@@ -1,15 +1,18 @@
-//! 引擎抽象：同步 KvEngine trait + MockStore 参考实现。
+//! Engine abstraction: sync [`KvEngine`] trait + [`MockStore`] reference
+//! implementation.
 
-/// KV 引擎最小接口（前缀扫描返回每个 key 的"剩余段"）。
-/// fjall / slatedb feature 各自提供实现；测试用 MockStore。
+/// Minimal KV engine interface (prefix scan returns the "suffix" of each key).
+/// The `fjall` / `slatedb` features each provide an implementation; tests
+/// use [`MockStore`].
 pub trait KvEngine {
     fn put(&mut self, key: Vec<u8>);
     fn del(&mut self, key: &[u8]);
-    /// 前缀扫描，返回每个 key 的"剩余段"（去掉 prefix）
+    /// Prefix scan; returns each matching key's "suffix" (prefix removed).
     fn scan_suffix(&self, prefix: &[u8]) -> Vec<Vec<u8>>;
 }
 
-/// 测试/开发用内存引擎（BTreeMap，memcmp 序与真实引擎一致）
+/// In-memory engine for tests and development (`BTreeMap`; memcmp order
+/// matches real engines).
 #[derive(Default, Clone)]
 pub struct MockStore {
     pub keys: std::collections::BTreeMap<Vec<u8>, ()>,

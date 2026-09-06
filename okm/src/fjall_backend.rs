@@ -1,7 +1,9 @@
-//! fjall 引擎适配：`FjallStore` = Database + keyspace 包装，实现同步 `KvEngine`。
+//! fjall engine adapter: `FjallStore` = Database + keyspace wrapper,
+//! implementing the sync `KvEngine`.
 //!
-//! 一个 OKM Collection 对应一个 keyspace；ns 前缀由 key 编码自带，
-//! 不同边类型共享 keyspace 也不冲突。
+//! One OKM Collection corresponds to one keyspace; ns prefixes come with the
+//! key encoding itself, so different edge types sharing a keyspace do not
+//! conflict.
 
 use crate::engine::KvEngine;
 use fjall::{Database, Keyspace, KeyspaceCreateOptions};
