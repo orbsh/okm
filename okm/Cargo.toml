@@ -1,0 +1,19 @@
+[package]
+name = "okm"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+okm-derive = { path = "../okm-derive" }
+fjall = { version = "3.1.10", optional = true }
+slatedb = { version = "0.16.0", optional = true }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"], optional = true }
+object_store = { version = "0.13", optional = true }
+
+[features]
+default = []
+fjall = ["dep:fjall"]
+slatedb = ["dep:slatedb", "dep:tokio"]
+
+[dev-dependencies]
+tempfile = "3"
