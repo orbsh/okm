@@ -1,3 +1,17 @@
+//! Derive macros for OKM (object-keyspace mapping).
+//!
+//! Two macros, each a pure single-item function with zero I/O:
+//!
+//! - `KeyEncode`: fixed-width key encoding. Generates `encode`/`decode`/
+//!   `KEY_LEN`/`FIELD_WIDTHS`/`encode_prefix_named`/`prefix_width`.
+//! - `EdgeEncode`: bidirectional edges. `#[kv_head(field, ...)]` declares
+//!   each endpoint's identity width; generates the `KvEdge` impl plus query
+//!   methods on the endpoint types.
+//!
+//! Namespace IDs come from `#[kv_ns(N)]` and fold at compile time into a
+//! 2-byte big-endian header; the dictionary itself lives in code, never in
+//! KV (docs/adr/0002). Schema stability is locked by hex assertions in the
+//! test suite.
 //! 两个 derive 宏：
 //!
 //! KeyEncode：定宽 key 编码。生成 encode/decode/KEY_LEN/FIELD_WIDTHS/

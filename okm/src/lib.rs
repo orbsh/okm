@@ -1,7 +1,29 @@
-//! OKM — object-keyspace mapping 运行时
+//! OKM — object-keyspace mapping runtime.
 //!
-//! 两个编码宏（KeyEncode / EdgeEncode）+ 一个组装点（Collection）。
-//! feature: `fjall` / `slatedb` 提供对应引擎的 Collection 实现。
+//! OKM is the KV counterpart of ORM: derive macros map Rust structs onto
+//! binary KV keys, turning schema correctness from a runtime database
+//! concern into a compile-time guarantee. The macro layer is deliberately
+//! storage-free — every `encode`/`decode` is a pure `Vec<u8>` in/out
+//! function, and engine choice belongs to the assembly site.
+//!
+//! # Architecture
+//!
+//! ```text
+//! KeyEncode / EdgeEncode derive macros   ← compile-time codecs, zero I/O
+//!         ↓ expand into pure functions
+//! Collection<S, E>                       ← assembly point: engine + edge type
+//!         ↓ trait dispatch
+//! KvEngine (MockStore / FjallStore / SlatedbStore)  ← real storage lives here
+//! ```
+//!
+//! # Features
+//!
+//! - `fjall` — sync [`FjallStore`] engine adapter.
+//! - `slatedb` — async [`SlatedbStore`] engine adapter (+ [`AsyncCollection`]).
+//!
+//! See `docs/adr/` for the design decisions (direction-bit niche, namespace
+//! dictionary, assembly point, value-side roadmap) and the project README
+//! for a full walkthrough.
 
 pub use okm_derive::{EdgeEncode, KeyEncode};
 
@@ -16,7 +38,7 @@ pub mod fjall_backend;
 pub mod slatedb_backend;
 
 pub use collection::Collection;
-pub use edge::{KvEdge, head_bytes};
+pub use edge::{head_bytes, KvEdge};
 pub use engine::{KvEngine, MockStore};
 pub use key::{KeyEncode, PrefixKey};
 

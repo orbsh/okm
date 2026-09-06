@@ -1,8 +1,11 @@
-//! slatedb 引擎适配：`SlatedbStore`（对象存储上的异步引擎）。
+//! slatedb engine adapter: `SlatedbStore` (async engine over object storage).
 //!
-//! slatedb 是 async API 且方法不可变借用（内部自己管理 WAL/flush），
-//! 故这里提供 `KvEngineAsync` trait 与 `AsyncCollection`——与同步
-//! `KvEngine`/`Collection` 平行，接口形状一致。
+//! slatedb is an async API with immutable borrows (WAL/flush managed
+//! internally), so this module provides the `KvEngineAsync` trait and
+//! `AsyncCollection` - parallel to the sync `KvEngine`/`Collection` with the
+//! same interface shape. Object stores are constructed via the
+//! `slatedb::object_store` re-export so versions always match slatedb's
+//! internals.
 
 use crate::edge::KvEdge;
 use crate::key::KeyEncode;
