@@ -24,3 +24,23 @@ Binding key and value types does not require code generation at all. `Collection
 **Update (2026-09-07, [ADR-0006](0006-row-node-model.md))**: with rows introduced (`RowEncode`), `Collection` narrows to edge-only duty (`EdgeTable`); node rows assemble in `Table<S, K, R>` — still a plain generic struct, still no assembly macro. The row macro's motivation is index declaration and the single-source field list, not binding, so the no-`KvRecord` conclusion stands.
 
 Atomicity note: `Collection.link()` performs the forward+reverse double write as one logical operation; true cross-collection atomic writes remain an engine-level property (one WAL commit over a shared batch) and stay on the engine side when needed.
+
+## Cross-collection atomic commits (mechanism note)
+
+Two collections each calling `write()` produce two independent WAL commits — which blocks the primary-table + secondary-index case, where both rows must live or die together (see the KV storage engine essay, "secondary index updates"). Atomicity across collections is an **engine-level property** (one WAL commit), not something the collection layer can synthesize; the mechanism is to return to the engine handle and let collections fall back to what they are good at — encoding only:
+
+```rust
+// primary table + secondary index share one engine-level batch
+let mut batch = WriteBatch::new();
+users.save_into(&mut batch, &user_key, &user_value);
+idx.save_into(&mut batch, &index_key, &EMPTY_VALUE);   // index entry value empty
+engine.write(batch)?;                                   // one WAL, atomic
+
+// division of labor:
+// single-collection routine write → internal buffer via save + write (convenience path)
+// cross-collection atomic write   → save_into into a shared batch + engine.write (consistency path)
+```
+
+`save_into` encodes into an externally owned batch without touching the internal buffer; the two paths do not interfere. No "shared buffer" variant is offered — that would only move the batch elsewhere; atomicity still comes from one engine commit.
+
+**Status**: `save_into` is designed and recorded here but not yet implemented; it lands with the row/batch layer ([ADR-0006](0006-row-node-model.md), where `Table::put` already writes primary + index entries as one engine batch for the single-table case).
