@@ -74,5 +74,9 @@ to full 16 bits). The trigger is "edge needs a new discriminator", never
       column names = field names; index entries excluded (derived state,
       rebuilt deterministically on import). Uses: backup, data exchange,
       lakehouse analysis.
+- [ ] CLI tool (`okm-cli`) exposing the above as commands:
+      Parquet export/import against a store, and macro expansion —
+      feed a derive-macro item, print the fully expanded source (for
+      auditing encoded layouts without a compiler session).
 - [ ] Publish to crates.io (`okm`, `okm-derive`).
 - [x] Push to github.com/orbsh/okm (repo referenced by wiki cross-links).
