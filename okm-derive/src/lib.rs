@@ -15,18 +15,45 @@ mod key_encode;
 mod row_encode;
 
 use proc_macro::TokenStream;
+use proc_macro2::TokenStream as TS2;
+
+/// Debug facility (PLAN Phase 4 — macro expansion audit): when
+/// `OKM_DERIVE_DUMP` is set to a directory path, the formatted expansion of
+/// every derive invocation is written there as
+/// `<struct>_<macro>.rs`. Zero cost when unset; cargo's macro caching
+/// applies — touch the source to re-dump.
+fn dump(macro_name: &str, input: TokenStream, tokens: &TS2) {
+    if let Ok(dir) = std::env::var("OKM_DERIVE_DUMP") {
+        let struct_name: Option<String> = syn::parse::<syn::DeriveInput>(input.clone())
+            .ok()
+            .map(|di| di.ident.to_string());
+        let file: syn::File =
+            syn::parse2(tokens.clone()).expect("derive expansion must parse as a file");
+        let src = prettyplease::unparse(&file);
+        let _ = std::fs::create_dir_all(&dir);
+        let name = struct_name.as_deref().unwrap_or("unknown");
+        let path = std::path::Path::new(&dir).join(format!("{name}_{macro_name}.rs"));
+        let _ = std::fs::write(path, src);
+    }
+}
 
 #[proc_macro_derive(KeyEncode, attributes(kv_ns))]
 pub fn derive_key_encode(input: TokenStream) -> TokenStream {
-    key_encode::derive(input)
+    let out = key_encode::derive(input.clone());
+    dump("KeyEncode", input, &out.clone().into());
+    out
 }
 
 #[proc_macro_derive(RowEncode, attributes(kv_ref, kv_index))]
 pub fn derive_row_encode(input: TokenStream) -> TokenStream {
-    row_encode::derive(input)
+    let out = row_encode::derive(input.clone());
+    dump("RowEncode", input, &out.clone().into());
+    out
 }
 
 #[proc_macro_derive(EdgeEncode, attributes(kv_ns, kv_head))]
 pub fn derive_edge(input: TokenStream) -> TokenStream {
-    edge_encode::derive(input)
+    let out = edge_encode::derive(input.clone());
+    dump("EdgeEncode", input, &out.clone().into());
+    out
 }

@@ -10,17 +10,25 @@ slatedb = { version = "0.16.0", optional = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"], optional = true }
 object_store = { version = "0.13", optional = true }
 arrow = { version = "54", optional = true }
+parquet = { version = "54", optional = true, default-features = false, features = ["arrow"] }
 
 [features]
 default = []
 fjall = ["dep:fjall"]
 slatedb = ["dep:slatedb", "dep:tokio"]
 arrow = ["dep:arrow"]
+parquet = ["dep:parquet", "arrow"]
 
 [dev-dependencies]
 tempfile = "3"
 arrow = { version = "54" }
+parquet = { version = "54", default-features = false, features = ["arrow"] }
+serde_json = "1"
 
 [[test]]
 name = "arrow_bridge_test"
 required-features = ["arrow"]
+
+[[test]]
+name = "tooling_test"
+required-features = ["parquet"]
