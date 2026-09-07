@@ -41,6 +41,7 @@ pub mod arrow_bridge;
 pub mod fjall_backend;
 #[cfg(feature = "slatedb")]
 pub mod slatedb_backend;
+pub mod tooling;
 
 pub use collection::EdgeTable;
 pub use edge::{KvEdge, head_bytes};
@@ -52,6 +53,8 @@ pub use table::Table;
 
 #[cfg(feature = "arrow")]
 pub use arrow_bridge as arrow_backend;
+#[cfg(feature = "parquet")]
+pub use tooling::parquet_io;
 
 #[cfg(feature = "fjall")]
 pub use fjall_backend::FjallStore;
