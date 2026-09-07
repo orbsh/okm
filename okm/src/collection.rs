@@ -1,22 +1,24 @@
-//! Assembly point: [`Collection`]`<S, E>` — engine + edge type = the
-//! operation surface of one relationship.
+//! Edge assembly point: [`EdgeTable`]`<S, E>` — engine + edge type = the
+//! operation surface of one relationship. Edges are the node-to-node
+//! accessor family; row tables use [`crate::table::Table`] (ADR-0006:
+//! Collection narrowed to edges, storage bound to the store instance).
 //!
 //! No `KvRecord` macro exists: binding key and value/edge types needs type
 //! parameters, not code generation (see `docs/adr/0003`). The macro layer
 //! stays storage-free; engine choice and lifecycle belong to the call site
-//! (`Collection::new(store)`).
+//! (`EdgeTable::new(store)`).
 
 use crate::edge::KvEdge;
 use crate::engine::KvEngine;
 use crate::key::{KeyEncode, PrefixKey};
 
 /// Engine `S` + edge `E` = the operation surface of one relationship.
-pub struct Collection<S, E> {
+pub struct EdgeTable<S, E> {
     pub store: S,
     _pd: std::marker::PhantomData<E>,
 }
 
-impl<S: KvEngine, E: KvEdge> Collection<S, E> {
+impl<S: KvEngine, E: KvEdge> EdgeTable<S, E> {
     pub fn new(store: S) -> Self {
         Self {
             store,
@@ -29,8 +31,8 @@ impl<S: KvEngine, E: KvEdge> Collection<S, E> {
         let e = E::from_parts(a.clone(), b.clone());
         let fk = e.forward_key();
         let rk = e.reverse_key();
-        self.store.put(fk);
-        self.store.put(rk);
+        self.store.put(fk, Vec::new());
+        self.store.put(rk, Vec::new());
     }
     /// Removes both directions.
     pub fn unlink(&mut self, a: &E::A, b: &E::B) {

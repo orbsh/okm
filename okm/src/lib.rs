@@ -25,24 +25,28 @@
 //! dictionary, assembly point, value-side roadmap) and the project README
 //! for a full walkthrough.
 
-pub use okm_derive::{EdgeEncode, KeyEncode};
+pub use okm_derive::{EdgeEncode, KeyEncode, RowEncode};
 
-pub mod key;
+pub mod collection;
 pub mod edge;
 pub mod engine;
-pub mod collection;
+pub mod index;
+pub mod key;
+pub mod table;
 
 #[cfg(feature = "fjall")]
 pub mod fjall_backend;
 #[cfg(feature = "slatedb")]
 pub mod slatedb_backend;
 
-pub use collection::Collection;
-pub use edge::{head_bytes, KvEdge};
+pub use collection::EdgeTable;
+pub use edge::{KvEdge, head_bytes};
 pub use engine::{KvEngine, MockStore};
+pub use index::{KvIndex, PRIMARY_SLOT, Row, scan_index};
 pub use key::{KeyEncode, PrefixKey};
+pub use table::Table;
 
 #[cfg(feature = "fjall")]
 pub use fjall_backend::FjallStore;
 #[cfg(feature = "slatedb")]
-pub use slatedb_backend::{AsyncCollection, KvEngineAsync, SlatedbStore};
+pub use slatedb_backend::{AsyncEdgeTable, KvEngineAsync, SlatedbStore};

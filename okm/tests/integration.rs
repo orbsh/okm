@@ -1,7 +1,7 @@
 //! 基础集成测试：MockStore 上验证字节布局、双向查询、PrefixKey。
 //! fjall 评估见 tests/fjall_eval.rs（--features fjall）。
 
-use okm::{Collection, EdgeEncode, KeyEncode, KvEdge, MockStore};
+use okm::{EdgeEncode, EdgeTable, KeyEncode, KvEdge, MockStore};
 
 // ================= 端点类型（derive KeyEncode） =================
 
@@ -38,13 +38,28 @@ pub struct UserToSessionEdge {
 #[test]
 fn byte_layout_and_queries() {
     let store = MockStore::default();
-    let mut edges: Collection<MockStore, UserToSessionEdge> = Collection::new(store);
+    let mut edges: EdgeTable<MockStore, UserToSessionEdge> = EdgeTable::new(store);
 
-    let u_org1 = UserKey { org_id: 7, user_id: 101 };
-    let u_org2 = UserKey { org_id: 8, user_id: 101 }; // 同 user_id 不同 org
-    let s1 = SessionKey { org_id: 7, session_id: 1001 };
-    let s2 = SessionKey { org_id: 7, session_id: 1002 };
-    let s3 = SessionKey { org_id: 8, session_id: 2001 };
+    let u_org1 = UserKey {
+        org_id: 7,
+        user_id: 101,
+    };
+    let u_org2 = UserKey {
+        org_id: 8,
+        user_id: 101,
+    }; // 同 user_id 不同 org
+    let s1 = SessionKey {
+        org_id: 7,
+        session_id: 1001,
+    };
+    let s2 = SessionKey {
+        org_id: 7,
+        session_id: 1002,
+    };
+    let s3 = SessionKey {
+        org_id: 8,
+        session_id: 2001,
+    };
 
     edges.link(&u_org1, &s1);
     edges.link(&u_org1, &s2);

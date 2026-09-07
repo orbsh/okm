@@ -3,7 +3,7 @@
 
 #![cfg(feature = "fjall")]
 
-use okm::{Collection, FjallStore};
+use okm::{EdgeTable, FjallStore};
 mod common;
 use common::*;
 
@@ -11,11 +11,20 @@ use common::*;
 fn fjall_roundtrip() {
     let dir = tempfile::tempdir().unwrap();
     let store = FjallStore::open(dir.path(), "edges").unwrap();
-    let mut edges: Collection<FjallStore, UserToSessionEdge> = Collection::new(store);
+    let mut edges: EdgeTable<FjallStore, UserToSessionEdge> = EdgeTable::new(store);
 
-    let u = UserKey { org_id: 7, user_id: 101 };
-    let s1 = SessionKey { org_id: 7, session_id: 1001 };
-    let s2 = SessionKey { org_id: 7, session_id: 1002 };
+    let u = UserKey {
+        org_id: 7,
+        user_id: 101,
+    };
+    let s1 = SessionKey {
+        org_id: 7,
+        session_id: 1001,
+    };
+    let s2 = SessionKey {
+        org_id: 7,
+        session_id: 1002,
+    };
 
     edges.link(&u, &s1);
     edges.link(&u, &s2);
@@ -34,7 +43,7 @@ fn fjall_roundtrip() {
     // 重新打开验证持久化（unlink 已生效，剩 1 条）
     drop(edges);
     let store2 = FjallStore::open(dir.path(), "edges").unwrap();
-    let edges2: Collection<FjallStore, UserToSessionEdge> = Collection::new(store2);
+    let edges2: EdgeTable<FjallStore, UserToSessionEdge> = EdgeTable::new(store2);
     let sessions2 = u.get_session(&edges2);
     assert_eq!(sessions2, vec![s2]);
 }
