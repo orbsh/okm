@@ -2,11 +2,13 @@
 //! key type, and a row type. `put` writes the primary key (slot 0) and one
 //! entry per access method in the same store instance, so atomicity holds
 //! within a single engine; cross-ns atomicity is the store instance's
-//! boundary, never the Table's.
+//! boundary, never the Table's. Index entries derive from the row payload
+//! (indexed + includes fields live there), so put and delete are both
+//! row-shaped.
 
 use crate::engine::KvEngine;
-use crate::index::{KvIndex, PRIMARY_SLOT, Row};
-use crate::key::KeyEncode;
+use crate::index::{KvIndex, Row};
+use crate::key::{KeyEncode, PrefixKey};
 
 pub struct Table<S, K: KeyEncode, R: Row<Key = K>> {
     store: S,
@@ -32,51 +34,37 @@ impl<S: KvEngine, K: KeyEncode, R: Row<Key = K>> Table<S, K, R> {
         &self.store
     }
 
-    /// Primary key entry (slot 0): `[ns 2B][0x00][key payload]`, value =
-    /// TLV payload of the row.
+    /// Primary key entry (slot 0): `[ns 2B][key payload]`, value = TLV
+    /// payload of the row.
     pub fn primary_key(&self, key: &K) -> Vec<u8> {
-        let mut buf = Vec::with_capacity(3 + K::KEY_LEN);
+        let mut buf = Vec::with_capacity(2 + K::KEY_LEN);
         buf.extend_from_slice(&self.ns.to_be_bytes());
-        buf.push(PRIMARY_SLOT);
         buf.extend_from_slice(&key.encode());
         buf
     }
 
-    /// Write a row: primary key + one index entry per access method.
-    /// Callers add more index entries via [`Table::put_index`] only when
-    /// the index is declared outside the row's `#[kv_index]` set (not
-    /// possible today — put covers all declared access methods).
+    /// Write a row: primary key + one (key, value) index entry per access
+    /// method, all derived from this one row.
     pub fn put(&mut self, key: &K, row: &R) {
         self.store.put(self.primary_key(key), row.encode_payload());
-        for e in R::index_entries(key, self.ns) {
-            self.store.put(e, Vec::new());
+        for (ek, ev) in R::index_entries(key, row, self.ns) {
+            self.store.put(ek, ev);
         }
     }
 
-    /// Index entry key for access method `I` (projection of the key only).
-    pub fn index_key<I: KvIndex<Key = K>>(&self, key: &K) -> Vec<u8> {
-        I::encode_entry(self.ns, key)
+    /// Index entry key for access method `I` derived from `key` + `row`.
+    pub fn index_key<I: KvIndex<Key = K, Row = R>>(&self, key: &K, row: &R) -> Vec<u8> {
+        I::entry_key(self.ns, key, row)
     }
 
-    /// Write one index entry for `idx` derived from the row's key. The
-    /// entry is a pure projection of the key — the row payload is not
-    /// involved (value is empty; covering fields come from `includes`).
-    pub fn put_index<I: KvIndex<Key = K>>(&mut self, key: &K) {
-        self.store.put(I::encode_entry(self.ns, key), Vec::new());
-    }
-
-    /// Delete a row: primary key + all declared index entries must be
-    /// removed by the caller (delete needs the index set, which lives at
-    /// the row's declaration — see `Table::delete_with`).
-    pub fn delete(&mut self, key: &K) {
+    /// Delete a row: primary key + all declared index entries, all
+    /// derived from the row being removed (the declaration IS the
+    /// registry).
+    pub fn delete(&mut self, key: &K, row: &R) {
         self.store.del(&self.primary_key(key));
-        for e in R::index_entries(key, self.ns) {
-            self.store.del(&e);
+        for (ek, _) in R::index_entries(key, row, self.ns) {
+            self.store.del(&ek);
         }
-    }
-
-    pub fn delete_index<I: KvIndex<Key = K>>(&mut self, key: &K) {
-        self.store.del(&I::encode_entry(self.ns, key));
     }
 
     /// Point lookup: decode key payload + TLV payload.
@@ -87,13 +75,49 @@ impl<S: KvEngine, K: KeyEncode, R: Row<Key = K>> Table<S, K, R> {
     }
 
     /// Leftmost-prefix scan over access method `I`, then fetch-back
-    /// (回表): decode each primary key ID and load its row payload.
-    pub fn scan<I: KvIndex<Key = K>>(&self, encoded: &[u8]) -> Vec<(K, Option<R>)> {
+    /// (回表): decode each entry's key prefix and load its row payload.
+    /// With a truncated `key(...)` prefix the decoded keys are partial
+    /// (`PrefixKey.taken < KEY_LEN`) — use the trustworthy prefix fields
+    /// to continue scanning the main table.
+    pub fn scan<I: KvIndex<Key = K, Row = R>>(&self, encoded: &[u8]) -> Vec<(PrefixKey<K>, Option<R>)> {
         crate::scan_index::<S, I>(&self.store, self.ns, encoded)
             .into_iter()
-            .map(|k| {
-                let row = self.get(&k);
-                (k, row)
+            .map(|pk| {
+                let row = if pk.taken == K::KEY_LEN {
+                    self.get(&pk.decoded)
+                } else {
+                    None
+                };
+                (pk, row)
+            })
+            .collect()
+    }
+
+    /// Covered scan over access method `I`: the includes segment lives in
+    /// the entry value, so a full-covering index answers without going
+    /// back to the primary table (materialized view, ADR-0006). Returns
+    /// `(key prefix, entry value bytes)`.
+    pub fn scan_covered<I: KvIndex<Key = K, Row = R>>(
+        &self,
+        encoded: &[u8],
+    ) -> Vec<(PrefixKey<K>, Vec<u8>)> {
+        let p = I::entry_prefix(self.ns, encoded);
+        let taken = I::key_prefix_width();
+        let kl = K::KEY_LEN;
+        self.store
+            .scan_suffix_kv(&p)
+            .into_iter()
+            .map(|(suffix, v)| {
+                assert!(suffix.len() >= taken, "index entry shorter than key prefix");
+                let start = suffix.len() - taken;
+                let decoded = if taken == kl {
+                    K::decode(&suffix[start..])
+                } else {
+                    let mut buf = vec![0u8; kl];
+                    buf[..taken].copy_from_slice(&suffix[start..]);
+                    K::decode(&buf)
+                };
+                (PrefixKey { decoded, taken }, v)
             })
             .collect()
     }
@@ -102,8 +126,7 @@ impl<S: KvEngine, K: KeyEncode, R: Row<Key = K>> Table<S, K, R> {
     /// in key order — the byte-level scan surface the Arrow bridge and
     /// snapshot exporter consume without struct materialization.
     pub fn scan_rows_raw(&self) -> Vec<(Vec<u8>, Vec<u8>)> {
-        let mut prefix = self.ns.to_be_bytes().to_vec();
-        prefix.push(PRIMARY_SLOT);
+        let prefix = self.ns.to_be_bytes().to_vec();
         self.store
             .scan_suffix(&prefix)
             .into_iter()
@@ -117,8 +140,7 @@ impl<S: KvEngine, K: KeyEncode, R: Row<Key = K>> Table<S, K, R> {
 
     /// Full-ns scan of primary keys (slot-0 entries only).
     pub fn scan_keys(&self) -> Vec<K> {
-        let mut p = self.ns.to_be_bytes().to_vec();
-        p.push(PRIMARY_SLOT);
+        let p = self.ns.to_be_bytes().to_vec();
         self.store
             .scan_suffix(&p)
             .iter()

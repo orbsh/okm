@@ -31,5 +31,9 @@ name = "arrow_bridge_test"
 required-features = ["arrow"]
 
 [[test]]
+name = "codec_v2_test"
+required-features = ["parquet"]
+
+[[test]]
 name = "tooling_test"
 required-features = ["parquet"]

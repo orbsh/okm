@@ -1,17 +1,26 @@
 //! Secondary indexes (access methods) and the [`Row`] payload contract.
 //!
-//! Index key layout (ADR-0005/0006): `[ns 2B][slot 1B][indexed fields BE]
-//! [includes fields BE][primary key ID]`, value empty. Slot 0 is reserved
-//! for the table's primary keys (`[ns 2B][0x00][key payload]`), so an
-//! access method's entries never collide with the table segment and one
-//! ns-prefix scan still covers everything. Slots 1, 2, … are allocated by
-//! attribute order inside one item (macro-side counter, never reused —
-//! hole discipline same as ns IDs). The primary key ID is always the full
-//! key encoding appended at the tail, so the layout is uniform regardless
-//! of how many fields the index covers.
+//! Index entry layout (ADR-0005/0006): key
+//! `[ns+slot 2B][index fields BE][key prefix]`, value = the includes
+//! segment (raw payload-field encodings, empty when no `includes`).
+//!
+//! - **Index fields** come from the row payload, encoded by name in the
+//!   index's declared order — the sort key is payload data.
+//! - **Key prefix** is the tail segment: the full primary-key encoding by
+//!   default, or a declared declaration-order prefix of the key struct
+//!   (`key(...)` clause). A truncated prefix makes the entry itself a list
+//!   encoding: `fields(name) key(user_id)` over a `(user_id, timestamp)`
+//!   table yields `[name][user_id]` — one prefix scan returns the user's
+//!   whole list (friends, timeline) without going through the primary key.
+//!   The tail is always decodable from the last bytes of the entry key.
+//!
+//! The primary table is slot 0: `[ns 2B][key]`, value = TLV payload.
+//! Access methods live at ns+1, ns+2, … allocated by attribute order
+//! inside one item (macro-side counter, never reused — hole discipline
+//! same as ns IDs, ADR-0005).
 
 use crate::engine::KvEngine;
-use crate::key::KeyEncode;
+use crate::key::{KeyEncode, PrefixKey};
 
 /// Slot reserved for a table's primary keys inside its ns segment.
 pub const PRIMARY_SLOT: u8 = 0;
@@ -35,10 +44,13 @@ pub trait Row: Sized + Clone {
     fn encode_payload(&self) -> Vec<u8>;
     /// Decode payload; `b` holds only the TLV region (no key bytes).
     fn decode_payload(b: &[u8]) -> Self;
-    /// All declared access methods' index entries for `key`, in slot order.
-    /// Generated; lets Table::put/delete cover every declared index without
-    /// a runtime registry (the declaration IS the registry).
-    fn index_entries(key: &Self::Key, ns: u16) -> Vec<Vec<u8>>;
+    /// All declared access methods' `(entry key, entry value)` pairs for
+    /// `key` + `row`, in slot order. Index entries depend on the payload
+    /// (indexed and includes fields live there), so the row is required —
+    /// put and delete are both row-shaped. Generated; lets Table cover
+    /// every declared index without a runtime registry (the declaration IS
+    /// the registry).
+    fn index_entries(key: &Self::Key, row: &Self, ns: u16) -> Vec<(Vec<u8>, Vec<u8>)>;
 
     /// Assembly-point constructor: builds the row's `Table` binding this
     /// row type to its `#[kv_ref]` key. The key type never appears at the
@@ -53,79 +65,122 @@ pub trait Row: Sized + Clone {
 /// from the table's ns — indexes never take manual namespace IDs.
 pub trait KvIndex {
     type Key: KeyEncode;
+    /// The row type this access method reads its index fields from.
+    type Row: Row<Key = Self::Key>;
     /// Item-local slot, allocated by attribute order (1, 2, …; 0 = primary).
+    /// This method's ns = table_ns + SLOT.
     const SLOT: u8;
-    /// Indexed fields, declaration-order prefix of the key struct's fields.
+    /// Indexed payload fields, in sort order.
     const FIELDS: &'static [&'static str];
-    /// Covering fields continuing the prefix (may be empty). `includes`
-    /// makes the scan self-sufficient — a materialized view for high-fanout
-    /// queries (ADR-0006), never a default optimization.
+    /// Covering payload fields carried in the entry value (may be empty).
+    /// `includes` makes the scan self-sufficient — a materialized view for
+    /// high-fanout queries (ADR-0006), never a default optimization. They
+    /// live in the value: they do not participate in the sort order.
     const INCLUDES: &'static [&'static str];
+    /// Key fields forming the tail prefix — a declaration-order prefix of
+    /// the key struct (empty = the full primary-key encoding).
+    const KEY_PREFIX: &'static [&'static str];
 
-    /// All fields carried before the primary key ID.
-    fn carried() -> Vec<&'static str> {
-        Self::FIELDS.iter().chain(Self::INCLUDES).copied().collect()
-    }
+    /// Encode the named fields in `names` order. Generated impls source
+    /// every name from the row payload; hand impls may read identity
+    /// fields off `key` instead (the hook receives both).
+    fn encode_named(key: &Self::Key, row: &Self::Row, names: &[&str], buf: &mut Vec<u8>);
 
-    /// Index header `[ns 2B][slot 1B]`; ns comes from the engine's segment
-    /// registry, passed in by the assembly point (Table) — the index itself
-    /// stays ns-agnostic.
-    fn header(ns: u16) -> [u8; 3] {
-        let b = ns.to_be_bytes();
-        [b[0], b[1], Self::SLOT]
-    }
-
-    /// Carried-segment byte width: `prefix_width(fields ++ includes)`.
-    fn carried_width() -> usize {
-        <Self::Key as KeyEncode>::prefix_width(&Self::carried())
-    }
-
-    /// Full index entry key: header + carried fields + full key as the
-    /// primary key ID. The carried segment is the declaration-order prefix
-    /// of the key's own encoding — no separate encoding pass, just a slice.
-    fn encode_entry(ns: u16, key: &Self::Key) -> Vec<u8> {
-        let enc = key.encode();
-        let w = Self::carried_width();
-        debug_assert!(enc.len() >= w, "carried width exceeds key length");
-        let mut buf = Vec::with_capacity(3 + w + Self::Key::KEY_LEN);
-        buf.extend_from_slice(&Self::header(ns));
-        buf.extend_from_slice(&enc[..w]);
-        buf.extend_from_slice(&enc); // primary key ID at the tail
+    /// Encoded index-field segment (the sort key, after the header).
+    fn fields_bytes(key: &Self::Key, row: &Self::Row) -> Vec<u8> {
+        let mut buf = Vec::new();
+        Self::encode_named(key, row, Self::FIELDS, &mut buf);
         buf
     }
 
-    /// Scan prefix for a leftmost-prefix match: header + the encoded bytes
-    /// of the leading carried fields. `encoded` is the caller-side encoding
-    /// of the match values (e.g. `7u32.to_be_bytes()` for `org_id`) and must
-    /// not exceed the carried width.
-    fn entry_prefix(ns: u16, encoded: &[u8]) -> Vec<u8> {
-        debug_assert!(
-            encoded.len() <= Self::carried_width(),
-            "encoded prefix exceeds carried width"
-        );
-        let mut buf = Vec::with_capacity(3 + encoded.len());
-        buf.extend_from_slice(&Self::header(ns));
+    /// Byte width of the key-prefix tail segment.
+    fn key_prefix_width() -> usize {
+        if Self::KEY_PREFIX.is_empty() {
+            Self::Key::KEY_LEN
+        } else {
+            Self::Key::prefix_width(Self::KEY_PREFIX)
+        }
+    }
+
+    /// Encoded key-prefix tail segment (full key encoding when
+    /// `KEY_PREFIX` is empty).
+    fn key_prefix_bytes(key: &Self::Key) -> Vec<u8> {
+        if Self::KEY_PREFIX.is_empty() {
+            key.encode()
+        } else {
+            let mut buf = Vec::with_capacity(Self::key_prefix_width());
+            key.encode_prefix_named(&mut buf, Self::KEY_PREFIX);
+            buf
+        }
+    }
+
+    /// ns of this access method: table segment + slot.
+    fn index_ns(table_ns: u16) -> u16 {
+        table_ns.wrapping_add(Self::SLOT as u16)
+    }
+
+    /// Full entry key: `[ns+slot 2B][index fields][key prefix]`.
+    fn entry_key(table_ns: u16, key: &Self::Key, row: &Self::Row) -> Vec<u8> {
+        let fb = Self::fields_bytes(key, row);
+        let kp = Self::key_prefix_bytes(key);
+        let mut buf = Vec::with_capacity(2 + fb.len() + kp.len());
+        buf.extend_from_slice(&Self::index_ns(table_ns).to_be_bytes());
+        buf.extend_from_slice(&fb);
+        buf.extend_from_slice(&kp);
+        buf
+    }
+
+    /// Entry value: the includes segment (raw payload-field encodings,
+    /// concatenation in `INCLUDES` order; empty when no includes).
+    fn entry_value(key: &Self::Key, row: &Self::Row) -> Vec<u8> {
+        let mut buf = Vec::new();
+        if !Self::INCLUDES.is_empty() {
+            Self::encode_named(key, row, Self::INCLUDES, &mut buf);
+        }
+        buf
+    }
+
+    /// Scan prefix for a leftmost-prefix match over the index fields:
+    /// header + the caller-side encoding of the leading index fields
+    /// (e.g. `7u32.to_be_bytes()` for a u32 field; empty slice = whole
+    /// index). Must not exceed the index-field segment width.
+    fn entry_prefix(table_ns: u16, encoded: &[u8]) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(2 + encoded.len());
+        buf.extend_from_slice(&Self::index_ns(table_ns).to_be_bytes());
         buf.extend_from_slice(encoded);
         buf
     }
 }
 
-/// Leftmost-prefix scan over an index: returns the decoded primary keys.
-///
-/// `encoded` is the concatenated big-endian encoding of the leading carried
-/// fields to match (empty slice = scan the whole index). Each entry's suffix
-/// is `[unmatched carried bytes][primary key ID]`; the primary key ID is the
-/// last `KEY_LEN` bytes regardless of what the index covers, so decoding
-/// never depends on the index definition.
-pub fn scan_index<S: KvEngine, I: KvIndex>(store: &S, ns: u16, encoded: &[u8]) -> Vec<I::Key> {
-    let p = I::entry_prefix(ns, encoded);
+/// Leftmost-prefix scan over an index: returns each entry's decoded key
+/// prefix. The key prefix is the tail segment of the entry key, so it is
+/// recovered from the last `key_prefix_width()` bytes — full key when
+/// `KEY_PREFIX` is empty, truncated identity otherwise (trailing fields
+/// are zero-filled, use only the prefix fields).
+pub fn scan_index<S: KvEngine, I: KvIndex>(
+    store: &S,
+    table_ns: u16,
+    encoded: &[u8],
+) -> Vec<PrefixKey<I::Key>> {
+    let p = I::entry_prefix(table_ns, encoded);
+    let taken = I::key_prefix_width();
     let kl = I::Key::KEY_LEN;
     store
         .scan_suffix(&p)
         .iter()
         .map(|suffix| {
-            assert!(suffix.len() >= kl, "index entry shorter than a primary key");
-            I::Key::decode(&suffix[suffix.len() - kl..])
+            assert!(suffix.len() >= taken, "index entry shorter than key prefix");
+            let start = suffix.len() - taken;
+            let decoded = if taken == kl {
+                I::Key::decode(&suffix[start..])
+            } else {
+                // Truncated identity: zero-fill past the prefix boundary —
+                // trailing fields are garbage by contract (PrefixKey).
+                let mut buf = vec![0u8; kl];
+                buf[..taken].copy_from_slice(&suffix[start..]);
+                I::Key::decode(&buf)
+            };
+            PrefixKey { decoded, taken }
         })
         .collect()
 }

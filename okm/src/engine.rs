@@ -12,6 +12,19 @@ pub trait KvEngine {
     fn del(&mut self, key: &[u8]);
     /// Prefix scan; returns each matching key's "suffix" (prefix removed).
     fn scan_suffix(&self, prefix: &[u8]) -> Vec<Vec<u8>>;
+    /// Prefix scan returning `(key suffix, value)` pairs, in key order.
+    /// Default derives from `scan_suffix` + `get` (two lookups per hit);
+    /// engines override with a native pair scan when it matters.
+    fn scan_suffix_kv(&self, prefix: &[u8]) -> Vec<(Vec<u8>, Vec<u8>)> {
+        self.scan_suffix(prefix)
+            .into_iter()
+            .map(|sfx| {
+                let full = [prefix, sfx.as_slice()].concat();
+                let v = self.get(&full).unwrap_or_default();
+                (sfx, v)
+            })
+            .collect()
+    }
 }
 
 /// In-memory engine for tests and development (`BTreeMap`; memcmp order
