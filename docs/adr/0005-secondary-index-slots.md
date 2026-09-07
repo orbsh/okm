@@ -1,7 +1,7 @@
 # ADR-0005: Secondary indexes — item-local slot allocation, no manual ns per index
 
 Date: 2026-09-06
-Status: Accepted (design; implementation pending). **Update 2026-09-07, [ADR-0006](0006-row-node-model.md)**: `#[kv_index]` mounts on the **row struct** (`RowEncode`), not the key struct — the index's data source is row attributes, and key structs stay pure identity. Slot numbering, ns derivation, and the 1-byte discriminator below are unchanged; covering indexes (`includes`) are positioned as materialized views for high-fanout queries.
+Status: Accepted (design; implementation pending). **Update 2026-09-07, [ADR-0006](0006-row-node-model.md)**: `#[kv_index]` mounts on the **row struct** (`RowEncode`), not the key struct — the index's data source is row attributes, and key structs stay pure identity. Slot numbering, ns derivation, and the 1-byte discriminator below are unchanged; covering indexes (`includes`) are positioned as materialized views for high-fanout queries. **Update 2026-09-07, implementation**: the slot mechanism is **removed** — the 2-byte table namespace alone discriminates every entry (primary key and each index entry each get their own derived ns; no slot byte, no hole bookkeeping). `fields(...)` names **payload** fields (the index's data source is the row); the carried key tail defaults to the full primary key and may be truncated to any named subset via `key(…)` — `encode_prefix_named` now accepts arbitrary named subsets, not just declaration-order prefixes. Entry layout: `[ns 2B][indexed fields][key prefix]`, value = `includes` fields TLV (empty when absent).
 
 ## Context
 

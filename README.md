@@ -32,7 +32,7 @@ Implemented:
 - `EdgeEncode` — bidirectional edges with per-endpoint identity width (`#[kv_head(...)]`), 2-byte direction-bit header, query methods generated onto endpoint types.
 - `EdgeTable<S, E>` (formerly `Collection`) — the edge assembly point: engine + edge type = the operation surface of one relationship (`link` / `unlink` / `forward` / `reverse` / `reverse_prefix`).
 - `RowEncode` — one macro declares a row (Node): `#[kv_ref]` identity + TLV payload fields + `#[kv_index(...)]` access methods; the `ValueEncode` derive is absorbed into it.
-- Secondary indexes (access methods) — `#[kv_index(name { fields(…), includes(…) })]` on **row structs**: composite indexes, item-local slot numbering (slots start at 1; slot 0 is the primary table), 1-byte slot discriminator, leftmost-prefix scans with fetch-back; `includes` covering positioned as a materialized view for high-fanout queries.
+- Secondary indexes (access methods) — `#[kv_index(name { fields(…), includes(…), key(…) })]` on **row structs**: composite indexes over payload fields (declaration order), no per-index slot/ns — the 2-byte table namespace already discriminates every entry; leftmost-prefix scans with fetch-back; `key(…)` truncates the carried primary-key tail to the named subset (`encode_prefix_named`), full key by default; `includes` covering positioned as a materialized view for high-fanout queries.
 - `Table<S, K, R>` node assembly point — `put`/`delete` write the primary key and every declared index entry in one store instance (the declaration IS the registry); `scan` returns `(Key, Option<Row>)` via leftmost-prefix on any access method.
 - Engine backends behind Cargo features: `fjall` (sync `FjallStore`), `slatedb` (async `SlatedbStore` + `AsyncEdgeTable`), plus an in-memory `MockStore` for tests.
 - Multi-engine mixing — different engines per ns segment in one process (fjall for transactions, slatedb for logs); atomicity stops at one engine, ns numbering globally unique.
@@ -147,47 +147,58 @@ The derive macro also generates query methods on the endpoint types themselves (
 use okm::{RowEncode, Row};
 
 /// A user row hangs off UserKey via #[kv_ref]; payload fields are TLV-encoded.
-/// Each #[kv_index] declares an access method — slots are allocated in
-/// attribute order starting at 1 (slot 0 is the primary table).
+/// Each #[kv_index] declares an access method over PAYLOAD fields —
+/// identity belongs to the key (a surrogate id), business dimensions to the row.
 #[derive(RowEncode, Clone, PartialEq, Debug)]
 #[kv_ref(UserKey)]
-#[kv_index(by_name { fields(org_id, name) })]
-#[kv_index(by_org_name { fields(org_id), includes(name) })]
+#[kv_index(by_reputation { fields(reputation) })]
+#[kv_index(by_org { fields(org_id, created_at), includes(bio_len) })]
 pub struct User {
+    pub org_id: u32,
+    pub created_at: u64,
     pub reputation: u32,
     pub bio_len: u16,
 }
 ```
 
-`fields(...)` names a declaration-order prefix of the key struct's fields (same
-truncation rule as `#[kv_head]`); `includes(...)` carries extra key fields into
-the entry — a covering index, positioned as a materialized view for high-fanout
-queries. Physical index entry layout (ADR-0005):
+`fields(...)` names payload fields to sort/group by (declaration order, first
+field = the grouping dimension); `includes(...)` copies extra payload fields
+into the entry value — a covering index, positioned as a materialized view for
+high-fanout queries; `key(...)` truncates the primary-key tail carried at the
+key end to the named subset (default: the full key). Physical index entry
+layout (ADR-0005):
 
 ```
-[ ns 2B BE ][ slot 1B ][ indexed fields BE ][ included fields BE ][ full primary key ]
+[ ns 2B BE ][ indexed fields BE ][ primary key prefix (default: full) ]   value = included fields TLV (empty when no includes)
 ```
 
-`Table::put` writes the primary key (slot 0, value = TLV payload) and one
-entry per declared access method in the same store instance — the declaration
-is the registry, no runtime index bookkeeping. `Row::table` builds the
-assembly point without repeating the key type at the call site:
+The 2-byte namespace is the only discriminator — no slot byte; every index
+gets its own `ns` derived from the table's. `Table::put` writes the primary
+key (value = TLV payload) and one entry per declared access method in the same
+store instance — the declaration is the registry, no runtime index
+bookkeeping. `Row::table` builds the assembly point without repeating the key
+type at the call site:
 
 ```rust
 use okm::{MockStore, Row};
 
 let mut t = <User as Row>::table(MockStore::default(), 9);
 
-t.put(&user, &User { reputation: 100, bio_len: 2 });
+t.put(&user, &User { org_id: 7, created_at: 30, reputation: 100, bio_len: 2 });
 
 // Leftmost-prefix scan on any access method, with fetch-back:
-let rows = t.scan::<ByOrgName>(&7u32.to_be_bytes());
+let rows = t.scan::<ByOrg>(&7u32.to_be_bytes());
 for (key, row) in rows {
     // key: decoded UserKey, row: Some(decoded User) when the payload exists
 }
 
 t.delete(&user); // removes the primary key + all declared index entries
 ```
+
+Truncated keys change row-uniqueness, not grouping: the `fields` prefix drives
+ordering, the key tail distinguishes rows. `key(user_id)` (dropping `org_id`
+from the tail) is safe only when the named subset is unique per row —
+otherwise rows overwrite each other's entries.
 
 ### 6. Engine backends
 
@@ -216,7 +227,7 @@ assert_eq!(&fk[2..6], &7u32.to_be_bytes());
 ```
 okm-derive/        proc-macro crate: KeyEncode, RowEncode, EdgeEncode (zero I/O)
 okm/src/key.rs     KeyEncode trait + PrefixKey
-okm/src/index.rs   Row + KvIndex traits, slot constants, index scan helpers
+okm/src/index.rs   Row + KvIndex traits, index scan helpers
 okm/src/edge.rs    KvEdge trait + direction-bit header
 okm/src/engine.rs  KvEngine trait + MockStore
 okm/src/table.rs       Table<S, K, R> node assembly point
