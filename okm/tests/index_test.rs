@@ -2,7 +2,7 @@
 //! put/scan 回表、entry 布局 hex 锁定（slot 从 1 起，0 保留给主表）、
 //! 最左前缀扫描、includes 覆盖。
 
-use okm::{KeyEncode, KvEngine, KvIndex, MockStore, Row, RowEncode, Table};
+use okm::{KeyEncode, KvEngine, KvIndex, MockStore, Row, RowEncode};
 
 // marker struct 生成在 derive 展开点（本文件），直接引用
 use __OkmIndex_User_by_name as ByName;
@@ -50,7 +50,7 @@ fn mk(org: u32, name: &[u8; 8], uid: u64) -> (UserKey, User) {
 
 #[test]
 fn table_put_writes_primary_and_indexes() {
-    let mut t: Table<MockStore, UserKey, User> = Table::new(MockStore::default(), 9);
+    let mut t = <User as Row>::table(MockStore::default(), 9);
     let (k, r) = mk(7, b"alice\0\0\0", 101);
     t.put(&k, &r);
 
@@ -83,7 +83,7 @@ fn table_put_writes_primary_and_indexes() {
 
 #[test]
 fn scan_via_index_returns_rows() {
-    let mut t: Table<MockStore, UserKey, User> = Table::new(MockStore::default(), 9);
+    let mut t = <User as Row>::table(MockStore::default(), 9);
     let (k1, r1) = mk(7, b"alice\0\0\0", 101);
     let (k2, r2) = mk(7, b"alice\0\0\0", 102);
     let (k3, r3) = mk(7, b"bob\0\0\0\0\0", 103);
