@@ -28,12 +28,14 @@ Implemented:
 - `Collection<S, E>` — the assembly point: engine + edge type = the operation surface of one relationship (`link` / `unlink` / `forward` / `reverse` / `reverse_prefix`).
 - Engine backends behind Cargo features: `fjall` (sync `FjallStore`), `slatedb` (async `SlatedbStore` + `AsyncCollection`), plus an in-memory `MockStore` for tests.
 
-Roadmap (design locked, not yet implemented — [ADR-0004](docs/adr/0004-value-side-and-wrappers.md), [ADR-0005](docs/adr/0005-secondary-index-slots.md)):
+Roadmap (design locked, not yet implemented — [ADR-0006](docs/adr/0006-row-node-model.md), [ADR-0004](docs/adr/0004-value-side-and-wrappers.md), [ADR-0005](docs/adr/0005-secondary-index-slots.md)):
 
-- `ValueEncode` — versioned value payload (lazy migration) and TLV extension section.
+- `RowEncode` — one macro declares a row (Node): `#[kv_ref]` identity + payload fields + `#[kv_index(...)]` access methods; the `ValueEncode` derive is absorbed into it (versioned payload, TLV extension section, field wrappers remain as encoding rules).
 - Field-level encoding wrappers (`Enum<T>`, `Offset<T>`, `Delta<T>`, `VarInt<T>`, `Reverse<T>` …).
-- Secondary indexes — `#[kv_index(name { fields(…) })]` on table structs: composite indexes, item-local slot numbering (one manual ns per **table**), 1-byte slot discriminator, leftmost-prefix scans.
-- Variable-length key fields (`String` with `[len: u16]` prefix), for secondary indexes.
+- Secondary indexes (access methods) — `#[kv_index(name { fields(…), includes(…) })]` on **row structs**: composite indexes, item-local slot numbering (one manual ns per **table**), 1-byte slot discriminator, leftmost-prefix scans; `includes` covering positioned as a materialized view for high-fanout queries.
+- `Table<S, K, R>` node assembly point beside the edge `Collection`; variable-length payload/index fields (`String`), keys stay fixed-width.
+- Multi-engine mixing — different engines per ns segment in one process (fjall for transactions, slatedb for logs); atomicity stops at one engine, ns numbering globally unique.
+- Snapshot export — rows → Parquet, engine-independent (backup / data exchange / lakehouse); ns restored to descriptive text, columns = field names.
 
 ## Usage
 

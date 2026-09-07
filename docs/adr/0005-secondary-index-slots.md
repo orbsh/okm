@@ -1,7 +1,7 @@
 # ADR-0005: Secondary indexes — item-local slot allocation, no manual ns per index
 
 Date: 2026-09-06
-Status: Accepted (design; implementation pending)
+Status: Accepted (design; implementation pending). **Update 2026-09-07, [ADR-0006](0006-row-node-model.md)**: `#[kv_index]` mounts on the **row struct** (`RowEncode`), not the key struct — the index's data source is row attributes, and key structs stay pure identity. Slot numbering, ns derivation, and the 1-byte discriminator below are unchanged; covering indexes (`includes`) are positioned as materialized views for high-fanout queries.
 
 ## Context
 

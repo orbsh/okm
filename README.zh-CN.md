@@ -30,12 +30,14 @@ SQL 的核心价值不是执行性能，而是关系模型交付的可读性、�
 - `Collection<S, E>` — 组装点：引擎 + 边类型 = 一条关系的操作面（`link` / `unlink` / `forward` / `reverse` / `reverse_prefix`）。
 - 引擎后端走 Cargo feature：`fjall`（同步 `FjallStore`）、`slatedb`（异步 `SlatedbStore` + `AsyncCollection`），测试用内存 `MockStore`。
 
-路线图（设计已定，尚未实现——[ADR-0004](docs/adr/0004-value-side-and-wrappers.md)、[ADR-0005](docs/adr/0005-secondary-index-slots.md)）：
+路线图（设计已定，尚未实现——[ADR-0006](docs/adr/0006-row-node-model.md)、[ADR-0004](docs/adr/0004-value-side-and-wrappers.md)、[ADR-0005](docs/adr/0005-secondary-index-slots.md)）：
 
-- `ValueEncode` — 版本化 value payload（懒迁移）与 TLV 扩展区。
+- `RowEncode` — 单宏声明行（Node）：`#[kv_ref]` 身份 + 载荷字段 + `#[kv_index(...)]` 访问方法；`ValueEncode` 宏并入其中（版本化 payload、TLV 扩展区、字段 wrapper 作为编码规则保留）。
 - 字段级编码 wrapper（`Enum<T>`、`Offset<T>`、`Delta<T>`、`VarInt<T>`、`Reverse<T>` …）。
-- 二级索引——表 struct 上的 `#[kv_index(name { fields(…) })]`：支持组合索引、item 内自动 slot 编号（每个**表**一个手动 ns）、1 字节 slot 判别符、最左前缀扫描。
-- 变长 key 字段（`String` 带 `[len: u16]` 前缀），用于二级索引。
+- 二级索引（访问方法）——**行 struct** 上的 `#[kv_index(name { fields(…), includes(…) })]`：支持组合索引、item 内自动 slot 编号（每个**表**一个手动 ns）、1 字节 slot 判别符、最左前缀扫描；`includes` 覆盖索引定位为高扇出查询的物化视图。
+- `Table<S, K, R>` 行装配点与边 `Collection` 并列；变长载荷/索引字段（`String`），key 保持定宽。
+- 多引擎混用——同一进程内不同 ns 段可绑不同引擎（交易走 fjall、日志走 slatedb）；原子性止于单引擎内，ns 编号全库唯一。
+- 快照导出——行 → Parquet，与引擎无关（备份 / 数据交换 / lakehouse 分析）；ns 还原为描述性文本，列名即字段名。
 
 ## 使用方法
 
