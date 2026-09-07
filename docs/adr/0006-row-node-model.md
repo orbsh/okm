@@ -138,19 +138,25 @@ Design points:
 
 ## Index entries and covering
 
-Index key layout (per ADR-0005 slot mechanism, now fed from the row):
+Index key layout (supersedes the slot mechanism — the 2-byte table namespace
+alone discriminates entries; each index derives its own ns from the table's):
 
 ```
-[table_ns 2B][slot 1B][indexed fields][includes fields][primary key ID]   value empty
+[table_ns 2B][indexed fields][primary key prefix]   value = includes fields TLV (empty when absent)
 ```
 
-- `includes(age)` appends payload fields into the index key, making the scan
-  self-sufficient (no point-lookup back to the row). **Positioning: this is a
-  materialized view for high-fanout queries, not a default optimization** — in
-  KV, "回表" is one bloom-filtered point lookup, cheap; widening every index
-  key and enlarging the update surface to save a couple of point lookups is a
-  losing trade at low fanout. The mechanism is free (a longer field list);
-  the posture is deliberate.
+- The indexed fields come from the **row payload** (payload-side encoders,
+  declaration order; the first field is the grouping dimension). The key tail
+  defaults to the full primary key and may be truncated to a named subset via
+  `key(…)` — truncation changes row-level uniqueness, not grouping; use it
+  only when the subset is unique per row.
+- `includes(age)` copies payload fields into the index **value**, making the
+  scan self-sufficient (no point-lookup back to the row). **Positioning: this
+  is a materialized view for high-fanout queries, not a default optimization**
+  — in KV, "回表" is one bloom-filtered point lookup, cheap; widening every
+  index entry and enlarging the update surface to save a couple of point
+  lookups is a losing trade at low fanout. The mechanism is free (a longer
+  field list); the posture is deliberate.
 - Updating a covered field rewrites the index entry — cost belongs to the
   user's explicit `includes` choice.
 
@@ -158,9 +164,10 @@ Index key layout (per ADR-0005 slot mechanism, now fed from the row):
 
 - `RowEncode` expand-time work: identity codec via the referenced `KeyEncode`
   type; payload codec per ADR-0004 rules; per-index `AccessMethod` impls with
-  item-local slots (unchanged from ADR-0005, relocated to the row item).
+  a per-index ns derived from the table's (slot mechanism removed at
+  implementation — see ADR-0005 update note).
 - Macro count stays at two derive families (key, row/edge) plus existing
   engine-agnostic traits; no assembly macro returns.
 - ADR-0004 remains authoritative for value byte layout; its macro-level claims
-  are superseded by this ADR. ADR-0005's slot/ns decisions are unchanged; its
-  key-struct mounting is superseded.
+  are superseded by this ADR. ADR-0005's ns-per-table discipline stands; its
+  slot mechanism and key-struct mounting are superseded.

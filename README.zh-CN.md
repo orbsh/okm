@@ -39,7 +39,7 @@ SQL 的核心价值不是执行性能，而是关系模型交付的可读性、�
 
 - `RowEncode` — 单宏声明行（Node）：`#[kv_ref]` 身份 + 载荷字段 + `#[kv_index(...)]` 访问方法；`ValueEncode` 宏并入其中（版本化 payload、TLV 扩展区、字段 wrapper 作为编码规则保留）。
 - 字段级编码 wrapper（`Enum<T>`、`Offset<T>`、`Delta<T>`、`VarInt<T>`、`Reverse<T>` …）。
-- 二级索引（访问方法）——**行 struct** 上的 `#[kv_index(name { fields(…), includes(…) })]`：支持组合索引、item 内自动 slot 编号（每个**表**一个手动 ns）、1 字节 slot 判别符、最左前缀扫描；`includes` 覆盖索引定位为高扇出查询的物化视图。
+- 二级索引（访问方法）——**行 struct** 上的 `#[kv_index(name { fields(…), includes(…), key(…) })]`：对 **payload 字段**（按声明序）建组合索引；无 per-index slot/ns——2 字节表命名空间已区分所有 entry；最左前缀扫描；`key(…)` 把 key 尾部携带的主键截断到命名子集（`encode_prefix_named`），默认取满主键；`includes` 覆盖索引定位为高扇出查询的物化视图。
 - `Table<S, K, R>` 行装配点与边 `Collection` 并列；变长载荷/索引字段（`String`），key 保持定宽。
 - 多引擎混用——同一进程内不同 ns 段可绑不同引擎（交易走 fjall、日志走 slatedb）；原子性止于单引擎内，ns 编号全库唯一。
 - 快照导出——行 → Parquet，与引擎无关（备份 / 数据交换 / lakehouse 分析）；ns 还原为描述性文本，列名即字段名。
@@ -142,7 +142,61 @@ for pk in edges.reverse_prefix(&s1) {
 
 派生宏还会在端点类型上生成查询方法（`user.get_session(&edges)`），方法名取对方字段（`session_id` → `get_session`）。
 
-### 5. 引擎后端
+### 5. 行：声明带索引的表
+
+```rust
+use okm::{RowEncode, Row};
+
+/// 行 struct 挂在 UserKey 上（#[kv_ref]）；payload 字段 TLV 编码。
+/// 每个 #[kv_index] 声明一个对 PAYLOAD 字段的访问方法——
+/// 身份归 key（代理 id），业务维度归行。
+#[derive(RowEncode, Clone, PartialEq, Debug)]
+#[kv_ref(UserKey)]
+#[kv_index(by_reputation { fields(reputation) })]
+#[kv_index(by_org { fields(org_id, created_at), includes(bio_len) })]
+pub struct User {
+    pub org_id: u32,
+    pub created_at: u64,
+    pub reputation: u32,
+    pub bio_len: u16,
+}
+```
+
+`fields(...)` 指定排序/分组的 payload 字段（按声明序，首位 = 分组维度）；
+`includes(...)` 把额外 payload 字段复制进 entry value——覆盖索引，定位为高扇出
+查询的物化视图；`key(...)` 把 key 尾部携带的主键截断到命名子集（默认取满主键）。
+物理索引 entry 布局（ADR-0005）：
+
+```
+[ ns 2B BE ][ 索引字段 BE ][ 主键前缀（默认取满） ]   value = includes 字段 TLV（无 includes 则为空）
+```
+
+2 字节命名空间是唯一判别符——无 slot 字节；每个索引从表的 ns 派生自己的 ns。
+`Table::put` 写入主键（value = TLV payload）和每个已声明访问方法各一条
+entry，在同一 store 实例内——声明即注册表，无运行时索引簿记。`Row::table`
+构建装配点，调用处无需重复 key 类型：
+
+```rust
+use okm::{MockStore, Row};
+
+let mut t = <User as Row>::table(MockStore::default(), 9);
+
+t.put(&user, &User { org_id: 7, created_at: 30, reputation: 100, bio_len: 2 });
+
+// 任意访问方法上的最左前缀扫描，带回表：
+let rows = t.scan::<ByOrg>(&7u32.to_be_bytes());
+for (key, row) in rows {
+    // key: 解码的 UserKey，row: payload 存在时为 Some(解码的 User)
+}
+
+t.delete(&user); // 删除主键 + 所有已声明的索引 entry
+```
+
+截断 key 改变的是行级唯一性，不是分组：`fields` 前缀驱动排序，key 尾段区分
+行。`key(user_id)`（尾段去掉 `org_id`）仅在命名子集对每行唯一时才安全——
+否则行会互相覆盖 entry。
+
+### 6. 引擎后端
 
 ```toml
 [dependencies]
@@ -153,7 +207,7 @@ okm = { version = "0.1", features = ["fjall"] }    # 或 "slatedb"
 - **slatedb**（异步）：`SlatedbStore::open(path, Arc<dyn ObjectStore>)` — 对象存储后端；构造 store 用 `slatedb::object_store` 的 re-export，版本永远和 slatedb 内部一致。异步遍历走 `AsyncCollection`。
 - **MockStore**：内存 `BTreeMap`，memcmp 序——与真实引擎迭代语义一致，测试套件使用。
 
-### 6. Schema 稳定性测试
+### 7. Schema 稳定性测试
 
 用硬编码 hex 锁定物理字节——任何布局漂移都让 CI 失败：
 
@@ -167,11 +221,13 @@ assert_eq!(&fk[2..6], &7u32.to_be_bytes());
 ## 项目结构
 
 ```
-okm-derive/        过程宏 crate：KeyEncode、EdgeEncode（零 I/O）
+okm-derive/        过程宏 crate：KeyEncode、RowEncode、EdgeEncode（零 I/O）
 okm/src/key.rs     KeyEncode trait + PrefixKey
+okm/src/index.rs   Row + KvIndex trait + 索引扫描辅助
 okm/src/edge.rs    KvEdge trait + 方向位头部
 okm/src/engine.rs  KvEngine trait + MockStore
-okm/src/collection.rs  Collection<S, E> 组装点
+okm/src/table.rs       Table<S, K, R> 行装配点
+okm/src/collection.rs  EdgeTable<S, E> 边装配点
 okm/src/fjall_backend.rs    fjall 适配（feature "fjall"）
 okm/src/slatedb_backend.rs  slatedb 适配（feature "slatedb"）
 okm/tests/         integration（MockStore）、fjall_eval、slatedb_eval
