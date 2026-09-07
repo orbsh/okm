@@ -34,6 +34,49 @@ fn arrow_type(ty: FieldType) -> DataType {
         FieldType::U64 => DataType::UInt64,
         FieldType::FixedBytes => DataType::Binary,
         FieldType::Str => DataType::Utf8,
+        // Logical types: VarInt decodes to its integer, Quant dequantizes
+        // to f64, Offset re-adds the base.
+        FieldType::VarInt => DataType::UInt64,
+        FieldType::Quant(_) => DataType::Float64,
+        FieldType::Enum => DataType::UInt8,
+        FieldType::Offset(_) => DataType::Int64,
+    }
+}
+
+/// LEB128 decode for `VarInt` columns (mirror of `VarIntEnc::varint_decode`).
+fn varint_decode(b: &[u8]) -> (u64, usize) {
+    let mut v: u64 = 0;
+    let mut shift = 0u32;
+    let mut i = 0usize;
+    loop {
+        let byte = *b.get(i).expect("VarInt: truncated frame");
+        v |= ((byte & 0x7F) as u64) << shift;
+        i += 1;
+        if byte & 0x80 == 0 {
+            break;
+        }
+        shift += 7;
+        assert!(i < 10, "VarInt: continuation byte past max width");
+    }
+    (v, i)
+}
+
+/// Wire slice → logical value bytes (little-endian) for the transformed
+/// payload kinds. Str/VarInt are variable-length and handled frame-wise;
+/// the rest are fixed-offset.
+fn logical_value(raw: &[u8], ty: FieldType) -> Vec<u8> {
+    match ty {
+        FieldType::VarInt => varint_decode(raw).0.to_le_bytes().to_vec(),
+        FieldType::Quant(p) => {
+            let w = i64::from_be_bytes(raw.try_into().expect("quant width"));
+            (w as f64 / 10f64.powi(p as i32)).to_le_bytes().to_vec()
+        }
+        FieldType::Enum => raw.to_vec(),
+        FieldType::Offset(base) => {
+            let off = u32::from_be_bytes(raw.try_into().expect("offset width")) as i64;
+            (base + off).to_le_bytes().to_vec()
+        }
+        other => swap_be(raw, 0, raw.len(), other),
     }
 }
 
@@ -114,7 +157,10 @@ fn build_batch<K: KeyEncode, R: Row<Key = K>>(
     // Fixed-width fields sit at a computable static offset; `Str` fields
     // must be walked frame-by-frame because every preceding variable-length
     // field shifts the offset.
-    let has_var = proj.row_fields.iter().any(|f| f.ty == FieldType::Str);
+    let has_var = proj
+        .row_fields
+        .iter()
+        .any(|f| matches!(f.ty, FieldType::Str | FieldType::VarInt));
     for (fi, f) in proj.row_fields.iter().enumerate() {
         let mut col: Vec<Vec<u8>> = Vec::with_capacity(n);
         for (_, v) in rows {
@@ -123,11 +169,11 @@ fn build_batch<K: KeyEncode, R: Row<Key = K>>(
                 if f.ty == FieldType::Str {
                     col.push(val.to_vec());
                 } else {
-                    col.push(swap_be(val, 0, f.width, f.ty));
+                    col.push(logical_value(val, f.ty));
                 }
             } else {
                 let off = tlv_value_offset(proj.row_fields, fi);
-                col.push(swap_be(v, off, f.width, f.ty));
+                col.push(logical_value(&v[off..off + f.width], f.ty));
             }
         }
         columns.push(col);
@@ -153,6 +199,14 @@ fn build_batch<K: KeyEncode, R: Row<Key = K>>(
             DataType::UInt64 => {
                 let vals: Vec<u64> = col.iter().map(|c| u64::from_le_bytes(c.as_chunks::<8>().0[0])).collect();
                 Arc::new(arrow::array::UInt64Array::from(vals))
+            }
+            DataType::Float64 => {
+                let vals: Vec<f64> = col.iter().map(|c| f64::from_le_bytes(c.as_chunks::<8>().0[0])).collect();
+                Arc::new(arrow::array::Float64Array::from(vals))
+            }
+            DataType::Int64 => {
+                let vals: Vec<i64> = col.iter().map(|c| i64::from_le_bytes(c.as_chunks::<8>().0[0])).collect();
+                Arc::new(arrow::array::Int64Array::from(vals))
             }
             DataType::Binary => {
                 let mut offsets: Vec<i32> = Vec::with_capacity(n + 1);
@@ -214,7 +268,9 @@ fn tlv_value<'a>(payload: &'a [u8], fields: &[FieldDesc], fi: usize) -> &'a [u8]
         let len = u32::from_be_bytes(payload[off + 1..off + 5].try_into().unwrap()) as usize;
         let val = off + 5;
         if i == fi {
-            debug_assert!(f.ty == FieldType::Str || len == f.width);
+            debug_assert!(
+                matches!(f.ty, FieldType::Str | FieldType::VarInt) || len == f.width
+            );
             return &payload[val..val + len];
         }
         off = val + len;
@@ -237,6 +293,9 @@ fn swap_be(src: &[u8], off: usize, width: usize, ty: FieldType) -> Vec<u8> {
         FieldType::U32 => raw.iter().rev().copied().collect(),
         FieldType::U64 => raw.iter().rev().copied().collect(),
         FieldType::Str => unreachable!("Str columns bypass swap_be"),
+        FieldType::VarInt | FieldType::Quant(_) | FieldType::Enum | FieldType::Offset(_) => {
+            unreachable!("transformed kinds bypass swap_be (see logical_value)")
+        }
     }
 }
 

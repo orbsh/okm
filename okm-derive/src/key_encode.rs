@@ -183,6 +183,16 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> Vec<Field> {
                      put Reverse fields in the row payload instead"
                 )
             }
+            _ if ty_str.starts_with("VarInt<")
+                | ty_str.starts_with("Quant<")
+                | ty_str.starts_with("Enum<")
+                | ty_str.starts_with("Offset<") =>
+            {
+                panic!(
+                    "{ctx}: wrapper type {ty_str} on key field {id} — keys are fixed-width \
+                     identity; wrapper codecs belong in the row payload"
+                )
+            }
             _ if ty_str.starts_with("String") => {
                 panic!(
                     "{ctx}: String on key field {id} — the key encoding is fixed-width \

@@ -21,6 +21,17 @@ pub enum FieldType {
     FixedBytes,
     /// `String` — variable length; `FieldDesc::width` is 0 (meaningless).
     Str,
+    /// `VarInt<T>` — LEB128, variable length; `FieldDesc::width` is 0.
+    /// Logical type is the inner unsigned integer.
+    VarInt,
+    /// `Quant<f64, P>` — fixed-point i64 wire (8 bytes); the payload is the
+    /// decimal precision P. Logical type is f64 (wire / 10^P).
+    Quant(u32),
+    /// `Enum<T>` — one-byte explicit tag (see `EnumTag`).
+    Enum,
+    /// `Offset<T>` — `value − base` stored as u32; the payload is the
+    /// static base. Logical type is i64 (base + wire).
+    Offset(i64),
 }
 
 /// One declared field: name, primitive kind, byte width.

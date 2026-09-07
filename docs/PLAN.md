@@ -37,12 +37,22 @@ Design decisions live in `docs/adr/`. This plan tracks implementation status.
       the length prefix (no second one on the wire); `FieldType::Str` in
       the FieldDesc table (width 0 = variable); frame-by-frame walk in the
       Arrow bridge; key side still rejects it at compile time.
-- [ ] Field wrappers on row fields: `Enum<T>`, `Offset<T>`, `Delta<T>`,
-      `VarInt<T>`, `Rle<T>`, `Quant<T>`; `Reverse<T>` ✅ shipped (+ `Reversible`
-      compile-time whitelist: the eight fixed-width integer types, floats
-      excluded — no fixed bit-flip inverts IEEE-754 order); one annotation applies to
-      every destination the field is encoded into. Key/index positions reject
-      `Reverse` (fixed-width identity rule); descending prefix scan = newest-first.
+- [x] Field wrappers on row fields: `VarInt<T>` (LEB128, u16/u32/u64,
+      variable frame), `Quant<P>` (f64 → scaled i64 wire, composes with
+      `Reverse` for descending float order), `Enum<T>` (u8 tag via manual
+      `impl EnumTag` — explicit tags, not positional), `Offset`
+      (`#[kv_offset(base = N)]` → u32 displacement, out-of-range panics) —
+      all shipped. `Reverse<T>` ✅ (+ `Reversible` compile-time whitelist:
+      the eight fixed-width integer types, floats excluded — no fixed
+      bit-flip inverts IEEE-754 order); one annotation applies to every
+      destination the field is encoded into. Key/index positions reject
+      all wrappers (fixed-width identity rule); descending prefix scan =
+      newest-first.
+- [ ] Column-block regime (NOT field wrappers — they are per-column
+      statistics that break row-independent decode): `Delta<T>`
+      (differential vs previous row), `Rle<T>` (run-length over a column),
+      `Offset`-with-shared-dictionary. Belongs with row-group encoding,
+      not the field annotation system.
 - [ ] Hot/cold promotion procedure (extension field → hot section tail,
       version bump, hex-test guarded).
 
