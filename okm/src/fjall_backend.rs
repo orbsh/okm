@@ -1,7 +1,7 @@
 //! fjall engine adapter: `FjallStore` = Database + keyspace wrapper,
 //! implementing the sync `KvEngine`.
 //!
-//! One OKM Collection corresponds to one keyspace; ns prefixes come with the
+//! One OKM EdgeTable corresponds to one keyspace; ns prefixes come with the
 //! key encoding itself, so different edge types sharing a keyspace do not
 //! conflict.
 
@@ -36,8 +36,14 @@ impl FjallStore {
 }
 
 impl KvEngine for FjallStore {
-    fn put(&mut self, key: Vec<u8>) {
-        self.ks.insert(key, []).expect("fjall insert failed");
+    fn put(&mut self, key: Vec<u8>, value: Vec<u8>) {
+        self.ks.insert(key, value).expect("fjall insert failed");
+    }
+    fn get(&self, key: &[u8]) -> Option<Vec<u8>> {
+        self.ks
+            .get(key)
+            .expect("fjall get failed")
+            .map(|v| v.to_vec())
     }
     fn del(&mut self, key: &[u8]) {
         self.ks.remove(key).expect("fjall remove failed");

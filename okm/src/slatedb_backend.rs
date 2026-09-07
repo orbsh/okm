@@ -2,7 +2,7 @@
 //!
 //! slatedb is an async API with immutable borrows (WAL/flush managed
 //! internally), so this module provides the `KvEngineAsync` trait and
-//! `AsyncCollection` - parallel to the sync `KvEngine`/`Collection` with the
+//! `AsyncEdgeTable` - parallel to the sync `KvEngine`/`EdgeTable` with the
 //! same interface shape. Object stores are constructed via the
 //! `slatedb::object_store` re-export so versions always match slatedb's
 //! internals.
@@ -16,7 +16,8 @@ use std::sync::Arc;
 
 /// 异步引擎最小接口（与同步 KvEngine 对齐）
 pub trait KvEngineAsync {
-    async fn put(&self, key: Vec<u8>);
+    async fn put(&self, key: Vec<u8>, value: Vec<u8>);
+    async fn get(&self, key: &[u8]) -> Option<Vec<u8>>;
     async fn del(&self, key: &[u8]);
     /// 前缀扫描，返回每个 key 的"剩余段"（去掉 prefix）
     async fn scan_suffix(&self, prefix: &[u8]) -> Vec<Vec<u8>>;
@@ -40,11 +41,15 @@ impl SlatedbStore {
 }
 
 impl KvEngineAsync for SlatedbStore {
-    async fn put(&self, key: Vec<u8>) {
+    async fn put(&self, key: Vec<u8>, value: Vec<u8>) {
+        self.db.put(key, value).await.expect("slatedb put failed");
+    }
+    async fn get(&self, key: &[u8]) -> Option<Vec<u8>> {
         self.db
-            .put(key, [])
+            .get(key)
             .await
-            .expect("slatedb put failed");
+            .expect("slatedb get failed")
+            .map(|v| v.to_vec())
     }
     async fn del(&self, key: &[u8]) {
         self.db.delete(key).await.expect("slatedb delete failed");
@@ -63,13 +68,13 @@ impl KvEngineAsync for SlatedbStore {
     }
 }
 
-/// 异步组装点：引擎 + 边类型 = 一条关系的操作面（平行于同步 Collection）
-pub struct AsyncCollection<S, E> {
+/// 异步边装配点：引擎 + 边类型 = 一条关系的操作面（平行于同步 EdgeTable）
+pub struct AsyncEdgeTable<S, E> {
     pub store: S,
     _pd: std::marker::PhantomData<E>,
 }
 
-impl<S: KvEngineAsync, E: KvEdge> AsyncCollection<S, E> {
+impl<S: KvEngineAsync, E: KvEdge> AsyncEdgeTable<S, E> {
     pub fn new(store: S) -> Self {
         Self {
             store,
@@ -80,8 +85,8 @@ impl<S: KvEngineAsync, E: KvEdge> AsyncCollection<S, E> {
     /// 原子双写：正向 + 反向（slatedb 单 put 原子；双写崩溃窗口由上层 reconcile）
     pub async fn link(&self, a: &E::A, b: &E::B) {
         let e = E::from_parts(a.clone(), b.clone());
-        self.store.put(e.forward_key()).await;
-        self.store.put(e.reverse_key()).await;
+        self.store.put(e.forward_key(), Vec::new()).await;
+        self.store.put(e.reverse_key(), Vec::new()).await;
     }
 
     pub async fn unlink(&self, a: &E::A, b: &E::B) {
