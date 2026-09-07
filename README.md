@@ -25,16 +25,16 @@ Implemented:
 
 - `KeyEncode` — fixed-width key encoding (`u32` / `u64` / `[u8; N]`), big-endian, compile-time `KEY_LEN` / `FIELD_WIDTHS`, `encode_prefix_named` truncation primitive.
 - `EdgeEncode` — bidirectional edges with per-endpoint identity width (`#[kv_head(...)]`), 2-byte direction-bit header, query methods generated onto endpoint types.
-- `Collection<S, E>` — the assembly point: engine + edge type = the operation surface of one relationship (`link` / `unlink` / `forward` / `reverse` / `reverse_prefix`).
-- Engine backends behind Cargo features: `fjall` (sync `FjallStore`), `slatedb` (async `SlatedbStore` + `AsyncCollection`), plus an in-memory `MockStore` for tests.
-
-Roadmap (design locked, not yet implemented — [ADR-0006](docs/adr/0006-row-node-model.md), [ADR-0004](docs/adr/0004-value-side-and-wrappers.md), [ADR-0005](docs/adr/0005-secondary-index-slots.md)):
-
-- `RowEncode` — one macro declares a row (Node): `#[kv_ref]` identity + payload fields + `#[kv_index(...)]` access methods; the `ValueEncode` derive is absorbed into it (versioned payload, TLV extension section, field wrappers remain as encoding rules).
-- Field-level encoding wrappers (`Enum<T>`, `Offset<T>`, `Delta<T>`, `VarInt<T>`, `Reverse<T>` …).
-- Secondary indexes (access methods) — `#[kv_index(name { fields(…), includes(…) })]` on **row structs**: composite indexes, item-local slot numbering (one manual ns per **table**), 1-byte slot discriminator, leftmost-prefix scans; `includes` covering positioned as a materialized view for high-fanout queries.
-- `Table<S, K, R>` node assembly point beside the edge `Collection`; variable-length payload/index fields (`String`), keys stay fixed-width.
+- `EdgeTable<S, E>` (formerly `Collection`) — the edge assembly point: engine + edge type = the operation surface of one relationship (`link` / `unlink` / `forward` / `reverse` / `reverse_prefix`).
+- `RowEncode` — one macro declares a row (Node): `#[kv_ref]` identity + TLV payload fields + `#[kv_index(...)]` access methods; the `ValueEncode` derive is absorbed into it.
+- Secondary indexes (access methods) — `#[kv_index(name { fields(…), includes(…) })]` on **row structs**: composite indexes, item-local slot numbering (slots start at 1; slot 0 is the primary table), 1-byte slot discriminator, leftmost-prefix scans with fetch-back; `includes` covering positioned as a materialized view for high-fanout queries.
+- `Table<S, K, R>` node assembly point — `put`/`delete` write the primary key and every declared index entry in one store instance (the declaration IS the registry); `scan` returns `(Key, Option<Row>)` via leftmost-prefix on any access method.
+- Engine backends behind Cargo features: `fjall` (sync `FjallStore`), `slatedb` (async `SlatedbStore` + `AsyncEdgeTable`), plus an in-memory `MockStore` for tests.
 - Multi-engine mixing — different engines per ns segment in one process (fjall for transactions, slatedb for logs); atomicity stops at one engine, ns numbering globally unique.
+
+Roadmap (design locked, not yet implemented — [ADR-0006](docs/adr/0006-row-node-model.md), [ADR-0004](docs/adr/0004-value-side-and-wrappers.md)):
+
+- Field-level encoding wrappers (`Enum<T>`, `Offset<T>`, `Delta<T>`, `VarInt<T>`, `Reverse<T>` …) and variable-length payload/index fields (`String`), keys stay fixed-width.
 - Snapshot export — rows → Parquet, engine-independent (backup / data exchange / lakehouse); ns restored to descriptive text, columns = field names.
 
 ## Usage
@@ -91,10 +91,10 @@ pub struct UserToSessionEdge {
 ### 3. Link, unlink, query
 
 ```rust
-use okm::Collection;
+use okm::EdgeTable;
 
 let store = okm::MockStore::default(); // or FjallStore / SlatedbStore
-let mut edges: Collection<_, UserToSessionEdge> = Collection::new(store);
+let mut edges: EdgeTable<_, UserToSessionEdge> = EdgeTable::new(store);
 
 let user = UserKey { org_id: 7, user_id: 101 };
 let s1 = SessionKey { org_id: 7, session_id: 1001 };
@@ -136,7 +136,55 @@ for pk in edges.reverse_prefix(&s1) {
 
 The derive macro also generates query methods on the endpoint types themselves (`user.get_session(&edges)`), named after the opposite field (`session_id` → `get_session`).
 
-### 5. Engine backends
+### 5. Rows: declare a table with indexes
+
+```rust
+use okm::{RowEncode, Row};
+
+/// A user row hangs off UserKey via #[kv_ref]; payload fields are TLV-encoded.
+/// Each #[kv_index] declares an access method — slots are allocated in
+/// attribute order starting at 1 (slot 0 is the primary table).
+#[derive(RowEncode, Clone, PartialEq, Debug)]
+#[kv_ref(UserKey)]
+#[kv_index(by_name { fields(org_id, name) })]
+#[kv_index(by_org_name { fields(org_id), includes(name) })]
+pub struct User {
+    pub reputation: u32,
+    pub bio_len: u16,
+}
+```
+
+`fields(...)` names a declaration-order prefix of the key struct's fields (same
+truncation rule as `#[kv_head]`); `includes(...)` carries extra key fields into
+the entry — a covering index, positioned as a materialized view for high-fanout
+queries. Physical index entry layout (ADR-0005):
+
+```
+[ ns 2B BE ][ slot 1B ][ indexed fields BE ][ included fields BE ][ full primary key ]
+```
+
+`Table::put` writes the primary key (slot 0, value = TLV payload) and one
+entry per declared access method in the same store instance — the declaration
+is the registry, no runtime index bookkeeping. `Row::table` builds the
+assembly point without repeating the key type at the call site:
+
+```rust
+use okm::{MockStore, Row};
+
+let mut t = <User as Row>::table(MockStore::default(), 9);
+
+t.put(&user, &User { reputation: 100, bio_len: 2 });
+
+// Leftmost-prefix scan on any access method, with fetch-back:
+let rows = t.scan::<ByOrgName>(&7u32.to_be_bytes());
+for (key, row) in rows {
+    // key: decoded UserKey, row: Some(decoded User) when the payload exists
+}
+
+t.delete(&user); // removes the primary key + all declared index entries
+```
+
+### 6. Engine backends
 
 ```toml
 [dependencies]
@@ -144,10 +192,10 @@ okm = { version = "0.1", features = ["fjall"] }    # or "slatedb"
 ```
 
 - **fjall** (sync): `FjallStore::open(path)` — local LSM engine, single `Database` handle, `persist` on demand.
-- **slatedb** (async): `SlatedbStore::open(path, Arc<dyn ObjectStore>)` — object-storage-backed; use `slatedb::object_store` re-exports to construct stores so versions always match slatedb's internals. Async traversal goes through `AsyncCollection`.
+- **slatedb** (async): `SlatedbStore::open(path, Arc<dyn ObjectStore>)` — object-storage-backed; use `slatedb::object_store` re-exports to construct stores so versions always match slatedb's internals. Async traversal goes through `AsyncEdgeTable`.
 - **MockStore**: in-memory `BTreeMap` with memcmp ordering — identical iteration semantics to real engines, used by the test suite.
 
-### 6. Schema stability tests
+### 7. Schema stability tests
 
 Lock the physical bytes with hard-coded hex — any layout drift fails CI:
 
@@ -161,14 +209,16 @@ assert_eq!(&fk[2..6], &7u32.to_be_bytes());
 ## Project layout
 
 ```
-okm-derive/        proc-macro crate: KeyEncode, EdgeEncode (zero I/O)
+okm-derive/        proc-macro crate: KeyEncode, RowEncode, EdgeEncode (zero I/O)
 okm/src/key.rs     KeyEncode trait + PrefixKey
+okm/src/index.rs   Row + KvIndex traits, slot constants, index scan helpers
 okm/src/edge.rs    KvEdge trait + direction-bit header
 okm/src/engine.rs  KvEngine trait + MockStore
-okm/src/collection.rs  Collection<S, E> assembly point
+okm/src/table.rs       Table<S, K, R> node assembly point
+okm/src/collection.rs  EdgeTable<S, E> edge assembly point
 okm/src/fjall_backend.rs    fjall adapter (feature "fjall")
 okm/src/slatedb_backend.rs  slatedb adapter (feature "slatedb")
-okm/tests/         integration (MockStore), fjall_eval, slatedb_eval
+okm/tests/         integration + index_test (MockStore), fjall_eval, slatedb_eval
 docs/adr/          architecture decision records (docs/PLAN.md = implementation plan)
 ```
 
@@ -176,7 +226,7 @@ docs/adr/          architecture decision records (docs/PLAN.md = implementation 
 
 - **Namespace stays in code** — the namespace dictionary is compile-time constants, never stored in KV. The access pattern itself lives in code (binary keys, no separators, per-field widths); putting ns in code is the same act as putting the key layout in code. Macros run at compile time when no KV exists to read from — a dictionary in KV is a bootstrap deadlock. Numbers are manually assigned, append-only, never reused; see [ADR-0002](docs/adr/0002-namespace-dictionary.md).
 - **Two layout regimes** — primary keys are fixed-width (zero parsing, hot path); secondary indexes are variable-length (text as discriminating prefix, UTF-8 byte order = dictionary scan order, primary-key ID appended at the key tail, value left empty). Width is a property of *structure*, not *data*; the discriminator is access pattern: point-lookup-only may hash to fixed width, anything needing prefix/range scan must keep raw text. See the [KV Storage Engine](https://github.com/orbsh/wiki/blob/main/kv-storage-engine.md) essay for the full argument.
-- **Macro layer is deliberately storage-free** — encode/decode are pure `Vec<u8>` in/out functions; engine choice and lifecycle belong to the assembly site (`Collection::new(store)`). This is what keeps each derive a single-item pure function.
+- **Macro layer is deliberately storage-free** — encode/decode are pure `Vec<u8>` in/out functions; engine choice and lifecycle belong to the assembly site (`EdgeTable::new(store)` / `<Row>::table(store, ns)`). This is what keeps each derive a single-item pure function.
 - **Portability**: the paradigm is bytes-level and host-language independent — a Python dataclass with the same `encode()` reproduces the layout, at the price of moving guarantees from compile time to runtime assertions.
 
 ## License

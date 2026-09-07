@@ -35,6 +35,13 @@ pub trait Row: Sized + Clone {
     /// Generated; lets Table::put/delete cover every declared index without
     /// a runtime registry (the declaration IS the registry).
     fn index_entries(key: &Self::Key, ns: u16) -> Vec<Vec<u8>>;
+
+    /// Assembly-point constructor: builds the row's `Table` binding this
+    /// row type to its `#[kv_ref]` key. The key type never appears at the
+    /// call site — it is already pinned by `Self::Key`.
+    fn table<S: KvEngine>(store: S, ns: u16) -> crate::table::Table<S, Self::Key, Self> {
+        crate::table::Table::new(store, ns)
+    }
 }
 
 /// One access method over a table. Implemented by generated marker
