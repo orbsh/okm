@@ -14,41 +14,43 @@ Design decisions live in `docs/adr/`. This plan tracks implementation status.
       (async, feature).
 - [x] Hex layout-stability tests (`tests/integration.rs`).
 
-## Phase 2 — Rows / Nodes (ADR-0006, value rules per ADR-0004) — design locked, not implemented
+## Phase 2 — Rows / Nodes (ADR-0006, value rules per ADR-0004) ✅ core shipped
 
-- [ ] `RowEncode` derive: single item declares identity (`#[kv_ref]` key
+- [x] `RowEncode` derive: single item declares identity (`#[kv_ref]` key
       reference), payload fields, and `#[kv_index(...)]` access methods —
       one field list, three destinations (key / value / index).
-- [ ] Payload encoding rules (ADR-0004 mechanisms, expanded by `RowEncode`):
-      `#[kv_version(n)]` versioned payload with lazy in-memory upgrade; TLV
-      extension section (hot section + tagged `id: u8, len: u16, bytes`,
-      old readers skip); variable-length fields (String) length-prefixed in
-      values.
+- [x] Payload encoding: TLV frames `[tag u8][len u32 BE][value BE]`, tag =
+      field declaration index (decoupled from names); fixed-width fields
+      today, same frame kept for the variable-length regime later.
+- [x] `Table<S, K, R>` assembly point: plain generics, no assembly macro;
+      holds the shared engine instance; `put(row)` = primary key write +
+      index entries in one engine batch; `Row::table(store, ns)` constructor.
+- [ ] `#[kv_version(n)]` versioned payload with lazy in-memory upgrade.
+- [ ] Variable-length payload fields (String) length-prefixed in values —
+      currently rejected by `field_encoders`.
 - [ ] Field wrappers on row fields: `Enum<T>`, `Offset<T>`, `Delta<T>`,
       `VarInt<T>`, `Rle<T>`, `Quant<T>`, `Reverse<T>` (+ `Reversible`
       compile-time whitelist, floats excluded); one annotation applies to
       every destination the field is encoded into.
 - [ ] Hot/cold promotion procedure (extension field → hot section tail,
       version bump, hex-test guarded).
-- [ ] `Table<S, K, R>` assembly point: plain generics, no assembly macro;
-      holds the shared engine instance; `put(row)` = primary key write +
-      index entries in one engine batch.
 
-## Phase 3 — Secondary indexes / access methods (ADR-0005 + 0006) — design locked, not implemented
+## Phase 3 — Secondary indexes / access methods (ADR-0005 + 0006) ✅ shipped
 
-- [ ] `#[kv_index(name { fields(…), includes(…) })]` on **row structs**.
-- [ ] Item-local slot counter; ns = `table_ns` + slot (mechanical derivation).
-- [ ] 1-byte slot discriminator: index key `[table_ns 2B][slot 1B]
-      [indexed fields][includes fields][primary key ID]`, value empty.
-- [ ] Per-index generated access-method impl; leftmost-prefix scan API;
-      whole-table segment scan.
-- [ ] `includes()` covering: mechanism free, positioned as materialized view
-      for high-fanout queries (not a default optimization; covered-field
-      updates rewrite the entry).
+- [x] `#[kv_index(name { fields(…), includes(…) })]` on **row structs**.
+- [x] Item-local slot counter; slots start at 1 (slot 0 = primary table,
+      `PRIMARY_SLOT`), ns = `table_ns` + slot.
+- [x] 1-byte slot discriminator: index key `[ns 2B][slot 1B][indexed
+      fields][includes fields][primary key ID]`, value empty.
+- [x] Per-index generated access-method impl; leftmost-prefix scan API with
+      fetch-back (`scan` returns `(Key, Option<Row>)`); whole-table scan.
+- [x] `includes()` covering: mechanism free, positioned as materialized view
+      for high-fanout queries.
+- [x] `Collection` narrowed to edge-only (`EdgeTable`); existing tests moved.
 - [ ] Variable-length indexed fields follow the secondary-index regime
-      (text-first, ID at tail).
-- [ ] Slot holes never reused; hex tests lock index layouts.
-- [ ] `Collection` narrowed to edge-only (`EdgeTable`); existing tests move.
+      (text-first, ID at tail) — blocked on variable-length payload fields.
+- [ ] Slot holes never reused (policy not yet stress-tested; hex tests lock
+      current index layouts).
 
 ### Header unification trigger (edge direction bit)
 
@@ -73,4 +75,4 @@ to full 16 bits). The trigger is "edge needs a new discriminator", never
       rebuilt deterministically on import). Uses: backup, data exchange,
       lakehouse analysis.
 - [ ] Publish to crates.io (`okm`, `okm-derive`).
-- [ ] Push to github.com/orbsh/okm (repo referenced by wiki cross-links).
+- [x] Push to github.com/orbsh/okm (repo referenced by wiki cross-links).
