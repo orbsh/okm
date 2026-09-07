@@ -1,8 +1,10 @@
 # OKM — Object-Keyspace Mapping
 
+> ORM experience, Redis speed, PostgreSQL durability, and functions without boundaries.
+
 OKM is the KV counterpart of ORM: ORM maps objects onto relational tables, OKM maps objects onto KV keyspaces. Declarative derive macros (`#[derive(KeyEncode)]` / `#[derive(EdgeEncode)]`) plus numeric namespace IDs build a zero-cost semantic data layer — as declarative as an ORM at development time, compiled down to pure pointer-offset arithmetic.
 
-Related reading: [KV Storage Engine](https://github.com/orbsh/wiki/blob/main/kv-storage-engine.md) — underlying architecture and design patterns (encoding principles, index strategies, engine-level trade-offs).
+Related reading: [KV Storage Engine](https://github.com/orbsh/wiki/blob/main/kv-storage-engine-en.md) — underlying architecture and design patterns (encoding principles, index strategies, engine-level trade-offs).
 
 ## Why: code as DDL
 
@@ -225,9 +227,14 @@ docs/adr/          architecture decision records (docs/PLAN.md = implementation 
 ## Design notes
 
 - **Namespace stays in code** — the namespace dictionary is compile-time constants, never stored in KV. The access pattern itself lives in code (binary keys, no separators, per-field widths); putting ns in code is the same act as putting the key layout in code. Macros run at compile time when no KV exists to read from — a dictionary in KV is a bootstrap deadlock. Numbers are manually assigned, append-only, never reused; see [ADR-0002](docs/adr/0002-namespace-dictionary.md).
-- **Two layout regimes** — primary keys are fixed-width (zero parsing, hot path); secondary indexes are variable-length (text as discriminating prefix, UTF-8 byte order = dictionary scan order, primary-key ID appended at the key tail, value left empty). Width is a property of *structure*, not *data*; the discriminator is access pattern: point-lookup-only may hash to fixed width, anything needing prefix/range scan must keep raw text. See the [KV Storage Engine](https://github.com/orbsh/wiki/blob/main/kv-storage-engine.md) essay for the full argument.
+- **Two layout regimes** — primary keys are fixed-width (zero parsing, hot path); secondary indexes are variable-length (text as discriminating prefix, UTF-8 byte order = dictionary scan order, primary-key ID appended at the key tail, value left empty). Width is a property of *structure*, not *data*; the discriminator is access pattern: point-lookup-only may hash to fixed width, anything needing prefix/range scan must keep raw text. See the [KV Storage Engine](https://github.com/orbsh/wiki/blob/main/kv-storage-engine-en.md) essay for the full argument.
 - **Macro layer is deliberately storage-free** — encode/decode are pure `Vec<u8>` in/out functions; engine choice and lifecycle belong to the assembly site (`EdgeTable::new(store)` / `<Row>::table(store, ns)`). This is what keeps each derive a single-item pure function.
 - **Portability**: the paradigm is bytes-level and host-language independent — a Python dataclass with the same `encode()` reproduces the layout, at the price of moving guarantees from compile time to runtime assertions.
+
+## Why not just use a (ready-made) database?
+
+A side benefit of OKM: engine selection anxiety disappears. The actual menu is long — PostgreSQL, DuckDB, Lakehouse, SurrealDB… — and OKM speaks plain bytes, so any engine that can put and get them qualifies.
+
 
 ## License
 

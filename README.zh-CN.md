@@ -1,5 +1,7 @@
 # OKM — Object-Keyspace Mapping（对象键空间映射）
 
+> ORM 的体验，Redis 的速度，PostgreSQL 的持久，不受边界限制的功能。
+
 > 英文版为主文档（[README.md](README.md)），本文为对应中文版。
 
 OKM 是对标 ORM 的范式——ORM 将对象映射到关系表，OKM 将对象映射到 KV 键空间。通过派生宏 `#[derive(KeyEncode)]` / `#[derive(EdgeEncode)]` + 数字命名空间 ID，构建零成本抽象语义数据层：开发侧如同 ORM 般声明式，编译后退化为纯指针偏移计算。
@@ -179,3 +181,7 @@ docs/adr/          架构决策记录（docs/PLAN.md 为实施计划）
 - **两套布局 regime**——主键定宽（零解析、热路径）；二级索引变长（判别文本放最前，UTF-8 字节序 = 字典序扫描；主键 ID 挟带在 key 末尾，value 留空）。定宽是**结构**的属性不是**数据**的属性；判据是访问模式：纯点查可 hash 成定宽，需要前缀/范围扫描必须保留原始文本。完整论证见 [KV 存储引擎](https://github.com/orbsh/wiki/blob/main/kv-storage-engine.md)。
 - **宏层刻意无存储**——encode/decode 是纯 `Vec<u8>` 进出函数；引擎选择与生命周期归装配处（`Collection::new(store)`）。这是每个 derive 保持单 item 纯函数的前提。
 - **可移植性**：范式作用在字节层、与宿主语言无关——Python dataclass 写同样的 `encode()` 可复现布局，代价是保障从编译期降为运行时断言。
+
+## 为什么不用（现成的）数据库？
+
+OKM 的潜在好处之一：选型烦恼消失了。实际选项还很多：PostgreSQL、DuckDB、Lakehouse、SurrealDB……OKM 说的是纯字节，任何能 put/get 字节的引擎都够格。
