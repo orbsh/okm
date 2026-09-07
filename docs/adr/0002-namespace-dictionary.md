@@ -25,5 +25,7 @@ The question is where the namespace dictionary itself lives.
 
 ## Terminology and multi-tenancy
 
+Secondary indexes do NOT consume namespace IDs — they are slots derived inside the table item (see [ADR-0005](0005-secondary-index-slots.md)); the manual numbering below applies to tables only.
+
 - **namespace = table/collection (KV's native tongue)**: not "container/scope" — the standard KV/noSQL synonym for table/collection (Cassandra's keyspace likewise). It is a key-prefix discriminator only; there is no logical "table" with schema constraints or columns.
 - **Multi-tenant key shape**: if tenants exist, the key is `[ns][tenant_id]...` — the namespace is outermost, followed by tenant_id. There is no `tenant_ns_id` layer (this system exposes no user-programmable query/schema surface; multi-tenancy is carried by the API gateway, tenants share tables), and no outermost tenant isolation layer — tenant_id is one discriminating field inside the key, not a partition/table boundary. Even for SaaS, per-tenant outer isolation is over-isolation. SQL inside a program is equally hard-coded; ad-hoc dynamism comes from exposing a query interface, not from the storage being dynamic.
