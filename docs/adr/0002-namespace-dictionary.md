@@ -5,7 +5,12 @@ Status: Accepted
 
 ## Context
 
-String prefixes (`"user_sessions:"`, 14 bytes) waste space at scale and force variable-length offset arithmetic on every decode. The fix is a numeric namespace ID: `#[kv_ns(N)]` folds at compile time into a 2-byte big-endian prefix — an 85% compression with zero runtime lookup (an instruction immediate; faster than any L1-resident HashMap: no hash, no load).
+String prefixes (`"user_sessions:"`, 14 bytes) have two structural weaknesses at scale (hundreds of millions of keys):
+
+- **Space waste** — every key repeats the same prefix; at hundreds of millions of keys that is gigabytes of pure repetition, paid again as S3 transfer bandwidth.
+- **Variable-length offsets** — key total length varies per record, so every decode pays variable-length offset arithmetic instead of a fixed offset.
+
+The fix is a numeric namespace ID: `#[kv_ns(N)]` folds at compile time into a 2-byte big-endian prefix — an 85% compression with zero runtime lookup (an instruction immediate; faster than any L1-resident HashMap: no hash, no load).
 
 The question is where the namespace dictionary itself lives.
 
