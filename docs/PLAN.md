@@ -14,29 +14,41 @@ Design decisions live in `docs/adr/`. This plan tracks implementation status.
       (async, feature).
 - [x] Hex layout-stability tests (`tests/integration.rs`).
 
-## Phase 2 — Value side (ADR-0004) — design locked, not implemented
+## Phase 2 — Rows / Nodes (ADR-0006, value rules per ADR-0004) — design locked, not implemented
 
-- [ ] `ValueEncode` derive: `#[kv_version(n)]` versioned payload, lazy
-      in-memory upgrade on decode.
-- [ ] TLV extension section: fixed-width hot section + tagged extensions
-      (`id: u8, len: u16, bytes`), old readers skip whole extension block.
-- [ ] Field wrappers: `Enum<T>`, `Offset<T>`, `Delta<T>`, `VarInt<T>`,
-      `Rle<T>`, `Quant<T>`, `Reverse<T>` (+ `Reversible` compile-time
-      whitelist, floats excluded).
+- [ ] `RowEncode` derive: single item declares identity (`#[kv_ref]` key
+      reference), payload fields, and `#[kv_index(...)]` access methods —
+      one field list, three destinations (key / value / index).
+- [ ] Payload encoding rules (ADR-0004 mechanisms, expanded by `RowEncode`):
+      `#[kv_version(n)]` versioned payload with lazy in-memory upgrade; TLV
+      extension section (hot section + tagged `id: u8, len: u16, bytes`,
+      old readers skip); variable-length fields (String) length-prefixed in
+      values.
+- [ ] Field wrappers on row fields: `Enum<T>`, `Offset<T>`, `Delta<T>`,
+      `VarInt<T>`, `Rle<T>`, `Quant<T>`, `Reverse<T>` (+ `Reversible`
+      compile-time whitelist, floats excluded); one annotation applies to
+      every destination the field is encoded into.
 - [ ] Hot/cold promotion procedure (extension field → hot section tail,
       version bump, hex-test guarded).
+- [ ] `Table<S, K, R>` assembly point: plain generics, no assembly macro;
+      holds the shared engine instance; `put(row)` = primary key write +
+      index entries in one engine batch.
 
-## Phase 3 — Secondary indexes (ADR-0005) — design locked, not implemented
+## Phase 3 — Secondary indexes / access methods (ADR-0005 + 0006) — design locked, not implemented
 
-- [ ] `#[kv_index(name { fields(…) })]` attribute on table structs.
+- [ ] `#[kv_index(name { fields(…), includes(…) })]` on **row structs**.
 - [ ] Item-local slot counter; ns = `table_ns` + slot (mechanical derivation).
-- [ ] 1-byte slot discriminator: header `[table_ns 2B][slot 1B]`.
-- [ ] Per-index generated `IndexEncode` struct; index key = header + indexed
-      fields BE + primary key ID; value empty.
-- [ ] Leftmost-prefix scan API on index structs; whole-table segment scan.
-- [ ] Slot holes never reused; hex tests lock index layouts.
-- [ ] Variable-length field support follows the secondary-index regime
+- [ ] 1-byte slot discriminator: index key `[table_ns 2B][slot 1B]
+      [indexed fields][includes fields][primary key ID]`, value empty.
+- [ ] Per-index generated access-method impl; leftmost-prefix scan API;
+      whole-table segment scan.
+- [ ] `includes()` covering: mechanism free, positioned as materialized view
+      for high-fanout queries (not a default optimization; covered-field
+      updates rewrite the entry).
+- [ ] Variable-length indexed fields follow the secondary-index regime
       (text-first, ID at tail).
+- [ ] Slot holes never reused; hex tests lock index layouts.
+- [ ] `Collection` narrowed to edge-only (`EdgeTable`); existing tests move.
 
 ### Header unification trigger (edge direction bit)
 
@@ -53,7 +65,12 @@ point unify all key types into `[ns 2B][flags 1B]` (dir at bit0, ns restored
 to full 16 bits). The trigger is "edge needs a new discriminator", never
 "ns capacity pressure".
 
-## Phase 4 — Packaging
+## Phase 4 — Snapshots & packaging
 
+- [ ] Snapshot export/import: rows → Parquet (engine-independent, via
+      `KvEngine` scan surface); ns header reversed to descriptive text,
+      column names = field names; index entries excluded (derived state,
+      rebuilt deterministically on import). Uses: backup, data exchange,
+      lakehouse analysis.
 - [ ] Publish to crates.io (`okm`, `okm-derive`).
 - [ ] Push to github.com/orbsh/okm (repo referenced by wiki cross-links).

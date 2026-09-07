@@ -1,7 +1,7 @@
 # ADR-0004: Value side — versioned payloads, TLV extensions, and field wrappers
 
 Date: 2026-09-06
-Status: Accepted (design; implementation pending)
+Status: Superseded at the macro level by [ADR-0006](0006-row-node-model.md) (the standalone `ValueEncode` derive is cancelled; its encoding rules live on as the payload half of `RowEncode`). The mechanisms below remain authoritative.
 
 ## Context
 
