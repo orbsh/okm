@@ -19,6 +19,9 @@ pub trait KeyEncode: Sized + Clone {
     const FIELD_WIDTHS: &'static [(&'static str, usize)];
     fn encode(&self) -> Vec<u8>;
     fn decode(bytes: &[u8]) -> Self;
+    /// Field descriptors, declaration order — the key's single field list
+    /// with primitive kinds (Arrow schema / column builders, ADR-0007).
+    const FIELDS: &'static [crate::field::FieldDesc] = &[];
     /// Encode the first `names.len()` fields in declaration order;
     /// `names` must be a declaration-order prefix (first mismatch panics).
     fn encode_prefix_named(&self, buf: &mut Vec<u8>, names: &[&str]) -> usize;

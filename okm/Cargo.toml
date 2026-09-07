@@ -9,11 +9,18 @@ fjall = { version = "3.1.10", optional = true }
 slatedb = { version = "0.16.0", optional = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"], optional = true }
 object_store = { version = "0.13", optional = true }
+arrow = { version = "54", optional = true }
 
 [features]
 default = []
 fjall = ["dep:fjall"]
 slatedb = ["dep:slatedb", "dep:tokio"]
+arrow = ["dep:arrow"]
 
 [dev-dependencies]
 tempfile = "3"
+arrow = { version = "54" }
+
+[[test]]
+name = "arrow_bridge_test"
+required-features = ["arrow"]

@@ -98,6 +98,23 @@ impl<S: KvEngine, K: KeyEncode, R: Row<Key = K>> Table<S, K, R> {
             .collect()
     }
 
+    /// Raw rows: `(key encoding suffix, TLV payload)` per primary entry,
+    /// in key order — the byte-level scan surface the Arrow bridge and
+    /// snapshot exporter consume without struct materialization.
+    pub fn scan_rows_raw(&self) -> Vec<(Vec<u8>, Vec<u8>)> {
+        let mut prefix = self.ns.to_be_bytes().to_vec();
+        prefix.push(PRIMARY_SLOT);
+        self.store
+            .scan_suffix(&prefix)
+            .into_iter()
+            .filter_map(|suffix| {
+                let full = [prefix.as_slice(), suffix.as_slice()].concat();
+                let v = self.store.get(&full)?;
+                Some((suffix, v))
+            })
+            .collect()
+    }
+
     /// Full-ns scan of primary keys (slot-0 entries only).
     pub fn scan_keys(&self) -> Vec<K> {
         let mut p = self.ns.to_be_bytes().to_vec();

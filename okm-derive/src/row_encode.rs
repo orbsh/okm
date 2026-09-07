@@ -14,6 +14,14 @@
 //!    marker struct per index plus `Row::index_entries`, so `put`/
 //!    `delete` cover every declared access method with no runtime
 //!    registry — the declaration *is* the registry.
+//!
+//! Additionally, both the key struct and the row struct expose a
+//! `FieldDesc` table (name / byte width / primitive kind, declaration
+//! order) — the single field list feeding every downstream consumer that
+//! needs to lay out or interpret fields without a derive on their side
+//! (snapshot columns, Arrow schema, column builders; ADR-0007). The kind
+//! enum lives in `okm` core as `okm::FieldType` — dependency-free, so the
+//! derive stays pure.
 
 use proc_macro::TokenStream;
 use proc_macro2::{Delimiter, TokenStream as TS2, TokenTree};
@@ -127,6 +135,8 @@ struct FieldEnc {
     enc: TS2,
     dec: TS2,
     width: TS2,
+    /// `okm::FieldType` variant path, for the FieldDesc table (None = unsupported).
+    kind: Option<TS2>,
 }
 
 fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> Vec<FieldEnc> {
@@ -135,26 +145,30 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> Vec<FieldEnc> {
         let id = f.ident.clone().unwrap();
         let ty = &f.ty;
         let ty_str = quote!(#ty).to_string().replace(' ', "");
-        let (enc, dec, width) = match ty_str.as_str() {
+        let (enc, dec, width, kind) = match ty_str.as_str() {
             "u64" => (
                 quote! { buf.extend_from_slice(&self.#id.to_be_bytes()); },
                 quote! { let #id = u64::from_be_bytes(b[offset..offset+8].try_into().unwrap()); offset += 8; },
                 quote! { 8 },
+                Some(quote! { ::okm::FieldType::U64 }),
             ),
             "u32" => (
                 quote! { buf.extend_from_slice(&self.#id.to_be_bytes()); },
                 quote! { let #id = u32::from_be_bytes(b[offset..offset+4].try_into().unwrap()); offset += 4; },
                 quote! { 4 },
+                Some(quote! { ::okm::FieldType::U32 }),
             ),
             "u16" => (
                 quote! { buf.extend_from_slice(&self.#id.to_be_bytes()); },
                 quote! { let #id = u16::from_be_bytes(b[offset..offset+2].try_into().unwrap()); offset += 2; },
                 quote! { 2 },
+                Some(quote! { ::okm::FieldType::U16 }),
             ),
             "u8" => (
                 quote! { buf.push(self.#id); },
                 quote! { let #id = b[offset]; offset += 1; },
                 quote! { 1 },
+                Some(quote! { ::okm::FieldType::U8 }),
             ),
             _ if ty_str.starts_with("[u8;") => {
                 let n: usize = ty_str
@@ -171,6 +185,7 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> Vec<FieldEnc> {
                         offset += #nlit;
                     },
                     quote! { #nlit },
+                    Some(quote! { ::okm::FieldType::FixedBytes }),
                 )
             }
             other => panic!("{ctx}: unsupported type {other} (field {id})"),
@@ -180,9 +195,21 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> Vec<FieldEnc> {
             enc,
             dec,
             width,
+            kind,
         });
     }
     fs
+}
+
+/// FieldDesc table entries: `(name, FieldType, width)`, declaration order.
+fn field_desc_entries(fs: &[FieldEnc]) -> TS2 {
+    let rows = fs.iter().map(|f| {
+        let name = f.ident.to_string();
+        let kind = f.kind.as_ref().expect("field kind");
+        let w = &f.width;
+        quote! { (::okm::FieldDesc { name: #name, ty: #kind, width: #w }) }
+    });
+    quote! { &[ #(#rows),* ] }
 }
 
 pub fn derive(input: TokenStream) -> TokenStream {
@@ -213,6 +240,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
     let names: Vec<_> = fs.iter().map(|f| &f.ident).collect();
     let name_strs: Vec<_> = fs.iter().map(|f| f.ident.to_string()).collect();
     let widths: Vec<_> = fs.iter().map(|f| &f.width).collect();
+    let row_desc = field_desc_entries(&fs);
 
     // Row impl: encode_payload emits per-field TLV; decode_payload reads it
     // back field by field.
@@ -284,6 +312,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
         impl ::okm::Row for #row_name {
             type Key = #key_ty;
             const PAYLOAD_FIELDS: &'static [(&'static str, usize)] = &[ #((#name_strs, #widths)),* ];
+            const FIELDS: &'static [::okm::FieldDesc] = #row_desc;
             fn encode_payload(&self) -> Vec<u8> {
                 let mut buf = Vec::new();
                 #tlv_out
