@@ -23,6 +23,18 @@ The question is where the namespace dictionary itself lives.
 - **Not runtime width derivation** (`fetch_max` / `OnceLock`): mechanically sound (fetch_max is commutative and order-independent) but binds key width to the *global* namespace set — adding the 256th namespace silently rewrites the prefix width of *all* pre-existing keys. During rolling upgrades, old and new binaries coexist with different widths and cannot read each other. This is the same disease as insertion-triggered renumbering, relapsed at runtime; ~2.4% byte savings cannot buy it back.
 - **Width locked at u16 (2 bytes)**: supports 32768 namespaces after the direction-bit niche ([ADR-0001](0001-direction-bit-niche.md)); the actual namespace count is tens to low hundreds and grows slowly. 2B vs 1B costs ~1 byte per key (≈2.4%) and buys a structurally impossible-to-exhaust header — no machine, no maintenance, no cliff. Sub-byte widths (nibbles) would need bit operations and cross-byte offsets, shattering the "pure pointer slicing, zero parsing" fixed-width foundation.
 
+### Why width is not configurable (features vs const generics)
+
+A natural follow-up: make `ns` width selectable at dependency time — `features = [...]` or a const-generic parameter. Both are rejected; the reasons are mechanical, not stylistic.
+
+**Cargo features cannot express a width.** Features are boolean toggles, not parameters — `ns_width = 1` is not a thing features can carry. Supporting three widths means three features (`ns-u8` / `ns-u16` / `ns-u32`), mutual-exclusion constraints between them, and `cfg` forking at every `ns: u16` site — type signatures, derive output, and hex tests all grow cfg arms. The build matrix triples for a knob nobody turns.
+
+**Const generics pay at every call site.** `Table<S, K, R, const NS_W: usize>` threads a width parameter through the `Row` trait, the derive expansion, and every `Table<…>` type annotation. Rust's nominal typing turns "two widths" into "two distinct types": a `Table<S, K, R, 2>` and a `Table<S, K, R, 1>` share no impls, cannot be stored in the same collection, and double monomorphization for code paths that only ever run one width. The compile-time guarantee we'd buy (width mismatch caught in the type system) is already caught cheaper by the hex layout tests — a wrong width fails CI on day one, before any data exists.
+
+**Width uniformity is a format promise, and that is a feature.** The physical key layout is OKM's core contract; the ns width is part of it. Under nominal typing, two crates in one dependency graph selecting different widths simply fail to unify their key types — cargo rejects the build. This looks like a limitation but is exactly the ADR-0002 invariant ("ns numbering globally unique") enforced by the compiler instead of by convention: one process, one width, one layout. A mechanism that *allows* per-dependency widths would weaken a guarantee the architecture depends on.
+
+**And the u16 is not a bottleneck to parameterize around.** 32768 namespaces after the niche (see ADR-0001's trigger discipline) is structurally inexhaustible for this system's scale; the unification trigger there is explicitly not "ns capacity pressure". Adding configurability machinery for a dimension that cannot run out is negative expected value.
+
 ## Terminology and multi-tenancy
 
 Secondary indexes do NOT consume namespace IDs — they are slots derived inside the table item (see [ADR-0005](0005-secondary-index-slots.md)); the manual numbering below applies to tables only.
