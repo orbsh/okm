@@ -27,6 +27,10 @@ pub trait Row: Sized + Clone {
     type Key: KeyEncode;
     /// Payload field name → width table, declaration order (snapshot columns).
     const PAYLOAD_FIELDS: &'static [(&'static str, usize)];
+    /// Payload field descriptors, declaration order — single source shared
+    /// with PAYLOAD_FIELDS plus the primitive kind (Arrow schema, column
+    /// builders, snapshot tooling; ADR-0007).
+    const FIELDS: &'static [crate::field::FieldDesc] = &[];
     /// TLV payload encoding of the attribute fields.
     fn encode_payload(&self) -> Vec<u8>;
     /// Decode payload; `b` holds only the TLV region (no key bytes).

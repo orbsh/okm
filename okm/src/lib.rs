@@ -30,10 +30,13 @@ pub use okm_derive::{EdgeEncode, KeyEncode, RowEncode};
 pub mod collection;
 pub mod edge;
 pub mod engine;
+pub mod field;
 pub mod index;
 pub mod key;
 pub mod table;
 
+#[cfg(feature = "arrow")]
+pub mod arrow_bridge;
 #[cfg(feature = "fjall")]
 pub mod fjall_backend;
 #[cfg(feature = "slatedb")]
@@ -42,9 +45,13 @@ pub mod slatedb_backend;
 pub use collection::EdgeTable;
 pub use edge::{KvEdge, head_bytes};
 pub use engine::{KvEngine, MockStore};
+pub use field::{FieldDesc, FieldType};
 pub use index::{KvIndex, PRIMARY_SLOT, Row, scan_index};
 pub use key::{KeyEncode, PrefixKey};
 pub use table::Table;
+
+#[cfg(feature = "arrow")]
+pub use arrow_bridge as arrow_backend;
 
 #[cfg(feature = "fjall")]
 pub use fjall_backend::FjallStore;
