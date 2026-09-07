@@ -103,6 +103,68 @@ impl<S: KvEngine, K: KeyEncode, R: Row<Key = K>> Table<S, K, R> {
     pub fn describe(&self) -> String {
         describe::<K, R>()
     }
+
+    /// JSON Schema of this table's snapshot shape — the same column set the
+    /// Parquet export writes (key fields first, then payload fields, in
+    /// declaration order), so external tools reading the Parquet file can
+    /// derive their schema from this instead of introspecting the file.
+    pub fn json_schema(&self) -> String {
+        json_schema::<K, R>()
+    }
+}
+
+/// JSON Schema for the exported row shape (see [`Table::json_schema`]).
+/// Column type mapping mirrors the Arrow bridge: fixed-width unsigned
+/// integers → their JSON number types, `[u8; N]` → base64 string (the same
+/// encoding the bridge uses for binary columns). Column order = Parquet
+/// column order.
+pub fn json_schema<K: KeyEncode, R: Row<Key = K>>() -> String {
+    fn json_type(ty: FieldType) -> &'static str {
+        match ty {
+            FieldType::U8 | FieldType::U16 | FieldType::U32 | FieldType::U64 => "integer",
+            FieldType::FixedBytes => "string", // base64, matches Arrow BinaryArray
+        }
+    }
+
+    let key_fields = <K as KeyEncode>::FIELDS;
+    let row_fields = <R as Row>::FIELDS;
+    let mut out = String::from(
+        r#"{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+"#,
+    );
+    let props: Vec<String> = key_fields
+        .iter()
+        .chain(row_fields.iter())
+        .map(|f| {
+            format!(
+                concat!(
+                    "    {:<16}{{ \"type\": \"{}\", ",
+                    "\"description\": \"{} width, {} (declaration order)\" }}"
+                ),
+                format!("\"{}\":", f.name),
+                json_type(f.ty),
+                f.width,
+                format!("{:?}", f.ty),
+            )
+        })
+        .collect();
+    out.push_str(&props.join(",\n"));
+    out.push_str("\n  }");
+    // JSON objects are unordered; the authoritative Parquet column order
+    // (key fields then payload fields, declaration order) goes here.
+    let order: Vec<String> = key_fields
+        .iter()
+        .chain(row_fields.iter())
+        .map(|f| format!("    \"{}\"", f.name))
+        .collect();
+    out.push_str(&format!(
+        ",\n  \"x-okm-column-order\": [\n{}\n  ]\n}}\n",
+        order.join(",\n")
+    ));
+    out
 }
 
 /// Parquet snapshot tier (ADR-0007 Phase 3): batch → file, file → store.

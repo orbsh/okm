@@ -106,6 +106,44 @@ impl okm::KvIndex for TRowByOrg {
 // ================= FieldDesc sanity (describe's data source) =================
 
 #[test]
+fn json_schema_is_valid_and_matches_parquet_columns() {
+    let table: Table<MockStore, TKey, TRow> = Table::new(MockStore::default(), 7);
+    let schema = table.json_schema();
+
+    // Must parse as JSON.
+    let v: serde_json::Value =
+        serde_json::from_str(&schema).expect("json_schema must be valid JSON");
+
+    // Column set identical to the Parquet export (key fields first, then
+    // payload fields); authoritative column ORDER is in x-okm-column-order
+    // (JSON property objects are unordered).
+    let props = v["properties"].as_object().expect("properties object");
+    let mut names: Vec<&str> = props.keys().map(|s| s.as_str()).collect();
+    names.sort_unstable();
+    let mut expected = vec!["org_id", "user_id", "reputation", "level", "tag"];
+    expected.sort_unstable();
+    assert_eq!(names, expected);
+    let order: Vec<&str> = v["x-okm-column-order"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s.as_str().unwrap())
+        .collect();
+    assert_eq!(
+        order,
+        vec!["org_id", "user_id", "reputation", "level", "tag"]
+    );
+
+    // Type mapping mirrors the Arrow bridge.
+    assert_eq!(props["org_id"]["type"], "integer");
+    assert_eq!(props["user_id"]["type"], "integer");
+    assert_eq!(props["tag"]["type"], "string"); // [u8;4] → base64
+
+    // Free function form agrees.
+    assert_eq!(okm::tooling::json_schema::<TKey, TRow>(), schema);
+}
+
+#[test]
 fn fielddesc_tables_back_the_audit() {
     let kf = <TKey as KeyEncode>::FIELDS;
     assert_eq!(kf.len(), 2);
