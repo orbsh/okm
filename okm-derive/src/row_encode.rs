@@ -172,6 +172,23 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> Vec<FieldEnc> {
         let id = f.ident.clone().unwrap();
         let ty = &f.ty;
         let ty_str = quote!(#ty).to_string().replace(' ', "");
+        // #[kv_offset(base = <i64 literal>)] — the Offset wrapper's static
+        // base, required exactly when the type is Offset-shaped.
+        let offset_base: Option<i64> = f
+            .attrs
+            .iter()
+            .find(|a| a.path().is_ident("kv_offset"))
+            .map(|a| {
+                let mut b = None;
+                let _ = a.parse_nested_meta(|meta| {
+                    if meta.path.is_ident("base") {
+                        let v: syn::LitInt = meta.value()?.parse()?;
+                        b = Some(v.base10_parse::<i64>().expect("kv_offset: base must be an i64 literal"));
+                    }
+                    Ok(())
+                });
+                b.expect("kv_offset: missing `base = <i64>`")
+            });
         let (enc, dec, width, len_expr, kind) = match ty_str.as_str() {
             "u64" => (
                 quote! { buf.extend_from_slice(&self.#id.to_be_bytes()); },
@@ -240,6 +257,106 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> Vec<FieldEnc> {
                     quote! { #w },
                     quote! { #w },
                     Some(kind),
+                )
+            }
+            _ if ty_str.starts_with("VarInt<") => {
+                // VarInt<T> — LEB128 variable-length unsigned integer.
+                // Same regime as String: frame len is authoritative,
+                // FieldDesc width is 0. T ∈ {u16, u32, u64} (u8 is already
+                // minimal-width).
+                let inner = ty_str
+                    .trim_start_matches("VarInt<")
+                    .trim_end_matches('>')
+                    .to_string();
+                if !matches!(inner.as_str(), "u16" | "u32" | "u64") {
+                    panic!("{ctx}: VarInt<{inner}> unsupported (u16/u32/u64 only)");
+                }
+                let inner_ty: syn::Type = syn::parse_str(&inner)
+                    .unwrap_or_else(|_| panic!("{ctx}: bad VarInt inner type {inner}"));
+                (
+                    // Field value is the VarInt<T> newtype; encode reads .0.
+                    quote! { buf.extend_from_slice(&self.#id.encode()); },
+                    quote! {
+                        let (#id, n) = <#inner_ty as ::okm::VarIntEnc>::varint_decode(&b[offset..]);
+                        offset += n;
+                        let #id = ::okm::VarInt(#id);
+                    },
+                    quote! { 0 },
+                    // Variable-length frame: len = actual byte length.
+                    quote! { self.#id.encode().len() },
+                    Some(quote! { ::okm::FieldType::VarInt }),
+                )
+            }
+            _ if ty_str.starts_with("Quant<") => {
+                // Quant<f64, P> — fixed-point i64 wire (8 bytes, stable
+                // width across P). Composes with Reverse for descending
+                // float order.
+                // Accepted spellings: Quant<P> (inner is always f64) and
+                // the explicit Quant<f64, P>. The wire is i64 BE either way.
+                let args = ty_str
+                    .trim_start_matches("Quant<")
+                    .trim_end_matches('>')
+                    .to_string();
+                let (inner, p_str) = match args.split_once(',') {
+                    Some((i, p)) => (i.trim().to_string(), p.trim().to_string()),
+                    None => ("f64".to_string(), args),
+                };
+                let p: u32 = p_str
+                    .parse()
+                    .unwrap_or_else(|_| panic!("{ctx}: Quant precision P must be an integer literal, got {p_str}"));
+                if inner != "f64" {
+                    panic!("{ctx}: Quant<{inner}> unsupported (f64 only)");
+                }
+                let plit = proc_macro2::Literal::u32_unsuffixed(p);
+                (
+                    quote! { buf.extend_from_slice(&self.#id.encode()); },
+                    quote! {
+                        let #id = ::okm::Quant::<#p>::decode(&b[offset..offset+8]);
+                        offset += 8;
+                    },
+                    quote! { 8 },
+                    quote! { 8 },
+                    Some(quote! { ::okm::FieldType::Quant(#plit) }),
+                )
+            }
+            _ if ty_str.starts_with("Enum<") => {
+                // Enum<T> — one-byte explicit tag via the user's EnumTag
+                // impl (tags are a wire contract, never positional).
+                let inner = ty_str
+                    .trim_start_matches("Enum<")
+                    .trim_end_matches('>')
+                    .to_string();
+                let inner_ty: syn::Type = syn::parse_str(&inner)
+                    .unwrap_or_else(|_| panic!("{ctx}: bad Enum inner type {inner}"));
+                (
+                    quote! { buf.extend_from_slice(&self.#id.encode()); },
+                    quote! {
+                        let #id = ::okm::Enum::<#inner_ty>::decode(&b[offset..offset+1]);
+                        offset += 1;
+                    },
+                    quote! { 1 },
+                    quote! { 1 },
+                    Some(quote! { ::okm::FieldType::Enum }),
+                )
+            }
+            _ if ty_str == "Offset" || offset_base.is_some() => {
+                // Offset — #[kv_offset(base = N)] i64 fields stored as a u32
+                // displacement from the static base. Base and shape must
+                // agree: missing either half is a declaration error.
+                let base = offset_base
+                    .unwrap_or_else(|| panic!("{ctx}: {id} is Offset but lacks #[kv_offset(base = <i64>)]"));
+                if ty_str != "Offset" {
+                    panic!("{ctx}: {id} has #[kv_offset] but is not an Offset field");
+                }
+                let blit = proc_macro2::Literal::i64_unsuffixed(base);
+                (
+                    // Field value is the Offset newtype; the wire is the
+                    // u32 displacement. .0 is the absolute i64 value.
+                    quote! { buf.extend_from_slice(&::okm::offset_encode(self.#id.0, #blit)); },
+                    quote! { let #id = ::okm::Offset(::okm::offset_decode(&b[offset..offset+4], #blit)); offset += 4; },
+                    quote! { 4 },
+                    quote! { 4 },
+                    Some(quote! { ::okm::FieldType::Offset(#blit) }),
                 )
             }
             _ if ty_str.starts_with("String") => {
