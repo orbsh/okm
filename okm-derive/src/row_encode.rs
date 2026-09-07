@@ -128,15 +128,42 @@ fn parse_index_attr(attr: &syn::Attribute) -> Vec<IdxDecl> {
 }
 
 /// Payload-side field encoder triple: u8/u16/u32/u64 BE and `[u8; N]`.
-/// Variable-length types (String etc.) go through the index variable-length
-/// regime later; they are rejected here for now.
+/// `String` is the variable-length kind (TLV `len` is the prefix);
+/// `Reverse<T>` applies the descending-order bit-flip of `T`.
 struct FieldEnc {
     ident: syn::Ident,
     enc: TS2,
     dec: TS2,
     width: TS2,
+    /// TLV frame `len` expression: the declared width for fixed-width kinds,
+    /// the actual value byte length for variable-length kinds (`String`).
+    len_expr: TS2,
     /// `okm::FieldType` variant path, for the FieldDesc table (None = unsupported).
     kind: Option<TS2>,
+}
+
+/// Encoded width of a plain primitive type name (for `Reverse<T>` fields —
+/// same width as the unwrapped encoding).
+fn inner_w(ty: &str) -> TS2 {
+    match ty {
+        "u8" | "i8" => quote! { 1 },
+        "u16" | "i16" => quote! { 2 },
+        "u32" | "i32" => quote! { 4 },
+        "u64" | "i64" => quote! { 8 },
+        other => panic!("Reverse<{other}>: inner type not on the Reversible whitelist"),
+    }
+}
+
+/// FieldType of a plain primitive type name (Reverse keeps the inner kind —
+/// the wire is still a fixed-width integer, just bit-flipped).
+fn inner_kind(ty: &str) -> TS2 {
+    match ty {
+        "u8" | "i8" => quote! { ::okm::FieldType::U8 },
+        "u16" | "i16" => quote! { ::okm::FieldType::U16 },
+        "u32" | "i32" => quote! { ::okm::FieldType::U32 },
+        "u64" | "i64" => quote! { ::okm::FieldType::U64 },
+        other => panic!("Reverse<{other}>: inner type not on the Reversible whitelist"),
+    }
 }
 
 fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> Vec<FieldEnc> {
@@ -145,10 +172,11 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> Vec<FieldEnc> {
         let id = f.ident.clone().unwrap();
         let ty = &f.ty;
         let ty_str = quote!(#ty).to_string().replace(' ', "");
-        let (enc, dec, width, kind) = match ty_str.as_str() {
+        let (enc, dec, width, len_expr, kind) = match ty_str.as_str() {
             "u64" => (
                 quote! { buf.extend_from_slice(&self.#id.to_be_bytes()); },
                 quote! { let #id = u64::from_be_bytes(b[offset..offset+8].try_into().unwrap()); offset += 8; },
+                quote! { 8 },
                 quote! { 8 },
                 Some(quote! { ::okm::FieldType::U64 }),
             ),
@@ -156,17 +184,20 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> Vec<FieldEnc> {
                 quote! { buf.extend_from_slice(&self.#id.to_be_bytes()); },
                 quote! { let #id = u32::from_be_bytes(b[offset..offset+4].try_into().unwrap()); offset += 4; },
                 quote! { 4 },
+                quote! { 4 },
                 Some(quote! { ::okm::FieldType::U32 }),
             ),
             "u16" => (
                 quote! { buf.extend_from_slice(&self.#id.to_be_bytes()); },
                 quote! { let #id = u16::from_be_bytes(b[offset..offset+2].try_into().unwrap()); offset += 2; },
                 quote! { 2 },
+                quote! { 2 },
                 Some(quote! { ::okm::FieldType::U16 }),
             ),
             "u8" => (
                 quote! { buf.push(self.#id); },
                 quote! { let #id = b[offset]; offset += 1; },
+                quote! { 1 },
                 quote! { 1 },
                 Some(quote! { ::okm::FieldType::U8 }),
             ),
@@ -185,7 +216,50 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> Vec<FieldEnc> {
                         offset += #nlit;
                     },
                     quote! { #nlit },
+                    quote! { #nlit },
                     Some(quote! { ::okm::FieldType::FixedBytes }),
+                )
+            }
+            _ if ty_str.starts_with("Reverse<") => {
+                // Reverse<T> — bit-flipped descending-order encoding applied
+                // at every destination of this field (payload value here,
+                // key/index positions rejected in the key macro). Inner type
+                // must be on the Reversible whitelist (compile-time check:
+                // the generated code calls ::okm::Reversible::rev_encode).
+                let inner = ty_str
+                    .trim_start_matches("Reverse<")
+                    .trim_end_matches('>')
+                    .to_string();
+                let inner_ty: syn::Type = syn::parse_str(&inner)
+                    .unwrap_or_else(|_| panic!("{ctx}: bad Reverse inner type {inner}"));
+                let w = inner_w(&inner);
+                let kind = inner_kind(&inner);
+                (
+                    quote! { buf.extend_from_slice(&self.#id.encode()); },
+                    quote! { let #id = ::okm::Reverse(#inner_ty::rev_decode(&b[offset..offset+#w])); offset += #w; },
+                    quote! { #w },
+                    quote! { #w },
+                    Some(kind),
+                )
+            }
+            _ if ty_str.starts_with("String") => {
+                // Variable-length regime: the TLV frame's `len u32` IS the
+                // length prefix — no second prefix on the wire. The frame
+                // header is emitted by the shared TLV loop, so here we only
+                // write/read the raw UTF-8 bytes.
+                (
+                    quote! { buf.extend_from_slice(self.#id.as_bytes()); },
+                    quote! {
+                        let #id = String::from_utf8(b[offset..offset+len].to_vec())
+                            .expect("TLV String field is valid UTF-8");
+                        offset += len;
+                    },
+                    // FieldDesc width is a static concept; the dynamic length
+                    // lives in the frame. 0 marks variable length.
+                    quote! { 0 },
+                    // Variable-length frame: len = actual byte length.
+                    quote! { self.#id.as_bytes().len() },
+                    Some(quote! { ::okm::FieldType::Str }),
                 )
             }
             other => panic!("{ctx}: unsupported type {other} (field {id})"),
@@ -195,6 +269,7 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> Vec<FieldEnc> {
             enc,
             dec,
             width,
+            len_expr,
             kind,
         });
     }
@@ -247,11 +322,11 @@ pub fn derive(input: TokenStream) -> TokenStream {
     let mut tlv_out = quote! {};
     for (i, f) in fs.iter().enumerate() {
         let tag = proc_macro2::Literal::u8_unsuffixed(i as u8);
-        let w = &f.width;
+        let len = &f.len_expr;
         let enc = &f.enc;
         tlv_out.extend(quote! {
             buf.push(#tag);
-            buf.extend_from_slice(&(#w as u32).to_be_bytes());
+            buf.extend_from_slice(&(#len as u32).to_be_bytes());
             #enc
         });
     }

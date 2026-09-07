@@ -27,12 +27,15 @@
 
 pub use okm_derive::{EdgeEncode, KeyEncode, RowEncode};
 
+pub use reverse::{Reversible, Reverse};
+
 pub mod collection;
 pub mod edge;
 pub mod engine;
 pub mod field;
 pub mod index;
 pub mod key;
+pub mod reverse;
 pub mod table;
 
 #[cfg(feature = "arrow")]

@@ -33,12 +33,16 @@ Design decisions live in `docs/adr/`. This plan tracks implementation status.
       retry loop) — future extension from the original design doc; no ADR
       record yet.
 - [ ] `#[kv_version(n)]` versioned payload with lazy in-memory upgrade.
-- [ ] Variable-length payload fields (String) length-prefixed in values —
-      currently rejected by `field_encoders`.
+- [x] Variable-length payload fields (String): the TLV frame's `len u32` IS
+      the length prefix (no second one on the wire); `FieldType::Str` in
+      the FieldDesc table (width 0 = variable); frame-by-frame walk in the
+      Arrow bridge; key side still rejects it at compile time.
 - [ ] Field wrappers on row fields: `Enum<T>`, `Offset<T>`, `Delta<T>`,
-      `VarInt<T>`, `Rle<T>`, `Quant<T>`, `Reverse<T>` (+ `Reversible`
-      compile-time whitelist, floats excluded); one annotation applies to
-      every destination the field is encoded into.
+      `VarInt<T>`, `Rle<T>`, `Quant<T>`; `Reverse<T>` ✅ shipped (+ `Reversible`
+      compile-time whitelist: the eight fixed-width integer types, floats
+      excluded — no fixed bit-flip inverts IEEE-754 order); one annotation applies to
+      every destination the field is encoded into. Key/index positions reject
+      `Reverse` (fixed-width identity rule); descending prefix scan = newest-first.
 - [ ] Hot/cold promotion procedure (extension field → hot section tail,
       version bump, hex-test guarded).
 

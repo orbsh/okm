@@ -33,6 +33,7 @@ fn arrow_type(ty: FieldType) -> DataType {
         FieldType::U32 => DataType::UInt32,
         FieldType::U64 => DataType::UInt64,
         FieldType::FixedBytes => DataType::Binary,
+        FieldType::Str => DataType::Utf8,
     }
 }
 
@@ -42,8 +43,6 @@ struct Projection<K: KeyEncode, R: Row<Key = K>> {
     schema: Schema,
     key_fields: &'static [FieldDesc],
     row_fields: &'static [FieldDesc],
-    /// Per-column value width (matches schema field order).
-    all_widths: Vec<usize>,
     _marker: std::marker::PhantomData<(K, R)>,
 }
 
@@ -52,20 +51,16 @@ impl<K: KeyEncode, R: Row<Key = K>> Projection<K, R> {
         let key_fields = <K as KeyEncode>::FIELDS;
         let row_fields = <R as Row>::FIELDS;
         let mut fields = Vec::with_capacity(key_fields.len() + row_fields.len());
-        let mut all_widths = Vec::with_capacity(key_fields.len() + row_fields.len());
         for f in key_fields {
             fields.push(ArrowField::new(f.name, arrow_type(f.ty), false));
-            all_widths.push(f.width);
         }
         for f in row_fields {
             fields.push(ArrowField::new(f.name, arrow_type(f.ty), false));
-            all_widths.push(f.width);
         }
         Self {
             schema: Schema::new(fields),
             key_fields,
             row_fields,
-            all_widths,
             _marker: std::marker::PhantomData,
         }
     }
@@ -89,7 +84,7 @@ fn build_batch<K: KeyEncode, R: Row<Key = K>>(
     rows: &[(Vec<u8>, Vec<u8>)],
 ) -> RecordBatch {
     let n = rows.len();
-    let mut columns: Vec<Vec<u8>> = Vec::with_capacity(proj.schema.fields().len());
+    let mut columns: Vec<Vec<Vec<u8>>> = Vec::with_capacity(proj.schema.fields().len());
 
     // Precompute the declaration-order byte offset of every key field
     // (computed once, applied per row).
@@ -105,21 +100,35 @@ fn build_batch<K: KeyEncode, R: Row<Key = K>>(
 
     // Key half: the scan suffix IS the key payload (encoding = declaration-
     // order BE fields), so per-field runs are contiguous offsets into it.
+    // One value per row per column (column-major list of per-row values).
     for (fi, f) in proj.key_fields.iter().enumerate() {
-        let mut col = Vec::with_capacity(n * f.width);
+        let mut col = Vec::with_capacity(n);
         for (kenc, _) in rows {
             let off = key_offsets[fi];
-            col.extend_from_slice(&swap_be(kenc, off, f.width, f.ty));
+            col.push(swap_be(kenc, off, f.width, f.ty));
         }
         columns.push(col);
     }
     // Payload half: walk each row's TLV frames in declaration order and
     // take the value bytes of the matching field (skipping tag + len).
+    // Fixed-width fields sit at a computable static offset; `Str` fields
+    // must be walked frame-by-frame because every preceding variable-length
+    // field shifts the offset.
+    let has_var = proj.row_fields.iter().any(|f| f.ty == FieldType::Str);
     for (fi, f) in proj.row_fields.iter().enumerate() {
-        let mut col = Vec::with_capacity(n * f.width);
+        let mut col: Vec<Vec<u8>> = Vec::with_capacity(n);
         for (_, v) in rows {
-            let off = tlv_value_offset(proj.row_fields, fi);
-            col.extend_from_slice(&swap_be(v, off, f.width, f.ty));
+            if has_var {
+                let val = tlv_value(v, proj.row_fields, fi);
+                if f.ty == FieldType::Str {
+                    col.push(val.to_vec());
+                } else {
+                    col.push(swap_be(val, 0, f.width, f.ty));
+                }
+            } else {
+                let off = tlv_value_offset(proj.row_fields, fi);
+                col.push(swap_be(v, off, f.width, f.ty));
+            }
         }
         columns.push(col);
     }
@@ -127,34 +136,49 @@ fn build_batch<K: KeyEncode, R: Row<Key = K>>(
     let arrays: Vec<Arc<dyn arrow::array::Array>> = columns
         .iter()
         .zip(proj.schema.fields().iter())
-        .zip(proj.all_widths.iter())
-        .map(|((col, field), &width)| -> Arc<dyn arrow::array::Array> {
+        .map(|(col, field)| -> Arc<dyn arrow::array::Array> {
             match field.data_type() {
             DataType::UInt8 => {
-                let vals: Vec<u8> = col.clone();
+                let vals: Vec<u8> = col.iter().map(|c| c[0]).collect();
                 Arc::new(arrow::array::UInt8Array::from(vals))
             }
             DataType::UInt16 => {
-                let vals: Vec<u16> = col.as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes(*c)).collect();
+                let vals: Vec<u16> = col.iter().map(|c| u16::from_le_bytes(c.as_chunks::<2>().0[0])).collect();
                 Arc::new(arrow::array::UInt16Array::from(vals))
             }
             DataType::UInt32 => {
-                let vals: Vec<u32> = col.as_chunks::<4>().0.iter().map(|c| u32::from_le_bytes(*c)).collect();
+                let vals: Vec<u32> = col.iter().map(|c| u32::from_le_bytes(c.as_chunks::<4>().0[0])).collect();
                 Arc::new(arrow::array::UInt32Array::from(vals))
             }
             DataType::UInt64 => {
-                let vals: Vec<u64> = col.as_chunks::<8>().0.iter().map(|c| u64::from_le_bytes(*c)).collect();
+                let vals: Vec<u64> = col.iter().map(|c| u64::from_le_bytes(c.as_chunks::<8>().0[0])).collect();
                 Arc::new(arrow::array::UInt64Array::from(vals))
             }
             DataType::Binary => {
                 let mut offsets: Vec<i32> = Vec::with_capacity(n + 1);
                 offsets.push(0);
                 let mut data = Vec::new();
-                for chunk in col.chunks_exact(width) {
+                for chunk in col {
                     data.extend_from_slice(chunk);
                     offsets.push(data.len() as i32);
                 }
                 Arc::new(arrow::array::BinaryArray::new(
+                    arrow::buffer::OffsetBuffer::new(
+                        arrow::buffer::ScalarBuffer::from(offsets),
+                    ),
+                    Buffer::from(data),
+                    None,
+                ))
+            }
+            DataType::Utf8 => {
+                let mut offsets: Vec<i32> = Vec::with_capacity(n + 1);
+                offsets.push(0);
+                let mut data = Vec::new();
+                for chunk in col {
+                    data.extend_from_slice(chunk);
+                    offsets.push(data.len() as i32);
+                }
+                Arc::new(arrow::array::StringArray::new(
                     arrow::buffer::OffsetBuffer::new(
                         arrow::buffer::ScalarBuffer::from(offsets),
                     ),
@@ -173,21 +197,46 @@ fn build_batch<K: KeyEncode, R: Row<Key = K>>(
 /// Byte offset of field `fi`'s value inside a TLV payload: walk frames
 /// 0..fi (tag u8 + len u32 + value), summing their strides. Declared field
 /// order == TLV emit order, so strides align with the wire format.
+///
+/// Only valid when no field before `fi` is variable-length — with `Str`
+/// fields present, use [`tlv_value`] instead (dynamic walk).
 fn tlv_value_offset(fields: &[FieldDesc], fi: usize) -> usize {
     // prior frames (tag+len+value) plus this frame's own tag+len header
     5 + fields[..fi].iter().map(|f| 5 + f.width).sum::<usize>()
 }
 
+/// Value slice of field `fi` inside a TLV payload, walked frame-by-frame.
+/// Handles variable-length (`Str`) frames whose stride is the frame's own
+/// `len`. Returns the value region only (tag + len skipped).
+fn tlv_value<'a>(payload: &'a [u8], fields: &[FieldDesc], fi: usize) -> &'a [u8] {
+    let mut off = 0usize;
+    for (i, f) in fields.iter().enumerate() {
+        let len = u32::from_be_bytes(payload[off + 1..off + 5].try_into().unwrap()) as usize;
+        let val = off + 5;
+        if i == fi {
+            debug_assert!(f.ty == FieldType::Str || len == f.width);
+            return &payload[val..val + len];
+        }
+        off = val + len;
+    }
+    unreachable!("field index out of TLV frame range: {fi}");
+}
+
 /// Copy `width` bytes at `off` of a big-endian region into the value bytes
 /// arrow's little-endian arrays expect. Multi-byte integers are byte-
 /// swapped; single bytes and binaries are copied verbatim.
+///
+/// Variable-length (`Str`) columns can't use this fixed-offset copy — they
+/// are handled frame-by-frame in `build_batch` below.
 fn swap_be(src: &[u8], off: usize, width: usize, ty: FieldType) -> Vec<u8> {
+    debug_assert_ne!(ty, FieldType::Str);
     let raw = &src[off..off + width];
     match ty {
         FieldType::U8 | FieldType::FixedBytes => raw.to_vec(),
         FieldType::U16 => raw.iter().rev().copied().collect(),
         FieldType::U32 => raw.iter().rev().copied().collect(),
         FieldType::U64 => raw.iter().rev().copied().collect(),
+        FieldType::Str => unreachable!("Str columns bypass swap_be"),
     }
 }
 

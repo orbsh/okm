@@ -8,8 +8,9 @@
 //! dependency to read a struct's field layout.
 
 /// Primitive field kinds currently supported by the codec family
-/// (fixed-width, big-endian). Variable-length kinds (String) slot in here
-/// when the value-side variable-length regime lands (PLAN Phase 2).
+/// (big-endian). `Str` is the variable-length kind: it only appears in
+/// payload (TLV) positions — the frame's `len u32` IS the length prefix —
+/// and is rejected on the fixed-width key side.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FieldType {
     U8,
@@ -18,6 +19,8 @@ pub enum FieldType {
     U64,
     /// `[u8; N]` — byte width is `FieldDesc::width`.
     FixedBytes,
+    /// `String` — variable length; `FieldDesc::width` is 0 (meaningless).
+    Str,
 }
 
 /// One declared field: name, primitive kind, byte width.

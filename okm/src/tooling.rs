@@ -84,16 +84,23 @@ pub fn describe<K: KeyEncode, R: Row<Key = K>>() -> String {
         out.push_str("  -- payload TLV (tag u8 + len u32 BE + value) --\n");
         let mut off = 0usize;
         for f in row_fields {
+            let width_note = if f.ty == FieldType::Str {
+                "var".to_string()
+            } else {
+                f.width.to_string()
+            };
             out.push_str(&format!(
                 "  {:<16} {:>7} {:>6}  {:?}   (frame header at {off})\n",
                 f.name,
                 off + 5,
-                f.width,
+                width_note,
                 f.ty
             ));
-            off += 5 + f.width;
+            // Str stride is dynamic (the frame's own len); show the static
+            // part (5-byte header) so the column stays aligned.
+            off += 5 + if f.ty == FieldType::Str { 0 } else { f.width };
         }
-        out.push_str(&format!("  payload total: {off}\n"));
+        out.push_str(&format!("  payload total: {off}+ (variable-length frames add their value bytes)\n"));
     }
     out
 }
@@ -123,6 +130,7 @@ pub fn json_schema<K: KeyEncode, R: Row<Key = K>>() -> String {
         match ty {
             FieldType::U8 | FieldType::U16 | FieldType::U32 | FieldType::U64 => "integer",
             FieldType::FixedBytes => "string", // base64, matches Arrow BinaryArray
+            FieldType::Str => "string",        // UTF-8, matches Arrow Utf8Array
         }
     }
 
@@ -140,14 +148,11 @@ pub fn json_schema<K: KeyEncode, R: Row<Key = K>>() -> String {
         .chain(row_fields.iter())
         .map(|f| {
             format!(
-                concat!(
-                    "    {:<16}{{ \"type\": \"{}\", ",
-                    "\"description\": \"{} width, {} (declaration order)\" }}"
-                ),
-                format!("\"{}\":", f.name),
+                "    \"{}\":{{ \"type\": \"{}\", \"description\": \"{} width, {:?} (declaration order)\" }}",
+                f.name,
                 json_type(f.ty),
                 f.width,
-                format!("{:?}", f.ty),
+                f.ty,
             )
         })
         .collect();
@@ -197,6 +202,10 @@ pub mod parquet_io {
                 let col = col.as_any().downcast_ref::<BinaryArray>().unwrap();
                 col.value(row).to_vec()
             }
+            FieldType::Str => {
+                let col = col.as_any().downcast_ref::<arrow::array::StringArray>().unwrap();
+                col.value(row).as_bytes().to_vec()
+            }
             other => {
                 let raw: Vec<u8> = match other {
                     FieldType::U8 => vec![col.as_any().downcast_ref::<arrow::array::UInt8Array>().unwrap().value(row)],
@@ -222,6 +231,7 @@ pub mod parquet_io {
                         .to_be_bytes()
                         .to_vec(),
                     FieldType::FixedBytes => unreachable!(),
+                    FieldType::Str => unreachable!("handled above"),
                 };
                 debug_assert_eq!(raw.len(), width, "width mismatch on import");
                 raw
@@ -265,9 +275,13 @@ pub mod parquet_io {
             for (fi, f) in row_fields.iter().enumerate() {
                 let col = batch.column(nkey + fi);
                 for (row, prow) in payloads.iter_mut().enumerate() {
+                    let wb = wire_bytes(col, row, f.width, f.ty);
                     prow.push(fi as u8);
-                    prow.extend_from_slice(&(f.width as u32).to_be_bytes());
-                    prow.extend_from_slice(&wire_bytes(col, row, f.width, f.ty));
+                    // Variable-length fields: the frame len is the actual
+                    // byte length; fixed-width fields re-emit the declared
+                    // width (redundant consistency check, same as export).
+                    prow.extend_from_slice(&(wb.len() as u32).to_be_bytes());
+                    prow.extend_from_slice(&wb);
                 }
             }
             for row in 0..n {

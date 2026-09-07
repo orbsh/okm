@@ -1,0 +1,7 @@
+error: proc-macro derive panicked
+ --> tests/compilefail/reverse_on_key.rs:3:10
+  |
+3 | #[derive(KeyEncode)]
+  |          ^^^^^^^^^
+  |
+  = help: message: KeyEncode: Reverse<T> on key field ts — keys are fixed-width identity; put Reverse fields in the row payload instead

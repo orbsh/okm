@@ -177,6 +177,18 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> Vec<Field> {
                     Some(quote! { ::okm::FieldType::FixedBytes }),
                 )
             }
+            _ if ty_str.starts_with("Reverse<") => {
+                panic!(
+                    "{ctx}: Reverse<T> on key field {id} — keys are fixed-width identity; \
+                     put Reverse fields in the row payload instead"
+                )
+            }
+            _ if ty_str.starts_with("String") => {
+                panic!(
+                    "{ctx}: String on key field {id} — the key encoding is fixed-width \
+                     (pure pointer slicing); use [u8; N] or a hash"
+                )
+            }
             other => panic!("{ctx}: unsupported type {other} (field {id})"),
         };
         fs.push(Field {
