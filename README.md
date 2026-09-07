@@ -28,11 +28,12 @@ Implemented:
 - `Collection<S, E>` — the assembly point: engine + edge type = the operation surface of one relationship (`link` / `unlink` / `forward` / `reverse` / `reverse_prefix`).
 - Engine backends behind Cargo features: `fjall` (sync `FjallStore`), `slatedb` (async `SlatedbStore` + `AsyncCollection`), plus an in-memory `MockStore` for tests.
 
-Roadmap (design accepted, not yet implemented — [ADR-0004](docs/adr/0004-value-side-and-wrappers.md)):
+Roadmap (design locked, not yet implemented — [ADR-0004](docs/adr/0004-value-side-and-wrappers.md), [ADR-0005](docs/adr/0005-secondary-index-slots.md)):
 
-- `ValueEncode` — versioned value payloads (lazy migration) and TLV extension sections.
-- Field-level encoding wrappers (`Enum<T>`, `Offset<T>`, `Delta<T>`, `VarInt<T>`, `Reverse<T>`, …).
-- Variable-length key fields (`String` with `[len: u16]` prefix) for secondary indexes.
+- `ValueEncode` — versioned value payload (lazy migration) and TLV extension section.
+- Field-level encoding wrappers (`Enum<T>`, `Offset<T>`, `Delta<T>`, `VarInt<T>`, `Reverse<T>` …).
+- Secondary indexes — `#[kv_index(name { fields(…) })]` on table structs: composite indexes, item-local slot numbering (one manual ns per **table**), 1-byte slot discriminator, leftmost-prefix scans.
+- Variable-length key fields (`String` with `[len: u16]` prefix), for secondary indexes.
 
 ## Usage
 
@@ -166,7 +167,7 @@ okm/src/collection.rs  Collection<S, E> assembly point
 okm/src/fjall_backend.rs    fjall adapter (feature "fjall")
 okm/src/slatedb_backend.rs  slatedb adapter (feature "slatedb")
 okm/tests/         integration (MockStore), fjall_eval, slatedb_eval
-docs/adr/          architecture decision records
+docs/adr/          architecture decision records (docs/PLAN.md = implementation plan)
 ```
 
 ## Design notes

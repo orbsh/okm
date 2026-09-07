@@ -30,10 +30,11 @@ SQL 的核心价值不是执行性能，而是关系模型交付的可读性、�
 - `Collection<S, E>` — 组装点：引擎 + 边类型 = 一条关系的操作面（`link` / `unlink` / `forward` / `reverse` / `reverse_prefix`）。
 - 引擎后端走 Cargo feature：`fjall`（同步 `FjallStore`）、`slatedb`（异步 `SlatedbStore` + `AsyncCollection`），测试用内存 `MockStore`。
 
-路线图（设计已定，尚未实现——[ADR-0004](docs/adr/0004-value-side-and-wrappers.md)）：
+路线图（设计已定，尚未实现——[ADR-0004](docs/adr/0004-value-side-and-wrappers.md)、[ADR-0005](docs/adr/0005-secondary-index-slots.md)）：
 
 - `ValueEncode` — 版本化 value payload（懒迁移）与 TLV 扩展区。
 - 字段级编码 wrapper（`Enum<T>`、`Offset<T>`、`Delta<T>`、`VarInt<T>`、`Reverse<T>` …）。
+- 二级索引——表 struct 上的 `#[kv_index(name { fields(…) })]`：支持组合索引、item 内自动 slot 编号（每个**表**一个手动 ns）、1 字节 slot 判别符、最左前缀扫描。
 - 变长 key 字段（`String` 带 `[len: u16]` 前缀），用于二级索引。
 
 ## 使用方法
@@ -167,7 +168,7 @@ okm/src/collection.rs  Collection<S, E> 组装点
 okm/src/fjall_backend.rs    fjall 适配（feature "fjall"）
 okm/src/slatedb_backend.rs  slatedb 适配（feature "slatedb"）
 okm/tests/         integration（MockStore）、fjall_eval、slatedb_eval
-docs/adr/          架构决策记录
+docs/adr/          架构决策记录（docs/PLAN.md 为实施计划）
 ```
 
 ## 设计要点
