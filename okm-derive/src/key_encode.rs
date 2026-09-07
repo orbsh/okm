@@ -55,33 +55,21 @@ pub fn derive(input: TokenStream) -> TokenStream {
     let decs: Vec<_> = fs.iter().map(|f| &f.dec).collect();
     let widths: Vec<_> = fs.iter().map(|f| &f.width).collect();
 
-    // encode_prefix_named: slice-pattern match — one arm per declared-order
-    // prefix. Pattern match = validation (failure falls into the `_` arm);
-    // each arm's width is a generated constant sum.
-    let mut prefix_arms = quote! {};
-    for i in 0..fs.len() {
-        let pat: Vec<_> = name_strs[..=i].iter().map(|s| quote! { #s }).collect();
-        let encs: Vec<_> = fs[..=i].iter().map(|f| &f.enc).collect();
-        let width_sum: Vec<_> = widths[..=i].to_vec();
-        prefix_arms.extend(quote! {
-            &[ #(#pat),* ] => {
-                #(#encs)*
-                0 #(+ #width_sum)*
-            }
-        });
-    }
-    prefix_arms.extend(quote! { _ => panic!("invalid prefix: {names:?}") });
-
-    // prefix_width: same arm structure, constant width only.
+    // encode_prefix_named / prefix_width: per-name lookup instead of
+    // declaration-order-prefix arms. Index key(...) truncation may skip
+    // fields (keep only the unique tail), so arbitrary named subsets must
+    // work, encoded in request order. All key fields are fixed-width, so
+    // prefix_width returns a plain usize.
+    // 逐名匹配 arm：循环 extend 到单一 TokenStream，再单次插值
+    // （嵌套 #(#vec)* 在此 quote 上下文会展开失败，探针已验证单次插值正常）。
+    let mut enc_arms = quote! {};
     let mut width_arms = quote! {};
-    for i in 0..fs.len() {
-        let pat: Vec<_> = name_strs[..=i].iter().map(|s| quote! { #s }).collect();
-        let width_sum: Vec<_> = widths[..=i].to_vec();
-        width_arms.extend(quote! {
-            &[ #(#pat),* ] => 0 #(+ #width_sum)*,
-        });
+    for (f, name_lit) in fs.iter().zip(name_strs.iter()) {
+        let enc = &f.enc;
+        let w = &f.width;
+        enc_arms.extend(quote! { #name_lit => { #enc } });
+        width_arms.extend(quote! { #name_lit => { #w } });
     }
-    width_arms.extend(quote! { _ => panic!("invalid prefix: {names:?}") });
 
     quote! {
         impl ::okm::KeyEncode for #name {
@@ -99,15 +87,28 @@ pub fn derive(input: TokenStream) -> TokenStream {
                 Self { #(#names),* }
             }
             const FIELDS: &'static [::okm::FieldDesc] = #desc;
+            /// Encode the requested named subset (request order) into
+            /// `buf`; returns bytes written. Unknown names panic.
             fn encode_prefix_named(&self, buf: &mut Vec<u8>, names: &[&str]) -> usize {
-                match names {
-                    #prefix_arms
+                let before = buf.len();
+                for n in names {
+                    match *n {
+                        #enc_arms
+                        _ => panic!("invalid prefix name: {n}"),
+                    }
                 }
+                buf.len() - before
             }
+            /// Constant width of the requested named subset. Unknown names panic.
             fn prefix_width(names: &[&str]) -> usize {
-                match names {
-                    #width_arms
+                let mut sum = 0usize;
+                for n in names {
+                    sum += match *n {
+                        #width_arms
+                        _ => panic!("invalid prefix name: {n}"),
+                    };
                 }
+                sum
             }
         }
 

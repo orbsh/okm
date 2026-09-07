@@ -65,7 +65,7 @@ pub struct RKey {
 
 #[derive(RowEncode, Clone, PartialEq, Debug)]
 #[kv_ref(RKey)]
-#[kv_index(by_newest { fields(org, ts_rev) })]
+#[kv_index(by_newest { fields(ts_rev), key(org) })]
 pub struct RRow {
     pub score: u16,
     pub ts_rev: Reverse<u64>,

@@ -30,12 +30,13 @@ use syn::{parse_macro_input, Data, DeriveInput, Fields};
 
 /// One parsed `#[kv_index(...)]` declaration. The attribute body uses
 /// struct-ish syntax that `syn::Meta` does not cover, so it is parsed at
-/// the token-stream level: `Ident` + brace group, with `(fields|includes)`
-/// paren groups inside, comma-separated across multiple indexes.
+/// the token-stream level: `Ident` + brace group, with `(fields|includes|
+/// key)` paren groups inside, comma-separated across multiple indexes.
 struct IdxDecl {
     ident: syn::Ident,
     fields: Vec<String>,
     includes: Vec<String>,
+    key: Vec<String>,
 }
 
 fn parse_index_attr(attr: &syn::Attribute) -> Vec<IdxDecl> {
@@ -83,12 +84,13 @@ fn parse_index_attr(attr: &syn::Attribute) -> Vec<IdxDecl> {
         // comma-separated.
         let mut fields = Vec::new();
         let mut includes = Vec::new();
+        let mut key = Vec::new();
         let toks: Vec<TokenTree> = body.into_iter().collect();
         let mut j = 0usize;
         while j < toks.len() {
             let kw = match &toks[j] {
                 TokenTree::Ident(id) => id.to_string(),
-                t => panic!("kv_index[{ident}]: expected fields/includes, got {t}"),
+                t => panic!("kv_index[{ident}]: expected fields/includes/key, got {t}"),
             };
             let list: Vec<String> = match toks.get(j + 1) {
                 Some(TokenTree::Group(g)) if g.delimiter() == Delimiter::Parenthesis => g
@@ -105,8 +107,9 @@ fn parse_index_attr(attr: &syn::Attribute) -> Vec<IdxDecl> {
             match kw.as_str() {
                 "fields" => fields = list,
                 "includes" => includes = list,
+                "key" => key = list,
                 other => {
-                    panic!("kv_index[{ident}]: unknown key {other} (supported: fields/includes)")
+                    panic!("kv_index[{ident}]: unknown key {other} (supported: fields/includes/key)")
                 }
             }
             j += 2;
@@ -118,10 +121,14 @@ fn parse_index_attr(attr: &syn::Attribute) -> Vec<IdxDecl> {
         if fields.is_empty() {
             panic!("kv_index[{ident}]: fields must not be empty");
         }
+        // key(...) prefix validation happens at encode time (the generated
+        // encode_prefix_named match panics on non-prefix names), same
+        // discipline as the edge macro's kv_head.
         out.push(IdxDecl {
             ident,
             fields,
             includes,
+            key,
         });
     }
     out
@@ -315,6 +322,19 @@ pub fn derive(input: TokenStream) -> TokenStream {
     let names: Vec<_> = fs.iter().map(|f| &f.ident).collect();
     let name_strs: Vec<_> = fs.iter().map(|f| f.ident.to_string()).collect();
     let widths: Vec<_> = fs.iter().map(|f| &f.width).collect();
+
+    // One match arm per payload field name — each arm appends that field's
+    // raw encoding (no TLV frame; the index segment is a plain
+    // concatenation, order = the requested name order). Shared by all
+    // index declarations and the inherent __okm_encode_named walk.
+    let mut enc_arms = quote! {};
+    for (i, f) in fs.iter().enumerate() {
+        let fname = &name_strs[i];
+        let enc = &f.enc;
+        enc_arms.extend(quote! {
+            #fname => { #enc }
+        });
+    }
     let row_desc = field_desc_entries(&fs);
 
     // Row impl: encode_payload emits per-field TLV; decode_payload reads it
@@ -353,6 +373,17 @@ pub fn derive(input: TokenStream) -> TokenStream {
         .filter(|a| a.path().is_ident("kv_index"))
         .flat_map(parse_index_attr)
         .collect();
+
+    // Validate that every index field/includes name refers to a real row
+    // payload field (compile-time; the name list is right here).
+    for idx in &idx_decls {
+        for n in idx.fields.iter().chain(&idx.includes) {
+            if !name_strs.contains(n) {
+                panic!("kv_index[{}]: field `{n}` is not a row payload field", idx.ident);
+            }
+        }
+    }
+
     let mut index_out = quote! {};
     for (n, idx) in idx_decls.iter().enumerate() {
         let slot_lit = proc_macro2::Literal::u8_unsuffixed(n as u8 + 1);
@@ -360,30 +391,67 @@ pub fn derive(input: TokenStream) -> TokenStream {
         let struct_ident = format_ident!("__OkmIndex_{}_{}", row_name, iname);
         let fields: Vec<&String> = idx.fields.iter().collect();
         let includes: Vec<&String> = idx.includes.iter().collect();
+        let key_names: Vec<&String> = idx.key.iter().collect();
         let slot_doc = format!("{}", n + 1);
+        // For Reverse<T> payload fields the payload encoder reads
+        // `self.field`; __okm_encode_named is an inherent method with a
+        // real `self`, so the arm bodies work verbatim.
         index_out.extend(quote! {
-            #[doc = concat!("Access method `", stringify!(#iname), "` over `", stringify!(#key_ty), "` (slot ", #slot_doc, ", ADR-0005/0006).")]
+            #[doc = concat!("Access method `", stringify!(#iname), "` over `", stringify!(#row_name), "` (slot ", #slot_doc, ", ADR-0005/0006).")]
             #[allow(non_camel_case_types)]
             #[derive(Clone, Copy, Debug)]
             pub struct #struct_ident;
 
             impl ::okm::KvIndex for #struct_ident {
                 type Key = #key_ty;
+                type Row = #row_name;
                 const SLOT: u8 = #slot_lit;
                 const FIELDS: &'static [&'static str] = &[#(#fields),*];
                 const INCLUDES: &'static [&'static str] = &[#(#includes),*];
+                const KEY_PREFIX: &'static [&'static str] = &[#(#key_names),*];
+
+                fn encode_named(
+                    _key: &Self::Key,
+                    row: &Self::Row,
+                    names: &[&str],
+                    buf: &mut Vec<u8>,
+                ) {
+                    // The field encoders reference `self.#id` (shared with
+                    // the payload TLV loop), so the walk lives in an
+                    // inherent method with a real `self` receiver.
+                    <Self::Row>::__okm_encode_named(row, names, buf)
+                }
             }
         });
     }
 
-    // index_entries: statically expands one encode_entry call per declared
-    // #[kv_index] (slot order) — no runtime registry needed; the
-    // declaration is the registry.
+    // index_entries: statically expands one (entry_key, entry_value) pair
+    // per declared #[kv_index] (slot order) — no runtime registry needed;
+    // the declaration is the registry.
     let entry_calls = idx_decls.iter().map(|idx| {
         let struct_ident = format_ident!("__OkmIndex_{}_{}", row_name, idx.ident);
-        quote! { out.push(<#struct_ident as ::okm::KvIndex>::encode_entry(ns, key)); }
+        quote! {
+            out.push((
+                <#struct_ident as ::okm::KvIndex>::entry_key(ns, key, row),
+                <#struct_ident as ::okm::KvIndex>::entry_value(key, row),
+            ));
+        }
     });
     let row_impl = quote! {
+        impl #row_name {
+            /// Named-field walk over the payload encoders (each arm body
+            /// reads `self.<field>`); the access methods call this with the
+            /// requested name order. Used by index key/value encoding.
+            #[allow(unused_variables, unused_mut, dead_code)]
+            pub fn __okm_encode_named(&self, names: &[&str], buf: &mut Vec<u8>) {
+                for n in names {
+                    match *n {
+                        #enc_arms
+                        other => panic!("unknown field name: {other}"),
+                    }
+                }
+            }
+        }
         impl ::okm::Row for #row_name {
             type Key = #key_ty;
             const PAYLOAD_FIELDS: &'static [(&'static str, usize)] = &[ #((#name_strs, #widths)),* ];
@@ -398,7 +466,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
                 #tlv_dec
                 Self { #(#names),* }
             }
-            fn index_entries(key: &Self::Key, ns: u16) -> Vec<Vec<u8>> {
+            fn index_entries(key: &Self::Key, row: &Self, ns: u16) -> Vec<(Vec<u8>, Vec<u8>)> {
                 let mut out = Vec::new();
                 #(#entry_calls)*
                 out
