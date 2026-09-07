@@ -1,0 +1,7 @@
+error: proc-macro derive panicked
+ --> tests/compilefail/string_on_key.rs:3:10
+  |
+3 | #[derive(KeyEncode)]
+  |          ^^^^^^^^^
+  |
+  = help: message: KeyEncode: String on key field name — the key encoding is fixed-width (pure pointer slicing); use [u8; N] or a hash
