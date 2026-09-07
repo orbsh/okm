@@ -38,6 +38,21 @@ Design decisions live in `docs/adr/`. This plan tracks implementation status.
 - [ ] Variable-length field support follows the secondary-index regime
       (text-first, ID at tail).
 
+### Header unification trigger (edge direction bit)
+
+Current state: edge headers are 2B (direction bit niched into the ns field,
+ADR-0001) while index headers are 3B (`[ns 2B][slot 1B]`). Merging dir into a
+shared `[ns 2B full 16-bit][flags 1B]` header is deliberately NOT done now:
+edges are the most numerous keys and the niche bit is free (ns is declared
+u16, effectively 32768 = structurally inexhaustible), so unification would
+cost every edge key 1 byte to buy unused ns capacity.
+
+Trigger: when the edge side needs a second discriminator of its own (edge
+grouping, edge versioning, …), the edge header grows to 3B anyway — at that
+point unify all key types into `[ns 2B][flags 1B]` (dir at bit0, ns restored
+to full 16 bits). The trigger is "edge needs a new discriminator", never
+"ns capacity pressure".
+
 ## Phase 4 — Packaging
 
 - [ ] Publish to crates.io (`okm`, `okm-derive`).

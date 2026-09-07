@@ -88,24 +88,36 @@ pub fn derive_key_encode(input: TokenStream) -> TokenStream {
     let decs: Vec<_> = fs.iter().map(|f| &f.dec).collect();
     let widths: Vec<_> = fs.iter().map(|f| &f.width).collect();
 
-    // encode_prefix_named：按声明序逐字段。构造时从最后一个字段向外包，
-    // 使外层 = 字段 0（先写）；n = 前缀字段数，`i < n` 即该字段属于前缀
-    let mut prefix_chain = quote! {};
-    for f in fs.iter().rev() {
-        let fenc = &f.enc;
-        prefix_chain = quote! {
-            if 0usize < n {
-                #fenc
-                n -= 1;
-                #prefix_chain
+    // encode_prefix_named：切片模式 match —— 每个「声明序前缀组合」一个臂。
+    // pattern 匹配即校验（失败落 _ 臂 panic），各臂宽度是生成期写死的常量和。
+    let mut prefix_arms = quote! {};
+    for (i, _) in fs.iter().enumerate() {
+        // 本臂的 pattern：names 恰好等于前 i+1 个字段名（&str 字面量切片模式）
+        let pat: Vec<_> = name_strs[..=i]
+            .iter()
+            .map(|s| quote! { #s })
+            .collect();
+        let encs: Vec<_> = fs[..=i].iter().map(|f| &f.enc).collect();
+        let width_sum: Vec<_> = widths[..=i].to_vec();
+        prefix_arms.extend(quote! {
+            &[ #(#pat),* ] => {
+                #(#encs)*
+                0 #(+ #width_sum)*
             }
-        };
+        });
     }
-    // 更直接：运行期把 names 逐个映射到声明序 index，非递增/越界即 panic
-    let mut match_arms = quote! {};
-    for (i, s) in name_strs.iter().enumerate() {
-        match_arms.extend(quote! { #s => #i, });
+    prefix_arms.extend(quote! { _ => panic!("invalid prefix: {names:?}") });
+
+    // prefix_width：与 encode_prefix_named 相同的臂结构，只返回常量宽度
+    let mut width_arms = quote! {};
+    for (i, _) in fs.iter().enumerate() {
+        let pat: Vec<_> = name_strs[..=i].iter().map(|s| quote! { #s }).collect();
+        let width_sum: Vec<_> = widths[..=i].to_vec();
+        width_arms.extend(quote! {
+            &[ #(#pat),* ] => 0 #(+ #width_sum)*,
+        });
     }
+    width_arms.extend(quote! { _ => panic!("invalid prefix: {names:?}") });
 
     quote! {
         impl ::okm::KeyEncode for #name {
@@ -123,33 +135,18 @@ pub fn derive_key_encode(input: TokenStream) -> TokenStream {
                 Self { #(#names),* }
             }
             fn encode_prefix_named(&self, buf: &mut Vec<u8>, names: &[&str]) -> usize {
-                let mut n = Self::prefix_width_idx(names);
-                #prefix_chain
-                Self::prefix_width(names)
+                match names {
+                    #prefix_arms
+                }
             }
             fn prefix_width(names: &[&str]) -> usize {
-                Self::prefix_width_idx(names)
+                match names {
+                    #width_arms
+                }
             }
         }
 
         impl #name {
-            /// names（声明序前缀的字段名列表）→ 前缀字段数 n + 宽度校验
-            fn prefix_width_idx(names: &[&str]) -> usize {
-                let mut total = 0usize;
-                for (i, nm) in names.iter().enumerate() {
-                    let idx = match *nm {
-                        #match_arms
-                        _ => panic!(concat!("", stringify!(#name), " 无字段 {}"), nm),
-                    };
-                    assert_eq!(idx, i, concat!(stringify!(#name), ": kv_head 必须是声明序前缀"));
-                    total += <#name as ::okm::KeyEncode>::FIELD_WIDTHS[idx].1;
-                }
-                total
-            }
-            /// 前缀宽度（字节数），n 为声明序前 N 个字段
-            pub fn head_width_n(n: usize) -> usize {
-                <#name as ::okm::KeyEncode>::FIELD_WIDTHS.iter().take(n).map(|(_, w)| *w).sum()
-            }
             /// 按声明序前 n 个字段编码（数字版，前缀扫描常用）
             pub fn encode_prefix_n(&self, buf: &mut Vec<u8>, n: usize) {
                 let mut done = 0usize;
