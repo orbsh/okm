@@ -75,7 +75,7 @@ impl_rev_signed!(i64, u64, 8);
 /// Newtype the derive macros recognize in field position (`Reverse<u64>`).
 /// Field declarations stay plain `T`; the wrapper is applied at encode time
 /// and removed at decode time, so user code keeps working with raw values.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub struct Reverse<T: Reversible>(pub T);
 
 impl<T: Reversible> Reverse<T> {

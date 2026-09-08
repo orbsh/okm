@@ -152,28 +152,36 @@ fn build_batch<K: KeyEncode, R: Row<Key = K>>(
         }
         columns.push(col);
     }
-    // Payload half: walk each row's TLV frames in declaration order and
-    // take the value bytes of the matching field (skipping tag + len).
-    // Fixed-width fields sit at a computable static offset; `Str` fields
-    // must be walked frame-by-frame because every preceding variable-length
-    // field shifts the offset.
-    let has_var = proj
+    // Payload half: two-segment layout behind the 3-byte header — hot
+    // segment is fixed-width at static offsets; cold segment is TLV walked
+    // frame-by-frame (each preceding variable-length frame shifts it).
+    let hot_width = <R as Row>::HOT_WIDTH;
+    let header = 3usize; // version u8 + hot_len u16
+    let cold_fields: Vec<(usize, &FieldDesc)> = proj
         .row_fields
         .iter()
-        .any(|f| matches!(f.ty, FieldType::Str | FieldType::VarInt));
+        .enumerate()
+        .filter(|(_, f)| f.width == 0)
+        .collect();
     for (fi, f) in proj.row_fields.iter().enumerate() {
         let mut col: Vec<Vec<u8>> = Vec::with_capacity(n);
         for (_, v) in rows {
-            if has_var {
-                let val = tlv_value(v, proj.row_fields, fi);
+            if f.width > 0 {
+                // Hot: header + sum of prior hot field widths.
+                let off = header
+                    + proj.row_fields[..fi]
+                        .iter()
+                        .filter(|g| g.width > 0)
+                        .map(|g| g.width)
+                        .sum::<usize>();
+                col.push(logical_value(&v[off..off + f.width], f.ty));
+            } else {
+                let val = tlv_value(&v[header + hot_width..], &cold_fields, fi);
                 if f.ty == FieldType::Str {
                     col.push(val.to_vec());
                 } else {
                     col.push(logical_value(val, f.ty));
                 }
-            } else {
-                let off = tlv_value_offset(proj.row_fields, fi);
-                col.push(logical_value(&v[off..off + f.width], f.ty));
             }
         }
         columns.push(col);
@@ -248,34 +256,28 @@ fn build_batch<K: KeyEncode, R: Row<Key = K>>(
     RecordBatch::try_new(Arc::new(proj.schema.clone()), arrays).expect("batch construction")
 }
 
-/// Byte offset of field `fi`'s value inside a TLV payload: walk frames
-/// 0..fi (tag u8 + len u32 + value), summing their strides. Declared field
-/// order == TLV emit order, so strides align with the wire format.
-///
-/// Only valid when no field before `fi` is variable-length — with `Str`
-/// fields present, use [`tlv_value`] instead (dynamic walk).
-fn tlv_value_offset(fields: &[FieldDesc], fi: usize) -> usize {
-    // prior frames (tag+len+value) plus this frame's own tag+len header
-    5 + fields[..fi].iter().map(|f| 5 + f.width).sum::<usize>()
-}
-
-/// Value slice of field `fi` inside a TLV payload, walked frame-by-frame.
-/// Handles variable-length (`Str`) frames whose stride is the frame's own
-/// `len`. Returns the value region only (tag + len skipped).
-fn tlv_value<'a>(payload: &'a [u8], fields: &[FieldDesc], fi: usize) -> &'a [u8] {
+/// Value slice of cold field `fi` (declaration index) inside the cold TLV
+/// region, walked frame-by-frame. `cold_fields` lists the declaration
+/// indices of the width-0 fields in order; a frame's tag IS that
+/// declaration index. Returns the value region only (tag + len skipped).
+fn tlv_value<'a>(
+    cold: &'a [u8],
+    cold_fields: &[(usize, &FieldDesc)],
+    fi: usize,
+) -> &'a [u8] {
     let mut off = 0usize;
-    for (i, f) in fields.iter().enumerate() {
-        let len = u32::from_be_bytes(payload[off + 1..off + 5].try_into().unwrap()) as usize;
+    for (decl, f) in cold_fields {
+        let len = u32::from_be_bytes(cold[off + 1..off + 5].try_into().unwrap()) as usize;
         let val = off + 5;
-        if i == fi {
+        if *decl == fi {
             debug_assert!(
                 matches!(f.ty, FieldType::Str | FieldType::VarInt) || len == f.width
             );
-            return &payload[val..val + len];
+            return &cold[val..val + len];
         }
         off = val + len;
     }
-    unreachable!("field index out of TLV frame range: {fi}");
+    unreachable!("field index out of cold TLV frame range: {fi}");
 }
 
 /// Copy `width` bytes at `off` of a big-endian region into the value bytes

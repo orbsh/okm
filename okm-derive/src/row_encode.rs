@@ -137,6 +137,10 @@ fn parse_index_attr(attr: &syn::Attribute) -> Vec<IdxDecl> {
 /// Payload-side field encoder triple: u8/u16/u32/u64 BE and `[u8; N]`.
 /// `String` is the variable-length kind (TLV `len` is the prefix);
 /// `Reverse<T>` applies the descending-order bit-flip of `T`.
+///
+/// `dec_val` is a BLOCK EXPRESSION that reads the field's value from
+/// `b[offset..]`, advances `offset` past it, and yields the value — the
+/// uniform shape decode needs for the default-filling `if` branches.
 struct FieldEnc {
     ident: syn::Ident,
     enc: TS2,
@@ -147,6 +151,15 @@ struct FieldEnc {
     len_expr: TS2,
     /// `okm::FieldType` variant path, for the FieldDesc table (None = unsupported).
     kind: Option<TS2>,
+    /// Hot/cold split: `true` = fixed-width hot segment (contiguous region
+    /// after the row header, O(1) offsets); `false` = variable-width cold
+    /// segment (TLV frames, tag = declaration index). Width 0 == cold.
+    hot: bool,
+    /// Expression producing the field's default value — used when a
+    /// payload written by an older layout version lacks this field
+    /// (append-only evolution fills the tail with defaults). From
+    /// `#[kv_default(expr)]`, else `<T as Default>::default()`.
+    default_expr: TS2,
 }
 
 /// Encoded width of a plain primitive type name (for `Reverse<T>` fields —
@@ -179,6 +192,25 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> Vec<FieldEnc> {
         let id = f.ident.clone().unwrap();
         let ty = &f.ty;
         let ty_str = quote!(#ty).to_string().replace(' ', "");
+        // #[kv_default(expr)] or #[kv_default = expr] — value used when an
+        // older-layout payload lacks this field (append-only schema
+        // evolution). Optional; fallback is `<T as Default>::default()`.
+        let kv_default: Option<TS2> = f
+            .attrs
+            .iter()
+            .find(|a| a.path().is_ident("kv_default"))
+            .map(|a| {
+                let mut e = None;
+                let _ = a.parse_nested_meta(|meta| {
+                    if meta.path.is_ident("expr") {
+                        e = Some(meta.value()?.parse::<syn::Expr>()?);
+                    }
+                    Ok(())
+                });
+                e.map(|x| quote! { #x })
+                    .or_else(|| a.parse_args::<syn::Expr>().ok().map(|x| quote! { #x }))
+                    .expect("kv_default: expected `#[kv_default(expr)]` or `#[kv_default = expr]`")
+            });
         // #[kv_offset(base = <i64 literal>)] — the Offset wrapper's static
         // base, required exactly when the type is Offset-shaped.
         let offset_base: Option<i64> = f
@@ -199,28 +231,28 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> Vec<FieldEnc> {
         let (enc, dec, width, len_expr, kind) = match ty_str.as_str() {
             "u64" => (
                 quote! { buf.extend_from_slice(&self.#id.to_be_bytes()); },
-                quote! { let #id = u64::from_be_bytes(b[offset..offset+8].try_into().unwrap()); offset += 8; },
+                quote! {{ let v = u64::from_be_bytes(b[offset..offset+8].try_into().unwrap()); offset += 8; v }},
                 quote! { 8 },
                 quote! { 8 },
                 Some(quote! { ::okm::FieldType::U64 }),
             ),
             "u32" => (
                 quote! { buf.extend_from_slice(&self.#id.to_be_bytes()); },
-                quote! { let #id = u32::from_be_bytes(b[offset..offset+4].try_into().unwrap()); offset += 4; },
+                quote! {{ let v = u32::from_be_bytes(b[offset..offset+4].try_into().unwrap()); offset += 4; v }},
                 quote! { 4 },
                 quote! { 4 },
                 Some(quote! { ::okm::FieldType::U32 }),
             ),
             "u16" => (
                 quote! { buf.extend_from_slice(&self.#id.to_be_bytes()); },
-                quote! { let #id = u16::from_be_bytes(b[offset..offset+2].try_into().unwrap()); offset += 2; },
+                quote! {{ let v = u16::from_be_bytes(b[offset..offset+2].try_into().unwrap()); offset += 2; v }},
                 quote! { 2 },
                 quote! { 2 },
                 Some(quote! { ::okm::FieldType::U16 }),
             ),
             "u8" => (
                 quote! { buf.push(self.#id); },
-                quote! { let #id = b[offset]; offset += 1; },
+                quote! {{ let v = b[offset]; offset += 1; v }},
                 quote! { 1 },
                 quote! { 1 },
                 Some(quote! { ::okm::FieldType::U8 }),
@@ -234,11 +266,12 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> Vec<FieldEnc> {
                 let nlit = proc_macro2::Literal::usize_unsuffixed(n);
                 (
                     quote! { buf.extend_from_slice(&self.#id); },
-                    quote! {
-                        let mut #id = [0u8; #nlit];
-                        #id.copy_from_slice(&b[offset..offset+#nlit]);
+                    quote! {{
+                        let mut v = [0u8; #nlit];
+                        v.copy_from_slice(&b[offset..offset+#nlit]);
                         offset += #nlit;
-                    },
+                        v
+                    }},
                     quote! { #nlit },
                     quote! { #nlit },
                     Some(quote! { ::okm::FieldType::FixedBytes }),
@@ -260,7 +293,7 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> Vec<FieldEnc> {
                 let kind = inner_kind(&inner);
                 (
                     quote! { buf.extend_from_slice(&self.#id.encode()); },
-                    quote! { let #id = ::okm::Reverse(#inner_ty::rev_decode(&b[offset..offset+#w])); offset += #w; },
+                    quote! {{ let v = ::okm::Reverse(#inner_ty::rev_decode(&b[offset..offset+#w])); offset += #w; v }},
                     quote! { #w },
                     quote! { #w },
                     Some(kind),
@@ -281,13 +314,12 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> Vec<FieldEnc> {
                 let inner_ty: syn::Type = syn::parse_str(&inner)
                     .unwrap_or_else(|_| panic!("{ctx}: bad VarInt inner type {inner}"));
                 (
-                    // Field value is the VarInt<T> newtype; encode reads .0.
                     quote! { buf.extend_from_slice(&self.#id.encode()); },
-                    quote! {
-                        let (#id, n) = <#inner_ty as ::okm::VarIntEnc>::varint_decode(&b[offset..]);
+                    quote! {{
+                        let (raw, n) = <#inner_ty as ::okm::VarIntEnc>::varint_decode(&b[offset..]);
                         offset += n;
-                        let #id = ::okm::VarInt(#id);
-                    },
+                        ::okm::VarInt(raw)
+                    }},
                     quote! { 0 },
                     // Variable-length frame: len = actual byte length.
                     quote! { self.#id.encode().len() },
@@ -317,10 +349,11 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> Vec<FieldEnc> {
                 let plit = proc_macro2::Literal::u32_unsuffixed(p);
                 (
                     quote! { buf.extend_from_slice(&self.#id.encode()); },
-                    quote! {
-                        let #id = ::okm::Quant::<#p>::decode(&b[offset..offset+8]);
+                    quote! {{
+                        let v = ::okm::Quant::<#p>::decode(&b[offset..offset+8]);
                         offset += 8;
-                    },
+                        v
+                    }},
                     quote! { 8 },
                     quote! { 8 },
                     Some(quote! { ::okm::FieldType::Quant(#plit) }),
@@ -337,10 +370,11 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> Vec<FieldEnc> {
                     .unwrap_or_else(|_| panic!("{ctx}: bad Enum inner type {inner}"));
                 (
                     quote! { buf.extend_from_slice(&self.#id.encode()); },
-                    quote! {
-                        let #id = ::okm::Enum::<#inner_ty>::decode(&b[offset..offset+1]);
+                    quote! {{
+                        let v = ::okm::Enum::<#inner_ty>::decode(&b[offset..offset+1]);
                         offset += 1;
-                    },
+                        v
+                    }},
                     quote! { 1 },
                     quote! { 1 },
                     Some(quote! { ::okm::FieldType::Enum }),
@@ -360,7 +394,7 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> Vec<FieldEnc> {
                     // Field value is the Offset newtype; the wire is the
                     // u32 displacement. .0 is the absolute i64 value.
                     quote! { buf.extend_from_slice(&::okm::offset_encode(self.#id.0, #blit)); },
-                    quote! { let #id = ::okm::Offset(::okm::offset_decode(&b[offset..offset+4], #blit)); offset += 4; },
+                    quote! {{ let v = ::okm::Offset(::okm::offset_decode(&b[offset..offset+4], #blit)); offset += 4; v }},
                     quote! { 4 },
                     quote! { 4 },
                     Some(quote! { ::okm::FieldType::Offset(#blit) }),
@@ -373,11 +407,12 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> Vec<FieldEnc> {
                 // write/read the raw UTF-8 bytes.
                 (
                     quote! { buf.extend_from_slice(self.#id.as_bytes()); },
-                    quote! {
-                        let #id = String::from_utf8(b[offset..offset+len].to_vec())
+                    quote! {{
+                        let v = String::from_utf8(b[offset..offset+len].to_vec())
                             .expect("TLV String field is valid UTF-8");
                         offset += len;
-                    },
+                        v
+                    }},
                     // FieldDesc width is a static concept; the dynamic length
                     // lives in the frame. 0 marks variable length.
                     quote! { 0 },
@@ -392,9 +427,13 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> Vec<FieldEnc> {
             ident: id,
             enc,
             dec,
-            width,
+            width: width.clone(),
             len_expr,
             kind,
+            // Fixed width → hot segment; width 0 (Str/VarInt) → cold.
+            hot: width.to_string() != "0",
+            default_expr: kv_default
+                .unwrap_or_else(|| quote! { <#ty as ::core::default::Default>::default() }),
         });
     }
     fs
@@ -454,33 +493,143 @@ pub fn derive(input: TokenStream) -> TokenStream {
     }
     let row_desc = field_desc_entries(&fs);
 
-    // Row impl: encode_payload emits per-field TLV; decode_payload reads it
-    // back field by field.
-    let mut tlv_out = quote! {};
-    for (i, f) in fs.iter().enumerate() {
-        let tag = proc_macro2::Literal::u8_unsuffixed(i as u8);
+    // #[kv_layout(version = N)] — row header layout version. Absent = 1.
+    // Bumping it is the signal that the hot/cold field set changed; decode
+    // accepts payloads written by any *older* version (append-only rule:
+    // new fields go to the tail of their segment, missing ones get their
+    // declared default) and rejects anything newer.
+    let layout_version: u8 = input
+        .attrs
+        .iter()
+        .find(|a| a.path().is_ident("kv_layout"))
+        .map(|a| {
+            let mut v = None;
+            let _ = a.parse_nested_meta(|meta| {
+                if meta.path.is_ident("version") {
+                    let lit: syn::LitInt = meta.value()?.parse()?;
+                    v = Some(lit.base10_parse::<u8>().expect("kv_layout: version must be a u8 literal"));
+                }
+                Ok(())
+            });
+            v.expect("kv_layout: expected `version = <u8 literal>`")
+        })
+        .unwrap_or(1);
+    let ver_lit = proc_macro2::Literal::u8_unsuffixed(layout_version);
+    let ver_str = layout_version.to_string();
+
+    // Segment split. Hot = fixed-width fields (contiguous, O(1) offsets);
+    // cold = variable-width fields (TLV frames, tag = declaration index
+    // over ALL fields so tags stay stable across the hot/cold split).
+    let hot_fields: Vec<&FieldEnc> = fs.iter().filter(|f| f.hot).collect();
+    let cold_fields: Vec<&FieldEnc> = fs.iter().filter(|f| !f.hot).collect();
+    // Hot width as a numeric literal — widths are fixed `quote!{ N }`
+    // tokens, so parsing the token text is exact for every supported kind.
+    let hot_width_total: usize = hot_fields
+        .iter()
+        .map(|f| f.width.to_string().parse::<usize>().unwrap_or(0))
+        .sum();
+    let hot_width_lit = proc_macro2::Literal::usize_unsuffixed(hot_width_total);
+
+    // ---- encode: [version u8][hot_len u16 BE][hot segment][cold TLV] ----
+    let mut hot_enc = quote! {};
+    for f in &hot_fields {
+        let enc = &f.enc;
+        hot_enc.extend(quote! { #enc });
+    }
+    let mut cold_enc = quote! {};
+    for f in &cold_fields {
+        let tag = proc_macro2::Literal::u8_unsuffixed(
+            fs.iter().position(|x| std::ptr::eq(x, *f)).unwrap() as u8,
+        );
         let len = &f.len_expr;
         let enc = &f.enc;
-        tlv_out.extend(quote! {
+        cold_enc.extend(quote! {
             buf.push(#tag);
             buf.extend_from_slice(&(#len as u32).to_be_bytes());
             #enc
         });
     }
-    let mut tlv_dec = quote! {};
-    for (i, f) in fs.iter().enumerate() {
-        let tag = proc_macro2::Literal::u8_unsuffixed(i as u8);
+    let encode_body = if hot_fields.is_empty() && cold_fields.is_empty() {
+        // Degenerate: header still present, hot_len 0, cold empty.
+        quote! {
+            buf.push(#ver_lit);
+            buf.extend_from_slice(&0u16.to_be_bytes());
+        }
+    } else {
+        quote! {
+            buf.push(#ver_lit);
+            buf.extend_from_slice(&0u16.to_be_bytes()); // hot_len placeholder
+            let hot_start = buf.len();
+            #hot_enc
+            let hot_len = (buf.len() - hot_start) as u16;
+            buf[1..3].copy_from_slice(&hot_len.to_be_bytes());
+            #cold_enc
+        }
+    };
+
+    // ---- decode: version check, hot walk, cold TLV walk, defaults ----
+    // Each field becomes `let <name> = if <present> { <dec_val> } else {
+    // <default> };` — dec blocks read from b[offset..], advance offset, and
+    // yield the value.
+    let mut hot_dec = quote! {};
+    for f in &hot_fields {
         let id = &f.ident;
         let dec = &f.dec;
-        tlv_dec.extend(quote! {
-            debug_assert_eq!(b[offset], #tag, "TLV tag mismatch at field {}", stringify!(#id));
-            offset += 1;
-            let len = u32::from_be_bytes(b[offset..offset+4].try_into().unwrap()) as usize;
-            offset += 4;
-            let _ = len;
-            #dec
+        let dflt = &f.default_expr;
+        let w = &f.width;
+        hot_dec.extend(quote! {
+            let #id = if offset + #w < hot_end + 1 {
+                #dec
+            } else {
+                // Truncated tail: field appended after this payload's
+                // hot segment was written → declared default.
+                #dflt
+            };
         });
     }
+    let mut cold_dec = quote! {};
+    for f in &cold_fields {
+        let tag = proc_macro2::Literal::u8_unsuffixed(
+            fs.iter().position(|x| std::ptr::eq(x, *f)).unwrap() as u8,
+        );
+        let id = &f.ident;
+        let dec = &f.dec;
+        let dflt = &f.default_expr;
+        cold_dec.extend(quote! {
+            let #id = if cold_pos < cold_end && b[cold_pos] == #tag {
+                cold_pos += 1;
+                let len = u32::from_be_bytes(b[cold_pos..cold_pos+4].try_into().unwrap()) as usize;
+                cold_pos += 4;
+                // dec blocks advance `offset`; alias it to the cold cursor
+                // for the duration of the frame, then write the position
+                // back (String/VarInt decs move it past the value).
+                offset = cold_pos;
+                let v = #dec;
+                cold_pos = offset;
+                v
+            } else {
+                #dflt
+            };
+        });
+    }
+    let decode_body = quote! {
+        let mut offset = 0usize;
+        let ver = b[0];
+        assert!(
+            ver <= #ver_lit,
+            concat!("payload layout version ", "{:03}", " is newer than this schema's ", #ver_str),
+            ver
+        );
+        let hot_len = u16::from_be_bytes(b[1..3].try_into().unwrap()) as usize;
+        offset = 3;
+        let hot_end = offset + hot_len;
+        #hot_dec
+        offset = hot_end;
+        let cold_end = b.len();
+        let mut cold_pos = offset;
+        #cold_dec
+        let _ = cold_pos;
+    };
 
     // #[kv_index(...)]: slots start at 1 (0 is the primary table) and
     // increment in attribute-declaration order.
@@ -571,16 +720,17 @@ pub fn derive(input: TokenStream) -> TokenStream {
         }
         impl ::okm::Row for #row_name {
             type Key = #key_ty;
+            const LAYOUT_VERSION: u8 = #ver_lit;
             const PAYLOAD_FIELDS: &'static [(&'static str, usize)] = &[ #((#name_strs, #widths)),* ];
             const FIELDS: &'static [::okm::FieldDesc] = #row_desc;
+            const HOT_WIDTH: usize = #hot_width_lit;
             fn encode_payload(&self) -> Vec<u8> {
                 let mut buf = Vec::new();
-                #tlv_out
+                #encode_body
                 buf
             }
             fn decode_payload(b: &[u8]) -> Self {
-                let mut offset = 0usize;
-                #tlv_dec
+                #decode_body
                 Self { #(#names),* }
             }
             fn index_entries(key: &Self::Key, row: &Self, ns: u16) -> Vec<(Vec<u8>, Vec<u8>)> {
