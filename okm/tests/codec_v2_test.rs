@@ -38,12 +38,16 @@ fn string_tlv_round_trip_through_payload() {
     let back = SRow::decode_payload(&p);
     assert_eq!(back, row);
 
-    // Wire shape: the TLV frame's len IS the length prefix (no second one).
-    // score frame (5 hdr + 4) then name frame header at offset 9.
-    assert_eq!(p[9], 1, "field tag 1 (name)");
-    let name_len = u32::from_be_bytes(p[10..14].try_into().unwrap()) as usize;
+    // Wire shape: [ver u8][hot_len u16 BE][hot segment][cold TLV]. Hot =
+    // score (u32 @3..7) then flag (u8 @7..8) in declaration order →
+    // hot_len = 5; the name TLV frame header starts at 8.
+    assert_eq!(p[0], 1, "layout version 1");
+    assert_eq!(&p[1..3], &[0u8, 5], "hot segment = 5 bytes (u32 score + u8 flag)");
+    assert_eq!(p[7], 0xA5, "flag hot byte");
+    assert_eq!(p[8], 1, "field tag 1 (name)");
+    let name_len = u32::from_be_bytes(p[9..13].try_into().unwrap()) as usize;
     assert_eq!(name_len, 5, "len = byte length of the value");
-    assert_eq!(&p[14..19], b"alice");
+    assert_eq!(&p[13..18], b"alice");
 }
 
 #[test]
@@ -78,11 +82,12 @@ fn reverse_wire_encoding_is_bit_flipped_and_involutive() {
         ts_rev: Reverse(0x0102_0304_0506_0708u64),
     };
     let p = row.encode_payload();
-    // score frame: 5 hdr + 2 bytes → Reverse value starts at offset 12.
+    // [ver u8][hot_len u16 BE][score u16 BE @3..5][Reverse u64 @5..13].
     // Plain BE of the inner value would be 01 02 03 04 05 06 07 08; the
     // wrapped encoding is the full-width bitwise NOT.
+    assert_eq!(&p[1..3], &[0, 10], "hot segment = 10 bytes");
     assert_eq!(
-        &p[12..20],
+        &p[5..13],
         &[!0x01, !0x02, !0x03, !0x04, !0x05, !0x06, !0x07, !0x08]
     );
     let back = RRow::decode_payload(&p);
@@ -141,4 +146,110 @@ fn parquet_roundtrip_with_string_columns() {
         assert_eq!(&r.name, name);
         assert_eq!(r.note, format!("note-{i}"));
     }
+}
+
+// ================= Hex snapshot: wire format guard =================
+
+#[test]
+fn payload_wire_hex_snapshot() {
+    // Pins the exact byte layout: [ver u8][hot_len u16 BE][hot seg][cold TLV].
+    // Any change here is a wire break — bump LAYOUT_VERSION and update this.
+    let row = SRow {
+        score: 0x0102_0304,
+        name: "ab".into(),
+        note: String::new(),
+        flag: 0xFF,
+    };
+    let p = row.encode_payload();
+    // hot = score(4) + flag(1) → hot_len 5; cold = name frame (5+2), note frame (5+0).
+    let expect = [
+        1u8, 0, 5,             // version 1, hot_len 5
+        1, 2, 3, 4,            // score BE (hot)
+        0xFF,                  // flag (hot)
+        1, 0, 0, 0, 2, b'a', b'b',   // name frame: tag 1, len 2, value
+        2, 0, 0, 0, 0,               // note frame: tag 2, len 0
+    ]
+    .to_vec();
+    assert_eq!(p, expect, "wire format snapshot (hex: {})", p.iter().map(|b| format!("{b:02x}")).collect::<String>());
+    assert_eq!(SRow::decode_payload(&p), row);
+}
+
+// ================= Version compatibility =================
+
+#[derive(RowEncode, Clone, PartialEq, Debug)]
+#[kv_ref(SKey)]
+#[kv_layout(version = 2)]
+pub struct EvolvedRow {
+    pub score: u32,
+    pub name: String,
+    pub note: String,
+    pub flag: u8,
+    // Appended at the tail at v2: old payloads lack them → defaults.
+    pub visits: u32,
+    pub memo: String,
+}
+
+#[test]
+fn older_payload_decodes_with_appended_defaults() {
+    // A v1 SRow payload, decoded through the v2 schema (both are
+    // score/name/note/flag declarations — same prefix, same wire prefix).
+    let old = SRow {
+        score: 42,
+        name: "old".into(),
+        note: "n".into(),
+        flag: 7,
+    };
+    let p = old.encode_payload();
+
+    let evolved = EvolvedRow {
+        score: 42,
+        name: "old".into(),
+        note: "n".into(),
+        flag: 7,
+        visits: <u32 as Default>::default(), // no #[kv_default] → T::default()
+        memo: String::default(),
+    };
+    assert_eq!(EvolvedRow::decode_payload(&p), evolved);
+    // Header version is the OLD row's (1), which is <= schema's 2 → accepted.
+    assert_eq!(p[0], 1);
+    assert_eq!(<EvolvedRow as Row>::LAYOUT_VERSION, 2);
+}
+
+#[test]
+fn newer_payload_version_is_rejected() {
+    let row = SRow { score: 1, name: "x".into(), note: String::new(), flag: 0 };
+    let mut p = row.encode_payload();
+    p[0] = 99; // a future layout version
+    let err = std::panic::catch_unwind(|| SRow::decode_payload(&p));
+    assert!(err.is_err(), "payload from a newer layout must panic");
+}
+
+#[test]
+fn explicit_layout_version_constant() {
+    // #[kv_layout(version = 2)] feeds the Row trait constant.
+    assert_eq!(<SRow as Row>::LAYOUT_VERSION, 1);
+}
+
+#[derive(RowEncode, Clone, PartialEq, Debug)]
+#[kv_ref(SKey)]
+#[kv_layout(version = 3)]
+pub struct DefaultedRow {
+    pub score: u32,
+    pub name: String,
+    #[kv_default(77)]
+    pub flag: u8,
+}
+
+#[test]
+fn kv_default_expression_used_for_missing_tail_field() {
+    let row = DefaultedRow { score: 5, name: "x".into(), flag: 77 };
+    let p = row.encode_payload();
+    assert_eq!(p[0], 3, "explicit layout version 3");
+    // Simulate an older payload without flag: strip the hot tail byte AND
+    // fix the header hot_len (an older schema's header recorded 4, not 5).
+    let mut old: Vec<u8> = p[..3 + 4].to_vec();
+    old[1..3].copy_from_slice(&4u16.to_be_bytes());
+    let back = DefaultedRow::decode_payload(&old);
+    assert_eq!(back.flag, 77, "#[kv_default(77)] applied");
+    assert_eq!(back.score, 5);
 }

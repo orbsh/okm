@@ -50,9 +50,12 @@ fn describe_offset_math_matches_wire_format() {
         tag: [0xA0, 0xA1, 0xA2, 0xA3],
     };
     let p = row.encode_payload();
-    assert_eq!(&p[5..9], &[1, 2, 3, 4]); // reputation BE at offset 5
-    assert_eq!(&p[14..16], &[5, 6]); // level BE at 5 + (5+4)
-    assert_eq!(&p[21..25], &[0xA0, 0xA1, 0xA2, 0xA3]); // tag at 5 + (5+4) + (5+2)
+    // [ver u8][hot_len u16 BE][hot segment]. All TRow fields are fixed-width
+    // → no cold frames: reputation @3..7, level @7..9, tag @9..13.
+    assert_eq!(&p[1..3], &[0, 10], "hot_len = 4+2+4");
+    assert_eq!(&p[3..7], &[1, 2, 3, 4]); // reputation BE at offset 3
+    assert_eq!(&p[7..9], &[5, 6]); // level BE at 3 + 4
+    assert_eq!(&p[9..13], &[0xA0, 0xA1, 0xA2, 0xA3]); // tag at 3 + 4 + 2
 }
 
 // ================= Parquet round trip =================
