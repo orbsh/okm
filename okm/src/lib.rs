@@ -28,6 +28,7 @@
 pub use okm_derive::{EdgeEncode, KeyEncode, RowEncode};
 
 pub use reverse::{Reversible, Reverse};
+pub use wrappers::{Enum, EnumTag, Offset, Quant, VarInt, VarIntEnc, offset_decode, offset_encode};
 
 pub mod collection;
 pub mod edge;
@@ -37,6 +38,7 @@ pub mod index;
 pub mod key;
 pub mod reverse;
 pub mod table;
+pub mod wrappers;
 
 #[cfg(feature = "arrow")]
 pub mod arrow_bridge;

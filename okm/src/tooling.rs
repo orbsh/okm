@@ -84,7 +84,7 @@ pub fn describe<K: KeyEncode, R: Row<Key = K>>() -> String {
         out.push_str("  -- payload TLV (tag u8 + len u32 BE + value) --\n");
         let mut off = 0usize;
         for f in row_fields {
-            let width_note = if f.ty == FieldType::Str {
+            let width_note = if matches!(f.ty, FieldType::Str | FieldType::VarInt) {
                 "var".to_string()
             } else {
                 f.width.to_string()
@@ -98,7 +98,12 @@ pub fn describe<K: KeyEncode, R: Row<Key = K>>() -> String {
             ));
             // Str stride is dynamic (the frame's own len); show the static
             // part (5-byte header) so the column stays aligned.
-            off += 5 + if f.ty == FieldType::Str { 0 } else { f.width };
+            off += 5
+                + if matches!(f.ty, FieldType::Str | FieldType::VarInt) {
+                    0
+                } else {
+                    f.width
+                };
         }
         out.push_str(&format!("  payload total: {off}+ (variable-length frames add their value bytes)\n"));
     }
@@ -131,6 +136,10 @@ pub fn json_schema<K: KeyEncode, R: Row<Key = K>>() -> String {
             FieldType::U8 | FieldType::U16 | FieldType::U32 | FieldType::U64 => "integer",
             FieldType::FixedBytes => "string", // base64, matches Arrow BinaryArray
             FieldType::Str => "string",        // UTF-8, matches Arrow Utf8Array
+            FieldType::VarInt => "integer",    // logical: the decoded integer
+            FieldType::Quant(_) => "number",   // logical: dequantized f64
+            FieldType::Enum => "integer",      // the u8 tag
+            FieldType::Offset(_) => "integer", // logical: base + offset
         }
     }
 
@@ -197,6 +206,7 @@ pub mod parquet_io {
     /// the key encoding / TLV frames expect (reverses the export-side LE
     /// conversion).
     fn wire_bytes(col: &dyn Array, row: usize, width: usize, ty: FieldType) -> Vec<u8> {
+        use crate::wrappers::{VarIntEnc as _, quantize, wire_to_be_bytes};
         match ty {
             FieldType::FixedBytes => {
                 let col = col.as_any().downcast_ref::<BinaryArray>().unwrap();
@@ -205,6 +215,26 @@ pub mod parquet_io {
             FieldType::Str => {
                 let col = col.as_any().downcast_ref::<arrow::array::StringArray>().unwrap();
                 col.value(row).as_bytes().to_vec()
+            }
+            FieldType::VarInt => {
+                let c = col.as_any().downcast_ref::<arrow::array::UInt64Array>().unwrap();
+                let mut buf = Vec::with_capacity(10);
+                c.value(row).varint_encode(&mut buf);
+                buf
+            }
+            FieldType::Quant(p) => {
+                // Re-quantize from the dequantized f64 column value at the
+                // declared precision; wire is the fixed-point i64 BE.
+                let c = col.as_any().downcast_ref::<arrow::array::Float64Array>().unwrap();
+                wire_to_be_bytes(quantize(c.value(row), p))
+            }
+            FieldType::Enum => {
+                let c = col.as_any().downcast_ref::<arrow::array::UInt8Array>().unwrap();
+                vec![c.value(row)]
+            }
+            FieldType::Offset(base) => {
+                let c = col.as_any().downcast_ref::<arrow::array::Int64Array>().unwrap();
+                crate::offset_encode(c.value(row), base)
             }
             other => {
                 let raw: Vec<u8> = match other {
@@ -232,6 +262,10 @@ pub mod parquet_io {
                         .to_vec(),
                     FieldType::FixedBytes => unreachable!(),
                     FieldType::Str => unreachable!("handled above"),
+                    FieldType::VarInt
+                    | FieldType::Quant(_)
+                    | FieldType::Enum
+                    | FieldType::Offset(_) => unreachable!("handled above"),
                 };
                 debug_assert_eq!(raw.len(), width, "width mismatch on import");
                 raw
