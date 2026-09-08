@@ -62,7 +62,7 @@ impl_varint!(u64, 10);
 /// time and removed at decode time, so user code keeps working with raw
 /// values. Wire is variable length: `FieldDesc::width` is 0 and the TLV
 /// frame's `len` is authoritative — same regime as `String`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub struct VarInt<T: VarIntEnc>(pub T);
 
 impl<T: VarIntEnc> VarInt<T> {

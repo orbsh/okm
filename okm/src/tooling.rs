@@ -81,31 +81,35 @@ pub fn describe<K: KeyEncode, R: Row<Key = K>>() -> String {
     }
 
     if !row_fields.is_empty() {
-        out.push_str("  -- payload TLV (tag u8 + len u32 BE + value) --\n");
-        let mut off = 0usize;
-        for f in row_fields {
-            let width_note = if matches!(f.ty, FieldType::Str | FieldType::VarInt) {
-                "var".to_string()
-            } else {
-                f.width.to_string()
-            };
+        out.push_str("  -- payload: [ver u8][hot_len u16 BE][hot][cold TLV (tag u8 + len u32 BE + value)] --\n");
+        // Hot segment: fixed-width fields at contiguous static offsets.
+        let mut off = 3usize; // header = version + hot_len
+        for f in row_fields.iter().filter(|f| f.width > 0) {
             out.push_str(&format!(
-                "  {:<16} {:>7} {:>6}  {:?}   (frame header at {off})\n",
+                "  {:<16} {:>7} {:>6}  {:?}   (hot, static offset)\n",
+                f.name, off, f.width, f.ty
+            ));
+            off += f.width;
+        }
+        // Cold segment: TLV frames, tag = declaration index.
+        let hot_total = off - 3;
+        let mut cold_off = 0usize;
+        for (fi, f) in row_fields.iter().enumerate() {
+            if f.width > 0 {
+                continue;
+            }
+            out.push_str(&format!(
+                "  {:<16} {:>7} {:>6}  {:?}   (cold, tag {fi}, frame header at {cold_off})\n",
                 f.name,
-                off + 5,
-                width_note,
+                cold_off + 5,
+                "var",
                 f.ty
             ));
-            // Str stride is dynamic (the frame's own len); show the static
-            // part (5-byte header) so the column stays aligned.
-            off += 5
-                + if matches!(f.ty, FieldType::Str | FieldType::VarInt) {
-                    0
-                } else {
-                    f.width
-                };
+            cold_off += 5; // Str/VarInt stride is dynamic; show the static header part
         }
-        out.push_str(&format!("  payload total: {off}+ (variable-length frames add their value bytes)\n"));
+        out.push_str(&format!(
+            "  payload total: 3+{hot_total} hot + {cold_off}+ cold (variable-length frames add their value bytes)\n"
+        ));
     }
     out
 }
@@ -297,7 +301,8 @@ pub mod parquet_io {
             let n = batch.num_rows();
 
             // Reassemble per-row: key encoding (declaration-order BE fields)
-            // then the TLV payload (tag + len + value per field).
+            // then the two-segment payload — [ver u8][hot_len u16 BE]
+            // [hot segment][cold TLV] — matching the export-side layout.
             let mut keys: Vec<Vec<u8>> = vec![Vec::with_capacity(K::KEY_LEN); n];
             for (fi, f) in key_fields.iter().enumerate() {
                 let col = batch.column(fi);
@@ -305,15 +310,30 @@ pub mod parquet_io {
                     krow.extend_from_slice(&wire_bytes(col, row, f.width, f.ty));
                 }
             }
-            let mut payloads: Vec<Vec<u8>> = vec![Vec::new(); n];
+            let hot_width: usize = row_fields.iter().filter(|f| f.width > 0).map(|f| f.width).sum();
+            let ver = <R as Row>::LAYOUT_VERSION;
+            let header = vec![ver, (hot_width >> 8) as u8, hot_width as u8];
+            let mut payloads: Vec<Vec<u8>> = vec![header; n];
+            // Hot segment: contiguous fixed-width runs (no frame headers).
             for (fi, f) in row_fields.iter().enumerate() {
+                if f.width == 0 {
+                    continue;
+                }
+                let col = batch.column(nkey + fi);
+                for (row, prow) in payloads.iter_mut().enumerate() {
+                    prow.extend_from_slice(&wire_bytes(col, row, f.width, f.ty));
+                }
+            }
+            // Cold segment: one TLV frame per variable-length field, tag =
+            // the field's declaration index.
+            for (fi, f) in row_fields.iter().enumerate() {
+                if f.width > 0 {
+                    continue;
+                }
                 let col = batch.column(nkey + fi);
                 for (row, prow) in payloads.iter_mut().enumerate() {
                     let wb = wire_bytes(col, row, f.width, f.ty);
                     prow.push(fi as u8);
-                    // Variable-length fields: the frame len is the actual
-                    // byte length; fixed-width fields re-emit the declared
-                    // width (redundant consistency check, same as export).
                     prow.extend_from_slice(&(wb.len() as u32).to_be_bytes());
                     prow.extend_from_slice(&wb);
                 }
