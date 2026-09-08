@@ -38,7 +38,7 @@ pub fn offset_decode(b: &[u8], base: i64) -> i64 {
 /// Newtype the derive macros recognize in field position
 /// (`Offset<i64>` paired with `#[kv_offset(base = N)]`). Field
 /// declarations stay wrapped; `.0` is the absolute value.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub struct Offset(pub i64);
 
 #[cfg(test)]

@@ -51,7 +51,7 @@ pub fn wire_to_be_bytes(w: i64) -> Vec<u8> {
 /// Newtype the derive macros recognize in field position
 /// (`Quant<f64, 3>`). `P` is the decimal-places const parameter; the
 /// wire is `i64` BE (8 bytes, same width regardless of P).
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
 pub struct Quant<const P: u32>(pub f64);
 
 impl<const P: u32> Quant<P> {

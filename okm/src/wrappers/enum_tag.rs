@@ -40,6 +40,15 @@ pub trait EnumTag: Copy + Sized + PartialEq + std::fmt::Debug + 'static {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Enum<T: EnumTag>(pub T);
 
+impl<T: EnumTag> Default for Enum<T> {
+    /// Tag 0 — the schema-evolution default (same rule as decode filling
+    /// missing tail fields). Explicit tags make this a contract: the first
+    /// declared variant must own tag 0.
+    fn default() -> Self {
+        Enum(T::from_tag(0))
+    }
+}
+
 impl<T: EnumTag> Enum<T> {
     pub fn encode(&self) -> Vec<u8> {
         vec![self.0.tag()]
