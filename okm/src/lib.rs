@@ -52,7 +52,7 @@ pub use collection::EdgeTable;
 pub use edge::{KvEdge, head_bytes};
 pub use engine::{KvEngine, MockStore};
 pub use field::{FieldDesc, FieldType};
-pub use index::{KvIndex, PRIMARY_SLOT, Row, scan_index};
+pub use index::{IndexFuncResult, KvIndex, PRIMARY_SLOT, Row, scan_index};
 pub use key::{KeyEncode, PrefixKey};
 pub use table::Table;
 

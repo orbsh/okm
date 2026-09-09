@@ -1,0 +1,7 @@
+error: proc-macro derive panicked
+  --> tests/compilefail/func_with_fields.rs:10:10
+   |
+10 | #[derive(RowEncode, Clone, PartialEq, Debug)]
+   |          ^^^^^^^^^
+   |
+   = help: message: kv_index[bad]: func(...) and fields/includes are exclusive — the function result IS the sort segment

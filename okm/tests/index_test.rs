@@ -293,3 +293,140 @@ fn row_value_tlv_roundtrip() {
     let dec = <Session as Row>::decode_payload(&sr.encode_payload());
     assert_eq!(dec, sr);
 }
+
+/// DocKey：代理主键。name 是变长 payload 字段（text-first 索引 regime），
+/// city 是分组维度（定宽，居首可定位）。
+#[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
+#[kv_ns(21)]
+pub struct DocKey {
+    pub id: u64,
+}
+
+/// Doc 行：by_city_name 复合索引 = (city, name)，变长 name 居末；
+/// by_name 单字段文本索引。排序 = 字典序（裸 UTF-8 字节，无长度前缀——
+/// 长度前缀会先按长度后按字节，摧毁字典序）。
+#[derive(RowEncode, Clone, PartialEq, Debug)]
+#[kv_ref(DocKey)]
+#[kv_index(
+    by_city_name {
+        fields(city, name),
+    },
+    by_name { fields(name) },
+)]
+pub struct Doc {
+    pub city: u32,
+    pub name: String,
+}
+
+use __OkmIndex_Doc_by_city_name as ByCityName;
+use __OkmIndex_Doc_by_name as ByName;
+
+fn mk_doc(id: u64, city: u32, name: &str) -> (DocKey, Doc) {
+    (DocKey { id }, Doc { city, name: name.to_string() })
+}
+
+#[test]
+fn variable_length_index_text_first() {
+    // 变长字段索引（text-first regime）：裸 UTF-8 字节参与排序，共享前缀
+    // 文本按字典序相邻；精确匹配靠尾部主键回表核验（无定界符是本 regime
+    // 的代价——"ab" 的前缀扫描会扫到 "abc"，这正是字典序的行为）。
+    let mut t = <Doc as Row>::table(MockStore::default(), 21);
+    let rows = [
+        mk_doc(1, 10, "alpha"),
+        mk_doc(2, 10, "alphabet"),   // "alpha" 的扩展，字典序紧随其后
+        mk_doc(3, 10, "beta"),
+        mk_doc(4, 20, "alpha"),      // 同名不同城市，city 维度隔开
+    ];
+    for (k, r) in &rows {
+        t.put(k, r);
+    }
+
+    // entry 布局：[ns+slot 2B][city 4B][name 裸 UTF-8][id 8B]
+    // value：无 includes → 空
+    let kl = <DocKey as KeyEncode>::KEY_LEN;
+    assert_eq!(kl, 8);
+    let (k, r) = &rows[0];
+    let e = ByCityName::entry_key(21, k, r);
+    assert_eq!(&e[..2], &(22u16).to_be_bytes()); // ns = 21+1
+    assert_eq!(&e[2..6], &10u32.to_be_bytes()); // city 定宽可定位
+    assert_eq!(&e[6..11], b"alpha"); // name 居末：裸字节，无长度前缀
+    assert_eq!(&e[11..], &k.encode()[..]); // 尾部主键干净切出
+    assert_eq!(e.len(), 2 + 4 + 5 + kl);
+
+    // 前缀扫描 "alpha" 命中 alpha + alphabet（共享前缀 = 同一字典序区间）
+    let p = ByCityName::entry_prefix(21, &10u32.to_be_bytes());
+    let hits = t.store().scan_suffix(&p);
+    assert_eq!(hits.len(), 3); // city=10 的 3 行
+
+    // scan API：name="beta"，回表核验后返回行
+    let listed = t.scan::<ByCityName>(
+        &[&10u32.to_be_bytes()[..], b"beta"].concat(),
+    );
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].0.decoded.id, 3);
+    assert_eq!(listed[0].1.as_ref().unwrap(), &rows[2].1);
+
+    // by_name：单字段文本索引，空前缀 = 全表按 name 字典序
+    let all = t.scan::<ByName>(&[]);
+    let names: Vec<&str> = all.iter().map(|(_, r)| r.as_ref().unwrap().name.as_str()).collect();
+    assert_eq!(names, ["alpha", "alpha", "alphabet", "beta"]);
+    // 精确匹配："alpha" 扫出 2 行（含 alphabet），去重靠主键
+    let alphas = t.scan::<ByName>(b"alpha");
+    assert_eq!(alphas.len(), 3);
+}
+
+/// 函数索引（function-index regime）：归一化函数同时驱动写入端编码与
+/// 查询端探针——一条声明，两侧共用。
+fn lower_name(row: &DocFunc) -> String {
+    row.name.to_lowercase()
+}
+
+#[derive(RowEncode, Clone, PartialEq, Debug)]
+#[kv_ref(DocKey)]
+#[kv_index(by_lower { func(lower_name) })]
+pub struct DocFunc {
+    pub city: u32,
+    pub name: String,
+}
+
+use __OkmIndex_DocFunc_by_lower as ByLower;
+
+fn mk_docf(id: u64, city: u32, name: &str) -> (DocKey, DocFunc) {
+    (DocKey { id }, DocFunc { city, name: name.to_string() })
+}
+
+#[test]
+fn function_index_normalizes_both_sides() {
+    // 写入端：entry 排序段 = lower_name(&row) 的结果（裸 UTF-8，字典序）；
+    // 查询端：探针行调用同一个函数归一化，两侧共享一条声明。
+    let mut t = <DocFunc as Row>::table(MockStore::default(), 25);
+    let rows = [
+        mk_docf(1, 10, "Apple"),
+        mk_docf(2, 10, "APPLE"),
+        mk_docf(3, 10, "banana"),
+    ];
+    for (k, r) in &rows {
+        t.put(k, r);
+    }
+
+    // entry 布局：[ns+slot 2B][func 结果裸字节][id 8B]——无 fields 段
+    let kl = <DocKey as KeyEncode>::KEY_LEN;
+    let (k, r) = &rows[0];
+    let e = ByLower::entry_key(25, k, r);
+    assert_eq!(&e[..2], &(26u16).to_be_bytes());
+    assert_eq!(&e[2..7], b"apple"); // 归一化后的结果
+    assert_eq!(&e[7..], &k.encode()[..]);
+    assert_eq!(e.len(), 2 + 5 + kl);
+    assert_eq!(ByLower::FUNC, "lower_name");
+
+    // 查询端探针：同一函数归一化 probe 行 → 前缀扫描 → 回表
+    let probe = DocFunc { city: 0, name: "APPLE".to_string() };
+    let listed = t.scan::<ByLower>(probe.name.to_lowercase().as_bytes());
+    assert_eq!(listed.len(), 2); // Apple + APPLE 归一化到同一区间
+    let ids: Vec<u64> = listed.iter().map(|(pk, _)| pk.decoded.id).collect();
+    assert_eq!(ids, [1, 2]); // 字典序（同结果 → 主键序）
+
+    // delete：函数索引 entry 一并移除
+    t.delete(k, r);
+    assert!(t.store().get(&e).is_none());
+}
