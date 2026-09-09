@@ -25,6 +25,41 @@ use crate::key::{KeyEncode, PrefixKey};
 /// Slot reserved for a table's primary keys inside its ns segment.
 pub const PRIMARY_SLOT: u8 = 0;
 
+/// Encoded form of a function-index result (ADR-0005, function-index
+/// regime): what the declared function returns must land in the index
+/// entry's computed-field segment in a well-defined sort order.
+///
+/// - `String` → raw UTF-8 bytes: sort order IS byte-wise lexicographic
+///   (the text-first regime). No length prefix — a length prefix would
+///   sort by length before bytes and destroy dictionary order; exact
+///   matching is resolved by the primary-key tail + fetch-back.
+/// - Unsigned integers → big-endian bytes: sort order IS numeric order.
+///
+/// A function returning anything else fails to compile at the generated
+/// `KvIndex` impl (the trait bound names this trait explicitly).
+pub trait IndexFuncResult {
+    /// Append the index-segment encoding of this value.
+    fn encode_index(&self, buf: &mut Vec<u8>);
+}
+
+impl IndexFuncResult for String {
+    fn encode_index(&self, buf: &mut Vec<u8>) {
+        buf.extend_from_slice(self.as_bytes());
+    }
+}
+
+macro_rules! index_func_uint {
+    ($($t:ty),*) => {$(
+        impl IndexFuncResult for $t {
+            fn encode_index(&self, buf: &mut Vec<u8>) {
+                buf.extend_from_slice(&self.to_be_bytes());
+            }
+        }
+    )*};
+}
+
+index_func_uint!(u8, u16, u32, u64);
+
 /// Value-side payload contract (ADR-0004/0006): a row = identity (its key)
 /// plus payload fields, laid out as two segments behind a header —
 /// `[version u8][hot_len u16 BE][hot segment][cold segment]`:
@@ -101,6 +136,12 @@ pub trait KvIndex {
     /// Key fields forming the tail prefix — a declaration-order prefix of
     /// the key struct (empty = the full primary-key encoding).
     const KEY_PREFIX: &'static [&'static str];
+    /// Function-index function path (ADR-0005, function-index regime);
+    /// empty = plain field index. The generated impl calls this path with
+    /// `&row` and encodes the result via `IndexFuncResult` (sort order =
+    /// the result encoding's order). The query side calls the same path on
+    /// its probe value — one declaration drives both encode and scan.
+    const FUNC: &'static str = "";
 
     /// Encode the named fields in `names` order. Generated impls source
     /// every name from the row payload; hand impls may read identity

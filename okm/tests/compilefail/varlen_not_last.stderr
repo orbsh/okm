@@ -1,0 +1,7 @@
+error: proc-macro derive panicked
+  --> tests/compilefail/varlen_not_last.rs:10:10
+   |
+10 | #[derive(RowEncode, Clone, PartialEq, Debug)]
+   |          ^^^^^^^^^
+   |
+   = help: message: kv_index[bad_order]: variable-length field `name` in fields must be the last field — fields after it cannot be located (no static width)

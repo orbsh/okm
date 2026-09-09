@@ -37,6 +37,10 @@ struct IdxDecl {
     fields: Vec<String>,
     includes: Vec<String>,
     key: Vec<String>,
+    /// Function-index function path (empty = plain field index): the
+    /// single token inside `func(...)` is spliced verbatim into the
+    /// generated `KvIndex` impl, which calls it as `#path(&row)`.
+    func: String,
 }
 
 fn parse_index_attr(attr: &syn::Attribute) -> Vec<IdxDecl> {
@@ -85,6 +89,7 @@ fn parse_index_attr(attr: &syn::Attribute) -> Vec<IdxDecl> {
         let mut fields = Vec::new();
         let mut includes = Vec::new();
         let mut key = Vec::new();
+        let mut func = String::new();
         let toks: Vec<TokenTree> = body.into_iter().collect();
         let mut j = 0usize;
         while j < toks.len() {
@@ -108,8 +113,18 @@ fn parse_index_attr(attr: &syn::Attribute) -> Vec<IdxDecl> {
                 "fields" => fields = list,
                 "includes" => includes = list,
                 "key" => key = list,
+                "func" => {
+                    // func(path) — the function path spliced verbatim into
+                    // the generated impl (called as `path(&row)`).
+                    if list.len() != 1 {
+                        panic!("kv_index[{ident}].func: expected exactly one function path");
+                    }
+                    func = list[0].clone();
+                }
                 other => {
-                    panic!("kv_index[{ident}]: unknown key {other} (supported: fields/includes/key)")
+                    panic!(
+                        "kv_index[{ident}]: unknown key {other} (supported: fields/includes/key/func)"
+                    )
                 }
             }
             j += 2;
@@ -118,7 +133,17 @@ fn parse_index_attr(attr: &syn::Attribute) -> Vec<IdxDecl> {
                 j += 1;
             }
         }
-        if fields.is_empty() {
+        // Function-index regime: the entry's sort segment is the function
+        // result, not payload fields — fields/includes would have no place
+        // in the wire. `fields` stays empty there, so the emptiness check
+        // applies only to plain field indexes.
+        if !func.is_empty() {
+            if !fields.is_empty() || !includes.is_empty() {
+                panic!(
+                    "kv_index[{ident}]: func(...) and fields/includes are exclusive — the function result IS the sort segment"
+                );
+            }
+        } else if fields.is_empty() {
             panic!("kv_index[{ident}]: fields must not be empty");
         }
         // key(...) prefix validation happens at encode time (the generated
@@ -129,9 +154,22 @@ fn parse_index_attr(attr: &syn::Attribute) -> Vec<IdxDecl> {
             fields,
             includes,
             key,
+            func,
         });
     }
     out
+}
+
+/// Is this payload field variable-width (no static width)? Width-0 kinds:
+/// `String` (raw UTF-8 in the index segment) and `VarInt<T>` (LEB128). Both
+/// are cold-segment TLV fields in the payload; in an index segment they are
+/// naked bytes with no frame, hence the last-position rule.
+fn variable_width(fs: &[FieldEnc], name_strs: &[String], n: &str) -> bool {
+    fs.iter()
+        .zip(name_strs)
+        .find(|(_, s)| s.as_str() == n)
+        .map(|(f, _)| f.width.to_string() == "0")
+        .unwrap_or(false)
 }
 
 /// Payload-side field encoder triple: u8/u16/u32/u64 BE and `[u8; N]`.
@@ -648,6 +686,34 @@ pub fn derive(input: TokenStream) -> TokenStream {
                 panic!("kv_index[{}]: field `{n}` is not a row payload field", idx.ident);
             }
         }
+        // Variable-length payload fields (String, VarInt — width 0) have no
+        // static width, so a field declared AFTER one cannot be located
+        // within the index segment: the variable-length field may appear
+        // at most once and must be the LAST field. Fields before it are
+        // fixed-width and locate fine (text-first regime, ADR-0005: the
+        // trailing primary key still cuts off cleanly from the tail).
+        // The `includes` value segment has the same shape, same rule.
+        for (list, kw) in [(&idx.fields, "fields"), (&idx.includes, "includes")] {
+            let fslice: &[String] = list;
+            if let Some((vi, _)) = fslice
+                .iter()
+                .enumerate()
+                .find(|(_, n)| variable_width(&fs, &name_strs, n))
+            {
+                if vi != fslice.len() - 1 {
+                    panic!(
+                        "kv_index[{}]: variable-length field `{}` in {kw} must be the last field — fields after it cannot be located (no static width)",
+                        idx.ident, list[vi]
+                    );
+                }
+                if fslice[..vi].iter().any(|n| variable_width(&fs, &name_strs, n)) {
+                    panic!(
+                        "kv_index[{}]: at most one variable-length field allowed in {kw}",
+                        idx.ident
+                    );
+                }
+            }
+        }
     }
 
     let mut index_out = quote! {};
@@ -659,6 +725,28 @@ pub fn derive(input: TokenStream) -> TokenStream {
         let includes: Vec<&String> = idx.includes.iter().collect();
         let key_names: Vec<&String> = idx.key.iter().collect();
         let slot_doc = format!("{}", n + 1);
+        let func_str = idx.func.clone();
+        // Function-index regime: the sort segment is `func(&row)`'s result,
+        // encoded via IndexFuncResult. The generated encode_named ignores
+        // the requested names (the function replaces them); scan_covered
+        // still works because the value segment (includes) stays field
+        // encoded — with no includes the value is empty.
+        let encode_named_body = if idx.func.is_empty() {
+            // The field encoders reference `self.#id` (shared with the
+            // payload TLV loop), so the walk lives in an inherent method
+            // with a real `self` receiver.
+            quote! { <Self::Row>::__okm_encode_named(row, names, buf) }
+        } else {
+            let fpath = syn::parse_str::<syn::Expr>(&idx.func)
+                .unwrap_or_else(|e| panic!("kv_index[{}]: bad func path `{}`: {e}", idx.ident, idx.func));
+            quote! {{
+                // Function index: result → IndexFuncResult encoding (sort
+                // order = the result encoding's order). The same path is
+                // what the query side calls on its probe value.
+                let __okm_fv = #fpath(row);
+                ::okm::IndexFuncResult::encode_index(&__okm_fv, buf);
+            }}
+        };
         // For Reverse<T> payload fields the payload encoder reads
         // `self.field`; __okm_encode_named is an inherent method with a
         // real `self`, so the arm bodies work verbatim.
@@ -675,6 +763,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
                 const FIELDS: &'static [&'static str] = &[#(#fields),*];
                 const INCLUDES: &'static [&'static str] = &[#(#includes),*];
                 const KEY_PREFIX: &'static [&'static str] = &[#(#key_names),*];
+                const FUNC: &'static str = #func_str;
 
                 fn encode_named(
                     _key: &Self::Key,
@@ -682,10 +771,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
                     names: &[&str],
                     buf: &mut Vec<u8>,
                 ) {
-                    // The field encoders reference `self.#id` (shared with
-                    // the payload TLV loop), so the walk lives in an
-                    // inherent method with a real `self` receiver.
-                    <Self::Row>::__okm_encode_named(row, names, buf)
+                    #encode_named_body
                 }
             }
         });
