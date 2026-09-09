@@ -48,11 +48,16 @@ Design decisions live in `docs/adr/`. This plan tracks implementation status.
       destination the field is encoded into. Key/index positions reject
       all wrappers (fixed-width identity rule); descending prefix scan =
       newest-first.
-- [ ] Column-block regime (NOT field wrappers — they are per-column
-      statistics that break row-independent decode): `Delta<T>`
-      (differential vs previous row), `Rle<T>` (run-length over a column),
-      `Offset`-with-shared-dictionary. Belongs with row-group encoding,
-      not the field annotation system.
+- [x] Column-block regime — **cancelled** (2026-09-09, structural reason):
+      `Delta<T>`/`Rle<T>`/shared-dictionary `Offset` are cross-row
+      encodings — decoding one row requires the previous row or the whole
+      column block. OKM's storage model is row-independent entries
+      (`put(row)` = self-sufficient primary + index entries, each
+      decodable alone); pushing cross-row statistics into the field
+      annotation system breaks that invariant. Their proper home is the
+      row-group/columnar tier, which already exists: the Parquet snapshot
+      path (Phase 4) provides delta/RLE/dictionary encodings natively —
+      a second in-house column-block regime has no increment.
 - [ ] Hot/cold promotion procedure (extension field → hot section tail,
       version bump, hex-test guarded).
 
@@ -68,8 +73,18 @@ Design decisions live in `docs/adr/`. This plan tracks implementation status.
 - [x] `includes()` covering: mechanism free, positioned as materialized view
       for high-fanout queries.
 - [x] `Collection` narrowed to edge-only (`EdgeTable`); existing tests moved.
-- [ ] Variable-length indexed fields follow the secondary-index regime
-      (text-first, ID at tail) — blocked on variable-length payload fields.
+- [x] Variable-length indexed fields follow the secondary-index regime
+      (ADR-0005 update 2026-09-09): text-first, primary key at the tail;
+      at most one variable-length field per index segment and only in the
+      last position (compile-time panic otherwise — fields after it have
+      no static width to locate by). Wire = raw UTF-8, no length prefix
+      (a prefix would sort by length first and destroy dictionary order);
+      exact matching resolves via the trailing primary key + fetch-back.
+      Function indexes (`func(path)`) shipped alongside: the sort segment
+      is the declared function's result (`IndexFuncResult` — String →
+      UTF-8 dictionary order, uints → BE numeric order); the query side
+      calls the same function on its probe, so normalization cannot
+      drift between encode and scan.
 - [ ] Slot holes never reused (policy not yet stress-tested; hex tests lock
       current index layouts).
 
