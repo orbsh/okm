@@ -126,6 +126,22 @@ fn table_put_writes_primary_and_indexes() {
 }
 
 #[test]
+fn delete_by_pkey_fetches_row_and_cleans_indexes() {
+    let mut t = <User as Row>::table(MockStore::default(), 9);
+    let (k, r) = mk_user(101, 100);
+    t.put(&k, &r);
+
+    // 只给主键：内部 get 回 row，两半同源派生
+    assert!(t.delete_by_pkey(&k));
+    assert!(t.store().get(&t.primary_key(&k)).is_none());
+    assert!(t.store().get(&t.index_key::<ByReputation>(&k, &r)).is_none());
+
+    // 不存在的主键：no-op，返回 false
+    let (missing, _) = mk_user(999, 1);
+    assert!(!t.delete_by_pkey(&missing));
+}
+
+#[test]
 fn scan_via_index_returns_rows() {
     let mut t = <User as Row>::table(MockStore::default(), 9);
     let rows_in = [

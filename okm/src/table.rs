@@ -60,10 +60,44 @@ impl<S: KvEngine, K: KeyEncode, R: Row<Key = K>> Table<S, K, R> {
     /// Delete a row: primary key + all declared index entries, all
     /// derived from the row being removed (the declaration IS the
     /// registry).
+    ///
+    /// Contract: `row` MUST be the row currently stored under `key` —
+    /// the index entries are derived from `row`'s field values while the
+    /// primary entry is derived from `key` alone, and a mismatched pair
+    /// silently leaves dangling index entries (the KV layer's `del` is a
+    /// no-op on absent keys, so nothing errors). The typical sound
+    /// source is the `row` just fetched for `key` (get / scan 回表).
+    /// When the row is not in hand or its provenance is doubtful, use
+    /// [`Self::delete_by_pkey`], which derives both halves from the same
+    /// read.
     pub fn delete(&mut self, key: &K, row: &R) {
         self.store.del(&self.primary_key(key));
         for (ek, _) in R::index_entries(key, row, self.ns) {
             self.store.del(&ek);
+        }
+    }
+
+    /// Delete by primary key only: fetch the row from the primary table
+    /// first, then delegate to [`Self::delete`]. Both halves of the
+    /// removal (primary entry + index entries) derive from the same
+    /// fetched row, so a mismatched key/row pair is structurally
+    /// impossible. No-op (returns false) when the key has no row.
+    ///
+    /// The fetch costs one primary-table point read; when the caller
+    /// already holds the row from a prior get/scan, prefer
+    /// [`Self::delete`] with it.
+    ///
+    /// Not atomic: a concurrent writer between the internal get and the
+    /// deletes could still orphan index entries. Sound under the
+    /// current single-writer engine; revisit with transactional
+    /// backends.
+    pub fn delete_by_pkey(&mut self, key: &K) -> bool {
+        match self.get(key) {
+            Some(row) => {
+                self.delete(key, &row);
+                true
+            }
+            None => false,
         }
     }
 
