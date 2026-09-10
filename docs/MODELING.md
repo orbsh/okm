@@ -134,6 +134,9 @@ pub struct User {
   case the token is the data segment (variable-length, hugging the primary
   key prefix); the read path is identical to a plain index (`scan::<I>`).
   `okm` ships no tokenizer — splitting logic belongs to the business layer.
+  Implementation details (encoding contract, `entry_pairs` override, probe
+  normalization) live in the internals doc
+  [func-index-mechanism.zh-CN.md](internals/func-index-mechanism.zh-CN.md).
 
 Physical index entry layout (ADR-0005):
 
@@ -257,7 +260,10 @@ t.delete(&user); // removes the primary key + all declared index entries
 ```
 
 Multi-value function index, declared and queried (inverted-index shape —
-the token is the data segment, the primary-key prefix is cut off the tail):
+the token is the data segment, the primary-key prefix is cut off the tail).
+The `Vec` return is contract, not laziness: put consumes the values
+immediately, entry by entry, so a lazy iterator buys nothing — one
+`collect` for the smallest trait surface:
 
 ```rust
 fn tokens(row: &Doc) -> Vec<String> {
