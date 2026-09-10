@@ -145,6 +145,31 @@ note there is no index backfill: a newly appended index only sees rows
 written afterwards; existing rows get no entries — migrate with
 double-writes if existing data must be covered.
 
+The fields segment is semantically an **ordered sequence of dimensions**:
+the leading field is the grouping/equality dimension, the rest sort
+within it. Two constraints govern it —
+
+- **Decode constraint**: at most one variable-length field, and it must
+  sit immediately before the primary-key prefix. The primary key is
+  fixed-width (`KEY_LEN`) and is sliced off from the tail; any further
+  fixed-width fields are sliced right-to-left; whatever remains is the
+  single variable-length segment — its length is never stored, the
+  boundary is inferred from the fixed-width anchor on its right. Two
+  variable-length segments (e.g. `fields(token, name)`) share no
+  boundary byte and are undecodable; the derive rejects this at compile
+  time.
+- **Query constraint (leftmost-prefix)**: prefix scans specify fields
+  fully from the left, in declaration order. A variable-length field
+  that is not last breaks prefix semantics — raw bytes `"beijing"` have
+  no terminator, so a scan for it also matches `"beijing2"`. Variable
+  fields go last; equality/fixed-width dimensions go first.
+
+Note that `includes` is not part of the fields segment — it lives in
+the entry value and takes no part in key structure or ordering.
+Expressing "carry more data in the entry" by adding fields is a
+modeling mistake; the correct outlets are `includes` (copy to skip
+table lookups) or nested entries (store together).
+
 
 ### Link, unlink, query (`EdgeTable`)
 
