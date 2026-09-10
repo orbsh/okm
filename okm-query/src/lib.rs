@@ -15,6 +15,12 @@
 /// primary key, so a join on the primary key is a merge join on the two
 /// scan results' key tails. The caller supplies the key extractor
 /// because only it knows the segment layout (`KEY_PREFIX` width).
+///
+/// Deliberately no hash join: a join key that is not either side's sort
+/// dimension is a modeling gap — declare a `kv_index(fields(join_key))`
+/// and the stream is ordered again. Sorting is a property of the store,
+/// not a burden on the query operator (and merge join stays streaming
+/// and memory-bounded, where hash join must materialize the build side).
 pub fn merge_join<K: Ord + Clone, L: Clone, R: Clone>(
     left: impl IntoIterator<Item = (K, L)>,
     right: impl IntoIterator<Item = (K, R)>,
@@ -60,32 +66,6 @@ pub fn merge_join<K: Ord + Clone, L: Clone, R: Clone>(
                 }
             },
             _ => break,
-        }
-    }
-    out
-}
-
-/// Hash join: build on the (smaller) right stream, probe with the left.
-/// No ordering requirement on either side — the complement to
-/// [`merge_join`] when one side is unsorted or much smaller.
-pub fn hash_join<K: Ord + std::hash::Hash + Clone, L, R>(
-    left: impl IntoIterator<Item = (K, L)>,
-    right: impl IntoIterator<Item = (K, R)>,
-) -> Vec<(L, R)>
-where
-    L: Clone,
-    R: Clone,
-{
-    let mut table: std::collections::HashMap<K, Vec<R>> = std::collections::HashMap::new();
-    for (k, r) in right {
-        table.entry(k).or_default().push(r);
-    }
-    let mut out = Vec::new();
-    for (k, l) in left {
-        if let Some(rs) = table.get(&k) {
-            for r in rs {
-                out.push((l.clone(), r.clone()));
-            }
         }
     }
     out
@@ -142,13 +122,6 @@ mod tests {
         let mut joined = merge_join(left, right);
         joined.sort();
         assert_eq!(joined.len(), 4);
-    }
-
-    #[test]
-    fn hash_join_needs_no_order() {
-        let left = vec![(9u64, "a9"), (2, "a2")];
-        let right = vec![(2u64, "b2")];
-        assert_eq!(hash_join(left, right), vec![("a2", "b2")]);
     }
 
     #[test]
