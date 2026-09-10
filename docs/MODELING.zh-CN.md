@@ -99,7 +99,7 @@ pub struct User {
 索引条目物理布局（ADR-0005）：
 
 ```
-[ ns 2B BE ][ slot 1B ][ 索引字段 BE ][ 主键前缀（默认取满） ]   value = includes 字段 TLV（无 includes 则为空）
+[ ns 2B BE ][ slot 1B ][ 数据段（fields）BE ][ 主键前缀（默认取满） ]   value = includes 字段 TLV（无 includes 则为空）
 ```
 
 判别符 = ns + slot：ns 段划整张表，slot 字节在表段内区分访问方法（主表 slot=0，索引按声明序 1, 2, …）；声明即注册，无运行时索引簿记。slot 按声明序机械分配（SLOT = `#[kv_index]` 出现的序位），因此**索引声明是 append-only 的**：只能在尾部追加，不能在中途插入或重排——插入会让其后所有索引的 slot 漂移，已落库条目留在旧 slot 位，`scan` 换了前缀后读到空结果（静默错误，不是变慢）。删除声明只是留下无害的 slot 洞（与 ns 编号永不复用是同一纪律，ADR-0002）。另注意：没有索引回填机制，尾部追加的新索引只对之后写入的行生效，存量行不补条目；需要覆盖存量时走迁移双写。
