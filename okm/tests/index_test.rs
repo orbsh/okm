@@ -446,3 +446,53 @@ fn function_index_normalizes_both_sides() {
     t.delete(k, r);
     assert!(t.store().get(&e).is_none());
 }
+
+#[test]
+fn multi_entry_function_index_fans_out() {
+    // 多值函数索引：func 返回 Vec<String>，一行 fan out 成 N 条 entry
+    // （倒排索引形态：token → 该 token 下的主键集合）。读路径复用
+    // 既有 scan::<I>——token 就是数据段，主键前缀从尾部反推。
+    fn tokens(row: &DocTags) -> Vec<String> {
+        row.tags.split(',').map(|s| s.to_string()).collect()
+    }
+
+    #[derive(RowEncode, Clone, PartialEq, Debug)]
+    #[kv_ref(DocKey)]
+    #[kv_index(by_tag { func(tokens) })]
+    pub struct DocTags {
+        pub tags: String,
+    }
+
+    use __OkmIndex_DocTags_by_tag as ByTag;
+
+    let mut t = <DocTags as Row>::table(MockStore::default(), 30);
+    let rows = [
+        (DocKey { id: 1 }, DocTags { tags: "rust,kv".into() }),
+        (DocKey { id: 2 }, DocTags { tags: "rust,storage".into() }),
+    ];
+    for (k, r) in &rows {
+        t.put(k, r);
+    }
+
+    // 一行两条 entry：token 居数据段（变长，贴主键前），主键 8B 从尾部切出
+    let e = ByTag::entry_pairs(30, &rows[0].0, &rows[0].1);
+    assert_eq!(e.len(), 2);
+    let kl = <DocKey as KeyEncode>::KEY_LEN;
+    let mut toks: Vec<&[u8]> =
+        e.iter().map(|(k, _)| &k[3..k.len() - kl]).collect();
+    toks.sort();
+    assert_eq!(toks, vec![b"kv".as_slice(), b"rust".as_slice()]);
+
+    // scan 语义：按 token 前缀扫 → 回表（返回行）
+    let rust_rows = t.scan::<ByTag>(b"rust");
+    assert_eq!(rust_rows.len(), 2); // 两行都打了 rust
+
+    let kv_rows = t.scan::<ByTag>(b"kv");
+    assert_eq!(kv_rows.len(), 1);
+    assert_eq!(kv_rows[0].0.decoded.id, 1);
+
+    // 删除：delete 沿 entry_pairs 逐条清除，无悬挂条目
+    t.delete(&rows[0].0, &rows[0].1);
+    let remaining = t.scan::<ByTag>(b"rust").len();
+    assert_eq!(remaining, 1); // 只剩 id 2
+}
