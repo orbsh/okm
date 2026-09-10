@@ -21,7 +21,7 @@
 /// and the stream is ordered again. Sorting is a property of the store,
 /// not a burden on the query operator (and merge join stays streaming
 /// and memory-bounded, where hash join must materialize the build side).
-pub fn merge_join<K: Ord + Clone, L: Clone, R: Clone>(
+pub fn merge_join<K: Ord, L: Clone, R: Clone>(
     left: impl IntoIterator<Item = (K, L)>,
     right: impl IntoIterator<Item = (K, R)>,
 ) -> Vec<(L, R)> {
@@ -29,48 +29,46 @@ pub fn merge_join<K: Ord + Clone, L: Clone, R: Clone>(
     let mut li = left.into_iter().peekable();
     let mut ri = right.into_iter().peekable();
     loop {
-        match (li.peek(), ri.peek()) {
-            (Some((lk, _)), Some((rk, _))) => match lk.cmp(rk) {
-                std::cmp::Ordering::Less => {
-                    li.next();
-                }
-                std::cmp::Ordering::Greater => {
-                    ri.next();
-                }
-                std::cmp::Ordering::Equal => {
-                    // Drain the run of equal keys on both sides — a
-                    // nested-loop over the equal runs, matching SQL join
-                    // semantics when keys duplicate.
-                    let lk = (*lk).clone();
-                    let mut lrun = Vec::new();
-                    while let Some((k, _)) = li.peek() {
-                        if k == &lk {
-                            lrun.push(li.next().unwrap().1);
-                        } else {
-                            break;
-                        }
-                    }
-                    let mut rrun = Vec::new();
-                    while let Some((k, _)) = ri.peek() {
-                        if k == &lk {
-                            rrun.push(ri.next().unwrap().1);
-                        } else {
-                            break;
-                        }
-                    }
-                    for l in &lrun {
-                        for r in &rrun {
-                            out.push((l.clone(), r.clone()));
-                        }
-                    }
-                }
-            },
+        let ord = match (li.peek(), ri.peek()) {
+            (Some((lk, _)), Some((rk, _))) => lk.cmp(rk),
             _ => break,
+        };
+        match ord {
+            std::cmp::Ordering::Less => {
+                li.next();
+            }
+            std::cmp::Ordering::Greater => {
+                ri.next();
+            }
+            std::cmp::Ordering::Equal => {
+                // Drain the run of equal keys on both sides — a
+                // nested-loop over the equal runs, matching SQL join
+                // semantics when keys duplicate. The run key is the
+                // run's first key, taken by value — no `K: Clone`.
+                let (run_key, v0) = li.next().unwrap();
+                let mut lrun = vec![v0];
+                loop {
+                    let same = li.peek().is_some_and(|(k, _)| *k == run_key);
+                    if !same {
+                        break;
+                    }
+                    lrun.push(li.next().unwrap().1);
+                }
+                loop {
+                    let same = ri.peek().is_some_and(|(k, _)| *k == run_key);
+                    if !same {
+                        break;
+                    }
+                    let r = ri.next().unwrap().1;
+                    for l in &lrun {
+                        out.push((l.clone(), r.clone()));
+                    }
+                }
+            }
         }
     }
     out
 }
-
 /// Group-fold over an ordered entry stream: consecutive entries whose
 /// extracted group key matches fold into one accumulator. Ordered input
 /// (which every okm scan is) makes this a single pass — the KV-side
