@@ -15,6 +15,175 @@
 
 说不出访问方法，模型就没建完——说不出的查询会变成全表扫描。
 
+## 声明基础
+
+四层建模法在代码里的落点就是三个派生宏。完整声明词汇：
+
+### 端点 key：`KeyEncode`
+
+```rust
+use okm::KeyEncode;
+
+/// org 内的用户。org_id 是"组织前缀"，user_id 才是身份终点。
+#[derive(KeyEncode, Clone, PartialEq, Debug)]
+#[kv_ns(1)] // 编译期命名空间，折叠为 key 的大端字节前缀
+pub struct UserKey {
+    pub org_id: u32,
+    pub user_id: u64,
+}
+
+#[derive(KeyEncode, Clone, PartialEq, Debug)]
+#[kv_ns(2)]
+pub struct SessionKey {
+    pub org_id: u32,
+    pub session_id: u64,
+}
+```
+
+`UserKey { org_id: 7, user_id: 101 }` 的物理布局：
+
+```
+[ org_id: 4B BE ][ user_id: 8B BE ]   = 12 字节，零填充
+```
+
+主键定宽：字段按声明序大端编码，`KEY_LEN` 编译期锁死。变长字段见下方「行与索引」——key 保持定宽，变长是索引条目的属性。
+
+### 边：`EdgeEncode`
+
+```rust
+use okm::EdgeEncode;
+
+/// user → sessions 边。
+///
+/// 正向：user 的身份是 (org_id, user_id) 两个字段 → kv_head(org_id, user_id)
+/// 反向：session 的身份是完整 SessionKey（无 kv_head）
+///
+/// 同一条边的两个方向使用不同宽度的端点身份——
+/// 这就是"主键随方向变化"的表达。
+#[derive(EdgeEncode, Clone)]
+#[kv_ns(4)]
+pub struct UserToSessionEdge {
+    #[kv_head(org_id, user_id)]
+    pub user_id: UserKey,
+    pub session_id: SessionKey,
+}
+```
+
+`#[kv_head(field, ...)]` 声明该端点在**这条边里**哪些字段算身份；不标注 = 全量 key 即身份。字段名必须是端点声明序的前缀（宏生成的编译期检查）。声明一次，正反两族条目自动生成（方向位见上文「多对多关系」）。
+
+### 行与索引：`RowEncode`
+
+```rust
+use okm::RowEncode;
+
+/// 行 struct 挂在 UserKey 上（#[kv_ref]）；payload 字段 TLV 编码。
+/// 每个 #[kv_index] 声明一个对 PAYLOAD 字段的访问方法——
+/// 身份归 key（代理 id），业务维度归行。
+#[derive(RowEncode, Clone, PartialEq, Debug)]
+#[kv_ref(UserKey)]
+#[kv_index(by_reputation { fields(reputation) })]
+#[kv_index(by_org { fields(org_id, created_at), includes(bio_len) })]
+pub struct User {
+    pub org_id: u32,
+    pub created_at: u64,
+    pub reputation: u32,
+    pub bio_len: u16,
+}
+```
+
+- `#[kv_ref(UserKey)]`——行挂到哪个主键上；身份归 key，业务维度归行。
+- `fields(...)`——排序/分组的 payload 字段，按声明序，首位 = 分组维度。
+- `includes(...)`——覆盖索引，复制 payload 字段进 entry value（上文「覆盖索引克制」）。
+- `key(...)`——把 entry 尾部携带的主键截断到命名子集（默认取满）。截断改变的是行级唯一性，不是分组：`fields` 前缀驱动排序，key 尾段区分行；`key(user_id)` 仅在命名子集对每行唯一时才安全，否则行会互相覆盖 entry。
+
+索引条目物理布局（ADR-0005）：
+
+```
+[ ns 2B BE ][ 索引字段 BE ][ 主键前缀（默认取满） ]   value = includes 字段 TLV（无 includes 则为空）
+```
+
+2 字节命名空间是唯一判别符，无 slot 字节；声明即注册，无运行时索引簿记。索引类型的 ns 由声明序机械推导（`table_ns + SLOT`，SLOT = `#[kv_index]` 出现的序位），因此**索引声明是 append-only 的**：只能在尾部追加，不能在中途插入或重排——插入会让其后所有索引的 ns 漂移，已落库条目留在旧 ns 段，`scan` 换了前缀后读到空结果（静默错误，不是变慢）。删除声明只是留下无害的 ns 洞（与 ns 编号永不复用是同一纪律，ADR-0002）。另注意：没有索引回填机制，尾部追加的新索引只对之后写入的行生效，存量行不补条目；需要覆盖存量时走迁移双写。
+
+### 连接、断开、查询（`EdgeTable`）
+
+```rust
+use okm::EdgeTable;
+
+let store = okm::MockStore::default(); // 或 FjallStore / SlatedbStore
+let mut edges: EdgeTable<_, UserToSessionEdge> = EdgeTable::new(store);
+
+let user = UserKey { org_id: 7, user_id: 101 };
+let s1 = SessionKey { org_id: 7, session_id: 1001 };
+let s2 = SessionKey { org_id: 7, session_id: 1002 };
+
+edges.link(&user, &s1);   // 原子双写：正向 + 反向 key
+edges.link(&user, &s2);
+
+let sessions = user.get_session(&edges);   // 正向：user → [SessionKey]
+assert_eq!(sessions, vec![s1.clone(), s2.clone()]);
+
+edges.unlink(&user, &s1); // 双向同时删除
+```
+
+物理 key 布局（正向）：
+
+```
+[ 头部 2B: (ns<<1 | dir) BE ][ A·身份 ][ B·身份 ]
+```
+
+`ns = 4`、FWD → 头部 `[0x08, 0x00]`；REV → `[0x08, 0x01]`。方向位 niche 在命名空间字段的最高位——见 [ADR-0001](docs/adr/0001-direction-bit-niche.md)。
+
+### 反向查询与截断身份
+
+```rust
+// 反向：session → users。此方向 A 的身份是截断的（kv_head），
+// 返回原始字节，供调用方拿去主表做前缀扫描。
+let raws = edges.reverse_raw(&s1);
+
+// 若 A 是全量身份，reverse() 直接 decode 回类型：
+// let users: Vec<UserKey> = edges.reverse(&s1);
+
+// PrefixKey 标记前多少字节可信。
+for pk in edges.reverse_prefix(&s1) {
+    // pk.decoded：解码出的结构体（前缀字段有效）
+    // pk.taken：  身份前缀消耗的字节数
+}
+```
+
+派生宏还会在端点类型上生成查询方法（`user.get_session(&edges)`），方法名取对方字段（`session_id` → `get_session`）。
+
+### 行的运行时用法（`Table`）
+
+`RowEncode` 声明的访问方法在查询侧具名为索引类型。索引声明的派生物在展开点（本文件）生成：`kv_index(by_org ...)` 生成索引类型 `__OkmIndex_User_by_org`（机械拼接，无大小写转换），`use` 别名后即可作泛型参数。`Row::table` 构建装配点，调用处无需重复 key 类型：
+
+```rust
+use okm::{MockStore, Row};
+use __OkmIndex_User_by_org as ByOrg; // 索引类型：kv_index(by_org) 的派生物
+
+let mut t = <User as Row>::table(MockStore::default(), 9);
+
+t.put(&user, &User { org_id: 7, created_at: 30, reputation: 100, bio_len: 2 });
+
+// 任意访问方法上的最左前缀扫描，带回表：
+let rows = t.scan::<ByOrg>(&7u32.to_be_bytes());
+for (key, row) in rows {
+    // key: 解码的 UserKey，row: payload 存在时为 Some(解码的 User)
+}
+
+t.delete(&user); // 删除主键 + 所有已声明的索引 entry
+```
+
+### Schema 稳定性测试
+
+用硬编码 hex 锁定物理字节——任何布局漂移都让 CI 失败：
+
+```rust
+let fk = edge.forward_key();
+assert_eq!(&fk[..2], &[0, 8]); // ns=4、FWD——方向位在 BE 字节对的最低位
+assert_eq!(&fk[2..6], &7u32.to_be_bytes());
+// ... 完整布局断言见 okm/tests/integration.rs
+```
+
 ## 一对多关系
 
 访问方法不只是排序：**一对多关系也能落成前缀分组**。`[tenant_id][org_id][user_id]` 这样的布局，前缀取一个组织内的全部 user——这正是关系模型里"外键 + 列表"的物理化。
