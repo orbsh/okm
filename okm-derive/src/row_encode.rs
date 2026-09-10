@@ -329,6 +329,70 @@ fn emit_index_entries(schema: &RowSchema) -> TS2 {
     }
 }
 
+/// Aggregates: `#[kv_aggregate(MyLogic { group(a, b) })]` — the user
+/// implements `okm::AggregateLogic` on `MyLogic` (Acc + fold/unfold);
+/// the derive generates the `okm::Aggregate` impl on the SAME type
+/// (SLOT/GROUP come from the declaration) plus the Row hook override
+/// running each aggregate's read-modify-write. Returns
+/// (trait impls, hook fn body to splice inside `impl Row`).
+fn emit_aggregates(schema: &RowSchema) -> (TS2, TS2) {
+    let row_name = &schema.row_name;
+    let n_idx = schema.indexes.len();
+
+    let mut impls = quote! {};
+    let mut calls = quote! {};
+    for (n, agg) in schema.aggregates.iter().enumerate() {
+        let slot_lit = proc_macro2::Literal::u8_unsuffixed(n_idx as u8 + 1 + n as u8);
+        let logic = syn::parse_str::<syn::Type>(&agg.logic)
+            .unwrap_or_else(|e| panic!("kv_aggregate[{}]: bad logic type `{}`: {e}", agg.ident, agg.logic));
+        let group: Vec<&String> = agg.group.iter().collect();
+        impls.extend(quote! {
+            impl ::okm::Aggregate for #logic {
+                const SLOT: u8 = #slot_lit;
+                const GROUP: &'static [&'static str] = &[ #(#group),* ];
+                fn group_bytes(
+                    _key: &<#row_name as ::okm::Row>::Key,
+                    row: &#row_name,
+                ) -> Vec<u8> {
+                    // The row's named-field walk — same encoders as the
+                    // index layer, byte-compatible with read-side probes.
+                    let mut buf = Vec::new();
+                    <#row_name>::__okm_encode_named(row, Self::GROUP, &mut buf);
+                    buf
+                }
+            }
+        });
+        calls.extend(quote! {{
+            let __okm_ek = <#logic as ::okm::Aggregate>::entry_key(_ns, _key, _row);
+            let mut __okm_acc = match _store.get(&__okm_ek) {
+                Some(b) => <#logic as ::okm::AggregateLogic>::Acc::decode_acc(&b),
+                None => ::core::default::Default::default(),
+            };
+            if _add {
+                <#logic as ::okm::AggregateLogic>::fold(&mut __okm_acc, _row);
+            } else {
+                <#logic as ::okm::AggregateLogic>::unfold(&mut __okm_acc, _row);
+            }
+            _store.put(__okm_ek, <#logic as ::okm::AggregateLogic>::Acc::encode_acc(&__okm_acc));
+        }});
+    }
+    if schema.aggregates.is_empty() {
+        return (quote! {}, quote! {});
+    }
+    let hook = quote! {
+        fn __okm_apply_aggregates<S: ::okm::KvEngine>(
+            _store: &mut S,
+            _key: &Self::Key,
+            _row: &Self,
+            _ns: u16,
+            _add: bool,
+        ) {
+            #calls
+        }
+    };
+    (impls, hook)
+}
+
 /// The inherent named-field walk + the full `Row` trait impl, assembled
 /// from the other emit functions' output.
 fn emit_row_impl(schema: &RowSchema) -> TS2 {
@@ -350,12 +414,14 @@ fn emit_row_impl(schema: &RowSchema) -> TS2 {
     let named_walk = emit_named_walk(schema);
     let index_structs = emit_index_structs(schema);
     let index_entries = emit_index_entries(schema);
+    let (agg_impls, agg_hook) = emit_aggregates(schema);
     let names: Vec<_> = schema.fields.iter().map(|f| &f.ident).collect();
     let name_strs: Vec<_> = schema.fields.iter().map(|f| f.ident.to_string()).collect();
     let widths: Vec<_> = schema.fields.iter().map(|f| &f.width).collect();
 
     quote! {
         #index_structs
+        #agg_impls
         impl #row_name {
             #named_walk
         }
@@ -375,6 +441,7 @@ fn emit_row_impl(schema: &RowSchema) -> TS2 {
                 Self { #(#names),* }
             }
             #index_entries
+            #agg_hook
         }
     }
 }

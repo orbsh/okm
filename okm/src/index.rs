@@ -142,6 +142,18 @@ pub trait Row: Sized + Clone {
     /// the registry).
     fn index_entries(key: &Self::Key, row: &Self, ns: u16) -> Vec<(Vec<u8>, Vec<u8>)>;
 
+    /// Cross-row aggregate hook (see [`crate::aggregate`]): apply this
+    /// row to every declared `#[kv_aggregate]` group. Default no-op —
+    /// only rows with aggregate declarations override it.
+    fn __okm_apply_aggregates<S: KvEngine>(
+        _store: &mut S,
+        _key: &Self::Key,
+        _row: &Self,
+        _ns: u16,
+        _add: bool,
+    ) {
+    }
+
     /// Assembly-point constructor: builds the row's `Table` binding this
     /// row type to its `#[kv_ref]` key. The key type never appears at the
     /// call site — it is already pinned by `Self::Key`.

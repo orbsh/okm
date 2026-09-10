@@ -95,8 +95,29 @@ pub struct User {
 - `fields(...)`——排序/分组的 payload 字段，按声明序，首位 = 分组维度。
 - `includes(...)`——覆盖索引，复制 payload 字段进 entry value（上文「覆盖索引克制」）。
 - `key(...)`——把 entry 尾部携带的主键截断到命名子集（默认取满）。截断改变的是行级唯一性，不是分组：`fields` 前缀驱动排序，key 尾段区分行；`key(user_id)` 仅在命名子集对每行唯一时才安全，否则行会互相覆盖 entry。
-- `func(path)`——函数索引：排序段由 `path(&row)` 的返回值编码（查询端探针调用同一路径归一化，一条声明驱动两侧）。返回单值 = 经典函数索引（如 `lower_name` 归一化）；**返回 `Vec<V>` = 多值函数索引**，一行展开为 N 条 entry——tokenize 全文检索、多值字段（tags）、时间分桶都落在这一原语上。多值时 token 即数据段（变长、贴主键前），读路径与普通索引完全相同（`scan::<I>`）。`okm` 不内置分词器，切分逻辑归业务层。
-  实现细节（编码契约、entry_pairs 覆盖、探针归一化）见 internals 的[函数索引机制](internals/func-index-mechanism.zh-CN.md)。
+- `func(path)`——函数索引：数据段由 `path(&row)` 的返回值编码，代替 fields 字段。函数是普通 Rust fn（业务代码里实现），查询端探针调用**同一条声明的同一路径**归一化——编码与扫描共享一条定义，归一化逻辑（lowercase、编码变换）不可能在两侧漂移。一条声明驱动两侧，声明即注册。
+
+**基础用法一：单值函数索引（写侧预计算）。** 排序段 = 函数返回值的编码，一行一条 entry，entry 仍随行生灭：
+
+```text
+fn lower_name(row: &Doc) -> String { row.name.to_lowercase() }
+
+#[kv_index(by_name { func(lower_name) })]   // "Apple"/"APPLE" 归一化后同位
+```
+
+**基础用法二：多值函数索引（一行展开为 N 条 entry）。** 返回 `Vec<V>` 时一行 fan out 成 N 条，token 即数据段（变长、贴主键前），读路径与普通索引完全相同（`scan::<I>`）：
+
+```text
+fn hour_bucket(row: &Post) -> Vec<u64> {
+    vec![row.created_at / 3_600_000]          // 毫秒时间戳 → 小时桶
+}
+
+#[kv_index(by_hour { func(hour_bucket) })]   // scan 传桶号 = 该小时全部帖子
+```
+
+时间分桶是这个形状的最低成本用法——返回单元素 Vec，写入时把时间戳折叠成桶号（桶号定宽 BE，字节序 = 时间序），按小时的 rollup/时间线就是一次前缀扫。同一原语直接覆盖 tokenize 全文检索（切词返回 Vec<String>）、多值字段（tags 拆分）。`okm` 不内置分词器，切分/分桶逻辑归业务层；func 的契约是**纯函数**——delete 从行重新生成待删集合，函数不纯（时钟/随机/外部状态）会在删除时生成与写入时不同的集合，留下悬挂条目。
+
+`func(path)` 与下文的 `#[kv_aggregate]` 是两个外部扩展机制：func 是**单行派生**（写侧预计算，entry 仍随行生灭），aggregate 是**跨行聚合**（可变 value 读-改-写）；集成的复杂形态（FTS/向量/图算法如何落在原语上）见[集成边界](INTEGRATION.zh-CN.md)。实现细节（编码契约、entry_pairs 覆盖、探针归一化）见 internals 的[函数索引机制](internals/func-index-mechanism.zh-CN.md)。
 
 索引条目物理布局（ADR-0005）：
 
@@ -245,6 +266,25 @@ struct OrgUserEdge {
 **双向是义务不是选项。** REV 条目只多付一份 key 的存储（LSM 顺序 append，最廉价的写），省掉它换来的却是：反查需求出现时全扫 FWD 段过滤（违反访问方法强制），或事后补边加回填迁移（贵几个量级）。与索引对照更清楚：索引只有一个方向，因为反查走主键 `get` 就行；边的两个端点都是次级视角，谁也不持有主键，所以两个方向都要一条。双向还让解绑变 O(1)——FWD/REV 两条 key 的身份都在手上，精确 `delete`，无需先扫后删。真正的克制点不在"要不要 REV"（不二选），在**要不要这条 Edge**：没有反查需求且基数小的关系（如配置类一对一），直接放 payload 字段就够，连边都不建；需要时再加，边的双写自动同步，无回填。
 
 一句话：**索引 = 一行的派生视图，边 = 一等的关系数据**。`#[kv_index]` 定义时方便（声明即注册，无需手工编号 ns——ADR-0005 的动机正是消灭 per-index 手工编号与洞簿记）是次要红利，不是两者的分界；分界在数据源。
+
+## 跨行预聚合
+
+索引的每个条目都是**随行生灭**的 append-only 派生视图——delete 用同一个函数重新生成待删集合，永不悬挂。有一类需求天然落在这个纪律之外：按作者统计发文数、按小时的 rollup、精确计数器。它们是**跨行**的——func 的签名 `fn(&Row)` 只看得见一行，答案落在 entry value 的**读-改-写**上，即第四个原语（可变聚合 entry）。
+
+okm 对它的立场是两层拆分：核心不内置任何聚合语义（没有内建计数器类型，不解决分布式累加协议），但机械部分由辅助设施提供，声明方式与索引同款：
+
+```text
+#[kv_aggregate(AuthorStats { group(author_id) })]
+```
+
+`group(...)` 从行字段取分组段（entry = `[ns][slot][group 段]`，slot 续接索引计数器）；`AuthorStats` 是用户类型，实现 `AggregateLogic`——`Acc`（累计器类型，实现 `AggCodec` 定宽 BE 编码）+ `fold(acc, &row)`（put 时）+ `unfold(acc, &row)`（delete 时）。写入路径自动读-改-写：读到当前 acc，fold/unfold，写回。读侧 `aggregate_get` 取单组、`scan_aggregates` 扫全部组。
+
+两条使用纪律：
+
+- **可逆性是契约**：`unfold(fold(a,x)) = a` 必须精确成立，count/sum 可以，median/distinct 不可以——不可逆聚合去旁边的 OLAP 系统。复合 acc（count+sum 求均值）直接实现 `AggCodec`，okm 只负责存取字节。
+- **单写者边界**：hook 是读-改-写，单写者引擎下安全；多写者竞态与分布式累加协议不在此模型内（见集成文档）。
+
+零值回收刻意不做：组空了 entry 仍在（acc 回到单位元），省掉墓碑逻辑；调用方按需跳过单位元组。
 
 ## 访问方法强制
 
