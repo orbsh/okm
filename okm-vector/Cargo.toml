@@ -1,0 +1,8 @@
+[package]
+name = "okm-vector"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+okm = { path = "../okm" }
+okm-query = { path = "../okm-query" }

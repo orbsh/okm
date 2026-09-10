@@ -2096,10 +2096,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "okm-graph"
+version = "0.1.0"
+dependencies = [
+ "okm",
+ "okm-query",
+]
+
+[[package]]
+name = "okm-ngram"
+version = "0.1.0"
+dependencies = [
+ "okm",
+]
+
+[[package]]
 name = "okm-query"
 version = "0.1.0"
 dependencies = [
  "okm",
+]
+
+[[package]]
+name = "okm-vector"
+version = "0.1.0"
+dependencies = [
+ "okm",
+ "okm-query",
 ]
 
 [[package]]
