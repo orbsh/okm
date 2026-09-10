@@ -22,464 +22,51 @@
 //! (snapshot columns, Arrow schema, column builders; ADR-0007). The kind
 //! enum lives in `okm` core as `okm::FieldType` — dependency-free, so the
 //! derive stays pure.
+//!
+//! Structure: parse once into the schema IR (`schema.rs`, which also owns
+//! all validation), then one emit function per generated artifact. Adding
+//! a generated artifact = adding an `emit_*(&RowSchema)` function; the
+//! emit functions share no temporary state.
 
 use proc_macro::TokenStream;
-use proc_macro2::{Delimiter, TokenStream as TS2, TokenTree};
-use quote::{format_ident, quote, ToTokens};
-use syn::{parse_macro_input, Data, DeriveInput, Fields};
+use proc_macro2::TokenStream as TS2;
+use quote::{format_ident, quote};
+use syn::{parse_macro_input, DeriveInput};
 
-/// One parsed `#[kv_index(...)]` declaration. The attribute body uses
-/// struct-ish syntax that `syn::Meta` does not cover, so it is parsed at
-/// the token-stream level: `Ident` + brace group, with `(fields|includes|
-/// key)` paren groups inside, comma-separated across multiple indexes.
-struct IdxDecl {
-    ident: syn::Ident,
-    fields: Vec<String>,
-    includes: Vec<String>,
-    key: Vec<String>,
-    /// Function-index function path (empty = plain field index): the
-    /// single token inside `func(...)` is spliced verbatim into the
-    /// generated `KvIndex` impl, which calls it as `#path(&row)`.
-    func: String,
-}
+use crate::schema::{parse_schema, RowSchema};
 
-fn parse_index_attr(attr: &syn::Attribute) -> Vec<IdxDecl> {
-    let mut out = Vec::new();
-    let ts: Vec<TokenTree> = attr.to_token_stream().into_iter().collect();
-    // Shape: `#[kv_index(…)]` — take the top-level Bracket group, then the
-    // inner Parenthesis group (the attribute arguments).
-    let outer = ts
-        .iter()
-        .find_map(|t| match t {
-            TokenTree::Group(g) if g.delimiter() == Delimiter::Bracket => Some(g.stream()),
-            _ => None,
-        })
-        .expect("kv_index: missing attribute brackets");
-    let body = outer
-        .into_iter()
-        .find_map(|t| match t {
-            TokenTree::Group(g) if g.delimiter() == Delimiter::Parenthesis => Some(g.stream()),
-            _ => None,
-        })
-        .expect("kv_index: missing argument parentheses");
-    let ts: Vec<TokenTree> = body.into_iter().collect();
-
-    let mut i = 0usize;
-    while i < ts.len() {
-        // Skip commas between index declarations.
-        if matches!(&ts[i], TokenTree::Punct(p) if p.as_char() == ',') {
-            i += 1;
-            continue;
-        }
-        // Expect: index name (Ident).
-        let ident = match &ts[i] {
-            TokenTree::Ident(id) => id.clone(),
-            t => panic!("kv_index: expected index name Ident, got {t}"),
-        };
-        i += 1;
-        // Expect: { … } brace group.
-        let body = match ts.get(i) {
-            Some(TokenTree::Group(g)) if g.delimiter() == Delimiter::Brace => g.stream(),
-            t => panic!("kv_index[{ident}]: expected {{ fields(…) }} block, got {t:?}"),
-        };
-        i += 1;
-
-        // Inside: fields(a, b), includes(c) — Ident + paren group pairs,
-        // comma-separated.
-        let mut fields = Vec::new();
-        let mut includes = Vec::new();
-        let mut key = Vec::new();
-        let mut func = String::new();
-        let toks: Vec<TokenTree> = body.into_iter().collect();
-        let mut j = 0usize;
-        while j < toks.len() {
-            let kw = match &toks[j] {
-                TokenTree::Ident(id) => id.to_string(),
-                t => panic!("kv_index[{ident}]: expected fields/includes/key, got {t}"),
-            };
-            let list: Vec<String> = match toks.get(j + 1) {
-                Some(TokenTree::Group(g)) if g.delimiter() == Delimiter::Parenthesis => g
-                    .stream()
-                    .into_iter()
-                    .filter_map(|t| match t {
-                        TokenTree::Ident(id) => Some(id.to_string()),
-                        TokenTree::Punct(_) => None,
-                        t => panic!("kv_index[{ident}].{kw}: illegal token {t}"),
-                    })
-                    .collect(),
-                t => panic!("kv_index[{ident}].{kw}: expected paren group, got {t:?}"),
-            };
-            match kw.as_str() {
-                "fields" => fields = list,
-                "includes" => includes = list,
-                "key" => key = list,
-                "func" => {
-                    // func(path) — the function path spliced verbatim into
-                    // the generated impl (called as `path(&row)`).
-                    if list.len() != 1 {
-                        panic!("kv_index[{ident}].func: expected exactly one function path");
-                    }
-                    func = list[0].clone();
-                }
-                other => {
-                    panic!(
-                        "kv_index[{ident}]: unknown key {other} (supported: fields/includes/key/func)"
-                    )
-                }
-            }
-            j += 2;
-            // Skip trailing comma.
-            if matches!(toks.get(j), Some(TokenTree::Punct(p)) if p.as_char() == ',') {
-                j += 1;
-            }
-        }
-        // Function-index regime: the entry's sort segment is the function
-        // result, not payload fields — fields/includes would have no place
-        // in the wire. `fields` stays empty there, so the emptiness check
-        // applies only to plain field indexes.
-        if !func.is_empty() {
-            if !fields.is_empty() || !includes.is_empty() {
-                panic!(
-                    "kv_index[{ident}]: func(...) and fields/includes are exclusive — the function result IS the sort segment"
-                );
-            }
-        } else if fields.is_empty() {
-            panic!("kv_index[{ident}]: fields must not be empty");
-        }
-        // key(...) prefix validation happens at encode time (the generated
-        // encode_prefix_named match panics on non-prefix names), same
-        // discipline as the edge macro's kv_head.
-        out.push(IdxDecl {
-            ident,
-            fields,
-            includes,
-            key,
-            func,
+/// One match arm per payload field name — each arm appends that field's
+/// raw encoding (no TLV frame; the index segment is a plain
+/// concatenation, order = the requested name order). Shared by all
+/// index declarations and the inherent `__okm_encode_named` walk.
+fn emit_named_walk(schema: &RowSchema) -> TS2 {
+    let mut enc_arms = quote! {};
+    for f in &schema.fields {
+        let fname = f.ident.to_string();
+        let enc = &f.enc;
+        enc_arms.extend(quote! {
+            #fname => { #enc }
         });
     }
-    out
-}
-
-/// Is this payload field variable-width (no static width)? Width-0 kinds:
-/// `String` (raw UTF-8 in the index segment) and `VarInt<T>` (LEB128). Both
-/// are cold-segment TLV fields in the payload; in an index segment they are
-/// naked bytes with no frame, hence the last-position rule.
-fn variable_width(fs: &[FieldEnc], name_strs: &[String], n: &str) -> bool {
-    fs.iter()
-        .zip(name_strs)
-        .find(|(_, s)| s.as_str() == n)
-        .map(|(f, _)| f.width.to_string() == "0")
-        .unwrap_or(false)
-}
-
-/// Payload-side field encoder triple: u8/u16/u32/u64 BE and `[u8; N]`.
-/// `String` is the variable-length kind (TLV `len` is the prefix);
-/// `Reverse<T>` applies the descending-order bit-flip of `T`.
-///
-/// `dec_val` is a BLOCK EXPRESSION that reads the field's value from
-/// `b[offset..]`, advances `offset` past it, and yields the value — the
-/// uniform shape decode needs for the default-filling `if` branches.
-struct FieldEnc {
-    ident: syn::Ident,
-    enc: TS2,
-    dec: TS2,
-    width: TS2,
-    /// TLV frame `len` expression: the declared width for fixed-width kinds,
-    /// the actual value byte length for variable-length kinds (`String`).
-    len_expr: TS2,
-    /// `okm::FieldType` variant path, for the FieldDesc table (None = unsupported).
-    kind: Option<TS2>,
-    /// Hot/cold split: `true` = fixed-width hot segment (contiguous region
-    /// after the row header, O(1) offsets); `false` = variable-width cold
-    /// segment (TLV frames, tag = declaration index). Width 0 == cold.
-    hot: bool,
-    /// Expression producing the field's default value — used when a
-    /// payload written by an older layout version lacks this field
-    /// (append-only evolution fills the tail with defaults). From
-    /// `#[kv_default(expr)]`, else `<T as Default>::default()`.
-    default_expr: TS2,
-}
-
-/// Encoded width of a plain primitive type name (for `Reverse<T>` fields —
-/// same width as the unwrapped encoding).
-fn inner_w(ty: &str) -> TS2 {
-    match ty {
-        "u8" | "i8" => quote! { 1 },
-        "u16" | "i16" => quote! { 2 },
-        "u32" | "i32" => quote! { 4 },
-        "u64" | "i64" => quote! { 8 },
-        other => panic!("Reverse<{other}>: inner type not on the Reversible whitelist"),
-    }
-}
-
-/// FieldType of a plain primitive type name (Reverse keeps the inner kind —
-/// the wire is still a fixed-width integer, just bit-flipped).
-fn inner_kind(ty: &str) -> TS2 {
-    match ty {
-        "u8" | "i8" => quote! { ::okm::FieldType::U8 },
-        "u16" | "i16" => quote! { ::okm::FieldType::U16 },
-        "u32" | "i32" => quote! { ::okm::FieldType::U32 },
-        "u64" | "i64" => quote! { ::okm::FieldType::U64 },
-        other => panic!("Reverse<{other}>: inner type not on the Reversible whitelist"),
-    }
-}
-
-fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> Vec<FieldEnc> {
-    let mut fs = Vec::new();
-    for f in named.named.iter() {
-        let id = f.ident.clone().unwrap();
-        let ty = &f.ty;
-        let ty_str = quote!(#ty).to_string().replace(' ', "");
-        // #[kv_default(expr)] or #[kv_default = expr] — value used when an
-        // older-layout payload lacks this field (append-only schema
-        // evolution). Optional; fallback is `<T as Default>::default()`.
-        let kv_default: Option<TS2> = f
-            .attrs
-            .iter()
-            .find(|a| a.path().is_ident("kv_default"))
-            .map(|a| {
-                let mut e = None;
-                let _ = a.parse_nested_meta(|meta| {
-                    if meta.path.is_ident("expr") {
-                        e = Some(meta.value()?.parse::<syn::Expr>()?);
-                    }
-                    Ok(())
-                });
-                e.map(|x| quote! { #x })
-                    .or_else(|| a.parse_args::<syn::Expr>().ok().map(|x| quote! { #x }))
-                    .expect("kv_default: expected `#[kv_default(expr)]` or `#[kv_default = expr]`")
-            });
-        // #[kv_offset(base = <i64 literal>)] — the Offset wrapper's static
-        // base, required exactly when the type is Offset-shaped.
-        let offset_base: Option<i64> = f
-            .attrs
-            .iter()
-            .find(|a| a.path().is_ident("kv_offset"))
-            .map(|a| {
-                let mut b = None;
-                let _ = a.parse_nested_meta(|meta| {
-                    if meta.path.is_ident("base") {
-                        let v: syn::LitInt = meta.value()?.parse()?;
-                        b = Some(v.base10_parse::<i64>().expect("kv_offset: base must be an i64 literal"));
-                    }
-                    Ok(())
-                });
-                b.expect("kv_offset: missing `base = <i64>`")
-            });
-        let (enc, dec, width, len_expr, kind) = match ty_str.as_str() {
-            "u64" => (
-                quote! { buf.extend_from_slice(&self.#id.to_be_bytes()); },
-                quote! {{ let v = u64::from_be_bytes(b[offset..offset+8].try_into().unwrap()); offset += 8; v }},
-                quote! { 8 },
-                quote! { 8 },
-                Some(quote! { ::okm::FieldType::U64 }),
-            ),
-            "u32" => (
-                quote! { buf.extend_from_slice(&self.#id.to_be_bytes()); },
-                quote! {{ let v = u32::from_be_bytes(b[offset..offset+4].try_into().unwrap()); offset += 4; v }},
-                quote! { 4 },
-                quote! { 4 },
-                Some(quote! { ::okm::FieldType::U32 }),
-            ),
-            "u16" => (
-                quote! { buf.extend_from_slice(&self.#id.to_be_bytes()); },
-                quote! {{ let v = u16::from_be_bytes(b[offset..offset+2].try_into().unwrap()); offset += 2; v }},
-                quote! { 2 },
-                quote! { 2 },
-                Some(quote! { ::okm::FieldType::U16 }),
-            ),
-            "u8" => (
-                quote! { buf.push(self.#id); },
-                quote! {{ let v = b[offset]; offset += 1; v }},
-                quote! { 1 },
-                quote! { 1 },
-                Some(quote! { ::okm::FieldType::U8 }),
-            ),
-            _ if ty_str.starts_with("[u8;") => {
-                let n: usize = ty_str
-                    .trim_start_matches("[u8;")
-                    .trim_end_matches(']')
-                    .parse()
-                    .expect("[u8; N]: N must be an integer literal");
-                let nlit = proc_macro2::Literal::usize_unsuffixed(n);
-                (
-                    quote! { buf.extend_from_slice(&self.#id); },
-                    quote! {{
-                        let mut v = [0u8; #nlit];
-                        v.copy_from_slice(&b[offset..offset+#nlit]);
-                        offset += #nlit;
-                        v
-                    }},
-                    quote! { #nlit },
-                    quote! { #nlit },
-                    Some(quote! { ::okm::FieldType::FixedBytes }),
-                )
-            }
-            _ if ty_str.starts_with("Reverse<") => {
-                // Reverse<T> — bit-flipped descending-order encoding applied
-                // at every destination of this field (payload value here,
-                // key/index positions rejected in the key macro). Inner type
-                // must be on the Reversible whitelist (compile-time check:
-                // the generated code calls ::okm::Reversible::rev_encode).
-                let inner = ty_str
-                    .trim_start_matches("Reverse<")
-                    .trim_end_matches('>')
-                    .to_string();
-                let inner_ty: syn::Type = syn::parse_str(&inner)
-                    .unwrap_or_else(|_| panic!("{ctx}: bad Reverse inner type {inner}"));
-                let w = inner_w(&inner);
-                let kind = inner_kind(&inner);
-                (
-                    quote! { buf.extend_from_slice(&self.#id.encode()); },
-                    quote! {{ let v = ::okm::Reverse(#inner_ty::rev_decode(&b[offset..offset+#w])); offset += #w; v }},
-                    quote! { #w },
-                    quote! { #w },
-                    Some(kind),
-                )
-            }
-            _ if ty_str.starts_with("VarInt<") => {
-                // VarInt<T> — LEB128 variable-length unsigned integer.
-                // Same regime as String: frame len is authoritative,
-                // FieldDesc width is 0. T ∈ {u16, u32, u64} (u8 is already
-                // minimal-width).
-                let inner = ty_str
-                    .trim_start_matches("VarInt<")
-                    .trim_end_matches('>')
-                    .to_string();
-                if !matches!(inner.as_str(), "u16" | "u32" | "u64") {
-                    panic!("{ctx}: VarInt<{inner}> unsupported (u16/u32/u64 only)");
+    quote! {
+        /// Named-field walk over the payload encoders (each arm body
+        /// reads `self.<field>`); the access methods call this with the
+        /// requested name order. Used by index key/value encoding.
+        #[allow(unused_variables, unused_mut, dead_code)]
+        pub fn __okm_encode_named(&self, names: &[&str], buf: &mut Vec<u8>) {
+            for n in names {
+                match *n {
+                    #enc_arms
+                    other => panic!("unknown field name: {other}"),
                 }
-                let inner_ty: syn::Type = syn::parse_str(&inner)
-                    .unwrap_or_else(|_| panic!("{ctx}: bad VarInt inner type {inner}"));
-                (
-                    quote! { buf.extend_from_slice(&self.#id.encode()); },
-                    quote! {{
-                        let (raw, n) = <#inner_ty as ::okm::VarIntEnc>::varint_decode(&b[offset..]);
-                        offset += n;
-                        ::okm::VarInt(raw)
-                    }},
-                    quote! { 0 },
-                    // Variable-length frame: len = actual byte length.
-                    quote! { self.#id.encode().len() },
-                    Some(quote! { ::okm::FieldType::VarInt }),
-                )
             }
-            _ if ty_str.starts_with("Quant<") => {
-                // Quant<f64, P> — fixed-point i64 wire (8 bytes, stable
-                // width across P). Composes with Reverse for descending
-                // float order.
-                // Accepted spellings: Quant<P> (inner is always f64) and
-                // the explicit Quant<f64, P>. The wire is i64 BE either way.
-                let args = ty_str
-                    .trim_start_matches("Quant<")
-                    .trim_end_matches('>')
-                    .to_string();
-                let (inner, p_str) = match args.split_once(',') {
-                    Some((i, p)) => (i.trim().to_string(), p.trim().to_string()),
-                    None => ("f64".to_string(), args),
-                };
-                let p: u32 = p_str
-                    .parse()
-                    .unwrap_or_else(|_| panic!("{ctx}: Quant precision P must be an integer literal, got {p_str}"));
-                if inner != "f64" {
-                    panic!("{ctx}: Quant<{inner}> unsupported (f64 only)");
-                }
-                let plit = proc_macro2::Literal::u32_unsuffixed(p);
-                (
-                    quote! { buf.extend_from_slice(&self.#id.encode()); },
-                    quote! {{
-                        let v = ::okm::Quant::<#p>::decode(&b[offset..offset+8]);
-                        offset += 8;
-                        v
-                    }},
-                    quote! { 8 },
-                    quote! { 8 },
-                    Some(quote! { ::okm::FieldType::Quant(#plit) }),
-                )
-            }
-            _ if ty_str.starts_with("Enum<") => {
-                // Enum<T> — one-byte explicit tag via the user's EnumTag
-                // impl (tags are a wire contract, never positional).
-                let inner = ty_str
-                    .trim_start_matches("Enum<")
-                    .trim_end_matches('>')
-                    .to_string();
-                let inner_ty: syn::Type = syn::parse_str(&inner)
-                    .unwrap_or_else(|_| panic!("{ctx}: bad Enum inner type {inner}"));
-                (
-                    quote! { buf.extend_from_slice(&self.#id.encode()); },
-                    quote! {{
-                        let v = ::okm::Enum::<#inner_ty>::decode(&b[offset..offset+1]);
-                        offset += 1;
-                        v
-                    }},
-                    quote! { 1 },
-                    quote! { 1 },
-                    Some(quote! { ::okm::FieldType::Enum }),
-                )
-            }
-            _ if ty_str == "Offset" || offset_base.is_some() => {
-                // Offset — #[kv_offset(base = N)] i64 fields stored as a u32
-                // displacement from the static base. Base and shape must
-                // agree: missing either half is a declaration error.
-                let base = offset_base
-                    .unwrap_or_else(|| panic!("{ctx}: {id} is Offset but lacks #[kv_offset(base = <i64>)]"));
-                if ty_str != "Offset" {
-                    panic!("{ctx}: {id} has #[kv_offset] but is not an Offset field");
-                }
-                let blit = proc_macro2::Literal::i64_unsuffixed(base);
-                (
-                    // Field value is the Offset newtype; the wire is the
-                    // u32 displacement. .0 is the absolute i64 value.
-                    quote! { buf.extend_from_slice(&::okm::offset_encode(self.#id.0, #blit)); },
-                    quote! {{ let v = ::okm::Offset(::okm::offset_decode(&b[offset..offset+4], #blit)); offset += 4; v }},
-                    quote! { 4 },
-                    quote! { 4 },
-                    Some(quote! { ::okm::FieldType::Offset(#blit) }),
-                )
-            }
-            _ if ty_str.starts_with("String") => {
-                // Variable-length regime: the TLV frame's `len u32` IS the
-                // length prefix — no second prefix on the wire. The frame
-                // header is emitted by the shared TLV loop, so here we only
-                // write/read the raw UTF-8 bytes.
-                (
-                    quote! { buf.extend_from_slice(self.#id.as_bytes()); },
-                    quote! {{
-                        let v = String::from_utf8(b[offset..offset+len].to_vec())
-                            .expect("TLV String field is valid UTF-8");
-                        offset += len;
-                        v
-                    }},
-                    // FieldDesc width is a static concept; the dynamic length
-                    // lives in the frame. 0 marks variable length.
-                    quote! { 0 },
-                    // Variable-length frame: len = actual byte length.
-                    quote! { self.#id.as_bytes().len() },
-                    Some(quote! { ::okm::FieldType::Str }),
-                )
-            }
-            other => panic!("{ctx}: unsupported type {other} (field {id})"),
-        };
-        fs.push(FieldEnc {
-            ident: id,
-            enc,
-            dec,
-            width: width.clone(),
-            len_expr,
-            kind,
-            // Fixed width → hot segment; width 0 (Str/VarInt) → cold.
-            hot: width.to_string() != "0",
-            default_expr: kv_default
-                .unwrap_or_else(|| quote! { <#ty as ::core::default::Default>::default() }),
-        });
+        }
     }
-    fs
 }
 
 /// FieldDesc table entries: `(name, FieldType, width)`, declaration order.
-fn field_desc_entries(fs: &[FieldEnc]) -> TS2 {
-    let rows = fs.iter().map(|f| {
+fn field_desc_entries(schema: &RowSchema) -> TS2 {
+    let rows = schema.fields.iter().map(|f| {
         let name = f.ident.to_string();
         let kind = f.kind.as_ref().expect("field kind");
         let w = &f.width;
@@ -488,87 +75,16 @@ fn field_desc_entries(fs: &[FieldEnc]) -> TS2 {
     quote! { &[ #(#rows),* ] }
 }
 
-pub fn derive(input: TokenStream) -> TokenStream {
-    let input = parse_macro_input!(input as DeriveInput);
-    let row_name = &input.ident;
-
-    // #[kv_ref(KeyType)] — the identity struct the row hangs off.
-    let key_ty: syn::Type = input
-        .attrs
-        .iter()
-        .find_map(|a| {
-            if a.path().is_ident("kv_ref") {
-                Some(a.parse_args::<syn::Type>().unwrap())
-            } else {
-                None
-            }
-        })
-        .expect("missing #[kv_ref(KeyType)]");
-
-    let named = match &input.data {
-        Data::Struct(s) => match &s.fields {
-            Fields::Named(f) => f,
-            _ => panic!("RowEncode only supports structs with named fields"),
-        },
-        _ => panic!("RowEncode only supports structs"),
-    };
-    let fs = field_encoders(named, "RowEncode");
-    let names: Vec<_> = fs.iter().map(|f| &f.ident).collect();
-    let name_strs: Vec<_> = fs.iter().map(|f| f.ident.to_string()).collect();
-    let widths: Vec<_> = fs.iter().map(|f| &f.width).collect();
-
-    // One match arm per payload field name — each arm appends that field's
-    // raw encoding (no TLV frame; the index segment is a plain
-    // concatenation, order = the requested name order). Shared by all
-    // index declarations and the inherent __okm_encode_named walk.
-    let mut enc_arms = quote! {};
-    for (i, f) in fs.iter().enumerate() {
-        let fname = &name_strs[i];
-        let enc = &f.enc;
-        enc_arms.extend(quote! {
-            #fname => { #enc }
-        });
-    }
-    let row_desc = field_desc_entries(&fs);
-
-    // #[kv_layout(version = N)] — row header layout version. Absent = 1.
-    // Bumping it is the signal that the hot/cold field set changed; decode
-    // accepts payloads written by any *older* version (append-only rule:
-    // new fields go to the tail of their segment, missing ones get their
-    // declared default) and rejects anything newer.
-    let layout_version: u8 = input
-        .attrs
-        .iter()
-        .find(|a| a.path().is_ident("kv_layout"))
-        .map(|a| {
-            let mut v = None;
-            let _ = a.parse_nested_meta(|meta| {
-                if meta.path.is_ident("version") {
-                    let lit: syn::LitInt = meta.value()?.parse()?;
-                    v = Some(lit.base10_parse::<u8>().expect("kv_layout: version must be a u8 literal"));
-                }
-                Ok(())
-            });
-            v.expect("kv_layout: expected `version = <u8 literal>`")
-        })
-        .unwrap_or(1);
-    let ver_lit = proc_macro2::Literal::u8_unsuffixed(layout_version);
-    let ver_str = layout_version.to_string();
+/// ---- encode: [version u8][hot_len u16 BE][hot segment][cold TLV] ----
+fn emit_payload_encode(schema: &RowSchema) -> TS2 {
+    let ver_lit = proc_macro2::Literal::u8_unsuffixed(schema.layout_version);
 
     // Segment split. Hot = fixed-width fields (contiguous, O(1) offsets);
     // cold = variable-width fields (TLV frames, tag = declaration index
     // over ALL fields so tags stay stable across the hot/cold split).
-    let hot_fields: Vec<&FieldEnc> = fs.iter().filter(|f| f.hot).collect();
-    let cold_fields: Vec<&FieldEnc> = fs.iter().filter(|f| !f.hot).collect();
-    // Hot width as a numeric literal — widths are fixed `quote!{ N }`
-    // tokens, so parsing the token text is exact for every supported kind.
-    let hot_width_total: usize = hot_fields
-        .iter()
-        .map(|f| f.width.to_string().parse::<usize>().unwrap_or(0))
-        .sum();
-    let hot_width_lit = proc_macro2::Literal::usize_unsuffixed(hot_width_total);
+    let hot_fields: Vec<_> = schema.fields.iter().filter(|f| f.hot).collect();
+    let cold_fields: Vec<_> = schema.fields.iter().filter(|f| !f.hot).collect();
 
-    // ---- encode: [version u8][hot_len u16 BE][hot segment][cold TLV] ----
     let mut hot_enc = quote! {};
     for f in &hot_fields {
         let enc = &f.enc;
@@ -577,7 +93,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
     let mut cold_enc = quote! {};
     for f in &cold_fields {
         let tag = proc_macro2::Literal::u8_unsuffixed(
-            fs.iter().position(|x| std::ptr::eq(x, *f)).unwrap() as u8,
+            schema.fields.iter().position(|x| std::ptr::eq(x, *f)).unwrap() as u8,
         );
         let len = &f.len_expr;
         let enc = &f.enc;
@@ -587,7 +103,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
             #enc
         });
     }
-    let encode_body = if hot_fields.is_empty() && cold_fields.is_empty() {
+    if hot_fields.is_empty() && cold_fields.is_empty() {
         // Degenerate: header still present, hot_len 0, cold empty.
         quote! {
             buf.push(#ver_lit);
@@ -603,12 +119,20 @@ pub fn derive(input: TokenStream) -> TokenStream {
             buf[1..3].copy_from_slice(&hot_len.to_be_bytes());
             #cold_enc
         }
-    };
+    }
+}
 
-    // ---- decode: version check, hot walk, cold TLV walk, defaults ----
-    // Each field becomes `let <name> = if <present> { <dec_val> } else {
-    // <default> };` — dec blocks read from b[offset..], advance offset, and
-    // yield the value.
+/// ---- decode: version check, hot walk, cold TLV walk, defaults ----
+/// Each field becomes `let <name> = if <present> { <dec_val> } else {
+/// <default> };` — dec blocks read from b[offset..], advance offset, and
+/// yield the value.
+fn emit_payload_decode(schema: &RowSchema) -> TS2 {
+    let ver_lit = proc_macro2::Literal::u8_unsuffixed(schema.layout_version);
+    let ver_str = schema.layout_version.to_string();
+
+    let hot_fields: Vec<_> = schema.fields.iter().filter(|f| f.hot).collect();
+    let cold_fields: Vec<_> = schema.fields.iter().filter(|f| !f.hot).collect();
+
     let mut hot_dec = quote! {};
     for f in &hot_fields {
         let id = &f.ident;
@@ -628,7 +152,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
     let mut cold_dec = quote! {};
     for f in &cold_fields {
         let tag = proc_macro2::Literal::u8_unsuffixed(
-            fs.iter().position(|x| std::ptr::eq(x, *f)).unwrap() as u8,
+            schema.fields.iter().position(|x| std::ptr::eq(x, *f)).unwrap() as u8,
         );
         let id = &f.ident;
         let dec = &f.dec;
@@ -650,7 +174,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
             };
         });
     }
-    let decode_body = quote! {
+    quote! {
         let mut offset = 0usize;
         let ver = b[0];
         assert!(
@@ -667,57 +191,17 @@ pub fn derive(input: TokenStream) -> TokenStream {
         let mut cold_pos = offset;
         #cold_dec
         let _ = cold_pos;
-    };
-
-    // #[kv_index(...)]: slots start at 1 (0 is the primary table) and
-    // increment in attribute-declaration order.
-    let idx_decls: Vec<IdxDecl> = input
-        .attrs
-        .iter()
-        .filter(|a| a.path().is_ident("kv_index"))
-        .flat_map(parse_index_attr)
-        .collect();
-
-    // Validate that every index field/includes name refers to a real row
-    // payload field (compile-time; the name list is right here).
-    for idx in &idx_decls {
-        for n in idx.fields.iter().chain(&idx.includes) {
-            if !name_strs.contains(n) {
-                panic!("kv_index[{}]: field `{n}` is not a row payload field", idx.ident);
-            }
-        }
-        // Variable-length payload fields (String, VarInt — width 0) have no
-        // static width, so a field declared AFTER one cannot be located
-        // within the index segment: the variable-length field may appear
-        // at most once and must be the LAST field. Fields before it are
-        // fixed-width and locate fine (text-first regime, ADR-0005: the
-        // trailing primary key still cuts off cleanly from the tail).
-        // The `includes` value segment has the same shape, same rule.
-        for (list, kw) in [(&idx.fields, "fields"), (&idx.includes, "includes")] {
-            let fslice: &[String] = list;
-            if let Some((vi, _)) = fslice
-                .iter()
-                .enumerate()
-                .find(|(_, n)| variable_width(&fs, &name_strs, n))
-            {
-                if vi != fslice.len() - 1 {
-                    panic!(
-                        "kv_index[{}]: variable-length field `{}` in {kw} must be the last field — fields after it cannot be located (no static width)",
-                        idx.ident, list[vi]
-                    );
-                }
-                if fslice[..vi].iter().any(|n| variable_width(&fs, &name_strs, n)) {
-                    panic!(
-                        "kv_index[{}]: at most one variable-length field allowed in {kw}",
-                        idx.ident
-                    );
-                }
-            }
-        }
     }
+}
+
+/// One marker struct + `KvIndex` impl per declared `#[kv_index]` (slot
+/// order).
+fn emit_index_structs(schema: &RowSchema) -> TS2 {
+    let row_name = &schema.row_name;
+    let key_ty = &schema.key_ty;
 
     let mut index_out = quote! {};
-    for (n, idx) in idx_decls.iter().enumerate() {
+    for (n, idx) in schema.indexes.iter().enumerate() {
         let slot_lit = proc_macro2::Literal::u8_unsuffixed(n as u8 + 1);
         let iname = &idx.ident;
         let struct_ident = format_ident!("__OkmIndex_{}_{}", row_name, iname);
@@ -776,11 +260,15 @@ pub fn derive(input: TokenStream) -> TokenStream {
             }
         });
     }
+    index_out
+}
 
-    // index_entries: statically expands one (entry_key, entry_value) pair
-    // per declared #[kv_index] (slot order) — no runtime registry needed;
-    // the declaration is the registry.
-    let entry_calls = idx_decls.iter().map(|idx| {
+/// index_entries: statically expands one (entry_key, entry_value) pair
+/// per declared #[kv_index] (slot order) — no runtime registry needed;
+/// the declaration is the registry.
+fn emit_index_entries(schema: &RowSchema) -> TS2 {
+    let row_name = &schema.row_name;
+    let entry_calls = schema.indexes.iter().map(|idx| {
         let struct_ident = format_ident!("__OkmIndex_{}_{}", row_name, idx.ident);
         quote! {
             out.push((
@@ -789,20 +277,44 @@ pub fn derive(input: TokenStream) -> TokenStream {
             ));
         }
     });
-    let row_impl = quote! {
+    quote! {
+        fn index_entries(key: &Self::Key, row: &Self, ns: u16) -> Vec<(Vec<u8>, Vec<u8>)> {
+            let mut out = Vec::new();
+            #(#entry_calls)*
+            out
+        }
+    }
+}
+
+/// The inherent named-field walk + the full `Row` trait impl, assembled
+/// from the other emit functions' output.
+fn emit_row_impl(schema: &RowSchema) -> TS2 {
+    let row_name = &schema.row_name;
+    let key_ty = &schema.key_ty;
+    let ver_lit = proc_macro2::Literal::u8_unsuffixed(schema.layout_version);
+    let row_desc = field_desc_entries(schema);
+    let encode_body = emit_payload_encode(schema);
+    let decode_body = emit_payload_decode(schema);
+    // Hot width as a numeric literal — widths are fixed `quote!{ N }`
+    // tokens, so parsing the token text is exact for every supported kind.
+    let hot_width_total: usize = schema
+        .fields
+        .iter()
+        .filter(|f| f.hot)
+        .map(|f| f.width.to_string().parse::<usize>().unwrap_or(0))
+        .sum();
+    let hot_width_lit = proc_macro2::Literal::usize_unsuffixed(hot_width_total);
+    let named_walk = emit_named_walk(schema);
+    let index_structs = emit_index_structs(schema);
+    let index_entries = emit_index_entries(schema);
+    let names: Vec<_> = schema.fields.iter().map(|f| &f.ident).collect();
+    let name_strs: Vec<_> = schema.fields.iter().map(|f| f.ident.to_string()).collect();
+    let widths: Vec<_> = schema.fields.iter().map(|f| &f.width).collect();
+
+    quote! {
+        #index_structs
         impl #row_name {
-            /// Named-field walk over the payload encoders (each arm body
-            /// reads `self.<field>`); the access methods call this with the
-            /// requested name order. Used by index key/value encoding.
-            #[allow(unused_variables, unused_mut, dead_code)]
-            pub fn __okm_encode_named(&self, names: &[&str], buf: &mut Vec<u8>) {
-                for n in names {
-                    match *n {
-                        #enc_arms
-                        other => panic!("unknown field name: {other}"),
-                    }
-                }
-            }
+            #named_walk
         }
         impl ::okm::Row for #row_name {
             type Key = #key_ty;
@@ -819,17 +331,13 @@ pub fn derive(input: TokenStream) -> TokenStream {
                 #decode_body
                 Self { #(#names),* }
             }
-            fn index_entries(key: &Self::Key, row: &Self, ns: u16) -> Vec<(Vec<u8>, Vec<u8>)> {
-                let mut out = Vec::new();
-                #(#entry_calls)*
-                out
-            }
+            #index_entries
         }
-    };
-
-    quote! {
-        #row_impl
-        #index_out
     }
-    .into()
+}
+
+pub fn derive(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    let schema = parse_schema(input);
+    emit_row_impl(&schema).into()
 }
