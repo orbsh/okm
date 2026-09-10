@@ -1,7 +1,7 @@
 //! Secondary indexes (access methods) and the [`Row`] payload contract.
 //!
 //! Index entry layout (ADR-0005/0006): key
-//! `[ns+slot 2B][index fields BE][key prefix]`, value = the includes
+//! `[ns 2B][slot 1B][index fields BE][key prefix]`, value = the includes
 //! segment (raw payload-field encodings, empty when no `includes`).
 //!
 //! - **Index fields** come from the row payload, encoded by name in the
@@ -124,7 +124,7 @@ pub trait KvIndex {
     /// The row type this access method reads its index fields from.
     type Row: Row<Key = Self::Key>;
     /// Item-local slot, allocated by attribute order (1, 2, …; 0 = primary).
-    /// This method's ns = table_ns + SLOT.
+    /// This access method's slot byte in the entry header (1, 2, …; 0 = primary).
     const SLOT: u8;
     /// Indexed payload fields, in sort order.
     const FIELDS: &'static [&'static str];
@@ -176,17 +176,16 @@ pub trait KvIndex {
         }
     }
 
-    /// ns of this access method: table segment + slot.
-    fn index_ns(table_ns: u16) -> u16 {
-        table_ns.wrapping_add(Self::SLOT as u16)
-    }
-
-    /// Full entry key: `[ns+slot 2B][index fields][key prefix]`.
+    /// Full entry key: `[ns 2B][slot 1B][index fields][key prefix]` —
+    /// the 1-byte slot discriminates access methods *within* the table's
+    /// ns segment; the table's ns allocation is untouched by how many
+    /// indexes exist (ADR-0005).
     fn entry_key(table_ns: u16, key: &Self::Key, row: &Self::Row) -> Vec<u8> {
         let fb = Self::fields_bytes(key, row);
         let kp = Self::key_prefix_bytes(key);
-        let mut buf = Vec::with_capacity(2 + fb.len() + kp.len());
-        buf.extend_from_slice(&Self::index_ns(table_ns).to_be_bytes());
+        let mut buf = Vec::with_capacity(3 + fb.len() + kp.len());
+        buf.extend_from_slice(&table_ns.to_be_bytes());
+        buf.push(Self::SLOT);
         buf.extend_from_slice(&fb);
         buf.extend_from_slice(&kp);
         buf
@@ -207,8 +206,9 @@ pub trait KvIndex {
     /// (e.g. `7u32.to_be_bytes()` for a u32 field; empty slice = whole
     /// index). Must not exceed the index-field segment width.
     fn entry_prefix(table_ns: u16, encoded: &[u8]) -> Vec<u8> {
-        let mut buf = Vec::with_capacity(2 + encoded.len());
-        buf.extend_from_slice(&Self::index_ns(table_ns).to_be_bytes());
+        let mut buf = Vec::with_capacity(3 + encoded.len());
+        buf.extend_from_slice(&table_ns.to_be_bytes());
+        buf.push(Self::SLOT);
         buf.extend_from_slice(encoded);
         buf
     }

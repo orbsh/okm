@@ -1,5 +1,5 @@
 //! 二级索引集成测试（ADR-0006 Row 形状）：RowEncode 派生、Table 装配点
-//! put/scan 回表、entry 布局 hex 锁定（entry = [ns+slot 2B][索引字段]
+//! put/scan 回表、entry 布局 hex 锁定（entry = [ns 2B][slot 1B][索引字段]
 //! [key前缀]，value = includes 段）、最左前缀扫描、includes 覆盖、
 //! 截断 key 前缀（尾段去冗余，前提：剩余字段已唯一）。
 
@@ -102,20 +102,20 @@ fn table_put_writes_primary_and_indexes() {
     let (k, r) = mk_user(101, 100);
     t.put(&k, &r);
 
-    // 主键写入 slot 0：头 [0,9] + key payload
+    // 主键写入 slot 0：头 [0,9,0]（ns 2B + slot 0）+ key payload
     let kl = <UserKey as KeyEncode>::KEY_LEN;
     let pk = t.primary_key(&k);
-    assert_eq!(&pk[..2], &[0, 9]);
-    assert_eq!(&pk[2..], &k.encode()[..]);
+    assert_eq!(&pk[..3], &[0, 9, 0]);
+    assert_eq!(&pk[3..], &k.encode()[..]);
     // value = 行载荷 TLV，可解码回原行
     let raw = t.store().get(&pk).unwrap();
     let dec = <User as Row>::decode_payload(&raw);
     assert_eq!(dec, r);
 
-    // 索引 entry：ns = 9+1（by_reputation）
+    // 索引 entry：ns 9 + slot 1（by_reputation）
     // entry key 尾部 = 完整主键 id；value = includes 段（无 includes → 空）
     let e1 = t.index_key::<ByReputation>(&k, &r);
-    assert_eq!(&e1[..2], &(10u16).to_be_bytes());
+    assert_eq!(&e1[..3], &[0, 9, 1]); // ns=9、slot=1
     assert_eq!(&e1[e1.len() - kl..], &k.encode()[..]);
     assert!(t.store().get(&e1).is_some());
 
@@ -170,38 +170,38 @@ fn scan_via_index_returns_rows() {
 
 #[test]
 fn entry_layout_hex_lock() {
-    // 直接锁定 by_reputation entry 字节布局：[ns+slot 2B][reputation 4B][id 8B]
+    // 直接锁定 by_reputation entry 字节布局：[ns 2B][slot 1B][reputation 4B][id 8B]
     let (k, r) = mk_user(101, 100);
     let kl = <UserKey as KeyEncode>::KEY_LEN; // 8
     assert_eq!(kl, 8);
 
     let e = ByReputation::entry_key(9, &k, &r);
-    assert_eq!(&e[..2], &(10u16).to_be_bytes()); // ns = 9+1（slot 1）
-    assert_eq!(&e[2..6], &100u32.to_be_bytes()); // 索引字段 reputation 来自 payload
-    assert_eq!(&e[6..], &k.encode()[..]); // key 前缀取满 = 完整主键
-    assert_eq!(e.len(), 2 + 4 + kl);
+    assert_eq!(&e[..3], &[0, 9, 1]); // ns=9、slot=1
+    assert_eq!(&e[3..7], &100u32.to_be_bytes()); // 索引字段 reputation 来自 payload
+    assert_eq!(&e[7..], &k.encode()[..]); // key 前缀取满 = 完整主键
+    assert_eq!(e.len(), 3 + 4 + kl);
     // value：无 includes → 空
     assert!(ByReputation::entry_value(&k, &r).is_empty());
 
-    // Post.by_timeline：ns = 12+1，索引字段 author_id(8B)+created_at(8B)
+    // Post.by_timeline：ns 12 + slot 1，索引字段 author_id(8B)+created_at(8B)
     // （均来自 payload），key 前缀取满 id(8B)；value = includes(title_len) 段
     let (pk, pr) = mk_post(500, 7, 1700000000, 42);
     let e2 = ByTimeline::entry_key(12, &pk, &pr);
-    assert_eq!(&e2[..2], &(13u16).to_be_bytes());
-    assert_eq!(&e2[2..10], &7u64.to_be_bytes()); // author_id 来自 payload
-    assert_eq!(&e2[10..18], &1700000000u64.to_be_bytes()); // created_at 来自 payload
-    assert_eq!(&e2[18..], &pk.encode()[..]); // key 前缀取满
-    assert_eq!(e2.len(), 2 + 8 + 8 + 8);
+    assert_eq!(&e2[..3], &[0, 12, 1]); // ns=12、slot=1
+    assert_eq!(&e2[3..11], &7u64.to_be_bytes()); // author_id 来自 payload
+    assert_eq!(&e2[11..19], &1700000000u64.to_be_bytes()); // created_at 来自 payload
+    assert_eq!(&e2[19..], &pk.encode()[..]); // key 前缀取满
+    assert_eq!(e2.len(), 3 + 8 + 8 + 8);
     assert_eq!(ByTimeline::entry_value(&pk, &pr), 42u32.to_be_bytes().to_vec());
 
     // Session.by_kind：ns = 15+1，索引字段 kind(1B)，key 前缀截断到
     // session_id(8B)——user_id 从尾段去掉（去冗余）
     let (sk, sr) = mk_session(9, 777, 3);
     let e3 = ByKind::entry_key(15, &sk, &sr);
-    assert_eq!(&e3[..2], &(16u16).to_be_bytes());
-    assert_eq!(&e3[2..3], &[3]); // kind 来自 payload
-    assert_eq!(&e3[3..], &777u64.to_be_bytes()); // 截断尾段 = session_id
-    assert_eq!(e3.len(), 2 + 1 + 8);
+    assert_eq!(&e3[..3], &[0, 15, 1]); // ns=15、slot=1
+    assert_eq!(&e3[3..4], &[3]); // kind 来自 payload
+    assert_eq!(&e3[4..], &777u64.to_be_bytes()); // 截断尾段 = session_id
+    assert_eq!(e3.len(), 3 + 1 + 8);
 }
 
 #[test]
@@ -282,7 +282,7 @@ fn truncated_key_prefix_drops_redundant_tail() {
 
 #[test]
 fn slot_allocation() {
-    // slot 从 1 起：0 保留给主表；ns = table_ns + slot 区分索引
+    // slot 从 1 起：0 保留给主表；slot 字节在表 ns 段内区分索引
     assert_eq!(<ByReputation as KvIndex>::SLOT, 1);
     assert_eq!(<ByTimeline as KvIndex>::SLOT, 1);
     assert_eq!(<ByKind as KvIndex>::SLOT, 1);
@@ -357,17 +357,17 @@ fn variable_length_index_text_first() {
         t.put(k, r);
     }
 
-    // entry 布局：[ns+slot 2B][city 4B][name 裸 UTF-8][id 8B]
+    // entry 布局：[ns 2B][slot 1B][city 4B][name 裸 UTF-8][id 8B]
     // value：无 includes → 空
     let kl = <DocKey as KeyEncode>::KEY_LEN;
     assert_eq!(kl, 8);
     let (k, r) = &rows[0];
     let e = ByCityName::entry_key(21, k, r);
-    assert_eq!(&e[..2], &(22u16).to_be_bytes()); // ns = 21+1
-    assert_eq!(&e[2..6], &10u32.to_be_bytes()); // city 定宽可定位
-    assert_eq!(&e[6..11], b"alpha"); // name 居末：裸字节，无长度前缀
-    assert_eq!(&e[11..], &k.encode()[..]); // 尾部主键干净切出
-    assert_eq!(e.len(), 2 + 4 + 5 + kl);
+    assert_eq!(&e[..3], &[0, 21, 1]); // ns=21、slot=1
+    assert_eq!(&e[3..7], &10u32.to_be_bytes()); // city 定宽可定位
+    assert_eq!(&e[7..12], b"alpha"); // name 居末：裸字节，无长度前缀
+    assert_eq!(&e[12..], &k.encode()[..]); // 尾部主键干净切出
+    assert_eq!(e.len(), 3 + 4 + 5 + kl);
 
     // 前缀扫描 "alpha" 命中 alpha + alphabet（共享前缀 = 同一字典序区间）
     let p = ByCityName::entry_prefix(21, &10u32.to_be_bytes());
@@ -425,14 +425,14 @@ fn function_index_normalizes_both_sides() {
         t.put(k, r);
     }
 
-    // entry 布局：[ns+slot 2B][func 结果裸字节][id 8B]——无 fields 段
+    // entry 布局：[ns 2B][slot 1B][func 结果裸字节][id 8B]——无 fields 段
     let kl = <DocKey as KeyEncode>::KEY_LEN;
     let (k, r) = &rows[0];
     let e = ByLower::entry_key(25, k, r);
-    assert_eq!(&e[..2], &(26u16).to_be_bytes());
-    assert_eq!(&e[2..7], b"apple"); // 归一化后的结果
-    assert_eq!(&e[7..], &k.encode()[..]);
-    assert_eq!(e.len(), 2 + 5 + kl);
+    assert_eq!(&e[..3], &[0, 25, 1]); // ns=25、slot=1
+    assert_eq!(&e[3..8], b"apple"); // 归一化后的结果
+    assert_eq!(&e[8..], &k.encode()[..]);
+    assert_eq!(e.len(), 3 + 5 + kl);
     assert_eq!(ByLower::FUNC, "lower_name");
 
     // 查询端探针：同一函数归一化 probe 行 → 前缀扫描 → 回表
