@@ -128,5 +128,36 @@ to full 16 bits). The trigger is "edge needs a new discriminator", never
       (`x-okm-column-order` carries the authoritative column order);
       macro expansion dump to disk via
       `OKM_DERIVE_DUMP=<dir>` (formatted impl source per derive).
-- [ ] Publish to crates.io (`okm`, `okm-derive`).
+- [ ] Publish to crates.io (`okm-core`, `okm-derive`).
 - [x] Push to github.com/orbsh/okm (repo referenced by wiki cross-links).
+
+## Phase 5 — Event layer (ADR-0008): reduce rename, subscribe channels, okm-stream
+
+- [ ] Rename `okm` → `okm-core`: workspace member, directory, crate name,
+      all `okm::` references **including ADRs** (user decision: update
+      everything so greps stay truthful). Lands first; later phases build
+      on the new name.
+- [ ] Rename aggregate → reduce (`#[kv_reduce]`, `ReduceLogic`,
+      `ReduceCodec`, `reduce_get`, `scan_reduces`): semantics unchanged,
+      name aligned to the role (stateful reversible reduction over the
+      row-event stream).
+- [ ] `#[kv_subscribe]`: per-annotated row type sends uniform-format events
+      in the write path (sync `try_send`, no handler at the annotation
+      site — consumers own the logic, combinators are the adapter); ≥1
+      declaration emits a per-row-type `OnceLock` global mpsc + consumer
+      accessor. Core stays synchronous; delivery is best-effort, policy
+      declared by the subscriber.
+- [ ] `okm-stream` crate: consumes the emitted receivers; Rx-style
+      combinators (map/filter/merge/scan) + push-mode multi-table
+      fan-in. Zero storage responsibility; pull-mode fan-in stays in
+      `okm-query`.
+- [ ] Doc pass: INTEGRATION/MODELING twins updated for the event layer
+      (inline exactly-once vs channel no-guarantee boundary; reduce
+      never a channel consumer; trigger asymmetry).
+- [ ] Query recipes doc (okm-query): prefix scan + `group_by` composed
+      into the SQL GROUP BY recipe (multi-level rollup by group-segment
+      prefix; reduce's compile-time GROUP vs read-time `group_by` vs
+      index-sort grouping — same encoders, different landing). The
+      where-boundary record: prefix = physical where (free, selectivity
+      belongs in key layout), `.filter()` = in-memory where (stdlib,
+      no wrapper needed).
