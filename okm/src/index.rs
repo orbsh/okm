@@ -60,6 +60,40 @@ macro_rules! index_func_uint {
 
 index_func_uint!(u8, u16, u32, u64);
 
+/// The set of index entries one function-index invocation produces.
+/// Single values yield one entry (the classic function index); iterators
+/// of values (`Vec<String>`, token streams) yield one entry each — the
+/// multi-entry regime (inverted index, multi-valued fields). A type
+/// cannot implement both arms: `Vec<V>` never implements
+/// `IndexFuncResult`, so the two impls do not overlap.
+pub trait IndexFuncValues {
+    /// Each element is one entry's index-segment encoding.
+    fn func_values(self) -> Vec<Vec<u8>>;
+}
+
+macro_rules! index_func_values_single {
+    ($($t:ty),*) => {$(impl IndexFuncValues for $t {
+        fn func_values(self) -> Vec<Vec<u8>> {
+            let mut buf = Vec::new();
+            IndexFuncResult::encode_index(&self, &mut buf);
+            vec![buf]
+        }
+    })*};
+}
+index_func_values_single!(String, u8, u16, u32, u64);
+
+impl<V: IndexFuncResult> IndexFuncValues for Vec<V> {
+    fn func_values(self) -> Vec<Vec<u8>> {
+        self.into_iter()
+            .map(|v| {
+                let mut buf = Vec::new();
+                v.encode_index(&mut buf);
+                buf
+            })
+            .collect()
+    }
+}
+
 /// Value-side payload contract (ADR-0004/0006): a row = identity (its key)
 /// plus payload fields, laid out as two segments behind a header —
 /// `[version u8][hot_len u16 BE][hot segment][cold segment]`:
@@ -199,6 +233,15 @@ pub trait KvIndex {
             Self::encode_named(key, row, Self::INCLUDES, &mut buf);
         }
         buf
+    }
+
+    /// All entries this access method produces for one row: plain and
+    /// single-value function indexes yield one `(key, value)` pair;
+    /// multi-value function indexes yield one pair per produced value —
+    /// the write side (`Table::put`/`delete` via `index_entries`) just
+    /// iterates. Each entry shares the same includes value.
+    fn entry_pairs(table_ns: u16, key: &Self::Key, row: &Self::Row) -> Vec<(Vec<u8>, Vec<u8>)> {
+        vec![(Self::entry_key(table_ns, key, row), Self::entry_value(key, row))]
     }
 
     /// Scan prefix for a leftmost-prefix match over the index fields:

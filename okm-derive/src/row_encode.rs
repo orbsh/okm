@@ -209,12 +209,50 @@ fn emit_index_structs(schema: &RowSchema) -> TS2 {
         let includes: Vec<&String> = idx.includes.iter().collect();
         let key_names: Vec<&String> = idx.key.iter().collect();
         let slot_doc = format!("{}", n + 1);
+        // Function indexes may produce multiple values per row (multi-
+        // entry regime): override entry_pairs to fan out. Plain field
+        // indexes use the trait default (one pair).
+        let pairs_impl = if idx.func.is_empty() {
+            quote! {}
+        } else {
+            let fpath = syn::parse_str::<syn::Expr>(&idx.func)
+                .unwrap_or_else(|e| panic!("kv_index[{}]: bad func path `{}`: {e}", idx.ident, idx.func));
+            quote! {
+                fn entry_pairs(
+                    table_ns: u16,
+                    key: &Self::Key,
+                    row: &Self::Row,
+                ) -> Vec<(Vec<u8>, Vec<u8>)> {
+                    // One (key, value) pair per produced value; every
+                    // entry shares the same includes value. Key =
+                    // [ns 2B][slot][value][key prefix].
+                    let __okm_fv = #fpath(row);
+                    let __okm_vals = ::okm::IndexFuncValues::func_values(__okm_fv);
+                    let mut __okm_out = Vec::with_capacity(__okm_vals.len());
+                    let __okm_value = Self::entry_value(key, row);
+                    for __okm_seg in __okm_vals {
+                        let mut __okm_k = Vec::with_capacity(
+                            3 + __okm_seg.len() + Self::key_prefix_width(),
+                        );
+                        __okm_k.extend_from_slice(&table_ns.to_be_bytes());
+                        __okm_k.push(Self::SLOT);
+                        __okm_k.extend_from_slice(&__okm_seg);
+                        __okm_k.extend_from_slice(&Self::key_prefix_bytes(key));
+                        __okm_out.push((__okm_k, __okm_value.clone()));
+                    }
+                    __okm_out
+                }
+            }
+        };
         let func_str = idx.func.clone();
-        // Function-index regime: the sort segment is `func(&row)`'s result,
-        // encoded via IndexFuncResult. The generated encode_named ignores
-        // the requested names (the function replaces them); scan_covered
-        // still works because the value segment (includes) stays field
-        // encoded — with no includes the value is empty.
+        // Function-index regime: the sort segment is `func(&row)`'s
+        // result(s), each encoded via IndexFuncResult — a single value
+        // yields one entry, an iterator yields one entry per element
+        // (multi-entry regime: inverted index, multi-valued fields).
+        // The generated encode_named ignores the requested names (the
+        // function replaces them); scan_covered still works because the
+        // value segment (includes) stays field encoded — with no
+        // includes the value is empty.
         let encode_named_body = if idx.func.is_empty() {
             // The field encoders reference `self.#id` (shared with the
             // payload TLV loop), so the walk lives in an inherent method
@@ -224,11 +262,17 @@ fn emit_index_structs(schema: &RowSchema) -> TS2 {
             let fpath = syn::parse_str::<syn::Expr>(&idx.func)
                 .unwrap_or_else(|e| panic!("kv_index[{}]: bad func path `{}`: {e}", idx.ident, idx.func));
             quote! {{
-                // Function index: result → IndexFuncResult encoding (sort
-                // order = the result encoding's order). The same path is
-                // what the query side calls on its probe value.
+                // Function index: result(s) → index-segment encoding. A
+                // single value encodes once; a Vec encodes its first value
+                // here (encode_named only feeds scan_covered's sort
+                // segment) — the multi-entry fan-out lives in
+                // entry_pairs. The same path is what the query side calls
+                // on its probe value.
                 let __okm_fv = #fpath(row);
-                ::okm::IndexFuncResult::encode_index(&__okm_fv, buf);
+                match ::okm::IndexFuncValues::func_values(__okm_fv).pop() {
+                    Some(__okm_seg) => buf.extend_from_slice(&__okm_seg),
+                    None => {}
+                }
             }}
         };
         // For Reverse<T> payload fields the payload encoder reads
@@ -257,24 +301,23 @@ fn emit_index_structs(schema: &RowSchema) -> TS2 {
                 ) {
                     #encode_named_body
                 }
+                #pairs_impl
             }
         });
     }
     index_out
 }
 
-/// index_entries: statically expands one (entry_key, entry_value) pair
+/// index_entries: statically expands every (entry_key, entry_value) pair
 /// per declared #[kv_index] (slot order) — no runtime registry needed;
-/// the declaration is the registry.
+/// the declaration is the registry. Function indexes may fan out to
+/// multiple pairs per row (multi-entry regime).
 fn emit_index_entries(schema: &RowSchema) -> TS2 {
     let row_name = &schema.row_name;
     let entry_calls = schema.indexes.iter().map(|idx| {
         let struct_ident = format_ident!("__OkmIndex_{}_{}", row_name, idx.ident);
         quote! {
-            out.push((
-                <#struct_ident as ::okm::KvIndex>::entry_key(ns, key, row),
-                <#struct_ident as ::okm::KvIndex>::entry_value(key, row),
-            ));
+            out.extend(<#struct_ident as ::okm::KvIndex>::entry_pairs(ns, key, row));
         }
     });
     quote! {
