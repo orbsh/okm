@@ -32,7 +32,7 @@ SQL 的核心价值不是执行性能，而是关系模型交付的可读性、�
 
 - `KeyEncode` — 定宽 key 编码（`u32` / `u64` / `[u8; N]`），大端序，编译期 `KEY_LEN` / `FIELD_WIDTHS`，`encode_prefix_named` 截断原语。
 - `EdgeEncode` — 双向边，各端点身份宽度可独立声明（`#[kv_head(...)]`），2 字节方向位头部，查询方法生成在端点类型上。
-- `Collection<S, E>` — 组装点：引擎 + 边类型 = 一条关系的操作面（`link` / `unlink` / `forward` / `reverse` / `reverse_prefix`）。
+- `EdgeTable<S, E>` — 组装点：引擎 + 边类型 = 一条关系的操作面（`link` / `unlink` / `forward` / `reverse` / `reverse_prefix`）。
 - 引擎后端走 Cargo feature：`fjall`（同步 `FjallStore`）、`slatedb`（异步 `SlatedbStore` + `AsyncCollection`），测试用内存 `MockStore`。
 
 路线图（设计已定，尚未实现——[ADR-0006](docs/adr/0006-row-node-model.md)、[ADR-0004](docs/adr/0004-value-side-and-wrappers.md)、[ADR-0005](docs/adr/0005-secondary-index-slots.md)）：
@@ -40,51 +40,21 @@ SQL 的核心价值不是执行性能，而是关系模型交付的可读性、�
 - `RowEncode` — 单宏声明行（Node）：`#[kv_ref]` 身份 + 载荷字段 + `#[kv_index(...)]` 访问方法；`ValueEncode` 宏并入其中（版本化 payload、TLV 扩展区、字段 wrapper 作为编码规则保留）。
 - 字段级编码 wrapper（`Enum<T>`、`Offset<T>`、`Delta<T>`、`VarInt<T>`、`Reverse<T>` …）。
 - 二级索引（访问方法）——**行 struct** 上的 `#[kv_index(name { fields(…), includes(…), key(…) })]`：对 **payload 字段**（按声明序）建组合索引；无 per-index slot/ns——2 字节表命名空间已区分所有 entry；最左前缀扫描；`key(…)` 把 key 尾部携带的主键截断到命名子集（`encode_prefix_named`），默认取满主键；`includes` 覆盖索引定位为高扇出查询的物化视图。
-- `Table<S, K, R>` 行装配点与边 `Collection` 并列；变长载荷/索引字段（`String`），key 保持定宽。
+- `Table<S, K, R>` 行装配点与边 `EdgeTable` 并列；变长载荷/索引字段（`String`），key 保持定宽。
 - 多引擎混用——同一进程内不同 ns 段可绑不同引擎（交易走 fjall、日志走 slatedb）；原子性止于单引擎内，ns 编号全库唯一。
 - 快照导出——行 → Parquet，与引擎无关（备份 / 数据交换 / lakehouse 分析）；ns 还原为描述性文本，列名即字段名。
 
 ## 使用方法
 
-### 1. 定义端点 key
+### 1. 定义端点 key 与边（声明）
+
+完整的声明词汇（`KeyEncode` / `EdgeEncode` / `RowEncode`、`#[kv_index]` 的 `fields`/`includes`/`key` 注解）见[建模指南](docs/MODELING.zh-CN.md)「声明基础」。摘要：
 
 ```rust
-use okm::{EdgeEncode, KeyEncode};
+#[derive(KeyEncode)] #[kv_ns(1)]
+pub struct UserKey { pub org_id: u32, pub user_id: u64 }
 
-/// org 内的用户。org_id 是"组织前缀"，user_id 才是身份终点。
-#[derive(KeyEncode, Clone, PartialEq, Debug)]
-#[kv_ns(1)] // 编译期命名空间，折叠为 key 的大端字节前缀
-pub struct UserKey {
-    pub org_id: u32,
-    pub user_id: u64,
-}
-
-#[derive(KeyEncode, Clone, PartialEq, Debug)]
-#[kv_ns(2)]
-pub struct SessionKey {
-    pub org_id: u32,
-    pub session_id: u64,
-}
-```
-
-`UserKey { org_id: 7, user_id: 101 }` 的物理布局：
-
-```
-[ org_id: 4B BE ][ user_id: 8B BE ]   = 12 字节，零填充
-```
-
-### 2. 声明一条边
-
-```rust
-/// user → sessions 边。
-///
-/// 正向：user 的身份是 (org_id, user_id) 两个字段 → kv_head(org_id, user_id)
-/// 反向：session 的身份是完整 SessionKey（无 kv_head）
-///
-/// 同一条边的两个方向使用不同宽度的端点身份——
-/// 这就是"主键随方向变化"的表达。
-#[derive(EdgeEncode, Clone)]
-#[kv_ns(4)]
+#[derive(EdgeEncode)] #[kv_ns(4)]
 pub struct UserToSessionEdge {
     #[kv_head(org_id, user_id)]
     pub user_id: UserKey,
@@ -92,111 +62,25 @@ pub struct UserToSessionEdge {
 }
 ```
 
-`#[kv_head(field, ...)]` 声明该端点在**这条边里**哪些字段算身份；不标注 = 全量 key 即身份。字段名必须是端点声明序的前缀（宏生成的编译期检查）。
+### 2. 运行时：连边与读写（速览）
 
-### 3. 连接、断开、查询
-
-```rust
-use okm::Collection;
-
-let store = okm::MockStore::default(); // 或 FjallStore / SlatedbStore
-let mut edges: Collection<_, UserToSessionEdge> = Collection::new(store);
-
-let user = UserKey { org_id: 7, user_id: 101 };
-let s1 = SessionKey { org_id: 7, session_id: 1001 };
-let s2 = SessionKey { org_id: 7, session_id: 1002 };
-
-edges.link(&user, &s1);   // 原子双写：正向 + 反向 key
-edges.link(&user, &s2);
-
-let sessions = user.get_session(&edges);   // 正向：user → [SessionKey]
-assert_eq!(sessions, vec![s1.clone(), s2.clone()]);
-
-edges.unlink(&user, &s1); // 双向同时删除
-```
-
-物理 key 布局（正向）：
-
-```
-[ 头部 2B: (ns<<1 | dir) BE ][ A·身份 ][ B·身份 ]
-```
-
-`ns = 4`、FWD → 头部 `[0x08, 0x00]`；REV → `[0x08, 0x01]`。方向位 niche 在命名空间字段的最高位——见 [ADR-0001](docs/adr/0001-direction-bit-niche.md)。
-
-### 4. 反向查询与截断身份
+完整用法（含反向查询、截断身份、扫描回表、Schema 稳定性测试）见[建模指南](docs/MODELING.zh-CN.md)「声明基础」之后的运行时小节。
 
 ```rust
-// 反向：session → users。此方向 A 的身份是截断的（kv_head），
-// 返回原始字节，供调用方拿去主表做前缀扫描。
-let raws = edges.reverse_raw(&s1);
+// 边：原子双写 + 双向查询
+let mut edges: EdgeTable<_, UserToSessionEdge> = EdgeTable::new(store);
+edges.link(&user, &s1);
+let sessions = user.get_session(&edges);
 
-// 若 A 是全量身份，reverse() 直接 decode 回类型：
-// let users: Vec<UserKey> = edges.reverse(&s1);
-
-// PrefixKey 标记前多少字节可信。
-for pk in edges.reverse_prefix(&s1) {
-    // pk.decoded：解码出的结构体（前缀字段有效）
-    // pk.taken：  身份前缀消耗的字节数
-}
-```
-
-派生宏还会在端点类型上生成查询方法（`user.get_session(&edges)`），方法名取对方字段（`session_id` → `get_session`）。
-
-### 5. 行：声明带索引的表
-
-```rust
-use okm::{RowEncode, Row};
-
-/// 行 struct 挂在 UserKey 上（#[kv_ref]）；payload 字段 TLV 编码。
-/// 每个 #[kv_index] 声明一个对 PAYLOAD 字段的访问方法——
-/// 身份归 key（代理 id），业务维度归行。
-#[derive(RowEncode, Clone, PartialEq, Debug)]
-#[kv_ref(UserKey)]
-#[kv_index(by_reputation { fields(reputation) })]
-#[kv_index(by_org { fields(org_id, created_at), includes(bio_len) })]
-pub struct User {
-    pub org_id: u32,
-    pub created_at: u64,
-    pub reputation: u32,
-    pub bio_len: u16,
-}
-```
-
-`fields(...)` 指定排序/分组的 payload 字段（按声明序，首位 = 分组维度）；
-`includes(...)` 把额外 payload 字段复制进 entry value——覆盖索引，定位为高扇出
-查询的物化视图；`key(...)` 把 key 尾部携带的主键截断到命名子集（默认取满主键）。
-物理索引 entry 布局（ADR-0005）：
-
-```
-[ ns 2B BE ][ 索引字段 BE ][ 主键前缀（默认取满） ]   value = includes 字段 TLV（无 includes 则为空）
-```
-
-2 字节命名空间是唯一判别符——无 slot 字节；每个索引从表的 ns 派生自己的 ns。
-`Table::put` 写入主键（value = TLV payload）和每个已声明访问方法各一条
-entry，在同一 store 实例内——声明即注册表，无运行时索引簿记。`Row::table`
-构建装配点，调用处无需重复 key 类型：
-
-```rust
-use okm::{MockStore, Row};
-
-let mut t = <User as Row>::table(MockStore::default(), 9);
-
-t.put(&user, &User { org_id: 7, created_at: 30, reputation: 100, bio_len: 2 });
-
-// 任意访问方法上的最左前缀扫描，带回表：
+// 行：写主键 + 全部索引条目；按访问方法扫描
+let mut t = <User as Row>::table(store, 9);
+t.put(&user, &user_row);
 let rows = t.scan::<ByOrg>(&7u32.to_be_bytes());
-for (key, row) in rows {
-    // key: 解码的 UserKey，row: payload 存在时为 Some(解码的 User)
-}
-
-t.delete(&user); // 删除主键 + 所有已声明的索引 entry
 ```
 
-截断 key 改变的是行级唯一性，不是分组：`fields` 前缀驱动排序，key 尾段区分
-行。`key(user_id)`（尾段去掉 `org_id`）仅在命名子集对每行唯一时才安全——
-否则行会互相覆盖 entry。
+`scan::<ByOrg>` 的 `ByOrg` 来自索引名：`kv_index(by_org ...)` 生成类型 `__OkmIndex_User_by_org`（机械拼接，无大小写转换），`use __OkmIndex_User_by_org as ByOrg` 后即可用短名。声明怎么写见[建模指南](docs/MODELING.zh-CN.md)「声明基础」。
 
-### 6. 引擎后端
+### 3. 引擎后端
 
 ```toml
 [dependencies]
@@ -206,17 +90,6 @@ okm = { version = "0.1", features = ["fjall"] }    # 或 "slatedb"
 - **fjall**（同步）：`FjallStore::open(path)` — 本地 LSM 引擎，单 `Database` 句柄，按需 `persist`。
 - **slatedb**（异步）：`SlatedbStore::open(path, Arc<dyn ObjectStore>)` — 对象存储后端；构造 store 用 `slatedb::object_store` 的 re-export，版本永远和 slatedb 内部一致。异步遍历走 `AsyncCollection`。
 - **MockStore**：内存 `BTreeMap`，memcmp 序——与真实引擎迭代语义一致，测试套件使用。
-
-### 7. Schema 稳定性测试
-
-用硬编码 hex 锁定物理字节——任何布局漂移都让 CI 失败：
-
-```rust
-let fk = edge.forward_key();
-assert_eq!(&fk[..2], &[0, 8]); // ns=4、FWD——方向位在 BE 字节对的最低位
-assert_eq!(&fk[2..6], &7u32.to_be_bytes());
-// ... 完整布局断言见 okm/tests/integration.rs
-```
 
 ## 项目结构
 

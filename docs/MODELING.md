@@ -29,6 +29,208 @@ primary sort field → access methods**.
 If you cannot name the access methods, the model is not finished — the
 questions you cannot name become full scans.
 
+## Declaration basics
+
+The four layers land in code as three derive macros. The full declaration
+vocabulary:
+
+### Endpoint keys: `KeyEncode`
+
+```rust
+use okm::KeyEncode;
+
+/// A user within an org. `org_id` is the organizational prefix;
+/// `user_id` is the identity endpoint.
+#[derive(KeyEncode, Clone, PartialEq, Debug)]
+#[kv_ns(1)] // compile-time namespace, folded into the key as big-endian bytes
+pub struct UserKey {
+    pub org_id: u32,
+    pub user_id: u64,
+}
+
+#[derive(KeyEncode, Clone, PartialEq, Debug)]
+#[kv_ns(2)]
+pub struct SessionKey {
+    pub org_id: u32,
+    pub session_id: u64,
+}
+```
+
+Physical layout of `UserKey { org_id: 7, user_id: 101 }`:
+
+```
+[ org_id: 4B BE ][ user_id: 8B BE ]   = 12 bytes, zero padding
+```
+
+Primary keys are fixed-width: fields are big-endian encoded in declaration
+order, `KEY_LEN` locked at compile time. Keys stay fixed-width; variability
+is a property of index entries, not keys.
+
+### Edges: `EdgeEncode`
+
+```rust
+use okm::EdgeEncode;
+
+/// user → sessions edge.
+///
+/// Forward direction: a user's identity is (org_id, user_id) → kv_head(org_id, user_id)
+/// Reverse direction: a session's identity is the full SessionKey (no kv_head).
+///
+/// The two directions of one edge use different endpoint identity widths —
+/// this is how "the primary key changes with direction" is expressed.
+#[derive(EdgeEncode, Clone)]
+#[kv_ns(4)]
+pub struct UserToSessionEdge {
+    #[kv_head(org_id, user_id)]
+    pub user_id: UserKey,
+    pub session_id: SessionKey,
+}
+```
+
+`#[kv_head(field, ...)]` declares which fields of the endpoint count as its
+*identity* for this edge; omitting it means the full key is the identity.
+Names must be a declaration-order prefix of the endpoint's fields
+(compile-time generated check). One declaration produces both key families
+automatically (direction bit: see "Many-to-many relationships" above).
+
+### Rows and indexes: `RowEncode`
+
+```rust
+use okm::RowEncode;
+
+/// A user row hangs off UserKey via #[kv_ref]; payload fields are TLV-encoded.
+/// Each #[kv_index] declares an access method over PAYLOAD fields —
+/// identity belongs to the key (a surrogate id), business dimensions to the row.
+#[derive(RowEncode, Clone, PartialEq, Debug)]
+#[kv_ref(UserKey)]
+#[kv_index(by_reputation { fields(reputation) })]
+#[kv_index(by_org { fields(org_id, created_at), includes(bio_len) })]
+pub struct User {
+    pub org_id: u32,
+    pub created_at: u64,
+    pub reputation: u32,
+    pub bio_len: u16,
+}
+```
+
+- `#[kv_ref(UserKey)]` — which primary key the row hangs off; identity
+  belongs to the key, business dimensions to the row.
+- `fields(...)` — payload fields to sort/group by, declaration order,
+  first field = the grouping dimension.
+- `includes(...)` — covering index: copies payload fields into the entry
+  value (see "Covering indexes, with restraint").
+- `key(...)` — truncates the primary-key tail carried at the entry end to
+  the named subset (default: full). Truncation changes row-uniqueness, not
+  grouping: the `fields` prefix drives ordering, the key tail distinguishes
+  rows; `key(user_id)` is safe only when the named subset is unique per row —
+  otherwise rows overwrite each other's entries.
+
+Physical index entry layout (ADR-0005):
+
+```
+[ ns 2B BE ][ indexed fields BE ][ primary key prefix (default: full) ]   value = included fields TLV (empty when no includes)
+```
+
+The 2-byte namespace is the only discriminator — no slot byte; declaration
+is the registry, no runtime index bookkeeping. An index type's ns is
+mechanically derived from declaration order (`table_ns + SLOT`, SLOT =
+the index's position among `#[kv_index]` attributes), so **index
+declarations are append-only**: add at the tail only — never insert into
+or reorder the middle. An insertion shifts the ns of every later index;
+entries already on disk stay in the old ns segment, and after the shift
+`scan` reads a new prefix and returns empty results (a silent error, not
+a slowdown). Removing a declaration merely leaves a harmless ns hole
+(same discipline as ns IDs never being reused, ADR-0002). Also note
+there is no index backfill: a newly appended index only sees rows
+written afterwards; existing rows get no entries — migrate with
+double-writes if existing data must be covered.
+
+
+### Link, unlink, query (`EdgeTable`)
+
+```rust
+use okm::EdgeTable;
+
+let store = okm::MockStore::default(); // or FjallStore / SlatedbStore
+let mut edges: EdgeTable<_, UserToSessionEdge> = EdgeTable::new(store);
+
+let user = UserKey { org_id: 7, user_id: 101 };
+let s1 = SessionKey { org_id: 7, session_id: 1001 };
+let s2 = SessionKey { org_id: 7, session_id: 1002 };
+
+edges.link(&user, &s1);   // atomic double write: forward + reverse key
+edges.link(&user, &s2);
+
+let sessions = user.get_session(&edges);   // forward: user → [SessionKey]
+assert_eq!(sessions, vec![s1.clone(), s2.clone()]);
+
+edges.unlink(&user, &s1); // deletes both directions
+```
+
+Physical key layout (forward):
+
+```
+[ head 2B: (ns<<1 | dir) BE ][ A·identity ][ B·identity ]
+```
+
+`ns = 4`, FWD → head `[0x08, 0x00]`; REV → `[0x08, 0x01]`. The direction bit is niched into the top bit of the namespace field — see [ADR-0001](docs/adr/0001-direction-bit-niche.md).
+
+### Reverse queries and truncated identities
+
+```rust
+// Reverse: session → users. A's identity here is truncated (kv_head),
+// so raw bytes are returned for a main-table prefix scan.
+let raws = edges.reverse_raw(&s1);
+
+// If A had full identity, reverse() decodes back to the type:
+// let users: Vec<UserKey> = edges.reverse(&s1);
+
+// PrefixKey marks how many leading bytes are trustworthy.
+for pk in edges.reverse_prefix(&s1) {
+    // pk.decoded: decoded struct (prefix fields valid)
+    // pk.taken:   bytes consumed by the identity prefix
+}
+```
+
+The derive macro also generates query methods on the endpoint types themselves (`user.get_session(&edges)`), named after the opposite field (`session_id` → `get_session`).
+
+### Rows at runtime (`Table`)
+
+Declaring rows and indexes (`RowEncode` + `#[kv_index]`) is covered in the
+[Modeling Guide](docs/MODELING.md), "Declaration basics". The index declaration's derivative is generated at the expansion point
+(this file): `kv_index(by_org ...)` generates the index type
+`__OkmIndex_User_by_org` (mechanical concatenation, no case conversion);
+alias it with `use` and it serves as the generic parameter. `Row::table`
+builds the assembly point without repeating the key type at the call site:
+
+```rust
+use okm::{MockStore, Row};
+use __OkmIndex_User_by_org as ByOrg; // index type: derived from kv_index(by_org)
+
+let mut t = <User as Row>::table(MockStore::default(), 9);
+
+t.put(&user, &User { org_id: 7, created_at: 30, reputation: 100, bio_len: 2 });
+
+// Leftmost-prefix scan on any access method, with fetch-back:
+let rows = t.scan::<ByOrg>(&7u32.to_be_bytes());
+for (key, row) in rows {
+    // key: decoded UserKey, row: Some(decoded User) when the payload exists
+}
+
+t.delete(&user); // removes the primary key + all declared index entries
+```
+
+### Schema stability tests
+
+Lock the physical bytes with hard-coded hex — any layout drift fails CI:
+
+```rust
+let fk = edge.forward_key();
+assert_eq!(&fk[..2], &[0, 8]); // ns=4, FWD — direction bit in the low bit of the BE pair
+assert_eq!(&fk[2..6], &7u32.to_be_bytes());
+// ... full layout assertions in okm/tests/integration.rs
+```
+
 ## One-to-many relationships
 
 Access methods are not only about ordering: **one-to-many relationships

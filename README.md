@@ -44,46 +44,17 @@ Roadmap (design locked, not yet implemented — [ADR-0006](docs/adr/0006-row-nod
 
 ## Usage
 
-### 1. Define endpoint keys
+### 1. Define endpoint keys and edges (declarations)
+
+The full declaration vocabulary (`KeyEncode` / `EdgeEncode` / `RowEncode`,
+the `fields`/`includes`/`key` annotations of `#[kv_index]`) is in the
+[Modeling Guide](docs/MODELING.md), "Declaration basics". Summary:
 
 ```rust
-use okm::{EdgeEncode, KeyEncode};
+#[derive(KeyEncode)] #[kv_ns(1)]
+pub struct UserKey { pub org_id: u32, pub user_id: u64 }
 
-/// A user within an org. `org_id` is the organizational prefix;
-/// `user_id` is the identity endpoint.
-#[derive(KeyEncode, Clone, PartialEq, Debug)]
-#[kv_ns(1)] // compile-time namespace, folded into the key as big-endian bytes
-pub struct UserKey {
-    pub org_id: u32,
-    pub user_id: u64,
-}
-
-#[derive(KeyEncode, Clone, PartialEq, Debug)]
-#[kv_ns(2)]
-pub struct SessionKey {
-    pub org_id: u32,
-    pub session_id: u64,
-}
-```
-
-Physical layout of `UserKey { org_id: 7, user_id: 101 }`:
-
-```
-[ org_id: 4B BE ][ user_id: 8B BE ]   = 12 bytes, zero padding
-```
-
-### 2. Declare an edge between them
-
-```rust
-/// user → sessions edge.
-///
-/// Forward direction: a user's identity is (org_id, user_id) → kv_head(org_id, user_id)
-/// Reverse direction: a session's identity is the full SessionKey (no kv_head).
-///
-/// The two directions of one edge use different endpoint identity widths —
-/// this is how "the primary key changes with direction" is expressed.
-#[derive(EdgeEncode, Clone)]
-#[kv_ns(4)]
+#[derive(EdgeEncode)] #[kv_ns(4)]
 pub struct UserToSessionEdge {
     #[kv_head(org_id, user_id)]
     pub user_id: UserKey,
@@ -91,116 +62,31 @@ pub struct UserToSessionEdge {
 }
 ```
 
-`#[kv_head(field, ...)]` declares which fields of the endpoint count as its *identity* for this edge; omitting it means the full key is the identity. Names must be a declaration-order prefix of the endpoint's fields (compile-time generated check).
+### 2. Runtime: linking and reading/writing (overview)
 
-### 3. Link, unlink, query
+Full usage (reverse queries, truncated identities, scans with fetch-back,
+schema stability tests) is in the [Modeling Guide](docs/MODELING.md),
+runtime subsections after "Declaration basics".
 
 ```rust
-use okm::EdgeTable;
-
-let store = okm::MockStore::default(); // or FjallStore / SlatedbStore
+// Edge: atomic double write + queries in both directions
 let mut edges: EdgeTable<_, UserToSessionEdge> = EdgeTable::new(store);
+edges.link(&user, &s1);
+let sessions = user.get_session(&edges);
 
-let user = UserKey { org_id: 7, user_id: 101 };
-let s1 = SessionKey { org_id: 7, session_id: 1001 };
-let s2 = SessionKey { org_id: 7, session_id: 1002 };
-
-edges.link(&user, &s1);   // atomic double write: forward + reverse key
-edges.link(&user, &s2);
-
-let sessions = user.get_session(&edges);   // forward: user → [SessionKey]
-assert_eq!(sessions, vec![s1.clone(), s2.clone()]);
-
-edges.unlink(&user, &s1); // deletes both directions
-```
-
-Physical key layout (forward):
-
-```
-[ head 2B: (ns<<1 | dir) BE ][ A·identity ][ B·identity ]
-```
-
-`ns = 4`, FWD → head `[0x08, 0x00]`; REV → `[0x08, 0x01]`. The direction bit is niched into the top bit of the namespace field — see [ADR-0001](docs/adr/0001-direction-bit-niche.md).
-
-### 4. Reverse queries and truncated identities
-
-```rust
-// Reverse: session → users. A's identity here is truncated (kv_head),
-// so raw bytes are returned for a main-table prefix scan.
-let raws = edges.reverse_raw(&s1);
-
-// If A had full identity, reverse() decodes back to the type:
-// let users: Vec<UserKey> = edges.reverse(&s1);
-
-// PrefixKey marks how many leading bytes are trustworthy.
-for pk in edges.reverse_prefix(&s1) {
-    // pk.decoded: decoded struct (prefix fields valid)
-    // pk.taken:   bytes consumed by the identity prefix
-}
-```
-
-The derive macro also generates query methods on the endpoint types themselves (`user.get_session(&edges)`), named after the opposite field (`session_id` → `get_session`).
-
-### 5. Rows: declare a table with indexes
-
-```rust
-use okm::{RowEncode, Row};
-
-/// A user row hangs off UserKey via #[kv_ref]; payload fields are TLV-encoded.
-/// Each #[kv_index] declares an access method over PAYLOAD fields —
-/// identity belongs to the key (a surrogate id), business dimensions to the row.
-#[derive(RowEncode, Clone, PartialEq, Debug)]
-#[kv_ref(UserKey)]
-#[kv_index(by_reputation { fields(reputation) })]
-#[kv_index(by_org { fields(org_id, created_at), includes(bio_len) })]
-pub struct User {
-    pub org_id: u32,
-    pub created_at: u64,
-    pub reputation: u32,
-    pub bio_len: u16,
-}
-```
-
-`fields(...)` names payload fields to sort/group by (declaration order, first
-field = the grouping dimension); `includes(...)` copies extra payload fields
-into the entry value — a covering index, positioned as a materialized view for
-high-fanout queries; `key(...)` truncates the primary-key tail carried at the
-key end to the named subset (default: the full key). Physical index entry
-layout (ADR-0005):
-
-```
-[ ns 2B BE ][ indexed fields BE ][ primary key prefix (default: full) ]   value = included fields TLV (empty when no includes)
-```
-
-The 2-byte namespace is the only discriminator — no slot byte; every index
-gets its own `ns` derived from the table's. `Table::put` writes the primary
-key (value = TLV payload) and one entry per declared access method in the same
-store instance — the declaration is the registry, no runtime index
-bookkeeping. `Row::table` builds the assembly point without repeating the key
-type at the call site:
-
-```rust
-use okm::{MockStore, Row};
-
-let mut t = <User as Row>::table(MockStore::default(), 9);
-
-t.put(&user, &User { org_id: 7, created_at: 30, reputation: 100, bio_len: 2 });
-
-// Leftmost-prefix scan on any access method, with fetch-back:
+// Row: writes the primary key + all index entries; scan by access method
+let mut t = <User as Row>::table(store, 9);
+t.put(&user, &user_row);
 let rows = t.scan::<ByOrg>(&7u32.to_be_bytes());
-for (key, row) in rows {
-    // key: decoded UserKey, row: Some(decoded User) when the payload exists
-}
-
-t.delete(&user); // removes the primary key + all declared index entries
 ```
 
-Truncated keys change row-uniqueness, not grouping: the `fields` prefix drives
-ordering, the key tail distinguishes rows. `key(user_id)` (dropping `org_id`
-from the tail) is safe only when the named subset is unique per row —
-otherwise rows overwrite each other's entries.
+`ByOrg` comes from the index name: `kv_index(by_org ...)` generates the
+type `__OkmIndex_User_by_org` (mechanical concatenation, no case
+conversion); `use __OkmIndex_User_by_org as ByOrg` gives the short form.
+For declarations see the [Modeling Guide](docs/MODELING.md), "Declaration
+basics".
 
-### 6. Engine backends
+### 3. Engine backends
 
 ```toml
 [dependencies]
@@ -210,17 +96,6 @@ okm = { version = "0.1", features = ["fjall"] }    # or "slatedb"
 - **fjall** (sync): `FjallStore::open(path)` — local LSM engine, single `Database` handle, `persist` on demand.
 - **slatedb** (async): `SlatedbStore::open(path, Arc<dyn ObjectStore>)` — object-storage-backed; use `slatedb::object_store` re-exports to construct stores so versions always match slatedb's internals. Async traversal goes through `AsyncEdgeTable`.
 - **MockStore**: in-memory `BTreeMap` with memcmp ordering — identical iteration semantics to real engines, used by the test suite.
-
-### 7. Schema stability tests
-
-Lock the physical bytes with hard-coded hex — any layout drift fails CI:
-
-```rust
-let fk = edge.forward_key();
-assert_eq!(&fk[..2], &[0, 8]); // ns=4, FWD — direction bit in the low bit of the BE pair
-assert_eq!(&fk[2..6], &7u32.to_be_bytes());
-// ... full layout assertions in okm/tests/integration.rs
-```
 
 ## Project layout
 
