@@ -103,6 +103,7 @@ okm/src/table.rs       Table<S, K, R> 行装配点
 okm/src/collection.rs  EdgeTable<S, E> 边装配点
 okm/src/fjall_backend.rs    fjall 适配（feature "fjall"）
 okm/src/slatedb_backend.rs  slatedb 适配（feature "slatedb"）
+okm-query/         扩展算子 crate：merge_join、group_by（消费 scan 有序流，零 core 依赖）
 okm/tests/         integration（MockStore）、fjall_eval、slatedb_eval
 docs/adr/          架构决策记录（docs/PLAN.md 为实施计划）
 ```

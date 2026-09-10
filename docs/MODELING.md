@@ -124,6 +124,16 @@ pub struct User {
   grouping: the `fields` prefix drives ordering, the key tail distinguishes
   rows; `key(user_id)` is safe only when the named subset is unique per row —
   otherwise rows overwrite each other's entries.
+- `func(path)` — function index: the sort segment is the encoding of
+  `path(&row)`'s return value (the query side calls the same path on its
+  probe value; one declaration drives both sides). A single return value is
+  the classic function index (e.g. `lower_name` normalization); **a
+  `Vec<V>` return is the multi-value function index** — one row fans out
+  into N entries. Tokenized full-text search, multi-valued fields (tags),
+  and time bucketing all land on this one primitive. In the multi-value
+  case the token is the data segment (variable-length, hugging the primary
+  key prefix); the read path is identical to a plain index (`scan::<I>`).
+  `okm` ships no tokenizer — splitting logic belongs to the business layer.
 
 Physical index entry layout (ADR-0005):
 
@@ -243,6 +253,29 @@ for (key, row) in rows {
 }
 
 t.delete(&user); // removes the primary key + all declared index entries
+// (multi-value indexes clear entry by entry — no dangling entries)
+```
+
+Multi-value function index, declared and queried (inverted-index shape —
+the token is the data segment, the primary-key prefix is cut off the tail):
+
+```rust
+fn tokens(row: &Doc) -> Vec<String> {
+    row.text.split_ascii_whitespace().map(String::from).collect()
+}
+
+#[derive(RowEncode, Clone, PartialEq, Debug)]
+#[kv_ref(DocKey)]
+#[kv_index(by_token { func(tokens) })]
+pub struct Doc {
+    pub text: String,
+}
+
+use __OkmIndex_Doc_by_token as ByToken;
+
+// Write: one row of "rust kv" fans out into two entries (rust → key, kv → key)
+// Query: prefix scan by token → fetch-back, exactly like a plain index
+let hits = t.scan::<ByToken>(b"rust");
 ```
 
 ### Schema stability tests
