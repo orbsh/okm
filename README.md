@@ -109,6 +109,7 @@ okm/src/table.rs       Table<S, K, R> node assembly point
 okm/src/collection.rs  EdgeTable<S, E> edge assembly point
 okm/src/fjall_backend.rs    fjall adapter (feature "fjall")
 okm/src/slatedb_backend.rs  slatedb adapter (feature "slatedb")
+okm-query/         extension operator crate: merge_join, group_by (consumes scan streams, zero core changes)
 okm/tests/         integration + index_test (MockStore), fjall_eval, slatedb_eval
 docs/adr/          architecture decision records (docs/PLAN.md = implementation plan)
 ```

@@ -33,7 +33,7 @@ entry value [ includes 字段 TLV ]                （无 includes = 空）
 
 - **索引字段段**：`FIELDS` 按声明序逐个编码，首位 = 分组维度（最左前缀匹配的物理基础）。**至多一个变长字段且必须紧贴主键前缀之前**：定宽段从右往左依次切分（主键 `KEY_LEN` 提供右手锚点），剩下整块是唯一变长段，长度由右侧定宽边界反推、不需存储；两个变长段之间无边界字节，derive 编译期拒绝（MODELING「数据段」节）。变长段不在末位则前缀语义破坏（裸字节无终结符，`"beijing"` 命中 `"beijing2"`）。
 - **主键前缀**：默认全长主键编码（`KEY_LEN` 编译期锁死）；`key(...)` 声明截断到命名子集。尾段永远可解——它就是主键编码，布局在声明系统内。
-- **函数索引**（`func(path)`）：`path` 为 `fn(&Row) -> String`，声明同时驱动写侧编码与查询侧探针编码，同一函数两处消费。
+- **函数索引**（`func(path)`）：`path` 的返回值经 `IndexFuncValues` 编码为数据段——单值（`String`/整数）一条 entry（经典函数索引，如归一化）；`Vec<V>` 一行展开为 N 条 entry（多值 regime：tokenize 倒排、多值字段、时间分桶），每条共享同一 includes value。查询侧探针调用同一路径，一条声明驱动两侧。
 
 ## scan::<I>：前缀扫描 + 回表
 
@@ -64,7 +64,7 @@ store.scan_suffix_kv(&p)            连 key 与 value 一起取
 
 ## 写路径的同步
 
-`Table::put` 单次写入：主表条目（slot 0）+ 每个声明索引各一条 entry，同一 store 实例内；`Table::delete` 对应删除全部。没有运行时索引簿记——`index_entries()`（derive 生成）静态展开为每个索引一对 `(entry_key, entry_value)`，声明即注册。**因此条目与声明永不失配**：库里存在哪个 ns 段的条目，当且仅当源码里声明了对应索引。
+`Table::put` 单次写入：主表条目（slot 0）+ 每个声明索引的 `entry_pairs()` 全部条目（普通索引一对；多值函数索引 N 对），同一 store 实例内；`Table::delete` 对应删除全部。没有运行时索引簿记——`index_entries()`（derive 生成）静态展开为每个索引调用 `entry_pairs` 并展平，声明即注册。**因此条目与声明永不失配**：库里存在哪个 ns 段的条目，当且仅当源码里声明了对应索引。
 
 ## 两种"一对多"的分野
 

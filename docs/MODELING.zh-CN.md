@@ -95,6 +95,7 @@ pub struct User {
 - `fields(...)`——排序/分组的 payload 字段，按声明序，首位 = 分组维度。
 - `includes(...)`——覆盖索引，复制 payload 字段进 entry value（上文「覆盖索引克制」）。
 - `key(...)`——把 entry 尾部携带的主键截断到命名子集（默认取满）。截断改变的是行级唯一性，不是分组：`fields` 前缀驱动排序，key 尾段区分行；`key(user_id)` 仅在命名子集对每行唯一时才安全，否则行会互相覆盖 entry。
+- `func(path)`——函数索引：排序段由 `path(&row)` 的返回值编码（查询端探针调用同一路径归一化，一条声明驱动两侧）。返回单值 = 经典函数索引（如 `lower_name` 归一化）；**返回 `Vec<V>` = 多值函数索引**，一行展开为 N 条 entry——tokenize 全文检索、多值字段（tags）、时间分桶都落在这一原语上。多值时 token 即数据段（变长、贴主键前），读路径与普通索引完全相同（`scan::<I>`）。`okm` 不内置分词器，切分逻辑归业务层。
 
 索引条目物理布局（ADR-0005）：
 
@@ -176,7 +177,28 @@ for (key, row) in rows {
     // key: 解码的 UserKey，row: payload 存在时为 Some(解码的 User)
 }
 
-t.delete(&user); // 删除主键 + 所有已声明的索引 entry
+t.delete(&user); // 删除主键 + 所有已声明的索引 entry（多值索引逐条清除，无悬挂条目）
+```
+
+多值函数索引的声明与查询（倒排索引形态——token 是数据段，主键前缀从尾部反推）：
+
+```rust
+fn tokens(row: &Doc) -> Vec<String> {
+    row.text.split_ascii_whitespace().map(String::from).collect()
+}
+
+#[derive(RowEncode, Clone, PartialEq, Debug)]
+#[kv_ref(DocKey)]
+#[kv_index(by_token { func(tokens) })]
+pub struct Doc {
+    pub text: String,
+}
+
+use __OkmIndex_Doc_by_token as ByToken;
+
+// 写入：一行 "rust kv" 展开为两条 entry（rust → key，kv → key）
+// 查询：token 前缀扫 → 回表，与普通索引无异
+let hits = t.scan::<ByToken>(b"rust");
 ```
 
 ### Schema 稳定性测试
