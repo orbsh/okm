@@ -128,7 +128,7 @@ pub struct User {
 Physical index entry layout (ADR-0005):
 
 ```
-[ ns 2B BE ][ slot 1B ][ indexed fields BE ][ primary key prefix (default: full) ]   value = included fields TLV (empty when no includes)
+[ ns 2B BE ][ slot 1B ][ fields segment BE ][ primary key prefix (default: full) ]   value = included fields TLV (empty when no includes)
 ```
 
 The discriminator is namespace + slot: the ns segment scopes the table,
