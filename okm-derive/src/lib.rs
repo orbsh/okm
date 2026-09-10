@@ -13,6 +13,7 @@
 mod edge_encode;
 mod key_encode;
 mod row_encode;
+mod schema;
 
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TS2;
