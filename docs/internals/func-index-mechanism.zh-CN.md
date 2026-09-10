@@ -78,6 +78,24 @@ t.scan::<ByTag>(b"rust")
 
 多值扫描的语义与普通最左前缀完全一致：`b"rust"` 命中所有含该 token 的行；做整 token 精确匹配是调用方的扫描边界问题（变长段无终结符，前缀扫天然是"以此为前缀"，精确匹配可以扫完当前 token 区间——下一个 entry 的 token 段变化即止）。
 
+## 扩展点分层：为什么 func 是 fn 而不是 trait
+
+对外扩展面收在三层，各司其职：
+
+```text
+声明式（无扩展点）   fields / includes / key      宏直接生成，用户代码不进入编码
+业务派生逻辑         func(path) — 一个普通 fn      唯一让用户代码进入条目编码的口子
+值编码接缝           IndexFuncResult              新值类型 → 数据段的字节编码（用户自己的类型，orphan rule 无碍）
+                     IndexFuncValues              新展开形态 → 单值/N 条 entry
+```
+
+扩展的正确分工：新值类型实现 `IndexFuncResult`；新展开形态给 `IndexFuncValues` 加臂；业务派生逻辑写一个 fn。func 不是 trait，理由有四：
+
+1. **能力零增益**——trait 能做的事 fn path 全能做。需要"同一概念 func 的多个实现"，写两个 fn 就是两个实现；索引声明是编译期的，`func(lower_v1)` / `func(lower_v2)` 直接可选。
+2. **trait 破坏"一条声明驱动两侧"**——探针归一化现在就是"调用同一个 path"；换 trait 后探针侧要指定同一个 impl，调用方语法更重，机制没变。
+3. **最小接缝**——derive 只需要"一个可调用路径"，fn 是最简满足；包一层 trait 是给业务逻辑强加框架仪式（`fn tokens(&Doc) -> Vec<String>` 写完即止，这是现设计的优点）。
+4. **声明即注册**——trait 化的真实动机往往是让框架感知用户逻辑（注册、发现），而 `#[kv_index]` 本身就是注册点，函数只是被指到的实现，不需要第二层簿记。
+
 ## 与 fields 的分岔总结
 
 ```text
