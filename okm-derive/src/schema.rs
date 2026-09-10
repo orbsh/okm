@@ -146,6 +146,64 @@ pub(crate) fn parse_index_attr(attr: &syn::Attribute) -> Vec<IdxDecl> {
     out
 }
 
+/// Parse `#[kv_aggregate(name { group(a, b) })]` — same Ident + brace
+/// shape as one `kv_index` declaration, only the keyword set differs.
+pub(crate) fn parse_aggregate_attr(attr: &syn::Attribute) -> AggDecl {
+    let ts: Vec<TokenTree> = attr.to_token_stream().into_iter().collect();
+    let outer = ts
+        .iter()
+        .find_map(|t| match t {
+            TokenTree::Group(g) if g.delimiter() == Delimiter::Bracket => Some(g.stream()),
+            _ => None,
+        })
+        .expect("kv_aggregate: missing attribute brackets");
+    let body = outer
+        .into_iter()
+        .find_map(|t| match t {
+            TokenTree::Group(g) if g.delimiter() == Delimiter::Parenthesis => Some(g.stream()),
+            _ => None,
+        })
+        .expect("kv_aggregate: missing argument parentheses");
+    let toks: Vec<TokenTree> = body.into_iter().collect();
+
+    let ident = match toks.first() {
+        Some(TokenTree::Ident(id)) => id.clone(),
+        t => panic!("kv_aggregate: expected aggregate name Ident, got {t:?}"),
+    };
+    let group_body = match toks.get(1) {
+        Some(TokenTree::Group(g)) if g.delimiter() == Delimiter::Brace => g.stream(),
+        t => panic!("kv_aggregate[{ident}]: expected {{ group(…) }} block, got {t:?}"),
+    };
+    let gtoks: Vec<TokenTree> = group_body.into_iter().collect();
+    let kw = match gtoks.first() {
+        Some(TokenTree::Ident(id)) => id.to_string(),
+        t => panic!("kv_aggregate[{ident}]: expected group(...), got {t:?}"),
+    };
+    if kw != "group" {
+        panic!("kv_aggregate[{ident}]: unknown key {kw} (supported: group)");
+    }
+    let group: Vec<String> = match gtoks.get(1) {
+        Some(TokenTree::Group(g)) if g.delimiter() == Delimiter::Parenthesis => g
+            .stream()
+            .into_iter()
+            .filter_map(|t| match t {
+                TokenTree::Ident(id) => Some(id.to_string()),
+                TokenTree::Punct(_) => None,
+                t => panic!("kv_aggregate[{ident}].group: illegal token {t}"),
+            })
+            .collect(),
+        t => panic!("kv_aggregate[{ident}]: expected paren group, got {t:?}"),
+    };
+    if group.is_empty() {
+        panic!("kv_aggregate[{ident}]: group must not be empty — a global single-group aggregate has no group key to scan by");
+    }
+    AggDecl {
+        logic: ident.to_string(),
+        ident,
+        group,
+    }
+}
+
 /// Is this payload field variable-width (no static width)? Width-0 kinds:
 /// `String` (raw UTF-8 in the index segment) and `VarInt<T>` (LEB128). Both
 /// are cold-segment TLV fields in the payload; in an index segment they are
@@ -463,6 +521,17 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> Vec<FieldSchema> {
     fs
 }
 
+/// One `#[kv_aggregate(name { group(a, b) })]` declaration. The fold /
+/// unfold callbacks and the accumulator type come from a user-implemented
+/// `Aggregate` impl on a marker struct named `__OkmAggregate_{row}_{name}`;
+/// this IR only carries the declaration (slot allocation + group fields).
+pub(crate) struct AggDecl {
+    pub ident: syn::Ident,
+    /// The user's `AggregateLogic` impl type (the attribute's name token).
+    pub logic: String,
+    pub group: Vec<String>,
+}
+
 /// Whole-macro IR: parse once, consumed by every emit function.
 pub(crate) struct RowSchema {
     pub row_name: syn::Ident,
@@ -473,6 +542,9 @@ pub(crate) struct RowSchema {
     pub fields: Vec<FieldSchema>,
     /// Index declarations, attribute order (slot = position + 1).
     pub indexes: Vec<IdxDecl>,
+    /// Aggregate declarations, attribute order (slots continue after
+    /// the last index — same append-only counter, never reused).
+    pub aggregates: Vec<AggDecl>,
 }
 
 /// Parse + validate the derive input. Returns a fully validated schema —
@@ -572,11 +644,28 @@ pub(crate) fn parse_schema(input: DeriveInput) -> RowSchema {
         }
     }
 
+    // #[kv_aggregate(name { group(a, b) })]: slots CONTINUE the index
+    // counter (append-only, never reused) — slot = last index slot + 1 + n.
+    let agg_decls: Vec<AggDecl> = input
+        .attrs
+        .iter()
+        .filter(|a| a.path().is_ident("kv_aggregate"))
+        .map(parse_aggregate_attr)
+        .collect();
+    for agg in &agg_decls {
+        for n in &agg.group {
+            if !name_strs.contains(n) {
+                panic!("kv_aggregate[{}]: group field `{n}` is not a row payload field", agg.ident);
+            }
+        }
+    }
+
     RowSchema {
         row_name,
         key_ty,
         layout_version,
         fields: fs,
         indexes: idx_decls,
+        aggregates: agg_decls,
     }
 }

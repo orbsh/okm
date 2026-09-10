@@ -48,14 +48,25 @@ that is the opposite of the index-entry discipline:
   is gone, the count remains — or tombstone logic is needed).
 
 That makes cross-row precomputation a **fourth primitive** (mutable
-aggregation entry), which okm deliberately does not provide — it drags
-in concurrency semantics (read-modify-write races, distributed add
-protocols), and once introduced the model is no longer "an ordered byte
-stream". Approximate counting (UV, hot terms) can degrade to "entry
-exists = count 1" plus counting entries in a scan range; when exact
-cross-row aggregation is genuinely required, the answer is usually a
-real OLAP/stream system next to the KV, not an aggregation layer inside
-it.
+aggregation entry). okm's stance splits in two layers: **core still
+ships no aggregation semantics** — no built-in counter/sum types, no
+distributed add protocol; but the mechanical half is provided as a
+helper facility — the `#[kv_aggregate(Logic { group(a,b) })]`
+declaration, a user-implemented `AggregateLogic` (fold/unfold plus Acc
+encoding), and a read-modify-write hook on the write path (fold on put,
+unfold on delete). Reversibility (`unfold(fold(a,x)) = a`) is the
+implementor's contract; non-invertible aggregates (median, distinct)
+do not qualify. okm does no zero-value GC — an emptied group keeps its
+entry. Usage is documented in the modeling guide's cross-row
+pre-aggregation section.
+
+The concurrency boundary is unchanged: under single-writer engines the
+hook is a safe read-modify-write; multi-writer races and distributed
+add protocols remain outside the "ordered byte stream" model — a real
+OLAP/stream system next to the KV is still the answer there.
+Approximate counting (UV, hot terms) should prefer the degradation to
+"entry exists = count 1" plus counting entries in a scan range.
+
 
 ## Extension types that land (present or crate-worthy)
 
@@ -80,9 +91,10 @@ it.
 - **Streaming subscriptions / CDC** — no tail-scan primitive exists;
   this belongs to the engine layer (fjall watch / slatedb invalidate),
   not a model-layer imitation.
-- **Exact cross-row aggregation / distributed counters** — see above: a
-  fourth primitive plus a concurrency protocol, outside the "ordered
-  byte stream" model.
+- **Distributed add protocols** — under a single writer the
+  `#[kv_aggregate]` read-modify-write hook is safe; multi-writer races
+  and distributed counter protocols remain outside the "ordered byte
+  stream" model — a real OLAP/stream system beside the KV.
 - **General second-level cache** — invalidation policy is application
   logic; okm entries live and die with declarations, and there is no
   place to hang invalidation hooks.

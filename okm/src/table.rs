@@ -53,6 +53,10 @@ impl<S: KvEngine, K: KeyEncode, R: Row<Key = K>> Table<S, K, R> {
         for (ek, ev) in R::index_entries(key, row, self.ns) {
             self.store.put(ek, ev);
         }
+        // Cross-row aggregates: fold this row into each declared group.
+        // Same store instance, so the RMW shares the engine's atomicity
+        // boundary with the row + index writes.
+        R::__okm_apply_aggregates(&mut self.store, key, row, self.ns, true);
     }
 
     /// Index entry key for access method `I` derived from `key` + `row`.
@@ -78,6 +82,9 @@ impl<S: KvEngine, K: KeyEncode, R: Row<Key = K>> Table<S, K, R> {
         for (ek, _) in R::index_entries(key, row, self.ns) {
             self.store.del(&ek);
         }
+        // Unfold from every declared aggregate group (single call site —
+        // delete_by_pkey reaches here after its internal get).
+        R::__okm_apply_aggregates(&mut self.store, key, row, self.ns, false);
     }
 
     /// Delete by primary key only: fetch the row from the primary table

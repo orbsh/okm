@@ -124,19 +124,57 @@ pub struct User {
   grouping: the `fields` prefix drives ordering, the key tail distinguishes
   rows; `key(user_id)` is safe only when the named subset is unique per row —
   otherwise rows overwrite each other's entries.
-- `func(path)` — function index: the sort segment is the encoding of
-  `path(&row)`'s return value (the query side calls the same path on its
-  probe value; one declaration drives both sides). A single return value is
-  the classic function index (e.g. `lower_name` normalization); **a
-  `Vec<V>` return is the multi-value function index** — one row fans out
-  into N entries. Tokenized full-text search, multi-valued fields (tags),
-  and time bucketing all land on this one primitive. In the multi-value
-  case the token is the data segment (variable-length, hugging the primary
-  key prefix); the read path is identical to a plain index (`scan::<I>`).
-  `okm` ships no tokenizer — splitting logic belongs to the business layer.
-  Implementation details (encoding contract, `entry_pairs` override, probe
-  normalization) live in the internals doc
-  [func-index-mechanism.zh-CN.md](internals/func-index-mechanism.zh-CN.md).
+- `func(path)` — function index: the data segment is the encoding of
+  `path(&row)`'s return value, replacing fields. The function is a plain
+  Rust fn (implemented in business code), and the query side calls the
+  **same declared path** on its probe value — encoding and scanning share
+  one definition, so normalization (lowercase, encoding transforms) cannot
+  drift between the two sides. One declaration drives both sides;
+  declaration is registration.
+
+**Basic use 1: single-value function index (write-side precomputation).**
+The data segment is the encoding of the function's return value, one
+entry per row, entries still live and die with the row:
+
+```text
+fn lower_name(row: &Doc) -> String { row.name.to_lowercase() }
+
+#[kv_index(by_name { func(lower_name) })]   // "Apple"/"APPLE" co-located
+```
+
+**Basic use 2: multi-value function index (one row fans out into N
+entries).** A `Vec<V>` return fans one row into N entries; the token is
+the data segment (variable-length, hugging the primary-key prefix), and
+the read path is identical to a plain index (`scan::<I>`):
+
+```text
+fn hour_bucket(row: &Post) -> Vec<u64> {
+    vec![row.created_at / 3_600_000]          // ms timestamp -> hour bucket
+}
+
+#[kv_index(by_hour { func(hour_bucket) })]   // scan with a bucket id = that hour's posts
+```
+
+Time bucketing is this shape at its cheapest — a single-element Vec that
+folds the timestamp into a bucket number at write time (fixed-width BE,
+byte order = time order); hourly rollups and timelines are one prefix
+scan. The same primitive directly covers tokenized full-text search
+(a tokenizer returning `Vec<String>`) and multi-valued fields (split
+tags). `okm` ships no tokenizer — splitting/bucketing logic belongs to
+the business layer. The func contract is **purity**: delete regenerates
+the entry set from the row, so an impure function (clock / randomness /
+external state) produces a different set at delete time than at write
+time, leaving dangling entries.
+
+`func(path)` and the `#[kv_aggregate]` declaration below are the two
+external extension mechanisms: func is **per-row derivation** (computed
+at write time; entries still live and die with the row), aggregate is
+**cross-row aggregation** (mutable value, read-modify-write). How the
+heavier integrations (FTS / vector / graph algorithms) land on the
+primitives is covered in the [integration boundary
+doc](INTEGRATION.md). Implementation details (encoding contract,
+`entry_pairs` override, probe normalization) live in the internals doc
+[func-index-mechanism.zh-CN.md](internals/func-index-mechanism.zh-CN.md).
 
 Physical index entry layout (ADR-0005):
 
@@ -388,6 +426,50 @@ first-class relationship data**. The convenience of `#[kv_index]`
 was precisely eliminating per-index manual numbering and hole
 bookkeeping) is a secondary bonus, not the dividing line; the dividing
 line is the data source.
+
+## Cross-row pre-aggregation
+
+Every index entry is an append-only derived view that lives and dies
+with its row — delete regenerates the exact set via the same function,
+so nothing dangles. One class of requirements sits outside that
+discipline by nature: post counts per author, hourly rollups, exact
+counters. These are **cross-row** — func's `fn(&Row)` signature sees
+one row, and the answer lands on **read-modify-write of the entry
+value**, the fourth primitive (mutable aggregation entry).
+
+okm's stance splits in two layers: core ships no aggregation semantics
+(no built-in counter types, no distributed add protocol), but the
+mechanical half is provided as a helper facility, declared like an
+index:
+
+```text
+#[kv_aggregate(AuthorStats { group(author_id) })]
+```
+
+`group(...)` takes the grouping segment from row fields (entry =
+`[ns][slot][group segment]`, the slot continues the index counter);
+`AuthorStats` is a user type implementing `AggregateLogic` — an `Acc`
+(the accumulator type, implementing `AggCodec` for fixed-width BE
+encoding) plus `fold(acc, &row)` (on put) and `unfold(acc, &row)` (on
+delete). The write path performs the read-modify-write automatically:
+read the current acc, fold or unfold, write back. The read side is
+`aggregate_get` for one group and `scan_aggregates` for all groups.
+
+Two disciplines of use:
+
+- **Reversibility is the contract**: `unfold(fold(a,x)) = a` must hold
+  exactly — count and sum qualify, median and distinct do not;
+  non-invertible aggregates belong in an OLAP system beside the KV. A
+  compound acc (count + sum for averages) implements `AggCodec`
+  directly; okm only stores and fetches the bytes.
+- **Single-writer boundary**: the hook is a read-modify-write, safe
+  under single-writer engines; multi-writer races and distributed add
+  protocols are outside this model (see the integration doc).
+
+Zero-value GC is deliberately omitted: an emptied group keeps its
+entry (the acc back at the identity), which avoids tombstone logic;
+callers skip identity-element groups as needed.
+
 
 ## Access methods are mandatory
 
