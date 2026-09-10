@@ -14,7 +14,7 @@ __OkmIndex_{Row}_{name}      // 机械拼接，无大小写转换
 
 ```text
 type Key / type Row          关联的主键与行类型
-const SLOT                   声明序序位（1, 2, …；0 = 主表）
+const SLOT                   声明序序位（1, 2, …；0 = 主表），进 entry 头第 3 字节
 const FIELDS                 索引字段（排序序）
 const INCLUDES               覆盖字段（进 value，不参与排序）
 const KEY_PREFIX             主键尾段截断子集（空 = 全长）
@@ -27,7 +27,7 @@ fn encode_named(...)         按字段名序编码 payload 段
 ## 条目编码
 
 ```text
-entry key   [ index_ns 2B BE ][ 索引字段 BE ][ 主键前缀 ]
+entry key   [ table_ns 2B BE ][ slot 1B ][ 索引字段 BE ][ 主键前缀 ]
 entry value [ includes 字段 TLV ]                （无 includes = 空）
 ```
 
@@ -39,7 +39,7 @@ entry value [ includes 字段 TLV ]                （无 includes = 空）
 
 ```text
 t.scan::<I>(&encoded)
-  1. entry_prefix = [ index_ns 2B ] + encoded          编译期选 ns，运行期拼字节
+  1. entry_prefix = [ ns 2B ][ slot 1B ] + encoded     编译期选表与序位，运行期拼字节
   2. store.scan_suffix(&p)                             引擎范围扫，返回去前缀的 suffix
   3. 尾段切出主键编码 → PrefixKey<K> { decoded, taken }   宽度已知（key_prefix_width）
   4. 回表：taken == KEY_LEN → get(decoded) + decode_payload

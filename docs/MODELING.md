@@ -128,20 +128,20 @@ pub struct User {
 Physical index entry layout (ADR-0005):
 
 ```
-[ ns 2B BE ][ indexed fields BE ][ primary key prefix (default: full) ]   value = included fields TLV (empty when no includes)
+[ ns 2B BE ][ slot 1B ][ indexed fields BE ][ primary key prefix (default: full) ]   value = included fields TLV (empty when no includes)
 ```
 
-The 2-byte namespace is the only discriminator — no slot byte; declaration
-is the registry, no runtime index bookkeeping. An index type's ns is
-mechanically derived from declaration order (`table_ns + SLOT`, SLOT =
-the index's position among `#[kv_index]` attributes), so **index
-declarations are append-only**: add at the tail only — never insert into
-or reorder the middle. An insertion shifts the ns of every later index;
-entries already on disk stay in the old ns segment, and after the shift
-`scan` reads a new prefix and returns empty results (a silent error, not
-a slowdown). Removing a declaration merely leaves a harmless ns hole
-(same discipline as ns IDs never being reused, ADR-0002). Also note
-there is no index backfill: a newly appended index only sees rows
+The discriminator is namespace + slot: the ns segment scopes the table,
+the slot byte distinguishes access methods within it (primary = 0,
+indexes numbered 1, 2, … in declaration order); declaration is the
+registry, no runtime index bookkeeping. **Index declarations are
+append-only**: add at the tail only — never insert into or reorder the
+middle. An insertion shifts the slot of every later index; entries
+already on disk stay in the old slot position, and after the shift
+`scan` reads a new prefix and returns empty results (a silent error,
+not a slowdown). Removing a declaration merely leaves a harmless slot
+hole (same discipline as ns IDs never being reused, ADR-0002). Also
+note there is no index backfill: a newly appended index only sees rows
 written afterwards; existing rows get no entries — migrate with
 double-writes if existing data must be covered.
 
@@ -239,7 +239,7 @@ also land as prefix grouping**. A layout like
 scan — this is the physical form of the relational "foreign key + list".
 
 In OKM it appears as an independent ns plus a secondary index. The index
-entry layout is `[ns+slot][fields segment][primary-key prefix]`:
+entry layout is `[ns 2B][slot][fields segment][primary-key prefix]`:
 `fields(org_id)` is the grouping/sort segment in the middle of the entry
 (payload fields encoded in declaration order, derive-generated,
 compile-time layout locked) and provides the grouping prefix;
@@ -417,7 +417,7 @@ as the business grows — without touching the primary key layout.
 different decidability, and they are easy to confuse:
 
 ```text
-index entry     [ns+slot][fields segment][primary-key prefix]  ← tail always decodable
+index entry     [ns 2B][slot][fields segment][primary-key prefix]  ← tail always decodable
 primary entry   [ns][pkey...][custom tail?]                    ← custom tail undecodable
 ```
 

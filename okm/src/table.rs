@@ -34,11 +34,14 @@ impl<S: KvEngine, K: KeyEncode, R: Row<Key = K>> Table<S, K, R> {
         &self.store
     }
 
-    /// Primary key entry (slot 0): `[ns 2B][key payload]`, value = TLV
-    /// payload of the row.
+    /// Primary key entry (slot 0): `[ns 2B][slot 0][key payload]`, value
+    /// = TLV payload of the row. The slot byte keeps the header uniform
+    /// with index entries (`[ns 2B][slot 1B]`); slot 0 = primary, per
+    /// ADR-0005.
     pub fn primary_key(&self, key: &K) -> Vec<u8> {
-        let mut buf = Vec::with_capacity(2 + K::KEY_LEN);
+        let mut buf = Vec::with_capacity(3 + K::KEY_LEN);
         buf.extend_from_slice(&self.ns.to_be_bytes());
+        buf.push(crate::index::PRIMARY_SLOT);
         buf.extend_from_slice(&key.encode());
         buf
     }
