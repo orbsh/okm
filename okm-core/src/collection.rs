@@ -34,6 +34,17 @@ impl<S: KvEngine, E: KvEdge> EdgeTable<S, E> {
         self.store.put(fk, Vec::new());
         self.store.put(rk, Vec::new());
     }
+
+    /// Encode this edge's double write (forward + reverse) into an
+    /// externally owned batch — no write until commit. The
+    /// cross-collection atomic path (ADR-0003): rows and edges share one
+    /// batch, one `commit_batch` covers them all.
+    pub fn save_into(&self, batch: &mut impl crate::engine::KvBatch, a: &E::A, b: &E::B) {
+        let e = E::from_parts(a.clone(), b.clone());
+        batch.put(e.forward_key(), Vec::new());
+        batch.put(e.reverse_key(), Vec::new());
+    }
+
     /// Removes both directions.
     pub fn unlink(&mut self, a: &E::A, b: &E::B) {
         let e = E::from_parts(a.clone(), b.clone());
