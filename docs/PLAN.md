@@ -200,13 +200,14 @@ to full 16 bits). The trigger is "edge needs a new discriminator", never
       MODELING.zh-CN.md landed 2026-09-11 ("Write-path events: inline
       and channel" — epoch semantics, both disciplines, transport
       boundary); INTEGRATION twins cover the trigger asymmetry.
-- [ ] Query recipes doc (okm-query): prefix scan + `group_by` composed
+- [x] Query recipes doc (okm-query): prefix scan + `group_by` composed
       into the SQL GROUP BY recipe (multi-level rollup by group-segment
       prefix; reduce's compile-time GROUP vs read-time `group_by` vs
       index-sort grouping — same encoders, different landing). The
       where-boundary record: prefix = physical where (free, selectivity
       belongs in key layout), `.filter()` = in-memory where (stdlib,
-      no wrapper needed).
+      no wrapper needed). Landed 2026-09-11 (docs/query-recipes.md,
+      query-recipes.zh-CN.md; README links it).
 
 ## Phase 6 — Commanded RMW: `Table::upsert_with`
 
