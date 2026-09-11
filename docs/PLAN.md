@@ -182,10 +182,18 @@ to full 16 bits). The trigger is "edge needs a new discriminator", never
       code, but NOT when the input is a compile byproduct (okm-core scheme (a)):
       build.rs is the structural fix, its `rerun-if-changed` contract being
       the reliable equivalent.
-- [ ] `okm-stream` crate: consumes the emitted receivers; Rx-style
-      combinators (map/filter/merge/scan) + push-mode multi-table
-      fan-in. Zero storage responsibility; pull-mode fan-in stays in
-      `okm-query`.
+- [x] `okm-stream` crate: consumes the emitted receivers; Rx-style
+      combinators (filter/map/with_previous/distinct_by) + push-mode
+      pipelines registered directly as `EventSink`s. Zero storage
+      responsibility; pull-mode fan-in stays in `okm-query`. Landed
+      2026-09-11: synchronous by default (the write path's try_send
+      drives combinators inline; `tokio` feature defers the executor
+      bridge), field-level subscription as `filter_field`, change
+      detection as `distinct_by` — consumer-side interest, per the
+      `Event.old` rejection below. Multi-table fan-in via the
+      generated per-enum channels (each `CHANNEL_<ENUM>` is its own
+      stream head); merge/fan-in combinators over multiple heads land
+      with the first consumer that needs them.
 - [x] Doc pass: INTEGRATION/MODELING twins updated for the event layer
       (inline exactly-once vs channel no-guarantee boundary; reduce
       never a channel consumer; trigger asymmetry). MODELING.md /
