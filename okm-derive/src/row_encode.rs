@@ -329,25 +329,25 @@ fn emit_index_entries(schema: &RowSchema) -> TS2 {
     }
 }
 
-/// Aggregates: `#[kv_aggregate(MyLogic { group(a, b) })]` — the user
-/// implements `okm_core::AggregateLogic` on `MyLogic` (Acc + fold/unfold);
-/// the derive generates the `okm_core::Aggregate` impl on the SAME type
+/// Reduces: `#[kv_reduce(MyLogic { group(a, b) })]` — the user
+/// implements `okm_core::ReduceLogic` on `MyLogic` (Acc + fold/unfold);
+/// the derive generates the `okm_core::Reduce` impl on the SAME type
 /// (SLOT/GROUP come from the declaration) plus the Row hook override
-/// running each aggregate's read-modify-write. Returns
+/// running each reduce's read-modify-write. Returns
 /// (trait impls, hook fn body to splice inside `impl Row`).
-fn emit_aggregates(schema: &RowSchema) -> (TS2, TS2) {
+fn emit_reduces(schema: &RowSchema) -> (TS2, TS2) {
     let row_name = &schema.row_name;
     let n_idx = schema.indexes.len();
 
     let mut impls = quote! {};
     let mut calls = quote! {};
-    for (n, agg) in schema.aggregates.iter().enumerate() {
+    for (n, red) in schema.reduces.iter().enumerate() {
         let slot_lit = proc_macro2::Literal::u8_unsuffixed(n_idx as u8 + 1 + n as u8);
-        let logic = syn::parse_str::<syn::Type>(&agg.logic)
-            .unwrap_or_else(|e| panic!("kv_aggregate[{}]: bad logic type `{}`: {e}", agg.ident, agg.logic));
-        let group: Vec<&String> = agg.group.iter().collect();
+        let logic = syn::parse_str::<syn::Type>(&red.logic)
+            .unwrap_or_else(|e| panic!("kv_reduce[{}]: bad logic type `{}`: {e}", red.ident, red.logic));
+        let group: Vec<&String> = red.group.iter().collect();
         impls.extend(quote! {
-            impl ::okm_core::Aggregate for #logic {
+            impl ::okm_core::Reduce for #logic {
                 const SLOT: u8 = #slot_lit;
                 const GROUP: &'static [&'static str] = &[ #(#group),* ];
                 fn group_bytes(
@@ -363,24 +363,24 @@ fn emit_aggregates(schema: &RowSchema) -> (TS2, TS2) {
             }
         });
         calls.extend(quote! {{
-            let __okm_ek = <#logic as ::okm_core::Aggregate>::entry_key(_ns, _key, _row);
+            let __okm_ek = <#logic as ::okm_core::Reduce>::entry_key(_ns, _key, _row);
             let mut __okm_acc = match _store.get(&__okm_ek) {
-                Some(b) => <#logic as ::okm_core::AggregateLogic>::Acc::decode_acc(&b),
+                Some(b) => <#logic as ::okm_core::ReduceLogic>::Acc::decode_acc(&b),
                 None => ::core::default::Default::default(),
             };
             if _add {
-                <#logic as ::okm_core::AggregateLogic>::fold(&mut __okm_acc, _row);
+                <#logic as ::okm_core::ReduceLogic>::fold(&mut __okm_acc, _row);
             } else {
-                <#logic as ::okm_core::AggregateLogic>::unfold(&mut __okm_acc, _row);
+                <#logic as ::okm_core::ReduceLogic>::unfold(&mut __okm_acc, _row);
             }
-            _store.put(__okm_ek, <#logic as ::okm_core::AggregateLogic>::Acc::encode_acc(&__okm_acc));
+            _store.put(__okm_ek, <#logic as ::okm_core::ReduceLogic>::Acc::encode_acc(&__okm_acc));
         }});
     }
-    if schema.aggregates.is_empty() {
+    if schema.reduces.is_empty() {
         return (quote! {}, quote! {});
     }
     let hook = quote! {
-        fn __okm_apply_aggregates<S: ::okm_core::KvEngine>(
+        fn __okm_apply_reduces<S: ::okm_core::KvEngine>(
             _store: &mut S,
             _key: &Self::Key,
             _row: &Self,
@@ -497,7 +497,7 @@ fn emit_row_impl(schema: &RowSchema) -> TS2 {
     let named_walk = emit_named_walk(schema);
     let index_structs = emit_index_structs(schema);
     let index_entries = emit_index_entries(schema);
-    let (agg_impls, agg_hook) = emit_aggregates(schema);
+    let (agg_impls, agg_hook) = emit_reduces(schema);
     let (sub_statics, sub_hook) = emit_subscribe(schema);
     let names: Vec<_> = schema.fields.iter().map(|f| &f.ident).collect();
     let name_strs: Vec<_> = schema.fields.iter().map(|f| f.ident.to_string()).collect();

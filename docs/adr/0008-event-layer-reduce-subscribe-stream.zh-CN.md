@@ -6,8 +6,8 @@
 
 ## 背景
 
-跨行预聚合（ADR-0005 的 slot 空间，2026-09-10 落地）引入了 `#[kv_aggregate]` 辅助设施：
-用户实现 `AggregateLogic`（Acc + fold/unfold），由写路径上的读-改-写 hook 驱动。审视这个
+跨行预聚合（ADR-0005 的 slot 空间，2026-09-10 落地）引入了 `#[kv_reduce]` 辅助设施：
+用户实现 `ReduceLogic`（Acc + fold/unfold），由写路径上的读-改-写 hook 驱动。审视这个
 hook 的本质时浮现出一个泛化：fold/unfold 就是**对行事件流的内联消费**。同一事件源还能
 支撑别的消费者——触发器（无状态副作用）、外部通知（观察者）、FRP 风格的流组合。本 ADR
 记录把机制泛化的决定，以及守住边界的条款。
@@ -16,7 +16,7 @@ hook 的本质时浮现出一个泛化：fold/unfold 就是**对行事件流的�
 
 ### 1. aggregate → reduce（改名，语义不变）
 
-`#[kv_aggregate]` / `AggregateLogic` / `AggCodec` / `aggregate_get` / `scan_aggregates`
+`#[kv_reduce]` / `ReduceLogic` / `ReduceCodec` / `reduce_get` / `scan_reduces`
 更名为 `#[kv_reduce]` / `ReduceLogic` / `ReduceCodec` / `reduce_get` / `scan_reduces`。
 改名让名字对齐角色：reduce 是对行事件流的有状态、可逆归约（put 时 fold，delete 时
 unfold）。行为零变化；双层 trait 拆分（用户实现 Logic、derive 在其上实现 trait——

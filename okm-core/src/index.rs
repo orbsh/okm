@@ -142,10 +142,10 @@ pub trait Row: Sized + Clone {
     /// the registry).
     fn index_entries(key: &Self::Key, row: &Self, ns: u16) -> Vec<(Vec<u8>, Vec<u8>)>;
 
-    /// Cross-row aggregate hook (see [`crate::aggregate`]): apply this
-    /// row to every declared `#[kv_aggregate]` group. Default no-op —
-    /// only rows with aggregate declarations override it.
-    fn __okm_apply_aggregates<S: KvEngine>(
+    /// Cross-row reduce hook (see [`crate::reduce`]): apply this
+    /// row to every declared `#[kv_reduce]` group. Default no-op —
+    /// only rows with reduce declarations override it.
+    fn __okm_apply_reduces<S: KvEngine>(
         _store: &mut S,
         _key: &Self::Key,
         _row: &Self,

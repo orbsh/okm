@@ -146,9 +146,9 @@ pub(crate) fn parse_index_attr(attr: &syn::Attribute) -> Vec<IdxDecl> {
     out
 }
 
-/// Parse `#[kv_aggregate(name { group(a, b) })]` — same Ident + brace
+/// Parse `#[kv_reduce(name { group(a, b) })]` — same Ident + brace
 /// shape as one `kv_index` declaration, only the keyword set differs.
-pub(crate) fn parse_aggregate_attr(attr: &syn::Attribute) -> AggDecl {
+pub(crate) fn parse_reduce_attr(attr: &syn::Attribute) -> ReduceDecl {
     let ts: Vec<TokenTree> = attr.to_token_stream().into_iter().collect();
     let outer = ts
         .iter()
@@ -156,31 +156,31 @@ pub(crate) fn parse_aggregate_attr(attr: &syn::Attribute) -> AggDecl {
             TokenTree::Group(g) if g.delimiter() == Delimiter::Bracket => Some(g.stream()),
             _ => None,
         })
-        .expect("kv_aggregate: missing attribute brackets");
+        .expect("kv_reduce: missing attribute brackets");
     let body = outer
         .into_iter()
         .find_map(|t| match t {
             TokenTree::Group(g) if g.delimiter() == Delimiter::Parenthesis => Some(g.stream()),
             _ => None,
         })
-        .expect("kv_aggregate: missing argument parentheses");
+        .expect("kv_reduce: missing argument parentheses");
     let toks: Vec<TokenTree> = body.into_iter().collect();
 
     let ident = match toks.first() {
         Some(TokenTree::Ident(id)) => id.clone(),
-        t => panic!("kv_aggregate: expected aggregate name Ident, got {t:?}"),
+        t => panic!("kv_reduce: expected reduce name Ident, got {t:?}"),
     };
     let group_body = match toks.get(1) {
         Some(TokenTree::Group(g)) if g.delimiter() == Delimiter::Brace => g.stream(),
-        t => panic!("kv_aggregate[{ident}]: expected {{ group(…) }} block, got {t:?}"),
+        t => panic!("kv_reduce[{ident}]: expected {{ group(…) }} block, got {t:?}"),
     };
     let gtoks: Vec<TokenTree> = group_body.into_iter().collect();
     let kw = match gtoks.first() {
         Some(TokenTree::Ident(id)) => id.to_string(),
-        t => panic!("kv_aggregate[{ident}]: expected group(...), got {t:?}"),
+        t => panic!("kv_reduce[{ident}]: expected group(...), got {t:?}"),
     };
     if kw != "group" {
-        panic!("kv_aggregate[{ident}]: unknown key {kw} (supported: group)");
+        panic!("kv_reduce[{ident}]: unknown key {kw} (supported: group)");
     }
     let group: Vec<String> = match gtoks.get(1) {
         Some(TokenTree::Group(g)) if g.delimiter() == Delimiter::Parenthesis => g
@@ -189,15 +189,15 @@ pub(crate) fn parse_aggregate_attr(attr: &syn::Attribute) -> AggDecl {
             .filter_map(|t| match t {
                 TokenTree::Ident(id) => Some(id.to_string()),
                 TokenTree::Punct(_) => None,
-                t => panic!("kv_aggregate[{ident}].group: illegal token {t}"),
+                t => panic!("kv_reduce[{ident}].group: illegal token {t}"),
             })
             .collect(),
-        t => panic!("kv_aggregate[{ident}]: expected paren group, got {t:?}"),
+        t => panic!("kv_reduce[{ident}]: expected paren group, got {t:?}"),
     };
     if group.is_empty() {
-        panic!("kv_aggregate[{ident}]: group must not be empty — a global single-group aggregate has no group key to scan by");
+        panic!("kv_reduce[{ident}]: group must not be empty — a global single-group reduce has no group key to scan by");
     }
-    AggDecl {
+    ReduceDecl {
         logic: ident.to_string(),
         ident,
         group,
@@ -521,13 +521,13 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> Vec<FieldSchema> {
     fs
 }
 
-/// One `#[kv_aggregate(name { group(a, b) })]` declaration. The fold /
+/// One `#[kv_reduce(name { group(a, b) })]` declaration. The fold /
 /// unfold callbacks and the accumulator type come from a user-implemented
-/// `Aggregate` impl on a marker struct named `__OkmAggregate_{row}_{name}`;
+/// `Reduce` impl on a marker struct named `__OkmReduce_{row}_{name}`;
 /// this IR only carries the declaration (slot allocation + group fields).
-pub(crate) struct AggDecl {
+pub(crate) struct ReduceDecl {
     pub ident: syn::Ident,
-    /// The user's `AggregateLogic` impl type (the attribute's name token).
+    /// The user's `ReduceLogic` impl type (the attribute's name token).
     pub logic: String,
     pub group: Vec<String>,
 }
@@ -566,9 +566,9 @@ pub(crate) struct RowSchema {
     pub fields: Vec<FieldSchema>,
     /// Index declarations, attribute order (slot = position + 1).
     pub indexes: Vec<IdxDecl>,
-    /// Aggregate declarations, attribute order (slots continue after
+    /// Reduce declarations, attribute order (slots continue after
     /// the last index — same append-only counter, never reused).
-    pub aggregates: Vec<AggDecl>,
+    pub reduces: Vec<ReduceDecl>,
     /// Subscribe declaration — at most one per row type.
     pub subscribe: Option<SubDecl>,
 }
@@ -670,18 +670,18 @@ pub(crate) fn parse_schema(input: DeriveInput) -> RowSchema {
         }
     }
 
-    // #[kv_aggregate(name { group(a, b) })]: slots CONTINUE the index
+    // #[kv_reduce(name { group(a, b) })]: slots CONTINUE the index
     // counter (append-only, never reused) — slot = last index slot + 1 + n.
-    let agg_decls: Vec<AggDecl> = input
+    let agg_decls: Vec<ReduceDecl> = input
         .attrs
         .iter()
-        .filter(|a| a.path().is_ident("kv_aggregate"))
-        .map(parse_aggregate_attr)
+        .filter(|a| a.path().is_ident("kv_reduce"))
+        .map(parse_reduce_attr)
         .collect();
-    for agg in &agg_decls {
-        for n in &agg.group {
+    for red in &agg_decls {
+        for n in &red.group {
             if !name_strs.contains(n) {
-                panic!("kv_aggregate[{}]: group field `{n}` is not a row payload field", agg.ident);
+                panic!("kv_reduce[{}]: group field `{n}` is not a row payload field", red.ident);
             }
         }
     }
@@ -702,7 +702,7 @@ pub(crate) fn parse_schema(input: DeriveInput) -> RowSchema {
         layout_version,
         fields: fs,
         indexes: idx_decls,
-        aggregates: agg_decls,
+        reduces: agg_decls,
         subscribe: sub_decl,
     }
 }

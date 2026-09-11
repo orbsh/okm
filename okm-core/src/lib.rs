@@ -30,7 +30,7 @@ pub use okm_derive::{EdgeEncode, KeyEncode, RowEncode};
 pub use reverse::{Reversible, Reverse};
 pub use wrappers::{Enum, EnumTag, Offset, Quant, VarInt, VarIntEnc, offset_decode, offset_encode};
 
-pub mod aggregate;
+pub mod reduce;
 pub mod collection;
 pub mod edge;
 pub mod engine;
@@ -50,7 +50,7 @@ pub mod fjall_backend;
 pub mod slatedb_backend;
 pub mod tooling;
 
-pub use aggregate::{aggregate_get, scan_aggregates, AggCodec, Aggregate, AggregateLogic};
+pub use reduce::{reduce_get, scan_reduces, ReduceCodec, Reduce, ReduceLogic};
 pub use collection::EdgeTable;
 pub use edge::{KvEdge, head_bytes};
 pub use engine::{KvEngine, MockStore};

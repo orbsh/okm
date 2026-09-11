@@ -166,9 +166,9 @@ the entry set from the row, so an impure function (clock / randomness /
 external state) produces a different set at delete time than at write
 time, leaving dangling entries.
 
-`func(path)` and the `#[kv_aggregate]` declaration below are the two
+`func(path)` and the `#[kv_reduce]` declaration below are the two
 external extension mechanisms: func is **per-row derivation** (computed
-at write time; entries still live and die with the row), aggregate is
+at write time; entries still live and die with the row), reduce is
 **cross-row aggregation** (mutable value, read-modify-write). How the
 heavier integrations (FTS / vector / graph algorithms) land on the
 primitives is covered in the [integration boundary
@@ -443,24 +443,24 @@ mechanical half is provided as a helper facility, declared like an
 index:
 
 ```text
-#[kv_aggregate(AuthorStats { group(author_id) })]
+#[kv_reduce(AuthorStats { group(author_id) })]
 ```
 
 `group(...)` takes the grouping segment from row fields (entry =
 `[ns][slot][group segment]`, the slot continues the index counter);
-`AuthorStats` is a user type implementing `AggregateLogic` — an `Acc`
-(the accumulator type, implementing `AggCodec` for fixed-width BE
+`AuthorStats` is a user type implementing `ReduceLogic` — an `Acc`
+(the accumulator type, implementing `ReduceCodec` for fixed-width BE
 encoding) plus `fold(acc, &row)` (on put) and `unfold(acc, &row)` (on
 delete). The write path performs the read-modify-write automatically:
 read the current acc, fold or unfold, write back. The read side is
-`aggregate_get` for one group and `scan_aggregates` for all groups.
+`reduce_get` for one group and `scan_reduces` for all groups.
 
 Two disciplines of use:
 
 - **Reversibility is the contract**: `unfold(fold(a,x)) = a` must hold
   exactly — count and sum qualify, median and distinct do not;
-  non-invertible aggregates belong in an OLAP system beside the KV. A
-  compound acc (count + sum for averages) implements `AggCodec`
+  non-invertible reduces belong in an OLAP system beside the KV. A
+  compound acc (count + sum for averages) implements `ReduceCodec`
   directly; okm-core only stores and fetches the bytes.
 - **Single-writer boundary**: the hook is a read-modify-write, safe
   under single-writer engines; multi-writer races and distributed add
