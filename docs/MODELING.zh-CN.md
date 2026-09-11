@@ -286,6 +286,27 @@ okm-core 对它的立场是两层拆分：核心不内置任何聚合语义（�
 
 零值回收刻意不做：组空了 entry 仍在（acc 回到单位元），省掉墓碑逻辑；调用方按需跳过单位元组。
 
+## 写路径事件：inline 与 channel
+
+reduce 回答"累计后的状态长什么样"；另一类消费者需要的是写本身作为事件——缓存失效、搜索索引同步、下游通知。事件层（ADR-0008）把这类消费者拆成两种，这个拆分就是全部设计：
+
+- **Inline**（reduce）：运行在写路径内部，构造上恰好一次——fold 就是写的一部分。reduce 永远不消费 channel。
+- **Channel**（`#[kv_subscribe]`）：best-effort 投递，无保证。注解声明"该行类型的写路径事件进入 channel"；注解处没有 handler——处理逻辑完全归消费者：
+
+```text
+#[kv_subscribe(RowEvent::Account)]   // 事件包进生成 enum 的 variant
+#[kv_subscribe]                      // bare：每行类型独立 channel，退化形态
+```
+
+事件携带 `op`（put/delete）、单调递增的**写批次 epoch** 和行本身。epoch 是发出这张表的写计数器：同一张表的事件带精确的同表批次边界，消费者组合子可以恰好折叠到边界为止（glitch-free），而不是靠去抖启发式。它只在进程内有意义——不持久化，重启归零——并且不提供跨表顺序：独立 put 之间不存在原子性的"两者都已更新"时刻，多表 fan-in 结构上就是最终一致。
+
+两条使用纪律：
+
+- **正确性永不放上 channel。** 队列满会丢、没有 sink 会静默丢；必须恰好一次发生的事（如 reduce）属于 inline。channel 的位置是容忍丢失、事后可对账的消费者。
+- **纯度约束同样适用于事件载荷**：行快照按原样随事件走；消费时再去派生额外上下文，等于重读一个事件已不再保证描述的存储。
+
+传输是组装点决策（`ChannelCell::register` 接受任意 sink——tokio mpsc、crossbeam 队列、no-op）；core 保持同步、不认识任何 executor。对 receiver 的组合子（map/filter/merge/折叠到 epoch 边界）属于 stream 层的职责，不属于模型层。
+
 ## 访问方法强制
 
 查询只走 `get`（主键点查）或 `scan::<I>`（具名访问方法）。没有通用全表扫描的查询面。

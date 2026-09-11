@@ -141,13 +141,13 @@ to full 16 bits). The trigger is "edge needs a new discriminator", never
       `ReduceCodec`, `reduce_get`, `scan_reduces`): semantics unchanged,
       name aligned to the role (stateful reversible reduction over the
       row-event stream).
-- [ ] `#[kv_subscribe]`: per-annotated row type sends uniform-format events
+- [x] `#[kv_subscribe]`: per-annotated row type sends uniform-format events
       in the write path (sync `try_send`, no handler at the annotation
       site — consumers own the logic, combinators are the adapter); ≥1
       declaration emits a per-row-type `OnceLock` global mpsc + consumer
       accessor. Core stays synchronous; delivery is best-effort, policy
       declared by the subscriber.
-- [ ] Event payload carries a monotonic write-batch epoch: gives consumer
+- [x] Event payload carries a monotonic write-batch epoch: gives consumer
       combinators an exact same-batch boundary (glitch-free folding within
       a table), not a debounce heuristic. Cross-table fan-in stays
       eventually-consistent — structurally no atomic "both updated" instant
@@ -185,9 +185,12 @@ to full 16 bits). The trigger is "edge needs a new discriminator", never
       combinators (map/filter/merge/scan) + push-mode multi-table
       fan-in. Zero storage responsibility; pull-mode fan-in stays in
       `okm-query`.
-- [ ] Doc pass: INTEGRATION/MODELING twins updated for the event layer
+- [x] Doc pass: INTEGRATION/MODELING twins updated for the event layer
       (inline exactly-once vs channel no-guarantee boundary; reduce
-      never a channel consumer; trigger asymmetry).
+      never a channel consumer; trigger asymmetry). MODELING.md /
+      MODELING.zh-CN.md landed 2026-09-11 ("Write-path events: inline
+      and channel" — epoch semantics, both disciplines, transport
+      boundary); INTEGRATION twins cover the trigger asymmetry.
 - [ ] Query recipes doc (okm-query): prefix scan + `group_by` composed
       into the SQL GROUP BY recipe (multi-level rollup by group-segment
       prefix; reduce's compile-time GROUP vs read-time `group_by` vs
