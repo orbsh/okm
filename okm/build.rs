@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 use quote::ToTokens;
 
-fn collect_subscribe_rows(dir: &Path, acc: &mut Vec<(String, String, String)>) {
+fn collect_subscribe_rows(dir: &Path, acc: &mut Vec<(String, String, String, String)>) {
     let mut entries: Vec<PathBuf> = fs::read_dir(dir)
         .expect("build.rs: read src/")
         .map(|e| e.expect("build.rs: dir entry").path())
@@ -25,9 +25,22 @@ fn collect_subscribe_rows(dir: &Path, acc: &mut Vec<(String, String, String)>) {
     }
 }
 
+/// Extract the key type from `#[kv_ref(KeyTy)]` (the derive's proxy-key
+/// annotation) — the generated enum variant needs a concrete
+/// `Event<KeyTy, Row>` payload type, and key/row live in the consuming
+/// crate's own scope, so bare names are emitted.
+fn key_type_of(s: &syn::ItemStruct) -> Option<String> {
+    s.attrs
+        .iter()
+        .filter(|a| a.path().is_ident("kv_ref"))
+        .filter_map(|a| a.parse_args::<syn::ExprPath>().ok())
+        .next()
+        .map(|p| p.to_token_stream().to_string().replace(' ', ""))
+}
+
 /// One pass with syn: find `#[derive(... RowEncode ...)]` structs carrying
 /// `#[kv_subscribe(Enum::Variant)]`.
-fn scan_file(path: &Path, acc: &mut Vec<(String, String, String)>) {
+fn scan_file(path: &Path, acc: &mut Vec<(String, String, String, String)>) {
     let txt = fs::read_to_string(path).unwrap_or_else(|e| panic!("build.rs: read {path:?}: {e}"));
     let Ok(ast) = syn::parse_file(&txt) else {
         // Not parseable standalone (e.g. a fixture snippet) — skip; the
@@ -47,12 +60,12 @@ fn scan_file(path: &Path, acc: &mut Vec<(String, String, String)>) {
         let mut sub: Option<(String, String)> = None;
         for a in &s.attrs {
             if a.path().is_ident("kv_subscribe") {
-                let ts = a.to_token_stream().to_string();
-                let body = ts
-                    .trim_end_matches(']')
-                    .split_once('(')
-                    .and_then(|(_, rest)| rest.trim_end_matches(')').split_whitespace().next())
-                    .map(|p| p.replace(' ', ""));
+                // Bare form (no parens) → parse_args fails → variant None.
+                // Annotated form: one `Enum::Variant` path.
+                let body = a
+                    .parse_args::<syn::ExprPath>()
+                    .ok()
+                    .map(|p| p.to_token_stream().to_string().replace(' ', ""));
                 if let Some(p) = body {
                     let mut segs = p.split("::").filter(|s| !s.is_empty());
                     match (segs.next(), segs.next()) {
@@ -68,7 +81,10 @@ fn scan_file(path: &Path, acc: &mut Vec<(String, String, String)>) {
             }
         }
         if let Some((en, var)) = sub {
-            acc.push((en, var, s.ident.to_string()));
+            let key_ty = key_type_of(s).unwrap_or_else(|| {
+                panic!("kv_subscribe[{}]: no `#[kv_ref(KeyTy)]` found", s.ident)
+            });
+            acc.push((en, var, s.ident.to_string(), key_ty));
         }
     }
 }
@@ -114,15 +130,21 @@ impl<E: 'static> EnumChannel<E> {
 
 fn main() {
     println!("cargo:rerun-if-changed=src/");
-    let mut rows: Vec<(String, String, String)> = Vec::new();
-    collect_subscribe_rows(Path::new("src"), &mut rows);
+    println!("cargo:rerun-if-changed=tests/");
+    let mut rows: Vec<(String, String, String, String)> = Vec::new();
+    if Path::new("src").exists() {
+        collect_subscribe_rows(Path::new("src"), &mut rows);
+    }
+    if Path::new("tests").exists() {
+        collect_subscribe_rows(Path::new("tests"), &mut rows);
+    }
 
     // Group by enum name (multi-enum support is free at this granularity).
-    let mut enums: Vec<(String, Vec<(String, String)>)> = Vec::new();
-    for (en, var, row) in rows {
+    let mut enums: Vec<(String, Vec<(String, String, String)>)> = Vec::new();
+    for (en, var, row, key) in rows {
         match enums.iter_mut().find(|(e, _)| *e == en) {
-            Some((_, v)) => v.push((var, row)),
-            None => enums.push((en, vec![(var, row)])),
+            Some((_, v)) => v.push((var, row, key)),
+            None => enums.push((en, vec![(var, row, key)])),
         }
     }
     if enums.iter().any(|(_, v)| v.len() > 1) {
@@ -139,9 +161,9 @@ fn main() {
         let mut decl = format!(
             "\n/// Event enum `{en}` — one variant per subscribed row type.\npub enum {en} {{\n"
         );
-        for (var, row) in variants {
+        for (var, row, key) in variants {
             decl.push_str(&format!(
-                "    {var}(Event<crate::keys::{row}Key, crate::rows::{row}>),\n"
+                "    {var}(Event<super::{key}, super::{row}>),\n"
             ));
         }
         decl.push_str("}\n");
