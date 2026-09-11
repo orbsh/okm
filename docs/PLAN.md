@@ -25,10 +25,18 @@ Design decisions live in `docs/adr/`. This plan tracks implementation status.
 - [x] `Table<S, K, R>` assembly point: plain generics, no assembly macro;
       holds the shared engine instance; `put(row)` = primary key write +
       index entries in one engine batch; `Row::table(store, ns)` constructor.
-- [ ] `save_into(batch, key, value)` cross-collection atomic path (ADR-0003
+- [x] `save_into(batch, key, value)` cross-collection atomic path (ADR-0003
       mechanism note): encode into an externally owned engine batch without
       touching the collection's internal buffer; for primary + index across
       two assembly points (single-table case already covered by `put`).
+      Landed 2026-09-11: `KvBatch` trait + `KvEngine::batch`/`commit_batch`
+      (default carrier MemBatch — op list replayed; fjall overrides
+      commit_batch with its native cross-keyspace Batch, one real WAL
+      write). `Table::save_into` (primary + all index entries) and
+      `EdgeTable::save_into` (forward + reverse) encode into the batch;
+      save_into is the encoding surface — reduce folds / subscribe
+      emission / overwrite unfold stay put-path only (documented on the
+      method).
 - [ ] Optimistic CAS write (`save_with_cas`, MVCC version compare-and-swap
       retry loop) — future extension from the original design doc; no ADR
       record yet.

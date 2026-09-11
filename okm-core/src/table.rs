@@ -109,6 +109,26 @@ impl<S: KvEngine, K: KeyEncode, R: Row<Key = K>> Table<S, K, R> {
         new
     }
 
+    /// Encode this row's full write set (primary entry + one entry per
+    /// access method) into an externally owned batch — no write happens
+    /// until the batch commits. The cross-collection atomic path
+    /// (ADR-0003): a row table and an edge table (or two rows tables)
+    /// each `save_into` the same batch, then one `commit_batch` makes
+    /// them live or die together.
+    ///
+    /// Note: save_into bypasses put's higher write-path hooks (reduce
+    /// folds, subscribe emission, overwrite unfold) — it is the encoding
+    /// surface, not the semantic one. Rows that participate in reduce or
+    /// subscriptions must go through `put`/`upsert_with`; save_into is
+    /// for batch-aligned bulk loads where the consumer settles those
+    /// folds itself.
+    pub fn save_into(&self, batch: &mut impl crate::engine::KvBatch, key: &K, row: &R) {
+        batch.put(self.primary_key(key), row.encode_payload());
+        for (ek, ev) in R::index_entries(key, row, self.ns) {
+            batch.put(ek, ev);
+        }
+    }
+
     /// Index entry key for access method `I` derived from `key` + `row`.
     pub fn index_key<I: KvIndex<Key = K, Row = R>>(&self, key: &K, row: &R) -> Vec<u8> {
         I::entry_key(self.ns, key, row)
