@@ -418,6 +418,7 @@ fn emit_subscribe(schema: &RowSchema) -> (TS2, TS2) {
             quote! {
                 fn __okm_emit_event(
                     _op: ::okm_core::subscribe::Op,
+                    _epoch: u64,
                     _key: &Self::Key,
                     _row: &Self,
                 ) {
@@ -429,7 +430,7 @@ fn emit_subscribe(schema: &RowSchema) -> (TS2, TS2) {
                     // the build.rs-generated module there.
                     crate::okm_subscribe::CHANNEL.emit(
                         crate::okm_subscribe::RowEvent::#var(::okm_core::subscribe::Event::new(
-                            _op, _key.clone(), _row.clone(),
+                            _op, _epoch, _key.clone(), _row.clone(),
                         )),
                     );
                 }
@@ -443,11 +444,12 @@ fn emit_subscribe(schema: &RowSchema) -> (TS2, TS2) {
             quote! {
                 fn __okm_emit_event(
                     _op: ::okm_core::subscribe::Op,
+                    _epoch: u64,
                     _key: &Self::Key,
                     _row: &Self,
                 ) {
                     #cell.emit(::okm_core::subscribe::Event::new(
-                        _op, _key.clone(), _row.clone(),
+                        _op, _epoch, _key.clone(), _row.clone(),
                     ));
                 }
             }

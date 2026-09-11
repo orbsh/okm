@@ -25,16 +25,29 @@ pub enum Op {
 }
 
 /// One channel event — typed payload plus the operation that produced it.
+///
+/// `epoch` is the emitting table's monotonic write-batch counter (ADR-0008
+/// §5): events produced by one table share the counter's order, so a
+/// consumer combinator can fold exactly to an epoch boundary (glitch-free
+/// within a table). It is in-process only — never persisted, resets on
+/// restart; cross-table ordering does not exist (independent puts have no
+/// atomic "both updated" instant, ADR-0009 §2).
 #[derive(Debug)]
 pub struct Event<K, R> {
     pub op: Op,
+    pub epoch: u64,
     pub key: K,
     pub row: R,
 }
 
 impl<K, R> Event<K, R> {
-    pub fn new(op: Op, key: K, row: R) -> Self {
-        Self { op, key, row }
+    pub fn new(op: Op, epoch: u64, key: K, row: R) -> Self {
+        Self {
+            op,
+            epoch,
+            key,
+            row,
+        }
     }
 }
 
