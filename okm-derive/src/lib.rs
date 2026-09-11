@@ -45,7 +45,7 @@ pub fn derive_key_encode(input: TokenStream) -> TokenStream {
     out
 }
 
-#[proc_macro_derive(RowEncode, attributes(kv_ref, kv_index, kv_reduce, kv_offset, kv_layout, kv_default, kv_subscribe))]
+#[proc_macro_derive(RowEncode, attributes(kv_ref, kv_index, kv_reduce, kv_offset, kv_layout, kv_default, kv_subscribe, kv_event_enum))]
 pub fn derive_row_encode(input: TokenStream) -> TokenStream {
     let out = row_encode::derive(input.clone());
     dump("RowEncode", input, &out.clone().into());

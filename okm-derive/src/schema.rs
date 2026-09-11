@@ -532,28 +532,45 @@ pub(crate) struct ReduceDecl {
     pub group: Vec<String>,
 }
 
-/// One `#[kv_subscribe]` declaration. Optional argument: the enum variant
-/// path the row's events dispatch through (e.g. `RowEvent::User`). With
-/// the path, the send goes through the generated enum's channel; without,
-/// the row falls back to its per-row-type bare channel.
+/// One `#[kv_subscribe]` declaration: bare only. The event enum name comes
+/// from `#[kv_event_enum(Alias)]` (default `RowEvent`); the variant IS the
+/// row type name (build.rs derives it — no hand-written mapping, no
+/// per-row-type fallback channel; the bare-channel degraded shape is
+/// explicitly unsupported).
 pub(crate) struct SubDecl {
-    /// `Some(("RowEvent", "User"))` when a variant path is annotated.
-    pub variant: Option<(String, String)>,
+    /// Generated event enum name for this row's events (`RowEvent` unless
+    /// overridden by `#[kv_event_enum]`).
+    pub enum_name: String,
 }
 
-/// Parse `#[kv_subscribe]` or `#[kv_subscribe(RowEvent::User)]`.
+/// Parse `#[kv_subscribe]` (bare). Any parenthesized argument is rejected:
+/// the enum name lives in `#[kv_event_enum]`, not here.
 pub(crate) fn parse_subscribe_attr(attr: &syn::Attribute) -> SubDecl {
-    // Bare form: no parens — parse_args would reject it.
-    let Ok(ts) = attr.parse_args::<syn::ExprPath>() else {
-        return SubDecl { variant: None };
+    if attr.parse_args::<syn::ExprPath>().is_ok() {
+        panic!(
+            "kv_subscribe: variant paths are not supported — declare `#[kv_subscribe]` \
+             (bare); the event enum is `{}` and the variant is the row type name \
+             (rename the enum with `#[kv_event_enum(...)]`)",
+            DEFAULT_EVENT_ENUM
+        );
+    }
+    SubDecl { enum_name: DEFAULT_EVENT_ENUM.to_string() }
+}
+
+pub(crate) const DEFAULT_EVENT_ENUM: &str = "RowEvent";
+
+/// Optional `#[kv_event_enum(Alias)]`: renames the generated event enum
+/// this row's events dispatch through. Only read on rows that also carry
+/// `#[kv_subscribe]`.
+pub(crate) fn parse_event_enum_attr(attr: &syn::Attribute) -> String {
+    let ts = match attr.parse_args::<syn::ExprPath>() {
+        Ok(p) => p.to_token_stream().to_string().replace(' ', ""),
+        Err(_) => panic!("kv_event_enum: expected an enum name, e.g. `#[kv_event_enum(MyEvents)]`"),
     };
-    let path = ts.to_token_stream().to_string().replace(' ', "");
-    let mut segs = path.split("::");
-    let (en, var) = match (segs.next(), segs.next(), segs.next()) {
-        (Some(e), Some(v), None) => (e.to_string(), v.to_string()),
-        _ => panic!("kv_subscribe: expected `Enum::Variant` path, got `{path}`"),
-    };
-    SubDecl { variant: Some((en, var)) }
+    if ts.split("::").count() != 1 {
+        panic!("kv_event_enum: expected a bare enum name, got `{ts}`");
+    }
+    ts
 }
 
 /// Whole-macro IR: parse once, consumed by every emit function.
@@ -686,15 +703,21 @@ pub(crate) fn parse_schema(input: DeriveInput) -> RowSchema {
         }
     }
 
-    // #[kv_subscribe] / #[kv_subscribe(Enum::Variant)] — at most one per
-    // row type (two declarations = one channel send per write, ambiguous
-    // shape; reject rather than multiply sends).
+    // #[kv_subscribe] (bare) + optional #[kv_event_enum(Alias)] — at most
+    // one subscribe per row type (two declarations = one channel send per
+    // write, ambiguous shape; reject rather than multiply sends).
     let mut sub_iter = input.attrs.iter().filter(|a| a.path().is_ident("kv_subscribe"));
     let sub_attr = sub_iter.next();
     if sub_iter.next().is_some() {
         panic!("kv_subscribe: duplicate declaration — at most one per row type");
     }
-    let sub_decl = sub_attr.map(parse_subscribe_attr);
+    let sub_decl = sub_attr.map(|a| {
+        let mut decl = parse_subscribe_attr(a);
+        for attr in input.attrs.iter().filter(|a| a.path().is_ident("kv_event_enum")) {
+            decl.enum_name = parse_event_enum_attr(attr);
+        }
+        decl
+    });
 
     RowSchema {
         row_name,
