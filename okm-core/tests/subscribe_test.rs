@@ -62,7 +62,7 @@ fn subscribe_round_trip() {
     // Consuming side: register the transport at assembly time. Here the
     // sink is just a queue; in a real app it forwards into a tokio mpsc,
     // crossbeam queue, etc. — transport is not the core's business.
-    let seen: std::sync::Arc<std::sync::Mutex<Vec<(Op, u64)>>> = Default::default();
+    let seen: std::sync::Arc<std::sync::Mutex<Vec<(Op, u64, u64)>>> = Default::default();
     let sink = seen.clone();
     crate::okm_subscribe::CHANNEL.register(move |ev: crate::okm_subscribe::RowEvent| {
         // Single-variant enum for now — the let-else documents the
@@ -75,7 +75,7 @@ fn subscribe_round_trip() {
         if q.len() >= 8 {
             return false; // simulate a bounded transport dropping
         }
-        q.push((ev.op, ev.key.id));
+        q.push((ev.op, ev.epoch, ev.key.id));
         true
     });
     assert!(crate::okm_subscribe::CHANNEL.has_sink());
@@ -85,9 +85,11 @@ fn subscribe_round_trip() {
     t.put(&AccountKey { id: 2 }, &Account { balance: 20 });
     t.delete_by_pkey(&AccountKey { id: 1 });
 
+    // Epoch: the table's monotonic write-batch counter — 1, 2, 3 across
+    // the three writes, giving consumers an exact same-table boundary.
     assert_eq!(
         *seen.lock().unwrap(),
-        vec![(Op::Put, 1), (Op::Put, 2), (Op::Delete, 1)]
+        vec![(Op::Put, 1, 1), (Op::Put, 2, 2), (Op::Delete, 3, 1)]
     );
 
     // Bare per-row-type cell fallback: same sink contract, own channel.

@@ -15,6 +15,11 @@ pub struct Table<S, K: KeyEncode, R: Row<Key = K>> {
     /// Raw ns segment (no direction bit) — comes from the Table's
     /// `#[kv_ns]` declaration on the key struct.
     ns: u16,
+    /// Monotonic write-batch counter (in-process only, never persisted):
+    /// bumped on every put/delete, stamped on emitted subscribe events so
+    /// consumers can fold to exact same-table batch boundaries. Resets on
+    /// restart — meaningful only within one process lifetime.
+    epoch: u64,
     _marker: std::marker::PhantomData<(K, R)>,
 }
 
@@ -26,6 +31,7 @@ impl<S: KvEngine, K: KeyEncode, R: Row<Key = K>> Table<S, K, R> {
         Self {
             store,
             ns,
+            epoch: 0,
             _marker: std::marker::PhantomData,
         }
     }
@@ -59,7 +65,10 @@ impl<S: KvEngine, K: KeyEncode, R: Row<Key = K>> Table<S, K, R> {
         R::__okm_apply_reduces(&mut self.store, key, row, self.ns, true);
         // Subscribe: write-path event into the declared channel
         // (best-effort try_send — full channel drops, never blocks).
-        R::__okm_emit_event(crate::subscribe::Op::Put, key, row);
+        // The event carries the table's post-write epoch (monotonic
+        // write-batch boundary, ADR-0008 §5).
+        self.epoch += 1;
+        R::__okm_emit_event(crate::subscribe::Op::Put, self.epoch, key, row);
     }
 
     /// Index entry key for access method `I` derived from `key` + `row`.
@@ -88,8 +97,10 @@ impl<S: KvEngine, K: KeyEncode, R: Row<Key = K>> Table<S, K, R> {
         // Unfold from every declared reduce group (single call site —
         // delete_by_pkey reaches here after its internal get).
         R::__okm_apply_reduces(&mut self.store, key, row, self.ns, false);
-        // Subscribe: deletion event (same best-effort contract as put).
-        R::__okm_emit_event(crate::subscribe::Op::Delete, key, row);
+        // Subscribe: deletion event (same best-effort contract as put),
+        // stamped with the table's post-write epoch.
+        self.epoch += 1;
+        R::__okm_emit_event(crate::subscribe::Op::Delete, self.epoch, key, row);
     }
 
     /// Delete by primary key only: fetch the row from the primary table
