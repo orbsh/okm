@@ -242,9 +242,13 @@ impl<S: KvEngine, K: KeyEncode, R: Row<Key = K>> Table<S, K, R> {
 
     /// Raw rows: `(key encoding suffix, TLV payload)` per primary entry,
     /// in key order — the byte-level scan surface the Arrow bridge and
-    /// snapshot exporter consume without struct materialization.
+    /// snapshot exporter consume without struct materialization. Slot-0
+    /// only: the ns segment also holds index entries (slots 1+), which
+    /// are derived state excluded from export (rebuilt deterministically
+    /// on import via put).
     pub fn scan_rows_raw(&self) -> Vec<(Vec<u8>, Vec<u8>)> {
-        let prefix = self.ns.to_be_bytes().to_vec();
+        let mut prefix = self.ns.to_be_bytes().to_vec();
+        prefix.push(crate::index::PRIMARY_SLOT);
         self.store
             .scan_suffix(&prefix)
             .into_iter()
@@ -256,9 +260,11 @@ impl<S: KvEngine, K: KeyEncode, R: Row<Key = K>> Table<S, K, R> {
             .collect()
     }
 
-    /// Full-ns scan of primary keys (slot-0 entries only).
+    /// Full-ns scan of primary keys (slot-0 entries only — the same
+    /// slot-0 discipline as `scan_rows_raw`; index entries are slots 1+).
     pub fn scan_keys(&self) -> Vec<K> {
-        let p = self.ns.to_be_bytes().to_vec();
+        let mut p = self.ns.to_be_bytes().to_vec();
+        p.push(crate::index::PRIMARY_SLOT);
         self.store
             .scan_suffix(&p)
             .iter()
