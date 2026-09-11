@@ -48,8 +48,11 @@ fn enum_channel_receives_put_and_delete() {
     // crossbeam queue, etc. — transport is not the core's business.
     let seen: std::sync::Arc<std::sync::Mutex<Vec<(Op, u64)>>> = Default::default();
     let sink = seen.clone();
-    ::okm_subscribe::CHANNEL.register(move |ev: ::okm_subscribe::RowEvent| {
-        let ::okm_subscribe::RowEvent::Account(ev) = ev else {
+    crate::okm_subscribe::CHANNEL.register(move |ev: crate::okm_subscribe::RowEvent| {
+        // Single-variant enum for now — the let-else documents the
+        // fan-in shape more variants will take.
+        #[allow(irrefutable_let_patterns)]
+        let crate::okm_subscribe::RowEvent::Account(ev) = ev else {
             return false;
         };
         let mut q = sink.lock().unwrap();
@@ -59,7 +62,7 @@ fn enum_channel_receives_put_and_delete() {
         q.push((ev.op, ev.key.id));
         true
     });
-    assert!(::okm_subscribe::CHANNEL.has_sink());
+    assert!(crate::okm_subscribe::CHANNEL.has_sink());
 
     let mut t: Table<MockStore, AccountKey, Account> = Table::new(MockStore::default(), 21);
     t.put(&AccountKey { id: 1 }, &Account { balance: 10 });
@@ -76,7 +79,7 @@ fn enum_channel_receives_put_and_delete() {
 fn bare_cell_receives_events_without_enum() {
     let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let c = count.clone();
-    __OkmChannel_Audit.register(move |ev: okm::Event<AuditKey, Audit>| {
+    __OKM_CHANNEL_AUDIT.register(move |ev: okm::Event<AuditKey, Audit>| {
         assert!(matches!(ev.op, Op::Put | Op::Delete));
         c.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         true
