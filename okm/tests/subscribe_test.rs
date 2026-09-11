@@ -1,14 +1,14 @@
 //! Subscribe channel integration (ADR-0008): `#[kv_subscribe]` annotated
 //! rows emit events on the write path, build.rs collects them into the
-//! `RowEvent` enum + `::okm_subscribe::CHANNEL`, and a registered sink
-//! receives put/delete events. Also covers the bare per-row-type cell
-//! fallback (no variant annotated) and no-sink drop semantics.
+//! `RowEvent` enum + `crate::okm_subscribe::CHANNEL`, and a registered
+//! sink receives put/delete events. Also covers the bare per-row-type
+//! cell fallback (no variant annotated) and no-sink drop semantics.
 
 use okm::{KeyEncode, MockStore, Op, RowEncode, Table};
 
 // build.rs-collected event enum + channel cell, generated into OUT_DIR.
-// The derive expands to `::okm_subscribe::...`, so the module must sit at
-// this file's root (integration tests: file = crate root).
+// The derive expands to `crate::okm_subscribe::...`, so the module must
+// sit at this file's root (integration tests: file = crate root).
 mod okm_subscribe {
     include!(concat!(env!("OUT_DIR"), "/okm_subscribe.rs"));
 }
@@ -42,7 +42,7 @@ pub struct Audit {
 }
 
 #[test]
-fn enum_channel_receives_put_and_delete() {
+fn subscribe_round_trip() {
     // Consuming side: register the transport at assembly time. Here the
     // sink is just a queue; in a real app it forwards into a tokio mpsc,
     // crossbeam queue, etc. — transport is not the core's business.
@@ -73,10 +73,8 @@ fn enum_channel_receives_put_and_delete() {
         *seen.lock().unwrap(),
         vec![(Op::Put, 1), (Op::Put, 2), (Op::Delete, 1)]
     );
-}
 
-#[test]
-fn bare_cell_receives_events_without_enum() {
+    // Bare per-row-type cell fallback: same sink contract, own channel.
     let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let c = count.clone();
     __OKM_CHANNEL_AUDIT.register(move |ev: okm::Event<AuditKey, Audit>| {
@@ -84,10 +82,9 @@ fn bare_cell_receives_events_without_enum() {
         c.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         true
     });
-
-    let mut t: Table<MockStore, AuditKey, Audit> = Table::new(MockStore::default(), 22);
-    t.put(&AuditKey { id: 7 }, &Audit { note: "hi".into() });
-    t.delete_by_pkey(&AuditKey { id: 7 });
+    let mut a: Table<MockStore, AuditKey, Audit> = Table::new(MockStore::default(), 22);
+    a.put(&AuditKey { id: 7 }, &Audit { note: "hi".into() });
+    a.delete_by_pkey(&AuditKey { id: 7 });
     assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 2);
 }
 
