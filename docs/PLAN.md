@@ -40,7 +40,17 @@ Design decisions live in `docs/adr/`. This plan tracks implementation status.
 - [ ] Optimistic CAS write (`save_with_cas`, MVCC version compare-and-swap
       retry loop) — future extension from the original design doc; no ADR
       record yet.
-- [ ] `#[kv_version(n)]` versioned payload with lazy in-memory upgrade.
+- [x] `#[kv_version(n)]` versioned payload with lazy in-memory upgrade.
+      Landed under the name `#[kv_layout(version = N)]` (renamed at
+      implementation to avoid colliding with CAS/MVCC "row version";
+      PLAN entry name stale until now). Wire: 1-byte layout version in
+      the payload header; decode accepts any older version (append-only
+      rule — missing tail fields take declared defaults) and rejects
+      newer. "Lazy upgrade" = rewrite-on-read deliberately NOT done:
+      unread old records stay in the old format (ADR-0004's definition
+      — no write-bandwidth burn, the SQL ALTER TABLE contrast).
+      Locked by codec_v2_test (older-decodes-with-defaults,
+      newer-rejected, LAYOUT_VERSION constant).
 - [x] Variable-length payload fields (String): the TLV frame's `len u32` IS
       the length prefix (no second one on the wire); `FieldType::Str` in
       the FieldDesc table (width 0 = variable); frame-by-frame walk in the
