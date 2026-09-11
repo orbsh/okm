@@ -251,16 +251,20 @@ and the Phase 6 baseline premise is now real, not planned.
       maintenance, reduce hooks and (after the event layer) channel emission
       all fire without special-casing. Returns the written row.
       Landed 2026-09-11 together with the put overwrite fix (below).
-- [ ] Correctness boundary documented: single-writer only. OKM is an
+- [x] Correctness boundary documented: single-writer only. OKM is an
       in-process library with a serial write order, so get→f→put cannot
       interleave — no CAS needed. The optimistic-CAS item in Phase 2 stays
       separate (multi-writer future, different mechanism). Same constraint
-      that backs reduce's exactly-once.
+      that backs reduce's exactly-once. Documented in the upsert_with
+      doc-comment (table.rs) and the MODELING RMW section.
 - [x] Integration test: upsert on missing key (old = None → insert path),
       on existing key (RMW path), index + reduce entries correctly updated
       through the put path (tests/upsert_test.rs: all four paths asserted
       — insert, RMW, index scan, reduce fold, channel emission).
-- [ ] Doc: MODELING section pairing the two RMW forms — reduce
+- [x] Doc: MODELING section pairing the two RMW forms — reduce
       (declarative, compile-time fold/unfold, framework-driven on the write
       path) vs `upsert_with` (commanded, runtime closure, caller-driven);
-      boundary note that both rest on the single-writer constraint.
+      boundary note that both rest on the single-writer constraint. Landed
+      2026-09-11 ("Two read-modify-writes" in MODELING.md /
+      MODELING.zh-CN.md), which also updated the event-layer section for
+      the bare-only kv_subscribe form (build.rs-derived enum).

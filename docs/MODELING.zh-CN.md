@@ -286,6 +286,15 @@ okm-core 对它的立场是两层拆分：核心不内置任何聚合语义（�
 
 零值回收刻意不做：组空了 entry 仍在（acc 回到单位元），省掉墓碑逻辑；调用方按需跳过单位元组。
 
+## 两种读-改-写：reduce 与 upsert_with
+
+reduce 之外，写路径还有命令式的一半——`Table::upsert_with(key, f)`：读旧行、闭包算新值、走正常 put。两种 RMW 同一底层形态（read → compute → write），分工按「逻辑谁知道」切：
+
+- **reduce（声明式）**：`#[kv_reduce(Logic { group(f) })]` 在编译期定死——哪些行进哪个组、fold/unfold 怎么算，都是类型声明的一部分，框架驱动。适合与行结构同步演化的聚合（计数、求和）。
+- **upsert_with（命令式）**：`f(Option<R>) -> R` 在运行时收到旧行，任意逻辑。适合调用方才知道的更新（余额加减、条件修补）。`None` = key 不存在（插入路径）。
+
+两者共用同一条写路径（put），所以索引维护、reduce 折叠、事件发射全部照常触发，无特例。也共用同一个正确性边界：**单写者**。OKM 是进程内库、写序串行（`&mut self`），get→f→put 不可能交错——无需 CAS，这也是 reduce 恰好一次的同一约束。多写者未来（乐观 CAS）是不同机制，不在此模型内。覆盖写的 unfold 补偿由 put 内部完成，upsert_with 不另平账（见 internals 的 reduce 机制）。
+
 ## 写路径事件：inline 与 channel
 
 reduce 回答"累计后的状态长什么样"；另一类消费者需要的是写本身作为事件——缓存失效、搜索索引同步、下游通知。事件层（ADR-0008）把这类消费者拆成两种，这个拆分就是全部设计：
@@ -294,8 +303,9 @@ reduce 回答"累计后的状态长什么样"；另一类消费者需要的是�
 - **Channel**（`#[kv_subscribe]`）：best-effort 投递，无保证。注解声明"该行类型的写路径事件进入 channel"；注解处没有 handler——处理逻辑完全归消费者：
 
 ```text
-#[kv_subscribe(RowEvent::Account)]   // 事件包进生成 enum 的 variant
-#[kv_subscribe]                      // bare：每行类型独立 channel，退化形态
+#[kv_subscribe]                      // bare：唯一形态；事件 enum 由 build.rs 推导
+                                     // （variant = 行类型名，enum 名可用
+                                     // #[kv_event_enum(Alias)] 覆盖）
 ```
 
 事件携带 `op`（put/delete）、单调递增的**写批次 epoch** 和行本身。epoch 是发出这张表的写计数器：同一张表的事件带精确的同表批次边界，消费者组合子可以恰好折叠到边界为止（glitch-free），而不是靠去抖启发式。它只在进程内有意义——不持久化，重启归零——并且不提供跨表顺序：独立 put 之间不存在原子性的"两者都已更新"时刻，多表 fan-in 结构上就是最终一致。
