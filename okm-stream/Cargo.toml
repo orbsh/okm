@@ -1,0 +1,14 @@
+[package]
+name = "okm-stream"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+okm-core = { path = "../okm-core" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"], optional = true }
+
+[features]
+tokio = ["dep:tokio"]
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"] }

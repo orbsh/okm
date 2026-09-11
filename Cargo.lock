@@ -2121,6 +2121,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "okm-stream"
+version = "0.1.0"
+dependencies = [
+ "okm-core",
+ "tokio",
+]
+
+[[package]]
 name = "okm-vector"
 version = "0.1.0"
 dependencies = [

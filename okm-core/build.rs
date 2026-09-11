@@ -156,7 +156,8 @@ fn main() {
     // Variants ARE the row type names — unique within a crate by
     // construction (two structs cannot share one type name), so no
     // duplicate check is needed here.
-    let mut enums: Vec<(String, Vec<(String, String, String)>)> = Vec::new();
+    type EnumGroup = Vec<(String, String, String)>; // (variant=row, row, key)
+    let mut enums: Vec<(String, EnumGroup)> = Vec::new();
     for (en, var, row, key) in rows {
         match enums.iter_mut().find(|(e, _)| *e == en) {
             Some((_, v)) => v.push((var, row, key)),
