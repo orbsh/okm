@@ -154,6 +154,12 @@ pub trait Row: Sized + Clone {
     ) {
     }
 
+    /// Subscribe emit hook (see [`crate::subscribe`]): send this row's
+    /// write-path event into its declared channel. Default no-op — only
+    /// rows carrying `#[kv_subscribe]` override it. Best-effort by
+    /// contract (try_send); never blocks or fails the write.
+    fn __okm_emit_event(_op: crate::subscribe::Op, _key: &Self::Key, _row: &Self) {}
+
     /// Assembly-point constructor: builds the row's `Table` binding this
     /// row type to its `#[kv_ref]` key. The key type never appears at the
     /// call site — it is already pinned by `Self::Key`.

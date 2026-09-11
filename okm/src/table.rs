@@ -57,6 +57,9 @@ impl<S: KvEngine, K: KeyEncode, R: Row<Key = K>> Table<S, K, R> {
         // Same store instance, so the RMW shares the engine's atomicity
         // boundary with the row + index writes.
         R::__okm_apply_aggregates(&mut self.store, key, row, self.ns, true);
+        // Subscribe: write-path event into the declared channel
+        // (best-effort try_send — full channel drops, never blocks).
+        R::__okm_emit_event(crate::subscribe::Op::Put, key, row);
     }
 
     /// Index entry key for access method `I` derived from `key` + `row`.
@@ -85,6 +88,8 @@ impl<S: KvEngine, K: KeyEncode, R: Row<Key = K>> Table<S, K, R> {
         // Unfold from every declared aggregate group (single call site —
         // delete_by_pkey reaches here after its internal get).
         R::__okm_apply_aggregates(&mut self.store, key, row, self.ns, false);
+        // Subscribe: deletion event (same best-effort contract as put).
+        R::__okm_emit_event(crate::subscribe::Op::Delete, key, row);
     }
 
     /// Delete by primary key only: fetch the row from the primary table
