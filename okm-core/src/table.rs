@@ -54,8 +54,31 @@ impl<S: KvEngine, K: KeyEncode, R: Row<Key = K>> Table<S, K, R> {
 
     /// Write a row: primary key + one (key, value) index entry per access
     /// method, all derived from this one row.
+    ///
+    /// Overwrite semantics (ADR-0008 fold/unfold discipline): when the
+    /// key already holds a row, the stored row is unfolded from every
+    /// reduce group before the new row is folded in — otherwise the
+    /// second write double-counts. This costs one primary-table point
+    /// read per overwrite (inserts skip it: slot-0 miss = no fold to
+    /// undo). Index entries need no counterpart: they are derived
+    /// per-row and the entry key encodes the indexed fields, so an
+    /// overwrite with different indexed values lands at a different key
+    /// — the stale entry dangles, which is why `delete` (and
+    /// `delete_by_pkey`) exist; the reduce, by contrast, is a mutable
+    /// aggregate under one group key and MUST compensate.
     pub fn put(&mut self, key: &K, row: &R) {
-        self.store.put(self.primary_key(key), row.encode_payload());
+        // Overwrite detection doubles as the unfold source: the stored
+        // row (if any) is exactly what the reduce groups currently
+        // include for this key.
+        let pkey = self.primary_key(key);
+        let prev = self
+            .store
+            .get(&pkey)
+            .map(|v| R::decode_payload(&v));
+        if let Some(old) = &prev {
+            R::__okm_apply_reduces(&mut self.store, key, old, self.ns, false);
+        }
+        self.store.put(pkey, row.encode_payload());
         for (ek, ev) in R::index_entries(key, row, self.ns) {
             self.store.put(ek, ev);
         }
@@ -69,6 +92,21 @@ impl<S: KvEngine, K: KeyEncode, R: Row<Key = K>> Table<S, K, R> {
         // write-batch boundary, ADR-0008 §5).
         self.epoch += 1;
         R::__okm_emit_event(crate::subscribe::Op::Put, self.epoch, key, row);
+        let _ = prev; // kept alive for the unfold above; dropped here
+    }
+
+    /// Commanded RMW: `get` → `f(old)` → `put(key, new)` through the
+    /// normal write path, so index maintenance, reduce hooks and channel
+    /// emission all fire without special-casing. Returns the written row.
+    /// `f` receives `None` when the key has no row yet (insert path).
+    ///
+    /// Single-writer only: OKM is an in-process library with a serial
+    /// write order (`&mut self`), so get→f→put cannot interleave — no
+    /// CAS needed. Same constraint that backs reduce's exactly-once.
+    pub fn upsert_with(&mut self, key: &K, f: impl FnOnce(Option<R>) -> R) -> R {
+        let new = f(self.get(key));
+        self.put(key, &new);
+        new
     }
 
     /// Index entry key for access method `I` derived from `key` + `row`.
