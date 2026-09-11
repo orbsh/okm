@@ -39,7 +39,8 @@ fn key_type_of(s: &syn::ItemStruct) -> Option<String> {
 }
 
 /// One pass with syn: find `#[derive(... RowEncode ...)]` structs carrying
-/// `#[kv_subscribe(Enum::Variant)]`.
+/// `#[kv_subscribe]` (bare only). The variant IS the row type name; the
+/// enum name comes from `#[kv_event_enum(Alias)]` (default `RowEvent`).
 fn scan_file(path: &Path, acc: &mut Vec<(String, String, String, String)>) {
     let txt = fs::read_to_string(path).unwrap_or_else(|e| panic!("build.rs: read {path:?}: {e}"));
     let Ok(ast) = syn::parse_file(&txt) else {
@@ -57,34 +58,46 @@ fn scan_file(path: &Path, acc: &mut Vec<(String, String, String, String)>) {
         if !has_row_encode {
             continue;
         }
-        let mut sub: Option<(String, String)> = None;
+        let mut sub = false;
+        let mut enum_name: Option<String> = None;
         for a in &s.attrs {
             if a.path().is_ident("kv_subscribe") {
-                // Bare form (no parens) → parse_args fails → variant None.
-                // Annotated form: one `Enum::Variant` path.
+                // Bare form only: any parenthesized argument is a user
+                // error (variant paths are the unsupported hand-mapped
+                // shape — the derive emits the send, so nothing to map).
+                if a.parse_args::<syn::ExprPath>().is_ok() {
+                    panic!(
+                        "kv_subscribe[{}]: variant paths are not supported — declare \
+                         `#[kv_subscribe]` (bare); the variant is the row type name",
+                        s.ident
+                    );
+                }
+                sub = true;
+            }
+            if a.path().is_ident("kv_event_enum") {
                 let body = a
                     .parse_args::<syn::ExprPath>()
                     .ok()
-                    .map(|p| p.to_token_stream().to_string().replace(' ', ""));
-                if let Some(p) = body {
-                    let mut segs = p.split("::").filter(|s| !s.is_empty());
-                    match (segs.next(), segs.next()) {
-                        (Some(e), Some(v)) if segs.next().is_none() => {
-                            sub = Some((e.to_string(), v.to_string()));
-                        }
-                        _ => panic!(
-                            "kv_subscribe[{}]: expected `Enum::Variant`, got `{p}`",
+                    .map(|p| p.to_token_stream().to_string().replace(' ', ""))
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "kv_event_enum[{}]: expected an enum name, e.g. `#[kv_event_enum(MyEvents)]`",
                             s.ident
-                        ),
-                    }
+                        )
+                    });
+                if body.split("::").count() != 1 {
+                    panic!("kv_event_enum[{}]: expected a bare enum name, got `{body}`", s.ident);
                 }
+                enum_name = Some(body);
             }
         }
-        if let Some((en, var)) = sub {
+        if sub {
             let key_ty = key_type_of(s).unwrap_or_else(|| {
                 panic!("kv_subscribe[{}]: no `#[kv_ref(KeyTy)]` found", s.ident)
             });
-            acc.push((en, var, s.ident.to_string(), key_ty));
+            let en = enum_name.unwrap_or_else(|| "RowEvent".to_string());
+            // (enum name, variant = row name, row name, key type)
+            acc.push((en, s.ident.to_string(), s.ident.to_string(), key_ty));
         }
     }
 }
@@ -140,15 +153,15 @@ fn main() {
     }
 
     // Group by enum name (multi-enum support is free at this granularity).
+    // Variants ARE the row type names — unique within a crate by
+    // construction (two structs cannot share one type name), so no
+    // duplicate check is needed here.
     let mut enums: Vec<(String, Vec<(String, String, String)>)> = Vec::new();
     for (en, var, row, key) in rows {
         match enums.iter_mut().find(|(e, _)| *e == en) {
             Some((_, v)) => v.push((var, row, key)),
             None => enums.push((en, vec![(var, row, key)])),
         }
-    }
-    if enums.iter().any(|(_, v)| v.len() > 1) {
-        panic!("build.rs: duplicate variant within one event enum");
     }
 
     let mut code = String::from(
@@ -159,7 +172,7 @@ fn main() {
     code.push_str(RUNTIME);
     for (en, variants) in &enums {
         let mut decl = format!(
-            "\n/// Event enum `{en}` — one variant per subscribed row type.\npub enum {en} {{\n"
+            "\n/// Event enum `{en}` — one variant per subscribed row type.\n#[allow(dead_code)] // variants a test declares but never destructures\npub enum {en} {{\n"
         );
         for (var, row, key) in variants {
             decl.push_str(&format!(
@@ -168,8 +181,9 @@ fn main() {
         }
         decl.push_str("}\n");
         code.push_str(&decl);
+        let cell = format!("CHANNEL_{}", en.to_uppercase());
         code.push_str(&format!(
-            "\npub static CHANNEL: EnumChannel<{en}> = EnumChannel::new();\n"
+            "\npub static {cell}: EnumChannel<{en}> = EnumChannel::new();\n"
         ));
     }
 
