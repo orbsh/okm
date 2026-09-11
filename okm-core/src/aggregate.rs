@@ -6,7 +6,7 @@
 //! entries born and dying with the row. Aggregates span rows: a GROUP-BY
 //! group's accumulated value lives in one entry whose value is
 //! read-modify-written on every put/delete of a contributing row. That
-//! makes it the one place okm value semantics are mutable — by design,
+//! makes it the one place okm-core value semantics are mutable — by design,
 //! and only through the two user callbacks below.
 //!
 //! Entry layout mirrors index entries: `[ns 2B][slot 1B][group fields

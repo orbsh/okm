@@ -37,7 +37,7 @@ vocabulary:
 ### Endpoint keys: `KeyEncode`
 
 ```rust
-use okm::KeyEncode;
+use okm_core::KeyEncode;
 
 /// A user within an org. `org_id` is the organizational prefix;
 /// `user_id` is the identity endpoint.
@@ -69,7 +69,7 @@ is a property of index entries, not keys.
 ### Edges: `EdgeEncode`
 
 ```rust
-use okm::EdgeEncode;
+use okm_core::EdgeEncode;
 
 /// user → sessions edge.
 ///
@@ -96,7 +96,7 @@ automatically (direction bit: see "Many-to-many relationships" above).
 ### Rows and indexes: `RowEncode`
 
 ```rust
-use okm::RowEncode;
+use okm_core::RowEncode;
 
 /// A user row hangs off UserKey via #[kv_ref]; payload fields are TLV-encoded.
 /// Each #[kv_index] declares an access method over PAYLOAD fields —
@@ -160,7 +160,7 @@ folds the timestamp into a bucket number at write time (fixed-width BE,
 byte order = time order); hourly rollups and timelines are one prefix
 scan. The same primitive directly covers tokenized full-text search
 (a tokenizer returning `Vec<String>`) and multi-valued fields (split
-tags). `okm` ships no tokenizer — splitting/bucketing logic belongs to
+tags). \`okm-core\` ships no tokenizer — splitting/bucketing logic belongs to
 the business layer. The func contract is **purity**: delete regenerates
 the entry set from the row, so an impure function (clock / randomness /
 external state) produces a different set at delete time than at write
@@ -225,9 +225,9 @@ table lookups) or nested entries (store together).
 ### Link, unlink, query (`EdgeTable`)
 
 ```rust
-use okm::EdgeTable;
+use okm_core::EdgeTable;
 
-let store = okm::MockStore::default(); // or FjallStore / SlatedbStore
+let store = okm_core::MockStore::default(); // or FjallStore / SlatedbStore
 let mut edges: EdgeTable<_, UserToSessionEdge> = EdgeTable::new(store);
 
 let user = UserKey { org_id: 7, user_id: 101 };
@@ -280,7 +280,7 @@ alias it with `use` and it serves as the generic parameter. `Row::table`
 builds the assembly point without repeating the key type at the call site:
 
 ```rust
-use okm::{MockStore, Row};
+use okm_core::{MockStore, Row};
 use __OkmIndex_User_by_org as ByOrg; // index type: derived from kv_index(by_org)
 
 let mut t = <User as Row>::table(MockStore::default(), 9);
@@ -330,7 +330,7 @@ Lock the physical bytes with hard-coded hex — any layout drift fails CI:
 let fk = edge.forward_key();
 assert_eq!(&fk[..2], &[0, 8]); // ns=4, FWD — direction bit in the low bit of the BE pair
 assert_eq!(&fk[2..6], &7u32.to_be_bytes());
-// ... full layout assertions in okm/tests/integration.rs
+// ... full layout assertions in okm-core/tests/integration.rs
 ```
 
 ## One-to-many relationships
@@ -437,7 +437,7 @@ counters. These are **cross-row** — func's `fn(&Row)` signature sees
 one row, and the answer lands on **read-modify-write of the entry
 value**, the fourth primitive (mutable aggregation entry).
 
-okm's stance splits in two layers: core ships no aggregation semantics
+okm-core's stance splits in two layers: core ships no aggregation semantics
 (no built-in counter types, no distributed add protocol), but the
 mechanical half is provided as a helper facility, declared like an
 index:
@@ -461,7 +461,7 @@ Two disciplines of use:
   exactly — count and sum qualify, median and distinct do not;
   non-invertible aggregates belong in an OLAP system beside the KV. A
   compound acc (count + sum for averages) implements `AggCodec`
-  directly; okm only stores and fetches the bytes.
+  directly; okm-core only stores and fetches the bytes.
 - **Single-writer boundary**: the hook is a read-modify-write, safe
   under single-writer engines; multi-writer races and distributed add
   protocols are outside this model (see the integration doc).

@@ -134,7 +134,7 @@ to full 16 bits). The trigger is "edge needs a new discriminator", never
 ## Phase 5 — Event layer (ADR-0008): reduce rename, subscribe channels, okm-stream
 
 - [ ] Rename `okm` → `okm-core`: workspace member, directory, crate name,
-      all `okm::` references **including ADRs** (user decision: update
+      all `okm_core::` references **including ADRs** (user decision: update
       everything so greps stay truthful). Lands first; later phases build
       on the new name.
 - [ ] Rename aggregate → reduce (`#[kv_reduce]`, `ReduceLogic`,
@@ -178,7 +178,7 @@ to full 16 bits). The trigger is "edge needs a new discriminator", never
       from fluxora `gen_dispatch!`: proc-macro file dependence CAN be made
       reliable with the `include_bytes!` HACK (forces dep-tracking on the
       parsed file) — that patch suffices when the input is static source
-      code, but NOT when the input is a compile byproduct (okm scheme (a)):
+      code, but NOT when the input is a compile byproduct (okm-core scheme (a)):
       build.rs is the structural fix, its `rerun-if-changed` contract being
       the reliable equivalent.
 - [ ] `okm-stream` crate: consumes the emitted receivers; Rx-style

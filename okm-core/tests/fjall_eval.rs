@@ -3,7 +3,7 @@
 
 #![cfg(feature = "fjall")]
 
-use okm::{EdgeTable, FjallStore};
+use okm_core::{EdgeTable, FjallStore};
 mod common;
 use common::*;
 

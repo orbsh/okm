@@ -1,6 +1,6 @@
 # Integration Boundaries: Extension Types and Primitives
 
-okm has exactly three primitives: **ordered prefix scan** (the data
+okm-core has exactly three primitives: **ordered prefix scan** (the data
 segment is the sort dimension), **function index** (the data segment is
 a per-row derived value, precomputed at write time), and **double-written
 edges** (first-class relations). This doc answers how the "advanced"
@@ -22,7 +22,7 @@ Graph   = edge entries (neighbors = one prefix scan)
 ```
 
 Algorithm work (scoring, iteration, convergence) lives entirely in the
-integration crates or the caller; okm only guarantees the ordered
+integration crates or the caller; okm-core only guarantees the ordered
 stream. The test for any new extension type: is it a **recipe over the
 primitives** (→ integration crate) or a **new primitive** (→ core)?
 
@@ -48,7 +48,7 @@ that is the opposite of the index-entry discipline:
   is gone, the count remains — or tombstone logic is needed).
 
 That makes cross-row precomputation a **fourth primitive** (mutable
-aggregation entry). okm's stance splits in two layers: **core still
+aggregation entry). okm-core's stance splits in two layers: **core still
 ships no aggregation semantics** — no built-in counter/sum types, no
 distributed add protocol; but the mechanical half is provided as a
 helper facility — the `#[kv_aggregate(Logic { group(a,b) })]`
@@ -56,7 +56,7 @@ declaration, a user-implemented `AggregateLogic` (fold/unfold plus Acc
 encoding), and a read-modify-write hook on the write path (fold on put,
 unfold on delete). Reversibility (`unfold(fold(a,x)) = a`) is the
 implementor's contract; non-invertible aggregates (median, distinct)
-do not qualify. okm does no zero-value GC — an emptied group keeps its
+do not qualify. okm-core does no zero-value GC — an emptied group keeps its
 entry. Usage is documented in the modeling guide's cross-row
 pre-aggregation section.
 
@@ -96,7 +96,7 @@ Approximate counting (UV, hot terms) should prefer the degradation to
   and distributed counter protocols remain outside the "ordered byte
   stream" model — a real OLAP/stream system beside the KV.
 - **General second-level cache** — invalidation policy is application
-  logic; okm entries live and die with declarations, and there is no
+  logic; okm-core entries live and die with declarations, and there is no
   place to hang invalidation hooks.
 
 ## Discipline for the integration crates

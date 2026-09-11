@@ -3,7 +3,7 @@
 
 #![cfg(feature = "slatedb")]
 
-use okm::slatedb_backend::{AsyncEdgeTable, SlatedbStore};
+use okm_core::slatedb_backend::{AsyncEdgeTable, SlatedbStore};
 mod common;
 use common::*;
 

@@ -1,9 +1,9 @@
-use okm::{KeyEncode, Reverse};
+use okm_core::KeyEncode;
 
 #[derive(KeyEncode)]
 #[kv_ns(1)]
 struct Bad {
-    ts: Reverse<u64>,
+    name: String,
 }
 
 fn main() {}

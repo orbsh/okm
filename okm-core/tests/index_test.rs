@@ -3,7 +3,7 @@
 //! [key前缀]，value = includes 段）、最左前缀扫描、includes 覆盖、
 //! 截断 key 前缀（尾段去冗余，前提：剩余字段已唯一）。
 
-use okm::{KeyEncode, KvEngine, KvIndex, MockStore, PrefixKey, Row, RowEncode};
+use okm_core::{KeyEncode, KvEngine, KvIndex, MockStore, PrefixKey, Row, RowEncode};
 
 // marker struct 生成在 derive 展开点（本文件），直接引用
 use __OkmIndex_User_by_reputation as ByReputation;
@@ -291,7 +291,7 @@ fn slot_allocation() {
     assert_eq!(<ByTimeline as KvIndex>::INCLUDES, &["title_len"]);
     assert_eq!(<ByTimeline as KvIndex>::KEY_PREFIX, &[] as &[&str]);
     assert_eq!(<ByKind as KvIndex>::KEY_PREFIX, &["session_id"]);
-    assert_eq!(okm::PRIMARY_SLOT, 0);
+    assert_eq!(okm_core::PRIMARY_SLOT, 0);
     let _ = std::marker::PhantomData::<PrefixKey<UserKey>>;
 }
 

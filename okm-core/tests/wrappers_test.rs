@@ -1,7 +1,7 @@
 //! Wrapper codecs: VarInt / Quant / Enum / Offset — payload TLV framing,
 //! FieldDesc reporting, and Arrow/Parquet round trips (ADR-0007 Phase 2).
 
-use okm::{
+use okm_core::{
     Enum, EnumTag, FieldType, KeyEncode, MockStore, Offset, Quant, Reverse, Row,
     RowEncode, Table, VarInt, offset_decode, offset_encode,
 };
@@ -86,7 +86,7 @@ fn offset_wire_is_four_byte_displacement() {
 
 #[test]
 fn field_desc_reports_wrapper_kinds() {
-    let fs = <WRow as okm::Row>::FIELDS;
+    let fs = <WRow as okm_core::Row>::FIELDS;
     assert_eq!(fs[0].name, "hits");
     assert_eq!(fs[0].ty, FieldType::VarInt);
     assert_eq!(fs[0].width, 0); // variable-length regime
@@ -117,7 +117,7 @@ fn table_round_trip_with_wrappers() {
 #[cfg(feature = "parquet")]
 mod parquet {
     use super::*;
-    use okm::parquet_io;
+    use okm_core::parquet_io;
 
     #[test]
     fn parquet_roundtrip_with_wrappers() {

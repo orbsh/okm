@@ -81,7 +81,7 @@ freshness; snapshot = pay conversion once, buy throughput.
 
 ## Consequences
 
-- New module `okm/src/arrow_bridge.rs` (or `arrow_backend.rs`, mirroring the
+- New module `okm-core/src/arrow_bridge.rs` (or `arrow_backend.rs`, mirroring the
   engine backend naming) behind an `arrow` feature; `to_polars()` behind the
   additional `polars` feature.
 - **Export is feature-gated**: the bridge and its dependencies (`arrow-*`,

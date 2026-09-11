@@ -20,7 +20,7 @@
 //! order) — the single field list feeding every downstream consumer that
 //! needs to lay out or interpret fields without a derive on their side
 //! (snapshot columns, Arrow schema, column builders; ADR-0007). The kind
-//! enum lives in `okm` core as `okm::FieldType` — dependency-free, so the
+//! enum lives in `okm` core as `okm_core::FieldType` — dependency-free, so the
 //! derive stays pure.
 //!
 //! Structure: parse once into the schema IR (`schema.rs`, which also owns
@@ -70,7 +70,7 @@ fn field_desc_entries(schema: &RowSchema) -> TS2 {
         let name = f.ident.to_string();
         let kind = f.kind.as_ref().expect("field kind");
         let w = &f.width;
-        quote! { (::okm::FieldDesc { name: #name, ty: #kind, width: #w }) }
+        quote! { (::okm_core::FieldDesc { name: #name, ty: #kind, width: #w }) }
     });
     quote! { &[ #(#rows),* ] }
 }
@@ -227,7 +227,7 @@ fn emit_index_structs(schema: &RowSchema) -> TS2 {
                     // entry shares the same includes value. Key =
                     // [ns 2B][slot][value][key prefix].
                     let __okm_fv = #fpath(row);
-                    let __okm_vals = ::okm::IndexFuncValues::func_values(__okm_fv);
+                    let __okm_vals = ::okm_core::IndexFuncValues::func_values(__okm_fv);
                     let mut __okm_out = Vec::with_capacity(__okm_vals.len());
                     let __okm_value = Self::entry_value(key, row);
                     for __okm_seg in __okm_vals {
@@ -269,7 +269,7 @@ fn emit_index_structs(schema: &RowSchema) -> TS2 {
                 // entry_pairs. The same path is what the query side calls
                 // on its probe value.
                 let __okm_fv = #fpath(row);
-                match ::okm::IndexFuncValues::func_values(__okm_fv).pop() {
+                match ::okm_core::IndexFuncValues::func_values(__okm_fv).pop() {
                     Some(__okm_seg) => buf.extend_from_slice(&__okm_seg),
                     None => {}
                 }
@@ -284,7 +284,7 @@ fn emit_index_structs(schema: &RowSchema) -> TS2 {
             #[derive(Clone, Copy, Debug)]
             pub struct #struct_ident;
 
-            impl ::okm::KvIndex for #struct_ident {
+            impl ::okm_core::KvIndex for #struct_ident {
                 type Key = #key_ty;
                 type Row = #row_name;
                 const SLOT: u8 = #slot_lit;
@@ -317,7 +317,7 @@ fn emit_index_entries(schema: &RowSchema) -> TS2 {
     let entry_calls = schema.indexes.iter().map(|idx| {
         let struct_ident = format_ident!("__OkmIndex_{}_{}", row_name, idx.ident);
         quote! {
-            out.extend(<#struct_ident as ::okm::KvIndex>::entry_pairs(ns, key, row));
+            out.extend(<#struct_ident as ::okm_core::KvIndex>::entry_pairs(ns, key, row));
         }
     });
     quote! {
@@ -330,8 +330,8 @@ fn emit_index_entries(schema: &RowSchema) -> TS2 {
 }
 
 /// Aggregates: `#[kv_aggregate(MyLogic { group(a, b) })]` — the user
-/// implements `okm::AggregateLogic` on `MyLogic` (Acc + fold/unfold);
-/// the derive generates the `okm::Aggregate` impl on the SAME type
+/// implements `okm_core::AggregateLogic` on `MyLogic` (Acc + fold/unfold);
+/// the derive generates the `okm_core::Aggregate` impl on the SAME type
 /// (SLOT/GROUP come from the declaration) plus the Row hook override
 /// running each aggregate's read-modify-write. Returns
 /// (trait impls, hook fn body to splice inside `impl Row`).
@@ -347,11 +347,11 @@ fn emit_aggregates(schema: &RowSchema) -> (TS2, TS2) {
             .unwrap_or_else(|e| panic!("kv_aggregate[{}]: bad logic type `{}`: {e}", agg.ident, agg.logic));
         let group: Vec<&String> = agg.group.iter().collect();
         impls.extend(quote! {
-            impl ::okm::Aggregate for #logic {
+            impl ::okm_core::Aggregate for #logic {
                 const SLOT: u8 = #slot_lit;
                 const GROUP: &'static [&'static str] = &[ #(#group),* ];
                 fn group_bytes(
-                    _key: &<#row_name as ::okm::Row>::Key,
+                    _key: &<#row_name as ::okm_core::Row>::Key,
                     row: &#row_name,
                 ) -> Vec<u8> {
                     // The row's named-field walk — same encoders as the
@@ -363,24 +363,24 @@ fn emit_aggregates(schema: &RowSchema) -> (TS2, TS2) {
             }
         });
         calls.extend(quote! {{
-            let __okm_ek = <#logic as ::okm::Aggregate>::entry_key(_ns, _key, _row);
+            let __okm_ek = <#logic as ::okm_core::Aggregate>::entry_key(_ns, _key, _row);
             let mut __okm_acc = match _store.get(&__okm_ek) {
-                Some(b) => <#logic as ::okm::AggregateLogic>::Acc::decode_acc(&b),
+                Some(b) => <#logic as ::okm_core::AggregateLogic>::Acc::decode_acc(&b),
                 None => ::core::default::Default::default(),
             };
             if _add {
-                <#logic as ::okm::AggregateLogic>::fold(&mut __okm_acc, _row);
+                <#logic as ::okm_core::AggregateLogic>::fold(&mut __okm_acc, _row);
             } else {
-                <#logic as ::okm::AggregateLogic>::unfold(&mut __okm_acc, _row);
+                <#logic as ::okm_core::AggregateLogic>::unfold(&mut __okm_acc, _row);
             }
-            _store.put(__okm_ek, <#logic as ::okm::AggregateLogic>::Acc::encode_acc(&__okm_acc));
+            _store.put(__okm_ek, <#logic as ::okm_core::AggregateLogic>::Acc::encode_acc(&__okm_acc));
         }});
     }
     if schema.aggregates.is_empty() {
         return (quote! {}, quote! {});
     }
     let hook = quote! {
-        fn __okm_apply_aggregates<S: ::okm::KvEngine>(
+        fn __okm_apply_aggregates<S: ::okm_core::KvEngine>(
             _store: &mut S,
             _key: &Self::Key,
             _row: &Self,
@@ -417,7 +417,7 @@ fn emit_subscribe(schema: &RowSchema) -> (TS2, TS2) {
                 .unwrap_or_else(|e| panic!("kv_subscribe: bad variant `{var}`: {e}"));
             quote! {
                 fn __okm_emit_event(
-                    _op: ::okm::subscribe::Op,
+                    _op: ::okm_core::subscribe::Op,
                     _key: &Self::Key,
                     _row: &Self,
                 ) {
@@ -428,7 +428,7 @@ fn emit_subscribe(schema: &RowSchema) -> (TS2, TS2) {
                     // `mod okm_subscribe` at ITS crate root and bridges
                     // the build.rs-generated module there.
                     crate::okm_subscribe::CHANNEL.emit(
-                        crate::okm_subscribe::RowEvent::#var(::okm::subscribe::Event::new(
+                        crate::okm_subscribe::RowEvent::#var(::okm_core::subscribe::Event::new(
                             _op, _key.clone(), _row.clone(),
                         )),
                     );
@@ -442,11 +442,11 @@ fn emit_subscribe(schema: &RowSchema) -> (TS2, TS2) {
             );
             quote! {
                 fn __okm_emit_event(
-                    _op: ::okm::subscribe::Op,
+                    _op: ::okm_core::subscribe::Op,
                     _key: &Self::Key,
                     _row: &Self,
                 ) {
-                    #cell.emit(::okm::subscribe::Event::new(
+                    #cell.emit(::okm_core::subscribe::Event::new(
                         _op, _key.clone(), _row.clone(),
                     ));
                 }
@@ -467,9 +467,9 @@ fn emit_subscribe(schema: &RowSchema) -> (TS2, TS2) {
             );
             quote! {
                 #[doc = #doc]
-                pub static #cell: ::okm::subscribe::ChannelCell<
-                    ::okm::subscribe::Event<#key_ty, #row_name>,
-                > = ::okm::subscribe::ChannelCell::new();
+                pub static #cell: ::okm_core::subscribe::ChannelCell<
+                    ::okm_core::subscribe::Event<#key_ty, #row_name>,
+                > = ::okm_core::subscribe::ChannelCell::new();
             }
         }
     };
@@ -510,11 +510,11 @@ fn emit_row_impl(schema: &RowSchema) -> TS2 {
         impl #row_name {
             #named_walk
         }
-        impl ::okm::Row for #row_name {
+        impl ::okm_core::Row for #row_name {
             type Key = #key_ty;
             const LAYOUT_VERSION: u8 = #ver_lit;
             const PAYLOAD_FIELDS: &'static [(&'static str, usize)] = &[ #((#name_strs, #widths)),* ];
-            const FIELDS: &'static [::okm::FieldDesc] = #row_desc;
+            const FIELDS: &'static [::okm_core::FieldDesc] = #row_desc;
             const HOT_WIDTH: usize = #hot_width_lit;
             fn encode_payload(&self) -> Vec<u8> {
                 let mut buf = Vec::new();

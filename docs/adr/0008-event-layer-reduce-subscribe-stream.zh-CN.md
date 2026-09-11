@@ -48,14 +48,14 @@ coherence 所迫）不变。
   注解的行类型得到一个统一格式的发送（注解点不挂 handler；处理归消费者，组合子是
   适配层）。
 - 某行类型存在 ≥1 个 subscribe 声明时，derive 生成**全局通道声明与消费端访问器**
-  （`okm::events::<R>()` 形态）。proc-macro 无法拥有真正的进程级全局——static 是生成
+  （`okm_core::events::<R>()` 形态）。proc-macro 无法拥有真正的进程级全局——static 是生成
   模块里 per-row-type 的 `OnceLock`。跨行类型的流聚合是流 crate 的 merge 组合子的
   事，不是核心的事。
 - 事件格式统一：(行类型身份，key 字节，op，payload 字节)。核心定形状；handler 按需解码。
 - 异步边界：生产端同步（`try_send`，微秒级，写路径不 spawn）；消费端是
   `tokio::sync::mpsc`（默认无界——丢失容忍就是声明了的语义；有界+策略留作后续选项）。
   **核心保持同步。** Fjall 的阻塞 hook 是调用方的嵌入关切（`spawn_blocking` 属于嵌入
-  侧，不属于 okm）；slatedb 的 async 藏在 `KvEngine` 之后；全核心 async 化什么都买不到，
+  侧，不属于 okm-core）；slatedb 的 async 藏在 `KvEngine` 之后；全核心 async 化什么都买不到，
   却让每个 API 付出代价。
 
 ### 4. okm-stream：通道之上的 FRP 组合子（新 crate）
@@ -67,7 +67,7 @@ map/filter/merge/scan——以及推模式的多表 fan-in（多表流 merge 进
 
 ### 5. okm → okm-core 改名
 
-运行时 crate 更名 `okm-core`（workspace 成员、目录、crate 名、所有 `okm::` 引用）。
+运行时 crate 更名 `okm-core`（workspace 成员、目录、crate 名、所有 `okm_core::` 引用）。
 derive crate 保持 `okm-derive`。**引用全部更新，包括 ADR**（用户 2026-09-10 决定：
 全部改）——ADR 仍是决策档案，但其代码引用予以修正，保证 grep 的真实性。顺序：改名
 先落地，后续每个阶段都建在新名字上。

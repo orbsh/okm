@@ -1,4 +1,4 @@
-//! okm-vector — vector search built on okm's single-value function
+//! okm-vector — vector search built on okm-core's single-value function
 //! indexes and edge entries.
 //!
 //! An embedding is a row's derived value: `func(embed)` returns one

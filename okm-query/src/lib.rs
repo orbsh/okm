@@ -1,4 +1,4 @@
-//! okm-query — consumer-side query operators over okm's ordered scan
+//! okm-query — consumer-side query operators over okm-core's ordered scan
 //! streams. The core's obligation ends at "give an ordered iterator per
 //! access method"; composing two streams (join), walking edge graphs
 //! (one hop = one scan), and folding groups are algorithm-layer work and
@@ -11,7 +11,7 @@
 /// the full encoded prefix the caller passes in. Equality-only: ranges
 /// belong to the caller's scan prefix, not here.
 ///
-/// The natural okm shape: index entries whose tail segment is the
+/// The natural okm-core shape: index entries whose tail segment is the
 /// primary key, so a join on the primary key is a merge join on the two
 /// scan results' key tails. The caller supplies the key extractor
 /// because only it knows the segment layout (`KEY_PREFIX` width).
@@ -22,7 +22,7 @@
 /// not a burden on the query operator (and merge join stays streaming
 /// and memory-bounded, where hash join must materialize the build side).
 
-use okm::KvEngine;
+use okm_core::KvEngine;
 
 pub fn merge_join<K: Ord, L: Clone, R: Clone>(
     left: impl IntoIterator<Item = (K, L)>,
@@ -74,7 +74,7 @@ pub fn merge_join<K: Ord, L: Clone, R: Clone>(
 }
 /// Group-fold over an ordered entry stream: consecutive entries whose
 /// extracted group key matches fold into one accumulator. Ordered input
-/// (which every okm scan is) makes this a single pass — the KV-side
+/// (which every okm-core scan is) makes this a single pass — the KV-side
 /// equivalent of SQL GROUP BY when the index already sorts by the group
 /// dimension (put the group field first in `fields` and the sort does
 /// the grouping).
@@ -161,7 +161,7 @@ pub fn walk<S: KvEngine + Clone>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use okm::{EdgeEncode, KeyEncode, MockStore};
+    use okm_core::{EdgeEncode, KeyEncode, MockStore};
 
     /// Two edge types over one node type — the multi-relation graph a
     /// real model has (follows + mentions over User).
@@ -189,13 +189,13 @@ mod tests {
     #[test]
     fn peers_spans_both_directions_and_both_edge_types() {
         // EdgeTable owns its engine; link phase returns the store.
-        let mut follows: okm::EdgeTable<MockStore, FollowsEdge> =
-            okm::EdgeTable::new(MockStore::default());
+        let mut follows: okm_core::EdgeTable<MockStore, FollowsEdge> =
+            okm_core::EdgeTable::new(MockStore::default());
         follows.link(&mk(1), &mk(2));
         follows.link(&mk(3), &mk(1)); // incoming for node 1
         let mut store = follows.store;
-        let mut mentions: okm::EdgeTable<MockStore, MentionsEdge> =
-            okm::EdgeTable::new(std::mem::take(&mut store));
+        let mut mentions: okm_core::EdgeTable<MockStore, MentionsEdge> =
+            okm_core::EdgeTable::new(std::mem::take(&mut store));
         mentions.link(&mk(1), &mk(4));
         let store = mentions.store;
 
@@ -215,7 +215,7 @@ mod tests {
         fn peers(&self, store: MockStore, node: &[u8]) -> Vec<Vec<u8>> {
             // Typed adapter over EdgeTable — the call site owns the
             // edge type and the node encoding.
-            let t = okm::EdgeTable::<MockStore, FollowsEdge>::new(store);
+            let t = okm_core::EdgeTable::<MockStore, FollowsEdge>::new(store);
             // Raw byte hop: decode the node, run both directions.
             let n = UserKey::decode(node);
             let mut out = t
@@ -234,7 +234,7 @@ mod tests {
     struct MentionsNeighbors;
     impl GraphEdge<MockStore> for MentionsNeighbors {
         fn peers(&self, store: MockStore, node: &[u8]) -> Vec<Vec<u8>> {
-            let t = okm::EdgeTable::<MockStore, MentionsEdge>::new(store);
+            let t = okm_core::EdgeTable::<MockStore, MentionsEdge>::new(store);
             let n = UserKey::decode(node);
             let mut out = t
                 .forward(&n)
@@ -252,8 +252,8 @@ mod tests {
 
     #[test]
     fn walk_two_hops_reaches_friends_of_friends() {
-        let mut follows: okm::EdgeTable<MockStore, FollowsEdge> =
-            okm::EdgeTable::new(MockStore::default());
+        let mut follows: okm_core::EdgeTable<MockStore, FollowsEdge> =
+            okm_core::EdgeTable::new(MockStore::default());
         // 1 → 2 → 3: two hops from 1 reach 3.
         follows.link(&mk(1), &mk(2));
         follows.link(&mk(2), &mk(3));

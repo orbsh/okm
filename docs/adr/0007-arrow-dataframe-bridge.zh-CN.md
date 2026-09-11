@@ -37,7 +37,7 @@ Polars 是 DataFrame 侧选定的消费方（纯 Rust、Arrow 原生、惰性优
 
 ## 后果
 
-- 新模块 `okm/src/arrow_bridge.rs`（或 `arrow_backend.rs`，对齐引擎后端命名），挂在 `arrow` feature 下；`to_polars()` 在其上的 `polars` feature 下。
+- 新模块 `okm-core/src/arrow_bridge.rs`（或 `arrow_backend.rs`，对齐引擎后端命名），挂在 `arrow` feature 下；`to_polars()` 在其上的 `polars` feature 下。
 - **导出由 feature 门控**：桥及其依赖（`arrow-*`、`polars`）全部是可选 feature，默认关闭——不需要分析路径的构建（嵌入式 OLTP、CI、嵌入式设备）不为此付出编译时间和二进制体积；`Table` 上的导出方法只在 feature 激活时生成，核心 API 面零增量。
 - **ns ID 还原为表名**：RecordBatch 的列不含 ns 字节，但批次需要知道来源表——导出方负责把键里的 `[ns 2B]` 头经 ns 字典（ADR-0002，字典活在代码里）反查回描述性表名，作为批次元数据（表名/列归属）。与 ADR-0006 快照的自描述输出是同一条纪律：二进制 ns 头不得泄漏进消费侧，逆映射由导出方独占。
 - `RowEncode` 多产出一个编译期产物：Arrow `Schema` + 每字段列 builder，与 `PAYLOAD_FIELDS` 同源派生。宏复杂度有界：一个 item、一份字段表、多一个输出。
