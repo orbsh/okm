@@ -453,7 +453,10 @@ index:
 encoding) plus `fold(acc, &row)` (on put) and `unfold(acc, &row)` (on
 delete). The write path performs the read-modify-write automatically:
 read the current acc, fold or unfold, write back. The read side is
-`reduce_get` for one group and `scan_reduces` for all groups.
+`reduce_get` for one group and `scan_reduces` for all groups. The
+mechanics (ledger invariant, the overwrite-unfold compensation, the
+write-path sequence) live in the internals doc
+[reduce-mechanism.zh-CN.md](internals/reduce-mechanism.zh-CN.md).
 
 Two disciplines of use:
 

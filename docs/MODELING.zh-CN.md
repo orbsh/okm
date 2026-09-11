@@ -277,7 +277,7 @@ okm-core 对它的立场是两层拆分：核心不内置任何聚合语义（�
 #[kv_reduce(AuthorStats { group(author_id) })]
 ```
 
-`group(...)` 从行字段取分组段（entry = `[ns][slot][group 段]`，slot 续接索引计数器）；`AuthorStats` 是用户类型，实现 `ReduceLogic`——`Acc`（累计器类型，实现 `ReduceCodec` 定宽 BE 编码）+ `fold(acc, &row)`（put 时）+ `unfold(acc, &row)`（delete 时）。写入路径自动读-改-写：读到当前 acc，fold/unfold，写回。读侧 `reduce_get` 取单组、`scan_reduces` 扫全部组。
+`group(...)` 从行字段取分组段（entry = `[ns][slot][group 段]`，slot 续接索引计数器）；`AuthorStats` 是用户类型，实现 `ReduceLogic`——`Acc`（累计器类型，实现 `ReduceCodec` 定宽 BE 编码）+ `fold(acc, &row)`（put 时）+ `unfold(acc, &row)`（delete 时）。写入路径自动读-改-写：读到当前 acc，fold/unfold，写回。读侧 `reduce_get` 取单组、`scan_reduces` 扫全部组。机制细节（账本不变量、覆盖写的 unfold 补偿、写路径时序）见 internals 的[reduce 机制](internals/reduce-mechanism.zh-CN.md)。
 
 两条使用纪律：
 
