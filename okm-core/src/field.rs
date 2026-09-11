@@ -3,7 +3,7 @@
 //! columns, Arrow schema, column builders; ADR-0007).
 //!
 //! The derive macros emit one `FieldDesc` per declared field (declaration
-//! order); `okm::field` (this module) interprets them. Keeping the enum in
+//! order); `okm_core::field` (this module) interprets them. Keeping the enum in
 //! core — not in the macro crate — means consumers need no proc-macro
 //! dependency to read a struct's field layout.
 

@@ -1,4 +1,4 @@
-//! okm-ngram — n-gram full-text search over okm's multi-value function
+//! okm-ngram — n-gram full-text search over okm-core's multi-value function
 //! indexes.
 //!
 //! The whole capability is one tokenizer: character n-grams of a
@@ -11,7 +11,7 @@
 //! BM25 (linguistic tokenization, fuzzy match, incremental indexing)
 //! is either the caller's own tokenizer against the same
 //! multi-value-func contract, or a dedicated engine (Tantivy et al.)
-//! next to okm — not this crate growing a second opinion.
+//! next to okm-core — not this crate growing a second opinion.
 
 /// Character n-grams of width `n`. Panics on `n == 0` — a zero-width
 /// gram is a modeling error, not an empty result.

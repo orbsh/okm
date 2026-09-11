@@ -3,7 +3,7 @@
 //! round trip against struct decode.
 
 use arrow::datatypes::DataType;
-use okm::{FieldDesc, FieldType, KeyEncode, MockStore, Row, RowEncode, Table};
+use okm_core::{FieldDesc, FieldType, KeyEncode, MockStore, Row, RowEncode, Table};
 
 /// UserKey：org 内的用户身份（主键）。字段类型覆盖四种 kind。
 #[derive(KeyEncode, Clone, PartialEq, Debug)]

@@ -231,7 +231,7 @@ pub(crate) struct FieldSchema {
     /// TLV frame `len` expression: the declared width for fixed-width kinds,
     /// the actual value byte length for variable-length kinds (`String`).
     pub len_expr: TS2,
-    /// `okm::FieldType` variant path, for the FieldDesc table (None = unsupported).
+    /// `okm_core::FieldType` variant path, for the FieldDesc table (None = unsupported).
     pub kind: Option<TS2>,
     /// Hot/cold split: `true` = fixed-width hot segment (contiguous region
     /// after the row header, O(1) offsets); `false` = variable-width cold
@@ -260,10 +260,10 @@ fn inner_w(ty: &str) -> TS2 {
 /// the wire is still a fixed-width integer, just bit-flipped).
 fn inner_kind(ty: &str) -> TS2 {
     match ty {
-        "u8" | "i8" => quote! { ::okm::FieldType::U8 },
-        "u16" | "i16" => quote! { ::okm::FieldType::U16 },
-        "u32" | "i32" => quote! { ::okm::FieldType::U32 },
-        "u64" | "i64" => quote! { ::okm::FieldType::U64 },
+        "u8" | "i8" => quote! { ::okm_core::FieldType::U8 },
+        "u16" | "i16" => quote! { ::okm_core::FieldType::U16 },
+        "u32" | "i32" => quote! { ::okm_core::FieldType::U32 },
+        "u64" | "i64" => quote! { ::okm_core::FieldType::U64 },
         other => panic!("Reverse<{other}>: inner type not on the Reversible whitelist"),
     }
 }
@@ -316,28 +316,28 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> Vec<FieldSchema> {
                 quote! {{ let v = u64::from_be_bytes(b[offset..offset+8].try_into().unwrap()); offset += 8; v }},
                 quote! { 8 },
                 quote! { 8 },
-                Some(quote! { ::okm::FieldType::U64 }),
+                Some(quote! { ::okm_core::FieldType::U64 }),
             ),
             "u32" => (
                 quote! { buf.extend_from_slice(&self.#id.to_be_bytes()); },
                 quote! {{ let v = u32::from_be_bytes(b[offset..offset+4].try_into().unwrap()); offset += 4; v }},
                 quote! { 4 },
                 quote! { 4 },
-                Some(quote! { ::okm::FieldType::U32 }),
+                Some(quote! { ::okm_core::FieldType::U32 }),
             ),
             "u16" => (
                 quote! { buf.extend_from_slice(&self.#id.to_be_bytes()); },
                 quote! {{ let v = u16::from_be_bytes(b[offset..offset+2].try_into().unwrap()); offset += 2; v }},
                 quote! { 2 },
                 quote! { 2 },
-                Some(quote! { ::okm::FieldType::U16 }),
+                Some(quote! { ::okm_core::FieldType::U16 }),
             ),
             "u8" => (
                 quote! { buf.push(self.#id); },
                 quote! {{ let v = b[offset]; offset += 1; v }},
                 quote! { 1 },
                 quote! { 1 },
-                Some(quote! { ::okm::FieldType::U8 }),
+                Some(quote! { ::okm_core::FieldType::U8 }),
             ),
             _ if ty_str.starts_with("[u8;") => {
                 let n: usize = ty_str
@@ -356,7 +356,7 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> Vec<FieldSchema> {
                     }},
                     quote! { #nlit },
                     quote! { #nlit },
-                    Some(quote! { ::okm::FieldType::FixedBytes }),
+                    Some(quote! { ::okm_core::FieldType::FixedBytes }),
                 )
             }
             _ if ty_str.starts_with("Reverse<") => {
@@ -364,7 +364,7 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> Vec<FieldSchema> {
                 // at every destination of this field (payload value here,
                 // key/index positions rejected in the key macro). Inner type
                 // must be on the Reversible whitelist (compile-time check:
-                // the generated code calls ::okm::Reversible::rev_encode).
+                // the generated code calls ::okm_core::Reversible::rev_encode).
                 let inner = ty_str
                     .trim_start_matches("Reverse<")
                     .trim_end_matches('>')
@@ -375,7 +375,7 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> Vec<FieldSchema> {
                 let kind = inner_kind(&inner);
                 (
                     quote! { buf.extend_from_slice(&self.#id.encode()); },
-                    quote! {{ let v = ::okm::Reverse(#inner_ty::rev_decode(&b[offset..offset+#w])); offset += #w; v }},
+                    quote! {{ let v = ::okm_core::Reverse(#inner_ty::rev_decode(&b[offset..offset+#w])); offset += #w; v }},
                     quote! { #w },
                     quote! { #w },
                     Some(kind),
@@ -398,14 +398,14 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> Vec<FieldSchema> {
                 (
                     quote! { buf.extend_from_slice(&self.#id.encode()); },
                     quote! {{
-                        let (raw, n) = <#inner_ty as ::okm::VarIntEnc>::varint_decode(&b[offset..]);
+                        let (raw, n) = <#inner_ty as ::okm_core::VarIntEnc>::varint_decode(&b[offset..]);
                         offset += n;
-                        ::okm::VarInt(raw)
+                        ::okm_core::VarInt(raw)
                     }},
                     quote! { 0 },
                     // Variable-length frame: len = actual byte length.
                     quote! { self.#id.encode().len() },
-                    Some(quote! { ::okm::FieldType::VarInt }),
+                    Some(quote! { ::okm_core::FieldType::VarInt }),
                 )
             }
             _ if ty_str.starts_with("Quant<") => {
@@ -432,13 +432,13 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> Vec<FieldSchema> {
                 (
                     quote! { buf.extend_from_slice(&self.#id.encode()); },
                     quote! {{
-                        let v = ::okm::Quant::<#p>::decode(&b[offset..offset+8]);
+                        let v = ::okm_core::Quant::<#p>::decode(&b[offset..offset+8]);
                         offset += 8;
                         v
                     }},
                     quote! { 8 },
                     quote! { 8 },
-                    Some(quote! { ::okm::FieldType::Quant(#plit) }),
+                    Some(quote! { ::okm_core::FieldType::Quant(#plit) }),
                 )
             }
             _ if ty_str.starts_with("Enum<") => {
@@ -453,13 +453,13 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> Vec<FieldSchema> {
                 (
                     quote! { buf.extend_from_slice(&self.#id.encode()); },
                     quote! {{
-                        let v = ::okm::Enum::<#inner_ty>::decode(&b[offset..offset+1]);
+                        let v = ::okm_core::Enum::<#inner_ty>::decode(&b[offset..offset+1]);
                         offset += 1;
                         v
                     }},
                     quote! { 1 },
                     quote! { 1 },
-                    Some(quote! { ::okm::FieldType::Enum }),
+                    Some(quote! { ::okm_core::FieldType::Enum }),
                 )
             }
             _ if ty_str == "Offset" || offset_base.is_some() => {
@@ -475,11 +475,11 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> Vec<FieldSchema> {
                 (
                     // Field value is the Offset newtype; the wire is the
                     // u32 displacement. .0 is the absolute i64 value.
-                    quote! { buf.extend_from_slice(&::okm::offset_encode(self.#id.0, #blit)); },
-                    quote! {{ let v = ::okm::Offset(::okm::offset_decode(&b[offset..offset+4], #blit)); offset += 4; v }},
+                    quote! { buf.extend_from_slice(&::okm_core::offset_encode(self.#id.0, #blit)); },
+                    quote! {{ let v = ::okm_core::Offset(::okm_core::offset_decode(&b[offset..offset+4], #blit)); offset += 4; v }},
                     quote! { 4 },
                     quote! { 4 },
-                    Some(quote! { ::okm::FieldType::Offset(#blit) }),
+                    Some(quote! { ::okm_core::FieldType::Offset(#blit) }),
                 )
             }
             _ if ty_str.starts_with("String") => {
@@ -500,7 +500,7 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> Vec<FieldSchema> {
                     quote! { 0 },
                     // Variable-length frame: len = actual byte length.
                     quote! { self.#id.as_bytes().len() },
-                    Some(quote! { ::okm::FieldType::Str }),
+                    Some(quote! { ::okm_core::FieldType::Str }),
                 )
             }
             other => panic!("{ctx}: unsupported type {other} (field {id})"),

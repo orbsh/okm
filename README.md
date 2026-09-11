@@ -12,7 +12,7 @@ SQL's core value is not execution performance — it is the readability, modelin
 
 - **Struct as DDL**: SQL defines table structure; a Rust struct defines key encoding. The compiler enforces format consistency — any code attempting to write a malformed key fails at compile time, no runtime validation.
 - **Schema-less is a trap**: schema-less stores accept anything (`"25"`, `[25]` for a numeric field), and every consuming service pays for it in defensive parsing. Strong typing fuses invalid data at `cargo check` — it never even gets generated — while keeping KV's hardware-level speed and skipping PG's runtime DDL-lock and SQL-parsing taxes.
-- **Hex stability tests**: the last line of defense against encoding drift. Hard-coded historical hex bytes lock the physical key layout; any change to ns, field order, or widths fails CI immediately (see `okm/tests/integration.rs`).
+- **Hex stability tests**: the last line of defense against encoding drift. Hard-coded historical hex bytes lock the physical key layout; any change to ns, field order, or widths fails CI immediately (see `okm-core/tests/integration.rs`).
 
 The verdict: SQL's core value is human-facing structured discipline. By holding to "code as DDL" — strongly-typed key encoding, lazy migration via versioned enums, dual-write key-pointer contracts, and hard-coded hex stability tests — OKM gains all of it at once: compile-time schema safety (the Rust compiler) + runtime performance (LSM-Tree) + zero-downtime evolution (versioned enums) + team maintainability (struct comments as documentation) + drift protection (hex tests). On schema safety it overtakes both SurrealDB (schema-less) and PostgreSQL (runtime DDL locks).
 
@@ -90,7 +90,7 @@ basics".
 
 ```toml
 [dependencies]
-okm = { version = "0.1", features = ["fjall"] }    # or "slatedb"
+okm-core = { version = "0.1", features = ["fjall"] }    # or "slatedb"
 ```
 
 - **fjall** (sync): `FjallStore::open(path)` — local LSM engine, single `Database` handle, `persist` on demand.
@@ -101,16 +101,16 @@ okm = { version = "0.1", features = ["fjall"] }    # or "slatedb"
 
 ```
 okm-derive/        proc-macro crate: KeyEncode, RowEncode, EdgeEncode (zero I/O)
-okm/src/key.rs     KeyEncode trait + PrefixKey
-okm/src/index.rs   Row + KvIndex traits, index scan helpers
-okm/src/edge.rs    KvEdge trait + direction-bit header
-okm/src/engine.rs  KvEngine trait + MockStore
-okm/src/table.rs       Table<S, K, R> node assembly point
-okm/src/collection.rs  EdgeTable<S, E> edge assembly point
-okm/src/fjall_backend.rs    fjall adapter (feature "fjall")
-okm/src/slatedb_backend.rs  slatedb adapter (feature "slatedb")
+okm-core/src/key.rs     KeyEncode trait + PrefixKey
+okm-core/src/index.rs   Row + KvIndex traits, index scan helpers
+okm-core/src/edge.rs    KvEdge trait + direction-bit header
+okm-core/src/engine.rs  KvEngine trait + MockStore
+okm-core/src/table.rs       Table<S, K, R> node assembly point
+okm-core/src/collection.rs  EdgeTable<S, E> edge assembly point
+okm-core/src/fjall_backend.rs    fjall adapter (feature "fjall")
+okm-core/src/slatedb_backend.rs  slatedb adapter (feature "slatedb")
 okm-query/         extension operator crate: merge_join, group_by (consumes scan streams, zero core changes)
-okm/tests/         integration + index_test (MockStore), fjall_eval, slatedb_eval
+okm-core/tests/         integration + index_test (MockStore), fjall_eval, slatedb_eval
 docs/adr/          architecture decision records (docs/PLAN.md = implementation plan)
 ```
 

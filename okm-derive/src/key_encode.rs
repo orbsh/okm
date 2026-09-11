@@ -19,7 +19,7 @@ struct Field {
     enc: TS2,
     dec: TS2,
     width: TS2,
-    /// `okm::FieldType` variant path, for the FieldDesc table (ADR-0007).
+    /// `okm_core::FieldType` variant path, for the FieldDesc table (ADR-0007).
     kind: Option<TS2>,
 }
 
@@ -29,7 +29,7 @@ fn field_desc_entries(fs: &[Field]) -> TS2 {
         let name = f.ident.to_string();
         let kind = f.kind.as_ref().expect("field kind");
         let w = &f.width;
-        quote! { (::okm::FieldDesc { name: #name, ty: #kind, width: #w }) }
+        quote! { (::okm_core::FieldDesc { name: #name, ty: #kind, width: #w }) }
     });
     quote! { &[ #(#rows),* ] }
 }
@@ -72,7 +72,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
     }
 
     quote! {
-        impl ::okm::KeyEncode for #name {
+        impl ::okm_core::KeyEncode for #name {
             const KEY_LEN: usize = 0 #(+ #widths)*;
             const FIELD_WIDTHS: &'static [(&'static str, usize)] = &[ #((#name_strs, #widths)),* ];
 
@@ -86,7 +86,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
                 #(#decs)*
                 Self { #(#names),* }
             }
-            const FIELDS: &'static [::okm::FieldDesc] = #desc;
+            const FIELDS: &'static [::okm_core::FieldDesc] = #desc;
             /// Encode the requested named subset (request order) into
             /// `buf`; returns bytes written. Unknown names panic.
             fn encode_prefix_named(&self, buf: &mut Vec<u8>, names: &[&str]) -> usize {
@@ -140,25 +140,25 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> Vec<Field> {
                 quote! { buf.extend_from_slice(&self.#id.to_be_bytes()); },
                 quote! { let #id = u64::from_be_bytes(b[offset..offset+8].try_into().unwrap()); offset += 8; },
                 quote! { 8 },
-                Some(quote! { ::okm::FieldType::U64 }),
+                Some(quote! { ::okm_core::FieldType::U64 }),
             ),
             "u32" => (
                 quote! { buf.extend_from_slice(&self.#id.to_be_bytes()); },
                 quote! { let #id = u32::from_be_bytes(b[offset..offset+4].try_into().unwrap()); offset += 4; },
                 quote! { 4 },
-                Some(quote! { ::okm::FieldType::U32 }),
+                Some(quote! { ::okm_core::FieldType::U32 }),
             ),
             "u16" => (
                 quote! { buf.extend_from_slice(&self.#id.to_be_bytes()); },
                 quote! { let #id = u16::from_be_bytes(b[offset..offset+2].try_into().unwrap()); offset += 2; },
                 quote! { 2 },
-                Some(quote! { ::okm::FieldType::U16 }),
+                Some(quote! { ::okm_core::FieldType::U16 }),
             ),
             "u8" => (
                 quote! { buf.push(self.#id); },
                 quote! { let #id = b[offset]; offset += 1; },
                 quote! { 1 },
-                Some(quote! { ::okm::FieldType::U8 }),
+                Some(quote! { ::okm_core::FieldType::U8 }),
             ),
             _ if ty_str.starts_with("[u8;") => {
                 let n: usize = ty_str
@@ -175,7 +175,7 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> Vec<Field> {
                         offset += #nlit;
                     },
                     quote! { #nlit },
-                    Some(quote! { ::okm::FieldType::FixedBytes }),
+                    Some(quote! { ::okm_core::FieldType::FixedBytes }),
                 )
             }
             _ if ty_str.starts_with("Reverse<") => {

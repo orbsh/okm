@@ -4,7 +4,7 @@
 //! sink receives put/delete events. Also covers the bare per-row-type
 //! cell fallback (no variant annotated) and no-sink drop semantics.
 
-use okm::{KeyEncode, MockStore, Op, RowEncode, Table};
+use okm_core::{KeyEncode, MockStore, Op, RowEncode, Table};
 
 // build.rs-collected event enum + channel cell, generated into OUT_DIR.
 // The derive expands to `crate::okm_subscribe::...`, so the module must
@@ -39,6 +39,22 @@ pub struct AuditKey {
 #[kv_subscribe]
 pub struct Audit {
     pub note: String,
+}
+
+#[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
+#[kv_ns(23)]
+pub struct GhostKey {
+    pub id: u64,
+}
+
+/// Subscribed but nobody ever registers its bare cell — the no-sink
+/// case must be tested on a channel no other test can touch (global
+/// statics are process-wide; parallel tests would race otherwise).
+#[derive(RowEncode, Clone, PartialEq, Debug)]
+#[kv_ref(GhostKey)]
+#[kv_subscribe]
+pub struct Ghost {
+    pub v: u64,
 }
 
 #[test]
@@ -77,7 +93,7 @@ fn subscribe_round_trip() {
     // Bare per-row-type cell fallback: same sink contract, own channel.
     let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let c = count.clone();
-    __OKM_CHANNEL_AUDIT.register(move |ev: okm::Event<AuditKey, Audit>| {
+    __OKM_CHANNEL_AUDIT.register(move |ev: okm_core::Event<AuditKey, Audit>| {
         assert!(matches!(ev.op, Op::Put | Op::Delete));
         c.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         true
@@ -93,7 +109,7 @@ fn no_sink_drops_silently() {
     // A subscribed row with nobody consuming: writes must not block or
     // panic — the zero-cost default. A write round-trip works regardless
     // of event delivery.
-    let mut t: Table<MockStore, AccountKey, Account> = Table::new(MockStore::default(), 21);
-    t.put(&AccountKey { id: 3 }, &Account { balance: 30 });
-    assert!(t.get(&AccountKey { id: 3 }).is_some());
+    let mut t: Table<MockStore, GhostKey, Ghost> = Table::new(MockStore::default(), 23);
+    t.put(&GhostKey { id: 3 }, &Ghost { v: 30 });
+    assert!(t.get(&GhostKey { id: 3 }).is_some());
 }

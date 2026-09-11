@@ -6,7 +6,7 @@
 //! Compile-time rejections (String / Reverse on key side, non-whitelist
 //! Reverse inner) live in `codec_compilefail.rs` via trybuild.
 
-use okm::{KeyEncode, MockStore, Reversible, Reverse, Row, RowEncode, Table, parquet_io};
+use okm_core::{KeyEncode, MockStore, Reversible, Reverse, Row, RowEncode, Table, parquet_io};
 
 // ================= String (variable length) =================
 
@@ -54,7 +54,7 @@ fn string_tlv_round_trip_through_payload() {
 fn string_field_desc_marks_variable_width() {
     let rf = <SRow as Row>::FIELDS;
     let name = rf.iter().find(|f| f.name == "name").unwrap();
-    assert!(matches!(name.ty, okm::FieldType::Str));
+    assert!(matches!(name.ty, okm_core::FieldType::Str));
     assert_eq!(name.width, 0, "static width meaningless for Str");
 }
 

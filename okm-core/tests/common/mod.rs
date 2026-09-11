@@ -2,7 +2,7 @@
 #![allow(dead_code)]
 #![cfg(any(feature = "fjall", feature = "slatedb"))]
 
-use okm::{EdgeEncode, KeyEncode};
+use okm_core::{EdgeEncode, KeyEncode};
 
 #[derive(KeyEncode, Clone, PartialEq, Debug)]
 #[kv_ns(1)]

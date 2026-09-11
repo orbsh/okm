@@ -1,7 +1,7 @@
 //! Tooling interfaces (PLAN Phase 4): layout audit (`describe`) and the
 //! Parquet snapshot round trip (export → import through `Table::put`).
 
-use okm::{FieldDesc, FieldType, KeyEncode, MockStore, Row, RowEncode, Table, parquet_io};
+use okm_core::{FieldDesc, FieldType, KeyEncode, MockStore, Row, RowEncode, Table, parquet_io};
 
 #[derive(KeyEncode, Clone, PartialEq, Debug)]
 #[kv_ns(7)]
@@ -37,7 +37,7 @@ fn describe_renders_offsets_and_tlv_frames() {
     assert!(text.contains("payload total"), "payload summary:\n{text}");
 
     // Free function form agrees.
-    assert_eq!(okm::tooling::describe::<TKey, TRow>(), text);
+    assert_eq!(okm_core::tooling::describe::<TKey, TRow>(), text);
 }
 
 #[test]
@@ -101,7 +101,7 @@ fn parquet_export_import_roundtrip_restores_rows_and_indexes() {
 
 /// The generated access-method marker struct (slot 1) — hand-written form.
 struct TRowByOrg;
-impl okm::KvIndex for TRowByOrg {
+impl okm_core::KvIndex for TRowByOrg {
     type Key = TKey;
     type Row = TRow;
     const SLOT: u8 = 1;
@@ -162,7 +162,7 @@ fn json_schema_is_valid_and_matches_parquet_columns() {
     assert_eq!(props["tag"]["type"], "string"); // [u8;4] → base64
 
     // Free function form agrees.
-    assert_eq!(okm::tooling::json_schema::<TKey, TRow>(), schema);
+    assert_eq!(okm_core::tooling::json_schema::<TKey, TRow>(), schema);
 }
 
 #[test]

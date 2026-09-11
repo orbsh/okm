@@ -1,4 +1,4 @@
-use okm::{KeyEncode, RowEncode};
+use okm_core::{KeyEncode, RowEncode};
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
 #[kv_ns(1)]

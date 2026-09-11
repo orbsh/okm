@@ -57,7 +57,7 @@ source stay two things.
   (no handler at the annotation site; consumers decide the processing, combinators are
   the adapter).
 - When ≥1 subscribe declaration exists on a row type, the derive emits a **global channel
-  declaration plus a consumer-side accessor** (`okm::events::<R>()` shape). Proc-macros
+  declaration plus a consumer-side accessor** (`okm_core::events::<R>()` shape). Proc-macros
   cannot own a true process global — the static is a per-row-type `OnceLock` in the
   generated module. Cross-table-type aggregation of streams is the stream crate's merge
   combinator, not core's job.
@@ -67,7 +67,7 @@ source stay two things.
   path); the consumer end is `tokio::sync::mpsc` (unbounded by default — loss tolerance is
   the declared semantics; bounded+policy is a later option). **Core stays synchronous.**
   Fjall's blocking hooks are the caller's embedding concern (`spawn_blocking` belongs to the
-  embedding, not to okm); slatedb's async sits behind `KvEngine`; full-async infection of
+  embedding, not to okm-core); slatedb's async sits behind `KvEngine`; full-async infection of
   the core buys nothing and costs every API.
 
 ### 4. okm-stream: FRP combinators over the channel (new crate)
@@ -82,7 +82,7 @@ the bytes come from; the bus lives in core.
 ### 5. okm → okm-core rename
 
 The runtime crate renames to `okm-core` (workspace member, directory, crate name, all
-`okm::` references). Derive crate stays `okm-derive`. **All references are updated,
+`okm_core::` references). Derive crate stays `okm-derive`. **All references are updated,
 including ADRs** (user decision 2026-09-10: 全部改) — ADRs remain decision archives, but
 their code references are corrected so greps stay truthful. Ordering: the rename lands
 first; every later phase builds on the new name.

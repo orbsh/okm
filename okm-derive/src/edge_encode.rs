@@ -80,7 +80,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
     let b_trait = format_ident!("{}ColR", edge_name);
 
     quote! {
-        impl ::okm::KvEdge for #edge_name {
+        impl ::okm_core::KvEdge for #edge_name {
             type A = #ta;
             type B = #tb;
             const NS: u16 = #ns;
@@ -95,15 +95,15 @@ pub fn derive(input: TokenStream) -> TokenStream {
 
         /// Query methods on the start endpoint.
         pub trait #a_trait {
-            fn #m_on_a<S: ::okm::KvEngine>(
+            fn #m_on_a<S: ::okm_core::KvEngine>(
                 &self,
-                c: &::okm::EdgeTable<S, #edge_name>,
+                c: &::okm_core::EdgeTable<S, #edge_name>,
             ) -> Vec<#tb>;
         }
         impl #a_trait for #ta {
-            fn #m_on_a<S: ::okm::KvEngine>(
+            fn #m_on_a<S: ::okm_core::KvEngine>(
                 &self,
-                c: &::okm::EdgeTable<S, #edge_name>,
+                c: &::okm_core::EdgeTable<S, #edge_name>,
             ) -> Vec<#tb> {
                 c.forward(self)
             }
@@ -111,22 +111,22 @@ pub fn derive(input: TokenStream) -> TokenStream {
 
         /// Query methods on the end endpoint.
         pub trait #b_trait {
-            fn #m_on_b<S: ::okm::KvEngine>(
+            fn #m_on_b<S: ::okm_core::KvEngine>(
                 &self,
-                c: &::okm::EdgeTable<S, #edge_name>,
-            ) -> Vec<::okm::PrefixKey<#ta>>;
+                c: &::okm_core::EdgeTable<S, #edge_name>,
+            ) -> Vec<::okm_core::PrefixKey<#ta>>;
         }
         impl #b_trait for #tb {
-            fn #m_on_b<S: ::okm::KvEngine>(
+            fn #m_on_b<S: ::okm_core::KvEngine>(
                 &self,
-                c: &::okm::EdgeTable<S, #edge_name>,
-            ) -> Vec<::okm::PrefixKey<#ta>> {
+                c: &::okm_core::EdgeTable<S, #edge_name>,
+            ) -> Vec<::okm_core::PrefixKey<#ta>> {
                 c.reverse_raw(self)
                     .into_iter()
                     .map(|suffix| {
-                        ::okm::PrefixKey {
-                            decoded: <#ta as ::okm::KeyEncode>::decode(&suffix),
-                            taken: <#ta as ::okm::KeyEncode>::FIELD_WIDTHS
+                        ::okm_core::PrefixKey {
+                            decoded: <#ta as ::okm_core::KeyEncode>::decode(&suffix),
+                            taken: <#ta as ::okm_core::KeyEncode>::FIELD_WIDTHS
                                 .iter()
                                 .map(|(_, w)| *w)
                                 .sum(),

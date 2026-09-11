@@ -22,7 +22,7 @@
 ### 端点 key：`KeyEncode`
 
 ```rust
-use okm::KeyEncode;
+use okm_core::KeyEncode;
 
 /// org 内的用户。org_id 是"组织前缀"，user_id 才是身份终点。
 #[derive(KeyEncode, Clone, PartialEq, Debug)]
@@ -51,7 +51,7 @@ pub struct SessionKey {
 ### 边：`EdgeEncode`
 
 ```rust
-use okm::EdgeEncode;
+use okm_core::EdgeEncode;
 
 /// user → sessions 边。
 ///
@@ -74,7 +74,7 @@ pub struct UserToSessionEdge {
 ### 行与索引：`RowEncode`
 
 ```rust
-use okm::RowEncode;
+use okm_core::RowEncode;
 
 /// 行 struct 挂在 UserKey 上（#[kv_ref]）；payload 字段 TLV 编码。
 /// 每个 #[kv_index] 声明一个对 PAYLOAD 字段的访问方法——
@@ -115,7 +115,7 @@ fn hour_bucket(row: &Post) -> Vec<u64> {
 #[kv_index(by_hour { func(hour_bucket) })]   // scan 传桶号 = 该小时全部帖子
 ```
 
-时间分桶是这个形状的最低成本用法——返回单元素 Vec，写入时把时间戳折叠成桶号（桶号定宽 BE，字节序 = 时间序），按小时的 rollup/时间线就是一次前缀扫。同一原语直接覆盖 tokenize 全文检索（切词返回 Vec<String>）、多值字段（tags 拆分）。`okm` 不内置分词器，切分/分桶逻辑归业务层；func 的契约是**纯函数**——delete 从行重新生成待删集合，函数不纯（时钟/随机/外部状态）会在删除时生成与写入时不同的集合，留下悬挂条目。
+时间分桶是这个形状的最低成本用法——返回单元素 Vec，写入时把时间戳折叠成桶号（桶号定宽 BE，字节序 = 时间序），按小时的 rollup/时间线就是一次前缀扫。同一原语直接覆盖 tokenize 全文检索（切词返回 Vec<String>）、多值字段（tags 拆分）。\`okm-core\` 不内置分词器，切分/分桶逻辑归业务层；func 的契约是**纯函数**——delete 从行重新生成待删集合，函数不纯（时钟/随机/外部状态）会在删除时生成与写入时不同的集合，留下悬挂条目。
 
 `func(path)` 与下文的 `#[kv_aggregate]` 是两个外部扩展机制：func 是**单行派生**（写侧预计算，entry 仍随行生灭），aggregate 是**跨行聚合**（可变 value 读-改-写）；集成的复杂形态（FTS/向量/图算法如何落在原语上）见[集成边界](INTEGRATION.zh-CN.md)。实现细节（编码契约、entry_pairs 覆盖、探针归一化）见 internals 的[函数索引机制](internals/func-index-mechanism.zh-CN.md)。
 
@@ -136,9 +136,9 @@ fn hour_bucket(row: &Post) -> Vec<u64> {
 ### 连接、断开、查询（`EdgeTable`）
 
 ```rust
-use okm::EdgeTable;
+use okm_core::EdgeTable;
 
-let store = okm::MockStore::default(); // 或 FjallStore / SlatedbStore
+let store = okm_core::MockStore::default(); // 或 FjallStore / SlatedbStore
 let mut edges: EdgeTable<_, UserToSessionEdge> = EdgeTable::new(store);
 
 let user = UserKey { org_id: 7, user_id: 101 };
@@ -186,7 +186,7 @@ for pk in edges.reverse_prefix(&s1) {
 `RowEncode` 声明的访问方法在查询侧具名为索引类型。索引声明的派生物在展开点（本文件）生成：`kv_index(by_org ...)` 生成索引类型 `__OkmIndex_User_by_org`（机械拼接，无大小写转换），`use` 别名后即可作泛型参数。`Row::table` 构建装配点，调用处无需重复 key 类型：
 
 ```rust
-use okm::{MockStore, Row};
+use okm_core::{MockStore, Row};
 use __OkmIndex_User_by_org as ByOrg; // 索引类型：kv_index(by_org) 的派生物
 
 let mut t = <User as Row>::table(MockStore::default(), 9);
@@ -231,7 +231,7 @@ let hits = t.scan::<ByToken>(b"rust");
 let fk = edge.forward_key();
 assert_eq!(&fk[..2], &[0, 8]); // ns=4、FWD——方向位在 BE 字节对的最低位
 assert_eq!(&fk[2..6], &7u32.to_be_bytes());
-// ... 完整布局断言见 okm/tests/integration.rs
+// ... 完整布局断言见 okm-core/tests/integration.rs
 ```
 
 ## 一对多关系
@@ -271,7 +271,7 @@ struct OrgUserEdge {
 
 索引的每个条目都是**随行生灭**的 append-only 派生视图——delete 用同一个函数重新生成待删集合，永不悬挂。有一类需求天然落在这个纪律之外：按作者统计发文数、按小时的 rollup、精确计数器。它们是**跨行**的——func 的签名 `fn(&Row)` 只看得见一行，答案落在 entry value 的**读-改-写**上，即第四个原语（可变聚合 entry）。
 
-okm 对它的立场是两层拆分：核心不内置任何聚合语义（没有内建计数器类型，不解决分布式累加协议），但机械部分由辅助设施提供，声明方式与索引同款：
+okm-core 对它的立场是两层拆分：核心不内置任何聚合语义（没有内建计数器类型，不解决分布式累加协议），但机械部分由辅助设施提供，声明方式与索引同款：
 
 ```text
 #[kv_aggregate(AuthorStats { group(author_id) })]
@@ -281,7 +281,7 @@ okm 对它的立场是两层拆分：核心不内置任何聚合语义（没有�
 
 两条使用纪律：
 
-- **可逆性是契约**：`unfold(fold(a,x)) = a` 必须精确成立，count/sum 可以，median/distinct 不可以——不可逆聚合去旁边的 OLAP 系统。复合 acc（count+sum 求均值）直接实现 `AggCodec`，okm 只负责存取字节。
+- **可逆性是契约**：`unfold(fold(a,x)) = a` 必须精确成立，count/sum 可以，median/distinct 不可以——不可逆聚合去旁边的 OLAP 系统。复合 acc（count+sum 求均值）直接实现 `AggCodec`，okm-core 只负责存取字节。
 - **单写者边界**：hook 是读-改-写，单写者引擎下安全；多写者竞态与分布式累加协议不在此模型内（见集成文档）。
 
 零值回收刻意不做：组空了 entry 仍在（acc 回到单位元），省掉墓碑逻辑；调用方按需跳过单位元组。

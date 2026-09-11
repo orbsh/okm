@@ -1,4 +1,4 @@
-//! okm-graph — graph algorithms over okm's edge entries and
+//! okm-graph — graph algorithms over okm-core's edge entries and
 //! okm-query's ordered-stream operators.
 //!
 //! The graph already exists in the store: an `EdgeEncode` type

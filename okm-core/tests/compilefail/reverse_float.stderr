@@ -38,7 +38,7 @@ error[E0277]: the trait bound `f64: Reversible` is not satisfied
              u32
              u64
              u8
-note: required by a bound in `okm::Reverse`
+note: required by a bound in `okm_core::Reverse`
   --> src/reverse.rs
    |
    | pub struct Reverse<T: Reversible>(pub T);

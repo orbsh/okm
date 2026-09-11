@@ -1,7 +1,7 @@
 //! 基础集成测试：MockStore 上验证字节布局、双向查询、PrefixKey。
 //! fjall 评估见 tests/fjall_eval.rs（--features fjall）。
 
-use okm::{EdgeEncode, EdgeTable, KeyEncode, KvEdge, MockStore};
+use okm_core::{EdgeEncode, EdgeTable, KeyEncode, KvEdge, MockStore};
 
 // ================= 端点类型（derive KeyEncode） =================
 
@@ -114,8 +114,8 @@ fn byte_layout_and_queries() {
 fn head_disjointness() {
     // ns=4 → FWD 头 [0x08,0x00]，REV 头 [0x08,0x01]：共享前缀 [0x08,0x0] 不成立
     // （REV 第二字节 0x01 ≠ FWD 的 0x00），扫描 [0x08,0x00] 不会命中 REV key。
-    assert_eq!(okm::head_bytes(4, false), [0, 8]);
-    assert_eq!(okm::head_bytes(4, true), [0, 9]);
-    assert_eq!(okm::head_bytes(127, false), [0, 254]);
-    assert_eq!(okm::head_bytes(127, true), [0, 255]);
+    assert_eq!(okm_core::head_bytes(4, false), [0, 8]);
+    assert_eq!(okm_core::head_bytes(4, true), [0, 9]);
+    assert_eq!(okm_core::head_bytes(127, false), [0, 254]);
+    assert_eq!(okm_core::head_bytes(127, true), [0, 255]);
 }
