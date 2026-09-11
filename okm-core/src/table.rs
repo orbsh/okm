@@ -103,6 +103,15 @@ impl<S: KvEngine, K: KeyEncode, R: Row<Key = K>> Table<S, K, R> {
     /// Single-writer only: OKM is an in-process library with a serial
     /// write order (`&mut self`), so get→f→put cannot interleave — no
     /// CAS needed. Same constraint that backs reduce's exactly-once.
+    /// Cross-process exclusion is the engine's job, not OKM's: fjall
+    /// takes a file lock on open (a second process fails to open the
+    /// same directory), slatedb fences with a writer epoch in the
+    /// manifest (a stale writer's commits are rejected). With the engine
+    /// arbitrating, any moment has at most one live writer — the
+    /// single-writer model holds end to end, and an OKM-level lock would
+    /// only double-guard what the engine already enforces. The
+    /// multi-writer future (optimistic CAS) triggers only if multiple
+    /// live writers over one store become a real requirement.
     pub fn upsert_with(&mut self, key: &K, f: impl FnOnce(Option<R>) -> R) -> R {
         let new = f(self.get(key));
         self.put(key, &new);

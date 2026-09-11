@@ -97,6 +97,20 @@ fn parquet_export_import_roundtrip_restores_rows_and_indexes() {
     // bytes — here just scan the whole index (empty prefix).
     let scanned = t2.scan::<TRowByOrg>(&[]);
     assert_eq!(scanned.len(), 5, "index rebuilt on import");
+
+    // Exported column names = field names in declaration order (key
+    // fields then payload fields) with Arrow types — the snapshot's
+    // schema is the declaration, viewable from any Parquet reader.
+    assert_eq!(
+        t1.export_columns(),
+        vec![
+            ("org_id", arrow::datatypes::DataType::UInt32),
+            ("user_id", arrow::datatypes::DataType::UInt64),
+            ("reputation", arrow::datatypes::DataType::UInt32),
+            ("level", arrow::datatypes::DataType::UInt16),
+            ("tag", arrow::datatypes::DataType::Binary),
+        ]
+    );
 }
 
 /// The generated access-method marker struct (slot 1) — hand-written form.
