@@ -209,18 +209,49 @@ behavior, nothing per-type → belongs on `Table`, NOT okm-query (read-side
 combinator layer, must not hold the write path) and NOT derive (static
 per-type schema artifacts; upsert has none).
 
-- [ ] `Table::upsert_with(key, f: impl FnOnce(Option<R>) -> R) -> Result<R>`:
+Phase 6 is also the **baseline for event-layer granularity decisions**
+(user principle: analyze against the final state, not a temporary one —
+a premise that a planned phase will invalidate is not an exclusion
+argument). With `upsert_with` as the standard write path, the old row is
+in hand on every write, so field-level diff is a free byproduct; any
+field-granularity subscription/filtering must be priced against THAT
+world, not the current read-free put. Phase 6 lands before okm-stream
+for exactly this reason — it is the foundation the stream layer's
+change-detection combinators rest on.
+
+Event granularity — evaluated and rejected: `Event.old` (attaching the
+pre-write row snapshot to every event). The consumer side can derive the
+same at zero write-path cost: okm-stream combinators are stateful anyway
+(scan/merge/fold carry buffers), so a per-key previous-row cache in a
+`with_previous`/`distinct` combinator gives diff/change-detection without
+doubling the clone tax on every write. Events stay the minimal fact
+(op/epoch/key/row); before/after semantics are a consumer-side derivation,
+matching the best-effort channel contract (precision-bound consumers use
+inline reduce). Field-level subscription is therefore an okm-stream
+combinator capability, never a declaration-side feature.
+
+Put overwrite fix (landed with Phase 6): `put` on an existing key now
+unfolds the stored row from every reduce group before folding the new
+row — previously the second write double-counted (count=2 where the
+table holds one row). The overwrite detection read is exactly the
+prerequisite the event-granularity analysis priced against: with the
+old row in hand on every write, field-level diff is a free byproduct
+and the Phase 6 baseline premise is now real, not planned.
+
+- [x] `Table::upsert_with(key, f: impl FnOnce(Option<R>) -> R) -> Result<R>`:
       `get` → `f(old)` → `put(key, new)` via the normal write path, so index
       maintenance, reduce hooks and (after the event layer) channel emission
       all fire without special-casing. Returns the written row.
+      Landed 2026-09-11 together with the put overwrite fix (below).
 - [ ] Correctness boundary documented: single-writer only. OKM is an
       in-process library with a serial write order, so get→f→put cannot
       interleave — no CAS needed. The optimistic-CAS item in Phase 2 stays
       separate (multi-writer future, different mechanism). Same constraint
       that backs reduce's exactly-once.
-- [ ] Integration test: upsert on missing key (old = None → insert path),
+- [x] Integration test: upsert on missing key (old = None → insert path),
       on existing key (RMW path), index + reduce entries correctly updated
-      through the put path.
+      through the put path (tests/upsert_test.rs: all four paths asserted
+      — insert, RMW, index scan, reduce fold, channel emission).
 - [ ] Doc: MODELING section pairing the two RMW forms — reduce
       (declarative, compile-time fold/unfold, framework-driven on the write
       path) vs `upsert_with` (commanded, runtime closure, caller-driven);

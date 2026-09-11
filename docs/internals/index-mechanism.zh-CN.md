@@ -64,7 +64,7 @@ store.scan_suffix_kv(&p)            连 key 与 value 一起取
 
 ## 写路径的同步
 
-`Table::put` 单次写入：主表条目（slot 0）+ 每个声明索引的 `entry_pairs()` 全部条目（普通索引一对；多值函数索引 N 对），同一 store 实例内；`Table::delete` 对应删除全部。没有运行时索引簿记——`index_entries()`（derive 生成）静态展开为每个索引调用 `entry_pairs` 并展平，声明即注册。**因此条目与声明永不失配**：库里存在哪个 ns 段的条目，当且仅当源码里声明了对应索引。
+`Table::put` 单次写入：主表条目（slot 0）+ 每个声明索引的 `entry_pairs()` 全部条目（普通索引一对；多值函数索引 N 对），同一 store 实例内；`Table::delete` 对应删除全部。没有运行时索引簿记——`index_entries()`（derive 生成）静态展开为每个索引调用 `entry_pairs` 并展平，声明即注册。**因此条目与声明永不失配**：库里存在哪个 ns 段的条目，当且仅当源码里声明了对应索引。覆盖写时 reduce 账本的 unfold/fold 补偿是另一条约束，见[reduce 机制](reduce-mechanism.zh-CN.md)——索引条目随覆盖自然转移（旧条目悬挂由 delete 兜底），账本必须就地平账。
 
 ## 两种"一对多"的分野
 
