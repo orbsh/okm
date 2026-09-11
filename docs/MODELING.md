@@ -473,6 +473,34 @@ Zero-value GC is deliberately omitted: an emptied group keeps its
 entry (the acc back at the identity), which avoids tombstone logic;
 callers skip identity-element groups as needed.
 
+## Two read-modify-writes: reduce and upsert_with
+
+Besides reduce, the write path has an imperative half —
+`Table::upsert_with(key, f)`: read the old row, compute the new one in
+a closure, go through the normal put. Both RMWs share the same
+underlying shape (read → compute → write); the division of labor
+follows one question: who knows the logic?
+
+- **reduce (declarative)**: `#[kv_reduce(Logic { group(f) })]` pins
+  everything at compile time — which rows land in which group, how
+  fold/unfold compute — as part of the type declaration, framework-
+  driven. Fits aggregations that evolve with the row structure
+  (counts, sums).
+- **upsert_with (commanded)**: `f(Option<R>) -> R` receives the old
+  row at runtime, arbitrary logic. Fits updates only the caller knows
+  (balance adjustments, conditional patches). `None` = the key does
+  not exist yet (insert path).
+
+Both go through the same write path (put), so index maintenance,
+reduce folds and event emission all fire without special-casing. Both
+rest on the same correctness boundary: **single-writer**. OKM is an
+in-process library with a serial write order (`&mut self`), so
+get→f→put cannot interleave — no CAS needed; the same constraint that
+backs reduce's exactly-once. The multi-writer future (optimistic CAS)
+is a different mechanism, outside this model. The overwrite unfold
+compensation happens inside put; upsert_with does not settle the
+ledger twice (see the internals doc on the reduce mechanism).
+
 ## Write-path events: inline and channel
 
 Reduce answers "what does the accumulated state look like"; a second
@@ -490,8 +518,9 @@ whole design:
   processing logic belongs entirely to the consumer:
 
 ```text
-#[kv_subscribe(RowEvent::Account)]   // wraps events in the generated enum's variant
-#[kv_subscribe]                      // bare: per-row-type channel, the degraded fallback
+#[kv_subscribe]                      // bare: the only form; the event enum is
+                                     // build.rs-derived (variant = row type
+                                     // name, renameable via #[kv_event_enum])
 ```
 
 Events carry `op` (put/delete), a monotonic **write-batch epoch**, and
