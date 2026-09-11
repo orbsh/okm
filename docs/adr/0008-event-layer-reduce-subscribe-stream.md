@@ -7,7 +7,7 @@
 ## Context
 
 Cross-row pre-aggregation (ADR-0005 slot space, shipped 2026-09-10) introduced the
-`#[kv_aggregate]` helper: a user-implemented `AggregateLogic` (Acc + fold/unfold) driven by
+`#[kv_reduce]` helper: a user-implemented `ReduceLogic` (Acc + fold/unfold) driven by
 a read-modify-write hook on the write path. In reviewing what that hook actually is, a
 generalization surfaced: fold/unfold is **inline consumption of a row-event stream**. The
 same event source supports other consumers — triggers (stateless side effects), external
@@ -18,7 +18,7 @@ generalize the mechanism and the boundaries that keep it honest.
 
 ### 1. aggregate → reduce (rename, semantics unchanged)
 
-`#[kv_aggregate]` / `AggregateLogic` / `AggCodec` / `aggregate_get` / `scan_aggregates`
+`#[kv_reduce]` / `ReduceLogic` / `ReduceCodec` / `reduce_get` / `scan_reduces`
 rename to `#[kv_reduce]` / `ReduceLogic` / `ReduceCodec` / `reduce_get` / `scan_reduces`.
 The rename aligns the name with the role: a reduce is a stateful, reversible reduction over
 the row-event stream (fold on put, unfold on delete). No behavior change; the two-layer

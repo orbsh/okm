@@ -51,11 +51,11 @@ That makes cross-row precomputation a **fourth primitive** (mutable
 aggregation entry). okm-core's stance splits in two layers: **core still
 ships no aggregation semantics** — no built-in counter/sum types, no
 distributed add protocol; but the mechanical half is provided as a
-helper facility — the `#[kv_aggregate(Logic { group(a,b) })]`
-declaration, a user-implemented `AggregateLogic` (fold/unfold plus Acc
+helper facility — the `#[kv_reduce(Logic { group(a,b) })]`
+declaration, a user-implemented `ReduceLogic` (fold/unfold plus Acc
 encoding), and a read-modify-write hook on the write path (fold on put,
 unfold on delete). Reversibility (`unfold(fold(a,x)) = a`) is the
-implementor's contract; non-invertible aggregates (median, distinct)
+implementor's contract; non-invertible reduces (median, distinct)
 do not qualify. okm-core does no zero-value GC — an emptied group keeps its
 entry. Usage is documented in the modeling guide's cross-row
 pre-aggregation section.
@@ -92,7 +92,7 @@ Approximate counting (UV, hot terms) should prefer the degradation to
   this belongs to the engine layer (fjall watch / slatedb invalidate),
   not a model-layer imitation.
 - **Distributed add protocols** — under a single writer the
-  `#[kv_aggregate]` read-modify-write hook is safe; multi-writer races
+  `#[kv_reduce]` read-modify-write hook is safe; multi-writer races
   and distributed counter protocols remain outside the "ordered byte
   stream" model — a real OLAP/stream system beside the KV.
 - **General second-level cache** — invalidation policy is application

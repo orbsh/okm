@@ -53,10 +53,10 @@ impl<S: KvEngine, K: KeyEncode, R: Row<Key = K>> Table<S, K, R> {
         for (ek, ev) in R::index_entries(key, row, self.ns) {
             self.store.put(ek, ev);
         }
-        // Cross-row aggregates: fold this row into each declared group.
+        // Cross-row reduces: fold this row into each declared group.
         // Same store instance, so the RMW shares the engine's atomicity
         // boundary with the row + index writes.
-        R::__okm_apply_aggregates(&mut self.store, key, row, self.ns, true);
+        R::__okm_apply_reduces(&mut self.store, key, row, self.ns, true);
         // Subscribe: write-path event into the declared channel
         // (best-effort try_send — full channel drops, never blocks).
         R::__okm_emit_event(crate::subscribe::Op::Put, key, row);
@@ -85,9 +85,9 @@ impl<S: KvEngine, K: KeyEncode, R: Row<Key = K>> Table<S, K, R> {
         for (ek, _) in R::index_entries(key, row, self.ns) {
             self.store.del(&ek);
         }
-        // Unfold from every declared aggregate group (single call site —
+        // Unfold from every declared reduce group (single call site —
         // delete_by_pkey reaches here after its internal get).
-        R::__okm_apply_aggregates(&mut self.store, key, row, self.ns, false);
+        R::__okm_apply_reduces(&mut self.store, key, row, self.ns, false);
         // Subscribe: deletion event (same best-effort contract as put).
         R::__okm_emit_event(crate::subscribe::Op::Delete, key, row);
     }

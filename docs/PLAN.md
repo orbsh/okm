@@ -133,11 +133,11 @@ to full 16 bits). The trigger is "edge needs a new discriminator", never
 
 ## Phase 5 — Event layer (ADR-0008): reduce rename, subscribe channels, okm-stream
 
-- [ ] Rename `okm` → `okm-core`: workspace member, directory, crate name,
+- [x] Rename `okm` → `okm-core`: workspace member, directory, crate name,
       all `okm_core::` references **including ADRs** (user decision: update
       everything so greps stay truthful). Lands first; later phases build
       on the new name.
-- [ ] Rename aggregate → reduce (`#[kv_reduce]`, `ReduceLogic`,
+- [x] Rename aggregate → reduce (`#[kv_reduce]`, `ReduceLogic`,
       `ReduceCodec`, `reduce_get`, `scan_reduces`): semantics unchanged,
       name aligned to the role (stateful reversible reduction over the
       row-event stream).

@@ -1,10 +1,10 @@
-//! 跨行预聚合集成测试：`#[kv_aggregate(Logic { group(...) })]` 声明 →
-//! derive 生成 `Aggregate` impl + Row hook；Table::put/delete 读改写。
+//! 跨行预聚合集成测试：`#[kv_reduce(Logic { group(...) })]` 声明 →
+//! derive 生成 `Reduce` impl + Row hook；Table::put/delete 读改写。
 //! 覆盖：计数+求和复合 acc 的可逆往返、delete_by_pkey 同一路径、
-//! 同 group 多次 fold 累积、scan_aggregates 全组扫描、entry 布局
+//! 同 group 多次 fold 累积、scan_reduces 全组扫描、entry 布局
 //! `[ns 2B][slot 1B][group 段]`（slot 续接索引计数器）。
 
-use okm_core::{Aggregate, AggregateLogic, AggCodec, MockStore, Row, RowEncode};
+use okm_core::{Reduce, ReduceLogic, ReduceCodec, MockStore, Row, RowEncode};
 
 /// PostKey：代理主键。
 #[derive(okm_core::KeyEncode, Clone, PartialEq, Debug, Default)]
@@ -16,7 +16,7 @@ pub struct PostKey {
 /// Post 行：按 author 分组做 count + title_len 求和。
 #[derive(RowEncode, Clone, PartialEq, Debug)]
 #[kv_ref(PostKey)]
-#[kv_aggregate(AuthorStats { group(author_id) })]
+#[kv_reduce(AuthorStats { group(author_id) })]
 pub struct Post {
     pub author_id: u64,
     pub title_len: u32,
@@ -29,7 +29,7 @@ pub struct CountSum {
     pub sum: u64,
 }
 
-impl AggCodec for CountSum {
+impl ReduceCodec for CountSum {
     fn encode_acc(&self) -> Vec<u8> {
         let mut b = Vec::with_capacity(16);
         b.extend_from_slice(&self.count.to_be_bytes());
@@ -48,7 +48,7 @@ impl AggCodec for CountSum {
 /// 用户侧逻辑 half：okm-core 不感知语义，只负责喂行与存取 acc。
 pub struct AuthorStats;
 
-impl AggregateLogic for AuthorStats {
+impl ReduceLogic for AuthorStats {
     type Row = Post;
     type Acc = CountSum;
     fn fold(acc: &mut CountSum, item: &Post) {
@@ -85,21 +85,21 @@ fn fold_unfold_roundtrip_is_exact() {
     t.put(&k3, &r3);
 
     // author 100: count=2, sum=42；author 200: count=1, sum=7。
-    let acc = okm_core::aggregate_get::<_, AuthorStats>(t.store(), 21, &k1, &r1).expect("group exists");
+    let acc = okm_core::reduce_get::<_, AuthorStats>(t.store(), 21, &k1, &r1).expect("group exists");
     assert_eq!(acc, CountSum { count: 2, sum: 42 });
 
     // delete_by_pkey 走同一条 unfold 路径（内部 get 出 row）。
     t.delete_by_pkey(&k2);
-    let acc = okm_core::aggregate_get::<_, AuthorStats>(t.store(), 21, &k1, &r1).expect("group exists");
+    let acc = okm_core::reduce_get::<_, AuthorStats>(t.store(), 21, &k1, &r1).expect("group exists");
     assert_eq!(acc, CountSum { count: 1, sum: 30 });
 
     // 可逆往返：删空后 acc 回到单位元。
     t.delete_by_pkey(&k1);
-    let acc = okm_core::aggregate_get::<_, AuthorStats>(t.store(), 21, &k1, &r1).expect("entry survives");
+    let acc = okm_core::reduce_get::<_, AuthorStats>(t.store(), 21, &k1, &r1).expect("entry survives");
     assert_eq!(acc, CountSum::default());
 
     // acc 独立生命周期：组空了 entry 仍在（okm-core 不做零值 GC）。
-    let all = okm_core::scan_aggregates::<_, AuthorStats>(t.store(), 21);
+    let all = okm_core::scan_reduces::<_, AuthorStats>(t.store(), 21);
     assert_eq!(all.len(), 2);
 }
 
@@ -114,7 +114,7 @@ fn entry_layout_is_ns_slot_group() {
     t.put(&k, &r);
 
     // author_id 是 u64 → group 段 = 8B BE；slot 续接索引计数器（无索引 → 1）。
-    let ek = <AuthorStats as Aggregate>::entry_key(21, &k, &r);
+    let ek = <AuthorStats as Reduce>::entry_key(21, &k, &r);
     assert_eq!(ek.len(), 3 + 8);
     assert_eq!(&ek[..2], &21u16.to_be_bytes());
     assert_eq!(ek[2], 1);
