@@ -470,6 +470,51 @@ Zero-value GC is deliberately omitted: an emptied group keeps its
 entry (the acc back at the identity), which avoids tombstone logic;
 callers skip identity-element groups as needed.
 
+## Write-path events: inline and channel
+
+Reduce answers "what does the accumulated state look like"; a second
+class of consumers needs the write itself as an event — cache
+invalidation, search-index sync, downstream notifications. The event
+layer (ADR-0008) splits those consumers in two, and the split is the
+whole design:
+
+- **Inline** (reduce): runs inside the write path, exactly-once by
+  construction — the fold IS part of the write. Reduce never consumes
+  a channel.
+- **Channel** (`#[kv_subscribe]`): best-effort delivery, no guarantee.
+  The annotation declares that this row type's write-path events enter
+  a channel; there is no handler at the annotation site — the
+  processing logic belongs entirely to the consumer:
+
+```text
+#[kv_subscribe(RowEvent::Account)]   // wraps events in the generated enum's variant
+#[kv_subscribe]                      // bare: per-row-type channel, the degraded fallback
+```
+
+Events carry `op` (put/delete), a monotonic **write-batch epoch**, and
+the row itself. The epoch is the emitting table's write counter: events
+from one table arrive with an exact same-table boundary, so a consumer
+combinator can fold glitch-free to the boundary instead of debouncing.
+It is in-process only — never persisted, resets on restart — and gives
+no cross-table ordering: independent puts have no atomic "both updated"
+instant, so multi-table fan-in stays eventually-consistent by
+structure.
+
+Two disciplines of use:
+
+- **Never put correctness on the channel.** A full queue drops, a
+  missing sink drops silently; anything that must happen exactly once
+  (like reduce) belongs inline. The channel is for consumers that can
+  tolerate loss and reconcile later.
+- **Purity applies to event payloads too**: the row snapshot rides the
+  event as-is; deriving extra context at consume time re-reads storage
+  the event no longer guarantees to describe.
+
+The transport is an assembly-site decision (`ChannelCell::register`
+accepts any sink — tokio mpsc, crossbeam queue, no-op); the core stays
+synchronous and knows no executor. Combinators over the receivers
+(map/filter/merge/fold to an epoch boundary) are the stream layer's
+business, not the model's.
 
 ## Access methods are mandatory
 
