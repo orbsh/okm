@@ -147,6 +147,40 @@ to full 16 bits). The trigger is "edge needs a new discriminator", never
       declaration emits a per-row-type `OnceLock` global mpsc + consumer
       accessor. Core stays synchronous; delivery is best-effort, policy
       declared by the subscriber.
+- [ ] Event payload carries a monotonic write-batch epoch: gives consumer
+      combinators an exact same-batch boundary (glitch-free folding within
+      a table), not a debounce heuristic. Cross-table fan-in stays
+      eventually-consistent — structurally no atomic "both updated" instant
+      exists across independent puts (ADR-0009 §2). Decision lands with
+      the payload format in this phase; okm-stream consumes it, does not
+      manufacture it.
+- [ ] Channel payload form: hand-written event Enum + alignment annotation
+      `#[kv_subscribe(EnumName::Variant)]` (send site IS the variant →
+      type mismatch is a compile error; match exhaustiveness is free).
+      Raw per-type channels remain the fallback when no Enum is declared.
+      Evaluated and rejected: (a) derive-writes-file, enum-macro-reads —
+      proc-macro reruns only on file change, so the discovered-variants
+      file goes stale under incremental compilation (missing/ghost
+      variants), plus racy appends and no "run after all derives" ordering
+      guarantee; (b) macro-parses-source-file — deterministic input, no
+      cache issue, but locks subscription declarations to a single file
+      (multi-module/crate breaks it) and pays a full re-parse to save one
+      line per type. OPEN: one manual variant line per subscribed type is
+      still unsatisfying — options to revisit: build-script based
+      collection (rerun-if-changed on the source tree, codegen into a
+      checked-in or OUT_DIR module; reliable ordering, costs a build
+      step), or accepting the annotation as the single source of truth
+      and generating the Enum FROM the annotation paths themselves via
+      build script (same collection problem, but source-of-truth moves
+      to the annotations — one declaration per type, no separate Enum
+      to maintain). DECIDED (user): implement the event Enum via build.rs
+      when landing stream functionality — no interim workaround. Precedent
+      from fluxora `gen_dispatch!`: proc-macro file dependence CAN be made
+      reliable with the `include_bytes!` HACK (forces dep-tracking on the
+      parsed file) — that patch suffices when the input is static source
+      code, but NOT when the input is a compile byproduct (okm scheme (a)):
+      build.rs is the structural fix, its `rerun-if-changed` contract being
+      the reliable equivalent.
 - [ ] `okm-stream` crate: consumes the emitted receivers; Rx-style
       combinators (map/filter/merge/scan) + push-mode multi-table
       fan-in. Zero storage responsibility; pull-mode fan-in stays in
@@ -161,3 +195,29 @@ to full 16 bits). The trigger is "edge needs a new discriminator", never
       where-boundary record: prefix = physical where (free, selectivity
       belongs in key layout), `.filter()` = in-memory where (stdlib,
       no wrapper needed).
+
+## Phase 6 — Commanded RMW: `Table::upsert_with`
+
+User-complemented RMW next to the declarative one (reduce). Same underlying
+shape — read old value, compute, write new — but imperative: arbitrary logic
+in a runtime closure, one shared implementation for all tables (runtime
+behavior, nothing per-type → belongs on `Table`, NOT okm-query (read-side
+combinator layer, must not hold the write path) and NOT derive (static
+per-type schema artifacts; upsert has none).
+
+- [ ] `Table::upsert_with(key, f: impl FnOnce(Option<R>) -> R) -> Result<R>`:
+      `get` → `f(old)` → `put(key, new)` via the normal write path, so index
+      maintenance, reduce hooks and (after the event layer) channel emission
+      all fire without special-casing. Returns the written row.
+- [ ] Correctness boundary documented: single-writer only. OKM is an
+      in-process library with a serial write order, so get→f→put cannot
+      interleave — no CAS needed. The optimistic-CAS item in Phase 2 stays
+      separate (multi-writer future, different mechanism). Same constraint
+      that backs reduce's exactly-once.
+- [ ] Integration test: upsert on missing key (old = None → insert path),
+      on existing key (RMW path), index + reduce entries correctly updated
+      through the put path.
+- [ ] Doc: MODELING section pairing the two RMW forms — reduce
+      (declarative, compile-time fold/unfold, framework-driven on the write
+      path) vs `upsert_with` (commanded, runtime closure, caller-driven);
+      boundary note that both rest on the single-writer constraint.
