@@ -532,6 +532,30 @@ pub(crate) struct AggDecl {
     pub group: Vec<String>,
 }
 
+/// One `#[kv_subscribe]` declaration. Optional argument: the enum variant
+/// path the row's events dispatch through (e.g. `RowEvent::User`). With
+/// the path, the send goes through the generated enum's channel; without,
+/// the row falls back to its per-row-type bare channel.
+pub(crate) struct SubDecl {
+    /// `Some(("RowEvent", "User"))` when a variant path is annotated.
+    pub variant: Option<(String, String)>,
+}
+
+/// Parse `#[kv_subscribe]` or `#[kv_subscribe(RowEvent::User)]`.
+pub(crate) fn parse_subscribe_attr(attr: &syn::Attribute) -> SubDecl {
+    // Bare form: no parens — parse_args would reject it.
+    let Ok(ts) = attr.parse_args::<syn::ExprPath>() else {
+        return SubDecl { variant: None };
+    };
+    let path = ts.to_token_stream().to_string().replace(' ', "");
+    let mut segs = path.split("::");
+    let (en, var) = match (segs.next(), segs.next(), segs.next()) {
+        (Some(e), Some(v), None) => (e.to_string(), v.to_string()),
+        _ => panic!("kv_subscribe: expected `Enum::Variant` path, got `{path}`"),
+    };
+    SubDecl { variant: Some((en, var)) }
+}
+
 /// Whole-macro IR: parse once, consumed by every emit function.
 pub(crate) struct RowSchema {
     pub row_name: syn::Ident,
@@ -545,6 +569,8 @@ pub(crate) struct RowSchema {
     /// Aggregate declarations, attribute order (slots continue after
     /// the last index — same append-only counter, never reused).
     pub aggregates: Vec<AggDecl>,
+    /// Subscribe declaration — at most one per row type.
+    pub subscribe: Option<SubDecl>,
 }
 
 /// Parse + validate the derive input. Returns a fully validated schema —
@@ -660,6 +686,16 @@ pub(crate) fn parse_schema(input: DeriveInput) -> RowSchema {
         }
     }
 
+    // #[kv_subscribe] / #[kv_subscribe(Enum::Variant)] — at most one per
+    // row type (two declarations = one channel send per write, ambiguous
+    // shape; reject rather than multiply sends).
+    let mut sub_iter = input.attrs.iter().filter(|a| a.path().is_ident("kv_subscribe"));
+    let sub_attr = sub_iter.next();
+    if sub_iter.next().is_some() {
+        panic!("kv_subscribe: duplicate declaration — at most one per row type");
+    }
+    let sub_decl = sub_attr.map(parse_subscribe_attr);
+
     RowSchema {
         row_name,
         key_ty,
@@ -667,5 +703,6 @@ pub(crate) fn parse_schema(input: DeriveInput) -> RowSchema {
         fields: fs,
         indexes: idx_decls,
         aggregates: agg_decls,
+        subscribe: sub_decl,
     }
 }

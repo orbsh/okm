@@ -38,6 +38,7 @@ pub mod field;
 pub mod index;
 pub mod key;
 pub mod reverse;
+pub mod subscribe;
 pub mod table;
 pub mod wrappers;
 
@@ -56,6 +57,7 @@ pub use engine::{KvEngine, MockStore};
 pub use field::{FieldDesc, FieldType};
 pub use index::{IndexFuncResult, IndexFuncValues, KvIndex, PRIMARY_SLOT, Row, scan_index};
 pub use key::{KeyEncode, PrefixKey};
+pub use subscribe::{ChannelCell, Event, Op};
 pub use table::Table;
 
 #[cfg(feature = "arrow")]
