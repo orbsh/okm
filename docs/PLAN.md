@@ -103,8 +103,17 @@ Design decisions live in `docs/adr/`. This plan tracks implementation status.
       UTF-8 dictionary order, uints → BE numeric order); the query side
       calls the same function on its probe, so normalization cannot
       drift between encode and scan.
-- [ ] Slot holes never reused (policy not yet stress-tested; hex tests lock
-      current index layouts).
+- [x] Deprecating an index declaration: removal is NOT allowed (declaration
+      order is a persistent contract — deleting a middle entry shifts every
+      later slot onto stale data, the same silent-corruption class as the
+      rejected additive ns derivation). Instead: `#[kv_index(name { … },
+      deprecated)]` keeps the slot reserved but generates no write path, no
+      marker struct, no scan surface; `Table::prune_deprecated_slots()`
+      prefix-scans `[ns][deprecated slot]` and deletes the stale entries
+      left from before the deprecation (idempotent, returns the count).
+      Row::DEPRECATED_SLOTS is derive-emitted. Tests lock: slot reservation,
+      no writes to the deprecated slot, prune, no-op prune without
+      deprecated declarations.
 
 ### Header unification trigger (edge direction bit)
 

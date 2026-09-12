@@ -269,6 +269,28 @@ impl<S: VirtualStorage, K: KeyEncode, R: Row<Key = K>> Table<S, K, R> {
 
     /// Full-ns scan of primary keys (slot-0 entries only — the same
     /// slot-0 discipline as `scan_rows_raw`; index entries are slots 1+).
+    /// Clear stale entries under deprecated index slots (ADR-0005):
+    /// a `#[kv_index(..., deprecated)]` declaration keeps its slot
+    /// reserved but writes nothing; entries written before the
+    /// deprecation remain until this method deletes them
+    /// (`[ns][deprecated slot]` prefix scan, delete each). Returns the
+    /// number of entries removed. Idempotent — a second call finds
+    /// nothing. Does NOT touch live slots or the primary table.
+    pub fn prune_deprecated_slots(&mut self) -> usize {
+        let mut removed = 0;
+        for slot in R::DEPRECATED_SLOTS {
+            let mut p = R::NS_PREFIX.to_vec();
+            p.push(*slot);
+            for sfx in self.store.scan_suffix(&p) {
+                let mut full = p.clone();
+                full.extend_from_slice(&sfx);
+                self.store.del(&full);
+                removed += 1;
+            }
+        }
+        removed
+    }
+
     pub fn scan_keys(&self) -> Vec<K> {
         let mut p = R::NS_PREFIX.to_vec();
         p.push(crate::index::PRIMARY_SLOT);

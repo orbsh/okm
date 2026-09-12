@@ -202,6 +202,13 @@ fn emit_index_structs(schema: &RowSchema) -> TS2 {
 
     let mut index_out = quote! {};
     for (n, idx) in schema.indexes.iter().enumerate() {
+        // Deprecated declaration: slot stays reserved (declaration order
+        // is a persistent contract), but nothing is generated — no marker
+        // struct, no write path, no scan surface. Stale entries are
+        // cleared by Table::prune_deprecated_slots (ADR-0005).
+        if idx.deprecated {
+            continue;
+        }
         let slot_lit = proc_macro2::Literal::u8_unsuffixed(n as u8 + 1);
         let iname = &idx.ident;
         let struct_ident = format_ident!("__OkmIndex_{}_{}", row_name, iname);
@@ -314,18 +321,38 @@ fn emit_index_structs(schema: &RowSchema) -> TS2 {
 /// multiple pairs per row (multi-entry regime).
 fn emit_index_entries(schema: &RowSchema) -> TS2 {
     let row_name = &schema.row_name;
-    let entry_calls = schema.indexes.iter().map(|idx| {
+    let entry_calls = schema.indexes.iter().filter(|idx| !idx.deprecated).map(|idx| {
         let struct_ident = format_ident!("__OkmIndex_{}_{}", row_name, idx.ident);
         quote! {
             out.extend(<#struct_ident as ::okm_core::KvIndex>::entry_pairs(ns, key, row));
         }
     });
+    // Deprecated slots: declaration positions (1-based) whose entries are
+    // stale after the declaration was marked `deprecated` — consumed by
+    // `Table::prune_deprecated_slots` (prefix-scan + delete).
+    let dep_slots: Vec<_> = schema
+        .indexes
+        .iter()
+        .enumerate()
+        .filter(|(_, idx)| idx.deprecated)
+        .map(|(n, _)| {
+            let lit = proc_macro2::Literal::u8_unsuffixed(n as u8 + 1);
+            quote! { #lit }
+        })
+        .collect();
+    let dep_const = quote! {
+        /// Slots reserved by `deprecated` index declarations — entries
+        /// here are stale (written before the deprecation) and are
+        /// cleared by `Table::prune_deprecated_slots`.
+        const DEPRECATED_SLOTS: &'static [u8] = &[#(#dep_slots),*];
+    };
     quote! {
         fn index_entries(key: &Self::Key, row: &Self, ns: &[u8]) -> Vec<(Vec<u8>, Vec<u8>)> {
             let mut out = Vec::new();
             #(#entry_calls)*
             out
         }
+        #dep_const
     }
 }
 

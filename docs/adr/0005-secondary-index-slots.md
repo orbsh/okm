@@ -66,6 +66,27 @@ The 2026-09-07 implementation replaced the slot byte with additive ns derivation
 
 The byte saved was a local, negligible gain; the guarantee given up was global. Implementation-time simplifications must be checked against this ADR's consequences list — the additive variant was considered and rejected here for exactly this class of reason. Restored: entry header `[table_ns 2B][slot 1B]` on every entry (primary slot 0), +1 byte per key, ns dictionary back to one number per table, 255 indexes per table.
 
+## Update 2026-09-12b: deprecating an index declaration
+
+An earlier "holes are harmless" claim was wrong for the positional slot
+allocation: deleting a MIDDLE declaration shifts every later slot down one,
+so those slots' new writes land on the previous declarations' stale entries
+— silent corruption, the same class as the rejected additive derivation.
+Removing a declaration is therefore NOT a supported operation (same
+discipline as reordering: layout change = clean rebuild or migration
+double-write). The supported retirement path is a deprecation marker:
+
+```rust
+#[kv_index(by_old { fields(legacy) }, deprecated)]   // slot stays reserved
+```
+
+The derive keeps the slot (later declarations keep their slots), but
+generates no marker struct, no write path, and no scan surface for it.
+Stale entries from before the deprecation are cleared explicitly:
+`Table::prune_deprecated_slots()` prefix-scans `[ns][deprecated slot]` and
+deletes (idempotent; returns the count). `Row::DEPRECATED_SLOTS` carries
+the derive-emitted slot list.
+
 ## Update 2026-09-12: ns declaration moves from key struct to row struct
 
 `#[kv_ns]` originally lived on the key struct (this ADR's example shows it
