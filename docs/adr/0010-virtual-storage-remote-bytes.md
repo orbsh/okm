@@ -80,6 +80,15 @@ Capability ceiling, permanent: no reduce/subscribe on the dynamic side
 (fold/unfold are Rust compile-time logic; a dynamic rebuild would break
 exactly-once).
 
+Engine choice is per-assembly-point and freely mixable: a local Table may
+bind a local engine, while another Table in the same process binds the
+remote backend ("forwarding" — same semantics, engine chosen remote).
+There is no mixing conflict to guard: the receiver prefix is wrapping the
+receiver applies, not part of the sender's key shape, so local `[ns 2B]`
+keys and hosted `[prefix][ns 2B]` bytes never meet in one engine unless
+the receiver itself chooses to host them there. No reserved prefix
+values.
+
 ### 4. Receiver declaration: `#[kv_storage]` derive
 
 The receiver is declared, not hand-wired. An empty struct annotated with
@@ -96,32 +105,38 @@ construction; crossing namespaces is not expressible — physical separation,
 not naming filters). Same discipline as `#[kv_subscribe]`: the annotation
 declares a fact; the macro emits the implementation.
 
-### 5. Multi-tenant prefix, per ADR-0002's key shape
+### 5. Multi-tenancy: receiver-side prefix, one ns per instance
 
-`app_id/tenant_id` is NOT a namespace layer (ns is compile-time, u16,
-dictionary-in-code; tenants are runtime data). The physical key on the
-receiver's engine is a pure concatenation — receiver bytes first, sender
-bytes after, order never adjusted:
+Multi-tenancy has exactly one database-level mechanism: the receiver's
+declared prefix. A remote OKM instance is one application = one domain
+model = its own ns dictionary; to the receiver it is just another ns
+occupying one prefix. There is no `app_id` layer inside OKM, no reserved
+prefix values, and no multi-level ns declaration — if an application
+partitions by tenant internally, `tenant_id` is a plain key field in its
+structs (business sharding, same modeling for every tenant); only when
+whole applications are isolated at the platform level does the receiver
+host one `#[kv_storage]` executor per application, each with its own
+declared prefix and its own sender-side ns dictionary behind it.
+
+The physical key on the receiver's engine is a pure concatenation —
+receiver bytes first, sender bytes after, order never adjusted:
 
 ```text
-[app_id][tenant_id][ ns 2B ][ sender's key payload ... ]
- └── receiver prefix ──┘  └────── sender bytes, untouched ──────┘
+[receiver prefix][ ns 2B ][ sender's key payload ... ]
+ └─ receiver ──┘  └────── sender bytes, untouched ─────┘
 ```
 
-The receiver knows only `[app_id][tenant_id]` — its declared prefix. The
-ns segment is the sender's: the receiver prepends its prefix to whatever
-the frame carries and never parses what follows; ns bytes pass through
-opaque. Knowledge asymmetry is the isolation mechanism: the receiver
-cannot route between tenants it cannot see past, and the sender cannot
+The receiver knows only its prefix; the ns segment is the sender's —
+the receiver prepends its prefix and never parses what follows; ns bytes
+pass through opaque. Knowledge asymmetry is the isolation mechanism: the
+receiver cannot route past what it cannot see, and the sender cannot
 escape the prefix it does not hold (the `#[kv_storage]` handle is bound
 to the prefix at construction). ADR-0002's "if tenants exist" clause is
-thereby **promoted from sketch to adopted mechanism** (with the segment
-order corrected: receiver bytes lead, not ns); its rejection of
+thereby **promoted from sketch to adopted mechanism**; its rejection of
 per-tenant outer isolation was premised on "no user-programmable query
 surface", which the dynamic-execution mode changes — this ADR is the
 revision trigger. The ns dictionary discipline itself (compile-time,
-append-only, u16) is untouched — ns keeps its in-sender-keyspace
-meaning; the receiver prefix lives outside it.
+append-only, u16) is untouched.
 
 ### 6. Transport is a backend-internal detail
 
@@ -143,7 +158,7 @@ never leaks into it.
 - Krystallizer's storage config becomes four-way: mock / fjall / slatedb /
   virtual(→Aura). OKM semantic layers (Table/index/reduce/events) unchanged.
 - Aura gains a Storage Actor hosting `#[kv_storage]` executors: one declared
-  instance per application (prefix = app_id/tenant_id), frames arrive from
+  instance per application (one declared prefix each), frames arrive from
   VirtualStorage backends or realm events; same-machine callers connect
   in-process.
 - The frame format is minimal and stable (`op + bytes`); it is NOT a

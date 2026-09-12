@@ -305,19 +305,28 @@ and the Phase 6 baseline premise is now real, not planned.
       scan/get request frame + oneshot response (unified call model, declared
       fast-call). Transport is backend-internal (in-process channel / UDS /
       existing WS connection) — fixed at assembly, no declared endpoint.
-- [ ] `#[kv_storage]` derive: empty struct + namespace declaration → NO data
+- [ ] `#[kv_storage]` derive: empty struct + prefix declaration → NO data
       methods, exactly one exec/receive method (prepend declared prefix →
       plain byte-level engine execution → fill back scan bytes). Receiver
       holds no OKM semantics; storing garbage is indistinguishable from
       storing data. Same annotation discipline as `#[kv_subscribe]`.
+- [ ] ns declaration moves to the Table side: `#[kv_ns(...)]` read by
+      RowEncode/EdgeEncode (declared, never hand-filled at `Table::new` —
+      the ns parameter disappears from the constructor); KeyEncode's
+      currently-unused `kv_ns` attribute registration removed. Single
+      ns per row type (one OKM = one domain model); the engine choice
+      stays per-assembly-point (local/remote freely mixable — remote is
+      just another KvEngine impl).
 - [ ] Dynamic codec (Python first, then Steel): schema-driven
       encoder/decoder/scan built from `describe()`/`json_schema()` exports —
       in-process use for embedded-language Actors. Permanent capability
       ceiling: no reduce/subscribe (Rust compile-time logic; dynamic rebuild
       would break exactly-once).
-- [ ] Multi-tenant key shape: pure concatenation — receiver's declared
-      prefix `[app_id][tenant_id]` first, sender's bytes (`[ns 2B]...`)
-      after, order never adjusted. The receiver knows only its prefix;
-      ns is the sender's, opaque to the receiver (ADR-0002 sketch
-      promoted to adopted mechanism, segment order corrected; ns
-      dictionary discipline untouched).
+- [ ] Multi-tenancy: receiver-side prefix only — a remote OKM instance is
+      one application = one domain model = one ns; to the receiver it is
+      just another prefix. No app_id layer inside OKM, no multi-level ns
+      declaration, no reserved values; internal tenant sharding is a
+      plain key field (business concern, same modeling). Receiver key =
+      pure concatenation `[receiver prefix][ns 2B][sender payload]`,
+      ns opaque to the receiver (ADR-0002 sketch promoted; discipline
+      untouched).
