@@ -292,3 +292,29 @@ and the Phase 6 baseline premise is now real, not planned.
       2026-09-11 ("Two read-modify-writes" in MODELING.md /
       MODELING.zh-CN.md), which also updated the event-layer section for
       the bare-only kv_subscribe form (build.rs-derived enum).
+
+## Phase 7 — VirtualStorage: engine as boundary, remote backend, kv_storage derive (ADR-0010)
+
+- [ ] Trait boundary rename/alias: KvEngine conceptualized as VirtualStorage
+      (put/get/del/scan_suffix/batch/commit_batch speak only encoded bytes —
+      the boundary already exists, no method changes). Four backend shapes:
+      mock / fjall / slatedb / remote.
+- [ ] Remote backend (sender side): write = MemBatch op list serialized
+      (postcard) into a frame `[op][batch bytes]`; fire-and-forget (one
+      frame = one receiver WAL commit; channel order = write order). Read =
+      scan/get request frame + oneshot response (unified call model, declared
+      fast-call). Transport is backend-internal (in-process channel / UDS /
+      existing WS connection) — fixed at assembly, no declared endpoint.
+- [ ] `#[kv_storage]` derive: empty struct + namespace declaration → NO data
+      methods, exactly one exec/receive method (prepend declared prefix →
+      plain byte-level engine execution → fill back scan bytes). Receiver
+      holds no OKM semantics; storing garbage is indistinguishable from
+      storing data. Same annotation discipline as `#[kv_subscribe]`.
+- [ ] Dynamic codec (Python first, then Steel): schema-driven
+      encoder/decoder/scan built from `describe()`/`json_schema()` exports —
+      in-process use for embedded-language Actors. Permanent capability
+      ceiling: no reduce/subscribe (Rust compile-time logic; dynamic rebuild
+      would break exactly-once).
+- [ ] Multi-tenant key shape: `[ns 2B][app_id][tenant_id]...` — receiver's
+      declared prefix outside the app's ns bytes (ADR-0002 sketch promoted
+      to adopted mechanism; ns dictionary discipline untouched).
