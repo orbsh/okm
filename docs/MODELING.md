@@ -42,14 +42,12 @@ use okm_core::KeyEncode;
 /// A user within an org. `org_id` is the organizational prefix;
 /// `user_id` is the identity endpoint.
 #[derive(KeyEncode, Clone, PartialEq, Debug)]
-#[kv_ns(1)] // compile-time namespace, folded into the key as big-endian bytes
 pub struct UserKey {
     pub org_id: u32,
     pub user_id: u64,
 }
 
 #[derive(KeyEncode, Clone, PartialEq, Debug)]
-#[kv_ns(2)]
 pub struct SessionKey {
     pub org_id: u32,
     pub session_id: u64,
@@ -103,6 +101,7 @@ use okm_core::RowEncode;
 /// identity belongs to the key (a surrogate id), business dimensions to the row.
 #[derive(RowEncode, Clone, PartialEq, Debug)]
 #[kv_ref(UserKey)]
+#[kv_ns(1)] // the table's namespace — declared on the row, not the key
 #[kv_index(by_reputation { fields(reputation) })]
 #[kv_index(by_org { fields(org_id, created_at), includes(bio_len) })]
 pub struct User {
@@ -115,6 +114,12 @@ pub struct User {
 
 - `#[kv_ref(UserKey)]` — which primary key the row hangs off; identity
   belongs to the key, business dimensions to the row.
+- `#[kv_ns(1)]` — the table's namespace segment, declared on the ROW (the
+  row is the table's declaration point: `#[kv_ref]` pins the key type, so
+  the row determines `Table<S, K, R>` entirely). A key type carries no ns —
+  the same key shape may serve several rows/tables, each with its own ns.
+  `Table::new(store)` takes no ns argument; the assembly site picks the
+  engine only. Edge structs declare `#[kv_ns]` the same way (EdgeEncode).
 - `fields(...)` — payload fields to sort/group by, declaration order,
   first field = the grouping dimension.
 - `includes(...)` — covering index: copies payload fields into the entry

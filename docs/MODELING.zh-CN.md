@@ -26,14 +26,12 @@ use okm_core::KeyEncode;
 
 /// org 内的用户。org_id 是"组织前缀"，user_id 才是身份终点。
 #[derive(KeyEncode, Clone, PartialEq, Debug)]
-#[kv_ns(1)] // 编译期命名空间，折叠为 key 的大端字节前缀
 pub struct UserKey {
     pub org_id: u32,
     pub user_id: u64,
 }
 
 #[derive(KeyEncode, Clone, PartialEq, Debug)]
-#[kv_ns(2)]
 pub struct SessionKey {
     pub org_id: u32,
     pub session_id: u64,
@@ -81,6 +79,7 @@ use okm_core::RowEncode;
 /// 身份归 key（代理 id），业务维度归行。
 #[derive(RowEncode, Clone, PartialEq, Debug)]
 #[kv_ref(UserKey)]
+#[kv_ns(1)] // 表的命名空间——声明在行上，不声明在 key 上
 #[kv_index(by_reputation { fields(reputation) })]
 #[kv_index(by_org { fields(org_id, created_at), includes(bio_len) })]
 pub struct User {
@@ -92,6 +91,10 @@ pub struct User {
 ```
 
 - `#[kv_ref(UserKey)]`——行挂到哪个主键上；身份归 key，业务维度归行。
+- `#[kv_ns(1)]`——表的命名空间段，声明在**行上**（行是表的声明点：`#[kv_ref]`
+  已把 key 类型钉死，行完全决定 `Table<S, K, R>`）。key 类型不带 ns——同一个
+  key 形状可以合法服务多个行/表，各挂各的 ns 号。`Table::new(store)` 不收 ns
+  参数，拼装点只选 engine。edge struct 的 `#[kv_ns]` 同理（EdgeEncode）。
 - `fields(...)`——排序/分组的 payload 字段，按声明序，首位 = 分组维度。
 - `includes(...)`——覆盖索引，复制 payload 字段进 entry value（上文「覆盖索引克制」）。
 - `key(...)`——把 entry 尾部携带的主键截断到命名子集（默认取满）。截断改变的是行级唯一性，不是分组：`fields` 前缀驱动排序，key 尾段区分行；`key(user_id)` 仅在命名子集对每行唯一时才安全，否则行会互相覆盖 entry。
