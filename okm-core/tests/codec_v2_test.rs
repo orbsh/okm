@@ -11,7 +11,6 @@ use okm_core::{KeyEncode, MockStore, Reversible, Reverse, Row, RowEncode, Table,
 // ================= String (variable length) =================
 
 #[derive(KeyEncode, Clone, PartialEq, Debug)]
-#[kv_ns(3)]
 pub struct SKey {
     pub shard: u16,
     pub id: u64,
@@ -19,6 +18,7 @@ pub struct SKey {
 
 #[derive(RowEncode, Clone, PartialEq, Debug)]
 #[kv_ref(SKey)]
+#[kv_ns(3)]
 pub struct SRow {
     pub score: u32,
     pub name: String,
@@ -61,7 +61,6 @@ fn string_field_desc_marks_variable_width() {
 // ================= Reverse<T> =================
 
 #[derive(KeyEncode, Clone, PartialEq, Debug)]
-#[kv_ns(4)]
 pub struct RKey {
     pub org: u32,
     pub user: u64,
@@ -70,6 +69,7 @@ pub struct RKey {
 #[derive(RowEncode, Clone, PartialEq, Debug)]
 #[kv_ref(RKey)]
 #[kv_index(by_newest { fields(ts_rev), key(org) })]
+#[kv_ns(4)]
 pub struct RRow {
     pub score: u16,
     pub ts_rev: Reverse<u64>,
@@ -123,7 +123,7 @@ fn parquet_roundtrip_with_string_columns() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("snapshot.parquet");
 
-    let mut t1: Table<MockStore, SKey, SRow> = Table::new(MockStore::default(), 3);
+    let mut t1: Table<MockStore, SKey, SRow> = Table::new(MockStore::default());
     let names = ["", "alice", "多字节 ✓ 名称"];
     for (i, name) in names.iter().enumerate() {
         t1.put(
@@ -138,7 +138,7 @@ fn parquet_roundtrip_with_string_columns() {
     }
     parquet_io::export_parquet(&t1, &path).unwrap();
 
-    let mut t2: Table<MockStore, SKey, SRow> = Table::new(MockStore::default(), 3);
+    let mut t2: Table<MockStore, SKey, SRow> = Table::new(MockStore::default());
     let n = parquet_io::import_parquet(&mut t2, &path).unwrap();
     assert_eq!(n, 3);
     for (i, name) in names.iter().enumerate() {
@@ -179,6 +179,7 @@ fn payload_wire_hex_snapshot() {
 #[derive(RowEncode, Clone, PartialEq, Debug)]
 #[kv_ref(SKey)]
 #[kv_layout(version = 2)]
+#[kv_ns(3)]
 pub struct EvolvedRow {
     pub score: u32,
     pub name: String,
@@ -233,6 +234,7 @@ fn explicit_layout_version_constant() {
 #[derive(RowEncode, Clone, PartialEq, Debug)]
 #[kv_ref(SKey)]
 #[kv_layout(version = 3)]
+#[kv_ns(3)]
 pub struct DefaultedRow {
     pub score: u32,
     pub name: String,

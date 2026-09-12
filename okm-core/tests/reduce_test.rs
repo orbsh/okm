@@ -8,7 +8,6 @@ use okm_core::{Reduce, ReduceLogic, ReduceCodec, MockStore, Row, RowEncode};
 
 /// PostKey：代理主键。
 #[derive(okm_core::KeyEncode, Clone, PartialEq, Debug, Default)]
-#[kv_ns(21)]
 pub struct PostKey {
     pub id: u64,
 }
@@ -17,6 +16,7 @@ pub struct PostKey {
 #[derive(RowEncode, Clone, PartialEq, Debug)]
 #[kv_ref(PostKey)]
 #[kv_reduce(AuthorStats { group(author_id) })]
+#[kv_ns(21)]
 pub struct Post {
     pub author_id: u64,
     pub title_len: u32,
@@ -63,7 +63,7 @@ impl ReduceLogic for AuthorStats {
 
 #[test]
 fn fold_unfold_roundtrip_is_exact() {
-    let mut t = <Post as Row>::table(MockStore::default(), 21);
+    let mut t = <Post as Row>::table(MockStore::default());
 
     let k1 = PostKey { id: 1 };
     let r1 = Post {
@@ -85,27 +85,27 @@ fn fold_unfold_roundtrip_is_exact() {
     t.put(&k3, &r3);
 
     // author 100: count=2, sum=42；author 200: count=1, sum=7。
-    let acc = okm_core::reduce_get::<_, AuthorStats>(t.store(), 21, &k1, &r1).expect("group exists");
+    let acc = okm_core::reduce_get::<_, AuthorStats>(t.store(), <Post as Row>::NS_PREFIX, &k1, &r1).expect("group exists");
     assert_eq!(acc, CountSum { count: 2, sum: 42 });
 
     // delete_by_pkey 走同一条 unfold 路径（内部 get 出 row）。
     t.delete_by_pkey(&k2);
-    let acc = okm_core::reduce_get::<_, AuthorStats>(t.store(), 21, &k1, &r1).expect("group exists");
+    let acc = okm_core::reduce_get::<_, AuthorStats>(t.store(), <Post as Row>::NS_PREFIX, &k1, &r1).expect("group exists");
     assert_eq!(acc, CountSum { count: 1, sum: 30 });
 
     // 可逆往返：删空后 acc 回到单位元。
     t.delete_by_pkey(&k1);
-    let acc = okm_core::reduce_get::<_, AuthorStats>(t.store(), 21, &k1, &r1).expect("entry survives");
+    let acc = okm_core::reduce_get::<_, AuthorStats>(t.store(), <Post as Row>::NS_PREFIX, &k1, &r1).expect("entry survives");
     assert_eq!(acc, CountSum::default());
 
     // acc 独立生命周期：组空了 entry 仍在（okm-core 不做零值 GC）。
-    let all = okm_core::scan_reduces::<_, AuthorStats>(t.store(), 21);
+    let all = okm_core::scan_reduces::<_, AuthorStats>(t.store(), <Post as Row>::NS_PREFIX);
     assert_eq!(all.len(), 2);
 }
 
 #[test]
 fn entry_layout_is_ns_slot_group() {
-    let mut t = <Post as Row>::table(MockStore::default(), 21);
+    let mut t = <Post as Row>::table(MockStore::default());
     let k = PostKey { id: 9 };
     let r = Post {
         author_id: 55,
@@ -114,9 +114,9 @@ fn entry_layout_is_ns_slot_group() {
     t.put(&k, &r);
 
     // author_id 是 u64 → group 段 = 8B BE；slot 续接索引计数器（无索引 → 1）。
-    let ek = <AuthorStats as Reduce>::entry_key(21, &k, &r);
+    let ek = <AuthorStats as Reduce>::entry_key(<Post as Row>::NS_PREFIX, &k, &r);
     assert_eq!(ek.len(), 3 + 8);
-    assert_eq!(&ek[..2], &21u16.to_be_bytes());
+    assert_eq!(&ek[..2], &[0, 21]);
     assert_eq!(ek[2], 1);
     assert_eq!(&ek[3..], &55u64.to_be_bytes());
 }

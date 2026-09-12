@@ -219,7 +219,7 @@ fn emit_index_structs(schema: &RowSchema) -> TS2 {
                 .unwrap_or_else(|e| panic!("kv_index[{}]: bad func path `{}`: {e}", idx.ident, idx.func));
             quote! {
                 fn entry_pairs(
-                    table_ns: u16,
+                    table_ns: &[u8],
                     key: &Self::Key,
                     row: &Self::Row,
                 ) -> Vec<(Vec<u8>, Vec<u8>)> {
@@ -232,9 +232,9 @@ fn emit_index_structs(schema: &RowSchema) -> TS2 {
                     let __okm_value = Self::entry_value(key, row);
                     for __okm_seg in __okm_vals {
                         let mut __okm_k = Vec::with_capacity(
-                            3 + __okm_seg.len() + Self::key_prefix_width(),
+                            table_ns.len() + 1 + __okm_seg.len() + Self::key_prefix_width(),
                         );
-                        __okm_k.extend_from_slice(&table_ns.to_be_bytes());
+                        __okm_k.extend_from_slice(table_ns);
                         __okm_k.push(Self::SLOT);
                         __okm_k.extend_from_slice(&__okm_seg);
                         __okm_k.extend_from_slice(&Self::key_prefix_bytes(key));
@@ -321,7 +321,7 @@ fn emit_index_entries(schema: &RowSchema) -> TS2 {
         }
     });
     quote! {
-        fn index_entries(key: &Self::Key, row: &Self, ns: u16) -> Vec<(Vec<u8>, Vec<u8>)> {
+        fn index_entries(key: &Self::Key, row: &Self, ns: &[u8]) -> Vec<(Vec<u8>, Vec<u8>)> {
             let mut out = Vec::new();
             #(#entry_calls)*
             out
@@ -384,7 +384,7 @@ fn emit_reduces(schema: &RowSchema) -> (TS2, TS2) {
             _store: &mut S,
             _key: &Self::Key,
             _row: &Self,
-            _ns: u16,
+            _ns: &[u8],
             _add: bool,
         ) {
             #calls
@@ -446,6 +446,16 @@ fn emit_subscribe(schema: &RowSchema) -> (TS2, TS2) {
 fn emit_row_impl(schema: &RowSchema) -> TS2 {
     let row_name = &schema.row_name;
     let key_ty = &schema.key_ty;
+    // #[kv_ns(N)] → the row's table ns prefix bytes (big-endian u16,
+    // matching the raw `[ns 2B]` header). Absent = default empty.
+    let ns_const = match schema.ns {
+        Some(n) => {
+            let hi = (n >> 8) as u8;
+            let lo = (n & 0xff) as u8;
+            quote! { const NS_PREFIX: &'static [u8] = &[#hi, #lo]; }
+        }
+        None => quote! {},
+    };
     let ver_lit = proc_macro2::Literal::u8_unsuffixed(schema.layout_version);
     let row_desc = field_desc_entries(schema);
     let encode_body = emit_payload_encode(schema);
@@ -477,6 +487,7 @@ fn emit_row_impl(schema: &RowSchema) -> TS2 {
         }
         impl ::okm_core::Row for #row_name {
             type Key = #key_ty;
+            #ns_const
             const LAYOUT_VERSION: u8 = #ver_lit;
             const PAYLOAD_FIELDS: &'static [(&'static str, usize)] = &[ #((#name_strs, #widths)),* ];
             const FIELDS: &'static [::okm_core::FieldDesc] = #row_desc;

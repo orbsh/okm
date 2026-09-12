@@ -93,10 +93,10 @@ pub trait Reduce: ReduceLogic {
     fn group_bytes(key: &<Self::Row as Row>::Key, row: &Self::Row) -> Vec<u8>;
 
     /// Full entry key `[ns 2B][slot 1B][group segment]`.
-    fn entry_key(table_ns: u16, key: &<Self::Row as Row>::Key, row: &Self::Row) -> Vec<u8> {
+    fn entry_key(table_ns: &[u8], key: &<Self::Row as Row>::Key, row: &Self::Row) -> Vec<u8> {
         let g = Self::group_bytes(key, row);
-        let mut buf = Vec::with_capacity(3 + g.len());
-        buf.extend_from_slice(&table_ns.to_be_bytes());
+        let mut buf = Vec::with_capacity(table_ns.len() + 1 + g.len());
+        buf.extend_from_slice(table_ns);
         buf.push(Self::SLOT);
         buf.extend_from_slice(&g);
         buf
@@ -106,7 +106,7 @@ pub trait Reduce: ReduceLogic {
 /// Read one group's current accumulator (None = group not yet created).
 pub fn reduce_get<S: KvEngine, A: Reduce>(
     store: &S,
-    table_ns: u16,
+    table_ns: &[u8],
     key: &<A::Row as Row>::Key,
     row: &A::Row,
 ) -> Option<A::Acc> {
@@ -118,10 +118,10 @@ pub fn reduce_get<S: KvEngine, A: Reduce>(
 /// Prefix `[ns 2B][slot 1B]` — each suffix is the group segment.
 pub fn scan_reduces<S: KvEngine, A: Reduce>(
     store: &S,
-    table_ns: u16,
+    table_ns: &[u8],
 ) -> Vec<(Vec<u8>, A::Acc)> {
-    let mut prefix = Vec::with_capacity(3);
-    prefix.extend_from_slice(&table_ns.to_be_bytes());
+    let mut prefix = Vec::with_capacity(table_ns.len() + 1);
+    prefix.extend_from_slice(table_ns);
     prefix.push(A::SLOT);
     store
         .scan_suffix_kv(&prefix)
@@ -141,7 +141,7 @@ pub fn apply_row<S: KvEngine, R: Row>(
     store: &mut S,
     key: &R::Key,
     row: &R,
-    table_ns: u16,
+    table_ns: &[u8],
     add: bool,
 ) {
     R::__okm_apply_reduces(store, key, row, table_ns, add);

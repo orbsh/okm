@@ -6,7 +6,6 @@
 use okm_core::{EdgeEncode, EdgeTable, KeyEncode, KvEngine, MockStore, RowEncode, Table};
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
-#[kv_ns(41)]
 pub struct PostKey {
     pub id: u64,
 }
@@ -14,13 +13,13 @@ pub struct PostKey {
 #[derive(RowEncode, Clone, PartialEq, Debug)]
 #[kv_ref(PostKey)]
 #[kv_index(by_author { fields(author_id) })]
+#[kv_ns(41)]
 pub struct Post {
     pub author_id: u64,
     pub title: String,
 }
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
-#[kv_ns(43)]
 pub struct AuthorKey {
     pub id: u64,
 }
@@ -37,7 +36,7 @@ pub struct AuthorEdge {
 fn save_into_defers_until_commit() {
     let mut store = MockStore::default();
     let mut batch = store.batch();
-    let t: Table<MockStore, PostKey, Post> = Table::new(store.clone(), 41);
+    let t: Table<MockStore, PostKey, Post> = Table::new(store.clone());
 
     // Encode-only: nothing lands in any store.
     t.save_into(
@@ -52,7 +51,7 @@ fn save_into_defers_until_commit() {
 
     // Commit: primary + index entries land together.
     store.commit_batch(batch).expect("commit");
-    let t2: Table<MockStore, PostKey, Post> = Table::new(store.clone(), 41);
+    let t2: Table<MockStore, PostKey, Post> = Table::new(store.clone());
     assert!(t2.get(&PostKey { id: 1 }).is_some(), "row lands at commit");
 }
 
@@ -63,7 +62,7 @@ fn cross_collection_one_batch() {
     let mut batch = store.batch();
 
     {
-        let t: Table<MockStore, PostKey, Post> = Table::new(store.clone(), 41);
+        let t: Table<MockStore, PostKey, Post> = Table::new(store.clone());
         t.save_into(
             &mut batch,
             &PostKey { id: 1 },
@@ -76,7 +75,7 @@ fn cross_collection_one_batch() {
     store.commit_batch(batch).expect("commit");
 
     // Both landed through the ONE committed store instance.
-    let t: Table<MockStore, PostKey, Post> = Table::new(store.clone(), 41);
+    let t: Table<MockStore, PostKey, Post> = Table::new(store.clone());
     let scanned = t.scan::<Post_ByAuthor>(&7u64.to_be_bytes());
     assert_eq!(scanned.len(), 1);
     let edges: EdgeTable<MockStore, AuthorEdge> = EdgeTable::new(store);
