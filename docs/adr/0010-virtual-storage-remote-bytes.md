@@ -52,9 +52,12 @@ No semantic parsing anywhere:
   as raw bytes. It does not parse keys, does not know TLV frames, does not
   know that OKM exists. Storing garbage is indistinguishable from storing
   data — by design.
-- **Read path** (`get`/`scan_suffix`) needs a response: it rides the unified
-  call model (`ctx.invoke()`, oneshot fill-back, declared fast-call). No
-  second waiting mechanism.
+- **Read path** (`get`/`scan_suffix`) needs a response — how a request is
+  correlated with its answer is the consumer's business, not the wire's.
+  The sender side implements the trait (`get` returns `Option<Vec<u8>>`);
+  what transport, what correlation id, what callback or blocking wait it
+  uses under that signature is its own choice. The wire carries request
+  and response frames; everything above is outside this ADR.
 - **No version header on the wire.** Layout versioning is the sender's
   in-process concern (compile-time hex tests + `#[kv_layout(version)]`
   decode rejection). Aura does not run the sender's OKM and holds no layout
@@ -150,6 +153,9 @@ dedicated listener, no second protocol.
 Symmetrically, the receiver does not know arrival paths either. The
 `#[kv_storage]` executor's surface is exactly one method — frame in, results
 out; who called it and through which channel is the caller's business.
+Read correlation (which response answers which request) lives on the
+sender side of the executor, same as write. A TCP + postcard client is
+the reference example; it is an example, not part of the contract.
 Transport diversity exists only on the two outsides of the executor and
 never leaks into it.
 

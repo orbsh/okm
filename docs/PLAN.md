@@ -299,12 +299,14 @@ and the Phase 6 baseline premise is now real, not planned.
       (put/get/del/scan_suffix/batch/commit_batch speak only encoded bytes —
       the boundary already exists, no method changes). Four backend shapes:
       mock / fjall / slatedb / remote.
-- [ ] Remote backend (sender side): write = MemBatch op list serialized
-      (postcard) into a frame `[op][batch bytes]`; fire-and-forget (one
-      frame = one receiver WAL commit; channel order = write order). Read =
-      scan/get request frame + oneshot response (unified call model, declared
-      fast-call). Transport is backend-internal (in-process channel / UDS /
-      existing WS connection) — fixed at assembly, no declared endpoint.
+- [ ] Remote backend (sender side): impl KvEngine; write = MemBatch op
+      list serialized (postcard) into a frame `[op][batch bytes]`;
+      fire-and-forget (one frame = one receiver WAL commit; channel order
+      = write order). Read = request frame + response — correlation is
+      the consumer's choice inside the trait impl (a TCP + postcard
+      client is the reference example, not the contract). Transport is
+      backend-internal (in-process channel / UDS / existing WS
+      connection) — fixed at assembly, no declared endpoint.
 - [ ] `#[kv_storage]` derive: empty struct + prefix declaration → NO data
       methods, exactly one exec/receive method (prepend declared prefix →
       plain byte-level engine execution → fill back scan bytes). Receiver
