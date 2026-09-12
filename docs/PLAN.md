@@ -333,14 +333,21 @@ and the Phase 6 baseline premise is now real, not planned.
       in-process use for embedded-language Actors. Permanent capability
       ceiling: no reduce/subscribe (Rust compile-time logic; dynamic rebuild
       would break exactly-once).
-- [ ] Multi-tenancy: receiver-side prefix only — a remote OKM instance is
+- [x] Multi-tenancy: receiver-side prefix only — a remote OKM instance is
       one application = one domain model = one ns; to the receiver it is
       just another prefix. No app_id layer inside OKM, no multi-level ns
       declaration, no reserved values; internal tenant sharding is a
       plain key field (business concern, same modeling). Receiver key =
       pure concatenation `[receiver prefix][ns 2B][sender payload]`,
       ns opaque to the receiver (ADR-0002 sketch promoted; discipline
-      untouched).
+      untouched). Shipped 2026-09-12: the mechanism is exactly the
+      `#[kv_storage]` derive (one declared executor + prefix per
+      application) + `StorageHost`'s concatenating `hosted_key` — there
+      is no separate multi-tenant code path. `multi_tenant_test.rs`
+      covers one shared engine / two hosts (disjoint prefix segments,
+      identical sender keys), internal tenant sharding as a plain key
+      field, and the Table write path landing inside the tenant's
+      segment.
 - [ ] Key-segment composition primitive: a complete key encoding usable
       as a declared segment inside another key ("multiple keys composing
       into one whole, which then composes with other keys"). Current
