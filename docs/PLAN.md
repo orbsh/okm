@@ -312,13 +312,20 @@ and the Phase 6 baseline premise is now real, not planned.
       plain byte-level engine execution → fill back scan bytes). Receiver
       holds no OKM semantics; storing garbage is indistinguishable from
       storing data. Same annotation discipline as `#[kv_subscribe]`.
-- [ ] ns declaration moves to the Table side: `#[kv_ns(...)]` read by
+- [x] ns declaration moves to the Table side: `#[kv_ns(...)]` read by
       RowEncode/EdgeEncode (declared, never hand-filled at `Table::new` —
       the ns parameter disappears from the constructor); KeyEncode's
-      currently-unused `kv_ns` attribute registration removed. Single
-      ns per row type (one OKM = one domain model); the engine choice
-      stays per-assembly-point (local/remote freely mixable — remote is
-      just another KvEngine impl).
+      `kv_ns` attribute registration removed. Declared on the ROW struct
+      (the row is the table's declaration point: `#[kv_ref]` pins the
+      key type, so the row determines `Table<S, K, R>` entirely) and
+      emitted as `Row::NS_PREFIX` (`&'static [u8]`, big-endian `[ns 2B]`);
+      all hooks (`index_entries`, `__okm_apply_reduces`, `entry_key`,
+      `entry_prefix`, `scan_index`) take the prefix slice, not a u16. A
+      key type carries no ns: the same key shape may serve several rows /
+      tables, each with its own declared ns. Single ns per row type (one
+      OKM = one domain model); the engine choice stays
+      per-assembly-point (local/remote freely mixable — remote is just
+      another KvEngine impl).
 - [ ] Dynamic codec (Python first, then Steel): schema-driven
       encoder/decoder/scan built from `describe()`/`json_schema()` exports —
       in-process use for embedded-language Actors. Permanent capability
@@ -332,3 +339,14 @@ and the Phase 6 baseline premise is now real, not planned.
       pure concatenation `[receiver prefix][ns 2B][sender payload]`,
       ns opaque to the receiver (ADR-0002 sketch promoted; discipline
       untouched).
+- [ ] Key-segment composition primitive: a complete key encoding usable
+      as a declared segment inside another key ("multiple keys composing
+      into one whole, which then composes with other keys"). Current
+      `KeyEncode` is flat named fields — `encode_prefix_named` slices by
+      field name only; there is no way to embed key A's full encoding as
+      one fixed-width-derivable segment of key B. Needs: segment width
+      composition (`KEY_LEN` of the inner key contributes to the outer
+      key's field-width table), prefix slicing through the nested
+      boundary, and a decode rule (inner decode consumes exactly
+      inner `KEY_LEN` bytes). Variable-length inner fields are out of
+      scope unless the inner key guarantees fixed width.

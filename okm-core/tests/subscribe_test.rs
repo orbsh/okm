@@ -39,7 +39,7 @@ fn subscribe_round_trip() {
     });
     assert!(okm_subscribe::CHANNEL_ROWEVENT.has_sink());
 
-    let mut t: Table<MockStore, AccountKey, Account> = Table::new(MockStore::default(), 21);
+    let mut t: Table<MockStore, AccountKey, Account> = Table::new(MockStore::default());
     t.put(&AccountKey { id: 1 }, &Account { balance: 10 });
     t.put(&AccountKey { id: 2 }, &Account { balance: 20 });
     t.delete_by_pkey(&AccountKey { id: 1 });
@@ -47,7 +47,7 @@ fn subscribe_round_trip() {
     // Epoch: the table's monotonic write-batch counter — 1, 2, 3 across
     // the three writes, giving consumers an exact same-table boundary.
     // Fan-in: the second row type lands in the same enum (tag 100+).
-    let mut a: Table<MockStore, AuditKey, Audit> = Table::new(MockStore::default(), 22);
+    let mut a: Table<MockStore, AuditKey, Audit> = Table::new(MockStore::default());
     a.put(&AuditKey { id: 7 }, &Audit { note: "hi".into() });
     a.delete_by_pkey(&AuditKey { id: 7 });
 
@@ -69,7 +69,7 @@ fn no_sink_drops_silently() {
     // panic — the zero-cost default. A write round-trip works regardless
     // of event delivery. (Ghost rides its own `ShadowEvents` enum, so
     // this test cannot race the RowEvent consumers above.)
-    let mut t: Table<MockStore, GhostKey, Ghost> = Table::new(MockStore::default(), 23);
+    let mut t: Table<MockStore, GhostKey, Ghost> = Table::new(MockStore::default());
     t.put(&GhostKey { id: 3 }, &Ghost { v: 30 });
     assert!(t.get(&GhostKey { id: 3 }).is_some());
 }

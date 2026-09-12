@@ -12,7 +12,6 @@
 use okm_core::{KeyEncode, ReduceLogic, ReduceCodec, RowEncode};
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
-#[kv_ns(21)]
 pub struct AccountKey {
     pub id: u64,
 }
@@ -21,12 +20,12 @@ pub struct AccountKey {
 #[derive(RowEncode, Clone, PartialEq, Debug)]
 #[kv_ref(AccountKey)]
 #[kv_subscribe]
+#[kv_ns(21)]
 pub struct Account {
     pub balance: u64,
 }
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
-#[kv_ns(22)]
 pub struct AuditKey {
     pub id: u64,
 }
@@ -35,12 +34,12 @@ pub struct AuditKey {
 #[derive(RowEncode, Clone, PartialEq, Debug)]
 #[kv_ref(AuditKey)]
 #[kv_subscribe]
+#[kv_ns(22)]
 pub struct Audit {
     pub note: String,
 }
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
-#[kv_ns(23)]
 pub struct GhostKey {
     pub id: u64,
 }
@@ -54,12 +53,12 @@ pub struct GhostKey {
 #[kv_ref(GhostKey)]
 #[kv_event_enum(ShadowEvents)]
 #[kv_subscribe]
+#[kv_ns(23)]
 pub struct Ghost {
     pub v: u64,
 }
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
-#[kv_ns(31)]
 pub struct CounterKey {
     pub id: u64,
 }
@@ -72,6 +71,7 @@ pub struct CounterKey {
 #[kv_index(by_bucket { fields(bucket) })]
 #[kv_reduce(CounterTotals { group(bucket) })]
 #[kv_subscribe]
+#[kv_ns(31)]
 pub struct Counter {
     pub bucket: u32,
     pub hits: u64,

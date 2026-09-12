@@ -7,7 +7,6 @@ use okm_core::{EdgeEncode, EdgeTable, KeyEncode, KvEdge, MockStore};
 
 /// UserKey：org 内的用户。org_id 是"组织前缀"，user_id 才是身份终点
 #[derive(KeyEncode, Clone, PartialEq, Debug)]
-#[kv_ns(1)]
 pub struct UserKey {
     pub org_id: u32,
     pub user_id: u64,
@@ -15,7 +14,6 @@ pub struct UserKey {
 
 /// SessionKey：org 内的会话
 #[derive(KeyEncode, Clone, PartialEq, Debug)]
-#[kv_ns(2)]
 pub struct SessionKey {
     pub org_id: u32,
     pub session_id: u64,

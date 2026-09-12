@@ -577,6 +577,9 @@ pub(crate) fn parse_event_enum_attr(attr: &syn::Attribute) -> String {
 pub(crate) struct RowSchema {
     pub row_name: syn::Ident,
     pub key_ty: syn::Type,
+    /// `#[kv_ns(N)]` — the row's table namespace. None = not declared
+    /// (layout-only row; table-less usage keeps an empty prefix).
+    pub ns: Option<u16>,
     pub layout_version: u8,
     /// Payload fields, declaration order. The TLV tag = vec index, so
     /// order is a wire contract here.
@@ -607,6 +610,25 @@ pub(crate) fn parse_schema(input: DeriveInput) -> RowSchema {
             }
         })
         .expect("missing #[kv_ref(KeyType)]");
+
+    // #[kv_ns(N)] — the table's namespace segment, declared on the row
+    // (the row is the table's declaration point: #[kv_ref] pins the key
+    // type, so the row determines Table<S, K, R> entirely). Absent = None.
+    let ns: Option<u16> = input
+        .attrs
+        .iter()
+        .find_map(|a| {
+            if a.path().is_ident("kv_ns") {
+                Some(
+                    a.parse_args::<syn::LitInt>()
+                        .expect("kv_ns format: #[kv_ns(N)]")
+                        .base10_parse()
+                        .expect("kv_ns must be a u16 literal"),
+                )
+            } else {
+                None
+            }
+        });
 
     let named = match &input.data {
         Data::Struct(s) => match &s.fields {
@@ -722,6 +744,7 @@ pub(crate) fn parse_schema(input: DeriveInput) -> RowSchema {
     RowSchema {
         row_name,
         key_ty,
+        ns,
         layout_version,
         fields: fs,
         indexes: idx_decls,

@@ -140,7 +140,7 @@ pub trait Row: Sized + Clone {
     /// put and delete are both row-shaped. Generated; lets Table cover
     /// every declared index without a runtime registry (the declaration IS
     /// the registry).
-    fn index_entries(key: &Self::Key, row: &Self, ns: u16) -> Vec<(Vec<u8>, Vec<u8>)>;
+    fn index_entries(key: &Self::Key, row: &Self, ns: &[u8]) -> Vec<(Vec<u8>, Vec<u8>)>;
 
     /// Cross-row reduce hook (see [`crate::reduce`]): apply this
     /// row to every declared `#[kv_reduce]` group. Default no-op —
@@ -149,7 +149,7 @@ pub trait Row: Sized + Clone {
         _store: &mut S,
         _key: &Self::Key,
         _row: &Self,
-        _ns: u16,
+        _ns: &[u8],
         _add: bool,
     ) {
     }
@@ -170,9 +170,20 @@ pub trait Row: Sized + Clone {
     /// Assembly-point constructor: builds the row's `Table` binding this
     /// row type to its `#[kv_ref]` key. The key type never appears at the
     /// call site — it is already pinned by `Self::Key`.
-    fn table<S: KvEngine>(store: S, ns: u16) -> crate::table::Table<S, Self::Key, Self> {
-        crate::table::Table::new(store, ns)
+    fn table<S: KvEngine>(store: S) -> crate::table::Table<S, Self::Key, Self> {
+        crate::table::Table::new(store)
     }
+
+    /// The namespace prefix this row's table lives under, encoded and
+    /// ready to prepend (`[ns 2B]` big-endian). Declared via `#[kv_ns(N)]`
+    /// on the ROW struct — the row is the table's declaration point (its
+    /// `#[kv_ref]` pins the key type, so `Table<S, K, R>` is fully
+    /// determined by the row), never hand-filled at the assembly site
+    /// (ADR-0002: the ns dictionary is code). A key type carries no ns of
+    /// its own: the same key shape may legitimately serve several rows /
+    /// tables, each with its own declared ns. Default = empty (no ns
+    /// declared — a layout-only row that never materializes a table).
+    const NS_PREFIX: &'static [u8] = &[];
 }
 
 /// One access method over a table. Implemented by generated marker
@@ -239,11 +250,11 @@ pub trait KvIndex {
     /// the 1-byte slot discriminates access methods *within* the table's
     /// ns segment; the table's ns allocation is untouched by how many
     /// indexes exist (ADR-0005).
-    fn entry_key(table_ns: u16, key: &Self::Key, row: &Self::Row) -> Vec<u8> {
+    fn entry_key(table_ns: &[u8], key: &Self::Key, row: &Self::Row) -> Vec<u8> {
         let fb = Self::fields_bytes(key, row);
         let kp = Self::key_prefix_bytes(key);
-        let mut buf = Vec::with_capacity(3 + fb.len() + kp.len());
-        buf.extend_from_slice(&table_ns.to_be_bytes());
+        let mut buf = Vec::with_capacity(table_ns.len() + 1 + fb.len() + kp.len());
+        buf.extend_from_slice(table_ns);
         buf.push(Self::SLOT);
         buf.extend_from_slice(&fb);
         buf.extend_from_slice(&kp);
@@ -265,7 +276,7 @@ pub trait KvIndex {
     /// multi-value function indexes yield one pair per produced value —
     /// the write side (`Table::put`/`delete` via `index_entries`) just
     /// iterates. Each entry shares the same includes value.
-    fn entry_pairs(table_ns: u16, key: &Self::Key, row: &Self::Row) -> Vec<(Vec<u8>, Vec<u8>)> {
+    fn entry_pairs(table_ns: &[u8], key: &Self::Key, row: &Self::Row) -> Vec<(Vec<u8>, Vec<u8>)> {
         vec![(Self::entry_key(table_ns, key, row), Self::entry_value(key, row))]
     }
 
@@ -273,9 +284,9 @@ pub trait KvIndex {
     /// header + the caller-side encoding of the leading index fields
     /// (e.g. `7u32.to_be_bytes()` for a u32 field; empty slice = whole
     /// index). Must not exceed the index-field segment width.
-    fn entry_prefix(table_ns: u16, encoded: &[u8]) -> Vec<u8> {
-        let mut buf = Vec::with_capacity(3 + encoded.len());
-        buf.extend_from_slice(&table_ns.to_be_bytes());
+    fn entry_prefix(table_ns: &[u8], encoded: &[u8]) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(table_ns.len() + 1 + encoded.len());
+        buf.extend_from_slice(table_ns);
         buf.push(Self::SLOT);
         buf.extend_from_slice(encoded);
         buf
@@ -289,7 +300,7 @@ pub trait KvIndex {
 /// are zero-filled, use only the prefix fields).
 pub fn scan_index<S: KvEngine, I: KvIndex>(
     store: &S,
-    table_ns: u16,
+    table_ns: &[u8],
     encoded: &[u8],
 ) -> Vec<PrefixKey<I::Key>> {
     let p = I::entry_prefix(table_ns, encoded);

@@ -7,7 +7,6 @@ use okm_core::{
 };
 
 #[derive(KeyEncode, Clone, PartialEq, Debug)]
-#[kv_ns(7)]
 pub struct WKey {
     pub org: u32,
     pub id: u64,
@@ -29,6 +28,7 @@ impl EnumTag for State {
 
 #[derive(RowEncode, Clone, PartialEq, Debug)]
 #[kv_ref(WKey)]
+#[kv_ns(7)]
 pub struct WRow {
     pub hits: VarInt<u64>,
     pub ratio: Quant<3>,
@@ -102,7 +102,7 @@ fn field_desc_reports_wrapper_kinds() {
 
 #[test]
 fn table_round_trip_with_wrappers() {
-    let mut t: Table<MockStore, WKey, WRow> = Table::new(MockStore::default(), 7);
+    let mut t: Table<MockStore, WKey, WRow> = Table::new(MockStore::default());
     for i in 0..5u64 {
         t.put(&WKey { org: 1, id: i }, &sample(i));
     }
@@ -124,13 +124,13 @@ mod parquet {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("wrappers.parquet");
 
-        let mut t1: Table<MockStore, WKey, WRow> = Table::new(MockStore::default(), 7);
+        let mut t1: Table<MockStore, WKey, WRow> = Table::new(MockStore::default());
         for i in 0..4u64 {
             t1.put(&WKey { org: 2, id: i }, &sample(i));
         }
         parquet_io::export_parquet(&t1, &path).unwrap();
 
-        let mut t2: Table<MockStore, WKey, WRow> = Table::new(MockStore::default(), 7);
+        let mut t2: Table<MockStore, WKey, WRow> = Table::new(MockStore::default());
         let n = parquet_io::import_parquet(&mut t2, &path).unwrap();
         assert_eq!(n, 4);
         for i in 0..4u64 {
@@ -140,7 +140,7 @@ mod parquet {
 
     #[test]
     fn record_batch_columns_are_logical_types() {
-        let mut t: Table<MockStore, WKey, WRow> = Table::new(MockStore::default(), 7);
+        let mut t: Table<MockStore, WKey, WRow> = Table::new(MockStore::default());
         for i in 0..3u64 {
             t.put(&WKey { org: 3, id: i }, &sample(i));
         }

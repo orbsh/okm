@@ -11,7 +11,7 @@
 索引条目  [ table_ns 2B BE ][ slot 1B ][ 索引字段 ][ 主键前缀 ]  value = includes TLV
 ```
 
-判别符 = 2 字节命名空间 + 1 字节 slot：ns 段划整张表，slot 字节在**表段内部**区分访问方法。`#[kv_ns]` 回归"一张表一个号"的最清洁语义——表的 ns 分配与索引数量彻底无关（ADR-0005）。
+判别符 = 2 字节命名空间 + 1 字节 slot：ns 段划整张表，slot 字节在**表段内部**区分访问方法。全层级 key 布局（ns 头编码、方向位 niche、table/edge 共用编号空间）见[key 布局](key-layout.zh-CN.md)；本篇只展开 slot 这一级。`#[kv_ns]` 回归"一张表一个号"的最清洁语义——表的 ns 分配与索引数量彻底无关（ADR-0005）。
 
 ## slot 分配
 

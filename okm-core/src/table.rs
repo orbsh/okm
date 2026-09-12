@@ -12,9 +12,6 @@ use crate::key::{KeyEncode, PrefixKey};
 
 pub struct Table<S, K: KeyEncode, R: Row<Key = K>> {
     store: S,
-    /// Raw ns segment (no direction bit) — comes from the Table's
-    /// `#[kv_ns]` declaration on the key struct.
-    ns: u16,
     /// Monotonic write-batch counter (in-process only, never persisted):
     /// bumped on every put/delete, stamped on emitted subscribe events so
     /// consumers can fold to exact same-table batch boundaries. Resets on
@@ -24,13 +21,14 @@ pub struct Table<S, K: KeyEncode, R: Row<Key = K>> {
 }
 
 impl<S: KvEngine, K: KeyEncode, R: Row<Key = K>> Table<S, K, R> {
-    /// ns here is the table's segment ID; the assembly site passes it
-    /// explicitly (it is declared once on the key struct's `#[kv_ns]` and
-    /// threaded through by the user's binding code).
-    pub fn new(store: S, ns: u16) -> Self {
+    /// The ns prefix is NOT a constructor argument: it is declared once
+    /// on the key struct (`#[kv_ns]`) and read at compile time via
+    /// `R::NS_PREFIX` (ADR-0002: the ns dictionary is code; ADR-0010:
+    /// engine choice is per-assembly-point, ns is not). The assembly
+    /// site picks the engine; it never restates the ns.
+    pub fn new(store: S) -> Self {
         Self {
             store,
-            ns,
             epoch: 0,
             _marker: std::marker::PhantomData,
         }
@@ -46,7 +44,7 @@ impl<S: KvEngine, K: KeyEncode, R: Row<Key = K>> Table<S, K, R> {
     /// ADR-0005.
     pub fn primary_key(&self, key: &K) -> Vec<u8> {
         let mut buf = Vec::with_capacity(3 + K::KEY_LEN);
-        buf.extend_from_slice(&self.ns.to_be_bytes());
+        buf.extend_from_slice(R::NS_PREFIX);
         buf.push(crate::index::PRIMARY_SLOT);
         buf.extend_from_slice(&key.encode());
         buf
@@ -76,16 +74,16 @@ impl<S: KvEngine, K: KeyEncode, R: Row<Key = K>> Table<S, K, R> {
             .get(&pkey)
             .map(|v| R::decode_payload(&v));
         if let Some(old) = &prev {
-            R::__okm_apply_reduces(&mut self.store, key, old, self.ns, false);
+            R::__okm_apply_reduces(&mut self.store, key, old, R::NS_PREFIX, false);
         }
         self.store.put(pkey, row.encode_payload());
-        for (ek, ev) in R::index_entries(key, row, self.ns) {
+        for (ek, ev) in R::index_entries(key, row, R::NS_PREFIX) {
             self.store.put(ek, ev);
         }
         // Cross-row reduces: fold this row into each declared group.
         // Same store instance, so the RMW shares the engine's atomicity
         // boundary with the row + index writes.
-        R::__okm_apply_reduces(&mut self.store, key, row, self.ns, true);
+        R::__okm_apply_reduces(&mut self.store, key, row, R::NS_PREFIX, true);
         // Subscribe: write-path event into the declared channel
         // (best-effort try_send — full channel drops, never blocks).
         // The event carries the table's post-write epoch (monotonic
@@ -133,14 +131,14 @@ impl<S: KvEngine, K: KeyEncode, R: Row<Key = K>> Table<S, K, R> {
     /// folds itself.
     pub fn save_into(&self, batch: &mut impl crate::engine::KvBatch, key: &K, row: &R) {
         batch.put(self.primary_key(key), row.encode_payload());
-        for (ek, ev) in R::index_entries(key, row, self.ns) {
+        for (ek, ev) in R::index_entries(key, row, R::NS_PREFIX) {
             batch.put(ek, ev);
         }
     }
 
     /// Index entry key for access method `I` derived from `key` + `row`.
     pub fn index_key<I: KvIndex<Key = K, Row = R>>(&self, key: &K, row: &R) -> Vec<u8> {
-        I::entry_key(self.ns, key, row)
+        I::entry_key(R::NS_PREFIX, key, row)
     }
 
     /// Delete a row: primary key + all declared index entries, all
@@ -158,12 +156,12 @@ impl<S: KvEngine, K: KeyEncode, R: Row<Key = K>> Table<S, K, R> {
     /// read.
     pub fn delete(&mut self, key: &K, row: &R) {
         self.store.del(&self.primary_key(key));
-        for (ek, _) in R::index_entries(key, row, self.ns) {
+        for (ek, _) in R::index_entries(key, row, R::NS_PREFIX) {
             self.store.del(&ek);
         }
         // Unfold from every declared reduce group (single call site —
         // delete_by_pkey reaches here after its internal get).
-        R::__okm_apply_reduces(&mut self.store, key, row, self.ns, false);
+        R::__okm_apply_reduces(&mut self.store, key, row, R::NS_PREFIX, false);
         // Subscribe: deletion event (same best-effort contract as put),
         // stamped with the table's post-write epoch.
         self.epoch += 1;
@@ -207,7 +205,7 @@ impl<S: KvEngine, K: KeyEncode, R: Row<Key = K>> Table<S, K, R> {
     /// (`PrefixKey.taken < KEY_LEN`) — use the trustworthy prefix fields
     /// to continue scanning the main table.
     pub fn scan<I: KvIndex<Key = K, Row = R>>(&self, encoded: &[u8]) -> Vec<(PrefixKey<K>, Option<R>)> {
-        crate::scan_index::<S, I>(&self.store, self.ns, encoded)
+        crate::scan_index::<S, I>(&self.store, R::NS_PREFIX, encoded)
             .into_iter()
             .map(|pk| {
                 let row = if pk.taken == K::KEY_LEN {
@@ -228,7 +226,7 @@ impl<S: KvEngine, K: KeyEncode, R: Row<Key = K>> Table<S, K, R> {
         &self,
         encoded: &[u8],
     ) -> Vec<(PrefixKey<K>, Vec<u8>)> {
-        let p = I::entry_prefix(self.ns, encoded);
+        let p = I::entry_prefix(R::NS_PREFIX, encoded);
         let taken = I::key_prefix_width();
         let kl = K::KEY_LEN;
         self.store
@@ -256,7 +254,7 @@ impl<S: KvEngine, K: KeyEncode, R: Row<Key = K>> Table<S, K, R> {
     /// are derived state excluded from export (rebuilt deterministically
     /// on import via put).
     pub fn scan_rows_raw(&self) -> Vec<(Vec<u8>, Vec<u8>)> {
-        let mut prefix = self.ns.to_be_bytes().to_vec();
+        let mut prefix = R::NS_PREFIX.to_vec();
         prefix.push(crate::index::PRIMARY_SLOT);
         self.store
             .scan_suffix(&prefix)
@@ -272,7 +270,7 @@ impl<S: KvEngine, K: KeyEncode, R: Row<Key = K>> Table<S, K, R> {
     /// Full-ns scan of primary keys (slot-0 entries only — the same
     /// slot-0 discipline as `scan_rows_raw`; index entries are slots 1+).
     pub fn scan_keys(&self) -> Vec<K> {
-        let mut p = self.ns.to_be_bytes().to_vec();
+        let mut p = R::NS_PREFIX.to_vec();
         p.push(crate::index::PRIMARY_SLOT);
         self.store
             .scan_suffix(&p)
