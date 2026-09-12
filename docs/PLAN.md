@@ -362,14 +362,17 @@ and the Phase 6 baseline premise is now real, not planned.
       identical sender keys), internal tenant sharding as a plain key
       field, and the Table write path landing inside the tenant's
       segment.
-- [ ] Key-segment composition primitive: a complete key encoding usable
-      as a declared segment inside another key ("multiple keys composing
-      into one whole, which then composes with other keys"). Current
-      `KeyEncode` is flat named fields — `encode_prefix_named` slices by
-      field name only; there is no way to embed key A's full encoding as
-      one fixed-width-derivable segment of key B. Needs: segment width
-      composition (`KEY_LEN` of the inner key contributes to the outer
-      key's field-width table), prefix slicing through the nested
-      boundary, and a decode rule (inner decode consumes exactly
-      inner `KEY_LEN` bytes). Variable-length inner fields are out of
-      scope unless the inner key guarantees fixed width.
+- [~] Key-segment composition primitive — REJECTED (2026-09-12, evaluated
+      and dropped). The scenario was hypothetical: it existed to justify
+      moving `#[kv_ns]` off `KeyEncode` (a key type may legitimately serve
+      several tables). With ns now on the row, that justification is
+      moot; a composition need, when it actually appears, is trivially
+      served by redeclaring the fields (they are 2-3 plain fixed-width
+      fields — manual re-encoding is ~zero cost and keeps the flat
+      named-field DDL). A `KeySegment` trait + derive recursion was
+      prototyped to working width-composition, but dropped: real use
+      cases are rare, the trait layer + atomic-segment slicing rules add
+      machinery that would sit idle, and the flat key encoding is the
+      discipline worth keeping. If a genuine repeated need shows up, the
+      prototype design (KeySegment: WIDTH/DESC/put/take, blanket impl
+      over KeyEncode) is the starting point.
