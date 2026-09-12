@@ -31,7 +31,7 @@ Status: Accepted. **更新 2026-09-12，改名落地**：trait 现在直接命�
 
 ### 2. 远端发送已编码的字节
 
-OKM 的写路径本来就是双写（一次 batch 内主表 + 索引条目）。线帧就是那个 batch：`commit_batch` 的 `MemBatch` op 列表序列化（postcard）—— `[op][batch bytes]`。全程无语义解析：
+OKM 的写路径本来就是双写（一次 batch 内主表 + 索引条目）。线帧就是那个 batch：`commit_batch` 的 `MemBatch` op 列表，手工计数长度成帧—— `[op][batch bytes]`。全程无语义解析：
 
 - **发送方**（如 Krystallizer）：key/value 在 trait 边界处已编码；帧只包住 op 边界。它对接收方的前缀一无所知。
 - **接收方**：前置自己声明的前缀，按普通字节级 KV 引擎执行（一个 batch 一次真实 WAL commit），扫描结果按原始字节回填。它不解析 key，不认识 TLV 帧，不知道 OKM 存在。存垃圾与存数据不可区分——by design。

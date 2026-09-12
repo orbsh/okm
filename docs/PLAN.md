@@ -301,19 +301,24 @@ and the Phase 6 baseline premise is now real, not planned.
       encoded bytes (put/get/del/scan_suffix/batch/commit_batch — no
       method changes, no alias layer). Four backend shapes:
       mock / fjall / slatedb / remote; backend struct names unchanged.
-- [ ] Remote backend (sender side): impl VirtualStorage; write = MemBatch op
-      list serialized (postcard) into a frame `[op][batch bytes]`;
-      fire-and-forget (one frame = one receiver WAL commit; channel order
-      = write order). Read = request frame + response — correlation is
-      the consumer's choice inside the trait impl (a TCP + postcard
-      client is the reference example, not the contract). Transport is
-      backend-internal (in-process channel / UDS / existing WS
-      connection) — fixed at assembly, no declared endpoint.
-- [ ] `#[kv_storage]` derive: empty struct + prefix declaration → NO data
-      methods, exactly one exec/receive method (prepend declared prefix →
-      plain byte-level engine execution → fill back scan bytes). Receiver
-      holds no OKM semantics; storing garbage is indistinguishable from
-      storing data. Same annotation discipline as `#[kv_subscribe]`.
+- [x] Remote backend (sender side): impl VirtualStorage; write = MemBatch
+      op list hand-framed with counted lengths into a frame
+      `[op][batch bytes]` — no serde/postcard, the frame is counted
+      fields, not a protocol (ADR-0010 §2 frame layout; codec lives in
+      the zero-dependency `okm-wire` crate). Fire-and-forget (one frame =
+      one receiver WAL commit; channel order = write order). Read =
+      request frame + response — correlation is the consumer's choice
+      inside the trait impl (an mpsc round trip is the reference example,
+      not the contract). Transport is backend-internal (in-process
+      channel / UDS / existing WS connection) — fixed at assembly, no
+      declared endpoint.
+- [x] `#[kv_storage]` derive: empty struct + prefix declaration (`#[kv_ns
+      (N)]`) → NO data methods, exactly one execution surface (`serve`
+      engine → `VirtualHandle`; internally the `StorageHost` reference:
+      prepend declared prefix → plain byte-level engine execution →
+      fill back scan bytes). Receiver holds no OKM semantics; storing
+      garbage is indistinguishable from storing data. Same annotation
+      discipline as `#[kv_subscribe]`.
 - [x] ns declaration moves to the Table side: `#[kv_ns(...)]` read by
       RowEncode/EdgeEncode (declared, never hand-filled at `Table::new` —
       the ns parameter disappears from the constructor); KeyEncode's
