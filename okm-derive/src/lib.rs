@@ -14,6 +14,7 @@ mod edge_encode;
 mod key_encode;
 mod row_encode;
 mod schema;
+mod storage_encode;
 
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TS2;
@@ -56,5 +57,12 @@ pub fn derive_row_encode(input: TokenStream) -> TokenStream {
 pub fn derive_edge(input: TokenStream) -> TokenStream {
     let out = edge_encode::derive(input.clone());
     dump("EdgeEncode", input, &out.clone().into());
+    out
+}
+
+#[proc_macro_derive(StorageEncode, attributes(kv_ns))]
+pub fn derive_storage(input: TokenStream) -> TokenStream {
+    let out = storage_encode::derive(input.clone());
+    dump("StorageEncode", input, &out.clone().into());
     out
 }

@@ -25,7 +25,7 @@
 //! dictionary, assembly point, value-side roadmap) and the project README
 //! for a full walkthrough.
 
-pub use okm_derive::{EdgeEncode, KeyEncode, RowEncode};
+pub use okm_derive::{EdgeEncode, KeyEncode, RowEncode, StorageEncode};
 
 pub use reverse::{Reversible, Reverse};
 pub use wrappers::{Enum, EnumTag, Offset, Quant, VarInt, VarIntEnc, offset_decode, offset_encode};
@@ -33,6 +33,7 @@ pub use wrappers::{Enum, EnumTag, Offset, Quant, VarInt, VarIntEnc, offset_decod
 pub mod reduce;
 pub mod collection;
 pub mod edge;
+pub mod remote;
 pub mod storage;
 pub mod field;
 pub mod index;
@@ -53,7 +54,9 @@ pub mod tooling;
 pub use reduce::{reduce_get, scan_reduces, ReduceCodec, Reduce, ReduceLogic};
 pub use collection::EdgeTable;
 pub use edge::{KvEdge, head_bytes};
-pub use storage::{VirtualStorage, MockStore};
+pub use storage::{VirtualStorage, MockStore, KvBatch, MemBatch};
+pub use remote::{RemoteStore, StorageHost, VirtualHandle};
+pub use okm_wire::{ReadFrame, ReadResponse, WriteFrame};
 pub use field::{FieldDesc, FieldType};
 pub use index::{IndexFuncResult, IndexFuncValues, KvIndex, PRIMARY_SLOT, Row, scan_index};
 pub use key::{KeyEncode, PrefixKey};
