@@ -36,6 +36,15 @@ fn kv_storage_derive_end_to_end() {
     let mut t: Table<RemoteStore, ItemKey, Item> = Table::new(remote);
 
     t.put(&ItemKey { id: 1 }, &Item { kind: 7 });
+
+    // Fire-and-forget write: poll until the round trip sees the row.
+    for _ in 0..200 {
+        if t.get(&ItemKey { id: 1 }).is_some() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+
     let row = t.get(&ItemKey { id: 1 }).expect("row round-tripped");
     assert_eq!(row.kind, 7);
 
