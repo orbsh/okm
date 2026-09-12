@@ -1,7 +1,12 @@
 # ADR-0002: Namespace dictionary lives in code, never in KV
 
 Date: 2026-09-06
-Status: Accepted
+Status: Accepted. **Update 2026-09-12**: `#[kv_ns]` now declares on the
+row struct (emitted as `Row::NS_PREFIX`, `&'static [u8]` big-endian), not
+the key struct — the row is the table's declaration point, and a key type
+carries no ns so one key shape can serve several tables, each with its own
+ns number. The dictionary discipline below (compile-time, append-only,
+one number per table, no multi-level declaration) is untouched.
 
 ## Context
 
