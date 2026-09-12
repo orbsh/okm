@@ -3,7 +3,7 @@
 //! commit makes them live or die together. Covers both orderings (nothing
 //! written before commit; everything written after).
 
-use okm_core::{EdgeEncode, EdgeTable, KeyEncode, KvEngine, MockStore, RowEncode, Table};
+use okm_core::{EdgeEncode, EdgeTable, KeyEncode, VirtualStorage, MockStore, RowEncode, Table};
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
 pub struct PostKey {

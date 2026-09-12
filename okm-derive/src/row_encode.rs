@@ -380,7 +380,7 @@ fn emit_reduces(schema: &RowSchema) -> (TS2, TS2) {
         return (quote! {}, quote! {});
     }
     let hook = quote! {
-        fn __okm_apply_reduces<S: ::okm_core::KvEngine>(
+        fn __okm_apply_reduces<S: ::okm_core::VirtualStorage>(
             _store: &mut S,
             _key: &Self::Key,
             _row: &Self,

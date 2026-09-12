@@ -19,7 +19,7 @@ use arrow::array::RecordBatch;
 use arrow::buffer::Buffer;
 use arrow::datatypes::{DataType, Field as ArrowField, Schema};
 
-use crate::engine::KvEngine;
+use crate::storage::VirtualStorage;
 use crate::field::{FieldDesc, FieldType};
 use crate::index::Row;
 use crate::key::KeyEncode;
@@ -301,7 +301,7 @@ fn swap_be(src: &[u8], off: usize, width: usize, ty: FieldType) -> Vec<u8> {
     }
 }
 
-impl<S: KvEngine, K: KeyEncode, R: Row<Key = K>> Table<S, K, R> {
+impl<S: VirtualStorage, K: KeyEncode, R: Row<Key = K>> Table<S, K, R> {
     /// Export all rows as one Arrow `RecordBatch` (ADR-0007 Phase 1).
     ///
     /// Columns: key fields (declaration order) then payload fields. All

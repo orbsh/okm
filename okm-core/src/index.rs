@@ -19,7 +19,7 @@
 //! inside one item (macro-side counter, never reused — hole discipline
 //! same as ns IDs, ADR-0005).
 
-use crate::engine::KvEngine;
+use crate::storage::VirtualStorage;
 use crate::key::{KeyEncode, PrefixKey};
 
 /// Slot reserved for a table's primary keys inside its ns segment.
@@ -145,7 +145,7 @@ pub trait Row: Sized + Clone {
     /// Cross-row reduce hook (see [`crate::reduce`]): apply this
     /// row to every declared `#[kv_reduce]` group. Default no-op —
     /// only rows with reduce declarations override it.
-    fn __okm_apply_reduces<S: KvEngine>(
+    fn __okm_apply_reduces<S: VirtualStorage>(
         _store: &mut S,
         _key: &Self::Key,
         _row: &Self,
@@ -170,7 +170,7 @@ pub trait Row: Sized + Clone {
     /// Assembly-point constructor: builds the row's `Table` binding this
     /// row type to its `#[kv_ref]` key. The key type never appears at the
     /// call site — it is already pinned by `Self::Key`.
-    fn table<S: KvEngine>(store: S) -> crate::table::Table<S, Self::Key, Self> {
+    fn table<S: VirtualStorage>(store: S) -> crate::table::Table<S, Self::Key, Self> {
         crate::table::Table::new(store)
     }
 
@@ -298,7 +298,7 @@ pub trait KvIndex {
 /// recovered from the last `key_prefix_width()` bytes — full key when
 /// `KEY_PREFIX` is empty, truncated identity otherwise (trailing fields
 /// are zero-filled, use only the prefix fields).
-pub fn scan_index<S: KvEngine, I: KvIndex>(
+pub fn scan_index<S: VirtualStorage, I: KvIndex>(
     store: &S,
     table_ns: &[u8],
     encoded: &[u8],

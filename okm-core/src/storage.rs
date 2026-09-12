@@ -1,4 +1,4 @@
-//! Engine abstraction: sync [`KvEngine`] trait + [`MockStore`] reference
+//! Storage abstraction: sync [`VirtualStorage`] trait + [`MockStore`] reference
 //! implementation.
 
 use std::collections::BTreeMap;
@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 /// Minimal KV engine interface (prefix scan returns the "suffix" of each key).
 /// The `fjall` / `slatedb` features each provide an implementation; tests
 /// use [`MockStore`].
-pub trait KvEngine {
+pub trait VirtualStorage {
     fn put(&mut self, key: Vec<u8>, value: Vec<u8>);
     fn get(&self, key: &[u8]) -> Option<Vec<u8>>;
     fn del(&mut self, key: &[u8]);
@@ -64,7 +64,7 @@ pub trait KvBatch {
 
 /// The default batch carrier: an ordered op list. Commit is a no-op on
 /// the carrier itself — the caller replays via the engine trait's own
-/// put/del; see [`KvEngine::batch`].
+/// put/del; see [`VirtualStorage::batch`].
 #[derive(Default)]
 pub struct MemBatch {
     pub ops: Vec<(Vec<u8>, Option<Vec<u8>>)>,
@@ -89,7 +89,7 @@ pub struct MockStore {
     pub map: BTreeMap<Vec<u8>, Vec<u8>>,
 }
 
-impl KvEngine for MockStore {
+impl VirtualStorage for MockStore {
     fn put(&mut self, key: Vec<u8>, value: Vec<u8>) {
         self.map.insert(key, value);
     }

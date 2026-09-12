@@ -98,7 +98,7 @@ okm-derive/        过程宏 crate：KeyEncode、RowEncode、EdgeEncode（零 I/
 okm/src/key.rs     KeyEncode trait + PrefixKey
 okm/src/index.rs   Row + KvIndex trait + 索引扫描辅助
 okm/src/edge.rs    KvEdge trait + 方向位头部
-okm/src/engine.rs  KvEngine trait + MockStore
+okm/src/storage.rs  VirtualStorage trait + MockStore
 okm/src/table.rs       Table<S, K, R> 行装配点
 okm/src/collection.rs  EdgeTable<S, E> 边装配点
 okm/src/fjall_backend.rs    fjall 适配（feature "fjall"）
