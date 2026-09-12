@@ -1,7 +1,7 @@
 # ADR-0006: Row/Node model — one macro declares the row; ValueEncode absorbed
 
 Date: 2026-09-07
-Status: Accepted (design; implementation pending)
+Status: Implemented
 
 ## Context
 

@@ -315,6 +315,9 @@ and the Phase 6 baseline premise is now real, not planned.
       in-process use for embedded-language Actors. Permanent capability
       ceiling: no reduce/subscribe (Rust compile-time logic; dynamic rebuild
       would break exactly-once).
-- [ ] Multi-tenant key shape: `[ns 2B][app_id][tenant_id]...` — receiver's
-      declared prefix outside the app's ns bytes (ADR-0002 sketch promoted
-      to adopted mechanism; ns dictionary discipline untouched).
+- [ ] Multi-tenant key shape: pure concatenation — receiver's declared
+      prefix `[app_id][tenant_id]` first, sender's bytes (`[ns 2B]...`)
+      after, order never adjusted. The receiver knows only its prefix;
+      ns is the sender's, opaque to the receiver (ADR-0002 sketch
+      promoted to adopted mechanism, segment order corrected; ns
+      dictionary discipline untouched).
