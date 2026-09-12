@@ -27,6 +27,12 @@ pub(crate) struct IdxDecl {
     /// single token inside `func(...)` is spliced verbatim into the
     /// generated `KvIndex` impl, which calls it as `#path(&row)`.
     pub func: String,
+    /// `deprecated` flag on the declaration: the slot stays reserved
+    /// (declaration order is a persistent contract — removing the entry
+    /// would shift every later slot onto stale data), but no write path,
+    /// scan surface, or marker struct is generated. Stale entries from
+    /// before the deprecation are cleared by `Table::prune_deprecated_slots`.
+    pub deprecated: bool,
 }
 
 pub(crate) fn parse_index_attr(attr: &syn::Attribute) -> Vec<IdxDecl> {
@@ -63,12 +69,26 @@ pub(crate) fn parse_index_attr(attr: &syn::Attribute) -> Vec<IdxDecl> {
             t => panic!("kv_index: expected index name Ident, got {t}"),
         };
         i += 1;
+        // Optional `deprecated` marker BEFORE the brace group.
+        let mut deprecated = matches!(&ts.get(i), Some(TokenTree::Ident(id)) if id == "deprecated");
+        if deprecated {
+            i += 1;
+        }
         // Expect: { … } brace group.
         let body = match ts.get(i) {
             Some(TokenTree::Group(g)) if g.delimiter() == Delimiter::Brace => g.stream(),
             t => panic!("kv_index[{ident}]: expected {{ fields(…) }} block, got {t:?}"),
         };
         i += 1;
+        // Optional `deprecated` marker AFTER the brace group (trailing) —
+        // skip the separating comma first.
+        if matches!(&ts.get(i), Some(TokenTree::Punct(p)) if p.as_char() == ',') {
+            i += 1;
+        }
+        if !deprecated && matches!(&ts.get(i), Some(TokenTree::Ident(id)) if id == "deprecated") {
+            deprecated = true;
+            i += 1;
+        }
 
         // Inside: fields(a, b), includes(c) — Ident + paren group pairs,
         // comma-separated.
@@ -129,7 +149,7 @@ pub(crate) fn parse_index_attr(attr: &syn::Attribute) -> Vec<IdxDecl> {
                     "kv_index[{ident}]: func(...) and fields/includes are exclusive — the function result IS the sort segment"
                 );
             }
-        } else if fields.is_empty() {
+        } else if fields.is_empty() && !deprecated {
             panic!("kv_index[{ident}]: fields must not be empty");
         }
         // key(...) prefix validation happens at encode time (the generated
@@ -141,6 +161,7 @@ pub(crate) fn parse_index_attr(attr: &syn::Attribute) -> Vec<IdxDecl> {
             includes,
             key,
             func,
+            deprecated,
         });
     }
     out

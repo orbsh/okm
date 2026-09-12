@@ -174,6 +174,13 @@ pub trait Row: Sized + Clone {
         crate::table::Table::new(store)
     }
 
+    /// Slots reserved by `deprecated` index declarations (ADR-0005):
+    /// entries under `[ns][slot]` for these slots are stale leftovers
+    /// from before the declaration was deprecated — never written by the
+    /// current code, cleared by `Table::prune_deprecated_slots`. Default
+    /// empty (no deprecated declarations).
+    const DEPRECATED_SLOTS: &'static [u8] = &[];
+
     /// The namespace prefix this row's table lives under, encoded and
     /// ready to prepend (`[ns 2B]` big-endian). Declared via `#[kv_ns(N)]`
     /// on the ROW struct — the row is the table's declaration point (its
