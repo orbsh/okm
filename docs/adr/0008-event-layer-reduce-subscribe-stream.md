@@ -2,7 +2,7 @@
 
 > **Languages:** [English](0008-event-layer-reduce-subscribe-stream.md) (primary) · [中文](0008-event-layer-reduce-subscribe-stream.zh-CN.md)
 
-**Status:** Accepted (design; implementation pending — detailed plan, phases gated per PLAN.md)
+**Status:** Implemented (2026-09-11: bare `#[kv_subscribe]` with build.rs-derived event enum, monotonic batch epoch, okm-stream combinators; per-row fallback channel rejected — see PLAN channel-payload decision)
 
 ## Context
 

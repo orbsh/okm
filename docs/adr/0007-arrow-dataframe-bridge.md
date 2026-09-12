@@ -1,7 +1,7 @@
 # ADR-0007: DataFrame bridge — Arrow RecordBatch as the single contact surface
 
 Date: 2026-09-07
-Status: Accepted (design; implementation pending)
+Status: Implemented (2026-09-11: to_record_batch eager bridge, parquet_io export/import; lazy pushdown load-gated)
 
 ## Context
 

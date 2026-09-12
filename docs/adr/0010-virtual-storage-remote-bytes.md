@@ -99,14 +99,29 @@ declares a fact; the macro emits the implementation.
 ### 5. Multi-tenant prefix, per ADR-0002's key shape
 
 `app_id/tenant_id` is NOT a namespace layer (ns is compile-time, u16,
-dictionary-in-code; tenants are runtime data). The adopted key shape is the
-one ADR-0002 already sketched: `[ns 2B][app_id][tenant_id]...` — the
-receiver's declared prefix sits outside the application's own ns bytes.
-ADR-0002's "if tenants exist" clause is thereby **promoted from sketch to
-adopted mechanism**; its rejection of per-tenant outer isolation was premised
-on "no user-programmable query surface", which the dynamic-execution mode
-changes — this ADR is the revision trigger. The ns dictionary discipline
-itself (compile-time, append-only, u16) is untouched.
+dictionary-in-code; tenants are runtime data). The physical key on the
+receiver's engine is a pure concatenation — receiver bytes first, sender
+bytes after, order never adjusted:
+
+```text
+[app_id][tenant_id][ ns 2B ][ sender's key payload ... ]
+ └── receiver prefix ──┘  └────── sender bytes, untouched ──────┘
+```
+
+The receiver knows only `[app_id][tenant_id]` — its declared prefix. The
+ns segment is the sender's: the receiver prepends its prefix to whatever
+the frame carries and never parses what follows; ns bytes pass through
+opaque. Knowledge asymmetry is the isolation mechanism: the receiver
+cannot route between tenants it cannot see past, and the sender cannot
+escape the prefix it does not hold (the `#[kv_storage]` handle is bound
+to the prefix at construction). ADR-0002's "if tenants exist" clause is
+thereby **promoted from sketch to adopted mechanism** (with the segment
+order corrected: receiver bytes lead, not ns); its rejection of
+per-tenant outer isolation was premised on "no user-programmable query
+surface", which the dynamic-execution mode changes — this ADR is the
+revision trigger. The ns dictionary discipline itself (compile-time,
+append-only, u16) is untouched — ns keeps its in-sender-keyspace
+meaning; the receiver prefix lives outside it.
 
 ### 6. Transport is a backend-internal detail
 
@@ -128,7 +143,7 @@ never leaks into it.
 - Krystallizer's storage config becomes four-way: mock / fjall / slatedb /
   virtual(→Aura). OKM semantic layers (Table/index/reduce/events) unchanged.
 - Aura gains a Storage Actor hosting `#[kv_storage]` executors: one declared
-  instance per application (ns = app_id/tenant_id), frames arrive from
+  instance per application (prefix = app_id/tenant_id), frames arrive from
   VirtualStorage backends or realm events; same-machine callers connect
   in-process.
 - The frame format is minimal and stable (`op + bytes`); it is NOT a
