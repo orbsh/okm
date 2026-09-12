@@ -2077,6 +2077,7 @@ dependencies = [
  "fjall",
  "object_store 0.13.2",
  "okm-derive",
+ "okm-wire",
  "parquet",
  "proc-macro2",
  "quote",
@@ -2135,6 +2136,10 @@ dependencies = [
  "okm-core",
  "okm-query",
 ]
+
+[[package]]
+name = "okm-wire"
+version = "0.1.0"
 
 [[package]]
 name = "once_cell"

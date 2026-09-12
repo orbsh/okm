@@ -45,7 +45,8 @@ Adding a backend = one more `impl VirtualStorage`. The trait gains no methods.
 
 The write path in OKM is already double-write (primary + index entries in
 one batch). The wire frame is exactly that batch:
-`commit_batch`'s `MemBatch` op list serialized (postcard) — `[op][batch bytes]`.
+`commit_batch`'s `MemBatch` op list, hand-framed with counted lengths —
+`[op][batch bytes]`.
 No semantic parsing anywhere:
 
 - **Sender** (e.g. Krystallizer): keys/values are already encoded at the
@@ -69,6 +70,41 @@ No semantic parsing anywhere:
   streams. (This supersedes an earlier draft that put a layout version in
   the frame header — wrong because it semantically coupled ends that are
   deliberately unrelated.)
+- **No generic serialization library on the wire.** The frame is counted
+  fields, not a protocol: the ops are already encoded at the trait
+  boundary, so a frame only needs to mark op boundaries — tag + lengths +
+  raw bytes, hand-parsed (~30 lines with boundary checks). serde/postcard
+  would buy "counting the lengths for us" at the cost of two dependencies
+  and a trait mechanism for nothing: byte-for-byte the same volume (varint
+  length prefixes are the same bytes), same order of parse cost (per-op a
+  few instructions vs a WAL commit's microseconds — unmeasurable), and a
+  compression/semantics layer the boundary must NOT have (see §2's refusal
+  of version headers for the same shape of reason). Value compression, if
+  any, belongs to the field-wrapper layer (VarInt/Quant — where value
+  semantics are known), never to the frame; the frame sees compressed
+  bytes as just shorter bytes.
+- **Frame layout** (hand-parsed, no total-length header — the transport
+  (`Vec<u8>` message / TCP stream framing) already delimits; restating it
+  inside the frame is redundant):
+
+  ```text
+  write frame: [op_count varint]
+               per op: [tag+type nibble u8][key len LK][value len LV][key][value]
+      tag nibble: put / delete / get / scan (4 shapes, 2 bits, reserved 2)
+      length encoding (LK and LV alike), first byte:
+        00xxxxxx                              inline (≤63 bytes)
+        01xxxxxx + 1 byte                     14-bit
+        10xxxxxx + 2 bytes                    22-bit
+        11xxxxxx + 4 bytes                    32-bit
+      (low 6 bits of the first byte are the value's high bits; the four
+      width buckets absorb the "tiny inline" case — a 4-bit length bucket
+      would never be hit since real keys are ns+payload ≥ tens of bytes)
+  ```
+
+  Shift/mask decode costs single-cycle pipeline instructions — the real
+  cost of bit packing is one selector branch per field and a wider
+  bad-frame test surface (maintenance, not speed). Malformed lengths
+  exceeding the remaining bytes are rejected, never panic.
 - **Atomicity**: one frame = one batch = one receiver WAL commit. Cross-batch
   ordering = channel ordering. No epochs, no negotiation.
 
@@ -158,7 +194,7 @@ Symmetrically, the receiver does not know arrival paths either. The
 `#[kv_storage]` executor's surface is exactly one method — frame in, results
 out; who called it and through which channel is the caller's business.
 Read correlation (which response answers which request) lives on the
-sender side of the executor, same as write. A TCP + postcard client is
+sender side of the executor, same as write. A TCP + hand-parsed client is
 the reference example; it is an example, not part of the contract.
 Transport diversity exists only on the two outsides of the executor and
 never leaks into it.
