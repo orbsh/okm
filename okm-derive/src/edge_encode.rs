@@ -95,13 +95,13 @@ pub fn derive(input: TokenStream) -> TokenStream {
 
         /// Query methods on the start endpoint.
         pub trait #a_trait {
-            fn #m_on_a<S: ::okm_core::KvEngine>(
+            fn #m_on_a<S: ::okm_core::VirtualStorage>(
                 &self,
                 c: &::okm_core::EdgeTable<S, #edge_name>,
             ) -> Vec<#tb>;
         }
         impl #a_trait for #ta {
-            fn #m_on_a<S: ::okm_core::KvEngine>(
+            fn #m_on_a<S: ::okm_core::VirtualStorage>(
                 &self,
                 c: &::okm_core::EdgeTable<S, #edge_name>,
             ) -> Vec<#tb> {
@@ -111,13 +111,13 @@ pub fn derive(input: TokenStream) -> TokenStream {
 
         /// Query methods on the end endpoint.
         pub trait #b_trait {
-            fn #m_on_b<S: ::okm_core::KvEngine>(
+            fn #m_on_b<S: ::okm_core::VirtualStorage>(
                 &self,
                 c: &::okm_core::EdgeTable<S, #edge_name>,
             ) -> Vec<::okm_core::PrefixKey<#ta>>;
         }
         impl #b_trait for #tb {
-            fn #m_on_b<S: ::okm_core::KvEngine>(
+            fn #m_on_b<S: ::okm_core::VirtualStorage>(
                 &self,
                 c: &::okm_core::EdgeTable<S, #edge_name>,
             ) -> Vec<::okm_core::PrefixKey<#ta>> {

@@ -13,7 +13,7 @@
 //!         ↓ expand into pure functions
 //! Collection<S, E>                       ← assembly point: engine + edge type
 //!         ↓ trait dispatch
-//! KvEngine (MockStore / FjallStore / SlatedbStore)  ← real storage lives here
+//! VirtualStorage (MockStore / FjallStore / SlatedbStore)  ← real storage lives here
 //! ```
 //!
 //! # Features
@@ -33,7 +33,7 @@ pub use wrappers::{Enum, EnumTag, Offset, Quant, VarInt, VarIntEnc, offset_decod
 pub mod reduce;
 pub mod collection;
 pub mod edge;
-pub mod engine;
+pub mod storage;
 pub mod field;
 pub mod index;
 pub mod key;
@@ -53,7 +53,7 @@ pub mod tooling;
 pub use reduce::{reduce_get, scan_reduces, ReduceCodec, Reduce, ReduceLogic};
 pub use collection::EdgeTable;
 pub use edge::{KvEdge, head_bytes};
-pub use engine::{KvEngine, MockStore};
+pub use storage::{VirtualStorage, MockStore};
 pub use field::{FieldDesc, FieldType};
 pub use index::{IndexFuncResult, IndexFuncValues, KvIndex, PRIMARY_SLOT, Row, scan_index};
 pub use key::{KeyEncode, PrefixKey};
@@ -68,4 +68,4 @@ pub use tooling::parquet_io;
 #[cfg(feature = "fjall")]
 pub use fjall_backend::FjallStore;
 #[cfg(feature = "slatedb")]
-pub use slatedb_backend::{AsyncEdgeTable, KvEngineAsync, SlatedbStore};
+pub use slatedb_backend::{AsyncEdgeTable, VirtualStorageAsync, SlatedbStore};

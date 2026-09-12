@@ -1,7 +1,10 @@
-# ADR-0010: VirtualStorage —— KvEngine 即存储边界，远端字节走既有通道
+# ADR-0010: VirtualStorage —— 存储 trait 即边界，远端字节走既有通道
 
 Date: 2026-09-13
-Status: Accepted
+Status: Accepted. **更新 2026-09-12，改名落地**：trait 现在直接命名为
+`VirtualStorage`（模块 `storage`；slatedb 路径的异步孪生为
+`VirtualStorageAsync`）——不再需要别名层做概念转换。后端结构体名
+（`MockStore`、`FjallStore`、`SlatedbStore`）不变。
 
 ## Context
 
@@ -17,14 +20,14 @@ Status: Accepted
 
 ### 1. trait 就是边界 —— VirtualStorage
 
-`KvEngine`（put/get/del/scan_suffix/batch/commit_batch）只说编码后的话。它自此就是存储边界点，别名/概念化为 **VirtualStorage**。一个 trait 后面四种后端形态：
+存储 trait（`VirtualStorage`，2026-09-12 以此名落地——put/get/del/scan_suffix/batch/commit_batch）只说编码后的话。它就是存储边界点。一个 trait 后面四种后端形态：
 
 - `mock` —— BTreeMap（测试）
 - `fjall` —— 本地引擎（feature）
 - `slatedb` —— S3 引擎（feature）
 - **remote** —— op 走既有通道；字节进字节出
 
-加后端 = 多一个 `impl KvEngine`。trait 不加方法。
+加后端 = 多一个 `impl VirtualStorage`。trait 不加方法。
 
 ### 2. 远端发送已编码的字节
 

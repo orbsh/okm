@@ -1,7 +1,11 @@
-# ADR-0010: VirtualStorage — KvEngine as the storage boundary, remote bytes over existing channels
+# ADR-0010: VirtualStorage — the storage trait as the boundary, remote bytes over existing channels
 
 Date: 2026-09-13
-Status: Accepted
+Status: Accepted. **Update 2026-09-12, rename shipped**: the trait is now
+literally named `VirtualStorage` (module `storage`; async twin
+`VirtualStorageAsync` on the slatedb path) — no alias layer left to
+conceptualize through. Backend struct names (`MockStore`, `FjallStore`,
+`SlatedbStore`) are unchanged.
 
 ## Context
 
@@ -26,16 +30,16 @@ protocol where the data is already encoded bytes.
 
 ### 1. The trait IS the boundary — VirtualStorage
 
-`KvEngine` (put/get/del/scan_suffix/batch/commit_batch) already speaks only
-in encoded bytes. It is hereby the storage boundary point, aliased/conceptualized
-as **VirtualStorage**. Four backend shapes behind one trait:
+The storage trait (`VirtualStorage`; shipped 2026-09-12 under this name —
+put/get/del/scan_suffix/batch/commit_batch) speaks only in encoded bytes.
+It IS the storage boundary point. Four backend shapes behind one trait:
 
 - `mock` — BTreeMap (tests)
 - `fjall` — local engine (feature)
 - `slatedb` — S3-backed engine (feature)
 - **remote** — ops travel over an existing channel; bytes in, bytes out
 
-Adding a backend = one more `impl KvEngine`. The trait gains no methods.
+Adding a backend = one more `impl VirtualStorage`. The trait gains no methods.
 
 ### 2. The remote backend sends what is already encoded
 

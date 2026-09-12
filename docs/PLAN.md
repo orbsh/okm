@@ -295,11 +295,13 @@ and the Phase 6 baseline premise is now real, not planned.
 
 ## Phase 7 — VirtualStorage: engine as boundary, remote backend, kv_storage derive (ADR-0010)
 
-- [ ] Trait boundary rename/alias: KvEngine conceptualized as VirtualStorage
-      (put/get/del/scan_suffix/batch/commit_batch speak only encoded bytes —
-      the boundary already exists, no method changes). Four backend shapes:
-      mock / fjall / slatedb / remote.
-- [ ] Remote backend (sender side): impl KvEngine; write = MemBatch op
+- [x] Trait boundary rename: `KvEngine` → `VirtualStorage` (module
+      `engine` → `storage`; async twin `KvEngineAsync` →
+      `VirtualStorageAsync`), shipped 2026-09-12. The trait speaks only
+      encoded bytes (put/get/del/scan_suffix/batch/commit_batch — no
+      method changes, no alias layer). Four backend shapes:
+      mock / fjall / slatedb / remote; backend struct names unchanged.
+- [ ] Remote backend (sender side): impl VirtualStorage; write = MemBatch op
       list serialized (postcard) into a frame `[op][batch bytes]`;
       fire-and-forget (one frame = one receiver WAL commit; channel order
       = write order). Read = request frame + response — correlation is

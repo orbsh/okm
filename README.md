@@ -104,7 +104,7 @@ okm-derive/        proc-macro crate: KeyEncode, RowEncode, EdgeEncode (zero I/O)
 okm-core/src/key.rs     KeyEncode trait + PrefixKey
 okm-core/src/index.rs   Row + KvIndex traits, index scan helpers
 okm-core/src/edge.rs    KvEdge trait + direction-bit header
-okm-core/src/engine.rs  KvEngine trait + MockStore
+okm-core/src/storage.rs  VirtualStorage trait + MockStore
 okm-core/src/table.rs       Table<S, K, R> node assembly point
 okm-core/src/collection.rs  EdgeTable<S, E> edge assembly point
 okm-core/src/fjall_backend.rs    fjall adapter (feature "fjall")

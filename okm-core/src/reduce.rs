@@ -15,7 +15,7 @@
 //! the same declaration-order counter as indexes (append-only, never
 //! reused), allocated by the derive after the last index.
 
-use crate::engine::KvEngine;
+use crate::storage::VirtualStorage;
 use crate::index::Row;
 
 /// Wire codec for a user accumulator. Deliberately not `serde`-shaped:
@@ -104,7 +104,7 @@ pub trait Reduce: ReduceLogic {
 }
 
 /// Read one group's current accumulator (None = group not yet created).
-pub fn reduce_get<S: KvEngine, A: Reduce>(
+pub fn reduce_get<S: VirtualStorage, A: Reduce>(
     store: &S,
     table_ns: &[u8],
     key: &<A::Row as Row>::Key,
@@ -116,7 +116,7 @@ pub fn reduce_get<S: KvEngine, A: Reduce>(
 
 /// Scan every group of one reduce: full group segment + acc bytes.
 /// Prefix `[ns 2B][slot 1B]` — each suffix is the group segment.
-pub fn scan_reduces<S: KvEngine, A: Reduce>(
+pub fn scan_reduces<S: VirtualStorage, A: Reduce>(
     store: &S,
     table_ns: &[u8],
 ) -> Vec<(Vec<u8>, A::Acc)> {
@@ -137,7 +137,7 @@ pub fn scan_reduces<S: KvEngine, A: Reduce>(
 /// modify-write for its group — get acc, decode, fold/unfold, encode,
 /// put. Same store instance as the row write, so atomicity holds within
 /// one engine (same boundary as index entries).
-pub fn apply_row<S: KvEngine, R: Row>(
+pub fn apply_row<S: VirtualStorage, R: Row>(
     store: &mut S,
     key: &R::Key,
     row: &R,

@@ -1,8 +1,8 @@
 //! slatedb engine adapter: `SlatedbStore` (async engine over object storage).
 //!
 //! slatedb is an async API with immutable borrows (WAL/flush managed
-//! internally), so this module provides the `KvEngineAsync` trait and
-//! `AsyncEdgeTable` - parallel to the sync `KvEngine`/`EdgeTable` with the
+//! internally), so this module provides the `VirtualStorageAsync` trait and
+//! `AsyncEdgeTable` - parallel to the sync `VirtualStorage`/`EdgeTable` with the
 //! same interface shape. Object stores are constructed via the
 //! `slatedb::object_store` re-export so versions always match slatedb's
 //! internals.
@@ -14,8 +14,8 @@ use slatedb::object_store::ObjectStore;
 use std::ops::RangeFull;
 use std::sync::Arc;
 
-/// 异步引擎最小接口（与同步 KvEngine 对齐）
-pub trait KvEngineAsync {
+/// 异步引擎最小接口（与同步 VirtualStorage 对齐）
+pub trait VirtualStorageAsync {
     async fn put(&self, key: Vec<u8>, value: Vec<u8>);
     async fn get(&self, key: &[u8]) -> Option<Vec<u8>>;
     async fn del(&self, key: &[u8]);
@@ -40,7 +40,7 @@ impl SlatedbStore {
     }
 }
 
-impl KvEngineAsync for SlatedbStore {
+impl VirtualStorageAsync for SlatedbStore {
     async fn put(&self, key: Vec<u8>, value: Vec<u8>) {
         self.db.put(key, value).await.expect("slatedb put failed");
     }
@@ -74,7 +74,7 @@ pub struct AsyncEdgeTable<S, E> {
     _pd: std::marker::PhantomData<E>,
 }
 
-impl<S: KvEngineAsync, E: KvEdge> AsyncEdgeTable<S, E> {
+impl<S: VirtualStorageAsync, E: KvEdge> AsyncEdgeTable<S, E> {
     pub fn new(store: S) -> Self {
         Self {
             store,

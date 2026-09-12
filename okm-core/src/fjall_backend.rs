@@ -1,11 +1,11 @@
 //! fjall engine adapter: `FjallStore` = Database + keyspace wrapper,
-//! implementing the sync `KvEngine`.
+//! implementing the sync `VirtualStorage`.
 //!
 //! One OKM EdgeTable corresponds to one keyspace; ns prefixes come with the
 //! key encoding itself, so different edge types sharing a keyspace do not
 //! conflict.
 
-use crate::engine::{KvBatch, KvEngine, MemBatch};
+use crate::storage::{KvBatch, VirtualStorage, MemBatch};
 use fjall::{Database, Keyspace, KeyspaceCreateOptions};
 
 pub struct FjallStore {
@@ -35,7 +35,7 @@ impl FjallStore {
     }
 }
 
-impl KvEngine for FjallStore {
+impl VirtualStorage for FjallStore {
     fn put(&mut self, key: Vec<u8>, value: Vec<u8>) {
         self.ks.insert(key, value).expect("fjall insert failed");
     }

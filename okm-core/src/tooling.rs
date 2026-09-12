@@ -16,7 +16,7 @@
 //!   key + index entries) is never bypassed; this is a backup/restore path,
 //!   not a second write channel.
 
-use crate::engine::KvEngine;
+use crate::storage::VirtualStorage;
 use crate::field::{FieldDesc, FieldType};
 use crate::index::Row;
 use crate::key::KeyEncode;
@@ -114,7 +114,7 @@ pub fn describe<K: KeyEncode, R: Row<Key = K>>() -> String {
     out
 }
 
-impl<S: KvEngine, K: KeyEncode, R: Row<Key = K>> Table<S, K, R> {
+impl<S: VirtualStorage, K: KeyEncode, R: Row<Key = K>> Table<S, K, R> {
     /// Layout audit for this table's key + row declaration (see [`describe`]).
     pub fn describe(&self) -> String {
         describe::<K, R>()
@@ -194,7 +194,7 @@ pub mod parquet_io {
     /// Export all rows to a Parquet file (overwrite). Typed columns, schema
     /// from the declaration — the same batch shape as
     /// [`Table::to_record_batch`].
-    pub fn export_parquet<S: KvEngine, K: KeyEncode, R: Row<Key = K>>(
+    pub fn export_parquet<S: VirtualStorage, K: KeyEncode, R: Row<Key = K>>(
         table: &Table<S, K, R>,
         path: &std::path::Path,
     ) -> parquet::errors::Result<()> {
@@ -283,7 +283,7 @@ pub mod parquet_io {
     /// the restore path, not a second write channel.
     ///
     /// Returns the number of rows restored.
-    pub fn import_parquet<S: KvEngine, K: KeyEncode, R: Row<Key = K>>(
+    pub fn import_parquet<S: VirtualStorage, K: KeyEncode, R: Row<Key = K>>(
         table: &mut Table<S, K, R>,
         path: &std::path::Path,
     ) -> parquet::errors::Result<usize> {

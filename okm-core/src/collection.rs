@@ -9,7 +9,7 @@
 //! (`EdgeTable::new(store)`).
 
 use crate::edge::KvEdge;
-use crate::engine::KvEngine;
+use crate::storage::VirtualStorage;
 use crate::key::{KeyEncode, PrefixKey};
 
 /// Engine `S` + edge `E` = the operation surface of one relationship.
@@ -18,7 +18,7 @@ pub struct EdgeTable<S, E> {
     _pd: std::marker::PhantomData<E>,
 }
 
-impl<S: KvEngine, E: KvEdge> EdgeTable<S, E> {
+impl<S: VirtualStorage, E: KvEdge> EdgeTable<S, E> {
     pub fn new(store: S) -> Self {
         Self {
             store,
@@ -39,7 +39,7 @@ impl<S: KvEngine, E: KvEdge> EdgeTable<S, E> {
     /// externally owned batch — no write until commit. The
     /// cross-collection atomic path (ADR-0003): rows and edges share one
     /// batch, one `commit_batch` covers them all.
-    pub fn save_into(&self, batch: &mut impl crate::engine::KvBatch, a: &E::A, b: &E::B) {
+    pub fn save_into(&self, batch: &mut impl crate::storage::KvBatch, a: &E::A, b: &E::B) {
         let e = E::from_parts(a.clone(), b.clone());
         batch.put(e.forward_key(), Vec::new());
         batch.put(e.reverse_key(), Vec::new());

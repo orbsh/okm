@@ -6,7 +6,7 @@
 //! (indexed + includes fields live there), so put and delete are both
 //! row-shaped.
 
-use crate::engine::KvEngine;
+use crate::storage::VirtualStorage;
 use crate::index::{KvIndex, Row};
 use crate::key::{KeyEncode, PrefixKey};
 
@@ -20,7 +20,7 @@ pub struct Table<S, K: KeyEncode, R: Row<Key = K>> {
     _marker: std::marker::PhantomData<(K, R)>,
 }
 
-impl<S: KvEngine, K: KeyEncode, R: Row<Key = K>> Table<S, K, R> {
+impl<S: VirtualStorage, K: KeyEncode, R: Row<Key = K>> Table<S, K, R> {
     /// The ns prefix is NOT a constructor argument: it is declared once
     /// on the key struct (`#[kv_ns]`) and read at compile time via
     /// `R::NS_PREFIX` (ADR-0002: the ns dictionary is code; ADR-0010:
@@ -129,7 +129,7 @@ impl<S: KvEngine, K: KeyEncode, R: Row<Key = K>> Table<S, K, R> {
     /// subscriptions must go through `put`/`upsert_with`; save_into is
     /// for batch-aligned bulk loads where the consumer settles those
     /// folds itself.
-    pub fn save_into(&self, batch: &mut impl crate::engine::KvBatch, key: &K, row: &R) {
+    pub fn save_into(&self, batch: &mut impl crate::storage::KvBatch, key: &K, row: &R) {
         batch.put(self.primary_key(key), row.encode_payload());
         for (ek, ev) in R::index_entries(key, row, R::NS_PREFIX) {
             batch.put(ek, ev);

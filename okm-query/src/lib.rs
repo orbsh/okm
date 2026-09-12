@@ -22,7 +22,7 @@
 /// not a burden on the query operator (and merge join stays streaming
 /// and memory-bounded, where hash join must materialize the build side).
 
-use okm_core::KvEngine;
+use okm_core::VirtualStorage;
 
 pub fn merge_join<K: Ord, L: Clone, R: Clone>(
     left: impl IntoIterator<Item = (K, L)>,
@@ -115,7 +115,7 @@ where
 /// no deduplication here: FWD and REV entries of one link cannot both
 /// match one node's prefix unless the link is a self-loop, which the
 /// caller models or filters.
-pub trait GraphEdge<S: KvEngine + Clone> {
+pub trait GraphEdge<S: VirtualStorage + Clone> {
     /// All peers of `node` (its encoded identity) across this edge
     /// type, in both directions, as encoded peer-identity bytes.
     fn peers(&self, store: S, node: &[u8]) -> Vec<Vec<u8>>;
@@ -130,7 +130,7 @@ pub trait GraphEdge<S: KvEngine + Clone> {
 /// Each hop is one prefix scan per edge type per direction — the cost
 /// model is identical to `forward`/`reverse` in the edge layer; the
 /// only added structure is the frontier and the visited set.
-pub fn walk<S: KvEngine + Clone>(
+pub fn walk<S: VirtualStorage + Clone>(
     edges: &[&dyn GraphEdge<S>],
     store: S,
     start: &[u8],
