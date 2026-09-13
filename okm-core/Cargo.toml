@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 okm-derive = { path = "../okm-derive" }
 okm-wire = { path = "../okm-wire" }
+serde = { version = "1", features = ["derive"], optional = true }
 fjall = { version = "3.1.10", optional = true }
 slatedb = { version = "0.16.0", optional = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"], optional = true }
@@ -20,6 +21,7 @@ syn = { version = "2", features = ["full", "parsing"] }
 
 [features]
 default = []
+schema-serde = ["dep:serde"]
 fjall = ["dep:fjall"]
 slatedb = ["dep:slatedb", "dep:tokio"]
 arrow = ["dep:arrow"]
@@ -27,10 +29,11 @@ parquet = ["dep:parquet", "arrow"]
 
 [dev-dependencies]
 tempfile = "3"
+serde_json = "1"
+okm-dynamic = { path = "../okm-dynamic" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 arrow = { version = "54" }
 parquet = { version = "54", default-features = false, features = ["arrow"] }
-serde_json = "1"
 trybuild = "1"
 
 [[test]]

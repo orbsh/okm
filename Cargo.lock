@@ -2077,10 +2077,12 @@ dependencies = [
  "fjall",
  "object_store 0.13.2",
  "okm-derive",
+ "okm-dynamic",
  "okm-wire",
  "parquet",
  "proc-macro2",
  "quote",
+ "serde",
  "serde_json",
  "slatedb",
  "syn 2.0.119",
@@ -2097,6 +2099,14 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "okm-dynamic"
+version = "0.1.0"
+dependencies = [
+ "okm-core",
+ "serde",
 ]
 
 [[package]]
