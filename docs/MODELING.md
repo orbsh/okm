@@ -177,7 +177,7 @@ at write time; entries still live and die with the row), reduce is
 **cross-row aggregation** (mutable value, read-modify-write). How the
 heavier integrations (FTS / vector / graph algorithms) land on the
 primitives is covered in the [integration boundary
-doc](INTEGRATION.md). Implementation details (encoding contract,
+doc](integration/EXTENSION-TYPES.md). Implementation details (encoding contract,
 `entry_pairs` override, probe normalization) live in the internals doc
 [func-index-mechanism.zh-CN.md](internals/func-index-mechanism.zh-CN.md).
 
