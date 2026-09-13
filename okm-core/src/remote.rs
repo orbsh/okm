@@ -123,10 +123,18 @@ impl VirtualStorage for RemoteStore {
 /// indistinguishable from storing data (ADR-0010 §2). The `#[kv_storage]`
 /// derive generates this shape; this manual form is its reference.
 pub struct StorageHost<S: VirtualStorage> {
-    engine: Arc<Mutex<S>>,
-    prefix: Vec<u8>,
+    core: Arc<StorageCore<S>>,
     write_rx: mpsc::Receiver<Vec<u8>>,
     read_rx: mpsc::Receiver<(mpsc::Sender<ReadResponse>, Vec<u8>)>,
+}
+
+/// The host's execution core, transport-free (ADR-0010 §6): intake
+/// methods for transports that already exist (a WS connection, a UDS
+/// handler, an in-process caller). Same logic the mpsc reference pumps
+/// call; see `docs/integration/WS-CHANNEL.md` for the adapter shape.
+pub struct StorageCore<S: VirtualStorage> {
+    engine: Arc<Mutex<S>>,
+    prefix: Vec<u8>,
 }
 
 impl<S: VirtualStorage + Send + 'static> StorageHost<S> {
@@ -138,8 +146,10 @@ impl<S: VirtualStorage + Send + 'static> StorageHost<S> {
         let (read_tx, read_rx) = mpsc::channel();
         (
             Self {
-                engine: Arc::new(Mutex::new(engine)),
-                prefix: prefix.to_vec(),
+                core: Arc::new(StorageCore {
+                    engine: Arc::new(Mutex::new(engine)),
+                    prefix: prefix.to_vec(),
+                }),
                 write_rx,
                 read_rx,
             },
@@ -150,6 +160,12 @@ impl<S: VirtualStorage + Send + 'static> StorageHost<S> {
         )
     }
 
+    /// Transport-free intake: the WS/UDS adapter calls these directly
+    /// (see `docs/integration/WS-CHANNEL.md`).
+    pub fn core(&self) -> &Arc<StorageCore<S>> {
+        &self.core
+    }
+
     /// Serve forever: write pump (frame → one engine commit) + read pump
     /// (frame → engine op → response). The reference transport is plain
     /// threads; an async receiver would task-spawn the same loops. The
@@ -157,54 +173,65 @@ impl<S: VirtualStorage + Send + 'static> StorageHost<S> {
     /// move into their threads (mpsc Receiver is not Sync — each pump
     /// owns its end exclusively, which is the correct shape anyway).
     pub fn serve(self) {
-        let engine = self.engine.clone();
-        let prefix = self.prefix.clone();
         let write_rx = self.write_rx;
+        let core_write = Arc::clone(&self.core);
         std::thread::spawn(move || {
             for bytes in write_rx {
-                let Some(frame) = WriteFrame::decode(&bytes) else {
-                    continue; // malformed frame = drop; garbage in, nothing stored
-                };
-                let mut engine = engine.lock().expect("engine lock");
-                let mut batch = MemBatch::default();
-                for (tag, key, value) in frame.0 {
-                    match tag {
-                        OP_PUT => batch.put(hosted_key(&prefix, &key), value),
-                        OP_DELETE => batch.del(&hosted_key(&prefix, &key)),
-                        // Reads never arrive on the write channel.
-                        _ => {}
-                    }
-                }
-                // One commit over the whole frame — the WAL boundary the
-                // sender's batch maps onto (ADR-0010 §2). Fire-and-forget:
-                // no return path, matching channel semantics.
-                let _ = engine.commit_batch(batch);
+                core_write.apply_write(&bytes);
             }
         });
-        let engine = self.engine;
-        let prefix = self.prefix;
         let read_rx = self.read_rx;
+        let core_read = self.core;
         std::thread::spawn(move || {
             for (reply_tx, bytes) in read_rx {
-                let Some(frame) = ReadFrame::decode(&bytes) else {
+                let Some(resp) = core_read.apply_read(&bytes) else {
                     continue;
-                };
-                let engine = engine.lock().expect("engine lock");
-                let resp = match frame {
-                    ReadFrame::Get { key } => ReadResponse {
-                        value: engine.get(&hosted_key(&prefix, &key)),
-                        ..Default::default()
-                    },
-                    ReadFrame::Scan { prefix: p } => ReadResponse {
-                        suffixes: engine.scan_suffix(&hosted_key(&prefix, &p)),
-                        ..Default::default()
-                    },
                 };
                 if reply_tx.send(resp).is_err() {
                     break; // sender gone; this read pump's endpoints are dead
                 }
             }
         });
+    }
+}
+
+impl<S: VirtualStorage> StorageCore<S> {
+    /// Apply one write frame: decode (malformed = drop, garbage in /
+    /// nothing stored) → one `commit_batch` = one engine WAL write
+    /// (ADR-0010 §2). Fire-and-forget: no return path.
+    pub fn apply_write(&self, bytes: &[u8]) {
+        let Some(frame) = WriteFrame::decode(bytes) else {
+            return;
+        };
+        let mut engine = self.engine.lock().expect("engine lock");
+        let mut batch = MemBatch::default();
+        for (tag, key, value) in frame.0 {
+            match tag {
+                OP_PUT => batch.put(hosted_key(&self.prefix, &key), value),
+                OP_DELETE => batch.del(&hosted_key(&self.prefix, &key)),
+                // Reads never arrive on the write channel.
+                _ => {}
+            }
+        }
+        let _ = engine.commit_batch(batch);
+    }
+
+    /// Apply one read frame; `None` = malformed frame. The engine mutex
+    /// serializes reads against the write pump (single-writer + reader
+    /// exclusion at the engine, same boundary as local callers).
+    pub fn apply_read(&self, bytes: &[u8]) -> Option<ReadResponse> {
+        let frame = ReadFrame::decode(bytes)?;
+        let engine = self.engine.lock().expect("engine lock");
+        Some(match frame {
+            ReadFrame::Get { key } => ReadResponse {
+                value: engine.get(&hosted_key(&self.prefix, &key)),
+                ..Default::default()
+            },
+            ReadFrame::Scan { prefix: p } => ReadResponse {
+                suffixes: engine.scan_suffix(&hosted_key(&self.prefix, &p)),
+                ..Default::default()
+            },
+        })
     }
 }
 

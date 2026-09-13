@@ -1,0 +1,122 @@
+# 经由既有 WS 通道集成：在运行中的传输上执行远端 VirtualStorage
+
+> 姊妹篇：[集成扩展类型与原语](EXTENSION-TYPES.zh-CN.md)——FTS/向量/图算法如何落在 OKM 原语上。本篇是传输集成侧：已有 WebSocket 连接（或任何可携带消息的通道）的应用，如何不新开传输就执行远端引擎上的 OKM 操作。
+
+## 前提
+
+OKM 的 remote 后端（ADR-0010）已经把三件事分开：
+
+```text
+发送方（RemoteStore）     实现 VirtualStorage，把 ops 成帧
+编解码（okm-wire）        手写解析帧：tag + 长度 + 裸字节
+接收方（StorageHost）     前置自己声明的前缀，在引擎上重放
+```
+
+发送方与接收方之间的传输是后端内部细节：codec 定义「帧是什么」，从不定义「帧怎么走」。一帧就是一个 `Vec<u8>`；任何「一条消息携带一帧」的东西都能当传输。本篇把 WS 场景端到端走一遍。
+
+## 唯一规则：帧是通道的不透明载荷
+
+既有 WS 连接通常有自己的消息协议（JSON 信封、protobuf 事件、realm 消息）。集成规则是对称且严格的：
+
+- OKM 侧**不解析**通道信封——它产出一帧的字节，作为一个不透明载荷交给通道。
+- 通道侧**不解析** OKM 帧——它把载荷转交给声明的 `StorageHost`，把返回内容送回去。
+
+按「谁持有连接」分两种形态：
+
+### 形态 A：OKM 在 WS 应用内（常见情形）
+
+应用同时持有 WS 客户端和 `StorageHost`；其它进程里的远端 OKM 实例**经由这条连接**发操作过来。
+
+```text
+Krystallizer 进程                         Aura 节点进程
+┌─────────────────────┐                 ┌──────────────────────────────┐
+│ RemoteStore         │                 │ WS server                    │
+│   │ 帧字节           │   WebSocket     │   │ 信封 → 路由：             │
+│   ▼                 │ ──────────────► │   ▼                          │
+│ okm-wire 编码        │                 │ StorageHost 的泵             │
+└─────────────────────┘                 │   ├─ [prefix] 引擎操作        │
+                                        │   └─ 应答                     │
+                                        └──────────────────────────────┘
+```
+
+**接收侧（Aura）**：WS handler 收到信封，按信封约定取出 OKM 载荷，交给宿主的入口。这要求宿主的泵可以从 WS handler 直达，而不是只挂在内部 mpsc 通道后面——一个 20 行的适配器：
+
+```rust
+pub struct WsIntake<S: VirtualStorage> {
+    host: Arc<Mutex<StorageCore<S>>>,
+}
+
+impl<S: VirtualStorage + Send + 'static> WsIntake<S> {
+    /// 一条 WS 消息携带一个写帧。无返回——fire-and-forget，与 mpsc 写泵一致。
+    pub fn write_frame(&self, frame: &[u8]) {
+        self.host.lock().unwrap().apply_write(frame);
+    }
+    /// 一条 WS 消息携带一个读帧。返回响应帧字节——WS handler 经同一连接送回。
+    pub fn read_frame(&self, frame: &[u8]) -> Option<Vec<u8>> {
+        self.host.lock().unwrap().apply_read(frame)
+    }
+}
+```
+
+（`StorageCore` 是现在的 `StorageHost` 去掉内部 mpsc 泵、把引擎 + 前缀暴露成 `apply_write` / `apply_read` 两个方法——mpsc 泵调用的正是同一逻辑。行为零变化；mpsc 接线保留为参考传输。）
+
+**发送侧（Krystallizer）**：`RemoteStore` 目前硬绑 `mpsc::Sender<Vec<u8>>`。泛化方向是把发送方对小传输的依赖从一个具体通道改成一个小 trait：
+
+```rust
+pub trait FrameTransport {
+    /// 发送一个写帧（fire-and-forget）。
+    fn send_write(&self, frame: Vec<u8>);
+    /// 发送一个读帧并阻塞等响应。关联是传输自己的事（进程内 mpsc 靠
+    /// 通道配对隐式完成；WS 靠连接本身或信封里的请求 id）。
+    fn round_trip(&self, frame: Vec<u8>) -> Vec<u8>;
+}
+```
+
+WS 实现包住应用**现有的**连接句柄：
+
+```rust
+struct WsTransport<C: WsConn> {
+    conn: C,                       // 既有连接，共享
+    write_topic: &'static str,     // 信封约定：OKM 帧在协议里的位置
+    read_topic: &'static str,
+}
+
+impl<C: WsConn> FrameTransport for WsTransport<C> {
+    fn send_write(&self, frame: Vec<u8>) {
+        self.conn.send_json(topic(self.write_topic), frame);  // 不透明载荷
+    }
+    fn round_trip(&mut self, frame: Vec<u8>) -> Vec<u8> {
+        let id = self.conn.next_request_id();                 // 关联 id
+        self.conn.send_json(request(self.read_topic, id), frame);
+        self.conn.wait_reply(id)                              // 阻塞当前 task
+    }
+}
+```
+
+注意**什么没有变**：帧字节、codec、host、前缀纪律、batch 原子性映射。只有最后一公里长出了一个信封。
+
+### 形态 B：OKM 作为 WS 应用的存储服务
+
+反向嵌入——WS 应用是存储客户端，OKM 跑在自己的进程（或同进程不同 Actor），经由 topic 可达。与形态 A 相同，只是信封两侧角色对调；适配器和传输 trait 是同样的两块。
+
+## 可行的信封约定
+
+通道协议需要给 OKM 流量三个槽位：
+
+1. **路由**：帧给哪个声明的宿主（哪个应用/前缀）——一条连接服务多个实例时需要。这是信封数据（topic、路由键），**绝不进帧**：帧自己不知道接收方的前缀（ADR-0010 §5，知识不对称）。
+2. **种类**：写（fire-and-forget）还是读（期待应答）。帧的首个 op tag 理论上能承载，但让信封知道它，通道就能不看帧内容就路由应答。
+3. **关联**（仅读）：匹配响应与请求的 id。mpsc 靠通道配对免费获得；WS 要么用专门的请求/应答模式，要么按 id 多路复用。两者都是传输策略——帧对此保持沉默。
+
+**不能进信封的**：布局版本、schema 提示、压缩标志——任何让接收方理解帧内容的东西。信封把 OKM 帧当成和其它二进制载荷完全一样的东西对待，这就是隔离机制的全部。
+
+## WS 上的顺序与原子性保证
+
+- **写顺序**：WS 消息按发送序到达（单连接内）；宿主写泵按到达序应用。一帧 = 一次引擎 `commit_batch`，发送方的 batch 原子性 1:1 映射。多条连接打同一个宿主 = 无全序——把每个发送方的写路由到它自己的宿主实例（本来就该每应用一个 `#[kv_storage]`），或接受交错（发送方触碰不相交 key 范围时无害）。
+- **读**：任何连接都能服务读；宿主的引擎互斥锁让它们与写泵串行。
+- **重连**：WS 断开丢失在途帧（fire-and-forget 写没有 ack）。发送方若需要送达保证，那是通道层的关切（ack 信封 + 重试幂等），不是 OKM 的——OKM 的引擎操作按 key 幂等：重放 put 安全，重放 delete 是 no-op，但 put-delete-put 序列从检查点重放需要检查点在发送方。需求真实时在信封层设计，不要预防性建设。
+
+## 为什么不进 okm-core
+
+WS 适配器是传输胶水：把既有连接绑到宿主入口，加一层信封约定。每个应用的通道协议都不同，所以适配器不可能成为库——它是应用（或 Aura 节点）里的按集成而写的代码，原料是 okm-core 提供的两块：`StorageHost` 拆出来的泵方法、`RemoteStore` 的传输 trait。文档级契约就是上面的三个信封槽位。
+
+> English version: [WS channel integration](WS-CHANNEL.md)

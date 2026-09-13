@@ -120,7 +120,7 @@ fn hour_bucket(row: &Post) -> Vec<u64> {
 
 时间分桶是这个形状的最低成本用法——返回单元素 Vec，写入时把时间戳折叠成桶号（桶号定宽 BE，字节序 = 时间序），按小时的 rollup/时间线就是一次前缀扫。同一原语直接覆盖 tokenize 全文检索（切词返回 Vec<String>）、多值字段（tags 拆分）。\`okm-core\` 不内置分词器，切分/分桶逻辑归业务层；func 的契约是**纯函数**——delete 从行重新生成待删集合，函数不纯（时钟/随机/外部状态）会在删除时生成与写入时不同的集合，留下悬挂条目。
 
-`func(path)` 与下文的 `#[kv_reduce]` 是两个外部扩展机制：func 是**单行派生**（写侧预计算，entry 仍随行生灭），reduce 是**跨行聚合**（可变 value 读-改-写）；集成的复杂形态（FTS/向量/图算法如何落在原语上）见[集成边界](INTEGRATION.zh-CN.md)。实现细节（编码契约、entry_pairs 覆盖、探针归一化）见 internals 的[函数索引机制](internals/func-index-mechanism.zh-CN.md)。
+`func(path)` 与下文的 `#[kv_reduce]` 是两个外部扩展机制：func 是**单行派生**（写侧预计算，entry 仍随行生灭），reduce 是**跨行聚合**（可变 value 读-改-写）；集成的复杂形态（FTS/向量/图算法如何落在原语上）见[集成边界](integration/EXTENSION-TYPES.zh-CN.md)。实现细节（编码契约、entry_pairs 覆盖、探针归一化）见 internals 的[函数索引机制](internals/func-index-mechanism.zh-CN.md)。
 
 索引条目物理布局（ADR-0005）：
 
