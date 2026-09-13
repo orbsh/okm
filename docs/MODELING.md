@@ -288,7 +288,7 @@ builds the assembly point without repeating the key type at the call site:
 use okm_core::{MockStore, Row};
 use __OkmIndex_User_by_org as ByOrg; // index type: derived from kv_index(by_org)
 
-let mut t = <User as Row>::table(MockStore::default(), 9);
+let mut t = <User as Row>::table(MockStore::default());
 
 t.put(&user, &User { org_id: 7, created_at: 30, reputation: 100, bio_len: 2 });
 
@@ -326,6 +326,45 @@ use __OkmIndex_Doc_by_token as ByToken;
 // Query: prefix scan by token → fetch-back, exactly like a plain index
 let hits = t.scan::<ByToken>(b"rust");
 ```
+
+### Payload versions and field defaults
+
+The payload carries a version byte (`#[kv_layout(version = N)]`, default 1).
+Decode rule: a payload whose header version is **newer** than the reading
+schema's is rejected; **older** payloads are accepted, and fields the old
+payload lacks (appended at the tail after that version was written) take
+their defaults:
+
+```rust
+#[derive(RowEncode, Clone, PartialEq, Debug)]
+#[kv_ref(UserKey)]
+#[kv_layout(version = 2)]            // bump when the field set changed
+pub struct User {
+    pub org_id: u32,                 // existed since v1
+    #[kv_default(100)]               // explicit default for pre-v2 payloads
+    pub reputation: u32,             // appended at v2's tail
+    pub bio_len: u16,                // no #[kv_default] → T::default() (0)
+}
+```
+
+- `#[kv_default(expr)]` is any expression (literal, constant, function
+  call); omitting it falls back to `<T as Default>::default()`.
+- Defaults apply ONLY to decoding older payloads — a field missing from
+  the bytes. Newly written payloads always carry every field (the writer
+  stamps its own version), so this is version-migration semantics, not a
+  "field default" for absent values.
+- Append-at-the-tail is the only legal way to add fields: a field the
+  reader knows but finds missing must be at the tail of its segment
+  (header `hot_len` marks the boundary for hot fields; absent cold TLV
+  frames simply aren't there). Mid-insertion changes the position of
+  existing fields = layout change = version bump + clean rebuild, never
+  silent.
+- Lazy migration: old records stay in the old format; upgrading happens
+  in memory on read. Unread rows never burn write bandwidth.
+
+The dynamic codec (schema-driven encoders in Python/Steel) mirrors this
+rule from `TableSchema` — per-field defaults travel with the schema so
+the dynamic reader applies the same migration semantics.
 
 ### Schema stability tests
 

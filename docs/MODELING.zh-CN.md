@@ -192,7 +192,7 @@ for pk in edges.reverse_prefix(&s1) {
 use okm_core::{MockStore, Row};
 use __OkmIndex_User_by_org as ByOrg; // 索引类型：kv_index(by_org) 的派生物
 
-let mut t = <User as Row>::table(MockStore::default(), 9);
+let mut t = <User as Row>::table(MockStore::default());
 
 t.put(&user, &User { org_id: 7, created_at: 30, reputation: 100, bio_len: 2 });
 
@@ -225,6 +225,29 @@ use __OkmIndex_Doc_by_token as ByToken;
 // 查询：token 前缀扫 → 回表，与普通索引无异
 let hits = t.scan::<ByToken>(b"rust");
 ```
+
+### Payload 版本与字段默认值
+
+payload 头部带版本字节（`#[kv_layout(version = N)]`，默认 1）。解码规则：payload 头部版本比读取方的 schema **新** → 拒绝；**旧** → 接受，且旧 payload 缺失的字段（该版本之后尾部追加的）取默认值：
+
+```rust
+#[derive(RowEncode, Clone, PartialEq, Debug)]
+#[kv_ref(UserKey)]
+#[kv_layout(version = 2)]            // 字段集变更时递增
+pub struct User {
+    pub org_id: u32,                 // v1 就有
+    #[kv_default(100)]               // 显式默认：v2 之前的 payload 用它
+    pub reputation: u32,             // v2 尾部追加
+    pub bio_len: u16,                // 无 #[kv_default] → T::default()（0）
+}
+```
+
+- `#[kv_default(expr)]` 接受任意表达式（字面量、常量、函数调用）；不写则回退 `<T as Default>::default()`。
+- 默认值**只作用于解码旧版本 payload**——即字节里缺失的字段。新写入的 payload 总是带全字段（写入方标自己的版本），所以这是版本迁移语义，不是「字段缺省值」。
+- 尾部追加是加字段的唯一合法方式：读取方认识但字节里找不到的字段必然在段尾（header 的 `hot_len` 标出热段边界；cold TLV 帧缺席就是不在）。中途插入会改变既有字段的位置 = 布局变更 = version 递增 + 清库重建，绝不静默。
+- 惰性迁移：旧记录保持旧格式，升级发生在读取时的内存里。未读到的行永不消耗写带宽。
+
+dynamic codec（Python/Steel 的 schema 驱动编解码）从 `TableSchema` 镜像同一规则——字段默认值随 schema 走，动态读取器执行同样的迁移语义。
 
 ### Schema 稳定性测试
 
