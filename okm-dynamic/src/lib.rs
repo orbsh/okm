@@ -8,7 +8,7 @@
 //!
 //! Execution contract (Aura): Python/Steel implement a schema-driven
 //! VirtualStorage — they encode/decode, the engine execution stays in
-//! OKM (`kvStorage` executors, now WITHOUT a receiver prefix: same-shard
+//! OKM (`StorageHost` executors, without a receiver prefix: same-shard
 //! local execution, same code path for future sharded distribution; the
 //! upper layer coordinates and orchestrates). Capability ceiling is
 //! permanent: no reduce, no subscribe (compile-time fold/unfold; a
