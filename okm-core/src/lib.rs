@@ -34,6 +34,7 @@ pub mod reduce;
 pub mod collection;
 pub mod edge;
 pub mod remote;
+pub mod schema;
 pub mod storage;
 pub mod field;
 pub mod index;

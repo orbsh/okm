@@ -6,129 +6,23 @@
 //! caller's application. A "CLI experience" is a thin bin wrapping these
 //! calls.
 //!
-//! - [`describe`]-style methods render the declaration-order byte layout
-//!   (offsets, widths, TLV frame strides) from the same `FieldDesc` tables
-//!   the derive macros emit — the declaration is still the single source;
-//!   nothing re-parses source code.
+//! - `json_schema` renders the declaration-order byte layout as
+//!   machine-readable JSON (from the same `FieldDesc` tables the derive
+//!   macros emit — the declaration is still the single source; nothing
+//!   re-parses source code).
 //! - `export_parquet` / `import_parquet` (feature `parquet`) sit on the
 //!   Arrow bridge: RecordBatch → Parquet file, and back. Import writes
 //!   through [`Table::put`] — the normal one-batch write contract (primary
 //!   key + index entries) is never bypassed; this is a backup/restore path,
 //!   not a second write channel.
 
-use crate::storage::VirtualStorage;
-use crate::field::{FieldDesc, FieldType};
+use crate::field::FieldType;
 use crate::index::Row;
 use crate::key::KeyEncode;
-use crate::table::Table;
-
-/// One line of the layout audit table.
-pub struct LayoutRow {
-    pub name: &'static str,
-    /// Byte offset of the value within its region (key encoding for key
-    /// fields, TLV payload for row fields).
-    pub offset: usize,
-    pub width: usize,
-    pub ty: FieldType,
-}
-
-impl std::fmt::Display for LayoutRow {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "  {:<16} {:>7} {:>6}  {:?}",
-            self.name, self.offset, self.width, self.ty
-        )
-    }
-}
 
 /// Declaration-order offset table for a fixed-width region (the key
 /// encoding, or the value half of TLV frames — widths are declared, so the
 /// stride math is the same for both).
-fn layout_rows(fields: &[FieldDesc]) -> Vec<LayoutRow> {
-    let mut rows = Vec::with_capacity(fields.len());
-    let mut off = 0usize;
-    for f in fields {
-        rows.push(LayoutRow {
-            name: f.name,
-            offset: off,
-            width: f.width,
-            ty: f.ty,
-        });
-        off += f.width;
-    }
-    rows
-}
-
-/// Human-readable layout audit for a table's identity + payload fields:
-/// key encoding (fixed offsets from 0) and TLV payload (per-field frame
-/// stride `tag 1B + len 4B + value`). No compiler session needed — this is
-/// the declaration rendered as bytes.
-pub fn describe<K: KeyEncode, R: Row<Key = K>>() -> String {
-    let key_fields = <K as KeyEncode>::FIELDS;
-    let row_fields = <R as Row>::FIELDS;
-    let mut out = String::new();
-    out.push_str(&format!(
-        "{} {{ key: {} }}  KEY_LEN={}\n",
-        std::any::type_name::<K>(),
-        std::any::type_name::<R>(),
-        K::KEY_LEN,
-    ));
-
-    out.push_str("  -- key encoding (BE, declaration order) --\n");
-    for r in layout_rows(key_fields) {
-        out.push_str(&format!("{r}\n"));
-    }
-
-    if !row_fields.is_empty() {
-        out.push_str("  -- payload: [ver u8][hot_len u16 BE][hot][cold TLV (tag u8 + len u32 BE + value)] --\n");
-        // Hot segment: fixed-width fields at contiguous static offsets.
-        let mut off = 3usize; // header = version + hot_len
-        for f in row_fields.iter().filter(|f| f.width > 0) {
-            out.push_str(&format!(
-                "  {:<16} {:>7} {:>6}  {:?}   (hot, static offset)\n",
-                f.name, off, f.width, f.ty
-            ));
-            off += f.width;
-        }
-        // Cold segment: TLV frames, tag = declaration index.
-        let hot_total = off - 3;
-        let mut cold_off = 0usize;
-        for (fi, f) in row_fields.iter().enumerate() {
-            if f.width > 0 {
-                continue;
-            }
-            out.push_str(&format!(
-                "  {:<16} {:>7} {:>6}  {:?}   (cold, tag {fi}, frame header at {cold_off})\n",
-                f.name,
-                cold_off + 5,
-                "var",
-                f.ty
-            ));
-            cold_off += 5; // Str/VarInt stride is dynamic; show the static header part
-        }
-        out.push_str(&format!(
-            "  payload total: 3+{hot_total} hot + {cold_off}+ cold (variable-length frames add their value bytes)\n"
-        ));
-    }
-    out
-}
-
-impl<S: VirtualStorage, K: KeyEncode, R: Row<Key = K>> Table<S, K, R> {
-    /// Layout audit for this table's key + row declaration (see [`describe`]).
-    pub fn describe(&self) -> String {
-        describe::<K, R>()
-    }
-
-    /// JSON Schema of this table's snapshot shape — the same column set the
-    /// Parquet export writes (key fields first, then payload fields, in
-    /// declaration order), so external tools reading the Parquet file can
-    /// derive their schema from this instead of introspecting the file.
-    pub fn json_schema(&self) -> String {
-        json_schema::<K, R>()
-    }
-}
-
 /// JSON Schema for the exported row shape (see [`Table::json_schema`]).
 /// Column type mapping mirrors the Arrow bridge: fixed-width unsigned
 /// integers → their JSON number types, `[u8; N]` → base64 string (the same
@@ -189,6 +83,8 @@ pub fn json_schema<K: KeyEncode, R: Row<Key = K>>() -> String {
 #[cfg(feature = "parquet")]
 pub mod parquet_io {
     use super::*;
+    use crate::storage::VirtualStorage;
+    use crate::table::Table;
     use arrow::array::{Array, BinaryArray, RecordBatch};
 
     /// Export all rows to a Parquet file (overwrite). Typed columns, schema

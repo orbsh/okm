@@ -1,0 +1,12 @@
+[package]
+name = "okm-dynamic"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+okm-core = { path = "../okm-core" }
+serde = { version = "1", features = ["derive"], optional = true }
+
+[features]
+default = []
+serde = ["dep:serde"]

@@ -1,4 +1,4 @@
-//! Tooling interfaces (PLAN Phase 4): layout audit (`describe`) and the
+//! Tooling interfaces (PLAN Phase 4): schema export and the
 //! Parquet snapshot round trip (export → import through `Table::put`).
 
 use okm_core::{FieldDesc, FieldType, KeyEncode, MockStore, Row, RowEncode, Table, parquet_io};
@@ -19,44 +19,6 @@ pub struct TRow {
     pub tag: [u8; 4],
 }
 
-// ================= describe =================
-
-#[test]
-fn describe_renders_offsets_and_tlv_frames() {
-    let table: Table<MockStore, TKey, TRow> = Table::new(MockStore::default());
-    let text = table.describe();
-
-    // Key half: declaration-order fixed offsets.
-    assert!(text.contains("org_id"), "key field listed:\n{text}");
-    assert!(text.contains("user_id"), "key field listed:\n{text}");
-    assert!(text.contains("KEY_LEN=12"), "KEY_LEN rendered:\n{text}");
-
-    // Payload half: TLV frame strides — first value at 5 (after tag+len of
-    // frame 0), second at 5+5+2 per declaration widths (4, 2, then [u8;4]).
-    assert!(text.contains("reputation"), "payload field listed:\n{text}");
-    assert!(text.contains("payload total"), "payload summary:\n{text}");
-
-    // Free function form agrees.
-    assert_eq!(okm_core::tooling::describe::<TKey, TRow>(), text);
-}
-
-#[test]
-fn describe_offset_math_matches_wire_format() {
-    // Recompute the offsets the formatter prints and cross-check against a
-    // real payload: the first field's value must start at byte 5.
-    let row = TRow {
-        reputation: 0x01020304,
-        level: 0x0506,
-        tag: [0xA0, 0xA1, 0xA2, 0xA3],
-    };
-    let p = row.encode_payload();
-    // [ver u8][hot_len u16 BE][hot segment]. All TRow fields are fixed-width
-    // → no cold frames: reputation @3..7, level @7..9, tag @9..13.
-    assert_eq!(&p[1..3], &[0, 10], "hot_len = 4+2+4");
-    assert_eq!(&p[3..7], &[1, 2, 3, 4]); // reputation BE at offset 3
-    assert_eq!(&p[7..9], &[5, 6]); // level BE at 3 + 4
-    assert_eq!(&p[9..13], &[0xA0, 0xA1, 0xA2, 0xA3]); // tag at 3 + 4 + 2
-}
 
 // ================= Parquet round trip =================
 
@@ -139,7 +101,7 @@ impl okm_core::KvIndex for TRowByOrg {
     }
 }
 
-// ================= FieldDesc sanity (describe's data source) =================
+// ================= FieldDesc sanity (schema export's data source) =================
 
 #[test]
 fn json_schema_is_valid_and_matches_parquet_columns() {
