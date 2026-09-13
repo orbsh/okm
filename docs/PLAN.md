@@ -304,6 +304,12 @@ and the Phase 6 baseline premise is now real, not planned.
 
 ## Phase 7 — VirtualStorage: engine as boundary, remote backend, kv_storage derive (ADR-0010)
 
+Implementation naming note: the ADR's concept name `#[kv_storage]` maps to
+code as `#[derive(StorageEncode)]` -> `StorageHost` (okm-core/src/remote.rs)
+— the receiver that prepends its declared prefix and executes on the local
+engine. ADR text uses the concept name; code identifiers use StorageEncode/
+StorageHost throughout.
+
 - [x] Trait boundary rename: `KvEngine` → `VirtualStorage` (module
       `engine` → `storage`; async twin `KvEngineAsync` →
       `VirtualStorageAsync`), shipped 2026-09-12. The trait speaks only
@@ -342,6 +348,26 @@ and the Phase 6 baseline premise is now real, not planned.
       OKM = one domain model); the engine choice stays
       per-assembly-point (local/remote freely mixable — remote is just
       another KvEngine impl).
+- [ ] Benchmarks (criterion, `benches/` per crate):
+      establish the performance floor the abstractions claim.
+      Encoding paths: KeyEncode::encode / encode_prefix_named, payload
+      encode/decode (hot + cold TLV), Reverse bit-flip, VarInt, Quant —
+      per key-size distribution (small/typical/wide).
+      Index scan: scan_index + fetch-back vs scan_covered at fanout
+      1/100/10k entries per prefix value.
+      Engine backends: MockStore vs fjall (sync) — put throughput, point
+      get, prefix-scan latency; batch commit (10/100/1k ops) vs per-op
+      put; slatedb async path separate (feature-gated).
+      Remote path: framed put round trip vs local put — measures the
+      okm-wire codec + host pump overhead (ADR-0010 claims the transport
+      is thin; verify).
+      Dynamic codec: okm-dynamic encode/decode vs the Rust derive path
+      on the same declaration — the interpreter's tax, expected but
+      measured, not assumed.
+      Reduce fold: fold cost at group cardinality 1/1k/100k.
+      Deliverable: baseline numbers recorded in docs (here or an
+      internals doc), re-run on engine upgrades. No CI regression gates
+      initially — baselines first; gates only where variance allows.
 - [~] Dynamic codec (Python first, then Steel): schema-driven
       encoder/decoder/scan built from structured schema exports —
       in-process use for embedded-language Actors. Permanent capability
