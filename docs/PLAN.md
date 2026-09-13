@@ -342,11 +342,20 @@ and the Phase 6 baseline premise is now real, not planned.
       OKM = one domain model); the engine choice stays
       per-assembly-point (local/remote freely mixable — remote is just
       another KvEngine impl).
-- [ ] Dynamic codec (Python first, then Steel): schema-driven
-      encoder/decoder/scan built from `describe()`/`json_schema()` exports —
+- [~] Dynamic codec (Python first, then Steel): schema-driven
+      encoder/decoder/scan built from structured schema exports —
       in-process use for embedded-language Actors. Permanent capability
       ceiling: no reduce/subscribe (Rust compile-time logic; dynamic rebuild
-      would break exactly-once).
+      would break exactly-once). Core shipped 2026-09-12: `okm-core::schema::
+      TableSchema::of` (structured export, serde behind `schema-serde`) +
+      `okm-dynamic` crate (Value tree; encode/decode mirroring the derive's
+      byte layout; version gate + unknown-tag skip); cross-language byte
+      equality locked by dynamic_cross_test. Remaining: PyO3/Steel bindings;
+      version-default migration on the dynamic read path — `#[kv_default]`
+      values must travel in TableSchema (derive exports them; decode applies
+      defaults for fields missing from older payloads, mirroring the Rust
+      decode rule); schema reverse-import (Python-declared key/row/table →
+      Rust runtime execution) deferred.
 - [x] Multi-tenancy: receiver-side prefix only — a remote OKM instance is
       one application = one domain model = one ns; to the receiver it is
       just another prefix. No app_id layer inside OKM, no multi-level ns
