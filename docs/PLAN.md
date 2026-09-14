@@ -397,6 +397,25 @@ StorageHost throughout.
       identical sender keys), internal tenant sharding as a plain key
       field, and the Table write path landing inside the tenant's
       segment.
+- [x] Bare shard host: `StorageHost::bare` — NO prefix, frames execute
+      byte-identical (the sender's keyspace IS the engine's keyspace).
+      Serves sharding of one business domain: N shards = N bare hosts
+      behind the orchestrator's partition-key routing (e.g. Aura's);
+      OKM adds zero checking or machinery. Prerequisite: domain-model
+      consistency across the shard instances pointing at one host —
+      guaranteed by deployment (same binary per shard), not decidable
+      at runtime. Coexists with hosted hosts on one engine (2-byte
+      segment disjointness; the orchestrator allocates hosted segment
+      numbers off the bare shards' in-domain ns numbers — an
+      allocation duty at the global-view layer, not a runtime check;
+      hosted apps may themselves shard as bare-hosted instances).
+      Enabler: `SharedVirtualStorage` trait — hosts require genuinely
+      shared engines (handle semantics, not deep copies); MockStore now
+      shares via an Arc kernel. `StorageCore` (transport-free intake:
+      apply_write/apply_read) factored out for WS/UDS adapters; mpsc
+      pumps remain the reference transport. bare_shard_test locks
+      byte-identical execution, shard-table ns segments, and
+      bare+hosted coexistence.
 - [~] Key-segment composition primitive — REJECTED (2026-09-12, evaluated
       and dropped). The scenario was hypothetical: it existed to justify
       moving `#[kv_ns]` off `KeyEncode` (a key type may legitimately serve
