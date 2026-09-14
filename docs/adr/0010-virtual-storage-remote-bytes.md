@@ -137,8 +137,9 @@ The receiver is declared, not hand-wired. An empty struct annotated with
 `#[kv_storage(...)]` declares only its namespace (which app/prefix it
 serves). The derive generates **no data methods** (no put/get/scan — there
 is no row type to encode) and exactly one execution method
-(`exec`/`receive`): take frame → prepend declared prefix → plain engine
-execution → fill back scan results.
+(`apply`): take frame → prepend declared prefix → plain engine
+execution → return the response frame (Some for get/scan, None for
+put/delete — the return value itself answers whether a reply exists).
 
 This pins three things at once: prefix source (declared, not scattered
 config), executor shape (macro-generated, not hand-assembled), and

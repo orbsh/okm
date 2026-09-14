@@ -39,7 +39,7 @@ Krystallizer 进程                         Aura 节点进程
                                         └──────────────────────────────┘
 ```
 
-**接收侧（Aura）**：WS handler 收到信封，按信封约定取出 OKM 载荷，直接调宿主执行核心的两个入口。`StorageHost` 的执行核心（`StorageCore`——引擎 + 前缀 + `apply_write`/`apply_read`）在 `Arc` 里天然 `Send + Sync`，不需要任何包装：
+**接收侧（Aura）**：WS handler 收到信封，按信封约定取出 OKM 载荷，直接调宿主执行核心的唯一入口。`StorageHost` 的执行核心（`StorageCore`——引擎 + 前缀 + `apply`）在 `Arc` 里天然 `Send + Sync`，不需要任何包装。执行是"接收指令、执行、回发"三步，**读写不分岔**：四个操作（put/delete/get/scan）同一帧格式，`apply` 按返回值决定有没有响应——get/scan 返回 Some（响应帧），put/delete 返回 None（无响应，也不需要发）：
 
 ```rust
 // Aura 侧：宿主构造后，把 Arc<StorageCore> 存进 WS 会话状态
@@ -49,66 +49,31 @@ host.serve();                                   // mpsc 参考传输照常可开
 
 // WS 消息处理（信封解析是 WS 侧自己的代码，OKM 不参与）：
 fn on_ws_message(core: &StorageCore<MyEngine>, envelope: Envelope) {
-    match envelope.kind {
-        Kind::StorageWrite => core.apply_write(&envelope.payload),
-        Kind::StorageRead  => {
-            if let Some(resp) = core.apply_read(&envelope.payload) {
-                send_ws(envelope.reply_to, resp);   // 响应帧走同连接
-            }
-        }
-        // 其它应用消息……
+    // 每个操作帧独立：执行 → 有响应就发回，没有就什么都不发。
+    // 信封里的 kind 不区分读写——那不是 OKM 的语义，帧内容自带。
+    if let Some(resp) = core.apply(&envelope.payload) {
+        send_ws(envelope.reply_to, resp);   // get/scan 的响应帧走同连接
     }
+    // 其它应用消息……
 }
 ```
 
-WS 特有的部分（信封解析、路由、请求 id）全在 handler 的解析代码里——OKM 侧给传输的东西就一个 `Arc<StorageCore>` 的两个方法，没有任何需要适配的结构体。mpsc 接线保留为参考传输，与新入口共享同一执行核心，行为零分叉。
+WS 特有的部分（信封解析、路由、请求 id）全在 handler 的解析代码里——OKM 侧给传输的东西就一个 `Arc<StorageCore>` 的一个方法，没有任何需要适配的结构体。mpsc 接线保留为参考传输，与新入口共享同一执行核心，行为零分叉。
 
-**发送侧（Krystallizer）**：`RemoteStore` 目前硬绑 `mpsc::Sender<Vec<u8>>`。泛化方向是把发送方对小传输的依赖从一个具体通道改成一个小 trait：
+**发送侧（Krystallizer）**：发送侧就是正常的存储读写——`RemoteStore` 实现 `VirtualStorage`，`put/get/del/scan_suffix` 四个操作的签名和本地引擎完全一致，调用方感知不到远端。差异被压在实现内部：每个操作编码成帧，经信封送到对端，get/scan 阻塞等响应帧，put/delete 发完即回（fire-and-forget）。换传输（mpsc → WS）只改 `RemoteStore` 内部的发送/等待两个私有方法，`VirtualStorage` 接口和调用方零变化。
 
-```rust
-pub trait FrameTransport {
-    /// 发送一个写帧（fire-and-forget）。
-    fn send_write(&self, frame: Vec<u8>);
-    /// 发送一个读帧并阻塞等响应。关联是传输自己的事（进程内 mpsc 靠
-    /// 通道配对隐式完成；WS 靠连接本身或信封里的请求 id）。
-    fn round_trip(&self, frame: Vec<u8>) -> Vec<u8>;
-}
-```
-
-WS 实现包住应用**现有的**连接句柄：
-
-```rust
-struct WsTransport<C: WsConn> {
-    conn: C,                       // 既有连接，共享
-    write_topic: &'static str,     // 信封约定：OKM 帧在协议里的位置
-    read_topic: &'static str,
-}
-
-impl<C: WsConn> FrameTransport for WsTransport<C> {
-    fn send_write(&self, frame: Vec<u8>) {
-        self.conn.send_json(topic(self.write_topic), frame);  // 不透明载荷
-    }
-    fn round_trip(&mut self, frame: Vec<u8>) -> Vec<u8> {
-        let id = self.conn.next_request_id();                 // 关联 id
-        self.conn.send_json(request(self.read_topic, id), frame);
-        self.conn.wait_reply(id)                              // 阻塞当前 task
-    }
-}
-```
-
-注意**什么没有变**：帧字节、codec、host、前缀纪律、batch 原子性映射。只有最后一公里长出了一个信封。
+注意**什么没有变**：帧字节、codec、host、前缀纪律、batch 原子性映射。发送侧看不到信封——它只看到正常的 VirtualStorage 读写；信封只存在于接收侧 handler 的解析代码里。
 
 ### 形态 B：OKM 作为 WS 应用的存储服务
 
-反向嵌入——WS 应用是存储客户端，OKM 跑在自己的进程（或同进程不同 Actor），经由 topic 可达。与形态 A 相同，只是信封两侧角色对调；适配器和传输 trait 是同样的两块。
+反向嵌入——WS 应用是存储客户端，OKM 跑在自己的进程（或同进程不同 Actor），经由 topic 可达。与形态 A 相同，只是信封两侧角色对调；接收侧 handler 和发送侧 RemoteStore 是同样的两块。
 
 ## 可行的信封约定
 
-通道协议需要给 OKM 流量三个槽位：
+通道协议需要给 OKM 流量两个槽位：
 
 1. **路由**：帧给哪个声明的宿主（哪个应用/前缀）——一条连接服务多个实例时需要。这是信封数据（topic、路由键），**绝不进帧**：帧自己不知道接收方的前缀（ADR-0010 §5，知识不对称）。裸分片宿主（`StorageHost::bare`，无前缀）对路由到它的每一帧字节原样执行——一个域模型的分片就是编排层 partition-key 路由背后的 N 个裸宿主。
-2. **种类**：写（fire-and-forget）还是读（期待应答）。帧的首个 op tag 理论上能承载，但让信封知道它，通道就能不看帧内容就路由应答。
-3. **关联**（仅读）：匹配响应与请求的 id。mpsc 靠通道配对免费获得；WS 要么用专门的请求/应答模式，要么按 id 多路复用。两者都是传输策略——帧对此保持沉默。
+2. **关联**：匹配响应与请求的 id。有没有响应由帧内容决定（apply 的返回值），信封不需要知道读写之分——同一关联机制对两种操作一视同仁。mpsc 靠通道配对免费获得；WS 要么用专门的请求/应答模式，要么按 id 多路复用。两者都是传输策略——帧对此保持沉默。
 
 **不能进信封的**：布局版本、schema 提示、压缩标志——任何让接收方理解帧内容的东西。信封把 OKM 帧当成和其它二进制载荷完全一样的东西对待，这就是隔离机制的全部。
 
@@ -120,6 +85,6 @@ impl<C: WsConn> FrameTransport for WsTransport<C> {
 
 ## 为什么不进 okm-core
 
-WS 适配器是传输胶水：把既有连接绑到宿主入口，加一层信封约定。每个应用的通道协议都不同，所以适配器不可能成为库——它是应用（或 Aura 节点）里的按集成而写的代码，原料是 okm-core 提供的两块：`StorageHost` 拆出来的泵方法、`RemoteStore` 的传输 trait。文档级契约就是上面的三个信封槽位。
+WS 适配器是传输胶水：把既有连接绑到宿主入口，加一层信封约定。每个应用的通道协议都不同，所以适配器不可能成为库——它是应用（或 Aura 节点）里的按集成而写的代码，原料是 okm-core 提供的两块：`StorageCore::apply`（接收侧唯一入口）、`RemoteStore`（发送侧，实现 VirtualStorage）。文档级契约就是上面的两个信封槽位。
 
 > English version: [WS channel integration](WS-CHANNEL.md)

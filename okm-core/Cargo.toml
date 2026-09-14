@@ -24,9 +24,10 @@ syn = { version = "2", features = ["full", "parsing"] }
 [features]
 default = []
 schema-serde = ["dep:serde"]
+test-engines = ["slatedb"]
+slatedb = ["dep:slatedb", "dep:tokio"]
 fjall = ["dep:fjall", "dep:tempfile"]
 redb = ["dep:redb", "dep:tempfile"]
-slatedb = ["dep:slatedb", "dep:tokio"]
 arrow = ["dep:arrow"]
 parquet = ["dep:parquet", "arrow"]
 
@@ -55,3 +56,59 @@ required-features = ["parquet"]
 [[test]]
 name = "tooling_test"
 required-features = ["parquet"]
+
+[[test]]
+name = "deprecated_index_test"
+required-features = ["test-engines"]
+
+[[test]]
+name = "dynamic_cross_test"
+required-features = ["test-engines"]
+
+[[test]]
+name = "engine_matrix_test"
+required-features = ["test-engines", "fjall", "redb"]
+
+[[test]]
+name = "index_test"
+required-features = ["test-engines"]
+
+[[test]]
+name = "integration"
+required-features = ["test-engines"]
+
+[[test]]
+name = "kv_storage_test"
+required-features = ["test-engines"]
+
+[[test]]
+name = "multi_tenant_test"
+required-features = ["test-engines"]
+
+[[test]]
+name = "reduce_test"
+required-features = ["test-engines"]
+
+[[test]]
+name = "remote_test"
+required-features = ["test-engines"]
+
+[[test]]
+name = "save_into_test"
+required-features = ["test-engines"]
+
+[[test]]
+name = "subscribe_test"
+required-features = ["test-engines"]
+
+[[test]]
+name = "upsert_test"
+required-features = ["test-engines"]
+
+[[test]]
+name = "wrappers_test"
+required-features = ["test-engines"]
+
+[[test]]
+name = "bare_shard_test"
+required-features = ["test-engines"]

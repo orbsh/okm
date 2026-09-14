@@ -10,7 +10,6 @@
 //! rejection.
 
 use okm_core::{KeyEncode, TestStore, Row, RowEncode, Table, VirtualStorage};
-use __OkmIndex_User_by_level as ByLevel;
 use okm_core::schema::TableSchema;
 use okm_dynamic::{decode_key, decode_payload, encode_key, encode_payload, CodecError, Value, ValueMap};
 use std::collections::BTreeMap;

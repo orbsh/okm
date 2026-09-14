@@ -7,7 +7,7 @@
 //! `Table::prune_deprecated_slots` deletes them by prefix.
 
 use okm_core::{
-    KeyEncode, TestStore, Row, RowEncode, Table, VirtualStorage,
+    KeyEncode, TestStore, RowEncode, Table, VirtualStorage,
 };
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
