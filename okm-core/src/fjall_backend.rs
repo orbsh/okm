@@ -5,7 +5,7 @@
 //! key encoding itself, so different edge types sharing a keyspace do not
 //! conflict.
 
-use crate::storage::{KvBatch, VirtualStorage, MemBatch};
+use crate::storage::{VirtualStorage, MemBatch};
 use fjall::{Database, Keyspace, KeyspaceCreateOptions};
 
 /// Clone is a handle clone: Arc-inner in fjall, clones share the keyspace.
