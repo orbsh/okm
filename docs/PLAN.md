@@ -315,7 +315,12 @@ StorageHost throughout.
       `VirtualStorageAsync`), shipped 2026-09-12. The trait speaks only
       encoded bytes (put/get/del/scan_suffix/batch/commit_batch — no
       method changes, no alias layer). Four backend shapes:
-      mock / fjall / slatedb / remote; backend struct names unchanged.
+      fjall / slatedb / redb / remote; backend struct names
+      unchanged. redb shipped 2026-09-12 (feature 'redb'): single-file
+      B-tree, read-deterministic complement to fjall's LSM; batch =
+      one write transaction; in the TestStore engine matrix
+      (engine_matrix_test runs the same verification across all
+      enabled backends).
 - [x] Remote backend (sender side): impl VirtualStorage; write = MemBatch
       op list hand-framed with counted lengths into a frame
       `[op][batch bytes]` — no serde/postcard, the frame is counted
