@@ -48,7 +48,7 @@ fn wait_for(predicate: impl Fn() -> bool, what: &str) {
 
 #[test]
 fn table_semantics_over_remote() {
-    let handle = spawn_host(TestStore::slatedb_mem(), &[0x00, 0x09]);
+    let handle = spawn_host(TestStore::default(), &[0x00, 0x09]);
     let remote = handle.open();
 
     let mut t: Table<RemoteStore, UserKey, User> = Table::new(remote);
@@ -97,8 +97,8 @@ fn prefix_isolation_between_two_hosts() {
     // prefix A physically cannot land bytes in B's segment — it does not
     // hold B's prefix (ADR-0010 §4). Verified by cross reads: A's bytes
     // are invisible to B's sender and vice versa.
-    let ha = spawn_host(TestStore::slatedb_mem(), &[0x00, 0x01]);
-    let hb = spawn_host(TestStore::slatedb_mem(), &[0x00, 0x02]);
+    let ha = spawn_host(TestStore::default(), &[0x00, 0x01]);
+    let hb = spawn_host(TestStore::default(), &[0x00, 0x02]);
     let mut ra = ha.open();
     let mut rb = hb.open();
 
@@ -117,7 +117,7 @@ fn prefix_isolation_between_two_hosts() {
 
 #[test]
 fn commit_batch_is_one_frame_one_commit() {
-    let handle = spawn_host(TestStore::slatedb_mem(), &[0x00, 0x03]);
+    let handle = spawn_host(TestStore::default(), &[0x00, 0x03]);
     let mut remote = handle.open();
 
     // Cross-assembly atomicity (ADR-0003): the whole batch ships as one

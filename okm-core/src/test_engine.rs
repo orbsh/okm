@@ -98,6 +98,22 @@ impl Default for TestStore {
     }
 }
 
+#[cfg(all(not(feature = "slatedb"), feature = "fjall"))]
+impl Default for TestStore {
+    /// No slatedb in this build: fjall temp-dir is the fallback.
+    fn default() -> Self {
+        Self::fjall_tmp()
+    }
+}
+
+#[cfg(all(not(feature = "slatedb"), not(feature = "fjall"), feature = "redb"))]
+impl Default for TestStore {
+    /// Only redb in this build.
+    fn default() -> Self {
+        Self::redb_tmp()
+    }
+}
+
 impl crate::storage::SharedVirtualStorage for TestStore {
     fn shared_handle(&self) -> Self {
         self.shared_handle()
