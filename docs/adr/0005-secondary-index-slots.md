@@ -1,7 +1,7 @@
 # ADR-0005: Secondary indexes — item-local slot allocation, no manual ns per index
 
 Date: 2026-09-06
-Status: Implemented. **Update 2026-09-12, [ADR-0006](0006-row-node-model.md) refinement**: `#[kv_ns]` itself also mounts on the **row struct** now (`Row::NS_PREFIX`, a `&'static [u8]` big-endian `[ns 2B]` emitted by the derive) — the row is the table's declaration point (`#[kv_ref]` pins the key type), and a key type carries no ns so the same key shape can serve several rows/tables, each with its own declared ns. `Table::new` loses the ns parameter. One number per table: unchanged. **Update 2026-09-07, [ADR-0006](0006-row-node-model.md)**: `#[kv_index]` mounts on the **row struct** (`RowEncode`), not the key struct — the index's data source is row attributes, and key structs stay pure identity. Slot numbering, ns derivation, and the 1-byte discriminator below are unchanged; covering indexes (`includes`) are positioned as materialized views for high-fanout queries. **Update 2026-09-10, implementation**: the 1-byte slot byte ships as designed below — entry header is `[table_ns 2B][slot 1B]`, primary = 0, indexes numbered by declaration order. *(A 2026-09-07 implementation briefly replaced this with additive ns derivation — `index_ns = table_ns + SLOT`, no slot byte — before the flaw surfaced; see the second update at the bottom.)* `fields(...)` names **payload** fields (the index's data source is the row); the carried key tail defaults to the full primary key and may be truncated to any named subset via `key(…)` — `encode_prefix_named` now accepts arbitrary named subsets, not just declaration-order prefixes. Entry layout: `[ns 2B][slot 1B][indexed fields][key prefix]`, value = `includes` fields TLV (empty when absent).
+Status: Implemented. **Update 2026-09-14**: index entries carry the address header exactly once — the primary key rides bare in the entry tail (see the update at the bottom). **Update 2026-09-12, [ADR-0006](0006-row-node-model.md) refinement**: `#[kv_ns]` itself also mounts on the **row struct** now (`Row::NS_PREFIX`, a `&'static [u8]` big-endian `[ns 2B]` emitted by the derive) — the row is the table's declaration point (`#[kv_ref]` pins the key type), and a key type carries no ns so the same key shape can serve several rows/tables, each with its own declared ns. `Table::new` loses the ns parameter. One number per table: unchanged. **Update 2026-09-07, [ADR-0006](0006-row-node-model.md)**: `#[kv_index]` mounts on the **row struct** (`RowEncode`), not the key struct — the index's data source is row attributes, and key structs stay pure identity. Slot numbering, ns derivation, and the 1-byte discriminator below are unchanged; covering indexes (`includes`) are positioned as materialized views for high-fanout queries. **Update 2026-09-10, implementation**: the 1-byte slot byte ships as designed below — entry header is `[table_ns 2B][slot 1B]`, primary = 0, indexes numbered by declaration order. *(A 2026-09-07 implementation briefly replaced this with additive ns derivation — `index_ns = table_ns + SLOT`, no slot byte — before the flaw surfaced; see the second update at the bottom.)* `fields(...)` names **payload** fields (the index's data source is the row); the carried key tail defaults to the full primary key and may be truncated to any named subset via `key(…)` — `encode_prefix_named` now accepts arbitrary named subsets, not just declaration-order prefixes. Entry layout: `[ns 2B][slot 1B][indexed fields][key prefix]`, value = `includes` fields TLV (empty when absent).
 
 ## Context
 
@@ -100,3 +100,18 @@ tables, each with its own declared ns, which mounting ns on the key would
 have forbidden. Edge structs keep declaring `#[kv_ns]` on the edge (unchanged
 EdgeEncode path). "One number per table" is untouched: the number is now
 declared where the table is declared.
+
+## Update 2026-09-14: index entries never duplicate the address header — the primary key rides bare in the entry tail
+
+An index entry stores the address header (`[ns 2B][slot 1B]`) exactly once,
+in the entry **key**; the primary key payload rides **bare** as the tail
+segment (`[ns 2B][slot 1B][indexed fields][key payload]`, value = includes
+TLV). Stripping-and-rejoining at the engine level was considered and
+rejected (ADR-0011); likewise, repeating `[ns][slot 0]` inside each index
+entry would be pure duplication — the header is a property of the table the
+entry belongs to, and the entry key already carries it. Lookup flow: a scan
+hits the entry key, decodes the primary key from the tail segment, and
+hands it to `Table::get`, whose `primary_key` is the **single** place that
+composes `[NS_PREFIX][slot 0][payload]` for the primary table. One
+composition point per direction: entry construction composes once, primary
+lookup composes once, nothing repeats.
