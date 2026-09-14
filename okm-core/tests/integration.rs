@@ -1,7 +1,7 @@
-//! 基础集成测试：MockStore 上验证字节布局、双向查询、PrefixKey。
+//! 基础集成测试：TestStore 上验证字节布局、双向查询、PrefixKey。
 //! fjall 评估见 tests/fjall_eval.rs（--features fjall）。
 
-use okm_core::{EdgeEncode, EdgeTable, KeyEncode, KvEdge, MockStore};
+use okm_core::{EdgeEncode, EdgeTable, KeyEncode, KvEdge, TestStore};
 
 // ================= 端点类型（derive KeyEncode） =================
 
@@ -35,8 +35,8 @@ pub struct UserToSessionEdge {
 
 #[test]
 fn byte_layout_and_queries() {
-    let store = MockStore::default();
-    let mut edges: EdgeTable<MockStore, UserToSessionEdge> = EdgeTable::new(store);
+    let store = TestStore::slatedb_mem();
+    let mut edges: EdgeTable<TestStore, UserToSessionEdge> = EdgeTable::new(store);
 
     let u_org1 = UserKey {
         org_id: 7,

@@ -9,10 +9,53 @@
 
 use crate::edge::KvEdge;
 use crate::key::KeyEncode;
+use crate::storage::VirtualStorage;
 use slatedb::Db;
 use slatedb::object_store::ObjectStore;
 use std::ops::RangeFull;
 use std::sync::Arc;
+
+/// Sync facade over a slatedb instance: an internal current-thread runtime
+/// drives the async engine. This is what the sync `VirtualStorage` tests
+/// and engines run on — the in-memory object store gives a zero-fs
+/// test engine; a real object store gives production.
+///
+/// One runtime per store handle; handlers must not call across handles in
+/// nested fashion (re-entrant block_on panics). OKM's call shapes are flat
+/// (engine methods only), so this holds.
+pub struct SlatedbSync {
+    rt: tokio::runtime::Runtime,
+    db: Db,
+}
+
+impl SlatedbSync {
+    /// In-memory instance: zero fs, per-test isolation by construction
+    /// (each call builds a fresh InMemory object store).
+    pub fn open_mem(name: &str) -> Result<Self, slatedb::Error> {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("tokio current-thread runtime");
+        let store: Arc<dyn ObjectStore> = Arc::new(slatedb::object_store::memory::InMemory::new());
+        let db = rt.block_on(slatedb::Db::open(format!("/{name}"), store))?;
+        Ok(Self { rt, db })
+    }
+
+    /// Sync adapter over an already-open async Db.
+    pub fn from_db(rt: tokio::runtime::Runtime, db: Db) -> Self {
+        Self { rt, db }
+    }
+
+    /// Access the async handle (async call sites bypass block_on).
+    pub fn db(&self) -> &Db {
+        &self.db
+    }
+
+    /// Access the runtime (async call sites).
+    pub fn runtime(&self) -> &tokio::runtime::Runtime {
+        &self.rt
+    }
+}
 
 /// 异步引擎最小接口（与同步 VirtualStorage 对齐）
 pub trait VirtualStorageAsync {
@@ -123,3 +166,54 @@ impl<S: VirtualStorageAsync, E: KvEdge> AsyncEdgeTable<S, E> {
 
 // object_store 便捷 re-export：调用方构造 InMemory/S3 store 用 slatedb 的版本，避免版本分裂
 pub use slatedb::object_store;
+
+impl SlatedbSync {
+    /// slatedb ops are &self-safe (engine handles concurrency internally);
+    /// these inherent methods are what shared handles call.
+    pub fn put_sync(&self, key: Vec<u8>, value: Vec<u8>) {
+        self.rt.block_on(self.db.put(key, value)).expect("slatedb put failed");
+    }
+    pub fn get_sync(&self, key: &[u8]) -> Option<Vec<u8>> {
+        self.rt
+            .block_on(self.db.get(key))
+            .expect("slatedb get failed")
+            .map(|v| v.to_vec())
+    }
+    pub fn del_sync(&self, key: &[u8]) {
+        self.rt.block_on(self.db.delete(key)).expect("slatedb delete failed");
+    }
+    pub fn scan_suffix_sync(&self, prefix: &[u8]) -> Vec<Vec<u8>> {
+        let mut it = self
+            .rt
+            .block_on(self.db.scan_prefix(prefix, RangeFull))
+            .expect("slatedb scan failed");
+        let mut out = Vec::new();
+        while let Some(kv) = self.rt.block_on(it.next()).expect("slatedb iter failed") {
+            out.push(kv.key[prefix.len()..].to_vec());
+        }
+        out
+    }
+}
+
+impl VirtualStorage for SlatedbSync {
+    fn put(&mut self, key: Vec<u8>, value: Vec<u8>) {
+        self.put_sync(key, value)
+    }
+    fn get(&self, key: &[u8]) -> Option<Vec<u8>> {
+        self.get_sync(key)
+    }
+    fn del(&mut self, key: &[u8]) {
+        self.del_sync(key)
+    }
+    fn scan_suffix(&self, prefix: &[u8]) -> Vec<Vec<u8>> {
+        let mut it = self
+            .rt
+            .block_on(self.db.scan_prefix(prefix, RangeFull))
+            .expect("slatedb scan failed");
+        let mut out = Vec::new();
+        while let Some(kv) = self.rt.block_on(it.next()).expect("slatedb iter failed") {
+            out.push(kv.key[prefix.len()..].to_vec());
+        }
+        out
+    }
+}

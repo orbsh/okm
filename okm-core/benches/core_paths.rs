@@ -11,7 +11,7 @@ use criterion::{criterion_group, criterion_main, BatchSize, Criterion, Throughpu
 use std::hint::black_box;
 
 use okm_core::{
-    KeyEncode, KvBatch, MockStore, ReduceCodec, ReduceLogic, Reversible, Reverse, Row, RowEncode,
+    KeyEncode, KvBatch, TestStore, ReduceCodec, ReduceLogic, Reversible, Reverse, Row, RowEncode,
     Table, VarInt, VirtualStorage,
 };
 
@@ -148,7 +148,7 @@ fn bench_payload(c: &mut Criterion) {
 fn bench_scan(c: &mut Criterion) {
     let mut g = c.benchmark_group("index-scan");
     for &fanout in &[1usize, 100, 10_000] {
-        let mut t: Table<MockStore, BenchKey, BenchRow> = Table::new(MockStore::default());
+        let mut t: Table<TestStore, BenchKey, BenchRow> = Table::new(TestStore::slatedb_mem());
         for i in 0..fanout as u64 {
             let k = make_key(1_000_000 + i);
             // Same tag for all rows in this group → one prefix value,
@@ -178,12 +178,12 @@ fn bench_scan(c: &mut Criterion) {
     g.finish()
 }
 
-// ---------- write path (MockStore) ----------
+// ---------- write path (TestStore) ----------
 
 fn bench_write_mock(c: &mut Criterion) {
     let mut g = c.benchmark_group("write-mock");
     g.bench_function("put/row_with_index+reduce", |b| {
-        let mut t: Table<MockStore, BenchKey, BenchRow> = Table::new(MockStore::default());
+        let mut t: Table<TestStore, BenchKey, BenchRow> = Table::new(TestStore::slatedb_mem());
         let mut i = 0u64;
         b.iter(|| {
             t.put(&make_key(i), &make_row(i));
@@ -192,13 +192,13 @@ fn bench_write_mock(c: &mut Criterion) {
         })
     });
     g.bench_function("get/point", |b| {
-        let mut t: Table<MockStore, BenchKey, BenchRow> = Table::new(MockStore::default());
+        let mut t: Table<TestStore, BenchKey, BenchRow> = Table::new(TestStore::slatedb_mem());
         t.put(&make_key(1), &make_row(1));
         b.iter(|| black_box(t.get(&make_key(1)).is_some()))
     });
     g.bench_function("batch_commit/100_ops", |b| {
-        let store = MockStore::default();
-        let t: Table<MockStore, BenchKey, BenchRow> = Table::new(store.clone());
+        let store = TestStore::slatedb_mem();
+        let t: Table<TestStore, BenchKey, BenchRow> = Table::new(store.clone());
         b.iter_batched(
             || {
                 let mut store = store.clone();

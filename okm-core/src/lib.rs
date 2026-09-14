@@ -13,7 +13,7 @@
 //!         ↓ expand into pure functions
 //! Collection<S, E>                       ← assembly point: engine + edge type
 //!         ↓ trait dispatch
-//! VirtualStorage (MockStore / FjallStore / SlatedbStore)  ← real storage lives here
+//! VirtualStorage (FjallStore / SlatedbStore / TestStore)  ← real storage lives here
 //! ```
 //!
 //! # Features
@@ -36,6 +36,7 @@ pub mod edge;
 pub mod remote;
 pub mod schema;
 pub mod storage;
+pub mod test_engine;
 pub mod field;
 pub mod index;
 pub mod key;
@@ -55,7 +56,8 @@ pub mod tooling;
 pub use reduce::{reduce_get, scan_reduces, ReduceCodec, Reduce, ReduceLogic};
 pub use collection::EdgeTable;
 pub use edge::{KvEdge, head_bytes};
-pub use storage::{VirtualStorage, MockStore, KvBatch, MemBatch, SharedVirtualStorage};
+pub use storage::{VirtualStorage, KvBatch, MemBatch, SharedVirtualStorage};
+pub use test_engine::TestStore;
 pub use remote::{RemoteStore, StorageHost, StorageCore, VirtualHandle};
 pub use okm_wire::{ReadFrame, ReadResponse, WriteFrame};
 pub use field::{FieldDesc, FieldType};

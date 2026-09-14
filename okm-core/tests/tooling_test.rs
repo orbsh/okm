@@ -1,7 +1,7 @@
 //! Tooling interfaces (PLAN Phase 4): schema export and the
 //! Parquet snapshot round trip (export → import through `Table::put`).
 
-use okm_core::{FieldDesc, FieldType, KeyEncode, MockStore, Row, RowEncode, Table, parquet_io};
+use okm_core::{FieldDesc, FieldType, KeyEncode, TestStore, Row, RowEncode, Table, parquet_io};
 
 #[derive(KeyEncode, Clone, PartialEq, Debug)]
 pub struct TKey {
@@ -27,7 +27,7 @@ fn parquet_export_import_roundtrip_restores_rows_and_indexes() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("snapshot.parquet");
 
-    let mut t1: Table<MockStore, TKey, TRow> = Table::new(MockStore::default());
+    let mut t1: Table<TestStore, TKey, TRow> = Table::new(TestStore::slatedb_mem());
     for i in 0..5u64 {
         let k = TKey { org_id: 1, user_id: i };
         let r = TRow {
@@ -42,7 +42,7 @@ fn parquet_export_import_roundtrip_restores_rows_and_indexes() {
 
     // Import into a FRESH table: row and index entries must both come back
     // (put contract) and the scan over the index must find all 5 rows.
-    let mut t2: Table<MockStore, TKey, TRow> = Table::new(MockStore::default());
+    let mut t2: Table<TestStore, TKey, TRow> = Table::new(TestStore::slatedb_mem());
     let n = parquet_io::import_parquet(&mut t2, &path).unwrap();
     assert_eq!(n, 5, "restored row count");
 
@@ -105,8 +105,7 @@ impl okm_core::KvIndex for TRowByOrg {
 
 #[test]
 fn json_schema_is_valid_and_matches_parquet_columns() {
-    let table: Table<MockStore, TKey, TRow> = Table::new(MockStore::default());
-    let schema = table.json_schema();
+    let schema = okm_core::tooling::json_schema::<TKey, TRow>();
 
     // Must parse as JSON.
     let v: serde_json::Value =

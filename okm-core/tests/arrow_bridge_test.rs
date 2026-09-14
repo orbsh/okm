@@ -3,7 +3,7 @@
 //! round trip against struct decode.
 
 use arrow::datatypes::DataType;
-use okm_core::{FieldDesc, FieldType, KeyEncode, MockStore, Row, RowEncode, Table};
+use okm_core::{FieldDesc, FieldType, KeyEncode, TestStore, Row, RowEncode, Table};
 
 /// UserKey：org 内的用户身份（主键）。字段类型覆盖四种 kind。
 #[derive(KeyEncode, Clone, PartialEq, Debug)]
@@ -23,7 +23,7 @@ pub struct ExportRow {
     pub flags: u8,
 }
 
-fn put_rows(t: &mut Table<MockStore, ExportKey, ExportRow>) -> Vec<(ExportKey, ExportRow)> {
+fn put_rows(t: &mut Table<TestStore, ExportKey, ExportRow>) -> Vec<(ExportKey, ExportRow)> {
     let mut out = Vec::new();
     for i in 0u64..5 {
         let k = ExportKey {
@@ -44,7 +44,7 @@ fn put_rows(t: &mut Table<MockStore, ExportKey, ExportRow>) -> Vec<(ExportKey, E
 
 #[test]
 fn schema_is_generated_from_field_desc() {
-    let t: Table<MockStore, ExportKey, ExportRow> = Table::new(MockStore::default());
+    let t: Table<TestStore, ExportKey, ExportRow> = Table::new(TestStore::slatedb_mem());
     let cols = t.export_columns();
     // key half then payload half, declaration order within each half
     let names: Vec<_> = cols.iter().map(|(n, _)| *n).collect();
@@ -87,7 +87,7 @@ fn field_desc_tables_match_declaration() {
 
 #[test]
 fn batch_values_roundtrip_through_struct_decode() {
-    let mut t: Table<MockStore, ExportKey, ExportRow> = Table::new(MockStore::default());
+    let mut t: Table<TestStore, ExportKey, ExportRow> = Table::new(TestStore::slatedb_mem());
     let rows = put_rows(&mut t);
 
     let batch = t.to_record_batch();
@@ -118,7 +118,7 @@ fn batch_values_roundtrip_through_struct_decode() {
 #[test]
 fn batch_respects_key_order() {
     // scan_suffix 返回 key 序，导出应保持该顺序（user_id 升序）
-    let mut t: Table<MockStore, ExportKey, ExportRow> = Table::new(MockStore::default());
+    let mut t: Table<TestStore, ExportKey, ExportRow> = Table::new(TestStore::slatedb_mem());
     put_rows(&mut t);
     let batch = t.to_record_batch();
     let uid = batch.column(1).as_any().downcast_ref::<arrow::array::UInt64Array>().unwrap();
@@ -142,7 +142,7 @@ fn fixed_bytes_maps_to_binary() {
         pub n: u32,
     }
 
-    let mut t: Table<MockStore, BinKey, BinRow> = Table::new(MockStore::default());
+    let mut t: Table<TestStore, BinKey, BinRow> = Table::new(TestStore::slatedb_mem());
     let k = BinKey { id: 1, name: *b"abcd" };
     t.put(&k, &BinRow { n: 9 });
 
@@ -156,7 +156,7 @@ fn fixed_bytes_maps_to_binary() {
 /// 空表导出：batch 零行、schema 完整。
 #[test]
 fn empty_table_exports_full_schema() {
-    let t: Table<MockStore, ExportKey, ExportRow> = Table::new(MockStore::default());
+    let t: Table<TestStore, ExportKey, ExportRow> = Table::new(TestStore::slatedb_mem());
     let batch = t.to_record_batch();
     assert_eq!(batch.num_rows(), 0);
     assert_eq!(batch.num_columns(), 6);

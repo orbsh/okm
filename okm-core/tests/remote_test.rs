@@ -1,16 +1,16 @@
 //! ADR-0010 Phase 7 end-to-end: RemoteStore (sender, `impl VirtualStorage`)
 //! → mpsc channel (reference transport) → StorageHost (receiver, declared
-//! prefix) → MockStore (the real engine). Covers the whole Table write
+//! prefix) → TestStore (the real engine). Covers the whole Table write
 //! path surviving remoteness: primary + index entries in one frame, one
 //! receiver WAL commit per batch, prefix isolation between two hosts.
 //!
 //! Observation discipline: the host owns its engine behind the mutex; the
 //! tests observe through the remote handle (get / scan_suffix round
-//! trips), never through a kept MockStore clone — MockStore::clone is a
+//! trips), never through a kept TestStore clone — TestStore::clone is a
 //! deep copy, a kept clone would observe a different engine.
 
 use okm_core::{
-    KeyEncode, KvBatch, MockStore, RemoteStore, Row, RowEncode, StorageHost, Table, VirtualHandle,
+    KeyEncode, KvBatch, TestStore, RemoteStore, Row, RowEncode, StorageHost, Table, VirtualHandle,
     VirtualStorage,
 };
 
@@ -30,7 +30,7 @@ pub struct User {
 use __OkmIndex_User_by_tag as ByLevel;
 
 /// Spawn a host on its own threads; return the sender endpoint handle.
-fn spawn_host(engine: MockStore, prefix: &[u8]) -> VirtualHandle {
+fn spawn_host(engine: TestStore, prefix: &[u8]) -> VirtualHandle {
     let (host, handle) = StorageHost::new(engine, prefix);
     host.serve();
     handle
@@ -48,7 +48,7 @@ fn wait_for(predicate: impl Fn() -> bool, what: &str) {
 
 #[test]
 fn table_semantics_over_remote() {
-    let handle = spawn_host(MockStore::default(), &[0x00, 0x09]);
+    let handle = spawn_host(TestStore::slatedb_mem(), &[0x00, 0x09]);
     let remote = handle.open();
 
     let mut t: Table<RemoteStore, UserKey, User> = Table::new(remote);
@@ -97,8 +97,8 @@ fn prefix_isolation_between_two_hosts() {
     // prefix A physically cannot land bytes in B's segment — it does not
     // hold B's prefix (ADR-0010 §4). Verified by cross reads: A's bytes
     // are invisible to B's sender and vice versa.
-    let ha = spawn_host(MockStore::default(), &[0x00, 0x01]);
-    let hb = spawn_host(MockStore::default(), &[0x00, 0x02]);
+    let ha = spawn_host(TestStore::slatedb_mem(), &[0x00, 0x01]);
+    let hb = spawn_host(TestStore::slatedb_mem(), &[0x00, 0x02]);
     let mut ra = ha.open();
     let mut rb = hb.open();
 
@@ -117,7 +117,7 @@ fn prefix_isolation_between_two_hosts() {
 
 #[test]
 fn commit_batch_is_one_frame_one_commit() {
-    let handle = spawn_host(MockStore::default(), &[0x00, 0x03]);
+    let handle = spawn_host(TestStore::slatedb_mem(), &[0x00, 0x03]);
     let mut remote = handle.open();
 
     // Cross-assembly atomicity (ADR-0003): the whole batch ships as one

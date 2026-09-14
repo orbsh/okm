@@ -6,7 +6,7 @@
 //! Compile-time rejections (String / Reverse on key side, non-whitelist
 //! Reverse inner) live in `codec_compilefail.rs` via trybuild.
 
-use okm_core::{KeyEncode, MockStore, Reversible, Reverse, Row, RowEncode, Table, parquet_io};
+use okm_core::{KeyEncode, TestStore, Reversible, Reverse, Row, RowEncode, Table, parquet_io};
 
 // ================= String (variable length) =================
 
@@ -123,7 +123,7 @@ fn parquet_roundtrip_with_string_columns() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("snapshot.parquet");
 
-    let mut t1: Table<MockStore, SKey, SRow> = Table::new(MockStore::default());
+    let mut t1: Table<TestStore, SKey, SRow> = Table::new(TestStore::slatedb_mem());
     let names = ["", "alice", "多字节 ✓ 名称"];
     for (i, name) in names.iter().enumerate() {
         t1.put(
@@ -138,7 +138,7 @@ fn parquet_roundtrip_with_string_columns() {
     }
     parquet_io::export_parquet(&t1, &path).unwrap();
 
-    let mut t2: Table<MockStore, SKey, SRow> = Table::new(MockStore::default());
+    let mut t2: Table<TestStore, SKey, SRow> = Table::new(TestStore::slatedb_mem());
     let n = parquet_io::import_parquet(&mut t2, &path).unwrap();
     assert_eq!(n, 3);
     for (i, name) in names.iter().enumerate() {

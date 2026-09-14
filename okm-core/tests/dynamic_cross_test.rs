@@ -9,7 +9,7 @@
 //! write → Rust read), cold TLV frames, version rejection, unknown-field
 //! rejection.
 
-use okm_core::{KeyEncode, MockStore, Row, RowEncode, Table, VirtualStorage};
+use okm_core::{KeyEncode, TestStore, Row, RowEncode, Table, VirtualStorage};
 use __OkmIndex_User_by_level as ByLevel;
 use okm_core::schema::TableSchema;
 use okm_dynamic::{decode_key, decode_payload, encode_key, encode_payload, CodecError, Value, ValueMap};
@@ -73,7 +73,7 @@ fn dynamic_encode_equals_rust_derive_bytes() {
 #[test]
 fn rust_write_dynamic_read_and_reverse() {
     let schema = TableSchema::of::<UserKey, User>();
-    let mut t: Table<MockStore, UserKey, User> = Table::new(MockStore::default());
+    let mut t: Table<TestStore, UserKey, User> = Table::new(TestStore::slatedb_mem());
     let key = UserKey { org_id: 1, user_id: 2 };
     t.put(&key, &User { level: 4, score: 77, name: "bob".into() });
 
@@ -92,7 +92,7 @@ fn rust_write_dynamic_read_and_reverse() {
     assert_eq!(kv.get("user_id"), Some(&Value::U64(2)));
 
     // Dynamic wrote (via schema encode); Rust reads through the table.
-    // MockStore::clone is a deep copy so a shared-engine bypass is not
+    // TestStore::clone is a deep copy so a shared-engine bypass is not
     // available — the cross check goes through the bytes: Rust decodes
     // the dynamic-encoded payload/key, then puts through the normal
     // path. Byte equality is the contract being verified.

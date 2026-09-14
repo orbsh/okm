@@ -309,7 +309,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Row<Key = K>> Table<S, K, R> {
     /// payload fields map to `Utf8` when the variable-length regime lands.
     ///
     /// Reads through the engine's scan surface — engine-independent, same
-    /// batch shape for fjall / slatedb / MockStore-backed tables.
+    /// batch shape for fjall / slatedb-backed tables.
     pub fn to_record_batch(&self) -> RecordBatch {
         let proj = Projection::<K, R>::new();
         let rows: Vec<(Vec<u8>, Vec<u8>)> = self.scan_rows_raw().into_iter().collect();
