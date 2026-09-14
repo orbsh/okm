@@ -4,8 +4,7 @@ Date: 2026-09-13
 Status: Accepted. **Update 2026-09-12, rename shipped**: the trait is now
 literally named `VirtualStorage` (module `storage`; async twin
 `VirtualStorageAsync` on the slatedb path) — no alias layer left to
-conceptualize through. Backend struct names (`MockStore`, `FjallStore`,
-`SlatedbStore`) are unchanged.
+conceptualize through. Backend struct names (`FjallStore`, `SlatedbStore`) are unchanged; the test `MockStore` was later replaced by the `TestStore` engine matrix ( slatedb-mem / fjall / redb).
 
 ## Context
 
