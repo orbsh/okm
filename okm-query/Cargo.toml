@@ -5,3 +5,6 @@ edition = "2024"
 
 [dependencies]
 okm-core = { path = "../okm-core" }
+
+[dev-dependencies]
+okm-core = { path = "../okm-core", features = ["slatedb"] }

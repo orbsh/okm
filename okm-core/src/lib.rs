@@ -38,6 +38,7 @@ pub mod schema;
 #[cfg(feature = "redb")]
 pub mod redb_backend;
 pub mod storage;
+#[cfg(any(feature = "slatedb", feature = "fjall", feature = "redb"))]
 pub mod test_engine;
 pub mod field;
 pub mod index;
@@ -59,6 +60,7 @@ pub use reduce::{reduce_get, scan_reduces, ReduceCodec, Reduce, ReduceLogic};
 pub use collection::EdgeTable;
 pub use edge::{KvEdge, head_bytes};
 pub use storage::{VirtualStorage, KvBatch, MemBatch, SharedVirtualStorage};
+#[cfg(any(feature = "slatedb", feature = "fjall", feature = "redb"))]
 pub use test_engine::TestStore;
 pub use remote::{RemoteStore, StorageHost, StorageCore, VirtualHandle};
 pub use okm_wire::{ReadFrame, ReadResponse, WriteFrame};
