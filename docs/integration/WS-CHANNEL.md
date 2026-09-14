@@ -53,9 +53,13 @@ Krystallizer process                    Aura node process
 
 Receiver side (Aura): the WS handler receives an envelope, extracts the
 OKM payload by envelope convention, and calls the host's execution core
-directly. `StorageCore` (engine + prefix + `apply_write`/`apply_read`)
-lives in an `Arc` and is `Send + Sync` by construction — it needs no
-wrapper:
+directly. `StorageCore` (engine + prefix + `apply`) lives in an `Arc`
+and is `Send + Sync` by construction — it needs no wrapper. Execution
+is three steps — receive a frame, apply it, send back whatever comes
+out — with NO read/write fork: all four ops (put/delete/get/scan) share
+one frame format, and `apply` decides by its return value whether a
+response exists — get/scan return Some (response frame), put/delete
+return None (no response, and none needed):
 
 ```rust
 // Aura side: after constructing the host, hand the Arc<StorageCore> to
@@ -67,63 +71,37 @@ host.serve();                                  // mpsc reference transport may s
 // WS message handling — envelope parsing is the WS side's own code; OKM
 // takes no part in it:
 fn on_ws_message(core: &StorageCore<MyEngine>, envelope: Envelope) {
-    match envelope.kind {
-        Kind::StorageWrite => core.apply_write(&envelope.payload),
-        Kind::StorageRead => {
-            if let Some(resp) = core.apply_read(&envelope.payload) {
-                send_ws(envelope.reply_to, resp);   // response over the same connection
-            }
-        }
-        // other application messages...
+    // One frame per op: apply → send a response back if there is one,
+    // send nothing otherwise. The envelope's kind does NOT distinguish
+    // reads from writes — that is not OKM semantics; the frame carries it.
+    if let Some(resp) = core.apply(&envelope.payload) {
+        send_ws(envelope.reply_to, resp);   // get/scan responses over the same connection
     }
+    // other application messages...
 }
 ```
 
 The WS-specific parts (envelope parsing, routing, request ids) all live
 in the handler's parsing code — what OKM hands the transport is one
-`Arc<StorageCore>` with two methods, no adapter struct anywhere. The
+`Arc<StorageCore>` with a single method, no adapter struct anywhere. The
 mpsc wiring remains as the reference transport sharing the same core;
 zero behavioral divergence.
 
-Sender side (Krystallizer): `RemoteStore` currently hard-wires
-`mpsc::Sender<Vec<u8>>`. The generalization is to make the sender
-generic over a tiny transport trait instead of the concrete channel:
-
-```rust
-pub trait FrameTransport {
-    /// Ship one write frame (fire-and-forget).
-    fn send_write(&self, frame: Vec<u8>);
-    /// Ship one read frame and block for its response. Correlation is
-    /// the transport's business (in-process mpsc pairs it implicitly;
-    /// WS pairs it by the connection itself or an envelope request id).
-    fn round_trip(&self, frame: Vec<u8>) -> Vec<u8>;
-}
-```
-
-The WS implementation wraps the app's existing connection handle:
-
-```rust
-struct WsTransport<C: WsConn> {
-    conn: C,                       // the EXISTING connection, shared
-    write_topic: &'static str,     // envelope convention: where OKM
-    read_topic: &'static str,      // frames live inside the protocol
-}
-
-impl<C: WsConn> FrameTransport for WsTransport<C> {
-    fn send_write(&self, frame: Vec<u8>) {
-        self.conn.send_json(topic(self.write_topic), frame);  // opaque payload
-    }
-    fn round_trip(&mut self, frame: Vec<u8>) -> Vec<u8> {
-        let id = self.conn.next_request_id();                 // correlation id
-        self.conn.send_json(request(self.read_topic, id), frame);
-        self.conn.wait_reply(id)                              // blocks this task
-    }
-}
-```
+Sender side (Krystallizer): the sender is just normal storage I/O —
+`RemoteStore` implements `VirtualStorage`, and its four ops
+(`put/get/del/scan_suffix`) have signatures identical to a local
+engine. Callers cannot tell they are remote. The remoteness is pressed
+entirely into the implementation: each op is encoded into a frame,
+shipped inside an envelope to the peer; get/scan block for the response
+frame, put/delete return immediately (fire-and-forget). Swapping the
+transport (mpsc to WS) touches only the two private send/await helpers
+inside `RemoteStore` — the `VirtualStorage` interface and its callers
+do not change.
 
 Note what does NOT change: the frame bytes, the codec, the host, the
-prefix discipline, the batch atomicity mapping. Only the last mile
-grows an envelope.
+prefix discipline, the batch atomicity mapping. The sender never sees
+the envelope — it sees ordinary VirtualStorage reads and writes; the
+envelope lives only in the receiver's handler parsing code.
 
 ### Shape B: OKM as the WS app's storage service
 
@@ -135,7 +113,7 @@ two pieces.
 
 ## Envelope conventions that work
 
-The channel's protocol needs three slots for OKM traffic:
+The channel's protocol needs two slots for OKM traffic:
 
 1. **Routing**: which declared host (which app/prefix) the frame is
    for — when one connection serves several instances. This is envelope
@@ -144,13 +122,13 @@ The channel's protocol needs three slots for OKM traffic:
    A bare shard host (`StorageHost::bare`, no prefix) takes every frame
    routed to it byte-identical — sharding of one domain model is N bare
    hosts behind the orchestrator's partition-key routing.
-2. **Kind**: write (fire-and-forget) vs read (expects a reply). The
-   frame's leading op tag could carry this, but the envelope knowing it
-   lets the channel route replies without peeking into the frame.
-3. **Correlation** (reads only): an id matching response to request.
-   mpsc gets this for free by pairing channels; WS either dedicates a
-   request/reply pattern or multiplexes by id. Either is transport
-   policy — the frame stays silent about it.
+2. **Correlation**: an id matching a response to its request. Whether a
+   response exists is decided by the frame content (`apply`'s return
+   value) — the envelope does not need to know reads from writes; the
+   same correlation mechanism serves both. mpsc gets this for free by
+   pairing channels; WS either dedicates a request/reply pattern or
+   multiplexes by id. Either is transport policy — the frame stays
+   silent about it.
 
 What must NOT enter the envelope: layout versions, schema hints,
 compression flags, anything that makes the receiver understand frame
@@ -183,8 +161,9 @@ The WS adapter is transport glue: it binds an existing connection to
 the host's intake and adds an envelope convention. Every application's
 channel protocol differs, so the adapter cannot be a library — it is
 per-integration code in the application (or the Aura node), built from
-two pieces okm-core provides: `StorageHost`'s factored pump methods and
-`RemoteStore`'s transport trait. The doc-level contract is the three
-envelope slots above.
+two pieces okm-core provides: `StorageCore::apply` (the receiver's
+single intake) and `RemoteStore` (the sender, implementing
+`VirtualStorage`). The doc-level contract is the two envelope slots
+above.
 
 > 中文本篇：[经由既有 WS 通道集成](WS-CHANNEL.zh-CN.md)

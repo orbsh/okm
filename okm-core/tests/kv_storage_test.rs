@@ -3,7 +3,7 @@
 //! the sender endpoint plugs into a `Table` whose write path runs
 //! entirely over the wire.
 
-use okm_core::{KeyEncode, TestStore, RemoteStore, Row, RowEncode, Table, VirtualStorage};
+use okm_core::{KeyEncode, TestStore, RemoteStore, RowEncode, Table, VirtualStorage};
 
 // Receiver declaration: no data methods, one execution surface.
 #[derive(okm_core::StorageEncode)]

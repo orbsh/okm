@@ -16,9 +16,11 @@
 //! Layout (locked by hex tests):
 //!
 //! ```text
-//! write frame: [op_count len-enc] per op: [tag u8][key LK][value LV][key][value]
-//! read frame:  [op_count len-enc] per op: [tag u8][key LK][value LV][key]
-//! response:    [has_value u8][value len LK][value bytes] [count len-enc] per hit: [len][bytes]
+//! request frame: [op_count len-enc] per op: [tag u8][key LK][value LV][key][value]
+//!   all four ops in one shape — put/delete carry their bytes, get/scan
+//!   carry value = empty (LV = 0); a frame may mix mutating and query ops
+//! response frame: [has_value u8][value len LK][value bytes] [count len-enc] per hit: [len][bytes]
+//!   put/delete answers are the default (empty) response
 //! length LK/LV — 4 width buckets in the first byte (high 2 bits select,
 //! low 6 bits are the value's high bits):
 //!   00xxxxxx inline ≤63 | 01xxxxxx+1B 14-bit | 10xxxxxx+2B 22-bit | 11xxxxxx+4B 32-bit
@@ -122,18 +124,30 @@ pub fn take(frame: &[u8], pos: &mut usize, n: usize) -> Option<Vec<u8>> {
     Some(v)
 }
 
-// ---- write frames ----
+// ---- unified op frames ----
 
-/// A write frame: `[op_count][op]...` — the batch's op list as
-/// `(tag, key, value)` triples. One frame = one receiver WAL commit
-/// (ADR-0010 §2): the atomicity boundary maps 1:1 from the sender's
-/// batch to the receiver's engine.
+/// One op: `(tag, key, value)`. All four ops share this shape — reads
+/// carry `value = Vec::new()` (LV = 0). Tags: put / delete / get / scan
+/// (2 bits used, 2 reserved).
+pub type Op = (u8, Vec<u8>, Vec<u8>);
+
+/// A request frame: `[op_count len-enc] per op: [tag u8][key LK][value LV][key][value]`.
+/// All four ops in one shape — a frame is a batch of ops, each op either
+/// mutates (put/delete) or queries (get/scan). One frame = one receiver
+/// execution pass; mutating ops commit together (one WAL write, the
+/// sender's batch atomicity, ADR-0010 §2); query ops run after them in
+/// frame order.
 #[derive(Debug, Default, Clone, PartialEq)]
-pub struct WriteFrame(pub Vec<(u8, Vec<u8>, Vec<u8>)>);
+pub struct OpFrame(pub Vec<Op>);
 
-impl WriteFrame {
-    pub fn new(ops: Vec<(u8, Vec<u8>, Vec<u8>)>) -> Self {
+impl OpFrame {
+    pub fn new(ops: Vec<Op>) -> Self {
         Self(ops)
+    }
+
+    /// Convenience: single-op frame.
+    pub fn one(tag: u8, key: Vec<u8>, value: Vec<u8>) -> Self {
+        Self(vec![(tag, key, value)])
     }
 
     pub fn encode(&self) -> Vec<u8> {
@@ -166,62 +180,23 @@ impl WriteFrame {
     }
 }
 
-// ---- read frames ----
-
-/// A read request frame: one point read or one prefix scan. The response
-/// travels back out-of-band — correlation is the transport's business
-/// (envelope address, connection id), never the frame's (ADR-0010 §6).
-#[derive(Debug, Clone, PartialEq)]
-pub enum ReadFrame {
-    Get { key: Vec<u8> },
-    Scan { prefix: Vec<u8> },
-}
-
-impl ReadFrame {
-    pub fn encode(&self) -> Vec<u8> {
-        let mut buf = Vec::new();
-        put_len(&mut buf, 1);
-        let (tag, key) = match self {
-            ReadFrame::Get { key } => (OP_GET, key),
-            ReadFrame::Scan { prefix } => (OP_SCAN, prefix),
-        };
-        put_op_header(&mut buf, tag, key.len(), 0);
-        buf.extend_from_slice(key);
-        buf
-    }
-
-    pub fn decode(frame: &[u8]) -> Option<Self> {
-        let mut pos = 0;
-        let count = get_len(frame, &mut pos)?;
-        if count != 1 {
-            return None; // a read frame carries exactly one op
-        }
-        let (tag, klen, vlen) = get_op_header(frame, &mut pos)?;
-        if vlen != 0 {
-            return None;
-        }
-        let key = take(frame, &mut pos, klen)?;
-        match tag {
-            OP_GET => Some(ReadFrame::Get { key }),
-            OP_SCAN => Some(ReadFrame::Scan { prefix: key }),
-            _ => None,
-        }
-    }
-}
-
-/// The receiver's answer to one read frame. Raw bytes in, raw bytes out —
-/// the receiver never learns what the bytes mean.
+/// The receiver's answer to one request frame. Uniform shape for all
+/// four ops — a put/delete answer is the default (empty) response: the
+/// sender learns success by receiving A response (the transport's
+/// delivery, not the frame, carries the guarantee). Raw bytes in, raw
+/// bytes out — the receiver never learns what the bytes mean.
 #[derive(Debug, Default, Clone, PartialEq)]
-pub struct ReadResponse {
-    /// Point read answer (`None` = key absent).
+pub struct OpResponse {
+    /// Get answer (`None` = key absent). Empty for the other ops.
     pub value: Option<Vec<u8>>,
     /// Scan answer: key suffixes relative to the requested prefix — the
     /// engine's own `scan_suffix` contract, byte-for-byte, so the sender
-    /// re-splits exactly as it would against a local engine.
+    /// re-splits exactly as it would against a local engine. Empty for
+    /// the other ops.
     pub suffixes: Vec<Vec<u8>>,
 }
 
-impl ReadResponse {
+impl OpResponse {
     pub fn encode(&self) -> Vec<u8> {
         let mut buf = Vec::new();
         match &self.value {
@@ -263,3 +238,4 @@ impl ReadResponse {
         Some(Self { value, suffixes })
     }
 }
+

@@ -7,7 +7,7 @@
 //! mechanism, which is why this test is all the multi-tenancy code there
 //! is.
 
-use okm_core::{KeyEncode, TestStore, RemoteStore, Row, RowEncode, Table, VirtualStorage};
+use okm_core::{KeyEncode, TestStore, RemoteStore, RowEncode, Table, VirtualStorage};
 
 // TestStore now has handle-clone semantics (Arc kernel) and implements
 // SharedVirtualStorage — the test-local SharedEngine workaround is gone.

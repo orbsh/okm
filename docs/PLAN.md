@@ -407,7 +407,7 @@ StorageHost throughout.
       Enabler: `SharedVirtualStorage` trait — hosts require genuinely
       shared engines (handle semantics, not deep copies); the test engines share
       via Arc kernels. `StorageCore` (transport-free intake:
-      apply_write/apply_read) factored out for WS/UDS adapters; mpsc
+      apply) factored out for WS/UDS adapters; mpsc
       pumps remain the reference transport. bare_shard_test locks
       byte-identical execution, shard-table ns segments, and
       bare+hosted coexistence.

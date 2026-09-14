@@ -8,11 +8,11 @@
 //! bare instances' ns numbers off the hosted segments' numbers (an
 //! allocation duty, not a runtime check).
 
-use okm_core::{KeyEncode, TestStore, RemoteStore, Row, RowEncode, StorageHost, Table, VirtualStorage};
+use okm_core::{KeyEncode, TestStore, RemoteStore, RowEncode, StorageHost, Table, VirtualStorage};
 
 #[test]
 fn bare_host_executes_frames_byte_identical() {
-    let handle = StorageHost::bare(TestStore::slatedb_mem());
+    let handle = StorageHost::bare(TestStore::default());
     let mut s: RemoteStore = handle.open();
 
     // Keys land exactly as sent — no prefix prepended (compare: hosted
@@ -46,7 +46,7 @@ pub struct ShardDoc {
 
 #[test]
 fn shard_table_via_bare_host_lands_on_its_ns_segment() {
-    let handle = StorageHost::bare(TestStore::slatedb_mem());
+    let handle = StorageHost::bare(TestStore::default());
     let mut t: Table<RemoteStore, ShardDocKey, ShardDoc> = Table::new(handle.open());
 
     t.put(&ShardDocKey { id: 5 }, &ShardDoc { title: 3 });
@@ -77,7 +77,7 @@ fn bare_and_hosted_coexist_with_allocation_discipline() {
     #[kv_ns(30)]
     pub struct AppBStorage;
 
-    let engine = TestStore::slatedb_mem(); // handle-clone = shared engine
+    let engine = TestStore::default(); // handle-clone = shared engine
     let bare = StorageHost::bare(engine.clone());
     let hosted = AppBStorage::serve(engine);
     let mut bs: RemoteStore = bare.open();

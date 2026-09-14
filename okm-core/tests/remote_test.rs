@@ -10,7 +10,7 @@
 //! deep copy, a kept clone would observe a different engine.
 
 use okm_core::{
-    KeyEncode, KvBatch, TestStore, RemoteStore, Row, RowEncode, StorageHost, Table, VirtualHandle,
+    KeyEncode, KvBatch, TestStore, RemoteStore, RowEncode, StorageHost, Table, VirtualHandle,
     VirtualStorage,
 };
 

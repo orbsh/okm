@@ -1,26 +1,35 @@
 //! Remote storage backend (ADR-0010 Phase 7). Sender: implements
-//! [`VirtualStorage`] by framing the already-encoded op list —
-//! fire-and-forget writes, round-trip reads. Receiver: [`StorageHost`]
-//! prepends its declared prefix and replays frames on a plain byte-level
-//! engine. Neither side parses key contents; the wire carries only op
-//! bytes (ADR-0010 §2: no semantic parsing, no generic serialization
-//! library — the frame is counted fields, not a protocol).
+//! [`VirtualStorage`] by framing the already-encoded op list — writes are
+//! fire-and-forget, reads block on the round trip. Receiver:
+//! [`StorageHost`] prepends its declared prefix and executes frames on a
+//! plain byte-level engine. Neither side parses key contents; the wire
+//! carries only op bytes (ADR-0010 §2: no semantic parsing, no generic
+//! serialization library — the frame is counted fields, not a protocol).
 //!
 //! The frame codec itself lives in `okm-wire` (zero dependencies, zero
 //! OKM semantics) so a transport that reuses other channels — Aura's WS
 //! connection, a TCP client, UDS — depends only on the codec, not on
 //! okm-core. This module is the okm-core binding of that codec: the
 //! sender's `impl VirtualStorage`, the receiver host, and the mpsc
-//! reference transport. Read correlation rides the transport envelope
-//! (an mpsc sender beside each frame), never the frame bytes (ADR-0010
-//! §6). The `#[kv_storage]` derive generates exactly the [`StorageHost`]
+//! reference transport.
+//!
+//! ONE execution surface (no read/write split): the host's intake is
+//! `apply(frame) -> Option<OpResponse>`. Every op executes in frame
+//! order; mutating ops commit together; get/scan fill the response.
+//! A put/delete answer is the empty (default) response — the sender
+//! learns success by receiving A response; the delivery guarantee is
+//! the transport's, never the frame's (ADR-0010 §6). Read correlation
+//! also rides the transport envelope (an mpsc sender beside each
+//! frame), never the frame bytes.
+//!
+//! The `#[kv_storage]` derive generates exactly the [`StorageHost`]
 //! shape; this manual form is the reference implementation the derive
 //! targets.
 
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 
-use okm_wire::{OP_DELETE, OP_PUT, ReadFrame, ReadResponse, WriteFrame};
+use okm_wire::{OP_DELETE, OP_GET, OP_PUT, OP_SCAN, OpFrame, OpResponse};
 
 use crate::storage::{KvBatch, MemBatch, SharedVirtualStorage, VirtualStorage};
 
@@ -28,68 +37,63 @@ use crate::storage::{KvBatch, MemBatch, SharedVirtualStorage, VirtualStorage};
 
 /// Sender handle over the in-process reference transport. Implements
 /// [`VirtualStorage`]: writes ship as one framed batch (fire-and-forget —
-/// one frame = one receiver WAL commit; channel order = write order),
+/// one frame = one receiver execution pass; channel order = write order),
 /// reads block on the round trip. A TCP client would be another `impl
 /// VirtualStorage` with the same `okm-wire` frames over a stream —
 /// everything here is transport-shaped, not contract-shaped.
 pub struct RemoteStore {
-    write_tx: mpsc::Sender<Vec<u8>>,
-    read_tx: mpsc::Sender<(mpsc::Sender<ReadResponse>, Vec<u8>)>,
+    exec_tx: mpsc::Sender<(mpsc::Sender<OpResponse>, Vec<u8>)>,
 }
 
 /// The sender-side endpoints a [`StorageHost::new`] hands out. Each read
 /// round trip carries its own reply box in the transport envelope, so
 /// several senders can share one host without cross-reading answers.
 pub struct VirtualHandle {
-    write_tx: mpsc::Sender<Vec<u8>>,
-    read_tx: mpsc::Sender<(mpsc::Sender<ReadResponse>, Vec<u8>)>,
+    exec_tx: mpsc::Sender<(mpsc::Sender<OpResponse>, Vec<u8>)>,
 }
 
 impl VirtualHandle {
     /// Open one sender endpoint.
     pub fn open(&self) -> RemoteStore {
         RemoteStore {
-            write_tx: self.write_tx.clone(),
-            read_tx: self.read_tx.clone(),
+            exec_tx: self.exec_tx.clone(),
         }
     }
 }
 
 impl RemoteStore {
-    fn send_write(&self, frame: &WriteFrame) {
-        self.write_tx
-            .send(frame.encode())
-            .expect("write channel open");
+    fn send_write(&self, frame: &OpFrame) {
+        self.exec_tx
+            .send((mpsc::channel().0, frame.encode()))
+            .expect("channel open");
     }
 
-    fn round_trip(&self, frame: &ReadFrame) -> ReadResponse {
+    fn round_trip(&self, frame: &OpFrame) -> OpResponse {
         let (reply_tx, reply_rx) = mpsc::channel();
-        self.read_tx
+        self.exec_tx
             .send((reply_tx, frame.encode()))
-            .expect("read channel open");
-        reply_rx.recv().expect("read response")
+            .expect("channel open");
+        reply_rx.recv().expect("response")
     }
 }
 
 impl VirtualStorage for RemoteStore {
     fn put(&mut self, key: Vec<u8>, value: Vec<u8>) {
-        self.send_write(&WriteFrame::new(vec![(OP_PUT, key, value)]));
+        self.send_write(&OpFrame::one(OP_PUT, key, value));
     }
 
     fn get(&self, key: &[u8]) -> Option<Vec<u8>> {
-        self.round_trip(&ReadFrame::Get { key: key.to_vec() })
+        self.round_trip(&OpFrame::one(OP_GET, key.to_vec(), Vec::new()))
             .value
     }
 
     fn del(&mut self, key: &[u8]) {
-        self.send_write(&WriteFrame::new(vec![(OP_DELETE, key.to_vec(), Vec::new())]));
+        self.send_write(&OpFrame::one(OP_DELETE, key.to_vec(), Vec::new()));
     }
 
     fn scan_suffix(&self, prefix: &[u8]) -> Vec<Vec<u8>> {
-        self.round_trip(&ReadFrame::Scan {
-            prefix: prefix.to_vec(),
-        })
-        .suffixes
+        self.round_trip(&OpFrame::one(OP_SCAN, prefix.to_vec(), Vec::new()))
+            .suffixes
     }
 
     /// Batch = carrier accumulate only; the frame ships at commit.
@@ -97,7 +101,7 @@ impl VirtualStorage for RemoteStore {
         MemBatch::default()
     }
 
-    /// One `commit_batch` = one frame = one receiver WAL write: the
+    /// One `commit_batch` = one frame = one receiver execution pass: the
     /// cross-assembly-point atomic path (ADR-0003) survives remoteness
     /// because the receiver commits the whole op list in one call.
     fn commit_batch(&mut self, batch: MemBatch) -> Result<(), String> {
@@ -109,7 +113,7 @@ impl VirtualStorage for RemoteStore {
                 None => (OP_DELETE, k, Vec::new()),
             })
             .collect();
-        self.send_write(&WriteFrame::new(ops));
+        self.send_write(&OpFrame::new(ops));
         Ok(())
     }
 }
@@ -117,21 +121,21 @@ impl VirtualStorage for RemoteStore {
 // ============ receiver side ============
 
 /// Receiver host: owns the real engine behind a mutex (single-writer
-/// discipline, held across one `commit_batch` — the same boundary a local
-/// caller's `&mut self` provides) and knows exactly one thing: its
-/// declared prefix. No TLV, no rows, no OKM semantics — storing garbage is
-/// indistinguishable from storing data (ADR-0010 §2). The `#[kv_storage]`
-/// derive generates this shape; this manual form is its reference.
+/// discipline, held across one execution pass — the same boundary a
+/// local caller's `&mut self` provides) and knows exactly one thing:
+/// its declared prefix. No TLV, no rows, no OKM semantics — storing
+/// garbage is indistinguishable from storing data (ADR-0010 §2). The
+/// `#[kv_storage]` derive generates this shape; this manual form is its
+/// reference.
 pub struct StorageHost<S: VirtualStorage> {
     core: Arc<StorageCore<S>>,
-    write_rx: mpsc::Receiver<Vec<u8>>,
-    read_rx: mpsc::Receiver<(mpsc::Sender<ReadResponse>, Vec<u8>)>,
+    exec_rx: mpsc::Receiver<(mpsc::Sender<OpResponse>, Vec<u8>)>,
 }
 
-/// The host's execution core, transport-free (ADR-0010 §6): intake
-/// methods for transports that already exist (a WS connection, a UDS
-/// handler, an in-process caller). Same logic the mpsc reference pumps
-/// call; see `docs/integration/WS-CHANNEL.md` for the adapter shape.
+/// The host's execution core, transport-free (ADR-0010 §6): ONE intake
+/// for every op — receive, execute, answer if the op produces output.
+/// WS/UDS adapters and the mpsc reference pump call the same methods;
+/// see `docs/integration/WS-CHANNEL.md` for the adapter shape.
 pub struct StorageCore<S: VirtualStorage> {
     engine: Arc<Mutex<S>>,
     /// `Some` = hosted (multi-tenant, `#[kv_storage]` declared): every
@@ -170,53 +174,42 @@ impl<S: SharedVirtualStorage + Send + 'static> StorageHost<S> {
     }
 
     fn with_prefix(engine: S, prefix: Option<Vec<u8>>) -> (Self, VirtualHandle) {
-        let (write_tx, write_rx) = mpsc::channel();
-        let (read_tx, read_rx) = mpsc::channel();
+        let (exec_tx, exec_rx) = mpsc::channel();
         (
             Self {
                 core: Arc::new(StorageCore {
                     engine: Arc::new(Mutex::new(engine)),
                     prefix,
                 }),
-                write_rx,
-                read_rx,
+                exec_rx,
             },
-            VirtualHandle {
-                write_tx,
-                read_tx,
-            },
+            VirtualHandle { exec_tx },
         )
     }
 
-    /// Transport-free intake: the WS/UDS adapter calls these directly
+    /// Transport-free intake: the WS/UDS adapter calls this directly
     /// (see `docs/integration/WS-CHANNEL.md`).
     pub fn core(&self) -> &Arc<StorageCore<S>> {
         &self.core
     }
 
-    /// Serve forever: write pump (frame → one engine commit) + read pump
-    /// (frame → engine op → response). The reference transport is plain
-    /// threads; an async receiver would task-spawn the same loops. The
-    /// two pumps share the engine behind the mutex; the channel receivers
-    /// move into their threads (mpsc Receiver is not Sync — each pump
-    /// owns its end exclusively, which is the correct shape anyway).
+    /// Serve forever on the reference mpsc transport: one pump, one loop
+    /// — receive frame, execute, answer. An async receiver would
+    /// task-spawn the same loop. The channel receiver moves into the
+    /// thread (mpsc Receiver is not Sync — it owns its end exclusively,
+    /// which is the correct shape anyway).
     pub fn serve(self) {
-        let write_rx = self.write_rx;
-        let core_write = Arc::clone(&self.core);
+        let core = self.core;
+        let exec_rx = self.exec_rx;
         std::thread::spawn(move || {
-            for bytes in write_rx {
-                core_write.apply_write(&bytes);
-            }
-        });
-        let read_rx = self.read_rx;
-        let core_read = self.core;
-        std::thread::spawn(move || {
-            for (reply_tx, bytes) in read_rx {
-                let Some(resp) = core_read.apply_read(&bytes) else {
-                    continue;
-                };
-                if reply_tx.send(resp).is_err() {
-                    break; // sender gone; this read pump's endpoints are dead
+            for (reply_tx, bytes) in exec_rx {
+                let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| core.apply(&bytes)));
+                if let Ok(Some(resp)) = r {
+                    // Fire-and-forget writers (put/delete) drop their reply
+                    // box before the answer arrives — a failed send is the
+                    // NORMAL case for them, never a pump death. Round-trip
+                    // readers self-heal: each request carries a fresh box.
+                    let _ = reply_tx.send(resp);
                 }
             }
         });
@@ -224,42 +217,34 @@ impl<S: SharedVirtualStorage + Send + 'static> StorageHost<S> {
 }
 
 impl<S: VirtualStorage> StorageCore<S> {
-    /// Apply one write frame: decode (malformed = drop, garbage in /
-    /// nothing stored) → one `commit_batch` = one engine WAL write
-    /// (ADR-0010 §2). Fire-and-forget: no return path.
-    pub fn apply_write(&self, bytes: &[u8]) {
-        let Some(frame) = WriteFrame::decode(bytes) else {
-            return;
-        };
+    /// Apply one request frame — THE execution surface, all four ops:
+    /// decode (malformed = `None`, garbage in / nothing stored), then
+    /// execute in frame order. Mutating ops (put/delete) commit together
+    /// in one `commit_batch` = one engine WAL write (ADR-0010 §2);
+    /// query ops (get/scan) run after them and fill the response.
+    /// Returns `None` only for malformed frames.
+    pub fn apply(&self, bytes: &[u8]) -> Option<OpResponse> {
+        let frame = OpFrame::decode(bytes)?;
         let mut engine = self.engine.lock().expect("engine lock");
         let mut batch = MemBatch::default();
+        let mut resp = OpResponse::default();
         for (tag, key, value) in frame.0 {
             match tag {
                 OP_PUT => batch.put(hosted_key(&self.prefix, &key), value),
                 OP_DELETE => batch.del(&hosted_key(&self.prefix, &key)),
-                // Reads never arrive on the write channel.
-                _ => {}
+                OP_GET => {
+                    engine.commit_batch(MemBatch::default()).ok(); // flush pending mutations first: reads see prior ops in the same frame
+                    resp.value = engine.get(&hosted_key(&self.prefix, &key));
+                }
+                OP_SCAN => {
+                    engine.commit_batch(MemBatch::default()).ok();
+                    resp.suffixes = engine.scan_suffix(&hosted_key(&self.prefix, &key));
+                }
+                _ => return None, // unknown op tag = malformed frame
             }
         }
-        let _ = engine.commit_batch(batch);
-    }
-
-    /// Apply one read frame; `None` = malformed frame. The engine mutex
-    /// serializes reads against the write pump (single-writer + reader
-    /// exclusion at the engine, same boundary as local callers).
-    pub fn apply_read(&self, bytes: &[u8]) -> Option<ReadResponse> {
-        let frame = ReadFrame::decode(bytes)?;
-        let engine = self.engine.lock().expect("engine lock");
-        Some(match frame {
-            ReadFrame::Get { key } => ReadResponse {
-                value: engine.get(&hosted_key(&self.prefix, &key)),
-                ..Default::default()
-            },
-            ReadFrame::Scan { prefix: p } => ReadResponse {
-                suffixes: engine.scan_suffix(&hosted_key(&self.prefix, &p)),
-                ..Default::default()
-            },
-        })
+        engine.commit_batch(batch).ok();
+        Some(resp)
     }
 }
 
@@ -277,5 +262,64 @@ fn hosted_key(prefix: &Option<Vec<u8>>, sender_key: &[u8]) -> Vec<u8> {
             full
         }
         None => sender_key.to_vec(),
+    }
+}
+
+#[cfg(all(test, feature = "test-engines"))]
+mod tests {
+    use super::*;
+    use crate::storage::VirtualStorage;
+    use std::collections::BTreeMap;
+
+    #[derive(Default, Clone)]
+    struct TestEngine(std::sync::Arc<std::sync::Mutex<BTreeMap<Vec<u8>, Vec<u8>>>>);
+
+    impl VirtualStorage for TestEngine {
+        fn put(&mut self, key: Vec<u8>, value: Vec<u8>) {
+            self.0.lock().unwrap().insert(key, value);
+        }
+        fn get(&self, key: &[u8]) -> Option<Vec<u8>> {
+            self.0.lock().unwrap().get(key).cloned()
+        }
+        fn del(&mut self, key: &[u8]) {
+            self.0.lock().unwrap().remove(key);
+        }
+        fn scan_suffix(&self, prefix: &[u8]) -> Vec<Vec<u8>> {
+            self.0
+                .lock()
+                .unwrap()
+                .range(prefix.to_vec()..)
+                .take_while(|(k, _)| k.starts_with(prefix))
+                .map(|(k, _)| k[prefix.len()..].to_vec())
+                .collect()
+        }
+    }
+
+    impl SharedVirtualStorage for TestEngine {
+        fn shared_handle(&self) -> Self {
+            self.clone()
+        }
+    }
+
+    #[test]
+    fn round_trip_via_handle() {
+        // bare() serves internally and returns the handle — the exact
+        // path bare_shard_test exercises.
+        let handle = StorageHost::bare(TestEngine::default());
+        let mut rs: RemoteStore = handle.open();
+        rs.put(b"k".to_vec(), b"v".to_vec());
+        assert_eq!(rs.get(b"k").as_deref(), Some(b"v".as_slice()));
+    }
+
+    #[test]
+    fn apply_put_get_round_trip() {
+        let (host, _handle) = StorageHost::new(TestEngine::default(), &[0, 9]);
+        let core = host.core();
+        let put = OpFrame::one(OP_PUT, b"k".to_vec(), b"v".to_vec());
+        let r = core.apply(&put.encode());
+        assert!(r.is_some(), "put apply must succeed");
+        let get = OpFrame::one(OP_GET, b"k".to_vec(), Vec::new());
+        let r = core.apply(&get.encode());
+        assert_eq!(r.unwrap().value.as_deref(), Some(b"v".as_slice()));
     }
 }
