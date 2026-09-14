@@ -7,7 +7,7 @@
 //! `Table::prune_deprecated_slots` deletes them by prefix.
 
 use okm_core::{
-    KeyEncode, MockStore, Row, RowEncode, Table, VirtualStorage,
+    KeyEncode, TestStore, Row, RowEncode, Table, VirtualStorage,
 };
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
@@ -29,7 +29,7 @@ pub struct User {
 
 #[test]
 fn deprecated_slot_is_reserved_and_not_written() {
-    let mut t: Table<MockStore, UserKey, User> = Table::new(MockStore::default());
+    let mut t: Table<TestStore, UserKey, User> = Table::new(TestStore::slatedb_mem());
     t.put(&UserKey { id: 1 }, &User { legacy: 99, level: 7 });
 
     // Two physical index-bearing entries were written? No: only the LIVE
@@ -45,9 +45,9 @@ fn deprecated_slot_is_reserved_and_not_written() {
 fn prune_deletes_only_deprecated_prefix() {
     // A legacy database had slot-1 entries from before the declaration
     // was deprecated; simulate one by writing directly at slot 1 — on a
-    // store handed to the Table AFTER seeding (MockStore::clone is a deep
+    // store handed to the Table AFTER seeding (TestStore::clone is a deep
     // copy, so the seeded entry lands in the table's own engine).
-    let mut store = MockStore::default();
+    let mut store = TestStore::slatedb_mem();
     let stale = [
         vec![0u8, 9, 1],
         99u32.to_be_bytes().to_vec(),
@@ -55,7 +55,7 @@ fn prune_deletes_only_deprecated_prefix() {
     ]
     .concat();
     store.put(stale, Vec::new());
-    let mut t: Table<MockStore, UserKey, User> = Table::new(store);
+    let mut t: Table<TestStore, UserKey, User> = Table::new(store);
     t.put(&UserKey { id: 1 }, &User { legacy: 99, level: 7 });
     t.put(&UserKey { id: 2 }, &User { legacy: 50, level: 8 });
 
@@ -78,7 +78,7 @@ fn no_deprecated_declarations_prunes_nothing() {
         pub level: u32,
     }
 
-    let mut t: Table<MockStore, UserKey, PlainUser> = Table::new(MockStore::default());
+    let mut t: Table<TestStore, UserKey, PlainUser> = Table::new(TestStore::slatedb_mem());
     t.put(&UserKey { id: 1 }, &PlainUser { level: 3 });
     assert_eq!(t.prune_deprecated_slots(), 0);
 }

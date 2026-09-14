@@ -7,9 +7,9 @@
 //! mechanism, which is why this test is all the multi-tenancy code there
 //! is.
 
-use okm_core::{KeyEncode, MockStore, RemoteStore, Row, RowEncode, Table, VirtualStorage};
+use okm_core::{KeyEncode, TestStore, RemoteStore, Row, RowEncode, Table, VirtualStorage};
 
-// MockStore now has handle-clone semantics (Arc kernel) and implements
+// TestStore now has handle-clone semantics (Arc kernel) and implements
 // SharedVirtualStorage — the test-local SharedEngine workaround is gone.
 
 // One declared executor per application — same physical engine behind all.
@@ -42,10 +42,10 @@ pub struct Doc {
 /// engine's key space splits as [0,21|sender bytes] vs [0,22|sender bytes].
 #[test]
 fn one_engine_two_tenants_prefix_segments_disjoint() {
-    // One physical engine instance (MockStore clones SHARE the map now),
+    // One physical engine instance (TestStore clones SHARE the map now),
     // handed to both hosts. The hosts own the only handles; the sender
     // endpoints are the contract-level view.
-    let engine = MockStore::default();
+    let engine = TestStore::slatedb_mem();
     let ha = TenantAStorage::serve(engine.clone());
     let hb = TenantBStorage::serve(engine);
     let mut sa = ha.open();
@@ -84,7 +84,7 @@ fn one_engine_two_tenants_prefix_segments_disjoint() {
 /// touch ns or the host prefix.
 #[test]
 fn internal_tenant_sharding_is_a_plain_key_field() {
-    let engine = MockStore::default();
+    let engine = TestStore::slatedb_mem();
     let handle = TenantAStorage::serve(engine);
     let mut s = handle.open();
 
@@ -111,7 +111,7 @@ fn internal_tenant_sharding_is_a_plain_key_field() {
 /// (primary + index entries) land inside the tenant's prefix segment.
 #[test]
 fn table_write_path_inside_tenant_segment() {
-    let handle = AppStorage::serve(MockStore::default());
+    let handle = AppStorage::serve(TestStore::slatedb_mem());
     let t: Table<RemoteStore, DocKey, Doc> = Table::new(handle.open());
 
     let mut t = t;

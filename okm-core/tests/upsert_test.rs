@@ -7,7 +7,7 @@
 //! subscribe_test — the generated enum's `super::` references must
 //! resolve in every binary that includes it).
 
-use okm_core::{MockStore, Row, Table};
+use okm_core::{TestStore, Row, Table};
 
 #[path = "subscribe_common.rs"]
 mod subscribe_common;
@@ -17,7 +17,7 @@ use __OkmIndex_Counter_by_bucket as Counter_ByBucket;
 
 #[test]
 fn upsert_with_full_paths() {
-    let mut t: Table<MockStore, CounterKey, Counter> = Table::new(MockStore::default());
+    let mut t: Table<TestStore, CounterKey, Counter> = Table::new(TestStore::slatedb_mem());
 
     // ---------- insert path: old = None ----------
     let written = t.upsert_with(&CounterKey { id: 1 }, |old| {

@@ -2,7 +2,7 @@
 //! FieldDesc reporting, and Arrow/Parquet round trips (ADR-0007 Phase 2).
 
 use okm_core::{
-    Enum, EnumTag, FieldType, KeyEncode, MockStore, Offset, Quant, Reverse, Row,
+    Enum, EnumTag, FieldType, KeyEncode, TestStore, Offset, Quant, Reverse, Row,
     RowEncode, Table, VarInt, offset_decode, offset_encode,
 };
 
@@ -102,7 +102,7 @@ fn field_desc_reports_wrapper_kinds() {
 
 #[test]
 fn table_round_trip_with_wrappers() {
-    let mut t: Table<MockStore, WKey, WRow> = Table::new(MockStore::default());
+    let mut t: Table<TestStore, WKey, WRow> = Table::new(TestStore::slatedb_mem());
     for i in 0..5u64 {
         t.put(&WKey { org: 1, id: i }, &sample(i));
     }
@@ -124,13 +124,13 @@ mod parquet {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("wrappers.parquet");
 
-        let mut t1: Table<MockStore, WKey, WRow> = Table::new(MockStore::default());
+        let mut t1: Table<TestStore, WKey, WRow> = Table::new(TestStore::slatedb_mem());
         for i in 0..4u64 {
             t1.put(&WKey { org: 2, id: i }, &sample(i));
         }
         parquet_io::export_parquet(&t1, &path).unwrap();
 
-        let mut t2: Table<MockStore, WKey, WRow> = Table::new(MockStore::default());
+        let mut t2: Table<TestStore, WKey, WRow> = Table::new(TestStore::slatedb_mem());
         let n = parquet_io::import_parquet(&mut t2, &path).unwrap();
         assert_eq!(n, 4);
         for i in 0..4u64 {
@@ -140,7 +140,7 @@ mod parquet {
 
     #[test]
     fn record_batch_columns_are_logical_types() {
-        let mut t: Table<MockStore, WKey, WRow> = Table::new(MockStore::default());
+        let mut t: Table<TestStore, WKey, WRow> = Table::new(TestStore::slatedb_mem());
         for i in 0..3u64 {
             t.put(&WKey { org: 3, id: i }, &sample(i));
         }

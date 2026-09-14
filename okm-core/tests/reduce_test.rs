@@ -4,7 +4,7 @@
 //! 同 group 多次 fold 累积、scan_reduces 全组扫描、entry 布局
 //! `[ns 2B][slot 1B][group 段]`（slot 续接索引计数器）。
 
-use okm_core::{Reduce, ReduceLogic, ReduceCodec, MockStore, Row, RowEncode};
+use okm_core::{Reduce, ReduceLogic, ReduceCodec, TestStore, Row, RowEncode};
 
 /// PostKey：代理主键。
 #[derive(okm_core::KeyEncode, Clone, PartialEq, Debug, Default)]
@@ -63,7 +63,7 @@ impl ReduceLogic for AuthorStats {
 
 #[test]
 fn fold_unfold_roundtrip_is_exact() {
-    let mut t = <Post as Row>::table(MockStore::default());
+    let mut t = <Post as Row>::table(TestStore::slatedb_mem());
 
     let k1 = PostKey { id: 1 };
     let r1 = Post {
@@ -105,7 +105,7 @@ fn fold_unfold_roundtrip_is_exact() {
 
 #[test]
 fn entry_layout_is_ns_slot_group() {
-    let mut t = <Post as Row>::table(MockStore::default());
+    let mut t = <Post as Row>::table(TestStore::slatedb_mem());
     let k = PostKey { id: 9 };
     let r = Post {
         author_id: 55,

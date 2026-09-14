@@ -9,6 +9,7 @@ okm-wire = { path = "../okm-wire" }
 serde = { version = "1", features = ["derive"], optional = true }
 fjall = { version = "3.1.10", optional = true }
 slatedb = { version = "0.16.0", optional = true }
+tempfile = { version = "3", optional = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"], optional = true }
 object_store = { version = "0.13", optional = true }
 arrow = { version = "54", optional = true }
@@ -22,7 +23,7 @@ syn = { version = "2", features = ["full", "parsing"] }
 [features]
 default = []
 schema-serde = ["dep:serde"]
-fjall = ["dep:fjall"]
+fjall = ["dep:fjall", "dep:tempfile"]
 slatedb = ["dep:slatedb", "dep:tokio"]
 arrow = ["dep:arrow"]
 parquet = ["dep:parquet", "arrow"]

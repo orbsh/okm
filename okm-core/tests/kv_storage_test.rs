@@ -3,7 +3,7 @@
 //! the sender endpoint plugs into a `Table` whose write path runs
 //! entirely over the wire.
 
-use okm_core::{KeyEncode, MockStore, RemoteStore, Row, RowEncode, Table, VirtualStorage};
+use okm_core::{KeyEncode, TestStore, RemoteStore, Row, RowEncode, Table, VirtualStorage};
 
 // Receiver declaration: no data methods, one execution surface.
 #[derive(okm_core::StorageEncode)]
@@ -31,7 +31,7 @@ fn kv_storage_derive_end_to_end() {
     // encoding as Row::NS_PREFIX.
     assert_eq!(AppStorage::NS_PREFIX, &[0, 21]);
 
-    let handle = AppStorage::serve(MockStore::default());
+    let handle = AppStorage::serve(TestStore::slatedb_mem());
     let remote = handle.open();
     let mut t: Table<RemoteStore, ItemKey, Item> = Table::new(remote);
 
@@ -63,8 +63,8 @@ fn two_instances_isolated_by_declared_prefix() {
 
     assert_eq!(OtherStorage::NS_PREFIX, &[0, 22]);
 
-    let h1 = AppStorage::serve(MockStore::default());
-    let h2 = OtherStorage::serve(MockStore::default());
+    let h1 = AppStorage::serve(TestStore::slatedb_mem());
+    let h2 = OtherStorage::serve(TestStore::slatedb_mem());
     let mut s1 = h1.open();
     let mut s2 = h2.open();
 
