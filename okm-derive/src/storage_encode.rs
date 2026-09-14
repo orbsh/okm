@@ -62,7 +62,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
             /// behind the host's single-writer mutex; every key entering
             /// it is `[NS_PREFIX][sender bytes]` — the prefix escape is
             /// not expressible from the outside (ADR-0010 §4).
-            pub fn serve<S: ::okm_core::VirtualStorage + Send + 'static>(
+            pub fn serve<S: ::okm_core::SharedVirtualStorage + Send + 'static>(
                 engine: S,
             ) -> ::okm_core::VirtualHandle {
                 let (host, handle) = ::okm_core::StorageHost::new(engine, Self::NS_PREFIX);

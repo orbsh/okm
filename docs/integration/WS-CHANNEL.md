@@ -141,6 +141,9 @@ The channel's protocol needs three slots for OKM traffic:
    for — when one connection serves several instances. This is envelope
    data (a topic, a route key), never frame data: the frame itself does
    not know the receiver's prefix (ADR-0010 §5, knowledge asymmetry).
+   A bare shard host (`StorageHost::bare`, no prefix) takes every frame
+   routed to it byte-identical — sharding of one domain model is N bare
+   hosts behind the orchestrator's partition-key routing.
 2. **Kind**: write (fire-and-forget) vs read (expects a reply). The
    frame's leading op tag could carry this, but the envelope knowing it
    lets the channel route replies without peeking into the frame.

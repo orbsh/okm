@@ -22,7 +22,7 @@ use std::sync::{Arc, Mutex};
 
 use okm_wire::{OP_DELETE, OP_PUT, ReadFrame, ReadResponse, WriteFrame};
 
-use crate::storage::{KvBatch, MemBatch, VirtualStorage};
+use crate::storage::{KvBatch, MemBatch, SharedVirtualStorage, VirtualStorage};
 
 // ============ sender side ============
 
@@ -134,21 +134,49 @@ pub struct StorageHost<S: VirtualStorage> {
 /// call; see `docs/integration/WS-CHANNEL.md` for the adapter shape.
 pub struct StorageCore<S: VirtualStorage> {
     engine: Arc<Mutex<S>>,
-    prefix: Vec<u8>,
+    /// `Some` = hosted (multi-tenant, `#[kv_storage]` declared): every
+    /// key enters as `[prefix][sender bytes]`. `None` = bare shard
+    /// (single instance per engine, sharding routed by the orchestrator):
+    /// frames execute byte-identical — the sender's keyspace IS the
+    /// engine's keyspace.
+    prefix: Option<Vec<u8>>,
 }
 
-impl<S: VirtualStorage + Send + 'static> StorageHost<S> {
-    /// Bind the host to its declared prefix and engine at construction —
+impl<S: SharedVirtualStorage + Send + 'static> StorageHost<S> {
+    /// Hosted form: bind the host to its declared prefix and engine —
     /// prefix escape is not expressible afterwards (physical separation,
-    /// not naming filters, ADR-0010 §4). Returns the sender endpoints.
+    /// not naming filters, ADR-0010 §4). Multi-tenant: several hosted
+    /// hosts may share one engine; their 2-byte prefixes are byte-wise
+    /// disjoint, and each carries its own private ns dictionary inside.
+    /// Returns the sender endpoints.
     pub fn new(engine: S, prefix: &[u8]) -> (Self, VirtualHandle) {
+        Self::with_prefix(engine, Some(prefix.to_vec()))
+    }
+
+    /// Bare shard form: NO prefix — frames execute byte-identical on the
+    /// engine. The sender's keyspace IS the engine's keyspace; sharding
+    /// and routing belong to the orchestrator. Prerequisite: every OKM
+    /// instance pointing at this host shares one domain model (one ns
+    /// dictionary, one encoding) — same binary deployed per shard makes
+    /// this automatic. Coexistence with a hosted host on one engine is
+    /// legal as long as the orchestrator keeps the bare instances' ns
+    /// numbers off the hosted segments' numbers (an allocation duty, not
+    /// a runtime check — the host has no global view and needs none).
+    /// Singleton per engine is the practical shape.
+    pub fn bare(engine: S) -> VirtualHandle {
+        let (host, handle) = Self::with_prefix(engine, None);
+        host.serve();
+        handle
+    }
+
+    fn with_prefix(engine: S, prefix: Option<Vec<u8>>) -> (Self, VirtualHandle) {
         let (write_tx, write_rx) = mpsc::channel();
         let (read_tx, read_rx) = mpsc::channel();
         (
             Self {
                 core: Arc::new(StorageCore {
                     engine: Arc::new(Mutex::new(engine)),
-                    prefix: prefix.to_vec(),
+                    prefix,
                 }),
                 write_rx,
                 read_rx,
@@ -235,12 +263,19 @@ impl<S: VirtualStorage> StorageCore<S> {
     }
 }
 
-/// Sender key bytes → receiver-side physical key: pure concatenation,
-/// receiver bytes first, sender bytes after, order never adjusted
-/// (ADR-0010 §5). The receiver never parses what follows its prefix.
-fn hosted_key(prefix: &[u8], sender_key: &[u8]) -> Vec<u8> {
-    let mut full = Vec::with_capacity(prefix.len() + sender_key.len());
-    full.extend_from_slice(prefix);
-    full.extend_from_slice(sender_key);
-    full
+/// Sender key bytes → receiver-side physical key. Hosted (Some): pure
+/// concatenation, receiver bytes first, sender bytes after, order never
+/// adjusted (ADR-0010 §5) — the receiver never parses what follows its
+/// prefix. Bare shard (None): byte-identical — the engine's keyspace IS
+/// the sender's.
+fn hosted_key(prefix: &Option<Vec<u8>>, sender_key: &[u8]) -> Vec<u8> {
+    match prefix {
+        Some(p) => {
+            let mut full = Vec::with_capacity(p.len() + sender_key.len());
+            full.extend_from_slice(p);
+            full.extend_from_slice(sender_key);
+            full
+        }
+        None => sender_key.to_vec(),
+    }
 }
