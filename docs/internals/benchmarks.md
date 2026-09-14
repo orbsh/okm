@@ -15,7 +15,8 @@ when wired.
 
 - dev profile (criterion builds benches in release by default — numbers
   are release-grade), local runner
-- MockStore (BTreeMap) — engine numbers are memory-locality
+- MockStore is gone; baseline engine = TestStore default (slatedb
+  in-memory) — memory-locality
   representatives, not disk-engine representatives
 
 ## Declarations under test
@@ -52,7 +53,7 @@ heap copy; hot-segment arithmetic is sub-ns.
 Linear in fanout (~110-130 ns/row: key decode + payload point-read per
 hit). scan_covered at fanout 1 saves the fetch-back read (~30%).
 
-## Write path (MockStore)
+## Write path (in-memory engine)
 
 | path | mean |
 |---|---|

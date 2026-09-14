@@ -232,7 +232,7 @@ table lookups) or nested entries (store together).
 ```rust
 use okm_core::EdgeTable;
 
-let store = okm_core::MockStore::default(); // or FjallStore / SlatedbStore
+let store = okm_core::TestStore::default(); // slatedb-mem; also FjallStore / SlatedbStore / RedbStore
 let mut edges: EdgeTable<_, UserToSessionEdge> = EdgeTable::new(store);
 
 let user = UserKey { org_id: 7, user_id: 101 };
@@ -285,10 +285,10 @@ alias it with `use` and it serves as the generic parameter. `Row::table`
 builds the assembly point without repeating the key type at the call site:
 
 ```rust
-use okm_core::{MockStore, Row};
+use okm_core::{Row, TestStore};
 use __OkmIndex_User_by_org as ByOrg; // index type: derived from kv_index(by_org)
 
-let mut t = <User as Row>::table(MockStore::default());
+let mut t = <User as Row>::table(TestStore::default());
 
 t.put(&user, &User { org_id: 7, created_at: 30, reputation: 100, bio_len: 2 });
 

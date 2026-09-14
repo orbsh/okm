@@ -10,7 +10,7 @@ Design decisions live in `docs/adr/`. This plan tracks implementation status.
       2-byte direction-bit header (niche, ADR-0001), query methods on endpoint
       types.
 - [x] `Collection<S, E>` assembly point, no `KvRecord` (ADR-0003).
-- [x] Engines: `MockStore` (default), `fjall` (sync, feature), `slatedb`
+- [x] Engines: `fjall` (sync, feature), `slatedb`
       (async, feature).
 - [x] Hex layout-stability tests (`tests/integration.rs`).
 
@@ -405,8 +405,8 @@ StorageHost throughout.
       allocation duty at the global-view layer, not a runtime check;
       hosted apps may themselves shard as bare-hosted instances).
       Enabler: `SharedVirtualStorage` trait — hosts require genuinely
-      shared engines (handle semantics, not deep copies); MockStore now
-      shares via an Arc kernel. `StorageCore` (transport-free intake:
+      shared engines (handle semantics, not deep copies); the test engines share
+      via Arc kernels. `StorageCore` (transport-free intake:
       apply_write/apply_read) factored out for WS/UDS adapters; mpsc
       pumps remain the reference transport. bare_shard_test locks
       byte-identical execution, shard-table ns segments, and

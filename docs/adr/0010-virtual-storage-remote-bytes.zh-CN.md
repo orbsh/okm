@@ -4,7 +4,7 @@ Date: 2026-09-13
 Status: Accepted. **更新 2026-09-12，改名落地**：trait 现在直接命名为
 `VirtualStorage`（模块 `storage`；slatedb 路径的异步孪生为
 `VirtualStorageAsync`）——不再需要别名层做概念转换。后端结构体名
-（`MockStore`、`FjallStore`、`SlatedbStore`）不变。
+（`FjallStore`、`SlatedbStore`）不变；测试用 `MockStore` 后来由 `TestStore` 引擎矩阵（slatedb-mem / fjall / redb）取代。
 
 ## Context
 

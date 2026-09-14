@@ -141,7 +141,7 @@ fn hour_bucket(row: &Post) -> Vec<u64> {
 ```rust
 use okm_core::EdgeTable;
 
-let store = okm_core::MockStore::default(); // 或 FjallStore / SlatedbStore
+let store = okm_core::TestStore::default(); // slatedb-mem；另有 FjallStore / SlatedbStore / RedbStore
 let mut edges: EdgeTable<_, UserToSessionEdge> = EdgeTable::new(store);
 
 let user = UserKey { org_id: 7, user_id: 101 };
@@ -189,10 +189,10 @@ for pk in edges.reverse_prefix(&s1) {
 `RowEncode` 声明的访问方法在查询侧具名为索引类型。索引声明的派生物在展开点（本文件）生成：`kv_index(by_org ...)` 生成索引类型 `__OkmIndex_User_by_org`（机械拼接，无大小写转换），`use` 别名后即可作泛型参数。`Row::table` 构建装配点，调用处无需重复 key 类型：
 
 ```rust
-use okm_core::{MockStore, Row};
+use okm_core::{Row, TestStore};
 use __OkmIndex_User_by_org as ByOrg; // 索引类型：kv_index(by_org) 的派生物
 
-let mut t = <User as Row>::table(MockStore::default());
+let mut t = <User as Row>::table(TestStore::default());
 
 t.put(&user, &User { org_id: 7, created_at: 30, reputation: 100, bio_len: 2 });
 
