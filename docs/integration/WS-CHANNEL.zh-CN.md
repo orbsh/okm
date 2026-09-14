@@ -39,26 +39,29 @@ Krystallizer 进程                         Aura 节点进程
                                         └──────────────────────────────┘
 ```
 
-**接收侧（Aura）**：WS handler 收到信封，按信封约定取出 OKM 载荷，交给宿主的入口。这要求宿主的泵可以从 WS handler 直达，而不是只挂在内部 mpsc 通道后面——一个 20 行的适配器：
+**接收侧（Aura）**：WS handler 收到信封，按信封约定取出 OKM 载荷，直接调宿主执行核心的两个入口。`StorageHost` 的执行核心（`StorageCore`——引擎 + 前缀 + `apply_write`/`apply_read`）在 `Arc` 里天然 `Send + Sync`，不需要任何包装：
 
 ```rust
-pub struct WsIntake<S: VirtualStorage> {
-    host: Arc<Mutex<StorageCore<S>>>,
-}
+// Aura 侧：宿主构造后，把 Arc<StorageCore> 存进 WS 会话状态
+let (host, handle) = AppStorage::serve(engine);
+let core: Arc<StorageCore<_>> = host.core();   // 交给 WS handler 持有
+host.serve();                                   // mpsc 参考传输照常可开（两者共存）
 
-impl<S: VirtualStorage + Send + 'static> WsIntake<S> {
-    /// 一条 WS 消息携带一个写帧。无返回——fire-and-forget，与 mpsc 写泵一致。
-    pub fn write_frame(&self, frame: &[u8]) {
-        self.host.lock().unwrap().apply_write(frame);
-    }
-    /// 一条 WS 消息携带一个读帧。返回响应帧字节——WS handler 经同一连接送回。
-    pub fn read_frame(&self, frame: &[u8]) -> Option<Vec<u8>> {
-        self.host.lock().unwrap().apply_read(frame)
+// WS 消息处理（信封解析是 WS 侧自己的代码，OKM 不参与）：
+fn on_ws_message(core: &StorageCore<MyEngine>, envelope: Envelope) {
+    match envelope.kind {
+        Kind::StorageWrite => core.apply_write(&envelope.payload),
+        Kind::StorageRead  => {
+            if let Some(resp) = core.apply_read(&envelope.payload) {
+                send_ws(envelope.reply_to, resp);   // 响应帧走同连接
+            }
+        }
+        // 其它应用消息……
     }
 }
 ```
 
-（`StorageCore` 是现在的 `StorageHost` 去掉内部 mpsc 泵、把引擎 + 前缀暴露成 `apply_write` / `apply_read` 两个方法——mpsc 泵调用的正是同一逻辑。行为零变化；mpsc 接线保留为参考传输。）
+WS 特有的部分（信封解析、路由、请求 id）全在 handler 的解析代码里——OKM 侧给传输的东西就一个 `Arc<StorageCore>` 的两个方法，没有任何需要适配的结构体。mpsc 接线保留为参考传输，与新入口共享同一执行核心，行为零分叉。
 
 **发送侧（Krystallizer）**：`RemoteStore` 目前硬绑 `mpsc::Sender<Vec<u8>>`。泛化方向是把发送方对小传输的依赖从一个具体通道改成一个小 trait：
 
