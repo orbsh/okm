@@ -1,4 +1,4 @@
-//! Bare shard host (ADR-0010 §5, `StorageHost::bare`): NO prefix —
+//! Bare shard nest (ADR-0010 §5, `NestStorage::bare`): NO prefix —
 //! frames execute byte-identical on the engine. The sender's keyspace IS
 //! the engine's keyspace; sharding and routing belong to the
 //! orchestrator. Prerequisite: every OKM instance pointing at the bare
@@ -8,11 +8,11 @@
 //! bare instances' ns numbers off the hosted segments' numbers (an
 //! allocation duty, not a runtime check).
 
-use okm_core::{KeyEncode, TestStore, RemoteStore, RowEncode, StorageHost, Table, VirtualStorage};
+use okm_core::{KeyEncode, NestStorage, RemoteStore, RowEncode, Table, TestStore, VirtualStorage};
 
 #[test]
 fn bare_host_executes_frames_byte_identical() {
-    let handle = StorageHost::bare(TestStore::default());
+    let handle = NestStorage::bare(TestStore::default());
     let mut s: RemoteStore = handle.open();
 
     // Keys land exactly as sent — no prefix prepended (compare: hosted
@@ -46,7 +46,7 @@ pub struct ShardDoc {
 
 #[test]
 fn shard_table_via_bare_host_lands_on_its_ns_segment() {
-    let handle = StorageHost::bare(TestStore::default());
+    let handle = NestStorage::bare(TestStore::default());
     let mut t: Table<RemoteStore, ShardDocKey, ShardDoc> = Table::new(handle.open());
 
     t.put(&ShardDocKey { id: 5 }, &ShardDoc { title: 3 });
@@ -73,12 +73,12 @@ fn shard_table_via_bare_host_lands_on_its_ns_segment() {
 /// app sits at segment [0, 30]).
 #[test]
 fn bare_and_hosted_coexist_with_allocation_discipline() {
-    #[derive(okm_core::StorageEncode)]
+    #[derive(okm_core::NestStorage)]
     #[kv_ns(30)]
     pub struct AppBStorage;
 
     let engine = TestStore::default(); // handle-clone = shared engine
-    let bare = StorageHost::bare(engine.clone());
+    let bare = NestStorage::bare(engine.clone());
     let hosted = AppBStorage::serve(engine);
     let mut bs: RemoteStore = bare.open();
     let mut hs = hosted.open();

@@ -78,7 +78,7 @@ name = "integration"
 required-features = ["test-engines"]
 
 [[test]]
-name = "kv_storage_test"
+name = "kv_nest_test"
 required-features = ["test-engines"]
 
 [[test]]

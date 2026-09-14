@@ -131,10 +131,10 @@ keys and hosted `[prefix][ns 2B]` bytes never meet in one engine unless
 the receiver itself chooses to host them there. No reserved prefix
 values.
 
-### 4. Receiver declaration: `#[kv_storage]` derive
+### 4. Receiver declaration: `#[kv_nest]` derive
 
 The receiver is declared, not hand-wired. An empty struct annotated with
-`#[kv_storage(...)]` declares only its namespace (which app/prefix it
+`#[kv_nest]` declares only its namespace (which app/prefix it
 serves). The derive generates **no data methods** (no put/get/scan — there
 is no row type to encode) and exactly one execution method
 (`apply`): take frame → prepend declared prefix → plain engine
@@ -158,10 +158,10 @@ prefix values, and no multi-level ns declaration — if an application
 partitions by tenant internally, `tenant_id` is a plain key field in its
 structs (business sharding, same modeling for every tenant); only when
 whole applications are isolated at the platform level does the receiver
-host one `#[kv_storage]` executor per application, each with its own
+host one `#[kv_nest]` executor per application, each with its own
 declared prefix and its own sender-side ns dictionary behind it.
 
-**Bare shard form.** The prefix is optional (`StorageHost::bare`): a bare
+**Bare shard form.** The prefix is optional (`NestStorage::bare`): a bare
 host executes frames byte-identical — the sender's keyspace IS the
 engine's keyspace. This serves sharding: N shards of one business domain
 (one binary deployed per shard, one ns dictionary, one encoding) each get
@@ -192,7 +192,7 @@ The receiver knows only its prefix; the ns segment is the sender's —
 the receiver prepends its prefix and never parses what follows; ns bytes
 pass through opaque. Knowledge asymmetry is the isolation mechanism: the
 receiver cannot route past what it cannot see, and the sender cannot
-escape the prefix it does not hold (the `#[kv_storage]` handle is bound
+escape the prefix it does not hold (the `#[kv_nest]` handle is bound
 to the prefix at construction). ADR-0002's "if tenants exist" clause is
 thereby **promoted from sketch to adopted mechanism**; its rejection of
 per-tenant outer isolation was premised on "no user-programmable query
@@ -210,7 +210,7 @@ physical topology is fixed at assembly time. No declared endpoint, no
 dedicated listener, no second protocol.
 
 Symmetrically, the receiver does not know arrival paths either. The
-`#[kv_storage]` executor's surface is exactly one method — frame in, results
+`#[kv_nest]` executor's surface is exactly one method — frame in, results
 out; who called it and through which channel is the caller's business.
 Read correlation (which response answers which request) lives on the
 sender side of the executor, same as write. A TCP + hand-parsed client is
@@ -222,7 +222,7 @@ never leaks into it.
 
 - Krystallizer's storage config becomes four-way: mock / fjall / slatedb /
   virtual(→Aura). OKM semantic layers (Table/index/reduce/events) unchanged.
-- Aura gains a Storage Actor hosting `#[kv_storage]` executors: one declared
+- Aura gains a Storage Actor hosting `#[kv_nest]` executors: one declared
   instance per application (one declared prefix each), frames arrive from
   VirtualStorage backends or realm events; same-machine callers connect
   in-process.

@@ -25,7 +25,7 @@
 //! dictionary, assembly point, value-side roadmap) and the project README
 //! for a full walkthrough.
 
-pub use okm_derive::{EdgeEncode, KeyEncode, RowEncode, StorageEncode};
+pub use okm_derive::{EdgeEncode, KeyEncode, NestStorage, RowEncode};
 
 pub use reverse::{Reversible, Reverse};
 pub use wrappers::{Enum, EnumTag, Offset, Quant, VarInt, VarIntEnc, offset_decode, offset_encode};
@@ -33,7 +33,7 @@ pub use wrappers::{Enum, EnumTag, Offset, Quant, VarInt, VarIntEnc, offset_decod
 pub mod reduce;
 pub mod collection;
 pub mod edge;
-pub mod remote;
+pub mod nest;
 pub mod schema;
 #[cfg(feature = "redb")]
 pub mod redb_backend;
@@ -62,7 +62,7 @@ pub use edge::{KvEdge, head_bytes};
 pub use storage::{VirtualStorage, KvBatch, MemBatch, SharedVirtualStorage};
 #[cfg(any(feature = "test-engines", feature = "fjall", feature = "redb"))]
 pub use test_engine::TestStore;
-pub use remote::{RemoteStore, StorageHost, StorageCore, VirtualHandle};
+pub use nest::{NestStorage, RemoteStore, VirtualHandle};
 pub use okm_wire::{OpFrame, OpResponse};
 pub use field::{FieldDesc, FieldType};
 pub use index::{IndexFuncResult, IndexFuncValues, KvIndex, PRIMARY_SLOT, Row, scan_index};

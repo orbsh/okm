@@ -302,13 +302,13 @@ and the Phase 6 baseline premise is now real, not planned.
       MODELING.zh-CN.md), which also updated the event-layer section for
       the bare-only kv_subscribe form (build.rs-derived enum).
 
-## Phase 7 — VirtualStorage: engine as boundary, remote backend, kv_storage derive (ADR-0010)
+## Phase 7 — VirtualStorage: engine as boundary, remote backend, kv_nest derive (ADR-0010)
 
-Implementation naming note: the ADR's concept name `#[kv_storage]` maps to
-code as `#[derive(StorageEncode)]` -> `StorageHost` (okm-core/src/remote.rs)
-— the receiver that prepends its declared prefix and executes on the local
-engine. ADR text uses the concept name; code identifiers use StorageEncode/
-StorageHost throughout.
+Implementation naming note: the ADR's concept name `#[kv_nest]` maps to
+code as `#[derive(NestStorage)]` -> `NestStorage` (okm-core/src/nest.rs)
+— the receiver that nests an existing engine behind its declared prefix
+and executes frames on it. Derive macro and receiver type share one
+name root, like `#[kv_nest]` ↔ `NestStorage`.
 
 - [x] Trait boundary rename: `KvEngine` → `VirtualStorage` (module
       `engine` → `storage`; async twin `KvEngineAsync` →
@@ -332,9 +332,9 @@ StorageHost throughout.
       not the contract). Transport is backend-internal (in-process
       channel / UDS / existing WS connection) — fixed at assembly, no
       declared endpoint.
-- [x] `#[kv_storage]` derive: empty struct + prefix declaration (`#[kv_ns
+- [x] `#[kv_nest]` derive: empty struct + prefix declaration (`#[kv_ns
       (N)]`) → NO data methods, exactly one execution surface (`serve`
-      engine → `VirtualHandle`; internally the `StorageHost` reference:
+      engine → `VirtualHandle`; internally the `NestStorage` reference:
       prepend declared prefix → plain byte-level engine execution →
       fill back scan bytes). Receiver holds no OKM semantics; storing
       garbage is indistinguishable from storing data. Same annotation
@@ -385,14 +385,14 @@ StorageHost throughout.
       pure concatenation `[receiver prefix][ns 2B][sender payload]`,
       ns opaque to the receiver (ADR-0002 sketch promoted; discipline
       untouched). Shipped 2026-09-12: the mechanism is exactly the
-      `#[kv_storage]` derive (one declared executor + prefix per
-      application) + `StorageHost`'s concatenating `hosted_key` — there
+      `#[kv_nest]` derive (one declared executor + prefix per
+      application) + `NestStorage`'s concatenating `hosted_key` — there
       is no separate multi-tenant code path. `multi_tenant_test.rs`
       covers one shared engine / two hosts (disjoint prefix segments,
       identical sender keys), internal tenant sharding as a plain key
       field, and the Table write path landing inside the tenant's
       segment.
-- [x] Bare shard host: `StorageHost::bare` — NO prefix, frames execute
+- [x] Bare shard host: `NestStorage::bare` — NO prefix, frames execute
       byte-identical (the sender's keyspace IS the engine's keyspace).
       Serves sharding of one business domain: N shards = N bare hosts
       behind the orchestrator's partition-key routing (e.g. Aura's);
@@ -406,7 +406,7 @@ StorageHost throughout.
       hosted apps may themselves shard as bare-hosted instances).
       Enabler: `SharedVirtualStorage` trait — hosts require genuinely
       shared engines (handle semantics, not deep copies); the test engines share
-      via Arc kernels. `StorageCore` (transport-free intake:
+      via Arc kernels. `NestStorage` (transport-free intake:
       apply) factored out for WS/UDS adapters; mpsc
       pumps remain the reference transport. bare_shard_test locks
       byte-identical execution, shard-table ns segments, and
