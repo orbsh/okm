@@ -170,10 +170,15 @@ partition-key routing), and OKM adds zero checking or machinery. The
 prerequisite is the domain-model consistency of the shards pointing at
 the host — guaranteed by deployment, not decidable at runtime (deciding
 it would be OKM semantics the host must not have). Bare and hosted hosts
-may coexist on one engine: hosted segments are 2-byte-disjoint, and the
-orchestrator's allocation duty is keeping bare instances' ns numbers off
-the hosted segments' numbers — an allocation duty at the layer that owns
-the global view, not a runtime check in the host.
+may coexist on one engine: hosted segments are 2-byte-disjoint among
+themselves, and hosted apps may themselves shard (several bare-hosted
+instances of one declared app, routed by user/partition key). The only
+collision surface is byte coincidence — a bare instance's ns-table bytes
+(`[0, N]...`) matching a hosted segment's prefix `[0, M]` when N = M —
+which the orchestrator avoids by allocating hosted segment numbers off
+the bare shards' in-domain ns numbers. One allocation at the layer that
+owns the global view, not a runtime check in the host (a bare host does
+not know hosted segments exist, and must not).
 
 The physical key on the receiver's engine is a pure concatenation —
 receiver bytes first, sender bytes after, order never adjusted:
