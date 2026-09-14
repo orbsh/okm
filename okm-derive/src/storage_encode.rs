@@ -1,6 +1,6 @@
-//! `StorageEncode` — the `#[kv_storage]` receiver derive (ADR-0010 §4).
+//! `NestStorage` — the `#[kv_nest]` receiver derive (ADR-0010 §4).
 //!
-//! An empty struct annotated with `#[derive(StorageEncode)]` +
+//! An empty struct annotated with `#[derive(NestStorage)]` +
 //! `#[kv_ns(N)]` becomes a receiver host: the derive generates **no data
 //! methods** (there is no row type to encode) and exactly one execution
 //! surface (`serve`) — take frames, prepend the declared prefix, replay
@@ -9,7 +9,7 @@
 //!
 //! Same annotation discipline as `#[kv_subscribe]`: the annotation
 //! declares a fact (which prefix this host serves); the macro emits the
-//! implementation. The generated host wraps `okm_core::StorageHost`
+//! implementation. The generated host wraps `okm_core::NestStorage`
 //! internally — the reference implementation this derive targets.
 
 use proc_macro::TokenStream;
@@ -22,7 +22,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
 
     match &input.data {
         Data::Struct(s) if s.fields.is_empty() => {}
-        _ => panic!("StorageEncode only supports unit/empty structs — the host carries no data"),
+        _ => panic!("NestStorage only supports unit/empty structs — the host carries no data"),
     }
 
     // `#[kv_ns(N)]` — the prefix this host serves. Required: a host with
@@ -36,7 +36,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
             if a.path().is_ident("kv_ns") {
                 Some(
                     a.parse_args::<syn::LitInt>()
-                        .expect("kv_storage format: #[kv_ns(N)]")
+                        .expect("kv_nest format: #[kv_ns(N)]")
                         .base10_parse()
                         .expect("kv_ns must be a u16 literal"),
                 )
@@ -65,7 +65,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
             pub fn serve<S: ::okm_core::SharedVirtualStorage + Send + 'static>(
                 engine: S,
             ) -> ::okm_core::VirtualHandle {
-                let (host, handle) = ::okm_core::StorageHost::new(engine, Self::NS_PREFIX);
+                let (host, handle) = ::okm_core::NestStorage::new(engine, Self::NS_PREFIX);
                 host.serve();
                 handle
             }

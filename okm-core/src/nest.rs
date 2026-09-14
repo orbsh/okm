@@ -1,7 +1,7 @@
 //! Remote storage backend (ADR-0010 Phase 7). Sender: implements
 //! [`VirtualStorage`] by framing the already-encoded op list — writes are
 //! fire-and-forget, reads block on the round trip. Receiver:
-//! [`StorageHost`] prepends its declared prefix and executes frames on a
+//! [`NestStorage`] prepends its declared prefix and executes frames on a
 //! plain byte-level engine. Neither side parses key contents; the wire
 //! carries only op bytes (ADR-0010 §2: no semantic parsing, no generic
 //! serialization library — the frame is counted fields, not a protocol).
@@ -22,7 +22,7 @@
 //! also rides the transport envelope (an mpsc sender beside each
 //! frame), never the frame bytes.
 //!
-//! The `#[kv_storage]` derive generates exactly the [`StorageHost`]
+//! The `#[kv_nest]` derive generates exactly the [`NestStorage`]
 //! shape; this manual form is the reference implementation the derive
 //! targets.
 
@@ -45,7 +45,7 @@ pub struct RemoteStore {
     exec_tx: mpsc::Sender<(mpsc::Sender<OpResponse>, Vec<u8>)>,
 }
 
-/// The sender-side endpoints a [`StorageHost::new`] hands out. Each read
+/// The sender-side endpoints a [`NestStorage::new`] hands out. Each read
 /// round trip carries its own reply box in the transport envelope, so
 /// several senders can share one host without cross-reading answers.
 pub struct VirtualHandle {
@@ -120,33 +120,36 @@ impl VirtualStorage for RemoteStore {
 
 // ============ receiver side ============
 
-/// Receiver host: owns the real engine behind a mutex (single-writer
-/// discipline, held across one execution pass — the same boundary a
-/// local caller's `&mut self` provides) and knows exactly one thing:
-/// its declared prefix. No TLV, no rows, no OKM semantics — storing
-/// garbage is indistinguishable from storing data (ADR-0010 §2). The
-/// `#[kv_storage]` derive generates this shape; this manual form is its
-/// reference.
-pub struct StorageHost<S: VirtualStorage> {
-    core: Arc<StorageCore<S>>,
-    exec_rx: mpsc::Receiver<(mpsc::Sender<OpResponse>, Vec<u8>)>,
+/// Receiver side: a **nested storage** — an existing engine nested
+/// inside a declared prefix, executing frames through one intake. Owns
+/// the real engine behind a mutex (single-writer discipline, held
+/// across one execution pass — the same boundary a local caller's
+/// `&mut self` provides) and knows exactly one thing: its declared
+/// prefix. No TLV, no rows, no OKM semantics — storing garbage is
+/// indistinguishable from storing data (ADR-0010 §2). The `#[kv_nest]`
+/// derive generates this shape; this manual form is its reference.
+/// Transport-free execution core (ADR-0010 §6): ONE intake for every op
+/// — receive, execute, answer if the op produces output. The mpsc
+/// reference pump and a WS/UDS adapter (holding `Arc<NestStorage>`)
+/// serialize on the same engine mutex; see
+/// `docs/integration/WS-CHANNEL.md` for the adapter shape.
+struct ExecCore<S: VirtualStorage> {
+    engine: Arc<Mutex<S>>,
+    prefix: Option<Vec<u8>>,
 }
 
-/// The host's execution core, transport-free (ADR-0010 §6): ONE intake
-/// for every op — receive, execute, answer if the op produces output.
-/// WS/UDS adapters and the mpsc reference pump call the same methods;
-/// see `docs/integration/WS-CHANNEL.md` for the adapter shape.
-pub struct StorageCore<S: VirtualStorage> {
+pub struct NestStorage<S: VirtualStorage> {
     engine: Arc<Mutex<S>>,
-    /// `Some` = hosted (multi-tenant, `#[kv_storage]` declared): every
+    /// `Some` = hosted (multi-tenant, `#[kv_nest]` declared): every
     /// key enters as `[prefix][sender bytes]`. `None` = bare shard
     /// (single instance per engine, sharding routed by the orchestrator):
     /// frames execute byte-identical — the sender's keyspace IS the
     /// engine's keyspace.
     prefix: Option<Vec<u8>>,
+    exec_rx: mpsc::Receiver<(mpsc::Sender<OpResponse>, Vec<u8>)>,
 }
 
-impl<S: SharedVirtualStorage + Send + 'static> StorageHost<S> {
+impl<S: SharedVirtualStorage + Send + 'static> NestStorage<S> {
     /// Hosted form: bind the host to its declared prefix and engine —
     /// prefix escape is not expressible afterwards (physical separation,
     /// not naming filters, ADR-0010 §4). Multi-tenant: several hosted
@@ -169,7 +172,7 @@ impl<S: SharedVirtualStorage + Send + 'static> StorageHost<S> {
     /// Singleton per engine is the practical shape.
     pub fn bare(engine: S) -> VirtualHandle {
         let (host, handle) = Self::with_prefix(engine, None);
-        host.serve();
+        let _ = host.serve(); // pump owns its Arc; drop the intake handle
         handle
     }
 
@@ -177,33 +180,36 @@ impl<S: SharedVirtualStorage + Send + 'static> StorageHost<S> {
         let (exec_tx, exec_rx) = mpsc::channel();
         (
             Self {
-                core: Arc::new(StorageCore {
-                    engine: Arc::new(Mutex::new(engine)),
-                    prefix,
-                }),
+                engine: Arc::new(Mutex::new(engine)),
+                prefix,
                 exec_rx,
             },
             VirtualHandle { exec_tx },
         )
     }
 
-    /// Transport-free intake: the WS/UDS adapter calls this directly
-    /// (see `docs/integration/WS-CHANNEL.md`).
-    pub fn core(&self) -> &Arc<StorageCore<S>> {
-        &self.core
-    }
-
-    /// Serve forever on the reference mpsc transport: one pump, one loop
-    /// — receive frame, execute, answer. An async receiver would
-    /// task-spawn the same loop. The channel receiver moves into the
-    /// thread (mpsc Receiver is not Sync — it owns its end exclusively,
-    /// which is the correct shape anyway).
-    pub fn serve(self) {
-        let core = self.core;
-        let exec_rx = self.exec_rx;
+    /// Start serving on the reference mpsc transport: one pump, one loop
+    /// — receive frame, execute, answer. Returns `Arc<Self>` so the
+    /// caller can share the same intake with other transports (a WS/UDS
+    /// adapter calls `apply` on it directly — see
+    /// `docs/integration/WS-CHANNEL.md`). An async receiver would
+    /// task-spawn the same loop.
+    pub fn serve(self) -> Arc<Self> {
+        // Split: the engine+prefix go into a pump struct (Clone-able
+        // core), the receiver end moves into the pump thread (mpsc
+        // Receiver is not Sync — it owns its end exclusively, the
+        // correct shape anyway). The returned Arc shares the same
+        // engine/prefix, so `apply` from a WS adapter and the pump
+        // serialize on the same mutex.
+        let core = Arc::new(ExecCore {
+            engine: self.engine,
+            prefix: self.prefix,
+        });
+        let pump_rx = self.exec_rx;
+        let pump_core = Arc::clone(&core);
         std::thread::spawn(move || {
-            for (reply_tx, bytes) in exec_rx {
-                let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| core.apply(&bytes)));
+            for (reply_tx, bytes) in pump_rx {
+                let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| pump_core.apply(&bytes)));
                 if let Ok(Some(resp)) = r {
                     // Fire-and-forget writers (put/delete) drop their reply
                     // box before the answer arrives — a failed send is the
@@ -213,17 +219,33 @@ impl<S: SharedVirtualStorage + Send + 'static> StorageHost<S> {
                 }
             }
         });
+        Arc::new(Self {
+            engine: Arc::clone(&core.engine),
+            prefix: core.prefix.clone(),
+            exec_rx: mpsc::channel().1, // placeholder: this instance's intake is the returned Arc's `apply`
+        })
+    }
+
+    /// Transport-free intake: the WS/UDS adapter calls this on the
+    /// `Arc<NestStorage>` returned by `serve` (see
+    /// `docs/integration/WS-CHANNEL.md`).
+    pub fn apply(&self, bytes: &[u8]) -> Option<OpResponse> {
+        ExecCore {
+            engine: Arc::clone(&self.engine),
+            prefix: self.prefix.clone(),
+        }
+        .apply(bytes)
     }
 }
 
-impl<S: VirtualStorage> StorageCore<S> {
+impl<S: VirtualStorage> ExecCore<S> {
     /// Apply one request frame — THE execution surface, all four ops:
     /// decode (malformed = `None`, garbage in / nothing stored), then
     /// execute in frame order. Mutating ops (put/delete) commit together
     /// in one `commit_batch` = one engine WAL write (ADR-0010 §2);
     /// query ops (get/scan) run after them and fill the response.
     /// Returns `None` only for malformed frames.
-    pub fn apply(&self, bytes: &[u8]) -> Option<OpResponse> {
+    fn apply(&self, bytes: &[u8]) -> Option<OpResponse> {
         let frame = OpFrame::decode(bytes)?;
         let mut engine = self.engine.lock().expect("engine lock");
         let mut batch = MemBatch::default();
@@ -305,7 +327,7 @@ mod tests {
     fn round_trip_via_handle() {
         // bare() serves internally and returns the handle — the exact
         // path bare_shard_test exercises.
-        let handle = StorageHost::bare(TestEngine::default());
+        let handle = NestStorage::bare(TestEngine::default());
         let mut rs: RemoteStore = handle.open();
         rs.put(b"k".to_vec(), b"v".to_vec());
         assert_eq!(rs.get(b"k").as_deref(), Some(b"v".as_slice()));
@@ -313,13 +335,12 @@ mod tests {
 
     #[test]
     fn apply_put_get_round_trip() {
-        let (host, _handle) = StorageHost::new(TestEngine::default(), &[0, 9]);
-        let core = host.core();
+        let (host, _handle) = NestStorage::new(TestEngine::default(), &[0, 9]);
         let put = OpFrame::one(OP_PUT, b"k".to_vec(), b"v".to_vec());
-        let r = core.apply(&put.encode());
+        let r = host.apply(&put.encode());
         assert!(r.is_some(), "put apply must succeed");
         let get = OpFrame::one(OP_GET, b"k".to_vec(), Vec::new());
-        let r = core.apply(&get.encode());
+        let r = host.apply(&get.encode());
         assert_eq!(r.unwrap().value.as_deref(), Some(b"v".as_slice()));
     }
 }

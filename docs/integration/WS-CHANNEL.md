@@ -13,7 +13,7 @@ OKM's remote backend (ADR-0010) already separates three concerns:
 ```text
 sender (RemoteStore)      implements VirtualStorage; frames ops
 codec (okm-wire)          hand-parsed frames: tag + lengths + raw bytes
-receiver (StorageHost)    prepends its declared prefix, replays on the engine
+receiver (NestStorage)    prepends its declared prefix, replays on the engine
 ```
 
 The transport between sender and receiver is a backend-internal detail:
@@ -30,13 +30,13 @@ symmetric and strict:
 - The OKM side must NOT parse the channel's envelope — it produces a
   frame's bytes and hands them over as one opaque payload.
 - The channel side must NOT parse the OKM frame — it forwards the
-  payload to a declared `StorageHost` and returns whatever comes back.
+  payload to a declared `NestStorage` and returns whatever comes back.
 
 Two ways to satisfy this, depending on who owns the connection:
 
 ### Shape A: OKM inside the WS app (the usual case)
 
-The application runs both the WS client and the `StorageHost`; remote
+The application runs both the WS client and the `NestStorage`; remote
 OKM instances elsewhere send operations **over this connection**.
 
 ```text
@@ -45,7 +45,7 @@ Krystallizer process                    Aura node process
 │ RemoteStore         │                │ WS server                    │
 │   │ frame bytes     │   WebSocket    │   │ envelope → route:        │
 │   ▼                 │ ─────────────► │   ▼                          │
-│ okm-wire encode     │                │ StorageHost::serve pumps     │
+│ okm-wire encode     │                │ NestStorage::serve pumps     │
 └─────────────────────┘                │   ├─ [prefix] engine ops     │
                                        │   └─ replies                 │
                                        └──────────────────────────────┘
@@ -53,7 +53,7 @@ Krystallizer process                    Aura node process
 
 Receiver side (Aura): the WS handler receives an envelope, extracts the
 OKM payload by envelope convention, and calls the host's execution core
-directly. `StorageCore` (engine + prefix + `apply`) lives in an `Arc`
+directly. `NestStorage` (engine + prefix + `apply`) lives in an `Arc`
 and is `Send + Sync` by construction — it needs no wrapper. Execution
 is three steps — receive a frame, apply it, send back whatever comes
 out — with NO read/write fork: all four ops (put/delete/get/scan) share
@@ -62,15 +62,15 @@ response exists — get/scan return Some (response frame), put/delete
 return None (no response, and none needed):
 
 ```rust
-// Aura side: after constructing the host, hand the Arc<StorageCore> to
+// Aura side: after constructing the host, hand the Arc<NestStorage> to
 // the WS session state.
 let (host, handle) = AppStorage::serve(engine);
-let core: Arc<StorageCore<_>> = host.core();  // held by the WS handler
+let core: Arc<NestStorage<_>> = nest (Arc) directly;  // held by the WS handler
 host.serve();                                  // mpsc reference transport may stay on (coexists)
 
 // WS message handling — envelope parsing is the WS side's own code; OKM
 // takes no part in it:
-fn on_ws_message(core: &StorageCore<MyEngine>, envelope: Envelope) {
+fn on_ws_message(core: &NestStorage<MyEngine>, envelope: Envelope) {
     // One frame per op: apply → send a response back if there is one,
     // send nothing otherwise. The envelope's kind does NOT distinguish
     // reads from writes — that is not OKM semantics; the frame carries it.
@@ -83,7 +83,7 @@ fn on_ws_message(core: &StorageCore<MyEngine>, envelope: Envelope) {
 
 The WS-specific parts (envelope parsing, routing, request ids) all live
 in the handler's parsing code — what OKM hands the transport is one
-`Arc<StorageCore>` with a single method, no adapter struct anywhere. The
+`Arc<NestStorage>` with a single method, no adapter struct anywhere. The
 mpsc wiring remains as the reference transport sharing the same core;
 zero behavioral divergence.
 
@@ -119,7 +119,7 @@ The channel's protocol needs two slots for OKM traffic:
    for — when one connection serves several instances. This is envelope
    data (a topic, a route key), never frame data: the frame itself does
    not know the receiver's prefix (ADR-0010 §5, knowledge asymmetry).
-   A bare shard host (`StorageHost::bare`, no prefix) takes every frame
+   A bare shard host (`NestStorage::bare`, no prefix) takes every frame
    routed to it byte-identical — sharding of one domain model is N bare
    hosts behind the orchestrator's partition-key routing.
 2. **Correlation**: an id matching a response to its request. Whether a
@@ -141,7 +141,7 @@ binary payload — that is the whole isolation mechanism.
   host's write pump applies frames in arrival order. One frame = one
   engine `commit_batch`, so the sender's batch atomicity maps 1:1.
   Multiple connections to one host = no total order — route each
-  sender's writes to its own host instance (one `#[kv_storage]` per
+  sender's writes to its own host instance (one `#[kv_nest]` per
   application anyway) or accept interleaving (fine when senders touch
   disjoint key ranges).
 - **Reads**: any connection can serve reads; the host's engine mutex
@@ -161,7 +161,7 @@ The WS adapter is transport glue: it binds an existing connection to
 the host's intake and adds an envelope convention. Every application's
 channel protocol differs, so the adapter cannot be a library — it is
 per-integration code in the application (or the Aura node), built from
-two pieces okm-core provides: `StorageCore::apply` (the receiver's
+two pieces okm-core provides: `NestStorage::apply` (the receiver's
 single intake) and `RemoteStore` (the sender, implementing
 `VirtualStorage`). The doc-level contract is the two envelope slots
 above.

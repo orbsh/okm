@@ -126,7 +126,7 @@ Reading the table honestly:
   persistence, its eviction policy); OKM's is a free composition —
   in-process engine (this baseline), sharded bare hosts (one engine per
   shard, orchestrator-routed), hosted multi-tenant segments (one engine,
-  `#[kv_storage]` executors), or a Redis-like network service (RemoteStore
+  `#[kv_nest]` executors), or a Redis-like network service (RemoteStore
   behind the service's connection plane — the WS-CHANNEL integration) —
   each form is a constructor call away, and the byte format is unchanged
   across all of them.
@@ -140,6 +140,6 @@ Reading the table honestly:
 ## Not yet benched
 
 - fjall / slatedb engine paths (feature benches)
-- remote round trip (framed put through okm-wire + StorageHost pump)
+- remote round trip (framed put through okm-wire + NestStorage pump)
   — blocked on the WS/transport integration landing
 - reduce fold at large group cardinality (current table: single group)

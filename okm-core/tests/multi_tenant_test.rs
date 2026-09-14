@@ -1,4 +1,4 @@
-//! Multi-tenancy (ADR-0010 §5): one physical engine, several `#[kv_storage]`
+//! Multi-tenancy (ADR-0010 §5): one physical engine, several `#[kv_nest]`
 //! executors — one declared prefix per application. Isolation is the pure
 //! concatenation in `hosted_key`: two hosts on the same engine occupy two
 //! disjoint prefix segments, and a sender bound to one prefix cannot reach
@@ -13,15 +13,15 @@ use okm_core::{KeyEncode, TestStore, RemoteStore, RowEncode, Table, VirtualStora
 // SharedVirtualStorage — the test-local SharedEngine workaround is gone.
 
 // One declared executor per application — same physical engine behind all.
-#[derive(okm_core::StorageEncode)]
+#[derive(okm_core::NestStorage)]
 #[kv_ns(21)]
 pub struct TenantAStorage;
 
-#[derive(okm_core::StorageEncode)]
+#[derive(okm_core::NestStorage)]
 #[kv_ns(22)]
 pub struct TenantBStorage;
 
-#[derive(okm_core::StorageEncode)]
+#[derive(okm_core::NestStorage)]
 #[kv_ns(21)]
 pub struct AppStorage;
 

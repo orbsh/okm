@@ -1,5 +1,5 @@
 //! ADR-0010 Phase 7 end-to-end: RemoteStore (sender, `impl VirtualStorage`)
-//! → mpsc channel (reference transport) → StorageHost (receiver, declared
+//! → mpsc channel (reference transport) → NestStorage (receiver, declared
 //! prefix) → TestStore (the real engine). Covers the whole Table write
 //! path surviving remoteness: primary + index entries in one frame, one
 //! receiver WAL commit per batch, prefix isolation between two hosts.
@@ -10,7 +10,7 @@
 //! deep copy, a kept clone would observe a different engine.
 
 use okm_core::{
-    KeyEncode, KvBatch, TestStore, RemoteStore, RowEncode, StorageHost, Table, VirtualHandle,
+    KeyEncode, KvBatch, NestStorage, RemoteStore, RowEncode, Table, TestStore, VirtualHandle,
     VirtualStorage,
 };
 
@@ -31,7 +31,7 @@ use __OkmIndex_User_by_tag as ByLevel;
 
 /// Spawn a host on its own threads; return the sender endpoint handle.
 fn spawn_host(engine: TestStore, prefix: &[u8]) -> VirtualHandle {
-    let (host, handle) = StorageHost::new(engine, prefix);
+    let (host, handle) = NestStorage::new(engine, prefix);
     host.serve();
     handle
 }

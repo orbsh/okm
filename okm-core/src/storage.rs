@@ -57,7 +57,7 @@ pub trait VirtualStorage {
 /// An engine that can be genuinely shared across hosts and handles:
 /// the `shared_handle()` view IS the same physical keyspace (fjall /
 /// slatedb store handles are Arc-kernel and already behave this way).
-/// `StorageHost` requires it — a host wraps the engine in an
+/// `NestStorage` requires it — a nest wraps the engine in an
 /// `Arc<Mutex<S>>`, and "wrapped" must mean shared, not copied.
 /// Deep-copy-Clone engines (test maps) deliberately do not implement
 /// this: a copied engine behind two hosts would silently fork the
