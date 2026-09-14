@@ -52,33 +52,38 @@ Krystallizer process                    Aura node process
 ```
 
 Receiver side (Aura): the WS handler receives an envelope, extracts the
-OKM payload by envelope convention, and hands it to the host's intake.
-The host needs its pumps addressable from the WS handler instead of
-internal mpsc channels — a 20-line adapter:
+OKM payload by envelope convention, and calls the host's execution core
+directly. `StorageCore` (engine + prefix + `apply_write`/`apply_read`)
+lives in an `Arc` and is `Send + Sync` by construction — it needs no
+wrapper:
 
 ```rust
-pub struct WsIntake<S: VirtualStorage> {
-    host: Arc<Mutex<StorageCore<S>>>,
-}
+// Aura side: after constructing the host, hand the Arc<StorageCore> to
+// the WS session state.
+let (host, handle) = AppStorage::serve(engine);
+let core: Arc<StorageCore<_>> = host.core();  // held by the WS handler
+host.serve();                                  // mpsc reference transport may stay on (coexists)
 
-impl<S: VirtualStorage + Send + 'static> WsIntake<S> {
-    /// One WS message carrying a write frame. Returns nothing —
-    /// fire-and-forget, exactly like the mpsc write pump.
-    pub fn write_frame(&self, frame: &[u8]) {
-        self.host.lock().unwrap().apply_write(frame);
-    }
-    /// One WS message carrying a read frame. Returns the response frame
-    /// bytes — the WS handler sends them back over the same connection.
-    pub fn read_frame(&self, frame: &[u8]) -> Option<Vec<u8>> {
-        self.host.lock().unwrap().apply_read(frame)
+// WS message handling — envelope parsing is the WS side's own code; OKM
+// takes no part in it:
+fn on_ws_message(core: &StorageCore<MyEngine>, envelope: Envelope) {
+    match envelope.kind {
+        Kind::StorageWrite => core.apply_write(&envelope.payload),
+        Kind::StorageRead => {
+            if let Some(resp) = core.apply_read(&envelope.payload) {
+                send_ws(envelope.reply_to, resp);   // response over the same connection
+            }
+        }
+        // other application messages...
     }
 }
 ```
 
-(`StorageCore` is the current `StorageHost` with its engine + prefix but
-the pumps factored into `apply_write` / `apply_read` methods — the same
-logic the mpsc pumps call. No behavior change; the mpsc wiring stays as
-the reference transport.)
+The WS-specific parts (envelope parsing, routing, request ids) all live
+in the handler's parsing code — what OKM hands the transport is one
+`Arc<StorageCore>` with two methods, no adapter struct anywhere. The
+mpsc wiring remains as the reference transport sharing the same core;
+zero behavioral divergence.
 
 Sender side (Krystallizer): `RemoteStore` currently hard-wires
 `mpsc::Sender<Vec<u8>>`. The generalization is to make the sender
