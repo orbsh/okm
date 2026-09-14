@@ -348,26 +348,16 @@ StorageHost throughout.
       OKM = one domain model); the engine choice stays
       per-assembly-point (local/remote freely mixable — remote is just
       another KvEngine impl).
-- [ ] Benchmarks (criterion, `benches/` per crate):
-      establish the performance floor the abstractions claim.
-      Encoding paths: KeyEncode::encode / encode_prefix_named, payload
-      encode/decode (hot + cold TLV), Reverse bit-flip, VarInt, Quant —
-      per key-size distribution (small/typical/wide).
-      Index scan: scan_index + fetch-back vs scan_covered at fanout
-      1/100/10k entries per prefix value.
-      Engine backends: MockStore vs fjall (sync) — put throughput, point
-      get, prefix-scan latency; batch commit (10/100/1k ops) vs per-op
-      put; slatedb async path separate (feature-gated).
-      Remote path: framed put round trip vs local put — measures the
-      okm-wire codec + host pump overhead (ADR-0010 claims the transport
-      is thin; verify).
-      Dynamic codec: okm-dynamic encode/decode vs the Rust derive path
-      on the same declaration — the interpreter's tax, expected but
-      measured, not assumed.
-      Reduce fold: fold cost at group cardinality 1/1k/100k.
-      Deliverable: baseline numbers recorded in docs (here or an
-      internals doc), re-run on engine upgrades. No CI regression gates
-      initially — baselines first; gates only where variance allows.
+- [x] Benchmarks (criterion, `okm-core/benches/core_paths.rs`): baseline
+      recorded 2026-09-12 in
+      [internals/benchmarks.md](internals/benchmarks.md) — key encode
+      5.5ns / decode 3.0ns, payload encode 92ns (TLV+String dominated),
+      index scan ~120ns/row (linear in fanout), semantic put 1.3µs vs
+      raw batch op 41ns, dynamic codec tax measured (key ~8×, payload
+      on par). Engine benches (fjall/slatedb/remote round trip) land
+      with their integrations; re-run with
+      `cargo bench -p okm-core --bench core_paths -- --baseline initial`.
+      No CI regression gates initially.
 - [~] Dynamic codec (Python first, then Steel): schema-driven
       encoder/decoder/scan built from structured schema exports —
       in-process use for embedded-language Actors. Permanent capability
