@@ -1,4 +1,4 @@
-//! `#[kv_nest]` — the receiver derive, end-to-end (ADR-0010 §4): the
+//! `NestStorage` derive (declared via `#[kv_ns]`) — end-to-end (ADR-0010 §4): the
 //! annotated empty struct becomes a host bound to its declared prefix;
 //! the sender endpoint plugs into a `Table` whose write path runs
 //! entirely over the wire.
@@ -26,7 +26,7 @@ pub struct Item {
 use __OkmIndex_Item_by_kind as ByKind;
 
 #[test]
-fn kv_nest_derive_end_to_end() {
+fn nest_derive_end_to_end() {
     // NS_PREFIX is the declared prefix, big-endian [ns 2B] — same
     // encoding as Row::NS_PREFIX.
     assert_eq!(AppStorage::NS_PREFIX, &[0, 21]);
@@ -55,7 +55,7 @@ fn kv_nest_derive_end_to_end() {
 
 #[test]
 fn two_instances_isolated_by_declared_prefix() {
-    // One #[kv_nest] executor per application — the isolation
+    // One declared NestStorage executor per application — the isolation
     // boundary IS the declared prefix (ADR-0010 §5).
     #[derive(okm_core::NestStorage)]
     #[kv_ns(22)]

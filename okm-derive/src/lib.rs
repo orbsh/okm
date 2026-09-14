@@ -60,7 +60,7 @@ pub fn derive_edge(input: TokenStream) -> TokenStream {
     out
 }
 
-#[proc_macro_derive(NestStorage, attributes(kv_nest, kv_ns))]
+#[proc_macro_derive(NestStorage, attributes(kv_ns))]
 pub fn derive_nest(input: TokenStream) -> TokenStream {
     let out = storage_encode::derive(input.clone());
     dump("NestStorage", input, &out.clone().into());

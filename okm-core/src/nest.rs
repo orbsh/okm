@@ -22,7 +22,7 @@
 //! also rides the transport envelope (an mpsc sender beside each
 //! frame), never the frame bytes.
 //!
-//! The `#[kv_nest]` derive generates exactly the [`NestStorage`]
+//! The `NestStorage` derive (with `#[kv_ns]`) generates exactly the [`NestStorage`]
 //! shape; this manual form is the reference implementation the derive
 //! targets.
 
@@ -126,7 +126,7 @@ impl VirtualStorage for RemoteStore {
 /// across one execution pass — the same boundary a local caller's
 /// `&mut self` provides) and knows exactly one thing: its declared
 /// prefix. No TLV, no rows, no OKM semantics — storing garbage is
-/// indistinguishable from storing data (ADR-0010 §2). The `#[kv_nest]`
+/// indistinguishable from storing data (ADR-0010 §2). The `NestStorage`
 /// derive generates this shape; this manual form is its reference.
 /// Transport-free execution core (ADR-0010 §6): ONE intake for every op
 /// — receive, execute, answer if the op produces output. The mpsc
@@ -140,7 +140,7 @@ struct ExecCore<S: VirtualStorage> {
 
 pub struct NestStorage<S: VirtualStorage> {
     engine: Arc<Mutex<S>>,
-    /// `Some` = hosted (multi-tenant, `#[kv_nest]` declared): every
+    /// `Some` = hosted (multi-tenant, declared via `#[kv_ns]`): every
     /// key enters as `[prefix][sender bytes]`. `None` = bare shard
     /// (single instance per engine, sharding routed by the orchestrator):
     /// frames execute byte-identical — the sender's keyspace IS the
