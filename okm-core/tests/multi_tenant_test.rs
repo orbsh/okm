@@ -7,40 +7,10 @@
 //! mechanism, which is why this test is all the multi-tenancy code there
 //! is.
 
-use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex};
+use okm_core::{KeyEncode, MockStore, RemoteStore, Row, RowEncode, Table, VirtualStorage};
 
-use okm_core::{KeyEncode, RemoteStore, Row, RowEncode, Table, VirtualStorage};
-
-/// A test engine whose clone SHARES the map (engine-handle semantics, like
-/// a real fjall store handle) — the same physical instance handed to two
-/// hosts. MockStore itself is a plain deep-copy map, which cannot model
-/// "one physical engine, two hosts".
-#[derive(Default, Clone)]
-struct SharedEngine {
-    map: Arc<Mutex<BTreeMap<Vec<u8>, Vec<u8>>>>,
-}
-
-impl VirtualStorage for SharedEngine {
-    fn put(&mut self, key: Vec<u8>, value: Vec<u8>) {
-        self.map.lock().unwrap().insert(key, value);
-    }
-    fn get(&self, key: &[u8]) -> Option<Vec<u8>> {
-        self.map.lock().unwrap().get(key).cloned()
-    }
-    fn del(&mut self, key: &[u8]) {
-        self.map.lock().unwrap().remove(key);
-    }
-    fn scan_suffix(&self, prefix: &[u8]) -> Vec<Vec<u8>> {
-        self.map
-            .lock()
-            .unwrap()
-            .range(prefix.to_vec()..)
-            .take_while(|(k, _)| k.starts_with(prefix))
-            .map(|(k, _)| k[prefix.len()..].to_vec())
-            .collect()
-    }
-}
+// MockStore now has handle-clone semantics (Arc kernel) and implements
+// SharedVirtualStorage — the test-local SharedEngine workaround is gone.
 
 // One declared executor per application — same physical engine behind all.
 #[derive(okm_core::StorageEncode)]
@@ -72,10 +42,10 @@ pub struct Doc {
 /// engine's key space splits as [0,21|sender bytes] vs [0,22|sender bytes].
 #[test]
 fn one_engine_two_tenants_prefix_segments_disjoint() {
-    // One physical engine instance (handle-clone shares the map), handed
-    // to both hosts. The hosts own the only handles; the sender endpoints
-    // are the contract-level view.
-    let engine = SharedEngine::default();
+    // One physical engine instance (MockStore clones SHARE the map now),
+    // handed to both hosts. The hosts own the only handles; the sender
+    // endpoints are the contract-level view.
+    let engine = MockStore::default();
     let ha = TenantAStorage::serve(engine.clone());
     let hb = TenantBStorage::serve(engine);
     let mut sa = ha.open();
@@ -114,7 +84,7 @@ fn one_engine_two_tenants_prefix_segments_disjoint() {
 /// touch ns or the host prefix.
 #[test]
 fn internal_tenant_sharding_is_a_plain_key_field() {
-    let engine = SharedEngine::default();
+    let engine = MockStore::default();
     let handle = TenantAStorage::serve(engine);
     let mut s = handle.open();
 
@@ -141,7 +111,7 @@ fn internal_tenant_sharding_is_a_plain_key_field() {
 /// (primary + index entries) land inside the tenant's prefix segment.
 #[test]
 fn table_write_path_inside_tenant_segment() {
-    let handle = AppStorage::serve(SharedEngine::default());
+    let handle = AppStorage::serve(MockStore::default());
     let t: Table<RemoteStore, DocKey, Doc> = Table::new(handle.open());
 
     let mut t = t;

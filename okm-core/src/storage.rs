@@ -2,6 +2,8 @@
 //! implementation.
 
 use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex};
+
 
 /// Minimal KV engine interface (prefix scan returns the "suffix" of each key).
 /// The `fjall` / `slatedb` features each provide an implementation; tests
@@ -53,6 +55,19 @@ pub trait VirtualStorage {
     }
 }
 
+/// An engine that can be genuinely shared across hosts and handles:
+/// the `shared_handle()` view IS the same physical keyspace (fjall /
+/// slatedb store handles are Arc-kernel and already behave this way).
+/// `StorageHost` requires it — a host wraps the engine in an
+/// `Arc<Mutex<S>>`, and "wrapped" must mean shared, not copied.
+/// Deep-copy-Clone engines (test maps) deliberately do not implement
+/// this: a copied engine behind two hosts would silently fork the
+/// keyspace.
+pub trait SharedVirtualStorage: VirtualStorage {
+    /// A handle to the same physical engine. Cheap; shares all state.
+    fn shared_handle(&self) -> Self;
+}
+
 /// Engine-agnostic write batch: accumulates put/delete operations that
 /// commit together in one engine-level WAL write (ADR-0003).
 pub trait KvBatch {
@@ -82,28 +97,48 @@ impl KvBatch for MemBatch {
     }
 }
 
-/// In-memory engine for tests and development (`BTreeMap`; memcmp order
-/// matches real engines).
+/// In-memory engine for tests and development: an `Arc`-kernel map
+/// (handle-clone semantics — clones SHARE the keyspace, matching how
+/// real engine handles behave; memcmp order matches real engines).
 #[derive(Default, Clone)]
 pub struct MockStore {
-    pub map: BTreeMap<Vec<u8>, Vec<u8>>,
+    map: Arc<Mutex<BTreeMap<Vec<u8>, Vec<u8>>>>,
+}
+
+impl MockStore {
+    /// Snapshot the whole keyspace (test observation helper: iterate a
+    /// consistent copy). Not a production API.
+    pub fn snapshot(&self) -> BTreeMap<Vec<u8>, Vec<u8>> {
+        self.map.lock().expect("map lock").clone()
+    }
+    pub fn keys(&self) -> Vec<Vec<u8>> {
+        self.map.lock().expect("map lock").keys().cloned().collect()
+    }
 }
 
 impl VirtualStorage for MockStore {
     fn put(&mut self, key: Vec<u8>, value: Vec<u8>) {
-        self.map.insert(key, value);
+        self.map.lock().expect("map lock").insert(key, value);
     }
     fn get(&self, key: &[u8]) -> Option<Vec<u8>> {
-        self.map.get(key).cloned()
+        self.map.lock().expect("map lock").get(key).cloned()
     }
     fn del(&mut self, key: &[u8]) {
-        self.map.remove(key);
+        self.map.lock().expect("map lock").remove(key);
     }
     fn scan_suffix(&self, prefix: &[u8]) -> Vec<Vec<u8>> {
         self.map
+            .lock()
+            .expect("map lock")
             .range(prefix.to_vec()..)
             .take_while(|(k, _)| k.starts_with(prefix))
             .map(|(k, _)| k[prefix.len()..].to_vec())
             .collect()
+    }
+}
+
+impl SharedVirtualStorage for MockStore {
+    fn shared_handle(&self) -> Self {
+        self.clone()
     }
 }

@@ -161,6 +161,20 @@ whole applications are isolated at the platform level does the receiver
 host one `#[kv_storage]` executor per application, each with its own
 declared prefix and its own sender-side ns dictionary behind it.
 
+**Bare shard form.** The prefix is optional (`StorageHost::bare`): a bare
+host executes frames byte-identical — the sender's keyspace IS the
+engine's keyspace. This serves sharding: N shards of one business domain
+(one binary deployed per shard, one ns dictionary, one encoding) each get
+a bare host; sharding and routing belong to the orchestrator (e.g. Aura's
+partition-key routing), and OKM adds zero checking or machinery. The
+prerequisite is the domain-model consistency of the shards pointing at
+the host — guaranteed by deployment, not decidable at runtime (deciding
+it would be OKM semantics the host must not have). Bare and hosted hosts
+may coexist on one engine: hosted segments are 2-byte-disjoint, and the
+orchestrator's allocation duty is keeping bare instances' ns numbers off
+the hosted segments' numbers — an allocation duty at the layer that owns
+the global view, not a runtime check in the host.
+
 The physical key on the receiver's engine is a pure concatenation —
 receiver bytes first, sender bytes after, order never adjusted:
 
