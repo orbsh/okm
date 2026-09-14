@@ -1,4 +1,5 @@
-//! `NestStorage` — the `#[kv_nest]` receiver derive (ADR-0010 §4).
+//! `NestStorage` — the receiver derive (ADR-0010 §4): reads the same
+//! `#[kv_ns(N)]` attribute every other derive uses.
 //!
 //! An empty struct annotated with `#[derive(NestStorage)]` +
 //! `#[kv_ns(N)]` becomes a receiver host: the derive generates **no data
@@ -36,7 +37,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
             if a.path().is_ident("kv_ns") {
                 Some(
                     a.parse_args::<syn::LitInt>()
-                        .expect("kv_nest format: #[kv_ns(N)]")
+                        .expect("#[kv_ns(N)] format")
                         .base10_parse()
                         .expect("kv_ns must be a u16 literal"),
                 )

@@ -141,7 +141,7 @@ binary payload — that is the whole isolation mechanism.
   host's write pump applies frames in arrival order. One frame = one
   engine `commit_batch`, so the sender's batch atomicity maps 1:1.
   Multiple connections to one host = no total order — route each
-  sender's writes to its own host instance (one `#[kv_nest]` per
+  sender's writes to its own host instance (one `NestStorage` (with `#[kv_ns]`) per
   application anyway) or accept interleaving (fine when senders touch
   disjoint key ranges).
 - **Reads**: any connection can serve reads; the host's engine mutex

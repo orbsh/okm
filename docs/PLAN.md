@@ -302,13 +302,14 @@ and the Phase 6 baseline premise is now real, not planned.
       MODELING.zh-CN.md), which also updated the event-layer section for
       the bare-only kv_subscribe form (build.rs-derived enum).
 
-## Phase 7 — VirtualStorage: engine as boundary, remote backend, kv_nest derive (ADR-0010)
+## Phase 7 — VirtualStorage: engine as boundary, remote backend, NestStorage derive (ADR-0010)
 
-Implementation naming note: the ADR's concept name `#[kv_nest]` maps to
-code as `#[derive(NestStorage)]` -> `NestStorage` (okm-core/src/nest.rs)
-— the receiver that nests an existing engine behind its declared prefix
-and executes frames on it. Derive macro and receiver type share one
-name root, like `#[kv_nest]` ↔ `NestStorage`.
+Implementation naming note: the receiver is declared as
+`#[derive(NestStorage)]` + `#[kv_ns(N)]` (okm-core/src/nest.rs) — the
+same `#[kv_ns]` attribute every other derive reads, so one attribute
+keeps one meaning: "declare this side's ns number". The receiver that
+nests an existing engine behind that declared prefix and executes
+frames on it.
 
 - [x] Trait boundary rename: `KvEngine` → `VirtualStorage` (module
       `engine` → `storage`; async twin `KvEngineAsync` →
@@ -332,7 +333,7 @@ name root, like `#[kv_nest]` ↔ `NestStorage`.
       not the contract). Transport is backend-internal (in-process
       channel / UDS / existing WS connection) — fixed at assembly, no
       declared endpoint.
-- [x] `#[kv_nest]` derive: empty struct + prefix declaration (`#[kv_ns
+- [x] `NestStorage` derive: empty struct + prefix declaration (`#[kv_ns
       (N)]`) → NO data methods, exactly one execution surface (`serve`
       engine → `VirtualHandle`; internally the `NestStorage` reference:
       prepend declared prefix → plain byte-level engine execution →
@@ -385,7 +386,7 @@ name root, like `#[kv_nest]` ↔ `NestStorage`.
       pure concatenation `[receiver prefix][ns 2B][sender payload]`,
       ns opaque to the receiver (ADR-0002 sketch promoted; discipline
       untouched). Shipped 2026-09-12: the mechanism is exactly the
-      `#[kv_nest]` derive (one declared executor + prefix per
+      `NestStorage` derive (one declared executor + prefix per
       application) + `NestStorage`'s concatenating `hosted_key` — there
       is no separate multi-tenant code path. `multi_tenant_test.rs`
       covers one shared engine / two hosts (disjoint prefix segments,

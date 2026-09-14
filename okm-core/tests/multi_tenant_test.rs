@@ -1,4 +1,4 @@
-//! Multi-tenancy (ADR-0010 §5): one physical engine, several `#[kv_nest]`
+//! Multi-tenancy (ADR-0010 §5): one physical engine, several declared `NestStorage`
 //! executors — one declared prefix per application. Isolation is the pure
 //! concatenation in `hosted_key`: two hosts on the same engine occupy two
 //! disjoint prefix segments, and a sender bound to one prefix cannot reach
