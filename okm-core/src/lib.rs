@@ -35,6 +35,8 @@ pub mod collection;
 pub mod edge;
 pub mod remote;
 pub mod schema;
+#[cfg(feature = "redb")]
+pub mod redb_backend;
 pub mod storage;
 pub mod test_engine;
 pub mod field;
