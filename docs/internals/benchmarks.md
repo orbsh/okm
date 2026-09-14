@@ -106,17 +106,35 @@ Reading the table honestly:
   Redis's own hash lookup is 50-100 ns, the same class as OKM's map ops.
   Comparing Redis's *total* latency to OKM's *core* latency compares
   different segments of the stack.
-- What OKM **loses** to Redis: multi-client concurrent access, network
-  shared-state semantics, TTL/persistence machinery. What it **wins**:
-  per-operation latency floor, semantic writes (one put = primary + index
-  + reduce, vs N round trips to Redis), and schema'd bytes (no
-  serialize/deserialize per hop — values are already encoded at the
-  boundary).
+- What OKM **loses** to Redis — nothing structural, because the
+  comparison unit is wrong. Redis is always "cache service + the
+  application serving API on top"; Krystallizer-style services are
+  exactly that app, so the honest unit is **OKM+service vs
+  Redis+service**. The "multi-client / shared-state / TTL" list lives
+  in the service layer either way: concurrent access is the service's
+  connection plane (WS handlers, the same concurrency regardless of
+  storage), shared state across instances is a deployment concern
+  (OKM hosts on shared engines or sharded instances, ADR-0010 §5's
+  bare/hosted forms are the vocabulary), and TTL/expiry is application
+  logic Redis never implemented for you either. What the application
+  gains modeling on OKM instead of Redis patterns: semantic writes (one
+  put = primary + index + reduce, vs N round trips + client-side
+  bookkeeping), schema'd bytes (no serialize/deserialize per hop), and
+  ordered structures (prefix scans) without ZSET workarounds.
+- Deployment topology: Redis's is fixed (network server, its
+  persistence, its eviction policy); OKM's is a free composition —
+  in-process engine (this baseline), sharded bare hosts (one engine per
+  shard, orchestrator-routed), hosted multi-tenant segments (one engine,
+  `#[kv_storage]` executors), or a Redis-like network service (RemoteStore
+  behind the service's connection plane — the WS-CHANNEL integration) —
+  each form is a constructor call away, and the byte format is unchanged
+  across all of them.
 - Throughput: Redis single-core ~145K ops/s (I/O bound); OKM single
-  thread ~700K semantic puts/s (1.3 µs each) — but the two serve
-  different deployment topologies. The honest statement: **for
+  thread ~700K semantic puts/s (1.3 µs each). The honest statement: for
   in-process Actor storage (OKM's design point), the network service's
-  latency floor is the cost you delete.**
+  latency floor is a cost you delete — and if a network surface is
+  needed, wrapping a host in the service's connection plane rebuilds
+  the Redis shape without the Redis patterns.
 
 ## Not yet benched
 
