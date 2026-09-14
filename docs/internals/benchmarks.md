@@ -78,6 +78,46 @@ faster than derive) indicates the derive's String TLV path allocates
 more than the schema walk — worth an investigate later, not a blocker.
 Dynamic decode benchmarks land with the PyO3 binding work.
 
+## Context: versus a network KV service (Redis, public data)
+
+Public redis-benchmark data (official docs, same-AZ r7g/c6i measurements):
+a GET/SET is **~100-300 µs p50** (loopback or same-AZ TCP; single core
+~145K ops/s, pipelined ~1.5-1.8M ops/s). The breakdown is consistent
+across published analyses: hash-table lookup ~50-100 ns, everything else
+— RESP parse/serialize, kernel syscalls, network round-trip — is ~97%
+of the operation. Value size scales the network side linearly (1 MB
+value → ~12 ms).
+
+OKM is an **in-process library** — the same comparison class as the
+"in-process cache" numbers (31 ns hash-lookup + pointer), not the
+network-service class. Per-operation costs from the baseline above
+sit exactly where an in-process store should:
+
+| operation | Redis (network, public data) | OKM (in-process, baseline) |
+|---|---|---|
+| point get | ~100-300 µs | 42 ns (put+get path) / ~130 ns with index fetch-back |
+| point put | ~150-300 µs | 1.3 µs (semantic: primary + index entry + reduce fold) |
+| raw batch commit | pipelined ~0.6 µs/op (16-deep) | ~41 ns/op |
+| scan a prefix value's entries | N round trips (or SCAN iteration) | ~120 ns/row, one call |
+
+Reading the table honestly:
+
+- The 3-4 order-of-magnitude gap is the **network**, not server quality —
+  Redis's own hash lookup is 50-100 ns, the same class as OKM's map ops.
+  Comparing Redis's *total* latency to OKM's *core* latency compares
+  different segments of the stack.
+- What OKM **loses** to Redis: multi-client concurrent access, network
+  shared-state semantics, TTL/persistence machinery. What it **wins**:
+  per-operation latency floor, semantic writes (one put = primary + index
+  + reduce, vs N round trips to Redis), and schema'd bytes (no
+  serialize/deserialize per hop — values are already encoded at the
+  boundary).
+- Throughput: Redis single-core ~145K ops/s (I/O bound); OKM single
+  thread ~700K semantic puts/s (1.3 µs each) — but the two serve
+  different deployment topologies. The honest statement: **for
+  in-process Actor storage (OKM's design point), the network service's
+  latency floor is the cost you delete.**
+
 ## Not yet benched
 
 - fjall / slatedb engine paths (feature benches)
