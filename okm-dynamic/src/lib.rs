@@ -24,6 +24,8 @@
 
 mod decode;
 mod encode;
+mod index;
+mod table;
 
 pub use okm_core::schema::{FieldSchema, TableSchema};
 pub use okm_core::field::FieldType;
@@ -36,6 +38,8 @@ pub use okm_core::field::FieldType;
 
 pub use decode::{decode_key, decode_payload};
 pub use encode::{encode_key, encode_payload};
+pub use index::{index_entries, scan_access_method, AccessMethod};
+pub use table::DynamicTable;
 
 use std::collections::BTreeMap;
 
