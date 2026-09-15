@@ -1,0 +1,161 @@
+//! DynamicTable — a runtime-typed table facade over VirtualStorage.
+//!
+//! The typed `Table<S, K, R>` binds row/key types at compile time; this
+//! facade binds them at runtime through a `TableSchema` + declared
+//! `AccessMethod`s. Put/get/delete/scan produce and consume the same
+//! bytes as the derive (codec shared with the typed path, byte equality
+//! locked by the cross tests).
+//!
+//! Single-writer only (same contract as `Table`): `&mut self` puts, the
+//! engine arbitrates cross-process exclusion.
+//!
+//! Capability ceiling (permanent): no reduce, no subscribe, no function
+//! indexes — exactly-once logic stays Rust-side compile-time.
+
+use okm_core::storage::VirtualStorage;
+
+use crate::index::{delete_entries, index_entries, scan_access_method, AccessMethod};
+use crate::{decode_payload, encode_payload, TableSchema, ValueMap};
+
+/// Codec errors surfaced as strings (dynamic callers are host-language
+/// bridges — error values, not typed hierarchies).
+fn codec<E: std::fmt::Display>(e: E) -> String {
+    e.to_string()
+}
+
+/// A runtime-declared table: schema + access methods + a namespaced
+/// slot of storage. `ns` MUST be unique within the store instance (the
+/// two-instance data/meta model guarantees that across planes).
+pub struct DynamicTable<S: VirtualStorage> {
+    store: S,
+    schema: TableSchema,
+    ns: Vec<u8>,
+    indexes: Vec<AccessMethod>,
+}
+
+impl<S: VirtualStorage> DynamicTable<S> {
+    /// Declare a dynamic table. `ns` is the 2-byte BE namespace segment
+    /// (the table's own allocation; access methods share it, slot bytes
+    /// discriminate within). Slots on the access methods are caller-
+    /// allocated (1-based, unique per table) — mirroring declaration
+    /// order in the typed path.
+    pub fn new(store: S, ns: u16, schema: TableSchema, indexes: Vec<AccessMethod>) -> Self {
+        let slots: Vec<u8> = indexes.iter().map(|i| i.slot).collect();
+        debug_assert!(
+            slots.iter().all(|s| *s > 0) && {
+                let mut sorted = slots.clone();
+                sorted.sort_unstable();
+                sorted.dedup();
+                sorted.len() == slots.len()
+            },
+            "access method slots must be unique and 1-based"
+        );
+        Self {
+            store,
+            schema,
+            ns: ns.to_be_bytes().to_vec(),
+            indexes,
+        }
+    }
+
+    pub fn schema(&self) -> &TableSchema {
+        &self.schema
+    }
+
+    /// Direct store access (tests, maintenance sweeps).
+    pub fn store(&self) -> &S {
+        &self.store
+    }
+
+    pub fn indexes(&self) -> &[AccessMethod] {
+        &self.indexes
+    }
+
+    fn primary_key(&self, pkey: &[u8]) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(3 + self.schema.key_len);
+        buf.extend_from_slice(&self.ns);
+        buf.push(0); // PRIMARY_SLOT
+        buf.extend_from_slice(pkey);
+        buf
+    }
+
+    /// Write one row: primary entry + one index entry per access method.
+    /// Overwrite first removes the old row's index entries (they are
+    /// keyed by indexed values — a changed value would otherwise leave a
+    /// dangling entry; no reduce unfold needed — the ceiling excludes it).
+    pub fn put(&mut self, pkey: &[u8], row: &ValueMap) -> Result<(), String> {
+        if pkey.len() != self.schema.key_len {
+            return Err(format!(
+                "key width mismatch: got {}, schema declares {}",
+                pkey.len(),
+                self.schema.key_len
+            ));
+        }
+        let old_pkey = self.primary_key(pkey);
+        // Sweep the old row's index entries before overwriting.
+        if let Some(old_payload) = self.store.get(&old_pkey) {
+            if let Ok(old_row) = decode_payload(&self.schema, &old_payload).map_err(codec) {
+                let old_entries =
+                    index_entries(&self.schema, &self.ns, &self.indexes, pkey, &old_row)?;
+                delete_entries(&mut self.store, &old_entries);
+            }
+            // Undecodable old payload: the primary entry is overwritten
+            // below anyway; a dangling index entry is the caller's schema
+            // mismatch, surfaced by scan (missing primary on get).
+        }
+        let pkey_owned = pkey.to_vec();
+        let entries = index_entries(&self.schema, &self.ns, &self.indexes, &pkey_owned, row)?;
+        let payload = encode_payload(&self.schema, row).map_err(codec)?;
+        self.store.put(old_pkey, payload);
+        for (ek, ev) in entries {
+            self.store.put(ek, ev);
+        }
+        Ok(())
+    }
+
+    /// Point read by primary key (dynamic `Table::get`).
+    pub fn get(&self, pkey: &[u8]) -> Result<Option<ValueMap>, String> {
+        if pkey.len() != self.schema.key_len {
+            return Err(format!(
+                "key width mismatch: got {}, schema declares {}",
+                pkey.len(),
+                self.schema.key_len
+            ));
+        }
+        Ok(self
+            .store
+            .get(&self.primary_key(pkey))
+            .map(|payload| decode_payload(&self.schema, &payload).map_err(codec))
+            .transpose()?)
+    }
+
+    /// Delete a row: primary entry + every access method's entry for
+    /// this key (entries are recomputed from the stored row — the delete
+    /// path must see the same indexed values the write produced).
+    pub fn delete(&mut self, pkey: &[u8]) -> Result<(), String> {
+        let pk = self.primary_key(pkey);
+        if let Some(payload) = self.store.get(&pk) {
+            let row = decode_payload(&self.schema, &payload).map_err(codec)?;
+            let entries = index_entries(&self.schema, &self.ns, &self.indexes, pkey, &row)?;
+            delete_entries(&mut self.store, &entries);
+            self.store.del(&pk);
+        }
+        Ok(())
+    }
+
+    /// Access-method scan (leftmost prefix over the indexed fields,
+    /// caller-encoded): returns the matching rows' primary keys, decoded.
+    /// THE routing primitive — an event resolves its targets here.
+    pub fn scan(
+        &self,
+        index_slot: u8,
+        encoded_prefix: &[u8],
+    ) -> Result<Vec<ValueMap>, String> {
+        let index = self
+            .indexes
+            .iter()
+            .find(|i| i.slot == index_slot)
+            .ok_or_else(|| format!("no access method with slot {index_slot}"))?;
+        scan_access_method(&self.store, &self.schema, &self.ns, index, encoded_prefix)
+    }
+}
