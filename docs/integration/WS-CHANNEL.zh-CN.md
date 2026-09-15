@@ -39,19 +39,18 @@ Krystallizer 进程                         Aura 节点进程
                                         └──────────────────────────────┘
 ```
 
-**接收侧（Aura）**：WS handler 收到信封，按信封约定取出 OKM 载荷，直接调宿主执行核心的唯一入口。`NestStorage` 的执行核心（`NestStorage`——引擎 + 前缀 + `apply`）在 `Arc` 里天然 `Send + Sync`，不需要任何包装。执行是"接收指令、执行、回发"三步，**读写不分岔**：四个操作（put/delete/get/scan）同一帧格式，`apply` 按返回值决定有没有响应——get/scan 返回 Some（响应帧），put/delete 返回 None（无响应，也不需要发）：
+**接收侧（Aura）**：WS handler 收到信封，按信封约定取出 OKM 载荷，直接调 `NestStorage` 的唯一入口（引擎 + 前缀 + `apply`）。它在 `Arc` 里天然 `Send + Sync`，不需要任何包装。执行是"接收指令、执行、回发"三步，**读写不分岔**：四个操作（put/delete/get/scan）同一帧格式，`apply` 按返回值决定有没有响应——get/scan 返回 Some（响应帧），put/delete 返回 None（无响应，也不需要发）：
 
 ```rust
 // Aura 侧：宿主构造后，把 Arc<NestStorage> 存进 WS 会话状态
 let (host, handle) = AppStorage::serve(engine);
-let core: Arc<NestStorage<_>> = nest (Arc) directly;   // 交给 WS handler 持有
-host.serve();                                   // mpsc 参考传输照常可开（两者共存）
+let nest: Arc<NestStorage<_>> = host.serve();   // 泵启动并交回 Arc；mpsc 参考传输照常可开（两者共存）
 
 // WS 消息处理（信封解析是 WS 侧自己的代码，OKM 不参与）：
-fn on_ws_message(core: &NestStorage<MyEngine>, envelope: Envelope) {
+fn on_ws_message(nest: &NestStorage<MyEngine>, envelope: Envelope) {
     // 每个操作帧独立：执行 → 有响应就发回，没有就什么都不发。
     // 信封里的 kind 不区分读写——那不是 OKM 的语义，帧内容自带。
-    if let Some(resp) = core.apply(&envelope.payload) {
+    if let Some(resp) = nest.apply(&envelope.payload) {
         send_ws(envelope.reply_to, resp);   // get/scan 的响应帧走同连接
     }
     // 其它应用消息……
@@ -60,7 +59,7 @@ fn on_ws_message(core: &NestStorage<MyEngine>, envelope: Envelope) {
 
 WS 特有的部分（信封解析、路由、请求 id）全在 handler 的解析代码里——OKM 侧给传输的东西就一个 `Arc<NestStorage>` 的一个方法，没有任何需要适配的结构体。mpsc 接线保留为参考传输，与新入口共享同一执行核心，行为零分叉。
 
-**发送侧（Krystallizer）**：发送侧就是正常的存储读写——`RemoteStore` 实现 `VirtualStorage`，`put/get/del/scan_suffix` 四个操作的签名和本地引擎完全一致，调用方感知不到远端。差异被压在实现内部：每个操作编码成帧，经信封送到对端，get/scan 阻塞等响应帧，put/delete 发完即回（fire-and-forget）。换传输（mpsc → WS）只改 `RemoteStore` 内部的发送/等待两个私有方法，`VirtualStorage` 接口和调用方零变化。
+**发送侧（Krystallizer）**：发送侧就是正常的存储读写——`RemoteStore` 实现 `VirtualStorage`，`put/get/del/scan_suffix` 四个操作的签名和本地引擎完全一致，调用方感知不到远端。差异被压在实现内部：每个操作编码成帧，经信封送到对端。get/scan 是**异步等待**：发出时带一个关联 id（信封槽位 2），把等待挂起在当前 task 上（不是阻塞线程——WS 是消息流不是请求/应答管道，响应会异步到达且可能与其它请求的响应交错，全靠 id 配对唤醒）；put/delete 不带等待，发完即回（fire-and-forget）。换传输（mpsc → WS）只改 `RemoteStore` 内部的发送/等待两个私有方法，`VirtualStorage` 接口和调用方零变化。
 
 注意**什么没有变**：帧字节、codec、host、前缀纪律、batch 原子性映射。发送侧看不到信封——它只看到正常的 VirtualStorage 读写；信封只存在于接收侧 handler 的解析代码里。
 

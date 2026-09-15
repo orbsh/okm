@@ -311,6 +311,19 @@ keeps one meaning: "declare this side's ns number". The receiver that
 nests an existing engine behind that declared prefix and executes
 frames on it.
 
+2026-09-14 refinements (all landed): okm-wire frames unified — one
+`OpFrame` (tag covers put/delete/get/scan, reads carry an empty value
+segment) + one `OpResponse` (`[has_value][value][suffixes]`), replacing
+the WriteFrame/ReadFrame/ReadResponse trio. Receiver intake unified —
+`NestStorage::apply(bytes) -> Option<OpResponse>` is the single
+transport-free surface (Some = get/scan, None = put/delete); the mpsc
+pump and a WS adapter call the same `Arc<NestStorage>`; sender side is
+plain `VirtualStorage` (`RemoteStore`), unaware of nesting. The unused
+`kv_nest` attribute registration was dropped — `#[kv_ns]` is the one
+prefix-declaring attribute. Full-keys-in-storage decision recorded as
+ADR-0011; the index-entry header rule (header carried once, primary
+key bare in the tail) recorded in ADR-0005.
+
 - [x] Trait boundary rename: `KvEngine` → `VirtualStorage` (module
       `engine` → `storage`; async twin `KvEngineAsync` →
       `VirtualStorageAsync`), shipped 2026-09-12. The trait speaks only
@@ -335,11 +348,12 @@ frames on it.
       declared endpoint.
 - [x] `NestStorage` derive: empty struct + prefix declaration (`#[kv_ns
       (N)]`) → NO data methods, exactly one execution surface (`serve`
-      engine → `VirtualHandle`; internally the `NestStorage` reference:
-      prepend declared prefix → plain byte-level engine execution →
-      fill back scan bytes). Receiver holds no OKM semantics; storing
-      garbage is indistinguishable from storing data. Same annotation
-      discipline as `#[kv_subscribe]`.
+      engine → `Arc<NestStorage>` whose `apply(bytes) -> Option<OpResponse>`
+      is the transport-free intake; prepend declared prefix → plain
+      byte-level engine execution → response frame back). Receiver
+      holds no OKM semantics; storing garbage is indistinguishable from
+      storing data. Declaration shares `#[kv_ns]` with every other
+      derive (no separate attribute).
 - [x] ns declaration moves to the Table side: `#[kv_ns(...)]` read by
       RowEncode/EdgeEncode (declared, never hand-filled at `Table::new` —
       the ns parameter disappears from the constructor); KeyEncode's
