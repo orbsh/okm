@@ -65,16 +65,15 @@ return None (no response, and none needed):
 // Aura side: after constructing the host, hand the Arc<NestStorage> to
 // the WS session state.
 let (host, handle) = AppStorage::serve(engine);
-let core: Arc<NestStorage<_>> = nest (Arc) directly;  // held by the WS handler
-host.serve();                                  // mpsc reference transport may stay on (coexists)
+let nest: Arc<NestStorage<_>> = host.serve();  // pump starts and hands back the Arc; mpsc reference transport may stay on (coexists)
 
 // WS message handling — envelope parsing is the WS side's own code; OKM
 // takes no part in it:
-fn on_ws_message(core: &NestStorage<MyEngine>, envelope: Envelope) {
+fn on_ws_message(nest: &NestStorage<MyEngine>, envelope: Envelope) {
     // One frame per op: apply → send a response back if there is one,
     // send nothing otherwise. The envelope's kind does NOT distinguish
     // reads from writes — that is not OKM semantics; the frame carries it.
-    if let Some(resp) = core.apply(&envelope.payload) {
+    if let Some(resp) = nest.apply(&envelope.payload) {
         send_ws(envelope.reply_to, resp);   // get/scan responses over the same connection
     }
     // other application messages...
@@ -92,11 +91,15 @@ Sender side (Krystallizer): the sender is just normal storage I/O —
 (`put/get/del/scan_suffix`) have signatures identical to a local
 engine. Callers cannot tell they are remote. The remoteness is pressed
 entirely into the implementation: each op is encoded into a frame,
-shipped inside an envelope to the peer; get/scan block for the response
-frame, put/delete return immediately (fire-and-forget). Swapping the
-transport (mpsc to WS) touches only the two private send/await helpers
-inside `RemoteStore` — the `VirtualStorage` interface and its callers
-do not change.
+shipped inside an envelope to the peer. get/scan **await** their
+response: the request carries a correlation id (envelope slot 2) and the
+current task suspends on it — not a blocking thread wait, because WS is
+a message stream, not a request/reply pipe: responses arrive
+asynchronously and may interleave with other requests' responses; the id
+pairing wakes the right task. put/delete carry no wait and return
+immediately (fire-and-forget). Swapping the transport (mpsc to WS)
+touches only the two private send/await helpers inside `RemoteStore` —
+the `VirtualStorage` interface and its callers do not change.
 
 Note what does NOT change: the frame bytes, the codec, the host, the
 prefix discipline, the batch atomicity mapping. The sender never sees
