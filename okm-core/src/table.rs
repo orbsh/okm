@@ -38,13 +38,27 @@ impl<S: VirtualStorage, K: KeyEncode, R: Row<Key = K>> Table<S, K, R> {
         &self.store
     }
 
-    /// Primary key entry (slot 0): `[ns 2B][slot 0][key payload]`, value
-    /// = TLV payload of the row. The slot byte keeps the header uniform
-    /// with index entries (`[ns 2B][slot 1B]`); slot 0 = primary, per
-    /// ADR-0005.
-    pub fn primary_key(&self, key: &K) -> Vec<u8> {
-        let mut buf = Vec::with_capacity(3 + K::KEY_LEN);
+    /// The table's key header: `[part 1B (if declared)][ns 2B]` — every
+    /// key byte sequence this table writes starts with it. ADR-0014 §5:
+    /// the partition segment precedes the ns header (workload isolation
+    /// lives outside ownership scope); absent when the row declares no
+    /// `#[kv_partition]`.
+    fn header(&self) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(3);
+        buf.extend_from_slice(R::PARTITION_PREFIX);
         buf.extend_from_slice(R::NS_PREFIX);
+        buf
+    }
+
+    /// Primary key entry (slot 0): `[part 1B (if declared)][ns 2B][slot 0]
+    /// [key payload]`, value = TLV payload of the row. The slot byte keeps
+    /// the header uniform with index entries (`[ns 2B][slot 1B]`); slot 0 =
+    /// primary, per ADR-0005. The partition segment precedes the ns header
+    /// (ADR-0014 §5): workload isolation lives outside ownership scope —
+    /// a partition groups tables by compaction profile, a namespace groups
+    /// them by owner. Absent when the row declares no `#[kv_partition]`.
+    pub fn primary_key(&self, key: &K) -> Vec<u8> {
+        let mut buf = self.header();
         buf.push(crate::index::PRIMARY_SLOT);
         buf.extend_from_slice(&key.encode());
         buf
@@ -74,16 +88,18 @@ impl<S: VirtualStorage, K: KeyEncode, R: Row<Key = K>> Table<S, K, R> {
             .get(&pkey)
             .map(|v| R::decode_payload(&v));
         if let Some(old) = &prev {
-            R::__okm_apply_reduces(&mut self.store, key, old, R::NS_PREFIX, false);
+            let header = self.header();
+        R::__okm_apply_reduces(&mut self.store, key, old, &header, false);
         }
         self.store.put(pkey, row.encode_payload());
-        for (ek, ev) in R::index_entries(key, row, R::NS_PREFIX) {
+        for (ek, ev) in R::index_entries(key, row, &self.header()) {
             self.store.put(ek, ev);
         }
         // Cross-row reduces: fold this row into each declared group.
         // Same store instance, so the RMW shares the engine's atomicity
         // boundary with the row + index writes.
-        R::__okm_apply_reduces(&mut self.store, key, row, R::NS_PREFIX, true);
+        let header = self.header();
+        R::__okm_apply_reduces(&mut self.store, key, row, &header, true);
         // Subscribe: write-path event into the declared channel
         // (best-effort try_send — full channel drops, never blocks).
         // The event carries the table's post-write epoch (monotonic
@@ -131,14 +147,14 @@ impl<S: VirtualStorage, K: KeyEncode, R: Row<Key = K>> Table<S, K, R> {
     /// folds itself.
     pub fn save_into(&self, batch: &mut impl crate::storage::KvBatch, key: &K, row: &R) {
         batch.put(self.primary_key(key), row.encode_payload());
-        for (ek, ev) in R::index_entries(key, row, R::NS_PREFIX) {
+        for (ek, ev) in R::index_entries(key, row, &self.header()) {
             batch.put(ek, ev);
         }
     }
 
     /// Index entry key for access method `I` derived from `key` + `row`.
     pub fn index_key<I: KvIndex<Key = K, Row = R>>(&self, key: &K, row: &R) -> Vec<u8> {
-        I::entry_key(R::NS_PREFIX, key, row)
+        I::entry_key(&self.header(), key, row)
     }
 
     /// Delete a row: primary key + all declared index entries, all
@@ -156,12 +172,13 @@ impl<S: VirtualStorage, K: KeyEncode, R: Row<Key = K>> Table<S, K, R> {
     /// read.
     pub fn delete(&mut self, key: &K, row: &R) {
         self.store.del(&self.primary_key(key));
-        for (ek, _) in R::index_entries(key, row, R::NS_PREFIX) {
+        for (ek, _) in R::index_entries(key, row, &self.header()) {
             self.store.del(&ek);
         }
         // Unfold from every declared reduce group (single call site —
         // delete_by_pkey reaches here after its internal get).
-        R::__okm_apply_reduces(&mut self.store, key, row, R::NS_PREFIX, false);
+        let header = self.header();
+        R::__okm_apply_reduces(&mut self.store, key, row, &header, false);
         // Subscribe: deletion event (same best-effort contract as put),
         // stamped with the table's post-write epoch.
         self.epoch += 1;
@@ -205,7 +222,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Row<Key = K>> Table<S, K, R> {
     /// (`PrefixKey.taken < KEY_LEN`) — use the trustworthy prefix fields
     /// to continue scanning the main table.
     pub fn scan<I: KvIndex<Key = K, Row = R>>(&self, encoded: &[u8]) -> Vec<(PrefixKey<K>, Option<R>)> {
-        crate::scan_index::<S, I>(&self.store, R::NS_PREFIX, encoded)
+        crate::scan_index::<S, I>(&self.store, &self.header(), encoded)
             .into_iter()
             .map(|pk| {
                 let row = if pk.taken == K::KEY_LEN {
@@ -226,7 +243,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Row<Key = K>> Table<S, K, R> {
         &self,
         encoded: &[u8],
     ) -> Vec<(PrefixKey<K>, Vec<u8>)> {
-        let p = I::entry_prefix(R::NS_PREFIX, encoded);
+        let p = I::entry_prefix(&self.header(), encoded);
         let taken = I::key_prefix_width();
         let kl = K::KEY_LEN;
         self.store
@@ -254,7 +271,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Row<Key = K>> Table<S, K, R> {
     /// are derived state excluded from export (rebuilt deterministically
     /// on import via put).
     pub fn scan_rows_raw(&self) -> Vec<(Vec<u8>, Vec<u8>)> {
-        let mut prefix = R::NS_PREFIX.to_vec();
+        let mut prefix = self.header();
         prefix.push(crate::index::PRIMARY_SLOT);
         self.store
             .scan_suffix(&prefix)
@@ -279,7 +296,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Row<Key = K>> Table<S, K, R> {
     pub fn prune_deprecated_slots(&mut self) -> usize {
         let mut removed = 0;
         for slot in R::DEPRECATED_SLOTS {
-            let mut p = R::NS_PREFIX.to_vec();
+            let mut p = self.header();
             p.push(*slot);
             for sfx in self.store.scan_suffix(&p) {
                 let mut full = p.clone();
@@ -292,7 +309,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Row<Key = K>> Table<S, K, R> {
     }
 
     pub fn scan_keys(&self) -> Vec<K> {
-        let mut p = R::NS_PREFIX.to_vec();
+        let mut p = self.header();
         p.push(crate::index::PRIMARY_SLOT);
         self.store
             .scan_suffix(&p)
