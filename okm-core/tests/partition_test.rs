@@ -31,11 +31,12 @@ pub struct Plain {
 fn partition_segment_precedes_ns_header() {
     // 派生常量：声明表 Some(1) + `[0x01]` 前缀；默认表 None + 空前缀。
     assert_eq!(<Partitioned as Row>::PARTITION_ID, Some(1u8));
-    assert_eq!(<Partitioned as Row>::PARTITION_PREFIX, &[0x01u8][..]);
+    assert_eq!(<Partitioned as Row>::PARTITION_PREFIX, &[0xFFu8, 0x01u8][..]);
     assert!(<Plain as Row>::PARTITION_ID.is_none());
     assert_eq!(<Plain as Row>::PARTITION_PREFIX.len(), 0);
 
-    // 键布局锁定：partition 表的主键 = [0x01][ns 7 BE][slot 0][key]；
+    // 键布局锁定：partition 表的主键 = [0xFF][0x01][ns 7 BE][slot 0][key]
+    // （0xFF 逃逸字节：合法 ns 头首字节永不取 0xFF → 结构性无碰撞）；
     // 无 partition 表的主键 = [ns 7 BE][slot 0][key]（无 part 段）。
     let store = TestStore::default();
     let mut pt: okm_core::Table<_, PlainKey, Partitioned> = okm_core::Table::new(store.clone());
@@ -44,10 +45,12 @@ fn partition_segment_precedes_ns_header() {
     let k = PlainKey { id: 1 };
     let pk = pt.primary_key(&k);
     let lk = pl.primary_key(&k);
-    assert_eq!(&pk[..1], &[0x01], "partitioned key starts with [part 1B]");
-    assert_eq!(&pk[1..3], &[0x00, 0x07], "ns 7 big-endian follows");
-    assert_eq!(&lk[..2], &[0x00, 0x07], "plain key starts with ns header directly");
-    assert_eq!(&pk[3..], &lk[2..], "slot byte + key payload identical after headers");
+    assert_eq!(&pk[..2], &[0xFF, 0x01], "partitioned key starts with [0xFF][part 1B] escape segment");
+    assert_eq!(&pk[2..4], &[0x00, 0x07], "ns 7 big-endian follows");
+    assert_eq!(&lk[..2], &[0x00, 0x07], "plain key starts with ns header directly (never 0xFF)");
+    assert_eq!(&pk[4..], &lk[2..], "slot byte + key payload identical after headers");
+    // 结构性无碰撞：plain 键首字节属于 0x00-0xFE（ns 字典纪律），part 表
+    // 键首字节恒为 0xFF——前缀空间天然不相交，无需编号对齐。
 
     // 表内 put/get/scan 正常（经 partition 前缀域）。
     pt.put(&k, &Partitioned { value: 42 });

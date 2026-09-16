@@ -483,11 +483,14 @@ fn emit_row_impl(schema: &RowSchema) -> TS2 {
         }
         None => quote! {},
     };
-    // #[kv_partition] / #[kv_partition(N)] → PARTITION_ID: Option<u8>.
-    // None = no partition segment in the key (default). Some(N) prepends
-    // a 1-byte `[N]` segment before the ns header. Bare `#[kv_partition]`
-    // (no argument) is rejected — an id is required to avoid the
-    // "Some(0) = no segment" ambiguity.
+    // #[kv_partition(N)] → PARTITION_ID: Option<u8>. None = no partition
+    // segment in the key (default). Some(N) prepends a 2-byte ESCAPE
+    // segment `[0xFF][N]` before the ns header — 0xFF is a reserved escape
+    // byte that legal ns headers (big-endian u16, first byte constrained
+    // by the ns dictionary to 0x00-0xFE) never start with, so partitioned
+    // and unpartitioned keys are structurally disjoint with zero numbering
+    // discipline. Bare `#[kv_partition]` (no argument) is rejected — an id
+    // is required to avoid the "Some(0) = no segment" ambiguity.
     let part_const = match schema.partition {
         Some(id) => {
             let lit = proc_macro2::Literal::u8_unsuffixed(id);
@@ -498,10 +501,10 @@ fn emit_row_impl(schema: &RowSchema) -> TS2 {
                 )
                 .to_compile_error();
             }
-            let bytes_lit = quote! { &[#lit] };
+            let id_lit = proc_macro2::Literal::u8_unsuffixed(id);
             quote! {
                 const PARTITION_ID: Option<u8> = Some(#lit);
-                const PARTITION_PREFIX: &'static [u8] = #bytes_lit;
+                const PARTITION_PREFIX: &'static [u8] = &[0xFFu8, #id_lit];
             }
         }
         None => quote! {
