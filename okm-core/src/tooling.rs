@@ -34,6 +34,7 @@ pub fn json_schema<K: KeyEncode, R: Row<Key = K>>() -> String {
             FieldType::U8 | FieldType::U16 | FieldType::U32 | FieldType::U64 => "integer",
             FieldType::FixedBytes => "string", // base64, matches Arrow BinaryArray
             FieldType::Str => "string",        // UTF-8, matches Arrow Utf8Array
+            FieldType::Bytes => "string",      // base64, matches Arrow BinaryArray
             FieldType::VarInt => "integer",    // logical: the decoded integer
             FieldType::Quant(_) => "number",   // logical: dequantized f64
             FieldType::Enum => "integer",      // the u8 tag

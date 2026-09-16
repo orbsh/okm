@@ -159,9 +159,9 @@ fn decode_fixed(
             raw.try_into().map_err(|_| need(raw.len()))?,
         )),
         FieldType::FixedBytes => Value::Bytes(raw.to_vec()),
-        // Str is cold-only; hot segment never carries it (width 0).
-        FieldType::Str | FieldType::VarInt | FieldType::Quant(_) | FieldType::Enum
-        | FieldType::Offset(_) => {
+        // Str/Bytes are cold-only; hot segment never carries them (width 0).
+        FieldType::Str | FieldType::Bytes | FieldType::VarInt | FieldType::Quant(_)
+        | FieldType::Enum | FieldType::Offset(_) => {
             return Err(CodecError::TypeMismatch {
                 field: name,
                 expected: "hot-capable fixed-width kind",

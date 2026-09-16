@@ -152,6 +152,7 @@ fn schema_kind_name(ty: okm_core::field::FieldType) -> &'static str {
         okm_core::field::FieldType::U64 => "U64",
         okm_core::field::FieldType::FixedBytes => "bytes",
         okm_core::field::FieldType::Str => "string",
+        okm_core::field::FieldType::Bytes => "bytes",
         okm_core::field::FieldType::VarInt => "U64 (VarInt storage form)",
         okm_core::field::FieldType::Quant(_) => "U64 (fixed-point storage form)",
         okm_core::field::FieldType::Enum => "U8 (tag)",
