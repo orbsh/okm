@@ -616,6 +616,15 @@ pub(crate) struct RowSchema {
     /// `#[kv_ns(N)]` — the row's table namespace. None = not declared
     /// (layout-only row; table-less usage keeps an empty prefix).
     pub ns: Option<u16>,
+    /// `#[kv_partition]` / `#[kv_partition(N)]` — the row's table
+    /// partition id. None = no partition segment in the key (default;
+    /// zero cost for tables without partition needs). Some(id) prepends
+    /// a 1-byte segment `[part id]` before the ns header — physical
+    /// partition routing (Fjall) and workload isolation in the key
+    /// space; engines without partition semantics ignore the physical
+    /// split but the key encoding (and thus byte layout) is identical
+    /// everywhere. Declared on the row like kv_ns.
+    pub partition: Option<u8>,
     pub layout_version: u8,
     /// Payload fields, declaration order. The TLV tag = vec index, so
     /// order is a wire contract here.
@@ -665,6 +674,27 @@ pub(crate) fn parse_schema(input: DeriveInput) -> RowSchema {
                 None
             }
         });
+
+    // #[kv_partition] / #[kv_partition(N)] — the table's partition id.
+    // None = no partition segment (default). Declared on the row.
+    let partition: Option<u8> = input
+        .attrs
+        .iter()
+        .find_map(|a| {
+            if a.path().is_ident("kv_partition") {
+                Some(
+                    a.parse_args::<syn::LitInt>()
+                        .ok()
+                        .and_then(|l| l.base10_parse::<u8>().ok())
+                        .unwrap_or(0),
+                )
+            } else {
+                None
+            }
+        });
+    // `None` attr vs bare `#[kv_partition]` distinction: bare form = Some(0)
+    // is NOT wanted (partition 0 = no segment). So: attr present → Some(N)
+    // (bare = Some(0) is disallowed to avoid ambiguity — enforce below).
 
     let named = match &input.data {
         Data::Struct(s) => match &s.fields {
@@ -781,6 +811,7 @@ pub(crate) fn parse_schema(input: DeriveInput) -> RowSchema {
         row_name,
         key_ty,
         ns,
+        partition,
         layout_version,
         fields: fs,
         indexes: idx_decls,

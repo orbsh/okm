@@ -483,6 +483,32 @@ fn emit_row_impl(schema: &RowSchema) -> TS2 {
         }
         None => quote! {},
     };
+    // #[kv_partition] / #[kv_partition(N)] → PARTITION_ID: Option<u8>.
+    // None = no partition segment in the key (default). Some(N) prepends
+    // a 1-byte `[N]` segment before the ns header. Bare `#[kv_partition]`
+    // (no argument) is rejected — an id is required to avoid the
+    // "Some(0) = no segment" ambiguity.
+    let part_const = match schema.partition {
+        Some(id) => {
+            let lit = proc_macro2::Literal::u8_unsuffixed(id);
+            if id == 0 {
+                return syn::Error::new(
+                    proc_macro2::Span::call_site(),
+                    "#[kv_partition(0)] is invalid: partition 0 means \"no partition segment\" — omit the attribute instead",
+                )
+                .to_compile_error();
+            }
+            let bytes_lit = quote! { &[#lit] };
+            quote! {
+                const PARTITION_ID: Option<u8> = Some(#lit);
+                const PARTITION_PREFIX: &'static [u8] = #bytes_lit;
+            }
+        }
+        None => quote! {
+            const PARTITION_ID: Option<u8> = None;
+            const PARTITION_PREFIX: &'static [u8] = &[];
+        },
+    };
     let ver_lit = proc_macro2::Literal::u8_unsuffixed(schema.layout_version);
     let row_desc = field_desc_entries(schema);
     let encode_body = emit_payload_encode(schema);
@@ -514,6 +540,7 @@ fn emit_row_impl(schema: &RowSchema) -> TS2 {
         }
         impl ::okm_core::Row for #row_name {
             type Key = #key_ty;
+            #part_const
             #ns_const
             const LAYOUT_VERSION: u8 = #ver_lit;
             const PAYLOAD_FIELDS: &'static [(&'static str, usize)] = &[ #((#name_strs, #widths)),* ];

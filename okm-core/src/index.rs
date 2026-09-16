@@ -191,6 +191,24 @@ pub trait Row: Sized + Clone {
     /// tables, each with its own declared ns. Default = empty (no ns
     /// declared — a layout-only row that never materializes a table).
     const NS_PREFIX: &'static [u8] = &[];
+
+    /// The table's partition id (ADR-0014 §5): `Some(N)` prepends a 1-byte
+    /// `[N]` segment before the ns header — physical partition routing
+    /// (Fjall) and workload isolation in the key space. `None` (default) =
+    /// no partition segment at all: zero key-encoding cost for tables
+    /// without partition needs. The id is a compile-time constant on the
+    /// type — decoding always knows the layout; byte-level collisions
+    /// across tables with different partition declarations are harmless
+    /// (keys never cross table boundaries: scans are table-scoped, frames
+    /// carry the full key). Engines without partition semantics ignore the
+    /// physical split; the key encoding is identical everywhere.
+    /// Declared via `#[kv_partition(N)]`; bare `#[kv_partition]` /
+    /// `#[kv_partition(0)]` are rejected by the derive.
+    const PARTITION_ID: Option<u8> = None;
+    /// Encoded partition segment, ready to prepend (`[part 1B]`). Empty
+    /// when `PARTITION_ID` is `None`. Consumed by `Table::primary_key` /
+    /// index entry assembly before the ns header.
+    const PARTITION_PREFIX: &'static [u8] = &[];
 }
 
 /// One access method over a table. Implemented by generated marker
