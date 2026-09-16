@@ -3,7 +3,7 @@
 //! identical behavior for the core operations — key round trips,
 //! prefix scans, batch atomicity, and SharedVirtualStorage sharing.
 
-use okm_core::{KeyEncode, KvBatch, RowEncode, Table, TestStore, VirtualStorage};
+use okm_core::{KeyEncode, KvBatch, ObjEncode, Table, TestStore, VirtualStorage};
 
 fn verify_engine(store: TestStore) {
     let name = store.name();
@@ -53,9 +53,9 @@ pub struct MKey {
     pub id: u64,
 }
 
-#[derive(RowEncode, Clone, PartialEq, Debug)]
-#[kv_ref(MKey)]
-#[kv_ns(3)]
+#[derive(ObjEncode, Clone, PartialEq, Debug)]
+#[ok_ref(MKey)]
+#[ok_ns(3)]
 pub struct MRow {
     pub score: u32,
 }

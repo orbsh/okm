@@ -21,14 +21,14 @@ pub struct SessionKey {
 
 // ================= 边：user → sessions =================
 //
-// user → sessions 方向：用户的"身份"是 (org_id, user_id) 两个字段 → kv_head(org_id, user_id)
+// user → sessions 方向：用户的"身份"是 (org_id, user_id) 两个字段 → ok_head(org_id, user_id)
 // session → user 方向：session 的"身份"是完整 SessionKey
 //
 // 同一个 edge 的两个方向使用不同宽度的端点身份——这就是"主键随方向变化"的表达。
 #[derive(EdgeEncode, Clone)]
-#[kv_ns(4)]
+#[ok_ns(4)]
 pub struct UserToSessionEdge {
-    #[kv_head(org_id, user_id)]
+    #[ok_head(org_id, user_id)]
     pub user_id: UserKey,
     pub session_id: SessionKey,
 }

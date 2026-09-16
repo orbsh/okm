@@ -1,7 +1,7 @@
 error: proc-macro derive panicked
  --> tests/compilefail/reverse_float.rs:9:10
   |
-9 | #[derive(RowEncode)]
+9 | #[derive(ObjEncode)]
   |          ^^^^^^^^^
   |
   = help: message: Reverse<f64>: inner type not on the Reversible whitelist

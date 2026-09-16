@@ -1,5 +1,5 @@
 //! Runtime-typed access methods for dynamic tables (schema-declared
-//! secondary indexes, mirroring `#[kv_index]`).
+//! secondary indexes, mirroring `#[ok_index]`).
 //!
 //! A declared access method has a slot (1-based, matching the static
 //! allocation rule: declaration order), indexed payload/key fields, and an

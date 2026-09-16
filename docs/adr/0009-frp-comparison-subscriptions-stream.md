@@ -8,7 +8,7 @@ boundary clauses with the Spacetimedb reference point)
 ## Context
 
 ADR-0008 fixed the event layer's shape: inline consumers (reduce, exactly-once, write-path
-synchronous) and channel consumers (`#[kv_subscribe]`, best-effort, combinators in
+synchronous) and channel consumers (`#[ok_subscribe]`, best-effort, combinators in
 `okm-stream`). Spacetimedb's client subscriptions are the closest widely-known system to
 compare against — they are, structurally, an FRP graph that grew inside a database. This
 ADR records the comparison so later design discussions don't silently import Spacetimedb's

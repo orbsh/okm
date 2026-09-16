@@ -2,12 +2,12 @@
 
 > **Languages:** [English](0008-event-layer-reduce-subscribe-stream.md) (primary) · [中文](0008-event-layer-reduce-subscribe-stream.zh-CN.md)
 
-**Status:** Implemented (2026-09-11: bare `#[kv_subscribe]` with build.rs-derived event enum, monotonic batch epoch, okm-stream combinators; per-row fallback channel rejected — see PLAN channel-payload decision)
+**Status:** Implemented (2026-09-11: bare `#[ok_subscribe]` with build.rs-derived event enum, monotonic batch epoch, okm-stream combinators; per-row fallback channel rejected — see PLAN channel-payload decision)
 
 ## Context
 
 Cross-row pre-aggregation (ADR-0005 slot space, shipped 2026-09-10) introduced the
-`#[kv_reduce]` helper: a user-implemented `ReduceLogic` (Acc + fold/unfold) driven by
+`#[ok_reduce]` helper: a user-implemented `ReduceLogic` (Acc + fold/unfold) driven by
 a read-modify-write hook on the write path. In reviewing what that hook actually is, a
 generalization surfaced: fold/unfold is **inline consumption of a row-event stream**. The
 same event source supports other consumers — triggers (stateless side effects), external
@@ -18,8 +18,8 @@ generalize the mechanism and the boundaries that keep it honest.
 
 ### 1. aggregate → reduce (rename, semantics unchanged)
 
-`#[kv_reduce]` / `ReduceLogic` / `ReduceCodec` / `reduce_get` / `scan_reduces`
-rename to `#[kv_reduce]` / `ReduceLogic` / `ReduceCodec` / `reduce_get` / `scan_reduces`.
+`#[ok_reduce]` / `ReduceLogic` / `ReduceCodec` / `reduce_get` / `scan_reduces`
+rename to `#[ok_reduce]` / `ReduceLogic` / `ReduceCodec` / `reduce_get` / `scan_reduces`.
 The rename aligns the name with the role: a reduce is a stateful, reversible reduction over
 the row-event stream (fold on put, unfold on delete). No behavior change; the two-layer
 trait split (user implements Logic, derive implements the trait on it — coherence-driven)
@@ -31,12 +31,12 @@ The write path emits a **row event** (table identity, key, op: put/delete, row p
 the existing hook bottleneck (`Row::__okm_apply_*` call sites in `Table::put`/`delete`).
 Two consumer classes attach to it, with deliberately different failure semantics:
 
-- **Inline consumers** (`#[kv_reduce]`, triggers): synchronous calls in the write path,
+- **Inline consumers** (`#[ok_reduce]`, triggers): synchronous calls in the write path,
   same ordering as the writes, exactly-once per event. Reduce's reversibility contract
   (`unfold(fold(a,x)) = a`) is only meaningful under exactly-once — a lost event is a silent
   acc/row mismatch (data corruption, not degradation). Inline is therefore not a channel
   consumer and never will be.
-- **Channel consumers** (`#[kv_subscribe]`): each annotation point on a row type
+- **Channel consumers** (`#[ok_subscribe]`): each annotation point on a row type
   declares that the row's events enter the channel — the derive emits only a
   uniform-format send (row identity, key, op, payload) at the write path. No handler is
   attached at the annotation site: processing logic belongs entirely to the channel
@@ -52,7 +52,7 @@ source stay two things.
 
 ### 3. Channels live in core (derive-generated), not in an extension crate
 
-- `#[kv_subscribe]` is a new attribute on `RowEncode` structs; it only declares that the
+- `#[ok_subscribe]` is a new attribute on `ObjEncode` structs; it only declares that the
   row's events enter the channel — each annotated row type gets a uniform-format send
   (no handler at the annotation site; consumers decide the processing, combinators are
   the adapter).

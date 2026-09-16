@@ -11,7 +11,7 @@ Every byte key that reaches the engine is a **self-describing address**:
 [ns 2B][slot 1B][key payload]
 ```
 
-`ns` is the table's declared namespace number (`#[kv_ns]`, ADR-0002), the
+`ns` is the table's declared namespace number (`#[ok_ns]`, ADR-0002), the
 slot byte marks primary (0) vs index entries (ADR-0005), and the payload is
 the encoded key or indexed fields. When a remote sender talks through a
 declared `NestStorage`, the receiver prepends one more layer — its host

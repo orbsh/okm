@@ -11,7 +11,7 @@
 
 ## 决策
 
-**一个模型，名为 obj。** 公开概念是 object；全量改名时 `RowEncode` 更名 `ObjEncode`，声明式 row 就是"只有声明字段的 obj"。
+**一个模型，名为 obj。** 公开概念是 object；全量改名时 `ObjEncode` 更名 `ObjEncode`，声明式 row 就是"只有声明字段的 obj"。
 
 为什么不用 document：这个概念确实与 document-oriented 存储（CouchDB、MongoDB）同宗，这层亲缘值得承认——但 `obj` 这个名字靠双关挣得位置：编程语言中的对象，也是存储格式意义上的 object。object/doc/variant 三个词各自标记静态/动态光谱上的三个不同位置，obj 刻意与 document 区分开：
 
@@ -79,7 +79,7 @@ slot 8+     索引与 reduce（声明序），[ns][slot][...]
 
 ## 改名：kv_ → ok_
 
-属性家族 `kv_` → `ok_`（`ok_ns`、`ok_index`、`ok_ref`、`ok_subscribe`、`ok_default`、`ok_event_enum`），row 概念更名为 obj（`ObjEncode`）。`o` 是双关：编程语言中的对象，也是存储格式意义上的 object/doc/variant。改名随 obj 工作落地，赶在 crates.io 发布之前——发布后再改就是 breaking change。derive 宏名跟随同一词根（`KeyEncode`、`ObjEncode`）；`RowEncode` 消失并入 obj 概念。
+属性家族 `kv_` → `ok_`（`ok_ns`、`ok_index`、`ok_ref`、`ok_subscribe`、`ok_default`、`ok_event_enum`），row 概念更名为 obj（`ObjEncode`）。`o` 是双关：编程语言中的对象，也是存储格式意义上的 object/doc/variant。改名随 obj 工作落地，赶在 crates.io 发布之前——发布后再改就是 breaking change。derive 宏名跟随同一词根（`KeyEncode`、`ObjEncode`）；`ObjEncode` 消失并入 obj 概念。
 
 ## 后果
 

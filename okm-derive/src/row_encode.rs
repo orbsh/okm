@@ -1,14 +1,14 @@
-//! `RowEncode` — value/payload encoding + index declarations.
+//! `ObjEncode` — value/payload encoding + index declarations.
 //!
 //! One macro, three concerns (ADR-0006):
 //!
-//! 1. `#[kv_ref(KeyType)]` — the identity struct this row hangs off.
+//! 1. `#[ok_ref(KeyType)]` — the identity struct this row hangs off.
 //! 2. Payload fields — encoded as TLV: `[tag u8][len u32 BE][value BE]`
 //!    per field, `tag` = field declaration index (unique within the row,
 //!    decoupled from field names). `len` is a redundant check for
 //!    fixed-width fields today but keeps the same frame for the
 //!    variable-length regime later.
-//! 3. `#[kv_index(idx_name { fields(a, b), includes(c) })]` — one access
+//! 3. `#[ok_index(idx_name { fields(a, b), includes(c) })]` — one access
 //!    method per declaration, slots start at 1 in attribute order
 //!    (`0` is reserved for the primary table, ADR-0005). Generates a
 //!    marker struct per index plus `Row::index_entries`, so `put`/
@@ -194,7 +194,7 @@ fn emit_payload_decode(schema: &RowSchema) -> TS2 {
     }
 }
 
-/// One marker struct + `KvIndex` impl per declared `#[kv_index]` (slot
+/// One marker struct + `KvIndex` impl per declared `#[ok_index]` (slot
 /// order).
 fn emit_index_structs(schema: &RowSchema) -> TS2 {
     let row_name = &schema.row_name;
@@ -223,7 +223,7 @@ fn emit_index_structs(schema: &RowSchema) -> TS2 {
             quote! {}
         } else {
             let fpath = syn::parse_str::<syn::Expr>(&idx.func)
-                .unwrap_or_else(|e| panic!("kv_index[{}]: bad func path `{}`: {e}", idx.ident, idx.func));
+                .unwrap_or_else(|e| panic!("ok_index[{}]: bad func path `{}`: {e}", idx.ident, idx.func));
             quote! {
                 fn entry_pairs(
                     table_ns: &[u8],
@@ -267,7 +267,7 @@ fn emit_index_structs(schema: &RowSchema) -> TS2 {
             quote! { <Self::Row>::__okm_encode_named(row, names, buf) }
         } else {
             let fpath = syn::parse_str::<syn::Expr>(&idx.func)
-                .unwrap_or_else(|e| panic!("kv_index[{}]: bad func path `{}`: {e}", idx.ident, idx.func));
+                .unwrap_or_else(|e| panic!("ok_index[{}]: bad func path `{}`: {e}", idx.ident, idx.func));
             quote! {{
                 // Function index: result(s) → index-segment encoding. A
                 // single value encodes once; a Vec encodes its first value
@@ -316,7 +316,7 @@ fn emit_index_structs(schema: &RowSchema) -> TS2 {
 }
 
 /// index_entries: statically expands every (entry_key, entry_value) pair
-/// per declared #[kv_index] (slot order) — no runtime registry needed;
+/// per declared #[ok_index] (slot order) — no runtime registry needed;
 /// the declaration is the registry. Function indexes may fan out to
 /// multiple pairs per row (multi-entry regime).
 fn emit_index_entries(schema: &RowSchema) -> TS2 {
@@ -356,7 +356,7 @@ fn emit_index_entries(schema: &RowSchema) -> TS2 {
     }
 }
 
-/// Reduces: `#[kv_reduce(MyLogic { group(a, b) })]` — the user
+/// Reduces: `#[ok_reduce(MyLogic { group(a, b) })]` — the user
 /// implements `okm_core::ReduceLogic` on `MyLogic` (Acc + fold/unfold);
 /// the derive generates the `okm_core::Reduce` impl on the SAME type
 /// (SLOT/GROUP come from the declaration) plus the Row hook override
@@ -371,7 +371,7 @@ fn emit_reduces(schema: &RowSchema) -> (TS2, TS2) {
     for (n, red) in schema.reduces.iter().enumerate() {
         let slot_lit = proc_macro2::Literal::u8_unsuffixed(n_idx as u8 + 1 + n as u8);
         let logic = syn::parse_str::<syn::Type>(&red.logic)
-            .unwrap_or_else(|e| panic!("kv_reduce[{}]: bad logic type `{}`: {e}", red.ident, red.logic));
+            .unwrap_or_else(|e| panic!("ok_reduce[{}]: bad logic type `{}`: {e}", red.ident, red.logic));
         let group: Vec<&String> = red.group.iter().collect();
         impls.extend(quote! {
             impl ::okm_core::Reduce for #logic {
@@ -420,7 +420,7 @@ fn emit_reduces(schema: &RowSchema) -> (TS2, TS2) {
     (impls, hook)
 }
 
-/// Subscribe: `#[kv_subscribe]` or `#[kv_subscribe(RowEvent::User)]` —
+/// Subscribe: `#[ok_subscribe]` or `#[ok_subscribe(RowEvent::User)]` —
 /// the write-path event send (ADR-0008). The annotation declares the
 /// channel entry point; there is NO handler here. Returns (static items
 /// to place beside the impl, hook fn body to splice inside `impl Row`).
@@ -435,12 +435,12 @@ fn emit_subscribe(schema: &RowSchema) -> (TS2, TS2) {
         return (quote! {}, quote! {});
     };
     let en = syn::parse_str::<syn::Ident>(&sub.enum_name)
-        .unwrap_or_else(|e| panic!("kv_subscribe: bad enum name `{}`: {e}", sub.enum_name));
+        .unwrap_or_else(|e| panic!("ok_subscribe: bad enum name `{}`: {e}", sub.enum_name));
     // The variant IS the row type name — derived by build.rs, so a send
     // site can never drift from the declaration (compile error on mismatch).
     let var = row_name;
     let cell = syn::parse_str::<syn::Ident>(&format!("CHANNEL_{}", sub.enum_name.to_uppercase()))
-        .unwrap_or_else(|e| panic!("kv_subscribe: bad cell name from `{}`: {e}", sub.enum_name));
+        .unwrap_or_else(|e| panic!("ok_subscribe: bad cell name from `{}`: {e}", sub.enum_name));
     let hook = quote! {
         fn __okm_emit_event(
             _op: ::okm_core::subscribe::Op,
@@ -473,7 +473,7 @@ fn emit_subscribe(schema: &RowSchema) -> (TS2, TS2) {
 fn emit_row_impl(schema: &RowSchema) -> TS2 {
     let row_name = &schema.row_name;
     let key_ty = &schema.key_ty;
-    // #[kv_ns(N)] → the row's table ns prefix bytes (big-endian u16,
+    // #[ok_ns(N)] → the row's table ns prefix bytes (big-endian u16,
     // matching the raw `[ns 2B]` header). Absent = default empty.
     let ns_const = match schema.ns {
         Some(n) => {
@@ -483,13 +483,13 @@ fn emit_row_impl(schema: &RowSchema) -> TS2 {
         }
         None => quote! {},
     };
-    // #[kv_partition(N)] → PARTITION_ID: Option<u8>. None = no partition
+    // #[ok_partition(N)] → PARTITION_ID: Option<u8>. None = no partition
     // segment in the key (default). Some(N) prepends a 2-byte ESCAPE
     // segment `[0xFF][N]` before the ns header — 0xFF is a reserved escape
     // byte that legal ns headers (big-endian u16, first byte constrained
     // by the ns dictionary to 0x00-0xFE) never start with, so partitioned
     // and unpartitioned keys are structurally disjoint with zero numbering
-    // discipline. Bare `#[kv_partition]` (no argument) is rejected — an id
+    // discipline. Bare `#[ok_partition]` (no argument) is rejected — an id
     // is required to avoid the "Some(0) = no segment" ambiguity.
     let part_const = match schema.partition {
         Some(id) => {
@@ -497,7 +497,7 @@ fn emit_row_impl(schema: &RowSchema) -> TS2 {
             if id == 0 {
                 return syn::Error::new(
                     proc_macro2::Span::call_site(),
-                    "#[kv_partition(0)] is invalid: partition 0 means \"no partition segment\" — omit the attribute instead",
+                    "#[ok_partition(0)] is invalid: partition 0 means \"no partition segment\" — omit the attribute instead",
                 )
                 .to_compile_error();
             }

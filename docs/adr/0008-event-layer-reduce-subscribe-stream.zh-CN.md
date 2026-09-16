@@ -6,7 +6,7 @@
 
 ## 背景
 
-跨行预聚合（ADR-0005 的 slot 空间，2026-09-10 落地）引入了 `#[kv_reduce]` 辅助设施：
+跨行预聚合（ADR-0005 的 slot 空间，2026-09-10 落地）引入了 `#[ok_reduce]` 辅助设施：
 用户实现 `ReduceLogic`（Acc + fold/unfold），由写路径上的读-改-写 hook 驱动。审视这个
 hook 的本质时浮现出一个泛化：fold/unfold 就是**对行事件流的内联消费**。同一事件源还能
 支撑别的消费者——触发器（无状态副作用）、外部通知（观察者）、FRP 风格的流组合。本 ADR
@@ -16,8 +16,8 @@ hook 的本质时浮现出一个泛化：fold/unfold 就是**对行事件流的�
 
 ### 1. aggregate → reduce（改名，语义不变）
 
-`#[kv_reduce]` / `ReduceLogic` / `ReduceCodec` / `reduce_get` / `scan_reduces`
-更名为 `#[kv_reduce]` / `ReduceLogic` / `ReduceCodec` / `reduce_get` / `scan_reduces`。
+`#[ok_reduce]` / `ReduceLogic` / `ReduceCodec` / `reduce_get` / `scan_reduces`
+更名为 `#[ok_reduce]` / `ReduceLogic` / `ReduceCodec` / `reduce_get` / `scan_reduces`。
 改名让名字对齐角色：reduce 是对行事件流的有状态、可逆归约（put 时 fold，delete 时
 unfold）。行为零变化；双层 trait 拆分（用户实现 Logic、derive 在其上实现 trait——
 coherence 所迫）不变。
@@ -28,10 +28,10 @@ coherence 所迫）不变。
 **行事件**（表身份、key、op：put/delete、行 payload）。两类消费者挂在它上面，失败语义
 刻意不同：
 
-- **内联消费者**（`#[kv_reduce]`、触发器）：写路径内的同步调用，与写入同序，每事件恰好
+- **内联消费者**（`#[ok_reduce]`、触发器）：写路径内的同步调用，与写入同序，每事件恰好
   一次。reduce 的可逆性契约（`unfold(fold(a,x)) = a`）只在恰好一次的前提下成立——丢
   一个事件是静默的 acc/行失配（数据损坏，不是降级）。因此内联永远不是通道消费者。
-- **通道消费者**（`#[kv_subscribe]`）：行类型上的每个注解点只声明"该行的事件进通道"——
+- **通道消费者**（`#[ok_subscribe]`）：行类型上的每个注解点只声明"该行的事件进通道"——
   derive 在写路径发出的只是统一格式的发送（行身份、key、op、payload），注解点不挂
   handler：处理逻辑完全属于通道消费者，流 crate 的组合子是原始事件与那段逻辑之间的
   适配层。投递是
@@ -44,7 +44,7 @@ coherence 所迫）不变。
 
 ### 3. 通道在核心（derive 生成），不在扩展 crate
 
-- `#[kv_subscribe]` 是 `RowEncode` 结构体的新属性；它只声明"该行的事件进通道"——每个
+- `#[ok_subscribe]` 是 `ObjEncode` 结构体的新属性；它只声明"该行的事件进通道"——每个
   注解的行类型得到一个统一格式的发送（注解点不挂 handler；处理归消费者，组合子是
   适配层）。
 - 某行类型存在 ≥1 个 subscribe 声明时，derive 生成**全局通道声明与消费端访问器**

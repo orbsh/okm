@@ -1,7 +1,7 @@
 # ADR-0002: Namespace dictionary lives in code, never in KV
 
 Date: 2026-09-06
-Status: Accepted. **Update 2026-09-12**: `#[kv_ns]` now declares on the
+Status: Accepted. **Update 2026-09-12**: `#[ok_ns]` now declares on the
 row struct (emitted as `Row::NS_PREFIX`, `&'static [u8]` big-endian), not
 the key struct — the row is the table's declaration point, and a key type
 carries no ns so one key shape can serve several tables, each with its own
@@ -15,7 +15,7 @@ String prefixes (`"user_sessions:"`, 14 bytes) have two structural weaknesses at
 - **Space waste** — every key repeats the same prefix; at hundreds of millions of keys that is gigabytes of pure repetition, paid again as S3 transfer bandwidth.
 - **Variable-length offsets** — key total length varies per record, so every decode pays variable-length offset arithmetic instead of a fixed offset.
 
-The fix is a numeric namespace ID: `#[kv_ns(N)]` folds at compile time into a 2-byte big-endian prefix — an 85% compression with zero runtime lookup (an instruction immediate; faster than any L1-resident HashMap: no hash, no load).
+The fix is a numeric namespace ID: `#[ok_ns(N)]` folds at compile time into a 2-byte big-endian prefix — an 85% compression with zero runtime lookup (an instruction immediate; faster than any L1-resident HashMap: no hash, no load).
 
 The question is where the namespace dictionary itself lives.
 
@@ -52,4 +52,4 @@ Secondary indexes do NOT consume namespace IDs — they are slots derived inside
 - **namespace = table/collection (KV's native tongue)**: not "container/scope" — the standard KV/noSQL synonym for table/collection (Cassandra's keyspace likewise). It is a key-prefix discriminator only; there is no logical "table" with schema constraints or columns.
 - **Multi-tenant key shape**: if tenants exist, the key is `[ns][tenant_id]...` — the namespace is outermost, followed by tenant_id. There is no `tenant_ns_id` layer (this system exposes no user-programmable query/schema surface; multi-tenancy is carried by the API gateway, tenants share tables), and no outermost tenant isolation layer — tenant_id is one discriminating field inside the key, not a partition/table boundary. Even for SaaS, per-tenant outer isolation is over-isolation. SQL inside a program is equally hard-coded; ad-hoc dynamism comes from exposing a query interface, not from the storage being dynamic.
 
-- **No multi-level ns declaration**: `#[kv_ns]` takes exactly one number; a "hierarchical" form (`#[kv_ns(app, ns)]`, path-shaped ns) is rejected. One OKM instance IS one domain model — its ns dictionary is already a closed, append-only vocabulary, and a second level inside it would be a second dictionary to keep globally unique, halving the width budget for a distinction the domain layer should make (app boundaries are platform concerns, not key-layout concerns). Application-internal partitioning is a plain key field (tenant_id); cross-application isolation happens OUTSIDE the ns bytes — the receiver-prefix concatenation of [ADR-0010](0010-virtual-storage-remote-bytes.md), where each hosted instance brings its own complete single-level dictionary. Every layer that wanted "multi-level ns" gets its isolation elsewhere without growing this one.
+- **No multi-level ns declaration**: `#[ok_ns]` takes exactly one number; a "hierarchical" form (`#[ok_ns(app, ns)]`, path-shaped ns) is rejected. One OKM instance IS one domain model — its ns dictionary is already a closed, append-only vocabulary, and a second level inside it would be a second dictionary to keep globally unique, halving the width budget for a distinction the domain layer should make (app boundaries are platform concerns, not key-layout concerns). Application-internal partitioning is a plain key field (tenant_id); cross-application isolation happens OUTSIDE the ns bytes — the receiver-prefix concatenation of [ADR-0010](0010-virtual-storage-remote-bytes.md), where each hosted instance brings its own complete single-level dictionary. Every layer that wanted "multi-level ns" gets its isolation elsewhere without growing this one.

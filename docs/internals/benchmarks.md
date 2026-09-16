@@ -126,7 +126,7 @@ Reading the table honestly:
   persistence, its eviction policy); OKM's is a free composition —
   in-process engine (this baseline), sharded bare hosts (one engine per
   shard, orchestrator-routed), hosted multi-tenant segments (one engine,
-  `NestStorage` (with `#[kv_ns]`) executors), or a Redis-like network service (RemoteStore
+  `NestStorage` (with `#[ok_ns]`) executors), or a Redis-like network service (RemoteStore
   behind the service's connection plane — the WS-CHANNEL integration) —
   each form is a constructor call away, and the byte format is unchanged
   across all of them.

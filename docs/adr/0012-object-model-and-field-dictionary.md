@@ -18,7 +18,7 @@ spectrum, with the declared end keeping every capability it has today.
 
 ## Decision
 
-**One model, named obj.** The public concept is the object; `RowEncode` is
+**One model, named obj.** The public concept is the object; `ObjEncode` is
 renamed `ObjEncode` in the full rename (see below), and a declared row
 becomes simply "an obj with only declared fields".
 
@@ -174,7 +174,7 @@ renames to obj (`ObjEncode`). The `o` is doubly loaded: object in the
 programming sense, and the storage-format sense (object/doc/variant, orthogonal terms). The
 rename lands with the doc work, before crates.io publishing — after
 publishing it would be a breaking change. The derive macro names follow
-the same root (`KeyEncode`, `ObjEncode`); `RowEncode` disappears into the
+the same root (`KeyEncode`, `ObjEncode`); `ObjEncode` disappears into the
 obj concept.
 
 ## Consequences

@@ -1,6 +1,6 @@
 # Reduce 机制：账本、覆盖写与可逆性
 
-本文是 `#[kv_reduce]` 跨行预聚合的机制与实现细节文档：fold/unfold 钩子怎么驱动、覆盖写为什么要 unfold 旧值、以及这条不变量对写路径的约束。声明与建模纪律见[建模指南「跨行预聚合」](../MODELING.zh-CN.md)；索引侧的写路径同步见[索引机制](index-mechanism.zh-CN.md)。
+本文是 `#[ok_reduce]` 跨行预聚合的机制与实现细节文档：fold/unfold 钩子怎么驱动、覆盖写为什么要 unfold 旧值、以及这条不变量对写路径的约束。声明与建模纪律见[建模指南「跨行预聚合」](../MODELING.zh-CN.md)；索引侧的写路径同步见[索引机制](index-mechanism.zh-CN.md)。
 
 ## 定位
 

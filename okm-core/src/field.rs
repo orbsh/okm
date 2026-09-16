@@ -1,5 +1,5 @@
 //! Field descriptors — the dependency-free field vocabulary shared by
-//! `KeyEncode` / `RowEncode` and downstream layout consumers (snapshot
+//! `KeyEncode` / `ObjEncode` and downstream layout consumers (snapshot
 //! columns, Arrow schema, column builders; ADR-0007).
 //!
 //! The derive macros emit one `FieldDesc` per declared field (declaration

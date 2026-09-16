@@ -3,7 +3,7 @@
 //! round trip against struct decode.
 
 use arrow::datatypes::DataType;
-use okm_core::{FieldDesc, FieldType, KeyEncode, TestStore, Row, RowEncode, Table};
+use okm_core::{FieldDesc, FieldType, KeyEncode, TestStore, Row, ObjEncode, Table};
 
 /// UserKey：org 内的用户身份（主键）。字段类型覆盖四种 kind。
 #[derive(KeyEncode, Clone, PartialEq, Debug)]
@@ -14,9 +14,9 @@ pub struct ExportKey {
 }
 
 /// User 行：载荷字段含 u32/u16（多字节 BE→LE 换位路径）。
-#[derive(RowEncode, Clone, PartialEq, Debug)]
-#[kv_ref(ExportKey)]
-#[kv_ns(11)]
+#[derive(ObjEncode, Clone, PartialEq, Debug)]
+#[ok_ref(ExportKey)]
+#[ok_ns(11)]
 pub struct ExportRow {
     pub reputation: u32,
     pub bio_len: u16,
@@ -131,13 +131,13 @@ fn batch_respects_key_order() {
 #[test]
 fn fixed_bytes_maps_to_binary() {
     #[derive(KeyEncode, Clone, PartialEq, Debug)]
-    #[kv_ns(12)]
+    #[ok_ns(12)]
     pub struct BinKey {
         pub id: u64,
         pub name: [u8; 4],
     }
-    #[derive(RowEncode, Clone, PartialEq, Debug)]
-    #[kv_ref(BinKey)]
+    #[derive(ObjEncode, Clone, PartialEq, Debug)]
+    #[ok_ref(BinKey)]
     pub struct BinRow {
         pub n: u32,
     }

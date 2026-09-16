@@ -1,7 +1,7 @@
 //! Tooling interfaces (PLAN Phase 4): schema export and the
 //! Parquet snapshot round trip (export → import through `Table::put`).
 
-use okm_core::{FieldDesc, FieldType, KeyEncode, TestStore, Row, RowEncode, Table, parquet_io};
+use okm_core::{FieldDesc, FieldType, KeyEncode, TestStore, Row, ObjEncode, Table, parquet_io};
 
 #[derive(KeyEncode, Clone, PartialEq, Debug)]
 pub struct TKey {
@@ -9,10 +9,10 @@ pub struct TKey {
     pub user_id: u64,
 }
 
-#[derive(RowEncode, Clone, PartialEq, Debug)]
-#[kv_ref(TKey)]
-#[kv_index(by_org { fields(reputation) })]
-#[kv_ns(7)]
+#[derive(ObjEncode, Clone, PartialEq, Debug)]
+#[ok_ref(TKey)]
+#[ok_index(by_org { fields(reputation) })]
+#[ok_ns(7)]
 pub struct TRow {
     pub reputation: u32,
     pub level: u16,

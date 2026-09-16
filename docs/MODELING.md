@@ -21,9 +21,9 @@ primary sort field → access methods**.
    (`[ns][pkey...][order]`). Placed at the key tail, it keeps entries
    under the same pkey physically adjacent and ordered: a prefix scan
    *is* the timeline / range read. Other sort dimensions stay out of the
-   key and surface through `#[kv_index]`. How physical decisions trade
+   key and surface through `#[ok_index]`. How physical decisions trade
    against indirect costs: see "Design constraints on performance".
-4. **Access methods** — declared `#[kv_index]` entries. Each one is a
+4. **Access methods** — declared `#[ok_index]` entries. Each one is a
    standing answer to "how is this entity queried?".
 
 If you cannot name the access methods, the model is not finished — the
@@ -71,39 +71,39 @@ use okm_core::EdgeEncode;
 
 /// user → sessions edge.
 ///
-/// Forward direction: a user's identity is (org_id, user_id) → kv_head(org_id, user_id)
-/// Reverse direction: a session's identity is the full SessionKey (no kv_head).
+/// Forward direction: a user's identity is (org_id, user_id) → ok_head(org_id, user_id)
+/// Reverse direction: a session's identity is the full SessionKey (no ok_head).
 ///
 /// The two directions of one edge use different endpoint identity widths —
 /// this is how "the primary key changes with direction" is expressed.
 #[derive(EdgeEncode, Clone)]
-#[kv_ns(4)]
+#[ok_ns(4)]
 pub struct UserToSessionEdge {
-    #[kv_head(org_id, user_id)]
+    #[ok_head(org_id, user_id)]
     pub user_id: UserKey,
     pub session_id: SessionKey,
 }
 ```
 
-`#[kv_head(field, ...)]` declares which fields of the endpoint count as its
+`#[ok_head(field, ...)]` declares which fields of the endpoint count as its
 *identity* for this edge; omitting it means the full key is the identity.
 Names must be a declaration-order prefix of the endpoint's fields
 (compile-time generated check). One declaration produces both key families
 automatically (direction bit: see "Many-to-many relationships" above).
 
-### Rows and indexes: `RowEncode`
+### Rows and indexes: `ObjEncode`
 
 ```rust
-use okm_core::RowEncode;
+use okm_core::ObjEncode;
 
-/// A user row hangs off UserKey via #[kv_ref]; payload fields are TLV-encoded.
-/// Each #[kv_index] declares an access method over PAYLOAD fields —
+/// A user row hangs off UserKey via #[ok_ref]; payload fields are TLV-encoded.
+/// Each #[ok_index] declares an access method over PAYLOAD fields —
 /// identity belongs to the key (a surrogate id), business dimensions to the row.
-#[derive(RowEncode, Clone, PartialEq, Debug)]
-#[kv_ref(UserKey)]
-#[kv_ns(1)] // the table's namespace — declared on the row, not the key
-#[kv_index(by_reputation { fields(reputation) })]
-#[kv_index(by_org { fields(org_id, created_at), includes(bio_len) })]
+#[derive(ObjEncode, Clone, PartialEq, Debug)]
+#[ok_ref(UserKey)]
+#[ok_ns(1)] // the table's namespace — declared on the row, not the key
+#[ok_index(by_reputation { fields(reputation) })]
+#[ok_index(by_org { fields(org_id, created_at), includes(bio_len) })]
 pub struct User {
     pub org_id: u32,
     pub created_at: u64,
@@ -112,14 +112,14 @@ pub struct User {
 }
 ```
 
-- `#[kv_ref(UserKey)]` — which primary key the row hangs off; identity
+- `#[ok_ref(UserKey)]` — which primary key the row hangs off; identity
   belongs to the key, business dimensions to the row.
-- `#[kv_ns(1)]` — the table's namespace segment, declared on the ROW (the
-  row is the table's declaration point: `#[kv_ref]` pins the key type, so
+- `#[ok_ns(1)]` — the table's namespace segment, declared on the ROW (the
+  row is the table's declaration point: `#[ok_ref]` pins the key type, so
   the row determines `Table<S, K, R>` entirely). A key type carries no ns —
   the same key shape may serve several rows/tables, each with its own ns.
   `Table::new(store)` takes no ns argument; the assembly site picks the
-  engine only. Edge structs declare `#[kv_ns]` the same way (EdgeEncode).
+  engine only. Edge structs declare `#[ok_ns]` the same way (EdgeEncode).
 - `fields(...)` — payload fields to sort/group by, declaration order,
   first field = the grouping dimension.
 - `includes(...)` — covering index: copies payload fields into the entry
@@ -144,7 +144,7 @@ entry per row, entries still live and die with the row:
 ```text
 fn lower_name(row: &Doc) -> String { row.name.to_lowercase() }
 
-#[kv_index(by_name { func(lower_name) })]   // "Apple"/"APPLE" co-located
+#[ok_index(by_name { func(lower_name) })]   // "Apple"/"APPLE" co-located
 ```
 
 **Basic use 2: multi-value function index (one row fans out into N
@@ -157,7 +157,7 @@ fn hour_bucket(row: &Post) -> Vec<u64> {
     vec![row.created_at / 3_600_000]          // ms timestamp -> hour bucket
 }
 
-#[kv_index(by_hour { func(hour_bucket) })]   // scan with a bucket id = that hour's posts
+#[ok_index(by_hour { func(hour_bucket) })]   // scan with a bucket id = that hour's posts
 ```
 
 Time bucketing is this shape at its cheapest — a single-element Vec that
@@ -171,7 +171,7 @@ the entry set from the row, so an impure function (clock / randomness /
 external state) produces a different set at delete time than at write
 time, leaving dangling entries.
 
-`func(path)` and the `#[kv_reduce]` declaration below are the two
+`func(path)` and the `#[ok_reduce]` declaration below are the two
 external extension mechanisms: func is **per-row derivation** (computed
 at write time; entries still live and die with the row), reduce is
 **cross-row aggregation** (mutable value, read-modify-write). How the
@@ -259,7 +259,7 @@ Physical key layout (forward):
 ### Reverse queries and truncated identities
 
 ```rust
-// Reverse: session → users. A's identity here is truncated (kv_head),
+// Reverse: session → users. A's identity here is truncated (ok_head),
 // so raw bytes are returned for a main-table prefix scan.
 let raws = edges.reverse_raw(&s1);
 
@@ -277,16 +277,16 @@ The derive macro also generates query methods on the endpoint types themselves (
 
 ### Rows at runtime (`Table`)
 
-Declaring rows and indexes (`RowEncode` + `#[kv_index]`) is covered in the
+Declaring rows and indexes (`ObjEncode` + `#[ok_index]`) is covered in the
 [Modeling Guide](docs/MODELING.md), "Declaration basics". The index declaration's derivative is generated at the expansion point
-(this file): `kv_index(by_org ...)` generates the index type
+(this file): `ok_index(by_org ...)` generates the index type
 `__OkmIndex_User_by_org` (mechanical concatenation, no case conversion);
 alias it with `use` and it serves as the generic parameter. `Row::table`
 builds the assembly point without repeating the key type at the call site:
 
 ```rust
 use okm_core::{Row, TestStore};
-use __OkmIndex_User_by_org as ByOrg; // index type: derived from kv_index(by_org)
+use __OkmIndex_User_by_org as ByOrg; // index type: derived from ok_index(by_org)
 
 let mut t = <User as Row>::table(TestStore::default());
 
@@ -313,9 +313,9 @@ fn tokens(row: &Doc) -> Vec<String> {
     row.text.split_ascii_whitespace().map(String::from).collect()
 }
 
-#[derive(RowEncode, Clone, PartialEq, Debug)]
-#[kv_ref(DocKey)]
-#[kv_index(by_token { func(tokens) })]
+#[derive(ObjEncode, Clone, PartialEq, Debug)]
+#[ok_ref(DocKey)]
+#[ok_index(by_token { func(tokens) })]
 pub struct Doc {
     pub text: String,
 }
@@ -329,25 +329,25 @@ let hits = t.scan::<ByToken>(b"rust");
 
 ### Payload versions and field defaults
 
-The payload carries a version byte (`#[kv_layout(version = N)]`, default 1).
+The payload carries a version byte (`#[ok_layout(version = N)]`, default 1).
 Decode rule: a payload whose header version is **newer** than the reading
 schema's is rejected; **older** payloads are accepted, and fields the old
 payload lacks (appended at the tail after that version was written) take
 their defaults:
 
 ```rust
-#[derive(RowEncode, Clone, PartialEq, Debug)]
-#[kv_ref(UserKey)]
-#[kv_layout(version = 2)]            // bump when the field set changed
+#[derive(ObjEncode, Clone, PartialEq, Debug)]
+#[ok_ref(UserKey)]
+#[ok_layout(version = 2)]            // bump when the field set changed
 pub struct User {
     pub org_id: u32,                 // existed since v1
-    #[kv_default(100)]               // explicit default for pre-v2 payloads
+    #[ok_default(100)]               // explicit default for pre-v2 payloads
     pub reputation: u32,             // appended at v2's tail
-    pub bio_len: u16,                // no #[kv_default] → T::default() (0)
+    pub bio_len: u16,                // no #[ok_default] → T::default() (0)
 }
 ```
 
-- `#[kv_default(expr)]` is any expression (literal, constant, function
+- `#[ok_default(expr)]` is any expression (literal, constant, function
   call); omitting it falls back to `<T as Default>::default()`.
 - Defaults apply ONLY to decoding older payloads — a field missing from
   the bytes. Newly written payloads always carry every field (the writer
@@ -406,7 +406,7 @@ singular.
 
 ## Many-to-many relationships: edges
 
-The access methods defined by `#[kv_index]` are **table-local** — their
+The access methods defined by `#[ok_index]` are **table-local** — their
 data source is the row's own payload, kept in sync automatically by
 `put`/`delete`. Cross-table relationships (one-to-many, many-to-many)
 are facts between two independent entities; a payload index cannot
@@ -414,9 +414,9 @@ reach them, so they are expressed as **edges**:
 
 ```text
 #[derive(EdgeEncode)]
-#[kv_ns(4)]
+#[ok_ns(4)]
 struct OrgUserEdge {
-    #[kv_head(tenant_id, org_id)]   // A-side identity truncated to (tenant_id, org_id)
+    #[ok_head(tenant_id, org_id)]   // A-side identity truncated to (tenant_id, org_id)
     pub org: OrgKey,                // B side, no annotation = full UserKey
     pub user: UserKey,
 }
@@ -427,11 +427,11 @@ bit): the top bit of the ns is the direction. The FWD prefix
 `[ns:4][tenant][org]` fetches all members of an org in one scan (the
 list side); the REV prefix fetches all orgs a user belongs to. A job
 change = adding/removing one edge; identity never moves.
-`#[kv_head(...)]` declares which identity fields the endpoint is
+`#[ok_head(...)]` declares which identity fields the endpoint is
 truncated to on that direction (absent = full identity), letting each
 endpoint use a shorter prefix — edge key length and grouping granularity
 are trimmed per direction, which is how "the primary key varies by
-direction" is expressed. `kv_head` selects a subset of *declared
+direction" is expressed. `ok_head` selects a subset of *declared
 identity fields*, not free bytes; its decidability follows the same
 principle as the index tail.
 
@@ -465,7 +465,7 @@ field, with no edge declared; add one later when needed — edge
 double-writes sync automatically, no backfill.
 
 One sentence: **an index is a derived view of one row; an edge is
-first-class relationship data**. The convenience of `#[kv_index]`
+first-class relationship data**. The convenience of `#[ok_index]`
 (declare-to-register, no manual ns numbering — ADR-0005's motivation
 was precisely eliminating per-index manual numbering and hole
 bookkeeping) is a secondary bonus, not the dividing line; the dividing
@@ -487,7 +487,7 @@ mechanical half is provided as a helper facility, declared like an
 index:
 
 ```text
-#[kv_reduce(AuthorStats { group(author_id) })]
+#[ok_reduce(AuthorStats { group(author_id) })]
 ```
 
 `group(...)` takes the grouping segment from row fields (entry =
@@ -525,7 +525,7 @@ a closure, go through the normal put. Both RMWs share the same
 underlying shape (read → compute → write); the division of labor
 follows one question: who knows the logic?
 
-- **reduce (declarative)**: `#[kv_reduce(Logic { group(f) })]` pins
+- **reduce (declarative)**: `#[ok_reduce(Logic { group(f) })]` pins
   everything at compile time — which rows land in which group, how
   fold/unfold compute — as part of the type declaration, framework-
   driven. Fits aggregations that evolve with the row structure
@@ -556,15 +556,15 @@ whole design:
 - **Inline** (reduce): runs inside the write path, exactly-once by
   construction — the fold IS part of the write. Reduce never consumes
   a channel.
-- **Channel** (`#[kv_subscribe]`): best-effort delivery, no guarantee.
+- **Channel** (`#[ok_subscribe]`): best-effort delivery, no guarantee.
   The annotation declares that this row type's write-path events enter
   a channel; there is no handler at the annotation site — the
   processing logic belongs entirely to the consumer:
 
 ```text
-#[kv_subscribe]                      // bare: the only form; the event enum is
+#[ok_subscribe]                      // bare: the only form; the event enum is
                                      // build.rs-derived (variant = row type
-                                     // name, renameable via #[kv_event_enum])
+                                     // name, renameable via #[ok_event_enum])
 ```
 
 Events carry `op` (put/delete), a monotonic **write-batch epoch**, and
@@ -610,12 +610,12 @@ natural timeline): entries under the same pkey are physically adjacent
 and ordered, and a prefix scan directly *is* the timeline / range read —
 restoring a session, fetching the latest N, all one `scan`. Putting the
 primary sort field into the key is a physical decision; other sort
-dimensions stay in the payload and surface through `#[kv_index]`.
+dimensions stay in the payload and surface through `#[ok_index]`.
 
 Fancy prefix schemes are not recommended (path-style, semantically
 segmented prefixes) — the longer the prefix, the harder to manage; every
 prefix is an encoding convention that must be maintained. Prefer
-declaring more access methods: each `#[kv_index]` is an independent,
+declaring more access methods: each `#[ok_index]` is an independent,
 composable, extensible read path — declared to register, one line
 deleted to retire.
 
@@ -675,7 +675,7 @@ scenarios, but:
   zero-cost encode/decode with compile-time locked layouts.
 
 These dimensions all belong to access methods / secondary indexes:
-`#[kv_index]` registers on declaration — composable, extensible, added
+`#[ok_index]` registers on declaration — composable, extensible, added
 as the business grows — without touching the primary key layout.
 
 ## Two kinds of tails: index tails are decodable, primary-key tails are not
@@ -689,7 +689,7 @@ primary entry   [ns][pkey...][custom tail?]                    ← custom tail u
 ```
 
 **Index tails are decodable**: the tail segment of an index entry key is
-the primary-key encoding — a struct declared via `#[kv_ref]`, whose
+the primary-key encoding — a struct declared via `#[ok_ref]`, whose
 exact layout the `KeyEncode` derive knows; cut it off the end of the
 entry key and decode it back into the primary key (`PrefixKey`; the
 ADR-0005 contract: "the tail is always decodable from the last bytes of
@@ -713,7 +713,7 @@ not be stuffed in; the need belongs to `fields(...)`.
 Terminology: **"access method" is the modeling-layer word** — a declared
 read path; this guide uses it. **"Secondary index" is the
 mechanism-layer word** — the index entry layout generated by
-`#[kv_index]`; the ADRs and README use it. `#[kv_index]` is the mount
+`#[ok_index]`; the ADRs and README use it. `#[ok_index]` is the mount
 point for both. This document addresses modeling, so the body uses
 "access method" throughout and says "secondary index" only when
 touching mechanism layout.
@@ -734,7 +734,7 @@ parse.
 **The per-hit cost is small, and amortized.** That indirection is a
 routine LSM point get / one TLV parse — not hot-path scale; what it
 buys is a key layout that never deforms for every "also query by X"
-dimension. As the business grows you add `#[kv_index]` instead of
+dimension. As the business grows you add `#[ok_index]` instead of
 redesigning keys.
 
 **Bulk reads actually come out ahead.** Fetch-back looks like random
@@ -799,7 +799,7 @@ User
   means a key change: one physical person split into several
   identities.
 
-Reads by org go through an index: `#[kv_index(by_org {
+Reads by org go through an index: `#[ok_index(by_org {
 fields(org_id, ...) })]` answers org-scoped reads with one prefix scan
 while identity stays singular.
 

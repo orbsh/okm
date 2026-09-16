@@ -4,10 +4,10 @@
 //! Annotation form (field attribute, read by the derive macros):
 //!
 //! ```ignore
-//! #[derive(RowEncode)]
-//! #[kv_ref(K)]
+//! #[derive(ObjEncode)]
+//! #[ok_ref(K)]
 //! struct Row {
-//!     #[kv_offset(base = 1_700_000_000)]
+//!     #[ok_offset(base = 1_700_000_000)]
 //!     created: i64,     // stored as u32 offset from the epoch base
 //! }
 //! ```
@@ -36,7 +36,7 @@ pub fn offset_decode(b: &[u8], base: i64) -> i64 {
 }
 
 /// Newtype the derive macros recognize in field position
-/// (`Offset<i64>` paired with `#[kv_offset(base = N)]`). Field
+/// (`Offset<i64>` paired with `#[ok_offset(base = N)]`). Field
 /// declarations stay wrapped; `.0` is the absolute value.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub struct Offset(pub i64);

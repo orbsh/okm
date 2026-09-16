@@ -16,7 +16,7 @@ FTS    = 多值函数索引（n-gram/token → N 条 entry）+ 调用方 BM25 �
 
 ## 事件层边界
 
-写路径同时发出 subscribe 事件（`#[kv_subscribe]`，best-effort channel——见建模文档）。对扩展消费者有一条不对称值得单列：**delete 事件携带完整行，不只是 key。** 这是模型逼出来的，不是附赠——索引条目和 reduce 折叠都从行的字段派生，所以 `delete` 必须拿着行（`delete_by_pkey` 内部先取回），发出的事件直接复用它。对消费者的推论：搜索索引同步、缓存失效仅凭事件本身就能卸载被删行的派生物，无需回读一个删除即将改变状态的存储。下游触发保持对称（put/delete 都带行），而 reduce 严格留在 inline——永不搭 channel，其恰好一次契约不被事件层触及。
+写路径同时发出 subscribe 事件（`#[ok_subscribe]`，best-effort channel——见建模文档）。对扩展消费者有一条不对称值得单列：**delete 事件携带完整行，不只是 key。** 这是模型逼出来的，不是附赠——索引条目和 reduce 折叠都从行的字段派生，所以 `delete` 必须拿着行（`delete_by_pkey` 内部先取回），发出的事件直接复用它。对消费者的推论：搜索索引同步、缓存失效仅凭事件本身就能卸载被删行的派生物，无需回读一个删除即将改变状态的存储。下游触发保持对称（put/delete 都带行），而 reduce 严格留在 inline——永不搭 channel，其恰好一次契约不被事件层触及。
 
 ## 预计算的两层分界
 
@@ -29,7 +29,7 @@ FTS    = 多值函数索引（n-gram/token → N 条 entry）+ 调用方 BM25 �
 - 索引 entry：append-only，随行生灭（delete 同一函数生成待删集合，永不悬挂）；
 - 计数 entry：可变 value，有独立生命周期（行删了计数还在，或需要墓碑逻辑）。
 
-这意味着跨行预计算是**第四个原语**（可变聚合 entry）。okm-core 对它的立场是两层拆分：**核心仍不内置聚合语义**——不提供任何内建计数器/求和类型，也不解决分布式累加协议；但机械部分由辅助设施提供——`#[kv_reduce(Logic { group(a,b) })]` 声明 + `ReduceLogic`（用户实现 fold/unfold 与 Acc 编码）+ 写入路径的读-改-写 hook（put 时 fold、delete 时 unfold）。可逆性（`unfold(fold(a,x)) = a`）是使用者的契约，不可逆聚合（median、distinct）不适用；okm-core 不做零值回收，组空了 entry 仍在。用法见建模文档「跨行预聚合」一节。
+这意味着跨行预计算是**第四个原语**（可变聚合 entry）。okm-core 对它的立场是两层拆分：**核心仍不内置聚合语义**——不提供任何内建计数器/求和类型，也不解决分布式累加协议；但机械部分由辅助设施提供——`#[ok_reduce(Logic { group(a,b) })]` 声明 + `ReduceLogic`（用户实现 fold/unfold 与 Acc 编码）+ 写入路径的读-改-写 hook（put 时 fold、delete 时 unfold）。可逆性（`unfold(fold(a,x)) = a`）是使用者的契约，不可逆聚合（median、distinct）不适用；okm-core 不做零值回收，组空了 entry 仍在。用法见建模文档「跨行预聚合」一节。
 
 并发语义的边界没有变：单写者引擎下 hook 是安全的读-改-写；多写者/分布式累加协议仍然超出「有序字节流」模型，真需要时答案依旧是旁边放真正的 OLAP/流系统。近似计数（UV、热词）优先退化为「entry 存在即计 1」+ 扫区间数条数。
 
@@ -44,7 +44,7 @@ FTS    = 多值函数索引（n-gram/token → N 条 entry）+ 调用方 BM25 �
 
 - **hash join / 无序 join 加速**——join key 不是排序维度是建模缺口，声明索引让流重新有序；`okm-query::merge_join` 是唯一答案。
 - **流式订阅 / CDC**——没有 tail 扫原语，属引擎层（fjall watch / slatedb invalidate），不该在模型层仿造。
-- **分布式累加协议**——单写者下 `#[kv_reduce]` 的读-改-写 hook 是安全的；多写者竞态/分布式计数器协议仍超出「有序字节流」模型，属旁边的 OLAP/流系统。
+- **分布式累加协议**——单写者下 `#[ok_reduce]` 的读-改-写 hook 是安全的；多写者竞态/分布式计数器协议仍超出「有序字节流」模型，属旁边的 OLAP/流系统。
 - **通用二级缓存**——缓存失效策略是应用逻辑；okm-core 条目生灭绑定声明，没有挂失效钩子的位置。
 
 ## 集成 crate 的边界纪律

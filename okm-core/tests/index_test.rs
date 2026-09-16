@@ -1,9 +1,9 @@
-//! 二级索引集成测试（ADR-0006 Row 形状）：RowEncode 派生、Table 装配点
+//! 二级索引集成测试（ADR-0006 Row 形状）：ObjEncode 派生、Table 装配点
 //! put/scan 回表、entry 布局 hex 锁定（entry = [ns 2B][slot 1B][索引字段]
 //! [key前缀]，value = includes 段）、最左前缀扫描、includes 覆盖、
 //! 截断 key 前缀（尾段去冗余，前提：剩余字段已唯一）。
 
-use okm_core::{KeyEncode, VirtualStorage, KvIndex, TestStore, PrefixKey, Row, RowEncode};
+use okm_core::{KeyEncode, VirtualStorage, KvIndex, TestStore, PrefixKey, Row, ObjEncode};
 
 // marker struct 生成在 derive 展开点（本文件），直接引用
 use __OkmIndex_User_by_reputation as ByReputation;
@@ -18,10 +18,10 @@ pub struct UserKey {
 
 /// User 行：by_reputation 按 payload 的 reputation 排序，key 前缀取满
 /// 主键（默认）。
-#[derive(RowEncode, Clone, PartialEq, Debug)]
-#[kv_ref(UserKey)]
-#[kv_index(by_reputation { fields(reputation) })]
-#[kv_ns(9)]
+#[derive(ObjEncode, Clone, PartialEq, Debug)]
+#[ok_ref(UserKey)]
+#[ok_index(by_reputation { fields(reputation) })]
+#[ok_ns(9)]
 pub struct User {
     pub reputation: u32,
 }
@@ -37,13 +37,13 @@ pub struct PostKey {
 /// author_id 是 payload 外键属性，排在 fields 首位，一条
 /// `entry_prefix(author_id)` 前缀扫描即返回该作者的整个时间线；
 /// includes(title_len) 使扫描无需回表。
-#[derive(RowEncode, Clone, PartialEq, Debug)]
-#[kv_ref(PostKey)]
-#[kv_index(by_timeline {
+#[derive(ObjEncode, Clone, PartialEq, Debug)]
+#[ok_ref(PostKey)]
+#[ok_index(by_timeline {
     fields(author_id, created_at),
     includes(title_len),
 })]
-#[kv_ns(12)]
+#[ok_ns(12)]
 pub struct Post {
     pub author_id: u64,
     pub created_at: u64,
@@ -60,13 +60,13 @@ pub struct SessionKey {
 /// Session 行：by_kind 演示截断 key 前缀——fields(kind) 已含分组
 /// 维度，尾段只需 session_id（全局唯一）即可区分行，user_id 从尾段
 /// 去掉是安全的去冗余（(kind, session_id) 仍行级唯一）。
-#[derive(RowEncode, Clone, PartialEq, Debug)]
-#[kv_ref(SessionKey)]
-#[kv_index(by_kind {
+#[derive(ObjEncode, Clone, PartialEq, Debug)]
+#[ok_ref(SessionKey)]
+#[ok_index(by_kind {
     fields(kind),
     key(session_id),
 })]
-#[kv_ns(15)]
+#[ok_ns(15)]
 pub struct Session {
     pub kind: u8,
 }
@@ -320,15 +320,15 @@ pub struct DocKey {
 /// Doc 行：by_city_name 复合索引 = (city, name)，变长 name 居末；
 /// by_name 单字段文本索引。排序 = 字典序（裸 UTF-8 字节，无长度前缀——
 /// 长度前缀会先按长度后按字节，摧毁字典序）。
-#[derive(RowEncode, Clone, PartialEq, Debug)]
-#[kv_ref(DocKey)]
-#[kv_index(
+#[derive(ObjEncode, Clone, PartialEq, Debug)]
+#[ok_ref(DocKey)]
+#[ok_index(
     by_city_name {
         fields(city, name),
     },
     by_name { fields(name) },
 )]
-#[kv_ns(21)]
+#[ok_ns(21)]
 pub struct Doc {
     pub city: u32,
     pub name: String,
@@ -397,10 +397,10 @@ fn lower_name(row: &DocFunc) -> String {
     row.name.to_lowercase()
 }
 
-#[derive(RowEncode, Clone, PartialEq, Debug)]
-#[kv_ref(DocKey)]
-#[kv_index(by_lower { func(lower_name) })]
-#[kv_ns(21)]
+#[derive(ObjEncode, Clone, PartialEq, Debug)]
+#[ok_ref(DocKey)]
+#[ok_index(by_lower { func(lower_name) })]
+#[ok_ns(21)]
 pub struct DocFunc {
     pub city: u32,
     pub name: String,
@@ -457,10 +457,10 @@ fn multi_entry_function_index_fans_out() {
         row.tags.split(',').map(|s| s.to_string()).collect()
     }
 
-    #[derive(RowEncode, Clone, PartialEq, Debug)]
-    #[kv_ref(DocKey)]
-    #[kv_ns(21)]
-    #[kv_index(by_tag { func(tokens) })]
+    #[derive(ObjEncode, Clone, PartialEq, Debug)]
+    #[ok_ref(DocKey)]
+    #[ok_ns(21)]
+    #[ok_index(by_tag { func(tokens) })]
     pub struct DocTags {
         pub tags: String,
     }

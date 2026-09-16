@@ -3,17 +3,17 @@
 //! commit makes them live or die together. Covers both orderings (nothing
 //! written before commit; everything written after).
 
-use okm_core::{EdgeEncode, EdgeTable, KeyEncode, VirtualStorage, TestStore, RowEncode, Table};
+use okm_core::{EdgeEncode, EdgeTable, KeyEncode, VirtualStorage, TestStore, ObjEncode, Table};
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
 pub struct PostKey {
     pub id: u64,
 }
 
-#[derive(RowEncode, Clone, PartialEq, Debug)]
-#[kv_ref(PostKey)]
-#[kv_index(by_author { fields(author_id) })]
-#[kv_ns(41)]
+#[derive(ObjEncode, Clone, PartialEq, Debug)]
+#[ok_ref(PostKey)]
+#[ok_index(by_author { fields(author_id) })]
+#[ok_ns(41)]
 pub struct Post {
     pub author_id: u64,
     pub title: String,
@@ -25,9 +25,9 @@ pub struct AuthorKey {
 }
 
 #[derive(EdgeEncode, Clone)]
-#[kv_ns(42)]
+#[ok_ns(42)]
 pub struct AuthorEdge {
-    #[kv_head(id)]
+    #[ok_head(id)]
     pub author: AuthorKey,
     pub post: PostKey,
 }

@@ -14,7 +14,7 @@ pub trait KeyEncode: Sized + Clone {
     /// Total encoded byte count (payload only, namespace header excluded).
     const KEY_LEN: usize;
     /// Field name → width table (declaration order). The edge macro uses it
-    /// to validate at runtime that `kv_head` names a legal declaration-order
+    /// to validate at runtime that `ok_head` names a legal declaration-order
     /// prefix.
     const FIELD_WIDTHS: &'static [(&'static str, usize)];
     fn encode(&self) -> Vec<u8>;
@@ -37,6 +37,6 @@ pub trait KeyEncode: Sized + Clone {
 /// fields, or take `decoded`'s prefix portion to scan the main table.
 pub struct PrefixKey<A> {
     pub decoded: A,
-    /// Bytes consumed by the identity prefix (= sum of `kv_head` field widths).
+    /// Bytes consumed by the identity prefix (= sum of `ok_head` field widths).
     pub taken: usize,
 }

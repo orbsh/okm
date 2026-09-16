@@ -12,7 +12,7 @@
 //! Capability ceiling (permanent): no reduce/subscribe/function indexes —
 //! the dynamic rebuild would break exactly-once (ADR-0008).
 
-use okm_core::{KeyEncode, Row, RowEncode, Table, TestStore, VirtualStorage};
+use okm_core::{KeyEncode, ObjEncode, Table, TestStore, VirtualStorage};
 use okm_core::schema::TableSchema;
 use okm_dynamic::{AccessMethod, DynamicTable, Value, ValueMap};
 use std::collections::BTreeMap;
@@ -23,12 +23,12 @@ pub struct UserKey {
     pub user_id: u64,
 }
 
-#[derive(RowEncode, Clone, PartialEq, Debug)]
-#[kv_ref(UserKey)]
-#[kv_ns(41)]
-#[kv_layout(version = 2)]
-#[kv_index(by_level { fields(level) })]
-#[kv_index(by_score { fields(score), includes(level) })]
+#[derive(ObjEncode, Clone, PartialEq, Debug)]
+#[ok_ref(UserKey)]
+#[ok_ns(41)]
+#[ok_layout(version = 2)]
+#[ok_index(by_level { fields(level) })]
+#[ok_index(by_score { fields(score), includes(level) })]
 pub struct User {
     pub level: u32,  // hot
     pub score: u16,  // hot

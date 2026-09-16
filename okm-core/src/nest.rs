@@ -22,7 +22,7 @@
 //! also rides the transport envelope (an mpsc sender beside each
 //! frame), never the frame bytes.
 //!
-//! The `NestStorage` derive (with `#[kv_ns]`) generates exactly the [`NestStorage`]
+//! The `NestStorage` derive (with `#[ok_ns]`) generates exactly the [`NestStorage`]
 //! shape; this manual form is the reference implementation the derive
 //! targets.
 
@@ -140,7 +140,7 @@ struct ExecCore<S: VirtualStorage> {
 
 pub struct NestStorage<S: VirtualStorage> {
     engine: Arc<Mutex<S>>,
-    /// `Some` = hosted (multi-tenant, declared via `#[kv_ns]`): every
+    /// `Some` = hosted (multi-tenant, declared via `#[ok_ns]`): every
     /// key enters as `[prefix][sender bytes]`. `None` = bare shard
     /// (single instance per engine, sharding routed by the orchestrator):
     /// frames execute byte-identical — the sender's keyspace IS the

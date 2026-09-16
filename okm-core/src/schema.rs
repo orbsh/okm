@@ -122,6 +122,7 @@ mod serde_impls {
                     s.serialize_unit_variant("FieldType", 4, "FixedBytes")
                 }
                 FieldType::Str => s.serialize_unit_variant("FieldType", 5, "Str"),
+                FieldType::Bytes => s.serialize_unit_variant("FieldType", 10, "Bytes"),
                 FieldType::VarInt => s.serialize_unit_variant("FieldType", 6, "VarInt"),
                 FieldType::Quant(p) => {
                     s.serialize_newtype_variant("FieldType", 7, "Quant", p)

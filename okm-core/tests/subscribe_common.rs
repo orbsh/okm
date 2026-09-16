@@ -5,11 +5,11 @@
 //! artifacts resolve identically in each binary. build.rs scans tests/
 //! recursively and collects these rows once.
 //!
-//! Convention: every `#[kv_subscribe]` row of the okm-core test family
+//! Convention: every `#[ok_subscribe]` row of the okm-core test family
 //! lives HERE — the generated enum spans all of them, so they must share
 //! one compilation unit per test binary.
 
-use okm_core::{KeyEncode, ReduceLogic, ReduceCodec, RowEncode};
+use okm_core::{KeyEncode, ReduceLogic, ReduceCodec, ObjEncode};
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
 pub struct AccountKey {
@@ -17,10 +17,10 @@ pub struct AccountKey {
 }
 
 /// Subscribed row — variant is the row type name, derived by build.rs.
-#[derive(RowEncode, Clone, PartialEq, Debug)]
-#[kv_ref(AccountKey)]
-#[kv_subscribe]
-#[kv_ns(21)]
+#[derive(ObjEncode, Clone, PartialEq, Debug)]
+#[ok_ref(AccountKey)]
+#[ok_subscribe]
+#[ok_ns(21)]
 pub struct Account {
     pub balance: u64,
 }
@@ -31,10 +31,10 @@ pub struct AuditKey {
 }
 
 /// Subscribed row routed through the same enum — fan-in shape.
-#[derive(RowEncode, Clone, PartialEq, Debug)]
-#[kv_ref(AuditKey)]
-#[kv_subscribe]
-#[kv_ns(22)]
+#[derive(ObjEncode, Clone, PartialEq, Debug)]
+#[ok_ref(AuditKey)]
+#[ok_subscribe]
+#[ok_ns(22)]
 pub struct Audit {
     pub note: String,
 }
@@ -47,13 +47,13 @@ pub struct GhostKey {
 /// Subscribed but nobody ever registers the channel — the no-sink
 /// case must be tested on a channel no other test can touch (global
 /// statics are process-wide; parallel tests would race otherwise).
-/// This row carries its own enum alias via `#[kv_event_enum]`, which
+/// This row carries its own enum alias via `#[ok_event_enum]`, which
 /// lands as a second generated enum.
-#[derive(RowEncode, Clone, PartialEq, Debug)]
-#[kv_ref(GhostKey)]
-#[kv_event_enum(ShadowEvents)]
-#[kv_subscribe]
-#[kv_ns(23)]
+#[derive(ObjEncode, Clone, PartialEq, Debug)]
+#[ok_ref(GhostKey)]
+#[ok_event_enum(ShadowEvents)]
+#[ok_subscribe]
+#[ok_ns(23)]
 pub struct Ghost {
     pub v: u64,
 }
@@ -66,12 +66,12 @@ pub struct CounterKey {
 /// Row with an index + a reduce + a subscription, so tests can verify
 /// the put path fired through all three (upsert_with must not bypass
 /// any of them).
-#[derive(RowEncode, Clone, PartialEq, Debug)]
-#[kv_ref(CounterKey)]
-#[kv_index(by_bucket { fields(bucket) })]
-#[kv_reduce(CounterTotals { group(bucket) })]
-#[kv_subscribe]
-#[kv_ns(31)]
+#[derive(ObjEncode, Clone, PartialEq, Debug)]
+#[ok_ref(CounterKey)]
+#[ok_index(by_bucket { fields(bucket) })]
+#[ok_reduce(CounterTotals { group(bucket) })]
+#[ok_subscribe]
+#[ok_ns(31)]
 pub struct Counter {
     pub bucket: u32,
     pub hits: u64,

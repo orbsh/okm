@@ -17,7 +17,7 @@
 /// because only it knows the segment layout (`KEY_PREFIX` width).
 ///
 /// Deliberately no hash join: a join key that is not either side's sort
-/// dimension is a modeling gap — declare a `kv_index(fields(join_key))`
+/// dimension is a modeling gap — declare a `ok_index(fields(join_key))`
 /// and the stream is ordered again. Sorting is a property of the store,
 /// not a burden on the query operator (and merge join stays streaming
 /// and memory-bounded, where hash join must materialize the build side).
@@ -166,13 +166,13 @@ mod tests {
     /// Two edge types over one node type — the multi-relation graph a
     /// real model has (follows + mentions over User).
     #[derive(EdgeEncode, Clone, PartialEq, Debug)]
-    #[kv_ns(4)]
+    #[ok_ns(4)]
     struct FollowsEdge {
         user_id: UserKey,
         followee_id: UserKey,
     }
     #[derive(EdgeEncode, Clone, PartialEq, Debug)]
-    #[kv_ns(5)]
+    #[ok_ns(5)]
     struct MentionsEdge {
         user_id: UserKey,
         mentioned_id: UserKey,

@@ -4,12 +4,12 @@
 
 ## 声明位置：ns 挂在 Row 上，不挂在 Key 上
 
-`#[kv_ns(N)]` 声明在 **row struct**（或 edge struct）上，不在 key struct 上：
+`#[ok_ns(N)]` 声明在 **row struct**（或 edge struct）上，不在 key struct 上：
 
-- row 是表的声明点——它的 `#[kv_ref]` 已把 key 类型钉死，`Table<S, K, R>` 三个参数由 row 完全决定，ns 是这张表的身份的一部分；
+- row 是表的声明点——它的 `#[ok_ref]` 已把 key 类型钉死，`Table<S, K, R>` 三个参数由 row 完全决定，ns 是这张表的身份的一部分；
 - key 类型不带 ns，意味着**同一个 key 形状可以合法服务多个 row / 多张表**，各挂各的 ns 号。若 ns 挂 key，这个场景被编译期堵死，只能靠多声明一份同构 key 类型绕行。
 
-derive（`okm-derive`）把 `#[kv_ns(N)]` 编译成 `Row::NS_PREFIX: &'static [u8]`（大端 `[hi, lo]` 两字节，未声明 = 空切片，对应仅做 codec、不落表的 row）。`Table::new(store)` 不收 ns 参数——拼装点只选 engine，不复述 ns（ns 字典是代码，ADR-0002；engine 选择是每拼装点的自由，ADR-0010）。
+derive（`okm-derive`）把 `#[ok_ns(N)]` 编译成 `Row::NS_PREFIX: &'static [u8]`（大端 `[hi, lo]` 两字节，未声明 = 空切片，对应仅做 codec、不落表的 row）。`Table::new(store)` 不收 ns 参数——拼装点只选 engine，不复述 ns（ns 字典是代码，ADR-0002；engine 选择是每拼装点的自由，ADR-0010）。
 
 ## 第一级：2 字节 ns 前缀，table 与 edge 共用
 
@@ -36,7 +36,7 @@ reverse key  [head(ns=4, dir=1)][B·identity][A·identity]   反向：终点身�
 
 ## 第二级：table 后面接 1 字节 slot
 
-table 侧，ns 头之后是 1 字节 slot，0 是主表（`PRIMARY_SLOT`），1 起按 `#[kv_index]` 声明序分配给访问方法：
+table 侧，ns 头之后是 1 字节 slot，0 是主表（`PRIMARY_SLOT`），1 起按 `#[ok_index]` 声明序分配给访问方法：
 
 ```text
 主表条目  [ ns 2B ][ slot=0 ][ 主键编码 ]                 value = TLV payload
@@ -55,7 +55,7 @@ edge   [ ns<<1|dir 2B BE   ][ A·id ][ B·id ]     （反向时 A/B 对调）
          ↑ 共用同一编号空间：table 用满 16 位，edge 用低 15 位 + 最高位方向位
 ```
 
-注意一个工程后果：ns 字典手动分配时，**table 号与 edge 号混在同一空间里**——`#[kv_ns(4)]` 既是 row 表也是 edge 的合法号，互撞由字典纪律（append-only、人工分配，ADR-0002）而不是类型系统阻止。.ns 号 32768..=65535 对 edge 不可表达（方向位 niche 的直接后果），分配时 table 可用的号比 edge 宽一倍。
+注意一个工程后果：ns 字典手动分配时，**table 号与 edge 号混在同一空间里**——`#[ok_ns(4)]` 既是 row 表也是 edge 的合法号，互撞由字典纪律（append-only、人工分配，ADR-0002）而不是类型系统阻止。.ns 号 32768..=65535 对 edge 不可表达（方向位 niche 的直接后果），分配时 table 可用的号比 edge 宽一倍。
 
 ## reduce 的位置
 

@@ -11,7 +11,7 @@
 [ns 2B][slot 1B][key payload]
 ```
 
-`ns` 是表的命名空间号（`#[kv_ns]` 声明，ADR-0002），slot 字节区分主键（0）与索引条目（ADR-0005），payload 是编码后的键或被索引字段。当远程发送方经过一个声明过的 `NestStorage` 时，接收方再前置一层——宿主前缀——线上字节到引擎上变成 `[host prefix][ns 2B][slot 1B][payload]`（ADR-0010）。
+`ns` 是表的命名空间号（`#[ok_ns]` 声明，ADR-0002），slot 字节区分主键（0）与索引条目（ADR-0005），payload 是编码后的键或被索引字段。当远程发送方经过一个声明过的 `NestStorage` 时，接收方再前置一层——宿主前缀——线上字节到引擎上变成 `[host prefix][ns 2B][slot 1B][payload]`（ADR-0010）。
 
 曾有替代方案：存储**剥离后的键**（只存 `[key payload]`），查询时再把前缀拼回去。每键省 3 字节。本 ADR 记录否决理由。
 

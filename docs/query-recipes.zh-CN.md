@@ -24,7 +24,7 @@ JOIN            merge_join（双方都是键序流）
 把 group 字段放在 `fields(...)` 首位，排序即分组：
 
 ```rust
-#[kv_index(by_org { fields(org_id, created_at) })]
+#[ok_index(by_org { fields(org_id, created_at) })]
 struct User { org_id: u32, created_at: u64, ... }
 ```
 
@@ -59,7 +59,7 @@ scan(&[org, dept, day])         → org × dept × day（明细）
 
 | 落地 | 时机 | 语义 | 适合 |
 |---|---|---|---|
-| `#[kv_reduce]` | 编译期 | 可逆聚合，随写路径维护，常驻 | 高频读的固定分组 |
+| `#[ok_reduce]` | 编译期 | 可逆聚合，随写路径维护，常驻 | 高频读的固定分组 |
 | `group_by`（索引排序） | 读时 | 单趟折叠，随查询变化 | 即席分组、多维度 |
 | reduce 的 GROUP vs 索引首位 | — | — | 同一批字段编码器，不同落地时机 |
 
@@ -77,7 +77,7 @@ let pairs = okm_query::merge_join(
 );
 ```
 
-刻意没有 hash join：join key 不是某一侧的排序维度 = 建模缺口——声明 `kv_index(fields(join_key))`，流重新有序。排序是存储的属性，不是查询算子的负担（merge join 流式、内存有界；hash join 必须物化 build 侧）。
+刻意没有 hash join：join key 不是某一侧的排序维度 = 建模缺口——声明 `ok_index(fields(join_key))`，流重新有序。排序是存储的属性，不是查询算子的负担（merge join 流式、内存有界；hash join 必须物化 build 侧）。
 
 ## 图配方：walk
 
