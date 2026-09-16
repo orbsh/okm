@@ -43,6 +43,12 @@ SQL 的核心价值不是执行性能，而是关系模型交付的可读性、�
 - `Table<S, K, R>` 行装配点与边 `EdgeTable` 并列；变长载荷/索引字段（`String`），key 保持定宽。
 - 多引擎混用——同一进程内不同 ns 段可绑不同引擎（交易走 fjall、日志走 slatedb）；原子性止于单引擎内，ns 编号全库唯一。
 - 快照导出——行 → Parquet，与引擎无关（备份 / 数据交换 / lakehouse 分析）；ns 还原为描述性文本，列名即字段名。
+- **Object 模型（obj）**——声明式 row 与外部数据共用单一编码（[ADR-0012](docs/adr/0012-object-model-and-field-dictionary.md)）。`obj` 是刻意的双关：编程语言中的对象，也是存储格式意义上的 object。三个词标记静态/动态光谱上的三个位置：
+  - **document**——逻辑与物理全动态；每个字段都走动态路径（字典编号 + 每帧值类型）。
+  - **variant**——动态内容嵌为一个声明的静态字段（`Bytes` payload）；动态性活在值里，不进键布局。
+  - **obj**——逻辑上全动态（运行期可出现任意字段），但声明的静态字段嵌入动态整体：hot/cold 段、索引、schema 导出照常生效。声明式 row 是动态路径为空的退化 obj；纯 document 是声明路径为空的退化 obj；两者同一编码。
+
+  动态帧采用 CBOR 衍生的取帧方式，不是 CBOR 本身：只取 **major type 模式**——每帧以类型 nibble 开头——结构编码也在同一方案里。CBOR 的 major type 含列表和映射；有了字段名字典，OKM 只需要列表：映射就是 nTLV 列表（编号、类型、长度、值），结构信息活在值里，不进 per-document schema。
 
 ## 使用方法
 
