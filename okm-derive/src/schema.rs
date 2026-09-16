@@ -524,6 +524,21 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> Vec<FieldSchema> {
                     Some(quote! { ::okm_core::FieldType::Str }),
                 )
             }
+            _ if ty_str.starts_with("Vec < u8 >") || ty_str.starts_with("Vec<u8>") => {
+                // Bytes — same variable-length TLV frame as String, minus
+                // the UTF-8 constraint: raw binary payloads (CBOR, etc.).
+                (
+                    quote! { buf.extend_from_slice(&self.#id); },
+                    quote! {{
+                        let v = b[offset..offset+len].to_vec();
+                        offset += len;
+                        v
+                    }},
+                    quote! { 0 },
+                    quote! { self.#id.len() },
+                    Some(quote! { ::okm_core::FieldType::Bytes }),
+                )
+            }
             other => panic!("{ctx}: unsupported type {other} (field {id})"),
         };
         fs.push(FieldSchema {

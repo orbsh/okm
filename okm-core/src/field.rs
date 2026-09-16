@@ -21,6 +21,9 @@ pub enum FieldType {
     FixedBytes,
     /// `String` — variable length; `FieldDesc::width` is 0 (meaningless).
     Str,
+    /// `Vec<u8>` — variable length raw bytes (TLV, same frame shape as
+    /// `Str` minus the UTF-8 constraint); `FieldDesc::width` is 0.
+    Bytes,
     /// `VarInt<T>` — LEB128, variable length; `FieldDesc::width` is 0.
     /// Logical type is the inner unsigned integer.
     VarInt,
