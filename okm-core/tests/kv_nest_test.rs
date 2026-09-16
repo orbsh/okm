@@ -1,13 +1,13 @@
-//! `NestStorage` derive (declared via `#[kv_ns]`) — end-to-end (ADR-0010 §4): the
+//! `NestStorage` derive (declared via `#[ok_ns]`) — end-to-end (ADR-0010 §4): the
 //! annotated empty struct becomes a host bound to its declared prefix;
 //! the sender endpoint plugs into a `Table` whose write path runs
 //! entirely over the wire.
 
-use okm_core::{KeyEncode, TestStore, RemoteStore, RowEncode, Table, VirtualStorage};
+use okm_core::{KeyEncode, TestStore, RemoteStore, ObjEncode, Table, VirtualStorage};
 
 // Receiver declaration: no data methods, one execution surface.
 #[derive(okm_core::NestStorage)]
-#[kv_ns(21)]
+#[ok_ns(21)]
 pub struct AppStorage;
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
@@ -15,10 +15,10 @@ pub struct ItemKey {
     pub id: u64,
 }
 
-#[derive(RowEncode, Clone, PartialEq, Debug)]
-#[kv_ref(ItemKey)]
-#[kv_ns(21)]
-#[kv_index(by_kind { fields(kind) })]
+#[derive(ObjEncode, Clone, PartialEq, Debug)]
+#[ok_ref(ItemKey)]
+#[ok_ns(21)]
+#[ok_index(by_kind { fields(kind) })]
 pub struct Item {
     pub kind: u32,
 }
@@ -58,7 +58,7 @@ fn two_instances_isolated_by_declared_prefix() {
     // One declared NestStorage executor per application — the isolation
     // boundary IS the declared prefix (ADR-0010 §5).
     #[derive(okm_core::NestStorage)]
-    #[kv_ns(22)]
+    #[ok_ns(22)]
     pub struct OtherStorage;
 
     assert_eq!(OtherStorage::NS_PREFIX, &[0, 22]);

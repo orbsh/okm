@@ -10,8 +10,8 @@
 
 1. **命名空间（ns）**——实体活在哪个键空间。一类实体 = 一个 ns。2 字节 ns 已经区分了所有条目，不要把实体类型编码进 key。
 2. **主键**——身份，且仅是身份。代理键（自增 id、UUID）是默认选择：属性是 payload，不是身份。
-3. **主排序字段**——key 的第三段（`[ns][pkey...][order]`）。放 key 尾使同一 pkey 下条目物理相邻且有序，前缀扫描即时间线/区间读；其余排序维度不进 key，经 `#[kv_index]` 暴露。物理决策与间接成本的关系见下文「设计约束对性能的影响」。
-4. **访问方法**——声明的 `#[kv_index]` 条目。每一个都是对"这个实体被怎么查？"的常备回答。
+3. **主排序字段**——key 的第三段（`[ns][pkey...][order]`）。放 key 尾使同一 pkey 下条目物理相邻且有序，前缀扫描即时间线/区间读；其余排序维度不进 key，经 `#[ok_index]` 暴露。物理决策与间接成本的关系见下文「设计约束对性能的影响」。
+4. **访问方法**——声明的 `#[ok_index]` 条目。每一个都是对"这个实体被怎么查？"的常备回答。
 
 说不出访问方法，模型就没建完——说不出的查询会变成全表扫描。
 
@@ -53,35 +53,35 @@ use okm_core::EdgeEncode;
 
 /// user → sessions 边。
 ///
-/// 正向：user 的身份是 (org_id, user_id) 两个字段 → kv_head(org_id, user_id)
-/// 反向：session 的身份是完整 SessionKey（无 kv_head）
+/// 正向：user 的身份是 (org_id, user_id) 两个字段 → ok_head(org_id, user_id)
+/// 反向：session 的身份是完整 SessionKey（无 ok_head）
 ///
 /// 同一条边的两个方向使用不同宽度的端点身份——
 /// 这就是"主键随方向变化"的表达。
 #[derive(EdgeEncode, Clone)]
-#[kv_ns(4)]
+#[ok_ns(4)]
 pub struct UserToSessionEdge {
-    #[kv_head(org_id, user_id)]
+    #[ok_head(org_id, user_id)]
     pub user_id: UserKey,
     pub session_id: SessionKey,
 }
 ```
 
-`#[kv_head(field, ...)]` 声明该端点在**这条边里**哪些字段算身份；不标注 = 全量 key 即身份。字段名必须是端点声明序的前缀（宏生成的编译期检查）。声明一次，正反两族条目自动生成（方向位见上文「多对多关系」）。
+`#[ok_head(field, ...)]` 声明该端点在**这条边里**哪些字段算身份；不标注 = 全量 key 即身份。字段名必须是端点声明序的前缀（宏生成的编译期检查）。声明一次，正反两族条目自动生成（方向位见上文「多对多关系」）。
 
-### 行与索引：`RowEncode`
+### 行与索引：`ObjEncode`
 
 ```rust
-use okm_core::RowEncode;
+use okm_core::ObjEncode;
 
-/// 行 struct 挂在 UserKey 上（#[kv_ref]）；payload 字段 TLV 编码。
-/// 每个 #[kv_index] 声明一个对 PAYLOAD 字段的访问方法——
+/// 行 struct 挂在 UserKey 上（#[ok_ref]）；payload 字段 TLV 编码。
+/// 每个 #[ok_index] 声明一个对 PAYLOAD 字段的访问方法——
 /// 身份归 key（代理 id），业务维度归行。
-#[derive(RowEncode, Clone, PartialEq, Debug)]
-#[kv_ref(UserKey)]
-#[kv_ns(1)] // 表的命名空间——声明在行上，不声明在 key 上
-#[kv_index(by_reputation { fields(reputation) })]
-#[kv_index(by_org { fields(org_id, created_at), includes(bio_len) })]
+#[derive(ObjEncode, Clone, PartialEq, Debug)]
+#[ok_ref(UserKey)]
+#[ok_ns(1)] // 表的命名空间——声明在行上，不声明在 key 上
+#[ok_index(by_reputation { fields(reputation) })]
+#[ok_index(by_org { fields(org_id, created_at), includes(bio_len) })]
 pub struct User {
     pub org_id: u32,
     pub created_at: u64,
@@ -90,11 +90,11 @@ pub struct User {
 }
 ```
 
-- `#[kv_ref(UserKey)]`——行挂到哪个主键上；身份归 key，业务维度归行。
-- `#[kv_ns(1)]`——表的命名空间段，声明在**行上**（行是表的声明点：`#[kv_ref]`
+- `#[ok_ref(UserKey)]`——行挂到哪个主键上；身份归 key，业务维度归行。
+- `#[ok_ns(1)]`——表的命名空间段，声明在**行上**（行是表的声明点：`#[ok_ref]`
   已把 key 类型钉死，行完全决定 `Table<S, K, R>`）。key 类型不带 ns——同一个
   key 形状可以合法服务多个行/表，各挂各的 ns 号。`Table::new(store)` 不收 ns
-  参数，拼装点只选 engine。edge struct 的 `#[kv_ns]` 同理（EdgeEncode）。
+  参数，拼装点只选 engine。edge struct 的 `#[ok_ns]` 同理（EdgeEncode）。
 - `fields(...)`——排序/分组的 payload 字段，按声明序，首位 = 分组维度。
 - `includes(...)`——覆盖索引，复制 payload 字段进 entry value（上文「覆盖索引克制」）。
 - `key(...)`——把 entry 尾部携带的主键截断到命名子集（默认取满）。截断改变的是行级唯一性，不是分组：`fields` 前缀驱动排序，key 尾段区分行；`key(user_id)` 仅在命名子集对每行唯一时才安全，否则行会互相覆盖 entry。
@@ -105,7 +105,7 @@ pub struct User {
 ```text
 fn lower_name(row: &Doc) -> String { row.name.to_lowercase() }
 
-#[kv_index(by_name { func(lower_name) })]   // "Apple"/"APPLE" 归一化后同位
+#[ok_index(by_name { func(lower_name) })]   // "Apple"/"APPLE" 归一化后同位
 ```
 
 **基础用法二：多值函数索引（一行展开为 N 条 entry）。** 返回 `Vec<V>` 时一行 fan out 成 N 条，token 即数据段（变长、贴主键前），读路径与普通索引完全相同（`scan::<I>`）：
@@ -115,12 +115,12 @@ fn hour_bucket(row: &Post) -> Vec<u64> {
     vec![row.created_at / 3_600_000]          // 毫秒时间戳 → 小时桶
 }
 
-#[kv_index(by_hour { func(hour_bucket) })]   // scan 传桶号 = 该小时全部帖子
+#[ok_index(by_hour { func(hour_bucket) })]   // scan 传桶号 = 该小时全部帖子
 ```
 
 时间分桶是这个形状的最低成本用法——返回单元素 Vec，写入时把时间戳折叠成桶号（桶号定宽 BE，字节序 = 时间序），按小时的 rollup/时间线就是一次前缀扫。同一原语直接覆盖 tokenize 全文检索（切词返回 Vec<String>）、多值字段（tags 拆分）。\`okm-core\` 不内置分词器，切分/分桶逻辑归业务层；func 的契约是**纯函数**——delete 从行重新生成待删集合，函数不纯（时钟/随机/外部状态）会在删除时生成与写入时不同的集合，留下悬挂条目。
 
-`func(path)` 与下文的 `#[kv_reduce]` 是两个外部扩展机制：func 是**单行派生**（写侧预计算，entry 仍随行生灭），reduce 是**跨行聚合**（可变 value 读-改-写）；集成的复杂形态（FTS/向量/图算法如何落在原语上）见[集成边界](integration/EXTENSION-TYPES.zh-CN.md)。实现细节（编码契约、entry_pairs 覆盖、探针归一化）见 internals 的[函数索引机制](internals/func-index-mechanism.zh-CN.md)。
+`func(path)` 与下文的 `#[ok_reduce]` 是两个外部扩展机制：func 是**单行派生**（写侧预计算，entry 仍随行生灭），reduce 是**跨行聚合**（可变 value 读-改-写）；集成的复杂形态（FTS/向量/图算法如何落在原语上）见[集成边界](integration/EXTENSION-TYPES.zh-CN.md)。实现细节（编码契约、entry_pairs 覆盖、探针归一化）见 internals 的[函数索引机制](internals/func-index-mechanism.zh-CN.md)。
 
 索引条目物理布局（ADR-0005）：
 
@@ -128,7 +128,7 @@ fn hour_bucket(row: &Post) -> Vec<u64> {
 [ ns 2B BE ][ slot 1B ][ 数据段（fields）BE ][ 主键前缀（默认取满） ]   value = includes 字段 TLV（无 includes 则为空）
 ```
 
-判别符 = ns + slot：ns 段划整张表，slot 字节在表段内区分访问方法（主表 slot=0，索引按声明序 1, 2, …）；声明即注册，无运行时索引簿记。slot 按声明序机械分配（SLOT = `#[kv_index]` 出现的序位），因此**索引声明是 append-only 的**：只能在尾部追加，不能在中途插入或重排——插入会让其后所有索引的 slot 漂移，已落库条目留在旧 slot 位，`scan` 换了前缀后读到空结果（静默错误，不是变慢）。删除声明只是留下无害的 slot 洞（与 ns 编号永不复用是同一纪律，ADR-0002）。另注意：没有索引回填机制，尾部追加的新索引只对之后写入的行生效，存量行不补条目；需要覆盖存量时走迁移双写。
+判别符 = ns + slot：ns 段划整张表，slot 字节在表段内区分访问方法（主表 slot=0，索引按声明序 1, 2, …）；声明即注册，无运行时索引簿记。slot 按声明序机械分配（SLOT = `#[ok_index]` 出现的序位），因此**索引声明是 append-only 的**：只能在尾部追加，不能在中途插入或重排——插入会让其后所有索引的 slot 漂移，已落库条目留在旧 slot 位，`scan` 换了前缀后读到空结果（静默错误，不是变慢）。删除声明只是留下无害的 slot 洞（与 ns 编号永不复用是同一纪律，ADR-0002）。另注意：没有索引回填机制，尾部追加的新索引只对之后写入的行生效，存量行不补条目；需要覆盖存量时走迁移双写。
 
 数据段（fields 段）的语义结构是**有序的维度序列**：首位是分组/等值维度，其后是排序维度，它受两重约束——
 - **解码约束**：数据段中至多一个变长字段，且必须紧贴主键前缀之前。主键定宽（`KEY_LEN`），从尾部反推切出；其后若还有定宽字段也依次从右往左切；剩下整块就是那个唯一的变长段——它的长度不需要存储，边界由右侧定宽段反推。两个变长段（如 `fields(token, name)`）之间没有边界字节，解码不可能，derive 在编译期拒绝。
@@ -168,7 +168,7 @@ edges.unlink(&user, &s1); // 双向同时删除
 ### 反向查询与截断身份
 
 ```rust
-// 反向：session → users。此方向 A 的身份是截断的（kv_head），
+// 反向：session → users。此方向 A 的身份是截断的（ok_head），
 // 返回原始字节，供调用方拿去主表做前缀扫描。
 let raws = edges.reverse_raw(&s1);
 
@@ -186,11 +186,11 @@ for pk in edges.reverse_prefix(&s1) {
 
 ### 行的运行时用法（`Table`）
 
-`RowEncode` 声明的访问方法在查询侧具名为索引类型。索引声明的派生物在展开点（本文件）生成：`kv_index(by_org ...)` 生成索引类型 `__OkmIndex_User_by_org`（机械拼接，无大小写转换），`use` 别名后即可作泛型参数。`Row::table` 构建装配点，调用处无需重复 key 类型：
+`ObjEncode` 声明的访问方法在查询侧具名为索引类型。索引声明的派生物在展开点（本文件）生成：`ok_index(by_org ...)` 生成索引类型 `__OkmIndex_User_by_org`（机械拼接，无大小写转换），`use` 别名后即可作泛型参数。`Row::table` 构建装配点，调用处无需重复 key 类型：
 
 ```rust
 use okm_core::{Row, TestStore};
-use __OkmIndex_User_by_org as ByOrg; // 索引类型：kv_index(by_org) 的派生物
+use __OkmIndex_User_by_org as ByOrg; // 索引类型：ok_index(by_org) 的派生物
 
 let mut t = <User as Row>::table(TestStore::default());
 
@@ -212,9 +212,9 @@ fn tokens(row: &Doc) -> Vec<String> {
     row.text.split_ascii_whitespace().map(String::from).collect()
 }
 
-#[derive(RowEncode, Clone, PartialEq, Debug)]
-#[kv_ref(DocKey)]
-#[kv_index(by_token { func(tokens) })]
+#[derive(ObjEncode, Clone, PartialEq, Debug)]
+#[ok_ref(DocKey)]
+#[ok_index(by_token { func(tokens) })]
 pub struct Doc {
     pub text: String,
 }
@@ -228,21 +228,21 @@ let hits = t.scan::<ByToken>(b"rust");
 
 ### Payload 版本与字段默认值
 
-payload 头部带版本字节（`#[kv_layout(version = N)]`，默认 1）。解码规则：payload 头部版本比读取方的 schema **新** → 拒绝；**旧** → 接受，且旧 payload 缺失的字段（该版本之后尾部追加的）取默认值：
+payload 头部带版本字节（`#[ok_layout(version = N)]`，默认 1）。解码规则：payload 头部版本比读取方的 schema **新** → 拒绝；**旧** → 接受，且旧 payload 缺失的字段（该版本之后尾部追加的）取默认值：
 
 ```rust
-#[derive(RowEncode, Clone, PartialEq, Debug)]
-#[kv_ref(UserKey)]
-#[kv_layout(version = 2)]            // 字段集变更时递增
+#[derive(ObjEncode, Clone, PartialEq, Debug)]
+#[ok_ref(UserKey)]
+#[ok_layout(version = 2)]            // 字段集变更时递增
 pub struct User {
     pub org_id: u32,                 // v1 就有
-    #[kv_default(100)]               // 显式默认：v2 之前的 payload 用它
+    #[ok_default(100)]               // 显式默认：v2 之前的 payload 用它
     pub reputation: u32,             // v2 尾部追加
-    pub bio_len: u16,                // 无 #[kv_default] → T::default()（0）
+    pub bio_len: u16,                // 无 #[ok_default] → T::default()（0）
 }
 ```
 
-- `#[kv_default(expr)]` 接受任意表达式（字面量、常量、函数调用）；不写则回退 `<T as Default>::default()`。
+- `#[ok_default(expr)]` 接受任意表达式（字面量、常量、函数调用）；不写则回退 `<T as Default>::default()`。
 - 默认值**只作用于解码旧版本 payload**——即字节里缺失的字段。新写入的 payload 总是带全字段（写入方标自己的版本），所以这是版本迁移语义，不是「字段缺省值」。
 - 尾部追加是加字段的唯一合法方式：读取方认识但字节里找不到的字段必然在段尾（header 的 `hot_len` 标出热段边界；cold TLV 帧缺席就是不在）。中途插入会改变既有字段的位置 = 布局变更 = version 递增 + 清库重建，绝不静默。
 - 惰性迁移：旧记录保持旧格式，升级发生在读取时的内存里。未读到的行永不消耗写带宽。
@@ -270,19 +270,19 @@ OKM 里它以二级索引的形态出现：索引条目的布局是 `[ns 2B][slo
 
 ## 多对多关系：边（edge）
 
-`#[kv_index]` 定义的访问方法是**表内**的——数据源是本行 payload，随 `put`/`delete` 自动同步。跨表关系（一对多、多对多）是两个独立实体之间的事实，payload 索引够不着，由**边**表达：
+`#[ok_index]` 定义的访问方法是**表内**的——数据源是本行 payload，随 `put`/`delete` 自动同步。跨表关系（一对多、多对多）是两个独立实体之间的事实，payload 索引够不着，由**边**表达：
 
 ```text
 #[derive(EdgeEncode)]
-#[kv_ns(4)]
+#[ok_ns(4)]
 struct OrgUserEdge {
-    #[kv_head(tenant_id, org_id)]   // A 端身份截断到 (tenant_id, org_id)
+    #[ok_head(tenant_id, org_id)]   // A 端身份截断到 (tenant_id, org_id)
     pub org: OrgKey,                // B 端无注解 = 完整 UserKey
     pub user: UserKey,
 }
 ```
 
-边物化为显式的正反双向 key（ADR-0001 方向位）：ns 顶位是方向位，FWD 前缀 `[ns:4][tenant][org]` 一次扫描取整组织的成员（列表侧），REV 前缀取某用户所属的全部组织；跳槽 = 增删一条边，身份不动。`#[kv_head(...)]` 声明该方向把端点身份截断到哪几个字段（不写 = 完整身份），让端点用更短的前缀、边 key 长度和分组粒度按方向各自裁剪——端点身份宽度的选取是"主键随方向变化"的表达。`kv_head` 选的是身份字段的子集（结构体声明过的字段），不是自由字节，可解性与索引尾段同理。
+边物化为显式的正反双向 key（ADR-0001 方向位）：ns 顶位是方向位，FWD 前缀 `[ns:4][tenant][org]` 一次扫描取整组织的成员（列表侧），REV 前缀取某用户所属的全部组织；跳槽 = 增删一条边，身份不动。`#[ok_head(...)]` 声明该方向把端点身份截断到哪几个字段（不写 = 完整身份），让端点用更短的前缀、边 key 长度和分组粒度按方向各自裁剪——端点身份宽度的选取是"主键随方向变化"的表达。`ok_head` 选的是身份字段的子集（结构体声明过的字段），不是自由字节，可解性与索引尾段同理。
 
 边与索引机制上同构（都是"指向身份的次级 key 布局"），但角色不能互换：
 
@@ -291,7 +291,7 @@ struct OrgUserEdge {
 
 **双向是义务不是选项。** REV 条目只多付一份 key 的存储（LSM 顺序 append，最廉价的写），省掉它换来的却是：反查需求出现时全扫 FWD 段过滤（违反访问方法强制），或事后补边加回填迁移（贵几个量级）。与索引对照更清楚：索引只有一个方向，因为反查走主键 `get` 就行；边的两个端点都是次级视角，谁也不持有主键，所以两个方向都要一条。双向还让解绑变 O(1)——FWD/REV 两条 key 的身份都在手上，精确 `delete`，无需先扫后删。真正的克制点不在"要不要 REV"（不二选），在**要不要这条 Edge**：没有反查需求且基数小的关系（如配置类一对一），直接放 payload 字段就够，连边都不建；需要时再加，边的双写自动同步，无回填。
 
-一句话：**索引 = 一行的派生视图，边 = 一等的关系数据**。`#[kv_index]` 定义时方便（声明即注册，无需手工编号 ns——ADR-0005 的动机正是消灭 per-index 手工编号与洞簿记）是次要红利，不是两者的分界；分界在数据源。
+一句话：**索引 = 一行的派生视图，边 = 一等的关系数据**。`#[ok_index]` 定义时方便（声明即注册，无需手工编号 ns——ADR-0005 的动机正是消灭 per-index 手工编号与洞簿记）是次要红利，不是两者的分界；分界在数据源。
 
 ## 跨行预聚合
 
@@ -300,7 +300,7 @@ struct OrgUserEdge {
 okm-core 对它的立场是两层拆分：核心不内置任何聚合语义（没有内建计数器类型，不解决分布式累加协议），但机械部分由辅助设施提供，声明方式与索引同款：
 
 ```text
-#[kv_reduce(AuthorStats { group(author_id) })]
+#[ok_reduce(AuthorStats { group(author_id) })]
 ```
 
 `group(...)` 从行字段取分组段（entry = `[ns][slot][group 段]`，slot 续接索引计数器）；`AuthorStats` 是用户类型，实现 `ReduceLogic`——`Acc`（累计器类型，实现 `ReduceCodec` 定宽 BE 编码）+ `fold(acc, &row)`（put 时）+ `unfold(acc, &row)`（delete 时）。写入路径自动读-改-写：读到当前 acc，fold/unfold，写回。读侧 `reduce_get` 取单组、`scan_reduces` 扫全部组。机制细节（账本不变量、覆盖写的 unfold 补偿、写路径时序）见 internals 的[reduce 机制](internals/reduce-mechanism.zh-CN.md)。
@@ -316,7 +316,7 @@ okm-core 对它的立场是两层拆分：核心不内置任何聚合语义（�
 
 reduce 之外，写路径还有命令式的一半——`Table::upsert_with(key, f)`：读旧行、闭包算新值、走正常 put。两种 RMW 同一底层形态（read → compute → write），分工按「逻辑谁知道」切：
 
-- **reduce（声明式）**：`#[kv_reduce(Logic { group(f) })]` 在编译期定死——哪些行进哪个组、fold/unfold 怎么算，都是类型声明的一部分，框架驱动。适合与行结构同步演化的聚合（计数、求和）。
+- **reduce（声明式）**：`#[ok_reduce(Logic { group(f) })]` 在编译期定死——哪些行进哪个组、fold/unfold 怎么算，都是类型声明的一部分，框架驱动。适合与行结构同步演化的聚合（计数、求和）。
 - **upsert_with（命令式）**：`f(Option<R>) -> R` 在运行时收到旧行，任意逻辑。适合调用方才知道的更新（余额加减、条件修补）。`None` = key 不存在（插入路径）。
 
 两者共用同一条写路径（put），所以索引维护、reduce 折叠、事件发射全部照常触发，无特例。也共用同一个正确性边界：**单写者**。OKM 是进程内库、写序串行（`&mut self`），get→f→put 不可能交错——无需 CAS，这也是 reduce 恰好一次的同一约束。多写者未来（乐观 CAS）是不同机制，不在此模型内。覆盖写的 unfold 补偿由 put 内部完成，upsert_with 不另平账（见 internals 的 reduce 机制）。
@@ -326,12 +326,12 @@ reduce 之外，写路径还有命令式的一半——`Table::upsert_with(key, 
 reduce 回答"累计后的状态长什么样"；另一类消费者需要的是写本身作为事件——缓存失效、搜索索引同步、下游通知。事件层（ADR-0008）把这类消费者拆成两种，这个拆分就是全部设计：
 
 - **Inline**（reduce）：运行在写路径内部，构造上恰好一次——fold 就是写的一部分。reduce 永远不消费 channel。
-- **Channel**（`#[kv_subscribe]`）：best-effort 投递，无保证。注解声明"该行类型的写路径事件进入 channel"；注解处没有 handler——处理逻辑完全归消费者：
+- **Channel**（`#[ok_subscribe]`）：best-effort 投递，无保证。注解声明"该行类型的写路径事件进入 channel"；注解处没有 handler——处理逻辑完全归消费者：
 
 ```text
-#[kv_subscribe]                      // bare：唯一形态；事件 enum 由 build.rs 推导
+#[ok_subscribe]                      // bare：唯一形态；事件 enum 由 build.rs 推导
                                      // （variant = 行类型名，enum 名可用
-                                     // #[kv_event_enum(Alias)] 覆盖）
+                                     // #[ok_event_enum(Alias)] 覆盖）
 ```
 
 事件携带 `op`（put/delete）、单调递增的**写批次 epoch** 和行本身。epoch 是发出这张表的写计数器：同一张表的事件带精确的同表批次边界，消费者组合子可以恰好折叠到边界为止（glitch-free），而不是靠去抖启发式。它只在进程内有意义——不持久化，重启归零——并且不提供跨表顺序：独立 put 之间不存在原子性的"两者都已更新"时刻，多表 fan-in 结构上就是最终一致。
@@ -351,9 +351,9 @@ reduce 回答"累计后的状态长什么样"；另一类消费者需要的是�
 
 ## 键的命名：朴素前缀 + 访问方法组合
 
-键的命名就是三段：`[ns][pkey...][order]`。排序字段放 key 尾（u64 大端时间戳 = 时间序的字节序，天然时间线）：同一 pkey 下的条目物理相邻且按序排列，前缀扫描直接就是时间线/区间读——恢复会话、提取最近 N 条，都是一次 `scan`。主排序字段进 key 是物理决策；其余排序维度不进 key，放行 payload、经 `#[kv_index]` 暴露。
+键的命名就是三段：`[ns][pkey...][order]`。排序字段放 key 尾（u64 大端时间戳 = 时间序的字节序，天然时间线）：同一 pkey 下的条目物理相邻且按序排列，前缀扫描直接就是时间线/区间读——恢复会话、提取最近 N 条，都是一次 `scan`。主排序字段进 key 是物理决策；其余排序维度不进 key，放行 payload、经 `#[ok_index]` 暴露。
 
-不建议花哨的前缀方案（路径式、语义分段式前缀）——前缀越长越难管理，每个前缀都是一条要维护的编码约定。宁可多声明访问方法：每个 `#[kv_index]` 是一条独立的、可组合、可扩展的读取路径，声明即注册，删一行即下线。
+不建议花哨的前缀方案（路径式、语义分段式前缀）——前缀越长越难管理，每个前缀都是一条要维护的编码约定。宁可多声明访问方法：每个 `#[ok_index]` 是一条独立的、可组合、可扩展的读取路径，声明即注册，删一行即下线。
 
 **查询结果是复数的时候，才需要考虑排序键。** 排序键（`[order]` 段）的价值是把"一组相关条目"聚成物理相邻且有序的一段，一次前缀扫描整组取回；单条结果（点查）用 `get`，key 里攒排序段没有意义。
 
@@ -374,7 +374,7 @@ reduce 回答"累计后的状态长什么样"；另一类消费者需要的是�
 - **成本收益不成比例**：开发成本高，性能收益也不大（量化分析见下节「设计约束对性能的影响」）。
 - **后缀无处解码**：key 尾的自定义段需要配套的解码方法，这是 OKM 明确不支持的——`KeyEncode` 派生只解声明过的 key 全长（`KEY_LEN` 编译期锁死），`PrefixKey` 只解截断的身份前缀（前缀之外按契约是垃圾字节）。自己手写偏移算术去解后缀，复杂且易错，恰恰丢掉了 OKM 的意义：编译期布局锁定的零成本编解码。
 
-这些维度一律划到访问方法/二级索引：`#[kv_index]` 声明即注册，可组合、可扩展、随业务增长追加，无需改动主键布局。
+这些维度一律划到访问方法/二级索引：`#[ok_index]` 声明即注册，可组合、可扩展、随业务增长追加，无需改动主键布局。
 
 ## 两种尾段：索引尾可解，主键尾不可解
 
@@ -385,13 +385,13 @@ reduce 回答"累计后的状态长什么样"；另一类消费者需要的是�
 主表条目  [ns][pkey...][自定义尾段?]       ← 自定义尾段无处解码
 ```
 
-**索引尾段可解**：索引条目 key 的尾段就是主键编码——`#[kv_ref]` 声明过的结构体，`KeyEncode` 派生知道它的精确布局，从条目 key 末尾切出来即解回主键（`PrefixKey`，ADR-0005 的契约："the tail is always decodable from the last bytes of the entry key"）。`fields(...)` 段同理：payload 字段按声明序编码，编解码全是 derive 生成的编译期锁定代码。
+**索引尾段可解**：索引条目 key 的尾段就是主键编码——`#[ok_ref]` 声明过的结构体，`KeyEncode` 派生知道它的精确布局，从条目 key 末尾切出来即解回主键（`PrefixKey`，ADR-0005 的契约："the tail is always decodable from the last bytes of the entry key"）。`fields(...)` 段同理：payload 字段按声明序编码，编解码全是 derive 生成的编译期锁定代码。
 
 **主键自定义尾段不可解**：主键 key 的布局由用户声明的 key 结构体决定，`decode` 只解声明的全长。key 尾塞一个结构体里不存在的"剩余标识"，任何生成代码都不知道它的偏移和宽度——`PrefixKey` 的契约还明确截断前缀之外是垃圾字节。
 
 根源一句话：**尾段可解的前提是布局进了声明系统**。索引尾段（主键编码、`fields` 段）在声明系统内，所以可解；主键尾的"剩余标识"在声明系统外，所以无处解码——也不要塞，需求归 `fields(...)`。
 
-术语约定：**"访问方法"（access method）是建模层的词**，指一条已声明的读取路径——建模指南用它；**"二级索引"（secondary index）是机制层的词**，指 `#[kv_index]` 生成的索引条目布局——ADR 与 README 用它。`#[kv_index]` 是两者的挂载点。本文档面向建模，正文一律用"访问方法"，提及机制布局时才落到"二级索引"。
+术语约定：**"访问方法"（access method）是建模层的词**，指一条已声明的读取路径——建模指南用它；**"二级索引"（secondary index）是机制层的词**，指 `#[ok_index]` 生成的索引条目布局——ADR 与 README 用它。`#[ok_index]` 是两者的挂载点。本文档面向建模，正文一律用"访问方法"，提及机制布局时才落到"二级索引"。
 
 ## 设计约束对性能的影响
 
@@ -399,7 +399,7 @@ reduce 回答"累计后的状态长什么样"；另一类消费者需要的是�
 
 **key 里直接取 vs 访问方法取。** 剩余标识烧进 key，扫描时随条目免费带回（key 尾字节直接在手）；走访问方法，这个维度要经一次间接操作取回——`scan` 回表每条多一次主表点读加一次 `decode_payload` 解析，`scan_covered` 免点读但仍多一次 entry value 解析。单条确实多付一次解析。
 
-**单次成本不高，摊销了。** 那一次间接是常规 LSM 点查/一次 TLV 解析，不在热路径的量级上；换来的是键布局不用为每个"还要按 X 查"的维度变形，业务增长时加 `#[kv_index]` 而不是重新设计 key。
+**单次成本不高，摊销了。** 那一次间接是常规 LSM 点查/一次 TLV 解析，不在热路径的量级上；换来的是键布局不用为每个"还要按 X 查"的维度变形，业务增长时加 `#[ok_index]` 而不是重新设计 key。
 
 **批量场景反而更优。** 回表看似逐条随机点查，实际两条流本身有序：索引条目按 `[pkey][order]` 聚簇有序，主表按 `[pkey]` 聚簇有序——回表天然退化为双指针归并（类似 merge join），顺序 I/O，远低于逐条随机读的开销。key 布局手工优化在批量场景并没有额外牌可打。
 
@@ -432,7 +432,7 @@ reduce 回答"累计后的状态长什么样"；另一类消费者需要的是�
 - 树形结构不跨 tenant：parent_id 引用的父组织与子组织同属一个 tenant，因此组织表内的 `{parent_id}` 就够表达层级，不需要单独的邻接表实体——逐层展开（BFS/DFS）在 `[ns:org][tenant_id]` 前缀内就是按 parent_id 逐层 `get`，一条访问方法即可覆盖。
 - 用户主键只有 `[user_id]`。org_id 是 row 字段——把 `(org_id, user_id)` 拼进主键，跳槽即换 key，同一物理人被拆成多条身份。
 
-org 维度的读取走索引：`#[kv_index(by_org { fields(org_id, ...) })]` 用一次前缀扫描回答按 org 的读取，身份保持单一。
+org 维度的读取走索引：`#[ok_index(by_org { fields(org_id, ...) })]` 用一次前缀扫描回答按 org 的读取，身份保持单一。
 
 "用户产生的数据属于公司还是属于个人"这类归属问题同理——它们是业务问题，答案变了（数据迁移、所有权变更）身份不该变。这就是行模型（ADR-0006）的 payload-not-identity 规则，落成建模纪律。
 

@@ -3,7 +3,7 @@
 
 use okm_core::{
     Enum, EnumTag, FieldType, KeyEncode, TestStore, Offset, Quant, Reverse, Row,
-    RowEncode, Table, VarInt, offset_decode, offset_encode,
+    ObjEncode, Table, VarInt, offset_decode, offset_encode,
 };
 
 #[derive(KeyEncode, Clone, PartialEq, Debug)]
@@ -26,14 +26,14 @@ impl EnumTag for State {
         &[(State::Active, 0), (State::Suspended, 1), (State::Closed, 9)];
 }
 
-#[derive(RowEncode, Clone, PartialEq, Debug)]
-#[kv_ref(WKey)]
-#[kv_ns(7)]
+#[derive(ObjEncode, Clone, PartialEq, Debug)]
+#[ok_ref(WKey)]
+#[ok_ns(7)]
 pub struct WRow {
     pub hits: VarInt<u64>,
     pub ratio: Quant<3>,
     pub state: Enum<State>,
-    #[kv_offset(base = 1_700_000_000)]
+    #[ok_offset(base = 1_700_000_000)]
     pub created: Offset,
 }
 

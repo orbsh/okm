@@ -1,4 +1,4 @@
-//! Schema IR for `RowEncode` — parse once, emit many.
+//! Schema IR for `ObjEncode` — parse once, emit many.
 //!
 //! `parse_schema` turns the derive input into a validated `RowSchema`
 //! (attributes, payload field encoders, index declarations). All attribute
@@ -14,7 +14,7 @@
 use proc_macro2::{Delimiter, TokenStream as TS2, TokenTree};
 use quote::{quote, ToTokens};
 use syn::{Data, DeriveInput, Fields};
-/// One parsed `#[kv_index(...)]` declaration. The attribute body uses
+/// One parsed `#[ok_index(...)]` declaration. The attribute body uses
 /// struct-ish syntax that `syn::Meta` does not cover, so it is parsed at
 /// the token-stream level: `Ident` + brace group, with `(fields|includes|
 /// key)` paren groups inside, comma-separated across multiple indexes.
@@ -38,7 +38,7 @@ pub(crate) struct IdxDecl {
 pub(crate) fn parse_index_attr(attr: &syn::Attribute) -> Vec<IdxDecl> {
     let mut out = Vec::new();
     let ts: Vec<TokenTree> = attr.to_token_stream().into_iter().collect();
-    // Shape: `#[kv_index(…)]` — take the top-level Bracket group, then the
+    // Shape: `#[ok_index(…)]` — take the top-level Bracket group, then the
     // inner Parenthesis group (the attribute arguments).
     let outer = ts
         .iter()
@@ -46,14 +46,14 @@ pub(crate) fn parse_index_attr(attr: &syn::Attribute) -> Vec<IdxDecl> {
             TokenTree::Group(g) if g.delimiter() == Delimiter::Bracket => Some(g.stream()),
             _ => None,
         })
-        .expect("kv_index: missing attribute brackets");
+        .expect("ok_index: missing attribute brackets");
     let body = outer
         .into_iter()
         .find_map(|t| match t {
             TokenTree::Group(g) if g.delimiter() == Delimiter::Parenthesis => Some(g.stream()),
             _ => None,
         })
-        .expect("kv_index: missing argument parentheses");
+        .expect("ok_index: missing argument parentheses");
     let ts: Vec<TokenTree> = body.into_iter().collect();
 
     let mut i = 0usize;
@@ -66,7 +66,7 @@ pub(crate) fn parse_index_attr(attr: &syn::Attribute) -> Vec<IdxDecl> {
         // Expect: index name (Ident).
         let ident = match &ts[i] {
             TokenTree::Ident(id) => id.clone(),
-            t => panic!("kv_index: expected index name Ident, got {t}"),
+            t => panic!("ok_index: expected index name Ident, got {t}"),
         };
         i += 1;
         // Optional `deprecated` marker BEFORE the brace group.
@@ -77,7 +77,7 @@ pub(crate) fn parse_index_attr(attr: &syn::Attribute) -> Vec<IdxDecl> {
         // Expect: { … } brace group.
         let body = match ts.get(i) {
             Some(TokenTree::Group(g)) if g.delimiter() == Delimiter::Brace => g.stream(),
-            t => panic!("kv_index[{ident}]: expected {{ fields(…) }} block, got {t:?}"),
+            t => panic!("ok_index[{ident}]: expected {{ fields(…) }} block, got {t:?}"),
         };
         i += 1;
         // Optional `deprecated` marker AFTER the brace group (trailing) —
@@ -101,7 +101,7 @@ pub(crate) fn parse_index_attr(attr: &syn::Attribute) -> Vec<IdxDecl> {
         while j < toks.len() {
             let kw = match &toks[j] {
                 TokenTree::Ident(id) => id.to_string(),
-                t => panic!("kv_index[{ident}]: expected fields/includes/key, got {t}"),
+                t => panic!("ok_index[{ident}]: expected fields/includes/key, got {t}"),
             };
             let list: Vec<String> = match toks.get(j + 1) {
                 Some(TokenTree::Group(g)) if g.delimiter() == Delimiter::Parenthesis => g
@@ -110,10 +110,10 @@ pub(crate) fn parse_index_attr(attr: &syn::Attribute) -> Vec<IdxDecl> {
                     .filter_map(|t| match t {
                         TokenTree::Ident(id) => Some(id.to_string()),
                         TokenTree::Punct(_) => None,
-                        t => panic!("kv_index[{ident}].{kw}: illegal token {t}"),
+                        t => panic!("ok_index[{ident}].{kw}: illegal token {t}"),
                     })
                     .collect(),
-                t => panic!("kv_index[{ident}].{kw}: expected paren group, got {t:?}"),
+                t => panic!("ok_index[{ident}].{kw}: expected paren group, got {t:?}"),
             };
             match kw.as_str() {
                 "fields" => fields = list,
@@ -123,13 +123,13 @@ pub(crate) fn parse_index_attr(attr: &syn::Attribute) -> Vec<IdxDecl> {
                     // func(path) — the function path spliced verbatim into
                     // the generated impl (called as `path(&row)`).
                     if list.len() != 1 {
-                        panic!("kv_index[{ident}].func: expected exactly one function path");
+                        panic!("ok_index[{ident}].func: expected exactly one function path");
                     }
                     func = list[0].clone();
                 }
                 other => {
                     panic!(
-                        "kv_index[{ident}]: unknown key {other} (supported: fields/includes/key/func)"
+                        "ok_index[{ident}]: unknown key {other} (supported: fields/includes/key/func)"
                     )
                 }
             }
@@ -146,15 +146,15 @@ pub(crate) fn parse_index_attr(attr: &syn::Attribute) -> Vec<IdxDecl> {
         if !func.is_empty() {
             if !fields.is_empty() || !includes.is_empty() {
                 panic!(
-                    "kv_index[{ident}]: func(...) and fields/includes are exclusive — the function result IS the sort segment"
+                    "ok_index[{ident}]: func(...) and fields/includes are exclusive — the function result IS the sort segment"
                 );
             }
         } else if fields.is_empty() && !deprecated {
-            panic!("kv_index[{ident}]: fields must not be empty");
+            panic!("ok_index[{ident}]: fields must not be empty");
         }
         // key(...) prefix validation happens at encode time (the generated
         // encode_prefix_named match panics on non-prefix names), same
-        // discipline as the edge macro's kv_head.
+        // discipline as the edge macro's ok_head.
         out.push(IdxDecl {
             ident,
             fields,
@@ -167,8 +167,8 @@ pub(crate) fn parse_index_attr(attr: &syn::Attribute) -> Vec<IdxDecl> {
     out
 }
 
-/// Parse `#[kv_reduce(name { group(a, b) })]` — same Ident + brace
-/// shape as one `kv_index` declaration, only the keyword set differs.
+/// Parse `#[ok_reduce(name { group(a, b) })]` — same Ident + brace
+/// shape as one `ok_index` declaration, only the keyword set differs.
 pub(crate) fn parse_reduce_attr(attr: &syn::Attribute) -> ReduceDecl {
     let ts: Vec<TokenTree> = attr.to_token_stream().into_iter().collect();
     let outer = ts
@@ -177,31 +177,31 @@ pub(crate) fn parse_reduce_attr(attr: &syn::Attribute) -> ReduceDecl {
             TokenTree::Group(g) if g.delimiter() == Delimiter::Bracket => Some(g.stream()),
             _ => None,
         })
-        .expect("kv_reduce: missing attribute brackets");
+        .expect("ok_reduce: missing attribute brackets");
     let body = outer
         .into_iter()
         .find_map(|t| match t {
             TokenTree::Group(g) if g.delimiter() == Delimiter::Parenthesis => Some(g.stream()),
             _ => None,
         })
-        .expect("kv_reduce: missing argument parentheses");
+        .expect("ok_reduce: missing argument parentheses");
     let toks: Vec<TokenTree> = body.into_iter().collect();
 
     let ident = match toks.first() {
         Some(TokenTree::Ident(id)) => id.clone(),
-        t => panic!("kv_reduce: expected reduce name Ident, got {t:?}"),
+        t => panic!("ok_reduce: expected reduce name Ident, got {t:?}"),
     };
     let group_body = match toks.get(1) {
         Some(TokenTree::Group(g)) if g.delimiter() == Delimiter::Brace => g.stream(),
-        t => panic!("kv_reduce[{ident}]: expected {{ group(…) }} block, got {t:?}"),
+        t => panic!("ok_reduce[{ident}]: expected {{ group(…) }} block, got {t:?}"),
     };
     let gtoks: Vec<TokenTree> = group_body.into_iter().collect();
     let kw = match gtoks.first() {
         Some(TokenTree::Ident(id)) => id.to_string(),
-        t => panic!("kv_reduce[{ident}]: expected group(...), got {t:?}"),
+        t => panic!("ok_reduce[{ident}]: expected group(...), got {t:?}"),
     };
     if kw != "group" {
-        panic!("kv_reduce[{ident}]: unknown key {kw} (supported: group)");
+        panic!("ok_reduce[{ident}]: unknown key {kw} (supported: group)");
     }
     let group: Vec<String> = match gtoks.get(1) {
         Some(TokenTree::Group(g)) if g.delimiter() == Delimiter::Parenthesis => g
@@ -210,13 +210,13 @@ pub(crate) fn parse_reduce_attr(attr: &syn::Attribute) -> ReduceDecl {
             .filter_map(|t| match t {
                 TokenTree::Ident(id) => Some(id.to_string()),
                 TokenTree::Punct(_) => None,
-                t => panic!("kv_reduce[{ident}].group: illegal token {t}"),
+                t => panic!("ok_reduce[{ident}].group: illegal token {t}"),
             })
             .collect(),
-        t => panic!("kv_reduce[{ident}]: expected paren group, got {t:?}"),
+        t => panic!("ok_reduce[{ident}]: expected paren group, got {t:?}"),
     };
     if group.is_empty() {
-        panic!("kv_reduce[{ident}]: group must not be empty — a global single-group reduce has no group key to scan by");
+        panic!("ok_reduce[{ident}]: group must not be empty — a global single-group reduce has no group key to scan by");
     }
     ReduceDecl {
         logic: ident.to_string(),
@@ -261,7 +261,7 @@ pub(crate) struct FieldSchema {
     /// Expression producing the field's default value — used when a
     /// payload written by an older layout version lacks this field
     /// (append-only evolution fills the tail with defaults). From
-    /// `#[kv_default(expr)]`, else `<T as Default>::default()`.
+    /// `#[ok_default(expr)]`, else `<T as Default>::default()`.
     pub default_expr: TS2,
 }
 
@@ -295,13 +295,13 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> Vec<FieldSchema> {
         let id = f.ident.clone().unwrap();
         let ty = &f.ty;
         let ty_str = quote!(#ty).to_string().replace(' ', "");
-        // #[kv_default(expr)] or #[kv_default = expr] — value used when an
+        // #[ok_default(expr)] or #[ok_default = expr] — value used when an
         // older-layout payload lacks this field (append-only schema
         // evolution). Optional; fallback is `<T as Default>::default()`.
-        let kv_default: Option<TS2> = f
+        let ok_default: Option<TS2> = f
             .attrs
             .iter()
-            .find(|a| a.path().is_ident("kv_default"))
+            .find(|a| a.path().is_ident("ok_default"))
             .map(|a| {
                 let mut e = None;
                 let _ = a.parse_nested_meta(|meta| {
@@ -312,24 +312,24 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> Vec<FieldSchema> {
                 });
                 e.map(|x| quote! { #x })
                     .or_else(|| a.parse_args::<syn::Expr>().ok().map(|x| quote! { #x }))
-                    .expect("kv_default: expected `#[kv_default(expr)]` or `#[kv_default = expr]`")
+                    .expect("ok_default: expected `#[ok_default(expr)]` or `#[ok_default = expr]`")
             });
-        // #[kv_offset(base = <i64 literal>)] — the Offset wrapper's static
+        // #[ok_offset(base = <i64 literal>)] — the Offset wrapper's static
         // base, required exactly when the type is Offset-shaped.
         let offset_base: Option<i64> = f
             .attrs
             .iter()
-            .find(|a| a.path().is_ident("kv_offset"))
+            .find(|a| a.path().is_ident("ok_offset"))
             .map(|a| {
                 let mut b = None;
                 let _ = a.parse_nested_meta(|meta| {
                     if meta.path.is_ident("base") {
                         let v: syn::LitInt = meta.value()?.parse()?;
-                        b = Some(v.base10_parse::<i64>().expect("kv_offset: base must be an i64 literal"));
+                        b = Some(v.base10_parse::<i64>().expect("ok_offset: base must be an i64 literal"));
                     }
                     Ok(())
                 });
-                b.expect("kv_offset: missing `base = <i64>`")
+                b.expect("ok_offset: missing `base = <i64>`")
             });
         let (enc, dec, width, len_expr, kind) = match ty_str.as_str() {
             "u64" => (
@@ -484,13 +484,13 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> Vec<FieldSchema> {
                 )
             }
             _ if ty_str == "Offset" || offset_base.is_some() => {
-                // Offset — #[kv_offset(base = N)] i64 fields stored as a u32
+                // Offset — #[ok_offset(base = N)] i64 fields stored as a u32
                 // displacement from the static base. Base and shape must
                 // agree: missing either half is a declaration error.
                 let base = offset_base
-                    .unwrap_or_else(|| panic!("{ctx}: {id} is Offset but lacks #[kv_offset(base = <i64>)]"));
+                    .unwrap_or_else(|| panic!("{ctx}: {id} is Offset but lacks #[ok_offset(base = <i64>)]"));
                 if ty_str != "Offset" {
-                    panic!("{ctx}: {id} has #[kv_offset] but is not an Offset field");
+                    panic!("{ctx}: {id} has #[ok_offset] but is not an Offset field");
                 }
                 let blit = proc_macro2::Literal::i64_unsuffixed(base);
                 (
@@ -550,14 +550,14 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> Vec<FieldSchema> {
             kind,
             // Fixed width → hot segment; width 0 (Str/VarInt) → cold.
             hot: width.to_string() != "0",
-            default_expr: kv_default
+            default_expr: ok_default
                 .unwrap_or_else(|| quote! { <#ty as ::core::default::Default>::default() }),
         });
     }
     fs
 }
 
-/// One `#[kv_reduce(name { group(a, b) })]` declaration. The fold /
+/// One `#[ok_reduce(name { group(a, b) })]` declaration. The fold /
 /// unfold callbacks and the accumulator type come from a user-implemented
 /// `Reduce` impl on a marker struct named `__OkmReduce_{row}_{name}`;
 /// this IR only carries the declaration (slot allocation + group fields).
@@ -568,25 +568,25 @@ pub(crate) struct ReduceDecl {
     pub group: Vec<String>,
 }
 
-/// One `#[kv_subscribe]` declaration: bare only. The event enum name comes
-/// from `#[kv_event_enum(Alias)]` (default `RowEvent`); the variant IS the
+/// One `#[ok_subscribe]` declaration: bare only. The event enum name comes
+/// from `#[ok_event_enum(Alias)]` (default `RowEvent`); the variant IS the
 /// row type name (build.rs derives it — no hand-written mapping, no
 /// per-row-type fallback channel; the bare-channel degraded shape is
 /// explicitly unsupported).
 pub(crate) struct SubDecl {
     /// Generated event enum name for this row's events (`RowEvent` unless
-    /// overridden by `#[kv_event_enum]`).
+    /// overridden by `#[ok_event_enum]`).
     pub enum_name: String,
 }
 
-/// Parse `#[kv_subscribe]` (bare). Any parenthesized argument is rejected:
-/// the enum name lives in `#[kv_event_enum]`, not here.
+/// Parse `#[ok_subscribe]` (bare). Any parenthesized argument is rejected:
+/// the enum name lives in `#[ok_event_enum]`, not here.
 pub(crate) fn parse_subscribe_attr(attr: &syn::Attribute) -> SubDecl {
     if attr.parse_args::<syn::ExprPath>().is_ok() {
         panic!(
-            "kv_subscribe: variant paths are not supported — declare `#[kv_subscribe]` \
+            "ok_subscribe: variant paths are not supported — declare `#[ok_subscribe]` \
              (bare); the event enum is `{}` and the variant is the row type name \
-             (rename the enum with `#[kv_event_enum(...)]`)",
+             (rename the enum with `#[ok_event_enum(...)]`)",
             DEFAULT_EVENT_ENUM
         );
     }
@@ -595,16 +595,16 @@ pub(crate) fn parse_subscribe_attr(attr: &syn::Attribute) -> SubDecl {
 
 pub(crate) const DEFAULT_EVENT_ENUM: &str = "RowEvent";
 
-/// Optional `#[kv_event_enum(Alias)]`: renames the generated event enum
+/// Optional `#[ok_event_enum(Alias)]`: renames the generated event enum
 /// this row's events dispatch through. Only read on rows that also carry
-/// `#[kv_subscribe]`.
+/// `#[ok_subscribe]`.
 pub(crate) fn parse_event_enum_attr(attr: &syn::Attribute) -> String {
     let ts = match attr.parse_args::<syn::ExprPath>() {
         Ok(p) => p.to_token_stream().to_string().replace(' ', ""),
-        Err(_) => panic!("kv_event_enum: expected an enum name, e.g. `#[kv_event_enum(MyEvents)]`"),
+        Err(_) => panic!("ok_event_enum: expected an enum name, e.g. `#[ok_event_enum(MyEvents)]`"),
     };
     if ts.split("::").count() != 1 {
-        panic!("kv_event_enum: expected a bare enum name, got `{ts}`");
+        panic!("ok_event_enum: expected a bare enum name, got `{ts}`");
     }
     ts
 }
@@ -613,17 +613,17 @@ pub(crate) fn parse_event_enum_attr(attr: &syn::Attribute) -> String {
 pub(crate) struct RowSchema {
     pub row_name: syn::Ident,
     pub key_ty: syn::Type,
-    /// `#[kv_ns(N)]` — the row's table namespace. None = not declared
+    /// `#[ok_ns(N)]` — the row's table namespace. None = not declared
     /// (layout-only row; table-less usage keeps an empty prefix).
     pub ns: Option<u16>,
-    /// `#[kv_partition]` / `#[kv_partition(N)]` — the row's table
+    /// `#[ok_partition]` / `#[ok_partition(N)]` — the row's table
     /// partition id. None = no partition segment in the key (default;
     /// zero cost for tables without partition needs). Some(id) prepends
     /// a 1-byte segment `[part id]` before the ns header — physical
     /// partition routing (Fjall) and workload isolation in the key
     /// space; engines without partition semantics ignore the physical
     /// split but the key encoding (and thus byte layout) is identical
-    /// everywhere. Declared on the row like kv_ns.
+    /// everywhere. Declared on the row like ok_ns.
     pub partition: Option<u8>,
     pub layout_version: u8,
     /// Payload fields, declaration order. The TLV tag = vec index, so
@@ -643,45 +643,45 @@ pub(crate) struct RowSchema {
 pub(crate) fn parse_schema(input: DeriveInput) -> RowSchema {
     let row_name = input.ident.clone();
 
-    // #[kv_ref(KeyType)] — the identity struct the row hangs off.
+    // #[ok_ref(KeyType)] — the identity struct the row hangs off.
     let key_ty: syn::Type = input
         .attrs
         .iter()
         .find_map(|a| {
-            if a.path().is_ident("kv_ref") {
+            if a.path().is_ident("ok_ref") {
                 Some(a.parse_args::<syn::Type>().unwrap())
             } else {
                 None
             }
         })
-        .expect("missing #[kv_ref(KeyType)]");
+        .expect("missing #[ok_ref(KeyType)]");
 
-    // #[kv_ns(N)] — the table's namespace segment, declared on the row
-    // (the row is the table's declaration point: #[kv_ref] pins the key
+    // #[ok_ns(N)] — the table's namespace segment, declared on the row
+    // (the row is the table's declaration point: #[ok_ref] pins the key
     // type, so the row determines Table<S, K, R> entirely). Absent = None.
     let ns: Option<u16> = input
         .attrs
         .iter()
         .find_map(|a| {
-            if a.path().is_ident("kv_ns") {
+            if a.path().is_ident("ok_ns") {
                 Some(
                     a.parse_args::<syn::LitInt>()
-                        .expect("kv_ns format: #[kv_ns(N)]")
+                        .expect("ok_ns format: #[ok_ns(N)]")
                         .base10_parse()
-                        .expect("kv_ns must be a u16 literal"),
+                        .expect("ok_ns must be a u16 literal"),
                 )
             } else {
                 None
             }
         });
 
-    // #[kv_partition] / #[kv_partition(N)] — the table's partition id.
+    // #[ok_partition] / #[ok_partition(N)] — the table's partition id.
     // None = no partition segment (default). Declared on the row.
     let partition: Option<u8> = input
         .attrs
         .iter()
         .find_map(|a| {
-            if a.path().is_ident("kv_partition") {
+            if a.path().is_ident("ok_partition") {
                 Some(
                     a.parse_args::<syn::LitInt>()
                         .ok()
@@ -692,21 +692,21 @@ pub(crate) fn parse_schema(input: DeriveInput) -> RowSchema {
                 None
             }
         });
-    // `None` attr vs bare `#[kv_partition]` distinction: bare form = Some(0)
+    // `None` attr vs bare `#[ok_partition]` distinction: bare form = Some(0)
     // is NOT wanted (partition 0 = no segment). So: attr present → Some(N)
     // (bare = Some(0) is disallowed to avoid ambiguity — enforce below).
 
     let named = match &input.data {
         Data::Struct(s) => match &s.fields {
             Fields::Named(f) => f,
-            _ => panic!("RowEncode only supports structs with named fields"),
+            _ => panic!("ObjEncode only supports structs with named fields"),
         },
-        _ => panic!("RowEncode only supports structs"),
+        _ => panic!("ObjEncode only supports structs"),
     };
-    let fs = field_encoders(named, "RowEncode");
+    let fs = field_encoders(named, "ObjEncode");
     let name_strs: Vec<_> = fs.iter().map(|f| f.ident.to_string()).collect();
 
-    // #[kv_layout(version = N)] — row header layout version. Absent = 1.
+    // #[ok_layout(version = N)] — row header layout version. Absent = 1.
     // Bumping it is the signal that the hot/cold field set changed; decode
     // accepts payloads written by any *older* version (append-only rule:
     // new fields go to the tail of their segment, missing ones get their
@@ -714,26 +714,26 @@ pub(crate) fn parse_schema(input: DeriveInput) -> RowSchema {
     let layout_version: u8 = input
         .attrs
         .iter()
-        .find(|a| a.path().is_ident("kv_layout"))
+        .find(|a| a.path().is_ident("ok_layout"))
         .map(|a| {
             let mut v = None;
             let _ = a.parse_nested_meta(|meta| {
                 if meta.path.is_ident("version") {
                     let lit: syn::LitInt = meta.value()?.parse()?;
-                    v = Some(lit.base10_parse::<u8>().expect("kv_layout: version must be a u8 literal"));
+                    v = Some(lit.base10_parse::<u8>().expect("ok_layout: version must be a u8 literal"));
                 }
                 Ok(())
             });
-            v.expect("kv_layout: expected `version = <u8 literal>`")
+            v.expect("ok_layout: expected `version = <u8 literal>`")
         })
         .unwrap_or(1);
 
-    // #[kv_index(...)]: slots start at 1 (0 is the primary table) and
+    // #[ok_index(...)]: slots start at 1 (0 is the primary table) and
     // increment in attribute-declaration order.
     let idx_decls: Vec<IdxDecl> = input
         .attrs
         .iter()
-        .filter(|a| a.path().is_ident("kv_index"))
+        .filter(|a| a.path().is_ident("ok_index"))
         .flat_map(parse_index_attr)
         .collect();
 
@@ -742,7 +742,7 @@ pub(crate) fn parse_schema(input: DeriveInput) -> RowSchema {
     for idx in &idx_decls {
         for n in idx.fields.iter().chain(&idx.includes) {
             if !name_strs.contains(n) {
-                panic!("kv_index[{}]: field `{n}` is not a row payload field", idx.ident);
+                panic!("ok_index[{}]: field `{n}` is not a row payload field", idx.ident);
             }
         }
         // Variable-length payload fields (String, VarInt — width 0) have no
@@ -761,13 +761,13 @@ pub(crate) fn parse_schema(input: DeriveInput) -> RowSchema {
             {
                 if vi != fslice.len() - 1 {
                     panic!(
-                        "kv_index[{}]: variable-length field `{}` in {kw} must be the last field — fields after it cannot be located (no static width)",
+                        "ok_index[{}]: variable-length field `{}` in {kw} must be the last field — fields after it cannot be located (no static width)",
                         idx.ident, list[vi]
                     );
                 }
                 if fslice[..vi].iter().any(|n| variable_width(&fs, &name_strs, n)) {
                     panic!(
-                        "kv_index[{}]: at most one variable-length field allowed in {kw}",
+                        "ok_index[{}]: at most one variable-length field allowed in {kw}",
                         idx.ident
                     );
                 }
@@ -775,33 +775,33 @@ pub(crate) fn parse_schema(input: DeriveInput) -> RowSchema {
         }
     }
 
-    // #[kv_reduce(name { group(a, b) })]: slots CONTINUE the index
+    // #[ok_reduce(name { group(a, b) })]: slots CONTINUE the index
     // counter (append-only, never reused) — slot = last index slot + 1 + n.
     let agg_decls: Vec<ReduceDecl> = input
         .attrs
         .iter()
-        .filter(|a| a.path().is_ident("kv_reduce"))
+        .filter(|a| a.path().is_ident("ok_reduce"))
         .map(parse_reduce_attr)
         .collect();
     for red in &agg_decls {
         for n in &red.group {
             if !name_strs.contains(n) {
-                panic!("kv_reduce[{}]: group field `{n}` is not a row payload field", red.ident);
+                panic!("ok_reduce[{}]: group field `{n}` is not a row payload field", red.ident);
             }
         }
     }
 
-    // #[kv_subscribe] (bare) + optional #[kv_event_enum(Alias)] — at most
+    // #[ok_subscribe] (bare) + optional #[ok_event_enum(Alias)] — at most
     // one subscribe per row type (two declarations = one channel send per
     // write, ambiguous shape; reject rather than multiply sends).
-    let mut sub_iter = input.attrs.iter().filter(|a| a.path().is_ident("kv_subscribe"));
+    let mut sub_iter = input.attrs.iter().filter(|a| a.path().is_ident("ok_subscribe"));
     let sub_attr = sub_iter.next();
     if sub_iter.next().is_some() {
-        panic!("kv_subscribe: duplicate declaration — at most one per row type");
+        panic!("ok_subscribe: duplicate declaration — at most one per row type");
     }
     let sub_decl = sub_attr.map(|a| {
         let mut decl = parse_subscribe_attr(a);
-        for attr in input.attrs.iter().filter(|a| a.path().is_ident("kv_event_enum")) {
+        for attr in input.attrs.iter().filter(|a| a.path().is_ident("ok_event_enum")) {
             decl.enum_name = parse_event_enum_attr(attr);
         }
         decl

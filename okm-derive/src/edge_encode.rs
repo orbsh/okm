@@ -1,6 +1,6 @@
 //! `EdgeEncode` — bidirectional edges.
 //!
-//! The edge struct has exactly two fields (start, end). `#[kv_head(field,
+//! The edge struct has exactly two fields (start, end). `#[ok_head(field,
 //! ...)]` on each endpoint field declares that endpoint's identity width
 //! (empty = full identity); generates the `KvEdge` impl plus query
 //! traits hanging off the endpoint types.
@@ -17,7 +17,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
         .attrs
         .iter()
         .find_map(|a| {
-            if a.path().is_ident("kv_ns") {
+            if a.path().is_ident("ok_ns") {
                 Some(
                     a.parse_args::<syn::LitInt>()
                         .unwrap()
@@ -28,7 +28,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
                 None
             }
         })
-        .expect("missing #[kv_ns(N)]");
+        .expect("missing #[ok_ns(N)]");
 
     let named = match &input.data {
         Data::Struct(s) => match &s.fields {
@@ -46,17 +46,17 @@ pub fn derive(input: TokenStream) -> TokenStream {
     let ia = fa.ident.clone().unwrap();
     let ib = fb.ident.clone().unwrap();
 
-    // #[kv_head(field, ...)] → &["a", "b"]; no attribute = full identity
+    // #[ok_head(field, ...)] → &["a", "b"]; no attribute = full identity
     // (empty slice).
     fn head_names(field: &syn::Field) -> Vec<String> {
         field
             .attrs
             .iter()
             .find_map(|a| {
-                if a.path().is_ident("kv_head") {
+                if a.path().is_ident("ok_head") {
                     let list: syn::punctuated::Punctuated<syn::Ident, syn::Token![,]> = a
                         .parse_args_with(syn::punctuated::Punctuated::parse_terminated)
-                        .expect("kv_head format: #[kv_head(field, ...)]");
+                        .expect("ok_head format: #[ok_head(field, ...)]");
                     Some(list.iter().map(|i| i.to_string()).collect())
                 } else {
                     None

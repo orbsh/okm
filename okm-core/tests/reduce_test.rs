@@ -1,10 +1,10 @@
-//! 跨行预聚合集成测试：`#[kv_reduce(Logic { group(...) })]` 声明 →
+//! 跨行预聚合集成测试：`#[ok_reduce(Logic { group(...) })]` 声明 →
 //! derive 生成 `Reduce` impl + Row hook；Table::put/delete 读改写。
 //! 覆盖：计数+求和复合 acc 的可逆往返、delete_by_pkey 同一路径、
 //! 同 group 多次 fold 累积、scan_reduces 全组扫描、entry 布局
 //! `[ns 2B][slot 1B][group 段]`（slot 续接索引计数器）。
 
-use okm_core::{Reduce, ReduceLogic, ReduceCodec, TestStore, Row, RowEncode};
+use okm_core::{Reduce, ReduceLogic, ReduceCodec, TestStore, Row, ObjEncode};
 
 /// PostKey：代理主键。
 #[derive(okm_core::KeyEncode, Clone, PartialEq, Debug, Default)]
@@ -13,10 +13,10 @@ pub struct PostKey {
 }
 
 /// Post 行：按 author 分组做 count + title_len 求和。
-#[derive(RowEncode, Clone, PartialEq, Debug)]
-#[kv_ref(PostKey)]
-#[kv_reduce(AuthorStats { group(author_id) })]
-#[kv_ns(21)]
+#[derive(ObjEncode, Clone, PartialEq, Debug)]
+#[ok_ref(PostKey)]
+#[ok_reduce(AuthorStats { group(author_id) })]
+#[ok_ns(21)]
 pub struct Post {
     pub author_id: u64,
     pub title_len: u32,

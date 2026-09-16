@@ -1,5 +1,5 @@
 //! Deprecated index declarations (ADR-0005 slot discipline): a
-//! `#[kv_index(name { ... }, deprecated)]` declaration still occupies its
+//! `#[ok_index(name { ... }, deprecated)]` declaration still occupies its
 //! slot (declaration order is a persistent contract — removing it would
 //! shift every later slot onto stale data), but generates NO write path
 //! (no marker struct, no `index_entries` contribution) and NO scan
@@ -7,7 +7,7 @@
 //! `Table::prune_deprecated_slots` deletes them by prefix.
 
 use okm_core::{
-    KeyEncode, TestStore, RowEncode, Table, VirtualStorage,
+    KeyEncode, TestStore, ObjEncode, Table, VirtualStorage,
 };
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
@@ -17,11 +17,11 @@ pub struct UserKey {
 
 /// Live declaration AFTER the deprecated one — its slot must NOT shift
 /// (that is the entire point of the placeholder).
-#[derive(RowEncode, Clone, PartialEq, Debug)]
-#[kv_ref(UserKey)]
-#[kv_ns(9)]
-#[kv_index(by_old { fields(legacy) }, deprecated)]
-#[kv_index(by_level { fields(level) })]
+#[derive(ObjEncode, Clone, PartialEq, Debug)]
+#[ok_ref(UserKey)]
+#[ok_ns(9)]
+#[ok_index(by_old { fields(legacy) }, deprecated)]
+#[ok_index(by_level { fields(level) })]
 pub struct User {
     pub legacy: u32,
     pub level: u32,
@@ -70,10 +70,10 @@ fn prune_deletes_only_deprecated_prefix() {
 
 #[test]
 fn no_deprecated_declarations_prunes_nothing() {
-    #[derive(RowEncode, Clone, PartialEq, Debug)]
-    #[kv_ref(UserKey)]
-    #[kv_ns(10)]
-    #[kv_index(by_only { fields(level) })]
+    #[derive(ObjEncode, Clone, PartialEq, Debug)]
+    #[ok_ref(UserKey)]
+    #[ok_ns(10)]
+    #[ok_index(by_only { fields(level) })]
     pub struct PlainUser {
         pub level: u32,
     }

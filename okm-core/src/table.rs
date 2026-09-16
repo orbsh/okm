@@ -22,7 +22,7 @@ pub struct Table<S, K: KeyEncode, R: Row<Key = K>> {
 
 impl<S: VirtualStorage, K: KeyEncode, R: Row<Key = K>> Table<S, K, R> {
     /// The ns prefix is NOT a constructor argument: it is declared once
-    /// on the key struct (`#[kv_ns]`) and read at compile time via
+    /// on the key struct (`#[ok_ns]`) and read at compile time via
     /// `R::NS_PREFIX` (ADR-0002: the ns dictionary is code; ADR-0010:
     /// engine choice is per-assembly-point, ns is not). The assembly
     /// site picks the engine; it never restates the ns.
@@ -42,7 +42,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Row<Key = K>> Table<S, K, R> {
     /// key byte sequence this table writes starts with it. ADR-0014 §5:
     /// the partition segment precedes the ns header (workload isolation
     /// lives outside ownership scope); absent when the row declares no
-    /// `#[kv_partition]`.
+    /// `#[ok_partition]`.
     fn header(&self) -> Vec<u8> {
         let mut buf = Vec::with_capacity(3);
         buf.extend_from_slice(R::PARTITION_PREFIX);
@@ -58,7 +58,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Row<Key = K>> Table<S, K, R> {
     /// a partition groups tables by compaction profile, a namespace groups
     /// them by owner; the 0xFF escape byte makes partitioned and
     /// unpartitioned keys structurally disjoint. Absent when the row
-    /// declares no `#[kv_partition]`.
+    /// declares no `#[ok_partition]`.
     pub fn primary_key(&self, key: &K) -> Vec<u8> {
         let mut buf = self.header();
         buf.push(crate::index::PRIMARY_SLOT);
@@ -289,7 +289,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Row<Key = K>> Table<S, K, R> {
     /// Full-ns scan of primary keys (slot-0 entries only — the same
     /// slot-0 discipline as `scan_rows_raw`; index entries are slots 1+).
     /// Clear stale entries under deprecated index slots (ADR-0005):
-    /// a `#[kv_index(..., deprecated)]` declaration keeps its slot
+    /// a `#[ok_index(..., deprecated)]` declaration keeps its slot
     /// reserved but writes nothing; entries written before the
     /// deprecation remain until this method deletes them
     /// (`[ns][deprecated slot]` prefix scan, delete each). Returns the

@@ -31,15 +31,15 @@ SQL 的核心价值不是执行性能，而是关系模型交付的可读性、�
 已实现：
 
 - `KeyEncode` — 定宽 key 编码（`u32` / `u64` / `[u8; N]`），大端序，编译期 `KEY_LEN` / `FIELD_WIDTHS`，`encode_prefix_named` 截断原语。
-- `EdgeEncode` — 双向边，各端点身份宽度可独立声明（`#[kv_head(...)]`），2 字节方向位头部，查询方法生成在端点类型上。
+- `EdgeEncode` — 双向边，各端点身份宽度可独立声明（`#[ok_head(...)]`），2 字节方向位头部，查询方法生成在端点类型上。
 - `EdgeTable<S, E>` — 组装点：引擎 + 边类型 = 一条关系的操作面（`link` / `unlink` / `forward` / `reverse` / `reverse_prefix`）。
 - 引擎后端走 Cargo feature：`fjall`（同步 `FjallStore`）、`slatedb`（异步 `SlatedbStore` + `AsyncCollection`），测试用内存 `MockStore`。
 
 路线图（设计已定，尚未实现——[ADR-0006](docs/adr/0006-row-node-model.md)、[ADR-0004](docs/adr/0004-value-side-and-wrappers.md)、[ADR-0005](docs/adr/0005-secondary-index-slots.md)）：
 
-- `RowEncode` — 单宏声明行（Node）：`#[kv_ref]` 身份 + 载荷字段 + `#[kv_index(...)]` 访问方法；`ValueEncode` 宏并入其中（版本化 payload、TLV 扩展区、字段 wrapper 作为编码规则保留）。
+- `ObjEncode` — 单宏声明行（Node）：`#[ok_ref]` 身份 + 载荷字段 + `#[ok_index(...)]` 访问方法；`ValueEncode` 宏并入其中（版本化 payload、TLV 扩展区、字段 wrapper 作为编码规则保留）。
 - 字段级编码 wrapper（`Enum<T>`、`Offset<T>`、`Delta<T>`、`VarInt<T>`、`Reverse<T>` …）。
-- 二级索引（访问方法）——**行 struct** 上的 `#[kv_index(name { fields(…), includes(…), key(…) })]`：对 **payload 字段**（按声明序）建组合索引；无 per-index slot/ns——2 字节表命名空间已区分所有 entry；最左前缀扫描；`key(…)` 把 key 尾部携带的主键截断到命名子集（`encode_prefix_named`），默认取满主键；`includes` 覆盖索引定位为高扇出查询的物化视图。
+- 二级索引（访问方法）——**行 struct** 上的 `#[ok_index(name { fields(…), includes(…), key(…) })]`：对 **payload 字段**（按声明序）建组合索引；无 per-index slot/ns——2 字节表命名空间已区分所有 entry；最左前缀扫描；`key(…)` 把 key 尾部携带的主键截断到命名子集（`encode_prefix_named`），默认取满主键；`includes` 覆盖索引定位为高扇出查询的物化视图。
 - `Table<S, K, R>` 行装配点与边 `EdgeTable` 并列；变长载荷/索引字段（`String`），key 保持定宽。
 - 多引擎混用——同一进程内不同 ns 段可绑不同引擎（交易走 fjall、日志走 slatedb）；原子性止于单引擎内，ns 编号全库唯一。
 - 快照导出——行 → Parquet，与引擎无关（备份 / 数据交换 / lakehouse 分析）；ns 还原为描述性文本，列名即字段名。
@@ -54,15 +54,15 @@ SQL 的核心价值不是执行性能，而是关系模型交付的可读性、�
 
 ### 1. 定义端点 key 与边（声明）
 
-完整的声明词汇（`KeyEncode` / `EdgeEncode` / `RowEncode`、`#[kv_index]` 的 `fields`/`includes`/`key` 注解）见[建模指南](docs/MODELING.zh-CN.md)「声明基础」。摘要：
+完整的声明词汇（`KeyEncode` / `EdgeEncode` / `ObjEncode`、`#[ok_index]` 的 `fields`/`includes`/`key` 注解）见[建模指南](docs/MODELING.zh-CN.md)「声明基础」。摘要：
 
 ```rust
-#[derive(KeyEncode)] #[kv_ns(1)]
+#[derive(KeyEncode)] #[ok_ns(1)]
 pub struct UserKey { pub org_id: u32, pub user_id: u64 }
 
-#[derive(EdgeEncode)] #[kv_ns(4)]
+#[derive(EdgeEncode)] #[ok_ns(4)]
 pub struct UserToSessionEdge {
-    #[kv_head(org_id, user_id)]
+    #[ok_head(org_id, user_id)]
     pub user_id: UserKey,
     pub session_id: SessionKey,
 }
@@ -84,7 +84,7 @@ t.put(&user, &user_row);
 let rows = t.scan::<ByOrg>(&7u32.to_be_bytes());
 ```
 
-`scan::<ByOrg>` 的 `ByOrg` 来自索引名：`kv_index(by_org ...)` 生成类型 `__OkmIndex_User_by_org`（机械拼接，无大小写转换），`use __OkmIndex_User_by_org as ByOrg` 后即可用短名。声明怎么写见[建模指南](docs/MODELING.zh-CN.md)「声明基础」。
+`scan::<ByOrg>` 的 `ByOrg` 来自索引名：`ok_index(by_org ...)` 生成类型 `__OkmIndex_User_by_org`（机械拼接，无大小写转换），`use __OkmIndex_User_by_org as ByOrg` 后即可用短名。声明怎么写见[建模指南](docs/MODELING.zh-CN.md)「声明基础」。
 
 ### 3. 引擎后端
 
@@ -100,7 +100,7 @@ okm = { version = "0.1", features = ["fjall"] }    # 或 "slatedb"
 ## 项目结构
 
 ```
-okm-derive/        过程宏 crate：KeyEncode、RowEncode、EdgeEncode（零 I/O）
+okm-derive/        过程宏 crate：KeyEncode、ObjEncode、EdgeEncode（零 I/O）
 okm/src/key.rs     KeyEncode trait + PrefixKey
 okm/src/index.rs   Row + KvIndex trait + 索引扫描辅助
 okm/src/edge.rs    KvEdge trait + 方向位头部

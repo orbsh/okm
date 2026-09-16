@@ -1,4 +1,4 @@
-//! Subscribe channel integration (ADR-0008): `#[kv_subscribe]` (bare)
+//! Subscribe channel integration (ADR-0008): `#[ok_subscribe]` (bare)
 //! annotated rows emit events on the write path, build.rs collects them
 //! into the `RowEvent` enum (variant = row type name) +
 //! `crate::okm_subscribe::CHANNEL_ROWEVENT`, and a registered sink

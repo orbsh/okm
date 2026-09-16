@@ -3,7 +3,7 @@
 //! Three macros, each a pure single-item function with zero I/O:
 //!
 //! - `KeyEncode`: fixed-width key encoding (`key_encode.rs`).
-//! - `RowEncode`: value/payload encoding + index declarations
+//! - `ObjEncode`: value/payload encoding + index declarations
 //!   (`row_encode.rs`).
 //! - `EdgeEncode`: bidirectional edges (`edge_encode.rs`).
 //!
@@ -39,28 +39,28 @@ fn dump(macro_name: &str, input: TokenStream, tokens: &TS2) {
     }
 }
 
-#[proc_macro_derive(KeyEncode, attributes(kv_ns))]
+#[proc_macro_derive(KeyEncode, attributes(ok_ns))]
 pub fn derive_key_encode(input: TokenStream) -> TokenStream {
     let out = key_encode::derive(input.clone());
     dump("KeyEncode", input, &out.clone().into());
     out
 }
 
-#[proc_macro_derive(RowEncode, attributes(kv_ref, kv_ns, kv_partition, kv_index, kv_reduce, kv_offset, kv_layout, kv_default, kv_subscribe, kv_event_enum))]
+#[proc_macro_derive(ObjEncode, attributes(ok_ref, ok_ns, ok_partition, ok_index, ok_reduce, ok_offset, ok_layout, ok_default, ok_subscribe, ok_event_enum))]
 pub fn derive_row_encode(input: TokenStream) -> TokenStream {
     let out = row_encode::derive(input.clone());
-    dump("RowEncode", input, &out.clone().into());
+    dump("ObjEncode", input, &out.clone().into());
     out
 }
 
-#[proc_macro_derive(EdgeEncode, attributes(kv_ns, kv_head))]
+#[proc_macro_derive(EdgeEncode, attributes(ok_ns, ok_head))]
 pub fn derive_edge(input: TokenStream) -> TokenStream {
     let out = edge_encode::derive(input.clone());
     dump("EdgeEncode", input, &out.clone().into());
     out
 }
 
-#[proc_macro_derive(NestStorage, attributes(kv_ns))]
+#[proc_macro_derive(NestStorage, attributes(ok_ns))]
 pub fn derive_nest(input: TokenStream) -> TokenStream {
     let out = storage_encode::derive(input.clone());
     dump("NestStorage", input, &out.clone().into());

@@ -18,26 +18,26 @@ field list is redundant and a worse developer experience.
 
 ## Decision
 
-**One macro per row.** `RowEncode` declares identity, payload, and access
+**One macro per row.** `ObjEncode` declares identity, payload, and access
 methods in a single item; the three concerns share one field list:
 
 ```rust
 #[derive(KeyEncode)]
-#[kv_ns(1)]
+#[ok_ns(1)]
 pub struct UserKey {              // pure identity, fixed-width, unchanged
     pub org_id: u32,
     pub user_id: u64,
 }
 
-#[derive(RowEncode)]
+#[derive(ObjEncode)]
 #[kv_row(key = UserKey)]
 pub struct UserRow {
-    #[kv_ref]
+    #[ok_ref]
     pub id: UserKey,              // identity: encoded via KeyEncode
     pub name: String,             // payload: value-layout mechanisms (ADR-0004)
     #[kv_version(2)]              //   version byte, TLV ext section, wrappers —
     pub age: u8,                  //   all apply to the payload half
-    #[kv_index(by_name { fields(name), includes(age) })]   // access methods
+    #[ok_index(by_name { fields(name), includes(age) })]   // access methods
 }
 ```
 
@@ -60,8 +60,8 @@ The type system resolves into two record kinds sharing one physical base
 
 | | identity | payload | access methods | scans |
 |:--|:--|:--|:--|:--|
-| **Node** (Row) | `#[kv_ref]` key | yes (versioned/TLV) | secondary indexes | by key / by index |
-| **Edge** | both endpoints | none (empty value) | `#[kv_head]` truncation | forward / reverse |
+| **Node** (Row) | `#[ok_ref]` key | yes (versioned/TLV) | secondary indexes | by key / by index |
+| **Edge** | both endpoints | none (empty value) | `#[ok_head]` truncation | forward / reverse |
 
 This replaces the earlier conflation where `Collection` served both roles.
 
@@ -162,7 +162,7 @@ alone discriminates entries; each index derives its own ns from the table's):
 
 ## Consequences
 
-- `RowEncode` expand-time work: identity codec via the referenced `KeyEncode`
+- `ObjEncode` expand-time work: identity codec via the referenced `KeyEncode`
   type; payload codec per ADR-0004 rules; per-index `AccessMethod` impls with
   a per-index ns derived from the table's (slot mechanism removed at
   implementation — see ADR-0005 update note).

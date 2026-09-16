@@ -9,7 +9,7 @@
 //! write → Rust read), cold TLV frames, version rejection, unknown-field
 //! rejection.
 
-use okm_core::{KeyEncode, TestStore, Row, RowEncode, Table, VirtualStorage};
+use okm_core::{KeyEncode, TestStore, Row, ObjEncode, Table, VirtualStorage};
 use okm_core::schema::TableSchema;
 use okm_dynamic::{decode_key, decode_payload, encode_key, encode_payload, CodecError, Value, ValueMap};
 use std::collections::BTreeMap;
@@ -20,11 +20,11 @@ pub struct UserKey {
     pub user_id: u64,
 }
 
-#[derive(RowEncode, Clone, PartialEq, Debug)]
-#[kv_ref(UserKey)]
-#[kv_ns(41)]
-#[kv_layout(version = 2)]
-#[kv_index(by_level { fields(level) })]
+#[derive(ObjEncode, Clone, PartialEq, Debug)]
+#[ok_ref(UserKey)]
+#[ok_ns(41)]
+#[ok_layout(version = 2)]
+#[ok_index(by_level { fields(level) })]
 pub struct User {
     pub level: u32,          // hot
     pub score: u16,          // hot

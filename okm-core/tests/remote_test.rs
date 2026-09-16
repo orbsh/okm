@@ -10,7 +10,7 @@
 //! deep copy, a kept clone would observe a different engine.
 
 use okm_core::{
-    KeyEncode, KvBatch, NestStorage, RemoteStore, RowEncode, Table, TestStore, VirtualHandle,
+    KeyEncode, KvBatch, NestStorage, RemoteStore, ObjEncode, Table, TestStore, VirtualHandle,
     VirtualStorage,
 };
 
@@ -19,10 +19,10 @@ pub struct UserKey {
     pub id: u64,
 }
 
-#[derive(RowEncode, Clone, PartialEq, Debug)]
-#[kv_ref(UserKey)]
-#[kv_ns(7)]
-#[kv_index(by_tag { fields(level) })]
+#[derive(ObjEncode, Clone, PartialEq, Debug)]
+#[ok_ref(UserKey)]
+#[ok_ns(7)]
+#[ok_index(by_tag { fields(level) })]
 pub struct User {
     pub level: u32,
 }

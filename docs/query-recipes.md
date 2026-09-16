@@ -33,7 +33,7 @@ Graph walk       walk (one hop = one prefix scan)
 Put the group field first in `fields(...)`; the sort IS the grouping:
 
 ```rust
-#[kv_index(by_org { fields(org_id, created_at) })]
+#[ok_index(by_org { fields(org_id, created_at) })]
 struct User { org_id: u32, created_at: u64, ... }
 ```
 
@@ -73,7 +73,7 @@ demand — one physical layout declaration covers all of them.
 
 | Landing | When | Semantics | Fits |
 |---|---|---|---|
-| `#[kv_reduce]` | compile time | reversible aggregate, maintained on the write path, resident | fixed groups, read-heavy |
+| `#[ok_reduce]` | compile time | reversible aggregate, maintained on the write path, resident | fixed groups, read-heavy |
 | `group_by` (index sort) | read time | single-pass fold, varies per query | ad-hoc grouping, multi-dimension |
 | reduce GROUP vs index-first-field | — | — | the same field encoders, different landing time |
 
@@ -96,7 +96,7 @@ let pairs = okm_query::merge_join(
 ```
 
 No hash join, deliberately: a join key that is not either side's sort
-dimension is a modeling gap — declare `kv_index(fields(join_key))` and
+dimension is a modeling gap — declare `ok_index(fields(join_key))` and
 the stream is ordered again. Sorting is a property of the store, not a
 burden on the query operator (merge join stays streaming and
 memory-bounded; hash join must materialize the build side).

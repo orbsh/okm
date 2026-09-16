@@ -63,7 +63,7 @@ No semantic parsing anywhere:
   uses under that signature is its own choice. The wire carries request
   and response frames; everything above is outside this ADR.
 - **No version header on the wire.** Layout versioning is the sender's
-  in-process concern (compile-time hex tests + `#[kv_layout(version)]`
+  in-process concern (compile-time hex tests + `#[ok_layout(version)]`
   decode rejection). Aura does not run the sender's OKM and holds no layout
   knowledge; the only contract between the ends is the op byte + byte
   streams. (This supersedes an earlier draft that put a layout version in
@@ -134,7 +134,7 @@ values.
 ### 4. Receiver declaration: `NestStorage` derive
 
 The receiver is declared, not hand-wired. An empty struct annotated with
-`NestStorage` (with `#[kv_ns]`) declares only its namespace (which app/prefix it
+`NestStorage` (with `#[ok_ns]`) declares only its namespace (which app/prefix it
 serves). The derive generates **no data methods** (no put/get/scan — there
 is no row type to encode) and exactly one execution method
 (`apply`): take frame → prepend declared prefix → plain engine
@@ -145,7 +145,7 @@ This pins three things at once: prefix source (declared, not scattered
 config), executor shape (macro-generated, not hand-assembled), and
 impossibility of prefix escape (the handle is bound to the prefix at
 construction; crossing namespaces is not expressible — physical separation,
-not naming filters). Same discipline as `#[kv_subscribe]`: the annotation
+not naming filters). Same discipline as `#[ok_subscribe]`: the annotation
 declares a fact; the macro emits the implementation.
 
 ### 5. Multi-tenancy: receiver-side prefix, one ns per instance
@@ -158,7 +158,7 @@ prefix values, and no multi-level ns declaration — if an application
 partitions by tenant internally, `tenant_id` is a plain key field in its
 structs (business sharding, same modeling for every tenant); only when
 whole applications are isolated at the platform level does the receiver
-host one `NestStorage` (with `#[kv_ns]`) executor per application, each with its own
+host one `NestStorage` (with `#[ok_ns]`) executor per application, each with its own
 declared prefix and its own sender-side ns dictionary behind it.
 
 **Bare shard form.** The prefix is optional (`NestStorage::bare`): a bare
@@ -192,7 +192,7 @@ The receiver knows only its prefix; the ns segment is the sender's —
 the receiver prepends its prefix and never parses what follows; ns bytes
 pass through opaque. Knowledge asymmetry is the isolation mechanism: the
 receiver cannot route past what it cannot see, and the sender cannot
-escape the prefix it does not hold (the `NestStorage` (with `#[kv_ns]`) handle is bound
+escape the prefix it does not hold (the `NestStorage` (with `#[ok_ns]`) handle is bound
 to the prefix at construction). ADR-0002's "if tenants exist" clause is
 thereby **promoted from sketch to adopted mechanism**; its rejection of
 per-tenant outer isolation was premised on "no user-programmable query
@@ -210,7 +210,7 @@ physical topology is fixed at assembly time. No declared endpoint, no
 dedicated listener, no second protocol.
 
 Symmetrically, the receiver does not know arrival paths either. The
-`NestStorage` (with `#[kv_ns]`) executor's surface is exactly one method — frame in, results
+`NestStorage` (with `#[ok_ns]`) executor's surface is exactly one method — frame in, results
 out; who called it and through which channel is the caller's business.
 Read correlation (which response answers which request) lives on the
 sender side of the executor, same as write. A TCP + hand-parsed client is
@@ -222,7 +222,7 @@ never leaks into it.
 
 - Krystallizer's storage config becomes four-way: mock / fjall / slatedb /
   virtual(→Aura). OKM semantic layers (Table/index/reduce/events) unchanged.
-- Aura gains a Storage Actor hosting `NestStorage` (with `#[kv_ns]`) executors: one declared
+- Aura gains a Storage Actor hosting `NestStorage` (with `#[ok_ns]`) executors: one declared
   instance per application (one declared prefix each), frames arrive from
   VirtualStorage backends or realm events; same-machine callers connect
   in-process.

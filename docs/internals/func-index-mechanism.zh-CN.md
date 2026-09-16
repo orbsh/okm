@@ -15,7 +15,7 @@
 ## 声明展开
 
 ```rust
-#[kv_index(by_token { func(tokens) })]
+#[ok_index(by_token { func(tokens) })]
 ```
 
 derive（`okm-derive/src/row_encode.rs`）对每个 func 索引生成同款 marker struct `__OkmIndex_{Row}_{name}`，实现 `KvIndex` 时与普通字段索引的差异只有一处：
@@ -94,7 +94,7 @@ t.scan::<ByTag>(b"rust")
 1. **能力零增益**——trait 能做的事 fn path 全能做。需要"同一概念 func 的多个实现"，写两个 fn 就是两个实现；索引声明是编译期的，`func(lower_v1)` / `func(lower_v2)` 直接可选。
 2. **trait 破坏"一条声明驱动两侧"**——探针归一化现在就是"调用同一个 path"；换 trait 后探针侧要指定同一个 impl，调用方语法更重，机制没变。
 3. **最小接缝**——derive 只需要"一个可调用路径"，fn 是最简满足；包一层 trait 是给业务逻辑强加框架仪式（`fn tokens(&Doc) -> Vec<String>` 写完即止，这是现设计的优点）。
-4. **声明即注册**——trait 化的真实动机往往是让框架感知用户逻辑（注册、发现），而 `#[kv_index]` 本身就是注册点，函数只是被指到的实现，不需要第二层簿记。
+4. **声明即注册**——trait 化的真实动机往往是让框架感知用户逻辑（注册、发现），而 `#[ok_index]` 本身就是注册点，函数只是被指到的实现，不需要第二层簿记。
 
 ## 与 fields 的分岔总结
 

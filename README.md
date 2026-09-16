@@ -29,10 +29,10 @@ The verdict: SQL's core value is human-facing structured discipline. By holding 
 Implemented:
 
 - `KeyEncode` — fixed-width key encoding (`u32` / `u64` / `[u8; N]`), big-endian, compile-time `KEY_LEN` / `FIELD_WIDTHS`, `encode_prefix_named` truncation primitive.
-- `EdgeEncode` — bidirectional edges with per-endpoint identity width (`#[kv_head(...)]`), 2-byte direction-bit header, query methods generated onto endpoint types.
+- `EdgeEncode` — bidirectional edges with per-endpoint identity width (`#[ok_head(...)]`), 2-byte direction-bit header, query methods generated onto endpoint types.
 - `EdgeTable<S, E>` (formerly `Collection`) — the edge assembly point: engine + edge type = the operation surface of one relationship (`link` / `unlink` / `forward` / `reverse` / `reverse_prefix`).
-- `RowEncode` — one macro declares a row (Node): `#[kv_ref]` identity + TLV payload fields + `#[kv_index(...)]` access methods; the `ValueEncode` derive is absorbed into it.
-- Secondary indexes (access methods) — `#[kv_index(name { fields(…), includes(…), key(…) })]` on **row structs**: composite indexes over payload fields (declaration order), no per-index slot/ns — the 2-byte table namespace already discriminates every entry; leftmost-prefix scans with fetch-back; `key(…)` truncates the carried primary-key tail to the named subset (`encode_prefix_named`), full key by default; `includes` covering positioned as a materialized view for high-fanout queries.
+- `ObjEncode` — one macro declares a row (Node): `#[ok_ref]` identity + TLV payload fields + `#[ok_index(...)]` access methods; the `ValueEncode` derive is absorbed into it.
+- Secondary indexes (access methods) — `#[ok_index(name { fields(…), includes(…), key(…) })]` on **row structs**: composite indexes over payload fields (declaration order), no per-index slot/ns — the 2-byte table namespace already discriminates every entry; leftmost-prefix scans with fetch-back; `key(…)` truncates the carried primary-key tail to the named subset (`encode_prefix_named`), full key by default; `includes` covering positioned as a materialized view for high-fanout queries.
 - `Table<S, K, R>` node assembly point — `put`/`delete` write the primary key and every declared index entry in one store instance (the declaration IS the registry); `scan` returns `(Key, Option<Row>)` via leftmost-prefix on any access method.
 - Engine backends behind Cargo features: `fjall` (sync `FjallStore`), `slatedb` (async `SlatedbStore` + `AsyncEdgeTable`), plus an in-memory `MockStore` for tests.
 - Multi-engine mixing — different engines per ns segment in one process (fjall for transactions, slatedb for logs); atomicity stops at one engine, ns numbering globally unique.
@@ -52,17 +52,17 @@ Roadmap (design locked, not yet implemented — [ADR-0006](docs/adr/0006-row-nod
 
 ### 1. Define endpoint keys and edges (declarations)
 
-The full declaration vocabulary (`KeyEncode` / `EdgeEncode` / `RowEncode`,
-the `fields`/`includes`/`key` annotations of `#[kv_index]`) is in the
+The full declaration vocabulary (`KeyEncode` / `EdgeEncode` / `ObjEncode`,
+the `fields`/`includes`/`key` annotations of `#[ok_index]`) is in the
 [Modeling Guide](docs/MODELING.md), "Declaration basics". Summary:
 
 ```rust
-#[derive(KeyEncode)] #[kv_ns(1)]
+#[derive(KeyEncode)] #[ok_ns(1)]
 pub struct UserKey { pub org_id: u32, pub user_id: u64 }
 
-#[derive(EdgeEncode)] #[kv_ns(4)]
+#[derive(EdgeEncode)] #[ok_ns(4)]
 pub struct UserToSessionEdge {
-    #[kv_head(org_id, user_id)]
+    #[ok_head(org_id, user_id)]
     pub user_id: UserKey,
     pub session_id: SessionKey,
 }
@@ -86,7 +86,7 @@ t.put(&user, &user_row);
 let rows = t.scan::<ByOrg>(&7u32.to_be_bytes());
 ```
 
-`ByOrg` comes from the index name: `kv_index(by_org ...)` generates the
+`ByOrg` comes from the index name: `ok_index(by_org ...)` generates the
 type `__OkmIndex_User_by_org` (mechanical concatenation, no case
 conversion); `use __OkmIndex_User_by_org as ByOrg` gives the short form.
 For declarations see the [Modeling Guide](docs/MODELING.md), "Declaration
@@ -106,7 +106,7 @@ okm-core = { version = "0.1", features = ["fjall"] }    # or "slatedb"
 ## Project layout
 
 ```
-okm-derive/        proc-macro crate: KeyEncode, RowEncode, EdgeEncode (zero I/O)
+okm-derive/        proc-macro crate: KeyEncode, ObjEncode, EdgeEncode (zero I/O)
 okm-core/src/key.rs     KeyEncode trait + PrefixKey
 okm-core/src/index.rs   Row + KvIndex traits, index scan helpers
 okm-core/src/edge.rs    KvEdge trait + direction-bit header

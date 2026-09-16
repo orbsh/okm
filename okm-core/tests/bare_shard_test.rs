@@ -8,7 +8,7 @@
 //! bare instances' ns numbers off the hosted segments' numbers (an
 //! allocation duty, not a runtime check).
 
-use okm_core::{KeyEncode, NestStorage, RemoteStore, RowEncode, Table, TestStore, VirtualStorage};
+use okm_core::{KeyEncode, NestStorage, RemoteStore, ObjEncode, Table, TestStore, VirtualStorage};
 
 #[test]
 fn bare_host_executes_frames_byte_identical() {
@@ -37,9 +37,9 @@ pub struct ShardDocKey {
     pub id: u64,
 }
 
-#[derive(RowEncode, Clone, PartialEq, Debug)]
-#[kv_ref(ShardDocKey)]
-#[kv_ns(1)]
+#[derive(ObjEncode, Clone, PartialEq, Debug)]
+#[ok_ref(ShardDocKey)]
+#[ok_ns(1)]
 pub struct ShardDoc {
     pub title: u64,
 }
@@ -74,7 +74,7 @@ fn shard_table_via_bare_host_lands_on_its_ns_segment() {
 #[test]
 fn bare_and_hosted_coexist_with_allocation_discipline() {
     #[derive(okm_core::NestStorage)]
-    #[kv_ns(30)]
+    #[ok_ns(30)]
     pub struct AppBStorage;
 
     let engine = TestStore::default(); // handle-clone = shared engine

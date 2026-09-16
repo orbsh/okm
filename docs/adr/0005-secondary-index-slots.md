@@ -1,13 +1,13 @@
 # ADR-0005: Secondary indexes — item-local slot allocation, no manual ns per index
 
 Date: 2026-09-06
-Status: Implemented. **Update 2026-09-14**: index entries carry the address header exactly once — the primary key rides bare in the entry tail (see the update at the bottom). **Update 2026-09-12, [ADR-0006](0006-row-node-model.md) refinement**: `#[kv_ns]` itself also mounts on the **row struct** now (`Row::NS_PREFIX`, a `&'static [u8]` big-endian `[ns 2B]` emitted by the derive) — the row is the table's declaration point (`#[kv_ref]` pins the key type), and a key type carries no ns so the same key shape can serve several rows/tables, each with its own declared ns. `Table::new` loses the ns parameter. One number per table: unchanged. **Update 2026-09-07, [ADR-0006](0006-row-node-model.md)**: `#[kv_index]` mounts on the **row struct** (`RowEncode`), not the key struct — the index's data source is row attributes, and key structs stay pure identity. Slot numbering, ns derivation, and the 1-byte discriminator below are unchanged; covering indexes (`includes`) are positioned as materialized views for high-fanout queries. **Update 2026-09-10, implementation**: the 1-byte slot byte ships as designed below — entry header is `[table_ns 2B][slot 1B]`, primary = 0, indexes numbered by declaration order. *(A 2026-09-07 implementation briefly replaced this with additive ns derivation — `index_ns = table_ns + SLOT`, no slot byte — before the flaw surfaced; see the second update at the bottom.)* `fields(...)` names **payload** fields (the index's data source is the row); the carried key tail defaults to the full primary key and may be truncated to any named subset via `key(…)` — `encode_prefix_named` now accepts arbitrary named subsets, not just declaration-order prefixes. Entry layout: `[ns 2B][slot 1B][indexed fields][key prefix]`, value = `includes` fields TLV (empty when absent).
+Status: Implemented. **Update 2026-09-14**: index entries carry the address header exactly once — the primary key rides bare in the entry tail (see the update at the bottom). **Update 2026-09-12, [ADR-0006](0006-row-node-model.md) refinement**: `#[ok_ns]` itself also mounts on the **row struct** now (`Row::NS_PREFIX`, a `&'static [u8]` big-endian `[ns 2B]` emitted by the derive) — the row is the table's declaration point (`#[ok_ref]` pins the key type), and a key type carries no ns so the same key shape can serve several rows/tables, each with its own declared ns. `Table::new` loses the ns parameter. One number per table: unchanged. **Update 2026-09-07, [ADR-0006](0006-row-node-model.md)**: `#[ok_index]` mounts on the **row struct** (`ObjEncode`), not the key struct — the index's data source is row attributes, and key structs stay pure identity. Slot numbering, ns derivation, and the 1-byte discriminator below are unchanged; covering indexes (`includes`) are positioned as materialized views for high-fanout queries. **Update 2026-09-10, implementation**: the 1-byte slot byte ships as designed below — entry header is `[table_ns 2B][slot 1B]`, primary = 0, indexes numbered by declaration order. *(A 2026-09-07 implementation briefly replaced this with additive ns derivation — `index_ns = table_ns + SLOT`, no slot byte — before the flaw surfaced; see the second update at the bottom.)* `fields(...)` names **payload** fields (the index's data source is the row); the carried key tail defaults to the full primary key and may be truncated to any named subset via `key(…)` — `encode_prefix_named` now accepts arbitrary named subsets, not just declaration-order prefixes. Entry layout: `[ns 2B][slot 1B][indexed fields][key prefix]`, value = `includes` fields TLV (empty when absent).
 
 ## Context
 
 Secondary indexes (including composite ones) need their own keyspaces. Two obvious mechanisms both fail:
 
-- **Field-level attributes** (`#[kv_index]` on each indexed field) cannot express composite indexes — an index spans several fields, so it has no single field to hang on.
+- **Field-level attributes** (`#[ok_index]` on each indexed field) cannot express composite indexes — an index spans several fields, so it has no single field to hang on.
 - **Manually assigning a namespace ID per index** re-introduces the exact burden ADR-0002 removed: every `CREATE INDEX` becomes a hand-edit of a global numbering table, and every deletion leaves a hole someone must remember not to reuse.
 
 ## Decision
@@ -16,8 +16,8 @@ Indexes are declared on the **table struct itself** and numbered **inside the it
 
 ```rust
 #[derive(KeyEncode)]
-#[kv_ns(9)]                              // one manual ID per TABLE, not per index
-#[kv_index(
+#[ok_ns(9)]                              // one manual ID per TABLE, not per index
+#[ok_index(
     by_name    { fields(name) },          // single-field index
     by_age_org { fields(org_id, age) },   // composite index = field list
 )]
@@ -50,7 +50,7 @@ index key:   [header = table_ns·slot][indexed fields BE][primary key ID]   ← 
 - **Slot width is a global decision**: bit-packing with 4 bits caps 15 indexes per table. Preferred alternative: a 1-byte discriminator after the header (header becomes 3 bytes: `[table_ns 2B][slot 1B]`) — ns space untouched, 256 indexes per table, header stays fixed-width; cost is 1 byte on every key. Chosen: 1-byte slot.
 - **Deleted indexes leave holes**: slots are never reused (same discipline as ns IDs, ADR-0002). Holes are harmless.
 - **Fixed-width fields only** for this regime: variable-length indexed fields (e.g. `String`) belong to the secondary-index layout regime (discriminating text first, primary key ID carried at the tail, value empty — see kv-storage-engine.md). The slot mechanism is identical across both regimes. *(Shipped 2026-09-09 — see the update below; the rule sharpened to a positional constraint.)*
-- **`#[kv_ns]` semantics return to its cleanest form**: one number per table; indexes, composites and slots are mechanical macro expansion. Humans only allocate table IDs.
+- **`#[ok_ns]` semantics return to its cleanest form**: one number per table; indexes, composites and slots are mechanical macro expansion. Humans only allocate table IDs.
 
 ## Update 2026-09-09: variable-length fields and function indexes shipped
 
@@ -62,7 +62,7 @@ The text-first regime is implemented; the constraint sharpens from "fixed-width 
 
 ## Update 2026-09-10: slot byte restored
 
-The 2026-09-07 implementation replaced the slot byte with additive ns derivation (`index_ns = table_ns + SLOT`, `wrapping_add`) — one byte shorter, one less layer. The flaw that surfaced: **table ns allocation stopped being self-contained**. Allocating ns=256 meant reserving headroom for "how many indexes this table might ever have"; adding an index could overflow into the next table's segment, and the error was silent (overlapping segments still scan fine — entries just cross-read). `#[kv_ns]` regressed from "one number per table" to "one number plus an unbounded reservation".
+The 2026-09-07 implementation replaced the slot byte with additive ns derivation (`index_ns = table_ns + SLOT`, `wrapping_add`) — one byte shorter, one less layer. The flaw that surfaced: **table ns allocation stopped being self-contained**. Allocating ns=256 meant reserving headroom for "how many indexes this table might ever have"; adding an index could overflow into the next table's segment, and the error was silent (overlapping segments still scan fine — entries just cross-read). `#[ok_ns]` regressed from "one number per table" to "one number plus an unbounded reservation".
 
 The byte saved was a local, negligible gain; the guarantee given up was global. Implementation-time simplifications must be checked against this ADR's consequences list — the additive variant was considered and rejected here for exactly this class of reason. Restored: entry header `[table_ns 2B][slot 1B]` on every entry (primary slot 0), +1 byte per key, ns dictionary back to one number per table, 255 indexes per table.
 
@@ -77,7 +77,7 @@ discipline as reordering: layout change = clean rebuild or migration
 double-write). The supported retirement path is a deprecation marker:
 
 ```rust
-#[kv_index(by_old { fields(legacy) }, deprecated)]   // slot stays reserved
+#[ok_index(by_old { fields(legacy) }, deprecated)]   // slot stays reserved
 ```
 
 The derive keeps the slot (later declarations keep their slots), but
@@ -89,15 +89,15 @@ the derive-emitted slot list.
 
 ## Update 2026-09-12: ns declaration moves from key struct to row struct
 
-`#[kv_ns]` originally lived on the key struct (this ADR's example shows it
+`#[ok_ns]` originally lived on the key struct (this ADR's example shows it
 there). It now lives on the **row struct** and the derive emits it as
 `Row::NS_PREFIX: &'static [u8]` (big-endian `[ns 2B]`); `Table::new(store)`
 no longer takes an ns parameter, and all hooks take the prefix slice. Two
-reasons: the row is the table's declaration point (`#[kv_ref]` already pins
+reasons: the row is the table's declaration point (`#[ok_ref]` already pins
 the key type, so the row fully determines `Table<S, K, R>`), and a key type
 must stay ns-free — the same key shape legitimately serves several rows /
 tables, each with its own declared ns, which mounting ns on the key would
-have forbidden. Edge structs keep declaring `#[kv_ns]` on the edge (unchanged
+have forbidden. Edge structs keep declaring `#[ok_ns]` on the edge (unchanged
 EdgeEncode path). "One number per table" is untouched: the number is now
 declared where the table is declared.
 

@@ -1,10 +1,10 @@
 # 索引机制：条目、扫描与回表
 
-本文是机制与实现细节文档：`#[kv_index]` 声明展开成什么、条目怎么编码、`scan::<I>` 与 `scan_covered` 怎么工作。建模纪律见[建模指南](../MODELING.zh-CN.md)（访问方法强制、覆盖索引克制）；slot/ns 推导见[slot 机制](slot-mechanism.zh-CN.md)。
+本文是机制与实现细节文档：`#[ok_index]` 声明展开成什么、条目怎么编码、`scan::<I>` 与 `scan_covered` 怎么工作。建模纪律见[建模指南](../MODELING.zh-CN.md)（访问方法强制、覆盖索引克制）；slot/ns 推导见[slot 机制](slot-mechanism.zh-CN.md)。
 
 ## 声明展开
 
-`#[derive(RowEncode)]` 对每个 `#[kv_index(name { ... })]` 生成一个**索引类型**（marker struct，生成在展开点）：
+`#[derive(ObjEncode)]` 对每个 `#[ok_index(name { ... })]` 生成一个**索引类型**（marker struct，生成在展开点）：
 
 ```text
 __OkmIndex_{Row}_{name}      // 机械拼接，无大小写转换

@@ -1,6 +1,6 @@
 //! Subscribe — the channel half of the event layer (ADR-0008).
 //!
-//! `#[kv_subscribe]` on a `RowEncode` struct declares: this row type's
+//! `#[ok_subscribe]` on a `ObjEncode` struct declares: this row type's
 //! write-path events enter a channel. There is NO handler at the
 //! annotation site — the derive only emits a uniform-format send; the
 //! processing logic belongs entirely to the consumer, and the combinators

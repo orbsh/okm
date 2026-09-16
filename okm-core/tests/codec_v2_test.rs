@@ -6,7 +6,7 @@
 //! Compile-time rejections (String / Reverse on key side, non-whitelist
 //! Reverse inner) live in `codec_compilefail.rs` via trybuild.
 
-use okm_core::{KeyEncode, TestStore, Reversible, Reverse, Row, RowEncode, Table, parquet_io};
+use okm_core::{KeyEncode, TestStore, Reversible, Reverse, Row, ObjEncode, Table, parquet_io};
 
 // ================= String (variable length) =================
 
@@ -16,9 +16,9 @@ pub struct SKey {
     pub id: u64,
 }
 
-#[derive(RowEncode, Clone, PartialEq, Debug)]
-#[kv_ref(SKey)]
-#[kv_ns(3)]
+#[derive(ObjEncode, Clone, PartialEq, Debug)]
+#[ok_ref(SKey)]
+#[ok_ns(3)]
 pub struct SRow {
     pub score: u32,
     pub name: String,
@@ -66,10 +66,10 @@ pub struct RKey {
     pub user: u64,
 }
 
-#[derive(RowEncode, Clone, PartialEq, Debug)]
-#[kv_ref(RKey)]
-#[kv_index(by_newest { fields(ts_rev), key(org) })]
-#[kv_ns(4)]
+#[derive(ObjEncode, Clone, PartialEq, Debug)]
+#[ok_ref(RKey)]
+#[ok_index(by_newest { fields(ts_rev), key(org) })]
+#[ok_ns(4)]
 pub struct RRow {
     pub score: u16,
     pub ts_rev: Reverse<u64>,
@@ -176,10 +176,10 @@ fn payload_wire_hex_snapshot() {
 
 // ================= Version compatibility =================
 
-#[derive(RowEncode, Clone, PartialEq, Debug)]
-#[kv_ref(SKey)]
-#[kv_layout(version = 2)]
-#[kv_ns(3)]
+#[derive(ObjEncode, Clone, PartialEq, Debug)]
+#[ok_ref(SKey)]
+#[ok_layout(version = 2)]
+#[ok_ns(3)]
 pub struct EvolvedRow {
     pub score: u32,
     pub name: String,
@@ -207,7 +207,7 @@ fn older_payload_decodes_with_appended_defaults() {
         name: "old".into(),
         note: "n".into(),
         flag: 7,
-        visits: <u32 as Default>::default(), // no #[kv_default] → T::default()
+        visits: <u32 as Default>::default(), // no #[ok_default] → T::default()
         memo: String::default(),
     };
     assert_eq!(EvolvedRow::decode_payload(&p), evolved);
@@ -227,23 +227,23 @@ fn newer_payload_version_is_rejected() {
 
 #[test]
 fn explicit_layout_version_constant() {
-    // #[kv_layout(version = 2)] feeds the Row trait constant.
+    // #[ok_layout(version = 2)] feeds the Row trait constant.
     assert_eq!(<SRow as Row>::LAYOUT_VERSION, 1);
 }
 
-#[derive(RowEncode, Clone, PartialEq, Debug)]
-#[kv_ref(SKey)]
-#[kv_layout(version = 3)]
-#[kv_ns(3)]
+#[derive(ObjEncode, Clone, PartialEq, Debug)]
+#[ok_ref(SKey)]
+#[ok_layout(version = 3)]
+#[ok_ns(3)]
 pub struct DefaultedRow {
     pub score: u32,
     pub name: String,
-    #[kv_default(77)]
+    #[ok_default(77)]
     pub flag: u8,
 }
 
 #[test]
-fn kv_default_expression_used_for_missing_tail_field() {
+fn ok_default_expression_used_for_missing_tail_field() {
     let row = DefaultedRow { score: 5, name: "x".into(), flag: 77 };
     let p = row.encode_payload();
     assert_eq!(p[0], 3, "explicit layout version 3");
@@ -252,6 +252,6 @@ fn kv_default_expression_used_for_missing_tail_field() {
     let mut old: Vec<u8> = p[..3 + 4].to_vec();
     old[1..3].copy_from_slice(&4u16.to_be_bytes());
     let back = DefaultedRow::decode_payload(&old);
-    assert_eq!(back.flag, 77, "#[kv_default(77)] applied");
+    assert_eq!(back.flag, 77, "#[ok_default(77)] applied");
     assert_eq!(back.score, 5);
 }

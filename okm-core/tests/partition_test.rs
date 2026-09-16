@@ -1,8 +1,8 @@
-//! `#[kv_partition]` 集成测试（ADR-0014 §5）：partition 段进键编码
+//! `#[ok_partition]` 集成测试（ADR-0014 §5）：partition 段进键编码
 //! （Some(N) → `[part 1B]` 前缀，None → 无段零成本）、表内 put/scan
 //! 正常工作、跨表字节空间独立（part 段在 ns 段之前）。
 
-use okm_core::{KeyEncode, Row, RowEncode, TestStore};
+use okm_core::{KeyEncode, Row, ObjEncode, TestStore};
 
 /// 普通 key：无 partition（默认布局，无 part 段）。
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
@@ -11,18 +11,18 @@ pub struct PlainKey {
 }
 
 /// partition 1 表：键布局 = [part 1B][ns 2B][slot][key payload]。
-#[derive(RowEncode, Clone, PartialEq, Debug)]
-#[kv_ref(PlainKey)]
-#[kv_partition(1)]
-#[kv_ns(7)]
+#[derive(ObjEncode, Clone, PartialEq, Debug)]
+#[ok_ref(PlainKey)]
+#[ok_partition(1)]
+#[ok_ns(7)]
 pub struct Partitioned {
     pub value: u32,
 }
 
 /// 无 partition 对照表：键布局 = [ns 2B][slot][key payload]。
-#[derive(RowEncode, Clone, PartialEq, Debug)]
-#[kv_ref(PlainKey)]
-#[kv_ns(7)]
+#[derive(ObjEncode, Clone, PartialEq, Debug)]
+#[ok_ref(PlainKey)]
+#[ok_ns(7)]
 pub struct Plain {
     pub value: u32,
 }
@@ -67,7 +67,7 @@ fn partition_segment_precedes_ns_header() {
 
 #[test]
 fn partition_zero_rejected() {
-    // 编译期拒绝：#[kv_partition(0)] 产生 compile_error!（see derive）。
+    // 编译期拒绝：#[ok_partition(0)] 产生 compile_error!（see derive）。
     // 运行期此处只验证 PARTITION_ID 语义：0 不作为合法 id 出现。
     assert_ne!(<Partitioned as Row>::PARTITION_ID, Some(0));
 }

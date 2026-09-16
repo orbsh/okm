@@ -11,7 +11,7 @@ use criterion::{criterion_group, criterion_main, BatchSize, Criterion, Throughpu
 use std::hint::black_box;
 
 use okm_core::{
-    KeyEncode, KvBatch, TestStore, ReduceCodec, ReduceLogic, Reversible, Reverse, Row, RowEncode,
+    KeyEncode, KvBatch, TestStore, ReduceCodec, ReduceLogic, Reversible, Reverse, Row, ObjEncode,
     Table, VarInt, VirtualStorage,
 };
 
@@ -24,11 +24,11 @@ pub struct BenchKey {
     pub tag: [u8; 4],  // 4B  → KEY_LEN = 16 ("typical" key)
 }
 
-#[derive(RowEncode, Clone, PartialEq, Debug)]
-#[kv_ref(BenchKey)]
-#[kv_ns(9)]
-#[kv_index(by_level { fields(level) })]
-#[kv_reduce(TagTotals { group(level) })]
+#[derive(ObjEncode, Clone, PartialEq, Debug)]
+#[ok_ref(BenchKey)]
+#[ok_ns(9)]
+#[ok_index(by_level { fields(level) })]
+#[ok_reduce(TagTotals { group(level) })]
 pub struct BenchRow {
     pub level: u32,        // hot 4B
     pub score: Reverse<u64>, // hot 8B (bit-flipped BE)

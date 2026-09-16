@@ -1,14 +1,14 @@
 //! `NestStorage` — the receiver derive (ADR-0010 §4): reads the same
-//! `#[kv_ns(N)]` attribute every other derive uses.
+//! `#[ok_ns(N)]` attribute every other derive uses.
 //!
 //! An empty struct annotated with `#[derive(NestStorage)]` +
-//! `#[kv_ns(N)]` becomes a receiver host: the derive generates **no data
+//! `#[ok_ns(N)]` becomes a receiver host: the derive generates **no data
 //! methods** (there is no row type to encode) and exactly one execution
 //! surface (`serve`) — take frames, prepend the declared prefix, replay
 //! on a plain byte-level engine. The host knows only its prefix; storing
 //! garbage is indistinguishable from storing data.
 //!
-//! Same annotation discipline as `#[kv_subscribe]`: the annotation
+//! Same annotation discipline as `#[ok_subscribe]`: the annotation
 //! declares a fact (which prefix this host serves); the macro emits the
 //! implementation. The generated host wraps `okm_core::NestStorage`
 //! internally — the reference implementation this derive targets.
@@ -26,7 +26,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
         _ => panic!("NestStorage only supports unit/empty structs — the host carries no data"),
     }
 
-    // `#[kv_ns(N)]` — the prefix this host serves. Required: a host with
+    // `#[ok_ns(N)]` — the prefix this host serves. Required: a host with
     // no prefix would accept any sender's bytes into the root segment,
     // which is exactly the escape the declaration exists to make
     // inexpressible (ADR-0010 §4).
@@ -34,18 +34,18 @@ pub fn derive(input: TokenStream) -> TokenStream {
         .attrs
         .iter()
         .find_map(|a| {
-            if a.path().is_ident("kv_ns") {
+            if a.path().is_ident("ok_ns") {
                 Some(
                     a.parse_args::<syn::LitInt>()
-                        .expect("#[kv_ns(N)] format")
+                        .expect("#[ok_ns(N)] format")
                         .base10_parse()
-                        .expect("kv_ns must be a u16 literal"),
+                        .expect("ok_ns must be a u16 literal"),
                 )
             } else {
                 None
             }
         })
-        .expect("missing #[kv_ns(N)] — the declared prefix IS the host's isolation boundary");
+        .expect("missing #[ok_ns(N)] — the declared prefix IS the host's isolation boundary");
     let prefix_lit = {
         let hi = (ns >> 8) as u8;
         let lo = (ns & 0xff) as u8;

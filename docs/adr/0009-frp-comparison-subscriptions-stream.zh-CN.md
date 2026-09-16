@@ -7,7 +7,7 @@
 ## 背景
 
 ADR-0008 定下了事件层的形状：内联消费者（reduce，恰好一次，写路径同步）与通道消费者
-（`#[kv_subscribe]`，尽力而为，组合子在 `okm-stream`）。Spacetimedb 的客户端订阅是
+（`#[ok_subscribe]`，尽力而为，组合子在 `okm-stream`）。Spacetimedb 的客户端订阅是
 目前最接近的广为人知的对照系统——它在结构上就是一张长在数据库里的 FRP 图。本 ADR 记录
 这场对照，防止后续设计讨论把 Spacetimedb 的 reducer/订阅语义悄悄搬进 OKM 的不同形态。
 

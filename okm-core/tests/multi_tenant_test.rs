@@ -7,22 +7,22 @@
 //! mechanism, which is why this test is all the multi-tenancy code there
 //! is.
 
-use okm_core::{KeyEncode, TestStore, RemoteStore, RowEncode, Table, VirtualStorage};
+use okm_core::{KeyEncode, TestStore, RemoteStore, ObjEncode, Table, VirtualStorage};
 
 // TestStore now has handle-clone semantics (Arc kernel) and implements
 // SharedVirtualStorage — the test-local SharedEngine workaround is gone.
 
 // One declared executor per application — same physical engine behind all.
 #[derive(okm_core::NestStorage)]
-#[kv_ns(21)]
+#[ok_ns(21)]
 pub struct TenantAStorage;
 
 #[derive(okm_core::NestStorage)]
-#[kv_ns(22)]
+#[ok_ns(22)]
 pub struct TenantBStorage;
 
 #[derive(okm_core::NestStorage)]
-#[kv_ns(21)]
+#[ok_ns(21)]
 pub struct AppStorage;
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
@@ -30,9 +30,9 @@ pub struct DocKey {
     pub id: u64,
 }
 
-#[derive(RowEncode, Clone, PartialEq, Debug)]
-#[kv_ref(DocKey)]
-#[kv_ns(1)]
+#[derive(ObjEncode, Clone, PartialEq, Debug)]
+#[ok_ref(DocKey)]
+#[ok_ns(1)]
 pub struct Doc {
     pub title: u64,
 }

@@ -25,7 +25,7 @@
 //! dictionary, assembly point, value-side roadmap) and the project README
 //! for a full walkthrough.
 
-pub use okm_derive::{EdgeEncode, KeyEncode, NestStorage, RowEncode};
+pub use okm_derive::{EdgeEncode, KeyEncode, NestStorage, ObjEncode};
 
 pub use reverse::{Reversible, Reverse};
 pub use wrappers::{Enum, EnumTag, Offset, Quant, VarInt, VarIntEnc, offset_decode, offset_encode};
