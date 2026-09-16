@@ -440,3 +440,35 @@ key bare in the tail) recorded in ADR-0005.
       discipline worth keeping. If a genuine repeated need shows up, the
       prototype design (KeySegment: WIDTH/DESC/put/take, blanket impl
       over KeyEncode) is the starting point.
+
+## Phase 8 — Object model: one encoding, field-name dictionary, kv_ → ok_ (ADR-0012)
+
+Design locked in [ADR-0012](adr/0012-object-model-and-field-dictionary.md).
+Core idea: a declared row IS a doc with an empty dynamic segment — one
+encoding, one derive family. No separate document storage mode.
+
+- [ ] Rename: attributes `kv_` → `ok_` (`ok_ns`, `ok_index`, `ok_ref`,
+      `ok_subscribe`, `ok_default`, `ok_event_enum`); derive `RowEncode` →
+      `ObjEncode`; docs' concept vocabulary follows (row → doc where the
+      encoding is meant). Must land before crates.io publishing
+      (breaking change afterwards).
+- [ ] Slot allocation revision: slot 1 = obj dynamic segment, slot 2/3 =
+      field-name dictionary (bidirectional), slot 4–7 reserved, slot 8+
+      indexes/reduces. Existing rows byte-compatible (they use none of
+      the new slots).
+- [ ] Dynamic segment (slot 1): one entry per obj, value =
+      `([field-id][value-type][len u32][bytes])*`; value-type byte is a
+      small closed enum (int/float/str/bytes/bool/null/array/
+      doc-reserved for later nesting).
+- [ ] Field-name dictionary: run-time per-table append-only vocabulary;
+      first-seen name claims the next number (single-writer, engine
+      mutex); id `0xFF` escapes to `[0xFF][u16 id]` — no renumbering,
+      ever; flat bidirectional point lookups (slots 2/3), no trie.
+- [ ] Indexing rule: declared fields only; a dynamic field becomes
+      indexable by being declared (schema evolution, deliberately manual).
+- [ ] Schema export: FieldDesc table extended with the value-type enum
+      and the obj dynamic-segment shape for the dynamic reader
+      (okm-dynamic / Python side).
+
+Unchanged: primary payload layout `[version][hot_len][hot][cold TLV]`
+(ADR-0011 full keys; ADR-0006 row model for declared fields).

@@ -37,10 +37,16 @@ Implemented:
 - Engine backends behind Cargo features: `fjall` (sync `FjallStore`), `slatedb` (async `SlatedbStore` + `AsyncEdgeTable`), plus an in-memory `MockStore` for tests.
 - Multi-engine mixing — different engines per ns segment in one process (fjall for transactions, slatedb for logs); atomicity stops at one engine, ns numbering globally unique.
 
-Roadmap (design locked, not yet implemented — [ADR-0006](docs/adr/0006-row-node-model.md), [ADR-0004](docs/adr/0004-value-side-and-wrappers.md)):
+Roadmap (design locked, not yet implemented — [ADR-0006](docs/adr/0006-row-node-model.md), [ADR-0012](docs/adr/0012-object-model-and-field-dictionary.md)):
 
 - Field-level encoding wrappers (`Enum<T>`, `Offset<T>`, `Delta<T>`, `VarInt<T>`, `Reverse<T>` …) and variable-length payload/index fields (`String`), keys stay fixed-width.
 - Snapshot export — rows → Parquet, engine-independent (backup / data exchange / lakehouse); ns restored to descriptive text, columns = field names.
+- **Object model (obj)** — one encoding for declared rows and external data ([ADR-0012](docs/adr/0012-object-model-and-field-dictionary.md)). The name `obj` is a deliberate double meaning: object in the programming sense, and object in the storage-format sense. Three terms mark three positions on the static/dynamic spectrum:
+  - **document** — logically and physically all-dynamic; every field rides the dynamic path (dictionary number + value type per frame).
+  - **variant** — a dynamic blob nested as ONE declared static field (`Bytes` payload); the dynamics live inside a value, not in the key layout.
+  - **obj** — logically all-dynamic (any field may appear at run time), but declared static fields embed into the dynamic whole: hot/cold segments, indexing, and schema export apply to them as usual. A declared row is the degenerate obj with an empty dynamic path; a pure document is the degenerate obj with an empty declared path; both are the same encoding.
+
+  Dynamic frames use a CBOR-derived framing, not CBOR itself: only the **major-type pattern** is taken — a type nibble opening each frame — and struct encoding rides the same scheme. CBOR's major types include lists and maps; with a field-name dictionary OKM needs only the list: a map is an n-TLV list (number, type, len, value), with structure information living in the values, not in a per-document schema.
 
 ## Usage
 
