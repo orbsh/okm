@@ -38,7 +38,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Row<Key = K>> Table<S, K, R> {
         &self.store
     }
 
-    /// The table's key header: `[part 1B (if declared)][ns 2B]` — every
+    /// The table's key header: `[0xFF][part 1B] (if declared)[ns 2B]` — every
     /// key byte sequence this table writes starts with it. ADR-0014 §5:
     /// the partition segment precedes the ns header (workload isolation
     /// lives outside ownership scope); absent when the row declares no
@@ -50,13 +50,15 @@ impl<S: VirtualStorage, K: KeyEncode, R: Row<Key = K>> Table<S, K, R> {
         buf
     }
 
-    /// Primary key entry (slot 0): `[part 1B (if declared)][ns 2B][slot 0]
+    /// Primary key entry (slot 0): `[0xFF][part 1B] (if declared)[ns 2B][slot 0]
     /// [key payload]`, value = TLV payload of the row. The slot byte keeps
     /// the header uniform with index entries (`[ns 2B][slot 1B]`); slot 0 =
     /// primary, per ADR-0005. The partition segment precedes the ns header
     /// (ADR-0014 §5): workload isolation lives outside ownership scope —
     /// a partition groups tables by compaction profile, a namespace groups
-    /// them by owner. Absent when the row declares no `#[kv_partition]`.
+    /// them by owner; the 0xFF escape byte makes partitioned and
+    /// unpartitioned keys structurally disjoint. Absent when the row
+    /// declares no `#[kv_partition]`.
     pub fn primary_key(&self, key: &K) -> Vec<u8> {
         let mut buf = self.header();
         buf.push(crate::index::PRIMARY_SLOT);
