@@ -417,7 +417,6 @@ impl<S: VirtualStorage, K: KeyEncode, R: Row<Key = K>> Table<S, K, R> {
         key: &K,
         object: &BTreeMap<String, DynamicValue>,
     ) {
-        // Split by declared/undeclared.
         // Split by declared/undeclared: declared names go through the
         // typed path (slot 0 via from_map + put — full pipeline incl.
         // indexes/reduces/events), the rest to the dynamic segment.
@@ -434,17 +433,14 @@ impl<S: VirtualStorage, K: KeyEncode, R: Row<Key = K>> Table<S, K, R> {
                 Some(r) => r,
                 None => R::from_map(&BTreeMap::new()), // all-default row
             };
-            let typed: BTreeMap<String, DynamicValue> = typed_names
-                .iter()
-                .filter_map(|n| object.get(*n).map(|v| ((*n).clone(), v.clone())))
-                .collect();
-            let _ = &typed;
-            // from_map over the TYPED subset only: build a sub-map and
-            // overwrite the current row's fields from it.
-            let current = row.to_map();
-            let mut merged = current;
-            for (k, v) in &typed {
-                merged.insert(k.clone(), v.clone());
+            // from_map over the TYPED subset only: the current row's map
+            // (or all-default for a fresh key) overwritten by the given
+            // declared fields — absent fields keep their values.
+            let mut merged = row.to_map();
+            for n in &typed_names {
+                if let Some(v) = object.get(*n) {
+                    merged.insert((*n).clone(), v.clone());
+                }
             }
             row = R::from_map(&merged);
             self.put(key, &row);
