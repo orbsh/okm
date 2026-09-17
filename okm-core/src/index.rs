@@ -22,7 +22,7 @@
 use crate::storage::VirtualStorage;
 use crate::key::{KeyEncode, PrefixKey};
 
-/// Slot reserved for a table's primary keys inside its ns segment.
+/// Slot reserved for a collection's primary keys inside its ns segment.
 pub const PRIMARY_SLOT: u8 = 0;
 /// obj dynamic segment (ADR-0012): per-document undeclared fields.
 pub const DYNAMIC_SLOT: u8 = 1;
@@ -200,7 +200,7 @@ pub trait Document: Sized + Clone {
     /// write-path event into its declared channel. Default no-op — only
     /// documents carrying `#[ok_subscribe]` override it. Best-effort by
     /// contract (try_send); never blocks or fails the write. `_epoch` is
-    /// the emitting table's monotonic write-batch counter.
+    /// the emitting collection's monotonic write-batch counter.
     fn __okm_emit_event(
         _op: crate::subscribe::Op,
         _epoch: u64,
@@ -224,18 +224,18 @@ pub trait Document: Sized + Clone {
     /// empty (no deprecated declarations).
     const DEPRECATED_SLOTS: &'static [u8] = &[];
 
-    /// The namespace prefix this document's table lives under, encoded and
+    /// The namespace prefix this document's collection lives under, encoded and
     /// ready to prepend (`[ns 2B]` big-endian). Declared via `#[ok_ns(N)]`
-    /// on the ROW struct — the document is the table's declaration point (its
+    /// on the document struct — the document is the collection's declaration point (its
     /// `#[ok_ref]` pins the key type, so `Collection<S, K, R>` is fully
     /// determined by the document), never hand-filled at the assembly site
     /// (ADR-0002: the ns dictionary is code). A key type carries no ns of
     /// its own: the same key shape may legitimately serve several documents /
     /// tables, each with its own declared ns. Default = empty (no ns
-    /// declared — a layout-only document that never materializes a table).
+    /// declared — a layout-only document that never materializes a collection).
     const NS_PREFIX: &'static [u8] = &[];
 
-    /// The table's partition id (ADR-0014 §5): `Some(N)` prepends a
+    /// The collection's partition id (ADR-0014 §5): `Some(N)` prepends a
     /// 2-byte escape segment `[0xFF][N]` before the ns header — physical
     /// partition routing (Fjall) and workload isolation in the key space.
     /// The 0xFF first byte is a reserved escape: legal ns headers
@@ -255,9 +255,9 @@ pub trait Document: Sized + Clone {
     const PARTITION_PREFIX: &'static [u8] = &[];
 }
 
-/// One access method over a table. Implemented by generated marker
+/// One access method over a collection. Implemented by generated marker
 /// structs (`#[derive(DocumentEncode)]` + `#[ok_index(...)]`); slots derive
-/// from the table's ns — indexes never take manual namespace IDs.
+/// from the collection's ns — indexes never take manual namespace IDs.
 pub trait KvIndex {
     type Key: KeyEncode;
     /// The document type this access method reads its index fields from.
@@ -316,14 +316,14 @@ pub trait KvIndex {
     }
 
     /// Full entry key: `[ns 2B][slot 1B][index fields][key prefix]` —
-    /// the 1-byte slot discriminates access methods *within* the table's
+    /// the 1-byte slot discriminates access methods *within* the collection's
     /// ns segment; the table's ns allocation is untouched by how many
     /// indexes exist (ADR-0005).
-    fn entry_key(table_ns: &[u8], key: &Self::Key, document: &Self::Document) -> Vec<u8> {
+    fn entry_key(ns_prefix: &[u8], key: &Self::Key, document: &Self::Document) -> Vec<u8> {
         let fb = Self::fields_bytes(key, document);
         let kp = Self::key_prefix_bytes(key);
-        let mut buf = Vec::with_capacity(table_ns.len() + 1 + fb.len() + kp.len());
-        buf.extend_from_slice(table_ns);
+        let mut buf = Vec::with_capacity(ns_prefix.len() + 1 + fb.len() + kp.len());
+        buf.extend_from_slice(ns_prefix);
         buf.push(Self::SLOT);
         buf.extend_from_slice(&fb);
         buf.extend_from_slice(&kp);
@@ -345,17 +345,17 @@ pub trait KvIndex {
     /// multi-value function indexes yield one pair per produced value —
     /// the write side (`Collection::put`/`delete` via `index_entries`) just
     /// iterates. Each entry shares the same includes value.
-    fn entry_pairs(table_ns: &[u8], key: &Self::Key, document: &Self::Document) -> Vec<(Vec<u8>, Vec<u8>)> {
-        vec![(Self::entry_key(table_ns, key, document), Self::entry_value(key, document))]
+    fn entry_pairs(ns_prefix: &[u8], key: &Self::Key, document: &Self::Document) -> Vec<(Vec<u8>, Vec<u8>)> {
+        vec![(Self::entry_key(ns_prefix, key, document), Self::entry_value(key, document))]
     }
 
     /// Scan prefix for a leftmost-prefix match over the index fields:
     /// header + the caller-side encoding of the leading index fields
     /// (e.g. `7u32.to_be_bytes()` for a u32 field; empty slice = whole
     /// index). Must not exceed the index-field segment width.
-    fn entry_prefix(table_ns: &[u8], encoded: &[u8]) -> Vec<u8> {
-        let mut buf = Vec::with_capacity(table_ns.len() + 1 + encoded.len());
-        buf.extend_from_slice(table_ns);
+    fn entry_prefix(ns_prefix: &[u8], encoded: &[u8]) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(ns_prefix.len() + 1 + encoded.len());
+        buf.extend_from_slice(ns_prefix);
         buf.push(Self::SLOT);
         buf.extend_from_slice(encoded);
         buf
@@ -369,10 +369,10 @@ pub trait KvIndex {
 /// are zero-filled, use only the prefix fields).
 pub fn scan_index<S: VirtualStorage, I: KvIndex>(
     store: &S,
-    table_ns: &[u8],
+    ns_prefix: &[u8],
     encoded: &[u8],
 ) -> Vec<PrefixKey<I::Key>> {
-    let p = I::entry_prefix(table_ns, encoded);
+    let p = I::entry_prefix(ns_prefix, encoded);
     let taken = I::key_prefix_width();
     let kl = I::Key::KEY_LEN;
     store

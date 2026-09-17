@@ -10,7 +10,7 @@
 //! discipline as tables (raw ns, no transform, full 16-bit ns space).
 //! Direction is a slot: 14 = forward (source identity first), 15 =
 //! reverse (destination identity first). The saved byte of the old
-//! niche cost a transform, a halved ns space, and table/edge layout
+//! niche cost a transform, a halved ns space, and collection/edge layout
 //! divergence; one slot byte restores uniformity.
 
 use crate::index::{EDGE_FWD_SLOT, EDGE_REV_SLOT};

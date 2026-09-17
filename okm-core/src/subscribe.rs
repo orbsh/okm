@@ -26,11 +26,11 @@ pub enum Op {
 
 /// One channel event — typed payload plus the operation that produced it.
 ///
-/// `epoch` is the emitting table's monotonic write-batch counter (ADR-0008
-/// §5): events produced by one table share the counter's order, so a
+/// `epoch` is the emitting collection's monotonic write-batch counter (ADR-0008
+/// §5): events produced by one collection share the counter's order, so a
 /// consumer combinator can fold exactly to an epoch boundary (glitch-free
-/// within a table). It is in-process only — never persisted, resets on
-/// restart; cross-table ordering does not exist (independent puts have no
+/// within a collection). It is in-process only — never persisted, resets on
+/// restart; cross-collection ordering does not exist (independent puts have no
 /// atomic "both updated" instant, ADR-0009 §2).
 #[derive(Debug)]
 pub struct Event<K, R> {

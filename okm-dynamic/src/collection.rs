@@ -1,4 +1,4 @@
-//! DynamicTable — a runtime-typed table facade over VirtualStorage.
+//! DynamicCollection — a runtime-typed table facade over VirtualStorage.
 //!
 //! The typed `Collection<S, K, R>` binds document/key types at compile time; this
 //! facade binds them at runtime through a `TableSchema` + declared
@@ -26,14 +26,14 @@ fn codec<E: std::fmt::Display>(e: E) -> String {
 /// A runtime-declared table: schema + access methods + a namespaced
 /// slot of storage. `ns` MUST be unique within the store instance (the
 /// two-instance data/meta model guarantees that across planes).
-pub struct DynamicTable<S: VirtualStorage> {
+pub struct DynamicCollection<S: VirtualStorage> {
     store: S,
     schema: TableSchema,
     ns: Vec<u8>,
     indexes: Vec<AccessMethod>,
 }
 
-impl<S: VirtualStorage> DynamicTable<S> {
+impl<S: VirtualStorage> DynamicCollection<S> {
     /// Declare a dynamic table. `ns` is the 2-byte BE namespace segment
     /// (the table's own allocation; access methods share it, slot bytes
     /// discriminate within). Slots on the access methods are caller-
