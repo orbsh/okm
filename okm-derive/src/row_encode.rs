@@ -787,8 +787,10 @@ fn emit_row_impl(schema: &RowSchema) -> TS2 {
                     let mut pkey = <#d_ty as ::okm_core::Document>::NS_PREFIX.to_vec();
                     pkey.push(::okm_core::PRIMARY_SLOT);
                     pkey.extend_from_slice(&self.#fid.key.encode());
-                    if let Some(payload) = store.get(&pkey) {
-                        self.#fid.value = Some(<#d_ty as ::okm_core::Document>::decode_payload(&payload));
+                    if let Some(mut payload_row) = store.get(&pkey).map(|v| <#d_ty as ::okm_core::Document>::decode_payload(&v)) {
+                        // Recurse: the child may itself embed documents.
+                        <#d_ty as ::okm_core::Document>::__okm_embed_deref(&mut payload_row, store);
+                        self.#fid.value = Some(payload_row);
                     }
                 }
             }
