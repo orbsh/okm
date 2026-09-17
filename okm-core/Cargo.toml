@@ -13,8 +13,9 @@ slatedb = { version = "0.16.0", optional = true }
 tempfile = { version = "3", optional = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"], optional = true }
 object_store = { version = "0.13", optional = true }
-arrow = { version = "54", optional = true }
-parquet = { version = "54", optional = true, default-features = false, features = ["arrow"] }
+arrow = { version = "60", optional = true }
+parquet = { version = "60", optional = true, default-features = false, features = ["arrow"] }
+parquet-variant = { version = "60", optional = true }
 
 [build-dependencies]
 proc-macro2 = "1"
@@ -29,15 +30,15 @@ slatedb = ["dep:slatedb", "dep:tokio"]
 fjall = ["dep:fjall", "dep:tempfile"]
 redb = ["dep:redb", "dep:tempfile"]
 arrow = ["dep:arrow"]
-parquet = ["dep:parquet", "arrow"]
+parquet = ["dep:parquet", "dep:parquet-variant", "arrow"]
 
 [dev-dependencies]
 tempfile = "3"
 serde_json = "1"
 okm-dynamic = { path = "../okm-dynamic" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
-arrow = { version = "54" }
-parquet = { version = "54", default-features = false, features = ["arrow"] }
+arrow = { version = "60" }
+parquet = { version = "60", default-features = false, features = ["arrow"] }
 trybuild = "1"
 criterion = "0.5"
 
