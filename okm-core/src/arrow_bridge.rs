@@ -23,6 +23,7 @@ use crate::storage::VirtualStorage;
 use crate::field::{FieldDesc, FieldType};
 use crate::index::Document;
 use crate::key::KeyEncode;
+use crate::obj_dynamic::DynamicValue;
 use crate::document::Collection;
 
 /// Arrow column type for a declared field kind.
@@ -257,6 +258,92 @@ fn build_batch<K: KeyEncode, R: Document<Key = K>>(
     RecordBatch::try_new(Arc::new(proj.schema.clone()), arrays).expect("batch construction")
 }
 
+/// DynamicValue -> parquet Variant via the builder API (nested Obj/Array
+/// recurse; scalars map 1:1). UInt widens to i64 — Variant integers are
+/// signed, and OKM UInt fields are u64: values above i64::MAX wrap. This
+/// is a documented export limitation, not a storage change.
+#[cfg(feature = "parquet")]
+fn push_variant<B: parquet_variant::VariantBuilderExt>(b: &mut B, v: &DynamicValue) {
+    match v {
+        DynamicValue::Null => b.append_null(),
+        DynamicValue::Bool(x) => b.append_value(*x),
+        DynamicValue::UInt(x) => b.append_value(*x as i64),
+        DynamicValue::Int(x) => b.append_value(*x),
+        DynamicValue::F64(x) => b.append_value(*x),
+        DynamicValue::Str(sv) => b.append_value(sv.as_str()),
+        DynamicValue::Bytes(bv) => b.append_value(bv.as_slice()),
+        DynamicValue::Array(items) => {
+            let mut lb = b.new_list();
+            for it in items { push_variant(&mut lb, it); }
+            lb.finish();
+        }
+        DynamicValue::Obj(map) => {
+            // ObjectBuilder does not impl VariantBuilderExt — fields go
+            // through keyed sub-builders / field builders.
+            let mut ob = b.new_object();
+            push_variant_obj(&mut ob, map);
+            ob.finish();
+        }
+    }
+}
+
+#[cfg(feature = "parquet")]
+fn push_variant_obj<S: parquet_variant::BuilderSpecificState>(
+    ob: &mut parquet_variant::ObjectBuilder<'_, S>,
+    map: &std::collections::BTreeMap<String, DynamicValue>,
+) {
+    for (k, val) in map {
+        match val {
+            DynamicValue::Obj(sub_map) => {
+                let mut sub = ob.new_object(k);
+                push_variant_obj(&mut sub, sub_map);
+                sub.finish();
+            }
+            DynamicValue::Array(items) => {
+                let mut sub = ob.new_list(k);
+                for it in items { push_variant(&mut sub, it); }
+                sub.finish();
+            }
+            other => {
+                let mut fb = parquet_variant::ObjectFieldBuilder::new(k, ob);
+                push_variant(&mut fb, other);
+            }
+        }
+    }
+}
+
+/// One Variant column from every document's dynamic segment (slot 1) —
+/// `None` = the document has no dynamic entry.
+#[cfg(feature = "parquet")]
+fn variant_column(
+    store: &dyn VirtualStorage,
+    fields_prefixes: &[(Vec<u8>, Vec<u8>)], // (pkey, fields_key) per doc
+    n: usize,
+) -> Vec<Option<(Vec<u8>, Vec<u8>)>> {
+    let mut out: Vec<Option<(Vec<u8>, Vec<u8>)>> = Vec::with_capacity(n);
+    for (_pkey, fkey) in fields_prefixes {
+        out.push(store.get(fkey).map(|raw| (raw, Vec::new())));
+    }
+    out
+}
+
+/// A Variant-typed Arrow extension field ("parquet.variant" extension
+/// metadata), the analytics-layer twin of the dynamic segment.
+#[cfg(feature = "parquet")]
+fn variant_field(name: &str, nullable: bool) -> arrow::datatypes::Field {
+    use arrow::datatypes::Field as ArrowField;
+    let mut f = ArrowField::new(name, DataType::Binary, nullable);
+    // Variant's Arrow representation: binary metadata+value; the extension
+    // type marks it. Full StructArray representation is a later refinement;
+    // Binary + extension metadata is what the spec calls the "shredding
+    // absent" fallback and every Variant-aware engine accepts it.
+    f.set_metadata(std::collections::HashMap::from([(
+        "ARROW:extension:name".to_string(),
+        "parquet.variant".to_string(),
+    )]));
+    f
+}
+
 /// Value slice of cold field `fi` (declaration index) inside the cold TLV
 /// region, walked frame-by-frame. `cold_fields` lists the declaration
 /// indices of the width-0 fields in order; a frame's tag IS that
@@ -315,6 +402,89 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         let proj = Projection::<K, R>::new();
         let documents: Vec<(Vec<u8>, Vec<u8>)> = self.scan_documents_raw().into_iter().collect();
         build_batch(&proj, &documents)
+    }
+
+    /// Export with a `variant` column appended: each row's dynamic segment
+    /// (slot 1) encoded as one Parquet Variant value (nested Obj/Array
+    /// recurse; names resolved through the field-name dictionary). Rows
+    /// without a dynamic segment get `null`. The declared fields stay
+    /// typed columns — Variant is the analytics-layer twin of the
+    /// dynamic path, not a replacement for it (ADR-0007).
+    #[cfg(feature = "parquet")]
+    pub fn to_record_batch_with_variant(&mut self) -> RecordBatch {
+        use arrow::array::BinaryArray;
+        use arrow::buffer::{Buffer, OffsetBuffer, ScalarBuffer};
+        use arrow::datatypes::{Field as ArrowField, Schema as ArrowSchema};
+
+        let proj = Projection::<K, R>::new();
+        let documents: Vec<(Vec<u8>, Vec<u8>)> = self.scan_documents_raw().into_iter().collect();
+
+        // Base (typed) columns from the same projection.
+        let base = build_batch(&proj, &documents);
+
+        // One Variant per document from its dynamic segment: metadata and
+        // value buffers CONCATENATED per row (the Variant spec's wire form
+        // is [metadata][value] — a single binary per row).
+        let mut per_row: Vec<Option<Vec<u8>>> = Vec::with_capacity(documents.len());
+        for (kenc, _) in &documents {
+            let key = K::decode(kenc);
+            match self.get_fields(&key) {
+                Some(fields) => {
+                    let mut b = parquet_variant::VariantBuilder::new();
+                    let map: std::collections::BTreeMap<String, DynamicValue> =
+                        fields.into_iter().collect();
+                    push_variant(&mut b, &DynamicValue::Obj(map));
+                    let (md, val) = b.finish();
+                    // Wire per row: [md_len u32 BE][metadata][value] — the
+                    // metadata dict is self-contained per variant value, so
+                    // the reader splits deterministically.
+                    let mut wire = (md.len() as u32).to_be_bytes().to_vec();
+                    wire.extend_from_slice(&md);
+                    wire.extend_from_slice(&val);
+                    per_row.push(Some(wire));
+                }
+                None => per_row.push(None),
+            }
+        }
+
+        let mut offsets: Vec<i32> = Vec::with_capacity(documents.len() + 1);
+        offsets.push(0);
+        let mut data = Vec::new();
+        let mut nulls = Vec::with_capacity(documents.len());
+        for wire in &per_row {
+            match wire {
+                Some(bytes) => {
+                    data.extend_from_slice(bytes);
+                    offsets.push(data.len() as i32);
+                    nulls.push(true);
+                }
+                None => {
+                    offsets.push(data.len() as i32);
+                    nulls.push(false);
+                }
+            }
+        }
+        let variant_col = Arc::new(BinaryArray::new(
+            OffsetBuffer::new(ScalarBuffer::from(offsets)),
+            Buffer::from(data),
+            Some(arrow::buffer::NullBuffer::from(nulls)),
+        ));
+
+        // Schema: base fields + variant field (extension-typed).
+        let mut fields: Vec<ArrowField> = base
+            .schema()
+            .fields()
+            .iter()
+            .map(|f| f.as_ref().clone())
+            .collect();
+        fields.push(variant_field("variant", true));
+        let schema = Arc::new(ArrowSchema::new(fields));
+
+        let mut arrays: Vec<Arc<dyn arrow::array::Array>> =
+            base.columns().iter().map(|c| c.clone()).collect();
+        arrays.push(variant_col);
+
+        RecordBatch::try_new(schema, arrays).expect("batch with variant column")
     }
 
     /// Exported column names (key fields then payload fields) with their

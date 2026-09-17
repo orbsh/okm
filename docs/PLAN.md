@@ -619,7 +619,7 @@ Document-oriented naming, one sweep before crates.io:
   schema lineage the model is moving away from.
 - Aura mq.rs migrated; bindings follow (they reference the codec only).
 
-## Parquet Variant export (proposed, 2026-09-17)
+## Parquet Variant export (shipped, 2026-09-17)
 
 Dynamic segment fields exported to Parquet as the **Variant** type —
 the open question and the assessment:
@@ -654,3 +654,12 @@ the open question and the assessment:
   `parquet-variant` separately so plain typed export stays on 54 if
   version coupling proves painful. Decide version strategy at
   implementation time.
+- **Shipped 2026-09-17**: deps bumped (arrow/parquet 60 + parquet-variant);
+  `Collection::to_record_batch_with_variant()` — typed columns unchanged,
+  one `variant` Binary column appended (ARROW:extension:name =
+  "parquet.variant"), per-row wire = [md_len u32 BE][metadata][value]
+  (the metadata dict is self-contained per variant value), rows without
+  a dynamic segment are null. Bump exposed three masked bugs, fixed:
+  Reverse<T> from_map emitted VarInt::from_dyn (type error, codec_v2_test
+  only compiled under parquet); hand-written TRowByOrg marker used stale
+  SLOT=1; FieldType::Bytes missing from arrow_type/swap_be/wire_bytes.
