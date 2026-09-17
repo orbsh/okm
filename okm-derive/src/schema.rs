@@ -246,6 +246,9 @@ fn variable_width(fs: &[FieldSchema], name_strs: &[String], n: &str) -> bool {
 /// uniform shape decode needs for the default-filling `if` branches.
 pub(crate) struct FieldSchema {
     pub ident: syn::Ident,
+    /// Rust type as written (normalized string), for the row-map bridge
+    /// to emit exact casts (`DynamicValue::UInt` -> `u32 as u32` etc.).
+    pub ty_str: String,
     pub enc: TS2,
     pub dec: TS2,
     pub width: TS2,
@@ -542,6 +545,7 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> Vec<FieldSchema> {
             other => panic!("{ctx}: unsupported type {other} (field {id})"),
         };
         fs.push(FieldSchema {
+            ty_str: ty_str.clone(),
             ident: id,
             enc,
             dec,
