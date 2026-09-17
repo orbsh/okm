@@ -12,6 +12,12 @@
 ///     const TAGS: &[(Self, u8)] = &[(State::Active, 0), (State::Suspended, 1), (State::Closed, 9)];
 /// }
 /// ```
+/// Free function so generated code can call it without naming `T`
+/// (inference resolves from the call site's context).
+pub fn enum_from_name<T: EnumTag>(name: &str) -> Option<T> {
+    T::from_name(name)
+}
+
 pub trait EnumTag: Copy + Sized + PartialEq + std::fmt::Debug + 'static {
     /// The full variant → tag table. Every variant must appear exactly
     /// once; tags need not be contiguous (gaps reserve room).
@@ -33,12 +39,35 @@ pub trait EnumTag: Copy + Sized + PartialEq + std::fmt::Debug + 'static {
             .map(|(v, _)| *v)
             .unwrap_or_else(|| panic!("EnumTag: unknown tag {t}"))
     }
+    /// Variant name for the map view (ADR-0012 row-map bridge):
+    /// `DynamicValue::Str(name)`. Derived from the TAGS table via Debug
+    /// — the variant's short name is the text after `::`.
+    fn name(&self) -> String {
+        let dbg = format!("{self:?}");
+        dbg.rsplit("::").next().unwrap_or(&dbg).to_owned()
+    }
+    /// Inverse of [`Self::name`]: map view → variant. Unknown names are
+    /// normal dynamic-reader input — `None`, never panic.
+    fn from_name(name: &str) -> Option<Self> {
+        Self::TAGS
+            .iter()
+            .find(|(v, _)| v.name() == name)
+            .map(|(v, _)| *v)
+    }
 }
 
 /// Newtype the derive macros recognize in field position (`Enum<State>`).
 /// Wire is one byte — width 1, fixed, at every destination.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Enum<T: EnumTag>(pub T);
+
+impl<T: EnumTag> Enum<T> {
+    /// Bridge constructor (ADR-0012 row-map bridge): `T` inferred from
+    /// the field type — no type interpolation in generated code.
+    pub fn from_dyn(v: T) -> Self {
+        Enum(v)
+    }
+}
 
 impl<T: EnumTag> Default for Enum<T> {
     /// Tag 0 — the schema-evolution default (same rule as decode filling

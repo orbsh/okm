@@ -560,14 +560,19 @@ fn emit_row_impl(schema: &RowSchema) -> TS2 {
         let is_bytes = ty_str.starts_with("Vec<u8>") || ty_str.starts_with("Vec < u8 >");
         let is_fixedbytes = ty_str.starts_with("[u8;");
         let is_f64 = ty_str.starts_with("Quant<") || ty_str.starts_with("Quant <");
+        let is_varint = ty_str.starts_with("VarInt<") || ty_str.starts_with("VarInt <");
+        let is_enum = ty_str.starts_with("Enum<") || ty_str.starts_with("Enum <");
+        let is_offset = ty_str.starts_with("Offset");
         if is_signed {
-            // Signed: pass through Default (map view shows Null); the
-            // wire/typed path remains authoritative for these fields.
+            // Signed integers lift as Int (two's complement preserved).
             to_map_arms.extend(quote! {
-                out.insert(#name.to_string(), ::okm_core::obj_dynamic::DynamicValue::Null);
+                out.insert(#name.to_string(), ::okm_core::obj_dynamic::DynamicValue::Int(self.#id as i64));
             });
             from_map_arms.extend(quote! {
-                #id: #dflt,
+                #id: match map.get(#name) {
+                    Some(::okm_core::obj_dynamic::DynamicValue::Int(v)) => (*v) as #t,
+                    _ => #dflt,
+                },
             });
         } else if is_bool {
             to_map_arms.extend(quote! {
@@ -609,15 +614,67 @@ fn emit_row_impl(schema: &RowSchema) -> TS2 {
                     _ => #dflt,
                 },
             });
-        } else if is_f64 {
-            // Quant<f64, P> stores an i64 wire but the Rust field is f64;
-            // lift the logical value.
+        } else if is_varint {
+            // VarInt<T>(pub T): lift the inner integer.
             to_map_arms.extend(quote! {
-                out.insert(#name.to_string(), ::okm_core::obj_dynamic::DynamicValue::F64(self.#id));
+                out.insert(#name.to_string(), ::okm_core::obj_dynamic::DynamicValue::UInt(self.#id.0 as u64));
             });
             from_map_arms.extend(quote! {
                 #id: match map.get(#name) {
-                    Some(::okm_core::obj_dynamic::DynamicValue::F64(v)) => *v,
+                    Some(::okm_core::obj_dynamic::DynamicValue::UInt(v)) => ::okm_core::VarInt::from_dyn(*v),
+                    _ => #dflt,
+                },
+            });
+        } else if is_enum {
+            // Enum<T>(pub T): the map view carries the VARIANT NAME
+            // (semantic value, not the wire tag). name()/from_name() are
+            // EnumTag methods on the enum type itself — defined once per
+            // enum, shared by every table that uses it (nothing
+            // per-table is generated here).
+            to_map_arms.extend(quote! {
+                out.insert(#name.to_string(), ::okm_core::obj_dynamic::DynamicValue::Str(self.#id.0.name()));
+            });
+            from_map_arms.extend(quote! {
+                #id: match map.get(#name) {
+                    Some(::okm_core::obj_dynamic::DynamicValue::Str(v)) => {
+                        match ::okm_core::wrappers::enum_from_name(v) {
+                            Some(e) => ::okm_core::Enum::from_dyn(e),
+                            None => #dflt,
+                        }
+                    }
+                    _ => #dflt,
+                },
+            });
+        } else if is_offset {
+            // Offset(pub i64): the absolute value IS the semantics.
+            to_map_arms.extend(quote! {
+                out.insert(#name.to_string(), ::okm_core::obj_dynamic::DynamicValue::Int(self.#id.0));
+            });
+            from_map_arms.extend(quote! {
+                #id: match map.get(#name) {
+                    Some(::okm_core::obj_dynamic::DynamicValue::Int(v)) => #t(*v),
+                    _ => #dflt,
+                },
+            });
+        } else if is_f64 || ty_str.starts_with("Quant <") {
+            // Quant<f64, P> stores an i64 wire but the Rust field is f64.
+            to_map_arms.extend(quote! {
+                out.insert(#name.to_string(), ::okm_core::obj_dynamic::DynamicValue::F64(self.#id.0));
+            });
+            from_map_arms.extend(quote! {
+                #id: match map.get(#name) {
+                    Some(::okm_core::obj_dynamic::DynamicValue::F64(v)) => ::okm_core::Quant::from_dyn(*v),
+                    _ => #dflt,
+                },
+            });
+        } else if ty_str.starts_with("Reverse<") || ty_str.starts_with("Reverse <") {
+            // Reverse<T>(pub T): wire is bit-flipped T; lift the inner.
+            to_map_arms.extend(quote! {
+                out.insert(#name.to_string(), ::okm_core::obj_dynamic::DynamicValue::UInt(self.#id.0 as u64));
+            });
+            from_map_arms.extend(quote! {
+                #id: match map.get(#name) {
+                    Some(::okm_core::obj_dynamic::DynamicValue::UInt(v)) => ::okm_core::VarInt::from_dyn(*v),
                     _ => #dflt,
                 },
             });

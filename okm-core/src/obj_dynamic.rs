@@ -21,6 +21,8 @@ use crate::wrappers::obj_value::ObjValueType;
 #[derive(Clone, Debug, PartialEq)]
 pub enum DynamicValue {
     UInt(u64),
+    /// Signed integer (typed path: `i8`..`i64` fields, `Offset` lifts).
+    Int(i64),
     F64(f64),
     Str(String),
     Bytes(Vec<u8>),
@@ -55,6 +57,15 @@ pub fn put_frame(buf: &mut Vec<u8>, id: u16, value: &DynamicValue) {
 /// Value → (type tag, body bytes).
 fn encode_value(value: &DynamicValue) -> (ObjValueType, Vec<u8>) {
     match value {
+        DynamicValue::Int(v) => {
+            // Minimal big-endian two's-complement width.
+            let be = v.to_be_bytes();
+            let fill = if *v < 0 { 0xFF } else { 0x00 };
+            let first = be.iter().position(|&b| b != fill).unwrap_or(7);
+            // Keep one sign byte so the sign is recoverable.
+            let start = if *v < 0 && first > 0 { first - 1 } else { first };
+            (ObjValueType::Int, be[start..].to_vec())
+        }
         DynamicValue::UInt(v) => {
             // Minimal big-endian width: strip leading zero bytes.
             let be = v.to_be_bytes();
@@ -160,6 +171,16 @@ fn decode_value(ty: ObjValueType, body: &[u8]) -> Option<DynamicValue> {
             let mut be = [0u8; 8];
             be[8 - body.len()..].copy_from_slice(body);
             DynamicValue::UInt(u64::from_be_bytes(be))
+        }
+        ObjValueType::Int => {
+            // Sign-extend back to 8 bytes, big-endian two's complement.
+            if body.is_empty() || body.len() > 8 {
+                return None;
+            }
+            let fill = if body[0] & 0x80 != 0 { 0xFF } else { 0x00 };
+            let mut be = [fill; 8];
+            be[8 - body.len()..].copy_from_slice(body);
+            DynamicValue::Int(i64::from_be_bytes(be))
         }
         ObjValueType::F64 => {
             if body.len() != 8 {

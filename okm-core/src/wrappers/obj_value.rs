@@ -44,6 +44,9 @@ pub enum ObjValueType {
     /// Nested object (reserved for the nesting milestone — frames carry
     /// the same shape as the top-level dynamic segment).
     Obj = 7,
+    /// Signed integer, big-endian two's complement, width implied by the
+    /// frame length (sign-extended on read).
+    Int = 8,
 }
 
 impl ObjValueType {
@@ -60,6 +63,7 @@ impl ObjValueType {
             5 => Some(Self::Null),
             6 => Some(Self::Array),
             7 => Some(Self::Obj),
+            8 => Some(Self::Int),
             _ => None,
         }
     }
@@ -75,11 +79,11 @@ mod tests {
 
     #[test]
     fn tags_round_trip_and_unknown_is_none() {
-        for b in 0u8..=7 {
-            let t = ObjValueType::from_byte(b).expect("0-7 are defined");
+        for b in 0u8..=8 {
+            let t = ObjValueType::from_byte(b).expect("0-8 are defined");
             assert_eq!(t.to_byte(), b);
         }
-        assert_eq!(ObjValueType::from_byte(8), None);
+        assert_eq!(ObjValueType::from_byte(9), None);
         assert_eq!(ObjValueType::from_byte(0xFF), None);
     }
 
@@ -95,5 +99,6 @@ mod tests {
         assert_eq!(ObjValueType::Null.to_byte(), 5);
         assert_eq!(ObjValueType::Array.to_byte(), 6);
         assert_eq!(ObjValueType::Obj.to_byte(), 7);
+        assert_eq!(ObjValueType::Int.to_byte(), 8);
     }
 }

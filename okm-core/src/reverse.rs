@@ -79,6 +79,14 @@ impl_rev_signed!(i64, u64, 8);
 pub struct Reverse<T: Reversible>(pub T);
 
 impl<T: Reversible> Reverse<T> {
+    /// Bridge constructor (ADR-0012 row-map bridge): `T` inferred from
+    /// the field type — no type interpolation in generated code.
+    pub fn from_dyn(v: u64) -> Self
+    where
+        T: std::convert::From<u64>,
+    {
+        Reverse(T::from(v))
+    }
     /// Descending-order BE encoding of the wrapped value.
     pub fn encode(&self) -> Vec<u8> {
         self.0.rev_encode()

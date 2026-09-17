@@ -15,12 +15,18 @@ pub trait VarIntEnc: Copy + Sized {
     /// Decode from the front of `b`; returns the value and bytes consumed.
     /// Panics on truncated input or a 10th continuation byte.
     fn varint_decode(b: &[u8]) -> (Self, usize);
+    /// Bridge cast: u64 (DynamicValue::UInt) → the concrete width. Macro
+    /// impls emit the exact `as` cast.
+    fn varint_from_u64(v: u64) -> Self;
 }
 
 macro_rules! impl_varint {
     ($t:ty, $maxw:literal) => {
         impl VarIntEnc for $t {
             const MAX_WIDTH: usize = $maxw;
+            fn varint_from_u64(v: u64) -> Self {
+                v as $t
+            }
             fn varint_encode(self, buf: &mut Vec<u8>) {
                 let mut v = self;
                 loop {
@@ -66,6 +72,11 @@ impl_varint!(u64, 10);
 pub struct VarInt<T: VarIntEnc>(pub T);
 
 impl<T: VarIntEnc> VarInt<T> {
+    /// Bridge constructor (ADR-0012 row-map bridge): `T` inferred from
+    /// the field type — no type interpolation in generated code.
+    pub fn from_dyn(v: u64) -> Self {
+        VarInt(T::varint_from_u64(v))
+    }
     pub fn encode(&self) -> Vec<u8> {
         let mut buf = Vec::with_capacity(T::MAX_WIDTH);
         self.0.varint_encode(&mut buf);
