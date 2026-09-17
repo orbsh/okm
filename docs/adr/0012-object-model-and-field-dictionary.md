@@ -158,13 +158,26 @@ slot 0      primary table          [ns][0][key payload]
 slot 1      obj dynamic segment    [ns][1][key payload]
 slot 2      field-name dictionary  [ns][2][field-id]        → name
 slot 3      field-name dictionary  [ns][3][name bytes]      → field-id
-slot 4–7    reserved
-slot 8+     indexes and reduces (declaration order), [ns][slot][...]
+slot 4–13   reserved (two-ended growth buffer)
+slot 14     edge forward           [ns][14][A·id][B·id]
+slot 15     edge reverse           [ns][15][B·id][A·id]
+slot 16+    indexes and reduces (declaration order), [ns][slot][...]
 ```
 
+Fixed roles grow upward from 0; edges sit at the top (14/15) and grow
+downward; 4–13 is an unpartitioned free buffer between the two fronts —
+the heap/stack memory-layout shape. No internal zoning: a future fixed
+role claims the next number from whichever front needs it; exhaustion =
+the fronts meet. The fixed/declared boundary sits on a nibble edge
+(`0x0?` fixed, `0x1?` declared) for hex-test legibility.
+Edge slots 14/15 belong to the edge-via-slots decision, PLAN Phase 10 —
+listed here so the table shows the complete final allocation; the
+direction-bit niche of ADR-0001 is retired by it.)
+
 Existing declared rows are byte-compatible: they simply use none of the
-new slots. Reserve 4–7 as cheap insurance (six numbers); index/reduce
-starting at 8 leaves 240+ usable slots, ample for any single table.
+new slots. The reserved band (4–13) is cheap insurance (ten numbers);
+indexes/reduces start at 16, leaving 240 per table — ample for any
+single table.
 
 ## Renaming: kv_ → ok_
 

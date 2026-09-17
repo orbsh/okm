@@ -13,56 +13,58 @@ derive（`okm-derive`）把 `#[ok_ns(N)]` 编译成 `Row::NS_PREFIX: &'static [u
 
 ## 第一级：2 字节 ns 前缀，table 与 edge 共用
 
-所有条目的 key 都以同构的 2 字节 BE 头开头，table（row 表）与 edge 共用同一个 ns 编号空间：
+所有条目的 key 都以同构的 2 字节 BE 头开头——ns 原值大端写入，table 与 edge 共用完整的 16 位编号空间，无变换、无保留半区：
 
 ```text
 [ ns 2B BE ] ...
-  └ table  : ns 占满 16 位，原值大端写入
-  └ edge   : ns 占低 15 位，最高位是方向位（FWD=0, REV=1）
 ```
 
-edge 的头是 `(ns << 1 | dir).to_be_bytes()`（`okm-core/src/edge.rs` 的 `head_bytes`）——方向位 niche 进 ns 字段的最高位（ADR-0001），没有独立的第三字节。代价是 edge 可用的 ns 号只有 0..=32767（声明类型仍是 u16）；收益是头保持定宽 2 字节，前缀扫描可以把头当固定 tag 用。
+## 第二级：1 字节 slot
 
-方向语义：
+ns 头之后是 1 字节 slot。完整分配（终态）：
 
 ```text
-edge ns=4，user → session
-
-forward key  [head(ns=4, dir=0)][A·identity][B·identity]   正向：起点身份在前
-reverse key  [head(ns=4, dir=1)][B·identity][A·identity]   反向：终点身份在前
+slot 0      主表                [ns][0][主键编码]                 value = TLV payload
+slot 1      obj 动态段          [ns][1][主键编码]                 value = nTLV 帧
+slot 2      字段名字典          [ns][2][field-id]                → 名字
+slot 3      字段名字典          [ns][3][名字]                    → field-id
+slot 4–13   保留（两端向中间增长的缓冲带）
+slot 14     edge 正向           [ns][14][A·identity][B·identity]
+slot 15     edge 反向           [ns][15][B·identity][A·identity]
+slot 16+    index / reduce      [ns][slot≥16][索引字段/组段][主键前缀]
 ```
 
-高位为 1 的段即反向段——双写保证两个方向都在（`EdgeTable::link` 一次写两条），扫描"某节点的所有邻居" = 同一 ns 的 FWD + REV 两段前缀扫描拼接。
+分配呈**两端固定、向中间收敛**的形态（类堆栈内存布局）：固定角色从 0 向上（主表、动态段、字典，未来的新固定角色按出现顺序向上领号），edge 从顶端向下（15 反向、14 正向），中间 4–13 是未划分的自由缓冲——不做内部区域划分，谁需要谁领号，两侧相遇即耗尽。
 
-## 第二级：table 后面接 1 字节 slot
+- 主表与派生：0 主表（`PRIMARY_SLOT`），1 obj 动态段（ADR-0012），2–3 字段名字典（双向），16 起按 `#[ok_index]` 声明序分配访问方法、reduce 续接同一计数器。
+- edge（PLAN Phase 10，取代 ADR-0001 方向位 niche）：正/反各占一个 slot（14/15），头就是 ns 原值——不再有 `ns<<1|dir` 变换，table 与 edge 布局完全同构，16 位 ns 全宽对两者开放。双写保证两个方向都在（`EdgeTable::link` 一次写两条），扫描"某节点的所有邻居" = slot 14 + slot 15 两段前缀扫描拼接。
 
-table 侧，ns 头之后是 1 字节 slot，0 是主表（`PRIMARY_SLOT`），1 起按 `#[ok_index]` 声明序分配给访问方法：
+slot 字节让"表内加派生数据"永不侵占相邻表的 ns 段（ADR-0005）；分配纪律、append-only 契约、变长字段的约束见[slot 机制](slot-mechanism.zh-CN.md)。
+
+**partition 前缀（可选，在 ns 头之前）**：`#[ok_partition(N)]` 声明的表，所有键在最前面多一段 `[0xFF][N 1B]`：
 
 ```text
-主表条目  [ ns 2B ][ slot=0 ][ 主键编码 ]                 value = TLV payload
-索引条目  [ ns 2B ][ slot≥1 ][ 索引字段 ][ 主键前缀 ]      value = includes TLV
+partition 表条目  [ 0xFF ][ part 1B ][ ns 2B ][ slot ][ ... ]
 ```
 
-slot 字节让"表内加索引"永不侵占相邻表的 ns 段（ADR-0005）；分配纪律、append-only 契约、变长字段的约束见[slot 机制](slot-mechanism.zh-CN.md)。
-
-edge 侧没有第二级——头之后直接是端点身份编码，正向/反向的分岔已由方向位承担，不存在"一条边多个访问方法"的形态。
+`0xFF` 是转义字节——合法 ns 头（大端 u16，首字节受 ns 字典纪律约束为 0x00–0xFE）永不以它开头，所以 partition 表与普通表的键空间**结构性不相交**，无需任何编号协调（partition(0) 非法——直接省略属性即无段）。语义：partition 是 workload 隔离（compaction 分组），不是所有权边界；ns 仍是归属的最外层。
 
 ## 全景
 
 ```text
-table  [ ns 2B            ][ slot 1B    ][ ... ]
-edge   [ ns<<1|dir 2B BE   ][ A·id ][ B·id ]     （反向时 A/B 对调）
-         ↑ 共用同一编号空间：table 用满 16 位，edge 用低 15 位 + 最高位方向位
+table  [ (0xFF part 1B) ][ ns 2B ][ slot 1B ][ ... ]   partition 段可选
+edge   [ ns 2B          ][ slot 6|7 ][ A·id ][ B·id ]
+         ↑ 同一编号空间、同一头纪律，slot 区分派生数据——无方向位变换
 ```
 
-注意一个工程后果：ns 字典手动分配时，**table 号与 edge 号混在同一空间里**——`#[ok_ns(4)]` 既是 row 表也是 edge 的合法号，互撞由字典纪律（append-only、人工分配，ADR-0002）而不是类型系统阻止。.ns 号 32768..=65535 对 edge 不可表达（方向位 niche 的直接后果），分配时 table 可用的号比 edge 宽一倍。
+注意一个工程后果：ns 字典手动分配时，**table 号与 edge 号在同一空间里是真共享**——`#[ok_ns(4)]` 下 table 的 slot 0 是主表，edge 的 slot 6/7 是边，两者共存于同一 ns 段，互不冲突也不需要错开编号。
 
 ## reduce 的位置
 
-reduce 条目没有独立 ns——它寄生在宿主 row 的 ns 段里，slot 续接该 row 的索引计数器（最后一个索引 slot + 1 起，同样 append-only）：
+reduce 条目没有独立 ns——它寄生在宿主 obj 的 ns 段里，slot 从 16 起与索引共用计数器（按声明序分配，append-only）：
 
 ```text
-reduce 条目  [ ns 2B ][ slot≥N ][ group 段 ]   value = acc 编码
+reduce 条目  [ ns 2B ][ slot≥16 ][ group 段 ]   value = acc 编码
 ```
 
-对扫描而言，一个 ns 段内前缀 `[ns][slot]` 完整枚举了这张表的所有派生状态：slot 0 主表、1.. 索引与 reduce。机制见[reduce 机制](reduce-mechanism.zh-CN.md)。
+对扫描而言，一个 ns 段内前缀 `[ns][slot]` 完整枚举了这张 obj 的所有派生状态：0 主表、1 动态段、2–3 字典、14–15 边、16+ 索引与 reduce。机制见[reduce 机制](reduce-mechanism.zh-CN.md)。
