@@ -346,12 +346,16 @@ impl<S: VirtualStorage, K: KeyEncode, R: Row<Key = K>> Table<S, K, R> {
     /// zero-frame list is never written).
     pub fn get_variants(&mut self, key: &K) -> Option<BTreeMap<String, DynamicValue>> {
         let raw = self.store.get(&self.variants_key(key))?;
-        let frames = crate::obj_dynamic::decode_variants(&raw);
+        let mut d = DictCache::default();
+        let header = self.header();
+        // decode_named resolves nested obj field ids through the same
+        // dictionary — nested maps come back fully name-keyed.
+        let frames = crate::obj_dynamic::decode_named(&raw, &mut |id| {
+            d.name_for(&mut self.store, &header, id)
+        });
         if frames.is_empty() {
             return None;
         }
-        let mut d = DictCache::default();
-        let header = self.header();
         let mut out = BTreeMap::new();
         for f in frames {
             if let Some(name) = d.name_for(&mut self.store, &header, f.id) {
@@ -375,11 +379,14 @@ impl<S: VirtualStorage, K: KeyEncode, R: Row<Key = K>> Table<S, K, R> {
         variants: &BTreeMap<String, DynamicValue>,
     ) {
         let mut d = DictCache::default();
-        let header = self.header();
+        let header = self.header().clone();
+        let store = &mut self.store;
+        let mut resolver = |name: &str| d.id_for(store, &header, name);
         let mut body = Vec::new();
         for (name, value) in variants {
-            let id = d.id_for(&mut self.store, &header, name);
-            crate::obj_dynamic::put_frame(&mut body, id, value);
+            // put_frame_named recurses into nested Obj values, sharing
+            // the dictionary (id_for allocates on first sight).
+            crate::obj_dynamic::put_frame_named(&mut body, name, value, &mut resolver);
         }
         self.epoch += 1;
         let k = self.variants_key(key);
