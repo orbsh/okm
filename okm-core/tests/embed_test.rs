@@ -1,4 +1,4 @@
-use okm_core::{KeyEncode, DocumentEncode, Document, Embedded, TestStore};
+use okm_core::{KeyEncode, DocumentEncode, Document, Ref, TestStore};
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
 pub struct OwnerKey { pub org_id: u32, pub user_id: u64 }
@@ -19,7 +19,7 @@ pub struct Address {
 #[ok_ns(41)]
 pub struct User {
     pub level: u32,
-    pub address: Embedded<Address, AddressKey>,
+    pub address: Ref<Address, AddressKey>,
 }
 
 #[test]
@@ -32,7 +32,7 @@ fn embed_roundtrip() {
     let addr = Address { city: "delhi".into(), zip: 110001 };
     users.put(&ukey, &User {
         level: 4,
-        address: Embedded::own(akey.clone(), addr.clone()),
+        address: Ref::own(akey.clone(), addr.clone()),
     });
     // child written at its own key
     assert_eq!(addrs.get(&akey), Some(addr.clone()));
@@ -41,7 +41,7 @@ fn embed_roundtrip() {
     assert_eq!(u.address.value, Some(addr.clone()));
     // reference-only write: new user pointing at the same address
     let ukey2 = OwnerKey { org_id: 1, user_id: 3 };
-    users.put(&ukey2, &User { level: 9, address: Embedded::ref_key(akey.clone()) });
+    users.put(&ukey2, &User { level: 9, address: Ref::ref_key(akey.clone()) });
     assert_eq!(addrs.get(&akey), Some(addr.clone()));
     let u2 = users.get(&ukey2).expect("user2");
     assert_eq!(u2.address.value, Some(addr.clone()));
