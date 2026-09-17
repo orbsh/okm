@@ -1,4 +1,4 @@
-//! `Embedded<D, K>` — a child document embedded into a parent document
+//! `Ref<D, K>` — a child document embedded into a parent document
 //! by key reference (ADR-0012 embedded-type milestone).
 //!
 //! Wire form: **key only** (`K::encode()`, fixed width — hot-segment
@@ -15,13 +15,13 @@
 //!   `None` (visible absence, not a panic — under reference semantics
 //!   the child can be deleted independently).
 //!
-//! No attribute: `Embedded<D, K>` in field position is recognized by the
+//! No attribute: `Ref<D, K>` in field position is recognized by the
 //! derive from the type itself, same discipline as `Reverse<T>` /
 //! `VarInt<T>` / `Quant<P>`.
 use crate::key::KeyEncode;
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct Embedded<D, K: KeyEncode> {
+pub struct Ref<D, K: KeyEncode> {
     /// The child document's own key (the only thing on the wire).
     pub key: K,
     /// The child document in memory. `Some` = write it / it was read
@@ -29,15 +29,15 @@ pub struct Embedded<D, K: KeyEncode> {
     pub value: Option<D>,
 }
 
-impl<D, K: KeyEncode> Embedded<D, K> {
+impl<D, K: KeyEncode> Ref<D, K> {
     /// Reference an existing child by key (write: no child write).
     pub fn ref_key(key: K) -> Self {
-        Embedded { key, value: None }
+        Ref { key, value: None }
     }
 
     /// Own a child document: write it under this key on the parent's put.
     pub fn own(key: K, value: D) -> Self {
-        Embedded { key, value: Some(value) }
+        Ref { key, value: Some(value) }
     }
 
     /// Wire bytes = the child key's encoding.

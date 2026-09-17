@@ -557,9 +557,9 @@ fn emit_row_impl(schema: &RowSchema) -> TS2 {
     // decoder. `String`/`Vec<u8>` clone; fixed `[u8; N]` converts.
     let mut to_map_arms = quote! {};
     let mut from_map_arms = quote! {};
-    // Embedded fields: (ident, D type tokens, K type tokens) — feeds the
+    // Ref fields: (ident, D type tokens, K type tokens) — feeds the
     // deref/write/release hooks.
-    let mut embed_fields: Vec<(syn::Ident, syn::Type, syn::Type)> = Vec::new();
+    let mut embed_fields: Vec<(syn::Ident, syn::Type, syn::Type, bool)> = Vec::new(); // (ident, D, K, is_list)
     for f in &schema.fields {
         let id = &f.ident;
         let name = id.to_string();
@@ -580,42 +580,46 @@ fn emit_row_impl(schema: &RowSchema) -> TS2 {
         let is_varint = ty_str.starts_with("VarInt<") || ty_str.starts_with("VarInt <");
         let is_enum = ty_str.starts_with("Enum<") || ty_str.starts_with("Enum <");
         let is_offset = ty_str.starts_with("Offset");
-        let is_embed = ty_str.starts_with("Embedded<") || ty_str.starts_with("Embedded <");
-        // Embedded<D, K>: extract the K type for key encode/decode.
-        let embed_default = if is_embed {
+        let is_embed = ty_str.starts_with("Ref<") || ty_str.starts_with("Ref <") || ty_str.starts_with("List<");
+        // Ref<D, K>: extract the K type for key encode/decode.
+        let embed_default = if ty_str.starts_with("Ref<") || ty_str.starts_with("Ref <") {
             let k_ty_str = ty_str
-                .trim_start_matches("Embedded <")
-                .trim_start_matches("Embedded<")
+                .trim_start_matches("Ref <")
+                .trim_start_matches("Ref<")
                 .trim_end_matches('>')
                 .rsplit_once(',')
                 .map(|(_, k)| k.trim().to_string())
-                .expect("embedded: <D, K>");
+                .expect("ref: <D, K>");
             let k_ty: syn::Type = syn::parse_str(&k_ty_str)
-                .unwrap_or_else(|e| panic!("bridge: bad Embedded key type `{k_ty_str}`: {e}"));
-            quote! { ::okm_core::Embedded { key: <#k_ty as ::core::default::Default>::default(), value: None } }
+                .unwrap_or_else(|e| panic!("bridge: bad Ref key type `{k_ty_str}`: {e}"));
+            quote! { ::okm_core::Ref { key: <#k_ty as ::core::default::Default>::default(), value: None } }
+        } else if ty_str.starts_with("List<") {
+            quote! { ::okm_core::List { keys: ::std::vec::Vec::new(), values: ::std::vec::Vec::new() } }
         } else {
             quote! {}
         };
         if is_embed {
             let d_k = ty_str
-                .trim_start_matches("Embedded <")
-                .trim_start_matches("Embedded<")
+                .trim_start_matches("Ref <")
+                .trim_start_matches("Ref<")
+                .trim_start_matches("List <")
+                .trim_start_matches("List<")
                 .trim_end_matches('>')
                 .to_string();
             let (d_str, k_str) = d_k
                 .rsplit_once(',')
                 .map(|(d, k)| (d.trim().to_string(), k.trim().to_string()))
-                .expect("embedded: <D, K>");
+                .expect("ref: <D, K>");
             let d_ty: syn::Type = syn::parse_str(&d_str)
-                .unwrap_or_else(|e| panic!("bridge: bad Embedded doc type `{d_str}`: {e}"));
+                .unwrap_or_else(|e| panic!("bridge: bad Ref doc type `{d_str}`: {e}"));
             let k_ty: syn::Type = syn::parse_str(&k_str)
-                .unwrap_or_else(|e| panic!("bridge: bad Embedded key type `{k_str}`: {e}"));
-            embed_fields.push((id.clone(), d_ty, k_ty));
+                .unwrap_or_else(|e| panic!("bridge: bad Ref key type `{k_str}`: {e}"));
+            embed_fields.push((id.clone(), d_ty, k_ty, ty_str.starts_with("List")));
         }
         let embed_k: Option<syn::Type> = if is_embed {
             let generics = ty_str
-                .trim_start_matches("Embedded <")
-                .trim_start_matches("Embedded<")
+                .trim_start_matches("Ref <")
+                .trim_start_matches("Ref<")
                 .trim_end_matches('>')
                 .to_string();
             generics.rsplit_once(',').map(|(_, k)| k.trim().to_string()).and_then(|k| syn::parse_str(&k).ok())
@@ -737,18 +741,18 @@ fn emit_row_impl(schema: &RowSchema) -> TS2 {
                     _ => #dflt,
                 },
             });
-        } else if is_embed {
-            // Embedded field: map view = the child key bytes (the wire
+        } else if is_embed && (ty_str.starts_with("Ref<") || ty_str.starts_with("Ref <")) {
+            // Ref field: map view = the child key bytes (the wire
             // truth). The child VALUE is a document relation, not data in
             // this map — readers who want it call the child collection.
-            let kt = embed_k.clone().expect("embedded: key type");
+            let kt = embed_k.clone().expect("ref: key type");
             to_map_arms.extend(quote! {
                 out.insert(#name.to_string(), ::okm_core::obj_dynamic::DynamicValue::Bytes(self.#id.key.encode()));
             });
             from_map_arms.extend(quote! {
                 #id: match map.get(#name) {
                     Some(::okm_core::obj_dynamic::DynamicValue::Bytes(b)) => {
-                        ::okm_core::Embedded {
+                        ::okm_core::Ref {
                             key: <#kt as ::okm_core::KeyEncode>::decode(b),
                             value: None,
                         }
@@ -756,6 +760,29 @@ fn emit_row_impl(schema: &RowSchema) -> TS2 {
                     _ => {
                                 #embed_default
                     }
+                },
+            });
+        } else if is_embed {
+            // List field: map view = Array of child key bytes.
+            let kt = embed_k.clone().expect("list: key type");
+            to_map_arms.extend(quote! {
+                out.insert(#name.to_string(), ::okm_core::obj_dynamic::DynamicValue::Array(
+                    self.#id.keys.iter().map(|k| ::okm_core::obj_dynamic::DynamicValue::Bytes(k.encode())).collect()
+                ));
+            });
+            from_map_arms.extend(quote! {
+                #id: match map.get(#name) {
+                    Some(::okm_core::obj_dynamic::DynamicValue::Array(items)) => {
+                        ::okm_core::List {
+                            keys: items.iter().filter_map(|v| match v {
+                                ::okm_core::obj_dynamic::DynamicValue::Bytes(b) =>
+                                    Some(<#kt as ::okm_core::KeyEncode>::decode(b)),
+                                _ => None,
+                            }).collect(),
+                            values: (0..items.len()).map(|_| ::core::option::Option::None).collect(),
+                        }
+                    }
+                    _ => #embed_default,
                 },
             });
         } else {
@@ -777,46 +804,95 @@ fn emit_row_impl(schema: &RowSchema) -> TS2 {
     let widths: Vec<_> = schema.fields.iter().map(|f| &f.width).collect();
 
 
-    // ---- embedded hooks (no-ops when the document has no Embedded fields) ----
+    // ---- ref hooks (no-ops when the document has no embedded fields) ----
     let embed_hooks = if embed_fields.is_empty() {
         quote! {}
     } else {
-        let deref_arms = embed_fields.iter().map(|(fid, d_ty, _k_ty)| {
-            quote! {
-                if self.#fid.value.is_none() {
-                    let mut pkey = <#d_ty as ::okm_core::Document>::NS_PREFIX.to_vec();
-                    pkey.push(::okm_core::PRIMARY_SLOT);
-                    pkey.extend_from_slice(&self.#fid.key.encode());
-                    if let Some(mut payload_row) = store.get(&pkey).map(|v| <#d_ty as ::okm_core::Document>::decode_payload(&v)) {
-                        // Recurse: the child may itself embed documents.
-                        <#d_ty as ::okm_core::Document>::__okm_embed_deref(&mut payload_row, store);
-                        self.#fid.value = Some(payload_row);
+        // ---- deref arms (Ref: single; List: per key) ----
+        let deref_arms = embed_fields.iter().map(|(fid, d_ty, _k_ty, is_list)| {
+            if *is_list {
+                quote! {
+                    for i in 0..self.#fid.keys.len() {
+                        if self.#fid.values.get(i).map_or(true, |v| v.is_none()) {
+                            let mut pkey = <#d_ty as ::okm_core::Document>::NS_PREFIX.to_vec();
+                            pkey.push(::okm_core::PRIMARY_SLOT);
+                            pkey.extend_from_slice(&self.#fid.keys[i].encode());
+                            if let Some(payload) = store.get(&pkey) {
+                                let mut child = <#d_ty as ::okm_core::Document>::decode_payload(&payload);
+                                <#d_ty as ::okm_core::Document>::__okm_embed_deref(&mut child, store);
+                                self.#fid.values[i] = Some(child);
+                            }
+                        }
+                    }
+                }
+            } else {
+                quote! {
+                    if self.#fid.value.is_none() {
+                        let mut pkey = <#d_ty as ::okm_core::Document>::NS_PREFIX.to_vec();
+                        pkey.push(::okm_core::PRIMARY_SLOT);
+                        pkey.extend_from_slice(&self.#fid.key.encode());
+                        if let Some(payload) = store.get(&pkey) {
+                            let mut child = <#d_ty as ::okm_core::Document>::decode_payload(&payload);
+                            <#d_ty as ::okm_core::Document>::__okm_embed_deref(&mut child, store);
+                            self.#fid.value = Some(child);
+                        }
                     }
                 }
             }
         });
-        let entry_arms = embed_fields.iter().map(|(fid, d_ty, k_ty)| {
-            quote! {
-                if let Some(child) = &self.#fid.value {
-                    let raw = self.#fid.key.encode();
-                    let mut pkey = <#d_ty as ::okm_core::Document>::NS_PREFIX.to_vec();
-                    pkey.push(::okm_core::PRIMARY_SLOT);
-                    pkey.extend_from_slice(&raw);
-                    entries.push((pkey, child.encode_payload()));
-                    let child_key = <#k_ty as ::okm_core::KeyEncode>::decode(&raw);
-                    for (ek, ev) in <#d_ty as ::okm_core::Document>::index_entries(&child_key, child, <#d_ty as ::okm_core::Document>::NS_PREFIX) {
-                        entries.push((ek, ev));
+        // ---- entry arms (Ref: single child; List: per Some value) ----
+        let entry_arms = embed_fields.iter().map(|(fid, d_ty, k_ty, is_list)| {
+            if *is_list {
+                quote! {
+                    for (k, child) in self.#fid.keys.iter().zip(self.#fid.values.iter()) {
+                        if let Some(child) = child {
+                            let raw = k.encode();
+                            let mut pkey = <#d_ty as ::okm_core::Document>::NS_PREFIX.to_vec();
+                            pkey.push(::okm_core::PRIMARY_SLOT);
+                            pkey.extend_from_slice(&raw);
+                            entries.push((pkey, child.encode_payload()));
+                            let child_key = <#k_ty as ::okm_core::KeyEncode>::decode(&raw);
+                            for (ek, ev) in <#d_ty as ::okm_core::Document>::index_entries(&child_key, child, <#d_ty as ::okm_core::Document>::NS_PREFIX) {
+                                entries.push((ek, ev));
+                            }
+                        }
+                    }
+                }
+            } else {
+                quote! {
+                    if let Some(child) = &self.#fid.value {
+                        let raw = self.#fid.key.encode();
+                        let mut pkey = <#d_ty as ::okm_core::Document>::NS_PREFIX.to_vec();
+                        pkey.push(::okm_core::PRIMARY_SLOT);
+                        pkey.extend_from_slice(&raw);
+                        entries.push((pkey, child.encode_payload()));
+                        let child_key = <#k_ty as ::okm_core::KeyEncode>::decode(&raw);
+                        for (ek, ev) in <#d_ty as ::okm_core::Document>::index_entries(&child_key, child, <#d_ty as ::okm_core::Document>::NS_PREFIX) {
+                            entries.push((ek, ev));
+                        }
                     }
                 }
             }
         });
-        let key_arms = embed_fields.iter().map(|(fid, d_ty, _k_ty)| {
-            quote! {
-                {
-                    let mut pkey = <#d_ty as ::okm_core::Document>::NS_PREFIX.to_vec();
-                    pkey.push(::okm_core::PRIMARY_SLOT);
-                    pkey.extend_from_slice(&self.#fid.key.encode());
-                    keys.push(pkey);
+        // ---- key arms (for stale-release) ----
+        let key_arms = embed_fields.iter().map(|(fid, d_ty, _k_ty, is_list)| {
+            if *is_list {
+                quote! {
+                    for k in &self.#fid.keys {
+                        let mut pkey = <#d_ty as ::okm_core::Document>::NS_PREFIX.to_vec();
+                        pkey.push(::okm_core::PRIMARY_SLOT);
+                        pkey.extend_from_slice(&k.encode());
+                        keys.push(pkey);
+                    }
+                }
+            } else {
+                quote! {
+                    {
+                        let mut pkey = <#d_ty as ::okm_core::Document>::NS_PREFIX.to_vec();
+                        pkey.push(::okm_core::PRIMARY_SLOT);
+                        pkey.extend_from_slice(&self.#fid.key.encode());
+                        keys.push(pkey);
+                    }
                 }
             }
         });

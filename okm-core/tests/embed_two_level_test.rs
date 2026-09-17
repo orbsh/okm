@@ -1,4 +1,4 @@
-use okm_core::{DocumentEncode, Embedded, KeyEncode, TestStore};
+use okm_core::{DocumentEncode, Ref, KeyEncode, TestStore};
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
 pub struct OrgKey {
@@ -41,7 +41,7 @@ pub struct Floor {
 pub struct DeptV2 {
     pub name: String,
     pub floor_count: u8,
-    pub main_floor: Embedded<Floor, FloorKey>,
+    pub main_floor: Ref<Floor, FloorKey>,
 }
 
 #[derive(DocumentEncode, Clone, PartialEq, Debug)]
@@ -49,7 +49,7 @@ pub struct DeptV2 {
 #[ok_ns(51)]
 pub struct Org {
     pub name: String,
-    pub hq: Embedded<DeptV2, DeptKey>,
+    pub hq: Ref<DeptV2, DeptKey>,
 }
 
 #[test]
@@ -71,12 +71,12 @@ fn two_level_embed_roundtrip() {
     let dept = DeptV2 {
         name: "platform".into(),
         floor_count: 3,
-        main_floor: Embedded::ref_key(floor_key.clone()),
+        main_floor: Ref::ref_key(floor_key.clone()),
     };
     depts.put(&dept_key, &dept);
     let org = Org {
         name: "acme".into(),
-        hq: Embedded::ref_key(dept_key.clone()),
+        hq: Ref::ref_key(dept_key.clone()),
     };
     orgs.put(&org_key, &org);
 
@@ -90,7 +90,7 @@ fn two_level_embed_roundtrip() {
     // Owning write: change the floor through the dept's put.
     let dept2 = DeptV2 {
         floor_count: 4,
-        main_floor: Embedded::own(floor_key.clone(), Floor { room_count: 20 }),
+        main_floor: Ref::own(floor_key.clone(), Floor { room_count: 20 }),
         ..dept.clone()
     };
     depts.put(&dept_key, &dept2);
