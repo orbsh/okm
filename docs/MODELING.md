@@ -370,6 +370,60 @@ t.delete(&key);                                   // remove slot 0 + index entri
   derive (cross tests lock this). Version-default migration works on the
   dynamic read path too: literal `#[ok_default]` travels with the schema.
 
+### Embedded documents (`Embedded<D, K>`)
+
+A child document embedded **by key reference**: the parent's field
+carries only the child's key on the wire (fixed width, hot segment);
+the child is a complete document at its own ns/key with its own
+indexes. In memory the field is `key` + `Option<value>`:
+
+```rust
+#[derive(KeyEncode)]
+pub struct AddressKey { pub owner_id: u64, pub kind: u8 }
+
+#[derive(DocumentEncode)]
+#[ok_ref(AddressKey)]
+#[ok_ns(42)]
+pub struct Address {          // a complete document of its own
+    pub city: String,
+    pub zip: u32,
+}
+
+#[derive(DocumentEncode)]
+#[ok_ref(OwnerKey)]
+#[ok_ns(41)]
+pub struct User {
+    pub level: u32,
+    pub address: Embedded<Address, AddressKey>,  // no attribute needed
+}
+```
+
+- **Write, `Some(value)`** (`Embedded::own(key, value)`): the parent's
+  `put` also writes the child payload + the child's index entries, in
+  the same store batch (one atomic boundary).
+- **Write, `None`** (`Embedded::ref_key(key)`): reference an existing
+  child — the parent stores the key and touches nothing else. This is
+  the shared, many-to-one form (many users pointing at one address).
+- **Read**: `get` dereferences automatically — the child is fetched by
+  the stored key and backfilled. A missing child (deleted independently
+  under reference semantics) reads back as `value: None` — visible
+  absence, not a panic. Queries return the nested struct directly.
+- **Overwrite**: changing the key releases the old reference — keys the
+  OLD document pointed at but the new one doesn't are deleted. No
+  cascade: a shared child survives; an owned-cascade option
+  (`#[ok_embed(own)]`) is a possible future extension.
+- No attribute is required: the derive recognizes `Embedded<D, K>` from
+  the field type, the same discipline as `Reverse<T>` / `Quant<P>`.
+- The map view (`to_map`) lifts an embedded field to
+  `Bytes(child key)` — the wire truth; the child's value belongs to the
+  child collection, not this map.
+
+Embedded is one of three ways fields relate across documents —
+`includes` copies values into an index entry (skip the fetch), dynamic
+frames nest values inside one payload, and embedding references a
+separate document (shared identity, independent indexes, independent
+lifecycle).
+
 ### Payload versions and field defaults
 
 The payload carries a version byte (`#[ok_layout(version = N)]`, default 1).

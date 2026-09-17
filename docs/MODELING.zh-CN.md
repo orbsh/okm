@@ -257,6 +257,40 @@ t.delete(&key);                                   // 移除 slot 0 + 全部索�
   `bindings/`，与 Rust derive 字节一致（交叉测试锁定）。版本默认值迁移
   在动态读路径同样生效：字面量 `#[ok_default]` 随 schema 走。
 
+### 嵌入文档（`Embedded<D, K>`）
+
+以 **key 引用**嵌入子文档：父文档的字段在 wire 上只携带子文档的 key（定宽、热段）；子文档是独立完整的 document，有自己的 ns/key 和自己的索引。内存形态是 `key` + `Option<value>`：
+
+```rust
+#[derive(KeyEncode)]
+pub struct AddressKey { pub owner_id: u64, pub kind: u8 }
+
+#[derive(DocumentEncode)]
+#[ok_ref(AddressKey)]
+#[ok_ns(42)]
+pub struct Address {          // 独立完整的 document
+    pub city: String,
+    pub zip: u32,
+}
+
+#[derive(DocumentEncode)]
+#[ok_ref(OwnerKey)]
+#[ok_ns(41)]
+pub struct User {
+    pub level: u32,
+    pub address: Embedded<Address, AddressKey>,  // 无需 attribute
+}
+```
+
+- **写入 `Some(value)`**（`Embedded::own(key, value)`）：父文档的 `put` 同时写子文档 payload 与子文档自己的索引条目，同一 store batch（同一原子边界）。
+- **写入 `None`**（`Embedded::ref_key(key)`）：引用已存在的子文档——父文档只存 key，不碰子文档。这是共享、多对一的形态（多个 user 指向同一个 address）。
+- **读取**：`get` 自动解引用——按存储的 key 取子文档并回填。子文档缺失（引用语义下被独立删除）读回 `value: None`——可见的缺失，不是 panic。查询直接返回嵌套结构体。
+- **覆盖**：换 key 会释放旧引用——旧文档指向而新文档不指向的 key 被删除。不 cascade：共享的子文档存活；拥有式级联（`#[ok_embed(own)]`）是可能的后续扩展。
+- 无需 attribute：derive 从字段类型识别 `Embedded<D, K>`，与 `Reverse<T>` / `Quant<P>` 同一纪律。
+- map 视图（`to_map`）把嵌入字段 lift 为 `Bytes(子 key)`——wire 事实；子文档的值属于子 collection，不属于这个 map。
+
+嵌入是字段跨文档关联的三种方式之一——`includes` 把值拷贝进索引条目（免回表）、动态帧把值嵌进单个 payload、嵌入引用一个独立文档（共享身份、独立索引、独立生命周期）。
+
 ### Payload 版本与字段默认值
 
 payload 头部带版本字节（`#[ok_layout(version = N)]`，默认 1）。解码规则：payload 头部版本比读取方的 schema **新** → 拒绝；**旧** → 接受，且旧 payload 缺失的字段（该版本之后尾部追加的）取默认值：
