@@ -11,8 +11,8 @@ use criterion::{criterion_group, criterion_main, BatchSize, Criterion, Throughpu
 use std::hint::black_box;
 
 use okm_core::{
-    KeyEncode, KvBatch, TestStore, ReduceCodec, ReduceLogic, Reversible, Reverse, Row, ObjEncode,
-    Table, VarInt, VirtualStorage,
+    KeyEncode, KvBatch, TestStore, ReduceCodec, ReduceLogic, Reversible, Reverse, Document, DocumentEncode,
+    Collection, VarInt, VirtualStorage,
 };
 
 // ---------- declarations under test ----------
@@ -24,7 +24,7 @@ pub struct BenchKey {
     pub tag: [u8; 4],  // 4B  → KEY_LEN = 16 ("typical" key)
 }
 
-#[derive(ObjEncode, Clone, PartialEq, Debug)]
+#[derive(DocumentEncode, Clone, PartialEq, Debug)]
 #[ok_ref(BenchKey)]
 #[ok_ns(9)]
 #[ok_index(by_level { fields(level) })]
@@ -61,7 +61,7 @@ impl ReduceCodec for TagTotals {
 }
 
 impl ReduceLogic for TagTotals {
-    type Row = BenchRow;
+    type Document = BenchRow;
     type Acc = TagTotals;
     fn fold(acc: &mut TagTotals, item: &BenchRow) {
         acc.count += 1;
@@ -134,7 +134,7 @@ fn bench_payload(c: &mut Criterion) {
     g.throughput(Throughput::Bytes(bytes.len() as u64));
     g.bench_function("encode_payload/hot+cold", |b| b.iter(|| black_box(row.encode_payload())));
     g.bench_function("decode_payload/hot+cold", |b| {
-        b.iter(|| black_box(<BenchRow as Row>::decode_payload(black_box(&bytes))))
+        b.iter(|| black_box(<BenchRow as Document>::decode_payload(black_box(&bytes))))
     });
 
     // Reverse<T> bit-flip (order-preserving descending index).
@@ -148,7 +148,7 @@ fn bench_payload(c: &mut Criterion) {
 fn bench_scan(c: &mut Criterion) {
     let mut g = c.benchmark_group("index-scan");
     for &fanout in &[1usize, 100, 10_000] {
-        let mut t: Table<TestStore, BenchKey, BenchRow> = Table::new(TestStore::slatedb_mem());
+        let mut t: Collection<TestStore, BenchKey, BenchRow> = Collection::new(TestStore::slatedb_mem());
         for i in 0..fanout as u64 {
             let k = make_key(1_000_000 + i);
             // Same tag for all rows in this group → one prefix value,
@@ -183,7 +183,7 @@ fn bench_scan(c: &mut Criterion) {
 fn bench_write_mock(c: &mut Criterion) {
     let mut g = c.benchmark_group("write-mock");
     g.bench_function("put/row_with_index+reduce", |b| {
-        let mut t: Table<TestStore, BenchKey, BenchRow> = Table::new(TestStore::slatedb_mem());
+        let mut t: Collection<TestStore, BenchKey, BenchRow> = Collection::new(TestStore::slatedb_mem());
         let mut i = 0u64;
         b.iter(|| {
             t.put(&make_key(i), &make_row(i));
@@ -192,13 +192,13 @@ fn bench_write_mock(c: &mut Criterion) {
         })
     });
     g.bench_function("get/point", |b| {
-        let mut t: Table<TestStore, BenchKey, BenchRow> = Table::new(TestStore::slatedb_mem());
+        let mut t: Collection<TestStore, BenchKey, BenchRow> = Collection::new(TestStore::slatedb_mem());
         t.put(&make_key(1), &make_row(1));
         b.iter(|| black_box(t.get(&make_key(1)).is_some()))
     });
     g.bench_function("batch_commit/100_ops", |b| {
         let store = TestStore::slatedb_mem();
-        let t: Table<TestStore, BenchKey, BenchRow> = Table::new(store.clone());
+        let t: Collection<TestStore, BenchKey, BenchRow> = Collection::new(store.clone());
         b.iter_batched(
             || {
                 let mut store = store.clone();

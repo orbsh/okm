@@ -2,7 +2,7 @@
 //! （Some(N) → `[part 1B]` 前缀，None → 无段零成本）、表内 put/scan
 //! 正常工作、跨表字节空间独立（part 段在 ns 段之前）。
 
-use okm_core::{KeyEncode, Row, ObjEncode, TestStore};
+use okm_core::{KeyEncode, Document, DocumentEncode, TestStore};
 
 /// 普通 key：无 partition（默认布局，无 part 段）。
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
@@ -11,7 +11,7 @@ pub struct PlainKey {
 }
 
 /// partition 1 表：键布局 = [part 1B][ns 2B][slot][key payload]。
-#[derive(ObjEncode, Clone, PartialEq, Debug)]
+#[derive(DocumentEncode, Clone, PartialEq, Debug)]
 #[ok_ref(PlainKey)]
 #[ok_partition(1)]
 #[ok_ns(7)]
@@ -20,7 +20,7 @@ pub struct Partitioned {
 }
 
 /// 无 partition 对照表：键布局 = [ns 2B][slot][key payload]。
-#[derive(ObjEncode, Clone, PartialEq, Debug)]
+#[derive(DocumentEncode, Clone, PartialEq, Debug)]
 #[ok_ref(PlainKey)]
 #[ok_ns(7)]
 pub struct Plain {
@@ -30,17 +30,17 @@ pub struct Plain {
 #[test]
 fn partition_segment_precedes_ns_header() {
     // 派生常量：声明表 Some(1) + `[0x01]` 前缀；默认表 None + 空前缀。
-    assert_eq!(<Partitioned as Row>::PARTITION_ID, Some(1u8));
-    assert_eq!(<Partitioned as Row>::PARTITION_PREFIX, &[0xFFu8, 0x01u8][..]);
-    assert!(<Plain as Row>::PARTITION_ID.is_none());
-    assert_eq!(<Plain as Row>::PARTITION_PREFIX.len(), 0);
+    assert_eq!(<Partitioned as Document>::PARTITION_ID, Some(1u8));
+    assert_eq!(<Partitioned as Document>::PARTITION_PREFIX, &[0xFFu8, 0x01u8][..]);
+    assert!(<Plain as Document>::PARTITION_ID.is_none());
+    assert_eq!(<Plain as Document>::PARTITION_PREFIX.len(), 0);
 
     // 键布局锁定：partition 表的主键 = [0xFF][0x01][ns 7 BE][slot 0][key]
     // （0xFF 逃逸字节：合法 ns 头首字节永不取 0xFF → 结构性无碰撞）；
     // 无 partition 表的主键 = [ns 7 BE][slot 0][key]（无 part 段）。
     let store = TestStore::default();
-    let mut pt: okm_core::Table<_, PlainKey, Partitioned> = okm_core::Table::new(store.clone());
-    let mut pl: okm_core::Table<_, PlainKey, Plain> = okm_core::Table::new(store.clone());
+    let mut pt: okm_core::Collection<_, PlainKey, Partitioned> = okm_core::Collection::new(store.clone());
+    let mut pl: okm_core::Collection<_, PlainKey, Plain> = okm_core::Collection::new(store.clone());
 
     let k = PlainKey { id: 1 };
     let pk = pt.primary_key(&k);
@@ -69,5 +69,5 @@ fn partition_segment_precedes_ns_header() {
 fn partition_zero_rejected() {
     // 编译期拒绝：#[ok_partition(0)] 产生 compile_error!（see derive）。
     // 运行期此处只验证 PARTITION_ID 语义：0 不作为合法 id 出现。
-    assert_ne!(<Partitioned as Row>::PARTITION_ID, Some(0));
+    assert_ne!(<Partitioned as Document>::PARTITION_ID, Some(0));
 }

@@ -7,7 +7,7 @@
 //! subscribe_test — the generated enum's `super::` references must
 //! resolve in every binary that includes it).
 
-use okm_core::{TestStore, Row, Table};
+use okm_core::{TestStore, Document, Collection};
 
 #[path = "subscribe_common.rs"]
 mod subscribe_common;
@@ -17,7 +17,7 @@ use __OkmIndex_Counter_by_bucket as Counter_ByBucket;
 
 #[test]
 fn upsert_with_full_paths() {
-    let mut t: Table<TestStore, CounterKey, Counter> = Table::new(TestStore::slatedb_mem());
+    let mut t: Collection<TestStore, CounterKey, Counter> = Collection::new(TestStore::slatedb_mem());
 
     // ---------- insert path: old = None ----------
     let written = t.upsert_with(&CounterKey { id: 1 }, |old| {
@@ -47,7 +47,7 @@ fn upsert_with_full_paths() {
     // The reduce group for bucket 7 must total 15 (folds went through
     // __okm_apply_reduces inside put).
     let probe = Counter { bucket: 7, hits: 0 };
-    let acc = okm_core::reduce_get::<_, CounterTotals>(t.store(), <Counter as Row>::NS_PREFIX, &CounterKey { id: 1 }, &probe)
+    let acc = okm_core::reduce_get::<_, CounterTotals>(t.store(), <Counter as Document>::NS_PREFIX, &CounterKey { id: 1 }, &probe)
         .expect("group exists");
     assert_eq!(acc, CountSum { count: 1, sum: 15 });
 

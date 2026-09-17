@@ -9,7 +9,7 @@
 //! write → Rust read), cold TLV frames, version rejection, unknown-field
 //! rejection.
 
-use okm_core::{KeyEncode, TestStore, Row, ObjEncode, Table, VirtualStorage};
+use okm_core::{KeyEncode, TestStore, Document, DocumentEncode, Collection, VirtualStorage};
 use okm_core::schema::TableSchema;
 use okm_dynamic::{decode_key, decode_payload, encode_key, encode_payload, CodecError, Value, ValueMap};
 use std::collections::BTreeMap;
@@ -20,7 +20,7 @@ pub struct UserKey {
     pub user_id: u64,
 }
 
-#[derive(ObjEncode, Clone, PartialEq, Debug)]
+#[derive(DocumentEncode, Clone, PartialEq, Debug)]
 #[ok_ref(UserKey)]
 #[ok_ns(41)]
 #[ok_layout(version = 2)]
@@ -34,7 +34,7 @@ pub struct User {
 /// v3 evolution of `User`: appended `tier` (hot, literal default 3) and
 /// `region` (cold, literal default "eu"). Older payloads lack both —
 /// the dynamic reader fills them from the schema export.
-#[derive(ObjEncode, Clone, PartialEq, Debug)]
+#[derive(DocumentEncode, Clone, PartialEq, Debug)]
 #[ok_ref(UserKey)]
 #[ok_ns(41)]
 #[ok_layout(version = 3)]
@@ -89,7 +89,7 @@ fn dynamic_encode_equals_rust_derive_bytes() {
 #[test]
 fn rust_write_dynamic_read_and_reverse() {
     let schema = TableSchema::of::<UserKey, User>();
-    let mut t: Table<TestStore, UserKey, User> = Table::new(TestStore::slatedb_mem());
+    let mut t: Collection<TestStore, UserKey, User> = Collection::new(TestStore::slatedb_mem());
     let key = UserKey { org_id: 1, user_id: 2 };
     t.put(&key, &User { level: 4, score: 77, name: "bob".into() });
 
@@ -115,7 +115,7 @@ fn rust_write_dynamic_read_and_reverse() {
     let values2 = sample_values();
     let dyn_payload = encode_payload(&schema, &values2).expect("dynamic encode");
     let dyn_key = encode_key(&schema, &values2).expect("dynamic encode");
-    let rust_decoded = <User as Row>::decode_payload(&dyn_payload);
+    let rust_decoded = <User as Document>::decode_payload(&dyn_payload);
     let rust_key = <UserKey as KeyEncode>::decode(&dyn_key);
     assert_eq!(rust_decoded.name, "alice");
     assert_eq!(rust_decoded.level, 9);

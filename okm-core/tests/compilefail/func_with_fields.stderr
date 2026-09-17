@@ -1,7 +1,7 @@
 error: proc-macro derive panicked
   --> tests/compilefail/func_with_fields.rs:10:10
    |
-10 | #[derive(ObjEncode, Clone, PartialEq, Debug)]
-   |          ^^^^^^^^^
+10 | #[derive(DocumentEncode, Clone, PartialEq, Debug)]
+   |          ^^^^^^^^^^^^^^
    |
    = help: message: ok_index[bad]: func(...) and fields/includes are exclusive — the function result IS the sort segment

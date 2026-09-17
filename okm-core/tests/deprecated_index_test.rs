@@ -7,7 +7,7 @@
 //! `Table::prune_deprecated_slots` deletes them by prefix.
 
 use okm_core::{
-    KeyEncode, TestStore, ObjEncode, Table, VirtualStorage,
+    KeyEncode, TestStore, DocumentEncode, Collection, VirtualStorage,
 };
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
@@ -17,7 +17,7 @@ pub struct UserKey {
 
 /// Live declaration AFTER the deprecated one — its slot must NOT shift
 /// (that is the entire point of the placeholder).
-#[derive(ObjEncode, Clone, PartialEq, Debug)]
+#[derive(DocumentEncode, Clone, PartialEq, Debug)]
 #[ok_ref(UserKey)]
 #[ok_ns(9)]
 #[ok_index(by_old { fields(legacy) }, deprecated)]
@@ -29,7 +29,7 @@ pub struct User {
 
 #[test]
 fn deprecated_slot_is_reserved_and_not_written() {
-    let mut t: Table<TestStore, UserKey, User> = Table::new(TestStore::slatedb_mem());
+    let mut t: Collection<TestStore, UserKey, User> = Collection::new(TestStore::slatedb_mem());
     t.put(&UserKey { id: 1 }, &User { legacy: 99, level: 7 });
 
     // Only the LIVE index writes — the deprecated slot (16) produces
@@ -55,7 +55,7 @@ fn prune_deletes_only_deprecated_prefix() {
     ]
     .concat();
     store.put(stale, Vec::new());
-    let mut t: Table<TestStore, UserKey, User> = Table::new(store);
+    let mut t: Collection<TestStore, UserKey, User> = Collection::new(store);
     t.put(&UserKey { id: 1 }, &User { legacy: 99, level: 7 });
     t.put(&UserKey { id: 2 }, &User { legacy: 50, level: 8 });
 
@@ -70,7 +70,7 @@ fn prune_deletes_only_deprecated_prefix() {
 
 #[test]
 fn no_deprecated_declarations_prunes_nothing() {
-    #[derive(ObjEncode, Clone, PartialEq, Debug)]
+    #[derive(DocumentEncode, Clone, PartialEq, Debug)]
     #[ok_ref(UserKey)]
     #[ok_ns(10)]
     #[ok_index(by_only { fields(level) })]
@@ -78,7 +78,7 @@ fn no_deprecated_declarations_prunes_nothing() {
         pub level: u32,
     }
 
-    let mut t: Table<TestStore, UserKey, PlainUser> = Table::new(TestStore::slatedb_mem());
+    let mut t: Collection<TestStore, UserKey, PlainUser> = Collection::new(TestStore::slatedb_mem());
     t.put(&UserKey { id: 1 }, &PlainUser { level: 3 });
     assert_eq!(t.prune_deprecated_slots(), 0);
 }

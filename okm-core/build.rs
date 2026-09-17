@@ -27,7 +27,7 @@ fn collect_subscribe_rows(dir: &Path, acc: &mut Vec<(String, String, String, Str
 
 /// Extract the key type from `#[ok_ref(KeyTy)]` (the derive's proxy-key
 /// annotation) — the generated enum variant needs a concrete
-/// `Event<KeyTy, Row>` payload type, and key/row live in the consuming
+/// `Event<KeyTy, Document>` payload type, and key/row live in the consuming
 /// crate's own scope, so bare names are emitted.
 fn key_type_of(s: &syn::ItemStruct) -> Option<String> {
     s.attrs
@@ -38,7 +38,7 @@ fn key_type_of(s: &syn::ItemStruct) -> Option<String> {
         .map(|p| p.to_token_stream().to_string().replace(' ', ""))
 }
 
-/// One pass with syn: find `#[derive(... ObjEncode ...)]` structs carrying
+/// One pass with syn: find `#[derive(... DocumentEncode ...)]` structs carrying
 /// `#[ok_subscribe]` (bare only). The variant IS the row type name; the
 /// enum name comes from `#[ok_event_enum(Alias)]` (default `RowEvent`).
 fn scan_file(path: &Path, acc: &mut Vec<(String, String, String, String)>) {
@@ -54,7 +54,7 @@ fn scan_file(path: &Path, acc: &mut Vec<(String, String, String, String)>) {
             .attrs
             .iter()
             .filter(|a| a.path().is_ident("derive"))
-            .any(|a| a.to_token_stream().to_string().contains("ObjEncode"));
+            .any(|a| a.to_token_stream().to_string().contains("DocumentEncode"));
         if !has_row_encode {
             continue;
         }

@@ -4,9 +4,9 @@
 //! Annotation form (field attribute, read by the derive macros):
 //!
 //! ```ignore
-//! #[derive(ObjEncode)]
+//! #[derive(DocumentEncode)]
 //! #[ok_ref(K)]
-//! struct Row {
+//! struct Document {
 //!     #[ok_offset(base = 1_700_000_000)]
 //!     created: i64,     // stored as u32 offset from the epoch base
 //! }

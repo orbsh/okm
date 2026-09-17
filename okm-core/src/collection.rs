@@ -1,24 +1,24 @@
-//! Edge assembly point: [`EdgeTable`]`<S, E>` — engine + edge type = the
+//! Edge assembly point: [`Edge`]`<S, E>` — engine + edge type = the
 //! operation surface of one relationship. Edges are the node-to-node
-//! accessor family; row tables use [`crate::table::Table`] (ADR-0006:
+//! accessor family; row tables use [`crate::document::Table`] (ADR-0006:
 //! Collection narrowed to edges, storage bound to the store instance).
 //!
 //! No `KvRecord` macro exists: binding key and value/edge types needs type
 //! parameters, not code generation (see `docs/adr/0003`). The macro layer
 //! stays storage-free; engine choice and lifecycle belong to the call site
-//! (`EdgeTable::new(store)`).
+//! (`Edge::new(store)`).
 
 use crate::edge::KvEdge;
 use crate::storage::VirtualStorage;
 use crate::key::{KeyEncode, PrefixKey};
 
 /// Engine `S` + edge `E` = the operation surface of one relationship.
-pub struct EdgeTable<S, E> {
+pub struct Edge<S, E> {
     pub store: S,
     _pd: std::marker::PhantomData<E>,
 }
 
-impl<S: VirtualStorage, E: KvEdge> EdgeTable<S, E> {
+impl<S: VirtualStorage, E: KvEdge> Edge<S, E> {
     pub fn new(store: S) -> Self {
         Self {
             store,

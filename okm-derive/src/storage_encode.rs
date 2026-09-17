@@ -55,7 +55,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
     quote! {
         impl #name {
             /// The declared namespace prefix this host serves (big-endian
-            /// `[ns 2B]`, same encoding as `Row::NS_PREFIX`).
+            /// `[ns 2B]`, same encoding as `Document::NS_PREFIX`).
             pub const NS_PREFIX: &'static [u8] = #prefix_lit;
 
             /// Bind the host to a real engine and start serving: returns

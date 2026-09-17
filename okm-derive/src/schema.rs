@@ -1,4 +1,4 @@
-//! Schema IR for `ObjEncode` — parse once, emit many.
+//! Schema IR for `DocumentEncode` — parse once, emit many.
 //!
 //! `parse_schema` turns the derive input into a validated `RowSchema`
 //! (attributes, payload field encoders, index declarations). All attribute
@@ -31,7 +31,7 @@ pub(crate) struct IdxDecl {
     /// (declaration order is a persistent contract — removing the entry
     /// would shift every later slot onto stale data), but no write path,
     /// scan surface, or marker struct is generated. Stale entries from
-    /// before the deprecation are cleared by `Table::prune_deprecated_slots`.
+    /// before the deprecation are cleared by `Collection::prune_deprecated_slots`.
     pub deprecated: bool,
 }
 
@@ -267,7 +267,7 @@ pub(crate) struct FieldSchema {
     /// `#[ok_default(expr)]`, else `<T as Default>::default()`.
     pub default_expr: TS2,
     /// Exportable const literal (Some only when #[ok_default] is a plain
-    /// literal or `"x".to_string()`); feeds the Row::DEFAULTS const for
+    /// literal or `"x".to_string()`); feeds the Document::DEFAULTS const for
     /// the dynamic reader's version migration.
     pub default_lit: Option<TS2>,
 }
@@ -705,7 +705,7 @@ pub(crate) fn parse_schema(input: DeriveInput) -> RowSchema {
 
     // #[ok_ns(N)] — the table's namespace segment, declared on the row
     // (the row is the table's declaration point: #[ok_ref] pins the key
-    // type, so the row determines Table<S, K, R> entirely). Absent = None.
+    // type, so the row determines Collection<S, K, R> entirely). Absent = None.
     let ns: Option<u16> = input
         .attrs
         .iter()
@@ -746,11 +746,11 @@ pub(crate) fn parse_schema(input: DeriveInput) -> RowSchema {
     let named = match &input.data {
         Data::Struct(s) => match &s.fields {
             Fields::Named(f) => f,
-            _ => panic!("ObjEncode only supports structs with named fields"),
+            _ => panic!("DocumentEncode only supports structs with named fields"),
         },
-        _ => panic!("ObjEncode only supports structs"),
+        _ => panic!("DocumentEncode only supports structs"),
     };
-    let fs = field_encoders(named, "ObjEncode");
+    let fs = field_encoders(named, "DocumentEncode");
     let name_strs: Vec<_> = fs.iter().map(|f| f.ident.to_string()).collect();
 
     // #[ok_layout(version = N)] — row header layout version. Absent = 1.

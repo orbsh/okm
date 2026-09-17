@@ -10,7 +10,7 @@
 //! deep copy, a kept clone would observe a different engine.
 
 use okm_core::{
-    KeyEncode, KvBatch, NestStorage, RemoteStore, ObjEncode, Table, TestStore, VirtualHandle,
+    KeyEncode, KvBatch, NestStorage, RemoteStore, DocumentEncode, Collection, TestStore, VirtualHandle,
     VirtualStorage,
 };
 
@@ -19,7 +19,7 @@ pub struct UserKey {
     pub id: u64,
 }
 
-#[derive(ObjEncode, Clone, PartialEq, Debug)]
+#[derive(DocumentEncode, Clone, PartialEq, Debug)]
 #[ok_ref(UserKey)]
 #[ok_ns(7)]
 #[ok_index(by_tag { fields(level) })]
@@ -51,7 +51,7 @@ fn table_semantics_over_remote() {
     let handle = spawn_host(TestStore::default(), &[0x00, 0x09]);
     let remote = handle.open();
 
-    let mut t: Table<RemoteStore, UserKey, User> = Table::new(remote);
+    let mut t: Collection<RemoteStore, UserKey, User> = Collection::new(remote);
     t.put(&UserKey { id: 42 }, &User { level: 3 });
     t.put(&UserKey { id: 43 }, &User { level: 5 });
 

@@ -32,20 +32,18 @@ SQL 的核心价值不是执行性能，而是关系模型交付的可读性、�
 
 - `KeyEncode` — 定宽 key 编码（`u32` / `u64` / `[u8; N]`），大端序，编译期 `KEY_LEN` / `FIELD_WIDTHS`，`encode_prefix_named` 截断原语。
 - `EdgeEncode` — 双向边，各端点身份宽度可独立声明（`#[ok_head(...)]`），3 字节头部 `[ns u16][slot u8]`（slot 14/15 = 正/反向），查询方法生成在端点类型上。
-- `EdgeTable<S, E>` — 组装点：引擎 + 边类型 = 一条关系的操作面（`link` / `unlink` / `forward` / `reverse` / `reverse_prefix`）。
+- `Edge<S, E>` — 组装点：引擎 + 边类型 = 一条关系的操作面（`link` / `unlink` / `forward` / `reverse` / `reverse_prefix`）。
 - 引擎后端走 Cargo feature：`fjall`（同步 `FjallStore`）、`slatedb`（异步 `SlatedbStore` + `AsyncCollection`），测试用内存 `MockStore`。
 
 - 二级索引（访问方法）——**行 struct** 上的 `#[ok_index(name { fields(…), includes(…), key(…) })]`：对 **payload 字段**（按声明序）建组合索引；无 per-index slot/ns——2 字节表命名空间已区分所有 entry；最左前缀扫描；`key(…)` 把 key 尾部携带的主键截断到命名子集（`encode_prefix_named`），默认取满主键；`includes` 覆盖索引定位为高扇出查询的物化视图。
-- `Table<S, K, R>` 行装配点——`put`/`delete` 在同一 store 实例内一次写入主键与全部声明的索引条目（声明即注册表）；`scan` 经任意访问方法的最左前缀返回 `(Key, Option<Row>)`。
+- `Collection<S, K, R>` 行装配点——`put`/`delete` 在同一 store 实例内一次写入主键与全部声明的索引条目（声明即注册表）；`scan` 经任意访问方法的最左前缀返回 `(Key, Option<Row>)`。
 - 字段级编码 wrapper（`Enum<T>`、`Offset<T>`、`VarInt<T>`、`Quant<P>`、`Reverse<T>`、`Option<T>`）与变长载荷/索引字段（`String`），key 保持定宽。
 - 多引擎混用——同一进程内不同 ns 段可绑不同引擎（交易走 fjall、日志走 slatedb）；原子性止于单引擎内，ns 编号全库唯一。
 - 快照导出——行 → Parquet，与引擎无关（备份 / 数据交换 / lakehouse 分析）；ns 还原为描述性文本，列名即字段名。
-- **obj API**——`get_object` / `set_object` / `get_variants` / `set_variants` / `delete_variants`：未知字段名在每表字段名字典里分配编号，落进动态段（n-TLV 帧、嵌套对象递归、无 CBOR）；行-映射桥把声明字段 lift 到逻辑类型（`Quant`→`F64`、`Enum`→变体名、`Offset`→`i64`）。
+- **Document API**——`get_document` / `put_document` / `get_fields` / `put_fields` / `delete_fields`：未知字段名在每表字段名字典里分配编号，落进动态段（n-TLV 帧、嵌套对象递归、无 CBOR）；行-映射桥把声明字段 lift 到逻辑类型（`Quant`→`F64`、`Enum`→变体名、`Offset`→`i64`）。
 - **动态 codec binding**——schema 导出驱动嵌入式语言读取器：`bindings/okm-python`（PyO3）与 `bindings/okm-steel`，与 Rust derive 字节一致。
-- **Object 模型（obj）**——声明式 row 与外部数据共用单一编码（[ADR-0012](docs/adr/0012-object-model-and-field-dictionary.md)）。`obj` 是刻意的双关：编程语言中的对象，也是存储格式意义上的 object。三个词标记静态/动态光谱上的三个位置：
-  - **document**——逻辑与物理全动态；每个字段都走动态路径（字典编号 + 每帧值类型）。
+- **Document 模型**——声明式 row 与外部数据共用单一编码（[ADR-0012](docs/adr/0012-object-model-and-field-dictionary.md)）。OKM 面向文档：document 逻辑上全动态（运行期可出现任意字段），且**声明的静态字段嵌入动态整体**——hot/cold 段、索引、schema 导出照常生效。声明 struct 是只有静态路径的退化 document；纯 document（MQ payload、JSON）是只有动态路径的退化 document；两者同一编码。嵌入光谱上的术语：
   - **variant**——动态内容嵌为一个声明的静态字段（`Bytes` payload）；动态性活在值里，不进键布局。
-  - **obj**——逻辑上全动态（运行期可出现任意字段），但声明的静态字段嵌入动态整体：hot/cold 段、索引、schema 导出照常生效。声明式 row 是动态路径为空的退化 obj；纯 document 是声明路径为空的退化 obj；两者同一编码。
 
   动态帧采用 CBOR 衍生的取帧方式，不是 CBOR 本身：只取 **major type 模式**——每帧以类型 nibble 开头——结构编码也在同一方案里。CBOR 的 major type 含列表和映射；有了字段名字典，OKM 只需要列表：映射就是 nTLV 列表（编号、类型、长度、值），结构信息活在值里，不进 per-document schema。
 
@@ -53,7 +51,7 @@ SQL 的核心价值不是执行性能，而是关系模型交付的可读性、�
 
 ### 1. 定义端点 key 与边（声明）
 
-完整的声明词汇（`KeyEncode` / `EdgeEncode` / `ObjEncode`、`#[ok_index]` 的 `fields`/`includes`/`key` 注解）见[建模指南](docs/MODELING.zh-CN.md)「声明基础」。摘要：
+完整的声明词汇（`KeyEncode` / `EdgeEncode` / `DocumentEncode`、`#[ok_index]` 的 `fields`/`includes`/`key` 注解）见[建模指南](docs/MODELING.zh-CN.md)「声明基础」。摘要：
 
 ```rust
 #[derive(KeyEncode)] #[ok_ns(1)]
@@ -73,27 +71,27 @@ pub struct UserToSessionEdge {
 
 ```rust
 // 边：原子双写 + 双向查询
-let mut edges: EdgeTable<_, UserToSessionEdge> = EdgeTable::new(store);
+let mut edges: Edge<_, UserToSessionEdge> = Edge::new(store);
 edges.link(&user, &s1);
 let sessions = user.get_session(&edges);
 
 // 行：写主键 + 全部索引条目；按访问方法扫描
-let mut t = <User as Row>::table(store, 9);
+let mut t = <User as Document>::table(store, 9);
 t.put(&user, &user_row);
 let rows = t.scan::<ByOrg>(&7u32.to_be_bytes());
 ```
 
 `scan::<ByOrg>` 的 `ByOrg` 来自索引名：`ok_index(by_org ...)` 生成类型 `__OkmIndex_User_by_org`（机械拼接，无大小写转换），`use __OkmIndex_User_by_org as ByOrg` 后即可用短名。声明怎么写见[建模指南](docs/MODELING.zh-CN.md)「声明基础」。
 
-### 3. 动态字段：obj API
+### 3. 动态字段：document API
 
 一套编码服务声明行与外部数据。未知字段名是正常输入：在每表的字段名字典里分配编号，落进动态段（`[id][type][len][value]` 帧、嵌套对象递归）。声明字段保持 typed 且可索引。
 
 ```rust
 // 读：声明字段 lift 到逻辑类型 + 动态字段按名字
-let (row, dynamic) = t.get_object(&key);
+let (row, dynamic) = t.get_document(&key);
 // 写：匹配的名字 -> typed 路径；未知名字 -> 动态段
-t.set_object(&key, &fields);
+t.put_document(&key, &fields);
 ```
 
 嵌入式语言读取器（Python / Steel Actor）经 schema 导出消费动态 codec——`bindings/okm-python`（PyO3）与 `bindings/okm-steel` 与 Rust derive 字节一致；版本默认值迁移在该路径同样生效。
@@ -112,13 +110,13 @@ okm = { version = "0.1", features = ["fjall"] }    # 或 "slatedb"
 ## 项目结构
 
 ```
-okm-derive/        过程宏 crate：KeyEncode、ObjEncode、EdgeEncode（零 I/O）
+okm-derive/        过程宏 crate：KeyEncode、DocumentEncode、EdgeEncode（零 I/O）
 okm/src/key.rs     KeyEncode trait + PrefixKey
 okm/src/index.rs   Row + KvIndex trait + 索引扫描辅助
 okm/src/edge.rs    KvEdge trait + 方向位头部
 okm/src/storage.rs  VirtualStorage trait + MockStore
-okm/src/table.rs       Table<S, K, R> 行装配点
-okm/src/collection.rs  EdgeTable<S, E> 边装配点
+okm/src/table.rs       Collection<S, K, R> 行装配点
+okm/src/collection.rs  Edge<S, E> 边装配点
 okm/src/fjall_backend.rs    fjall 适配（feature "fjall"）
 okm/src/slatedb_backend.rs  slatedb 适配（feature "slatedb"）
 okm-query/         扩展算子 crate：merge_join、group_by（消费 scan 有序流，零 core 依赖）

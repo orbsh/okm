@@ -1,9 +1,9 @@
-//! 二级索引集成测试（ADR-0006 Row 形状）：ObjEncode 派生、Table 装配点
+//! 二级索引集成测试（ADR-0006 Document 形状）：DocumentEncode 派生、Table 装配点
 //! put/scan 回表、entry 布局 hex 锁定（entry = [ns 2B][slot 1B][索引字段]
 //! [key前缀]，value = includes 段）、最左前缀扫描、includes 覆盖、
 //! 截断 key 前缀（尾段去冗余，前提：剩余字段已唯一）。
 
-use okm_core::{KeyEncode, VirtualStorage, KvIndex, TestStore, PrefixKey, Row, ObjEncode};
+use okm_core::{KeyEncode, VirtualStorage, KvIndex, TestStore, PrefixKey, Document, DocumentEncode};
 
 // marker struct 生成在 derive 展开点（本文件），直接引用
 use __OkmIndex_User_by_reputation as ByReputation;
@@ -18,7 +18,7 @@ pub struct UserKey {
 
 /// User 行：by_reputation 按 payload 的 reputation 排序，key 前缀取满
 /// 主键（默认）。
-#[derive(ObjEncode, Clone, PartialEq, Debug)]
+#[derive(DocumentEncode, Clone, PartialEq, Debug)]
 #[ok_ref(UserKey)]
 #[ok_index(by_reputation { fields(reputation) })]
 #[ok_ns(9)]
@@ -37,7 +37,7 @@ pub struct PostKey {
 /// author_id 是 payload 外键属性，排在 fields 首位，一条
 /// `entry_prefix(author_id)` 前缀扫描即返回该作者的整个时间线；
 /// includes(title_len) 使扫描无需回表。
-#[derive(ObjEncode, Clone, PartialEq, Debug)]
+#[derive(DocumentEncode, Clone, PartialEq, Debug)]
 #[ok_ref(PostKey)]
 #[ok_index(by_timeline {
     fields(author_id, created_at),
@@ -60,7 +60,7 @@ pub struct SessionKey {
 /// Session 行：by_kind 演示截断 key 前缀——fields(kind) 已含分组
 /// 维度，尾段只需 session_id（全局唯一）即可区分行，user_id 从尾段
 /// 去掉是安全的去冗余（(kind, session_id) 仍行级唯一）。
-#[derive(ObjEncode, Clone, PartialEq, Debug)]
+#[derive(DocumentEncode, Clone, PartialEq, Debug)]
 #[ok_ref(SessionKey)]
 #[ok_index(by_kind {
     fields(kind),
@@ -98,7 +98,7 @@ fn mk_session(user: u64, sid: u64, kind: u8) -> (SessionKey, Session) {
 
 #[test]
 fn table_put_writes_primary_and_indexes() {
-    let mut t = <User as Row>::table(TestStore::slatedb_mem());
+    let mut t = <User as Document>::table(TestStore::slatedb_mem());
     let (k, r) = mk_user(101, 100);
     t.put(&k, &r);
 
@@ -109,7 +109,7 @@ fn table_put_writes_primary_and_indexes() {
     assert_eq!(&pk[3..], &k.encode()[..]);
     // value = 行载荷 TLV，可解码回原行
     let raw = t.store().get(&pk).unwrap();
-    let dec = <User as Row>::decode_payload(&raw);
+    let dec = <User as Document>::decode_payload(&raw);
     assert_eq!(dec, r);
 
     // 索引 entry：ns 9 + slot 16（by_reputation，DECLARED_SLOT_BASE）
@@ -127,7 +127,7 @@ fn table_put_writes_primary_and_indexes() {
 
 #[test]
 fn delete_by_pkey_fetches_row_and_cleans_indexes() {
-    let mut t = <User as Row>::table(TestStore::slatedb_mem());
+    let mut t = <User as Document>::table(TestStore::slatedb_mem());
     let (k, r) = mk_user(101, 100);
     t.put(&k, &r);
 
@@ -143,7 +143,7 @@ fn delete_by_pkey_fetches_row_and_cleans_indexes() {
 
 #[test]
 fn scan_via_index_returns_rows() {
-    let mut t = <User as Row>::table(TestStore::slatedb_mem());
+    let mut t = <User as Document>::table(TestStore::slatedb_mem());
     let rows_in = [
         mk_user(101, 10),
         mk_user(102, 20),
@@ -175,7 +175,7 @@ fn entry_layout_hex_lock() {
     let kl = <UserKey as KeyEncode>::KEY_LEN; // 8
     assert_eq!(kl, 8);
 
-    let e = ByReputation::entry_key(<User as Row>::NS_PREFIX, &k, &r);
+    let e = ByReputation::entry_key(<User as Document>::NS_PREFIX, &k, &r);
     assert_eq!(&e[..3], &[0, 9, 16]); // ns=9、slot=16
     assert_eq!(&e[3..7], &100u32.to_be_bytes()); // 索引字段 reputation 来自 payload
     assert_eq!(&e[7..], &k.encode()[..]); // key 前缀取满 = 完整主键
@@ -186,7 +186,7 @@ fn entry_layout_hex_lock() {
     // Post.by_timeline：ns 12 + slot 16，索引字段 author_id(8B)+created_at(8B)
     // （均来自 payload），key 前缀取满 id(8B)；value = includes(title_len) 段
     let (pk, pr) = mk_post(500, 7, 1700000000, 42);
-    let e2 = ByTimeline::entry_key(<Post as Row>::NS_PREFIX, &pk, &pr);
+    let e2 = ByTimeline::entry_key(<Post as Document>::NS_PREFIX, &pk, &pr);
     assert_eq!(&e2[..3], &[0, 12, 16]); // ns=12、slot=16
     assert_eq!(&e2[3..11], &7u64.to_be_bytes()); // author_id 来自 payload
     assert_eq!(&e2[11..19], &1700000000u64.to_be_bytes()); // created_at 来自 payload
@@ -197,7 +197,7 @@ fn entry_layout_hex_lock() {
     // Session.by_kind：ns = 15+1，索引字段 kind(1B)，key 前缀截断到
     // session_id(8B)——user_id 从尾段去掉（去冗余）
     let (sk, sr) = mk_session(9, 777, 3);
-    let e3 = ByKind::entry_key(<Session as Row>::NS_PREFIX, &sk, &sr);
+    let e3 = ByKind::entry_key(<Session as Document>::NS_PREFIX, &sk, &sr);
     assert_eq!(&e3[..3], &[0, 15, 16]); // ns=15、slot=16
     assert_eq!(&e3[3..4], &[3]); // kind 来自 payload
     assert_eq!(&e3[4..], &777u64.to_be_bytes()); // 截断尾段 = session_id
@@ -209,7 +209,7 @@ fn timeline_is_a_list_encoding() {
     // by_timeline：fields(author_id, created_at)，分组维度在 fields 首位，
     // 一条前缀扫描（author=7）即返回该作者的整个时间线，组内按
     // created_at 升序；includes(title_len) 覆盖，无需回表。
-    let mut t = <Post as Row>::table(TestStore::slatedb_mem());
+    let mut t = <Post as Document>::table(TestStore::slatedb_mem());
     let rows = [
         mk_post(500, 7, 30, 10),
         mk_post(501, 7, 20, 11),
@@ -222,7 +222,7 @@ fn timeline_is_a_list_encoding() {
 
     // 原始前缀扫描：author=7 → 3 条 entry。suffix（去掉 ns+author 前缀）
     // = created_at(8B) + 完整主键 id(8B) = 16B。
-    let p = ByTimeline::entry_prefix(<Post as Row>::NS_PREFIX, &7u64.to_be_bytes());
+    let p = ByTimeline::entry_prefix(<Post as Document>::NS_PREFIX, &7u64.to_be_bytes());
     let hits = t.store().scan_suffix(&p);
     assert_eq!(hits.len(), 3);
     for sfx in &hits {
@@ -249,7 +249,7 @@ fn truncated_key_prefix_drops_redundant_tail() {
     // by_kind：fields(kind) 分组 + key(session_id) 截断尾段。session_id
     // 全局唯一，(kind, session_id) 行级唯一——user_id 留在尾段只会冗余。
     // 扫描 kind=3 → 该类型的全部会话（列表语义），不回表。
-    let mut t = <Session as Row>::table(TestStore::slatedb_mem());
+    let mut t = <Session as Document>::table(TestStore::slatedb_mem());
     let rows = [
         mk_session(9, 777, 3),
         mk_session(9, 778, 3),   // 同用户同类型的另一会话：session_id 区分，不覆盖
@@ -260,7 +260,7 @@ fn truncated_key_prefix_drops_redundant_tail() {
         t.put(k, r);
     }
 
-    let p = ByKind::entry_prefix(<Session as Row>::NS_PREFIX, &[3]);
+    let p = ByKind::entry_prefix(<Session as Document>::NS_PREFIX, &[3]);
     let hits = t.store().scan_suffix(&p);
     assert_eq!(hits.len(), 3);
     for sfx in &hits {
@@ -299,15 +299,15 @@ fn slot_allocation() {
 #[test]
 fn row_value_tlv_roundtrip() {
     let (_k, r) = mk_user(101, 100);
-    let dec = <User as Row>::decode_payload(&r.encode_payload());
+    let dec = <User as Document>::decode_payload(&r.encode_payload());
     assert_eq!(dec, r);
 
     let (_pk, pr) = mk_post(500, 7, 1, 2);
-    let dec = <Post as Row>::decode_payload(&pr.encode_payload());
+    let dec = <Post as Document>::decode_payload(&pr.encode_payload());
     assert_eq!(dec, pr);
 
     let (_sk, sr) = mk_session(9, 777, 3);
-    let dec = <Session as Row>::decode_payload(&sr.encode_payload());
+    let dec = <Session as Document>::decode_payload(&sr.encode_payload());
     assert_eq!(dec, sr);
 }
 
@@ -321,7 +321,7 @@ pub struct DocKey {
 /// Doc 行：by_city_name 复合索引 = (city, name)，变长 name 居末；
 /// by_name 单字段文本索引。排序 = 字典序（裸 UTF-8 字节，无长度前缀——
 /// 长度前缀会先按长度后按字节，摧毁字典序）。
-#[derive(ObjEncode, Clone, PartialEq, Debug)]
+#[derive(DocumentEncode, Clone, PartialEq, Debug)]
 #[ok_ref(DocKey)]
 #[ok_index(
     by_city_name {
@@ -347,7 +347,7 @@ fn variable_length_index_text_first() {
     // 变长字段索引（text-first regime）：裸 UTF-8 字节参与排序，共享前缀
     // 文本按字典序相邻；精确匹配靠尾部主键回表核验（无定界符是本 regime
     // 的代价——"ab" 的前缀扫描会扫到 "abc"，这正是字典序的行为）。
-    let mut t = <Doc as Row>::table(TestStore::slatedb_mem());
+    let mut t = <Doc as Document>::table(TestStore::slatedb_mem());
     let rows = [
         mk_doc(1, 10, "alpha"),
         mk_doc(2, 10, "alphabet"),   // "alpha" 的扩展，字典序紧随其后
@@ -363,7 +363,7 @@ fn variable_length_index_text_first() {
     let kl = <DocKey as KeyEncode>::KEY_LEN;
     assert_eq!(kl, 8);
     let (k, r) = &rows[0];
-    let e = ByCityName::entry_key(<Doc as Row>::NS_PREFIX, k, r);
+    let e = ByCityName::entry_key(<Doc as Document>::NS_PREFIX, k, r);
     assert_eq!(&e[..3], &[0, 21, 16]); // ns=21、slot=16
     assert_eq!(&e[3..7], &10u32.to_be_bytes()); // city 定宽可定位
     assert_eq!(&e[7..12], b"alpha"); // name 居末：裸字节，无长度前缀
@@ -371,7 +371,7 @@ fn variable_length_index_text_first() {
     assert_eq!(e.len(), 3 + 4 + 5 + kl);
 
     // 前缀扫描 "alpha" 命中 alpha + alphabet（共享前缀 = 同一字典序区间）
-    let p = ByCityName::entry_prefix(<Doc as Row>::NS_PREFIX, &10u32.to_be_bytes());
+    let p = ByCityName::entry_prefix(<Doc as Document>::NS_PREFIX, &10u32.to_be_bytes());
     let hits = t.store().scan_suffix(&p);
     assert_eq!(hits.len(), 3); // city=10 的 3 行
 
@@ -398,7 +398,7 @@ fn lower_name(row: &DocFunc) -> String {
     row.name.to_lowercase()
 }
 
-#[derive(ObjEncode, Clone, PartialEq, Debug)]
+#[derive(DocumentEncode, Clone, PartialEq, Debug)]
 #[ok_ref(DocKey)]
 #[ok_index(by_lower { func(lower_name) })]
 #[ok_ns(21)]
@@ -417,7 +417,7 @@ fn mk_docf(id: u64, city: u32, name: &str) -> (DocKey, DocFunc) {
 fn function_index_normalizes_both_sides() {
     // 写入端：entry 排序段 = lower_name(&row) 的结果（裸 UTF-8，字典序）；
     // 查询端：探针行调用同一个函数归一化，两侧共享一条声明。
-    let mut t = <DocFunc as Row>::table(TestStore::slatedb_mem());
+    let mut t = <DocFunc as Document>::table(TestStore::slatedb_mem());
     let rows = [
         mk_docf(1, 10, "Apple"),
         mk_docf(2, 10, "APPLE"),
@@ -430,7 +430,7 @@ fn function_index_normalizes_both_sides() {
     // entry 布局：[ns 2B][slot 1B][func 结果裸字节][id 8B]——无 fields 段
     let kl = <DocKey as KeyEncode>::KEY_LEN;
     let (k, r) = &rows[0];
-    let e = ByLower::entry_key(<DocFunc as Row>::NS_PREFIX, k, r);
+    let e = ByLower::entry_key(<DocFunc as Document>::NS_PREFIX, k, r);
     assert_eq!(&e[..3], &[0, 21, 16]); // ns=21（DocKey 的段）、slot=1
     assert_eq!(&e[3..8], b"apple"); // 归一化后的结果
     assert_eq!(&e[8..], &k.encode()[..]);
@@ -458,7 +458,7 @@ fn multi_entry_function_index_fans_out() {
         row.tags.split(',').map(|s| s.to_string()).collect()
     }
 
-    #[derive(ObjEncode, Clone, PartialEq, Debug)]
+    #[derive(DocumentEncode, Clone, PartialEq, Debug)]
     #[ok_ref(DocKey)]
     #[ok_ns(21)]
     #[ok_index(by_tag { func(tokens) })]
@@ -468,7 +468,7 @@ fn multi_entry_function_index_fans_out() {
 
     use __OkmIndex_DocTags_by_tag as ByTag;
 
-    let mut t = <DocTags as Row>::table(TestStore::slatedb_mem());
+    let mut t = <DocTags as Document>::table(TestStore::slatedb_mem());
     let rows = [
         (DocKey { id: 1 }, DocTags { tags: "rust,kv".into() }),
         (DocKey { id: 2 }, DocTags { tags: "rust,storage".into() }),
@@ -478,7 +478,7 @@ fn multi_entry_function_index_fans_out() {
     }
 
     // 一行两条 entry：token 居数据段（变长，贴主键前），主键 8B 从尾部切出
-    let e = ByTag::entry_pairs(<DocTags as Row>::NS_PREFIX, &rows[0].0, &rows[0].1);
+    let e = ByTag::entry_pairs(<DocTags as Document>::NS_PREFIX, &rows[0].0, &rows[0].1);
     assert_eq!(e.len(), 2);
     let kl = <DocKey as KeyEncode>::KEY_LEN;
     let mut toks: Vec<&[u8]> =

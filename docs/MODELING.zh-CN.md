@@ -69,15 +69,15 @@ pub struct UserToSessionEdge {
 
 `#[ok_head(field, ...)]` 声明该端点在**这条边里**哪些字段算身份；不标注 = 全量 key 即身份。字段名必须是端点声明序的前缀（宏生成的编译期检查）。声明一次，正反两族条目自动生成（方向位见上文「多对多关系」）。
 
-### 行与索引：`ObjEncode`
+### 行与索引：`DocumentEncode`
 
 ```rust
-use okm_core::ObjEncode;
+use okm_core::DocumentEncode;
 
 /// 行 struct 挂在 UserKey 上（#[ok_ref]）；payload 字段 TLV 编码。
 /// 每个 #[ok_index] 声明一个对 PAYLOAD 字段的访问方法——
 /// 身份归 key（代理 id），业务维度归行。
-#[derive(ObjEncode, Clone, PartialEq, Debug)]
+#[derive(DocumentEncode, Clone, PartialEq, Debug)]
 #[ok_ref(UserKey)]
 #[ok_ns(1)] // 表的命名空间——声明在行上，不声明在 key 上
 #[ok_index(by_reputation { fields(reputation) })]
@@ -92,8 +92,8 @@ pub struct User {
 
 - `#[ok_ref(UserKey)]`——行挂到哪个主键上；身份归 key，业务维度归行。
 - `#[ok_ns(1)]`——表的命名空间段，声明在**行上**（行是表的声明点：`#[ok_ref]`
-  已把 key 类型钉死，行完全决定 `Table<S, K, R>`）。key 类型不带 ns——同一个
-  key 形状可以合法服务多个行/表，各挂各的 ns 号。`Table::new(store)` 不收 ns
+  已把 key 类型钉死，行完全决定 `Collection<S, K, R>`）。key 类型不带 ns——同一个
+  key 形状可以合法服务多个行/表，各挂各的 ns 号。`Collection::new(store)` 不收 ns
   参数，拼装点只选 engine。edge struct 的 `#[ok_ns]` 同理（EdgeEncode）。
 - `fields(...)`——排序/分组的 payload 字段，按声明序，首位 = 分组维度。
 - `includes(...)`——覆盖索引，复制 payload 字段进 entry value（上文「覆盖索引克制」）。
@@ -136,13 +136,13 @@ fn hour_bucket(row: &Post) -> Vec<u64> {
 
 另注意 `includes` 不在数据段内——它在 entry value 里，不参与 key 结构与排序。想把"条目里多带点数据"表达成加 fields 段是建模误区，正确出口是 `includes`（免回表复制）或嵌套条目（存一起）。
 
-### 连接、断开、查询（`EdgeTable`）
+### 连接、断开、查询（`Edge`）
 
 ```rust
-use okm_core::EdgeTable;
+use okm_core::Edge;
 
 let store = okm_core::TestStore::default(); // slatedb-mem；另有 FjallStore / SlatedbStore / RedbStore
-let mut edges: EdgeTable<_, UserToSessionEdge> = EdgeTable::new(store);
+let mut edges: Edge<_, UserToSessionEdge> = Edge::new(store);
 
 let user = UserKey { org_id: 7, user_id: 101 };
 let s1 = SessionKey { org_id: 7, session_id: 1001 };
@@ -184,15 +184,15 @@ for pk in edges.reverse_prefix(&s1) {
 
 派生宏还会在端点类型上生成查询方法（`user.get_session(&edges)`），方法名取对方字段（`session_id` → `get_session`）。
 
-### 行的运行时用法（`Table`）
+### 行的运行时用法（`Collection`）
 
-`ObjEncode` 声明的访问方法在查询侧具名为索引类型。索引声明的派生物在展开点（本文件）生成：`ok_index(by_org ...)` 生成索引类型 `__OkmIndex_User_by_org`（机械拼接，无大小写转换），`use` 别名后即可作泛型参数。`Row::table` 构建装配点，调用处无需重复 key 类型：
+`DocumentEncode` 声明的访问方法在查询侧具名为索引类型。索引声明的派生物在展开点（本文件）生成：`ok_index(by_org ...)` 生成索引类型 `__OkmIndex_User_by_org`（机械拼接，无大小写转换），`use` 别名后即可作泛型参数。`Row::table` 构建装配点，调用处无需重复 key 类型：
 
 ```rust
 use okm_core::{Row, TestStore};
 use __OkmIndex_User_by_org as ByOrg; // 索引类型：ok_index(by_org) 的派生物
 
-let mut t = <User as Row>::table(TestStore::default());
+let mut t = <User as Document>::table(TestStore::default());
 
 t.put(&user, &User { org_id: 7, created_at: 30, reputation: 100, bio_len: 2 });
 
@@ -212,7 +212,7 @@ fn tokens(row: &Doc) -> Vec<String> {
     row.text.split_ascii_whitespace().map(String::from).collect()
 }
 
-#[derive(ObjEncode, Clone, PartialEq, Debug)]
+#[derive(DocumentEncode, Clone, PartialEq, Debug)]
 #[ok_ref(DocKey)]
 #[ok_index(by_token { func(tokens) })]
 pub struct Doc {
@@ -226,23 +226,23 @@ use __OkmIndex_Doc_by_token as ByToken;
 let hits = t.scan::<ByToken>(b"rust");
 ```
 
-### 动态字段：obj API（ADR-0012）
+### 动态字段：document API（ADR-0012）
 
-一套编码同时服务声明行与外部数据。声明字段照常走热/冷段；其余落进**动态段**（slot 1），以 n-TLV 帧——`[字段编号][类型][长度][字节]`——存储，名字在**字段名字典**（slot 2/3）里首次出现时分配。`Table` 上的运行时接口：
+一套编码同时服务声明行与外部数据。声明字段照常走热/冷段；其余落进**动态段**（slot 1），以 n-TLV 帧——`[字段编号][类型][长度][字节]`——存储，名字在**字段名字典**（slot 2/3）里首次出现时分配。`Collection` 上的运行时接口：
 
 ```rust
 // 行-映射桥：每个声明字段 lift 到逻辑类型
 // （Quant -> F64、VarInt -> u64、Enum -> 变体名、Offset -> i64）。
-let (row, dynamic) = t.get_object(&key);          // (User, BTreeMap<String, DynamicValue>)
+let (row, dynamic) = t.get_document(&key);          // (User, BTreeMap<String, DynamicValue>)
 
 // 整体写：名字匹配声明结构体的字段走 typed 路径；
 // 未知名字在字典里分配编号，落进 slot 1。
-t.set_object(&key, &fields);                      // BTreeMap<String, DynamicValue>
+t.put_document(&key, &fields);                      // BTreeMap<String, DynamicValue>
 
 // 仅动态段的视图（直接操作 slot 1）：
-t.get_variants(&key);                             // 名字键 map 或 None
-t.set_variants(&key, &map);                       // 整段替换，缺席字段被移除
-t.delete_variants(&key);                          // 清空动态段
+t.get_fields(&key);                             // 名字键 map 或 None
+t.put_fields(&key, &map);                       // 整段替换，缺席字段被移除
+t.delete_fields(&key);                          // 清空动态段
 t.delete(&key);                                   // 移除 slot 0 + 全部索引条目
 ```
 
@@ -262,7 +262,7 @@ t.delete(&key);                                   // 移除 slot 0 + 全部索�
 payload 头部带版本字节（`#[ok_layout(version = N)]`，默认 1）。解码规则：payload 头部版本比读取方的 schema **新** → 拒绝；**旧** → 接受，且旧 payload 缺失的字段（该版本之后尾部追加的）取默认值：
 
 ```rust
-#[derive(ObjEncode, Clone, PartialEq, Debug)]
+#[derive(DocumentEncode, Clone, PartialEq, Debug)]
 #[ok_ref(UserKey)]
 #[ok_layout(version = 2)]            // 字段集变更时递增
 pub struct User {
@@ -345,7 +345,7 @@ okm-core 对它的立场是两层拆分：核心不内置任何聚合语义（�
 
 ## 两种读-改-写：reduce 与 upsert_with
 
-reduce 之外，写路径还有命令式的一半——`Table::upsert_with(key, f)`：读旧行、闭包算新值、走正常 put。两种 RMW 同一底层形态（read → compute → write），分工按「逻辑谁知道」切：
+reduce 之外，写路径还有命令式的一半——`Collection::upsert_with(key, f)`：读旧行、闭包算新值、走正常 put。两种 RMW 同一底层形态（read → compute → write），分工按「逻辑谁知道」切：
 
 - **reduce（声明式）**：`#[ok_reduce(Logic { group(f) })]` 在编译期定死——哪些行进哪个组、fold/unfold 怎么算，都是类型声明的一部分，框架驱动。适合与行结构同步演化的聚合（计数、求和）。
 - **upsert_with（命令式）**：`f(Option<R>) -> R` 在运行时收到旧行，任意逻辑。适合调用方才知道的更新（余额加减、条件修补）。`None` = key 不存在（插入路径）。

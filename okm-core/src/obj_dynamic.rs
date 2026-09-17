@@ -196,7 +196,7 @@ fn u32_be(b: &[u8]) -> u32 {
 /// reader).
 /// Decode all frames, resolving nested object field ids to names via
 /// `name_of` (the dictionary's id → name direction). Top-level frames
-/// keep their numeric ids in [`DynamicField`] (the Table layer maps
+/// keep their numeric ids in [`DynamicField`] (the Collection layer maps
 /// them); nested `Obj` values come back fully name-keyed.
 pub fn decode_named(
     bytes: &[u8],

@@ -1,4 +1,4 @@
-//! `ObjEncode` — value/payload encoding + index declarations.
+//! `DocumentEncode` — value/payload encoding + index declarations.
 //!
 //! One macro, three concerns (ADR-0006):
 //!
@@ -224,7 +224,7 @@ fn emit_index_structs(schema: &RowSchema) -> TS2 {
         // Deprecated declaration: slot stays reserved (declaration order
         // is a persistent contract), but nothing is generated — no marker
         // struct, no write path, no scan surface. Stale entries are
-        // cleared by Table::prune_deprecated_slots (ADR-0005).
+        // cleared by Collection::prune_deprecated_slots (ADR-0005).
         if idx.deprecated {
             continue;
         }
@@ -247,7 +247,7 @@ fn emit_index_structs(schema: &RowSchema) -> TS2 {
                 fn entry_pairs(
                     table_ns: &[u8],
                     key: &Self::Key,
-                    row: &Self::Row,
+                    row: &Self::Document,
                 ) -> Vec<(Vec<u8>, Vec<u8>)> {
                     // One (key, value) pair per produced value; every
                     // entry shares the same includes value. Key =
@@ -283,7 +283,7 @@ fn emit_index_structs(schema: &RowSchema) -> TS2 {
             // The field encoders reference `self.#id` (shared with the
             // payload TLV loop), so the walk lives in an inherent method
             // with a real `self` receiver.
-            quote! { <Self::Row>::__okm_encode_named(row, names, buf) }
+            quote! { <Self::Document>::__okm_encode_named(row, names, buf) }
         } else {
             let fpath = syn::parse_str::<syn::Expr>(&idx.func)
                 .unwrap_or_else(|e| panic!("ok_index[{}]: bad func path `{}`: {e}", idx.ident, idx.func));
@@ -312,7 +312,7 @@ fn emit_index_structs(schema: &RowSchema) -> TS2 {
 
             impl ::okm_core::KvIndex for #struct_ident {
                 type Key = #key_ty;
-                type Row = #row_name;
+                type Document = #row_name;
                 const SLOT: u8 = #slot_lit;
                 const FIELDS: &'static [&'static str] = &[#(#fields),*];
                 const INCLUDES: &'static [&'static str] = &[#(#includes),*];
@@ -321,7 +321,7 @@ fn emit_index_structs(schema: &RowSchema) -> TS2 {
 
                 fn encode_named(
                     _key: &Self::Key,
-                    row: &Self::Row,
+                    row: &Self::Document,
                     names: &[&str],
                     buf: &mut Vec<u8>,
                 ) {
@@ -348,7 +348,7 @@ fn emit_index_entries(schema: &RowSchema) -> TS2 {
     });
     // Deprecated slots: declaration positions (1-based) whose entries are
     // stale after the declaration was marked `deprecated` — consumed by
-    // `Table::prune_deprecated_slots` (prefix-scan + delete).
+    // `Collection::prune_deprecated_slots` (prefix-scan + delete).
     let dep_slots: Vec<_> = schema
         .indexes
         .iter()
@@ -362,7 +362,7 @@ fn emit_index_entries(schema: &RowSchema) -> TS2 {
     let dep_const = quote! {
         /// Slots reserved by `deprecated` index declarations — entries
         /// here are stale (written before the deprecation) and are
-        /// cleared by `Table::prune_deprecated_slots`.
+        /// cleared by `Collection::prune_deprecated_slots`.
         const DEPRECATED_SLOTS: &'static [u8] = &[#(#dep_slots),*];
     };
     quote! {
@@ -380,7 +380,7 @@ fn emit_index_entries(schema: &RowSchema) -> TS2 {
 /// the derive generates the `okm_core::Reduce` impl on the SAME type
 /// (SLOT/GROUP come from the declaration) plus the Row hook override
 /// running each reduce's read-modify-write. Returns
-/// (trait impls, hook fn body to splice inside `impl Row`).
+/// (trait impls, hook fn body to splice inside `impl Document`).
 fn emit_reduces(schema: &RowSchema) -> (TS2, TS2) {
     let row_name = &schema.row_name;
     let n_idx = schema.indexes.len();
@@ -397,7 +397,7 @@ fn emit_reduces(schema: &RowSchema) -> (TS2, TS2) {
                 const SLOT: u8 = #slot_lit;
                 const GROUP: &'static [&'static str] = &[ #(#group),* ];
                 fn group_bytes(
-                    _key: &<#row_name as ::okm_core::Row>::Key,
+                    _key: &<#row_name as ::okm_core::Document>::Key,
                     row: &#row_name,
                 ) -> Vec<u8> {
                     // The row's named-field walk — same encoders as the
@@ -442,7 +442,7 @@ fn emit_reduces(schema: &RowSchema) -> (TS2, TS2) {
 /// Subscribe: `#[ok_subscribe]` or `#[ok_subscribe(RowEvent::User)]` —
 /// the write-path event send (ADR-0008). The annotation declares the
 /// channel entry point; there is NO handler here. Returns (static items
-/// to place beside the impl, hook fn body to splice inside `impl Row`).
+/// to place beside the impl, hook fn body to splice inside `impl Document`).
 ///
 /// One shape only: the send wraps the event in the generated enum's
 /// variant (variant = row type name) and goes through that enum's global
@@ -717,7 +717,7 @@ fn emit_row_impl(schema: &RowSchema) -> TS2 {
         impl #row_name {
             #named_walk
         }
-        impl ::okm_core::Row for #row_name {
+        impl ::okm_core::Document for #row_name {
             type Key = #key_ty;
             #part_const
             #ns_const
