@@ -482,6 +482,14 @@ encoding, one derive family. No separate document storage mode.
       the two, not a base op. `delete` / `delete_by_pkey` cover both
       slots (primary + dynamic segment) in one engine batch; scans stay
       index-slot only (dynamic fields are not indexable).
+- [ ] Write side mirrors the read side: `set_variants(key, map)` writes
+      the slot-1 entry (first-seen names allocate, single engine batch);
+      `set_object(key, map)` is the name-keyed whole-obj write — fields
+      present in the row struct go to the typed path (slot 0, existing
+      put semantics), the rest land in slot 1; unknown names follow the
+      dynamic rule (first-seen allocation), not rejection (that rule is
+      for the typed decoder, where a mismatched value tree is a caller
+      bug).
 - [ ] `okm-dynamic::Value` gains the dynamic-segment value types
       (Float/Bool/Null/Array/nested obj), mirroring the wire's
       value-type enum — no third-party value tree.
