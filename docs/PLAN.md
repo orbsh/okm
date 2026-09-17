@@ -678,3 +678,26 @@ the open question and the assessment:
 derive — only `Vec<u8>` (one Bytes frame). The typed pure-value list
 (`[tag][len][elem × n]` cold frames, one frame per element) is an open
 item; need predates nothing yet, record when a real consumer appears.
+
+## Junction rename + ns derivation (ADR-0015, decided 2026-09-17)
+
+`EdgeEncode`/`Edge` misnamed — it is the SQL junction table (many-to-
+many middle table, double-materialized FWD/REV), not a graph edge.
+Decided:
+
+- [ ] Rename `EdgeEncode` -> `JunctionEncode`, `Edge<S, E>` ->
+      `Junction<S, E>` (mechanical: derive, core, tests, docs en/zh).
+- [ ] Junction ns derives from endpoint key types' ns at compile time
+      (deterministic combination + compile-time collision check) —
+      `#[ok_ns(N)]` on junctions removed (ADR-0005's manual-numbering
+      argument applies verbatim; two human numbers can silently
+      collide, derivation cannot).
+- [ ] Future: `#[ok_relation(JunctionType)]` on a `Refs` field — put-
+      time diff auto link/unlink (trades RMW for declarative sync;
+      needs the two-endpoint write consistency analysis first).
+- [ ] Future: graph `Edge` (directed, `DynamicValue` attributes, edge
+      name -> compile-time hashed ns via `#[ok_edge("has")]`, no
+      nesting, no field-name compression) — a genuinely different
+      type; no consumer yet, design deferred.
+- Pre-crates.io timing makes the rename free: downstream (aura, k10r)
+  currently declares zero junctions.
