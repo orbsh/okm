@@ -1,0 +1,17 @@
+[package]
+name = "okm-python"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "okm"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+okm-core = { path = "../../okm-core", features = ["schema-serde"] }
+okm-dynamic = { path = "../../okm-dynamic" }
+pyo3 = { version = "0.25", features = ["extension-module"] }
+serde_json = "1"
+
+# standalone crate — keep out of the okm root workspace
+[workspace]

@@ -394,8 +394,16 @@ key bare in the tail) recorded in ADR-0005.
       tail, no longer an error) and cold fields from schema defaults,
       zero fallback per kind when no literal. Locked by
       version_default_migration_on_dynamic_read (v2 bytes through a v3
-      schema). Remaining: PyO3/Steel bindings; schema reverse-import
-      (Python-declared key/row/table → Rust runtime execution) deferred.
+      schema). Shipped 2026-09-17: PyO3 binding (`bindings/okm-python`,
+      maturin, pyo3 0.25) — `Schema.from_json` parses the serde'd
+      TableSchema; `encode_key`/`encode_payload` coerce Python scalars to
+      each field's schema kind (Python ints carry no width); `decode_*`
+      return dicts. Verified both directions byte-identical with the Rust
+      derive (verify.py: Rust→Python read + Python→Rust decode). Also
+      fixed: TableSchema Serialize omitted `slots` while Deserialize
+      required it (round-trip asymmetry). Remaining: Steel binding;
+      schema reverse-import (Python-declared key/row/table → Rust
+      runtime execution) deferred.
 - [x] Multi-tenancy: receiver-side prefix only — a remote OKM instance is
       one application = one domain model = one ns; to the receiver it is
       just another prefix. No app_id layer inside OKM, no multi-level ns

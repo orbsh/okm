@@ -419,6 +419,7 @@ mod serde_impls {
                 payload_header_len: usize,
                 hot_fields: &'a [FieldSchema],
                 cold_fields: &'a [FieldSchema],
+                slots: &'a SlotMap,
             }
             Repr {
                 key_len: self.key_len,
@@ -428,6 +429,7 @@ mod serde_impls {
                 payload_header_len: self.payload_header_len,
                 hot_fields: &self.hot_fields,
                 cold_fields: &self.cold_fields,
+                slots: &self.slots,
             }
             .serialize(s)
         }
