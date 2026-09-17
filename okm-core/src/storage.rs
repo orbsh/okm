@@ -28,7 +28,7 @@ pub trait VirtualStorage {
     }
     /// Open a write batch: [`KvBatch`] entries accumulate here, one
     /// `commit()` = one engine-level WAL commit. This is the
-    /// cross-collection atomicity primitive (ADR-0003): single-table
+    /// cross-collection atomicity primitive (ADR-0003): single-collection
     /// writes are already atomic inside `Collection::put`; primary + index
     /// across two assembly points share one batch and commit once.
     /// Default carrier is [`MemBatch`] (op list replayed by the engine
