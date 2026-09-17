@@ -57,7 +57,7 @@ fn parquet_export_import_roundtrip_restores_rows_and_indexes() {
     // Index entries were rewritten by put; the hand impl sorts by payload
     // `reputation` = i*100, so matching the first value requires its BE
     // bytes — here just scan the whole index (empty prefix).
-    let scanned = t2.scan::<TRowByOrg>(&[]);
+    let scanned = t2.scan::<__OkmIndex_TRow_by_org>(&[]);
     assert_eq!(scanned.len(), 5, "index rebuilt on import");
 
     // Exported column names = field names in declaration order (key
@@ -75,31 +75,6 @@ fn parquet_export_import_roundtrip_restores_rows_and_indexes() {
     );
 }
 
-/// The generated access-method marker struct (slot 1) — hand-written form.
-struct TRowByOrg;
-impl okm_core::KvIndex for TRowByOrg {
-    type Key = TKey;
-    type Document = TRow;
-    const SLOT: u8 = 1;
-    const FIELDS: &'static [&'static str] = &["org_id"];
-    const INCLUDES: &'static [&'static str] = &[];
-    const KEY_PREFIX: &'static [&'static str] = &[];
-    fn encode_named(
-        _key: &TKey,
-        document: &TRow,
-        names: &[&str],
-        buf: &mut Vec<u8>,
-    ) {
-        for n in names {
-            match *n {
-                "reputation" => buf.extend_from_slice(&document.reputation.to_be_bytes()),
-                "level" => buf.extend_from_slice(&document.level.to_be_bytes()),
-                "tag" => buf.extend_from_slice(&document.tag),
-                other => panic!("unknown field name: {other}"),
-            }
-        }
-    }
-}
 
 // ================= FieldDesc sanity (schema export's data source) =================
 

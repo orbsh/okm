@@ -23,7 +23,7 @@ use crate::storage::VirtualStorage;
 use crate::field::{FieldDesc, FieldType};
 use crate::index::Document;
 use crate::key::KeyEncode;
-use crate::document::Table;
+use crate::document::Collection;
 
 /// Arrow column type for a declared field kind.
 fn arrow_type(ty: FieldType) -> DataType {
@@ -34,6 +34,7 @@ fn arrow_type(ty: FieldType) -> DataType {
         FieldType::U64 => DataType::UInt64,
         FieldType::FixedBytes => DataType::Binary,
         FieldType::Str => DataType::Utf8,
+        FieldType::Bytes => DataType::Binary,
         // Logical types: VarInt decodes to its integer, Quant dequantizes
         // to f64, Offset re-adds the base.
         FieldType::VarInt => DataType::UInt64,
@@ -294,7 +295,7 @@ fn swap_be(src: &[u8], off: usize, width: usize, ty: FieldType) -> Vec<u8> {
         FieldType::U16 => raw.iter().rev().copied().collect(),
         FieldType::U32 => raw.iter().rev().copied().collect(),
         FieldType::U64 => raw.iter().rev().copied().collect(),
-        FieldType::Str => unreachable!("Str columns bypass swap_be"),
+        FieldType::Str | FieldType::Bytes => unreachable!("Str/Bytes columns bypass swap_be"),
         FieldType::VarInt | FieldType::Quant(_) | FieldType::Enum | FieldType::Offset(_) => {
             unreachable!("transformed kinds bypass swap_be (see logical_value)")
         }

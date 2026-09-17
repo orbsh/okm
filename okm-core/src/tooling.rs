@@ -85,7 +85,7 @@ pub fn json_schema<K: KeyEncode, R: Document<Key = K>>() -> String {
 pub mod parquet_io {
     use super::*;
     use crate::storage::VirtualStorage;
-    use crate::document::Table;
+    use crate::document::Collection;
     use arrow::array::{Array, BinaryArray, RecordBatch};
 
     /// Export all documents to a Parquet file (overwrite). Typed columns, schema
@@ -162,6 +162,13 @@ pub mod parquet_io {
                         .to_be_bytes()
                         .to_vec(),
                     FieldType::FixedBytes => unreachable!(),
+                    FieldType::Bytes => {
+                        col.as_any()
+                            .downcast_ref::<arrow::array::BinaryArray>()
+                            .unwrap()
+                            .value(document)
+                            .to_vec()
+                    }
                     FieldType::Str => unreachable!("handled above"),
                     FieldType::VarInt
                     | FieldType::Quant(_)

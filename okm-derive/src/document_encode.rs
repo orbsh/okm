@@ -732,12 +732,29 @@ fn emit_row_impl(schema: &DocumentSchema) -> TS2 {
             });
         } else if ty_str.starts_with("Reverse<") || ty_str.starts_with("Reverse <") {
             // Reverse<T>(pub T): wire is bit-flipped T; lift the inner.
+            // from_map: build the inner T from UInt, wrap Reverse(.0).
+            let inner = ty_str
+                .trim_start_matches("Reverse <")
+                .trim_start_matches("Reverse<")
+                .trim_end_matches('>')
+                .trim()
+                .to_string();
+            let inner_ty: syn::Type = syn::parse_str(&inner)
+                .unwrap_or_else(|e| panic!("bridge: bad Reverse inner type `{inner}`: {e}"));
             to_map_arms.extend(quote! {
-                out.insert(#name.to_string(), ::okm_core::obj_dynamic::DynamicValue::UInt(self.#id.0 as u64));
+                out.insert(#name.to_string(), ::okm_core::obj_dynamic::DynamicValue::UInt(
+                    (!self.#id.0) as u64
+                ));
             });
             from_map_arms.extend(quote! {
                 #id: match map.get(#name) {
-                    Some(::okm_core::obj_dynamic::DynamicValue::UInt(v)) => ::okm_core::VarInt::from_dyn(*v),
+                    // The map carries the LOGICAL value; Reverse's wire flips
+                    // bits — construct the wrapper by flipping back.
+                    Some(::okm_core::obj_dynamic::DynamicValue::UInt(v)) => {
+                        let logical = <#inner_ty as ::core::convert::TryFrom<u64>>::try_from(*v)
+                            .unwrap_or_else(|_| 0);
+                        ::okm_core::Reverse(!logical)
+                    }
                     _ => #dflt,
                 },
             });
