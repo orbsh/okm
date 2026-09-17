@@ -515,18 +515,21 @@ Unchanged: primary payload layout `[version][hot_len][hot][cold TLV]`
 
 ## Phase 9 — wrappers: `Option<T>` (short name, pending)
 
-- [ ] `Option<T>` wrapper in `okm-core/src/wrappers/` (family: `Enum<T>` /
+- [x] `Option<T>` wrapper in `okm-core/src/wrappers/` (family: `Enum<T>` /
       `Offset<T>` / `Quant<P>` / `VarInt<T>`): fixed-width encoding for
       optional declared fields — wire `[present u8][T wire bytes]`,
       total width `1 + T::WIDTH`, None zero-fills the value bytes. Keeps
       hot-segment eligibility (O(1) offsets) for fields that would
       otherwise be forced into cold TLV; distinguishes None from a real
-      value (`Some(0)` is not `None`).
+      value (`Some(0)` is not `None`). Shipped 2026-09-16 (2dd5385):
+      u8..u64/[u8;N] primitives; Enum/VarInt/Quant/Reverse compose via
+      their own contracts. Remaining: derive field-position recognition
+      (`Optional<T>` in a struct field → OptionalEnc impl + width).
 - [ ] Derive support: field-position recognition like the other wrappers
       (width = `1 + T::WIDTH` in FieldDesc), `[ok_default]` interplay
       documented (default decides what a missing pre-v2 payload decodes
       to; `Option` decides presence within a payload — orthogonal).
-- First use cases: watermark/cursor fields where 0 is a real value
+- [x] First use cases: watermark/cursor fields where 0 is a real value
   (MQ cursor keeps its 0 semantics — a plain u64 stays correct there;
   `Option` targets genuine None/Some distinctions: config overrides,
   optional foreign keys).
