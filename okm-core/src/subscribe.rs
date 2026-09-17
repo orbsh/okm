@@ -1,6 +1,6 @@
 //! Subscribe — the channel half of the event layer (ADR-0008).
 //!
-//! `#[ok_subscribe]` on a `DocumentEncode` struct declares: this row type's
+//! `#[ok_subscribe]` on a `DocumentEncode` struct declares: this document type's
 //! write-path events enter a channel. There is NO handler at the
 //! annotation site — the derive only emits a uniform-format send; the
 //! processing logic belongs entirely to the consumer, and the combinators
@@ -37,16 +37,16 @@ pub struct Event<K, R> {
     pub op: Op,
     pub epoch: u64,
     pub key: K,
-    pub row: R,
+    pub document: R,
 }
 
 impl<K, R> Event<K, R> {
-    pub fn new(op: Op, epoch: u64, key: K, row: R) -> Self {
+    pub fn new(op: Op, epoch: u64, key: K, document: R) -> Self {
         Self {
             op,
             epoch,
             key,
-            row,
+            document,
         }
     }
 }
@@ -67,7 +67,7 @@ impl<E, F: Fn(E) -> bool + Send + Sync> EventSink<E> for F {
 /// Global sink cell for one event stream. The caller registers a sink
 /// once at assembly time (before or during consumption); emit sites call
 /// [`Self::emit`] — no sink registered means events are dropped (the
-/// zero-cost default: subscribed rows whose stream nobody consumes pay
+/// zero-cost default: subscribed documents whose stream nobody consumes pay
 /// only one atomic load per write).
 pub struct ChannelCell<E> {
     sink: std::sync::RwLock<Option<std::sync::Arc<dyn EventSink<E>>>>,

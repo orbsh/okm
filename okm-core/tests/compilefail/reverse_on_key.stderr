@@ -4,4 +4,4 @@ error: proc-macro derive panicked
 3 | #[derive(KeyEncode)]
   |          ^^^^^^^^^
   |
-  = help: message: KeyEncode: Reverse<T> on key field ts — keys are fixed-width identity; put Reverse fields in the row payload instead
+  = help: message: KeyEncode: Reverse<T> on key field ts — keys are fixed-width identity; put Reverse fields in the document payload instead

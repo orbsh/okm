@@ -66,15 +66,15 @@ fn table_semantics_over_remote() {
     assert_eq!(hits[0].1.as_ref().unwrap().level, 3);
 
     // Point get via the table (full round trip: frame → host → engine → back).
-    let row = t.get(&UserKey { id: 42 }).expect("row round-tripped");
-    assert_eq!(row.level, 3);
+    let document = t.get(&UserKey { id: 42 }).expect("document round-tripped");
+    assert_eq!(document.level, 3);
 
     // Both rows' primary + index entries landed (read-side observation).
     let all = t.scan::<ByLevel>(&[]);
     assert_eq!(all.len(), 2);
 
     // Delete removes both halves remotely.
-    t.delete(&UserKey { id: 42 }, &row);
+    t.delete(&UserKey { id: 42 }, &document);
     wait_for(
         || t.get(&UserKey { id: 42 }).is_none(),
         "delete to propagate",

@@ -1,13 +1,13 @@
 //! Arrow RecordBatch bridge (ADR-0007 Phase 1 — eager export).
 //!
-//! Streams a table's rows as Arrow `RecordBatch`es: the key fields and the
+//! Streams a table's documents as Arrow `RecordBatch`es: the key fields and the
 //! TLV payload fields become columns, with the schema generated from the
 //! same `FieldDesc` tables the derive macros emit ("code as DDL" — one
 //! struct is the single source for key encoding, payload encoding, index
 //! slots, snapshot columns, and Arrow schema).
 //!
 //! This module reads bytes, not structs: key fields are big-endian slices
-//! of the key encoding, payload fields are TLV-framed slices of the row
+//! of the key encoding, payload fields are TLV-framed slices of the document
 //! payload. Column builders copy those slices straight in — no intermediate
 //! struct materialization on the export path.
 //!
@@ -116,21 +116,21 @@ impl<K: KeyEncode, R: Document<Key = K>> Projection<K, R> {
 
 /// Buffer adapter: arrow wants `Buffer` + length; the bytes come from a
 /// caller-owned `Vec`. Each column is a contiguous BE run of the source
-/// bytes, so per-column we produce (offset, len) views of the row buffer.
+/// bytes, so per-column we produce (offset, len) views of the document buffer.
 ///
-/// One `RecordBatch` per call: rows are appended column-wise into
+/// One `RecordBatch` per call: documents are appended column-wise into
 /// `Vec<Vec<u8>>` scratch (column-major), then each column becomes a single
 /// `Buffer` of concatenated fixed-width values — arrow primitives are
 /// little-endian, so a byte-swapping copy is required per value.
 fn build_batch<K: KeyEncode, R: Document<Key = K>>(
     proj: &Projection<K, R>,
-    rows: &[(Vec<u8>, Vec<u8>)],
+    documents: &[(Vec<u8>, Vec<u8>)],
 ) -> RecordBatch {
-    let n = rows.len();
+    let n = documents.len();
     let mut columns: Vec<Vec<Vec<u8>>> = Vec::with_capacity(proj.schema.fields().len());
 
     // Precompute the declaration-order byte offset of every key field
-    // (computed once, applied per row).
+    // (computed once, applied per document).
     let key_offsets: Vec<usize> = {
         let mut offs = Vec::with_capacity(proj.key_fields.len());
         let mut acc = 0usize;
@@ -143,10 +143,10 @@ fn build_batch<K: KeyEncode, R: Document<Key = K>>(
 
     // Key half: the scan suffix IS the key payload (encoding = declaration-
     // order BE fields), so per-field runs are contiguous offsets into it.
-    // One value per row per column (column-major list of per-row values).
+    // One value per document per column (column-major list of per-document values).
     for (fi, f) in proj.key_fields.iter().enumerate() {
         let mut col = Vec::with_capacity(n);
-        for (kenc, _) in rows {
+        for (kenc, _) in documents {
             let off = key_offsets[fi];
             col.push(swap_be(kenc, off, f.width, f.ty));
         }
@@ -165,7 +165,7 @@ fn build_batch<K: KeyEncode, R: Document<Key = K>>(
         .collect();
     for (fi, f) in proj.row_fields.iter().enumerate() {
         let mut col: Vec<Vec<u8>> = Vec::with_capacity(n);
-        for (_, v) in rows {
+        for (_, v) in documents {
             if f.width > 0 {
                 // Hot: header + sum of prior hot field widths.
                 let off = header
@@ -302,7 +302,7 @@ fn swap_be(src: &[u8], off: usize, width: usize, ty: FieldType) -> Vec<u8> {
 }
 
 impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> {
-    /// Export all rows as one Arrow `RecordBatch` (ADR-0007 Phase 1).
+    /// Export all documents as one Arrow `RecordBatch` (ADR-0007 Phase 1).
     ///
     /// Columns: key fields (declaration order) then payload fields. All
     /// current field kinds are fixed-width and non-nullable; `String`
@@ -312,8 +312,8 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     /// batch shape for fjall / slatedb-backed tables.
     pub fn to_record_batch(&self) -> RecordBatch {
         let proj = Projection::<K, R>::new();
-        let rows: Vec<(Vec<u8>, Vec<u8>)> = self.scan_rows_raw().into_iter().collect();
-        build_batch(&proj, &rows)
+        let documents: Vec<(Vec<u8>, Vec<u8>)> = self.scan_documents_raw().into_iter().collect();
+        build_batch(&proj, &documents)
     }
 
     /// Exported column names (key fields then payload fields) with their
@@ -328,7 +328,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
             .collect()
     }
 
-    /// Approximate per-batch memory: one row's full field width.
+    /// Approximate per-batch memory: one document's full field width.
     pub fn row_width(&self) -> usize {
         Projection::<K, R>::new().total_width()
     }

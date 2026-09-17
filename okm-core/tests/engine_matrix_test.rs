@@ -65,7 +65,7 @@ fn engine_matrix_table_round_trip() {
     for (name, store) in TestStore::matrix() {
         let mut t: okm_core::Collection<TestStore, MKey, MRow> = okm_core::Collection::new(store);
         t.put(&MKey { id: 7 }, &MRow { score: 55 });
-        let back = t.get(&MKey { id: 7 }).expect("{name}: row round trip");
+        let back = t.get(&MKey { id: 7 }).expect("{name}: document round trip");
         assert_eq!(back.score, 55, "{name}");
         let keys = t.scan_keys();
         assert_eq!(keys, vec![MKey { id: 7 }], "{name}: scan_keys");

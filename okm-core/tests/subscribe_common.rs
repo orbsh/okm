@@ -1,11 +1,11 @@
-//! Shared subscribe fixture: row types, reduce/index impls, and the
+//! Shared subscribe fixture: document types, reduce/index impls, and the
 //! generated okm_subscribe module. Test binaries that emit or consume
 //! events include this module at their crate root (`#[path] mod`), so
 //! the build.rs-generated enum's `super::` references and the derive
 //! artifacts resolve identically in each binary. build.rs scans tests/
 //! recursively and collects these rows once.
 //!
-//! Convention: every `#[ok_subscribe]` row of the okm-core test family
+//! Convention: every `#[ok_subscribe]` document of the okm-core test family
 //! lives HERE — the generated enum spans all of them, so they must share
 //! one compilation unit per test binary.
 
@@ -16,7 +16,7 @@ pub struct AccountKey {
     pub id: u64,
 }
 
-/// Subscribed row — variant is the row type name, derived by build.rs.
+/// Subscribed document — variant is the document type name, derived by build.rs.
 #[derive(DocumentEncode, Clone, PartialEq, Debug)]
 #[ok_ref(AccountKey)]
 #[ok_subscribe]
@@ -30,7 +30,7 @@ pub struct AuditKey {
     pub id: u64,
 }
 
-/// Subscribed row routed through the same enum — fan-in shape.
+/// Subscribed document routed through the same enum — fan-in shape.
 #[derive(DocumentEncode, Clone, PartialEq, Debug)]
 #[ok_ref(AuditKey)]
 #[ok_subscribe]
@@ -47,7 +47,7 @@ pub struct GhostKey {
 /// Subscribed but nobody ever registers the channel — the no-sink
 /// case must be tested on a channel no other test can touch (global
 /// statics are process-wide; parallel tests would race otherwise).
-/// This row carries its own enum alias via `#[ok_event_enum]`, which
+/// This document carries its own enum alias via `#[ok_event_enum]`, which
 /// lands as a second generated enum.
 #[derive(DocumentEncode, Clone, PartialEq, Debug)]
 #[ok_ref(GhostKey)]

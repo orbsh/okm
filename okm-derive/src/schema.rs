@@ -1,9 +1,9 @@
 //! Schema IR for `DocumentEncode` — parse once, emit many.
 //!
-//! `parse_schema` turns the derive input into a validated `RowSchema`
+//! `parse_schema` turns the derive input into a validated `DocumentSchema`
 //! (attributes, payload field encoders, index declarations). All attribute
 //! parsing and all compile-time validation happens here; the emit functions
-//! in `row_encode.rs` consume the schema and only generate code.
+//! in `document_encode.rs` consume the schema and only generate code.
 //!
 //! The IR holds pre-compiled `TokenStream` fragments (enc/dec/width): the
 //! macro's discipline is mechanical expansion of declaration info, and the
@@ -25,7 +25,7 @@ pub(crate) struct IdxDecl {
     pub key: Vec<String>,
     /// Function-index function path (empty = plain field index): the
     /// single token inside `func(...)` is spliced verbatim into the
-    /// generated `KvIndex` impl, which calls it as `#path(&row)`.
+    /// generated `KvIndex` impl, which calls it as `#path(&document)`.
     pub func: String,
     /// `deprecated` flag on the declaration: the slot stays reserved
     /// (declaration order is a persistent contract — removing the entry
@@ -121,7 +121,7 @@ pub(crate) fn parse_index_attr(attr: &syn::Attribute) -> Vec<IdxDecl> {
                 "key" => key = list,
                 "func" => {
                     // func(path) — the function path spliced verbatim into
-                    // the generated impl (called as `path(&row)`).
+                    // the generated impl (called as `path(&document)`).
                     if list.len() != 1 {
                         panic!("ok_index[{ident}].func: expected exactly one function path");
                     }
@@ -246,7 +246,7 @@ fn variable_width(fs: &[FieldSchema], name_strs: &[String], n: &str) -> bool {
 /// uniform shape decode needs for the default-filling `if` branches.
 pub(crate) struct FieldSchema {
     pub ident: syn::Ident,
-    /// Rust type as written (normalized string), for the row-map bridge
+    /// Rust type as written (normalized string), for the document-map bridge
     /// to emit exact casts (`DynamicValue::UInt` -> `u32 as u32` etc.).
     pub ty_str: String,
     pub enc: TS2,
@@ -258,7 +258,7 @@ pub(crate) struct FieldSchema {
     /// `okm_core::FieldType` variant path, for the FieldDesc table (None = unsupported).
     pub kind: Option<TS2>,
     /// Hot/cold split: `true` = fixed-width hot segment (contiguous region
-    /// after the row header, O(1) offsets); `false` = variable-width cold
+    /// after the document header, O(1) offsets); `false` = variable-width cold
     /// segment (TLV frames, tag = declaration index). Width 0 == cold.
     pub hot: bool,
     /// Expression producing the field's default value — used when a
@@ -703,7 +703,7 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> Vec<FieldSchema> {
 
 /// One `#[ok_reduce(name { group(a, b) })]` declaration. The fold /
 /// unfold callbacks and the accumulator type come from a user-implemented
-/// `Reduce` impl on a marker struct named `__OkmReduce_{row}_{name}`;
+/// `Reduce` impl on a marker struct named `__OkmReduce_{document}_{name}`;
 /// this IR only carries the declaration (slot allocation + group fields).
 pub(crate) struct ReduceDecl {
     pub ident: syn::Ident,
@@ -714,11 +714,11 @@ pub(crate) struct ReduceDecl {
 
 /// One `#[ok_subscribe]` declaration: bare only. The event enum name comes
 /// from `#[ok_event_enum(Alias)]` (default `RowEvent`); the variant IS the
-/// row type name (build.rs derives it — no hand-written mapping, no
-/// per-row-type fallback channel; the bare-channel degraded shape is
+/// document type name (build.rs derives it — no hand-written mapping, no
+/// per-document-type fallback channel; the bare-channel degraded shape is
 /// explicitly unsupported).
 pub(crate) struct SubDecl {
-    /// Generated event enum name for this row's events (`RowEvent` unless
+    /// Generated event enum name for this document's events (`RowEvent` unless
     /// overridden by `#[ok_event_enum]`).
     pub enum_name: String,
 }
@@ -729,7 +729,7 @@ pub(crate) fn parse_subscribe_attr(attr: &syn::Attribute) -> SubDecl {
     if attr.parse_args::<syn::ExprPath>().is_ok() {
         panic!(
             "ok_subscribe: variant paths are not supported — declare `#[ok_subscribe]` \
-             (bare); the event enum is `{}` and the variant is the row type name \
+             (bare); the event enum is `{}` and the variant is the document type name \
              (rename the enum with `#[ok_event_enum(...)]`)",
             DEFAULT_EVENT_ENUM
         );
@@ -740,7 +740,7 @@ pub(crate) fn parse_subscribe_attr(attr: &syn::Attribute) -> SubDecl {
 pub(crate) const DEFAULT_EVENT_ENUM: &str = "RowEvent";
 
 /// Optional `#[ok_event_enum(Alias)]`: renames the generated event enum
-/// this row's events dispatch through. Only read on rows that also carry
+/// this document's events dispatch through. Only read on documents that also carry
 /// `#[ok_subscribe]`.
 pub(crate) fn parse_event_enum_attr(attr: &syn::Attribute) -> String {
     let ts = match attr.parse_args::<syn::ExprPath>() {
@@ -754,20 +754,20 @@ pub(crate) fn parse_event_enum_attr(attr: &syn::Attribute) -> String {
 }
 
 /// Whole-macro IR: parse once, consumed by every emit function.
-pub(crate) struct RowSchema {
+pub(crate) struct DocumentSchema {
     pub row_name: syn::Ident,
     pub key_ty: syn::Type,
-    /// `#[ok_ns(N)]` — the row's table namespace. None = not declared
-    /// (layout-only row; table-less usage keeps an empty prefix).
+    /// `#[ok_ns(N)]` — the document's table namespace. None = not declared
+    /// (layout-only document; table-less usage keeps an empty prefix).
     pub ns: Option<u16>,
-    /// `#[ok_partition]` / `#[ok_partition(N)]` — the row's table
+    /// `#[ok_partition]` / `#[ok_partition(N)]` — the document's table
     /// partition id. None = no partition segment in the key (default;
     /// zero cost for tables without partition needs). Some(id) prepends
     /// a 1-byte segment `[part id]` before the ns header — physical
     /// partition routing (Fjall) and workload isolation in the key
     /// space; engines without partition semantics ignore the physical
     /// split but the key encoding (and thus byte layout) is identical
-    /// everywhere. Declared on the row like ok_ns.
+    /// everywhere. Declared on the document like ok_ns.
     pub partition: Option<u8>,
     pub layout_version: u8,
     /// Payload fields, declaration order. The TLV tag = vec index, so
@@ -778,16 +778,16 @@ pub(crate) struct RowSchema {
     /// Reduce declarations, attribute order (slots continue after
     /// the last index — same append-only counter, never reused).
     pub reduces: Vec<ReduceDecl>,
-    /// Subscribe declaration — at most one per row type.
+    /// Subscribe declaration — at most one per document type.
     pub subscribe: Option<SubDecl>,
 }
 
 /// Parse + validate the derive input. Returns a fully validated schema —
 /// the emit functions never panic.
-pub(crate) fn parse_schema(input: DeriveInput) -> RowSchema {
+pub(crate) fn parse_schema(input: DeriveInput) -> DocumentSchema {
     let row_name = input.ident.clone();
 
-    // #[ok_ref(KeyType)] — the identity struct the row hangs off.
+    // #[ok_ref(KeyType)] — the identity struct the document hangs off.
     let key_ty: syn::Type = input
         .attrs
         .iter()
@@ -800,9 +800,9 @@ pub(crate) fn parse_schema(input: DeriveInput) -> RowSchema {
         })
         .expect("missing #[ok_ref(KeyType)]");
 
-    // #[ok_ns(N)] — the table's namespace segment, declared on the row
-    // (the row is the table's declaration point: #[ok_ref] pins the key
-    // type, so the row determines Collection<S, K, R> entirely). Absent = None.
+    // #[ok_ns(N)] — the table's namespace segment, declared on the document
+    // (the document is the table's declaration point: #[ok_ref] pins the key
+    // type, so the document determines Collection<S, K, R> entirely). Absent = None.
     let ns: Option<u16> = input
         .attrs
         .iter()
@@ -820,7 +820,7 @@ pub(crate) fn parse_schema(input: DeriveInput) -> RowSchema {
         });
 
     // #[ok_partition] / #[ok_partition(N)] — the table's partition id.
-    // None = no partition segment (default). Declared on the row.
+    // None = no partition segment (default). Declared on the document.
     let partition: Option<u8> = input
         .attrs
         .iter()
@@ -850,7 +850,7 @@ pub(crate) fn parse_schema(input: DeriveInput) -> RowSchema {
     let fs = field_encoders(named, "DocumentEncode");
     let name_strs: Vec<_> = fs.iter().map(|f| f.ident.to_string()).collect();
 
-    // #[ok_layout(version = N)] — row header layout version. Absent = 1.
+    // #[ok_layout(version = N)] — document header layout version. Absent = 1.
     // Bumping it is the signal that the hot/cold field set changed; decode
     // accepts payloads written by any *older* version (append-only rule:
     // new fields go to the tail of their segment, missing ones get their
@@ -881,12 +881,12 @@ pub(crate) fn parse_schema(input: DeriveInput) -> RowSchema {
         .flat_map(parse_index_attr)
         .collect();
 
-    // Validate that every index field/includes name refers to a real row
+    // Validate that every index field/includes name refers to a real document
     // payload field (compile-time; the name list is right here).
     for idx in &idx_decls {
         for n in idx.fields.iter().chain(&idx.includes) {
             if !name_strs.contains(n) {
-                panic!("ok_index[{}]: field `{n}` is not a row payload field", idx.ident);
+                panic!("ok_index[{}]: field `{n}` is not a document payload field", idx.ident);
             }
         }
         // Variable-length payload fields (String, VarInt — width 0) have no
@@ -930,18 +930,18 @@ pub(crate) fn parse_schema(input: DeriveInput) -> RowSchema {
     for red in &agg_decls {
         for n in &red.group {
             if !name_strs.contains(n) {
-                panic!("ok_reduce[{}]: group field `{n}` is not a row payload field", red.ident);
+                panic!("ok_reduce[{}]: group field `{n}` is not a document payload field", red.ident);
             }
         }
     }
 
     // #[ok_subscribe] (bare) + optional #[ok_event_enum(Alias)] — at most
-    // one subscribe per row type (two declarations = one channel send per
+    // one subscribe per document type (two declarations = one channel send per
     // write, ambiguous shape; reject rather than multiply sends).
     let mut sub_iter = input.attrs.iter().filter(|a| a.path().is_ident("ok_subscribe"));
     let sub_attr = sub_iter.next();
     if sub_iter.next().is_some() {
-        panic!("ok_subscribe: duplicate declaration — at most one per row type");
+        panic!("ok_subscribe: duplicate declaration — at most one per document type");
     }
     let sub_decl = sub_attr.map(|a| {
         let mut decl = parse_subscribe_attr(a);
@@ -951,7 +951,7 @@ pub(crate) fn parse_schema(input: DeriveInput) -> RowSchema {
         decl
     });
 
-    RowSchema {
+    DocumentSchema {
         row_name,
         key_ty,
         ns,

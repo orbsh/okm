@@ -2,20 +2,20 @@
 //!
 //! One macro, three concerns (ADR-0006):
 //!
-//! 1. `#[ok_ref(KeyType)]` — the identity struct this row hangs off.
+//! 1. `#[ok_ref(KeyType)]` — the identity struct this document hangs off.
 //! 2. Payload fields — encoded as TLV: `[tag u8][len u32 BE][value BE]`
-//!    per field, `tag` = field declaration index (unique within the row,
+//!    per field, `tag` = field declaration index (unique within the document,
 //!    decoupled from field names). `len` is a redundant check for
 //!    fixed-width fields today but keeps the same frame for the
 //!    variable-length regime later.
 //! 3. `#[ok_index(idx_name { fields(a, b), includes(c) })]` — one access
 //!    method per declaration, slots start at DECLARED_SLOT_BASE (16) in attribute order
 //!    (`0` is reserved for the primary table, ADR-0005). Generates a
-//!    marker struct per index plus `Row::index_entries`, so `put`/
+//!    marker struct per index plus `Document::index_entries`, so `put`/
 //!    `delete` cover every declared access method with no runtime
 //!    registry — the declaration *is* the registry.
 //!
-//! Additionally, both the key struct and the row struct expose a
+//! Additionally, both the key struct and the document struct expose a
 //! `FieldDesc` table (name / byte width / primitive kind, declaration
 //! order) — the single field list feeding every downstream consumer that
 //! needs to lay out or interpret fields without a derive on their side
@@ -25,7 +25,7 @@
 //!
 //! Structure: parse once into the schema IR (`schema.rs`, which also owns
 //! all validation), then one emit function per generated artifact. Adding
-//! a generated artifact = adding an `emit_*(&RowSchema)` function; the
+//! a generated artifact = adding an `emit_*(&DocumentSchema)` function; the
 //! emit functions share no temporary state.
 
 use proc_macro::TokenStream;
@@ -39,13 +39,13 @@ const DECLARED_SLOT_BASE: u8 = 16;
 use quote::{format_ident, quote};
 use syn::{parse_macro_input, DeriveInput};
 
-use crate::schema::{parse_schema, RowSchema};
+use crate::schema::{parse_schema, DocumentSchema};
 
 /// One match arm per payload field name — each arm appends that field's
 /// raw encoding (no TLV frame; the index segment is a plain
 /// concatenation, order = the requested name order). Shared by all
 /// index declarations and the inherent `__okm_encode_named` walk.
-fn emit_named_walk(schema: &RowSchema) -> TS2 {
+fn emit_named_walk(schema: &DocumentSchema) -> TS2 {
     let mut enc_arms = quote! {};
     for f in &schema.fields {
         let fname = f.ident.to_string();
@@ -71,31 +71,31 @@ fn emit_named_walk(schema: &RowSchema) -> TS2 {
 }
 
 /// FieldDesc table entries: `(name, FieldType, width)`, declaration order.
-fn field_desc_entries(schema: &RowSchema) -> TS2 {
-    let rows = schema.fields.iter().map(|f| {
+fn field_desc_entries(schema: &DocumentSchema) -> TS2 {
+    let documents = schema.fields.iter().map(|f| {
         let name = f.ident.to_string();
         let kind = f.kind.as_ref().expect("field kind");
         let w = &f.width;
         quote! { (::okm_core::FieldDesc { name: #name, ty: #kind, width: #w }) }
     });
-    quote! { &[ #(#rows),* ] }
+    quote! { &[ #(#documents),* ] }
 }
 
 /// Const DEFAULTS entries: literal `#[ok_default]` per field, name-keyed.
 /// The `Str` case needs &'static str — emitted from the inner str literal
 /// of `"x".to_string()` or a bare "x"; non-literal exprs are skipped
 /// (dynamic reader falls back to zero).
-fn defaults_entries(schema: &RowSchema) -> TS2 {
-    let rows = schema.fields.iter().filter_map(|f| {
+fn defaults_entries(schema: &DocumentSchema) -> TS2 {
+    let documents = schema.fields.iter().filter_map(|f| {
         let name = f.ident.to_string();
         let lit = f.default_lit.as_ref()?;
         Some(quote! { (#name, #lit) })
     });
-    quote! { &[ #(#rows),* ] }
+    quote! { &[ #(#documents),* ] }
 }
 
 /// ---- encode: [version u8][hot_len u16 BE][hot segment][cold TLV] ----
-fn emit_payload_encode(schema: &RowSchema) -> TS2 {
+fn emit_payload_encode(schema: &DocumentSchema) -> TS2 {
     let ver_lit = proc_macro2::Literal::u8_unsuffixed(schema.layout_version);
 
     // Segment split. Hot = fixed-width fields (contiguous, O(1) offsets);
@@ -145,7 +145,7 @@ fn emit_payload_encode(schema: &RowSchema) -> TS2 {
 /// Each field becomes `let <name> = if <present> { <dec_val> } else {
 /// <default> };` — dec blocks read from b[offset..], advance offset, and
 /// yield the value.
-fn emit_payload_decode(schema: &RowSchema) -> TS2 {
+fn emit_payload_decode(schema: &DocumentSchema) -> TS2 {
     let ver_lit = proc_macro2::Literal::u8_unsuffixed(schema.layout_version);
     let ver_str = schema.layout_version.to_string();
 
@@ -215,7 +215,7 @@ fn emit_payload_decode(schema: &RowSchema) -> TS2 {
 
 /// One marker struct + `KvIndex` impl per declared `#[ok_index]` (slot
 /// order).
-fn emit_index_structs(schema: &RowSchema) -> TS2 {
+fn emit_index_structs(schema: &DocumentSchema) -> TS2 {
     let row_name = &schema.row_name;
     let key_ty = &schema.key_ty;
 
@@ -235,7 +235,7 @@ fn emit_index_structs(schema: &RowSchema) -> TS2 {
         let includes: Vec<&String> = idx.includes.iter().collect();
         let key_names: Vec<&String> = idx.key.iter().collect();
         let slot_doc = format!("{}", n + 1);
-        // Function indexes may produce multiple values per row (multi-
+        // Function indexes may produce multiple values per document (multi-
         // entry regime): override entry_pairs to fan out. Plain field
         // indexes use the trait default (one pair).
         let pairs_impl = if idx.func.is_empty() {
@@ -247,15 +247,15 @@ fn emit_index_structs(schema: &RowSchema) -> TS2 {
                 fn entry_pairs(
                     table_ns: &[u8],
                     key: &Self::Key,
-                    row: &Self::Document,
+                    document: &Self::Document,
                 ) -> Vec<(Vec<u8>, Vec<u8>)> {
                     // One (key, value) pair per produced value; every
                     // entry shares the same includes value. Key =
                     // [ns 2B][slot][value][key prefix].
-                    let __okm_fv = #fpath(row);
+                    let __okm_fv = #fpath(document);
                     let __okm_vals = ::okm_core::IndexFuncValues::func_values(__okm_fv);
                     let mut __okm_out = Vec::with_capacity(__okm_vals.len());
-                    let __okm_value = Self::entry_value(key, row);
+                    let __okm_value = Self::entry_value(key, document);
                     for __okm_seg in __okm_vals {
                         let mut __okm_k = Vec::with_capacity(
                             table_ns.len() + 1 + __okm_seg.len() + Self::key_prefix_width(),
@@ -271,7 +271,7 @@ fn emit_index_structs(schema: &RowSchema) -> TS2 {
             }
         };
         let func_str = idx.func.clone();
-        // Function-index regime: the sort segment is `func(&row)`'s
+        // Function-index regime: the sort segment is `func(&document)`'s
         // result(s), each encoded via IndexFuncResult — a single value
         // yields one entry, an iterator yields one entry per element
         // (multi-entry regime: inverted index, multi-valued fields).
@@ -283,7 +283,7 @@ fn emit_index_structs(schema: &RowSchema) -> TS2 {
             // The field encoders reference `self.#id` (shared with the
             // payload TLV loop), so the walk lives in an inherent method
             // with a real `self` receiver.
-            quote! { <Self::Document>::__okm_encode_named(row, names, buf) }
+            quote! { <Self::Document>::__okm_encode_named(document, names, buf) }
         } else {
             let fpath = syn::parse_str::<syn::Expr>(&idx.func)
                 .unwrap_or_else(|e| panic!("ok_index[{}]: bad func path `{}`: {e}", idx.ident, idx.func));
@@ -294,7 +294,7 @@ fn emit_index_structs(schema: &RowSchema) -> TS2 {
                 // segment) — the multi-entry fan-out lives in
                 // entry_pairs. The same path is what the query side calls
                 // on its probe value.
-                let __okm_fv = #fpath(row);
+                let __okm_fv = #fpath(document);
                 match ::okm_core::IndexFuncValues::func_values(__okm_fv).pop() {
                     Some(__okm_seg) => buf.extend_from_slice(&__okm_seg),
                     None => {}
@@ -321,7 +321,7 @@ fn emit_index_structs(schema: &RowSchema) -> TS2 {
 
                 fn encode_named(
                     _key: &Self::Key,
-                    row: &Self::Document,
+                    document: &Self::Document,
                     names: &[&str],
                     buf: &mut Vec<u8>,
                 ) {
@@ -337,13 +337,13 @@ fn emit_index_structs(schema: &RowSchema) -> TS2 {
 /// index_entries: statically expands every (entry_key, entry_value) pair
 /// per declared #[ok_index] (slot order) — no runtime registry needed;
 /// the declaration is the registry. Function indexes may fan out to
-/// multiple pairs per row (multi-entry regime).
-fn emit_index_entries(schema: &RowSchema) -> TS2 {
+/// multiple pairs per document (multi-entry regime).
+fn emit_index_entries(schema: &DocumentSchema) -> TS2 {
     let row_name = &schema.row_name;
     let entry_calls = schema.indexes.iter().filter(|idx| !idx.deprecated).map(|idx| {
         let struct_ident = format_ident!("__OkmIndex_{}_{}", row_name, idx.ident);
         quote! {
-            out.extend(<#struct_ident as ::okm_core::KvIndex>::entry_pairs(ns, key, row));
+            out.extend(<#struct_ident as ::okm_core::KvIndex>::entry_pairs(ns, key, document));
         }
     });
     // Deprecated slots: declaration positions (1-based) whose entries are
@@ -366,7 +366,7 @@ fn emit_index_entries(schema: &RowSchema) -> TS2 {
         const DEPRECATED_SLOTS: &'static [u8] = &[#(#dep_slots),*];
     };
     quote! {
-        fn index_entries(key: &Self::Key, row: &Self, ns: &[u8]) -> Vec<(Vec<u8>, Vec<u8>)> {
+        fn index_entries(key: &Self::Key, document: &Self, ns: &[u8]) -> Vec<(Vec<u8>, Vec<u8>)> {
             let mut out = Vec::new();
             #(#entry_calls)*
             out
@@ -378,10 +378,10 @@ fn emit_index_entries(schema: &RowSchema) -> TS2 {
 /// Reduces: `#[ok_reduce(MyLogic { group(a, b) })]` — the user
 /// implements `okm_core::ReduceLogic` on `MyLogic` (Acc + fold/unfold);
 /// the derive generates the `okm_core::Reduce` impl on the SAME type
-/// (SLOT/GROUP come from the declaration) plus the Row hook override
+/// (SLOT/GROUP come from the declaration) plus the Document hook override
 /// running each reduce's read-modify-write. Returns
 /// (trait impls, hook fn body to splice inside `impl Document`).
-fn emit_reduces(schema: &RowSchema) -> (TS2, TS2) {
+fn emit_reduces(schema: &DocumentSchema) -> (TS2, TS2) {
     let row_name = &schema.row_name;
     let n_idx = schema.indexes.len();
 
@@ -398,12 +398,12 @@ fn emit_reduces(schema: &RowSchema) -> (TS2, TS2) {
                 const GROUP: &'static [&'static str] = &[ #(#group),* ];
                 fn group_bytes(
                     _key: &<#row_name as ::okm_core::Document>::Key,
-                    row: &#row_name,
+                    document: &#row_name,
                 ) -> Vec<u8> {
-                    // The row's named-field walk — same encoders as the
+                    // The document's named-field walk — same encoders as the
                     // index layer, byte-compatible with read-side probes.
                     let mut buf = Vec::new();
-                    <#row_name>::__okm_encode_named(row, Self::GROUP, &mut buf);
+                    <#row_name>::__okm_encode_named(document, Self::GROUP, &mut buf);
                     buf
                 }
             }
@@ -445,17 +445,17 @@ fn emit_reduces(schema: &RowSchema) -> (TS2, TS2) {
 /// to place beside the impl, hook fn body to splice inside `impl Document`).
 ///
 /// One shape only: the send wraps the event in the generated enum's
-/// variant (variant = row type name) and goes through that enum's global
+/// variant (variant = document type name) and goes through that enum's global
 /// channel cell (`::okm_subscribe::` module generated by the build
-/// script). The per-row-type bare channel is explicitly unsupported.
-fn emit_subscribe(schema: &RowSchema) -> (TS2, TS2) {
+/// script). The per-document-type bare channel is explicitly unsupported.
+fn emit_subscribe(schema: &DocumentSchema) -> (TS2, TS2) {
     let row_name = &schema.row_name;
     let Some(sub) = &schema.subscribe else {
         return (quote! {}, quote! {});
     };
     let en = syn::parse_str::<syn::Ident>(&sub.enum_name)
         .unwrap_or_else(|e| panic!("ok_subscribe: bad enum name `{}`: {e}", sub.enum_name));
-    // The variant IS the row type name — derived by build.rs, so a send
+    // The variant IS the document type name — derived by build.rs, so a send
     // site can never drift from the declaration (compile error on mismatch).
     let var = row_name;
     let cell = syn::parse_str::<syn::Ident>(&format!("CHANNEL_{}", sub.enum_name.to_uppercase()))
@@ -469,7 +469,7 @@ fn emit_subscribe(schema: &RowSchema) -> (TS2, TS2) {
         ) {
             // Best-effort: no sink registered / sink rejected =
             // event dropped; the write path is never blocked
-            // (ADR-0008). Clone only happens on subscribed rows.
+            // (ADR-0008). Clone only happens on subscribed documents.
             // Path contract: the consuming crate declares
             // `mod okm_subscribe` at ITS crate root and bridges
             // the build.rs-generated module there. The cell name
@@ -482,17 +482,17 @@ fn emit_subscribe(schema: &RowSchema) -> (TS2, TS2) {
             );
         }
     };
-    // The enum cell lives in ::okm_subscribe (build script) — no per-row
-    // statics in the row's own module.
+    // The enum cell lives in ::okm_subscribe (build script) — no per-document
+    // statics in the document's own module.
     (quote! {}, hook)
 }
 
-/// The inherent named-field walk + the full `Row` trait impl, assembled
+/// The inherent named-field walk + the full `Document` trait impl, assembled
 /// from the other emit functions' output.
-fn emit_row_impl(schema: &RowSchema) -> TS2 {
+fn emit_row_impl(schema: &DocumentSchema) -> TS2 {
     let row_name = &schema.row_name;
     let key_ty = &schema.key_ty;
-    // #[ok_ns(N)] → the row's table ns prefix bytes (big-endian u16,
+    // #[ok_ns(N)] → the document's table ns prefix bytes (big-endian u16,
     // matching the raw `[ns 2B]` header). Absent = default empty.
     let ns_const = match schema.ns {
         Some(n) => {
@@ -550,7 +550,7 @@ fn emit_row_impl(schema: &RowSchema) -> TS2 {
     let index_entries = emit_index_entries(schema);
     let (agg_impls, agg_hook) = emit_reduces(schema);
     let (sub_statics, sub_hook) = emit_subscribe(schema);
-    // ---- row <-> map bridge (ADR-0012): per-field lift into
+    // ---- document <-> map bridge (ADR-0012): per-field lift into
     // DynamicValue and back. The derive owns the concrete Rust types, so
     // each arm emits the exact cast; from_map fills missing fields from
     // `#[ok_default]` / `Default` — same evolution rule as the payload
@@ -939,14 +939,14 @@ fn emit_row_impl(schema: &RowSchema) -> TS2 {
                 #decode_body
                 Self { #(#names),* }
             }
-            /// row -> map: every declared field lifted into DynamicValue
-            /// (ADR-0012 row-map bridge).
+            /// document -> map: every declared field lifted into DynamicValue
+            /// (ADR-0012 document-map bridge).
             fn to_map(&self) -> ::std::collections::BTreeMap<String, ::okm_core::obj_dynamic::DynamicValue> {
                 let mut out = ::std::collections::BTreeMap::new();
                 #to_map_arms
                 out
             }
-            /// map -> row: matched fields assigned from DynamicValue,
+            /// map -> document: matched fields assigned from DynamicValue,
             /// missing fields fall back to `#[ok_default]`/Default — the
             /// same evolution rule as the payload decoder.
             fn from_map(map: &::std::collections::BTreeMap<String, ::okm_core::obj_dynamic::DynamicValue>) -> Self {

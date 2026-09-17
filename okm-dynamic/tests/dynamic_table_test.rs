@@ -2,7 +2,7 @@
 //! with schema-declared access methods. The lock that keeps the dynamic
 //! path honest is byte equality with the typed path:
 //!
-//! - a `DynamicTable` and a typed `Table` writing the same row into the
+//! - a `DynamicTable` and a typed `Table` writing the same document into the
 //!   same ns must land byte-identical entries (primary + index), so a
 //!   dynamic scan sees typed writes and vice versa;
 //! - access-method scans return the matching rows' primary keys;
@@ -74,8 +74,8 @@ fn dynamic_entries_equal_typed_entries() {
     let mut typed: Collection<TestStore, UserKey, User> = Collection::new(TestStore::slatedb_mem());
     let mut dynamic = dynamic_table(TestStore::slatedb_mem());
 
-    let row = User { level: 4, score: 77, name: "bob".into() };
-    typed.put(&UserKey { org_id: 1, user_id: 2 }, &row);
+    let document = User { level: 4, score: 77, name: "bob".into() };
+    typed.put(&UserKey { org_id: 1, user_id: 2 }, &document);
     dynamic
         .put(&key_bytes(1, 2), &values(1, 2, 4, 77, "bob"))
         .expect("dynamic put");
@@ -158,10 +158,10 @@ fn dynamic_delete_removes_all_entries() {
 fn dynamic_get_round_trips() {
     let mut t = dynamic_table(TestStore::slatedb_mem());
     t.put(&key_bytes(7, 8), &values(7, 8, 2, 300, "zoe")).unwrap();
-    let row = t.get(&key_bytes(7, 8)).unwrap().expect("row present");
-    assert_eq!(row.get("level"), Some(&Value::U32(2)));
-    assert_eq!(row.get("score"), Some(&Value::U16(300)));
-    assert_eq!(row.get("name"), Some(&Value::Str("zoe".into())));
+    let document = t.get(&key_bytes(7, 8)).unwrap().expect("document present");
+    assert_eq!(document.get("level"), Some(&Value::U32(2)));
+    assert_eq!(document.get("score"), Some(&Value::U16(300)));
+    assert_eq!(document.get("name"), Some(&Value::Str("zoe".into())));
 
     // Key-width discipline: a short key is a caller bug, not silent bytes.
     assert!(t.put(&[0u8; 4], &values(7, 8, 2, 300, "zoe")).is_err());

@@ -40,15 +40,15 @@ fn parquet_export_import_roundtrip_restores_rows_and_indexes() {
 
     parquet_io::export_parquet(&t1, &path).unwrap();
 
-    // Import into a FRESH table: row and index entries must both come back
+    // Import into a FRESH table: document and index entries must both come back
     // (put contract) and the scan over the index must find all 5 rows.
     let mut t2: Collection<TestStore, TKey, TRow> = Collection::new(TestStore::slatedb_mem());
     let n = parquet_io::import_parquet(&mut t2, &path).unwrap();
-    assert_eq!(n, 5, "restored row count");
+    assert_eq!(n, 5, "restored document count");
 
     for i in 0..5u64 {
         let k = TKey { org_id: 1, user_id: i };
-        let r = t2.get(&k).expect("row restored");
+        let r = t2.get(&k).expect("document restored");
         assert_eq!(r.reputation, (i * 100) as u32);
         assert_eq!(r.level, (i as u16) + 7);
         assert_eq!(r.tag, [i as u8, 0, 0xFF, 0x42]);
@@ -86,15 +86,15 @@ impl okm_core::KvIndex for TRowByOrg {
     const KEY_PREFIX: &'static [&'static str] = &[];
     fn encode_named(
         _key: &TKey,
-        row: &TRow,
+        document: &TRow,
         names: &[&str],
         buf: &mut Vec<u8>,
     ) {
         for n in names {
             match *n {
-                "reputation" => buf.extend_from_slice(&row.reputation.to_be_bytes()),
-                "level" => buf.extend_from_slice(&row.level.to_be_bytes()),
-                "tag" => buf.extend_from_slice(&row.tag),
+                "reputation" => buf.extend_from_slice(&document.reputation.to_be_bytes()),
+                "level" => buf.extend_from_slice(&document.level.to_be_bytes()),
+                "tag" => buf.extend_from_slice(&document.tag),
                 other => panic!("unknown field name: {other}"),
             }
         }

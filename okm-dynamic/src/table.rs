@@ -1,6 +1,6 @@
 //! DynamicTable — a runtime-typed table facade over VirtualStorage.
 //!
-//! The typed `Collection<S, K, R>` binds row/key types at compile time; this
+//! The typed `Collection<S, K, R>` binds document/key types at compile time; this
 //! facade binds them at runtime through a `TableSchema` + declared
 //! `AccessMethod`s. Put/get/delete/scan produce and consume the same
 //! bytes as the derive (codec shared with the typed path, byte equality
@@ -79,11 +79,11 @@ impl<S: VirtualStorage> DynamicTable<S> {
         buf
     }
 
-    /// Write one row: primary entry + one index entry per access method.
-    /// Overwrite first removes the old row's index entries (they are
+    /// Write one document: primary entry + one index entry per access method.
+    /// Overwrite first removes the old document's index entries (they are
     /// keyed by indexed values — a changed value would otherwise leave a
     /// dangling entry; no reduce unfold needed — the ceiling excludes it).
-    pub fn put(&mut self, pkey: &[u8], row: &ValueMap) -> Result<(), String> {
+    pub fn put(&mut self, pkey: &[u8], document: &ValueMap) -> Result<(), String> {
         if pkey.len() != self.schema.key_len {
             return Err(format!(
                 "key width mismatch: got {}, schema declares {}",
@@ -92,7 +92,7 @@ impl<S: VirtualStorage> DynamicTable<S> {
             ));
         }
         let old_pkey = self.primary_key(pkey);
-        // Sweep the old row's index entries before overwriting.
+        // Sweep the old document's index entries before overwriting.
         if let Some(old_payload) = self.store.get(&old_pkey) {
             if let Ok(old_row) = decode_payload(&self.schema, &old_payload).map_err(codec) {
                 let old_entries =
@@ -104,8 +104,8 @@ impl<S: VirtualStorage> DynamicTable<S> {
             // mismatch, surfaced by scan (missing primary on get).
         }
         let pkey_owned = pkey.to_vec();
-        let entries = index_entries(&self.schema, &self.ns, &self.indexes, &pkey_owned, row)?;
-        let payload = encode_payload(&self.schema, row).map_err(codec)?;
+        let entries = index_entries(&self.schema, &self.ns, &self.indexes, &pkey_owned, document)?;
+        let payload = encode_payload(&self.schema, document).map_err(codec)?;
         self.store.put(old_pkey, payload);
         for (ek, ev) in entries {
             self.store.put(ek, ev);
@@ -129,14 +129,14 @@ impl<S: VirtualStorage> DynamicTable<S> {
             .transpose()?)
     }
 
-    /// Delete a row: primary entry + every access method's entry for
-    /// this key (entries are recomputed from the stored row — the delete
+    /// Delete a document: primary entry + every access method's entry for
+    /// this key (entries are recomputed from the stored document — the delete
     /// path must see the same indexed values the write produced).
     pub fn delete(&mut self, pkey: &[u8]) -> Result<(), String> {
         let pk = self.primary_key(pkey);
         if let Some(payload) = self.store.get(&pk) {
-            let row = decode_payload(&self.schema, &payload).map_err(codec)?;
-            let entries = index_entries(&self.schema, &self.ns, &self.indexes, pkey, &row)?;
+            let document = decode_payload(&self.schema, &payload).map_err(codec)?;
+            let entries = index_entries(&self.schema, &self.ns, &self.indexes, pkey, &document)?;
             delete_entries(&mut self.store, &entries);
             self.store.del(&pk);
         }
@@ -144,7 +144,7 @@ impl<S: VirtualStorage> DynamicTable<S> {
     }
 
     /// Access-method scan (leftmost prefix over the indexed fields,
-    /// caller-encoded): returns the matching rows' primary keys, decoded.
+    /// caller-encoded): returns the matching documents' primary keys, decoded.
     /// THE routing primitive — an event resolves its targets here.
     pub fn scan(
         &self,

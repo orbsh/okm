@@ -48,7 +48,7 @@ impl<E: 'static> okm_core::subscribe::EventSink<E> for Stream<E> {
 
 impl<E: 'static> Stream<E> {
     /// Pass events through where `pred` holds (field-level subscription
-    /// lives here: `filter_field` on the row inside the event).
+    /// lives here: `filter_field` on the document inside the event).
     pub fn filter(self, pred: impl Fn(&E) -> bool + Send + Sync + 'static) -> Self {
         let inner = self.sink;
         Self::new(move |e| {
@@ -74,7 +74,7 @@ impl<E: 'static> Stream<E> {
     }
 }
 
-/// Field-level subscription: keep only events whose row passes `pred`.
+/// Field-level subscription: keep only events whose document passes `pred`.
 /// The declaration-side feature does not exist by decision (see PLAN):
 /// interest sets belong to consumers, one per consumer, no second source
 /// of truth.
@@ -87,12 +87,12 @@ where
 {
     move |stream| {
         let pred = pred.clone();
-        stream.filter(move |ev| pred(&ev.row))
+        stream.filter(move |ev| pred(&ev.document))
     }
 }
 
-/// Previous-row cache keyed by the event key: replaces each event's
-/// `row` with `(old, new)` and hands the pair downstream. The consumer
+/// Previous-document cache keyed by the event key: replaces each event's
+/// `document` with `(old, new)` and hands the pair downstream. The consumer
 /// derives before/after (diff, change detection) at zero write-path
 /// cost — this is the combinator that replaced `Event.old` (evaluated
 /// and rejected: see PLAN).
@@ -110,8 +110,8 @@ where
     move |stream| {
         let cache: std::sync::Arc<std::sync::Mutex<HashMap<K, R>>> = Default::default();
         stream.map::<Event<K, R>>(move |ev| {
-            let old = cache.lock().unwrap().insert(ev.key.clone(), ev.row.clone());
-            Event::<K, (Option<R>, R)>::new(ev.op, ev.epoch, ev.key, (old, ev.row))
+            let old = cache.lock().unwrap().insert(ev.key.clone(), ev.document.clone());
+            Event::<K, (Option<R>, R)>::new(ev.op, ev.epoch, ev.key, (old, ev.document))
         })
     }
 }
@@ -130,12 +130,12 @@ where
         let cache: std::sync::Arc<std::sync::Mutex<HashMap<K, R>>> = Default::default();
         let changed = changed.clone();
         stream.map::<Event<K, R>>(move |ev| {
-            let old = cache.lock().unwrap().insert(ev.key.clone(), ev.row.clone());
+            let old = cache.lock().unwrap().insert(ev.key.clone(), ev.document.clone());
             let is_changed = match old.as_ref() {
-                Some(o) => changed(o, &ev.row),
+                Some(o) => changed(o, &ev.document),
                 None => true,
             };
-            Event::<K, (bool, R)>::new(ev.op, ev.epoch, ev.key, (is_changed, ev.row))
+            Event::<K, (bool, R)>::new(ev.op, ev.epoch, ev.key, (is_changed, ev.document))
         })
     }
 }

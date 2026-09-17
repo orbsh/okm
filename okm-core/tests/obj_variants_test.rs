@@ -85,9 +85,9 @@ fn obj_bridge_typed_and_dynamic_merge() {
 
     // Typed path wrote slot 0 (level 5 → 30); declared field `legacy`
     // kept its value (RMW, not default-clobbered).
-    let row = t.get(&UserKey { id: 1 }).unwrap();
-    assert_eq!(row.level, 30);
-    assert_eq!(row.legacy, 5);
+    let document = t.get(&UserKey { id: 1 }).unwrap();
+    assert_eq!(document.level, 30);
+    assert_eq!(document.legacy, 5);
 
     // get_document merges: declared (to_map) + dynamic (dictionary).
     let got = t.get_document(&UserKey { id: 1 }).unwrap();
@@ -95,7 +95,7 @@ fn obj_bridge_typed_and_dynamic_merge() {
     assert_eq!(got["legacy"], okm_core::obj_dynamic::DynamicValue::UInt(5));
     assert_eq!(got["extra"], okm_core::obj_dynamic::DynamicValue::Str("dyn".into()));
 
-    // Fresh row via put_document: absent declared fields default, no get first.
+    // Fresh document via put_document: absent declared fields default, no get first.
     let mut obj2 = std::collections::BTreeMap::new();
     obj2.insert("id".to_string(), okm_core::obj_dynamic::DynamicValue::UInt(2));
     obj2.insert("level".to_string(), okm_core::obj_dynamic::DynamicValue::UInt(1));

@@ -51,15 +51,15 @@ fn sample(i: u64) -> WRow {
 #[test]
 fn payload_round_trip_all_wrappers() {
     for i in 0..6u64 {
-        let row = sample(i);
-        assert_eq!(WRow::decode_payload(&row.encode_payload()), row);
+        let document = sample(i);
+        assert_eq!(WRow::decode_payload(&document.encode_payload()), document);
     }
 }
 
 #[test]
 fn varint_frame_is_variable_length() {
     // hits=1000 → 2 LEB128 bytes; total frame = 1 tag + 4 len + 2 val.
-    let row = WRow {
+    let document = WRow {
         hits: VarInt(1_000),
         ratio: Quant::<3>::new(0.0),
         state: Enum(State::Active),
@@ -67,7 +67,7 @@ fn varint_frame_is_variable_length() {
     };
     // [ver u8][hot_len u16 BE][ratio 8][state 1][created 4][hits TLV].
     // hits=1000 → 2 LEB128 bytes; cold frame = 1 tag + 4 len + 2 val at 16.
-    let p = row.encode_payload();
+    let p = document.encode_payload();
     assert_eq!(&p[1..3], &[0, 13], "hot = ratio(8)+state(1)+created(4)");
     assert_eq!(p[16], 0); // tag 0 = first declared field
     assert_eq!(&p[17..21], &2u32.to_be_bytes()); // len = 2
@@ -107,7 +107,7 @@ fn table_round_trip_with_wrappers() {
         t.put(&WKey { org: 1, id: i }, &sample(i));
     }
     for i in 0..5u64 {
-        let r = t.get(&WKey { org: 1, id: i }).expect("row");
+        let r = t.get(&WKey { org: 1, id: i }).expect("document");
         assert_eq!(r, sample(i));
     }
 }
@@ -159,7 +159,7 @@ mod parquet {
         assert_eq!(dts[4], arrow::datatypes::DataType::UInt8); // Enum → tag
         assert_eq!(dts[5], arrow::datatypes::DataType::Int64); // Offset → absolute
 
-        // Spot-check row 0's logical values.
+        // Spot-check document 0's logical values.
         let hits = batch
             .column(2)
             .as_any()

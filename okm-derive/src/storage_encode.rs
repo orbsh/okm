@@ -3,7 +3,7 @@
 //!
 //! An empty struct annotated with `#[derive(NestStorage)]` +
 //! `#[ok_ns(N)]` becomes a receiver host: the derive generates **no data
-//! methods** (there is no row type to encode) and exactly one execution
+//! methods** (there is no document type to encode) and exactly one execution
 //! surface (`serve`) — take frames, prepend the declared prefix, replay
 //! on a plain byte-level engine. The host knows only its prefix; storing
 //! garbage is indistinguishable from storing data.

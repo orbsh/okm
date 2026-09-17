@@ -56,7 +56,7 @@ impl AccessMethod {
     fn fields_bytes(
         &self,
         schema: &TableSchema,
-        row: &ValueMap,
+        document: &ValueMap,
         pkey: &[u8],
     ) -> Result<Vec<u8>, String> {
         let _ = pkey; // payload-only; the pkey tail is appended by the caller
@@ -67,8 +67,8 @@ impl AccessMethod {
                     "access method field `{name}` is a key field; indexes take payload fields only"
                 ));
             }
-            let v = row.get(name)
-                .ok_or_else(|| format!("index field `{name}` missing from row"))?;
+            let v = document.get(name)
+                .ok_or_else(|| format!("index field `{name}` missing from document"))?;
             let f = find_field(schema, name)
                 .ok_or_else(|| format!("access method field `{name}` not in schema"))?;
             encode_fixed(f.ty, v, &mut buf)?;
@@ -109,7 +109,7 @@ fn encode_fixed(
     Ok(())
 }
 
-/// All index entries one row produces, mirroring
+/// All index entries one document produces, mirroring
 /// `KvIndex::entry_pairs` for the dynamic declarations:
 /// key = `[ns][slot][index fields][pkey]`, value = includes segment.
 pub fn index_entries(
@@ -117,11 +117,11 @@ pub fn index_entries(
     ns: &[u8],
     indexes: &[AccessMethod],
     pkey: &[u8],
-    row: &ValueMap,
+    document: &ValueMap,
 ) -> Result<Vec<(Vec<u8>, Vec<u8>)>, String> {
     let mut out = Vec::new();
     for idx in indexes {
-        let fb = idx.fields_bytes(schema, row, pkey)?;
+        let fb = idx.fields_bytes(schema, document, pkey)?;
         let mut ek = Vec::with_capacity(ns.len() + 1 + fb.len() + pkey.len());
         ek.extend_from_slice(ns);
         ek.push(idx.slot);
@@ -137,8 +137,8 @@ pub fn index_entries(
                     "includes field `{inc}` is a key field; includes take payload fields only"
                 ));
             }
-            let v = row.get(inc)
-                .ok_or_else(|| format!("includes field `{inc}` missing from row"))?;
+            let v = document.get(inc)
+                .ok_or_else(|| format!("includes field `{inc}` missing from document"))?;
             let f = find_field(schema, inc)
                 .ok_or_else(|| format!("includes field `{inc}` not in schema"))?;
             encode_fixed(f.ty, v, &mut ev)?;
@@ -149,7 +149,7 @@ pub fn index_entries(
 }
 
 /// Leftmost-prefix scan over one access method: returns the primary keys
-/// of matching rows (dynamic counterpart of `okm_core::scan_index`).
+/// of matching documents (dynamic counterpart of `okm_core::scan_index`).
 /// The pkey is the tail of the entry key (`schema.key_len` bytes — a
 /// dynamic index always indexes the FULL key; prefix keys are a
 /// Rust-side refinement).
@@ -182,7 +182,7 @@ pub fn scan_access_method<S: VirtualStorage>(
 }
 
 /// Stale-entry sweep: delete every entry under this access method whose
-/// indexed values no longer match the current row (derive overwrite
+/// indexed values no longer match the current document (derive overwrite
 /// lands stale entries at different keys; `delete` covers the rest).
 /// Dynamic tables recompute entries per write, so the sweep runs on
 /// every `DynamicTable::put` for the overwritten key's OLD entries.

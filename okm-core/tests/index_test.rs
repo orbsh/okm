@@ -131,7 +131,7 @@ fn delete_by_pkey_fetches_row_and_cleans_indexes() {
     let (k, r) = mk_user(101, 100);
     t.put(&k, &r);
 
-    // 只给主键：内部 get 回 row，两半同源派生
+    // 只给主键：内部 get 回 document，两半同源派生
     assert!(t.delete_by_pkey(&k));
     assert!(t.store().get(&t.primary_key(&k)).is_none());
     assert!(t.store().get(&t.index_key::<ByReputation>(&k, &r)).is_none());
@@ -394,8 +394,8 @@ fn variable_length_index_text_first() {
 
 /// 函数索引（function-index regime）：归一化函数同时驱动写入端编码与
 /// 查询端探针——一条声明，两侧共用。
-fn lower_name(row: &DocFunc) -> String {
-    row.name.to_lowercase()
+fn lower_name(document: &DocFunc) -> String {
+    document.name.to_lowercase()
 }
 
 #[derive(DocumentEncode, Clone, PartialEq, Debug)]
@@ -415,7 +415,7 @@ fn mk_docf(id: u64, city: u32, name: &str) -> (DocKey, DocFunc) {
 
 #[test]
 fn function_index_normalizes_both_sides() {
-    // 写入端：entry 排序段 = lower_name(&row) 的结果（裸 UTF-8，字典序）；
+    // 写入端：entry 排序段 = lower_name(&document) 的结果（裸 UTF-8，字典序）；
     // 查询端：探针行调用同一个函数归一化，两侧共享一条声明。
     let mut t = <DocFunc as Document>::collection(TestStore::slatedb_mem());
     let rows = [
@@ -454,8 +454,8 @@ fn multi_entry_function_index_fans_out() {
     // 多值函数索引：func 返回 Vec<String>，一行 fan out 成 N 条 entry
     // （倒排索引形态：token → 该 token 下的主键集合）。读路径复用
     // 既有 scan::<I>——token 就是数据段，主键前缀从尾部反推。
-    fn tokens(row: &DocTags) -> Vec<String> {
-        row.tags.split(',').map(|s| s.to_string()).collect()
+    fn tokens(document: &DocTags) -> Vec<String> {
+        document.tags.split(',').map(|s| s.to_string()).collect()
     }
 
     #[derive(DocumentEncode, Clone, PartialEq, Debug)]

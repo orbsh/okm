@@ -39,7 +39,7 @@ pub trait EnumTag: Copy + Sized + PartialEq + std::fmt::Debug + 'static {
             .map(|(v, _)| *v)
             .unwrap_or_else(|| panic!("EnumTag: unknown tag {t}"))
     }
-    /// Variant name for the map view (ADR-0012 row-map bridge):
+    /// Variant name for the map view (ADR-0012 document-map bridge):
     /// `DynamicValue::Str(name)`. Derived from the TAGS table via Debug
     /// — the variant's short name is the text after `::`.
     fn name(&self) -> String {
@@ -62,7 +62,7 @@ pub trait EnumTag: Copy + Sized + PartialEq + std::fmt::Debug + 'static {
 pub struct Enum<T: EnumTag>(pub T);
 
 impl<T: EnumTag> Enum<T> {
-    /// Bridge constructor (ADR-0012 row-map bridge): `T` inferred from
+    /// Bridge constructor (ADR-0012 document-map bridge): `T` inferred from
     /// the field type — no type interpolation in generated code.
     pub fn from_dyn(v: T) -> Self {
         Enum(v)

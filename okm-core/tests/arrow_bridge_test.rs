@@ -78,7 +78,7 @@ fn field_desc_tables_match_declaration() {
             FieldDesc { name: "status", ty: FieldType::U8, width: 1 },
         ]
     );
-    // row 侧：载荷三个字段
+    // document 侧：载荷三个字段
     let rf = <ExportRow as Document>::FIELDS;
     assert_eq!(rf.len(), 3);
     assert_eq!(rf[0].name, "reputation");
@@ -99,17 +99,17 @@ fn batch_values_roundtrip_through_struct_decode() {
         let org = batch.column(0).as_any().downcast_ref::<arrow::array::UInt32Array>().unwrap();
         let uid = batch.column(1).as_any().downcast_ref::<arrow::array::UInt64Array>().unwrap();
         let status = batch.column(2).as_any().downcast_ref::<arrow::array::UInt8Array>().unwrap();
-        assert_eq!(org.value(i), k.org_id, "org_id row {i}");
-        assert_eq!(uid.value(i), k.user_id, "user_id row {i}");
-        assert_eq!(status.value(i), k.status, "status row {i}");
+        assert_eq!(org.value(i), k.org_id, "org_id document {i}");
+        assert_eq!(uid.value(i), k.user_id, "user_id document {i}");
+        assert_eq!(status.value(i), k.status, "status document {i}");
 
         // 载荷字段：对照 struct 值（BE→LE 换位正确性的行为证明）
         let rep = batch.column(3).as_any().downcast_ref::<arrow::array::UInt32Array>().unwrap();
         let bio = batch.column(4).as_any().downcast_ref::<arrow::array::UInt16Array>().unwrap();
         let flg = batch.column(5).as_any().downcast_ref::<arrow::array::UInt8Array>().unwrap();
-        assert_eq!(rep.value(i), r.reputation, "reputation row {i}");
-        assert_eq!(bio.value(i), r.bio_len, "bio_len row {i}");
-        assert_eq!(flg.value(i), r.flags, "flags row {i}");
+        assert_eq!(rep.value(i), r.reputation, "reputation document {i}");
+        assert_eq!(bio.value(i), r.bio_len, "bio_len document {i}");
+        assert_eq!(flg.value(i), r.flags, "flags document {i}");
         // 列名对齐：第 3 列确实是 reputation
         assert_eq!(cols[3].0, "reputation");
     }
@@ -123,7 +123,7 @@ fn batch_respects_key_order() {
     let batch = t.to_record_batch();
     let uid = batch.column(1).as_any().downcast_ref::<arrow::array::UInt64Array>().unwrap();
     for i in 1..batch.num_rows() {
-        assert!(uid.value(i - 1) < uid.value(i), "row {i} out of key order");
+        assert!(uid.value(i - 1) < uid.value(i), "document {i} out of key order");
     }
 }
 

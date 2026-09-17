@@ -23,7 +23,7 @@ use crate::key::KeyEncode;
 /// Declaration-order offset table for a fixed-width region (the key
 /// encoding, or the value half of TLV frames — widths are declared, so the
 /// stride math is the same for both).
-/// JSON Schema for the exported row shape (see [`Collection::json_schema`]).
+/// JSON Schema for the exported document shape (see [`Collection::json_schema`]).
 /// Column type mapping mirrors the Arrow bridge: fixed-width unsigned
 /// integers → their JSON number types, `[u8; N]` → base64 string (the same
 /// encoding the bridge uses for binary columns). Column order = Parquet
@@ -88,7 +88,7 @@ pub mod parquet_io {
     use crate::document::Table;
     use arrow::array::{Array, BinaryArray, RecordBatch};
 
-    /// Export all rows to a Parquet file (overwrite). Typed columns, schema
+    /// Export all documents to a Parquet file (overwrite). Typed columns, schema
     /// from the declaration — the same batch shape as
     /// [`Collection::to_record_batch`].
     pub fn export_parquet<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>>(
@@ -103,62 +103,62 @@ pub mod parquet_io {
         Ok(())
     }
 
-    /// Read one row's value from column `col` at `row` as the BE wire bytes
+    /// Read one document's value from column `col` at `document` as the BE wire bytes
     /// the key encoding / TLV frames expect (reverses the export-side LE
     /// conversion).
-    fn wire_bytes(col: &dyn Array, row: usize, width: usize, ty: FieldType) -> Vec<u8> {
+    fn wire_bytes(col: &dyn Array, document: usize, width: usize, ty: FieldType) -> Vec<u8> {
         use crate::wrappers::{VarIntEnc as _, quantize, wire_to_be_bytes};
         match ty {
             FieldType::FixedBytes => {
                 let col = col.as_any().downcast_ref::<BinaryArray>().unwrap();
-                col.value(row).to_vec()
+                col.value(document).to_vec()
             }
             FieldType::Str => {
                 let col = col.as_any().downcast_ref::<arrow::array::StringArray>().unwrap();
-                col.value(row).as_bytes().to_vec()
+                col.value(document).as_bytes().to_vec()
             }
             FieldType::VarInt => {
                 let c = col.as_any().downcast_ref::<arrow::array::UInt64Array>().unwrap();
                 let mut buf = Vec::with_capacity(10);
-                c.value(row).varint_encode(&mut buf);
+                c.value(document).varint_encode(&mut buf);
                 buf
             }
             FieldType::Quant(p) => {
                 // Re-quantize from the dequantized f64 column value at the
                 // declared precision; wire is the fixed-point i64 BE.
                 let c = col.as_any().downcast_ref::<arrow::array::Float64Array>().unwrap();
-                wire_to_be_bytes(quantize(c.value(row), p))
+                wire_to_be_bytes(quantize(c.value(document), p))
             }
             FieldType::Enum => {
                 let c = col.as_any().downcast_ref::<arrow::array::UInt8Array>().unwrap();
-                vec![c.value(row)]
+                vec![c.value(document)]
             }
             FieldType::Offset(base) => {
                 let c = col.as_any().downcast_ref::<arrow::array::Int64Array>().unwrap();
-                crate::offset_encode(c.value(row), base)
+                crate::offset_encode(c.value(document), base)
             }
             other => {
                 let raw: Vec<u8> = match other {
-                    FieldType::U8 => vec![col.as_any().downcast_ref::<arrow::array::UInt8Array>().unwrap().value(row)],
+                    FieldType::U8 => vec![col.as_any().downcast_ref::<arrow::array::UInt8Array>().unwrap().value(document)],
                     FieldType::U16 => col
                         .as_any()
                         .downcast_ref::<arrow::array::UInt16Array>()
                         .unwrap()
-                        .value(row)
+                        .value(document)
                         .to_be_bytes()
                         .to_vec(),
                     FieldType::U32 => col
                         .as_any()
                         .downcast_ref::<arrow::array::UInt32Array>()
                         .unwrap()
-                        .value(row)
+                        .value(document)
                         .to_be_bytes()
                         .to_vec(),
                     FieldType::U64 => col
                         .as_any()
                         .downcast_ref::<arrow::array::UInt64Array>()
                         .unwrap()
-                        .value(row)
+                        .value(document)
                         .to_be_bytes()
                         .to_vec(),
                     FieldType::FixedBytes => unreachable!(),
@@ -174,12 +174,12 @@ pub mod parquet_io {
         }
     }
 
-    /// Import rows from a Parquet file previously written by
-    /// [`export_parquet`], writing each row back through [`Collection::put`]
+    /// Import documents from a Parquet file previously written by
+    /// [`export_parquet`], writing each document back through [`Collection::put`]
     /// (primary key + index entries — the normal write contract). This is
     /// the restore path, not a second write channel.
     ///
-    /// Returns the number of rows restored.
+    /// Returns the number of documents restored.
     pub fn import_parquet<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>>(
         table: &mut Collection<S, K, R>,
         path: &std::path::Path,
@@ -197,14 +197,14 @@ pub mod parquet_io {
             let batch: RecordBatch = batch?;
             let n = batch.num_rows();
 
-            // Reassemble per-row: key encoding (declaration-order BE fields)
+            // Reassemble per-document: key encoding (declaration-order BE fields)
             // then the two-segment payload — [ver u8][hot_len u16 BE]
             // [hot segment][cold TLV] — matching the export-side layout.
             let mut keys: Vec<Vec<u8>> = vec![Vec::with_capacity(K::KEY_LEN); n];
             for (fi, f) in key_fields.iter().enumerate() {
                 let col = batch.column(fi);
-                for (row, krow) in keys.iter_mut().enumerate() {
-                    krow.extend_from_slice(&wire_bytes(col, row, f.width, f.ty));
+                for (document, krow) in keys.iter_mut().enumerate() {
+                    krow.extend_from_slice(&wire_bytes(col, document, f.width, f.ty));
                 }
             }
             let hot_width: usize = row_fields.iter().filter(|f| f.width > 0).map(|f| f.width).sum();
@@ -217,8 +217,8 @@ pub mod parquet_io {
                     continue;
                 }
                 let col = batch.column(nkey + fi);
-                for (row, prow) in payloads.iter_mut().enumerate() {
-                    prow.extend_from_slice(&wire_bytes(col, row, f.width, f.ty));
+                for (document, prow) in payloads.iter_mut().enumerate() {
+                    prow.extend_from_slice(&wire_bytes(col, document, f.width, f.ty));
                 }
             }
             // Cold segment: one TLV frame per variable-length field, tag =
@@ -228,16 +228,16 @@ pub mod parquet_io {
                     continue;
                 }
                 let col = batch.column(nkey + fi);
-                for (row, prow) in payloads.iter_mut().enumerate() {
-                    let wb = wire_bytes(col, row, f.width, f.ty);
+                for (document, prow) in payloads.iter_mut().enumerate() {
+                    let wb = wire_bytes(col, document, f.width, f.ty);
                     prow.push(fi as u8);
                     prow.extend_from_slice(&(wb.len() as u32).to_be_bytes());
                     prow.extend_from_slice(&wb);
                 }
             }
-            for row in 0..n {
-                let key = K::decode(&keys[row]);
-                let rv = R::decode_payload(&payloads[row]);
+            for document in 0..n {
+                let key = K::decode(&keys[document]);
+                let rv = R::decode_payload(&payloads[document]);
                 table.put(&key, &rv);
                 count += 1;
             }

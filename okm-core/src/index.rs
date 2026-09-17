@@ -4,7 +4,7 @@
 //! `[ns 2B][slot 1B][index fields BE][key prefix]`, value = the includes
 //! segment (raw payload-field encodings, empty when no `includes`).
 //!
-//! - **Index fields** come from the row payload, encoded by name in the
+//! - **Index fields** come from the document payload, encoded by name in the
 //!   index's declared order — the sort key is payload data.
 //! - **Key prefix** is the tail segment: the full primary-key encoding by
 //!   default, or a declared declaration-order prefix of the key struct
@@ -24,7 +24,7 @@ use crate::key::{KeyEncode, PrefixKey};
 
 /// Slot reserved for a table's primary keys inside its ns segment.
 pub const PRIMARY_SLOT: u8 = 0;
-/// obj dynamic segment (ADR-0012): per-row undeclared fields.
+/// obj dynamic segment (ADR-0012): per-document undeclared fields.
 pub const DYNAMIC_SLOT: u8 = 1;
 /// Field-name dictionary, number → name (ADR-0012).
 pub const DICT_ID_SLOT: u8 = 2;
@@ -108,7 +108,7 @@ impl<V: IndexFuncResult> IndexFuncValues for Vec<V> {
     }
 }
 
-/// Value-side payload contract (ADR-0004/0006): a row = identity (its key)
+/// Value-side payload contract (ADR-0004/0006): a document = identity (its key)
 /// plus payload fields, laid out as two segments behind a header —
 /// `[version u8][hot_len u16 BE][hot segment][cold segment]`:
 ///
@@ -143,15 +143,15 @@ pub trait Document: Sized + Clone {
     fn __okm_embed_keys(&self) -> Vec<Vec<u8>> {
         Vec::new()
     }
-    /// row -> map: every declared field lifted into a run-time
-    /// DynamicValue (ADR-0012 row-map bridge; derive-generated).
+    /// document -> map: every declared field lifted into a run-time
+    /// DynamicValue (ADR-0012 document-map bridge; derive-generated).
     fn to_map(&self) -> std::collections::BTreeMap<String, crate::obj_dynamic::DynamicValue>;
-    /// map -> row: matched fields assigned from DynamicValue; missing
+    /// map -> document: matched fields assigned from DynamicValue; missing
     /// fields fall back to `#[ok_default]`/Default (derive-generated).
     fn from_map(map: &std::collections::BTreeMap<String, crate::obj_dynamic::DynamicValue>) -> Self
     where
         Self: Sized;
-    /// Identity type this row hangs off (from `#[ok_ref(...)]`).
+    /// Identity type this document hangs off (from `#[ok_ref(...)]`).
     type Key: KeyEncode;
     /// Layout version written into the payload header (`#[ok_layout(version)]`,
     /// default 1). Decode accepts `<= LAYOUT_VERSION`, rejects newer.
@@ -177,16 +177,16 @@ pub trait Document: Sized + Clone {
     /// Decode payload; `b` holds only the two-segment region (no key bytes).
     fn decode_payload(b: &[u8]) -> Self;
     /// All declared access methods' `(entry key, entry value)` pairs for
-    /// `key` + `row`, in slot order. Index entries depend on the payload
-    /// (indexed and includes fields live there), so the row is required —
-    /// put and delete are both row-shaped. Generated; lets Collection cover
+    /// `key` + `document`, in slot order. Index entries depend on the payload
+    /// (indexed and includes fields live there), so the document is required —
+    /// put and delete are both document-shaped. Generated; lets Collection cover
     /// every declared index without a runtime registry (the declaration IS
     /// the registry).
-    fn index_entries(key: &Self::Key, row: &Self, ns: &[u8]) -> Vec<(Vec<u8>, Vec<u8>)>;
+    fn index_entries(key: &Self::Key, document: &Self, ns: &[u8]) -> Vec<(Vec<u8>, Vec<u8>)>;
 
-    /// Cross-row reduce hook (see [`crate::reduce`]): apply this
-    /// row to every declared `#[ok_reduce]` group. Default no-op —
-    /// only rows with reduce declarations override it.
+    /// Cross-document reduce hook (see [`crate::reduce`]): apply this
+    /// document to every declared `#[ok_reduce]` group. Default no-op —
+    /// only documents with reduce declarations override it.
     fn __okm_apply_reduces<S: VirtualStorage>(
         _store: &mut S,
         _key: &Self::Key,
@@ -196,9 +196,9 @@ pub trait Document: Sized + Clone {
     ) {
     }
 
-    /// Subscribe emit hook (see [`crate::subscribe`]): send this row's
+    /// Subscribe emit hook (see [`crate::subscribe`]): send this document's
     /// write-path event into its declared channel. Default no-op — only
-    /// rows carrying `#[ok_subscribe]` override it. Best-effort by
+    /// documents carrying `#[ok_subscribe]` override it. Best-effort by
     /// contract (try_send); never blocks or fails the write. `_epoch` is
     /// the emitting table's monotonic write-batch counter.
     fn __okm_emit_event(
@@ -224,15 +224,15 @@ pub trait Document: Sized + Clone {
     /// empty (no deprecated declarations).
     const DEPRECATED_SLOTS: &'static [u8] = &[];
 
-    /// The namespace prefix this row's table lives under, encoded and
+    /// The namespace prefix this document's table lives under, encoded and
     /// ready to prepend (`[ns 2B]` big-endian). Declared via `#[ok_ns(N)]`
-    /// on the ROW struct — the row is the table's declaration point (its
+    /// on the ROW struct — the document is the table's declaration point (its
     /// `#[ok_ref]` pins the key type, so `Collection<S, K, R>` is fully
-    /// determined by the row), never hand-filled at the assembly site
+    /// determined by the document), never hand-filled at the assembly site
     /// (ADR-0002: the ns dictionary is code). A key type carries no ns of
-    /// its own: the same key shape may legitimately serve several rows /
+    /// its own: the same key shape may legitimately serve several documents /
     /// tables, each with its own declared ns. Default = empty (no ns
-    /// declared — a layout-only row that never materializes a table).
+    /// declared — a layout-only document that never materializes a table).
     const NS_PREFIX: &'static [u8] = &[];
 
     /// The table's partition id (ADR-0014 §5): `Some(N)` prepends a
@@ -260,7 +260,7 @@ pub trait Document: Sized + Clone {
 /// from the table's ns — indexes never take manual namespace IDs.
 pub trait KvIndex {
     type Key: KeyEncode;
-    /// The row type this access method reads its index fields from.
+    /// The document type this access method reads its index fields from.
     type Document: Document<Key = Self::Key>;
     /// Item-local slot, allocated by attribute order (1, 2, …; 0 = primary).
     /// This access method's slot byte in the entry header (1, 2, …; 0 = primary).
@@ -277,20 +277,20 @@ pub trait KvIndex {
     const KEY_PREFIX: &'static [&'static str];
     /// Function-index function path (ADR-0005, function-index regime);
     /// empty = plain field index. The generated impl calls this path with
-    /// `&row` and encodes the result via `IndexFuncResult` (sort order =
+    /// `&document` and encodes the result via `IndexFuncResult` (sort order =
     /// the result encoding's order). The query side calls the same path on
     /// its probe value — one declaration drives both encode and scan.
     const FUNC: &'static str = "";
 
     /// Encode the named fields in `names` order. Generated impls source
-    /// every name from the row payload; hand impls may read identity
+    /// every name from the document payload; hand impls may read identity
     /// fields off `key` instead (the hook receives both).
-    fn encode_named(key: &Self::Key, row: &Self::Document, names: &[&str], buf: &mut Vec<u8>);
+    fn encode_named(key: &Self::Key, document: &Self::Document, names: &[&str], buf: &mut Vec<u8>);
 
     /// Encoded index-field segment (the sort key, after the header).
-    fn fields_bytes(key: &Self::Key, row: &Self::Document) -> Vec<u8> {
+    fn fields_bytes(key: &Self::Key, document: &Self::Document) -> Vec<u8> {
         let mut buf = Vec::new();
-        Self::encode_named(key, row, Self::FIELDS, &mut buf);
+        Self::encode_named(key, document, Self::FIELDS, &mut buf);
         buf
     }
 
@@ -319,8 +319,8 @@ pub trait KvIndex {
     /// the 1-byte slot discriminates access methods *within* the table's
     /// ns segment; the table's ns allocation is untouched by how many
     /// indexes exist (ADR-0005).
-    fn entry_key(table_ns: &[u8], key: &Self::Key, row: &Self::Document) -> Vec<u8> {
-        let fb = Self::fields_bytes(key, row);
+    fn entry_key(table_ns: &[u8], key: &Self::Key, document: &Self::Document) -> Vec<u8> {
+        let fb = Self::fields_bytes(key, document);
         let kp = Self::key_prefix_bytes(key);
         let mut buf = Vec::with_capacity(table_ns.len() + 1 + fb.len() + kp.len());
         buf.extend_from_slice(table_ns);
@@ -332,21 +332,21 @@ pub trait KvIndex {
 
     /// Entry value: the includes segment (raw payload-field encodings,
     /// concatenation in `INCLUDES` order; empty when no includes).
-    fn entry_value(key: &Self::Key, row: &Self::Document) -> Vec<u8> {
+    fn entry_value(key: &Self::Key, document: &Self::Document) -> Vec<u8> {
         let mut buf = Vec::new();
         if !Self::INCLUDES.is_empty() {
-            Self::encode_named(key, row, Self::INCLUDES, &mut buf);
+            Self::encode_named(key, document, Self::INCLUDES, &mut buf);
         }
         buf
     }
 
-    /// All entries this access method produces for one row: plain and
+    /// All entries this access method produces for one document: plain and
     /// single-value function indexes yield one `(key, value)` pair;
     /// multi-value function indexes yield one pair per produced value —
     /// the write side (`Collection::put`/`delete` via `index_entries`) just
     /// iterates. Each entry shares the same includes value.
-    fn entry_pairs(table_ns: &[u8], key: &Self::Key, row: &Self::Document) -> Vec<(Vec<u8>, Vec<u8>)> {
-        vec![(Self::entry_key(table_ns, key, row), Self::entry_value(key, row))]
+    fn entry_pairs(table_ns: &[u8], key: &Self::Key, document: &Self::Document) -> Vec<(Vec<u8>, Vec<u8>)> {
+        vec![(Self::entry_key(table_ns, key, document), Self::entry_value(key, document))]
     }
 
     /// Scan prefix for a leftmost-prefix match over the index fields:

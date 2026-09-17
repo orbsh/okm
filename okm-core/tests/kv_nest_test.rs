@@ -37,7 +37,7 @@ fn nest_derive_end_to_end() {
 
     t.put(&ItemKey { id: 1 }, &Item { kind: 7 });
 
-    // Fire-and-forget write: poll until the round trip sees the row.
+    // Fire-and-forget write: poll until the round trip sees the document.
     for _ in 0..200 {
         if t.get(&ItemKey { id: 1 }).is_some() {
             break;
@@ -45,8 +45,8 @@ fn nest_derive_end_to_end() {
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
 
-    let row = t.get(&ItemKey { id: 1 }).expect("row round-tripped");
-    assert_eq!(row.kind, 7);
+    let document = t.get(&ItemKey { id: 1 }).expect("document round-tripped");
+    assert_eq!(document.kind, 7);
 
     let hits = t.scan::<ByKind>(&7u32.to_be_bytes());
     assert_eq!(hits.len(), 1);

@@ -1,10 +1,10 @@
-//! Collection — the row assembly point (ADR-0006): binds an engine instance, a
-//! key type, and a row type. `put` writes the primary key (slot 0) and one
+//! Collection — the document assembly point (ADR-0006): binds an engine instance, a
+//! key type, and a document type. `put` writes the primary key (slot 0) and one
 //! entry per access method in the same store instance, so atomicity holds
 //! within a single engine; cross-ns atomicity is the store instance's
-//! boundary, never the Table's. Index entries derive from the row payload
+//! boundary, never the Table's. Index entries derive from the document payload
 //! (indexed + includes fields live there), so put and delete are both
-//! row-shaped.
+//! document-shaped.
 
 use crate::storage::VirtualStorage;
 use crate::index::{KvIndex, Document};
@@ -41,7 +41,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     /// The table's key header: `[0xFF][part 1B] (if declared)[ns 2B]` — every
     /// key byte sequence this table writes starts with it. ADR-0014 §5:
     /// the partition segment precedes the ns header (workload isolation
-    /// lives outside ownership scope); absent when the row declares no
+    /// lives outside ownership scope); absent when the document declares no
     /// `#[ok_partition]`.
     fn header(&self) -> Vec<u8> {
         let mut buf = Vec::with_capacity(3);
@@ -51,13 +51,13 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     }
 
     /// Primary key entry (slot 0): `[0xFF][part 1B] (if declared)[ns 2B][slot 0]
-    /// [key payload]`, value = TLV payload of the row. The slot byte keeps
+    /// [key payload]`, value = TLV payload of the document. The slot byte keeps
     /// the header uniform with index entries (`[ns 2B][slot 1B]`); slot 0 =
     /// primary, per ADR-0005. The partition segment precedes the ns header
     /// (ADR-0014 §5): workload isolation lives outside ownership scope —
     /// a partition groups tables by compaction profile, a namespace groups
     /// them by owner; the 0xFF escape byte makes partitioned and
-    /// unpartitioned keys structurally disjoint. Absent when the row
+    /// unpartitioned keys structurally disjoint. Absent when the document
     /// declares no `#[ok_partition]`.
     pub fn primary_key(&self, key: &K) -> Vec<u8> {
         let mut buf = self.header();
@@ -66,23 +66,23 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         buf
     }
 
-    /// Write a row: primary key + one (key, value) index entry per access
-    /// method, all derived from this one row.
+    /// Write a document: primary key + one (key, value) index entry per access
+    /// method, all derived from this one document.
     ///
     /// Overwrite semantics (ADR-0008 fold/unfold discipline): when the
-    /// key already holds a row, the stored row is unfolded from every
-    /// reduce group before the new row is folded in — otherwise the
+    /// key already holds a document, the stored document is unfolded from every
+    /// reduce group before the new document is folded in — otherwise the
     /// second write double-counts. This costs one primary-table point
     /// read per overwrite (inserts skip it: slot-0 miss = no fold to
     /// undo). Index entries need no counterpart: they are derived
-    /// per-row and the entry key encodes the indexed fields, so an
+    /// per-document and the entry key encodes the indexed fields, so an
     /// overwrite with different indexed values lands at a different key
     /// — the stale entry dangles, which is why `delete` (and
     /// `delete_by_pkey`) exist; the reduce, by contrast, is a mutable
     /// aggregate under one group key and MUST compensate.
-    pub fn put(&mut self, key: &K, row: &R) {
+    pub fn put(&mut self, key: &K, document: &R) {
         // Overwrite detection doubles as the unfold source: the stored
-        // row (if any) is exactly what the reduce groups currently
+        // document (if any) is exactly what the reduce groups currently
         // include for this key.
         let pkey = self.primary_key(key);
         let prev = self
@@ -93,43 +93,43 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
             let header = self.header();
         R::__okm_apply_reduces(&mut self.store, key, old, &header, false);
         }
-        self.store.put(pkey, row.encode_payload());
-        for (ek, ev) in R::index_entries(key, row, &self.header()) {
+        self.store.put(pkey, document.encode_payload());
+        for (ek, ev) in R::index_entries(key, document, &self.header()) {
             self.store.put(ek, ev);
         }
         // Embedded documents: write children carried with Some(value), and
         // release references the OLD document pointed at that the new one
         // no longer does (key change). Reference semantics — no cascade.
-        for (ck, cp) in R::__okm_embed_entries(row) {
+        for (ck, cp) in R::__okm_embed_entries(document) {
             self.store.put(ck, cp);
         }
         if let Some(old) = &prev {
             let new_keys: std::collections::HashSet<Vec<u8>> =
-                R::__okm_embed_keys(row).into_iter().collect();
+                R::__okm_embed_keys(document).into_iter().collect();
             for old_key in R::__okm_embed_keys(old) {
                 if !new_keys.contains(&old_key) {
                     self.store.del(&old_key);
                 }
             }
         }
-        // Cross-row reduces: fold this row into each declared group.
+        // Cross-document reduces: fold this document into each declared group.
         // Same store instance, so the RMW shares the engine's atomicity
-        // boundary with the row + index writes.
+        // boundary with the document + index writes.
         let header = self.header();
-        R::__okm_apply_reduces(&mut self.store, key, row, &header, true);
+        R::__okm_apply_reduces(&mut self.store, key, document, &header, true);
         // Subscribe: write-path event into the declared channel
         // (best-effort try_send — full channel drops, never blocks).
         // The event carries the table's post-write epoch (monotonic
         // write-batch boundary, ADR-0008 §5).
         self.epoch += 1;
-        R::__okm_emit_event(crate::subscribe::Op::Put, self.epoch, key, row);
+        R::__okm_emit_event(crate::subscribe::Op::Put, self.epoch, key, document);
         let _ = prev; // kept alive for the unfold above; dropped here
     }
 
     /// Commanded RMW: `get` → `f(old)` → `put(key, new)` through the
     /// normal write path, so index maintenance, reduce hooks and channel
-    /// emission all fire without special-casing. Returns the written row.
-    /// `f` receives `None` when the key has no row yet (insert path).
+    /// emission all fire without special-casing. Returns the written document.
+    /// `f` receives `None` when the key has no document yet (insert path).
     ///
     /// Single-writer only: OKM is an in-process library with a serial
     /// write order (`&mut self`), so get→f→put cannot interleave — no
@@ -149,67 +149,67 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         new
     }
 
-    /// Encode this row's full write set (primary entry + one entry per
+    /// Encode this document's full write set (primary entry + one entry per
     /// access method) into an externally owned batch — no write happens
     /// until the batch commits. The cross-collection atomic path
-    /// (ADR-0003): a row table and an edge table (or two rows tables)
+    /// (ADR-0003): a document table and an edge table (or two documents tables)
     /// each `save_into` the same batch, then one `commit_batch` makes
     /// them live or die together.
     ///
     /// Note: save_into bypasses put's higher write-path hooks (reduce
     /// folds, subscribe emission, overwrite unfold) — it is the encoding
-    /// surface, not the semantic one. Rows that participate in reduce or
+    /// surface, not the semantic one. Documents that participate in reduce or
     /// subscriptions must go through `put`/`upsert_with`; save_into is
     /// for batch-aligned bulk loads where the consumer settles those
     /// folds itself.
-    pub fn save_into(&self, batch: &mut impl crate::storage::KvBatch, key: &K, row: &R) {
-        batch.put(self.primary_key(key), row.encode_payload());
-        for (ek, ev) in R::index_entries(key, row, &self.header()) {
+    pub fn save_into(&self, batch: &mut impl crate::storage::KvBatch, key: &K, document: &R) {
+        batch.put(self.primary_key(key), document.encode_payload());
+        for (ek, ev) in R::index_entries(key, document, &self.header()) {
             batch.put(ek, ev);
         }
     }
 
-    /// Index entry key for access method `I` derived from `key` + `row`.
-    pub fn index_key<I: KvIndex<Key = K, Document = R>>(&self, key: &K, row: &R) -> Vec<u8> {
-        I::entry_key(&self.header(), key, row)
+    /// Index entry key for access method `I` derived from `key` + `document`.
+    pub fn index_key<I: KvIndex<Key = K, Document = R>>(&self, key: &K, document: &R) -> Vec<u8> {
+        I::entry_key(&self.header(), key, document)
     }
 
-    /// Delete a row: primary key + all declared index entries, all
-    /// derived from the row being removed (the declaration IS the
+    /// Delete a document: primary key + all declared index entries, all
+    /// derived from the document being removed (the declaration IS the
     /// registry).
     ///
-    /// Contract: `row` MUST be the row currently stored under `key` —
-    /// the index entries are derived from `row`'s field values while the
+    /// Contract: `document` MUST be the document currently stored under `key` —
+    /// the index entries are derived from `document`'s field values while the
     /// primary entry is derived from `key` alone, and a mismatched pair
     /// silently leaves dangling index entries (the KV layer's `del` is a
     /// no-op on absent keys, so nothing errors). The typical sound
-    /// source is the `row` just fetched for `key` (get / scan 回表).
-    /// When the row is not in hand or its provenance is doubtful, use
+    /// source is the `document` just fetched for `key` (get / scan 回表).
+    /// When the document is not in hand or its provenance is doubtful, use
     /// [`Self::delete_by_pkey`], which derives both halves from the same
     /// read.
-    pub fn delete(&mut self, key: &K, row: &R) {
+    pub fn delete(&mut self, key: &K, document: &R) {
         self.store.del(&self.primary_key(key));
-        for (ek, _) in R::index_entries(key, row, &self.header()) {
+        for (ek, _) in R::index_entries(key, document, &self.header()) {
             self.store.del(&ek);
         }
         // Unfold from every declared reduce group (single call site —
         // delete_by_pkey reaches here after its internal get).
         let header = self.header();
-        R::__okm_apply_reduces(&mut self.store, key, row, &header, false);
+        R::__okm_apply_reduces(&mut self.store, key, document, &header, false);
         // Subscribe: deletion event (same best-effort contract as put),
         // stamped with the table's post-write epoch.
         self.epoch += 1;
-        R::__okm_emit_event(crate::subscribe::Op::Delete, self.epoch, key, row);
+        R::__okm_emit_event(crate::subscribe::Op::Delete, self.epoch, key, document);
     }
 
-    /// Delete by primary key only: fetch the row from the primary table
+    /// Delete by primary key only: fetch the document from the primary table
     /// first, then delegate to [`Self::delete`]. Both halves of the
     /// removal (primary entry + index entries) derive from the same
-    /// fetched row, so a mismatched key/row pair is structurally
-    /// impossible. No-op (returns false) when the key has no row.
+    /// fetched document, so a mismatched key/document pair is structurally
+    /// impossible. No-op (returns false) when the key has no document.
     ///
     /// The fetch costs one primary-table point read; when the caller
-    /// already holds the row from a prior get/scan, prefer
+    /// already holds the document from a prior get/scan, prefer
     /// [`Self::delete`] with it.
     ///
     /// Not atomic: a concurrent writer between the internal get and the
@@ -218,8 +218,8 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     /// backends.
     pub fn delete_by_pkey(&mut self, key: &K) -> bool {
         match self.get(key) {
-            Some(row) => {
-                self.delete(key, &row);
+            Some(document) => {
+                self.delete(key, &document);
                 true
             }
             None => false,
@@ -230,13 +230,13 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     pub fn get(&self, key: &K) -> Option<R> {
         let k = self.primary_key(key);
         let v = self.store.get(&k)?;
-        let mut row = R::decode_payload(&v);
-        R::__okm_embed_deref(&mut row, &self.store);
-        Some(row)
+        let mut document = R::decode_payload(&v);
+        R::__okm_embed_deref(&mut document, &self.store);
+        Some(document)
     }
 
     /// Leftmost-prefix scan over access method `I`, then fetch-back
-    /// (回表): decode each entry's key prefix and load its row payload.
+    /// (回表): decode each entry's key prefix and load its document payload.
     /// With a truncated `key(...)` prefix the decoded keys are partial
     /// (`PrefixKey.taken < KEY_LEN`) — use the trustworthy prefix fields
     /// to continue scanning the main table.
@@ -244,12 +244,12 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         crate::scan_index::<S, I>(&self.store, &self.header(), encoded)
             .into_iter()
             .map(|pk| {
-                let row = if pk.taken == K::KEY_LEN {
+                let document = if pk.taken == K::KEY_LEN {
                     self.get(&pk.decoded)
                 } else {
                     None
                 };
-                (pk, row)
+                (pk, document)
             })
             .collect()
     }
@@ -283,13 +283,13 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
             .collect()
     }
 
-    /// Raw rows: `(key encoding suffix, TLV payload)` per primary entry,
+    /// Raw documents: `(key encoding suffix, TLV payload)` per primary entry,
     /// in key order — the byte-level scan surface the Arrow bridge and
     /// snapshot exporter consume without struct materialization. Slot-0
     /// only: the ns segment also holds index entries (slots 1+), which
     /// are derived state excluded from export (rebuilt deterministically
     /// on import via put).
-    pub fn scan_rows_raw(&self) -> Vec<(Vec<u8>, Vec<u8>)> {
+    pub fn scan_documents_raw(&self) -> Vec<(Vec<u8>, Vec<u8>)> {
         let mut prefix = self.header();
         prefix.push(crate::index::PRIMARY_SLOT);
         self.store
@@ -304,7 +304,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     }
 
     /// Full-ns scan of primary keys (slot-0 entries only — the same
-    /// slot-0 discipline as `scan_rows_raw`; index entries are slots 1+).
+    /// slot-0 discipline as `scan_documents_raw`; index entries are slots 1+).
     /// Clear stale entries under deprecated index slots (ADR-0005):
     /// a `#[ok_index(..., deprecated)]` declaration keeps its slot
     /// reserved but writes nothing; entries written before the
@@ -348,7 +348,7 @@ use crate::obj_dynamic::DynamicValue;
 
 impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> {
     /// Dynamic-segment key: `[header][DYNAMIC_SLOT][key payload]` — the
-    /// per-row extension entry next to the primary (slot 0), same
+    /// per-document extension entry next to the primary (slot 0), same
     /// skeleton as an index entry with no field segment (ADR-0012).
     fn fields_key(&self, key: &K) -> Vec<u8> {
         let mut buf = self.header();
@@ -422,15 +422,15 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     /// declared name would have to be allocated first; convention:
     /// callers don't, and `get_fields` exposes any violation).
     pub fn get_document(&mut self, key: &K) -> Option<BTreeMap<String, DynamicValue>> {
-        let row = self.get(key)?;
-        let mut out = row.to_map();
+        let document = self.get(key)?;
+        let mut out = document.to_map();
         if let Some(v) = self.get_fields(key) {
             out.extend(v);
         }
         Some(out)
     }
 
-    /// Whole-obj write: fields whose names match the row struct go to
+    /// Whole-obj write: fields whose names match the document struct go to
     /// the typed path (slot 0, `R::decode_payload` + field assignment),
     /// the rest to the dynamic segment. Unknown names allocate (this is
     /// the external-data entry point — unknown fields are normal input,
@@ -457,22 +457,22 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
             .collect();
         if !typed_names.is_empty() {
             // Read-modify-write: absent declared fields keep their current
-            // values (fresh rows default).
-            let mut row = match self.get(key) {
+            // values (fresh documents default).
+            let mut document = match self.get(key) {
                 Some(r) => r,
-                None => R::from_map(&BTreeMap::new()), // all-default row
+                None => R::from_map(&BTreeMap::new()), // all-default document
             };
-            // from_map over the TYPED subset only: the current row's map
+            // from_map over the TYPED subset only: the current document's map
             // (or all-default for a fresh key) overwritten by the given
             // declared fields — absent fields keep their values.
-            let mut merged = row.to_map();
+            let mut merged = document.to_map();
             for n in &typed_names {
                 if let Some(v) = object.get(*n) {
                     merged.insert((*n).clone(), v.clone());
                 }
             }
-            row = R::from_map(&merged);
-            self.put(key, &row);
+            document = R::from_map(&merged);
+            self.put(key, &document);
         }
         let dynamic: BTreeMap<String, DynamicValue> = object
             .iter()
