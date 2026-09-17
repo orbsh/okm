@@ -58,6 +58,11 @@ impl<const P: u32> Quant<P> {
     pub fn new(v: f64) -> Self {
         Quant(v)
     }
+    /// Bridge constructor (ADR-0012 row-map bridge): `P` inferred from
+    /// the field type — no type interpolation in generated code.
+    pub fn from_dyn(v: f64) -> Self {
+        Quant(v)
+    }
     /// Fixed-point wire encoding.
     pub fn encode(&self) -> Vec<u8> {
         wire_to_be_bytes(quantize(self.0, P))
