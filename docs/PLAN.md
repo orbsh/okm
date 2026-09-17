@@ -575,6 +575,27 @@ Unchanged: primary payload layout `[version][hot_len][hot][cold TLV]`
       superseded. Edge key bytes changed — dev stage, no stored data.
 
 
+## Embedded documents (2026-09-17, shipped)
+
+`Embedded<D, K>` field type — child document by key reference:
+
+- Wire = child key bytes only (fixed width, hot segment). The child is a
+  complete document at its own ns/key with its own indexes.
+- No attribute: derive recognizes `Embedded<D, K>` in field position from
+  the type itself (same discipline as Reverse/VarInt/Quant).
+- Memory: `key: K, value: Option<D>`. Write `Some(d)` = child written by
+  the parent's put; write `None` = reference an existing child (shared,
+  many-to-one). Read: `get` dereferences via the generated
+  `__okm_embed_deref` hook — missing child stays `None` (visible
+  absence under reference semantics, not a panic).
+- `Collection::put` writes `__okm_embed_entries` (child payload + child
+  index entries, same store/atomic boundary) and releases stale
+  references: keys pointed at by the OLD document but not the new one
+  are deleted (no cascade — shared children may survive; owned-cascade
+  is a future `#[ok_embed(own)]` option).
+- Queries return the nested struct directly (deref on read); the map
+  view (to_map) lifts an embedded field to `Bytes(child key)`.
+
 ## Terminology (2026-09-17, decided)
 
 Document-oriented naming, one sweep before crates.io:

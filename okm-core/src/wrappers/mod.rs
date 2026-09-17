@@ -7,6 +7,7 @@
 //! (`Delta`, `Rle`, `Offset` without a static base) live in the
 //! row-group regime, not here.
 
+mod embedded;
 mod enum_tag;
 pub mod obj_value;
 mod offset;
@@ -14,6 +15,7 @@ mod optional;
 mod quant;
 pub mod varint;
 
+pub use embedded::Embedded;
 pub use enum_tag::{enum_from_name, Enum, EnumTag};
 pub use obj_value::ObjValueType;
 pub use optional::{Option, OptionalEnc, WireWidth};
