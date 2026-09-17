@@ -34,6 +34,7 @@ pub mod reduce;
 pub mod collection;
 pub mod edge;
 pub mod nest;
+pub mod obj_dynamic;
 pub mod schema;
 #[cfg(feature = "redb")]
 pub mod redb_backend;
