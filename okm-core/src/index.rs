@@ -24,6 +24,20 @@ use crate::key::{KeyEncode, PrefixKey};
 
 /// Slot reserved for a table's primary keys inside its ns segment.
 pub const PRIMARY_SLOT: u8 = 0;
+/// obj dynamic segment (ADR-0012): per-row undeclared fields.
+pub const DYNAMIC_SLOT: u8 = 1;
+/// Field-name dictionary, number → name (ADR-0012).
+pub const DICT_ID_SLOT: u8 = 2;
+/// Field-name dictionary, name → number (ADR-0012).
+pub const DICT_NAME_SLOT: u8 = 3;
+/// edge forward / reverse (PLAN Phase 10, ADR-0001 superseded). Reserves
+/// the top of the fixed nibble region — fixed roles grow up from 0,
+/// edges grow down from 15, the middle is an unpartitioned buffer.
+pub const EDGE_FWD_SLOT: u8 = 14;
+pub const EDGE_REV_SLOT: u8 = 15;
+/// First slot available to `#[ok_index]`/`#[ok_reduce]` declaration-order
+/// allocation (ADR-0012: fixed roles own 0–15).
+pub const DECLARED_SLOT_BASE: u8 = 16;
 
 /// Encoded form of a function-index result (ADR-0005, function-index
 /// regime): what the declared function returns must land in the index

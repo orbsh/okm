@@ -55,9 +55,9 @@ fn dynamic_table(store: TestStore) -> DynamicTable<TestStore> {
         41,
         schema(),
         vec![
-            AccessMethod { slot: 1, fields: vec!["level".into()], includes: vec![] },
+            AccessMethod { slot: 16, fields: vec!["level".into()], includes: vec![] },
             AccessMethod {
-                slot: 2,
+                slot: 17,
                 fields: vec!["score".into()],
                 includes: vec!["level".into()],
             },
@@ -103,8 +103,8 @@ fn dynamic_scan_finds_by_access_method() {
     t.put(&key_bytes(1, 11), &values(1, 11, 9, 100, "b")).unwrap();
     t.put(&key_bytes(1, 12), &values(1, 12, 4, 200, "c")).unwrap();
 
-    // by_level (slot 1): level = 4 → users 10 and 12.
-    let hits = t.scan(1, &4u32.to_be_bytes()).unwrap();
+    // by_level (slot 16): level = 4 → users 10 and 12.
+    let hits = t.scan(16, &4u32.to_be_bytes()).unwrap();
     let mut ids: Vec<u64> = hits
         .iter()
         .map(|k| match k.get("user_id") {
@@ -115,15 +115,15 @@ fn dynamic_scan_finds_by_access_method() {
     ids.sort();
     assert_eq!(ids, vec![10, 12]);
 
-    // by_score (slot 2): score = 100 -> users 10 and 11.
+    // by_score (slot 17): score = 100 -> users 10 and 11.
     let mut prefix = Vec::new();
     prefix.extend_from_slice(&100u16.to_be_bytes());
-    assert_eq!(t.scan(2, &prefix).unwrap().len(), 2);
+    assert_eq!(t.scan(17, &prefix).unwrap().len(), 2);
 
     // No match: org 2 has nobody.
     let mut prefix = Vec::new();
     prefix.extend_from_slice(&999u16.to_be_bytes());
-    assert!(t.scan(2, &prefix).unwrap().is_empty());
+    assert!(t.scan(17, &prefix).unwrap().is_empty());
 }
 
 #[test]
@@ -131,13 +131,13 @@ fn dynamic_overwrite_sweeps_stale_entries() {
     let mut t = dynamic_table(TestStore::slatedb_mem());
     t.put(&key_bytes(1, 10), &values(1, 10, 4, 100, "a")).unwrap();
 
-    // Overwrite changes `level` 4 → 9: the old by_level entry (slot 1,
+    // Overwrite changes `level` 4 → 9: the old by_level entry (slot 16,
     // level 4) must be gone, the new one present.
     t.put(&key_bytes(1, 10), &values(1, 10, 9, 100, "a")).unwrap();
 
-    let level4 = t.scan(1, &4u32.to_be_bytes()).unwrap();
+    let level4 = t.scan(16, &4u32.to_be_bytes()).unwrap();
     assert!(level4.is_empty(), "stale by_level entry must be swept");
-    let level9 = t.scan(1, &9u32.to_be_bytes()).unwrap();
+    let level9 = t.scan(16, &9u32.to_be_bytes()).unwrap();
     assert_eq!(level9.len(), 1);
 }
 
@@ -147,10 +147,10 @@ fn dynamic_delete_removes_all_entries() {
     t.put(&key_bytes(1, 10), &values(1, 10, 4, 100, "a")).unwrap();
     t.delete(&key_bytes(1, 10)).unwrap();
 
-    assert!(t.scan(1, &4u32.to_be_bytes()).unwrap().is_empty());
+    assert!(t.scan(16, &4u32.to_be_bytes()).unwrap().is_empty());
     let mut prefix = Vec::new();
     prefix.extend_from_slice(&100u16.to_be_bytes());
-    assert!(t.scan(2, &prefix).unwrap().is_empty());
+    assert!(t.scan(17, &prefix).unwrap().is_empty());
     assert!(t.get(&key_bytes(1, 10)).unwrap().is_none());
 }
 
@@ -172,7 +172,7 @@ fn dynamic_rejects_key_field_indexes() {
     // Key fields in `fields` or `includes` are declared-scheme errors:
     // the key IS the lookup target; indexing it is meaningless and
     // ambiguous under key/payload name collisions.
-    let bad = AccessMethod { slot: 3, fields: vec!["org_id".into()], includes: vec![] };
+    let bad = AccessMethod { slot: 18, fields: vec!["org_id".into()], includes: vec![] };
     assert!(okm_dynamic::index_entries(
         &schema(),
         &[41],
@@ -183,7 +183,7 @@ fn dynamic_rejects_key_field_indexes() {
     .is_err());
 
     let bad_inc =
-        AccessMethod { slot: 3, fields: vec!["level".into()], includes: vec!["user_id".into()] };
+        AccessMethod { slot: 18, fields: vec!["level".into()], includes: vec!["user_id".into()] };
     assert!(okm_dynamic::index_entries(
         &schema(),
         &[41],
