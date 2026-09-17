@@ -9,7 +9,7 @@
 //!    fixed-width fields today but keeps the same frame for the
 //!    variable-length regime later.
 //! 3. `#[ok_index(idx_name { fields(a, b), includes(c) })]` — one access
-//!    method per declaration, slots start at 1 in attribute order
+//!    method per declaration, slots start at DECLARED_SLOT_BASE (16) in attribute order
 //!    (`0` is reserved for the primary table, ADR-0005). Generates a
 //!    marker struct per index plus `Row::index_entries`, so `put`/
 //!    `delete` cover every declared access method with no runtime
@@ -30,6 +30,12 @@
 
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TS2;
+
+/// Declared-slot base (ADR-0012): fixed roles own 0–15; indexes/reduces
+/// allocate from here. A literal, not a runtime constant — a proc-macro
+/// crate cannot name okm_core at its own compile time. Keep in sync with
+/// `okm_core::index::DECLARED_SLOT_BASE`.
+const DECLARED_SLOT_BASE: u8 = 16;
 use quote::{format_ident, quote};
 use syn::{parse_macro_input, DeriveInput};
 
@@ -209,7 +215,7 @@ fn emit_index_structs(schema: &RowSchema) -> TS2 {
         if idx.deprecated {
             continue;
         }
-        let slot_lit = proc_macro2::Literal::u8_unsuffixed(n as u8 + 1);
+        let slot_lit = proc_macro2::Literal::u8_unsuffixed(DECLARED_SLOT_BASE + n as u8);
         let iname = &idx.ident;
         let struct_ident = format_ident!("__OkmIndex_{}_{}", row_name, iname);
         let fields: Vec<&String> = idx.fields.iter().collect();
@@ -336,7 +342,7 @@ fn emit_index_entries(schema: &RowSchema) -> TS2 {
         .enumerate()
         .filter(|(_, idx)| idx.deprecated)
         .map(|(n, _)| {
-            let lit = proc_macro2::Literal::u8_unsuffixed(n as u8 + 1);
+            let lit = proc_macro2::Literal::u8_unsuffixed(DECLARED_SLOT_BASE + n as u8);
             quote! { #lit }
         })
         .collect();
@@ -369,7 +375,7 @@ fn emit_reduces(schema: &RowSchema) -> (TS2, TS2) {
     let mut impls = quote! {};
     let mut calls = quote! {};
     for (n, red) in schema.reduces.iter().enumerate() {
-        let slot_lit = proc_macro2::Literal::u8_unsuffixed(n_idx as u8 + 1 + n as u8);
+        let slot_lit = proc_macro2::Literal::u8_unsuffixed(DECLARED_SLOT_BASE + n_idx as u8 + n as u8);
         let logic = syn::parse_str::<syn::Type>(&red.logic)
             .unwrap_or_else(|e| panic!("ok_reduce[{}]: bad logic type `{}`: {e}", red.ident, red.logic));
         let group: Vec<&String> = red.group.iter().collect();
