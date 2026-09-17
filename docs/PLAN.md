@@ -524,7 +524,7 @@ Unchanged: primary payload layout `[version][hot_len][hot][cold TLV]`
       value (`Some(0)` is not `None`). Shipped 2026-09-16 (2dd5385):
       u8..u64/[u8;N] primitives; Enum/VarInt/Quant/Reverse compose via
       their own contracts. Remaining: derive field-position recognition
-      (`Optional<T>` in a struct field → OptionalEnc impl + width).
+      (`Option<T>` in a struct field → OptionalEnc impl + width).
 - [ ] Derive support: field-position recognition like the other wrappers
       (width = `1 + T::WIDTH` in FieldDesc), `[ok_default]` interplay
       documented (default decides what a missing pre-v2 payload decodes

@@ -1,4 +1,4 @@
-//! `Option<T>` — fixed-width presence wrapper for declared fields
+//! `Option` — fixed-width presence wrapper for declared fields
 //! (PLAN Phase 9, ADR-0012 wrapper family).
 //!
 //! Wire layout: `[present u8][T wire bytes]` — total width is
@@ -6,7 +6,7 @@
 //! (O(1) offsets, same discipline as every fixed-width kind). `None`
 //! zero-fills the value bytes; `Some(0)` and `None` are byte-distinct.
 //!
-//! Why not plain `Option<T>` in field position: the derive's fixed-width
+//! Why not std's `Option<T>` directly in field position: the derive's fixed-width
 //! pipeline needs a wrapper contract (wire width, default, encode/decode)
 //! exactly like `Enum<T>`/`Offset<T>`/`VarInt<T>`. `Optional` also
 //! inherits the value's own semantics — a missing field and a field set
@@ -15,16 +15,16 @@
 //! Orthogonality with `#[ok_default]`: the default decides what a
 //! payload written by an older layout version decodes to; `Option`
 //! decides presence *within* a payload. A missing pre-v2 field decodes
-//! to `Optional(None)` unless `#[ok_default(Some(x))]` says otherwise.
+//! to `Option(None)` unless `#[ok_default(Some(x))]` says otherwise.
 
 /// The presence wrapper. `T` is any fixed-width codec field
 /// (`u8..u64`, `[u8; N]`, `Enum<E>`, another wrapper...).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Optional<T>(pub Option<T>);
+pub struct Option<T>(pub ::std::option::Option<T>);
 
-impl<T: Default> Default for Optional<T> {
+impl<T: Default> Default for Option<T> {
     fn default() -> Self {
-        Optional(None)
+        Option(::std::option::Option::None)
     }
 }
 
@@ -43,17 +43,17 @@ pub trait OptionalEnc: WireWidth + Sized + Copy + PartialEq + std::fmt::Debug {
     fn dec_wire(present: u8, wire: &[u8]) -> Self;
 }
 
-impl<T: OptionalEnc + WireWidth> WireWidth for Optional<T> {
+impl<T: OptionalEnc + WireWidth> WireWidth for Option<T> {
     const WIDTH: usize = 1 + T::WIDTH;
 }
-impl<T: OptionalEnc + WireWidth> OptionalEnc for Optional<T> {
+impl<T: OptionalEnc + WireWidth> OptionalEnc for Option<T> {
     fn enc_wire(&self, buf: &mut Vec<u8>) {
         match &self.0 {
-            Some(v) => {
+            ::std::option::Option::Some(v) => {
                 buf.push(1);
                 v.enc_wire(buf);
             }
-            None => {
+            ::std::option::Option::None => {
                 buf.push(0);
                 buf.extend_from_slice(&vec![0u8; T::WIDTH]);
             }
@@ -61,9 +61,9 @@ impl<T: OptionalEnc + WireWidth> OptionalEnc for Optional<T> {
     }
     fn dec_wire(present: u8, wire: &[u8]) -> Self {
         if present == 0 {
-            Optional(None)
+            Option(::std::option::Option::None)
         } else {
-            Optional(Some(T::dec_wire(1, wire)))
+            Option(::std::option::Option::Some(T::dec_wire(1, wire)))
         }
     }
 }
@@ -111,13 +111,13 @@ mod tests {
     #[test]
     fn none_and_some_zero_are_byte_distinct() {
         let mut none = Vec::new();
-        Optional::<u64>(None).enc_wire(&mut none);
+        Option::<u64>(::std::option::Option::None).enc_wire(&mut none);
         assert_eq!(none.len(), 9);
         assert_eq!(none[0], 0);
         assert!(none[1..].iter().all(|&b| b == 0));
 
         let mut zero = Vec::new();
-        Optional::<u64>(Some(0)).enc_wire(&mut zero);
+        Option::<u64>(::std::option::Option::Some(0)).enc_wire(&mut zero);
         assert_eq!(zero.len(), 9);
         assert_eq!(zero[0], 1);
         assert!(zero[1..].iter().all(|&b| b == 0));
@@ -128,21 +128,22 @@ mod tests {
 
     #[test]
     fn round_trips() {
-        for v in [None, Some(0u32), Some(u32::MAX)] {
+        use ::std::option::Option as StdOption;
+        for v in [StdOption::None, StdOption::Some(0u32), StdOption::Some(u32::MAX)] {
             let mut buf = Vec::new();
-            Optional::<u32>(v).enc_wire(&mut buf);
-            let back = Optional::<u32>::dec_wire(buf[0], &buf[1..]);
-            assert_eq!(back, Optional::<u32>(v));
+            Option::<u32>(v).enc_wire(&mut buf);
+            let back = Option::<u32>::dec_wire(buf[0], &buf[1..]);
+            assert_eq!(back, Option::<u32>(v));
             assert_eq!(buf.len(), 5);
         }
         let mut buf = Vec::new();
-        Optional::<[u8; 4]>(Some([1, 2, 3, 4])).enc_wire(&mut buf);
-        let back = Optional::<[u8; 4]>::dec_wire(buf[0], &buf[1..]);
-        assert_eq!(back, Optional::<[u8; 4]>(Some([1, 2, 3, 4])));
+        Option::<[u8; 4]>(StdOption::Some([1, 2, 3, 4])).enc_wire(&mut buf);
+        let back = Option::<[u8; 4]>::dec_wire(buf[0], &buf[1..]);
+        assert_eq!(back, Option::<[u8; 4]>(StdOption::Some([1, 2, 3, 4])));
     }
 
     #[test]
     fn default_is_none() {
-        assert_eq!(Optional::<u16>::default(), Optional(None));
+        assert_eq!(Option::<u16>::default(), Option(::std::option::Option::None));
     }
 }
