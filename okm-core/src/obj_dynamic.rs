@@ -13,6 +13,7 @@
 //! older reader cannot see. Frames are written in insertion order;
 //! readers address fields by id, not position.
 
+use std::collections::BTreeMap;
 use crate::wrappers::obj_value::ObjValueType;
 
 /// Dynamic-segment value: the run-time counterpart of a decoded frame.
@@ -30,6 +31,10 @@ pub enum DynamicValue {
     /// Nothing stored; presence itself is the information.
     Null,
     Array(Vec<DynamicValue>),
+    /// Nested object: name-keyed map, the in-memory counterpart of a
+    /// nested nTLV list (ADR-0012 — a map IS an nTLV list; the field
+    /// NAME → id mapping reuses the same field-name dictionary).
+    Obj(BTreeMap<String, DynamicValue>),
 }
 
 /// One dynamic field: dictionary id + decoded value.
@@ -40,7 +45,9 @@ pub struct DynamicField {
 }
 
 /// Append one frame. `id < 0xFF` takes the short form; anything larger
-/// escapes through `0xFF`.
+/// escapes through `0xFF`. Nested `DynamicValue::Obj` values are NOT
+/// supported here (their ids must be resolved first) — use
+/// [`put_frame_named`] with a name resolver.
 pub fn put_frame(buf: &mut Vec<u8>, id: u16, value: &DynamicValue) {
     if id < 0xFF {
         buf.push(id as u8);
@@ -54,7 +61,62 @@ pub fn put_frame(buf: &mut Vec<u8>, id: u16, value: &DynamicValue) {
     buf.append(&mut body);
 }
 
-/// Value → (type tag, body bytes).
+/// Name resolver: returns the dictionary id for `name`, allocating
+/// through the closure on first sight (the caller's dictionary owns
+/// allocation discipline — single writer, engine mutex).
+pub trait NameResolver {
+    fn resolve(&mut self, name: &str) -> u16;
+}
+
+/// Append one frame for a NAMED field: nested `Obj` values recurse,
+/// each nested name resolved through the same resolver (nested objects
+/// share the obj's dictionary — one vocabulary per table).
+pub fn put_frame_named<R: NameResolver>(
+    buf: &mut Vec<u8>,
+    name: &str,
+    value: &DynamicValue,
+    dict: &mut R,
+) {
+    put_frame_named_inner(buf, name, value, dict);
+}
+
+fn put_frame_named_inner<R: NameResolver>(
+    buf: &mut Vec<u8>,
+    name: &str,
+    value: &DynamicValue,
+    dict: &mut R,
+) {
+    let id = dict.resolve(name);
+    if id < 0xFF {
+        buf.push(id as u8);
+    } else {
+        buf.push(0xFF);
+        buf.extend_from_slice(&id.to_be_bytes());
+    }
+    match value {
+        DynamicValue::Obj(map) => {
+            // Nested obj: one outer frame (type 7) whose body is the
+            // nested nTLV list — same shape, same dictionary.
+            let mut body = Vec::new();
+            for (k, v) in map {
+                put_frame_named_inner(&mut body, k, v, dict);
+            }
+            buf.push(ObjValueType::Obj.to_byte());
+            buf.extend_from_slice(&(body.len() as u32).to_be_bytes());
+            buf.append(&mut body);
+        }
+        other => {
+            let (ty, mut body) = encode_value(other);
+            buf.push(ty.to_byte());
+            buf.extend_from_slice(&(body.len() as u32).to_be_bytes());
+            buf.append(&mut body);
+        }
+    }
+}
+
+/// Value → (type tag, body bytes). Nested objects need the dictionary
+/// to resolve names → ids, so the resolver is a parameter (top-level
+/// frames go through [`put_frame`], which owns the dict).
 fn encode_value(value: &DynamicValue) -> (ObjValueType, Vec<u8>) {
     match value {
         DynamicValue::Int(v) => {
@@ -88,6 +150,12 @@ fn encode_value(value: &DynamicValue) -> (ObjValueType, Vec<u8>) {
             }
             (ObjValueType::Array, body)
         }
+        DynamicValue::Obj(_) => {
+            // Encoded by put_frame via the dictionary resolver — see
+            // put_frame's Obj arm. This arm is unreachable through the
+            // public entry but kept total for exhaustiveness.
+            (ObjValueType::Obj, Vec::new())
+        }
     }
 }
 
@@ -120,6 +188,32 @@ fn u32_be(b: &[u8]) -> u32 {
 /// malformed frames abort the list — everything before the abort point
 /// is still returned (partial results beat nothing for a dynamic
 /// reader).
+/// Decode all frames, resolving nested object field ids to names via
+/// `name_of` (the dictionary's id → name direction). Top-level frames
+/// keep their numeric ids in [`DynamicField`] (the Table layer maps
+/// them); nested `Obj` values come back fully name-keyed.
+pub fn decode_named(
+    bytes: &[u8],
+    name_of: &mut dyn FnMut(u16) -> Option<String>,
+) -> Vec<DynamicField> {
+    let mut out = Vec::new();
+    let mut off = 0usize;
+    while off < bytes.len() {
+        match decode_frame_named(bytes, &mut off, name_of) {
+            Ok(Some(f)) => out.push(f),
+            Ok(None) => {}         // unknown type — skipped, off advanced
+            Err(FrameErr::Malformed) => break, // torn tail: stop
+            Err(FrameErr::UnknownType) => {}   // defensive
+        }
+    }
+    out
+}
+
+fn decode_frame(bytes: &[u8], off: &mut usize) -> Result<Option<DynamicField>, FrameErr> {
+    let mut no_names = |_id: u16| -> Option<String> { None };
+    decode_frame_named(bytes, off, &mut no_names)
+}
+
 pub fn decode_variants(bytes: &[u8]) -> Vec<DynamicField> {
     let mut out = Vec::new();
     let mut off = 0usize;
@@ -146,7 +240,11 @@ fn decode_id(bytes: &[u8], off: &mut usize) -> Option<u16> {
     }
 }
 
-fn decode_frame(bytes: &[u8], off: &mut usize) -> Result<Option<DynamicField>, FrameErr> {
+fn decode_frame_named(
+    bytes: &[u8],
+    off: &mut usize,
+    name_of: &mut dyn FnMut(u16) -> Option<String>,
+) -> Result<Option<DynamicField>, FrameErr> {
     let id = decode_id(bytes, off).ok_or(FrameErr::Malformed)?;
     let ty_byte = take(bytes, off, 1)
         .and_then(|b| b.first().copied())
@@ -157,7 +255,24 @@ fn decode_frame(bytes: &[u8], off: &mut usize) -> Result<Option<DynamicField>, F
         Some(t) => t,
         None => return Err(FrameErr::UnknownType), // caller may skip; off already advanced
     };
-    let value = decode_value(ty, body).ok_or(FrameErr::Malformed)?;
+    let value = match ty {
+        ObjValueType::Obj => {
+            let mut m = BTreeMap::new();
+            let mut inner = 0usize;
+            while inner < body.len() {
+                let nf = match decode_frame_named(body, &mut inner, name_of) {
+                    Ok(Some(nf)) => Some(nf),
+                    Ok(None) => None,               // unknown nested type
+                    Err(_) => return Err(FrameErr::Malformed),
+                };
+                let Some(nf) = nf else { continue };
+                let key = name_of(nf.id).unwrap_or_else(|| nf.id.to_string());
+                m.insert(key, nf.value);
+            }
+            DynamicValue::Obj(m)
+        }
+        other => decode_value(other, body).ok_or(FrameErr::Malformed)?,
+    };
     Ok(Some(DynamicField { id, value }))
 }
 
@@ -221,8 +336,7 @@ fn decode_value(ty: ObjValueType, body: &[u8]) -> Option<DynamicValue> {
             }
             DynamicValue::Array(items)
         }
-        // Reserved until the nesting milestone; a reader that cannot
-        // build nested objects skips the frame.
+        // Unreachable through decode_value — nested objs decode via decode_frame_named.
         ObjValueType::Obj => return None,
     })
 }
@@ -300,5 +414,110 @@ mod tests {
         assert_eq!(fields.len(), 2, "unknown frame skipped by length");
         assert_eq!(fields[0].id, 1);
         assert_eq!(fields[1].id, 3);
+    }
+}
+
+#[cfg(test)]
+mod nested_tests {
+    use super::*;
+
+    // Minimal dictionary stub for tests: name -> id by order of first sight.
+    struct StubDict {
+        next: u16,
+        names: std::collections::HashMap<String, u16>,
+    }
+    impl StubDict {
+        fn new() -> Self {
+            StubDict { next: 0, names: std::collections::HashMap::new() }
+        }
+    }
+    impl NameResolver for StubDict {
+        fn resolve(&mut self, name: &str) -> u16 {
+            if let Some(&id) = self.names.get(name) {
+                return id;
+            }
+            let id = self.next;
+            self.next += 1;
+            self.names.insert(name.to_string(), id);
+            id
+        }
+    }
+
+    #[test]
+    fn nested_obj_roundtrip() {
+        let mut inner = BTreeMap::new();
+        inner.insert("lat".to_string(), DynamicValue::F64(52.3));
+        inner.insert("lon".to_string(), DynamicValue::F64(4.9));
+        let mut outer = BTreeMap::new();
+        outer.insert("loc".to_string(), DynamicValue::Obj(inner));
+        outer.insert("n".to_string(), DynamicValue::UInt(7));
+
+        let mut dict = StubDict::new();
+        let mut buf = Vec::new();
+        for (k, v) in &outer {
+            put_frame_named(&mut buf, k, v, &mut dict);
+        }
+
+        // Decode with name resolution.
+        let name_of_id = |id: u16| -> Option<String> {
+            dict.names
+                .iter()
+                .find(|ent| *ent.1 == id)
+                .map(|(k, _)| k.clone())
+        };
+        let fields = decode_named(&buf, &mut |id| name_of_id(id));
+        assert_eq!(fields.len(), 2);
+
+        let by_name: BTreeMap<&str, &DynamicValue> = fields
+            .iter()
+            .filter_map(|f| {
+                let name = dict
+                    .names
+                    .iter()
+                    .find(|ent| *ent.1 == f.id)
+                    .map(|(k, _)| k.as_str())?;
+                Some((name, &f.value))
+            })
+            .collect();
+        assert_eq!(by_name["n"], &DynamicValue::UInt(7));
+        match by_name["loc"] {
+            DynamicValue::Obj(m) => {
+                assert_eq!(m.len(), 2);
+                assert_eq!(m["lat"], DynamicValue::F64(52.3));
+                assert_eq!(m["lon"], DynamicValue::F64(4.9));
+            }
+            other => panic!("expected nested Obj, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn nested_deep_recursion() {
+        // obj → obj → obj: three levels, all through the same dictionary.
+        let leaf = BTreeMap::from([("v".to_string(), DynamicValue::Int(-3))]);
+        let mid = BTreeMap::from([("leaf".to_string(), DynamicValue::Obj(leaf))]);
+        let top = BTreeMap::from([("mid".to_string(), DynamicValue::Obj(mid))]);
+
+        let mut dict = StubDict::new();
+        let mut buf = Vec::new();
+        for (k, v) in &top {
+            put_frame_named(&mut buf, k, v, &mut dict);
+        }
+        // Dictionary saw: mid, leaf, v — shared vocabulary across levels.
+        assert_eq!(dict.names.len(), 3);
+
+        let name_of_id = |id: u16| -> Option<String> {
+            dict.names
+                .iter()
+                .find(|ent| *ent.1 == id)
+                .map(|(k, _)| k.clone())
+        };
+        let fields = decode_named(&buf, &mut |id| name_of_id(id));
+        let DynamicValue::Obj(mid_m) = &fields[0].value else {
+            panic!("top must be Obj");
+        };
+        let DynamicValue::Obj(leaf_m) = &mid_m["leaf"] else {
+            panic!("mid must contain Obj leaf");
+        };
+        assert_eq!(leaf_m["v"], DynamicValue::Int(-3));
     }
 }
