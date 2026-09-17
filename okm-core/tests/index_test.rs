@@ -98,7 +98,7 @@ fn mk_session(user: u64, sid: u64, kind: u8) -> (SessionKey, Session) {
 
 #[test]
 fn table_put_writes_primary_and_indexes() {
-    let mut t = <User as Document>::table(TestStore::slatedb_mem());
+    let mut t = <User as Document>::collection(TestStore::slatedb_mem());
     let (k, r) = mk_user(101, 100);
     t.put(&k, &r);
 
@@ -127,7 +127,7 @@ fn table_put_writes_primary_and_indexes() {
 
 #[test]
 fn delete_by_pkey_fetches_row_and_cleans_indexes() {
-    let mut t = <User as Document>::table(TestStore::slatedb_mem());
+    let mut t = <User as Document>::collection(TestStore::slatedb_mem());
     let (k, r) = mk_user(101, 100);
     t.put(&k, &r);
 
@@ -143,7 +143,7 @@ fn delete_by_pkey_fetches_row_and_cleans_indexes() {
 
 #[test]
 fn scan_via_index_returns_rows() {
-    let mut t = <User as Document>::table(TestStore::slatedb_mem());
+    let mut t = <User as Document>::collection(TestStore::slatedb_mem());
     let rows_in = [
         mk_user(101, 10),
         mk_user(102, 20),
@@ -209,7 +209,7 @@ fn timeline_is_a_list_encoding() {
     // by_timeline：fields(author_id, created_at)，分组维度在 fields 首位，
     // 一条前缀扫描（author=7）即返回该作者的整个时间线，组内按
     // created_at 升序；includes(title_len) 覆盖，无需回表。
-    let mut t = <Post as Document>::table(TestStore::slatedb_mem());
+    let mut t = <Post as Document>::collection(TestStore::slatedb_mem());
     let rows = [
         mk_post(500, 7, 30, 10),
         mk_post(501, 7, 20, 11),
@@ -249,7 +249,7 @@ fn truncated_key_prefix_drops_redundant_tail() {
     // by_kind：fields(kind) 分组 + key(session_id) 截断尾段。session_id
     // 全局唯一，(kind, session_id) 行级唯一——user_id 留在尾段只会冗余。
     // 扫描 kind=3 → 该类型的全部会话（列表语义），不回表。
-    let mut t = <Session as Document>::table(TestStore::slatedb_mem());
+    let mut t = <Session as Document>::collection(TestStore::slatedb_mem());
     let rows = [
         mk_session(9, 777, 3),
         mk_session(9, 778, 3),   // 同用户同类型的另一会话：session_id 区分，不覆盖
@@ -347,7 +347,7 @@ fn variable_length_index_text_first() {
     // 变长字段索引（text-first regime）：裸 UTF-8 字节参与排序，共享前缀
     // 文本按字典序相邻；精确匹配靠尾部主键回表核验（无定界符是本 regime
     // 的代价——"ab" 的前缀扫描会扫到 "abc"，这正是字典序的行为）。
-    let mut t = <Doc as Document>::table(TestStore::slatedb_mem());
+    let mut t = <Doc as Document>::collection(TestStore::slatedb_mem());
     let rows = [
         mk_doc(1, 10, "alpha"),
         mk_doc(2, 10, "alphabet"),   // "alpha" 的扩展，字典序紧随其后
@@ -417,7 +417,7 @@ fn mk_docf(id: u64, city: u32, name: &str) -> (DocKey, DocFunc) {
 fn function_index_normalizes_both_sides() {
     // 写入端：entry 排序段 = lower_name(&row) 的结果（裸 UTF-8，字典序）；
     // 查询端：探针行调用同一个函数归一化，两侧共享一条声明。
-    let mut t = <DocFunc as Document>::table(TestStore::slatedb_mem());
+    let mut t = <DocFunc as Document>::collection(TestStore::slatedb_mem());
     let rows = [
         mk_docf(1, 10, "Apple"),
         mk_docf(2, 10, "APPLE"),
@@ -468,7 +468,7 @@ fn multi_entry_function_index_fans_out() {
 
     use __OkmIndex_DocTags_by_tag as ByTag;
 
-    let mut t = <DocTags as Document>::table(TestStore::slatedb_mem());
+    let mut t = <DocTags as Document>::collection(TestStore::slatedb_mem());
     let rows = [
         (DocKey { id: 1 }, DocTags { tags: "rust,kv".into() }),
         (DocKey { id: 2 }, DocTags { tags: "rust,storage".into() }),

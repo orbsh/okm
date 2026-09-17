@@ -78,7 +78,7 @@ edges.link(&user, &s1);
 let sessions = user.get_session(&edges);
 
 // Row: writes the primary key + all index entries; scan by access method
-let mut t = <User as Document>::table(store, 9);
+let mut t = <User as Document>::collection(store);
 t.put(&user, &user_row);
 let rows = t.scan::<ByOrg>(&7u32.to_be_bytes());
 ```
@@ -140,7 +140,7 @@ docs/adr/          architecture decision records (docs/PLAN.md = implementation 
 
 - **Namespace stays in code** — the namespace dictionary is compile-time constants, never stored in KV. The access pattern itself lives in code (binary keys, no separators, per-field widths); putting ns in code is the same act as putting the key layout in code. Macros run at compile time when no KV exists to read from — a dictionary in KV is a bootstrap deadlock. Numbers are manually assigned, append-only, never reused; see [ADR-0002](docs/adr/0002-namespace-dictionary.md).
 - **Two layout regimes** — primary keys are fixed-width (zero parsing, hot path); secondary indexes are variable-length (text as discriminating prefix, UTF-8 byte order = dictionary scan order, primary-key ID appended at the key tail, value left empty). Width is a property of *structure*, not *data*; the discriminator is access pattern: point-lookup-only may hash to fixed width, anything needing prefix/range scan must keep raw text. Variable-length fields use a length prefix `[len: u16][bytes]` over NUL termination (no escaping burden); a fixed-width field *after* a variable-length one loses its compile-time offset and falls back to a runtime cursor — "fixed-width prefix + variable tail" keeps most of the zero-parsing benefit. Hex stability tests still apply to variable-length keys: what they lock is the encoding scheme itself (prefix layout, length endianness, limits), not specific bytes. The name→id index is the mainstream case and is almost always variable-length, since an index exists to answer prefix/range queries. See the [KV Storage Engine](https://github.com/orbsh/wiki/blob/main/kv-storage-engine-en.md) essay for the full argument.
-- **Macro layer is deliberately storage-free** — encode/decode are pure `Vec<u8>` in/out functions; engine choice and lifecycle belong to the assembly site (`Edge::new(store)` / `<Row>::table(store, ns)`). This is what keeps each derive a single-item pure function.
+- **Macro layer is deliberately storage-free** — encode/decode are pure `Vec<u8>` in/out functions; engine choice and lifecycle belong to the assembly site (`Edge::new(store)` / `<Document>::collection(store)`). This is what keeps each derive a single-item pure function.
 - **Portability**: the paradigm is bytes-level and host-language independent — a Python dataclass with the same `encode()` reproduces the layout, at the price of moving guarantees from compile time to runtime assertions (SlateDB's Python bindings via UniFFI provide the needed primitives: `get` / `scan_prefix` + `KeyRange` / `WriteBatch` / transactions). Portability has a structural cost, however: type errors move from compile time to runtime (`assert` instead of the compiler), encoding is byte-concatenation rather than memcpy-level offsets (1–2 orders of magnitude slower on hot paths), and decorators/metaclass registration is a runtime cost instead of a compile-time expansion. Same paradigm, guarantee level set by the host language.
 
 ## Why not just use a (ready-made) database?

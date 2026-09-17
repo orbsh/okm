@@ -286,14 +286,14 @@ Declaring rows and indexes (`DocumentEncode` + `#[ok_index]`) is covered in the
 [Modeling Guide](docs/MODELING.md), "Declaration basics". The index declaration's derivative is generated at the expansion point
 (this file): `ok_index(by_org ...)` generates the index type
 `__OkmIndex_User_by_org` (mechanical concatenation, no case conversion);
-alias it with `use` and it serves as the generic parameter. `Row::table`
+alias it with `use` and it serves as the generic parameter. `Document::collection`
 builds the assembly point without repeating the key type at the call site:
 
 ```rust
 use okm_core::{Row, TestStore};
 use __OkmIndex_User_by_org as ByOrg; // index type: derived from ok_index(by_org)
 
-let mut t = <User as Document>::table(TestStore::default());
+let mut t = <User as Document>::collection(TestStore::default());
 
 t.put(&user, &User { org_id: 7, created_at: 30, reputation: 100, bio_len: 2 });
 

@@ -24,7 +24,7 @@ pub struct User {
 
 #[test]
 fn embed_roundtrip() {
-    let mut users = <User as Document>::table(TestStore::slatedb_mem());
+    let mut users = <User as Document>::collection(TestStore::slatedb_mem());
     let mut addrs: okm_core::Collection<TestStore, AddressKey, Address> =
         okm_core::Collection::new(users.store().clone());
     let akey = AddressKey { owner_id: 2, kind: 1 };

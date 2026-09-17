@@ -209,10 +209,11 @@ pub trait Document: Sized + Clone {
     ) {
     }
 
-    /// Assembly-point constructor: builds the row's `Table` binding this
-    /// row type to its `#[ok_ref]` key. The key type never appears at the
-    /// call site — it is already pinned by `Self::Key`.
-    fn table<S: VirtualStorage>(store: S) -> crate::document::Collection<S, Self::Key, Self> {
+    /// Assembly-point constructor: builds the document's `Collection`
+    /// binding this document type to its `#[ok_ref]` key. The key type
+    /// never appears at the call site — it is already pinned by
+    /// `Self::Key`.
+    fn collection<S: VirtualStorage>(store: S) -> crate::document::Collection<S, Self::Key, Self> {
         crate::document::Collection::new(store)
     }
 
