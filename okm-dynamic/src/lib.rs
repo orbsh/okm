@@ -53,6 +53,15 @@ pub enum Value {
     U16(u16),
     U32(u32),
     U64(u64),
+    /// Signed integer (dynamic-segment parity; typed fields may declare
+    /// signed kinds when schema support lands).
+    I64(i64),
+    /// IEEE-754 double (dynamic-segment parity).
+    F64(f64),
+    /// Boolean (dynamic-segment parity).
+    Bool(bool),
+    /// Absence (dynamic-segment parity; encodes as a zero-length frame).
+    Null,
     /// Fixed-width byte string (`[u8; N]` key fields, `FixedBytes`).
     Bytes(Vec<u8>),
     /// UTF-8 string (cold TLV payload fields).
