@@ -266,6 +266,10 @@ pub(crate) struct FieldSchema {
     /// (append-only evolution fills the tail with defaults). From
     /// `#[ok_default(expr)]`, else `<T as Default>::default()`.
     pub default_expr: TS2,
+    /// Exportable const literal (Some only when #[ok_default] is a plain
+    /// literal or `"x".to_string()`); feeds the Row::DEFAULTS const for
+    /// the dynamic reader's version migration.
+    pub default_lit: Option<TS2>,
 }
 
 /// Encoded width of a plain primitive type name (for `Reverse<T>` fields —
@@ -317,6 +321,44 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> Vec<FieldSchema> {
                     .or_else(|| a.parse_args::<syn::Expr>().ok().map(|x| quote! { #x }))
                     .expect("ok_default: expected `#[ok_default(expr)]` or `#[ok_default = expr]`")
             });
+        // Literal detection: `#[ok_default(3)]` etc. exports as data for
+        // the dynamic reader; non-literal exprs stay Rust-only.
+        let ok_default_lit: Option<TS2> = ok_default.as_ref().and_then(|e| {
+            syn::parse2::<syn::Expr>(e.clone())
+                .ok()
+                .and_then(|x| match x {
+                    syn::Expr::Lit(l) => match l.lit {
+                        syn::Lit::Int(i) => Some(quote! { ::okm_core::field::DefaultValueConst::I64(#i) }),
+                        syn::Lit::Float(fl) => {
+                            Some(quote! { ::okm_core::field::DefaultValueConst::F64(#fl) })
+                        }
+                        syn::Lit::Bool(b) => {
+                            Some(quote! { ::okm_core::field::DefaultValueConst::Bool(#b) })
+                        }
+                        syn::Lit::Str(st) => Some(quote! {
+                            ::okm_core::field::DefaultValueConst::Str(#st)
+                        }),
+                        _ => None,
+                    },
+                    // `"eu".to_string()` on a str literal: the idiomatic
+                    // String default — export the inner literal.
+                    syn::Expr::MethodCall(mc)
+                        if mc.method == "to_string"
+                            && matches!(*mc.receiver, syn::Expr::Lit(ref l) if matches!(l.lit, syn::Lit::Str(_))) =>
+                    {
+                        match *mc.receiver {
+                            syn::Expr::Lit(l) => match l.lit {
+                                syn::Lit::Str(st) => Some(quote! {
+                                    ::okm_core::field::DefaultValueConst::Str(#st)
+                                }),
+                                _ => None,
+                            },
+                            _ => None,
+                        }
+                    }
+                    _ => None,
+                })
+        });
         // #[ok_offset(base = <i64 literal>)] — the Offset wrapper's static
         // base, required exactly when the type is Offset-shaped.
         let offset_base: Option<i64> = f
@@ -556,6 +598,7 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> Vec<FieldSchema> {
             hot: width.to_string() != "0",
             default_expr: ok_default
                 .unwrap_or_else(|| quote! { <#ty as ::core::default::Default>::default() }),
+            default_lit: ok_default_lit,
         });
     }
     fs

@@ -31,6 +31,23 @@ pub struct User {
     pub name: String,        // cold TLV (tag = declaration index 2)
 }
 
+/// v3 evolution of `User`: appended `tier` (hot, literal default 3) and
+/// `region` (cold, literal default "eu"). Older payloads lack both —
+/// the dynamic reader fills them from the schema export.
+#[derive(ObjEncode, Clone, PartialEq, Debug)]
+#[ok_ref(UserKey)]
+#[ok_ns(41)]
+#[ok_layout(version = 3)]
+pub struct UserV3 {
+    pub level: u32,
+    pub score: u16,
+    pub name: String,
+    #[ok_default(3)]
+    pub tier: u8,
+    #[ok_default("eu".to_string())]
+    pub region: String,
+}
+
 #[test]
 fn schema_export_matches_declaration() {
     let s = TableSchema::of::<UserKey, User>();
@@ -152,4 +169,36 @@ fn dynamic_rejects_schema_violations() {
         decode_payload(&schema, &newer),
         Err(CodecError::VersionMismatch { schema: 2, found: 3 })
     ));
+}
+
+
+#[test]
+fn version_default_migration_on_dynamic_read() {
+    // The v3 schema export carries literal defaults as data.
+    let v3 = TableSchema::of::<UserKey, UserV3>();
+    let tier = v3.hot_fields.iter().find(|f| f.name == "tier").expect("tier field");
+    assert_eq!(
+        tier.default,
+        Some(okm_core::schema::DefaultValue::I64(3)),
+        "literal #[ok_default] must export as data"
+    );
+    let region = v3.cold_fields.iter().find(|f| f.name == "region").expect("region field");
+    assert_eq!(
+        region.default,
+        Some(okm_core::schema::DefaultValue::Str("eu".into()))
+    );
+
+    // A payload written by the v2 layout (two fields fewer, older version
+    // byte) read through the v3 schema: appended fields arrive as their
+    // defaults, pre-existing fields decode normally.
+    let v2_payload = User { level: 9, score: 500, name: "alice".into() }.encode_payload();
+    let values = decode_payload(&v3, &v2_payload).expect("v2 bytes through v3 schema");
+    assert_eq!(values.get("level"), Some(&Value::U32(9)));
+    assert_eq!(values.get("tier"), Some(&Value::I64(3)));
+    assert_eq!(values.get("region"), Some(&Value::Str("eu".into())));
+
+    // Non-literal / absent defaults fall back to zero for the kind.
+    let v2 = TableSchema::of::<UserKey, User>();
+    assert!(v2.hot_fields.iter().all(|f| f.default.is_none()));
+    // (zero fallback covered by encode: a truncated tail decodes as zero)
 }

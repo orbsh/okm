@@ -44,3 +44,15 @@ pub struct FieldDesc {
     pub ty: FieldType,
     pub width: usize,
 }
+
+/// Const-constructible default literal for `FieldDesc`-adjacent export
+/// (`&'static str` instead of `String` — FIELDS is a const). Converted to
+/// the owned `schema::DefaultValue` at `TableSchema::of` time.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum DefaultValueConst {
+    U64(u64),
+    I64(i64),
+    F64(f64),
+    Bool(bool),
+    Str(&'static str),
+}
