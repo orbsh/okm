@@ -76,7 +76,7 @@ edges.link(&user, &s1);
 let sessions = user.get_session(&edges);
 
 // 行：写主键 + 全部索引条目；按访问方法扫描
-let mut t = <User as Document>::table(store, 9);
+let mut t = <User as Document>::collection(store);
 t.put(&user, &user_row);
 let rows = t.scan::<ByOrg>(&7u32.to_be_bytes());
 ```

@@ -63,7 +63,7 @@ impl ReduceLogic for AuthorStats {
 
 #[test]
 fn fold_unfold_roundtrip_is_exact() {
-    let mut t = <Post as Document>::table(TestStore::slatedb_mem());
+    let mut t = <Post as Document>::collection(TestStore::slatedb_mem());
 
     let k1 = PostKey { id: 1 };
     let r1 = Post {
@@ -105,7 +105,7 @@ fn fold_unfold_roundtrip_is_exact() {
 
 #[test]
 fn entry_layout_is_ns_slot_group() {
-    let mut t = <Post as Document>::table(TestStore::slatedb_mem());
+    let mut t = <Post as Document>::collection(TestStore::slatedb_mem());
     let k = PostKey { id: 9 };
     let r = Post {
         author_id: 55,

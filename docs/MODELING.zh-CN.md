@@ -186,13 +186,13 @@ for pk in edges.reverse_prefix(&s1) {
 
 ### 行的运行时用法（`Collection`）
 
-`DocumentEncode` 声明的访问方法在查询侧具名为索引类型。索引声明的派生物在展开点（本文件）生成：`ok_index(by_org ...)` 生成索引类型 `__OkmIndex_User_by_org`（机械拼接，无大小写转换），`use` 别名后即可作泛型参数。`Row::table` 构建装配点，调用处无需重复 key 类型：
+`DocumentEncode` 声明的访问方法在查询侧具名为索引类型。索引声明的派生物在展开点（本文件）生成：`ok_index(by_org ...)` 生成索引类型 `__OkmIndex_User_by_org`（机械拼接，无大小写转换），`use` 别名后即可作泛型参数。`Document::collection` 构建装配点，调用处无需重复 key 类型：
 
 ```rust
 use okm_core::{Row, TestStore};
 use __OkmIndex_User_by_org as ByOrg; // 索引类型：ok_index(by_org) 的派生物
 
-let mut t = <User as Document>::table(TestStore::default());
+let mut t = <User as Document>::collection(TestStore::default());
 
 t.put(&user, &User { org_id: 7, created_at: 30, reputation: 100, bio_len: 2 });
 
