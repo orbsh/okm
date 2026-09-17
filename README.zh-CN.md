@@ -31,18 +31,17 @@ SQL 的核心价值不是执行性能，而是关系模型交付的可读性、�
 已实现：
 
 - `KeyEncode` — 定宽 key 编码（`u32` / `u64` / `[u8; N]`），大端序，编译期 `KEY_LEN` / `FIELD_WIDTHS`，`encode_prefix_named` 截断原语。
-- `EdgeEncode` — 双向边，各端点身份宽度可独立声明（`#[ok_head(...)]`），2 字节方向位头部，查询方法生成在端点类型上。
+- `EdgeEncode` — 双向边，各端点身份宽度可独立声明（`#[ok_head(...)]`），3 字节头部 `[ns u16][slot u8]`（slot 14/15 = 正/反向），查询方法生成在端点类型上。
 - `EdgeTable<S, E>` — 组装点：引擎 + 边类型 = 一条关系的操作面（`link` / `unlink` / `forward` / `reverse` / `reverse_prefix`）。
 - 引擎后端走 Cargo feature：`fjall`（同步 `FjallStore`）、`slatedb`（异步 `SlatedbStore` + `AsyncCollection`），测试用内存 `MockStore`。
 
-路线图（设计已定，尚未实现——[ADR-0006](docs/adr/0006-row-node-model.md)、[ADR-0004](docs/adr/0004-value-side-and-wrappers.md)、[ADR-0005](docs/adr/0005-secondary-index-slots.md)）：
-
-- `ObjEncode` — 单宏声明行（Node）：`#[ok_ref]` 身份 + 载荷字段 + `#[ok_index(...)]` 访问方法；`ValueEncode` 宏并入其中（版本化 payload、TLV 扩展区、字段 wrapper 作为编码规则保留）。
-- 字段级编码 wrapper（`Enum<T>`、`Offset<T>`、`Delta<T>`、`VarInt<T>`、`Reverse<T>` …）。
 - 二级索引（访问方法）——**行 struct** 上的 `#[ok_index(name { fields(…), includes(…), key(…) })]`：对 **payload 字段**（按声明序）建组合索引；无 per-index slot/ns——2 字节表命名空间已区分所有 entry；最左前缀扫描；`key(…)` 把 key 尾部携带的主键截断到命名子集（`encode_prefix_named`），默认取满主键；`includes` 覆盖索引定位为高扇出查询的物化视图。
-- `Table<S, K, R>` 行装配点与边 `EdgeTable` 并列；变长载荷/索引字段（`String`），key 保持定宽。
+- `Table<S, K, R>` 行装配点——`put`/`delete` 在同一 store 实例内一次写入主键与全部声明的索引条目（声明即注册表）；`scan` 经任意访问方法的最左前缀返回 `(Key, Option<Row>)`。
+- 字段级编码 wrapper（`Enum<T>`、`Offset<T>`、`VarInt<T>`、`Quant<P>`、`Reverse<T>`、`Option<T>`）与变长载荷/索引字段（`String`），key 保持定宽。
 - 多引擎混用——同一进程内不同 ns 段可绑不同引擎（交易走 fjall、日志走 slatedb）；原子性止于单引擎内，ns 编号全库唯一。
 - 快照导出——行 → Parquet，与引擎无关（备份 / 数据交换 / lakehouse 分析）；ns 还原为描述性文本，列名即字段名。
+- **obj API**——`get_object` / `set_object` / `get_variants` / `set_variants` / `delete_variants`：未知字段名在每表字段名字典里分配编号，落进动态段（n-TLV 帧、嵌套对象递归、无 CBOR）；行-映射桥把声明字段 lift 到逻辑类型（`Quant`→`F64`、`Enum`→变体名、`Offset`→`i64`）。
+- **动态 codec binding**——schema 导出驱动嵌入式语言读取器：`bindings/okm-python`（PyO3）与 `bindings/okm-steel`，与 Rust derive 字节一致。
 - **Object 模型（obj）**——声明式 row 与外部数据共用单一编码（[ADR-0012](docs/adr/0012-object-model-and-field-dictionary.md)）。`obj` 是刻意的双关：编程语言中的对象，也是存储格式意义上的 object。三个词标记静态/动态光谱上的三个位置：
   - **document**——逻辑与物理全动态；每个字段都走动态路径（字典编号 + 每帧值类型）。
   - **variant**——动态内容嵌为一个声明的静态字段（`Bytes` payload）；动态性活在值里，不进键布局。
@@ -86,7 +85,20 @@ let rows = t.scan::<ByOrg>(&7u32.to_be_bytes());
 
 `scan::<ByOrg>` 的 `ByOrg` 来自索引名：`ok_index(by_org ...)` 生成类型 `__OkmIndex_User_by_org`（机械拼接，无大小写转换），`use __OkmIndex_User_by_org as ByOrg` 后即可用短名。声明怎么写见[建模指南](docs/MODELING.zh-CN.md)「声明基础」。
 
-### 3. 引擎后端
+### 3. 动态字段：obj API
+
+一套编码服务声明行与外部数据。未知字段名是正常输入：在每表的字段名字典里分配编号，落进动态段（`[id][type][len][value]` 帧、嵌套对象递归）。声明字段保持 typed 且可索引。
+
+```rust
+// 读：声明字段 lift 到逻辑类型 + 动态字段按名字
+let (row, dynamic) = t.get_object(&key);
+// 写：匹配的名字 -> typed 路径；未知名字 -> 动态段
+t.set_object(&key, &fields);
+```
+
+嵌入式语言读取器（Python / Steel Actor）经 schema 导出消费动态 codec——`bindings/okm-python`（PyO3）与 `bindings/okm-steel` 与 Rust derive 字节一致；版本默认值迁移在该路径同样生效。
+
+### 4. 引擎后端
 
 ```toml
 [dependencies]

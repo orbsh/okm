@@ -251,10 +251,15 @@ edges.unlink(&user, &s1); // deletes both directions
 Physical key layout (forward):
 
 ```
-[ head 2B: (ns<<1 | dir) BE ][ A·identity ][ B·identity ]
+[ head 3B: ns u16 BE + slot u8 ][ A·identity ][ B·identity ]
 ```
 
-`ns = 4`, FWD → head `[0x08, 0x00]`; REV → `[0x08, 0x01]`. The direction bit is niched into the top bit of the namespace field — see [ADR-0001](docs/adr/0001-direction-bit-niche.md).
+`ns = 4` → FWD head `[0x00, 0x04, 14]`, REV head `[0x00, 0x04, 15]`.
+Direction is a slot (14/15) at the top of the fixed region, not a
+direction bit — the table and the edge share one key discipline (plain
+slot byte after the ns). See [ADR-0001](docs/adr/0001-direction-bit-niche.md)
+(superseded by the slot allocation in ADR-0012) and the slot table in
+[key-layout](docs/internals/key-layout.zh-CN.md).
 
 ### Reverse queries and truncated identities
 
@@ -327,6 +332,44 @@ use __OkmIndex_Doc_by_token as ByToken;
 let hits = t.scan::<ByToken>(b"rust");
 ```
 
+### Dynamic fields: the obj API (ADR-0012)
+
+One encoding serves declared rows and external data. Declared fields ride
+the hot/cold segments as usual; anything else lands in the **dynamic
+segment** (slot 1) as n-TLV frames — `[field-id][type][len][bytes]` —
+with names allocated on first sight in the **field-name dictionary**
+(slots 2/3). Runtime surface on `Table`:
+
+```rust
+// The row-map bridge: every declared field lifts to its logical type
+// (Quant -> F64, VarInt -> u64, Enum -> variant name, Offset -> i64).
+let (row, dynamic) = t.get_object(&key);          // (User, BTreeMap<String, DynamicValue>)
+
+// Whole-obj write: fields matching the declared struct go to the typed
+// path; unknown names allocate in the dictionary and land in slot 1.
+t.set_object(&key, &fields);                      // BTreeMap<String, DynamicValue>
+
+// Dynamic-only views (slot 1 directly):
+t.get_variants(&key);                             // name-keyed map or None
+t.set_variants(&key, &map);                       // whole-entry put, absent fields removed
+t.delete_variants(&key);                          // clear the dynamic segment
+t.delete(&key);                                   // remove slot 0 + index entries
+```
+
+- `DynamicValue` carries the open value vocabulary: `UInt`/`Int`/`F64`/
+  `Str`/`Bytes`/`Bool`/`Null`/`Array`/`Obj` — nested objects recurse as
+  native frames (type tag 7) sharing the table's dictionary; no CBOR.
+- Unknown names are **normal input** here (external data, MQ payloads);
+  the typed decoder's unknown-field rejection applies only to the
+  declared path.
+- Declared fields are indexable; dynamic fields are not (their names are
+  runtime data).
+- The schema export (`TableSchema`, serde behind `schema-serde`) drives
+  the dynamic codec for embedded-language readers — Python (PyO3) and
+  Steel bindings live in `bindings/`, byte-identical with the Rust
+  derive (cross tests lock this). Version-default migration works on the
+  dynamic read path too: literal `#[ok_default]` travels with the schema.
+
 ### Payload versions and field defaults
 
 The payload carries a version byte (`#[ok_layout(version = N)]`, default 1).
@@ -372,8 +415,8 @@ Lock the physical bytes with hard-coded hex — any layout drift fails CI:
 
 ```rust
 let fk = edge.forward_key();
-assert_eq!(&fk[..2], &[0, 8]); // ns=4, FWD — direction bit in the low bit of the BE pair
-assert_eq!(&fk[2..6], &7u32.to_be_bytes());
+assert_eq!(&fk[..3], &[0, 4, 14]); // ns=4, FWD slot 14
+assert_eq!(&fk[3..7], &7u32.to_be_bytes());
 // ... full layout assertions in okm-core/tests/integration.rs
 ```
 
