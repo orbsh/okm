@@ -618,3 +618,39 @@ Document-oriented naming, one sweep before crates.io:
 - Record considered and rejected: record-oriented storage is the fixed-
   schema lineage the model is moving away from.
 - Aura mq.rs migrated; bindings follow (they reference the codec only).
+
+## Parquet Variant export (proposed, 2026-09-17)
+
+Dynamic segment fields exported to Parquet as the **Variant** type —
+the open question and the assessment:
+
+- **What**: `Collection::to_record_batch` currently exports declared
+  fields only (key + hot/cold payload columns from `FieldDesc`). The
+  dynamic segment (slot 1, name-keyed `DynamicValue` tree with nested
+  `Obj`/`Array`) would become one extra `Variant`-typed column —
+  per-row, schema-free, queryable by Variant-aware engines (DuckDB
+  1.4+, Spark 4, Snowflake natively).
+- **Feasibility**: parquet crate 60.0 ships `parquet-variant` /
+  `parquet-variant-json` / `parquet-variant-compute`; OKM pins parquet
+  54 — the Variant feature requires the 60 line, so this lands as a
+  minor breaking bump of the optional `parquet` feature. Mapping is
+  mechanical: `DynamicValue` UInt/Int/F64/Bool/Str → Variant scalars,
+  Bytes → Variant binary, Null → Variant null, Array → Variant list,
+  Obj → Variant object (field names straight through — the dictionary
+  has already resolved ids → names at read time).
+- **Why it is reasonable**: Variant is precisely the industry answer to
+  "schema-on-read columns inside a schema-on-write table" — the same
+  static/dynamic split ADR-0012 encodes at the storage layer, mirrored
+  at the analytics layer. Declared fields stay typed Parquet columns
+  (zero-copy, predicate-pushdown-able); dynamic fields stay open but
+  remain queryable. Neither shape is compromised.
+- **Deliberate scope line**: Variant export does NOT pull dynamic
+  fields into declared indexes/reduces — the ADR-0012 capability
+  ceiling (no dynamic reduce/subscribe) is unchanged. Export is a
+  read-side projection, not a write-path capability.
+- **Plan**: bump `parquet` optional dep 54 → 60; build Variant values
+  from `get_fields`' map (names resolved); append as `variant` column
+  via parquet-variant's Arrow integration; feature-gate
+  `parquet-variant` separately so plain typed export stays on 54 if
+  version coupling proves painful. Decide version strategy at
+  implementation time.
