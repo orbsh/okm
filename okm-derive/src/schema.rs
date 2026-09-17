@@ -507,6 +507,39 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> Vec<FieldSchema> {
                     Some(quote! { ::okm_core::FieldType::Quant(#plit) }),
                 )
             }
+            _ if ty_str.starts_with("Embedded<") => {
+                // Embedded<D, K> — child-document by key reference. Wire =
+                // K::encode() (fixed width, hot segment); the child payload
+                // lives at its own key (written by Collection::put's embed
+                // pass). The in-memory `value` never touches this wire.
+                let generics = ty_str
+                    .trim_start_matches("Embedded<")
+                    .trim_end_matches('>')
+                    .to_string();
+                // Split "D, K" on the top-level comma (D/K are type names;
+                // nesting deeper generics inside Embedded is not supported
+                // — the child must be a plain document type).
+                let (d_ty, k_ty) = match generics.rsplit_once(',') {
+                    Some((d, k)) => (d.trim().to_string(), k.trim().to_string()),
+                    None => panic!("{ctx}: Embedded requires <D, K> (field {id})"),
+                };
+                let k_ty_parsed: syn::Type = syn::parse_str(&k_ty)
+                    .unwrap_or_else(|e| panic!("{ctx}: bad Embedded key type `{k_ty}`: {e}"));
+                (
+                    // enc: the child key bytes only
+                    quote! { buf.extend_from_slice(&self.#id.key.encode()); },
+                    // dec: key back; value starts None (deref fills it)
+                    quote! {{
+                        let key = <#k_ty_parsed as ::okm_core::KeyEncode>::decode(&b[offset..offset+<#k_ty_parsed as ::okm_core::KeyEncode>::KEY_LEN]);
+                        offset += <#k_ty_parsed as ::okm_core::KeyEncode>::KEY_LEN;
+                        ::okm_core::Embedded { key, value: None }
+                    }},
+                    // width expr: static KEY_LEN
+                    quote! { <#k_ty_parsed as ::okm_core::KeyEncode>::KEY_LEN },
+                    quote! { <#k_ty_parsed as ::okm_core::KeyEncode>::KEY_LEN },
+                    Some(quote! { ::okm_core::FieldType::FixedBytes }),
+                )
+            }
             _ if ty_str.starts_with("Enum<") => {
                 // Enum<T> — one-byte explicit tag via the user's EnumTag
                 // impl (tags are a wire contract, never positional).
@@ -596,8 +629,24 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> Vec<FieldSchema> {
             kind,
             // Fixed width → hot segment; width 0 (Str/VarInt) → cold.
             hot: width.to_string() != "0",
-            default_expr: ok_default
-                .unwrap_or_else(|| quote! { <#ty as ::core::default::Default>::default() }),
+            default_expr: if ty_str.starts_with("Embedded<") || ty_str.starts_with("Embedded <") {
+                // No Default for Embedded (D is a document): the fallback is
+                // a key-default reference — K must implement Default, which
+                // every generated key type does.
+                let k_ty_str = ty_str
+                    .trim_start_matches("Embedded <")
+                    .trim_start_matches("Embedded<")
+                    .trim_end_matches('>')
+                    .rsplit_once(',')
+                    .map(|(_, k)| k.trim().to_string())
+                    .expect("embedded: <D, K>");
+                let k_ty: syn::Type = syn::parse_str(&k_ty_str)
+                    .unwrap_or_else(|e| panic!("{ctx}: bad Embedded key type `{k_ty_str}`: {e}"));
+                quote! { ::okm_core::Embedded { key: <#k_ty as ::core::default::Default>::default(), value: None } }
+            } else {
+                ok_default
+                    .unwrap_or_else(|| quote! { <#ty as ::core::default::Default>::default() })
+            },
             default_lit: ok_default_lit,
         });
     }

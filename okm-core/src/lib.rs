@@ -28,7 +28,7 @@
 pub use okm_derive::{EdgeEncode, KeyEncode, NestStorage, DocumentEncode};
 
 pub use reverse::{Reversible, Reverse};
-pub use wrappers::{Enum, EnumTag, Offset, Quant, VarInt, VarIntEnc, offset_decode, offset_encode};
+pub use wrappers::{Embedded, Enum, EnumTag, Offset, Quant, VarInt, VarIntEnc, offset_decode, offset_encode};
 
 pub mod reduce;
 pub mod collection;

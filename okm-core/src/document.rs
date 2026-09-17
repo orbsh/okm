@@ -97,6 +97,21 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         for (ek, ev) in R::index_entries(key, row, &self.header()) {
             self.store.put(ek, ev);
         }
+        // Embedded documents: write children carried with Some(value), and
+        // release references the OLD document pointed at that the new one
+        // no longer does (key change). Reference semantics — no cascade.
+        for (ck, cp) in R::__okm_embed_entries(row) {
+            self.store.put(ck, cp);
+        }
+        if let Some(old) = &prev {
+            let new_keys: std::collections::HashSet<Vec<u8>> =
+                R::__okm_embed_keys(row).into_iter().collect();
+            for old_key in R::__okm_embed_keys(old) {
+                if !new_keys.contains(&old_key) {
+                    self.store.del(&old_key);
+                }
+            }
+        }
         // Cross-row reduces: fold this row into each declared group.
         // Same store instance, so the RMW shares the engine's atomicity
         // boundary with the row + index writes.
@@ -215,7 +230,9 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     pub fn get(&self, key: &K) -> Option<R> {
         let k = self.primary_key(key);
         let v = self.store.get(&k)?;
-        Some(R::decode_payload(&v))
+        let mut row = R::decode_payload(&v);
+        R::__okm_embed_deref(&mut row, &self.store);
+        Some(row)
     }
 
     /// Leftmost-prefix scan over access method `I`, then fetch-back
