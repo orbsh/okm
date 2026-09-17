@@ -452,24 +452,28 @@ encoding, one derive family. No separate document storage mode.
       `ok_reduce`/`ok_offset`/`ok_layout` caught in the sweep); derive
       `RowEncode` → `ObjEncode`; docs' concept vocabulary follows. Shipped
       2026-09-14 (ec07a33) — landed before crates.io publishing as required.
-- [ ] Slot allocation revision: slot 1 = obj dynamic segment, slot 2/3 =
+- [x] Slot allocation revision: slot 1 = obj dynamic segment, slot 2/3 =
       field-name dictionary (bidirectional), slot 4–13 reserved (two-ended
       growth buffer), slot 14/15 = edge fwd/rev, slot 16+
       indexes/reduces. Existing rows byte-compatible (they use none of
-      the new slots).
-- [ ] Dynamic segment (slot 1): one entry per obj, value =
+      the new slots). Shipped 2026-09-16 (f4c9136).
+- [x] Dynamic segment (slot 1): one entry per obj, value =
       `([field-id][value-type][len u32][bytes])*`; value-type byte is a
-      small closed enum (int/float/str/bytes/bool/null/array/
-      doc-reserved for later nesting).
-- [ ] Field-name dictionary: run-time per-table append-only vocabulary;
+      small closed enum (int/uint/float/str/bytes/bool/null/array/
+      obj-reserved). Shipped 2026-09-16 (cdefdea): ObjValueType tags
+      (EnumTag discipline), obj_dynamic put_frame/decode_variants,
+      unknown-type skip, malformed-tail partial results.
+- [x] Field-name dictionary: run-time per-table append-only vocabulary;
       first-seen name claims the next number (single-writer, engine
       mutex); id `0xFF` escapes to `[0xFF][u16 id]` — no renumbering,
       ever; flat bidirectional point lookups (slots 2/3), no trie.
+      Shipped 2026-09-16 (d18cb36): DictCache (by_id/by_name/next_id),
+      wholesale lazy load, id_for allocates one batch both directions.
 - [ ] Indexing rule: declared fields only; a dynamic field becomes
       indexable by being declared (schema evolution, deliberately manual).
-- [ ] Schema export: FieldDesc table extended with the value-type enum
-      and the obj dynamic-segment shape for the dynamic reader
-      (okm-dynamic / Python side).
+- [x] Schema export: TableSchema extended with SlotMap (fixed-role slot
+      numbers) and the ObjValueTypeSchema tag enum for the dynamic
+      reader (okm-dynamic / Python side). Shipped 2026-09-16.
 - [ ] Read/delete API over the two slots: `get` returns the typed struct
       unchanged (declared fields only); `get_variants(key) ->
       BTreeMap<String, Value>` reads slot 1 with **name keys directly** —

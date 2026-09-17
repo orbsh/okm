@@ -32,6 +32,39 @@ pub struct FieldSchema {
     pub tag: Option<u8>,
 }
 
+/// The dynamic segment's frame vocabulary (ADR-0012). Mirrors
+/// `okm_core::wrappers::ObjValueType` tag bytes — the dynamic reader
+/// dispatches on these.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ObjValueTypeSchema {
+    UInt,
+    Int,
+    F64,
+    Str,
+    Bytes,
+    Bool,
+    Null,
+    Array,
+    Obj,
+}
+
+impl ObjValueTypeSchema {
+    /// Wire tag byte.
+    pub fn tag(&self) -> u8 {
+        match self {
+            Self::UInt => 0,
+            Self::Int => 8,
+            Self::F64 => 1,
+            Self::Str => 2,
+            Self::Bytes => 3,
+            Self::Bool => 4,
+            Self::Null => 5,
+            Self::Array => 6,
+            Self::Obj => 7,
+        }
+    }
+}
+
 /// The complete machine-readable declaration of one table.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TableSchema {
@@ -44,6 +77,23 @@ pub struct TableSchema {
     pub payload_header_len: usize,
     pub hot_fields: Vec<FieldSchema>,
     pub cold_fields: Vec<FieldSchema>,
+    /// Slot map (ADR-0012 final allocation): the dynamic reader needs to
+    /// know where the dynamic segment and the dictionary live, and where
+    /// declared index/reduce slots begin.
+    pub slots: SlotMap,
+}
+
+/// Fixed-role slot numbers (ADR-0012); declared index/reduce slots start
+/// at `declared_base` in declaration order.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SlotMap {
+    pub primary: u8,
+    pub dynamic: u8,
+    pub dict_id: u8,
+    pub dict_name: u8,
+    pub edge_fwd: u8,
+    pub edge_rev: u8,
+    pub declared_base: u8,
 }
 
 impl TableSchema {
@@ -95,6 +145,15 @@ impl TableSchema {
             payload_header_len: 3, // [version u8][hot_len u16 BE]
             hot_fields,
             cold_fields,
+            slots: SlotMap {
+                primary: crate::index::PRIMARY_SLOT,
+                dynamic: crate::index::DYNAMIC_SLOT,
+                dict_id: crate::index::DICT_ID_SLOT,
+                dict_name: crate::index::DICT_NAME_SLOT,
+                edge_fwd: crate::index::EDGE_FWD_SLOT,
+                edge_rev: crate::index::EDGE_REV_SLOT,
+                declared_base: crate::index::DECLARED_SLOT_BASE,
+            },
         }
     }
 
@@ -105,7 +164,7 @@ impl TableSchema {
 
 #[cfg(feature = "schema-serde")]
 mod serde_impls {
-    use super::{FieldSchema, TableSchema};
+    use super::{FieldSchema, ObjValueTypeSchema, SlotMap, TableSchema};
     use crate::field::FieldType;
     use serde::{Deserialize, Serialize};
 
@@ -132,6 +191,70 @@ mod serde_impls {
                     s.serialize_newtype_variant("FieldType", 9, "Offset", b)
                 }
             }
+        }
+    }
+
+    impl Serialize for ObjValueTypeSchema {
+        fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+            s.serialize_u8(self.tag())
+        }
+    }
+
+    impl<'de> Deserialize<'de> for ObjValueTypeSchema {
+        fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+            let b = u8::deserialize(d)?;
+            match b {
+                0 => Ok(Self::UInt),
+                1 => Ok(Self::F64),
+                2 => Ok(Self::Str),
+                3 => Ok(Self::Bytes),
+                4 => Ok(Self::Bool),
+                5 => Ok(Self::Null),
+                6 => Ok(Self::Array),
+                7 => Ok(Self::Obj),
+                8 => Ok(Self::Int),
+                _ => Err(serde::de::Error::custom("unknown obj value type")),
+            }
+        }
+    }
+
+    impl Serialize for SlotMap {
+        fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+            use serde::ser::SerializeStruct;
+            let mut st = s.serialize_struct("SlotMap", 7)?;
+            st.serialize_field("primary", &self.primary)?;
+            st.serialize_field("dynamic", &self.dynamic)?;
+            st.serialize_field("dict_id", &self.dict_id)?;
+            st.serialize_field("dict_name", &self.dict_name)?;
+            st.serialize_field("edge_fwd", &self.edge_fwd)?;
+            st.serialize_field("edge_rev", &self.edge_rev)?;
+            st.serialize_field("declared_base", &self.declared_base)?;
+            st.end()
+        }
+    }
+
+    impl<'de> Deserialize<'de> for SlotMap {
+        fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+            #[derive(Deserialize)]
+            struct Repr {
+                primary: u8,
+                dynamic: u8,
+                dict_id: u8,
+                dict_name: u8,
+                edge_fwd: u8,
+                edge_rev: u8,
+                declared_base: u8,
+            }
+            let r = Repr::deserialize(d)?;
+            Ok(Self {
+                primary: r.primary,
+                dynamic: r.dynamic,
+                dict_id: r.dict_id,
+                dict_name: r.dict_name,
+                edge_fwd: r.edge_fwd,
+                edge_rev: r.edge_rev,
+                declared_base: r.declared_base,
+            })
         }
     }
 
@@ -243,6 +366,7 @@ mod serde_impls {
                 payload_header_len: usize,
                 hot_fields: Vec<FieldSchema>,
                 cold_fields: Vec<FieldSchema>,
+                slots: SlotMap,
             }
             let r = Repr::deserialize(d)?;
             Ok(Self {
@@ -253,6 +377,7 @@ mod serde_impls {
                 payload_header_len: r.payload_header_len,
                 hot_fields: r.hot_fields,
                 cold_fields: r.cold_fields,
+                slots: r.slots,
             })
         }
     }
