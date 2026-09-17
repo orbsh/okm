@@ -577,13 +577,21 @@ Unchanged: primary payload layout `[version][hot_len][hot][cold TLV]`
 
 ## Embedded documents (2026-09-17, shipped)
 
-`Ref<D, K>` and `List<D, K>` field types — child documents by key
-reference (single / many):
+`Ref<D, K>` and `Refs<D, K>` field types — child documents by key
+reference (single / many). Refs renamed from List: the type IS the
+foreign-key set of a one-to-many relation (MODELING's one-to-many
+section, now with a declarative field-level carrier), so the name says
+reference semantics, not container shape:
+
+- Naming line drawn: elements WITH identity (own indexes, sharing,
+  independent updates) -> Refs; pure-value elements -> `Vec<T>` fields
+  or dynamic `Array` frames (a scalar has no key — a key reference to
+  it is a category error).
 
 - Ref wire = child key bytes only (fixed width, hot segment); List wire =
   cold TLV `[count u32][key × n]`. Children are complete documents at
   their own ns/key with their own indexes.
-- No attribute: derive recognizes `Ref<D, K>` / `List<D, K>` in field
+- No attribute: derive recognizes `Ref<D, K>` / `Refs<D, K>` in field
   position from the type itself (same discipline as Reverse/VarInt/Quant).
 - Naming: Ref chosen over Embedded/Unit/Record/Object/Dict — the wire
   truth IS a reference; `values: Vec<Option<D>>` keeps dangling refs
@@ -663,3 +671,10 @@ the open question and the assessment:
   Reverse<T> from_map emitted VarInt::from_dyn (type error, codec_v2_test
   only compiled under parquet); hand-written TRowByOrg marker used stale
   SLOT=1; FieldType::Bytes missing from arrow_type/swap_be/wire_bytes.
+
+## Scalar list fields (gap, 2026-09-17)
+
+`Vec<String>` / `Vec<u32>` declared fields are not recognized by the
+derive — only `Vec<u8>` (one Bytes frame). The typed pure-value list
+(`[tag][len][elem × n]` cold frames, one frame per element) is an open
+item; need predates nothing yet, record when a real consumer appears.

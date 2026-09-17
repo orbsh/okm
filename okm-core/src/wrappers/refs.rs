@@ -1,4 +1,4 @@
-//! `List<D, K>` — a list of child documents embedded by key
+//! `Refs<D, K>` — a list of child documents embedded by key
 //! reference (ADR-0012 embedded milestone; the many-form of
 //! [`Ref`]).
 //!
@@ -26,10 +26,18 @@
 //!   parent-exclusive; shared children need explicit management.
 //!
 //! No attribute: recognized from the type, same as `Ref<D, K>`.
+//!
+//! The dividing line: elements WITH identity (need their own indexes,
+//! sharing, independent updates) belong here; pure-value elements
+//! (`Vec<String>` fields, dynamic `Array` frames) do NOT — a scalar has
+//! no key to reference, so storing it as a key reference is a category
+//! error. `Refs` is the declarative form of the one-to-many relation:
+//! children live normalized in their own ns, the parent holds the
+//! foreign-key set.
 use crate::key::KeyEncode;
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct List<D, K: KeyEncode> {
+pub struct Refs<D, K: KeyEncode> {
     /// The child keys in list order (the only thing on the wire).
     pub keys: Vec<K>,
     /// Dereferenced children, index-aligned with `keys`. `None` =
@@ -37,24 +45,25 @@ pub struct List<D, K: KeyEncode> {
     pub values: Vec<Option<D>>,
 }
 
-impl<D, K: KeyEncode> List<D, K> {
+impl<D, K: KeyEncode> Refs<D, K> {
     /// Reference existing children by key (write: no child writes).
-    pub fn ref_keys(keys: Vec<K>) -> Self {
+    /// Method named `new` — the type name already says "references".
+    pub fn new(keys: Vec<K>) -> Self {
         let n = keys.len();
-        List { keys, values: (0..n).map(|_| None).collect() }
+        Refs { keys, values: (0..n).map(|_| None).collect() }
     }
 
     /// Own all children: write each value under its key on the parent's
     /// put. Panics if `keys.len() != values.len()` — construction bug.
     pub fn own_all(keys: Vec<K>, values: Vec<D>) -> Self {
-        assert_eq!(keys.len(), values.len(), "List::own_all: keys/values length mismatch");
-        List { keys, values: values.into_iter().map(Some).collect() }
+        assert_eq!(keys.len(), values.len(), "Refs::own_all: keys/values length mismatch");
+        Refs { keys, values: values.into_iter().map(Some).collect() }
     }
 
     /// Mixed form: caller decides per item.
     pub fn from_pairs(pairs: Vec<(K, Option<D>)>) -> Self {
         let keys = pairs.iter().map(|(k, _)| k.clone()).collect();
         let values = pairs.into_iter().map(|(_, v)| v).collect();
-        List { keys, values }
+        Refs { keys, values }
     }
 }
