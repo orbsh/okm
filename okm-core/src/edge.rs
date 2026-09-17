@@ -1,25 +1,20 @@
-//! Edge side: the [`KvEdge`] trait and the direction-bit header.
+//! Edge side: the [`KvEdge`] trait and slot-addressed edge keys
+//! (PLAN Phase 10 — supersedes the ADR-0001 direction-bit niche).
 //!
 //! SQL foreign keys become explicit forward+reverse double-written keys.
 //! Writing links both directions atomically; deleting removes both sides.
 //! The edge struct's declaration doubles as the E-R documentation — the
 //! relationship encoding and the key generation live in the same place.
+//!
+//! Layout: `[ns 2B BE][slot 1B][endpoint identities]` — the same header
+//! discipline as tables (raw ns, no transform, full 16-bit ns space).
+//! Direction is a slot: 14 = forward (source identity first), 15 =
+//! reverse (destination identity first). The saved byte of the old
+//! niche cost a transform, a halved ns space, and table/edge layout
+//! divergence; one slot byte restores uniformity.
 
+use crate::index::{EDGE_FWD_SLOT, EDGE_REV_SLOT};
 use crate::key::KeyEncode;
-
-/// Header encoding: ns occupies the low 15 bits of a u16, the top bit is
-/// the direction bit (FWD = 0, REV = 1).
-///
-/// The semantic namespace space is 32768 (niche decision, finalized
-/// 2026-09-06 — see `docs/adr/0001-direction-bit-niche.md`); the 2-byte
-/// fixed-width header preserves prefix-scan semantics.
-pub const NS_BITS: u16 = 15;
-pub const DIR_BIT: u16 = 1 << NS_BITS; // 0x8000
-
-#[inline]
-pub fn head_bytes(ns: u16, rev: bool) -> [u8; 2] {
-    (((ns & (DIR_BIT - 1)) << 1) | (rev as u16)).to_be_bytes()
-}
 
 /// Bidirectional edge contract. `A` = first field (source), `B` = second
 /// field (destination).
@@ -70,18 +65,20 @@ pub trait KvEdge: Sized {
         }
     }
 
-    /// `[head 2B: ns<<1 | dir][A·identity][B·identity]`
+    /// `[ns 2B BE][slot 14][A·identity][B·identity]`
     fn forward_key(&self) -> Vec<u8> {
-        let mut k = Vec::with_capacity(2 + Self::a_head_width() + Self::b_head_width());
-        k.extend_from_slice(&head_bytes(Self::NS, false));
+        let mut k = Vec::with_capacity(3 + Self::a_head_width() + Self::b_head_width());
+        k.extend_from_slice(&Self::NS.to_be_bytes());
+        k.push(EDGE_FWD_SLOT);
         Self::encode_a_head(&mut k, self.a());
         Self::encode_b_head(&mut k, self.b());
         k
     }
-    /// `[head 2B: ns<<1 | dir][B·identity][A·identity]`
+    /// `[ns 2B BE][slot 15][B·identity][A·identity]`
     fn reverse_key(&self) -> Vec<u8> {
-        let mut k = Vec::with_capacity(2 + Self::a_head_width() + Self::b_head_width());
-        k.extend_from_slice(&head_bytes(Self::NS, true));
+        let mut k = Vec::with_capacity(3 + Self::a_head_width() + Self::b_head_width());
+        k.extend_from_slice(&Self::NS.to_be_bytes());
+        k.push(EDGE_REV_SLOT);
         Self::encode_b_head(&mut k, self.b());
         Self::encode_a_head(&mut k, self.a());
         k

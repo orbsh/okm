@@ -60,7 +60,7 @@ pub mod tooling;
 
 pub use reduce::{reduce_get, scan_reduces, ReduceCodec, Reduce, ReduceLogic};
 pub use collection::EdgeTable;
-pub use edge::{KvEdge, head_bytes};
+pub use edge::KvEdge;
 pub use storage::{VirtualStorage, KvBatch, MemBatch, SharedVirtualStorage};
 #[cfg(any(feature = "test-engines", feature = "fjall", feature = "redb"))]
 pub use test_engine::TestStore;
