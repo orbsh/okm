@@ -88,6 +88,39 @@ direction only, reverse = full scan of the child ns — which is fine
 when the child's key carries the parent identity, the one-to-many
 case).
 
+### 4. The plural-modeling taxonomy
+
+MODELING needs a complete plural-types guide. Two axes: does the
+element have identity, and homogeneous vs heterogeneous.
+
+- **One-to-many (elements have identity, one direction)**: `Refs<D, K>`
+  — above.
+- **Many-to-many (both sides have identity, bidirectional)**:
+  `Junction` — above.
+- **Vector (homogeneous list, used as a whole)**: elements of one
+  type, read and written as a unit, possibly multi-dimensional (a
+  header carries shape and type; one dimension is just a list; many
+  is a tensor). Canonical use: embedding vectors (order and dimension
+  expressed), numeric sequences. Stored in slot 0's dynamic part, in
+  the same class as strings (variable-length TLV frames); dynamic
+  elements use LV format. `DynamicValue::Array` is its heterogeneous
+  counterpart — more general, more dynamic, per-element type tags,
+  slightly higher overhead.
+- **Array (heterogeneous list)**: `DynamicValue::Array` — mixed
+  element types, recursive dynamic-segment frames.
+- **Set (deduplicated elements)**: no carrier yet. The candidate
+  implementation is an inverted index (element value -> document
+  primary keys holding it) — mechanically identical to
+  `#[ok_index]`'s multi-value function index (a func returning
+  `Vec<V>` fans out). Whether a dedicated type (`#[ok_set]`-like) or
+  a documented "express it with a function index" is decided when a
+  real consumer appears.
+
+The dividing-line criterion is unchanged: **elements with identity
+(own indexes, sharing, independent updates) -> Ref/Junction; elements
+as pure values (read/written as a whole, no independent lifecycle) ->
+vector/array**.
+
 ## Consequences
 
 - `EdgeEncode` / `Edge` rename touches the derive, core, tests, and
@@ -118,6 +151,15 @@ solved by hashing the name literal at compile time from
 mechanism decision 2 uses for junctions. No KV dictionary (ADR-0002
 deadlock avoided), no compression. Not designed further here; no
 consumer exists.
+
+### C. Vector types — materialization
+
+The concrete `Vector<D>` design (fixed-width elements BE-serialized
+directly; dynamic elements as LV frames; multi-dimensional shape
+headers) is worked out when real consumers appear — vector retrieval
+(okm-vector) and embedding storage. This ADR only locks the taxonomy
+position: homogeneous, whole-value read/write, slot 0 dynamic part,
+same class as strings.
 
 ### B. Field-position relation declaration + auto-sync
 

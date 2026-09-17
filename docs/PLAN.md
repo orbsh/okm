@@ -701,3 +701,28 @@ Decided:
       type; no consumer yet, design deferred.
 - Pre-crates.io timing makes the rename free: downstream (aura, k10r)
   currently declares zero junctions.
+
+## Plural modeling types (ADR-0015 §4, 2026-09-17)
+
+The full plural taxonomy (identity axis x homogeneous/heterogeneous):
+
+- [ ] **Vector<D>** — homogeneous list, used as a whole; multi-
+      dimensional (header carries shape + type; 1-D = list). Storage:
+      slot 0 dynamic part, variable-length TLV like Str; dynamic
+      elements in LV format. Use cases: embedding vectors (okm-vector
+      bridge), numeric sequences, order-expressing lists. Elements are
+      pure values — NOT a relation carrier.
+- [x] **DynamicValue::Array** — heterogeneous list (shipped with the
+      dynamic segment); more general than Vector, per-element type
+      tags, slightly higher overhead.
+- [ ] **Set** — deduplicated element membership. Candidate: inverted
+      index (element -> document keys), mechanically identical to the
+      multi-value function index (func returning Vec<V> fans out).
+      Decide dedicated type vs documented function-index usage when a
+      consumer appears.
+- [x] **Refs<D, K>** (one-to-many) / **Junction** (many-to-many) —
+      relation carriers, see ADR-0015.
+
+The dividing line: elements with identity -> Ref/Refs/Junction; pure
+values -> Vector/Array (a scalar has no key; a key reference to it is
+a category error).
