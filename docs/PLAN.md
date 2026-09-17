@@ -401,9 +401,16 @@ key bare in the tail) recorded in ADR-0005.
       return dicts. Verified both directions byte-identical with the Rust
       derive (verify.py: Rust→Python read + Python→Rust decode). Also
       fixed: TableSchema Serialize omitted `slots` while Deserialize
-      required it (round-trip asymmetry). Remaining: Steel binding;
-      schema reverse-import (Python-declared key/row/table → Rust
-      runtime execution) deferred.
+      required it (round-trip asymmetry). Steel binding shipped 2026-09-17
+      (`bindings/okm-steel`, steel-core 0.7): `register(vm)` installs
+      `okm-schema-from-json!` / `okm-schema-version!` / `okm-encode-key!` /
+      `okm-encode-payload!` / `okm-decode-key!` / `okm-decode-payload!`;
+      schema handles are integer ids into a thread-local registry (steel's
+      Custom-type escape hatch is sealed); bytes cross as vectors of
+      integers (ByteVector field is crate-private); VM round trip locked by
+      vm_roundtrip (Rust writes → steel reads → steel re-encodes byte-
+      identical). Remaining: schema reverse-import (Python/Steel-declared
+      key/row/table → Rust runtime execution) deferred.
 - [x] Multi-tenancy: receiver-side prefix only — a remote OKM instance is
       one application = one domain model = one ns; to the receiver it is
       just another prefix. No app_id layer inside OKM, no multi-level ns
