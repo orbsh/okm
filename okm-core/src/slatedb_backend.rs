@@ -145,7 +145,8 @@ impl<S: VirtualStorageAsync, E: KvEdge> AsyncEdgeTable<S, E> {
             "forward 需要 B 全量身份才能 decode 回类型"
         );
         let mut p = Vec::with_capacity(2 + E::a_head_width());
-        p.extend_from_slice(&crate::edge::head_bytes(E::NS, false));
+        p.extend_from_slice(&E::NS.to_be_bytes());
+        p.push(crate::index::EDGE_FWD_SLOT);
         E::encode_a_head(&mut p, a);
         self.store
             .scan_suffix(&p)
@@ -158,7 +159,8 @@ impl<S: VirtualStorageAsync, E: KvEdge> AsyncEdgeTable<S, E> {
     /// B → As 的原始前缀字节（A 为截断身份时无法 decode）
     pub async fn reverse_raw(&self, b: &E::B) -> Vec<Vec<u8>> {
         let mut p = Vec::with_capacity(2 + E::b_head_width());
-        p.extend_from_slice(&crate::edge::head_bytes(E::NS, true));
+        p.extend_from_slice(&E::NS.to_be_bytes());
+        p.push(crate::index::EDGE_REV_SLOT);
         E::encode_b_head(&mut p, b);
         self.store.scan_suffix(&p).await
     }

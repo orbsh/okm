@@ -57,7 +57,8 @@ impl<S: VirtualStorage, E: KvEdge> EdgeTable<S, E> {
     /// arbitrary B and must not participate in matching).
     fn forward_prefix(a: &E::A) -> Vec<u8> {
         let mut p = Vec::with_capacity(2 + E::a_head_width());
-        p.extend_from_slice(&crate::edge::head_bytes(E::NS, false));
+        p.extend_from_slice(&E::NS.to_be_bytes());
+        p.push(crate::index::EDGE_FWD_SLOT);
         E::encode_a_head(&mut p, a);
         p
     }
@@ -80,7 +81,8 @@ impl<S: VirtualStorage, E: KvEdge> EdgeTable<S, E> {
     /// A's identity is truncated and cannot be decoded).
     pub fn reverse_raw(&self, b: &E::B) -> Vec<Vec<u8>> {
         let mut p = Vec::with_capacity(2 + E::b_head_width());
-        p.extend_from_slice(&crate::edge::head_bytes(E::NS, true));
+        p.extend_from_slice(&E::NS.to_be_bytes());
+        p.push(crate::index::EDGE_REV_SLOT);
         E::encode_b_head(&mut p, b);
         self.store.scan_suffix(&p)
     }
