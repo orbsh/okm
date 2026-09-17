@@ -86,6 +86,15 @@ fn encode_field(
                 expected: "fixed-width (Str is a cold TLV kind)",
             })
         }
+        // Dynamic-segment parity kinds: typed-schema fields cannot declare
+        // them yet (schema kinds are fixed-width), so in the static region
+        // they are type errors. They become valid once a schema kind lands.
+        Value::I64(_) | Value::F64(_) | Value::Bool(_) | Value::Null => {
+            return Err(CodecError::TypeMismatch {
+                field: f.name.clone(),
+                expected: "fixed-width numeric/bytes (signed/float/bool/null are dynamic-segment kinds)",
+            })
+        }
     }
     Ok(())
 }

@@ -497,10 +497,12 @@ encoding, one derive family. No separate document storage mode.
       dynamic rule (first-seen allocation), not rejection (that rule is
       for the typed decoder, where a mismatched value tree is a caller
       bug).
-- [ ] `okm-dynamic::Value` gains the dynamic-segment value types
-      (Float/Bool/Null/Array/nested obj), mirroring the wire's
-      value-type enum — no third-party value tree.
-- [ ] Dictionary cache is **bidirectional**: `DictCache { by_id: HashMap<u16,
+- [x] `okm-dynamic::Value` gains the dynamic-segment value types
+      (I64/F64/Bool/Null added; Array/Obj stay dynamic-segment-only —
+      the typed static region rejects them until schema kinds land).
+      Nested obj lives in okm-core's `DynamicValue` (wire tag 7), which
+      is the only value tree the dynamic segment needs.
+- [x] Dictionary cache is **bidirectional**: `DictCache { by_id: HashMap<u16,
       String>, by_name: HashMap<String, u16>, next_id: u16 }` under one
       `OnceLock<RwLock<…>>`. Read path needs id→name (slot 2 mirror),
       write path needs name→id (slot 3 mirror), first-seen allocation
