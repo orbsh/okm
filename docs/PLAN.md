@@ -469,8 +469,11 @@ encoding, one derive family. No separate document storage mode.
       ever; flat bidirectional point lookups (slots 2/3), no trie.
       Shipped 2026-09-16 (d18cb36): DictCache (by_id/by_name/next_id),
       wholesale lazy load, id_for allocates one batch both directions.
-- [ ] Indexing rule: declared fields only; a dynamic field becomes
+- [x] Indexing rule: declared fields only; a dynamic field becomes
       indexable by being declared (schema evolution, deliberately manual).
+      Not a separate mechanism: index entries derive from `R::FIELDS`
+      (declared) only; `set_object` routes unknown names to the dynamic
+      segment, so nothing undeclared can reach a slot ≥ 16.
 - [x] Schema export: TableSchema extended with SlotMap (fixed-role slot
       numbers) and the ObjValueTypeSchema tag enum for the dynamic
       reader (okm-dynamic / Python side). Shipped 2026-09-16.
