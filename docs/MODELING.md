@@ -370,7 +370,7 @@ t.delete(&key);                                   // remove slot 0 + index entri
   derive (cross tests lock this). Version-default migration works on the
   dynamic read path too: literal `#[ok_default]` travels with the schema.
 
-### Embedded documents (`Ref<D, K>` and `List<D, K>`)
+### Embedded documents (`Ref<D, K>` and `Refs<D, K>`)
 
 A child document embedded **by key reference**: the parent's field
 carries only the child's key on the wire (fixed width, hot segment);
@@ -414,12 +414,18 @@ pub struct User {
   (`#[ok_embed(own)]`) is a possible future extension.
 - No attribute is required: the derive recognizes `Ref<D, K>` / `List<D, K>`
   from the field type, the same discipline as `Reverse<T>` / `Quant<P>`.
-- **Lists**: `List<D, K>` embeds many children — wire is a cold TLV frame
+- **Lists**: `Refs<D, K>` embeds many children — wire is a cold TLV frame
   `[count][key × n]`; memory is `keys` + index-aligned
   `values: Vec<Option<D>>` (dangling refs stay visible). Child keys must
   carry their own list identity (`owner_id + seq`) — OKM never appends
   positional numbers to keys. Stale release covers shortening: keys the
-  old list held and the new one doesn't are deleted.
+  old list held and the new one doesn't are deleted. `Refs` is the
+  declarative carrier of the one-to-many relation above: children stay
+  normalized in their own ns, the parent field holds the foreign-key set.
+- **The identity line**: elements WITH identity (own indexes, sharing,
+  independent updates) belong in `Ref`/`Refs`; pure-value elements
+  (`Vec<String>` fields, dynamic `Array` frames) do not — a scalar has no
+  key, and a key reference to it is a category error.
 - The map view (`to_map`) lifts an embedded field to
   `Bytes(child key)` — the wire truth; the child's value belongs to the
   child collection, not this map.
