@@ -147,6 +147,11 @@ pub trait Row: Sized + Clone {
     /// with PAYLOAD_FIELDS plus the primitive kind (Arrow schema, column
     /// builders, snapshot tooling; ADR-0007).
     const FIELDS: &'static [crate::field::FieldDesc] = &[];
+    /// Const-constructible field defaults, name-keyed (literal
+    /// `#[ok_default]` only). Consumed by `TableSchema::of` to fill
+    /// `FieldSchema::default` — the dynamic reader's version-migration
+    /// data. Empty when no field declares a literal default.
+    const DEFAULTS: &'static [(&'static str, crate::field::DefaultValueConst)] = &[];
     /// Byte width of the hot segment at THIS schema version: the fixed-
     /// width fields in declaration order, concatenated. The decode-side
     /// split point of the two segments (hot walk ends, cold TLV walk

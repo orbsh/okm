@@ -56,14 +56,15 @@ pub fn decode_payload(schema: &TableSchema, bytes: &[u8]) -> Result<ValueMap, Co
 
     let mut out = BTreeMap::new();
     for f in &schema.hot_fields {
-        let raw = hot.get(f.offset..f.offset + f.width).ok_or_else(|| {
-            CodecError::Truncated {
-                field: f.name.clone(),
-                needed: f.offset + f.width,
-                got: hot.len(),
+        match hot.get(f.offset..f.offset + f.width) {
+            Some(raw) => {
+                out.insert(f.name.clone(), decode_fixed(f.name.clone(), f.ty, f.width, raw)?);
             }
-        })?;
-        out.insert(f.name.clone(), decode_fixed(f.name.clone(), f.ty, f.width, raw)?);
+            // Truncated tail: field appended after this payload's hot
+            // segment was written → version-default fill (below), not an
+            // error. Mirrors the Rust decoder's truncation rule.
+            None => continue,
+        }
     }
 
     // Cold TLV frames: tag u8 + len u32 BE + value, until the tail.
@@ -132,6 +133,36 @@ pub fn decode_payload(schema: &TableSchema, bytes: &[u8]) -> Result<ValueMap, Co
                 let _ = CodecError::UnknownTag(tag);
             }
         }
+    }
+    // Version-default migration: a payload written by an older layout
+    // lacks tail fields; the dynamic reader fills them from the schema's
+    // exported defaults (mirrors the Rust decoder's #[ok_default]/Default
+    // rule). Zero fallback when the export carries no literal.
+    for f in schema.hot_fields.iter().chain(schema.cold_fields.iter()) {
+        if out.contains_key(&f.name) {
+            continue;
+        }
+        let v = match &f.default {
+            Some(okm_core::schema::DefaultValue::U64(x)) => Value::U64(*x),
+            Some(okm_core::schema::DefaultValue::I64(x)) => Value::I64(*x),
+            Some(okm_core::schema::DefaultValue::F64(x)) => Value::F64(*x),
+            Some(okm_core::schema::DefaultValue::Bool(x)) => Value::Bool(*x),
+            Some(okm_core::schema::DefaultValue::Str(x)) => Value::Str(x.clone()),
+            Some(okm_core::schema::DefaultValue::ZeroBytes(n)) => Value::Bytes(vec![0; *n]),
+            None => match f.ty {
+                FieldType::U8 => Value::U8(0),
+                FieldType::U16 => Value::U16(0),
+                FieldType::U32 => Value::U32(0),
+                FieldType::U64 | FieldType::VarInt | FieldType::Quant(_) | FieldType::Offset(_) => {
+                    Value::U64(0)
+                }
+                FieldType::Str => Value::Str(String::new()),
+                FieldType::Bytes => Value::Bytes(vec![0; f.width]),
+                FieldType::FixedBytes => Value::Bytes(vec![0; f.width]),
+                FieldType::Enum => Value::U8(0),
+            },
+        };
+        out.insert(f.name.clone(), v);
     }
     Ok(out)
 }

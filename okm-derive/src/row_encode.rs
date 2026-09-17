@@ -81,6 +81,19 @@ fn field_desc_entries(schema: &RowSchema) -> TS2 {
     quote! { &[ #(#rows),* ] }
 }
 
+/// Const DEFAULTS entries: literal `#[ok_default]` per field, name-keyed.
+/// The `Str` case needs &'static str — emitted from the inner str literal
+/// of `"x".to_string()` or a bare "x"; non-literal exprs are skipped
+/// (dynamic reader falls back to zero).
+fn defaults_entries(schema: &RowSchema) -> TS2 {
+    let rows = schema.fields.iter().filter_map(|f| {
+        let name = f.ident.to_string();
+        let lit = f.default_lit.as_ref()?;
+        Some(quote! { (#name, #lit) })
+    });
+    quote! { &[ #(#rows),* ] }
+}
+
 /// ---- encode: [version u8][hot_len u16 BE][hot segment][cold TLV] ----
 fn emit_payload_encode(schema: &RowSchema) -> TS2 {
     let ver_lit = proc_macro2::Literal::u8_unsuffixed(schema.layout_version);
@@ -520,6 +533,7 @@ fn emit_row_impl(schema: &RowSchema) -> TS2 {
     };
     let ver_lit = proc_macro2::Literal::u8_unsuffixed(schema.layout_version);
     let row_desc = field_desc_entries(schema);
+    let row_defaults = defaults_entries(schema);
     let encode_body = emit_payload_encode(schema);
     let decode_body = emit_payload_decode(schema);
     // Hot width as a numeric literal — widths are fixed `quote!{ N }`
@@ -710,6 +724,7 @@ fn emit_row_impl(schema: &RowSchema) -> TS2 {
             const LAYOUT_VERSION: u8 = #ver_lit;
             const PAYLOAD_FIELDS: &'static [(&'static str, usize)] = &[ #((#name_strs, #widths)),* ];
             const FIELDS: &'static [::okm_core::FieldDesc] = #row_desc;
+            const DEFAULTS: &'static [(&'static str, ::okm_core::field::DefaultValueConst)] = #row_defaults;
             const HOT_WIDTH: usize = #hot_width_lit;
             fn encode_payload(&self) -> Vec<u8> {
                 let mut buf = Vec::new();

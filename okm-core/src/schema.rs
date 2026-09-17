@@ -30,6 +30,26 @@ pub struct FieldSchema {
     /// TLV tag for cold payload fields (declaration index); `None` for
     /// key and hot fields.
     pub tag: Option<u8>,
+    /// Default value for version migration: a payload written by an
+    /// older layout lacks this field, the dynamic reader fills it from
+    /// here (mirrors the Rust decoder's `#[ok_default]`/Default rule).
+    /// `None` = the export carries no literal default (the Rust side
+    /// always has one — expression or `Default::default()` — but only
+    /// literal expressions are exportable data).
+    pub default: Option<DefaultValue>,
+}
+
+/// Exportable default literal. Deliberately narrow: the dynamic reader
+/// has no Rust type context, so defaults travel as plain data.
+#[derive(Clone, Debug, PartialEq)]
+pub enum DefaultValue {
+    U64(u64),
+    I64(i64),
+    F64(f64),
+    Bool(bool),
+    Str(String),
+    /// Zero-filled byte string of schema width (FixedBytes default).
+    ZeroBytes(usize),
 }
 
 /// The dynamic segment's frame vocabulary (ADR-0012). Mirrors
@@ -83,6 +103,20 @@ pub struct TableSchema {
     pub slots: SlotMap,
 }
 
+/// Find a field's const default by name; converts to the owned form.
+fn lookup_default(
+    defaults: &'static [(&'static str, crate::field::DefaultValueConst)],
+    name: &str,
+) -> Option<DefaultValue> {
+    defaults.iter().find(|(n, _)| *n == name).map(|(_, d)| match d {
+        crate::field::DefaultValueConst::U64(x) => DefaultValue::U64(*x),
+        crate::field::DefaultValueConst::I64(x) => DefaultValue::I64(*x),
+        crate::field::DefaultValueConst::F64(x) => DefaultValue::F64(*x),
+        crate::field::DefaultValueConst::Bool(x) => DefaultValue::Bool(*x),
+        crate::field::DefaultValueConst::Str(x) => DefaultValue::Str(x.to_string()),
+    })
+}
+
 /// Fixed-role slot numbers (ADR-0012); declared index/reduce slots start
 /// at `declared_base` in declaration order.
 #[derive(Clone, Debug, PartialEq)]
@@ -108,6 +142,7 @@ impl TableSchema {
                 width: f.width,
                 offset: off,
                 tag: None,
+                default: None,
             });
             off += f.width;
         }
@@ -125,6 +160,7 @@ impl TableSchema {
                     width: f.width,
                     offset: hot_off,
                     tag: None,
+                    default: lookup_default(<R as Row>::DEFAULTS, f.name),
                 });
                 hot_off += f.width;
             } else {
@@ -134,6 +170,7 @@ impl TableSchema {
                     width: 0,
                     offset: 0,
                     tag: Some(fi as u8),
+                    default: lookup_default(<R as Row>::DEFAULTS, f.name),
                 });
             }
         }
@@ -164,7 +201,7 @@ impl TableSchema {
 
 #[cfg(feature = "schema-serde")]
 mod serde_impls {
-    use super::{FieldSchema, ObjValueTypeSchema, SlotMap, TableSchema};
+    use super::{DefaultValue, FieldSchema, ObjValueTypeSchema, SlotMap, TableSchema};
     use crate::field::FieldType;
     use serde::{Deserialize, Serialize};
 
@@ -297,6 +334,7 @@ mod serde_impls {
                 width: usize,
                 offset: usize,
                 tag: &'a Option<u8>,
+                default: &'a Option<DefaultValue>,
             }
             Repr {
                 name: &self.name,
@@ -304,6 +342,7 @@ mod serde_impls {
                 width: self.width,
                 offset: self.offset,
                 tag: &self.tag,
+                default: &self.default,
             }
             .serialize(s)
         }
@@ -318,6 +357,7 @@ mod serde_impls {
                 width: usize,
                 offset: usize,
                 tag: Option<u8>,
+                default: Option<DefaultValue>,
             }
             let r = Repr::deserialize(d)?;
             Ok(Self {
@@ -326,7 +366,45 @@ mod serde_impls {
                 width: r.width,
                 offset: r.offset,
                 tag: r.tag,
+                default: r.default,
             })
+        }
+    }
+
+    impl Serialize for DefaultValue {
+        fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+            match self {
+                DefaultValue::U64(x) => s.serialize_newtype_variant("DefaultValue", 0, "U64", x),
+                DefaultValue::I64(x) => s.serialize_newtype_variant("DefaultValue", 1, "I64", x),
+                DefaultValue::F64(x) => s.serialize_newtype_variant("DefaultValue", 2, "F64", x),
+                DefaultValue::Bool(x) => s.serialize_newtype_variant("DefaultValue", 3, "Bool", x),
+                DefaultValue::Str(x) => s.serialize_newtype_variant("DefaultValue", 4, "Str", x),
+                DefaultValue::ZeroBytes(n) => {
+                    s.serialize_newtype_variant("DefaultValue", 5, "ZeroBytes", n)
+                }
+            }
+        }
+    }
+
+    impl<'de> Deserialize<'de> for DefaultValue {
+        fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+            #[derive(Deserialize)]
+            enum Repr {
+                U64(u64),
+                I64(i64),
+                F64(f64),
+                Bool(bool),
+                Str(String),
+                ZeroBytes(usize),
+            }
+            match Repr::deserialize(d)? {
+                Repr::U64(x) => Ok(DefaultValue::U64(x)),
+                Repr::I64(x) => Ok(DefaultValue::I64(x)),
+                Repr::F64(x) => Ok(DefaultValue::F64(x)),
+                Repr::Bool(x) => Ok(DefaultValue::Bool(x)),
+                Repr::Str(x) => Ok(DefaultValue::Str(x)),
+                Repr::ZeroBytes(x) => Ok(DefaultValue::ZeroBytes(x)),
+            }
         }
     }
 

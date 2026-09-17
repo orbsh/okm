@@ -386,12 +386,16 @@ key bare in the tail) recorded in ADR-0005.
       TableSchema::of` (structured export, serde behind `schema-serde`) +
       `okm-dynamic` crate (Value tree; encode/decode mirroring the derive's
       byte layout; version gate + unknown-tag skip); cross-language byte
-      equality locked by dynamic_cross_test. Remaining: PyO3/Steel bindings;
-      version-default migration on the dynamic read path — `#[ok_default]`
-      values must travel in TableSchema (derive exports them; decode applies
-      defaults for fields missing from older payloads, mirroring the Rust
-      decode rule); schema reverse-import (Python-declared key/row/table →
-      Rust runtime execution) deferred.
+      equality locked by dynamic_cross_test. Shipped 2026-09-17: version-
+      default migration — literal `#[ok_default]` exports through
+      `Row::DEFAULTS` (const `DefaultValueConst`, &'static str for Str;
+      `"x".to_string()` unwrapped) into `FieldSchema::default` (owned,
+      serde'd); okm-dynamic decode fills absent hot fields (truncated
+      tail, no longer an error) and cold fields from schema defaults,
+      zero fallback per kind when no literal. Locked by
+      version_default_migration_on_dynamic_read (v2 bytes through a v3
+      schema). Remaining: PyO3/Steel bindings; schema reverse-import
+      (Python-declared key/row/table → Rust runtime execution) deferred.
 - [x] Multi-tenancy: receiver-side prefix only — a remote OKM instance is
       one application = one domain model = one ns; to the receiver it is
       just another prefix. No app_id layer inside OKM, no multi-level ns
