@@ -5,12 +5,12 @@ import subprocess
 import sys
 
 TEST_RS = r'''
-use okm_core::{KeyEncode, ObjEncode, Row};
+use okm_core::{KeyEncode, DocumentEncode, Document};
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
 pub struct UserKey { pub org_id: u32, pub user_id: u64 }
 
-#[derive(ObjEncode, Clone, PartialEq, Debug)]
+#[derive(DocumentEncode, Clone, PartialEq, Debug)]
 #[ok_ref(UserKey)]
 #[ok_ns(41)]
 #[ok_layout(version = 3)]
@@ -38,7 +38,7 @@ fn main() {
     // 3) decode Python-encoded bytes back into the typed row
     let ph = |h: &str| (0..h.len()).step_by(2).map(|i| u8::from_str_radix(&h[i..i+2], 16).unwrap()).collect::<Vec<u8>>();
     if let (Some(payload_hex), Some(key_hex)) = (std::env::args().nth(1), std::env::args().nth(2)) {
-        let row2 = <UserV3 as okm_core::Row>::decode_payload(&ph(&payload_hex));
+        let row2 = <UserV3 as okm_core::Document>::decode_payload(&ph(&payload_hex));
         let key2 = <UserKey as okm_core::KeyEncode>::decode(&ph(&key_hex));
         println!("RUST_DECODE level={} score={} name={} tier={} region={} org={} user={}",
             row2.level, row2.score, row2.name, row2.tier, row2.region, key2.org_id, key2.user_id);
