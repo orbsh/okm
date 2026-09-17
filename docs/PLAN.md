@@ -577,12 +577,18 @@ Unchanged: primary payload layout `[version][hot_len][hot][cold TLV]`
 
 ## Embedded documents (2026-09-17, shipped)
 
-`Embedded<D, K>` field type — child document by key reference:
+`Ref<D, K>` and `List<D, K>` field types — child documents by key
+reference (single / many):
 
-- Wire = child key bytes only (fixed width, hot segment). The child is a
-  complete document at its own ns/key with its own indexes.
-- No attribute: derive recognizes `Embedded<D, K>` in field position from
-  the type itself (same discipline as Reverse/VarInt/Quant).
+- Ref wire = child key bytes only (fixed width, hot segment); List wire =
+  cold TLV `[count u32][key × n]`. Children are complete documents at
+  their own ns/key with their own indexes.
+- No attribute: derive recognizes `Ref<D, K>` / `List<D, K>` in field
+  position from the type itself (same discipline as Reverse/VarInt/Quant).
+- Naming: Ref chosen over Embedded/Unit/Record/Object/Dict — the wire
+  truth IS a reference; `values: Vec<Option<D>>` keeps dangling refs
+  visible. Key discipline: list children carry their own sequence
+  identity (OKM never appends positional numbers).
 - Memory: `key: K, value: Option<D>`. Write `Some(d)` = child written by
   the parent's put; write `None` = reference an existing child (shared,
   many-to-one). Read: `get` dereferences via the generated

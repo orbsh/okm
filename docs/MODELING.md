@@ -370,7 +370,7 @@ t.delete(&key);                                   // remove slot 0 + index entri
   derive (cross tests lock this). Version-default migration works on the
   dynamic read path too: literal `#[ok_default]` travels with the schema.
 
-### Embedded documents (`Embedded<D, K>`)
+### Embedded documents (`Ref<D, K>` and `List<D, K>`)
 
 A child document embedded **by key reference**: the parent's field
 carries only the child's key on the wire (fixed width, hot segment);
@@ -394,14 +394,14 @@ pub struct Address {          // a complete document of its own
 #[ok_ns(41)]
 pub struct User {
     pub level: u32,
-    pub address: Embedded<Address, AddressKey>,  // no attribute needed
+    pub address: Ref<Address, AddressKey>,  // no attribute needed
 }
 ```
 
-- **Write, `Some(value)`** (`Embedded::own(key, value)`): the parent's
+- **Write, `Some(value)`** (`Ref::own(key, value)`): the parent's
   `put` also writes the child payload + the child's index entries, in
   the same store batch (one atomic boundary).
-- **Write, `None`** (`Embedded::ref_key(key)`): reference an existing
+- **Write, `None`** (`Ref::ref_key(key)`): reference an existing
   child — the parent stores the key and touches nothing else. This is
   the shared, many-to-one form (many users pointing at one address).
 - **Read**: `get` dereferences automatically — the child is fetched by
@@ -412,8 +412,14 @@ pub struct User {
   OLD document pointed at but the new one doesn't are deleted. No
   cascade: a shared child survives; an owned-cascade option
   (`#[ok_embed(own)]`) is a possible future extension.
-- No attribute is required: the derive recognizes `Embedded<D, K>` from
-  the field type, the same discipline as `Reverse<T>` / `Quant<P>`.
+- No attribute is required: the derive recognizes `Ref<D, K>` / `List<D, K>`
+  from the field type, the same discipline as `Reverse<T>` / `Quant<P>`.
+- **Lists**: `List<D, K>` embeds many children — wire is a cold TLV frame
+  `[count][key × n]`; memory is `keys` + index-aligned
+  `values: Vec<Option<D>>` (dangling refs stay visible). Child keys must
+  carry their own list identity (`owner_id + seq`) — OKM never appends
+  positional numbers to keys. Stale release covers shortening: keys the
+  old list held and the new one doesn't are deleted.
 - The map view (`to_map`) lifts an embedded field to
   `Bytes(child key)` — the wire truth; the child's value belongs to the
   child collection, not this map.
