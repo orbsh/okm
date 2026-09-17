@@ -1,7 +1,7 @@
 //! Key side: the [`KeyEncode`] trait and [`PrefixKey`].
 //!
 //! A key struct derived with `#[derive(KeyEncode)]` **is** the DDL: SQL
-//! defines table structure, the Rust struct defines key encoding, and the
+//! defines collection structure, the Rust struct defines key encoding, and the
 //! compiler enforces format consistency. Fields are big-endian, fixed
 //! width, no separators — decoding is pure pointer slicing.
 
@@ -34,7 +34,7 @@ pub trait KeyEncode: Sized + Clone {
 ///
 /// Prefix fields are trustworthy; trailing fields are garbage read past the
 /// boundary into B's encoding region — callers must use only the prefix
-/// fields, or take `decoded`'s prefix portion to scan the main table.
+/// fields, or take `decoded`'s prefix portion to scan the main collection.
 pub struct PrefixKey<A> {
     pub decoded: A,
     /// Bytes consumed by the identity prefix (= sum of `ok_head` field widths).
