@@ -245,7 +245,7 @@ fn emit_index_structs(schema: &DocumentSchema) -> TS2 {
                 .unwrap_or_else(|e| panic!("ok_index[{}]: bad func path `{}`: {e}", idx.ident, idx.func));
             quote! {
                 fn entry_pairs(
-                    table_ns: &[u8],
+                    ns_prefix: &[u8],
                     key: &Self::Key,
                     document: &Self::Document,
                 ) -> Vec<(Vec<u8>, Vec<u8>)> {
@@ -258,9 +258,9 @@ fn emit_index_structs(schema: &DocumentSchema) -> TS2 {
                     let __okm_value = Self::entry_value(key, document);
                     for __okm_seg in __okm_vals {
                         let mut __okm_k = Vec::with_capacity(
-                            table_ns.len() + 1 + __okm_seg.len() + Self::key_prefix_width(),
+                            ns_prefix.len() + 1 + __okm_seg.len() + Self::key_prefix_width(),
                         );
-                        __okm_k.extend_from_slice(table_ns);
+                        __okm_k.extend_from_slice(ns_prefix);
                         __okm_k.push(Self::SLOT);
                         __okm_k.extend_from_slice(&__okm_seg);
                         __okm_k.extend_from_slice(&Self::key_prefix_bytes(key));

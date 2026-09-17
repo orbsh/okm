@@ -1,8 +1,8 @@
-//! DynamicTable acceptance: runtime-declared tables over VirtualStorage
+//! DynamicCollection acceptance: runtime-declared tables over VirtualStorage
 //! with schema-declared access methods. The lock that keeps the dynamic
 //! path honest is byte equality with the typed path:
 //!
-//! - a `DynamicTable` and a typed `Table` writing the same document into the
+//! - a `DynamicCollection` and a typed `Table` writing the same document into the
 //!   same ns must land byte-identical entries (primary + index), so a
 //!   dynamic scan sees typed writes and vice versa;
 //! - access-method scans return the matching rows' primary keys;
@@ -14,7 +14,7 @@
 
 use okm_core::{KeyEncode, DocumentEncode, Collection, TestStore, VirtualStorage};
 use okm_core::schema::TableSchema;
-use okm_dynamic::{AccessMethod, DynamicTable, Value, ValueMap};
+use okm_dynamic::{AccessMethod, DynamicCollection, Value, ValueMap};
 use std::collections::BTreeMap;
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
@@ -49,8 +49,8 @@ fn values(org_id: u32, user_id: u64, level: u32, score: u16, name: &str) -> Valu
     m
 }
 
-fn dynamic_table(store: TestStore) -> DynamicTable<TestStore> {
-    DynamicTable::new(
+fn dynamic_table(store: TestStore) -> DynamicCollection<TestStore> {
+    DynamicCollection::new(
         store,
         41,
         schema(),

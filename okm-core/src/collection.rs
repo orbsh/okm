@@ -77,7 +77,7 @@ impl<S: VirtualStorage, E: KvEdge> Edge<S, E> {
             .collect()
     }
 
-    /// B → As, raw prefix bytes (returned for a main-table prefix scan when
+    /// B → As, raw prefix bytes (returned for a main-collection prefix scan when
     /// A's identity is truncated and cannot be decoded).
     pub fn reverse_raw(&self, b: &E::B) -> Vec<Vec<u8>> {
         let mut p = Vec::with_capacity(2 + E::b_head_width());

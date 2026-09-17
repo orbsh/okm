@@ -93,10 +93,10 @@ pub trait Reduce: ReduceLogic {
     fn group_bytes(key: &<Self::Document as Document>::Key, document: &Self::Document) -> Vec<u8>;
 
     /// Full entry key `[ns 2B][slot 1B][group segment]`.
-    fn entry_key(table_ns: &[u8], key: &<Self::Document as Document>::Key, document: &Self::Document) -> Vec<u8> {
+    fn entry_key(ns_prefix: &[u8], key: &<Self::Document as Document>::Key, document: &Self::Document) -> Vec<u8> {
         let g = Self::group_bytes(key, document);
-        let mut buf = Vec::with_capacity(table_ns.len() + 1 + g.len());
-        buf.extend_from_slice(table_ns);
+        let mut buf = Vec::with_capacity(ns_prefix.len() + 1 + g.len());
+        buf.extend_from_slice(ns_prefix);
         buf.push(Self::SLOT);
         buf.extend_from_slice(&g);
         buf
@@ -106,11 +106,11 @@ pub trait Reduce: ReduceLogic {
 /// Read one group's current accumulator (None = group not yet created).
 pub fn reduce_get<S: VirtualStorage, A: Reduce>(
     store: &S,
-    table_ns: &[u8],
+    ns_prefix: &[u8],
     key: &<A::Document as Document>::Key,
     document: &A::Document,
 ) -> Option<A::Acc> {
-    let bytes = store.get(&A::entry_key(table_ns, key, document))?;
+    let bytes = store.get(&A::entry_key(ns_prefix, key, document))?;
     Some(A::Acc::decode_acc(&bytes))
 }
 
@@ -118,10 +118,10 @@ pub fn reduce_get<S: VirtualStorage, A: Reduce>(
 /// Prefix `[ns 2B][slot 1B]` — each suffix is the group segment.
 pub fn scan_reduces<S: VirtualStorage, A: Reduce>(
     store: &S,
-    table_ns: &[u8],
+    ns_prefix: &[u8],
 ) -> Vec<(Vec<u8>, A::Acc)> {
-    let mut prefix = Vec::with_capacity(table_ns.len() + 1);
-    prefix.extend_from_slice(table_ns);
+    let mut prefix = Vec::with_capacity(ns_prefix.len() + 1);
+    prefix.extend_from_slice(ns_prefix);
     prefix.push(A::SLOT);
     store
         .scan_suffix_kv(&prefix)
@@ -141,8 +141,8 @@ pub fn apply_row<S: VirtualStorage, R: Document>(
     store: &mut S,
     key: &R::Key,
     document: &R,
-    table_ns: &[u8],
+    ns_prefix: &[u8],
     add: bool,
 ) {
-    R::__okm_apply_reduces(store, key, document, table_ns, add);
+    R::__okm_apply_reduces(store, key, document, ns_prefix, add);
 }

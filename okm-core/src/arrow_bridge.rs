@@ -1,6 +1,6 @@
 //! Arrow RecordBatch bridge (ADR-0007 Phase 1 — eager export).
 //!
-//! Streams a table's documents as Arrow `RecordBatch`es: the key fields and the
+//! Streams a collection's documents as Arrow `RecordBatch`es: the key fields and the
 //! TLV payload fields become columns, with the schema generated from the
 //! same `FieldDesc` tables the derive macros emit ("code as DDL" — one
 //! struct is the single source for key encoding, payload encoding, index
@@ -80,7 +80,7 @@ fn logical_value(raw: &[u8], ty: FieldType) -> Vec<u8> {
     }
 }
 
-/// Columnar projection of a table: key fields then payload fields, in
+/// Columnar projection of a collection: key fields then payload fields, in
 /// declaration order within each half. Two sources, one schema.
 struct Projection<K: KeyEncode, R: Document<Key = K>> {
     schema: Schema,

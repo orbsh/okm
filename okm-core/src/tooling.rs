@@ -92,10 +92,10 @@ pub mod parquet_io {
     /// from the declaration — the same batch shape as
     /// [`Collection::to_record_batch`].
     pub fn export_parquet<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>>(
-        table: &Collection<S, K, R>,
+        collection: &Collection<S, K, R>,
         path: &std::path::Path,
     ) -> parquet::errors::Result<()> {
-        let batch = table.to_record_batch();
+        let batch = collection.to_record_batch();
         let file = std::fs::File::create(path)?;
         let mut w = parquet::arrow::ArrowWriter::try_new(file, batch.schema(), None)?;
         w.write(&batch)?;
@@ -181,7 +181,7 @@ pub mod parquet_io {
     ///
     /// Returns the number of documents restored.
     pub fn import_parquet<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>>(
-        table: &mut Collection<S, K, R>,
+        collection: &mut Collection<S, K, R>,
         path: &std::path::Path,
     ) -> parquet::errors::Result<usize> {
         let key_fields = <K as KeyEncode>::FIELDS;
@@ -238,7 +238,7 @@ pub mod parquet_io {
             for document in 0..n {
                 let key = K::decode(&keys[document]);
                 let rv = R::decode_payload(&payloads[document]);
-                table.put(&key, &rv);
+                collection.put(&key, &rv);
                 count += 1;
             }
         }

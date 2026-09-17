@@ -185,7 +185,7 @@ pub fn scan_access_method<S: VirtualStorage>(
 /// indexed values no longer match the current document (derive overwrite
 /// lands stale entries at different keys; `delete` covers the rest).
 /// Dynamic tables recompute entries per write, so the sweep runs on
-/// every `DynamicTable::put` for the overwritten key's OLD entries.
+/// every `DynamicCollection::put` for the overwritten key's OLD entries.
 pub fn delete_entries(
     store: &mut impl VirtualStorage,
     entries: &[(Vec<u8>, Vec<u8>)],
