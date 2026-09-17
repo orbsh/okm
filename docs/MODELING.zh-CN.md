@@ -160,10 +160,10 @@ edges.unlink(&user, &s1); // 双向同时删除
 物理 key 布局（正向）：
 
 ```
-[ 头部 2B: (ns<<1 | dir) BE ][ A·身份 ][ B·身份 ]
+[ 头部 3B: ns u16 BE + slot u8 ][ A·身份 ][ B·身份 ]
 ```
 
-`ns = 4`、FWD → 头部 `[0x08, 0x00]`；REV → `[0x08, 0x01]`。方向位 niche 在命名空间字段的最高位——见 [ADR-0001](docs/adr/0001-direction-bit-niche.md)。
+`ns = 4` → FWD 头部 `[0x00, 0x04, 14]`，REV 头部 `[0x00, 0x04, 15]`。方向是 slot（14/15，固定区顶部），不是方向位——edge 与 table 共用同一套键纪律（ns 后跟普通 slot 字节）。见 [ADR-0001](docs/adr/0001-direction-bit-niche.md)（已被 ADR-0012 的 slot 分配取代）与 [key-layout](docs/internals/key-layout.zh-CN.md) 的 slot 表。
 
 ### 反向查询与截断身份
 
@@ -226,6 +226,37 @@ use __OkmIndex_Doc_by_token as ByToken;
 let hits = t.scan::<ByToken>(b"rust");
 ```
 
+### 动态字段：obj API（ADR-0012）
+
+一套编码同时服务声明行与外部数据。声明字段照常走热/冷段；其余落进**动态段**（slot 1），以 n-TLV 帧——`[字段编号][类型][长度][字节]`——存储，名字在**字段名字典**（slot 2/3）里首次出现时分配。`Table` 上的运行时接口：
+
+```rust
+// 行-映射桥：每个声明字段 lift 到逻辑类型
+// （Quant -> F64、VarInt -> u64、Enum -> 变体名、Offset -> i64）。
+let (row, dynamic) = t.get_object(&key);          // (User, BTreeMap<String, DynamicValue>)
+
+// 整体写：名字匹配声明结构体的字段走 typed 路径；
+// 未知名字在字典里分配编号，落进 slot 1。
+t.set_object(&key, &fields);                      // BTreeMap<String, DynamicValue>
+
+// 仅动态段的视图（直接操作 slot 1）：
+t.get_variants(&key);                             // 名字键 map 或 None
+t.set_variants(&key, &map);                       // 整段替换，缺席字段被移除
+t.delete_variants(&key);                          // 清空动态段
+t.delete(&key);                                   // 移除 slot 0 + 全部索引条目
+```
+
+- `DynamicValue` 承载开放的值词汇表：`UInt`/`Int`/`F64`/`Str`/`Bytes`/
+  `Bool`/`Null`/`Array`/`Obj`——嵌套对象以原生帧递归（类型标签 7），
+  共享所在表的字典；不依赖 CBOR。
+- 未知名字在这里是**正常输入**（外部数据、MQ payload）；「未知字段拒绝」
+  纪律只适用于声明路径的 typed 解码器。
+- 声明字段可索引；动态字段不可（名字是运行期数据）。
+- schema 导出（`TableSchema`，serde 在 `schema-serde` feature 后）驱动
+  嵌入式语言读取器的动态 codec——Python（PyO3）与 Steel binding 在
+  `bindings/`，与 Rust derive 字节一致（交叉测试锁定）。版本默认值迁移
+  在动态读路径同样生效：字面量 `#[ok_default]` 随 schema 走。
+
 ### Payload 版本与字段默认值
 
 payload 头部带版本字节（`#[ok_layout(version = N)]`，默认 1）。解码规则：payload 头部版本比读取方的 schema **新** → 拒绝；**旧** → 接受，且旧 payload 缺失的字段（该版本之后尾部追加的）取默认值：
@@ -255,8 +286,8 @@ dynamic codec（Python/Steel 的 schema 驱动编解码）从 `TableSchema` 镜�
 
 ```rust
 let fk = edge.forward_key();
-assert_eq!(&fk[..2], &[0, 8]); // ns=4、FWD——方向位在 BE 字节对的最低位
-assert_eq!(&fk[2..6], &7u32.to_be_bytes());
+assert_eq!(&fk[..3], &[0, 4, 14]); // ns=4、FWD slot 14
+assert_eq!(&fk[3..7], &7u32.to_be_bytes());
 // ... 完整布局断言见 okm-core/tests/integration.rs
 ```
 
@@ -282,12 +313,12 @@ struct OrgUserEdge {
 }
 ```
 
-边物化为显式的正反双向 key（ADR-0001 方向位）：ns 顶位是方向位，FWD 前缀 `[ns:4][tenant][org]` 一次扫描取整组织的成员（列表侧），REV 前缀取某用户所属的全部组织；跳槽 = 增删一条边，身份不动。`#[ok_head(...)]` 声明该方向把端点身份截断到哪几个字段（不写 = 完整身份），让端点用更短的前缀、边 key 长度和分组粒度按方向各自裁剪——端点身份宽度的选取是"主键随方向变化"的表达。`ok_head` 选的是身份字段的子集（结构体声明过的字段），不是自由字节，可解性与索引尾段同理。
+边物化为显式的正反双向 key（slot 14/15 区分方向，ADR-0001 已被取代）：FWD 前缀 `[ns:4][tenant][org]` 一次扫描取整组织的成员（列表侧），REV 前缀取某用户所属的全部组织；跳槽 = 增删一条边，身份不动。`#[ok_head(...)]` 声明该方向把端点身份截断到哪几个字段（不写 = 完整身份），让端点用更短的前缀、边 key 长度和分组粒度按方向各自裁剪——端点身份宽度的选取是"主键随方向变化"的表达。`ok_head` 选的是身份字段的子集（结构体声明过的字段），不是自由字节，可解性与索引尾段同理。
 
 边与索引机制上同构（都是"指向身份的次级 key 布局"），但角色不能互换：
 
 - **数据源**：索引的数据源是本行 payload，用户永不手写条目；边的数据源是两个实体的关系，是业务事实本身，必须显式双写双删。
-- **端点**：索引尾段指向自己表的主键；边指向另一张表的实体（双端点、方向位区分正反）。
+- **端点**：索引尾段指向自己表的主键；边指向另一张表的实体（双端点、slot 14/15 区分正反）。
 
 **双向是义务不是选项。** REV 条目只多付一份 key 的存储（LSM 顺序 append，最廉价的写），省掉它换来的却是：反查需求出现时全扫 FWD 段过滤（违反访问方法强制），或事后补边加回填迁移（贵几个量级）。与索引对照更清楚：索引只有一个方向，因为反查走主键 `get` 就行；边的两个端点都是次级视角，谁也不持有主键，所以两个方向都要一条。双向还让解绑变 O(1)——FWD/REV 两条 key 的身份都在手上，精确 `delete`，无需先扫后删。真正的克制点不在"要不要 REV"（不二选），在**要不要这条 Edge**：没有反查需求且基数小的关系（如配置类一对一），直接放 payload 字段就够，连边都不建；需要时再加，边的双写自动同步，无回填。
 

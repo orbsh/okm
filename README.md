@@ -29,17 +29,16 @@ The verdict: SQL's core value is human-facing structured discipline. By holding 
 Implemented:
 
 - `KeyEncode` — fixed-width key encoding (`u32` / `u64` / `[u8; N]`), big-endian, compile-time `KEY_LEN` / `FIELD_WIDTHS`, `encode_prefix_named` truncation primitive.
-- `EdgeEncode` — bidirectional edges with per-endpoint identity width (`#[ok_head(...)]`), 2-byte direction-bit header, query methods generated onto endpoint types.
+- `EdgeEncode` — bidirectional edges with per-endpoint identity width (`#[ok_head(...)]`), 3-byte header `[ns u16][slot u8]` (slots 14/15 = forward/reverse), query methods generated onto endpoint types.
 - `EdgeTable<S, E>` (formerly `Collection`) — the edge assembly point: engine + edge type = the operation surface of one relationship (`link` / `unlink` / `forward` / `reverse` / `reverse_prefix`).
 - `ObjEncode` — one macro declares a row (Node): `#[ok_ref]` identity + TLV payload fields + `#[ok_index(...)]` access methods; the `ValueEncode` derive is absorbed into it.
 - Secondary indexes (access methods) — `#[ok_index(name { fields(…), includes(…), key(…) })]` on **row structs**: composite indexes over payload fields (declaration order), no per-index slot/ns — the 2-byte table namespace already discriminates every entry; leftmost-prefix scans with fetch-back; `key(…)` truncates the carried primary-key tail to the named subset (`encode_prefix_named`), full key by default; `includes` covering positioned as a materialized view for high-fanout queries.
 - `Table<S, K, R>` node assembly point — `put`/`delete` write the primary key and every declared index entry in one store instance (the declaration IS the registry); `scan` returns `(Key, Option<Row>)` via leftmost-prefix on any access method.
+- **Obj API** — `get_object` / `set_object` / `get_variants` / `set_variants` / `delete_variants`: unknown field names allocate in the per-table field-name dictionary and land in the dynamic segment (n-TLV frames, nested objects recursive, no CBOR); the row-map bridge lifts declared fields to logical types (`Quant`→`F64`, `Enum`→variant name, `Offset`→`i64`).
+- **Dynamic codec bindings** — schema export drives embedded-language readers: `bindings/okm-python` (PyO3) and `bindings/okm-steel`, byte-identical with the Rust derive.
 - Engine backends behind Cargo features: `fjall` (sync `FjallStore`), `slatedb` (async `SlatedbStore` + `AsyncEdgeTable`), plus an in-memory `MockStore` for tests.
 - Multi-engine mixing — different engines per ns segment in one process (fjall for transactions, slatedb for logs); atomicity stops at one engine, ns numbering globally unique.
-
-Roadmap (design locked, not yet implemented — [ADR-0006](docs/adr/0006-row-node-model.md), [ADR-0012](docs/adr/0012-object-model-and-field-dictionary.md)):
-
-- Field-level encoding wrappers (`Enum<T>`, `Offset<T>`, `Delta<T>`, `VarInt<T>`, `Reverse<T>` …) and variable-length payload/index fields (`String`), keys stay fixed-width.
+- Field-level encoding wrappers (`Enum<T>`, `Offset<T>`, `VarInt<T>`, `Quant<P>`, `Reverse<T>`, `Option<T>`) and variable-length payload/index fields (`String`), keys stay fixed-width.
 - Snapshot export — rows → Parquet, engine-independent (backup / data exchange / lakehouse); ns restored to descriptive text, columns = field names.
 - **Object model (obj)** — one encoding for declared rows and external data ([ADR-0012](docs/adr/0012-object-model-and-field-dictionary.md)). The name `obj` is a deliberate double meaning: object in the programming sense, and object in the storage-format sense. Three terms mark three positions on the static/dynamic spectrum:
   - **document** — logically and physically all-dynamic; every field rides the dynamic path (dictionary number + value type per frame).
@@ -92,7 +91,26 @@ conversion); `use __OkmIndex_User_by_org as ByOrg` gives the short form.
 For declarations see the [Modeling Guide](docs/MODELING.md), "Declaration
 basics".
 
-### 3. Engine backends
+### 3. Dynamic fields: the obj API
+
+One encoding for declared rows and external data. Unknown field names are
+normal input: they allocate in the per-table field-name dictionary and
+land in the dynamic segment (`[id][type][len][value]` frames, nested
+objects recursive). Declared fields stay typed and indexable.
+
+```rust
+// read: declared fields lifted to logical types + dynamic fields by name
+let (row, dynamic) = t.get_object(&key);
+// write: matched names -> typed path; unknown names -> dynamic segment
+t.set_object(&key, &fields);
+```
+
+Embedded-language readers (Python / Steel Actors) consume the schema
+export through the dynamic codec — `bindings/okm-python` (PyO3) and
+`bindings/okm-steel` encode/decode byte-identically with the Rust
+derive; version-default migration applies on that path too.
+
+### 4. Engine backends
 
 ```toml
 [dependencies]
