@@ -536,6 +536,105 @@ fn emit_row_impl(schema: &RowSchema) -> TS2 {
     let index_entries = emit_index_entries(schema);
     let (agg_impls, agg_hook) = emit_reduces(schema);
     let (sub_statics, sub_hook) = emit_subscribe(schema);
+    // ---- row <-> map bridge (ADR-0012): per-field lift into
+    // DynamicValue and back. The derive owns the concrete Rust types, so
+    // each arm emits the exact cast; from_map fills missing fields from
+    // `#[ok_default]` / `Default` — same evolution rule as the payload
+    // decoder. `String`/`Vec<u8>` clone; fixed `[u8; N]` converts.
+    let mut to_map_arms = quote! {};
+    let mut from_map_arms = quote! {};
+    for f in &schema.fields {
+        let id = &f.ident;
+        let name = id.to_string();
+        let dflt = &f.default_expr;
+        let ty_str = &f.ty_str;
+        let t: syn::Type = syn::parse_str(ty_str)
+            .unwrap_or_else(|e| panic!("bridge: bad type `{}`: {e}", ty_str));
+        // Signed integers: widen to i64, store as UInt of the two's-
+        // complement bits? No — DynamicValue has no signed variant yet;
+        // negative values round-trip through the typed path, and the map
+        // view lifts only unsigned/Str/Bytes/Bool for now. Documented.
+        let is_signed = ty_str.starts_with('i');
+        let is_bool = ty_str == "bool";
+        let is_string = ty_str.starts_with("String");
+        let is_bytes = ty_str.starts_with("Vec<u8>") || ty_str.starts_with("Vec < u8 >");
+        let is_fixedbytes = ty_str.starts_with("[u8;");
+        let is_f64 = ty_str.starts_with("Quant<") || ty_str.starts_with("Quant <");
+        if is_signed {
+            // Signed: pass through Default (map view shows Null); the
+            // wire/typed path remains authoritative for these fields.
+            to_map_arms.extend(quote! {
+                out.insert(#name.to_string(), ::okm_core::obj_dynamic::DynamicValue::Null);
+            });
+            from_map_arms.extend(quote! {
+                #id: #dflt,
+            });
+        } else if is_bool {
+            to_map_arms.extend(quote! {
+                out.insert(#name.to_string(), ::okm_core::obj_dynamic::DynamicValue::Bool(self.#id));
+            });
+            from_map_arms.extend(quote! {
+                #id: match map.get(#name) {
+                    Some(::okm_core::obj_dynamic::DynamicValue::Bool(v)) => *v,
+                    _ => #dflt,
+                },
+            });
+        } else if is_string {
+            to_map_arms.extend(quote! {
+                out.insert(#name.to_string(), ::okm_core::obj_dynamic::DynamicValue::Str(self.#id.clone()));
+            });
+            from_map_arms.extend(quote! {
+                #id: match map.get(#name) {
+                    Some(::okm_core::obj_dynamic::DynamicValue::Str(v)) => v.clone(),
+                    _ => #dflt,
+                },
+            });
+        } else if is_bytes {
+            to_map_arms.extend(quote! {
+                out.insert(#name.to_string(), ::okm_core::obj_dynamic::DynamicValue::Bytes(self.#id.clone()));
+            });
+            from_map_arms.extend(quote! {
+                #id: match map.get(#name) {
+                    Some(::okm_core::obj_dynamic::DynamicValue::Bytes(v)) => v.clone(),
+                    _ => #dflt,
+                },
+            });
+        } else if is_fixedbytes {
+            to_map_arms.extend(quote! {
+                out.insert(#name.to_string(), ::okm_core::obj_dynamic::DynamicValue::Bytes(self.#id.to_vec()));
+            });
+            from_map_arms.extend(quote! {
+                #id: match map.get(#name) {
+                    Some(::okm_core::obj_dynamic::DynamicValue::Bytes(v)) => v.clone().try_into().unwrap_or_else(|_| #dflt),
+                    _ => #dflt,
+                },
+            });
+        } else if is_f64 {
+            // Quant<f64, P> stores an i64 wire but the Rust field is f64;
+            // lift the logical value.
+            to_map_arms.extend(quote! {
+                out.insert(#name.to_string(), ::okm_core::obj_dynamic::DynamicValue::F64(self.#id));
+            });
+            from_map_arms.extend(quote! {
+                #id: match map.get(#name) {
+                    Some(::okm_core::obj_dynamic::DynamicValue::F64(v)) => *v,
+                    _ => #dflt,
+                },
+            });
+        } else {
+            // Unsigned integers (u8/u16/u32/u64): the common hot path.
+            to_map_arms.extend(quote! {
+                out.insert(#name.to_string(), ::okm_core::obj_dynamic::DynamicValue::UInt(self.#id as u64));
+            });
+            from_map_arms.extend(quote! {
+                #id: match map.get(#name) {
+                    Some(::okm_core::obj_dynamic::DynamicValue::UInt(v)) => (*v) as #t,
+                    _ => #dflt,
+                },
+            });
+        }
+    }
+
     let names: Vec<_> = schema.fields.iter().map(|f| &f.ident).collect();
     let name_strs: Vec<_> = schema.fields.iter().map(|f| f.ident.to_string()).collect();
     let widths: Vec<_> = schema.fields.iter().map(|f| &f.width).collect();
@@ -563,6 +662,21 @@ fn emit_row_impl(schema: &RowSchema) -> TS2 {
             fn decode_payload(b: &[u8]) -> Self {
                 #decode_body
                 Self { #(#names),* }
+            }
+            /// row -> map: every declared field lifted into DynamicValue
+            /// (ADR-0012 row-map bridge).
+            fn to_map(&self) -> ::std::collections::BTreeMap<String, ::okm_core::obj_dynamic::DynamicValue> {
+                let mut out = ::std::collections::BTreeMap::new();
+                #to_map_arms
+                out
+            }
+            /// map -> row: matched fields assigned from DynamicValue,
+            /// missing fields fall back to `#[ok_default]`/Default — the
+            /// same evolution rule as the payload decoder.
+            fn from_map(map: &::std::collections::BTreeMap<String, ::okm_core::obj_dynamic::DynamicValue>) -> Self {
+                Self {
+                    #from_map_arms
+                }
             }
             #index_entries
             #agg_hook

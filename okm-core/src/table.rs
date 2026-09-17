@@ -398,12 +398,12 @@ impl<S: VirtualStorage, K: KeyEncode, R: Row<Key = K>> Table<S, K, R> {
     /// declared name would have to be allocated first; convention:
     /// callers don't, and `get_variants` exposes any violation).
     pub fn get_object(&mut self, key: &K) -> Option<BTreeMap<String, DynamicValue>> {
-        // v1: dynamic fields only. Declared fields carry Rust types the
-        // derive knows how to lift into DynamicValue — that helper lands
-        // with the derive-side row↔map bridge (PLAN Phase 8); until then
-        // the declared half is reachable through the typed `get`.
-        let dynamic = self.get_variants(key)?;
-        Some(dynamic)
+        let row = self.get(key)?;
+        let mut out = row.to_map();
+        if let Some(v) = self.get_variants(key) {
+            out.extend(v);
+        }
+        Some(out)
     }
 
     /// Whole-obj write: fields whose names match the row struct go to
@@ -418,11 +418,43 @@ impl<S: VirtualStorage, K: KeyEncode, R: Row<Key = K>> Table<S, K, R> {
         object: &BTreeMap<String, DynamicValue>,
     ) {
         // Split by declared/undeclared.
-        // v1: everything routes to the dynamic segment. Typed-path
-        // assignment (declared names → slot 0 via a derive-generated
-        // lift) lands with the row↔map bridge in PLAN Phase 8; until
-        // then set_object is set_variants with a wider contract.
-        self.set_variants(key, object);
+        // Split by declared/undeclared: declared names go through the
+        // typed path (slot 0 via from_map + put — full pipeline incl.
+        // indexes/reduces/events), the rest to the dynamic segment.
+        let declared: std::collections::HashSet<&str> =
+            R::FIELDS.iter().map(|f| f.name).collect();
+        let typed_names: Vec<&String> = object
+            .keys()
+            .filter(|n| declared.contains(n.as_str()))
+            .collect();
+        if !typed_names.is_empty() {
+            // Read-modify-write: absent declared fields keep their current
+            // values (fresh rows default).
+            let mut row = match self.get(key) {
+                Some(r) => r,
+                None => R::from_map(&BTreeMap::new()), // all-default row
+            };
+            let typed: BTreeMap<String, DynamicValue> = typed_names
+                .iter()
+                .filter_map(|n| object.get(*n).map(|v| ((*n).clone(), v.clone())))
+                .collect();
+            let _ = &typed;
+            // from_map over the TYPED subset only: build a sub-map and
+            // overwrite the current row's fields from it.
+            let current = row.to_map();
+            let mut merged = current;
+            for (k, v) in &typed {
+                merged.insert(k.clone(), v.clone());
+            }
+            row = R::from_map(&merged);
+            self.put(key, &row);
+        }
+        let dynamic: BTreeMap<String, DynamicValue> = object
+            .iter()
+            .filter(|(n, _)| !declared.contains(n.as_str()))
+            .map(|(n, v)| (n.clone(), v.clone()))
+            .collect();
+        self.set_variants(key, &dynamic);
     }
 
     /// Drop the dynamic entry (declared fields untouched). True if an

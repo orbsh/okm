@@ -71,3 +71,40 @@ fn obj_set_variants_replaces_wholesale_and_delete_clears() {
     assert!(t.get_variants(&UserKey { id: 1 }).is_none());
     assert!(!t.delete_variants(&UserKey { id: 1 }), "second delete is a no-op");
 }
+
+#[test]
+fn obj_bridge_typed_and_dynamic_merge() {
+    let mut t: Table<TestStore, UserKey, User> = Table::new(TestStore::slatedb_mem());
+    t.put(&UserKey { id: 1 }, &User { legacy: 5, level: 7 });
+
+    // set_object: declared fields route to slot 0, unknown to slot 1.
+    let mut obj = std::collections::BTreeMap::new();
+    obj.insert("level".to_string(), okm_core::obj_dynamic::DynamicValue::UInt(30));
+    obj.insert("extra".to_string(), okm_core::obj_dynamic::DynamicValue::Str("dyn".into()));
+    t.set_object(&UserKey { id: 1 }, &obj);
+
+    // Typed path wrote slot 0 (level 5 → 30); declared field `legacy`
+    // kept its value (RMW, not default-clobbered).
+    let row = t.get(&UserKey { id: 1 }).unwrap();
+    assert_eq!(row.level, 30);
+    assert_eq!(row.legacy, 5);
+
+    // get_object merges: declared (to_map) + dynamic (dictionary).
+    let got = t.get_object(&UserKey { id: 1 }).unwrap();
+    assert_eq!(got["level"], okm_core::obj_dynamic::DynamicValue::UInt(30));
+    assert_eq!(got["legacy"], okm_core::obj_dynamic::DynamicValue::UInt(5));
+    assert_eq!(got["extra"], okm_core::obj_dynamic::DynamicValue::Str("dyn".into()));
+
+    // Fresh row via set_object: absent declared fields default, no get first.
+    let mut obj2 = std::collections::BTreeMap::new();
+    obj2.insert("id".to_string(), okm_core::obj_dynamic::DynamicValue::UInt(2));
+    obj2.insert("level".to_string(), okm_core::obj_dynamic::DynamicValue::UInt(1));
+    obj2.insert("legacy".to_string(), okm_core::obj_dynamic::DynamicValue::UInt(3));
+    t.set_object(&UserKey { id: 2 }, &obj2);
+    let row2 = t.get(&UserKey { id: 2 }).unwrap();
+    assert_eq!((row2.legacy, row2.level), (3, 1));
+
+    // Unknown names allocate into the dictionary (external-data rule),
+    // and get_object surfaces them.
+    assert!(t.get_variants(&UserKey { id: 2 }).unwrap().is_empty() == false);
+}
