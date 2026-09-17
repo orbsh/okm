@@ -477,7 +477,7 @@ encoding, one derive family. No separate document storage mode.
 - [x] Schema export: TableSchema extended with SlotMap (fixed-role slot
       numbers) and the ObjValueTypeSchema tag enum for the dynamic
       reader (okm-dynamic / Python side). Shipped 2026-09-16.
-- [ ] Read/delete API over the two slots: `get` returns the typed struct
+- [x] Read/delete API over the two slots: `get` returns the typed struct
       unchanged (declared fields only); `get_variants(key) ->
       BTreeMap<String, Value>` reads slot 1 with **name keys directly** —
       the id never appears in a public signature (no use case: iteration,
@@ -489,7 +489,7 @@ encoding, one derive family. No separate document storage mode.
       the two, not a base op. `delete` / `delete_by_pkey` cover both
       slots (primary + dynamic segment) in one engine batch; scans stay
       index-slot only (dynamic fields are not indexable).
-- [ ] Write side mirrors the read side: `set_variants(key, map)` writes
+- [x] Write side mirrors the read side: `set_variants(key, map)` writes
       the slot-1 entry (first-seen names allocate, single engine batch);
       `set_object(key, map)` is the name-keyed whole-obj write — fields
       present in the row struct go to the typed path (slot 0, existing
@@ -513,7 +513,7 @@ encoding, one derive family. No separate document storage mode.
 Unchanged: primary payload layout `[version][hot_len][hot][cold TLV]`
 (ADR-0011 full keys; ADR-0006 row model for declared fields).
 
-## Phase 9 — wrappers: `Option<T>` (short name, pending)
+## Phase 9 — wrappers: `Option<T>`
 
 - [x] `Option<T>` wrapper in `okm-core/src/wrappers/` (family: `Enum<T>` /
       `Offset<T>` / `Quant<P>` / `VarInt<T>`): fixed-width encoding for
@@ -532,7 +532,9 @@ Unchanged: primary payload layout `[version][hot_len][hot][cold TLV]`
 - [x] First use cases: watermark/cursor fields where 0 is a real value
   (MQ cursor keeps its 0 semantics — a plain u64 stays correct there;
   `Option` targets genuine None/Some distinctions: config overrides,
-  optional foreign keys).
+  optional foreign keys). Aura MQ audited 2026-09-16: no field needs
+  `Option` today — its tables are pure typed-path (put/get/scan), so no
+  migration was required by the obj work.
 
 ## Phase 10 — edge keys via slots: retire the direction-bit niche (high priority)
 
