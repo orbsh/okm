@@ -10,11 +10,13 @@
 mod enum_tag;
 pub mod obj_value;
 mod offset;
+mod optional;
 mod quant;
 pub mod varint;
 
 pub use enum_tag::{enum_from_name, Enum, EnumTag};
 pub use obj_value::ObjValueType;
+pub use optional::{Optional, OptionalEnc, WireWidth};
 pub use offset::{Offset, offset_decode, offset_encode};
 pub use quant::{Quant, dequantize, quantize, wire_to_be_bytes};
 pub use varint::{VarInt, VarIntEnc};
