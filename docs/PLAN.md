@@ -447,13 +447,14 @@ Design locked in [ADR-0012](adr/0012-object-model-and-field-dictionary.md).
 Core idea: a declared row IS a doc with an empty dynamic segment — one
 encoding, one derive family. No separate document storage mode.
 
-- [ ] Rename: attributes `kv_` → `ok_` (`ok_ns`, `ok_index`, `ok_ref`,
-      `ok_subscribe`, `ok_default`, `ok_event_enum`); derive `ObjEncode` →
-      `ObjEncode`; docs' concept vocabulary follows (row → doc where the
-      encoding is meant). Must land before crates.io publishing
-      (breaking change afterwards).
+- [x] Rename: attributes `kv_` → `ok_` (`ok_ns`, `ok_index`, `ok_ref`,
+      `ok_head`, `ok_subscribe`, `ok_default`, `ok_event_enum`, plus
+      `ok_reduce`/`ok_offset`/`ok_layout` caught in the sweep); derive
+      `RowEncode` → `ObjEncode`; docs' concept vocabulary follows. Shipped
+      2026-09-14 (ec07a33) — landed before crates.io publishing as required.
 - [ ] Slot allocation revision: slot 1 = obj dynamic segment, slot 2/3 =
-      field-name dictionary (bidirectional), slot 4–7 reserved, slot 8+
+      field-name dictionary (bidirectional), slot 4–13 reserved (two-ended
+      growth buffer), slot 14/15 = edge fwd/rev, slot 16+
       indexes/reduces. Existing rows byte-compatible (they use none of
       the new slots).
 - [ ] Dynamic segment (slot 1): one entry per obj, value =
@@ -469,6 +470,69 @@ encoding, one derive family. No separate document storage mode.
 - [ ] Schema export: FieldDesc table extended with the value-type enum
       and the obj dynamic-segment shape for the dynamic reader
       (okm-dynamic / Python side).
+- [ ] Read/delete API over the two slots: `get` returns the typed struct
+      unchanged (declared fields only); `get_variants(key) ->
+      BTreeMap<String, Value>` reads slot 1 with **name keys directly** —
+      the id never appears in a public signature (no use case: iteration,
+      addressing, and writes are all name-first; the dictionary is a
+      per-table append-only map cached wholesale on first access, so a
+      name lookup is one hash probe); `get_object(key) ->
+      Option<BTreeMap<String, Value>>` merges declared (FieldDesc names)
+      and dynamic (dictionary names) into one view — a combinator over
+      the two, not a base op. `delete` / `delete_by_pkey` cover both
+      slots (primary + dynamic segment) in one engine batch; scans stay
+      index-slot only (dynamic fields are not indexable).
+- [ ] `okm-dynamic::Value` gains the dynamic-segment value types
+      (Float/Bool/Null/Array/nested obj), mirroring the wire's
+      value-type enum — no third-party value tree.
+- [ ] Dictionary cache is **bidirectional**: `DictCache { by_id: HashMap<u16,
+      String>, by_name: HashMap<String, u16>, next_id: u16 }` under one
+      `OnceLock<RwLock<…>>`. Read path needs id→name (slot 2 mirror),
+      write path needs name→id (slot 3 mirror), first-seen allocation
+      needs `next_id` + one engine batch writing both slots + cache
+      update on both sides. Consistency rests on the single-writer
+      discipline (engine mutex serializes allocation); multi-process
+      shared engines degrade the cache to connection lifetime (reload on
+      reconnect) — acceptable.
 
 Unchanged: primary payload layout `[version][hot_len][hot][cold TLV]`
 (ADR-0011 full keys; ADR-0006 row model for declared fields).
+
+## Phase 9 — wrappers: `Option<T>` (short name, pending)
+
+- [ ] `Option<T>` wrapper in `okm-core/src/wrappers/` (family: `Enum<T>` /
+      `Offset<T>` / `Quant<P>` / `VarInt<T>`): fixed-width encoding for
+      optional declared fields — wire `[present u8][T wire bytes]`,
+      total width `1 + T::WIDTH`, None zero-fills the value bytes. Keeps
+      hot-segment eligibility (O(1) offsets) for fields that would
+      otherwise be forced into cold TLV; distinguishes None from a real
+      value (`Some(0)` is not `None`).
+- [ ] Derive support: field-position recognition like the other wrappers
+      (width = `1 + T::WIDTH` in FieldDesc), `[ok_default]` interplay
+      documented (default decides what a missing pre-v2 payload decodes
+      to; `Option` decides presence within a payload — orthogonal).
+- First use cases: watermark/cursor fields where 0 is a real value
+  (MQ cursor keeps its 0 semantics — a plain u64 stays correct there;
+  `Option` targets genuine None/Some distinctions: config overrides,
+  optional foreign keys).
+
+## Phase 10 — edge keys via slots: retire the direction-bit niche (high priority)
+
+- [ ] Replace ADR-0001's direction-bit niche with plain slot allocation:
+      edge forward = slot 14, edge reverse = slot 15 (top of the fixed
+      nibble region, growing toward the middle — heap/stack shape; see
+      the revised slot table). Header becomes the raw ns big-endian value
+      (`head_bytes` = `ns.to_be_bytes()`, `DIR_BIT` deleted) — no
+      transform, no hidden halves.
+- [ ] Full 16-bit ns space shared by tables and edges for real (today
+      tables have it, edges are capped at 0..=32767 by the niche). The
+      ns dictionary stops being a "shared-in-theory" space.
+- [ ] Table/edge layout fully uniform: same header discipline, edge just
+      declares two slots instead of one. Supersedes ADR-0001 (record the
+      supersession + rationale: the 1 saved byte is cheap, the permanent
+      cognitive load of `ns<<1|dir` is not).
+- [ ] Sweep: `edge.rs` (`head_bytes`/`DIR_BIT`), `edge_encode.rs`
+      generation, edge test hex locks, key-layout docs, ADR-0001 update.
+      Wire-format change for edge keys — dev stage, no stored data to
+      migrate.
+
