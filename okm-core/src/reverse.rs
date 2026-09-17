@@ -79,7 +79,7 @@ impl_rev_signed!(i64, u64, 8);
 pub struct Reverse<T: Reversible>(pub T);
 
 impl<T: Reversible> Reverse<T> {
-    /// Bridge constructor (ADR-0012 row-map bridge): `T` inferred from
+    /// Bridge constructor (ADR-0012 document-map bridge): `T` inferred from
     /// the field type — no type interpolation in generated code.
     pub fn from_dyn(v: u64) -> Self
     where

@@ -1,6 +1,6 @@
 //! Edge assembly point: [`Edge`]`<S, E>` — engine + edge type = the
 //! operation surface of one relationship. Edges are the node-to-node
-//! accessor family; row tables use [`crate::document::Table`] (ADR-0006:
+//! accessor family; document tables use [`crate::document::Table`] (ADR-0006:
 //! Collection narrowed to edges, storage bound to the store instance).
 //!
 //! No `KvRecord` macro exists: binding key and value/edge types needs type
@@ -37,7 +37,7 @@ impl<S: VirtualStorage, E: KvEdge> Edge<S, E> {
 
     /// Encode this edge's double write (forward + reverse) into an
     /// externally owned batch — no write until commit. The
-    /// cross-collection atomic path (ADR-0003): rows and edges share one
+    /// cross-collection atomic path (ADR-0003): documents and edges share one
     /// batch, one `commit_batch` covers them all.
     pub fn save_into(&self, batch: &mut impl crate::storage::KvBatch, a: &E::A, b: &E::B) {
         let e = E::from_parts(a.clone(), b.clone());

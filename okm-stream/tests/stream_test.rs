@@ -17,7 +17,7 @@ fn field_filter_keeps_declared_interest_only() {
     // consumer's interest is `cents >= 10000`, declared here, nowhere
     // else (no declaration-side field set — see PLAN).
     let downstream = Stream::new(move |ev: Event<String, Price>| {
-        sink.lock().unwrap().push(ev.row.cents);
+        sink.lock().unwrap().push(ev.document.cents);
         true
     });
     let upstream = filter_field(|p: &Price| p.cents >= 10_000)(downstream);
@@ -44,7 +44,7 @@ fn with_previous_derives_before_after() {
     // with_previous: the consumer-side replacement for Event.old — a
     // per-key cache in the combinator, zero write-path clone tax.
     let downstream = Stream::new(move |ev: Event<String, (Option<Price>, Price)>| {
-        let (old, new) = &ev.row;
+        let (old, new) = &ev.document;
         sink.lock().unwrap().push((old.as_ref().map(|p| p.cents), new.cents));
         true
     });

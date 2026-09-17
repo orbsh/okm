@@ -1,5 +1,5 @@
 //! save_into / commit_batch — the cross-collection atomic path
-//! (ADR-0003): a row table and an edge table encode into one batch, one
+//! (ADR-0003): a document table and an edge table encode into one batch, one
 //! commit makes them live or die together. Covers both orderings (nothing
 //! written before commit; everything written after).
 
@@ -52,7 +52,7 @@ fn save_into_defers_until_commit() {
     // Commit: primary + index entries land together.
     store.commit_batch(batch).expect("commit");
     let t2: Collection<TestStore, PostKey, Post> = Collection::new(store.clone());
-    assert!(t2.get(&PostKey { id: 1 }).is_some(), "row lands at commit");
+    assert!(t2.get(&PostKey { id: 1 }).is_some(), "document lands at commit");
 }
 
 #[test]

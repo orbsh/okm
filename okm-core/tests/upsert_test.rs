@@ -37,7 +37,7 @@ fn upsert_with_full_paths() {
     assert_eq!(t.get(&CounterKey { id: 1 }).unwrap().hits, 15);
 
     // ---------- write path fired: index entries present ----------
-    // by_bucket(7) scan must see the row (index entry written by the put
+    // by_bucket(7) scan must see the document (index entry written by the put
     // inside upsert_with, not bypassed).
     let scanned = t.scan::<Counter_ByBucket>(&7u32.to_be_bytes());
     assert_eq!(scanned.len(), 1);
@@ -56,7 +56,7 @@ fn upsert_with_full_paths() {
     let sink = seen.clone();
     okm_subscribe::CHANNEL_ROWEVENT.register(move |ev: okm_subscribe::RowEvent| {
         let okm_subscribe::RowEvent::Counter(ev) = ev else { return false };
-        sink.lock().unwrap().push(ev.row.hits);
+        sink.lock().unwrap().push(ev.document.hits);
         true
     });
     t.upsert_with(&CounterKey { id: 1 }, |old| {

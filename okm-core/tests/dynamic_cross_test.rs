@@ -122,9 +122,9 @@ fn rust_write_dynamic_read_and_reverse() {
     assert_eq!(rust_key.org_id, 0x0A0B_0C0D);
     assert_eq!(rust_key.user_id, 0x1122_3344_5566_7788);
     t.put(&rust_key, &rust_decoded);
-    let row = t.get(&rust_key).expect("rust reads dynamic-encoded bytes");
-    assert_eq!(row.name, "alice");
-    assert_eq!(row.level, 9);
+    let document = t.get(&rust_key).expect("rust reads dynamic-encoded bytes");
+    assert_eq!(document.name, "alice");
+    assert_eq!(document.level, 9);
 }
 
 #[test]

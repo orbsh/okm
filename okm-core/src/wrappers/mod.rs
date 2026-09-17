@@ -3,9 +3,9 @@
 //! `docs/PLAN.md` Phase 2 and ADR-0007.
 //!
 //! Regime split: the wrappers in this module are *self-contained per
-//! row* — decoding one row needs no neighbor. Column-block transforms
+//! document* — decoding one document needs no neighbor. Column-block transforms
 //! (`Delta`, `Rle`, `Offset` without a static base) live in the
-//! row-group regime, not here.
+//! document-group regime, not here.
 
 mod list;
 mod ref_mod;

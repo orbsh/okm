@@ -84,7 +84,7 @@ fn bare_and_hosted_coexist_with_allocation_discipline() {
     let mut hs = hosted.open();
 
     // Shard writes ns-1 keys; hosted app B's segment is [0,30].
-    bs.put([1u8, 5].to_vec(), b"shard-row".to_vec());
+    bs.put([1u8, 5].to_vec(), b"shard-document".to_vec());
     hs.put(b"appkey".to_vec(), b"app-b".to_vec());
 
     for _ in 0..200 {
@@ -93,6 +93,6 @@ fn bare_and_hosted_coexist_with_allocation_discipline() {
         }
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
-    assert_eq!(bs.get(&[1u8, 5]).as_deref(), Some(b"shard-row".as_slice()));
+    assert_eq!(bs.get(&[1u8, 5]).as_deref(), Some(b"shard-document".as_slice()));
     assert_eq!(hs.get(b"appkey").as_deref(), Some(b"app-b".as_slice()));
 }

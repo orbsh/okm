@@ -18,7 +18,7 @@ pub fn encode_key(schema: &TableSchema, values: &ValueMap) -> Result<Vec<u8>, Co
 /// Encode the payload: `[version u8][hot_len u16 BE][hot][cold TLV]`.
 /// Cold frames are written in schema declaration order (the map order is
 /// irrelevant); every declared cold field MUST be present — dynamic
-/// payloads are fully materialized (no partial rows).
+/// payloads are fully materialized (no partial documents).
 pub fn encode_payload(schema: &TableSchema, values: &ValueMap) -> Result<Vec<u8>, CodecError> {
     let mut hot = Vec::with_capacity(schema.hot_width);
     for f in &schema.hot_fields {

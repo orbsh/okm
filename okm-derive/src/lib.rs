@@ -4,7 +4,7 @@
 //!
 //! - `KeyEncode`: fixed-width key encoding (`key_encode.rs`).
 //! - `DocumentEncode`: value/payload encoding + index declarations
-//!   (`row_encode.rs`).
+//!   (`document_encode.rs`).
 //! - `EdgeEncode`: bidirectional edges (`edge_encode.rs`).
 //!
 //! Schema stability is locked by hex assertions in the test suite
@@ -12,7 +12,7 @@
 
 mod edge_encode;
 mod key_encode;
-mod row_encode;
+mod document_encode;
 mod schema;
 mod storage_encode;
 
@@ -47,8 +47,8 @@ pub fn derive_key_encode(input: TokenStream) -> TokenStream {
 }
 
 #[proc_macro_derive(DocumentEncode, attributes(ok_ref, ok_ns, ok_partition, ok_index, ok_reduce, ok_offset, ok_layout, ok_default, ok_subscribe, ok_event_enum))]
-pub fn derive_row_encode(input: TokenStream) -> TokenStream {
-    let out = row_encode::derive(input.clone());
+pub fn derive_document_encode(input: TokenStream) -> TokenStream {
+    let out = document_encode::derive(input.clone());
     dump("DocumentEncode", input, &out.clone().into());
     out
 }

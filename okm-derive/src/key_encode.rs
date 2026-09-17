@@ -13,7 +13,7 @@ use quote::quote;
 use syn::{parse_macro_input, Data, DeriveInput, Fields};
 
 /// Identity-side field encoder: same shape as the payload-side triple in
-/// `row_encode` (u8/u16/u32/u64 BE, `[u8; N]`).
+/// `document_encode` (u8/u16/u32/u64 BE, `[u8; N]`).
 struct Field {
     ident: syn::Ident,
     enc: TS2,
@@ -25,13 +25,13 @@ struct Field {
 
 /// FieldDesc table entries: `(name, FieldType, width)`, declaration order.
 fn field_desc_entries(fs: &[Field]) -> TS2 {
-    let rows = fs.iter().map(|f| {
+    let documents = fs.iter().map(|f| {
         let name = f.ident.to_string();
         let kind = f.kind.as_ref().expect("field kind");
         let w = &f.width;
         quote! { (::okm_core::FieldDesc { name: #name, ty: #kind, width: #w }) }
     });
-    quote! { &[ #(#rows),* ] }
+    quote! { &[ #(#documents),* ] }
 }
 
 pub fn derive(input: TokenStream) -> TokenStream {
@@ -181,7 +181,7 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> Vec<Field> {
             _ if ty_str.starts_with("Reverse<") => {
                 panic!(
                     "{ctx}: Reverse<T> on key field {id} — keys are fixed-width identity; \
-                     put Reverse fields in the row payload instead"
+                     put Reverse fields in the document payload instead"
                 )
             }
             _ if ty_str.starts_with("VarInt<")
@@ -191,7 +191,7 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> Vec<Field> {
             {
                 panic!(
                     "{ctx}: wrapper type {ty_str} on key field {id} — keys are fixed-width \
-                     identity; wrapper codecs belong in the row payload"
+                     identity; wrapper codecs belong in the document payload"
                 )
             }
             _ if ty_str.starts_with("String") => {

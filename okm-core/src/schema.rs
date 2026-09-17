@@ -195,7 +195,7 @@ impl TableSchema {
     }
 
     /// Slot 0 = primary (ADR-0005); index slots live outside this schema
-    /// (they are derived state, rebuilt from rows).
+    /// (they are derived state, rebuilt from documents).
     pub const PRIMARY_SLOT: u8 = PRIMARY_SLOT;
 }
 

@@ -125,7 +125,7 @@ impl VirtualStorage for RemoteStore {
 /// the real engine behind a mutex (single-writer discipline, held
 /// across one execution pass — the same boundary a local caller's
 /// `&mut self` provides) and knows exactly one thing: its declared
-/// prefix. No TLV, no rows, no OKM semantics — storing garbage is
+/// prefix. No TLV, no documents, no OKM semantics — storing garbage is
 /// indistinguishable from storing data (ADR-0010 §2). The `NestStorage`
 /// derive generates this shape; this manual form is its reference.
 /// Transport-free execution core (ADR-0010 §6): ONE intake for every op

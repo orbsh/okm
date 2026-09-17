@@ -1,6 +1,6 @@
 //! Subscribe channel integration (ADR-0008): `#[ok_subscribe]` (bare)
 //! annotated rows emit events on the write path, build.rs collects them
-//! into the `RowEvent` enum (variant = row type name) +
+//! into the `RowEvent` enum (variant = document type name) +
 //! `crate::okm_subscribe::CHANNEL_ROWEVENT`, and a registered sink
 //! receives put/delete events. Also covers no-sink drop semantics.
 //!
@@ -28,7 +28,7 @@ fn subscribe_round_trip() {
             return false; // simulate a bounded transport dropping
         }
         // Multi-variant match — the exhaustiveness contract: every
-        // subscribed row type must name its variant handling here.
+        // subscribed document type must name its variant handling here.
         let (op, epoch, tag) = match ev {
             okm_subscribe::RowEvent::Account(ev) => (ev.op, ev.epoch, ev.key.id),
             okm_subscribe::RowEvent::Audit(ev) => (ev.op, ev.epoch, 100 + ev.key.id),
@@ -46,7 +46,7 @@ fn subscribe_round_trip() {
 
     // Epoch: the table's monotonic write-batch counter — 1, 2, 3 across
     // the three writes, giving consumers an exact same-table boundary.
-    // Fan-in: the second row type lands in the same enum (tag 100+).
+    // Fan-in: the second document type lands in the same enum (tag 100+).
     let mut a: Collection<TestStore, AuditKey, Audit> = Collection::new(TestStore::slatedb_mem());
     a.put(&AuditKey { id: 7 }, &Audit { note: "hi".into() });
     a.delete_by_pkey(&AuditKey { id: 7 });
@@ -65,7 +65,7 @@ fn subscribe_round_trip() {
 
 #[test]
 fn no_sink_drops_silently() {
-    // A subscribed row with nobody consuming: writes must not block or
+    // A subscribed document with nobody consuming: writes must not block or
     // panic — the zero-cost default. A write round-trip works regardless
     // of event delivery. (Ghost rides its own `ShadowEvents` enum, so
     // this test cannot race the RowEvent consumers above.)

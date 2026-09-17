@@ -28,15 +28,15 @@ pub struct SRow {
 
 #[test]
 fn string_tlv_round_trip_through_payload() {
-    let row = SRow {
+    let document = SRow {
         score: 7,
         name: "alice".into(),
         note: "多字节 UTF-8 ✓".into(),
         flag: 0xA5,
     };
-    let p = row.encode_payload();
+    let p = document.encode_payload();
     let back = SRow::decode_payload(&p);
-    assert_eq!(back, row);
+    assert_eq!(back, document);
 
     // Wire shape: [ver u8][hot_len u16 BE][hot segment][cold TLV]. Hot =
     // score (u32 @3..7) then flag (u8 @7..8) in declaration order →
@@ -77,11 +77,11 @@ pub struct RRow {
 
 #[test]
 fn reverse_wire_encoding_is_bit_flipped_and_involutive() {
-    let row = RRow {
+    let document = RRow {
         score: 9,
         ts_rev: Reverse(0x0102_0304_0506_0708u64),
     };
-    let p = row.encode_payload();
+    let p = document.encode_payload();
     // [ver u8][hot_len u16 BE][score u16 BE @3..5][Reverse u64 @5..13].
     // Plain BE of the inner value would be 01 02 03 04 05 06 07 08; the
     // wrapped encoding is the full-width bitwise NOT.
@@ -91,7 +91,7 @@ fn reverse_wire_encoding_is_bit_flipped_and_involutive() {
         &[!0x01, !0x02, !0x03, !0x04, !0x05, !0x06, !0x07, !0x08]
     );
     let back = RRow::decode_payload(&p);
-    assert_eq!(back, row);
+    assert_eq!(back, document);
 }
 
 #[test]
@@ -142,7 +142,7 @@ fn parquet_roundtrip_with_string_columns() {
     let n = parquet_io::import_parquet(&mut t2, &path).unwrap();
     assert_eq!(n, 3);
     for (i, name) in names.iter().enumerate() {
-        let r = t2.get(&SKey { shard: 1, id: i as u64 }).expect("row");
+        let r = t2.get(&SKey { shard: 1, id: i as u64 }).expect("document");
         assert_eq!(&r.name, name);
         assert_eq!(r.note, format!("note-{i}"));
     }
@@ -154,13 +154,13 @@ fn parquet_roundtrip_with_string_columns() {
 fn payload_wire_hex_snapshot() {
     // Pins the exact byte layout: [ver u8][hot_len u16 BE][hot seg][cold TLV].
     // Any change here is a wire break — bump LAYOUT_VERSION and update this.
-    let row = SRow {
+    let document = SRow {
         score: 0x0102_0304,
         name: "ab".into(),
         note: String::new(),
         flag: 0xFF,
     };
-    let p = row.encode_payload();
+    let p = document.encode_payload();
     // hot = score(4) + flag(1) → hot_len 5; cold = name frame (5+2), note frame (5+0).
     let expect = [
         1u8, 0, 5,             // version 1, hot_len 5
@@ -171,7 +171,7 @@ fn payload_wire_hex_snapshot() {
     ]
     .to_vec();
     assert_eq!(p, expect, "wire format snapshot (hex: {})", p.iter().map(|b| format!("{b:02x}")).collect::<String>());
-    assert_eq!(SRow::decode_payload(&p), row);
+    assert_eq!(SRow::decode_payload(&p), document);
 }
 
 // ================= Version compatibility =================
@@ -211,15 +211,15 @@ fn older_payload_decodes_with_appended_defaults() {
         memo: String::default(),
     };
     assert_eq!(EvolvedRow::decode_payload(&p), evolved);
-    // Header version is the OLD row's (1), which is <= schema's 2 → accepted.
+    // Header version is the OLD document's (1), which is <= schema's 2 → accepted.
     assert_eq!(p[0], 1);
     assert_eq!(<EvolvedRow as Document>::LAYOUT_VERSION, 2);
 }
 
 #[test]
 fn newer_payload_version_is_rejected() {
-    let row = SRow { score: 1, name: "x".into(), note: String::new(), flag: 0 };
-    let mut p = row.encode_payload();
+    let document = SRow { score: 1, name: "x".into(), note: String::new(), flag: 0 };
+    let mut p = document.encode_payload();
     p[0] = 99; // a future layout version
     let err = std::panic::catch_unwind(|| SRow::decode_payload(&p));
     assert!(err.is_err(), "payload from a newer layout must panic");
@@ -244,8 +244,8 @@ pub struct DefaultedRow {
 
 #[test]
 fn ok_default_expression_used_for_missing_tail_field() {
-    let row = DefaultedRow { score: 5, name: "x".into(), flag: 77 };
-    let p = row.encode_payload();
+    let document = DefaultedRow { score: 5, name: "x".into(), flag: 77 };
+    let p = document.encode_payload();
     assert_eq!(p[0], 3, "explicit layout version 3");
     // Simulate an older payload without flag: strip the hot tail byte AND
     // fix the header hot_len (an older schema's header recorded 4, not 5).

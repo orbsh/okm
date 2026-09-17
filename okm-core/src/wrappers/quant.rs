@@ -58,7 +58,7 @@ impl<const P: u32> Quant<P> {
     pub fn new(v: f64) -> Self {
         Quant(v)
     }
-    /// Bridge constructor (ADR-0012 row-map bridge): `P` inferred from
+    /// Bridge constructor (ADR-0012 document-map bridge): `P` inferred from
     /// the field type — no type interpolation in generated code.
     pub fn from_dyn(v: f64) -> Self {
         Quant(v)

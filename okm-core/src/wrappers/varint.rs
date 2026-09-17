@@ -72,7 +72,7 @@ impl_varint!(u64, 10);
 pub struct VarInt<T: VarIntEnc>(pub T);
 
 impl<T: VarIntEnc> VarInt<T> {
-    /// Bridge constructor (ADR-0012 row-map bridge): `T` inferred from
+    /// Bridge constructor (ADR-0012 document-map bridge): `T` inferred from
     /// the field type — no type interpolation in generated code.
     pub fn from_dyn(v: u64) -> Self {
         VarInt(T::varint_from_u64(v))
