@@ -68,6 +68,12 @@ pub trait NameResolver {
     fn resolve(&mut self, name: &str) -> u16;
 }
 
+impl<F: FnMut(&str) -> u16> NameResolver for F {
+    fn resolve(&mut self, name: &str) -> u16 {
+        self(name)
+    }
+}
+
 /// Append one frame for a NAMED field: nested `Obj` values recurse,
 /// each nested name resolved through the same resolver (nested objects
 /// share the obj's dictionary — one vocabulary per table).
