@@ -7,7 +7,7 @@
 //! (`Delta`, `Rle`, `Offset` without a static base) live in the
 //! document-group regime, not here.
 
-mod list;
+mod refs;
 mod ref_mod;
 mod enum_tag;
 pub mod obj_value;
@@ -16,7 +16,7 @@ mod optional;
 mod quant;
 pub mod varint;
 
-pub use list::List;
+pub use refs::Refs;
 pub use ref_mod::Ref;
 pub use enum_tag::{enum_from_name, Enum, EnumTag};
 pub use obj_value::ObjValueType;

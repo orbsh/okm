@@ -1,4 +1,4 @@
-use okm_core::{DocumentEncode, KeyEncode, List, TestStore};
+use okm_core::{DocumentEncode, KeyEncode, Refs, TestStore};
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
 pub struct RoomKey {
@@ -18,7 +18,7 @@ pub struct Room {
 #[ok_ns(61)]
 pub struct Dept {
     pub name: String,
-    pub rooms: List<Room, RoomKey>, // no attribute needed
+    pub rooms: Refs<Room, RoomKey>, // no attribute needed
 }
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
@@ -41,7 +41,7 @@ fn list_roundtrip_and_stale_release() {
     // Own-write: three rooms in one put.
     depts.put(&dept_key, &Dept {
         name: "platform".into(),
-        rooms: List::own_all(
+        rooms: Refs::own_all(
             vec![k1.clone(), k2.clone(), k3.clone()],
             vec![
                 Room { label: "alpha".into() },
@@ -61,7 +61,7 @@ fn list_roundtrip_and_stale_release() {
     // Shorten the list: k3 drops out -> stale release deletes it.
     depts.put(&dept_key, &Dept {
         name: "platform".into(),
-        rooms: List::own_all(
+        rooms: Refs::own_all(
             vec![k1.clone(), k2.clone()],
             vec![
                 Room { label: "alpha".into() },
@@ -75,7 +75,7 @@ fn list_roundtrip_and_stale_release() {
     // Reference-only: list of keys, children untouched.
     depts.put(&dept_key, &Dept {
         name: "platform".into(),
-        rooms: List::ref_keys(vec![k1.clone(), k2.clone()]),
+        rooms: Refs::new(vec![k1.clone(), k2.clone()]),
     });
     assert_eq!(rooms.get(&k1).unwrap().label, "alpha");
     assert!(rooms.get(&k2).is_some());

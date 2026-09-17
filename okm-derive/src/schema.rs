@@ -540,21 +540,21 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> Vec<FieldSchema> {
                     Some(quote! { ::okm_core::FieldType::FixedBytes }),
                 )
             }
-            _ if ty_str.starts_with("List<") => {
-                // List<D, K> — many-form of Ref: wire = variable-length
+            _ if ty_str.starts_with("Refs<") => {
+                // Refs<D, K> — many-form of Ref: wire = variable-length
                 // cold frame [count u32 BE][K bytes × count]. Values never
                 // touch this wire; Collection::put's embed pass writes
                 // children, get's deref pass backfills them.
                 let generics = ty_str
-                    .trim_start_matches("List<")
+                    .trim_start_matches("Refs<")
                     .trim_end_matches('>')
                     .to_string();
                 let (_d_ty, k_ty) = match generics.rsplit_once(',') {
                     Some((d, k)) => (d.trim().to_string(), k.trim().to_string()),
-                    None => panic!("{ctx}: List requires <D, K> (field {id})"),
+                    None => panic!("{ctx}: Refs requires <D, K> (field {id})"),
                 };
                 let k_parsed: syn::Type = syn::parse_str(&k_ty)
-                    .unwrap_or_else(|e| panic!("{ctx}: bad List key type `{k_ty}`: {e}"));
+                    .unwrap_or_else(|e| panic!("{ctx}: bad Refs key type `{k_ty}`: {e}"));
                 (
                     // enc: [count u32 BE][key bytes × n] — child keys share
                     // one static KEY_LEN (the K type is fixed-width).
@@ -574,7 +574,7 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> Vec<FieldSchema> {
                             keys.push(<#k_parsed as ::okm_core::KeyEncode>::decode(&b[offset..offset+kl]));
                             offset += kl;
                         }
-                        ::okm_core::List {
+                        ::okm_core::Refs {
                             keys,
                             values: (0..n).map(|_| ::core::option::Option::None).collect(),
                         }
@@ -689,8 +689,8 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> Vec<FieldSchema> {
                 let k_ty: syn::Type = syn::parse_str(&k_ty_str)
                     .unwrap_or_else(|e| panic!("{ctx}: bad Ref key type `{k_ty_str}`: {e}"));
                 quote! { ::okm_core::Ref { key: <#k_ty as ::core::default::Default>::default(), value: None } }
-            } else if ty_str.starts_with("List<") {
-                quote! { ::okm_core::List { keys: ::std::vec::Vec::new(), values: ::std::vec::Vec::new() } }
+            } else if ty_str.starts_with("Refs<") {
+                quote! { ::okm_core::Refs { keys: ::std::vec::Vec::new(), values: ::std::vec::Vec::new() } }
             } else {
                 ok_default
                     .unwrap_or_else(|| quote! { <#ty as ::core::default::Default>::default() })

@@ -580,7 +580,7 @@ fn emit_row_impl(schema: &DocumentSchema) -> TS2 {
         let is_varint = ty_str.starts_with("VarInt<") || ty_str.starts_with("VarInt <");
         let is_enum = ty_str.starts_with("Enum<") || ty_str.starts_with("Enum <");
         let is_offset = ty_str.starts_with("Offset");
-        let is_embed = ty_str.starts_with("Ref<") || ty_str.starts_with("Ref <") || ty_str.starts_with("List<");
+        let is_embed = ty_str.starts_with("Ref<") || ty_str.starts_with("Ref <") || ty_str.starts_with("Refs<");
         // Ref<D, K>: extract the K type for key encode/decode.
         let embed_default = if ty_str.starts_with("Ref<") || ty_str.starts_with("Ref <") {
             let k_ty_str = ty_str
@@ -593,8 +593,8 @@ fn emit_row_impl(schema: &DocumentSchema) -> TS2 {
             let k_ty: syn::Type = syn::parse_str(&k_ty_str)
                 .unwrap_or_else(|e| panic!("bridge: bad Ref key type `{k_ty_str}`: {e}"));
             quote! { ::okm_core::Ref { key: <#k_ty as ::core::default::Default>::default(), value: None } }
-        } else if ty_str.starts_with("List<") {
-            quote! { ::okm_core::List { keys: ::std::vec::Vec::new(), values: ::std::vec::Vec::new() } }
+        } else if ty_str.starts_with("Refs<") {
+            quote! { ::okm_core::Refs { keys: ::std::vec::Vec::new(), values: ::std::vec::Vec::new() } }
         } else {
             quote! {}
         };
@@ -603,7 +603,7 @@ fn emit_row_impl(schema: &DocumentSchema) -> TS2 {
                 .trim_start_matches("Ref <")
                 .trim_start_matches("Ref<")
                 .trim_start_matches("List <")
-                .trim_start_matches("List<")
+                .trim_start_matches("Refs<")
                 .trim_end_matches('>')
                 .to_string();
             let (d_str, k_str) = d_k
@@ -614,7 +614,7 @@ fn emit_row_impl(schema: &DocumentSchema) -> TS2 {
                 .unwrap_or_else(|e| panic!("bridge: bad Ref doc type `{d_str}`: {e}"));
             let k_ty: syn::Type = syn::parse_str(&k_str)
                 .unwrap_or_else(|e| panic!("bridge: bad Ref key type `{k_str}`: {e}"));
-            embed_fields.push((id.clone(), d_ty, k_ty, ty_str.starts_with("List")));
+            embed_fields.push((id.clone(), d_ty, k_ty, ty_str.starts_with("Refs")));
         }
         let embed_k: Option<syn::Type> = if is_embed {
             let generics = ty_str
@@ -780,7 +780,7 @@ fn emit_row_impl(schema: &DocumentSchema) -> TS2 {
                 },
             });
         } else if is_embed {
-            // List field: map view = Array of child key bytes.
+            // Refs field: map view = Array of child key bytes.
             let kt = embed_k.clone().expect("list: key type");
             to_map_arms.extend(quote! {
                 out.insert(#name.to_string(), ::okm_core::obj_dynamic::DynamicValue::Array(
@@ -790,7 +790,7 @@ fn emit_row_impl(schema: &DocumentSchema) -> TS2 {
             from_map_arms.extend(quote! {
                 #id: match map.get(#name) {
                     Some(::okm_core::obj_dynamic::DynamicValue::Array(items)) => {
-                        ::okm_core::List {
+                        ::okm_core::Refs {
                             keys: items.iter().filter_map(|v| match v {
                                 ::okm_core::obj_dynamic::DynamicValue::Bytes(b) =>
                                     Some(<#kt as ::okm_core::KeyEncode>::decode(b)),
