@@ -188,14 +188,14 @@ mod tests {
 
     #[test]
     fn peers_spans_both_directions_and_both_edge_types() {
-        // EdgeTable owns its engine; link phase returns the store.
-        let mut follows: okm_core::EdgeTable<TestStore, FollowsEdge> =
-            okm_core::EdgeTable::new(TestStore::slatedb_mem());
+        // Edge owns its engine; link phase returns the store.
+        let mut follows: okm_core::Edge<TestStore, FollowsEdge> =
+            okm_core::Edge::new(TestStore::slatedb_mem());
         follows.link(&mk(1), &mk(2));
         follows.link(&mk(3), &mk(1)); // incoming for node 1
         let mut store = follows.store;
-        let mut mentions: okm_core::EdgeTable<TestStore, MentionsEdge> =
-            okm_core::EdgeTable::new(std::mem::take(&mut store));
+        let mut mentions: okm_core::Edge<TestStore, MentionsEdge> =
+            okm_core::Edge::new(std::mem::take(&mut store));
         mentions.link(&mk(1), &mk(4));
         let store = mentions.store;
 
@@ -213,9 +213,9 @@ mod tests {
     struct FollowsNeighbors;
     impl GraphEdge<TestStore> for FollowsNeighbors {
         fn peers(&self, store: TestStore, node: &[u8]) -> Vec<Vec<u8>> {
-            // Typed adapter over EdgeTable — the call site owns the
+            // Typed adapter over Edge — the call site owns the
             // edge type and the node encoding.
-            let t = okm_core::EdgeTable::<TestStore, FollowsEdge>::new(store);
+            let t = okm_core::Edge::<TestStore, FollowsEdge>::new(store);
             // Raw byte hop: decode the node, run both directions.
             let n = UserKey::decode(node);
             let mut out = t
@@ -234,7 +234,7 @@ mod tests {
     struct MentionsNeighbors;
     impl GraphEdge<TestStore> for MentionsNeighbors {
         fn peers(&self, store: TestStore, node: &[u8]) -> Vec<Vec<u8>> {
-            let t = okm_core::EdgeTable::<TestStore, MentionsEdge>::new(store);
+            let t = okm_core::Edge::<TestStore, MentionsEdge>::new(store);
             let n = UserKey::decode(node);
             let mut out = t
                 .forward(&n)
@@ -252,8 +252,8 @@ mod tests {
 
     #[test]
     fn walk_two_hops_reaches_friends_of_friends() {
-        let mut follows: okm_core::EdgeTable<TestStore, FollowsEdge> =
-            okm_core::EdgeTable::new(TestStore::slatedb_mem());
+        let mut follows: okm_core::Edge<TestStore, FollowsEdge> =
+            okm_core::Edge::new(TestStore::slatedb_mem());
         // 1 → 2 → 3: two hops from 1 reach 3.
         follows.link(&mk(1), &mk(2));
         follows.link(&mk(2), &mk(3));

@@ -21,9 +21,9 @@ use arrow::datatypes::{DataType, Field as ArrowField, Schema};
 
 use crate::storage::VirtualStorage;
 use crate::field::{FieldDesc, FieldType};
-use crate::index::Row;
+use crate::index::Document;
 use crate::key::KeyEncode;
-use crate::table::Table;
+use crate::document::Table;
 
 /// Arrow column type for a declared field kind.
 fn arrow_type(ty: FieldType) -> DataType {
@@ -82,17 +82,17 @@ fn logical_value(raw: &[u8], ty: FieldType) -> Vec<u8> {
 
 /// Columnar projection of a table: key fields then payload fields, in
 /// declaration order within each half. Two sources, one schema.
-struct Projection<K: KeyEncode, R: Row<Key = K>> {
+struct Projection<K: KeyEncode, R: Document<Key = K>> {
     schema: Schema,
     key_fields: &'static [FieldDesc],
     row_fields: &'static [FieldDesc],
     _marker: std::marker::PhantomData<(K, R)>,
 }
 
-impl<K: KeyEncode, R: Row<Key = K>> Projection<K, R> {
+impl<K: KeyEncode, R: Document<Key = K>> Projection<K, R> {
     fn new() -> Self {
         let key_fields = <K as KeyEncode>::FIELDS;
-        let row_fields = <R as Row>::FIELDS;
+        let row_fields = <R as Document>::FIELDS;
         let mut fields = Vec::with_capacity(key_fields.len() + row_fields.len());
         for f in key_fields {
             fields.push(ArrowField::new(f.name, arrow_type(f.ty), false));
@@ -122,7 +122,7 @@ impl<K: KeyEncode, R: Row<Key = K>> Projection<K, R> {
 /// `Vec<Vec<u8>>` scratch (column-major), then each column becomes a single
 /// `Buffer` of concatenated fixed-width values — arrow primitives are
 /// little-endian, so a byte-swapping copy is required per value.
-fn build_batch<K: KeyEncode, R: Row<Key = K>>(
+fn build_batch<K: KeyEncode, R: Document<Key = K>>(
     proj: &Projection<K, R>,
     rows: &[(Vec<u8>, Vec<u8>)],
 ) -> RecordBatch {
@@ -155,7 +155,7 @@ fn build_batch<K: KeyEncode, R: Row<Key = K>>(
     // Payload half: two-segment layout behind the 3-byte header — hot
     // segment is fixed-width at static offsets; cold segment is TLV walked
     // frame-by-frame (each preceding variable-length frame shifts it).
-    let hot_width = <R as Row>::HOT_WIDTH;
+    let hot_width = <R as Document>::HOT_WIDTH;
     let header = 3usize; // version u8 + hot_len u16
     let cold_fields: Vec<(usize, &FieldDesc)> = proj
         .row_fields
@@ -301,7 +301,7 @@ fn swap_be(src: &[u8], off: usize, width: usize, ty: FieldType) -> Vec<u8> {
     }
 }
 
-impl<S: VirtualStorage, K: KeyEncode, R: Row<Key = K>> Table<S, K, R> {
+impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> {
     /// Export all rows as one Arrow `RecordBatch` (ADR-0007 Phase 1).
     ///
     /// Columns: key fields (declaration order) then payload fields. All

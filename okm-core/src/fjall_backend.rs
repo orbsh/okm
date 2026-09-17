@@ -1,7 +1,7 @@
 //! fjall engine adapter: `FjallStore` = Database + keyspace wrapper,
 //! implementing the sync `VirtualStorage`.
 //!
-//! One OKM EdgeTable corresponds to one keyspace; ns prefixes come with the
+//! One OKM Edge corresponds to one keyspace; ns prefixes come with the
 //! key encoding itself, so different edge types sharing a keyspace do not
 //! conflict.
 

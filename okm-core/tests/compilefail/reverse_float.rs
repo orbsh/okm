@@ -1,4 +1,4 @@
-use okm_core::{KeyEncode, Reverse, ObjEncode};
+use okm_core::{KeyEncode, Reverse, DocumentEncode};
 
 #[derive(KeyEncode)]
 #[ok_ns(1)]
@@ -6,7 +6,7 @@ struct K {
     a: u32,
 }
 
-#[derive(ObjEncode)]
+#[derive(DocumentEncode)]
 #[ok_ref(K)]
 struct R {
     f: Reverse<f64>,

@@ -11,7 +11,7 @@
 //! language borders as JSON/whatever; the struct itself is plain data.
 
 use crate::field::FieldType;
-use crate::index::{Row, PRIMARY_SLOT};
+use crate::index::{Document, PRIMARY_SLOT};
 use crate::key::KeyEncode;
 
 /// One field's placement: a key field is addressed by static offset; a
@@ -132,7 +132,7 @@ pub struct SlotMap {
 
 impl TableSchema {
     /// Export the declaration of `<K, R>` as structured data.
-    pub fn of<K: KeyEncode, R: Row<Key = K>>() -> Self {
+    pub fn of<K: KeyEncode, R: Document<Key = K>>() -> Self {
         let mut key_fields = Vec::new();
         let mut off = 0usize;
         for f in <K as KeyEncode>::FIELDS {
@@ -152,7 +152,7 @@ impl TableSchema {
         let mut hot_fields = Vec::new();
         let mut cold_fields = Vec::new();
         let mut hot_off = 0usize;
-        for (fi, f) in <R as Row>::FIELDS.iter().enumerate() {
+        for (fi, f) in <R as Document>::FIELDS.iter().enumerate() {
             if f.width > 0 {
                 hot_fields.push(FieldSchema {
                     name: f.name.to_string(),
@@ -160,7 +160,7 @@ impl TableSchema {
                     width: f.width,
                     offset: hot_off,
                     tag: None,
-                    default: lookup_default(<R as Row>::DEFAULTS, f.name),
+                    default: lookup_default(<R as Document>::DEFAULTS, f.name),
                 });
                 hot_off += f.width;
             } else {
@@ -170,7 +170,7 @@ impl TableSchema {
                     width: 0,
                     offset: 0,
                     tag: Some(fi as u8),
-                    default: lookup_default(<R as Row>::DEFAULTS, f.name),
+                    default: lookup_default(<R as Document>::DEFAULTS, f.name),
                 });
             }
         }

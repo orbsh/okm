@@ -9,7 +9,7 @@
 //! lives HERE — the generated enum spans all of them, so they must share
 //! one compilation unit per test binary.
 
-use okm_core::{KeyEncode, ReduceLogic, ReduceCodec, ObjEncode};
+use okm_core::{KeyEncode, ReduceLogic, ReduceCodec, DocumentEncode};
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
 pub struct AccountKey {
@@ -17,7 +17,7 @@ pub struct AccountKey {
 }
 
 /// Subscribed row — variant is the row type name, derived by build.rs.
-#[derive(ObjEncode, Clone, PartialEq, Debug)]
+#[derive(DocumentEncode, Clone, PartialEq, Debug)]
 #[ok_ref(AccountKey)]
 #[ok_subscribe]
 #[ok_ns(21)]
@@ -31,7 +31,7 @@ pub struct AuditKey {
 }
 
 /// Subscribed row routed through the same enum — fan-in shape.
-#[derive(ObjEncode, Clone, PartialEq, Debug)]
+#[derive(DocumentEncode, Clone, PartialEq, Debug)]
 #[ok_ref(AuditKey)]
 #[ok_subscribe]
 #[ok_ns(22)]
@@ -49,7 +49,7 @@ pub struct GhostKey {
 /// statics are process-wide; parallel tests would race otherwise).
 /// This row carries its own enum alias via `#[ok_event_enum]`, which
 /// lands as a second generated enum.
-#[derive(ObjEncode, Clone, PartialEq, Debug)]
+#[derive(DocumentEncode, Clone, PartialEq, Debug)]
 #[ok_ref(GhostKey)]
 #[ok_event_enum(ShadowEvents)]
 #[ok_subscribe]
@@ -63,10 +63,10 @@ pub struct CounterKey {
     pub id: u64,
 }
 
-/// Row with an index + a reduce + a subscription, so tests can verify
+/// Document with an index + a reduce + a subscription, so tests can verify
 /// the put path fired through all three (upsert_with must not bypass
 /// any of them).
-#[derive(ObjEncode, Clone, PartialEq, Debug)]
+#[derive(DocumentEncode, Clone, PartialEq, Debug)]
 #[ok_ref(CounterKey)]
 #[ok_index(by_bucket { fields(bucket) })]
 #[ok_reduce(CounterTotals { group(bucket) })]
@@ -103,7 +103,7 @@ impl ReduceCodec for CountSum {
 pub struct CounterTotals;
 
 impl ReduceLogic for CounterTotals {
-    type Row = Counter;
+    type Document = Counter;
     type Acc = CountSum;
     fn fold(acc: &mut CountSum, item: &Counter) {
         acc.count += 1;

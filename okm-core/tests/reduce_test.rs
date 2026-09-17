@@ -1,10 +1,10 @@
 //! 跨行预聚合集成测试：`#[ok_reduce(Logic { group(...) })]` 声明 →
-//! derive 生成 `Reduce` impl + Row hook；Table::put/delete 读改写。
+//! derive 生成 `Reduce` impl + Document hook；Table::put/delete 读改写。
 //! 覆盖：计数+求和复合 acc 的可逆往返、delete_by_pkey 同一路径、
 //! 同 group 多次 fold 累积、scan_reduces 全组扫描、entry 布局
 //! `[ns 2B][slot 1B][group 段]`（slot 续接索引计数器）。
 
-use okm_core::{Reduce, ReduceLogic, ReduceCodec, TestStore, Row, ObjEncode};
+use okm_core::{Reduce, ReduceLogic, ReduceCodec, TestStore, Document, DocumentEncode};
 
 /// PostKey：代理主键。
 #[derive(okm_core::KeyEncode, Clone, PartialEq, Debug, Default)]
@@ -13,7 +13,7 @@ pub struct PostKey {
 }
 
 /// Post 行：按 author 分组做 count + title_len 求和。
-#[derive(ObjEncode, Clone, PartialEq, Debug)]
+#[derive(DocumentEncode, Clone, PartialEq, Debug)]
 #[ok_ref(PostKey)]
 #[ok_reduce(AuthorStats { group(author_id) })]
 #[ok_ns(21)]
@@ -49,7 +49,7 @@ impl ReduceCodec for CountSum {
 pub struct AuthorStats;
 
 impl ReduceLogic for AuthorStats {
-    type Row = Post;
+    type Document = Post;
     type Acc = CountSum;
     fn fold(acc: &mut CountSum, item: &Post) {
         acc.count += 1;
@@ -63,7 +63,7 @@ impl ReduceLogic for AuthorStats {
 
 #[test]
 fn fold_unfold_roundtrip_is_exact() {
-    let mut t = <Post as Row>::table(TestStore::slatedb_mem());
+    let mut t = <Post as Document>::table(TestStore::slatedb_mem());
 
     let k1 = PostKey { id: 1 };
     let r1 = Post {
@@ -85,27 +85,27 @@ fn fold_unfold_roundtrip_is_exact() {
     t.put(&k3, &r3);
 
     // author 100: count=2, sum=42；author 200: count=1, sum=7。
-    let acc = okm_core::reduce_get::<_, AuthorStats>(t.store(), <Post as Row>::NS_PREFIX, &k1, &r1).expect("group exists");
+    let acc = okm_core::reduce_get::<_, AuthorStats>(t.store(), <Post as Document>::NS_PREFIX, &k1, &r1).expect("group exists");
     assert_eq!(acc, CountSum { count: 2, sum: 42 });
 
     // delete_by_pkey 走同一条 unfold 路径（内部 get 出 row）。
     t.delete_by_pkey(&k2);
-    let acc = okm_core::reduce_get::<_, AuthorStats>(t.store(), <Post as Row>::NS_PREFIX, &k1, &r1).expect("group exists");
+    let acc = okm_core::reduce_get::<_, AuthorStats>(t.store(), <Post as Document>::NS_PREFIX, &k1, &r1).expect("group exists");
     assert_eq!(acc, CountSum { count: 1, sum: 30 });
 
     // 可逆往返：删空后 acc 回到单位元。
     t.delete_by_pkey(&k1);
-    let acc = okm_core::reduce_get::<_, AuthorStats>(t.store(), <Post as Row>::NS_PREFIX, &k1, &r1).expect("entry survives");
+    let acc = okm_core::reduce_get::<_, AuthorStats>(t.store(), <Post as Document>::NS_PREFIX, &k1, &r1).expect("entry survives");
     assert_eq!(acc, CountSum::default());
 
     // acc 独立生命周期：组空了 entry 仍在（okm-core 不做零值 GC）。
-    let all = okm_core::scan_reduces::<_, AuthorStats>(t.store(), <Post as Row>::NS_PREFIX);
+    let all = okm_core::scan_reduces::<_, AuthorStats>(t.store(), <Post as Document>::NS_PREFIX);
     assert_eq!(all.len(), 2);
 }
 
 #[test]
 fn entry_layout_is_ns_slot_group() {
-    let mut t = <Post as Row>::table(TestStore::slatedb_mem());
+    let mut t = <Post as Document>::table(TestStore::slatedb_mem());
     let k = PostKey { id: 9 };
     let r = Post {
         author_id: 55,
@@ -115,7 +115,7 @@ fn entry_layout_is_ns_slot_group() {
 
     // author_id 是 u64 → group 段 = 8B BE；slot 续接索引计数器
     // （无索引 → DECLARED_SLOT_BASE = 16，ADR-0012）。
-    let ek = <AuthorStats as Reduce>::entry_key(<Post as Row>::NS_PREFIX, &k, &r);
+    let ek = <AuthorStats as Reduce>::entry_key(<Post as Document>::NS_PREFIX, &k, &r);
     assert_eq!(ek.len(), 3 + 8);
     assert_eq!(&ek[..2], &[0, 21]);
     assert_eq!(ek[2], 16);

@@ -1,7 +1,7 @@
 //! Tooling interfaces (PLAN Phase 4): schema export and the
 //! Parquet snapshot round trip (export → import through `Table::put`).
 
-use okm_core::{FieldDesc, FieldType, KeyEncode, TestStore, Row, ObjEncode, Table, parquet_io};
+use okm_core::{FieldDesc, FieldType, KeyEncode, TestStore, Document, DocumentEncode, Collection, parquet_io};
 
 #[derive(KeyEncode, Clone, PartialEq, Debug)]
 pub struct TKey {
@@ -9,7 +9,7 @@ pub struct TKey {
     pub user_id: u64,
 }
 
-#[derive(ObjEncode, Clone, PartialEq, Debug)]
+#[derive(DocumentEncode, Clone, PartialEq, Debug)]
 #[ok_ref(TKey)]
 #[ok_index(by_org { fields(reputation) })]
 #[ok_ns(7)]
@@ -27,7 +27,7 @@ fn parquet_export_import_roundtrip_restores_rows_and_indexes() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("snapshot.parquet");
 
-    let mut t1: Table<TestStore, TKey, TRow> = Table::new(TestStore::slatedb_mem());
+    let mut t1: Collection<TestStore, TKey, TRow> = Collection::new(TestStore::slatedb_mem());
     for i in 0..5u64 {
         let k = TKey { org_id: 1, user_id: i };
         let r = TRow {
@@ -42,7 +42,7 @@ fn parquet_export_import_roundtrip_restores_rows_and_indexes() {
 
     // Import into a FRESH table: row and index entries must both come back
     // (put contract) and the scan over the index must find all 5 rows.
-    let mut t2: Table<TestStore, TKey, TRow> = Table::new(TestStore::slatedb_mem());
+    let mut t2: Collection<TestStore, TKey, TRow> = Collection::new(TestStore::slatedb_mem());
     let n = parquet_io::import_parquet(&mut t2, &path).unwrap();
     assert_eq!(n, 5, "restored row count");
 
@@ -79,7 +79,7 @@ fn parquet_export_import_roundtrip_restores_rows_and_indexes() {
 struct TRowByOrg;
 impl okm_core::KvIndex for TRowByOrg {
     type Key = TKey;
-    type Row = TRow;
+    type Document = TRow;
     const SLOT: u8 = 1;
     const FIELDS: &'static [&'static str] = &["org_id"];
     const INCLUDES: &'static [&'static str] = &[];
@@ -148,7 +148,7 @@ fn fielddesc_tables_back_the_audit() {
     assert_eq!((kf[1].name, kf[1].width), ("user_id", 8));
     assert!(matches!(kf[1].ty, FieldType::U64));
 
-    let rf = <TRow as Row>::FIELDS;
+    let rf = <TRow as Document>::FIELDS;
     assert_eq!(rf.len(), 3);
     assert!(matches!(rf[2].ty, FieldType::FixedBytes));
     assert_eq!(rf[2].width, 4);

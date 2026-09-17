@@ -91,15 +91,15 @@ Names must be a declaration-order prefix of the endpoint's fields
 (compile-time generated check). One declaration produces both key families
 automatically (direction bit: see "Many-to-many relationships" above).
 
-### Rows and indexes: `ObjEncode`
+### Rows and indexes: `DocumentEncode`
 
 ```rust
-use okm_core::ObjEncode;
+use okm_core::DocumentEncode;
 
 /// A user row hangs off UserKey via #[ok_ref]; payload fields are TLV-encoded.
 /// Each #[ok_index] declares an access method over PAYLOAD fields —
 /// identity belongs to the key (a surrogate id), business dimensions to the row.
-#[derive(ObjEncode, Clone, PartialEq, Debug)]
+#[derive(DocumentEncode, Clone, PartialEq, Debug)]
 #[ok_ref(UserKey)]
 #[ok_ns(1)] // the table's namespace — declared on the row, not the key
 #[ok_index(by_reputation { fields(reputation) })]
@@ -116,9 +116,9 @@ pub struct User {
   belongs to the key, business dimensions to the row.
 - `#[ok_ns(1)]` — the table's namespace segment, declared on the ROW (the
   row is the table's declaration point: `#[ok_ref]` pins the key type, so
-  the row determines `Table<S, K, R>` entirely). A key type carries no ns —
+  the row determines `Collection<S, K, R>` entirely). A key type carries no ns —
   the same key shape may serve several rows/tables, each with its own ns.
-  `Table::new(store)` takes no ns argument; the assembly site picks the
+  `Collection::new(store)` takes no ns argument; the assembly site picks the
   engine only. Edge structs declare `#[ok_ns]` the same way (EdgeEncode).
 - `fields(...)` — payload fields to sort/group by, declaration order,
   first field = the grouping dimension.
@@ -227,13 +227,13 @@ modeling mistake; the correct outlets are `includes` (copy to skip
 table lookups) or nested entries (store together).
 
 
-### Link, unlink, query (`EdgeTable`)
+### Link, unlink, query (`Edge`)
 
 ```rust
-use okm_core::EdgeTable;
+use okm_core::Edge;
 
 let store = okm_core::TestStore::default(); // slatedb-mem; also FjallStore / SlatedbStore / RedbStore
-let mut edges: EdgeTable<_, UserToSessionEdge> = EdgeTable::new(store);
+let mut edges: Edge<_, UserToSessionEdge> = Edge::new(store);
 
 let user = UserKey { org_id: 7, user_id: 101 };
 let s1 = SessionKey { org_id: 7, session_id: 1001 };
@@ -280,9 +280,9 @@ for pk in edges.reverse_prefix(&s1) {
 
 The derive macro also generates query methods on the endpoint types themselves (`user.get_session(&edges)`), named after the opposite field (`session_id` → `get_session`).
 
-### Rows at runtime (`Table`)
+### Rows at runtime (`Collection`)
 
-Declaring rows and indexes (`ObjEncode` + `#[ok_index]`) is covered in the
+Declaring rows and indexes (`DocumentEncode` + `#[ok_index]`) is covered in the
 [Modeling Guide](docs/MODELING.md), "Declaration basics". The index declaration's derivative is generated at the expansion point
 (this file): `ok_index(by_org ...)` generates the index type
 `__OkmIndex_User_by_org` (mechanical concatenation, no case conversion);
@@ -293,7 +293,7 @@ builds the assembly point without repeating the key type at the call site:
 use okm_core::{Row, TestStore};
 use __OkmIndex_User_by_org as ByOrg; // index type: derived from ok_index(by_org)
 
-let mut t = <User as Row>::table(TestStore::default());
+let mut t = <User as Document>::table(TestStore::default());
 
 t.put(&user, &User { org_id: 7, created_at: 30, reputation: 100, bio_len: 2 });
 
@@ -318,7 +318,7 @@ fn tokens(row: &Doc) -> Vec<String> {
     row.text.split_ascii_whitespace().map(String::from).collect()
 }
 
-#[derive(ObjEncode, Clone, PartialEq, Debug)]
+#[derive(DocumentEncode, Clone, PartialEq, Debug)]
 #[ok_ref(DocKey)]
 #[ok_index(by_token { func(tokens) })]
 pub struct Doc {
@@ -332,27 +332,27 @@ use __OkmIndex_Doc_by_token as ByToken;
 let hits = t.scan::<ByToken>(b"rust");
 ```
 
-### Dynamic fields: the obj API (ADR-0012)
+### Dynamic fields: the document API (ADR-0012)
 
 One encoding serves declared rows and external data. Declared fields ride
 the hot/cold segments as usual; anything else lands in the **dynamic
 segment** (slot 1) as n-TLV frames — `[field-id][type][len][bytes]` —
 with names allocated on first sight in the **field-name dictionary**
-(slots 2/3). Runtime surface on `Table`:
+(slots 2/3). Runtime surface on `Collection`:
 
 ```rust
 // The row-map bridge: every declared field lifts to its logical type
 // (Quant -> F64, VarInt -> u64, Enum -> variant name, Offset -> i64).
-let (row, dynamic) = t.get_object(&key);          // (User, BTreeMap<String, DynamicValue>)
+let (row, dynamic) = t.get_document(&key);          // (User, BTreeMap<String, DynamicValue>)
 
-// Whole-obj write: fields matching the declared struct go to the typed
+// Whole-document write: fields matching the declared struct go to the typed
 // path; unknown names allocate in the dictionary and land in slot 1.
-t.set_object(&key, &fields);                      // BTreeMap<String, DynamicValue>
+t.put_document(&key, &fields);                      // BTreeMap<String, DynamicValue>
 
 // Dynamic-only views (slot 1 directly):
-t.get_variants(&key);                             // name-keyed map or None
-t.set_variants(&key, &map);                       // whole-entry put, absent fields removed
-t.delete_variants(&key);                          // clear the dynamic segment
+t.get_fields(&key);                             // name-keyed map or None
+t.put_fields(&key, &map);                       // whole-entry put, absent fields removed
+t.delete_fields(&key);                          // clear the dynamic segment
 t.delete(&key);                                   // remove slot 0 + index entries
 ```
 
@@ -379,7 +379,7 @@ payload lacks (appended at the tail after that version was written) take
 their defaults:
 
 ```rust
-#[derive(ObjEncode, Clone, PartialEq, Debug)]
+#[derive(DocumentEncode, Clone, PartialEq, Debug)]
 #[ok_ref(UserKey)]
 #[ok_layout(version = 2)]            // bump when the field set changed
 pub struct User {
@@ -563,7 +563,7 @@ callers skip identity-element groups as needed.
 ## Two read-modify-writes: reduce and upsert_with
 
 Besides reduce, the write path has an imperative half —
-`Table::upsert_with(key, f)`: read the old row, compute the new one in
+`Collection::upsert_with(key, f)`: read the old row, compute the new one in
 a closure, go through the normal put. Both RMWs share the same
 underlying shape (read → compute → write); the division of labor
 follows one question: who knows the logic?

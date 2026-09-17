@@ -6,7 +6,7 @@
 //! Compile-time rejections (String / Reverse on key side, non-whitelist
 //! Reverse inner) live in `codec_compilefail.rs` via trybuild.
 
-use okm_core::{KeyEncode, TestStore, Reversible, Reverse, Row, ObjEncode, Table, parquet_io};
+use okm_core::{KeyEncode, TestStore, Reversible, Reverse, Document, DocumentEncode, Collection, parquet_io};
 
 // ================= String (variable length) =================
 
@@ -16,7 +16,7 @@ pub struct SKey {
     pub id: u64,
 }
 
-#[derive(ObjEncode, Clone, PartialEq, Debug)]
+#[derive(DocumentEncode, Clone, PartialEq, Debug)]
 #[ok_ref(SKey)]
 #[ok_ns(3)]
 pub struct SRow {
@@ -52,7 +52,7 @@ fn string_tlv_round_trip_through_payload() {
 
 #[test]
 fn string_field_desc_marks_variable_width() {
-    let rf = <SRow as Row>::FIELDS;
+    let rf = <SRow as Document>::FIELDS;
     let name = rf.iter().find(|f| f.name == "name").unwrap();
     assert!(matches!(name.ty, okm_core::FieldType::Str));
     assert_eq!(name.width, 0, "static width meaningless for Str");
@@ -66,7 +66,7 @@ pub struct RKey {
     pub user: u64,
 }
 
-#[derive(ObjEncode, Clone, PartialEq, Debug)]
+#[derive(DocumentEncode, Clone, PartialEq, Debug)]
 #[ok_ref(RKey)]
 #[ok_index(by_newest { fields(ts_rev), key(org) })]
 #[ok_ns(4)]
@@ -123,7 +123,7 @@ fn parquet_roundtrip_with_string_columns() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("snapshot.parquet");
 
-    let mut t1: Table<TestStore, SKey, SRow> = Table::new(TestStore::slatedb_mem());
+    let mut t1: Collection<TestStore, SKey, SRow> = Collection::new(TestStore::slatedb_mem());
     let names = ["", "alice", "多字节 ✓ 名称"];
     for (i, name) in names.iter().enumerate() {
         t1.put(
@@ -138,7 +138,7 @@ fn parquet_roundtrip_with_string_columns() {
     }
     parquet_io::export_parquet(&t1, &path).unwrap();
 
-    let mut t2: Table<TestStore, SKey, SRow> = Table::new(TestStore::slatedb_mem());
+    let mut t2: Collection<TestStore, SKey, SRow> = Collection::new(TestStore::slatedb_mem());
     let n = parquet_io::import_parquet(&mut t2, &path).unwrap();
     assert_eq!(n, 3);
     for (i, name) in names.iter().enumerate() {
@@ -176,7 +176,7 @@ fn payload_wire_hex_snapshot() {
 
 // ================= Version compatibility =================
 
-#[derive(ObjEncode, Clone, PartialEq, Debug)]
+#[derive(DocumentEncode, Clone, PartialEq, Debug)]
 #[ok_ref(SKey)]
 #[ok_layout(version = 2)]
 #[ok_ns(3)]
@@ -213,7 +213,7 @@ fn older_payload_decodes_with_appended_defaults() {
     assert_eq!(EvolvedRow::decode_payload(&p), evolved);
     // Header version is the OLD row's (1), which is <= schema's 2 → accepted.
     assert_eq!(p[0], 1);
-    assert_eq!(<EvolvedRow as Row>::LAYOUT_VERSION, 2);
+    assert_eq!(<EvolvedRow as Document>::LAYOUT_VERSION, 2);
 }
 
 #[test]
@@ -227,11 +227,11 @@ fn newer_payload_version_is_rejected() {
 
 #[test]
 fn explicit_layout_version_constant() {
-    // #[ok_layout(version = 2)] feeds the Row trait constant.
-    assert_eq!(<SRow as Row>::LAYOUT_VERSION, 1);
+    // #[ok_layout(version = 2)] feeds the Document trait constant.
+    assert_eq!(<SRow as Document>::LAYOUT_VERSION, 1);
 }
 
-#[derive(ObjEncode, Clone, PartialEq, Debug)]
+#[derive(DocumentEncode, Clone, PartialEq, Debug)]
 #[ok_ref(SKey)]
 #[ok_layout(version = 3)]
 #[ok_ns(3)]

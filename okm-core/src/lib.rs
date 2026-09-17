@@ -25,7 +25,7 @@
 //! dictionary, assembly point, value-side roadmap) and the project README
 //! for a full walkthrough.
 
-pub use okm_derive::{EdgeEncode, KeyEncode, NestStorage, ObjEncode};
+pub use okm_derive::{EdgeEncode, KeyEncode, NestStorage, DocumentEncode};
 
 pub use reverse::{Reversible, Reverse};
 pub use wrappers::{Enum, EnumTag, Offset, Quant, VarInt, VarIntEnc, offset_decode, offset_encode};
@@ -47,7 +47,7 @@ pub mod index;
 pub mod key;
 pub mod reverse;
 pub mod subscribe;
-pub mod table;
+pub mod document;
 pub mod wrappers;
 
 #[cfg(feature = "arrow")]
@@ -59,7 +59,7 @@ pub mod slatedb_backend;
 pub mod tooling;
 
 pub use reduce::{reduce_get, scan_reduces, ReduceCodec, Reduce, ReduceLogic};
-pub use collection::EdgeTable;
+pub use collection::Edge;
 pub use edge::KvEdge;
 pub use storage::{VirtualStorage, KvBatch, MemBatch, SharedVirtualStorage};
 #[cfg(any(feature = "test-engines", feature = "fjall", feature = "redb"))]
@@ -67,10 +67,10 @@ pub use test_engine::TestStore;
 pub use nest::{NestStorage, RemoteStore, VirtualHandle};
 pub use okm_wire::{OpFrame, OpResponse};
 pub use field::{FieldDesc, FieldType};
-pub use index::{IndexFuncResult, IndexFuncValues, KvIndex, PRIMARY_SLOT, Row, scan_index};
+pub use index::{Document, IndexFuncResult, IndexFuncValues, KvIndex, PRIMARY_SLOT, scan_index};
 pub use key::{KeyEncode, PrefixKey};
 pub use subscribe::{ChannelCell, Event, Op};
-pub use table::Table;
+pub use document::Collection;
 
 #[cfg(feature = "arrow")]
 pub use arrow_bridge as arrow_backend;

@@ -2,7 +2,7 @@
 //!
 //! slatedb is an async API with immutable borrows (WAL/flush managed
 //! internally), so this module provides the `VirtualStorageAsync` trait and
-//! `AsyncEdgeTable` - parallel to the sync `VirtualStorage`/`EdgeTable` with the
+//! `AsyncEdgeTable` - parallel to the sync `VirtualStorage`/`Edge` with the
 //! same interface shape. Object stores are constructed via the
 //! `slatedb::object_store` re-export so versions always match slatedb's
 //! internals.
@@ -111,7 +111,7 @@ impl VirtualStorageAsync for SlatedbStore {
     }
 }
 
-/// 异步边装配点：引擎 + 边类型 = 一条关系的操作面（平行于同步 EdgeTable）
+/// 异步边装配点：引擎 + 边类型 = 一条关系的操作面（平行于同步 Edge）
 pub struct AsyncEdgeTable<S, E> {
     pub store: S,
     _pd: std::marker::PhantomData<E>,

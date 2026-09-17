@@ -3,7 +3,7 @@
 //! Three macros, each a pure single-item function with zero I/O:
 //!
 //! - `KeyEncode`: fixed-width key encoding (`key_encode.rs`).
-//! - `ObjEncode`: value/payload encoding + index declarations
+//! - `DocumentEncode`: value/payload encoding + index declarations
 //!   (`row_encode.rs`).
 //! - `EdgeEncode`: bidirectional edges (`edge_encode.rs`).
 //!
@@ -46,10 +46,10 @@ pub fn derive_key_encode(input: TokenStream) -> TokenStream {
     out
 }
 
-#[proc_macro_derive(ObjEncode, attributes(ok_ref, ok_ns, ok_partition, ok_index, ok_reduce, ok_offset, ok_layout, ok_default, ok_subscribe, ok_event_enum))]
+#[proc_macro_derive(DocumentEncode, attributes(ok_ref, ok_ns, ok_partition, ok_index, ok_reduce, ok_offset, ok_layout, ok_default, ok_subscribe, ok_event_enum))]
 pub fn derive_row_encode(input: TokenStream) -> TokenStream {
     let out = row_encode::derive(input.clone());
-    dump("ObjEncode", input, &out.clone().into());
+    dump("DocumentEncode", input, &out.clone().into());
     out
 }
 

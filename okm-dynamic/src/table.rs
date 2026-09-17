@@ -1,6 +1,6 @@
 //! DynamicTable — a runtime-typed table facade over VirtualStorage.
 //!
-//! The typed `Table<S, K, R>` binds row/key types at compile time; this
+//! The typed `Collection<S, K, R>` binds row/key types at compile time; this
 //! facade binds them at runtime through a `TableSchema` + declared
 //! `AccessMethod`s. Put/get/delete/scan produce and consume the same
 //! bytes as the derive (codec shared with the typed path, byte equality
@@ -113,7 +113,7 @@ impl<S: VirtualStorage> DynamicTable<S> {
         Ok(())
     }
 
-    /// Point read by primary key (dynamic `Table::get`).
+    /// Point read by primary key (dynamic `Collection::get`).
     pub fn get(&self, pkey: &[u8]) -> Result<Option<ValueMap>, String> {
         if pkey.len() != self.schema.key_len {
             return Err(format!(

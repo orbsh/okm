@@ -1,7 +1,7 @@
 //! Steel VM end-to-end: register the okm functions, run a scheme program
 //! that parses the schema, encodes a payload, decodes it back, and checks
 //! the values — mirroring the PyO3 verify.py round trip.
-use okm_core::{KeyEncode, ObjEncode, Row, schema::TableSchema};
+use okm_core::{KeyEncode, DocumentEncode, Document, schema::TableSchema};
 use steel::steel_vm::engine::Engine;
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
@@ -10,7 +10,7 @@ pub struct UserKey {
     pub user_id: u64,
 }
 
-#[derive(ObjEncode, Clone, PartialEq, Debug)]
+#[derive(DocumentEncode, Clone, PartialEq, Debug)]
 #[ok_ref(UserKey)]
 #[ok_ns(41)]
 #[ok_layout(version = 3)]

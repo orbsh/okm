@@ -2,8 +2,8 @@
 //! FieldDesc reporting, and Arrow/Parquet round trips (ADR-0007 Phase 2).
 
 use okm_core::{
-    Enum, EnumTag, FieldType, KeyEncode, TestStore, Offset, Quant, Reverse, Row,
-    ObjEncode, Table, VarInt, offset_decode, offset_encode,
+    Enum, EnumTag, FieldType, KeyEncode, TestStore, Offset, Quant, Reverse, Document,
+    DocumentEncode, Collection, VarInt, offset_decode, offset_encode,
 };
 
 #[derive(KeyEncode, Clone, PartialEq, Debug)]
@@ -26,7 +26,7 @@ impl EnumTag for State {
         &[(State::Active, 0), (State::Suspended, 1), (State::Closed, 9)];
 }
 
-#[derive(ObjEncode, Clone, PartialEq, Debug)]
+#[derive(DocumentEncode, Clone, PartialEq, Debug)]
 #[ok_ref(WKey)]
 #[ok_ns(7)]
 pub struct WRow {
@@ -86,7 +86,7 @@ fn offset_wire_is_four_byte_displacement() {
 
 #[test]
 fn field_desc_reports_wrapper_kinds() {
-    let fs = <WRow as okm_core::Row>::FIELDS;
+    let fs = <WRow as okm_core::Document>::FIELDS;
     assert_eq!(fs[0].name, "hits");
     assert_eq!(fs[0].ty, FieldType::VarInt);
     assert_eq!(fs[0].width, 0); // variable-length regime
@@ -102,7 +102,7 @@ fn field_desc_reports_wrapper_kinds() {
 
 #[test]
 fn table_round_trip_with_wrappers() {
-    let mut t: Table<TestStore, WKey, WRow> = Table::new(TestStore::slatedb_mem());
+    let mut t: Collection<TestStore, WKey, WRow> = Collection::new(TestStore::slatedb_mem());
     for i in 0..5u64 {
         t.put(&WKey { org: 1, id: i }, &sample(i));
     }
@@ -124,13 +124,13 @@ mod parquet {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("wrappers.parquet");
 
-        let mut t1: Table<TestStore, WKey, WRow> = Table::new(TestStore::slatedb_mem());
+        let mut t1: Collection<TestStore, WKey, WRow> = Collection::new(TestStore::slatedb_mem());
         for i in 0..4u64 {
             t1.put(&WKey { org: 2, id: i }, &sample(i));
         }
         parquet_io::export_parquet(&t1, &path).unwrap();
 
-        let mut t2: Table<TestStore, WKey, WRow> = Table::new(TestStore::slatedb_mem());
+        let mut t2: Collection<TestStore, WKey, WRow> = Collection::new(TestStore::slatedb_mem());
         let n = parquet_io::import_parquet(&mut t2, &path).unwrap();
         assert_eq!(n, 4);
         for i in 0..4u64 {
@@ -140,7 +140,7 @@ mod parquet {
 
     #[test]
     fn record_batch_columns_are_logical_types() {
-        let mut t: Table<TestStore, WKey, WRow> = Table::new(TestStore::slatedb_mem());
+        let mut t: Collection<TestStore, WKey, WRow> = Collection::new(TestStore::slatedb_mem());
         for i in 0..3u64 {
             t.put(&WKey { org: 3, id: i }, &sample(i));
         }

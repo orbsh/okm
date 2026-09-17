@@ -12,7 +12,7 @@
 //! Capability ceiling (permanent): no reduce/subscribe/function indexes —
 //! the dynamic rebuild would break exactly-once (ADR-0008).
 
-use okm_core::{KeyEncode, ObjEncode, Table, TestStore, VirtualStorage};
+use okm_core::{KeyEncode, DocumentEncode, Collection, TestStore, VirtualStorage};
 use okm_core::schema::TableSchema;
 use okm_dynamic::{AccessMethod, DynamicTable, Value, ValueMap};
 use std::collections::BTreeMap;
@@ -23,7 +23,7 @@ pub struct UserKey {
     pub user_id: u64,
 }
 
-#[derive(ObjEncode, Clone, PartialEq, Debug)]
+#[derive(DocumentEncode, Clone, PartialEq, Debug)]
 #[ok_ref(UserKey)]
 #[ok_ns(41)]
 #[ok_layout(version = 2)]
@@ -71,7 +71,7 @@ fn key_bytes(org_id: u32, user_id: u64) -> Vec<u8> {
 
 #[test]
 fn dynamic_entries_equal_typed_entries() {
-    let mut typed: Table<TestStore, UserKey, User> = Table::new(TestStore::slatedb_mem());
+    let mut typed: Collection<TestStore, UserKey, User> = Collection::new(TestStore::slatedb_mem());
     let mut dynamic = dynamic_table(TestStore::slatedb_mem());
 
     let row = User { level: 4, score: 77, name: "bob".into() };

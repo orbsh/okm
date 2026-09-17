@@ -3,7 +3,7 @@
 //! the sender endpoint plugs into a `Table` whose write path runs
 //! entirely over the wire.
 
-use okm_core::{KeyEncode, TestStore, RemoteStore, ObjEncode, Table, VirtualStorage};
+use okm_core::{KeyEncode, TestStore, RemoteStore, DocumentEncode, Collection, VirtualStorage};
 
 // Receiver declaration: no data methods, one execution surface.
 #[derive(okm_core::NestStorage)]
@@ -15,7 +15,7 @@ pub struct ItemKey {
     pub id: u64,
 }
 
-#[derive(ObjEncode, Clone, PartialEq, Debug)]
+#[derive(DocumentEncode, Clone, PartialEq, Debug)]
 #[ok_ref(ItemKey)]
 #[ok_ns(21)]
 #[ok_index(by_kind { fields(kind) })]
@@ -28,12 +28,12 @@ use __OkmIndex_Item_by_kind as ByKind;
 #[test]
 fn nest_derive_end_to_end() {
     // NS_PREFIX is the declared prefix, big-endian [ns 2B] — same
-    // encoding as Row::NS_PREFIX.
+    // encoding as Document::NS_PREFIX.
     assert_eq!(AppStorage::NS_PREFIX, &[0, 21]);
 
     let handle = AppStorage::serve(TestStore::slatedb_mem());
     let remote = handle.open();
-    let mut t: Table<RemoteStore, ItemKey, Item> = Table::new(remote);
+    let mut t: Collection<RemoteStore, ItemKey, Item> = Collection::new(remote);
 
     t.put(&ItemKey { id: 1 }, &Item { kind: 7 });
 

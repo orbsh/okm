@@ -97,13 +97,13 @@ pub fn derive(input: TokenStream) -> TokenStream {
         pub trait #a_trait {
             fn #m_on_a<S: ::okm_core::VirtualStorage>(
                 &self,
-                c: &::okm_core::EdgeTable<S, #edge_name>,
+                c: &::okm_core::Edge<S, #edge_name>,
             ) -> Vec<#tb>;
         }
         impl #a_trait for #ta {
             fn #m_on_a<S: ::okm_core::VirtualStorage>(
                 &self,
-                c: &::okm_core::EdgeTable<S, #edge_name>,
+                c: &::okm_core::Edge<S, #edge_name>,
             ) -> Vec<#tb> {
                 c.forward(self)
             }
@@ -113,13 +113,13 @@ pub fn derive(input: TokenStream) -> TokenStream {
         pub trait #b_trait {
             fn #m_on_b<S: ::okm_core::VirtualStorage>(
                 &self,
-                c: &::okm_core::EdgeTable<S, #edge_name>,
+                c: &::okm_core::Edge<S, #edge_name>,
             ) -> Vec<::okm_core::PrefixKey<#ta>>;
         }
         impl #b_trait for #tb {
             fn #m_on_b<S: ::okm_core::VirtualStorage>(
                 &self,
-                c: &::okm_core::EdgeTable<S, #edge_name>,
+                c: &::okm_core::Edge<S, #edge_name>,
             ) -> Vec<::okm_core::PrefixKey<#ta>> {
                 c.reverse_raw(self)
                     .into_iter()

@@ -3,7 +3,7 @@
 //! identical behavior for the core operations — key round trips,
 //! prefix scans, batch atomicity, and SharedVirtualStorage sharing.
 
-use okm_core::{KeyEncode, KvBatch, ObjEncode, Table, TestStore, VirtualStorage};
+use okm_core::{KeyEncode, KvBatch, DocumentEncode, Collection, TestStore, VirtualStorage};
 
 fn verify_engine(store: TestStore) {
     let name = store.name();
@@ -53,7 +53,7 @@ pub struct MKey {
     pub id: u64,
 }
 
-#[derive(ObjEncode, Clone, PartialEq, Debug)]
+#[derive(DocumentEncode, Clone, PartialEq, Debug)]
 #[ok_ref(MKey)]
 #[ok_ns(3)]
 pub struct MRow {
@@ -63,7 +63,7 @@ pub struct MRow {
 #[test]
 fn engine_matrix_table_round_trip() {
     for (name, store) in TestStore::matrix() {
-        let mut t: okm_core::Table<TestStore, MKey, MRow> = okm_core::Table::new(store);
+        let mut t: okm_core::Collection<TestStore, MKey, MRow> = okm_core::Collection::new(store);
         t.put(&MKey { id: 7 }, &MRow { score: 55 });
         let back = t.get(&MKey { id: 7 }).expect("{name}: row round trip");
         assert_eq!(back.score, 55, "{name}");

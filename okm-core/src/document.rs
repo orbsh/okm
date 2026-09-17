@@ -1,4 +1,4 @@
-//! Table — the row assembly point (ADR-0006): binds an engine instance, a
+//! Collection — the row assembly point (ADR-0006): binds an engine instance, a
 //! key type, and a row type. `put` writes the primary key (slot 0) and one
 //! entry per access method in the same store instance, so atomicity holds
 //! within a single engine; cross-ns atomicity is the store instance's
@@ -7,10 +7,10 @@
 //! row-shaped.
 
 use crate::storage::VirtualStorage;
-use crate::index::{KvIndex, Row};
+use crate::index::{KvIndex, Document};
 use crate::key::{KeyEncode, PrefixKey};
 
-pub struct Table<S, K: KeyEncode, R: Row<Key = K>> {
+pub struct Collection<S, K: KeyEncode, R: Document<Key = K>> {
     store: S,
     /// Monotonic write-batch counter (in-process only, never persisted):
     /// bumped on every put/delete, stamped on emitted subscribe events so
@@ -20,7 +20,7 @@ pub struct Table<S, K: KeyEncode, R: Row<Key = K>> {
     _marker: std::marker::PhantomData<(K, R)>,
 }
 
-impl<S: VirtualStorage, K: KeyEncode, R: Row<Key = K>> Table<S, K, R> {
+impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> {
     /// The ns prefix is NOT a constructor argument: it is declared once
     /// on the key struct (`#[ok_ns]`) and read at compile time via
     /// `R::NS_PREFIX` (ADR-0002: the ns dictionary is code; ADR-0010:
@@ -155,7 +155,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Row<Key = K>> Table<S, K, R> {
     }
 
     /// Index entry key for access method `I` derived from `key` + `row`.
-    pub fn index_key<I: KvIndex<Key = K, Row = R>>(&self, key: &K, row: &R) -> Vec<u8> {
+    pub fn index_key<I: KvIndex<Key = K, Document = R>>(&self, key: &K, row: &R) -> Vec<u8> {
         I::entry_key(&self.header(), key, row)
     }
 
@@ -223,7 +223,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Row<Key = K>> Table<S, K, R> {
     /// With a truncated `key(...)` prefix the decoded keys are partial
     /// (`PrefixKey.taken < KEY_LEN`) — use the trustworthy prefix fields
     /// to continue scanning the main table.
-    pub fn scan<I: KvIndex<Key = K, Row = R>>(&self, encoded: &[u8]) -> Vec<(PrefixKey<K>, Option<R>)> {
+    pub fn scan<I: KvIndex<Key = K, Document = R>>(&self, encoded: &[u8]) -> Vec<(PrefixKey<K>, Option<R>)> {
         crate::scan_index::<S, I>(&self.store, &self.header(), encoded)
             .into_iter()
             .map(|pk| {
@@ -241,7 +241,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Row<Key = K>> Table<S, K, R> {
     /// the entry value, so a full-covering index answers without going
     /// back to the primary table (materialized view, ADR-0006). Returns
     /// `(key prefix, entry value bytes)`.
-    pub fn scan_covered<I: KvIndex<Key = K, Row = R>>(
+    pub fn scan_covered<I: KvIndex<Key = K, Document = R>>(
         &self,
         encoded: &[u8],
     ) -> Vec<(PrefixKey<K>, Vec<u8>)> {
@@ -329,11 +329,11 @@ use std::collections::BTreeMap;
 use crate::obj_dict::DictCache;
 use crate::obj_dynamic::DynamicValue;
 
-impl<S: VirtualStorage, K: KeyEncode, R: Row<Key = K>> Table<S, K, R> {
+impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> {
     /// Dynamic-segment key: `[header][DYNAMIC_SLOT][key payload]` — the
     /// per-row extension entry next to the primary (slot 0), same
     /// skeleton as an index entry with no field segment (ADR-0012).
-    fn variants_key(&self, key: &K) -> Vec<u8> {
+    fn fields_key(&self, key: &K) -> Vec<u8> {
         let mut buf = self.header();
         buf.push(crate::index::DYNAMIC_SLOT);
         buf.extend_from_slice(&key.encode());
@@ -344,8 +344,8 @@ impl<S: VirtualStorage, K: KeyEncode, R: Row<Key = K>> Table<S, K, R> {
     /// the field-name dictionary. `None` = the obj has no dynamic entry
     /// (distinct from an empty entry, which is also None here — a
     /// zero-frame list is never written).
-    pub fn get_variants(&mut self, key: &K) -> Option<BTreeMap<String, DynamicValue>> {
-        let raw = self.store.get(&self.variants_key(key))?;
+    pub fn get_fields(&mut self, key: &K) -> Option<BTreeMap<String, DynamicValue>> {
+        let raw = self.store.get(&self.fields_key(key))?;
         let mut d = DictCache::default();
         let header = self.header();
         // decode_named resolves nested obj field ids through the same
@@ -373,7 +373,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Row<Key = K>> Table<S, K, R> {
     /// this is a whole-entry put, not a per-field merge). First-seen
     /// names allocate ids through the dictionary; one engine batch
     /// carries any dictionary growth plus the entry itself.
-    pub fn set_variants(
+    pub fn put_fields(
         &mut self,
         key: &K,
         variants: &BTreeMap<String, DynamicValue>,
@@ -389,7 +389,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Row<Key = K>> Table<S, K, R> {
             crate::obj_dynamic::put_frame_named(&mut body, name, value, &mut resolver);
         }
         self.epoch += 1;
-        let k = self.variants_key(key);
+        let k = self.fields_key(key);
         if body.is_empty() {
             self.store.del(&k);
         } else {
@@ -403,11 +403,11 @@ impl<S: VirtualStorage, K: KeyEncode, R: Row<Key = K>> Table<S, K, R> {
     /// because the typed side is compile-time and the dictionary only
     /// allocates names it has never seen (a dynamic name equal to a
     /// declared name would have to be allocated first; convention:
-    /// callers don't, and `get_variants` exposes any violation).
-    pub fn get_object(&mut self, key: &K) -> Option<BTreeMap<String, DynamicValue>> {
+    /// callers don't, and `get_fields` exposes any violation).
+    pub fn get_document(&mut self, key: &K) -> Option<BTreeMap<String, DynamicValue>> {
         let row = self.get(key)?;
         let mut out = row.to_map();
-        if let Some(v) = self.get_variants(key) {
+        if let Some(v) = self.get_fields(key) {
             out.extend(v);
         }
         Some(out)
@@ -424,7 +424,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Row<Key = K>> Table<S, K, R> {
     /// scalar/array tops (no synthetic `"_root"` field). Callers holding
     /// a non-object document decide themselves: wrap in a named field,
     /// reject, or split; the storage layer does not guess.
-    pub fn set_object(
+    pub fn put_document(
         &mut self,
         key: &K,
         object: &BTreeMap<String, DynamicValue>,
@@ -462,13 +462,21 @@ impl<S: VirtualStorage, K: KeyEncode, R: Row<Key = K>> Table<S, K, R> {
             .filter(|(n, _)| !declared.contains(n.as_str()))
             .map(|(n, v)| (n.clone(), v.clone()))
             .collect();
-        self.set_variants(key, &dynamic);
+        self.put_fields(key, &dynamic);
     }
 
     /// Drop the dynamic entry (declared fields untouched). True if an
     /// entry existed.
-    pub fn delete_variants(&mut self, key: &K) -> bool {
-        let k = self.variants_key(key);
+    /// Delete the whole document: slot 0 (primary + index entries) AND
+    /// the dynamic segment (slot 1). One semantic action, both slots.
+    pub fn delete_document(&mut self, key: &K) -> bool {
+        let fields_gone = self.delete_fields(key);
+        let primary_gone = self.delete_by_pkey(key);
+        fields_gone || primary_gone
+    }
+
+    pub fn delete_fields(&mut self, key: &K) -> bool {
+        let k = self.fields_key(key);
         if self.store.get(&k).is_some() {
             self.store.del(&k);
             self.epoch += 1;

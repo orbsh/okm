@@ -1,7 +1,7 @@
 //! Tooling interfaces (PLAN Phase 4): layout audit tables, Parquet snapshot
 //! export/import.
 //!
-//! These are library functions, not a standalone binary: `Table<S, K, R>`
+//! These are library functions, not a standalone binary: `Collection<S, K, R>`
 //! binds user types at compile time, so the type context must live in the
 //! caller's application. A "CLI experience" is a thin bin wrapping these
 //! calls.
@@ -12,23 +12,23 @@
 //!   re-parses source code).
 //! - `export_parquet` / `import_parquet` (feature `parquet`) sit on the
 //!   Arrow bridge: RecordBatch → Parquet file, and back. Import writes
-//!   through [`Table::put`] — the normal one-batch write contract (primary
+//!   through [`Collection::put`] — the normal one-batch write contract (primary
 //!   key + index entries) is never bypassed; this is a backup/restore path,
 //!   not a second write channel.
 
 use crate::field::FieldType;
-use crate::index::Row;
+use crate::index::Document;
 use crate::key::KeyEncode;
 
 /// Declaration-order offset table for a fixed-width region (the key
 /// encoding, or the value half of TLV frames — widths are declared, so the
 /// stride math is the same for both).
-/// JSON Schema for the exported row shape (see [`Table::json_schema`]).
+/// JSON Schema for the exported row shape (see [`Collection::json_schema`]).
 /// Column type mapping mirrors the Arrow bridge: fixed-width unsigned
 /// integers → their JSON number types, `[u8; N]` → base64 string (the same
 /// encoding the bridge uses for binary columns). Column order = Parquet
 /// column order.
-pub fn json_schema<K: KeyEncode, R: Row<Key = K>>() -> String {
+pub fn json_schema<K: KeyEncode, R: Document<Key = K>>() -> String {
     fn json_type(ty: FieldType) -> &'static str {
         match ty {
             FieldType::U8 | FieldType::U16 | FieldType::U32 | FieldType::U64 => "integer",
@@ -43,7 +43,7 @@ pub fn json_schema<K: KeyEncode, R: Row<Key = K>>() -> String {
     }
 
     let key_fields = <K as KeyEncode>::FIELDS;
-    let row_fields = <R as Row>::FIELDS;
+    let row_fields = <R as Document>::FIELDS;
     let mut out = String::from(
         r#"{
   "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -85,14 +85,14 @@ pub fn json_schema<K: KeyEncode, R: Row<Key = K>>() -> String {
 pub mod parquet_io {
     use super::*;
     use crate::storage::VirtualStorage;
-    use crate::table::Table;
+    use crate::document::Table;
     use arrow::array::{Array, BinaryArray, RecordBatch};
 
     /// Export all rows to a Parquet file (overwrite). Typed columns, schema
     /// from the declaration — the same batch shape as
-    /// [`Table::to_record_batch`].
-    pub fn export_parquet<S: VirtualStorage, K: KeyEncode, R: Row<Key = K>>(
-        table: &Table<S, K, R>,
+    /// [`Collection::to_record_batch`].
+    pub fn export_parquet<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>>(
+        table: &Collection<S, K, R>,
         path: &std::path::Path,
     ) -> parquet::errors::Result<()> {
         let batch = table.to_record_batch();
@@ -175,17 +175,17 @@ pub mod parquet_io {
     }
 
     /// Import rows from a Parquet file previously written by
-    /// [`export_parquet`], writing each row back through [`Table::put`]
+    /// [`export_parquet`], writing each row back through [`Collection::put`]
     /// (primary key + index entries — the normal write contract). This is
     /// the restore path, not a second write channel.
     ///
     /// Returns the number of rows restored.
-    pub fn import_parquet<S: VirtualStorage, K: KeyEncode, R: Row<Key = K>>(
-        table: &mut Table<S, K, R>,
+    pub fn import_parquet<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>>(
+        table: &mut Collection<S, K, R>,
         path: &std::path::Path,
     ) -> parquet::errors::Result<usize> {
         let key_fields = <K as KeyEncode>::FIELDS;
-        let row_fields = <R as Row>::FIELDS;
+        let row_fields = <R as Document>::FIELDS;
         let nkey = key_fields.len();
 
         let file = std::fs::File::open(path)?;
@@ -208,7 +208,7 @@ pub mod parquet_io {
                 }
             }
             let hot_width: usize = row_fields.iter().filter(|f| f.width > 0).map(|f| f.width).sum();
-            let ver = <R as Row>::LAYOUT_VERSION;
+            let ver = <R as Document>::LAYOUT_VERSION;
             let header = vec![ver, (hot_width >> 8) as u8, hot_width as u8];
             let mut payloads: Vec<Vec<u8>> = vec![header; n];
             // Hot segment: contiguous fixed-width runs (no frame headers).

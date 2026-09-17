@@ -574,3 +574,20 @@ Unchanged: primary payload layout `[version][hot_len][hot][cold TLV]`
       slatedb_backend.rs prefix scans, integration hex locks, ADR-0001
       superseded. Edge key bytes changed — dev stage, no stored data.
 
+
+## Terminology (2026-09-17, decided)
+
+Document-oriented naming, one sweep before crates.io:
+
+- `Table` -> `Collection` (module table.rs -> document.rs); `EdgeTable` -> `Edge`.
+- `ObjEncode` -> `DocumentEncode`; trait `Row` -> `Document` (assoc types too).
+- API verbs: `get`/`put`/`delete` (typed, unchanged) + `get_document` /
+  `put_document` / `delete_document` (both slots) + `get_fields` /
+  `put_fields` / `delete_fields` (dynamic segment; the old `variants`
+  name retired — dynamic fields ARE the document's fields).
+- Public concept: **document** (OKM is document-oriented; declared static
+  fields embed into the dynamic whole). "obj"/"object" retired from docs;
+  `DynamicValue` stays (value-type name, unambiguous).
+- Record considered and rejected: record-oriented storage is the fixed-
+  schema lineage the model is moving away from.
+- Aura mq.rs migrated; bindings follow (they reference the codec only).

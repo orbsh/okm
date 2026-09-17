@@ -3,7 +3,7 @@
 //! round trip against struct decode.
 
 use arrow::datatypes::DataType;
-use okm_core::{FieldDesc, FieldType, KeyEncode, TestStore, Row, ObjEncode, Table};
+use okm_core::{FieldDesc, FieldType, KeyEncode, TestStore, Document, DocumentEncode, Collection};
 
 /// UserKey：org 内的用户身份（主键）。字段类型覆盖四种 kind。
 #[derive(KeyEncode, Clone, PartialEq, Debug)]
@@ -14,7 +14,7 @@ pub struct ExportKey {
 }
 
 /// User 行：载荷字段含 u32/u16（多字节 BE→LE 换位路径）。
-#[derive(ObjEncode, Clone, PartialEq, Debug)]
+#[derive(DocumentEncode, Clone, PartialEq, Debug)]
 #[ok_ref(ExportKey)]
 #[ok_ns(11)]
 pub struct ExportRow {
@@ -23,7 +23,7 @@ pub struct ExportRow {
     pub flags: u8,
 }
 
-fn put_rows(t: &mut Table<TestStore, ExportKey, ExportRow>) -> Vec<(ExportKey, ExportRow)> {
+fn put_rows(t: &mut Collection<TestStore, ExportKey, ExportRow>) -> Vec<(ExportKey, ExportRow)> {
     let mut out = Vec::new();
     for i in 0u64..5 {
         let k = ExportKey {
@@ -44,7 +44,7 @@ fn put_rows(t: &mut Table<TestStore, ExportKey, ExportRow>) -> Vec<(ExportKey, E
 
 #[test]
 fn schema_is_generated_from_field_desc() {
-    let t: Table<TestStore, ExportKey, ExportRow> = Table::new(TestStore::slatedb_mem());
+    let t: Collection<TestStore, ExportKey, ExportRow> = Collection::new(TestStore::slatedb_mem());
     let cols = t.export_columns();
     // key half then payload half, declaration order within each half
     let names: Vec<_> = cols.iter().map(|(n, _)| *n).collect();
@@ -79,7 +79,7 @@ fn field_desc_tables_match_declaration() {
         ]
     );
     // row 侧：载荷三个字段
-    let rf = <ExportRow as Row>::FIELDS;
+    let rf = <ExportRow as Document>::FIELDS;
     assert_eq!(rf.len(), 3);
     assert_eq!(rf[0].name, "reputation");
     assert_eq!(rf[0].width, 4);
@@ -87,7 +87,7 @@ fn field_desc_tables_match_declaration() {
 
 #[test]
 fn batch_values_roundtrip_through_struct_decode() {
-    let mut t: Table<TestStore, ExportKey, ExportRow> = Table::new(TestStore::slatedb_mem());
+    let mut t: Collection<TestStore, ExportKey, ExportRow> = Collection::new(TestStore::slatedb_mem());
     let rows = put_rows(&mut t);
 
     let batch = t.to_record_batch();
@@ -118,7 +118,7 @@ fn batch_values_roundtrip_through_struct_decode() {
 #[test]
 fn batch_respects_key_order() {
     // scan_suffix 返回 key 序，导出应保持该顺序（user_id 升序）
-    let mut t: Table<TestStore, ExportKey, ExportRow> = Table::new(TestStore::slatedb_mem());
+    let mut t: Collection<TestStore, ExportKey, ExportRow> = Collection::new(TestStore::slatedb_mem());
     put_rows(&mut t);
     let batch = t.to_record_batch();
     let uid = batch.column(1).as_any().downcast_ref::<arrow::array::UInt64Array>().unwrap();
@@ -136,13 +136,13 @@ fn fixed_bytes_maps_to_binary() {
         pub id: u64,
         pub name: [u8; 4],
     }
-    #[derive(ObjEncode, Clone, PartialEq, Debug)]
+    #[derive(DocumentEncode, Clone, PartialEq, Debug)]
     #[ok_ref(BinKey)]
     pub struct BinRow {
         pub n: u32,
     }
 
-    let mut t: Table<TestStore, BinKey, BinRow> = Table::new(TestStore::slatedb_mem());
+    let mut t: Collection<TestStore, BinKey, BinRow> = Collection::new(TestStore::slatedb_mem());
     let k = BinKey { id: 1, name: *b"abcd" };
     t.put(&k, &BinRow { n: 9 });
 
@@ -156,7 +156,7 @@ fn fixed_bytes_maps_to_binary() {
 /// 空表导出：batch 零行、schema 完整。
 #[test]
 fn empty_table_exports_full_schema() {
-    let t: Table<TestStore, ExportKey, ExportRow> = Table::new(TestStore::slatedb_mem());
+    let t: Collection<TestStore, ExportKey, ExportRow> = Collection::new(TestStore::slatedb_mem());
     let batch = t.to_record_batch();
     assert_eq!(batch.num_rows(), 0);
     assert_eq!(batch.num_columns(), 6);
