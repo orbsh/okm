@@ -533,21 +533,18 @@ Unchanged: primary payload layout `[version][hot_len][hot][cold TLV]`
 
 ## Phase 10 — edge keys via slots: retire the direction-bit niche (high priority)
 
-- [ ] Replace ADR-0001's direction-bit niche with plain slot allocation:
+- [x] Replace ADR-0001's direction-bit niche with plain slot allocation:
       edge forward = slot 14, edge reverse = slot 15 (top of the fixed
       nibble region, growing toward the middle — heap/stack shape; see
       the revised slot table). Header becomes the raw ns big-endian value
       (`head_bytes` = `ns.to_be_bytes()`, `DIR_BIT` deleted) — no
       transform, no hidden halves.
-- [ ] Full 16-bit ns space shared by tables and edges for real (today
-      tables have it, edges are capped at 0..=32767 by the niche). The
-      ns dictionary stops being a "shared-in-theory" space.
-- [ ] Table/edge layout fully uniform: same header discipline, edge just
-      declares two slots instead of one. Supersedes ADR-0001 (record the
-      supersession + rationale: the 1 saved byte is cheap, the permanent
-      cognitive load of `ns<<1|dir` is not).
-- [ ] Sweep: `edge.rs` (`head_bytes`/`DIR_BIT`), `edge_encode.rs`
-      generation, edge test hex locks, key-layout docs, ADR-0001 update.
-      Wire-format change for edge keys — dev stage, no stored data to
-      migrate.
+- [x] Full 16-bit ns space shared by tables and edges for real. The ns
+      dictionary is a genuinely shared space (b2bd478).
+- [x] Table/edge layout fully uniform: same header discipline, edge just
+      declares two slots instead of one. ADR-0001 superseded (rationale
+      recorded in the doc header).
+- [x] Sweep: `edge.rs` (`head_bytes`/`DIR_BIT` deleted), collection.rs /
+      slatedb_backend.rs prefix scans, integration hex locks, ADR-0001
+      superseded. Edge key bytes changed — dev stage, no stored data.
 
