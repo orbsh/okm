@@ -499,3 +499,4 @@ fn multi_entry_function_index_fans_out() {
     let remaining = t.scan::<ByTag>(b"rust").len();
     assert_eq!(remaining, 1); // 只剩 id 2
 }
+

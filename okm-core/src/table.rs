@@ -323,3 +323,118 @@ impl<S: VirtualStorage, K: KeyEncode, R: Row<Key = K>> Table<S, K, R> {
             .collect()
     }
 }
+
+use std::collections::BTreeMap;
+
+use crate::obj_dict::DictCache;
+use crate::obj_dynamic::DynamicValue;
+
+impl<S: VirtualStorage, K: KeyEncode, R: Row<Key = K>> Table<S, K, R> {
+    /// Dynamic-segment key: `[header][DYNAMIC_SLOT][key payload]` — the
+    /// per-row extension entry next to the primary (slot 0), same
+    /// skeleton as an index entry with no field segment (ADR-0012).
+    fn variants_key(&self, key: &K) -> Vec<u8> {
+        let mut buf = self.header();
+        buf.push(crate::index::DYNAMIC_SLOT);
+        buf.extend_from_slice(&key.encode());
+        buf
+    }
+
+    /// Read the obj's dynamic fields: slot 1 frames decoded to names via
+    /// the field-name dictionary. `None` = the obj has no dynamic entry
+    /// (distinct from an empty entry, which is also None here — a
+    /// zero-frame list is never written).
+    pub fn get_variants(&mut self, key: &K) -> Option<BTreeMap<String, DynamicValue>> {
+        let raw = self.store.get(&self.variants_key(key))?;
+        let frames = crate::obj_dynamic::decode_variants(&raw);
+        if frames.is_empty() {
+            return None;
+        }
+        let mut d = DictCache::default();
+        let header = self.header();
+        let mut out = BTreeMap::new();
+        for f in frames {
+            if let Some(name) = d.name_for(&mut self.store, &header, f.id) {
+                out.insert(name, f.value);
+            }
+            // Unknown id (dictionary entry absent): drop the field. Under
+            // single-writer this cannot happen; with shared engines it is
+            // the same degraded mode the cache documents.
+        }
+        Some(out)
+    }
+
+    /// Replace the obj's dynamic fields wholesale: the map becomes the
+    /// entire slot-1 entry (fields absent from `variants` are removed —
+    /// this is a whole-entry put, not a per-field merge). First-seen
+    /// names allocate ids through the dictionary; one engine batch
+    /// carries any dictionary growth plus the entry itself.
+    pub fn set_variants(
+        &mut self,
+        key: &K,
+        variants: &BTreeMap<String, DynamicValue>,
+    ) {
+        let mut d = DictCache::default();
+        let header = self.header();
+        let mut body = Vec::new();
+        for (name, value) in variants {
+            let id = d.id_for(&mut self.store, &header, name);
+            crate::obj_dynamic::put_frame(&mut body, id, value);
+        }
+        self.epoch += 1;
+        let k = self.variants_key(key);
+        if body.is_empty() {
+            self.store.del(&k);
+        } else {
+            self.store.put(k, body);
+        }
+    }
+
+    /// The whole obj as a name-keyed map: declared fields (typed, from
+    /// slot 0 via FieldDesc) merged over the dynamic segment (slot 1).
+    /// Declared names win by construction — the two paths cannot collide
+    /// because the typed side is compile-time and the dictionary only
+    /// allocates names it has never seen (a dynamic name equal to a
+    /// declared name would have to be allocated first; convention:
+    /// callers don't, and `get_variants` exposes any violation).
+    pub fn get_object(&mut self, key: &K) -> Option<BTreeMap<String, DynamicValue>> {
+        // v1: dynamic fields only. Declared fields carry Rust types the
+        // derive knows how to lift into DynamicValue — that helper lands
+        // with the derive-side row↔map bridge (PLAN Phase 8); until then
+        // the declared half is reachable through the typed `get`.
+        let dynamic = self.get_variants(key)?;
+        Some(dynamic)
+    }
+
+    /// Whole-obj write: fields whose names match the row struct go to
+    /// the typed path (slot 0, `R::decode_payload` + field assignment),
+    /// the rest to the dynamic segment. Unknown names allocate (this is
+    /// the external-data entry point — unknown fields are normal input,
+    /// unlike the typed decoder where they are caller bugs). One call,
+    /// two slots, one epoch bump.
+    pub fn set_object(
+        &mut self,
+        key: &K,
+        object: &BTreeMap<String, DynamicValue>,
+    ) {
+        // Split by declared/undeclared.
+        // v1: everything routes to the dynamic segment. Typed-path
+        // assignment (declared names → slot 0 via a derive-generated
+        // lift) lands with the row↔map bridge in PLAN Phase 8; until
+        // then set_object is set_variants with a wider contract.
+        self.set_variants(key, object);
+    }
+
+    /// Drop the dynamic entry (declared fields untouched). True if an
+    /// entry existed.
+    pub fn delete_variants(&mut self, key: &K) -> bool {
+        let k = self.variants_key(key);
+        if self.store.get(&k).is_some() {
+            self.store.del(&k);
+            self.epoch += 1;
+            true
+        } else {
+            false
+        }
+    }
+}
