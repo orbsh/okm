@@ -419,6 +419,11 @@ impl<S: VirtualStorage, K: KeyEncode, R: Row<Key = K>> Table<S, K, R> {
     /// the external-data entry point — unknown fields are normal input,
     /// unlike the typed decoder where they are caller bugs). One call,
     /// two slots, one epoch bump.
+    ///
+    /// The input IS a map — there is no root-wrapping convention for
+    /// scalar/array tops (no synthetic `"_root"` field). Callers holding
+    /// a non-object document decide themselves: wrap in a named field,
+    /// reject, or split; the storage layer does not guess.
     pub fn set_object(
         &mut self,
         key: &K,
