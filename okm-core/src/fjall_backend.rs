@@ -37,6 +37,13 @@ impl FjallStore {
     }
 }
 
+/// Clone IS a shared handle (Arc-inner) — the NestStorage requirement.
+impl crate::storage::SharedVirtualStorage for FjallStore {
+    fn shared_handle(&self) -> Self {
+        self.clone()
+    }
+}
+
 impl VirtualStorage for FjallStore {
     fn put(&mut self, key: Vec<u8>, value: Vec<u8>) {
         self.ks.insert(key, value).expect("fjall insert failed");
