@@ -687,6 +687,9 @@ Decided:
 
 - [ ] Rename `EdgeEncode` -> `JunctionEncode`, `Edge<S, E>` ->
       `Junction<S, E>` (mechanical: derive, core, tests, docs en/zh).
+      Junction is unidirectional per entry: one slot per endpoint ns
+      (the old "two direction slots in one ns" 14/15 design is
+      replaced by the two-ns residency).
 - [ ] Junction ns derives from endpoint key types' ns at compile time
       (deterministic combination + compile-time collision check) —
       `#[ok_ns(N)]` on junctions removed (ADR-0005's manual-numbering
