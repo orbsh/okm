@@ -29,7 +29,11 @@
 
 端点**不是编译期定类型**。引用是 `[ns 2B BE][pkey]`——任意 collection 的任意文档、任意 key 形状。ns 充当类型标记：解码引用按 ns 路由到归属 collection，节点类型不受限。
 
-pkey 的边界**不在 key 里**。一个 collection 的 pkey 宽度是 schema 事实（`KeyEncode::KEY_LEN`）；Edge 实现持有 **ns → KEY_LEN 注册表**（声明形态编译期生成，动态形态运行期表），按查找切出 pkey。这是 Ref 纪律——"引用是 key 字节，ns 知识在声明处"——从单一绑定的端点类型推广到端点类型的注册表。
+pkey 的边界**不在 key 里**。一个 collection 的 pkey 宽度是 schema 事实（`KeyEncode::KEY_LEN`），Edge 实现通过 **ns → KEY_LEN 注册表**解析。三个候选方案经过权衡：
+
+- **a. 定宽约定**——要求同一图内所有节点 collection 的 pkey 宽度相同（如都是 u64 id）。key 零开销，但对建模是硬约束：一个 20 字节复合键的异构节点就破坏它，且跨图复用注册表会变别扭。拒绝——对真实图太死板。
+- **b. 自描述段（TLV）**——`[ns 2B][pkey_len varint][pkey]`。完全通用，任意 pkey 形状通用，解码无需注册表。代价：每条引用 +1 字节以上（len 前缀），且每次解码多一个 varint 步骤。拒绝——Edge collection 持有数千条引用，per-reference 开销会在遍历面（0x5-0x8，存储中最高频的条目）上成倍放大。
+- **c. 注册表查表（选中）**——pkey 宽度来自 schema（`KeyEncode::KEY_LEN`）；Edge 实现持有 **ns → KEY_LEN 注册表**（声明形态编译期生成，动态形态运行期表），按查找切出 pkey。key 零开销，把 Ref 纪律——"引用是 key 字节，ns 知识在声明处"——从单一绑定的端点类型推广到端点类型的注册表。注册表是新的跨集合 schema 事实：编译期形态生成，动态形态用户维护。
 
 ### 3. Slot 分配（ADR-0016 段，在 Edge ns 内）
 
