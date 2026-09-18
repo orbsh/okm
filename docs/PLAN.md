@@ -699,12 +699,19 @@ Decided:
       the entries live in the endpoints' own ns, ADR-0015/0016).
       Discriminator `#[ok_junction(n)]` fills the segment-0x3 counter
       (separates multiple junctions over one endpoint pair).
-- [ ] Future: `#[ok_relation(JunctionType)]` on a `Refs` field — put-
-      time diff auto link/unlink (trades RMW for declarative sync;
-      needs the two-endpoint write consistency analysis first).
-- [ ] Future: graph `Edge` (directed, `DynamicValue` attributes, no
-      nesting, no field-name compression) — a genuinely different type;
-      no consumer yet, design deferred. ns scheme open (the earlier
+- [ ] Future (HIGH): `#[ok_relation(JunctionType)]` on a `Refs`
+      field — put-time diff auto link/unlink (trades RMW for
+      declarative sync; needs the two-endpoint write consistency
+      analysis first). Highest-priority open item.
+- [ ] Future (HIGH): graph `Edge` — designed, ADR-0017 (draft): the
+      third relation carrier. One ns per graph (normal ns dictionary,
+      no new mechanism); self-describing endpoint references
+      ([ns][pkey], pkey width via a ns->KEY_LEN registry); six faces
+      (primary / kind index / out / in / kind+out / kind+in) on
+      ADR-0016 segments; kind dictionary reuses 0x2/0x3; attributes as
+      a dynamic segment in the edge body; empty-declaration dynamic
+      form shares the wire layout. Next: implement the derive + Graph
+      assembly point + registry. ns scheme open (the earlier
       compile-time-hash idea is rejected — nondeterministic; graph edges
       often exist independently of either endpoint document, so the
       two-ns residency may not transfer).
@@ -735,7 +742,7 @@ The full plural taxonomy (identity axis x homogeneous/heterogeneous):
 - [x] **DynamicValue::Array** — heterogeneous list (shipped with the
       dynamic segment); more general than Vector, per-element type
       tags, slightly higher overhead.
-- [ ] **Set** — deduplicated element membership. Candidate: inverted
+- [ ] (MEDIUM) **Set** — deduplicated element membership. Candidate: inverted
       index (element -> document keys), mechanically identical to the
       multi-value function index (func returning Vec<V> fans out).
       Decide dedicated type vs documented function-index usage when a
