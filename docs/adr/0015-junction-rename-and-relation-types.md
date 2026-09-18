@@ -48,23 +48,60 @@ Collection. `forward_key` / `reverse_key` keep their names: the FWD/
 REV double materialization is the mechanism's essence, the names are
 accurate.
 
-### 2. Junction ns derives from the endpoints
+### 2. Two-ns residency: each endpoint's ns hosts one direction
 
-The manual `#[ok_ns(N)]` on a junction declaration is removed. The ns
-is **derived at compile time** from the two endpoint key types' own ns
-values (deterministic combination, collision-checked at compile time
-across the crate's declarations). Two reasons:
+The manual `#[ok_ns(N)]` on a junction declaration is removed. A
+junction's two physical entries live **in the two endpoint documents'
+own ns** — one entry per ns, no third ns:
 
-- Identity: a junction is fully determined by its endpoint pair —
-  `Org + User` IS the relation's identity; a separate human-assigned
-  number adds a bookkeeping fact with zero information.
-- The ADR-0005 argument applies verbatim: manual numbering is a hole-
-  bookkeeping burden, and unlike indexes, junction ns collisions are a
-  real hazard (two human-assigned numbers can silently overlap).
+```
+ns_org  [ns_org ][slot 0x80][A identity][B identity]   // the fact seen from A
+ns_user [ns_user][slot 0x81][B identity][A identity]   // the same fact from B
+```
 
-Endpoint ns values are compile-time constants (each key type declares
-one), so derivation is a const expression — no runtime cost, no
-dictionary, no ADR-0002 KV-bootstrap deadlock.
+A junction is **unidirectional per entry**: each entry answers exactly
+one query direction ("all users of this org" from ns_org; "all orgs of
+this user" from ns_user). The two entries are the same relation fact
+written twice — the double materialization that makes both directions
+O(1). No derived ns, no hash, no third namespace: the relation lives
+with its endpoints, one slot in each.
+
+Why not a derived independent ns (the earlier draft): a compile-time
+hash of the two endpoint ns values was rejected — not for collision
+risk but for **indeterminacy**. A hashed ns is an opaque number whose
+relation to the endpoints is invisible, and the project's identity
+discipline (keys declared, namespaces declared, nothing manufactured)
+extends to relation storage: the entries live where the endpoints
+live.
+
+**Isolation from ordinary indexes**: the 1-byte slot is extended to
+**2 bytes (u16, big-endian)** — the high byte is a segment number,
+the low byte free within the segment. Ordinary indexes and junctions
+differ in the high byte alone (`0x01` vs `0x80`), a structural
+distinction rather than a convention:
+
+```
+slot high byte = segment:
+  0x00  document itself   (low: 0 primary, 1 dynamic, 2/3 dict,
+                           4-13 buffer, 14/15 reserved)
+  0x01  declared indexes  (low = declaration-order counter)
+  0x02  reduces           (own counter — no longer chained after
+                           indexes)
+  0x03-0x7F  derived region reserved
+  0x80  junction entries pointing A-side (hosted in ns_A)
+  0x81  junction entries pointing B-side (hosted in ns_B)
+  0x82-0xBF  relation region reserved (future graph Edge, etc.)
+  0xC0-0xFF  system reserved
+```
+
+Consequences of the 2-byte slot: every non-primary entry key grows by
+1 byte (invisible next to identity encodings of tens of bytes);
+segment membership becomes structural (`slot >> 8` dispatch) instead
+of a numbering convention; reduces stop consuming the index quota
+(the old chained-counter coupling dies); segment exhaustion moves
+from real to theoretical (each low-byte space is 256, per document
+type). The hex locks and key-layout documents change accordingly —
+pre-crates.io is the only cheap window, which is now.
 
 ### 3. Taxonomy: two relation types, two carriers
 
@@ -135,6 +172,10 @@ vector/array**.
   against stored junction entries (auto link/unlink). Recorded as
   future work — it trades RMW for auto-sync and needs a consistency
   story before it lands.
+- The junction is unidirectional per entry: the "two slots per
+  junction" of the old design (14/15 in one ns) becomes "one slot in
+  each endpoint's ns" — the relation fact is written once per
+  endpoint ns, each hosting the direction that ns answers.
 
 ## Future work (explicitly out of scope here)
 
