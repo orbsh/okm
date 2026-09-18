@@ -63,3 +63,14 @@ Wrappers are **compression semantics** (how a field is stored), orthogonal to **
 ## Relationship to engine compression
 
 Disk block compression (LZ4) belongs to the engine; variable-length wrappers solve the in-memory representation tension. The division of labor and the full value-granularity argument (whole-row vs field-per-key) live in the [KV Storage Engine essay](https://github.com/orbsh/wiki/blob/main/kv-storage-engine.md).
+
+
+## Update 2026-09-19: cold-frame length is a varint
+
+Declared variable-width fields' cold frames `[tag u8][len u32 BE][value]`
+became `[tag u8][len varint][value]` — the length prefix uses the
+prefix-monotonic wire codec (`wrappers/wire.rs`), shared with `VarInt`
+and the dynamic-segment frames. Short strings cost a 1-byte length
+instead of 4. `Vector<String>` element LV prefixes changed the same
+way. Hot-segment fixed-width fields and index keys are untouched
+(fixed width remains the sort-order and static-offset contract).
