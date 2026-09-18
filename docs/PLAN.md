@@ -778,14 +778,14 @@ STORAGE-layer format. Embedding vectors are the anchor use case.
 Elements are pure values — the identity line keeps this out of
 Ref/Junction.
 
-**P1 — VarInt re-encoding: byte order = value order.** UTF-8
-prefix-monotonic idea: first byte increases with value range
-([0bbbbbbb] 1B / [10bb....] 2B / ...), so byte comparison equals
-numeric comparison — VarInt becomes a legal index-segment field
-without swap transforms. Breaking wire change (LEB128 payloads
-re-encoded); downstream (aura, k10r) declares zero VarInt fields, so
-the window is now. Acceptance: dictionary-order tests over value
-boundaries (0/127/128/2^14...), index-field hex lock.
+**P1 — VarInt re-encoding: byte order = value order.** DONE
+(2026-09-19). Prefix-monotonic encoding shipped: first byte = width
+((w-1) leading ones + terminator 0), payload big-endian — byte
+comparison equals numeric comparison across width boundaries, so
+VarInt is a legal index-segment field without swap transforms.
+Breaking wire change (LEB128 payloads re-encoded); downstream (aura,
+k10r) declared zero VarInt fields. Acceptance: byte-order test over
+width boundaries passed, hex lock updated.
 
 **P2 — dynamic-segment scalar width tiers.** ObjValueType::UInt
 splits into 8/16/32/64-bit sub-variants; encoder picks the smallest
