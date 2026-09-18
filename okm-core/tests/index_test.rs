@@ -1,5 +1,5 @@
 //! 二级索引集成测试（ADR-0006 Document 形状）：DocumentEncode 派生、Table 装配点
-//! put/scan 回表、entry 布局 hex 锁定（entry = [ns 2B][slot 1B][索引字段]
+//! put/scan 回表、entry 布局 hex 锁定（entry = [ns 2B][slot 2B][索引字段]
 //! [key前缀]，value = includes 段）、最左前缀扫描、includes 覆盖、
 //! 截断 key 前缀（尾段去冗余，前提：剩余字段已唯一）。
 
@@ -102,20 +102,20 @@ fn table_put_writes_primary_and_indexes() {
     let (k, r) = mk_user(101, 100);
     t.put(&k, &r);
 
-    // 主键写入 slot 0：头 [0,9,0]（ns 2B + slot 0）+ key payload
+    // 主键写入 slot 0x0000：头 [0,9,0,0]（ns 2B + slot 2B BE）+ key payload
     let kl = <UserKey as KeyEncode>::KEY_LEN;
     let pk = t.primary_key(&k);
-    assert_eq!(&pk[..3], &[0, 9, 0]);
-    assert_eq!(&pk[3..], &k.encode()[..]);
+    assert_eq!(&pk[..4], &[0, 9, 0, 0]);
+    assert_eq!(&pk[4..], &k.encode()[..]);
     // value = 行载荷 TLV，可解码回原行
     let raw = t.store().get(&pk).unwrap();
     let dec = <User as Document>::decode_payload(&raw);
     assert_eq!(dec, r);
 
-    // 索引 entry：ns 9 + slot 16（by_reputation，DECLARED_SLOT_BASE）
+    // 索引 entry：ns 9 + slot 0x1001（by_reputation，index 段计数 1）
     // entry key 尾部 = 完整主键 id；value = includes 段（无 includes → 空）
     let e1 = t.index_key::<ByReputation>(&k, &r);
-    assert_eq!(&e1[..3], &[0, 9, 16]); // ns=9、slot=16
+    assert_eq!(&e1[..4], &[0, 9, 0x10, 0x01]); // ns=9、slot=0x1001
     assert_eq!(&e1[e1.len() - kl..], &k.encode()[..]);
     assert!(t.store().get(&e1).is_some());
 
@@ -170,38 +170,38 @@ fn scan_via_index_returns_rows() {
 
 #[test]
 fn entry_layout_hex_lock() {
-    // 直接锁定 by_reputation entry 字节布局：[ns 2B][slot 1B][reputation 4B][id 8B]
+    // 直接锁定 by_reputation entry 字节布局：[ns 2B][slot 2B][reputation 4B][id 8B]
     let (k, r) = mk_user(101, 100);
     let kl = <UserKey as KeyEncode>::KEY_LEN; // 8
     assert_eq!(kl, 8);
 
     let e = ByReputation::entry_key(<User as Document>::NS_PREFIX, &k, &r);
-    assert_eq!(&e[..3], &[0, 9, 16]); // ns=9、slot=16
-    assert_eq!(&e[3..7], &100u32.to_be_bytes()); // 索引字段 reputation 来自 payload
-    assert_eq!(&e[7..], &k.encode()[..]); // key 前缀取满 = 完整主键
-    assert_eq!(e.len(), 3 + 4 + kl);
+    assert_eq!(&e[..4], &[0, 9, 0x10, 0x01]); // ns=9、slot=0x1001
+    assert_eq!(&e[4..8], &100u32.to_be_bytes()); // 索引字段 reputation 来自 payload
+    assert_eq!(&e[8..], &k.encode()[..]); // key 前缀取满 = 完整主键
+    assert_eq!(e.len(), 4 + 4 + kl);
     // value：无 includes → 空
     assert!(ByReputation::entry_value(&k, &r).is_empty());
 
-    // Post.by_timeline：ns 12 + slot 16，索引字段 author_id(8B)+created_at(8B)
+    // Post.by_timeline：ns 12 + slot 0x1001，索引字段 author_id(8B)+created_at(8B)
     // （均来自 payload），key 前缀取满 id(8B)；value = includes(title_len) 段
     let (pk, pr) = mk_post(500, 7, 1700000000, 42);
     let e2 = ByTimeline::entry_key(<Post as Document>::NS_PREFIX, &pk, &pr);
-    assert_eq!(&e2[..3], &[0, 12, 16]); // ns=12、slot=16
-    assert_eq!(&e2[3..11], &7u64.to_be_bytes()); // author_id 来自 payload
-    assert_eq!(&e2[11..19], &1700000000u64.to_be_bytes()); // created_at 来自 payload
-    assert_eq!(&e2[19..], &pk.encode()[..]); // key 前缀取满
-    assert_eq!(e2.len(), 3 + 8 + 8 + 8);
+    assert_eq!(&e2[..4], &[0, 12, 0x10, 0x01]); // ns=12、slot=0x1001
+    assert_eq!(&e2[4..12], &7u64.to_be_bytes()); // author_id 来自 payload
+    assert_eq!(&e2[12..20], &1700000000u64.to_be_bytes()); // created_at 来自 payload
+    assert_eq!(&e2[20..], &pk.encode()[..]); // key 前缀取满
+    assert_eq!(e2.len(), 4 + 8 + 8 + 8);
     assert_eq!(ByTimeline::entry_value(&pk, &pr), 42u32.to_be_bytes().to_vec());
 
     // Session.by_kind：ns = 15+1，索引字段 kind(1B)，key 前缀截断到
     // session_id(8B)——user_id 从尾段去掉（去冗余）
     let (sk, sr) = mk_session(9, 777, 3);
     let e3 = ByKind::entry_key(<Session as Document>::NS_PREFIX, &sk, &sr);
-    assert_eq!(&e3[..3], &[0, 15, 16]); // ns=15、slot=16
-    assert_eq!(&e3[3..4], &[3]); // kind 来自 payload
-    assert_eq!(&e3[4..], &777u64.to_be_bytes()); // 截断尾段 = session_id
-    assert_eq!(e3.len(), 3 + 1 + 8);
+    assert_eq!(&e3[..4], &[0, 15, 0x10, 0x01]); // ns=15、slot=0x1001
+    assert_eq!(&e3[4..5], &[3]); // kind 来自 payload
+    assert_eq!(&e3[5..], &777u64.to_be_bytes()); // 截断尾段 = session_id
+    assert_eq!(e3.len(), 4 + 1 + 8);
 }
 
 #[test]
@@ -282,17 +282,17 @@ fn truncated_key_prefix_drops_redundant_tail() {
 
 #[test]
 fn slot_allocation() {
-    // slot 从 DECLARED_SLOT_BASE（16）起：0-15 固定角色（ADR-0012）；
-    // slot 字节在表 ns 段内区分索引
-    assert_eq!(<ByReputation as KvIndex>::SLOT, 16);
-    assert_eq!(<ByTimeline as KvIndex>::SLOT, 16);
-    assert_eq!(<ByKind as KvIndex>::SLOT, 16);
+    // slot 段号制（ADR-0016）：索引段 0x1，计数从 1 起；段号 = slot >> 12，
+    // 在集合 ns 段内结构化区分条目种类
+    assert_eq!(<ByReputation as KvIndex>::SLOT, 0x1001);
+    assert_eq!(<ByTimeline as KvIndex>::SLOT, 0x1001);
+    assert_eq!(<ByKind as KvIndex>::SLOT, 0x1001);
     assert_eq!(<ByReputation as KvIndex>::FIELDS, &["reputation"]);
     assert_eq!(<ByTimeline as KvIndex>::FIELDS, &["author_id", "created_at"]);
     assert_eq!(<ByTimeline as KvIndex>::INCLUDES, &["title_len"]);
     assert_eq!(<ByTimeline as KvIndex>::KEY_PREFIX, &[] as &[&str]);
     assert_eq!(<ByKind as KvIndex>::KEY_PREFIX, &["session_id"]);
-    assert_eq!(okm_core::PRIMARY_SLOT, 0);
+    assert_eq!(okm_core::PRIMARY_SLOT, 0x0000);
     let _ = std::marker::PhantomData::<PrefixKey<UserKey>>;
 }
 
@@ -358,17 +358,17 @@ fn variable_length_index_text_first() {
         t.put(k, r);
     }
 
-    // entry 布局：[ns 2B][slot 1B][city 4B][name 裸 UTF-8][id 8B]
+    // entry 布局：[ns 2B][slot 2B][city 4B][name 裸 UTF-8][id 8B]
     // value：无 includes → 空
     let kl = <DocKey as KeyEncode>::KEY_LEN;
     assert_eq!(kl, 8);
     let (k, r) = &rows[0];
     let e = ByCityName::entry_key(<Doc as Document>::NS_PREFIX, k, r);
-    assert_eq!(&e[..3], &[0, 21, 16]); // ns=21、slot=16
-    assert_eq!(&e[3..7], &10u32.to_be_bytes()); // city 定宽可定位
-    assert_eq!(&e[7..12], b"alpha"); // name 居末：裸字节，无长度前缀
-    assert_eq!(&e[12..], &k.encode()[..]); // 尾部主键干净切出
-    assert_eq!(e.len(), 3 + 4 + 5 + kl);
+    assert_eq!(&e[..4], &[0, 21, 0x10, 0x01]); // ns=21、slot=0x1001
+    assert_eq!(&e[4..8], &10u32.to_be_bytes()); // city 定宽可定位
+    assert_eq!(&e[8..13], b"alpha"); // name 居末：裸字节，无长度前缀
+    assert_eq!(&e[13..], &k.encode()[..]); // 尾部主键干净切出
+    assert_eq!(e.len(), 4 + 4 + 5 + kl);
 
     // 前缀扫描 "alpha" 命中 alpha + alphabet（共享前缀 = 同一字典序区间）
     let p = ByCityName::entry_prefix(<Doc as Document>::NS_PREFIX, &10u32.to_be_bytes());
@@ -427,14 +427,14 @@ fn function_index_normalizes_both_sides() {
         t.put(k, r);
     }
 
-    // entry 布局：[ns 2B][slot 1B][func 结果裸字节][id 8B]——无 fields 段
+    // entry 布局：[ns 2B][slot 2B][func 结果裸字节][id 8B]——无 fields 段
     let kl = <DocKey as KeyEncode>::KEY_LEN;
     let (k, r) = &rows[0];
     let e = ByLower::entry_key(<DocFunc as Document>::NS_PREFIX, k, r);
-    assert_eq!(&e[..3], &[0, 21, 16]); // ns=21（DocKey 的段）、slot=1
-    assert_eq!(&e[3..8], b"apple"); // 归一化后的结果
-    assert_eq!(&e[8..], &k.encode()[..]);
-    assert_eq!(e.len(), 3 + 5 + kl);
+    assert_eq!(&e[..4], &[0, 21, 0x10, 0x01]); // ns=21、slot=0x1001
+    assert_eq!(&e[4..9], b"apple"); // 归一化后的结果
+    assert_eq!(&e[9..], &k.encode()[..]);
+    assert_eq!(e.len(), 4 + 5 + kl);
     assert_eq!(ByLower::FUNC, "lower_name");
 
     // 查询端探针：同一函数归一化 probe 行 → 前缀扫描 → 回表
@@ -482,7 +482,7 @@ fn multi_entry_function_index_fans_out() {
     assert_eq!(e.len(), 2);
     let kl = <DocKey as KeyEncode>::KEY_LEN;
     let mut toks: Vec<&[u8]> =
-        e.iter().map(|(k, _)| &k[3..k.len() - kl]).collect();
+        e.iter().map(|(k, _)| &k[4..k.len() - kl]).collect();
     toks.sort();
     assert_eq!(toks, vec![b"kv".as_slice(), b"rust".as_slice()]);
 

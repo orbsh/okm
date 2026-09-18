@@ -33,7 +33,7 @@ ns 头之后是 2 字节 BE slot：高 4 位是**段号**（条目种类的结�
                      slot 0x0004+  缓冲（4092 个）
 段 0x1  声明索引     [ns][0x1nnn][索引字段][主键前缀]   nnn = 声明序
 段 0x2  reduce       [ns][0x2nnn][group 段]            nnn = 声明序，独立计数器
-段 0x3  junction     [ns][0x3nnn][对端身份]            nnn = junction 区分号
+段 0x3  junction     [ns][0x3nnn?][本端身份][对端身份]  n = 区分号，低位 = 方向
 段 0x4–0xB 预留（派生/关系扩展）
 段 0xC–0xF 预留（系统）
 ```
@@ -54,8 +54,8 @@ partition 条目  [ 0xFF ][ part 1B ][ ns 2B ][ slot 2B ][ ... ]
 
 ```text
 document  [ (0xFF part 1B) ][ ns 2B ][ slot 2B ][ ... ]   partition 段可选
-junction  [ ns_a 2B         ][ 0x3nnn ][ 对端身份 ]            在 A 的集合里
-junction  [ ns_b 2B         ][ 0x3nnn ][ 对端身份 ]            在 B 的集合里
+junction  [ ns_a 2B         ][ 0x3nnn? ][ 本端身份 ][ 对端身份 ]   在 A 的集合里
+junction  [ ns_b 2B         ][ 0x3nnn? ][ 本端身份 ][ 对端身份 ]   在 B 的集合里
             ↑ 同一编号空间、同一头纪律，slot 段号区分条目种类——无变换
 ```
 

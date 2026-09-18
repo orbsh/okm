@@ -60,8 +60,8 @@ Segment 0x0  document-self   slot 0x0000 primary      [ns][0x0000][pkey]       v
 Segment 0x1  declared index  [ns][0x1nnn][index fields][pkey prefix]  nnn = declaration order
 Segment 0x2  reduce          [ns][0x2nnn][group seg]                  nnn = declaration order,
                                                                       independent counter
-Segment 0x3  junction        [ns][0x3nnn][peer identity]              nnn = junction
-                                                                      discriminator
+Segment 0x3  junction        [ns][0x3nnn?][local id][peer id]         n = discriminator,
+                                                                      low bit = direction
 Segments 0x4–0xB  reserved (derived / relation extensions)
 Segments 0xC–0xF  reserved (system)
 ```
@@ -99,8 +99,8 @@ level.
 
 ```text
 document  [ (0xFF part 1B) ][ ns 2B ][ slot 2B ][ ... ]   partition optional
-junction  [ ns_a 2B         ][ 0x3nnn ][ peer identity ]        in A's collection
-junction  [ ns_b 2B         ][ 0x3nnn ][ peer identity ]        in B's collection
+junction  [ ns_a 2B         ][ 0x3nnn? ][ local id ][ peer id ]   in A's collection
+junction  [ ns_b 2B         ][ 0x3nnn? ][ local id ][ peer id ]   in B's collection
             ↑ one number space, one header discipline; the slot segment
               dispatches entry kinds — no transforms
 ```

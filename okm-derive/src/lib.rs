@@ -5,12 +5,12 @@
 //! - `KeyEncode`: fixed-width key encoding (`key_encode.rs`).
 //! - `DocumentEncode`: value/payload encoding + index declarations
 //!   (`document_encode.rs`).
-//! - `EdgeEncode`: bidirectional edges (`edge_encode.rs`).
+//! - `JunctionEncode`: junctions (`junction_encode.rs`).
 //!
 //! Schema stability is locked by hex assertions in the test suite
 //! (docs/adr/0002, docs/adr/0005, docs/adr/0006).
 
-mod edge_encode;
+mod junction_encode;
 mod key_encode;
 mod document_encode;
 mod schema;
@@ -53,10 +53,10 @@ pub fn derive_document_encode(input: TokenStream) -> TokenStream {
     out
 }
 
-#[proc_macro_derive(EdgeEncode, attributes(ok_ns, ok_head))]
-pub fn derive_edge(input: TokenStream) -> TokenStream {
-    let out = edge_encode::derive(input.clone());
-    dump("EdgeEncode", input, &out.clone().into());
+#[proc_macro_derive(JunctionEncode, attributes(ok_junction, ok_head))]
+pub fn derive_junction(input: TokenStream) -> TokenStream {
+    let out = junction_encode::derive(input.clone());
+    dump("JunctionEncode", input, &out.clone().into());
     out
 }
 

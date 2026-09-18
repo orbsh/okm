@@ -161,25 +161,33 @@ pub fn walk<S: VirtualStorage + Clone>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use okm_core::{EdgeEncode, KeyEncode, TestStore};
+    use okm_core::{DocumentEncode, JunctionEncode, KeyEncode, Ref, TestStore};
 
-    /// Two edge types over one node type — the multi-relation graph a
-    /// real model has (follows + mentions over User).
-    #[derive(EdgeEncode, Clone, PartialEq, Debug)]
-    #[ok_ns(4)]
-    struct FollowsEdge {
-        user_id: UserKey,
-        followee_id: UserKey,
-    }
-    #[derive(EdgeEncode, Clone, PartialEq, Debug)]
-    #[ok_ns(5)]
-    struct MentionsEdge {
-        user_id: UserKey,
-        mentioned_id: UserKey,
+    /// 端点文档：user（ns=1，自反 junction：follows 的两端都是它）
+    #[derive(DocumentEncode, Clone, PartialEq, Debug)]
+    #[ok_ref(UserKey)]
+    #[ok_ns(1)]
+    struct User {
+        id: u32,
     }
     #[derive(KeyEncode, Clone, PartialEq, Debug)]
     struct UserKey {
         id: u32,
+    }
+
+    /// Two junction types over one node type — the multi-relation graph a
+    /// real model has (follows + mentions over User). 自反：两端同一文档。
+    #[derive(JunctionEncode, Clone, PartialEq, Debug)]
+    #[ok_junction(1)]
+    struct FollowsEdge {
+        user_id: Ref<User, UserKey>,
+        followee_id: Ref<User, UserKey>,
+    }
+    #[derive(JunctionEncode, Clone, PartialEq, Debug)]
+    #[ok_junction(2)]
+    struct MentionsEdge {
+        user_id: Ref<User, UserKey>,
+        mentioned_id: Ref<User, UserKey>,
     }
 
     fn mk(id: u32) -> UserKey {
@@ -189,13 +197,13 @@ mod tests {
     #[test]
     fn peers_spans_both_directions_and_both_edge_types() {
         // Edge owns its engine; link phase returns the store.
-        let mut follows: okm_core::Edge<TestStore, FollowsEdge> =
-            okm_core::Edge::new(TestStore::slatedb_mem());
+        let mut follows: okm_core::Junction<TestStore, FollowsEdge> =
+            okm_core::Junction::new(TestStore::slatedb_mem());
         follows.link(&mk(1), &mk(2));
         follows.link(&mk(3), &mk(1)); // incoming for node 1
         let mut store = follows.store;
-        let mut mentions: okm_core::Edge<TestStore, MentionsEdge> =
-            okm_core::Edge::new(std::mem::take(&mut store));
+        let mut mentions: okm_core::Junction<TestStore, MentionsEdge> =
+            okm_core::Junction::new(std::mem::take(&mut store));
         mentions.link(&mk(1), &mk(4));
         let store = mentions.store;
 
@@ -215,7 +223,7 @@ mod tests {
         fn peers(&self, store: TestStore, node: &[u8]) -> Vec<Vec<u8>> {
             // Typed adapter over Edge — the call site owns the
             // edge type and the node encoding.
-            let t = okm_core::Edge::<TestStore, FollowsEdge>::new(store);
+            let t = okm_core::Junction::<TestStore, FollowsEdge>::new(store);
             // Raw byte hop: decode the node, run both directions.
             let n = UserKey::decode(node);
             let mut out = t
@@ -234,7 +242,7 @@ mod tests {
     struct MentionsNeighbors;
     impl GraphEdge<TestStore> for MentionsNeighbors {
         fn peers(&self, store: TestStore, node: &[u8]) -> Vec<Vec<u8>> {
-            let t = okm_core::Edge::<TestStore, MentionsEdge>::new(store);
+            let t = okm_core::Junction::<TestStore, MentionsEdge>::new(store);
             let n = UserKey::decode(node);
             let mut out = t
                 .forward(&n)
@@ -252,8 +260,8 @@ mod tests {
 
     #[test]
     fn walk_two_hops_reaches_friends_of_friends() {
-        let mut follows: okm_core::Edge<TestStore, FollowsEdge> =
-            okm_core::Edge::new(TestStore::slatedb_mem());
+        let mut follows: okm_core::Junction<TestStore, FollowsEdge> =
+            okm_core::Junction::new(TestStore::slatedb_mem());
         // 1 → 2 → 3: two hops from 1 reach 3.
         follows.link(&mk(1), &mk(2));
         follows.link(&mk(2), &mk(3));

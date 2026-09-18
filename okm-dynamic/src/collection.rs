@@ -40,7 +40,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
     /// allocated (1-based, unique per table) — mirroring declaration
     /// order in the typed path.
     pub fn new(store: S, ns: u16, schema: TableSchema, indexes: Vec<AccessMethod>) -> Self {
-        let slots: Vec<u8> = indexes.iter().map(|i| i.slot).collect();
+        let slots: Vec<u16> = indexes.iter().map(|i| i.slot).collect();
         debug_assert!(
             slots.iter().all(|s| *s > 0) && {
                 let mut sorted = slots.clone();
@@ -74,7 +74,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
     fn primary_key(&self, pkey: &[u8]) -> Vec<u8> {
         let mut buf = Vec::with_capacity(3 + self.schema.key_len);
         buf.extend_from_slice(&self.ns);
-        buf.push(0); // PRIMARY_SLOT
+        buf.extend_from_slice(&0u16.to_be_bytes()); // PRIMARY_SLOT
         buf.extend_from_slice(pkey);
         buf
     }
@@ -148,7 +148,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
     /// THE routing primitive — an event resolves its targets here.
     pub fn scan(
         &self,
-        index_slot: u8,
+        index_slot: u16,
         encoded_prefix: &[u8],
     ) -> Result<Vec<ValueMap>, String> {
         let index = self

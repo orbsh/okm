@@ -55,11 +55,11 @@ impl DictCache {
         // dictionary entries are harmless — names are append-only).
         let mut batch = store.batch();
         let mut id_key = header.to_vec();
-        id_key.push(DICT_ID_SLOT);
+        id_key.extend_from_slice(&DICT_ID_SLOT.to_be_bytes());
         id_key.extend_from_slice(&id.to_be_bytes());
         batch.put(id_key, name.as_bytes().to_vec());
         let mut name_key = header.to_vec();
-        name_key.push(DICT_NAME_SLOT);
+        name_key.extend_from_slice(&DICT_NAME_SLOT.to_be_bytes());
         name_key.extend_from_slice(name.as_bytes());
         batch.put(name_key, id.to_be_bytes().to_vec());
         let _ = store.commit_batch(batch);
@@ -85,7 +85,7 @@ impl DictCache {
         }
         // Direct probe before giving up (shared-engine catch-up).
         let mut key = header.to_vec();
-        key.push(DICT_ID_SLOT);
+        key.extend_from_slice(&DICT_ID_SLOT.to_be_bytes());
         key.extend_from_slice(&id.to_be_bytes());
         let name = store.get(&key)?;
         let name = String::from_utf8(name).ok()?;
@@ -107,7 +107,7 @@ impl DictCache {
         }
         // slot 2: [header][2][id u16 BE] → name
         let mut p2 = header.to_vec();
-        p2.push(DICT_ID_SLOT);
+        p2.extend_from_slice(&DICT_ID_SLOT.to_be_bytes());
         for (suffix, name) in store.scan_suffix_kv(&p2) {
             if suffix.len() != 2 {
                 continue;
@@ -119,7 +119,7 @@ impl DictCache {
         }
         // slot 3 mirrors; also derives next_id (max + 1).
         let mut p3 = header.to_vec();
-        p3.push(DICT_NAME_SLOT);
+        p3.extend_from_slice(&DICT_NAME_SLOT.to_be_bytes());
         for (suffix, idv) in store.scan_suffix_kv(&p3) {
             if let Ok(n) = String::from_utf8(suffix) {
                 if idv.len() == 2 {
@@ -185,11 +185,11 @@ mod tests {
 
         // Both directions landed in the engine.
         let mut k2 = HEADER.to_vec();
-        k2.push(DICT_ID_SLOT);
+        k2.extend_from_slice(&DICT_ID_SLOT.to_be_bytes());
         k2.extend_from_slice(&0u16.to_be_bytes());
         assert_eq!(store.get(&k2).unwrap(), b"alpha");
         let mut k3 = HEADER.to_vec();
-        k3.push(DICT_NAME_SLOT);
+        k3.extend_from_slice(&DICT_NAME_SLOT.to_be_bytes());
         k3.extend_from_slice(b"beta");
         assert_eq!(store.get(&k3).unwrap(), &1u16.to_be_bytes());
     }
@@ -219,11 +219,11 @@ mod tests {
         // Directly seed an escaped-range name, then read it back.
         let mut batch = store.batch();
         let mut k2 = HEADER.to_vec();
-        k2.push(DICT_ID_SLOT);
+        k2.extend_from_slice(&DICT_ID_SLOT.to_be_bytes());
         k2.extend_from_slice(&0x1234u16.to_be_bytes());
         batch.put(k2, b"big".to_vec());
         let mut k3 = HEADER.to_vec();
-        k3.push(DICT_NAME_SLOT);
+        k3.extend_from_slice(&DICT_NAME_SLOT.to_be_bytes());
         k3.extend_from_slice(b"big");
         batch.put(k3, 0x1234u16.to_be_bytes().to_vec());
         let _ = store.commit_batch(batch);

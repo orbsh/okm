@@ -25,14 +25,14 @@
 //! dictionary, assembly point, value-side roadmap) and the project README
 //! for a full walkthrough.
 
-pub use okm_derive::{EdgeEncode, KeyEncode, NestStorage, DocumentEncode};
+pub use okm_derive::{JunctionEncode, KeyEncode, NestStorage, DocumentEncode};
 
 pub use reverse::{Reversible, Reverse};
 pub use wrappers::{Ref, Refs, Enum, EnumTag, Offset, Quant, VarInt, VarIntEnc, offset_decode, offset_encode};
 
 pub mod reduce;
 pub mod collection;
-pub mod edge;
+pub mod junction;
 pub mod nest;
 pub mod obj_dict;
 pub mod obj_dynamic;
@@ -59,8 +59,8 @@ pub mod slatedb_backend;
 pub mod tooling;
 
 pub use reduce::{reduce_get, scan_reduces, ReduceCodec, Reduce, ReduceLogic};
-pub use collection::Edge;
-pub use edge::KvEdge;
+pub use collection::Junction;
+pub use junction::KvJunction;
 pub use storage::{VirtualStorage, KvBatch, MemBatch, SharedVirtualStorage};
 #[cfg(any(feature = "test-engines", feature = "fjall", feature = "redb"))]
 pub use test_engine::TestStore;
@@ -80,4 +80,4 @@ pub use tooling::parquet_io;
 #[cfg(feature = "fjall")]
 pub use fjall_backend::FjallStore;
 #[cfg(feature = "slatedb")]
-pub use slatedb_backend::{AsyncEdgeTable, VirtualStorageAsync, SlatedbStore};
+pub use slatedb_backend::{AsyncJunction, VirtualStorageAsync, SlatedbStore};

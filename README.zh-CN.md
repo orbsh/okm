@@ -4,7 +4,7 @@
 
 > 英文版为主文档（[README.md](README.md)），本文为对应中文版。
 
-OKM 是对标 ORM 的范式——ORM 将对象映射到关系表，OKM 将对象映射到 KV 键空间。通过派生宏 `#[derive(KeyEncode)]` / `#[derive(EdgeEncode)]` + 数字命名空间 ID，构建零成本抽象语义数据层：开发侧如同 ORM 般声明式，编译后退化为纯指针偏移计算。
+OKM 是对标 ORM 的范式——ORM 将对象映射到关系表，OKM 将对象映射到 KV 键空间。通过派生宏 `#[derive(KeyEncode)]` / `#[derive(JunctionEncode)]` + 数字命名空间 ID，构建零成本抽象语义数据层：开发侧如同 ORM 般声明式，编译后退化为纯指针偏移计算。
 
 关联阅读：[KV 存储引擎](https://github.com/orbsh/wiki/blob/main/kv-storage-engine.md) — 底层架构与设计模式（编码原理、索引策略、引擎层取舍）；[建模指南](docs/MODELING.zh-CN.md) — 规范性 schema 建模方法（四层建模法、访问方法强制、覆盖索引克制、主键复合边界）。
 
@@ -31,9 +31,9 @@ SQL 的核心价值不是执行性能，而是关系模型交付的可读性、�
 已实现：
 
 - `KeyEncode` — 定宽 key 编码（`u32` / `u64` / `[u8; N]`），大端序，编译期 `KEY_LEN` / `FIELD_WIDTHS`，`encode_prefix_named` 截断原语。
-- `EdgeEncode` — 双向边，各端点身份宽度可独立声明（`#[ok_head(...)]`），3 字节头部 `[ns u16][slot u8]`（slot 14/15 = 正/反向），查询方法生成在端点类型上。
-- `Edge<S, E>` — 组装点：引擎 + 边类型 = 一条关系的操作面（`link` / `unlink` / `forward` / `reverse` / `reverse_prefix`）。
-- 引擎后端走 Cargo feature：`fjall`（同步 `FjallStore`）、`slatedb`（异步 `SlatedbStore` + `AsyncCollection`），测试用内存 `MockStore`。
+- `JunctionEncode` — junction（SQL 多对多连接表）：每端 ns 一条单向条目，4 字节头 `[ns u16][slot u16]`（0x3 段），各端点身份宽度可独立声明（`#[ok_head(...)]`），`#[ok_junction(n)]` 区分号，查询方法生成在端点 key 类型上。
+- `Junction<S, E>` — junction 装配点：引擎 + junction 类型 = 一条关系的操作面（`link` / `unlink` / `forward` / `reverse` / `reverse_prefix`）。
+- 引擎后端走 Cargo feature：`fjall`（同步 `FjallStore`）、`slatedb`（异步 `SlatedbStore` + `AsyncJunction`），测试用内存 `MockStore`。
 
 - 二级索引（访问方法）——**行 struct** 上的 `#[ok_index(name { fields(…), includes(…), key(…) })]`：对 **payload 字段**（按声明序）建组合索引；无 per-index slot/ns——2 字节表命名空间已区分所有 entry；最左前缀扫描；`key(…)` 把 key 尾部携带的主键截断到命名子集（`encode_prefix_named`），默认取满主键；`includes` 覆盖索引定位为高扇出查询的物化视图。
 - `Collection<S, K, R>` 行装配点——`put`/`delete` 在同一 store 实例内一次写入主键与全部声明的索引条目（声明即注册表）；`scan` 经任意访问方法的最左前缀返回 `(Key, Option<Row>)`。
@@ -51,17 +51,17 @@ SQL 的核心价值不是执行性能，而是关系模型交付的可读性、�
 
 ### 1. 定义端点 key 与边（声明）
 
-完整的声明词汇（`KeyEncode` / `EdgeEncode` / `DocumentEncode`、`#[ok_index]` 的 `fields`/`includes`/`key` 注解）见[建模指南](docs/MODELING.zh-CN.md)「声明基础」。摘要：
+完整的声明词汇（`KeyEncode` / `JunctionEncode` / `DocumentEncode`、`#[ok_index]` 的 `fields`/`includes`/`key` 注解）见[建模指南](docs/MODELING.zh-CN.md)「声明基础」。摘要：
 
 ```rust
 #[derive(KeyEncode)] #[ok_ns(1)]
 pub struct UserKey { pub org_id: u32, pub user_id: u64 }
 
-#[derive(EdgeEncode)] #[ok_ns(4)]
-pub struct UserToSessionEdge {
+#[derive(JunctionEncode)] #[ok_junction(1)]
+pub struct UserToSession {
     #[ok_head(org_id, user_id)]
-    pub user_id: UserKey,
-    pub session_id: SessionKey,
+    pub user: Ref<User, UserKey>,
+    pub session: Ref<Session, SessionKey>,
 }
 ```
 
@@ -70,8 +70,8 @@ pub struct UserToSessionEdge {
 完整用法（含反向查询、截断身份、扫描回表、Schema 稳定性测试）见[建模指南](docs/MODELING.zh-CN.md)「声明基础」之后的运行时小节。
 
 ```rust
-// 边：原子双写 + 双向查询
-let mut edges: Edge<_, UserToSessionEdge> = Edge::new(store);
+// junction：每端 ns 一条单向条目（共两条）+ 双向查询
+let mut edges: Junction<_, UserToSession> = Junction::new(store);
 edges.link(&user, &s1);
 let sessions = user.get_session(&edges);
 
@@ -104,19 +104,19 @@ okm = { version = "0.1", features = ["fjall"] }    # 或 "slatedb"
 ```
 
 - **fjall**（同步）：`FjallStore::open(path)` — 本地 LSM 引擎，单 `Database` 句柄，按需 `persist`。
-- **slatedb**（异步）：`SlatedbStore::open(path, Arc<dyn ObjectStore>)` — 对象存储后端；构造 store 用 `slatedb::object_store` 的 re-export，版本永远和 slatedb 内部一致。异步遍历走 `AsyncCollection`。
+- **slatedb**（异步）：`SlatedbStore::open(path, Arc<dyn ObjectStore>)` — 对象存储后端；构造 store 用 `slatedb::object_store` 的 re-export，版本永远和 slatedb 内部一致。异步遍历走 `AsyncJunction`。
 - **MockStore**：内存 `BTreeMap`，memcmp 序——与真实引擎迭代语义一致，测试套件使用。
 
 ## 项目结构
 
 ```
-okm-derive/        过程宏 crate：KeyEncode、DocumentEncode、EdgeEncode（零 I/O）
+okm-derive/        过程宏 crate：KeyEncode、DocumentEncode、JunctionEncode（零 I/O）
 okm/src/key.rs     KeyEncode trait + PrefixKey
 okm/src/index.rs   Row + KvIndex trait + 索引扫描辅助
-okm/src/edge.rs    KvEdge trait + 方向位头部
+okm/src/junction.rs    KvJunction trait + 0x3 段 slot key
 okm/src/storage.rs  VirtualStorage trait + MockStore
 okm/src/table.rs       Collection<S, K, R> 行装配点
-okm/src/collection.rs  Edge<S, E> 边装配点
+okm/src/collection.rs  Junction<S, E> junction 装配点
 okm/src/fjall_backend.rs    fjall 适配（feature "fjall"）
 okm/src/slatedb_backend.rs  slatedb 适配（feature "slatedb"）
 okm-query/         扩展算子 crate：merge_join、group_by（消费 scan 有序流，零 core 依赖）

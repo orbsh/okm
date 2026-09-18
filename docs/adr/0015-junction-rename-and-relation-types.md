@@ -58,8 +58,9 @@ junction's two physical entries live **in the two endpoint documents'
 own ns** — one entry per ns, no third ns:
 
 ```
-ns_org  [ns_org ][slot 0x3nnn][B identity]   // the fact seen from A (ADR-0016:
-ns_user [ns_user][slot 0x3nnn][A identity]   // one one-way entry per endpoint ns)
+ns_org  [ns_org ][slot 0x3nnn?][org·identity][user·identity]   // from A (ADR-0016:
+ns_user [ns_user][slot 0x3nnn?][user·identity][org·identity]   // one entry per endpoint ns,
+                                                               // local identity leads, dir bit in n)
 ```
 
 A junction is **unidirectional per entry**: each entry answers exactly

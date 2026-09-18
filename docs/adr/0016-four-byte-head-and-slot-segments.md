@@ -59,15 +59,22 @@ A junction writes **one one-way entry in each endpoint's collection ns** —
 two entries total, no third ns:
 
 ```text
-[ns_a 2B][slot 0x3nnn][B identity]   in A's collection
-[ns_b 2B][slot 0x3nnn][A identity]   in B's collection
+[ns_a 2B][slot 0x3nnn?][A·identity][B·identity]   in A's collection
+[ns_b 2B][slot 0x3nnn?][B·identity][A·identity]   in B's collection
 ```
 
 `nnn` is the junction discriminator (`#[ok_junction(n)]`), separating
-multiple junctions over the same endpoint pair. Direction is carried by
-which ns the entry lives in, not by a slot bit — superseding ADR-0011's
-forward/reverse slot pair (14/15), which existed only because one ns
-hosted both directions.
+multiple junctions over the same endpoint pair. Both identities are in
+the entry: the LOCAL endpoint's identity leads so the scan prefix
+`[ns][slot][local identity]` can match, the PEER's identity is the
+suffix. The discriminator's lowest bit carries the direction
+(`slot = 0x3000 | (n << 1) | dir`) — structurally necessary only for
+self-reflexive junctions (both endpoints in one ns), where without it
+the two directions' scan prefixes would be identical and every scan
+would cross-match; endpoint-distinct junctions never observe it, each
+ns hosting exactly one direction. This supersedes ADR-0011's
+forward/reverse slot pair (14/15) without resurrecting it: direction is
+one bit inside the junction counter, not a slot pair.
 
 The junction declaration references **document types, not key types**:
 

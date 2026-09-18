@@ -3,7 +3,7 @@
 
 #![cfg(feature = "slatedb")]
 
-use okm_core::slatedb_backend::{AsyncEdgeTable, SlatedbStore};
+use okm_core::slatedb_backend::{AsyncJunction, SlatedbStore};
 mod common;
 use common::*;
 
@@ -13,7 +13,7 @@ async fn slatedb_roundtrip() {
     let db = SlatedbStore::open("okm-test", std::sync::Arc::new(store))
         .await
         .unwrap();
-    let edges: AsyncEdgeTable<SlatedbStore, UserToSessionEdge> = AsyncEdgeTable::new(db);
+    let edges: AsyncJunction<SlatedbStore, UserToSessionEdge> = AsyncJunction::new(db);
 
     let u = UserKey {
         org_id: 7,
