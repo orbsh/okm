@@ -58,7 +58,8 @@ fn payload_round_trip_all_wrappers() {
 
 #[test]
 fn varint_frame_is_variable_length() {
-    // hits=1000 → 2 LEB128 bytes; total frame = 1 tag + 4 len + 2 val.
+    // hits=1000 → prefix-monotonic varint, 2 bytes (w=2: [0x83, 0xE8]);
+    // total frame = 1 tag + 4 len + 2 val.
     let document = WRow {
         hits: VarInt(1_000),
         ratio: Quant::<3>::new(0.0),
@@ -66,12 +67,12 @@ fn varint_frame_is_variable_length() {
         created: Offset(1_700_000_000),
     };
     // [ver u8][hot_len u16 BE][ratio 8][state 1][created 4][hits TLV].
-    // hits=1000 → 2 LEB128 bytes; cold frame = 1 tag + 4 len + 2 val at 16.
+    // hits=1000 → 2 bytes; cold frame = 1 tag + 4 len + 2 val at 16.
     let p = document.encode_payload();
     assert_eq!(&p[1..3], &[0, 13], "hot = ratio(8)+state(1)+created(4)");
     assert_eq!(p[16], 0); // tag 0 = first declared field
     assert_eq!(&p[17..21], &2u32.to_be_bytes()); // len = 2
-    assert_eq!(&p[21..23], &[0xE8, 0x07]); // LEB128(1000)
+    assert_eq!(&p[21..23], &[0x83, 0xE8]); // varint(1000): w=2, byte order = value order
 }
 
 #[test]
