@@ -1,7 +1,7 @@
 //! Secondary indexes (access methods) and the [`Document`] payload contract.
 //!
-//! Index entry layout (ADR-0005/0006): key
-//! `[ns 2B][slot 1B][index fields BE][key prefix]`, value = the includes
+//! Index entry layout (ADR-0005/0006, ADR-0016): key
+//! `[ns 2B][slot 2B][index fields BE][key prefix]`, value = the includes
 //! segment (raw payload-field encodings, empty when no `includes`).
 //!
 //! - **Index fields** come from the document payload, encoded by name in the
@@ -14,30 +14,53 @@
 //!   whole list (friends, timeline) without going through the primary key.
 //!   The tail is always decodable from the last bytes of the entry key.
 //!
-//! The primary table is slot 0: `[ns 2B][key]`, value = TLV payload.
-//! Access methods live at ns+1, ns+2, … allocated by attribute order
-//! inside one item (macro-side counter, never reused — hole discipline
-//! same as ns IDs, ADR-0005).
+//! The primary table is slot 0x0000: `[ns 2B][0x0000][key]`, value = TLV
+//! payload. Access methods live in the index segment (0x1), counters by
+//! attribute order inside one item (never reused — hole discipline same
+//! as ns IDs, ADR-0005).
 
 use crate::storage::VirtualStorage;
 use crate::key::{KeyEncode, PrefixKey};
 
+/// Slot type: 4-bit segment (high nibble, entry kind) + 12-bit in-segment
+/// counter (ADR-0016). Big-endian in the key.
+pub type Slot = u16;
+
+/// Segment numbers (the high nibble of a slot): entry kinds, structurally
+/// dispatched by `slot >> 12`. An enumeration, not a space allocation.
+pub mod segment {
+    /// Document-self: primary, dynamic segment, dictionaries, buffer.
+    pub const SELF: u16 = 0x0;
+    /// Declared indexes (declaration-order counter).
+    pub const INDEX: u16 = 0x1;
+    /// Declared reduces (independent declaration-order counter).
+    pub const REDUCE: u16 = 0x2;
+    /// Junctions (one one-way entry per endpoint ns, ADR-0015/0016).
+    pub const JUNCTION: u16 = 0x3;
+}
+
+/// Assemble a slot from its segment and in-segment counter.
+pub const fn slot(segment: u16, counter: u16) -> Slot {
+    (segment << 12) | (counter & 0x0FFF)
+}
+
 /// Slot reserved for a collection's primary keys inside its ns segment.
-pub const PRIMARY_SLOT: u8 = 0;
+pub const PRIMARY_SLOT: Slot = slot(segment::SELF, 0);
 /// obj dynamic segment (ADR-0012): per-document undeclared fields.
-pub const DYNAMIC_SLOT: u8 = 1;
+pub const DYNAMIC_SLOT: Slot = slot(segment::SELF, 1);
 /// Field-name dictionary, number → name (ADR-0012).
-pub const DICT_ID_SLOT: u8 = 2;
+pub const DICT_ID_SLOT: Slot = slot(segment::SELF, 2);
 /// Field-name dictionary, name → number (ADR-0012).
-pub const DICT_NAME_SLOT: u8 = 3;
-/// edge forward / reverse (PLAN Phase 10, ADR-0001 superseded). Reserves
-/// the top of the fixed nibble region — fixed roles grow up from 0,
-/// edges grow down from 15, the middle is an unpartitioned buffer.
-pub const EDGE_FWD_SLOT: u8 = 14;
-pub const EDGE_REV_SLOT: u8 = 15;
-/// First slot available to `#[ok_index]`/`#[ok_reduce]` declaration-order
-/// allocation (ADR-0012: fixed roles own 0–15).
-pub const DECLARED_SLOT_BASE: u8 = 16;
+pub const DICT_NAME_SLOT: Slot = slot(segment::SELF, 3);
+/// Slot base available to `#[ok_index]` declaration-order allocation
+/// (ADR-0016: counters start at 1; 0 is the primary).
+pub const DECLARED_SLOT_BASE: Slot = slot(segment::INDEX, 1);
+/// Slot base for `#[ok_reduce]` declarations — independent of the index
+/// counter (ADR-0016 removed the chained coupling).
+pub const REDUCE_SLOT_BASE: Slot = slot(segment::REDUCE, 1);
+/// Slot base for junction discriminators (`#[ok_junction(n)]`,
+/// ADR-0015/0016: one one-way entry per endpoint ns).
+pub const JUNCTION_SLOT_BASE: Slot = slot(segment::JUNCTION, 0);
 
 /// Encoded form of a function-index result (ADR-0005, function-index
 /// regime): what the declared function returns must land in the index
@@ -222,7 +245,7 @@ pub trait Document: Sized + Clone {
     /// from before the declaration was deprecated — never written by the
     /// current code, cleared by `Collection::prune_deprecated_slots`. Default
     /// empty (no deprecated declarations).
-    const DEPRECATED_SLOTS: &'static [u8] = &[];
+    const DEPRECATED_SLOTS: &'static [Slot] = &[];
 
     /// The namespace prefix this document's collection lives under, encoded and
     /// ready to prepend (`[ns 2B]` big-endian). Declared via `#[ok_ns(N)]`
@@ -262,9 +285,10 @@ pub trait KvIndex {
     type Key: KeyEncode;
     /// The document type this access method reads its index fields from.
     type Document: Document<Key = Self::Key>;
-    /// Item-local slot, allocated by attribute order (1, 2, …; 0 = primary).
-    /// This access method's slot byte in the entry header (1, 2, …; 0 = primary).
-    const SLOT: u8;
+    /// Item-local slot, allocated by attribute order (index segment,
+    /// 0x1001, 0x1002, …; primary = 0x0000). 2 bytes in the entry header,
+    /// big-endian (ADR-0016).
+    const SLOT: Slot;
     /// Indexed payload fields, in sort order.
     const FIELDS: &'static [&'static str];
     /// Covering payload fields carried in the entry value (may be empty).
@@ -315,16 +339,16 @@ pub trait KvIndex {
         }
     }
 
-    /// Full entry key: `[ns 2B][slot 1B][index fields][key prefix]` —
-    /// the 1-byte slot discriminates access methods *within* the collection's
-    /// ns segment; the table's ns allocation is untouched by how many
-    /// indexes exist (ADR-0005).
+    /// Full entry key: `[ns 2B][slot 2B][index fields][key prefix]` —
+    /// the slot's segment dispatches entry kinds *within* the collection's
+    /// ns segment (ADR-0016); the collection's ns allocation is untouched
+    /// by how many indexes exist (ADR-0005).
     fn entry_key(ns_prefix: &[u8], key: &Self::Key, document: &Self::Document) -> Vec<u8> {
         let fb = Self::fields_bytes(key, document);
         let kp = Self::key_prefix_bytes(key);
-        let mut buf = Vec::with_capacity(ns_prefix.len() + 1 + fb.len() + kp.len());
+        let mut buf = Vec::with_capacity(ns_prefix.len() + 2 + fb.len() + kp.len());
         buf.extend_from_slice(ns_prefix);
-        buf.push(Self::SLOT);
+        buf.extend_from_slice(&Self::SLOT.to_be_bytes());
         buf.extend_from_slice(&fb);
         buf.extend_from_slice(&kp);
         buf
@@ -354,9 +378,9 @@ pub trait KvIndex {
     /// (e.g. `7u32.to_be_bytes()` for a u32 field; empty slice = whole
     /// index). Must not exceed the index-field segment width.
     fn entry_prefix(ns_prefix: &[u8], encoded: &[u8]) -> Vec<u8> {
-        let mut buf = Vec::with_capacity(ns_prefix.len() + 1 + encoded.len());
+        let mut buf = Vec::with_capacity(ns_prefix.len() + 2 + encoded.len());
         buf.extend_from_slice(ns_prefix);
-        buf.push(Self::SLOT);
+        buf.extend_from_slice(&Self::SLOT.to_be_bytes());
         buf.extend_from_slice(encoded);
         buf
     }

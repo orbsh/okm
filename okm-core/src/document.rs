@@ -61,7 +61,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     /// declares no `#[ok_partition]`.
     pub fn primary_key(&self, key: &K) -> Vec<u8> {
         let mut buf = self.header();
-        buf.push(crate::index::PRIMARY_SLOT);
+        buf.extend_from_slice(&crate::index::PRIMARY_SLOT.to_be_bytes());
         buf.extend_from_slice(&key.encode());
         buf
     }
@@ -291,7 +291,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     /// on import via put).
     pub fn scan_documents_raw(&self) -> Vec<(Vec<u8>, Vec<u8>)> {
         let mut prefix = self.header();
-        prefix.push(crate::index::PRIMARY_SLOT);
+        prefix.extend_from_slice(&crate::index::PRIMARY_SLOT.to_be_bytes());
         self.store
             .scan_suffix(&prefix)
             .into_iter()
@@ -316,7 +316,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         let mut removed = 0;
         for slot in R::DEPRECATED_SLOTS {
             let mut p = self.header();
-            p.push(*slot);
+            p.extend_from_slice(&slot.to_be_bytes());
             for sfx in self.store.scan_suffix(&p) {
                 let mut full = p.clone();
                 full.extend_from_slice(&sfx);
@@ -329,7 +329,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
 
     pub fn scan_keys(&self) -> Vec<K> {
         let mut p = self.header();
-        p.push(crate::index::PRIMARY_SLOT);
+        p.extend_from_slice(&crate::index::PRIMARY_SLOT.to_be_bytes());
         self.store
             .scan_suffix(&p)
             .iter()
@@ -352,7 +352,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     /// skeleton as an index entry with no field segment (ADR-0012).
     fn fields_key(&self, key: &K) -> Vec<u8> {
         let mut buf = self.header();
-        buf.push(crate::index::DYNAMIC_SLOT);
+        buf.extend_from_slice(&crate::index::DYNAMIC_SLOT.to_be_bytes());
         buf.extend_from_slice(&key.encode());
         buf
     }

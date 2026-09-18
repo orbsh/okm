@@ -31,11 +31,13 @@
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TS2;
 
-/// Declared-slot base (ADR-0012): fixed roles own 0–15; indexes/reduces
-/// allocate from here. A literal, not a runtime constant — a proc-macro
-/// crate cannot name okm_core at its own compile time. Keep in sync with
-/// `okm_core::index::DECLARED_SLOT_BASE`.
-const DECLARED_SLOT_BASE: u8 = 16;
+/// Declared-slot segment bases (ADR-0016): slot = 4-bit segment + 12-bit
+/// counter; indexes allocate from the 0x1 segment, reduces from the 0x2
+/// segment (independent counters). Literals, not runtime constants — a
+/// proc-macro crate cannot name okm_core at its own compile time. Keep in
+/// sync with `okm_core::index::DECLARED_SLOT_BASE` / `REDUCE_SLOT_BASE`.
+const DECLARED_SLOT_BASE: u16 = 0x1001;
+const REDUCE_SLOT_BASE: u16 = 0x2001;
 use quote::{format_ident, quote};
 use syn::{parse_macro_input, DeriveInput};
 
@@ -228,7 +230,7 @@ fn emit_index_structs(schema: &DocumentSchema) -> TS2 {
         if idx.deprecated {
             continue;
         }
-        let slot_lit = proc_macro2::Literal::u8_unsuffixed(DECLARED_SLOT_BASE + n as u8);
+        let slot_lit = proc_macro2::Literal::u16_unsuffixed(DECLARED_SLOT_BASE + n as u16);
         let iname = &idx.ident;
         let struct_ident = format_ident!("__OkmIndex_{}_{}", row_name, iname);
         let fields: Vec<&String> = idx.fields.iter().collect();
@@ -261,7 +263,7 @@ fn emit_index_structs(schema: &DocumentSchema) -> TS2 {
                             ns_prefix.len() + 1 + __okm_seg.len() + Self::key_prefix_width(),
                         );
                         __okm_k.extend_from_slice(ns_prefix);
-                        __okm_k.push(Self::SLOT);
+                        __okm_k.extend_from_slice(&Self::SLOT.to_be_bytes());
                         __okm_k.extend_from_slice(&__okm_seg);
                         __okm_k.extend_from_slice(&Self::key_prefix_bytes(key));
                         __okm_out.push((__okm_k, __okm_value.clone()));
@@ -313,7 +315,7 @@ fn emit_index_structs(schema: &DocumentSchema) -> TS2 {
             impl ::okm_core::KvIndex for #struct_ident {
                 type Key = #key_ty;
                 type Document = #row_name;
-                const SLOT: u8 = #slot_lit;
+                const SLOT: ::okm_core::index::Slot = #slot_lit;
                 const FIELDS: &'static [&'static str] = &[#(#fields),*];
                 const INCLUDES: &'static [&'static str] = &[#(#includes),*];
                 const KEY_PREFIX: &'static [&'static str] = &[#(#key_names),*];
@@ -355,7 +357,7 @@ fn emit_index_entries(schema: &DocumentSchema) -> TS2 {
         .enumerate()
         .filter(|(_, idx)| idx.deprecated)
         .map(|(n, _)| {
-            let lit = proc_macro2::Literal::u8_unsuffixed(DECLARED_SLOT_BASE + n as u8);
+            let lit = proc_macro2::Literal::u16_unsuffixed(DECLARED_SLOT_BASE + n as u16);
             quote! { #lit }
         })
         .collect();
@@ -363,7 +365,7 @@ fn emit_index_entries(schema: &DocumentSchema) -> TS2 {
         /// Slots reserved by `deprecated` index declarations — entries
         /// here are stale (written before the deprecation) and are
         /// cleared by `Collection::prune_deprecated_slots`.
-        const DEPRECATED_SLOTS: &'static [u8] = &[#(#dep_slots),*];
+        const DEPRECATED_SLOTS: &'static [::okm_core::index::Slot] = &[#(#dep_slots),*];
     };
     quote! {
         fn index_entries(key: &Self::Key, document: &Self, ns: &[u8]) -> Vec<(Vec<u8>, Vec<u8>)> {
@@ -383,18 +385,18 @@ fn emit_index_entries(schema: &DocumentSchema) -> TS2 {
 /// (trait impls, hook fn body to splice inside `impl Document`).
 fn emit_reduces(schema: &DocumentSchema) -> (TS2, TS2) {
     let row_name = &schema.row_name;
-    let n_idx = schema.indexes.len();
+    let _n_idx = schema.indexes.len();
 
     let mut impls = quote! {};
     let mut calls = quote! {};
     for (n, red) in schema.reduces.iter().enumerate() {
-        let slot_lit = proc_macro2::Literal::u8_unsuffixed(DECLARED_SLOT_BASE + n_idx as u8 + n as u8);
+        let slot_lit = proc_macro2::Literal::u16_unsuffixed(REDUCE_SLOT_BASE + n as u16);
         let logic = syn::parse_str::<syn::Type>(&red.logic)
             .unwrap_or_else(|e| panic!("ok_reduce[{}]: bad logic type `{}`: {e}", red.ident, red.logic));
         let group: Vec<&String> = red.group.iter().collect();
         impls.extend(quote! {
             impl ::okm_core::Reduce for #logic {
-                const SLOT: u8 = #slot_lit;
+                const SLOT: ::okm_core::index::Slot = #slot_lit;
                 const GROUP: &'static [&'static str] = &[ #(#group),* ];
                 fn group_bytes(
                     _key: &<#row_name as ::okm_core::Document>::Key,
@@ -832,7 +834,7 @@ fn emit_row_impl(schema: &DocumentSchema) -> TS2 {
                     for i in 0..self.#fid.keys.len() {
                         if self.#fid.values.get(i).map_or(true, |v| v.is_none()) {
                             let mut pkey = <#d_ty as ::okm_core::Document>::NS_PREFIX.to_vec();
-                            pkey.push(::okm_core::PRIMARY_SLOT);
+                            pkey.extend_from_slice(&::okm_core::PRIMARY_SLOT.to_be_bytes());
                             pkey.extend_from_slice(&self.#fid.keys[i].encode());
                             if let Some(payload) = store.get(&pkey) {
                                 let mut child = <#d_ty as ::okm_core::Document>::decode_payload(&payload);
@@ -846,7 +848,7 @@ fn emit_row_impl(schema: &DocumentSchema) -> TS2 {
                 quote! {
                     if self.#fid.value.is_none() {
                         let mut pkey = <#d_ty as ::okm_core::Document>::NS_PREFIX.to_vec();
-                        pkey.push(::okm_core::PRIMARY_SLOT);
+                        pkey.extend_from_slice(&::okm_core::PRIMARY_SLOT.to_be_bytes());
                         pkey.extend_from_slice(&self.#fid.key.encode());
                         if let Some(payload) = store.get(&pkey) {
                             let mut child = <#d_ty as ::okm_core::Document>::decode_payload(&payload);
@@ -865,7 +867,7 @@ fn emit_row_impl(schema: &DocumentSchema) -> TS2 {
                         if let Some(child) = child {
                             let raw = k.encode();
                             let mut pkey = <#d_ty as ::okm_core::Document>::NS_PREFIX.to_vec();
-                            pkey.push(::okm_core::PRIMARY_SLOT);
+                            pkey.extend_from_slice(&::okm_core::PRIMARY_SLOT.to_be_bytes());
                             pkey.extend_from_slice(&raw);
                             entries.push((pkey, child.encode_payload()));
                             let child_key = <#k_ty as ::okm_core::KeyEncode>::decode(&raw);
@@ -880,7 +882,7 @@ fn emit_row_impl(schema: &DocumentSchema) -> TS2 {
                     if let Some(child) = &self.#fid.value {
                         let raw = self.#fid.key.encode();
                         let mut pkey = <#d_ty as ::okm_core::Document>::NS_PREFIX.to_vec();
-                        pkey.push(::okm_core::PRIMARY_SLOT);
+                        pkey.extend_from_slice(&::okm_core::PRIMARY_SLOT.to_be_bytes());
                         pkey.extend_from_slice(&raw);
                         entries.push((pkey, child.encode_payload()));
                         let child_key = <#k_ty as ::okm_core::KeyEncode>::decode(&raw);
@@ -897,7 +899,7 @@ fn emit_row_impl(schema: &DocumentSchema) -> TS2 {
                 quote! {
                     for k in &self.#fid.keys {
                         let mut pkey = <#d_ty as ::okm_core::Document>::NS_PREFIX.to_vec();
-                        pkey.push(::okm_core::PRIMARY_SLOT);
+                        pkey.extend_from_slice(&::okm_core::PRIMARY_SLOT.to_be_bytes());
                         pkey.extend_from_slice(&k.encode());
                         keys.push(pkey);
                     }
@@ -906,7 +908,7 @@ fn emit_row_impl(schema: &DocumentSchema) -> TS2 {
                 quote! {
                     {
                         let mut pkey = <#d_ty as ::okm_core::Document>::NS_PREFIX.to_vec();
-                        pkey.push(::okm_core::PRIMARY_SLOT);
+                        pkey.extend_from_slice(&::okm_core::PRIMARY_SLOT.to_be_bytes());
                         pkey.extend_from_slice(&self.#fid.key.encode());
                         keys.push(pkey);
                     }

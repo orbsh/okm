@@ -78,8 +78,9 @@ pub trait ReduceLogic: 'static {
 ///   is the caller's, kept out of core deliberately.
 pub trait Reduce: ReduceLogic {
     /// Item-local slot — allocated by the derive in declaration order
-    /// (continuing after the last index; append-only, same discipline).
-    const SLOT: u8;
+    /// within the reduce segment (0x2; independent of the index counter,
+    /// ADR-0016; append-only, same discipline).
+    const SLOT: crate::index::Slot;
     /// Group-by fields, named document payload fields in declaration order —
     /// their encodings form the entry's group segment (the sort key).
     /// Read-side probes name the same fields with the same encodings,
@@ -92,12 +93,12 @@ pub trait Reduce: ReduceLogic {
     /// same encoders the index layer uses, so byte compatibility holds.
     fn group_bytes(key: &<Self::Document as Document>::Key, document: &Self::Document) -> Vec<u8>;
 
-    /// Full entry key `[ns 2B][slot 1B][group segment]`.
+    /// Full entry key `[ns 2B][slot 2B][group segment]`.
     fn entry_key(ns_prefix: &[u8], key: &<Self::Document as Document>::Key, document: &Self::Document) -> Vec<u8> {
         let g = Self::group_bytes(key, document);
-        let mut buf = Vec::with_capacity(ns_prefix.len() + 1 + g.len());
+        let mut buf = Vec::with_capacity(ns_prefix.len() + 2 + g.len());
         buf.extend_from_slice(ns_prefix);
-        buf.push(Self::SLOT);
+        buf.extend_from_slice(&Self::SLOT.to_be_bytes());
         buf.extend_from_slice(&g);
         buf
     }
@@ -120,9 +121,9 @@ pub fn scan_reduces<S: VirtualStorage, A: Reduce>(
     store: &S,
     ns_prefix: &[u8],
 ) -> Vec<(Vec<u8>, A::Acc)> {
-    let mut prefix = Vec::with_capacity(ns_prefix.len() + 1);
+    let mut prefix = Vec::with_capacity(ns_prefix.len() + 2);
     prefix.extend_from_slice(ns_prefix);
-    prefix.push(A::SLOT);
+    prefix.extend_from_slice(&A::SLOT.to_be_bytes());
     store
         .scan_suffix_kv(&prefix)
         .into_iter()

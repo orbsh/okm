@@ -160,9 +160,11 @@ edges.unlink(&user, &s1); // 双向同时删除
 物理 key 布局（正向）：
 
 ```
-[ ns_a u16 BE ][ slot u16 BE: 0x3 段 ][ B·身份 ]   在 A 的集合里
-[ ns_b u16 BE ][ slot u16 BE: 0x3 段 ][ A·身份 ]   在 B 的集合里
+[ ns_a u16 BE ][ slot u16 BE: 0x3 段 ][ A·身份 ][ B·身份 ]   在 A 的集合里
+[ ns_b u16 BE ][ slot u16 BE: 0x3 段 ][ B·身份 ][ A·身份 ]   在 B 的集合里
 ```
+
+本端身份在前（扫描前缀 `[ns][slot][本端身份]` 必须能命中），对端身份是后缀。区分号低位承载方向——只有自反 junction（两端同 ns）需要它。
 
 每条 entry 单向：ns_org 里的回答“这个组织的全部成员”，ns_user 里的回答“这个用户所属的全部组织”。方向由条目所在的 ns 承载——不再有方向 slot（旧的 14/15 已取消）。`nnn` 是 junction 区分号（`#[ok_junction(n)]`），区分同一端点对上的多条 junction。junction 的字段引用**文档类型**，derive 反查其 `Key` 与 `NS_PREFIX`——ns 只在文档上声明一次。见 ADR-0015/ADR-0016 与 [key-layout](docs/internals/key-layout.zh-CN.md) 的 slot 表。
 

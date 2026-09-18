@@ -1,9 +1,11 @@
 //! save_into / commit_batch — the cross-collection atomic path
-//! (ADR-0003): a document table and an edge table encode into one batch, one
-//! commit makes them live or die together. Covers both orderings (nothing
-//! written before commit; everything written after).
+//! (ADR-0003): a document collection and a junction encode into one batch,
+//! one commit makes them live or die together. Covers both orderings
+//! (nothing written before commit; everything written after).
 
-use okm_core::{EdgeEncode, Edge, KeyEncode, VirtualStorage, TestStore, DocumentEncode, Collection};
+use okm_core::{
+    DocumentEncode, JunctionEncode, KeyEncode, Ref, VirtualStorage, TestStore, Collection,
+};
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
 pub struct PostKey {
@@ -24,12 +26,20 @@ pub struct AuthorKey {
     pub id: u64,
 }
 
-#[derive(EdgeEncode, Clone)]
-#[ok_ns(42)]
-pub struct AuthorEdge {
+/// 端点文档：author（ns=43，仅作 junction 端点，不需要自己的主表）
+#[derive(DocumentEncode, Clone, PartialEq, Debug)]
+#[ok_ref(AuthorKey)]
+#[ok_ns(43)]
+pub struct Author {
+    pub id: u64,
+}
+
+#[derive(JunctionEncode, Clone)]
+#[ok_junction(1)]
+pub struct AuthorPost {
     #[ok_head(id)]
-    pub author: AuthorKey,
-    pub post: PostKey,
+    pub author: Ref<Author, AuthorKey>,
+    pub post: Ref<Post, PostKey>,
 }
 
 #[test]
@@ -57,7 +67,7 @@ fn save_into_defers_until_commit() {
 
 #[test]
 fn cross_collection_one_batch() {
-    // Document table + edge table share one batch: both live or neither does.
+    // Document collection + junction share one batch: both live or neither does.
     let mut store = TestStore::slatedb_mem();
     let mut batch = store.batch();
 
@@ -68,7 +78,8 @@ fn cross_collection_one_batch() {
             &PostKey { id: 1 },
             &Post { author_id: 7, title: "hi".into() },
         );
-        let edges: Edge<TestStore, AuthorEdge> = Edge::new(store.clone());
+        let edges: okm_core::Junction<TestStore, AuthorPost> =
+            okm_core::Junction::new(store.clone());
         edges.save_into(&mut batch, &AuthorKey { id: 7 }, &PostKey { id: 1 });
     }
 
@@ -78,7 +89,7 @@ fn cross_collection_one_batch() {
     let t: Collection<TestStore, PostKey, Post> = Collection::new(store.clone());
     let scanned = t.scan::<Post_ByAuthor>(&7u64.to_be_bytes());
     assert_eq!(scanned.len(), 1);
-    let edges: Edge<TestStore, AuthorEdge> = Edge::new(store);
+    let edges: okm_core::Junction<TestStore, AuthorPost> = okm_core::Junction::new(store);
     let fwd = edges.forward(&AuthorKey { id: 7 });
     assert_eq!(fwd.len(), 1);
     assert_eq!(fwd[0], PostKey { id: 1 });

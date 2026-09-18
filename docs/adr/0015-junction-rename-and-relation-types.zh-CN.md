@@ -26,8 +26,9 @@
 junction 声明上的手工 `#[ok_ns(N)]` 移除。junction 的两个物理条目分别寄生于**两端文档各自的 ns**——每个 ns 一条，不需要第三个 ns：
 
 ```
-ns_org  [ns_org ][slot 0x3nnn][B 身份]   // 从 A 端看的事实
-ns_user [ns_user][slot 0x3nnn][A 身份]   // 同一事实从 B 端看
+ns_org  [ns_org ][slot 0x3nnn?][org·身份][user·身份]   // 从 A 端看（ADR-0016：
+ns_user [ns_user][slot 0x3nnn?][user·身份][org·身份]   // 每端一条 entry，本端身份在前，
+                                                       // 方向位在区分号低位）
 ```
 
 junction 是**每条目单向**的：每条 entry 只回答一个查询方向（ns_org 里的回答“这个组织的全部成员”；ns_user 里的回答“这个用户所属的全部组织”）。两条 entry 是同一关系事实的两次写入——让两个方向都 O(1) 的双物化。无派生 ns、无哈希、无第三个命名空间：关系与它的端点住在一起，每端一条 entry。`nnn` 是 junction 区分号（`#[ok_junction(n)]`），区分同一端点对上的多条 junction；方向由条目所在的 ns 承载，不由 slot 位承载（ADR-0016）。

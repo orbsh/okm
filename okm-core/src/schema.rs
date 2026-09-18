@@ -117,17 +117,18 @@ fn lookup_default(
     })
 }
 
-/// Fixed-role slot numbers (ADR-0012); declared index/reduce slots start
-/// at `declared_base` in declaration order.
+/// Fixed-role slots and declared-slot segment bases (ADR-0016: slot =
+/// 4-bit segment + 12-bit counter); declared index/reduce counters start
+/// at 1 inside their segments.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SlotMap {
-    pub primary: u8,
-    pub dynamic: u8,
-    pub dict_id: u8,
-    pub dict_name: u8,
-    pub edge_fwd: u8,
-    pub edge_rev: u8,
-    pub declared_base: u8,
+    pub primary: u16,
+    pub dynamic: u16,
+    pub dict_id: u16,
+    pub dict_name: u16,
+    pub declared_index_base: u16,
+    pub declared_reduce_base: u16,
+    pub junction_base: u16,
 }
 
 impl TableSchema {
@@ -187,16 +188,16 @@ impl TableSchema {
                 dynamic: crate::index::DYNAMIC_SLOT,
                 dict_id: crate::index::DICT_ID_SLOT,
                 dict_name: crate::index::DICT_NAME_SLOT,
-                edge_fwd: crate::index::EDGE_FWD_SLOT,
-                edge_rev: crate::index::EDGE_REV_SLOT,
-                declared_base: crate::index::DECLARED_SLOT_BASE,
+                declared_index_base: crate::index::DECLARED_SLOT_BASE,
+                declared_reduce_base: crate::index::REDUCE_SLOT_BASE,
+                junction_base: crate::index::JUNCTION_SLOT_BASE,
             },
         }
     }
 
     /// Slot 0 = primary (ADR-0005); index slots live outside this schema
     /// (they are derived state, rebuilt from documents).
-    pub const PRIMARY_SLOT: u8 = PRIMARY_SLOT;
+    pub const PRIMARY_SLOT: u16 = PRIMARY_SLOT;
 }
 
 #[cfg(feature = "schema-serde")]
@@ -263,9 +264,9 @@ mod serde_impls {
             st.serialize_field("dynamic", &self.dynamic)?;
             st.serialize_field("dict_id", &self.dict_id)?;
             st.serialize_field("dict_name", &self.dict_name)?;
-            st.serialize_field("edge_fwd", &self.edge_fwd)?;
-            st.serialize_field("edge_rev", &self.edge_rev)?;
-            st.serialize_field("declared_base", &self.declared_base)?;
+            st.serialize_field("declared_index_base", &self.declared_index_base)?;
+            st.serialize_field("declared_reduce_base", &self.declared_reduce_base)?;
+            st.serialize_field("junction_base", &self.junction_base)?;
             st.end()
         }
     }
@@ -274,13 +275,13 @@ mod serde_impls {
         fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
             #[derive(Deserialize)]
             struct Repr {
-                primary: u8,
-                dynamic: u8,
-                dict_id: u8,
-                dict_name: u8,
-                edge_fwd: u8,
-                edge_rev: u8,
-                declared_base: u8,
+                primary: u16,
+                dynamic: u16,
+                dict_id: u16,
+                dict_name: u16,
+                declared_index_base: u16,
+                declared_reduce_base: u16,
+                junction_base: u16,
             }
             let r = Repr::deserialize(d)?;
             Ok(Self {
@@ -288,9 +289,9 @@ mod serde_impls {
                 dynamic: r.dynamic,
                 dict_id: r.dict_id,
                 dict_name: r.dict_name,
-                edge_fwd: r.edge_fwd,
-                edge_rev: r.edge_rev,
-                declared_base: r.declared_base,
+                declared_index_base: r.declared_index_base,
+                declared_reduce_base: r.declared_reduce_base,
+                junction_base: r.junction_base,
             })
         }
     }

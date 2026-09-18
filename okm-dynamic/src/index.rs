@@ -17,9 +17,9 @@ use crate::{Value, ValueMap};
 /// One declared access method over a dynamic table.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AccessMethod {
-    /// Entry header slot byte (1, 2, …; 0 is reserved for the primary
-    /// entry — the same allocation rule as the derive).
-    pub slot: u8,
+    /// Entry header slot (index segment, u16: 0x1001, 0x1002, …; the
+    /// primary is 0x0000 — ADR-0016).
+    pub slot: u16,
     /// Indexed fields by schema name, in sort order. Fields may live in
     /// the key segment or the hot payload segment (both are fixed-width,
     /// static-placement — everything an entry needs).
@@ -122,9 +122,9 @@ pub fn index_entries(
     let mut out = Vec::new();
     for idx in indexes {
         let fb = idx.fields_bytes(schema, document, pkey)?;
-        let mut ek = Vec::with_capacity(ns.len() + 1 + fb.len() + pkey.len());
+        let mut ek = Vec::with_capacity(ns.len() + 2 + fb.len() + pkey.len());
         ek.extend_from_slice(ns);
-        ek.push(idx.slot);
+        ek.extend_from_slice(&idx.slot.to_be_bytes());
         ek.extend_from_slice(&fb);
         ek.extend_from_slice(pkey);
         // Includes segment: raw encodings of the named payload fields,
@@ -165,9 +165,9 @@ pub fn scan_access_method<S: VirtualStorage>(
     if encoded_prefix.len() > index.fields_width(schema)? {
         return Err("scan prefix exceeds the index-field segment".into());
     }
-    let mut p = Vec::with_capacity(ns.len() + 1 + encoded_prefix.len());
+    let mut p = Vec::with_capacity(ns.len() + 2 + encoded_prefix.len());
     p.extend_from_slice(ns);
-    p.push(index.slot);
+    p.extend_from_slice(&index.slot.to_be_bytes());
     p.extend_from_slice(encoded_prefix);
     let kl = schema.key_len;
     let mut out = Vec::new();

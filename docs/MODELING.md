@@ -251,9 +251,14 @@ edges.unlink(&user, &s1); // deletes both directions
 Physical key layout (two-ns residency, ADR-0015/0016):
 
 ```
-[ ns_a u16 BE ][ slot u16 BE: segment 0x3 ][ B·identity ]   in A's collection
-[ ns_b u16 BE ][ slot u16 BE: segment 0x3 ][ A·identity ]   in B's collection
+[ ns_a u16 BE ][ slot u16 BE: 0x3 seg ][ A·identity ][ B·identity ]   in A's collection
+[ ns_b u16 BE ][ slot u16 BE: 0x3 seg ][ B·identity ][ A·identity ]   in B's collection
 ```
+
+The local identity leads (the scan prefix `[ns][slot][local identity]`
+must match); the peer identity is the suffix. The discriminator's low
+bit carries the direction — needed only for self-reflexive junctions,
+where both endpoints share one ns.
 
 Each entry is one-way: the entry in `ns_org` answers "all members of this
 organization", the one in `ns_user` answers "all organizations this user

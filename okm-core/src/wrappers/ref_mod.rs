@@ -35,6 +35,12 @@ impl<D, K: KeyEncode> Ref<D, K> {
         Ref { key, value: None }
     }
 
+    /// Alias of `ref_key` — construct from the key alone (used by the
+    /// junction derive's `from_parts`).
+    pub fn from_key(key: K) -> Self {
+        Ref { key, value: None }
+    }
+
     /// Own a child document: write it under this key on the parent's put.
     pub fn own(key: K, value: D) -> Self {
         Ref { key, value: Some(value) }

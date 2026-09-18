@@ -2,12 +2,12 @@
 //!
 //! slatedb is an async API with immutable borrows (WAL/flush managed
 //! internally), so this module provides the `VirtualStorageAsync` trait and
-//! `AsyncEdgeTable` - parallel to the sync `VirtualStorage`/`Edge` with the
+//! `AsyncJunction` - parallel to the sync `VirtualStorage`/`Edge` with the
 //! same interface shape. Object stores are constructed via the
 //! `slatedb::object_store` re-export so versions always match slatedb's
 //! internals.
 
-use crate::edge::KvEdge;
+use crate::junction::KvJunction;
 use crate::key::KeyEncode;
 use crate::storage::VirtualStorage;
 use slatedb::Db;
@@ -111,13 +111,16 @@ impl VirtualStorageAsync for SlatedbStore {
     }
 }
 
-/// 异步边装配点：引擎 + 边类型 = 一条关系的操作面（平行于同步 Edge）
-pub struct AsyncEdgeTable<S, E> {
+/// 异步 junction 装配点：引擎 + junction 类型 = 一条关系的操作面（平行于同步 Junction）
+pub struct AsyncJunction<S, E> {
     pub store: S,
     _pd: std::marker::PhantomData<E>,
 }
 
-impl<S: VirtualStorageAsync, E: KvEdge> AsyncEdgeTable<S, E> {
+type AKey<E> = <<E as KvJunction>::A as crate::index::Document>::Key;
+type BKey<E> = <<E as KvJunction>::B as crate::index::Document>::Key;
+
+impl<S: VirtualStorageAsync, E: KvJunction> AsyncJunction<S, E> {
     pub fn new(store: S) -> Self {
         Self {
             store,
@@ -125,43 +128,37 @@ impl<S: VirtualStorageAsync, E: KvEdge> AsyncEdgeTable<S, E> {
         }
     }
 
-    /// 原子双写：正向 + 反向（slatedb 单 put 原子；双写崩溃窗口由上层 reconcile）
-    pub async fn link(&self, a: &E::A, b: &E::B) {
+    /// 原子双写：两端各一条单向 entry（slatedb 单 put 原子；崩溃窗口由上层 reconcile）
+    pub async fn link(&self, a: &AKey<E>, b: &BKey<E>) {
         let e = E::from_parts(a.clone(), b.clone());
-        self.store.put(e.forward_key(), Vec::new()).await;
-        self.store.put(e.reverse_key(), Vec::new()).await;
+        self.store.put(e.a_side_key(), Vec::new()).await;
+        self.store.put(e.b_side_key(), Vec::new()).await;
     }
 
-    pub async fn unlink(&self, a: &E::A, b: &E::B) {
+    pub async fn unlink(&self, a: &AKey<E>, b: &BKey<E>) {
         let e = E::from_parts(a.clone(), b.clone());
-        self.store.del(&e.forward_key()).await;
-        self.store.del(&e.reverse_key()).await;
+        self.store.del(&e.a_side_key()).await;
+        self.store.del(&e.b_side_key()).await;
     }
 
-    /// A → Bs：正向扫描。要求 B 全量身份（可 decode）。
-    pub async fn forward(&self, a: &E::A) -> Vec<E::B> {
+    /// A 端扫描：与 a 相连的全部 B 身份（要求 B 全量身份，可 decode）。
+    pub async fn forward(&self, a: &AKey<E>) -> Vec<BKey<E>> {
         assert!(
             E::B_HEAD.is_empty(),
             "forward 需要 B 全量身份才能 decode 回类型"
         );
-        let mut p = Vec::with_capacity(2 + E::a_head_width());
-        p.extend_from_slice(&E::NS.to_be_bytes());
-        p.push(crate::index::EDGE_FWD_SLOT);
-        E::encode_a_head(&mut p, a);
+        let p = E::a_side_prefix(a);
         self.store
             .scan_suffix(&p)
             .await
             .iter()
-            .map(|sfx| E::B::decode(sfx))
+            .map(|sfx| BKey::<E>::decode(sfx))
             .collect()
     }
 
-    /// B → As 的原始前缀字节（A 为截断身份时无法 decode）
-    pub async fn reverse_raw(&self, b: &E::B) -> Vec<Vec<u8>> {
-        let mut p = Vec::with_capacity(2 + E::b_head_width());
-        p.extend_from_slice(&E::NS.to_be_bytes());
-        p.push(crate::index::EDGE_REV_SLOT);
-        E::encode_b_head(&mut p, b);
+    /// B 端扫描的原始前缀字节（A 为截断身份时无法 decode）
+    pub async fn reverse_raw(&self, b: &BKey<E>) -> Vec<Vec<u8>> {
+        let p = E::b_side_prefix(b);
         self.store.scan_suffix(&p).await
     }
 }

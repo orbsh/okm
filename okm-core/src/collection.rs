@@ -1,24 +1,25 @@
-//! Edge assembly point: [`Edge`]`<S, E>` — engine + edge type = the
-//! operation surface of one relationship. Edges are the node-to-node
-//! accessor family; document tables use [`crate::document::Table`] (ADR-0006:
-//! Collection narrowed to edges, storage bound to the store instance).
+//! Junction assembly point: [`Junction`]`<S, E>` — engine + junction type =
+//! the operation surface of one relationship. Junctions are the
+//! node-to-node accessor family; document collections use
+//! [`crate::document::Collection`] (ADR-0006). Each entry is one-way and
+//! lives in its endpoint's own ns (ADR-0015/0016).
 //!
-//! No `KvRecord` macro exists: binding key and value/edge types needs type
-//! parameters, not code generation (see `docs/adr/0003`). The macro layer
-//! stays storage-free; engine choice and lifecycle belong to the call site
-//! (`Edge::new(store)`).
+//! No macro binds key and junction types: binding needs type parameters,
+//! not code generation (see `docs/adr/0003`). The macro layer stays
+//! storage-free; engine choice and lifecycle belong to the call site
+//! (`Junction::new(store)`).
 
-use crate::edge::KvEdge;
+use crate::junction::KvJunction;
 use crate::storage::VirtualStorage;
 use crate::key::{KeyEncode, PrefixKey};
 
-/// Engine `S` + edge `E` = the operation surface of one relationship.
-pub struct Edge<S, E> {
+/// Engine `S` + junction `E` = the operation surface of one relationship.
+pub struct Junction<S, E> {
     pub store: S,
     _pd: std::marker::PhantomData<E>,
 }
 
-impl<S: VirtualStorage, E: KvEdge> Edge<S, E> {
+impl<S: VirtualStorage, E: KvJunction> Junction<S, E> {
     pub fn new(store: S) -> Self {
         Self {
             store,
@@ -26,92 +27,86 @@ impl<S: VirtualStorage, E: KvEdge> Edge<S, E> {
         }
     }
 
-    /// Atomic double write: forward + reverse key.
-    pub fn link(&mut self, a: &E::A, b: &E::B) {
+    /// Atomic double write: one entry in each endpoint's ns.
+    pub fn link(&mut self, a: &<E::A as crate::index::Document>::Key, b: &<E::B as crate::index::Document>::Key) {
         let e = E::from_parts(a.clone(), b.clone());
-        let fk = e.forward_key();
-        let rk = e.reverse_key();
-        self.store.put(fk, Vec::new());
-        self.store.put(rk, Vec::new());
+        let ak = e.a_side_key();
+        let bk = e.b_side_key();
+        self.store.put(ak, Vec::new());
+        self.store.put(bk, Vec::new());
     }
 
-    /// Encode this edge's double write (forward + reverse) into an
-    /// externally owned batch — no write until commit. The
-    /// cross-collection atomic path (ADR-0003): documents and edges share one
-    /// batch, one `commit_batch` covers them all.
-    pub fn save_into(&self, batch: &mut impl crate::storage::KvBatch, a: &E::A, b: &E::B) {
+    /// Encode this junction's double write into an externally owned batch —
+    /// no write until commit. The cross-collection atomic path (ADR-0003):
+    /// documents and junctions share one batch, one `commit_batch` covers
+    /// them all.
+    pub fn save_into(
+        &self,
+        batch: &mut impl crate::storage::KvBatch,
+        a: &<E::A as crate::index::Document>::Key,
+        b: &<E::B as crate::index::Document>::Key,
+    ) {
         let e = E::from_parts(a.clone(), b.clone());
-        batch.put(e.forward_key(), Vec::new());
-        batch.put(e.reverse_key(), Vec::new());
+        batch.put(e.a_side_key(), Vec::new());
+        batch.put(e.b_side_key(), Vec::new());
     }
 
-    /// Removes both directions.
-    pub fn unlink(&mut self, a: &E::A, b: &E::B) {
+    /// Removes both entries.
+    pub fn unlink(&mut self, a: &<E::A as crate::index::Document>::Key, b: &<E::B as crate::index::Document>::Key) {
         let e = E::from_parts(a.clone(), b.clone());
-        self.store.del(&e.forward_key());
-        self.store.del(&e.reverse_key());
+        self.store.del(&e.a_side_key());
+        self.store.del(&e.b_side_key());
     }
 
-    /// Scan prefix = header ++ A·identity (trailing partial bytes of A's
-    /// identity are dropped — everything after A·identity belongs to an
-    /// arbitrary B and must not participate in matching).
-    fn forward_prefix(a: &E::A) -> Vec<u8> {
-        let mut p = Vec::with_capacity(2 + E::a_head_width());
-        p.extend_from_slice(&E::NS.to_be_bytes());
-        p.push(crate::index::EDGE_FWD_SLOT);
-        E::encode_a_head(&mut p, a);
-        p
-    }
-
-    /// A → Bs: forward scan. Requires B to have full identity (decodable).
-    pub fn forward(&self, a: &E::A) -> Vec<E::B> {
+    /// A-side scan: Bs linked to `a` (reads A's collection). Requires B to
+    /// have full identity (decodable).
+    pub fn forward(&self, a: &<E::A as crate::index::Document>::Key) -> Vec<<E::B as crate::index::Document>::Key> {
         assert!(
             E::B_HEAD.is_empty(),
-            "forward requires B full identity to decode back into the type"
+            "forward requires B full identity to decode back into the key type"
         );
-        let p = Self::forward_prefix(a);
+        let p = E::a_side_prefix(a);
         self.store
             .scan_suffix(&p)
             .iter()
-            .map(|suffix| E::B::decode(suffix))
+            .map(|suffix| <E::B as crate::index::Document>::Key::decode(suffix))
             .collect()
     }
 
-    /// B → As, raw prefix bytes (returned for a main-collection prefix scan when
-    /// A's identity is truncated and cannot be decoded).
-    pub fn reverse_raw(&self, b: &E::B) -> Vec<Vec<u8>> {
-        let mut p = Vec::with_capacity(2 + E::b_head_width());
-        p.extend_from_slice(&E::NS.to_be_bytes());
-        p.push(crate::index::EDGE_REV_SLOT);
-        E::encode_b_head(&mut p, b);
+    /// B-side scan, raw prefix bytes (returned for a collection prefix scan
+    /// when A's identity is truncated and cannot be decoded).
+    pub fn reverse_raw(&self, b: &<E::B as crate::index::Document>::Key) -> Vec<Vec<u8>> {
+        let p = E::b_side_prefix(b);
         self.store.scan_suffix(&p)
     }
 
-    /// B → As: reverse scan, decodes back into the type when A has full
-    /// identity.
-    pub fn reverse(&self, b: &E::B) -> Vec<E::A> {
+    /// B-side scan, decodes back into A's key type when A has full identity.
+    pub fn reverse(&self, b: &<E::B as crate::index::Document>::Key) -> Vec<<E::A as crate::index::Document>::Key> {
         assert!(
             E::A_HEAD.is_empty(),
             "A is a truncated identity and cannot be decoded; use reverse_raw"
         );
         self.reverse_raw(b)
             .iter()
-            .map(|sfx| E::A::decode(sfx))
+            .map(|sfx| <E::A as crate::index::Document>::Key::decode(sfx))
             .collect()
     }
 
-    /// B → As (truncated-identity product): only the first `taken` bytes are
-    /// trustworthy.
-    pub fn reverse_prefix(&self, b: &E::B) -> Vec<PrefixKey<E::A>> {
+    /// B-side scan (truncated-identity product): only the first `taken`
+    /// bytes are trustworthy.
+    pub fn reverse_prefix(
+        &self,
+        b: &<E::B as crate::index::Document>::Key,
+    ) -> Vec<PrefixKey<<E::A as crate::index::Document>::Key>> {
         let taken = if E::A_HEAD.is_empty() {
-            E::A::KEY_LEN
+            <<E::A as crate::index::Document>::Key as KeyEncode>::KEY_LEN
         } else {
-            E::A::prefix_width(E::A_HEAD)
+            <<E::A as crate::index::Document>::Key as KeyEncode>::prefix_width(E::A_HEAD)
         };
         self.reverse_raw(b)
             .iter()
             .map(|sfx| PrefixKey {
-                decoded: E::A::decode(sfx),
+                decoded: <E::A as crate::index::Document>::Key::decode(sfx),
                 taken,
             })
             .collect()

@@ -45,7 +45,7 @@ fn obj_variants_round_trip_over_two_slots() {
     assert_eq!(t.get(&UserKey { id: 1 }).unwrap().level, 2);
 
     // Dictionary landed in slots 2/3 under the same ns.
-    let dict_scan = t.store().scan_suffix(&[0, 9, okm_core::index::DICT_ID_SLOT]);
+    let dict_scan = t.store().scan_suffix(&[0, 9, 0, 2]); // [ns 2B][DICT_ID_SLOT 0x0002 BE]
     assert_eq!(dict_scan.len(), 3, "three names allocated");
 }
 

@@ -113,11 +113,11 @@ fn entry_layout_is_ns_slot_group() {
     };
     t.put(&k, &r);
 
-    // author_id 是 u64 → group 段 = 8B BE；slot 续接索引计数器
-    // （无索引 → DECLARED_SLOT_BASE = 16，ADR-0012）。
+    // author_id 是 u64 → group 段 = 8B BE；reduce 走独立段 0x2
+    // （计数 1 → slot 0x2001，ADR-0016：不再续接索引计数器）。
     let ek = <AuthorStats as Reduce>::entry_key(<Post as Document>::NS_PREFIX, &k, &r);
-    assert_eq!(ek.len(), 3 + 8);
+    assert_eq!(ek.len(), 4 + 8);
     assert_eq!(&ek[..2], &[0, 21]);
-    assert_eq!(ek[2], 16);
-    assert_eq!(&ek[3..], &55u64.to_be_bytes());
+    assert_eq!(&ek[2..4], &[0x20, 0x01]);
+    assert_eq!(&ek[4..], &55u64.to_be_bytes());
 }
