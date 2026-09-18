@@ -1,5 +1,7 @@
 # ARCHITECTURE — the two-layer declaration machine
 
+> 中文版：[ARCHITECTURE.zh-CN.md](ARCHITECTURE.zh-CN.md)。
+
 OKM is a KV counterpart of ORM. This document explains its central
 mechanism: how a Rust struct declaration becomes KV bytes, and why the
 implementation is split the way it is. Normative modeling guidance
