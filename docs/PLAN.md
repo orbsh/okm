@@ -787,12 +787,18 @@ Breaking wire change (LEB128 payloads re-encoded); downstream (aura,
 k10r) declared zero VarInt fields. Acceptance: byte-order test over
 width boundaries passed, hex lock updated.
 
-**P2 — dynamic-segment scalar width tiers.** ObjValueType::UInt
-splits into 8/16/32/64-bit sub-variants; encoder picks the smallest
-fit, decoder sign/zero-extends back. Slot 1 ONLY — declared fields
-(hot/cold) and index keys never tier (fixed width is the static-
-offset + sort-order lifeline). Typical saving 3-7 bytes/field on
-small values.
+**P2 — dynamic-segment frame-length varint.** DONE (2026-09-19).
+Scope narrowed during review: UInt already carries minimal-width
+payload (leading zeros stripped, width implied by the frame length —
+shipped with ADR-0012), so the scalar-tiering idea was redundant. The
+real waste was the frame header: `[tag][len u32 BE]` spent 4 bytes on
+lens that are usually 1-2. Now `[tag][len varint]` via the shared
+wire codec (`wrappers/wire.rs` — put_len/take_len, the P1 encoding;
+one implementation, no second codec). Frame headers drop from 5 to
+2-3 bytes on small values; Array element frames and nested Obj frames
+inherit the saving. Declared cold-segment frames stay `[len u32]` for
+now (separate wire, possible followup); `DynamicValue::UInt`
+minimal-width kept as is.
 
 Order: P3 -> P3.5 -> P1 -> P2. P1/P2 produce new wire bytes; doing
 them after P3 means hex locks change once, not twice.

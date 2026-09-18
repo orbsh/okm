@@ -26,9 +26,13 @@
 //! transform. Payload is big-endian within a width. 9 bytes for
 //! `u64::MAX` (vs LEB128's 10).
 //!
-//! Unsigned only (`u16`/`u32`/`u64`; `u8` is already minimal-width).
-//! The frame's own `len u32` absorbs width variability on the cold
-//! segment; index-segment use rides the fixed per-width layout.
+//! The width/prefix arithmetic lives in [`super::wire`] — one
+//! implementation shared with the frame-length prefix codec. Unsigned
+//! only (`u16`/`u32`/`u64`; `u8` is already minimal-width). The frame's
+//! own length absorbs width variability on the cold segment;
+//! index-segment use rides the fixed per-width layout.
+
+use super::wire;
 
 /// Prefix-monotonic varint codec (see the module docs for the layout).
 pub trait VarIntEnc: Copy + Sized {
@@ -43,12 +47,6 @@ pub trait VarIntEnc: Copy + Sized {
     fn varint_from_u64(v: u64) -> Self;
 }
 
-/// Number of leading 1-bits in the first byte + 1 = total width.
-#[inline]
-fn prefix_width(first: u8) -> usize {
-    first.leading_ones() as usize + 1
-}
-
 macro_rules! impl_varint {
     ($t:ty) => {
         impl VarIntEnc for $t {
@@ -58,36 +56,23 @@ macro_rules! impl_varint {
             }
             fn varint_encode(self, buf: &mut Vec<u8>) {
                 let v = self as u64;
-                let mut out = vec![0u8; 9];
-                if v >= 1u64 << 56 {
-                    // w=9: 0xFF prefix + full 64-bit BE payload
+                let w = wire::width_of(v);
+                let mut out = vec![0u8; w];
+                if w == 9 {
+                    // 0xFF prefix + full 64-bit BE payload
                     out[0] = 0xFF;
                     out[1..].copy_from_slice(&v.to_be_bytes());
                 } else {
-                    // smallest w with payload capacity
-                    let mut w = 1usize;
-                    loop {
-                        let payload_bits = (w - 1) * 8 + (8 - w);
-                        if w >= 8 || v < 1u64 << payload_bits {
-                            break;
-                        }
-                        w += 1;
-                    }
-                    out.truncate(w);
                     let payload_bits = (w - 1) * 8 + (8 - w);
-                    // prefix: (w-1) leading ones + terminator 0 —
-                    // w=1 -> 0x00, w=2 -> 0x80, ... w=8 -> 0xFE
-                    let prefix = ((!(0xFFFFu16 >> (w - 1))) >> 8) as u8;
-                    let hi = (v >> ((w - 1) * 8)) as u8 & (0xFF >> w);
-                    out[0] = prefix | hi;
-                    let low = v & ((1u64 << (payload_bits - (8 - w))) - 1);
+                    out[0] = wire::prefix(w) | ((v >> ((w - 1) * 8)) as u8 & (0xFF >> w));
+                    let low = v & ((1u64 << ((w - 1) * 8)) - 1);
                     let lb = low.to_be_bytes();
                     out[1..].copy_from_slice(&lb[8 - (w - 1)..]);
                 }
                 buf.extend_from_slice(&out);
             }
             fn varint_decode(b: &[u8]) -> (Self, usize) {
-                let w = prefix_width(*b.first().expect("VarInt: truncated frame"));
+                let w = wire::prefix_width(*b.first().expect("VarInt: truncated frame"));
                 assert!(b.len() >= w, "VarInt: truncated frame");
                 let v: u64 = if w == 9 {
                     u64::from_be_bytes(b[1..9].try_into().unwrap())

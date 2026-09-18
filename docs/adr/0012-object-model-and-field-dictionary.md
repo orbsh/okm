@@ -202,3 +202,16 @@ obj concept.
   declared — schema evolution is the escape hatch, deliberately manual.
 - Implementation is PLAN-gated: ObjEncode rename, slot-1 writer/reader,
   dictionary maintenance, value-type enum, schema export extension.
+
+
+## Update 2026-09-19: frame length is a varint (P2)
+
+The dynamic-segment frame `[field-id][value-type][len u32][bytes]`
+became `[field-id][value-type][len varint][bytes]` — the length
+prefix uses the prefix-monotonic wire codec introduced for `VarInt`
+(P1), implemented once in `wrappers/wire.rs` and shared by the field
+wrapper, the dynamic-segment frames, and Array/nested-Obj element
+frames. Small frames cost 2-3 header bytes instead of 5. The
+element-type vocabulary, dictionary, and ordering rules are
+unchanged. Declared cold-segment frames (`[tag][len u32]`, ADR-0004)
+keep the fixed length for now.

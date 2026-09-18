@@ -92,3 +92,13 @@ slot 16+    索引与 reduce（声明序），[ns][slot][...]
 - 动态字段的值类型成为线格式契约的一部分（okm-core 里一个小封闭枚举，schema 导出同步镜像）。
 - 动态字段处处可读，但声明之后才可索引——schema 演化是刻意手动的逃生口。
 - 实现由 PLAN 排期：ObjEncode 改名、slot 1 读写路径、字典维护、值类型枚举、schema 导出扩展。
+
+
+## 更新 2026-09-19：帧长改为 varint（P2）
+
+动态段帧 `[field-id][value-type][len u32][bytes]` 变为
+`[field-id][value-type][len varint][bytes]`——长度前缀使用 `VarInt`
+（P1）引入的前缀单调 wire 编码，在 `wrappers/wire.rs` 中实现一次，
+字段包装器、动态段帧、Array 与嵌套 Obj 的元素帧共用。小帧的头部
+从 5 字节降到 2-3 字节。元素类型词汇表、字典与排序规则不变。声明
+字段的冷段帧（`[tag][len u32]`，ADR-0004）暂保持定长。
