@@ -685,23 +685,29 @@ item; need predates nothing yet, record when a real consumer appears.
 many middle table, double-materialized FWD/REV), not a graph edge.
 Decided:
 
-- [ ] Rename `EdgeEncode` -> `JunctionEncode`, `Edge<S, E>` ->
-      `Junction<S, E>` (mechanical: derive, core, tests, docs en/zh).
-      Junction is unidirectional per entry: one slot per endpoint ns
-      (the old "two direction slots in one ns" 14/15 design is
-      replaced by the two-ns residency).
-- [ ] Junction ns derives from endpoint key types' ns at compile time
-      (deterministic combination + compile-time collision check) —
-      `#[ok_ns(N)]` on junctions removed (ADR-0005's manual-numbering
-      argument applies verbatim; two human numbers can silently
-      collide, derivation cannot).
+- [ ] 4-byte entry head (ADR-0016): `[ns u16][slot u16]`, slot = 4-bit
+      segment + 12-bit counter (0x0 document-self, 0x1 index, 0x2 reduce,
+      0x3 junction; counters independent). All non-primary entry keys
+      +1 byte; hex locks and slot tables rewritten. Renames
+      `EdgeEncode` -> `JunctionEncode`, `Edge<S, E>` -> `Junction<S, E>`
+      (mechanical: derive, core, tests, docs en/zh).
+- [ ] Junction fields reference document types (`user: User`, not
+      `UserKey`) — the derive resolves `<User as Document>::Key` and
+      `NS_PREFIX`; `#[ok_ns]` on junctions removed entirely (ns declared
+      once, on the document; the earlier "derive the junction ns from
+      endpoint ns values" idea is superseded — no derivation at all,
+      the entries live in the endpoints' own ns, ADR-0015/0016).
+      Discriminator `#[ok_junction(n)]` fills the segment-0x3 counter
+      (separates multiple junctions over one endpoint pair).
 - [ ] Future: `#[ok_relation(JunctionType)]` on a `Refs` field — put-
       time diff auto link/unlink (trades RMW for declarative sync;
       needs the two-endpoint write consistency analysis first).
-- [ ] Future: graph `Edge` (directed, `DynamicValue` attributes, edge
-      name -> compile-time hashed ns via `#[ok_edge("has")]`, no
-      nesting, no field-name compression) — a genuinely different
-      type; no consumer yet, design deferred.
+- [ ] Future: graph `Edge` (directed, `DynamicValue` attributes, no
+      nesting, no field-name compression) — a genuinely different type;
+      no consumer yet, design deferred. ns scheme open (the earlier
+      compile-time-hash idea is rejected — nondeterministic; graph edges
+      often exist independently of either endpoint document, so the
+      two-ns residency may not transfer).
 - Pre-crates.io timing makes the rename free: downstream (aura, k10r)
   currently declares zero junctions.
 
