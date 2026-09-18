@@ -108,6 +108,29 @@ pub fn decode_payload(schema: &TableSchema, bytes: &[u8]) -> Result<ValueMap, Co
                             .map_err(|_| CodecError::InvalidUtf8(f.name.clone()))?
                             .to_string(),
                     ),
+                    FieldType::Vector { .. } => {
+                        // Frame = [count u32 BE][elements per T]. The
+                        // element decoding is consumer-side (the value
+                        // stays an opaque Bytes frame); the schema-side
+                        // expect_len contract is enforced HERE.
+                        if value.len() < 4 {
+                            return Err(CodecError::Truncated {
+                                field: f.name.clone(),
+                                needed: 4,
+                                got: value.len(),
+                            });
+                        }
+                        let count = u32::from_be_bytes(value[0..4].try_into().unwrap());
+                        if let Some(expect) = f.expect_len {
+                            if count as usize != expect {
+                                return Err(CodecError::TypeMismatch {
+                                    field: f.name.clone(),
+                                    expected: "element count matching expect_len",
+                                });
+                            }
+                        }
+                        Value::Bytes(value.to_vec())
+                    }
                     FieldType::VarInt | FieldType::Quant(_) | FieldType::Offset(_) => {
                         if value.len() != 8 {
                             return Err(CodecError::Truncated {
@@ -160,6 +183,9 @@ pub fn decode_payload(schema: &TableSchema, bytes: &[u8]) -> Result<ValueMap, Co
                 FieldType::Bytes => Value::Bytes(vec![0; f.width]),
                 FieldType::FixedBytes => Value::Bytes(vec![0; f.width]),
                 FieldType::Enum => Value::U8(0),
+                // Vector default = empty frame (count 0) — the natural
+                // default for a variable-length list.
+                FieldType::Vector { .. } => Value::Bytes(vec![0, 0, 0, 0]),
             },
         };
         out.insert(f.name.clone(), v);
@@ -191,6 +217,9 @@ fn decode_fixed(
         )),
         FieldType::FixedBytes => Value::Bytes(raw.to_vec()),
         // Str/Bytes are cold-only; hot segment never carries them (width 0).
+        // Vector is hot-capable but decoded via its own arm below — the
+        // generic fixed walk treats it as raw bytes.
+        FieldType::Vector { .. } => Value::Bytes(raw.to_vec()), // frame payload as-is
         FieldType::Str | FieldType::Bytes | FieldType::VarInt | FieldType::Quant(_)
         | FieldType::Enum | FieldType::Offset(_) => {
             return Err(CodecError::TypeMismatch {

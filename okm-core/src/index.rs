@@ -190,6 +190,11 @@ pub trait Document: Sized + Clone {
     /// `FieldSchema::default` — the dynamic reader's version-migration
     /// data. Empty when no field declares a literal default.
     const DEFAULTS: &'static [(&'static str, crate::field::DefaultValueConst)] = &[];
+    /// Per-field application contracts (`#[ok_len(N)]` on `Vector<T>`
+    /// fields): `(field name, expected element count)`. Exported into
+    /// `FieldSchema::expect_len` so the dynamic reader enforces the same
+    /// check the Rust decoder generates. Default empty.
+    const FIELD_CONTRACTS: &'static [(&'static str, usize)] = &[];
     /// Byte width of the hot segment at THIS schema version: the fixed-
     /// width fields in declaration order, concatenated. The decode-side
     /// split point of the two segments (hot walk ends, cold TLV walk

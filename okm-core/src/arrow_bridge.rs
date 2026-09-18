@@ -42,6 +42,9 @@ fn arrow_type(ty: FieldType) -> DataType {
         FieldType::Quant(_) => DataType::Float64,
         FieldType::Enum => DataType::UInt8,
         FieldType::Offset(_) => DataType::Int64,
+        // Variable-length frame → opaque binary column (like Bytes); the
+        // element type lives in the schema, Arrow stays byte-opaque.
+        FieldType::Vector { .. } => DataType::Binary,
     }
 }
 
@@ -382,6 +385,7 @@ fn swap_be(src: &[u8], off: usize, width: usize, ty: FieldType) -> Vec<u8> {
         FieldType::U16 => raw.iter().rev().copied().collect(),
         FieldType::U32 => raw.iter().rev().copied().collect(),
         FieldType::U64 => raw.iter().rev().copied().collect(),
+        FieldType::Vector { .. } => raw.to_vec(), // already LE by contract
         FieldType::Str | FieldType::Bytes => unreachable!("Str/Bytes columns bypass swap_be"),
         FieldType::VarInt | FieldType::Quant(_) | FieldType::Enum | FieldType::Offset(_) => {
             unreachable!("transformed kinds bypass swap_be (see logical_value)")

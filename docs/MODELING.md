@@ -589,6 +589,56 @@ was precisely eliminating per-index manual numbering and hole
 bookkeeping) is a secondary bonus, not the dividing line; the dividing
 line is the data source.
 
+## Homogeneous lists: `Vector<T>`
+
+The plural-modeling taxonomy (ADR-0015 §4) has a fourth member besides
+the two relation carriers and the heterogeneous `DynamicValue::Array`:
+the **typed homogeneous list**. `Vector<f32>` declares a list of
+floats; `Vector<String>` a list of strings — the element type is the
+schema, the length is data.
+
+Storage is a **variable-length cold TLV frame** (same slot as
+`String`): payload = `[count u32 BE]` + the elements. Homogeneity is
+the payoff — fixed-width scalar elements are **bare V** (zero
+per-element overhead; a 384-dim f32 embedding costs 1.5 KB, not the
+~10 bytes/element a heterogeneous Array would pay), while dynamic-
+width elements (`String`) are per-element **LV**.
+
+```rust
+#[derive(DocumentEncode)]
+#[ok_ref(DocKey)]
+pub struct Doc {
+    pub id: u64,
+    pub embed: Vector<f32>,        // cold frame, any length
+    pub tags: Vector<String>,      // per-element LV
+    pub score: u32,
+}
+```
+
+Length is data, not schema: a different embedding model (384 -> 768
+dims) is just different frames — no wire migration. When the
+application DOES know the expected count (embedding dims by contract),
+`#[ok_len(384)]` adds an encode-time check — the write boundary is
+where the promise is enforced; decode never checks (bypassing the
+decoder is the reader's own problem — raw frame bytes are as opaque
+as an unrendered image). The same contract is exported to the dynamic
+reader (`FieldSchema::expect_len`) so the Python side is enforced
+identically. It is an application contract, never a format constraint.
+
+Elements are **pure values** — the identity dividing line (§Many-to-many
+above) keeps Vector out of the relation carriers: a scalar has no key,
+a key reference to it is a category error. One-to-many -> `Refs`; many-
+to-many -> `Junction`; order-expressing value lists -> `Vector`;
+heterogeneous dynamic lists -> `DynamicValue::Array` (slot 1). On
+`get_document` a Vector lifts to `DynVal::Array` — the dynamic layer
+has no Vector type; Vector is a storage-layer format. Multi-dimensional
+shape is application-layer interpretation (row-major over the flat
+sequence); nothing on the wire.
+
+The consumer (okm-vector) builds search on top: the frame bytes are the
+function-index data segment (exact match / quantized bucket recall via
+prefix scan), distance is rerank-side. Storage stays byte-opaque.
+
 ## Cross-row pre-aggregation
 
 Every index entry is an append-only derived view that lives and dies

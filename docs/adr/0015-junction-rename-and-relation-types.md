@@ -124,17 +124,17 @@ element have identity, and homogeneous vs heterogeneous.
 - **Many-to-many (both sides have identity, bidirectional)**:
   `Junction` — above.
 - **Vector (homogeneous list, used as a whole)**: elements of one
-  type, read and written as a unit, possibly multi-dimensional (a
-  header carries shape and type; one dimension is just a list; many
-  is a tensor). Canonical use: embedding vectors (order and dimension
-  expressed), numeric sequences. Stored in slot 0's dynamic part, in
-  the same class as strings (variable-length TLV frames); dynamic
-  elements use LV format. Declared form (PLAN P3.5): `Vector<f32,
-  384>` shape — element type and dimension in the type = fixed-width
-  wire; okm-vector's hand-rolled `encode_f32s` migrates onto it.
-  `DynamicValue::Array` is its heterogeneous counterpart — more
-  general, more dynamic, per-element type tags, slightly higher
-  overhead.
+  type, read and written as a unit. Storage: a variable-length cold
+  TLV frame like strings — payload = [count u32 BE] + elements;
+  homogeneous fixed-width elements are bare V (zero per-element
+  overhead), dynamic-width elements carry per-element LV. Length is
+  data, not schema; `#[ok_len(N)]` is an encode-time application
+  contract (exported to the dynamic reader as `expect_len`; decode
+  never checks — bypassing the decoder is the reader's own problem).
+  Canonical use: embedding vectors (okm-vector), numeric sequences.
+  On get_document it lifts to DynVal::Array — the dynamic layer has
+  no Vector type. Multi-dim shape is application-layer. Elements are
+  pure values — NOT a relation carrier.
 - **Array (heterogeneous list)**: `DynamicValue::Array` — mixed
   element types, recursive dynamic-segment frames.
 - **Set (deduplicated elements)**: no carrier yet. The candidate

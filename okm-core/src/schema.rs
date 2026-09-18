@@ -37,6 +37,11 @@ pub struct FieldSchema {
     /// always has one — expression or `Default::default()` — but only
     /// literal expressions are exportable data).
     pub default: Option<DefaultValue>,
+    /// `Vector` element-count contract (`#[ok_len(N)]` / the dynamic
+    /// reader's declared expectation): a decode-time assertion, not a
+    /// wire constraint — the frame carries its own count. `None` =
+    /// unrestricted (the dynamic-mode default).
+    pub expect_len: Option<usize>,
 }
 
 /// Exportable default literal. Deliberately narrow: the dynamic reader
@@ -103,6 +108,14 @@ pub struct TableSchema {
     pub slots: SlotMap,
 }
 
+/// `#[ok_len(N)]` lookup over a document's FIELD_CONTRACTS table.
+fn expect_len_of(
+    contracts: &'static [(&'static str, usize)],
+    name: &str,
+) -> Option<usize> {
+    contracts.iter().find(|(n, _)| *n == name).map(|(_, l)| *l)
+}
+
 /// Find a field's const default by name; converts to the owned form.
 fn lookup_default(
     defaults: &'static [(&'static str, crate::field::DefaultValueConst)],
@@ -144,6 +157,7 @@ impl TableSchema {
                 offset: off,
                 tag: None,
                 default: None,
+                expect_len: None,
             });
             off += f.width;
         }
@@ -162,6 +176,7 @@ impl TableSchema {
                     offset: hot_off,
                     tag: None,
                     default: lookup_default(<R as Document>::DEFAULTS, f.name),
+                    expect_len: None,
                 });
                 hot_off += f.width;
             } else {
@@ -172,6 +187,9 @@ impl TableSchema {
                     offset: 0,
                     tag: Some(fi as u8),
                     default: lookup_default(<R as Document>::DEFAULTS, f.name),
+                    // Vector fields export the #[ok_len] contract for the
+                    // dynamic reader; other cold kinds have none.
+                    expect_len: expect_len_of(<R as Document>::FIELD_CONTRACTS, f.name),
                 });
             }
         }
@@ -227,6 +245,9 @@ mod serde_impls {
                 FieldType::Enum => s.serialize_unit_variant("FieldType", 8, "Enum"),
                 FieldType::Offset(b) => {
                     s.serialize_newtype_variant("FieldType", 9, "Offset", b)
+                }
+                FieldType::Vector { elem } => {
+                    s.serialize_newtype_variant("FieldType", 11, "Vector", elem)
                 }
             }
         }
@@ -310,6 +331,7 @@ mod serde_impls {
                 Quant(u32),
                 Enum,
                 Offset(i64),
+                Vector { elem: String },
             }
             Ok(match Repr::deserialize(d)? {
                 Repr::U8 => FieldType::U8,
@@ -322,6 +344,9 @@ mod serde_impls {
                 Repr::Quant(p) => FieldType::Quant(p),
                 Repr::Enum => FieldType::Enum,
                 Repr::Offset(b) => FieldType::Offset(b),
+                // Leak is bounded: the element-type vocabulary is a tiny
+                // closed set written by the serializer, never attacker data.
+                Repr::Vector { elem } => FieldType::Vector { elem: Box::leak(elem.into_boxed_str()) },
             })
         }
     }
@@ -336,6 +361,7 @@ mod serde_impls {
                 offset: usize,
                 tag: &'a Option<u8>,
                 default: &'a Option<DefaultValue>,
+                expect_len: &'a Option<usize>,
             }
             Repr {
                 name: &self.name,
@@ -344,6 +370,7 @@ mod serde_impls {
                 offset: self.offset,
                 tag: &self.tag,
                 default: &self.default,
+                expect_len: &self.expect_len,
             }
             .serialize(s)
         }
@@ -359,6 +386,7 @@ mod serde_impls {
                 offset: usize,
                 tag: Option<u8>,
                 default: Option<DefaultValue>,
+                expect_len: Option<usize>,
             }
             let r = Repr::deserialize(d)?;
             Ok(Self {
@@ -368,6 +396,7 @@ mod serde_impls {
                 offset: r.offset,
                 tag: r.tag,
                 default: r.default,
+                expect_len: r.expect_len,
             })
         }
     }

@@ -715,12 +715,23 @@ Decided:
 
 The full plural taxonomy (identity axis x homogeneous/heterogeneous):
 
-- [ ] **Vector<D>** — homogeneous list, used as a whole; multi-
-      dimensional (header carries shape + type; 1-D = list). Storage:
-      slot 0 dynamic part, variable-length TLV like Str; dynamic
-      elements in LV format. Use cases: embedding vectors (okm-vector
-      bridge), numeric sequences, order-expressing lists. Elements are
-      pure values — NOT a relation carrier.
+- [x] **Vector<T>** — homogeneous list, used as a whole. Shipped
+      2026-09-19 (P3.5, second pass): variable-length cold TLV frame —
+      payload = [count u32 BE] + count x element encoding; fixed-width
+      scalars are bare V (zero per-element overhead vs Array's
+      per-element frames), dynamic-width elements (String) are
+      per-element LV. `FieldType::Vector { elem: "f32" }` in schema
+      export (Arrow Binary, byte-opaque). Optional `#[ok_len(N)]` is an
+      ENCODE-TIME contract check (embedding dims) — the write boundary is
+      where the promise is enforced; decode never checks (bypassing the
+      decoder is the reader's own problem, raw frame bytes are as opaque
+      as an unrendered image). The contract still travels in
+      `FieldSchema::expect_len` for dynamic readers to enforce. Length is
+      data, not schema:
+      changing embedding models is different frames, no migration.
+      Multi-dim shape is application-layer (row-major over the flat
+      sequence); okm-vector migrated onto it. Elements are pure
+      values — NOT a relation carrier.
 - [x] **DynamicValue::Array** — heterogeneous list (shipped with the
       dynamic segment); more general than Vector, per-element type
       tags, slightly higher overhead.
@@ -753,15 +764,19 @@ junction / 0x82-0xBF relation reserve / 0xC0-0xFF system). Junction
 rename rides the same sweep. Hex locks + key-layout + ADR-0012 slot
 table rewritten.
 
-**P3.5 — Vector<D> typed homogeneous list.** Follows P3 (new slot
-segments are its storage home). Declared field: `pub embed:
-Vector<f32, 384>`-shape (element type + dimension in the type =
-fixed-width wire, slot 0 dynamic part as one TLV frame like Str but
-element-typed). Design points: header carries shape+type for multi-
-dim; 1-D is the list; okm-vector's `encode_f32s` migrates onto it
-(replacing the hand-rolled helper); embedding vectors are the anchor
-use case. Elements are pure values — the identity line keeps this
-out of Ref/Junction.
+**P3.5 — Vector<T> typed homogeneous list.** DONE (2026-09-19, second
+pass). First pass compiled the dimension into the type (`Vector<T, N>`,
+fixed-width hot segment) — rejected in review: embedding dims change
+per model, and a 1.5 KB field blows up the hot segment for zero gain
+(the offset arithmetic it enables is meaningless for a field accessed
+as a whole). Final form follows the original definition: a variable-
+length cold TLV frame like String, header carries the count, elements
+are bare V when homogeneous (the payoff vs Array) and per-element LV
+when dynamic-width (`Vector<String>`). `get_document` lifts it to
+`DynVal::Array` — the dynamic layer has no Vector type; Vector is a
+STORAGE-layer format. Embedding vectors are the anchor use case.
+Elements are pure values — the identity line keeps this out of
+Ref/Junction.
 
 **P1 — VarInt re-encoding: byte order = value order.** UTF-8
 prefix-monotonic idea: first byte increases with value range

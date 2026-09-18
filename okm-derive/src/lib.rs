@@ -29,8 +29,25 @@ fn dump(macro_name: &str, input: TokenStream, tokens: &TS2) {
         let struct_name: Option<String> = syn::parse::<syn::DeriveInput>(input.clone())
             .ok()
             .map(|di| di.ident.to_string());
-        let file: syn::File =
-            syn::parse2(tokens.clone()).expect("derive expansion must parse as a file");
+        let file: Option<syn::File> = match syn::parse2(tokens.clone()) {
+            Ok(f) => Some(f),
+            Err(e) => {
+                // Write the RAW token string so the offending site is
+                // greppable even when pretty-parsing fails.
+                let name_raw = input
+                    .clone()
+                    .into_iter()
+                    .next()
+                    .map(|t| t.to_string())
+                    .unwrap_or_else(|| "unknown".into());
+                let _ = std::fs::create_dir_all(&dir);
+                let path = std::path::Path::new(&dir)
+                    .join(format!("{name_raw}_{macro_name}.raw.rs"));
+                let _ = std::fs::write(path, tokens.to_string());
+                panic!("derive expansion must parse as a file: {e}");
+            }
+        };
+        let file = file.unwrap();
         let src = prettyplease::unparse(&file);
         let _ = std::fs::create_dir_all(&dir);
         let name = struct_name.as_deref().unwrap_or("unknown");
@@ -46,7 +63,7 @@ pub fn derive_key_encode(input: TokenStream) -> TokenStream {
     out
 }
 
-#[proc_macro_derive(DocumentEncode, attributes(ok_ref, ok_ns, ok_partition, ok_index, ok_reduce, ok_offset, ok_layout, ok_default, ok_subscribe, ok_event_enum))]
+#[proc_macro_derive(DocumentEncode, attributes(ok_ref, ok_ns, ok_partition, ok_index, ok_reduce, ok_offset, ok_layout, ok_default, ok_subscribe, ok_event_enum, ok_len))]
 pub fn derive_document_encode(input: TokenStream) -> TokenStream {
     let out = document_encode::derive(input.clone());
     dump("DocumentEncode", input, &out.clone().into());

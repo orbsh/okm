@@ -166,6 +166,7 @@ fn schema_kind_name(ty: okm_core::field::FieldType) -> &'static str {
         okm_core::field::FieldType::Quant(_) => "U64 (fixed-point storage form)",
         okm_core::field::FieldType::Enum => "U8 (tag)",
         okm_core::field::FieldType::Offset(_) => "U64 (biased storage form)",
+        okm_core::field::FieldType::Vector { .. } => "bytes (flat LE vector)",
     }
 }
 

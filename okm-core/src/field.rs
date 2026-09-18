@@ -35,6 +35,13 @@ pub enum FieldType {
     /// `Offset<T>` — `value − base` stored as u32; the payload is the
     /// static base. Logical type is i64 (base + wire).
     Offset(i64),
+    /// `Vector<T>` — typed homogeneous list (ADR-0015 §4): a variable-
+    /// length frame `[count u32 BE][elements per T]`; `elem` names the
+    /// element type ("f32", "String", …). Logical type is the element
+    /// sequence. No length in the schema — the frame carries its own
+    /// count; application-level count contracts are `#[ok_len]` /
+    /// `FieldSchema::expect_len` (decode-time checks).
+    Vector { elem: &'static str },
 }
 
 /// One declared field: name, primitive kind, byte width.
