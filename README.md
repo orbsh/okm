@@ -2,7 +2,7 @@
 
 > ORM experience, Redis speed, PostgreSQL durability, and functions without boundaries.
 
-OKM is the KV counterpart of ORM: ORM maps objects onto relational tables, OKM maps objects onto KV keyspaces. Declarative derive macros (`#[derive(KeyEncode)]` / `#[derive(JunctionEncode)]`) plus numeric namespace IDs build a zero-cost semantic data layer — as declarative as an ORM at development time, compiled down to pure pointer-offset arithmetic.
+OKM is the KV counterpart of ORM: the logic is defined ORM-style, code generation produces the underlying KV operations. ORM maps objects onto relational tables, OKM maps objects onto KV keyspaces. Declarative derive macros (`#[derive(KeyEncode)]` / `#[derive(JunctionEncode)]`) plus numeric namespace IDs build a zero-cost semantic data layer — as declarative as an ORM at development time, compiled down to pure pointer-offset arithmetic.
 
 Related reading: [KV Storage Engine](https://github.com/orbsh/wiki/blob/main/kv-storage-engine-en.md) — underlying architecture and design patterns (encoding principles, index strategies, engine-level trade-offs); [Modeling Guide](docs/MODELING.md) — the normative schema-modeling method (four layers, mandatory access methods, covering-index restraint, composite-key boundary); [Query Recipes](docs/query-recipes.md) — composing merge_join / group_by / walk into SQL shapes, the WHERE boundary record.
 
