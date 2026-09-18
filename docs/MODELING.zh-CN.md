@@ -363,6 +363,29 @@ junction 物化为每个端点 ns 各一条单向 key（段 0x3，方向由 ns �
 
 一句话：**索引 = 一行的派生视图，边 = 一等的关系数据**。`#[ok_index]` 定义时方便（声明即注册，无需手工编号 ns——ADR-0005 的动机正是消灭 per-index 手工编号与洞簿记）是次要红利，不是两者的分界；分界在数据源。
 
+## 同质列表：`Vector<T>`
+
+复数建模分类学（ADR-0015 §4）在两个关系载体与异质 `DynamicValue::Array` 之外有第四个成员：**类型化同质列表**。`Vector<f32>` 声明浮点列表，`Vector<String>` 声明字符串列表——元素类型是 schema，长度是数据。
+
+存储是**冷段变长 TLV 帧**（与 String 同落位）：载荷 = `[count u32 BE]` + 元素。同质性是它的价值——定宽标量元素是**裸 V**（每元素零开销；384 维 f32 嵌入向量 1.5 KB，而异质 Array 每元素约 10 字节），动态宽度元素（`String`）逐元素 **LV**。
+
+```rust
+#[derive(DocumentEncode)]
+#[ok_ref(DocKey)]
+pub struct Doc {
+    pub id: u64,
+    pub embed: Vector<f32>,        // 冷段帧，任意长度
+    pub tags: Vector<String>,      // 逐元素 LV
+    pub score: u32,
+}
+```
+
+长度是数据不是 schema：换嵌入模型（384 -> 768 维）只是不同的帧，无需 wire 迁移。应用确实知道预期长度时（合同约定的嵌入维度），`#[ok_len(384)]` 加一个编码期检查——写入边界即承诺执行处；解码不检查（绕过解码器是读取者自己的问题——原始帧字节与未渲染的图片同样不透明）。同一合同导出给动态 reader（`FieldSchema::expect_len`），Python 侧被一致地强制。它是应用合同，绝不是格式约束。
+
+元素是**纯值**——身份分界线（上文多对多一节）把 Vector 挡在关系载体之外：标量没有 key，对它做 key 引用是范畴错误。一对多 → `Refs`；多对多 → `Junction`；表达顺序的值列表 → `Vector`；异质动态列表 → `DynamicValue::Array`（slot 1）。`get_document` 时 Vector 提升为 `DynVal::Array`——动态层没有 Vector 类型，Vector 是存储层格式。多维形状是应用层解释（扁平序列按行优先），wire 上什么都不存。
+
+消费侧（okm-vector）在其上构建搜索：帧字节就是 function-index 的数据段（前缀扫描做精确匹配/量化桶召回），距离是 rerank 侧的事。存储保持字节不透明。
+
 ## 跨行预聚合
 
 索引的每个条目都是**随行生灭**的 append-only 派生视图——delete 用同一个函数重新生成待删集合，永不悬挂。有一类需求天然落在这个纪律之外：按作者统计发文数、按小时的 rollup、精确计数器。它们是**跨行**的——func 的签名 `fn(&Row)` 只看得见一行，答案落在 entry value 的**读-改-写**上，即第四个原语（可变聚合 entry）。

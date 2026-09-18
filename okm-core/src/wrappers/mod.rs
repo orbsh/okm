@@ -15,6 +15,7 @@ mod offset;
 mod optional;
 mod quant;
 pub mod varint;
+pub mod vector;
 
 pub use refs::Refs;
 pub use ref_mod::Ref;
@@ -24,3 +25,4 @@ pub use optional::{Option, OptionalEnc, WireWidth};
 pub use offset::{Offset, offset_decode, offset_encode};
 pub use quant::{Quant, dequantize, quantize, wire_to_be_bytes};
 pub use varint::{VarInt, VarIntEnc};
+pub use vector::{Vector, VectorElem};

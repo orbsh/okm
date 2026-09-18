@@ -270,6 +270,10 @@ pub(crate) struct FieldSchema {
     /// literal or `"x".to_string()`); feeds the Document::DEFAULTS const for
     /// the dynamic reader's version migration.
     pub default_lit: Option<TS2>,
+    /// `#[ok_len(N)]` — expected element count of a `Vector<T>` field
+    /// (embedding dims known to the app). A decode-time check, not a wire
+    /// constraint: the frame carries its own count. None = unrestricted.
+    pub ok_len: Option<usize>,
 }
 
 /// Encoded width of a plain primitive type name (for `Reverse<T>` fields —
@@ -320,6 +324,17 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> Vec<FieldSchema> {
                 e.map(|x| quote! { #x })
                     .or_else(|| a.parse_args::<syn::Expr>().ok().map(|x| quote! { #x }))
                     .expect("ok_default: expected `#[ok_default(expr)]` or `#[ok_default = expr]`")
+            });
+        // #[ok_len(N)] — Vector element-count expectation (decode check).
+        let ok_len: Option<usize> = f
+            .attrs
+            .iter()
+            .find(|a| a.path().is_ident("ok_len"))
+            .map(|a| {
+                a.parse_args::<syn::LitInt>()
+                    .expect("ok_len: expected `#[ok_len(N)]`")
+                    .base10_parse()
+                    .expect("ok_len: N must be a usize literal")
             });
         // Literal detection: `#[ok_default(3)]` etc. exports as data for
         // the dynamic reader; non-literal exprs stay Rust-only.
@@ -375,6 +390,17 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> Vec<FieldSchema> {
                     Ok(())
                 });
                 b.expect("ok_offset: missing `base = <i64>`")
+            });
+        // #[ok_len(N)] — Vector element-count expectation (decode check).
+        let ok_len: Option<usize> = f
+            .attrs
+            .iter()
+            .find(|a| a.path().is_ident("ok_len"))
+            .map(|a| {
+                a.parse_args::<syn::LitInt>()
+                    .expect("ok_len: expected `#[ok_len(N)]`")
+                    .base10_parse()
+                    .expect("ok_len: N must be a usize literal")
             });
         let (enc, dec, width, len_expr, kind) = match ty_str.as_str() {
             "u64" => (
@@ -505,6 +531,119 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> Vec<FieldSchema> {
                     quote! { 8 },
                     quote! { 8 },
                     Some(quote! { ::okm_core::FieldType::Quant(#plit) }),
+                )
+            }
+            _ if ty_str.starts_with("Vector<") || ty_str.starts_with("Vector <") => {
+                // Vector<T> — typed homogeneous list (ADR-0015 §4): a
+                // variable-length cold TLV frame, payload = [count u32 BE]
+                // + count × element encoding. Element encoding by T:
+                // fixed-width scalars are bare V (zero per-element
+                // overhead); Str elements carry their own len (LV).
+                // #[ok_len(N)] validates the count at decode (a check, not
+                // a wire constraint — the frame carries its own count).
+                let t_str = ty_str
+                    .trim_start_matches("Vector <")
+                    .trim_start_matches("Vector<")
+                    .trim_end_matches('>')
+                    .to_string();
+                let t_lit = &t_str;
+                let t_ty: syn::Type = syn::parse_str(&t_str)
+                    .unwrap_or_else(|e| panic!("{ctx}: bad Vector element type `{t_str}`: {e}"));
+                let (elem_enc, elem_dec, elem_fixed): (proc_macro2::TokenStream, proc_macro2::TokenStream, usize) = match t_str.as_str() {
+                    "f32" | "u32" | "i32" => (
+                        quote! {
+                            // works for both an owned buf and a &mut alias:
+                            // extend needs no re-borrow of `buf` itself
+                            let mut tmp = Vec::with_capacity(4);
+                            e.encode_le(&mut tmp);
+                            buf.extend_from_slice(&tmp);
+                        },
+                        quote! {{
+                            elems.push(<#t_ty as ::okm_core::VectorElem>::decode_le(&payload[p..p+4]));
+                            p += 4;
+                        }},
+                        4usize,
+                    ),
+                    "u64" | "i64" => (
+                        quote! {
+                            let mut tmp = Vec::with_capacity(8);
+                            e.encode_le(&mut tmp);
+                            buf.extend_from_slice(&tmp);
+                        },
+                        quote! {{
+                            elems.push(<#t_ty as ::okm_core::VectorElem>::decode_le(&payload[p..p+8]));
+                            p += 8;
+                        }},
+                        8usize,
+                    ),
+                    "String" => (
+                        quote! {{
+                            let eb = e.as_bytes();
+                            buf.extend_from_slice(&(eb.len() as u32).to_be_bytes());
+                            buf.extend_from_slice(eb);
+                        }},
+                        quote! {{
+                            let l = u32::from_be_bytes(payload[p..p+4].try_into().unwrap()) as usize;
+                            p += 4;
+                            elems.push(String::from_utf8(payload[p..p+l].to_vec())
+                                .expect("Vector<String> element is valid UTF-8"));
+                            p += l;
+                        }},
+                        0usize,
+                    ),
+                    other => panic!("{ctx}: unsupported Vector element type `{other}` (scalars: f32/u32/i32/u64/i64; dynamic-width: String)"),
+                };
+                // #[ok_len] is an ENCODE-time contract check (the write
+                // boundary is where the application's dimension promise is
+                // enforced). Decode never checks: bypassing the decoder is
+                // the reader's own problem — raw frame bytes are as opaque
+                // as an unrendered image. The contract still travels in
+                // FieldSchema::expect_len for dynamic readers to enforce.
+                let ok_len_check = match ok_len {
+                    Some(n) => quote! {
+                        if self.#id.elems.len() != #n {
+                            panic!(concat!(
+                                "Vector count mismatch (#[ok_len] contract): field `",
+                                stringify!(#id), "`: expected ", #n, ", found {}"
+                            ), self.#id.elems.len());
+                        }
+                    },
+                    None => quote! {},
+                };
+                // len_expr: frame payload bytes = count prefix + elements
+                let len_expr = if elem_fixed > 0 {
+                    let fixed_lit = proc_macro2::Literal::usize_unsuffixed(elem_fixed);
+                    // fully parenthesized: the cold-loop template casts
+                    // `#len as u32`, and `as` binds tighter than `*`.
+                    quote! { (4 + self.#id.elems.len() * (#fixed_lit)) }
+                } else {
+                    quote! { 4 + self.#id.elems.iter().map(|e| 4 + e.len()).sum::<usize>() }
+                };
+                (
+                    // enc: contract check + count prefix + elements (cold
+                    // TLV loop adds the frame header; this writes the payload)
+                    quote! {{
+                        #ok_len_check
+                        buf.extend_from_slice(&(self.#id.elems.len() as u32).to_be_bytes());
+                        for e in &self.#id.elems { #elem_enc }
+                    }},
+                    // dec: count, optional ok_len check, per-element decode
+                    quote! {{
+                        let mut count_bytes = [0u8; 4];
+                        count_bytes.copy_from_slice(&b[offset..offset+4]);
+                        let count = u32::from_be_bytes(count_bytes) as usize;
+                        offset += 4;
+                        let payload = &b[offset..offset + len - 4];
+                        let mut elems = Vec::with_capacity(count);
+                        let mut p = 0usize;
+                        for _ in 0..count { #elem_dec }
+                        offset += len - 4;
+                        ::okm_core::Vector { elems }
+                    }},
+                    // width 0 = cold (variable length)
+                    quote! { 0 },
+                    len_expr,
+                    Some(quote! { ::okm_core::FieldType::Vector { elem: #t_lit } }),
                 )
             }
             _ if ty_str.starts_with("Ref<") => {
@@ -696,6 +835,7 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> Vec<FieldSchema> {
                     .unwrap_or_else(|| quote! { <#ty as ::core::default::Default>::default() })
             },
             default_lit: ok_default_lit,
+            ok_len: if ty_str.starts_with("Vector<") || ty_str.starts_with("Vector <") { ok_len } else { None },
         });
     }
     fs

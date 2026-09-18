@@ -39,6 +39,7 @@ pub fn json_schema<K: KeyEncode, R: Document<Key = K>>() -> String {
             FieldType::Quant(_) => "number",   // logical: dequantized f64
             FieldType::Enum => "integer",      // the u8 tag
             FieldType::Offset(_) => "integer", // logical: base + offset
+            FieldType::Vector { .. } => "array", // element sequence (dynamic-length)
         }
     }
 

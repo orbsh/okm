@@ -536,6 +536,23 @@ fn emit_row_impl(schema: &DocumentSchema) -> TS2 {
     let ver_lit = proc_macro2::Literal::u8_unsuffixed(schema.layout_version);
     let row_desc = field_desc_entries(schema);
     let row_defaults = defaults_entries(schema);
+    // FIELD_CONTRACTS: Vector fields with #[ok_len(N)] — the dynamic
+    // reader enforces the same count check the Rust decoder inlines.
+    let contracts: Vec<(String, proc_macro2::Literal)> = schema
+        .fields
+        .iter()
+        .filter_map(|f| {
+            f.ok_len
+                .map(|n| (f.ident.to_string(), proc_macro2::Literal::usize_unsuffixed(n)))
+        })
+        .collect();
+    let contracts_const = {
+        let names = contracts.iter().map(|(n, _)| n);
+        let lens = contracts.iter().map(|(_, l)| l);
+        quote! {
+            const FIELD_CONTRACTS: &'static [(&'static str, usize)] = &[ #((#names, #lens)),* ];
+        }
+    };
     let encode_body = emit_payload_encode(schema);
     let decode_body = emit_payload_decode(schema);
     // Hot width as a numeric literal — widths are fixed `quote!{ N }`
@@ -706,6 +723,21 @@ fn emit_row_impl(schema: &DocumentSchema) -> TS2 {
                             Some(e) => ::okm_core::Enum::from_dyn(e),
                             None => #dflt,
                         }
+                    }
+                    _ => #dflt,
+                },
+            });
+        } else if ty_str.starts_with("Vector<") || ty_str.starts_with("Vector <") {
+            // Vector<T, N>: map view = the flat LE wire (Bytes). Element
+            // arithmetic is a consumer concern; the map bridge carries
+            // the opaque fixed-width encoding.
+            to_map_arms.extend(quote! {
+                out.insert(#name.to_string(), ::okm_core::obj_dynamic::DynamicValue::Bytes(self.#id.encode_payload()));
+            });
+            from_map_arms.extend(quote! {
+                #id: match map.get(#name) {
+                    Some(::okm_core::obj_dynamic::DynamicValue::Bytes(b)) => {
+                        ::okm_core::Vector::decode_payload(b)
                     }
                     _ => #dflt,
                 },
@@ -948,6 +980,7 @@ fn emit_row_impl(schema: &DocumentSchema) -> TS2 {
             const PAYLOAD_FIELDS: &'static [(&'static str, usize)] = &[ #((#name_strs, #widths)),* ];
             const FIELDS: &'static [::okm_core::FieldDesc] = #row_desc;
             const DEFAULTS: &'static [(&'static str, ::okm_core::field::DefaultValueConst)] = #row_defaults;
+            #contracts_const
             const HOT_WIDTH: usize = #hot_width_lit;
             fn encode_payload(&self) -> Vec<u8> {
                 let mut buf = Vec::new();
