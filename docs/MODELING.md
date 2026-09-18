@@ -368,6 +368,13 @@ t.delete(&key);                                   // remove slot 0 + index entri
 - `DynamicValue` carries the open value vocabulary: `UInt`/`Int`/`F64`/
   `Str`/`Bytes`/`Bool`/`Null`/`Array`/`Obj` — nested objects recurse as
   native frames (type tag 7) sharing the table's dictionary; no CBOR.
+- `Bytes` is the **opaque member** of the vocabulary: the store
+  interprets nothing — tag and total length only; content and its
+  meaning belong to the application. It is the standard escape hatch
+  for extension types: a new encoding starts life as Bytes, and
+  promoting it to a first-class type later is an additive change. The
+  field name carries the semantics the tag deliberately does not
+  (`embed_v1`, `attrs_cbor`).
 - Unknown names are **normal input** here (external data, MQ payloads);
   the typed decoder's unknown-field rejection applies only to the
   declared path.
