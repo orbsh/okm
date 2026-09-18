@@ -6,9 +6,9 @@
 //! (indexed + includes fields live there), so put and delete are both
 //! document-shaped.
 
-use crate::storage::VirtualStorage;
-use crate::index::{KvIndex, Document};
-use crate::key::{KeyEncode, PrefixKey};
+use crate::engine::storage::VirtualStorage;
+use crate::model::index::{KvIndex, Document};
+use crate::model::key::{KeyEncode, PrefixKey};
 
 pub struct Collection<S, K: KeyEncode, R: Document<Key = K>> {
     store: S,
@@ -61,7 +61,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     /// declares no `#[ok_partition]`.
     pub fn primary_key(&self, key: &K) -> Vec<u8> {
         let mut buf = self.header();
-        buf.extend_from_slice(&crate::index::PRIMARY_SLOT.to_be_bytes());
+        buf.extend_from_slice(&crate::model::index::PRIMARY_SLOT.to_be_bytes());
         buf.extend_from_slice(&key.encode());
         buf
     }
@@ -162,7 +162,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     /// subscriptions must go through `put`/`upsert_with`; save_into is
     /// for batch-aligned bulk loads where the consumer settles those
     /// folds itself.
-    pub fn save_into(&self, batch: &mut impl crate::storage::KvBatch, key: &K, document: &R) {
+    pub fn save_into(&self, batch: &mut impl crate::engine::storage::KvBatch, key: &K, document: &R) {
         batch.put(self.primary_key(key), document.encode_payload());
         for (ek, ev) in R::index_entries(key, document, &self.header()) {
             batch.put(ek, ev);
@@ -291,7 +291,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     /// on import via put).
     pub fn scan_documents_raw(&self) -> Vec<(Vec<u8>, Vec<u8>)> {
         let mut prefix = self.header();
-        prefix.extend_from_slice(&crate::index::PRIMARY_SLOT.to_be_bytes());
+        prefix.extend_from_slice(&crate::model::index::PRIMARY_SLOT.to_be_bytes());
         self.store
             .scan_suffix(&prefix)
             .into_iter()
@@ -329,7 +329,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
 
     pub fn scan_keys(&self) -> Vec<K> {
         let mut p = self.header();
-        p.extend_from_slice(&crate::index::PRIMARY_SLOT.to_be_bytes());
+        p.extend_from_slice(&crate::model::index::PRIMARY_SLOT.to_be_bytes());
         self.store
             .scan_suffix(&p)
             .iter()
@@ -343,8 +343,8 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
 
 use std::collections::BTreeMap;
 
-use crate::obj_dict::DictCache;
-use crate::obj_dynamic::DynamicValue;
+use crate::model::obj_dict::DictCache;
+use crate::model::obj_dynamic::DynamicValue;
 
 impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> {
     /// Dynamic-segment key: `[header][DYNAMIC_SLOT][key payload]` — the
@@ -352,7 +352,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     /// skeleton as an index entry with no field segment (ADR-0012).
     fn fields_key(&self, key: &K) -> Vec<u8> {
         let mut buf = self.header();
-        buf.extend_from_slice(&crate::index::DYNAMIC_SLOT.to_be_bytes());
+        buf.extend_from_slice(&crate::model::index::DYNAMIC_SLOT.to_be_bytes());
         buf.extend_from_slice(&key.encode());
         buf
     }
@@ -367,7 +367,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         let header = self.header();
         // decode_named resolves nested obj field ids through the same
         // dictionary — nested maps come back fully name-keyed.
-        let frames = crate::obj_dynamic::decode_named(&raw, &mut |id| {
+        let frames = crate::model::obj_dynamic::decode_named(&raw, &mut |id| {
             d.name_for(&mut self.store, &header, id)
         });
         if frames.is_empty() {
@@ -403,7 +403,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         for (name, value) in variants {
             // put_frame_named recurses into nested Obj values, sharing
             // the dictionary (id_for allocates on first sight).
-            crate::obj_dynamic::put_frame_named(&mut body, name, value, &mut resolver);
+            crate::model::obj_dynamic::put_frame_named(&mut body, name, value, &mut resolver);
         }
         self.epoch += 1;
         let k = self.fields_key(key);

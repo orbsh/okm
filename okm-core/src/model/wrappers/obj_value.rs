@@ -11,7 +11,7 @@
 //! list (id, type, len, value), structure information living in the
 //! values, not in a per-document schema.
 //!
-//! Tag discipline mirrors [`crate::wrappers::EnumTag`]: explicit values,
+//! Tag discipline mirrors [`crate::model::wrappers::EnumTag`]: explicit values,
 //! stable under later insertion (append-only growth; never renumber —
 //! stored bytes reference these numbers forever).
 

@@ -16,8 +16,8 @@
 //! readers address fields by id, not position.
 
 use std::collections::BTreeMap;
-use crate::wrappers::obj_value::ObjValueType;
-use crate::wrappers::wire::{put_len, take_len};
+use crate::model::wrappers::obj_value::ObjValueType;
+use crate::model::wrappers::wire::{put_len, take_len};
 
 /// Dynamic-segment value: the run-time counterpart of a decoded frame.
 /// Typed (fixed-width, schema-checked) fields never use this — declared

@@ -15,8 +15,8 @@
 //! the same declaration-order counter as indexes (append-only, never
 //! reused), allocated by the derive after the last index.
 
-use crate::storage::VirtualStorage;
-use crate::index::Document;
+use crate::engine::storage::VirtualStorage;
+use crate::model::index::Document;
 
 /// Wire codec for a user accumulator. Deliberately not `serde`-shaped:
 /// an accumulator is a small fixed-shape value (count, sum, count+sum
@@ -80,7 +80,7 @@ pub trait Reduce: ReduceLogic {
     /// Item-local slot — allocated by the derive in declaration order
     /// within the reduce segment (0x2; independent of the index counter,
     /// ADR-0016; append-only, same discipline).
-    const SLOT: crate::index::Slot;
+    const SLOT: crate::model::index::Slot;
     /// Group-by fields, named document payload fields in declaration order —
     /// their encodings form the entry's group segment (the sort key).
     /// Read-side probes name the same fields with the same encodings,

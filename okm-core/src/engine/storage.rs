@@ -1,12 +1,12 @@
 //! Storage abstraction: the sync [`VirtualStorage`] trait — the engine
 //! contract every backend (fjall / slatedb / redb) implements. Tests run
-//! against real engines via [`crate::test_engine::TestStore`].
+//! against real engines via [`crate::engine::test_engine::TestStore`].
 
 
 
 /// Minimal KV engine interface (prefix scan returns the "suffix" of each key).
 /// The `fjall` / `slatedb` features each provide an implementation; tests
-/// run the real engines through [`crate::test_engine::TestStore`].
+/// run the real engines through [`crate::engine::test_engine::TestStore`].
 pub trait VirtualStorage {
     fn put(&mut self, key: Vec<u8>, value: Vec<u8>);
     fn get(&self, key: &[u8]) -> Option<Vec<u8>>;

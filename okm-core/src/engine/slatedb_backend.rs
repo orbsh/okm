@@ -7,9 +7,9 @@
 //! `slatedb::object_store` re-export so versions always match slatedb's
 //! internals.
 
-use crate::junction::KvJunction;
-use crate::key::KeyEncode;
-use crate::storage::VirtualStorage;
+use crate::model::junction::KvJunction;
+use crate::model::key::KeyEncode;
+use crate::engine::storage::VirtualStorage;
 use slatedb::Db;
 use slatedb::object_store::ObjectStore;
 use std::ops::RangeFull;
@@ -117,8 +117,8 @@ pub struct AsyncJunction<S, E> {
     _pd: std::marker::PhantomData<E>,
 }
 
-type AKey<E> = <<E as KvJunction>::A as crate::index::Document>::Key;
-type BKey<E> = <<E as KvJunction>::B as crate::index::Document>::Key;
+type AKey<E> = <<E as KvJunction>::A as crate::model::index::Document>::Key;
+type BKey<E> = <<E as KvJunction>::B as crate::model::index::Document>::Key;
 
 impl<S: VirtualStorageAsync, E: KvJunction> AsyncJunction<S, E> {
     pub fn new(store: S) -> Self {

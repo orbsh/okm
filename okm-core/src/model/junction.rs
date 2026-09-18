@@ -24,8 +24,8 @@
 //! `#[ok_junction(n)]` and separates multiple junctions over one endpoint
 //! pair.
 
-use crate::index::{JUNCTION_SLOT_BASE, Slot};
-use crate::key::KeyEncode;
+use crate::model::index::{JUNCTION_SLOT_BASE, Slot};
+use crate::model::key::KeyEncode;
 
 pub(crate) fn encode_head<K: KeyEncode>(buf: &mut Vec<u8>, key: &K, head: &[&str]) -> usize {
     if head.is_empty() {
@@ -50,8 +50,8 @@ pub(crate) fn head_width<K: KeyEncode>(head: &[&str]) -> usize {
 /// `A_HEAD` / `B_HEAD` come from the `JunctionEncode` macro's
 /// `#[ok_head(...)]` (empty = full identity).
 pub trait KvJunction: Sized {
-    type A: crate::index::Document;
-    type B: crate::index::Document;
+    type A: crate::model::index::Document;
+    type B: crate::model::index::Document;
     /// Junction discriminator filling the segment-0x3 counter
     /// (`#[ok_junction(n)]`): separates multiple junctions over one
     /// endpoint pair.
@@ -60,11 +60,11 @@ pub trait KvJunction: Sized {
     const A_HEAD: &'static [&'static str];
     /// Identity fields of B for this junction.
     const B_HEAD: &'static [&'static str];
-    fn a(&self) -> &<Self::A as crate::index::Document>::Key;
-    fn b(&self) -> &<Self::B as crate::index::Document>::Key;
+    fn a(&self) -> &<Self::A as crate::model::index::Document>::Key;
+    fn b(&self) -> &<Self::B as crate::model::index::Document>::Key;
     fn from_parts(
-        a: <Self::A as crate::index::Document>::Key,
-        b: <Self::B as crate::index::Document>::Key,
+        a: <Self::A as crate::model::index::Document>::Key,
+        b: <Self::B as crate::model::index::Document>::Key,
     ) -> Self;
 
     /// Slot for one direction: `0x3` segment, counter = discriminator
@@ -83,10 +83,10 @@ pub trait KvJunction: Sized {
     /// prefix can match; the peer identity (B) is the suffix.
     fn a_side_key(&self) -> Vec<u8> {
         let mut k = Vec::with_capacity(
-            4 + head_width::<<Self::A as crate::index::Document>::Key>(Self::A_HEAD)
-                + head_width::<<Self::B as crate::index::Document>::Key>(Self::B_HEAD),
+            4 + head_width::<<Self::A as crate::model::index::Document>::Key>(Self::A_HEAD)
+                + head_width::<<Self::B as crate::model::index::Document>::Key>(Self::B_HEAD),
         );
-        k.extend_from_slice(<Self::A as crate::index::Document>::NS_PREFIX);
+        k.extend_from_slice(<Self::A as crate::model::index::Document>::NS_PREFIX);
         k.extend_from_slice(&Self::dir_slot(0).to_be_bytes());
         encode_head(&mut k, self.a(), Self::A_HEAD);
         encode_head(&mut k, self.b(), Self::B_HEAD);
@@ -97,10 +97,10 @@ pub trait KvJunction: Sized {
     /// from B's collection. The local identity (B) leads.
     fn b_side_key(&self) -> Vec<u8> {
         let mut k = Vec::with_capacity(
-            4 + head_width::<<Self::B as crate::index::Document>::Key>(Self::B_HEAD)
-                + head_width::<<Self::A as crate::index::Document>::Key>(Self::A_HEAD),
+            4 + head_width::<<Self::B as crate::model::index::Document>::Key>(Self::B_HEAD)
+                + head_width::<<Self::A as crate::model::index::Document>::Key>(Self::A_HEAD),
         );
-        k.extend_from_slice(<Self::B as crate::index::Document>::NS_PREFIX);
+        k.extend_from_slice(<Self::B as crate::model::index::Document>::NS_PREFIX);
         k.extend_from_slice(&Self::dir_slot(1).to_be_bytes());
         encode_head(&mut k, self.b(), Self::B_HEAD);
         encode_head(&mut k, self.a(), Self::A_HEAD);
@@ -111,22 +111,22 @@ pub trait KvJunction: Sized {
     /// partial bytes of A's identity are dropped — everything after A's
     /// identity belongs to an arbitrary B and must not participate in
     /// matching).
-    fn a_side_prefix(a: &<Self::A as crate::index::Document>::Key) -> Vec<u8> {
+    fn a_side_prefix(a: &<Self::A as crate::model::index::Document>::Key) -> Vec<u8> {
         let mut p = Vec::with_capacity(
-            4 + head_width::<<Self::A as crate::index::Document>::Key>(Self::A_HEAD),
+            4 + head_width::<<Self::A as crate::model::index::Document>::Key>(Self::A_HEAD),
         );
-        p.extend_from_slice(<Self::A as crate::index::Document>::NS_PREFIX);
+        p.extend_from_slice(<Self::A as crate::model::index::Document>::NS_PREFIX);
         p.extend_from_slice(&Self::dir_slot(0).to_be_bytes());
         encode_head(&mut p, a, Self::A_HEAD);
         p
     }
 
     /// Scan prefix in B's collection: `ns_b ++ slot ++ B·identity`.
-    fn b_side_prefix(b: &<Self::B as crate::index::Document>::Key) -> Vec<u8> {
+    fn b_side_prefix(b: &<Self::B as crate::model::index::Document>::Key) -> Vec<u8> {
         let mut p = Vec::with_capacity(
-            4 + head_width::<<Self::B as crate::index::Document>::Key>(Self::B_HEAD),
+            4 + head_width::<<Self::B as crate::model::index::Document>::Key>(Self::B_HEAD),
         );
-        p.extend_from_slice(<Self::B as crate::index::Document>::NS_PREFIX);
+        p.extend_from_slice(<Self::B as crate::model::index::Document>::NS_PREFIX);
         p.extend_from_slice(&Self::dir_slot(1).to_be_bytes());
         encode_head(&mut p, b, Self::B_HEAD);
         p

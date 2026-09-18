@@ -5,7 +5,7 @@
 //! key encoding itself, so different edge types sharing a keyspace do not
 //! conflict.
 
-use crate::storage::{VirtualStorage, MemBatch};
+use crate::engine::storage::{VirtualStorage, MemBatch};
 use fjall::{Database, Keyspace, KeyspaceCreateOptions};
 
 /// Clone is a handle clone: Arc-inner in fjall, clones share the keyspace.
@@ -38,7 +38,7 @@ impl FjallStore {
 }
 
 /// Clone IS a shared handle (Arc-inner) — the NestStorage requirement.
-impl crate::storage::SharedVirtualStorage for FjallStore {
+impl crate::engine::storage::SharedVirtualStorage for FjallStore {
     fn shared_handle(&self) -> Self {
         self.clone()
     }

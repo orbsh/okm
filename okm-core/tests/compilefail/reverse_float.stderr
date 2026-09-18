@@ -13,7 +13,7 @@ error[E0277]: the trait bound `K: Clone` is not satisfied
   |        ^ the trait `Clone` is not implemented for `K`
   |
 note: required by a bound in `KeyEncode`
- --> src/key.rs
+ --> src/model/key.rs
   |
   | pub trait KeyEncode: Sized + Clone {
   |                              ^^^^^ required by this bound in `KeyEncode`
@@ -39,7 +39,7 @@ error[E0277]: the trait bound `f64: Reversible` is not satisfied
              u64
              u8
 note: required by a bound in `okm_core::Reverse`
-  --> src/reverse.rs
+  --> src/model/reverse.rs
    |
    | pub struct Reverse<T: Reversible>(pub T);
    |                       ^^^^^^^^^^ required by this bound in `Reverse`
@@ -51,7 +51,7 @@ error[E0277]: the trait bound `K: Clone` is not satisfied
   |          ^^^^^^^^^ the trait `Clone` is not implemented for `K`
   |
 note: required by a bound in `KEY_LEN`
- --> src/key.rs
+ --> src/model/key.rs
   |
   | pub trait KeyEncode: Sized + Clone {
   |                              ^^^^^ required by this bound in `KeyEncode::KEY_LEN`
