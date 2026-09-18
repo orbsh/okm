@@ -67,7 +67,7 @@ pub fn decode_payload(schema: &TableSchema, bytes: &[u8]) -> Result<ValueMap, Co
         }
     }
 
-    // Cold TLV frames: tag u8 + len u32 BE + value, until the tail.
+    // Cold TLV frames: tag u8 + len varint + value, until the tail.
     let by_tag: BTreeMap<u8, &okm_core::schema::FieldSchema> = schema
         .cold_fields
         .iter()
@@ -81,18 +81,19 @@ pub fn decode_payload(schema: &TableSchema, bytes: &[u8]) -> Result<ValueMap, Co
             got: bytes.len() - pos,
         })?;
         pos += 1;
-        let len = u32::from_be_bytes(
-            bytes
-                .get(pos..pos + 4)
-                .ok_or_else(|| CodecError::Truncated {
-                    field: "<cold len>".into(),
-                    needed: 4,
-                    got: bytes.len() - pos,
-                })?
-                .try_into()
-                .expect("4-byte slice"),
-        ) as usize;
-        pos += 4;
+        let rest = bytes.get(pos..).ok_or_else(|| CodecError::Truncated {
+            field: "<cold len>".into(),
+            needed: 1,
+            got: 0,
+        })?;
+        let Some((len, len_n)) = okm_core::take_len(rest) else {
+            return Err(CodecError::Truncated {
+                field: "<cold len>".into(),
+                needed: 4,
+                got: bytes.len() - pos,
+            });
+        };
+        pos += len_n;
         let value = bytes.get(pos..pos + len).ok_or_else(|| CodecError::Truncated {
             field: "<cold value>".into(),
             needed: len,

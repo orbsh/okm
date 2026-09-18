@@ -38,6 +38,7 @@ pub mod subscribe;
 
 pub use model::reverse::{Reversible, Reverse};
 pub use model::wrappers::{Ref, Refs, Enum, EnumTag, Offset, Quant, VarInt, VarIntEnc, Vector, VectorElem, offset_decode, offset_encode};
+pub use model::wrappers::wire::{put_len, take_len};
 
 pub use model::reduce::{reduce_get, scan_reduces, ReduceCodec, Reduce, ReduceLogic};
 pub use model::collection::Junction;

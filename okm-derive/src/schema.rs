@@ -579,12 +579,13 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> Vec<FieldSchema> {
                     "String" => (
                         quote! {{
                             let eb = e.as_bytes();
-                            buf.extend_from_slice(&(eb.len() as u32).to_be_bytes());
+                            ::okm_core::put_len(&mut buf, eb.len());
                             buf.extend_from_slice(eb);
                         }},
                         quote! {{
-                            let l = u32::from_be_bytes(payload[p..p+4].try_into().unwrap()) as usize;
-                            p += 4;
+                            let (l, ln) = ::okm_core::take_len(&payload[p..])
+                                .expect("Vector<String> element: truncated length");
+                            p += ln;
                             elems.push(String::from_utf8(payload[p..p+l].to_vec())
                                 .expect("Vector<String> element is valid UTF-8"));
                             p += l;

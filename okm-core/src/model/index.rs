@@ -138,7 +138,7 @@ impl<V: IndexFuncResult> IndexFuncValues for Vec<V> {
 /// - **Hot segment**: fixed-width fields in declaration order, contiguous —
 ///   O(1) per-field offsets, no frame headers.
 /// - **Cold segment**: variable-width fields (`String`, `VarInt`) as TLV —
-///   one `[tag u8][len u32 BE][value]` frame per field, `tag` = the
+///   one `[tag u8][len varint][value]` frame per field, `tag` = the
 ///   field's declaration index over ALL payload fields.
 ///
 /// Schema evolution is append-only: new fields are added at the tail of

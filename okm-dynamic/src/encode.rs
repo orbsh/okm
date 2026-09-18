@@ -41,14 +41,14 @@ pub fn encode_payload(schema: &TableSchema, values: &ValueMap) -> Result<Vec<u8>
         buf.push(tag);
         match v {
             Value::Str(s) => {
-                buf.extend_from_slice(&(s.len() as u32).to_be_bytes());
+                okm_core::put_len(&mut buf, s.len());
                 buf.extend_from_slice(s.as_bytes());
             }
             other => {
                 // Variable-width wrapper kinds arrive in their storage
                 // form; frame them through their integer encoding.
                 let bytes = storage_be_bytes(other, &f.name)?;
-                buf.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
+                okm_core::put_len(&mut buf, bytes.len());
                 buf.extend_from_slice(&bytes);
             }
         }

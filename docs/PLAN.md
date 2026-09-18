@@ -787,6 +787,15 @@ Breaking wire change (LEB128 payloads re-encoded); downstream (aura,
 k10r) declared zero VarInt fields. Acceptance: byte-order test over
 width boundaries passed, hex lock updated.
 
+**P2.5 — KDL as the TableSchema serialization (low priority).** The
+dynamic mode's schema serialization is JSON today (serde, bindings
+consume it). KDL would replace it for hand-written declaration
+consistency with the KDL config family; ~150-200 lines of manual
+converter (vs serde's auto-derive) for no new capability. Defer until
+hand-maintained schemas actually exist. Note: `json_schema` (the JSON
+Schema standard output for external systems) is a different thing and
+stays regardless.
+
 **P2 — dynamic-segment frame-length varint.** DONE (2026-09-19).
 Scope narrowed during review: UInt already carries minimal-width
 payload (leading zeros stripped, width implied by the frame length —
@@ -796,8 +805,9 @@ lens that are usually 1-2. Now `[tag][len varint]` via the shared
 wire codec (`wrappers/wire.rs` — put_len/take_len, the P1 encoding;
 one implementation, no second codec). Frame headers drop from 5 to
 2-3 bytes on small values; Array element frames and nested Obj frames
-inherit the saving. Declared cold-segment frames stay `[len u32]` for
-now (separate wire, possible followup); `DynamicValue::UInt`
+inherit the saving. Declared cold-segment frames
+(`[tag][len u32]`, ADR-0004) were converted the same way in the same
+sweep — one wire discipline for every TLV length. `DynamicValue::UInt`
 minimal-width kept as is.
 
 Order: P3 -> P3.5 -> P1 -> P2. P1/P2 produce new wire bytes; doing

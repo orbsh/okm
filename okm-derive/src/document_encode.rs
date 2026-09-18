@@ -120,7 +120,7 @@ fn emit_payload_encode(schema: &DocumentSchema) -> TS2 {
         let enc = &f.enc;
         cold_enc.extend(quote! {
             buf.push(#tag);
-            buf.extend_from_slice(&(#len as u32).to_be_bytes());
+            ::okm_core::put_len(&mut buf, #len);
             #enc
         });
     }
@@ -181,8 +181,9 @@ fn emit_payload_decode(schema: &DocumentSchema) -> TS2 {
         cold_dec.extend(quote! {
             let #id = if cold_pos < cold_end && b[cold_pos] == #tag {
                 cold_pos += 1;
-                let len = u32::from_be_bytes(b[cold_pos..cold_pos+4].try_into().unwrap()) as usize;
-                cold_pos += 4;
+                let (len, len_n) = ::okm_core::take_len(&b[cold_pos..])
+                    .expect("cold frame: truncated length prefix");
+                cold_pos += len_n;
                 // dec blocks advance `offset`; alias it to the cold cursor
                 // for the duration of the frame, then write the position
                 // back (String/VarInt decs move it past the value).

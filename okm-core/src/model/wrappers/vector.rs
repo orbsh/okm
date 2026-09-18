@@ -8,7 +8,7 @@
 //! - fixed-width scalars (`f32`/`u32`/`i32`/`u64`/`i64`): bare little-
 //!   endian values — zero per-element overhead (the homogeneous payoff
 //!   versus `DynamicValue::Array`'s per-element frames);
-//! - dynamic-width elements (`String`): per-element `[len u32][bytes]`
+//! - dynamic-width elements (`String`): per-element `[len varint][bytes]`
 //!   (LV).
 //!
 //! No length in the type: the frame carries its own count, so a changed

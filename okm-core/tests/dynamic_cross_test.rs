@@ -82,8 +82,8 @@ fn dynamic_encode_equals_rust_derive_bytes() {
     let dyn_payload = encode_payload(&schema, &values).expect("dynamic payload encode");
     let rust_payload = User { level: 9, score: 500, name: "alice".into() }.encode_payload();
     assert_eq!(dyn_payload, rust_payload, "payload bytes must match the derive");
-    // Cold frame present: tag 2, "alice".
-    assert!(dyn_payload.windows(7).any(|w| w == [2, 0, 0, 0, 5, b'a', b'l']));
+    // Cold frame present: tag 2, len varint 5, "alice".
+    assert!(dyn_payload.windows(7).any(|w| w == [2, 5, b'a', b'l', b'i', b'c', b'e']));
 }
 
 #[test]

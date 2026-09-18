@@ -9,7 +9,7 @@
 
 /// Primitive field kinds currently supported by the codec family
 /// (big-endian). `Str` is the variable-length kind: it only appears in
-/// payload (TLV) positions — the frame's `len u32` IS the length prefix —
+/// payload (TLV) positions — the frame's `len varint` IS the length prefix —
 /// and is rejected on the fixed-width key side.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FieldType {
