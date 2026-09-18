@@ -19,8 +19,8 @@
 //! attribute order inside one item (never reused — hole discipline same
 //! as ns IDs, ADR-0005).
 
-use crate::storage::VirtualStorage;
-use crate::key::{KeyEncode, PrefixKey};
+use crate::engine::storage::VirtualStorage;
+use crate::model::key::{KeyEncode, PrefixKey};
 
 /// Slot type: 4-bit segment (high nibble, entry kind) + 12-bit in-segment
 /// counter (ADR-0016). Big-endian in the key.
@@ -168,10 +168,10 @@ pub trait Document: Sized + Clone {
     }
     /// document -> map: every declared field lifted into a run-time
     /// DynamicValue (ADR-0012 document-map bridge; derive-generated).
-    fn to_map(&self) -> std::collections::BTreeMap<String, crate::obj_dynamic::DynamicValue>;
+    fn to_map(&self) -> std::collections::BTreeMap<String, crate::model::obj_dynamic::DynamicValue>;
     /// map -> document: matched fields assigned from DynamicValue; missing
     /// fields fall back to `#[ok_default]`/Default (derive-generated).
-    fn from_map(map: &std::collections::BTreeMap<String, crate::obj_dynamic::DynamicValue>) -> Self
+    fn from_map(map: &std::collections::BTreeMap<String, crate::model::obj_dynamic::DynamicValue>) -> Self
     where
         Self: Sized;
     /// Identity type this document hangs off (from `#[ok_ref(...)]`).
@@ -184,12 +184,12 @@ pub trait Document: Sized + Clone {
     /// Payload field descriptors, declaration order — single source shared
     /// with PAYLOAD_FIELDS plus the primitive kind (Arrow schema, column
     /// builders, snapshot tooling; ADR-0007).
-    const FIELDS: &'static [crate::field::FieldDesc] = &[];
+    const FIELDS: &'static [crate::model::field::FieldDesc] = &[];
     /// Const-constructible field defaults, name-keyed (literal
     /// `#[ok_default]` only). Consumed by `TableSchema::of` to fill
     /// `FieldSchema::default` — the dynamic reader's version-migration
     /// data. Empty when no field declares a literal default.
-    const DEFAULTS: &'static [(&'static str, crate::field::DefaultValueConst)] = &[];
+    const DEFAULTS: &'static [(&'static str, crate::model::field::DefaultValueConst)] = &[];
     /// Per-field application contracts (`#[ok_len(N)]` on `Vector<T>`
     /// fields): `(field name, expected element count)`. Exported into
     /// `FieldSchema::expect_len` so the dynamic reader enforces the same
@@ -212,7 +212,7 @@ pub trait Document: Sized + Clone {
     /// the registry).
     fn index_entries(key: &Self::Key, document: &Self, ns: &[u8]) -> Vec<(Vec<u8>, Vec<u8>)>;
 
-    /// Cross-document reduce hook (see [`crate::reduce`]): apply this
+    /// Cross-document reduce hook (see [`crate::model::reduce`]): apply this
     /// document to every declared `#[ok_reduce]` group. Default no-op —
     /// only documents with reduce declarations override it.
     fn __okm_apply_reduces<S: VirtualStorage>(
@@ -241,8 +241,8 @@ pub trait Document: Sized + Clone {
     /// binding this document type to its `#[ok_ref]` key. The key type
     /// never appears at the call site — it is already pinned by
     /// `Self::Key`.
-    fn collection<S: VirtualStorage>(store: S) -> crate::document::Collection<S, Self::Key, Self> {
-        crate::document::Collection::new(store)
+    fn collection<S: VirtualStorage>(store: S) -> crate::model::document::Collection<S, Self::Key, Self> {
+        crate::model::document::Collection::new(store)
     }
 
     /// Slots reserved by `deprecated` index declarations (ADR-0005):

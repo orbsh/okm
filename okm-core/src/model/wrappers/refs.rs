@@ -34,7 +34,7 @@
 //! error. `Refs` is the declarative form of the one-to-many relation:
 //! children live normalized in their own ns, the parent holds the
 //! foreign-key set.
-use crate::key::KeyEncode;
+use crate::model::key::KeyEncode;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Refs<D, K: KeyEncode> {

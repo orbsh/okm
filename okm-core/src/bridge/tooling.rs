@@ -16,9 +16,9 @@
 //!   key + index entries) is never bypassed; this is a backup/restore path,
 //!   not a second write channel.
 
-use crate::field::FieldType;
-use crate::index::Document;
-use crate::key::KeyEncode;
+use crate::model::field::FieldType;
+use crate::model::index::Document;
+use crate::model::key::KeyEncode;
 
 /// Declaration-order offset table for a fixed-width region (the key
 /// encoding, or the value half of TLV frames — widths are declared, so the
@@ -85,8 +85,8 @@ pub fn json_schema<K: KeyEncode, R: Document<Key = K>>() -> String {
 #[cfg(feature = "parquet")]
 pub mod parquet_io {
     use super::*;
-    use crate::storage::VirtualStorage;
-    use crate::document::Collection;
+    use crate::engine::storage::VirtualStorage;
+    use crate::model::document::Collection;
     use arrow::array::{Array, BinaryArray, RecordBatch};
 
     /// Export all documents to a Parquet file (overwrite). Typed columns, schema
@@ -108,7 +108,7 @@ pub mod parquet_io {
     /// the key encoding / TLV frames expect (reverses the export-side LE
     /// conversion).
     fn wire_bytes(col: &dyn Array, document: usize, width: usize, ty: FieldType) -> Vec<u8> {
-        use crate::wrappers::{VarIntEnc as _, quantize, wire_to_be_bytes};
+        use crate::model::wrappers::{VarIntEnc as _, quantize, wire_to_be_bytes};
         match ty {
             FieldType::FixedBytes => {
                 let col = col.as_any().downcast_ref::<BinaryArray>().unwrap();
@@ -174,7 +174,8 @@ pub mod parquet_io {
                     FieldType::VarInt
                     | FieldType::Quant(_)
                     | FieldType::Enum
-                    | FieldType::Offset(_) => unreachable!("handled above"),
+                    | FieldType::Offset(_)
+                    | FieldType::Vector { .. } => unreachable!("handled above"),
                 };
                 debug_assert_eq!(raw.len(), width, "width mismatch on import");
                 raw

@@ -19,12 +19,12 @@ use arrow::array::RecordBatch;
 use arrow::buffer::Buffer;
 use arrow::datatypes::{DataType, Field as ArrowField, Schema};
 
-use crate::storage::VirtualStorage;
-use crate::field::{FieldDesc, FieldType};
-use crate::index::Document;
-use crate::key::KeyEncode;
-use crate::obj_dynamic::DynamicValue;
-use crate::document::Collection;
+use crate::engine::storage::VirtualStorage;
+use crate::model::field::{FieldDesc, FieldType};
+use crate::model::index::Document;
+use crate::model::key::KeyEncode;
+use crate::model::obj_dynamic::DynamicValue;
+use crate::model::document::Collection;
 
 /// Arrow column type for a declared field kind.
 fn arrow_type(ty: FieldType) -> DataType {

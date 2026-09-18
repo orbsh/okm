@@ -18,7 +18,7 @@
 //! No attribute: `Ref<D, K>` in field position is recognized by the
 //! derive from the type itself, same discipline as `Reverse<T>` /
 //! `VarInt<T>` / `Quant<P>`.
-use crate::key::KeyEncode;
+use crate::model::key::KeyEncode;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Ref<D, K: KeyEncode> {

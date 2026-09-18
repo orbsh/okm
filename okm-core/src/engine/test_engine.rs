@@ -9,7 +9,7 @@
 //! Not gated behind a feature: tests compile against whatever engines the
 //! build has; the matrix is simply the engines available.
 
-use crate::storage::VirtualStorage;
+use crate::engine::storage::VirtualStorage;
 
 /// A concrete engine handle. Clones share the underlying keyspace (same
 /// semantics as real engine handles).
@@ -17,17 +17,17 @@ use crate::storage::VirtualStorage;
 pub enum TestStore {
     /// slatedb over the in-memory object store. Zero fs.
     #[cfg(feature = "slatedb")]
-    Slatedb(std::sync::Arc<crate::slatedb_backend::SlatedbSync>),
+    Slatedb(std::sync::Arc<crate::engine::slatedb_backend::SlatedbSync>),
     /// fjall over a temp dir. The dir lives as long as the handle.
     #[cfg(feature = "fjall")]
     Fjall {
-        store: crate::fjall_backend::FjallStore,
+        store: crate::engine::fjall_backend::FjallStore,
         _dir: std::sync::Arc<tempfile::TempDir>,
     },
     /// redb over a temp file. The file lives as long as the handle.
     #[cfg(feature = "redb")]
     Redb {
-        store: crate::redb_backend::RedbStore,
+        store: crate::engine::redb_backend::RedbStore,
         _dir: std::sync::Arc<tempfile::TempDir>,
     },
 }
@@ -50,7 +50,7 @@ impl TestStore {
     #[cfg(feature = "slatedb")]
     pub fn slatedb_mem() -> Self {
         Self::Slatedb(std::sync::Arc::new(
-            crate::slatedb_backend::SlatedbSync::open_mem("okm-test")
+            crate::engine::slatedb_backend::SlatedbSync::open_mem("okm-test")
                 .expect("slatedb mem open"),
         ))
     }
@@ -58,7 +58,7 @@ impl TestStore {
     #[cfg(feature = "fjall")]
     pub fn fjall_tmp() -> Self {
         let dir = tempfile::TempDir::new().expect("tempdir");
-        let store = crate::fjall_backend::FjallStore::open(dir.path(), "okm-test")
+        let store = crate::engine::fjall_backend::FjallStore::open(dir.path(), "okm-test")
             .expect("fjall open");
         Self::Fjall { store, _dir: std::sync::Arc::new(dir) }
     }
@@ -66,7 +66,7 @@ impl TestStore {
     #[cfg(feature = "redb")]
     pub fn redb_tmp() -> Self {
         let dir = tempfile::TempDir::new().expect("tempdir");
-        let store = crate::redb_backend::RedbStore::open(&dir.path().join("okm.redb"))
+        let store = crate::engine::redb_backend::RedbStore::open(&dir.path().join("okm.redb"))
             .expect("redb open");
         Self::Redb { store, _dir: std::sync::Arc::new(dir) }
     }
@@ -114,7 +114,7 @@ impl Default for TestStore {
     }
 }
 
-impl crate::storage::SharedVirtualStorage for TestStore {
+impl crate::engine::storage::SharedVirtualStorage for TestStore {
     fn shared_handle(&self) -> Self {
         self.shared_handle()
     }

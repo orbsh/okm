@@ -31,7 +31,7 @@ use std::sync::{Arc, Mutex};
 
 use okm_wire::{OP_DELETE, OP_GET, OP_PUT, OP_SCAN, OpFrame, OpResponse};
 
-use crate::storage::{KvBatch, MemBatch, SharedVirtualStorage, VirtualStorage};
+use crate::engine::storage::{KvBatch, MemBatch, SharedVirtualStorage, VirtualStorage};
 
 // ============ sender side ============
 
@@ -290,7 +290,7 @@ fn hosted_key(prefix: &Option<Vec<u8>>, sender_key: &[u8]) -> Vec<u8> {
 #[cfg(all(test, feature = "test-engines"))]
 mod tests {
     use super::*;
-    use crate::storage::VirtualStorage;
+    use crate::engine::storage::VirtualStorage;
     use std::collections::BTreeMap;
 
     #[derive(Default, Clone)]

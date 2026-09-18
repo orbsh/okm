@@ -20,8 +20,8 @@
 //! the cache degrades to connection lifetime (reload on reconnect) —
 //! acceptable for a vocabulary that only grows.
 
-use crate::index::{DICT_ID_SLOT, DICT_NAME_SLOT};
-use crate::storage::{KvBatch, VirtualStorage};
+use crate::model::index::{DICT_ID_SLOT, DICT_NAME_SLOT};
+use crate::engine::storage::{KvBatch, VirtualStorage};
 use std::collections::HashMap;
 
 /// One dictionary cache, bound to one ns segment. Both directions plus
@@ -138,8 +138,8 @@ impl DictCache {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::{KvBatch, VirtualStorage};
-    use crate::test_engine::TestStore;
+    use crate::engine::storage::{KvBatch, VirtualStorage};
+    use crate::engine::test_engine::TestStore;
     use std::sync::{Arc, Mutex};
 
     #[derive(Clone, Default)]

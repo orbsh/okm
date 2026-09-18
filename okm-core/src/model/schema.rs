@@ -10,9 +10,9 @@
 //! The serde forms (feature `schema-serde`) exist so the schema crosses
 //! language borders as JSON/whatever; the struct itself is plain data.
 
-use crate::field::FieldType;
-use crate::index::{Document, PRIMARY_SLOT};
-use crate::key::KeyEncode;
+use crate::model::field::FieldType;
+use crate::model::index::{Document, PRIMARY_SLOT};
+use crate::model::key::KeyEncode;
 
 /// One field's placement: a key field is addressed by static offset; a
 /// payload field is either hot (static offset inside the hot segment) or
@@ -118,15 +118,15 @@ fn expect_len_of(
 
 /// Find a field's const default by name; converts to the owned form.
 fn lookup_default(
-    defaults: &'static [(&'static str, crate::field::DefaultValueConst)],
+    defaults: &'static [(&'static str, crate::model::field::DefaultValueConst)],
     name: &str,
 ) -> Option<DefaultValue> {
     defaults.iter().find(|(n, _)| *n == name).map(|(_, d)| match d {
-        crate::field::DefaultValueConst::U64(x) => DefaultValue::U64(*x),
-        crate::field::DefaultValueConst::I64(x) => DefaultValue::I64(*x),
-        crate::field::DefaultValueConst::F64(x) => DefaultValue::F64(*x),
-        crate::field::DefaultValueConst::Bool(x) => DefaultValue::Bool(*x),
-        crate::field::DefaultValueConst::Str(x) => DefaultValue::Str(x.to_string()),
+        crate::model::field::DefaultValueConst::U64(x) => DefaultValue::U64(*x),
+        crate::model::field::DefaultValueConst::I64(x) => DefaultValue::I64(*x),
+        crate::model::field::DefaultValueConst::F64(x) => DefaultValue::F64(*x),
+        crate::model::field::DefaultValueConst::Bool(x) => DefaultValue::Bool(*x),
+        crate::model::field::DefaultValueConst::Str(x) => DefaultValue::Str(x.to_string()),
     })
 }
 
@@ -202,13 +202,13 @@ impl TableSchema {
             hot_fields,
             cold_fields,
             slots: SlotMap {
-                primary: crate::index::PRIMARY_SLOT,
-                dynamic: crate::index::DYNAMIC_SLOT,
-                dict_id: crate::index::DICT_ID_SLOT,
-                dict_name: crate::index::DICT_NAME_SLOT,
-                declared_index_base: crate::index::DECLARED_SLOT_BASE,
-                declared_reduce_base: crate::index::REDUCE_SLOT_BASE,
-                junction_base: crate::index::JUNCTION_SLOT_BASE,
+                primary: crate::model::index::PRIMARY_SLOT,
+                dynamic: crate::model::index::DYNAMIC_SLOT,
+                dict_id: crate::model::index::DICT_ID_SLOT,
+                dict_name: crate::model::index::DICT_NAME_SLOT,
+                declared_index_base: crate::model::index::DECLARED_SLOT_BASE,
+                declared_reduce_base: crate::model::index::REDUCE_SLOT_BASE,
+                junction_base: crate::model::index::JUNCTION_SLOT_BASE,
             },
         }
     }
@@ -221,7 +221,7 @@ impl TableSchema {
 #[cfg(feature = "schema-serde")]
 mod serde_impls {
     use super::{DefaultValue, FieldSchema, ObjValueTypeSchema, SlotMap, TableSchema};
-    use crate::field::FieldType;
+    use crate::model::field::FieldType;
     use serde::{Deserialize, Serialize};
 
     impl Serialize for FieldType {

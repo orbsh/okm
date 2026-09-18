@@ -13,7 +13,7 @@
 //! `shared_handle` is an Arc-kernel clone (`Database` clones share the
 //! file lock and keyspace).
 
-use crate::storage::{MemBatch, VirtualStorage};
+use crate::engine::storage::{MemBatch, VirtualStorage};
 use redb::{Database, ReadableDatabase, TableDefinition};
 
 /// The single table holding the whole OKM keyspace (ns prefixes come
@@ -136,7 +136,7 @@ impl VirtualStorage for RedbStore {
     }
 }
 
-impl crate::storage::SharedVirtualStorage for RedbStore {
+impl crate::engine::storage::SharedVirtualStorage for RedbStore {
     fn shared_handle(&self) -> Self {
         self.clone()
     }
