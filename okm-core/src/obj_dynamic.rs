@@ -2,7 +2,9 @@
 //! obj — the value is a list of self-describing frames:
 //!
 //! ```text
-//! ([field-id][value-type u8][len u32 BE][bytes])*
+//! ([field-id][value-type u8][len varint][bytes])* — len uses the
+//! prefix-monotonic wire codec (P1), shared with `VarInt<T>`; small
+//! frames cost 1-2 header bytes instead of a fixed 4-byte length.
 //! ```
 //!
 //! `field-id` is the field NAME's dictionary number (slots 2/3); u8 ids
@@ -15,6 +17,7 @@
 
 use std::collections::BTreeMap;
 use crate::wrappers::obj_value::ObjValueType;
+use crate::wrappers::wire::{put_len, take_len};
 
 /// Dynamic-segment value: the run-time counterpart of a decoded frame.
 /// Typed (fixed-width, schema-checked) fields never use this — declared
@@ -57,7 +60,7 @@ pub fn put_frame(buf: &mut Vec<u8>, id: u16, value: &DynamicValue) {
     }
     let (ty, mut body) = encode_value(value);
     buf.push(ty.to_byte());
-    buf.extend_from_slice(&(body.len() as u32).to_be_bytes());
+    put_len(buf, body.len());
     buf.append(&mut body);
 }
 
@@ -108,13 +111,13 @@ fn put_frame_named_inner<R: NameResolver>(
                 put_frame_named_inner(&mut body, k, v, dict);
             }
             buf.push(ObjValueType::Obj.to_byte());
-            buf.extend_from_slice(&(body.len() as u32).to_be_bytes());
+            put_len(buf, body.len());
             buf.append(&mut body);
         }
         other => {
             let (ty, mut body) = encode_value(other);
             buf.push(ty.to_byte());
-            buf.extend_from_slice(&(body.len() as u32).to_be_bytes());
+            put_len(buf, body.len());
             buf.append(&mut body);
         }
     }
@@ -147,11 +150,12 @@ fn encode_value(value: &DynamicValue) -> (ObjValueType, Vec<u8>) {
         DynamicValue::Null => (ObjValueType::Null, Vec::new()),
         DynamicValue::Array(items) => {
             // [element count u32 BE][element frames...]
-            let mut body = (items.len() as u32).to_be_bytes().to_vec();
+            let mut body = Vec::new();
+            put_len(&mut body, items.len());
             for item in items {
                 let (ty, mut b) = encode_value(item);
                 body.push(ty.to_byte());
-                body.extend_from_slice(&(b.len() as u32).to_be_bytes());
+                put_len(&mut body, b.len());
                 body.append(&mut b);
             }
             (ObjValueType::Array, body)
@@ -183,10 +187,6 @@ fn take<'a>(b: &'a [u8], off: &mut usize, n: usize) -> Option<&'a [u8]> {
     let s = &b[*off..*off + n];
     *off += n;
     Some(s)
-}
-
-fn u32_be(b: &[u8]) -> u32 {
-    u32::from_be_bytes([b[0], b[1], b[2], b[3]])
 }
 
 /// Decode the whole dynamic-segment value: frames until bytes run out.
@@ -255,7 +255,8 @@ fn decode_frame_named(
     let ty_byte = take(bytes, off, 1)
         .and_then(|b| b.first().copied())
         .ok_or(FrameErr::Malformed)?;
-    let len = u32_be(take(bytes, off, 4).ok_or(FrameErr::Malformed)?) as usize;
+    let (len, len_n) = take_len(&bytes[*off..]).ok_or(FrameErr::Malformed)?;
+    *off += len_n;
     let body = take(bytes, off, len).ok_or(FrameErr::Malformed)?;
     let ty = match ObjValueType::from_byte(ty_byte) {
         Some(t) => t,
@@ -324,17 +325,13 @@ fn decode_value(ty: ObjValueType, body: &[u8]) -> Option<DynamicValue> {
             DynamicValue::Null
         }
         ObjValueType::Array => {
-            if body.len() < 4 {
-                return None;
-            }
-            let count = u32_be(body) as usize;
+            let (count, mut off) = take_len(body)?;
             let mut items = Vec::with_capacity(count);
-            let mut off = 4usize;
             for _ in 0..count {
                 let ty_byte = *body.get(off)?;
                 off += 1;
-                let len = u32_be(body.get(off..off + 4)?) as usize;
-                off += 4;
+                let (len, ln) = take_len(body.get(off..)?)?;
+                off += ln;
                 let item_body = body.get(off..off + len)?;
                 off += len;
                 let ty = ObjValueType::from_byte(ty_byte)?;
@@ -352,6 +349,8 @@ mod tests {
     use super::*;
 
     #[test]
+
+
     fn frames_round_trip() {
         let cases: Vec<(u16, DynamicValue)> = vec![
             (1, DynamicValue::UInt(0)),
@@ -377,7 +376,11 @@ mod tests {
             let mut buf = Vec::new();
             put_frame(&mut buf, *id, v);
             let mut off = 0usize;
-            let f = decode_frame(&buf, &mut off).unwrap().unwrap();
+            let f = decode_frame(&buf, &mut off);
+            if f.is_err() {
+                panic!("case id={} v={:?} buf={:02x?} err={:?}", id, v, buf, f);
+            }
+            let f = f.unwrap().unwrap();
             assert_eq!(f.id, *id);
             assert_eq!(f.value, *v);
             assert_eq!(off, buf.len(), "frame consumed exactly");
@@ -403,7 +406,7 @@ mod tests {
     fn list_decode_is_partial_on_malformed_tail() {
         let mut buf = Vec::new();
         put_frame(&mut buf, 1, &DynamicValue::UInt(7));
-        buf.extend_from_slice(&[0x05, 0, 0, 0, 99]); // truncated frame
+        buf.extend_from_slice(&[0x05, 0x00, 0x09, 0xAA]); // torn tail: len 9, only 1 byte follows
         let fields = decode_variants(&buf);
         assert_eq!(fields.len(), 1);
         assert_eq!(fields[0].value, DynamicValue::UInt(7));
@@ -414,7 +417,7 @@ mod tests {
         let mut buf = Vec::new();
         put_frame(&mut buf, 1, &DynamicValue::UInt(7));
         // Hand-rolled frame with a not-yet-defined type (0xFE).
-        buf.extend_from_slice(&[0x02, 0xFE, 0, 0, 0, 3, 0xAA, 0xBB, 0xCC]);
+        buf.extend_from_slice(&[0x02, 0xFE, 0x03, 0xAA, 0xBB, 0xCC]);
         put_frame(&mut buf, 3, &DynamicValue::Str("after".into()));
         let fields = decode_variants(&buf);
         assert_eq!(fields.len(), 2, "unknown frame skipped by length");

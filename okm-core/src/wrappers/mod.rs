@@ -15,6 +15,7 @@ mod offset;
 mod optional;
 mod quant;
 pub mod varint;
+pub mod wire;
 pub mod vector;
 
 pub use refs::Refs;
