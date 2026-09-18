@@ -729,3 +729,49 @@ The full plural taxonomy (identity axis x homogeneous/heterogeneous):
 The dividing line: elements with identity -> Ref/Refs/Junction; pure
 values -> Vector/Array (a scalar has no key; a key reference to it is
 a category error).
+
+## Wire encoding refinements (execution order, 2026-09-17)
+
+UTF encoding-series lessons applied to OKM's wire. Full analysis in
+session: the valuable transfers are (1) prefix-monotonic variable-
+width integers (fix VarInt's sort-order defect), (2) value-width
+tiers for dynamic-segment scalars (space, capped to slot 1), and the
+explicitly rejected ones: surrogate-pair-style compensation and
+uniform width (O(1) field indexing is already covered by static
+offsets).
+
+**P3 — 4-byte head (ns u16 + slot u16) + Junction rename.** Layout
+groundwork first; ADR-0015 decided. `slot: u8` -> `u16` BE, high
+byte = segment (0x00 doc / 0x01 indexes / 0x02 reduces / 0x80-0x81
+junction / 0x82-0xBF relation reserve / 0xC0-0xFF system). Junction
+rename rides the same sweep. Hex locks + key-layout + ADR-0012 slot
+table rewritten.
+
+**P3.5 — Vector<D> typed homogeneous list.** Follows P3 (new slot
+segments are its storage home). Declared field: `pub embed:
+Vector<f32, 384>`-shape (element type + dimension in the type =
+fixed-width wire, slot 0 dynamic part as one TLV frame like Str but
+element-typed). Design points: header carries shape+type for multi-
+dim; 1-D is the list; okm-vector's `encode_f32s` migrates onto it
+(replacing the hand-rolled helper); embedding vectors are the anchor
+use case. Elements are pure values — the identity line keeps this
+out of Ref/Junction.
+
+**P1 — VarInt re-encoding: byte order = value order.** UTF-8
+prefix-monotonic idea: first byte increases with value range
+([0bbbbbbb] 1B / [10bb....] 2B / ...), so byte comparison equals
+numeric comparison — VarInt becomes a legal index-segment field
+without swap transforms. Breaking wire change (LEB128 payloads
+re-encoded); downstream (aura, k10r) declares zero VarInt fields, so
+the window is now. Acceptance: dictionary-order tests over value
+boundaries (0/127/128/2^14...), index-field hex lock.
+
+**P2 — dynamic-segment scalar width tiers.** ObjValueType::UInt
+splits into 8/16/32/64-bit sub-variants; encoder picks the smallest
+fit, decoder sign/zero-extends back. Slot 1 ONLY — declared fields
+(hot/cold) and index keys never tier (fixed width is the static-
+offset + sort-order lifeline). Typical saving 3-7 bytes/field on
+small values.
+
+Order: P3 -> P3.5 -> P1 -> P2. P1/P2 produce new wire bytes; doing
+them after P3 means hex locks change once, not twice.
