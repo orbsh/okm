@@ -2,7 +2,9 @@
 
 ## Status
 
-Accepted (2026-09-17). Rename, two-ns residency, and the 2-byte slot
+Accepted (2026-09-17). Rename and two-ns residency stand; the 2-byte slot
+**segment table was superseded by ADR-0016** (4-bit segment + 12-bit counter,
+junction = segment 0x3) — see there for the current allocation
 segments decided; the ns-derivation scheme was rejected; graph Edge and
 field-position auto-sync recorded as future work.
 
@@ -56,8 +58,8 @@ junction's two physical entries live **in the two endpoint documents'
 own ns** — one entry per ns, no third ns:
 
 ```
-ns_org  [ns_org ][slot 0x80][A identity][B identity]   // the fact seen from A
-ns_user [ns_user][slot 0x81][B identity][A identity]   // the same fact from B
+ns_org  [ns_org ][slot 0x3nnn][B identity]   // the fact seen from A (ADR-0016:
+ns_user [ns_user][slot 0x3nnn][A identity]   // one one-way entry per endpoint ns)
 ```
 
 A junction is **unidirectional per entry**: each entry answers exactly
@@ -75,34 +77,17 @@ discipline (keys declared, namespaces declared, nothing manufactured)
 extends to relation storage: the entries live where the endpoints
 live.
 
-**Isolation from ordinary indexes**: the 1-byte slot is extended to
-**2 bytes (u16, big-endian)** — the high byte is a segment number,
-the low byte free within the segment. Ordinary indexes and junctions
-differ in the high byte alone (`0x01` vs `0x80`), a structural
-distinction rather than a convention:
-
-```
-slot high byte = segment:
-  0x00  document itself   (low: 0 primary, 1 dynamic, 2/3 dict,
-                           4-13 buffer, 14/15 reserved)
-  0x01  declared indexes  (low = declaration-order counter)
-  0x02  reduces           (own counter — no longer chained after
-                           indexes)
-  0x03-0x7F  derived region reserved
-  0x80  junction entries pointing A-side (hosted in ns_A)
-  0x81  junction entries pointing B-side (hosted in ns_B)
-  0x82-0xBF  relation region reserved (future graph Edge, etc.)
-  0xC0-0xFF  system reserved
-```
-
-Consequences of the 2-byte slot: every non-primary entry key grows by
-1 byte (invisible next to identity encodings of tens of bytes);
-segment membership becomes structural (`slot >> 8` dispatch) instead
-of a numbering convention; reduces stop consuming the index quota
-(the old chained-counter coupling dies); segment exhaustion moves
-from real to theoretical (each low-byte space is 256, per document
-type). The hex locks and key-layout documents change accordingly —
-pre-crates.io is the only cheap window, which is now.
+**Isolation from ordinary indexes**: the slot is widened and segmented
+(ADR-0016): **2 bytes (u16, big-endian)** — a 4-bit segment number plus a
+12-bit in-segment counter. Ordinary indexes and junctions differ in the
+segment alone (`0x1` vs `0x3`), a structural distinction rather than a
+convention. The full segment table, the document-self layout, and the
+consequences (head growth, counter independence, hex-lock rewrite) live
+in ADR-0016 — the allocation proposed here (byte-wide segments,
+junction at `0x80`/`0x81`) was superseded during review: direction
+moved out of the slot entirely (one entry per endpoint ns, above), so
+the junction needs a single segment, and segments being a 16-entry
+enumeration freed the remaining bits for the counter.
 
 ### 3. Taxonomy: two relation types, two carriers
 

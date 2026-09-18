@@ -248,18 +248,22 @@ assert_eq!(sessions, vec![s1.clone(), s2.clone()]);
 edges.unlink(&user, &s1); // deletes both directions
 ```
 
-Physical key layout (forward):
+Physical key layout (two-ns residency, ADR-0015/0016):
 
 ```
-[ head 3B: ns u16 BE + slot u8 ][ A·identity ][ B·identity ]
+[ ns_a u16 BE ][ slot u16 BE: segment 0x3 ][ B·identity ]   in A's collection
+[ ns_b u16 BE ][ slot u16 BE: segment 0x3 ][ A·identity ]   in B's collection
 ```
 
-`ns = 4` → FWD head `[0x00, 0x04, 14]`, REV head `[0x00, 0x04, 15]`.
-Direction is a slot (14/15) at the top of the fixed region, not a
-direction bit — the table and the edge share one key discipline (plain
-slot byte after the ns). See [ADR-0001](docs/adr/0001-direction-bit-niche.md)
-(superseded by the slot allocation in ADR-0012) and the slot table in
-[key-layout](docs/internals/key-layout.zh-CN.md).
+Each entry is one-way: the entry in `ns_org` answers "all members of this
+organization", the one in `ns_user` answers "all organizations this user
+belongs to". Direction is carried by which ns the entry lives in — no
+direction slots (the old 14/15 pair is gone). `nnn` is the junction
+discriminator (`#[ok_junction(n)]`) for multiple junctions over one
+endpoint pair. The junction's fields reference **document types**; the
+derive resolves their `Key` and `NS_PREFIX` — ns is declared once, on the
+document. See ADR-0015/ADR-0016 and the slot table in
+[key-layout](docs/internals/key-layout.md).
 
 ### Reverse queries and truncated identities
 
@@ -481,8 +485,8 @@ Lock the physical bytes with hard-coded hex — any layout drift fails CI:
 
 ```rust
 let fk = edge.forward_key();
-assert_eq!(&fk[..3], &[0, 4, 14]); // ns=4, FWD slot 14
-assert_eq!(&fk[3..7], &7u32.to_be_bytes());
+assert_eq!(&fk[..4], &[0, 4, 0x30, 1]); // ns=4, slot 0x3001 (junction seg, n=1)
+assert_eq!(&fk[4..8], &7u32.to_be_bytes());
 // ... full layout assertions in okm-core/tests/integration.rs
 ```
 
