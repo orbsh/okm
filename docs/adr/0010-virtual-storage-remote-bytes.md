@@ -63,7 +63,7 @@ No semantic parsing anywhere:
   uses under that signature is its own choice. The wire carries request
   and response frames; everything above is outside this ADR.
 - **No version header on the wire.** Layout versioning is the sender's
-  in-process concern (compile-time hex tests + `#[ok_layout(version)]`
+  in-process concern (hard-coded hex stability tests + `#[ok_layout(version)]`
   decode rejection). Aura does not run the sender's OKM and holds no layout
   knowledge; the only contract between the ends is the op byte + byte
   streams. (This supersedes an earlier draft that put a layout version in
