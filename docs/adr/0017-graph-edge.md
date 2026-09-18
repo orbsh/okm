@@ -57,13 +57,32 @@ Endpoints are **not compile-time typed**. A reference is
 ns acts as the type marker: decoding a reference routes by ns to the
 owning collection, so node type is unrestricted.
 
-The pkey boundary is **not in the key**. The width of a collection's
-pkey is a schema fact (`KeyEncode::KEY_LEN`); the Edge implementation
-holds a **ns → KEY_LEN registry** (compile-time generated for the
-declared form, a runtime table for the dynamic form) and slices the
-pkey by lookup. This extends the Ref discipline — "the reference is
-key bytes, ns knowledge lives at the declaration point" — from one
-bound endpoint type to a registry of endpoint types.
+The pkey boundary is **not stored in the key**. The width of a
+collection's pkey is a schema fact (`KeyEncode::KEY_LEN`), and the
+Edge implementation resolves it through a **ns → KEY_LEN registry**.
+Three candidate schemes were weighed:
+
+- **a. Fixed-width convention** — require all node collections in one
+  graph to share a single pkey width (e.g. all u64 ids). Zero key
+  overhead, but a hard constraint on modeling: one heterogeneous node
+  with a 20-byte composite key breaks it, and cross-graph reuse of the
+  registry gets awkward. Rejected — too rigid for real graphs.
+- **b. Self-describing segment (TLV)** — `[ns 2B][pkey_len varint]
+  [pkey]`. Fully general, works for any pkey shape, decoding needs no
+  registry. Cost: every reference grows by 1+ bytes (the len prefix),
+  and every decode pays a varint step. Rejected — the Edge collection
+  holds thousands of references, and the per-reference overhead
+  multiplies across the traversal faces (0x5-0x8), which are the
+  highest-volume entries in the store.
+- **c. Registry lookup (CHOSEN)** — pkey width comes from the schema
+  (`KeyEncode::KEY_LEN`); the Edge implementation holds a **ns →
+  KEY_LEN registry** (compile-time generated for the declared form, a
+  runtime table for the dynamic form) and slices the pkey by lookup.
+  Zero key overhead, extends the Ref discipline — "the reference is
+  key bytes, ns knowledge lives at the declaration point" — from one
+  bound endpoint type to a registry of endpoint types. The registry is
+  a new cross-collection schema fact: compile-time form is generated,
+  dynamic form is user-maintained.
 
 ### 3. Slot allocation (ADR-0016 segments, within the Edge ns)
 
