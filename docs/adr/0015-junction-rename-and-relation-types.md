@@ -2,7 +2,8 @@
 
 ## Status
 
-Accepted (2026-09-17). Rename + ns derivation decided; graph Edge and
+Accepted (2026-09-17). Rename, two-ns residency, and the 2-byte slot
+segments decided; the ns-derivation scheme was rejected; graph Edge and
 field-position auto-sync recorded as future work.
 
 ## Context
@@ -113,10 +114,12 @@ picture:
   children normalized in their own ns, single-direction (the child's
   key carries the parent identity; reverse lookup is a prefix scan on
   it). Parasitic on the parent document; the child does not point back.
-- **Many-to-many**: `Junction` — first-class relation data, both
+- **Many-to-many**: `Junction` — first-class relation fact, both
   endpoint identities in the entry key, double-materialized for
-  two-directional O(1) scans. Not a field: the relation exists
-  independently of either endpoint's document.
+  two-directional O(1) scans. Not a field: the relation fact exists
+  independently of either endpoint's document; physically it is
+  **two-ns residency** — each endpoint ns hosts one direction (see
+  decision 2).
 
 The dividing line is the same one MODELING already draws for edge vs
 index: **can the relation be found from both sides without scanning?**
@@ -140,9 +143,12 @@ element have identity, and homogeneous vs heterogeneous.
   is a tensor). Canonical use: embedding vectors (order and dimension
   expressed), numeric sequences. Stored in slot 0's dynamic part, in
   the same class as strings (variable-length TLV frames); dynamic
-  elements use LV format. `DynamicValue::Array` is its heterogeneous
-  counterpart — more general, more dynamic, per-element type tags,
-  slightly higher overhead.
+  elements use LV format. Declared form (PLAN P3.5): `Vector<f32,
+  384>` shape — element type and dimension in the type = fixed-width
+  wire; okm-vector's hand-rolled `encode_f32s` migrates onto it.
+  `DynamicValue::Array` is its heterogeneous counterpart — more
+  general, more dynamic, per-element type tags, slightly higher
+  overhead.
 - **Array (heterogeneous list)**: `DynamicValue::Array` — mixed
   element types, recursive dynamic-segment frames.
 - **Set (deduplicated elements)**: no carrier yet. The candidate
@@ -185,22 +191,24 @@ The graph edge — directed, attribute-carrying, traversable — is a
 different data structure and gets a different name (the freed-up
 `Edge`). Attributes are dynamic (`DynamicValue`-shaped, no schema pre-
 definition, no field-name compression — dynamic frames already carry
-names inline). The ns-of-an-edge-name problem (ns is a fixed-width
-compile-time number; edge names like "has"/"belongs" are strings) is
-solved by hashing the name literal at compile time from
-`#[ok_edge("has")]`, with compile-time collision detection — the same
-mechanism decision 2 uses for junctions. No KV dictionary (ADR-0002
-deadlock avoided), no compression. Not designed further here; no
-consumer exists.
+names inline). The ns-of-an-edge-name problem (ns is a compile-time
+declared number; edge names like "has"/"belongs" are strings): the
+earlier draft's compile-time hash from `#[ok_edge("has")]` was
+rejected along with decision 2's derivation (indeterminacy). The graph
+Edge's namespace mechanism (allocation within an independent ns
+segment, edge name in key or payload) is left to design — unlike the
+junction's two-ns residency, a graph edge typically exists
+independently of any endpoint document, so residency may not apply.
+Not designed further here; no consumer exists.
 
 ### C. Vector types — materialization
 
-The concrete `Vector<D>` design (fixed-width elements BE-serialized
-directly; dynamic elements as LV frames; multi-dimensional shape
-headers) is worked out when real consumers appear — vector retrieval
-(okm-vector) and embedding storage. This ADR only locks the taxonomy
-position: homogeneous, whole-value read/write, slot 0 dynamic part,
-same class as strings.
+Scheduled (PLAN P3.5, following the 4-byte head): declared form
+`Vector<T, N>` — element type and dimension in the type, fixed-width
+elements BE-serialized directly; dynamic elements as LV frames;
+multi-dimensional shape headers. okm-vector's `encode_f32s` migrates
+onto it. This ADR locks the taxonomy position: homogeneous, whole-
+value read/write, slot 0 dynamic part, same class as strings.
 
 ### B. Field-position relation declaration + auto-sync
 
