@@ -626,6 +626,43 @@ peer's ns implicitly. Do not model a junction as a document field; if
 set-shaped mutation over one endpoint becomes a real need, the escape
 is an explicit command, never put-path magic.
 
+### Refs or Junction: deciding, and migrating when the answer changes
+
+The two carriers answer different ownership questions — pick by asking
+which side needs set-shaped lookup:
+
+- **"Which sessions does this user hold?"** — a one-directional need.
+  The relation is an attribute of the user row: `Refs` in field
+  position, the user row is the single truth source, sessions live in
+  their own ns and never point back. A sync-shaped mutation (an import
+  pushes the whole list, a form submits the new set) is naturally
+  served by the put diff — the field IS the state, overwrite-and-diff
+  is already the mechanism.
+- **"AND: which users follow this session?"** — both directions are
+  now first-class set queries. The relation has outgrown any single
+  row: a user-side field cannot answer the session-side question
+  without a full scan, so the fact must be materialized in both
+  endpoints' ns — a `Junction`, linked/unlinked as explicit events.
+
+The second question arriving later is a **schema migration, not a
+retrofit**: promoting a `Refs` field to a `Junction` means (a) declare
+the junction type with the same endpoint pair and a fresh
+`#[ok_junction(n)]` discriminator; (b) backfill by walking the parent
+collection and `link`ing each row's current key set (junction entries
+have no backfill mechanism — the same discipline as index append-only:
+a new access method only sees writes made after it exists); (c) drop
+the field from the document in the same layout-version bump, since the
+field and the junction would otherwise be two truth sources fighting
+over the same fact (the exact dual-entry-point conflict that killed
+`#[ok_relation]`). Reverse migration (junction back to `Refs`) applies
+when one endpoint's lookup need disappears — the reverse-scan demand
+was the only reason the fact left the row.
+
+The rejected `#[ok_relation]` proposal effectively assumed the first
+shape while storing the second; that mismatch — a set-shaped truth
+source living in one endpoint's field while the relation is defined by
+both — is precisely why it could not stand.
+
 ## Graph edges: the third relation carrier
 
 Junctions cover many-to-many with **compile-time typed endpoints**. A
