@@ -544,18 +544,21 @@ Unchanged: primary payload layout `[version][hot_len][hot][cold TLV]`
       otherwise be forced into cold TLV; distinguishes None from a real
       value (`Some(0)` is not `None`). Shipped 2026-09-16 (2dd5385):
       u8..u64/[u8;N] primitives; Enum/VarInt/Quant/Reverse compose via
-      their own contracts. Remaining: derive field-position recognition
-      (`Option<T>` in a struct field → OptionalEnc impl + width).
-- [ ] Derive support: field-position recognition like the other wrappers
-      (width = `1 + T::WIDTH` in FieldDesc), `[ok_default]` interplay
-      documented (default decides what a missing pre-v2 payload decodes
-      to; `Option` decides presence within a payload — orthogonal).
+      their own contracts. (Derive field-position recognition: see the
+      REJECTED entry below.)
 - [x] First use cases: watermark/cursor fields where 0 is a real value
   (MQ cursor keeps its 0 semantics — a plain u64 stays correct there;
   `Option` targets genuine None/Some distinctions: config overrides,
   optional foreign keys). Aura MQ audited 2026-09-16: no field needs
   `Option` today — its tables are pure typed-path (put/get/scan), so no
   migration was required by the obj work.
+- [x] Derive field-position recognition: REJECTED (2026-09-20) — the
+      derive-recognition followup is closed without implementation. The
+      wrapper type stays for hand-written OptionalEnc use, but declared
+      `Option<T>` fields are not supported and no use case exists
+      (aura audit: zero Option fields; the fixed-width presence byte
+      buys nothing over a plain field + sentinel for the few genuine
+      None/Some cases). Do not re-propose.
 
 ## Phase 10 — edge keys via slots: retire the direction-bit niche (high priority)
 
