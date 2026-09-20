@@ -5,8 +5,10 @@
 Accepted (2026-09-17). Rename and two-ns residency stand; the 2-byte slot
 **segment table was superseded by ADR-0016** (4-bit segment + 12-bit counter,
 junction = segment 0x3) — see there for the current allocation
-segments decided; the ns-derivation scheme was rejected; graph Edge and
-field-position auto-sync recorded as future work.
+segments decided; the ns-derivation scheme was rejected; graph Edge landed
+as ADR-0017; the field-position auto-sync (`#[ok_relation]`) was REJECTED
+after analysis on 2026-09-20 — the imperative link/unlink pairing stands
+as the junction's interface (see Future work §B).
 
 ## Context
 
@@ -163,7 +165,8 @@ vector/array**.
   a document could name its junction, and `put` would diff the field
   against stored junction entries (auto link/unlink). Recorded as
   future work — it trades RMW for auto-sync and needs a consistency
-  story before it lands.
+  story before it lands. (Update 2026-09-20: rejected — see Future
+  work §B.)
 - The junction is unidirectional per entry: the "two slots per
   junction" of the old design (14/15 in one ns) becomes "one slot in
   each endpoint's ns" — the relation fact is written once per
@@ -196,12 +199,36 @@ multi-dimensional shape headers. okm-vector's `encode_f32s` migrates
 onto it. This ADR locks the taxonomy position: homogeneous, whole-
 value read/write, slot 0 dynamic part, same class as strings.
 
-### B. Field-position relation declaration + auto-sync
+### B. Field-position relation declaration + auto-sync — REJECTED (2026-09-20)
 
-`#[ok_relation(JunctionType)]` on a `Refs` field, with put-time diff
-against stored junction entries. Trades RMW for declarative sync;
-requires the consistency analysis (two endpoints' documents both
-writing the same junction) before design.
+Update: the `#[ok_relation(JunctionType)]` idea was analyzed and
+**rejected without implementation**. The deciding argument chain:
+
+- The mechanism would be a direct generalization of Refs' put-time diff
+  (stale-release), so the mechanics are cheap. The cost is semantic:
+  **the truth source of a junction has no natural home row.** Refs works
+  because the parent row is the single owner (one-directional by
+  structure); a junction's two endpoints are peers — declaring the field
+  on one side makes the other side's `delete` unable to clean up without
+  a reverse RMW chain, and a stale field key resurrects a deleted edge
+  on the next put.
+- Two write entry points over the same junction (field diff + explicit
+  `link`/`unlink`) fight each other: a handler that unlinks directly and
+  a later field-preserving put that diffs the stale key back.
+- The diff buys nothing unless the reverse scan is required — and
+  requiring it is exactly the "is this edge needed at all" question
+  MODELING already poses. A relation with no reverse-lookup need should
+  not be a junction in the first place.
+- The imperative pairing (`link` writes both entries, `unlink` deletes
+  both) keeps the code IS the event property: the call site is the
+  causal record, no old state is ever reconstructed, and the write
+  domain never crosses into the peer's ns implicitly.
+
+The imperative pairing stands as the junction's interface. If a real
+consumer surfaces with set-shaped mutation over one endpoint, the
+lighter escape is an explicit `Junction::sync_from(row)` command — same
+diff, but an explicit verb, not put-path magic. Do not re-propose the
+field-position form without a named consumer.
 
 ## References
 

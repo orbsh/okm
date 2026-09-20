@@ -706,10 +706,20 @@ Decided:
       (separates multiple junctions over one endpoint pair). LANDED
       2026-09-20 — endpoint fields carry `Ref<Doc, Key>` (integration.rs
       UserToSession), derive resolves NS_PREFIX + Key.
-- [ ] Future (HIGH): `#[ok_relation(JunctionType)]` on a `Refs`
-      field — put-time diff auto link/unlink (trades RMW for
-      declarative sync; needs the two-endpoint write consistency
-      analysis first). Highest-priority open item.
+- [x] Future (HIGH): `#[ok_relation(JunctionType)]` on a `Refs`
+      field — REJECTED (2026-09-20) after analysis, closed without
+      implementation. The truth-source argument: Refs works because the
+      parent row is the single owner; a junction's endpoints are peers —
+      a one-side field declaration leaves the peer's delete unable to
+      clean up (reverse RMW chain or stale-key edge resurrection on the
+      next put), and two write entry points (field diff + explicit
+      link/unlink) fight each other. The imperative pairing (link writes
+      both entries, unlink deletes both) stands as the junction's
+      interface — the call site is the causal record, no old state is
+      reconstructed, the write domain never crosses the peer's ns
+      implicitly. Lighter escape if a real consumer surfaces:
+      explicit `Junction::sync_from(row)`. Do not re-propose without a
+      named consumer. Full argument chain in ADR-0015 Future work §B.
 - [x] Future (HIGH) -> LANDED 2026-09-20 (fixed-ontology form): graph
       `Edge` — ADR-0017 (Accepted): the third relation carrier. One ns
       per graph (normal ns dictionary); self-describing endpoint
