@@ -14,5 +14,9 @@
 - [0010 — VirtualStorage：KvEngine 即存储边界，远端字节走既有通道](0010-virtual-storage-remote-bytes.md)（已接受，实现待做——PLAN Phase 7）— [中文](0010-virtual-storage-remote-bytes.zh-CN.md)
 - [0011 — 存储完整键：不剥前缀](0011-full-keys-in-storage.md)（已接受）— [中文](0011-full-keys-in-storage.zh-CN.md)
 - [0012 — Object 模式：单一编码 + 字段名字典 + ok_ 改名](0012-object-model-and-field-dictionary.md)（设计定案，实现待排期）— [中文](0012-object-model-and-field-dictionary.zh-CN.md)
+- [0015 — Junction 改名与两类关系载体](0015-junction-rename-and-relation-types.md)（已接受；其中 2 字节 slot 段表由 0016 取代）— [中文](0015-junction-rename-and-relation-types.zh-CN.md)
+- [0016 — 4 字节 entry 头与段编号 slot](0016-four-byte-head-and-slot-segments.md)（已接受）— [中文](0016-four-byte-head-and-slot-segments.zh-CN.md)
+- [0017 — Graph Edge：第三类关系载体](0017-graph-edge.md)（已接受；两种形态均已实现）— [中文](0017-graph-edge.zh-CN.md)
+- [0018 — 存储值就是引擎自己的值模型，序列化文本绝不作为存储表示](0018-storage-values-native-not-serialized-text.md)（已接受；aura 侧实现待做——`StoreAsVirtual` 删除 + state 文档化）— [中文](0018-storage-values-native-not-serialized-text.zh-CN.md)
 
 实施计划见 [docs/PLAN.md](../PLAN.md)。
