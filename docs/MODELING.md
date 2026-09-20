@@ -614,12 +614,12 @@ on the edge side:
 ```rust
 use okm_core::{GraphEdgeEncode, EdgeFact, Graph, NodeRef};
 
-/// The edge collection of one graph: ns + the participating node
-/// collections' registry (ns -> key width). Declared attribute fields
-/// are edge-own data; endpoints are NOT declared (open endpoints —
-/// they travel as runtime NodeRefs).
-#[derive(GraphEdgeEncode, Clone, Default)]
-#[ok_edge(ns = 100, nodes(10 = 8, 11 = 8))]   // User ns 10 (8B keys), Org ns 11
+/// The edge collection of one graph. Declared attribute fields are
+/// edge-own data; endpoints are NOT declared — refs are
+/// self-describing ([ns 2B][len][pkey]), so any node collection
+/// participates with zero ceremony.
+#[derive(EdgeEncode, Clone, Default)]
+#[ok_edge(ns = 100)]
 struct Employment {
     since_year: u16,   // each declared field = one 0x1 face
     weight: u32,
@@ -638,13 +638,13 @@ g.typed_out("employs", &user1);   // 0x7 face: kind-qualified traversal
 g.by_attr_face(<Employment as Face>::slot("since_year"), &2020u16.to_be_bytes());
 ```
 
-- **Endpoint references** are `[ns 2B][pkey]` — the ns is the type
-  marker, so any collection's document participates. The pkey boundary
-  is NOT in the key: it resolves through a **ns -> KEY_LEN registry**
-  (`nodes(...)` declares it at compile time; the dynamic form maintains
-  it at runtime). Same discipline as Ref — reference is key bytes, ns
-  knowledge lives at the declaration point — generalized from one bound
-  endpoint type to a registry.
+- **Endpoint references** are `[ns 2B][len varint][pkey]` — the ns is
+  the type marker, the pkey width rides IN the ref as a one-byte
+  varint. Any collection's document participates with no declaration:
+  same node = same bytes (traversal faces prefix-match exactly), mixed
+  pkey widths coexist, and there is no registry to declare, maintain,
+  or fail on. Graph edges retire the Ref discipline — the reference
+  carries its own width, ns knowledge and all.
 - **Faces**: one `link` writes primary (slot 0x0, `edge_id` u64) +
   kind index (0x4) + out/in traversal (0x5/0x6) + kind-qualified
   traversal (0x7/0x8) + one declared-attribute face per field (0x1),

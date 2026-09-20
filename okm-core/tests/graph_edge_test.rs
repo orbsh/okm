@@ -4,7 +4,7 @@
 //! `link_into`, and node-kind filtering per the ADR's node-side section.
 
 use okm_core::{
-    DocumentEncode, GraphEdgeEncode, KeyEncode, VirtualStorage,
+    DocumentEncode, EdgeEncode, KeyEncode, VirtualStorage,
 };
 
 // ---- node collections (standard documents, standard layout) ----
@@ -43,8 +43,8 @@ pub struct Org {
 
 // ---- the graph's edge collection ----
 
-#[derive(Clone, Default, GraphEdgeEncode)]
-#[ok_edge(ns = 100, nodes(10 = 8, 11 = 8))]
+#[derive(Clone, Default, EdgeEncode)]
+#[ok_edge(ns = 100)]
 struct Employment {
     #[ok_default(0)]
     since_year: u16,
@@ -53,7 +53,7 @@ struct Employment {
 }
 
 use okm_core::{
-    EdgeFact, EndpointRegistry, Graph, NodeRef, PRIMARY_SLOT,
+    EdgeFact, Graph, NodeRef, PRIMARY_SLOT,
 };
 
 fn user(id: u64) -> NodeRef {
@@ -62,15 +62,6 @@ fn user(id: u64) -> NodeRef {
 
 fn org(id: u64) -> NodeRef {
     NodeRef::new(&11u16.to_be_bytes(), &id.to_be_bytes())
-}
-
-#[test]
-fn derived_graph_impl_carries_ns_and_registry() {
-    assert_eq!(<Employment as okm_core::KvGraph>::NS_PREFIX, &100u16.to_be_bytes());
-    let r = <Employment as okm_core::KvGraph>::registry();
-    assert_eq!(r.key_len_of(10), Some(8));
-    assert_eq!(r.key_len_of(11), Some(8));
-    assert_eq!(r.key_len_of(12), None);
 }
 
 #[test]
@@ -119,8 +110,8 @@ trait GraphEdgeAccess {
 impl GraphEdgeAccess for Employment {
     fn __okm_face_slot(field: &str) -> u16 {
         match field {
-            "since_year" => __OkmGraphIndex_Employment_since_year::SLOT,
-            "weight" => __OkmGraphIndex_Employment_weight::SLOT,
+            "since_year" => __OkmEdgeIndex_Employment_since_year::SLOT,
+            "weight" => __OkmEdgeIndex_Employment_weight::SLOT,
             other => panic!("no face for {other}"),
         }
     }
@@ -214,15 +205,16 @@ fn node_kind_filter_intersects_typed_traversal() {
 }
 
 #[test]
-fn runtime_registry_form_matches_compile_time() {
-    // The dynamic-form registry: caller-maintained, same cut semantics.
-    let mut r = EndpointRegistry::new();
-    r.register(10, 8);
-    r.register(11, 8);
-    r.register(10, 8); // same width re-register = no-op
-    assert_eq!(r.entries().len(), 2);
-    let wire = user(3).encode();
-    assert_eq!(r.cut(&wire).unwrap().pkey, 3u64.to_be_bytes().to_vec());
+fn noderef_varint_len_self_describing() {
+    // The wire carries the pkey width: same node -> same bytes (prefix
+    // scans match), mixed widths need no registration.
+    let a = NodeRef::new(&10u16.to_be_bytes(), &3u64.to_be_bytes());
+    let b = NodeRef::new(&11u16.to_be_bytes(), &[9, 9, 9, 9]);
+    assert_eq!(a.encode().len(), 11);
+    assert_eq!(b.encode().len(), 2 + 1 + 4); // ns 2B + len 1B + 4-byte pkey
+    let (back, n) = NodeRef::decode(&b.encode()).unwrap();
+    assert_eq!(n, b.encode().len());
+    assert_eq!(back, b);
 }
 
 #[test]
@@ -246,6 +238,9 @@ fn hex_lock_six_face_layout() {
     let kid = 0u16.to_be_bytes().to_vec();
     let src = user(1).encode();
     let dst = org(9).encode();
+    // Refs are self-describing: [ns 2B][len 1B][pkey 8B] = 11 bytes.
+    assert_eq!(src.len(), 11);
+    assert_eq!(dst.len(), 11);
     let key = |parts: &[Vec<u8>]| parts.concat();
 
     let mut primary = ns.to_vec();

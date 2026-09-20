@@ -24,6 +24,7 @@
 
 mod decode;
 mod encode;
+mod graph;
 mod index;
 mod collection;
 
@@ -40,6 +41,7 @@ pub use decode::{decode_key, decode_payload};
 pub use encode::{encode_key, encode_payload};
 pub use index::{index_entries, scan_access_method, AccessMethod};
 pub use collection::DynamicCollection;
+pub use graph::{DynEdge, Graph};
 
 use std::collections::BTreeMap;
 

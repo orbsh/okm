@@ -1,7 +1,7 @@
 # ADR-0017: Graph Edge — the third relation carrier
 
 Date: 2026-09-19
-Status: Accepted (2026-09-20; fixed-ontology form implemented — GraphEdgeEncode derive, Graph<S, E>, EndpointRegistry). Updates 2026-09-20: declared attribute fields (§3), node-side kind filtering (§3), slot-layout clarification (§3).
+Status: Accepted (2026-09-20; both forms implemented — EdgeEncode derive + Graph<S, E> fixed-ontology, okm-dynamic Graph<S> fully dynamic). Updates 2026-09-20: §2 endpoint refs re-decided to scheme b (self-describing [ns 2B][len varint][pkey]) — scheme c (registry) abandoned; §3 declared attribute fields, node-side kind filtering, slot-layout clarification.
 Related: ADR-0015 (relation taxonomy), ADR-0016 (4-byte head, segment-numbered slots), ADR-0002 (namespace dictionary)
 
 ## Context
@@ -83,6 +83,22 @@ Three candidate schemes were weighed:
   bound endpoint type to a registry of endpoint types. The registry is
   a new cross-collection schema fact: compile-time form is generated,
   dynamic form is user-maintained.
+
+- **Update 2026-09-20 — scheme b (self-describing ref) CHOSEN, scheme c
+  abandoned.** The original draft's rejection of b mis-counted: the
+  shared varint codec encodes pkey widths (4–16 bytes) in ONE byte, so
+  the per-ref cost is ~1 byte (~5% on traversal-face keys), not "1+
+  bytes multiplying across the face". Against that stands everything
+  the registry costs: a new cross-collection schema fact, a
+  `nodes(...)` declaration whose hand-written width literals drift
+  from the node keys, a runtime `register()` ceremony in the dynamic
+  form, and a decode failure mode (unregistered ns) that exists only
+  to defend the registry itself. Refs become
+  `[ns 2B][len varint][pkey]` — width is wire data, traversal faces
+  still prefix-match exactly (same node = same bytes), and both forms
+  need zero endpoint declaration. The Ref discipline is thereby
+  RETIRED for graph edges: ns knowledge no longer lives at a
+  declaration point; it lives in the ref itself.
 
 ### 3. Slot allocation (ADR-0016 segments, within the Edge ns)
 

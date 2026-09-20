@@ -1,4 +1,4 @@
-//! `GraphEdgeEncode` — the fixed-ontology Graph Edge derive (ADR-0017).
+//! `EdgeEncode` — the fixed-ontology Graph Edge derive (ADR-0017).
 //!
 //! Declares a graph's edge collection: ns + participating-node registry
 //! at the struct level, declared attribute fields on the fields. The
@@ -17,7 +17,7 @@
 //! Generates: the `KvGraph` impl (NS_PREFIX, REGISTRY constants +
 //! attribute encoding via `__okm_encode_named`-style per-field arms),
 //! and one access-method marker struct per declared attribute field
-//! (`__OkmGraphIndex_<edge>_<field>`), whose 0x1-segment face is
+//! (`__OkmEdgeIndex_<edge>_<field>`), whose 0x1-segment face is
 //! `[field value][edge_id]` — scanning it returns edge ids for the
 //! `Graph::by_attr_face` walk. Attribute values are edge-own data,
 //! fixed width by construction (variable-width attribute fields are
@@ -28,16 +28,10 @@ use proc_macro2::{Delimiter, TokenTree};
 use quote::{format_ident, quote, ToTokens};
 use syn::{parse_macro_input, Data, DeriveInput, Fields};
 
-/// Node entries are raw ns integer literals (`nodes(10 = 8, 11 = 16)` —
-/// the ns VALUE, since the node collection's ns is a plain u16; a name
-/// here would force the derive to resolve a type's NS_PREFIX, which a
-/// proc-macro cannot). Splice the literal straight into the REGISTRY
-/// constant.
-
-/// Parse `#[ok_edge(ns = N, nodes(10 = 8, 11 = 16))]` — node entries are
-/// `ns = KEY_LEN` pairs with raw integer ns values.
-/// Returns (ns u16, Vec<(node ns literal, key width usize)>).
-fn parse_edge_attr(attr: &syn::Attribute) -> (u16, Vec<(String, usize)>) {
+/// Parse `#[ok_edge(ns = N)]`. Endpoints need NO declaration — refs
+/// are self-describing (`[ns 2B][len][pkey]`), so there is no node
+/// registry to maintain.
+fn parse_edge_attr(attr: &syn::Attribute) -> u16 {
     let ts: Vec<TokenTree> = attr.to_token_stream().into_iter().collect();
     let outer = ts
         .iter()
@@ -55,7 +49,6 @@ fn parse_edge_attr(attr: &syn::Attribute) -> (u16, Vec<(String, usize)>) {
         .expect("ok_edge: missing argument parentheses");
 
     let mut ns: Option<u16> = None;
-    let mut nodes = Vec::new();
     let toks: Vec<TokenTree> = body.into_iter().collect();
     let mut i = 0;
     while i < toks.len() {
@@ -65,89 +58,38 @@ fn parse_edge_attr(attr: &syn::Attribute) -> (u16, Vec<(String, usize)>) {
         }
         let kw = match &toks[i] {
             TokenTree::Ident(id) => id.to_string(),
-            t => panic!("ok_edge: expected `ns` or `nodes`, got {t}"),
+            t => panic!("ok_edge: expected `ns`, got {t}"),
         };
-        match kw.as_str() {
-            "ns" => {
-                // `ns = N`
-                assert!(
-                    matches!(&toks.get(i + 1), Some(TokenTree::Punct(p)) if p.as_char() == '='),
-                    "ok_edge: expected `ns = <u16 literal>`"
-                );
-                let lit = match &toks.get(i + 2) {
-                    Some(TokenTree::Literal(l)) => l.to_string(),
-                    t => panic!("ok_edge: expected ns literal, got {t:?}"),
-                };
-                ns = Some(
-                    lit.parse::<u16>()
-                        .unwrap_or_else(|e| panic!("ok_edge: bad ns literal `{lit}`: {e}")),
-                );
-                i += 3;
-            }
-            "nodes" => {
-                // `nodes(A = w1, B = w2)` — one brace/paren group of
-                // `Ident = int` pairs.
-                let group = match &toks.get(i + 1) {
-                    Some(TokenTree::Group(g))
-                        if g.delimiter() == Delimiter::Parenthesis
-                            || g.delimiter() == Delimiter::Brace =>
-                    {
-                        g.clone()
-                    }
-                    t => panic!("ok_edge: expected nodes(...) group, got {t:?}"),
-                };
-                let mut gt: Vec<TokenTree> = group.stream().into_iter().collect();
-                // Brace groups lack their delimiters in this view; handle
-                // both raw ident streams and paren-wrapped ones uniformly
-                // by stripping a redundant single group wrapper.
-                if gt.len() == 1 {
-                    if let TokenTree::Group(g) = &gt[0] {
-                        gt = g.stream().into_iter().collect();
-                    }
-                }
-                let mut j = 0;
-                while j < gt.len() {
-                    if matches!(&gt[j], TokenTree::Punct(p) if p.as_char() == ',') {
-                        j += 1;
-                        continue;
-                    }
-                    let name = match &gt[j] {
-                        TokenTree::Literal(l) => l.to_string(),
-                        t => panic!("ok_edge.nodes: expected node ns integer literal, got {t}"),
-                    };
-                    assert!(
-                        matches!(&gt.get(j + 1), Some(TokenTree::Punct(p)) if p.as_char() == '='),
-                        "ok_edge.nodes: expected `{name} = <width literal>`"
-                    );
-                    let lit = match &gt.get(j + 2) {
-                        Some(TokenTree::Literal(l)) => l.to_string(),
-                        t => panic!("ok_edge.nodes: expected width literal, got {t:?}"),
-                    };
-                    let w = lit
-                        .parse::<usize>()
-                        .unwrap_or_else(|e| panic!("ok_edge.nodes: bad width `{lit}`: {e}"));
-                    nodes.push((name, w));
-                    j += 3;
-                }
-                i += 2;
-            }
-            other => panic!("ok_edge: unknown key `{other}` (supported: ns, nodes)"),
+        if kw != "ns" {
+            panic!("ok_edge: unknown key `{kw}` (supported: ns — endpoints are self-describing, no node declaration)");
         }
+        assert!(
+            matches!(&toks.get(i + 1), Some(TokenTree::Punct(p)) if p.as_char() == '='),
+            "ok_edge: expected `ns = <u16 literal>`"
+        );
+        let lit = match &toks.get(i + 2) {
+            Some(TokenTree::Literal(l)) => l.to_string(),
+            t => panic!("ok_edge: expected ns literal, got {t:?}"),
+        };
+        ns = Some(
+            lit.parse::<u16>()
+                .unwrap_or_else(|e| panic!("ok_edge: bad ns literal `{lit}`: {e}")),
+        );
+        i += 3;
     }
-    let ns = ns.expect("ok_edge: missing `ns = N`");
-    (ns, nodes)
+    ns.expect("ok_edge: missing `ns = N`")
 }
 
 pub fn derive(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     let name = &input.ident;
 
-    let (ns, nodes) = input
+    let ns = input
         .attrs
         .iter()
         .find(|a| a.path().is_ident("ok_edge"))
         .map(parse_edge_attr)
-        .expect("missing #[ok_edge(ns = N, nodes(...))]");
+        .expect("missing #[ok_edge(ns = N)]");
 
     let named = match &input.data {
         Data::Struct(s) => match &s.fields {
@@ -205,7 +147,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
         // DECLARED base (0x1001) + declaration index, face
         // `[field value][edge_id u64 BE]`.
         let slot_lit = 0x1001u16 + attr_names.len() as u16 - 1;
-        let struct_ident = format_ident!("__OkmGraphIndex_{}_{}", name, fname);
+        let struct_ident = format_ident!("__OkmEdgeIndex_{}_{}", name, fname);
         let slot_doc = attr_names.len().to_string();
         index_structs.extend(quote! {
             #[doc = concat!("Graph-edge declared-attribute access method `", stringify!(#name), ".", #fname, "` (0x1 segment, slot ", #slot_doc, "; face = [", #fname, "][edge_id], ADR-0017 §3).")]
@@ -237,18 +179,6 @@ pub fn derive(input: TokenStream) -> TokenStream {
         let _ = width; // width is implicit in the field's own BE encoding
     }
 
-    // Registry constant: node ns names are caller-side ns VALUES
-    // (`User = 10` means the User document declares #[ok_ns(10)]). The
-    // width literal is written by the declaration — the same
-    // literal-in-the-macro discipline as every segment constant (a
-    // proc-macro cannot name okm_core's KeyEncode to read KEY_LEN).
-    let registry_pairs = nodes.iter().map(|(n, w)| {
-        let wl = proc_macro2::Literal::usize_unsuffixed(*w);
-        let nlit: syn::LitInt = syn::parse_str(n)
-            .unwrap_or_else(|_| panic!("ok_edge.nodes: node ns must be an integer literal, got `{n}`"));
-        quote! { (#nlit, #wl) }
-    });
-
     let ns_hi = (ns >> 8) as u8;
     let ns_lo = (ns & 0xff) as u8;
 
@@ -264,7 +194,6 @@ pub fn derive(input: TokenStream) -> TokenStream {
     quote! {
         impl ::okm_core::KvGraph for #name {
             const NS_PREFIX: &'static [u8] = &[#ns_hi, #ns_lo];
-            const REGISTRY: &'static [(u16, usize)] = &[#(#registry_pairs),*];
             const ATTR_SLOTS: &'static [::okm_core::index::Slot] = &[#(#attr_slots),*];
             fn attrs(&self) -> Vec<u8> {
                 // The declared-attribute payload: one __okm_encode_named
