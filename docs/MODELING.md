@@ -64,32 +64,39 @@ Primary keys are fixed-width: fields are big-endian encoded in declaration
 order, `KEY_LEN` locked at compile time. Keys stay fixed-width; variability
 is a property of index entries, not keys.
 
-### Edges: `EdgeEncode`
+### Junctions: `JunctionEncode`
 
 ```rust
-use okm_core::EdgeEncode;
+use okm_core::{JunctionEncode, Ref};
 
-/// user → sessions edge.
+/// user → sessions junction (the SQL many-to-many junction table).
 ///
-/// Forward direction: a user's identity is (org_id, user_id) → ok_head(org_id, user_id)
-/// Reverse direction: a session's identity is the full SessionKey (no ok_head).
+/// Fields reference DOCUMENT types: the derive resolves
+/// `<User as Document>::Key` and `NS_PREFIX` — the ns is declared once on
+/// the document (User carries `#[ok_ns(1)]`, Session `#[ok_ns(2)]`); the
+/// junction declares no ns of its own.
 ///
-/// The two directions of one edge use different endpoint identity widths —
+/// Forward: a user's identity is (org_id, user_id) → ok_head(org_id, user_id)
+/// Reverse: a session's identity is the full SessionKey (no ok_head).
+/// The two directions use different endpoint identity widths —
 /// this is how "the primary key changes with direction" is expressed.
-#[derive(EdgeEncode, Clone)]
-#[ok_ns(4)]
-pub struct UserToSessionEdge {
+#[derive(JunctionEncode, Clone)]
+#[ok_junction(1)]
+pub struct UserToSession {
     #[ok_head(org_id, user_id)]
-    pub user_id: UserKey,
-    pub session_id: SessionKey,
+    pub user: Ref<User, UserKey>,
+    pub session: Ref<Session, SessionKey>,
 }
 ```
 
-`#[ok_head(field, ...)]` declares which fields of the endpoint count as its
-*identity* for this edge; omitting it means the full key is the identity.
-Names must be a declaration-order prefix of the endpoint's fields
-(compile-time generated check). One declaration produces both key families
-automatically (direction bit: see "Many-to-many relationships" above).
+`#[ok_junction(n)]` sets the segment-0x3 discriminator, separating
+multiple junctions over one endpoint pair. `#[ok_head(field, ...)]`
+declares which fields of the endpoint count as its identity **in this
+junction**; omitting it means the full key is the identity. Names must
+be a declaration-order prefix of the endpoint's fields (compile-time
+generated check). One declaration produces the one-way entry in each
+endpoint's ns automatically (direction is carried by which ns the entry
+lives in — see "Many-to-many relationships" below).
 
 ### Rows and indexes: `DocumentEncode`
 
@@ -119,7 +126,8 @@ pub struct User {
   the row determines `Collection<S, K, R>` entirely). A key type carries no ns —
   the same key shape may serve several rows/tables, each with its own ns.
   `Collection::new(store)` takes no ns argument; the assembly site picks the
-  engine only. Edge structs declare `#[ok_ns]` the same way (EdgeEncode).
+  engine only. A junction declares no ns — each endpoint document carries its
+  own (JunctionEncode).
 - `fields(...)` — payload fields to sort/group by, declaration order,
   first field = the grouping dimension.
 - `includes(...)` — covering index: copies payload fields into the entry
@@ -184,12 +192,12 @@ doc](integration/EXTENSION-TYPES.md). Implementation details (encoding contract,
 Physical index entry layout (ADR-0005):
 
 ```
-[ ns 2B BE ][ slot 1B ][ fields segment BE ][ primary key prefix (default: full) ]   value = included fields TLV (empty when no includes)
+[ ns 2B BE ][ slot 2B BE ][ fields segment BE ][ primary key prefix (default: full) ]   value = included fields TLV (empty when no includes)
 ```
 
 The discriminator is namespace + slot: the ns segment scopes the table,
-the slot byte distinguishes access methods within it (primary = 0,
-indexes numbered 1, 2, … in declaration order); declaration is the
+the slot's segment number distinguishes entry kinds within it
+(primary/index/reduce/junction, ADR-0016); declaration is the
 registry, no runtime index bookkeeping. **Index declarations are
 append-only**: add at the tail only — never insert into or reorder the
 middle. An insertion shifts the slot of every later index; entries
@@ -227,13 +235,13 @@ modeling mistake; the correct outlets are `includes` (copy to skip
 table lookups) or nested entries (store together).
 
 
-### Link, unlink, query (`Edge`)
+### Link, unlink, query (`Junction`)
 
 ```rust
-use okm_core::Edge;
+use okm_core::Junction;
 
 let store = okm_core::TestStore::default(); // slatedb-mem; also FjallStore / SlatedbStore / RedbStore
-let mut edges: Edge<_, UserToSessionEdge> = Edge::new(store);
+let mut edges: Junction<_, UserToSession> = Junction::new(store);
 
 let user = UserKey { org_id: 7, user_id: 101 };
 let s1 = SessionKey { org_id: 7, session_id: 1001 };
@@ -299,7 +307,7 @@ alias it with `use` and it serves as the generic parameter. `Document::collectio
 builds the assembly point without repeating the key type at the call site:
 
 ```rust
-use okm_core::{Row, TestStore};
+use okm_core::TestStore;
 use __OkmIndex_User_by_org as ByOrg; // index type: derived from ok_index(by_org)
 
 let mut t = <User as Document>::collection(TestStore::default());
@@ -350,9 +358,9 @@ with names allocated on first sight in the **field-name dictionary**
 (slots 2/3). Runtime surface on `Collection`:
 
 ```rust
-// The row-map bridge: every declared field lifts to its logical type
-// (Quant -> F64, VarInt -> u64, Enum -> variant name, Offset -> i64).
-let (row, dynamic) = t.get_document(&key);          // (User, BTreeMap<String, DynamicValue>)
+// The row-map bridge: every field (declared + dynamic) lifts to its logical
+// type (Quant -> F64, VarInt -> u64, Enum -> variant name, Offset -> i64).
+let fields = t.get_document(&key);          // Option<BTreeMap<String, DynamicValue>>, None = no row
 
 // Whole-document write: fields matching the declared struct go to the typed
 // path; unknown names allocate in the dictionary and land in slot 1.
@@ -496,9 +504,15 @@ the dynamic reader applies the same migration semantics.
 Lock the physical bytes with hard-coded hex — any layout drift fails CI:
 
 ```rust
-let fk = edge.forward_key();
-assert_eq!(&fk[..4], &[0, 4, 0x30, 1]); // ns=4, slot 0x3001 (junction seg, n=1)
-assert_eq!(&fk[4..8], &7u32.to_be_bytes());
+let e = UserToSession {
+    user: Ref::ref_key(UserKey { org_id: 7, user_id: 101 }),
+    session: Ref::ref_key(SessionKey { org_id: 7, session_id: 1001 }),
+};
+let fk = e.a_side_key(); // A-side (forward) entry: lives in User's ns
+assert_eq!(&fk[..4], &[0, 1, 0x30, 2]); // ns=1 (User), slot 0x3002 (junction seg, n=1, dir=0)
+assert_eq!(&fk[4..8], &7u32.to_be_bytes()); // local identity leads
+let rk = e.b_side_key(); // B-side (reverse) entry: lives in Session's ns
+assert_eq!(&rk[..4], &[0, 2, 0x30, 3]); // ns=2 (Session), slot 0x3003 (n=1, dir=1)
 // ... full layout assertions in okm-core/tests/integration.rs
 ```
 
@@ -529,48 +543,49 @@ row, not on user rows. Storing together (denormalized) is efficient but
 couples; apart (normalized) pays one indirection but keeps identity
 singular.
 
-## Many-to-many relationships: edges
+## Many-to-many relationships: junctions
 
 The access methods defined by `#[ok_index]` are **table-local** — their
 data source is the row's own payload, kept in sync automatically by
 `put`/`delete`. Cross-table relationships (one-to-many, many-to-many)
 are facts between two independent entities; a payload index cannot
-reach them, so they are expressed as **edges**:
+reach them. One-to-many is carried by `Refs` (see "Embedded documents");
+many-to-many is carried by the **junction**:
 
 ```text
-#[derive(EdgeEncode)]
-#[ok_ns(4)]
-struct OrgUserEdge {
+#[derive(JunctionEncode)]
+#[ok_junction(1)]
+struct OrgUser {
     #[ok_head(tenant_id, org_id)]   // A-side identity truncated to (tenant_id, org_id)
-    pub org: OrgKey,                // B side, no annotation = full UserKey
-    pub user: UserKey,
+    pub org: Ref<Org, OrgKey>,
+    pub user: Ref<User, UserKey>,   // B side, no annotation = full UserKey
 }
 ```
 
-Edges materialize as explicit forward+reverse keys (ADR-0001 direction
-bit): the top bit of the ns is the direction. The FWD prefix
-`[ns:4][tenant][org]` fetches all members of an org in one scan (the
-list side); the REV prefix fetches all orgs a user belongs to. A job
-change = adding/removing one edge; identity never moves.
-`#[ok_head(...)]` declares which identity fields the endpoint is
-truncated to on that direction (absent = full identity), letting each
-endpoint use a shorter prefix — edge key length and grouping granularity
-are trimmed per direction, which is how "the primary key varies by
-direction" is expressed. `ok_head` selects a subset of *declared
-identity fields*, not free bytes; its decidability follows the same
-principle as the index tail.
+A junction materializes as one one-way key per endpoint ns (segment 0x3,
+direction carried by which ns the entry lives in, ADR-0015/0016): the
+A-side prefix `[ns_org][0x3nnn][org]` fetches all members of an org in
+one scan (the list side); the prefix in `ns_user` fetches all orgs a
+user belongs to. A job change = adding/removing one junction entry;
+identity never moves. `#[ok_head(...)]` declares which identity fields
+the endpoint is truncated to on that direction (absent = full identity),
+letting each endpoint use a shorter prefix — entry key length and
+grouping granularity are trimmed per direction, which is how "the
+primary key varies by direction" is expressed. `ok_head` selects a
+subset of *declared identity fields*, not free bytes; its decidability
+follows the same principle as the index tail.
 
-Edges and indexes are isomorphic at the mechanism level (both are
+Junctions and indexes are isomorphic at the mechanism level (both are
 "secondary key layouts pointing at identity") but their roles cannot be
 swapped:
 
 - **Data source**: an index's data source is the row's own payload —
-  the user never writes entries by hand. An edge's data source is the
+  the user never writes entries by hand. A junction's data source is the
   relationship between two entities — a business fact in its own right,
   requiring explicit double-write and double-delete.
 - **Endpoints**: an index's tail points at its own table's primary key;
-  an edge points at another table's entity (two endpoints, direction bit
-  separating forward and reverse).
+  a junction points at another collection's entity (two endpoints, one
+  one-way entry per endpoint ns).
 
 **Bidirectionality is an obligation, not an option.** A REV entry costs
 one extra key of storage (LSM sequential append — the cheapest write
@@ -579,17 +594,17 @@ of the FWD segment (violating access-method discipline), or a later
 backfill migration (orders of magnitude more expensive). The contrast
 with indexes makes this sharper: an index has only one direction,
 because the reverse lookup goes through the primary-key `get`; both
-endpoints of an edge are secondary vantage points — neither holds the
+endpoints of a junction are secondary vantage points — neither holds the
 primary key — so both directions need an entry. Bidirectionality also
 makes unbinding O(1): both keys' identities are in hand, so it is an
 exact `delete`, not scan-then-delete. The real restraint is not "do we
-need the REV direction" (no choice there) but **whether this edge
+need the REV direction" (no choice there) but **whether this junction
 should exist at all**: a relationship with no reverse-lookup need and a
 small cardinality (a config-style one-to-one) can live in a payload
-field, with no edge declared; add one later when needed — edge
+field, with no junction declared; add one later when needed — junction
 double-writes sync automatically, no backfill.
 
-One sentence: **an index is a derived view of one row; an edge is
+One sentence: **an index is a derived view of one row; a junction is
 first-class relationship data**. The convenience of `#[ok_index]`
 (declare-to-register, no manual ns numbering — ADR-0005's motivation
 was precisely eliminating per-index manual numbering and hole
@@ -612,7 +627,7 @@ zero layout difference from any document collection. What is new lives
 on the edge side:
 
 ```rust
-use okm_core::{GraphEdgeEncode, EdgeFact, Graph, NodeRef};
+use okm_core::{EdgeEncode, EdgeFact, Graph, NodeRef};
 
 /// The edge collection of one graph. Declared attribute fields are
 /// edge-own data; endpoints are NOT declared — refs are
@@ -635,7 +650,8 @@ g.link(&EdgeFact {
 }, &attrs, 1).unwrap();
 
 g.typed_out("employs", &user1);   // 0x7 face: kind-qualified traversal
-g.by_attr_face(<Employment as Face>::slot("since_year"), &2020u16.to_be_bytes());
+let slot = __OkmEdgeIndex_Employment_since_year::SLOT; // derive-generated 0x1 face slot
+g.by_attr_face(slot, &2020u16.to_be_bytes());
 ```
 
 - **Endpoint references** are `[ns 2B][len varint][pkey]` — the ns is

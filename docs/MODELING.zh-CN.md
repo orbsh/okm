@@ -46,28 +46,32 @@ pub struct SessionKey {
 
 主键定宽：字段按声明序大端编码，`KEY_LEN` 编译期锁死。变长字段见下方「行与索引」——key 保持定宽，变长是索引条目的属性。
 
-### 边：`EdgeEncode`
+### Junction：`JunctionEncode`
 
 ```rust
-use okm_core::EdgeEncode;
+use okm_core::{JunctionEncode, Ref};
 
-/// user → sessions 边。
+/// user → sessions junction（SQL 多对多连接表）。
+///
+/// 字段引用文档类型：derive 反查 `<User as Document>::Key` 与 `NS_PREFIX`——
+/// ns 只在文档上声明一次（User 挂 `#[ok_ns(1)]`，Session 挂 `#[ok_ns(2)]`），
+/// junction 自身不声明 ns。
 ///
 /// 正向：user 的身份是 (org_id, user_id) 两个字段 → ok_head(org_id, user_id)
 /// 反向：session 的身份是完整 SessionKey（无 ok_head）
 ///
-/// 同一条边的两个方向使用不同宽度的端点身份——
+/// 同一条 junction 的两个方向使用不同宽度的端点身份——
 /// 这就是"主键随方向变化"的表达。
-#[derive(EdgeEncode, Clone)]
-#[ok_ns(4)]
-pub struct UserToSessionEdge {
+#[derive(JunctionEncode, Clone)]
+#[ok_junction(1)]
+pub struct UserToSession {
     #[ok_head(org_id, user_id)]
-    pub user_id: UserKey,
-    pub session_id: SessionKey,
+    pub user: Ref<User, UserKey>,
+    pub session: Ref<Session, SessionKey>,
 }
 ```
 
-`#[ok_head(field, ...)]` 声明该端点在**这条边里**哪些字段算身份；不标注 = 全量 key 即身份。字段名必须是端点声明序的前缀（宏生成的编译期检查）。声明一次，正反两族条目自动生成（方向位见上文「多对多关系」）。
+`#[ok_junction(n)]` 设置段 0x3 区分号，区分同一端点对上的多条 junction。`#[ok_head(field, ...)]` 声明该端点**在这条 junction 里**哪些字段算身份；不标注 = 全量 key 即身份。字段名必须是端点声明序的前缀（宏生成的编译期检查）。一次声明自动生成每个端点 ns 里的一条单向条目（方向由条目所在的 ns 承载——见下文「多对多关系」）。
 
 ### 行与索引：`DocumentEncode`
 
@@ -94,7 +98,7 @@ pub struct User {
 - `#[ok_ns(1)]`——表的命名空间段，声明在**行上**（行是表的声明点：`#[ok_ref]`
   已把 key 类型钉死，行完全决定 `Collection<S, K, R>`）。key 类型不带 ns——同一个
   key 形状可以合法服务多个行/表，各挂各的 ns 号。`Collection::new(store)` 不收 ns
-  参数，拼装点只选 engine。edge struct 的 `#[ok_ns]` 同理（EdgeEncode）。
+  参数，拼装点只选 engine。junction 不声明 ns——端点文档各自携带（JunctionEncode）。
 - `fields(...)`——排序/分组的 payload 字段，按声明序，首位 = 分组维度。
 - `includes(...)`——覆盖索引，复制 payload 字段进 entry value（上文「覆盖索引克制」）。
 - `key(...)`——把 entry 尾部携带的主键截断到命名子集（默认取满）。截断改变的是行级唯一性，不是分组：`fields` 前缀驱动排序，key 尾段区分行；`key(user_id)` 仅在命名子集对每行唯一时才安全，否则行会互相覆盖 entry。
@@ -125,10 +129,10 @@ fn hour_bucket(row: &Post) -> Vec<u64> {
 索引条目物理布局（ADR-0005）：
 
 ```
-[ ns 2B BE ][ slot 1B ][ 数据段（fields）BE ][ 主键前缀（默认取满） ]   value = includes 字段 TLV（无 includes 则为空）
+[ ns 2B BE ][ slot 2B BE ][ 数据段（fields）BE ][ 主键前缀（默认取满） ]   value = includes 字段 TLV（无 includes 则为空）
 ```
 
-判别符 = ns + slot：ns 段划整张表，slot 字节在表段内区分访问方法（主表 slot=0，索引按声明序 1, 2, …）；声明即注册，无运行时索引簿记。slot 按声明序机械分配（SLOT = `#[ok_index]` 出现的序位），因此**索引声明是 append-only 的**：只能在尾部追加，不能在中途插入或重排——插入会让其后所有索引的 slot 漂移，已落库条目留在旧 slot 位，`scan` 换了前缀后读到空结果（静默错误，不是变慢）。删除声明只是留下无害的 slot 洞（与 ns 编号永不复用是同一纪律，ADR-0002）。另注意：没有索引回填机制，尾部追加的新索引只对之后写入的行生效，存量行不补条目；需要覆盖存量时走迁移双写。
+判别符 = ns + slot：ns 段划整张表，slot 的段号区分条目类别（主表/索引/reduce/junction，ADR-0016）；声明即注册，无运行时索引簿记。slot 按声明序机械分配（SLOT = `#[ok_index]` 出现的序位），因此**索引声明是 append-only 的**：只能在尾部追加，不能在中途插入或重排——插入会让其后所有索引的 slot 漂移，已落库条目留在旧 slot 位，`scan` 换了前缀后读到空结果（静默错误，不是变慢）。删除声明只是留下无害的 slot 洞（与 ns 编号永不复用是同一纪律，ADR-0002）。另注意：没有索引回填机制，尾部追加的新索引只对之后写入的行生效，存量行不补条目；需要覆盖存量时走迁移双写。
 
 数据段（fields 段）的语义结构是**有序的维度序列**：首位是分组/等值维度，其后是排序维度，它受两重约束——
 - **解码约束**：数据段中至多一个变长字段，且必须紧贴主键前缀之前。主键定宽（`KEY_LEN`），从尾部反推切出；其后若还有定宽字段也依次从右往左切；剩下整块就是那个唯一的变长段——它的长度不需要存储，边界由右侧定宽段反推。两个变长段（如 `fields(token, name)`）之间没有边界字节，解码不可能，derive 在编译期拒绝。
@@ -136,13 +140,13 @@ fn hour_bucket(row: &Post) -> Vec<u64> {
 
 另注意 `includes` 不在数据段内——它在 entry value 里，不参与 key 结构与排序。想把"条目里多带点数据"表达成加 fields 段是建模误区，正确出口是 `includes`（免回表复制）或嵌套条目（存一起）。
 
-### 连接、断开、查询（`Edge`）
+### 连接、断开、查询（`Junction`）
 
 ```rust
-use okm_core::Edge;
+use okm_core::Junction;
 
 let store = okm_core::TestStore::default(); // slatedb-mem；另有 FjallStore / SlatedbStore / RedbStore
-let mut edges: Edge<_, UserToSessionEdge> = Edge::new(store);
+let mut edges: Junction<_, UserToSession> = Junction::new(store);
 
 let user = UserKey { org_id: 7, user_id: 101 };
 let s1 = SessionKey { org_id: 7, session_id: 1001 };
@@ -192,7 +196,7 @@ for pk in edges.reverse_prefix(&s1) {
 `DocumentEncode` 声明的访问方法在查询侧具名为索引类型。索引声明的派生物在展开点（本文件）生成：`ok_index(by_org ...)` 生成索引类型 `__OkmIndex_User_by_org`（机械拼接，无大小写转换），`use` 别名后即可作泛型参数。`Document::collection` 构建装配点，调用处无需重复 key 类型：
 
 ```rust
-use okm_core::{Row, TestStore};
+use okm_core::TestStore;
 use __OkmIndex_User_by_org as ByOrg; // 索引类型：ok_index(by_org) 的派生物
 
 let mut t = <User as Document>::collection(TestStore::default());
@@ -234,9 +238,9 @@ let hits = t.scan::<ByToken>(b"rust");
 一套编码同时服务声明行与外部数据。声明字段照常走热/冷段；其余落进**动态段**（slot 1），以 n-TLV 帧——`[字段编号][类型][长度][字节]`——存储，名字在**字段名字典**（slot 2/3）里首次出现时分配。`Collection` 上的运行时接口：
 
 ```rust
-// 行-映射桥：每个声明字段 lift 到逻辑类型
+// 行-映射桥：全部字段（声明 + 动态）lift 到逻辑类型
 // （Quant -> F64、VarInt -> u64、Enum -> 变体名、Offset -> i64）。
-let (row, dynamic) = t.get_document(&key);          // (User, BTreeMap<String, DynamicValue>)
+let fields = t.get_document(&key);          // Option<BTreeMap<String, DynamicValue>>，None = 行不存在
 
 // 整体写：名字匹配声明结构体的字段走 typed 路径；
 // 未知名字在字典里分配编号，落进 slot 1。
@@ -328,9 +332,15 @@ dynamic codec（Python/Steel 的 schema 驱动编解码）从 `TableSchema` 镜�
 用硬编码 hex 锁定物理字节——任何布局漂移都让 CI 失败：
 
 ```rust
-let fk = edge.forward_key();
-assert_eq!(&fk[..4], &[0, 4, 0x30, 1]); // ns=4、slot 0x3001（junction 段、n=1）
-assert_eq!(&fk[3..7], &7u32.to_be_bytes());
+let e = UserToSession {
+    user: Ref::ref_key(UserKey { org_id: 7, user_id: 101 }),
+    session: Ref::ref_key(SessionKey { org_id: 7, session_id: 1001 }),
+};
+let fk = e.a_side_key(); // A 端（正向）entry：住在 User 的 ns
+assert_eq!(&fk[..4], &[0, 1, 0x30, 2]); // ns=1（User）、slot 0x3002（junction 段、n=1、dir=0）
+assert_eq!(&fk[4..8], &7u32.to_be_bytes()); // 本端身份在前
+let rk = e.b_side_key(); // B 端（反向）entry：住在 Session 的 ns
+assert_eq!(&rk[..4], &[0, 2, 0x30, 3]); // ns=2（Session）、slot 0x3003（n=1、dir=1）
 // ... 完整布局断言见 okm-core/tests/integration.rs
 ```
 
@@ -342,30 +352,30 @@ OKM 里它以二级索引的形态出现：索引条目的布局是 `[ns 2B][slo
 
 对应 SQL 的范式化：独立 ns 是范式化的——parent_id、org_name 之类的组织属性只存组织行一份，用户行不带；存一起（反范式化）效率高但耦合，分开（范式化）多一次间接但身份单一。
 
-## 多对多关系：边（edge）
+## 多对多关系：junction
 
-`#[ok_index]` 定义的访问方法是**表内**的——数据源是本行 payload，随 `put`/`delete` 自动同步。跨表关系（一对多、多对多）是两个独立实体之间的事实，payload 索引够不着，由**边**表达：
+`#[ok_index]` 定义的访问方法是**表内**的——数据源是本行 payload，随 `put`/`delete` 自动同步。跨表关系（一对多、多对多）是两个独立实体之间的事实，payload 索引够不着：一对多由 `Refs` 承载（见「嵌入文档」一节），多对多由 **junction** 承载：
 
 ```text
-#[derive(EdgeEncode)]
-#[ok_ns(4)]
-struct OrgUserEdge {
+#[derive(JunctionEncode)]
+#[ok_junction(1)]
+struct OrgUser {
     #[ok_head(tenant_id, org_id)]   // A 端身份截断到 (tenant_id, org_id)
-    pub org: OrgKey,                // B 端无注解 = 完整 UserKey
-    pub user: UserKey,
+    pub org: Ref<Org, OrgKey>,
+    pub user: Ref<User, UserKey>,   // B 端无注解 = 完整 UserKey
 }
 ```
 
-junction 物化为每个端点 ns 各一条单向 key（段 0x3，方向由 ns 承载，ADR-0015/0016）：A 端前缀 `[ns:4][0x3nnn][org]` 一次扫描取整组织的成员（列表侧），REV 前缀取某用户所属的全部组织；跳槽 = 增删一条边，身份不动。`#[ok_head(...)]` 声明该方向把端点身份截断到哪几个字段（不写 = 完整身份），让端点用更短的前缀、边 key 长度和分组粒度按方向各自裁剪——端点身份宽度的选取是"主键随方向变化"的表达。`ok_head` 选的是身份字段的子集（结构体声明过的字段），不是自由字节，可解性与索引尾段同理。
+junction 物化为每个端点 ns 各一条单向 key（段 0x3，方向由条目所在的 ns 承载，ADR-0015/0016）：`ns_org` 里的前缀 `[ns_org][0x3nnn][org]` 一次扫描取整组织的成员（列表侧），`ns_user` 里的前缀取某用户所属的全部组织；跳槽 = 增删一条 junction 条目，身份不动。`#[ok_head(...)]` 声明该方向把端点身份截断到哪几个字段（不写 = 完整身份），让端点用更短的前缀、条目 key 长度和分组粒度按方向各自裁剪——端点身份宽度的选取是"主键随方向变化"的表达。`ok_head` 选的是身份字段的子集（结构体声明过的字段），不是自由字节，可解性与索引尾段同理。
 
-边与索引机制上同构（都是"指向身份的次级 key 布局"），但角色不能互换：
+junction 与索引机制上同构（都是"指向身份的次级 key 布局"），但角色不能互换：
 
-- **数据源**：索引的数据源是本行 payload，用户永不手写条目；边的数据源是两个实体的关系，是业务事实本身，必须显式双写双删。
+- **数据源**：索引的数据源是本行 payload，用户永不手写条目；junction 的数据源是两个实体的关系，是业务事实本身，必须显式双写双删。
 - **端点**：索引尾段指向自己表的主键；junction 指向另一张集合的实体（双端点、每端 ns 一条单向条目）。
 
-**双向是义务不是选项。** REV 条目只多付一份 key 的存储（LSM 顺序 append，最廉价的写），省掉它换来的却是：反查需求出现时全扫 FWD 段过滤（违反访问方法强制），或事后补边加回填迁移（贵几个量级）。与索引对照更清楚：索引只有一个方向，因为反查走主键 `get` 就行；边的两个端点都是次级视角，谁也不持有主键，所以两个方向都要一条。双向还让解绑变 O(1)——FWD/REV 两条 key 的身份都在手上，精确 `delete`，无需先扫后删。真正的克制点不在"要不要 REV"（不二选），在**要不要这条 Edge**：没有反查需求且基数小的关系（如配置类一对一），直接放 payload 字段就够，连边都不建；需要时再加，边的双写自动同步，无回填。
+**双向是义务不是选项。** REV 条目只多付一份 key 的存储（LSM 顺序 append，最廉价的写），省掉它换来的却是：反查需求出现时全扫 FWD 段过滤（违反访问方法强制），或事后补边加回填迁移（贵几个量级）。与索引对照更清楚：索引只有一个方向，因为反查走主键 `get` 就行；junction 的两个端点都是次级视角，谁也不持有主键，所以两个方向都要一条。双向还让解绑变 O(1)——FWD/REV 两条 key 的身份都在手上，精确 `delete`，无需先扫后删。真正的克制点不在"要不要 REV"（不二选），在**要不要这条 junction**：没有反查需求且基数小的关系（如配置类一对一），直接放 payload 字段就够，连 junction 都不建；需要时再加，junction 的双写自动同步，无回填。
 
-一句话：**索引 = 一行的派生视图，边 = 一等的关系数据**。`#[ok_index]` 定义时方便（声明即注册，无需手工编号 ns——ADR-0005 的动机正是消灭 per-index 手工编号与洞簿记）是次要红利，不是两者的分界；分界在数据源。
+一句话：**索引 = 一行的派生视图，junction = 一等的关系数据**。`#[ok_index]` 定义时方便（声明即注册，无需手工编号 ns——ADR-0005 的动机正是消灭 per-index 手工编号与洞簿记）是次要红利，不是两者的分界；分界在数据源。
 
 ## 图边：第三种关系载体
 
@@ -374,7 +384,7 @@ Junction 覆盖的多对多绑定在**编译期端点类型**上。知识图谱�
 节点就是普通 document collection：节点的"类型"是它的 collection（ns 即类型标记），节点 kind / 属性过滤走 collection 自己的声明索引和字典——与任何文档 collection 布局零差异。新增的东西都在边这一侧：
 
 ```rust
-use okm_core::{GraphEdgeEncode, EdgeFact, Graph, NodeRef};
+use okm_core::{EdgeEncode, EdgeFact, Graph, NodeRef};
 
 /// 一个图的边 collection。声明属性字段是边自身的数据；端点不需要声明——
 /// 引用自描述（[ns 2B][len][pkey]），任意节点 collection 零成本参与。
@@ -395,7 +405,8 @@ g.link(&EdgeFact {
 }, &attrs, 1).unwrap();
 
 g.typed_out("employs", &user1);   // 0x7 面：类型限定遍历
-g.by_attr_face(<Employment as Face>::slot("since_year"), &2020u16.to_be_bytes());
+let slot = __OkmEdgeIndex_Employment_since_year::SLOT; // derive-generated 0x1 face slot
+g.by_attr_face(slot, &2020u16.to_be_bytes());
 ```
 
 - **端点引用**是 `[ns 2B][len varint][pkey]`——ns 充当类型标记，pkey 宽度以单字节 varint 住在引用自身。任意 collection 的文档免声明参与：同节点 = 同字节（遍历面精确前缀命中），不同 pkey 宽度共存，没有需要声明、维护、防错的注册表。图边让 Ref 纪律退役——引用自带宽度，连同 ns 知识一起。

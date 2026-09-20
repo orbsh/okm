@@ -685,20 +685,24 @@ item; need predates nothing yet, record when a real consumer appears.
 many middle table, double-materialized FWD/REV), not a graph edge.
 Decided:
 
-- [ ] 4-byte entry head (ADR-0016): `[ns u16][slot u16]`, slot = 4-bit
+- [x] 4-byte entry head (ADR-0016): `[ns u16][slot u16]`, slot = 4-bit
       segment + 12-bit counter (0x0 document-self, 0x1 index, 0x2 reduce,
       0x3 junction; counters independent). All non-primary entry keys
       +1 byte; hex locks and slot tables rewritten. Renames
       `EdgeEncode` -> `JunctionEncode`, `Edge<S, E>` -> `Junction<S, E>`
-      (mechanical: derive, core, tests, docs en/zh).
-- [ ] Junction fields reference document types (`user: User`, not
+      (mechanical: derive, core, tests, docs en/zh). LANDED 2026-09-20 —
+      hex locks in integration.rs (`[0,1,0x30,2]` A-side / `[0,2,0x30,3]`
+      B-side, low bit of nnn carries dir for self-reflexive junctions).
+- [x] Junction fields reference document types (`user: User`, not
       `UserKey`) — the derive resolves `<User as Document>::Key` and
       `NS_PREFIX`; `#[ok_ns]` on junctions removed entirely (ns declared
       once, on the document; the earlier "derive the junction ns from
       endpoint ns values" idea is superseded — no derivation at all,
       the entries live in the endpoints' own ns, ADR-0015/0016).
       Discriminator `#[ok_junction(n)]` fills the segment-0x3 counter
-      (separates multiple junctions over one endpoint pair).
+      (separates multiple junctions over one endpoint pair). LANDED
+      2026-09-20 — endpoint fields carry `Ref<Doc, Key>` (integration.rs
+      UserToSession), derive resolves NS_PREFIX + Key.
 - [ ] Future (HIGH): `#[ok_relation(JunctionType)]` on a `Refs`
       field — put-time diff auto link/unlink (trades RMW for
       declarative sync; needs the two-endpoint write consistency
@@ -777,12 +781,12 @@ explicitly rejected ones: surrogate-pair-style compensation and
 uniform width (O(1) field indexing is already covered by static
 offsets).
 
-**P3 — 4-byte head (ns u16 + slot u16) + Junction rename.** Layout
-groundwork first; ADR-0015 decided. `slot: u8` -> `u16` BE, high
-byte = segment (0x00 doc / 0x01 indexes / 0x02 reduces / 0x80-0x81
-junction / 0x82-0xBF relation reserve / 0xC0-0xFF system). Junction
-rename rides the same sweep. Hex locks + key-layout + ADR-0012 slot
-table rewritten.
+**P3 — 4-byte head (ns u16 + slot u16) + Junction rename.** DONE
+(2026-09-20). Layout groundwork first; ADR-0015 decided. `slot: u8` ->
+`u16` BE, high byte = segment (0x0 document-self / 0x1 indexes /
+0x2 reduces / 0x3 junction / 0x82-0xBF relation reserve / 0xC0-0xFF
+system; 12-bit counter per segment). Junction rename rides the same
+sweep. Hex locks + key-layout + ADR-0012 slot table rewritten.
 
 **P3.5 — Vector<T> typed homogeneous list.** DONE (2026-09-19, second
 pass). First pass compiled the dimension into the type (`Vector<T, N>`,
