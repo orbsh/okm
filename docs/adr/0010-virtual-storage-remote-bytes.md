@@ -4,7 +4,10 @@ Date: 2026-09-13
 Status: Accepted. **Update 2026-09-12, rename shipped**: the trait is now
 literally named `VirtualStorage` (module `storage`; async twin
 `VirtualStorageAsync` on the slatedb path) — no alias layer left to
-conceptualize through. Backend struct names (`FjallStore`, `SlatedbStore`) are unchanged; the test `MockStore` was later replaced by the `TestStore` engine matrix ( slatedb-mem / fjall / redb).
+conceptualize through. Backend struct names (`FjallStore`, `SlatedbStore`) are unchanged; the test `MockStore` was later replaced by the `TestStore` engine matrix ( slatedb-mem / fjall / redb). **Update 2026-09-20, receiver placement**:
+the receiver is an engine-bearing host of the deployment — the Aura node itself.
+A second placement, the receiver inside a remote *execution* node (the probe),
+was implemented and withdrawn the same day; §7 records the reasons.
 
 ## Context
 
@@ -204,8 +207,9 @@ append-only, u16) is untouched.
 
 Same process: direct engine handle (no remote backend at all).
 Same machine, cross process: in-process channel / UDS.
-Cross machine: the existing outbound WS connection (Probe case) or realm
-events (in-realm case). The sender holds "an object implementing the trait";
+Cross machine: the existing outbound WS connection (a probe's connection,
+for instance, or any other already-open channel) or realm events (in-realm
+case). The sender holds "an object implementing the trait";
 physical topology is fixed at assembly time. No declared endpoint, no
 dedicated listener, no second protocol.
 
@@ -217,6 +221,34 @@ sender side of the executor, same as write. A TCP + hand-parsed client is
 the reference example; it is an example, not part of the contract.
 Transport diversity exists only on the two outsides of the executor and
 never leaks into it.
+
+### 7. Receiver placement: an engine-bearing host, never an execution node (2026-09-20)
+
+The receiver owns an engine, so the host it runs on must be one meant to hold
+data. That is the Aura node itself — application data, Krystallizer's graph and
+any other remote sender's bytes land in an engine Aura operates, and §6's
+transport is simply what carries frames to it.
+
+A second placement was implemented and then removed: the receiver as a
+`#[kv_storage]` executor inside the **probe**, i.e. on a remote execution node,
+with each instance's prefix declared in the probe's config and op frames riding
+the probe's outbound WS connection. Two structural reasons ended it:
+
+- **An execution node holds nothing between calls.** Every operation is
+  delivered per call and carries its code with it; hosting an engine there adds
+  a directory to place, size and back up plus an engine lifecycle, for data that
+  has no reason to live on that host.
+- **The receiver prefix is the receiver's own wrapping, derived from the
+  sender's identity and business logic** (for Gravity's data: its own ns, then
+  the partition id, then the event id — resolved by lookup on the control
+  plane). Declaring it as a per-instance field on the receiving side only
+  restated a decision taken elsewhere, and the field's `ns` shape dragged this
+  crate's vocabulary into a component whose contract is bytes only.
+
+Reading §6 with this in mind: frames may arrive over any already-open channel,
+including a probe's, but the **engine stays on a host the operator runs data
+on**. Where a receiver is assembled is a deployment decision, and reachability
+alone does not turn an execution node into a storage host.
 
 ## Consequences
 
