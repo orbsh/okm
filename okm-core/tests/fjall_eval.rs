@@ -3,7 +3,7 @@
 
 #![cfg(feature = "fjall")]
 
-use okm_core::{Edge, FjallStore};
+use okm_core::{Junction, FjallStore};
 mod common;
 use common::*;
 
@@ -11,7 +11,7 @@ use common::*;
 fn fjall_roundtrip() {
     let dir = tempfile::tempdir().unwrap();
     let store = FjallStore::open(dir.path(), "edges").unwrap();
-    let mut edges: Edge<FjallStore, UserToSessionEdge> = Edge::new(store);
+    let mut edges: Junction<FjallStore, UserToSessionEdge> = Junction::new(store);
 
     let u = UserKey {
         org_id: 7,
@@ -43,7 +43,7 @@ fn fjall_roundtrip() {
     // 重新打开验证持久化（unlink 已生效，剩 1 条）
     drop(edges);
     let store2 = FjallStore::open(dir.path(), "edges").unwrap();
-    let edges2: Edge<FjallStore, UserToSessionEdge> = Edge::new(store2);
+    let edges2: Junction<FjallStore, UserToSessionEdge> = Junction::new(store2);
     let sessions2 = u.get_session(&edges2);
     assert_eq!(sessions2, vec![s2]);
 }
