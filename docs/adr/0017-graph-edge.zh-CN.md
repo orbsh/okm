@@ -86,4 +86,4 @@ pkey 的边界**不在 key 里**。一个 collection 的 pkey 宽度是 schema �
 - 新 derive（`EdgeEncode` 的变体或独立的 `GraphEdgeEncode`）+ 一个小的运行期注册表类型。六面写入协议住在 `Graph<S, E>` 装配点，与 `Junction<S, E>` 对称。
 - ns → KEY_LEN 注册表是新的跨集合 schema 事实；编译期形态生成，动态形态用户维护。
 - ADR-0016 的段不改动：0x4–0x8 是 Edge collection 的普通 ns 内段。
-- 尚无消费者；设计在 `#[ok_relation]` 工作开始前落档，因为两者共用写路径 diff 机制。
+- 尚无消费者；设计在 `#[ok_relation]` 工作开始前落档，因为两者共用写路径 diff 机制。（更新 2026-09-20：`#[ok_relation]` 字段位形态随后被否决——见 ADR-0015 未来工作 §B；junction 的命令式 link/unlink 成对操作确立，本 ADR 的 put 路径 `link_into` batch 面不受影响。）

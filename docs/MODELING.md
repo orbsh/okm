@@ -611,6 +611,21 @@ was precisely eliminating per-index manual numbering and hole
 bookkeeping) is a secondary bonus, not the dividing line; the dividing
 line is the data source.
 
+**The interface is the verb pair, not a field** (ADR-0015 §B, decided
+2026-09-20). A field-position `#[ok_relation(JunctionType)]` on a
+`Refs` field — put-time diff auto link/unlink, generalizing Refs'
+stale-release — was analyzed and rejected: Refs works because the
+parent row is the single owner (one-directional by structure); a
+junction's endpoints are peers, so a one-side field declaration leaves
+the peer's delete unable to clean up (a stale field key resurrects a
+deleted edge on the next put), and two write entry points (field diff +
+explicit `link`/`unlink`) fight each other. The imperative pairing
+keeps the call site as the causal record — the code says what happened,
+no old state is ever reconstructed, and no write ever crosses into the
+peer's ns implicitly. Do not model a junction as a document field; if
+set-shaped mutation over one endpoint becomes a real need, the escape
+is an explicit command, never put-path magic.
+
 ## Graph edges: the third relation carrier
 
 Junctions cover many-to-many with **compile-time typed endpoints**. A

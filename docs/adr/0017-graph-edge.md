@@ -234,4 +234,7 @@ carries over.
   in-ns segments of the Edge collection.
 - No consumer exists yet; the design is recorded before
   `#[ok_relation]` work begins, since both share the write-path diff
-  machinery.
+  machinery. (Update 2026-09-20: the `#[ok_relation]` field-position
+  form was subsequently REJECTED — ADR-0015 Future work §B; the
+  junction's imperative link/unlink pairing stands, and this ADR's
+  put-path `link_into` batch surface is unaffected.)
