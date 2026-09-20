@@ -1,7 +1,7 @@
 # ADR-0017：图 Edge——第三种关系载体
 
 日期：2026-09-19
-状态：草案
+状态：草案（2026-09-20 更新：§3 增补声明属性字段——边上的静态字段直接生成访问方法，可用于过滤；增补节点侧 kind 过滤与 slot 布局说明）
 关联：ADR-0015（关系分类学）、ADR-0016（4 字节头、段号制 slot）、ADR-0002（命名空间字典）
 
 ## 背景
@@ -47,7 +47,14 @@ pkey 的边界**不在 key 里**。一个 collection 的 pkey 宽度是 schema �
 0x8  类型反向   [kind_id][dst NodeRef][edge_id]
 ```
 
-- **主表（0x0）**：边本体——`[src NodeRef][dst NodeRef][kind_id][attributes]`。属性是动态段（value 内的 slot-1 帧）：图属性天然动态。声明属性字段是后续可能的增强。
+**Slot 布局与普通文档的关系（2026-09-20 更新）**——明确说明，不追求严格一致：
+
+- **节点 collection = 标准文档布局，不变。** 节点 kind 面不是新段：它是 0x1 段里一个普通访问方法（固定本体形态是一条 `#[ok_index]` 声明，动态形态是用户分配的 `AccessMethod` slot）。节点 kind 走 collection 自己的 0x2/0x3 字典——每个 collection 都有同一本字典。与任何文档 collection 布局零差异；"某个字段是 kind"是建模约定，不是布局事实。
+- **Edge collection = 上表八类条目，用同一套段语言写成的另一种 collection 形态。** 0x0/0x1/0x2/0x3 保留文档侧的段语义（主表、声明索引、字典）；0x4–0x8 是 Edge collection 的普通 ns 内段（ADR-0016）——不引入新段类型。Edge 不是"带特殊段的文档"，而是由共享词汇组成的另一种 collection。
+
+- **主表（0x0）**：边本体——`[src NodeRef][dst NodeRef][kind_id][attributes]`。属性是动态段（value 内的 slot-1 帧）：图属性天然动态。
+- **声明属性字段（2026-09-20 更新）**：固定本体形态下，边声明可以携带 src/dst/kind 之外的静态字段。每个声明字段就是一条普通声明索引——segment 0x1（`0x1001+n`，声明序），每字段一面 `[字段值][edge_id]`。derive 直接生成访问方法；过滤走该面的索引扫描再解码回主表，而不是全量取边解码。字段值是边自身属性——不含 NodeRef，天然定宽——因此完全不触碰 ns → KEY_LEN 注册表。与 kind 字典互不相干：kind 是运行期增长的词表，声明字段是编译期声明、直接编码进索引 key。默认不建复合面（`kind+字段`、`字段+端点`）——用选择度最高的面过滤，edge_id 在内存收敛，与文档索引同一立场；复合面只在访问模式证明需要后再加。动态形态不受影响（空声明，属性全在动态段）。每个声明字段使 link/unlink 多写一条条目——写放大由声明者自选。
+- **节点侧 kind 过滤（2026-09-20 更新）**：按节点 kind / 节点属性过滤是图查询的基本需求，按形态分别回答。固定本体形态下节点就是普通 document collection：节点"类型"= collection 本身（ns 即类型标记），属性过滤走 collection 自己的 `#[ok_index]` 声明索引——零新机制。全动态形态下节点 kind 是动态段数据，由两个既有机制承载过滤、不新增段：(1) **节点 kind 字典**——每个 collection 本来就拥有自己的 0x2/0x3 字典，节点 kind 走它分配；节点 collection 的字典与边 collection 的字典天然分开（字典是 per-collection 的）。(2) **节点 kind 面**——节点 collection ns 内的一个声明访问方法，`[kind_id][node pkey]`，由节点正常 put 路径维护。复合过滤（`(*)-[edge_kind]->(:node_kind)`）扫 0x7/0x8 面与节点 kind 面、内存求交 id 集合——两个便宜面、一次收敛（不为它建三元复合面）。
 - **kind 索引（0x4）**：一种 kind 的全部边——`MATCH ()-[r:has]->()` 的入口。`kind_id` 来自 kind 字典（0x2/0x3）：写入时 name → id，保证每个 key 段定宽可排序。
 - **遍历（0x5/0x6）**：一个节点的全部出边 / 入边。完整 NodeRef 领先使扫描前缀可命中；`edge_id` 收尾——平行边（同两节点间的两个事实）各得一条条目，尾段 id 解码回主表。
 - **类型遍历（0x7/0x8）**：`(*)-[kind]->(*)` 面——kind 领先，因为它在此面是过滤维度；kind 不能作为此面的尾段。
@@ -55,7 +62,7 @@ pkey 的边界**不在 key 里**。一个 collection 的 pkey 宽度是 schema �
 
 ### 4. 两种形态，一套机制
 
-- **固定本体**：边 kind 与节点集合编译期声明。Edge derive 从 `#[ok_edge]` 形态的声明生成六面条目；ns 注册表是编译期常量。
+- **固定本体**：边 kind 与节点集合编译期声明。Edge derive 从 `#[ok_edge]` 形态的声明生成六面条目（声明属性字段每字段额外加一条 0x1 面，见 §3）；ns 注册表是编译期常量。
 - **全动态**（知识图谱）：一个 `KgNode` collection 与一个 `KgEdge` collection，**空声明**——只有身份，载荷全在动态段（声明 `props: DynamicValue` 会把它放进 slot 0，那是静态形态——不是动态图想要的）。kind 与节点 kind 是动态段数据；端点注册表是运行期表；遍历面通过动态层的 `AccessMethod` 构建走。
 
 两种形态共享同一 wire 布局与同一 slot 语义；差异只在声明住在哪里（derive 常量 vs 运行期 schema）。

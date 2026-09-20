@@ -13,6 +13,7 @@
 mod junction_encode;
 mod key_encode;
 mod document_encode;
+mod graph_encode;
 mod schema;
 mod storage_encode;
 
@@ -74,6 +75,16 @@ pub fn derive_document_encode(input: TokenStream) -> TokenStream {
 pub fn derive_junction(input: TokenStream) -> TokenStream {
     let out = junction_encode::derive(input.clone());
     dump("JunctionEncode", input, &out.clone().into());
+    out
+}
+
+/// Fixed-ontology Graph Edge (ADR-0017): ns + node registry + declared
+/// attribute fields (one 0x1 face each). Open endpoints — they travel as
+/// runtime `NodeRef`s, never as declared struct fields.
+#[proc_macro_derive(GraphEdgeEncode, attributes(ok_edge, ok_default))]
+pub fn derive_graph_edge(input: TokenStream) -> TokenStream {
+    let out = graph_encode::derive(input.clone());
+    dump("GraphEdgeEncode", input, &out.clone().into());
     out
 }
 

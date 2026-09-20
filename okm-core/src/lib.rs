@@ -27,7 +27,7 @@
 //! secondary index slots, assembly point, frame codec) and the project
 //! README for a full walkthrough.
 
-pub use okm_derive::{JunctionEncode, KeyEncode, NestStorage, DocumentEncode};
+pub use okm_derive::{JunctionEncode, KeyEncode, NestStorage, DocumentEncode, GraphEdgeEncode};
 
 pub mod model;
 pub mod engine;
@@ -43,6 +43,7 @@ pub use model::wrappers::wire::{put_len, take_len};
 pub use model::reduce::{reduce_get, scan_reduces, ReduceCodec, Reduce, ReduceLogic};
 pub use model::collection::Junction;
 pub use model::junction::KvJunction;
+pub use model::graph::{EdgeBody, EdgeFact, EndpointRegistry, Graph, KvGraph, NodeRef};
 pub use engine::storage::{VirtualStorage, KvBatch, MemBatch, SharedVirtualStorage};
 #[cfg(any(feature = "test-engines", feature = "fjall", feature = "redb"))]
 pub use engine::test_engine::TestStore;

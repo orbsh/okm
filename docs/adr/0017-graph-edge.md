@@ -1,7 +1,7 @@
 # ADR-0017: Graph Edge — the third relation carrier
 
 Date: 2026-09-19
-Status: Draft
+Status: Draft (Update 2026-09-20: declared attribute fields added to §3 — static fields on the edge generate access methods usable as filters)
 Related: ADR-0015 (relation taxonomy), ADR-0016 (4-byte head, segment-numbered slots), ADR-0002 (namespace dictionary)
 
 ## Context
@@ -96,10 +96,64 @@ Three candidate schemes were weighed:
 0x8  kind+in      [kind_id][dst NodeRef][edge_id]
 ```
 
+**Slot layout versus ordinary documents (Update 2026-09-20)** — stated
+explicitly, though not identical-by-construction:
+
+- **Node collection = the standard document layout, unchanged.** The
+  node kind face is NOT a new segment: it is an ordinary access method
+  in the 0x1 segment (a declared `#[ok_index]` in the fixed-ontology
+  form, a caller-allocated `AccessMethod` slot in the dynamic form).
+  Node kinds allocate through the collection's own 0x2/0x3 dictionary
+  — the same dictionary every collection has. Zero layout difference
+  from any document collection; "one field is the kind" is a modeling
+  convention, not a layout fact.
+- **Edge collection = the eight entry kinds above, a different
+  collection shape written in the SAME segment language.** 0x0/0x1/
+  0x2/0x3 keep their document-side segment semantics (primary,
+  declared indexes, dictionary); 0x4–0x8 are ordinary in-ns segments
+  of the Edge collection per ADR-0016 — no new segment type is
+  introduced. The Edge is not "a document with special segments"; it
+  is another kind of collection composed from the shared vocabulary.
+
 - **Primary (0x0)**: the edge body — `[src NodeRef][dst NodeRef]
   [kind_id][attributes]`. Attributes are a dynamic segment (slot-1
   frames within the value): graph attributes are naturally dynamic.
-  Declared attribute fields are a possible later enhancement.
+- **Declared attribute fields (Update 2026-09-20)**: in the fixed-
+  ontology form the edge declaration may carry static fields beyond
+  src/dst/kind. Each declared field is an ordinary declared index —
+  segment 0x1 (`0x1001+n`, declaration order), one face
+  `[field value][edge_id]` per field. The derive generates the access
+  method directly; filtering runs as an index scan over that face and
+  decodes back to the primary, instead of fetching every edge and
+  decoding. Field values are the edge's own attributes — no NodeRef,
+  fixed width by construction — so they never touch the ns → KEY_LEN
+  registry. This is disjoint from the kind dictionary: kinds are a
+  runtime-growing vocabulary, declared fields are compile-time
+  declarations encoded straight into the index key. No composite faces
+  (`kind+field`, `field+endpoint`) are built by default — filter by
+  the most selective face and converge edge_ids in memory, the same
+  stance as document indexes; a composite face is added only when a
+  proven access pattern demands it. Dynamic form is unaffected (empty
+  declarations, attributes entirely in the dynamic segment). Each
+  declared field grows link/unlink by one entry — write amplification
+  the declarer opts into.
+- **Node-side kind filtering (Update 2026-09-20)**: filtering by node
+  kind / node attributes is a basic graph-query need, answered
+  per form. In the fixed-ontology form a node IS an ordinary document
+  collection: node "type" = the collection itself (the ns is the type
+  marker), and attribute filtering rides the collection's own
+  `#[ok_index]` declarations — nothing new. In the fully dynamic form
+  node kinds are dynamic-segment data, so two existing mechanisms
+  carry the filter, no new segment: (1) **node kind dictionary** —
+  every collection already owns its own 0x2/0x3 dictionary; node kinds
+  allocate through it, and the node collection's dictionary is
+  naturally separate from the edge collection's (dictionaries are
+  per-collection). (2) **node kind face** — one declared access method
+  over the node collection's ns, `[kind_id][node pkey]`, maintained by
+  the node's normal put path. Composite filtering
+  (`(*)-[edge_kind]->(:node_kind)`) scans the 0x7/0x8 face and the node
+  kind face and intersects the id sets in memory — two cheap faces,
+  one convergence (no triple-composite face is built for it).
 - **kind index (0x4)**: all edges of one kind — the `MATCH ()-[r:has]->()`
   entry point. `kind_id` comes from the kind dictionary (0x2/0x3):
   write-time name → id, so every key segment stays fixed-width and
@@ -119,7 +173,8 @@ Three candidate schemes were weighed:
 
 - **Fixed ontology**: edge kinds and node collections declared at
   compile time. The Edge derive generates the six-face entries from
-  `#[ok_edge]`-shaped declarations; the ns registry is compile-time
+  `#[ok_edge]`-shaped declarations (declared attribute fields add one
+  0x1 face each, see §3); the ns registry is compile-time
   constants.
 - **Fully dynamic** (knowledge graphs): a `KgNode` collection and a
   `KgEdge` collection, **empty declarations** — identity only, payload

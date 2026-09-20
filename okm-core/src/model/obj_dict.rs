@@ -97,6 +97,15 @@ impl DictCache {
         Some(name)
     }
 
+    /// Non-allocating name → id probe: does the cache already know this
+    /// name (loaded or previously written through this handle)? No
+    /// engine fallback — a name this handle never wrote and the load
+    /// missed is treated as unknown (typed scans return empty rather
+    /// than touching the store).
+    pub fn by_name_get(&self, name: &str) -> Option<u16> {
+        self.by_name.get(name).copied()
+    }
+
     /// Load both directions from the engine once. Full-table load, not
     /// per-id probes: the vocabulary is small and append-only, so one
     /// scan_prefix covers every future read until this process writes a
