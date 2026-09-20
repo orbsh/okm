@@ -48,22 +48,23 @@ fn arrow_type(ty: FieldType) -> DataType {
     }
 }
 
-/// LEB128 decode for `VarInt` columns (mirror of `VarIntEnc::varint_decode`).
+/// Decode a prefix-monotonic varint (P1 wire — the same codec as
+/// `VarIntEnc`, shared shape) for `VarInt` columns. `raw` is the frame
+/// value region only.
 fn varint_decode(b: &[u8]) -> (u64, usize) {
-    let mut v: u64 = 0;
-    let mut shift = 0u32;
-    let mut i = 0usize;
-    loop {
-        let byte = *b.get(i).expect("VarInt: truncated frame");
-        v |= ((byte & 0x7F) as u64) << shift;
-        i += 1;
-        if byte & 0x80 == 0 {
-            break;
-        }
-        shift += 7;
-        assert!(i < 10, "VarInt: continuation byte past max width");
+    let w = crate::model::wrappers::wire::prefix_width(
+        *b.first().expect("VarInt: truncated frame"),
+    );
+    assert!(b.len() >= w, "VarInt: truncated frame");
+    if w == 9 {
+        return (u64::from_be_bytes(b[1..9].try_into().unwrap()), 9);
     }
-    (v, i)
+    let hi = (b[0] & (0xFF >> w)) as u64;
+    let mut low: u64 = 0;
+    for i in 1..w {
+        low = (low << 8) | b[i] as u64;
+    }
+    (hi << ((w - 1) * 8) | low, w)
 }
 
 /// Wire slice → logical value bytes (little-endian) for the transformed
@@ -358,8 +359,11 @@ fn tlv_value<'a>(
 ) -> &'a [u8] {
     let mut off = 0usize;
     for (decl, f) in cold_fields {
-        let len = u32::from_be_bytes(cold[off + 1..off + 5].try_into().unwrap()) as usize;
-        let val = off + 5;
+        // P2 wire: frame = [tag u8][len varint][value] — take_len reads
+        // the prefix-monotonic length and reports its byte width.
+        let (len, len_n) = crate::take_len(&cold[off + 1..])
+            .expect("cold frame: truncated length prefix");
+        let val = off + 1 + len_n;
         if *decl == fi {
             debug_assert!(
                 matches!(f.ty, FieldType::Str | FieldType::VarInt) || len == f.width

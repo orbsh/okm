@@ -44,7 +44,6 @@
 
 use crate::engine::storage::{KvBatch, VirtualStorage};
 use crate::model::index::{PRIMARY_SLOT, Slot};
-use crate::model::key::KeyEncode;
 use crate::model::obj_dict::DictCache;
 
 /// Segment-0x4 kind-index slot (fixed-ontology form uses the first
@@ -271,12 +270,6 @@ impl<S: VirtualStorage, E: KvGraph> Graph<S, E> {
 
     pub fn store(&self) -> &S {
         &self.store
-    }
-
-    /// The graph's key header (`[ns 2B]`; partition prefixes are a
-    /// document-collection concern — the edge ns is declared whole).
-    fn header(&self) -> &[u8] {
-        E::NS_PREFIX
     }
 
     fn primary_key(&self, edge_id: u64) -> Vec<u8> {
@@ -585,7 +578,7 @@ mod tests {
 
     #[test]
     fn link_writes_six_faces_and_kind_dict() {
-        let mut store = TestStore::slatedb_mem();
+        let store = TestStore::slatedb_mem();
         let mut g: Graph<_, Follows> = Graph::new(store.clone());
         let e = EdgeFact { src: person(1), dst: org(9), kind: "has".into(), attrs: Vec::new() };
         g.link(&e, &Follows, 100).unwrap();
@@ -618,10 +611,10 @@ mod tests {
 
     #[test]
     fn parallel_edges_are_separate_facts() {
-        let mut store = TestStore::slatedb_mem();
+        let store = TestStore::slatedb_mem();
         let mut g: Graph<_, Follows> = Graph::new(store.clone());
-        g.link(&fact(person(1), org(9)), 1).unwrap();
-        g.link(&fact(person(1), org(9)), 2).unwrap();
+        g.link(&fact(person(1), org(9)), &Follows, 1).unwrap();
+        g.link(&fact(person(1), org(9)), &Follows, 2).unwrap();
         assert_eq!(g.out_edges(&person(1)), vec![1, 2]);
         assert_eq!(g.in_edges(&org(9)), vec![1, 2]);
         assert_eq!(g.edges_of_kind("has"), vec![1, 2]);
@@ -629,10 +622,10 @@ mod tests {
 
     #[test]
     fn unlink_removes_all_faces() {
-        let mut store = TestStore::slatedb_mem();
+        let store = TestStore::slatedb_mem();
         let mut g: Graph<_, Follows> = Graph::new(store.clone());
-        g.link(&fact(person(1), org(9)), 1).unwrap();
-        g.link(&fact(person(2), org(9)), 2).unwrap();
+        g.link(&fact(person(1), org(9)), &Follows, 1).unwrap();
+        g.link(&fact(person(2), org(9)), &Follows, 2).unwrap();
         g.unlink(1).unwrap();
         assert_eq!(g.out_edges(&person(1)), Vec::<u64>::new());
         assert_eq!(g.edges_of_kind("has"), vec![2]);
@@ -642,10 +635,10 @@ mod tests {
 
     #[test]
     fn link_rejects_live_edge_id() {
-        let mut store = TestStore::slatedb_mem();
+        let store = TestStore::slatedb_mem();
         let mut g: Graph<_, Follows> = Graph::new(store.clone());
-        g.link(&fact(person(1), org(9)), 1).unwrap();
-        assert!(g.link(&fact(person(2), org(8)), 1).is_err());
+        g.link(&fact(person(1), org(9)), &Follows, 1).unwrap();
+        assert!(g.link(&fact(person(2), org(8)), &Follows, 1).is_err());
     }
 
     #[test]
@@ -655,9 +648,9 @@ mod tests {
         // node's — the direction ambiguity that needed the Junction's
         // direction bit does not exist here, the two faces are distinct
         // slots).
-        let mut store = TestStore::slatedb_mem();
+        let store = TestStore::slatedb_mem();
         let mut g: Graph<_, Follows> = Graph::new(store.clone());
-        g.link(&fact(person(1), person(2)), 5).unwrap();
+        g.link(&fact(person(1), person(2)), &Follows, 5).unwrap();
         assert_eq!(g.out_edges(&person(1)), vec![5]);
         assert_eq!(g.in_edges(&person(2)), vec![5]);
         assert_eq!(g.out_edges(&person(2)), Vec::<u64>::new());

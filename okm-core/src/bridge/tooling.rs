@@ -240,7 +240,9 @@ pub mod parquet_io {
                 for (document, prow) in payloads.iter_mut().enumerate() {
                     let wb = wire_bytes(col, document, f.width, f.ty);
                     prow.push(fi as u8);
-                    prow.extend_from_slice(&(wb.len() as u32).to_be_bytes());
+                    // P2 wire: frame length is the prefix-monotonic varint
+                    // (shared codec — one length discipline everywhere).
+                    crate::put_len(prow, wb.len());
                     prow.extend_from_slice(&wb);
                 }
             }

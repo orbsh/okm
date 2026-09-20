@@ -46,6 +46,10 @@ criterion = "0.5"
 name = "core_paths"
 harness = false
 
+[[example]]
+name = "py_helper"
+required-features = ["schema-serde"]
+
 [[test]]
 name = "arrow_bridge_test"
 required-features = ["arrow"]

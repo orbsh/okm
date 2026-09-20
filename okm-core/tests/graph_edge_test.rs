@@ -156,7 +156,7 @@ fn unlink_and_relabeled_parallel_edges() {
 fn link_into_shares_one_batch_with_documents() {
     let mut store = okm_core::TestStore::slatedb_mem();
     let mut g: Graph<_, Employment> = Graph::new(store.clone());
-    let mut nodes = okm_core::Collection::new(store.clone());
+    let nodes = okm_core::Collection::new(store.clone());
 
     let mut batch = store.batch();
     // A document write and an edge write into ONE batch.
@@ -252,7 +252,19 @@ fn hex_lock_six_face_layout() {
     primary.extend_from_slice(&PRIMARY_SLOT.to_be_bytes());
     primary.extend_from_slice(&id);
     let body = store.get(&primary).unwrap();
-    assert_eq!(body, [src.clone(), dst.clone(), kid.clone()].concat());
+    // Edge body = [src][dst][kind_id][attrs] — attrs from the typed
+    // Employment { since_year: 2020, weight: 0 } this link wrote.
+    assert_eq!(
+        body,
+        [
+            src.clone(),
+            dst.clone(),
+            kid.clone(),
+            2020u16.to_be_bytes().to_vec(),
+            0u32.to_be_bytes().to_vec(),
+        ]
+        .concat()
+    );
 
     assert!(store.get(&key(&[ns.to_vec(), slot(0x4001), kid.clone(), id.clone()])).is_some(), "kind index");
     assert!(store.get(&key(&[ns.to_vec(), slot(0x5001), src.clone(), id.clone()])).is_some(), "out");
