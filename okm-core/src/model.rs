@@ -4,6 +4,7 @@
 pub mod collection;
 pub mod document;
 pub mod field;
+pub mod graph;
 pub mod index;
 pub mod junction;
 pub mod key;
