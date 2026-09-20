@@ -703,18 +703,24 @@ Decided:
       field — put-time diff auto link/unlink (trades RMW for
       declarative sync; needs the two-endpoint write consistency
       analysis first). Highest-priority open item.
-- [ ] Future (HIGH): graph `Edge` — designed, ADR-0017 (draft): the
-      third relation carrier. One ns per graph (normal ns dictionary,
-      no new mechanism); self-describing endpoint references
-      ([ns][pkey], pkey width via a ns->KEY_LEN registry); six faces
-      (primary / kind index / out / in / kind+out / kind+in) on
-      ADR-0016 segments; kind dictionary reuses 0x2/0x3; attributes as
-      a dynamic segment in the edge body; empty-declaration dynamic
-      form shares the wire layout. Next: implement the derive + Graph
-      assembly point + registry. ns scheme open (the earlier
-      compile-time-hash idea is rejected — nondeterministic; graph edges
-      often exist independently of either endpoint document, so the
-      two-ns residency may not transfer).
+- [x] Future (HIGH) -> LANDED 2026-09-20 (fixed-ontology form): graph
+      `Edge` — ADR-0017 (Accepted): the third relation carrier. One ns
+      per graph (normal ns dictionary); self-describing endpoint
+      references ([ns 2B][pkey], pkey width via a ns->KEY_LEN registry,
+      compile-time `nodes(...)` declaration); EIGHT entry kinds on
+      ADR-0016 segments — primary (0x0, edge_id u64) / kind dictionary
+      (0x2/0x3, DictCache reused) / kind index (0x4) / out (0x5) / in
+      (0x6) / kind+out (0x7) / kind+in (0x8) / one declared-attribute
+      face per field (0x1). `GraphEdgeEncode` derive
+      (`#[ok_edge(ns = N, nodes(ns = KEY_LEN, ...))]`, fixed-width
+      attribute fields only) + `Graph<S, E>` assembly point
+      (`link`/`link_into`/`unlink`, typed/untyped/kind/attr scans).
+      Node side = standard document layout (node kind face = its own
+      declared index). Locked by graph.rs module tests +
+      graph_edge_test (six-face byte lock, parallel edges, registry
+      cut, cross-collection batch, node-kind intersection). Remaining:
+      fully dynamic form (empty declarations, runtime registry,
+      okm-dynamic side); MODELING/README sections landed.
 - Pre-crates.io timing makes the rename free: downstream (aura, k10r)
   currently declares zero junctions.
 

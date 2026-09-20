@@ -367,6 +367,44 @@ junction 物化为每个端点 ns 各一条单向 key（段 0x3，方向由 ns �
 
 一句话：**索引 = 一行的派生视图，边 = 一等的关系数据**。`#[ok_index]` 定义时方便（声明即注册，无需手工编号 ns——ADR-0005 的动机正是消灭 per-index 手工编号与洞簿记）是次要红利，不是两者的分界；分界在数据源。
 
+## 图边：第三种关系载体
+
+Junction 覆盖的多对多绑定在**编译期端点类型**上。知识图谱打破这个绑定：一个图连接多种类型的节点，边 kind 是运行期数据，平行边是不同的事实，边还携带属性。图边是第三种关系载体（ADR-0017）——独立身份、属性、平行边、开放端点。
+
+节点就是普通 document collection：节点的"类型"是它的 collection（ns 即类型标记），节点 kind / 属性过滤走 collection 自己的声明索引和字典——与任何文档 collection 布局零差异。新增的东西都在边这一侧：
+
+```rust
+use okm_core::{GraphEdgeEncode, EdgeFact, Graph, NodeRef};
+
+/// 一个图的边 collection：ns + 参与节点 collection 的注册表（ns -> key 宽度）。
+/// 声明属性字段是边自身的数据；端点不在结构里声明（开放端点——运行期 NodeRef）。
+#[derive(GraphEdgeEncode, Clone, Default)]
+#[ok_edge(ns = 100, nodes(10 = 8, 11 = 8))]   // User ns 10（8B key），Org ns 11
+struct Employment {
+    since_year: u16,   // 每个声明字段 = 一条 0x1 面
+    weight: u32,
+}
+
+let mut g: Graph<_, Employment> = Graph::new(store);
+let attrs = Employment { since_year: 2020, weight: 7 };
+g.link(&EdgeFact {
+    src: NodeRef::new(&10u16.to_be_bytes(), &1u64.to_be_bytes()),
+    dst: NodeRef::new(&11u16.to_be_bytes(), &9u64.to_be_bytes()),
+    kind: "employs".into(),
+    attrs: okm_core::KvGraph::attrs(&attrs),
+}, &attrs, 1).unwrap();
+
+g.typed_out("employs", &user1);   // 0x7 面：类型限定遍历
+g.by_attr_face(<Employment as Face>::slot("since_year"), &2020u16.to_be_bytes());
+```
+
+- **端点引用**是 `[ns 2B][pkey]`——ns 充当类型标记，任意 collection 的文档都参与。pkey 边界**不在 key 里**：通过 **ns -> KEY_LEN 注册表**解析（`nodes(...)` 编译期声明；动态形态运行期维护）。与 Ref 同一纪律——引用是 key 字节，ns 知识住在声明处——从单一绑定的端点类型推广到注册表。
+- **面**：一次 `link` 写主表（slot 0x0，`edge_id` u64）+ kind 索引（0x4）+ 出入遍历（0x5/0x6）+ 类型限定遍历（0x7/0x8）+ 每个声明字段一条属性面（0x1），一个 batch；`unlink` 对称删除。kind 名走边 collection 自己的字典（0x2/0x3，先见者得号）。
+- **平行边**是独立事实：每次 link 携带调用方选定的 `edge_id`；live id 被拒绝，绝不复用。
+- **过滤**：先走选择度最高的面，id 在内存收敛——默认不建复合面（`(*)-[kind]->(:node_kind)` = 0x7 扫描与节点 kind 面的 pkey 集合求交）。
+
+分界线：`Refs` = 一对多；`Junction` = 多对多、固定端点、无属性；**图边** = 独立身份、属性、平行边、开放端点。
+
 ## 同质列表：`Vector<T>`
 
 复数建模分类学（ADR-0015 §4）在两个关系载体与异质 `DynamicValue::Array` 之外有第四个成员：**类型化同质列表**。`Vector<f32>` 声明浮点列表，`Vector<String>` 声明字符串列表——元素类型是 schema，长度是数据。
