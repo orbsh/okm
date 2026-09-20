@@ -33,7 +33,7 @@ SQL 的核心价值不是执行性能，而是关系模型交付的可读性、�
 - `KeyEncode` — 定宽 key 编码（`u32` / `u64` / `[u8; N]`），大端序，编译期 `KEY_LEN` / `FIELD_WIDTHS`，`encode_prefix_named` 截断原语。
 - `JunctionEncode` — junction（SQL 多对多连接表）：每端 ns 一条单向条目，4 字节头 `[ns u16][slot u16]`（0x3 段），各端点身份宽度可独立声明（`#[ok_head(...)]`），`#[ok_junction(n)]` 区分号，查询方法生成在端点 key 类型上。
 - `Junction<S, E>` — junction 装配点：引擎 + junction 类型 = 一条关系的操作面（`link` / `unlink` / `forward` / `reverse` / `reverse_prefix`）。
-- `GraphEdgeEncode` + `Graph<S, E>` + `KvGraph`/`NodeRef`/`EndpointRegistry` — 图边，第三种关系载体（ADR-0017）：开放端点走自描述引用 `[ns 2B][pkey]`（pkey 宽度由 ns→KEY_LEN 注册表解析），平行边携带调用方选定的 id，声明属性字段为 0x1 面，kind 名走边 collection 字典；`link`/`unlink` 一个 batch 写/删全部面；类型/无类型/kind/属性四种扫描。
+- `EdgeEncode` + `Graph<S, E>` + `KvGraph`/`NodeRef` — 图边，第三种关系载体（ADR-0017）：开放端点走自描述引用 `[ns 2B][len][pkey]`（pkey 宽度住在引用自身——无注册表），平行边携带调用方选定的 id，声明属性字段为 0x1 面，kind 名走边 collection 字典；`link`/`unlink` 一个 batch 写/删全部面；类型/无类型/kind/属性四种扫描。
 - 引擎后端走 Cargo feature：`fjall`（同步 `FjallStore`）、`slatedb`（异步 `SlatedbStore` + `AsyncJunction`），测试用内存 `MockStore`。
 
 - 二级索引（访问方法）——**行 struct** 上的 `#[ok_index(name { fields(…), includes(…), key(…) })]`：对 **payload 字段**（按声明序）建组合索引；无 per-index slot/ns——2 字节表命名空间已区分所有 entry；最左前缀扫描；`key(…)` 把 key 尾部携带的主键截断到命名子集（`encode_prefix_named`），默认取满主键；`includes` 覆盖索引定位为高扇出查询的物化视图。

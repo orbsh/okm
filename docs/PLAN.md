@@ -716,11 +716,18 @@ Decided:
       attribute fields only) + `Graph<S, E>` assembly point
       (`link`/`link_into`/`unlink`, typed/untyped/kind/attr scans).
       Node side = standard document layout (node kind face = its own
-      declared index). Locked by graph.rs module tests +
-      graph_edge_test (six-face byte lock, parallel edges, registry
-      cut, cross-collection batch, node-kind intersection). Remaining:
-      fully dynamic form (empty declarations, runtime registry,
-      okm-dynamic side); MODELING/README sections landed.
+      declared index). Update 2026-09-20: endpoint refs re-decided to
+      self-describing `[ns 2B][len varint][pkey]` — the ns->KEY_LEN
+      registry (compile-time nodes(...) literals AND the runtime
+      register() table) is deleted; derive renamed GraphEdgeEncode ->
+      EdgeEncode. Locked by graph.rs module tests + graph_edge_test
+      (six-face byte lock, parallel edges, self-describing ref cuts,
+      cross-collection batch, node-kind intersection).
+    - [x] Fully dynamic form LANDED 2026-09-20 (okm-dynamic `Graph<S>`):
+          empty declarations, attributes as nTLV frames (no 0x1 faces —
+          structural), same eight faces / same wire. Byte-equality with
+          the fixed-ontology form is the drift lock. MODELING/README
+          sections landed.
 - Pre-crates.io timing makes the rename free: downstream (aura, k10r)
   currently declares zero junctions.
 

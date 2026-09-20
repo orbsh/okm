@@ -376,10 +376,10 @@ Junction 覆盖的多对多绑定在**编译期端点类型**上。知识图谱�
 ```rust
 use okm_core::{GraphEdgeEncode, EdgeFact, Graph, NodeRef};
 
-/// 一个图的边 collection：ns + 参与节点 collection 的注册表（ns -> key 宽度）。
-/// 声明属性字段是边自身的数据；端点不在结构里声明（开放端点——运行期 NodeRef）。
-#[derive(GraphEdgeEncode, Clone, Default)]
-#[ok_edge(ns = 100, nodes(10 = 8, 11 = 8))]   // User ns 10（8B key），Org ns 11
+/// 一个图的边 collection。声明属性字段是边自身的数据；端点不需要声明——
+/// 引用自描述（[ns 2B][len][pkey]），任意节点 collection 零成本参与。
+#[derive(EdgeEncode, Clone, Default)]
+#[ok_edge(ns = 100)]
 struct Employment {
     since_year: u16,   // 每个声明字段 = 一条 0x1 面
     weight: u32,
@@ -398,7 +398,7 @@ g.typed_out("employs", &user1);   // 0x7 面：类型限定遍历
 g.by_attr_face(<Employment as Face>::slot("since_year"), &2020u16.to_be_bytes());
 ```
 
-- **端点引用**是 `[ns 2B][pkey]`——ns 充当类型标记，任意 collection 的文档都参与。pkey 边界**不在 key 里**：通过 **ns -> KEY_LEN 注册表**解析（`nodes(...)` 编译期声明；动态形态运行期维护）。与 Ref 同一纪律——引用是 key 字节，ns 知识住在声明处——从单一绑定的端点类型推广到注册表。
+- **端点引用**是 `[ns 2B][len varint][pkey]`——ns 充当类型标记，pkey 宽度以单字节 varint 住在引用自身。任意 collection 的文档免声明参与：同节点 = 同字节（遍历面精确前缀命中），不同 pkey 宽度共存，没有需要声明、维护、防错的注册表。图边让 Ref 纪律退役——引用自带宽度，连同 ns 知识一起。
 - **面**：一次 `link` 写主表（slot 0x0，`edge_id` u64）+ kind 索引（0x4）+ 出入遍历（0x5/0x6）+ 类型限定遍历（0x7/0x8）+ 每个声明字段一条属性面（0x1），一个 batch；`unlink` 对称删除。kind 名走边 collection 自己的字典（0x2/0x3，先见者得号）。
 - **平行边**是独立事实：每次 link 携带调用方选定的 `edge_id`；live id 被拒绝，绝不复用。
 - **过滤**：先走选择度最高的面，id 在内存收敛——默认不建复合面（`(*)-[kind]->(:node_kind)` = 0x7 扫描与节点 kind 面的 pkey 集合求交）。
