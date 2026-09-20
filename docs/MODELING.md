@@ -596,6 +596,71 @@ was precisely eliminating per-index manual numbering and hole
 bookkeeping) is a secondary bonus, not the dividing line; the dividing
 line is the data source.
 
+## Graph edges: the third relation carrier
+
+Junctions cover many-to-many with **compile-time typed endpoints**. A
+knowledge graph breaks that binding: one graph connects nodes of many
+types, edge kinds are runtime data, parallel edges are distinct facts,
+and edges carry attributes. The graph edge is the third relation carrier
+(ADR-0017) — independent identity, attributes, parallel edges, open
+endpoints.
+
+Nodes are ordinary document collections: a node's "type" is its
+collection (the ns is the type marker), and node-kind/attribute
+filtering rides the collection's own declared indexes and dictionary —
+zero layout difference from any document collection. What is new lives
+on the edge side:
+
+```rust
+use okm_core::{GraphEdgeEncode, EdgeFact, Graph, NodeRef};
+
+/// The edge collection of one graph: ns + the participating node
+/// collections' registry (ns -> key width). Declared attribute fields
+/// are edge-own data; endpoints are NOT declared (open endpoints —
+/// they travel as runtime NodeRefs).
+#[derive(GraphEdgeEncode, Clone, Default)]
+#[ok_edge(ns = 100, nodes(10 = 8, 11 = 8))]   // User ns 10 (8B keys), Org ns 11
+struct Employment {
+    since_year: u16,   // each declared field = one 0x1 face
+    weight: u32,
+}
+
+let mut g: Graph<_, Employment> = Graph::new(store);
+let attrs = Employment { since_year: 2020, weight: 7 };
+g.link(&EdgeFact {
+    src: NodeRef::new(&10u16.to_be_bytes(), &1u64.to_be_bytes()),
+    dst: NodeRef::new(&11u16.to_be_bytes(), &9u64.to_be_bytes()),
+    kind: "employs".into(),
+    attrs: okm_core::KvGraph::attrs(&attrs),
+}, &attrs, 1).unwrap();
+
+g.typed_out("employs", &user1);   // 0x7 face: kind-qualified traversal
+g.by_attr_face(<Employment as Face>::slot("since_year"), &2020u16.to_be_bytes());
+```
+
+- **Endpoint references** are `[ns 2B][pkey]` — the ns is the type
+  marker, so any collection's document participates. The pkey boundary
+  is NOT in the key: it resolves through a **ns -> KEY_LEN registry**
+  (`nodes(...)` declares it at compile time; the dynamic form maintains
+  it at runtime). Same discipline as Ref — reference is key bytes, ns
+  knowledge lives at the declaration point — generalized from one bound
+  endpoint type to a registry.
+- **Faces**: one `link` writes primary (slot 0x0, `edge_id` u64) +
+  kind index (0x4) + out/in traversal (0x5/0x6) + kind-qualified
+  traversal (0x7/0x8) + one declared-attribute face per field (0x1),
+  all in one batch; `unlink` deletes the same set. Kind names resolve
+  through the edge collection's own dictionary (0x2/0x3,
+  first-seen-claims-next).
+- **Parallel edges** are separate facts: each link carries a
+  caller-chosen `edge_id`; a live id is rejected, never reused.
+- **Filtering**: the most selective face first, ids converged in
+  memory — no composite faces by default (`(*)-[kind]->(:node_kind)` =
+  0x7 scan intersected with the node kind face's pkey set).
+
+Division line: `Refs` = one-to-many; `Junction` = many-to-many, fixed
+endpoints, no attributes; **Graph Edge** = independent identity,
+attributes, parallel edges, open endpoints.
+
 ## Homogeneous lists: `Vector<T>`
 
 The plural-modeling taxonomy (ADR-0015 §4) has a fourth member besides

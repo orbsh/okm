@@ -1,7 +1,7 @@
 # ADR-0017: Graph Edge — the third relation carrier
 
 Date: 2026-09-19
-Status: Draft (Update 2026-09-20: declared attribute fields added to §3 — static fields on the edge generate access methods usable as filters)
+Status: Accepted (2026-09-20; fixed-ontology form implemented — GraphEdgeEncode derive, Graph<S, E>, EndpointRegistry). Updates 2026-09-20: declared attribute fields (§3), node-side kind filtering (§3), slot-layout clarification (§3).
 Related: ADR-0015 (relation taxonomy), ADR-0016 (4-byte head, segment-numbered slots), ADR-0002 (namespace dictionary)
 
 ## Context
