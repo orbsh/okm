@@ -40,14 +40,14 @@ fn string_tlv_round_trip_through_payload() {
 
     // Wire shape: [ver u8][hot_len u16 BE][hot segment][cold TLV]. Hot =
     // score (u32 @3..7) then flag (u8 @7..8) in declaration order →
-    // hot_len = 5; the name TLV frame header starts at 8.
+    // hot_len = 5; the name TLV frame header starts at 8. Frame length
+    // uses the P2 varint ("alice" = 5 bytes → single byte [0x05], < 64).
     assert_eq!(p[0], 1, "layout version 1");
     assert_eq!(&p[1..3], &[0u8, 5], "hot segment = 5 bytes (u32 score + u8 flag)");
     assert_eq!(p[7], 0xA5, "flag hot byte");
     assert_eq!(p[8], 1, "field tag 1 (name)");
-    let name_len = u32::from_be_bytes(p[9..13].try_into().unwrap()) as usize;
-    assert_eq!(name_len, 5, "len = byte length of the value");
-    assert_eq!(&p[13..18], b"alice");
+    assert_eq!(p[9], 5, "varint len: 5 fits the 1-byte lane (< 64)");
+    assert_eq!(&p[10..15], b"alice");
 }
 
 #[test]
@@ -162,12 +162,14 @@ fn payload_wire_hex_snapshot() {
     };
     let p = document.encode_payload();
     // hot = score(4) + flag(1) → hot_len 5; cold = name frame (5+2), note frame (5+0).
+    // P2 varint frame lengths: the len prefix is a prefix-monotonic
+    // varint — values < 64 are ONE byte (len 2 → [0x02], len 0 → [0x00]).
     let expect = [
         1u8, 0, 5,             // version 1, hot_len 5
         1, 2, 3, 4,            // score BE (hot)
         0xFF,                  // flag (hot)
-        1, 0, 0, 0, 2, b'a', b'b',   // name frame: tag 1, len 2, value
-        2, 0, 0, 0, 0,               // note frame: tag 2, len 0
+        1, 2, b'a', b'b',            // name frame: tag 1, len 2 (1-byte varint), value
+        2, 0,                        // note frame: tag 2, len 0
     ]
     .to_vec();
     assert_eq!(p, expect, "wire format snapshot (hex: {})", p.iter().map(|b| format!("{b:02x}")).collect::<String>());
