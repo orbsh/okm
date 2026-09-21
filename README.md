@@ -33,7 +33,7 @@ Implemented:
 - `Junction<S, E>` — the junction assembly point: engine + junction type = the operation surface of one relationship (`link` / `unlink` / `forward` / `reverse` / `reverse_prefix`).
 - `EdgeEncode` + `Graph<S, E>` + `KvGraph`/`NodeRef` — graph edges, the third relation carrier (ADR-0017): open endpoints as self-describing `[ns 2B][len][pkey]` refs (width rides in the ref — no registry), parallel edges with caller-chosen ids, declared attribute fields as 0x1 faces, kind names through the edge collection's dictionary; `link`/`unlink` write/delete all faces in one batch; typed/untyped/kind/attribute scans.
 - `DocumentEncode` — one macro declares a row (Node): `#[ok_ref]` identity + TLV payload fields + `#[ok_index(...)]` access methods; the `ValueEncode` derive is absorbed into it.
-- Secondary indexes (access methods) — `#[ok_index(name { fields(…), includes(…), key(…) })]` on **row structs**: composite indexes over payload fields (declaration order), no per-index slot/ns — the 2-byte table namespace already discriminates every entry; leftmost-prefix scans with fetch-back; `key(…)` truncates the carried primary-key tail to the named subset (`encode_prefix_named`), full key by default; `includes` covering positioned as a materialized view for high-fanout queries.
+- Secondary indexes (access methods) — `#[ok_index(name { fields(…), includes(…), key(…), func(…), where(…) })]` on **row structs**: composite indexes over payload fields (declaration order), no per-index slot/ns — the 2-byte table namespace already discriminates every entry; leftmost-prefix scans with fetch-back; `key(…)` truncates the carried primary-key tail to the named subset (`encode_prefix_named`), full key by default; `includes` covering positioned as a materialized view for high-fanout queries; `func(path)` replaces the data segment with a plain fn's return value (probe side calls the same path); `where(path)` is a row-level predicate — a partial index, rows the predicate rejects contribute no entries.
 - `Collection<S, K, R>` node assembly point — `put`/`delete` write the primary key and every declared index entry in one store instance (the declaration IS the registry); `scan` returns `(Key, Option<Row>)` via leftmost-prefix on any access method.
 - **Document API** — `get_document` / `put_document` / `get_fields` / `put_fields` / `delete_fields`: unknown field names allocate in the per-table field-name dictionary and land in the dynamic segment (n-TLV frames, nested objects recursive, no CBOR); the row-map bridge lifts declared fields to logical types (`Quant`→`F64`, `Enum`→variant name, `Offset`→`i64`).
 - **Dynamic codec bindings** — schema export drives embedded-language readers: `bindings/okm-python` (PyO3) and `bindings/okm-steel`, byte-identical with the Rust derive.
@@ -51,7 +51,7 @@ Implemented:
 ### 1. Define endpoint keys and edges (declarations)
 
 The full declaration vocabulary (`KeyEncode` / `JunctionEncode` / `DocumentEncode`,
-the `fields`/`includes`/`key` annotations of `#[ok_index]`) is in the
+the `fields`/`includes`/`key`/`func`/`where` annotations of `#[ok_index]`) is in the
 [Modeling Guide](docs/MODELING.md), "Declaration basics". Summary:
 
 ```rust

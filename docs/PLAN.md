@@ -114,6 +114,16 @@ Design decisions live in `docs/adr/`. This plan tracks implementation status.
       Row::DEPRECATED_SLOTS is derive-emitted. Tests lock: slot reservation,
       no writes to the deprecated slot, prune, no-op prune without
       deprecated declarations.
+- [x] Partial indexes (`where(path)`, ADR-0019): a declared row-level
+      predicate on either index form — a rejected row contributes no
+      entries. Expanded as a `KvIndex::admits` override (trait default
+      `true`), consulted once per document at the head of `entry_pairs`
+      (the single generation point shared by put/delete/save_into). Not
+      part of the entry address; scans untouched. A `func` returning an
+      empty `Vec` remains the per-value drop. Tests lock admission,
+      coexistence with `includes` covering, delete symmetry, the empty-Vec
+      idiom, and the dangling-entry behaviour of a predicate flip (the
+      pre-existing overwrite contract).
 
 ### Header unification trigger (edge direction bit)
 

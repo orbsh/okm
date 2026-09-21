@@ -18,7 +18,7 @@
 #[ok_index(by_token { func(tokens) })]
 ```
 
-derive（`okm-derive/src/row_encode.rs`）对每个 func 索引生成同款 marker struct `__OkmIndex_{Row}_{name}`，实现 `KvIndex` 时与普通字段索引的差异只有一处：
+derive（`okm-derive/src/document_encode.rs`）对每个 func 索引生成同款 marker struct `__OkmIndex_{Row}_{name}`，实现 `KvIndex` 时与普通字段索引的差异只有一处：
 
 ```text
 const FUNC: &'static str = "tokens"    // 普通索引为空串
@@ -28,7 +28,7 @@ FUNC 目前是**文档性常量**（记录路径名，测试断言它锁定声�
 
 ## 值的编码契约：IndexFuncResult 与 IndexFuncValues
 
-函数返回值经过两层 trait 编码为数据段（`okm/src/index.rs`）：
+函数返回值经过两层 trait 编码为数据段（`okm-core/src/model/index.rs`）：
 
 ```text
 IndexFuncResult      单个值的字节编码（数据段格式）
@@ -38,9 +38,12 @@ IndexFuncResult      单个值的字节编码（数据段格式）
 IndexFuncValues      一次 func 调用产生的 entry 集合（单值/多值两臂）
   impl: 单值类型     → vec![该值编码]（经典函数索引，一条 entry）
   impl: Vec<V>       → 每个 V 一条（多值 regime，N 条 entry）
+                       空 Vec → 0 条：该行不产生任何 entry
 ```
 
 单值臂与多值臂不 overlap：`Vec<V>` 自身不实现 `IndexFuncResult`。不采用 `IntoIterator` blanket 的原因正是 coherence——它与单值臂必然冲突（`Vec<V>` 也是 IntoIterator）。func 返回 `Vec` 是契约而非偷懒：put 收到返回值后立即逐条写入，惰性迭代器没有收益，一次 `collect` 换 trait 面最小。
+
+**空 Vec 是行级过滤的一种写法**（另一种是声明上的 `where(path)` 谓词，见[索引机制](index-mechanism.zh-CN.md)）。两者的分工：`where` 是行级条件（声明可见，常规索引也能用），函数体内过滤是逐值丢弃（同一行的某个 token 不要、其余保留）。行级条件混进值函数会让"一条声明驱动两侧"退化成"调用方得知道函数内部哪一半该镜像到探针"——这是选择 `where` 的理由。
 
 编码方式沿用了字段编码的既定约定：`String` 裸 UTF-8（变长、字典序 = 字节序），整数 BE（定宽、数值序 = 字节序）。函数索引因此自动继承数据段的全部约束——至多一个变长段且必须紧贴主键前缀（func 值就是那个唯一的变长段，主键前缀从尾部反推）；func 值之后再拼定宽字段在当前 derive 下不出现（func 与 fields 互斥，一条声明二选一）。
 
@@ -50,10 +53,11 @@ IndexFuncValues      一次 func 调用产生的 entry 集合（单值/多值两
 
 ```rust
 fn entry_pairs(table_ns, key, row) -> Vec<(Vec<u8>, Vec<u8>)> {
+    if !admits(row) { return Vec::new(); }      // where(path) 谓词（无声明则恒 true）
     let fv = tokens(row);                       // 调用用户函数
     let vals = IndexFuncValues::func_values(fv); // 单值 → 1 条；Vec → N 条
     for seg in vals {                            // 每条 entry 共享同一 includes value
-        [ns 2B][slot 1B][seg][主键前缀]          // key；value = entry_value(key, row)
+        [ns 2B][slot 2B][seg][主键前缀]          // key；value = entry_value(key, row)
     }
 }
 ```
@@ -102,6 +106,7 @@ t.scan::<ByTag>(b"rust")
              fields(...)              func(path)
 数据段来源    payload 字段直接编码      函数返回值编码
 写侧 entry    trait 默认（1 对）        entry_pairs 覆盖（1 或 N 对）
+行级过滤      where(path)              where(path)，或函数体返回空 Vec
 编译期约束    多字段组合、变长位置检查   单值；变长约束由值类型继承
 探针          调用方编码 probe 值       调用方调同一 path 归一化 probe
 成本          零额外                    每次写入一次函数调用 + collect

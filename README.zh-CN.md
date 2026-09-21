@@ -36,7 +36,7 @@ SQL 的核心价值不是执行性能，而是关系模型交付的可读性、�
 - `EdgeEncode` + `Graph<S, E>` + `KvGraph`/`NodeRef` — 图边，第三种关系载体（ADR-0017）：开放端点走自描述引用 `[ns 2B][len][pkey]`（pkey 宽度住在引用自身——无注册表），平行边携带调用方选定的 id，声明属性字段为 0x1 面，kind 名走边 collection 字典；`link`/`unlink` 一个 batch 写/删全部面；类型/无类型/kind/属性四种扫描。
 - 引擎后端走 Cargo feature：`fjall`（同步 `FjallStore`）、`slatedb`（异步 `SlatedbStore` + `AsyncJunction`），测试用内存 `MockStore`。
 
-- 二级索引（访问方法）——**行 struct** 上的 `#[ok_index(name { fields(…), includes(…), key(…) })]`：对 **payload 字段**（按声明序）建组合索引；无 per-index slot/ns——2 字节表命名空间已区分所有 entry；最左前缀扫描；`key(…)` 把 key 尾部携带的主键截断到命名子集（`encode_prefix_named`），默认取满主键；`includes` 覆盖索引定位为高扇出查询的物化视图。
+- 二级索引（访问方法）——**行 struct** 上的 `#[ok_index(name { fields(…), includes(…), key(…), func(…), where(…) })]`：对 **payload 字段**（按声明序）建组合索引；无 per-index slot/ns——2 字节表命名空间已区分所有 entry；最左前缀扫描；`key(…)` 把 key 尾部携带的主键截断到命名子集（`encode_prefix_named`），默认取满主键；`includes` 覆盖索引定位为高扇出查询的物化视图；`func(path)` 用普通 fn 的返回值替代数据段（探针端调同一路径）；`where(path)` 是行级谓词——部分索引，被拒绝的行不产生任何条目。
 - `Collection<S, K, R>` 行装配点——`put`/`delete` 在同一 store 实例内一次写入主键与全部声明的索引条目（声明即注册表）；`scan` 经任意访问方法的最左前缀返回 `(Key, Option<Row>)`。
 - 字段级编码 wrapper（`Enum<T>`、`Offset<T>`、`VarInt<T>`、`Quant<P>`、`Reverse<T>`、`Option<T>`）与变长载荷/索引字段（`String`），key 保持定宽。
 - 多引擎混用——同一进程内不同 ns 段可绑不同引擎（交易走 fjall、日志走 slatedb）；原子性止于单引擎内，ns 编号全库唯一。
@@ -52,7 +52,7 @@ SQL 的核心价值不是执行性能，而是关系模型交付的可读性、�
 
 ### 1. 定义端点 key 与边（声明）
 
-完整的声明词汇（`KeyEncode` / `JunctionEncode` / `DocumentEncode`、`#[ok_index]` 的 `fields`/`includes`/`key` 注解）见[建模指南](docs/MODELING.zh-CN.md)「声明基础」。摘要：
+完整的声明词汇（`KeyEncode` / `JunctionEncode` / `DocumentEncode`、`#[ok_index]` 的 `fields`/`includes`/`key`/`func`/`where` 注解）见[建模指南](docs/MODELING.zh-CN.md)「声明基础」。摘要：
 
 ```rust
 #[derive(KeyEncode)] #[ok_ns(1)]

@@ -500,3 +500,205 @@ fn multi_entry_function_index_fans_out() {
     assert_eq!(remaining, 1); // 只剩 id 2
 }
 
+// ---------------------------------------------------------------------------
+// 部分索引（partial index）：where(path) 行级谓词
+// ---------------------------------------------------------------------------
+
+/// TicketKey：代理主键。
+#[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
+pub struct TicketKey {
+    pub id: u64,
+}
+
+/// 谓词收整行，读哪些列由业务决定——这里读的是不参与排序的 status
+/// （非索引列同样可以）。
+fn ticket_is_open(document: &Ticket) -> bool {
+    document.status == 0
+}
+
+/// 函数索引形态的等价过滤：空 Vec = 该行不产生任何 entry（无 where）。
+/// 与 where 的分工——where 管行级条件（声明可见），函数体内过滤管
+/// 逐值丢弃（某个 token 不要，其它保留）。
+fn live_tokens(document: &Ticket) -> Vec<String> {
+    if document.status != 0 {
+        return Vec::new();
+    }
+    document.tags.split(',').map(|s| s.to_string()).collect()
+}
+
+/// Ticket：open_by_assignee 是「常规字段索引 + 覆盖段 + 谓词」三者叠加
+/// （只索引未关闭工单是常见分布——存量里 99% 已关闭）；by_live_token 是
+/// 函数索引形态的同一条件，靠空 Vec 表达。
+#[derive(DocumentEncode, Clone, PartialEq, Debug)]
+#[ok_ref(TicketKey)]
+#[ok_index(open_by_assignee {
+    fields(assignee_id, created_at),
+    includes(title_len),
+    where(ticket_is_open),
+})]
+#[ok_index(by_live_token { func(live_tokens) })]
+#[ok_index(by_open_token { func(all_tokens), where(ticket_is_open) })]
+#[ok_ns(22)]
+pub struct Ticket {
+    pub assignee_id: u64,
+    pub created_at: u64,
+    pub title_len: u32,
+    /// 0 = open，1 = closed——谓词读的非索引列
+    pub status: u8,
+    pub tags: String,
+}
+
+use __OkmIndex_Ticket_open_by_assignee as ByOpenAssignee;
+use __OkmIndex_Ticket_by_live_token as ByLiveToken;
+use __OkmIndex_Ticket_by_open_token as ByOpenToken;
+
+/// 无条件的 token 切分——过滤交给声明上的 where（函数索引形态的谓词）。
+fn all_tokens(document: &Ticket) -> Vec<String> {
+    document.tags.split(',').map(|s| s.to_string()).collect()
+}
+
+fn mk_ticket(
+    id: u64,
+    assignee: u64,
+    created_at: u64,
+    title_len: u32,
+    status: u8,
+    tags: &str,
+) -> (TicketKey, Ticket) {
+    (
+        TicketKey { id },
+        Ticket {
+            assignee_id: assignee,
+            created_at,
+            title_len,
+            status,
+            tags: tags.to_string(),
+        },
+    )
+}
+
+#[test]
+fn partial_index_admits_only_matching_rows() {
+    let mut t = <Ticket as Document>::collection(TestStore::slatedb_mem());
+    let open_a = mk_ticket(1, 7, 10, 3, 0, "");
+    let closed = mk_ticket(2, 7, 20, 5, 1, "");
+    let open_b = mk_ticket(3, 7, 30, 2, 0, "");
+    for (k, r) in [&open_a, &closed, &open_b] {
+        t.put(k, r);
+    }
+
+    // 谓词在 entry_pairs 里短路：被拒的行主表条目在、索引条目不在。
+    // entry key 仍可算（它是行的派生地址），只是写路径没写它。
+    let e_closed = t.index_key::<ByOpenAssignee>(&closed.0, &closed.1);
+    assert!(t.store().get(&t.primary_key(&closed.0)).is_some());
+    assert!(t.store().get(&e_closed).is_none());
+    assert!(!ByOpenAssignee::admits(&closed.1));
+    assert!(ByOpenAssignee::admits(&open_a.1));
+
+    // 扫描只返回被接纳的行，组内按 created_at（10, 30）
+    let rows = t.scan::<ByOpenAssignee>(&7u64.to_be_bytes());
+    let ids: Vec<u64> = rows.iter().map(|(pk, _)| pk.decoded.id).collect();
+    assert_eq!(ids, [1, 3]);
+    // 整索引扫描（空前缀）同样只有 2 条——稀疏性对读侧透明
+    assert_eq!(t.scan::<ByOpenAssignee>(&[]).len(), 2);
+
+    // 覆盖扫描不受谓词影响：includes(title_len) 仍在 value 里
+    let covered = t.scan_covered::<ByOpenAssignee>(&7u64.to_be_bytes());
+    assert_eq!(covered.len(), 2);
+    assert_eq!(covered[0].1, 3u32.to_be_bytes().to_vec());
+    assert_eq!(covered[1].1, 2u32.to_be_bytes().to_vec());
+
+    // delete 走同一个 entry_pairs：被接纳的行清干净
+    t.delete(&open_a.0, &open_a.1);
+    assert!(t.store().get(&t.index_key::<ByOpenAssignee>(&open_a.0, &open_a.1)).is_none());
+    assert_eq!(t.scan::<ByOpenAssignee>(&7u64.to_be_bytes()).len(), 1);
+}
+
+#[test]
+fn partial_index_flip_needs_delete_then_put() {
+    // 谓词翻转（open → closed）：entry key 只由索引字段决定，谓词不进 key
+    // ——同一个地址，写侧只是这次不再产它。put 覆盖不清理旧索引条目
+    // （document.rs 的既有契约，值变化与谓词翻转同类），于是旧条目悬挂，
+    // 且扫描把它当被接纳的行返回——谓词的保证到 delete 为止。
+    let mut t = <Ticket as Document>::collection(TestStore::slatedb_mem());
+    let (k, open) = mk_ticket(1, 7, 10, 3, 0, "");
+    t.put(&k, &open);
+    let e = t.index_key::<ByOpenAssignee>(&k, &open);
+
+    let closed = Ticket { status: 1, ..open.clone() };
+    t.put(&k, &closed);
+    assert_eq!(e, t.index_key::<ByOpenAssignee>(&k, &closed));
+    assert!(t.store().get(&e).is_some(), "悬挂条目——既有覆盖写契约，非谓词引入");
+    let hit = t.scan::<ByOpenAssignee>(&7u64.to_be_bytes());
+    assert_eq!(hit.len(), 1);
+    assert_eq!(hit[0].1.as_ref().unwrap().status, 1, "扫描返回了谓词拒绝的行");
+
+    // 纪律：delete 用「当时存储的行」（= 生成旧条目那一行）再 put 新状态。
+    // 顺序颠倒的补救见下。
+    let mut t2 = <Ticket as Document>::collection(TestStore::slatedb_mem());
+    t2.put(&k, &open);
+    t2.delete(&k, &open); // 删除集合由旧状态派生 → 条目清掉
+    t2.put(&k, &closed);
+    assert!(t2.store().get(&e).is_none());
+    assert!(t2.scan::<ByOpenAssignee>(&7u64.to_be_bytes()).is_empty());
+
+    // delete 的删除集合也由传入行派生：closed 行不产条目，所以
+    // delete(closed) 清不掉悬挂条目，必须用旧状态的行再删一次
+    t.delete(&k, &closed);
+    assert!(t.store().get(&e).is_some(), "delete 沿 entry_pairs 派生，closed 行是 no-op");
+    t.delete(&k, &open);
+    assert!(t.store().get(&e).is_none());
+    assert!(t.scan::<ByOpenAssignee>(&7u64.to_be_bytes()).is_empty());
+}
+
+#[test]
+fn function_index_empty_vec_skips_row() {
+    let mut t = <Ticket as Document>::collection(TestStore::slatedb_mem());
+    let open = mk_ticket(1, 7, 10, 3, 0, "rust,kv");
+    let closed = mk_ticket(2, 7, 20, 5, 1, "rust");
+    t.put(&open.0, &open.1);
+    t.put(&closed.0, &closed.1);
+
+    // 被接纳的行 fan out 成 2 条 token entry；空 Vec → 0 条
+    assert_eq!(
+        ByLiveToken::entry_pairs(<Ticket as Document>::NS_PREFIX, &open.0, &open.1).len(),
+        2
+    );
+    assert!(ByLiveToken::entry_pairs(<Ticket as Document>::NS_PREFIX, &closed.0, &closed.1).is_empty());
+    assert!(t.store().get(&t.index_key::<ByLiveToken>(&closed.0, &closed.1)).is_none());
+
+    // 扫描只见被接纳的行
+    let rust = t.scan::<ByLiveToken>(b"rust");
+    assert_eq!(rust.len(), 1);
+    assert_eq!(rust[0].0.decoded.id, 1);
+
+    // delete 对称：写入集合与删除集合同源（空 Vec 的行删除是 no-op）
+    t.delete(&open.0, &open.1);
+    assert_eq!(t.scan::<ByLiveToken>(b"rust").len(), 0);
+}
+
+#[test]
+fn function_index_with_where_filters_row() {
+    // 函数索引形态叠加声明谓词：切分无条件，过滤在 where——同一个谓词对
+    // 两种索引形态一视同仁（都是 admits 覆盖 + entry_pairs 短路）。
+    let mut t = <Ticket as Document>::collection(TestStore::slatedb_mem());
+    let open = mk_ticket(1, 7, 10, 3, 0, "rust,kv");
+    let closed = mk_ticket(2, 7, 20, 5, 1, "rust");
+    t.put(&open.0, &open.1);
+    t.put(&closed.0, &closed.1);
+
+    assert_eq!(
+        ByOpenToken::entry_pairs(<Ticket as Document>::NS_PREFIX, &open.0, &open.1).len(),
+        2
+    );
+    assert!(ByOpenToken::entry_pairs(<Ticket as Document>::NS_PREFIX, &closed.0, &closed.1).is_empty());
+    assert!(!ByOpenToken::admits(&closed.1));
+
+    // 与空 Vec 写法等价（by_live_token 的 live_tokens 内嵌同一条件）
+    assert_eq!(
+        t.scan::<ByOpenToken>(b"rust").len(),
+        t.scan::<ByLiveToken>(b"rust").len()
+    );
+    assert_eq!(t.scan::<ByOpenToken>(b"rust").len(), 1);
+}
+
