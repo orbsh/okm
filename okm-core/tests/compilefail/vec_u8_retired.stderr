@@ -1,0 +1,7 @@
+error: proc-macro derive panicked
+ --> tests/compilefail/vec_u8_retired.rs:8:10
+  |
+8 | #[derive(DocumentEncode)]
+  |          ^^^^^^^^^^^^^^
+  |
+  = help: message: DocumentEncode: `Vec<u8>` is retired as a field spelling — use `Bytes` (okm_core::Bytes) for raw-byte fields (field blob)

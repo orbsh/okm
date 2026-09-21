@@ -601,7 +601,7 @@ fn emit_row_impl(schema: &DocumentSchema) -> TS2 {
     // DynamicValue and back. The derive owns the concrete Rust types, so
     // each arm emits the exact cast; from_map fills missing fields from
     // `#[ok_default]` / `Default` — same evolution rule as the payload
-    // decoder. `String`/`Vec<u8>` clone; fixed `[u8; N]` converts.
+    // decoder. `String`/`Bytes` clone; fixed `[u8; N]` converts.
     let mut to_map_arms = quote! {};
     let mut from_map_arms = quote! {};
     // Ref fields: (ident, D type tokens, K type tokens) — feeds the
@@ -621,7 +621,7 @@ fn emit_row_impl(schema: &DocumentSchema) -> TS2 {
         let is_signed = ty_str.starts_with('i');
         let is_bool = ty_str == "bool";
         let is_string = ty_str.starts_with("String");
-        let is_bytes = ty_str.starts_with("Vec<u8>") || ty_str.starts_with("Vec < u8 >");
+        let is_bytes = ty_str.starts_with("Bytes");
         let is_fixedbytes = ty_str.starts_with("[u8;");
         let is_f64 = ty_str.starts_with("Quant<") || ty_str.starts_with("Quant <");
         let is_varint = ty_str.starts_with("VarInt<") || ty_str.starts_with("VarInt <");
@@ -706,11 +706,11 @@ fn emit_row_impl(schema: &DocumentSchema) -> TS2 {
             });
         } else if is_bytes {
             to_map_arms.extend(quote! {
-                out.insert(#name.to_string(), ::okm_core::obj_dynamic::DynamicValue::Bytes(self.#id.clone()));
+                out.insert(#name.to_string(), ::okm_core::obj_dynamic::DynamicValue::Bytes(self.#id.0.clone()));
             });
             from_map_arms.extend(quote! {
                 #id: match map.get(#name) {
-                    Some(::okm_core::obj_dynamic::DynamicValue::Bytes(v)) => v.clone(),
+                    Some(::okm_core::obj_dynamic::DynamicValue::Bytes(v)) => ::okm_core::Bytes(v.clone()),
                     _ => #dflt,
                 },
             });

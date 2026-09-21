@@ -807,17 +807,24 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> Vec<FieldSchema> {
                 )
             }
             _ if ty_str.starts_with("Vec < u8 >") || ty_str.starts_with("Vec<u8>") => {
+                // Retired spelling: `Vec<u8>` carried BYTE-STRING semantics
+                // under a LIST-shaped name. The declared field is now spelled
+                // `Bytes` (okm_core::Bytes) — same wire, honest name.
+                panic!("{ctx}: `Vec<u8>` is retired as a field spelling — use `Bytes` (okm_core::Bytes) for raw-byte fields (field {id})")
+            }
+            _ if ty_str.starts_with("Bytes") || ty_str == "Bytes" => {
                 // Bytes — same variable-length TLV frame as String, minus
-                // the UTF-8 constraint: raw binary payloads (CBOR, etc.).
+                // the UTF-8 constraint: raw binary payloads (hashes,
+                // ciphertext, serialized blobs).
                 (
-                    quote! { buf.extend_from_slice(&self.#id); },
+                    quote! { buf.extend_from_slice(&self.#id.0); },
                     quote! {{
-                        let v = b[offset..offset+len].to_vec();
+                        let v = ::okm_core::Bytes(b[offset..offset+len].to_vec());
                         offset += len;
                         v
                     }},
                     quote! { 0 },
-                    quote! { self.#id.len() },
+                    quote! { self.#id.0.len() },
                     Some(quote! { ::okm_core::FieldType::Bytes }),
                 )
             }

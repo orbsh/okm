@@ -685,12 +685,15 @@ the open question and the assessment:
   only compiled under parquet); hand-written TRowByOrg marker used stale
   SLOT=1; FieldType::Bytes missing from arrow_type/swap_be/wire_bytes.
 
-## Scalar list fields (gap, 2026-09-17)
+## Scalar list fields (closed, 2026-09-21)
 
-`Vec<String>` / `Vec<u32>` declared fields are not recognized by the
-derive — only `Vec<u8>` (one Bytes frame). The typed pure-value list
-(`[tag][len][elem × n]` cold frames, one frame per element) is an open
-item; need predates nothing yet, record when a real consumer appears.
+Closed in two halves: `Vector<String>` (per-element LV) already covers
+the variable-width scalar list — the remaining mismatch was the BYTE
+spelling. `Vec<u8>` as a declared field is retired: raw-byte fields are
+now spelled `Bytes` (`okm_core::Bytes`), same cold TLV wire, honest name
+(a list-shaped name misdescribed byte-string semantics). The old
+spelling is rejected at compile time (compilefail/vec_u8_retired.rs);
+no consumer declared `Vec<u8>` fields, so there is no migration.
 
 ## Junction rename + ns derivation (ADR-0015, decided 2026-09-17)
 
