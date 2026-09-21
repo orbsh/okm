@@ -149,6 +149,11 @@ pub struct User {
   receives the whole row and may read any column (not necessarily an
   indexed one); it composes with plain field indexes and function indexes
   alike.
+- Raw-byte fields: `Bytes` (`okm_core::Bytes`) — a variable-length cold
+  TLV frame, the same encoding as `String` minus the UTF-8 constraint
+  (hashes, ciphertext, serialized blobs). The retired `Vec<u8>` spelling
+  is rejected at compile time with a pointer here: a list-shaped name
+  misdescribed byte-string semantics.
 
 **Basic use 1: single-value function index (write-side precomputation).**
 The data segment is the encoding of the function's return value, one
@@ -416,7 +421,10 @@ t.delete(&key);                                   // remove slot 0 + index entri
   native frames (type tag 7) sharing the table's dictionary; no CBOR.
 - `Bytes` is the **opaque member** of the vocabulary: the store
   interprets nothing — tag and total length only; content and its
-  meaning belong to the application. It is the standard escape hatch
+  meaning belong to the application. Opaque means the CONTENT: the
+  frame's `[len]` prefix is payload delimiting (the encoding layer's
+  job — how multi-field payloads are sliced), not interpretation;
+  `String` carries the same header. It is the standard escape hatch
   for extension types: a new encoding starts life as Bytes, and
   promoting it to a first-class type later is an additive change. The
   field name carries the semantics the tag deliberately does not

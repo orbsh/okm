@@ -7,6 +7,7 @@
 //! (`Delta`, `Rle`, `Offset` without a static base) live in the
 //! document-group regime, not here.
 
+mod bytes;
 mod refs;
 mod ref_mod;
 mod enum_tag;
@@ -18,6 +19,7 @@ pub mod varint;
 pub mod wire;
 pub mod vector;
 
+pub use bytes::Bytes;
 pub use refs::Refs;
 pub use ref_mod::Ref;
 pub use enum_tag::{enum_from_name, Enum, EnumTag};
