@@ -27,6 +27,12 @@ pub(crate) struct IdxDecl {
     /// single token inside `func(...)` is spliced verbatim into the
     /// generated `KvIndex` impl, which calls it as `#path(&document)`.
     pub func: String,
+    /// Partial-index predicate path (empty = full index): the token
+    /// inside `where(...)`, called as `#path(&document)` from the
+    /// generated `KvIndex::admits` override. `false` = the document
+    /// contributes no entries to this index. Applies to plain AND
+    /// function indexes.
+    pub filter: String,
     /// `deprecated` flag on the declaration: the slot stays reserved
     /// (declaration order is a persistent contract — removing the entry
     /// would shift every later slot onto stale data), but no write path,
@@ -96,6 +102,7 @@ pub(crate) fn parse_index_attr(attr: &syn::Attribute) -> Vec<IdxDecl> {
         let mut includes = Vec::new();
         let mut key = Vec::new();
         let mut func = String::new();
+        let mut filter = String::new();
         let toks: Vec<TokenTree> = body.into_iter().collect();
         let mut j = 0usize;
         while j < toks.len() {
@@ -127,9 +134,19 @@ pub(crate) fn parse_index_attr(attr: &syn::Attribute) -> Vec<IdxDecl> {
                     }
                     func = list[0].clone();
                 }
+                "where" => {
+                    // where(predicate) — partial-index predicate, called as
+                    // `predicate(&document)` from the generated `admits`
+                    // override. Legal on plain AND function indexes
+                    // (row membership is orthogonal to the sort segment).
+                    if list.len() != 1 {
+                        panic!("ok_index[{ident}].where: expected exactly one predicate path");
+                    }
+                    filter = list[0].clone();
+                }
                 other => {
                     panic!(
-                        "ok_index[{ident}]: unknown key {other} (supported: fields/includes/key/func)"
+                        "ok_index[{ident}]: unknown key {other} (supported: fields/includes/key/func/where)"
                     )
                 }
             }
@@ -161,6 +178,7 @@ pub(crate) fn parse_index_attr(attr: &syn::Attribute) -> Vec<IdxDecl> {
             includes,
             key,
             func,
+            filter,
             deprecated,
         });
     }

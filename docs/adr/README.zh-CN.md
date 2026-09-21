@@ -18,5 +18,6 @@
 - [0016 — 4 字节 entry 头与段编号 slot](0016-four-byte-head-and-slot-segments.md)（已接受）— [中文](0016-four-byte-head-and-slot-segments.zh-CN.md)
 - [0017 — Graph Edge：第三类关系载体](0017-graph-edge.md)（已接受；两种形态均已实现）— [中文](0017-graph-edge.zh-CN.md)
 - [0018 — 存储值就是引擎自己的值模型，序列化文本绝不作为存储表示](0018-storage-values-native-not-serialized-text.md)（已接受；aura 侧实现待做——`StoreAsVirtual` 删除 + state 文档化）— [中文](0018-storage-values-native-not-serialized-text.zh-CN.md)
+- [0019 — 部分索引：声明上的 where(path) 谓词，而不是返回 Option 的函数](0019-partial-index-where-predicate.md)（已实现——两种索引形态都可用，谓词不进 entry 地址）— [中文](0019-partial-index-where-predicate.zh-CN.md)
 
 实施计划见 [docs/PLAN.md](../PLAN.md)。

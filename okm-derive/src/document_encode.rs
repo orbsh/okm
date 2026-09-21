@@ -217,7 +217,10 @@ fn emit_payload_decode(schema: &DocumentSchema) -> TS2 {
 }
 
 /// One marker struct + `KvIndex` impl per declared `#[ok_index]` (slot
-/// order).
+/// order). A `where(path)` clause contributes an `admits` override
+/// (partial index); a `func(path)` clause contributes an `entry_pairs`
+/// override (multi-entry fan-out) and the function-index `encode_named`
+/// body. Both may coexist on one declaration.
 fn emit_index_structs(schema: &DocumentSchema) -> TS2 {
     let row_name = &schema.row_name;
     let key_ty = &schema.key_ty;
@@ -252,6 +255,12 @@ fn emit_index_structs(schema: &DocumentSchema) -> TS2 {
                     key: &Self::Key,
                     document: &Self::Document,
                 ) -> Vec<(Vec<u8>, Vec<u8>)> {
+                    // Partial index (where(path)): a rejected document
+                    // contributes no entries at all. Checked once per
+                    // document, before any fan-out.
+                    if !Self::admits(document) {
+                        return Vec::new();
+                    }
                     // One (key, value) pair per produced value; every
                     // entry shares the same includes value. Key =
                     // [ns 2B][slot][value][key prefix].
@@ -274,6 +283,23 @@ fn emit_index_structs(schema: &DocumentSchema) -> TS2 {
             }
         };
         let func_str = idx.func.clone();
+        // Partial index: `where(path)` on the declaration → generated
+        // `admits` override delegating to the declared predicate. Absent =
+        // the trait default (every document admitted). Legal on plain and
+        // function indexes alike — the trait default `entry_pairs` (plain
+        // path) consults `admits` too.
+        let admits_impl = if idx.filter.is_empty() {
+            quote! {}
+        } else {
+            let fpath = syn::parse_str::<syn::Expr>(&idx.filter).unwrap_or_else(|e| {
+                panic!("ok_index[{}]: bad where path `{}`: {e}", idx.ident, idx.filter)
+            });
+            quote! {
+                fn admits(document: &Self::Document) -> bool {
+                    #fpath(document)
+                }
+            }
+        };
         // Function-index regime: the sort segment is `func(&document)`'s
         // result(s), each encoded via IndexFuncResult — a single value
         // yields one entry, an iterator yields one entry per element
@@ -331,6 +357,7 @@ fn emit_index_structs(schema: &DocumentSchema) -> TS2 {
                     #encode_named_body
                 }
                 #pairs_impl
+                #admits_impl
             }
         });
     }

@@ -374,8 +374,36 @@ pub trait KvIndex {
     /// multi-value function indexes yield one pair per produced value —
     /// the write side (`Collection::put`/`delete` via `index_entries`) just
     /// iterates. Each entry shares the same includes value.
+    ///
+    /// Partial indexes (`where(path)` declaration clause) short-circuit
+    /// here: `admits` is consulted once per document, before any entry is
+    /// built. Nothing else in the write path can create an entry, so the
+    /// filter is complete by construction.
     fn entry_pairs(ns_prefix: &[u8], key: &Self::Key, document: &Self::Document) -> Vec<(Vec<u8>, Vec<u8>)> {
+        if !Self::admits(document) {
+            return Vec::new();
+        }
         vec![(Self::entry_key(ns_prefix, key, document), Self::entry_value(key, document))]
+    }
+
+    /// Partial-index predicate — the `where(path)` clause of an
+    /// `#[ok_index]` declaration. `false` = this document contributes NO
+    /// entries to this access method (Postgres-style partial index).
+    /// Default `true`: a full index.
+    ///
+    /// Evaluated once per document per generation pass, by `entry_pairs`
+    /// — the single place entries are produced for put, delete AND
+    /// save_into. Removal therefore regenerates exactly the write set as
+    /// long as the predicate is pure: a predicate reading a clock or
+    /// external state makes delete compute a different set and leaves
+    /// dangling entries (same purity contract as a `func` path).
+    ///
+    /// Scans never consult it — a partial index is simply sparser. A scan
+    /// over one is complete only for queries whose condition implies the
+    /// predicate; nothing enforces that, the declaration states which rows
+    /// are in the index and the caller owns the query.
+    fn admits(_document: &Self::Document) -> bool {
+        true
     }
 
     /// Scan prefix for a leftmost-prefix match over the index fields:

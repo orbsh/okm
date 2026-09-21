@@ -144,6 +144,11 @@ pub struct User {
   one definition, so normalization (lowercase, encoding transforms) cannot
   drift between the two sides. One declaration drives both sides;
   declaration is registration.
+- `where(path)` — partial index: a row for which `path(&row) -> bool` is
+  false does not exist in this index (a partial index). The predicate
+  receives the whole row and may read any column (not necessarily an
+  indexed one); it composes with plain field indexes and function indexes
+  alike.
 
 **Basic use 1: single-value function index (write-side precomputation).**
 The data segment is the encoding of the function's return value, one
@@ -177,7 +182,40 @@ tags). \`okm-core\` ships no tokenizer — splitting/bucketing logic belongs to
 the business layer. The func contract is **purity**: delete regenerates
 the entry set from the row, so an impure function (clock / randomness /
 external state) produces a different set at delete time than at write
-time, leaving dangling entries.
+time, leaving dangling entries. An empty `Vec` is one way to filter at
+row level (the row produces no entries at all), but a row-level condition
+reads better as a declared `where` predicate.
+
+**Basic use 3: partial index (a `where` predicate).** Only rows the
+predicate admits are indexed — when most of the stored rows never use the
+access method (a ticket table that is 99% closed, say, indexing only the
+open ones), entry volume and maintenance cost are paid on the admitted
+subset:
+
+```text
+fn is_open(row: &Ticket) -> bool { row.status == 0 }
+
+#[ok_index(open_by_assignee {
+    fields(assignee_id, created_at),
+    includes(title_len),
+    where(is_open),
+})]
+```
+
+The predicate sits at the same level as `func` and carries the same purity
+contract: delete re-derives the removal set from the row, so a predicate
+reading a clock or external state produces a different set at delete time
+than at write time, leaving dangling entries. The predicate's guarantee
+ends at the write side — entries are addressed by the indexed fields, and
+the predicate only decides "write it this time or not", so an overwriting
+`put` does not clean the old entry: when a row goes from admitted to
+rejected, the old entry dangles (the same pre-existing contract as "a
+changed value leaves a dangling entry"), and clearing it means deleting
+with **the row that generated it**. Nothing checks completeness on the
+read side either — a partial index is complete only for queries whose
+condition implies the predicate, okm has no query planner, and choosing
+the index is the caller's job. That discipline belongs to modeling, not
+to the mechanism.
 
 `func(path)` and the `#[ok_reduce]` declaration below are the two
 external extension mechanisms: func is **per-row derivation** (computed
