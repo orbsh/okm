@@ -1,6 +1,6 @@
 # 查询配方：okm-query 组合子与 SQL 的对应
 
-本文是 okm-query 的使用配方集：三个组合子（merge_join / group_by / walk）怎么组合成 SQL 世界的熟悉形状，以及两条边界记录——where 的物理/内存分界、三种分组的落地差异。机制细节见 internals（[索引机制](internals/index-mechanism.zh-CN.md)）；建模纪律见[建模指南](MODELING.zh-CN.md)。
+本文是 okm-query 的使用配方集：三个组合子（merge_join / group_by / walk）怎么组合成 SQL 世界的熟悉形状，以及两条边界记录——where 的物理/内存分界（前缀、区间、filter）、三种分组的落地差异。机制细节见 internals（[索引机制](internals/index-mechanism.zh-CN.md)）；建模纪律见[建模指南](MODELING.zh-CN.md)。
 
 ## 核心立场
 
@@ -9,9 +9,9 @@ okm-core 的义务到「每个访问方法给一条有序流」为止；组合�
 ```text
 SQL 概念        okm 落地
 ────────────────────────────────────────────
-WHERE (物理)    索引声明 + 前缀扫描（免费，见边界记录）
-WHERE (内存)    .filter()（stdlib，无包装）
-GROUP BY        group_by 组合子（索引排序承担分组）或 reduce（编译期）
+WHERE (物理)    索引声明 + 前缀/区间扫描（免费，见边界记录）
+WHERE (内存)    .filter()（stdlib，无需包装）
+GROUP BY        group_by（索引排序承担分组）或 reduce（编译期）
 JOIN            merge_join（双方都是键序流）
 多级 rollup     前缀扫描逐级收窄 group 段
 图遍历          walk（一跳 = 一次前缀扫描）
@@ -90,9 +90,10 @@ let found = okm_query::walk(&[&friend_edge], &store, &start_bytes, 2);
 
 成本模型与 edge 层的 forward/reverse 完全一致，只多了 frontier 与 visited set。
 
-## 边界记录：where 的两种形态
+## 边界记录：where 的形态
 
-- **prefix = 物理 where**。前缀扫描命中的字节范围就是存储层的过滤，免费（不读不命中）。选择性属于键布局设计——「这个实体按什么查」决定 `fields` 的首位放什么。该进 key 的过滤条件放 `.filter()` 里做 = 放弃存储层的选择性，每次查询为丢弃的行付解码成本。
-- **`.filter()` = 内存 where**。_stdlib 即可，无需包装_：对 scan 返回的 `Vec<(PrefixKey, Option<R>)>` 直接 `.filter()`。谓词无法进键（非前缀维度、跨字段条件、计算谓词）时才落在这里。
+- **prefix = 物理 where（等值）**。前缀扫描命中的字节范围就是存储层的过滤，免费（不读不命中）。选择性属于键布局设计——「这个实体按什么查」决定 `fields` 的首位放什么。该进 key 的过滤条件放 `.filter()` 里做 = 放弃存储层的选择性，每次查询为丢弃的行付解码成本。
+- **range = 物理 where 的区间形态（ADR-0020）**。谓词落在索引首字段、且字节序 == 值序时，它就是一个 key 区间——`1 < a < 100` 只读 `[1, 100)` 内的行，走 `scan_range`（缓冲）或 `scan_range_iter`（惰性：LIMIT / 首个命中即停止拉取；`.rev()` 反向读，免费）。边界是首字段的编码字节，由调用方负责。与 prefix 的差异不在成本——两者都只读命中——而在形状：prefix = 首段等值，range = 首字段比较。都不需要 `.filter()`。
+- **`.filter()` = 内存 where**。_stdlib 即可，无需包装_：对 scan 返回的输出直接 `.filter()`。谓词无法进键（非前缀维度、跨字段条件、计算谓词）时才落在这里。
 
-判据一句话：**先问这个谓词能否成为某个访问方法的前缀；能 → 改索引声明，不能 → filter**。前缀是免费的，filter 是按行付费的。
+判据一句话：**先问这个谓词能否成为某个访问方法的前缀（等值）或首字段区间（比较）；能 → 改索引声明 / 边界，不能 → filter**。前缀和区间都是免费的，filter 是按行付费的。

@@ -15,6 +15,54 @@ use slatedb::object_store::ObjectStore;
 use std::ops::RangeFull;
 use std::sync::Arc;
 
+/// Owned lazy adapter over slatedb's forward-only async `DbIterator`:
+/// the iterator is 'static, so it crosses into the sync world with a
+/// shared runtime handle (one `block_on` per `next()`). Backwards walk
+/// (`next_back`) has no native counterpart — it buffers the remaining
+/// range once and drains from the tail (laziness lost, semantics kept).
+pub struct SlatedbIter {
+    it: slatedb::DbIterator,
+    rt: std::sync::Arc<tokio::runtime::Runtime>,
+    back_buf: Option<std::vec::IntoIter<(Vec<u8>, Vec<u8>)>>,
+}
+
+impl SlatedbIter {
+    /// Materialize everything not yet consumed (skipping already-taken
+    /// entries) into a reversed tail buffer for `next_back`.
+    fn fill_back_buf(&mut self) {
+        let mut tail = Vec::new();
+        while let Some(kv) = self
+            .rt
+            .block_on(self.it.next())
+            .expect("slatedb iter failed")
+        {
+            tail.push((kv.key.to_vec(), kv.value.to_vec()));
+        }
+        tail.reverse();
+        self.back_buf = Some(tail.into_iter());
+    }
+}
+
+impl Iterator for SlatedbIter {
+    type Item = (Vec<u8>, Vec<u8>);
+    fn next(&mut self) -> Option<Self::Item> {
+        let kv = self
+            .rt
+            .block_on(self.it.next())
+            .expect("slatedb iter failed")?;
+        Some((kv.key.to_vec(), kv.value.to_vec()))
+    }
+}
+
+impl DoubleEndedIterator for SlatedbIter {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        if self.back_buf.is_none() {
+            self.fill_back_buf();
+        }
+        self.back_buf.as_mut().and_then(std::iter::Iterator::next)
+    }
+}
+
 /// Sync facade over a slatedb instance: an internal current-thread runtime
 /// drives the async engine. This is what the sync `VirtualStorage` tests
 /// and engines run on — the in-memory object store gives a zero-fs
@@ -24,7 +72,7 @@ use std::sync::Arc;
 /// nested fashion (re-entrant block_on panics). OKM's call shapes are flat
 /// (engine methods only), so this holds.
 pub struct SlatedbSync {
-    rt: tokio::runtime::Runtime,
+    rt: std::sync::Arc<tokio::runtime::Runtime>,
     db: Db,
 }
 
@@ -38,11 +86,11 @@ impl SlatedbSync {
             .expect("tokio current-thread runtime");
         let store: Arc<dyn ObjectStore> = Arc::new(slatedb::object_store::memory::InMemory::new());
         let db = rt.block_on(slatedb::Db::open(format!("/{name}"), store))?;
-        Ok(Self { rt, db })
+        Ok(Self { rt: std::sync::Arc::new(rt), db })
     }
 
     /// Sync adapter over an already-open async Db.
-    pub fn from_db(rt: tokio::runtime::Runtime, db: Db) -> Self {
+    pub fn from_db(rt: std::sync::Arc<tokio::runtime::Runtime>, db: Db) -> Self {
         Self { rt, db }
     }
 
@@ -64,6 +112,9 @@ pub trait VirtualStorageAsync {
     async fn del(&self, key: &[u8]);
     /// 前缀扫描，返回每个 key 的"剩余段"（去掉 prefix）
     async fn scan_suffix(&self, prefix: &[u8]) -> Vec<Vec<u8>>;
+    /// Range scan over FULL keys: `[begin, end)` byte order; None end =
+    /// unbounded. The async mirror of the sync trait's `scan_range`.
+    async fn scan_range(&self, begin: &[u8], end: Option<&[u8]>) -> Vec<Vec<u8>>;
 }
 
 /// slatedb 包装。ns 前缀由 key 编码自带；一个 Db 可承载所有边类型。
@@ -106,6 +157,25 @@ impl VirtualStorageAsync for SlatedbStore {
         let mut out = Vec::new();
         while let Some(kv) = it.next().await.expect("slatedb iter failed") {
             out.push(kv.key[prefix.len()..].to_vec());
+        }
+        out
+    }
+    async fn scan_range(&self, begin: &[u8], end: Option<&[u8]>) -> Vec<Vec<u8>> {
+        if let Some(end) = end {
+            if end <= begin {
+                return Vec::new();
+            }
+        }
+        // The subrange is relative to the prefix (slatedb semantics);
+        // an empty prefix makes the FULL-key range the subrange.
+        let mut it = match end {
+            Some(end) => self.db.scan_prefix(b"", begin..end).await,
+            None => self.db.scan_prefix(b"", begin..).await,
+        }
+        .expect("slatedb scan failed");
+        let mut out = Vec::new();
+        while let Some(kv) = it.next().await.expect("slatedb iter failed") {
+            out.push(kv.key.to_vec());
         }
         out
     }
@@ -181,6 +251,47 @@ impl SlatedbSync {
     pub fn del_sync(&self, key: &[u8]) {
         self.rt.block_on(self.db.delete(key)).expect("slatedb delete failed");
     }
+    pub fn scan_range_sync(&self, begin: &[u8], end: Option<&[u8]>) -> Vec<Vec<u8>> {
+        if let Some(end) = end {
+            if end <= begin {
+                return Vec::new();
+            }
+        }
+        let mut it = match end {
+            Some(end) => self.rt.block_on(self.db.scan_prefix(b"", begin..end)),
+            None => self.rt.block_on(self.db.scan_prefix(b"", begin..)),
+        }
+        .expect("slatedb scan failed");
+        let mut out = Vec::new();
+        while let Some(kv) = self.rt.block_on(it.next()).expect("slatedb iter failed") {
+            out.push(kv.key.to_vec());
+        }
+        out
+    }
+    /// Owned lazy adapter: the slatedb `DbIterator` is 'static, so it
+    /// can cross into the sync world as long as the runtime handle is
+    /// shared (Arc) — each `next()` is one `block_on`.
+    /// slatedb: owned lazy adapter (one block_on per next); backwards
+    /// walk buffers the remaining tail (see `SlatedbIter`).
+    pub fn scan_range_iter_sync(
+        &self,
+        begin: &[u8],
+        end: Option<&[u8]>,
+    ) -> super::storage::ScanIter {
+        if let Some(end) = end {
+            if end <= begin {
+                return super::storage::ScanIter::Buffered(std::iter::empty().collect::<Vec<_>>().into_iter());
+            }
+        }
+        let it = match end {
+            Some(end) => self.rt.block_on(self.db.scan_prefix(b"", begin..end)),
+            None => self.rt.block_on(self.db.scan_prefix(b"", begin..)),
+        }
+        .expect("slatedb scan failed");
+        let rt = self.rt.clone();
+        super::storage::ScanIter::Slatedb(SlatedbIter { it, rt, back_buf: None })
+    }
+
     pub fn scan_suffix_sync(&self, prefix: &[u8]) -> Vec<Vec<u8>> {
         let mut it = self
             .rt
@@ -205,14 +316,19 @@ impl VirtualStorage for SlatedbSync {
         self.del_sync(key)
     }
     fn scan_suffix(&self, prefix: &[u8]) -> Vec<Vec<u8>> {
-        let mut it = self
-            .rt
-            .block_on(self.db.scan_prefix(prefix, RangeFull))
-            .expect("slatedb scan failed");
-        let mut out = Vec::new();
-        while let Some(kv) = self.rt.block_on(it.next()).expect("slatedb iter failed") {
-            out.push(kv.key[prefix.len()..].to_vec());
-        }
-        out
+        self.scan_range_sync(prefix, None)
+            .into_iter()
+            .filter_map(|k| k.strip_prefix(prefix).map(|s| s.to_vec()))
+            .collect()
+    }
+    fn scan_range(&self, begin: &[u8], end: Option<&[u8]>) -> Vec<Vec<u8>> {
+        self.scan_range_sync(begin, end)
+    }
+    fn scan_range_iter(
+        &self,
+        begin: &[u8],
+        end: Option<&[u8]>,
+    ) -> super::storage::ScanIter {
+        self.scan_range_iter_sync(begin, end)
     }
 }

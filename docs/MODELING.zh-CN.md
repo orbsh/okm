@@ -249,6 +249,8 @@ use __OkmIndex_Doc_by_token as ByToken;
 let hits = t.scan::<ByToken>(b"rust");
 ```
 
+等值前缀之外，索引首字段上的比较谓词是一个物理 key 区间（ADR-0020）：`scan_range::<I>(begin, end)` / `scan_range_iter::<I>(..)`——OKM 每种编码都保持字节序 == 值序，`1 < a < 100` 只读 `[1, 100)` 内的行。配方见[查询指南](query-recipes.zh-CN.md)「where 的形态」一节。
+
 ### 动态字段：document API（ADR-0012）
 
 一套编码同时服务声明行与外部数据。声明字段照常走热/冷段；其余落进**动态段**（slot 1），以 n-TLV 帧——`[字段编号][类型][长度][字节]`——存储，名字在**字段名字典**（slot 2/3）里首次出现时分配。`Collection` 上的运行时接口：

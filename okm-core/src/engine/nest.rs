@@ -95,6 +95,39 @@ impl VirtualStorage for RemoteStore {
         self.round_trip(&OpFrame::one(OP_SCAN, prefix.to_vec(), Vec::new()))
             .suffixes
     }
+    /// Range scan rides the SAME OP_SCAN frame: the value segment —
+    /// empty for a prefix scan — carries `[0x01][end bytes]` when a
+    /// finite end exists, `[0x00]` for unbounded. No wire change: the
+    /// frame already has a value field; prefix is just the special case
+    /// with an empty value.
+    fn scan_range(&self, begin: &[u8], end: Option<&[u8]>) -> Vec<Vec<u8>> {
+        let mut value = vec![0u8];
+        if let Some(end) = end {
+            value[0] = 1;
+            value.extend_from_slice(end);
+        }
+        self.round_trip(&OpFrame::one(OP_SCAN, begin.to_vec(), value)).suffixes
+    }
+
+    /// Remote degrade (documented in ADR-0020): the wire frame already
+    /// batches the answer, so the streaming contract buffers — one
+    /// round trip, then lazy draining over the owned reply. Backwards
+    /// walk rides the buffer for free.
+    fn scan_range_iter(
+        &self,
+        begin: &[u8],
+        end: Option<&[u8]>,
+    ) -> crate::engine::storage::ScanIter {
+        let pairs: Vec<(Vec<u8>, Vec<u8>)> = self
+            .scan_range(begin, end)
+            .into_iter()
+            .filter_map(|k| {
+                let v = self.get(&k)?;
+                Some((k, v))
+            })
+            .collect();
+        crate::engine::storage::ScanIter::Buffered(pairs.into_iter())
+    }
 
     /// Batch = carrier accumulate only; the frame ships at commit.
     fn batch(&mut self) -> MemBatch {
@@ -260,7 +293,14 @@ impl<S: VirtualStorage> ExecCore<S> {
                 }
                 OP_SCAN => {
                     engine.commit_batch(MemBatch::default()).ok();
-                    resp.suffixes = engine.scan_suffix(&hosted_key(&self.prefix, &key));
+                    let hk = hosted_key(&self.prefix, &key);
+                    resp.suffixes = match value.first() {
+                        Some(&1) => {
+                            let end = &value[1..];
+                            engine.scan_range(&hk, Some(end))
+                        }
+                        _ => engine.scan_suffix(&hk), // empty value = prefix scan
+                    };
                 }
                 _ => return None, // unknown op tag = malformed frame
             }
@@ -314,6 +354,16 @@ mod tests {
                 .take_while(|(k, _)| k.starts_with(prefix))
                 .map(|(k, _)| k[prefix.len()..].to_vec())
                 .collect()
+        }
+        fn scan_range(&self, begin: &[u8], end: Option<&[u8]>) -> Vec<Vec<u8>> {
+            let map = self.0.lock().unwrap();
+            let iter = map.range(begin.to_vec()..);
+            iter.take_while(|(k, _)| match end {
+                Some(end) => k.as_slice() < end,
+                None => true,
+            })
+            .map(|(k, _)| k.clone())
+            .collect()
         }
     }
 

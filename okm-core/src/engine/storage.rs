@@ -4,15 +4,74 @@
 
 
 
-/// Minimal KV engine interface (prefix scan returns the "suffix" of each key).
-/// The `fjall` / `slatedb` features each provide an implementation; tests
-/// run the real engines through [`crate::engine::test_engine::TestStore`].
+/// Minimal KV engine interface: one ordered-read primitive (`scan_range`)
+/// plus point reads and batches. The `fjall` / `slatedb` features each
+/// provide an implementation; tests run the real engines through
+/// [`crate::engine::test_engine::TestStore`].
+/// The exclusive upper bound of a prefix as a FULL key: increment the
+/// last byte with carry (`[0x01, 0x7F]` -> `[0x01, 0x80]`). `None` when
+/// the prefix is all `0xFF` (no finite terminator — the range is
+/// unbounded). This is how prefix semantics ride on top of a range
+/// primitive without a second physical operation.
+pub fn prefix_end(prefix: &[u8]) -> Option<Vec<u8>> {
+    let mut end = prefix.to_vec();
+    for b in end.iter_mut().rev() {
+        if *b < 0xFF {
+            *b += 1;
+            return Some(end);
+        }
+        *b = 0x00;
+    }
+    None
+}
+
 pub trait VirtualStorage {
     fn put(&mut self, key: Vec<u8>, value: Vec<u8>);
     fn get(&self, key: &[u8]) -> Option<Vec<u8>>;
     fn del(&mut self, key: &[u8]);
     /// Prefix scan; returns each matching key's "suffix" (prefix removed).
-    fn scan_suffix(&self, prefix: &[u8]) -> Vec<Vec<u8>>;
+    /// A convenience bound over [`scan_range`](Self::scan_range): the
+    /// physical operation is the same ordered iteration, the prefix is
+    /// the range whose end is the prefix's terminator (see
+    /// [`prefix_end`]). Engines override when their native prefix scan
+    /// beats a range (`slatedb`'s `scan_prefix(prefix, subrange)`).
+    fn scan_suffix(&self, prefix: &[u8]) -> Vec<Vec<u8>> {
+        self.scan_range(prefix, prefix_end(prefix).as_deref())
+    }
+    /// Range scan over FULL keys: `[begin, end)` in byte order —
+    /// `None` end = unbounded. Begin is inclusive. This is the ONE
+    /// ordered-read primitive of the engine contract; prefix scanning
+    /// is its special case (see `scan_suffix`). Byte order == value
+    /// order for every OKM-encoded field (BE fixed-width, VarInt's
+    /// prefix-monotonic encoding), so a `1 < a < 100` predicate IS a
+    /// key interval — the engine reads only rows inside it.
+    fn scan_range(&self, begin: &[u8], end: Option<&[u8]>) -> Vec<Vec<u8>>;
+
+    /// LAZY range scan: full `(key, value)` pairs in byte order, pulled
+    /// on demand — half-way abandonment (LIMIT, first-match) costs only
+    /// the reads actually performed. The opaque [`ScanIter`] is the
+    /// trait's streaming contract: every native backend iterator (fjall
+    /// `Iter`, redb `OwnedRange`, slatedb `DbIterator`) is 'static and
+    /// owned, so wrapping is free; buffers never materialize unless the
+    /// consumer collects. `scan_range`'s default derives from here.
+    /// Remote engines degrade to a buffered round trip (the wire frame
+    /// already batches the answer).
+    fn scan_range_iter(
+        &self,
+        begin: &[u8],
+        end: Option<&[u8]>,
+    ) -> ScanIter {
+        // Sound-but-buffered default: engines with owned native
+        // iterators (fjall / redb / slatedb) override this method; the
+        // default materializes the whole range first (a borrow cannot
+        // span the trait boundary) and hands back an owned iterator.
+        let pairs: Vec<(Vec<u8>, Vec<u8>)> = self
+            .scan_range(begin, end)
+            .into_iter()
+            .filter_map(|k| Some((k.clone(), self.get(&k)?)))
+            .collect();
+        ScanIter::Buffered(pairs.into_iter())
+    }
     /// Prefix scan returning `(key suffix, value)` pairs, in key order.
     /// Default derives from `scan_suffix` + `get` (two lookups per hit);
     /// engines override with a native pair scan when it matters.
@@ -62,6 +121,85 @@ pub trait VirtualStorage {
 /// Deep-copy-Clone engines (test maps) deliberately do not implement
 /// this: a copied engine behind two hosts would silently fork the
 /// keyspace.
+/// The engine contract's streaming iterator, returned by
+/// [`VirtualStorage::scan_range_iter`]. An opaque enum over the
+/// backends' native owned iterators rather than a `dyn` box: the enum
+/// keeps `DoubleEndedIterator` — a consumer may walk the range
+/// backwards (e.g. "last N entries") without a second buffer pass.
+/// Variants without a native backwards walk (slatedb's async-forward
+/// `DbIterator`, the remote buffered round trip) degrade to buffered
+/// `next_back` over a materialized tail — semantics identical, laziness
+/// lost only where the engine cannot give it back.
+pub enum ScanIter {
+    /// fjall `Iter` — native snapshot, both directions.
+    #[cfg(feature = "fjall")]
+    Fjall(fjall::Iter),
+    /// redb `OwnedRange` — 'static via Arc'd txn guard, both directions.
+    #[cfg(feature = "redb")]
+    Redb(redb::OwnedRange<&'static [u8], &'static [u8]>),
+    /// slatedb `DbIterator` — forward-only (async adapter); backwards
+    /// drains a buffered copy of the remaining range.
+    #[cfg(feature = "slatedb")]
+    Slatedb(super::slatedb_backend::SlatedbIter),
+    /// Owned buffer: the trait default, the remote degrade path, and
+    /// any test map.
+    Buffered(std::vec::IntoIter<(Vec<u8>, Vec<u8>)>),
+}
+
+impl Iterator for ScanIter {
+    type Item = (Vec<u8>, Vec<u8>);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            #[cfg(feature = "fjall")]
+            ScanIter::Fjall(it) => it
+                .next()
+                .map(|g| {
+                    let (k, v) = g
+                        .into_inner()
+                        .unwrap_or_else(|e| panic!("fjall iter guard: {e}"));
+                    (k.to_vec(), v.to_vec())
+                }),
+            #[cfg(feature = "redb")]
+            ScanIter::Redb(it) => it
+                .next()
+                .map(|r| {
+                    let (k, v) = r.expect("redb range item");
+                    (k.value().to_vec(), v.value().to_vec())
+                }),
+            #[cfg(feature = "slatedb")]
+            ScanIter::Slatedb(it) => it.next(),
+            ScanIter::Buffered(it) => it.next(),
+        }
+    }
+}
+
+impl DoubleEndedIterator for ScanIter {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        match self {
+            #[cfg(feature = "fjall")]
+            ScanIter::Fjall(it) => it
+                .next_back()
+                .map(|g| {
+                    let (k, v) = g
+                        .into_inner()
+                        .unwrap_or_else(|e| panic!("fjall iter guard: {e}"));
+                    (k.to_vec(), v.to_vec())
+                }),
+            #[cfg(feature = "redb")]
+            ScanIter::Redb(it) => it
+                .next_back()
+                .map(|r| {
+                    let (k, v) = r.expect("redb range item");
+                    (k.value().to_vec(), v.value().to_vec())
+                }),
+            #[cfg(feature = "slatedb")]
+            ScanIter::Slatedb(it) => it.next_back(),
+            ScanIter::Buffered(it) => it.next_back(),
+        }
+    }
+}
+
 pub trait SharedVirtualStorage: VirtualStorage {
     /// A handle to the same physical engine. Cheap; shares all state.
     fn shared_handle(&self) -> Self;

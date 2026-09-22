@@ -785,17 +785,78 @@ The full plural taxonomy (identity axis x homogeneous/heterogeneous):
 - [x] **DynamicValue::Array** — heterogeneous list (shipped with the
       dynamic segment); more general than Vector, per-element type
       tags, slightly higher overhead.
-- [ ] (MEDIUM) **Set** — deduplicated element membership. Candidate: inverted
-      index (element -> document keys), mechanically identical to the
-      multi-value function index (func returning Vec<V> fans out).
-      Decide dedicated type vs documented function-index usage when a
-      consumer appears.
+- [x] **Set** — deduplicated element membership. CLOSED 2026-09-21
+      without a dedicated type: membership is a cardinality choice
+      between two application-layer paths. Low cardinality = the
+      multi-value function index IS the inverted index (element -> pkey
+      fan-out; point lookup exact; duplicates collapse by put
+      semantics; truth source on the row). High cardinality =
+      application-level bloom filter stored as a `Bytes` field (O(1)
+      per put, false positives traded; hash family / m-n ratio /
+      error budget are application parameters — data-quality policy
+      stays out of the codec). Bloom is a lossy derivative: it must
+      ride with a complete member representation, never stand alone.
+      Documented in MODELING "Set membership: inverted index or bloom,
+      by cardinality" (en/zh).
 - [x] **Refs<D, K>** (one-to-many) / **Junction** (many-to-many) —
       relation carriers, see ADR-0015.
 
 The dividing line: elements with identity -> Ref/Refs/Junction; pure
 values -> Vector/Array (a scalar has no key; a key reference to it is
 a category error).
+
+## Range scan + lazy iteration (ADR-0020, 2026-09-21)
+
+The engine contract had one ordered-read shape: `scan_suffix(prefix) ->
+Vec` — an equality prefix, fully materialized. Range predicates
+(`1 < a < 100`) degraded to in-memory filtering, and no early exit:
+LIMIT-style consumers paid for the whole result. Byte order == value
+order was already a property of every encoding; the trait hid it.
+
+Decision (ADR-0020): ONE ordered-read primitive `scan_range(begin,
+end) -> Vec` (full-key `[begin, end)` byte order, None end = unbounded)
+plus a streaming form `scan_range_iter -> ScanIter` — an OPAQUE
+concrete enum in okm-core (private arms per engine + a buffered arm),
+implementing DoubleEndedIterator: fjall and redb iterate backwards
+natively; slatedb's forward-only DbIterator buffers the remaining tail
+on next_back (laziness lost there, semantics identical). Reverse<T>
+stays valid for key-layout descending order; query-time rev() is the
+unwrapped alternative. `scan_suffix` becomes a default over
+`scan_range` via `prefix_end` (last-byte increment with carry).
+Collection gains `scan_range<I>` / `scan_range_iter<I>` splicing bounds
+between the entry header and the identity tail (the region
+`entry_prefix` fills with an equality prefix); two names stay separate
+(scan = equality-prefix semantics, scan_range = caller owns bound
+encoding). The lazy mirror's fetch-back captures
+`SharedVirtualStorage::shared_handle()` — a view of the SAME physical
+engine across the iterator boundary, never a deep copy. Remote path
+rides the SAME OP_SCAN frame — bounds encoded in the value segment,
+zero wire change; its iter form buffers (recorded future work, not an
+obligation).
+
+Engine survey (see ADR-0020 for the full table): fjall `Keyspace::range`
+(lazy Iter, owned 'static), redb `range_owned` (OwnedRange, 'static via
+Arc'd txn guard), slatedb `scan_prefix(b"", full-key range)` (DbIterator
+'sstatic; sync adapter = Arc<Runtime> + block_on per next; empty Range
+panics -> adapters return empty). All native iterators are owned and
+'static, so the boxed trait method loses nothing.
+
+- [x] Engine trait: `scan_range` + `scan_range_iter` + `prefix_end`;
+      `scan_suffix` demoted to default over range. fjall / redb /
+      slatedb (async + sync) / TestStore / RemoteStore (OP_SCAN value
+      segment) / test engines implemented.
+- [x] Acceptance: `scan_range_test` — inclusive begin / exclusive end,
+      key order, unbounded, empty interval, doc fetch-back; per-engine
+      (slatedb / fjall / redb) interval tests.
+- [x] Collection `scan_range_iter<I>` lazy mirror: fetch-back captures
+      `shared_handle()` (`S: SharedVirtualStorage` on the method, not
+      the impl block); return type is `impl DoubleEndedIterator`.
+      Tests: fwd/rev equivalence (native fjall), last-N via rev(),
+      early-abandon take().
+- [x] Docs: query-recipes "the forms of WHERE" (prefix = equality,
+      range = the interval form of physical WHERE, filter = in-memory)
+      + core-stance table row; MODELING "Rows at runtime" cross-reference
+      (en + zh).
 
 ## Wire encoding refinements (execution order, 2026-09-17)
 

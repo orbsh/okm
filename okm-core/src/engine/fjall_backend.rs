@@ -81,4 +81,36 @@ impl VirtualStorage for FjallStore {
             .map(|k| k[prefix.len()..].to_vec())
             .collect()
     }
+
+    fn scan_range(&self, begin: &[u8], end: Option<&[u8]>) -> Vec<Vec<u8>> {
+        match end {
+            Some(end) => self
+                .ks
+                .range(begin..end)
+                .filter_map(|g| g.key().ok())
+                .map(|k| k.to_vec())
+                .collect(),
+            None => self
+                .ks
+                .range(begin..)
+                .filter_map(|g| g.key().ok())
+                .map(|k| k.to_vec())
+                .collect(),
+        }
+    }
+
+    /// fjall's `Iter` is an owned, 'static lazy iterator (snapshot
+    /// nonce held inside) — native streaming, no buffering, both
+    /// directions.
+    fn scan_range_iter(
+        &self,
+        begin: &[u8],
+        end: Option<&[u8]>,
+    ) -> super::storage::ScanIter {
+        let it = match end {
+            Some(end) => self.ks.range(begin..end),
+            None => self.ks.range(begin..),
+        };
+        super::storage::ScanIter::Fjall(it)
+    }
 }

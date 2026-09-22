@@ -6,7 +6,7 @@
 //! (indexed + includes fields live there), so put and delete are both
 //! document-shaped.
 
-use crate::engine::storage::VirtualStorage;
+use crate::engine::storage::{SharedVirtualStorage, VirtualStorage};
 use crate::model::index::{KvIndex, Document};
 use crate::model::key::{KeyEncode, PrefixKey};
 
@@ -252,6 +252,120 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
                 (pk, document)
             })
             .collect()
+    }
+
+    /// Range scan over access method `I`: `begin`/`end` are the ENCODED
+    /// forms of the leading index fields (byte order == value order for
+    /// every OKM encoding — BE fixed-width and prefix-monotonic VarInt).
+    /// `[begin, end)` on the entry keys, so the engine reads only rows
+    /// whose `a` falls inside the interval — the physical WHERE of a
+    /// `1 < a < 100` predicate. Semantics beyond the leading-field
+    /// interval (an end that cuts into the carried pkey, mixed bound
+    /// widths) are the caller's: the bound bytes are spliced between
+    /// the entry header and the identity tail, exactly the region
+    /// `entry_prefix` fills with an equality prefix.
+    pub fn scan_range<I: KvIndex<Key = K, Document = R>>(
+        &self,
+        begin: &[u8],
+        end: Option<&[u8]>,
+    ) -> Vec<(PrefixKey<K>, Option<R>)> {
+        let header = self.header();
+        let mut b = I::entry_prefix(&header, &[]);
+        b.extend_from_slice(begin);
+        let e = end.map(|end| {
+            let mut e = I::entry_prefix(&header, &[]);
+            e.extend_from_slice(end);
+            e
+        });
+        let taken = I::key_prefix_width();
+        let kl = K::KEY_LEN;
+        self.store
+            .scan_range(&b, e.as_deref())
+            .iter()
+            .filter_map(|full| {
+                let suffix = &full[b.len()..];
+                if suffix.len() < taken {
+                    return None;
+                }
+                let start = suffix.len() - taken;
+                let decoded = if taken == kl {
+                    I::Key::decode(&suffix[start..])
+                } else {
+                    let mut buf = vec![0u8; kl];
+                    buf[..taken].copy_from_slice(&suffix[start..]);
+                    I::Key::decode(&buf)
+                };
+                let document = if taken == kl {
+                    self.get(&decoded)
+                } else {
+                    None
+                };
+                Some((PrefixKey { decoded, taken }, document))
+            })
+            .collect()
+    }
+
+    /// Lazy range scan over access method `I`: identical bounds to
+    /// [`scan_range`](Self::scan_range), but entries are pulled on
+    /// demand — a consumer that stops early (LIMIT, first match) pays
+    /// only the reads performed. Documents are fetched per pulled entry,
+    /// never for the untouched tail.
+    pub fn scan_range_iter<I: KvIndex<Key = K, Document = R>>(
+        &self,
+        begin: &[u8],
+        end: Option<&[u8]>,
+    ) -> impl DoubleEndedIterator<Item = (PrefixKey<K>, Option<R>)>
+    where
+        S: SharedVirtualStorage,
+    {
+        let header = self.header();
+        let mut b = I::entry_prefix(&header, &[]);
+        b.extend_from_slice(begin);
+        let e = end.map(|end| {
+            let mut e = I::entry_prefix(&header, &[]);
+            e.extend_from_slice(end);
+            e
+        });
+        let taken = I::key_prefix_width();
+        let kl = K::KEY_LEN;
+        // Fetch-back needs an engine handle that outlives the iterator
+        // borrow: `shared_handle` hands out a view of the SAME physical
+        // engine (never a deep copy — forking the keyspace behind two
+        // cursors would be unsound), which is exactly the
+        // SharedVirtualStorage contract.
+        let store = self.store.shared_handle();
+        let b_len = b.len();
+        self.store
+            .scan_range_iter(&b, e.as_deref())
+            .map(move |(full, _value)| {
+                let suffix = &full[b_len..];
+                let start = suffix.len() - taken;
+                let decoded = if taken == kl {
+                    K::decode(&suffix[start..])
+                } else {
+                    let mut buf = vec![0u8; kl];
+                    buf[..taken].copy_from_slice(&suffix[start..]);
+                    K::decode(&buf)
+                };
+                let document = if taken == kl {
+                    // Point fetch-back on the shared engine handle:
+                    // same key layout as `Collection::get` (header +
+                    // slot-0 primary entry), inlined because the
+                    // closure cannot re-enter `self`.
+                    let mut k = header.clone();
+                    k.extend_from_slice(&crate::model::index::PRIMARY_SLOT.to_be_bytes());
+                    k.extend_from_slice(&decoded.encode());
+                    let v = store.get(&k);
+                    v.map(|v| {
+                        let mut document = R::decode_payload(&v);
+                        R::__okm_embed_deref(&mut document, &store);
+                        document
+                    })
+                } else {
+                    None
+                };
+                (PrefixKey { decoded, taken }, document)
+            })
     }
 
     /// Covered scan over access method `I`: the includes segment lives in

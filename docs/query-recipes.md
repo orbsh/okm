@@ -2,7 +2,8 @@
 
 A recipe collection for okm-query: how the three combinators
 (merge_join / group_by / walk) compose into shapes familiar from SQL,
-plus two boundary records — the physical/in-memory split of WHERE, and
+plus two boundary records — the physical/in-memory split of WHERE
+(prefix, range, filter), and
 the three landings of grouping. Mechanism details live in internals
 ([index-mechanism](internals/index-mechanism.zh-CN.md)); modeling
 discipline lives in the [modeling guide](MODELING.md).
@@ -18,7 +19,7 @@ code, declaration is execution.
 ```text
 SQL concept      okm landing
 ────────────────────────────────────────────
-WHERE (physical) index declaration + prefix scan (free — see the record)
+WHERE (physical) index declaration + prefix/range scan (free — see the record)
 WHERE (memory)   .filter() (stdlib, no wrapper)
 GROUP BY         group_by (index sort does the grouping) or reduce (compile time)
 JOIN             merge_join (both sides key-ordered streams)
@@ -115,19 +116,29 @@ let found = okm_query::walk(&[&friend_edge], &store, &start_bytes, 2);
 The cost model is identical to the edge layer's forward/reverse; the
 only added structure is the frontier and the visited set.
 
-## Boundary record: the two forms of WHERE
+## Boundary record: the forms of WHERE
 
-- **prefix = physical WHERE.** The byte range a prefix scan hits IS
-  the storage-layer filter, free (non-hits are never read).
+- **prefix = physical WHERE (equality).** The byte range a prefix scan
+  hits IS the storage-layer filter, free (non-hits are never read).
   Selectivity belongs in key layout — "how is this entity queried"
   decides what leads `fields`. Pushing a key-qualifying predicate into
   `.filter()` abandons the storage layer's selectivity: every query
   pays decode cost for rows it throws away.
+- **range = the interval form of physical WHERE (ADR-0020).** A
+  predicate on the LEADING index field with byte order == value order
+  is a key interval — `1 < a < 100` reads only the rows inside
+  `[1, 100)`, via `scan_range` (buffered) or `scan_range_iter` (lazy:
+  LIMIT / first-match stops pulling; `.rev()` reads backwards, free).
+  Bounds are the encoded bytes of the leading field, caller-owned.
+  The difference from a prefix is not cost — both read only hits — but
+  SHAPE: prefix = equality on a leading segment, range = comparison on
+  the leading field. Neither needs `.filter()`.
 - **`.filter()` = in-memory WHERE.** _stdlib suffices, no wrapper_:
-  `.filter()` straight over the scan's `Vec<(PrefixKey, Option<R>)>`.
-  Reserved for predicates that cannot enter a key (non-prefix
-  dimensions, cross-field conditions, computed predicates).
+  `.filter()` straight over the scan's output. Reserved for predicates
+  that cannot enter a key (non-prefix dimensions, cross-field
+  conditions, computed predicates).
 
 One-line criterion: **first ask whether the predicate can become a
-prefix of some access method; if yes → change the index declaration,
-if no → filter**. A prefix is free; a filter pays per row.
+prefix (equality) or a range on the leading field (comparison) of some
+access method; if yes → change the index declaration / bounds, if no →
+filter**. A prefix and a range are free; a filter pays per row.

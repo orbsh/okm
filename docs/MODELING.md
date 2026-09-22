@@ -392,6 +392,13 @@ use __OkmIndex_Doc_by_token as ByToken;
 let hits = t.scan::<ByToken>(b"rust");
 ```
 
+Beyond the equality prefix, a comparison on the leading index field is
+a physical key interval (ADR-0020): `scan_range::<I>(begin, end)` /
+`scan_range_iter::<I>(..)` — byte order == value order for every OKM
+encoding, so `1 < a < 100` reads only the rows inside `[1, 100)`.
+Recipes live in the [query guide](query-recipes.md), "the forms of
+WHERE".
+
 ### Dynamic fields: the document API (ADR-0012)
 
 One encoding serves declared rows and external data. Declared fields ride
