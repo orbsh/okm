@@ -35,7 +35,7 @@ The contract works, but every real usage starts the same way: the user hand-writ
 
 - **`Sum` is not order-independent under overwrite** in floating point; the preset is integer-only (`u64` payload fields). Float sums remain user-written `ReduceLogic` (where the user can pick a compensation strategy), not silently lossy presets.
 - **`Max`/`Min` unfold is lossy by nature** (removing the current maximum cannot restore the previous one without a second structure). `Max<F>`/`Min<F>` therefore require the reversible-identity reading: the group's stored value is an upper/lower bound that may legitimately be below the true extreme of remaining rows after a delete. Consumers needing exactness use `MaxKeep` semantics or a user-written logic with a companion `Count` to detect staleness. This is the contract's existing reversibility clause made concrete, not a new concession — but presets make it easier to hit accidentally, hence this paragraph.
-- **The mirror-field problem remains for keyed quantities.** A reduce folds over PAYLOAD fields; when the aggregated quantity lives in the key (aura's proxy id), the payload must carry a mirror. Combinators do not change this — `Max<F>` aggregates a payload field like any user logic. A "reduce over key fields" extension is a separate idea with its own ADR, not smuggled in here.
+- **The mirror-field problem for keyed quantities is solved by ADR-0024** (reduce hooks receive the decoded key; GROUP may name key fields) — recorded there because it is a hook-contract change, not a combinator concern. Once 0024 lands, `Max<F>`/`MaxKeep<F>` aggregate key fields by name and the mirror pattern is retired.
 
 ## Consequences
 
