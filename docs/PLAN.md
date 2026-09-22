@@ -251,6 +251,16 @@ to full 16 bits). The trigger is "edge needs a new discriminator", never
       no wrapper needed). Landed 2026-09-11 (docs/query-recipes.md,
       query-recipes.zh-CN.md; README links it).
 
+### Preset reduce combinators (ADR-0023, accepted 2026-09-22 — to implement)
+
+- [ ] `okm_core` ships `Count`, `Max<F>`, `Min<F>`, `Sum<F>`, `MaxKeep<F>` as
+      generic `ReduceLogic` impls; `#[ok_reduce(Count { group(..) })]` resolves
+      by name — no new attribute/wire/slot rules. Integer-only (u64); unfold
+      ambiguity (watermark vs shrinkable extreme) resolved by NAME (`MaxKeep`
+      vs `Max`), visible in the schema. NOT built into the engine: row count
+      stays one declaration away, not a write-path tax on every table.
+      Tests in `reduce_test.rs`; docs pass INTEGRATION/MODELING.
+
 ## Phase 6 — Commanded RMW: `Table::upsert_with`
 
 User-complemented RMW next to the declarative one (reduce). Same underlying
