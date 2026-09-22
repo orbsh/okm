@@ -70,10 +70,10 @@ mod rust_reduce {
     impl ReduceLogic for GroupCount {
         type Document = User;
         type Acc = GroupCount;
-        fn fold(acc: &mut GroupCount, _item: &User) {
+        fn fold(acc: &mut GroupCount, _key: &UserKey, _item: &User) {
             acc.0 += 1;
         }
-        fn unfold(acc: &mut GroupCount, _item: &User) {
+        fn unfold(acc: &mut GroupCount, _key: &UserKey, _item: &User) {
             acc.0 -= 1;
         }
     }
@@ -128,12 +128,12 @@ impl okm_dynamic::ReduceLogic for GroupCount {
     fn seed(&self) -> Vec<u8> {
         0u64.to_be_bytes().to_vec()
     }
-    fn fold(&self, acc: &mut Vec<u8>, _document: &ValueMap) -> Result<(), String> {
+    fn fold(&self, acc: &mut Vec<u8>, _key: &ValueMap, _document: &ValueMap) -> Result<(), String> {
         let n = be_u64(acc) + 1;
         *acc = n.to_be_bytes().to_vec();
         Ok(())
     }
-    fn unfold(&self, acc: &mut Vec<u8>, _document: &ValueMap) -> Result<(), String> {
+    fn unfold(&self, acc: &mut Vec<u8>, _key: &ValueMap, _document: &ValueMap) -> Result<(), String> {
         let n = be_u64(acc)
             .checked_sub(1)
             .ok_or("accumulator underflow: unfold without fold")?;
@@ -189,7 +189,7 @@ fn reduce_entry_key(t: &DynamicCollection<TestStore>, level: u32) -> Vec<u8> {
     });
     let mut m = BTreeMap::new();
     m.insert("level".into(), Value::U32(level));
-    reduce.entry_key(t.schema(), &42u16.to_be_bytes(), &m).unwrap()
+    reduce.entry_key(t.schema(), &42u16.to_be_bytes(), &m, &m).unwrap()
 }
 
 fn acc_of(t: &DynamicCollection<TestStore>, level: u32) -> Option<u64> {

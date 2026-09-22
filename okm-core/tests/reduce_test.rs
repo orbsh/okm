@@ -51,11 +51,11 @@ pub struct AuthorStats;
 impl ReduceLogic for AuthorStats {
     type Document = Post;
     type Acc = CountSum;
-    fn fold(acc: &mut CountSum, item: &Post) {
+    fn fold(acc: &mut CountSum, _key: &PostKey, item: &Post) {
         acc.count += 1;
         acc.sum += item.title_len as u64;
     }
-    fn unfold(acc: &mut CountSum, item: &Post) {
+    fn unfold(acc: &mut CountSum, _key: &PostKey, item: &Post) {
         acc.count -= 1;
         acc.sum -= item.title_len as u64;
     }

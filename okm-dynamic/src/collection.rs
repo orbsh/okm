@@ -142,7 +142,10 @@ impl<S: VirtualStorage> DynamicCollection<S> {
             .reduces
             .first()
             .ok_or_else(|| "no reduce registered".to_string())?;
-        reduce.entry_key(&self.schema, &self.ns, group_values)
+        // Read probe: the caller's map supplies the group-field values;
+        // it rides both the key and document slots so a group name from
+        // EITHER source resolves (the values are the caller's).
+        reduce.entry_key(&self.schema, &self.ns, group_values, group_values)
     }
 
     pub(crate) fn primary_key(&self, pkey: &[u8]) -> Vec<u8> {

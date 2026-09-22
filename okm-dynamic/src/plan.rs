@@ -92,13 +92,13 @@ impl<S: VirtualStorage> DynamicCollection<S> {
             for (ek, _) in old_entries {
                 plan.ops.push((ek, None));
             }
-            self.plan_reduces(old_row, false, &mut plan, &mut overlay)?;
+            self.plan_reduces(pkey, old_row, false, &mut plan, &mut overlay)?;
         }
         // New entries + primary write.
         let entries =
             index_entries(self.schema(), &self.ns, &self.indexes, pkey, document)?;
         let payload = encode_payload(self.schema(), document).map_err(|e| e.to_string())?;
-        self.plan_reduces(document, true, &mut plan, &mut overlay)?;
+        self.plan_reduces(pkey, document, true, &mut plan, &mut overlay)?;
         plan.ops.push((self.primary_key(pkey), Some(payload)));
         for (ek, ev) in entries {
             plan.ops.push((ek, Some(ev)));
@@ -123,7 +123,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
         for (ek, _) in entries {
             plan.ops.push((ek, None));
         }
-        self.plan_reduces(old, false, &mut plan, &mut overlay)?;
+        self.plan_reduces(pkey, old, false, &mut plan, &mut overlay)?;
         plan.ops.push((self.primary_key(pkey), None));
         Ok(plan)
     }
@@ -133,13 +133,17 @@ impl<S: VirtualStorage> DynamicCollection<S> {
     /// reading accs through `acc_of` instead of the engine.
     fn plan_reduces(
         &self,
+        pkey: &[u8],
         document: &ValueMap,
         add: bool,
         plan: &mut impl PlanSink,
         overlay: &mut AccOverlay,
     ) -> Result<(), String> {
+        // The key decoded ONCE per plan (schema-driven slicing of the
+        // caller's pkey — the embedded path's &Key twin).
+        let key = crate::decode_key(self.schema(), pkey).map_err(|e| e.to_string())?;
         for reduce in &self.reduces {
-            let ek = reduce.entry_key(self.schema(), &self.ns, document)?;
+            let ek = reduce.entry_key(self.schema(), &self.ns, &key, document)?;
             let mut acc = match overlay.get(&ek) {
                 Some(bytes) => bytes,
                 // Seed only on the fold arm (same rule as embedded):
@@ -149,9 +153,9 @@ impl<S: VirtualStorage> DynamicCollection<S> {
                 None => return Ok(()),
             };
             if add {
-                reduce.spec.logic.fold(&mut acc, document)?;
+                reduce.spec.logic.fold(&mut acc, &key, document)?;
             } else {
-                reduce.spec.logic.unfold(&mut acc, document)?;
+                reduce.spec.logic.unfold(&mut acc, &key, document)?;
             }
             plan.push((ek.clone(), Some(acc.clone())));
             plan.push_acc((ek.clone(), acc.clone()));

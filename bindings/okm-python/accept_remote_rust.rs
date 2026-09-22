@@ -37,12 +37,12 @@ struct GroupCount;
 
 impl ReduceLogic for GroupCount {
     fn seed(&self) -> Vec<u8> { 0u64.to_be_bytes().to_vec() }
-    fn fold(&self, acc: &mut Vec<u8>, _d: &ValueMap) -> Result<(), String> {
+    fn fold(&self, acc: &mut Vec<u8>, _k: &ValueMap, _d: &ValueMap) -> Result<(), String> {
         let n = u64::from_be_bytes(acc.as_slice().try_into().map_err(|_| "acc width")?) + 1;
         *acc = n.to_be_bytes().to_vec();
         Ok(())
     }
-    fn unfold(&self, acc: &mut Vec<u8>, _d: &ValueMap) -> Result<(), String> {
+    fn unfold(&self, acc: &mut Vec<u8>, _k: &ValueMap, _d: &ValueMap) -> Result<(), String> {
         let n = u64::from_be_bytes(acc.as_slice().try_into().map_err(|_| "acc width")?)
             .checked_sub(1)
             .ok_or("underflow")?;

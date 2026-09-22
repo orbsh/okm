@@ -105,11 +105,11 @@ pub struct CounterTotals;
 impl ReduceLogic for CounterTotals {
     type Document = Counter;
     type Acc = CountSum;
-    fn fold(acc: &mut CountSum, item: &Counter) {
+    fn fold(acc: &mut CountSum, _key: &CounterKey, item: &Counter) {
         acc.count += 1;
         acc.sum += item.hits;
     }
-    fn unfold(acc: &mut CountSum, item: &Counter) {
+    fn unfold(acc: &mut CountSum, _key: &CounterKey, item: &Counter) {
         acc.count -= 1;
         acc.sum -= item.hits;
     }
