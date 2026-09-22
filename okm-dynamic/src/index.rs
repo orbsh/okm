@@ -6,9 +6,10 @@
 //! optional includes list. Entries share the byte layout of the derive:
 //! `[ns 2B][slot][index fields][key prefix]` → value = includes segment.
 //!
-//! Capability ceiling (permanent, per ADR-0008): no function indexes, no
-//! multi-entry fanout, no reduce/subscribe — a dynamic rebuild of those
-//! would break exactly-once. Plain field indexes only.
+//! Capability scope (ADR-0022): subscribe stays excluded; function/partial
+//! indexes and reduce become binding-implementable via host-language
+//! callables under the deployment-shape contract. Plain field indexes
+//! shipped first; callable surfaces are the open work.
 
 use okm_core::schema::TableSchema;
 use okm_core::storage::VirtualStorage;

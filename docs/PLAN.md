@@ -390,9 +390,11 @@ key bare in the tail) recorded in ADR-0005.
       No CI regression gates initially.
 - [~] Dynamic codec (Python first, then Steel): schema-driven
       encoder/decoder/scan built from structured schema exports —
-      in-process use for embedded-language Actors. Permanent capability
-      ceiling: no reduce/subscribe (Rust compile-time logic; dynamic rebuild
-      would break exactly-once). Core shipped 2026-09-12: `okm-core::schema::
+      in-process use for embedded-language Actors. Capability ceiling
+      RESCOPED (2026-09-22, ADR-0022): subscribe stays excluded; func/
+      partial indexes and reduce become binding-implementable under the
+      deployment-shape contract (see the ADR-0022 checklist item). Core
+      shipped 2026-09-12: `okm-core::schema::
       TableSchema::of` (structured export, serde behind `schema-serde`) +
       `okm-dynamic` crate (Value tree; encode/decode mirroring the derive's
       byte layout; version gate + unknown-tag skip); cross-language byte
@@ -419,8 +421,37 @@ key bare in the tail) recorded in ADR-0005.
       Custom-type escape hatch is sealed); bytes cross as vectors of
       integers (ByteVector field is crate-private); VM round trip locked by
       vm_roundtrip (Rust writes → steel reads → steel re-encodes byte-
-      identical). Remaining: schema reverse-import (Python/Steel-declared
-      key/row/table → Rust runtime execution) deferred.
+      identical).
+- [~] Schema reverse-import (Python/Steel-declared key/row/table → Rust
+      runtime execution) — REJECTED (2026-09-22). The Rust runtime cannot
+      predict dynamically-added Python/Steel schemas, so a reverse import
+      would force the Rust side into the same dynamic mode, which is what
+      okm-dynamic already provides on the bindings side (no increment).
+      Positioning: Python/Steel are BINDINGS — they never interact with
+      the Rust parts directly (transparent channels like
+      NestStorage/remote excepted).
+- [ ] Bindings semantic alignment — ADR-0022 (2026-09-22): the dynamic
+      codec's "permanent ceiling" is rescoped. Bindings implement
+      semantics via host-language callables (binding-time registration):
+      func/partial indexes (`Schema.add_func_index`, `admits` callable)
+      and reduce (`Schema.add_reduce` with fold/unfold callables +
+      declared acc codec). Subscribe stays excluded (write-path
+      broadcast, not a per-document derivation). Deployments:
+      embedded (Python owns the engine, single writer, in-process
+      calling discipline) and remote/Aura (callables run in the actor,
+      operation payloads carry semantic RESULTS — derived entry bytes,
+      absolute acc values, old document for overwrite unfold; remote
+      executes as one framed batch, never hosts callables). Precondition
+      for remote reduce: single-writer-per-group (Aura's partitioned
+      actor model satisfies it); steady-state puts carry an absolute
+      acc at zero extra round trips, only restart recovery reads once;
+      document write + acc update are atomic via the framed batch.
+      Acceptance: (1) embedded — calling-discipline test (put/delete/
+      overwrite vs accumulator); (2) remote — Python-actor operations
+      land byte-identically to Rust-side (cross-language byte equality,
+      extended from codec bytes to semantic entries). Implementation:
+      okm-dynamic `AccessMethod` func/admits variants + `DynamicCollection`
+      reduce calling discipline; okm-core untouched.
 - [x] Multi-tenancy: receiver-side prefix only — a remote OKM instance is
       one application = one domain model = one ns; to the receiver it is
       just another prefix. No app_id layer inside OKM, no multi-level ns
@@ -877,58 +908,54 @@ explicitly rejected ones: surrogate-pair-style compensation and
 uniform width (O(1) field indexing is already covered by static
 offsets).
 
-**P3 — 4-byte head (ns u16 + slot u16) + Junction rename.** DONE
-(2026-09-20). Layout groundwork first; ADR-0015 decided. `slot: u8` ->
-`u16` BE, high byte = segment (0x0 document-self / 0x1 indexes /
-0x2 reduces / 0x3 junction / 0x82-0xBF relation reserve / 0xC0-0xFF
-system; 12-bit counter per segment). Junction rename rides the same
-sweep. Hex locks + key-layout + ADR-0012 slot table rewritten.
+- [x] P3 — 4-byte head (ns u16 + slot u16) + Junction rename. DONE
+      (2026-09-20). Layout groundwork first; ADR-0015 decided. `slot: u8` ->
+      `u16` BE, high byte = segment (0x0 document-self / 0x1 indexes /
+      0x2 reduces / 0x3 junction / 0x82-0xBF relation reserve / 0xC0-0xFF
+      system; 12-bit counter per segment). Junction rename rides the same
+      sweep. Hex locks + key-layout + ADR-0012 slot table rewritten.
+- [x] P3.5 — Vector<T> typed homogeneous list. DONE (2026-09-19, second
+      pass). First pass compiled the dimension into the type (`Vector<T, N>`,
+      fixed-width hot segment) — rejected in review: embedding dims change
+      per model, and a 1.5 KB field blows up the hot segment for zero gain
+      (the offset arithmetic it enables is meaningless for a field accessed
+      as a whole). Final form follows the original definition: a variable-
+      length cold TLV frame like String, header carries the count, elements
+      are bare V when homogeneous (the payoff vs Array) and per-element LV
+      when dynamic-width (`Vector<String>`). `get_document` lifts it to
+      `DynVal::Array` — the dynamic layer has no Vector type; Vector is a
+      STORAGE-layer format. Embedding vectors are the anchor use case.
+      Elements are pure values — the identity line keeps this out of
+      Ref/Junction.
+- [x] P1 — VarInt re-encoding: byte order = value order. DONE
+      (2026-09-19). Prefix-monotonic encoding shipped: first byte = width
+      ((w-1) leading ones + terminator 0), payload big-endian — byte
+      comparison equals numeric comparison across width boundaries, so
+      VarInt is a legal index-segment field without swap transforms.
+      Breaking wire change (LEB128 payloads re-encoded); downstream (aura,
+      k10r) declared zero VarInt fields. Acceptance: byte-order test over
+      width boundaries passed, hex lock updated.
+- [ ] P2.5 — KDL as the TableSchema serialization (low priority). The
+      dynamic mode's schema serialization is JSON today (serde, bindings
+      consume it). KDL would replace it for hand-written declaration
+      consistency with the KDL config family; ~150-200 lines of manual
+      converter (vs serde's auto-derive) for no new capability. Defer until
+      hand-maintained schemas actually exist. Note: `json_schema` (the JSON
+      Schema standard output for external systems) is a different thing and
+      stays regardless.
+- [x] P2 — dynamic-segment frame-length varint. DONE (2026-09-19).
+      Scope narrowed during review: UInt already carries minimal-width
+      payload (leading zeros stripped, width implied by the frame length —
+      shipped with ADR-0012), so the scalar-tiering idea was redundant. The
+      real waste was the frame header: `[tag][len u32 BE]` spent 4 bytes on
+      lens that are usually 1-2. Now `[tag][len varint]` via the shared
+      wire codec (`wrappers/wire.rs` — put_len/take_len, the P1 encoding;
+      one implementation, no second codec). Frame headers drop from 5 to
+      2-3 bytes on small values; Array element frames and nested Obj frames
+      inherit the saving. Declared cold-segment frames
+      (`[tag][len u32]`, ADR-0004) were converted the same way in the same
+      sweep — one wire discipline for every TLV length. `DynamicValue::UInt`
+      minimal-width kept as is.
 
-**P3.5 — Vector<T> typed homogeneous list.** DONE (2026-09-19, second
-pass). First pass compiled the dimension into the type (`Vector<T, N>`,
-fixed-width hot segment) — rejected in review: embedding dims change
-per model, and a 1.5 KB field blows up the hot segment for zero gain
-(the offset arithmetic it enables is meaningless for a field accessed
-as a whole). Final form follows the original definition: a variable-
-length cold TLV frame like String, header carries the count, elements
-are bare V when homogeneous (the payoff vs Array) and per-element LV
-when dynamic-width (`Vector<String>`). `get_document` lifts it to
-`DynVal::Array` — the dynamic layer has no Vector type; Vector is a
-STORAGE-layer format. Embedding vectors are the anchor use case.
-Elements are pure values — the identity line keeps this out of
-Ref/Junction.
-
-**P1 — VarInt re-encoding: byte order = value order.** DONE
-(2026-09-19). Prefix-monotonic encoding shipped: first byte = width
-((w-1) leading ones + terminator 0), payload big-endian — byte
-comparison equals numeric comparison across width boundaries, so
-VarInt is a legal index-segment field without swap transforms.
-Breaking wire change (LEB128 payloads re-encoded); downstream (aura,
-k10r) declared zero VarInt fields. Acceptance: byte-order test over
-width boundaries passed, hex lock updated.
-
-**P2.5 — KDL as the TableSchema serialization (low priority).** The
-dynamic mode's schema serialization is JSON today (serde, bindings
-consume it). KDL would replace it for hand-written declaration
-consistency with the KDL config family; ~150-200 lines of manual
-converter (vs serde's auto-derive) for no new capability. Defer until
-hand-maintained schemas actually exist. Note: `json_schema` (the JSON
-Schema standard output for external systems) is a different thing and
-stays regardless.
-
-**P2 — dynamic-segment frame-length varint.** DONE (2026-09-19).
-Scope narrowed during review: UInt already carries minimal-width
-payload (leading zeros stripped, width implied by the frame length —
-shipped with ADR-0012), so the scalar-tiering idea was redundant. The
-real waste was the frame header: `[tag][len u32 BE]` spent 4 bytes on
-lens that are usually 1-2. Now `[tag][len varint]` via the shared
-wire codec (`wrappers/wire.rs` — put_len/take_len, the P1 encoding;
-one implementation, no second codec). Frame headers drop from 5 to
-2-3 bytes on small values; Array element frames and nested Obj frames
-inherit the saving. Declared cold-segment frames
-(`[tag][len u32]`, ADR-0004) were converted the same way in the same
-sweep — one wire discipline for every TLV length. `DynamicValue::UInt`
-minimal-width kept as is.
-
-Order: P3 -> P3.5 -> P1 -> P2. P1/P2 produce new wire bytes; doing
-them after P3 means hex locks change once, not twice.
+Execution order was P3 -> P3.5 -> P1 -> P2: P1/P2 produce new wire
+bytes; doing them after P3 means hex locks change once, not twice.

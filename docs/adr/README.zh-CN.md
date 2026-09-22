@@ -21,5 +21,6 @@
 - [0019 — 部分索引：声明上的 where(path) 谓词，而不是返回 Option 的函数](0019-partial-index-where-predicate.md)（已实现——两种索引形态都可用，谓词不进 entry 地址）— [中文](0019-partial-index-where-predicate.zh-CN.md)
 - [0020 — 范围扫描是引擎唯一的有序读原语——trait 边界上的惰性迭代](0020-range-scan-lazy-iterator.md)（已接受；引擎层已实现——Collection 层惰性镜像与文档随同批次）— [中文](0020-range-scan-lazy-iterator.zh-CN.md)
 - [0021 — wire 层的流式扫描——远端路径加入惰性契约](0021-remote-streaming-scan.md)（**草案**——OP_SCAN_STREAM 分页 + 自足 chunk，待帧形态评审）— [中文](0021-remote-streaming-scan.zh-CN.md)
+- [0022 — bindings 语义对齐——动态模式的能力上限是有范围的，不是永久的](0022-bindings-semantic-alignment.md)（已接受——callable 本地执行、远程携带语义结果；subscribe 仍排除）— [中文](0022-bindings-semantic-alignment.zh-CN.md)
 
 实施计划见 [docs/PLAN.md](../PLAN.md)。

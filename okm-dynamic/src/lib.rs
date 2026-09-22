@@ -10,9 +10,10 @@
 //! VirtualStorage — they encode/decode, the engine execution stays in
 //! OKM (`StorageHost` executors, without a receiver prefix: same-shard
 //! local execution, same code path for future sharded distribution; the
-//! upper layer coordinates and orchestrates). Capability ceiling is
-//! permanent: no reduce, no subscribe (compile-time fold/unfold; a
-//! dynamic rebuild would break exactly-once).
+//! upper layer coordinates and orchestrates). Capability scope (ADR-0022):
+//! subscribe stays excluded; reduce and function/partial indexes are
+//! binding-implementable via host-language callables under the
+//! deployment-shape contract.
 //!
 //! Value tree representation is host-agnostic (`Value` enum); binding
 //! crates convert to/from their native types (dict, hashmap, ...).
