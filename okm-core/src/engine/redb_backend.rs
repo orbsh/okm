@@ -104,6 +104,46 @@ impl VirtualStorage for RedbStore {
             .collect()
     }
 
+    fn scan_range(&self, begin: &[u8], end: Option<&[u8]>) -> Vec<Vec<u8>> {
+        let txn = self.db.begin_read().expect("redb begin_read");
+        let Ok(table) = txn.open_table(TABLE) else {
+            return Vec::new(); // missing table = empty keyspace
+        };
+        // redb's RangeBounds on `&[u8]` keys: begin inclusive, end
+        // exclusive via `..end`; unbounded when no end.
+        let iter = match end {
+            Some(end) => table.range(begin..end),
+            None => table.range(begin..),
+        }
+        .expect("redb range");
+        iter.map(|r| {
+                let (k, _) = r.expect("redb range item");
+                k.value().to_vec()
+            })
+            .collect()
+    }
+
+    /// redb's `OwnedRange` is 'static (Arc'd transaction guard inside) —
+    /// native streaming without holding the read txn borrow, both
+    /// directions.
+    fn scan_range_iter(
+        &self,
+        begin: &[u8],
+        end: Option<&[u8]>,
+    ) -> super::storage::ScanIter {
+        let txn = self.db.begin_read().expect("redb begin_read");
+        let Ok(table) = txn.open_table(TABLE) else {
+            return super::storage::ScanIter::Buffered(std::iter::empty().collect::<Vec<_>>().into_iter());
+        };
+        let iter = match end {
+            Some(end) => table.range_owned(begin..end),
+            None => table.range_owned(begin..),
+        }
+        .expect("redb range");
+        let _ = txn; // guard moved into the iterator via range_owned's Arc
+        super::storage::ScanIter::Redb(iter)
+    }
+
     fn batch(&mut self) -> MemBatch {
         MemBatch::default()
     }

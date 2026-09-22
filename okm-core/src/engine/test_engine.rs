@@ -173,4 +173,32 @@ impl VirtualStorage for TestStore {
             _ => unreachable!("TestStore: no engine features enabled"),
         }
     }
+    fn scan_range(&self, begin: &[u8], end: Option<&[u8]>) -> Vec<Vec<u8>> {
+        match self {
+            #[cfg(feature = "slatedb")]
+            Self::Slatedb(s) => s.scan_range_sync(begin, end),
+            #[cfg(feature = "fjall")]
+            Self::Fjall { store, .. } => store.scan_range(begin, end),
+            #[cfg(feature = "redb")]
+            Self::Redb { store, .. } => store.scan_range(begin, end),
+            #[cfg(not(any(feature = "slatedb", feature = "fjall", feature = "redb")))]
+            _ => unreachable!("TestStore: no engine features enabled"),
+        }
+    }
+    fn scan_range_iter(
+        &self,
+        begin: &[u8],
+        end: Option<&[u8]>,
+    ) -> super::storage::ScanIter {
+        match self {
+            #[cfg(feature = "slatedb")]
+            Self::Slatedb(s) => s.scan_range_iter_sync(begin, end),
+            #[cfg(feature = "fjall")]
+            Self::Fjall { store, .. } => store.scan_range_iter(begin, end),
+            #[cfg(feature = "redb")]
+            Self::Redb { store, .. } => store.scan_range_iter(begin, end),
+            #[cfg(not(any(feature = "slatedb", feature = "fjall", feature = "redb")))]
+            _ => unreachable!("TestStore: no engine features enabled"),
+        }
+    }
 }
