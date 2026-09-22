@@ -167,6 +167,21 @@ impl OpFrame {
         Self(vec![(tag, key, value)])
     }
 
+    /// MemBatch-shaped ops (None = delete) → one write frame — the
+    /// ADR-0010 §2 mapping, shared by the remote backend's
+    /// `commit_batch` and the binding plan surface (a planned put IS a
+    /// batch: primary + index entries + acc updates in one frame).
+    pub fn write_batch(ops: &[(Vec<u8>, Option<Vec<u8>>)]) -> Self {
+        Self(
+            ops.iter()
+                .map(|(k, v)| match v {
+                    Some(v) => (OP_PUT, k.clone(), v.clone()),
+                    None => (OP_DELETE, k.clone(), Vec::new()),
+                })
+                .collect(),
+        )
+    }
+
     pub fn encode(&self) -> Vec<u8> {
         let mut buf = Vec::new();
         put_len(&mut buf, self.0.len());

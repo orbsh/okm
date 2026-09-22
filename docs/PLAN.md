@@ -475,7 +475,23 @@ key bare in the tail) recorded in ADR-0005.
       scan_reduces exposed, schema-coerced. Locked by
       accept_embedded.py: registration → put folds → overwrite no drift →
       cross-group overwrite → delete unfolds → func fan-out sweep →
-      partial admission flip. Steel callable surface remains open work.
+      partial admission flip. Shipped 2026-09-22 (remote mode, A route):
+      the put/delete expansion extracted into a SHARED plan surface
+      (`okm-dynamic::plan` — `plan_put`/`plan_delete` are pure functions
+      over caller-held state: old document + acc lookup closure; the
+      embedded `put`/`delete` is plan + local engine replay, so remote
+      plans land byte-identical by construction). Plan-local acc overlay:
+      within one plan the fold arm reads the acc the unfold arm wrote
+      (same group overwrite) — matches the receiver's in-frame execution
+      order. Python binding grows `plan_put`/`plan_delete` (dict in →
+      `(wire frame bytes, new_accs receipt)` out; `decode_stored` refills
+      the actor's old-document cache) — Python wraps, all encoding lives
+      Rust-side. okm-wire gains `OpFrame::write_batch` (the ADR-0010 §2
+      MemBatch→frame mapping; `RemoteStore::commit_batch` now shares it;
+      zero new op tags). Locked by accept_remote.py: the same scenario
+      (fresh put / same-group overwrite / cross-group move / delete)
+      planned Python-side and Rust-side lands hex-identical frames.
+      Steel callable surface remains open work.
 - [x] Multi-tenancy: receiver-side prefix only — a remote OKM instance is
       one application = one domain model = one ns; to the receiver it is
       just another prefix. No app_id layer inside OKM, no multi-level ns

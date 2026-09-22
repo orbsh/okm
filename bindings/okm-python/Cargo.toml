@@ -10,6 +10,7 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 okm-core = { path = "../../okm-core", features = ["schema-serde", "test-engines"] }
 okm-dynamic = { path = "../../okm-dynamic" }
+okm-wire = { path = "../../okm-wire" }
 pyo3 = { version = "0.25", features = ["extension-module"] }
 serde_json = "1"
 
