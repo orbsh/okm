@@ -175,15 +175,7 @@ impl VirtualStorage for RemoteStore {
     /// cross-assembly-point atomic path (ADR-0003) survives remoteness
     /// because the receiver commits the whole op list in one call.
     fn commit_batch(&mut self, batch: MemBatch) -> Result<(), String> {
-        let ops = batch
-            .ops
-            .into_iter()
-            .map(|(k, v)| match v {
-                Some(v) => (OP_PUT, k, v),
-                None => (OP_DELETE, k, Vec::new()),
-            })
-            .collect();
-        self.send_write(&OpFrame::new(ops));
+        self.send_write(&OpFrame::write_batch(&batch.ops));
         Ok(())
     }
 }

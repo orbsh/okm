@@ -16,41 +16,6 @@ use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use std::sync::{Arc, Mutex};
 
-/// Convert a decoded payload dict into the okm-dynamic ValueMap.
-/// Mirrors `map_to_py` inverted; the payload decoder never emits unknown
-/// variants, so the mapping is total.
-fn map_from_dict(dict: &Bound<'_, PyAny>) -> PyResult<ValueMap> {
-    let d = dict
-        .downcast::<pyo3::types::PyDict>()
-        .map_err(|_| PyTypeError::new_err("document must be a dict"))?;
-    let mut out = ValueMap::new();
-    for (k, v) in d.iter() {
-        let name: String = k.extract()?;
-        let value = if v.is_none() {
-            Value::Null
-        } else if let Ok(b) = v.extract::<bool>() {
-            // bool before int: bool is an int subclass in Python.
-            Value::Bool(b)
-        } else if let Ok(n) = v.extract::<u64>() {
-            Value::U64(n)
-        } else if let Ok(n) = v.extract::<i64>() {
-            Value::I64(n)
-        } else if let Ok(f) = v.extract::<f64>() {
-            Value::F64(f)
-        } else if let Ok(s) = v.extract::<String>() {
-            Value::Str(s)
-        } else if let Ok(b) = v.extract::<Vec<u8>>() {
-            Value::Bytes(b)
-        } else {
-            return Err(PyTypeError::new_err(format!(
-                "field `{name}`: unsupported value type"
-            )));
-        };
-        out.insert(name, value);
-    }
-    Ok(out)
-}
-
 /// Convert a ValueMap (decoded document) into a Python dict.
 fn map_to_dict<'py>(py: Python<'py>, m: &ValueMap) -> PyResult<Bound<'py, pyo3::types::PyDict>> {
     use pyo3::conversion::IntoPyObject;
@@ -293,7 +258,6 @@ impl Collection {
             .map_err(PyValueError::new_err)?;
         Ok(t.store().get(&ek))
     }
-
     /// Scan every group of one reduce: list of (group segment bytes,
     /// acc bytes). Group fields decode with the schema's BE rule.
     fn scan_reduces(&self, slot: u16) -> PyResult<Vec<(Vec<u8>, Vec<u8>)>> {
@@ -304,6 +268,86 @@ impl Collection {
             slot,
         ))
     }
+
+    // ---- remote mode (ADR-0022): plan surfaces, Python wraps only ----
+
+    /// Plan one put WITHOUT touching a local engine: returns
+    /// `(frame bytes, [(group_key, new_acc)])`. The frame is the wire
+    /// write frame (one `commit_batch` — document + index entries + acc
+    /// updates atomically); `new_accs` is the receipt the actor adopts
+    /// into its acc cache. `old` is the caller-held stored document
+    /// (None = fresh key); `accs` maps group entry key → current acc
+    /// bytes (the actor IS the authoritative acc holder,
+    /// single-writer-per-group).
+    #[pyo3(signature = (pkey, document, old=None, accs=None))]
+    fn plan_put(
+        &self,
+        pkey: Vec<u8>,
+        document: &Bound<'_, PyAny>,
+        old: Option<&Bound<'_, PyAny>>,
+        accs: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<(Vec<u8>, Vec<(Vec<u8>, Vec<u8>)>)> {
+        let map = py_values_to_map(&self.schema, document)?;
+        let old = match old {
+            Some(d) => Some(py_values_to_map(&self.schema, d)?),
+            None => None,
+        };
+        let accs = accs_dict(accs)?;
+        let t = self.inner.lock().unwrap();
+        let plan = t
+            .plan_put(&pkey, &map, old.as_ref(), &|ek| {
+                accs.as_ref().and_then(|a| a.get(ek).cloned())
+            })
+            .map_err(PyValueError::new_err)?;
+        let frame = okm_wire::OpFrame::write_batch(&plan.ops).encode();
+        Ok((frame, plan.new_accs))
+    }
+
+    /// Plan one delete: `(frame bytes, new_accs)` — same contract as
+    /// `plan_put`; an absent `old` means there is nothing to remove
+    /// (empty frame).
+    #[pyo3(signature = (pkey, old, accs=None))]
+    fn plan_delete(
+        &self,
+        pkey: Vec<u8>,
+        old: &Bound<'_, PyAny>,
+        accs: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<(Vec<u8>, Vec<(Vec<u8>, Vec<u8>)>)> {
+        let old = py_values_to_map(&self.schema, old)?;
+        let accs = accs_dict(accs)?;
+        let t = self.inner.lock().unwrap();
+        let plan = t
+            .plan_delete(&pkey, &old, &|ek| {
+                accs.as_ref().and_then(|a| a.get(ek).cloned())
+            })
+            .map_err(PyValueError::new_err)?;
+        let frame = okm_wire::OpFrame::write_batch(&plan.ops).encode();
+        Ok((frame, plan.new_accs))
+    }
+
+    /// Decode a stored payload (the receiver's GET answer) into the
+    /// `old` document dict for the next `plan_put` — the cache-refill
+    /// helper the embedded path does against its own engine.
+    fn decode_stored(&self, payload: Vec<u8>) -> PyResult<PyObject> {
+        let m = okm_dynamic::decode_stored(&self.schema, &payload)
+            .map_err(PyValueError::new_err)?;
+        Python::with_gil(|py| Ok(map_to_dict(py, &m)?.unbind().into_any()))
+    }
+}
+
+/// `{group_key bytes: acc bytes}` → Rust lookup (None = no dict given).
+fn accs_dict(accs: Option<&Bound<'_, PyAny>>) -> PyResult<Option<std::collections::HashMap<Vec<u8>, Vec<u8>>>> {
+    let Some(a) = accs else { return Ok(None) };
+    let d = a
+        .downcast::<pyo3::types::PyDict>()
+        .map_err(|_| PyTypeError::new_err("accs must be a dict {group_key bytes: acc bytes}"))?;
+    let mut m = std::collections::HashMap::new();
+    for (k, v) in d.iter() {
+        let key: Vec<u8> = k.extract()?;
+        let val: Vec<u8> = v.extract()?;
+        m.insert(key, val);
+    }
+    Ok(Some(m))
 }
 
 /// A parsed OKM table schema (re-exported from the codec module so the

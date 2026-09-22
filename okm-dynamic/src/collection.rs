@@ -17,7 +17,7 @@
 
 use okm_core::storage::VirtualStorage;
 
-use crate::index::{delete_entries, index_entries, scan_access_method, AccessMethod};
+use crate::index::{scan_access_method, AccessMethod};
 use crate::reduce::{BoundReduce, ReduceSpec};
 use crate::{decode_payload, encode_payload, CollectionSchema, ValueMap};
 
@@ -31,11 +31,11 @@ fn codec<E: std::fmt::Display>(e: E) -> String {
 /// slot of storage. `ns` MUST be unique within the store instance (the
 /// two-instance data/meta model guarantees that across planes).
 pub struct DynamicCollection<S: VirtualStorage> {
-    store: S,
-    schema: CollectionSchema,
-    ns: Vec<u8>,
-    indexes: Vec<AccessMethod>,
-    reduces: Vec<BoundReduce>,
+    pub(crate) store: S,
+    pub(crate) schema: CollectionSchema,
+    pub(crate) ns: Vec<u8>,
+    pub(crate) indexes: Vec<AccessMethod>,
+    pub(crate) reduces: Vec<BoundReduce>,
 }
 
 impl<S: VirtualStorage> DynamicCollection<S> {
@@ -145,7 +145,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
         reduce.entry_key(&self.schema, &self.ns, group_values)
     }
 
-    fn primary_key(&self, pkey: &[u8]) -> Vec<u8> {
+    pub(crate) fn primary_key(&self, pkey: &[u8]) -> Vec<u8> {
         let mut buf = Vec::with_capacity(3 + self.schema.key_len);
         buf.extend_from_slice(&self.ns);
         buf.extend_from_slice(&0u16.to_be_bytes()); // PRIMARY_SLOT
@@ -157,40 +157,16 @@ impl<S: VirtualStorage> DynamicCollection<S> {
     /// + the reduce calling discipline (ADR-0022). Overwrite first removes
     /// the old document's index entries (they are keyed by indexed values —
     /// a changed value would otherwise leave a dangling entry), unfolds the
-    /// old document from every reduce group, then folds the new one. Document
-    /// write and acc updates share the same engine instance — atomicity
-    /// holds within one engine (same boundary as index entries).
+    /// old document from every reduce group, then folds the new one. The
+    /// expansion is the SHARED plan surface (`plan::plan_put`) — the
+    /// embedded path is plan + local engine replay, so remote plans land
+    /// byte-identical by construction.
     pub fn put(&mut self, pkey: &[u8], document: &ValueMap) -> Result<(), String> {
-        if pkey.len() != self.schema.key_len {
-            return Err(format!(
-                "key width mismatch: got {}, schema declares {}",
-                pkey.len(),
-                self.schema.key_len
-            ));
-        }
-        let old_pkey = self.primary_key(pkey);
-        // Sweep the old document's index entries before overwriting.
-        if let Some(old_payload) = self.store.get(&old_pkey) {
-            if let Ok(old_row) = decode_payload(&self.schema, &old_payload).map_err(codec) {
-                let old_entries =
-                    index_entries(&self.schema, &self.ns, &self.indexes, pkey, &old_row)?;
-                delete_entries(&mut self.store, &old_entries);
-                // Overwrite unfold: remove the stored document from every
-                // group before the new document folds in.
-                self.apply_reduces(&old_row, false)?;
-            }
-            // Undecodable old payload: the primary entry is overwritten
-            // below anyway; a dangling index entry is the caller's schema
-            // mismatch, surfaced by scan (missing primary on get).
-        }
-        let pkey_owned = pkey.to_vec();
-        let entries = index_entries(&self.schema, &self.ns, &self.indexes, &pkey_owned, document)?;
-        let payload = encode_payload(&self.schema, document).map_err(codec)?;
-        self.apply_reduces(document, true)?;
-        self.store.put(old_pkey, payload);
-        for (ek, ev) in entries {
-            self.store.put(ek, ev);
-        }
+        // The embedded path reads its own state: old document + accs.
+        let old = self.stored_document(pkey)?;
+        let store = &self.store;
+        let plan = self.plan_put(pkey, document, old.as_ref(), &|ek| store.get(ek))?;
+        self.replay(&plan.ops);
         Ok(())
     }
 
@@ -213,44 +189,43 @@ impl<S: VirtualStorage> DynamicCollection<S> {
     /// Delete a document: primary entry + every access method's entry for
     /// this key (entries are recomputed from the stored document — the delete
     /// path must see the same indexed values the write produced) + the
-    /// unfold arm of the reduce calling discipline.
+    /// unfold arm of the reduce calling discipline. Same shared plan core.
     pub fn delete(&mut self, pkey: &[u8]) -> Result<(), String> {
-        let pk = self.primary_key(pkey);
-        if let Some(payload) = self.store.get(&pk) {
-            let document = decode_payload(&self.schema, &payload).map_err(codec)?;
-            let entries = index_entries(&self.schema, &self.ns, &self.indexes, pkey, &document)?;
-            delete_entries(&mut self.store, &entries);
-            self.apply_reduces(&document, false)?;
-            self.store.del(&pk);
-        }
+        let Some(old) = self.stored_document(pkey)? else {
+            return Ok(()); // missing key: a no-op (mirrored by plan_delete)
+        };
+        let plan = self.plan_delete(pkey, &old, &|ek| self.store.get(ek))?;
+        self.replay(&plan.ops);
         Ok(())
     }
 
-    /// The reduce calling discipline, one direction per call site: fold
-    /// (add = true, a document entering the groups) or unfold (add = false,
-    /// a stored document leaving them). Each group is a full
-    /// get → callable → put against the same engine instance. A missing
-    /// group entry is seeded from the logic (`ReduceLogic::seed`, the
-    /// `Default::default()` counterpart) before the fold.
-    fn apply_reduces(&mut self, document: &ValueMap, add: bool) -> Result<(), String> {
-        for reduce in &self.reduces {
-            let ek = reduce.entry_key(&self.schema, &self.ns, document)?;
-            let mut acc = match self.store.get(&ek) {
-                Some(bytes) => bytes,
-                // Seed only on the fold arm: an unfold hitting a missing
-                // entry is a discipline violation (nothing was folded),
-                // not a zero group — surfaced by the callable, not here.
-                None if add => reduce.spec.logic.seed(),
-                None => return Ok(()),
-            };
-            if add {
-                reduce.spec.logic.fold(&mut acc, document)?;
-            } else {
-                reduce.spec.logic.unfold(&mut acc, document)?;
-            }
-            self.store.put(ek, acc);
+    /// The stored document at `pkey`, decoded (None = absent). The
+    /// embedded path's read its own state before planning.
+    fn stored_document(&self, pkey: &[u8]) -> Result<Option<ValueMap>, String> {
+        if pkey.len() != self.schema.key_len {
+            return Err(format!(
+                "key width mismatch: got {}, schema declares {}",
+                pkey.len(),
+                self.schema.key_len
+            ));
         }
-        Ok(())
+        Ok(self
+            .store
+            .get(&self.primary_key(pkey))
+            .map(|payload| decode_payload(&self.schema, &payload).map_err(codec))
+            .transpose()?)
+    }
+
+    /// Replay a plan's ops against the local engine, in order (the
+    /// embedded execution arm — one engine instance, same atomicity
+    /// boundary as index entries).
+    fn replay(&mut self, ops: &[(Vec<u8>, Option<Vec<u8>>)]) {
+        for (key, value) in ops {
+            match value {
+                Some(v) => self.store.put(key.clone(), v.clone()),
+                None => self.store.del(key),
+            }
+        }
     }
 
     /// Access-method scan (leftmost prefix over the indexed fields,

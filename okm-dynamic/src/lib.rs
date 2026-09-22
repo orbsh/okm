@@ -30,6 +30,7 @@ mod graph;
 mod index;
 mod collection;
 mod reduce;
+mod plan;
 
 pub use okm_core::schema::{FieldSchema, CollectionSchema};
 pub use okm_core::field::FieldType;
@@ -46,6 +47,7 @@ pub use index::{index_entries, scan_access_method, AccessMethod, AccessMethodKin
 pub use collection::DynamicCollection;
 pub use graph::{DynEdge, Graph};
 pub use reduce::{scan_reduces, reduce_get, ReduceLogic, ReduceLogicObj, BoundReduce, ReduceSpec};
+pub use plan::{decode_stored, PlannedDelete, PlannedPut};
 
 use std::collections::BTreeMap;
 
