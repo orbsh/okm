@@ -11,8 +11,9 @@
 //!   okm_dynamic Value (dict = nested obj is NOT valid here — the typed
 //!   codec has no nested kind; raises TypeError).
 //!
-//! Embedded-actor use (ADR-0012 ceiling): encode/decode only — no
-//! reduce/subscribe, which stay Rust compile-time by design.
+//! Embedded-actor use (ADR-0022 scope): encode/decode plus the
+//! callable-implementable semantics — reduce and func/partial indexes
+//! via host-language callables; subscribe stays excluded.
 use okm_core::schema::TableSchema;
 use okm_dynamic::{decode_key, decode_payload, encode_key, encode_payload, Value, ValueMap};
 use pyo3::exceptions::{PyTypeError, PyValueError};

@@ -16,8 +16,9 @@
 //!   0x4/0x7/0x8 faces);
 //! - `edge_id` stays caller-chosen, verified non-colliding at link.
 //!
-//! Capability ceiling inherited from the dynamic layer: no
-//! reduce/subscribe/function indexes.
+//! Capability scope inherited from the dynamic layer (ADR-0022):
+//! subscribe stays excluded; func/partial indexes and reduce are
+//! callable-implementable on the table side.
 
 use okm_core::index::PRIMARY_SLOT;
 use okm_core::model::graph::{

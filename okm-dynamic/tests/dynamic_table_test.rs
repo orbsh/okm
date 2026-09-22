@@ -9,8 +9,9 @@
 //! - overwrite with changed indexed values sweeps the stale entry;
 //! - delete removes primary + index entries.
 //!
-//! Capability ceiling (permanent): no reduce/subscribe/function indexes —
-//! the dynamic rebuild would break exactly-once (ADR-0008).
+//! Capability scope (ADR-0022): subscribe stays excluded; func/partial
+//! indexes and reduce are callable-implementable —
+//! dynamic_semantics_test.rs is the calling-discipline acceptance.
 
 use okm_core::{KeyEncode, DocumentEncode, Collection, TestStore, VirtualStorage};
 use okm_core::schema::TableSchema;
@@ -55,12 +56,8 @@ fn dynamic_table(store: TestStore) -> DynamicCollection<TestStore> {
         41,
         schema(),
         vec![
-            AccessMethod { slot: 0x1001, fields: vec!["level".into()], includes: vec![] },
-            AccessMethod {
-                slot: 0x1002,
-                fields: vec!["score".into()],
-                includes: vec!["level".into()],
-            },
+            AccessMethod::plain(0x1001, vec!["level".into()], vec![]),
+            AccessMethod::plain(0x1002, vec!["score".into()], vec!["level".into()]),
         ],
     )
 }
@@ -172,7 +169,7 @@ fn dynamic_rejects_key_field_indexes() {
     // Key fields in `fields` or `includes` are declared-scheme errors:
     // the key IS the lookup target; indexing it is meaningless and
     // ambiguous under key/payload name collisions.
-    let bad = AccessMethod { slot: 0x1003, fields: vec!["org_id".into()], includes: vec![] };
+    let bad = AccessMethod::plain(0x1003, vec!["org_id".into()], vec![]);
     assert!(okm_dynamic::index_entries(
         &schema(),
         &[41],
@@ -182,8 +179,7 @@ fn dynamic_rejects_key_field_indexes() {
     )
     .is_err());
 
-    let bad_inc =
-        AccessMethod { slot: 0x1003, fields: vec!["level".into()], includes: vec!["user_id".into()] };
+    let bad_inc = AccessMethod::plain(0x1003, vec!["level".into()], vec!["user_id".into()]);
     assert!(okm_dynamic::index_entries(
         &schema(),
         &[41],

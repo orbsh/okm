@@ -7,30 +7,82 @@
 //! `[ns 2B][slot][index fields][key prefix]` → value = includes segment.
 //!
 //! Capability scope (ADR-0022): subscribe stays excluded; function/partial
-//! indexes and reduce become binding-implementable via host-language
-//! callables under the deployment-shape contract. Plain field indexes
-//! shipped first; callable surfaces are the open work.
+//! indexes are binding-implementable — the callable (predicate or derive
+//! function) runs in the host language at registration time and returns
+//! ENCODED bytes; this module only manages the entry lifecycle.
 
 use okm_core::schema::TableSchema;
 use okm_core::storage::VirtualStorage;
 use crate::{Value, ValueMap};
 
+/// Host-language callables for the semantic access methods (ADR-0022).
+/// Every callable receives the decoded document and returns encoded bytes
+/// or an error — the dynamic layer never inspects semantics, it only
+/// manages entries. Errors are ordinary input (dynamic-side discipline).
+pub type CallableResult<T> = Result<T, String>;
+
+/// Partial-index predicate: `false` = this document contributes NO
+/// entries. Must be pure (same purity contract as the Rust-side
+/// `admits`): an impure predicate makes delete compute a different
+/// entry set than put and leaves dangling entries.
+pub type Admits = Box<dyn Fn(&ValueMap) -> CallableResult<bool> + Send + Sync>;
+
+/// Function-index derive: one encoded value per entry (plain func index),
+/// or several (multi-entry fan-out, the inverted-index regime). Sort
+/// order = the result encodings' order, same as the derive.
+pub type FuncDerive = Box<dyn Fn(&ValueMap) -> CallableResult<Vec<Vec<u8>>> + Send + Sync>;
+
+/// Which entries an access method produces.
+pub enum AccessMethodKind {
+    /// Plain field index (the shipped shape): `fields` + `includes`.
+    Plain,
+    /// Partial index: the plain layout, gated by a host predicate.
+    Partial(Admits),
+    /// Function index: the caller supplies the derive callable; `fields`
+    /// is EMPTY (the derive result IS the indexed segment) and `includes`
+    /// carries payload as usual.
+    Func(FuncDerive),
+}
+
 /// One declared access method over a dynamic table.
-#[derive(Clone, Debug, PartialEq)]
 pub struct AccessMethod {
     /// Entry header slot (index segment, u16: 0x1001, 0x1002, …; the
     /// primary is 0x0000 — ADR-0016).
     pub slot: u16,
     /// Indexed fields by schema name, in sort order. Fields may live in
     /// the key segment or the hot payload segment (both are fixed-width,
-    /// static-placement — everything an entry needs).
+    /// static-placement — everything an entry needs). Empty for `Func`
+    /// (the callable's encoded result IS the indexed segment).
     pub fields: Vec<String>,
     /// Payload fields carried in the entry value (raw encodings,
     /// concatenated — the derive's `includes`).
     pub includes: Vec<String>,
+    /// Entry production rule (plain / partial / func, ADR-0022).
+    pub kind: AccessMethodKind,
+}
+
+impl std::fmt::Debug for AccessMethod {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let kind = match &self.kind {
+            AccessMethodKind::Plain => "plain",
+            AccessMethodKind::Partial(_) => "partial",
+            AccessMethodKind::Func(_) => "func",
+        };
+        f.debug_struct("AccessMethod")
+            .field("slot", &self.slot)
+            .field("fields", &self.fields)
+            .field("includes", &self.includes)
+            .field("kind", &kind)
+            .finish()
+    }
 }
 
 impl AccessMethod {
+    /// A plain field index.
+    pub fn plain(slot: u16, fields: Vec<String>, includes: Vec<String>) -> Self {
+        Self { slot, fields, includes, kind: AccessMethodKind::Plain }
+    }
+
     /// Width of the indexed-field segment (schema-derived; every field
     /// must be fixed-width — dynamic entries cannot frame variable
     /// lengths without breaking leftmost-prefix scans).
@@ -113,6 +165,9 @@ fn encode_fixed(
 /// All index entries one document produces, mirroring
 /// `KvIndex::entry_pairs` for the dynamic declarations:
 /// key = `[ns][slot][index fields][pkey]`, value = includes segment.
+/// Partial indexes consult their predicate first (`false` → no entries);
+/// function indexes fan out one entry per derived value (inverted-index
+/// regime, the Rust-side `entry_pairs` multi-value shape).
 pub fn index_entries(
     schema: &TableSchema,
     ns: &[u8],
@@ -122,12 +177,20 @@ pub fn index_entries(
 ) -> Result<Vec<(Vec<u8>, Vec<u8>)>, String> {
     let mut out = Vec::new();
     for idx in indexes {
-        let fb = idx.fields_bytes(schema, document, pkey)?;
-        let mut ek = Vec::with_capacity(ns.len() + 2 + fb.len() + pkey.len());
-        ek.extend_from_slice(ns);
-        ek.extend_from_slice(&idx.slot.to_be_bytes());
-        ek.extend_from_slice(&fb);
-        ek.extend_from_slice(pkey);
+        // Partial gate (purity contract documented on `Admits`): consulted
+        // before any entry is built, the single entry-production site, so
+        // the filter is complete by construction.
+        if let AccessMethodKind::Partial(admits) = &idx.kind {
+            if !admits(document)? {
+                continue;
+            }
+        }
+        // The indexed-field segment: declared fields for Plain/Partial;
+        // the callable's encoded results for Func (fan-out).
+        let segments: Vec<Vec<u8>> = match &idx.kind {
+            AccessMethodKind::Func(derive) => derive(document)?,
+            _ => vec![idx.fields_bytes(schema, document, pkey)?],
+        };
         // Includes segment: raw encodings of the named payload fields,
         // in declaration order. Key fields rejected — same discipline as
         // the index segment: includes carry payload, not key bytes.
@@ -144,7 +207,14 @@ pub fn index_entries(
                 .ok_or_else(|| format!("includes field `{inc}` not in schema"))?;
             encode_fixed(f.ty, v, &mut ev)?;
         }
-        out.push((ek, ev));
+        for fb in &segments {
+            let mut ek = Vec::with_capacity(ns.len() + 2 + fb.len() + pkey.len());
+            ek.extend_from_slice(ns);
+            ek.extend_from_slice(&idx.slot.to_be_bytes());
+            ek.extend_from_slice(fb);
+            ek.extend_from_slice(pkey);
+            out.push((ek, ev.clone()));
+        }
     }
     Ok(out)
 }
@@ -162,9 +232,13 @@ pub fn scan_access_method<S: VirtualStorage>(
     encoded_prefix: &[u8],
 ) -> Result<Vec<ValueMap>, String> {
     // `encoded_prefix` is the leftmost prefix of the indexed-field
-    // segment, already encoded (empty slice = whole index).
-    if encoded_prefix.len() > index.fields_width(schema)? {
-        return Err("scan prefix exceeds the index-field segment".into());
+    // segment, already encoded (empty slice = whole index). Func
+    // indexes have no declared-field width — the segment is the
+    // callable's result encoding, caller-owned; any prefix is legal.
+    if !matches!(index.kind, AccessMethodKind::Func(_)) {
+        if encoded_prefix.len() > index.fields_width(schema)? {
+            return Err("scan prefix exceeds the index-field segment".into());
+        }
     }
     let mut p = Vec::with_capacity(ns.len() + 2 + encoded_prefix.len());
     p.extend_from_slice(ns);

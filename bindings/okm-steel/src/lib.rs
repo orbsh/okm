@@ -6,8 +6,9 @@
 //! strings are strings; the schema kind drives coercion at encode time,
 //! same as the PyO3 binding.
 //!
-//! ADR-0012 ceiling applies identically: encode/decode only — no
-//! reduce/subscribe (Rust compile-time logic).
+//! ADR-0022 scope applies identically: encode/decode plus the
+//! callable-implementable semantics (reduce, func/partial indexes via
+//! host callables); subscribe stays excluded.
 use okm_core::schema::TableSchema;
 use okm_dynamic::{decode_key, decode_payload, encode_key, encode_payload, Value, ValueMap};
 use steel::{SteelVal, SteelVal::{BoolV, IntV, NumV, StringV}};
