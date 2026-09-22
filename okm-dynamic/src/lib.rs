@@ -13,7 +13,8 @@
 //! upper layer coordinates and orchestrates). Capability scope (ADR-0022):
 //! subscribe stays excluded; reduce and function/partial indexes are
 //! binding-implementable via host-language callables under the
-//! deployment-shape contract.
+//! deployment-shape contract (embedded: in-process calling discipline;
+//! remote: operation payloads carry semantic results, single-writer-per-group).
 //!
 //! Value tree representation is host-agnostic (`Value` enum); binding
 //! crates convert to/from their native types (dict, hashmap, ...).
@@ -28,6 +29,7 @@ mod encode;
 mod graph;
 mod index;
 mod collection;
+mod reduce;
 
 pub use okm_core::schema::{FieldSchema, TableSchema};
 pub use okm_core::field::FieldType;
@@ -40,9 +42,10 @@ pub use okm_core::field::FieldType;
 
 pub use decode::{decode_key, decode_payload};
 pub use encode::{encode_key, encode_payload};
-pub use index::{index_entries, scan_access_method, AccessMethod};
+pub use index::{index_entries, scan_access_method, AccessMethod, AccessMethodKind, Admits, FuncDerive};
 pub use collection::DynamicCollection;
 pub use graph::{DynEdge, Graph};
+pub use reduce::{scan_reduces, reduce_get, AccOp, BoundReduce, ReduceSpec};
 
 use std::collections::BTreeMap;
 

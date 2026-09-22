@@ -430,7 +430,7 @@ key bare in the tail) recorded in ADR-0005.
       Positioning: Python/Steel are BINDINGS — they never interact with
       the Rust parts directly (transparent channels like
       NestStorage/remote excepted).
-- [ ] Bindings semantic alignment — ADR-0022 (2026-09-22): the dynamic
+- [x] Bindings semantic alignment — ADR-0022 (2026-09-22): the dynamic
       codec's "permanent ceiling" is rescoped. Bindings implement
       semantics via host-language callables (binding-time registration):
       func/partial indexes (`Schema.add_func_index`, `admits` callable)
@@ -451,7 +451,18 @@ key bare in the tail) recorded in ADR-0005.
       land byte-identically to Rust-side (cross-language byte equality,
       extended from codec bytes to semantic entries). Implementation:
       okm-dynamic `AccessMethod` func/admits variants + `DynamicCollection`
-      reduce calling discipline; okm-core untouched.
+      reduce calling discipline; okm-core untouched. Shipped 2026-09-22
+      (Rust-side base): `AccessMethodKind` (Plain/Partial/Func — callables
+      return encoded bytes, entry lifecycle stays dynamic-side);
+      `DynamicCollection::with_reduces` + the put/overwrite/delete calling
+      discipline (`apply_reduces`: put folds, overwrite unfolds old then
+      folds new, delete unfolds — one get→callable→put per group, same
+      engine instance); byte-transparent acc (host owns the layout, seed
+      on first fold). Locked by dynamic_semantics_test.rs: func fan-out
+      sweep, partial admission flip, full discipline sequence, and
+      reduce-entry layout parity against the Rust-side key format. The
+      Python/Steel callable registration surfaces (`Schema.add_func_index`,
+      `Schema.add_reduce`) remain open binding-layer work.
 - [x] Multi-tenancy: receiver-side prefix only — a remote OKM instance is
       one application = one domain model = one ns; to the receiver it is
       just another prefix. No app_id layer inside OKM, no multi-level ns
@@ -697,9 +708,11 @@ the open question and the assessment:
   (zero-copy, predicate-pushdown-able); dynamic fields stay open but
   remain queryable. Neither shape is compromised.
 - **Deliberate scope line**: Variant export does NOT pull dynamic
-  fields into declared indexes/reduces — the ADR-0012 capability
-  ceiling (no dynamic reduce/subscribe) is unchanged. Export is a
-  read-side projection, not a write-path capability.
+  fields into declared indexes/reduces — dynamic fields stay outside
+  the declared access-method/reduce surfaces (ADR-0022's scope line:
+  the write-path capabilities there are caller-declared on declared
+  fields, via host callables). Export is a read-side projection, not a
+  write-path capability.
 - **Plan**: bump `parquet` optional dep 54 → 60; build Variant values
   from `get_fields`' map (names resolved); append as `variant` column
   via parquet-variant's Arrow integration; feature-gate

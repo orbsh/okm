@@ -18,6 +18,7 @@
 use okm_core::storage::VirtualStorage;
 
 use crate::index::{delete_entries, index_entries, scan_access_method, AccessMethod};
+use crate::reduce::{BoundReduce, ReduceSpec};
 use crate::{decode_payload, encode_payload, TableSchema, ValueMap};
 
 /// Codec errors surfaced as strings (dynamic callers are host-language
@@ -34,6 +35,7 @@ pub struct DynamicCollection<S: VirtualStorage> {
     schema: TableSchema,
     ns: Vec<u8>,
     indexes: Vec<AccessMethod>,
+    reduces: Vec<BoundReduce>,
 }
 
 impl<S: VirtualStorage> DynamicCollection<S> {
@@ -43,6 +45,19 @@ impl<S: VirtualStorage> DynamicCollection<S> {
     /// allocated (1-based, unique per table) — mirroring declaration
     /// order in the typed path.
     pub fn new(store: S, ns: u16, schema: TableSchema, indexes: Vec<AccessMethod>) -> Self {
+        Self::with_reduces(store, ns, schema, indexes, Vec::new())
+    }
+
+    /// Declare a dynamic table with reduce groups (ADR-0022). Slots on
+    /// the reduces are caller-allocated (unique per table, mirroring the
+    /// derive's declaration-order rule in the reduce segment).
+    pub fn with_reduces(
+        store: S,
+        ns: u16,
+        schema: TableSchema,
+        indexes: Vec<AccessMethod>,
+        reduces: Vec<ReduceSpec>,
+    ) -> Self {
         let slots: Vec<u16> = indexes.iter().map(|i| i.slot).collect();
         debug_assert!(
             slots.iter().all(|s| *s > 0) && {
@@ -53,11 +68,22 @@ impl<S: VirtualStorage> DynamicCollection<S> {
             },
             "access method slots must be unique and 1-based"
         );
+        let rslots: Vec<u16> = reduces.iter().map(|r| r.slot).collect();
+        debug_assert!(
+            rslots.iter().all(|s| *s > 0) && {
+                let mut sorted = rslots.clone();
+                sorted.sort_unstable();
+                sorted.dedup();
+                sorted.len() == rslots.len()
+            },
+            "reduce slots must be unique and 1-based"
+        );
         Self {
             store,
             schema,
             ns: ns.to_be_bytes().to_vec(),
             indexes,
+            reduces: reduces.into_iter().map(BoundReduce::new).collect(),
         }
     }
 
@@ -82,10 +108,13 @@ impl<S: VirtualStorage> DynamicCollection<S> {
         buf
     }
 
-    /// Write one document: primary entry + one index entry per access method.
-    /// Overwrite first removes the old document's index entries (they are
-    /// keyed by indexed values — a changed value would otherwise leave a
-    /// dangling entry; no reduce unfold needed — the ceiling excludes it).
+    /// Write one document: primary entry + one index entry per access method
+    /// + the reduce calling discipline (ADR-0022). Overwrite first removes
+    /// the old document's index entries (they are keyed by indexed values —
+    /// a changed value would otherwise leave a dangling entry), unfolds the
+    /// old document from every reduce group, then folds the new one. Document
+    /// write and acc updates share the same engine instance — atomicity
+    /// holds within one engine (same boundary as index entries).
     pub fn put(&mut self, pkey: &[u8], document: &ValueMap) -> Result<(), String> {
         if pkey.len() != self.schema.key_len {
             return Err(format!(
@@ -101,6 +130,9 @@ impl<S: VirtualStorage> DynamicCollection<S> {
                 let old_entries =
                     index_entries(&self.schema, &self.ns, &self.indexes, pkey, &old_row)?;
                 delete_entries(&mut self.store, &old_entries);
+                // Overwrite unfold: remove the stored document from every
+                // group before the new document folds in.
+                self.apply_reduces(&old_row, false)?;
             }
             // Undecodable old payload: the primary entry is overwritten
             // below anyway; a dangling index entry is the caller's schema
@@ -109,6 +141,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
         let pkey_owned = pkey.to_vec();
         let entries = index_entries(&self.schema, &self.ns, &self.indexes, &pkey_owned, document)?;
         let payload = encode_payload(&self.schema, document).map_err(codec)?;
+        self.apply_reduces(document, true)?;
         self.store.put(old_pkey, payload);
         for (ek, ev) in entries {
             self.store.put(ek, ev);
@@ -134,14 +167,34 @@ impl<S: VirtualStorage> DynamicCollection<S> {
 
     /// Delete a document: primary entry + every access method's entry for
     /// this key (entries are recomputed from the stored document — the delete
-    /// path must see the same indexed values the write produced).
+    /// path must see the same indexed values the write produced) + the
+    /// unfold arm of the reduce calling discipline.
     pub fn delete(&mut self, pkey: &[u8]) -> Result<(), String> {
         let pk = self.primary_key(pkey);
         if let Some(payload) = self.store.get(&pk) {
             let document = decode_payload(&self.schema, &payload).map_err(codec)?;
             let entries = index_entries(&self.schema, &self.ns, &self.indexes, pkey, &document)?;
             delete_entries(&mut self.store, &entries);
+            self.apply_reduces(&document, false)?;
             self.store.del(&pk);
+        }
+        Ok(())
+    }
+
+    /// The reduce calling discipline, one direction per call site: fold
+    /// (add = true, a document entering the groups) or unfold (add = false,
+    /// a stored document leaving them). Each group is a full
+    /// get → callable → put against the same engine instance.
+    fn apply_reduces(&mut self, document: &ValueMap, add: bool) -> Result<(), String> {
+        for reduce in &self.reduces {
+            let ek = reduce.entry_key(&self.schema, &self.ns, document)?;
+            let mut acc = self.store.get(&ek).unwrap_or_default();
+            if add {
+                (reduce.spec.fold)(&mut acc, document)?;
+            } else {
+                (reduce.spec.unfold)(&mut acc, document)?;
+            }
+            self.store.put(ek, acc);
         }
         Ok(())
     }
