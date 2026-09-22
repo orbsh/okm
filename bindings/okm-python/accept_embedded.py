@@ -78,11 +78,11 @@ def make_logic():
         def seed(self) -> bytes:
             return (0).to_bytes(8, "big")
 
-        def fold(self, acc: bytearray, doc: dict) -> None:
+        def fold(self, acc: bytearray, key: dict, doc: dict) -> None:
             n = int.from_bytes(bytes(acc), "big") + 1
             acc[:] = n.to_bytes(8, "big")
 
-        def unfold(self, acc: bytearray, doc: dict) -> None:
+        def unfold(self, acc: bytearray, key: dict, doc: dict) -> None:
             n = int.from_bytes(bytes(acc), "big")
             if n == 0:
                 raise ValueError("accumulator underflow: unfold without fold")

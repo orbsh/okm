@@ -49,9 +49,11 @@ use crate::schema::{parse_schema, DocumentSchema};
 /// index declarations and the inherent `__okm_encode_named` walk.
 fn emit_named_walk(schema: &DocumentSchema) -> TS2 {
     let mut enc_arms = quote! {};
+    let mut enc_names = Vec::new();
     for f in &schema.fields {
         let fname = f.ident.to_string();
         let enc = &f.enc;
+        enc_names.push(fname.clone());
         enc_arms.extend(quote! {
             #fname => { #enc }
         });
@@ -66,6 +68,40 @@ fn emit_named_walk(schema: &DocumentSchema) -> TS2 {
                 match *n {
                     #enc_arms
                     other => panic!("unknown field name: {other}"),
+                }
+            }
+        }
+
+        /// Two-source named walk for reduce GROUP segments (ADR-0024):
+        /// payload names encode from `self`; key names slice the key's
+        /// full encoding by its FIELD_WIDTHS offsets (key fields are
+        /// fixed-width — the slice IS the field encoding). A name
+        /// unknown to both sources panics; a name in both is rejected at
+        /// schema build (compile-time validation site).
+        #[allow(unused_variables, unused_mut, dead_code)]
+        pub fn __okm_encode_group_named(
+            key: &<Self as ::okm_core::Document>::Key,
+            document: &Self,
+            names: &[&str],
+            buf: &mut Vec<u8>,
+        ) {
+            // Key-side names, encoded once and sliced per name.
+            let key_bytes = ::okm_core::KeyEncode::encode(key);
+            let mut key_off = 0usize;
+            let mut key_slices: std::collections::HashMap<&str, (usize, usize)> =
+                std::collections::HashMap::new();
+            for f in <<Self as ::okm_core::Document>::Key as ::okm_core::KeyEncode>::FIELDS {
+                key_slices.insert(f.name, (key_off, key_off + f.width));
+                key_off += f.width;
+            }
+            let payload_fields: &[&str] = &[#(#enc_names),*];
+            for n in names {
+                if payload_fields.contains(&n) {
+                    document.__okm_encode_named(&[n], buf);
+                } else if let Some((a, b)) = key_slices.get(n) {
+                    buf.extend_from_slice(&key_bytes[*a..*b]);
+                } else {
+                    panic!("unknown group field: {n}");
                 }
             }
         }
@@ -427,13 +463,15 @@ fn emit_reduces(schema: &DocumentSchema) -> (TS2, TS2) {
                 const SLOT: ::okm_core::index::Slot = #slot_lit;
                 const GROUP: &'static [&'static str] = &[ #(#group),* ];
                 fn group_bytes(
-                    _key: &<#row_name as ::okm_core::Document>::Key,
+                    key: &<#row_name as ::okm_core::Document>::Key,
                     document: &#row_name,
                 ) -> Vec<u8> {
-                    // The document's named-field walk — same encoders as the
-                    // index layer, byte-compatible with read-side probes.
+                    // Two-source named walk (ADR-0024): a group name
+                    // resolves to the KEY's encoding or the payload's —
+                    // whichever struct declares it; a name in both is a
+                    // compile error (schema validation below).
                     let mut buf = Vec::new();
-                    <#row_name>::__okm_encode_named(document, Self::GROUP, &mut buf);
+                    <#row_name>::__okm_encode_group_named(key, document, Self::GROUP, &mut buf);
                     buf
                 }
             }
@@ -445,9 +483,9 @@ fn emit_reduces(schema: &DocumentSchema) -> (TS2, TS2) {
                 None => ::core::default::Default::default(),
             };
             if _add {
-                <#logic as ::okm_core::ReduceLogic>::fold(&mut __okm_acc, _row);
+                <#logic as ::okm_core::ReduceLogic>::fold(&mut __okm_acc, _key, _row);
             } else {
-                <#logic as ::okm_core::ReduceLogic>::unfold(&mut __okm_acc, _row);
+                <#logic as ::okm_core::ReduceLogic>::unfold(&mut __okm_acc, _key, _row);
             }
             _store.put(__okm_ek, <#logic as ::okm_core::ReduceLogic>::Acc::encode_acc(&__okm_acc));
         }});

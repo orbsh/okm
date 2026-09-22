@@ -62,21 +62,31 @@ impl ReduceLogic for PyReduce {
         })
     }
 
-    fn fold(&self, acc: &mut Vec<u8>, document: &ValueMap) -> Result<(), String> {
-        Python::with_gil(|py| self.apply(py, "fold", acc, document))
+    fn fold(&self, acc: &mut Vec<u8>, key: &ValueMap, document: &ValueMap) -> Result<(), String> {
+        Python::with_gil(|py| self.apply(py, "fold", acc, key, document))
     }
 
-    fn unfold(&self, acc: &mut Vec<u8>, document: &ValueMap) -> Result<(), String> {
-        Python::with_gil(|py| self.apply(py, "unfold", acc, document))
+    fn unfold(&self, acc: &mut Vec<u8>, key: &ValueMap, document: &ValueMap) -> Result<(), String> {
+        Python::with_gil(|py| self.apply(py, "unfold", acc, key, document))
     }
 }
 
 impl PyReduce {
-    fn apply(&self, py: Python<'_>, method: &str, acc: &mut Vec<u8>, document: &ValueMap) -> Result<(), String> {
+    fn apply(
+        &self,
+        py: Python<'_>,
+        method: &str,
+        acc: &mut Vec<u8>,
+        key: &ValueMap,
+        document: &ValueMap,
+    ) -> Result<(), String> {
         let py_acc = pyo3::types::PyByteArray::new(py, acc);
+        // ADR-0024: the host callable sees the DECODED key dict — one
+        // object model, never bytes.
+        let py_key = map_to_dict(py, key).map_err(call_err)?;
         let doc = map_to_dict(py, document).map_err(call_err)?;
         self.obj
-            .call_method(py, method, (py_acc.clone(), doc), None)
+            .call_method(py, method, (py_acc.clone(), py_key, doc), None)
             .map_err(|e| format!("reduce {method}: {}", py_to_string(py, e)))?;
         *acc = py_acc.to_vec();
         Ok(())

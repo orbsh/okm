@@ -32,11 +32,13 @@ pub trait ReduceLogic: Send + Sync {
     /// Seed accumulator: the `Default::default()` of the acc layout.
     /// Called when a group's entry does not exist yet.
     fn seed(&self) -> Vec<u8>;
-    /// Add one document into the group's accumulator.
-    fn fold(&self, acc: &mut Vec<u8>, document: &ValueMap) -> Result<(), String>;
+    /// Add one document into the group's accumulator. The key arrives
+    /// DECODED (schema-driven key-field map, ADR-0024) — host callables
+    /// see one object model, never bytes.
+    fn fold(&self, acc: &mut Vec<u8>, key: &ValueMap, document: &ValueMap) -> Result<(), String>;
     /// Remove one document from the group's accumulator. Reversibility
     /// `unfold(fold(a, x)) = a` is the implementor's obligation.
-    fn unfold(&self, acc: &mut Vec<u8>, document: &ValueMap) -> Result<(), String>;
+    fn unfold(&self, acc: &mut Vec<u8>, key: &ValueMap, document: &ValueMap) -> Result<(), String>;
 }
 
 /// Object-safe alias the collection holds (host languages bridge their
@@ -48,8 +50,9 @@ pub struct ReduceSpec {
     /// Item-local slot in the reduce segment (the derive allocates the
     /// Rust side in declaration order; the caller mirrors that rule).
     pub slot: u16,
-    /// Group-by fields, named document payload fields in declaration
-    /// order — their encodings form the entry's group segment.
+    /// Group-by fields, named document fields in declaration order —
+    /// key OR payload (ADR-0024 two-source rule) — their encodings form
+    /// the entry's group segment.
     pub group_fields: Vec<String>,
     /// The fold/unfold/seed logic (one host object).
     pub logic: ReduceLogicObj,
@@ -74,30 +77,38 @@ impl BoundReduce {
         Self { spec }
     }
 
-    /// The group segment: named fields' payload encodings in declaration
-    /// order — the same encoders the index layer uses, so byte parity
-    /// with the Rust-side `group_bytes` holds.
+    /// The group segment: named fields' encodings in declaration order —
+    /// key fields from the DECODED key map, payload fields from the
+    /// document map (two-source rule, ADR-0024; byte parity with the
+    /// Rust-side `group_bytes` holds). `key` must be the decoded key of
+    /// the row being folded (the embedded path's `&Key` twin).
     pub fn group_bytes(
         &self,
         schema: &okm_core::schema::CollectionSchema,
+        key: &ValueMap,
         document: &ValueMap,
     ) -> Result<Vec<u8>, String> {
         let mut buf = Vec::new();
         for name in &self.spec.group_fields {
-            if schema.key_fields.iter().any(|f| &f.name == name) {
-                return Err(format!(
-                    "group field `{name}` is a key field; groups take payload fields only"
-                ));
-            }
-            let f = schema
-                .hot_fields
-                .iter()
-                .chain(schema.cold_fields.iter())
-                .find(|f| &f.name == name)
-                .ok_or_else(|| format!("group field `{name}` not in schema"))?;
-            let v = document
+            let from_key = schema.key_fields.iter().any(|f| &f.name == name);
+            let f = if from_key {
+                schema
+                    .key_fields
+                    .iter()
+                    .find(|f| &f.name == name)
+                    .ok_or_else(|| format!("group field `{name}` not in schema"))?
+            } else {
+                schema
+                    .hot_fields
+                    .iter()
+                    .chain(schema.cold_fields.iter())
+                    .find(|f| &f.name == name)
+                    .ok_or_else(|| format!("group field `{name}` not in schema"))?
+            };
+            let source: &ValueMap = if from_key { key } else { document };
+            let v = source
                 .get(name)
-                .ok_or_else(|| format!("group field `{name}` missing from document"))?;
+                .ok_or_else(|| format!("group field `{name}` missing from {} map", if from_key { "key" } else { "document" }))?;
             // Fixed-width BE storage form (the same rule as index
             // segments: group segments take fixed-width kinds, matching
             // the Rust-side walk).
@@ -123,9 +134,10 @@ impl BoundReduce {
         &self,
         schema: &okm_core::schema::CollectionSchema,
         ns: &[u8],
+        key: &ValueMap,
         document: &ValueMap,
     ) -> Result<Vec<u8>, String> {
-        let g = self.group_bytes(schema, document)?;
+        let g = self.group_bytes(schema, key, document)?;
         let mut buf = Vec::with_capacity(ns.len() + 2 + g.len());
         buf.extend_from_slice(ns);
         buf.extend_from_slice(&self.spec.slot.to_be_bytes());
