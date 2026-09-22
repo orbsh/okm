@@ -775,6 +775,41 @@ Division line: `Refs` = one-to-many; `Junction` = many-to-many, fixed
 endpoints, no attributes; **Graph Edge** = independent identity,
 attributes, parallel edges, open endpoints.
 
+## Set membership: inverted index or bloom, by cardinality
+
+There is no dedicated `Set` type — membership is served by two
+application-layer paths, chosen by the collection's cardinality:
+
+**Low cardinality — the multi-value function index IS the inverted
+index.** `#[ok_index(by_tag { func(tags) })]` fans one row into one
+entry per element (`element -> pkey`), so "which rows contain X" is one
+prefix scan and "does row R contain X" is one point lookup — exact, no
+false positives, and the inverted face collapses duplicates by put
+semantics (same element + same pkey = same entry key). The truth source
+stays on the row (the func regenerates the entry set from it), so
+delete unfolds correctly by the purity contract. Write cost is linear
+in the set size — pay it when the set is tens of elements, not
+thousands.
+
+**High cardinality — an application-level bloom filter, stored as a
+`Bytes` field.** When per-put fan-out is unacceptable (a 100k-element
+set would write 100k entries per put), write the membership bitmap
+instead: k hash set-bits over m bits, O(1) per put, false positives in
+exchange. The storage layer sees only opaque bytes — hash family, m/n
+ratio, and error budget are application parameters; pushing them into
+the codec would put data-quality policy in the wrong layer. Two rules
+keep it honest:
+
+- **Truth-source discipline**: a bloom filter is a lossy derivative —
+  delete cannot unfold members from it. It must ride WITH a complete
+  member representation (`Vector<T>` on the row, or the set stored
+  outside the row entirely), never stand alone as the only record of
+  membership.
+- **Query semantics**: "possibly in the set" (verify through the
+  complete representation when it matters) vs the inverted path's
+  "definitely in the set". The two paths are complements, not
+  substitutes.
+
 ## Homogeneous lists: `Vector<T>`
 
 The plural-modeling taxonomy (ADR-0015 §4) has a fourth member besides
