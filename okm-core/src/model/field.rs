@@ -54,7 +54,7 @@ pub struct FieldDesc {
 
 /// Const-constructible default literal for `FieldDesc`-adjacent export
 /// (`&'static str` instead of `String` — FIELDS is a const). Converted to
-/// the owned `schema::DefaultValue` at `TableSchema::of` time.
+/// the owned `schema::DefaultValue` at `CollectionSchema::of` time.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum DefaultValueConst {
     U64(u64),

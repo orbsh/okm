@@ -11,7 +11,7 @@
 //! function) runs in the host language at registration time and returns
 //! ENCODED bytes; this module only manages the entry lifecycle.
 
-use okm_core::schema::TableSchema;
+use okm_core::schema::CollectionSchema;
 use okm_core::storage::VirtualStorage;
 use crate::{Value, ValueMap};
 
@@ -86,7 +86,7 @@ impl AccessMethod {
     /// Width of the indexed-field segment (schema-derived; every field
     /// must be fixed-width — dynamic entries cannot frame variable
     /// lengths without breaking leftmost-prefix scans).
-    pub fn fields_width(&self, schema: &TableSchema) -> Result<usize, String> {
+    pub fn fields_width(&self, schema: &CollectionSchema) -> Result<usize, String> {
         let mut w = 0;
         for name in &self.fields {
             let f = find_field(schema, name)
@@ -108,7 +108,7 @@ impl AccessMethod {
     /// collisions never silently resolve to the key side.
     fn fields_bytes(
         &self,
-        schema: &TableSchema,
+        schema: &CollectionSchema,
         document: &ValueMap,
         pkey: &[u8],
     ) -> Result<Vec<u8>, String> {
@@ -132,7 +132,7 @@ impl AccessMethod {
 
 /// Locate a fixed-width field (key or hot) by name.
 fn find_field<'s>(
-    schema: &'s TableSchema,
+    schema: &'s CollectionSchema,
     name: &str,
 ) -> Option<&'s okm_core::schema::FieldSchema> {
     schema
@@ -169,7 +169,7 @@ fn encode_fixed(
 /// function indexes fan out one entry per derived value (inverted-index
 /// regime, the Rust-side `entry_pairs` multi-value shape).
 pub fn index_entries(
-    schema: &TableSchema,
+    schema: &CollectionSchema,
     ns: &[u8],
     indexes: &[AccessMethod],
     pkey: &[u8],
@@ -226,7 +226,7 @@ pub fn index_entries(
 /// Rust-side refinement).
 pub fn scan_access_method<S: VirtualStorage>(
     store: &S,
-    schema: &TableSchema,
+    schema: &CollectionSchema,
     ns: &[u8],
     index: &AccessMethod,
     encoded_prefix: &[u8],

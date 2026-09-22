@@ -24,12 +24,26 @@
 use okm_core::storage::VirtualStorage;
 use crate::{Value, ValueMap};
 
-/// Fold/unfold callable: mutates the accumulator bytes by one document.
-/// The acc arrives as the empty slice on a group's first fold — the
-/// callable owns the seed (e.g. zero for a BE u64 counter).
-pub type AccOp = Box<dyn Fn(&mut Vec<u8>, &ValueMap) -> Result<(), String> + Send + Sync>;
+/// The host-language reduce logic — one object, the mirror of the
+/// Rust-side `ReduceLogic` + `ReduceCodec: Default` pair (ADR-0022).
+/// The acc is byte-transparent (`Vec<u8>`): the layout is the host's
+/// contract, declared and seeded by the same object.
+pub trait ReduceLogic: Send + Sync {
+    /// Seed accumulator: the `Default::default()` of the acc layout.
+    /// Called when a group's entry does not exist yet.
+    fn seed(&self) -> Vec<u8>;
+    /// Add one document into the group's accumulator.
+    fn fold(&self, acc: &mut Vec<u8>, document: &ValueMap) -> Result<(), String>;
+    /// Remove one document from the group's accumulator. Reversibility
+    /// `unfold(fold(a, x)) = a` is the implementor's obligation.
+    fn unfold(&self, acc: &mut Vec<u8>, document: &ValueMap) -> Result<(), String>;
+}
 
-/// One declared dynamic reduce: slot + group fields + the host callables.
+/// Object-safe alias the collection holds (host languages bridge their
+/// class instances into this).
+pub type ReduceLogicObj = Box<dyn ReduceLogic>;
+
+/// One declared dynamic reduce: slot + group fields + the host logic.
 pub struct ReduceSpec {
     /// Item-local slot in the reduce segment (the derive allocates the
     /// Rust side in declaration order; the caller mirrors that rule).
@@ -37,11 +51,8 @@ pub struct ReduceSpec {
     /// Group-by fields, named document payload fields in declaration
     /// order — their encodings form the entry's group segment.
     pub group_fields: Vec<String>,
-    /// Add one document into the group's accumulator.
-    pub fold: AccOp,
-    /// Remove one document from the group's accumulator. Reversibility
-    /// `unfold(fold(a, x)) = a` is the implementor's obligation.
-    pub unfold: AccOp,
+    /// The fold/unfold/seed logic (one host object).
+    pub logic: ReduceLogicObj,
 }
 
 impl std::fmt::Debug for ReduceSpec {
@@ -68,7 +79,7 @@ impl BoundReduce {
     /// with the Rust-side `group_bytes` holds.
     pub fn group_bytes(
         &self,
-        schema: &okm_core::schema::TableSchema,
+        schema: &okm_core::schema::CollectionSchema,
         document: &ValueMap,
     ) -> Result<Vec<u8>, String> {
         let mut buf = Vec::new();
@@ -110,7 +121,7 @@ impl BoundReduce {
     /// Full entry key `[ns 2B][slot u16 BE][group segment]`.
     pub fn entry_key(
         &self,
-        schema: &okm_core::schema::TableSchema,
+        schema: &okm_core::schema::CollectionSchema,
         ns: &[u8],
         document: &ValueMap,
     ) -> Result<Vec<u8>, String> {

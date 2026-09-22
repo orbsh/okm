@@ -2,11 +2,11 @@
 //! map. Key encoding is the flat concatenation of BE fields; payload is
 //! `[version u8][hot_len u16 BE][hot][cold TLV]`.
 
-use crate::{field_pair, CodecError, TableSchema, Value, ValueMap};
+use crate::{field_pair, CodecError, CollectionSchema, Value, ValueMap};
 
 /// Encode the key from the value map: fields in schema order, BE widths.
 /// Returns exactly `schema.key_len` bytes (nested segments recurse).
-pub fn encode_key(schema: &TableSchema, values: &ValueMap) -> Result<Vec<u8>, CodecError> {
+pub fn encode_key(schema: &CollectionSchema, values: &ValueMap) -> Result<Vec<u8>, CodecError> {
     let mut buf = Vec::with_capacity(schema.key_len);
     for f in &schema.key_fields {
         encode_field(f, values, &mut buf)?;
@@ -19,7 +19,7 @@ pub fn encode_key(schema: &TableSchema, values: &ValueMap) -> Result<Vec<u8>, Co
 /// Cold frames are written in schema declaration order (the map order is
 /// irrelevant); every declared cold field MUST be present — dynamic
 /// payloads are fully materialized (no partial documents).
-pub fn encode_payload(schema: &TableSchema, values: &ValueMap) -> Result<Vec<u8>, CodecError> {
+pub fn encode_payload(schema: &CollectionSchema, values: &ValueMap) -> Result<Vec<u8>, CodecError> {
     let mut hot = Vec::with_capacity(schema.hot_width);
     for f in &schema.hot_fields {
         encode_field(f, values, &mut hot)?;

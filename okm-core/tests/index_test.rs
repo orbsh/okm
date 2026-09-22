@@ -1,4 +1,4 @@
-//! 二级索引集成测试（ADR-0006 Document 形状）：DocumentEncode 派生、Table 装配点
+//! 二级索引集成测试（ADR-0006 Document 形状）：DocumentEncode 派生、Collection 装配点
 //! put/scan 回表、entry 布局 hex 锁定（entry = [ns 2B][slot 2B][索引字段]
 //! [key前缀]，value = includes 段）、最左前缀扫描、includes 覆盖、
 //! 截断 key 前缀（尾段去冗余，前提：剩余字段已唯一）。

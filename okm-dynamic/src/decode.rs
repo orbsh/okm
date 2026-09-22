@@ -2,13 +2,13 @@
 //! the key; payload walks the header, the hot segment by static offsets,
 //! then cold TLV frames by tag.
 
-use crate::{CodecError, TableSchema, Value, ValueMap};
+use crate::{CodecError, CollectionSchema, Value, ValueMap};
 use okm_core::field::FieldType;
 use std::collections::BTreeMap;
 
 /// Decode the key bytes into the value map (fields at their static
 /// offsets; nested segments would recurse — v1 keys are flat).
-pub fn decode_key(schema: &TableSchema, bytes: &[u8]) -> Result<ValueMap, CodecError> {
+pub fn decode_key(schema: &CollectionSchema, bytes: &[u8]) -> Result<ValueMap, CodecError> {
     if bytes.len() < schema.key_len {
         return Err(CodecError::Truncated {
             field: "<key>".into(),
@@ -29,7 +29,7 @@ pub fn decode_key(schema: &TableSchema, bytes: &[u8]) -> Result<ValueMap, CodecE
 /// static offsets, cold TLV frames matched by tag. Unknown tags are
 /// skipped — forward-compatible reading of fields the schema does not
 /// know is the TLV contract (ADR-0004).
-pub fn decode_payload(schema: &TableSchema, bytes: &[u8]) -> Result<ValueMap, CodecError> {
+pub fn decode_payload(schema: &CollectionSchema, bytes: &[u8]) -> Result<ValueMap, CodecError> {
     let hdr = schema.payload_header_len;
     if bytes.len() < hdr {
         return Err(CodecError::Truncated {

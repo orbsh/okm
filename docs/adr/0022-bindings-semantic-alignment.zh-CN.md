@@ -28,7 +28,7 @@ ADR-0008 裁决的是**事件层**：reduce/subscribe 是行事件流的 inline/
 
 ### 路线：宿主语言 callable，绑定期注册
 
-每个语义面的声明侧信息已经是数据（关联常量）：`KvIndex` 的 `SLOT`/`FIELDS`/`INCLUDES`/`KEY_PREFIX`、`Reduce` 的 `SLOT`/`GROUP`，以及 `TableSchema` + `SlotMap` 的结构化导出。真正曾是 Rust 代码的只有语义函数本身——而这恰好是 binding 能用自己的语言提供的部分：
+每个语义面的声明侧信息已经是数据（关联常量）：`KvIndex` 的 `SLOT`/`FIELDS`/`INCLUDES`/`KEY_PREFIX`、`Reduce` 的 `SLOT`/`GROUP`，以及 `CollectionSchema` + `SlotMap` 的结构化导出。真正曾是 Rust 代码的只有语义函数本身——而这恰好是 binding 能用自己的语言提供的部分：
 
 - **function 索引**：`Schema.add_func_index(name, fn, includes=[])`——callable 把解码后的文档映射为一个编码值或值的迭代器（多 entry fan-out，即倒排索引形态）。partial 索引的 `admits` 同形：一个谓词 callable。
 - **reduce**：`Schema.add_reduce(name, group_fields, fold, unfold, acc_codec)`——callable 在宿主语言里实现 `ReduceLogic` 的 fold/unfold；累加器 codec 是声明的字节布局规则（u64 = 8 字节 BE 是种子；复合累加器走字节透明形态，与 Rust 的 `Vec<u8>` 逃生舱相同）。

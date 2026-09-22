@@ -3,7 +3,7 @@
 //!
 //! `describe()` is for humans; this module is for code that has no
 //! compile-time access to the Rust structs — Python/Steel Actors encode
-//! and decode bytes from `TableSchema` alone. Same source (`FIELDS`,
+//! and decode bytes from `CollectionSchema` alone. Same source (`FIELDS`,
 //! `HOT_WIDTH`, `LAYOUT_VERSION`), same discipline as `describe()`: the
 //! declaration IS the schema, nothing is duplicated here.
 //!
@@ -92,7 +92,7 @@ impl ObjValueTypeSchema {
 
 /// The complete machine-readable declaration of one table.
 #[derive(Clone, Debug, PartialEq)]
-pub struct TableSchema {
+pub struct CollectionSchema {
     pub key_len: usize,
     pub key_fields: Vec<FieldSchema>,
     pub layout_version: u8,
@@ -144,7 +144,7 @@ pub struct SlotMap {
     pub junction_base: u16,
 }
 
-impl TableSchema {
+impl CollectionSchema {
     /// Export the declaration of `<K, R>` as structured data.
     pub fn of<K: KeyEncode, R: Document<Key = K>>() -> Self {
         let mut key_fields = Vec::new();
@@ -220,7 +220,7 @@ impl TableSchema {
 
 #[cfg(feature = "schema-serde")]
 mod serde_impls {
-    use super::{DefaultValue, FieldSchema, ObjValueTypeSchema, SlotMap, TableSchema};
+    use super::{DefaultValue, FieldSchema, ObjValueTypeSchema, SlotMap, CollectionSchema};
     use crate::model::field::FieldType;
     use serde::{Deserialize, Serialize};
 
@@ -438,7 +438,7 @@ mod serde_impls {
         }
     }
 
-    impl Serialize for TableSchema {
+    impl Serialize for CollectionSchema {
         fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
             #[derive(Serialize)]
             struct Repr<'a> {
@@ -465,7 +465,7 @@ mod serde_impls {
         }
     }
 
-    impl<'de> Deserialize<'de> for TableSchema {
+    impl<'de> Deserialize<'de> for CollectionSchema {
         fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
             #[derive(Deserialize)]
             struct Repr {

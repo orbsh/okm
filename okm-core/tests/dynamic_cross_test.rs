@@ -10,7 +10,7 @@
 //! rejection.
 
 use okm_core::{KeyEncode, TestStore, Document, DocumentEncode, Collection, VirtualStorage};
-use okm_core::schema::TableSchema;
+use okm_core::schema::CollectionSchema;
 use okm_dynamic::{decode_key, decode_payload, encode_key, encode_payload, CodecError, Value, ValueMap};
 use std::collections::BTreeMap;
 
@@ -50,7 +50,7 @@ pub struct UserV3 {
 
 #[test]
 fn schema_export_matches_declaration() {
-    let s = TableSchema::of::<UserKey, User>();
+    let s = CollectionSchema::of::<UserKey, User>();
     assert_eq!(s.key_len, 12);
     assert_eq!(s.layout_version, 2);
     assert_eq!(s.hot_width, 4 + 2);
@@ -72,7 +72,7 @@ fn sample_values() -> ValueMap {
 
 #[test]
 fn dynamic_encode_equals_rust_derive_bytes() {
-    let schema = TableSchema::of::<UserKey, User>();
+    let schema = CollectionSchema::of::<UserKey, User>();
     let values = sample_values();
 
     let dyn_key = encode_key(&schema, &values).expect("dynamic key encode");
@@ -88,7 +88,7 @@ fn dynamic_encode_equals_rust_derive_bytes() {
 
 #[test]
 fn rust_write_dynamic_read_and_reverse() {
-    let schema = TableSchema::of::<UserKey, User>();
+    let schema = CollectionSchema::of::<UserKey, User>();
     let mut t: Collection<TestStore, UserKey, User> = Collection::new(TestStore::slatedb_mem());
     let key = UserKey { org_id: 1, user_id: 2 };
     t.put(&key, &User { level: 4, score: 77, name: "bob".into() });
@@ -129,7 +129,7 @@ fn rust_write_dynamic_read_and_reverse() {
 
 #[test]
 fn dynamic_rejects_schema_violations() {
-    let schema = TableSchema::of::<UserKey, User>();
+    let schema = CollectionSchema::of::<UserKey, User>();
 
     // Unknown field.
     let mut bad = sample_values();
@@ -175,7 +175,7 @@ fn dynamic_rejects_schema_violations() {
 #[test]
 fn version_default_migration_on_dynamic_read() {
     // The v3 schema export carries literal defaults as data.
-    let v3 = TableSchema::of::<UserKey, UserV3>();
+    let v3 = CollectionSchema::of::<UserKey, UserV3>();
     let tier = v3.hot_fields.iter().find(|f| f.name == "tier").expect("tier field");
     assert_eq!(
         tier.default,
@@ -198,7 +198,7 @@ fn version_default_migration_on_dynamic_read() {
     assert_eq!(values.get("region"), Some(&Value::Str("eu".into())));
 
     // Non-literal / absent defaults fall back to zero for the kind.
-    let v2 = TableSchema::of::<UserKey, User>();
+    let v2 = CollectionSchema::of::<UserKey, User>();
     assert!(v2.hot_fields.iter().all(|f| f.default.is_none()));
     // (zero fallback covered by encode: a truncated tail decodes as zero)
 }

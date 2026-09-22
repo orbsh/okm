@@ -95,8 +95,8 @@ fn ok_len_contract_enforced_at_encode() {
 
 #[test]
 fn field_contracts_exported() {
-    // FIELD_CONTRACTS 进 TableSchema（动态 reader 用同一检查）。
-    let schema = okm_core::schema::TableSchema::of::<DocKey, ContractedDoc>();
+    // FIELD_CONTRACTS 进 CollectionSchema（动态 reader 用同一检查）。
+    let schema = okm_core::schema::CollectionSchema::of::<DocKey, ContractedDoc>();
     let cold = schema.cold_fields.iter().find(|f| f.name == "embed").unwrap();
     assert_eq!(cold.expect_len, Some(2));
 }

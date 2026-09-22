@@ -219,10 +219,10 @@ fn bench_write_mock(c: &mut Criterion) {
 // ---------- dynamic codec tax ----------
 
 fn bench_dynamic(c: &mut Criterion) {
-    use okm_core::schema::TableSchema;
+    use okm_core::schema::CollectionSchema;
     use okm_dynamic::{encode_key, encode_payload, Value, ValueMap};
 
-    let schema = TableSchema::of::<BenchKey, BenchRow>();
+    let schema = CollectionSchema::of::<BenchKey, BenchRow>();
     let mut values = ValueMap::new();
     values.insert("org_id".into(), Value::U32(42));
     values.insert("user_id".into(), Value::U64(42));

@@ -1,6 +1,6 @@
 //! `NestStorage` derive (declared via `#[ok_ns]`) — end-to-end (ADR-0010 §4): the
 //! annotated empty struct becomes a host bound to its declared prefix;
-//! the sender endpoint plugs into a `Table` whose write path runs
+//! the sender endpoint plugs into a `Collection` whose write path runs
 //! entirely over the wire.
 
 use okm_core::{KeyEncode, TestStore, RemoteStore, DocumentEncode, Collection, VirtualStorage};

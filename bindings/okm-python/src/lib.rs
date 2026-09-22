@@ -1,25 +1,389 @@
-//! PyO3 bindings for OKM's dynamic codec (PLAN Phase 5, dynamic codec
-//! "Python first"). The Python side consumes the structured schema
-//! export (`TableSchema`, serde JSON) and the value tree mirrors
-//! `okm_dynamic::Value` — no derive, no Rust compile step for readers.
+//! PyO3 bridge for the ADR-0022 semantic surfaces: a Python-owned
+//! DynamicCollection (embedded mode — Python is the only writer) with
+//! binding-time registration of host callables.
 //!
-//! Surface:
-//! - `Schema.from_json(str)` — parse a serde'd TableSchema
-//! - `Schema.encode_key(dict) / encode_payload(dict) -> bytes`
-//! - `Schema.decode_key(bytes) / decode_payload(bytes) -> dict`
-//! - `Value` mapping: Python int/float/bool/str/bytes/list/dict ↔
-//!   okm_dynamic Value (dict = nested obj is NOT valid here — the typed
-//!   codec has no nested kind; raises TypeError).
+//! - `ReduceLogic` subclass → `ReduceSpec` (seed/fold/unfold mirror the
+//!   Rust-side `ReduceLogic` + `ReduceCodec: Default` pair).
+//! - `add_func_index(slot, func, includes=[])` / `add_partial_index(slot,
+//!   fields, admits, includes=[])` — callables receive the decoded
+//!   document dict and return encoded bytes / bool.
 //!
-//! Embedded-actor use (ADR-0022 scope): encode/decode plus the
-//! callable-implementable semantics — reduce and func/partial indexes
-//! via host-language callables; subscribe stays excluded.
-use okm_core::schema::TableSchema;
-use okm_dynamic::{decode_key, decode_payload, encode_key, encode_payload, Value, ValueMap};
+//! Errors cross as Python ValueError (dynamic-side discipline: errors
+//! are ordinary input).
+use okm_core::storage::VirtualStorage;
+use okm_dynamic::{AccessMethod, AccessMethodKind, ReduceLogic, Value, ValueMap};
 use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
-use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+
+/// Convert a decoded payload dict into the okm-dynamic ValueMap.
+/// Mirrors `map_to_py` inverted; the payload decoder never emits unknown
+/// variants, so the mapping is total.
+fn map_from_dict(dict: &Bound<'_, PyAny>) -> PyResult<ValueMap> {
+    let d = dict
+        .downcast::<pyo3::types::PyDict>()
+        .map_err(|_| PyTypeError::new_err("document must be a dict"))?;
+    let mut out = ValueMap::new();
+    for (k, v) in d.iter() {
+        let name: String = k.extract()?;
+        let value = if v.is_none() {
+            Value::Null
+        } else if let Ok(b) = v.extract::<bool>() {
+            // bool before int: bool is an int subclass in Python.
+            Value::Bool(b)
+        } else if let Ok(n) = v.extract::<u64>() {
+            Value::U64(n)
+        } else if let Ok(n) = v.extract::<i64>() {
+            Value::I64(n)
+        } else if let Ok(f) = v.extract::<f64>() {
+            Value::F64(f)
+        } else if let Ok(s) = v.extract::<String>() {
+            Value::Str(s)
+        } else if let Ok(b) = v.extract::<Vec<u8>>() {
+            Value::Bytes(b)
+        } else {
+            return Err(PyTypeError::new_err(format!(
+                "field `{name}`: unsupported value type"
+            )));
+        };
+        out.insert(name, value);
+    }
+    Ok(out)
+}
+
+/// Convert a ValueMap (decoded document) into a Python dict.
+fn map_to_dict<'py>(py: Python<'py>, m: &ValueMap) -> PyResult<Bound<'py, pyo3::types::PyDict>> {
+    use pyo3::conversion::IntoPyObject;
+    let d = pyo3::types::PyDict::new(py);
+    for (k, v) in m {
+        let value: pyo3::PyObject = match v {
+            Value::U8(x) => x.into_pyobject(py)?.unbind().into_any(),
+            Value::U16(x) => x.into_pyobject(py)?.unbind().into_any(),
+            Value::U32(x) => x.into_pyobject(py)?.unbind().into_any(),
+            Value::U64(x) => x.into_pyobject(py)?.unbind().into_any(),
+            Value::I64(x) => x.into_pyobject(py)?.unbind().into_any(),
+            Value::F64(x) => x.into_pyobject(py)?.unbind().into_any(),
+            Value::Bool(x) => (*x as u8).into_pyobject(py)?.unbind().into_any(),
+            Value::Null => py.None(),
+            Value::Str(s) => s.into_pyobject(py)?.unbind().into_any(),
+            Value::Bytes(b) => b.into_pyobject(py)?.unbind().into_any(),
+        };
+        d.set_item(k, value)?;
+    }
+    Ok(d)
+}
+
+fn call_err(e: PyErr) -> String {
+    e.to_string()
+}
+
+fn py_to_string(py: Python<'_>, err: PyErr) -> String {
+    let v = err.value(py);
+    v.str().map(|s| s.to_string()).unwrap_or_default()
+}
+
+/// The Python `ReduceLogic` subclass held as a Rust-side trait object.
+struct PyReduce {
+    obj: Py<PyAny>,
+}
+
+impl ReduceLogic for PyReduce {
+    fn seed(&self) -> Vec<u8> {
+        Python::with_gil(|py| {
+            self.obj
+                .call_method(py, "seed", (), None)
+                .and_then(|b| b.extract::<Vec<u8>>(py))
+                .unwrap_or_default()
+        })
+    }
+
+    fn fold(&self, acc: &mut Vec<u8>, document: &ValueMap) -> Result<(), String> {
+        Python::with_gil(|py| self.apply(py, "fold", acc, document))
+    }
+
+    fn unfold(&self, acc: &mut Vec<u8>, document: &ValueMap) -> Result<(), String> {
+        Python::with_gil(|py| self.apply(py, "unfold", acc, document))
+    }
+}
+
+impl PyReduce {
+    fn apply(&self, py: Python<'_>, method: &str, acc: &mut Vec<u8>, document: &ValueMap) -> Result<(), String> {
+        let py_acc = pyo3::types::PyByteArray::new(py, acc);
+        let doc = map_to_dict(py, document).map_err(call_err)?;
+        self.obj
+            .call_method(py, method, (py_acc.clone(), doc), None)
+            .map_err(|e| format!("reduce {method}: {}", py_to_string(py, e)))?;
+        *acc = py_acc.to_vec();
+        Ok(())
+    }
+}
+
+/// A Python-owned dynamic collection: the embedded-mode facade (ADR-0022).
+/// Python holds the engine (in-process TestStore), registers host
+/// callables at binding time, and drives put/get/delete/scan — the
+/// calling discipline (fold/unfold/seed) runs inside the Rust put path.
+#[pyclass]
+struct Collection {
+    inner: Arc<Mutex<okm_dynamic::DynamicCollection<okm_core::TestStore>>>,
+    schema: okm_core::schema::CollectionSchema,
+    ns: u16,
+}
+
+#[pymethods]
+impl Collection {
+    /// Open a table on a fresh in-process store (embedded mode: Python
+    /// is the single writer by construction).
+    #[new]
+    fn new(schema: &Schema, ns: u16) -> PyResult<Self> {
+        Ok(Collection {
+            inner: Arc::new(Mutex::new(okm_dynamic::DynamicCollection::new(
+                okm_core::TestStore::slatedb_mem(),
+                ns,
+                schema.inner.as_ref().clone(),
+                Vec::new(),
+            ))),
+            schema: schema.inner.as_ref().clone(),
+            ns,
+        })
+    }
+
+    /// Register a function index (ADR-0022): `func(document) ->
+    /// list[bytes]` produces one entry per derived value (multi-entry
+    /// fan-out, the inverted-index regime). The slot must be unique
+    /// within the table and outside the plain-index range used so far.
+    #[pyo3(signature = (slot, func, includes=None))]
+    fn add_func_index(
+        &self,
+        slot: u16,
+        func: Py<PyAny>,
+        includes: Option<Vec<String>>,
+    ) -> PyResult<()> {
+        let derive = move |document: &ValueMap| -> Result<Vec<Vec<u8>>, String> {
+            Python::with_gil(|py| {
+                let doc = map_to_dict(py, document).map_err(call_err)?;
+                let raw = func
+                    .call(py, (doc,), None)
+                    .map_err(|e| py_to_string(py, e))?;
+                raw.extract::<Vec<Vec<u8>>>(py)
+                    .map_err(|e| py_to_string(py, e))
+            })
+        };
+        self.inner
+            .lock()
+            .unwrap()
+            .declare_index(AccessMethod {
+                slot,
+                fields: vec![], // the derive result IS the segment
+                includes: includes.unwrap_or_default(),
+                kind: AccessMethodKind::Func(Box::new(derive)),
+            })
+            .map_err(PyValueError::new_err)
+    }
+
+    /// Register a partial index: `admits(document) -> bool` gates whether
+    /// the declared fields produce an entry (Postgres-style). Purity is
+    /// the caller's contract (an impure predicate leaves dangling entries).
+    #[pyo3(signature = (slot, fields, admits, includes=None))]
+    fn add_partial_index(
+        &self,
+        slot: u16,
+        fields: Vec<String>,
+        admits: Py<PyAny>,
+        includes: Option<Vec<String>>,
+    ) -> PyResult<()> {
+        let predicate = move |document: &ValueMap| -> Result<bool, String> {
+            Python::with_gil(|py| {
+                let doc = map_to_dict(py, document).map_err(call_err)?;
+                let raw = admits
+                    .call(py, (doc,), None)
+                    .map_err(|e| py_to_string(py, e))?;
+                raw.extract::<bool>(py)
+                    .map_err(|e| py_to_string(py, e))
+            })
+        };
+        self.inner
+            .lock()
+            .unwrap()
+            .declare_index(AccessMethod {
+                slot,
+                fields,
+                includes: includes.unwrap_or_default(),
+                kind: AccessMethodKind::Partial(Box::new(predicate)),
+            })
+            .map_err(PyValueError::new_err)
+    }
+
+    /// Register a reduce group: a `ReduceLogic` subclass instance whose
+    /// seed/fold/unfold implement the accumulator semantics (the mirror
+    /// of the Rust-side `ReduceLogic` + `ReduceCodec: Default` pair).
+    fn add_reduce(&self, slot: u16, group_fields: Vec<String>, logic: Py<PyAny>) -> PyResult<()> {
+        let logic = PyReduce { obj: logic };
+        self.inner
+            .lock()
+            .unwrap()
+            .declare_reduce(okm_dynamic::ReduceSpec {
+                slot,
+                group_fields,
+                logic: Box::new(logic),
+            })
+            .map_err(PyValueError::new_err)
+    }
+
+    /// Write one document: `{field: value}` — key + payload fields in
+    /// one dict (the schema splits them). Runs the index entry lifecycle
+    /// and the reduce calling discipline.
+    fn put(&self, pkey: Vec<u8>, document: &Bound<'_, PyAny>) -> PyResult<()> {
+        // Schema-coerced (Python ints carry no width; the schema kind
+        // drives the coercion — same rule as the codec surface).
+        let map = py_values_to_map(&self.schema, document)?;
+        self.inner
+            .lock()
+            .unwrap()
+            .put(&pkey, &map)
+            .map_err(PyValueError::new_err)
+    }
+
+    /// Point read by primary key → dict or None.
+    fn get(&self, pkey: Vec<u8>) -> PyResult<Option<PyObject>> {
+        let doc = self
+            .inner
+            .lock()
+            .unwrap()
+            .get(&pkey)
+            .map_err(PyValueError::new_err)?;
+        match doc {
+            Some(m) => Python::with_gil(|py| Ok(Some(map_to_dict(py, &m)?.unbind().into_any()))),
+            None => Ok(None),
+        }
+    }
+
+    /// Delete a document (index entries + unfold).
+    fn delete(&self, pkey: Vec<u8>) -> PyResult<()> {
+        self.inner
+            .lock()
+            .unwrap()
+            .delete(&pkey)
+            .map_err(PyValueError::new_err)
+    }
+
+    /// Access-method scan: return the matching documents' primary keys,
+    /// decoded as dicts (dynamic counterpart of `Collection::scan_index`).
+    fn scan(&self, slot: u16, encoded_prefix: Vec<u8>) -> PyResult<Vec<PyObject>> {
+        let docs = self
+            .inner
+            .lock()
+            .unwrap()
+            .scan(slot, &encoded_prefix)
+            .map_err(PyValueError::new_err)?;
+        Python::with_gil(|py| {
+            docs.iter()
+                .map(|m| Ok(map_to_dict(py, m)?.unbind().into_any()))
+                .collect()
+        })
+    }
+
+    /// Read one reduce group's accumulator bytes (None = no group yet).
+    /// The layout is the host's contract — decode with the same rule the
+    /// `ReduceLogic` class writes.
+    fn reduce_get(&self, group: &Bound<'_, PyAny>) -> PyResult<Option<Vec<u8>>> {
+        let map = py_values_to_map(&self.schema, group)?;
+        let t = self.inner.lock().unwrap();
+        let ek = t
+            .reduce_entry_key(self.ns, &map)
+            .map_err(PyValueError::new_err)?;
+        Ok(t.store().get(&ek))
+    }
+
+    /// Scan every group of one reduce: list of (group segment bytes,
+    /// acc bytes). Group fields decode with the schema's BE rule.
+    fn scan_reduces(&self, slot: u16) -> PyResult<Vec<(Vec<u8>, Vec<u8>)>> {
+        let t = self.inner.lock().unwrap();
+        Ok(okm_dynamic::scan_reduces(
+            t.store(),
+            &self.ns.to_be_bytes(),
+            slot,
+        ))
+    }
+}
+
+/// A parsed OKM table schema (re-exported from the codec module so the
+/// Collection constructor takes the same object the codec surface returns).
+#[pyclass]
+struct Schema {
+    inner: Arc<okm_core::schema::CollectionSchema>,
+}
+
+#[pymethods]
+impl Schema {
+    /// Build from `Collection::json_schema()` output or any serde'd
+    /// CollectionSchema JSON.
+    #[new]
+    fn from_json(json: &str) -> PyResult<Self> {
+        let schema: okm_core::schema::CollectionSchema = serde_json::from_str(json)
+            .map_err(|e| PyValueError::new_err(format!("bad schema json: {e}")))?;
+        Ok(Schema { inner: Arc::new(schema) })
+    }
+
+    /// Layout version this schema declares.
+    #[getter]
+    fn layout_version(&self) -> u8 {
+        self.inner.layout_version
+    }
+
+    /// Encode key fields from `{field: value}` (subset order-independent;
+    /// missing key fields are a ValueError).
+    fn encode_key(&self, values: &Bound<'_, PyAny>) -> PyResult<Vec<u8>> {
+        let map = py_values_to_map(&self.inner, values)?;
+        okm_dynamic::encode_key(&self.inner, &map).map_err(codec_err)
+    }
+
+    /// Encode the payload (hot segment + cold TLV) from `{field: value}`.
+    fn encode_payload(&self, values: &Bound<'_, PyAny>) -> PyResult<Vec<u8>> {
+        let map = py_values_to_map(&self.inner, values)?;
+        okm_dynamic::encode_payload(&self.inner, &map).map_err(codec_err)
+    }
+
+    /// Decode key bytes → `{field: value}`.
+    fn decode_key(&self, bytes: &[u8]) -> PyResult<PyObject> {
+        okm_dynamic::decode_key(&self.inner, bytes)
+            .map(|m| Python::with_gil(|py| map_to_dict(py, &m).unwrap().unbind().into_any()))
+            .map_err(codec_err)
+    }
+
+    /// Decode payload bytes → `{field: value}`. Absent tail fields arrive
+    /// as their schema defaults (version migration).
+    fn decode_payload(&self, bytes: &[u8]) -> PyResult<PyObject> {
+        okm_dynamic::decode_payload(&self.inner, bytes)
+            .map(|m| Python::with_gil(|py| map_to_dict(py, &m).unwrap().unbind().into_any()))
+            .map_err(codec_err)
+    }
+}
+
+/// Schema-coerced dict → ValueMap (ints carry no Python width; the
+/// schema kind drives the coercion).
+fn py_values_to_map(
+    schema: &okm_core::schema::CollectionSchema,
+    values: &Bound<'_, PyAny>,
+) -> PyResult<ValueMap> {
+    let dict = values
+        .downcast::<pyo3::types::PyDict>()
+        .map_err(|_| PyTypeError::new_err("values must be a dict {field: value}"))?;
+    let mut out = ValueMap::new();
+    for (k, v) in dict.iter() {
+        let name: String = k.extract()?;
+        let f = schema
+            .key_fields
+            .iter()
+            .chain(schema.hot_fields.iter())
+            .chain(schema.cold_fields.iter())
+            .find(|f| f.name == name)
+            .ok_or_else(|| {
+                PyValueError::new_err(format!("field `{name}`: not declared in the schema"))
+            })?;
+        out.insert(name.clone(), coerce(&name, f.ty, &v)?);
+    }
+    Ok(out)
+}
 
 /// Python has no integer-width distinction; coerce by the field's schema
 /// kind so `{"level": 9}` fills a U32 field, a U64 field, etc.
@@ -40,53 +404,9 @@ fn coerce(name: &str, kind: okm_core::FieldType, v: &Bound<'_, PyAny>) -> PyResu
             Value::Bytes(v.extract::<Vec<u8>>().map_err(|_| bad("bytes"))?)
         }
         FieldType::Str => Value::Str(v.extract::<String>().map_err(|_| bad("str"))?),
-    })
-}
-
-fn map_from_py(schema: &TableSchema, values: &Bound<'_, PyAny>) -> PyResult<ValueMap> {
-    let dict = values
-        .downcast::<pyo3::types::PyDict>()
-        .map_err(|_| PyTypeError::new_err("values must be a dict {field: value}"))?;
-    let mut out = BTreeMap::new();
-    for (k, v) in dict.iter() {
-        let name: String = k.extract()?;
-        let f = schema
-            .key_fields
-            .iter()
-            .chain(schema.hot_fields.iter())
-            .chain(schema.cold_fields.iter())
-            .find(|f| f.name == name)
-            .ok_or_else(|| {
-                PyValueError::new_err(format!("field `{name}`: not declared in the schema"))
-            })?;
-        out.insert(name.clone(), coerce(&name, f.ty, &v)?);
-    }
-    Ok(out)
-}
-
-fn value_to_py(v: &Value) -> PyObject {
-    use pyo3::conversion::IntoPyObject;
-    Python::with_gil(|py| match v {
-        Value::U8(x) => (*x).into_pyobject(py).unwrap().unbind().into_any(),
-        Value::U16(x) => (*x).into_pyobject(py).unwrap().unbind().into_any(),
-        Value::U32(x) => (*x).into_pyobject(py).unwrap().unbind().into_any(),
-        Value::U64(x) => (*x).into_pyobject(py).unwrap().unbind().into_any(),
-        Value::I64(x) => (*x).into_pyobject(py).unwrap().unbind().into_any(),
-        Value::F64(x) => (*x).into_pyobject(py).unwrap().unbind().into_any(),
-        Value::Bool(x) => (*x).into_pyobject(py).unwrap().to_owned().unbind().into_any(),
-        Value::Null => py.None(),
-        Value::Str(s) => s.into_pyobject(py).unwrap().unbind().into_any(),
-        Value::Bytes(b) => b.into_pyobject(py).unwrap().unbind().into_any(),
-    })
-}
-
-fn map_to_py(m: &ValueMap) -> PyObject {
-    Python::with_gil(|py| {
-        let d = pyo3::types::PyDict::new(py);
-        for (k, v) in m {
-            d.set_item(k, value_to_py(v)).ok();
+        FieldType::Vector { .. } => {
+            Value::Bytes(v.extract::<Vec<u8>>().map_err(|_| bad("flat LE vector bytes"))?)
         }
-        d.into_any().unbind()
     })
 }
 
@@ -94,56 +414,10 @@ fn codec_err(e: okm_dynamic::CodecError) -> PyErr {
     PyValueError::new_err(format!("{e}"))
 }
 
-/// A parsed OKM table schema. Build from `Table::json_schema()` output or
-/// any serde'd TableSchema JSON.
-#[pyclass]
-struct Schema {
-    inner: Arc<TableSchema>,
-}
-
-#[pymethods]
-impl Schema {
-    #[new]
-    fn from_json(json: &str) -> PyResult<Self> {
-        let schema: TableSchema = serde_json::from_str(json)
-            .map_err(|e| PyValueError::new_err(format!("bad schema json: {e}")))?;
-        Ok(Schema { inner: Arc::new(schema) })
-    }
-
-    /// Layout version this schema declares.
-    #[getter]
-    fn layout_version(&self) -> u8 {
-        self.inner.layout_version
-    }
-
-    /// Encode key fields from `{field: value}` (subset order-independent;
-    /// missing key fields are a ValueError).
-    fn encode_key(&self, values: &Bound<'_, PyAny>) -> PyResult<Vec<u8>> {
-        encode_key(&*self.inner, &map_from_py(&*self.inner, values)?).map_err(codec_err)
-    }
-
-    /// Encode the payload (hot segment + cold TLV) from `{field: value}`.
-    fn encode_payload(&self, values: &Bound<'_, PyAny>) -> PyResult<Vec<u8>> {
-        encode_payload(&*self.inner, &map_from_py(&*self.inner, values)?).map_err(codec_err)
-    }
-
-    /// Decode key bytes → `{field: value}`.
-    fn decode_key(&self, bytes: &[u8]) -> PyResult<PyObject> {
-        decode_key(&self.inner, bytes).map(|m| map_to_py(&m)).map_err(codec_err)
-    }
-
-    /// Decode payload bytes → `{field: value}`. Absent tail fields arrive
-    /// as their schema defaults (version migration).
-    fn decode_payload(&self, bytes: &[u8]) -> PyResult<PyObject> {
-        decode_payload(&self.inner, bytes)
-            .map(|m| map_to_py(&m))
-            .map_err(codec_err)
-    }
-}
-
-/// okm — OKM dynamic codec for Python.
+/// okm — OKM dynamic codec + embedded-mode table for Python.
 #[pymodule]
 fn okm(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Schema>()?;
+    m.add_class::<Collection>()?;
     Ok(())
 }
