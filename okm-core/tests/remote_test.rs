@@ -135,3 +135,65 @@ fn commit_batch_is_one_frame_one_commit() {
     // Delete op in the frame also executed (no-op on absent key = fine).
     assert_eq!(remote.get(b"k0"), None);
 }
+
+/// ADR-0021 end-to-end: the remote path joins the lazy contract —
+/// `scan_range_iter` returns `ScanIter::Remote`, pages ride
+/// OP_SCAN_STREAM with values attached (no N+1), the cursor is
+/// sender-owned, and forward == buffered answers.
+#[test]
+fn remote_scan_range_iter_is_lazy_paged() {
+    let handle = spawn_host(TestStore::default(), &[0x00, 0x11]);
+    let mut t: Collection<RemoteStore, UserKey, User> = Collection::new(handle.open());
+    let remote = handle.open();
+    for i in 0..40u64 {
+        t.put(&UserKey { id: i }, &User { level: (i % 4) as u32 });
+    }
+    wait_for(|| t.get(&UserKey { id: 39 }).is_some(), "writes to land");
+
+    // Sender-side bounds: `[ns 2B][slot 2B BE][pkey 8B]` (User declares
+    // no partition, so no 0xFF escape). The hosted prefix `[0x00, 0x11]`
+    // never appears here — the receiver prepends it and strips it again
+    // on the answer; the sender's key space is prefix-relative (ADR-0010).
+    let begin = {
+        let mut b = vec![0x00, 0x07, 0x00, 0x00];
+        b.extend_from_slice(&0u64.to_be_bytes());
+        b
+    };
+    let end = {
+        let mut e = vec![0x00, 0x07, 0x00, 0x00, 0xFF];
+        e.extend_from_slice(&u64::MAX.to_be_bytes());
+        e
+    };
+    let buffered: Vec<(Vec<u8>, Vec<u8>)> = remote
+        .scan_range(&begin, Some(&end))
+        .into_iter()
+        .filter_map(|k| remote.get(&k).map(|v| (k, v)))
+        .collect();
+    let lazy: Vec<(Vec<u8>, Vec<u8>)> =
+        remote.scan_range_iter(&begin, Some(&end)).collect();
+    assert_eq!(lazy.len(), 40);
+    assert_eq!(lazy, buffered, "lazy paged walk == buffered answer");
+
+    // Values ride the chunks: every lazy item has a non-empty value
+    // without any per-key OP_GET (the N+1 fix — asserted by shape).
+    assert!(lazy.iter().all(|(_, v)| !v.is_empty()));
+
+    // Early abandonment stops after the first page (page default 256 >
+    // 40 rows here, so one round trip covers all; the take() locks the
+    // lazy-by-construction semantics through the remote arm).
+    let first_two: Vec<_> = remote
+        .scan_range_iter(&begin, None)
+        .take(2)
+        .collect();
+    assert_eq!(first_two.len(), 2);
+
+    // Backwards walk degrades to buffered (the slatedb rule): rev() gives
+    // the reverse of the forward answer.
+    let last_two: Vec<_> = remote
+        .scan_range_iter(&begin, Some(&end))
+        .rev()
+        .take(2)
+        .collect();
+    assert_eq!(last_two[0].0, lazy[39].0);
+    assert_eq!(last_two[1].0, lazy[38].0);
+}

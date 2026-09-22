@@ -138,11 +138,13 @@ pub enum ScanIter {
     #[cfg(feature = "redb")]
     Redb(redb::OwnedRange<&'static [u8], &'static [u8]>),
     /// slatedb `DbIterator` — forward-only (async adapter); backwards
-    /// drains a buffered copy of the remaining range.
+    /// walk buffers a materialized copy of the remaining range.
     #[cfg(feature = "slatedb")]
     Slatedb(super::slatedb_backend::SlatedbIter),
-    /// Owned buffer: the trait default, the remote degrade path, and
-    /// any test map.
+    /// Remote paged stream (ADR-0021): lazy over the wire, one
+    /// OP_SCAN_STREAM page per refill; `next_back` degrades to buffered.
+    Remote(super::nest::RemoteScanIter),
+    /// Owned buffer: the trait default, and any test map.
     Buffered(std::vec::IntoIter<(Vec<u8>, Vec<u8>)>),
 }
 
@@ -169,6 +171,7 @@ impl Iterator for ScanIter {
                 }),
             #[cfg(feature = "slatedb")]
             ScanIter::Slatedb(it) => it.next(),
+            ScanIter::Remote(it) => it.next(),
             ScanIter::Buffered(it) => it.next(),
         }
     }
@@ -195,6 +198,7 @@ impl DoubleEndedIterator for ScanIter {
                 }),
             #[cfg(feature = "slatedb")]
             ScanIter::Slatedb(it) => it.next_back(),
+            ScanIter::Remote(it) => it.next_back(),
             ScanIter::Buffered(it) => it.next_back(),
         }
     }

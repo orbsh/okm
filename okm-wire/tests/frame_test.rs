@@ -3,7 +3,7 @@
 //! discipline as the key/index hex tests). Covers the length codec's four
 //! buckets, the op header, round trips, and malformed-frame rejection.
 
-use okm_wire::{put_len, OpFrame, OpResponse};
+use okm_wire::{put_len, OpFrame, OpResponse, OP_SCAN_STREAM, TAIL_FINAL, TAIL_MORE};
 
 #[test]
 fn length_codec_four_buckets() {
@@ -79,16 +79,93 @@ fn response_round_trip() {
     let resp = OpResponse {
         value: Some(b"hello".to_vec()),
         suffixes: vec![b"1".to_vec(), b"2".to_vec()],
+        hits: Vec::new(),
+        tail: None,
     };
     let back = OpResponse::decode(&resp.encode()).expect("round trip");
     assert_eq!(back.value.as_deref(), Some(b"hello".as_slice()));
     assert_eq!(back.suffixes, vec![b"1".to_vec(), b"2".to_vec()]);
+    assert_eq!(back.hits, Vec::new());
+    assert_eq!(back.tail, None);
 
     // Put/delete answer = default (empty) response.
     let none = OpResponse::default();
     let back = OpResponse::decode(&none.encode()).expect("round trip");
     assert_eq!(back.value, None);
     assert!(back.suffixes.is_empty());
+}
+
+/// ADR-0021: OP_SCAN_STREAM chunk grammar — a plain OpResponse whose hits
+/// section carries (key, value) pairs, plus one trailing tail byte.
+#[test]
+fn stream_chunk_round_trip() {
+    let chunk = OpResponse {
+        value: None,
+        suffixes: Vec::new(),
+        hits: vec![
+            (b"k1".to_vec(), b"v1".to_vec()),
+            (b"k2".to_vec(), b"v2".to_vec()),
+        ],
+        tail: Some(TAIL_MORE),
+    };
+    let bytes = chunk.encode();
+    // Layout lock: [has_value 0][count 2][klen 2]"k1"[vlen 2]"v1"[klen 2]"k2"[vlen 2]"v2"[tail 0x00]
+    assert_eq!(
+        &bytes,
+        &[0, 2, 2, b'k', b'1', 2, b'v', b'1', 2, b'k', b'2', 2, b'v', b'2', 0x00]
+    );
+    let back = OpResponse::decode_chunk(&bytes).expect("chunk round trip");
+    assert_eq!(back.hits, chunk.hits);
+    assert_eq!(back.tail, Some(TAIL_MORE));
+    assert_eq!(back.encode(), bytes, "re-encode is byte-identical");
+
+    // Final chunk: tail 0x01, count may be anything (including 0 — the
+    // empty range answer).
+    let empty_final = OpResponse {
+        value: None,
+        suffixes: Vec::new(),
+        hits: Vec::new(),
+        tail: Some(TAIL_FINAL),
+    };
+    let bytes = empty_final.encode();
+    assert_eq!(&bytes, &[0, 0, 0x01]);
+    let back = OpResponse::decode_chunk(&bytes).expect("empty final chunk");
+    assert!(back.hits.is_empty());
+    assert_eq!(back.tail, Some(TAIL_FINAL));
+
+    // Unknown trailer byte and truncated frame reject, never panic.
+    let mut bad = empty_final.encode();
+    *bad.last_mut().unwrap() = 0x02;
+    assert!(OpResponse::decode_chunk(&bad).is_none());
+    assert!(OpResponse::decode_chunk(&[0, 0]).is_none());
+
+    // The plain decoder rejects a chunk (trailing tail byte = garbage to
+    // it) and vice versa — the two shapes are call-site chosen, not sniffed.
+    assert!(OpResponse::decode(&chunk.encode()).is_none());
+    let plain = OpResponse {
+        value: None,
+        suffixes: vec![b"s".to_vec()],
+        hits: Vec::new(),
+        tail: None,
+    };
+    assert!(OpResponse::decode_chunk(&plain.encode()).is_none());
+}
+
+/// ADR-0021: tag 4 (OP_SCAN_STREAM) enters the frame grammar; tag 5 is
+/// still reserved and rejected.
+#[test]
+fn scan_stream_tag_accepted_next_tag_still_rejected() {
+    let frame = OpFrame::one(OP_SCAN_STREAM, b"begin".to_vec(), vec![0x00, 0x10]);
+    let bytes = frame.encode();
+    // op header: tag 4<<4, key len 5, value len 2.
+    assert_eq!(&bytes[1..4], &[0x40, 0x05, 0x02]);
+    let back = OpFrame::decode(&bytes).expect("tag 4 decodes");
+    assert_eq!(back.0[0].0, OP_SCAN_STREAM);
+
+    let mut f = Vec::new();
+    put_len(&mut f, 1);
+    f.extend_from_slice(&[0x50, 0x01, 0x01, b'k', b'v']); // tag 5 — reserved
+    assert!(OpFrame::decode(&f).is_none(), "tag 5 stays reserved");
 }
 
 #[test]
@@ -108,10 +185,11 @@ fn malformed_frames_rejected_not_panic() {
     f.extend_from_slice(&[0x00, 0x7F, 0x00, b'k']); // key len 127 inline, 1 byte present
     assert!(OpFrame::decode(&f).is_none());
 
-    // Unknown op tag (0x04 in high nibble — reserved).
+    // Reserved op tag (0x05 in high nibble — tag 4 is OP_SCAN_STREAM now,
+    // ADR-0021; the reserved space moved with it).
     let mut f = Vec::new();
     put_len(&mut f, 1);
-    f.extend_from_slice(&[0x40, 0x01, 0x01, b'k', b'v']);
+    f.extend_from_slice(&[0x50, 0x01, 0x01, b'k', b'v']);
     assert!(OpFrame::decode(&f).is_none());
 
     assert!(OpResponse::decode(&[9]).is_none()); // invalid has_value byte

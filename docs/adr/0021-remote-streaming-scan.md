@@ -1,7 +1,7 @@
 # ADR-0021: Streaming scan over the wire — the remote path joins the lazy contract
 
 Date: 2026-09-22
-Status: Draft (design proposal; implementation lands after the frame-shape review).
+Status: Landed (2026-09-22) — wire codec, hex tests, `RemoteStore::scan_range_iter` lazy `ScanIter::Remote` arm all green.
 
 ## Context
 
@@ -46,6 +46,8 @@ A stream is a sequence of `apply`-shaped responses over the SAME correlation cha
 tail: 0x00 = more chunks follow (this chunk's count == page size)
       0x01 = final chunk (count may be anything, including 0)
 ```
+
+The trailer sits at the END, not the front, for two reasons — neither of which is forward compatibility: an unimplemented `OP_SCAN_STREAM` is rejected whole (unknown tag → `apply` → `None`), so the sender never parses far enough to care where the byte lives. First, the chunk keeps its defined shape — "today's `OpResponse` plus one appended byte" — and `OpResponse`'s fields are already ordered, so the only extension point that preserves that encoding is the tail; a leading byte would rewrite field positions and make this a second response format, exactly what the decision avoids. Second, the semantics are trailing-shaped: `0x01` certifies the entries just read as complete, not the next chunk as promised. Placing it in front would assert a property before any entry exists to back it, and force the receiver to carry one more piece of forward state while consuming.
 
 Three properties fall out of reusing the response grammar:
 
@@ -95,3 +97,10 @@ The trait's return type does not change (`ScanIter` gains a `Remote` arm behind 
 - **okm-wire gains one op tag and one trailer byte — its zero-dependency, zero-semantics charter holds.** The hex tests extend to cover: chunk round trip, exclusive-begin flag, empty final chunk, unknown-tag fallback.
 - **The buffered `OP_SCAN` path remains the compatibility floor** — a peer that predates tag 4 interoperates forever; the sender discovers the capability per-call (the fallback is invisible above the trait boundary).
 - **`0xFF = one giant page` preserves the old behavior exactly** for consumers that want the buffered shape (the `scan_covered`-style internal callers), so nothing regresses while nothing is forced.
+
+## Update (2026-09-22, landing)
+
+Two implementation-level refinements surfaced while landing, both consistent with the frame shape:
+
+- **Answers are prefix-relative.** Scan and stream answers carry keys in the SENDER's key space — the receiver strips its hosted prefix from every returned key (and hosts the end bound the same way it hosts the begin). The draft's chunk sketch implied receiver-side full keys; that would leak the hosted prefix into sender bytes and break cursor resumption (the sender must be able to re-send a hit key verbatim as the next begin). Existing `OP_SCAN` answers already followed this rule via `scan_suffix`'s prefix-stripping; the landing extends it to range and stream answers, where the draft had left it implicit.
+- **A begin-only range is expressible.** `OP_SCAN`'s value segment `[0x00]` (unbounded end) is a range begin..∞, distinct from the EMPTY value segment (the legacy prefix scan). The pre-landing receiver conflated the two; the grammar always said they were different.

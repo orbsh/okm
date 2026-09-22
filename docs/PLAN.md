@@ -889,14 +889,20 @@ panics -> adapters return empty). All native iterators are owned and
       range = the interval form of physical WHERE, filter = in-memory)
       + core-stance table row; MODELING "Rows at runtime" cross-reference
       (en + zh).
-- [ ] Remote streaming scan — ADR-0021 draft landed (2026-09-22):
+- [x] Remote streaming scan — ADR-0021 landed (2026-09-22):
       `OP_SCAN_STREAM` (tag 4) — paged request (entries, 0xFF = legacy
-      buffered shape), self-contained value-carrying chunks, sender-owned
-      cursor via exclusive-begin; receiver stays stateless, unknown tag
-      falls back to buffered `OP_SCAN`. Waiting on: frame-shape review.
-      Then: okm-wire codec + hex tests, `RemoteStore::scan_range_iter`
-      lazy `ScanIter::Remote` arm, `next_back` stays buffered (no
-      descending-page use case).
+      buffered shape), self-contained value-carrying chunks (hits +
+      trailing tail byte on `OpResponse`), sender-owned cursor via
+      exclusive-begin flag `[0x02]` (receiver-side `prefix_end`
+      increment — the sender never parses keys); receiver stays
+      stateless, unknown tag falls back to buffered `OP_SCAN`.
+      Answers are PREFIX-RELATIVE (receiver strips the hosted prefix
+      from scan/stream keys — the sender's key space never sees it),
+      and the scan-range end bound is hosted receiver-side like the
+      begin. okm-wire: tag 4 accepted, tag 5 still reserved, chunk
+      grammar call-site chosen (`decode_chunk`), hex tests lock the
+      layout. `ScanIter::Remote` refills one page per round trip;
+      `next_back` degrades to buffered (slatedb rule).
 
 ## Wire encoding refinements (execution order, 2026-09-17)
 
