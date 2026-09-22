@@ -17,10 +17,15 @@
 //!
 //! ```text
 //! request frame: [op_count len-enc] per op: [tag u8][key LK][value LV][key][value]
-//!   all four ops in one shape — put/delete carry their bytes, get/scan
-//!   carry value = empty (LV = 0); a frame may mix mutating and query ops
+//!   all five ops in one shape — put/delete carry their bytes, get/scan/scan-stream
+//!   carry value = empty (LV = 0; scan-stream's value segment carries its request
+//!   grammar, encoded sender-side); a frame may mix mutating and query ops
 //! response frame: [has_value u8][value len LK][value bytes] [count len-enc] per hit: [len][bytes]
 //!   put/delete answers are the default (empty) response
+//!   OP_SCAN_STREAM chunk: same shape with the hits section carrying
+//!   [len][key][len][value] pairs and one trailing tail byte
+//!   (0x00 more chunks / 0x01 final); responses without the section decode as
+//!   hits = [] / tail = None — one type, two shapes (ADR-0021).
 //! length LK/LV — 4 width buckets in the first byte (high 2 bits select,
 //! low 6 bits are the value's high bits):
 //!   00xxxxxx inline ≤63 | 01xxxxxx+1B 14-bit | 10xxxxxx+2B 22-bit | 11xxxxxx+4B 32-bit
@@ -32,11 +37,21 @@
 //! know the semantics), never to the frame: compressed bytes are just
 //! shorter bytes here.
 
-/// Op tags: 2 bits used, 2 reserved (high nibble of the op header byte).
+/// Op tags: 3 used, 1 reserved (high nibble of the op header byte).
 pub const OP_PUT: u8 = 0;
 pub const OP_DELETE: u8 = 1;
 pub const OP_GET: u8 = 2;
 pub const OP_SCAN: u8 = 3;
+/// Paged streaming scan (ADR-0021): request = scan bounds + page size in
+/// the value segment (encoded by the sender, opaque here); response = a
+/// chunk (`OpResponse` hits + tail byte). A receiver without this tag
+/// rejects the frame; the sender falls back to buffered `OP_SCAN`.
+pub const OP_SCAN_STREAM: u8 = 4;
+
+/// Chunk trailer (ADR-0021): more chunks follow this one.
+pub const TAIL_MORE: u8 = 0x00;
+/// Chunk trailer (ADR-0021): final chunk — the entries just read are all.
+pub const TAIL_FINAL: u8 = 0x01;
 
 /// Append `value` with its bucketed length prefix.
 pub fn put_len(buf: &mut Vec<u8>, value: usize) {
@@ -126,9 +141,11 @@ pub fn take(frame: &[u8], pos: &mut usize, n: usize) -> Option<Vec<u8>> {
 
 // ---- unified op frames ----
 
-/// One op: `(tag, key, value)`. All four ops share this shape — reads
-/// carry `value = Vec::new()` (LV = 0). Tags: put / delete / get / scan
-/// (2 bits used, 2 reserved).
+/// One op: `(tag, key, value)`. All five ops share this shape — reads
+/// carry `value = Vec::new()` (LV = 0) except OP_SCAN_STREAM, whose
+/// value segment carries its request grammar (bounds + page size,
+/// encoded sender-side). Tags: put / delete / get / scan / scan-stream
+/// (3 used, 1 reserved).
 pub type Op = (u8, Vec<u8>, Vec<u8>);
 
 /// A request frame: `[op_count len-enc] per op: [tag u8][key LK][value LV][key][value]`.
@@ -169,7 +186,7 @@ impl OpFrame {
         let mut ops = Vec::with_capacity(count.min(1024));
         for _ in 0..count {
             let (tag, klen, vlen) = get_op_header(frame, &mut pos)?;
-            if tag > OP_SCAN {
+            if tag > OP_SCAN_STREAM {
                 return None;
             }
             let key = take(frame, &mut pos, klen)?;
@@ -181,10 +198,16 @@ impl OpFrame {
 }
 
 /// The receiver's answer to one request frame. Uniform shape for all
-/// four ops — a put/delete answer is the default (empty) response: the
+/// ops — a put/delete answer is the default (empty) response: the
 /// sender learns success by receiving A response (the transport's
 /// delivery, not the frame, carries the guarantee). Raw bytes in, raw
 /// bytes out — the receiver never learns what the bytes mean.
+///
+/// One type, two shapes (ADR-0021): a plain answer has `suffixes`
+/// filled (OP_SCAN) and `hits`/`tail` empty; an OP_SCAN_STREAM chunk
+/// has `hits` + `tail` filled and `suffixes` empty. `decode` and
+/// `encode` keep the two apart by the optional trailing section, so
+/// the chunk is exactly "today's `OpResponse` plus one appended byte".
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct OpResponse {
     /// Get answer (`None` = key absent). Empty for the other ops.
@@ -194,6 +217,13 @@ pub struct OpResponse {
     /// re-splits exactly as it would against a local engine. Empty for
     /// the other ops.
     pub suffixes: Vec<Vec<u8>>,
+    /// OP_SCAN_STREAM chunk: `(key, value)` pairs of this page — the
+    /// engine's full-key items, receiver-prefix already applied (the
+    /// same bytes a local engine's iterator yields).
+    pub hits: Vec<(Vec<u8>, Vec<u8>)>,
+    /// OP_SCAN_STREAM chunk trailer: `Some(TAIL_MORE)` / `Some(TAIL_FINAL)`
+    /// marks the bytes as a stream chunk; `None` = plain (non-chunk) answer.
+    pub tail: Option<u8>,
 }
 
 impl OpResponse {
@@ -207,10 +237,26 @@ impl OpResponse {
             }
             None => buf.push(0),
         }
-        put_len(&mut buf, self.suffixes.len());
-        for sfx in &self.suffixes {
-            put_len(&mut buf, sfx.len());
-            buf.extend_from_slice(sfx);
+        // Chunk grammar (tail = Some): hits are (key, value) pairs;
+        // plain grammar: suffixes are bare byte strings.
+        match self.tail {
+            Some(tail) => {
+                put_len(&mut buf, self.hits.len());
+                for (k, v) in &self.hits {
+                    put_len(&mut buf, k.len());
+                    buf.extend_from_slice(k);
+                    put_len(&mut buf, v.len());
+                    buf.extend_from_slice(v);
+                }
+                buf.push(tail);
+            }
+            None => {
+                put_len(&mut buf, self.suffixes.len());
+                for sfx in &self.suffixes {
+                    put_len(&mut buf, sfx.len());
+                    buf.extend_from_slice(sfx);
+                }
+            }
         }
         buf
     }
@@ -235,7 +281,55 @@ impl OpResponse {
             let len = get_len(frame, &mut pos)?;
             suffixes.push(take(frame, &mut pos, len)?);
         }
-        Some(Self { value, suffixes })
+        if pos != frame.len() {
+            return None; // trailing garbage
+        }
+        Some(Self {
+            value,
+            suffixes,
+            hits: Vec::new(),
+            tail: None,
+        })
+    }
+
+    /// Decode an `OP_SCAN_STREAM` chunk (ADR-0021 grammar: entries as
+    /// `(key, value)` pairs + the trailing tail byte). The sender knows
+    /// which op it issued, so the shape is chosen at the call site —
+    /// never sniffed from the bytes (a sniffed distinction is ambiguous:
+    /// a plain suffix list of the right parity can masquerade as pairs).
+    pub fn decode_chunk(frame: &[u8]) -> Option<Self> {
+        let mut pos = 0;
+        let value = match frame.first()? {
+            0 => {
+                pos += 1;
+                None
+            }
+            1 => {
+                pos += 1;
+                let len = get_len(frame, &mut pos)?;
+                Some(take(frame, &mut pos, len)?)
+            }
+            _ => return None,
+        };
+        let count = get_len(frame, &mut pos)?;
+        let mut hits = Vec::with_capacity(count.min(1024));
+        for _ in 0..count {
+            let klen = get_len(frame, &mut pos)?;
+            let k = take(frame, &mut pos, klen)?;
+            let vlen = get_len(frame, &mut pos)?;
+            let v = take(frame, &mut pos, vlen)?;
+            hits.push((k, v));
+        }
+        let tail = *frame.get(pos)?;
+        if !matches!(tail, TAIL_MORE | TAIL_FINAL) || pos + 1 != frame.len() {
+            return None; // unknown trailer or trailing garbage
+        }
+        Some(Self {
+            value,
+            suffixes: Vec::new(),
+            hits,
+            tail: Some(tail),
+        })
     }
 }
 

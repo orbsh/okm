@@ -26,12 +26,15 @@
 //! shape; this manual form is the reference implementation the derive
 //! targets.
 
+use std::collections::VecDeque;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 
-use okm_wire::{OP_DELETE, OP_GET, OP_PUT, OP_SCAN, OpFrame, OpResponse};
+use okm_wire::{
+    OP_DELETE, OP_GET, OP_PUT, OP_SCAN, OP_SCAN_STREAM, OpFrame, OpResponse, TAIL_FINAL, TAIL_MORE,
+};
 
-use crate::engine::storage::{KvBatch, MemBatch, SharedVirtualStorage, VirtualStorage};
+use crate::engine::storage::{KvBatch, MemBatch, SharedVirtualStorage, VirtualStorage, prefix_end};
 
 // ============ sender side ============
 
@@ -43,6 +46,38 @@ use crate::engine::storage::{KvBatch, MemBatch, SharedVirtualStorage, VirtualSto
 /// everything here is transport-shaped, not contract-shaped.
 pub struct RemoteStore {
     exec_tx: mpsc::Sender<(mpsc::Sender<OpResponse>, Vec<u8>)>,
+}
+
+impl RemoteStore {
+    /// A handle the iterator can own: same channel endpoints, same
+    /// physical store — a clone of the sender side (the channel sender
+    /// is `Clone`; the store has no other state).
+    fn clone_for_iter(&self) -> Self {
+        Self {
+            exec_tx: self.exec_tx.clone(),
+        }
+    }
+
+    /// One `OP_SCAN_STREAM` page request. `exclusive` re-sends the last
+    /// key as begin and lets the receiver's `[0x02]` flag do the
+    /// increment — the sender never parses or derives key bytes
+    /// (ADR-0021: the sender owns the cursor, the receiver owns keys).
+    fn stream_page(
+        &self,
+        begin: &[u8],
+        end: Option<&[u8]>,
+        exclusive: bool,
+        page: u8,
+    ) -> OpResponse {
+        let mut value = vec![if exclusive { 0x02 } else if end.is_some() { 0x01 } else { 0x00 }];
+        if let Some(end) = end {
+            value.extend_from_slice(end);
+        }
+        value.push(page);
+        let resp = self.round_trip(&OpFrame::one(OP_SCAN_STREAM, begin.to_vec(), value));
+        debug_assert!(resp.tail.is_some(), "stream answer is a chunk");
+        resp
+    }
 }
 
 /// The sender-side endpoints a [`NestStorage::new`] hands out. Each read
@@ -109,24 +144,26 @@ impl VirtualStorage for RemoteStore {
         self.round_trip(&OpFrame::one(OP_SCAN, begin.to_vec(), value)).suffixes
     }
 
-    /// Remote degrade (documented in ADR-0020): the wire frame already
-    /// batches the answer, so the streaming contract buffers — one
-    /// round trip, then lazy draining over the owned reply. Backwards
-    /// walk rides the buffer for free.
+    /// Lazy paged stream (ADR-0021): one `ScanIter::Remote` whose refill
+    /// is an `OP_SCAN_STREAM` round trip per page. Early abandonment
+    /// stops pulling pages; values ride the chunk (no N+1). The
+    /// receiver's chunk-time consistency (no snapshot across pages) is
+    /// the documented contract — a consumer needing a frozen view
+    /// materializes it instead.
     fn scan_range_iter(
         &self,
         begin: &[u8],
         end: Option<&[u8]>,
     ) -> crate::engine::storage::ScanIter {
-        let pairs: Vec<(Vec<u8>, Vec<u8>)> = self
-            .scan_range(begin, end)
-            .into_iter()
-            .filter_map(|k| {
-                let v = self.get(&k)?;
-                Some((k, v))
-            })
-            .collect();
-        crate::engine::storage::ScanIter::Buffered(pairs.into_iter())
+        crate::engine::storage::ScanIter::Remote(RemoteScanIter {
+            store: self.clone_for_iter(),
+            begin: begin.to_vec(),
+            end: end.map(|e| e.to_vec()),
+            page: 0, // 0 = engine default (256)
+            buf: VecDeque::new(),
+            cursor: None,
+            done: false,
+        })
     }
 
     /// Batch = carrier accumulate only; the frame ships at commit.
@@ -148,6 +185,80 @@ impl VirtualStorage for RemoteStore {
             .collect();
         self.send_write(&OpFrame::new(ops));
         Ok(())
+    }
+}
+
+// ============ sender-side stream iterator (ADR-0021) ============
+
+/// The `ScanIter::Remote` engine arm: lazy over the wire. State lives on
+/// the SENDER (the receiver is stateless by contract): the drained page
+/// buffer, the cursor (the last key returned — re-sent verbatim as the
+/// next request's begin), and the stream-end flag set from the chunk's
+/// tail byte.
+pub struct RemoteScanIter {
+    store: RemoteStore,
+    begin: Vec<u8>,
+    end: Option<Vec<u8>>,
+    page: u8,
+    buf: std::collections::VecDeque<(Vec<u8>, Vec<u8>)>,
+    /// The last CONSUMED key — the sender-owned cursor. `None` before
+    /// the first item; `Some` re-sent verbatim as the next page's
+    /// exclusive begin (the receiver does the increment).
+    cursor: Option<Vec<u8>>,
+    done: bool,
+}
+
+impl RemoteScanIter {
+    fn refill(&mut self) {
+        if self.done {
+            return;
+        }
+        let (exclusive, begin) = match self.cursor.take() {
+            // Resume: the last CONSUMED key is the cursor — re-sent as
+            // begin with the exclusive flag (receiver-side increment).
+            Some(last) => (true, last),
+            None => (false, std::mem::take(&mut self.begin)),
+        };
+        let resp = self.store.stream_page(&begin, self.end.as_deref(), exclusive, self.page);
+        self.done = resp.tail != Some(TAIL_MORE);
+        self.buf.extend(resp.hits);
+    }
+
+    fn consume_front(&mut self) -> Option<(Vec<u8>, Vec<u8>)> {
+        let item = self.buf.pop_front()?;
+        self.cursor = Some(item.0.clone());
+        Some(item)
+    }
+
+    fn consume_back(&mut self) -> Option<(Vec<u8>, Vec<u8>)> {
+        let item = self.buf.pop_back()?;
+        self.cursor = Some(item.0.clone());
+        Some(item)
+    }
+}
+
+impl Iterator for RemoteScanIter {
+    type Item = (Vec<u8>, Vec<u8>);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.buf.is_empty() && !self.done {
+            self.refill();
+        }
+        self.consume_front()
+    }
+}
+
+impl DoubleEndedIterator for RemoteScanIter {
+    /// NOT overridden as lazy (ADR-0021: a backwards remote walk would
+    /// need a descending-page request shape — deferred): first call
+    /// materializes the remaining range through ordinary forward pages,
+    /// then drains from the back — semantics identical, laziness lost
+    /// where the wire shape cannot give it back (the slatedb rule).
+    fn next_back(&mut self) -> Option<Self::Item> {
+        while self.buf.is_empty() && !self.done {
+            self.refill();
+        }
+        self.consume_back()
     }
 }
 
@@ -294,13 +405,97 @@ impl<S: VirtualStorage> ExecCore<S> {
                 OP_SCAN => {
                     engine.commit_batch(MemBatch::default()).ok();
                     let hk = hosted_key(&self.prefix, &key);
+                    // Wire contract: answers are PREFIX-RELATIVE keys —
+                    // the sender's key space never sees the hosted prefix
+                    // (it prepends on write and the round trip must be
+                    // the inverse). Range answers strip hk from every
+                    // full key; prefix answers are already relative.
+                    let plen = self.prefix.as_ref().map_or(0, Vec::len);
+                    let strip = move |k: Vec<u8>| k[plen..].to_vec();
                     resp.suffixes = match value.first() {
-                        Some(&1) => {
-                            let end = &value[1..];
-                            engine.scan_range(&hk, Some(end))
+                        // [0x01][end] = bounded range; [0x00] alone =
+                        // begin-only range (unbounded end); EMPTY value =
+                        // the legacy prefix scan. (A begin-only range and
+                        // a prefix scan are different predicates.)
+                        Some(&0x00) if value.len() == 1 => {
+                            engine.scan_range(&hk, None).into_iter().map(strip).collect()
+                        }
+                        Some(&0x01) => {
+                            let end = hosted_key(&self.prefix, &value[1..]);
+                            engine
+                                .scan_range(&hk, Some(&end))
+                                .into_iter()
+                                .map(strip)
+                                .collect()
                         }
                         _ => engine.scan_suffix(&hk), // empty value = prefix scan
                     };
+                }
+                OP_SCAN_STREAM => {
+                    // ADR-0021: one page per apply — the host stays
+                    // stateless (constraint 2); the sender's next request
+                    // carries the cursor. Value segment =
+                    // [flag][end bytes?][page u8] with flag 0x00 unbounded
+                    // / 0x01 + end / 0x02 + end AND exclusive begin (the
+                    // resume request re-sends the last key as begin; the
+                    // flag moves inclusivity, not the bytes). page:
+                    // 0 = engine default (256), 0xFF = one giant page
+                    // (the legacy buffered shape).
+                    engine.commit_batch(MemBatch::default()).ok();
+                    // Grammar: [flag][end bytes?][page u8] — page is
+                    // always the last byte; the flag says whether an end
+                    // span sits between it and the flag.
+                    let page = match value.last() {
+                        Some(p) => *p,
+                        None => return None, // page byte is mandatory
+                    };
+                    let (end, exclusive) = match value[0] {
+                        0x00 => (None, false),
+                        0x01 => (
+                            Some(hosted_key(&self.prefix, &value[1..value.len() - 1])),
+                            false,
+                        ),
+                        0x02 => (
+                            Some(hosted_key(&self.prefix, &value[1..value.len() - 1])),
+                            true,
+                        ),
+                        _ => return None,
+                    };
+                    let hk = hosted_key(&self.prefix, &key);
+                    // Exclusive begin: bump past the cursor with the same
+                    // carry increment `prefix_end` uses (an all-0xFF begin
+                    // cannot occur here — the cursor key just existed).
+                    let begin: Option<Vec<u8>> = if exclusive {
+                        prefix_end(&hk)
+                    } else {
+                        Some(hk)
+                    };
+                    let want = match page {
+                        0xFF => usize::MAX,
+                        0 => 256,
+                        p => p as usize,
+                    };
+                    // Hits are prefix-relative (same contract as OP_SCAN):
+                    // the sender owns cursor bytes it can re-send verbatim.
+                    let plen = self.prefix.as_ref().map_or(0, Vec::len);
+                    let pairs: Vec<(Vec<u8>, Vec<u8>)> = engine
+                        .scan_range_iter(
+                            begin.as_deref().expect("begin present"),
+                            end.as_deref(),
+                        )
+                        .take(want)
+                        .map(|(k, v)| (k[plen..].to_vec(), v))
+                        .collect();
+                    // More pages only when the page filled to its exact
+                    // budget (0xFF = giant page is always FINAL — it asked
+                    // for the whole buffered answer).
+                    let tail = if pairs.len() == want && want != usize::MAX {
+                        TAIL_MORE
+                    } else {
+                        TAIL_FINAL
+                    };
+                    resp.hits = pairs;
+                    resp.tail = Some(tail);
                 }
                 _ => return None, // unknown op tag = malformed frame
             }
