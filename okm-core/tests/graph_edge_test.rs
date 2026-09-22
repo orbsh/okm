@@ -277,3 +277,43 @@ fn hex_lock_six_face_layout() {
     face.extend_from_slice(&id);
     assert!(store.get(&face).is_some(), "declared-attribute face");
 }
+
+#[test]
+fn neighbor_nodes_resolve_to_node_refs() {
+    let store = okm_core::TestStore::slatedb_mem();
+    let mut g: Graph<_, Employment> = Graph::new(store.clone());
+
+    let a1 = Employment { since_year: 2020, weight: 1 };
+    let a2 = Employment { since_year: 2021, weight: 2 };
+    let mk = |src: NodeRef, dst: NodeRef, id: u64, attrs: &Employment| EdgeFact {
+        src,
+        dst,
+        kind: "employs".into(),
+        attrs: okm_core::KvGraph::attrs(attrs),
+    };
+    g.link(&mk(user(1), org(9), 1, &a1), &a1, 1).unwrap();
+    g.link(&mk(user(1), org(10), 2, &a2), &a2, 2).unwrap();
+
+    // One-hop neighbors as NodeRef — the traversal currency.
+    let mut outs = g.out_nodes(&user(1));
+    outs.sort();
+    assert_eq!(outs, vec![org(9), org(10)]);
+    assert_eq!(g.in_nodes(&org(9)), vec![user(1)]);
+
+    // Kind-qualified neighbors share the resolve step.
+    assert_eq!(g.typed_out_nodes("employs", &user(1)), vec![org(9), org(10)]);
+    assert_eq!(g.typed_out_nodes("contracts", &user(1)), Vec::<NodeRef>::new());
+    assert_eq!(g.typed_in_nodes("employs", &org(10)), vec![user(1)]);
+
+    // Parallel-edge collapse: two facts between the same pair produce
+    // the same neighbor twice — multiplicity preserved, dedupe is the
+    // caller's set semantics (NodeRef is Hash + Ord).
+    let a3 = Employment { since_year: 2022, weight: 3 };
+    g.link(&mk(user(2), org(9), 3, &a3), &a3, 3).unwrap();
+    g.link(&mk(user(2), org(9), 4, &a3), &a3, 4).unwrap();
+    assert_eq!(g.out_nodes(&user(2)), vec![org(9), org(9)]);
+    let mut deduped = g.out_nodes(&user(2));
+    deduped.sort();
+    deduped.dedup();
+    assert_eq!(deduped, vec![org(9)]);
+}
