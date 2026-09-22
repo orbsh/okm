@@ -47,7 +47,7 @@ fn engine_matrix_core_ops() {
     }
 }
 
-/// Typed Table over each engine: the compose-key put/get path.
+/// Typed Collection over each engine: the compose-key put/get path.
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
 pub struct MKey {
     pub id: u64,

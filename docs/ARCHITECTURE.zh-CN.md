@@ -29,9 +29,9 @@ Collection::put/get/scan ───────── 两层在此汇合
 VirtualStorage (Fjall / redb / slatedb)
 ```
 
-**为什么这个拆分重要**：声明的消费者——schema 导出（`TableSchema::of`）、动态 reader（okm-dynamic）、Arrow/Parquet 桥、快照工具——需要的是 schema 的**知识**，不是它的**代码**。它们读常量。加一个消费者永远不需要碰 derive；加一个字段只需要 derive 知道多发射一条常量项。两层独立扩展，仅由 `Document` trait 的关联项耦合。
+**为什么这个拆分重要**：声明的消费者——schema 导出（`CollectionSchema::of`）、动态 reader（okm-dynamic）、Arrow/Parquet 桥、快照工具——需要的是 schema 的**知识**，不是它的**代码**。它们读常量。加一个消费者永远不需要碰 derive；加一个字段只需要 derive 知道多发射一条常量项。两层独立扩展，仅由 `Document` trait 的关联项耦合。
 
-这也是动态模式能存在的原因：`TableSchema`（从常量组装而来）是 schema 的完整、可序列化描述——Python 与 Steel 绑定从它构建 collection，全程不出现任何 Rust 类型。
+这也是动态模式能存在的原因：`CollectionSchema`（从常量组装而来）是 schema 的完整、可序列化描述——Python 与 Steel 绑定从它构建 collection，全程不出现任何 Rust 类型。
 
 ## 模块布局
 
@@ -72,7 +72,7 @@ junction 是唯一的跨集合条目：每个端点 ns 一条单向条目（双 
 
 - 无 I/O。每个生成的函数都是纯字节进字节出。
 - 无引擎知识。`Collection<S, K, R>` 在拼装点绑定引擎；derive 无法命名一个引擎。
-- 无运行期注册表。"声明即注册表"——索引 slot、合同、默认值都是常量，编译期读取或一次性组装进 `TableSchema`。
+- 无运行期注册表。"声明即注册表"——索引 slot、合同、默认值都是常量，编译期读取或一次性组装进 `CollectionSchema`。
 
 ## 后续方向
 

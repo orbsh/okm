@@ -4,7 +4,7 @@
 //! shift every later slot onto stale data), but generates NO write path
 //! (no marker struct, no `index_entries` contribution) and NO scan
 //! surface. Its stale entries stay in the engine until
-//! `Table::prune_deprecated_slots` deletes them by prefix.
+//! `Collection::prune_deprecated_slots` deletes them by prefix.
 
 use okm_core::{
     KeyEncode, TestStore, DocumentEncode, Collection, VirtualStorage,
@@ -46,7 +46,7 @@ fn deprecated_slot_is_reserved_and_not_written() {
 fn prune_deletes_only_deprecated_prefix() {
     // A legacy database had slot-1 entries from before the declaration
     // was deprecated; simulate one by writing directly at slot 1 — on a
-    // store handed to the Table AFTER seeding (TestStore::clone is a deep
+    // store handed to the Collection AFTER seeding (TestStore::clone is a deep
     // copy, so the seeded entry lands in the table's own engine).
     let mut store = TestStore::slatedb_mem();
     let stale = [

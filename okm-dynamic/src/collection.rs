@@ -1,12 +1,12 @@
 //! DynamicCollection — a runtime-typed table facade over VirtualStorage.
 //!
 //! The typed `Collection<S, K, R>` binds document/key types at compile time; this
-//! facade binds them at runtime through a `TableSchema` + declared
+//! facade binds them at runtime through a `CollectionSchema` + declared
 //! `AccessMethod`s. Put/get/delete/scan produce and consume the same
 //! bytes as the derive (codec shared with the typed path, byte equality
 //! locked by the cross tests).
 //!
-//! Single-writer only (same contract as `Table`): `&mut self` puts, the
+//! Single-writer only (same contract as `Collection`): `&mut self` puts, the
 //! engine arbitrates cross-process exclusion.
 //!
 //! Capability scope (ADR-0022): subscribe stays excluded; reduce and
@@ -19,7 +19,7 @@ use okm_core::storage::VirtualStorage;
 
 use crate::index::{delete_entries, index_entries, scan_access_method, AccessMethod};
 use crate::reduce::{BoundReduce, ReduceSpec};
-use crate::{decode_payload, encode_payload, TableSchema, ValueMap};
+use crate::{decode_payload, encode_payload, CollectionSchema, ValueMap};
 
 /// Codec errors surfaced as strings (dynamic callers are host-language
 /// bridges — error values, not typed hierarchies).
@@ -32,7 +32,7 @@ fn codec<E: std::fmt::Display>(e: E) -> String {
 /// two-instance data/meta model guarantees that across planes).
 pub struct DynamicCollection<S: VirtualStorage> {
     store: S,
-    schema: TableSchema,
+    schema: CollectionSchema,
     ns: Vec<u8>,
     indexes: Vec<AccessMethod>,
     reduces: Vec<BoundReduce>,
@@ -44,7 +44,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
     /// discriminate within). Slots on the access methods are caller-
     /// allocated (1-based, unique per table) — mirroring declaration
     /// order in the typed path.
-    pub fn new(store: S, ns: u16, schema: TableSchema, indexes: Vec<AccessMethod>) -> Self {
+    pub fn new(store: S, ns: u16, schema: CollectionSchema, indexes: Vec<AccessMethod>) -> Self {
         Self::with_reduces(store, ns, schema, indexes, Vec::new())
     }
 
@@ -54,7 +54,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
     pub fn with_reduces(
         store: S,
         ns: u16,
-        schema: TableSchema,
+        schema: CollectionSchema,
         indexes: Vec<AccessMethod>,
         reduces: Vec<ReduceSpec>,
     ) -> Self {
@@ -87,7 +87,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
         }
     }
 
-    pub fn schema(&self) -> &TableSchema {
+    pub fn schema(&self) -> &CollectionSchema {
         &self.schema
     }
 
@@ -98,6 +98,51 @@ impl<S: VirtualStorage> DynamicCollection<S> {
 
     pub fn indexes(&self) -> &[AccessMethod] {
         &self.indexes
+    }
+
+    /// Declare an access method at runtime (binding-time registration,
+    /// ADR-0022: the host language registers its callables after the
+    /// table exists). The slot must be unique and non-zero — a collision
+    /// is a caller bug surfaced as an error, not silently merged.
+    pub fn declare_index(&mut self, index: AccessMethod) -> Result<(), String> {
+        if index.slot == 0 || self.indexes.iter().any(|i| i.slot == index.slot) {
+            return Err(format!(
+                "access method slot {} must be unique and non-zero",
+                index.slot
+            ));
+        }
+        self.indexes.push(index);
+        Ok(())
+    }
+
+    /// Declare a reduce group at runtime (binding-time registration).
+    /// Slot rule mirrors `declare_index`.
+    pub fn declare_reduce(&mut self, spec: crate::ReduceSpec) -> Result<(), String> {
+        if spec.slot == 0 || self.reduces.iter().any(|r| r.spec.slot == spec.slot) {
+            return Err(format!(
+                "reduce slot {} must be unique and non-zero",
+                spec.slot
+            ));
+        }
+        self.reduces.push(crate::BoundReduce::new(spec));
+        Ok(())
+    }
+
+    /// A reduce group's entry key for a group-field value map (read-side
+    /// probe: the caller names the GROUP fields, same rule as the
+    /// Rust-side `reduce_get` probe).
+    pub fn reduce_entry_key(
+        &self,
+        _ns: u16,
+        group_values: &ValueMap,
+    ) -> Result<Vec<u8>, String> {
+        // The first registered reduce owns this probe shape (single-reduce
+        // tables; multi-reduce probes go through BoundReduce directly).
+        let reduce = self
+            .reduces
+            .first()
+            .ok_or_else(|| "no reduce registered".to_string())?;
+        reduce.entry_key(&self.schema, &self.ns, group_values)
     }
 
     fn primary_key(&self, pkey: &[u8]) -> Vec<u8> {
@@ -184,15 +229,24 @@ impl<S: VirtualStorage> DynamicCollection<S> {
     /// The reduce calling discipline, one direction per call site: fold
     /// (add = true, a document entering the groups) or unfold (add = false,
     /// a stored document leaving them). Each group is a full
-    /// get → callable → put against the same engine instance.
+    /// get → callable → put against the same engine instance. A missing
+    /// group entry is seeded from the logic (`ReduceLogic::seed`, the
+    /// `Default::default()` counterpart) before the fold.
     fn apply_reduces(&mut self, document: &ValueMap, add: bool) -> Result<(), String> {
         for reduce in &self.reduces {
             let ek = reduce.entry_key(&self.schema, &self.ns, document)?;
-            let mut acc = self.store.get(&ek).unwrap_or_default();
+            let mut acc = match self.store.get(&ek) {
+                Some(bytes) => bytes,
+                // Seed only on the fold arm: an unfold hitting a missing
+                // entry is a discipline violation (nothing was folded),
+                // not a zero group — surfaced by the callable, not here.
+                None if add => reduce.spec.logic.seed(),
+                None => return Ok(()),
+            };
             if add {
-                (reduce.spec.fold)(&mut acc, document)?;
+                reduce.spec.logic.fold(&mut acc, document)?;
             } else {
-                (reduce.spec.unfold)(&mut acc, document)?;
+                reduce.spec.logic.unfold(&mut acc, document)?;
             }
             self.store.put(ek, acc);
         }

@@ -49,7 +49,7 @@ VirtualStorage (Fjall / redb / slatedb)
 ```
 
 **Why the split matters**: consumers of the declaration — the schema
-export (`TableSchema::of`), the dynamic reader (okm-dynamic), the
+export (`CollectionSchema::of`), the dynamic reader (okm-dynamic), the
 Arrow/Parquet bridge, snapshot tooling — need *knowledge* of the
 schema, not its code. They read the constants. Adding a consumer never
 requires touching the derive; adding a field requires only that the
@@ -57,7 +57,7 @@ derive knows how to emit one more constant entry. The two layers are
 independently extensible, coupled only by the `Document` trait's
 associated items.
 
-This is also why the dynamic mode can exist at all: `TableSchema`
+This is also why the dynamic mode can exist at all: `CollectionSchema`
 (assembled from the constants) is a complete, serializable description
 of the schema — the Python and Steel bindings build collections from
 it without any Rust type in sight.
@@ -122,7 +122,7 @@ make the fast path fast.
   assembly site; the derive cannot name one.
 - No runtime registry. "The declaration IS the registry" — index
   slots, contracts, and defaults are constants read at compile time or
-  assembled into `TableSchema` once.
+  assembled into `CollectionSchema` once.
 
 ## Where things go next
 

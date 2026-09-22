@@ -1,8 +1,8 @@
 //! okm-dynamic — schema-driven codec for embedded-language Actors
 //! (ADR-0010 PLAN "dynamic codec").
 //!
-//! Host-independent core: given a [`TableSchema`] (exported from Rust by
-//! `okm-core::schema::TableSchema::of`) and a plain value tree, encode
+//! Host-independent core: given a [`CollectionSchema`] (exported from Rust by
+//! `okm-core::schema::CollectionSchema::of`) and a plain value tree, encode
 //! and decode the exact bytes the Rust derive would — cross-language
 //! byte equality is locked by tests in the binding crates.
 //!
@@ -31,7 +31,7 @@ mod index;
 mod collection;
 mod reduce;
 
-pub use okm_core::schema::{FieldSchema, TableSchema};
+pub use okm_core::schema::{FieldSchema, CollectionSchema};
 pub use okm_core::field::FieldType;
 
 // NOTE (v1 scope): nested key segments are NOT supported by the dynamic
@@ -45,7 +45,7 @@ pub use encode::{encode_key, encode_payload};
 pub use index::{index_entries, scan_access_method, AccessMethod, AccessMethodKind, Admits, FuncDerive};
 pub use collection::DynamicCollection;
 pub use graph::{DynEdge, Graph};
-pub use reduce::{scan_reduces, reduce_get, AccOp, BoundReduce, ReduceSpec};
+pub use reduce::{scan_reduces, reduce_get, ReduceLogic, ReduceLogicObj, BoundReduce, ReduceSpec};
 
 use std::collections::BTreeMap;
 

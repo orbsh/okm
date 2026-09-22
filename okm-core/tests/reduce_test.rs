@@ -1,5 +1,5 @@
 //! 跨行预聚合集成测试：`#[ok_reduce(Logic { group(...) })]` 声明 →
-//! derive 生成 `Reduce` impl + Document hook；Table::put/delete 读改写。
+//! derive 生成 `Reduce` impl + Document hook；Collection::put/delete 读改写。
 //! 覆盖：计数+求和复合 acc 的可逆往返、delete_by_pkey 同一路径、
 //! 同 group 多次 fold 累积、scan_reduces 全组扫描、entry 布局
 //! `[ns 2B][slot 1B][group 段]`（slot 续接索引计数器）。

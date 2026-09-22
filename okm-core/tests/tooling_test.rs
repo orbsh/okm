@@ -1,5 +1,5 @@
 //! Tooling interfaces (PLAN Phase 4): schema export and the
-//! Parquet snapshot round trip (export → import through `Table::put`).
+//! Parquet snapshot round trip (export → import through `Collection::put`).
 
 use okm_core::{FieldDesc, FieldType, KeyEncode, TestStore, Document, DocumentEncode, Collection, parquet_io};
 

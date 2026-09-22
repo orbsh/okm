@@ -2,7 +2,7 @@
 //! key type, and a document type. `put` writes the primary key (slot 0) and one
 //! entry per access method in the same store instance, so atomicity holds
 //! within a single engine; cross-ns atomicity is the store instance's
-//! boundary, never the Table's. Index entries derive from the document payload
+//! boundary, never the Collection's. Index entries derive from the document payload
 //! (indexed + includes fields live there), so put and delete are both
 //! document-shaped.
 

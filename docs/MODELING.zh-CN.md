@@ -283,7 +283,7 @@ t.delete(&key);                                   // 移除 slot 0 + 全部索�
 - 未知名字在这里是**正常输入**（外部数据、MQ payload）；「未知字段拒绝」
   纪律只适用于声明路径的 typed 解码器。
 - 声明字段可索引；动态字段不可（名字是运行期数据）。
-- schema 导出（`TableSchema`，serde 在 `schema-serde` feature 后）驱动
+- schema 导出（`CollectionSchema`，serde 在 `schema-serde` feature 后）驱动
   嵌入式语言读取器的动态 codec——Python（PyO3）与 Steel binding 在
   `bindings/`，与 Rust derive 字节一致（交叉测试锁定）。版本默认值迁移
   在动态读路径同样生效：字面量 `#[ok_default]` 随 schema 走。
@@ -345,7 +345,7 @@ pub struct User {
 - 尾部追加是加字段的唯一合法方式：读取方认识但字节里找不到的字段必然在段尾（header 的 `hot_len` 标出热段边界；cold TLV 帧缺席就是不在）。中途插入会改变既有字段的位置 = 布局变更 = version 递增 + 清库重建，绝不静默。
 - 惰性迁移：旧记录保持旧格式，升级发生在读取时的内存里。未读到的行永不消耗写带宽。
 
-dynamic codec（Python/Steel 的 schema 驱动编解码）从 `TableSchema` 镜像同一规则——字段默认值随 schema 走，动态读取器执行同样的迁移语义。
+dynamic codec（Python/Steel 的 schema 驱动编解码）从 `CollectionSchema` 镜像同一规则——字段默认值随 schema 走，动态读取器执行同样的迁移语义。
 
 ### Schema 稳定性测试
 

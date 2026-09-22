@@ -1,6 +1,6 @@
 //! ADR-0010 Phase 7 end-to-end: RemoteStore (sender, `impl VirtualStorage`)
 //! → mpsc channel (reference transport) → NestStorage (receiver, declared
-//! prefix) → TestStore (the real engine). Covers the whole Table write
+//! prefix) → TestStore (the real engine). Covers the whole Collection write
 //! path surviving remoteness: primary + index entries in one frame, one
 //! receiver WAL commit per batch, prefix isolation between two hosts.
 //!

@@ -59,7 +59,7 @@ fn shard_table_via_bare_host_lands_on_its_ns_segment() {
 
     // Layout: the shard's own `[ns 2B][slot][key]` bytes pass through
     // the bare host untouched — the table's keys scan back exactly as a
-    // local Table on this engine would have written them. (The engine's
+    // local Collection on this engine would have written them. (The engine's
     // map itself is unreachable by design: hosts own the only handles,
     // and the sender-side view is the contract.)
     let keys = t.scan_keys();

@@ -395,7 +395,7 @@ key bare in the tail) recorded in ADR-0005.
       partial indexes and reduce become binding-implementable under the
       deployment-shape contract (see the ADR-0022 checklist item). Core
       shipped 2026-09-12: `okm-core::schema::
-      TableSchema::of` (structured export, serde behind `schema-serde`) +
+      CollectionSchema::of` (structured export, serde behind `schema-serde`) +
       `okm-dynamic` crate (Value tree; encode/decode mirroring the derive's
       byte layout; version gate + unknown-tag skip); cross-language byte
       equality locked by dynamic_cross_test. Shipped 2026-09-17: version-
@@ -408,11 +408,11 @@ key bare in the tail) recorded in ADR-0005.
       version_default_migration_on_dynamic_read (v2 bytes through a v3
       schema). Shipped 2026-09-17: PyO3 binding (`bindings/okm-python`,
       maturin, pyo3 0.25) — `Schema.from_json` parses the serde'd
-      TableSchema; `encode_key`/`encode_payload` coerce Python scalars to
+      CollectionSchema; `encode_key`/`encode_payload` coerce Python scalars to
       each field's schema kind (Python ints carry no width); `decode_*`
       return dicts. Verified both directions byte-identical with the Rust
       derive (verify.py: Rust→Python read + Python→Rust decode). Also
-      fixed: TableSchema Serialize omitted `slots` while Deserialize
+      fixed: CollectionSchema Serialize omitted `slots` while Deserialize
       required it (round-trip asymmetry). Steel binding shipped 2026-09-17
       (`bindings/okm-steel`, steel-core 0.7): `register(vm)` installs
       `okm-schema-from-json!` / `okm-schema-version!` / `okm-encode-key!` /
@@ -460,9 +460,22 @@ key bare in the tail) recorded in ADR-0005.
       engine instance); byte-transparent acc (host owns the layout, seed
       on first fold). Locked by dynamic_semantics_test.rs: func fan-out
       sweep, partial admission flip, full discipline sequence, and
-      reduce-entry layout parity against the Rust-side key format. The
-      Python/Steel callable registration surfaces (`Schema.add_func_index`,
-      `Schema.add_reduce`) remain open binding-layer work.
+      reduce-entry layout parity against the Rust-side key format. Shipped
+      2026-09-22 (continued): the reduce side converged to ONE host object —
+      `okm-dynamic::ReduceLogic` trait (seed/fold/unfold; `seed` is the
+      `ReduceCodec: Default` counterpart, called when a group entry is
+      missing on the fold arm; unfold hitting a missing entry is a discipline
+      violation, not a zero group) replacing the free-callable pair and the
+      empty-bytes seed hack. Python binding (`bindings/okm-python`): `Table`
+      class wrapping DynamicCollection (embedded mode, Python-owned engine)
+      with `add_func_index(slot, func)` / `add_partial_index(slot, fields,
+      admits)` / `add_reduce(slot, group_fields, logic)` binding-time
+      registration — Python callables bridge into the Rust-side trait
+      objects (GIL acquired per call); put/get/delete/scan/reduce_get/
+      scan_reduces exposed, schema-coerced. Locked by
+      accept_embedded.py: registration → put folds → overwrite no drift →
+      cross-group overwrite → delete unfolds → func fan-out sweep →
+      partial admission flip. Steel callable surface remains open work.
 - [x] Multi-tenancy: receiver-side prefix only — a remote OKM instance is
       one application = one domain model = one ns; to the receiver it is
       just another prefix. No app_id layer inside OKM, no multi-level ns
@@ -545,7 +558,7 @@ encoding, one derive family. No separate document storage mode.
       Not a separate mechanism: index entries derive from `R::FIELDS`
       (declared) only; `set_object` routes unknown names to the dynamic
       segment, so nothing undeclared can reach a slot ≥ 16.
-- [x] Schema export: TableSchema extended with SlotMap (fixed-role slot
+- [x] Schema export: CollectionSchema extended with SlotMap (fixed-role slot
       numbers) and the ObjValueTypeSchema tag enum for the dynamic
       reader (okm-dynamic / Python side). Shipped 2026-09-16.
 - [x] Read/delete API over the two slots: `get` returns the typed struct
@@ -670,6 +683,9 @@ reference semantics, not container shape:
 Document-oriented naming, one sweep before crates.io:
 
 - `Table` -> `Collection` (module table.rs -> document.rs); `EdgeTable` -> `Edge`.
+- `TableSchema` -> `CollectionSchema` (2026-09-22, same sweep carried out:
+  the structured schema export is a per-collection declaration; the serde
+  JSON field shapes are unchanged in kind, consumers rename the type).
 - `ObjEncode` -> `DocumentEncode`; trait `Row` -> `Document` (assoc types too).
 - API verbs: `get`/`put`/`delete` (typed, unchanged) + `get_document` /
   `put_document` / `delete_document` (both slots) + `get_fields` /
@@ -954,7 +970,7 @@ offsets).
       Breaking wire change (LEB128 payloads re-encoded); downstream (aura,
       k10r) declared zero VarInt fields. Acceptance: byte-order test over
       width boundaries passed, hex lock updated.
-- [ ] P2.5 — KDL as the TableSchema serialization (low priority). The
+- [ ] P2.5 — KDL as the CollectionSchema serialization (low priority). The
       dynamic mode's schema serialization is JSON today (serde, bindings
       consume it). KDL would replace it for hand-written declaration
       consistency with the KDL config family; ~150-200 lines of manual

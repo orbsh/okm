@@ -9,7 +9,7 @@
 //! ADR-0022 scope applies identically: encode/decode plus the
 //! callable-implementable semantics (reduce, func/partial indexes via
 //! host callables); subscribe stays excluded.
-use okm_core::schema::TableSchema;
+use okm_core::schema::CollectionSchema;
 use okm_dynamic::{decode_key, decode_payload, encode_key, encode_payload, Value, ValueMap};
 use steel::{SteelVal, SteelVal::{BoolV, IntV, NumV, StringV}};
 use steel::rvals::SteelHashMap;
@@ -94,7 +94,7 @@ fn value_to_steel(v: &Value) -> SteelVal {
 }
 
 fn find_field<'a>(
-    schema: &'a TableSchema,
+    schema: &'a CollectionSchema,
     name: &str,
 ) -> Result<&'a okm_core::schema::FieldSchema, String> {
     schema
@@ -107,7 +107,7 @@ fn find_field<'a>(
 }
 
 /// Hash-map (steel `hash?`) → ValueMap with kind coercion.
-fn steel_hash_to_map(schema: &TableSchema, v: &SteelVal) -> Result<ValueMap, String> {
+fn steel_hash_to_map(schema: &CollectionSchema, v: &SteelVal) -> Result<ValueMap, String> {
     let SteelVal::HashMapV(map) = v else {
         return Err(format!("values must be a hash (define/hash), got {v:?}"));
     };
@@ -143,14 +143,14 @@ fn err(e: okm_dynamic::CodecError) -> Result<SteelVal, String> {
 /// - `(okm-decode-key! schema bytes)` → hash
 /// - `(okm-decode-payload! schema bytes)` → hash
 thread_local! {
-    static SCHEMAS: std::cell::RefCell<std::collections::HashMap<u64, std::sync::Arc<TableSchema>>> =
+    static SCHEMAS: std::cell::RefCell<std::collections::HashMap<u64, std::sync::Arc<CollectionSchema>>> =
         std::cell::RefCell::new(std::collections::HashMap::new());
 }
 fn next_schema_id() -> u64 {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
     std::sync::atomic::AtomicU64::fetch_add(&NEXT, 1, std::sync::atomic::Ordering::Relaxed)
 }
-fn with_schema<T>(id: isize, f: impl FnOnce(&TableSchema) -> T) -> Result<T, String> {
+fn with_schema<T>(id: isize, f: impl FnOnce(&CollectionSchema) -> T) -> Result<T, String> {
     SCHEMAS.with(|r| {
         r.borrow()
             .get(&(id as u64))
@@ -158,7 +158,7 @@ fn with_schema<T>(id: isize, f: impl FnOnce(&TableSchema) -> T) -> Result<T, Str
             .ok_or_else(|| format!("okm: unknown schema handle {id}"))
     })
 }
-fn get_schema(id: isize) -> Result<std::sync::Arc<TableSchema>, String> {
+fn get_schema(id: isize) -> Result<std::sync::Arc<CollectionSchema>, String> {
     SCHEMAS.with(|r| {
         r.borrow()
             .get(&(id as u64))
@@ -173,7 +173,7 @@ fn steel_hash_to_map_for(id: isize, vals: SteelVal) -> Result<ValueMap, String> 
 
 pub fn register(vm: &mut Engine) {
     vm.register_fn("okm-schema-from-json!", |json: String| -> Result<SteelVal, String> {
-        let schema: TableSchema = serde_json::from_str(&json)
+        let schema: CollectionSchema = serde_json::from_str(&json)
             .map_err(|e| format!("bad schema json: {e}"))?;
         let id = next_schema_id();
         SCHEMAS.with(|r| r.borrow_mut().insert(id, Arc::new(schema)));

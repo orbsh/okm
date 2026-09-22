@@ -28,7 +28,7 @@ The old reasoning assumed semantics require Rust compile-time code and therefore
 
 ### Route: host-language callables, binding-time registration
 
-The declaration-side information of every semantic surface is already data (associated consts): `KvIndex`'s `SLOT`/`FIELDS`/`INCLUDES`/`KEY_PREFIX`, `Reduce`'s `SLOT`/`GROUP`, and `TableSchema` + `SlotMap` export all of it. The only thing that was ever Rust code is the semantic function itself — and that is exactly the part a binding can supply in its own language:
+The declaration-side information of every semantic surface is already data (associated consts): `KvIndex`'s `SLOT`/`FIELDS`/`INCLUDES`/`KEY_PREFIX`, `Reduce`'s `SLOT`/`GROUP`, and `CollectionSchema` + `SlotMap` export all of it. The only thing that was ever Rust code is the semantic function itself — and that is exactly the part a binding can supply in its own language:
 
 - **Function indexes**: `Schema.add_func_index(name, fn, includes=[])` — the callable maps a decoded document to an encoded value or an iterator of values (multi-entry fan-out, the inverted-index regime). Partial-index `admits` is the same shape: a predicate callable.
 - **Reduce**: `Schema.add_reduce(name, group_fields, fold, unfold, acc_codec)` — the callables implement `ReduceLogic`'s fold/unfold in the host language; the accumulator codec is a declared byte-layout rule (u64 = 8B BE is the seed; compound accumulators ride the byte-transparent form, same as Rust's `Vec<u8>` escape hatch).

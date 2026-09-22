@@ -20,7 +20,7 @@ pub struct UserV3 {
 
 fn main() {
     // 1) schema export
-    let schema = okm_core::schema::TableSchema::of::<UserKey, UserV3>();
+    let schema = okm_core::schema::CollectionSchema::of::<UserKey, UserV3>();
     println!("SCHEMA_JSON {}", serde_json::to_string(&schema).unwrap());
 
     // 2) Rust writes a row (payload + key bytes)

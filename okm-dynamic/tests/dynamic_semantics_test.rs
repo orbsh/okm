@@ -5,13 +5,13 @@
 //!   silent accumulator drift, so every discipline arm is locked here.
 //! - Byte-layout parity: func-index and reduce entries share the exact
 //!   layout of the Rust-side derive, verified against a typed
-//!   `Table` with the equivalent declarations landing in the same ns.
+//!   `Collection` with the equivalent declarations landing in the same ns.
 //! - Purity failure mode is documented, not engineered around: the acc
 //!   callable contract (`unfold(fold(a, x)) = a`) is the implementor's
 //!   obligation, same as the Rust-side `ReduceLogic`.
 
 use okm_core::{DocumentEncode, KeyEncode, TestStore, VirtualStorage};
-use okm_core::schema::TableSchema;
+use okm_core::schema::CollectionSchema;
 use okm_dynamic::{
     AccessMethod, AccessMethodKind, BoundReduce, DynamicCollection, ReduceSpec, Value, ValueMap,
 };
@@ -87,8 +87,8 @@ mod rust_reduce {
     }
 }
 
-fn schema() -> TableSchema {
-    TableSchema::of::<UserKey, User>()
+fn schema() -> CollectionSchema {
+    CollectionSchema::of::<UserKey, User>()
 }
 
 fn values(org_id: u32, user_id: u64, level: u32, score: u16, name: &str) -> ValueMap {
@@ -119,18 +119,27 @@ fn func_tags(document: &ValueMap) -> Result<Vec<Vec<u8>>, String> {
     }
 }
 
-fn acc_fold(acc: &mut Vec<u8>, _document: &ValueMap) -> Result<(), String> {
-    let mut n = if acc.is_empty() { 0 } else { be_u64(acc) };
-    n += 1;
-    *acc = n.to_be_bytes().to_vec();
-    Ok(())
-}
+/// The reduce logic as ONE object — the mirror of the Rust-side
+/// `ReduceLogic` + `ReduceCodec: Default` pair. `seed` is the
+/// `Default::default()` counterpart (8B BE zero for a u64 counter).
+struct GroupCount;
 
-fn acc_unfold(acc: &mut Vec<u8>, _document: &ValueMap) -> Result<(), String> {
-    let n = be_u64(acc);
-    let n = n.checked_sub(1).ok_or("accumulator underflow: unfold without fold")?;
-    *acc = n.to_be_bytes().to_vec();
-    Ok(())
+impl okm_dynamic::ReduceLogic for GroupCount {
+    fn seed(&self) -> Vec<u8> {
+        0u64.to_be_bytes().to_vec()
+    }
+    fn fold(&self, acc: &mut Vec<u8>, _document: &ValueMap) -> Result<(), String> {
+        let n = be_u64(acc) + 1;
+        *acc = n.to_be_bytes().to_vec();
+        Ok(())
+    }
+    fn unfold(&self, acc: &mut Vec<u8>, _document: &ValueMap) -> Result<(), String> {
+        let n = be_u64(acc)
+            .checked_sub(1)
+            .ok_or("accumulator underflow: unfold without fold")?;
+        *acc = n.to_be_bytes().to_vec();
+        Ok(())
+    }
 }
 
 fn be_u64(b: &[u8]) -> u64 {
@@ -167,8 +176,7 @@ fn dynamic_table(store: TestStore) -> DynamicCollection<TestStore> {
         vec![ReduceSpec {
             slot: 0x2001,
             group_fields: vec!["level".into()],
-            fold: Box::new(acc_fold),
-            unfold: Box::new(acc_unfold),
+            logic: Box::new(GroupCount),
         }],
     )
 }
@@ -177,8 +185,7 @@ fn reduce_entry_key(t: &DynamicCollection<TestStore>, level: u32) -> Vec<u8> {
     let reduce = BoundReduce::new(ReduceSpec {
         slot: 0x2001,
         group_fields: vec!["level".into()],
-        fold: Box::new(acc_fold),
-        unfold: Box::new(acc_unfold),
+        logic: Box::new(GroupCount),
     });
     let mut m = BTreeMap::new();
     m.insert("level".into(), Value::U32(level));

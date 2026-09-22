@@ -186,7 +186,7 @@ pub trait Document: Sized + Clone {
     /// builders, snapshot tooling; ADR-0007).
     const FIELDS: &'static [crate::model::field::FieldDesc] = &[];
     /// Const-constructible field defaults, name-keyed (literal
-    /// `#[ok_default]` only). Consumed by `TableSchema::of` to fill
+    /// `#[ok_default]` only). Consumed by `CollectionSchema::of` to fill
     /// `FieldSchema::default` — the dynamic reader's version-migration
     /// data. Empty when no field declares a literal default.
     const DEFAULTS: &'static [(&'static str, crate::model::field::DefaultValueConst)] = &[];

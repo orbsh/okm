@@ -2,7 +2,7 @@
 //! with schema-declared access methods. The lock that keeps the dynamic
 //! path honest is byte equality with the typed path:
 //!
-//! - a `DynamicCollection` and a typed `Table` writing the same document into the
+//! - a `DynamicCollection` and a typed `Collection` writing the same document into the
 //!   same ns must land byte-identical entries (primary + index), so a
 //!   dynamic scan sees typed writes and vice versa;
 //! - access-method scans return the matching rows' primary keys;
@@ -14,7 +14,7 @@
 //! dynamic_semantics_test.rs is the calling-discipline acceptance.
 
 use okm_core::{KeyEncode, DocumentEncode, Collection, TestStore, VirtualStorage};
-use okm_core::schema::TableSchema;
+use okm_core::schema::CollectionSchema;
 use okm_dynamic::{AccessMethod, DynamicCollection, Value, ValueMap};
 use std::collections::BTreeMap;
 
@@ -36,8 +36,8 @@ pub struct User {
     pub name: String, // cold TLV (tag = declaration index 2)
 }
 
-fn schema() -> TableSchema {
-    TableSchema::of::<UserKey, User>()
+fn schema() -> CollectionSchema {
+    CollectionSchema::of::<UserKey, User>()
 }
 
 fn values(org_id: u32, user_id: u64, level: u32, score: u16, name: &str) -> ValueMap {

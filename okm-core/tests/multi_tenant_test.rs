@@ -107,7 +107,7 @@ fn internal_tenant_sharding_is_a_plain_key_field() {
     assert_eq!(s.scan_suffix(b"t1:"), vec![b"doc:1".to_vec()]);
 }
 
-/// The document-level write path through a hosted tenant: Table semantics
+/// The document-level write path through a hosted tenant: Collection semantics
 /// (primary + index entries) land inside the tenant's prefix segment.
 #[test]
 fn table_write_path_inside_tenant_segment() {

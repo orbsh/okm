@@ -441,7 +441,7 @@ t.delete(&key);                                   // remove slot 0 + index entri
   declared path.
 - Declared fields are indexable; dynamic fields are not (their names are
   runtime data).
-- The schema export (`TableSchema`, serde behind `schema-serde`) drives
+- The schema export (`CollectionSchema`, serde behind `schema-serde`) drives
   the dynamic codec for embedded-language readers — Python (PyO3) and
   Steel bindings live in `bindings/`, byte-identical with the Rust
   derive (cross tests lock this). Version-default migration works on the
@@ -549,7 +549,7 @@ pub struct User {
   in memory on read. Unread rows never burn write bandwidth.
 
 The dynamic codec (schema-driven encoders in Python/Steel) mirrors this
-rule from `TableSchema` — per-field defaults travel with the schema so
+rule from `CollectionSchema` — per-field defaults travel with the schema so
 the dynamic reader applies the same migration semantics.
 
 ### Schema stability tests

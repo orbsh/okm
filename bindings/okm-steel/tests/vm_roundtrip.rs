@@ -1,7 +1,7 @@
 //! Steel VM end-to-end: register the okm functions, run a scheme program
 //! that parses the schema, encodes a payload, decodes it back, and checks
 //! the values — mirroring the PyO3 verify.py round trip.
-use okm_core::{KeyEncode, DocumentEncode, Document, schema::TableSchema};
+use okm_core::{KeyEncode, DocumentEncode, Document, schema::CollectionSchema};
 use steel::steel_vm::engine::Engine;
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
@@ -33,7 +33,7 @@ fn hex(h: &str) -> Vec<u8> {
 
 #[test]
 fn steel_vm_roundtrip() {
-    let schema = TableSchema::of::<UserKey, UserV3>();
+    let schema = CollectionSchema::of::<UserKey, UserV3>();
     let schema_json = serde_json::to_string(&schema).unwrap();
     let row = UserV3 { level: 9, score: 500, name: "alice".into(), tier: 2, region: "us".into() };
     let key = UserKey { org_id: 1, user_id: 2 };
