@@ -482,6 +482,57 @@ impl<S: VirtualStorage, E: KvGraph> Graph<S, E> {
             .map(|sfx| u64::from_be_bytes(sfx.as_slice().try_into().unwrap()))
             .collect()
     }
+
+    /// The NEIGHBOR nodes one hop out (untyped, 0x5): edge ids resolved
+    /// to their far endpoints. Edge ids remain the identity currency —
+    /// this is a convenience composition over `out_edges` + `get_edge`
+    /// (zero new wire), for the traversal shape where only nodes
+    /// matter. Parallel edges collapse into repeated refs; dedupe if
+    /// the caller wants a set (`NodeRef` is Hash + Ord for exactly
+    /// this), or keep the repeats as multiplicity.
+    pub fn out_nodes(&self, src: &NodeRef) -> Vec<NodeRef> {
+        self.out_edges(src)
+            .iter()
+            .filter_map(|id| self.get_edge(*id))
+            .map(|b| b.dst)
+            .collect()
+    }
+
+    /// Neighbor nodes one hop in (untyped, 0x6) — the in-direction
+    /// mirror of [`out_nodes`](Self::out_nodes).
+    pub fn in_nodes(&self, dst: &NodeRef) -> Vec<NodeRef> {
+        self.in_edges(dst)
+            .iter()
+            .filter_map(|id| self.get_edge(*id))
+            .map(|b| b.src)
+            .collect()
+    }
+
+    /// Kind-qualified neighbors (0x7/0x8): `typed_out`/`typed_in`
+    /// resolved to far endpoints. Unknown kinds scan empty, like their
+    /// edge-id counterparts.
+    pub fn typed_out_nodes(&mut self, kind: &str, src: &NodeRef) -> Vec<NodeRef> {
+        let ids = self.typed_out(kind, src);
+        self.endpoints(ids, |b| &b.dst)
+    }
+
+    /// Kind-qualified in-neighbors (0x8) — the in-direction mirror of
+    /// [`typed_out_nodes`](Self::typed_out_nodes).
+    pub fn typed_in_nodes(&mut self, kind: &str, dst: &NodeRef) -> Vec<NodeRef> {
+        let ids = self.typed_in(kind, dst);
+        self.endpoints(ids, |b| &b.src)
+    }
+
+    /// Shared resolve step of the *_nodes helpers: ids → bodies → far
+    /// endpoint. A dead id (concurrent unlink between scan and fetch)
+    /// drops out silently — neighbors are a scan snapshot, not a
+    /// transaction.
+    fn endpoints(&self, ids: Vec<u64>, side: impl Fn(&EdgeBody) -> &NodeRef) -> Vec<NodeRef> {
+        ids.iter()
+            .filter_map(|id| self.get_edge(*id))
+            .map(|b| side(&b).clone())
+            .collect()
+    }
 }
 
 #[cfg(test)]

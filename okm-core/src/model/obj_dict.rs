@@ -173,6 +173,16 @@ mod tests {
                 .map(|(k, _)| k[prefix.len()..].to_vec())
                 .collect()
         }
+        fn scan_range(&self, begin: &[u8], end: Option<&[u8]>) -> Vec<Vec<u8>> {
+            let map = self.0.lock().unwrap();
+            map.range(begin.to_vec()..)
+                .take_while(|(k, _)| match end {
+                    Some(end) => k.as_slice() < end,
+                    None => true,
+                })
+                .map(|(k, _)| k.clone())
+                .collect()
+        }
     }
 
     impl crate::SharedVirtualStorage for Engine {
