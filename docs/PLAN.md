@@ -261,6 +261,19 @@ to full 16 bits). The trigger is "edge needs a new discriminator", never
       stays one declaration away, not a write-path tax on every table.
       Tests in `reduce_test.rs`; docs pass INTEGRATION/MODELING.
 
+### Reduce hooks receive the decoded key (ADR-0024, accepted 2026-09-22 — to implement)
+
+- [ ] `ReduceLogic` hooks become `fold/unfold(acc, key: &Self::Key, item)` —
+      the write path already holds the decoded `&Key` at every call site
+      (`__okm_apply_reduces(store, key, ..)`); a parameter pass, never a
+      decode. GROUP may name key fields (two-source rule per
+      `KvIndex::encode_named`; name in both sources = compile error).
+      okm-dynamic `ReduceLogic` + Python `add_reduce` callables follow in
+      the same batch (dynamic key = decoded key-field map, not bytes).
+      Breaking: all in-tree fold/unfold impls take the new parameter.
+      Retires the mirror-field pattern (aura MaxInstanceId → ADR-0023
+      `MaxKeep` over a key field).
+
 ## Phase 6 — Commanded RMW: `Table::upsert_with`
 
 User-complemented RMW next to the declarative one (reduce). Same underlying
