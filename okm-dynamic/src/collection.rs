@@ -9,8 +9,11 @@
 //! Single-writer only (same contract as `Table`): `&mut self` puts, the
 //! engine arbitrates cross-process exclusion.
 //!
-//! Capability ceiling (permanent): no reduce, no subscribe, no function
-//! indexes — exactly-once logic stays Rust-side compile-time.
+//! Capability scope (ADR-0022): subscribe stays excluded; reduce and
+//! function/partial indexes are binding-implementable via host-language
+//! callables under the deployment-shape contract (embedded: in-process
+//! calling discipline; remote: operation payloads carry semantic
+//! results, single-writer-per-group).
 
 use okm_core::storage::VirtualStorage;
 
