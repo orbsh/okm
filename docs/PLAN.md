@@ -831,8 +831,9 @@ encoding). The lazy mirror's fetch-back captures
 `SharedVirtualStorage::shared_handle()` — a view of the SAME physical
 engine across the iterator boundary, never a deep copy. Remote path
 rides the SAME OP_SCAN frame — bounds encoded in the value segment,
-zero wire change; its iter form buffers (recorded future work, not an
-obligation).
+zero wire change; its iter form buffers — NOW SCHEDULED (2026-09-22):
+streaming the remote path is the next wire-layer work item; design
+drafted as ADR-0021 (see the checklist item below).
 
 Engine survey (see ADR-0020 for the full table): fjall `Keyspace::range`
 (lazy Iter, owned 'static), redb `range_owned` (OwnedRange, 'static via
@@ -857,6 +858,14 @@ panics -> adapters return empty). All native iterators are owned and
       range = the interval form of physical WHERE, filter = in-memory)
       + core-stance table row; MODELING "Rows at runtime" cross-reference
       (en + zh).
+- [ ] Remote streaming scan — ADR-0021 draft landed (2026-09-22):
+      `OP_SCAN_STREAM` (tag 4) — paged request (entries, 0xFF = legacy
+      buffered shape), self-contained value-carrying chunks, sender-owned
+      cursor via exclusive-begin; receiver stays stateless, unknown tag
+      falls back to buffered `OP_SCAN`. Waiting on: frame-shape review.
+      Then: okm-wire codec + hex tests, `RemoteStore::scan_range_iter`
+      lazy `ScanIter::Remote` arm, `next_back` stays buffered (no
+      descending-page use case).
 
 ## Wire encoding refinements (execution order, 2026-09-17)
 
