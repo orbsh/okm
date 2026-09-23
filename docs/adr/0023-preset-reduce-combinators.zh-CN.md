@@ -2,7 +2,9 @@
 
 > **Languages:** [English](0023-preset-reduce-combinators.md)（主文档） · [中文](0023-preset-reduce-combinators.zh-CN.md)
 
-**状态**：已接受（2026-09-22）；实现待排期，见 Consequences
+**状态**：已接受（2026-09-22）；2026-09-23 落地，附修订如下
+
+> **修订（2026-09-23，实现时）。**（1）最终集合为 `Count`、`Sum`、`HighWater`、`LowWater`——裸 `Max<F>`/`Min<F>` 刻意不提供：`u64` 累加器内真正可逆的 un-extreme unfold 需要第二结构恢复前一个极值，这正是预置组合子要消灭的仪式；HighWater/LowWater 名字即真实语义（两者 unfold 均为 no-op——watermark 契约）。（2）不分组模式：省略 group 块（`#[ok_reduce(Count)]`）即声明全表单一组，entry key 为 `[ns 2B][slot 2B]`、无 group 段。（3）`LowWater` 的累加器是 `LowAcc`（newtype，`Default` 即单位元 `u64::MAX`）：typed 读-改-写以 `Default::default()` 播种 acc，单位元必须住在类型里，而非 fold 时的特判。
 
 ## 背景
 
@@ -24,7 +26,7 @@ reduce 是 okm 的跨文档预计算面（ADR-0008）：用户实现 `ReduceLogi
 - **`Sum<F>`**——每组一个数值 payload 字段的总和。Acc `u64`；fold 相加；unfold 相减。
 - 声明骑在既有属性上：`#[ok_reduce(Count { group(user_id) })]` /
   `#[ok_reduce(Max::<F> { group(type_id) })]`——derive 把组合子解析到它的 Reduce impl，与解析用户写的 logic 类型完全一样。无新属性、无新 wire 格式、无新 slot 规则（slot 继续按声明顺序计数器，ADR-0016）。
-- **幂等恒等变体是独立名字，不是开关**：`MaxKeep<F>`（unfold = no-op——用于分配标识符的 watermark）与 `Max<F>` 是不同的组合子。unfold 的歧义在声明处用**名字**解决，schema 里可见，而不是埋在类型参数里的布尔。
+- **幂等恒等变体是独立名字，不是开关**：`HighWater<F>`（unfold = no-op——用于分配标识符的 watermark）与 `Max<F>` 是不同的组合子。unfold 的歧义在声明处用**名字**解决，schema 里可见，而不是埋在类型参数里的布尔。
 - 组合子住在 `okm_core`（`model/reduce.rs` 或相邻模块）——是库代码，遵守与 `ReduceLogic` 本身相同的无 `VirtualStorage`、引擎无关纪律。derive 除接受这些名字外无改动。
 
 ### 这里不裁决的
@@ -35,8 +37,8 @@ reduce 是 okm 的跨文档预计算面（ADR-0008）：用户实现 `ReduceLogi
 ## 诚实的语义代价
 
 - **`Sum` 在覆盖写下不满足顺序无关**（浮点）；预置只收整数（`u64` payload 字段）。浮点求和仍是用户手写 `ReduceLogic`（用户可以在那里选补偿策略），不做静默有损的预置。
-- **`Max`/`Min` 的 unfold 本性有损**（删除当前最大值无法在不引入第二结构的情况下恢复前一个）。因此 `Max<F>`/`Min<F>` 要求可逆恒等式读法：组里存的值是上/下界，删除后可能合法地低于剩余行的真实极值。需要精确的消费者用 `MaxKeep` 语义或手写 logic 配一个 `Count` 检测过期。这是契约既有可逆性条款的具体化，不是新让步——但预置让它更容易被无意踩中，所以写明。
-- **key 侧量的镜像字段问题由 ADR-0024 解决**（reduce 钩子接收解码后的 key；GROUP 可引用 key 字段）——记录在该 ADR，因为那是钩子契约变更，不是组合子关切。0024 落地后，`Max<F>`/`MaxKeep<F>` 按名聚合 key 字段，镜像模式退役。
+- **`Max`/`Min` 的 unfold 本性有损**（删除当前最大值无法在不引入第二结构的情况下恢复前一个）。因此 （若提供的话）`Max<F>`/`Min<F>` 要求可逆恒等式读法：组里存的值是上/下界，删除后可能合法地低于剩余行的真实极值。需要精确的消费者用手写 logic（或接受有损上界读法） 配一个 `Count` 检测过期。这是契约既有可逆性条款的具体化，不是新让步——但预置让它更容易被无意踩中，所以写明。
+- **key 侧量的镜像字段问题由 ADR-0024 解决**（reduce 钩子接收解码后的 key；GROUP 可引用 key 字段）——记录在该 ADR，因为那是钩子契约变更，不是组合子关切。0024 落地后，`Max<F>`/`HighWater<F>` 按名聚合 key 字段，镜像模式退役。
 
 ## Consequences
 
