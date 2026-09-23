@@ -90,6 +90,8 @@ impl BoundReduce {
     ) -> Result<Vec<u8>, String> {
         let mut buf = Vec::new();
         for name in &self.spec.group_fields {
+            // Two-source resolution, KEY WINS (ADR-0024): a name present
+            // in both key and payload schemas encodes from the key.
             let from_key = schema.key_fields.iter().any(|f| &f.name == name);
             let f = if from_key {
                 schema

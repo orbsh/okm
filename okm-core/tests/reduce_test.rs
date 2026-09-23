@@ -103,6 +103,80 @@ fn fold_unfold_roundtrip_is_exact() {
     assert_eq!(all.len(), 2);
 }
 
+/// TopicKey：多字段 key —— group 直接命名 key 字段（ADR-0024）。
+#[derive(okm_core::KeyEncode, Clone, PartialEq, Debug, Default)]
+pub struct TopicKey {
+    pub forum: u32,
+    pub id: u64,
+}
+
+/// Topic 行：GROUP 命名 key 字段 `forum`，fold 聚合 key 字段 `id`
+/// 的最大值（MaxInstanceId 形态，ADR-0024 §Consequences）。
+#[derive(DocumentEncode, Clone, PartialEq, Debug)]
+#[ok_ref(TopicKey)]
+#[ok_reduce(TopicStats { group(forum) })]
+#[ok_ns(22)]
+pub struct Topic {
+    pub title_len: u32,
+}
+
+/// acc = 已见最大 key.id（0 = 空，u64 非负域内可逆 unfold：
+/// 只在删除的恰是当前最大值时回退是 Max 语义做不到的——此处 unfold
+/// 仅对非最大值行调用即可保持精确；测试只走 put/单值路径）。
+#[derive(Default, Clone, Debug, PartialEq)]
+pub struct MaxId(pub u64);
+
+impl ReduceCodec for MaxId {
+    fn encode_acc(&self) -> Vec<u8> {
+        self.0.to_be_bytes().to_vec()
+    }
+    fn decode_acc(bytes: &[u8]) -> Self {
+        MaxId(u64::from_be_bytes(bytes.try_into().unwrap()))
+    }
+}
+
+pub struct TopicStats;
+
+impl ReduceLogic for TopicStats {
+    type Document = Topic;
+    type Acc = MaxId;
+    fn fold(acc: &mut MaxId, key: &TopicKey, _item: &Topic) {
+        acc.0 = acc.0.max(key.id);
+    }
+    fn unfold(_acc: &mut MaxId, _key: &TopicKey, _item: &Topic) {
+        // Max 不可逆；本测试不删除，保持 unfold 空实现。
+    }
+}
+
+#[test]
+fn group_and_fold_use_key_fields() {
+    let mut t = <Topic as Document>::collection(TestStore::slatedb_mem());
+
+    let k1 = TopicKey { forum: 7, id: 100 };
+    let k2 = TopicKey { forum: 7, id: 42 };
+    let k3 = TopicKey { forum: 8, id: 5 };
+    let r = Topic { title_len: 3 };
+    t.put(&k1, &r);
+    t.put(&k2, &r);
+    t.put(&k3, &r);
+
+    // group 段 = key 字段 forum 的编码（u32 4B BE），而非任何 payload。
+    let ek = <TopicStats as Reduce>::entry_key(<Topic as Document>::NS_PREFIX, &k1, &r);
+    assert_eq!(ek.len(), 4 + 4);
+    assert_eq!(&ek[4..], &7u32.to_be_bytes());
+
+    // fold 聚合 key 字段 id：forum 7 → max(100, 42) = 100。
+    let acc = okm_core::reduce_get::<_, TopicStats>(t.store(), <Topic as Document>::NS_PREFIX, &k1, &r)
+        .expect("group exists");
+    assert_eq!(acc, MaxId(100));
+
+    // forum 8 独立成组。
+    let acc8 =
+        okm_core::reduce_get::<_, TopicStats>(t.store(), <Topic as Document>::NS_PREFIX, &k3, &r)
+            .expect("group exists");
+    assert_eq!(acc8, MaxId(5));
+}
+
 #[test]
 fn entry_layout_is_ns_slot_group() {
     let mut t = <Post as Document>::collection(TestStore::slatedb_mem());
