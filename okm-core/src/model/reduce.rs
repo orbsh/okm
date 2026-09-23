@@ -38,6 +38,18 @@ impl ReduceCodec for u64 {
     }
 }
 
+/// Signed accumulator (Sum over signed/Quant fixed-point fields): the
+/// wire is the same 8-byte BE — two's complement IS the BE encoding.
+impl ReduceCodec for i64 {
+    fn encode_acc(&self) -> Vec<u8> {
+        self.to_be_bytes().to_vec()
+    }
+    fn decode_acc(bytes: &[u8]) -> Self {
+        assert!(bytes.len() == 8, "i64 accumulator must be 8 bytes BE");
+        i64::from_be_bytes(bytes.try_into().unwrap())
+    }
+}
+
 impl ReduceCodec for Vec<u8> {
     fn encode_acc(&self) -> Vec<u8> {
         self.clone()

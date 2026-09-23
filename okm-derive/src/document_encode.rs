@@ -496,21 +496,28 @@ fn emit_reduces(schema: &DocumentSchema) -> (TS2, TS2) {
             };
             if let Some(fm) = &field_marker {
                 let field = red.field.as_ref().unwrap();
-                // Field source: resolve the declared name by the two-source
-                // walk and widen to u64; a non-integer field panics with
-                // its name at the first fold (compile-time checking is
-                // impossible — the key struct is a separate expansion).
-                impls.extend(quote! {
-                    #[doc = concat!("Marker for the `", #field, "` aggregate source (ADR-0023 preset).")]
-                    pub struct #fm;
-                    impl ::okm_core::ReduceFieldSource for #fm {
-                        type Doc = #row_name;
-                        fn reduce_field_u64(
-                            key: &<#row_name as ::okm_core::Document>::Key,
-                            document: &#row_name,
-                        ) -> u64 {
-                            let mut buf = Vec::new();
-                            <#row_name>::__okm_encode_group_named(key, document, &[#field], &mut buf);
+                // The ACC TYPE follows the FIELD (ADR-0023 amendment):
+                // the declared payload field's type drives the readback
+                // branch and the accumulator. Unsigned integers widen to
+                // u64; signed integers accumulate as i64 (two's
+                // complement BE wire); Quant<f64, P> accumulates in its
+                // exact fixed-point i64 wire. A field unknown to this
+                // document's payload resolves through the two-source walk
+                // (a KEY field): the key encoding carries no sign
+                // information, so it reads back unsigned by width —
+                // signed key fields are outside the preset contract. A
+                // non-integer field panics with its name at the first
+                // fold (compile-time checking is impossible — the key
+                // struct is a separate expansion).
+                let field_ty = schema
+                    .fields
+                    .iter()
+                    .find(|f| f.ident.to_string() == *field)
+                    .map(|f| f.ty_str.clone());
+                let (acc_ty, readback, readback_u64) = match field_ty.as_deref() {
+                    Some("u8") | Some("u16") | Some("u32") | Some("u64") | None => (
+                        quote! { u64 },
+                        quote! {
                             match buf.len() {
                                 1 => buf[0] as u64,
                                 2 => u16::from_be_bytes(buf.as_slice().try_into().unwrap()) as u64,
@@ -521,7 +528,95 @@ fn emit_reduces(schema: &DocumentSchema) -> (TS2, TS2) {
                                     #field
                                 ),
                             }
+                        },
+                        None,
+                    ),
+                    Some("i8") | Some("i16") | Some("i32") | Some("i64") => (
+                        quote! { i64 },
+                        quote! {
+                            match buf.len() {
+                                1 => buf[0] as i8 as i64,
+                                2 => i16::from_be_bytes(buf.as_slice().try_into().unwrap()) as i64,
+                                4 => i32::from_be_bytes(buf.as_slice().try_into().unwrap()) as i64,
+                                8 => i64::from_be_bytes(buf.as_slice().try_into().unwrap()),
+                                other => panic!(
+                                    "ok_reduce preset: field `{}` must be an integer (1/2/4/8-byte) field, got {other} bytes",
+                                    #field
+                                ),
+                            }
+                        },
+                        // Watermark presets (u64 comparison domain) reject a
+                        // signed field at the first fold — the sign lives in
+                        // the wire's top bit, an unsigned readback would lie.
+                        Some(quote! {
+                            panic!(
+                                "ok_reduce preset: HighWater/LowWater require an unsigned field; `{}` is signed — watermarks are an unsigned-domain contract",
+                                #field
+                            )
+                        }),
+                    ),
+                    Some(t) if t.starts_with("Quant<") => (
+                        // Quant<f64, P>: the payload wire IS a fixed-point
+                        // i64 — summing in the wire domain is exact and
+                        // reversible; the reader interprets the acc with
+                        // the same precision P.
+                        quote! { i64 },
+                        quote! {
+                            if buf.len() == 8 {
+                                i64::from_be_bytes(buf.as_slice().try_into().unwrap())
+                            } else {
+                                panic!(
+                                    "ok_reduce preset: field `{}` must be an 8-byte Quant field, got {} bytes",
+                                    #field,
+                                    buf.len()
+                                )
+                            }
+                        },
+                        Some(quote! {
+                            panic!(
+                                "ok_reduce preset: HighWater/LowWater require an unsigned field; `{}` is Quant — watermarks are an unsigned-domain contract",
+                                #field
+                            )
+                        }),
+                    ),
+                    Some(other) => panic!(
+                        "ok_reduce[{}]: field `{}` has type `{}` — Sum supports unsigned/signed integers and Quant; other shapes stay user-written ReduceLogic",
+                        red.ident, field, other
+                    ),
+                };
+                let u64_method = match readback_u64 {
+                    Some(panic_body) => quote! {
+                        fn reduce_field_u64(
+                            _key: &<#row_name as ::okm_core::Document>::Key,
+                            _document: &#row_name,
+                        ) -> u64 {
+                            #panic_body
                         }
+                    },
+                    None => quote! {
+                        fn reduce_field_u64(
+                            key: &<#row_name as ::okm_core::Document>::Key,
+                            document: &#row_name,
+                        ) -> u64 {
+                            Self::reduce_field_acc(key, document)
+                        }
+                    },
+                };
+                impls.extend(quote! {
+                    #[doc = concat!("Marker for the `", #field, "` aggregate source (ADR-0023 preset).")]
+                    pub struct #fm;
+                    impl ::okm_core::ReduceFieldSource for #fm {
+                        type Doc = #row_name;
+                        type Acc = #acc_ty;
+                        fn reduce_field_acc(
+                            key: &<#row_name as ::okm_core::Document>::Key,
+                            document: &#row_name,
+                        ) -> Self::Acc {
+                            let mut buf = Vec::new();
+                            <#row_name>::__okm_encode_group_named(key, document, &[#field], &mut buf);
+                            #readback
+                        }
+                        #u64_method
                     }
                 });
             }
