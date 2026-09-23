@@ -461,6 +461,39 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> Vec<FieldSchema> {
                 quote! { 8 },
                 Some(quote! { ::okm_core::FieldType::U64 }),
             ),
+            // Signed integers: the wire is the same fixed-width BE bytes
+            // as the unsigned kind (two's complement IS the BE encoding);
+            // only the Rust-side decode type differs. The shared FieldType
+            // kind keeps the wire layout honest — the sign lives in the
+            // reader's interpretation, not in new wire kinds.
+            "i64" => (
+                quote! { buf.extend_from_slice(&self.#id.to_be_bytes()); },
+                quote! {{ let v = i64::from_be_bytes(b[offset..offset+8].try_into().unwrap()); offset += 8; v }},
+                quote! { 8 },
+                quote! { 8 },
+                Some(quote! { ::okm_core::FieldType::U64 }),
+            ),
+            "i32" => (
+                quote! { buf.extend_from_slice(&self.#id.to_be_bytes()); },
+                quote! {{ let v = i32::from_be_bytes(b[offset..offset+4].try_into().unwrap()); offset += 4; v }},
+                quote! { 4 },
+                quote! { 4 },
+                Some(quote! { ::okm_core::FieldType::U32 }),
+            ),
+            "i16" => (
+                quote! { buf.extend_from_slice(&self.#id.to_be_bytes()); },
+                quote! {{ let v = i16::from_be_bytes(b[offset..offset+2].try_into().unwrap()); offset += 2; v }},
+                quote! { 2 },
+                quote! { 2 },
+                Some(quote! { ::okm_core::FieldType::U16 }),
+            ),
+            "i8" => (
+                quote! { buf.push(self.#id as u8); },
+                quote! {{ let v = b[offset] as i8; offset += 1; v }},
+                quote! { 1 },
+                quote! { 1 },
+                Some(quote! { ::okm_core::FieldType::U8 }),
+            ),
             "u32" => (
                 quote! { buf.extend_from_slice(&self.#id.to_be_bytes()); },
                 quote! {{ let v = u32::from_be_bytes(b[offset..offset+4].try_into().unwrap()); offset += 4; v }},

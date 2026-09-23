@@ -269,7 +269,13 @@ to full 16 bits). The trigger is "edge needs a new discriminator", never
       is `LowAcc` (Default = identity `u64::MAX`) — the typed RMW seeds
       accs with `Default::default()`, a bare u64 cannot carry the
       minimum's identity. Tests in `preset_reduce_test.rs` (grouped +
-      no-group + key-field aggregation via ADR-0024).
+ no-group + key-field aggregation via ADR-0024). Sum's acc type
+ follows the field: unsigned → u64, signed (i8–i64) → i64,
+ Quant<f64, P> → its exact fixed-point i64 wire (never a bare
+ float); this required signed-integer payload encoding in the
+ derive (same fixed-width BE wire, no new FieldType kinds).
+ Watermark presets stay unsigned-only (KeyEncode carries no sign;
+ the watermark contract is an unsigned-domain contract).
 
 ### Reduce hooks receive the decoded key (ADR-0024, accepted 2026-09-22 — shipped 2026-09-23)
 

@@ -4,7 +4,7 @@
 
 **状态**：已接受（2026-09-22）；2026-09-23 落地，附修订如下
 
-> **修订（2026-09-23，实现时）。**（1）最终集合为 `Count`、`Sum`、`HighWater`、`LowWater`——裸 `Max<F>`/`Min<F>` 刻意不提供：`u64` 累加器内真正可逆的 un-extreme unfold 需要第二结构恢复前一个极值，这正是预置组合子要消灭的仪式；HighWater/LowWater 名字即真实语义（两者 unfold 均为 no-op——watermark 契约）。（2）不分组模式：省略 group 块（`#[ok_reduce(Count)]`）即声明全表单一组，entry key 为 `[ns 2B][slot 2B]`、无 group 段。（3）`LowWater` 的累加器是 `LowAcc`（newtype，`Default` 即单位元 `u64::MAX`）：typed 读-改-写以 `Default::default()` 播种 acc，单位元必须住在类型里，而非 fold 时的特判。
+> **修订（2026-09-23，实现时）。**（1）最终集合为 `Count`、`Sum`、`HighWater`、`LowWater`——裸 `Max<F>`/`Min<F>` 刻意不提供：`u64` 累加器内真正可逆的 un-extreme unfold 需要第二结构恢复前一个极值，这正是预置组合子要消灭的仪式；HighWater/LowWater 名字即真实语义（两者 unfold 均为 no-op——watermark 契约）。（2）不分组模式：省略 group 块（`#[ok_reduce(Count)]`）即声明全表单一组，entry key 为 `[ns 2B][slot 2B]`、无 group 段。（3）`LowWater` 的累加器是 `LowAcc`（newtype，`Default` 即单位元 `u64::MAX`）：typed 读-改-写以 `Default::default()` 播种 acc，单位元必须住在类型里，而非 fold 时的特判。（4）**Sum 的累加器类型跟字段走**：无符号 payload 字段按 u64 累加，有符号 payload 字段（i8–i64）按 i64，`Quant<f64, P>` 在其精确的定点 i64 wire 域内累加——绝不用裸浮点（次序无关性）。这要求 derive 支持有符号整数 payload 编码（wire 与无符号同宽同 BE，two's complement 即 BE 编码——不新增 FieldType kind）。watermark 组合子保持无符号域：`KeyEncode` 的 wire 不携带符号，且 watermark 契约本就是无符号域契约。
 
 ## 背景
 

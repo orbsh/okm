@@ -9,7 +9,7 @@
 //! (`__OkmReduce_<Doc>_<n>`); tests name those types via
 //! `okm_core::reduce::scan_reduces` / `Reduce::entry_key` generics.
 
-use okm_core::{Document, DocumentEncode, KeyEncode, Reduce, ReduceCodec, ReduceLogic, TestStore};
+use okm_core::{Document, DocumentEncode, KeyEncode, Quant, Reduce, ReduceCodec, ReduceLogic, TestStore};
 
 /// 分组模式：按 forum 分组，四种 preset 各占一个 slot。
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
@@ -156,4 +156,60 @@ fn preset_aggregates_key_field() {
     // acc 的 u64 BE wire 形状（bindings 的字节契约）。
     let bytes = <u64 as ReduceCodec>::encode_acc(&acc);
     assert_eq!(bytes, 90u64.to_be_bytes());
+}
+
+/// Sum 的 acc 类型跟字段走（ADR-0023 修订）：signed 字段 i64 累加
+/// （含负数精确可逆），Quant<f64,P> 字段定点 wire 域累加。
+#[derive(okm_core::KeyEncode, Clone, PartialEq, Debug, Default)]
+pub struct LedgerKey {
+    pub id: u64,
+}
+
+#[derive(DocumentEncode, Clone, PartialEq, Debug)]
+#[ok_ref(LedgerKey)]
+#[ok_ns(26)]
+#[ok_reduce(Sum(delta) { group(account) })]
+#[ok_reduce(Sum(amount) { group(account) })]
+pub struct Entry {
+    pub account: u64,
+    pub delta: i64,
+    pub amount: Quant<2>,
+}
+
+#[test]
+fn sum_acc_type_follows_field() {
+    let mut t = <Entry as Document>::collection(TestStore::slatedb_mem());
+    let k = |id: u64| LedgerKey { id };
+    let r_pos = Entry { account: 7, delta: 100, amount: Quant::<2>::new(12.5) };
+    let r_neg = Entry { account: 7, delta: -30, amount: Quant::<2>::new(-2.0) };
+    t.put(&k(1), &r_pos);
+    t.put(&k(2), &r_neg);
+
+    let ns = <Entry as Document>::NS_PREFIX;
+    let gb = 7u64.to_be_bytes().to_vec();
+    // i64 acc：100 + (−30) = 70，负数参与求和精确。
+    let sum_i = okm_core::reduce::scan_reduces::<_, __OkmReduce_Entry_0>(t.store(), ns)
+        .into_iter()
+        .find(|(sfx, _)| sfx.as_slice() == gb.as_slice())
+        .map(|(_, a)| a);
+    assert_eq!(sum_i, Some(70i64));
+    // Quant<2> 定点 wire 累加：1250 + (−200) = 1050（= 10.50）。
+    let sum_q = okm_core::reduce::scan_reduces::<_, __OkmReduce_Entry_1>(t.store(), ns)
+        .into_iter()
+        .find(|(sfx, _)| sfx.as_slice() == gb.as_slice())
+        .map(|(_, a)| a);
+    assert_eq!(sum_q, Some(1050i64));
+
+    // 可逆：删 r_neg 后两者回到 100 / 1250。
+    t.delete_by_pkey(&k(2));
+    let sum_i = okm_core::reduce::scan_reduces::<_, __OkmReduce_Entry_0>(t.store(), ns)
+        .into_iter()
+        .find(|(sfx, _)| sfx.as_slice() == gb.as_slice())
+        .map(|(_, a)| a);
+    let sum_q = okm_core::reduce::scan_reduces::<_, __OkmReduce_Entry_1>(t.store(), ns)
+        .into_iter()
+        .find(|(sfx, _)| sfx.as_slice() == gb.as_slice())
+        .map(|(_, a)| a);
+    assert_eq!(sum_i, Some(100i64));
+    assert_eq!(sum_q, Some(1250i64));
 }
