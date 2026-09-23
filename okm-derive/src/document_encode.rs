@@ -458,9 +458,90 @@ fn emit_reduces(schema: &DocumentSchema) -> (TS2, TS2) {
     let mut calls = quote! {};
     for (n, red) in schema.reduces.iter().enumerate() {
         let slot_lit = proc_macro2::Literal::u16_unsuffixed(REDUCE_SLOT_BASE + n as u16);
-        let logic = syn::parse_str::<syn::Type>(&red.logic)
-            .unwrap_or_else(|e| panic!("ok_reduce[{}]: bad logic type `{}`: {e}", red.ident, red.logic));
         let group: Vec<&String> = red.group.iter().collect();
+
+        // Preset combinators (ADR-0023): `Count`/`Sum(f)`/`HighWater(f)`/
+        // `LowWater(f)` expand to a LOCAL zero-size logic type whose
+        // `ReduceLogic` impl forwards to the okm-core preset (a foreign
+        // generic type cannot receive a local trait impl — coherence),
+        // keeping the accumulator semantics in core: written, reviewed,
+        // tested once. Field-based presets additionally get a marker
+        // type whose generated `ReduceFieldSource` impl resolves the
+        // declared field by the two-source rule (KEY WINS, ADR-0024).
+        // User-written logic names pass through unchanged.
+        const PRESETS: &[&str] = &["Count", "Sum", "HighWater", "LowWater"];
+        let is_preset = PRESETS.contains(&red.logic.as_str());
+        let red_doc = &red.logic;
+        let marker = quote::format_ident!("__OkmReduce_{}_{}", row_name, n);
+        let field_marker: Option<syn::Ident> = red.field.as_ref().map(|f| {
+            quote::format_ident!("__OkmReduceSource_{}_{}_{}", row_name, n, f)
+        });
+        let logic: TS2 = if is_preset {
+            quote! { #marker }
+        } else {
+            let ty: syn::Type = syn::parse_str(&red.logic).unwrap_or_else(|e| {
+                panic!("ok_reduce[{}]: bad logic type `{}`: {e}", red.ident, red.logic)
+            });
+            quote! { #ty }
+        };
+
+        if is_preset {
+            let forward = match red.logic.as_str() {
+                "Count" => quote! { ::okm_core::Count::<#row_name> },
+                other => {
+                    let fm = field_marker.as_ref().unwrap();
+                    let preset = quote::format_ident!("{}", other);
+                    quote! { ::okm_core::#preset::<#fm> }
+                }
+            };
+            if let Some(fm) = &field_marker {
+                let field = red.field.as_ref().unwrap();
+                // Field source: resolve the declared name by the two-source
+                // walk and widen to u64; a non-integer field panics with
+                // its name at the first fold (compile-time checking is
+                // impossible — the key struct is a separate expansion).
+                impls.extend(quote! {
+                    #[doc = concat!("Marker for the `", #field, "` aggregate source (ADR-0023 preset).")]
+                    pub struct #fm;
+                    impl ::okm_core::ReduceFieldSource for #fm {
+                        type Doc = #row_name;
+                        fn reduce_field_u64(
+                            key: &<#row_name as ::okm_core::Document>::Key,
+                            document: &#row_name,
+                        ) -> u64 {
+                            let mut buf = Vec::new();
+                            <#row_name>::__okm_encode_group_named(key, document, &[#field], &mut buf);
+                            match buf.len() {
+                                1 => buf[0] as u64,
+                                2 => u16::from_be_bytes(buf.as_slice().try_into().unwrap()) as u64,
+                                4 => u32::from_be_bytes(buf.as_slice().try_into().unwrap()) as u64,
+                                8 => u64::from_be_bytes(buf.as_slice().try_into().unwrap()),
+                                other => panic!(
+                                    "ok_reduce preset: field `{}` must be an integer (1/2/4/8-byte) field, got {other} bytes",
+                                    #field
+                                ),
+                            }
+                        }
+                    }
+                });
+            }
+            // Local forwarding logic: semantics live in the core preset.
+            impls.extend(quote! {
+                #[doc = concat!("ADR-0023 preset `", #red_doc, "` (local forward marker).")]
+                pub struct #marker;
+                impl ::okm_core::ReduceLogic for #marker {
+                    type Document = #row_name;
+                    type Acc = <#forward as ::okm_core::ReduceLogic>::Acc;
+                    fn fold(acc: &mut Self::Acc, key: &<#row_name as ::okm_core::Document>::Key, item: &#row_name) {
+                        <#forward as ::okm_core::ReduceLogic>::fold(acc, key, item);
+                    }
+                    fn unfold(acc: &mut Self::Acc, key: &<#row_name as ::okm_core::Document>::Key, item: &#row_name) {
+                        <#forward as ::okm_core::ReduceLogic>::unfold(acc, key, item);
+                    }
+                }
+            });
+        }
+
         impls.extend(quote! {
             impl ::okm_core::Reduce for #logic {
                 const SLOT: ::okm_core::index::Slot = #slot_lit;

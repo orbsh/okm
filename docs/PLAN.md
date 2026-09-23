@@ -251,15 +251,25 @@ to full 16 bits). The trigger is "edge needs a new discriminator", never
       no wrapper needed). Landed 2026-09-11 (docs/query-recipes.md,
       query-recipes.zh-CN.md; README links it).
 
-### Preset reduce combinators (ADR-0023, accepted 2026-09-22 — to implement)
+### Preset reduce combinators (ADR-0023, accepted 2026-09-22 — shipped 2026-09-23)
 
-- [ ] `okm_core` ships `Count`, `Max<F>`, `Min<F>`, `Sum<F>`, `MaxKeep<F>` as
-      generic `ReduceLogic` impls; `#[ok_reduce(Count { group(..) })]` resolves
-      by name — no new attribute/wire/slot rules. Integer-only (u64); unfold
-      ambiguity (watermark vs shrinkable extreme) resolved by NAME (`MaxKeep`
-      vs `Max`), visible in the schema. NOT built into the engine: row count
-      stays one declaration away, not a write-path tax on every table.
-      Tests in `reduce_test.rs`; docs pass INTEGRATION/MODELING.
+- [x] `okm_core` ships `Count`, `Sum`, `HighWater`, `LowWater` as generic
+      `ReduceLogic` impls; `#[ok_reduce(Count { group(..) })]` resolves
+      by name — no new attribute/wire/slot rules. Integer-only (u64);
+      unfold ambiguity (watermark vs shrinkable extreme) resolved by
+      NAME: only the HighWater/LowWater variants ship — a true un-max needs a second
+      structure (exactly the ceremony presets retire), so bare `Max`/
+      `Min` are deliberately absent (ADR amendment). The whole-table
+      single-group mode drops the group block: `#[ok_reduce(Count)]` →
+      entry `[ns][slot]`, no group segment. NOT built into the engine:
+      row count stays one declaration away, not a write-path tax on
+      every table. Semantics in core (`model/presets.rs`), the derive
+      emits a local forward marker + field source (coherence: a foreign
+      generic cannot receive the local `Reduce` impl). `LowWater`'s acc
+      is `LowAcc` (Default = identity `u64::MAX`) — the typed RMW seeds
+      accs with `Default::default()`, a bare u64 cannot carry the
+      minimum's identity. Tests in `preset_reduce_test.rs` (grouped +
+      no-group + key-field aggregation via ADR-0024).
 
 ### Reduce hooks receive the decoded key (ADR-0024, accepted 2026-09-22 — shipped 2026-09-23)
 
@@ -277,7 +287,7 @@ to full 16 bits). The trigger is "edge needs a new discriminator", never
       Tests: `reduce_test.rs::group_and_fold_use_key_fields` (key-field
       group + key-field fold).
       Retires the mirror-field pattern (aura MaxInstanceId → ADR-0023
-      `MaxKeep` over a key field).
+      `HighWater` over a key field).
 
 ## Phase 6 — Commanded RMW: `Table::upsert_with`
 

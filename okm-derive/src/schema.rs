@@ -209,37 +209,70 @@ pub(crate) fn parse_reduce_attr(attr: &syn::Attribute) -> ReduceDecl {
         Some(TokenTree::Ident(id)) => id.clone(),
         t => panic!("ok_reduce: expected reduce name Ident, got {t:?}"),
     };
-    let group_body = match toks.get(1) {
-        Some(TokenTree::Group(g)) if g.delimiter() == Delimiter::Brace => g.stream(),
-        t => panic!("ok_reduce[{ident}]: expected {{ group(…) }} block, got {t:?}"),
+    // Optional field argument for the preset combinators:
+    // `Sum(title_len) { group(..) }` / `HighWater(id)`. `Count` takes none.
+    let mut iter = toks.iter().skip(1).peekable();
+    let field: Option<String> = match iter.peek() {
+        Some(TokenTree::Group(g)) if g.delimiter() == Delimiter::Parenthesis => {
+            let ftoks: Vec<TokenTree> = g.stream().into_iter().collect();
+            let f = match ftoks.as_slice() {
+                [TokenTree::Ident(f)] => Some(f.to_string()),
+                _ => panic!("ok_reduce[{ident}]: expected exactly one field name in (...)"),
+            };
+            iter.next(); // consume the field-argument group
+            f
+        }
+        _ => None,
     };
-    let gtoks: Vec<TokenTree> = group_body.into_iter().collect();
-    let kw = match gtoks.first() {
-        Some(TokenTree::Ident(id)) => id.to_string(),
-        t => panic!("ok_reduce[{ident}]: expected group(...), got {t:?}"),
-    };
-    if kw != "group" {
-        panic!("ok_reduce[{ident}]: unknown key {kw} (supported: group)");
+    if field.is_some() && !matches!(ident.to_string().as_str(), "Sum" | "HighWater" | "LowWater") {
+        panic!(
+            "ok_reduce[{ident}]: field argument only applies to the preset combinators Sum/HighWater/LowWater"
+        );
     }
-    let group: Vec<String> = match gtoks.get(1) {
-        Some(TokenTree::Group(g)) if g.delimiter() == Delimiter::Parenthesis => g
-            .stream()
-            .into_iter()
-            .filter_map(|t| match t {
-                TokenTree::Ident(id) => Some(id.to_string()),
-                TokenTree::Punct(_) => None,
-                t => panic!("ok_reduce[{ident}].group: illegal token {t}"),
-            })
-            .collect(),
-        t => panic!("ok_reduce[{ident}]: expected paren group, got {t:?}"),
-    };
-    if group.is_empty() {
-        panic!("ok_reduce[{ident}]: group must not be empty — a global single-group reduce has no group key to scan by");
+    if field.is_none() && matches!(ident.to_string().as_str(), "Sum" | "HighWater" | "LowWater") {
+        panic!("ok_reduce[{ident}]: preset combinator requires a field argument, e.g. {ident}(field_name)");
     }
+    if field.is_some() && ident == "Count" {
+        panic!("ok_reduce[Count]: takes no field argument — it counts rows");
+    }
+    let group_body = match iter.next() {
+        // `{ group(…) }` block; ABSENT for the no-group (whole-table,
+        // single-group) declaration — `#[ok_reduce(Count)]` (ADR-0023).
+        Some(TokenTree::Group(g)) if g.delimiter() == Delimiter::Brace => Some(g.stream()),
+        Some(t) => panic!("ok_reduce[{ident}]: expected {{ group(…) }} block, got {t:?}"),
+        None => None,
+    };
+    let group = match group_body {
+        None => Vec::new(),
+        Some(group_body) => {
+            let gtoks: Vec<TokenTree> = group_body.into_iter().collect();
+            let kw = match gtoks.first() {
+                Some(TokenTree::Ident(id)) => id.to_string(),
+                t => panic!("ok_reduce[{ident}]: expected group(...), got {t:?}"),
+            };
+            if kw != "group" {
+                panic!("ok_reduce[{ident}]: unknown key {kw} (supported: group)");
+            }
+            let group: Vec<String> = match gtoks.get(1) {
+                Some(TokenTree::Group(g)) if g.delimiter() == Delimiter::Parenthesis => g
+                    .stream()
+                    .into_iter()
+                    .filter_map(|t| match t {
+                        TokenTree::Ident(id) => Some(id.to_string()),
+                        TokenTree::Punct(_) => None,
+                        t => panic!("ok_reduce[{ident}].group: illegal token {t}"),
+                    })
+                    .collect(),
+                t => panic!("ok_reduce[{ident}]: expected paren group, got {t:?}"),
+            };
+            group
+        }
+    };
     ReduceDecl {
         logic: ident.to_string(),
         ident,
         group,
+        field,
     }
 }
 
@@ -873,9 +906,13 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> Vec<FieldSchema> {
 /// this IR only carries the declaration (slot allocation + group fields).
 pub(crate) struct ReduceDecl {
     pub ident: syn::Ident,
-    /// The user's `ReduceLogic` impl type (the attribute's name token).
+    /// The user's `ReduceLogic` impl type (the attribute's name token),
+    /// or a preset combinator name (ADR-0023: Count/Sum/HighWater/LowWater).
     pub logic: String,
     pub group: Vec<String>,
+    /// The preset's aggregate field (`Sum(f)` / `HighWater(f)` / `LowWater(f)`);
+    /// None for `Count` and user-written logic types.
+    pub field: Option<String>,
 }
 
 /// One `#[ok_subscribe]` declaration: bare only. The event enum name comes

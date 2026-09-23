@@ -41,6 +41,7 @@ pub use model::wrappers::{Bytes, Ref, Refs, Enum, EnumTag, Offset, Quant, VarInt
 pub use model::wrappers::wire::{put_len, take_len};
 
 pub use model::reduce::{reduce_get, scan_reduces, ReduceCodec, Reduce, ReduceLogic};
+pub use model::presets::{Count, HighWater, LowAcc, LowWater, ReduceFieldSource, Sum};
 pub use model::collection::Junction;
 pub use model::junction::KvJunction;
 pub use model::graph::{EdgeBody, EdgeFact, Graph, KvGraph, NodeRef};
