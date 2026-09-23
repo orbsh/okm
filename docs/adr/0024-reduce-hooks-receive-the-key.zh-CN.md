@@ -29,7 +29,7 @@ reduce 钩子契约（ADR-0008）是 `fold(acc: &mut Acc, item: &Self::Document)
 **`ReduceLogic` 的钩子接收解码后的 key 类型化引用：`fold(acc: &mut Acc, key: &Self::Key, item: &Self::Document)`，unfold 同。GROUP 声明可以引用 key 字段；每个 group 字段从自己的来源编码（key 走 `KeyEncode`，payload 走 payload walk）——即复用 `KvIndex::encode_named` 的双源规则。**
 
 - **每个点都是引用，不是字节。** 写路径本就持有 `&Key` 与 `&Document`；钩子改动是一次参数传递，绝不是解码。（`Key::decode` 仍然只属于 index 扫描侧。）okm-dynamic 孪生侧同样传解码形态：document 本来就是 `&ValueMap`，key 按 schema 解码成 key 字段 map——绝不向宿主语言 callable 递交字节。
-- **GROUP 名字解析变双源。** `#[ok_reduce(Logic { group(a, b) })]` 可以引用 key 和 payload 字段；校验（schema.rs、okm-dynamic 的 `ReduceSpec`）撤掉 key 字段拒绝，按来源路由。字节兼容性：group 段布局规则不变——声明名按顺序、各字段定宽 BE 编码；唯一变化是**每个名字的编码器来源**。一个名字在两个来源同时存在 = 编译错误（来源歧义；「payload 静默获胜」的惯例被否——歧义不该被悄悄消解）。
+- **GROUP 名称解析变为双源。** `#[ok_reduce(Logic { group(a, b) })]` 可命名 key 和 payload 字段。字节兼容性：group 段的布局规则不变——声明名按序、每字段定宽 BE 编码；唯一差别是每个名字的 ENCODER。*修订（2026-09-23，实现时）：原定「名字同时存在于两源 = 编译错误」降级为 KEY 优先解析——key 结构体由另一次宏展开派生，DocumentEncode 在编译期看不到 key 字段名。解析落在生成的 `__okm_encode_group_named` walk（及 dynamic 侧 `group_bytes`，同一规则）。*
 - **累加器形状零改动。** `ReduceCodec`（`u64` BE、`Vec<u8>` 逃生口）不动；ADR-0023 的预置组合子按名声明聚合字段，这个名字现在可以是 key 字段——标准形状下的镜像字段模式就此消失，无需组合子层面任何特例。
 - **exactly-once 不变。** fold 仍在同一引擎锁内读-改-写里、由同一批调用点喂；多传一个已有的引用不改变原子性表面（ADR-0008 的不变量关于状态可见性，不是签名）。
 

@@ -1093,13 +1093,10 @@ pub(crate) fn parse_schema(input: DeriveInput) -> DocumentSchema {
         .filter(|a| a.path().is_ident("ok_reduce"))
         .map(parse_reduce_attr)
         .collect();
-    for red in &agg_decls {
-        for n in &red.group {
-            if !name_strs.contains(n) {
-                panic!("ok_reduce[{}]: group field `{n}` is not a document payload field", red.ident);
-            }
-        }
-    }
+    // Group-field validation note (ADR-0024): no payload-only check here —
+    // key fields are invisible at this expansion point (separate derive), so
+    // source resolution and unknown-name rejection live in the generated
+    // two-source walk (key wins on ambiguity).
 
     // #[ok_subscribe] (bare) + optional #[ok_event_enum(Alias)] — at most
     // one subscribe per document type (two declarations = one channel send per

@@ -73,11 +73,11 @@ fn emit_named_walk(schema: &DocumentSchema) -> TS2 {
         }
 
         /// Two-source named walk for reduce GROUP segments (ADR-0024):
-        /// payload names encode from `self`; key names slice the key's
-        /// full encoding by its FIELD_WIDTHS offsets (key fields are
-        /// fixed-width — the slice IS the field encoding). A name
-        /// unknown to both sources panics; a name in both is rejected at
-        /// schema build (compile-time validation site).
+        /// key names slice the key's full encoding by its FIELD_WIDTHS
+        /// offsets (key fields are fixed-width — the slice IS the field
+        /// encoding); payload names encode from `self`. A name in BOTH
+        /// sources resolves to the KEY (key wins). A name unknown to
+        /// both sources panics.
         #[allow(unused_variables, unused_mut, dead_code)]
         pub fn __okm_encode_group_named(
             key: &<Self as ::okm_core::Document>::Key,
@@ -96,10 +96,13 @@ fn emit_named_walk(schema: &DocumentSchema) -> TS2 {
             }
             let payload_fields: &[&str] = &[#(#enc_names),*];
             for n in names {
-                if payload_fields.contains(&n) {
+                if key_slices.contains_key(n) {
+                    // Ambiguous name (in key AND payload): key wins — the
+                    // same shadowing rule as the dynamic side.
+                    let (a, b) = key_slices[n];
+                    buf.extend_from_slice(&key_bytes[a..b]);
+                } else if payload_fields.contains(&n) {
                     document.__okm_encode_named(&[n], buf);
-                } else if let Some((a, b)) = key_slices.get(n) {
-                    buf.extend_from_slice(&key_bytes[*a..*b]);
                 } else {
                     panic!("unknown group field: {n}");
                 }
