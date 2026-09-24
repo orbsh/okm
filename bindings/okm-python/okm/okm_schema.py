@@ -55,6 +55,21 @@ _PRIMS = {
 }
 
 
+# Wire-type placeholders for annotations (`org_id: u32`): python has no
+# fixed-width int types, so bare strings can't be spelled bare — hosts
+# inject this module, which binds these names in the script namespace.
+# The assembler reads annotation type NAMES, so plain str objects suffice.
+u8 = "u8"
+u16 = "u16"
+u32 = "u32"
+u64 = "u64"
+int8 = "int8"
+int16 = "int16"
+int32 = "int32"
+int64 = "int64"
+bytes = "bytes"
+
+
 def _annotations(cls) -> list[tuple[str, str]]:
     """The class's own annotations as (name, type-name) pairs.
 
