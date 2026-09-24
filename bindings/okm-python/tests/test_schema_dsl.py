@@ -100,8 +100,8 @@ class IdxKey:
 
 @okm_schema.DocumentEncode
 @okm_schema.ok_ref(IdxKey)
-@okm_schema.ok_index("second", fields=("b",))
-@okm_schema.ok_index("first", fields=("a",))
+@okm_schema.ok_index("idx_b", fields=("b",))
+@okm_schema.ok_index("idx_a", fields=("a",))
 class Doc:
     a: "u32"
     b: "u32"
@@ -109,7 +109,9 @@ class Doc:
 def test_index_slots_follow_source_order():
     entry = okm_schema.assemble(Doc)
     idx = entry["indexes"]
-    assert [i["name"] for i in idx] == ["first", "second"]
+    # Source lines top→bottom: idx_b, idx_a. Stamp order is bottom-up;
+    # assemble reverses → source order.
+    assert [i["name"] for i in idx] == ["idx_b", "idx_a"]
     assert [i["slot"] for i in idx] == [okm_schema.INDEX_BASE, okm_schema.INDEX_BASE + 1]
 
 
