@@ -16,6 +16,17 @@ SQL's core value is not execution performance — it is the readability, modelin
 
 The verdict: SQL's core value is human-facing structured discipline. By holding to "code as DDL" — strongly-typed key encoding, lazy migration via versioned enums, dual-write key-pointer contracts, and hard-coded hex stability tests — OKM gains all of it at once: compile-time schema safety (the Rust compiler) + runtime performance (LSM-Tree) + zero-downtime evolution (versioned enums) + team maintainability (struct comments as documentation) + drift protection (hex tests). On schema safety it overtakes both SurrealDB (schema-less) and PostgreSQL (runtime DDL locks).
 
+## Two modes: compiled schema and declared schema
+
+OKM carries ONE storage engine contract and ONE key layout, reached by two schema carriers:
+
+- **Static mode (code generation)** — Rust types + `#[derive(...)]` (okm-derive). The compiler IS the schema validator: key widths, offsets, and index declarations are compile-time facts; `Collection<S, K, R>` is the assembly point. For Rust hosts and wasm actors compiled from Rust source.
+- **Dynamic mode (schema data)** — a `CollectionSchema` value (exported from the static side by `okm_core::schema::CollectionSchema::of`, or authored as data) + okm-dynamic. `DynamicCollection` takes a run-time ns and the schema value; encode/decode mirrors the derive byte-for-byte. For embedded-language actors (Python/Steel via the bindings), hosts assembling collections at run time (aura ADR-0026: one real ns per actor type, allocated from a registry).
+
+The two modes produce IDENTICAL bytes for the same declaration: same header discipline, same key encoding, same payload frames, same dictionary behavior. Data written by a compiled collection reads back through the dynamic one and vice versa — mode is a property of the WRITER, not the data. External API is aligned on purpose (put/get/scan/delete + document map), so application code shapes do not fork.
+
+Division of labor across crates: okm-core = the shared runtime (engine contract, `Collection`, document/dynamic-segment machinery, reduce, subscribe); okm-derive = static codegen; okm-dynamic = the schema-driven codec and `DynamicCollection`; okm-wire = the wire format for remote engines; okm-query/stream/graph/vector/ngram = consumer-side operators above the core.
+
 ## Physical gains
 
 - **85% prefix compression**: a 14-byte string prefix becomes 2 bytes of numeric namespace.

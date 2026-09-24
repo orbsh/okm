@@ -1055,20 +1055,19 @@ offsets).
 Execution order was P3 -> P3.5 -> P1 -> P2: P1/P2 produce new wire
 bytes; doing them after P3 means hex locks change once, not twice.
 
-## Phase 7 — Runtime-ns dynamic collections (ADR-0025)
+## Phase 7 — Two-mode record (ADR-0025, 2026-09-24)
 
-- [x] `DynamicCollection<S>`: runtime `[ns 2B]` constructor, dynamic key
-      frames (order-preserving wire: UInt/Bool BE, Int sign-bit remap, F64
-      total-order remap, Str/Bytes 0x00-escape terminator, Null empty;
-      Array/Obj key fields rejected), document values ride the existing
-      nTLV dynamic-segment frames + field-name dictionary (ADR-0012) —
-      `put` / `get` / `delete` / `scan_prefix` / `scan_range` with limit,
-      `DynamicValue` maps as documents (2026-09-24).
-- [x] Layout: same slot constants and header discipline as declared
-      tables (`[ns 2B][slot][key frame]`); the field-name dictionary
-      lives inside the collection's own ns segment (2026-09-24).
-- [x] Tests: key-order-is-value-order across Int/Str(escaped NUL)/F64
-      total order, put/get/delete roundtrip, prefix scan isolation across
-      ns, Obj-key rejection (2026-09-24).
-- Consumer: aura ADR-0026 type-scoped actor storage — one real ns per
-  actor type, collections materialized per the type's declared schema.
+- [x] Architecture record (no code change): OKM carries TWO schema
+      carriers over ONE engine contract — static (okm-derive codegen +
+      `Collection`, compile-time DDL) and dynamic (okm-dynamic
+      `CollectionSchema` + `DynamicCollection`, run-time ns and schema
+      data). Byte-identical for the same declaration; mode is the
+      WRITER's property, not the data's. Documented in the root README
+      ("Two modes"). A draft DynamicCollection in okm-core (order-
+      preserving dynamic key frames) was withdrawn: the dynamic mode's
+      home is okm-dynamic, and keys are schema-typed there — a second
+      key wire would break the byte-equality contract.
+- Consumer: aura ADR-0026 type-scoped actor storage — python/steel
+  actors execute through okm-dynamic `DynamicCollection` at the type's
+  registry-allocated ns; wasm (Rust source) actors use the static path
+  (derive + `Collection`) compiled into the module.
