@@ -501,7 +501,7 @@ fn codec_err(e: okm_dynamic::CodecError) -> PyErr {
 /// actor scripts so `@KeyEncode` / `@DocumentEncode` / `@ok_*` resolve
 /// and `assemble_module` produces the storage block — one source, every
 /// consumer embedding the same module.
-pub const OKM_SCHEMA_PY: &str = include_str!("../okm_schema.py");
+pub const OKM_SCHEMA_PY: &str = include_str!("../okm/okm_schema.py");
 
 /// okm — OKM dynamic codec + embedded-mode table for Python.
 #[pymodule]
