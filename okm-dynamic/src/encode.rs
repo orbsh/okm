@@ -56,6 +56,28 @@ pub fn encode_payload(schema: &CollectionSchema, values: &ValueMap) -> Result<Ve
     Ok(buf)
 }
 
+/// Encode the given schema fields (by name, in the caller's order) from
+/// a value map — the general primitive behind key and index-prefix
+/// encoding. All named fields must be fixed-width schema fields (key or
+/// hot); variable-length kinds error (they cannot order as prefixes).
+pub fn encode_fields(
+    schema: &CollectionSchema,
+    names: &[String],
+    values: &ValueMap,
+) -> Result<Vec<u8>, CodecError> {
+    let mut buf = Vec::new();
+    for name in names {
+        let f = schema
+            .key_fields
+            .iter()
+            .chain(schema.hot_fields.iter())
+            .find(|f| &f.name == name)
+            .ok_or_else(|| CodecError::UnknownField(name.clone()))?;
+        encode_field(f, values, &mut buf)?;
+    }
+    Ok(buf)
+}
+
 /// Encode one field (key or hot — fixed-width, static placement). Cold
 /// fields go through `encode_payload`'s TLV path.
 fn encode_field(
