@@ -58,7 +58,16 @@ pub fn put_frame(buf: &mut Vec<u8>, id: u16, value: &DynamicValue) {
         buf.push(0xFF);
         buf.extend_from_slice(&id.to_be_bytes());
     }
-    let (ty, mut body) = encode_value(value);
+    // No dictionary here (the id is caller-resolved): a nested Obj value
+    // cannot allocate names — the resolver panics instead of silently
+    // emitting an empty body (the documented put_frame contract). Arrays
+    // of scalars are fine.
+    let mut no_dict = |name: &str| -> u16 {
+        panic!(
+            "put_frame: nested object requires the dictionary (name `{name}` unresolved) — use put_frame_named"
+        );
+    };
+    let (ty, mut body) = encode_value(value, &mut no_dict);
     buf.push(ty.to_byte());
     put_len(buf, body.len());
     buf.append(&mut body);
@@ -115,7 +124,7 @@ fn put_frame_named_inner<R: NameResolver>(
             buf.append(&mut body);
         }
         other => {
-            let (ty, mut body) = encode_value(other);
+            let (ty, mut body) = encode_value(other, dict);
             buf.push(ty.to_byte());
             put_len(buf, body.len());
             buf.append(&mut body);
@@ -126,7 +135,12 @@ fn put_frame_named_inner<R: NameResolver>(
 /// Value → (type tag, body bytes). Nested objects need the dictionary
 /// to resolve names → ids, so the resolver is a parameter (top-level
 /// frames go through [`put_frame`], which owns the dict).
-fn encode_value(value: &DynamicValue) -> (ObjValueType, Vec<u8>) {
+/// Value → (type tag, body bytes). Nested objects need the dictionary
+/// to resolve names → ids, so the resolver is a parameter: a top-level
+/// Obj is encoded by `put_frame_named`'s own arm, but an Obj nested
+/// inside an Array reaches THIS arm — composites must encode fully
+/// wherever they appear.
+fn encode_value<R: NameResolver>(value: &DynamicValue, dict: &mut R) -> (ObjValueType, Vec<u8>) {
     match value {
         DynamicValue::Int(v) => {
             // Minimal big-endian two's-complement width.
@@ -153,18 +167,21 @@ fn encode_value(value: &DynamicValue) -> (ObjValueType, Vec<u8>) {
             let mut body = Vec::new();
             put_len(&mut body, items.len());
             for item in items {
-                let (ty, mut b) = encode_value(item);
+                let (ty, mut b) = encode_value(item, dict);
                 body.push(ty.to_byte());
                 put_len(&mut body, b.len());
                 body.append(&mut b);
             }
             (ObjValueType::Array, body)
         }
-        DynamicValue::Obj(_) => {
-            // Encoded by put_frame via the dictionary resolver — see
-            // put_frame's Obj arm. This arm is unreachable through the
-            // public entry but kept total for exhaustiveness.
-            (ObjValueType::Obj, Vec::new())
+        DynamicValue::Obj(map) => {
+            // Obj inside an Array: the same nested-nTLV body the
+            // frame-level Obj arm produces — same dictionary recursion.
+            let mut body = Vec::new();
+            for (k, v) in map {
+                put_frame_named_inner(&mut body, k, v, dict);
+            }
+            (ObjValueType::Obj, body)
         }
     }
 }
@@ -278,12 +295,20 @@ fn decode_frame_named(
             }
             DynamicValue::Obj(m)
         }
-        other => decode_value(other, body).ok_or(FrameErr::Malformed)?,
+        other => decode_value_named(other, body, name_of).ok_or(FrameErr::Malformed)?,
     };
     Ok(Some(DynamicField { id, value }))
 }
 
+/// Scalar/composite value decode. `name_of` resolves nested Obj frame
+/// ids to names — an Obj inside an Array decodes through HERE, so the
+/// resolver must be threaded down (composites are fully name-keyed
+/// wherever they appear).
 fn decode_value(ty: ObjValueType, body: &[u8]) -> Option<DynamicValue> {
+    decode_value_named(ty, body, &mut |_id| None)
+}
+
+fn decode_value_named(ty: ObjValueType, body: &[u8], name_of: &mut dyn FnMut(u16) -> Option<String>) -> Option<DynamicValue> {
     Some(match ty {
         ObjValueType::UInt => {
             // Zero-padded back to 8 bytes, big-endian.
@@ -335,18 +360,68 @@ fn decode_value(ty: ObjValueType, body: &[u8]) -> Option<DynamicValue> {
                 let item_body = body.get(off..off + len)?;
                 off += len;
                 let ty = ObjValueType::from_byte(ty_byte)?;
-                items.push(decode_value(ty, item_body)?);
+                items.push(decode_value_named(ty, item_body, name_of)?);
             }
             DynamicValue::Array(items)
         }
-        // Unreachable through decode_value — nested objs decode via decode_frame_named.
-        ObjValueType::Obj => return None,
+        // Obj inside an Array: same nested-frame decode as
+        // decode_frame_named's Obj arm (same resolver).
+        ObjValueType::Obj => {
+            let mut m = BTreeMap::new();
+            let mut inner = 0usize;
+            while inner < body.len() {
+                let nf = match decode_frame_named(body, &mut inner, name_of) {
+                    Ok(Some(nf)) => nf,
+                    Ok(None) => continue,            // unknown nested type
+                    Err(_) => return None,           // malformed
+                };
+                let key = name_of(nf.id).unwrap_or_else(|| nf.id.to_string());
+                m.insert(key, nf.value);
+            }
+            DynamicValue::Obj(m)
+        }
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn obj_in_array_roundtrip() {
+        // An Obj nested inside an Array: the value must encode with real
+        // nested frames and decode fully name-keyed (composites wherever
+        // they appear — this shape carried aura's persisted interface_schema).
+        let mut nested = std::collections::BTreeMap::new();
+        nested.insert("c".to_string(), DynamicValue::Int(0));
+        let val = DynamicValue::Obj(std::collections::BTreeMap::from([(
+            "item".to_string(),
+            DynamicValue::Obj(nested),
+        )]));
+        let mut body = Vec::new();
+        let mut resolver = |name: &str| match name {
+            "a" => 1,
+            "item" => 2,
+            "c" => 3,
+            _ => 99,
+        };
+        put_frame_named(&mut body, "a", &DynamicValue::Array(vec![val]), &mut resolver);
+        let frames = decode_named(&body, &mut |id| match id {
+            1 => Some("a".into()),
+            2 => Some("item".into()),
+            3 => Some("c".into()),
+            _ => None,
+        });
+        assert_eq!(frames.len(), 1);
+        let DynamicValue::Array(items) = &frames[0].value else {
+            panic!("expected array, got {:?}", frames[0].value);
+        };
+        assert_eq!(items.len(), 1);
+        let DynamicValue::Obj(m) = &items[0] else {
+            panic!("nested obj inside array must decode, got {:?}", items[0]);
+        };
+        assert!(m.contains_key("item"), "nested obj keys resolve: {m:?}");
+    }
 
     #[test]
 
