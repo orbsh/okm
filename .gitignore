@@ -1,2 +1,5 @@
 target/
 /.worktrees/
+# built extension artifact inside the mixed python package
+bindings/okm-python/okm/*.so
+bindings/okm-python/__pycache__/
