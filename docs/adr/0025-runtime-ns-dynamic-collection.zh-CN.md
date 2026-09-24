@@ -1,67 +1,45 @@
-# ADR-0025: 运行时 ns 的动态 collection——运行期组装的键控文档
+# ADR-0025: 两个 schema 载体、一个键空间——静态代码生成与动态 schema 数据模式
 
 > **Languages:** [English](0025-runtime-ns-dynamic-collection.md)（主文档）· [中文](0025-runtime-ns-dynamic-collection.zh-CN.md)
 
-**Status:** Accepted (2026-09-24); implementation follows
+**Status:** Accepted (2026-09-24) — 架构记录；机制先于本 ADR 存在
+
+> 文件名说明：本 ADR 初稿题为「运行时 ns 动态 collection」，提议在 okm-core 新增一种 collection 类型；初稿同日**撤回**——okm-dynamic 的 `DynamicCollection`（运行时 ns、schema 类型化 key）已覆盖该需求，而 okm-core 中的第二套保序 key wire 会破坏本 ADR 记录的字节相等契约。ADR 以双模式架构记录的形态保留。
 
 ## Context
 
-`Collection<S, K, R>` 在编译期绑定 namespace：`R::NS_PREFIX` 是 derive 生成的关联常量，`K: KeyEncode` 是编译期 DDL 结构体（ADR-0002：ns 字典即代码；key derive 对任何变宽 key 字段直接 panic）。对声明的表这两个绑定都是正确的——写程序时 schema 已知。
+aura 的 ADR-0026（类型级 actor 存储）引出一个问题：当 namespace 是**运行时值**时，宿主应使用 okm 的哪个接口面——每个注册的 actor 类型从注册表分配一个真实 ns，应用在 upload 时携带 schema 声明自己的 collection。出现过两个候选答案：
 
-aura 的 ADR-0026（类型级 actor 存储）需要 ns 是**运行时值**的 collection：每个注册的 actor 类型从注册表分配一个真实 ns（`ACTOR_NS_BASE + id`），宿主在类型上传之前不可能知道这些编号。应用在 `interface_schema` 携带的 schema 里声明自己的 collection；存储层必须能对着类型已分配的 ns 具现它们——既不能每个 ns 编译一个表类型（不可能，ns 是数据），也不能退回单表文本前缀方案（那会重新引入类型 ns 裁决要消除的共享键空间混叠）。
+1. 在 okm-core 新增一种 collection 类型，key 是运行时字段帧（保序 wire、解码时携带 `KeyKind` 清单）。
+2. **既有的** okm-dynamic `DynamicCollection`：运行时 ns 构造器，key 按 `CollectionSchema` 值编码——与 derive 产出相同的定宽 BE 纪律。
 
-第二个要求是 key。actor 声明的 collection 用应用字段给文档做键（如 `{user: "alice", seq: 3}`），所以 key 和 ns 一样是运行时数据。引擎契约仍然要求键字节有序：`scan_range` 是**唯一**的有序读原语（VirtualStorage），索引与前缀语义都骑在字节序上，每个定宽 `KeyEncode` 字段用大端正是为了让编码序等于值序。
+方案 1 是重复造轮子且退化：动态模式早已存在（okm-dynamic，ADR-0022 谱系——schema 驱动编解码、bindings、共享 plan 执行核），而第二套 key wire 会使字节级契约分叉。这场混乱暴露的问题值得记录：动态模式住在哪里、两个 schema 载体如何关联。
 
 ## Decision
 
-### 1. `DynamicCollection<S>`——运行时 ns 的组装点
+### 1. 一个引擎契约、一套键布局、两个 schema 载体
 
-`okm-core` 新增 collection 类型（`model/dynamic_collection.rs`）：
+- **静态模式——代码生成。** Rust 类型 + okm-derive；编译器即 schema 校验器（键宽、偏移、索引声明是编译期事实）；组装点是 `Collection<S, K, R>`。面向 Rust 宿主与 Rust 源码编译的 wasm actor。
+- **动态模式——schema 即数据。** 一个 `CollectionSchema` 值（静态侧经 `CollectionSchema::of` 导出，或以数据形式编写）+ okm-dynamic。`DynamicCollection` 接受运行时 ns 与 schema 值；编解码与 derive 逐字节一致。面向嵌入式语言 actor（Python/Steel bindings）与运行时组装 collection 的宿主。
 
-```rust
-pub struct DynamicCollection<S> { /* ns: [u8; 2], store: S, dict: DictCache */ }
-impl<S: VirtualStorage> DynamicCollection<S> {
-    pub fn new(store: S, ns: u16) -> Self;
-    pub fn put(&mut self, key: &[(String, DynamicValue)], doc: &BTreeMap<String, DynamicValue>);
-    pub fn get(&mut self, key: &[(String, DynamicValue)]) -> Option<BTreeMap<String, DynamicValue>>;
-    pub fn delete(&mut self, key: &[(String, DynamicValue)]) -> bool;
-    pub fn scan_prefix(&mut self, prefix: &[(String, DynamicValue)], limit: Option<u64>) -> Vec<Doc>;
-    pub fn scan_range(&mut self, begin/end over the same key frame, limit) -> Vec<Doc>;
-}
-```
+对同一声明，两个载体产生**完全相同的字节**：同一 header 纪律、同一键编码、同一 payload 帧、同一字典行为。一方写的数据另一方读得回来——**模式是写入方的属性，不是数据的属性**。外部 API 刻意对齐（put/get/scan/delete + document map），应用代码形状不分叉。
 
-key 是**有序的**具名 `DynamicValue` 字段列表（不是 map——顺序定义编码，名字经字段名字典解析，与动态段同一套，ADR-0012）。key 帧用自己的保序 wire；document **值**复用既有的 nTLV 动态段帧与字典，不改。
+### 2. 动态模式住在 okm-dynamic，不在 okm-core
 
-### 2. 动态 key wire 保序
+okm-core 宿主**共享运行时**：引擎契约（`VirtualStorage`）、编译期模式组装点（`Collection`）、document/动态段机制、reduce、subscribe。okm-dynamic 宿主 schema 驱动编解码与 `DynamicCollection`——包括其运行时 ns 构造器（ADR-0022 谱系即已存在；core 从不需要改动）。okm-derive 是静态代码生成；okm-wire 是远程 wire 格式；okm-query/stream/graph/vector/ngram 是 core 之上的消费侧算子。只被动态模式使用的键空间原语不进 core。
 
-每字段字节序必须等于值序，否则 scan/range 语义失真。nTLV 值帧不能直接用（`len varint` 前缀破坏字典序）。key 帧对每个字段编码为：
+### 3. aura 消费形态（ADR-0026）
 
-- `UInt(u64)` / `Bool`——定宽大端（字节序即值序）。
-- `Int(i64)`——大端二补数异或符号位（标准保序变换：翻最高位后按无符号比较）。
-- `F64`——IEEE 大端加 sign-magnitude → magnitude-sign 重映射（标准浮点全序键）。
-- `Str` / `Bytes`——**终结符编码**：原始字节，`0x00` 转义为 `0x00 0xFF`，以单个 `0x00` 结尾（标准字典序；文本字段上的前缀扫描行为正确）。
-- `Null`——空字段（同类型字段中排最前）；`Array` / `Obj` **拒绝**作为 key 字段（其顺序语义是调用方的问题——先拍平）。
-
-每个 key 字段携带 `[id u16 BE]` 前缀 + 保序 body。id 前缀保持自描述寻址（ADR-0011）且保序稳定（字典 id 对单个 collection 稳定）。
-
-### 3. 布局：与声明表同一套 header 纪律
-
-键为 `[ns 2B][slot][key frame]`，slot 常量与声明表完全相同（primary `0x00 0x00`、动态段 `0x00 0x01`、字典 `0x00 0x02/0x00 0x03`）——运行时 ns 恰好处在编译期 `NS_PREFIX` 的位置，remote 帧、nest 前缀、宿主字节布局全部保持一致（ADR-0011 全键、ADR-0010 wire）。字段名字典住在 collection 自己的 ns 段内，与声明表相同。
-
-不与 partition 段交互：运行时 ns 的 collection 是无分区的（`PARTITION_PREFIX` 为空）；actor 数据上的负载隔离需求尚未实证。
-
-### 4. 范围守卫：DynamicCollection 不做什么
-
-无 derive、无声明 payload 字段、无类型化解码、无 `#[ok_index]`/`#[ok_reduce]` 声明（schema 即声明；二级索引是调用方自己的辅助 collection）、无 subscribe 事件。它是宿主组装 schema 的逃生舱——声明式表仍是默认，运行时 ns 的 collection 只在 ns 本身成为数据时使用。
+- **python / steel actor**：`ctx.store.emit(op)` → realm 解析类型注册分配的 ns（`meta::ns_of`），经 okm-dynamic `DynamicCollection`（按 actor 声明的 schema 构建）执行 op。
+- **wasm（Rust 源码）actor**：静态路径编译**进模块**——derive + `Collection`，脚本在宿主桥之上实现 `VirtualStorage`，引擎调用跨桥执行。完全体：索引、reduce、编译期校验；无 schema 数据绕行。
+- 两者在同一 ns 写相同字节，数据跨载体语言可互操作。
 
 ## Honest semantic cost
 
-- **字典引入跨机词汇依赖**：id 只在单个引擎的字典内稳定；节点间导出原始 key 字节必须连同字典（它确实在同一 ns 段内——但消费方必须知道这一点）。
-- **key 字段类型窄于值帧**：无 Array/Obj 键，`Int`/`F64` 需要保序变换（同一抽象值现在存在两种编码：值 TLV 与 key wire）。接受：键序是让扫描诚实的性质；变换是标准且可测的。
-- **key 形状无编译期校验**：两个写入方对同一 collection 用不同字段顺序会无声地分叉键空间。schema 声明（调用方契约）是防线。
+- **两个载体、一个漂移面。** 字节相等是承重墙，由跨语言测试锁定；derive 改动不同步动态编解码（或反之）会无声分叉布局。bindings 的帧字节相等验收测试是防线。
+- **动态模式的 schema 是运行时数据**——键宽、索引声明无编译期校验；畸形 schema 在执行时以编解码错误浮现，而非构建期。
 
 ## Consequences
 
-- aura 的 ADR-0026 executor 把每个 actor 声明的 collection 具现为类型注册分配 ns 上的 `DynamicCollection`——每类型一个真实 ns，无文本前缀混叠。
-- `Collection`（编译期）仍是主接口面；声明表的任何行为不变。
-- 动态 key wire 是新 wire 面：hex 布局稳定性测试套件补齐保序变换用例（Int 符号位、F64 重映射、Str 终结符转义）。
+- 撤回的 okm-core 初稿已移除；okm-dynamic 仍是动态模式的唯一家园。README 在根文档记录双模式分工。
+- aura 的 executor 工作在 okm-dynamic 之上推进；ADR-0026 不需要任何 okm-core 改动。

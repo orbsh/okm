@@ -55,7 +55,6 @@ pub use model::index::{Document, IndexFuncResult, IndexFuncValues, KvIndex, PRIM
 pub use model::key::{KeyEncode, PrefixKey};
 pub use subscribe::{ChannelCell, Event, Op};
 pub use model::document::Collection;
-pub use model::dynamic_collection::{DynamicCollection, KeyKind};
 
 #[cfg(feature = "arrow")]
 pub use bridge::arrow_bridge as arrow_backend;

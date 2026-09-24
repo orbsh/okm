@@ -18,6 +18,17 @@ SQL 的核心价值不是执行性能，而是关系模型交付的可读性、�
 
 判定：SQL 的核心价值是面向人类的结构化纪律。KV 只要贯彻「代码即 DDL 的强类型编码 + 多版本 Enum 懒迁移 + 双写 Key 指针契约 + hex 硬编码单元测试」，就同时获得了：编译期 Schema 安全（Rust 编译器）+ 运行时极致性能（LSM-Tree）+ 零停机演进（版本化 Enum）+ 团队可维护性（Struct 注释即文档）+ 编码漂移防护（hex 单元测试）。在 Schema 安全性上完成对 SurrealDB（无模式）和 PostgreSQL（运行时 DDL 锁）的双向反超。
 
+## 两种模式：编译期 schema 与声明式 schema
+
+OKM 只有一个存储引擎契约、一套键布局，但有两个 schema 载体：
+
+- **静态模式（代码生成）**——Rust 类型 + `#[derive(...)]`（okm-derive）。编译器即 schema 校验器：键宽、偏移、索引声明都是编译期事实；组装点是 `Collection<S, K, R>`。面向 Rust 宿主与 Rust 源码编译的 wasm actor。
+- **动态模式（schema 数据）**——一个 `CollectionSchema` 值（静态侧经 `okm_core::schema::CollectionSchema::of` 导出，或直接以数据形式编写）+ okm-dynamic。`DynamicCollection` 接受运行时 ns 与 schema 值；编解码与 derive 逐字节一致。面向嵌入式语言 actor（经 bindings 的 Python/Steel）与运行时组装 collection 的宿主（aura ADR-0026：每 actor 类型一个真实 ns，从注册表分配）。
+
+两种模式对同一声明产生**完全相同的字节**：同一 header 纪律、同一键编码、同一 payload 帧、同一字典行为。编译期 collection 写的数据，动态侧读得回来，反之亦然——模式是**写入方**的属性，不是数据的属性。外部 API 刻意对齐（put/get/scan/delete + document map），应用代码形状不分叉。
+
+crate 分工：okm-core = 共享运行时（引擎契约、`Collection`、document/动态段机制、reduce、subscribe）；okm-derive = 静态代码生成；okm-dynamic = schema 驱动编解码与 `DynamicCollection`；okm-wire = 远程引擎 wire 格式；okm-query/stream/graph/vector/ngram = core 之上的消费侧算子。
+
 ## 物理收益
 
 - **85% 前缀压缩**：14 字节字符串前缀 → 2 字节数字命名空间。
