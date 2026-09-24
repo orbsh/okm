@@ -19,7 +19,7 @@ use okm_core::storage::VirtualStorage;
 
 use crate::index::{scan_access_method, AccessMethod};
 use crate::reduce::{BoundReduce, ReduceSpec};
-use crate::{decode_payload, encode_payload, CollectionSchema, ValueMap};
+use crate::{decode_payload, encode_payload, CollectionSchema, Value, ValueMap};
 
 /// Codec errors surfaced as strings (dynamic callers are host-language
 /// bridges — error values, not typed hierarchies).
@@ -246,4 +246,151 @@ impl<S: VirtualStorage> DynamicCollection<S> {
             .ok_or_else(|| format!("no access method with slot {index_slot}"))?;
         scan_access_method(&self.store, &self.schema, &self.ns, index, encoded_prefix)
     }
+    // --- Dynamic segment bridge (slot 1, dictionary slots 2/3) -----------
+    // The same per-document extension the typed Collection exposes:
+    // name-keyed fields outside the schema's declared vocabulary, encoded
+    // as nTLV frames in the dynamic entry, names resolved through the
+    // per-table field-name dictionary (one vocabulary per table; the
+    // dictionary lives inside the SAME ns segment as the data it names).
+    // put_fields is a whole-entry replace (fields absent from the map are
+    // removed — a per-field write reads the whole entry, merges, writes
+    // back).
+    //
+    // The Value <-> DynamicValue bridge maps composites natively: the
+    // dynamic segment is the schema-free zone, so nested Obj/Array are
+    // legitimate field values here (schema-declared fixed-width paths
+    // reject them upstream).
+
+    /// Dynamic-segment entry key: `[ns 2B][DYNAMIC_SLOT 2B][pkey]` —
+    /// identical byte layout to the typed path's `fields_key`.
+    fn fields_key(&self, pkey: &[u8]) -> Vec<u8> {
+        let mut buf = self.ns.clone();
+        buf.extend_from_slice(&okm_core::model::index::DYNAMIC_SLOT.to_be_bytes());
+        buf.extend_from_slice(pkey);
+        buf
+    }
+
+    /// Read the document's dynamic fields (decoded to names via the
+    /// dictionary). `None` = no dynamic entry (a zero-frame list is
+    /// never written).
+    pub fn get_fields(&self, pkey: &[u8]) -> Result<Option<ValueMap>, String> {
+        let raw = match self.store.get(&self.fields_key(pkey)) {
+            Some(r) => r,
+            None => return Ok(None),
+        };
+        let mut d = okm_core::model::obj_dict::DictCache::default();
+        let ns = self.ns.clone();
+        let store = &self.store;
+        let frames = okm_core::model::obj_dynamic::decode_named(&raw, &mut |id| {
+            d.name_for(store, &ns, id)
+        });
+        let mut out = ValueMap::new();
+        for f in frames {
+            let Some(name) = d.name_for(store, &ns, f.id) else {
+                continue; // dictionary entry absent: drop (single-writer cannot hit this)
+            };
+            let v = dyn_value_to_value(&f.value, &name)?;
+            out.insert(name, v);
+        }
+        Ok(Some(out))
+    }
+
+    /// Replace the document's dynamic fields wholesale (the map becomes
+    /// the entire slot-1 entry; fields absent from the map are removed).
+    /// First-seen names allocate dictionary ids; one batch carries any
+    /// dictionary growth plus the entry itself. An empty map deletes the
+    /// entry. Composite values (Obj/Array) are legitimate here.
+    pub fn put_fields(&mut self, pkey: &[u8], fields: &ValueMap) -> Result<(), String> {
+        let mut d = okm_core::model::obj_dict::DictCache::default();
+        let ns = self.ns.clone();
+        let mut resolver = |name: &str| d.id_for(&mut self.store, &ns, name);
+        let mut body = Vec::new();
+        for (name, value) in fields {
+            let dv = value_to_dyn_value(value)?;
+            okm_core::model::obj_dynamic::put_frame_named(&mut body, name, &dv, &mut resolver);
+        }
+        let k = self.fields_key(pkey);
+        if body.is_empty() {
+            self.store.del(&k);
+        } else {
+            self.store.put(k, body);
+        }
+        Ok(())
+    }
+
+    /// Drop the dynamic entry (declared fields untouched). True if an
+    /// entry existed.
+    pub fn delete_fields(&mut self, pkey: &[u8]) -> bool {
+        let k = self.fields_key(pkey);
+        if self.store.get(&k).is_some() {
+            self.store.del(&k);
+            true
+        } else {
+            false
+        }
+    }
+}
+
+/// okm-dynamic `Value` -> okm-core `DynamicValue` (the dynamic segment's
+/// currency). Composites map natively — `Value` carries Obj/Array for
+/// exactly the dynamic segment's sake (the schema-declared fixed-width
+/// paths reject them upstream).
+fn value_to_dyn_value(v: &Value) -> Result<okm_core::model::obj_dynamic::DynamicValue, String> {
+    use okm_core::model::obj_dynamic::DynamicValue;
+    Ok(match v {
+        Value::U8(x) => DynamicValue::UInt(*x as u64),
+        Value::U16(x) => DynamicValue::UInt(*x as u64),
+        Value::U32(x) => DynamicValue::UInt(*x as u64),
+        Value::U64(x) => DynamicValue::UInt(*x),
+        Value::I64(x) => DynamicValue::Int(*x),
+        Value::F64(x) => DynamicValue::F64(*x),
+        Value::Bool(x) => DynamicValue::Bool(*x),
+        Value::Str(s) => DynamicValue::Str(s.clone()),
+        Value::Bytes(b) => DynamicValue::Bytes(b.clone()),
+        Value::Null => DynamicValue::Null,
+        Value::Obj(m) => {
+            let mut out = std::collections::BTreeMap::new();
+            for (k, v) in m {
+                out.insert(k.clone(), value_to_dyn_value(v)?);
+            }
+            DynamicValue::Obj(out)
+        }
+        Value::Array(items) => {
+            let mut out = Vec::with_capacity(items.len());
+            for v in items {
+                out.push(value_to_dyn_value(v)?);
+            }
+            DynamicValue::Array(out)
+        }
+    })
+}
+
+/// okm-core `DynamicValue` -> okm-dynamic `Value`. Composites map
+/// natively (nested Obj frames decode fully name-keyed through the
+/// dictionary; Arrays decode element-wise).
+fn dyn_value_to_value(v: &okm_core::model::obj_dynamic::DynamicValue, name: &str) -> Result<Value, String> {
+    Ok(match v {
+        okm_core::model::obj_dynamic::DynamicValue::UInt(x) => Value::U64(*x),
+        okm_core::model::obj_dynamic::DynamicValue::Int(x) => Value::I64(*x),
+        okm_core::model::obj_dynamic::DynamicValue::F64(x) => Value::F64(*x),
+        okm_core::model::obj_dynamic::DynamicValue::Str(s) => Value::Str(s.clone()),
+        okm_core::model::obj_dynamic::DynamicValue::Bytes(b) => Value::Bytes(b.clone()),
+        okm_core::model::obj_dynamic::DynamicValue::Bool(x) => Value::Bool(*x),
+        okm_core::model::obj_dynamic::DynamicValue::Null => Value::Null,
+        okm_core::model::obj_dynamic::DynamicValue::Obj(m) => {
+            let mut out = std::collections::BTreeMap::new();
+            for (k, v) in m {
+                let cv = dyn_value_to_value(v, name)?;
+                out.insert(k.clone(), cv);
+            }
+            Value::Obj(out)
+        }
+        okm_core::model::obj_dynamic::DynamicValue::Array(items) => {
+            let mut out = Vec::with_capacity(items.len());
+            for v in items {
+                out.push(dyn_value_to_value(v, name)?);
+            }
+            Value::Array(out)
+        }
+    })
 }
