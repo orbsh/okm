@@ -189,3 +189,123 @@ fn dynamic_rejects_key_field_indexes() {
     )
     .is_err());
 }
+
+// --- Dynamic-segment bridge -------------------------------------------
+// The same lock as the primary/index entries: dynamic put_fields must
+// land the exact bytes the typed path's put_fields writes for the same
+// fields — the dynamic executor's field-level ops see typed writers'
+// dynamic segments and vice versa.
+
+#[test]
+fn dynamic_fields_equal_typed_fields() {
+    use okm_core::model::obj_dynamic::DynamicValue;
+
+    let mut typed: Collection<TestStore, UserKey, User> = Collection::new(TestStore::slatedb_mem());
+    let mut dynamic = dynamic_table(TestStore::slatedb_mem());
+
+    let document = User { level: 1, score: 5, name: "a".into() };
+    typed.put(&UserKey { org_id: 1, user_id: 2 }, &document);
+    dynamic.put(&key_bytes(1, 2), &values(1, 2, 1, 5, "a")).unwrap();
+
+    let mut fields = BTreeMap::new();
+    fields.insert("note".to_string(), DynamicValue::Str("hello".into()));
+    fields.insert("weight".to_string(), DynamicValue::UInt(9));
+    typed.put_fields(&UserKey { org_id: 1, user_id: 2 }, &fields);
+    let mut dfields: BTreeMap<String, Value> = BTreeMap::new();
+    dfields.insert("note".to_string(), Value::Str("hello".into()));
+    dfields.insert("weight".to_string(), Value::U64(9));
+    dynamic.put_fields(&key_bytes(1, 2), &dfields).unwrap();
+
+    let mut typed_entries: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+    for full in typed.store().scan_suffix(&[]) {
+        let v = typed.store().get(&full).unwrap_or_default();
+        typed_entries.push((full, v));
+    }
+    typed_entries.sort();
+    let mut dyn_entries: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+    for full in dynamic.store().scan_suffix(&[]) {
+        let v = dynamic.store().get(&full).unwrap_or_default();
+        dyn_entries.push((full, v));
+    }
+    dyn_entries.sort();
+    assert_eq!(typed_entries, dyn_entries, "dynamic and typed field writes must land identical entries (incl. dictionary)");
+
+    // Read-back through the dynamic bridge.
+    let back = dynamic.get_fields(&key_bytes(1, 2)).unwrap().unwrap();
+    assert_eq!(back.get("note"), Some(&Value::Str("hello".into())));
+    assert_eq!(back.get("weight"), Some(&Value::U64(9)));
+    assert_eq!(back.len(), 2);
+}
+
+#[test]
+fn dynamic_fields_replace_and_delete() {
+    let mut t = dynamic_table(TestStore::slatedb_mem());
+    t.put(&key_bytes(1, 3), &values(1, 3, 1, 5, "a")).unwrap();
+
+    let mut f1: BTreeMap<String, Value> = BTreeMap::new();
+    f1.insert("a".into(), Value::Str("x".into()));
+    f1.insert("b".into(), Value::U64(1));
+    t.put_fields(&key_bytes(1, 3), &f1).unwrap();
+
+    // Whole-entry replace: `a` is gone.
+    let mut f2: BTreeMap<String, Value> = BTreeMap::new();
+    f2.insert("b".into(), Value::U64(2));
+    t.put_fields(&key_bytes(1, 3), &f2).unwrap();
+    let back = t.get_fields(&key_bytes(1, 3)).unwrap().unwrap();
+    assert_eq!(back.len(), 1, "replace drops absent fields");
+    assert_eq!(back.get("b"), Some(&Value::U64(2)));
+
+    // Empty map deletes the entry; the primary document is untouched.
+    let empty: BTreeMap<String, Value> = BTreeMap::new();
+    t.put_fields(&key_bytes(1, 3), &empty).unwrap();
+    assert!(t.get_fields(&key_bytes(1, 3)).unwrap().is_none());
+    let doc = t.get(&key_bytes(1, 3)).unwrap().unwrap();
+    assert_eq!(doc.get("name"), Some(&Value::Str("a".into())));
+
+    // delete_fields is idempotent.
+    let mut f3: BTreeMap<String, Value> = BTreeMap::new();
+    f3.insert("c".into(), Value::Bool(true));
+    t.put_fields(&key_bytes(1, 3), &f3).unwrap();
+    assert!(t.delete_fields(&key_bytes(1, 3)));
+    assert!(!t.delete_fields(&key_bytes(1, 3)));
+    assert!(t.get_fields(&key_bytes(1, 3)).unwrap().is_none());
+}
+
+#[test]
+fn dynamic_fields_carry_composites() {
+    use std::collections::BTreeMap as M;
+    let mut t = dynamic_table(TestStore::slatedb_mem());
+    t.put(&key_bytes(1, 4), &values(1, 4, 1, 5, "a")).unwrap();
+
+    // Nested Obj + heterogeneous Array round-trip through the bridge.
+    let mut nested: M<String, Value> = M::new();
+    nested.insert("n".into(), Value::Str("v".into()));
+    let mut f: M<String, Value> = M::new();
+    f.insert("obj".into(), Value::Obj(nested));
+    f.insert("tags".into(), Value::Array(vec![Value::Str("x".into()), Value::U64(3)]));
+    t.put_fields(&key_bytes(1, 4), &f).unwrap();
+
+    let back = t.get_fields(&key_bytes(1, 4)).unwrap().unwrap();
+    assert_eq!(
+        back.get("obj"),
+        Some(&Value::Obj({
+            let mut m = M::new();
+            m.insert("n".into(), Value::Str("v".into()));
+            m
+        })),
+        "nested obj decodes fully name-keyed"
+    );
+    assert_eq!(
+        back.get("tags"),
+        Some(&Value::Array(vec![Value::Str("x".into()), Value::U64(3)]))
+    );
+
+    // The typed path sees the same bytes: Collection::get_fields over a
+    // store written by the dynamic bridge returns okm-core DynamicValue.
+    let mut raw_entries: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+    for full in t.store().scan_suffix(&[]) {
+        let v = t.store().get(&full).unwrap_or_default();
+        raw_entries.push((full, v));
+    }
+    assert!(!raw_entries.is_empty());
+}

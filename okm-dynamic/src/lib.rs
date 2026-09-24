@@ -74,6 +74,13 @@ pub enum Value {
     Bytes(Vec<u8>),
     /// UTF-8 string (cold TLV payload fields).
     Str(String),
+    /// Nested object (dynamic-segment composite; nTLV list sharing the
+    /// table's field-name dictionary). Schema-declared fixed-width fields
+    /// reject it — composites live in the dynamic segment.
+    Obj(BTreeMap<String, Value>),
+    /// Heterogeneous array (dynamic-segment composite; `[count u32 BE]
+    /// [element frames...]`). Schema-declared fixed-width fields reject it.
+    Array(Vec<Value>),
 }
 
 /// Field name → value. BTreeMap for deterministic iteration (cold TLV
