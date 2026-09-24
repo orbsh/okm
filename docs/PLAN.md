@@ -1054,3 +1054,21 @@ offsets).
 
 Execution order was P3 -> P3.5 -> P1 -> P2: P1/P2 produce new wire
 bytes; doing them after P3 means hex locks change once, not twice.
+
+## Phase 7 — Runtime-ns dynamic collections (ADR-0025)
+
+- [x] `DynamicCollection<S>`: runtime `[ns 2B]` constructor, dynamic key
+      frames (order-preserving wire: UInt/Bool BE, Int sign-bit remap, F64
+      total-order remap, Str/Bytes 0x00-escape terminator, Null empty;
+      Array/Obj key fields rejected), document values ride the existing
+      nTLV dynamic-segment frames + field-name dictionary (ADR-0012) —
+      `put` / `get` / `delete` / `scan_prefix` / `scan_range` with limit,
+      `DynamicValue` maps as documents (2026-09-24).
+- [x] Layout: same slot constants and header discipline as declared
+      tables (`[ns 2B][slot][key frame]`); the field-name dictionary
+      lives inside the collection's own ns segment (2026-09-24).
+- [x] Tests: key-order-is-value-order across Int/Str(escaped NUL)/F64
+      total order, put/get/delete roundtrip, prefix scan isolation across
+      ns, Obj-key rejection (2026-09-24).
+- Consumer: aura ADR-0026 type-scoped actor storage — one real ns per
+  actor type, collections materialized per the type's declared schema.

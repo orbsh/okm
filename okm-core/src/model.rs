@@ -3,6 +3,7 @@
 
 pub mod collection;
 pub mod document;
+pub mod dynamic_collection;
 pub mod field;
 pub mod graph;
 pub mod index;
