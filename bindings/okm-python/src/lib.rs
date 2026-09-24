@@ -496,6 +496,13 @@ fn codec_err(e: okm_dynamic::CodecError) -> PyErr {
     PyValueError::new_err(format!("{e}"))
 }
 
+/// The python schema-declaration DSL as an embeddable string (ADR-0026
+/// §4): hosts (probe's python carrier, aura) inject this module into
+/// actor scripts so `@KeyEncode` / `@DocumentEncode` / `@ok_*` resolve
+/// and `assemble_module` produces the storage block — one source, every
+/// consumer embedding the same module.
+pub const OKM_SCHEMA_PY: &str = include_str!("../okm_schema.py");
+
 /// okm — OKM dynamic codec + embedded-mode table for Python.
 #[pymodule]
 fn okm(m: &Bound<'_, PyModule>) -> PyResult<()> {
