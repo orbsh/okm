@@ -32,10 +32,38 @@ fn map_to_dict<'py>(py: Python<'py>, m: &ValueMap) -> PyResult<Bound<'py, pyo3::
             Value::Null => py.None(),
             Value::Str(s) => s.into_pyobject(py)?.unbind().into_any(),
             Value::Bytes(b) => b.into_pyobject(py)?.unbind().into_any(),
+            // Nested composites (okm 0c2a354): Obj → dict, Array → list.
+            Value::Obj(fields) => value_to_py(py, &Value::Obj(fields.clone()))?,
+            Value::Array(items) => value_to_py(py, &Value::Array(items.clone()))?,
         };
         d.set_item(k, value)?;
     }
     Ok(d)
+}
+
+/// Value → python object (the composite arm map_to_dict needs: Obj
+/// recurses through a dict, Array maps element-wise).
+fn value_to_py<'py>(py: Python<'py>, v: &Value) -> PyResult<PyObject> {
+    Ok(match v {
+        Value::Obj(fields) => {
+            let inner: ValueMap = fields.clone();
+            map_to_dict(py, &inner)?.into_any().unbind()
+        }
+        Value::Array(items) => {
+            let list = pyo3::types::PyList::empty(py);
+            for item in items {
+                list.append(value_to_py(py, item)?)?;
+            }
+            list.into_any().unbind()
+        }
+        other => {
+            let one = ValueMap::from([("__v__".to_string(), other.clone())]);
+            let d = map_to_dict(py, &one)?;
+            d.get_item("__v__")?
+                .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err("value roundtrip failed"))?
+                .unbind()
+        }
+    })
 }
 
 fn call_err(e: PyErr) -> String {
