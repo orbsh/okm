@@ -18,9 +18,8 @@ Rules locked to the Rust derive (okm-derive `parse_schema`/`field_encoders`):
   dict_name=3, index base = segment 1 counter 1, reduce base = segment 2
   counter 1, junction base = segment 3.
 - Index slots follow SOURCE declaration order (the Rust derive reads
-  `#[ok_index]` attributes top-to-bottom). With factory-style decorators
-  the resulting stamp list already matches that order (verified) — no
-  reversal.
+  `#[ok_index]` attributes top-to-bottom); the factory-based decorator
+  stamp list already matches that order.
 - A variable-width field may appear at most once in an index
   fields/includes list and must be LAST (no static width after it).
 - ns is NOT part of CollectionSchema (it binds at plan construction):
@@ -265,9 +264,9 @@ def assemble(document_cls) -> dict:
 
     layout_version = getattr(document_cls, "_okm_layout", 1)
 
-    # --- Indexes: the stamp list arrives in SOURCE declaration order
-    # (verified: with factory-style decorators the bottom line's stamper
-    # runs first, and that line is the first @ok_index in the source).
+    # --- Indexes: the stamp list is ALREADY in SOURCE declaration order
+    # (verified empirically: @ok_index factories capture payloads, then
+    # stampers run and the list reads top-to-bottom like the source).
     # Slots follow: INDEX-segment counter from the declaration base.
     index_decls = list(getattr(document_cls, "_okm_index", []))
     indexes = []
