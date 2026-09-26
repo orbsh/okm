@@ -384,7 +384,7 @@ impl<S: VirtualStorage, E: KvGraph> Graph<S, E> {
         for slot in attr_slots {
             let p = self.face_key(*slot, &[]);
             for sfx in self.store.scan_suffix(&p) {
-                if sfx.len() == 8 && sfx.as_slice() == &id_be {
+                if sfx.len() == 8 && sfx.as_slice() == id_be {
                     let mut full = p.clone();
                     full.extend_from_slice(&sfx);
                     batch.del(&full);

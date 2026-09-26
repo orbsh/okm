@@ -304,10 +304,6 @@ fn decode_frame_named(
 /// ids to names — an Obj inside an Array decodes through HERE, so the
 /// resolver must be threaded down (composites are fully name-keyed
 /// wherever they appear).
-fn decode_value(ty: ObjValueType, body: &[u8]) -> Option<DynamicValue> {
-    decode_value_named(ty, body, &mut |_id| None)
-}
-
 fn decode_value_named(ty: ObjValueType, body: &[u8], name_of: &mut dyn FnMut(u16) -> Option<String>) -> Option<DynamicValue> {
     Some(match ty {
         ObjValueType::UInt => {

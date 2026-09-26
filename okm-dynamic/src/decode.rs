@@ -122,14 +122,13 @@ pub fn decode_payload(schema: &CollectionSchema, bytes: &[u8]) -> Result<ValueMa
                             });
                         }
                         let count = u32::from_be_bytes(value[0..4].try_into().unwrap());
-                        if let Some(expect) = f.expect_len {
-                            if count as usize != expect {
+                        if let Some(expect) = f.expect_len
+                            && count as usize != expect {
                                 return Err(CodecError::TypeMismatch {
                                     field: f.name.clone(),
                                     expected: "element count matching expect_len",
                                 });
                             }
-                        }
                         Value::Bytes(value.to_vec())
                     }
                     FieldType::VarInt | FieldType::Quant(_) | FieldType::Offset(_) => {

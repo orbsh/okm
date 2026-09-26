@@ -13,7 +13,7 @@ use okm_core::{KeyEncode, NestStorage, RemoteStore, DocumentEncode, Collection, 
 #[test]
 fn bare_host_executes_frames_byte_identical() {
     let handle = NestStorage::bare(TestStore::default());
-    let mut s: RemoteStore = handle.open();
+    let s: RemoteStore = handle.open();
 
     // Keys land exactly as sent — no prefix prepended (compare: hosted
     // hosts turn `user:1` into `[0,21]user:1`).
@@ -80,8 +80,8 @@ fn bare_and_hosted_coexist_with_allocation_discipline() {
     let engine = TestStore::default(); // handle-clone = shared engine
     let bare = NestStorage::bare(engine.clone());
     let hosted = AppBStorage::serve(engine);
-    let mut bs: RemoteStore = bare.open();
-    let mut hs = hosted.open();
+    let bs: RemoteStore = bare.open();
+    let hs = hosted.open();
 
     // Shard writes ns-1 keys; hosted app B's segment is [0,30].
     bs.put([1u8, 5].to_vec(), b"shard-document".to_vec());

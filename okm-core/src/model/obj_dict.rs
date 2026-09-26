@@ -130,15 +130,14 @@ impl DictCache {
         let mut p3 = header.to_vec();
         p3.extend_from_slice(&DICT_NAME_SLOT.to_be_bytes());
         for (suffix, idv) in scan_suffix_kv(store, &p3) {
-            if let Ok(n) = String::from_utf8(suffix) {
-                if idv.len() == 2 {
+            if let Ok(n) = String::from_utf8(suffix)
+                && idv.len() == 2 {
                     let id = u16::from_be_bytes([idv[0], idv[1]]);
                     self.by_name.insert(n, id);
                     if id >= self.next_id {
                         self.next_id = id + 1;
                     }
                 }
-            }
         }
         self.loaded = true;
     }
@@ -147,49 +146,7 @@ impl DictCache {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::storage::{scan_suffix_kv, MemBatch, VirtualStorage};
     use crate::engine::test_engine::TestStore;
-    use std::sync::{Arc, Mutex};
-
-    #[derive(Clone, Default)]
-    struct Engine(Arc<Mutex<std::collections::BTreeMap<Vec<u8>, Vec<u8>>>>);
-
-    impl VirtualStorage for Engine {
-        fn put(&self, key: Vec<u8>, value: Vec<u8>) {
-            self.0.lock().unwrap().insert(key, value);
-        }
-        fn get(&self, key: &[u8]) -> Option<Vec<u8>> {
-            self.0.lock().unwrap().get(key).cloned()
-        }
-        fn del(&self, key: &[u8]) {
-            self.0.lock().unwrap().remove(key);
-        }
-        fn scan_suffix(&self, prefix: &[u8]) -> Vec<Vec<u8>> {
-            self.0
-                .lock()
-                .unwrap()
-                .range(prefix.to_vec()..)
-                .take_while(|(k, _)| k.starts_with(prefix))
-                .map(|(k, _)| k[prefix.len()..].to_vec())
-                .collect()
-        }
-        fn scan_range(&self, begin: &[u8], end: Option<&[u8]>) -> Vec<Vec<u8>> {
-            let map = self.0.lock().unwrap();
-            map.range(begin.to_vec()..)
-                .take_while(|(k, _)| match end {
-                    Some(end) => k.as_slice() < end,
-                    None => true,
-                })
-                .map(|(k, _)| k.clone())
-                .collect()
-        }
-    }
-
-    impl crate::SharedVirtualStorage for Engine {
-        fn shared_handle(&self) -> Self {
-            self.clone()
-        }
-    }
 
     const HEADER: &[u8] = &[0x00, 0x21]; // ns 33, no partition
 

@@ -48,7 +48,7 @@ fn prune_deletes_only_deprecated_prefix() {
     // was deprecated; simulate one by writing directly at slot 1 — on a
     // store handed to the Collection AFTER seeding (TestStore::clone is a deep
     // copy, so the seeded entry lands in the table's own engine).
-    let mut store = TestStore::slatedb_mem();
+    let store = TestStore::slatedb_mem();
     let stale = [
         vec![0u8, 9, 0x10, 0x01],
         99u32.to_be_bytes().to_vec(),

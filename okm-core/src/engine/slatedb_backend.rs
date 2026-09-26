@@ -107,6 +107,7 @@ impl SlatedbSync {
 
 /// 异步引擎最小接口（与同步 VirtualStorage 对齐，ADR-0027：
 /// 对齐的是审计后的同步面——scan_suffix_kv/batch 不在 trait 上）
+#[allow(async_fn_in_trait)] // engine contract: impls are in-crate backends and wasm senders; ADR-0010 keeps the surface byte-only
 pub trait VirtualStorageAsync {
     async fn put(&self, key: Vec<u8>, value: Vec<u8>);
     async fn get(&self, key: &[u8]) -> Option<Vec<u8>>;
@@ -161,7 +162,6 @@ pub async fn scan_suffix_kv_async<S: VirtualStorageAsync + ?Sized>(
     store
         .scan_range_iter(prefix, end.as_deref())
         .await
-        .into_iter()
         .map(|(full, v)| (full.get(prefix.len()..).unwrap_or(&[]).to_vec(), v))
         .collect()
 }
@@ -210,11 +210,10 @@ impl VirtualStorageAsync for SlatedbStore {
         out
     }
     async fn scan_range(&self, begin: &[u8], end: Option<&[u8]>) -> Vec<Vec<u8>> {
-        if let Some(end) = end {
-            if end <= begin {
+        if let Some(end) = end
+            && end <= begin {
                 return Vec::new();
             }
-        }
         // The subrange is relative to the prefix (slatedb semantics);
         // an empty prefix makes the FULL-key range the subrange.
         let mut it = match end {
@@ -240,13 +239,12 @@ impl VirtualStorageAsync for SlatedbStore {
         begin: &[u8],
         end: Option<&[u8]>,
     ) -> crate::engine::storage::ScanIter {
-        if let Some(end) = end {
-            if end <= begin {
+        if let Some(end) = end
+            && end <= begin {
                 return crate::engine::storage::ScanIter::Buffered(
                     Vec::new().into_iter(),
                 );
             }
-        }
         let mut it = match end {
             Some(end) => self.db.scan_prefix(b"", begin..end).await,
             None => self.db.scan_prefix(b"", begin..).await,
@@ -345,11 +343,10 @@ impl SlatedbSync {
         self.rt.block_on(self.db.delete(key)).expect("slatedb delete failed");
     }
     pub fn scan_range_sync(&self, begin: &[u8], end: Option<&[u8]>) -> Vec<Vec<u8>> {
-        if let Some(end) = end {
-            if end <= begin {
+        if let Some(end) = end
+            && end <= begin {
                 return Vec::new();
             }
-        }
         let mut it = match end {
             Some(end) => self.rt.block_on(self.db.scan_prefix(b"", begin..end)),
             None => self.rt.block_on(self.db.scan_prefix(b"", begin..)),
@@ -371,11 +368,10 @@ impl SlatedbSync {
         begin: &[u8],
         end: Option<&[u8]>,
     ) -> super::storage::ScanIter {
-        if let Some(end) = end {
-            if end <= begin {
+        if let Some(end) = end
+            && end <= begin {
                 return super::storage::ScanIter::Buffered(std::iter::empty().collect::<Vec<_>>().into_iter());
             }
-        }
         let it = match end {
             Some(end) => self.rt.block_on(self.db.scan_prefix(b"", begin..end)),
             None => self.rt.block_on(self.db.scan_prefix(b"", begin..)),

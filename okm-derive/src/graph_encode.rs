@@ -151,7 +151,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
         let slot_doc = attr_names.len().to_string();
         index_structs.extend(quote! {
             #[doc = concat!("Graph-edge declared-attribute access method `", stringify!(#name), ".", #fname, "` (0x1 segment, slot ", #slot_doc, "; face = [", #fname, "][edge_id], ADR-0017 §3).")]
-            #[allow(non_camel_case_types)]
+            #[allow(non_camel_case_types, non_snake_case)] // generated identities (ADR-0027)
             #[derive(Clone, Copy, Debug)]
             pub struct #struct_ident;
 

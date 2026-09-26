@@ -89,6 +89,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
             const FIELDS: &'static [::okm_core::FieldDesc] = #desc;
             /// Encode the requested named subset (request order) into
             /// `buf`; returns bytes written. Unknown names panic.
+            #[allow(clippy::ptr_arg)] // &mut Vec is the encoder-API shape
             fn encode_prefix_named(&self, buf: &mut Vec<u8>, names: &[&str]) -> usize {
                 let before = buf.len();
                 for n in names {
@@ -115,6 +116,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
         impl #name {
             /// Encode the first `n` fields in declaration order (numeric
             /// variant, handy for prefix scans).
+            #[allow(clippy::ptr_arg)] // &mut Vec is the encoder-API shape
             pub fn encode_prefix_n(&self, buf: &mut Vec<u8>, n: usize) {
                 let mut done = 0usize;
                 #(

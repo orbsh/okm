@@ -35,9 +35,12 @@ pub enum TestStore {
 impl TestStore {
     /// All engines this build carries. Empty only when neither backend
     /// feature is enabled (not a supported configuration for tests).
+    // every push here is feature-gated — clippy's vec_init_then_push
+    // shape ("create then push immediately") is exactly what the
+    // gated build legitimately is
+    #[allow(unused_mut, clippy::vec_init_then_push)]
     pub fn matrix() -> Vec<( &'static str, Self )> {
-        #[allow(unused_mut)] // variants are feature-gated; mut is needed when any engine is on
-        let mut out = Vec::new();
+        let mut out: Vec<(&'static str, Self)> = Vec::new();
         #[cfg(feature = "slatedb")]
         out.push(("slatedb-mem", Self::slatedb_mem()));
         #[cfg(feature = "fjall")]

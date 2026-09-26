@@ -99,8 +99,8 @@ fn prefix_isolation_between_two_hosts() {
     // are invisible to B's sender and vice versa.
     let ha = spawn_host(TestStore::default(), &[0x00, 0x01]);
     let hb = spawn_host(TestStore::default(), &[0x00, 0x02]);
-    let mut ra = ha.open();
-    let mut rb = hb.open();
+    let ra = ha.open();
+    let rb = hb.open();
 
     ra.put(b"user:1".to_vec(), b"hello".to_vec());
     rb.put(b"user:1".to_vec(), b"world".to_vec());

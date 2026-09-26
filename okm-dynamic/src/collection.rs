@@ -19,7 +19,7 @@ use okm_core::storage::VirtualStorage;
 
 use crate::index::{scan_access_method, AccessMethod};
 use crate::reduce::{BoundReduce, ReduceSpec};
-use crate::{decode_payload, encode_payload, CollectionSchema, Value, ValueMap};
+use crate::{decode_payload, CollectionSchema, Value, ValueMap};
 
 /// Codec errors surfaced as strings (dynamic callers are host-language
 /// bridges — error values, not typed hierarchies).
@@ -156,14 +156,14 @@ impl<S: VirtualStorage> DynamicCollection<S> {
         buf
     }
 
-    /// Write one document: primary entry + one index entry per access method
-    /// + the reduce calling discipline (ADR-0022). Overwrite first removes
-    /// the old document's index entries (they are keyed by indexed values —
-    /// a changed value would otherwise leave a dangling entry), unfolds the
-    /// old document from every reduce group, then folds the new one. The
-    /// expansion is the SHARED plan surface (`plan::plan_put`) — the
-    /// embedded path is plan + local engine replay, so remote plans land
-    /// byte-identical by construction.
+    /// Write one document: primary entry, one index entry per access
+    ///   method, and the reduce calling discipline (ADR-0022). Overwrite
+    ///   first removes the old document's index entries (they are keyed by
+    ///   indexed values — a changed value would otherwise leave a dangling
+    ///   entry), unfolds the old document from every reduce group, then
+    ///   folds the new one. The expansion is the SHARED plan surface
+    ///   (`plan::plan_put`) — the embedded path is plan + local engine
+    ///   replay, so remote plans land byte-identical by construction.
     pub fn put(&mut self, pkey: &[u8], document: &ValueMap) -> Result<(), String> {
         // The embedded path reads its own state: old document + accs.
         let old = self.stored_document(pkey)?;
@@ -182,11 +182,11 @@ impl<S: VirtualStorage> DynamicCollection<S> {
                 self.schema.key_len
             ));
         }
-        Ok(self
+        self
             .store
             .get(&self.primary_key(pkey))
             .map(|payload| decode_payload(&self.schema, &payload).map_err(codec))
-            .transpose()?)
+            .transpose()
     }
 
     /// Delete a document: primary entry + every access method's entry for
@@ -212,11 +212,11 @@ impl<S: VirtualStorage> DynamicCollection<S> {
                 self.schema.key_len
             ));
         }
-        Ok(self
+        self
             .store
             .get(&self.primary_key(pkey))
             .map(|payload| decode_payload(&self.schema, &payload).map_err(codec))
-            .transpose()?)
+            .transpose()
     }
 
     /// Replay a plan's ops against the local engine, in order (the
@@ -289,7 +289,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
             let Some(name) = d.name_for(store, &ns, f.id) else {
                 continue; // dictionary entry absent: drop (single-writer cannot hit this)
             };
-            let v = dyn_value_to_value(&f.value, &name)?;
+            let v = dyn_value_to_value(&f.value)?;
             out.insert(name, v);
         }
         Ok(Some(out))
@@ -368,7 +368,7 @@ fn value_to_dyn_value(v: &Value) -> Result<okm_core::model::obj_dynamic::Dynamic
 /// okm-core `DynamicValue` -> okm-dynamic `Value`. Composites map
 /// natively (nested Obj frames decode fully name-keyed through the
 /// dictionary; Arrays decode element-wise).
-fn dyn_value_to_value(v: &okm_core::model::obj_dynamic::DynamicValue, name: &str) -> Result<Value, String> {
+fn dyn_value_to_value(v: &okm_core::model::obj_dynamic::DynamicValue) -> Result<Value, String> {
     Ok(match v {
         okm_core::model::obj_dynamic::DynamicValue::UInt(x) => Value::U64(*x),
         okm_core::model::obj_dynamic::DynamicValue::Int(x) => Value::I64(*x),
@@ -380,7 +380,7 @@ fn dyn_value_to_value(v: &okm_core::model::obj_dynamic::DynamicValue, name: &str
         okm_core::model::obj_dynamic::DynamicValue::Obj(m) => {
             let mut out = std::collections::BTreeMap::new();
             for (k, v) in m {
-                let cv = dyn_value_to_value(v, name)?;
+                let cv = dyn_value_to_value(v)?;
                 out.insert(k.clone(), cv);
             }
             Value::Obj(out)
@@ -388,7 +388,7 @@ fn dyn_value_to_value(v: &okm_core::model::obj_dynamic::DynamicValue, name: &str
         okm_core::model::obj_dynamic::DynamicValue::Array(items) => {
             let mut out = Vec::with_capacity(items.len());
             for v in items {
-                out.push(dyn_value_to_value(v, name)?);
+                out.push(dyn_value_to_value(v)?);
             }
             Value::Array(out)
         }

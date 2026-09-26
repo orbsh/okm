@@ -48,8 +48,8 @@ fn one_engine_two_tenants_prefix_segments_disjoint() {
     let engine = TestStore::slatedb_mem();
     let ha = TenantAStorage::serve(engine.clone());
     let hb = TenantBStorage::serve(engine);
-    let mut sa = ha.open();
-    let mut sb = hb.open();
+    let sa = ha.open();
+    let sb = hb.open();
 
     // Same sender key bytes into both tenants.
     sa.put(b"doc:1".to_vec(), b"a".to_vec());
@@ -86,7 +86,7 @@ fn one_engine_two_tenants_prefix_segments_disjoint() {
 fn internal_tenant_sharding_is_a_plain_key_field() {
     let engine = TestStore::slatedb_mem();
     let handle = TenantAStorage::serve(engine);
-    let mut s = handle.open();
+    let s = handle.open();
 
     // tenant_id is the leading key-payload field: sender-side business
     // data, opaque to the receiver.

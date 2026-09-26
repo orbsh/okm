@@ -168,23 +168,26 @@ fn encode_fixed(
 /// Partial indexes consult their predicate first (`false` → no entries);
 /// function indexes fan out one entry per derived value (inverted-index
 /// regime, the Rust-side `entry_pairs` multi-value shape).
+/// Entry list shape: the `(key, value)` pairs one write set lands —
+/// primary rows and index entries alike (ADR-0016 layouts).
+pub type IndexEntries = Vec<(Vec<u8>, Vec<u8>)>;
+
 pub fn index_entries(
     schema: &CollectionSchema,
     ns: &[u8],
     indexes: &[AccessMethod],
     pkey: &[u8],
     document: &ValueMap,
-) -> Result<Vec<(Vec<u8>, Vec<u8>)>, String> {
+) -> Result<IndexEntries, String> {
     let mut out = Vec::new();
     for idx in indexes {
         // Partial gate (purity contract documented on `Admits`): consulted
         // before any entry is built, the single entry-production site, so
         // the filter is complete by construction.
-        if let AccessMethodKind::Partial(admits) = &idx.kind {
-            if !admits(document)? {
+        if let AccessMethodKind::Partial(admits) = &idx.kind
+            && !admits(document)? {
                 continue;
             }
-        }
         // The indexed-field segment: declared fields for Plain/Partial;
         // the callable's encoded results for Func (fan-out).
         let segments: Vec<Vec<u8>> = match &idx.kind {
@@ -235,11 +238,10 @@ pub fn scan_access_method<S: VirtualStorage>(
     // segment, already encoded (empty slice = whole index). Func
     // indexes have no declared-field width — the segment is the
     // callable's result encoding, caller-owned; any prefix is legal.
-    if !matches!(index.kind, AccessMethodKind::Func(_)) {
-        if encoded_prefix.len() > index.fields_width(schema)? {
+    if !matches!(index.kind, AccessMethodKind::Func(_))
+        && encoded_prefix.len() > index.fields_width(schema)? {
             return Err("scan prefix exceeds the index-field segment".into());
         }
-    }
     let mut p = Vec::with_capacity(ns.len() + 2 + encoded_prefix.len());
     p.extend_from_slice(ns);
     p.extend_from_slice(&index.slot.to_be_bytes());
@@ -256,16 +258,3 @@ pub fn scan_access_method<S: VirtualStorage>(
     Ok(out)
 }
 
-/// Stale-entry sweep: delete every entry under this access method whose
-/// indexed values no longer match the current document (derive overwrite
-/// lands stale entries at different keys; `delete` covers the rest).
-/// Dynamic tables recompute entries per write, so the sweep runs on
-/// every `DynamicCollection::put` for the overwritten key's OLD entries.
-pub fn delete_entries(
-    store: &mut impl VirtualStorage,
-    entries: &[(Vec<u8>, Vec<u8>)],
-) {
-    for (ek, _) in entries {
-        store.del(ek);
-    }
-}

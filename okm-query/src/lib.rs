@@ -5,6 +5,8 @@
 //! live here. Zero core changes: every input is an existing `scan` /
 //! `scan_index` output.
 
+use okm_core::VirtualStorage;
+
 /// Merge join over two key-ordered entry streams (both sides already
 /// sorted — `scan_index` returns entries in key order, which is the
 /// merge order). Yields matched `(left, right)` pairs; keys compare via
@@ -21,9 +23,6 @@
 /// and the stream is ordered again. Sorting is a property of the store,
 /// not a burden on the query operator (and merge join stays streaming
 /// and memory-bounded, where hash join must materialize the build side).
-
-use okm_core::VirtualStorage;
-
 pub fn merge_join<K: Ord, L: Clone, R: Clone>(
     left: impl IntoIterator<Item = (K, L)>,
     right: impl IntoIterator<Item = (K, R)>,
@@ -31,7 +30,7 @@ pub fn merge_join<K: Ord, L: Clone, R: Clone>(
     let mut out = Vec::new();
     let mut li = left.into_iter().peekable();
     let mut ri = right.into_iter().peekable();
-    loop {
+    while li.peek().is_some() && ri.peek().is_some() {
         let ord = match (li.peek(), ri.peek()) {
             (Some((lk, _)), Some((rk, _))) => lk.cmp(rk),
             _ => break,

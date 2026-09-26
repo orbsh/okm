@@ -1,4 +1,4 @@
-use okm_core::{KeyEncode, DocumentEncode, Document, Collection, obj_dynamic::DynamicValue};
+use okm_core::{KeyEncode, DocumentEncode, obj_dynamic::DynamicValue};
 use parquet_variant::VariantBuilder;
 use std::collections::BTreeMap;
 

@@ -285,7 +285,7 @@ fn neighbor_nodes_resolve_to_node_refs() {
 
     let a1 = Employment { since_year: 2020, weight: 1 };
     let a2 = Employment { since_year: 2021, weight: 2 };
-    let mk = |src: NodeRef, dst: NodeRef, id: u64, attrs: &Employment| EdgeFact {
+    let mk = |src: NodeRef, dst: NodeRef, _id: u64, attrs: &Employment| EdgeFact {
         src,
         dst,
         kind: "employs".into(),

@@ -24,7 +24,7 @@ pub fn put_len(buf: &mut Vec<u8>, len: usize) {
         buf.extend_from_slice(&v.to_be_bytes());
         return;
     }
-    let payload_bits = (w - 1) * 8 + (8 - w);
+    let _payload_bits = (w - 1) * 8 + (8 - w);
     buf.push(prefix(w) | ((v >> ((w - 1) * 8)) as u8 & (0xFF >> w)));
     let low = v & ((1u64 << ((w - 1) * 8)) - 1);
     let lb = low.to_be_bytes();
@@ -45,15 +45,15 @@ pub fn take_len(b: &[u8]) -> Option<(usize, usize)> {
         let payload_bits = (w - 1) * 8 + (8 - w);
         let hi = (b[0] & (0xFF >> w)) as u64;
         let mut low: u64 = 0;
-        for i in 1..w {
-            low = (low << 8) | b[i] as u64;
+        for byte in &b[1..w] {
+            low = (low << 8) | *byte as u64;
         }
         (hi << (payload_bits - (8 - w))) | low
     };
     usize::try_from(v).ok().map(|l| (l, w))
 }
 
-/// Internal helpers shared by the trait impls (single width logic).
+// Internal helpers shared by the trait impls (single width logic).
 
 /// Total encoded width for the first byte of a varint.
 #[inline]
