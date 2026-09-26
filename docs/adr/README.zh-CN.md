@@ -24,5 +24,7 @@
 - [0022 — bindings 语义对齐——动态模式的能力上限是有范围的，不是永久的](0022-bindings-semantic-alignment.md)（已接受——callable 本地执行、远程携带语义结果；subscribe 仍排除）— [中文](0022-bindings-semantic-alignment.zh-CN.md)
 - [0023 — 预置 reduce 组合子：Count/Max/Min/Sum 作为库声明](0023-preset-reduce-combinators.md)（已接受——一行声明、零样板；不做内置表统计；MaxKeep 独立命名）— [中文](0023-preset-reduce-combinators.zh-CN.md)
 - [0024 — reduce 钩子接收解码后的 key：fold(acc, key, item)](0024-reduce-hooks-receive-the-key.md)（已接受——key 以解码引用直达钩子、GROUP 双源命名；镜像字段模式退役）— [中文](0024-reduce-hooks-receive-the-key.zh-CN.md)
+- [0025 — 双模式载体共用一个键空间：静态 codegen 与动态 schema 数据](0025-runtime-ns-dynamic-collection.md)（已接受——字节恒等的两种写入模式；模式是写入方的属性，不是数据的）— [中文](0025-runtime-ns-dynamic-collection.zh-CN.md)
+- [0026 — VirtualStorage 写操作取 &self：共享句柄契约一次说清](0026-virtualstorage-shared-handle-writes.md)（已接受，实现待做——trait 放宽 + 消费者清扫）— [中文](0026-virtualstorage-shared-handle-writes.zh-CN.md)
 
 实施计划见 [docs/PLAN.md](../PLAN.md)。

@@ -45,7 +45,7 @@ impl crate::engine::storage::SharedVirtualStorage for FjallStore {
 }
 
 impl VirtualStorage for FjallStore {
-    fn put(&mut self, key: Vec<u8>, value: Vec<u8>) {
+    fn put(&self, key: Vec<u8>, value: Vec<u8>) {
         self.ks.insert(key, value).expect("fjall insert failed");
     }
     fn get(&self, key: &[u8]) -> Option<Vec<u8>> {
@@ -54,7 +54,7 @@ impl VirtualStorage for FjallStore {
             .expect("fjall get failed")
             .map(|v| v.to_vec())
     }
-    fn del(&mut self, key: &[u8]) {
+    fn del(&self, key: &[u8]) {
         self.ks.remove(key).expect("fjall remove failed");
     }
     fn batch(&mut self) -> MemBatch {

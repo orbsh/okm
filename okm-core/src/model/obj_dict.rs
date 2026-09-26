@@ -155,13 +155,13 @@ mod tests {
     struct Engine(Arc<Mutex<std::collections::BTreeMap<Vec<u8>, Vec<u8>>>>);
 
     impl VirtualStorage for Engine {
-        fn put(&mut self, key: Vec<u8>, value: Vec<u8>) {
+        fn put(&self, key: Vec<u8>, value: Vec<u8>) {
             self.0.lock().unwrap().insert(key, value);
         }
         fn get(&self, key: &[u8]) -> Option<Vec<u8>> {
             self.0.lock().unwrap().get(key).cloned()
         }
-        fn del(&mut self, key: &[u8]) {
+        fn del(&self, key: &[u8]) {
             self.0.lock().unwrap().remove(key);
         }
         fn scan_suffix(&self, prefix: &[u8]) -> Vec<Vec<u8>> {

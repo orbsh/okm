@@ -26,9 +26,9 @@ pub fn prefix_end(prefix: &[u8]) -> Option<Vec<u8>> {
 }
 
 pub trait VirtualStorage {
-    fn put(&mut self, key: Vec<u8>, value: Vec<u8>);
+    fn put(&self, key: Vec<u8>, value: Vec<u8>);
     fn get(&self, key: &[u8]) -> Option<Vec<u8>>;
-    fn del(&mut self, key: &[u8]);
+    fn del(&self, key: &[u8]);
     /// Prefix scan; returns each matching key's "suffix" (prefix removed).
     /// A convenience bound over [`scan_range`](Self::scan_range): the
     /// physical operation is the same ordered iteration, the prefix is
