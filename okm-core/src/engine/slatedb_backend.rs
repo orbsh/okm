@@ -105,7 +105,8 @@ impl SlatedbSync {
     }
 }
 
-/// 异步引擎最小接口（与同步 VirtualStorage 对齐）
+/// 异步引擎最小接口（与同步 VirtualStorage 对齐，ADR-0027：
+/// 对齐的是审计后的同步面——scan_suffix_kv/batch 不在 trait 上）
 pub trait VirtualStorageAsync {
     async fn put(&self, key: Vec<u8>, value: Vec<u8>);
     async fn get(&self, key: &[u8]) -> Option<Vec<u8>>;
@@ -115,6 +116,54 @@ pub trait VirtualStorageAsync {
     /// Range scan over FULL keys: `[begin, end)` byte order; None end =
     /// unbounded. The async mirror of the sync trait's `scan_range`.
     async fn scan_range(&self, begin: &[u8], end: Option<&[u8]>) -> Vec<Vec<u8>>;
+    /// Async mirror of the sync `scan_range_iter` (ADR-0027). The default
+    /// BUFFERS via `scan_range` + per-key `get` (N+1); SlatedbStore
+    /// overrides with a ONE-PASS materialization (see impl). Laziness is
+    /// deliberately NOT attempted: the sync `ScanIter::next` would need
+    /// `block_on`, and the async call site lives INSIDE a runtime —
+    /// re-entrant `block_on` panics (module header). ADR-0020 already
+    /// ruled the async surface small enough that buffering is harmless.
+    async fn scan_range_iter(
+        &self,
+        begin: &[u8],
+        end: Option<&[u8]>,
+    ) -> crate::engine::storage::ScanIter {
+        let mut pairs = Vec::new();
+        for k in self.scan_range(begin, end).await {
+            if let Some(v) = self.get(&k).await {
+                pairs.push((k, v));
+            }
+        }
+        crate::engine::storage::ScanIter::Buffered(pairs.into_iter())
+    }
+    /// Async mirror of the sync `commit_batch` (ADR-0027): one engine-level
+    /// write over all accumulated ops. Default replays through put/del;
+    /// engines with a native batch override (SlatedbStore ships slatedb's
+    /// `WriteBatch` as ONE `db.write` + durable wait).
+    async fn commit_batch(&mut self, batch: crate::engine::storage::MemBatch) -> Result<(), String> {
+        for (k, v) in batch.ops {
+            match v {
+                Some(v) => self.put(k, v).await,
+                None => self.del(&k).await,
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Prefix scan returning `(key suffix, value)` pairs — the async twin of
+/// the free `scan_suffix_kv` (ADR-0027; one pair-scan shape in both worlds).
+pub async fn scan_suffix_kv_async<S: VirtualStorageAsync + ?Sized>(
+    store: &S,
+    prefix: &[u8],
+) -> Vec<(Vec<u8>, Vec<u8>)> {
+    let end = crate::engine::storage::prefix_end(prefix);
+    store
+        .scan_range_iter(prefix, end.as_deref())
+        .await
+        .into_iter()
+        .map(|(full, v)| (full.get(prefix.len()..).unwrap_or(&[]).to_vec(), v))
+        .collect()
 }
 
 /// slatedb 包装。ns 前缀由 key 编码自带；一个 Db 可承载所有边类型。
@@ -178,6 +227,50 @@ impl VirtualStorageAsync for SlatedbStore {
             out.push(kv.key.to_vec());
         }
         out
+    }
+    /// Override of the buffered default (ADR-0027): materialize the range
+    /// in ONE native pass — keys and values come from the same
+    /// `DbIterator`, fixing the default's N+1 (`scan_range` + per-key
+    /// `get`). No lazy `SlatedbIter` wrapper here on purpose: its
+    /// `next()` calls `block_on`, which PANICS inside the async caller's
+    /// runtime (module header; the sync world's `SlatedbSync` is the only
+    /// legal home for the lazy adapter).
+    async fn scan_range_iter(
+        &self,
+        begin: &[u8],
+        end: Option<&[u8]>,
+    ) -> crate::engine::storage::ScanIter {
+        if let Some(end) = end {
+            if end <= begin {
+                return crate::engine::storage::ScanIter::Buffered(
+                    Vec::new().into_iter(),
+                );
+            }
+        }
+        let mut it = match end {
+            Some(end) => self.db.scan_prefix(b"", begin..end).await,
+            None => self.db.scan_prefix(b"", begin..).await,
+        }
+        .expect("slatedb scan failed");
+        let mut pairs = Vec::new();
+        while let Some(kv) = it.next().await.expect("slatedb iter failed") {
+            pairs.push((kv.key.to_vec(), kv.value.to_vec()));
+        }
+        crate::engine::storage::ScanIter::Buffered(pairs.into_iter())
+    }
+    /// Native batch (ADR-0027): slatedb's `WriteBatch` ships as ONE
+    /// `db.write` — a real single-write atomic form, not a replay; the
+    /// durable wait mirrors the sync engines' WAL boundary.
+    async fn commit_batch(&mut self, batch: crate::engine::storage::MemBatch) -> Result<(), String> {
+        let mut wb = slatedb::WriteBatch::new();
+        for (k, v) in &batch.ops {
+            match v {
+                Some(v) => wb.put(k.as_slice(), v.as_slice()),
+                None => wb.delete(k.as_slice()),
+            }
+        }
+        let h = self.db.write(wb).await.map_err(|e| e.to_string())?;
+        h.await_durable().await.map_err(|e| e.to_string())
     }
 }
 

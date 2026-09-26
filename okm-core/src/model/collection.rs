@@ -42,7 +42,7 @@ impl<S: VirtualStorage, E: KvJunction> Junction<S, E> {
     /// them all.
     pub fn save_into(
         &self,
-        batch: &mut impl crate::engine::storage::KvBatch,
+        batch: &mut crate::engine::storage::MemBatch,
         a: &<E::A as crate::model::index::Document>::Key,
         b: &<E::B as crate::model::index::Document>::Key,
     ) {

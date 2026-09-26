@@ -166,8 +166,7 @@ pub fn scan_reduces<S: VirtualStorage>(
     let mut prefix = Vec::with_capacity(ns.len() + 2);
     prefix.extend_from_slice(ns);
     prefix.extend_from_slice(&slot.to_be_bytes());
-    store
-        .scan_suffix_kv(&prefix)
+    okm_core::storage::scan_suffix_kv(store, &prefix)
         .into_iter()
         .collect()
 }

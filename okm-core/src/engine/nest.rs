@@ -34,7 +34,7 @@ use okm_wire::{
     OP_DELETE, OP_GET, OP_PUT, OP_SCAN, OP_SCAN_STREAM, OpFrame, OpResponse, TAIL_FINAL, TAIL_MORE,
 };
 
-use crate::engine::storage::{KvBatch, MemBatch, SharedVirtualStorage, VirtualStorage, prefix_end};
+use crate::engine::storage::{MemBatch, SharedVirtualStorage, VirtualStorage, prefix_end};
 
 // ============ sender side ============
 
@@ -164,11 +164,6 @@ impl VirtualStorage for RemoteStore {
             cursor: None,
             done: false,
         })
-    }
-
-    /// Batch = carrier accumulate only; the frame ships at commit.
-    fn batch(&mut self) -> MemBatch {
-        MemBatch::default()
     }
 
     /// One `commit_batch` = one frame = one receiver execution pass: the

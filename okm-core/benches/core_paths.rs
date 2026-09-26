@@ -11,7 +11,7 @@ use criterion::{criterion_group, criterion_main, BatchSize, Criterion, Throughpu
 use std::hint::black_box;
 
 use okm_core::{
-    KeyEncode, KvBatch, TestStore, ReduceCodec, ReduceLogic, Reversible, Reverse, Document, DocumentEncode,
+    KeyEncode, TestStore, ReduceCodec, ReduceLogic, Reversible, Reverse, Document, DocumentEncode,
     Collection, VarInt, VirtualStorage,
 };
 
@@ -202,7 +202,7 @@ fn bench_write_mock(c: &mut Criterion) {
         b.iter_batched(
             || {
                 let mut store = store.clone();
-                let mut batch = store.batch();
+                let mut batch = okm_core::MemBatch::default();
                 for i in 0..100u64 {
                     let k = make_key(i);
                     batch.put(k.encode(), make_row(i).encode_payload());

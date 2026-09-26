@@ -45,7 +45,7 @@ pub struct AuthorPost {
 #[test]
 fn save_into_defers_until_commit() {
     let mut store = TestStore::slatedb_mem();
-    let mut batch = store.batch();
+    let mut batch = okm_core::MemBatch::default();
     let t: Collection<TestStore, PostKey, Post> = Collection::new(store.clone());
 
     // Encode-only: nothing lands in any store.
@@ -69,7 +69,7 @@ fn save_into_defers_until_commit() {
 fn cross_collection_one_batch() {
     // Document collection + junction share one batch: both live or neither does.
     let mut store = TestStore::slatedb_mem();
-    let mut batch = store.batch();
+    let mut batch = okm_core::MemBatch::default();
 
     {
         let t: Collection<TestStore, PostKey, Post> = Collection::new(store.clone());

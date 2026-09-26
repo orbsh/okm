@@ -45,7 +45,7 @@ pub use model::presets::{Count, HighWater, LowAcc, LowWater, ReduceFieldSource, 
 pub use model::collection::Junction;
 pub use model::junction::KvJunction;
 pub use model::graph::{EdgeBody, EdgeFact, Graph, KvGraph, NodeRef};
-pub use engine::storage::{VirtualStorage, KvBatch, MemBatch, SharedVirtualStorage};
+pub use engine::storage::{VirtualStorage, MemBatch, SharedVirtualStorage, scan_suffix_kv};
 #[cfg(any(feature = "test-engines", feature = "fjall", feature = "redb"))]
 pub use engine::test_engine::TestStore;
 pub use engine::nest::{NestStorage, RemoteStore, VirtualHandle};
@@ -64,7 +64,9 @@ pub use bridge::tooling::parquet_io;
 #[cfg(feature = "fjall")]
 pub use engine::fjall_backend::FjallStore;
 #[cfg(feature = "slatedb")]
-pub use engine::slatedb_backend::{AsyncJunction, VirtualStorageAsync, SlatedbStore};
+pub use engine::slatedb_backend::{
+    AsyncJunction, VirtualStorageAsync, SlatedbStore, scan_suffix_kv_async,
+};
 
 // ================= path-compat re-exports =================
 // Downstream crates (okm-dynamic, okm-query, bindings) and tests import

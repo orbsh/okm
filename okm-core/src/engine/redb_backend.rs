@@ -144,10 +144,6 @@ impl VirtualStorage for RedbStore {
         super::storage::ScanIter::Redb(iter)
     }
 
-    fn batch(&mut self) -> MemBatch {
-        MemBatch::default()
-    }
-
     /// redb native: ONE write transaction over the whole batch — redb's
     /// own atomicity carries the mapping (the carrier stays
     /// engine-agnostic, MemBatch, same as fjall).
