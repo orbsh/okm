@@ -21,7 +21,7 @@
 //! acceptable for a vocabulary that only grows.
 
 use crate::model::index::{DICT_ID_SLOT, DICT_NAME_SLOT};
-use crate::engine::storage::{KvBatch, VirtualStorage};
+use crate::engine::storage::{scan_suffix_kv, MemBatch, VirtualStorage};
 use std::collections::HashMap;
 
 /// One dictionary cache, bound to one ns segment. Both directions plus
@@ -53,7 +53,7 @@ impl DictCache {
         // One engine batch writes both directions: the dictionary is
         // consistent even if the caller's own write fails later (extra
         // dictionary entries are harmless — names are append-only).
-        let mut batch = store.batch();
+        let mut batch = MemBatch::default();
         let mut id_key = header.to_vec();
         id_key.extend_from_slice(&DICT_ID_SLOT.to_be_bytes());
         id_key.extend_from_slice(&id.to_be_bytes());
@@ -117,7 +117,7 @@ impl DictCache {
         // slot 2: [header][2][id u16 BE] → name
         let mut p2 = header.to_vec();
         p2.extend_from_slice(&DICT_ID_SLOT.to_be_bytes());
-        for (suffix, name) in store.scan_suffix_kv(&p2) {
+        for (suffix, name) in scan_suffix_kv(store, &p2) {
             if suffix.len() != 2 {
                 continue;
             }
@@ -129,7 +129,7 @@ impl DictCache {
         // slot 3 mirrors; also derives next_id (max + 1).
         let mut p3 = header.to_vec();
         p3.extend_from_slice(&DICT_NAME_SLOT.to_be_bytes());
-        for (suffix, idv) in store.scan_suffix_kv(&p3) {
+        for (suffix, idv) in scan_suffix_kv(store, &p3) {
             if let Ok(n) = String::from_utf8(suffix) {
                 if idv.len() == 2 {
                     let id = u16::from_be_bytes([idv[0], idv[1]]);
@@ -147,7 +147,7 @@ impl DictCache {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::storage::{KvBatch, VirtualStorage};
+    use crate::engine::storage::{scan_suffix_kv, MemBatch, VirtualStorage};
     use crate::engine::test_engine::TestStore;
     use std::sync::{Arc, Mutex};
 
@@ -236,7 +236,7 @@ mod tests {
         let small = d.id_for(&mut store, HEADER, "small");
         assert!(small < 0xFF);
         // Directly seed an escaped-range name, then read it back.
-        let mut batch = store.batch();
+        let mut batch = MemBatch::default();
         let mut k2 = HEADER.to_vec();
         k2.extend_from_slice(&DICT_ID_SLOT.to_be_bytes());
         k2.extend_from_slice(&0x1234u16.to_be_bytes());

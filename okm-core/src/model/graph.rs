@@ -42,7 +42,7 @@
 //! encoding (empty for a fully dynamic edge; the dynamic segment slot-1
 //! entry, built by `put_fields`-style callers, is not touched here).
 
-use crate::engine::storage::{KvBatch, VirtualStorage};
+use crate::engine::storage::{MemBatch, VirtualStorage};
 use crate::model::index::{PRIMARY_SLOT, Slot};
 use crate::model::obj_dict::DictCache;
 
@@ -277,7 +277,7 @@ impl<S: VirtualStorage, E: KvGraph> Graph<S, E> {
         let dst_wire = fact.dst.encode();
         let id_be = edge_id.to_be_bytes();
 
-        let mut batch = self.store.batch();
+        let mut batch = MemBatch::default();
         batch.put(pk, body);
         // kind index (0x4): [kind_id][edge_id]
         batch.put(
@@ -317,7 +317,7 @@ impl<S: VirtualStorage, E: KvGraph> Graph<S, E> {
     /// the obj dictionary documents.
     pub fn link_into(
         &mut self,
-        batch: &mut impl KvBatch,
+        batch: &mut MemBatch,
         fact: &EdgeFact,
         edge: &E,
         edge_id: u64,
@@ -362,7 +362,7 @@ impl<S: VirtualStorage, E: KvGraph> Graph<S, E> {
         let dst_wire = parsed.dst.encode();
         let id_be = edge_id.to_be_bytes();
 
-        let mut batch = self.store.batch();
+        let mut batch = MemBatch::default();
         batch.del(&pk);
         batch.del(&self.face_key(EDGE_KIND_INDEX_SLOT, &[&parsed.kind_id.to_be_bytes(), &id_be]));
         batch.del(&self.face_key(EDGE_OUT_SLOT, &[&src_wire, &id_be]));

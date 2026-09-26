@@ -149,7 +149,7 @@ fn link_into_shares_one_batch_with_documents() {
     let mut g: Graph<_, Employment> = Graph::new(store.clone());
     let nodes = okm_core::Collection::new(store.clone());
 
-    let mut batch = store.batch();
+    let mut batch = okm_core::MemBatch::default();
     // A document write and an edge write into ONE batch.
     nodes.save_into(&mut batch, &UserId { id: 1 }, &User { active: 1 });
     let fact = EdgeFact { src: user(1), dst: org(9), kind: "employs".into(), attrs: Vec::new() };

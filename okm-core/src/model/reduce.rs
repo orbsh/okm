@@ -15,7 +15,7 @@
 //! the same declaration-order counter as indexes (append-only, never
 //! reused), allocated by the derive after the last index.
 
-use crate::engine::storage::VirtualStorage;
+use crate::engine::storage::{scan_suffix_kv, VirtualStorage};
 use crate::model::index::Document;
 
 /// Wire codec for a user accumulator. Deliberately not `serde`-shaped:
@@ -142,8 +142,7 @@ pub fn scan_reduces<S: VirtualStorage, A: Reduce>(
     let mut prefix = Vec::with_capacity(ns_prefix.len() + 2);
     prefix.extend_from_slice(ns_prefix);
     prefix.extend_from_slice(&A::SLOT.to_be_bytes());
-    store
-        .scan_suffix_kv(&prefix)
+    scan_suffix_kv(store, &prefix)
         .into_iter()
         .map(|(suffix, value)| (suffix, A::Acc::decode_acc(&value)))
         .collect()

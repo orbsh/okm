@@ -10,7 +10,7 @@
 //! deep copy, a kept clone would observe a different engine.
 
 use okm_core::{
-    KeyEncode, KvBatch, NestStorage, RemoteStore, DocumentEncode, Collection, TestStore, VirtualHandle,
+    KeyEncode, NestStorage, RemoteStore, DocumentEncode, Collection, TestStore, VirtualHandle,
     VirtualStorage,
 };
 
@@ -123,7 +123,7 @@ fn commit_batch_is_one_frame_one_commit() {
     // Cross-assembly atomicity (ADR-0003): the whole batch ships as one
     // frame; the receiver commits the op list in one `commit_batch` —
     // the sender's WAL boundary maps onto the receiver's.
-    let mut batch = remote.batch();
+    let mut batch = okm_core::MemBatch::default();
     batch.put(b"k1".to_vec(), b"v1".to_vec());
     batch.put(b"k2".to_vec(), b"v2".to_vec());
     batch.del(b"k0");

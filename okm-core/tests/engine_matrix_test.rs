@@ -3,7 +3,7 @@
 //! identical behavior for the core operations — key round trips,
 //! prefix scans, batch atomicity, and SharedVirtualStorage sharing.
 
-use okm_core::{KeyEncode, KvBatch, DocumentEncode, Collection, TestStore, VirtualStorage};
+use okm_core::{KeyEncode, DocumentEncode, Collection, TestStore, VirtualStorage};
 
 fn verify_engine(store: TestStore) {
     let name = store.name();
@@ -24,7 +24,7 @@ fn verify_engine(store: TestStore) {
     assert_eq!(s2.get(b"k1").as_deref(), Some(b"v1".as_slice()), "{name}: shared handle");
 
     // Batch atomicity: 100 ops in ONE commit_batch.
-    let mut batch = s.batch();
+    let mut batch = okm_core::MemBatch::default();
     for i in 0..100u64 {
         batch.put(format!("batch:{i}").into_bytes(), b"ok".to_vec());
     }
@@ -35,7 +35,7 @@ fn verify_engine(store: TestStore) {
     assert_eq!(s.scan_suffix(b"batch:").len(), 100, "{name}: all batch entries");
 
     // Batch failure handling: empty batch commits clean.
-    let empty = s.batch();
+    let empty = okm_core::MemBatch::default();
     s.commit_batch(empty).expect("{name}: empty batch");
 }
 

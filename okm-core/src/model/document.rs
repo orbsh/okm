@@ -6,7 +6,7 @@
 //! (indexed + includes fields live there), so put and delete are both
 //! document-shaped.
 
-use crate::engine::storage::{SharedVirtualStorage, VirtualStorage};
+use crate::engine::storage::{scan_suffix_kv, SharedVirtualStorage, VirtualStorage};
 use crate::model::index::{KvIndex, Document};
 use crate::model::key::{KeyEncode, PrefixKey};
 
@@ -162,7 +162,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     /// subscriptions must go through `put`/`upsert_with`; save_into is
     /// for batch-aligned bulk loads where the consumer settles those
     /// folds itself.
-    pub fn save_into(&self, batch: &mut impl crate::engine::storage::KvBatch, key: &K, document: &R) {
+    pub fn save_into(&self, batch: &mut crate::engine::storage::MemBatch, key: &K, document: &R) {
         batch.put(self.primary_key(key), document.encode_payload());
         for (ek, ev) in R::index_entries(key, document, &self.header()) {
             batch.put(ek, ev);
@@ -379,8 +379,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         let p = I::entry_prefix(&self.header(), encoded);
         let taken = I::key_prefix_width();
         let kl = K::KEY_LEN;
-        self.store
-            .scan_suffix_kv(&p)
+        scan_suffix_kv(&self.store, &p)
             .into_iter()
             .map(|(suffix, v)| {
                 assert!(suffix.len() >= taken, "index entry shorter than key prefix");

@@ -57,13 +57,9 @@ impl VirtualStorage for FjallStore {
     fn del(&self, key: &[u8]) {
         self.ks.remove(key).expect("fjall remove failed");
     }
-    fn batch(&mut self) -> MemBatch {
-        MemBatch::default()
-    }
-    /// fjall native: one `Batch::commit()` = one real WAL write over all
-    /// accumulated ops (batch() returns MemBatch for encoding; commit
-    /// replays into fjall's own cross-keyspace Batch — the atomicity is
-    /// fjall's, the carrier stays engine-agnostic).
+    /// fjall native: the op list executes in fjall's own cross-keyspace
+    /// `Batch` — one `Batch::commit()` = one real WAL write; the carrier
+    /// stays engine-agnostic (MemBatch), the atomicity is fjall's.
     fn commit_batch(&mut self, batch: MemBatch) -> Result<(), String> {
         let mut wb = self.db.batch();
         for (k, v) in &batch.ops {

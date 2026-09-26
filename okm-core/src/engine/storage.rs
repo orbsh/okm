@@ -72,36 +72,19 @@ pub trait VirtualStorage {
             .collect();
         ScanIter::Buffered(pairs.into_iter())
     }
-    /// Prefix scan returning `(key suffix, value)` pairs, in key order.
-    /// Default derives from `scan_suffix` + `get` (two lookups per hit);
-    /// engines override with a native pair scan when it matters.
-    fn scan_suffix_kv(&self, prefix: &[u8]) -> Vec<(Vec<u8>, Vec<u8>)> {
-        self.scan_suffix(prefix)
-            .into_iter()
-            .map(|sfx| {
-                let full = [prefix, sfx.as_slice()].concat();
-                let v = self.get(&full).unwrap_or_default();
-                (sfx, v)
-            })
-            .collect()
-    }
-    /// Open a write batch: [`KvBatch`] entries accumulate here, one
-    /// `commit()` = one engine-level WAL commit. This is the
-    /// cross-collection atomicity primitive (ADR-0003): single-collection
-    /// writes are already atomic inside `Collection::put`; primary + index
-    /// across two assembly points share one batch and commit once.
-    /// Default carrier is [`MemBatch`] (op list replayed by the engine
-    /// trait's own put/del); engines with a native batch API (fjall
-    /// `Batch`) override to wrap theirs — the single WAL commit is real,
+    /// Prefix scan returning `(key suffix, value)` pairs, in key order,
+    /// is NOT a trait method — it lives as the free function
+    /// [`scan_suffix_kv`] (ADR-0027).
+    /// Commit an accumulated [`MemBatch`]: one engine-level write over
+    /// all ops in the list. This is the cross-collection atomicity
+    /// primitive (ADR-0003): single-collection writes are already atomic
+    /// inside `Collection::put`; primary + index across two assembly
+    /// points share one batch and commit once. Default replays the op
+    /// list through put/del (single-threaded, so the sequence is atomic
+    /// within the caller's write order); engines with a native batch API
+    /// (fjall `Batch`, redb one write txn) override to execute the list
+    /// as ONE engine-level atomic unit — the single WAL commit is real,
     /// not a replay.
-    fn batch(&mut self) -> MemBatch {
-        MemBatch::default()
-    }
-    /// Commit a batch: one engine-level write over all accumulated ops.
-    /// Default replays the op list through put/del (single-threaded, so
-    /// the sequence is atomic within the caller's write order); engines
-    /// with a native batch override this to hand the carrier to the
-    /// engine's own commit (one real WAL write).
     fn commit_batch(&mut self, batch: MemBatch) -> Result<(), String> {
         for (k, v) in batch.ops {
             match v {
@@ -111,6 +94,26 @@ pub trait VirtualStorage {
         }
         Ok(())
     }
+}
+
+/// Prefix scan returning `(key suffix, value)` pairs, in key order:
+/// ONE pass over [`VirtualStorage::scan_range_iter`] (ADR-0027 moved this
+/// off the trait — its old default derived from `scan_suffix` + `get`,
+/// an N+1 shape no engine ever overrode).
+pub fn scan_suffix_kv<S: VirtualStorage>(
+    store: &S,
+    prefix: &[u8],
+) -> Vec<(Vec<u8>, Vec<u8>)> {
+    let end = prefix_end(prefix);
+    store
+        .scan_range_iter(prefix, end.as_deref())
+        .map(|(full, v)| {
+            (
+                full.get(prefix.len()..).unwrap_or(&[]).to_vec(),
+                v,
+            )
+        })
+        .collect()
 }
 
 /// An engine that can be genuinely shared across hosts and handles:
@@ -209,32 +212,22 @@ pub trait SharedVirtualStorage: VirtualStorage {
     fn shared_handle(&self) -> Self;
 }
 
-/// Engine-agnostic write batch: accumulates put/delete operations that
-/// commit together in one engine-level WAL write (ADR-0003).
-pub trait KvBatch {
-    fn put(&mut self, key: Vec<u8>, value: Vec<u8>);
-    fn del(&mut self, key: &[u8]);
-    /// Commit atomically: one WAL write over everything accumulated.
-    fn commit(self) -> Result<(), String>;
-}
-
-/// The default batch carrier: an ordered op list. Commit is a no-op on
-/// the carrier itself — the caller replays via the engine trait's own
-/// put/del; see [`VirtualStorage::batch`].
+/// The batch carrier: an ordered op list, accumulated by callers and
+/// consumed by one engine-level `commit_batch` (ADR-0027 retired the
+/// `KvBatch` trait — `batch()` returned this concrete type, so no engine
+/// could ever wrap a different carrier, and `KvBatch::commit` had zero
+/// callers: the commit boundary is the engine method, never the carrier).
 #[derive(Default)]
 pub struct MemBatch {
     pub ops: Vec<(Vec<u8>, Option<Vec<u8>>)>,
 }
 
-impl KvBatch for MemBatch {
-    fn put(&mut self, key: Vec<u8>, value: Vec<u8>) {
+impl MemBatch {
+    pub fn put(&mut self, key: Vec<u8>, value: Vec<u8>) {
         self.ops.push((key, Some(value)));
     }
-    fn del(&mut self, key: &[u8]) {
+    pub fn del(&mut self, key: &[u8]) {
         self.ops.push((key.to_vec(), None));
-    }
-    fn commit(self) -> Result<(), String> {
-        Ok(())
     }
 }
 

@@ -26,7 +26,7 @@ use okm_core::model::graph::{
 };
 use okm_core::obj_dict::DictCache;
 use okm_core::obj_dynamic::{decode_named, put_frame_named, DynamicValue};
-use okm_core::storage::{KvBatch, VirtualStorage};
+use okm_core::storage::{MemBatch, VirtualStorage};
 
 /// One dynamic edge fact: endpoints by reference, kind by name,
 /// attributes as a name-keyed map (nTLV frames on the wire, ids
@@ -124,7 +124,7 @@ impl<S: VirtualStorage> Graph<S> {
         body.extend_from_slice(&kind_id.to_be_bytes());
         body.extend_from_slice(&attr_wire);
 
-        let mut batch = self.store.batch();
+        let mut batch = MemBatch::default();
         batch.put(pk, body);
         batch.put(
             self.face_key(EDGE_KIND_INDEX_SLOT, &[&kind_id.to_be_bytes(), &id_be]),
@@ -149,7 +149,7 @@ impl<S: VirtualStorage> Graph<S> {
     /// cross-collection atomic path.
     pub fn link_into(
         &mut self,
-        batch: &mut impl KvBatch,
+        batch: &mut MemBatch,
         edge: &DynEdge,
         edge_id: u64,
     ) -> Result<(), String> {
@@ -194,7 +194,7 @@ impl<S: VirtualStorage> Graph<S> {
         let (src_wire, dst_wire, kind_id) = self.parse_body_head(&body)?;
         let id_be = edge_id.to_be_bytes();
 
-        let mut batch = self.store.batch();
+        let mut batch = MemBatch::default();
         batch.del(&pk);
         batch.del(&self.face_key(EDGE_KIND_INDEX_SLOT, &[&kind_id.to_be_bytes(), &id_be]));
         batch.del(&self.face_key(EDGE_OUT_SLOT, &[&src_wire, &id_be]));
