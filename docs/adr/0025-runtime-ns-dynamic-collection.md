@@ -13,9 +13,9 @@
 
 ## Context
 
-Aura's ADR-0026 (type-scoped actor storage) raised the question of which
+Aura's ADR-0026 (type-scoped booth storage) raised the question of which
 okm surface a host uses when the namespace is a RUN-TIME value: every
-registered actor type allocates one real ns from a registry, and the
+registered booth type allocates one real ns from a registry, and the
 application declares its collections in a schema carried at upload. Two
 candidate answers appeared:
 
@@ -38,13 +38,13 @@ and how the two schema carriers relate.
 - **Static mode — code generation.** Rust types + okm-derive; the
   compiler is the schema validator (key widths, offsets, index
   declarations are compile-time facts); `Collection<S, K, R>` is the
-  assembly point. For Rust hosts and wasm actors compiled from Rust
+  assembly point. For Rust hosts and wasm booths compiled from Rust
   source.
 - **Dynamic mode — schema as data.** A `CollectionSchema` value (exported
   from the static side via `CollectionSchema::of`, or authored as data) +
   okm-dynamic. `DynamicCollection` takes a run-time ns and the schema
   value; encode/decode mirrors the derive byte-for-byte. For
-  embedded-language actors (Python/Steel bindings) and hosts assembling
+  embedded-language booths (Python/Steel bindings) and hosts assembling
   collections at run time.
 
 For the same declaration the two carriers produce IDENTICAL bytes: same
@@ -68,11 +68,11 @@ the core.
 
 ### 3. Aura consumption shape (ADR-0026)
 
-- **python / steel actors**: `ctx.store.emit(op)` → the realm resolves
+- **python / steel booths**: `ctx.store.emit(op)` → the realm resolves
   the type's registry-allocated ns (`meta::ns_of`) and executes the op
-  through okm-dynamic `DynamicCollection` built on the actor's declared
+  through okm-dynamic `DynamicCollection` built on the booth's declared
   schema.
-- **wasm (Rust source) actors**: the static path compiled INTO the module
+- **wasm (Rust source) booths**: the static path compiled INTO the module
   — derive + `Collection` over a script-implemented `VirtualStorage`
   whose engine calls cross the host bridge. Full power: indexes, reduces,
   compile-time validation; no schema-data detour.

@@ -20,8 +20,8 @@ The verdict: SQL's core value is human-facing structured discipline. By holding 
 
 OKM carries ONE storage engine contract and ONE key layout, reached by two schema carriers:
 
-- **Static mode (code generation)** — Rust types + `#[derive(...)]` (okm-derive). The compiler IS the schema validator: key widths, offsets, and index declarations are compile-time facts; `Collection<S, K, R>` is the assembly point. For Rust hosts and wasm actors compiled from Rust source.
-- **Dynamic mode (schema data)** — a `CollectionSchema` value (exported from the static side by `okm_core::schema::CollectionSchema::of`, or authored as data) + okm-dynamic. `DynamicCollection` takes a run-time ns and the schema value; encode/decode mirrors the derive byte-for-byte. For embedded-language actors (Python/Steel via the bindings), hosts assembling collections at run time (aura ADR-0026: one real ns per actor type, allocated from a registry).
+- **Static mode (code generation)** — Rust types + `#[derive(...)]` (okm-derive). The compiler IS the schema validator: key widths, offsets, and index declarations are compile-time facts; `Collection<S, K, R>` is the assembly point. For Rust hosts and wasm booths compiled from Rust source.
+- **Dynamic mode (schema data)** — a `CollectionSchema` value (exported from the static side by `okm_core::schema::CollectionSchema::of`, or authored as data) + okm-dynamic. `DynamicCollection` takes a run-time ns and the schema value; encode/decode mirrors the derive byte-for-byte. For embedded-language booths (Python/Steel via the bindings), hosts assembling collections at run time (aura ADR-0026: one real ns per booth type, allocated from a registry).
 
 The two modes produce IDENTICAL bytes for the same declaration: same header discipline, same key encoding, same payload frames, same dictionary behavior. Data written by a compiled collection reads back through the dynamic one and vice versa — mode is a property of the WRITER, not the data. External API is aligned on purpose (put/get/scan/delete + document map), so application code shapes do not fork.
 
@@ -115,7 +115,7 @@ let (row, dynamic) = t.get_document(&key);
 t.put_document(&key, &fields);
 ```
 
-Embedded-language readers (Python / Steel Actors) consume the schema
+Embedded-language readers (Python / Steel Booths) consume the schema
 export through the dynamic codec — `bindings/okm-python` (PyO3) and
 `bindings/okm-steel` encode/decode byte-identically with the Rust
 derive; version-default migration applies on that path too.

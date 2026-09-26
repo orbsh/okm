@@ -18,7 +18,7 @@ ADR-0008 rules on the **event layer**: reduce/subscribe are inline/channel consu
 The ceiling was written when the bindings' only user was hypothetical. Two concrete deployment shapes have since emerged, and neither is served by an encode/decode-only binding:
 
 1. **Standalone Python applications.** fjall has no Python binding and raw KV is unwieldy; okm-dynamic is the answer — a semantic KV facade over a Python-held engine. In this shape the Python side is the ONLY writer; there is no "other side" to interoperate with. Telling this user "your writes cannot maintain index entries or reduce groups" excludes the primary consumer of the crate.
-2. **Aura actors in Python.** An actor produces okm operations and sends them to Aura for execution against nested storage. The actor's language is a deployment fact, not an interop requirement.
+2. **Aura booths in Python.** An booth produces okm operations and sends them to Aura for execution against nested storage. The booth's language is a deployment fact, not an interop requirement.
 
 The old reasoning assumed semantics require Rust compile-time code and therefore cannot exist on the binding side at all. That premise is wrong for function-shaped semantics: a function pointer is language-agnostic — what matters is that the same semantic contract is upheld, not which runtime executes it.
 
@@ -39,7 +39,7 @@ The declaration-side information of every semantic surface is already data (asso
 The exactly-once concern of ADR-0008 is preserved by a deployment-shape contract, not by an implementation-language ban:
 
 - **Embedded mode (Python owns the engine)**: single writer by construction. Fold/unfold run in-process inside the binding's put/delete, which must replicate the Rust write path's calling discipline exactly — put folds the new document, delete unfolds the stored one, overwrite unfolds the old document then folds the new one, all sharing the put path's engine batch. The calling discipline, not the language, is what the correctness rests on; a wrong call site is a silent accumulator drift, so it is the acceptance test's target.
-- **Remote mode (Aura: actor executes locally, remote executes mechanically)**: callables run in the actor's own runtime; operation payloads carry semantic RESULTS — derived entry bytes, absolute accumulator values ("acc becomes 42"), and the old document (or its version) for overwrite unfold. The remote executes them as one framed batch (ADR-0010 §2's single `commit_batch`), so document write + accumulator update stay atomic without the remote understanding either. The remote never hosts callables, never parses semantics — ADR-0010's receiver contract is untouched.
+- **Remote mode (Aura: booth executes locally, remote executes mechanically)**: callables run in the booth's own runtime; operation payloads carry semantic RESULTS — derived entry bytes, absolute accumulator values ("acc becomes 42"), and the old document (or its version) for overwrite unfold. The remote executes them as one framed batch (ADR-0010 §2's single `commit_batch`), so document write + accumulator update stay atomic without the remote understanding either. The remote never hosts callables, never parses semantics — ADR-0010's receiver contract is untouched.
 
 The ruled-out alternative — delegating function execution to the remote environment or embedding callables in operation payloads — is rejected on both complexity and principle: it makes the remote a runtime for foreign code, inverting ADR-0010 §7's "receiver hosts an engine, not execution" and re-coupling the wire to host runtimes.
 
@@ -47,19 +47,19 @@ The ruled-out alternative — delegating function execution to the remote enviro
 
 Local execution of reduce across a remote link changes the consistency envelope in one case: **multiple writers to the same reduce group**. The Rust-native fold is engine-lock-atomic per writer; a locally-executed fold computes from a local view of the accumulator, so two writers folding the same group concurrently lose updates. This is resolved by the ownership rule:
 
-- **Single-writer-per-group is a precondition of the remote reduce mode.** Aura's partitioned actor model satisfies it by construction (an actor owns the data it writes). Under the same rule the actor may cache the accumulator locally — it IS the authoritative value — so steady-state puts carry an absolute acc and cost zero extra round trips; only restart recovery reads the acc once (an explicit contrast with the Redis-style shared-RMW pattern, which needs CAS/transactions precisely because it has multiple writers).
-- Multi-writer groups do not fit this mode. Their semantic execution belongs in the owning process (Rust-side derive, or a dedicated owner actor). This is a scope boundary, not a limitation to be engineered away.
+- **Single-writer-per-group is a precondition of the remote reduce mode.** Aura's partitioned booth model satisfies it by construction (an booth owns the data it writes). Under the same rule the booth may cache the accumulator locally — it IS the authoritative value — so steady-state puts carry an absolute acc and cost zero extra round trips; only restart recovery reads the acc once (an explicit contrast with the Redis-style shared-RMW pattern, which needs CAS/transactions precisely because it has multiple writers).
+- Multi-writer groups do not fit this mode. Their semantic execution belongs in the owning process (Rust-side derive, or a dedicated owner booth). This is a scope boundary, not a limitation to be engineered away.
 
 ### Semantic alignment, not interop
 
 Rust and Python functions implementing the same declared surface never cross a runtime boundary: no callable is serialized, shipped, or executed on the other side. "Alignment" therefore means **semantic equivalence against the contract**: the same declared schema, driven from either side, produces the same entries, the same accumulator evolution, the same unfold compensation. Acceptance:
 
 1. Embedded mode: a schema declared on the binding side, driven purely from Python, exhibits contract-conformant semantics — the calling-discipline test (put/delete/overwrite against the accumulator) is the core case.
-2. Remote mode: operations produced by a Python actor, executed on a remote engine, land byte-identically to the same operations produced Rust-side (the existing cross-language byte-equality tests, extended from codec bytes to semantic entries).
+2. Remote mode: operations produced by a Python booth, executed on a remote engine, land byte-identically to the same operations produced Rust-side (the existing cross-language byte-equality tests, extended from codec bytes to semantic entries).
 
 ## Consequences
 
 - okm-dynamic gains callable-carrying surfaces: `AccessMethod` grows func/admits variants; `DynamicCollection::put`/`delete` grow the reduce calling discipline. The byte-layout work is small (the encoders exist); the calling-discipline work is where correctness lives.
 - The "permanent ceiling" wording in okm-dynamic's doc comments and the PLAN item is corrected to this ADR's scoped ruling: **subscribe excluded; everything else callable-implementable under the deployment-shape contract**.
 - ADR-0008 is not modified: its event-layer design holds for the Rust-native path, and its exactly-once invariant is what this ADR re-derives as a deployment-shape contract instead of an implementation-language ban.
-- Rejected-for-now, not rejected-ever: subscribe alignment. If a host-language consumer story emerges (an actor wanting reduce-group events in-process), it reopens with the channel protocol as the design surface.
+- Rejected-for-now, not rejected-ever: subscribe alignment. If a host-language consumer story emerges (an booth wanting reduce-group events in-process), it reopens with the channel protocol as the design surface.

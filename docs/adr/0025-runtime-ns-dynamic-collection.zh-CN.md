@@ -8,7 +8,7 @@
 
 ## Context
 
-aura 的 ADR-0026（类型级 actor 存储）引出一个问题：当 namespace 是**运行时值**时，宿主应使用 okm 的哪个接口面——每个注册的 actor 类型从注册表分配一个真实 ns，应用在 upload 时携带 schema 声明自己的 collection。出现过两个候选答案：
+aura 的 ADR-0026（类型级 摊位 存储）引出一个问题：当 namespace 是**运行时值**时，宿主应使用 okm 的哪个接口面——每个注册的 摊位 类型从注册表分配一个真实 ns，应用在 upload 时携带 schema 声明自己的 collection。出现过两个候选答案：
 
 1. 在 okm-core 新增一种 collection 类型，key 是运行时字段帧（保序 wire、解码时携带 `KeyKind` 清单）。
 2. **既有的** okm-dynamic `DynamicCollection`：运行时 ns 构造器，key 按 `CollectionSchema` 值编码——与 derive 产出相同的定宽 BE 纪律。
@@ -19,8 +19,8 @@ aura 的 ADR-0026（类型级 actor 存储）引出一个问题：当 namespace 
 
 ### 1. 一个引擎契约、一套键布局、两个 schema 载体
 
-- **静态模式——代码生成。** Rust 类型 + okm-derive；编译器即 schema 校验器（键宽、偏移、索引声明是编译期事实）；组装点是 `Collection<S, K, R>`。面向 Rust 宿主与 Rust 源码编译的 wasm actor。
-- **动态模式——schema 即数据。** 一个 `CollectionSchema` 值（静态侧经 `CollectionSchema::of` 导出，或以数据形式编写）+ okm-dynamic。`DynamicCollection` 接受运行时 ns 与 schema 值；编解码与 derive 逐字节一致。面向嵌入式语言 actor（Python/Steel bindings）与运行时组装 collection 的宿主。
+- **静态模式——代码生成。** Rust 类型 + okm-derive；编译器即 schema 校验器（键宽、偏移、索引声明是编译期事实）；组装点是 `Collection<S, K, R>`。面向 Rust 宿主与 Rust 源码编译的 wasm 摊位。
+- **动态模式——schema 即数据。** 一个 `CollectionSchema` 值（静态侧经 `CollectionSchema::of` 导出，或以数据形式编写）+ okm-dynamic。`DynamicCollection` 接受运行时 ns 与 schema 值；编解码与 derive 逐字节一致。面向嵌入式语言 摊位（Python/Steel bindings）与运行时组装 collection 的宿主。
 
 对同一声明，两个载体产生**完全相同的字节**：同一 header 纪律、同一键编码、同一 payload 帧、同一字典行为。一方写的数据另一方读得回来——**模式是写入方的属性，不是数据的属性**。外部 API 刻意对齐（put/get/scan/delete + document map），应用代码形状不分叉。
 
@@ -30,8 +30,8 @@ okm-core 宿主**共享运行时**：引擎契约（`VirtualStorage`）、编译
 
 ### 3. aura 消费形态（ADR-0026）
 
-- **python / steel actor**：`ctx.store.emit(op)` → realm 解析类型注册分配的 ns（`meta::ns_of`），经 okm-dynamic `DynamicCollection`（按 actor 声明的 schema 构建）执行 op。
-- **wasm（Rust 源码）actor**：静态路径编译**进模块**——derive + `Collection`，脚本在宿主桥之上实现 `VirtualStorage`，引擎调用跨桥执行。完全体：索引、reduce、编译期校验；无 schema 数据绕行。
+- **python / steel 摊位**：`ctx.store.emit(op)` → realm 解析类型注册分配的 ns（`meta::ns_of`），经 okm-dynamic `DynamicCollection`（按 摊位 声明的 schema 构建）执行 op。
+- **wasm（Rust 源码）摊位**：静态路径编译**进模块**——derive + `Collection`，脚本在宿主桥之上实现 `VirtualStorage`，引擎调用跨桥执行。完全体：索引、reduce、编译期校验；无 schema 数据绕行。
 - 两者在同一 ns 写相同字节，数据跨载体语言可互操作。
 
 ## Honest semantic cost

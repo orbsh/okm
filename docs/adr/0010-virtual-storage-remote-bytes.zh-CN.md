@@ -11,7 +11,7 @@ Status: Accepted. **更新 2026-09-12，改名落地**：trait 现在直接命�
 三个独立需求汇聚到同一机制：
 
 1. **Krystallizer 托管在 Aura 上** —— Krystallizer 的存储要能落在 Aura 节点（远程部署），且不改存储语义。它的引擎选型至今：mock / fjall / slatedb。
-2. **多语言 Actor 需要 KV 语义** —— Python/Steel Actor（嵌入式、零 IPC 拓扑）要 OKM 的编码纪律但不能手拼 key。它们需要一个 schema 驱动的动态 codec。
+2. **多语言 摊位 需要 KV 语义** —— Python/Steel 摊位（嵌入式、零 IPC 拓扑）要 OKM 的编码纪律但不能手拼 key。它们需要一个 schema 驱动的动态 codec。
 3. **多租户隔离** —— 多个应用共享一个 Aura 节点的物理引擎；隔离必须是结构性的，不是命名过滤。
 
 第一直觉是做「远程 KV 协议」：声明端点 + 专用 TCP 服务。它在三条上全失败：通道已存在的情况下分叉第二套传输（Probe→控制面是出站 WS 连接；域内调用是 realm 事件），且在数据已经是编码字节的地方制造了一个协议。
@@ -58,9 +58,9 @@ OKM 的写路径本来就是双写（一次 batch 内主表 + 索引条目）。
 
 ### 3. OKM 实例互不相关；接收方桥是唯一交叉点
 
-Aura 自己的应用数据、Krystallizer 的记忆图、未来的 Python/Steel Actor（dynamic OKM）各自运行自己的进程内 OKM、自己的声明 schema。这些实例共享 nothing。唯一交叉点是 Aura 的远程存储接收方——它向远程 VirtualStorage 后端服务字节流，且不理解任何内容。
+Aura 自己的应用数据、Krystallizer 的记忆图、未来的 Python/Steel 摊位（dynamic OKM）各自运行自己的进程内 OKM、自己的声明 schema。这些实例共享 nothing。唯一交叉点是 Aura 的远程存储接收方——它向远程 VirtualStorage 后端服务字节流，且不理解任何内容。
 
-Dynamic OKM 不过这个桥：同进程 Actor 直接持有引擎；动态 codec 是从 `describe()`/`json_schema()` 导出生成的 schema 驱动编解码器，进程内使用。能力天花板，永久的：dynamic 侧无 reduce/subscribe（fold/unfold 是 Rust 编译期逻辑，动态重建会破坏恰好一次）。
+Dynamic OKM 不过这个桥：同进程 摊位 直接持有引擎；动态 codec 是从 `describe()`/`json_schema()` 导出生成的 schema 驱动编解码器，进程内使用。能力天花板，永久的：dynamic 侧无 reduce/subscribe（fold/unfold 是 Rust 编译期逻辑，动态重建会破坏恰好一次）。
 
 引擎选择是组装点级的，且可自由混用：本地 Table 绑本地引擎，同进程另一个 Table 绑 remote 后端（「转发」——语义相同，只是引擎选了 remote）。没有需要防守的混用冲突：接收方前缀是接收方套的封装，不是发送方键形的组成部分，所以本地 `[ns 2B]` 键与托管 `[prefix][ns 2B]` 字节不会在同一引擎里相遇——除非接收方自己选择把它们放一起。无保留前缀值。
 
@@ -107,6 +107,6 @@ Dynamic OKM 不过这个桥：同进程 Actor 直接持有引擎；动态 codec 
 ## Consequences
 
 - Krystallizer 的存储配置变四选一：mock / fjall / slatedb / virtual(→Aura)。OKM 语义层（Table/index/reduce/事件）不变。
-- Aura 增加一个 Storage Actor 托管 `NestStorage` (with `#[ok_ns]`) 执行器：每应用一个声明实例（各一个声明前缀），帧来自 VirtualStorage 后端或 realm 事件；同机调用方进程内连接。
+- Aura 增加一个 Storage 摊位 托管 `NestStorage` (with `#[ok_ns]`) 执行器：每应用一个声明实例（各一个声明前缀），帧来自 VirtualStorage 后端或 realm 事件；同机调用方进程内连接。
 - 帧格式最小且稳定（`op + bytes`）；它不是 OKM 实例间的兼容面——只是发送方 trait 边界与接收方引擎之间的。OKM 编码演化无需改帧。
 - 写侧串行是接收方引擎的普通单写者行为，不因远程而改变。

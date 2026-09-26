@@ -9,7 +9,7 @@
 
 在 okm 的主要消费方（aura）里发现的缺陷，暴露出了一条从未写下过的规则：
 
-- actor state 被存成 **JSON 文本**——`serde_json::to_vec(value)`，每个字段一块。
+- 摊位 state 被存成 **JSON 文本**——`serde_json::to_vec(value)`，每个字段一块。
 - 该 realm 里的 okm 表却经由**裸字节 trait**（`VirtualStorage`）驱动，而那个 impl 架在**值类型为 JSON 的 store 之上**：写的时候，okm 的字节被 **base64** 编码成 JSON 字符串，因为夹在中间的容器只能装文本。
 
 三种税是机械后果，但真正的发现是因果链：**从来没有理由把字节编码成 base64。** 只是存储路径中间塞了一个文本容器，而只能装文本的容器会强迫字节以文本形式表示。base64 不是设计决策，它是“容器放错位置”的签名。
@@ -36,21 +36,21 @@ JSON、YAML、TOML、XML、CSV——文本是**接口**货币。文本编码可�
 
 ### 4. 消费方把表绑到 okm 引擎上，而不是绑到自己的 state store 上
 
-消费方保留它 API 需要的货币——aura 保留 JSON，因为它的 actor 是多语言脚本、而且 LLM 是协议的一方——然后在**接缝处转换一次**，通过单一一个 `serde_json::Value ↔ DynamicValue` 模块。表本身绑到讲 okm 货币的引擎上。
+消费方保留它 API 需要的货币——aura 保留 JSON，因为它的 摊位 是多语言脚本、而且 LLM 是协议的一方——然后在**接缝处转换一次**，通过单一一个 `serde_json::Value ↔ DynamicValue` 模块。表本身绑到讲 okm 货币的引擎上。
 
-工作中的范例（待 aura 实现）：删掉 `StoreAsVirtual`（那个 base64 适配器）；mq 表绑到同一条 fjall 数据库上的 `FjallStore`，用它们自己的 keyspace；actor state 变成每个实例一行文档，于是 state 二进制原生、且能被 okm 自己的机制读取。
+工作中的范例（待 aura 实现）：删掉 `StoreAsVirtual`（那个 base64 适配器）；mq 表绑到同一条 fjall 数据库上的 `FjallStore`，用它们自己的 keyspace；摊位 state 变成每个实例一行文档，于是 state 二进制原生、且能被 okm 自己的机制读取。
 
 ## 备选方案
 
 - **保留 JSON 值类型的 store 作为存储货币**（现状）。否决：上面三种税，且每一张 okm 表都被迫穿过一个装不下它内容的容器。
-- **把 actor API 的货币换成 `DynamicValue`**（系统里完全没有 JSON）。暂否决：API 的消费方是多语言脚本与 LLM，它们的天然货币就是 JSON——那正是 JSON 该待的地方。若 API 日后需要超出 JSON 的二进制保真，那是另一个决定，而存储层不再等它。
+- **把 摊位 API 的货币换成 `DynamicValue`**（系统里完全没有 JSON）。暂否决：API 的消费方是多语言脚本与 LLM，它们的天然货币就是 JSON——那正是 JSON 该待的地方。若 API 日后需要超出 JSON 的二进制保真，那是另一个决定，而存储层不再等它。
 - **把文本编码换成更好的**（用 CBOR/postcard 替 JSON，或用更密的 base64 字母表）。否决：在优化错误的容器。
 - **每字段一行、值用手工编码的 `DynamicValue` 帧**。否决：那是伸手进 okm 内部的帧编码，而不是走公开的文档 API。
 - **迁移已有的字节**。否决，改用干净断开（项目未上生产，盘上没有真实数据）。若哪天这不成立了，迁移就是一个只读读取器、经正常写入路径重建一切——restore path，绝不是第二条写通道。
 
 ## 后果
 
-- **aura**：删掉 `StoreAsVirtual`；mq 表绑到 `FjallStore`（同一数据库、独立 keyspace）；actor state 表示为每实例一行文档；已有的 mq/state 字节被丢弃（干净断开）——这一点明写在 ADR 里，不藏在迁移背后。
+- **aura**：删掉 `StoreAsVirtual`；mq 表绑到 `FjallStore`（同一数据库、独立 keyspace）；摊位 state 表示为每实例一行文档；已有的 mq/state 字节被丢弃（干净断开）——这一点明写在 ADR 里，不藏在迁移背后。
 - **一般消费方**：值模型就是契约。存下的文本 blob 即使“看起来能跑”，也是评审发现项。
 - **probe**：不受影响——它根本不持有存储（ADR-0010 §7）。
 - **执行是判据，不是品味**：要问的是“引擎保存的是什么”，不是“线上传的是什么”。
