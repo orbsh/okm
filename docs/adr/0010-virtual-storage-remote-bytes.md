@@ -16,7 +16,7 @@ Three independent needs converge on the same mechanism:
 1. **Krystallizer hosting on Aura** — Krystallizer's storage must be able to
    live on the Aura node (remote deployment) without changing its storage
    semantics. Its engine choice so far: mock / fjall / slatedb.
-2. **Multi-language Actors need KV semantics** — Python/Steel Actors
+2. **Multi-language Booths need KV semantics** — Python/Steel Booths
    (embedded, zero-IPC topology) want OKM's encoding discipline without
    hand-assembling keys. They need a schema-driven dynamic codec.
 3. **Multi-tenant isolation** — multiple applications share an Aura node's
@@ -113,12 +113,12 @@ No semantic parsing anywhere:
 ### 3. OKM instances are unrelated; the receiver bridge is the only crossing
 
 Aura's own application data, Krystallizer's memory graph, and future
-Python/Steel Actors (dynamic OKM) each run their own in-process OKM with
+Python/Steel Booths (dynamic OKM) each run their own in-process OKM with
 their own declared schema. These instances share nothing. The ONLY crossing
 point is Aura's remote-storage receiver, which serves byte streams to remote
 VirtualStorage backends and understands none of their content.
 
-Dynamic OKM does NOT cross this bridge: same-process Actors hold the engine
+Dynamic OKM does NOT cross this bridge: same-process Booths hold the engine
 directly; the dynamic codec is a schema-driven encoder/decoder generator
 built from `describe()`/`json_schema()` exports, used in-process.
 Capability ceiling, permanent: no reduce/subscribe on the dynamic side
@@ -254,7 +254,7 @@ alone does not turn an execution node into a storage host.
 
 - Krystallizer's storage config becomes four-way: mock / fjall / slatedb /
   virtual(→Aura). OKM semantic layers (Table/index/reduce/events) unchanged.
-- Aura gains a Storage Actor hosting `NestStorage` (with `#[ok_ns]`) executors: one declared
+- Aura gains a Storage Booth hosting `NestStorage` (with `#[ok_ns]`) executors: one declared
   instance per application (one declared prefix each), frames arrive from
   VirtualStorage backends or realm events; same-machine callers connect
   in-process.

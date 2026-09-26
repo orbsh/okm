@@ -434,7 +434,7 @@ key bare in the tail) recorded in ADR-0005.
       No CI regression gates initially.
 - [~] Dynamic codec (Python first, then Steel): schema-driven
       encoder/decoder/scan built from structured schema exports —
-      in-process use for embedded-language Actors. Capability ceiling
+      in-process use for embedded-language Booths. Capability ceiling
       RESCOPED (2026-09-22, ADR-0022): subscribe stays excluded; func/
       partial indexes and reduce become binding-implementable under the
       deployment-shape contract (see the ADR-0022 checklist item). Core
@@ -482,16 +482,16 @@ key bare in the tail) recorded in ADR-0005.
       declared acc codec). Subscribe stays excluded (write-path
       broadcast, not a per-document derivation). Deployments:
       embedded (Python owns the engine, single writer, in-process
-      calling discipline) and remote/Aura (callables run in the actor,
+      calling discipline) and remote/Aura (callables run in the booth,
       operation payloads carry semantic RESULTS — derived entry bytes,
       absolute acc values, old document for overwrite unfold; remote
       executes as one framed batch, never hosts callables). Precondition
       for remote reduce: single-writer-per-group (Aura's partitioned
-      actor model satisfies it); steady-state puts carry an absolute
+      booth model satisfies it); steady-state puts carry an absolute
       acc at zero extra round trips, only restart recovery reads once;
       document write + acc update are atomic via the framed batch.
       Acceptance: (1) embedded — calling-discipline test (put/delete/
-      overwrite vs accumulator); (2) remote — Python-actor operations
+      overwrite vs accumulator); (2) remote — Python-booth operations
       land byte-identically to Rust-side (cross-language byte equality,
       extended from codec bytes to semantic entries). Implementation:
       okm-dynamic `AccessMethod` func/admits variants + `DynamicCollection`
@@ -529,7 +529,7 @@ key bare in the tail) recorded in ADR-0005.
       (same group overwrite) — matches the receiver's in-frame execution
       order. Python binding grows `plan_put`/`plan_delete` (dict in →
       `(wire frame bytes, new_accs receipt)` out; `decode_stored` refills
-      the actor's old-document cache) — Python wraps, all encoding lives
+      the booth's old-document cache) — Python wraps, all encoding lives
       Rust-side. okm-wire gains `OpFrame::write_batch` (the ADR-0010 §2
       MemBatch→frame mapping; `RemoteStore::commit_batch` now shares it;
       zero new op tags). Locked by accept_remote.py: the same scenario
@@ -1067,7 +1067,7 @@ bytes; doing them after P3 means hex locks change once, not twice.
       preserving dynamic key frames) was withdrawn: the dynamic mode's
       home is okm-dynamic, and keys are schema-typed there — a second
       key wire would break the byte-equality contract.
-- Consumer: aura ADR-0026 type-scoped actor storage — python/steel
-  actors execute through okm-dynamic `DynamicCollection` at the type's
-  registry-allocated ns; wasm (Rust source) actors use the static path
+- Consumer: aura ADR-0026 type-scoped booth storage — python/steel
+  booths execute through okm-dynamic `DynamicCollection` at the type's
+  registry-allocated ns; wasm (Rust source) booths use the static path
   (derive + `Collection`) compiled into the module.

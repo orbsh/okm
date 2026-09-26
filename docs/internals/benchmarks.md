@@ -132,7 +132,7 @@ Reading the table honestly:
   across all of them.
 - Throughput: Redis single-core ~145K ops/s (I/O bound); OKM single
   thread ~700K semantic puts/s (1.3 µs each). The honest statement: for
-  in-process Actor storage (OKM's design point), the network service's
+  in-process Booth storage (OKM's design point), the network service's
   latency floor is a cost you delete — and if a network surface is
   needed, wrapping a host in the service's connection plane rebuilds
   the Redis shape without the Redis patterns.

@@ -109,7 +109,7 @@ envelope lives only in the receiver's handler parsing code.
 ### Shape B: OKM as the WS app's storage service
 
 The reverse embedding — the WS app is the storage client, OKM runs in
-its own process (or the same process, different actor), reachable
+its own process (or the same process, different booth), reachable
 through a topic. Identical to Shape A with the roles of the two
 envelope sides swapped; the adapter and transport trait are the same
 two pieces.
