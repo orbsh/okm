@@ -269,15 +269,21 @@ struct ExecCore<S: VirtualStorage> {
     prefix: Option<Vec<u8>>,
 }
 
+/// One queued request on the reference mpsc transport: where to send the
+/// response (fire-and-forget writers drop their end), and the raw frame.
+type ExecRequest = (mpsc::Sender<OpResponse>, Vec<u8>);
+
 pub struct NestStorage<S: VirtualStorage> {
-    engine: Arc<Mutex<S>>,
-    /// `Some` = hosted (multi-tenant, declared via `#[ok_ns]`): every
-    /// key enters as `[prefix][sender bytes]`. `None` = bare shard
-    /// (single instance per engine, sharding routed by the orchestrator):
-    /// frames execute byte-identical — the sender's keyspace IS the
-    /// engine's keyspace.
-    prefix: Option<Vec<u8>>,
-    exec_rx: mpsc::Receiver<(mpsc::Sender<OpResponse>, Vec<u8>)>,
+    /// Shared execution core — the pump thread and every `apply` caller
+    /// serialize on the same engine mutex. Holding the core (not engine +
+    /// prefix separately) makes `Arc<NestStorage>` `Send + Sync`
+    /// by construction (WS-CHANNEL.md), with no receiver half inside.
+    core: Arc<ExecCore<S>>,
+    /// Receiver half of the reference mpsc transport, parked here until
+    /// `serve` moves it into the pump thread. `Mutex<Option<..>>` (not a
+    /// bare `Receiver`, which is `!Sync`) keeps the struct `Sync` both
+    /// before and after serving; after `serve` it stays `None` forever.
+    exec_rx: Mutex<Option<mpsc::Receiver<ExecRequest>>>,
 }
 
 impl<S: SharedVirtualStorage + Send + 'static> NestStorage<S> {
@@ -307,13 +313,15 @@ impl<S: SharedVirtualStorage + Send + 'static> NestStorage<S> {
         handle
     }
 
-    fn with_prefix(engine: S, prefix: Option<Vec<u8>>) -> (Self, VirtualHandle) {
+    pub fn with_prefix(engine: S, prefix: Option<Vec<u8>>) -> (Self, VirtualHandle) {
         let (exec_tx, exec_rx) = mpsc::channel();
         (
             Self {
-                engine: Arc::new(Mutex::new(engine)),
-                prefix,
-                exec_rx,
+                core: Arc::new(ExecCore {
+                    engine: Arc::new(Mutex::new(engine)),
+                    prefix,
+                }),
+                exec_rx: Mutex::new(Some(exec_rx)),
             },
             VirtualHandle { exec_tx },
         )
@@ -326,18 +334,17 @@ impl<S: SharedVirtualStorage + Send + 'static> NestStorage<S> {
     /// `docs/integration/WS-CHANNEL.md`). An async receiver would
     /// task-spawn the same loop.
     pub fn serve(self) -> Arc<Self> {
-        // Split: the engine+prefix go into a pump struct (Clone-able
-        // core), the receiver end moves into the pump thread (mpsc
-        // Receiver is not Sync — it owns its end exclusively, the
-        // correct shape anyway). The returned Arc shares the same
-        // engine/prefix, so `apply` from a WS adapter and the pump
-        // serialize on the same mutex.
-        let core = Arc::new(ExecCore {
-            engine: self.engine,
-            prefix: self.prefix,
-        });
-        let pump_rx = self.exec_rx;
-        let pump_core = Arc::clone(&core);
+        // The receiver end moves into the pump thread (it owns its end
+        // exclusively, the correct shape anyway). Pump and returned
+        // intake share the SAME core, so `apply` from a WS adapter and
+        // the pump serialize on the same engine mutex.
+        let pump_rx = self
+            .exec_rx
+            .lock()
+            .expect("exec_rx lock")
+            .take()
+            .expect("serve called twice");
+        let pump_core = Arc::clone(&self.core);
         std::thread::spawn(move || {
             for (reply_tx, bytes) in pump_rx {
                 let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| pump_core.apply(&bytes)));
@@ -350,22 +357,14 @@ impl<S: SharedVirtualStorage + Send + 'static> NestStorage<S> {
                 }
             }
         });
-        Arc::new(Self {
-            engine: Arc::clone(&core.engine),
-            prefix: core.prefix.clone(),
-            exec_rx: mpsc::channel().1, // placeholder: this instance's intake is the returned Arc's `apply`
-        })
+        Arc::new(self)
     }
 
     /// Transport-free intake: the WS/UDS adapter calls this on the
     /// `Arc<NestStorage>` returned by `serve` (see
     /// `docs/integration/WS-CHANNEL.md`).
     pub fn apply(&self, bytes: &[u8]) -> Option<OpResponse> {
-        ExecCore {
-            engine: Arc::clone(&self.engine),
-            prefix: self.prefix.clone(),
-        }
-        .apply(bytes)
+        self.core.apply(bytes)
     }
 }
 
