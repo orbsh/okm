@@ -10,7 +10,7 @@ fn length_codec_four_buckets() {
     // inline (≤63): one byte, high 2 bits = 00
     let mut b = Vec::new();
     put_len(&mut b, 63);
-    assert_eq!(b, vec![0x00 | 63]);
+    assert_eq!(b, vec![63]);
     b.clear();
     put_len(&mut b, 0);
     assert_eq!(b, vec![0]);

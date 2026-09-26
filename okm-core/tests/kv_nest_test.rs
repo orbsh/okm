@@ -65,8 +65,8 @@ fn two_instances_isolated_by_declared_prefix() {
 
     let h1 = AppStorage::serve(TestStore::slatedb_mem());
     let h2 = OtherStorage::serve(TestStore::slatedb_mem());
-    let mut s1 = h1.open();
-    let mut s2 = h2.open();
+    let s1 = h1.open();
+    let s2 = h2.open();
 
     s1.put(b"k".to_vec(), b"one".to_vec());
     s2.put(b"k".to_vec(), b"two".to_vec());

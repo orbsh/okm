@@ -63,7 +63,6 @@ macro_rules! impl_varint {
                     out[0] = 0xFF;
                     out[1..].copy_from_slice(&v.to_be_bytes());
                 } else {
-                    let payload_bits = (w - 1) * 8 + (8 - w);
                     out[0] = wire::prefix(w) | ((v >> ((w - 1) * 8)) as u8 & (0xFF >> w));
                     let low = v & ((1u64 << ((w - 1) * 8)) - 1);
                     let lb = low.to_be_bytes();

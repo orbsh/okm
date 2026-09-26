@@ -63,11 +63,11 @@ impl ReduceCodec for TagTotals {
 impl ReduceLogic for TagTotals {
     type Document = BenchRow;
     type Acc = TagTotals;
-    fn fold(acc: &mut TagTotals, item: &BenchRow) {
+    fn fold(acc: &mut TagTotals, _key: &BenchKey, item: &BenchRow) {
         acc.count += 1;
         acc.sum += item.score.0;
     }
-    fn unfold(acc: &mut TagTotals, item: &BenchRow) {
+    fn unfold(acc: &mut TagTotals, _key: &BenchKey, item: &BenchRow) {
         acc.count = acc.count.saturating_sub(1);
         acc.sum = acc.sum.saturating_sub(item.score.0);
     }
@@ -198,10 +198,9 @@ fn bench_write_mock(c: &mut Criterion) {
     });
     g.bench_function("batch_commit/100_ops", |b| {
         let store = TestStore::slatedb_mem();
-        let t: Collection<TestStore, BenchKey, BenchRow> = Collection::new(store.clone());
         b.iter_batched(
             || {
-                let mut store = store.clone();
+                let store = store.clone();
                 let mut batch = okm_core::MemBatch::default();
                 for i in 0..100u64 {
                     let k = make_key(i);

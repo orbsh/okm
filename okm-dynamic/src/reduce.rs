@@ -11,9 +11,11 @@
 //! Calling discipline (the correctness surface — ADR-0008's exactly-once
 //! invariant re-derived as a deployment-shape contract, embedded mode:
 //! single writer by construction):
-//! - put (no old document): seed acc from empty, fold the new document;
+//! - put (no old document): seed acc from empty, fold the new
+//!   document;
 //! - overwrite: unfold the stored document, then fold the new one;
 //! - delete: unfold the stored document.
+//!
 //! Document write and acc update share the same engine instance —
 //! atomicity holds within one engine, same boundary as index entries.
 //!

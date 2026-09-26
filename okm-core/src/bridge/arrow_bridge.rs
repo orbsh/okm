@@ -61,8 +61,8 @@ fn varint_decode(b: &[u8]) -> (u64, usize) {
     }
     let hi = (b[0] & (0xFF >> w)) as u64;
     let mut low: u64 = 0;
-    for i in 1..w {
-        low = (low << 8) | b[i] as u64;
+    for byte in &b[1..w] {
+        low = (low << 8) | *byte as u64;
     }
     (hi << ((w - 1) * 8) | low, w)
 }
@@ -316,21 +316,6 @@ fn push_variant_obj<S: parquet_variant::BuilderSpecificState>(
     }
 }
 
-/// One Variant column from every document's dynamic segment (slot 1) —
-/// `None` = the document has no dynamic entry.
-#[cfg(feature = "parquet")]
-fn variant_column(
-    store: &dyn VirtualStorage,
-    fields_prefixes: &[(Vec<u8>, Vec<u8>)], // (pkey, fields_key) per doc
-    n: usize,
-) -> Vec<Option<(Vec<u8>, Vec<u8>)>> {
-    let mut out: Vec<Option<(Vec<u8>, Vec<u8>)>> = Vec::with_capacity(n);
-    for (_pkey, fkey) in fields_prefixes {
-        out.push(store.get(fkey).map(|raw| (raw, Vec::new())));
-    }
-    out
-}
-
 /// A Variant-typed Arrow extension field ("parquet.variant" extension
 /// metadata), the analytics-layer twin of the dynamic segment.
 #[cfg(feature = "parquet")]
@@ -489,7 +474,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         let schema = Arc::new(ArrowSchema::new(fields));
 
         let mut arrays: Vec<Arc<dyn arrow::array::Array>> =
-            base.columns().iter().map(|c| c.clone()).collect();
+            base.columns().to_vec();
         arrays.push(variant_col);
 
         RecordBatch::try_new(schema, arrays).expect("batch with variant column")

@@ -81,8 +81,12 @@ mod rust_reduce {
     impl Reduce for GroupCount {
         const SLOT: u16 = 0x2001;
         const GROUP: &'static [&'static str] = &["level"];
-        fn group_bytes(_key: &UserKey, _document: &User) -> Vec<u8> {
-            unreachable!("the derive generates this; we only need the layout constants")
+        fn group_bytes(_key: &UserKey, document: &User) -> Vec<u8> {
+            // Hand-written mirror of the derive's payload walk: the
+            // GROUP field `level` is a u32 payload field, BE-encoded —
+            // the same encoder the dynamic schema path uses (ADR-0022
+            // byte-parity acceptance is only real if this runs).
+            document.level.to_be_bytes().to_vec()
         }
     }
 }
@@ -292,4 +296,24 @@ fn reduce_entry_layout_matches_rust_side() {
     // And the accumulator value must match the Rust fold's encoding:
     // one document folded → u64 BE of 1.
     assert_eq!(t.store().get(&expected).unwrap(), 1u64.to_be_bytes().to_vec());
+
+    // The typed side must land the SAME bytes: group_bytes for the
+    // equivalent document (level=4), assembled through the trait's
+    // default entry_key. Without this arm the parity test only checks
+    // the dynamic side against itself.
+    let key = UserKey { org_id: 1, user_id: 10 };
+    let doc = User { level: 4, score: 100, name: "a".into() };
+    let typed = <rust_reduce::GroupCount as okm_core::model::reduce::Reduce>::entry_key(
+        &42u16.to_be_bytes(),
+        &key,
+        &doc,
+    );
+    assert_eq!(typed, expected, "typed and dynamic reduce keys byte-identical");
+    // A folded acc on the typed side encodes identically (u64 BE of 1).
+    let mut acc = <rust_reduce::GroupCount as okm_core::model::reduce::ReduceLogic>::Acc::default();
+    <rust_reduce::GroupCount as okm_core::model::reduce::ReduceLogic>::fold(&mut acc, &key, &doc);
+    assert_eq!(
+        okm_core::model::reduce::ReduceCodec::encode_acc(&acc),
+        t.store().get(&typed).unwrap()
+    );
 }

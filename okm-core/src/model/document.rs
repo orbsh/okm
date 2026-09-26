@@ -481,14 +481,14 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         // decode_named resolves nested obj field ids through the same
         // dictionary — nested maps come back fully name-keyed.
         let frames = crate::model::obj_dynamic::decode_named(&raw, &mut |id| {
-            d.name_for(&mut self.store, &header, id)
+            d.name_for(&self.store, &header, id)
         });
         if frames.is_empty() {
             return None;
         }
         let mut out = BTreeMap::new();
         for f in frames {
-            if let Some(name) = d.name_for(&mut self.store, &header, f.id) {
+            if let Some(name) = d.name_for(&self.store, &header, f.id) {
                 out.insert(name, f.value);
             }
             // Unknown id (dictionary entry absent): drop the field. Under

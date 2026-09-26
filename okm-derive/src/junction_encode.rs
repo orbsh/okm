@@ -127,6 +127,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
         }
 
         /// Query methods on the start endpoint.
+        #[allow(non_camel_case_types)] // generated trait: <Edge>_Ops identity (ADR-0015)
         pub trait #a_trait {
             fn #m_on_a<S: ::okm_core::VirtualStorage>(
                 &self,
@@ -143,6 +144,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
         }
 
         /// Query methods on the end endpoint.
+        #[allow(non_camel_case_types)] // generated trait: <Edge>ColR identity
         pub trait #b_trait {
             fn #m_on_b<S: ::okm_core::VirtualStorage>(
                 &self,

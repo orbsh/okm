@@ -377,7 +377,7 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> Vec<FieldSchema> {
                     .expect("ok_default: expected `#[ok_default(expr)]` or `#[ok_default = expr]`")
             });
         // #[ok_len(N)] — Vector element-count expectation (decode check).
-        let ok_len: Option<usize> = f
+        let _ok_len: Option<usize> = f
             .attrs
             .iter()
             .find(|a| a.path().is_ident("ok_len"))

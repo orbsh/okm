@@ -114,6 +114,12 @@ pub struct EnumChannel<E> {
     sink: std::sync::RwLock<Option<std::sync::Arc<dyn okm_core::subscribe::EventSink<E>>>>,
 }
 
+impl<E: 'static> Default for EnumChannel<E> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<E: 'static> EnumChannel<E> {
     pub const fn new() -> Self {
         Self { sink: std::sync::RwLock::new(None) }
@@ -126,6 +132,7 @@ impl<E: 'static> EnumChannel<E> {
         *self.sink.write().unwrap() = Some(std::sync::Arc::new(sink));
     }
 
+    #[allow(dead_code)] // generated API: consumer-side probe (register/emit pair)
     pub fn has_sink(&self) -> bool {
         self.sink.read().unwrap().is_some()
     }

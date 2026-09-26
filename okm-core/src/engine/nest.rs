@@ -432,9 +432,9 @@ impl<S: VirtualStorage> ExecCore<S> {
                     // Grammar: [flag][end bytes?][page u8] — page is
                     // always the last byte; the flag says whether an end
                     // span sits between it and the flag.
-                    let page = match value.last() {
-                        Some(p) => *p,
-                        None => return None, // page byte is mandatory
+                    let page = {
+                        let p = value.last()?;
+                        *p
                     };
                     let (end, exclusive) = match value[0] {
                         0x00 => (None, false),
@@ -560,7 +560,7 @@ mod tests {
         // bare() serves internally and returns the handle — the exact
         // path bare_shard_test exercises.
         let handle = NestStorage::bare(TestEngine::default());
-        let mut rs: RemoteStore = handle.open();
+        let rs: RemoteStore = handle.open();
         rs.put(b"k".to_vec(), b"v".to_vec());
         assert_eq!(rs.get(b"k").as_deref(), Some(b"v".as_slice()));
     }

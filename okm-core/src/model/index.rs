@@ -155,7 +155,7 @@ pub trait Document: Sized + Clone {
     /// parent payload decodes, fetch each `Unit` field's child document
     /// by its stored key and backfill `value`. Default no-op (no embedded
     /// fields). Derive-generated; failures leave `value: None`.
-    fn __okm_embed_deref(&mut self, store: &dyn VirtualStorage) {}
+    fn __okm_embed_deref(&mut self, _store: &dyn VirtualStorage) {}
     /// Embedded-field (Ref/Refs) write entries: `(child pkey, child payload)` pairs
     /// for fields carrying `value: Some(_)`. Default empty.
     fn __okm_embed_entries(&self) -> Vec<(Vec<u8>, Vec<u8>)> {

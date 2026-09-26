@@ -106,5 +106,5 @@ fn obj_bridge_typed_and_dynamic_merge() {
 
     // Unknown names allocate into the dictionary (external-data rule),
     // and get_document surfaces them.
-    assert!(t.get_fields(&UserKey { id: 2 }).unwrap().is_empty() == false);
+    assert!(!t.get_fields(&UserKey { id: 2 }).unwrap().is_empty());
 }

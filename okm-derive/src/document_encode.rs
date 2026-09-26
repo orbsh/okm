@@ -63,6 +63,7 @@ fn emit_named_walk(schema: &DocumentSchema) -> TS2 {
         /// reads `self.<field>`); the access methods call this with the
         /// requested name order. Used by index key/value encoding.
         #[allow(unused_variables, unused_mut, dead_code)]
+        #[allow(clippy::ptr_arg)] // &mut Vec is the encoder-API shape; degenerate (no-field) expansions never use Vec-only methods
         pub fn __okm_encode_named(&self, names: &[&str], buf: &mut Vec<u8>) {
             for n in names {
                 match *n {
@@ -79,6 +80,7 @@ fn emit_named_walk(schema: &DocumentSchema) -> TS2 {
         /// sources resolves to the KEY (key wins). A name unknown to
         /// both sources panics.
         #[allow(unused_variables, unused_mut, dead_code)]
+        #[allow(clippy::ptr_arg)] // &mut Vec is the encoder-API shape
         pub fn __okm_encode_group_named(
             key: &<Self as ::okm_core::Document>::Key,
             document: &Self,
@@ -374,7 +376,7 @@ fn emit_index_structs(schema: &DocumentSchema) -> TS2 {
         // real `self`, so the arm bodies work verbatim.
         index_out.extend(quote! {
             #[doc = concat!("Access method `", stringify!(#iname), "` over `", stringify!(#row_name), "` (slot ", #slot_doc, ", ADR-0005/0006).")]
-            #[allow(non_camel_case_types)]
+            #[allow(non_camel_case_types, non_snake_case)] // generated identities (ADR-0027)
             #[derive(Clone, Copy, Debug)]
             pub struct #struct_ident;
 
@@ -387,6 +389,7 @@ fn emit_index_structs(schema: &DocumentSchema) -> TS2 {
                 const KEY_PREFIX: &'static [&'static str] = &[#(#key_names),*];
                 const FUNC: &'static str = #func_str;
 
+                #[allow(clippy::ptr_arg)] // &mut Vec is the encoder-API shape
                 fn encode_named(
                     _key: &Self::Key,
                     document: &Self::Document,
@@ -512,7 +515,7 @@ fn emit_reduces(schema: &DocumentSchema) -> (TS2, TS2) {
                 let field_ty = schema
                     .fields
                     .iter()
-                    .find(|f| f.ident.to_string() == *field)
+                    .find(|f| f.ident == **field)
                     .map(|f| f.ty_str.clone());
                 let (acc_ty, readback, readback_u64) = match field_ty.as_deref() {
                     Some("u8") | Some("u16") | Some("u32") | Some("u64") | None => (
@@ -604,6 +607,7 @@ fn emit_reduces(schema: &DocumentSchema) -> (TS2, TS2) {
                 };
                 impls.extend(quote! {
                     #[doc = concat!("Marker for the `", #field, "` aggregate source (ADR-0023 preset).")]
+                    #[allow(non_camel_case_types, non_snake_case)] // generated marker identity, not user API (ADR-0027)
                     pub struct #fm;
                     impl ::okm_core::ReduceFieldSource for #fm {
                         type Doc = #row_name;
@@ -623,6 +627,7 @@ fn emit_reduces(schema: &DocumentSchema) -> (TS2, TS2) {
             // Local forwarding logic: semantics live in the core preset.
             impls.extend(quote! {
                 #[doc = concat!("ADR-0023 preset `", #red_doc, "` (local forward marker).")]
+                #[allow(non_camel_case_types, non_snake_case)] // generated marker identity, not user API (ADR-0027)
                 pub struct #marker;
                 impl ::okm_core::ReduceLogic for #marker {
                     type Document = #row_name;
