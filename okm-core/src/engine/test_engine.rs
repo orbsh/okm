@@ -125,7 +125,7 @@ impl crate::engine::storage::SharedVirtualStorage for TestStore {
     allow(unused_variables)
 )]
 impl VirtualStorage for TestStore {
-    fn put(&mut self, key: Vec<u8>, value: Vec<u8>) {
+    fn put(&self, key: Vec<u8>, value: Vec<u8>) {
         match self {
             #[cfg(feature = "slatedb")]
             Self::Slatedb(s) => s.put_sync(key, value),
@@ -149,7 +149,7 @@ impl VirtualStorage for TestStore {
             _ => unreachable!("TestStore: no engine features enabled"),
         }
     }
-    fn del(&mut self, key: &[u8]) {
+    fn del(&self, key: &[u8]) {
         match self {
             #[cfg(feature = "slatedb")]
             Self::Slatedb(s) => s.del_sync(key),

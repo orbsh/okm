@@ -51,7 +51,7 @@ impl VirtualStorage for RedbStore {
     /// redb note: the table is created on first write (`open_table`
     /// inside a write transaction creates it; read paths treat a
     /// missing table as an empty keyspace).
-    fn put(&mut self, key: Vec<u8>, value: Vec<u8>) {
+    fn put(&self, key: Vec<u8>, value: Vec<u8>) {
         let txn = self.db.begin_write().expect("redb begin_write");
         {
             let mut table = txn.open_table(TABLE).expect("redb open_table");
@@ -71,7 +71,7 @@ impl VirtualStorage for RedbStore {
         table.get(key).expect("redb get").map(|v| v.value().to_vec())
     }
 
-    fn del(&mut self, key: &[u8]) {
+    fn del(&self, key: &[u8]) {
         let txn = self.db.begin_write().expect("redb begin_write");
         {
             let mut table = txn.open_table(TABLE).expect("redb open_table");

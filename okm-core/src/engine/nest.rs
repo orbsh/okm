@@ -113,7 +113,7 @@ impl RemoteStore {
 }
 
 impl VirtualStorage for RemoteStore {
-    fn put(&mut self, key: Vec<u8>, value: Vec<u8>) {
+    fn put(&self, key: Vec<u8>, value: Vec<u8>) {
         self.send_write(&OpFrame::one(OP_PUT, key, value));
     }
 
@@ -122,7 +122,7 @@ impl VirtualStorage for RemoteStore {
             .value
     }
 
-    fn del(&mut self, key: &[u8]) {
+    fn del(&self, key: &[u8]) {
         self.send_write(&OpFrame::one(OP_DELETE, key.to_vec(), Vec::new()));
     }
 
@@ -524,13 +524,13 @@ mod tests {
     struct TestEngine(std::sync::Arc<std::sync::Mutex<BTreeMap<Vec<u8>, Vec<u8>>>>);
 
     impl VirtualStorage for TestEngine {
-        fn put(&mut self, key: Vec<u8>, value: Vec<u8>) {
+        fn put(&self, key: Vec<u8>, value: Vec<u8>) {
             self.0.lock().unwrap().insert(key, value);
         }
         fn get(&self, key: &[u8]) -> Option<Vec<u8>> {
             self.0.lock().unwrap().get(key).cloned()
         }
-        fn del(&mut self, key: &[u8]) {
+        fn del(&self, key: &[u8]) {
             self.0.lock().unwrap().remove(key);
         }
         fn scan_suffix(&self, prefix: &[u8]) -> Vec<Vec<u8>> {

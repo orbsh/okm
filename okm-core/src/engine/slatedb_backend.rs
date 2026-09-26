@@ -306,13 +306,13 @@ impl SlatedbSync {
 }
 
 impl VirtualStorage for SlatedbSync {
-    fn put(&mut self, key: Vec<u8>, value: Vec<u8>) {
+    fn put(&self, key: Vec<u8>, value: Vec<u8>) {
         self.put_sync(key, value)
     }
     fn get(&self, key: &[u8]) -> Option<Vec<u8>> {
         self.get_sync(key)
     }
-    fn del(&mut self, key: &[u8]) {
+    fn del(&self, key: &[u8]) {
         self.del_sync(key)
     }
     fn scan_suffix(&self, prefix: &[u8]) -> Vec<Vec<u8>> {
