@@ -3,7 +3,7 @@
 //! identical behavior for the core operations — key round trips,
 //! prefix scans, batch atomicity, and SharedVirtualStorage sharing.
 
-use okm_core::{KeyEncode, DocumentEncode, Collection, TestStore, VirtualStorage};
+use okm_core::{KeyEncode, DocumentEncode, TestStore, VirtualStorage};
 
 fn verify_engine(store: TestStore) {
     let name = store.name();

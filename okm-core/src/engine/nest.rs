@@ -69,7 +69,12 @@ impl RemoteStore {
         exclusive: bool,
         page: u8,
     ) -> OpResponse {
-        let mut value = vec![if exclusive { 0x02 } else if end.is_some() { 0x01 } else { 0x00 }];
+        let mut value = vec![match (exclusive, end.is_some()) {
+            (true, true) => 0x02,
+            (true, false) => 0x03, // unbounded + exclusive (ADR-0021
+            (false, true) => 0x01, // closure: the cursor resume of an
+            (false, false) => 0x00, // unbounded stream needs this corner
+        }];
         if let Some(end) = end {
             value.extend_from_slice(end);
         }
@@ -369,14 +374,22 @@ impl<S: SharedVirtualStorage + Send + 'static> NestStorage<S> {
 }
 
 impl<S: VirtualStorage> ExecCore<S> {
-    /// Apply one request frame — THE execution surface, all four ops:
+    /// Apply one request frame — THE execution surface, all ops:
     /// decode (malformed = `None`, garbage in / nothing stored), then
     /// execute in frame order. Mutating ops (put/delete) commit together
     /// in one `commit_batch` = one engine WAL write (ADR-0010 §2);
     /// query ops (get/scan) run after them and fill the response.
-    /// Returns `None` only for malformed frames.
+    /// `None` = NOTHING to answer: a malformed frame, or a pure-write
+    /// frame (WS-CHANNEL: the transport answers only what `apply`
+    /// returns `Some` — put/delete frames need no response, and a
+    /// positional-FIFO sender would mis-attach a stray empty answer to
+    /// the next waiter). Mixed frames answer their queries normally.
     fn apply(&self, bytes: &[u8]) -> Option<OpResponse> {
         let frame = OpFrame::decode(bytes)?;
+        let has_query = frame
+            .0
+            .iter()
+            .any(|(tag, _, _)| matches!(*tag, OP_GET | OP_SCAN | OP_SCAN_STREAM));
         let mut engine = self.engine.lock().expect("engine lock");
         let mut batch = MemBatch::default();
         let mut resp = OpResponse::default();
@@ -445,6 +458,10 @@ impl<S: VirtualStorage> ExecCore<S> {
                             Some(hosted_key(&self.prefix, &value[1..value.len() - 1])),
                             true,
                         ),
+                        // unbounded + exclusive (ADR-0021 closure): the
+                        // cursor resume of an unbounded stream — no end
+                        // span sits between flag and page byte.
+                        0x03 => (None, true),
                         _ => return None,
                     };
                     let hk = hosted_key(&self.prefix, &key);
@@ -487,7 +504,8 @@ impl<S: VirtualStorage> ExecCore<S> {
             }
         }
         engine.commit_batch(batch).ok();
-        Some(resp)
+        // pure-write frames execute fully but answer nothing (above).
+        has_query.then_some(resp)
     }
 }
 
@@ -569,7 +587,7 @@ mod tests {
         let (host, _handle) = NestStorage::new(TestEngine::default(), &[0, 9]);
         let put = OpFrame::one(OP_PUT, b"k".to_vec(), b"v".to_vec());
         let r = host.apply(&put.encode());
-        assert!(r.is_some(), "put apply must succeed");
+        assert!(r.is_none(), "pure-write frames execute but answer nothing");
         let get = OpFrame::one(OP_GET, b"k".to_vec(), Vec::new());
         let r = host.apply(&get.encode());
         assert_eq!(r.unwrap().value.as_deref(), Some(b"v".as_slice()));

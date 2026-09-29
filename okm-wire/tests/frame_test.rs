@@ -194,3 +194,44 @@ fn malformed_frames_rejected_not_panic() {
 
     assert!(OpResponse::decode(&[9]).is_none()); // invalid has_value byte
 }
+
+/// ADR-0021 flag grammar, CLOSED 2026-09-29 (ADR-0028 landing): all four
+/// request shapes locked as hex. The pre-closure blind spot was exactly
+/// this — no test ever encoded the exclusive + unbounded corner, so the
+/// senders could (and did) collide it with "bounded + empty end". The
+/// codec itself stays flag-agnostic (the value segment is opaque bytes);
+/// the lock lives here because the frame is the contract boundary both
+/// senders and every receiver share.
+#[test]
+fn stream_request_flags_are_exhaustive() {
+    // [flag][end?][page] — the four (exclusive, bounded) combinations.
+    let cases: [(u8, Option<&[u8]>, bool); 4] = [
+        (0x00, None, false),   // unbounded, inclusive begin
+        (0x01, Some(b"z"), false), // bounded, inclusive
+        (0x02, Some(b"z"), true),  // bounded, exclusive (cursor resume)
+        (0x03, None, true),       // unbounded, exclusive — the 0x03 closure
+    ];
+    for (expected_flag, end, exclusive) in cases {
+        let mut value = vec![expected_flag];
+        if let Some(e) = end {
+            value.extend_from_slice(e);
+        }
+        value.push(0); // page = engine default
+        let frame = OpFrame::one(OP_SCAN_STREAM, b"begin".to_vec(), value.clone());
+        let back = OpFrame::decode(&frame.encode()).expect("well-formed");
+        assert_eq!(back.0[0].2, value, "flag {expected_flag:02X}");
+        // the sender's own flag pick (the match both senders share):
+        let picked = match (exclusive, end.is_some()) {
+            (true, true) => 0x02,
+            (true, false) => 0x03,
+            (false, true) => 0x01,
+            (false, false) => 0x00,
+        };
+        assert_eq!(picked, expected_flag);
+    }
+    // A receiver that predates the closure (0x03 unknown): the request
+    // is rejected WHOLE by ExecCore's match (no partial apply) — the
+    // same backward-compat shape as an unknown op tag. The wire layer
+    // cannot express that rejection (values are opaque here); it lives
+    // in the receiver's flag match, exercised by the okm-core tests.
+}

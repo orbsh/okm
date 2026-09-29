@@ -1,15 +1,20 @@
-//! slatedb engine adapter: `SlatedbStore` (async engine over object storage).
+//! slatedb engine adapter: `SlatedbStore` (async engine over object storage)
+//! and `AsyncJunction` (its junction assembly point).
 //!
 //! slatedb is an async API with immutable borrows (WAL/flush managed
-//! internally), so this module provides the `VirtualStorageAsync` trait and
-//! `AsyncJunction` - parallel to the sync `VirtualStorage`/`Edge` with the
-//! same interface shape. Object stores are constructed via the
-//! `slatedb::object_store` re-export so versions always match slatedb's
-//! internals.
+//! internally), so this module wraps it for the async world; the async
+//! engine contract itself — `VirtualStorageAsync` — lives in
+//! `engine::storage` (ADR-0028: the aligned surface is the engine
+//! contract, not a slatedb property). Object stores are constructed via
+//! the `slatedb::object_store` re-export so versions always match
+//! slatedb's internals.
 
+use crate::engine::storage::VirtualStorage;
+// The trait + the pair-scan twin live in engine::storage (ADR-0028);
+// re-exported here so the slatedb-era import path keeps resolving.
+pub use crate::engine::storage::{VirtualStorageAsync, scan_suffix_kv_async};
 use crate::model::junction::KvJunction;
 use crate::model::key::KeyEncode;
-use crate::engine::storage::VirtualStorage;
 use slatedb::Db;
 use slatedb::object_store::ObjectStore;
 use std::ops::RangeFull;
@@ -103,67 +108,6 @@ impl SlatedbSync {
     pub fn runtime(&self) -> &tokio::runtime::Runtime {
         &self.rt
     }
-}
-
-/// 异步引擎最小接口（与同步 VirtualStorage 对齐，ADR-0027：
-/// 对齐的是审计后的同步面——scan_suffix_kv/batch 不在 trait 上）
-#[allow(async_fn_in_trait)] // engine contract: impls are in-crate backends and wasm senders; ADR-0010 keeps the surface byte-only
-pub trait VirtualStorageAsync {
-    async fn put(&self, key: Vec<u8>, value: Vec<u8>);
-    async fn get(&self, key: &[u8]) -> Option<Vec<u8>>;
-    async fn del(&self, key: &[u8]);
-    /// 前缀扫描，返回每个 key 的"剩余段"（去掉 prefix）
-    async fn scan_suffix(&self, prefix: &[u8]) -> Vec<Vec<u8>>;
-    /// Range scan over FULL keys: `[begin, end)` byte order; None end =
-    /// unbounded. The async mirror of the sync trait's `scan_range`.
-    async fn scan_range(&self, begin: &[u8], end: Option<&[u8]>) -> Vec<Vec<u8>>;
-    /// Async mirror of the sync `scan_range_iter` (ADR-0027). The default
-    /// BUFFERS via `scan_range` + per-key `get` (N+1); SlatedbStore
-    /// overrides with a ONE-PASS materialization (see impl). Laziness is
-    /// deliberately NOT attempted: the sync `ScanIter::next` would need
-    /// `block_on`, and the async call site lives INSIDE a runtime —
-    /// re-entrant `block_on` panics (module header). ADR-0020 already
-    /// ruled the async surface small enough that buffering is harmless.
-    async fn scan_range_iter(
-        &self,
-        begin: &[u8],
-        end: Option<&[u8]>,
-    ) -> crate::engine::storage::ScanIter {
-        let mut pairs = Vec::new();
-        for k in self.scan_range(begin, end).await {
-            if let Some(v) = self.get(&k).await {
-                pairs.push((k, v));
-            }
-        }
-        crate::engine::storage::ScanIter::Buffered(pairs.into_iter())
-    }
-    /// Async mirror of the sync `commit_batch` (ADR-0027): one engine-level
-    /// write over all accumulated ops. Default replays through put/del;
-    /// engines with a native batch override (SlatedbStore ships slatedb's
-    /// `WriteBatch` as ONE `db.write` + durable wait).
-    async fn commit_batch(&mut self, batch: crate::engine::storage::MemBatch) -> Result<(), String> {
-        for (k, v) in batch.ops {
-            match v {
-                Some(v) => self.put(k, v).await,
-                None => self.del(&k).await,
-            }
-        }
-        Ok(())
-    }
-}
-
-/// Prefix scan returning `(key suffix, value)` pairs — the async twin of
-/// the free `scan_suffix_kv` (ADR-0027; one pair-scan shape in both worlds).
-pub async fn scan_suffix_kv_async<S: VirtualStorageAsync + ?Sized>(
-    store: &S,
-    prefix: &[u8],
-) -> Vec<(Vec<u8>, Vec<u8>)> {
-    let end = crate::engine::storage::prefix_end(prefix);
-    store
-        .scan_range_iter(prefix, end.as_deref())
-        .await
-        .map(|(full, v)| (full.get(prefix.len()..).unwrap_or(&[]).to_vec(), v))
-        .collect()
 }
 
 /// slatedb 包装。ns 前缀由 key 编码自带；一个 Db 可承载所有边类型。

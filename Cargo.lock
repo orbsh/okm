@@ -2186,6 +2186,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "trybuild",
+ "web-sys",
 ]
 
 [[package]]
