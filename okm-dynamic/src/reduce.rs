@@ -172,3 +172,63 @@ pub fn scan_reduces<S: VirtualStorage>(
         .into_iter()
         .collect()
 }
+
+/// The shipped presets as dynamic-side logic (the same u64 BE
+/// accumulator okm-core's derive presets use): `count` folds +1 and
+/// unfolds −1 (saturating); `high_water`/`low_water` take the field's
+/// max/min and never fall back on unfold (the watermark rule). A
+/// binding building reduces from a schema declaration uses this — one
+/// implementation, every host (the okm-python injection face, the
+/// aura executor's declared-reduce registry, and the derive all land
+/// the same bytes).
+#[derive(Clone, Debug, PartialEq)]
+pub enum PresetKind {
+    Count,
+    HighWater(String),
+    LowWater(String),
+}
+
+pub struct PresetLogic {
+    pub kind: PresetKind,
+}
+
+impl PresetLogic {
+    fn field_u64(doc: &ValueMap, field: &str) -> Result<u64, String> {
+        match doc.get(field) {
+            Some(Value::U64(v)) => Ok(*v),
+            Some(other) => Err(format!("reduce field `{field}` is not U64: {other:?}")),
+            None => Err(format!("reduce field `{field}` missing from document")),
+        }
+    }
+}
+
+impl ReduceLogic for PresetLogic {
+    fn seed(&self) -> Vec<u8> {
+        match self.kind {
+            PresetKind::Count | PresetKind::HighWater(_) => 0u64.to_be_bytes().to_vec(),
+            PresetKind::LowWater(_) => u64::MAX.to_be_bytes().to_vec(),
+        }
+    }
+    fn fold(&self, acc: &mut Vec<u8>, _key: &ValueMap, document: &ValueMap) -> Result<(), String> {
+        let mut cur = u64::from_be_bytes(acc.as_slice().try_into().unwrap_or([0u8; 8]));
+        match &self.kind {
+            PresetKind::Count => cur += 1,
+            PresetKind::HighWater(f) => cur = cur.max(Self::field_u64(document, f)?),
+            PresetKind::LowWater(f) => cur = cur.min(Self::field_u64(document, f)?),
+        }
+        *acc = cur.to_be_bytes().to_vec();
+        Ok(())
+    }
+    fn unfold(&self, acc: &mut Vec<u8>, _key: &ValueMap, _document: &ValueMap) -> Result<(), String> {
+        match &self.kind {
+            PresetKind::Count => {
+                let mut cur = u64::from_be_bytes(acc.as_slice().try_into().unwrap_or([0u8; 8]));
+                cur = cur.saturating_sub(1);
+                *acc = cur.to_be_bytes().to_vec();
+                Ok(())
+            }
+            // Watermark: never falls.
+            PresetKind::HighWater(_) | PresetKind::LowWater(_) => Ok(()),
+        }
+    }
+}

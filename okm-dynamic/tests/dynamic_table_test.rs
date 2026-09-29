@@ -309,3 +309,87 @@ fn dynamic_fields_carry_composites() {
     }
     assert!(!raw_entries.is_empty());
 }
+
+// --- plan surface (ADR-0037 4.16a) -----------------------------------
+// The remote shape: a caller holding NO engine — dictionary mirror in,
+// ops out — replayed blind must land byte-identical to the embedded
+// put_fields (load->plan->replay). This is the injection contract the
+// bindings ride: ship the ops, the engine never leaves its host.
+
+#[test]
+fn plan_replay_equals_embedded_fields_across_two_writes() {
+    let ns = 7u16;
+    let nsb = ns.to_be_bytes();
+    let store = TestStore::slatedb_mem();
+
+    // Caller-side: two writes through ONE mirror, adopted between them.
+    let mut dict = okm_dynamic::DictMirror::default();
+    let p1 = okm_dynamic::plan_put_fields(&nsb, b"k1", &dfields(&[("note", "hello"), ("weight9", "9")]), &mut dict).unwrap();
+    for (k, v) in &p1.ops { match v { Some(b) => store.put(k.clone(), b.clone()), None => store.del(k) } }
+    dict.adopt(&p1.new_dict_entries);
+    let mut f2 = okm_dynamic::ValueMap::new();
+    f2.insert("note".into(), okm_dynamic::Value::U64(42));
+    let p2 = okm_dynamic::plan_put_fields(&nsb, b"k2", &f2, &mut dict).unwrap();
+    for (k, v) in &p2.ops { match v { Some(b) => store.put(k.clone(), b.clone()), None => store.del(k) } }
+    dict.adopt(&p2.new_dict_entries);
+    assert_eq!(p2.new_dict_entries, Vec::new(), "note was already allocated by the first plan");
+
+    // Embedded side on a fresh store: the same two writes.
+    let mut t = dynamic_table(TestStore::slatedb_mem()); // same schema ns as above? check below
+    // dynamic_table uses its own ns; build a matching collection:
+    drop(t);
+    let mut t = okm_dynamic::DynamicCollection::new(TestStore::slatedb_mem(), ns, schema(), Vec::new());
+    t.put_fields(b"k1", &dfields(&[("note", "hello"), ("weight9", "9")])).unwrap();
+    let mut g2 = okm_dynamic::ValueMap::new();
+    g2.insert("note".into(), okm_dynamic::Value::U64(42));
+    t.put_fields(b"k2", &g2).unwrap();
+
+    let mut a: Vec<(Vec<u8>, Vec<u8>)> = store
+        .scan_suffix(&[])
+        .into_iter()
+        .map(|full| (full.clone(), store.get(&full).unwrap_or_default()))
+        .collect();
+    let mut b: Vec<(Vec<u8>, Vec<u8>)> = t
+        .store()
+        .scan_suffix(&[])
+        .into_iter()
+        .map(|full| (full.clone(), t.store().get(&full).unwrap_or_default()))
+        .collect();
+    a.sort();
+    b.sort();
+    assert_eq!(a, b, "engine-less plan replay == embedded put_fields, byte for byte");
+
+    // The remote read side: frames + the caller's own mirror decode to
+    // the same map the embedded get_fields returns.
+    let raw = store
+        .get(&okm_dynamic::fields_key(&nsb, b"k1"))
+        .unwrap();
+    let back = okm_dynamic::fields_from_frames(&raw, &dict).unwrap();
+    assert_eq!(back.get("note"), Some(&okm_dynamic::Value::Str("hello".into())));
+    let emb = t.get_fields(b"k1").unwrap().unwrap();
+    assert_eq!(back, emb);
+
+    // plan_delete_fields lands where embedded delete_fields did.
+    let p3 = okm_dynamic::plan_delete_fields(&nsb, b"k2");
+    for (k, v) in &p3.ops { match v { Some(b) => store.put(k.clone(), b.clone()), None => store.del(k) } }
+    assert_eq!(
+        store.get(&okm_dynamic::fields_key(&nsb, b"k2")),
+        None,
+        "the planned delete removed the entry"
+    );
+}
+
+fn dfields(pairs: &[(&str, &str)]) -> okm_dynamic::ValueMap {
+    let mut m = okm_dynamic::ValueMap::new();
+    for (k, v) in pairs {
+        m.insert(
+            k.to_string(),
+            if v.chars().all(|c| c.is_ascii_digit()) {
+                okm_dynamic::Value::U64(v.parse().unwrap())
+            } else {
+                okm_dynamic::Value::Str(v.to_string())
+            },
+        );
+    }
+    m
+}
