@@ -10,9 +10,7 @@
 //!
 //! Errors cross as Python ValueError (dynamic-side discipline: errors
 //! are ordinary input).
-#[cfg(feature = "extension-module")]
-#[cfg(feature = "extension-module")]
-mod pyo3_impl {
+pub mod pyo3_impl {
 	use okm_core::storage::VirtualStorage;
 	use okm_dynamic::{AccessMethod, AccessMethodKind, ReduceLogic, Value, ValueMap};
 	use pyo3::exceptions::{PyTypeError, PyValueError};
@@ -124,26 +122,157 @@ mod pyo3_impl {
 	    }
 	}
 
+	/// The injected engine face (ADR-0037 4.16a): a host (probe's python
+	/// carrier, an embedded test harness) hands the collection a live
+	/// engine behind FOUR byte-level methods — the exact surface the
+	/// plan paths consume (get / scan / put / del). Bytes in, bytes out:
+	/// the contract is rev-independent (no okm types cross it), which is
+	/// what lets the host hold a different okm build than the binding.
+	/// Semantics mirror `VirtualStorage` (ordered keys, `None` end =
+	/// unbounded, scan returns FULL keys).
+	pub trait Engine: Send + Sync {
+	    fn put(&self, key: Vec<u8>, value: Vec<u8>);
+	    fn get(&self, key: &[u8]) -> Option<Vec<u8>>;
+	    fn del(&self, key: &[u8]);
+	    fn scan_range(&self, begin: &[u8], end: Option<&[u8]>) -> Vec<Vec<u8>>;
+	}
+
+	/// The collection's engine: the embedded mode's in-process store or
+	/// an injected host engine. One executor behind both faces (the
+	/// 0037 §1 rule): same `DynamicCollection` code path, the enum only
+	/// dispatches bytes.
+	pub enum EngineBox {
+	    Test(okm_core::TestStore),
+	    Injected(Arc<dyn Engine>),
+	}
+
+	impl okm_core::storage::VirtualStorage for EngineBox {
+	    fn put(&self, key: Vec<u8>, value: Vec<u8>) {
+	        match self {
+	            Self::Test(s) => s.put(key, value),
+	            Self::Injected(e) => e.put(key, value),
+	        }
+	    }
+	    fn get(&self, key: &[u8]) -> Option<Vec<u8>> {
+	        match self {
+	            Self::Test(s) => s.get(key),
+	            Self::Injected(e) => e.get(key),
+	        }
+	    }
+	    fn del(&self, key: &[u8]) {
+	        match self {
+	            Self::Test(s) => s.del(key),
+	            Self::Injected(e) => e.del(key),
+	        }
+	    }
+	    fn scan_range(&self, begin: &[u8], end: Option<&[u8]>) -> Vec<Vec<u8>> {
+	        match self {
+	            Self::Test(s) => s.scan_range(begin, end),
+	            Self::Injected(e) => e.scan_range(begin, end),
+	        }
+	    }
+	}
+
 	/// A Python-owned dynamic collection: the embedded-mode facade (ADR-0022).
 	/// Python holds the engine (in-process TestStore), registers host
 	/// callables at binding time, and drives put/get/delete/scan — the
 	/// calling discipline (fold/unfold/seed) runs inside the Rust put path.
+	/// The injected face (`Collection::with_store`) swaps ONLY the engine:
+	/// a host-supplied `Engine` parks the table in the realm's real store
+	/// while Python still writes nothing but Collection calls (zero
+	/// translation, ADR-0037 §1).
 	#[pyclass]
-	struct Collection {
-	    inner: Arc<Mutex<okm_dynamic::DynamicCollection<okm_core::TestStore>>>,
+	pub struct Collection {
+	    inner: Arc<Mutex<okm_dynamic::DynamicCollection<EngineBox>>>,
 	    schema: okm_core::schema::CollectionSchema,
 	    ns: u16,
 	}
 
-	#[pymethods]
-	impl Collection {
+
+impl Collection {
+    /// The host-injected face (ADR-0037 §1, Phase 4.16a): build a
+    /// collection over an ENGINE THE HOST OWNS — the realm's live store
+    /// behind the byte-level `Engine` face, zero translation. Lives in a
+    /// PLAIN Rust impl (not `#[pymethods]`): Python never constructs this
+    /// shape — the carrier's load step calls it per declared collection
+    /// and registers the instance into the module namespace — and its
+    /// host-side argument types (`Arc<dyn Engine>`, `&serde_json::Value`)
+    /// are not marshalable by pyo3. Construction needs no GIL: the
+    /// pyclass is plain Rust data until a method runs.
+    ///
+    /// `entry` is the RAW interface_schema storage entry:
+    /// `{ "schema": <CollectionSchema>, "indexes": [{name, slot, fields,
+    /// includes, kind}], "reduces": [{name, slot, group, kind}] }` (the
+    /// bare schema object is also accepted). Declared indexes must be
+    /// plain (host callables — func/partial — register through the
+    /// embedded-mode add_* surface instead); reduce kinds take the
+    /// okm-dynamic preset spellings ("count", {"high_water": f},
+    /// {"low_water": f}). ns is NOT in the entry (the DSL's rule: it
+    /// binds at construction).
+    pub fn with_store(
+        engine: Arc<dyn Engine>,
+        entry: &serde_json::Value,
+        ns: u16,
+    ) -> PyResult<Self> {
+        let raw = entry.get("schema").cloned().unwrap_or_else(|| entry.clone());
+        let schema: okm_core::schema::CollectionSchema = serde_json::from_value(raw)
+            .map_err(|e| PyValueError::new_err(format!("bad collection schema: {e}")))?;
+        let mut indexes: Vec<AccessMethod> = Vec::new();
+        if let Some(list) = entry.get("indexes").and_then(|x| x.as_array()) {
+            for e in list {
+                indexes.push(plain_access_method(e)?);
+            }
+        }
+        let mut reduces: Vec<okm_dynamic::ReduceSpec> = Vec::new();
+        if let Some(list) = entry.get("reduces").and_then(|x| x.as_array()) {
+            for e in list {
+                reduces.push(preset_reduce(e)?);
+            }
+        }
+        Ok(Collection {
+            inner: Arc::new(Mutex::new(okm_dynamic::DynamicCollection::with_reduces(
+                EngineBox::Injected(engine),
+                ns,
+                schema.clone(),
+                indexes,
+                reduces,
+            ))),
+            schema,
+            ns,
+        })
+    }
+
+    /// The PLAIN Rust method face (host-side callers: the carrier's
+    /// injection checks, embedded harnesses). Same executor, same
+    /// `DynamicCollection` calls the #[pymethods] shell makes — the
+    /// python shell adds only dict <-> ValueMap coercion on top.
+    pub fn put_doc(&self, pkey: &[u8], document: &ValueMap) -> Result<(), String> {
+        self.inner.lock().unwrap().put(pkey, document).map_err(|e| e.to_string())
+    }
+
+    pub fn get_doc(&self, pkey: &[u8]) -> Result<Option<ValueMap>, String> {
+        self.inner.lock().unwrap().get(pkey).map_err(|e| e.to_string())
+    }
+
+    pub fn delete_doc(&self, pkey: &[u8]) -> Result<(), String> {
+        self.inner.lock().unwrap().delete(pkey).map_err(|e| e.to_string())
+    }
+
+    /// Declared-index scan by slot + encoded prefix → decoded keys.
+    pub fn scan_doc(&self, slot: u16, encoded_prefix: &[u8]) -> Result<Vec<ValueMap>, String> {
+        self.inner.lock().unwrap().scan(slot, encoded_prefix).map_err(|e| e.to_string())
+    }
+}
+
+#[pymethods]
+impl Collection {
 	    /// Open a table on a fresh in-process store (embedded mode: Python
 	    /// is the single writer by construction).
 	    #[new]
 	    fn new(schema: &Schema, ns: u16) -> PyResult<Self> {
 	        Ok(Collection {
 	            inner: Arc::new(Mutex::new(okm_dynamic::DynamicCollection::new(
-	                okm_core::TestStore::slatedb_mem(),
+	                EngineBox::Test(okm_core::TestStore::slatedb_mem()),
 	                ns,
 	                schema.inner.as_ref().clone(),
 	                Vec::new(),
@@ -374,6 +503,82 @@ mod pyo3_impl {
 	            .map_err(PyValueError::new_err)?;
 	        Python::with_gil(|py| Ok(map_to_dict(py, &m)?.unbind().into_any()))
 	    }
+	}
+
+	/// One declared plain index from the schema-data spelling (the entry
+	/// shape okm_schema.py assembles): routing is by slot; kind must be
+	/// plain — a host-callable index cannot be built from data (the
+	/// embedded add_* surface owns callables).
+	fn plain_access_method(v: &serde_json::Value) -> PyResult<AccessMethod> {
+	    let obj = v
+	        .as_object()
+	        .ok_or_else(|| PyValueError::new_err("index entry must be an object"))?;
+	    let missing = |k: &str| PyValueError::new_err(format!("index missing {k}"));
+	    let slot = obj
+	        .get("slot")
+	        .and_then(|x| x.as_u64())
+	        .ok_or_else(|| missing("slot"))? as u16;
+	    let strings = |arr: &serde_json::Value| -> Vec<String> {
+	        arr.as_array()
+	            .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+	            .unwrap_or_default()
+	    };
+	    let fields = obj.get("fields").map(strings).ok_or_else(|| missing("fields"))?;
+	    let includes = obj.get("includes").map(strings).unwrap_or_default();
+	    let kind = obj.get("kind").and_then(|x| x.as_str()).unwrap_or("plain");
+	    if kind != "plain" {
+	        return Err(PyValueError::new_err(format!(
+	            "index slot {slot}: kind `{kind}` needs a host callable — use the embedded add_* surface"
+	        )));
+	    }
+	    Ok(AccessMethod { slot, fields, includes, kind: AccessMethodKind::Plain })
+	}
+
+	/// One declared preset reduce from the schema-data spelling:
+	/// `{ "slot": N, "group": [fields], "kind": "count" |
+	/// {"high_water": f} | {"low_water": f} }` — the okm-dynamic presets
+	/// (the u64 BE accumulator shared with the derive and the aura
+	/// executor: one implementation, every host).
+	fn preset_reduce(v: &serde_json::Value) -> PyResult<okm_dynamic::ReduceSpec> {
+	    let obj = v
+	        .as_object()
+	        .ok_or_else(|| PyValueError::new_err("reduce entry must be an object"))?;
+	    let slot = obj
+	        .get("slot")
+	        .and_then(|x| x.as_u64())
+	        .ok_or_else(|| PyValueError::new_err("reduce missing slot"))? as u16;
+	    let group_fields = obj
+	        .get("group")
+	        .and_then(|x| x.as_array())
+	        .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+	        .unwrap_or_default();
+	    let kind_v = obj
+	        .get("kind")
+	        .ok_or_else(|| PyValueError::new_err("reduce missing kind"))?;
+	    let kind = if let Some(s) = kind_v.as_str() {
+	        match s {
+	            "count" => okm_dynamic::PresetKind::Count,
+	            other => return Err(PyValueError::new_err(format!("unknown reduce kind `{other}`"))),
+	        }
+	    } else if let Some(o) = kind_v.as_object().filter(|o| o.len() == 1) {
+	        let (k, f) = o.iter().next().unwrap();
+	        let field = f
+	            .as_str()
+	            .ok_or_else(|| PyValueError::new_err("reduce kind field must be a string"))?
+	            .to_string();
+	        match k.as_str() {
+	            "high_water" => okm_dynamic::PresetKind::HighWater(field),
+	            "low_water" => okm_dynamic::PresetKind::LowWater(field),
+	            other => return Err(PyValueError::new_err(format!("unknown reduce kind `{other}`"))),
+	        }
+	    } else {
+	        return Err(PyValueError::new_err("reduce kind must be a string or {kind: field}"));
+	    };
+	    Ok(okm_dynamic::ReduceSpec {
+	        slot,
+	        group_fields,
+	        logic: Box::new(okm_dynamic::PresetLogic { kind }),
+	    })
 	}
 
 	/// `{group_key bytes: acc bytes}` → Rust lookup (None = no dict given).
