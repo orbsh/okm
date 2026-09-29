@@ -1074,7 +1074,9 @@ bytes; doing them after P3 means hex locks change once, not twice.
 
 ## In-browser VirtualStorage family (ADR-0028, 2026-09-29)
 
-- [ ] Design record shipped; code gated. Two browser roles, two traits —
+- [x] Design record shipped; code shipped (8d00132 + 8a12f81) and consumed
+      by the mudra panel (wire side + UI-state `LocalStorageStore`). Two
+      browser roles, two traits —
       localStorage as a SYNC `VirtualStorage` engine (feature
       `localstorage`; the only sync browser storage, ADR-0018's
       base64 boundary exception applies), and `WireClient` implementing

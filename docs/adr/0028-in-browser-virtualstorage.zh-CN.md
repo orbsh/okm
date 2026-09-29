@@ -2,7 +2,8 @@
 
 > **Languages:** [English](0028-in-browser-virtualstorage.md)（主文档） · [中文](0028-in-browser-virtualstorage.zh-CN.md)
 
-**状态：** Accepted（设计定案；实现待用户放行，按 ADR → PLAN → 代码的仓库节奏）。
+**状态：** Implemented（8d00132 + 8a12f81；mudra 面板已消费——remote.rs 跑 `WireClient`，
+UI 态跑 `LocalStorageStore`）。
 
 ## 背景
 
