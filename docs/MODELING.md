@@ -552,6 +552,38 @@ The dynamic codec (schema-driven encoders in Python/Steel) mirrors this
 rule from `CollectionSchema` — per-field defaults travel with the schema so
 the dynamic reader applies the same migration semantics.
 
+### Optional fields: sentinel values, not `Option<T>` (ADR-0027 audit)
+
+Declared `Option<T>` fields are **not supported** — the
+derive-recognition followup was closed without implementation (PLAN.md
+Phase 9, REJECTED 2026-09-20: no audited table needs it, and a
+fixed-width presence byte buys nothing over a plain field + sentinel).
+The idiom instead is **sentinel values drawn from the type's identity
+element**:
+
+- `String` / `Bytes` cleared → the empty value (length 0 — the identity
+  of concatenation). Clearing = writing the identity, idempotent, no
+  separate null marker.
+- Timestamps (`updated_at`-style) never updated → `0` ("did not happen";
+  mudra's lifecycle fields `opened_at`/`closed_at`/`deleted_at` all use
+  it, and rebinding re-clears `closed_at` back to 0 — the sentinel also
+  carries the reopened state).
+- "No parent" ids → `0` where real ids start at 1.
+- Flags → `u8` 0/1, not `bool` (no payload `Option` in the wire;
+  2..=255 stays free for future states).
+
+The cost is semantic overload: `""` cannot distinguish "explicitly
+cleared" from "never set". When a field genuinely needs that third
+state, the answer is **not** a nullable wrapper but an explicit enum
+(`Unset | Cleared | Set(v)`) — one extra tag byte, and the reader stops
+guessing. `DynamicValue::Null` is already this shape on the dynamic
+segment: Null is a variant of the open vocabulary, not an `Option`
+wrapper.
+
+Rule of thumb: if the field's empty state coincides with the type's
+identity element, use the sentinel; if "cleared" and "never set" must
+differ, declare a state enum — do not encode state in sentinels.
+
 ### Schema stability tests
 
 Lock the physical bytes with hard-coded hex — any layout drift fails CI:

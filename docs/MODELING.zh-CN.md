@@ -347,6 +347,19 @@ pub struct User {
 
 dynamic codec（Python/Steel 的 schema 驱动编解码）从 `CollectionSchema` 镜像同一规则——字段默认值随 schema 走，动态读取器执行同样的迁移语义。
 
+### 可空字段：哨兵值，而非 `Option<T>`（ADR-0027 审计）
+
+声明的 `Option<T>` 字段**不受支持**——derive 识别的后续讨论已在未实现状态下关闭（PLAN.md Phase 9，2026-09-20 REJECTED：审计过的表没有一个需要它，定宽 presence 字节相比「普通字段 + 哨兵」什么也换不来）。替代惯用法是**从类型的单位元取哨兵值**：
+
+- `String` / `Bytes` 清空 → 空值（长度 0——拼接的单位元）。清空 = 写入单位元，幂等，无需独立的 null 标记。
+- 从未更新的时间戳（`updated_at` 类）→ `0`（「未发生」；mudra 的生命周期字段 `opened_at`/`closed_at`/`deleted_at` 全用它，rebinding 会把 `closed_at` 清回 0——哨兵同时承载「重新打开」的状态）。
+- 「无父」id → `0`（真实 id 从 1 起）。
+- 标志位 → `u8` 0/1，不用 `bool`（wire 上没有 payload `Option`；2..=255 留给未来状态）。
+
+代价是语义过载：`""` 无法区分「显式清空」和「从未设置」。字段真的需要这个第三态时，答案**不是**可空包装而是显式 Enum（`Unset | Cleared | Set(v)`）——多一个 tag 字节，读取侧不再靠猜。动态段的 `DynamicValue::Null` 已经是这个形态：Null 是开放词汇表的一个 variant，不是 `Option` 包装。
+
+经验法则：字段的空态与类型单位元重合 → 用哨兵；「清空」和「从未设置」必须区分 → 声明状态 Enum——不要把状态编码进哨兵里。
+
 ### Schema 稳定性测试
 
 用硬编码 hex 锁定物理字节——任何布局漂移都让 CI 失败：
