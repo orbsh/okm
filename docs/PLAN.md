@@ -1071,3 +1071,15 @@ bytes; doing them after P3 means hex locks change once, not twice.
   booths execute through okm-dynamic `DynamicCollection` at the type's
   registry-allocated ns; wasm (Rust source) booths use the static path
   (derive + `Collection`) compiled into the module.
+
+## In-browser VirtualStorage family (ADR-0028, 2026-09-29)
+
+- [ ] Design record shipped; code gated. Two browser roles, two traits —
+      localStorage as a SYNC `VirtualStorage` engine (feature
+      `localstorage`; the only sync browser storage, ADR-0018's
+      base64 boundary exception applies), and `WireClient` implementing
+      the aligned async surface as the transport-injected generic form of
+      the mudra panel's hand-rolled RemoteStore-over-WS (FIFO pairing per
+      connection, explicit-Err teardown, no tokio). `VirtualStorageAsync`
+      relocates slatedb_backend → storage.rs. Details, rejected options,
+      and the panel-migration baseline: ADR-0028.
