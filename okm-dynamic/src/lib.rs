@@ -31,6 +31,7 @@ mod index;
 mod collection;
 mod reduce;
 mod plan;
+mod plan_fields;
 
 pub use okm_core::schema::{FieldSchema, CollectionSchema};
 pub use okm_core::field::FieldType;
@@ -46,8 +47,12 @@ pub use encode::{encode_fields, encode_key, encode_payload};
 pub use index::{index_entries, scan_access_method, AccessMethod, AccessMethodKind, Admits, FuncDerive};
 pub use collection::DynamicCollection;
 pub use graph::{DynEdge, Graph};
-pub use reduce::{scan_reduces, reduce_get, ReduceLogic, ReduceLogicObj, BoundReduce, ReduceSpec};
+pub use reduce::{scan_reduces, reduce_get, ReduceLogic, ReduceLogicObj, BoundReduce, ReduceSpec, PresetKind, PresetLogic};
 pub use plan::{decode_stored, PlannedDelete, PlannedPut};
+pub use plan_fields::{
+    DictMirror, PlannedFields, fields_from_frames, fields_key, plan_delete_fields,
+    plan_put_fields,
+};
 
 use std::collections::BTreeMap;
 
