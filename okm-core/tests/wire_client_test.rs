@@ -49,7 +49,7 @@ impl WireTransport for Loop {
 /// whose mpsc pump we replace with the loopback by using with_prefix
 /// (None).
 fn pair() -> (NestStorage<TestStore>, WireClient<Loop>, Loop) {
-    let (host, _handle) = NestStorage::with_prefix(TestStore::fjall_tmp(), None);
+    let (host, _handle) = NestStorage::with_prefix(TestStore::default(), None);
     let loop_t = Loop::default();
     let client = WireClient::new(loop_t.clone());
     (host, client, loop_t)
@@ -277,7 +277,7 @@ fn commit_batch_is_one_frame_one_pass() {
 fn hosted_prefix_is_invisible_to_the_client() {
     // mudra's WS server hosts the panel behind a declared prefix; the
     // client's keyspace never sees it (write prepend, answer strip).
-    let (host, _handle) = NestStorage::new(TestStore::fjall_tmp(), &[0x42, 0x00]);
+    let (host, _handle) = NestStorage::new(TestStore::default(), &[0x42, 0x00]);
     let loop_t = Loop::default();
     let client = WireClient::new(loop_t.clone());
     drive(client.put(b"a".to_vec(), b"1".to_vec()), &host, &client, &loop_t);
