@@ -2,8 +2,8 @@
 
 > **Languages:** [English](0028-in-browser-virtualstorage.md) (primary) · [中文](0028-in-browser-virtualstorage.zh-CN.md)
 
-**Status:** Accepted (design; implementation pending user go-ahead, per the
-ADR → PLAN → code rhythm).
+**Status:** Implemented (8d00132 + 8a12f81; consumed by the mudra panel —
+remote.rs over `WireClient`, UI state over `LocalStorageStore`).
 
 ## Context
 
