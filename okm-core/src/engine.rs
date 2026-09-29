@@ -13,3 +13,6 @@ pub mod fjall_backend;
 pub mod redb_backend;
 #[cfg(feature = "slatedb")]
 pub mod slatedb_backend;
+#[cfg(feature = "localstorage")]
+pub mod localstorage_backend;
+pub mod wire_client;

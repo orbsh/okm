@@ -45,10 +45,11 @@ pub use model::presets::{Count, HighWater, LowAcc, LowWater, ReduceFieldSource, 
 pub use model::collection::Junction;
 pub use model::junction::KvJunction;
 pub use model::graph::{EdgeBody, EdgeFact, Graph, KvGraph, NodeRef};
-pub use engine::storage::{VirtualStorage, MemBatch, SharedVirtualStorage, scan_suffix_kv};
+pub use engine::storage::{VirtualStorage, VirtualStorageAsync, MemBatch, SharedVirtualStorage, scan_suffix_kv, scan_suffix_kv_async};
 #[cfg(any(feature = "test-engines", feature = "fjall", feature = "redb"))]
 pub use engine::test_engine::TestStore;
 pub use engine::nest::{NestStorage, RemoteStore, VirtualHandle};
+pub use engine::wire_client::{WireClient, WireTransport};
 pub use okm_wire::{OpFrame, OpResponse};
 pub use model::field::{FieldDesc, FieldType};
 pub use model::index::{Document, IndexFuncResult, IndexFuncValues, KvIndex, PRIMARY_SLOT, scan_index};
@@ -65,8 +66,10 @@ pub use bridge::tooling::parquet_io;
 pub use engine::fjall_backend::FjallStore;
 #[cfg(feature = "slatedb")]
 pub use engine::slatedb_backend::{
-    AsyncJunction, VirtualStorageAsync, SlatedbStore, scan_suffix_kv_async,
+    AsyncJunction, SlatedbStore,
 };
+#[cfg(feature = "localstorage")]
+pub use engine::localstorage_backend::{b64_decode, b64_encode, LocalStorageStore};
 
 // ================= path-compat re-exports =================
 // Downstream crates (okm-dynamic, okm-query, bindings) and tests import
@@ -94,6 +97,8 @@ pub use engine::fjall_backend as fjall_backend;
 pub use engine::redb_backend as redb_backend;
 #[cfg(feature = "slatedb")]
 pub use engine::slatedb_backend as slatedb_backend;
+#[cfg(feature = "localstorage")]
+pub use engine::localstorage_backend as localstorage_backend;
 #[cfg(feature = "arrow")]
 pub use bridge::arrow_bridge as arrow_bridge;
 pub use bridge::tooling as tooling;

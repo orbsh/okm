@@ -1,7 +1,7 @@
 # ADR-0021: Streaming scan over the wire — the remote path joins the lazy contract
 
 Date: 2026-09-22
-Status: Landed (2026-09-22) — wire codec, hex tests, `RemoteStore::scan_range_iter` lazy `ScanIter::Remote` arm all green.
+Status: Landed (2026-09-22) — wire codec, hex tests, `RemoteStore::scan_range_iter` lazy `ScanIter::Remote` arm all green. Update 2026-09-29 (found while landing ADR-0028's async sender): the flag space gains `0x03` — the grammar lacked the exclusive + unbounded combination, so an unbounded stream silently truncated at the first page edge (see below; sync and async senders share the fix). The deferred `[0x03]` descending-page proposal below was never shipped, so the value is free — filling it follows this ADR's own discipline: "flags are added when a use case exists."
 
 ## Context
 
@@ -31,6 +31,12 @@ Same op shape as `OP_SCAN`: key segment = full-key begin bound (hosted-prefix ap
 
 ```text
 value segment: [flag u8][end bytes?][page u8]
+flag: 0x00 = unbounded begin           0x01 = bounded, inclusive begin
+      0x02 = bounded, exclusive begin  0x03 = unbounded, exclusive begin
+                                        (added 2026-09-29: the resume of
+                                        an unbounded stream — begin IS the
+                                        cursor, no end span sits between
+                                        flag and page byte)
 page: requested batch size in ENTRIES (not bytes) —
       0 = engine default (256), 0xFF = "one giant page" (the old buffered shape)
 ```
@@ -53,7 +59,7 @@ Three properties fall out of reusing the response grammar:
 
 - **Chunks are self-contained `OpResponse`s plus one byte.** A receiver that does not implement `OP_SCAN_STREAM` rejects the op (unknown tag = malformed frame, `apply` → `None`) and the sender falls back to the buffered path — backward compatibility without version negotiation.
 - **The chunk carries values**, fixing the N+1 problem without a separate decision: each hit is `[len][key][len][value]`, mirroring the engine's `(key, value)` iterator item. The old `suffixes`-only answer stays for `OP_SCAN`; `OP_SCAN_STREAM` never strips values because its contract is the iterator's contract.
-- **No cursor state on the receiver.** The sender owns resumption: each chunk's last key IS the cursor, and the next request is an ordinary `OP_SCAN_STREAM` with `begin = last_key + prefix_end-style increment` (exclusive begin via a `[0x02]` flag byte: exclusive-begin range). The receiver answers from whatever engine state exists now — no snapshot promise. This is the honest contract for a stateless executor (constraint 2): the remote stream is a sequence of consistent-at-chunk-time reads, not a frozen snapshot like fjall's local `Iter`. ADR-0020's semantics degrade exactly where the architecture already says they must.
+- **No cursor state on the receiver.** The sender owns resumption: each chunk's last key IS the cursor, and the next request is an ordinary `OP_SCAN_STREAM` with `begin = last_key + prefix_end-style increment` (exclusive begin via flag `0x02` with an end bound, or `0x03` when the stream is unbounded — exclusive-begin range). The receiver answers from whatever engine state exists now — no snapshot promise. This is the honest contract for a stateless executor (constraint 2): the remote stream is a sequence of consistent-at-chunk-time reads, not a frozen snapshot like fjall's local `Iter`. ADR-0020's semantics degrade exactly where the architecture already says they must.
 
 ### Sender shape: `RemoteStore::scan_range_iter` becomes genuinely lazy
 
@@ -88,7 +94,7 @@ The trait's return type does not change (`ScanIter` gains a `Remote` arm behind 
 
 - **A frame-level stream protocol (SEQ/ACK frames, receiver-side cursor id).** Violates constraint 2 (stateful receiver) and constraint 3 (correlation in frame bytes). The transport already orders and correlates; restating it in the wire is the same fact stored twice, and it would couple the codec to session-oriented transports — the UDS-datagram / fire-and-forget shapes stop working.
 - **One response type, streamed as raw byte spans with offsets.** Makes chunks non-self-contained: a chunk could only be parsed with its predecessors' context, so a dropped chunk poisons the rest. Self-contained chunks cost one repeated field and buy resumability for free.
-- **Descending-page request for `next_back` (`[0x03]` reverse flag).** Technically symmetric, but no current consumer walks a remote range backwards without first having read forward; deferring keeps the flag byte space honest (flags are added when a use case exists, not for symmetry — same reasoning as ADR-0016's slot table).
+- **Descending-page request for `next_back` (a reverse flag).** Technically symmetric, but no current consumer walks a remote range backwards without first having read forward; deferring keeps the flag byte space honest (flags are added when a use case exists, not for symmetry — same reasoning as ADR-0016's slot table). Note (2026-09-29): this line originally pre-named `[0x03]`; that value was taken by the unbounded-exclusive resume flag (Status). If the descending request returns, it claims the next free flag value.
 
 ## Consequences
 

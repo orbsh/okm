@@ -197,3 +197,33 @@ fn remote_scan_range_iter_is_lazy_paged() {
     assert_eq!(last_two[0].0, lazy[39].0);
     assert_eq!(last_two[1].0, lazy[38].0);
 }
+
+/// ADR-0028 closure regression, sync side: an UNBOUNDED stream walk over
+/// more than one page. The old flag grammar had no encoding for
+/// exclusive + no-end (the cursor resume of an unbounded stream), so the
+/// second page decoded as "empty end" and the walk truncated at page 1.
+/// The 40-row lazy test never crossed a page boundary and missed it.
+#[test]
+fn remote_unbounded_stream_crosses_pages() {
+    let handle = spawn_host(TestStore::default(), &[0x00, 0x11]);
+    let remote = handle.open();
+    // 600 keys, page default 256 => three pages (256 + 256 + 88)
+    let mut batch = okm_core::MemBatch::default();
+    for i in 0..600u32 {
+        batch.put(format!("k/{i:04}").into_bytes(), b"v".to_vec());
+    }
+    // second endpoint on the SAME handle: writes commit through it
+    let mut writer = handle.open();
+    writer.commit_batch(batch).expect("batch frame accepted");
+    wait_for(
+        || remote.scan_suffix(b"k/").len() == 600,
+        "600 writes to land",
+    );
+    let items: Vec<_> = remote.scan_range_iter(b"k", None).collect();
+    assert_eq!(items.len(), 600, "unbounded walk must not truncate at a page edge");
+    // byte order holds across the page seams
+    assert_eq!(items.first().unwrap().0, b"k/0000");
+    assert_eq!(items.get(255).unwrap().0, b"k/0255");
+    assert_eq!(items.get(256).unwrap().0, b"k/0256");
+    assert_eq!(items.last().unwrap().0, b"k/0599");
+}
