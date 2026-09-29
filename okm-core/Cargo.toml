@@ -128,3 +128,7 @@ required-features = ["test-engines"]
 [[test]]
 name = "bare_shard_test"
 required-features = ["test-engines"]
+
+[[test]]
+name = "wire_client_test"
+required-features = ["test-engines"]
