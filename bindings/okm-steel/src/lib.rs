@@ -18,6 +18,13 @@ use steel::steel_vm::register_fn::RegisterFn;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+pub mod collection;
+
+/// The shared injection machinery (engine face + entry parsing) rides
+/// through here so carriers need one dependency (okm-steel), not two —
+/// the same posture okm-python exposes `pyo3_impl::Engine`.
+pub use okm_entry;
+
 /// SteelVal → Value, with schema-kind coercion for integers (steel has one
 /// integer type; OKM fields are width-strict).
 fn steel_to_value(
@@ -30,7 +37,7 @@ fn steel_to_value(
     Ok(match kind {
         FieldType::Str => match v {
             StringV(s) => Value::Str(s.to_string()),
-            other => return Err(bad("string")),
+            _ => return Err(bad("string")),
         },
         FieldType::Bytes | FieldType::FixedBytes => {
             // Bytes cross as a scheme vector of integers (0-255) — steel's
@@ -90,6 +97,12 @@ fn value_to_steel(v: &Value) -> SteelVal {
         Value::Bytes(b) => SteelVal::VectorV(steel::rvals::SteelVector::from(
             steel::gc::Gc::new(b.iter().map(|x| IntV(*x as isize)).collect::<im_rc::Vector<SteelVal>>()),
         )),
+        // Nested composites (okm 0c2a354, same mapping as okm-python's
+        // map_to_dict): Obj → hash?, Array → vector, recursing.
+        Value::Obj(fields) => value_map_to_steel(fields),
+        Value::Array(items) => SteelVal::VectorV(steel::rvals::SteelVector::from(
+            steel::gc::Gc::new(items.iter().map(value_to_steel).collect::<im_rc::Vector<SteelVal>>()),
+        )),
     }
 }
 
@@ -107,7 +120,7 @@ fn find_field<'a>(
 }
 
 /// Hash-map (steel `hash?`) → ValueMap with kind coercion.
-fn steel_hash_to_map(schema: &CollectionSchema, v: &SteelVal) -> Result<ValueMap, String> {
+pub(crate) fn steel_hash_to_map(schema: &CollectionSchema, v: &SteelVal) -> Result<ValueMap, String> {
     let SteelVal::HashMapV(map) = v else {
         return Err(format!("values must be a hash (define/hash), got {v:?}"));
     };
@@ -118,12 +131,12 @@ fn steel_hash_to_map(schema: &CollectionSchema, v: &SteelVal) -> Result<ValueMap
             .ok_or_else(|| format!("hash keys must be strings, got {k:?}"))?
             .to_string();
         let f = find_field(schema, &name)?;
-        out.insert(name.clone(), steel_to_value(&name, f.ty, &val)?);
+        out.insert(name.clone(), steel_to_value(&name, f.ty, val)?);
     }
     Ok(out)
 }
 
-fn value_map_to_steel(m: &ValueMap) -> SteelVal {
+pub(crate) fn value_map_to_steel(m: &ValueMap) -> SteelVal {
     let mut inner = im_rc::HashMap::new();
     for (k, v) in m {
         inner.insert(StringV(k.as_str().to_owned().into()), value_to_steel(v));
@@ -135,13 +148,13 @@ fn err(e: okm_dynamic::CodecError) -> Result<SteelVal, String> {
     Err(format!("{e}"))
 }
 
-/// Install the okm codec functions into a VM:
-/// - `(okm-schema-from-json! "<json>")` → an opaque schema handle
-/// - `(okm-schema-version! schema)` → layout version
-/// - `(okm-encode-key! schema hash)` → bytevector
-/// - `(okm-encode-payload! schema hash)` → bytevector
-/// - `(okm-decode-key! schema bytes)` → hash
-/// - `(okm-decode-payload! schema bytes)` → hash
+// Install the okm codec functions into a VM:
+// - `(okm-schema-from-json! "<json>")` → an opaque schema handle
+// - `(okm-schema-version! schema)` → layout version
+// - `(okm-encode-key! schema hash)` → bytevector
+// - `(okm-encode-payload! schema hash)` → bytevector
+// - `(okm-decode-key! schema bytes)` → hash
+// - `(okm-decode-payload! schema bytes)` → hash
 thread_local! {
     static SCHEMAS: std::cell::RefCell<std::collections::HashMap<u64, std::sync::Arc<CollectionSchema>>> =
         std::cell::RefCell::new(std::collections::HashMap::new());
@@ -166,7 +179,7 @@ fn get_schema(id: isize) -> Result<std::sync::Arc<CollectionSchema>, String> {
             .ok_or_else(|| format!("okm: unknown schema handle {id}"))
     })
 }
-fn steel_hash_to_map_for(id: isize, vals: SteelVal) -> Result<ValueMap, String> {
+pub(crate) fn steel_hash_to_map_for(id: isize, vals: SteelVal) -> Result<ValueMap, String> {
     let s = get_schema(id)?;
     steel_hash_to_map(&s, &vals)
 }
