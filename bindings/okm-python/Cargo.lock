@@ -1495,11 +1495,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "okm-entry"
+version = "0.1.0"
+dependencies = [
+ "okm-core",
+ "okm-dynamic",
+ "serde_json",
+]
+
+[[package]]
 name = "okm-python"
 version = "0.1.0"
 dependencies = [
  "okm-core",
  "okm-dynamic",
+ "okm-entry",
  "okm-wire",
  "pyo3",
  "serde_json",
