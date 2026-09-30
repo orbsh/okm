@@ -24,13 +24,6 @@ pub struct UserV3 {
     pub region: String,
 }
 
-fn hex(h: &str) -> Vec<u8> {
-    (0..h.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&h[i..i + 2], 16).unwrap())
-        .collect()
-}
-
 #[test]
 fn steel_vm_roundtrip() {
     let schema = CollectionSchema::of::<UserKey, UserV3>();
