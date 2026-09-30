@@ -20,93 +20,233 @@ use slatedb::object_store::ObjectStore;
 use std::ops::RangeFull;
 use std::sync::Arc;
 
-/// Owned lazy adapter over slatedb's forward-only async `DbIterator`:
-/// the iterator is 'static, so it crosses into the sync world with a
-/// shared runtime handle (one `block_on` per `next()`). Backwards walk
-/// (`next_back`) has no native counterpart — it buffers the remaining
-/// range once and drains from the tail (laziness lost, semantics kept).
+/// Owned lazy adapter over the slatedb driver thread: the iterator
+/// consumes a per-item channel the driver fills (one `block_on` batch
+/// on the driver thread, zero `block_on` on the consumer thread — the
+/// consumer may live INSIDE a tokio context; a runtime-driven block_on
+/// there panics). Backwards walk (`next_back`) has no native
+/// counterpart — it drains the remaining range once and reads from the
+/// tail (laziness lost, semantics kept — the old shape's trade).
 pub struct SlatedbIter {
-    it: slatedb::DbIterator,
-    rt: std::sync::Arc<tokio::runtime::Runtime>,
+    rx: ItemStream,
+    done: bool,
     back_buf: Option<std::vec::IntoIter<(Vec<u8>, Vec<u8>)>>,
-}
-
-impl SlatedbIter {
-    /// Materialize everything not yet consumed (skipping already-taken
-    /// entries) into a reversed tail buffer for `next_back`.
-    fn fill_back_buf(&mut self) {
-        let mut tail = Vec::new();
-        while let Some(kv) = self
-            .rt
-            .block_on(self.it.next())
-            .expect("slatedb iter failed")
-        {
-            tail.push((kv.key.to_vec(), kv.value.to_vec()));
-        }
-        tail.reverse();
-        self.back_buf = Some(tail.into_iter());
-    }
 }
 
 impl Iterator for SlatedbIter {
     type Item = (Vec<u8>, Vec<u8>);
     fn next(&mut self) -> Option<Self::Item> {
-        let kv = self
-            .rt
-            .block_on(self.it.next())
-            .expect("slatedb iter failed")?;
-        Some((kv.key.to_vec(), kv.value.to_vec()))
+        if self.done {
+            return None;
+        }
+        match self.rx.recv() {
+            Ok(Some(kv)) => Some(kv),
+            Ok(None) | Err(_) => {
+                self.done = true;
+                None
+            }
+        }
     }
 }
 
 impl DoubleEndedIterator for SlatedbIter {
     fn next_back(&mut self) -> Option<Self::Item> {
         if self.back_buf.is_none() {
-            self.fill_back_buf();
+            // Materialize everything not yet consumed into a reversed
+            // tail buffer (the old `fill_back_buf` semantics) — a
+            // BLOCKING drain to the stream's end sentinel (a try_iter
+            // would race the driver and silently drop items it has
+            // not sent yet).
+            let mut tail: Vec<(Vec<u8>, Vec<u8>)> = self.rx.iter().flatten().collect();
+            tail.reverse();
+            self.back_buf = Some(tail.into_iter());
+            self.done = true;
         }
         self.back_buf.as_mut().and_then(std::iter::Iterator::next)
     }
 }
 
-/// Sync facade over a slatedb instance: an internal current-thread runtime
-/// drives the async engine. This is what the sync `VirtualStorage` tests
-/// and engines run on — the in-memory object store gives a zero-fs
-/// test engine; a real object store gives production.
+/// The per-item channel of a lazy scan stream (the driver produces
+/// `Some((k, v))` items, `None` ends the range; a dropped consumer
+/// stops the producer on its send error).
+type ItemStream = std::sync::mpsc::Receiver<Option<(Vec<u8>, Vec<u8>)>>;
+
+/// Commands the driver thread executes against the async Db. Every
+/// arm is flat (no re-entrant nesting — okm's call shapes are engine
+/// methods only, the same rule the old shared-runtime doc recorded).
+enum Cmd {
+    Put {
+        key: Vec<u8>,
+        value: Vec<u8>,
+    },
+    Get {
+        key: Vec<u8>,
+        reply: std::sync::mpsc::Sender<Option<Vec<u8>>>,
+    },
+    Del {
+        key: Vec<u8>,
+    },
+    /// Full keys in [begin, end) (the `scan_range_sync` contract);
+    /// `end: None` = unbounded tail.
+    ScanRange {
+        begin: Vec<u8>,
+        end: Option<Vec<u8>>,
+        reply: std::sync::mpsc::Sender<Vec<Vec<u8>>>,
+    },
+    /// Keys MINUS the prefix under `prefix` (the `scan_suffix_sync`
+    /// contract).
+    ScanSuffix {
+        prefix: Vec<u8>,
+        reply: std::sync::mpsc::Sender<Vec<Vec<u8>>>,
+    },
+    /// Lazy forward stream: the driver produces `(key, value)` items
+    /// until drained or the consumer drops the iterator (send fails).
+    /// `end: None` = unbounded tail.
+    ScanStream {
+        begin: Vec<u8>,
+        end: Option<Vec<u8>>,
+        reply: std::sync::mpsc::Sender<ItemStream>,
+    },
+}
+
+/// Sync facade over a slatedb instance: a DEDICATED driver thread owns
+/// the current-thread runtime and the Db, and executes commands from a
+/// channel. This is what the sync `VirtualStorage` tests and engines
+/// run on — the in-memory object store gives a zero-fs test engine; a
+/// real object store gives production.
 ///
-/// One runtime per store handle; handlers must not call across handles in
-/// nested fashion (re-entrant block_on panics). OKM's call shapes are flat
-/// (engine methods only), so this holds.
+/// Why a thread and not a held runtime: `Runtime::block_on` panics
+/// when called from a thread that already has a tokio context entered
+/// — aura's realm line constructs and drives injections inside
+/// `spawn_blocking`, which KEEPS the context. The old shape (runtime
+/// handle + block_on per call) worked only for consumers outside any
+/// runtime, and that assumption silently broke the first time a real
+/// host embedded the engine. Commands cross an mpsc instead: the
+/// consumer blocks on the channel, never on `block_on`.
 pub struct SlatedbSync {
-    rt: std::sync::Arc<tokio::runtime::Runtime>,
-    db: Db,
+    tx: Arc<std::sync::mpsc::Sender<Cmd>>,
+}
+
+fn drive(rt: tokio::runtime::Runtime, db: Db, rx: std::sync::mpsc::Receiver<Cmd>) {
+    while let Ok(cmd) = rx.recv() {
+        match cmd {
+            Cmd::Put { key, value } => {
+                rt.block_on(db.put(key, value)).expect("slatedb put failed");
+            }
+            Cmd::Get { key, reply } => {
+                let v = rt
+                    .block_on(db.get(&key))
+                    .expect("slatedb get failed")
+                    .map(|v| v.to_vec());
+                let _ = reply.send(v);
+            }
+            Cmd::Del { key } => {
+                rt.block_on(db.delete(key)).expect("slatedb delete failed");
+            }
+            Cmd::ScanRange { begin, end, reply } => {
+                let mut it = match end {
+                    Some(end) => rt
+                        .block_on(db.scan_prefix(b"", begin..end))
+                        .expect("slatedb scan failed"),
+                    None => rt
+                        .block_on(db.scan_prefix(b"", begin..))
+                        .expect("slatedb scan failed"),
+                };
+                let mut out = Vec::new();
+                while let Some(kv) = rt.block_on(it.next()).expect("slatedb iter failed") {
+                    out.push(kv.key.to_vec());
+                }
+                let _ = reply.send(out);
+            }
+            Cmd::ScanSuffix { prefix, reply } => {
+                let mut it = rt
+                    .block_on(db.scan_prefix(&prefix, RangeFull))
+                    .expect("slatedb scan failed");
+                let mut out = Vec::new();
+                while let Some(kv) = rt.block_on(it.next()).expect("slatedb iter failed") {
+                    out.push(kv.key[prefix.len()..].to_vec());
+                }
+                let _ = reply.send(out);
+            }
+            Cmd::ScanStream { begin, end, reply } => {
+                let (item_tx, item_rx) = std::sync::mpsc::channel();
+                // Hand the consumer its receiver FIRST, then produce.
+                if reply.send(item_rx).is_err() {
+                    continue;
+                }
+                let mut it = match end {
+                    Some(end) => rt
+                        .block_on(db.scan_prefix(b"", begin..end))
+                        .expect("slatedb scan failed"),
+                    None => rt
+                        .block_on(db.scan_prefix(b"", begin..))
+                        .expect("slatedb scan failed"),
+                };
+                loop {
+                    match rt.block_on(it.next()) {
+                        Ok(Some(kv)) => {
+                            if item_tx
+                                .send(Some((kv.key.to_vec(), kv.value.to_vec())))
+                                .is_err()
+                            {
+                                break; // consumer dropped the iterator
+                            }
+                        }
+                        Ok(None) => {
+                            let _ = item_tx.send(None);
+                            break;
+                        }
+                        Err(e) => panic!("slatedb iter failed: {e}"),
+                    }
+                }
+            }
+        }
+    }
 }
 
 impl SlatedbSync {
     /// In-memory instance: zero fs, per-test isolation by construction
-    /// (each call builds a fresh InMemory object store).
+    /// (each call builds a fresh InMemory object store). The open runs
+    /// on the driver thread — the caller may hold a tokio context, and
+    /// `block_on` there panics.
     pub fn open_mem(name: &str) -> Result<Self, slatedb::Error> {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("tokio current-thread runtime");
-        let store: Arc<dyn ObjectStore> = Arc::new(slatedb::object_store::memory::InMemory::new());
-        let db = rt.block_on(slatedb::Db::open(format!("/{name}"), store))?;
-        Ok(Self { rt: std::sync::Arc::new(rt), db })
+        let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let name = name.to_string();
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("tokio current-thread runtime");
+            let store: Arc<dyn ObjectStore> =
+                Arc::new(slatedb::object_store::memory::InMemory::new());
+            match rt.block_on(slatedb::Db::open(format!("/{name}"), store)) {
+                Ok(db) => {
+                    let _ = ready_tx.send(Ok(()));
+                    drive(rt, db, cmd_rx);
+                }
+                Err(e) => {
+                    let _ = ready_tx.send(Err(e));
+                }
+            }
+        });
+        ready_rx.recv().expect("slatedb open thread")?;
+        Ok(Self { tx: Arc::new(cmd_tx) })
     }
 
-    /// Sync adapter over an already-open async Db.
-    pub fn from_db(rt: std::sync::Arc<tokio::runtime::Runtime>, db: Db) -> Self {
-        Self { rt, db }
+    /// Sync adapter over an already-open async Db (the production
+    /// shape: the caller built the Db on its own runtime; this hands
+    /// the Db AND the runtime to a driver thread).
+    pub fn from_db(rt: tokio::runtime::Runtime, db: Db) -> Self {
+        let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || drive(rt, db, cmd_rx));
+        Self { tx: Arc::new(cmd_tx) }
     }
 
-    /// Access the async handle (async call sites bypass block_on).
-    pub fn db(&self) -> &Db {
-        &self.db
-    }
-
-    /// Access the runtime (async call sites).
-    pub fn runtime(&self) -> &tokio::runtime::Runtime {
-        &self.rt
+    fn request<R>(&self, make: impl FnOnce(std::sync::mpsc::Sender<R>) -> Cmd) -> R {
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.tx.send(make(tx)).expect("slatedb driver alive");
+        rx.recv().expect("slatedb driver reply")
     }
 }
 
@@ -272,69 +412,64 @@ impl<S: VirtualStorageAsync, E: KvJunction> AsyncJunction<S, E> {
 pub use slatedb::object_store;
 
 impl SlatedbSync {
-    /// slatedb ops are &self-safe (engine handles concurrency internally);
-    /// these inherent methods are what shared handles call.
+    /// slatedb ops are &self-safe (the driver thread serializes them);
+    /// these inherent methods are what shared handles call — each is
+    /// one command over the channel, never a `block_on` on the CALLER's
+    /// thread (that is the panic the driver-thread shape exists to kill:
+    /// aura's realm drives these inside spawn_blocking, a live tokio
+    /// context).
     pub fn put_sync(&self, key: Vec<u8>, value: Vec<u8>) {
-        self.rt.block_on(self.db.put(key, value)).expect("slatedb put failed");
+        self.tx
+            .send(Cmd::Put { key, value })
+            .expect("slatedb driver alive");
+        // Fire-and-forget is safe by channel ORDER: one mpsc, one
+        // driver — a later command (the Collection's read-back of its
+        // own batch, or the next write) is processed after this Put.
+        // Consumers that must observe a write against EXTERNAL writers
+        // ride Get, whose reply round trip closes the gap.
     }
     pub fn get_sync(&self, key: &[u8]) -> Option<Vec<u8>> {
-        self.rt
-            .block_on(self.db.get(key))
-            .expect("slatedb get failed")
-            .map(|v| v.to_vec())
+        let key = key.to_vec();
+        self.request(|reply| Cmd::Get { key, reply })
     }
     pub fn del_sync(&self, key: &[u8]) {
-        self.rt.block_on(self.db.delete(key)).expect("slatedb delete failed");
+        self.tx
+            .send(Cmd::Del { key: key.to_vec() })
+            .expect("slatedb driver alive");
     }
     pub fn scan_range_sync(&self, begin: &[u8], end: Option<&[u8]>) -> Vec<Vec<u8>> {
         if let Some(end) = end
-            && end <= begin {
-                return Vec::new();
-            }
-        let mut it = match end {
-            Some(end) => self.rt.block_on(self.db.scan_prefix(b"", begin..end)),
-            None => self.rt.block_on(self.db.scan_prefix(b"", begin..)),
+            && end <= begin
+        {
+            return Vec::new();
         }
-        .expect("slatedb scan failed");
-        let mut out = Vec::new();
-        while let Some(kv) = self.rt.block_on(it.next()).expect("slatedb iter failed") {
-            out.push(kv.key.to_vec());
-        }
-        out
+        let begin = begin.to_vec();
+        let end = end.map(|e| e.to_vec());
+        self.request(|reply| Cmd::ScanRange { begin, end, reply })
     }
-    /// Owned lazy adapter: the slatedb `DbIterator` is 'static, so it
-    /// can cross into the sync world as long as the runtime handle is
-    /// shared (Arc) — each `next()` is one `block_on`.
-    /// slatedb: owned lazy adapter (one block_on per next); backwards
-    /// walk buffers the remaining tail (see `SlatedbIter`).
+    /// Owned lazy adapter over the driver's per-item channel (ADR-0027
+    ///'s laziness contract: the driver walks the range as the consumer
+    /// pulls; a dropped iterator stops the producer on its send error).
     pub fn scan_range_iter_sync(
         &self,
         begin: &[u8],
         end: Option<&[u8]>,
     ) -> super::storage::ScanIter {
         if let Some(end) = end
-            && end <= begin {
-                return super::storage::ScanIter::Buffered(std::iter::empty().collect::<Vec<_>>().into_iter());
-            }
-        let it = match end {
-            Some(end) => self.rt.block_on(self.db.scan_prefix(b"", begin..end)),
-            None => self.rt.block_on(self.db.scan_prefix(b"", begin..)),
+            && end <= begin
+        {
+            let empty: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+            return super::storage::ScanIter::Buffered(empty.into_iter());
         }
-        .expect("slatedb scan failed");
-        let rt = self.rt.clone();
-        super::storage::ScanIter::Slatedb(SlatedbIter { it, rt, back_buf: None })
+        let begin = begin.to_vec();
+        let end = end.map(|e| e.to_vec());
+        let rx = self.request(|reply| Cmd::ScanStream { begin, end, reply });
+        super::storage::ScanIter::Slatedb(SlatedbIter { rx, done: false, back_buf: None })
     }
 
     pub fn scan_suffix_sync(&self, prefix: &[u8]) -> Vec<Vec<u8>> {
-        let mut it = self
-            .rt
-            .block_on(self.db.scan_prefix(prefix, RangeFull))
-            .expect("slatedb scan failed");
-        let mut out = Vec::new();
-        while let Some(kv) = self.rt.block_on(it.next()).expect("slatedb iter failed") {
-            out.push(kv.key[prefix.len()..].to_vec());
-        }
-        out
+        let prefix = prefix.to_vec();
+        self.request(|reply| Cmd::ScanSuffix { prefix, reply })
     }
 }
 
