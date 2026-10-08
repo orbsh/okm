@@ -545,25 +545,63 @@ reduce 之外，写路径还有命令式的一半——`Collection::upsert_with(
 
 两者共用同一条写路径（put），所以索引维护、reduce 折叠、事件发射全部照常触发，无特例。也共用同一个正确性边界：**单写者**。OKM 是进程内库、写序串行（`&mut self`），get→f→put 不可能交错——无需 CAS，这也是 reduce 恰好一次的同一约束。多写者未来（乐观 CAS）是不同机制，不在此模型内。覆盖写的 unfold 补偿由 put 内部完成，upsert_with 不另平账（见 internals 的 reduce 机制）。
 
-## 写路径事件：inline、trigger、channel
+## 写路径事件：两种机制（reduce、`#[ok_subscribe]`）与 trigger 归属
 
-reduce 回答"累计后的状态长什么样"；另一类消费者需要的是写本身作为事件——副作用、搜索索引同步、下游通知。事件层（ADR-0008）把这些消费者按**失败语义**拆成三类，这个拆分就是全部设计。判据一句话：这个消费者丢了一个事件会怎样？账本错 = inline；无所谓 = trigger；能事后追平 = channel。
+reduce 回答"累计后的状态长什么样"；另一类消费者需要的是写本身作为事件——副作用、搜索索引同步、下游通知。事件层（ADR-0008）按**失败语义**判别它们的归属。判据一句话：这个消费者丢了一个事件会怎样？账本错 = inline（reduce 机制）；无所谓 = trigger（应用代码，okm 无机制）；能事后追平 = channel（`#[ok_subscribe]` 机制）。**机制只有两种**——reduce 与 channel；trigger 是第三种归属，不是第三个机制。
 
 - **Inline**（reduce）：运行在写路径内部，构造上恰好一次——fold 就是写的一部分。reduce 永远不消费 channel。
-- **Trigger**（inline，无状态副作用）：同样同步跑在写路径里，但**至多一次**、无事务边界、无 undo——「已经通知过」「已经写了另一张表」撤不回来。trigger 的失败既不回滚写入、也不赢得重试；任何必须恰好一次的东西都不要挂在它上面。它与 reduce 的不对称（可逆 vs 至多一次，同一个事件源上）是刻意的设计（ADR-0008 记录在案），不要统一它们。
-- **Channel**（`#[ok_subscribe]`）：best-effort 投递，无保证。注解声明"该行类型的写路径事件进入 channel"；注解处没有 handler——处理逻辑完全归消费者：
+- **Trigger**（普通应用代码，okm 无机制、无声明面）：同步跑在写路径边上，但**至多一次**、无事务边界、无 undo——「已经通知过」「已经写了另一张表」撤不回来。trigger 的失败既不回滚写入、也不赢得重试；任何必须恰好一次的东西都不要挂在它上面。它与 reduce 的不对称（可逆 vs 至多一次，同一个事件源上）是刻意的设计（ADR-0008 记录在案），不要统一它们——也不要把它误读为第三个机制：okm 不为它提供任何东西，也不需要提供，这类副作用就归调用方自己的代码。
 
-```text
-#[ok_subscribe]                      // bare：唯一形态；事件 enum 由 build.rs 推导
-                                     // （variant = 行类型名，enum 名可用
-                                     // #[ok_event_enum(Alias)] 覆盖）
+  这不是声明，是写路径边缘的普通代码——行与它的派生条目落定之后顺手执行：
+
+  ```rust
+  // 调用方自己的 put 封装：行写入保持恰好一次，通知顺带发出、尽力而为、绝不重试
+  fn save_config(store: &mut impl VirtualStorage, cfg: &Config) -> Result<()> {
+      let mut t = Collection::new(store.shared_handle());
+      t.put(&cfg.key(), cfg)?;                       // 写：恰好一次
+      let _ = METRICS_GAUGE.set(cfg.name(), cfg.ttl_secs()); // trigger：至多一次
+      let _ = notifier.send(cfg.name());             // trigger：发后即忘
+      Ok(())
+  }
+  ```
+
+  trigger 与 channel 消费者的分界：trigger 跑在**调用方的写序列内**（它的耗时记在写的
+  延迟上，它的 panic 会传出来）；channel 消费者跑在**写返回之后**。如果副作用必须在任何
+  负载下观察到每一次写，那它是带持久供给的 channel 消费者——不是 trigger。
+
+- **Channel**（`#[ok_subscribe]`）：best-effort 投递，无保证。注解声明"该行类型的写路径
+  事件进入 channel"；注解处没有 handler——derive 只发一次 send，消费者在装配期注册传输：
+
+```rust
+// 声明：bare——该行类型的写事件进入 channel；
+// 事件 enum（variant = 行类型名）由 build.rs 收集生成
+#[derive(DocumentEncode, Clone, Debug)]
+#[ok_ref(AccountKey)]
+#[ok_subscribe]                        // Account 现在会发出 Put/Delete 事件
+#[ok_ns(21)]
+pub struct Account {
+    pub balance: u64,
+}
+
+// 消费，装配期一次性注册传输
+// （tokio mpsc、crossbeam、no-op 均可——传输不是模型的事）
+ACCOUNT_EVENTS.register(move |ev: AccountEvent| {
+    let AccountEvent::Account(e) = ev else { return false };
+    index_sync(e.op, &e.key, &e.document);   // 例如搜索索引同步：
+    e.epoch == last_epoch(e.key)             //   会丢、可重同步
+});
 ```
 
-事件携带 `op`（put/delete）、单调递增的**写批次 epoch** 和行本身。epoch 是发出这张表的写计数器：同一张表的事件带精确的同表批次边界，消费者组合子可以恰好折叠到边界为止（glitch-free），而不是靠去抖启发式。它只在进程内有意义——不持久化，重启归零——并且不提供跨表顺序：独立 put 之间不存在原子性的"两者都已更新"时刻，多表 fan-in 结构上就是最终一致。
+消费者收到的是：`op`（Put/Delete）、该行的 `epoch`（发出集合的单调写计数器——精确的
+同表顺序边界）、key、完整行快照。`register` 无返回值，投递是尽力而为：队列满会丢、
+没有 sink 会丢、写路径毫无察觉。这就是契约——容忍不了丢事件的消费者属于 inline，
+不在这里。
+
+事件流还有两条与消费类别无关的性质：事件带单调递增的**写批次 epoch**（发出表的写计数器——同表事件带精确的批次边界，消费者组合子可以恰好折叠到边界为止，glitch-free，而非靠去抖启发式）；流只在进程内有意义——不持久化，重启归零，不提供跨表顺序（独立 put 之间不存在原子性的"两者都已更新"时刻，多表 fan-in 结构上就是最终一致）。
 
 三条使用纪律：
 
-- **trigger 的失败不回滚写入。** 它是至多一次的副作用——失败了既不重试也不撤销，写路径不为它买单；反过来，凡是失败需要补偿的逻辑都不该写成 trigger。
+- **trigger 的失败不回滚写入。** 它是至多一次的副作用——失败了既不重试也不撤销，写路径不为它买单；反过来，凡是失败需要补偿的逻辑都不该写成写路径边的旁路副作用。
 - **正确性永不放上 channel。** 队列满会丢、没有 sink 会静默丢；必须恰好一次发生的事（如 reduce）属于 inline。channel 的位置是容忍丢失、事后可对账的消费者。
 - **纯度约束同样适用于事件载荷**：行快照按原样随事件走；消费时再去派生额外上下文，等于重读一个事件已不再保证描述的存储。
 
