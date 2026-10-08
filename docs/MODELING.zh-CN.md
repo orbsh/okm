@@ -506,7 +506,7 @@ okm-core 对它的立场是两层拆分：核心不内置任何聚合语义（�
 #[ok_reduce(AuthorStats { group(author_id) })]
 ```
 
-`group(...)` 从行字段取分组段（entry = `[ns][slot][group 段]`，slot 续接索引计数器）；`AuthorStats` 是用户类型，实现 `ReduceLogic`——`Acc`（累计器类型，实现 `ReduceCodec` 定宽 BE 编码）+ `fold(acc, &row)`（put 时）+ `unfold(acc, &row)`（delete 时）。写入路径自动读-改-写：读到当前 acc，fold/unfold，写回。读侧 `reduce_get` 取单组、`scan_reduces` 扫全部组。机制细节（账本不变量、覆盖写的 unfold 补偿、写路径时序）见 internals 的[reduce 机制](internals/reduce-mechanism.zh-CN.md)。
+`group(...)` 从行字段取分组段（entry = `[ns][slot][group 段]`，slot 是 reduce 段的槽位，与索引的槽位计数器各走各的，ADR-0016）；`AuthorStats` 是用户类型，实现 `ReduceLogic`——`Acc`（累计器类型，实现 `ReduceCodec` 定宽 BE 编码）+ `fold(acc, &row)`（put 时）+ `unfold(acc, &row)`（delete 时）。写入路径自动读-改-写：读到当前 acc，fold/unfold，写回。读侧 `reduce_get` 取单组、`scan_reduces` 扫全部组。机制细节（账本不变量、覆盖写的 unfold 补偿、写路径时序）见 internals 的[reduce 机制](internals/reduce-mechanism.zh-CN.md)。
 
 两条使用纪律：
 
@@ -514,6 +514,27 @@ okm-core 对它的立场是两层拆分：核心不内置任何聚合语义（�
 - **单写者边界**：hook 是读-改-写，单写者引擎下安全；多写者竞态与分布式累加协议不在此模型内（见集成文档）。
 
 零值回收刻意不做：组空了 entry 仍在（acc 回到单位元），省掉墓碑逻辑；调用方按需跳过单位元组。
+
+## 读一个 reduce
+
+写路径维护账本，读侧是两个函数，两者都收**类型 marker**、不收 slot 号——derive 为每条
+`#[ok_reduce]` 声明按声明序生成一个 marker，它带着该 reduce 的 slot、分组字段与分组编码器：
+
+```text
+reduce_get::<Store, __OkmReduce_AuthorStats_0>(store, ns_prefix, &key, &row) -> Option<Acc>
+scan_reduces::<Store, __OkmReduce_AuthorStats_0>(store, ns_prefix)           -> Vec<(group 段, Acc)>
+```
+
+- **entry 键是 `[ns][slot][group 段]`**——group 就是身份，没有 key 尾段。末尾那两个参数
+  （`&key`、`&row`）只干一件事：编码 group 段的字节（分组字段名按声明序、各自从自己的来源
+  编码——双源规则）。只是要读的时候，传一个带着这些分组字段的值即可。
+- **`None` 是一个真实答案**：该组从未被创建。零状态不做垃圾回收——被清空的组把 entry
+  留在累计器的恒等值上——所以「不存在」与「空」怎么区分是调用方的策略，不是核心的。
+- **slot 按段分配、只增不复用**：reduce 的 slot 来自 reduce 段（`0x2`），与索引的槽位计数器
+  无关、永不复用——所以一条声明的 slot 在这张表的生命周期内是稳定的，同一张表上的两个
+  reduce 靠它区分。
+- **`scan_reduces` 返回 group 段，不解成 key**（ADR-0024）：字段宽度在调用方手上，它能自己解；
+  读侧助手刻意不返还类型化 key。
 
 ## 两种读-改-写：reduce 与 upsert_with
 
@@ -578,6 +599,29 @@ reduce 回答"累计后的状态长什么样"；另一类消费者需要的是�
 - **后缀无处解码**：key 尾的自定义段需要配套的解码方法，这是 OKM 明确不支持的——`KeyEncode` 派生只解声明过的 key 全长（`KEY_LEN` 编译期锁死），`PrefixKey` 只解截断的身份前缀（前缀之外按契约是垃圾字节）。自己手写偏移算术去解后缀，复杂且易错，恰恰丢掉了 OKM 的意义：编译期布局锁定的零成本编解码。
 
 这些维度一律划到访问方法/二级索引：`#[ok_index]` 声明即注册，可组合、可扩展、随业务增长追加，无需改动主键布局。
+
+## 开放词汇：名字 → 代理 id
+
+键段是定宽字节身份——`KeyEncode` 在编译期拒绝 `String`。一个从 schema 之外到来的名字（用户 id、租户标识、实体种类、路由值）没有定宽，基数是数据规模：既不能声明成 key 字段，也不可能为每个值准备一个编译期常量。三件套把它变成键：
+
+```text
+行      [ns][id u32]                     → name + payload
+索引    by_name { fields(name) }         → name → id（字符串只住在这里）
+reduce  HighWater(id) { group(global) }  → id 发号（点读水位、+1）
+```
+
+- **行以代理 id 为主键、名字作 payload 字段**。名字是唯一变长的部分，永不进 key。
+- **`by_name` 索引是查名字的方向**（`name → id`）。索引文本段没有长度前缀也没有分隔符（ADR-0005），所以裸前缀扫描会命中更长的名字（"add" 命中 "add_to_cart"）——精确性靠行校验。
+- **`HighWater(id)` reduce 发号**：读水位、+1、写回。水位永不下降（unfold 是 no-op），所以撤回行不会让下一个 id 变小——账本唯一一处故意不等于行集合的地方，也正是这个 preset 能当发号器的原因。
+
+两条纪律：
+
+- **id 只增不复用**。复用代理 id = 把旧行读成新实体——与命名空间同一条规则。
+- **发号器是单写者**。水位的读-改-写与本文档其他读-改-写受同一条单写者边界保护。
+
+反向（`id → name`）是主表的一次 `get`——这正是字典胜过哈希的地方：把一个名字哈希进定宽段会碰撞（碰撞 = 静默寻址到别的实体的行），而且哈希不可反查，运维无法用人话列出这份词汇表。
+
+封闭 vs 开放：**封闭**词汇——系统自己声明的那些种类——配真实 ns（`#[ok_ns]`）；**开放**词汇——作为数据到来的名字——配代理 id + 文本索引。okm 自己的命名空间字典与字段名字典都是这个形态。
 
 ## 两种尾段：索引尾可解，主键尾不可解
 
