@@ -919,7 +919,8 @@ index:
 ```
 
 `group(...)` takes the grouping segment from row fields (entry =
-`[ns][slot][group segment]`, the slot continues the index counter);
+`[ns][slot][group segment]`; the slot is a reduce-segment slot, independent of
+the index counter, ADR-0016);
 `AuthorStats` is a user type implementing `ReduceLogic` — an `Acc`
 (the accumulator type, implementing `ReduceCodec` for fixed-width BE
 encoding) plus `fold(acc, &row)` (on put) and `unfold(acc, &row)` (on
@@ -944,6 +945,34 @@ Two disciplines of use:
 Zero-value GC is deliberately omitted: an emptied group keeps its
 entry (the acc back at the identity), which avoids tombstone logic;
 callers skip identity-element groups as needed.
+
+## Reading a reduce
+
+The write path maintains the entry; the read path is two functions, and both
+take a marker TYPE, never a slot number — the derive generates one marker per
+`#[ok_reduce]` declaration, in declaration order, carrying that reduce's slot,
+group fields and group encoder:
+
+```text
+reduce_get::<Store, __OkmReduce_AuthorStats_0>(store, ns_prefix, &key, &row) -> Option<Acc>
+scan_reduces::<Store, __OkmReduce_AuthorStats_0>(store, ns_prefix)           -> Vec<(group segment, Acc)>
+```
+
+- **The entry key is `[ns][slot][group segment]`** — the group IS the identity,
+  and there is no key tail. The two trailing arguments (`&key`, `&row`) are used
+  for exactly one thing: encoding the group segment's bytes (the named group
+  fields, each from its own source — the two-source rule). When you only mean to
+  read, pass any value that carries the group fields.
+- **`None` is a real answer**: the group has never been created. Zero states are
+  not garbage-collected — an emptied group keeps its entry at the accumulator's
+  identity — so "absent" and "empty" are the caller's policy, not core's.
+- **Slots are per-segment and append-only**: a reduce's slot comes from the
+  reduce segment (`0x2`), independent of the index counter, and is never reused —
+  so a declaration's slot is stable for the table's lifetime, and two reduces on
+  one table are told apart by it.
+- **`scan_reduces` returns group segments, not decoded keys** (ADR-0024): the
+  caller knows the field widths and can decode them; the helper deliberately does
+  not hand back a typed key.
 
 ## Two read-modify-writes: reduce and upsert_with
 
@@ -1105,6 +1134,52 @@ scenarios, but:
 These dimensions all belong to access methods / secondary indexes:
 `#[ok_index]` registers on declaration — composable, extensible, added
 as the business grows — without touching the primary key layout.
+
+## Open vocabularies: names become proxy ids
+
+A key segment is fixed-width byte identity — `KeyEncode` rejects `String`
+at compile time. A name that arrives from outside the schema (a user id,
+a tenant slug, an entity kind, a routing value) has no fixed width and
+data-scale cardinality: it cannot be declared as a key field, and it is
+not a compile-time constant per value either. Three parts turn it into a
+key:
+
+```text
+row     [ns][id u32]                     → name + payload
+index   by_name { fields(name) }         → name → id  (the string lives here, nowhere else)
+reduce  HighWater(id) { group(global) }  → id issuance (point read, +1)
+```
+
+- **The row is keyed by the proxy id and carries the name** as a payload
+  field. The name is the only variable-width piece and never enters the
+  key.
+- **The `by_name` index is the lookup direction** (`name → id`). Index
+  text segments carry no length prefix and no separator (ADR-0005), so a
+  raw prefix scan can hit a longer name ("add" hits "add_to_cart") — the
+  row comparison is what makes the match exact.
+- **The `HighWater(id)` reduce issues ids**: read the watermark, +1,
+  write back. The watermark never falls (its unfold is a no-op), so
+  retracting rows does not lower the next id — the one place where the
+  ledger deliberately diverges from the row set, and exactly what makes
+  the preset usable as an issuer.
+
+Two disciplines:
+
+- **Ids are append-only and never reused.** Reusing a proxy id reads old
+  rows as a new entity — the same rule as namespaces.
+- **The issuer is a single writer.** The watermark read-modify-write
+  rides the same single-writer boundary as every other read-modify-write
+  in this model.
+
+The reverse direction (`id → name`) is one `get` on the row — the point
+of a dictionary over a hash: a hash into a fixed-width segment collides
+(a collision silently addresses another entity's rows) and cannot be
+rendered back, so operations cannot list the vocabulary in human terms.
+
+Closed vs open: a **closed** vocabulary — the distinct kinds the system
+itself declares — earns a real namespace (`#[ok_ns]`); an **open** one —
+names that arrive as data — earns a proxy id plus a text index. okm's own
+namespace and field-name dictionaries are built this way.
 
 ## Two kinds of tails: index tails are decodable, primary-key tails are not
 
