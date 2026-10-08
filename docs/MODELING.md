@@ -1002,17 +1002,27 @@ is a different mechanism, outside this model. The overwrite unfold
 compensation happens inside put; upsert_with does not settle the
 ledger twice (see the internals doc on the reduce mechanism).
 
-## Write-path events: inline and channel
+## Write-path events: inline, trigger, channel
 
 Reduce answers "what does the accumulated state look like"; a second
-class of consumers needs the write itself as an event — cache
-invalidation, search-index sync, downstream notifications. The event
-layer (ADR-0008) splits those consumers in two, and the split is the
-whole design:
+class of consumers needs the write itself as an event — side effects,
+search-index sync, downstream notifications. The event layer (ADR-0008)
+splits those consumers THREE ways — by failure semantics, and the split
+is the whole design. The judging question: what happens if this
+consumer LOSES an event? A corrupted ledger = inline; nothing = trigger;
+reconcilable later = channel.
 
 - **Inline** (reduce): runs inside the write path, exactly-once by
   construction — the fold IS part of the write. Reduce never consumes
   a channel.
+- **Trigger** (inline, stateless side effects): also synchronous in the
+  write path, but AT-MOST-ONCE with no transaction boundary and no undo —
+  "already notified" and "already wrote the other table" cannot be
+  rolled back. A trigger's failure neither rolls back the write nor
+  earns a retry; do not hang anything on it that must happen exactly
+  once. The asymmetry with reduce (reversible vs at-most-once, on the
+  SAME event source) is a deliberate design, recorded in ADR-0008 — do
+  not unify them.
 - **Channel** (`#[ok_subscribe]`): best-effort delivery, no guarantee.
   The annotation declares that this row type's write-path events enter
   a channel; there is no handler at the annotation site — the
@@ -1033,8 +1043,12 @@ no cross-table ordering: independent puts have no atomic "both updated"
 instant, so multi-table fan-in stays eventually-consistent by
 structure.
 
-Two disciplines of use:
+Three disciplines of use:
 
+- **A trigger's failure never rolls back the write.** It is an at-most-once side
+  effect — a failure is neither retried nor undone, and the write path does not pay
+  for it; conversely, any logic whose failure would need compensating does not
+  belong in a trigger.
 - **Never put correctness on the channel.** A full queue drops, a
   missing sink drops silently; anything that must happen exactly once
   (like reduce) belongs inline. The channel is for consumers that can
