@@ -32,7 +32,7 @@ okm-core = { path = "../../okm-core", features = ["schema-serde", "test-engines"
 okm-dynamic = { path = "../../okm-dynamic" }
 okm-entry = { path = "../okm-entry" }
 okm-wire = { path = "../../okm-wire" }
-pyo3 = { version = "0.25" }
+pyo3 = { version = "0.29" }
 serde_json = "1"
 
 # No [dev-dependencies] re-declaring pyo3: dev deps MERGE features with

@@ -141,7 +141,7 @@ fn injected_reduce_preset_accums_in_the_host_engine() {
 fn bad_declaration_is_an_error_not_a_silent_empty() {
     // Reading a PyErr's message needs the interpreter (Display walks
     // the Python exception) — the only test here that inspects one.
-    pyo3::prepare_freethreaded_python();
+    pyo3::Python::initialize();
     let engine = Arc::new(MemEngine::new());
     // A func index cannot be built from data (needs a host callable).
     let entry = serde_json::json!({

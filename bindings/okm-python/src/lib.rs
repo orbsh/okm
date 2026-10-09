@@ -15,14 +15,14 @@ pub mod pyo3_impl {
 	use okm_dynamic::{AccessMethod, AccessMethodKind, ReduceLogic, Value, ValueMap};
 	use pyo3::exceptions::{PyTypeError, PyValueError};
 	use pyo3::prelude::*;
+    use pyo3::Py;
 	use std::sync::{Arc, Mutex};
 
 	/// Convert a ValueMap (decoded document) into a Python dict.
 	fn map_to_dict<'py>(py: Python<'py>, m: &ValueMap) -> PyResult<Bound<'py, pyo3::types::PyDict>> {
-	    use pyo3::conversion::IntoPyObject;
-	    let d = pyo3::types::PyDict::new(py);
+		    let d = pyo3::types::PyDict::new(py);
 	    for (k, v) in m {
-	        let value: pyo3::PyObject = match v {
+	        let value: pyo3::Py<PyAny> = match v {
 	            Value::U8(x) => x.into_pyobject(py)?.unbind().into_any(),
 	            Value::U16(x) => x.into_pyobject(py)?.unbind().into_any(),
 	            Value::U32(x) => x.into_pyobject(py)?.unbind().into_any(),
@@ -44,7 +44,7 @@ pub mod pyo3_impl {
 
 	/// Value → python object (the composite arm map_to_dict needs: Obj
 	/// recurses through a dict, Array maps element-wise).
-	fn value_to_py<'py>(py: Python<'py>, v: &Value) -> PyResult<PyObject> {
+	fn value_to_py<'py>(py: Python<'py>, v: &Value) -> PyResult<Py<PyAny>> {
 	    Ok(match v {
 	        Value::Obj(fields) => {
 	            let inner: ValueMap = fields.clone();
@@ -83,7 +83,7 @@ pub mod pyo3_impl {
 
 	impl ReduceLogic for PyReduce {
 	    fn seed(&self) -> Vec<u8> {
-	        Python::with_gil(|py| {
+	        Python::attach(|py| {
 	            self.obj
 	                .call_method(py, "seed", (), None)
 	                .and_then(|b| b.extract::<Vec<u8>>(py))
@@ -92,11 +92,11 @@ pub mod pyo3_impl {
 	    }
 
 	    fn fold(&self, acc: &mut Vec<u8>, key: &ValueMap, document: &ValueMap) -> Result<(), String> {
-	        Python::with_gil(|py| self.apply(py, "fold", acc, key, document))
+	        Python::attach(|py| self.apply(py, "fold", acc, key, document))
 	    }
 
 	    fn unfold(&self, acc: &mut Vec<u8>, key: &ValueMap, document: &ValueMap) -> Result<(), String> {
-	        Python::with_gil(|py| self.apply(py, "unfold", acc, key, document))
+	        Python::attach(|py| self.apply(py, "unfold", acc, key, document))
 	    }
 	}
 
@@ -239,7 +239,7 @@ impl Collection {
 	        includes: Option<Vec<String>>,
 	    ) -> PyResult<()> {
 	        let derive = move |document: &ValueMap| -> Result<Vec<Vec<u8>>, String> {
-	            Python::with_gil(|py| {
+	            Python::attach(|py| {
 	                let doc = map_to_dict(py, document).map_err(call_err)?;
 	                let raw = func
 	                    .call(py, (doc,), None)
@@ -272,7 +272,7 @@ impl Collection {
 	        includes: Option<Vec<String>>,
 	    ) -> PyResult<()> {
 	        let predicate = move |document: &ValueMap| -> Result<bool, String> {
-	            Python::with_gil(|py| {
+	            Python::attach(|py| {
 	                let doc = map_to_dict(py, document).map_err(call_err)?;
 	                let raw = admits
 	                    .call(py, (doc,), None)
@@ -324,7 +324,7 @@ impl Collection {
 	    }
 
 	    /// Point read by primary key → dict or None.
-	    fn get(&self, pkey: Vec<u8>) -> PyResult<Option<PyObject>> {
+	    fn get(&self, pkey: Vec<u8>) -> PyResult<Option<Py<PyAny>>> {
 	        let doc = self
 	            .inner
 	            .lock()
@@ -332,7 +332,7 @@ impl Collection {
 	            .get(&pkey)
 	            .map_err(PyValueError::new_err)?;
 	        match doc {
-	            Some(m) => Python::with_gil(|py| Ok(Some(map_to_dict(py, &m)?.unbind().into_any()))),
+	            Some(m) => Python::attach(|py| Ok(Some(map_to_dict(py, &m)?.unbind().into_any()))),
 	            None => Ok(None),
 	        }
 	    }
@@ -348,14 +348,14 @@ impl Collection {
 
 	    /// Access-method scan: return the matching documents' primary keys,
 	    /// decoded as dicts (dynamic counterpart of `Collection::scan_index`).
-	    fn scan(&self, slot: u16, encoded_prefix: Vec<u8>) -> PyResult<Vec<PyObject>> {
+	    fn scan(&self, slot: u16, encoded_prefix: Vec<u8>) -> PyResult<Vec<Py<PyAny>>> {
 	        let docs = self
 	            .inner
 	            .lock()
 	            .unwrap()
 	            .scan(slot, &encoded_prefix)
 	            .map_err(PyValueError::new_err)?;
-	        Python::with_gil(|py| {
+	        Python::attach(|py| {
 	            docs.iter()
 	                .map(|m| Ok(map_to_dict(py, m)?.unbind().into_any()))
 	                .collect()
@@ -443,10 +443,10 @@ impl Collection {
 	    /// Decode a stored payload (the receiver's GET answer) into the
 	    /// `old` document dict for the next `plan_put` — the cache-refill
 	    /// helper the embedded path does against its own engine.
-	    fn decode_stored(&self, payload: Vec<u8>) -> PyResult<PyObject> {
+	    fn decode_stored(&self, payload: Vec<u8>) -> PyResult<Py<PyAny>> {
 	        let m = okm_dynamic::decode_stored(&self.schema, &payload)
 	            .map_err(PyValueError::new_err)?;
-	        Python::with_gil(|py| Ok(map_to_dict(py, &m)?.unbind().into_any()))
+	        Python::attach(|py| Ok(map_to_dict(py, &m)?.unbind().into_any()))
 	    }
 	}
 
@@ -454,7 +454,7 @@ impl Collection {
 	fn accs_dict(accs: Option<&Bound<'_, PyAny>>) -> PyResult<Option<std::collections::HashMap<Vec<u8>, Vec<u8>>>> {
 	    let Some(a) = accs else { return Ok(None) };
 	    let d = a
-	        .downcast::<pyo3::types::PyDict>()
+	        .cast::<pyo3::types::PyDict>()
 	        .map_err(|_| PyTypeError::new_err("accs must be a dict {group_key bytes: acc bytes}"))?;
 	    let mut m = std::collections::HashMap::new();
 	    for (k, v) in d.iter() {
@@ -503,17 +503,17 @@ impl Collection {
 	    }
 
 	    /// Decode key bytes → `{field: value}`.
-	    fn decode_key(&self, bytes: &[u8]) -> PyResult<PyObject> {
+	    fn decode_key(&self, bytes: &[u8]) -> PyResult<Py<PyAny>> {
 	        okm_dynamic::decode_key(&self.inner, bytes)
-	            .map(|m| Python::with_gil(|py| map_to_dict(py, &m).unwrap().unbind().into_any()))
+	            .map(|m| Python::attach(|py| map_to_dict(py, &m).unwrap().unbind().into_any()))
 	            .map_err(codec_err)
 	    }
 
 	    /// Decode payload bytes → `{field: value}`. Absent tail fields arrive
 	    /// as their schema defaults (version migration).
-	    fn decode_payload(&self, bytes: &[u8]) -> PyResult<PyObject> {
+	    fn decode_payload(&self, bytes: &[u8]) -> PyResult<Py<PyAny>> {
 	        okm_dynamic::decode_payload(&self.inner, bytes)
-	            .map(|m| Python::with_gil(|py| map_to_dict(py, &m).unwrap().unbind().into_any()))
+	            .map(|m| Python::attach(|py| map_to_dict(py, &m).unwrap().unbind().into_any()))
 	            .map_err(codec_err)
 	    }
 	}
@@ -525,7 +525,7 @@ impl Collection {
 	    values: &Bound<'_, PyAny>,
 	) -> PyResult<ValueMap> {
 	    let dict = values
-	        .downcast::<pyo3::types::PyDict>()
+	        .cast::<pyo3::types::PyDict>()
 	        .map_err(|_| PyTypeError::new_err("values must be a dict {field: value}"))?;
 	    let mut out = ValueMap::new();
 	    for (k, v) in dict.iter() {
