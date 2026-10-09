@@ -71,9 +71,26 @@ pub fn encode_fields(
             .key_fields
             .iter()
             .chain(schema.hot_fields.iter())
+            .chain(schema.cold_fields.iter())
             .find(|f| &f.name == name)
             .ok_or_else(|| CodecError::UnknownField(name.clone()))?;
-        encode_field(f, values, &mut buf)?;
+        // A cold (variable-width) field encodes as raw storage bytes in a
+        // probe/index segment (the trailing-tail regime — raw UTF-8 for
+        // Str, no frame); hot/key fields keep their fixed-width walk.
+        if f.width == 0 {
+            let v = field_pair(&f.name, f.ty, values)?;
+            match v {
+                Value::Str(s) => buf.extend_from_slice(s.as_bytes()),
+                _ => {
+                    return Err(CodecError::TypeMismatch {
+                        field: f.name.clone(),
+                        expected: "variable-width (Str)",
+                    })
+                }
+            }
+        } else {
+            encode_field(f, values, &mut buf)?;
+        }
     }
     Ok(buf)
 }
