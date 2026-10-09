@@ -393,3 +393,142 @@ fn dfields(pairs: &[(&str, &str)]) -> okm_dynamic::ValueMap {
     }
     m
 }
+
+// --- Variable-width trailing index field (the okm-derive rule, aligned) --
+
+// The dynamic mode now accepts a variable-width (Str) field as the LAST
+// index field: raw UTF-8, no length prefix (text-first), the fixed-width
+// pkey tail cuts the segment. Byte-equality with the typed path holds for
+// this shape too, scans match by equality probe, and the declaration
+// errors (variable-width not last, two of them) mirror the derive's.
+
+#[test]
+fn dynamic_variable_width_index_matches_typed_bytes() {
+    // Typed declaration with the SAME shape the derive accepts:
+    // variable-width `name` last.
+    #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
+    pub struct EmailKey {
+        pub id: u64,
+    }
+    #[derive(DocumentEncode, Clone, PartialEq, Debug)]
+    #[ok_ref(EmailKey)]
+    #[ok_ns(43)]
+    #[ok_index(by_email { fields(email) })]
+    pub struct Subscriber {
+        pub email: String, // cold TLV in the payload; raw UTF-8 in the index
+    }
+
+    let mut typed: Collection<TestStore, EmailKey, Subscriber> = Collection::new(TestStore::slatedb_mem());
+    let schema = CollectionSchema::of::<EmailKey, Subscriber>();
+    let mut dynamic = DynamicCollection::new(
+        TestStore::slatedb_mem(),
+        43,
+        schema.clone(),
+        vec![AccessMethod::plain(0x1001, vec!["email".into()], vec![])],
+    );
+
+    let doc = |email: &str| Subscriber { email: email.into() };
+    let put = |c: &mut Subscriber, email: &str| c.email = email.into();
+    let _ = put;
+
+    for (id, email) in [(1u64, "a@x"), (2, "a@x"), (3, "b@x")] {
+        typed.put(&EmailKey { id }, &doc(email));
+        let mut m = BTreeMap::new();
+        m.insert("id".to_string(), Value::U64(id));
+        m.insert("email".to_string(), Value::Str(email.into()));
+        dynamic.put(&EmailKey { id }.encode(), &m).expect("dynamic put");
+    }
+
+    // The real lock: identical entry sets.
+    let mut typed_entries: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+    for full in typed.store().scan_suffix(&[]) {
+        let v = typed.store().get(&full).unwrap_or_default();
+        typed_entries.push((full, v));
+    }
+    typed_entries.sort();
+    let mut dyn_entries: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+    for full in dynamic.store().scan_suffix(&[]) {
+        let v = dynamic.store().get(&full).unwrap_or_default();
+        dyn_entries.push((full, v));
+    }
+    dyn_entries.sort();
+    assert_eq!(typed_entries, dyn_entries, "variable-width index entries must be byte-identical across modes");
+
+    // Equality probe with the FULL string (longer than nothing — the
+    // pkey tail cuts the raw UTF-8): rows 1 and 2 match, 3 does not.
+    let hits = dynamic.scan(0x1001, b"a@x").expect("equality probe");
+    let mut ids: Vec<u64> = hits
+        .iter()
+        .map(|k| match k.get("id") {
+            Some(Value::U64(v)) => *v,
+            other => panic!("unexpected key decode: {other:?}"),
+        })
+        .collect();
+    ids.sort();
+    assert_eq!(ids, vec![1, 2], "the fan-out: two rows share one email");
+
+    // Overwrite sweeps the stale entry (the email changed).
+    let mut m = BTreeMap::new();
+    m.insert("id".to_string(), Value::U64(3));
+    m.insert("email".to_string(), Value::Str("a@x".into()));
+    dynamic.put(&EmailKey { id: 3 }.encode(), &m).unwrap();
+    let hits = dynamic.scan(0x1001, b"a@x").unwrap();
+    let mut ids: Vec<u64> = hits
+        .iter()
+        .filter_map(|k| match k.get("id") {
+            Some(Value::U64(v)) => Some(*v),
+            _ => None,
+        })
+        .collect();
+    ids.sort();
+    assert_eq!(ids, vec![1, 2, 3], "the moved row's entry followed it");
+}
+
+#[test]
+fn dynamic_variable_width_index_declaration_errors() {
+    let fields_last_ok = AccessMethod::plain(0x1003, vec!["name".into()], vec![]);
+    assert!(fields_last_ok.fields_width(&schema()).is_ok(), "trailing Str is legal");
+
+    // Variable-width NOT last: nothing can locate fields after it.
+    let bad_order = AccessMethod::plain(0x1003, vec!["name".into(), "level".into()], vec![]);
+    assert!(bad_order.fields_width(&schema()).is_err());
+
+    // Two variable-width fields: the second has nothing to cut against.
+    // (Build a two-Str schema via the typed path.)
+    #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
+    pub struct TwoStrKey {
+        pub id: u64,
+    }
+    #[derive(DocumentEncode, Clone, PartialEq, Debug)]
+    #[ok_ref(TwoStrKey)]
+    #[ok_ns(44)]
+    pub struct TwoStr {
+        pub a: String,
+        pub b: String,
+    }
+    let two_str_schema = CollectionSchema::of::<TwoStrKey, TwoStr>();
+    let two_variable = AccessMethod::plain(0x1001, vec!["a".into(), "b".into()], vec![]);
+    assert!(two_variable.fields_width(&two_str_schema).is_err());
+
+    // Includes segments share the rule.
+    let bad_inc = AccessMethod::plain(0x1003, vec!["level".into()], vec!["name".into(), "score".into()]);
+    assert!(okm_dynamic::index_entries(
+        &schema(),
+        &[41],
+        &[bad_inc],
+        &key_bytes(1, 2),
+        &values(1, 2, 4, 77, "bob"),
+    )
+    .is_err());
+
+    // And the write path enforces it too (a Str field first in fields).
+    let bad_write = AccessMethod::plain(0x1003, vec!["name".into(), "level".into()], vec![]);
+    assert!(okm_dynamic::index_entries(
+        &schema(),
+        &[41],
+        &[bad_write],
+        &key_bytes(1, 2),
+        &values(1, 2, 4, 77, "bob"),
+    )
+    .is_err());
+}

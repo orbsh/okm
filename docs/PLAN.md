@@ -536,6 +536,22 @@ key bare in the tail) recorded in ADR-0005.
       (fresh put / same-group overwrite / cross-group move / delete)
       planned Python-side and Rust-side lands hex-identical frames.
       Steel callable surface remains open work.
+      - [x] Variable-width trailing index field (2026-10-09, aura
+      Phase 4.13's alignment item): `AccessMethod` accepts a variable-
+      width (Str) field as the LAST index field — raw UTF-8, no length
+      prefix (the `IndexFuncResult for String` text-first regime), the
+      fixed-width pkey tail (`schema.key_len`) cuts the segment; the
+      order rule "at most one variable-width field, last position only"
+      is shared by fields AND includes (`check_field_order`, the derive's
+      `okm-derive/src/schema.rs` rule mirrored). `find_field` widens to
+      cold fields (Str lives there). Equality probes may exceed the
+      fixed-width head exactly when the declaration's single field is
+      the trailing variable one. Locked by dynamic_table_test:
+      dynamic_variable_width_index_matches_typed_bytes (byte equality
+      with the typed path + equality-probe fan-out + overwrite sweep)
+      and dynamic_variable_width_index_declaration_errors. Consumer:
+      aura scan-route probes match String fields directly (the aura-side
+      event-flow.md §8.1 residual closes when aura adopts it).
 - [x] Multi-tenancy: receiver-side prefix only — a remote OKM instance is
       one application = one domain model = one ns; to the receiver it is
       just another prefix. No app_id layer inside OKM, no multi-level ns

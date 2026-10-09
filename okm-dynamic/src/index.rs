@@ -83,29 +83,65 @@ impl AccessMethod {
         Self { slot, fields, includes, kind: AccessMethodKind::Plain }
     }
 
-    /// Width of the indexed-field segment (schema-derived; every field
-    /// must be fixed-width — dynamic entries cannot frame variable
-    /// lengths without breaking leftmost-prefix scans).
+    /// Width of the indexed-field segment's FIXED-WIDTH head (schema-
+    /// derived). A variable-width field is allowed as the LAST field
+    /// (the okm-derive rule, mirrored here): the primary key is cut from
+    /// the entry's END (`key_len` fixed bytes), so a trailing variable-
+    /// width segment still locates — raw UTF-8, no length prefix
+    /// (text-first regime, `IndexFuncResult for String`). A variable-
+    /// width field anywhere but last cannot be located (no static width),
+    /// and a second one has nothing to cut against — both are declaration
+    /// errors, same as the derive.
     pub fn fields_width(&self, schema: &CollectionSchema) -> Result<usize, String> {
+        Self::check_field_order(schema, &self.fields)?;
         let mut w = 0;
         for name in &self.fields {
             let f = find_field(schema, name)
                 .ok_or_else(|| format!("access method field `{name}` not in schema"))?;
             if f.width == 0 {
-                return Err(format!(
-                    "access method field `{name}` is variable-width; dynamic indexes take fixed-width fields only"
-                ));
+                break; // the trailing variable-width tail: raw bytes after this
             }
             w += f.width;
         }
         Ok(w)
     }
 
+    /// The derive's index-segment order rule, shared by fields AND
+    /// includes (the value segment cuts the same way): variable-width
+    /// fields at most one, last position only.
+    fn check_field_order(schema: &CollectionSchema, names: &[String]) -> Result<(), String> {
+        let mut variable_positions = Vec::new();
+        for (i, name) in names.iter().enumerate() {
+            let f = find_field(schema, name)
+                .ok_or_else(|| format!("access method field `{name}` not in schema"))?;
+            if f.width == 0 {
+                variable_positions.push(i);
+            }
+        }
+        if let Some(pos) = variable_positions.first() {
+            if *pos != names.len() - 1 {
+                return Err(format!(
+                    "access method field `{}` is variable-width; it must be the LAST field — fields after it cannot be located (no static width)",
+                    names[*pos]
+                ));
+            }
+            if variable_positions.len() > 1 {
+                return Err(format!(
+                    "at most one variable-width field allowed in an access method (found {})",
+                    variable_positions.len()
+                ));
+            }
+        }
+        Ok(())
+    }
+
     /// The indexed-field segment bytes, in declaration (sort) order.
     /// Payload-only (hot fields): the key IS the lookup target — indexing
     /// a key field would mean "use part of the pkey to find the pkey",
     /// which is what plain key-prefix scanning is for. Key/payload name
-    /// collisions never silently resolve to the key side.
+    /// collisions never silently resolve to the key side. A trailing
+    /// variable-width field encodes as raw bytes (no frame — the pkey
+    /// tail cuts it off, text-first).
     fn fields_bytes(
         &self,
         schema: &CollectionSchema,
@@ -113,6 +149,7 @@ impl AccessMethod {
         pkey: &[u8],
     ) -> Result<Vec<u8>, String> {
         let _ = pkey; // payload-only; the pkey tail is appended by the caller
+        Self::check_field_order(schema, &self.fields)?;
         let mut buf = Vec::new();
         for name in &self.fields {
             if schema.key_fields.iter().any(|f| &f.name == name) {
@@ -124,13 +161,21 @@ impl AccessMethod {
                 .ok_or_else(|| format!("index field `{name}` missing from document"))?;
             let f = find_field(schema, name)
                 .ok_or_else(|| format!("access method field `{name}` not in schema"))?;
-            encode_fixed(f.ty, v, &mut buf)?;
+            if f.width == 0 {
+                // Trailing variable-width tail: raw encoding, no frame
+                // (the pkey tail cuts it — the derive's String regime).
+                encode_variable(f.ty, v, &mut buf)?;
+            } else {
+                encode_fixed(f.ty, v, &mut buf)?;
+            }
         }
         Ok(buf)
     }
 }
 
-/// Locate a fixed-width field (key or hot) by name.
+/// Locate a field (key, hot, or cold) by name. Cold fields (variable-
+/// width: Str et al.) are indexable as the TRAILING segment field — the
+/// value lives in the document map, the segment carries raw bytes.
 fn find_field<'s>(
     schema: &'s CollectionSchema,
     name: &str,
@@ -139,6 +184,7 @@ fn find_field<'s>(
         .key_fields
         .iter()
         .chain(schema.hot_fields.iter())
+        .chain(schema.cold_fields.iter())
         .find(|f| f.name == name)
 }
 
@@ -158,6 +204,24 @@ fn encode_fixed(
         (FT::U64, Value::U64(n)) => buf.extend_from_slice(&n.to_be_bytes()),
         (FT::FixedBytes, Value::Bytes(b)) => buf.extend_from_slice(b),
         _ => return Err(unexpected("fixed-width")),
+    }
+    Ok(())
+}
+
+/// Encoding for a variable-width field in a trailing index-segment tail
+/// (the derive's String regime): raw UTF-8, NO length prefix — sort order
+/// is byte-wise lexicographic and the pkey tail cuts the segment. Only
+/// the trailing position ever calls this (`check_field_order` enforces).
+fn encode_variable(
+    ty: okm_core::field::FieldType,
+    v: &Value,
+    buf: &mut Vec<u8>,
+) -> Result<(), String> {
+    use okm_core::field::FieldType as FT;
+    let unexpected = |want: &str| format!("field type {want:?} does not take {v:?}");
+    match (ty, v) {
+        (FT::Str, Value::Str(s)) => buf.extend_from_slice(s.as_bytes()),
+        _ => return Err(unexpected("variable-width (Str)")),
     }
     Ok(())
 }
@@ -196,7 +260,10 @@ pub fn index_entries(
         };
         // Includes segment: raw encodings of the named payload fields,
         // in declaration order. Key fields rejected — same discipline as
-        // the index segment: includes carry payload, not key bytes.
+        // the index segment: includes carry payload, not key bytes. The
+        // order rule is shared with the index segment (at most one
+        // variable-width field, last only).
+        AccessMethod::check_field_order(schema, &idx.includes)?;
         let mut ev = Vec::new();
         for inc in &idx.includes {
             if schema.key_fields.iter().any(|f| &f.name == inc) {
@@ -208,7 +275,11 @@ pub fn index_entries(
                 .ok_or_else(|| format!("includes field `{inc}` missing from document"))?;
             let f = find_field(schema, inc)
                 .ok_or_else(|| format!("includes field `{inc}` not in schema"))?;
-            encode_fixed(f.ty, v, &mut ev)?;
+            if f.width == 0 {
+                encode_variable(f.ty, v, &mut ev)?;
+            } else {
+                encode_fixed(f.ty, v, &mut ev)?;
+            }
         }
         for fb in &segments {
             let mut ek = Vec::with_capacity(ns.len() + 2 + fb.len() + pkey.len());
@@ -238,10 +309,24 @@ pub fn scan_access_method<S: VirtualStorage>(
     // segment, already encoded (empty slice = whole index). Func
     // indexes have no declared-field width — the segment is the
     // callable's result encoding, caller-owned; any prefix is legal.
-    if !matches!(index.kind, AccessMethodKind::Func(_))
-        && encoded_prefix.len() > index.fields_width(schema)? {
+    // With a trailing VARIABLE-WIDTH field the probe may be LONGER than
+    // the fixed-width head (the equality probe carries the full string,
+    // the entry tail is raw UTF-8 — prefix comparison still matches);
+    // a probe that exceeds the head is legal exactly when the
+    // declaration's last field IS variable-width. A probe beyond the
+    // head on an all-fixed-width declaration is a caller bug.
+    if !matches!(index.kind, AccessMethodKind::Func(_)) {
+        let head = index.fields_width(schema)?;
+        let trailing_variable = index
+            .fields
+            .last()
+            .and_then(|n| find_field(schema, n))
+            .map(|f| f.width == 0)
+            .unwrap_or(false);
+        if encoded_prefix.len() > head && !(trailing_variable && index.fields.len() == 1) {
             return Err("scan prefix exceeds the index-field segment".into());
         }
+    }
     let mut p = Vec::with_capacity(ns.len() + 2 + encoded_prefix.len());
     p.extend_from_slice(ns);
     p.extend_from_slice(&index.slot.to_be_bytes());
