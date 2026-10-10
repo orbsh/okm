@@ -814,6 +814,40 @@ Division line: `Refs` = one-to-many; `Junction` = many-to-many, fixed
 endpoints, no attributes; **Graph Edge** = independent identity,
 attributes, parallel edges, open endpoints.
 
+### What belongs in a graph
+
+Three modeling judgments sit above the mechanism — the open endpoints
+make it easy to put everything in a graph, and these are the lines
+that stop it:
+
+- **One graph = one trust domain with related semantics — merge, don't
+  split.** The graph boundary is the ns: one Edge collection per graph
+  (ADR-0017), NOT a global implicit edge pool (the SurrealDB `RELATE`
+  shape, where every `RELATE` quietly joins one store-wide graph). The
+  PGQ "merge over split" criterion carries over: same trust domain and
+  related relation semantics = one graph; only domains that are
+  separate AND never queried together get two. Within one graph, kinds
+  are runtime data — one edge collection carries many relation types,
+  the PGQ "one graph, many relations" stance without its per-pair
+  declaration overhead.
+- **Model vs state (型/态): high-churn instance state stays OUT.** A
+  task's template, preconditions and references are graph nodes (slow
+  variables, traversal-worthy); its instance rows (items, claimed_at,
+  short lifecycle, exact-enumeration queries) are ordinary document
+  collections. Approximate traversal is the wrong carrier for exact
+  enumeration — "search for one memory" must not get mixed up with
+  "count one status". When an application's aggregate state must be
+  listed or counted exactly, that is a collection with access methods,
+  not a node.
+- **Cross-graph: compose through NodeRefs, not graph syntax.** A
+  NodeRef is self-describing, so one document collection participates
+  in several graphs at once (the PGQ "one table, many graphs" property
+  — here as several Edge collections referencing the same nodes).
+  Genuinely separate domains reach each other by collecting NodeRef
+  sets from one graph and probing the other's faces, or by dropping to
+  plain document reads — there is no cross-graph match syntax, and
+  none is needed.
+
 ## Set membership: inverted index or bloom, by cardinality
 
 There is no dedicated `Set` type — membership is served by two

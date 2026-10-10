@@ -194,3 +194,8 @@ queries:
   document collections, their kinds live in their own declared indexes
   and dictionaries. `(:node_type)` filtering = the edge face scan ∩
   the node collection's own kind-face scan, intersected in memory.
+
+What NOT to model as a graph — merge-vs-split per trust domain,
+model-vs-state (instance state stays in collections), and cross-graph
+composition through NodeRefs — is the modeling guide's call, not this
+doc's: see [MODELING.md](MODELING.md) "What belongs in a graph".
