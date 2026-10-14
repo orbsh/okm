@@ -447,6 +447,50 @@ t.delete(&key);                                   // remove slot 0 + index entri
   derive (cross tests lock this). Version-default migration works on the
   dynamic read path too: literal `#[ok_default]` travels with the schema.
 
+### Path indexes over the dynamic segment (ADR-0029)
+
+An access method can name a PATH into the schema-free zone instead of a
+declared field:
+
+```rust
+use okm_dynamic::{AccessMethod, FieldType, Path};
+
+// nested object field
+let by_author = AccessMethod::path(0x1001, Path::parse("author.name")?, FieldType::Str)?;
+// array path: one entry per element (the fan-out regime)
+let by_tag = AccessMethod::path(0x1002, Path::parse("tags")?, FieldType::Str)?;
+// pinned element: exactly one
+let by_first_href = AccessMethod::path(0x1003, Path::parse("refs[0].href")?, FieldType::Str)?;
+```
+
+- **Components**: `Field(name)` — an object key, interned through the table's
+  field-name dictionary; `Index(u32)` — an array position (data: never
+  interned, and not stable across mutations); `Key(bytes)` — a literal key,
+  no interning. The first pair and `Index` are two namespaces and two walker
+  operations (map lookup vs subscript), not one niched integer.
+- **Resolution**: any component after an array fans out over every element
+  (a wildcard is the ABSENCE of `Index`), a path ending at an array fans out
+  over its scalar leaves, and an `Index` pins exactly one element. A missing
+  name, an out-of-range index, or a path ending at an object resolves to
+  nothing.
+- **The value type is declared** (`FieldType`): an entry segment is
+  byte-ordered and a path has no schema field to consult. Unsigned kinds also
+  accept the widened form the dynamic read path produces (a `U32` written
+  value reads back as `U64`), which is what keeps an entry's bytes a function
+  of the stored value — the overwrite sweep recomputes exactly the keys the
+  write built, so no entry survives a changed value.
+- **Maintenance rides the dynamic-segment write path** (`put_fields` /
+  `delete_fields`). The primary document path skips path declarations by
+  construction: a depth-1 path over the primary document is what a plain
+  index already is, and one entry set has exactly one maintainer.
+- A value whose variant does not match the declared type produces no entry
+  and no error — the "absent attribute values are empty results" rule.
+- **Queries** are the ordinary leftmost-prefix scans (`scan(slot, prefix)`),
+  ADR-0020's range scan covering ranges over the value. The canonical path
+  encoding (self-delimiting, no leading component count) is the form paths
+  take where they are DATA — declaration carriers and exported schemas; the
+  entry key carries the slot, never the path.
+
 ### Embedded documents (`Ref<D, K>` and `Refs<D, K>`)
 
 A child document embedded **by key reference**: the parent's field
