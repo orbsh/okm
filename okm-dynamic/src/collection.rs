@@ -27,6 +27,10 @@ fn codec<E: std::fmt::Display>(e: E) -> String {
     e.to_string()
 }
 
+/// One planned write op: `(key, Some(value))` = put, `(key, None)` =
+/// delete — the op shape the whole plan surface uses.
+pub(crate) type EngineOp = (Vec<u8>, Option<Vec<u8>>);
+
 /// A runtime-declared table: schema + access methods + a namespaced
 /// slot of storage. `ns` MUST be unique within the store instance (the
 /// two-instance data/meta model guarantees that across planes).
@@ -289,21 +293,78 @@ impl<S: VirtualStorage> DynamicCollection<S> {
     /// First-seen names allocate dictionary ids; one batch carries any
     /// dictionary growth plus the entry itself. An empty map deletes the
     /// entry. Composite values (Obj/Array) are legitimate here.
+    ///
+    /// Path indexes (ADR-0029) are maintained HERE and not on the primary
+    /// path: a path addresses nested content, which only the dynamic
+    /// segment carries. The old map is read first when a path index is
+    /// declared — entries are keyed by resolved values, so a changed
+    /// value would otherwise leave a dangling entry (the same sweep rule
+    /// the primary path runs through `index_entries`).
     pub fn put_fields(&mut self, pkey: &[u8], fields: &ValueMap) -> Result<(), String> {
+        let old = if self.has_path_index() {
+            self.get_fields(pkey)?
+        } else {
+            None
+        };
         let mut dict = crate::plan_fields::DictMirror::load(&self.store, &self.ns);
         let plan = crate::plan_fields::plan_put_fields(&self.ns, pkey, fields, &mut dict)?;
-        self.replay(&plan.ops);
+        let mut ops = plan.ops;
+        if let Some(old_map) = old.as_ref() {
+            ops.extend(self.path_entry_ops(pkey, old_map, false)?);
+        }
+        ops.extend(self.path_entry_ops(pkey, fields, true)?);
+        self.replay(&ops);
         Ok(())
     }
 
     /// Drop the dynamic entry (declared fields untouched). True if an
     /// entry existed.
+    ///
+    /// Path-index entries ride the removal: they are keyed by the values
+    /// the entry carried, so they are recomputed from the stored map
+    /// before it goes (best-effort — this method's shape is boolean for
+    /// the bindings, and `path_index_entries` has no failure mode of its
+    /// own; only a corrupt dynamic entry can make the recompute fail).
     pub fn delete_fields(&mut self, pkey: &[u8]) -> bool {
         let k = self.fields_key(pkey);
         let had = self.store.get(&k).is_some();
         if had {
+            if self.has_path_index()
+                && let Ok(Some(old)) = self.get_fields(pkey)
+                && let Ok(ops) = self.path_entry_ops(pkey, &old, false)
+            {
+                self.replay(&ops);
+            }
             self.store.del(&k);
         }
         had
+    }
+
+    /// Is any path index declared on this table? The gate that keeps the
+    /// old-map read off the common (no path index) write path.
+    fn has_path_index(&self) -> bool {
+        self.indexes
+            .iter()
+            .any(|i| matches!(i.kind, crate::AccessMethodKind::Path { .. }))
+    }
+
+    /// Path-index ops for one dynamic map: entries when `write`, the same
+    /// entry keys as deletions otherwise (the sweep arm). Empty when no
+    /// path index is declared.
+    fn path_entry_ops(
+        &self,
+        pkey: &[u8],
+        fields: &ValueMap,
+        write: bool,
+    ) -> Result<Vec<EngineOp>, String> {
+        if !self.has_path_index() {
+            return Ok(Vec::new());
+        }
+        let entries =
+            crate::index::path_index_entries(&self.schema, &self.ns, &self.indexes, pkey, fields)?;
+        Ok(entries
+            .into_iter()
+            .map(|(k, v)| (k, if write { Some(v) } else { None }))
+            .collect())
     }
 }

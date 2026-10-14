@@ -13,6 +13,7 @@
 
 use okm_core::schema::CollectionSchema;
 use okm_core::storage::VirtualStorage;
+use crate::path::Path;
 use crate::{Value, ValueMap};
 
 /// Host-language callables for the semantic access methods (ADR-0022).
@@ -42,6 +43,17 @@ pub enum AccessMethodKind {
     /// is EMPTY (the derive result IS the indexed segment) and `includes`
     /// carries payload as usual.
     Func(FuncDerive),
+    /// Path index (ADR-0029): the indexed segment is resolved by walking
+    /// `path` over a document, one entry per resolved value (fan-out over
+    /// arrays), encoded per the declared `value_ty`.
+    ///
+    /// Maintained by the DYNAMIC-SEGMENT write path
+    /// ([`path_index_entries`]) — the primary document holds
+    /// schema-declared fields only, where a path of depth 1 is exactly
+    /// what `Plain` already indexes. `fields` stays empty (the path is
+    /// the source); the entry key does NOT carry the path — the slot is
+    /// the path's identity.
+    Path { path: Path, value_ty: okm_core::field::FieldType },
 }
 
 /// One declared access method over a dynamic table.
@@ -64,9 +76,12 @@ pub struct AccessMethod {
 impl std::fmt::Debug for AccessMethod {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let kind = match &self.kind {
-            AccessMethodKind::Plain => "plain",
-            AccessMethodKind::Partial(_) => "partial",
-            AccessMethodKind::Func(_) => "func",
+            AccessMethodKind::Plain => "plain".to_string(),
+            AccessMethodKind::Partial(_) => "partial".to_string(),
+            AccessMethodKind::Func(_) => "func".to_string(),
+            AccessMethodKind::Path { path, value_ty } => {
+                format!("path({:?} -> {value_ty:?})", path.components())
+            }
         };
         f.debug_struct("AccessMethod")
             .field("slot", &self.slot)
@@ -81,6 +96,42 @@ impl AccessMethod {
     /// A plain field index.
     pub fn plain(slot: u16, fields: Vec<String>, includes: Vec<String>) -> Self {
         Self { slot, fields, includes, kind: AccessMethodKind::Plain }
+    }
+
+    /// A path index over the schema-free zone (ADR-0029): `path` resolves
+    /// in the dynamic segment, one entry per resolved value.
+    ///
+    /// The value type is DECLARED, never inferred: the entry segment is
+    /// byte-ordered, so the encoding needs a type at declaration time
+    /// (the primary document gets it from `FieldSchema`; a path has no
+    /// schema field to consult). Only types the fixed-width/variable-
+    /// width encoders cover are accepted — a wrapper-like type
+    /// (`VarInt`/`Quant`/`Offset`/`Enum`/`Vector`) is rejected here
+    /// rather than failing at every write.
+    pub fn path(
+        slot: u16,
+        path: Path,
+        value_ty: okm_core::field::FieldType,
+    ) -> Result<Self, String> {
+        use okm_core::field::FieldType as FT;
+        if path.is_empty() {
+            return Err("path index requires a non-empty path".to_string());
+        }
+        match value_ty {
+            FT::U8 | FT::U16 | FT::U32 | FT::U64 | FT::FixedBytes | FT::Str => {}
+            other => {
+                return Err(format!(
+                    "path index value type {other:?} has no declared encoding; \
+                     declare the storage-form type (U8/U16/U32/U64/FixedBytes/Str)"
+                ));
+            }
+        }
+        Ok(Self {
+            slot,
+            fields: Vec::new(),
+            includes: Vec::new(),
+            kind: AccessMethodKind::Path { path, value_ty },
+        })
     }
 
     /// Width of the indexed-field segment's FIXED-WIDTH head (schema-
@@ -250,8 +301,17 @@ pub fn index_entries(
         // the filter is complete by construction.
         if let AccessMethodKind::Partial(admits) = &idx.kind
             && !admits(document)? {
-                continue;
-            }
+            continue;
+        }
+        // Path indexes are maintained by the DYNAMIC-SEGMENT write path
+        // (`path_index_entries`): the primary document carries
+        // schema-declared fields only, where a depth-1 path is what
+        // `Plain` already covers. Skipping here keeps exactly ONE
+        // maintainer per entry set — generating them on both paths would
+        // leave entries the dynamic sweep cannot see.
+        if matches!(idx.kind, AccessMethodKind::Path { .. }) {
+            continue;
+        }
         // The indexed-field segment: declared fields for Plain/Partial;
         // the callable's encoded results for Func (fan-out).
         let segments: Vec<Vec<u8>> = match &idx.kind {
@@ -293,6 +353,95 @@ pub fn index_entries(
     Ok(out)
 }
 
+/// Path-index entries for one document (ADR-0029): the dynamic-segment
+/// write path's entry production. Non-`Path` declarations are skipped,
+/// so the caller passes its full declaration list unchanged.
+///
+/// Rules, every one inherited from a shipped shape:
+///
+/// - one entry per RESOLVED value — an array path fans out (the
+///   multi-entry regime `Func` already runs);
+/// - a resolved value whose variant does not match the DECLARED type
+///   produces NO entry and no error (a heterogeneous array is normal
+///   data; the "absent attribute values are empty results" rule);
+/// - a missing path (absent name, out-of-range index, path ending at an
+///   object) produces no entry;
+/// - a `Str` value rides the trailing variable-width regime — raw
+///   UTF-8, no length prefix, the pkey tail cutting the segment — the
+///   same rule a `Plain` index's cold last field follows;
+/// - the entry key does NOT carry the path: the slot is the path's
+///   identity, so a declared path costs the same bytes as any index.
+pub fn path_index_entries(
+    _schema: &CollectionSchema,
+    ns: &[u8],
+    indexes: &[AccessMethod],
+    pkey: &[u8],
+    document: &ValueMap,
+) -> Result<IndexEntries, String> {
+    let mut out = Vec::new();
+    for idx in indexes {
+        let AccessMethodKind::Path { path, value_ty } = &idx.kind else {
+            continue;
+        };
+        let mut segments: Vec<Vec<u8>> = Vec::new();
+        for v in path.resolve(document) {
+            let mut fb = Vec::new();
+            if encode_index_value(*value_ty, v, &mut fb).is_ok() {
+                segments.push(fb);
+            }
+        }
+        for fb in segments {
+            let mut ek = Vec::with_capacity(ns.len() + 2 + fb.len() + pkey.len());
+            ek.extend_from_slice(ns);
+            ek.extend_from_slice(&idx.slot.to_be_bytes());
+            ek.extend_from_slice(&fb);
+            ek.extend_from_slice(pkey);
+            out.push((ek, Vec::new()));
+        }
+    }
+    Ok(out)
+}
+
+/// Encode one resolved path value into the entry's indexed segment.
+///
+/// The unsigned kinds are coerced, not matched strictly: the dynamic READ
+/// side collapses every unsigned kind to `U64` (`dyn_value_to_value`:
+/// `DynamicValue::UInt` → `Value::U64`), so a value written as `U32(1)`
+/// comes back as `U64(1)`. An entry's bytes must be a function of the
+/// stored value alone — a strict variant match would make the written map
+/// and the read-back map produce DIFFERENT entry keys, and the overwrite
+/// sweep (which recomputes keys from the read-back map) would silently
+/// leave the old entry behind. Out-of-range values produce no entry (the
+/// same empty-result rule as a missing path).
+fn encode_index_value(
+    ty: okm_core::field::FieldType,
+    v: &Value,
+    buf: &mut Vec<u8>,
+) -> Result<(), String> {
+    use okm_core::field::FieldType as FT;
+    match ty {
+        FT::U8 | FT::U16 | FT::U32 | FT::U64 => {
+            let n = match v {
+                Value::U8(n) => *n as u64,
+                Value::U16(n) => *n as u64,
+                Value::U32(n) => *n as u64,
+                Value::U64(n) => *n,
+                other => return Err(format!("field type {ty:?} does not take {other:?}")),
+            };
+            let narrowed = match ty {
+                FT::U8 => Value::U8(u8::try_from(n).map_err(|_| format!("{n} overflows U8"))?),
+                FT::U16 => Value::U16(u16::try_from(n).map_err(|_| format!("{n} overflows U16"))?),
+                FT::U32 => Value::U32(u32::try_from(n).map_err(|_| format!("{n} overflows U32"))?),
+                _ => Value::U64(n),
+            };
+            encode_fixed(ty, &narrowed, buf)
+        }
+        FT::Str => encode_variable(ty, v, buf),
+        FT::FixedBytes => encode_fixed(ty, v, buf),
+        other => Err(format!("path index value type {other:?} has no encoding")),
+    }
+}
+
 /// Leftmost-prefix scan over one access method: returns the primary keys
 /// of matching documents (dynamic counterpart of `okm_core::scan_index`).
 /// The pkey is the tail of the entry key (`schema.key_len` bytes — a
@@ -315,7 +464,10 @@ pub fn scan_access_method<S: VirtualStorage>(
     // a probe that exceeds the head is legal exactly when the
     // declaration's last field IS variable-width. A probe beyond the
     // head on an all-fixed-width declaration is a caller bug.
-    if !matches!(index.kind, AccessMethodKind::Func(_)) {
+    if !matches!(
+        index.kind,
+        AccessMethodKind::Func(_) | AccessMethodKind::Path { .. }
+    ) {
         let head = index.fields_width(schema)?;
         let trailing_variable = index
             .fields
