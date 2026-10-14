@@ -552,6 +552,35 @@ key bare in the tail) recorded in ADR-0005.
       and dynamic_variable_width_index_declaration_errors. Consumer:
       aura scan-route probes match String fields directly (the aura-side
       event-flow.md §8.1 residual closes when aura adopts it).
+      - [x] Path indexes (2026-10-14, ADR-0029): declared paths over the
+      schema-free zone. `Path` component vocabulary (Field / Index / Key
+      — two namespaces, two walker operations, never one niched integer)
+      + a self-delimiting canonical encoding with NO leading component
+      count (a count would make DEPTH the primary sort key and break
+      "a path is a byte prefix of its extensions", which is what keeps a
+      subtree scan one prefix scan and array wildcards free); one slot
+      per declared path with the path OUT of the entry key; the value
+      type declared at declaration (only U8/U16/U32/U64/FixedBytes/Str).
+      Maintenance hangs off the DYNAMIC-segment write path
+      (`put_fields` / `delete_fields`; the primary path's `index_entries`
+      skips `Path` declarations by construction — one maintainer per
+      entry set), and the old map is read only when a path index is
+      declared, so the plan surface and every binding call site are
+      untouched. Unsigned kinds COERCE at the index boundary: the dynamic
+      read side widens every unsigned kind to U64, so a strict variant
+      match would make the written map and the read-back map produce
+      different entry keys and the overwrite sweep would leave the old
+      entry behind. Locked by path_index_test.rs (nested + top-level
+      resolution, array fan-out, pinned index, missing path / type
+      mismatch = no entry, entry layout lock, overwrite sweep, delete
+      sweep) and path.rs unit tests (parse forms, resolution, no-count
+      prefix property, compact-lane boundary, encode/decode roundtrip).
+      Open (not silently dropped): backfill for a path declared over
+      data that already exists (ADR-0020 range scan + one batch is the
+      shape), a durable path→slot registry, and a host-language
+      declaration surface (okm-python's `add_func_index` /
+      `add_partial_index` have no `add_path_index` counterpart yet —
+      declarations are Rust-side only for now).
 - [x] Multi-tenancy: receiver-side prefix only — a remote OKM instance is
       one application = one domain model = one ns; to the receiver it is
       just another prefix. No app_id layer inside OKM, no multi-level ns
