@@ -288,6 +288,40 @@ t.delete(&key);                                   // 移除 slot 0 + 全部索�
   `bindings/`，与 Rust derive 字节一致（交叉测试锁定）。版本默认值迁移
   在动态读路径同样生效：字面量 `#[ok_default]` 随 schema 走。
 
+### 动态段上的路径索引（ADR-0029）
+
+访问方法可以命名一条指向无 schema 区的**路径**，而不只是声明字段：
+
+```rust
+use okm_dynamic::{AccessMethod, FieldType, Path};
+
+// 嵌套对象字段
+let by_author = AccessMethod::path(0x1001, Path::parse("author.name")?, FieldType::Str)?;
+// 数组路径：每个元素一条条目（扇出）
+let by_tag = AccessMethod::path(0x1002, Path::parse("tags")?, FieldType::Str)?;
+// 钉住某个元素：恰好一条
+let by_first_href = AccessMethod::path(0x1003, Path::parse("refs[0].href")?, FieldType::Str)?;
+```
+
+- **组件**：`Field(name)`——对象键，经该表字段名字典入典；`Index(u32)`——
+  数组位次（数据：不入典，且不跨变更稳定）；`Key(bytes)`——字面键，不入典。
+  前两者与 `Index` 是两个命名空间、两种 walker 操作（map 取值 vs 数组下标），
+  不是一个被 niche 的整数。
+- **解析**：数组之后的任何组件都会对每个元素扇出（通配**就是"没有
+  `Index`"**）；路径止于数组时对其标量叶子扇出；`Index` 钉住恰好一个元素。
+  名字缺失、下标越界、路径止于对象，都解析为空。
+- **值类型由声明给出**（`FieldType`）：条目段是字节有序的，而路径没有 schema
+  字段可查。无符号类型还接受动态读路径产生的加宽形态（写入的 `U32` 读回是
+  `U64`）——这正是让"条目字节是存储值的函数"成立的东西：覆写清扫重算出的键
+  与写入时构造的完全一致，值变更后不会留下旧条目。
+- **维护挂在动态段写路径上**（`put_fields` / `delete_fields`）。主文档路径按
+  构造跳过路径声明：主文档上深度为 1 的路径恰恰就是普通索引；一个条目集合只有
+  一个维护者。
+- 变体与声明类型不符的值不产条目、也不报错——"属性缺失即空结果"同一条规则。
+- **查询**就是普通的最左前缀扫描（`scan(slot, prefix)`），值的区间由 ADR-0020
+  的范围扫描覆盖。路径的规范编码（自定界、不前置计数）是"路径作为数据"时的
+  形态——声明载体与导出的 schema；条目键携带的是 slot，从不携带路径。
+
 ### 嵌入文档（`Ref<D, K>` 与 `Refs<D, K>`）
 
 以 **key 引用**嵌入子文档：父文档的字段在 wire 上只携带子文档的 key（定宽、热段）；子文档是独立完整的 document，有自己的 ns/key 和自己的索引。内存形态是 `key` + `Option<value>`：

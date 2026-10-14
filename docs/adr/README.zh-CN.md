@@ -27,5 +27,7 @@
 - [0025 — 双模式载体共用一个键空间：静态 codegen 与动态 schema 数据](0025-runtime-ns-dynamic-collection.md)（已接受——字节恒等的两种写入模式；模式是写入方的属性，不是数据的）— [中文](0025-runtime-ns-dynamic-collection.zh-CN.md)
 - [0026 — VirtualStorage 写操作取 &self：共享句柄契约一次说清](0026-virtualstorage-shared-handle-writes.md)（已接受，实现待做——trait 放宽 + 消费者清扫）— [中文](0026-virtualstorage-shared-handle-writes.zh-CN.md)
 - [0027 — VirtualStorage 接口审计：派生便利方法退出 trait](0027-virtualstorage-surface-audit.md)（已接受并实施——scan_suffix_kv 与 batch() 出 trait、KvBatch 删除、异步面按审计后形态对齐）— [中文](0027-virtualstorage-surface-audit.zh-CN.md)
+- [0028 — 浏览器内的 VirtualStorage 家族：localStorage 引擎 + 异步线协议客户端](0028-in-browser-virtualstorage.md)（已接受并实现）— [中文](0028-in-browser-virtualstorage.zh-CN.md)
+- [0029 — 路径索引：在无 schema 区上声明的路径](0029-path-index.md)（已接受并实现——Path 组件词汇 + 自定界无计数编码 + 一路径一 slot；挂在动态段写路径上）— [中文](0029-path-index.zh-CN.md)
 
 实施计划见 [docs/PLAN.md](../PLAN.md)。
