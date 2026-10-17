@@ -886,7 +886,7 @@ g.link(&EdgeFact {
     attrs: Document::encode_payload(&attrs),   // the obj payload (ADR-0017 §3)
 }, &attrs, 1).unwrap();
 
-g.typed_out("employs", &user1);   // 0x7 face: predicate-filtered traversal
+g.typed_out("employs", &user1);   // 0x09 face: predicate-filtered traversal
 use __OkmIndex_Employment_by_since as BySince;   // the face type the declaration generated
 g.by_attr_face(BySince::SLOT, &2020u16.to_be_bytes());
 ```
@@ -903,7 +903,7 @@ g.by_attr_face(BySince::SLOT, &2020u16.to_be_bytes());
 - **Faces**: one `link` writes primary (fixed face 0x00, `edge_id` u64) +
   the payload's dynamic entry (0x01) when fields were written + predicate
   index (0x06) + out/in traversal (0x07/0x08) + predicate-qualified
-  traversal (0x04/0x05) + ONE face per DECLARED `#[ok_index]` (counting
+  traversal (0x09/0x0A) + ONE face per DECLARED `#[ok_index]` (counting
   family 0x1), all in one batch; `unlink` decodes the edge body and
   deletes exactly those entries. The predicate's name resolves through the
   graph's OWN dictionary (fixed faces 0x04/0x05, first-seen-claims-next) —
@@ -919,7 +919,7 @@ g.by_attr_face(BySince::SLOT, &2020u16.to_be_bytes());
   caller-chosen `edge_id`; a live id is rejected, never reused.
 - **Filtering**: the most selective face first, ids converged in
   memory — no composite faces by default (`(*)-[predicate]->(:node kind)`
-  = 0x7 scan intersected with the node kind face's pkey set).
+  = 0x09 scan intersected with the node kind face's pkey set).
 
 Division line: `Refs` = one-to-many; `Junction` = many-to-many, fixed
 endpoints, no attributes; **Graph Edge** = independent identity,

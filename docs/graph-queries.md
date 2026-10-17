@@ -79,7 +79,7 @@ Cypher shape                        okm landing (face)
 g.out_edges(&org9);                  // -> [1, 2]
 g.in_edges(&user1);                  // -> [1]
 
-// Predicate-filtered traversal — the predicate leads the scan prefix (0x04/0x05).
+// Predicate-filtered traversal — the predicate leads the scan prefix (0x09/0x0A).
 g.typed_out("employs", &org9);       // -> [1, 2]
 g.typed_in("employs", &user1);       // -> [1]
 
@@ -190,7 +190,7 @@ queries:
   dictionary).
 - The dynamic form has NO 0x1 attribute face (attribute names are
   runtime data, so exact-match attr scans are structurally absent —
-  predicate filtering via 0x06/0x04/0x05 is complete, not a gap).
+  predicate filtering via 0x06/0x09/0x0A is complete, not a gap).
 - Node-side "kind" is NOT an edge-layer concern: nodes are ordinary
   document collections, their kinds live in their own declared indexes
   and dictionaries. `(:node_type)` filtering = the edge face scan ∩

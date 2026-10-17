@@ -751,7 +751,8 @@ Unchanged: primary payload layout `[version][hot_len][hot][cold TLV]`
 
 - [x] Design recorded (ADR-0030): a family that is a single face — primary,
       dynamic segment, both dictionary directions, the graph's five — gets
-      its own 1-byte slot number (0x00–0x0A); the counting families
+      its own 1-byte slot number (0x00–0x0A — the graph's five faces plus its
+      predicate dictionary); the counting families
       (declared index 0x1 / reduce 0x2 / junction 0x3) keep the 2-byte slot,
       the 12-bit counter and their numbers unchanged. Width is decided by the
       first byte's high nibble, so a family-prefix scan stays exact without
@@ -782,7 +783,7 @@ Unchanged: primary payload layout `[version][hot_len][hot][cold TLV]`
       edge's type is its PREDICATE — a key dimension (2 bytes in the head) with
       its OWN dictionary (new fixed faces 0x04/0x05), separate from the
       payload's field-name dictionary (0x02/0x03), so listing a graph's
-      predicates is one 0x09 prefix scan and never an inference from the index
+      predicates is one 0x04 prefix scan and never an inference from the index
       faces. `Graph<S, E>` is a HANDLE that declares nothing (an engine instance
       + the per-instance state: the predicate dictionary cache, the edge_id
       allocation position) — the same shape as `Collection<S, K, R>`. The member

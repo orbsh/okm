@@ -151,7 +151,7 @@ by ROLE — the two vocabularies first, then the faces that read their ids:
 a dictionary leads the faces it serves. The NUMBERS stay the mechanism.)
 
 **The predicate has its OWN dictionary (Update 2026-10-17).**
-`[ns][0x09][predicate name] → predicate_id` and `[ns][0x0A][predicate_id]
+`[ns][0x04][predicate name] → predicate_id` and `[ns][0x05][predicate_id]
 → name` — the same bidirectional shape as 0x02/0x03, a different
 vocabulary. Listing a graph's predicates is then ONE prefix scan of 0x04:
 an exact list, never reverse-derived by walking the index faces. Sharing
@@ -258,7 +258,7 @@ explicitly, though not identical-by-construction:
   per-collection). (2) **node kind face** — one declared access method
   over the node collection's ns, `[kind_id][node pkey]`, maintained by
   the node's normal put path. Composite filtering
-  (`(*)-[predicate]->(:node kind)`) scans the 0x04/0x05 face and the node
+  (`(*)-[predicate]->(:node kind)`) scans the 0x09/0x0A face and the node
   kind face and intersects the id sets in memory — two cheap faces,
   one convergence (no triple-composite face is built for it).
 - **Predicate index (0x06)**: all edges of one predicate — the
@@ -271,7 +271,7 @@ explicitly, though not identical-by-construction:
   full NodeRef leads so the scan prefix matches; `edge_id` trails —
   parallel edges (two facts between the same nodes) each get their own
   entry, and the trailing id decodes back to the primary.
-- **Predicate-filtered traversal (0x04/0x05)**: the `(*)-[predicate]->(*)`
+- **Predicate-filtered traversal (0x09/0x0A)**: the `(*)-[predicate]->(*)`
   face — the predicate leads because it is the filter dimension here, and
   it cannot be a trailing segment on this face.
 - **Write protocol**: `link` = primary + one counting-family 0x1 entry per
