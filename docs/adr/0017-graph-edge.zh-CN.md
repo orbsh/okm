@@ -1,7 +1,7 @@
 # ADR-0017：图 Edge——第三种关系载体
 
 日期：2026-09-19
-状态：已接受（2026-09-20；两种形态均已实现——EdgeEncode derive + Graph<S, E> 固定本体、okm-dynamic Graph<S> 全动态）。2026-09-20 更新：§2 端点引用改选方案 b（自描述 [ns 2B][len varint][pkey]）——方案 c（注册表）废弃；§3 增补声明属性字段、节点侧 kind 过滤、slot 布局说明。
+状态：已接受（2026-09-20；两种形态均已实现——EdgeEncode derive + Graph<S, E> 固定本体、okm-dynamic Graph<S> 全动态）。2026-09-20 更新：§2 端点引用改选方案 b（自描述 [ns 2B][len varint][pkey]）——方案 c（注册表）废弃；§3 增补声明属性字段、节点侧 kind 过滤、slot 布局说明。2026-10-17 更新：§3 边的载荷改成 obj（ADR-0012）——一份文档声明同时生成双向编解码与声明面，derive 那套只有编码半的 `attrs()` / `attr_faces()` / `ATTR_SLOTS` 退役；§3 写入协议、§4 与「后果」随之改，§2 已废弃的注册表措辞从 §4、§5、「后果」清掉。
 关联：ADR-0015（关系分类学）、ADR-0016（4 字节头、段号制 slot）、ADR-0002（命名空间字典）
 
 ## 背景
@@ -37,35 +37,37 @@ pkey 的边界**不在 key 里**。一个 collection 的 pkey 宽度是 schema �
 
 - **2026-09-20 更新——改选方案 b（自描述引用），方案 c 废弃。** 原草案对 b 的拒绝算错了账：共享 varint 编解码器把 pkey 宽度（4–16 字节）编进**单字节**，每条引用实付约 1 字节（遍历面 key 约 5%），不是"1 字节以上成倍放大"。与之相对，注册表的代价是全套：新的跨集合 schema 事实、`nodes(...)` 声明里手写宽度字面量与节点 key 的漂移风险、动态形态的运行期 `register()` 仪式，以及一个只为保卫注册表而存在的解码失败模式（未注册 ns）。引用变为 `[ns 2B][len varint][pkey]`——宽度是 wire 数据，遍历面依然精确前缀命中（同节点 = 同字节），两种形态的端点声明归零。Ref 纪律就此对图边**退役**：ns 知识不再住在声明点，而住在引用自身。
 
-### 3. Slot 分配（ADR-0016 段，在 Edge ns 内）
+### 3. Slot 分配（固定面与计数族，在 Edge ns 内）
 
 ```text
-0x0  主表      [edge_id]                                  → value = 边本体
-0x2/0x3  kind 字典  （name ↔ kind_id，复用既有机制）
-0x4  kind 索引  [kind_id]                                  → edge_id 集合
-0x5  出边       [src NodeRef][edge_id]
-0x6  入边       [dst NodeRef][edge_id]
-0x7  类型正向   [kind_id][src NodeRef][edge_id]
-0x8  类型反向   [kind_id][dst NodeRef][edge_id]
+0x00  主表      [edge_id]                                  → value = 边本体
+0x02/0x03  kind 字典  （name ↔ kind_id，复用既有机制）
+0x04  kind 索引  [kind_id]                                  → edge_id 集合
+0x05  出边       [src NodeRef][edge_id]
+0x06  入边       [dst NodeRef][edge_id]
+0x07  类型正向   [kind_id][src NodeRef][edge_id]
+0x08  类型反向   [kind_id][dst NodeRef][edge_id]
 ```
+（图的面是固定面号——各一字节，ADR-0030；下文的声明属性面属于计数族 0x1。）
 
 **Slot 布局与普通文档的关系（2026-09-20 更新）**——明确说明，不追求严格一致：
 
-- **节点 collection = 标准文档布局，不变。** 节点 kind 面不是新段：它是 0x1 段里一个普通访问方法（固定本体形态是一条 `#[ok_index]` 声明，动态形态是用户分配的 `AccessMethod` slot）。节点 kind 走 collection 自己的 0x2/0x3 字典——每个 collection 都有同一本字典。与任何文档 collection 布局零差异；"某个字段是 kind"是建模约定，不是布局事实。
-- **Edge collection = 上表八类条目，用同一套段语言写成的另一种 collection 形态。** 0x0/0x1/0x2/0x3 保留文档侧的段语义（主表、声明索引、字典）；0x4–0x8 是 Edge collection 的普通 ns 内段（ADR-0016）——不引入新段类型。Edge 不是"带特殊段的文档"，而是由共享词汇组成的另一种 collection。
+- **节点 collection = 标准文档布局，不变。** 节点 kind 面不是新种类的 slot：它是计数族 0x1 里一个普通访问方法（固定本体形态是一条 `#[ok_index]` 声明，动态形态是用户分配的 `AccessMethod` slot）。节点 kind 走 collection 自己的 0x02/0x03 字典——每个 collection 都有同一本字典。与任何文档 collection 布局零差异；"某个字段是 kind"是建模约定，不是布局事实。
+- **Edge collection = 上表八类条目，用同一套 slot 词汇写成的另一种 collection 形态。** 0x00/0x01/0x02/0x03 保留文档侧的含义（主表、动态段、字典）；0x04–0x08 是图自己的面，落在固定面区间里——不引入新种类的 slot。值侧也不是第二套编码：边的载荷**就是**一份 obj（ADR-0012）。把它与文档 collection 区分开的是图的面与自描述端点，不是它自己的载荷格式。
 
-- **主表（0x0）**：边本体——`[src NodeRef][dst NodeRef][kind_id][attributes]`。属性是动态段（value 内的 slot-1 帧）：图属性天然动态。
-- **声明属性字段（2026-09-20 更新）**：固定本体形态下，边声明可以携带 src/dst/kind 之外的静态字段。每个声明字段就是一条普通声明索引——segment 0x1（`0x1001+n`，声明序），每字段一面 `[字段值][edge_id]`。derive 直接生成访问方法；过滤走该面的索引扫描再解码回主表，而不是全量取边解码。字段值是边自身属性——不含 NodeRef，天然定宽——因此完全不触碰 ns → KEY_LEN 注册表。与 kind 字典互不相干：kind 是运行期增长的词表，声明字段是编译期声明、直接编码进索引 key。默认不建复合面（`kind+字段`、`字段+端点`）——用选择度最高的面过滤，edge_id 在内存收敛，与文档索引同一立场；复合面只在访问模式证明需要后再加。动态形态不受影响（空声明，属性全在动态段）。每个声明字段使 link/unlink 多写一条条目——写放大由声明者自选。
-- **节点侧 kind 过滤（2026-09-20 更新）**：按节点 kind / 节点属性过滤是图查询的基本需求，按形态分别回答。固定本体形态下节点就是普通 document collection：节点"类型"= collection 本身（ns 即类型标记），属性过滤走 collection 自己的 `#[ok_index]` 声明索引——零新机制。全动态形态下节点 kind 是动态段数据，由两个既有机制承载过滤、不新增段：(1) **节点 kind 字典**——每个 collection 本来就拥有自己的 0x2/0x3 字典，节点 kind 走它分配；节点 collection 的字典与边 collection 的字典天然分开（字典是 per-collection 的）。(2) **节点 kind 面**——节点 collection ns 内的一个声明访问方法，`[kind_id][node pkey]`，由节点正常 put 路径维护。复合过滤（`(*)-[edge_kind]->(:node_kind)`）扫 0x7/0x8 面与节点 kind 面、内存求交 id 集合——两个便宜面、一次收敛（不为它建三元复合面）。
-- **kind 索引（0x4）**：一种 kind 的全部边——`MATCH ()-[r:has]->()` 的入口。`kind_id` 来自 kind 字典（0x2/0x3）：写入时 name → id，保证每个 key 段定宽可排序。
-- **遍历（0x5/0x6）**：一个节点的全部出边 / 入边。完整 NodeRef 领先使扫描前缀可命中；`edge_id` 收尾——平行边（同两节点间的两个事实）各得一条条目，尾段 id 解码回主表。
-- **类型遍历（0x7/0x8）**：`(*)-[kind]->(*)` 面——kind 领先，因为它在此面是过滤维度；kind 不能作为此面的尾段。
-- **写入协议**：`link` = 主表 + 0x4 + 0x5 + 0x6 + 0x7 + 0x8 一个 batch（六条条目）；`unlink` 对称删除六条。与 Junction 的双写义务同构，按面数放大。
+- **主表（0x00）**：边本体——`[src NodeRef][dst NodeRef][kind_id][obj 载荷]`。尾部区域就是一份普通的 obj 载荷（ADR-0012）：`[version u8][hot_len u16 BE][热段][冷 TLV]`，与任何文档行同一套编码。`src` / `dst` / `kind_id` 是图自己的头部，载荷起始位置可算——引用自描述、`kind_id` 定宽。
+- **声明属性字段**：固定本体形态下，边声明**就是**一份文档声明——`#[ok_edge(ns = N)]` 标在一个 `DocumentEncode` 类型上——所以 src/dst/kind 之外的静态字段就是普通声明字段：热/冷段摆放、生成的编码器**和**解码器、以及生成的 0x1 面（`[字段值][edge_id]`，计数族 0x1，`0x1001+n`，按声明序）。这正是那套只有编码半的自造机制（`KvGraph::attrs`、`attr_faces`、`ATTR_SLOTS`，连同 `EdgeEncode` 的载荷 derive）手工做出来的形状，本条决策把它退役：一份声明、一套编解码、两个方向都生成，宽度住在声明里而不是每个消费方手里。这些条目用的边身份就是边自己的 key（`[edge_id u64]`，一个 `KeyEncode` newtype），所以文档索引条目照样以 edge_id 收尾，与原来的 attr 面同形，并由同一条 `index_entries` 路径维护。过滤依旧走该面的索引扫描再解码回主表，而不是全量取边解码；字段值是边自身数据（不含 NodeRef），完全不触碰端点宽度。默认不建复合面（`kind+字段`、`字段+端点`）——用选择度最高的面过滤，edge_id 在内存收敛，与文档索引同一立场；复合面只在访问模式证明需要后再加。每个声明字段使 link/unlink 多写一条条目——写放大由声明者自选。
+- **动态属性（固定面 0x01）**：边的开放属性就是这份 obj 的动态段——每条边**一条**条目 `[ns][0x01][edge_id]`，nTLV 帧，字段名取字典号（ADR-0012）——即任何文档行都有的那个条目、那套编解码与 `put_fields`/`get_fields` 面。该条目由图装配点持有（调用方不再手搓帧）。日后要查的开放属性走它声明好的 path 索引（ADR-0029——每个解析出的值一条条目，值类型限于有存储形态编码的那些），永远不靠加宽 key。全动态形态无需改动：声明为空，自由属性走同一 obj 形状。
+- **节点侧 kind 过滤（2026-09-20 更新）**：按节点 kind / 节点属性过滤是图查询的基本需求，按形态分别回答。固定本体形态下节点就是普通 document collection：节点"类型"= collection 本身（ns 即类型标记），属性过滤走 collection 自己的 `#[ok_index]` 声明索引——零新机制。全动态形态下节点 kind 是动态段数据，由两个既有机制承载过滤、不新增段：(1) **节点 kind 字典**——每个 collection 本来就拥有自己的 0x02/0x03 字典，节点 kind 走它分配；节点 collection 的字典与边 collection 的字典天然分开（字典是 per-collection 的）。(2) **节点 kind 面**——节点 collection ns 内的一个声明访问方法，`[kind_id][node pkey]`，由节点正常 put 路径维护。复合过滤（`(*)-[edge_kind]->(:node_kind)`）扫 0x07/0x08 面与节点 kind 面、内存求交 id 集合——两个便宜面、一次收敛（不为它建三元复合面）。
+- **kind 索引（0x04）**：一种 kind 的全部边——`MATCH ()-[r:has]->()` 的入口。`kind_id` 来自 kind 字典（0x02/0x03）：写入时 name → id，保证每个 key 段定宽可排序。
+- **遍历（0x05/0x06）**：一个节点的全部出边 / 入边。完整 NodeRef 领先使扫描前缀可命中；`edge_id` 收尾——平行边（同两节点间的两个事实）各得一条条目，尾段 id 解码回主表。
+- **类型遍历（0x07/0x08）**：`(*)-[kind]->(*)` 面——kind 领先，因为它在此面是过滤维度；kind 不能作为此面的尾段。
+- **写入协议**：`link` = 主表 + 每个声明字段一条计数族 0x1 条目 + 0x04 + 0x05 + 0x06 + 0x07 + 0x08，一个 batch；调用方写过字段时，obj 的动态条目（固定面 0x01）同批写入。`unlink` 对称删除同样这些条目。与 Junction 的双写义务同构，按面数放大。
 
 ### 4. 两种形态，一套机制
 
-- **固定本体**：边 kind 与节点集合编译期声明。Edge derive 从 `#[ok_edge]` 形态的声明生成六面条目（声明属性字段每字段额外加一条 0x1 面，见 §3）；ns 注册表是编译期常量。
-- **全动态**（知识图谱）：一个 `KgNode` collection 与一个 `KgEdge` collection，**空声明**——只有身份，载荷全在动态段（声明 `props: DynamicValue` 会把它放进 slot 0，那是静态形态——不是动态图想要的）。kind 与节点 kind 是动态段数据；端点注册表是运行期表；遍历面通过动态层的 `AccessMethod` 构建走。
+- **固定本体**：边 kind 与节点集合编译期声明。边声明就是一份文档声明（`DocumentEncode` 加 `#[ok_edge]` 提供图的 ns），装配点从它生成六面条目——声明字段就是这份 obj 自己的声明索引，每字段一条 0x1 面（见 §3）。
+- **全动态**（知识图谱）：一个 `KgNode` collection 与一个 `KgEdge` collection，**空声明**——只有身份，载荷全在动态段（声明 `props: DynamicValue` 会把它放进 slot 0，那是静态形态——不是动态图想要的）。kind 与节点 kind 是动态段数据；端点是自描述引用（§2），这里同样没有端点声明、没有注册表；遍历面通过动态层的 `AccessMethod` 构建走。
 
 两种形态共享同一 wire 布局与同一 slot 语义；差异只在声明住在哪里（derive 常量 vs 运行期 schema）。
 
@@ -79,11 +81,11 @@ pkey 的边界**不在 key 里**。一个 collection 的 pkey 宽度是 schema �
 双向                Junction                     图 Edge
 ```
 
-图 Edge 相对 Junction 的结构差异恰好两点，都被开放端点的要求逼出：端点是自描述引用（ns + 注册表定界的 pkey）而非编译期定类型的 key；尾段是 `edge_id`（而非对端身份），因为平行边存在。其余一切——双写义务、条目面设计、ns 纪律——原样继承。
+图 Edge 相对 Junction 的结构差异恰好两点，都被开放端点的要求逼出：端点是自描述引用（`[ns 2B][len varint][pkey]`）而非编译期定类型的 key；尾段是 `edge_id`（而非对端身份），因为平行边存在。其余一切——双写义务、条目面设计、ns 纪律——原样继承。
 
 ## 后果
 
-- 新 derive（`EdgeEncode` 的变体或独立的 `GraphEdgeEncode`）+ 一个小的运行期注册表类型。六面写入协议住在 `Graph<S, E>` 装配点，与 `Junction<S, E>` 对称。
-- ns → KEY_LEN 注册表是新的跨集合 schema 事实；编译期形态生成，动态形态用户维护。
-- ADR-0016 的段不改动：0x4–0x8 是 Edge collection 的普通 ns 内段。
+- 边声明复用文档编解码（`DocumentEncode` + `#[ok_edge(ns = N)]`）：没有第二套载荷编码，也没有一套只有编码半的属性机制需要同步维护。六面写入协议住在 `Graph<S, E>` 装配点，与 `Junction<S, E>` 对称。
+- 端点引用自描述（`[ns 2B][len varint][pkey]`），因此没有跨集合宽度注册表、也没有端点声明（§2）。
+- ADR-0016 的 slot 分配不改动：0x04–0x08 是图自己的固定面，落在 Edge collection 的 ns 内（ADR-0030）。
 - 尚无消费者；设计在 `#[ok_relation]` 工作开始前落档，因为两者共用写路径 diff 机制。（更新 2026-09-20：`#[ok_relation]` 字段位形态随后被否决——见 ADR-0015 未来工作 §B；junction 的命令式 link/unlink 成对操作确立，本 ADR 的 put 路径 `link_into` batch 面不受影响。）

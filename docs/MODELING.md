@@ -446,9 +446,9 @@ WHERE".
 
 One encoding serves declared rows and external data. Declared fields ride
 the hot/cold segments as usual; anything else lands in the **dynamic
-segment** (slot 1) as n-TLV frames — `[field-id][type][len][bytes]` —
+segment** (fixed face 0x01) as n-TLV frames — `[field-id][type][len][bytes]` —
 with names allocated on first sight in the **field-name dictionary**
-(slots 2/3). Runtime surface on `Collection`:
+(fixed faces 0x02/0x03). Runtime surface on `Collection`:
 
 ```rust
 // The row-map bridge: every field (declared + dynamic) lifts to its logical
@@ -456,10 +456,10 @@ with names allocated on first sight in the **field-name dictionary**
 let fields = t.get_document(&key);          // Option<BTreeMap<String, DynamicValue>>, None = no row
 
 // Whole-document write: fields matching the declared struct go to the typed
-// path; unknown names allocate in the dictionary and land in slot 1.
+// path; unknown names allocate in the dictionary and land in fixed face 0x01.
 t.put_document(&key, &fields);                      // BTreeMap<String, DynamicValue>
 
-// Dynamic-only views (slot 1 directly):
+// Dynamic-only views (fixed face 0x01 directly):
 t.get_fields(&key);                             // name-keyed map or None
 t.put_fields(&key, &map);                       // whole-entry put, absent fields removed
 t.delete_fields(&key);                          // clear the dynamic segment
@@ -482,8 +482,14 @@ t.delete(&key);                                   // remove slot 0 + index entri
 - Unknown names are **normal input** here (external data, MQ payloads);
   the typed decoder's unknown-field rejection applies only to the
   declared path.
-- Declared fields are indexable; dynamic fields are not (their names are
-  runtime data).
+- Declared fields are indexable through their own 0x1 faces. A dynamic
+  field is indexable through a path index over its declared path
+  (ADR-0029: one entry per resolved value, the value types with a
+  storage-form encoding — U8/U16/U32/U64/FixedBytes/Str), landed on the
+  schema-driven (`DynamicCollection`) write path; a typed collection's
+  own dynamic segment has no such maintenance wired yet. What dynamic
+  names can never be is KEY material: a name is runtime data, so a
+  dynamic path is addressed by its declaration, never by the key.
 - The schema export (`CollectionSchema`, serde behind `schema-serde`) drives
   the dynamic codec for embedded-language readers — Python (PyO3) and
   Steel bindings live in `bindings/`, byte-identical with the Rust
@@ -851,13 +857,16 @@ zero layout difference from any document collection. What is new lives
 on the edge side:
 
 ```rust
-use okm_core::{EdgeEncode, EdgeFact, Graph, NodeRef};
+use okm_core::{Document, DocumentEncode, EdgeFact, Graph, NodeRef};
 
-/// The edge collection of one graph. Declared attribute fields are
-/// edge-own data; endpoints are NOT declared — refs are
+/// The edge collection of one graph. The edge declaration IS a document
+/// declaration (ADR-0012): its declared fields are the edge's own
+/// declared fields — hot/cold placement, a generated codec in BOTH
+/// directions, one 0x1 face each — and its dynamic segment carries the
+/// open attributes. Endpoints are NOT declared — refs are
 /// self-describing ([ns 2B][len][pkey]), so any node collection
 /// participates with zero ceremony.
-#[derive(EdgeEncode, Clone, Default)]
+#[derive(DocumentEncode, Clone, Default)]
 #[ok_edge(ns = 100)]
 struct Employment {
     since_year: u16,   // each declared field = one 0x1 face
@@ -870,7 +879,7 @@ g.link(&EdgeFact {
     src: NodeRef::new(&10u16.to_be_bytes(), &1u64.to_be_bytes()),
     dst: NodeRef::new(&11u16.to_be_bytes(), &9u64.to_be_bytes()),
     kind: "employs".into(),
-    attrs: okm_core::KvGraph::attrs(&attrs),
+    attrs: Document::encode_payload(&attrs),   // the obj payload (ADR-0017 §3)
 }, &attrs, 1).unwrap();
 
 g.typed_out("employs", &user1);   // 0x7 face: kind-qualified traversal
@@ -885,12 +894,12 @@ g.by_attr_face(slot, &2020u16.to_be_bytes());
   pkey widths coexist, and there is no registry to declare, maintain,
   or fail on. Graph edges retire the Ref discipline — the reference
   carries its own width, ns knowledge and all.
-- **Faces**: one `link` writes primary (slot 0x0, `edge_id` u64) +
-  kind index (0x4) + out/in traversal (0x5/0x6) + kind-qualified
-  traversal (0x7/0x8) + one declared-attribute face per field (0x1),
-  all in one batch; `unlink` deletes the same set. Kind names resolve
-  through the edge collection's own dictionary (0x2/0x3,
-  first-seen-claims-next).
+- **Faces**: one `link` writes primary (fixed face 0x00, `edge_id` u64) +
+  kind index (0x04) + out/in traversal (0x05/0x06) + kind-qualified
+  traversal (0x07/0x08) + one declared-attribute face per field (counting
+  family 0x1), all in one batch; `unlink` deletes the same set. Kind names
+  resolve through the edge collection's own dictionary (fixed faces
+  0x02/0x03, first-seen-claims-next).
 - **Parallel edges** are separate facts: each link carries a
   caller-chosen `edge_id`; a live id is rejected, never reused.
 - **Filtering**: the most selective face first, ids converged in
@@ -1010,7 +1019,7 @@ Elements are **pure values** — the identity dividing line (§Many-to-many
 above) keeps Vector out of the relation carriers: a scalar has no key,
 a key reference to it is a category error. One-to-many -> `Refs`; many-
 to-many -> `Junction`; order-expressing value lists -> `Vector`;
-heterogeneous dynamic lists -> `DynamicValue::Array` (slot 1). On
+heterogeneous dynamic lists -> `DynamicValue::Array` (fixed face 0x01). On
 `get_document` a Vector lifts to `DynVal::Array` — the dynamic layer
 has no Vector type; Vector is a storage-layer format. Multi-dimensional
 shape is application-layer interpretation (row-major over the flat

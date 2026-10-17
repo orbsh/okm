@@ -1,7 +1,7 @@
 # ADR-0012: Object model — one encoding, declared fields plus a dynamic segment
 
 Date: 2026-09-14
-Status: Accepted (design; implementation pending — PLAN)
+Status: Accepted (2026-09-14; landed — the obj payload's two slots, the field dictionary, `DocumentEncode` in both directions, `Ref`/`Refs` embedding). **Update 2026-10-17**: the slot table below is the flat pre-ADR-0016 numbering, kept as this decision's record — today's allocation is ADR-0030's, where the dynamic segment is fixed face 0x01 and the dictionary 0x02/0x03. The "only declared fields are indexed" paragraph is superseded by ADR-0029 (a dynamic field is indexable through a declared path).
 
 ## Context
 
@@ -56,17 +56,17 @@ fixed-width fields contiguous in the hot segment, variable-width fields as
 index. Types come from the compile-time `FieldDesc` table (`Row::FIELDS`),
 never from the bytes.
 
-**Dynamic segment (slot 1).** An obj may additionally carry undeclared
-fields, stored as ONE entry per row under `[ns][1][key payload]` — the
+**Dynamic segment (fixed face 0x01).** An obj may additionally carry undeclared
+fields, stored as ONE entry per row under `[ns][0x01][key payload]` — the
 same skeleton as an index entry (`[ns][slot][...]`, slot right after ns),
 with no field segment in between; the primary key rides in the tail.
 Per-row data hangs off the row key: without it, every row's dynamic
-segment would pile onto one physical key. The shared `[ns][1]` prefix
+segment would pile onto one physical key. The shared `[ns][0x01]` prefix
 also makes the whole segment prefix-scannable (prune, rebuilds). Its
 value is a list of frames:
 
 ```text
-[slot 1 value] = ([field-id][value-type][len u32][value bytes])*
+[dynamic-face value] = ([field-id][value-type][len u32][value bytes])*
 ```
 
 - `field-id`: the field NAME's dictionary number (see below).
@@ -86,14 +86,19 @@ value is a list of frames:
 - Ordering: frames are written in insertion order; readers address
   dynamic fields by id, not position.
 
-**Only declared fields are indexed.** Indexes need stable wire order and
+**Declared fields are indexed through their own faces; a dynamic field is
+indexed through a declared path.** Indexes need stable wire order and
 fixed-width comparison keys — properties a self-describing dynamic value
-does not offer. Dynamic fields are retrievable but not indexable; if a
-dynamic field becomes hot enough to query, it gets declared (a one-line
-schema change plus a table rebuild), which is exactly the discipline the
-row model already teaches.
+does not offer *as key material*. ADR-0029 closes the gap from the other
+side: a path index over a declared path materialises one entry per resolved
+value (the value types with a storage-form encoding), landed on the
+schema-driven write path. What a dynamic name can never be is KEY material:
+a name is runtime data, so a dynamic path is addressed by its declaration,
+never by the key. A dynamic field that turns out to be hot in a key-shaped
+way still gets declared (a one-line schema change plus a table rebuild) —
+the row model's discipline, unchanged.
 
-## Field-name dictionary (slots 2/3)
+## Field-name dictionary (fixed faces 0x02/0x03)
 
 Dynamic frames carry names by number. The dictionary is a **run-time,
 per-table, bidirectional mapping** — the first mutable vocabulary OKM
@@ -101,8 +106,8 @@ stores in KV (ns stays compile-time; ADR-0002's "the dictionary lives in
 code" is a statement about the ns layer, not this one):
 
 ```text
-slot 2: [ns][2][field-id]      → name bytes   (number → name)
-slot 3: [ns][3][name bytes]    → field-id     (name → number)
+fixed face 0x02: [ns][0x02][field-id]      → name bytes   (number → name)
+fixed face 0x03: [ns][0x03][name bytes]    → field-id     (name → number)
 ```
 
 Discipline, copied from the ns dictionary:
@@ -163,6 +168,11 @@ slot 14     edge forward           [ns][14][A·id][B·id]
 slot 15     edge reverse           [ns][15][B·id][A·id]
 slot 16+    indexes and reduces (declaration order), [ns][slot][...]
 ```
+
+*(Update 2026-10-17: this table is the flat pre-ADR-0016 allocation, kept
+as the decision's record. Current numbering: ADR-0030 — primary 0x00,
+dynamic segment 0x01, dictionary 0x02/0x03, graph faces 0x04–0x08,
+declared indexes 0x1nnn, reduces 0x2nnn, junctions 0x3nnn.)*
 
 Fixed roles grow upward from 0; edges sit at the top (14/15) and grow
 downward; 4–13 is an unpartitioned free buffer between the two fronts —

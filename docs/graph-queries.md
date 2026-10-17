@@ -49,8 +49,9 @@ pub struct EdgeBody {
     pub src: NodeRef,
     pub dst: NodeRef,
     pub kind_id: u16,     // kind NAME via g.kind_name(kind_id)
-    pub attrs: Vec<u8>,   // the edge's own payload (fixed-ontology form:
-                          // the EdgeEncode payload; dynamic form: nTLV frames)
+    pub attrs: Vec<u8>,   // the edge's own payload — an obj payload,
+                          // [version][hot_len][hot][cold TLV] (ADR-0017 §3);
+                          // dynamic form: nTLV frames
 }
 ```
 
@@ -65,12 +66,12 @@ written (org 9 -> user 1 since 2020, org 9 -> user 2 since 2021).
 ```text
 Cypher shape                        okm landing (face)
 ──────────────────────────────────────────────────────────
-(:org {id:9})-[]->()                out_edges          (0x5)
-()<-[]-(:user {id:1})               in_edges           (0x6)
-()-[r:employs]->()                  edges_of_kind      (0x4)
-(:org {id:9})-[r:employs]->()       typed_out          (0x7)
-()-[r:employs]->(:user {id:1})      typed_in           (0x8)
-()-[r:employs {since: 2020}]->()    by_attr_face       (0x1)
+(:org {id:9})-[]->()                out_edges          (0x05)
+()<-[]-(:user {id:1})               in_edges           (0x06)
+()-[r:employs]->()                  edges_of_kind      (0x04)
+(:org {id:9})-[r:employs]->()       typed_out          (0x07)
+()-[r:employs]->(:user {id:1})      typed_in           (0x08)
+()-[r:employs {since: 2020}]->()    by_attr_face       (family 0x1)
 ```
 
 ```rust
@@ -78,7 +79,7 @@ Cypher shape                        okm landing (face)
 g.out_edges(&org9);                  // -> [1, 2]
 g.in_edges(&user1);                  // -> [1]
 
-// Kind-qualified traversal — kind leads the scan prefix (0x7/0x8).
+// Kind-qualified traversal — kind leads the scan prefix (0x07/0x08).
 g.typed_out("employs", &org9);       // -> [1, 2]
 g.typed_in("employs", &user1);       // -> [1]
 
@@ -189,7 +190,7 @@ queries:
   dictionary).
 - The dynamic form has NO 0x1 attribute face (attribute names are
   runtime data, so exact-match attr scans are structurally absent —
-  kind filtering via 0x4/0x7/0x8 is complete, not a gap).
+  kind filtering via 0x04/0x07/0x08 is complete, not a gap).
 - Node-side "kind" is NOT an edge-layer concern: nodes are ordinary
   document collections, their kinds live in their own declared indexes
   and dictionaries. `(:node_type)` filtering = the edge face scan ∩
