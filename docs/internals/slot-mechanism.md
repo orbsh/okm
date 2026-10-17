@@ -3,33 +3,38 @@
 Mechanism/implementation document: how the slot dispatches derived entries
 inside a 2-byte namespace, what the constraints are, and why. Modeling
 discipline lives in [MODELING](../MODELING.md); decision records live in
-[ADR-0005](../adr/0005-secondary-index-slots.md) and
-[ADR-0016](../adr/0016-four-byte-head-and-slot-segments.md) (4-bit segment +
-12-bit counter — the current allocation).
+[ADR-0005](../adr/0005-secondary-index-slots.md),
+[ADR-0016](../adr/0016-four-byte-head-and-slot-segments.md) (the widened
+head, superseded for the fixed faces) and
+[ADR-0030](../adr/0030-slot-fixed-faces-and-counting-families.md) (the
+current allocation: a fixed face is one byte — no counter — and only the
+counting families carry the 2-byte slot).
 
 ## Entry layout
 
-A collection's entries come in two kinds, separated by the ns segment:
+A collection's entries come in two shapes, decided by the slot's first byte:
 
 ```text
-primary entry  [ ns 2B BE ][ slot 0x0000 ][ pkey ]                  value = TLV payload
-index entry    [ ns 2B BE ][ slot 0x1nnn ][ index fields ][ pkey ]  value = includes TLV
+fixed face      [ ns 2B BE ][ slot 0x00–0x0F ]                             value = TLV payload (primary)
+counting family [ ns 2B BE ][ slot 0x1nnn ][ index fields ][ pkey ]        value = includes TLV (declared index)
 ```
 
-The discriminator = the 2-byte namespace + the 2-byte slot: the ns segment
-scopes the whole collection, and the slot's segment number (high 4 bits)
-structurally dispatches entry kinds **inside** the collection segment. The
-full key layout lives in [key layout](key-layout.md); this page expands only
-the slot level. `#[ok_ns]` keeps its cleanest semantics — one number per
-collection, the collection's ns allocation fully decoupled from the number
-of derived entries (ADR-0005).
+The discriminator = the 2-byte namespace + the slot: the ns segment scopes
+the whole collection, and the slot's first byte either delimits the slot
+(high nibble 0 — a fixed face, one number per face) or carries a family
+number in its high nibble with a 12-bit counter in the rest. The full key
+layout lives in [key layout](key-layout.md); this page expands only the slot
+level. `#[ok_ns]` keeps its cleanest semantics — one number per collection,
+the collection's ns allocation fully decoupled from the number of derived
+entries (ADR-0005).
 
 ## Slot allocation
 
-`SLOT` is a compile-time constant: the segment is fixed (index = 0x1), the
-low 12-bit counter is allocated by the **declaration order** of
-`#[ok_index]` on the document struct: first = `0x1001`, second = `0x1002`,
-… The primary occupies `0x0000` (`PRIMARY_SLOT`).
+`SLOT` is a compile-time constant. A fixed face's slot is its one byte
+(primary = `0x00`, `PRIMARY_SLOT`; the dictionary directions `0x02`/`0x03`;
+the graph's faces `0x04`–`0x08`). A counting family's slot is its family
+number plus a counter allocated by **declaration order** — the declared-index
+family is `0x1`, so the first `#[ok_index]` is `0x1001`, the second `0x1002`, …
 
 ```text
 #[ok_ns(9)]
@@ -38,19 +43,21 @@ struct User { ... }
 #[ok_index(by_b ...)]   →  SLOT=0x1002, entry head = [0,9,0x10,0x02]
 ```
 
-Reduces live in segment 0x2, junctions in segment 0x3 — each with its own
+Reduces live in family 0x2, junctions in family 0x3 — each with its own
 independent counter (ADR-0016 removed the old coupling where reduce
 continued the index counter). Cross-collection isolation is guaranteed by
 the manual ns dictionary (ADR-0002); the slot only isolates **within** a
-collection. The per-collection cap is 4096 indexes (12-bit counter) —
-overflow is a compile-time fact (literal overflow), never a runtime risk.
+collection. The per-collection cap is 4095 indexes, 4095 reduces and 2048
+junction discriminators (a 12-bit counter with 0 reserved) — overflow is a
+compile-time fact (literal overflow), never a runtime risk.
 
 ## What compiles to constants
 
 The generic parameter `I: KvIndex` gives the scan path three pieces of
 static information at compile time, zero runtime lookup:
 
-- `SLOT`: bytes 3–4 of the scan prefix (the `[ns 2B][slot 2B]` header);
+- `SLOT`: for a counting family, bytes 3–4 of the scan prefix (the
+  `[ns 2B][slot 2B]` head); a fixed face occupies byte 3 only;
 - the index-field segment width: `encode_named` encodes payload fields
   big-endian in declaration order, widths determined by
   `KeyEncode`/field-type arithmetic;
@@ -102,3 +109,14 @@ entry kinds promoted from a numbering convention to structural dispatch
 (4-bit segment), counters widened to 4096 per segment; junctions landed in
 segment 0x3 (two-ns residency, ADR-0015), superseding ADR-0011's 14/15
 forward/reverse slot pair.
+
+2026-10-17: the widening was paid back where nothing needed it (ADR-0030).
+Nine of the twelve slots in use are a single face — primary, dynamic
+segment, both dictionary directions, the graph's five — and their counter
+was constant. Fixed faces became one byte with their own numbers (0x00–0x08)
+and the segment table gave way to a two-shape layout: fixed face (1 byte) or
+counting family (2 bytes, 12-bit counter, numbers unchanged — indexes and
+reduces still start at 0x1001/0x2001, junctions still 0x3nnn). The
+per-collection caps are 4095 indexes / 4095 reduces / 2048 junction
+discriminators, and the earlier 4096 wording was one too many (the counter's
+0 is reserved).

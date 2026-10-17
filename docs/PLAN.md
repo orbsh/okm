@@ -747,6 +747,23 @@ Unchanged: primary payload layout `[version][hot_len][hot][cold TLV]`
       slatedb_backend.rs prefix scans, integration hex locks, ADR-0001
       superseded. Edge key bytes changed — dev stage, no stored data.
 
+## Slot shapes: fixed face / counting family (ADR-0030, decided 2026-10-17)
+
+- [x] Design recorded (ADR-0030): a family that is a single face — primary,
+      dynamic segment, both dictionary directions, the graph's five — gets
+      its own 1-byte slot number (0x00–0x08); the counting families
+      (declared index 0x1 / reduce 0x2 / junction 0x3) keep the 2-byte slot,
+      the 12-bit counter and their numbers unchanged. Width is decided by the
+      first byte's high nibble, so a family-prefix scan stays exact without
+      consulting a table (the rejected alternative was a flat 1-byte slot with
+      level-1 ranges: a range split presupposes each family's growth ratio).
+- [ ] Implement the renumbering in code: slot constants become a fixed face
+      number or a family + counter, head assembly and pkey tail slicing
+      dispatch on the family constant, hex locks / SlotMap / bindings follow.
+      Caps stay 4095 indexes, 4095 reduces, 2048 junction discriminators.
+      Pre-release window — the store is rebuilt (derived entries rebuild from
+      documents; the dynamic segment and the dictionaries ride the rebuild).
+
 
 ## Embedded documents (2026-09-17, shipped)
 
