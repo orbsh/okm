@@ -32,8 +32,10 @@ fn codec<E: std::fmt::Display>(e: E) -> String {
 pub(crate) type EngineOp = (Vec<u8>, Option<Vec<u8>>);
 
 /// A runtime-declared table: schema + access methods + a namespaced
-/// slot of storage. `ns` MUST be unique within the store instance (the
-/// two-instance data/meta model guarantees that across planes).
+/// slot of storage. `ns` MUST be unique within the store instance —
+/// one keyspace, one ns dictionary. Keeping allocations apart is the
+/// deployment's duty (aura reserves the framework bands and allocates
+/// booth types above them, ADR-0040), never a runtime check.
 pub struct DynamicCollection<S: VirtualStorage> {
     pub(crate) store: S,
     pub(crate) schema: CollectionSchema,
