@@ -171,7 +171,7 @@ slot 16+    indexes and reduces (declaration order), [ns][slot][...]
 
 *(Update 2026-10-17: this table is the flat pre-ADR-0016 allocation, kept
 as the decision's record. Current numbering: ADR-0030 — primary 0x00,
-dynamic segment 0x01, dictionary 0x02/0x03, graph faces 0x04–0x08,
+dynamic segment 0x01, dictionary 0x02/0x03, graph faces 0x06–0x0A,
 declared indexes 0x1nnn, reduces 0x2nnn, junctions 0x3nnn.)*
 
 Fixed roles grow upward from 0; edges sit at the top (14/15) and grow

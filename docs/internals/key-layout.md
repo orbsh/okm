@@ -57,7 +57,7 @@ counting family   first byte high nibble != 0   slot = 2 bytes   [ns][0x1n][nn]
                                                                  counter = (n << 8) | nn
 ```
 
-**Fixed faces** (1 byte, 16 numbers, 9 in use) — a family that is a single
+**Fixed faces** (1 byte, 16 numbers, 11 in use) — a family that is a single
 face, with nothing to enumerate. Big-endian is why the high nibble leads,
 and why the rule holds: 0x00–0x0F can never equal a counting family's first
 byte (≥ 0x10).
@@ -67,12 +67,17 @@ byte (≥ 0x10).
 0x01  obj dynamic segment      [ns][0x01][pkey]                  value = nTLV frames
 0x02  field-name dictionary    [ns][0x02][field-id]              → name
 0x03  field-name dictionary    [ns][0x03][name]                  → field-id
-0x04  graph kind index         [ns][0x04][kind_id][edge_id]
-0x05  graph out                [ns][0x05][src NodeRef][edge_id]
-0x06  graph in                 [ns][0x06][dst NodeRef][edge_id]
-0x07  graph kind+out           [ns][0x07][kind_id][src ref][edge_id]
-0x08  graph kind+in            [ns][0x08][kind_id][dst ref][edge_id]
-0x09–0x0F  free for future fixed faces
+0x09  graph predicate dict     [ns][0x09][predicate_id]         → name
+0x0A  graph predicate dict     [ns][0x0A][name]                 → predicate_id
+0x06  graph predicate index    [ns][0x06][predicate_id][edge_id]
+0x07  graph out                [ns][0x07][src NodeRef][edge_id]
+0x08  graph in                 [ns][0x08][dst NodeRef][edge_id]
+0x09  graph predicate+out      [ns][0x09][predicate_id][src ref][edge_id]
+0x0A  graph predicate+in       [ns][0x0A][predicate_id][dst ref][edge_id]
+0x0B–0x0F  free for future fixed faces
+(rows are grouped by ROLE: the two vocabularies first, then the graph faces
+that read their ids — a dictionary leads the faces it serves; the NUMBERS
+are the mechanism.)
 ```
 
 **Counting families** (2 bytes, 12-bit counter, numbers unchanged) — a family
@@ -91,7 +96,7 @@ The width rule is a fact about the byte (`b & 0xF0 == 0` reads one slot byte,
 anything else reads two), not a lookup in a maintained table — the same
 posture as the ns escape byte below and the self-describing endpoint
 references (ADR-0017 §2). A family-prefix scan is therefore exact without
-consulting anything: `[ns][0x05]` cannot match a counting family, and
+consulting anything: `[ns][0x07]` cannot match a counting family, and
 `[ns][0x1n][nn]` cannot match a fixed face.
 
 Counting capacity is 4096 per family: declared indexes and reduces occupy
@@ -149,5 +154,7 @@ reduce entry  [ ns 2B ][ 0x2nnn ][ group seg ]   value = acc encoding
 
 For scans, the prefixes inside one ns segment enumerate everything derived
 for this document: fixed faces 0x00–0x03 (primary, dynamic segment, both
-dictionary directions), then counting families 0x1 indexes, 0x2 reduces, 0x3
-junctions. Mechanism in [reduce mechanism](reduce-mechanism.md).
+field-name dictionary directions), then counting families 0x1 indexes, 0x2
+reduces, 0x3 junctions. A graph (edge collection) adds its own fixed faces:
+the predicate dictionary 0x04/0x05 and 0x06–0x0A (predicate index, out/in
+edges, predicate±endpoint). Mechanism in [reduce mechanism](reduce-mechanism.md).

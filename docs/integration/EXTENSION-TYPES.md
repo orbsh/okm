@@ -119,7 +119,7 @@ Approximate counting (UV, hot terms) should prefer the degradation to
 `okm-ngram` / `okm-vector` / `okm-graph` share three constraints:
 
 1. **Zero storage responsibility** — no private table structures, no
-   bypassing `KvIndex`/`EdgeEncode`; all data flows through declared
+   bypassing `KvIndex`/`JunctionEncode`; all data flows through declared
    entries.
 2. **Replaceable algorithms** — the crates ship minimal working recipes
    (n-gram + BM25, bucket scan + rerank, LP + PageRank); heavier

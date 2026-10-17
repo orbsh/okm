@@ -86,7 +86,7 @@ Neither carrier persists its schema. `DynamicCollection` holds the
 with; the static `Collection` holds the derive's compile-time tables. The
 only declaration-flavoured bytes OKM ever puts in the keyspace are name
 vocabularies — the field-name dictionary (fixed faces 0x02/0x03, ADR-0012)
-and a graph's PREDICATE dictionary (its own 0x09/0x0A, ADR-0017 §3) — and
+and a graph's PREDICATE dictionary (its own 0x04/0x05, ADR-0017 §3) — and
 those record FACTS (names that were actually written, first-seen
 allocation), not declarations. Nothing recovers key widths,
 field offsets, cold tags, hot/cold placement, defaults or the `SlotMap`

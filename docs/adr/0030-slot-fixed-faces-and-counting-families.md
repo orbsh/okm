@@ -17,7 +17,9 @@ capacity headroom: 4096 per segment, declared-index capacity 240 → 4096.
 
 Measured against its consumers, of the twelve slots in use **nine are a
 single face**: the primary, the obj dynamic segment, both directions of
-the field-name dictionary, and the graph's five faces. Their counter is
+the field-name dictionary, and the graph's five faces (update 2026-10-17:
+the graph's predicate dictionary added two more fixed faces — 0x04/0x05 —
+so eleven are single faces today). Their counter is
 constant — 0/1/2/3 for the document-self bucket, 1 for the graph's faces.
 It carries no information and costs one byte on every such key.
 
@@ -28,7 +30,7 @@ the five graph faces each got a whole segment (`0x4001`…`0x8001`, counter
 pinned at 1). One face, one number would be the uniform rule.
 
 The entries paying for it are the most numerous in the store: the primary
-(one per document, one per edge) and the graph's traversal faces (0x5–0x8,
+(one per document, one per edge) and the graph's traversal faces (0x07–0x0A,
 thousands per edge collection). ADR-0017 §2 priced one byte on a reference
 at ~5% and took it seriously; here the byte sits on every primary key and
 every traversal entry.
@@ -65,6 +67,9 @@ In binary, the twelve slots in use, before → after:
 ```
 
 The right-hand nine rows read 1 byte: their high nibble is the delimiter.
+(Update 2026-10-17: the graph's faces then moved again — 0x06–0x0A — and its
+predicate dictionary took 0x04/0x05, ADR-0017 §3. The nine MIGRATED faces
+below are the mapping record; the allocation today is the table in §2.)
 The three counting rows keep today's bytes exactly.
 
 In the implementation the width follows from the slot's **value**: a slot
@@ -81,17 +86,24 @@ assembles a key writes a slot the same way.
 0x01  obj dynamic segment      [ns][0x01][pkey]        value = nTLV frames
 0x02  field-name dictionary    [ns][0x02][field-id]    → name
 0x03  field-name dictionary    [ns][0x03][name]        → field-id
-0x04  graph kind index         [ns][0x04][kind_id][edge_id]
-0x05  graph out                [ns][0x05][src NodeRef][edge_id]
-0x06  graph in                 [ns][0x06][dst NodeRef][edge_id]
-0x07  graph kind+out           [ns][0x07][kind_id][src ref][edge_id]
-0x08  graph kind+in            [ns][0x08][kind_id][dst ref][edge_id]
-0x09–0x0F                      free for future fixed faces
+0x09  graph predicate dict     [ns][0x09][predicate_id]  → name
+0x0A  graph predicate dict     [ns][0x0A][name]          → predicate_id
+0x06  graph predicate index    [ns][0x06][predicate_id][edge_id]
+0x07  graph out                [ns][0x07][src NodeRef][edge_id]
+0x08  graph in                 [ns][0x08][dst NodeRef][edge_id]
+0x09  graph predicate+out      [ns][0x09][predicate_id][src ref][edge_id]
+0x0A  graph predicate+in       [ns][0x0A][predicate_id][dst ref][edge_id]
+0x0B–0x0F                      free for future fixed faces
+(Update 2026-10-17: rows are grouped by ROLE — a vocabulary precedes the
+faces that read its ids; the NUMBERS are the mechanism.)
 ```
 
-The graph's kind dictionary reuses 0x02/0x03 (dictionaries are
-per-collection); the graph's declared attribute faces are ordinary
-declared indexes, family 0x1, in the edge collection's own ns.
+**Update 2026-10-17: the graph's PREDICATE dictionary holds its own pair
+(0x04/0x05).** A graph's predicate vocabulary is no longer the payload's
+field-name dictionary (0x02/0x03): listing a graph's predicates is one
+prefix scan of 0x04, and two allocating caches can no longer hand one id
+to two names (ADR-0017 §3). The graph's declared attribute faces are
+ordinary declared indexes, family 0x1, in the edge collection's own ns.
 
 ### 3. The counting families (2 bytes, 12-bit counter, numbers unchanged)
 
@@ -111,7 +123,7 @@ discriminators, exactly as today.
 
 `b & 0xF0 == 0` reads one slot byte, anything else reads two. The two
 spaces cannot overlap on the first byte (0x00–0x0F versus ≥0x10), so a
-family-prefix scan is exact without consulting the table: `[ns][0x05]`
+family-prefix scan is exact without consulting the table: `[ns][0x07]`
 cannot match a counting family, `[ns][0x1n][nn]` cannot match a fixed
 face. Being a property of the byte rather than of a maintained list is the
 same posture as the ns escape byte (`0xFF`, ADR-0012) and the self-
@@ -141,7 +153,7 @@ byte, no counter, nothing to enumerate.
   migration.
 - **Moving the delimiter to widen the fixed-face space** (e.g. first byte
   < 0x80 → 1 byte, giving 128 fixed faces and 8 counting families). Not
-  taken today: 9 of 16 fixed faces and 3 of 15 counting families are in
+  taken today: 11 of 16 fixed faces and 3 of 15 counting families are in
   use. Recorded as the growth path — `k` is the only knob: top `k` bits
   zero → `2^(8−k)` fixed faces, `2^k − 1` counting families.
 - **A 3-byte slot for counting families** (family byte + full u16 counter,
@@ -153,7 +165,7 @@ byte, no counter, nothing to enumerate.
 - **A fixed face carries no counter.** If a family that is one face today
   ever needs instances, it becomes a counting family (take a segment from
   0x4–0x0F) — it does not reuse its fixed-face number for sub-kinds. New
-  single-face kinds take the next free fixed-face number (7 left).
+  single-face kinds take the next free fixed-face number (5 left).
 - **One counter width, 12 bits.** There is no per-family counter width;
   the family byte's low nibble belongs to the counter.
 - **Cap wording corrected**: declared indexes and reduces are **4095 per
@@ -168,14 +180,14 @@ byte, no counter, nothing to enumerate.
 - **Key-format break, pre-release.** Primary and the graph's faces lose one
   byte; the dynamic segment and both dictionaries are renumbered
   (0x0001→0x01, 0x0002/0x0003→0x02/0x03); the graph's faces drop their
-  counter (0x4001–0x8001 → 0x04–0x08). Index, reduce and junction entries
+  counter (0x4001–0x8001 → 0x06–0x0A). Index, reduce and junction entries
   keep their exact bytes — including the junction byte assertions in
   MODELING and the slot values the bindings pass (0x1001/0x1002/0x2001).
   No external consumer exists (PLAN), so a rebuild covers it: derived
   entries rebuild from documents, the dynamic segment and the dictionaries
   ride the same rebuild.
 - `SlotMap` (schema export) keeps its `u16` fields — the values are now
-  0x00–0x08 for the fixed faces and 0x1nnn / 0x2nnn / 0x3nnn for the
+  0x00–0x0A for the fixed faces and 0x1nnn / 0x2nnn / 0x3nnn for the
   counting families, with the width implied by the value. The bindings'
   slot arguments are unchanged.
 - ADR-0016's segment table is superseded; its head-width decision survives

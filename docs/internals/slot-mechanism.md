@@ -32,7 +32,7 @@ entries (ADR-0005).
 
 `SLOT` is a compile-time constant. A fixed face's slot is its one byte
 (primary = `0x00`, `PRIMARY_SLOT`; the dictionary directions `0x02`/`0x03`;
-the graph's faces `0x04`–`0x08`). A counting family's slot is its family
+the graph's faces `0x06`–`0x0A`). A counting family's slot is its family
 number plus a counter allocated by **declaration order** — the declared-index
 family is `0x1`, so the first `#[ok_index]` is `0x1001`, the second `0x1002`, …
 
@@ -111,9 +111,10 @@ segment 0x3 (two-ns residency, ADR-0015), superseding ADR-0011's 14/15
 forward/reverse slot pair.
 
 2026-10-17: the widening was paid back where nothing needed it (ADR-0030).
-Nine of the twelve slots in use are a single face — primary, dynamic
+Nine of the twelve slots in use were a single face at landing (eleven today,
+update 2026-10-17: the graph gained a predicate dictionary) — primary, dynamic
 segment, both dictionary directions, the graph's five — and their counter
-was constant. Fixed faces became one byte with their own numbers (0x00–0x08)
+was constant. Fixed faces became one byte with their own numbers (0x00–0x0A)
 and the segment table gave way to a two-shape layout: fixed face (1 byte) or
 counting family (2 bytes, 12-bit counter, numbers unchanged — indexes and
 reduces still start at 0x1001/0x2001, junctions still 0x3nnn). The

@@ -94,7 +94,7 @@ Every key shares one header discipline:
   document (`#[ok_ns]`), full 16-bit space shared by all entry kinds.
 - **slot**: the first byte decides its own width. High nibble 0 → one
   byte, a fixed face (primary 0x00, dynamic segment 0x01, the two
-  dictionary directions 0x02/0x03, the graph's five faces 0x04–0x08).
+  dictionary directions 0x02/0x03, the graph's five faces 0x06–0x0A).
   Anything else → two bytes: a family number in the high nibble plus a
   12-bit counter (declared indexes 0x1nnn, reduces 0x2nnn, junctions
   0x3nnn). Delimiting on the byte's own bit, not on a table, is what
