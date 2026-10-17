@@ -20,7 +20,7 @@
 //! the cache degrades to connection lifetime (reload on reconnect) —
 //! acceptable for a vocabulary that only grows.
 
-use crate::model::index::{DICT_ID_SLOT, DICT_NAME_SLOT};
+use crate::model::index::{DICT_ID_SLOT, DICT_NAME_SLOT, write_slot};
 use crate::engine::storage::{scan_suffix_kv, MemBatch, VirtualStorage};
 use std::collections::HashMap;
 
@@ -55,11 +55,11 @@ impl DictCache {
         // dictionary entries are harmless — names are append-only).
         let mut batch = MemBatch::default();
         let mut id_key = header.to_vec();
-        id_key.extend_from_slice(&DICT_ID_SLOT.to_be_bytes());
+        write_slot(&mut id_key, DICT_ID_SLOT);
         id_key.extend_from_slice(&id.to_be_bytes());
         batch.put(id_key, name.as_bytes().to_vec());
         let mut name_key = header.to_vec();
-        name_key.extend_from_slice(&DICT_NAME_SLOT.to_be_bytes());
+        write_slot(&mut name_key, DICT_NAME_SLOT);
         name_key.extend_from_slice(name.as_bytes());
         batch.put(name_key, id.to_be_bytes().to_vec());
         let _ = store.commit_batch(batch);
@@ -85,7 +85,7 @@ impl DictCache {
         }
         // Direct probe before giving up (shared-engine catch-up).
         let mut key = header.to_vec();
-        key.extend_from_slice(&DICT_ID_SLOT.to_be_bytes());
+        write_slot(&mut key, DICT_ID_SLOT);
         key.extend_from_slice(&id.to_be_bytes());
         let name = store.get(&key)?;
         let name = String::from_utf8(name).ok()?;
@@ -114,9 +114,9 @@ impl DictCache {
         if self.loaded {
             return;
         }
-        // slot 2: [header][2][id u16 BE] → name
+        // fixed face 0x02: [header][0x02][id u16 BE] → name
         let mut p2 = header.to_vec();
-        p2.extend_from_slice(&DICT_ID_SLOT.to_be_bytes());
+        write_slot(&mut p2, DICT_ID_SLOT);
         for (suffix, name) in scan_suffix_kv(store, &p2) {
             if suffix.len() != 2 {
                 continue;
@@ -126,9 +126,9 @@ impl DictCache {
                 self.by_id.insert(id, n);
             }
         }
-        // slot 3 mirrors; also derives next_id (max + 1).
+        // fixed face 0x03 mirrors; also derives next_id (max + 1).
         let mut p3 = header.to_vec();
-        p3.extend_from_slice(&DICT_NAME_SLOT.to_be_bytes());
+        write_slot(&mut p3, DICT_NAME_SLOT);
         for (suffix, idv) in scan_suffix_kv(store, &p3) {
             if let Ok(n) = String::from_utf8(suffix)
                 && idv.len() == 2 {
@@ -161,11 +161,11 @@ mod tests {
 
         // Both directions landed in the engine.
         let mut k2 = HEADER.to_vec();
-        k2.extend_from_slice(&DICT_ID_SLOT.to_be_bytes());
+        k2.extend_from_slice(&[DICT_ID_SLOT as u8]);
         k2.extend_from_slice(&0u16.to_be_bytes());
         assert_eq!(store.get(&k2).unwrap(), b"alpha");
         let mut k3 = HEADER.to_vec();
-        k3.extend_from_slice(&DICT_NAME_SLOT.to_be_bytes());
+        k3.extend_from_slice(&[DICT_NAME_SLOT as u8]);
         k3.extend_from_slice(b"beta");
         assert_eq!(store.get(&k3).unwrap(), &1u16.to_be_bytes());
     }
@@ -195,11 +195,11 @@ mod tests {
         // Directly seed an escaped-range name, then read it back.
         let mut batch = MemBatch::default();
         let mut k2 = HEADER.to_vec();
-        k2.extend_from_slice(&DICT_ID_SLOT.to_be_bytes());
+        k2.extend_from_slice(&[DICT_ID_SLOT as u8]);
         k2.extend_from_slice(&0x1234u16.to_be_bytes());
         batch.put(k2, b"big".to_vec());
         let mut k3 = HEADER.to_vec();
-        k3.extend_from_slice(&DICT_NAME_SLOT.to_be_bytes());
+        k3.extend_from_slice(&[DICT_NAME_SLOT as u8]);
         k3.extend_from_slice(b"big");
         batch.put(k3, 0x1234u16.to_be_bytes().to_vec());
         let _ = store.commit_batch(batch);

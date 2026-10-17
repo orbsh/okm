@@ -161,7 +161,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
                 /// Entry key for one edge fact: `[ns 2B][slot][field BE][edge_id BE]`.
                 pub fn entry_key(ns_prefix: &[u8], value: &#ty, edge_id: u64) -> Vec<u8> {
                     let mut k = ns_prefix.to_vec();
-                    k.extend_from_slice(&Self::SLOT.to_be_bytes());
+                    ::okm_core::write_slot(&mut k, Self::SLOT);
                     k.extend_from_slice(&value.to_be_bytes());
                     k.extend_from_slice(&edge_id.to_be_bytes());
                     k
@@ -170,7 +170,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
                 /// after is edge ids of matching edges.
                 pub fn entry_prefix(ns_prefix: &[u8], value: &#ty) -> Vec<u8> {
                     let mut k = ns_prefix.to_vec();
-                    k.extend_from_slice(&Self::SLOT.to_be_bytes());
+                    ::okm_core::write_slot(&mut k, Self::SLOT);
                     k.extend_from_slice(&value.to_be_bytes());
                     k
                 }

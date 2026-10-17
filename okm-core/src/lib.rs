@@ -52,7 +52,7 @@ pub use engine::nest::{NestStorage, RemoteStore, VirtualHandle};
 pub use engine::wire_client::{WireClient, WireTransport};
 pub use okm_wire::{OpFrame, OpResponse};
 pub use model::field::{FieldDesc, FieldType};
-pub use model::index::{Document, IndexFuncResult, IndexFuncValues, KvIndex, PRIMARY_SLOT, scan_index, scan_index_exact};
+pub use model::index::{Document, IndexFuncResult, IndexFuncValues, KvIndex, PRIMARY_SLOT, scan_index, scan_index_exact, slot_len, write_slot};
 pub use model::key::{KeyEncode, PrefixKey};
 pub use subscribe::{ChannelCell, Event, Op};
 pub use model::document::Collection;

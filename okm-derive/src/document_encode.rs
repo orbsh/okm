@@ -314,7 +314,7 @@ fn emit_index_structs(schema: &DocumentSchema) -> TS2 {
                             ns_prefix.len() + 1 + __okm_seg.len() + Self::key_prefix_width(),
                         );
                         __okm_k.extend_from_slice(ns_prefix);
-                        __okm_k.extend_from_slice(&Self::SLOT.to_be_bytes());
+                        ::okm_core::write_slot(&mut __okm_k, Self::SLOT);
                         __okm_k.extend_from_slice(&__okm_seg);
                         __okm_k.extend_from_slice(&Self::key_prefix_bytes(key));
                         __okm_out.push((__okm_k, __okm_value.clone()));
@@ -1116,7 +1116,7 @@ fn emit_row_impl(schema: &DocumentSchema) -> TS2 {
                     for i in 0..self.#fid.keys.len() {
                         if self.#fid.values.get(i).map_or(true, |v| v.is_none()) {
                             let mut pkey = <#d_ty as ::okm_core::Document>::NS_PREFIX.to_vec();
-                            pkey.extend_from_slice(&::okm_core::PRIMARY_SLOT.to_be_bytes());
+                            ::okm_core::write_slot(&mut pkey, ::okm_core::PRIMARY_SLOT);
                             pkey.extend_from_slice(&self.#fid.keys[i].encode());
                             if let Some(payload) = store.get(&pkey) {
                                 let mut child = <#d_ty as ::okm_core::Document>::decode_payload(&payload);
@@ -1130,7 +1130,7 @@ fn emit_row_impl(schema: &DocumentSchema) -> TS2 {
                 quote! {
                     if self.#fid.value.is_none() {
                         let mut pkey = <#d_ty as ::okm_core::Document>::NS_PREFIX.to_vec();
-                        pkey.extend_from_slice(&::okm_core::PRIMARY_SLOT.to_be_bytes());
+                        ::okm_core::write_slot(&mut pkey, ::okm_core::PRIMARY_SLOT);
                         pkey.extend_from_slice(&self.#fid.key.encode());
                         if let Some(payload) = store.get(&pkey) {
                             let mut child = <#d_ty as ::okm_core::Document>::decode_payload(&payload);
@@ -1149,7 +1149,7 @@ fn emit_row_impl(schema: &DocumentSchema) -> TS2 {
                         if let Some(child) = child {
                             let raw = k.encode();
                             let mut pkey = <#d_ty as ::okm_core::Document>::NS_PREFIX.to_vec();
-                            pkey.extend_from_slice(&::okm_core::PRIMARY_SLOT.to_be_bytes());
+                            ::okm_core::write_slot(&mut pkey, ::okm_core::PRIMARY_SLOT);
                             pkey.extend_from_slice(&raw);
                             entries.push((pkey, child.encode_payload()));
                             let child_key = <#k_ty as ::okm_core::KeyEncode>::decode(&raw);
@@ -1164,7 +1164,7 @@ fn emit_row_impl(schema: &DocumentSchema) -> TS2 {
                     if let Some(child) = &self.#fid.value {
                         let raw = self.#fid.key.encode();
                         let mut pkey = <#d_ty as ::okm_core::Document>::NS_PREFIX.to_vec();
-                        pkey.extend_from_slice(&::okm_core::PRIMARY_SLOT.to_be_bytes());
+                        ::okm_core::write_slot(&mut pkey, ::okm_core::PRIMARY_SLOT);
                         pkey.extend_from_slice(&raw);
                         entries.push((pkey, child.encode_payload()));
                         let child_key = <#k_ty as ::okm_core::KeyEncode>::decode(&raw);
@@ -1181,7 +1181,7 @@ fn emit_row_impl(schema: &DocumentSchema) -> TS2 {
                 quote! {
                     for k in &self.#fid.keys {
                         let mut pkey = <#d_ty as ::okm_core::Document>::NS_PREFIX.to_vec();
-                        pkey.extend_from_slice(&::okm_core::PRIMARY_SLOT.to_be_bytes());
+                        ::okm_core::write_slot(&mut pkey, ::okm_core::PRIMARY_SLOT);
                         pkey.extend_from_slice(&k.encode());
                         keys.push(pkey);
                     }
@@ -1190,7 +1190,7 @@ fn emit_row_impl(schema: &DocumentSchema) -> TS2 {
                 quote! {
                     {
                         let mut pkey = <#d_ty as ::okm_core::Document>::NS_PREFIX.to_vec();
-                        pkey.extend_from_slice(&::okm_core::PRIMARY_SLOT.to_be_bytes());
+                        ::okm_core::write_slot(&mut pkey, ::okm_core::PRIMARY_SLOT);
                         pkey.extend_from_slice(&self.#fid.key.encode());
                         keys.push(pkey);
                     }

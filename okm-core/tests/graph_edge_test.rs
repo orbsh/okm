@@ -233,7 +233,11 @@ fn hex_lock_six_face_layout() {
     g.link(&fact, &attrs, 1).unwrap();
 
     let ns = 100u16.to_be_bytes();
-    let slot = |s: u16| s.to_be_bytes().to_vec();
+    let slot = |s: u16| {
+        let mut v = Vec::new();
+        okm_core::write_slot(&mut v, s);
+        v
+    };
     let id = 1u64.to_be_bytes().to_vec();
     let kid = 0u16.to_be_bytes().to_vec();
     let src = user(1).encode();
@@ -244,7 +248,8 @@ fn hex_lock_six_face_layout() {
     let key = |parts: &[Vec<u8>]| parts.concat();
 
     let mut primary = ns.to_vec();
-    primary.extend_from_slice(&PRIMARY_SLOT.to_be_bytes());
+    okm_core::write_slot(&mut primary, PRIMARY_SLOT);
+    assert_eq!(primary.len(), 3, "primary head = ns 2B + fixed face 0x00, one byte");
     primary.extend_from_slice(&id);
     let body = store.get(&primary).unwrap();
     // Edge body = [src][dst][kind_id][attrs] — attrs from the typed
@@ -261,20 +266,23 @@ fn hex_lock_six_face_layout() {
         .concat()
     );
 
-    assert!(store.get(&key(&[ns.to_vec(), slot(0x4001), kid.clone(), id.clone()])).is_some(), "kind index");
-    assert!(store.get(&key(&[ns.to_vec(), slot(0x5001), src.clone(), id.clone()])).is_some(), "out");
-    assert!(store.get(&key(&[ns.to_vec(), slot(0x6001), dst.clone(), id.clone()])).is_some(), "in");
+    // The graph's faces are fixed faces — one byte each (ADR-0030).
+    assert!(store.get(&key(&[ns.to_vec(), slot(0x04), kid.clone(), id.clone()])).is_some(), "kind index");
+    assert!(store.get(&key(&[ns.to_vec(), slot(0x05), src.clone(), id.clone()])).is_some(), "out");
+    assert!(store.get(&key(&[ns.to_vec(), slot(0x06), dst.clone(), id.clone()])).is_some(), "in");
     assert!(
-        store.get(&key(&[ns.to_vec(), slot(0x7001), kid.clone(), src.clone(), id.clone()])).is_some(),
+        store.get(&key(&[ns.to_vec(), slot(0x07), kid.clone(), src.clone(), id.clone()])).is_some(),
         "kind+out"
     );
-    assert!(store.get(&key(&[ns.to_vec(), slot(0x8001), kid, dst, id.clone()])).is_some(), "kind+in");
+    assert!(store.get(&key(&[ns.to_vec(), slot(0x08), kid, dst, id.clone()])).is_some(), "kind+in");
 
-    // Attribute face (0x1 segment, declaration order): since_year=2020.
+    // Attribute face (counting family 0x1, declaration order):
+    // since_year=2020 — two bytes, unlike the fixed faces above.
     let mut face = ns.to_vec();
-    face.extend_from_slice(&0x1001u16.to_be_bytes());
+    okm_core::write_slot(&mut face, 0x1001);
     face.extend_from_slice(&2020u16.to_be_bytes());
     face.extend_from_slice(&id);
+    assert_eq!(face.len(), 2 + 2 + 2 + 8);
     assert!(store.get(&face).is_some(), "declared-attribute face");
 }
 

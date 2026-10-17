@@ -114,9 +114,9 @@ pub trait Reduce: ReduceLogic {
     /// Full entry key `[ns 2B][slot 2B][group segment]`.
     fn entry_key(ns_prefix: &[u8], key: &<Self::Document as Document>::Key, document: &Self::Document) -> Vec<u8> {
         let g = Self::group_bytes(key, document);
-        let mut buf = Vec::with_capacity(ns_prefix.len() + 2 + g.len());
+        let mut buf = Vec::with_capacity(ns_prefix.len() + crate::model::index::slot_len(Self::SLOT) + g.len());
         buf.extend_from_slice(ns_prefix);
-        buf.extend_from_slice(&Self::SLOT.to_be_bytes());
+        crate::model::index::write_slot(&mut buf, Self::SLOT);
         buf.extend_from_slice(&g);
         buf
     }
@@ -134,14 +134,14 @@ pub fn reduce_get<S: VirtualStorage, A: Reduce>(
 }
 
 /// Scan every group of one reduce: full group segment + acc bytes.
-/// Prefix `[ns 2B][slot 1B]` — each suffix is the group segment.
+/// Prefix `[ns 2B][slot 2B]` — each suffix is the group segment.
 pub fn scan_reduces<S: VirtualStorage, A: Reduce>(
     store: &S,
     ns_prefix: &[u8],
 ) -> Vec<(Vec<u8>, A::Acc)> {
-    let mut prefix = Vec::with_capacity(ns_prefix.len() + 2);
+    let mut prefix = Vec::with_capacity(ns_prefix.len() + crate::model::index::slot_len(A::SLOT));
     prefix.extend_from_slice(ns_prefix);
-    prefix.extend_from_slice(&A::SLOT.to_be_bytes());
+    crate::model::index::write_slot(&mut prefix, A::SLOT);
     scan_suffix_kv(store, &prefix)
         .into_iter()
         .map(|(suffix, value)| (suffix, A::Acc::decode_acc(&value)))

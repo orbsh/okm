@@ -57,14 +57,14 @@ impl<S: VirtualStorage> Graph<S> {
 
     fn primary_key(&self, edge_id: u64) -> Vec<u8> {
         let mut k = self.ns.clone();
-        k.extend_from_slice(&PRIMARY_SLOT.to_be_bytes());
+        okm_core::write_slot(&mut k, PRIMARY_SLOT);
         k.extend_from_slice(&edge_id.to_be_bytes());
         k
     }
 
     fn face_key(&self, slot: u16, segments: &[&[u8]]) -> Vec<u8> {
         let mut k = self.ns.clone();
-        k.extend_from_slice(&slot.to_be_bytes());
+        okm_core::write_slot(&mut k, slot);
         for s in segments {
             k.extend_from_slice(s);
         }

@@ -38,7 +38,7 @@ impl DictMirror {
     pub fn load<S: VirtualStorage>(store: &S, ns: &[u8]) -> Self {
         let mut d = Self::default();
         let mut p2 = ns.to_vec();
-        p2.extend_from_slice(&DICT_ID_SLOT.to_be_bytes());
+        okm_core::write_slot(&mut p2, DICT_ID_SLOT);
         for (suffix, name) in scan_suffix_kv(store, &p2) {
             if suffix.len() != 2 {
                 continue;
@@ -49,7 +49,7 @@ impl DictMirror {
             }
         }
         let mut p3 = ns.to_vec();
-        p3.extend_from_slice(&DICT_NAME_SLOT.to_be_bytes());
+        okm_core::write_slot(&mut p3, DICT_NAME_SLOT);
         for (suffix, idv) in scan_suffix_kv(store, &p3) {
             if let Ok(n) = String::from_utf8(suffix)
                 && idv.len() == 2 {
@@ -114,7 +114,7 @@ pub struct PlannedFields {
 /// path (the typed model's fields_key is byte-identical).
 pub fn fields_key(ns: &[u8], pkey: &[u8]) -> Vec<u8> {
     let mut buf = ns.to_vec();
-    buf.extend_from_slice(&DYNAMIC_SLOT.to_be_bytes());
+    okm_core::write_slot(&mut buf, DYNAMIC_SLOT);
     buf.extend_from_slice(pkey);
     buf
 }
@@ -153,11 +153,11 @@ pub fn plan_put_fields(
             by_id.insert(id, name.to_string());
             written.push((name.to_string(), id));
             let mut id_key = ns.to_vec();
-            id_key.extend_from_slice(&DICT_ID_SLOT.to_be_bytes());
+            okm_core::write_slot(&mut id_key, DICT_ID_SLOT);
             id_key.extend_from_slice(&id.to_be_bytes());
             dict_ops.push((id_key, Some(name.as_bytes().to_vec())));
             let mut name_key = ns.to_vec();
-            name_key.extend_from_slice(&DICT_NAME_SLOT.to_be_bytes());
+            okm_core::write_slot(&mut name_key, DICT_NAME_SLOT);
             name_key.extend_from_slice(name.as_bytes());
             dict_ops.push((name_key, Some(id.to_be_bytes().to_vec())));
             id

@@ -757,12 +757,19 @@ Unchanged: primary payload layout `[version][hot_len][hot][cold TLV]`
       first byte's high nibble, so a family-prefix scan stays exact without
       consulting a table (the rejected alternative was a flat 1-byte slot with
       level-1 ranges: a range split presupposes each family's growth ratio).
-- [ ] Implement the renumbering in code: slot constants become a fixed face
-      number or a family + counter, head assembly and pkey tail slicing
-      dispatch on the family constant, hex locks / SlotMap / bindings follow.
-      Caps stay 4095 indexes, 4095 reduces, 2048 junction discriminators.
-      Pre-release window — the store is rebuilt (derived entries rebuild from
-      documents; the dynamic segment and the dictionaries ride the rebuild).
+- [x] Implement the renumbering in code (LANDED 2026-10-17): slot constants
+      became fixed faces / counting families in `okm-core::model::index`,
+      with `write_slot` / `slot_len` as the single width-aware writer every
+      key-assembly site calls (okm-core: document / obj_dict / reduce /
+      junction / graph; okm-dynamic: collection / plan_fields / index /
+      reduce / graph; the derive emits `::okm_core::write_slot`). Hex locks
+      updated (graph faces one byte, primary head 3 bytes, dynamic face
+      table), the Steel binding's primary-width assertion follows, and the
+      byte-equality drift locks between the typed and dynamic writers caught
+      the one writer that was missed. Caps stay 4095 indexes, 4095 reduces,
+      2048 junction discriminators. Pre-release window — the store is
+      rebuilt (derived entries rebuild from documents; the dynamic segment
+      and the dictionaries ride the rebuild).
 
 
 ## Embedded documents (2026-09-17, shipped)

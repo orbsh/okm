@@ -150,17 +150,18 @@ fn remote_scan_range_iter_is_lazy_paged() {
     }
     wait_for(|| t.get(&UserKey { id: 39 }).is_some(), "writes to land");
 
-    // Sender-side bounds: `[ns 2B][slot 2B BE][pkey 8B]` (User declares
-    // no partition, so no 0xFF escape). The hosted prefix `[0x00, 0x11]`
-    // never appears here — the receiver prepends it and strips it again
-    // on the answer; the sender's key space is prefix-relative (ADR-0010).
+    // Sender-side bounds: `[ns 2B][fixed face 0x00][pkey 8B]` (User
+    // declares no partition, so no 0xFF escape). The hosted prefix
+    // `[0x00, 0x11]` never appears here — the receiver prepends it and
+    // strips it again on the answer; the sender's key space is
+    // prefix-relative (ADR-0010).
     let begin = {
-        let mut b = vec![0x00, 0x07, 0x00, 0x00];
+        let mut b = vec![0x00, 0x07, 0x00];
         b.extend_from_slice(&0u64.to_be_bytes());
         b
     };
     let end = {
-        let mut e = vec![0x00, 0x07, 0x00, 0x00, 0xFF];
+        let mut e = vec![0x00, 0x07, 0x00, 0xFF];
         e.extend_from_slice(&u64::MAX.to_be_bytes());
         e
     };

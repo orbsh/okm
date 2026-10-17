@@ -50,10 +50,9 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         buf
     }
 
-    /// Primary key entry (slot 0): `[0xFF][part 1B] (if declared)[ns 2B][slot 0]
-    /// [key payload]`, value = TLV payload of the document. The slot byte keeps
-    /// the header uniform with index entries (`[ns 2B][slot 1B]`); slot 0 =
-    /// primary, per ADR-0005. The partition segment precedes the ns header
+    /// Primary key entry (fixed face 0x00, one byte):
+    /// `[0xFF][part 1B] (if declared)[ns 2B][0x00][key payload]`, value = the
+    /// document's TLV payload. The partition segment precedes the ns header
     /// (ADR-0014 §5): workload isolation lives outside ownership scope —
     /// a partition groups tables by compaction profile, a namespace groups
     /// them by owner; the 0xFF escape byte makes partitioned and
@@ -61,7 +60,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     /// declares no `#[ok_partition]`.
     pub fn primary_key(&self, key: &K) -> Vec<u8> {
         let mut buf = self.header();
-        buf.extend_from_slice(&crate::model::index::PRIMARY_SLOT.to_be_bytes());
+        crate::model::index::write_slot(&mut buf, crate::model::index::PRIMARY_SLOT);
         buf.extend_from_slice(&key.encode());
         buf
     }
@@ -390,7 +389,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
                     // slot-0 primary entry), inlined because the
                     // closure cannot re-enter `self`.
                     let mut k = header.clone();
-                    k.extend_from_slice(&crate::model::index::PRIMARY_SLOT.to_be_bytes());
+                    crate::model::index::write_slot(&mut k, crate::model::index::PRIMARY_SLOT);
                     k.extend_from_slice(&decoded.encode());
                     let v = store.get(&k);
                     v.map(|v| {
@@ -445,7 +444,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     /// on import via put).
     pub fn scan_documents_raw(&self) -> Vec<(Vec<u8>, Vec<u8>)> {
         let mut prefix = self.header();
-        prefix.extend_from_slice(&crate::model::index::PRIMARY_SLOT.to_be_bytes());
+        crate::model::index::write_slot(&mut prefix, crate::model::index::PRIMARY_SLOT);
         self.store
             .scan_suffix(&prefix)
             .into_iter()
@@ -470,7 +469,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         let mut removed = 0;
         for slot in R::DEPRECATED_SLOTS {
             let mut p = self.header();
-            p.extend_from_slice(&slot.to_be_bytes());
+            crate::model::index::write_slot(&mut p, *slot);
             for sfx in self.store.scan_suffix(&p) {
                 let mut full = p.clone();
                 full.extend_from_slice(&sfx);
@@ -483,7 +482,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
 
     pub fn scan_keys(&self) -> Vec<K> {
         let mut p = self.header();
-        p.extend_from_slice(&crate::model::index::PRIMARY_SLOT.to_be_bytes());
+        crate::model::index::write_slot(&mut p, crate::model::index::PRIMARY_SLOT);
         self.store
             .scan_suffix(&p)
             .iter()
@@ -501,12 +500,13 @@ use crate::model::obj_dict::DictCache;
 use crate::model::obj_dynamic::DynamicValue;
 
 impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> {
-    /// Dynamic-segment key: `[header][DYNAMIC_SLOT][key payload]` — the
-    /// per-document extension entry next to the primary (slot 0), same
-    /// skeleton as an index entry with no field segment (ADR-0012).
+    /// Dynamic-segment key: `[header][0x01][key payload]` — the per-document
+    /// extension entry next to the primary (fixed face 0x00), same skeleton as
+    /// an index entry with no field segment (ADR-0012; fixed face per
+    /// ADR-0030).
     fn fields_key(&self, key: &K) -> Vec<u8> {
         let mut buf = self.header();
-        buf.extend_from_slice(&crate::model::index::DYNAMIC_SLOT.to_be_bytes());
+        crate::model::index::write_slot(&mut buf, crate::model::index::DYNAMIC_SLOT);
         buf.extend_from_slice(&key.encode());
         buf
     }

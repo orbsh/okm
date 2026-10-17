@@ -335,7 +335,7 @@ fn plan_replay_equals_embedded_fields_across_two_writes() {
     assert_eq!(p2.new_dict_entries, Vec::new(), "note was already allocated by the first plan");
 
     // Embedded side on a fresh store: the same two writes.
-    let mut t = dynamic_table(TestStore::slatedb_mem()); // same schema ns as above? check below
+    let t = dynamic_table(TestStore::slatedb_mem()); // same schema ns as above? check below
     // dynamic_table uses its own ns; build a matching collection:
     drop(t);
     let mut t = okm_dynamic::DynamicCollection::new(TestStore::slatedb_mem(), ns, schema(), Vec::new());

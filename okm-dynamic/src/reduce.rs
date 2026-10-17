@@ -144,7 +144,7 @@ impl BoundReduce {
         let g = self.group_bytes(schema, key, document)?;
         let mut buf = Vec::with_capacity(ns.len() + 2 + g.len());
         buf.extend_from_slice(ns);
-        buf.extend_from_slice(&self.spec.slot.to_be_bytes());
+        okm_core::write_slot(&mut buf, self.spec.slot);
         buf.extend_from_slice(&g);
         Ok(buf)
     }
@@ -167,7 +167,7 @@ pub fn scan_reduces<S: VirtualStorage>(
 ) -> Vec<(Vec<u8>, Vec<u8>)> {
     let mut prefix = Vec::with_capacity(ns.len() + 2);
     prefix.extend_from_slice(ns);
-    prefix.extend_from_slice(&slot.to_be_bytes());
+    okm_core::write_slot(&mut prefix, slot);
     okm_core::storage::scan_suffix_kv(store, &prefix)
         .into_iter()
         .collect()
