@@ -138,13 +138,15 @@ fn byte_equality_with_fixed_ontology_form() {
     // graph_edge_test pins.
     let _ = collect(&store_dyn, &prefix);
 
+    // Fixed faces (ADR-0030): one byte each, no counter.
+    let face = |s: u8| [ns.to_be_bytes().as_slice(), &[s]].concat();
     let faces: Vec<Vec<u8>> = vec![
-        [ns.to_be_bytes().as_slice(), &0x0000u16.to_be_bytes()].concat(),
-        [ns.to_be_bytes().as_slice(), &0x4001u16.to_be_bytes()].concat(),
-        [ns.to_be_bytes().as_slice(), &0x5001u16.to_be_bytes()].concat(),
-        [ns.to_be_bytes().as_slice(), &0x6001u16.to_be_bytes()].concat(),
-        [ns.to_be_bytes().as_slice(), &0x7001u16.to_be_bytes()].concat(),
-        [ns.to_be_bytes().as_slice(), &0x8001u16.to_be_bytes()].concat(),
+        face(0x00),
+        face(0x04),
+        face(0x05),
+        face(0x06),
+        face(0x07),
+        face(0x08),
     ];
     for face in faces {
         let mut a = collect(&store_dyn, &face);

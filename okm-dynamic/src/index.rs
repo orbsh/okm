@@ -344,7 +344,7 @@ pub fn index_entries(
         for fb in &segments {
             let mut ek = Vec::with_capacity(ns.len() + 2 + fb.len() + pkey.len());
             ek.extend_from_slice(ns);
-            ek.extend_from_slice(&idx.slot.to_be_bytes());
+            okm_core::write_slot(&mut ek, idx.slot);
             ek.extend_from_slice(fb);
             ek.extend_from_slice(pkey);
             out.push((ek, ev.clone()));
@@ -393,7 +393,7 @@ pub fn path_index_entries(
         for fb in segments {
             let mut ek = Vec::with_capacity(ns.len() + 2 + fb.len() + pkey.len());
             ek.extend_from_slice(ns);
-            ek.extend_from_slice(&idx.slot.to_be_bytes());
+            okm_core::write_slot(&mut ek, idx.slot);
             ek.extend_from_slice(&fb);
             ek.extend_from_slice(pkey);
             out.push((ek, Vec::new()));
@@ -512,7 +512,7 @@ fn scan_access_method_filtered<S: VirtualStorage>(
     }
     let mut p = Vec::with_capacity(ns.len() + 2 + encoded_prefix.len());
     p.extend_from_slice(ns);
-    p.extend_from_slice(&index.slot.to_be_bytes());
+    okm_core::write_slot(&mut p, index.slot);
     p.extend_from_slice(encoded_prefix);
     let kl = schema.key_len;
     let mut out = Vec::new();

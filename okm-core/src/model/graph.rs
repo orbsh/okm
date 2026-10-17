@@ -19,45 +19,47 @@
 //! `GraphEdgeEncode` derive generates the constant table. Runtime form:
 //! the caller maintains the registry.
 //!
-//! # Slot layout (ADR-0016 segments, within the Edge ns)
+//! # Slot layout (fixed faces within the Edge ns, ADR-0030)
 //!
 //! ```text
-//! 0x0     primary       [edge_id u64 BE]        → value = edge body
-//! 0x2/0x3 kind dictionary (name ↔ kind_id, DictCache reused)
-//! 0x4     kind index    [kind_id u16 BE]        → edge_id set
-//! 0x5     out-edges     [src NodeRef][edge_id u64 BE]
-//! 0x6     in-edges      [dst NodeRef][edge_id u64 BE]
-//! 0x7     kind+out      [kind_id][src NodeRef][edge_id]
-//! 0x8     kind+in       [kind_id][dst NodeRef][edge_id]
+//! 0x00    primary       [edge_id u64 BE]        → value = edge body
+//! 0x02/0x03 kind dictionary (name ↔ kind_id, DictCache reused)
+//! 0x04    kind index    [kind_id u16 BE]        → edge_id set
+//! 0x05    out-edges     [src NodeRef][edge_id u64 BE]
+//! 0x06    in-edges      [dst NodeRef][edge_id u64 BE]
+//! 0x07    kind+out      [kind_id][src NodeRef][edge_id]
+//! 0x08    kind+in       [kind_id][dst NodeRef][edge_id]
 //! ```
 //!
-//! Declared attribute fields (fixed-ontology form) add one face each in
-//! the 0x1 segment — ordinary declared indexes, see the derive. The
-//! node collection is a STANDARD document collection: its node-kind
-//! face is its own declared index, its kinds live in its own 0x2/0x3
+//! All of them are fixed faces — one byte, no counter. Declared attribute
+//! fields (fixed-ontology form) add one face each in counting family 0x1
+//! (`0x1001+n`) — ordinary declared indexes, see the derive. The node
+//! collection is a STANDARD document collection: its node-kind face is
+//! its own declared index, its kinds live in its own 0x02/0x03
 //! dictionary — zero layout difference from any document collection.
 //!
 //! Edge body value: `[src NodeRef][dst NodeRef][kind_id u16 BE]
 //! [attrs payload]` — `attrs payload` is the edge's declared-attribute
-//! encoding (empty for a fully dynamic edge; the dynamic segment slot-1
-//! entry, built by `put_fields`-style callers, is not touched here).
+//! encoding (empty for a fully dynamic edge; the dynamic-segment entry
+//! (fixed face 0x01), built by `put_fields`-style callers, is not touched
+//! here).
 
 use crate::engine::storage::{MemBatch, VirtualStorage};
-use crate::model::index::{PRIMARY_SLOT, Slot};
+use crate::model::index::{PRIMARY_SLOT, Slot, write_slot};
 use crate::model::obj_dict::DictCache;
 
-/// Segment-0x4 kind-index slot (fixed-ontology form uses the first
-/// counter; the face is an Edge-collection-internal fact, not a declared
-/// document index — hence segment 0x4, not 0x1).
-pub const EDGE_KIND_INDEX_SLOT: Slot = 0x4001;
-/// Segment-0x5 out-edge traversal face.
-pub const EDGE_OUT_SLOT: Slot = 0x5001;
-/// Segment-0x6 in-edge traversal face.
-pub const EDGE_IN_SLOT: Slot = 0x6001;
-/// Segment-0x7 typed out-edge face (kind leads).
-pub const EDGE_KIND_OUT_SLOT: Slot = 0x7001;
-/// Segment-0x8 typed in-edge face (kind leads).
-pub const EDGE_KIND_IN_SLOT: Slot = 0x8001;
+/// Fixed face 0x04: kind index — an Edge-collection-internal fact, not a
+/// declared document index, hence a graph number rather than counting
+/// family 0x1.
+pub const EDGE_KIND_INDEX_SLOT: Slot = 0x04;
+/// Fixed face 0x05: out-edge traversal.
+pub const EDGE_OUT_SLOT: Slot = 0x05;
+/// Fixed face 0x06: in-edge traversal.
+pub const EDGE_IN_SLOT: Slot = 0x06;
+/// Fixed face 0x07: kind-qualified out-edge face (kind leads).
+pub const EDGE_KIND_OUT_SLOT: Slot = 0x07;
+/// Fixed face 0x08: kind-qualified in-edge face (kind leads).
+pub const EDGE_KIND_IN_SLOT: Slot = 0x08;
 
 /// Self-describing endpoint reference: `[ns 2B BE][len varint][pkey]`.
 /// The ns is the type marker; the pkey width rides IN the ref as a
@@ -227,14 +229,14 @@ impl<S: VirtualStorage, E: KvGraph> Graph<S, E> {
 
     fn primary_key(&self, edge_id: u64) -> Vec<u8> {
         let mut k = E::NS_PREFIX.to_vec();
-        k.extend_from_slice(&PRIMARY_SLOT.to_be_bytes());
+        write_slot(&mut k, PRIMARY_SLOT);
         k.extend_from_slice(&edge_id.to_be_bytes());
         k
     }
 
     fn face_key(&self, slot: Slot, segments: &[&[u8]]) -> Vec<u8> {
         let mut k = E::NS_PREFIX.to_vec();
-        k.extend_from_slice(&slot.to_be_bytes());
+        write_slot(&mut k, slot);
         for s in segments {
             k.extend_from_slice(s);
         }
@@ -597,7 +599,7 @@ mod tests {
         // one ns. Kind id 0 for the first-seen name.
         let pk = {
             let mut k = vec![0x00, 0x64];
-            k.extend_from_slice(&PRIMARY_SLOT.to_be_bytes());
+            write_slot(&mut k, PRIMARY_SLOT);
             k.extend_from_slice(&100u64.to_be_bytes());
             k
         };

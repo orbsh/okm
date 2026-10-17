@@ -102,11 +102,11 @@ fn table_put_writes_primary_and_indexes() {
     let (k, r) = mk_user(101, 100);
     t.put(&k, &r);
 
-    // 主键写入 slot 0x0000：头 [0,9,0,0]（ns 2B + slot 2B BE）+ key payload
+    // 主键写入固定面 0x00：头 [0,9,0]（ns 2B + 固定面 1 字节）+ key payload
     let kl = <UserKey as KeyEncode>::KEY_LEN;
     let pk = t.primary_key(&k);
-    assert_eq!(&pk[..4], &[0, 9, 0, 0]);
-    assert_eq!(&pk[4..], &k.encode()[..]);
+    assert_eq!(&pk[..3], &[0, 9, 0]);
+    assert_eq!(&pk[3..], &k.encode()[..]);
     // value = 行载荷 TLV，可解码回原行
     let raw = t.store().get(&pk).unwrap();
     let dec = <User as Document>::decode_payload(&raw);
@@ -282,7 +282,7 @@ fn truncated_key_prefix_drops_redundant_tail() {
 
 #[test]
 fn slot_allocation() {
-    // slot 段号制（ADR-0016）：索引段 0x1，计数从 1 起；段号 = slot >> 12，
+    // 计数族（ADR-0030）：索引族 0x1，计数从 1 起；族号 = slot >> 12，
     // 在集合 ns 段内结构化区分条目种类
     assert_eq!(<ByReputation as KvIndex>::SLOT, 0x1001);
     assert_eq!(<ByTimeline as KvIndex>::SLOT, 0x1001);
@@ -292,7 +292,7 @@ fn slot_allocation() {
     assert_eq!(<ByTimeline as KvIndex>::INCLUDES, &["title_len"]);
     assert_eq!(<ByTimeline as KvIndex>::KEY_PREFIX, &[] as &[&str]);
     assert_eq!(<ByKind as KvIndex>::KEY_PREFIX, &["session_id"]);
-    assert_eq!(okm_core::PRIMARY_SLOT, 0x0000);
+    assert_eq!(okm_core::PRIMARY_SLOT, 0x00);
     let _ = std::marker::PhantomData::<PrefixKey<UserKey>>;
 }
 

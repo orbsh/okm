@@ -67,6 +67,13 @@ In binary, the twelve slots in use, before → after:
 The right-hand nine rows read 1 byte: their high nibble is the delimiter.
 The three counting rows keep today's bytes exactly.
 
+In the implementation the width follows from the slot's **value**: a slot
+≤ 0x0F is written as one byte, anything else as two big-endian bytes (no
+family number is 0, so nothing else can land in 0x00–0x0F). `write_slot`
+asserts that rule, and `slot_len` gives the width — both live in
+`okm-core::model::index` next to the constants, so every site that
+assembles a key writes a slot the same way.
+
 ### 2. The fixed-face table (1 byte, 16 numbers)
 
 ```text
@@ -167,9 +174,10 @@ byte, no counter, nothing to enumerate.
   No external consumer exists (PLAN), so a rebuild covers it: derived
   entries rebuild from documents, the dynamic segment and the dictionaries
   ride the same rebuild.
-- `SlotMap` (schema export) becomes a sum type — fixed face number |
-  family + counter — instead of a u16 per field. The bindings' slot
-  arguments are unchanged.
+- `SlotMap` (schema export) keeps its `u16` fields — the values are now
+  0x00–0x08 for the fixed faces and 0x1nnn / 0x2nnn / 0x3nnn for the
+  counting families, with the width implied by the value. The bindings'
+  slot arguments are unchanged.
 - ADR-0016's segment table is superseded; its head-width decision survives
   for the counting families, and its junction placement stands untouched.
 - docs/internals/key-layout and slot-mechanism carry the layout tables;

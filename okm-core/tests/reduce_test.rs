@@ -2,7 +2,7 @@
 //! derive 生成 `Reduce` impl + Document hook；Collection::put/delete 读改写。
 //! 覆盖：计数+求和复合 acc 的可逆往返、delete_by_pkey 同一路径、
 //! 同 group 多次 fold 累积、scan_reduces 全组扫描、entry 布局
-//! `[ns 2B][slot 1B][group 段]`（slot 续接索引计数器）。
+//! `[ns 2B][slot 2B][group 段]`（reduce 族 0x2，独立计数器）。
 
 use okm_core::{Reduce, ReduceLogic, ReduceCodec, TestStore, Document, DocumentEncode};
 

@@ -155,7 +155,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
     pub(crate) fn primary_key(&self, pkey: &[u8]) -> Vec<u8> {
         let mut buf = Vec::with_capacity(3 + self.schema.key_len);
         buf.extend_from_slice(&self.ns);
-        buf.extend_from_slice(&0u16.to_be_bytes()); // PRIMARY_SLOT
+        okm_core::write_slot(&mut buf, okm_core::index::PRIMARY_SLOT);
         buf.extend_from_slice(pkey);
         buf
     }

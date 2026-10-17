@@ -24,7 +24,7 @@
 //! `#[ok_junction(n)]` and separates multiple junctions over one endpoint
 //! pair.
 
-use crate::model::index::{JUNCTION_SLOT_BASE, Slot};
+use crate::model::index::{JUNCTION_SLOT_BASE, Slot, write_slot};
 use crate::model::key::KeyEncode;
 
 pub(crate) fn encode_head<K: KeyEncode>(buf: &mut Vec<u8>, key: &K, head: &[&str]) -> usize {
@@ -87,7 +87,7 @@ pub trait KvJunction: Sized {
                 + head_width::<<Self::B as crate::model::index::Document>::Key>(Self::B_HEAD),
         );
         k.extend_from_slice(<Self::A as crate::model::index::Document>::NS_PREFIX);
-        k.extend_from_slice(&Self::dir_slot(0).to_be_bytes());
+        write_slot(&mut k, Self::dir_slot(0));
         encode_head(&mut k, self.a(), Self::A_HEAD);
         encode_head(&mut k, self.b(), Self::B_HEAD);
         k
@@ -101,7 +101,7 @@ pub trait KvJunction: Sized {
                 + head_width::<<Self::A as crate::model::index::Document>::Key>(Self::A_HEAD),
         );
         k.extend_from_slice(<Self::B as crate::model::index::Document>::NS_PREFIX);
-        k.extend_from_slice(&Self::dir_slot(1).to_be_bytes());
+        write_slot(&mut k, Self::dir_slot(1));
         encode_head(&mut k, self.b(), Self::B_HEAD);
         encode_head(&mut k, self.a(), Self::A_HEAD);
         k
@@ -116,7 +116,7 @@ pub trait KvJunction: Sized {
             4 + head_width::<<Self::A as crate::model::index::Document>::Key>(Self::A_HEAD),
         );
         p.extend_from_slice(<Self::A as crate::model::index::Document>::NS_PREFIX);
-        p.extend_from_slice(&Self::dir_slot(0).to_be_bytes());
+        write_slot(&mut p, Self::dir_slot(0));
         encode_head(&mut p, a, Self::A_HEAD);
         p
     }
@@ -127,7 +127,7 @@ pub trait KvJunction: Sized {
             4 + head_width::<<Self::B as crate::model::index::Document>::Key>(Self::B_HEAD),
         );
         p.extend_from_slice(<Self::B as crate::model::index::Document>::NS_PREFIX);
-        p.extend_from_slice(&Self::dir_slot(1).to_be_bytes());
+        write_slot(&mut p, Self::dir_slot(1));
         encode_head(&mut p, b, Self::B_HEAD);
         p
     }

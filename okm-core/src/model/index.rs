@@ -22,44 +22,72 @@
 use crate::engine::storage::VirtualStorage;
 use crate::model::key::{KeyEncode, PrefixKey};
 
-/// Slot type: 4-bit segment (high nibble, entry kind) + 12-bit in-segment
-/// counter (ADR-0016). Big-endian in the key.
+/// Slot type: either a **fixed face** (one byte, 0x00–0x0F — a family with a
+/// single face and nothing to enumerate) or a **counting family** (two bytes:
+/// the family number in the first byte's high nibble plus a 12-bit counter,
+/// ADR-0030). Big-endian in the key, and the width follows from the value, so
+/// a family-prefix scan is exact without consulting a table.
 pub type Slot = u16;
 
-/// Segment numbers (the high nibble of a slot): entry kinds, structurally
-/// dispatched by `slot >> 12`. An enumeration, not a space allocation.
+/// Family numbers (the high nibble of a counting family's first byte): entry
+/// kinds whose instances are enumerated. An enumeration, not a space
+/// allocation.
 pub mod segment {
-    /// Document-self: primary, dynamic segment, dictionaries, buffer.
-    pub const SELF: u16 = 0x0;
     /// Declared indexes (declaration-order counter).
     pub const INDEX: u16 = 0x1;
     /// Declared reduces (independent declaration-order counter).
     pub const REDUCE: u16 = 0x2;
-    /// Junctions (one one-way entry per endpoint ns, ADR-0015/0016).
+    /// Junctions (one one-way entry per endpoint ns, ADR-0015).
     pub const JUNCTION: u16 = 0x3;
 }
 
-/// Assemble a slot from its segment and in-segment counter.
-pub const fn slot(segment: u16, counter: u16) -> Slot {
-    (segment << 12) | (counter & 0x0FFF)
+/// Assemble a counting family's slot from its family number and counter.
+pub const fn slot(family: u16, counter: u16) -> Slot {
+    (family << 12) | (counter & 0x0FFF)
 }
 
-/// Slot reserved for a collection's primary keys inside its ns segment.
-pub const PRIMARY_SLOT: Slot = slot(segment::SELF, 0);
-/// obj dynamic segment (ADR-0012): per-document undeclared fields.
-pub const DYNAMIC_SLOT: Slot = slot(segment::SELF, 1);
-/// Field-name dictionary, number → name (ADR-0012).
-pub const DICT_ID_SLOT: Slot = slot(segment::SELF, 2);
-/// Field-name dictionary, name → number (ADR-0012).
-pub const DICT_NAME_SLOT: Slot = slot(segment::SELF, 3);
-/// Slot base available to `#[ok_index]` declaration-order allocation
-/// (ADR-0016: counters start at 1; 0 is the primary).
+/// Highest fixed-face number — the whole one-byte space. A fixed face carries
+/// no counter, and keeping the space at high nibble 0 is what makes
+/// "first byte's high nibble is 0" a sufficient delimiter.
+pub const FIXED_FACE_MAX: Slot = 0x0F;
+
+/// Write a slot in its own width: one byte for a fixed face, two for a
+/// counting family (ADR-0030). The panic arm is a layout error, not a
+/// runtime risk: every slot comes from a constant or a declaration order.
+pub fn write_slot(buf: &mut Vec<u8>, slot: Slot) {
+    if slot <= FIXED_FACE_MAX {
+        buf.push(slot as u8);
+    } else {
+        assert!(
+            slot >> 12 != 0,
+            "slot 0x{slot:04X} is neither a fixed face (0x00–0x0F) nor a counting family (family nibble != 0)"
+        );
+        buf.extend_from_slice(&slot.to_be_bytes());
+    }
+}
+
+/// The byte width [`write_slot`] uses for this slot.
+pub const fn slot_len(slot: Slot) -> usize {
+    if slot <= FIXED_FACE_MAX { 1 } else { 2 }
+}
+
+/// A collection's primary keys (document collection or edge collection):
+/// fixed face 0x00.
+pub const PRIMARY_SLOT: Slot = 0x00;
+/// obj dynamic segment (ADR-0012), per-row undeclared fields: fixed face 0x01.
+pub const DYNAMIC_SLOT: Slot = 0x01;
+/// Field-name dictionary, number → name (ADR-0012): fixed face 0x02.
+pub const DICT_ID_SLOT: Slot = 0x02;
+/// Field-name dictionary, name → number (ADR-0012): fixed face 0x03.
+pub const DICT_NAME_SLOT: Slot = 0x03;
+/// Slot base available to `#[ok_index]` declaration-order allocation —
+/// counters start at 1 (0 reserved), so 4095 declared indexes per collection.
 pub const DECLARED_SLOT_BASE: Slot = slot(segment::INDEX, 1);
-/// Slot base for `#[ok_reduce]` declarations — independent of the index
-/// counter (ADR-0016 removed the chained coupling).
+/// Slot base for `#[ok_reduce]` declarations — its own counter, 4095 per
+/// collection.
 pub const REDUCE_SLOT_BASE: Slot = slot(segment::REDUCE, 1);
-/// Slot base for junction discriminators (`#[ok_junction(n)]`,
-/// ADR-0015/0016: one one-way entry per endpoint ns).
+/// Slot base for junction discriminators (`#[ok_junction(n)]`, ADR-0015: one
+/// one-way entry per endpoint ns; counter = discriminator << 1 | direction).
 pub const JUNCTION_SLOT_BASE: Slot = slot(segment::JUNCTION, 0);
 
 /// Encoded form of a function-index result (ADR-0005, function-index
@@ -344,16 +372,16 @@ pub trait KvIndex {
         }
     }
 
-    /// Full entry key: `[ns 2B][slot 2B][index fields][key prefix]` —
-    /// the slot's segment dispatches entry kinds *within* the collection's
-    /// ns segment (ADR-0016); the collection's ns allocation is untouched
-    /// by how many indexes exist (ADR-0005).
+    /// Full entry key: `[ns 2B][slot][index fields][key prefix]` — an access
+    /// method's slot names a counting family, so it is two bytes here
+    /// (ADR-0030); the collection's ns allocation is untouched by how many
+    /// indexes exist (ADR-0005).
     fn entry_key(ns_prefix: &[u8], key: &Self::Key, document: &Self::Document) -> Vec<u8> {
         let fb = Self::fields_bytes(key, document);
         let kp = Self::key_prefix_bytes(key);
-        let mut buf = Vec::with_capacity(ns_prefix.len() + 2 + fb.len() + kp.len());
+        let mut buf = Vec::with_capacity(ns_prefix.len() + slot_len(Self::SLOT) + fb.len() + kp.len());
         buf.extend_from_slice(ns_prefix);
-        buf.extend_from_slice(&Self::SLOT.to_be_bytes());
+        write_slot(&mut buf, Self::SLOT);
         buf.extend_from_slice(&fb);
         buf.extend_from_slice(&kp);
         buf
@@ -411,9 +439,9 @@ pub trait KvIndex {
     /// (e.g. `7u32.to_be_bytes()` for a u32 field; empty slice = whole
     /// index). Must not exceed the index-field segment width.
     fn entry_prefix(ns_prefix: &[u8], encoded: &[u8]) -> Vec<u8> {
-        let mut buf = Vec::with_capacity(ns_prefix.len() + 2 + encoded.len());
+        let mut buf = Vec::with_capacity(ns_prefix.len() + slot_len(Self::SLOT) + encoded.len());
         buf.extend_from_slice(ns_prefix);
-        buf.extend_from_slice(&Self::SLOT.to_be_bytes());
+        write_slot(&mut buf, Self::SLOT);
         buf.extend_from_slice(encoded);
         buf
     }

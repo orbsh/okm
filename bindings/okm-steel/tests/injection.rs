@@ -187,7 +187,7 @@ fn script_writes_land_in_the_host_engine() {
     let rows = engine.0.lock().unwrap();
     let primary_gone = !rows
         .keys()
-        .any(|k| k.starts_with(&[0u8, 41, 0u8, 0u8]) && k.len() == 4 + 12);
+        .any(|k| k.starts_with(&[0u8, 41, 0u8]) && k.len() == 3 + 12);
     assert!(primary_gone, "the primary row left the host engine");
     let index_gone = !rows.keys().any(|k| k.starts_with(&[0u8, 41, 16u8, 1u8])); // slot 4097 = 0x1001
     assert!(index_gone, "the index entry was swept");

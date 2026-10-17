@@ -44,8 +44,8 @@ fn obj_variants_round_trip_over_two_slots() {
     // Typed get is untouched: declared fields live in slot 0.
     assert_eq!(t.get(&UserKey { id: 1 }).unwrap().level, 2);
 
-    // Dictionary landed in slots 2/3 under the same ns.
-    let dict_scan = t.store().scan_suffix(&[0, 9, 0, 2]); // [ns 2B][DICT_ID_SLOT 0x0002 BE]
+    // Dictionary landed in fixed faces 0x02/0x03 under the same ns.
+    let dict_scan = t.store().scan_suffix(&[0, 9, 2]); // [ns 2B][DICT_ID_SLOT 0x02]
     assert_eq!(dict_scan.len(), 3, "three names allocated");
 }
 
