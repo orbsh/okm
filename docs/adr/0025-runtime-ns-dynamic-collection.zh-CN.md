@@ -34,10 +34,24 @@ okm-core 宿主**共享运行时**：引擎契约（`VirtualStorage`）、编译
 - **wasm（Rust 源码）摊位**：静态路径编译**进模块**——derive + `Collection`，脚本在宿主桥之上实现 `VirtualStorage`，引擎调用跨桥执行。完全体：索引、reduce、编译期校验；无 schema 数据绕行。
 - 两者在同一 ns 写相同字节，数据跨载体语言可互操作。
 
+### 4. schema 不落键空间（2026-10-17）
+
+两个载体都不持久化自己的 schema。`DynamicCollection` 持有构造时传入的 `CollectionSchema`、access method 与 reduce spec；静态 `Collection` 持有 derive 的编译期表。OKM 写进键空间的、带声明气味的字节只有两套名字词汇——field-name dictionary（固定面 0x02/0x03，ADR-0012）与 edge kind dictionary（edge 自己的 0x02/0x03，ADR-0017）——而它们记录的是**事实**（真的被写过的名字，first-seen 分配），不是声明。键宽、字段偏移、cold tag、hot/cold 划分、defaults、`SlotMap` 都无法从键空间恢复。
+
+schema 属于写入方；一份**副本**属于分配 ns 的那一方，而不属于数据键空间：
+
+- **数据面无语义。** receiver 的职责是注入声明的 prefix 并执行字节（ADR-0010）；一条 schema 记录会让存储层重新参与 OKM 语义。
+- **字节相等。** 同一声明在两个载体产出同一批字节，而模式是写入方的属性（§1）。schema 记录是其中一个载体不会做的写——或者两者都必须做、却没有数据理由的写；两种情形都是新的分叉面。
+- **先例。** persisted slot map 曾因违反 code-only 的 ns/slot 字典被否决。slot 分配是声明出来的，schema 比 slot 更「声明」。
+- **版本演进。** 数据面的版本问题已由 payload 的 layout version 承载（写入方的事）；声明的演进归 ns 分配方。schema 记录进键空间等于把声明迁移也压给键空间。
+
+参考落点是 aura 的形态：introspected schema 走摊位定义行的动态段——一个条目、原生帧、绝非 JSON 文本——与它所描述的行并列，类型的 ns 与 schema 一次读取同时解析（aura ADR-0025 meta-plane-fate + ADR-0040 段位）。
+
 ## Honest semantic cost
 
 - **两个载体、一个漂移面。** 字节相等是承重墙，由跨语言测试锁定；derive 改动不同步动态编解码（或反之）会无声分叉布局。bindings 的帧字节相等验收测试是防线。
 - **动态模式的 schema 是运行时数据**——键宽、索引声明无编译期校验；畸形 schema 在执行时以编解码错误浮现，而非构建期。
+- **键空间单靠自己不自描述。** 两套字典只能恢复写过的名字，恢复不了布局；没有声明记录的读者手里是无法解码的字节。导出与备份因此必须随数据携带 schema（§4）——而一个必须自我解释的键空间是档案问题（谁拥有它的意义），不是缺失的功能。
 
 ## Consequences
 

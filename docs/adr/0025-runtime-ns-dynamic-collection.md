@@ -79,6 +79,42 @@ the core.
 - Both write the same bytes at the same ns, so data is interoperable
   across carrier languages.
 
+### 4. The schema is not stored in the keyspace (2026-10-17)
+
+Neither carrier persists its schema. `DynamicCollection` holds the
+`CollectionSchema`, access methods and reduce specs it was constructed
+with; the static `Collection` holds the derive's compile-time tables. The
+only declaration-flavoured bytes OKM ever puts in the keyspace are the
+two name vocabularies — the field-name dictionary (fixed faces 0x02/0x03,
+ADR-0012) and the edge kind dictionary (the edge's own 0x02/0x03,
+ADR-0017) — and those record FACTS (names that were actually written,
+first-seen allocation), not declarations. Nothing recovers key widths,
+field offsets, cold tags, hot/cold placement, defaults or the `SlotMap`
+from the keyspace.
+
+The schema belongs to the writer, and a persisted COPY belongs to whoever
+allocates the ns — not to the data keyspace:
+
+- **The data plane is semantics-free.** A receiver prepends its declared
+  prefix and executes bytes (ADR-0010); a schema record would make the
+  storage layer a participant in OKM semantics again.
+- **Byte equality.** The same declaration produces the same bytes from
+  either carrier, and mode is a property of the writer (§1). A schema
+  record is a write one carrier would not produce — or one both must, for
+  no data reason. Either way it is a new divergence surface.
+- **Precedent.** A persisted slot map was rejected as violating the
+  code-only ns/slot dictionary. Slot allocation is declared; a schema is
+  more declaration than a slot.
+- **Version evolution.** The data plane's version problem is already
+  carried by the payload layout version (the writer's concern);
+  declaration evolution belongs to the ns allocation. A schema record in
+  the keyspace would put declaration migration on the keyspace too.
+
+The reference landing is Aura's: the introspected schema rides the
+booth-definition row's dynamic segment — one entry, native frames, never
+JSON text — beside the rows it describes, with the type's ns and schema
+resolving in one read (aura ADR-0025 meta-plane-fate + ADR-0040 bands).
+
 ## Honest semantic cost
 
 - **Two carriers, one drift surface.** Byte-equality is load-bearing and
@@ -88,6 +124,12 @@ the core.
 - **The dynamic mode's schema is runtime data** — no compile-time
   validation of key widths or index declarations; malformed schemas
   surface as codec errors at execution, not at build.
+- **A keyspace alone is not self-describing.** The two dictionaries
+  recover the names that were written, never the layout; a reader without
+  the declaration record holds bytes it cannot decode. Export and backup
+  carry the schema alongside the data (§4) — and a keyspace that must
+  explain itself is an archive question (who owns its meaning), not a
+  missing feature.
 
 ## Consequences
 
