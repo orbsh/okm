@@ -7,11 +7,17 @@
 
 use okm_core::VirtualStorage;
 
-/// Merge join over two key-ordered entry streams (both sides already
-/// sorted — `scan_index` returns entries in key order, which is the
-/// merge order). Yields matched `(left, right)` pairs; keys compare via
-/// the full encoded prefix the caller passes in. Equality-only: ranges
-/// belong to the caller's scan prefix, not here.
+/// Merge join over two key-ordered entry streams: both sides must already
+/// be sorted BY THE EXTRACTED KEYS. An equality-prefix scan of an index
+/// whose tail carries the join key is already in that order — with the
+/// leading field fixed, the tails are the main-key bytes in order. A scan
+/// whose probe ranges ACROSS the leading field is NOT: its tails sort by
+/// the varied dimension, so extract-and-sort (or change the declaration)
+/// before joining.
+///
+/// Yields matched `(left, right)` pairs; keys compare via the full encoded
+/// prefix the caller passes in. Equality-only: ranges belong to the caller's
+/// scan prefix, not here.
 ///
 /// The natural okm-core shape: index entries whose tail segment is the
 /// primary key, so a join on the primary key is a merge join on the two

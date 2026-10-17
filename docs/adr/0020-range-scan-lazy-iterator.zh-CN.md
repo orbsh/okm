@@ -40,7 +40,7 @@ pub trait VirtualStorage {
 }
 ```
 
-- **`scan_suffix(prefix)` 降为 `scan_range` 之上的默认方法**，经新的 `prefix_end(prefix) -> Option<Vec<u8>>` 辅助（末字节进位；前缀全 `0xFF` 时为 `None`）。前缀语义搭在区间原语之上，而不是第二个物理操作。引擎可以保留自己的 `scan_suffix` 覆盖——原生前缀扫描更快时（slatedb 的 `scan_prefix(prefix, subrange)` 就是一例）。
+- **`scan_suffix(prefix)` 降为 `scan_range` 之上的默认方法**，经新的 `prefix_end(prefix) -> Option<Vec<u8>>` 辅助（末字节进位；前缀全 `0xFF` 时为 `None`）。前缀语义搭在区间原语之上，而不是第二个物理操作。**默认实现必须自己满足 `scan_suffix` 的返回契约**：`scan_range` 给的是完整 key，默认实现要切掉 `prefix` 只留后缀——一条直接转发完整 key 的默认实现会让"按后缀长度"的判断全部失效（曾在宿主注入引擎上让探针/尾段判据与等值匹配静默失灵），由 `scan_suffix_contract_test.rs` 锁定。引擎可以保留自己的 `scan_suffix` 覆盖——原生前缀扫描更快时（slatedb 的 `scan_prefix(prefix, subrange)` 就是一例）。
 - **惰性形态是独立方法，不是改返回类型。** `scan_range` 保持 `Vec`（现有全部消费者期望的缓冲形态）；`scan_range_iter` 返回 `ScanIter`——半路放弃（LIMIT、首个命中、提前 drop）只为实际执行的读买单。原生迭代器是惰性的引擎覆盖 `scan_range_iter`；trait 默认实现先物化（借用无法跨越 trait 边界）并如实文档化。
 - **远端路径刻意降级。** `RemoteStore` 走同一条 `OP_SCAN` 帧：value 段——前缀扫描时为空——携带 `[0x01][end 字节]`（有有限上界）或 `[0x00]`（无上界）。零 wire 变更（帧本来就有 value 字段；ADR-0010 的「wire 只见 op tag」成立）。远端引擎上的 `scan_range_iter` 按帧的本性缓冲响应。流式化远端路径是 wire 协议决策，本 ADR 刻意不做。
 - **空区间是合法答案。** slatedb 对空 `Range`（end <= begin）panic；适配器返回空——guard 放在适配器里，不推给调用方。

@@ -1389,13 +1389,19 @@ buys is a key layout that never deforms for every "also query by X"
 dimension. As the business grows you add `#[ok_index]` instead of
 redesigning keys.
 
-**Bulk reads actually come out ahead.** Fetch-back looks like random
-point reads, but both streams are already ordered: index entries are
-clustered and ordered by `[pkey][order]`, and the primary table by
-`[pkey]` — fetch-back degenerates naturally into a two-pointer merge
+**Bulk reads come out ahead UNDER AN EQUALITY PREFIX.** Fetch-back looks
+like random point reads, but with the leading index field FIXED both
+streams are ordered: index entries are clustered by `[indexed fields]
+[carried key]` and the primary table by `[pkey]`, so the tails are the
+main-key bytes in order and the walk degenerates into a two-pointer merge
 (merge-join style), sequential I/O, far cheaper than per-entry random
-reads. Hand-optimized key layouts have no extra card to play in the
-bulk case.
+reads. A range ACROSS the leading field breaks that: the tails then sort
+by the varied dimension, so every hit is a separate point read and the
+locality is roughly the number of distinct leading values in the interval
+— put the ranged dimension in the key's `[order]` segment (the main
+table's own sequential read), or iterate lazily with an early stop so
+only survivors pay the fetch-back. Hand-optimized key layouts have no
+extra card to play in the bulk case.
 
 Conclusion: the indirect cost of an access method is one amortizable
 parse plus one mergeable ordered read; bounded, controlled runtime
