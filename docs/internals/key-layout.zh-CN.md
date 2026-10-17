@@ -38,8 +38,8 @@ ns 头之后是 slot。它的首字节自己说明后面还跟不跟计数字节
 0x01  obj 动态段             [ns][0x01][主键]              value = nTLV 帧
 0x02  字段名字典             [ns][0x02][field-id]          → 名字
 0x03  字段名字典             [ns][0x03][名字]              → field-id
-0x09  图 谓词字典            [ns][0x09][predicate_id]      → 谓词名
-0x0A  图 谓词字典            [ns][0x0A][谓词名]            → predicate_id
+0x04  图 谓词字典            [ns][0x04][predicate_id]      → 谓词名
+0x05  图 谓词字典            [ns][0x05][谓词名]            → predicate_id
 0x06  图 谓词索引            [ns][0x06][predicate_id][edge_id]
 0x07  图 出边                [ns][0x07][src NodeRef][edge_id]
 0x08  图 入边                [ns][0x08][dst NodeRef][edge_id]

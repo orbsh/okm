@@ -67,8 +67,8 @@ byte (≥ 0x10).
 0x01  obj dynamic segment      [ns][0x01][pkey]                  value = nTLV frames
 0x02  field-name dictionary    [ns][0x02][field-id]              → name
 0x03  field-name dictionary    [ns][0x03][name]                  → field-id
-0x09  graph predicate dict     [ns][0x09][predicate_id]         → name
-0x0A  graph predicate dict     [ns][0x0A][name]                 → predicate_id
+0x04  graph predicate dict     [ns][0x04][predicate_id]         → name
+0x05  graph predicate dict     [ns][0x05][name]                 → predicate_id
 0x06  graph predicate index    [ns][0x06][predicate_id][edge_id]
 0x07  graph out                [ns][0x07][src NodeRef][edge_id]
 0x08  graph in                 [ns][0x08][dst NodeRef][edge_id]
