@@ -145,6 +145,19 @@ def main() -> int:
     assert t.scan(0x1002, (ord("a") & 0xFF).to_bytes(4, "big")) == []
     assert len(t.scan(0x1002, (ord("z") & 0xFF).to_bytes(4, "big"))) == 1
 
+    # --- exact scan: a probe completed by the key tail is dropped --------
+    # The fan-out value is 4 bytes and the key tail follows with no boundary
+    # byte, so the 5-byte probe (value + the key's first byte — org 1's high
+    # byte is 0x00) is satisfied by that entry's BYTES. It is not a match on
+    # the value: the stored value is shorter than the probe, which neither
+    # variant accepts. scan_exact additionally requires the probe to consume
+    # the whole field segment.
+    vz = (ord("z") & 0xFF).to_bytes(4, "big")
+    assert t.scan(0x1002, vz + b"\x00") == [], "spill is no prefix hit"
+    assert t.scan_exact(0x1002, vz + b"\x00") == [], "spill is no exact hit"
+    assert len(t.scan(0x1002, vz)) == 1, "the value itself is a prefix hit"
+    assert len(t.scan_exact(0x1002, vz)) == 1, "and an exact hit"
+
     # --- partial index: predicate gates entry existence ------------------
     # name "zig" is not admitted → no entry even though level=4 exists
     assert t.scan(0x1003, (4).to_bytes(4, "big")) == []

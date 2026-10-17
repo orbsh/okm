@@ -250,6 +250,28 @@ impl<S: VirtualStorage> DynamicCollection<S> {
             .ok_or_else(|| format!("no access method with slot {index_slot}"))?;
         scan_access_method(&self.store, &self.schema, &self.ns, index, encoded_prefix)
     }
+
+    /// Equality scan over one access method (same routing primitive as
+    /// [`scan`](Self::scan)): only documents whose field segment is exactly
+    /// the probe — the probe must name every field of the data segment.
+    pub fn scan_exact(
+        &self,
+        index_slot: u16,
+        encoded_prefix: &[u8],
+    ) -> Result<Vec<ValueMap>, String> {
+        let index = self
+            .indexes
+            .iter()
+            .find(|i| i.slot == index_slot)
+            .ok_or_else(|| format!("no access method with slot {index_slot}"))?;
+        crate::index::scan_access_method_exact(
+            &self.store,
+            &self.schema,
+            &self.ns,
+            index,
+            encoded_prefix,
+        )
+    }
     // --- Dynamic segment bridge (slot 1, dictionary slots 2/3) -----------
     // The same per-document extension the typed Collection exposes:
     // name-keyed fields outside the schema's declared vocabulary, encoded

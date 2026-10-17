@@ -158,6 +158,42 @@ fn nested_and_top_level_paths_resolve_to_entries() {
 }
 
 #[test]
+fn exact_scan_ignores_a_probe_completed_by_the_key_tail() {
+    // `author.name` is a Str path index, so the value's end and the key tail
+    // have no boundary byte between them: id 0x3100…0001 encodes to a key
+    // whose first byte is 0x31 ('1'), which lets the probe "ad1" match the
+    // stored value "ad" in a raw prefix scan. Values mix letters and digits,
+    // so that data is legal — the scan's length test is what drops it.
+    let mut t = table(TestStore::slatedb_mem());
+    let trap = 0x3100_0000_0000_0001;
+    for (id, name) in [(trap, "ad"), (2, "ad1"), (3, "ad1_to_cart")] {
+        t.put(&key(id), &declared(7)).unwrap();
+        t.put_fields(&key(id), &fields(Some(name), &[], None, &[]))
+            .unwrap();
+    }
+
+    // The trap is real: the entry's bytes start with the probe's prefix.
+    let mut probe: Vec<u8> = 51u16.to_be_bytes().to_vec();
+    probe.extend_from_slice(&SLOT_AUTHOR.to_be_bytes());
+    probe.extend_from_slice(b"ad1");
+    let keys = entry_keys(t.store(), SLOT_AUTHOR);
+    let trapped = keys
+        .iter()
+        .find(|k| k.ends_with(&key(trap)))
+        .expect("the trap entry exists");
+    assert!(trapped.starts_with(&probe));
+    assert_eq!(&trapped[4..], b"ad\x31\x00\x00\x00\x00\x00\x00\x01");
+
+    // Prefix: only values that START with "ad1" (the trap is dropped).
+    assert_eq!(ids(t.scan(SLOT_AUTHOR, b"ad1").unwrap()), vec![2, 3]);
+    // Exact: only the value that IS "ad1" — no fetch-back validation.
+    assert_eq!(ids(t.scan_exact(SLOT_AUTHOR, b"ad1").unwrap()), vec![2]);
+    // The short value keeps working: prefix sees all three, exact sees one.
+    assert_eq!(ids(t.scan(SLOT_AUTHOR, b"ad").unwrap()), vec![2, 3, trap]);
+    assert_eq!(ids(t.scan_exact(SLOT_AUTHOR, b"ad").unwrap()), vec![trap]);
+}
+
+#[test]
 fn array_path_fans_out_and_pinned_index_selects_one() {
     let mut t = table(TestStore::slatedb_mem());
     t.put(&key(1), &declared(7)).unwrap();
