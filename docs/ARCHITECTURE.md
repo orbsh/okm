@@ -87,15 +87,19 @@ Dependency direction is one-way: `model` never names an engine; the
 Every key shares one header discipline:
 
 ```text
-[ (0xFF part 1B) ][ ns 2B BE ][ slot 2B BE ][ identity / fields ... ]
+[ (0xFF part 1B) ][ ns 2B BE ][ slot 1B (fixed face) | 2B (counting) ][ identity / fields ... ]
 ```
 
 - **ns** (u16 BE): the collection's identity, declared once on the
   document (`#[ok_ns]`), full 16-bit space shared by all entry kinds.
-- **slot** (u16 BE): 4-bit segment (entry kind — document-self / index /
-  reduce / junction) + 12-bit in-segment counter. Segment membership is
-  structural (`slot >> 12`), dispatched by shift, not convention
-  (ADR-0016).
+- **slot**: the first byte decides its own width. High nibble 0 → one
+  byte, a fixed face (primary 0x00, dynamic segment 0x01, the two
+  dictionary directions 0x02/0x03, the graph's five faces 0x04–0x08).
+  Anything else → two bytes: a family number in the high nibble plus a
+  12-bit counter (declared indexes 0x1nnn, reduces 0x2nnn, junctions
+  0x3nnn). Delimiting on the byte's own bit, not on a table, is what
+  keeps a family-prefix scan exact (ADR-0030; it supersedes ADR-0016's
+  segment table).
 - **identity tail**: always the primary-key encoding (full or a
   declared truncation), so every derived entry is reversible to its
   source document.
@@ -130,4 +134,5 @@ The PLAN tracks open work (Set type via inverted index, KDL schema
 serialization as a low-priority alternative to JSON). The ADR series
 records why each decision above is the way it is — ADR-0002 (ns
 dictionary), ADR-0005 (index slots), ADR-0012 (object model +
-dictionary), ADR-0015/0016 (relations + the 4-byte head).
+dictionary), ADR-0015/0016 (relations + the entry head), ADR-0030 (the
+slot's two shapes: fixed face / counting family).

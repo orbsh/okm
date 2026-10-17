@@ -1,6 +1,6 @@
-# Key 布局：ns 前缀与层级判别
+# Key 布局：ns 前缀与 slot 分派
 
-本文是机制与实现细节文档：所有落进 engine 的 key 的第一级布局——2 字节 ns 前缀怎么编码、文档与 junction 怎么共用这一级、slot 怎么接在后面。slot 的分配纪律与 append-only 契约见[slot 机制](slot-mechanism.zh-CN.md)；决策记录见 [ADR-0002](../adr/0002-namespace-dictionary.md)、[ADR-0005](../adr/0005-secondary-index-slots.md)、[ADR-0016](../adr/0016-four-byte-head-and-slot-segments.zh-CN.md)（4 字节头与段号制 slot，现行的分配）。
+本文是机制与实现细节文档：所有落进 engine 的 key 的第一级布局——2 字节 ns 前缀怎么编码、文档与 junction 怎么共用这一级、slot 怎么接在后面。slot 的分配纪律与 append-only 契约见[slot 机制](slot-mechanism.zh-CN.md)；决策记录见 [ADR-0002](../adr/0002-namespace-dictionary.md)、[ADR-0005](../adr/0005-secondary-index-slots.md)、[ADR-0016](../adr/0016-four-byte-head-and-slot-segments.zh-CN.md)（条目头，其固定面部分已被取代）、[ADR-0030](../adr/0030-slot-fixed-faces-and-counting-families.zh-CN.md)——现行分配：固定面一字节，计数族保留 2 字节 slot。
 
 ## 声明位置：ns 挂在文档上，不挂在 Key 上
 
@@ -21,31 +21,50 @@ junction 不声明 ns：它的字段引用**文档类型**（`user: User`），d
 [ ns 2B BE ] ...
 ```
 
-## 第二级：2 字节 slot（4 bit 段号 + 12 bit 计数）
+## 第二级：slot——固定面一字节，计数族两字节
 
-ns 头之后是 2 字节 BE slot：高 4 位是**段号**（条目种类的结构分派，`slot >> 12`），低 12 位是段内计数。完整段表与决策理由见 [ADR-0016](../adr/0016-four-byte-head-and-slot-segments.zh-CN.md)；现行分配：
+ns 头之后是 slot。它的首字节自己说明后面还跟不跟计数字节：
 
 ```text
-段 0x0  文档自身     slot 0x0000 主表          [ns][0x0000][主键编码]      value = TLV payload
-                     slot 0x0001 obj 动态段     [ns][0x0001][主键编码]      value = nTLV 帧
-                     slot 0x0002 字段名字典     [ns][0x0002][field-id]     → 名字
-                     slot 0x0003 字段名字典     [ns][0x0003][名字]         → field-id
-                     slot 0x0004+  缓冲（4092 个）
-段 0x1  声明索引     [ns][0x1nnn][索引字段][主键前缀]   nnn = 声明序
-段 0x2  reduce       [ns][0x2nnn][group 段]            nnn = 声明序，独立计数器
-段 0x3  junction     [ns][0x3nnn?][本端身份][对端身份]  n = 区分号，低位 = 方向
-段 0x4–0xB 预留（派生/关系扩展）
-段 0xC–0xF 预留（系统）
+固定面        首字节高半字节 = 0     slot = 1 字节   [ns][0x0F]
+计数族        首字节高半字节 ≠ 0     slot = 2 字节   [ns][0x1n][nn]
+                                                    计数 = (n << 8) | nn
 ```
 
-段号是**枚举**（条目种类），不是空间分配：16 个种类对应"文档自身 / 几类派生 / 关系 / 系统"的量级；计数位 4096/段，宽于旧扁平 256。junction 在每个端点的 ns 里各写一条单向 entry（双 ns 寄生，ADR-0015），方向由条目所在 ns 承载，不由 slot 位承载——不再有正向/反向 slot 对。
+**固定面**（1 字节，16 个号，现用 9 个）——一族只有一张面，没有可枚举的东西。大端是"高半字节在左"的原因，也是这条定界成立的原因：0x00–0x0F 永远不可能等于计数族的首字节（≥ 0x10）。
 
-slot 段号让"集合内加派生数据"永不侵占相邻集合的 ns 段（ADR-0005）；段归属是结构事实（移位即得类别），不是编号纪律。分配纪律、append-only 契约、变长字段的约束见[slot 机制](slot-mechanism.zh-CN.md)。
+```text
+0x00  主表                   [ns][0x00][主键]              value = TLV payload
+0x01  obj 动态段             [ns][0x01][主键]              value = nTLV 帧
+0x02  字段名字典             [ns][0x02][field-id]          → 名字
+0x03  字段名字典             [ns][0x03][名字]              → field-id
+0x04  图 kind 索引           [ns][0x04][kind_id][edge_id]
+0x05  图 出边                [ns][0x05][src NodeRef][edge_id]
+0x06  图 入边                [ns][0x06][dst NodeRef][edge_id]
+0x07  图 kind+出             [ns][0x07][kind_id][src 引用][edge_id]
+0x08  图 kind+入             [ns][0x08][kind_id][dst 引用][edge_id]
+0x09–0x0F                   留给将来的固定面
+```
+
+**计数族**（2 字节，12 位计数，号码不变）——族内实例按声明序或区分号枚举：
+
+```text
+0x1nnn  声明索引     [ns][0x1nnn][索引字段][主键前缀]   nnn = 声明序
+0x2nnn  reduce       [ns][0x2nnn][group 段]             nnn = 声明序，独立计数器
+0x3nnn  junction     [ns][0x3nnn][本端身份][对端身份]    nnn = 区分号 << 1 | 方向
+段 0x4–0x0F          空着
+```
+
+宽度规则是关于字节的事实（`b & 0xF0 == 0` 读 1 字节 slot，否则读 2 字节），不是查一张要维护的表——与下文的 ns 转义字节、以及自描述端点引用（ADR-0017 §2）同一立场。所以按族拼前缀扫描天然精确，不需要查任何东西：`[ns][0x05]` 不可能命中计数族，`[ns][0x1n][nn]` 不可能命中固定面。
+
+每族的计数容量是 4096：声明索引与 reduce 占 1–4095（0 保留），junction 把整个范围用于 `区分号 << 1 | 方向`（每端点对 2048 个区分号）。junction 在每个端点集合自己的 ns 里写一条单向条目（双 ns 寄生，ADR-0015）；方向住在计数的低位——只有自反 junction（两端同 ns）结构上需要它，否则两个方向会共用一条扫描前缀。
+
+slot 让"集合内加派生数据"永不侵占相邻集合的 ns 段（ADR-0005），而且它的首字节在两种形态下都是结构事实：既界定 slot 又给出族名，固定面号不可能被误读成族号。被取代的段表（所有条目统一的 4 bit 段号 + 12 bit 计数）见 [ADR-0016](../adr/0016-four-byte-head-and-slot-segments.zh-CN.md)。分配纪律、append-only 契约、变长字段的约束见[slot 机制](slot-mechanism.zh-CN.md)。
 
 **partition 前缀（可选，在 ns 头之前）**：`#[ok_partition(N)]` 声明的集合，所有键在最前面多一段 `[0xFF][N 1B]`：
 
 ```text
-partition 条目  [ 0xFF ][ part 1B ][ ns 2B ][ slot 2B ][ ... ]
+partition 条目  [ 0xFF ][ part 1B ][ ns 2B ][ slot … ][ ... ]
 ```
 
 `0xFF` 是转义字节——合法 ns 头（大端 u16，首字节受 ns 字典纪律约束为 0x00–0xFE）永不以它开头，所以 partition 集合与普通集合的键空间**结构性不相交**，无需任何编号协调（partition(0) 非法——直接省略属性即无段）。语义：partition 是 workload 隔离（compaction 分组），不是所有权边界；ns 仍是归属的最外层。
@@ -53,10 +72,11 @@ partition 条目  [ 0xFF ][ part 1B ][ ns 2B ][ slot 2B ][ ... ]
 ## 全景
 
 ```text
-document  [ (0xFF part 1B) ][ ns 2B ][ slot 2B ][ ... ]   partition 段可选
-junction  [ ns_a 2B         ][ 0x3nnn? ][ 本端身份 ][ 对端身份 ]   在 A 的集合里
-junction  [ ns_b 2B         ][ 0x3nnn? ][ 本端身份 ][ 对端身份 ]   在 B 的集合里
-            ↑ 同一编号空间、同一头纪律，slot 段号区分条目种类——无变换
+document  [ (0xFF part 1B) ][ ns 2B ][ slot 1B（固定面）   ][ ... ]
+document  [ (0xFF part 1B) ][ ns 2B ][ slot 2B（计数族）   ][ ... ]
+junction  [ ns_a 2B         ][ 0x3nnn ][ 本端身份 ][ 对端身份 ]   在 A 的集合里
+junction  [ ns_b 2B         ][ 0x3nnn ][ 本端身份 ][ 对端身份 ]   在 B 的集合里
+            ↑ 同一编号空间、同一头纪律；slot 首字节既界定宽度也给出族名——无变换
 ```
 
 ## reduce 的位置
@@ -67,4 +87,4 @@ reduce 条目没有独立 ns——它寄生在宿主文档的 ns 段里，段 0x
 reduce 条目  [ ns 2B ][ 0x2nnn ][ group 段 ]   value = acc 编码
 ```
 
-对扫描而言，一个 ns 段内前缀 `[ns][slot]` 完整枚举了这张文档的所有派生状态：段 0 主表/动态段/字典、段 1 索引、段 2 reduce、段 3 junction。机制见[reduce 机制](reduce-mechanism.zh-CN.md)。
+对扫描而言，一个 ns 段内的前缀完整枚举了这张文档的所有派生状态：固定面 0x00–0x03（主表、动态段、字典两个方向），然后是计数族 0x1 索引、0x2 reduce、0x3 junction。机制见[reduce 机制](reduce-mechanism.zh-CN.md)。

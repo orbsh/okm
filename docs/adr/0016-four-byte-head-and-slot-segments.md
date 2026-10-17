@@ -1,7 +1,7 @@
 # ADR-0016: 4-Byte Entry Head and Segment-Numbered Slots
 
 Date: 2026-09-18
-Status: Accepted
+Status: Accepted (2026-09-18). **Update 2026-10-17**: the segment table below is superseded by ADR-0030 — a single-face family is one byte with no counter, and only the counting families (declared index / reduce / junction) keep the 2-byte slot and its 12-bit counter, at the same numbers. The head-width decision survives for those families; the junction placement section stands as written.
 Supersedes: the slot allocation sections of ADR-0005 (1-byte slot), ADR-0011 (edge slots 14/15), and ADR-0012 (flat fixed-role slot table). See ADR-0015 for the junction residency decision this builds on.
 
 ## Context
@@ -36,6 +36,11 @@ Segment (high nibble):
 0x4–0xB  reserved (derived / relation extensions)
 0xC–0xF  reserved (system)
 ```
+
+*(Update 2026-10-17: this table is superseded by ADR-0030. Fixed faces —
+primary, dynamic segment, both dictionary directions, the graph's five —
+are one byte with no counter and their own numbers 0x00–0x08; the three
+counting families keep the bytes below unchanged.)*
 
 - **Segment extraction is structural**: `slot >> 12`. What was a numeric
   range convention is now a typed dispatch — misuse of one segment's slot
