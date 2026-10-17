@@ -74,8 +74,8 @@ fn entry_pairs(table_ns, key, row) -> Vec<(Vec<u8>, Vec<u8>)> {
 
 ```text
 t.scan::<ByTag>(b"rust")
-  1. entry_prefix = [ns 2B][slot 1B] + b"rust"
-  2. 范围扫 → suffix 尾段切出主键（KEY_LEN 反推）→ 回表
+  1. entry_prefix = [ns 2B][slot 2B] + b"rust"
+  2. 范围扫 → 长度判据（suffix.len() ≥ 尾段宽度）丢弃假命中 → 尾段切出主键（KEY_LEN 反推）→ 回表
 ```
 
 **探针归一化是调用方的义务**：查询侧把 probe 值喂给同一条 func 再编码（测试里的 `probe.name.to_lowercase()`），一条声明驱动两侧。derive 无法替你做这件事——probe 在调用方手里，不是 row。这意味着 func 的编码必须与写入时完全一致（同一函数、同一序列化），一致性由"复用同一个函数"保证，这正是把路径写进声明（而非调用点手写编码）的收益所在。

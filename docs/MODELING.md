@@ -269,7 +269,11 @@ within it. Two constraints govern it —
   fully from the left, in declaration order. A variable-length field
   that is not last breaks prefix semantics — raw bytes `"beijing"` have
   no terminator, so a scan for it also matches `"beijing2"`. Variable
-  fields go last; equality/fixed-width dimensions go first.
+  fields go last; equality/fixed-width dimensions go first. The mirror
+  family — a probe LONGER than the stored value, its bytes completed by
+  the carried key tail — is not a match and is dropped by the scan's
+  length test ([index-mechanism.zh-CN.md](internals/index-mechanism.zh-CN.md));
+  full-field equality is `scan_exact`.
 
 Note that `includes` is not part of the fields segment — it lives in
 the entry value and takes no part in key structure or ordering.
@@ -1297,8 +1301,11 @@ reduce  HighWater(id) { group(global) }  → id issuance (point read, +1)
   key.
 - **The `by_name` index is the lookup direction** (`name → id`). Index
   text segments carry no length prefix and no separator (ADR-0005), so a
-  raw prefix scan can hit a longer name ("add" hits "add_to_cart") — the
-  row comparison is what makes the match exact.
+  raw prefix scan can hit a longer name ("add" hits "add_to_cart") — that
+  is prefix semantics, not a false hit. For equality use `scan_exact::<I>`
+  (the probe consumes the whole field segment); the family whose probe
+  bytes are completed by the primary-key tail is dropped by the scan's
+  length test, so no row comparison is needed either way.
 - **The `HighWater(id)` reduce issues ids**: read the watermark, +1,
   write back. The watermark never falls (its unfold is a no-op), so
   retracting rows does not lower the next id — the one place where the

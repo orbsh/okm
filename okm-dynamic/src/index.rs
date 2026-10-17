@@ -486,7 +486,14 @@ pub fn scan_access_method<S: VirtualStorage>(
     let kl = schema.key_len;
     let mut out = Vec::new();
     for suffix in store.scan_suffix(&p) {
-        assert!(suffix.len() >= kl, "index entry shorter than the primary key");
+        // A probe whose bytes ran past the entry's field segment into the
+        // primary-key tail is not a match: the stored value is SHORTER than
+        // the probe and cannot start with it. Such data is legal (values mix
+        // letters and digits — stored `"ad"` + key `0x31…` vs the probe
+        // `"ad1"`), so drop the entry instead of asserting.
+        if suffix.len() < kl {
+            continue;
+        }
         let start = suffix.len() - kl;
         out.push(
             crate::decode_key(schema, &suffix[start..]).map_err(|e: crate::CodecError| e.to_string())?,
