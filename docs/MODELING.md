@@ -281,6 +281,45 @@ Expressing "carry more data in the entry" by adding fields is a
 modeling mistake; the correct outlets are `includes` (copy to skip
 table lookups) or nested entries (store together).
 
+**Several text dimensions do not violate this constraint — they change
+shape.** The bound is on NAKED variable-length segments (one, last), not on how
+many text dimensions an entity may have. When several are needed, pick a shape in
+this order:
+
+- **Hierarchical dimensions become proxy ids (fixed width).** Province / city /
+  district is `fields(province_id, city_id, district_id)`: three fixed-width
+  segments, legal, and `[province]`, `[province][city]`,
+  `[province][city][district]` are each one prefix scan — how deep the grouping
+  goes comes free from declaration order. Names ride the open-vocabulary set (row
+  payload + a `by_name` face). It buys more than legality: a rename never moves
+  the key, keys never grow with the text, and no terminator ambiguity exists.
+- **One face per text dimension** (`by_name`, `by_city`, …): each face holds that
+  single variable segment, legal — at the price of one more entry per row, i.e. a
+  permanent write cost per face.
+- **A fixed-width sort dimension AFTER a text one rides the key tail.**
+  `fields(name)` with the tail carrying time/identity gives the entry
+  `[name][tail]`, i.e. a `(name, time)` composite order: the carried tail is the
+  only thing allowed to follow a variable segment — its third job.
+- **Two text dimensions that must BOTH order the bytes → one computed segment.**
+  A `func` index makes the data segment a single string with the separator inside
+  the VALUE (`last\x00first`): still one naked variable segment, still no
+  terminator in the key, and the prefix `last\x00` means "everyone with that
+  surname". Choosing the separator is that declaration's contract (the same
+  one-declaration-drives-both-sides rule as probe normalization); it must stay
+  outside the value domain or the classic escaping problem returns — owned by the
+  value-layer function rather than the key layout. The other lookup direction is
+  a second face (a func fan-out).
+- **Fixed width before VarInt.** Two `VarInt` fields hit the same bound; spelling
+  the width out (`u32`/`u64` BE) removes it — fixed width is the norm in a sort
+  segment, VarInt is a space-saving device.
+- **The genuine last resort is a self-delimiting frame**: two adjacent naked
+  variable segments are structurally undecodable; that route works but trades
+  away zero-cost slicing and the compile-time layout lock (ADR-0005's 2026-10-17
+  update).
+
+Every extra face is paid on the write side: one more entry set to maintain per
+put.
+
 
 ### Link, unlink, query (`Junction`)
 
