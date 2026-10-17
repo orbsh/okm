@@ -39,6 +39,18 @@ pub trait VirtualStorage {
     /// beats a range (`slatedb`'s `scan_prefix(prefix, subrange)`).
     fn scan_suffix(&self, prefix: &[u8]) -> Vec<Vec<u8>> {
         self.scan_range(prefix, prefix_end(prefix).as_deref())
+            .into_iter()
+            // The default MUST honor the documented return shape: `scan_range`
+            // hands back FULL keys, so the prefix is stripped here. A default
+            // that forwarded full keys kept every tail-slicing caller working
+            // (they slice from the end) while silently turning every
+            // LENGTH-based judgement into a no-op — an impl with only the raw
+            // ops (a host-injected engine) then reported suffixes one prefix
+            // too long, and exact matching could never fire there. The range
+            // holds exactly the keys carrying `prefix`, so the slice is total;
+            // `get` keeps it panic-free regardless.
+            .map(|k| k.get(prefix.len()..).unwrap_or(&[]).to_vec())
+            .collect()
     }
     /// Range scan over FULL keys: `[begin, end)` in byte order —
     /// `None` end = unbounded. Begin is inclusive. This is the ONE
