@@ -264,7 +264,7 @@ let hits = t.scan::<ByToken>(b"rust");
 
 ### 动态字段：document API（ADR-0012）
 
-一套编码同时服务声明行与外部数据。声明字段照常走热/冷段；其余落进**动态段**（slot 1），以 n-TLV 帧——`[字段编号][类型][长度][字节]`——存储，名字在**字段名字典**（slot 2/3）里首次出现时分配。`Collection` 上的运行时接口：
+一套编码同时服务声明行与外部数据。声明字段照常走热/冷段；其余落进**动态段**（固定面 0x01），以 n-TLV 帧——`[字段编号][类型][长度][字节]`——存储，名字在**字段名字典**（固定面 0x02/0x03）里首次出现时分配。`Collection` 上的运行时接口：
 
 ```rust
 // 行-映射桥：全部字段（声明 + 动态）lift 到逻辑类型
@@ -272,10 +272,10 @@ let hits = t.scan::<ByToken>(b"rust");
 let fields = t.get_document(&key);          // Option<BTreeMap<String, DynamicValue>>，None = 行不存在
 
 // 整体写：名字匹配声明结构体的字段走 typed 路径；
-// 未知名字在字典里分配编号，落进 slot 1。
+// 未知名字在字典里分配编号，落进固定面 0x01。
 t.put_document(&key, &fields);                      // BTreeMap<String, DynamicValue>
 
-// 仅动态段的视图（直接操作 slot 1）：
+// 仅动态段的视图（直接操作固定面 0x01）：
 t.get_fields(&key);                             // 名字键 map 或 None
 t.put_fields(&key, &map);                       // 整段替换，缺席字段被移除
 t.delete_fields(&key);                          // 清空动态段
@@ -293,7 +293,12 @@ t.delete(&key);                                   // 移除 slot 0 + 全部索�
   字段名承担 tag 刻意不承担的语义（`embed_v1`、`attrs_cbor`）。
 - 未知名字在这里是**正常输入**（外部数据、MQ payload）；「未知字段拒绝」
   纪律只适用于声明路径的 typed 解码器。
-- 声明字段可索引；动态字段不可（名字是运行期数据）。
+- 声明字段走自己的 0x1 面可索引。动态字段可索引，方式是声明一条 path 索引
+  （ADR-0029：每个解析出的值一条条目，值类型限有存储形态编码的那些——
+  U8/U16/U32/U64/FixedBytes/Str）——已在 schema 驱动的（`DynamicCollection`）
+  写路径上落地；typed collection 自己的动态段还没有这套维护。动态**名字**
+  永远不能当 key 材料：名字是运行期数据，动态路径只能靠它的声明被寻址，
+  不能靠 key。
 - schema 导出（`CollectionSchema`，serde 在 `schema-serde` feature 后）驱动
   嵌入式语言读取器的动态 codec——Python（PyO3）与 Steel binding 在
   `bindings/`，与 Rust derive 字节一致（交叉测试锁定）。版本默认值迁移
@@ -475,11 +480,13 @@ Junction 覆盖的多对多绑定在**编译期端点类型**上。知识图谱�
 节点就是普通 document collection：节点的"类型"是它的 collection（ns 即类型标记），节点 kind / 属性过滤走 collection 自己的声明索引和字典——与任何文档 collection 布局零差异。新增的东西都在边这一侧：
 
 ```rust
-use okm_core::{EdgeEncode, EdgeFact, Graph, NodeRef};
+use okm_core::{Document, DocumentEncode, EdgeFact, Graph, NodeRef};
 
-/// 一个图的边 collection。声明属性字段是边自身的数据；端点不需要声明——
-/// 引用自描述（[ns 2B][len][pkey]），任意节点 collection 零成本参与。
-#[derive(EdgeEncode, Clone, Default)]
+/// 一个图的边 collection。边声明**就是**一份文档声明（ADR-0012）：声明字段
+/// 就是边自身的声明字段——热/冷段摆放、两个方向都生成的编解码、每字段一条
+/// 0x1 面——开放属性走它的动态段。端点不需要声明——引用自描述
+/// （[ns 2B][len][pkey]），任意节点 collection 零成本参与。
+#[derive(DocumentEncode, Clone, Default)]
 #[ok_edge(ns = 100)]
 struct Employment {
     since_year: u16,   // 每个声明字段 = 一条 0x1 面
@@ -492,7 +499,7 @@ g.link(&EdgeFact {
     src: NodeRef::new(&10u16.to_be_bytes(), &1u64.to_be_bytes()),
     dst: NodeRef::new(&11u16.to_be_bytes(), &9u64.to_be_bytes()),
     kind: "employs".into(),
-    attrs: okm_core::KvGraph::attrs(&attrs),
+    attrs: Document::encode_payload(&attrs),   // obj 载荷（ADR-0017 §3）
 }, &attrs, 1).unwrap();
 
 g.typed_out("employs", &user1);   // 0x7 面：类型限定遍历
@@ -501,7 +508,7 @@ g.by_attr_face(slot, &2020u16.to_be_bytes());
 ```
 
 - **端点引用**是 `[ns 2B][len varint][pkey]`——ns 充当类型标记，pkey 宽度以单字节 varint 住在引用自身。任意 collection 的文档免声明参与：同节点 = 同字节（遍历面精确前缀命中），不同 pkey 宽度共存，没有需要声明、维护、防错的注册表。图边让 Ref 纪律退役——引用自带宽度，连同 ns 知识一起。
-- **面**：一次 `link` 写主表（slot 0x0，`edge_id` u64）+ kind 索引（0x4）+ 出入遍历（0x5/0x6）+ 类型限定遍历（0x7/0x8）+ 每个声明字段一条属性面（0x1），一个 batch；`unlink` 对称删除。kind 名走边 collection 自己的字典（0x2/0x3，先见者得号）。
+- **面**：一次 `link` 写主表（固定面 0x00，`edge_id` u64）+ kind 索引（0x04）+ 出入遍历（0x05/0x06）+ 类型限定遍历（0x07/0x08）+ 每个声明字段一条属性面（计数族 0x1），一个 batch；`unlink` 对称删除。kind 名走边 collection 自己的字典（固定面 0x02/0x03，先见者得号）。
 - **平行边**是独立事实：每次 link 携带调用方选定的 `edge_id`；live id 被拒绝，绝不复用。
 - **过滤**：先走选择度最高的面，id 在内存收敛——默认不建复合面（`(*)-[kind]->(:node_kind)` = 0x7 扫描与节点 kind 面的 pkey 集合求交）。
 
@@ -561,7 +568,7 @@ pub struct Doc {
 
 长度是数据不是 schema：换嵌入模型（384 -> 768 维）只是不同的帧，无需 wire 迁移。应用确实知道预期长度时（合同约定的嵌入维度），`#[ok_len(384)]` 加一个编码期检查——写入边界即承诺执行处；解码不检查（绕过解码器是读取者自己的问题——原始帧字节与未渲染的图片同样不透明）。同一合同导出给动态 reader（`FieldSchema::expect_len`），Python 侧被一致地强制。它是应用合同，绝不是格式约束。
 
-元素是**纯值**——身份分界线（上文多对多一节）把 Vector 挡在关系载体之外：标量没有 key，对它做 key 引用是范畴错误。一对多 → `Refs`；多对多 → `Junction`；表达顺序的值列表 → `Vector`；异质动态列表 → `DynamicValue::Array`（slot 1）。`get_document` 时 Vector 提升为 `DynVal::Array`——动态层没有 Vector 类型，Vector 是存储层格式。多维形状是应用层解释（扁平序列按行优先），wire 上什么都不存。
+元素是**纯值**——身份分界线（上文多对多一节）把 Vector 挡在关系载体之外：标量没有 key，对它做 key 引用是范畴错误。一对多 → `Refs`；多对多 → `Junction`；表达顺序的值列表 → `Vector`；异质动态列表 → `DynamicValue::Array`（固定面 0x01）。`get_document` 时 Vector 提升为 `DynVal::Array`——动态层没有 Vector 类型，Vector 是存储层格式。多维形状是应用层解释（扁平序列按行优先），wire 上什么都不存。
 
 消费侧（okm-vector）在其上构建搜索：帧字节就是 function-index 的数据段（前缀扫描做精确匹配/量化桶召回），距离是 rerank 侧的事。存储保持字节不透明。
 
