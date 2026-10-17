@@ -147,3 +147,45 @@ host-injected engine: `VirtualStorage::scan_suffix`'s default forwarded
 `scan_range`'s full keys instead of the documented prefix-stripped suffix, so
 `remain` carried a whole address header. [ADR-0020](0020-range-scan-lazy-iterator.md)
 now states the default's obligation, and `scan_suffix_contract_test.rs` locks it.
+
+## Update 2026-10-17 (continued): what the carried tail does, and the encodings that stay rejected
+
+**The tail is not decoration — it does three jobs at once, which is why the
+identity must not move into the entry VALUE.** (1) Entry uniqueness: one row =
+one entry, so `put` replaces the whole entry and `delete` regenerates the entry
+set from the row — no read-modify-write, no tombstone. Move the primary key into
+the value and two rows with equal indexed fields collide on one entry key; the
+escapes are declaring those fields unique (no runtime check, silent row loss) or
+turning the value into an id set — a cross-row read-modify-write on a shared
+entry, exactly what per-row derived entries exist to avoid, and already owned by
+another primitive (`#[ok_reduce]`: group in the key, accumulator in the value,
+fixed-width `Acc`, exactly-once fold/unfold). (2) Identity without reading the
+value: the tail decodes to a `PrefixKey` — that zero-copy slice is also why the
+probe/tail judgement above costs nothing — and a truncated `key(...)` tail stays
+a trustworthy prefix, which is what junction reverse lookups hand back to
+continue on the main table. (3) Order: inside an equality prefix the tails ARE
+the main-key bytes in order, the fetch-back locality property. The entry VALUE
+carries `includes` only. Graph edges are the instructive counterexample rather
+than a refutation: an edge keeps its endpoints in the BODY because the edge's
+own identity is its surrogate `edge_id`, and the addressed direction carries the
+ref in the face key — identity sits in the key on the side being addressed.
+
+**Two encodings for mid-segment variable-length data were examined and are NOT
+adopted.** (1) A length prefix inside an index segment fails structurally: the
+segment IS a sort segment, so a leading length sorts by length before bytes and
+destroys the dictionary order the text-first regime exists for (see the
+2026-09-09 update). (2) A C-style terminator with order-preserving escaping
+(`0x00`-terminated, `0x00` → `0x00 0xFF`) does keep byte order and would allow
+more than one variable segment — a self-delimiting form already ships inside okm,
+where the graph faces put `NodeRef = [ns 2B][len varint][pkey]` mid-key and pay
+~1 byte per ref for the boundary living in the wire. It is a trade, not an
+upgrade: encoding stops being compile-time-locked zero-copy slicing and becomes a
+runtime codec with escaping, range bounds must become terminator-aware, and what
+it buys is decodability alone — never selectivity, because leftmost-prefix is a
+query-semantics rule and extra variable dimensions still mean extra declared
+access methods. A separator IS legal one layer down, where nothing has to be
+decoded: a `func` index may build a single composite text segment with the
+separator inside the VALUE (`last\x00first`), the application owning that
+contract — the KEY still carries no terminator, so the rule below stands. The
+rule to carry away: NAKED bytes cannot sit mid-segment; a SELF-DELIMITING frame
+can.
