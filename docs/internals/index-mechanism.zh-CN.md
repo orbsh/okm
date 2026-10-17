@@ -66,14 +66,31 @@ if !Self::admits(document) { return Vec::new(); }
 t.scan::<I>(&encoded)
   1. entry_prefix = [ ns 2B ][ slot 2B ] + encoded     编译期选表与序位，运行期拼字节
   2. store.scan_suffix(&p)                             引擎范围扫，返回去前缀的 suffix
-  3. 尾段切出主键编码 → PrefixKey<K> { decoded, taken }   宽度已知（key_prefix_width）
-  4. 回表：taken == KEY_LEN → get(decoded) + decode_payload
+  3. 长度判据丢弃：suffix.len() < taken 的条目不是命中（探针字节被主键尾段满足）
+  4. 尾段切出主键编码 → PrefixKey<K> { decoded, taken }   宽度已知（key_prefix_width）
+  5. 回表：taken == KEY_LEN → get(decoded) + decode_payload
           taken <  KEY_LEN → row = None（截断前缀无法回表）
 ```
 
 返回 `Vec<(PrefixKey<K>, Option<R>)>`。截断 `key(...)` 的索引只能拿到可信前缀字段，调用方拿 `decoded` 去主表继续前缀扫描。
 
+**第 3 步是这一族的唯一判据。** 字段段与主键尾段之间没有边界字节，所以探针的字节可能被"更短的值 + 尾段"凑出来（存 `"ad"`、尾段首字节 `0x31`，探针 `"ad1"`；值与主键都允许字母数字混用，这是合法数据，不是可以靠纪律禁止的输入）。尾段宽度已知，于是字段段长度 = `suffix.len() - taken`（含探针自身）：**剩余字节短于尾段宽度 ⇒ 字段段比探针短 ⇒ 值不可能以探针开头**，丢弃。这个判据只在扫描侧做一次长度比较，不回表、不读 value；"更长的值也命中"不属于假命中（那是前缀语义本身），只有这一族是。
+
 回表看似逐条随机点查，实际两条流都有序：索引条目按 `[索引字段][主键前缀]` 聚簇，主表按 `[主键]` 聚簇——顺序 I/O 的双指针归并（merge join），量化分析见[建模指南「设计约束对性能的影响」](../MODELING.zh-CN.md)。
+
+## scan_exact：全字段等值
+
+同一个长度量换个比较：`suffix.len() == taken` ⇒ 探针吃尽整个字段段 ⇒ **值恰好等于探针**。
+
+```text
+t.scan_exact::<I>(&encoded)
+  1~2 同上（引擎扫描范围与前缀扫完全一致）
+  3. suffix.len() == taken ? 保留 : 丢弃   —— 更长的值（前缀扫的命中）与
+                                          "探针啃进尾段"两侧同时被排除
+  4~5 同上（尾段解码 + 回表）
+```
+
+它是**不回表的精确匹配**：不需要行校验，也不需要 `includes(该字段)` 来核对。前提是探针给出该索引数据段的**全部字段**——只给前导字段是分组语义（属 `scan::<I>`），等值形态下这些分组命中全被判掉。动态侧（`okm_dynamic::scan_access_method`）用同一条长度判据丢弃假命中，暂不提供等值变体。
 
 ## scan_covered：覆盖扫描
 

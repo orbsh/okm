@@ -133,6 +133,12 @@ only added structure is the frontier and the visited set.
   The difference from a prefix is not cost — both read only hits — but
   SHAPE: prefix = equality on a leading segment, range = comparison on
   the leading field. Neither needs `.filter()`.
+- **exact = full-field equality (`scan_exact`).** The probe must name
+  EVERY field of the data segment: only an entry the probe consumes
+  exactly is a hit, which excludes both directions at once (a longer
+  stored value, and a probe completed by the primary-key tail) — exact
+  matching with no fetch-back validation. Naming only leading fields is
+  grouping, which is prefix's job.
 - **`.filter()` = in-memory WHERE.** _stdlib suffices, no wrapper_:
   `.filter()` straight over the scan's output. Reserved for predicates
   that cannot enter a key (non-prefix dimensions, cross-field

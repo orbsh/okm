@@ -424,10 +424,44 @@ pub trait KvIndex {
 /// recovered from the last `key_prefix_width()` bytes — full key when
 /// `KEY_PREFIX` is empty, truncated identity otherwise (trailing fields
 /// are zero-filled, use only the prefix fields).
+///
+/// Prefix semantics: the probe is a byte prefix, so a stored value that
+/// EXTENDS it matches (`"alpha"` probes `"alpha"` and `"alphabet"`). One
+/// family is not a match and is dropped: a probe that ran past the
+/// entry's field segment and was satisfied by primary-key TAIL bytes
+/// (stored `"ad"` + tail `0x31…` matching the probe `"ad1"` — values mix
+/// letters and digits, so this data is legal). The field segment is
+/// bounded by the tail's known width, so the test is one length compare:
+/// a remainder shorter than the tail means the stored value is shorter
+/// than the probe and cannot start with it.
 pub fn scan_index<S: VirtualStorage, I: KvIndex>(
     store: &S,
     ns_prefix: &[u8],
     encoded: &[u8],
+) -> Vec<PrefixKey<I::Key>> {
+    scan_index_filtered::<S, I>(store, ns_prefix, encoded, false)
+}
+
+/// Equality scan over an index: only entries whose field segment is
+/// EXACTLY the probe — the probe consumes the whole segment, so nothing
+/// of it is carried by the tail. This is exact matching without reading
+/// the row: a stored value longer than the probe matches a prefix scan
+/// but not this one, and the tail-spill case is excluded by the same
+/// length test. The probe must name EVERY field of the index's data
+/// segment (a partial probe describes a group — use [`scan_index`]).
+pub fn scan_index_exact<S: VirtualStorage, I: KvIndex>(
+    store: &S,
+    ns_prefix: &[u8],
+    encoded: &[u8],
+) -> Vec<PrefixKey<I::Key>> {
+    scan_index_filtered::<S, I>(store, ns_prefix, encoded, true)
+}
+
+fn scan_index_filtered<S: VirtualStorage, I: KvIndex>(
+    store: &S,
+    ns_prefix: &[u8],
+    encoded: &[u8],
+    exact: bool,
 ) -> Vec<PrefixKey<I::Key>> {
     let p = I::entry_prefix(ns_prefix, encoded);
     let taken = I::key_prefix_width();
@@ -435,8 +469,15 @@ pub fn scan_index<S: VirtualStorage, I: KvIndex>(
     store
         .scan_suffix(&p)
         .iter()
-        .map(|suffix| {
-            assert!(suffix.len() >= taken, "index entry shorter than key prefix");
+        .filter_map(|suffix| {
+            // The tail's width is known, so the field segment's length is
+            // `suffix.len() - taken` (plus the probe): below the tail width
+            // the probe was satisfied by tail bytes — not a match. Exact
+            // additionally wants nothing left after the probe.
+            let matched = if exact { suffix.len() == taken } else { suffix.len() >= taken };
+            if !matched {
+                return None;
+            }
             let start = suffix.len() - taken;
             let decoded = if taken == kl {
                 I::Key::decode(&suffix[start..])
@@ -447,7 +488,7 @@ pub fn scan_index<S: VirtualStorage, I: KvIndex>(
                 buf[..taken].copy_from_slice(&suffix[start..]);
                 I::Key::decode(&buf)
             };
-            PrefixKey { decoded, taken }
+            Some(PrefixKey { decoded, taken })
         })
         .collect()
 }

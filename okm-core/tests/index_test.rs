@@ -392,6 +392,61 @@ fn variable_length_index_text_first() {
     assert_eq!(alphas.len(), 3);
 }
 
+#[test]
+fn probe_never_spills_into_the_key_tail() {
+    // 值的末尾与主键尾段之间没有边界字节，所以"探针比值长"的一族必须由
+    // 扫描侧判掉：探针 "ad1" 的字节可以由 name="ad" 加上主键首字节 0x31
+    // 拼出来（字母数字混用是完全合法的数据，不能靠纪律禁止）。
+    // 判据是一个长度比较：剩余字节短于尾段宽度 ⇒ 字段段比探针短 ⇒ 值不
+    // 可能以探针开头。
+    let mut t = <Doc as Document>::collection(TestStore::slatedb_mem());
+    let id_trap = 0x3100_0000_0000_0001; // 主键编码首字节 = 0x31（'1'）
+    let rows = [
+        mk_doc(id_trap, 10, "ad"), // 假命中：值 "ad" + 主键首字节 '1'
+        mk_doc(2, 10, "ad1"),
+        mk_doc(3, 10, "ad1_to_cart"),
+    ];
+    for (k, r) in &rows {
+        t.put(k, r);
+    }
+
+    // 前言落实情况：假命中确实存在——entry 的字节以探针为前缀
+    let (k, r) = &rows[0];
+    let e = ByName::entry_key(<Doc as Document>::NS_PREFIX, k, r);
+    assert_eq!(&e[4..], b"ad\x31\x00\x00\x00\x00\x00\x00\x01");
+    let probe = ByName::entry_prefix(<Doc as Document>::NS_PREFIX, b"ad1");
+    assert!(e.starts_with(&probe));
+
+    // 前缀扫描：只返回以 "ad1" 开头的值，假命中被丢掉（过去这里 panic）
+    let hits = t.scan::<ByName>(b"ad1");
+    let names: Vec<&str> = hits
+        .iter()
+        .map(|(_, r)| r.as_ref().unwrap().name.as_str())
+        .collect();
+    assert_eq!(names, ["ad1", "ad1_to_cart"]);
+
+    // 等值扫描：只返回 name 恰好等于探针的行——不回表核验、不需要 includes
+    let exact = t.scan_exact::<ByName>(b"ad1");
+    assert_eq!(exact.len(), 1);
+    assert_eq!(exact[0].0.decoded.id, 2);
+
+    // 真正的短值不受影响：等值扫描仍能找到 "ad" 那一行
+    let ad = t.scan_exact::<ByName>(b"ad");
+    assert_eq!(ad.len(), 1);
+    assert_eq!(ad[0].0.decoded.id, id_trap);
+    // 而 "ad" 的前缀扫描返回三行（共享前缀 = 同一字典序区间）
+    assert_eq!(t.scan::<ByName>(b"ad").len(), 3);
+
+    // 惰性区间迭代器走同一条判据（过去在剩余字节短于尾段时减法下溢）
+    let mut it = t.scan_range_iter::<ByName>(b"ad1", None);
+    let first = it.next().unwrap();
+    assert_eq!(first.1.as_ref().unwrap().name, "ad1");
+    assert_eq!(it.count(), 1); // 剩下 "ad1_to_cart"
+
+    // 覆盖扫描看的是同一条范围，同样丢掉假命中
+    assert_eq!(t.scan_covered::<ByName>(b"ad1").len(), 2);
+}
+
 /// 函数索引（function-index regime）：归一化函数同时驱动写入端编码与
 /// 查询端探针——一条声明，两侧共用。
 fn lower_name(document: &DocFunc) -> String {

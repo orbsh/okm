@@ -240,8 +240,38 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     /// With a truncated `key(...)` prefix the decoded keys are partial
     /// (`PrefixKey.taken < KEY_LEN`) — use the trustworthy prefix fields
     /// to continue scanning the main table.
+    ///
+    /// Prefix semantics: a stored value that EXTENDS the probe matches
+    /// (`"alpha"` probes `"alpha"` and `"alphabet"`). Entries whose probe
+    /// bytes were satisfied by primary-key tail bytes are dropped, never
+    /// returned (`"ad"` + tail `0x31…` vs the probe `"ad1"`) — exact
+    /// matching on the value is [`scan_exact`](Self::scan_exact).
     pub fn scan<I: KvIndex<Key = K, Document = R>>(&self, encoded: &[u8]) -> Vec<(PrefixKey<K>, Option<R>)> {
         crate::scan_index::<S, I>(&self.store, &self.header(), encoded)
+            .into_iter()
+            .map(|pk| {
+                let document = if pk.taken == K::KEY_LEN {
+                    self.get(&pk.decoded)
+                } else {
+                    None
+                };
+                (pk, document)
+            })
+            .collect()
+    }
+
+    /// Equality scan over access method `I`: only entries whose field
+    /// segment is exactly `encoded` — exact matching without reading the
+    /// row (no fetch-back validation, no `includes` needed). A stored
+    /// value that merely EXTENDS the probe is not a hit, and neither is
+    /// the tail-spill case (a probe satisfied by primary-key bytes). The
+    /// probe must name every field of the index's data segment; a partial
+    /// probe is a group query — use [`scan`](Self::scan).
+    pub fn scan_exact<I: KvIndex<Key = K, Document = R>>(
+        &self,
+        encoded: &[u8],
+    ) -> Vec<(PrefixKey<K>, Option<R>)> {
+        crate::scan_index_exact::<S, I>(&self.store, &self.header(), encoded)
             .into_iter()
             .map(|pk| {
                 let document = if pk.taken == K::KEY_LEN {
@@ -337,8 +367,15 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         let b_len = b.len();
         self.store
             .scan_range_iter(&b, e.as_deref())
-            .map(move |(full, _value)| {
+            .filter_map(move |(full, _value)| {
                 let suffix = &full[b_len..];
+                // Same false-hit test as the prefix scan: a probe whose
+                // bytes were satisfied by the primary-key tail is not a
+                // match (`suffix` below the tail width means the field
+                // segment is SHORTER than the probe).
+                if suffix.len() < taken {
+                    return None;
+                }
                 let start = suffix.len() - taken;
                 let decoded = if taken == kl {
                     K::decode(&suffix[start..])
@@ -364,7 +401,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
                 } else {
                     None
                 };
-                (PrefixKey { decoded, taken }, document)
+                Some((PrefixKey { decoded, taken }, document))
             })
     }
 
@@ -381,8 +418,12 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         let kl = K::KEY_LEN;
         scan_suffix_kv(&self.store, &p)
             .into_iter()
-            .map(|(suffix, v)| {
-                assert!(suffix.len() >= taken, "index entry shorter than key prefix");
+            .filter_map(|(suffix, v)| {
+                // Entries whose probe bytes were satisfied by the tail are
+                // dropped here too — the covered path sees the same range.
+                if suffix.len() < taken {
+                    return None;
+                }
                 let start = suffix.len() - taken;
                 let decoded = if taken == kl {
                     K::decode(&suffix[start..])
@@ -391,7 +432,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
                     buf[..taken].copy_from_slice(&suffix[start..]);
                     K::decode(&buf)
                 };
-                (PrefixKey { decoded, taken }, v)
+                Some((PrefixKey { decoded, taken }, v))
             })
             .collect()
     }
