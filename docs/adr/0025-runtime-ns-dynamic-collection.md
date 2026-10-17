@@ -84,11 +84,11 @@ the core.
 Neither carrier persists its schema. `DynamicCollection` holds the
 `CollectionSchema`, access methods and reduce specs it was constructed
 with; the static `Collection` holds the derive's compile-time tables. The
-only declaration-flavoured bytes OKM ever puts in the keyspace are the
-two name vocabularies — the field-name dictionary (fixed faces 0x02/0x03,
-ADR-0012) and the edge kind dictionary (the edge's own 0x02/0x03,
-ADR-0017) — and those record FACTS (names that were actually written,
-first-seen allocation), not declarations. Nothing recovers key widths,
+only declaration-flavoured bytes OKM ever puts in the keyspace are name
+vocabularies — the field-name dictionary (fixed faces 0x02/0x03, ADR-0012)
+and a graph's PREDICATE dictionary (its own 0x09/0x0A, ADR-0017 §3) — and
+those record FACTS (names that were actually written, first-seen
+allocation), not declarations. Nothing recovers key widths,
 field offsets, cold tags, hot/cold placement, defaults or the `SlotMap`
 from the keyspace.
 
