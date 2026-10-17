@@ -475,42 +475,48 @@ junction 与索引机制上同构（都是"指向身份的次级 key 布局"）�
 
 ## 图边：第三种关系载体
 
-Junction 覆盖的多对多绑定在**编译期端点类型**上。知识图谱打破这个绑定：一个图连接多种类型的节点，边 kind 是运行期数据，平行边是不同的事实，边还携带属性。图边是第三种关系载体（ADR-0017）——独立身份、属性、平行边、开放端点。
+Junction 覆盖的多对多绑定在**编译期端点类型**上。知识图谱打破这个绑定：一个图连接多种类型的节点，边**谓词**是运行期数据，平行边是不同的事实，边还携带属性。图边是第三种关系载体（ADR-0017）——独立身份、属性、平行边、开放端点，且声明**就是**这张图。
 
 节点就是普通 document collection：节点的"类型"是它的 collection（ns 即类型标记），节点 kind / 属性过滤走 collection 自己的声明索引和字典——与任何文档 collection 布局零差异。新增的东西都在边这一侧：
 
 ```rust
 use okm_core::{Document, DocumentEncode, EdgeFact, Graph, NodeRef};
 
-/// 一个图的边 collection。边声明**就是**一份文档声明（ADR-0012）：声明字段
-/// 就是边自身的声明字段——热/冷段摆放、两个方向都生成的编解码、每字段一条
-/// 0x1 面——开放属性走它的动态段。端点不需要声明——引用自描述
-/// （[ns 2B][len][pkey]），任意节点 collection 零成本参与。
-#[derive(DocumentEncode, Clone, Default)]
-#[ok_edge(ns = 100)]
+/// 图的边 collection——声明**就是**这张图（ADR-0017 §4）：一个 ns、边自己的
+/// 载荷（就是一份普通文档载荷：热/冷段摆放、两个方向都生成的编解码）、它**显式
+/// 声明**的属性面，以及它允许的节点集合。端点不逐个声明——引用自描述
+/// （[ns 2B][len][pkey]）——但"可以有哪些集合当节点"要声明。
+#[derive(GraphEncode, Clone, Default)]
+#[ok_ns(100)]
+#[ok_index(by_since { fields(since_year) })]   // 面是声明，不自动生成
 struct Employment {
-    since_year: u16,   // 每个声明字段 = 一条 0x1 面
+    since_year: u16,
     weight: u32,
 }
+impl GraphEncode for Employment { type Nodes = EmploymentNodes; }
+
+/// 成员集是一组**集合**（每个变体 = 一个 ns）。
+enum EmploymentNodes { Users, Orgs }
 
 let mut g: Graph<_, Employment> = Graph::new(store);
 let attrs = Employment { since_year: 2020, weight: 7 };
 g.link(&EdgeFact {
     src: NodeRef::new(&10u16.to_be_bytes(), &1u64.to_be_bytes()),
     dst: NodeRef::new(&11u16.to_be_bytes(), &9u64.to_be_bytes()),
-    kind: "employs".into(),
+    predicate: "employs".into(),   // 边的类型：一个头部段 + 图自己的字典
     attrs: Document::encode_payload(&attrs),   // obj 载荷（ADR-0017 §3）
 }, &attrs, 1).unwrap();
 
-g.typed_out("employs", &user1);   // 0x7 面：类型限定遍历
-let slot = __OkmEdgeIndex_Employment_since_year::SLOT; // derive-generated 0x1 face slot
-g.by_attr_face(slot, &2020u16.to_be_bytes());
+g.typed_out("employs", &user1);   // 0x7 面：谓词过滤遍历
+use __OkmIndex_Employment_by_since as BySince;   // 声明生成的那条面的类型
+g.by_attr_face(BySince::SLOT, &2020u16.to_be_bytes());
 ```
 
-- **端点引用**是 `[ns 2B][len varint][pkey]`——ns 充当类型标记，pkey 宽度以单字节 varint 住在引用自身。任意 collection 的文档免声明参与：同节点 = 同字节（遍历面精确前缀命中），不同 pkey 宽度共存，没有需要声明、维护、防错的注册表。图边让 Ref 纪律退役——引用自带宽度，连同 ns 知识一起。
-- **面**：一次 `link` 写主表（固定面 0x00，`edge_id` u64）+ kind 索引（0x04）+ 出入遍历（0x05/0x06）+ 类型限定遍历（0x07/0x08）+ 每个声明字段一条属性面（计数族 0x1），一个 batch；`unlink` 对称删除。kind 名走边 collection 自己的字典（固定面 0x02/0x03，先见者得号）。
+- **端点引用**是 `[ns 2B][len varint][pkey]`——ns 充当类型标记，pkey 宽度以单字节 varint 住在引用自身。任意 collection 的文档免声明参与：同节点 = 同字节（遍历面精确前缀命中），不同 pkey 宽度共存，没有需要声明、维护、防错的注册表。图边让 Ref 纪律退役——引用自带宽度，连同 ns 知识一起。成员集是唯一要声明的东西（`Nodes` 枚举），在写入与解码两处作为一次校验；宽度仍是 wire 数据，成员是声明。
+- **面**：一次 `link` 写主表（固定面 0x00，`edge_id` u64）+ 写过字段时载荷的动态条目（0x01）+ 谓词索引（0x06）+ 出入遍历（0x07/0x08）+ 谓词过滤遍历（0x04/0x05）+ 每条**声明**的 `#[ok_index]` 一条面（计数族 0x1），一个 batch；`unlink` 解码边本体、精确删掉这些条目。谓词名走**图自己的**字典（固定面 0x04/0x05，先见者得号）——与载荷的字段名字典（0x02/0x03）分开，所以"列出这张图的谓词"就是扫一次 0x04 前缀，永不靠走索引面反推。
+- **句柄不声明任何东西。** `Graph<S, E>` 绑定一个引擎实例与每实例状态（谓词字典缓存、edge_id 分配位置）；ns 来自声明、成员集来自 `E::Nodes`——与 `Collection<S, K, R>` 同形，后者也只收引擎。
 - **平行边**是独立事实：每次 link 携带调用方选定的 `edge_id`；live id 被拒绝，绝不复用。
-- **过滤**：先走选择度最高的面，id 在内存收敛——默认不建复合面（`(*)-[kind]->(:node_kind)` = 0x7 扫描与节点 kind 面的 pkey 集合求交）。
+- **过滤**：先走选择度最高的面，id 在内存收敛——默认不建复合面（`(*)-[谓词]->(:节点 kind)` = 0x7 扫描与节点 kind 面的 pkey 集合求交）。
 
 分界线：`Refs` = 一对多；`Junction` = 多对多、固定端点、无属性；**图边** = 独立身份、属性、平行边、开放端点。
 
@@ -523,7 +529,7 @@ g.by_attr_face(slot, &2020u16.to_be_bytes());
   边界是 ns：一图一条 Edge collection（ADR-0017），**不是**全局隐式
   边池（SurrealDB 的 `RELATE` 形态——每次 `RELATE` 悄悄并入全库一张
   图）。PGQ 的"能合不拆"判据照搬：同信任域、关系语义相关 = 一张
-  图；只有语义域彻底分离且从不相交查询才拆两张。图内 kind 是运行期
+  图；只有语义域彻底分离且从不相交查询才拆两张。图内谓词是运行期
   数据——一条边 collection 承载多种关系类型，即 PGQ "一图多关系"
   的立场，而无需它的 per-pair 声明开销。
 - **型与态分置：高 churn 的实例态不进图。** 任务的模板、前置条件、

@@ -36,7 +36,7 @@ okm-core 宿主**共享运行时**：引擎契约（`VirtualStorage`）、编译
 
 ### 4. schema 不落键空间（2026-10-17）
 
-两个载体都不持久化自己的 schema。`DynamicCollection` 持有构造时传入的 `CollectionSchema`、access method 与 reduce spec；静态 `Collection` 持有 derive 的编译期表。OKM 写进键空间的、带声明气味的字节只有名字词汇——field-name dictionary（固定面 0x02/0x03，ADR-0012）与图的 **谓词字典**（图自己的 0x09/0x0A，ADR-0017 §3）——而它们记录的是**事实**（真的被写过的名字，first-seen 分配），不是声明。键宽、字段偏移、cold tag、hot/cold 划分、defaults、`SlotMap` 都无法从键空间恢复。
+两个载体都不持久化自己的 schema。`DynamicCollection` 持有构造时传入的 `CollectionSchema`、access method 与 reduce spec；静态 `Collection` 持有 derive 的编译期表。OKM 写进键空间的、带声明气味的字节只有名字词汇——field-name dictionary（固定面 0x02/0x03，ADR-0012）与图的 **谓词字典**（图自己的 0x04/0x05，ADR-0017 §3）——而它们记录的是**事实**（真的被写过的名字，first-seen 分配），不是声明。键宽、字段偏移、cold tag、hot/cold 划分、defaults、`SlotMap` 都无法从键空间恢复。
 
 schema 属于写入方；一份**副本**属于分配 ns 的那一方，而不属于数据键空间：
 

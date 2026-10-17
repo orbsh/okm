@@ -28,7 +28,7 @@
 pub struct EdgeBody {
     pub src: NodeRef,
     pub dst: NodeRef,
-    pub kind_id: u16,     // kind 名经 g.kind_name(kind_id) 还原
+    pub predicate_id: u16,     // 谓词名经 g.predicate_name(predicate_id) 还原
     pub attrs: Vec<u8>,   // 边自己的载荷——一份 obj 载荷，
                           // [version][hot_len][热段][冷 TLV]（ADR-0017 §3）；
                           // 动态形态：nTLV 帧
@@ -44,41 +44,41 @@ pub struct EdgeBody {
 ```text
 Cypher 形状                          okm 落点（面）
 ──────────────────────────────────────────────────────────
-(:org {id:9})-[]->()                out_edges          (0x05)
-()<-[]-(:user {id:1})               in_edges           (0x06)
-()-[r:employs]->()                  edges_of_kind      (0x04)
-(:org {id:9})-[r:employs]->()       typed_out          (0x07)
-()-[r:employs]->(:user {id:1})      typed_in           (0x08)
+(:org {id:9})-[]->()                out_edges          (0x07)
+()<-[]-(:user {id:1})               in_edges           (0x08)
+()-[r:employs]->()                  edges_of_predicate      (0x06)
+(:org {id:9})-[r:employs]->()       typed_out          (0x09)
+()-[r:employs]->(:user {id:1})      typed_in           (0x0A)
 ()-[r:employs {since: 2020}]->()    by_attr_face       (计数族 0x1)
 ```
 
 ```rust
-// 无类型邻接——触碰节点的全部边，不限 kind。
+// 无类型邻接——触碰节点的全部边，不限谓词。
 g.out_edges(&org9);                  // -> [1, 2]
 g.in_edges(&user1);                  // -> [1]
 
-// kind 限定遍历——kind 领衔扫描前缀（0x07/0x08）。
+// 谓词过滤遍历——谓词领衔扫描前缀（0x04/0x05）。
 g.typed_out("employs", &org9);       // -> [1, 2]
 g.typed_in("employs", &user1);       // -> [1]
 
-// 全图 kind 扫描——`MATCH ()-[r:employs]->()` 的入口。
-g.edges_of_kind("employs");          // -> [1, 2]
+// 全图谓词扫描——`MATCH ()-[r:employs]->()` 的入口。
+g.edges_of_predicate("employs");          // -> [1, 2]
 
 // 属性面——边事实的声明字段，等值探针。
 let slot = __OkmEdgeIndex_Employment_since_year::SLOT;
 g.by_attr_face(slot, &2020u16.to_be_bytes());  // -> [1]
 g.by_attr_face(slot, &1999u16.to_be_bytes());  // -> []（无面无错）
 
-// body 读取——端点 + kind 名 + 属性，只对幸存 id。
+// body 读取——端点 + 谓词名 + 属性，只对幸存 id。
 let body = g.get_edge(1).unwrap();
-let kind = g.kind_name(body.kind_id).unwrap(); // -> "employs"
+let predicate = g.predicate_name(body.predicate_id).unwrap(); // -> "employs"
 ```
 
-所有原语返回 edge id；扫不到返回空 Vec——未知 kind 与不存在的属性值都是空结果，不是错误。
+所有原语返回 edge id；扫不到返回空 Vec——未知谓词 与不存在的属性值都是空结果，不是错误。
 
 ## 组合：内存交集，无组合面
 
-这些面刻意正交。单个面覆盖不了的谓词（kind AND 端点类型 AND 属性）是若干面扫描的合取，在内存按 edge id 交集：
+这些面刻意正交。单个面覆盖不了的谓词（谓词 AND 端点类型 AND 属性）是若干面扫描的合取，在内存按 edge id 交集：
 
 ```rust
 // 组织 9 的雇佣边、2020 年入职、雇员是 User（ns 10）——三个面，最小结果集优先：
@@ -89,7 +89,7 @@ let candidates: Vec<u64> = g.by_attr_face(slot, &2020u16.to_be_bytes())
     .collect();
 ```
 
-成本纪律与 OKM 全库一致：先扫最 selective 的面（等值属性匹配 > kind 扫描 > 无类型邻接），让字节区间承担物理 where——内存交集只对幸存者付费。某个合取变热时，把它提升为边 collection 上的访问方法（对边自己的声明属性字段建 `#[ok_index]`），而不是在查询期组合——声明即注册，查询路径坍缩为一次前缀扫。
+成本纪律与 OKM 全库一致：先扫最 selective 的面（等值属性匹配 > 谓词扫描 > 无类型邻接），让字节区间承担物理 where——内存交集只对幸存者付费。某个合取变热时，把它提升为边 collection 上的访问方法（对边自己的声明属性字段建 `#[ok_index]`），而不是在查询期组合——声明即注册，查询路径坍缩为一次前缀扫。
 
 ## 多跳：id 与节点的分工
 
@@ -99,7 +99,7 @@ let candidates: Vec<u64> = g.by_attr_face(slot, &2020u16.to_be_bytes())
 // 一跳，只要节点：
 g.out_nodes(&user1);                    // -> [org(9), org(10)]
 g.in_nodes(&org9);                      // -> [user(1)]
-g.typed_out_nodes("employs", &user1);   // kind 限定邻居
+g.typed_out_nodes("employs", &user1);   // 谓词限定的邻居
 g.typed_in_nodes("employs", &org9);
 
 // 平行边保留重数（同一对节点两条事实产出两次同一邻居）；集合语义是调用方的去重：
@@ -133,10 +133,10 @@ walk 成为热路径时，把边 collection 的热谓词提升为声明的 `#[ok
 
 ## 两种形态，一个查询面
 
-`Graph<S, E>`（固定本体：属性是声明 struct 字段，body 取类型化字节）与 `DynamicGraph<S>`（属性是运行时 nTLV 帧，`DynEdge { kind: String, attrs: BTreeMap<..> }`）在相同的面上暴露相同的读方法。查询可见的差异：
+`Graph<S, E>`（固定本体：属性是声明 struct 字段，body 取类型化字节）与 `DynamicGraph<S>`（属性是运行时 nTLV 帧，`DynEdge { predicate: String, attrs: BTreeMap<..> }`）在相同的面上暴露相同的读方法。查询可见的差异：
 
 - `get_edge` 返回类型化载荷（`EdgeBody.attrs` = 边类型字节）vs 解码后的 `DynEdge`（属性经字典还原）。
-- 动态形态没有 0x1 属性面（属性名是运行时数据，等值属性扫描结构性缺席——0x04/0x07/0x08 的 kind 过滤是完整的，不是缺口）。
+- 动态形态没有 0x1 属性面（属性名是运行时数据，等值属性扫描结构性缺席——0x06/0x04/0x05 的 谓词过滤是完整的，不是缺口）。
 - 节点侧的 "kind" 不是边层的关切：节点是普通文档 collection，其 kind 活在自己声明的索引与字典里。`(:node_type)` 过滤 = 边面扫描 ∩ 节点 collection 自己的 kind 面扫描，内存交集。
 
 什么不该建为图——按信任域定能合不拆、型与态分置（实例态留在

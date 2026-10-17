@@ -112,4 +112,4 @@ store.scan_suffix_kv(&p)            连 key 与 value 一起取
 
 ## 两种"一对多"的分野
 
-同表 payload 维度 → `fields(...)`（本文机制）；跨表实体关系 → `EdgeEncode` 双向边（见[建模指南「多对多关系」](../MODELING.zh-CN.md)）。二者机制同构（次级 key 布局指向身份），分界在数据源：索引 = 本行 payload 的派生视图，边 = 一等的关系数据。
+同表 payload 维度 → `fields(...)`（本文机制）；跨表实体关系 → `JunctionEncode` 双向边（见[建模指南「多对多关系」](../MODELING.zh-CN.md)）。二者机制同构（次级 key 布局指向身份），分界在数据源：索引 = 本行 payload 的派生视图，边 = 一等的关系数据。

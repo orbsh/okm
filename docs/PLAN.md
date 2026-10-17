@@ -751,7 +751,7 @@ Unchanged: primary payload layout `[version][hot_len][hot][cold TLV]`
 
 - [x] Design recorded (ADR-0030): a family that is a single face — primary,
       dynamic segment, both dictionary directions, the graph's five — gets
-      its own 1-byte slot number (0x00–0x08); the counting families
+      its own 1-byte slot number (0x00–0x0A); the counting families
       (declared index 0x1 / reduce 0x2 / junction 0x3) keep the 2-byte slot,
       the 12-bit counter and their numbers unchanged. Width is decided by the
       first byte's high nibble, so a family-prefix scan stays exact without
@@ -771,6 +771,46 @@ Unchanged: primary payload layout `[version][hot_len][hot][cold TLV]`
       rebuilt (derived entries rebuild from documents; the dynamic segment
       and the dictionaries ride the rebuild).
 
+
+## Graph edge: one declaration, a handle, a predicate vocabulary (ADR-0017, decided 2026-10-17)
+
+- [x] Design recorded (ADR-0017, terminal shape): the DECLARATION is the graph
+      — `GraphEncode` (one ns via `#[ok_ns]`, the edge's own document payload,
+      attribute faces declared EXPLICITLY via `#[ok_index]`, and `type Nodes` =
+      a compile-time enum over the member COLLECTIONS). `EdgeEncode` and its
+      encoder-only half (`attrs()` / `attr_faces()` / `ATTR_SLOTS`) retire. The
+      edge's type is its PREDICATE — a key dimension (2 bytes in the head) with
+      its OWN dictionary (new fixed faces 0x04/0x05), separate from the
+      payload's field-name dictionary (0x02/0x03), so listing a graph's
+      predicates is one 0x09 prefix scan and never an inference from the index
+      faces. `Graph<S, E>` is a HANDLE that declares nothing (an engine instance
+      + the per-instance state: the predicate dictionary cache, the edge_id
+      allocation position) — the same shape as `Collection<S, K, R>`. The member
+      set lives in code (never a slot); refs stay self-describing
+      `[ns 2B][len varint][pkey]` with membership checked at write and decode;
+      `unlink` deletes precisely by decoding the edge body. "kind" is retired as
+      the name for the edge's type (the predicate; `edge_id` stays the edge's
+      own identity).
+- [ ] Landing (code is still the old shape — `EdgeEncode` + `attrs()`):
+      · derive: `GraphEncode` (ns from `#[ok_ns]`, explicit `#[ok_index]`
+        faces, `type Nodes`); `EdgeEncode` removed; `#[ok_head]`/`ATTR_SLOTS`
+        consumers dropped
+      · predicate dictionary: fixed faces 0x04/0x05; the head's third segment
+        is read/written through it; rename `kind_id` / `kind_name` →
+        `predicate_id` / `predicate_name`, `EDGE_KIND_*_SLOT` → the predicate
+        face constants; the graph's five faces shift by two (0x04–0x08 →
+        0x06–0x0A) so that a dictionary precedes the faces that read its ids
+      · assembly point: the member check at write + decode, the payload's
+        dynamic entry (0x01) owned here, nothing declarative left;
+        `Graph::new(store)` — no ns parameter
+      · `unlink`: decode the body, delete the declared-index entries exactly
+        (the dynamic form needs its schema for that, else the prefix sweep)
+      · okm-dynamic's graph handle: takes the ns + schema PAIR (from the export
+        side) and rejects a disagreement
+      · store rebuild: predicate numbers move to the new dictionary
+        (krystallizer's facts ns 37 already has data — rebuild or migrate)
+      · tests: the graph hex locks (head segment, faces) and the typed/dynamic
+        drift locks follow the new head
 
 ## Embedded documents (2026-09-17, shipped)
 

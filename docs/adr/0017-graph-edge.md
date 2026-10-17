@@ -27,7 +27,7 @@ written property graph has:
   what is forbidden here, is undeclared participation.
 - **Runtime-emerging predicates** — the edge's predicate ("has", "owns"),
   i.e. its type, is data: it allocates through the graph's own predicate
-  dictionary (0x09/0x0A, §3). The node COLLECTIONS are the opposite case. The ns
+  dictionary (0x04/0x05, §3). The node COLLECTIONS are the opposite case. The ns
   vocabulary is compile-time closed (ADR-0002, "the dictionary is code"),
   so a knowledge graph's nodes are rows of DECLARED collections (a facts
   collection, an entities collection, a users collection) and never
@@ -95,7 +95,7 @@ Three candidate schemes were weighed:
   registry. Cost: every reference grows by 1+ bytes (the len prefix),
   and every decode pays a varint step. Rejected — the Edge collection
   holds thousands of references, and the per-reference overhead
-  multiplies across the traversal faces (0x5-0x8), which are the
+  multiplies across the traversal faces (0x07-0x0A), which are the
   highest-volume entries in the store.
 - **c. Registry lookup (CHOSEN)** — pkey width comes from the schema
   (`KeyEncode::KEY_LEN`); the Edge implementation holds a **ns →
@@ -138,29 +138,31 @@ Three candidate schemes were weighed:
 0x00  primary            [edge_id]                       → value = edge body
 0x01  dynamic segment    (the edge's open attributes)   → one entry per edge
 0x02/0x03  field-name dictionary   (the payload's own names ↔ ids)
-0x04  predicate index    [predicate_id]                  → edge_id set
-0x05  out-edges          [src NodeRef][edge_id]
-0x06  in-edges           [dst NodeRef][edge_id]
-0x07  predicate+out      [predicate_id][src NodeRef][edge_id]
-0x08  predicate+in       [predicate_id][dst NodeRef][edge_id]
-0x09/0x0A  PREDICATE dictionary    [predicate name ↔ predicate_id]
+0x04/0x05  PREDICATE dictionary    [predicate name ↔ predicate_id]
+0x06  predicate index    [predicate_id]                  → edge_id set
+0x07  out-edges          [src NodeRef][edge_id]
+0x08  in-edges           [dst NodeRef][edge_id]
+0x09  predicate+out      [predicate_id][src NodeRef][edge_id]
+0x0A  predicate+in       [predicate_id][dst NodeRef][edge_id]
 ```
 (The graph's faces are fixed-face numbers — one byte each, ADR-0030; the
-declared attribute faces below are counting family 0x1.)
+declared attribute faces below are counting family 0x1. Rows are grouped
+by ROLE — the two vocabularies first, then the faces that read their ids:
+a dictionary leads the faces it serves. The NUMBERS stay the mechanism.)
 
 **The predicate has its OWN dictionary (Update 2026-10-17).**
 `[ns][0x09][predicate name] → predicate_id` and `[ns][0x0A][predicate_id]
 → name` — the same bidirectional shape as 0x02/0x03, a different
-vocabulary. Listing a graph's predicates is then ONE prefix scan of 0x09:
+vocabulary. Listing a graph's predicates is then ONE prefix scan of 0x04:
 an exact list, never reverse-derived by walking the index faces. Sharing
 one vocabulary with the payload's field names (the previous shape) left
 the names indistinguishable and made "which predicates does this graph
-have" answerable only by scanning 0x04 — a listing must not be an
+have" answerable only by scanning 0x06 — a listing must not be an
 inference. Splitting one vocabulary by id band was rejected for the same
 class of reason the project separates physically elsewhere: a band is a
 convention that breaks silently on the first out-of-band allocation,
 while a second face pair is structural. Cost: one fixed-face pair of the
-sixteen (0x09/0x0A, ADR-0030; 0x0B–0x0F stay free) and two vocabularies
+sixteen (0x04/0x05, ADR-0030; 0x0B–0x0F stay free) and two vocabularies
 in the edge collection. The field-name dictionary (0x02/0x03) keeps its
 document-side meaning for the payload's own names.
 
@@ -168,7 +170,7 @@ document-side meaning for the payload's own names.
 It carries no more information than "type" and, in prose, cannot be told
 apart from a NODE's kind (a payload field). The edge's type is its
 PREDICATE: `predicate_id` on the wire, the predicate dictionary at
-0x09/0x0A, "predicate index" / "predicate-filtered traversal" for the
+0x04/0x05, "predicate index" / "predicate-filtered traversal" for the
 faces. `edge_id` was considered and rejected — that name is the edge's
 own identity (the primary key), and reusing it for the third head segment
 would make `[src][dst][edge_id][payload]` read as if it named the edge.
@@ -187,7 +189,7 @@ explicitly, though not identical-by-construction:
 - **Edge collection = the entry types above, a different collection
   shape written in the SAME slot vocabulary.** 0x00/0x01/0x02/0x03 keep
   their document-side meanings (primary, dynamic segment, dictionary);
-  0x04–0x08 are the graph's own faces and 0x09/0x0A its own predicate
+  0x06–0x0A are the graph's own faces and 0x04/0x05 its own predicate
   dictionary, all inside the fixed-face range — no new KIND of slot is
   introduced. The value side
   is not a second encoding either: the edge's payload IS an obj
@@ -198,7 +200,7 @@ explicitly, though not identical-by-construction:
 - **Primary (0x00)**: the edge body — `[src NodeRef][dst NodeRef]
   [predicate_id][obj payload]`, where `predicate_id` is the PREDICATE
   (the edge's type) carried as a key dimension: 2 bytes from the graph's
-  own predicate dictionary (0x09/0x0A), read back by name through it. The
+  own predicate dictionary (0x04/0x05), read back by name through it. The
   trailing region is an ordinary obj
   payload (ADR-0012): `[version u8][hot_len u16 BE][hot segment][cold
   TLV]`, the encoding every document row uses. `src` / `dst` /
@@ -256,24 +258,24 @@ explicitly, though not identical-by-construction:
   per-collection). (2) **node kind face** — one declared access method
   over the node collection's ns, `[kind_id][node pkey]`, maintained by
   the node's normal put path. Composite filtering
-  (`(*)-[predicate]->(:node kind)`) scans the 0x07/0x08 face and the node
+  (`(*)-[predicate]->(:node kind)`) scans the 0x04/0x05 face and the node
   kind face and intersects the id sets in memory — two cheap faces,
   one convergence (no triple-composite face is built for it).
-- **Predicate index (0x04)**: all edges of one predicate — the
+- **Predicate index (0x06)**: all edges of one predicate — the
   `MATCH ()-[r:has]->()` entry point. `predicate_id` comes from the
-  PREDICATE dictionary (0x09/0x0A): write-time name → id, so every key
+  PREDICATE dictionary (0x04/0x05): write-time name → id, so every key
   segment stays fixed-width and sortable. The dictionary is also the
-  LISTING surface: scanning 0x09 enumerates a graph's predicates exactly,
+  LISTING surface: scanning 0x04 enumerates a graph's predicates exactly,
   with no walk over this face to infer them.
-- **Traversal (0x05/0x06)**: all out-edges / in-edges of one node. The
+- **Traversal (0x07/0x08)**: all out-edges / in-edges of one node. The
   full NodeRef leads so the scan prefix matches; `edge_id` trails —
   parallel edges (two facts between the same nodes) each get their own
   entry, and the trailing id decodes back to the primary.
-- **Predicate-filtered traversal (0x07/0x08)**: the `(*)-[predicate]->(*)`
+- **Predicate-filtered traversal (0x04/0x05)**: the `(*)-[predicate]->(*)`
   face — the predicate leads because it is the filter dimension here, and
   it cannot be a trailing segment on this face.
 - **Write protocol**: `link` = primary + one counting-family 0x1 entry per
-  DECLARED index + 0x04 + 0x05 + 0x06 + 0x07 + 0x08 in one batch; the
+  DECLARED index + 0x06 + 0x07 + 0x08 + 0x09 + 0x0A in one batch; the
   obj's dynamic entry (fixed face 0x01) rides the same batch when the
   caller wrote fields. **`unlink` deletes precisely (Update 2026-10-17)**:
   it decodes the edge body, reads the declared field values out of it, and
@@ -393,7 +395,7 @@ in existing independently of the endpoints it names.
 - Endpoint refs are self-describing (`[ns 2B][len varint][pkey]`), so
   there is no cross-collection width registry; the endpoint TYPE
   restriction is the declared `Nodes` enum, applied as a check (§2).
-- No change to ADR-0016's slot allocation: 0x04–0x08 are the graph's
+- No change to ADR-0016's slot allocation: 0x06–0x0A are the graph's
   fixed faces inside the Edge collection's ns (ADR-0030).
 - No consumer exists yet; the design is recorded before
   `#[ok_relation]` work begins, since both share the write-path diff

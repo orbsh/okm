@@ -51,6 +51,6 @@ FTS    = 多值函数索引（n-gram/token → N 条 entry）+ 调用方 BM25 �
 
 `okm-ngram` / `okm-vector` / `okm-graph` 的共同约束：
 
-1. **零存储职责**——不建自己的表结构、不绕过 `KvIndex`/`EdgeEncode`，一切数据走声明条目；
+1. **零存储职责**——不建自己的表结构、不绕过 `KvIndex`/`JunctionEncode`，一切数据走声明条目；
 2. **算法可替换**——crate 给的是最小可用配方（ngram+BM25、桶扫+精排、LP+PageRank），更重的方案（Tantivy、arroy/HNSW、Louvain）由调用方按同一条目布局自接；
 3. **依赖最小**——能不引外部依赖就不引；确需引（如 ANN 库）时挂在自己的 crate，不进核心。

@@ -845,10 +845,10 @@ both — is precisely why it could not stand.
 
 Junctions cover many-to-many with **compile-time typed endpoints**. A
 knowledge graph breaks that binding: one graph connects nodes of many
-types, edge kinds are runtime data, parallel edges are distinct facts,
-and edges carry attributes. The graph edge is the third relation carrier
-(ADR-0017) — independent identity, attributes, parallel edges, open
-endpoints.
+types, edge predicates are runtime data, parallel edges are distinct
+facts, and edges carry attributes. The graph edge is the third relation
+carrier (ADR-0017) — independent identity, attributes, parallel edges,
+open endpoints, and a declaration that IS the graph.
 
 Nodes are ordinary document collections: a node's "type" is its
 collection (the ns is the type marker), and node-kind/attribute
@@ -857,34 +857,38 @@ zero layout difference from any document collection. What is new lives
 on the edge side:
 
 ```rust
-use okm_core::{Document, DocumentEncode, EdgeFact, Graph, NodeRef};
+use okm_core::{Document, Graph, GraphEncode, NodeRef};
 
-/// The edge collection of one graph. The edge declaration IS a document
-/// declaration (ADR-0012): its declared fields are the edge's own
-/// declared fields — hot/cold placement, a generated codec in BOTH
-/// directions, one 0x1 face each — and its dynamic segment carries the
-/// open attributes. Endpoints are NOT declared — refs are
-/// self-describing ([ns 2B][len][pkey]), so any node collection
-/// participates with zero ceremony.
-#[derive(DocumentEncode, Clone, Default)]
-#[ok_edge(ns = 100)]
+/// The graph's edge collection — the declaration IS the graph (ADR-0017 §4):
+/// one ns, the edge's own payload (an ordinary document payload: hot/cold
+/// placement, both codec directions), the attribute faces it declares
+/// EXPLICITLY, and the node collections it admits. Endpoints are NOT
+/// declared one by one — refs are self-describing ([ns 2B][len][pkey]) —
+/// but the SET of collections that may appear is.
+#[derive(GraphEncode, Clone, Default)]
+#[ok_ns(100)]
+#[ok_index(by_since { fields(since_year) })]   // a face is a declaration; nothing is implied
 struct Employment {
-    since_year: u16,   // each declared field = one 0x1 face
+    since_year: u16,
     weight: u32,
 }
+impl GraphEncode for Employment { type Nodes = EmploymentNodes; }
 
-let mut g: Graph<_, Employment> = Graph::new(store);
+/// The member set is a set of COLLECTIONS (each variant is one ns).
+enum EmploymentNodes { Users, Orgs }
+
+let mut g: Graph<_, Employment> = Graph::new(store);   // handle: engine + per-instance state
 let attrs = Employment { since_year: 2020, weight: 7 };
 g.link(&EdgeFact {
     src: NodeRef::new(&10u16.to_be_bytes(), &1u64.to_be_bytes()),
     dst: NodeRef::new(&11u16.to_be_bytes(), &9u64.to_be_bytes()),
-    kind: "employs".into(),
+    predicate: "employs".into(),   // the edge's type: a head segment + the graph's own dictionary
     attrs: Document::encode_payload(&attrs),   // the obj payload (ADR-0017 §3)
 }, &attrs, 1).unwrap();
 
-g.typed_out("employs", &user1);   // 0x7 face: kind-qualified traversal
-let slot = __OkmEdgeIndex_Employment_since_year::SLOT; // derive-generated 0x1 face slot
-g.by_attr_face(slot, &2020u16.to_be_bytes());
+g.typed_out("employs", &user1);   // 0x7 face: predicate-filtered traversal
+use __OkmIndex_Employment_by_since as BySince;   // the face type the declaration generated
+g.by_attr_face(BySince::SLOT, &2020u16.to_be_bytes());
 ```
 
 - **Endpoint references** are `[ns 2B][len varint][pkey]` — the ns is
@@ -893,18 +897,29 @@ g.by_attr_face(slot, &2020u16.to_be_bytes());
   same node = same bytes (traversal faces prefix-match exactly), mixed
   pkey widths coexist, and there is no registry to declare, maintain,
   or fail on. Graph edges retire the Ref discipline — the reference
-  carries its own width, ns knowledge and all.
+  carries its own width, ns knowledge and all. The member set is the one
+  thing declared (the `Nodes` enum), applied as a check at write and at
+  decode; width stays wire data, membership is a declaration.
 - **Faces**: one `link` writes primary (fixed face 0x00, `edge_id` u64) +
-  kind index (0x04) + out/in traversal (0x05/0x06) + kind-qualified
-  traversal (0x07/0x08) + one declared-attribute face per field (counting
-  family 0x1), all in one batch; `unlink` deletes the same set. Kind names
-  resolve through the edge collection's own dictionary (fixed faces
-  0x02/0x03, first-seen-claims-next).
+  the payload's dynamic entry (0x01) when fields were written + predicate
+  index (0x06) + out/in traversal (0x07/0x08) + predicate-qualified
+  traversal (0x04/0x05) + ONE face per DECLARED `#[ok_index]` (counting
+  family 0x1), all in one batch; `unlink` decodes the edge body and
+  deletes exactly those entries. The predicate's name resolves through the
+  graph's OWN dictionary (fixed faces 0x04/0x05, first-seen-claims-next) —
+  separate from the payload's field-name dictionary (0x02/0x03), so
+  listing a graph's predicates is one prefix scan of 0x04, never an
+  inference walked back from the index faces.
+- **The handle declares nothing.** `Graph<S, E>` binds an engine instance
+  and the per-instance state (the predicate dictionary cache, the edge_id
+  allocation position); the ns comes from the declaration and the member
+  set from `E::Nodes` — the same shape as `Collection<S, K, R>`, which also
+  takes only the engine.
 - **Parallel edges** are separate facts: each link carries a
   caller-chosen `edge_id`; a live id is rejected, never reused.
 - **Filtering**: the most selective face first, ids converged in
-  memory — no composite faces by default (`(*)-[kind]->(:node_kind)` =
-  0x7 scan intersected with the node kind face's pkey set).
+  memory — no composite faces by default (`(*)-[predicate]->(:node kind)`
+  = 0x7 scan intersected with the node kind face's pkey set).
 
 Division line: `Refs` = one-to-many; `Junction` = many-to-many, fixed
 endpoints, no attributes; **Graph Edge** = independent identity,
@@ -922,9 +937,9 @@ that stop it:
   shape, where every `RELATE` quietly joins one store-wide graph). The
   PGQ "merge over split" criterion carries over: same trust domain and
   related relation semantics = one graph; only domains that are
-  separate AND never queried together get two. Within one graph, kinds
-  are runtime data — one edge collection carries many relation types,
-  the PGQ "one graph, many relations" stance without its per-pair
+  separate AND never queried together get two. Within one graph,
+  predicates are runtime data — one edge collection carries many relation
+  types, the PGQ "one graph, many relations" stance without its per-pair
   declaration overhead.
 - **Model vs state (型/态): high-churn instance state stays OUT.** A
   task's template, preconditions and references are graph nodes (slow

@@ -48,7 +48,7 @@ varint][pkey]`:
 pub struct EdgeBody {
     pub src: NodeRef,
     pub dst: NodeRef,
-    pub kind_id: u16,     // kind NAME via g.kind_name(kind_id)
+    pub predicate_id: u16,     // predicate NAME via g.predicate_name(predicate_id)
     pub attrs: Vec<u8>,   // the edge's own payload — an obj payload,
                           // [version][hot_len][hot][cold TLV] (ADR-0017 §3);
                           // dynamic form: nTLV frames
@@ -66,44 +66,44 @@ written (org 9 -> user 1 since 2020, org 9 -> user 2 since 2021).
 ```text
 Cypher shape                        okm landing (face)
 ──────────────────────────────────────────────────────────
-(:org {id:9})-[]->()                out_edges          (0x05)
-()<-[]-(:user {id:1})               in_edges           (0x06)
-()-[r:employs]->()                  edges_of_kind      (0x04)
-(:org {id:9})-[r:employs]->()       typed_out          (0x07)
-()-[r:employs]->(:user {id:1})      typed_in           (0x08)
+(:org {id:9})-[]->()                out_edges          (0x07)
+()<-[]-(:user {id:1})               in_edges           (0x08)
+()-[r:employs]->()                  edges_of_predicate      (0x06)
+(:org {id:9})-[r:employs]->()       typed_out          (0x09)
+()-[r:employs]->(:user {id:1})      typed_in           (0x0A)
 ()-[r:employs {since: 2020}]->()    by_attr_face       (family 0x1)
 ```
 
 ```rust
-// Untyped adjacency — every edge touching the node, any kind.
+// Untyped adjacency — every edge touching the node, any predicate.
 g.out_edges(&org9);                  // -> [1, 2]
 g.in_edges(&user1);                  // -> [1]
 
-// Kind-qualified traversal — kind leads the scan prefix (0x07/0x08).
+// Predicate-filtered traversal — the predicate leads the scan prefix (0x04/0x05).
 g.typed_out("employs", &org9);       // -> [1, 2]
 g.typed_in("employs", &user1);       // -> [1]
 
-// Whole-graph kind scan — the `MATCH ()-[r:employs]->()` entry point.
-g.edges_of_kind("employs");          // -> [1, 2]
+// Whole-graph predicate scan — the `MATCH ()-[r:employs]->()` entry point.
+g.edges_of_predicate("employs");          // -> [1, 2]
 
 // Attribute face — declared fields of the edge fact, exact-match probe.
 let slot = __OkmEdgeIndex_Employment_since_year::SLOT;
 g.by_attr_face(slot, &2020u16.to_be_bytes());  // -> [1]
 g.by_attr_face(slot, &1999u16.to_be_bytes());  // -> [] (no face, no error)
 
-// Body read — endpoints + kind name + attrs, for the surviving ids.
+// Body read — endpoints + predicate name + attrs, for the surviving ids.
 let body = g.get_edge(1).unwrap();
-let kind = g.kind_name(body.kind_id).unwrap(); // -> "employs"
+let predicate = g.predicate_name(body.predicate_id).unwrap(); // -> "employs"
 ```
 
 All primitives return edge ids; a scan that matches nothing returns an
-empty Vec — unknown kinds and absent attribute values are empty
+empty Vec — unknown predicates and absent attribute values are empty
 results, never errors.
 
 ## Composition: intersect in memory, no composite faces
 
 The faces are deliberately orthogonal. A predicate they don't cover
-individually (kind AND endpoint type AND attribute) is a CONJUNCTION of
+individually (predicate AND endpoint type AND attribute) is a CONJUNCTION of
 face scans, intersected on edge ids in memory:
 
 ```rust
@@ -117,7 +117,7 @@ let candidates: Vec<u64> = g.by_attr_face(slot, &2020u16.to_be_bytes())
 ```
 
 The cost discipline is the same as everywhere in OKM: pick the most
-selective face first (an exact attribute match beats a kind scan beats
+selective face first (an exact attribute match beats a predicate scan beats
 an untyped adjacency), and let the byte ranges do the physical WHERE —
 in-memory intersection only pays on what survived. When a conjunction
 becomes hot, promote it to an access method on the EDGE collection
@@ -136,7 +136,7 @@ composition over the face scan + fetch-back (zero new wire):
 // One hop, nodes only:
 g.out_nodes(&user1);                    // -> [org(9), org(10)]
 g.in_nodes(&org9);                      // -> [user(1)]
-g.typed_out_nodes("employs", &user1);   // kind-qualified neighbors
+g.typed_out_nodes("employs", &user1);   // predicate-filtered neighbors
 g.typed_in_nodes("employs", &org9);
 
 // Parallel edges PRESERVE multiplicity (two facts between one pair
@@ -181,7 +181,7 @@ in-memory work left is the visited set.
 
 `Graph<S, E>` (fixed ontology: attributes are declared struct fields,
 typed attrs bodies) and `DynamicGraph<S>` (attributes are runtime
-nTLV frames, `DynEdge { kind: String, attrs: BTreeMap<..> }`) expose
+nTLV frames, `DynEdge { predicate: String, attrs: BTreeMap<..> }`) expose
 the SAME read methods over the SAME faces. Differences visible to
 queries:
 
@@ -190,7 +190,7 @@ queries:
   dictionary).
 - The dynamic form has NO 0x1 attribute face (attribute names are
   runtime data, so exact-match attr scans are structurally absent —
-  kind filtering via 0x04/0x07/0x08 is complete, not a gap).
+  predicate filtering via 0x06/0x04/0x05 is complete, not a gap).
 - Node-side "kind" is NOT an edge-layer concern: nodes are ordinary
   document collections, their kinds live in their own declared indexes
   and dictionaries. `(:node_type)` filtering = the edge face scan ∩
