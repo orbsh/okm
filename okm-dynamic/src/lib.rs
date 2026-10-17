@@ -45,7 +45,7 @@ pub use okm_core::field::FieldType;
 
 pub use decode::{decode_key, decode_payload};
 pub use encode::{encode_fields, encode_key, encode_payload};
-pub use index::{index_entries, path_index_entries, scan_access_method, AccessMethod, AccessMethodKind, Admits, FuncDerive};
+pub use index::{index_entries, path_index_entries, scan_access_method, scan_access_method_exact, AccessMethod, AccessMethodKind, Admits, FuncDerive};
 pub use path::{Component, Path};
 pub use collection::DynamicCollection;
 pub use graph::{DynEdge, Graph};

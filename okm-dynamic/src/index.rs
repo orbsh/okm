@@ -447,12 +447,43 @@ fn encode_index_value(
 /// The pkey is the tail of the entry key (`schema.key_len` bytes — a
 /// dynamic index always indexes the FULL key; prefix keys are a
 /// Rust-side refinement).
+///
+/// Prefix semantics: a stored value that EXTENDS the probe matches. A
+/// probe whose bytes were satisfied by the key tail is dropped — the
+/// stored value is SHORTER than the probe and cannot start with it.
 pub fn scan_access_method<S: VirtualStorage>(
     store: &S,
     schema: &CollectionSchema,
     ns: &[u8],
     index: &AccessMethod,
     encoded_prefix: &[u8],
+) -> Result<Vec<ValueMap>, String> {
+    scan_access_method_filtered(store, schema, ns, index, encoded_prefix, false)
+}
+
+/// Equality scan over one access method: only documents whose field
+/// segment is EXACTLY the probe (dynamic counterpart of
+/// `okm_core::scan_index_exact`). A stored value longer than the probe
+/// matches a prefix scan but not this one, and the tail-spill case is
+/// excluded by the same length test — exact matching without reading the
+/// document.
+pub fn scan_access_method_exact<S: VirtualStorage>(
+    store: &S,
+    schema: &CollectionSchema,
+    ns: &[u8],
+    index: &AccessMethod,
+    encoded_prefix: &[u8],
+) -> Result<Vec<ValueMap>, String> {
+    scan_access_method_filtered(store, schema, ns, index, encoded_prefix, true)
+}
+
+fn scan_access_method_filtered<S: VirtualStorage>(
+    store: &S,
+    schema: &CollectionSchema,
+    ns: &[u8],
+    index: &AccessMethod,
+    encoded_prefix: &[u8],
+    exact: bool,
 ) -> Result<Vec<ValueMap>, String> {
     // `encoded_prefix` is the leftmost prefix of the indexed-field
     // segment, already encoded (empty slice = whole index). Func
@@ -486,12 +517,13 @@ pub fn scan_access_method<S: VirtualStorage>(
     let kl = schema.key_len;
     let mut out = Vec::new();
     for suffix in store.scan_suffix(&p) {
-        // A probe whose bytes ran past the entry's field segment into the
-        // primary-key tail is not a match: the stored value is SHORTER than
-        // the probe and cannot start with it. Such data is legal (values mix
-        // letters and digits — stored `"ad"` + key `0x31…` vs the probe
-        // `"ad1"`), so drop the entry instead of asserting.
-        if suffix.len() < kl {
+        // The key tail's width is known, so the field segment's length is one
+        // length compare away: below it the probe was satisfied by tail bytes
+        // (the stored value is SHORTER than the probe — not a match, and such
+        // data is legal: values mix letters and digits), while exact
+        // additionally wants nothing left after the probe.
+        let matched = if exact { suffix.len() == kl } else { suffix.len() >= kl };
+        if !matched {
             continue;
         }
         let start = suffix.len() - kl;

@@ -362,6 +362,26 @@ impl Collection {
 	        })
 	    }
 
+	    /// Equality scan over one access method: only documents whose indexed
+	    /// fields are EXACTLY the probe, so the probe must name every field of
+	    /// the data segment (a partial probe is a group query — use `scan`).
+	    /// Row-free exact matching: a longer stored value and a probe completed
+	    /// by the primary-key tail are both excluded (dynamic counterpart of
+	    /// `Collection::scan_exact`).
+	    fn scan_exact(&self, slot: u16, encoded_prefix: Vec<u8>) -> PyResult<Vec<Py<PyAny>>> {
+	        let docs = self
+	            .inner
+	            .lock()
+	            .unwrap()
+	            .scan_exact(slot, &encoded_prefix)
+	            .map_err(PyValueError::new_err)?;
+	        Python::attach(|py| {
+	            docs.iter()
+	                .map(|m| Ok(map_to_dict(py, m)?.unbind().into_any()))
+	                .collect()
+	        })
+	    }
+
 	    /// Read one reduce group's accumulator bytes (None = no group yet).
 	    /// The layout is the host's contract — decode with the same rule the
 	    /// `ReduceLogic` class writes.

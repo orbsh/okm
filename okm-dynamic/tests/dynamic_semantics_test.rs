@@ -317,3 +317,20 @@ fn reduce_entry_layout_matches_rust_side() {
         t.store().get(&typed).unwrap()
     );
 }
+
+#[test]
+fn func_index_exact_scan() {
+    let mut t = dynamic_table(TestStore::slatedb_mem());
+    t.put(&key_bytes(1, 10), &values(1, 10, 4, 100, "zig"))
+        .unwrap();
+    let z = (b'z' as u32).to_be_bytes();
+    assert_eq!(t.scan(0x1002, &z).unwrap().len(), 1, "the value is a prefix hit");
+    assert_eq!(t.scan_exact(0x1002, &z).unwrap().len(), 1, "…and an exact hit");
+    // The key tail follows the 4-byte value with no boundary byte, so the
+    // 5-byte probe (value + the key's first byte, 0x00 for org 1) is
+    // satisfied by this entry's BYTES. It is not a match on the value for
+    // either variant: the stored value is shorter than the probe.
+    let spill = [z.as_slice(), b"\x00"].concat();
+    assert!(t.scan(0x1002, &spill).unwrap().is_empty(), "spill is no prefix hit");
+    assert!(t.scan_exact(0x1002, &spill).unwrap().is_empty(), "spill is no exact hit");
+}

@@ -90,7 +90,9 @@ t.scan_exact::<I>(&encoded)
   4~5 同上（尾段解码 + 回表）
 ```
 
-它是**不回表的精确匹配**：不需要行校验，也不需要 `includes(该字段)` 来核对。前提是探针给出该索引数据段的**全部字段**——只给前导字段是分组语义（属 `scan::<I>`），等值形态下这些分组命中全被判掉。动态侧（`okm_dynamic::scan_access_method`）用同一条长度判据丢弃假命中，暂不提供等值变体。
+它是**不回表的精确匹配**：不需要行校验，也不需要 `includes(该字段)` 来核对。前提是探针给出该索引数据段的**全部字段**——只给前导字段是分组语义（属 `scan::<I>`），等值形态下这些分组命中全被判掉。
+
+动态侧是同一判据的逐字对应：`okm_dynamic::scan_access_method` / `scan_access_method_exact` → `DynamicCollection::scan` / `scan_exact` → Python binding 的 `Collection.scan` / `scan_exact`（`accept_embedded.py` 锁一条 spill 断言）。
 
 ## scan_covered：覆盖扫描
 
