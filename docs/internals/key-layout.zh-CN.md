@@ -38,8 +38,8 @@ ns 头之后是 slot。它的首字节自己说明后面还跟不跟计数字节
 0x01  obj 动态段             [ns][0x01][主键]              value = nTLV 帧
 0x02  字段名字典             [ns][0x02][field-id]          → 名字
 0x03  字段名字典             [ns][0x03][名字]              → field-id
-0x04  图 谓词字典            [ns][0x04][predicate_id]      → 谓词名
-0x05  图 谓词字典            [ns][0x05][谓词名]            → predicate_id
+0x04  kind 词汇表            [ns][0x04][predicate_id]      → 谓词名
+0x05  kind 词汇表            [ns][0x05][谓词名]            → predicate_id
 0x06  图 谓词索引            [ns][0x06][predicate_id][edge_id]
 0x07  图 出边                [ns][0x07][src NodeRef][edge_id]
 0x08  图 入边                [ns][0x08][dst NodeRef][edge_id]
@@ -90,4 +90,4 @@ reduce 条目没有独立 ns——它寄生在宿主文档的 ns 段里，段 0x
 reduce 条目  [ ns 2B ][ 0x2nnn ][ group 段 ]   value = acc 编码
 ```
 
-对扫描而言，一个 ns 段内的前缀完整枚举了这张文档的所有派生状态：固定面 0x00–0x03（主表、动态段、字段名字典两个方向），然后是计数族 0x1 索引、0x2 reduce、0x3 junction。图（边集合）另加它自己的固定面：谓词字典 0x04/0x05 与 0x06–0x0A（谓词索引、出入边、谓词±端点）。机制见[reduce 机制](reduce-mechanism.zh-CN.md)。
+对扫描而言，一个 ns 段内的前缀完整枚举了这张文档的所有派生状态：固定面 0x00–0x03（主表、动态段、字段名字典两个方向），然后是计数族 0x1 索引、0x2 reduce、0x3 junction。图（边集合）另加它自己的固定面：kind 词汇表 0x04/0x05（它的谓词）与 0x06–0x0A（谓词索引、出入边、谓词±端点）。带 kind token 的文档集合声明同一对词汇表——同一条规则，谁需要谁用。机制见[reduce 机制](reduce-mechanism.zh-CN.md)。

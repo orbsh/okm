@@ -86,8 +86,8 @@ assembles a key writes a slot the same way.
 0x01  obj dynamic segment      [ns][0x01][pkey]        value = nTLV frames
 0x02  field-name dictionary    [ns][0x02][field-id]    → name
 0x03  field-name dictionary    [ns][0x03][name]        → field-id
-0x04  graph predicate dict     [ns][0x04][predicate_id]  → name
-0x05  graph predicate dict     [ns][0x05][name]          → predicate_id
+0x04  kind vocabulary          [ns][0x04][predicate_id]  → name
+0x05  kind vocabulary          [ns][0x05][name]          → predicate_id
 0x06  graph predicate index    [ns][0x06][predicate_id][edge_id]
 0x07  graph out                [ns][0x07][src NodeRef][edge_id]
 0x08  graph in                 [ns][0x08][dst NodeRef][edge_id]
@@ -98,11 +98,11 @@ assembles a key writes a slot the same way.
 faces that read its ids; the NUMBERS are the mechanism.)
 ```
 
-**Update 2026-10-17: the graph's PREDICATE dictionary holds its own pair
-(0x04/0x05).** A graph's predicate vocabulary is no longer the payload's
-field-name dictionary (0x02/0x03): listing a graph's predicates is one
-prefix scan of 0x04, and two allocating caches can no longer hand one id
-to two names (ADR-0017 §3). The graph's declared attribute faces are
+**Update 2026-10-17: the KIND VOCABULARY holds its own pair (0x04/0x05).**
+A collection's token vocabulary beyond field names — a graph's predicates, a
+node collection's kind tokens — is no longer the payload's field-name
+dictionary (0x02/0x03): listing it is one prefix scan of 0x04, and two
+allocating caches can no longer hand one id to two names (ADR-0017 §3). The graph's declared attribute faces are
 ordinary declared indexes, family 0x1, in the edge collection's own ns.
 
 ### 3. The counting families (2 bytes, 12-bit counter, numbers unchanged)

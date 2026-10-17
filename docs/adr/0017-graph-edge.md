@@ -138,7 +138,7 @@ Three candidate schemes were weighed:
 0x00  primary            [edge_id]                       → value = edge body
 0x01  dynamic segment    (the edge's open attributes)   → one entry per edge
 0x02/0x03  field-name dictionary   (the payload's own names ↔ ids)
-0x04/0x05  PREDICATE dictionary    [predicate name ↔ predicate_id]
+0x04/0x05  kind vocabulary         [predicate name ↔ predicate_id]  (this graph's)
 0x06  predicate index    [predicate_id]                  → edge_id set
 0x07  out-edges          [src NodeRef][edge_id]
 0x08  in-edges           [dst NodeRef][edge_id]
@@ -165,6 +165,14 @@ while a second face pair is structural. Cost: one fixed-face pair of the
 sixteen (0x04/0x05, ADR-0030; 0x0B–0x0F stay free) and two vocabularies
 in the edge collection. The field-name dictionary (0x02/0x03) keeps its
 document-side meaning for the payload's own names.
+
+**The pair is okm's KIND VOCABULARY (Update 2026-10-17).** 0x04/0x05 is not
+graph-specific: it is a collection's own token vocabulary BEYOND field names —
+a graph's PREDICATES here, and a NODE COLLECTION's kind tokens where it
+declares one. A document collection with kinds keeps field names in 0x02/0x03
+and its kinds here, so two allocators never share one id space; the kind field
+itself stays an ordinary payload field with a declared index. Same pair, same
+rule, whichever collection needs it.
 
 **"kind" is retired as a name for the edge's type (Update 2026-10-17).**
 It carries no more information than "type" and, in prose, cannot be told
@@ -251,11 +259,11 @@ explicitly, though not identical-by-construction:
   marker), and attribute filtering rides the collection's own
   `#[ok_index]` declarations — nothing new. In the fully dynamic form
   node kinds are dynamic-segment data, so two existing mechanisms
-  carry the filter, no new segment: (1) **node kind dictionary** —
-  every collection already owns its own 0x02/0x03 dictionary; node kinds
-  allocate through it, and the node collection's dictionary is
-  naturally separate from the edge collection's (dictionaries are
-  per-collection). (2) **node kind face** — one declared access method
+  carry the filter, no new segment: (1) **node kind vocabulary** — a node
+  collection that carries kind tokens declares its own pair (0x04/0x05, the
+  same rule as the graph's predicates), so its kinds never share an id space
+  with the props' field names (0x02/0x03) — and it is naturally separate from
+  any graph's vocabulary (vocabularies are per-collection). (2) **node kind face** — one declared access method
   over the node collection's ns, `[kind_id][node pkey]`, maintained by
   the node's normal put path. Composite filtering
   (`(*)-[predicate]->(:node kind)`) scans the 0x09/0x0A face and the node

@@ -67,8 +67,8 @@ byte (≥ 0x10).
 0x01  obj dynamic segment      [ns][0x01][pkey]                  value = nTLV frames
 0x02  field-name dictionary    [ns][0x02][field-id]              → name
 0x03  field-name dictionary    [ns][0x03][name]                  → field-id
-0x04  graph predicate dict     [ns][0x04][predicate_id]         → name
-0x05  graph predicate dict     [ns][0x05][name]                 → predicate_id
+0x04  kind vocabulary          [ns][0x04][predicate_id]         → name
+0x05  kind vocabulary          [ns][0x05][name]                 → predicate_id
 0x06  graph predicate index    [ns][0x06][predicate_id][edge_id]
 0x07  graph out                [ns][0x07][src NodeRef][edge_id]
 0x08  graph in                 [ns][0x08][dst NodeRef][edge_id]
@@ -156,5 +156,7 @@ For scans, the prefixes inside one ns segment enumerate everything derived
 for this document: fixed faces 0x00–0x03 (primary, dynamic segment, both
 field-name dictionary directions), then counting families 0x1 indexes, 0x2
 reduces, 0x3 junctions. A graph (edge collection) adds its own fixed faces:
-the predicate dictionary 0x04/0x05 and 0x06–0x0A (predicate index, out/in
-edges, predicate±endpoint). Mechanism in [reduce mechanism](reduce-mechanism.md).
+the kind vocabulary 0x04/0x05 (its predicates) and 0x06–0x0A (predicate index,
+out/in edges, predicate±endpoint). A document collection that carries kind
+tokens declares the same vocabulary pair — one rule, whichever collection
+needs it. Mechanism in [reduce mechanism](reduce-mechanism.md).
