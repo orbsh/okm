@@ -906,7 +906,8 @@ g.by_attr_face(BySince::SLOT, &2020u16.to_be_bytes());
   traversal (0x09/0x0A) + ONE face per DECLARED `#[ok_index]` (counting
   family 0x1), all in one batch; `unlink` decodes the edge body and
   deletes exactly those entries. The predicate's name resolves through the
-  graph's OWN dictionary (fixed faces 0x04/0x05, first-seen-claims-next) —
+  graph's OWN KIND VOCABULARY (fixed faces 0x04/0x05, first-seen-claims-next;
+  the same pair a node collection uses for its kind tokens) —
   separate from the payload's field-name dictionary (0x02/0x03), so
   listing a graph's predicates is one prefix scan of 0x04, never an
   inference walked back from the index faces.
