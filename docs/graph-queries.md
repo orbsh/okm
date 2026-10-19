@@ -49,16 +49,17 @@ pub struct EdgeBody {
     pub src: NodeRef,
     pub dst: NodeRef,
     pub predicate_id: u16,     // predicate NAME via g.predicate_name(predicate_id)
-    pub attrs: Vec<u8>,   // the edge's own payload — an obj payload,
+    pub payload: Vec<u8>, // the edge's own payload — an obj payload,
                           // [version][hot_len][hot][cold TLV] (ADR-0017 §3);
-                          // dynamic form: nTLV frames
+                          // the dynamic form leaves it the bare header and
+                          // keeps its open attributes in face 0x01
 }
 ```
 
 Multi-hop traversal is just following `EdgeBody.dst` as the next hop's
 `NodeRef`.
 
-## The six faces, as query shapes
+## The faces, as query shapes
 
 Setup: an `employs` graph over `Org(ns=9)` and `User(ns=10)`, two edges
 written (org 9 -> user 1 since 2020, org 9 -> user 2 since 2021).
@@ -86,8 +87,8 @@ g.typed_in("employs", &user1);       // -> [1]
 // Whole-graph predicate scan — the `MATCH ()-[r:employs]->()` entry point.
 g.edges_of_predicate("employs");          // -> [1, 2]
 
-// Attribute face — declared fields of the edge fact, exact-match probe.
-let slot = __OkmEdgeIndex_Employment_since_year::SLOT;
+// Attribute face — a declared `#[ok_index]` of the edge, exact-match probe.
+let slot = <__OkmIndex_Employment_by_since as KvIndex>::SLOT;
 g.by_attr_face(slot, &2020u16.to_be_bytes());  // -> [1]
 g.by_attr_face(slot, &1999u16.to_be_bytes());  // -> [] (no face, no error)
 
@@ -180,14 +181,14 @@ in-memory work left is the visited set.
 ## The two forms, one query surface
 
 `Graph<S, E>` (fixed ontology: attributes are declared struct fields,
-typed attrs bodies) and `DynamicGraph<S>` (attributes are runtime
+typed attrs bodies) and `okm_dynamic::Graph<S>` (attributes are runtime
 nTLV frames, `DynEdge { predicate: String, attrs: BTreeMap<..> }`) expose
 the SAME read methods over the SAME faces. Differences visible to
 queries:
 
-- `get_edge` returns the typed payload (`EdgeBody.attrs` = edge-type
-  bytes) vs a decoded `DynEdge` (attrs resolved through the
-  dictionary).
+- `get_edge` returns the raw body (`EdgeBody.payload` = payload bytes)
+  and `edge` decodes it into the declaration's type, vs a decoded
+  `DynEdge` (attrs resolved through the field dictionary).
 - The dynamic form has NO 0x1 attribute face (attribute names are
   runtime data, so exact-match attr scans are structurally absent —
   predicate filtering via 0x06/0x09/0x0A is complete, not a gap).
