@@ -190,10 +190,11 @@ explicitly, though not identical-by-construction:
   node kind face is NOT a new kind of slot: it is an ordinary access
   method in counting family 0x1 (a declared `#[ok_index]` in the
   fixed-ontology form, a caller-allocated `AccessMethod` slot in the
-  dynamic form). Node kinds allocate through the collection's own
-  0x02/0x03 dictionary — the same dictionary every collection has.
-  Zero layout difference from any document collection; "one field is
-  the kind" is a modeling convention, not a layout fact.
+  dynamic form). Node kinds allocate through the collection's own kind
+  vocabulary (0x04/0x05) — the pair in §3, kept apart from the
+  field-name dictionary (0x02/0x03) its props use. Zero layout difference
+  from any document collection; "one field is the kind" is a modeling
+  convention, not a layout fact.
 - **Edge collection = the entry types above, a different collection
   shape written in the SAME slot vocabulary.** 0x00/0x01/0x02/0x03 keep
   their document-side meanings (primary, dynamic segment, dictionary);
