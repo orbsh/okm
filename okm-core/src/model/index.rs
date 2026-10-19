@@ -76,19 +76,19 @@ pub const fn slot_len(slot: Slot) -> usize {
 pub const PRIMARY_SLOT: Slot = 0x00;
 /// obj dynamic segment (ADR-0012), per-row undeclared fields: fixed face 0x01.
 pub const DYNAMIC_SLOT: Slot = 0x01;
-/// Field-name dictionary, number → name (ADR-0012): fixed face 0x02.
-pub const DICT_ID_SLOT: Slot = 0x02;
-/// Field-name dictionary, name → number (ADR-0012): fixed face 0x03.
-pub const DICT_NAME_SLOT: Slot = 0x03;
-/// Kind vocabulary, number → name: fixed face 0x04. A collection's token
+/// Field-name vocabulary, number → name (ADR-0012): fixed face 0x02.
+pub const FIELD_VOCAB_ID_SLOT: Slot = 0x02;
+/// Field-name vocabulary, name → number (ADR-0012): fixed face 0x03.
+pub const FIELD_VOCAB_NAME_SLOT: Slot = 0x03;
+/// Predicate vocabulary, number → name: fixed face 0x04. A collection's token
 /// vocabulary BEYOND field names — a graph's predicates, a node
 /// collection's kind tokens (ADR-0017 §3). A pair of its own, never a band
 /// inside 0x02/0x03: two allocators in one id space hand the same id to two
 /// different names silently.
-pub const KIND_VOCAB_ID_SLOT: Slot = 0x04;
-/// Kind vocabulary, name → number: fixed face 0x05 (the mirror of
-/// [`KIND_VOCAB_ID_SLOT`]).
-pub const KIND_VOCAB_NAME_SLOT: Slot = 0x05;
+pub const PREDICATE_VOCAB_ID_SLOT: Slot = 0x04;
+/// Predicate vocabulary, name → number: fixed face 0x05 (the mirror of
+/// [`PREDICATE_VOCAB_ID_SLOT`]).
+pub const PREDICATE_VOCAB_NAME_SLOT: Slot = 0x05;
 /// Slot base available to `#[ok_index]` declaration-order allocation —
 /// counters start at 1 (0 reserved), so 4095 declared indexes per collection.
 pub const DECLARED_SLOT_BASE: Slot = slot(segment::INDEX, 1);
@@ -105,7 +105,7 @@ pub const JUNCTION_SLOT_BASE: Slot = slot(segment::JUNCTION, 0);
 ///
 /// - `String` → raw UTF-8 bytes: sort order IS byte-wise lexicographic
 ///   (the text-first regime). No length prefix — a length prefix would
-///   sort by length before bytes and destroy dictionary order; exact
+///   sort by length before bytes and destroy vocabulary order; exact
 ///   matching is resolved by the primary-key tail + fetch-back.
 /// - Unsigned integers → big-endian bytes: sort order IS numeric order.
 ///
@@ -294,7 +294,7 @@ pub trait Document: Sized + Clone {
     /// on the document struct — the document is the collection's declaration point (its
     /// `#[ok_ref]` pins the key type, so `Collection<S, K, R>` is fully
     /// determined by the document), never hand-filled at the assembly site
-    /// (ADR-0002: the ns dictionary is code). A key type carries no ns of
+    /// (ADR-0002: the ns vocabulary is code). A key type carries no ns of
     /// its own: the same key shape may legitimately serve several documents /
     /// tables, each with its own declared ns. Default = empty (no ns
     /// declared — a layout-only document that never materializes a collection).
@@ -304,7 +304,7 @@ pub trait Document: Sized + Clone {
     /// 2-byte escape segment `[0xFF][N]` before the ns header — physical
     /// partition routing (Fjall) and workload isolation in the key space.
     /// The 0xFF first byte is a reserved escape: legal ns headers
-    /// (big-endian u16 constrained by the ns dictionary) never start with
+    /// (big-endian u16 constrained by the ns vocabulary) never start with
     /// it, so partitioned and unpartitioned keys are structurally disjoint
     /// — no numbering discipline needed. `None` (default) = no segment at
     /// all: zero key-encoding cost for tables without partition needs.

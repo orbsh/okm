@@ -23,7 +23,7 @@
 //! - `fjall` — sync [`FjallStore`] engine adapter.
 //! - `slatedb` — async [`SlatedbStore`] engine adapter (+ [`AsyncJunction`]).
 //!
-//! See `docs/adr/` for the design decisions (namespace dictionary,
+//! See `docs/adr/` for the design decisions (namespace vocabulary,
 //! secondary index slots, assembly point, frame codec) and the project
 //! README for a full walkthrough.
 
@@ -79,7 +79,7 @@ pub use model::field as field;
 pub use model::index as index;
 pub use model::key as key;
 pub use model::schema as schema;
-pub use model::obj_dict as obj_dict;
+pub use model::obj_vocab as obj_vocab;
 pub use model::obj_dynamic as obj_dynamic;
 pub use model::reduce as reduce;
 pub use model::reverse as reverse;

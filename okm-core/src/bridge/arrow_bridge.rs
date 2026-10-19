@@ -399,7 +399,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
 
     /// Export with a `variant` column appended: each row's dynamic segment
     /// (slot 1) encoded as one Parquet Variant value (nested Obj/Array
-    /// recurse; names resolved through the field-name dictionary). Rows
+    /// recurse; names resolved through the field-name vocabulary). Rows
     /// without a dynamic segment get `null`. The declared fields stay
     /// typed columns — Variant is the analytics-layer twin of the
     /// dynamic path, not a replacement for it (ADR-0007).
@@ -429,7 +429,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
                     push_variant(&mut b, &DynamicValue::Obj(map));
                     let (md, val) = b.finish();
                     // Wire per row: [md_len u32 BE][metadata][value] — the
-                    // metadata dict is self-contained per variant value, so
+                    // metadata vocab is self-contained per variant value, so
                     // the reader splits deterministically.
                     let mut wire = (md.len() as u32).to_be_bytes().to_vec();
                     wire.extend_from_slice(&md);

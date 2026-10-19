@@ -23,7 +23,7 @@ pub struct Collection<S, K: KeyEncode, R: Document<Key = K>> {
 impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> {
     /// The ns prefix is NOT a constructor argument: it is declared once
     /// on the key struct (`#[ok_ns]`) and read at compile time via
-    /// `R::NS_PREFIX` (ADR-0002: the ns dictionary is code; ADR-0010:
+    /// `R::NS_PREFIX` (ADR-0002: the ns vocabulary is code; ADR-0010:
     /// engine choice is per-assembly-point, ns is not). The assembly
     /// site picks the engine; it never restates the ns.
     pub fn new(store: S) -> Self {
@@ -496,7 +496,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
 
 use std::collections::BTreeMap;
 
-use crate::model::obj_dict::{DictCache, FIELD_DICT};
+use crate::model::obj_vocab::{VocabCache, FIELD_VOCAB};
 use crate::model::obj_dynamic::DynamicValue;
 
 impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> {
@@ -512,15 +512,15 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     }
 
     /// Read the obj's dynamic fields: slot 1 frames decoded to names via
-    /// the field-name dictionary. `None` = the obj has no dynamic entry
+    /// the field-name vocabulary. `None` = the obj has no dynamic entry
     /// (distinct from an empty entry, which is also None here — a
     /// zero-frame list is never written).
     pub fn get_fields(&mut self, key: &K) -> Option<BTreeMap<String, DynamicValue>> {
         let raw = self.store.get(&self.fields_key(key))?;
-        let mut d = DictCache::new(FIELD_DICT);
+        let mut d = VocabCache::new(FIELD_VOCAB);
         let header = self.header();
         // decode_named resolves nested obj field ids through the same
-        // dictionary — nested maps come back fully name-keyed.
+        // vocabulary — nested maps come back fully name-keyed.
         let frames = crate::model::obj_dynamic::decode_named(&raw, &mut |id| {
             d.name_for(&self.store, &header, id)
         });
@@ -532,7 +532,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
             if let Some(name) = d.name_for(&self.store, &header, f.id) {
                 out.insert(name, f.value);
             }
-            // Unknown id (dictionary entry absent): drop the field. Under
+            // Unknown id (vocabulary entry absent): drop the field. Under
             // single-writer this cannot happen; with shared engines it is
             // the same degraded mode the cache documents.
         }
@@ -542,21 +542,21 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     /// Replace the obj's dynamic fields wholesale: the map becomes the
     /// entire slot-1 entry (fields absent from `variants` are removed —
     /// this is a whole-entry put, not a per-field merge). First-seen
-    /// names allocate ids through the dictionary; one engine batch
-    /// carries any dictionary growth plus the entry itself.
+    /// names allocate ids through the vocabulary; one engine batch
+    /// carries any vocabulary growth plus the entry itself.
     pub fn put_fields(
         &mut self,
         key: &K,
         variants: &BTreeMap<String, DynamicValue>,
     ) {
-        let mut d = DictCache::new(FIELD_DICT);
+        let mut d = VocabCache::new(FIELD_VOCAB);
         let header = self.header().clone();
         let store = &mut self.store;
         let mut resolver = |name: &str| d.id_for(store, &header, name);
         let mut body = Vec::new();
         for (name, value) in variants {
             // put_frame_named recurses into nested Obj values, sharing
-            // the dictionary (id_for allocates on first sight).
+            // the vocabulary (id_for allocates on first sight).
             crate::model::obj_dynamic::put_frame_named(&mut body, name, value, &mut resolver);
         }
         self.epoch += 1;
@@ -571,7 +571,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     /// The whole obj as a name-keyed map: declared fields (typed, from
     /// slot 0 via FieldDesc) merged over the dynamic segment (slot 1).
     /// Declared names win by construction — the two paths cannot collide
-    /// because the typed side is compile-time and the dictionary only
+    /// because the typed side is compile-time and the vocabulary only
     /// allocates names it has never seen (a dynamic name equal to a
     /// declared name would have to be allocated first; convention:
     /// callers don't, and `get_fields` exposes any violation).

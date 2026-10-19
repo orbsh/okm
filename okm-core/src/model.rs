@@ -8,7 +8,7 @@ pub mod graph;
 pub mod index;
 pub mod junction;
 pub mod key;
-pub mod obj_dict;
+pub mod obj_vocab;
 pub mod obj_dynamic;
 pub mod reduce;
 pub mod presets;

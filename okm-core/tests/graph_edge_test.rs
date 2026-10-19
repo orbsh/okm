@@ -102,7 +102,7 @@ fn link_traverse_and_fetch_back_with_attributes() {
     let body = g.get_edge(1).unwrap();
     assert_eq!(body.src, user(1));
     assert_eq!(body.dst, org(9));
-    assert_eq!(g.predicate_name(body.predicate_id).unwrap(), "employs");
+    assert_eq!(g.predicate_vocab_name(body.predicate_vocab_id).unwrap(), "employs");
     let back = g.edge(1).unwrap();
     assert_eq!((back.since_year, back.weight), (2020, 7));
 
@@ -115,7 +115,7 @@ fn link_traverse_and_fetch_back_with_attributes() {
 }
 
 #[test]
-fn predicates_are_listed_from_the_kind_vocabulary() {
+fn predicates_are_listed_from_the_predicate_vocabulary() {
     let store = okm_core::TestStore::slatedb_mem();
     let mut g: Graph<_, Employment> = Graph::new(store.clone());
 
@@ -192,7 +192,7 @@ fn rewrite_is_one_batch() {
     // The row is the new fact, under the same identity.
     let body = g.get_edge(1).unwrap();
     assert_eq!(body.dst, org(10));
-    assert_eq!(g.predicate_name(body.predicate_id).unwrap(), "contracts");
+    assert_eq!(g.predicate_vocab_name(body.predicate_vocab_id).unwrap(), "contracts");
     // Faces: the old destination and the old predicate are gone, the new ones
     // answer, and the declared face moved with the payload.
     assert!(g.in_edges(&org(9)).is_empty());
@@ -313,7 +313,7 @@ fn hex_lock_one_link() {
     assert_eq!(primary.len(), 3, "primary head = ns 2B + fixed face 0x00, one byte");
     primary.extend_from_slice(&id);
     let body = store.get(&primary).unwrap();
-    // Body = [src][dst][predicate_id][obj payload]; the payload is the same
+    // Body = [src][dst][predicate_vocab_id][obj payload]; the payload is the same
     // two-segment obj a document row carries: [version u8][hot_len u16 BE]
     // [hot segment] — since_year u16 then weight u32, both fixed-width.
     let payload = {
@@ -349,7 +349,7 @@ fn hex_lock_one_link() {
         "predicate+in"
     );
     // Nothing in the retired 0x02/0x03 band names a predicate: the field
-    // dictionary holds only what the payload declared.
+    // vocabulary holds only what the payload declared.
     assert!(store.get(&key(&[ns.to_vec(), slot(0x02), 0u16.to_be_bytes().to_vec()])).is_none());
 
     // Declared face (counting family 0x1, declaration order):

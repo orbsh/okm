@@ -155,19 +155,19 @@ declares a fact; the macro emits the implementation.
 
 Multi-tenancy has exactly one database-level mechanism: the receiver's
 declared prefix. A remote OKM instance is one application = one domain
-model = its own ns dictionary; to the receiver it is just another ns
+model = its own ns vocabulary; to the receiver it is just another ns
 occupying one prefix. There is no `app_id` layer inside OKM, no reserved
 prefix values, and no multi-level ns declaration — if an application
 partitions by tenant internally, `tenant_id` is a plain key field in its
 structs (business sharding, same modeling for every tenant); only when
 whole applications are isolated at the platform level does the receiver
 host one `NestStorage` (with `#[ok_ns]`) executor per application, each with its own
-declared prefix and its own sender-side ns dictionary behind it.
+declared prefix and its own sender-side ns vocabulary behind it.
 
 **Bare shard form.** The prefix is optional (`NestStorage::bare`): a bare
 host executes frames byte-identical — the sender's keyspace IS the
 engine's keyspace. This serves sharding: N shards of one business domain
-(one binary deployed per shard, one ns dictionary, one encoding) each get
+(one binary deployed per shard, one ns vocabulary, one encoding) each get
 a bare host; sharding and routing belong to the orchestrator (e.g. Aura's
 partition-key routing), and OKM adds zero checking or machinery. The
 prerequisite is the domain-model consistency of the shards pointing at
@@ -200,7 +200,7 @@ to the prefix at construction). ADR-0002's "if tenants exist" clause is
 thereby **promoted from sketch to adopted mechanism**; its rejection of
 per-tenant outer isolation was premised on "no user-programmable query
 surface", which the dynamic-execution mode changes — this ADR is the
-revision trigger. The ns dictionary discipline itself (compile-time,
+revision trigger. The ns vocabulary discipline itself (compile-time,
 append-only, u16) is untouched.
 
 ### 6. Transport is a backend-internal detail

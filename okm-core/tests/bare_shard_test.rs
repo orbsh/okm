@@ -2,7 +2,7 @@
 //! frames execute byte-identical on the engine. The sender's keyspace IS
 //! the engine's keyspace; sharding and routing belong to the
 //! orchestrator. Prerequisite: every OKM instance pointing at the bare
-//! host shares one domain model (one ns dictionary, one encoding) — the
+//! host shares one domain model (one ns vocabulary, one encoding) — the
 //! same binary deployed per shard makes this automatic. Bare and hosted
 //! hosts may coexist on one engine as long as the orchestrator keeps
 //! bare instances' ns numbers off the hosted segments' numbers (an

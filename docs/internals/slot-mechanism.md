@@ -31,8 +31,9 @@ entries (ADR-0005).
 ## Slot allocation
 
 `SLOT` is a compile-time constant. A fixed face's slot is its one byte
-(primary = `0x00`, `PRIMARY_SLOT`; the dictionary directions `0x02`/`0x03`;
-the graph's faces `0x06`–`0x0A`). A counting family's slot is its family
+(primary = `0x00`, `PRIMARY_SLOT`; the dynamic segment `0x01`; the
+field-name vocabulary's two directions `0x02`/`0x03`; the predicate vocabulary
+`0x04`/`0x05`; the graph's faces `0x06`–`0x0A`). A counting family's slot is its family
 number plus a counter allocated by **declaration order** — the declared-index
 family is `0x1`, so the first `#[ok_index]` is `0x1001`, the second `0x1002`, …
 
@@ -46,7 +47,7 @@ struct User { ... }
 Reduces live in family 0x2, junctions in family 0x3 — each with its own
 independent counter (ADR-0016 removed the old coupling where reduce
 continued the index counter). Cross-collection isolation is guaranteed by
-the manual ns dictionary (ADR-0002); the slot only isolates **within** a
+the manual ns vocabulary (ADR-0002); the slot only isolates **within** a
 collection. The per-collection cap is 4095 indexes, 4095 reduces and 2048
 junction discriminators (a 12-bit counter with 0 reserved) — overflow is a
 compile-time fact (literal overflow), never a runtime risk.
@@ -112,8 +113,8 @@ forward/reverse slot pair.
 
 2026-10-17: the widening was paid back where nothing needed it (ADR-0030).
 Nine of the twelve slots in use were a single face at landing (eleven today,
-update 2026-10-17: the graph gained a predicate dictionary) — primary, dynamic
-segment, both dictionary directions, the graph's five — and their counter
+update 2026-10-17: the graph gained a predicate vocabulary) — primary, dynamic
+segment, both vocabulary directions, the graph's five — and their counter
 was constant. Fixed faces became one byte with their own numbers (0x00–0x0A)
 and the segment table gave way to a two-shape layout: fixed face (1 byte) or
 counting family (2 bytes, 12-bit counter, numbers unchanged — indexes and

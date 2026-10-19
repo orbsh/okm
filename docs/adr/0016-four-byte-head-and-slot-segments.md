@@ -27,7 +27,7 @@ and the slot's internals are split structurally:
 slot u16 = [segment 4 bit][counter 12 bit]
 
 Segment (high nibble):
-0x0  document-self  (counter: 0 primary, 1 dynamic, 2/3 dictionary,
+0x0  document-self  (counter: 0 primary, 1 dynamic, 2/3 vocabulary,
                      4–4095 buffer)
 0x1  declared index  (counter = declaration order)
 0x2  reduce          (counter = declaration order, independent —
@@ -38,9 +38,9 @@ Segment (high nibble):
 ```
 
 *(Update 2026-10-17: this table is superseded by ADR-0030. Fixed faces —
-primary, dynamic segment, both dictionary directions, the graph's five —
-are one byte with no counter and their own numbers 0x00–0x08; the three
-counting families keep the bytes below unchanged.)*
+primary, dynamic segment, both vocabulary directions, the predicate vocabulary,
+the graph's five — are one byte with no counter and their own numbers
+0x00–0x0A; the three counting families keep the bytes below unchanged.)*
 
 - **Segment extraction is structural**: `slot >> 12`. What was a numeric
   range convention is now a typed dispatch — misuse of one segment's slot

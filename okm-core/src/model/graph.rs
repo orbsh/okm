@@ -20,15 +20,15 @@
 //! # Slot layout (fixed faces within the edge ns, ADR-0030/ADR-0017 §3)
 //!
 //! ```text
-//! 0x00    primary           [edge_id u64 BE]        → [src ref][dst ref][predicate_id][obj payload]
+//! 0x00    primary           [edge_id u64 BE]        → [src ref][dst ref][predicate_vocab_id][obj payload]
 //! 0x01    dynamic segment   [edge_id u64 BE]        → the edge's open attributes (nTLV)
-//! 0x02/0x03  field-name dictionary (the payload's own names ↔ ids)
-//! 0x04/0x05  KIND VOCABULARY      (predicate name ↔ predicate_id)
-//! 0x06    predicate index   [predicate_id u16 BE]   → edge_id set
+//! 0x02/0x03  field-name vocabulary (the payload's own names ↔ ids)
+//! 0x04/0x05  PREDICATE VOCABULARY      (predicate name ↔ predicate_vocab_id)
+//! 0x06    predicate index   [predicate_vocab_id u16 BE]   → edge_id set
 //! 0x07    out-edges         [src NodeRef][edge_id u64 BE]
 //! 0x08    in-edges          [dst NodeRef][edge_id u64 BE]
-//! 0x09    predicate+out     [predicate_id][src NodeRef][edge_id]
-//! 0x0A    predicate+in      [predicate_id][dst NodeRef][edge_id]
+//! 0x09    predicate+out     [predicate_vocab_id][src NodeRef][edge_id]
+//! 0x0A    predicate+in      [predicate_vocab_id][dst NodeRef][edge_id]
 //! ```
 //!
 //! A vocabulary precedes the faces that read its ids. Declared attribute
@@ -37,7 +37,7 @@
 //! edge's payload IS an obj (ADR-0012). The node collection is a STANDARD
 //! document collection: zero layout difference from any document
 //! collection; a node collection carrying kind tokens declares its own
-//! kind vocabulary (the same 0x04/0x05 pair, per collection).
+//! predicate vocabulary (the same 0x04/0x05 pair, per collection).
 //!
 //! Identity: the primary key is the bare `edge_id` (graph-global), so point
 //! reads and `unlink` need only the id; the predicate is a VALUE segment in
@@ -46,7 +46,7 @@
 use crate::engine::storage::{MemBatch, VirtualStorage, scan_suffix_kv};
 use crate::model::index::{Document, PRIMARY_SLOT, Slot, write_slot};
 use crate::model::key::KeyEncode;
-use crate::model::obj_dict::{DictCache, KIND_VOCAB};
+use crate::model::obj_vocab::{VocabCache, PREDICATE_VOCAB};
 
 /// Fixed face 0x06: predicate index — an edge-collection-internal detail, not
 /// a declared document index, hence a graph number rather than counting
@@ -205,38 +205,38 @@ pub trait GraphEncode: Document<Key = EdgeKey> {
 pub struct EdgeHead {
     pub src: NodeRef,
     pub dst: NodeRef,
-    /// The edge's type: resolved to `predicate_id` through the graph's kind
+    /// The edge's type: resolved to `predicate_vocab_id` through the graph's kind
     /// vocabulary (0x04/0x05) at write time, so every key segment stays
     /// fixed-width. Never repeated in the payload.
     pub predicate: String,
 }
 
 /// The edge body stored at the primary (face 0x00):
-/// `[src NodeRef][dst NodeRef][predicate_id u16 BE][obj payload]` — refs are
+/// `[src NodeRef][dst NodeRef][predicate_vocab_id u16 BE][obj payload]` — refs are
 /// self-describing and the payload starts at a computable offset.
-fn edge_body(head: &EdgeHead, predicate_id: u16, payload: &[u8]) -> Vec<u8> {
+fn edge_body(head: &EdgeHead, predicate_vocab_id: u16, payload: &[u8]) -> Vec<u8> {
     let mut v = Vec::with_capacity(
         3 + head.src.pkey.len() + 3 + head.dst.pkey.len() + 2 + payload.len(),
     );
     v.extend_from_slice(&head.src.encode());
     v.extend_from_slice(&head.dst.encode());
-    v.extend_from_slice(&predicate_id.to_be_bytes());
+    v.extend_from_slice(&predicate_vocab_id.to_be_bytes());
     v.extend_from_slice(payload);
     v
 }
 
-/// Decoded edge body. `predicate_id` stays raw — name resolution needs the
+/// Decoded edge body. `predicate_vocab_id` stays raw — name resolution needs the
 /// vocabulary (a `&mut store` + cache), which the read paths own; `payload`
 /// is the obj payload bytes, decoded by the declaration's type.
 #[derive(Clone, Debug)]
 pub struct EdgeBody {
     pub src: NodeRef,
     pub dst: NodeRef,
-    pub predicate_id: u16,
+    pub predicate_vocab_id: u16,
     pub payload: Vec<u8>,
 }
 
-/// Walk `[src ref][dst ref][predicate_id][payload]` from the front — refs
+/// Walk `[src ref][dst ref][predicate_vocab_id][payload]` from the front — refs
 /// are self-describing (len varint), so no side table is consulted.
 fn decode_body(bytes: &[u8]) -> EdgeBody {
     let (src, n1) = NodeRef::decode(bytes).expect("edge body: truncated src ref");
@@ -245,19 +245,19 @@ fn decode_body(bytes: &[u8]) -> EdgeBody {
     EdgeBody {
         src,
         dst,
-        predicate_id: u16::from_be_bytes([bytes[after_dst], bytes[after_dst + 1]]),
+        predicate_vocab_id: u16::from_be_bytes([bytes[after_dst], bytes[after_dst + 1]]),
         payload: bytes[after_dst + 2..].to_vec(),
     }
 }
 
 /// Engine + graph type = the operation surface of one graph's edge set
 /// (symmetric with [`crate::Junction`]). One ns hosts every entry kind,
-/// dispatched by segment. The `DictCache` is per-handle state over the
-/// graph's KIND VOCABULARY (0x04/0x05) — allocation is single-writer, and a
+/// dispatched by segment. The `VocabCache` is per-handle state over the
+/// graph's PREDICATE VOCABULARY (0x04/0x05) — allocation is single-writer, and a
 /// read-only handle still answers typed scans (the cache loads on probe).
 pub struct Graph<S, E: GraphEncode> {
     store: S,
-    dict: DictCache,
+    vocab: VocabCache,
     _pd: std::marker::PhantomData<E>,
 }
 
@@ -265,7 +265,7 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
     /// The handle takes the engine and nothing else: the ns comes from the
     /// declaration (`E::NS_PREFIX`), the member set from `E::Nodes`.
     pub fn new(store: S) -> Self {
-        Self { store, dict: DictCache::new(KIND_VOCAB), _pd: std::marker::PhantomData }
+        Self { store, vocab: VocabCache::new(PREDICATE_VOCAB), _pd: std::marker::PhantomData }
     }
 
     pub fn store(&self) -> &S {
@@ -306,22 +306,22 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
     /// Resolve (or allocate) the predicate id through the graph's kind
     /// vocabulary (0x04/0x05) — first-seen-claims-next, append-only, the
     /// same discipline as every other vocabulary in OKM. Separate from the
-    /// payload's field-name dictionary (0x02/0x03): two allocators in one
+    /// payload's field-name vocabulary (0x02/0x03): two allocators in one
     /// id space would hand the same id to two names.
-    fn predicate_id(&mut self, predicate: &str) -> u16 {
-        self.dict.id_for(&mut self.store, E::NS_PREFIX, predicate)
+    fn predicate_vocab_id(&mut self, predicate: &str) -> u16 {
+        self.vocab.id_for(&mut self.store, E::NS_PREFIX, predicate)
     }
 
     /// Resolve predicate id → name for display/diagnostics.
-    pub fn predicate_name(&mut self, id: u16) -> Option<String> {
-        self.dict.name_for(&self.store, E::NS_PREFIX, id)
+    pub fn predicate_vocab_name(&mut self, id: u16) -> Option<String> {
+        self.vocab.name_for(&self.store, E::NS_PREFIX, id)
     }
 
     /// Every predicate this graph has, id-ordered: ONE prefix scan of 0x04.
     /// A listing, never an inference walked back from the index faces.
     pub fn predicates(&mut self) -> Vec<(u16, String)> {
         let mut p = E::NS_PREFIX.to_vec();
-        write_slot(&mut p, crate::model::index::KIND_VOCAB_ID_SLOT);
+        write_slot(&mut p, crate::model::index::PREDICATE_VOCAB_ID_SLOT);
         let mut out: Vec<(u16, String)> = scan_suffix_kv(&self.store, &p)
             .into_iter()
             .filter(|(suffix, _)| suffix.len() == 2)
@@ -358,7 +358,7 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
     /// one commit covers them all). Vocabulary allocation cannot ride the
     /// caller's batch (it commits its own), so a first-sight predicate name
     /// may outlive a failed outer commit — an extra append-only entry is
-    /// harmless by the same rule the obj dictionary documents.
+    /// harmless by the same rule the obj vocabulary documents.
     pub fn link_into(
         &mut self,
         batch: &mut MemBatch,
@@ -377,15 +377,15 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
         edge_id: u64,
     ) -> Result<(), String> {
         self.check_members(&head.src, &head.dst)?;
-        let predicate_id = self.predicate_id(&head.predicate);
-        let predicate_be = predicate_id.to_be_bytes();
-        let body = edge_body(head, predicate_id, &payload.encode_payload());
+        let predicate_vocab_id = self.predicate_vocab_id(&head.predicate);
+        let predicate_be = predicate_vocab_id.to_be_bytes();
+        let body = edge_body(head, predicate_vocab_id, &payload.encode_payload());
         let src_wire = head.src.encode();
         let dst_wire = head.dst.encode();
         let id_be = edge_id.to_be_bytes();
 
         batch.put(self.primary_key(edge_id), body);
-        // predicate index (0x06): [predicate_id][edge_id]
+        // predicate index (0x06): [predicate_vocab_id][edge_id]
         batch.put(
             self.face_key(EDGE_PREDICATE_INDEX_SLOT, &[&predicate_be, &id_be]),
             Vec::new(),
@@ -394,12 +394,12 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
         batch.put(self.face_key(EDGE_OUT_SLOT, &[&src_wire, &id_be]), Vec::new());
         // in (0x08): [dst NodeRef][edge_id]
         batch.put(self.face_key(EDGE_IN_SLOT, &[&dst_wire, &id_be]), Vec::new());
-        // predicate+out (0x09): [predicate_id][src NodeRef][edge_id]
+        // predicate+out (0x09): [predicate_vocab_id][src NodeRef][edge_id]
         batch.put(
             self.face_key(EDGE_PREDICATE_OUT_SLOT, &[&predicate_be, &src_wire, &id_be]),
             Vec::new(),
         );
-        // predicate+in (0x0A): [predicate_id][dst NodeRef][edge_id]
+        // predicate+in (0x0A): [predicate_vocab_id][dst NodeRef][edge_id]
         batch.put(
             self.face_key(EDGE_PREDICATE_IN_SLOT, &[&predicate_be, &dst_wire, &id_be]),
             Vec::new(),
@@ -439,7 +439,7 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
         self.check_members(&parsed.src, &parsed.dst)?;
         let src_wire = parsed.src.encode();
         let dst_wire = parsed.dst.encode();
-        let predicate_be = parsed.predicate_id.to_be_bytes();
+        let predicate_be = parsed.predicate_vocab_id.to_be_bytes();
         let id_be = edge_id.to_be_bytes();
         let payload: E = E::decode_payload(&parsed.payload);
 
@@ -497,11 +497,11 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
     /// predicate from one node. An unknown predicate scans nothing — there
     /// is no face to match.
     pub fn typed_edges(&mut self, slot: Slot, predicate: &str, node: &NodeRef) -> Vec<u64> {
-        let predicate_id = match self.dict.id_get(&self.store, E::NS_PREFIX, predicate) {
+        let predicate_vocab_id = match self.vocab.id_get(&self.store, E::NS_PREFIX, predicate) {
             Some(id) => id,
             None => return Vec::new(),
         };
-        let p = self.face_key(slot, &[&predicate_id.to_be_bytes(), &node.encode()]);
+        let p = self.face_key(slot, &[&predicate_vocab_id.to_be_bytes(), &node.encode()]);
         self.store
             .scan_suffix(&p)
             .iter()
@@ -523,11 +523,11 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
     /// All edges of one predicate, regardless of endpoints (0x06) — the
     /// `MATCH ()-[r:has]->()` entry point.
     pub fn edges_of_predicate(&mut self, predicate: &str) -> Vec<u64> {
-        let predicate_id = match self.dict.id_get(&self.store, E::NS_PREFIX, predicate) {
+        let predicate_vocab_id = match self.vocab.id_get(&self.store, E::NS_PREFIX, predicate) {
             Some(id) => id,
             None => return Vec::new(),
         };
-        let p = self.face_key(EDGE_PREDICATE_INDEX_SLOT, &[&predicate_id.to_be_bytes()]);
+        let p = self.face_key(EDGE_PREDICATE_INDEX_SLOT, &[&predicate_vocab_id.to_be_bytes()]);
         self.store
             .scan_suffix(&p)
             .iter()
@@ -668,7 +668,7 @@ mod tests {
         let back = decode_body(&body);
         assert_eq!(back.src, person(1));
         assert_eq!(back.dst, org(9));
-        assert_eq!(back.predicate_id, 0x0102);
+        assert_eq!(back.predicate_vocab_id, 0x0102);
         assert_eq!(back.payload, vec![0xAA, 0xBB]);
     }
 }

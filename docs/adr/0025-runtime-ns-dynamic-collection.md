@@ -49,7 +49,7 @@ and how the two schema carriers relate.
 
 For the same declaration the two carriers produce IDENTICAL bytes: same
 header discipline, same key encoding, same payload frames, same
-dictionary behavior. Data written by one reads back through the other —
+vocabulary behavior. Data written by one reads back through the other —
 **mode is a property of the WRITER, not the data**. The external API is
 aligned on purpose (put/get/scan/delete + document map), so application
 code shapes do not fork.
@@ -85,8 +85,8 @@ Neither carrier persists its schema. `DynamicCollection` holds the
 `CollectionSchema`, access methods and reduce specs it was constructed
 with; the static `Collection` holds the derive's compile-time tables. The
 only declaration-flavoured bytes OKM ever puts in the keyspace are name
-vocabularies — the field-name dictionary (fixed faces 0x02/0x03, ADR-0012)
-and a graph's PREDICATE dictionary (its own 0x04/0x05, ADR-0017 §3) — and
+vocabularies — the field-name vocabulary (fixed faces 0x02/0x03, ADR-0012)
+and a graph's PREDICATE vocabulary (its own 0x04/0x05, ADR-0017 §3) — and
 those record FACTS (names that were actually written, first-seen
 allocation), not declarations. Nothing recovers key widths,
 field offsets, cold tags, hot/cold placement, defaults or the `SlotMap`
@@ -103,7 +103,7 @@ allocates the ns — not to the data keyspace:
   record is a write one carrier would not produce — or one both must, for
   no data reason. Either way it is a new divergence surface.
 - **Precedent.** A persisted slot map was rejected as violating the
-  code-only ns/slot dictionary. Slot allocation is declared; a schema is
+  code-only ns/slot vocabulary. Slot allocation is declared; a schema is
   more declaration than a slot.
 - **Version evolution.** The data plane's version problem is already
   carried by the payload layout version (the writer's concern);

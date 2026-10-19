@@ -14,8 +14,8 @@ Rules locked to the Rust derive (okm-derive `parse_schema`/`field_encoders`):
 - Payload header `[version u8][hot_len u16 BE]` = 3 bytes; layout_version
   defaults to 1.
 - Slot map is the ADR-0016 constant allocation: slot = 4-bit segment
-  (high nibble) + 12-bit counter. primary=0, dynamic=1, dict_id=2,
-  dict_name=3, index base = segment 1 counter 1, reduce base = segment 2
+  (high nibble) + 12-bit counter. primary=0, dynamic=1, field_vocab_id=2,
+  field_vocab_name=3, index base = segment 1 counter 1, reduce base = segment 2
   counter 1, junction base = segment 3.
 - Index slots follow SOURCE declaration order (the Rust derive reads
   `#[ok_index]` attributes top-to-bottom); the stamp list is reversed
@@ -31,8 +31,8 @@ from __future__ import annotations
 # Slot map constants (okm-core model/index.rs).
 PRIMARY = 0
 DYNAMIC = 1
-DICT_ID = 2
-DICT_NAME = 3
+FIELD_VOCAB_ID = 2
+FIELD_VOCAB_NAME = 3
 INDEX_BASE = (1 << 12) | 1
 REDUCE_BASE = (2 << 12) | 1
 JUNCTION_BASE = 3 << 12
@@ -293,8 +293,8 @@ def assemble(document_cls) -> dict:
         "slots": {
             "primary": PRIMARY,
             "dynamic": DYNAMIC,
-            "dict_id": DICT_ID,
-            "dict_name": DICT_NAME,
+            "field_vocab_id": FIELD_VOCAB_ID,
+            "field_vocab_name": FIELD_VOCAB_NAME,
             "declared_index_base": INDEX_BASE,
             "declared_reduce_base": REDUCE_BASE,
             "junction_base": JUNCTION_BASE,

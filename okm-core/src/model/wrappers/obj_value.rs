@@ -7,7 +7,7 @@
 //! Framing is CBOR-derived, not CBOR: only the major-type pattern is
 //! taken — a type nibble opens each frame — and struct encoding rides
 //! the same scheme. CBOR's major types include lists and maps; with the
-//! field-name dictionary OKM needs only the list: a map IS an n-TLV
+//! field-name vocabulary OKM needs only the list: a map IS an n-TLV
 //! list (id, type, len, value), structure information living in the
 //! values, not in a per-document schema.
 //!

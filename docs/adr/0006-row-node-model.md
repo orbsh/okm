@@ -92,7 +92,7 @@ index entry per access method, in one engine batch.
 Because the binding unit is the **store instance**, not a global singleton,
 different engines can coexist in one process — transactions on `fjall` (local,
 low-latency), logs on `slatedb` (S3-backed, async batch). Each ns segment
-follows its engine; the ns dictionary (ADR-0002) already lives in code, so the
+follows its engine; the ns vocabulary (ADR-0002) already lives in code, so the
 "segment → engine" mapping is just one more explicit choice at the call site.
 
 Two boundaries:
@@ -125,7 +125,7 @@ Design points:
   it never touches engine-specific file formats. fjall-backed and slatedb-backed
   tables produce identical Parquet.
 - **Self-describing output**: the binary ns header is reversed back into
-  descriptive text (the ns dictionary lives in code, ADR-0002 — the exporter
+  descriptive text (the ns vocabulary lives in code, ADR-0002 — the exporter
   owns the reverse mapping). Column names are field names. A snapshot needs
   no sidecar schema file to interpret.
 - **What indexes are NOT in the snapshot**: index entries are derived state,

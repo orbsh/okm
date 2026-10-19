@@ -76,10 +76,10 @@ fn dynamic_link_traverse_and_fetch_back() {
     assert_eq!(back.predicate, "works_at");
     assert_eq!(back.attrs.get("since"), Some(&DynamicValue::UInt(2020)));
 
-    // The predicate is listed from the KIND vocabulary (0x04), never from
+    // The predicate is listed from the predicate vocabulary (0x04), never from
     // the index faces, and attribute names never share its id space.
     assert_eq!(g.predicates(), vec![(0u16, "works_at".to_string())]);
-    assert_eq!(g.predicate_name(0).unwrap(), "works_at");
+    assert_eq!(g.predicate_vocab_name(0).unwrap(), "works_at");
 }
 
 #[test]

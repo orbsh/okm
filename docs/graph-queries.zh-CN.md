@@ -135,9 +135,9 @@ walk 成为热路径时，把边 collection 的热谓词提升为声明的 `#[ok
 
 `Graph<S, E>`（固定本体：属性是声明 struct 字段，body 取类型化字节）与 `okm_dynamic::Graph<S>`（属性是运行时 nTLV 帧，`DynEdge { predicate: String, attrs: BTreeMap<..> }`）在相同的面上暴露相同的读方法。查询可见的差异：
 
-- `get_edge` 返回原始 body（`EdgeBody.payload` = 载荷字节），`edge` 再把它解成声明的类型；对比解码后的 `DynEdge`（属性经字段字典还原）。
+- `get_edge` 返回原始 body（`EdgeBody.payload` = 载荷字节），`edge` 再把它解成声明的类型；对比解码后的 `DynEdge`（属性经字段名词汇表还原）。
 - 动态形态没有 0x1 属性面（属性名是运行时数据，等值属性扫描结构性缺席——0x06/0x09/0x0A 的谓词过滤是完整的，不是缺口）。
-- 节点侧的 "kind" 不是边层的关切：节点是普通文档 collection，其 kind 活在自己声明的索引与字典里。`(:node_type)` 过滤 = 边面扫描 ∩ 节点 collection 自己的 kind 面扫描，内存交集。
+- 节点侧的 "kind" 不是边层的关切：节点是普通文档 collection，其 kind 活在自己声明的索引与词汇表里。`(:node_type)` 过滤 = 边面扫描 ∩ 节点 collection 自己的 kind 面扫描，内存交集。
 
 什么不该建为图——按信任域定能合不拆、型与态分置（实例态留在
 collection）、跨图经 NodeRef 组合——是建模指南的裁量，不在本文：

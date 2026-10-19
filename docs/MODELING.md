@@ -447,7 +447,7 @@ WHERE".
 One encoding serves declared rows and external data. Declared fields ride
 the hot/cold segments as usual; anything else lands in the **dynamic
 segment** (fixed face 0x01) as n-TLV frames — `[field-id][type][len][bytes]` —
-with names allocated on first sight in the **field-name dictionary**
+with names allocated on first sight in the **field-name vocabulary**
 (fixed faces 0x02/0x03). Runtime surface on `Collection`:
 
 ```rust
@@ -456,7 +456,7 @@ with names allocated on first sight in the **field-name dictionary**
 let fields = t.get_document(&key);          // Option<BTreeMap<String, DynamicValue>>, None = no row
 
 // Whole-document write: fields matching the declared struct go to the typed
-// path; unknown names allocate in the dictionary and land in fixed face 0x01.
+// path; unknown names allocate in the vocabulary and land in fixed face 0x01.
 t.put_document(&key, &fields);                      // BTreeMap<String, DynamicValue>
 
 // Dynamic-only views (fixed face 0x01 directly):
@@ -468,7 +468,7 @@ t.delete(&key);                                   // remove slot 0 + index entri
 
 - `DynamicValue` carries the open value vocabulary: `UInt`/`Int`/`F64`/
   `Str`/`Bytes`/`Bool`/`Null`/`Array`/`Obj` — nested objects recurse as
-  native frames (type tag 7) sharing the table's dictionary; no CBOR.
+  native frames (type tag 7) sharing the table's vocabulary; no CBOR.
 - The value form crosses a boundary as itself, not as a hand-written
   `match` per direction: `Serialize`/`Deserialize` for `DynamicValue` ride
   the same `schema-serde` feature. `Deserialize` goes through
@@ -476,7 +476,7 @@ t.delete(&key);                                   // remove slot 0 + index entri
   not bincode); in JSON two collapses are unavoidable and documented —
   `Bytes` renders as a number array (CBOR keeps a byte string), and a
   non-negative `Int` reads back as `UInt`. The storage encoding is
-  untouched: frames + dictionary ids remain the representation at rest.
+  untouched: frames + vocabulary ids remain the representation at rest.
 - `Bytes` is the **opaque member** of the vocabulary: the store
   interprets nothing — tag and total length only; content and its
   meaning belong to the application. Opaque means the CONTENT: the
@@ -521,7 +521,7 @@ let by_first_href = AccessMethod::path(0x1003, Path::parse("refs[0].href")?, Fie
 ```
 
 - **Components**: `Field(name)` — an object key, interned through the table's
-  field-name dictionary; `Index(u32)` — an array position (data: never
+  field-name vocabulary; `Index(u32)` — an array position (data: never
   interned, and not stable across mutations); `Key(bytes)` — a literal key,
   no interning. The first pair and `Index` are two namespaces and two walker
   operations (map lookup vs subscript), not one niched integer.
@@ -860,7 +860,7 @@ open endpoints, and a declaration that IS the graph.
 
 Nodes are ordinary document collections: a node's "type" is its
 collection (the ns is the type marker), and node-kind/attribute
-filtering rides the collection's own declared indexes and dictionary —
+filtering rides the collection's own declared indexes and vocabulary —
 zero layout difference from any document collection. What is new lives
 on the edge side:
 
@@ -916,9 +916,9 @@ g.by_attr_face(<BySince as KvIndex>::SLOT, &2020u16.to_be_bytes());
   decoded payload, never swept by prefix); the fully dynamic form writes its
   open attributes into the dynamic segment (fixed face 0x01, one entry per
   edge). The predicate's name resolves through the
-  graph's OWN KIND VOCABULARY (fixed faces 0x04/0x05, first-seen-claims-next;
+  graph's OWN PREDICATE VOCABULARY (fixed faces 0x04/0x05, first-seen-claims-next;
   the same pair a node collection uses for its kind tokens) —
-  separate from the payload's field-name dictionary (0x02/0x03), so
+  separate from the payload's field-name vocabulary (0x02/0x03), so
   listing a graph's predicates is one prefix scan of 0x04, never an
   inference walked back from the index faces.
 - **The handle declares nothing.** `Graph<S, E>` binds an engine instance
@@ -1394,7 +1394,7 @@ Two disciplines:
   in this model.
 
 The reverse direction (`id → name`) is one `get` on the row — the point
-of a dictionary over a hash: a hash into a fixed-width segment collides
+of a vocabulary over a hash: a hash into a fixed-width segment collides
 (a collision silently addresses another entity's rows) and cannot be
 rendered back, so operations cannot list the vocabulary in human terms.
 
@@ -1561,7 +1561,7 @@ to "declare it, then never touch it".
   the declaration is the registry, and there is no runtime registry (see
   [ARCHITECTURE](ARCHITECTURE.md)).
 - **Position is identity.** An access method's slot is its position in
-  the declaration, and a field's dictionary id is its first-seen order.
+  the declaration, and a field's vocabulary id is its first-seen order.
   Both are append-only and never reused (above): nothing in the layout is
   "just a number" that may be reassigned.
 - **Illegal shapes are unrepresentable at compile time.** Two
@@ -1575,7 +1575,7 @@ to "declare it, then never touch it".
 - **The address space is a budget.** ns is a 2-byte identity — one
   entity class, one ns, never reused; the slot space is a 4-bit segment
   (entry kind) plus a 12-bit counter, its segments reserved by kind
-  (ADR-0016); dictionary ids only grow. Allocating them is a
+  (ADR-0016); vocabulary ids only grow. Allocating them is a
   declaration-time duty — when instances share one engine, ns allocation
   is a deployment decision.
 - **A layout change is a rebuild, not a migration.** Index entries are

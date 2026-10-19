@@ -758,7 +758,7 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> TS2 {
     // segment in the key (default). Some(N) prepends a 2-byte ESCAPE
     // segment `[0xFF][N]` before the ns header — 0xFF is a reserved escape
     // byte that legal ns headers (big-endian u16, first byte constrained
-    // by the ns dictionary to 0x00-0xFE) never start with, so partitioned
+    // by the ns vocabulary to 0x00-0xFE) never start with, so partitioned
     // and unpartitioned keys are structurally disjoint with zero numbering
     // discipline. Bare `#[ok_partition]` (no argument) is rejected — an id
     // is required to avoid the "Some(0) = no segment" ambiguity.

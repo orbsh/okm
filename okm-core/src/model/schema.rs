@@ -114,7 +114,7 @@ pub struct CollectionSchema {
     /// then checks nothing rather than guessing.
     pub members: Vec<u16>,
     /// Slot map (ADR-0012 final allocation): the dynamic reader needs to
-    /// know where the dynamic segment and the dictionary live, and where
+    /// know where the dynamic segment and the vocabulary live, and where
     /// declared index/reduce slots begin.
     pub slots: SlotMap,
 }
@@ -148,12 +148,12 @@ fn lookup_default(
 pub struct SlotMap {
     pub primary: u16,
     pub dynamic: u16,
-    pub dict_id: u16,
-    pub dict_name: u16,
-    /// Kind vocabulary (ADR-0017 §3): a graph's predicates, a node
+    pub field_vocab_id: u16,
+    pub field_vocab_name: u16,
+    /// Predicate vocabulary (ADR-0017 §3): a graph's predicates, a node
     /// collection's kind tokens — its own pair, never a band of 0x02/0x03.
-    pub kind_id: u16,
-    pub kind_name: u16,
+    pub predicate_vocab_id: u16,
+    pub predicate_vocab_name: u16,
     pub declared_index_base: u16,
     pub declared_reduce_base: u16,
     pub junction_base: u16,
@@ -221,10 +221,10 @@ impl CollectionSchema {
             slots: SlotMap {
                 primary: crate::model::index::PRIMARY_SLOT,
                 dynamic: crate::model::index::DYNAMIC_SLOT,
-                dict_id: crate::model::index::DICT_ID_SLOT,
-                dict_name: crate::model::index::DICT_NAME_SLOT,
-                kind_id: crate::model::index::KIND_VOCAB_ID_SLOT,
-                kind_name: crate::model::index::KIND_VOCAB_NAME_SLOT,
+                field_vocab_id: crate::model::index::FIELD_VOCAB_ID_SLOT,
+                field_vocab_name: crate::model::index::FIELD_VOCAB_NAME_SLOT,
+                predicate_vocab_id: crate::model::index::PREDICATE_VOCAB_ID_SLOT,
+                predicate_vocab_name: crate::model::index::PREDICATE_VOCAB_NAME_SLOT,
                 declared_index_base: crate::model::index::DECLARED_SLOT_BASE,
                 declared_reduce_base: crate::model::index::REDUCE_SLOT_BASE,
                 junction_base: crate::model::index::JUNCTION_SLOT_BASE,
@@ -311,11 +311,13 @@ mod serde_impls {
     impl Serialize for SlotMap {
         fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
             use serde::ser::SerializeStruct;
-            let mut st = s.serialize_struct("SlotMap", 7)?;
+            let mut st = s.serialize_struct("SlotMap", 9)?;
             st.serialize_field("primary", &self.primary)?;
             st.serialize_field("dynamic", &self.dynamic)?;
-            st.serialize_field("dict_id", &self.dict_id)?;
-            st.serialize_field("dict_name", &self.dict_name)?;
+            st.serialize_field("field_vocab_id", &self.field_vocab_id)?;
+            st.serialize_field("field_vocab_name", &self.field_vocab_name)?;
+            st.serialize_field("predicate_vocab_id", &self.predicate_vocab_id)?;
+            st.serialize_field("predicate_vocab_name", &self.predicate_vocab_name)?;
             st.serialize_field("declared_index_base", &self.declared_index_base)?;
             st.serialize_field("declared_reduce_base", &self.declared_reduce_base)?;
             st.serialize_field("junction_base", &self.junction_base)?;
@@ -329,32 +331,34 @@ mod serde_impls {
             struct Repr {
                 primary: u16,
                 dynamic: u16,
-                dict_id: u16,
-                dict_name: u16,
-                /// Schemas written before the kind vocabulary existed carry
+                #[serde(alias = "dict_id")]
+                field_vocab_id: u16,
+                #[serde(alias = "dict_name")]
+                field_vocab_name: u16,
+                /// Schemas written before the predicate vocabulary existed carry
                 /// no pair; the fixed faces are the fallback numbers.
-                #[serde(default = "default_kind_id")]
-                kind_id: u16,
-                #[serde(default = "default_kind_name")]
-                kind_name: u16,
+                #[serde(default = "default_predicate_vocab_id", alias = "kind_id")]
+                predicate_vocab_id: u16,
+                #[serde(default = "default_predicate_vocab_name", alias = "kind_name")]
+                predicate_vocab_name: u16,
                 declared_index_base: u16,
                 declared_reduce_base: u16,
                 junction_base: u16,
             }
-            fn default_kind_id() -> u16 {
-                crate::model::index::KIND_VOCAB_ID_SLOT
+            fn default_predicate_vocab_id() -> u16 {
+                crate::model::index::PREDICATE_VOCAB_ID_SLOT
             }
-            fn default_kind_name() -> u16 {
-                crate::model::index::KIND_VOCAB_NAME_SLOT
+            fn default_predicate_vocab_name() -> u16 {
+                crate::model::index::PREDICATE_VOCAB_NAME_SLOT
             }
             let r = Repr::deserialize(d)?;
             Ok(Self {
                 primary: r.primary,
                 dynamic: r.dynamic,
-                dict_id: r.dict_id,
-                dict_name: r.dict_name,
-                kind_id: r.kind_id,
-                kind_name: r.kind_name,
+                field_vocab_id: r.field_vocab_id,
+                field_vocab_name: r.field_vocab_name,
+                predicate_vocab_id: r.predicate_vocab_id,
+                predicate_vocab_name: r.predicate_vocab_name,
                 declared_index_base: r.declared_index_base,
                 declared_reduce_base: r.declared_reduce_base,
                 junction_base: r.junction_base,

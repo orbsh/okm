@@ -188,7 +188,7 @@ queries:
 
 - `get_edge` returns the raw body (`EdgeBody.payload` = payload bytes)
   and `edge` decodes it into the declaration's type, vs a decoded
-  `DynEdge` (attrs resolved through the field dictionary).
+  `DynEdge` (attrs resolved through the field-name vocabulary).
 - The dynamic form has NO 0x1 attribute face (attribute names are
   runtime data, so exact-match attr scans are structurally absent —
   predicate filtering via 0x06/0x09/0x0A is complete, not a gap).

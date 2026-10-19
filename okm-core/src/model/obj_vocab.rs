@@ -9,8 +9,8 @@
 //!
 //! TWO vocabularies exist, sharing the protocol but never an id space:
 //!
-//! - the payload's field names (`FIELD_DICT`, fixed faces 0x02/0x03);
-//! - the collection's kind vocabulary (`KIND_VOCAB`, fixed faces 0x04/0x05) —
+//! - the payload's field names (`FIELD_VOCAB`, fixed faces 0x02/0x03);
+//! - the collection's predicate vocabulary (`PREDICATE_VOCAB`, fixed faces 0x04/0x05) —
 //!   a graph's predicates, a node collection's kind tokens.
 //!
 //! The face pair is a construction parameter, not a second allocation
@@ -19,7 +19,7 @@
 //! type would duplicate that logic and let the two drift apart — the one
 //! thing the split exists to prevent is two allocators in one id space.
 //!
-//! Discipline copied from the ns dictionary (ADR-0002): append-only —
+//! Discipline copied from the ns vocabulary (ADR-0002): append-only —
 //! ids are never reused, never renumbered; a name seen for the first
 //! time on the write path claims the next free number (single-writer
 //! allocation, serialized by the engine mutex — the same boundary a
@@ -33,14 +33,14 @@
 //! acceptable for a vocabulary that only grows.
 
 use crate::engine::storage::{scan_suffix_kv, MemBatch, VirtualStorage};
-use crate::model::index::{DICT_ID_SLOT, DICT_NAME_SLOT, KIND_VOCAB_ID_SLOT, KIND_VOCAB_NAME_SLOT, Slot, write_slot};
+use crate::model::index::{FIELD_VOCAB_ID_SLOT, FIELD_VOCAB_NAME_SLOT, PREDICATE_VOCAB_ID_SLOT, PREDICATE_VOCAB_NAME_SLOT, Slot, write_slot};
 use std::collections::HashMap;
 
 /// The pair of faces one vocabulary occupies. Numbers are structural
 /// (ADR-0030): a vocabulary is a fixed face pair, never a band inside
 /// another pair.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct DictFaces {
+pub struct VocabFaces {
     /// number → name
     pub id_slot: Slot,
     /// name → number
@@ -48,26 +48,26 @@ pub struct DictFaces {
 }
 
 /// Field names of the payload, in the document's own ns (ADR-0012).
-pub const FIELD_DICT: DictFaces = DictFaces { id_slot: DICT_ID_SLOT, name_slot: DICT_NAME_SLOT };
-/// The collection's kind vocabulary: a graph's predicates, a node
+pub const FIELD_VOCAB: VocabFaces = VocabFaces { id_slot: FIELD_VOCAB_ID_SLOT, name_slot: FIELD_VOCAB_NAME_SLOT };
+/// The collection's predicate vocabulary: a graph's predicates, a node
 /// collection's kind tokens (ADR-0017 §3).
-pub const KIND_VOCAB: DictFaces =
-    DictFaces { id_slot: KIND_VOCAB_ID_SLOT, name_slot: KIND_VOCAB_NAME_SLOT };
+pub const PREDICATE_VOCAB: VocabFaces =
+    VocabFaces { id_slot: PREDICATE_VOCAB_ID_SLOT, name_slot: PREDICATE_VOCAB_NAME_SLOT };
 
 /// One vocabulary cache, bound to one ns segment and one face pair. Both
 /// directions plus the allocation cursor; lazily loaded from the engine on
 /// first touch.
 #[derive(Debug)]
-pub struct DictCache {
-    faces: DictFaces,
+pub struct VocabCache {
+    faces: VocabFaces,
     by_id: HashMap<u16, String>,
     by_name: HashMap<String, u16>,
     next_id: u16,
     loaded: bool,
 }
 
-impl DictCache {
-    pub fn new(faces: DictFaces) -> Self {
+impl VocabCache {
+    pub fn new(faces: VocabFaces) -> Self {
         Self {
             faces,
             by_id: HashMap::new(),
@@ -199,7 +199,7 @@ mod tests {
     #[test]
     fn allocates_sequentially_and_is_cached() {
         let mut store = TestStore::slatedb_mem();
-        let mut d = DictCache::new(FIELD_DICT);
+        let mut d = VocabCache::new(FIELD_VOCAB);
         let a = d.id_for(&mut store, HEADER, "alpha");
         let b = d.id_for(&mut store, HEADER, "beta");
         let a2 = d.id_for(&mut store, HEADER, "alpha");
@@ -207,11 +207,11 @@ mod tests {
 
         // Both directions landed in the engine.
         assert_eq!(
-            store.get(&key(HEADER, DICT_ID_SLOT, &0u16.to_be_bytes())).unwrap(),
+            store.get(&key(HEADER, FIELD_VOCAB_ID_SLOT, &0u16.to_be_bytes())).unwrap(),
             b"alpha"
         );
         assert_eq!(
-            store.get(&key(HEADER, DICT_NAME_SLOT, b"beta")).unwrap(),
+            store.get(&key(HEADER, FIELD_VOCAB_NAME_SLOT, b"beta")).unwrap(),
             &1u16.to_be_bytes()
         );
     }
@@ -219,8 +219,8 @@ mod tests {
     #[test]
     fn the_two_vocabularies_never_share_an_id_space() {
         let mut store = TestStore::slatedb_mem();
-        let mut fields = DictCache::new(FIELD_DICT);
-        let mut kinds = DictCache::new(KIND_VOCAB);
+        let mut fields = VocabCache::new(FIELD_VOCAB);
+        let mut kinds = VocabCache::new(PREDICATE_VOCAB);
         // The same name allocates in both; the same number names two
         // different things — that is precisely what the split permits.
         assert_eq!(fields.id_for(&mut store, HEADER, "since"), 0);
@@ -228,39 +228,39 @@ mod tests {
         assert_eq!(fields.name_for(&store, HEADER, 0).unwrap(), "since");
         assert_eq!(kinds.name_for(&store, HEADER, 0).unwrap(), "has");
         // …and they land on different faces.
-        assert_eq!(store.get(&key(HEADER, KIND_VOCAB_ID_SLOT, &0u16.to_be_bytes())).unwrap(), b"has");
-        assert_eq!(store.get(&key(HEADER, DICT_ID_SLOT, &0u16.to_be_bytes())).unwrap(), b"since");
+        assert_eq!(store.get(&key(HEADER, PREDICATE_VOCAB_ID_SLOT, &0u16.to_be_bytes())).unwrap(), b"has");
+        assert_eq!(store.get(&key(HEADER, FIELD_VOCAB_ID_SLOT, &0u16.to_be_bytes())).unwrap(), b"since");
     }
 
     #[test]
     fn fresh_cache_loads_from_engine_and_resumes_numbering() {
         let mut store = TestStore::slatedb_mem();
         {
-            let mut d = DictCache::new(KIND_VOCAB);
+            let mut d = VocabCache::new(PREDICATE_VOCAB);
             d.id_for(&mut store, HEADER, "one");
             d.id_for(&mut store, HEADER, "two");
         }
         // A brand-new cache (process restart) resumes after the max.
-        let mut d2 = DictCache::new(KIND_VOCAB);
+        let mut d2 = VocabCache::new(PREDICATE_VOCAB);
         assert_eq!(d2.name_for(&store, HEADER, 0).unwrap(), "one");
         assert_eq!(d2.name_for(&store, HEADER, 1).unwrap(), "two");
         let fresh = d2.id_for(&mut store, HEADER, "three");
         assert_eq!(fresh, 2, "numbering resumes after the loaded max");
         // A read-only handle answers without the caller priming anything.
-        let mut d3 = DictCache::new(KIND_VOCAB);
+        let mut d3 = VocabCache::new(PREDICATE_VOCAB);
         assert_eq!(d3.id_get(&store, HEADER, "two"), Some(1));
     }
 
     #[test]
     fn compact_ids_use_one_byte_and_escape_beyond() {
         let mut store = TestStore::slatedb_mem();
-        let mut d = DictCache::new(FIELD_DICT);
+        let mut d = VocabCache::new(FIELD_VOCAB);
         let small = d.id_for(&mut store, HEADER, "small");
         assert!(small < 0xFF);
         // Directly seed an escaped-range name, then read it back.
         let mut batch = MemBatch::default();
-        batch.put(key(HEADER, DICT_ID_SLOT, &0x1234u16.to_be_bytes()), b"big".to_vec());
-        batch.put(key(HEADER, DICT_NAME_SLOT, b"big"), 0x1234u16.to_be_bytes().to_vec());
+        batch.put(key(HEADER, FIELD_VOCAB_ID_SLOT, &0x1234u16.to_be_bytes()), b"big".to_vec());
+        batch.put(key(HEADER, FIELD_VOCAB_NAME_SLOT, b"big"), 0x1234u16.to_be_bytes().to_vec());
         let _ = store.commit_batch(batch);
         assert_eq!(d.name_for(&store, HEADER, 0x1234).unwrap(), "big");
     }

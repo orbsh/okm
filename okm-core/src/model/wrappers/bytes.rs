@@ -10,7 +10,7 @@
 //!
 //! Not to be confused with the dynamic layer's escape hatch: a declared
 //! `Bytes` field is part of the document schema (name in the field-name
-//! dictionary, `FieldType::Bytes` in the FieldDesc table); the
+//! vocabulary, `FieldType::Bytes` in the FieldDesc table); the
 //! `ObjValueType::Bytes` VALUE kind is the untyped dynamic-segment form.
 
 /// Variable-length raw-byte field. Memory form is `Vec<u8>`; wire form is
