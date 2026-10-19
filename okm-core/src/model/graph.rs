@@ -417,6 +417,19 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
     /// the declaration's type — no prefix sweep, so an unrelated edge with
     /// a shared attribute value cannot be touched.
     pub fn unlink(&mut self, edge_id: u64) -> Result<(), String> {
+        let mut batch = MemBatch::default();
+        self.unlink_into(&mut batch, edge_id)?;
+        self.store
+            .commit_batch(batch)
+            .map_err(|e| format!("graph unlink commit failed: {e}"))
+    }
+
+    /// Encode the full delete set into an externally owned batch — the
+    /// cross-collection atomic path, and the one that makes a REWRITE one
+    /// commit instead of two (`unlink_into` + `link_into` into the same
+    /// batch: the incumbent's primary is deleted and re-put in order, and
+    /// every stale face goes with it).
+    pub fn unlink_into(&mut self, batch: &mut MemBatch, edge_id: u64) -> Result<(), String> {
         let pk = self.primary_key(edge_id);
         let bytes = self
             .store
@@ -430,7 +443,6 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
         let id_be = edge_id.to_be_bytes();
         let payload: E = E::decode_payload(&parsed.payload);
 
-        let mut batch = MemBatch::default();
         batch.del(&pk);
         batch.del(&self.face_key(EDGE_PREDICATE_INDEX_SLOT, &[&predicate_be, &id_be]));
         batch.del(&self.face_key(EDGE_OUT_SLOT, &[&src_wire, &id_be]));
@@ -440,9 +452,7 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
         for (key, _) in E::index_entries(&EdgeKey(edge_id), &payload, E::NS_PREFIX) {
             batch.del(&key);
         }
-        self.store
-            .commit_batch(batch)
-            .map_err(|e| format!("graph unlink commit failed: {e}"))
+        Ok(())
     }
 
     /// Decode an edge body by id (the fetch-back step of every face scan).

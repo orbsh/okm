@@ -173,6 +173,38 @@ fn unlink_deletes_the_declared_face_entry_exactly() {
 }
 
 #[test]
+fn rewrite_is_one_batch() {
+    // A functional rewrite is unlink + link in ONE batch (ADR-0010's owed
+    // item): same edge_id, new endpoints/predicate/payload, and every stale
+    // face goes with the old row — no window between two commits.
+    let mut store = okm_core::TestStore::slatedb_mem();
+    let mut g: Graph<_, Employment> = Graph::new(store.clone());
+    let a = Employment { since_year: 2020, weight: 1 };
+    let b = Employment { since_year: 2021, weight: 2 };
+    g.link(&head(user(1), org(9), "employs"), &a, 1).unwrap();
+
+    let mut batch = MemBatch::default();
+    g.unlink_into(&mut batch, 1).unwrap();
+    g.link_into(&mut batch, &head(user(1), org(10), "contracts"), &b, 1)
+        .unwrap();
+    store.commit_batch(batch).unwrap();
+
+    // The row is the new fact, under the same identity.
+    let body = g.get_edge(1).unwrap();
+    assert_eq!(body.dst, org(10));
+    assert_eq!(g.predicate_name(body.predicate_id).unwrap(), "contracts");
+    // Faces: the old destination and the old predicate are gone, the new ones
+    // answer, and the declared face moved with the payload.
+    assert!(g.in_edges(&org(9)).is_empty());
+    assert_eq!(g.in_edges(&org(10)), vec![1]);
+    assert!(g.edges_of_predicate("employs").is_empty());
+    assert_eq!(g.edges_of_predicate("contracts"), vec![1]);
+    let slot = <__OkmIndex_Employment_by_since as okm_core::KvIndex>::SLOT;
+    assert!(g.by_attr_face(slot, &2020u16.to_be_bytes()).is_empty());
+    assert_eq!(g.by_attr_face(slot, &2021u16.to_be_bytes()), vec![1]);
+}
+
+#[test]
 fn member_set_is_checked_at_write() {
     let store = okm_core::TestStore::slatedb_mem();
     let mut g: Graph<_, Employment> = Graph::new(store.clone());
