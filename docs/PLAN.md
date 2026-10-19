@@ -792,26 +792,46 @@ Unchanged: primary payload layout `[version][hot_len][hot][cold TLV]`
       `unlink` deletes precisely by decoding the edge body. "kind" is retired as
       the name for the edge's type (the predicate; `edge_id` stays the edge's
       own identity).
-- [ ] Landing (code is still the old shape — `EdgeEncode` + `attrs()`):
-      · derive: `GraphEncode` (ns from `#[ok_ns]`, explicit `#[ok_index]`
-        faces, `type Nodes`); `EdgeEncode` removed; `#[ok_head]`/`ATTR_SLOTS`
-        consumers dropped
-      · predicate dictionary: fixed faces 0x04/0x05; the head's third segment
-        is read/written through it; rename `kind_id` / `kind_name` →
-        `predicate_id` / `predicate_name`, `EDGE_KIND_*_SLOT` → the predicate
-        face constants; the graph's five faces shift by two (0x04–0x08 →
-        0x06–0x0A) so that a dictionary precedes the faces that read its ids
-      · assembly point: the member check at write + decode, the payload's
-        dynamic entry (0x01) owned here, nothing declarative left;
-        `Graph::new(store)` — no ns parameter
-      · `unlink`: decode the body, delete the declared-index entries exactly
-        (the dynamic form needs its schema for that, else the prefix sweep)
-      · okm-dynamic's graph handle: takes the ns + schema PAIR (from the export
-        side) and rejects a disagreement
-      · store rebuild: predicate numbers move to the new dictionary
-        (krystallizer's facts ns 37 already has data — rebuild or migrate)
-      · tests: the graph hex locks (head segment, faces) and the typed/dynamic
-        drift locks follow the new head
+- [x] Landing (LANDED 2026-10-19 — code is the new shape):
+      · derive: `GraphEncode` replaced `EdgeEncode`; ns from `#[ok_ns]`, faces
+        from explicit `#[ok_index]`, and the member set named by
+        `#[ok_nodes(Enum)]` (a derive cannot leave an associated type open for
+        a hand-written impl, and Rust has no associated-type defaults — one
+        declaration, one impl). It generates the whole `Document` impl
+        (`okm-derive`'s row emitter, with `type Key = EdgeKey`) plus
+        `impl GraphEncode`; `attrs()` / `attr_faces()` / `ATTR_SLOTS` /
+        `KvGraph` are gone.
+      · predicate vocabulary: `KIND_VOCAB` is a `DictFaces` pair (0x04 id →
+        name, 0x05 name → id) and `DictCache` is parameterized by that pair
+        rather than duplicated per vocabulary; `FIELD_DICT` (0x02/0x03) stays
+        the payload's. Faces moved to 0x06 predicate index, 0x07 out, 0x08 in,
+        0x09/0x0A predicate±endpoint; `kind_id`/`kind_name` are
+        `predicate_id`/`predicate_name` everywhere.
+      · assembly: `Graph<S, E: GraphEncode>` takes the engine only (ns from
+        `E::NS_PREFIX`), checks `E::Nodes` membership at write and at decode,
+        encodes the payload itself (`E::encode_payload`), and writes the
+        declared faces through `E::index_entries` — the document machinery, so
+        an edge's attribute face IS an ordinary declared index.
+      · `unlink`: decodes the body, decodes the payload into `E`, re-derives
+        the declared entries and deletes them exactly — no prefix sweep.
+      · edge head type renamed `EdgeHead { src, dst, predicate }` (the word
+        "fact" is k10r's business vocabulary, not okm's; ADR-0017 §3's own
+        word for this segment is the head).
+      · okm-dynamic's handle: `Graph::new(store, ns, schema)` — the pair, and
+        `CollectionSchema` now carries `ns_prefix` so a disagreeing pair is
+        rejected instead of overridden. Its open attributes moved OUT of the
+        body into the dynamic segment (fixed face 0x01, one entry per edge) as
+        ADR-0017 §3 says, and they allocate names through the FIELD dictionary
+        while predicates allocate through KIND_VOCAB — the collision
+        krystallizer worked around is structurally gone.
+      · tests: `okm-core/tests/graph_edge_test.rs` (10) pins the new hex lock —
+        both vocabulary faces, the five graph faces, the 0x1001 declared face,
+        and the absence of any predicate in 0x02/0x03;
+        `okm-dynamic/tests/dynamic_graph_test.rs` (5) keeps the static/dynamic
+        byte-equality drift lock over faces 0x00/0x04–0x0A.
+      · still open: krystallizer's follow-up (`EdgeEncode` → `GraphEncode`,
+        `kind_id` → `predicate_id`, entity kinds onto its own 0x04/0x05, store
+        rebuild) — its ns 37 edges predate this, so the rebuild is mandatory.
 
 ## Embedded documents (2026-09-17, shipped)
 

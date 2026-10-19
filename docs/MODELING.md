@@ -857,7 +857,7 @@ zero layout difference from any document collection. What is new lives
 on the edge side:
 
 ```rust
-use okm_core::{Document, Graph, GraphEncode, NodeRef};
+use okm_core::{Graph, GraphEncode, NodeRef, NodeSet};
 
 /// The graph's edge collection — the declaration IS the graph (ADR-0017 §4):
 /// one ns, the edge's own payload (an ordinary document payload: hot/cold
@@ -867,28 +867,28 @@ use okm_core::{Document, Graph, GraphEncode, NodeRef};
 /// but the SET of collections that may appear is.
 #[derive(GraphEncode, Clone, Default)]
 #[ok_ns(100)]
+#[ok_nodes(EmploymentNodes)]                   // the member set: a compile-time enum
 #[ok_index(by_since { fields(since_year) })]   // a face is a declaration; nothing is implied
 struct Employment {
     since_year: u16,
     weight: u32,
 }
-impl GraphEncode for Employment { type Nodes = EmploymentNodes; }
 
 /// The member set is a set of COLLECTIONS (each variant is one ns).
 enum EmploymentNodes { Users, Orgs }
+impl NodeSet for EmploymentNodes { const NS_VALUES: &'static [u16] = &[10, 11]; }
 
 let mut g: Graph<_, Employment> = Graph::new(store);   // handle: engine + per-instance state
 let attrs = Employment { since_year: 2020, weight: 7 };
-g.link(&EdgeFact {
+g.link(&EdgeHead {
     src: NodeRef::new(&10u16.to_be_bytes(), &1u64.to_be_bytes()),
     dst: NodeRef::new(&11u16.to_be_bytes(), &9u64.to_be_bytes()),
-    predicate: "employs".into(),   // the edge's type: a head segment + the graph's own dictionary
-    attrs: Document::encode_payload(&attrs),   // the obj payload (ADR-0017 §3)
-}, &attrs, 1).unwrap();
+    predicate: "employs".into(),   // the edge's type: a head segment + the graph's own vocabulary
+}, &attrs, 1).unwrap();            // the payload is encoded by the declaration itself
 
 g.typed_out("employs", &user1);   // 0x09 face: predicate-filtered traversal
 use __OkmIndex_Employment_by_since as BySince;   // the face type the declaration generated
-g.by_attr_face(BySince::SLOT, &2020u16.to_be_bytes());
+g.by_attr_face(<BySince as KvIndex>::SLOT, &2020u16.to_be_bytes());
 ```
 
 - **Endpoint references** are `[ns 2B][len varint][pkey]` — the ns is
@@ -901,22 +901,23 @@ g.by_attr_face(BySince::SLOT, &2020u16.to_be_bytes());
   thing declared (the `Nodes` enum), applied as a check at write and at
   decode; width stays wire data, membership is a declaration.
 - **Faces**: one `link` writes primary (fixed face 0x00, `edge_id` u64) +
-  the payload's dynamic entry (0x01) when fields were written + predicate
-  index (0x06) + out/in traversal (0x07/0x08) + predicate-qualified
+  predicate index (0x06) + out/in traversal (0x07/0x08) + predicate-qualified
   traversal (0x09/0x0A) + ONE face per DECLARED `#[ok_index]` (counting
   family 0x1), all in one batch; `unlink` decodes the edge body and
-  deletes exactly those entries. The predicate's name resolves through the
+  deletes exactly those entries (the declared faces are re-derived from the
+  decoded payload, never swept by prefix); the fully dynamic form writes its
+  open attributes into the dynamic segment (fixed face 0x01, one entry per
+  edge). The predicate's name resolves through the
   graph's OWN KIND VOCABULARY (fixed faces 0x04/0x05, first-seen-claims-next;
   the same pair a node collection uses for its kind tokens) —
   separate from the payload's field-name dictionary (0x02/0x03), so
   listing a graph's predicates is one prefix scan of 0x04, never an
   inference walked back from the index faces.
 - **The handle declares nothing.** `Graph<S, E>` binds an engine instance
-  and the per-instance state (the predicate dictionary cache, the edge_id
-  allocation position); the ns comes from the declaration and the member
+  and the per-instance state (the predicate vocabulary cache); the ns comes from the declaration and the member
   set from `E::Nodes` — the same shape as `Collection<S, K, R>`, which also
   takes only the engine.
-- **Parallel edges** are separate facts: each link carries a
+- **Parallel edges** are separate edges: each link carries a
   caller-chosen `edge_id`; a live id is rejected, never reused.
 - **Filtering**: the most selective face first, ids converged in
   memory — no composite faces by default (`(*)-[predicate]->(:node kind)`

@@ -29,15 +29,15 @@ pub struct EdgeBody {
     pub src: NodeRef,
     pub dst: NodeRef,
     pub predicate_id: u16,     // 谓词名经 g.predicate_name(predicate_id) 还原
-    pub attrs: Vec<u8>,   // 边自己的载荷——一份 obj 载荷，
+    pub payload: Vec<u8>, // 边自己的载荷——一份 obj 载荷，
                           // [version][hot_len][热段][冷 TLV]（ADR-0017 §3）；
-                          // 动态形态：nTLV 帧
+                          // 全动态形态只留这个头，开放属性写进固定面 0x01
 }
 ```
 
 多跳遍历就是拿 `EdgeBody.dst` 当下一跳的 `NodeRef`。
 
-## 六个面，作为查询形状
+## 图的面，作为查询形状
 
 前置：`Org(ns=9)` 与 `User(ns=10)` 上的 `employs` 图，写入两条边（组织 9 -> 用户 1，2020 年；组织 9 -> 用户 2，2021 年）。
 
@@ -64,8 +64,8 @@ g.typed_in("employs", &user1);       // -> [1]
 // 全图谓词扫描——`MATCH ()-[r:employs]->()` 的入口。
 g.edges_of_predicate("employs");          // -> [1, 2]
 
-// 属性面——边事实的声明字段，等值探针。
-let slot = __OkmEdgeIndex_Employment_since_year::SLOT;
+// 属性面——边自己声明的 `#[ok_index]`，等值探针。
+let slot = <__OkmIndex_Employment_by_since as KvIndex>::SLOT;
 g.by_attr_face(slot, &2020u16.to_be_bytes());  // -> [1]
 g.by_attr_face(slot, &1999u16.to_be_bytes());  // -> []（无面无错）
 
@@ -133,9 +133,9 @@ walk 成为热路径时，把边 collection 的热谓词提升为声明的 `#[ok
 
 ## 两种形态，一个查询面
 
-`Graph<S, E>`（固定本体：属性是声明 struct 字段，body 取类型化字节）与 `DynamicGraph<S>`（属性是运行时 nTLV 帧，`DynEdge { predicate: String, attrs: BTreeMap<..> }`）在相同的面上暴露相同的读方法。查询可见的差异：
+`Graph<S, E>`（固定本体：属性是声明 struct 字段，body 取类型化字节）与 `okm_dynamic::Graph<S>`（属性是运行时 nTLV 帧，`DynEdge { predicate: String, attrs: BTreeMap<..> }`）在相同的面上暴露相同的读方法。查询可见的差异：
 
-- `get_edge` 返回类型化载荷（`EdgeBody.attrs` = 边类型字节）vs 解码后的 `DynEdge`（属性经字典还原）。
+- `get_edge` 返回原始 body（`EdgeBody.payload` = 载荷字节），`edge` 再把它解成声明的类型；对比解码后的 `DynEdge`（属性经字段字典还原）。
 - 动态形态没有 0x1 属性面（属性名是运行时数据，等值属性扫描结构性缺席——0x06/0x09/0x0A 的谓词过滤是完整的，不是缺口）。
 - 节点侧的 "kind" 不是边层的关切：节点是普通文档 collection，其 kind 活在自己声明的索引与字典里。`(:node_type)` 过滤 = 边面扫描 ∩ 节点 collection 自己的 kind 面扫描，内存交集。
 

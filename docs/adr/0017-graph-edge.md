@@ -1,7 +1,7 @@
 # ADR-0017: Graph Edge — the third relation carrier
 
 Date: 2026-09-19
-Status: Accepted (2026-09-20; both forms implemented — EdgeEncode derive + Graph<S, E> fixed-ontology, okm-dynamic Graph<S> fully dynamic). Updates 2026-09-20: §2 endpoint refs re-decided to scheme b (self-describing [ns 2B][len varint][pkey]) — scheme c (registry) abandoned; §3 declared attribute fields, node-side kind filtering, slot-layout clarification. Updates 2026-10-17: §3's edge payload is an obj (ADR-0012) — one document declaration generates both codec directions and the declared faces, so the derive's encoder-only `attrs()` / `attr_faces()` / `ATTR_SLOTS` half-mechanism retires; §3's write protocol, §4 and Consequences follow, and the registry wording §2 abandoned is swept out of §4, §5 and Consequences. Updates 2026-10-17 (second): the declaration is a GRAPH declaration (`GraphEncode` — one ns, the edge's own payload, explicitly declared attribute faces, plus a compile-time node-type enum); `EdgeEncode` retires with its encoder-only half; `Graph<S, E>` is a runtime HANDLE that declares nothing (no ns parameter, no node list, no schema); the member node set lives in code as a `Nodes` enum, never in a slot; `unlink` deletes precisely by decoding the edge body; Context's PGQ sentence corrected. Code status: still the old shape (`EdgeEncode` + `attrs()`); the terminal shape above lands next.
+Status: Accepted (2026-09-20; both forms implemented — EdgeEncode derive + Graph<S, E> fixed-ontology, okm-dynamic Graph<S> fully dynamic). Updates 2026-09-20: §2 endpoint refs re-decided to scheme b (self-describing [ns 2B][len varint][pkey]) — scheme c (registry) abandoned; §3 declared attribute fields, node-side kind filtering, slot-layout clarification. Updates 2026-10-17: §3's edge payload is an obj (ADR-0012) — one document declaration generates both codec directions and the declared faces, so the derive's encoder-only `attrs()` / `attr_faces()` / `ATTR_SLOTS` half-mechanism retires; §3's write protocol, §4 and Consequences follow, and the registry wording §2 abandoned is swept out of §4, §5 and Consequences. Updates 2026-10-17 (second): the declaration is a GRAPH declaration (`GraphEncode` — one ns, the edge's own payload, explicitly declared attribute faces, plus a compile-time node-type enum); `EdgeEncode` retires with its encoder-only half; `Graph<S, E>` is a runtime HANDLE that declares nothing (no ns parameter, no node list, no schema); the member node set lives in code as a `Nodes` enum, never in a slot; `unlink` deletes precisely by decoding the edge body; Context's PGQ sentence corrected. Code status: LANDED 2026-10-19 — `GraphEncode` derive (member set via `#[ok_nodes(Enum)]`), predicate vocabulary at 0x04/0x05, faces 0x06–0x0A, `Graph::new(store)`, exact unlink; okm-dynamic's handle takes the ns + schema pair (`CollectionSchema::ns_prefix`).
 Related: ADR-0015 (relation taxonomy), ADR-0016 (4-byte head, segment-numbered slots), ADR-0002 (namespace dictionary)
 
 ## Context
@@ -151,9 +151,9 @@ by ROLE — the two vocabularies first, then the faces that read their ids:
 a dictionary leads the faces it serves. The NUMBERS stay the mechanism.)
 
 **The predicate has its OWN dictionary (Update 2026-10-17).**
-`[ns][0x04][predicate name] → predicate_id` and `[ns][0x05][predicate_id]
-→ name` — the same bidirectional shape as 0x02/0x03, a different
-vocabulary. Listing a graph's predicates is then ONE prefix scan of 0x04:
+`[ns][0x04][predicate_id] → name` and `[ns][0x05][predicate name] →
+predicate_id` — the same bidirectional shape as 0x02/0x03 (id→name leads,
+the name carries the bytes), a different vocabulary. Listing a graph's predicates is then ONE prefix scan of 0x04:
 an exact list, never reverse-derived by walking the index faces. Sharing
 one vocabulary with the payload's field names (the previous shape) left
 the names indistinguishable and made "which predicates does this graph
@@ -302,10 +302,16 @@ The declaration IS the graph (Update 2026-10-17):
 ```text
 #[derive(GraphEncode)]                    the graph's edge collection
 #[ok_ns(37)]                              the graph's ns — the ONLY ns source
+#[ok_nodes(FactNodes)]                    the member set (a compile-time enum)
 #[ok_index(since { fields(since) })]      the edge's attribute faces, explicit (§3)
 pub struct FactEdge { … }                 the edge's payload = its attributes
-impl GraphEncode for FactEdge { type Nodes = FactNodes; }
 ```
+
+One derive, one declaration: the macro emits the whole `GraphEncode` impl
+(the payload codec, the declared faces, the ns) with `type Nodes` bound to the
+enum the attribute names. A hand-written `impl GraphEncode for FactEdge { type
+Nodes = … }` alongside the derive would be a second impl of the same trait —
+Rust has no associated-type defaults to leave the slot open.
 
 plus the member set as a TYPE — an enum over the node collections, so
 "which nodes" is a compile-time fact in code rather than an annotation on
@@ -313,7 +319,9 @@ a payload:
 
 ```text
 pub enum FactNodes { Entities, Users, Facts }   // the variants are COLLECTIONS
-impl FactNodes { pub const fn ns(self) -> u16 { … } }
+impl NodeSet for FactNodes {
+    const NS_VALUES: &'static [u16] = &[36, 35, 37];   // one ns per variant
+}
 ```
 
 The member unit is a COLLECTION (its ns), not a document type — the ref
