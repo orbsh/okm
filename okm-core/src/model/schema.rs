@@ -95,6 +95,12 @@ impl ObjValueTypeSchema {
 pub struct CollectionSchema {
     pub key_len: usize,
     pub key_fields: Vec<FieldSchema>,
+    /// The collection's `[ns 2B]` header as the declaration carries it
+    /// (`#[ok_ns]`). Empty = the declaration names no ns (layout-only).
+    /// The ns and the schema travel as a PAIR: assembly compares them and
+    /// rejects a disagreement instead of overriding one with the other
+    /// (ADR-0025, ADR-0017 §4).
+    pub ns_prefix: Vec<u8>,
     pub layout_version: u8,
     /// Byte width of the hot payload segment (header excluded).
     pub hot_width: usize,
@@ -139,6 +145,10 @@ pub struct SlotMap {
     pub dynamic: u16,
     pub dict_id: u16,
     pub dict_name: u16,
+    /// Kind vocabulary (ADR-0017 §3): a graph's predicates, a node
+    /// collection's kind tokens — its own pair, never a band of 0x02/0x03.
+    pub kind_id: u16,
+    pub kind_name: u16,
     pub declared_index_base: u16,
     pub declared_reduce_base: u16,
     pub junction_base: u16,
@@ -196,6 +206,7 @@ impl CollectionSchema {
         Self {
             key_len,
             key_fields,
+            ns_prefix: R::NS_PREFIX.to_vec(),
             layout_version: R::LAYOUT_VERSION,
             hot_width: R::HOT_WIDTH,
             payload_header_len: 3, // [version u8][hot_len u16 BE]
@@ -206,6 +217,8 @@ impl CollectionSchema {
                 dynamic: crate::model::index::DYNAMIC_SLOT,
                 dict_id: crate::model::index::DICT_ID_SLOT,
                 dict_name: crate::model::index::DICT_NAME_SLOT,
+                kind_id: crate::model::index::KIND_VOCAB_ID_SLOT,
+                kind_name: crate::model::index::KIND_VOCAB_NAME_SLOT,
                 declared_index_base: crate::model::index::DECLARED_SLOT_BASE,
                 declared_reduce_base: crate::model::index::REDUCE_SLOT_BASE,
                 junction_base: crate::model::index::JUNCTION_SLOT_BASE,
@@ -444,6 +457,7 @@ mod serde_impls {
             struct Repr<'a> {
                 key_len: usize,
                 key_fields: &'a [FieldSchema],
+                ns_prefix: &'a [u8],
                 layout_version: u8,
                 hot_width: usize,
                 payload_header_len: usize,
@@ -454,6 +468,7 @@ mod serde_impls {
             Repr {
                 key_len: self.key_len,
                 key_fields: &self.key_fields,
+                ns_prefix: &self.ns_prefix,
                 layout_version: self.layout_version,
                 hot_width: self.hot_width,
                 payload_header_len: self.payload_header_len,
@@ -471,6 +486,10 @@ mod serde_impls {
             struct Repr {
                 key_len: usize,
                 key_fields: Vec<FieldSchema>,
+                /// Writers that predate the pair carry no ns; assembly then
+                /// has one half only and cannot check a disagreement.
+                #[serde(default)]
+                ns_prefix: Vec<u8>,
                 layout_version: u8,
                 hot_width: usize,
                 payload_header_len: usize,
@@ -482,6 +501,7 @@ mod serde_impls {
             Ok(Self {
                 key_len: r.key_len,
                 key_fields: r.key_fields,
+                ns_prefix: r.ns_prefix,
                 layout_version: r.layout_version,
                 hot_width: r.hot_width,
                 payload_header_len: r.payload_header_len,

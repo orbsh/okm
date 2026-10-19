@@ -496,7 +496,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
 
 use std::collections::BTreeMap;
 
-use crate::model::obj_dict::DictCache;
+use crate::model::obj_dict::{DictCache, FIELD_DICT};
 use crate::model::obj_dynamic::DynamicValue;
 
 impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> {
@@ -517,7 +517,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     /// zero-frame list is never written).
     pub fn get_fields(&mut self, key: &K) -> Option<BTreeMap<String, DynamicValue>> {
         let raw = self.store.get(&self.fields_key(key))?;
-        let mut d = DictCache::default();
+        let mut d = DictCache::new(FIELD_DICT);
         let header = self.header();
         // decode_named resolves nested obj field ids through the same
         // dictionary — nested maps come back fully name-keyed.
@@ -549,7 +549,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         key: &K,
         variants: &BTreeMap<String, DynamicValue>,
     ) {
-        let mut d = DictCache::default();
+        let mut d = DictCache::new(FIELD_DICT);
         let header = self.header().clone();
         let store = &mut self.store;
         let mut resolver = |name: &str| d.id_for(store, &header, name);

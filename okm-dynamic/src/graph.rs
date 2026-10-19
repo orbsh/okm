@@ -1,20 +1,23 @@
-//! Fully dynamic graph edges (ADR-0017 §4, second form): a `KgNode` /
-//! `KgEdge` pair with EMPTY declarations — identity only, attributes as
-//! runtime data.
+//! Fully dynamic graph edges (ADR-0017 §4, second form): a dynamic edge
+//! with EMPTY declarations — identity only, attributes as runtime data.
 //!
-//! Shares the fixed-ontology wire exactly: same eight entry kinds on
-//! ADR-0016 segments, same self-describing `[ns 2B][len][pkey]` refs,
-//! same kind dictionary (0x2/0x3). The differences are declaration-side
-//! only:
+//! Shares the fixed-ontology wire exactly: the same entry kinds on
+//! ADR-0030 fixed faces, the same self-describing `[ns 2B][len][pkey]` refs,
+//! the same KIND VOCABULARY (0x04/0x05) for predicates. The differences are
+//! declaration-side only:
 //!
 //! - endpoints need NO declaration at all — refs carry their own pkey
 //!   width (varint len), so there is no registry to declare or maintain;
 //! - edge attributes are nTLV frames (id + dictionary, self-describing
-//!   value types) instead of compile-time fixed-width encodings —
-//!   attribute names are runtime data, so no 0x1 declared-attribute
-//!   faces exist structurally (kind filtering is fully covered by the
-//!   0x4/0x7/0x8 faces);
+//!   value types) in the payload instead of compile-time fields — attribute
+//!   names are runtime data, so their ids allocate through the payload's
+//!   FIELD dictionary (0x02/0x03), never through the predicate vocabulary
+//!   (0x04/0x05): one id space per vocabulary, no collision;
 //! - `edge_id` stays caller-chosen, verified non-colliding at link.
+//!
+//! The handle takes the ns and the schema as a PAIR (ADR-0025) — the
+//! declaration's two halves, from the export side — and rejects a
+//! disagreement instead of overriding one with the other.
 //!
 //! Capability scope inherited from the dynamic layer (ADR-0022):
 //! subscribe stays excluded; func/partial indexes and reduce are
@@ -22,20 +25,22 @@
 
 use okm_core::index::PRIMARY_SLOT;
 use okm_core::model::graph::{
-    EDGE_IN_SLOT, EDGE_KIND_INDEX_SLOT, EDGE_KIND_IN_SLOT, EDGE_KIND_OUT_SLOT, EDGE_OUT_SLOT, NodeRef,
+    EDGE_IN_SLOT, EDGE_OUT_SLOT, EDGE_PREDICATE_INDEX_SLOT, EDGE_PREDICATE_IN_SLOT,
+    EDGE_PREDICATE_OUT_SLOT, NodeRef,
 };
-use okm_core::obj_dict::DictCache;
+use okm_core::obj_dict::{DictCache, FIELD_DICT, KIND_VOCAB};
 use okm_core::obj_dynamic::{decode_named, put_frame_named, DynamicValue};
-use okm_core::storage::{MemBatch, VirtualStorage};
+use okm_core::schema::CollectionSchema;
+use okm_core::storage::{scan_suffix_kv, MemBatch, VirtualStorage};
 
-/// One dynamic edge fact: endpoints by reference, kind by name,
-/// attributes as a name-keyed map (nTLV frames on the wire, ids
-/// allocated through the edge collection's own dictionary).
+/// One dynamic edge: endpoints by reference, predicate by name,
+/// attributes as a name-keyed map (nTLV frames on the wire, ids allocated
+/// through the payload's field dictionary).
 #[derive(Clone, Debug)]
 pub struct DynEdge {
     pub src: NodeRef,
     pub dst: NodeRef,
-    pub kind: String,
+    pub predicate: String,
     pub attrs: std::collections::BTreeMap<String, DynamicValue>,
 }
 
@@ -44,15 +49,39 @@ pub struct DynEdge {
 /// declarations. No registry — refs are self-describing.
 pub struct Graph<S> {
     store: S,
-    dict: DictCache,
+    /// Predicate vocabulary (0x04/0x05) — per-handle state, allocation is
+    /// single-writer, reads load on probe.
+    predicates: DictCache,
+    /// Payload field-name dictionary (0x02/0x03) for attribute frames.
+    fields: DictCache,
     ns: Vec<u8>,
+    schema: CollectionSchema,
 }
 
 impl<S: VirtualStorage> Graph<S> {
-    /// Assemble a dynamic graph's edge collection. `ns` MUST be unique
-    /// within the store instance (same rule as `DynamicCollection`).
-    pub fn new(store: S, ns: u16) -> Self {
-        Self { store, dict: DictCache::default(), ns: ns.to_be_bytes().to_vec() }
+    /// Assemble a dynamic graph's edge collection from the declaration's
+    /// PAIR: the ns and the schema it yielded. `ns` MUST be unique within
+    /// the store instance (same rule as `DynamicCollection`), and a schema
+    /// that names a different ns is rejected — never overridden.
+    pub fn new(store: S, ns: u16, schema: CollectionSchema) -> Self {
+        let ns_bytes = ns.to_be_bytes();
+        assert!(
+            schema.ns_prefix.is_empty() || schema.ns_prefix == ns_bytes,
+            "graph assembly: ns {ns} disagrees with the schema's declared ns {:?} — the pair comes from one declaration, never from two",
+            schema.ns_prefix
+        );
+        Self {
+            store,
+            predicates: DictCache::new(KIND_VOCAB),
+            fields: DictCache::new(FIELD_DICT),
+            ns: ns_bytes.to_vec(),
+            schema,
+        }
+    }
+
+    /// The exported declaration this handle was assembled from.
+    pub fn schema(&self) -> &CollectionSchema {
+        &self.schema
     }
 
     fn primary_key(&self, edge_id: u64) -> Vec<u8> {
@@ -71,75 +100,70 @@ impl<S: VirtualStorage> Graph<S> {
         k
     }
 
-    /// Resolve (or allocate) the kind id through the edge collection's
-    /// own dictionary (first-seen-claims-next, append-only).
-    fn kind_id(&mut self, kind: &str) -> u16 {
-        self.dict.id_for(&mut self.store, &self.ns, kind)
+    /// Resolve (or allocate) the predicate id through the graph's KIND
+    /// VOCABULARY (0x04/0x05) — first-seen-claims-next, append-only.
+    fn predicate_id(&mut self, predicate: &str) -> u16 {
+        self.predicates.id_for(&mut self.store, &self.ns, predicate)
     }
 
-    /// Attribute map → nTLV frames (ids via the dictionary; values are
+    /// Attribute map → nTLV frames (ids via the field dictionary; values are
     /// self-describing typed frames — the dynamic segment's own wire).
     fn attrs_wire(&mut self, attrs: &std::collections::BTreeMap<String, DynamicValue>) -> Vec<u8> {
         let mut body = Vec::new();
-        let mut resolver = |name: &str| self.dict.id_for(&mut self.store, &self.ns, name);
+        let mut resolver = |name: &str| self.fields.id_for(&mut self.store, &self.ns, name);
         for (name, value) in attrs {
             put_frame_named(&mut body, name, value, &mut resolver);
         }
         body
     }
 
-    /// Attribute frames → name-keyed map (ids resolved via dictionary;
-    /// unknown ids dropped — the shared-engine degraded mode, same rule
-    /// as `get_fields`).
+    /// Attribute frames → name-keyed map (ids resolved via the field
+    /// dictionary; unknown ids dropped — the shared-engine degraded mode,
+    /// same rule as `get_fields`).
     fn attrs_from(&mut self, wire: &[u8]) -> std::collections::BTreeMap<String, DynamicValue> {
+        let frames = decode_named(wire, &mut |id| self.fields.name_for(&self.store, &self.ns, id));
         let mut out = std::collections::BTreeMap::new();
-        let frames = decode_named(wire, &mut |id| {
-            self.dict.name_for(&self.store, &self.ns, id)
-        });
         for f in frames {
-            if let Some(name) = self.dict.name_for(&self.store, &self.ns, f.id) {
+            if let Some(name) = self.fields.name_for(&self.store, &self.ns, f.id) {
                 out.insert(name, f.value);
             }
         }
         out
     }
 
-    /// Write one edge: primary + kind index + four traversal faces +
-    /// the kind dictionary, one engine batch. Attributes ride the
-    /// primary's value (nTLV frames after `[src][dst][kind_id]`).
+    /// Build the primary value: `[src ref][dst ref][predicate_id][obj
+    /// payload]`. The dynamic declaration has no payload fields, so the
+    /// payload is the bare obj header (`[version 1][hot_len 0]`) — the same
+    /// bytes the static form's empty declaration writes. Open attributes are
+    /// NOT part of it: they live in the dynamic segment (fixed face 0x01),
+    /// one entry per edge (ADR-0017 §3).
+    fn body_of(&mut self, edge: &DynEdge, predicate_id: u16) -> Vec<u8> {
+        let src_wire = edge.src.encode();
+        let dst_wire = edge.dst.encode();
+        let mut body = Vec::with_capacity(src_wire.len() + dst_wire.len() + 2 + 3);
+        body.extend_from_slice(&src_wire);
+        body.extend_from_slice(&dst_wire);
+        body.extend_from_slice(&predicate_id.to_be_bytes());
+        body.push(1);
+        body.extend_from_slice(&0u16.to_be_bytes());
+        body
+    }
+
+    /// The dynamic segment's entry: `[ns][0x01][edge_id]` → nTLV frames.
+    fn fields_key(&self, edge_id: u64) -> Vec<u8> {
+        self.face_key(okm_core::index::DYNAMIC_SLOT, &[&edge_id.to_be_bytes()])
+    }
+
+    /// Write one edge: primary + predicate index + four traversal faces +
+    /// the predicate vocabulary, one engine batch. Attributes ride the
+    /// primary's value (nTLV frames after `[src][dst][predicate_id]`).
     pub fn link(&mut self, edge: &DynEdge, edge_id: u64) -> Result<(), String> {
         let pk = self.primary_key(edge_id);
         if self.store.get(&pk).is_some() {
             return Err(format!("edge_id {edge_id} already live"));
         }
-        let kind_id = self.kind_id(&edge.kind);
-        let attr_wire = self.attrs_wire(&edge.attrs);
-        let src_wire = edge.src.encode();
-        let dst_wire = edge.dst.encode();
-        let id_be = edge_id.to_be_bytes();
-
-        let mut body = Vec::with_capacity(src_wire.len() + dst_wire.len() + 2 + attr_wire.len());
-        body.extend_from_slice(&src_wire);
-        body.extend_from_slice(&dst_wire);
-        body.extend_from_slice(&kind_id.to_be_bytes());
-        body.extend_from_slice(&attr_wire);
-
         let mut batch = MemBatch::default();
-        batch.put(pk, body);
-        batch.put(
-            self.face_key(EDGE_KIND_INDEX_SLOT, &[&kind_id.to_be_bytes(), &id_be]),
-            Vec::new(),
-        );
-        batch.put(self.face_key(EDGE_OUT_SLOT, &[&src_wire, &id_be]), Vec::new());
-        batch.put(self.face_key(EDGE_IN_SLOT, &[&dst_wire, &id_be]), Vec::new());
-        batch.put(
-            self.face_key(EDGE_KIND_OUT_SLOT, &[&kind_id.to_be_bytes(), &src_wire, &id_be]),
-            Vec::new(),
-        );
-        batch.put(
-            self.face_key(EDGE_KIND_IN_SLOT, &[&kind_id.to_be_bytes(), &dst_wire, &id_be]),
-            Vec::new(),
-        );
+        self.write_into(&mut batch, edge, edge_id);
         self.store
             .commit_batch(batch)
             .map_err(|e| format!("dynamic graph link commit failed: {e}"))
@@ -153,76 +177,76 @@ impl<S: VirtualStorage> Graph<S> {
         edge: &DynEdge,
         edge_id: u64,
     ) -> Result<(), String> {
-        let kind_id = self.kind_id(&edge.kind);
+        self.write_into(batch, edge, edge_id);
+        Ok(())
+    }
+
+    fn write_into(&mut self, batch: &mut MemBatch, edge: &DynEdge, edge_id: u64) {
+        let predicate_id = self.predicate_id(&edge.predicate);
+        let body = self.body_of(edge, predicate_id);
         let attr_wire = self.attrs_wire(&edge.attrs);
         let src_wire = edge.src.encode();
         let dst_wire = edge.dst.encode();
+        let predicate_be = predicate_id.to_be_bytes();
         let id_be = edge_id.to_be_bytes();
 
-        let mut body = Vec::with_capacity(src_wire.len() + dst_wire.len() + 2 + attr_wire.len());
-        body.extend_from_slice(&src_wire);
-        body.extend_from_slice(&dst_wire);
-        body.extend_from_slice(&kind_id.to_be_bytes());
-        body.extend_from_slice(&attr_wire);
-
         batch.put(self.primary_key(edge_id), body);
+        // Open attributes ride the dynamic segment, one entry per edge — a
+        // zero-frame list is never written (absent = no attributes).
+        if !attr_wire.is_empty() {
+            batch.put(self.fields_key(edge_id), attr_wire);
+        }
         batch.put(
-            self.face_key(EDGE_KIND_INDEX_SLOT, &[&kind_id.to_be_bytes(), &id_be]),
+            self.face_key(EDGE_PREDICATE_INDEX_SLOT, &[&predicate_be, &id_be]),
             Vec::new(),
         );
         batch.put(self.face_key(EDGE_OUT_SLOT, &[&src_wire, &id_be]), Vec::new());
         batch.put(self.face_key(EDGE_IN_SLOT, &[&dst_wire, &id_be]), Vec::new());
         batch.put(
-            self.face_key(EDGE_KIND_OUT_SLOT, &[&kind_id.to_be_bytes(), &src_wire, &id_be]),
+            self.face_key(EDGE_PREDICATE_OUT_SLOT, &[&predicate_be, &src_wire, &id_be]),
             Vec::new(),
         );
         batch.put(
-            self.face_key(EDGE_KIND_IN_SLOT, &[&kind_id.to_be_bytes(), &dst_wire, &id_be]),
+            self.face_key(EDGE_PREDICATE_IN_SLOT, &[&predicate_be, &dst_wire, &id_be]),
             Vec::new(),
         );
-        Ok(())
     }
 
-    /// Remove one edge: the faces encode the edge's own values, so
-    /// deletion re-derives them from the stored body (fetched first).
+    /// Remove one edge: the faces encode the edge's own values, so deletion
+    /// re-derives them from the stored body (fetched first). Exact by
+    /// construction — the dynamic form declares no attribute faces to sweep.
     pub fn unlink(&mut self, edge_id: u64) -> Result<(), String> {
         let pk = self.primary_key(edge_id);
         let body = self
             .store
             .get(&pk)
             .ok_or_else(|| format!("unlink: edge_id {edge_id} not found"))?;
-        let (src_wire, dst_wire, kind_id) = self.parse_body_head(&body)?;
+        let (src_wire, dst_wire, predicate_id) = self.parse_body_head(&body)?;
         let id_be = edge_id.to_be_bytes();
+        let predicate_be = predicate_id.to_be_bytes();
 
         let mut batch = MemBatch::default();
         batch.del(&pk);
-        batch.del(&self.face_key(EDGE_KIND_INDEX_SLOT, &[&kind_id.to_be_bytes(), &id_be]));
+        batch.del(&self.fields_key(edge_id));
+        batch.del(&self.face_key(EDGE_PREDICATE_INDEX_SLOT, &[&predicate_be, &id_be]));
         batch.del(&self.face_key(EDGE_OUT_SLOT, &[&src_wire, &id_be]));
         batch.del(&self.face_key(EDGE_IN_SLOT, &[&dst_wire, &id_be]));
-        batch.del(&self.face_key(
-            EDGE_KIND_OUT_SLOT,
-            &[&kind_id.to_be_bytes(), &src_wire, &id_be],
-        ));
-        batch.del(&self.face_key(
-            EDGE_KIND_IN_SLOT,
-            &[&kind_id.to_be_bytes(), &dst_wire, &id_be],
-        ));
+        batch.del(&self.face_key(EDGE_PREDICATE_OUT_SLOT, &[&predicate_be, &src_wire, &id_be]));
+        batch.del(&self.face_key(EDGE_PREDICATE_IN_SLOT, &[&predicate_be, &dst_wire, &id_be]));
         self.store
             .commit_batch(batch)
             .map_err(|e| format!("dynamic graph unlink commit failed: {e}"))
     }
 
-    /// Walk `[src ref][dst ref][kind_id]` from the body front; returns
-    /// the wire forms of both refs (for face-key reconstruction) and
-    /// the kind id. Attr frames start right after.
+    /// Walk `[src ref][dst ref][predicate_id]` from the body front; returns
+    /// the wire forms of both refs (for face-key reconstruction) and the
+    /// predicate id. Attribute frames start right after.
     fn parse_body_head(&mut self, body: &[u8]) -> Result<(Vec<u8>, Vec<u8>, u16), String> {
-        let (src, n1) = okm_core::model::graph::NodeRef::decode(body)
-            .ok_or("edge body: truncated src ref")?;
-        let (dst, n2) = okm_core::model::graph::NodeRef::decode(&body[n1..])
-            .ok_or("edge body: truncated dst ref")?;
+        let (src, n1) = NodeRef::decode(body).ok_or("edge body: truncated src ref")?;
+        let (dst, n2) = NodeRef::decode(&body[n1..]).ok_or("edge body: truncated dst ref")?;
         let after_dst = n1 + n2;
         if body.len() < after_dst + 2 {
-            return Err("edge body: truncated kind_id".into());
+            return Err("edge body: truncated predicate_id".into());
         }
         Ok((
             src.encode(),
@@ -231,17 +255,23 @@ impl<S: VirtualStorage> Graph<S> {
         ))
     }
 
-    /// Fetch one edge, decoded: endpoints, kind resolved to name,
+    /// Fetch one edge, decoded: endpoints, predicate resolved to name,
     /// attributes as a name-keyed map.
     pub fn get_edge(&mut self, edge_id: u64) -> Option<DynEdge> {
         let body = self.store.get(&self.primary_key(edge_id))?;
-        let (src, n1) = okm_core::model::graph::NodeRef::decode(&body)?;
-        let (dst, n2) = okm_core::model::graph::NodeRef::decode(&body[n1..])?;
+        let (src, n1) = NodeRef::decode(&body)?;
+        let (dst, n2) = NodeRef::decode(&body[n1..])?;
         let after_dst = n1 + n2;
-        let kind_id = u16::from_be_bytes([body[after_dst], body[after_dst + 1]]);
-        let kind = self.dict.name_for(&self.store, &self.ns, kind_id)?;
-        let attrs = self.attrs_from(&body[after_dst + 2..]);
-        Some(DynEdge { src, dst, kind, attrs })
+        let predicate_id = u16::from_be_bytes([body[after_dst], body[after_dst + 1]]);
+        let predicate = self
+            .predicates
+            .name_for(&self.store, &self.ns, predicate_id)?;
+        // Open attributes live in the dynamic segment, not in the body.
+        let attrs = match self.store.get(&self.fields_key(edge_id)) {
+            Some(wire) => self.attrs_from(&wire),
+            None => std::collections::BTreeMap::new(),
+        };
+        Some(DynEdge { src, dst, predicate, attrs })
     }
 
     /// Edge ids on one traversal face (full NodeRef leads — refs are
@@ -251,53 +281,71 @@ impl<S: VirtualStorage> Graph<S> {
         ids_from_suffixes(self.store.scan_suffix(&p))
     }
 
-    /// Out-edges of one node (0x5).
+    /// Out-edges of one node (0x07).
     pub fn out_edges(&self, src: &NodeRef) -> Vec<u64> {
         self.traverse(EDGE_OUT_SLOT, src)
     }
 
-    /// In-edges of one node (0x6).
+    /// In-edges of one node (0x08).
     pub fn in_edges(&self, dst: &NodeRef) -> Vec<u64> {
         self.traverse(EDGE_IN_SLOT, dst)
     }
 
-    /// Typed traversal (0x7/0x8): unknown kinds scan empty (no face).
-    pub fn typed_edges(&mut self, slot: u16, kind: &str, node: &NodeRef) -> Vec<u64> {
-        let kind_id = match self.dict.by_name_get(kind) {
+    /// Predicate-qualified traversal (0x09/0x0A): unknown predicates scan
+    /// empty (no face).
+    pub fn typed_edges(&mut self, slot: u16, predicate: &str, node: &NodeRef) -> Vec<u64> {
+        let predicate_id = match self.predicates.id_get(&self.store, &self.ns, predicate) {
             Some(id) => id,
             None => return Vec::new(),
         };
-        let p = self.face_key(slot, &[&kind_id.to_be_bytes(), &node.encode()]);
+        let p = self.face_key(slot, &[&predicate_id.to_be_bytes(), &node.encode()]);
         ids_from_suffixes(self.store.scan_suffix(&p))
     }
 
-    /// Typed out-edges (0x7).
-    pub fn typed_out(&mut self, kind: &str, src: &NodeRef) -> Vec<u64> {
-        self.typed_edges(EDGE_KIND_OUT_SLOT, kind, src)
+    /// Predicate-qualified out-edges (0x09).
+    pub fn typed_out(&mut self, predicate: &str, src: &NodeRef) -> Vec<u64> {
+        self.typed_edges(EDGE_PREDICATE_OUT_SLOT, predicate, src)
     }
 
-    /// Typed in-edges (0x8).
-    pub fn typed_in(&mut self, kind: &str, dst: &NodeRef) -> Vec<u64> {
-        self.typed_edges(EDGE_KIND_IN_SLOT, kind, dst)
+    /// Predicate-qualified in-edges (0x0A).
+    pub fn typed_in(&mut self, predicate: &str, dst: &NodeRef) -> Vec<u64> {
+        self.typed_edges(EDGE_PREDICATE_IN_SLOT, predicate, dst)
     }
 
-    /// All edges of one kind (0x4) — the `MATCH ()-[r:has]->()` entry.
-    pub fn edges_of_kind(&mut self, kind: &str) -> Vec<u64> {
-        let kind_id = match self.dict.by_name_get(kind) {
+    /// All edges of one predicate (0x06) — the `MATCH ()-[r:has]->()` entry.
+    pub fn edges_of_predicate(&mut self, predicate: &str) -> Vec<u64> {
+        let predicate_id = match self.predicates.id_get(&self.store, &self.ns, predicate) {
             Some(id) => id,
             None => return Vec::new(),
         };
-        let p = self.face_key(EDGE_KIND_INDEX_SLOT, &[&kind_id.to_be_bytes()]);
+        let p = self.face_key(EDGE_PREDICATE_INDEX_SLOT, &[&predicate_id.to_be_bytes()]);
         ids_from_suffixes(self.store.scan_suffix(&p))
     }
 
-    /// Kind id → name (diagnostics surface).
-    pub fn kind_name(&mut self, id: u16) -> Option<String> {
-        self.dict.name_for(&self.store, &self.ns, id)
+    /// Every predicate this graph has, id-ordered: one 0x04 prefix scan.
+    pub fn predicates(&mut self) -> Vec<(u16, String)> {
+        let mut p = self.ns.clone();
+        okm_core::write_slot(&mut p, okm_core::index::KIND_VOCAB_ID_SLOT);
+        let mut out: Vec<(u16, String)> = scan_suffix_kv(&self.store, &p)
+            .into_iter()
+            .filter(|(suffix, _)| suffix.len() == 2)
+            .filter_map(|(suffix, name)| {
+                String::from_utf8(name)
+                    .ok()
+                    .map(|n| (u16::from_be_bytes([suffix[0], suffix[1]]), n))
+            })
+            .collect();
+        out.sort_by_key(|(id, _)| *id);
+        out
+    }
+
+    /// Predicate id → name (diagnostics surface).
+    pub fn predicate_name(&mut self, id: u16) -> Option<String> {
+        self.predicates.name_for(&self.store, &self.ns, id)
     }
 }
 
-/// Face-suffix → edge ids: every traversal/kind face ends in an 8-byte
+/// Face-suffix → edge ids: every traversal/predicate face ends in an 8-byte
 /// BE edge id; shorter suffixes are foreign entries and are skipped.
 fn ids_from_suffixes(suffixes: Vec<Vec<u8>>) -> Vec<u64> {
     suffixes

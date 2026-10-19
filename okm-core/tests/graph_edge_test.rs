@@ -1,10 +1,11 @@
-//! Graph Edge integration tests (ADR-0017): the fixed-ontology form
-//! through the `GraphEdgeEncode` derive — declared attributes, 0x1
-//! attribute faces, registry cut/decode, cross-collection batch via
-//! `link_into`, and node-kind filtering per the ADR's node-side section.
+//! Graph Edge integration tests (ADR-0017 §4): one declaration IS the graph —
+//! ns + payload + declared attribute faces + member set. Covers the predicate
+//! vocabulary (0x04/0x05), the five graph faces (0x06–0x0A), declared-index
+//! faces, exact unlink, membership checks, and the cross-collection batch.
 
 use okm_core::{
-    DocumentEncode, EdgeEncode, KeyEncode, VirtualStorage,
+    DocumentEncode, EdgeHead, Graph, GraphEncode, KeyEncode, MemBatch, NodeRef, NodeSet,
+    VirtualStorage, PRIMARY_SLOT,
 };
 
 // ---- node collections (standard documents, standard layout) ----
@@ -33,28 +34,37 @@ pub struct OrgId {
 #[ok_index(by_kind { fields(kind) })]
 pub struct Org {
     /// Declared node-kind field: kind = 2 org, 3 team, … An ordinary
-    /// declared index (0x1 segment) is the node-kind face (ADR-0017
-    /// §3 node-side note).
+    /// declared index (counting family 0x1) is the node-kind face — zero
+    /// graph-specific layout (ADR-0017 §3 node-side note).
     #[ok_default(0)]
     kind: u8,
     #[ok_default(0)]
     active: u8,
 }
 
-// ---- the graph's edge collection ----
+// ---- the graph's edge collection: one declaration ----
 
-#[derive(Clone, Default, EdgeEncode)]
-#[ok_edge(ns = 100)]
-struct Employment {
+#[derive(Clone, Default, GraphEncode)]
+#[ok_ns(100)]
+#[ok_nodes(EmploymentNodes)]
+#[ok_index(by_since { fields(since_year) })]
+pub struct Employment {
     #[ok_default(0)]
     since_year: u16,
     #[ok_default(0)]
     weight: u32,
 }
 
-use okm_core::{
-    EdgeFact, Graph, NodeRef, PRIMARY_SLOT,
-};
+/// The member set: variants are COLLECTIONS (one ns each), never document
+/// types. Membership is a compile-time fact — no slot, no registry.
+pub enum EmploymentNodes {
+    Users,
+    Orgs,
+}
+
+impl NodeSet for EmploymentNodes {
+    const NS_VALUES: &'static [u16] = &[10, 11];
+}
 
 fn user(id: u64) -> NodeRef {
     NodeRef::new(&10u16.to_be_bytes(), &id.to_be_bytes())
@@ -64,57 +74,63 @@ fn org(id: u64) -> NodeRef {
     NodeRef::new(&11u16.to_be_bytes(), &id.to_be_bytes())
 }
 
+fn head(src: NodeRef, dst: NodeRef, predicate: &str) -> EdgeHead {
+    EdgeHead { src, dst, predicate: predicate.into() }
+}
+
 #[test]
 fn link_traverse_and_fetch_back_with_attributes() {
     let store = okm_core::TestStore::slatedb_mem();
     let mut g: Graph<_, Employment> = Graph::new(store.clone());
 
     let attrs = Employment { since_year: 2020, weight: 7 };
-    let fact = EdgeFact {
-        src: user(1),
-        dst: org(9),
-        kind: "employs".into(),
-        attrs: okm_core::KvGraph::attrs(&attrs),
-    };
-    g.link(&fact, &attrs, 1).unwrap();
+    g.link(&head(user(1), org(9), "employs"), &attrs, 1).unwrap();
 
-    // Traversal faces answer through the derived constants.
+    // Traversal faces answer.
     assert_eq!(g.out_edges(&user(1)), vec![1]);
     assert_eq!(g.in_edges(&org(9)), vec![1]);
     assert_eq!(g.typed_out("employs", &user(1)), vec![1]);
     assert_eq!(g.typed_in("employs", &org(9)), vec![1]);
-    assert_eq!(g.edges_of_kind("employs"), vec![1]);
+    assert_eq!(g.edges_of_predicate("employs"), vec![1]);
+    // An unknown predicate scans nothing (no face, no panic) — and a fresh
+    // handle answers without anyone priming the cache first.
+    assert!(g.typed_out("owns", &user(1)).is_empty());
+    assert!(g.edges_of_predicate("owns").is_empty());
 
-    // Fetch back: registry cuts both refs, attrs decode round-trip.
+    // Fetch back: both refs cut, predicate name via the graph's own
+    // vocabulary, payload decoded into the declaration's type.
     let body = g.get_edge(1).unwrap();
     assert_eq!(body.src, user(1));
     assert_eq!(body.dst, org(9));
-    assert_eq!(body.attrs, okm_core::KvGraph::attrs(&attrs));
-    let kind_name = g.kind_name(body.kind_id).unwrap();
-    assert_eq!(kind_name, "employs");
+    assert_eq!(g.predicate_name(body.predicate_id).unwrap(), "employs");
+    let back = g.edge(1).unwrap();
+    assert_eq!((back.since_year, back.weight), (2020, 7));
 
     // Declared-attribute face: scan [since_year = 2020] → edge 1.
-    let slot = <Employment as GraphEdgeAccess>::__okm_face_slot("since_year");
+    let slot = <__OkmIndex_Employment_by_since as okm_core::KvIndex>::SLOT;
     let ids = g.by_attr_face(slot, &2020u16.to_be_bytes());
     assert_eq!(ids, vec![1]);
     // A value no edge carries scans empty.
     assert!(g.by_attr_face(slot, &1999u16.to_be_bytes()).is_empty());
 }
 
-/// Small compile-time bridge: the generated marker structs are
-/// per-field; the test resolves a slot by walking the known pair.
-trait GraphEdgeAccess {
-    fn __okm_face_slot(field: &str) -> u16;
-}
+#[test]
+fn predicates_are_listed_from_the_kind_vocabulary() {
+    let store = okm_core::TestStore::slatedb_mem();
+    let mut g: Graph<_, Employment> = Graph::new(store.clone());
 
-impl GraphEdgeAccess for Employment {
-    fn __okm_face_slot(field: &str) -> u16 {
-        match field {
-            "since_year" => __OkmEdgeIndex_Employment_since_year::SLOT,
-            "weight" => __OkmEdgeIndex_Employment_weight::SLOT,
-            other => panic!("no face for {other}"),
-        }
-    }
+    g.link(&head(user(1), org(9), "employs"), &Employment::default(), 1).unwrap();
+    g.link(&head(user(1), org(9), "contracts"), &Employment::default(), 2).unwrap();
+    g.link(&head(user(2), org(9), "employs"), &Employment::default(), 3).unwrap();
+
+    // One 0x04 prefix scan — an exact list, id-ordered, never inferred
+    // from the index faces.
+    assert_eq!(
+        g.predicates(),
+        vec![(0u16, "employs".to_string()), (1u16, "contracts".to_string())]
+    );
+    // Repeating an existing name allocates nothing new.
+    assert_eq!(g.predicates().len(), 2);
 }
 
 #[test]
@@ -122,25 +138,53 @@ fn unlink_and_relabeled_parallel_edges() {
     let store = okm_core::TestStore::slatedb_mem();
     let mut g: Graph<_, Employment> = Graph::new(store.clone());
 
-    let mk = |src: NodeRef, dst: NodeRef, kind: &str| EdgeFact {
-        src,
-        dst,
-        kind: kind.into(),
-        attrs: Vec::new(),
-    };
-    g.link(&mk(user(1), org(9), "employs"), &Employment::default(), 1).unwrap();
-    g.link(&mk(user(1), org(9), "contracts"), &Employment::default(), 2).unwrap();
+    g.link(&head(user(1), org(9), "employs"), &Employment::default(), 1).unwrap();
+    g.link(&head(user(1), org(9), "contracts"), &Employment::default(), 2).unwrap();
 
-    // Parallel edges (same endpoints, different kinds) are independent
-    // facts on every face.
+    // Parallel edges (same endpoints, different predicates) are
+    // independent edges on every face.
     assert_eq!(g.typed_out("employs", &user(1)), vec![1]);
     assert_eq!(g.typed_out("contracts", &user(1)), vec![2]);
-    assert_eq!(g.edges_of_kind("contracts"), vec![2]);
+    assert_eq!(g.edges_of_predicate("contracts"), vec![2]);
 
     g.unlink(1).unwrap();
     assert_eq!(g.typed_out("employs", &user(1)), Vec::<u64>::new());
-    assert_eq!(g.edges_of_kind("employs"), Vec::<u64>::new());
-    assert_eq!(g.out_edges(&user(1)), vec![2], "the other fact survives");
+    assert_eq!(g.edges_of_predicate("employs"), Vec::<u64>::new());
+    assert_eq!(g.out_edges(&user(1)), vec![2], "the other edge survives");
+}
+
+#[test]
+fn unlink_deletes_the_declared_face_entry_exactly() {
+    let store = okm_core::TestStore::slatedb_mem();
+    let mut g: Graph<_, Employment> = Graph::new(store.clone());
+    let a = Employment { since_year: 2020, weight: 1 };
+    let b = Employment { since_year: 2020, weight: 2 }; // same declared value
+    g.link(&head(user(1), org(9), "employs"), &a, 1).unwrap();
+    g.link(&head(user(2), org(9), "employs"), &b, 2).unwrap();
+
+    let slot = <__OkmIndex_Employment_by_since as okm_core::KvIndex>::SLOT;
+    assert_eq!(g.by_attr_face(slot, &2020u16.to_be_bytes()), vec![1, 2]);
+
+    g.unlink(1).unwrap();
+    // Exact deletion: the payload was decoded, the same declared value was
+    // re-derived, and only edge 1's entry went away.
+    assert_eq!(g.by_attr_face(slot, &2020u16.to_be_bytes()), vec![2]);
+    assert!(g.unlink(1).is_err(), "double unlink errors, not silently re-deletes");
+}
+
+#[test]
+fn member_set_is_checked_at_write() {
+    let store = okm_core::TestStore::slatedb_mem();
+    let mut g: Graph<_, Employment> = Graph::new(store.clone());
+    // ns 12 is nobody's collection in this graph.
+    let stranger = NodeRef::new(&12u16.to_be_bytes(), &1u64.to_be_bytes());
+    let err = g
+        .link(&head(user(1), stranger, "employs"), &Employment::default(), 1)
+        .unwrap_err();
+    assert!(err.contains("not a member"), "unexpected error: {err}");
+    assert!(g.get_edge(1).is_none(), "nothing was written");
+    // A member pair still lands.
+    g.link(&head(user(1), org(9), "employs"), &Employment::default(), 1).unwrap();
 }
 
 #[test]
@@ -149,11 +193,11 @@ fn link_into_shares_one_batch_with_documents() {
     let mut g: Graph<_, Employment> = Graph::new(store.clone());
     let nodes = okm_core::Collection::new(store.clone());
 
-    let mut batch = okm_core::MemBatch::default();
+    let mut batch = MemBatch::default();
     // A document write and an edge write into ONE batch.
     nodes.save_into(&mut batch, &UserId { id: 1 }, &User { active: 1 });
-    let fact = EdgeFact { src: user(1), dst: org(9), kind: "employs".into(), attrs: Vec::new() };
-    g.link_into(&mut batch, &fact, &Employment::default(), 1).unwrap();
+    g.link_into(&mut batch, &head(user(1), org(9), "employs"), &Employment::default(), 1)
+        .unwrap();
     store.commit_batch(batch).unwrap();
 
     assert!(nodes.get(&UserId { id: 1 }).is_some(), "document landed");
@@ -163,7 +207,7 @@ fn link_into_shares_one_batch_with_documents() {
 #[test]
 fn node_kind_filter_intersects_typed_traversal() {
     // ADR-0017 §3 node-side note: composite filtering
-    // `(:User)-[employs]->(:Org kind=2)` = typed edge face ∪ node kind
+    // `(:User)-[employs]->(:Org kind=2)` = predicate face ∪ node kind
     // face, intersected in memory — two cheap faces, one convergence.
     let store = okm_core::TestStore::slatedb_mem();
     let mut orgs = okm_core::Collection::new(store.clone());
@@ -172,17 +216,10 @@ fn node_kind_filter_intersects_typed_traversal() {
     // Org 9 kind=2, Org 10 kind=3.
     orgs.put(&OrgId { id: 9 }, &Org { kind: 2, active: 1 });
     orgs.put(&OrgId { id: 10 }, &Org { kind: 3, active: 1 });
-    let mk = |dst: NodeRef| EdgeFact {
-        src: user(1),
-        dst,
-        kind: "employs".into(),
-        attrs: Vec::new(),
-    };
-    g.link(&mk(org(9)), &Employment::default(), 1).unwrap();
-    g.link(&mk(org(10)), &Employment::default(), 2).unwrap();
+    g.link(&head(user(1), org(9), "employs"), &Employment::default(), 1).unwrap();
+    g.link(&head(user(1), org(10), "employs"), &Employment::default(), 2).unwrap();
 
-    // Node kind face = Org's own declared index (standard document
-    // layout — nothing graph-specific here).
+    // Node kind face = Org's own declared index (standard document layout).
     let kind2: Vec<u64> = orgs
         .scan::<__OkmIndex_Org_by_kind>(&2u8.to_be_bytes())
         .into_iter()
@@ -190,8 +227,8 @@ fn node_kind_filter_intersects_typed_traversal() {
         .collect();
     assert_eq!(kind2, vec![9]);
 
-    // Typed edges from user(1), keep only those whose dst is in the
-    // kind-2 node set.
+    // Predicate-filtered traversal from user(1), keep only edges whose dst
+    // is in the kind-2 node set.
     let kept: Vec<u64> = g
         .typed_out("employs", &user(1))
         .into_iter()
@@ -218,19 +255,13 @@ fn noderef_varint_len_self_describing() {
 }
 
 #[test]
-fn hex_lock_six_face_layout() {
-    // Byte-level lock of one link's six faces (ns 100, edge_id 1,
-    // kind "employs" → id 0, user(1)→org(9), attrs empty).
+fn hex_lock_one_link() {
+    // Byte-level lock of one link (ns 100, edge_id 1, predicate "employs"
+    // → id 0, user(1)→org(9), payload {since_year: 2020, weight: 0}).
     let store = okm_core::TestStore::slatedb_mem();
     let mut g: Graph<_, Employment> = Graph::new(store.clone());
     let attrs = Employment { since_year: 2020, weight: 0 };
-    let fact = EdgeFact {
-        src: user(1),
-        dst: org(9),
-        kind: "employs".into(),
-        attrs: okm_core::KvGraph::attrs(&attrs),
-    };
-    g.link(&fact, &attrs, 1).unwrap();
+    g.link(&head(user(1), org(9), "employs"), &attrs, 1).unwrap();
 
     let ns = 100u16.to_be_bytes();
     let slot = |s: u16| {
@@ -239,47 +270,60 @@ fn hex_lock_six_face_layout() {
         v
     };
     let id = 1u64.to_be_bytes().to_vec();
-    let kid = 0u16.to_be_bytes().to_vec();
+    let pid = 0u16.to_be_bytes().to_vec();
     let src = user(1).encode();
     let dst = org(9).encode();
-    // Refs are self-describing: [ns 2B][len 1B][pkey 8B] = 11 bytes.
-    assert_eq!(src.len(), 11);
+    assert_eq!(src.len(), 11, "[ns 2B][len 1B][pkey 8B]");
     assert_eq!(dst.len(), 11);
-    let key = |parts: &[Vec<u8>]| parts.concat();
 
     let mut primary = ns.to_vec();
     okm_core::write_slot(&mut primary, PRIMARY_SLOT);
     assert_eq!(primary.len(), 3, "primary head = ns 2B + fixed face 0x00, one byte");
     primary.extend_from_slice(&id);
     let body = store.get(&primary).unwrap();
-    // Edge body = [src][dst][kind_id][attrs] — attrs from the typed
-    // Employment { since_year: 2020, weight: 0 } this link wrote.
-    assert_eq!(
-        body,
-        [
-            src.clone(),
-            dst.clone(),
-            kid.clone(),
-            2020u16.to_be_bytes().to_vec(),
-            0u32.to_be_bytes().to_vec(),
-        ]
-        .concat()
-    );
+    // Body = [src][dst][predicate_id][obj payload]; the payload is the same
+    // two-segment obj a document row carries: [version u8][hot_len u16 BE]
+    // [hot segment] — since_year u16 then weight u32, both fixed-width.
+    let payload = {
+        let mut v = Vec::new();
+        v.push(1u8);
+        v.extend_from_slice(&6u16.to_be_bytes());
+        v.extend_from_slice(&2020u16.to_be_bytes());
+        v.extend_from_slice(&0u32.to_be_bytes());
+        v
+    };
+    assert_eq!(body, [src.clone(), dst.clone(), pid.clone(), payload].concat());
 
-    // The graph's faces are fixed faces — one byte each (ADR-0030).
-    assert!(store.get(&key(&[ns.to_vec(), slot(0x04), kid.clone(), id.clone()])).is_some(), "kind index");
-    assert!(store.get(&key(&[ns.to_vec(), slot(0x05), src.clone(), id.clone()])).is_some(), "out");
-    assert!(store.get(&key(&[ns.to_vec(), slot(0x06), dst.clone(), id.clone()])).is_some(), "in");
+    // The graph's faces are fixed faces — one byte each (ADR-0030), and the
+    // vocabulary precedes the faces that read its ids.
+    let key = |parts: &[Vec<u8>]| parts.concat();
+    assert!(store.get(&key(&[ns.to_vec(), slot(0x04), pid.clone()])).is_some(), "0x04 id → name");
     assert!(
-        store.get(&key(&[ns.to_vec(), slot(0x07), kid.clone(), src.clone(), id.clone()])).is_some(),
-        "kind+out"
+        store.get(&key(&[ns.to_vec(), slot(0x05), b"employs".to_vec()])).is_some(),
+        "0x05 name → id"
     );
-    assert!(store.get(&key(&[ns.to_vec(), slot(0x08), kid, dst, id.clone()])).is_some(), "kind+in");
+    assert!(
+        store.get(&key(&[ns.to_vec(), slot(0x06), pid.clone(), id.clone()])).is_some(),
+        "predicate index"
+    );
+    assert!(store.get(&key(&[ns.to_vec(), slot(0x07), src.clone(), id.clone()])).is_some(), "out");
+    assert!(store.get(&key(&[ns.to_vec(), slot(0x08), dst.clone(), id.clone()])).is_some(), "in");
+    assert!(
+        store.get(&key(&[ns.to_vec(), slot(0x09), pid.clone(), src.clone(), id.clone()])).is_some(),
+        "predicate+out"
+    );
+    assert!(
+        store.get(&key(&[ns.to_vec(), slot(0x0A), pid, dst, id.clone()])).is_some(),
+        "predicate+in"
+    );
+    // Nothing in the retired 0x02/0x03 band names a predicate: the field
+    // dictionary holds only what the payload declared.
+    assert!(store.get(&key(&[ns.to_vec(), slot(0x02), 0u16.to_be_bytes().to_vec()])).is_none());
 
-    // Attribute face (counting family 0x1, declaration order):
+    // Declared face (counting family 0x1, declaration order):
     // since_year=2020 — two bytes, unlike the fixed faces above.
     let mut face = ns.to_vec();
-    okm_core::write_slot(&mut face, 0x1001);
+    okm_core::write_slot(&mut face, <__OkmIndex_Employment_by_since as okm_core::KvIndex>::SLOT);
     face.extend_from_slice(&2020u16.to_be_bytes());
     face.extend_from_slice(&id);
     assert_eq!(face.len(), 2 + 2 + 2 + 8);
@@ -293,14 +337,8 @@ fn neighbor_nodes_resolve_to_node_refs() {
 
     let a1 = Employment { since_year: 2020, weight: 1 };
     let a2 = Employment { since_year: 2021, weight: 2 };
-    let mk = |src: NodeRef, dst: NodeRef, _id: u64, attrs: &Employment| EdgeFact {
-        src,
-        dst,
-        kind: "employs".into(),
-        attrs: okm_core::KvGraph::attrs(attrs),
-    };
-    g.link(&mk(user(1), org(9), 1, &a1), &a1, 1).unwrap();
-    g.link(&mk(user(1), org(10), 2, &a2), &a2, 2).unwrap();
+    g.link(&head(user(1), org(9), "employs"), &a1, 1).unwrap();
+    g.link(&head(user(1), org(10), "employs"), &a2, 2).unwrap();
 
     // One-hop neighbors as NodeRef — the traversal currency.
     let mut outs = g.out_nodes(&user(1));
@@ -308,17 +346,17 @@ fn neighbor_nodes_resolve_to_node_refs() {
     assert_eq!(outs, vec![org(9), org(10)]);
     assert_eq!(g.in_nodes(&org(9)), vec![user(1)]);
 
-    // Kind-qualified neighbors share the resolve step.
+    // Predicate-qualified neighbors share the resolve step.
     assert_eq!(g.typed_out_nodes("employs", &user(1)), vec![org(9), org(10)]);
     assert_eq!(g.typed_out_nodes("contracts", &user(1)), Vec::<NodeRef>::new());
     assert_eq!(g.typed_in_nodes("employs", &org(10)), vec![user(1)]);
 
-    // Parallel-edge collapse: two facts between the same pair produce
+    // Parallel-edge collapse: two heads between the same pair produce
     // the same neighbor twice — multiplicity preserved, dedupe is the
     // caller's set semantics (NodeRef is Hash + Ord).
     let a3 = Employment { since_year: 2022, weight: 3 };
-    g.link(&mk(user(2), org(9), 3, &a3), &a3, 3).unwrap();
-    g.link(&mk(user(2), org(9), 4, &a3), &a3, 4).unwrap();
+    g.link(&head(user(2), org(9), "employs"), &a3, 3).unwrap();
+    g.link(&head(user(2), org(9), "employs"), &a3, 4).unwrap();
     assert_eq!(g.out_nodes(&user(2)), vec![org(9), org(9)]);
     let mut deduped = g.out_nodes(&user(2));
     deduped.sort();
