@@ -7,7 +7,7 @@
 //! frames cost 1-2 header bytes instead of a fixed 4-byte length.
 //! ```
 //!
-//! `field-id` is the field NAME's dictionary number (slots 2/3); u8 ids
+//! `field-id` is the field NAME's vocabulary number (slots 2/3); u8 ids
 //! with `0xFF` escaping to `[0xFF][u16 id]` (255 names pay one byte per
 //! frame; growth is append-only — no renumbering, ever). Unknown value
 //! types on decode are normal input for a dynamic reader: the frame is
@@ -36,11 +36,11 @@ pub enum DynamicValue {
     Array(Vec<DynamicValue>),
     /// Nested object: name-keyed map, the in-memory counterpart of a
     /// nested nTLV list (ADR-0012 — a map IS an nTLV list; the field
-    /// NAME → id mapping reuses the same field-name dictionary).
+    /// NAME → id mapping reuses the same field-name vocabulary).
     Obj(BTreeMap<String, DynamicValue>),
 }
 
-/// One dynamic field: dictionary id + decoded value.
+/// One dynamic field: vocabulary id + decoded value.
 #[derive(Clone, Debug, PartialEq)]
 pub struct DynamicField {
     pub id: u16,
@@ -58,23 +58,23 @@ pub fn put_frame(buf: &mut Vec<u8>, id: u16, value: &DynamicValue) {
         buf.push(0xFF);
         buf.extend_from_slice(&id.to_be_bytes());
     }
-    // No dictionary here (the id is caller-resolved): a nested Obj value
+    // No vocabulary here (the id is caller-resolved): a nested Obj value
     // cannot allocate names — the resolver panics instead of silently
     // emitting an empty body (the documented put_frame contract). Arrays
     // of scalars are fine.
-    let mut no_dict = |name: &str| -> u16 {
+    let mut no_vocab = |name: &str| -> u16 {
         panic!(
-            "put_frame: nested object requires the dictionary (name `{name}` unresolved) — use put_frame_named"
+            "put_frame: nested object requires the vocabulary (name `{name}` unresolved) — use put_frame_named"
         );
     };
-    let (ty, mut body) = encode_value(value, &mut no_dict);
+    let (ty, mut body) = encode_value(value, &mut no_vocab);
     buf.push(ty.to_byte());
     put_len(buf, body.len());
     buf.append(&mut body);
 }
 
-/// Name resolver: returns the dictionary id for `name`, allocating
-/// through the closure on first sight (the caller's dictionary owns
+/// Name resolver: returns the vocabulary id for `name`, allocating
+/// through the closure on first sight (the caller's vocabulary owns
 /// allocation discipline — single writer, engine mutex).
 pub trait NameResolver {
     fn resolve(&mut self, name: &str) -> u16;
@@ -88,23 +88,23 @@ impl<F: FnMut(&str) -> u16> NameResolver for F {
 
 /// Append one frame for a NAMED field: nested `Obj` values recurse,
 /// each nested name resolved through the same resolver (nested objects
-/// share the obj's dictionary — one vocabulary per table).
+/// share the obj's vocabulary — one vocabulary per table).
 pub fn put_frame_named<R: NameResolver>(
     buf: &mut Vec<u8>,
     name: &str,
     value: &DynamicValue,
-    dict: &mut R,
+    vocab: &mut R,
 ) {
-    put_frame_named_inner(buf, name, value, dict);
+    put_frame_named_inner(buf, name, value, vocab);
 }
 
 fn put_frame_named_inner<R: NameResolver>(
     buf: &mut Vec<u8>,
     name: &str,
     value: &DynamicValue,
-    dict: &mut R,
+    vocab: &mut R,
 ) {
-    let id = dict.resolve(name);
+    let id = vocab.resolve(name);
     if id < 0xFF {
         buf.push(id as u8);
     } else {
@@ -114,17 +114,17 @@ fn put_frame_named_inner<R: NameResolver>(
     match value {
         DynamicValue::Obj(map) => {
             // Nested obj: one outer frame (type 7) whose body is the
-            // nested nTLV list — same shape, same dictionary.
+            // nested nTLV list — same shape, same vocabulary.
             let mut body = Vec::new();
             for (k, v) in map {
-                put_frame_named_inner(&mut body, k, v, dict);
+                put_frame_named_inner(&mut body, k, v, vocab);
             }
             buf.push(ObjValueType::Obj.to_byte());
             put_len(buf, body.len());
             buf.append(&mut body);
         }
         other => {
-            let (ty, mut body) = encode_value(other, dict);
+            let (ty, mut body) = encode_value(other, vocab);
             buf.push(ty.to_byte());
             put_len(buf, body.len());
             buf.append(&mut body);
@@ -132,15 +132,15 @@ fn put_frame_named_inner<R: NameResolver>(
     }
 }
 
-/// Value → (type tag, body bytes). Nested objects need the dictionary
+/// Value → (type tag, body bytes). Nested objects need the vocabulary
 /// to resolve names → ids, so the resolver is a parameter (top-level
-/// frames go through [`put_frame`], which owns the dict).
-/// Value → (type tag, body bytes). Nested objects need the dictionary
+/// frames go through [`put_frame`], which owns the vocab).
+/// Value → (type tag, body bytes). Nested objects need the vocabulary
 /// to resolve names → ids, so the resolver is a parameter: a top-level
 /// Obj is encoded by `put_frame_named`'s own arm, but an Obj nested
 /// inside an Array reaches THIS arm — composites must encode fully
 /// wherever they appear.
-fn encode_value<R: NameResolver>(value: &DynamicValue, dict: &mut R) -> (ObjValueType, Vec<u8>) {
+fn encode_value<R: NameResolver>(value: &DynamicValue, vocab: &mut R) -> (ObjValueType, Vec<u8>) {
     match value {
         DynamicValue::Int(v) => {
             // Minimal big-endian two's-complement width.
@@ -167,7 +167,7 @@ fn encode_value<R: NameResolver>(value: &DynamicValue, dict: &mut R) -> (ObjValu
             let mut body = Vec::new();
             put_len(&mut body, items.len());
             for item in items {
-                let (ty, mut b) = encode_value(item, dict);
+                let (ty, mut b) = encode_value(item, vocab);
                 body.push(ty.to_byte());
                 put_len(&mut body, b.len());
                 body.append(&mut b);
@@ -176,10 +176,10 @@ fn encode_value<R: NameResolver>(value: &DynamicValue, dict: &mut R) -> (ObjValu
         }
         DynamicValue::Obj(map) => {
             // Obj inside an Array: the same nested-nTLV body the
-            // frame-level Obj arm produces — same dictionary recursion.
+            // frame-level Obj arm produces — same vocabulary recursion.
             let mut body = Vec::new();
             for (k, v) in map {
-                put_frame_named_inner(&mut body, k, v, dict);
+                put_frame_named_inner(&mut body, k, v, vocab);
             }
             (ObjValueType::Obj, body)
         }
@@ -212,7 +212,7 @@ fn take<'a>(b: &'a [u8], off: &mut usize, n: usize) -> Option<&'a [u8]> {
 /// is still returned (partial results beat nothing for a dynamic
 /// reader).
 /// Decode all frames, resolving nested object field ids to names via
-/// `name_of` (the dictionary's id → name direction). Top-level frames
+/// `name_of` (the vocabulary's id → name direction). Top-level frames
 /// keep their numeric ids in [`DynamicField`] (the Collection layer maps
 /// them); nested `Obj` values come back fully name-keyed.
 pub fn decode_named(
@@ -388,7 +388,7 @@ mod serde_impls {
     //! This is `Serialize`/`Deserialize`, NOT `to_json`: the format is the
     //! caller's choice (JSON, CBOR, …), and the storage encoding is
     //! untouched — the dynamic segment still reads and writes nTLV frames,
-    //! with names in the dictionary and fixed widths where the declaration
+    //! with names in the vocabulary and fixed widths where the declaration
     //! says so. The impl is the adapter at the edge, so a consumer stops
     //! hand-writing a `match` per direction.
     //!
@@ -741,17 +741,17 @@ mod tests {
 mod nested_tests {
     use super::*;
 
-    // Minimal dictionary stub for tests: name -> id by order of first sight.
-    struct StubDict {
+    // Minimal vocabulary stub for tests: name -> id by order of first sight.
+    struct StubVocab {
         next: u16,
         names: std::collections::HashMap<String, u16>,
     }
-    impl StubDict {
+    impl StubVocab {
         fn new() -> Self {
-            StubDict { next: 0, names: std::collections::HashMap::new() }
+            StubVocab { next: 0, names: std::collections::HashMap::new() }
         }
     }
-    impl NameResolver for StubDict {
+    impl NameResolver for StubVocab {
         fn resolve(&mut self, name: &str) -> u16 {
             if let Some(&id) = self.names.get(name) {
                 return id;
@@ -772,15 +772,15 @@ mod nested_tests {
         outer.insert("loc".to_string(), DynamicValue::Obj(inner));
         outer.insert("n".to_string(), DynamicValue::UInt(7));
 
-        let mut dict = StubDict::new();
+        let mut vocab = StubVocab::new();
         let mut buf = Vec::new();
         for (k, v) in &outer {
-            put_frame_named(&mut buf, k, v, &mut dict);
+            put_frame_named(&mut buf, k, v, &mut vocab);
         }
 
         // Decode with name resolution.
         let name_of_id = |id: u16| -> Option<String> {
-            dict.names
+            vocab.names
                 .iter()
                 .find(|ent| *ent.1 == id)
                 .map(|(k, _)| k.clone())
@@ -791,7 +791,7 @@ mod nested_tests {
         let by_name: BTreeMap<&str, &DynamicValue> = fields
             .iter()
             .filter_map(|f| {
-                let name = dict
+                let name = vocab
                     .names
                     .iter()
                     .find(|ent| *ent.1 == f.id)
@@ -812,21 +812,21 @@ mod nested_tests {
 
     #[test]
     fn nested_deep_recursion() {
-        // obj → obj → obj: three levels, all through the same dictionary.
+        // obj → obj → obj: three levels, all through the same vocabulary.
         let leaf = BTreeMap::from([("v".to_string(), DynamicValue::Int(-3))]);
         let mid = BTreeMap::from([("leaf".to_string(), DynamicValue::Obj(leaf))]);
         let top = BTreeMap::from([("mid".to_string(), DynamicValue::Obj(mid))]);
 
-        let mut dict = StubDict::new();
+        let mut vocab = StubVocab::new();
         let mut buf = Vec::new();
         for (k, v) in &top {
-            put_frame_named(&mut buf, k, v, &mut dict);
+            put_frame_named(&mut buf, k, v, &mut vocab);
         }
-        // Dictionary saw: mid, leaf, v — shared vocabulary across levels.
-        assert_eq!(dict.names.len(), 3);
+        // Vocabulary saw: mid, leaf, v — shared vocabulary across levels.
+        assert_eq!(vocab.names.len(), 3);
 
         let name_of_id = |id: u16| -> Option<String> {
-            dict.names
+            vocab.names
                 .iter()
                 .find(|ent| *ent.1 == id)
                 .map(|(k, _)| k.clone())

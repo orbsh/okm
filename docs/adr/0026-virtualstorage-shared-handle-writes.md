@@ -78,7 +78,7 @@ any real exclusivity at the data layer.
 
 - okm-core: trait signature change in engine/storage.rs; 8 impls updated
   (`FjallStore`, `SlatedbSync`, `RedbStore`, `TestStore`, `RemoteStore`, the
-  nest `TestEngine`, the obj_dict test `Engine`, plus any doc-comment
+  nest `TestEngine`, the obj_vocab test `Engine`, plus any doc-comment
   references). `FjallStore::put`/`del` drop their `&mut` and forward to the same
   `&self` fjall calls; `RedbStore` likewise. Full test suite runs (all engines
   the build carries, per the TestStore matrix).

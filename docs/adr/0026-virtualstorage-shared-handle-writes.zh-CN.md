@@ -70,7 +70,7 @@ trait 上的 `&mut` 是根：它强迫消费者制造 `&mut` 路径，而数据�
 
 - okm-core：engine/storage.rs 的 trait 签名改动；更新 8 个 impl
   （`FjallStore`、`SlatedbSync`、`RedbStore`、`TestStore`、`RemoteStore`、nest
-  的 `TestEngine`、obj_dict 测试的 `Engine`，及文档注释引用）。
+  的 `TestEngine`、obj_vocab 测试的 `Engine`，及文档注释引用）。
   `FjallStore::put`/`del` 去掉 `&mut`，转发到同样的 `&self` fjall 调用；
   `RedbStore` 同理。全测试套件运行（按 TestStore 矩阵覆盖构建携带的所有
   engine）。

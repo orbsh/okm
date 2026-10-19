@@ -1,7 +1,7 @@
 # ADR-0012: Object model — one encoding, declared fields plus a dynamic segment
 
 Date: 2026-09-14
-Status: Accepted (2026-09-14; landed — the obj payload's two slots, the field dictionary, `DocumentEncode` in both directions, `Ref`/`Refs` embedding). **Update 2026-10-17**: the slot table below is the flat pre-ADR-0016 numbering, kept as this decision's record — today's allocation is ADR-0030's, where the dynamic segment is fixed face 0x01 and the dictionary 0x02/0x03. The "only declared fields are indexed" paragraph is superseded by ADR-0029 (a dynamic field is indexable through a declared path).
+Status: Accepted (2026-09-14; landed — the obj payload's two slots, the field-name vocabulary, `DocumentEncode` in both directions, `Ref`/`Refs` embedding). **Update 2026-10-17**: the slot table below is the flat pre-ADR-0016 numbering, kept as this decision's record — today's allocation is ADR-0030's, where the dynamic segment is fixed face 0x01 and the vocabulary 0x02/0x03. The "only declared fields are indexed" paragraph is superseded by ADR-0029 (a dynamic field is indexable through a declared path).
 
 ## Context
 
@@ -30,7 +30,7 @@ mark three distinct positions on the static/dynamic spectrum, and obj sits
 deliberately apart from document:
 
 - **document** — logically and physically all-dynamic; every field rides the
-  dynamic path (dictionary number + value type per frame).
+  dynamic path (vocabulary number + value type per frame).
 - **variant** — a dynamic blob nested as ONE declared static field (a
   `Vec<u8>`/`Bytes` payload field); the dynamics live inside a value, not in
   the key layout.
@@ -69,7 +69,7 @@ value is a list of frames:
 [dynamic-face value] = ([field-id][value-type][len u32][value bytes])*
 ```
 
-- `field-id`: the field NAME's dictionary number (see below).
+- `field-id`: the field NAME's vocabulary number (see below).
 - `value-type`: a small run-time value vocabulary — this is the one
   genuinely new element. Declared fields carry types in the compile-time
   FieldDesc table; dynamic fields must be self-describing, so their
@@ -79,7 +79,7 @@ value is a list of frames:
   nesting support lands later. The framing is **CBOR-derived, not
   CBOR**: only the major-type pattern is taken — a type nibble opens
   each frame — and struct encoding rides the same scheme. CBOR's major
-  types include lists and maps; with a field-name dictionary OKM needs
+  types include lists and maps; with a field-name vocabulary OKM needs
   only the list — a map IS an n-TLV list (id, type, len, value),
   structure information living in the values, not in a per-document
   schema.
@@ -98,11 +98,11 @@ never by the key. A dynamic field that turns out to be hot in a key-shaped
 way still gets declared (a one-line schema change plus a table rebuild) —
 the row model's discipline, unchanged.
 
-## Field-name dictionary (fixed faces 0x02/0x03)
+## Field-name vocabulary (fixed faces 0x02/0x03)
 
-Dynamic frames carry names by number. The dictionary is a **run-time,
+Dynamic frames carry names by number. The vocabulary is a **run-time,
 per-table, bidirectional mapping** — the first mutable vocabulary OKM
-stores in KV (ns stays compile-time; ADR-0002's "the dictionary lives in
+stores in KV (ns stays compile-time; ADR-0002's "the vocabulary lives in
 code" is a statement about the ns layer, not this one):
 
 ```text
@@ -110,7 +110,7 @@ fixed face 0x02: [ns][0x02][field-id]      → name bytes   (number → name)
 fixed face 0x03: [ns][0x03][name bytes]    → field-id     (name → number)
 ```
 
-Discipline, copied from the ns dictionary:
+Discipline, copied from the ns vocabulary:
 
 - **Append-only.** Numbers are never reused, never renumbered. A name
   seen for the first time on the write path claims the next free number
@@ -125,11 +125,11 @@ Discipline, copied from the ns dictionary:
   evaluated and rejected: ordinary business names share few prefixes, the
   trie's multi-hop traversal and UTF-8 radix cost buy nothing, and the
   bidirectional flat mapping keeps number→name as cheap as name→number.
-- Raw names in frames were considered (no dictionary at all) and
+- Raw names in frames were considered (no vocabulary at all) and
   rejected for the target shape: same-table objects reuse the same
   names heavily (MQ topics), so paying the full name per frame per
   object is the expensive end. A truly schemaless table (every row
-  distinct names) degenerates to a 1:1 dictionary — no worse than raw
+  distinct names) degenerates to a 1:1 vocabulary — no worse than raw
   names, and it still buys a single lookup structure.
 
 **Why first-seen allocation beats inference and closed enums.** The
@@ -141,16 +141,16 @@ growing extras. Two standard answers fail here:
 - **First-record inference** (Elasticsearch-style) assumes the first
   document reveals the schema; type B arriving after type A turns the
   guess into a mapping conflict and an operations incident. The
-  dictionary has no first-record concept: a name claims its number
+  vocabulary has no first-record concept: a name claims its number
   whenever it first appears, in whatever order.
 - **Closed declared enums** (a compile-time registry of every field
   name) would need a rebuild for every new category — exactly the
-  unpredictability the workload rules out. The dictionary absorbs new
+  unpredictability the workload rules out. The vocabulary absorbs new
   categories at run time with no recompile and no estimate.
 
 The type byte, by contrast, stays per-frame: the same stream interleaves
 different value types at the same frame position, so type repetition
-cannot be assumed and a type dictionary would buy nothing. (Fully
+cannot be assumed and a type vocabulary would buy nothing. (Fully
 homogeneous collections — numeric columnar shapes — are not the object
 model's target; they are served by nested declared objects, which
 restore hot-segment O(1) offsets and indexing for the repeated
@@ -161,8 +161,8 @@ structure, while the outer object stays purely dynamic.)
 ```text
 slot 0      primary table          [ns][0][key payload]
 slot 1      obj dynamic segment    [ns][1][key payload]
-slot 2      field-name dictionary  [ns][2][field-id]        → name
-slot 3      field-name dictionary  [ns][3][name bytes]      → field-id
+slot 2      field-name vocabulary  [ns][2][field-id]        → name
+slot 3      field-name vocabulary  [ns][3][name bytes]      → field-id
 slot 4–13   reserved (two-ended growth buffer)
 slot 14     edge forward           [ns][14][A·id][B·id]
 slot 15     edge reverse           [ns][15][B·id][A·id]
@@ -171,7 +171,8 @@ slot 16+    indexes and reduces (declaration order), [ns][slot][...]
 
 *(Update 2026-10-17: this table is the flat pre-ADR-0016 allocation, kept
 as the decision's record. Current numbering: ADR-0030 — primary 0x00,
-dynamic segment 0x01, dictionary 0x02/0x03, graph faces 0x06–0x0A,
+dynamic segment 0x01, field-name vocabulary 0x02/0x03, predicate vocabulary
+0x04/0x05, graph faces 0x06–0x0A,
 declared indexes 0x1nnn, reduces 0x2nnn, junctions 0x3nnn.)*
 
 Fixed roles grow upward from 0; edges sit at the top (14/15) and grow
@@ -204,14 +205,14 @@ obj concept.
 
 - One encoding, one derive family, one decode path; declared rows are the
   zero-dynamic-segment special case and need no migration.
-- OKM gains its first run-time vocabulary (field names) with ns-dictionary
+- OKM gains its first run-time vocabulary (field names) with ns-vocabulary
   discipline: append-only, escaped growth, single-writer allocation.
 - Value types for dynamic fields become part of the wire contract (a
   small closed enum in okm-core, mirrored in schema exports).
 - Dynamic fields are readable everywhere but indexable only after being
   declared — schema evolution is the escape hatch, deliberately manual.
 - Implementation is PLAN-gated: ObjEncode rename, slot-1 writer/reader,
-  dictionary maintenance, value-type enum, schema export extension.
+  vocabulary maintenance, value-type enum, schema export extension.
 
 
 ## Update 2026-09-19: frame length is a varint (P2)
@@ -222,6 +223,6 @@ prefix uses the prefix-monotonic wire codec introduced for `VarInt`
 (P1), implemented once in `wrappers/wire.rs` and shared by the field
 wrapper, the dynamic-segment frames, and Array/nested-Obj element
 frames. Small frames cost 2-3 header bytes instead of 5. The
-element-type vocabulary, dictionary, and ordering rules are
+element-type vocabulary, vocabulary, and ordering rules are
 unchanged. Declared cold-segment frames (`[tag][len u32]`, ADR-0004)
 keep the fixed length for now.

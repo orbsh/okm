@@ -228,7 +228,7 @@ fn dynamic_fields_equal_typed_fields() {
         dyn_entries.push((full, v));
     }
     dyn_entries.sort();
-    assert_eq!(typed_entries, dyn_entries, "dynamic and typed field writes must land identical entries (incl. dictionary)");
+    assert_eq!(typed_entries, dyn_entries, "dynamic and typed field writes must land identical entries (incl. vocabulary)");
 
     // Read-back through the dynamic bridge.
     let back = dynamic.get_fields(&key_bytes(1, 2)).unwrap().unwrap();
@@ -311,7 +311,7 @@ fn dynamic_fields_carry_composites() {
 }
 
 // --- plan surface (ADR-0037 4.16a) -----------------------------------
-// The remote shape: a caller holding NO engine — dictionary mirror in,
+// The remote shape: a caller holding NO engine — vocabulary mirror in,
 // ops out — replayed blind must land byte-identical to the embedded
 // put_fields (load->plan->replay). This is the injection contract the
 // bindings ride: ship the ops, the engine never leaves its host.
@@ -323,16 +323,16 @@ fn plan_replay_equals_embedded_fields_across_two_writes() {
     let store = TestStore::slatedb_mem();
 
     // Caller-side: two writes through ONE mirror, adopted between them.
-    let mut dict = okm_dynamic::DictMirror::default();
-    let p1 = okm_dynamic::plan_put_fields(&nsb, b"k1", &dfields(&[("note", "hello"), ("weight9", "9")]), &mut dict).unwrap();
+    let mut vocab = okm_dynamic::VocabMirror::default();
+    let p1 = okm_dynamic::plan_put_fields(&nsb, b"k1", &dfields(&[("note", "hello"), ("weight9", "9")]), &mut vocab).unwrap();
     for (k, v) in &p1.ops { match v { Some(b) => store.put(k.clone(), b.clone()), None => store.del(k) } }
-    dict.adopt(&p1.new_dict_entries);
+    vocab.adopt(&p1.new_vocab_entries);
     let mut f2 = okm_dynamic::ValueMap::new();
     f2.insert("note".into(), okm_dynamic::Value::U64(42));
-    let p2 = okm_dynamic::plan_put_fields(&nsb, b"k2", &f2, &mut dict).unwrap();
+    let p2 = okm_dynamic::plan_put_fields(&nsb, b"k2", &f2, &mut vocab).unwrap();
     for (k, v) in &p2.ops { match v { Some(b) => store.put(k.clone(), b.clone()), None => store.del(k) } }
-    dict.adopt(&p2.new_dict_entries);
-    assert_eq!(p2.new_dict_entries, Vec::new(), "note was already allocated by the first plan");
+    vocab.adopt(&p2.new_vocab_entries);
+    assert_eq!(p2.new_vocab_entries, Vec::new(), "note was already allocated by the first plan");
 
     // Embedded side on a fresh store: the same two writes.
     let t = dynamic_table(TestStore::slatedb_mem()); // same schema ns as above? check below
@@ -364,7 +364,7 @@ fn plan_replay_equals_embedded_fields_across_two_writes() {
     let raw = store
         .get(&okm_dynamic::fields_key(&nsb, b"k1"))
         .unwrap();
-    let back = okm_dynamic::fields_from_frames(&raw, &dict).unwrap();
+    let back = okm_dynamic::fields_from_frames(&raw, &vocab).unwrap();
     assert_eq!(back.get("note"), Some(&okm_dynamic::Value::Str("hello".into())));
     let emb = t.get_fields(b"k1").unwrap().unwrap();
     assert_eq!(back, emb);

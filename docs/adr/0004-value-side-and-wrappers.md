@@ -5,7 +5,7 @@ Status: Superseded at the macro level by [ADR-0006](0006-row-node-model.md) (the
 
 ## Context
 
-The key layer is zero-waste (ns dictionary + fixed-width offsets), but the value side serialized with postcard is **non-self-describing** — fields are decoded by position, not tag. This makes "add a field" a structural cost of the whole-row packed layout: old data carries no field positions, so a new reader cannot skip an unrecognized tail. The fix is not a different layout but an evolvable serialization format. OKM reserves two levels of mechanism, plus a field-level wrapper system on the key side.
+The key layer is zero-waste (ns vocabulary + fixed-width offsets), but the value side serialized with postcard is **non-self-describing** — fields are decoded by position, not tag. This makes "add a field" a structural cost of the whole-row packed layout: old data carries no field positions, so a new reader cannot skip an unrecognized tail. The fix is not a different layout but an evolvable serialization format. OKM reserves two levels of mechanism, plus a field-level wrapper system on the key side.
 
 ## L1: Versioned payload (simplest)
 

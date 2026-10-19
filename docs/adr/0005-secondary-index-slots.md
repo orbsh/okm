@@ -56,15 +56,15 @@ index key:   [header = table_ns·slot][indexed fields BE][primary key ID]   ← 
 
 The text-first regime is implemented; the constraint sharpens from "fixed-width fields only" to a positional rule.
 
-**Variable-length fields (`String`, `VarInt<T>`) in `fields()`/`includes()`**: allowed at most once, and only in the **last** position. The wire is the raw encoding — UTF-8 bytes, no length prefix: a `len` prefix would sort by length before bytes and destroy dictionary order, which is the entire value of the text-first regime. Sort order = byte-wise lexicographic; fields *before* the variable-length one stay fixed-width and locatable, so `(city, name)` composite prefixes work (`WHERE city = ? AND name LIKE 'ab%'` falls out of prefix scanning). The exact-match cost: `"ab"` scans into `"abc"` — disambiguation is the trailing primary key + fetch-back, which is the regime's accepted price. A variable-length field followed by anything else is a compile-time panic (fields after it cannot be located — no static width).
+**Variable-length fields (`String`, `VarInt<T>`) in `fields()`/`includes()`**: allowed at most once, and only in the **last** position. The wire is the raw encoding — UTF-8 bytes, no length prefix: a `len` prefix would sort by length before bytes and destroy vocabulary order, which is the entire value of the text-first regime. Sort order = byte-wise lexicographic; fields *before* the variable-length one stay fixed-width and locatable, so `(city, name)` composite prefixes work (`WHERE city = ? AND name LIKE 'ab%'` falls out of prefix scanning). The exact-match cost: `"ab"` scans into `"abc"` — disambiguation is the trailing primary key + fetch-back, which is the regime's accepted price. A variable-length field followed by anything else is a compile-time panic (fields after it cannot be located — no static width).
 
-**Function indexes** (`func(path)`): the entry's sort segment is `path(&row)`'s result instead of payload fields — `fields`/`includes` stay empty and mixing them is a compile-time panic. The same declared function is what the query side calls on its probe value: one declaration drives both encode and scan (normalization like `to_lowercase` cannot drift between sides). The result type must implement `IndexFuncResult` ((`okm-core` crate)): `String` → raw UTF-8 bytes (dictionary order), unsigned integers → BE bytes (numeric order); anything else fails to compile at the generated impl.
+**Function indexes** (`func(path)`): the entry's sort segment is `path(&row)`'s result instead of payload fields — `fields`/`includes` stay empty and mixing them is a compile-time panic. The same declared function is what the query side calls on its probe value: one declaration drives both encode and scan (normalization like `to_lowercase` cannot drift between sides). The result type must implement `IndexFuncResult` ((`okm-core` crate)): `String` → raw UTF-8 bytes (vocabulary order), unsigned integers → BE bytes (numeric order); anything else fails to compile at the generated impl.
 
 ## Update 2026-09-10: slot byte restored
 
 The 2026-09-07 implementation replaced the slot byte with additive ns derivation (`index_ns = table_ns + SLOT`, `wrapping_add`) — one byte shorter, one less layer. The flaw that surfaced: **table ns allocation stopped being self-contained**. Allocating ns=256 meant reserving headroom for "how many indexes this table might ever have"; adding an index could overflow into the next table's segment, and the error was silent (overlapping segments still scan fine — entries just cross-read). `#[ok_ns]` regressed from "one number per table" to "one number plus an unbounded reservation".
 
-The byte saved was a local, negligible gain; the guarantee given up was global. Implementation-time simplifications must be checked against this ADR's consequences list — the additive variant was considered and rejected here for exactly this class of reason. Restored: entry header `[table_ns 2B][slot 1B]` on every entry (primary slot 0), +1 byte per key, ns dictionary back to one number per table, 255 indexes per table.
+The byte saved was a local, negligible gain; the guarantee given up was global. Implementation-time simplifications must be checked against this ADR's consequences list — the additive variant was considered and rejected here for exactly this class of reason. Restored: entry header `[table_ns 2B][slot 1B]` on every entry (primary slot 0), +1 byte per key, ns vocabulary back to one number per table, 255 indexes per table.
 
 ## Update 2026-09-12b: deprecating an index declaration
 
@@ -173,7 +173,7 @@ ref in the face key — identity sits in the key on the side being addressed.
 **Two encodings for mid-segment variable-length data were examined and are NOT
 adopted.** (1) A length prefix inside an index segment fails structurally: the
 segment IS a sort segment, so a leading length sorts by length before bytes and
-destroys the dictionary order the text-first regime exists for (see the
+destroys the vocabulary order the text-first regime exists for (see the
 2026-09-09 update). (2) A C-style terminator with order-preserving escaping
 (`0x00`-terminated, `0x00` → `0x00 0xFF`) does keep byte order and would allow
 more than one variable segment — a self-delimiting form already ships inside okm,

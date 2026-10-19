@@ -17,7 +17,7 @@
 //! remote: operation payloads carry semantic results, single-writer-per-group).
 //!
 //! Value tree representation is host-agnostic (`Value` enum); binding
-//! crates convert to/from their native types (dict, hashmap, ...).
+//! crates convert to/from their native types (vocab, hashmap, ...).
 //!
 //! Encoding rules (mirroring the derive, byte-for-byte):
 //! - key fields: BE fixed-width at their static offsets, concatenated;
@@ -52,7 +52,7 @@ pub use graph::{DynEdge, Graph};
 pub use reduce::{scan_reduces, reduce_get, ReduceLogic, ReduceLogicObj, BoundReduce, ReduceSpec, PresetKind, PresetLogic};
 pub use plan::{decode_stored, PlannedDelete, PlannedPut};
 pub use plan_fields::{
-    DictMirror, PlannedFields, fields_from_frames, fields_key, plan_delete_fields,
+    VocabMirror, PlannedFields, fields_from_frames, fields_key, plan_delete_fields,
     plan_put_fields,
 };
 
@@ -82,7 +82,7 @@ pub enum Value {
     /// UTF-8 string (cold TLV payload fields).
     Str(String),
     /// Nested object (dynamic-segment composite; nTLV list sharing the
-    /// table's field-name dictionary). Schema-declared fixed-width fields
+    /// table's field-name vocabulary). Schema-declared fixed-width fields
     /// reject it — composites live in the dynamic segment.
     Obj(BTreeMap<String, Value>),
     /// Heterogeneous array (dynamic-segment composite; `[count u32 BE]
@@ -170,12 +170,12 @@ pub(crate) fn field_pair<'a>(
     } else {
         Err(CodecError::TypeMismatch {
             field: name.to_string(),
-            expected: schema_kind_name(schema_ty),
+            expected: schema_predicate_vocab_name(schema_ty),
         })
     }
 }
 
-fn schema_kind_name(ty: okm_core::field::FieldType) -> &'static str {
+fn schema_predicate_vocab_name(ty: okm_core::field::FieldType) -> &'static str {
     match ty {
         okm_core::field::FieldType::U8 => "U8",
         okm_core::field::FieldType::U16 => "U16",

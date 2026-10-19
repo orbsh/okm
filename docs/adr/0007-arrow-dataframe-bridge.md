@@ -91,7 +91,7 @@ freshness; snapshot = pay conversion once, buy throughput.
   the feature is active, leaving the core API surface untouched.
 - **ns ID restored to table name**: RecordBatch columns carry no ns bytes,
   but a batch must know its source table — the exporter reverses the key's
-  `[ns 2B]` header through the ns dictionary (ADR-0002, dictionary lives in
+  `[ns 2B]` header through the ns vocabulary (ADR-0002, vocabulary lives in
   code) into the descriptive table name, attached as batch metadata (table
   name / column ownership). Same discipline as ADR-0006's self-describing
   snapshots: the binary ns header never leaks to consumers; the reverse

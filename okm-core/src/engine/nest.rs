@@ -296,7 +296,7 @@ impl<S: SharedVirtualStorage + Send + 'static> NestStorage<S> {
     /// prefix escape is not expressible afterwards (physical separation,
     /// not naming filters, ADR-0010 §4). Multi-tenant: several hosted
     /// hosts may share one engine; their 2-byte prefixes are byte-wise
-    /// disjoint, and each carries its own private ns dictionary inside.
+    /// disjoint, and each carries its own private ns vocabulary inside.
     /// Returns the sender endpoints.
     pub fn new(engine: S, prefix: &[u8]) -> (Self, VirtualHandle) {
         Self::with_prefix(engine, Some(prefix.to_vec()))
@@ -306,7 +306,7 @@ impl<S: SharedVirtualStorage + Send + 'static> NestStorage<S> {
     /// engine. The sender's keyspace IS the engine's keyspace; sharding
     /// and routing belong to the orchestrator. Prerequisite: every OKM
     /// instance pointing at this host shares one domain model (one ns
-    /// dictionary, one encoding) — same binary deployed per shard makes
+    /// vocabulary, one encoding) — same binary deployed per shard makes
     /// this automatic. Coexistence with a hosted host on one engine is
     /// legal as long as the orchestrator keeps the bare instances' ns
     /// numbers off the hosted segments' numbers (an allocation duty, not

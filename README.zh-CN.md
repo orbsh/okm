@@ -25,7 +25,7 @@ OKM 只有一个存储引擎契约、一套键布局，但有两个 schema 载�
 - **静态模式（代码生成）**——Rust 类型 + `#[derive(...)]`（okm-derive）。编译器即 schema 校验器：键宽、偏移、索引声明都是编译期事实；组装点是 `Collection<S, K, R>`。面向 Rust 宿主与 Rust 源码编译的 wasm 摊位。
 - **动态模式（schema 数据）**——一个 `CollectionSchema` 值（静态侧经 `okm_core::schema::CollectionSchema::of` 导出，或直接以数据形式编写）+ okm-dynamic。`DynamicCollection` 接受运行时 ns 与 schema 值；编解码与 derive 逐字节一致。面向嵌入式语言 摊位（经 bindings 的 Python/Steel）与运行时组装 collection 的宿主（aura ADR-0026：每 摊位 类型一个真实 ns，从注册表分配）。
 
-两种模式对同一声明产生**完全相同的字节**：同一 header 纪律、同一键编码、同一 payload 帧、同一字典行为。编译期 collection 写的数据，动态侧读得回来，反之亦然——模式是**写入方**的属性，不是数据的属性。外部 API 刻意对齐（put/get/scan/delete + document map），应用代码形状不分叉。
+两种模式对同一声明产生**完全相同的字节**：同一 header 纪律、同一键编码、同一 payload 帧、同一词汇表行为。编译期 collection 写的数据，动态侧读得回来，反之亦然——模式是**写入方**的属性，不是数据的属性。外部 API 刻意对齐（put/get/scan/delete + document map），应用代码形状不分叉。
 
 crate 分工：okm-core = 共享运行时（引擎契约、`Collection`、document/动态段机制、reduce、subscribe）；okm-derive = 静态代码生成；okm-dynamic = schema 驱动编解码与 `DynamicCollection`；okm-wire = 远程引擎 wire 格式；okm-query/stream/graph/vector/ngram = core 之上的消费侧算子。
 
@@ -44,7 +44,7 @@ crate 分工：okm-core = 共享运行时（引擎契约、`Collection`、docume
 - `KeyEncode` — 定宽 key 编码（`u32` / `u64` / `[u8; N]`），大端序，编译期 `KEY_LEN` / `FIELD_WIDTHS`，`encode_prefix_named` 截断原语。
 - `JunctionEncode` — junction（SQL 多对多连接表）：每端 ns 一条单向条目，4 字节头 `[ns u16][slot u16]`（0x3 段），各端点身份宽度可独立声明（`#[ok_head(...)]`），`#[ok_junction(n)]` 区分号，查询方法生成在端点 key 类型上。
 - `Junction<S, E>` — junction 装配点：引擎 + junction 类型 = 一条关系的操作面（`link` / `unlink` / `forward` / `reverse` / `reverse_prefix`）。
-- `GraphEncode` + `Graph<S, E>` + `NodeSet`/`NodeRef` — 图边，第三种关系载体（ADR-0017）：**一份声明就是这张图**（ns + 边自己的载荷 + 显式 `#[ok_index]` 面 + `#[ok_nodes]` 成员集），开放端点走自描述引用 `[ns 2B][len][pkey]`（pkey 宽度住在引用自身——无注册表），平行边携带调用方选定的 id，谓词走图自己的 KIND 词汇表（0x04/0x05——列举就是一扫前缀），声明属性面就是普通计数族 0x1 索引；`link`/`unlink` 一个 batch 写/删全部面，`unlink` 解码载荷后精确删除；无类型/谓词/谓词过滤/属性四种扫描。
+- `GraphEncode` + `Graph<S, E>` + `NodeSet`/`NodeRef` — 图边，第三种关系载体（ADR-0017）：**一份声明就是这张图**（ns + 边自己的载荷 + 显式 `#[ok_index]` 面 + `#[ok_nodes]` 成员集），开放端点走自描述引用 `[ns 2B][len][pkey]`（pkey 宽度住在引用自身——无注册表），平行边携带调用方选定的 id，谓词走图自己的谓词词汇表（0x04/0x05——列举就是一扫前缀），声明属性面就是普通计数族 0x1 索引；`link`/`unlink` 一个 batch 写/删全部面，`unlink` 解码载荷后精确删除；无类型/谓词/谓词过滤/属性四种扫描。
 - 引擎后端走 Cargo feature：`fjall`（同步 `FjallStore`）、`slatedb`（异步 `SlatedbStore` + `AsyncJunction`），测试用内存 `MockStore`。
 
 - 二级索引（访问方法）——**行 struct** 上的 `#[ok_index(name { fields(…), includes(…), key(…), func(…), where(…) })]`：对 **payload 字段**（按声明序）建组合索引；无 per-index slot/ns——2 字节表命名空间已区分所有 entry；最左前缀扫描；`key(…)` 把 key 尾部携带的主键截断到命名子集（`encode_prefix_named`），默认取满主键；`includes` 覆盖索引定位为高扇出查询的物化视图；`func(path)` 用普通 fn 的返回值替代数据段（探针端调同一路径）；`where(path)` 是行级谓词——部分索引，被拒绝的行不产生任何条目。
@@ -52,13 +52,13 @@ crate 分工：okm-core = 共享运行时（引擎契约、`Collection`、docume
 - 字段级编码 wrapper（`Enum<T>`、`Offset<T>`、`VarInt<T>`、`Quant<P>`、`Reverse<T>`、`Vector<T>`、`Bytes`）与变长载荷/索引字段（`String`），key 保持定宽。
 - 多引擎混用——同一进程内不同 ns 段可绑不同引擎（交易走 fjall、日志走 slatedb）；原子性止于单引擎内，ns 编号全库唯一。
 - 快照导出——行 → Parquet，与引擎无关（备份 / 数据交换 / lakehouse 分析）；ns 还原为描述性文本，列名即字段名。
-- **Document API**——`get_document` / `put_document` / `get_fields` / `put_fields` / `delete_fields`：未知字段名在每表字段名字典里分配编号，落进动态段（n-TLV 帧、嵌套对象递归、无 CBOR）；行-映射桥把声明字段 lift 到逻辑类型（`Quant`→`F64`、`Enum`→变体名、`Offset`→`i64`）。
+- **Document API**——`get_document` / `put_document` / `get_fields` / `put_fields` / `delete_fields`：未知字段名在每表字段名词汇表里分配编号，落进动态段（n-TLV 帧、嵌套对象递归、无 CBOR）；行-映射桥把声明字段 lift 到逻辑类型（`Quant`→`F64`、`Enum`→变体名、`Offset`→`i64`）。
 - **动态 codec binding**——schema 导出驱动嵌入式语言读取器：`bindings/okm-python`（PyO3）与 `bindings/okm-steel`，与 Rust derive 字节一致。
 - **动态段上的路径索引**（[ADR-0029](docs/adr/0029-path-index.zh-CN.md)）——`AccessMethod::path(slot, Path::parse("author.name")?, FieldType::Str)?`：把嵌套路径与数组路径声明成访问方法，每个解析出的值一条条目（通配 = 没有 `Index` 组件），维护挂在动态段写路径上；值类型随声明，条目键携带 slot、从不携带路径。
 - **Document 模型**——声明式 row 与外部数据共用单一编码（[ADR-0012](docs/adr/0012-object-model-and-field-dictionary.md)）。OKM 面向文档：document 逻辑上全动态（运行期可出现任意字段），且**声明的静态字段嵌入动态整体**——hot/cold 段、索引、schema 导出照常生效。声明 struct 是只有静态路径的退化 document；纯 document（MQ payload、JSON）是只有动态路径的退化 document；两者同一编码。嵌入光谱上的术语：
   - **variant**——动态内容嵌为一个声明的静态字段（`Bytes` payload）；动态性活在值里，不进键布局。
 
-  动态帧采用 CBOR 衍生的取帧方式，不是 CBOR 本身：只取 **major type 模式**——每帧以类型 nibble 开头——结构编码也在同一方案里。CBOR 的 major type 含列表和映射；有了字段名字典，OKM 只需要列表：映射就是 nTLV 列表（编号、类型、长度、值），结构信息活在值里，不进 per-document schema。
+  动态帧采用 CBOR 衍生的取帧方式，不是 CBOR 本身：只取 **major type 模式**——每帧以类型 nibble 开头——结构编码也在同一方案里。CBOR 的 major type 含列表和映射；有了字段名词汇表，OKM 只需要列表：映射就是 nTLV 列表（编号、类型、长度、值），结构信息活在值里，不进 per-document schema。
 
 ## 使用方法
 
@@ -98,7 +98,7 @@ let rows = t.scan::<ByOrg>(&7u32.to_be_bytes());
 
 ### 3. 动态字段：document API
 
-一套编码服务声明行与外部数据。未知字段名是正常输入：在每表的字段名字典里分配编号，落进动态段（`[id][type][len][value]` 帧、嵌套对象递归）。声明字段保持 typed 且可索引。
+一套编码服务声明行与外部数据。未知字段名是正常输入：在每表的字段名词汇表里分配编号，落进动态段（`[id][type][len][value]` 帧、嵌套对象递归）。声明字段保持 typed 且可索引。
 
 ```rust
 // 读：声明字段 lift 到逻辑类型 + 动态字段按名字
@@ -139,7 +139,7 @@ docs/adr/          架构决策记录（docs/PLAN.md 为实施计划）
 
 ## 设计要点
 
-- **命名空间留在代码**——命名空间字典是编译期常量，永不落 KV。访问模式本身就在代码里（二进制 key、无分隔符、每段宽度由代码定义），ns 在代码里和整套 key 布局在代码里是同一件事。宏在编译期运行，那时没有 KV 可读——字典落 KV 是自举死锁。编号手动分配、append-only、永不复用；见 [ADR-0002](docs/adr/0002-namespace-dictionary.md)。
+- **命名空间留在代码**——命名空间词汇表是编译期常量，永不落 KV。访问模式本身就在代码里（二进制 key、无分隔符、每段宽度由代码定义），ns 在代码里和整套 key 布局在代码里是同一件事。宏在编译期运行，那时没有 KV 可读——词汇表落 KV 是自举死锁。编号手动分配、append-only、永不复用；见 [ADR-0002](docs/adr/0002-namespace-dictionary.md)。
 - **两套布局 regime**——主键定宽（零解析、热路径）；二级索引变长（判别文本放最前，UTF-8 字节序 = 字典序扫描；主键 ID 挟带在 key 末尾，value 留空）。定宽是**结构**的属性不是**数据**的属性；判据是访问模式：纯点查可 hash 成定宽，需要前缀/范围扫描必须保留原始文本。变长字段用长度前缀 `[len: u16][bytes]` 而非 NUL 结尾（无转义负担）；变长字段**之后**的定长字段失去编译期偏移、退到运行期游标——「定宽前缀 + 变长尾缀」保留大部分零解析收益。hex 稳定性测试对变长 key 照常生效：锁的是**编码方案本身**（前缀布局、长度字节端序、上限），不是具体字节。姓名→id 索引是主流情形，且几乎必然变长——索引存在就是为了回答前缀/范围查询。完整论证见 [KV 存储引擎](https://github.com/orbsh/wiki/blob/main/kv-storage-engine.md)。
 - **宏层刻意无存储**——encode/decode 是纯 `Vec<u8>` 进出函数；引擎选择与生命周期归装配处（`Collection::new(store)`）。这是每个 derive 保持单 item 纯函数的前提。
 - **可移植性**：范式作用在字节层、与宿主语言无关——Python dataclass 写同样的 `encode()` 可复现布局（SlateDB 的 Python 绑定经 UniFFI 提供所需原语：`get` / `scan_prefix` + `KeyRange` / `WriteBatch` / 事务）。但可移植有结构性代价：类型错误从编译期移到运行时（`assert` 兜底而非编译器）、编码是字节拼接而非 memcpy 级指针偏移（热路径慢 1–2 个数量级）、装饰器/元类是运行期注册而非编译期展开。范式相同，保障级别由宿主语言能力决定。

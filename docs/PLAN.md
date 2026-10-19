@@ -67,7 +67,7 @@ Design decisions live in `docs/adr/`. This plan tracks implementation status.
       all wrappers (fixed-width identity rule); descending prefix scan =
       newest-first.
 - [x] Column-block regime — **cancelled** (2026-09-09, structural reason):
-      `Delta<T>`/`Rle<T>`/shared-dictionary `Offset` are cross-row
+      `Delta<T>`/`Rle<T>`/shared-vocabulary `Offset` are cross-row
       encodings — decoding one row requires the previous row or the whole
       column block. OKM's storage model is row-independent entries
       (`put(row)` = self-sufficient primary + index entries, each
@@ -96,11 +96,11 @@ Design decisions live in `docs/adr/`. This plan tracks implementation status.
       at most one variable-length field per index segment and only in the
       last position (compile-time panic otherwise — fields after it have
       no static width to locate by). Wire = raw UTF-8, no length prefix
-      (a prefix would sort by length first and destroy dictionary order);
+      (a prefix would sort by length first and destroy vocabulary order);
       exact matching resolves via the trailing primary key + fetch-back.
       Function indexes (`func(path)`) shipped alongside: the sort segment
       is the declared function's result (`IndexFuncResult` — String →
-      UTF-8 dictionary order, uints → BE numeric order); the query side
+      UTF-8 vocabulary order, uints → BE numeric order); the query side
       calls the same function on its probe, so normalization cannot
       drift between encode and scan.
 - [x] Deprecating an index declaration: removal is NOT allowed (declaration
@@ -630,7 +630,7 @@ key bare in the tail) recorded in ADR-0005.
       prototype design (KeySegment: WIDTH/DESC/put/take, blanket impl
       over KeyEncode) is the starting point.
 
-## Phase 8 — Object model: one encoding, field-name dictionary, kv_ → ok_ (ADR-0012)
+## Phase 8 — Object model: one encoding, field-name vocabulary, kv_ → ok_ (ADR-0012)
 
 Design locked in [ADR-0012](adr/0012-object-model-and-field-dictionary.md).
 Core idea: a declared row IS a doc with an empty dynamic segment — one
@@ -642,7 +642,7 @@ encoding, one derive family. No separate document storage mode.
       `RowEncode` → `ObjEncode`; docs' concept vocabulary follows. Shipped
       2026-09-14 (ec07a33) — landed before crates.io publishing as required.
 - [x] Slot allocation revision: slot 1 = obj dynamic segment, slot 2/3 =
-      field-name dictionary (bidirectional), slot 4–13 reserved (two-ended
+      field-name vocabulary (bidirectional), slot 4–13 reserved (two-ended
       growth buffer), slot 14/15 = edge fwd/rev, slot 16+
       indexes/reduces. Existing rows byte-compatible (they use none of
       the new slots). Shipped 2026-09-16 (f4c9136).
@@ -652,11 +652,11 @@ encoding, one derive family. No separate document storage mode.
       obj-reserved). Shipped 2026-09-16 (cdefdea): ObjValueType tags
       (EnumTag discipline), obj_dynamic put_frame/decode_variants,
       unknown-type skip, malformed-tail partial results.
-- [x] Field-name dictionary: run-time per-table append-only vocabulary;
+- [x] Field-name vocabulary: run-time per-table append-only vocabulary;
       first-seen name claims the next number (single-writer, engine
       mutex); id `0xFF` escapes to `[0xFF][u16 id]` — no renumbering,
       ever; flat bidirectional point lookups (slots 2/3), no trie.
-      Shipped 2026-09-16 (d18cb36): DictCache (by_id/by_name/next_id),
+      Shipped 2026-09-16 (d18cb36): VocabCache (by_id/by_name/next_id),
       wholesale lazy load, id_for allocates one batch both directions.
 - [x] Indexing rule: declared fields only; a dynamic field becomes
       indexable by being declared (schema evolution, deliberately manual).
@@ -670,11 +670,11 @@ encoding, one derive family. No separate document storage mode.
       unchanged (declared fields only); `get_variants(key) ->
       BTreeMap<String, Value>` reads slot 1 with **name keys directly** —
       the id never appears in a public signature (no use case: iteration,
-      addressing, and writes are all name-first; the dictionary is a
+      addressing, and writes are all name-first; the vocabulary is a
       per-table append-only map cached wholesale on first access, so a
       name lookup is one hash probe); `get_object(key) ->
       Option<BTreeMap<String, Value>>` merges declared (FieldDesc names)
-      and dynamic (dictionary names) into one view — a combinator over
+      and dynamic (vocabulary names) into one view — a combinator over
       the two, not a base op. `delete` / `delete_by_pkey` cover both
       slots (primary + dynamic segment) in one engine batch; scans stay
       index-slot only (dynamic fields are not indexable).
@@ -691,7 +691,7 @@ encoding, one derive family. No separate document storage mode.
       the typed static region rejects them until schema kinds land).
       Nested obj lives in okm-core's `DynamicValue` (wire tag 7), which
       is the only value tree the dynamic segment needs.
-- [x] Dictionary cache is **bidirectional**: `DictCache { by_id: HashMap<u16,
+- [x] Vocabulary cache is **bidirectional**: `VocabCache { by_id: HashMap<u16,
       String>, by_name: HashMap<String, u16>, next_id: u16 }` under one
       `OnceLock<RwLock<…>>`. Read path needs id→name (slot 2 mirror),
       write path needs name→id (slot 3 mirror), first-seen allocation
@@ -739,7 +739,7 @@ Unchanged: primary payload layout `[version][hot_len][hot][cold TLV]`
       (`head_bytes` = `ns.to_be_bytes()`, `DIR_BIT` deleted) — no
       transform, no hidden halves.
 - [x] Full 16-bit ns space shared by tables and edges for real. The ns
-      dictionary is a genuinely shared space (b2bd478).
+      vocabulary is a genuinely shared space (b2bd478).
 - [x] Table/edge layout fully uniform: same header discipline, edge just
       declares two slots instead of one. ADR-0001 superseded (rationale
       recorded in the doc header).
@@ -750,9 +750,9 @@ Unchanged: primary payload layout `[version][hot_len][hot][cold TLV]`
 ## Slot shapes: fixed face / counting family (ADR-0030, decided 2026-10-17)
 
 - [x] Design recorded (ADR-0030): a family that is a single face — primary,
-      dynamic segment, both dictionary directions, the graph's five — gets
+      dynamic segment, both vocabulary directions, the graph's five — gets
       its own 1-byte slot number (0x00–0x0A — the graph's five faces plus its
-      predicate dictionary); the counting families
+      predicate vocabulary); the counting families
       (declared index 0x1 / reduce 0x2 / junction 0x3) keep the 2-byte slot,
       the 12-bit counter and their numbers unchanged. Width is decided by the
       first byte's high nibble, so a family-prefix scan stays exact without
@@ -761,7 +761,7 @@ Unchanged: primary payload layout `[version][hot_len][hot][cold TLV]`
 - [x] Implement the renumbering in code (LANDED 2026-10-17): slot constants
       became fixed faces / counting families in `okm-core::model::index`,
       with `write_slot` / `slot_len` as the single width-aware writer every
-      key-assembly site calls (okm-core: document / obj_dict / reduce /
+      key-assembly site calls (okm-core: document / obj_vocab / reduce /
       junction / graph; okm-dynamic: collection / plan_fields / index /
       reduce / graph; the derive emits `::okm_core::write_slot`). Hex locks
       updated (graph faces one byte, primary head 3 bytes, dynamic face
@@ -781,11 +781,11 @@ Unchanged: primary payload layout `[version][hot_len][hot][cold TLV]`
       a compile-time enum over the member COLLECTIONS). `EdgeEncode` and its
       encoder-only half (`attrs()` / `attr_faces()` / `ATTR_SLOTS`) retire. The
       edge's type is its PREDICATE — a key dimension (2 bytes in the head) with
-      its OWN dictionary (new fixed faces 0x04/0x05), separate from the
-      payload's field-name dictionary (0x02/0x03), so listing a graph's
+      its OWN vocabulary (new fixed faces 0x04/0x05), separate from the
+      payload's field-name vocabulary (0x02/0x03), so listing a graph's
       predicates is one 0x04 prefix scan and never an inference from the index
       faces. `Graph<S, E>` is a HANDLE that declares nothing (an engine instance
-      + the per-instance state: the predicate dictionary cache, the edge_id
+      + the per-instance state: the predicate vocabulary cache, the edge_id
       allocation position) — the same shape as `Collection<S, K, R>`. The member
       set lives in code (never a slot); refs stay self-describing
       `[ns 2B][len varint][pkey]` with membership checked at write and decode;
@@ -801,11 +801,11 @@ Unchanged: primary payload layout `[version][hot_len][hot][cold TLV]`
         (`okm-derive`'s row emitter, with `type Key = EdgeKey`) plus
         `impl GraphEncode`; `attrs()` / `attr_faces()` / `ATTR_SLOTS` /
         `KvGraph` are gone.
-      · predicate vocabulary: `KIND_VOCAB` is a `DictFaces` pair (0x04 id →
-        name, 0x05 name → id) and `DictCache` is parameterized by that pair
-        rather than duplicated per vocabulary; `FIELD_DICT` (0x02/0x03) stays
+      · predicate vocabulary: `PREDICATE_VOCAB` is a `VocabFaces` pair (0x04 id →
+        name, 0x05 name → id) and `VocabCache` is parameterized by that pair
+        rather than duplicated per vocabulary; `FIELD_VOCAB` (0x02/0x03) stays
         the payload's. Faces moved to 0x06 predicate index, 0x07 out, 0x08 in,
-        0x09/0x0A predicate±endpoint; `kind_id`/`kind_name` are
+        0x09/0x0A predicate±endpoint; `predicate_vocab_id`/`predicate_vocab_name` are
         `predicate_id`/`predicate_name` everywhere.
       · assembly: `Graph<S, E: GraphEncode>` takes the engine only (ns from
         `E::NS_PREFIX`), checks `E::Nodes` membership at write and at decode,
@@ -825,8 +825,8 @@ Unchanged: primary payload layout `[version][hot_len][hot][cold TLV]`
         member set was the one declaration half a payload layout cannot carry.
         Its open attributes moved OUT of the
         body into the dynamic segment (fixed face 0x01, one entry per edge) as
-        ADR-0017 §3 says, and they allocate names through the FIELD dictionary
-        while predicates allocate through KIND_VOCAB — the collision
+        ADR-0017 §3 says, and they allocate names through the FIELD vocabulary
+        while predicates allocate through PREDICATE_VOCAB — the collision
         krystallizer worked around is structurally gone.
       · tests: `okm-core/tests/graph_edge_test.rs` (10) pins the new hex lock —
         both vocabulary faces, the five graph faces, the 0x1001 declared face,
@@ -912,7 +912,7 @@ the open question and the assessment:
   minor breaking bump of the optional `parquet` feature. Mapping is
   mechanical: `DynamicValue` UInt/Int/F64/Bool/Str → Variant scalars,
   Bytes → Variant binary, Null → Variant null, Array → Variant list,
-  Obj → Variant object (field names straight through — the dictionary
+  Obj → Variant object (field names straight through — the vocabulary
   has already resolved ids → names at read time).
 - **Why it is reasonable**: Variant is precisely the industry answer to
   "schema-on-read columns inside a schema-on-write table" — the same
@@ -992,11 +992,11 @@ Decided:
       named consumer. Full argument chain in ADR-0015 Future work §B.
 - [x] Future (HIGH) -> LANDED 2026-09-20 (fixed-ontology form): graph
       `Edge` — ADR-0017 (Accepted): the third relation carrier. One ns
-      per graph (normal ns dictionary); self-describing endpoint
+      per graph (normal ns vocabulary); self-describing endpoint
       references ([ns 2B][pkey], pkey width via a ns->KEY_LEN registry,
       compile-time `nodes(...)` declaration); EIGHT entry kinds on
-      ADR-0016 segments — primary (0x0, edge_id u64) / kind dictionary
-      (0x2/0x3, DictCache reused) / kind index (0x4) / out (0x5) / in
+      ADR-0016 segments — primary (0x0, edge_id u64) / predicate vocabulary
+      (0x2/0x3, VocabCache reused) / kind index (0x4) / out (0x5) / in
       (0x6) / kind+out (0x7) / kind+in (0x8) / one declared-attribute
       face per field (0x1). `GraphEdgeEncode` derive
       (`#[ok_edge(ns = N, nodes(ns = KEY_LEN, ...))]`, fixed-width

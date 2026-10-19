@@ -10,7 +10,7 @@
 //!
 //! - [`Component::Field`] / [`Component::Key`] address a **name** — in
 //!   the canonical byte form the name is a handle from the table's
-//!   field-name dictionary (ADR-0012), i.e. a stable identity;
+//!   field-name vocabulary (ADR-0012), i.e. a stable identity;
 //! - [`Component::Index`] addresses a **position** in an array — data,
 //!   never interned, and not stable across mutations (an insert shifts
 //!   every later position).
@@ -211,7 +211,7 @@ impl Path {
     }
 
     /// The canonical byte form. `resolve_name` interns a name through
-    /// the table's field-name dictionary (allocate on first sight on
+    /// the table's field-name vocabulary (allocate on first sight on
     /// the write path; a plain lookup on the read path).
     pub fn encode(&self, mut resolve_name: impl FnMut(&str) -> u16) -> Vec<u8> {
         let mut buf = Vec::new();
@@ -236,10 +236,10 @@ impl Path {
         buf
     }
 
-    /// Inverse of [`Path::encode`]. `name_of` resolves a dictionary
+    /// Inverse of [`Path::encode`]. `name_of` resolves a vocabulary
     /// handle back to its name; an unknown handle is an error (a path
     /// can only be decoded against the table it was written for — the
-    /// dictionary is per table, so a path is table-scoped by
+    /// vocabulary is per table, so a path is table-scoped by
     /// construction).
     pub fn decode(bytes: &[u8], mut name_of: impl FnMut(u16) -> Option<String>) -> Result<Self, String> {
         let mut components = Vec::new();
@@ -446,14 +446,14 @@ mod tests {
 
     #[test]
     fn canonical_encoding_has_no_leading_count_and_stays_prefix_shareable() {
-        // The same fake dictionary for both paths: "a" -> 5, "b" -> 9.
-        let dict = |n: &str| match n {
+        // The same fake vocabulary for both paths: "a" -> 5, "b" -> 9.
+        let vocab = |n: &str| match n {
             "a" => 5u16,
             "b" => 9u16,
             _ => 200u16,
         };
-        let short = Path::parse("a").unwrap().encode(dict);
-        let long = Path::parse("a.b").unwrap().encode(dict);
+        let short = Path::parse("a").unwrap().encode(vocab);
+        let long = Path::parse("a.b").unwrap().encode(vocab);
         assert_eq!(short, vec![TAG_FIELD, 5]);
         // No count in front: the shorter path is a byte PREFIX of the longer.
         assert_eq!(&long[..short.len()], &short[..]);
@@ -461,7 +461,7 @@ mod tests {
 
         // Array wildcard stays a prefix relationship too: `a` is a prefix
         // of `a[0].b` because the index component is just appended.
-        let indexed = Path::parse("a[0].b").unwrap().encode(dict);
+        let indexed = Path::parse("a[0].b").unwrap().encode(vocab);
         assert_eq!(&indexed[..short.len()], &short[..]);
         assert_eq!(indexed, vec![TAG_FIELD, 5, TAG_INDEX, 0, 0, 0, 0, TAG_FIELD, 9]);
 

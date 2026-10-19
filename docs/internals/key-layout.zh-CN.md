@@ -9,7 +9,7 @@
 - document 是集合的声明点——它的 `#[ok_ref]` 已把 key 类型钉死，`Collection<S, K, R>` 三个参数由 document 完全决定，ns 是这个集合的身份的一部分；
 - key 类型不带 ns，意味着**同一个 key 形状可以合法服务多个 document / 多个集合**，各挂各的 ns 号。若 ns 挂 key，这个场景被编译期堵死，只能靠多声明一份同构 key 类型绕行。
 
-derive（`okm-derive`）把 `#[ok_ns(N)]` 编译成 `Document::NS_PREFIX: &'static [u8]`（大端 `[hi, lo]` 两字节，未声明 = 空切片，对应仅做 codec、不落表的 document）。`Collection::new(store)` 不收 ns 参数——拼装点只选 engine，不复述 ns（ns 字典是代码，ADR-0002；engine 选择是每拼装点的自由，ADR-0010）。
+derive（`okm-derive`）把 `#[ok_ns(N)]` 编译成 `Document::NS_PREFIX: &'static [u8]`（大端 `[hi, lo]` 两字节，未声明 = 空切片，对应仅做 codec、不落表的 document）。`Collection::new(store)` 不收 ns 参数——拼装点只选 engine，不复述 ns（ns 词汇表是代码，ADR-0002；engine 选择是每拼装点的自由，ADR-0010）。
 
 junction 不声明 ns：它的字段引用**文档类型**（`user: User`），derive 反查 `<User as Document>::NS_PREFIX` 取端点 ns（ADR-0015、ADR-0016）。ns 只在文档上声明一次。
 
@@ -34,19 +34,19 @@ ns 头之后是 slot。它的首字节自己说明后面还跟不跟计数字节
 **固定面**（1 字节，16 个号，现用 11 个）——一族只有一张面，没有可枚举的东西。大端是"高半字节在左"的原因，也是这条定界成立的原因：0x00–0x0F 永远不可能等于计数族的首字节（≥ 0x10）。
 
 ```text
-0x00  主表                   [ns][0x00][主键]              value = TLV payload
-0x01  obj 动态段             [ns][0x01][主键]              value = nTLV 帧
-0x02  字段名字典             [ns][0x02][field-id]          → 名字
-0x03  字段名字典             [ns][0x03][名字]              → field-id
-0x04  kind 词汇表            [ns][0x04][predicate_id]      → 谓词名
-0x05  kind 词汇表            [ns][0x05][谓词名]            → predicate_id
-0x06  图 谓词索引            [ns][0x06][predicate_id][edge_id]
-0x07  图 出边                [ns][0x07][src NodeRef][edge_id]
-0x08  图 入边                [ns][0x08][dst NodeRef][edge_id]
-0x09  图 谓词+出             [ns][0x09][predicate_id][src 引用][edge_id]
-0x0A  图 谓词+入             [ns][0x0A][predicate_id][dst 引用][edge_id]
+0x00  主表              [ns][0x00][主键]                             value = TLV payload
+0x01  obj 动态段        [ns][0x01][主键]                             value = nTLV 帧
+0x02  字段名词汇表      [ns][0x02][field-id]                         → 名字
+0x03  字段名词汇表      [ns][0x03][名字]                             → field-id
+0x04  谓词词汇表        [ns][0x04][predicate_id]                     → 谓词名
+0x05  谓词词汇表        [ns][0x05][谓词名]                           → predicate_id
+0x06  图 谓词索引       [ns][0x06][predicate_id][edge_id]
+0x07  图 出边           [ns][0x07][src NodeRef][edge_id]
+0x08  图 入边           [ns][0x08][dst NodeRef][edge_id]
+0x09  图 谓词+出        [ns][0x09][predicate_id][src 引用][edge_id]
+0x0A  图 谓词+入        [ns][0x0A][predicate_id][dst 引用][edge_id]
 0x0B–0x0F                   留给将来的固定面
-（表按角色排：两本字典在前，读它们编号的图面在后——字典排在它服务的面之前；编号才是机制。）
+（表按角色排：两本词汇表在前，读它们编号的图面在后——词汇表排在它服务的面之前；编号才是机制。）
 ```
 
 **计数族**（2 字节，12 位计数，号码不变）——族内实例按声明序或区分号枚举：
@@ -70,7 +70,7 @@ slot 让"集合内加派生数据"永不侵占相邻集合的 ns 段（ADR-0005�
 partition 条目  [ 0xFF ][ part 1B ][ ns 2B ][ slot … ][ ... ]
 ```
 
-`0xFF` 是转义字节——合法 ns 头（大端 u16，首字节受 ns 字典纪律约束为 0x00–0xFE）永不以它开头，所以 partition 集合与普通集合的键空间**结构性不相交**，无需任何编号协调（partition(0) 非法——直接省略属性即无段）。语义：partition 是 workload 隔离（compaction 分组），不是所有权边界；ns 仍是归属的最外层。
+`0xFF` 是转义字节——合法 ns 头（大端 u16，首字节受 ns 词汇表纪律约束为 0x00–0xFE）永不以它开头，所以 partition 集合与普通集合的键空间**结构性不相交**，无需任何编号协调（partition(0) 非法——直接省略属性即无段）。语义：partition 是 workload 隔离（compaction 分组），不是所有权边界；ns 仍是归属的最外层。
 
 ## 全景
 
@@ -90,4 +90,4 @@ reduce 条目没有独立 ns——它寄生在宿主文档的 ns 段里，段 0x
 reduce 条目  [ ns 2B ][ 0x2nnn ][ group 段 ]   value = acc 编码
 ```
 
-对扫描而言，一个 ns 段内的前缀完整枚举了这张文档的所有派生状态：固定面 0x00–0x03（主表、动态段、字段名字典两个方向），然后是计数族 0x1 索引、0x2 reduce、0x3 junction。图（边集合）另加它自己的固定面：kind 词汇表 0x04/0x05（它的谓词）与 0x06–0x0A（谓词索引、出入边、谓词±端点）。带 kind token 的文档集合声明同一对词汇表——同一条规则，谁需要谁用。机制见[reduce 机制](reduce-mechanism.zh-CN.md)。
+对扫描而言，一个 ns 段内的前缀完整枚举了这张文档的所有派生状态：固定面 0x00–0x03（主表、动态段、字段名词汇表两个方向），然后是计数族 0x1 索引、0x2 reduce、0x3 junction。图（边集合）另加它自己的固定面：谓词词汇表 0x04/0x05（它的谓词）与 0x06–0x0A（谓词索引、出入边、谓词±端点）。带 kind token 的文档集合声明同一对词汇表——同一条规则，谁需要谁用。机制见[reduce 机制](reduce-mechanism.zh-CN.md)。

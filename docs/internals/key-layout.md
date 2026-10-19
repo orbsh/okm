@@ -29,7 +29,7 @@ The derive (`okm-derive`) compiles `#[ok_ns(N)]` into
 `Document::NS_PREFIX: &'static [u8]` (big-endian `[hi, lo]`; empty slice when
 undeclared — a codec-only document that never materializes a collection).
 `Collection::new(store)` takes no ns argument — the assembly point chooses
-the engine, it never restates the ns (the ns dictionary is code, ADR-0002;
+the engine, it never restates the ns (the ns vocabulary is code, ADR-0002;
 engine choice is per-assembly-point freedom, ADR-0010).
 
 A junction declares no ns: its fields reference **document types**
@@ -63,20 +63,20 @@ and why the rule holds: 0x00–0x0F can never equal a counting family's first
 byte (≥ 0x10).
 
 ```text
-0x00  primary                  [ns][0x00][pkey]                  value = TLV payload
-0x01  obj dynamic segment      [ns][0x01][pkey]                  value = nTLV frames
-0x02  field-name dictionary    [ns][0x02][field-id]              → name
-0x03  field-name dictionary    [ns][0x03][name]                  → field-id
-0x04  kind vocabulary          [ns][0x04][predicate_id]         → name
-0x05  kind vocabulary          [ns][0x05][name]                 → predicate_id
-0x06  graph predicate index    [ns][0x06][predicate_id][edge_id]
-0x07  graph out                [ns][0x07][src NodeRef][edge_id]
-0x08  graph in                 [ns][0x08][dst NodeRef][edge_id]
-0x09  graph predicate+out      [ns][0x09][predicate_id][src ref][edge_id]
-0x0A  graph predicate+in       [ns][0x0A][predicate_id][dst ref][edge_id]
+0x00  primary                      [ns][0x00][pkey]                            value = TLV payload
+0x01  obj dynamic segment          [ns][0x01][pkey]                            value = nTLV frames
+0x02  field-name vocabulary        [ns][0x02][field-id]                        → name
+0x03  field-name vocabulary        [ns][0x03][name]                            → field-id
+0x04  predicate vocabulary         [ns][0x04][predicate_id]                    → name
+0x05  predicate vocabulary         [ns][0x05][name]                            → predicate_id
+0x06  graph predicate index        [ns][0x06][predicate_id][edge_id]
+0x07  graph out                    [ns][0x07][src NodeRef][edge_id]
+0x08  graph in                     [ns][0x08][dst NodeRef][edge_id]
+0x09  graph predicate+out          [ns][0x09][predicate_id][src ref][edge_id]
+0x0A  graph predicate+in           [ns][0x0A][predicate_id][dst ref][edge_id]
 0x0B–0x0F  free for future fixed faces
 (rows are grouped by ROLE: the two vocabularies first, then the graph faces
-that read their ids — a dictionary leads the faces it serves; the NUMBERS
+that read their ids — a vocabulary leads the faces it serves; the NUMBERS
 are the mechanism.)
 ```
 
@@ -124,7 +124,7 @@ partitioned entry  [ 0xFF ][ part 1B ][ ns 2B ][ slot … ][ ... ]
 ```
 
 `0xFF` is the escape byte — legal ns headers (big-endian u16, first byte
-constrained by the ns dictionary to 0x00–0xFE) never start with it, so
+constrained by the ns vocabulary to 0x00–0xFE) never start with it, so
 partitioned and unpartitioned key spaces are **structurally disjoint** with
 zero numbering coordination (partition(0) is rejected — omit the attribute
 to have no segment). Semantics: partition is workload isolation (compaction
@@ -154,9 +154,9 @@ reduce entry  [ ns 2B ][ 0x2nnn ][ group seg ]   value = acc encoding
 
 For scans, the prefixes inside one ns segment enumerate everything derived
 for this document: fixed faces 0x00–0x03 (primary, dynamic segment, both
-field-name dictionary directions), then counting families 0x1 indexes, 0x2
+field-name vocabulary directions), then counting families 0x1 indexes, 0x2
 reduces, 0x3 junctions. A graph (edge collection) adds its own fixed faces:
-the kind vocabulary 0x04/0x05 (its predicates) and 0x06–0x0A (predicate index,
+the predicate vocabulary 0x04/0x05 (its predicates) and 0x06–0x0A (predicate index,
 out/in edges, predicate±endpoint). A document collection that carries kind
 tokens declares the same vocabulary pair — one rule, whichever collection
 needs it. Mechanism in [reduce mechanism](reduce-mechanism.md).

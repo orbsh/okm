@@ -2,7 +2,7 @@
 
 Date: 2026-09-19
 Status: Accepted (2026-09-20; both forms implemented — EdgeEncode derive + Graph<S, E> fixed-ontology, okm-dynamic Graph<S> fully dynamic). Updates 2026-09-20: §2 endpoint refs re-decided to scheme b (self-describing [ns 2B][len varint][pkey]) — scheme c (registry) abandoned; §3 declared attribute fields, node-side kind filtering, slot-layout clarification. Updates 2026-10-17: §3's edge payload is an obj (ADR-0012) — one document declaration generates both codec directions and the declared faces, so the derive's encoder-only `attrs()` / `attr_faces()` / `ATTR_SLOTS` half-mechanism retires; §3's write protocol, §4 and Consequences follow, and the registry wording §2 abandoned is swept out of §4, §5 and Consequences. Updates 2026-10-17 (second): the declaration is a GRAPH declaration (`GraphEncode` — one ns, the edge's own payload, explicitly declared attribute faces, plus a compile-time node-type enum); `EdgeEncode` retires with its encoder-only half; `Graph<S, E>` is a runtime HANDLE that declares nothing (no ns parameter, no node list, no schema); the member node set lives in code as a `Nodes` enum, never in a slot; `unlink` deletes precisely by decoding the edge body; Context's PGQ sentence corrected. Code status: LANDED 2026-10-19 — `GraphEncode` derive (member set via `#[ok_nodes(Enum)]`), predicate vocabulary at 0x04/0x05, faces 0x06–0x0A, `Graph::new(store)`, exact unlink; okm-dynamic's handle takes the ns + schema pair (`CollectionSchema::ns_prefix`).
-Related: ADR-0015 (relation taxonomy), ADR-0016 (4-byte head, segment-numbered slots), ADR-0002 (namespace dictionary)
+Related: ADR-0015 (relation taxonomy), ADR-0016 (4-byte head, segment-numbered slots), ADR-0002 (namespace vocabulary)
 
 ## Context
 
@@ -27,8 +27,8 @@ written property graph has:
   what is forbidden here, is undeclared participation.
 - **Runtime-emerging predicates** — the edge's predicate ("has", "owns"),
   i.e. its type, is data: it allocates through the graph's own predicate
-  dictionary (0x04/0x05, §3). The node COLLECTIONS are the opposite case. The ns
-  vocabulary is compile-time closed (ADR-0002, "the dictionary is code"),
+  vocabulary (0x04/0x05, §3). The node COLLECTIONS are the opposite case. The ns
+  vocabulary is compile-time closed (ADR-0002, "the vocabulary is code"),
   so a knowledge graph's nodes are rows of DECLARED collections (a facts
   collection, an entities collection, a users collection) and never
   collections created on the fly; a node "type" inside one collection is a
@@ -51,8 +51,8 @@ relation carrier**.
 ### 1. Edge = a first-class collection, one ns per graph
 
 A graph's edges live in their own Edge collection — one ns for the
-edge set of one graph, allocated through the normal ns dictionary
-(ADR-0002, "the dictionary is code"), symmetric with any document
+edge set of one graph, allocated through the normal ns vocabulary
+(ADR-0002, "the vocabulary is code"), symmetric with any document
 collection. No new namespace mechanism: not a per-predicate ns
 (predicates are runtime data in the dynamic form), not a global edge pool (a graph
 isolates at the ns layer), not residency (edges exist independently of
@@ -63,7 +63,7 @@ segment-numbered slots of ADR-0016.
 
 **The member node set is a declaration, not a registry (Update
 2026-10-17).** A graph declares which collections may appear as its nodes
-— a compile-time fact, in code, next to the ns dictionary it belongs to
+— a compile-time fact, in code, next to the ns vocabulary it belongs to
 (a `Nodes` enum; §4). No slot holds it: the set adds no runtime
 information (every candidate collection is already a compile-time ns),
 and a metadata entry would only add "who writes it, when, and who wins a
@@ -71,7 +71,7 @@ conflict". Runtime creation of node collections is rejected with it: a
 knowledge graph's shapes are declared collections whose rows carry a type
 field — one ns holding many runtime types — which is strictly cheaper
 than an ns per emergent type, and the only reading that keeps the ns
-dictionary closed (PGQ's own rule: tables are declared, not conjured).
+vocabulary closed (PGQ's own rule: tables are declared, not conjured).
 
 ### 2. Self-describing endpoint references
 
@@ -135,22 +135,22 @@ Three candidate schemes were weighed:
 ### 3. Slot allocation (fixed faces and counting families, within the Edge ns)
 
 ```text
-0x00  primary            [edge_id]                       → value = edge body
-0x01  dynamic segment    (the edge's open attributes)   → one entry per edge
-0x02/0x03  field-name dictionary   (the payload's own names ↔ ids)
-0x04/0x05  kind vocabulary         [predicate name ↔ predicate_id]  (this graph's)
-0x06  predicate index    [predicate_id]                  → edge_id set
-0x07  out-edges          [src NodeRef][edge_id]
-0x08  in-edges           [dst NodeRef][edge_id]
-0x09  predicate+out      [predicate_id][src NodeRef][edge_id]
-0x0A  predicate+in       [predicate_id][dst NodeRef][edge_id]
+0x00  primary                [edge_id]
+0x01  dynamic segment        (the edge's open attributes)
+0x02/0x03  field-name vocabulary  (the payload's own names ↔ ids)
+0x04/0x05  predicate vocabulary   [predicate name ↔ predicate_id]
+0x06  predicate index        [predicate_id]
+0x07  out-edges              [src NodeRef][edge_id]
+0x08  in-edges               [dst NodeRef][edge_id]
+0x09  predicate+out          [predicate_id][src NodeRef][edge_id]
+0x0A  predicate+in           [predicate_id][dst NodeRef][edge_id]
 ```
 (The graph's faces are fixed-face numbers — one byte each, ADR-0030; the
 declared attribute faces below are counting family 0x1. Rows are grouped
 by ROLE — the two vocabularies first, then the faces that read their ids:
-a dictionary leads the faces it serves. The NUMBERS stay the mechanism.)
+a vocabulary leads the faces it serves. The NUMBERS stay the mechanism.)
 
-**The predicate has its OWN dictionary (Update 2026-10-17).**
+**The predicate has its OWN vocabulary (Update 2026-10-17).**
 `[ns][0x04][predicate_id] → name` and `[ns][0x05][predicate name] →
 predicate_id` — the same bidirectional shape as 0x02/0x03 (id→name leads,
 the name carries the bytes), a different vocabulary. Listing a graph's predicates is then ONE prefix scan of 0x04:
@@ -163,13 +163,13 @@ class of reason the project separates physically elsewhere: a band is a
 convention that breaks silently on the first out-of-band allocation,
 while a second face pair is structural. Cost: one fixed-face pair of the
 sixteen (0x04/0x05, ADR-0030; 0x0B–0x0F stay free) and two vocabularies
-in the edge collection. The field-name dictionary (0x02/0x03) keeps its
+in the edge collection. The field-name vocabulary (0x02/0x03) keeps its
 document-side meaning for the payload's own names.
 
-**The pair is okm's KIND VOCABULARY (Update 2026-10-17).** 0x04/0x05 is not
-graph-specific: it is a collection's own token vocabulary BEYOND field names —
-a graph's PREDICATES here, and a NODE COLLECTION's kind tokens where it
-declares one. A document collection with kinds keeps field names in 0x02/0x03
+**The pair is the graph's own PREDICATE VOCABULARY (Update 2026-10-17).** The
+numbers are not graph-specific: the pair is a collection's own token vocabulary
+BEYOND field names — a graph's PREDICATES here, and a NODE COLLECTION's kind
+tokens where it declares one. A document collection with kinds keeps field names in 0x02/0x03
 and its kinds here, so two allocators never share one id space; the kind field
 itself stays an ordinary payload field with a declared index. Same pair, same
 rule, whichever collection needs it.
@@ -177,7 +177,7 @@ rule, whichever collection needs it.
 **"kind" is retired as a name for the edge's type (Update 2026-10-17).**
 It carries no more information than "type" and, in prose, cannot be told
 apart from a NODE's kind (a payload field). The edge's type is its
-PREDICATE: `predicate_id` on the wire, the predicate dictionary at
+PREDICATE: `predicate_id` on the wire, the predicate vocabulary at
 0x04/0x05, "predicate index" / "predicate-filtered traversal" for the
 faces. `edge_id` was considered and rejected — that name is the edge's
 own identity (the primary key), and reusing it for the third head segment
@@ -190,16 +190,16 @@ explicitly, though not identical-by-construction:
   node kind face is NOT a new kind of slot: it is an ordinary access
   method in counting family 0x1 (a declared `#[ok_index]` in the
   fixed-ontology form, a caller-allocated `AccessMethod` slot in the
-  dynamic form). Node kinds allocate through the collection's own kind
-  vocabulary (0x04/0x05) — the pair in §3, kept apart from the
-  field-name dictionary (0x02/0x03) its props use. Zero layout difference
+  dynamic form). Node kinds allocate through the collection's own 0x04/0x05
+  pair (the same rule as a graph's predicates), kept apart from the
+  field-name vocabulary (0x02/0x03) its props use. Zero layout difference
   from any document collection; "one field is the kind" is a modeling
   convention, not a layout fact.
 - **Edge collection = the entry types above, a different collection
   shape written in the SAME slot vocabulary.** 0x00/0x01/0x02/0x03 keep
-  their document-side meanings (primary, dynamic segment, dictionary);
+  their document-side meanings (primary, dynamic segment, vocabulary);
   0x06–0x0A are the graph's own faces and 0x04/0x05 its own predicate
-  dictionary, all inside the fixed-face range — no new KIND of slot is
+  vocabulary, all inside the fixed-face range — no new KIND of slot is
   introduced. The value side
   is not a second encoding either: the edge's payload IS an obj
   (ADR-0012). What makes this collection an Edge rather than a
@@ -209,7 +209,7 @@ explicitly, though not identical-by-construction:
 - **Primary (0x00)**: the edge body — `[src NodeRef][dst NodeRef]
   [predicate_id][obj payload]`, where `predicate_id` is the PREDICATE
   (the edge's type) carried as a key dimension: 2 bytes from the graph's
-  own predicate dictionary (0x04/0x05), read back by name through it. The
+  own predicate vocabulary (0x04/0x05), read back by name through it. The
   trailing region is an ordinary obj
   payload (ADR-0012): `[version u8][hot_len u16 BE][hot segment][cold
   TLV]`, the encoding every document row uses. `src` / `dst` /
@@ -244,7 +244,7 @@ explicitly, though not identical-by-construction:
   by one entry — write amplification the declarer opts into.
 - **Dynamic attributes (fixed face 0x01)**: the edge's open attributes are the
   obj's dynamic segment — ONE entry per edge, `[ns][0x01][edge_id]`, nTLV
-  frames whose field names are dictionary numbers (ADR-0012) — i.e.
+  frames whose field names are vocabulary numbers (ADR-0012) — i.e.
   the same entry, codec and `put_fields`/`get_fields` surface any
   document row has. The graph assembly owns that entry (callers stop
   hand-rolling frames). An open attribute a query later needs is
@@ -260,7 +260,7 @@ explicitly, though not identical-by-construction:
   marker), and attribute filtering rides the collection's own
   `#[ok_index]` declarations — nothing new. In the fully dynamic form
   node kinds are dynamic-segment data, so two existing mechanisms
-  carry the filter, no new segment: (1) **node kind vocabulary** — a node
+  carry the filter, no new segment: (1) **node predicate vocabulary** — a node
   collection that carries kind tokens declares its own pair (0x04/0x05, the
   same rule as the graph's predicates), so its kinds never share an id space
   with the props' field names (0x02/0x03) — and it is naturally separate from
@@ -272,8 +272,8 @@ explicitly, though not identical-by-construction:
   one convergence (no triple-composite face is built for it).
 - **Predicate index (0x06)**: all edges of one predicate — the
   `MATCH ()-[r:has]->()` entry point. `predicate_id` comes from the
-  PREDICATE dictionary (0x04/0x05): write-time name → id, so every key
-  segment stays fixed-width and sortable. The dictionary is also the
+  PREDICATE vocabulary (0x04/0x05): write-time name → id, so every key
+  segment stays fixed-width and sortable. The vocabulary is also the
   LISTING surface: scanning 0x04 enumerates a graph's predicates exactly,
   with no walk over this face to infer them.
 - **Traversal (0x07/0x08)**: all out-edges / in-edges of one node. The
@@ -332,14 +332,14 @@ declares is a set of collections.
 
 One graph = one edge declaration (shared by every edge it holds) + one
 `Nodes` enum + one ns. What separates edges from each other is the
-predicate (runtime data, dictionary-allocated); what separates nodes from
+predicate (runtime data, vocabulary-allocated); what separates nodes from
 each other is the enum variant (compile-time). Both are derived from the
 declaration — no hand-written tables, no assembly-time declaration.
 
 **Assembly is a runtime handle, nothing more.** `Graph<S, E: GraphEncode>`
 binds an engine INSTANCE (the same declaration mounts on a mock, on
 Fjall, or on a remote store — ADR-0025's one keyspace) and the
-per-instance state that cannot live in a type: the dictionary cache (the
+per-instance state that cannot live in a type: the vocabulary cache (the
 single-writer discipline over predicate ids) and the edge_id allocation
 position. It carries no ns parameter (the ns comes from `E::NS_PREFIX`),
 no node list and no schema; after this decision the assembly point has
@@ -354,7 +354,7 @@ zero declaration content.
   declaration means identity only, with the payload entirely in the
   dynamic segment (declaring `props: DynamicValue` would put it in slot 0
   — the static regime, not what a dynamic graph wants). Predicates and
-  free attributes are dictionary data either way; endpoints are
+  free attributes are vocabulary data either way; endpoints are
   self-describing refs (§2); traversal faces are built through the dynamic
   layer's `AccessMethod` construction. The handle takes the ns and the
   schema the declaration yielded as a PAIR, never a bare ns invented at the
@@ -404,7 +404,7 @@ in existing independently of the endpoints it names.
   declares nothing — it is an engine instance plus per-instance state.
 - The member node set is compile-time (a `Nodes` enum): no slot, no
   registry, no runtime `register()`. Adding a node collection costs a code
-  change — the price of the closed ns dictionary (ADR-0002), and the
+  change — the price of the closed ns vocabulary (ADR-0002), and the
   reason a knowledge graph keeps runtime TYPES inside declared collections
   instead of creating collections.
 - The graph's shape follows PGQ rather than the draft's reading of it:

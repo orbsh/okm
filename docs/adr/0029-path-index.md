@@ -3,7 +3,7 @@
 **Status**: Accepted (2026-10-14) — implementation landed with this decision
 **Date**: 2026-10-14
 **Chinese**: [0029-path-index.zh-CN.md](0029-path-index.zh-CN.md)
-**Depends on**: ADR-0012 (field-name dictionary), ADR-0016 (4-byte head, slot
+**Depends on**: ADR-0012 (field-name vocabulary), ADR-0016 (4-byte head, slot
 segments), ADR-0020 (range scan), ADR-0022 (dynamic access methods),
 ADR-0025 (two schema carriers)
 
@@ -11,7 +11,7 @@ ADR-0025 (two schema carriers)
 
 The dynamic segment is the schema-free zone: nested objects and arrays live
 there as nTLV frames, and field names are interned through the per-table
-field-name dictionary (ADR-0012). Access methods over that zone were in
+field-name vocabulary (ADR-0012). Access methods over that zone were in
 practice limited to *schema-declared* fields — `AccessMethod::plain` names
 fields `find_field` resolves in the schema (key/hot/cold), so a location
 inside a nested object, or an array element, had no declarative form. A host
@@ -21,9 +21,9 @@ value type into every host language, once per index.
 
 What already existed, and is NOT new here:
 
-- the field-name dictionary gives every dynamic field a **fixed-width
+- the field-name vocabulary gives every dynamic field a **fixed-width
   handle** (u16, compact lane: `< 0xFF` one byte, `0xFF` escapes to a u16 BE
-  tail); nested object field ids ride the same dictionary;
+  tail); nested object field ids ride the same vocabulary;
 - `DynamicCollection::declare_index` declares access methods at runtime, with
   caller-allocated slots;
 - index entries already share one byte layout —
@@ -38,7 +38,7 @@ declares a path plus the value type its entries are ordered by.**
 
 1. **`Path` = a sequence of components**, three kinds:
    - `Field(name)` — an object key, interned through the field-name
-     dictionary (a *stable identity*);
+     vocabulary (a *stable identity*);
    - `Index(u32)` — an array position (*data*: never interned, and not stable
      across mutations, since an insert shifts every later position);
    - `Key(bytes)` — an object key carried literally, no interning.
@@ -105,7 +105,7 @@ declares a path plus the value type its entries are ordered by.**
   write amplification is one entry per resolved value per declared path.
 - `Path::encode`/`decode` cover the form paths take where they are DATA
   (declaration carriers, exported schemas). They are **table-scoped by
-  construction**: handles come from that table's dictionary, so a path
+  construction**: handles come from that table's vocabulary, so a path
   decodes only against the table it was written for.
 - The query surface is unchanged: the leftmost-prefix scan treats a path index
   like a func index (the segment width is the caller's business, so any
@@ -121,8 +121,8 @@ declares a path plus the value type its entries are ordered by.**
 Recorded because the draft and the code differ, so a later session reads the
 difference as a refinement rather than a bug:
 
-- The draft's component sketch wrote `Field(u32)`; the dictionary's handle is
-  **u16**, and the encoding reuses the dictionary's own compact lane
+- The draft's component sketch wrote `Field(u32)`; the vocabulary's handle is
+  **u16**, and the encoding reuses the vocabulary's own compact lane
   (`< 0xFF` one byte, `0xFF` + u16 BE) instead of inventing a width. With
   fixed-width handles the only variable-width component is `Key`.
 - The draft left the attachment point open (an interface question: the plan

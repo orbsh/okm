@@ -71,7 +71,7 @@ stripping saves a fixed 3-byte slice, not a copy).
 
 **And the bytes are not redundant.** The slot byte unifies primary and
 index headers (ADR-0005); the ns bytes are the physical carrier of the ns
-dictionary. A key that cannot say where it belongs is not cheaper — it is
+vocabulary. A key that cannot say where it belongs is not cheaper — it is
 unaddressed.
 
 ## Consequences

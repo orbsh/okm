@@ -33,7 +33,7 @@ pub(crate) type EngineOp = (Vec<u8>, Option<Vec<u8>>);
 
 /// A runtime-declared table: schema + access methods + a namespaced
 /// slot of storage. `ns` MUST be unique within the store instance —
-/// one keyspace, one ns dictionary. Keeping allocations apart is the
+/// one keyspace, one ns vocabulary. Keeping allocations apart is the
 /// deployment's duty (aura reserves the framework bands and allocates
 /// booth types above them, ADR-0040), never a runtime check.
 pub struct DynamicCollection<S: VirtualStorage> {
@@ -274,14 +274,14 @@ impl<S: VirtualStorage> DynamicCollection<S> {
             encoded_prefix,
         )
     }
-    // --- Dynamic segment bridge (slot 1, dictionary slots 2/3) -----------
+    // --- Dynamic segment bridge (slot 1, vocabulary slots 2/3) -----------
     // The same per-document extension the typed Collection exposes:
     // name-keyed fields outside the schema's declared vocabulary, encoded
     // as nTLV frames in the dynamic entry, names resolved through the
-    // per-table field-name dictionary (one vocabulary per table; the
-    // dictionary lives inside the SAME ns segment as the data it names).
+    // per-table field-name vocabulary (one vocabulary per table; the
+    // vocabulary lives inside the SAME ns segment as the data it names).
     // Dynamic-segment ops ride the plan surface (plan_fields): the
-    // embedded path loads a dictionary mirror from its engine, plans
+    // embedded path loads a vocabulary mirror from its engine, plans
     // WITHOUT engine access, and replays the ops — byte-identical to
     // what a remote caller ships as one wire frame (the same
     // plan+replay discipline as put/delete).
@@ -298,7 +298,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
     }
 
     /// Read the document's dynamic fields (decoded to names via the
-    /// dictionary). `None` = no dynamic entry (a zero-frame list is
+    /// vocabulary). `None` = no dynamic entry (a zero-frame list is
     /// never written).
     pub fn get_fields(&self, pkey: &[u8]) -> Result<Option<ValueMap>, String> {
         let raw = match self.store.get(&self.fields_key(pkey)) {
@@ -306,16 +306,16 @@ impl<S: VirtualStorage> DynamicCollection<S> {
             None => return Ok(None),
         };
         // Fresh load per call — the embedded mirror of the old
-        // per-call DictCache (single writer: a reload always sees the
+        // per-call VocabCache (single writer: a reload always sees the
         // truth it wrote).
-        let dict = crate::plan_fields::DictMirror::load(&self.store, &self.ns);
-        Ok(Some(crate::plan_fields::fields_from_frames(&raw, &dict)?))
+        let vocab = crate::plan_fields::VocabMirror::load(&self.store, &self.ns);
+        Ok(Some(crate::plan_fields::fields_from_frames(&raw, &vocab)?))
     }
 
     /// Replace the document's dynamic fields wholesale (the map becomes
     /// the entire slot-1 entry; fields absent from the map are removed).
-    /// First-seen names allocate dictionary ids; one batch carries any
-    /// dictionary growth plus the entry itself. An empty map deletes the
+    /// First-seen names allocate vocabulary ids; one batch carries any
+    /// vocabulary growth plus the entry itself. An empty map deletes the
     /// entry. Composite values (Obj/Array) are legitimate here.
     ///
     /// Path indexes (ADR-0029) are maintained HERE and not on the primary
@@ -330,8 +330,8 @@ impl<S: VirtualStorage> DynamicCollection<S> {
         } else {
             None
         };
-        let mut dict = crate::plan_fields::DictMirror::load(&self.store, &self.ns);
-        let plan = crate::plan_fields::plan_put_fields(&self.ns, pkey, fields, &mut dict)?;
+        let mut vocab = crate::plan_fields::VocabMirror::load(&self.store, &self.ns);
+        let plan = crate::plan_fields::plan_put_fields(&self.ns, pkey, fields, &mut vocab)?;
         let mut ops = plan.ops;
         if let Some(old_map) = old.as_ref() {
             ops.extend(self.path_entry_ops(pkey, old_map, false)?);

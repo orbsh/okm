@@ -1,5 +1,5 @@
 //! ADR-0012: obj dynamic-segment read/write API over slots 0/1 and the
-//! field-name dictionary (slots 2/3).
+//! field-name vocabulary (slots 2/3).
 
 use okm_core::{
     KeyEncode, DocumentEncode, Collection, TestStore, VirtualStorage,
@@ -44,9 +44,9 @@ fn obj_variants_round_trip_over_two_slots() {
     // Typed get is untouched: declared fields live in slot 0.
     assert_eq!(t.get(&UserKey { id: 1 }).unwrap().level, 2);
 
-    // Dictionary landed in fixed faces 0x02/0x03 under the same ns.
-    let dict_scan = t.store().scan_suffix(&[0, 9, 2]); // [ns 2B][DICT_ID_SLOT 0x02]
-    assert_eq!(dict_scan.len(), 3, "three names allocated");
+    // Vocabulary landed in fixed faces 0x02/0x03 under the same ns.
+    let vocab_scan = t.store().scan_suffix(&[0, 9, 2]); // [ns 2B][FIELD_VOCAB_ID_SLOT 0x02]
+    assert_eq!(vocab_scan.len(), 3, "three names allocated");
 }
 
 #[test]
@@ -89,7 +89,7 @@ fn obj_bridge_typed_and_dynamic_merge() {
     assert_eq!(document.level, 30);
     assert_eq!(document.legacy, 5);
 
-    // get_document merges: declared (to_map) + dynamic (dictionary).
+    // get_document merges: declared (to_map) + dynamic (vocabulary).
     let got = t.get_document(&UserKey { id: 1 }).unwrap();
     assert_eq!(got["level"], okm_core::obj_dynamic::DynamicValue::UInt(30));
     assert_eq!(got["legacy"], okm_core::obj_dynamic::DynamicValue::UInt(5));
@@ -104,7 +104,7 @@ fn obj_bridge_typed_and_dynamic_merge() {
     let row2 = t.get(&UserKey { id: 2 }).unwrap();
     assert_eq!((row2.legacy, row2.level), (3, 1));
 
-    // Unknown names allocate into the dictionary (external-data rule),
+    // Unknown names allocate into the vocabulary (external-data rule),
     // and get_document surfaces them.
     assert!(!t.get_fields(&UserKey { id: 2 }).unwrap().is_empty());
 }

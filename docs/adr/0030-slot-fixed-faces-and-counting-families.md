@@ -7,7 +7,7 @@ Consequences
 **Supersedes**: the segment table of ADR-0016 (the 4-byte head survives for
 counting families; the slot's width now depends on the family)
 **Depends on**: ADR-0005 (index slots), ADR-0012 (object model and field
-dictionary), ADR-0016 (head and segments), ADR-0017 (graph faces)
+vocabulary), ADR-0016 (head and segments), ADR-0017 (graph faces)
 
 ## Context
 
@@ -17,8 +17,8 @@ capacity headroom: 4096 per segment, declared-index capacity 240 → 4096.
 
 Measured against its consumers, of the twelve slots in use **nine are a
 single face**: the primary, the obj dynamic segment, both directions of
-the field-name dictionary, and the graph's five faces (update 2026-10-17:
-the graph's predicate dictionary added two more fixed faces — 0x04/0x05 —
+the field-name vocabulary, and the graph's five faces (update 2026-10-17:
+the graph's predicate vocabulary added two more fixed faces — 0x04/0x05 —
 so eleven are single faces today). Their counter is
 constant — 0/1/2/3 for the document-self bucket, 1 for the graph's faces.
 It carries no information and costs one byte on every such key.
@@ -68,7 +68,7 @@ In binary, the twelve slots in use, before → after:
 
 The right-hand nine rows read 1 byte: their high nibble is the delimiter.
 (Update 2026-10-17: the graph's faces then moved again — 0x06–0x0A — and its
-predicate dictionary took 0x04/0x05, ADR-0017 §3. The nine MIGRATED faces
+predicate vocabulary took 0x04/0x05, ADR-0017 §3. The nine MIGRATED faces
 below are the mapping record; the allocation today is the table in §2.)
 The three counting rows keep today's bytes exactly.
 
@@ -82,26 +82,26 @@ assembles a key writes a slot the same way.
 ### 2. The fixed-face table (1 byte, 16 numbers)
 
 ```text
-0x00  primary                  document collection or edge collection
-0x01  obj dynamic segment      [ns][0x01][pkey]        value = nTLV frames
-0x02  field-name dictionary    [ns][0x02][field-id]    → name
-0x03  field-name dictionary    [ns][0x03][name]        → field-id
-0x04  kind vocabulary          [ns][0x04][predicate_id]  → name
-0x05  kind vocabulary          [ns][0x05][name]          → predicate_id
-0x06  graph predicate index    [ns][0x06][predicate_id][edge_id]
-0x07  graph out                [ns][0x07][src NodeRef][edge_id]
-0x08  graph in                 [ns][0x08][dst NodeRef][edge_id]
-0x09  graph predicate+out      [ns][0x09][predicate_id][src ref][edge_id]
-0x0A  graph predicate+in       [ns][0x0A][predicate_id][dst ref][edge_id]
+0x00  primary                      document collection or edge collection
+0x01  obj dynamic segment          [ns][0x01][pkey]                            value = nTLV frames
+0x02  field-name vocabulary        [ns][0x02][field-id]                        → name
+0x03  field-name vocabulary        [ns][0x03][name]                            → field-id
+0x04  predicate vocabulary         [ns][0x04][predicate_id]                    → name
+0x05  predicate vocabulary         [ns][0x05][name]                            → predicate_id
+0x06  graph predicate index        [ns][0x06][predicate_id][edge_id]
+0x07  graph out                    [ns][0x07][src NodeRef][edge_id]
+0x08  graph in                     [ns][0x08][dst NodeRef][edge_id]
+0x09  graph predicate+out          [ns][0x09][predicate_id][src ref][edge_id]
+0x0A  graph predicate+in           [ns][0x0A][predicate_id][dst ref][edge_id]
 0x0B–0x0F                      free for future fixed faces
 (Update 2026-10-17: rows are grouped by ROLE — a vocabulary precedes the
 faces that read its ids; the NUMBERS are the mechanism.)
 ```
 
-**Update 2026-10-17: the KIND VOCABULARY holds its own pair (0x04/0x05).**
+**Update 2026-10-17: the PREDICATE VOCABULARY holds its own pair (0x04/0x05).**
 A collection's token vocabulary beyond field names — a graph's predicates, a
 node collection's kind tokens — is no longer the payload's field-name
-dictionary (0x02/0x03): listing it is one prefix scan of 0x04, and two
+vocabulary (0x02/0x03): listing it is one prefix scan of 0x04, and two
 allocating caches can no longer hand one id to two names (ADR-0017 §3). The graph's declared attribute faces are
 ordinary declared indexes, family 0x1, in the edge collection's own ns.
 

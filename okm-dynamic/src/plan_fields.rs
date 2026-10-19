@@ -1,5 +1,5 @@
 //! The plan surface for the dynamic segment (ADR-0037 4.16a): the
-//! fields ops as pure functions over caller-held state — dictionary
+//! fields ops as pure functions over caller-held state — vocabulary
 //! mirror in, ops out, no engine access. The embedded paths
 //! (`DynamicCollection::put_fields` / `get_fields`) load a mirror from
 //! their store and call the same functions, so a remote plan and the
@@ -10,35 +10,35 @@
 //! The binding shape this enables: a host-language binding holds NO
 //! engine and NO bytes-level layout knowledge — it calls the plan
 //! surface and ships the ops over its injection channel (one submit
-//! callback + one read callback). The dictionary, the nTLV frames, the
+//! callback + one read callback). The vocabulary, the nTLV frames, the
 //! slot constants — every byte rule stays here, one source.
 
 use okm_core::model::obj_dynamic::{decode_named, put_frame_named};
-use okm_core::model::index::{DICT_ID_SLOT, DICT_NAME_SLOT, DYNAMIC_SLOT};
+use okm_core::model::index::{FIELD_VOCAB_ID_SLOT, FIELD_VOCAB_NAME_SLOT, DYNAMIC_SLOT};
 use okm_core::storage::{scan_suffix_kv, VirtualStorage};
 
 use crate::{Value, ValueMap};
 
-/// The field-name dictionary as a pure mirror (no engine): the plan
-/// surface's dictionary carrier. `next_id` is the allocation watermark;
+/// The field-name vocabulary as a pure mirror (no engine): the plan
+/// surface's vocabulary carrier. `next_id` is the allocation watermark;
 /// `written` collects what the last plan allocated (the caller adopts
 /// it via `adopt` so the next plan sees the names without a reload).
 #[derive(Debug, Clone, Default)]
-pub struct DictMirror {
+pub struct VocabMirror {
     by_name: std::collections::BTreeMap<String, u16>,
     by_id: std::collections::BTreeMap<u16, String>,
     next_id: u16,
     written: Vec<(String, u16)>,
 }
 
-impl DictMirror {
-    /// Both directions of one table's dictionary from the engine (one
+impl VocabMirror {
+    /// Both directions of one table's vocabulary from the engine (one
     /// prefix scan each; the watermark derives from the mirror — max +
-    /// 1, the load-once discipline `DictCache` records).
+    /// 1, the load-once discipline `VocabCache` records).
     pub fn load<S: VirtualStorage>(store: &S, ns: &[u8]) -> Self {
         let mut d = Self::default();
         let mut p2 = ns.to_vec();
-        okm_core::write_slot(&mut p2, DICT_ID_SLOT);
+        okm_core::write_slot(&mut p2, FIELD_VOCAB_ID_SLOT);
         for (suffix, name) in scan_suffix_kv(store, &p2) {
             if suffix.len() != 2 {
                 continue;
@@ -49,7 +49,7 @@ impl DictMirror {
             }
         }
         let mut p3 = ns.to_vec();
-        okm_core::write_slot(&mut p3, DICT_NAME_SLOT);
+        okm_core::write_slot(&mut p3, FIELD_VOCAB_NAME_SLOT);
         for (suffix, idv) in scan_suffix_kv(store, &p3) {
             if let Ok(n) = String::from_utf8(suffix)
                 && idv.len() == 2 {
@@ -71,7 +71,7 @@ impl DictMirror {
         d
     }
 
-    /// Adopt one plan's `new_dict_entries` receipt into the live cache
+    /// Adopt one plan's `new_vocab_entries` receipt into the live cache
     /// (the remote caller folds it back before the next plan; the
     /// embedded replay's mirror already holds it — the plan allocated
     /// through the same map).
@@ -97,16 +97,16 @@ impl DictMirror {
 }
 
 /// One planned dynamic-segment write: the field entry plus the
-/// dictionary growth that first-seen names require. The ops are
+/// vocabulary growth that first-seen names require. The ops are
 /// MemBatch-shaped (`None` = delete): replay or ship as one wire frame
 /// (ADR-0010's single `commit_batch`) — both land byte-identical.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PlannedFields {
     pub ops: Vec<(Vec<u8>, Option<Vec<u8>>)>,
     /// Names this plan allocated (id assignment order): the caller
-    /// adopts them into its live mirror (`DictMirror::adopt`) so the
+    /// adopts them into its live mirror (`VocabMirror::adopt`) so the
     /// next plan sees them without a reload.
-    pub new_dict_entries: Vec<(String, u16)>,
+    pub new_vocab_entries: Vec<(String, u16)>,
 }
 
 /// The dynamic-segment entry key: `[ns][DYNAMIC_SLOT][pkey]` — one
@@ -120,29 +120,29 @@ pub fn fields_key(ns: &[u8], pkey: &[u8]) -> Vec<u8> {
 }
 
 /// Plan one dynamic-field replacement WITHOUT touching an engine.
-/// `dict` is the caller's dictionary mirror; first-seen names allocate
-/// through it and grow the plan's dictionary ops (both directions, the
-/// same batch-consistency shape `DictCache::id_for` writes). An empty
+/// `vocab` is the caller's vocabulary mirror; first-seen names allocate
+/// through it and grow the plan's vocabulary ops (both directions, the
+/// same batch-consistency shape `VocabCache::id_for` writes). An empty
 /// map deletes the entry (the whole-entry-replace rule of `put_fields`,
-/// mirrored here). Nested `Obj` values share the dictionary, recursed
+/// mirrored here). Nested `Obj` values share the vocabulary, recursed
 /// by `put_frame_named`.
 pub fn plan_put_fields(
     ns: &[u8],
     pkey: &[u8],
     fields: &ValueMap,
-    dict: &mut DictMirror,
+    vocab: &mut VocabMirror,
 ) -> Result<PlannedFields, String> {
-    // The dictionary mutation and the frame body interleave (a nested
+    // The vocabulary mutation and the frame body interleave (a nested
     // Obj allocates mid-encode), so the resolver borrows the mirror
     // mutably for the whole encode; the ops it collects ride out with
     // the plan.
-    let mut dict_ops: Vec<(Vec<u8>, Option<Vec<u8>>)> = Vec::new();
+    let mut vocab_ops: Vec<(Vec<u8>, Option<Vec<u8>>)> = Vec::new();
     let mut body = Vec::new();
     {
-        let by_name = &mut dict.by_name;
-        let by_id = &mut dict.by_id;
-        let next_id = &mut dict.next_id;
-        let written = &mut dict.written;
+        let by_name = &mut vocab.by_name;
+        let by_id = &mut vocab.by_id;
+        let next_id = &mut vocab.next_id;
+        let written = &mut vocab.written;
         let mut resolver = |name: &str| -> u16 {
             if let Some(id) = by_name.get(name) {
                 return *id;
@@ -153,13 +153,13 @@ pub fn plan_put_fields(
             by_id.insert(id, name.to_string());
             written.push((name.to_string(), id));
             let mut id_key = ns.to_vec();
-            okm_core::write_slot(&mut id_key, DICT_ID_SLOT);
+            okm_core::write_slot(&mut id_key, FIELD_VOCAB_ID_SLOT);
             id_key.extend_from_slice(&id.to_be_bytes());
-            dict_ops.push((id_key, Some(name.as_bytes().to_vec())));
+            vocab_ops.push((id_key, Some(name.as_bytes().to_vec())));
             let mut name_key = ns.to_vec();
-            okm_core::write_slot(&mut name_key, DICT_NAME_SLOT);
+            okm_core::write_slot(&mut name_key, FIELD_VOCAB_NAME_SLOT);
             name_key.extend_from_slice(name.as_bytes());
-            dict_ops.push((name_key, Some(id.to_be_bytes().to_vec())));
+            vocab_ops.push((name_key, Some(id.to_be_bytes().to_vec())));
             id
         };
         for (name, value) in fields {
@@ -169,38 +169,38 @@ pub fn plan_put_fields(
     }
     let k = fields_key(ns, pkey);
     if body.is_empty() {
-        dict_ops.push((k, None));
+        vocab_ops.push((k, None));
     } else {
-        dict_ops.push((k, Some(body)));
+        vocab_ops.push((k, Some(body)));
     }
     Ok(PlannedFields {
-        ops: dict_ops,
-        new_dict_entries: std::mem::take(&mut dict.written),
+        ops: vocab_ops,
+        new_vocab_entries: std::mem::take(&mut vocab.written),
     })
 }
 
 /// Plan the dynamic-segment removal (declared fields untouched). The
-/// dictionary stays (names are append-only — a dangling dictionary
+/// vocabulary stays (names are append-only — a dangling vocabulary
 /// entry is harmless, the documented rule).
 pub fn plan_delete_fields(ns: &[u8], pkey: &[u8]) -> PlannedFields {
     PlannedFields {
         ops: vec![(fields_key(ns, pkey), None)],
-        new_dict_entries: Vec::new(),
+        new_vocab_entries: Vec::new(),
     }
 }
 
 /// Resolve stored dynamic frames to a name-keyed map with a caller-held
 /// mirror (the remote read surface; the embedded `get_fields` loads a
 /// mirror from its engine and calls this). Unknown ids drop the field —
-/// the dictionary-absent rule `get_fields` records (single-writer
+/// the vocabulary-absent rule `get_fields` records (single-writer
 /// cannot hit it; the embedded path reloads the mirror per call, so
 /// even shared-engine catch-up lands in the fresh load).
-pub fn fields_from_frames(raw: &[u8], dict: &DictMirror) -> Result<ValueMap, String> {
-    let frames = decode_named(raw, &mut |id| dict.name_for(id).map(str::to_string));
+pub fn fields_from_frames(raw: &[u8], vocab: &VocabMirror) -> Result<ValueMap, String> {
+    let frames = decode_named(raw, &mut |id| vocab.name_for(id).map(str::to_string));
     let mut out = ValueMap::new();
     for f in frames {
-        let Some(name) = dict.name_for(f.id) else {
-            continue; // dictionary entry absent: drop
+        let Some(name) = vocab.name_for(f.id) else {
+            continue; // vocabulary entry absent: drop
         };
         let v = dyn_value_to_value(&f.value)?;
         out.insert(name.to_string(), v);
@@ -287,11 +287,11 @@ mod tests {
 
     #[test]
     fn plan_allocates_both_directions_then_the_entry() {
-        let mut dict = DictMirror::default();
-        let plan = plan_put_fields(&ns(), b"k", &two_fields(), &mut dict).unwrap();
+        let mut vocab = VocabMirror::default();
+        let plan = plan_put_fields(&ns(), b"k", &two_fields(), &mut vocab).unwrap();
         // ValueMap order: note < weight → ids 0 and 1.
         assert_eq!(
-            plan.new_dict_entries,
+            plan.new_vocab_entries,
             vec![("note".to_string(), 0u16), ("weight".to_string(), 1u16)]
         );
         // 2 names x 2 directions + the entry = 5 ops, entry LAST.
@@ -301,33 +301,33 @@ mod tests {
     }
 
     #[test]
-    fn known_names_write_no_dict_ops_and_watermark_continues() {
-        let mut dict = DictMirror::from_pairs([("note", 0u16), ("weight", 1u16)]);
-        let plan = plan_put_fields(&ns(), b"k", &two_fields(), &mut dict).unwrap();
-        assert!(plan.new_dict_entries.is_empty());
+    fn known_names_write_no_vocab_ops_and_watermark_continues() {
+        let mut vocab = VocabMirror::from_pairs([("note", 0u16), ("weight", 1u16)]);
+        let plan = plan_put_fields(&ns(), b"k", &two_fields(), &mut vocab).unwrap();
+        assert!(plan.new_vocab_entries.is_empty());
         assert_eq!(plan.ops.len(), 1);
         // After adoption, a fresh name continues from the watermark.
-        dict.adopt(&[("extra".to_string(), 5u16)]);
+        vocab.adopt(&[("extra".to_string(), 5u16)]);
         let mut f = ValueMap::new();
         f.insert("brand_new".into(), Value::Bool(true));
-        let p2 = plan_put_fields(&ns(), b"k", &f, &mut dict).unwrap();
-        assert_eq!(p2.new_dict_entries, vec![("brand_new".to_string(), 6u16)]);
+        let p2 = plan_put_fields(&ns(), b"k", &f, &mut vocab).unwrap();
+        assert_eq!(p2.new_vocab_entries, vec![("brand_new".to_string(), 6u16)]);
     }
 
     #[test]
     fn empty_map_plans_the_delete() {
-        let mut dict = DictMirror::default();
-        let plan = plan_put_fields(&ns(), b"k", &ValueMap::new(), &mut dict).unwrap();
+        let mut vocab = VocabMirror::default();
+        let plan = plan_put_fields(&ns(), b"k", &ValueMap::new(), &mut vocab).unwrap();
         assert_eq!(plan.ops.len(), 1);
         assert!(plan.ops[0].1.is_none());
     }
 
     #[test]
     fn roundtrip_frames_to_map() {
-        let mut dict = DictMirror::default();
-        let plan = plan_put_fields(&ns(), b"k", &two_fields(), &mut dict).unwrap();
+        let mut vocab = VocabMirror::default();
+        let plan = plan_put_fields(&ns(), b"k", &two_fields(), &mut vocab).unwrap();
         let body = plan.ops.last().unwrap().1.clone().unwrap();
-        let back = fields_from_frames(&body, &dict).unwrap();
+        let back = fields_from_frames(&body, &vocab).unwrap();
         assert_eq!(back, two_fields());
     }
 }
