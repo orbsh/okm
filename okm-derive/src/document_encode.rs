@@ -741,7 +741,7 @@ fn emit_subscribe(schema: &DocumentSchema) -> (TS2, TS2) {
 
 /// The inherent named-field walk + the full `Document` trait impl, assembled
 /// from the other emit functions' output.
-fn emit_row_impl(schema: &DocumentSchema) -> TS2 {
+pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> TS2 {
     let row_name = &schema.row_name;
     let key_ty = &schema.key_ty;
     // #[ok_ns(N)] → the document's table ns prefix bytes (big-endian u16,

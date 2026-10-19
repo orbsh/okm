@@ -1021,8 +1021,6 @@ pub(crate) struct DocumentSchema {
 /// Parse + validate the derive input. Returns a fully validated schema —
 /// the emit functions never panic.
 pub(crate) fn parse_schema(input: DeriveInput) -> DocumentSchema {
-    let row_name = input.ident.clone();
-
     // #[ok_ref(KeyType)] — the identity struct the document hangs off.
     let key_ty: syn::Type = input
         .attrs
@@ -1035,6 +1033,14 @@ pub(crate) fn parse_schema(input: DeriveInput) -> DocumentSchema {
             }
         })
         .expect("missing #[ok_ref(KeyType)]");
+    parse_schema_with_key(input, key_ty)
+}
+
+/// Parse with a caller-supplied key type. The graph declaration's identity is
+/// the mechanism's own `EdgeKey` (the bare `edge_id`) — it has no `#[ok_ref]`
+/// to read, and no key struct of its own to declare.
+pub(crate) fn parse_schema_with_key(input: DeriveInput, key_ty: syn::Type) -> DocumentSchema {
+    let row_name = input.ident.clone();
 
     // #[ok_ns(N)] — the table's namespace segment, declared on the document
     // (the document is the table's declaration point: #[ok_ref] pins the key

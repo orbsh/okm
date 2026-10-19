@@ -6,60 +6,60 @@
 //! `Refs` = one-to-many (fixed child type, field position, one
 //! direction); `Junction` = many-to-many with compile-time typed
 //! endpoints; **Graph Edge** = independent identity, attributes,
-//! parallel edges, open endpoints.
+//! parallel edges, open endpoints, and a declaration that IS the graph.
 //!
-//! # Endpoint references and the registry
+//! # Endpoint references and membership
 //!
-//! A reference is `[ns 2B BE][pkey]` — the ns acts as the type marker.
-//! The pkey boundary is NOT stored in the key: it resolves through the
-//! **ns → KEY_LEN registry** (`EndpointRegistry`), the schema-fact
-//! extension of the Ref discipline ("the reference is key bytes, ns
-//! knowledge lives at the declaration point") from one bound endpoint
-//! type to a registry of endpoint types. Compile-time form: the
-//! `GraphEdgeEncode` derive generates the constant table. Runtime form:
-//! the caller maintains the registry.
+//! A reference is `[ns 2B BE][len varint][pkey]` — the ns acts as the type
+//! marker and the pkey width rides inside the reference. The pkey boundary
+//! is therefore wire data: no registry, no side table, mixed widths
+//! coexist. What IS declared is the member SET (the `Nodes` enum of the
+//! declaration), applied as a check at write and at decode — width is wire
+//! data, membership is a declaration.
 //!
-//! # Slot layout (fixed faces within the Edge ns, ADR-0030)
+//! # Slot layout (fixed faces within the edge ns, ADR-0030/ADR-0017 §3)
 //!
 //! ```text
-//! 0x00    primary       [edge_id u64 BE]        → value = edge body
-//! 0x02/0x03 kind dictionary (name ↔ kind_id, DictCache reused)
-//! 0x04    kind index    [kind_id u16 BE]        → edge_id set
-//! 0x05    out-edges     [src NodeRef][edge_id u64 BE]
-//! 0x06    in-edges      [dst NodeRef][edge_id u64 BE]
-//! 0x07    kind+out      [kind_id][src NodeRef][edge_id]
-//! 0x08    kind+in       [kind_id][dst NodeRef][edge_id]
+//! 0x00    primary           [edge_id u64 BE]        → [src ref][dst ref][predicate_id][obj payload]
+//! 0x01    dynamic segment   [edge_id u64 BE]        → the edge's open attributes (nTLV)
+//! 0x02/0x03  field-name dictionary (the payload's own names ↔ ids)
+//! 0x04/0x05  KIND VOCABULARY      (predicate name ↔ predicate_id)
+//! 0x06    predicate index   [predicate_id u16 BE]   → edge_id set
+//! 0x07    out-edges         [src NodeRef][edge_id u64 BE]
+//! 0x08    in-edges          [dst NodeRef][edge_id u64 BE]
+//! 0x09    predicate+out     [predicate_id][src NodeRef][edge_id]
+//! 0x0A    predicate+in      [predicate_id][dst NodeRef][edge_id]
 //! ```
 //!
-//! All of them are fixed faces — one byte, no counter. Declared attribute
-//! fields (fixed-ontology form) add one face each in counting family 0x1
-//! (`0x1001+n`) — ordinary declared indexes, see the derive. The node
-//! collection is a STANDARD document collection: its node-kind face is
-//! its own declared index, its kinds live in its own 0x02/0x03
-//! dictionary — zero layout difference from any document collection.
+//! A vocabulary precedes the faces that read its ids. Declared attribute
+//! faces are ordinary `#[ok_index]` declarations — counting family 0x1,
+//! exactly the document machinery (`Document::index_entries`), because the
+//! edge's payload IS an obj (ADR-0012). The node collection is a STANDARD
+//! document collection: zero layout difference from any document
+//! collection; a node collection carrying kind tokens declares its own
+//! kind vocabulary (the same 0x04/0x05 pair, per collection).
 //!
-//! Edge body value: `[src NodeRef][dst NodeRef][kind_id u16 BE]
-//! [attrs payload]` — `attrs payload` is the edge's declared-attribute
-//! encoding (empty for a fully dynamic edge; the dynamic-segment entry
-//! (fixed face 0x01), built by `put_fields`-style callers, is not touched
-//! here).
+//! Identity: the primary key is the bare `edge_id` (graph-global), so point
+//! reads and `unlink` need only the id; the predicate is a VALUE segment in
+//! the body and an index dimension on the faces.
 
-use crate::engine::storage::{MemBatch, VirtualStorage};
-use crate::model::index::{PRIMARY_SLOT, Slot, write_slot};
-use crate::model::obj_dict::DictCache;
+use crate::engine::storage::{MemBatch, VirtualStorage, scan_suffix_kv};
+use crate::model::index::{Document, PRIMARY_SLOT, Slot, write_slot};
+use crate::model::key::KeyEncode;
+use crate::model::obj_dict::{DictCache, KIND_VOCAB};
 
-/// Fixed face 0x04: kind index — an Edge-collection-internal fact, not a
-/// declared document index, hence a graph number rather than counting
+/// Fixed face 0x06: predicate index — an edge-collection-internal detail, not
+/// a declared document index, hence a graph number rather than counting
 /// family 0x1.
-pub const EDGE_KIND_INDEX_SLOT: Slot = 0x04;
-/// Fixed face 0x05: out-edge traversal.
-pub const EDGE_OUT_SLOT: Slot = 0x05;
-/// Fixed face 0x06: in-edge traversal.
-pub const EDGE_IN_SLOT: Slot = 0x06;
-/// Fixed face 0x07: kind-qualified out-edge face (kind leads).
-pub const EDGE_KIND_OUT_SLOT: Slot = 0x07;
-/// Fixed face 0x08: kind-qualified in-edge face (kind leads).
-pub const EDGE_KIND_IN_SLOT: Slot = 0x08;
+pub const EDGE_PREDICATE_INDEX_SLOT: Slot = 0x06;
+/// Fixed face 0x07: out-edge traversal.
+pub const EDGE_OUT_SLOT: Slot = 0x07;
+/// Fixed face 0x08: in-edge traversal.
+pub const EDGE_IN_SLOT: Slot = 0x08;
+/// Fixed face 0x09: predicate-qualified out-edge face (predicate leads).
+pub const EDGE_PREDICATE_OUT_SLOT: Slot = 0x09;
+/// Fixed face 0x0A: predicate-qualified in-edge face (predicate leads).
+pub const EDGE_PREDICATE_IN_SLOT: Slot = 0x0A;
 
 /// Self-describing endpoint reference: `[ns 2B BE][len varint][pkey]`.
 /// The ns is the type marker; the pkey width rides IN the ref as a
@@ -126,47 +126,118 @@ impl NodeRef {
     }
 }
 
-/// One edge fact: endpoints by reference, kind by name, declared
-/// attributes already encoded by the caller (the derive's payload
-/// encoding for the fixed-ontology form; empty for dynamic edges).
-#[derive(Clone, Debug)]
-pub struct EdgeFact {
-    pub src: NodeRef,
-    pub dst: NodeRef,
-    /// Kind name — resolved to `kind_id` through the kind dictionary
-    /// (0x2/0x3) at write time, so every key segment stays fixed-width.
-    pub kind: String,
-    /// Declared-attribute payload bytes (the fixed-ontology form's field
-    /// encoding; empty when the edge carries no declared attributes).
-    pub attrs: Vec<u8>,
+/// The edge's identity as a key: `edge_id` u64 big-endian, 8 bytes — the
+/// same bytes the pre-declaration layout used. It exists so the edge
+/// payload can be an ordinary [`Document`] (its declared `#[ok_index]`
+/// faces are keyed by it) without inventing a per-graph key struct.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct EdgeKey(pub u64);
+
+impl KeyEncode for EdgeKey {
+    const KEY_LEN: usize = 8;
+    const FIELD_WIDTHS: &'static [(&'static str, usize)] = &[("edge_id", 8)];
+    /// The key's field list — the exported schema (`CollectionSchema::of`)
+    /// walks it, so a graph declaration exports the same shape a document's
+    /// key does.
+    const FIELDS: &'static [crate::model::field::FieldDesc] = &[crate::model::field::FieldDesc {
+        name: "edge_id",
+        ty: crate::model::field::FieldType::U64,
+        width: 8,
+    }];
+
+    fn encode(&self) -> Vec<u8> {
+        self.0.to_be_bytes().to_vec()
+    }
+
+    fn decode(bytes: &[u8]) -> Self {
+        Self(u64::from_be_bytes(bytes[..8].try_into().expect("EdgeKey: 8 bytes")))
+    }
+
+    fn encode_prefix_named(&self, buf: &mut Vec<u8>, names: &[&str]) -> usize {
+        assert!(names.len() <= 1, "EdgeKey has one field; a prefix cannot be longer");
+        if names.len() == 1 {
+            assert_eq!(names[0], "edge_id", "EdgeKey's only field is `edge_id`");
+            buf.extend_from_slice(&self.0.to_be_bytes());
+            8
+        } else {
+            0
+        }
+    }
+
+    fn prefix_width(names: &[&str]) -> usize {
+        assert!(names.len() <= 1, "EdgeKey has one field; a prefix cannot be longer");
+        if names.len() == 1 {
+            assert_eq!(names[0], "edge_id", "EdgeKey's only field is `edge_id`");
+            8
+        } else {
+            0
+        }
+    }
 }
 
-/// The edge body stored at the primary (slot 0x0):
-/// `[src NodeRef][dst NodeRef][kind_id u16 BE][attrs]` — refs are
-/// self-describing, so `attrs` starts at a computable offset.
-fn edge_body(fact: &EdgeFact, kind_id: u16) -> Vec<u8> {
+/// The member set of a graph: one variant per participating COLLECTION
+/// (each variant is one ns). A declaration, not storage — the set carries
+/// no run-time information, so it never occupies a slot.
+pub trait NodeSet {
+    /// Every member collection's ns, one per variant.
+    const NS_VALUES: &'static [u16];
+
+    /// Is `ns` a member of this graph?
+    fn contains(ns: u16) -> bool {
+        Self::NS_VALUES.contains(&ns)
+    }
+}
+
+/// The graph declaration (ADR-0017 §4), generated by `#[derive(GraphEncode)]`:
+/// `#[ok_ns(N)]` is the only ns source, the struct's fields are the edge's
+/// payload (an ordinary document payload — both codec directions, its
+/// `#[ok_index]` faces declared EXPLICITLY), and `#[ok_nodes(Enum)]` names
+/// the member set. `Graph<S, E>` is a handle over this and declares nothing.
+pub trait GraphEncode: Document<Key = EdgeKey> {
+    /// The member set — a compile-time enum over the node collections.
+    type Nodes: NodeSet;
+}
+
+/// One edge's head: endpoints by reference, predicate by name. The payload
+/// travels separately (the declaration's own type) and is encoded by the
+/// graph at write time.
+#[derive(Clone, Debug)]
+pub struct EdgeHead {
+    pub src: NodeRef,
+    pub dst: NodeRef,
+    /// The edge's type: resolved to `predicate_id` through the graph's kind
+    /// vocabulary (0x04/0x05) at write time, so every key segment stays
+    /// fixed-width. Never repeated in the payload.
+    pub predicate: String,
+}
+
+/// The edge body stored at the primary (face 0x00):
+/// `[src NodeRef][dst NodeRef][predicate_id u16 BE][obj payload]` — refs are
+/// self-describing and the payload starts at a computable offset.
+fn edge_body(head: &EdgeHead, predicate_id: u16, payload: &[u8]) -> Vec<u8> {
     let mut v = Vec::with_capacity(
-        3 + fact.src.pkey.len() + 3 + fact.dst.pkey.len() + 2 + fact.attrs.len(),
+        3 + head.src.pkey.len() + 3 + head.dst.pkey.len() + 2 + payload.len(),
     );
-    v.extend_from_slice(&fact.src.encode());
-    v.extend_from_slice(&fact.dst.encode());
-    v.extend_from_slice(&kind_id.to_be_bytes());
-    v.extend_from_slice(&fact.attrs);
+    v.extend_from_slice(&head.src.encode());
+    v.extend_from_slice(&head.dst.encode());
+    v.extend_from_slice(&predicate_id.to_be_bytes());
+    v.extend_from_slice(payload);
     v
 }
 
-/// Decoded edge body. `kind_id` stays raw — name resolution needs the
-/// dictionary (a `&mut store` + cache), which the read paths own.
+/// Decoded edge body. `predicate_id` stays raw — name resolution needs the
+/// vocabulary (a `&mut store` + cache), which the read paths own; `payload`
+/// is the obj payload bytes, decoded by the declaration's type.
 #[derive(Clone, Debug)]
 pub struct EdgeBody {
     pub src: NodeRef,
     pub dst: NodeRef,
-    pub kind_id: u16,
-    pub attrs: Vec<u8>,
+    pub predicate_id: u16,
+    pub payload: Vec<u8>,
 }
 
-/// Walk `[src ref][dst ref][kind_id][attrs]` from the front — refs are
-/// self-describing (len varint), so no side table is consulted.
+/// Walk `[src ref][dst ref][predicate_id][payload]` from the front — refs
+/// are self-describing (len varint), so no side table is consulted.
 fn decode_body(bytes: &[u8]) -> EdgeBody {
     let (src, n1) = NodeRef::decode(bytes).expect("edge body: truncated src ref");
     let (dst, n2) = NodeRef::decode(&bytes[n1..]).expect("edge body: truncated dst ref");
@@ -174,53 +245,27 @@ fn decode_body(bytes: &[u8]) -> EdgeBody {
     EdgeBody {
         src,
         dst,
-        kind_id: u16::from_be_bytes([bytes[after_dst], bytes[after_dst + 1]]),
-        attrs: bytes[after_dst + 2..].to_vec(),
+        predicate_id: u16::from_be_bytes([bytes[after_dst], bytes[after_dst + 1]]),
+        payload: bytes[after_dst + 2..].to_vec(),
     }
-}
-
-/// Graph contract (fixed-ontology form; generated by the `EdgeEncode`
-/// derive). `NS_PREFIX` = the edge collection's own ns (one ns per
-/// graph, normal ns dictionary). Endpoints need NO declaration — refs
-/// carry their own pkey width. Attribute accessors live on the concrete
-/// edge type.
-pub trait KvGraph: Sized {
-    /// The graph's edge-collection ns (`[ns 2B BE]`, from `#[ok_edge(ns = N)]`).
-    const NS_PREFIX: &'static [u8];
-
-    /// Encode this edge's declared attributes (derive-generated; the
-    /// typed path's payload segment inside the edge body).
-    fn attrs(&self) -> Vec<u8>;
-
-    /// One `(slot, value bytes)` pair per declared attribute field — the
-    /// 0x1-segment faces `link`/`unlink` must maintain (empty for an
-    /// edge declaration without attribute fields; the runtime form has
-    /// none). The face key is `[ns][slot][value][edge_id]`, value bytes
-    /// lead so the scan prefix can match.
-    fn attr_faces(&self, edge_id: u64) -> Vec<(Slot, Vec<u8>)> {
-        let _ = edge_id;
-        Vec::new()
-    }
-
-    /// The 0x1 slots declared attribute faces occupy (declaration
-    /// order). Derive-generated as a constant; drives unlink's stale-
-    /// face sweep. Empty = no declared attribute fields.
-    const ATTR_SLOTS: &'static [Slot] = &[];
 }
 
 /// Engine + graph type = the operation surface of one graph's edge set
 /// (symmetric with [`crate::Junction`]). One ns hosts every entry kind,
-/// dispatched by segment. The `DictCache` is per-handle state (the
-/// single-writer discipline covers kind-name allocation).
-pub struct Graph<S, E: KvGraph> {
+/// dispatched by segment. The `DictCache` is per-handle state over the
+/// graph's KIND VOCABULARY (0x04/0x05) — allocation is single-writer, and a
+/// read-only handle still answers typed scans (the cache loads on probe).
+pub struct Graph<S, E: GraphEncode> {
     store: S,
     dict: DictCache,
     _pd: std::marker::PhantomData<E>,
 }
 
-impl<S: VirtualStorage, E: KvGraph> Graph<S, E> {
+impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
+    /// The handle takes the engine and nothing else: the ns comes from the
+    /// declaration (`E::NS_PREFIX`), the member set from `E::Nodes`.
     pub fn new(store: S) -> Self {
-        Self { store, dict: DictCache::default(), _pd: std::marker::PhantomData }
+        Self { store, dict: DictCache::new(KIND_VOCAB), _pd: std::marker::PhantomData }
     }
 
     pub fn store(&self) -> &S {
@@ -243,166 +288,176 @@ impl<S: VirtualStorage, E: KvGraph> Graph<S, E> {
         k
     }
 
-    /// Resolve (or allocate) the kind id. Allocation rides the edge
-    /// collection's own dictionary (slots 0x2/0x3) — the same
-    /// first-seen-claims-next append-only discipline as every other
-    /// vocabulary in OKM.
-    fn kind_id(&mut self, kind: &str) -> u16 {
-        self.dict.id_for(&mut self.store, E::NS_PREFIX, kind)
+    /// Membership: the declared set is checked against the refs' ns at
+    /// write and at decode (width stays wire data; membership does not).
+    fn check_members(&self, src: &NodeRef, dst: &NodeRef) -> Result<(), String> {
+        for (side, node) in [("src", src), ("dst", dst)] {
+            if !E::Nodes::contains(node.ns_id()) {
+                return Err(format!(
+                    "{side} ns {} is not a member of graph ns {}",
+                    node.ns_id(),
+                    u16::from_be_bytes([E::NS_PREFIX[0], E::NS_PREFIX[1]])
+                ));
+            }
+        }
+        Ok(())
     }
 
-    /// Resolve kind id → name for display/diagnostics.
-    pub fn kind_name(&mut self, id: u16) -> Option<String> {
+    /// Resolve (or allocate) the predicate id through the graph's kind
+    /// vocabulary (0x04/0x05) — first-seen-claims-next, append-only, the
+    /// same discipline as every other vocabulary in OKM. Separate from the
+    /// payload's field-name dictionary (0x02/0x03): two allocators in one
+    /// id space would hand the same id to two names.
+    fn predicate_id(&mut self, predicate: &str) -> u16 {
+        self.dict.id_for(&mut self.store, E::NS_PREFIX, predicate)
+    }
+
+    /// Resolve predicate id → name for display/diagnostics.
+    pub fn predicate_name(&mut self, id: u16) -> Option<String> {
         self.dict.name_for(&self.store, E::NS_PREFIX, id)
     }
 
-    /// Write one edge: primary + kind index + four traversal faces +
-    /// declared-attribute faces (and the kind dictionary on first sight
-    /// of a new name), all in one engine batch. Parallel edges are
-    /// separate facts — each call carries a caller-chosen `edge_id`
-    /// (the caller keeps identity allocation; `link` verifies
-    /// non-collision with one point read). `edge` supplies the typed
-    /// attribute faces (unit struct/`Default` for dynamic edges).
-    pub fn link(
-        &mut self,
-        fact: &EdgeFact,
-        edge: &E,
-        edge_id: u64,
-    ) -> Result<(), String> {
+    /// Every predicate this graph has, id-ordered: ONE prefix scan of 0x04.
+    /// A listing, never an inference walked back from the index faces.
+    pub fn predicates(&mut self) -> Vec<(u16, String)> {
+        let mut p = E::NS_PREFIX.to_vec();
+        write_slot(&mut p, crate::model::index::KIND_VOCAB_ID_SLOT);
+        let mut out: Vec<(u16, String)> = scan_suffix_kv(&self.store, &p)
+            .into_iter()
+            .filter(|(suffix, _)| suffix.len() == 2)
+            .filter_map(|(suffix, name)| {
+                String::from_utf8(name)
+                    .ok()
+                    .map(|n| (u16::from_be_bytes([suffix[0], suffix[1]]), n))
+            })
+            .collect();
+        out.sort_by_key(|(id, _)| *id);
+        out
+    }
+
+    /// Write one edge: primary + predicate index + four traversal faces +
+    /// every DECLARED `#[ok_index]` face (and the vocabulary pair on first
+    /// sight of a new predicate), all in one engine batch. Parallel edges
+    /// are separate edges — each call carries a caller-chosen `edge_id`
+    /// (identity allocation stays with the caller; `link` verifies
+    /// non-collision with one point read).
+    pub fn link(&mut self, head: &EdgeHead, payload: &E, edge_id: u64) -> Result<(), String> {
         let pk = self.primary_key(edge_id);
         if self.store.get(&pk).is_some() {
             return Err(format!("edge_id {edge_id} already live"));
         }
-        let kind_id = self.kind_id(&fact.kind);
-        let body = edge_body(fact, kind_id);
-        let src_wire = fact.src.encode();
-        let dst_wire = fact.dst.encode();
-        let id_be = edge_id.to_be_bytes();
-
         let mut batch = MemBatch::default();
-        batch.put(pk, body);
-        // kind index (0x4): [kind_id][edge_id]
-        batch.put(
-            self.face_key(EDGE_KIND_INDEX_SLOT, &[&kind_id.to_be_bytes(), &id_be]),
-            Vec::new(),
-        );
-        // out (0x5): [src NodeRef][edge_id]
-        batch.put(self.face_key(EDGE_OUT_SLOT, &[&src_wire, &id_be]), Vec::new());
-        // in (0x6): [dst NodeRef][edge_id]
-        batch.put(self.face_key(EDGE_IN_SLOT, &[&dst_wire, &id_be]), Vec::new());
-        // kind+out (0x7): [kind_id][src NodeRef][edge_id]
-        batch.put(
-            self.face_key(EDGE_KIND_OUT_SLOT, &[&kind_id.to_be_bytes(), &src_wire, &id_be]),
-            Vec::new(),
-        );
-        // kind+in (0x8): [kind_id][dst NodeRef][edge_id]
-        batch.put(
-            self.face_key(EDGE_KIND_IN_SLOT, &[&kind_id.to_be_bytes(), &dst_wire, &id_be]),
-            Vec::new(),
-        );
-        // Declared-attribute faces (0x1 segment, one per field): the
-        // typed edge enumerates them; each face is [value][edge_id].
-        for (slot, value) in edge.attr_faces(edge_id) {
-            batch.put(self.face_key(slot, &[&value, &id_be]), Vec::new());
-        }
+        self.write_into(&mut batch, head, payload, edge_id)?;
         self.store
             .commit_batch(batch)
             .map_err(|e| format!("graph link commit failed: {e}"))
     }
 
     /// Encode the full write set into an externally owned batch — the
-    /// cross-collection atomic path (documents and edges share one
-    /// batch, one commit covers them all). Kind-name allocation cannot
-    /// ride the caller's batch (the dictionary commits its own), so a
-    /// first-sight kind name may outlive a failed outer commit — an
-    /// extra append-only dictionary entry is harmless by the same rule
-    /// the obj dictionary documents.
+    /// cross-collection atomic path (documents and edges share one batch,
+    /// one commit covers them all). Vocabulary allocation cannot ride the
+    /// caller's batch (it commits its own), so a first-sight predicate name
+    /// may outlive a failed outer commit — an extra append-only entry is
+    /// harmless by the same rule the obj dictionary documents.
     pub fn link_into(
         &mut self,
         batch: &mut MemBatch,
-        fact: &EdgeFact,
-        edge: &E,
+        head: &EdgeHead,
+        payload: &E,
         edge_id: u64,
     ) -> Result<(), String> {
-        let kind_id = self.kind_id(&fact.kind);
-        let body = edge_body(fact, kind_id);
-        let src_wire = fact.src.encode();
-        let dst_wire = fact.dst.encode();
+        self.write_into(batch, head, payload, edge_id)
+    }
+
+    fn write_into(
+        &mut self,
+        batch: &mut MemBatch,
+        head: &EdgeHead,
+        payload: &E,
+        edge_id: u64,
+    ) -> Result<(), String> {
+        self.check_members(&head.src, &head.dst)?;
+        let predicate_id = self.predicate_id(&head.predicate);
+        let predicate_be = predicate_id.to_be_bytes();
+        let body = edge_body(head, predicate_id, &payload.encode_payload());
+        let src_wire = head.src.encode();
+        let dst_wire = head.dst.encode();
         let id_be = edge_id.to_be_bytes();
+
         batch.put(self.primary_key(edge_id), body);
+        // predicate index (0x06): [predicate_id][edge_id]
         batch.put(
-            self.face_key(EDGE_KIND_INDEX_SLOT, &[&kind_id.to_be_bytes(), &id_be]),
+            self.face_key(EDGE_PREDICATE_INDEX_SLOT, &[&predicate_be, &id_be]),
             Vec::new(),
         );
+        // out (0x07): [src NodeRef][edge_id]
         batch.put(self.face_key(EDGE_OUT_SLOT, &[&src_wire, &id_be]), Vec::new());
+        // in (0x08): [dst NodeRef][edge_id]
         batch.put(self.face_key(EDGE_IN_SLOT, &[&dst_wire, &id_be]), Vec::new());
+        // predicate+out (0x09): [predicate_id][src NodeRef][edge_id]
         batch.put(
-            self.face_key(EDGE_KIND_OUT_SLOT, &[&kind_id.to_be_bytes(), &src_wire, &id_be]),
+            self.face_key(EDGE_PREDICATE_OUT_SLOT, &[&predicate_be, &src_wire, &id_be]),
             Vec::new(),
         );
+        // predicate+in (0x0A): [predicate_id][dst NodeRef][edge_id]
         batch.put(
-            self.face_key(EDGE_KIND_IN_SLOT, &[&kind_id.to_be_bytes(), &dst_wire, &id_be]),
+            self.face_key(EDGE_PREDICATE_IN_SLOT, &[&predicate_be, &dst_wire, &id_be]),
             Vec::new(),
         );
-        for (slot, value) in edge.attr_faces(edge_id) {
-            batch.put(self.face_key(slot, &[&value, &id_be]), Vec::new());
+        // Declared faces: the payload's own #[ok_index] declarations, the
+        // same entries a document collection writes for the same row.
+        for (key, value) in E::index_entries(&EdgeKey(edge_id), payload, E::NS_PREFIX) {
+            batch.put(key, value);
         }
         Ok(())
     }
 
-    /// Remove one edge: the same six entries deleted (the faces encode
-    /// the edge's own values, so deletion needs the fact — the body —
-    /// not just the id).
+    /// Remove one edge: decode the body, delete the exact entries the link
+    /// wrote. Declared faces are re-derived by decoding the payload into
+    /// the declaration's type — no prefix sweep, so an unrelated edge with
+    /// a shared attribute value cannot be touched.
     pub fn unlink(&mut self, edge_id: u64) -> Result<(), String> {
         let pk = self.primary_key(edge_id);
-        let body = self
+        let bytes = self
             .store
             .get(&pk)
             .ok_or_else(|| format!("unlink: edge_id {edge_id} not found"))?;
-        let parsed = decode_body(&body);
+        let parsed = decode_body(&bytes);
+        self.check_members(&parsed.src, &parsed.dst)?;
         let src_wire = parsed.src.encode();
         let dst_wire = parsed.dst.encode();
+        let predicate_be = parsed.predicate_id.to_be_bytes();
         let id_be = edge_id.to_be_bytes();
+        let payload: E = E::decode_payload(&parsed.payload);
 
         let mut batch = MemBatch::default();
         batch.del(&pk);
-        batch.del(&self.face_key(EDGE_KIND_INDEX_SLOT, &[&parsed.kind_id.to_be_bytes(), &id_be]));
+        batch.del(&self.face_key(EDGE_PREDICATE_INDEX_SLOT, &[&predicate_be, &id_be]));
         batch.del(&self.face_key(EDGE_OUT_SLOT, &[&src_wire, &id_be]));
         batch.del(&self.face_key(EDGE_IN_SLOT, &[&dst_wire, &id_be]));
-        batch.del(&self.face_key(
-            EDGE_KIND_OUT_SLOT,
-            &[&parsed.kind_id.to_be_bytes(), &src_wire, &id_be],
-        ));
-        batch.del(&self.face_key(
-            EDGE_KIND_IN_SLOT,
-            &[&parsed.kind_id.to_be_bytes(), &dst_wire, &id_be],
-        ));
-        // Stale attribute faces: the face keys encode the OLD values, so
-        // they cannot be re-derived from the body without the typed
-        // field widths. Instead each declared 0x1 slot is prefix-scanned
-        // and every entry ending in this edge_id is deleted (per-slot
-        // counts are tiny — one entry per edge).
-        let attr_slots = E::ATTR_SLOTS;
-        for slot in attr_slots {
-            let p = self.face_key(*slot, &[]);
-            for sfx in self.store.scan_suffix(&p) {
-                if sfx.len() == 8 && sfx.as_slice() == id_be {
-                    let mut full = p.clone();
-                    full.extend_from_slice(&sfx);
-                    batch.del(&full);
-                }
-            }
+        batch.del(&self.face_key(EDGE_PREDICATE_OUT_SLOT, &[&predicate_be, &src_wire, &id_be]));
+        batch.del(&self.face_key(EDGE_PREDICATE_IN_SLOT, &[&predicate_be, &dst_wire, &id_be]));
+        for (key, _) in E::index_entries(&EdgeKey(edge_id), &payload, E::NS_PREFIX) {
+            batch.del(&key);
         }
         self.store
             .commit_batch(batch)
             .map_err(|e| format!("graph unlink commit failed: {e}"))
     }
 
-    /// Decode an edge body by id (the fetch-back step of every face
-    /// scan). `kind_name()` resolves the id when needed.
+    /// Decode an edge body by id (the fetch-back step of every face scan).
+    /// Non-member refs (a corrupt or foreign row) answer `None` here rather
+    /// than travelling as if they belonged to this graph.
     pub fn get_edge(&self, edge_id: u64) -> Option<EdgeBody> {
         let body = self.store.get(&self.primary_key(edge_id))?;
-        Some(decode_body(&body))
+        let parsed = decode_body(&body);
+        self.check_members(&parsed.src, &parsed.dst).ok()?;
+        Some(parsed)
+    }
+
+    /// The edge's payload decoded into the declaration's own type.
+    pub fn edge(&self, edge_id: u64) -> Option<E> {
+        self.get_edge(edge_id).map(|b| E::decode_payload(&b.payload))
     }
 
     /// All edge ids on one traversal face, decoded back through the
@@ -418,25 +473,25 @@ impl<S: VirtualStorage, E: KvGraph> Graph<S, E> {
             .collect()
     }
 
-    /// Out-edges of one node (untyped, 0x5).
+    /// Out-edges of one node (untyped, 0x07).
     pub fn out_edges(&self, src: &NodeRef) -> Vec<u64> {
         self.traverse(EDGE_OUT_SLOT, src)
     }
 
-    /// In-edges of one node (untyped, 0x6).
+    /// In-edges of one node (untyped, 0x08).
     pub fn in_edges(&self, dst: &NodeRef) -> Vec<u64> {
         self.traverse(EDGE_IN_SLOT, dst)
     }
 
-    /// Typed traversal (0x7/0x8): all edge ids of one kind from one
-    /// node. The kind id must come from a prior write (unknown kinds
-    /// scan nothing — there is no face to match).
-    pub fn typed_edges(&mut self, slot: Slot, kind: &str, node: &NodeRef) -> Vec<u64> {
-        let kind_id = match self.dict.by_name_get(kind) {
+    /// Predicate-qualified traversal (0x09/0x0A): all edge ids of one
+    /// predicate from one node. An unknown predicate scans nothing — there
+    /// is no face to match.
+    pub fn typed_edges(&mut self, slot: Slot, predicate: &str, node: &NodeRef) -> Vec<u64> {
+        let predicate_id = match self.dict.id_get(&self.store, E::NS_PREFIX, predicate) {
             Some(id) => id,
             None => return Vec::new(),
         };
-        let p = self.face_key(slot, &[&kind_id.to_be_bytes(), &node.encode()]);
+        let p = self.face_key(slot, &[&predicate_id.to_be_bytes(), &node.encode()]);
         self.store
             .scan_suffix(&p)
             .iter()
@@ -445,24 +500,24 @@ impl<S: VirtualStorage, E: KvGraph> Graph<S, E> {
             .collect()
     }
 
-    /// Typed out-edges (0x7).
-    pub fn typed_out(&mut self, kind: &str, src: &NodeRef) -> Vec<u64> {
-        self.typed_edges(EDGE_KIND_OUT_SLOT, kind, src)
+    /// Predicate-qualified out-edges (0x09).
+    pub fn typed_out(&mut self, predicate: &str, src: &NodeRef) -> Vec<u64> {
+        self.typed_edges(EDGE_PREDICATE_OUT_SLOT, predicate, src)
     }
 
-    /// Typed in-edges (0x8).
-    pub fn typed_in(&mut self, kind: &str, dst: &NodeRef) -> Vec<u64> {
-        self.typed_edges(EDGE_KIND_IN_SLOT, kind, dst)
+    /// Predicate-qualified in-edges (0x0A).
+    pub fn typed_in(&mut self, predicate: &str, dst: &NodeRef) -> Vec<u64> {
+        self.typed_edges(EDGE_PREDICATE_IN_SLOT, predicate, dst)
     }
 
-    /// All edges of one kind, regardless of endpoints (0x4) — the
+    /// All edges of one predicate, regardless of endpoints (0x06) — the
     /// `MATCH ()-[r:has]->()` entry point.
-    pub fn edges_of_kind(&mut self, kind: &str) -> Vec<u64> {
-        let kind_id = match self.dict.by_name_get(kind) {
+    pub fn edges_of_predicate(&mut self, predicate: &str) -> Vec<u64> {
+        let predicate_id = match self.dict.id_get(&self.store, E::NS_PREFIX, predicate) {
             Some(id) => id,
             None => return Vec::new(),
         };
-        let p = self.face_key(EDGE_KIND_INDEX_SLOT, &[&kind_id.to_be_bytes()]);
+        let p = self.face_key(EDGE_PREDICATE_INDEX_SLOT, &[&predicate_id.to_be_bytes()]);
         self.store
             .scan_suffix(&p)
             .iter()
@@ -471,10 +526,10 @@ impl<S: VirtualStorage, E: KvGraph> Graph<S, E> {
             .collect()
     }
 
-    /// Filter by declared attribute (0x1 face, fixed-ontology form):
-    /// scan the face with the caller-encoded probe and return edge ids.
-    /// The derive emits the per-field access methods on the concrete
-    /// edge type; this is the shared byte-level walk.
+    /// Filter by declared attribute (a counting-family 0x1 face): scan the
+    /// face with the caller-encoded probe and return edge ids. The derive
+    /// emits the per-field marker structs; this is the shared byte-level
+    /// walk.
     pub fn by_attr_face(&self, slot: Slot, encoded: &[u8]) -> Vec<u64> {
         let p = self.face_key(slot, &[encoded]);
         self.store
@@ -485,7 +540,7 @@ impl<S: VirtualStorage, E: KvGraph> Graph<S, E> {
             .collect()
     }
 
-    /// The NEIGHBOR nodes one hop out (untyped, 0x5): edge ids resolved
+    /// The NEIGHBOR nodes one hop out (untyped, 0x07): edge ids resolved
     /// to their far endpoints. Edge ids remain the identity currency —
     /// this is a convenience composition over `out_edges` + `get_edge`
     /// (zero new wire), for the traversal shape where only nodes
@@ -500,7 +555,7 @@ impl<S: VirtualStorage, E: KvGraph> Graph<S, E> {
             .collect()
     }
 
-    /// Neighbor nodes one hop in (untyped, 0x6) — the in-direction
+    /// Neighbor nodes one hop in (untyped, 0x08) — the in-direction
     /// mirror of [`out_nodes`](Self::out_nodes).
     pub fn in_nodes(&self, dst: &NodeRef) -> Vec<NodeRef> {
         self.in_edges(dst)
@@ -510,18 +565,18 @@ impl<S: VirtualStorage, E: KvGraph> Graph<S, E> {
             .collect()
     }
 
-    /// Kind-qualified neighbors (0x7/0x8): `typed_out`/`typed_in`
-    /// resolved to far endpoints. Unknown kinds scan empty, like their
+    /// Predicate-qualified neighbors (0x09/0x0A): `typed_out`/`typed_in`
+    /// resolved to far endpoints. Unknown predicates scan empty, like their
     /// edge-id counterparts.
-    pub fn typed_out_nodes(&mut self, kind: &str, src: &NodeRef) -> Vec<NodeRef> {
-        let ids = self.typed_out(kind, src);
+    pub fn typed_out_nodes(&mut self, predicate: &str, src: &NodeRef) -> Vec<NodeRef> {
+        let ids = self.typed_out(predicate, src);
         self.endpoints(ids, |b| &b.dst)
     }
 
-    /// Kind-qualified in-neighbors (0x8) — the in-direction mirror of
+    /// Predicate-qualified in-neighbors (0x0A) — the in-direction mirror of
     /// [`typed_out_nodes`](Self::typed_out_nodes).
-    pub fn typed_in_nodes(&mut self, kind: &str, dst: &NodeRef) -> Vec<NodeRef> {
-        let ids = self.typed_in(kind, dst);
+    pub fn typed_in_nodes(&mut self, predicate: &str, dst: &NodeRef) -> Vec<NodeRef> {
+        let ids = self.typed_in(predicate, dst);
         self.endpoints(ids, |b| &b.src)
     }
 
@@ -540,15 +595,6 @@ impl<S: VirtualStorage, E: KvGraph> Graph<S, E> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::test_engine::TestStore;
-
-    struct Follows;
-    impl KvGraph for Follows {
-        const NS_PREFIX: &'static [u8] = &[0x00, 0x64];
-        fn attrs(&self) -> Vec<u8> {
-            Vec::new()
-        }
-    }
 
     fn node(ns: u16, key: u64) -> NodeRef {
         NodeRef::new(&ns.to_be_bytes(), &key.to_be_bytes())
@@ -560,10 +606,6 @@ mod tests {
 
     fn org(id: u32) -> NodeRef {
         node(0x11, id as u64)
-    }
-
-    fn fact(src: NodeRef, dst: NodeRef) -> EdgeFact {
-        EdgeFact { src, dst, kind: "has".into(), attrs: Vec::new() }
     }
 
     #[test]
@@ -589,85 +631,34 @@ mod tests {
     }
 
     #[test]
-    fn link_writes_six_faces_and_kind_dict() {
-        let store = TestStore::slatedb_mem();
-        let mut g: Graph<_, Follows> = Graph::new(store.clone());
-        let e = EdgeFact { src: person(1), dst: org(9), kind: "has".into(), attrs: Vec::new() };
-        g.link(&e, &Follows, 100).unwrap();
+    fn edge_key_is_the_bare_u64() {
+        assert_eq!(EdgeKey(7).encode(), 7u64.to_be_bytes().to_vec());
+        assert_eq!(EdgeKey::KEY_LEN, 8);
+        assert_eq!(EdgeKey::decode(&7u64.to_be_bytes()), EdgeKey(7));
+        let mut buf = Vec::new();
+        assert_eq!(EdgeKey(9).encode_prefix_named(&mut buf, &["edge_id"]), 8);
+        assert_eq!(buf, 9u64.to_be_bytes().to_vec());
+        assert_eq!(EdgeKey::prefix_width(&[]), 0);
+    }
 
-        // Primary + the five faces + the two dictionary rows all live in
-        // one ns. Kind id 0 for the first-seen name.
-        let pk = {
-            let mut k = vec![0x00, 0x64];
-            write_slot(&mut k, PRIMARY_SLOT);
-            k.extend_from_slice(&100u64.to_be_bytes());
-            k
-        };
-        let body = store.get(&pk).unwrap();
-        // Refs are self-describing: [ns 2B][len 1B][pkey 8B] each.
+    #[test]
+    fn body_layout_is_ref_ref_predicate_payload() {
+        let head = EdgeHead { src: person(1), dst: org(9), predicate: "has".into() };
+        let body = edge_body(&head, 0x0102, &[0xAA, 0xBB]);
+        // [ns 2B][len 1B][pkey 8B] twice, then the predicate id, then payload.
         assert_eq!(&body[..2], &0x10u16.to_be_bytes());
         assert_eq!(body[2], 8, "pkey len varint (one byte for 8)");
         assert_eq!(&body[3..11], &1u64.to_be_bytes());
         assert_eq!(&body[11..13], &0x11u16.to_be_bytes());
         assert_eq!(body[13], 8);
         assert_eq!(&body[14..22], &9u64.to_be_bytes());
-        assert_eq!(&body[22..24], &0u16.to_be_bytes(), "first-seen kind gets id 0");
+        assert_eq!(&body[22..24], &0x0102u16.to_be_bytes());
+        assert_eq!(&body[24..], &[0xAA, 0xBB]);
 
-        // Traversal faces answer.
-        assert_eq!(g.out_edges(&person(1)), vec![100]);
-        assert_eq!(g.in_edges(&org(9)), vec![100]);
-        assert_eq!(g.typed_out("has", &person(1)), vec![100]);
-        assert_eq!(g.typed_in("has", &org(9)), vec![100]);
-        assert_eq!(g.edges_of_kind("has"), vec![100]);
-        // Unknown kind scans nothing (no face, no panic).
-        assert!(g.typed_out("owns", &person(1)).is_empty());
-        assert!(g.edges_of_kind("owns").is_empty());
-    }
-
-    #[test]
-    fn parallel_edges_are_separate_facts() {
-        let store = TestStore::slatedb_mem();
-        let mut g: Graph<_, Follows> = Graph::new(store.clone());
-        g.link(&fact(person(1), org(9)), &Follows, 1).unwrap();
-        g.link(&fact(person(1), org(9)), &Follows, 2).unwrap();
-        assert_eq!(g.out_edges(&person(1)), vec![1, 2]);
-        assert_eq!(g.in_edges(&org(9)), vec![1, 2]);
-        assert_eq!(g.edges_of_kind("has"), vec![1, 2]);
-    }
-
-    #[test]
-    fn unlink_removes_all_faces() {
-        let store = TestStore::slatedb_mem();
-        let mut g: Graph<_, Follows> = Graph::new(store.clone());
-        g.link(&fact(person(1), org(9)), &Follows, 1).unwrap();
-        g.link(&fact(person(2), org(9)), &Follows, 2).unwrap();
-        g.unlink(1).unwrap();
-        assert_eq!(g.out_edges(&person(1)), Vec::<u64>::new());
-        assert_eq!(g.edges_of_kind("has"), vec![2]);
-        assert!(g.get_edge(1).is_none());
-        assert!(g.unlink(1).is_err(), "double unlink errors, not silently re-deletes");
-    }
-
-    #[test]
-    fn link_rejects_live_edge_id() {
-        let store = TestStore::slatedb_mem();
-        let mut g: Graph<_, Follows> = Graph::new(store.clone());
-        g.link(&fact(person(1), org(9)), &Follows, 1).unwrap();
-        assert!(g.link(&fact(person(2), org(8)), &Follows, 1).is_err());
-    }
-
-    #[test]
-    fn shared_ns_of_both_endpoints_still_scans() {
-        // Same-ns endpoints (Person↔Person): both directions live in the
-        // SAME edge ns (the edge collection's ns is separate from the
-        // node's — the direction ambiguity that needed the Junction's
-        // direction bit does not exist here, the two faces are distinct
-        // slots).
-        let store = TestStore::slatedb_mem();
-        let mut g: Graph<_, Follows> = Graph::new(store.clone());
-        g.link(&fact(person(1), person(2)), &Follows, 5).unwrap();
-        assert_eq!(g.out_edges(&person(1)), vec![5]);
-        assert_eq!(g.in_edges(&person(2)), vec![5]);
-        assert_eq!(g.out_edges(&person(2)), Vec::<u64>::new());
+        let back = decode_body(&body);
+        assert_eq!(back.src, person(1));
+        assert_eq!(back.dst, org(9));
+        assert_eq!(back.predicate_id, 0x0102);
+        assert_eq!(back.payload, vec![0xAA, 0xBB]);
     }
 }

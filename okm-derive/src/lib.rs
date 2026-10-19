@@ -78,14 +78,16 @@ pub fn derive_junction(input: TokenStream) -> TokenStream {
     out
 }
 
-/// Fixed-ontology Graph Edge (ADR-0017): the edge collection ns +
-/// declared attribute fields (one 0x1 face each). Endpoints need no
-/// declaration — refs are self-describing; they travel as runtime
-/// `NodeRef`s, never as declared struct fields.
-#[proc_macro_derive(EdgeEncode, attributes(ok_edge, ok_default))]
-pub fn derive_edge(input: TokenStream) -> TokenStream {
+/// Graph Edge (ADR-0017 §4): one declaration IS the graph — the edge
+/// collection's ns (`#[ok_ns]`), its own document payload, the attribute
+/// faces it declares explicitly (`#[ok_index]`), and the member node
+/// collections (`#[ok_nodes]`). Endpoints need no declaration — refs are
+/// self-describing; they travel as runtime `NodeRef`s, never as declared
+/// struct fields.
+#[proc_macro_derive(GraphEncode, attributes(ok_ns, ok_nodes, ok_ref, ok_partition, ok_index, ok_reduce, ok_offset, ok_layout, ok_default, ok_subscribe, ok_event_enum, ok_len))]
+pub fn derive_graph_encode(input: TokenStream) -> TokenStream {
     let out = graph_encode::derive(input.clone());
-    dump("EdgeEncode", input, &out.clone().into());
+    dump("GraphEncode", input, &out.clone().into());
     out
 }
 

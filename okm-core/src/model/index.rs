@@ -80,6 +80,15 @@ pub const DYNAMIC_SLOT: Slot = 0x01;
 pub const DICT_ID_SLOT: Slot = 0x02;
 /// Field-name dictionary, name → number (ADR-0012): fixed face 0x03.
 pub const DICT_NAME_SLOT: Slot = 0x03;
+/// Kind vocabulary, number → name: fixed face 0x04. A collection's token
+/// vocabulary BEYOND field names — a graph's predicates, a node
+/// collection's kind tokens (ADR-0017 §3). A pair of its own, never a band
+/// inside 0x02/0x03: two allocators in one id space hand the same id to two
+/// different names silently.
+pub const KIND_VOCAB_ID_SLOT: Slot = 0x04;
+/// Kind vocabulary, name → number: fixed face 0x05 (the mirror of
+/// [`KIND_VOCAB_ID_SLOT`]).
+pub const KIND_VOCAB_NAME_SLOT: Slot = 0x05;
 /// Slot base available to `#[ok_index]` declaration-order allocation —
 /// counters start at 1 (0 reserved), so 4095 declared indexes per collection.
 pub const DECLARED_SLOT_BASE: Slot = slot(segment::INDEX, 1);
