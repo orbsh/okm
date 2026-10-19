@@ -819,7 +819,11 @@ Unchanged: primary payload layout `[version][hot_len][hot][cold TLV]`
         word for this segment is the head).
       · okm-dynamic's handle: `Graph::new(store, ns, schema)` — the pair, and
         `CollectionSchema` now carries `ns_prefix` so a disagreeing pair is
-        rejected instead of overridden. Its open attributes moved OUT of the
+        rejected instead of overridden, plus `members` (exported by
+        `CollectionSchema::of_graph::<E>()` from `E::Nodes::NS_VALUES`), which
+        the handle checks the refs' ns against at write and decode — the
+        member set was the one declaration half a payload layout cannot carry.
+        Its open attributes moved OUT of the
         body into the dynamic segment (fixed face 0x01, one entry per edge) as
         ADR-0017 §3 says, and they allocate names through the FIELD dictionary
         while predicates allocate through KIND_VOCAB — the collision

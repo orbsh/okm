@@ -84,6 +84,26 @@ impl<S: VirtualStorage> Graph<S> {
         &self.schema
     }
 
+    /// Membership (ADR-0017 §4): the declaration's member set rides the
+    /// schema as data, and a dynamic writer enforces it against the refs' ns —
+    /// the same check the static form makes through `E::Nodes`. An EMPTY set
+    /// declares nothing (a plain writer without a graph declaration), so
+    /// nothing is checked rather than guessed.
+    fn check_members(&self, src: &NodeRef, dst: &NodeRef) -> Result<(), String> {
+        if self.schema.members.is_empty() {
+            return Ok(());
+        }
+        for (side, node) in [("src", src), ("dst", dst)] {
+            if !self.schema.members.contains(&node.ns_id()) {
+                return Err(format!(
+                    "{side} ns {} is not a member of this graph",
+                    node.ns_id()
+                ));
+            }
+        }
+        Ok(())
+    }
+
     fn primary_key(&self, edge_id: u64) -> Vec<u8> {
         let mut k = self.ns.clone();
         okm_core::write_slot(&mut k, PRIMARY_SLOT);
@@ -163,7 +183,7 @@ impl<S: VirtualStorage> Graph<S> {
             return Err(format!("edge_id {edge_id} already live"));
         }
         let mut batch = MemBatch::default();
-        self.write_into(&mut batch, edge, edge_id);
+        self.write_into(&mut batch, edge, edge_id)?;
         self.store
             .commit_batch(batch)
             .map_err(|e| format!("dynamic graph link commit failed: {e}"))
@@ -177,11 +197,16 @@ impl<S: VirtualStorage> Graph<S> {
         edge: &DynEdge,
         edge_id: u64,
     ) -> Result<(), String> {
-        self.write_into(batch, edge, edge_id);
-        Ok(())
+        self.write_into(batch, edge, edge_id)
     }
 
-    fn write_into(&mut self, batch: &mut MemBatch, edge: &DynEdge, edge_id: u64) {
+    fn write_into(
+        &mut self,
+        batch: &mut MemBatch,
+        edge: &DynEdge,
+        edge_id: u64,
+    ) -> Result<(), String> {
+        self.check_members(&edge.src, &edge.dst)?;
         let predicate_id = self.predicate_id(&edge.predicate);
         let body = self.body_of(edge, predicate_id);
         let attr_wire = self.attrs_wire(&edge.attrs);
@@ -210,6 +235,7 @@ impl<S: VirtualStorage> Graph<S> {
             self.face_key(EDGE_PREDICATE_IN_SLOT, &[&predicate_be, &dst_wire, &id_be]),
             Vec::new(),
         );
+        Ok(())
     }
 
     /// Remove one edge: the faces encode the edge's own values, so deletion
@@ -261,6 +287,7 @@ impl<S: VirtualStorage> Graph<S> {
         let body = self.store.get(&self.primary_key(edge_id))?;
         let (src, n1) = NodeRef::decode(&body)?;
         let (dst, n2) = NodeRef::decode(&body[n1..])?;
+        self.check_members(&src, &dst).ok()?;
         let after_dst = n1 + n2;
         let predicate_id = u16::from_be_bytes([body[after_dst], body[after_dst + 1]]);
         let predicate = self

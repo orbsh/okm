@@ -47,11 +47,11 @@ pub enum WorksAtNodes {
 }
 
 impl NodeSet for WorksAtNodes {
-    const NS_VALUES: &'static [u16] = &[0x10, 0x11];
+    const NS_VALUES: &'static [u16] = &[0x10, 0x11, 0x12];
 }
 
 fn works_at_schema() -> CollectionSchema {
-    CollectionSchema::of::<EdgeKey, WorksAt>()
+    CollectionSchema::of_graph::<WorksAt>()
 }
 
 #[test]
@@ -116,6 +116,38 @@ fn dynamic_rejects_live_id_and_handles_mixed_pkey_widths() {
     let back = g.get_edge(2).unwrap();
     assert_eq!(back.dst.pkey, 7u32.to_be_bytes().to_vec());
     assert_eq!(g.in_edges(&team), vec![2]);
+}
+
+#[test]
+fn member_set_travels_in_the_schema_and_is_enforced() {
+    // The declaration's member set reaches a runtime writer as DATA — the
+    // half of a graph declaration the payload layout cannot carry.
+    let schema = works_at_schema();
+    assert_eq!(schema.members, vec![0x10, 0x11, 0x12], "Nodes::NS_VALUES exported");
+
+    let store = okm_core::TestStore::slatedb_mem();
+    let mut g: Graph<_> = Graph::new(store.clone(), NS, schema);
+    // ns 0x13 is nobody's collection in this graph: rejected at write, the same
+    // way the static form's `E::Nodes` rejects it.
+    let stranger = NodeRef::new(&0x13u16.to_be_bytes(), &1u64.to_be_bytes());
+    let err = g
+        .link(&dyn_edge(person(1), stranger, "works_at", 2020), 1)
+        .unwrap_err();
+    assert!(err.contains("not a member"), "unexpected error: {err}");
+    assert!(g.get_edge(1).is_none(), "nothing was written");
+
+    // An EMPTY set declares no membership (a writer without a graph
+    // declaration): nothing is checked, nothing is guessed.
+    let mut plain: Graph<_> = Graph::new(
+        store.clone(),
+        NS,
+        CollectionSchema::of::<EdgeKey, WorksAt>(),
+    );
+    assert!(plain.schema().members.is_empty());
+    let loose = NodeRef::new(&0x13u16.to_be_bytes(), &1u64.to_be_bytes());
+    plain
+        .link(&dyn_edge(person(1), loose, "works_at", 2020), 2)
+        .expect("an empty member set checks nothing");
 }
 
 #[test]

@@ -108,6 +108,11 @@ pub struct CollectionSchema {
     pub payload_header_len: usize,
     pub hot_fields: Vec<FieldSchema>,
     pub cold_fields: Vec<FieldSchema>,
+    /// The member collections of a GRAPH's edge set (ADR-0017 §4): the ns of
+    /// every node collection the graph admits. Empty for an ordinary document
+    /// collection, and empty also means "declares no set" — a dynamic writer
+    /// then checks nothing rather than guessing.
+    pub members: Vec<u16>,
     /// Slot map (ADR-0012 final allocation): the dynamic reader needs to
     /// know where the dynamic segment and the dictionary live, and where
     /// declared index/reduce slots begin.
@@ -212,6 +217,7 @@ impl CollectionSchema {
             payload_header_len: 3, // [version u8][hot_len u16 BE]
             hot_fields,
             cold_fields,
+            members: Vec::new(),
             slots: SlotMap {
                 primary: crate::model::index::PRIMARY_SLOT,
                 dynamic: crate::model::index::DYNAMIC_SLOT,
@@ -229,6 +235,18 @@ impl CollectionSchema {
     /// Slot 0 = primary (ADR-0005); index slots live outside this schema
     /// (they are derived state, rebuilt from documents).
     pub const PRIMARY_SLOT: u16 = PRIMARY_SLOT;
+
+    /// Export a GRAPH declaration (ADR-0017 §4): the edge collection's schema
+    /// plus its member set — the ns of every collection the graph admits.
+    /// The member set is the one half of the declaration a runtime writer
+    /// cannot derive from the payload layout and must enforce at write; it
+    /// rides the schema as DATA (ADR-0025: mode is a property of the writer),
+    /// never as a stored slot.
+    pub fn of_graph<E: crate::model::graph::GraphEncode>() -> Self {
+        let mut schema = Self::of::<crate::model::graph::EdgeKey, E>();
+        schema.members = <E::Nodes as crate::model::graph::NodeSet>::NS_VALUES.to_vec();
+        schema
+    }
 }
 
 #[cfg(feature = "schema-serde")]
@@ -313,9 +331,21 @@ mod serde_impls {
                 dynamic: u16,
                 dict_id: u16,
                 dict_name: u16,
+                /// Schemas written before the kind vocabulary existed carry
+                /// no pair; the fixed faces are the fallback numbers.
+                #[serde(default = "default_kind_id")]
+                kind_id: u16,
+                #[serde(default = "default_kind_name")]
+                kind_name: u16,
                 declared_index_base: u16,
                 declared_reduce_base: u16,
                 junction_base: u16,
+            }
+            fn default_kind_id() -> u16 {
+                crate::model::index::KIND_VOCAB_ID_SLOT
+            }
+            fn default_kind_name() -> u16 {
+                crate::model::index::KIND_VOCAB_NAME_SLOT
             }
             let r = Repr::deserialize(d)?;
             Ok(Self {
@@ -323,6 +353,8 @@ mod serde_impls {
                 dynamic: r.dynamic,
                 dict_id: r.dict_id,
                 dict_name: r.dict_name,
+                kind_id: r.kind_id,
+                kind_name: r.kind_name,
                 declared_index_base: r.declared_index_base,
                 declared_reduce_base: r.declared_reduce_base,
                 junction_base: r.junction_base,
@@ -463,6 +495,7 @@ mod serde_impls {
                 payload_header_len: usize,
                 hot_fields: &'a [FieldSchema],
                 cold_fields: &'a [FieldSchema],
+                members: &'a [u16],
                 slots: &'a SlotMap,
             }
             Repr {
@@ -474,6 +507,7 @@ mod serde_impls {
                 payload_header_len: self.payload_header_len,
                 hot_fields: &self.hot_fields,
                 cold_fields: &self.cold_fields,
+                members: &self.members,
                 slots: &self.slots,
             }
             .serialize(s)
@@ -495,6 +529,9 @@ mod serde_impls {
                 payload_header_len: usize,
                 hot_fields: Vec<FieldSchema>,
                 cold_fields: Vec<FieldSchema>,
+                /// Schemas written before the member set existed carry none.
+                #[serde(default)]
+                members: Vec<u16>,
                 slots: SlotMap,
             }
             let r = Repr::deserialize(d)?;
@@ -507,6 +544,7 @@ mod serde_impls {
                 payload_header_len: r.payload_header_len,
                 hot_fields: r.hot_fields,
                 cold_fields: r.cold_fields,
+                members: r.members,
                 slots: r.slots,
             })
         }
