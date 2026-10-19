@@ -359,9 +359,14 @@ zero declaration content.
   layer's `AccessMethod` construction. The handle takes the ns and the
   schema the declaration yielded as a PAIR, never a bare ns invented at the
   call site; where the ns is still a separate argument (today's
-  `DynamicCollection::new(store, ns, schema, …)` — `CollectionSchema`
-  itself carries no ns), the export side provides the pair and assembly
-  REJECTS a disagreement instead of overriding it.
+  `DynamicCollection::new(store, ns, schema, …)`), the export side provides
+  the pair and assembly REJECTS a disagreement instead of overriding it.
+  **Landed 2026-10-19:** `CollectionSchema` carries `ns_prefix` (the
+  declaration's own `[ns 2B]`, so the pair is checkable) and `members` (the
+  member set, exported by `CollectionSchema::of_graph::<E>()` from
+  `E::Nodes::NS_VALUES`) — the one half of a graph declaration a payload
+  layout cannot express, and the half a dynamic writer enforces against the
+  refs' ns exactly as the static form does through `E::Nodes`.
 
 Both forms share the same wire layout and the same slot semantics, and
 they produce identical bytes for the same declaration: mode is a property

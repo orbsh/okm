@@ -106,7 +106,7 @@ impl NodeSet for FactNodes {
 **装配只是一个运行期句柄，仅此而已。** `Graph<S, E: GraphEncode>` 绑定一个引擎**实例**（同一份声明可挂到 mock、Fjall 或远端存储上——ADR-0025 的 one keyspace），以及无法住在类型里的每实例状态：字典缓存（谓词号分配的单写者纪律）与 edge_id 分配位置。它不带 ns 参数（ns 来自 `E::NS_PREFIX`）、不带节点名单、不带 schema：本决策之后，装配点的声明内容为零。
 
 - **固定本体**：上面那份声明用 Rust 写；节点集合就是普通文档集合，行就是普通文档。
-- **全动态**（知识图谱）：**同一份**声明以数据形式携带——一个 `CollectionSchema` 值（静态侧用 `CollectionSchema::of` 导出，ADR-0025）加一个 okm-dynamic 句柄；空声明意味着只有身份、载荷全在动态段（声明 `props: DynamicValue` 会把它放进 slot 0，那是静态形态——不是动态图想要的）。两种形态下谓词与自由属性都是字典数据；端点是自描述引用（§2）；遍历面通过动态层的 `AccessMethod` 构建走。动态句柄收的是声明给出的 **ns 与 schema 这一对**值，绝不是调用点自己编的裸 ns；当 ns 仍作为独立参数传入时（今天的 `DynamicCollection::new(store, ns, schema, …)`——`CollectionSchema` 本身不带 ns），由导出那一侧成对给出，装配时**拒绝**不一致，而不是覆盖。
+- **全动态**（知识图谱）：**同一份**声明以数据形式携带——一个 `CollectionSchema` 值（静态侧用 `CollectionSchema::of` 导出，ADR-0025）加一个 okm-dynamic 句柄；空声明意味着只有身份、载荷全在动态段（声明 `props: DynamicValue` 会把它放进 slot 0，那是静态形态——不是动态图想要的）。两种形态下谓词与自由属性都是字典数据；端点是自描述引用（§2）；遍历面通过动态层的 `AccessMethod` 构建走。动态句柄收的是声明给出的 **ns 与 schema 这一对**值，绝不是调用点自己编的裸 ns；当 ns 仍作为独立参数传入时（今天的 `DynamicCollection::new(store, ns, schema, …)`），由导出那一侧成对给出，装配时**拒绝**不一致，而不是覆盖。**2026-10-19 落地：** `CollectionSchema` 现在带 `ns_prefix`（声明自己的 `[ns 2B]`，于是"这一对"可比对）与 `members`（成员集，由 `CollectionSchema::of_graph::<E>()` 从 `E::Nodes::NS_VALUES` 导出）——这是图的声明里唯一无法用载荷布局表达的一半，也是动态写者会拿引用里的 ns 去校验的一半，与静态形态走 `E::Nodes` 完全同一件事。
 
 两种形态共享同一 wire 布局与同一 slot 语义，且对同一份声明产出逐字节相同的字节：模式是**写入方**的属性，不是数据的（ADR-0025）。
 
