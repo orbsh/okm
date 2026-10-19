@@ -47,16 +47,17 @@ pub use index::{VECTOR_INDEX_SLOT, VectorIndex};
 
 use okm_core::Vector;
 
-/// The frame payload of an embedding field — `Vector<f32>::encode_payload`
+/// The frame payload of a `Vector<f32>` field — `Vector::encode_payload`
 /// (count prefix + bare LE elements). Kept as a free function for the
 /// function-index `func` path, which receives `&document` and returns one
-/// byte string.
-pub fn embed_payload(v: &Vector<f32>) -> Vec<u8> {
+/// byte string. Naming note: this is a CODEC, not an embedder — the crate
+/// never computes a vector.
+pub fn vector_payload(v: &Vector<f32>) -> Vec<u8> {
     v.encode_payload()
 }
 
-/// Decode an embedding's frame payload back to the typed Vector.
-pub fn embed_from_payload(b: &[u8]) -> Vector<f32> {
+/// Decode a `Vector<f32>` frame payload back to the typed vector.
+pub fn vector_from_payload(b: &[u8]) -> Vector<f32> {
     Vector::<f32>::decode_payload(b)
 }
 
@@ -92,9 +93,9 @@ mod tests {
     #[test]
     fn vector_payload_roundtrip() {
         let v: Vector<f32> = Vector::new(vec![0.25, -3.5, 1e6]);
-        let w = embed_payload(&v);
+        let w = vector_payload(&v);
         assert_eq!(w.len(), 4 + 12); // count prefix + 3 dims
-        assert_eq!(embed_from_payload(&w), v);
+        assert_eq!(vector_from_payload(&w), v);
     }
 
     #[test]
