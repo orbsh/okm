@@ -379,6 +379,246 @@ fn decode_value_named(ty: ObjValueType, body: &[u8], name_of: &mut dyn FnMut(u16
     })
 }
 
+#[cfg(feature = "schema-serde")]
+mod serde_impls {
+    //! The value form's serde bridge (feature `schema-serde`), for consumers
+    //! that cross a boundary in another representation — the packet a memory
+    //! consumer renders for a model, an MQ payload, a binding's argument.
+    //!
+    //! This is `Serialize`/`Deserialize`, NOT `to_json`: the format is the
+    //! caller's choice (JSON, CBOR, …), and the storage encoding is
+    //! untouched — the dynamic segment still reads and writes nTLV frames,
+    //! with names in the dictionary and fixed widths where the declaration
+    //! says so. The impl is the adapter at the edge, so a consumer stops
+    //! hand-writing a `match` per direction.
+    //!
+    //! `Deserialize` uses `deserialize_any`, so it needs a SELF-DESCRIBING
+    //! format (JSON, CBOR, MessagePack — not bincode). Two asymmetries no
+    //! self-describing text format can avoid, and neither loses data the
+    //! storage path keeps:
+    //! - `UInt` and a non-negative `Int` are one number in JSON: a `UInt`
+    //!   round-trips, a positive `Int` comes back as `UInt`.
+    //! - `Bytes` has no JSON spelling: it serializes as an array of numbers
+    //!   there (CBOR keeps a byte string), so it does not round-trip through
+    //!   JSON as `Bytes`.
+    //!
+    //! Object keys must be strings on the way in: an `Obj` is name-keyed.
+
+    use super::DynamicValue;
+    use serde::de::{MapAccess, SeqAccess, Visitor};
+    use serde::ser::{SerializeMap, SerializeSeq};
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use std::collections::BTreeMap;
+    use std::fmt;
+
+    impl Serialize for DynamicValue {
+        fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+            match self {
+                DynamicValue::UInt(v) => s.serialize_u64(*v),
+                DynamicValue::Int(v) => s.serialize_i64(*v),
+                DynamicValue::F64(v) => s.serialize_f64(*v),
+                DynamicValue::Str(v) => s.serialize_str(v),
+                DynamicValue::Bytes(v) => s.serialize_bytes(v),
+                DynamicValue::Bool(v) => s.serialize_bool(*v),
+                DynamicValue::Null => s.serialize_unit(),
+                DynamicValue::Array(items) => {
+                    let mut seq = s.serialize_seq(Some(items.len()))?;
+                    for item in items {
+                        seq.serialize_element(item)?;
+                    }
+                    seq.end()
+                }
+                DynamicValue::Obj(map) => {
+                    let mut m = s.serialize_map(Some(map.len()))?;
+                    for (name, value) in map {
+                        m.serialize_entry(name, value)?;
+                    }
+                    m.end()
+                }
+            }
+        }
+    }
+
+    impl<'de> Deserialize<'de> for DynamicValue {
+        fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+            struct ValueVisitor;
+
+            impl<'de> Visitor<'de> for ValueVisitor {
+                type Value = DynamicValue;
+
+                fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                    f.write_str(
+                        "a dynamic value (null, bool, integer, float, string, bytes, array, or object)",
+                    )
+                }
+
+                fn visit_bool<E>(self, v: bool) -> Result<Self::Value, E> {
+                    Ok(DynamicValue::Bool(v))
+                }
+
+                fn visit_i64<E>(self, v: i64) -> Result<Self::Value, E> {
+                    Ok(DynamicValue::Int(v))
+                }
+
+                fn visit_u64<E>(self, v: u64) -> Result<Self::Value, E> {
+                    Ok(DynamicValue::UInt(v))
+                }
+
+                fn visit_f64<E>(self, v: f64) -> Result<Self::Value, E> {
+                    Ok(DynamicValue::F64(v))
+                }
+
+                fn visit_str<E>(self, v: &str) -> Result<Self::Value, E> {
+                    Ok(DynamicValue::Str(v.to_owned()))
+                }
+
+                fn visit_string<E>(self, v: String) -> Result<Self::Value, E> {
+                    Ok(DynamicValue::Str(v))
+                }
+
+                fn visit_bytes<E>(self, v: &[u8]) -> Result<Self::Value, E> {
+                    Ok(DynamicValue::Bytes(v.to_vec()))
+                }
+
+                fn visit_byte_buf<E>(self, v: Vec<u8>) -> Result<Self::Value, E> {
+                    Ok(DynamicValue::Bytes(v))
+                }
+
+                fn visit_unit<E>(self) -> Result<Self::Value, E> {
+                    Ok(DynamicValue::Null)
+                }
+
+                fn visit_none<E>(self) -> Result<Self::Value, E> {
+                    Ok(DynamicValue::Null)
+                }
+
+                fn visit_some<D: Deserializer<'de>>(self, d: D) -> Result<Self::Value, D::Error> {
+                    DynamicValue::deserialize(d)
+                }
+
+                fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+                    let mut items = Vec::new();
+                    while let Some(item) = seq.next_element::<DynamicValue>()? {
+                        items.push(item);
+                    }
+                    Ok(DynamicValue::Array(items))
+                }
+
+                fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+                    let mut out = BTreeMap::new();
+                    while let Some((name, value)) = map.next_entry::<String, DynamicValue>()? {
+                        out.insert(name, value);
+                    }
+                    Ok(DynamicValue::Obj(out))
+                }
+            }
+
+            d.deserialize_any(ValueVisitor)
+        }
+    }
+}
+
+#[cfg(all(test, feature = "schema-serde"))]
+mod serde_tests {
+    use super::DynamicValue;
+    use std::collections::BTreeMap;
+
+    fn round_trip(value: &DynamicValue) -> DynamicValue {
+        let text = serde_json::to_string(value).expect("serializes");
+        serde_json::from_str(&text).expect("deserializes")
+    }
+
+    #[test]
+    fn every_scalar_round_trips_through_json() {
+        let cases = [
+            DynamicValue::UInt(0),
+            DynamicValue::UInt(u64::MAX),
+            DynamicValue::Int(-7),
+            DynamicValue::F64(3.25),
+            DynamicValue::Str("你好".into()),
+            DynamicValue::Bool(true),
+            DynamicValue::Null,
+        ];
+        for case in cases {
+            assert_eq!(round_trip(&case), case, "case {case:?}");
+        }
+    }
+
+    #[test]
+    fn composites_round_trip_and_names_survive() {
+        // The shape k10r hands to a model: a record with a nested object,
+        // an array of mixed values, and duplicate-free names.
+        let value = DynamicValue::Obj(BTreeMap::from([
+            ("name".to_string(), DynamicValue::Str("alpha".into())),
+            (
+                "props".to_string(),
+                DynamicValue::Obj(BTreeMap::from([
+                    ("vcs".to_string(), DynamicValue::Str("gitea".into())),
+                    ("stars".to_string(), DynamicValue::UInt(7)),
+                ])),
+            ),
+            (
+                "mixed".to_string(),
+                DynamicValue::Array(vec![
+                    DynamicValue::UInt(1),
+                    DynamicValue::Str("x".into()),
+                    DynamicValue::Null,
+                    DynamicValue::Array(vec![DynamicValue::Bool(false)]),
+                ]),
+            ),
+        ]));
+        assert_eq!(round_trip(&value), value);
+        // The JSON text is the obvious one — a consumer can read it as is.
+        assert_eq!(
+            serde_json::to_string(&DynamicValue::Obj(BTreeMap::from([(
+                "a".into(),
+                DynamicValue::UInt(1)
+            )])))
+            .unwrap(),
+            r#"{"a":1}"#
+        );
+    }
+
+    /// The documented asymmetry: bytes have no JSON spelling, so they ride as
+    /// a number array there and come back as an `Array` — the storage path
+    /// (nTLV) is what keeps them `Bytes`.
+    #[test]
+    fn bytes_degrade_to_a_number_array_in_json_and_that_is_documented() {
+        let bytes = DynamicValue::Bytes(vec![0, 1, 255]);
+        let text = serde_json::to_string(&bytes).unwrap();
+        assert_eq!(text, "[0,1,255]");
+        assert_eq!(
+            serde_json::from_str::<DynamicValue>(&text).unwrap(),
+            DynamicValue::Array(vec![
+                DynamicValue::UInt(0),
+                DynamicValue::UInt(1),
+                DynamicValue::UInt(255)
+            ])
+        );
+    }
+
+    /// A non-negative `Int` comes back as `UInt` — the other documented
+    /// collapse (JSON has one number type).
+    #[test]
+    fn a_non_negative_int_reads_back_as_uint() {
+        let text = serde_json::to_string(&DynamicValue::Int(5)).unwrap();
+        assert_eq!(text, "5");
+        assert_eq!(
+            serde_json::from_str::<DynamicValue>(&text).unwrap(),
+            DynamicValue::UInt(5)
+        );
+        // Negative stays `Int`.
+        assert_eq!(round_trip(&DynamicValue::Int(-5)), DynamicValue::Int(-5));
+    }
+
+    /// A non-string key cannot become an `Obj` name: the deserializer refuses
+    /// rather than stringifying it.
+    #[test]
+    fn a_non_string_object_key_is_refused() {
+        assert!(serde_json::from_str::<DynamicValue>(r#"{1: "x"}"#).is_err());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
