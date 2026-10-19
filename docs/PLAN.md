@@ -1159,6 +1159,20 @@ offsets).
       STORAGE-layer format. Embedding vectors are the anchor use case.
       Elements are pure values — the identity line keeps this out of
       Ref/Junction.
+- [x] okm-vector search layers (LANDED 2026-10-19). `ExactIndex` — one
+      contiguous f32 array, full scan, exact (the small-corpus path and the
+      recall reference). `Hnsw` — in-memory graph over quantized codes:
+      `Codec::I8` (cosine, 4-byte header, no training) or `Codec::Pq` (k-means
+      codebooks, `m` bytes, asymmetric distance); deterministic from
+      `(seed, insertion order)` so a rebuild reproduces byte-for-byte; deletes
+      are tombstones that keep routing. `VectorIndex` — fnv-1a shard routing,
+      fan-out merge, one snapshot blob per shard under fixed face 0x0B
+      (`[ns][0x0B][shard u16 BE]`), written in one batch so a reader sees every
+      shard from the same build. No core change, no per-row entries, no
+      permission filter inside the index: access control stays in the graph
+      layer, the caller over-fetches k' > k. Gates: recall@10 >= 0.85 vs exact
+      (dim 64, 400 rows, ef 48); PQ recall@10 >= 0.6 (dim 32, m 8, 512-sample
+      training); snapshot roundtrip equality; build determinism.
 - [x] P1 — VarInt re-encoding: byte order = value order. DONE
       (2026-09-19). Prefix-monotonic encoding shipped: first byte = width
       ((w-1) leading ones + terminator 0), payload big-endian — byte

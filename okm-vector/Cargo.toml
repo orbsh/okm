@@ -5,4 +5,3 @@ edition = "2024"
 
 [dependencies]
 okm-core = { path = "../okm-core" }
-okm-query = { path = "../okm-query" }

@@ -8,7 +8,7 @@ okm 只有三个原语：**有序前缀扫**（数据段 = 排序维度）、**�
 
 ```text
 FTS    = 多值函数索引（n-gram/token → N 条 entry）+ 调用方 BM25 精排
-向量   = 单值函数索引（定宽 embedding 字节串）+ 量化桶前缀扫 + 边条目做 ANN 图
+向量   = 单值函数索引（定宽 embedding 字节串）+ 精确连续扫描（小规模）/ 量化码上的内存 HNSW，按分片各存一份快照（固定面 0x0B）
 图算法 = 边条目（neighbors = 一次前缀扫）+ 有序流折叠（label propagation / PageRank）
 ```
 
@@ -51,6 +51,6 @@ FTS    = 多值函数索引（n-gram/token → N 条 entry）+ 调用方 BM25 �
 
 `okm-ngram` / `okm-vector` / `okm-graph` 的共同约束：
 
-1. **零存储职责**——不建自己的表结构、不绕过 `KvIndex`/`JunctionEncode`，一切数据走声明条目；
-2. **算法可替换**——crate 给的是最小可用配方（ngram+BM25、桶扫+精排、LP+PageRank），更重的方案（Tantivy、arroy/HNSW、Louvain）由调用方按同一条目布局自接；
+1. **零存储职责**——不为行建私有结构、不绕过 `KvIndex`/`JunctionEncode`，行数据走声明条目；构建产物可以在自己占用的固定面下缓存自己（okm-vector 的图在 0x0B），那份 blob 始终是派生物、可随时丢弃，绝不是某一行的存储；
+2. **算法可替换**——crate 给的是最小可用配方（ngram+BM25、精确扫/HNSW+精排、LP+PageRank），更重的方案（Tantivy、Louvain）由调用方按同一布局自接，已发的 ANN 也是可换底层的一层；
 3. **依赖最小**——能不引外部依赖就不引；确需引（如 ANN 库）时挂在自己的 crate，不进核心。

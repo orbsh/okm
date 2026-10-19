@@ -1,21 +1,49 @@
-//! okm-vector — vector search built on okm-core's single-value function
-//! indexes and junction entries.
+//! okm-vector — vector search over okm-core's single-value function indexes.
 //!
 //! An embedding is a row's derived value: `func(embed)` returns one
-//! fixed-width byte string — the classic single-value function index,
-//! one entry per row. The store's prefix scan over those bytes gives
-//! exact match and bucket recall for free; anything distance-based is
-//! consumer-side algorithm work, expressed through the same two
-//! primitives (ordered scans and junction entries):
+//! fixed-width byte string — the classic single-value function index, one entry
+//! per row. The storage form is `okm_core::Vector<f32>` (P3.5): a
+//! `[count u32 BE][bare LE elements]` frame, no dimension in the type.
 //!
-//! - **coarse recall** — quantized bucket id as the data segment
-//!   (`scan` the bucket = candidates), rerank by true distance;
-//! - **ANN** — a neighbor graph stored as `JunctionEncode` entries,
-//!   greedy search via `okm-query::walk`-style hops.
+//! Three layers, each optional:
 //!
-//! The storage form of an embedding field is `okm_core::Vector<f32, N>`
-//! (P3.5): fixed-width little-endian wire, hot-segment eligible. The
-//! helpers below operate on the same byte contract.
+//! - [`ExactIndex`] — one contiguous `Vec<f32>`, full scan, exact. The right
+//!   answer while the corpus is small enough that a query's byte volume fits
+//!   the budget, and the ground truth the approximate path is measured against.
+//! - [`Hnsw`] — an in-memory graph over quantized codes ([`Codec::I8`] or
+//!   [`Codec::Pq`]). Built, never stored per node: reproducible from
+//!   `(seed, insertion order)`, so it can be rebuilt from the corpus or shipped
+//!   as a blob.
+//! - [`VectorIndex`] — the store-facing handle: shards, the fan-out search and
+//!   the one-blob-per-shard snapshot under [`VECTOR_INDEX_SLOT`].
+//!
+//! What this crate deliberately does **not** do:
+//!
+//! - **No permission filtering.** The graph ranks by distance only. Access
+//!   control (reachability in the graph layer) is the caller's, applied by
+//!   over-fetching `k' > k` and filtering downstream — filtering inside an ANN
+//!   either loses recall or walks nodes the caller may not see.
+//! - **No per-row writes.** The index is not a declaration and owns no slotted
+//!   entry per row; the corpus stays in the document payload and the snapshot
+//!   is a cache that can be dropped at any time.
+//! - **No exact rerank.** The graph returns code-distance candidates;
+//!   re-scoring them against the stored f32 vectors is a caller decision, and
+//!   the only way to keep the code size low.
+//!
+//! Consistency is explicit: the caller tells the index about writes
+//! ([`VectorIndex::add`] / [`VectorIndex::remove`]) or rebuilds it from a scan.
+//! There is no hidden invalidation hook, and a snapshot's staleness is whatever
+//! the rebuild cadence makes it.
+
+pub mod codec;
+pub mod exact;
+pub mod hnsw;
+pub mod index;
+
+pub use codec::{Code, Codec, Prepared};
+pub use exact::ExactIndex;
+pub use hnsw::{Hnsw, HnswParams};
+pub use index::{VECTOR_INDEX_SLOT, VectorIndex};
 
 use okm_core::Vector;
 
@@ -32,17 +60,29 @@ pub fn embed_from_payload(b: &[u8]) -> Vector<f32> {
     Vector::<f32>::decode_payload(b)
 }
 
-/// Squared euclidean distance on raw f32 slices — the rerank metric.
+/// Squared euclidean distance on raw f32 slices — the rerank metric. For
+/// L2-normalized vectors this orders exactly like cosine.
 pub fn dist2(a: &[f32], b: &[f32]) -> f64 {
-    a.iter().zip(b).map(|(x, y)| (x - y) as f64 * (x - y) as f64).sum()
+    a.iter()
+        .zip(b)
+        .map(|(x, y)| (x - y) as f64 * (x - y) as f64)
+        .sum()
 }
 
-/// Quantized bucket id: cast each dim to a fixed-step bucket, encode
-/// BE — byte order equals bucket order, so the segment stays a valid
-/// prefix-scan dimension and a bucket probe is one prefix scan.
+/// Quantized bucket id: one `i16 BE` per dimension, so byte order equals
+/// bucket order and a bucket prefix stays a valid scan dimension.
+///
+/// Scalar bucketing is the cheap recall path (one prefix scan per probe); it is
+/// deliberately lossy and meant for coarse candidate generation, never for
+/// ranking. `step` is the bucket width in value units.
 pub fn bucket_id(v: &[f32], step: f32) -> Vec<u8> {
-    let ids: Vec<u8> = v.iter().map(|f| (f / step) as i64 as u8).collect();
-    ids
+    assert!(step > 0.0, "bucket step must be positive");
+    let mut out = Vec::with_capacity(v.len() * 2);
+    for f in v {
+        let bucket = (f / step).round().clamp(i16::MIN as f32, i16::MAX as f32) as i16;
+        out.extend_from_slice(&bucket.to_be_bytes());
+    }
+    out
 }
 
 #[cfg(test)]
@@ -64,8 +104,10 @@ mod tests {
 
     #[test]
     fn bucket_order_follows_value_order() {
-        // One-dim: bucket 5 < bucket 9, and BE byte order agrees —
-        // the prefix-scan dimension stays meaningful.
-        assert!(bucket_id(&[5.1], 1.0)[0] < bucket_id(&[9.7], 1.0)[0]);
+        // One-dim: bucket 5 < bucket 9, and BE byte order agrees — the
+        // prefix-scan dimension stays meaningful.
+        assert!(bucket_id(&[5.1], 1.0) < bucket_id(&[9.7], 1.0));
+        // Fixed width: two dims are four bytes, regardless of magnitude.
+        assert_eq!(bucket_id(&[0.0, 1e5], 1.0).len(), 4);
     }
 }

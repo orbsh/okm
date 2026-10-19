@@ -1050,9 +1050,13 @@ has no Vector type; Vector is a storage-layer format. Multi-dimensional
 shape is application-layer interpretation (row-major over the flat
 sequence); nothing on the wire.
 
-The consumer (okm-vector) builds search on top: the frame bytes are the
-function-index data segment (exact match / quantized bucket recall via
-prefix scan), distance is rerank-side. Storage stays byte-opaque.
+The consumer (okm-vector) builds search on top, in layers: an exact
+contiguous scan (the small-corpus path and the recall reference), an
+in-memory HNSW over quantized codes (int8 cosine or product codes), and a
+sharded handle whose snapshot is one blob per shard under fixed face 0x0B —
+a cache, droppable at any time. Code-level distances are the graph's output;
+re-scoring against the stored vector is the caller's step. Storage stays
+byte-opaque: the corpus is still just the frame bytes.
 
 ## Cross-row pre-aggregation
 
