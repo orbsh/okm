@@ -833,6 +833,9 @@ Unchanged: primary payload layout `[version][hot_len][hot][cold TLV]`
         and the absence of any predicate in 0x02/0x03;
         `okm-dynamic/tests/dynamic_graph_test.rs` (5) keeps the static/dynamic
         byte-equality drift lock over faces 0x00/0x04–0x0A.
+      · `unlink_into`: the delete set into a caller-owned batch, so a rewrite
+        (`unlink_into` + `link_into`, same edge id) is ONE commit — ADR-0010's
+        owed item on the k10r side. `unlink` is a thin wrapper over it.
       · still open: krystallizer's follow-up (`EdgeEncode` → `GraphEncode`,
         `kind_id` → `predicate_id`, entity kinds onto its own 0x04/0x05, store
         rebuild) — its ns 37 edges predate this, so the rebuild is mandatory.
