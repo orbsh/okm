@@ -469,6 +469,14 @@ t.delete(&key);                                   // remove slot 0 + index entri
 - `DynamicValue` carries the open value vocabulary: `UInt`/`Int`/`F64`/
   `Str`/`Bytes`/`Bool`/`Null`/`Array`/`Obj` — nested objects recurse as
   native frames (type tag 7) sharing the table's dictionary; no CBOR.
+- The value form crosses a boundary as itself, not as a hand-written
+  `match` per direction: `Serialize`/`Deserialize` for `DynamicValue` ride
+  the same `schema-serde` feature. `Deserialize` goes through
+  `deserialize_any`, so the format must be self-describing (JSON, CBOR —
+  not bincode); in JSON two collapses are unavoidable and documented —
+  `Bytes` renders as a number array (CBOR keeps a byte string), and a
+  non-negative `Int` reads back as `UInt`. The storage encoding is
+  untouched: frames + dictionary ids remain the representation at rest.
 - `Bytes` is the **opaque member** of the vocabulary: the store
   interprets nothing — tag and total length only; content and its
   meaning belong to the application. Opaque means the CONTENT: the

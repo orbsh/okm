@@ -299,6 +299,12 @@ t.delete(&key);                                   // 移除 slot 0 + 全部索�
   写路径上落地；typed collection 自己的动态段还没有这套维护。动态**名字**
   永远不能当 key 材料：名字是运行期数据，动态路径只能靠它的声明被寻址，
   不能靠 key。
+- 值形态过边界时用它自己，而不是调用方每个方向手写一遍 `match`：
+  `DynamicValue` 的 `Serialize`/`Deserialize` 挂在同一个 `schema-serde`
+  feature 后面。反序列化走 `deserialize_any`，因此格式必须自描述
+  （JSON、CBOR——不是 bincode）；JSON 下有两处避免不了的塌缩，已写进文档：
+  `Bytes` 呈数字数组（CBOR 保留字节串），非负 `Int` 读回来成 `UInt`。
+  存储编码不变：帧 + 字典 id 仍是落盘表示。
 - schema 导出（`CollectionSchema`，serde 在 `schema-serde` feature 后）驱动
   嵌入式语言读取器的动态 codec——Python（PyO3）与 Steel binding 在
   `bindings/`，与 Rust derive 字节一致（交叉测试锁定）。版本默认值迁移
