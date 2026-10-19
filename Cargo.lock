@@ -2243,7 +2243,6 @@ name = "okm-vector"
 version = "0.1.0"
 dependencies = [
  "okm-core",
- "okm-query",
 ]
 
 [[package]]

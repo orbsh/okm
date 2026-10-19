@@ -19,7 +19,7 @@ Measured against its consumers, of the twelve slots in use **nine are a
 single face**: the primary, the obj dynamic segment, both directions of
 the field-name vocabulary, and the graph's five faces (update 2026-10-17:
 the graph's predicate vocabulary added two more fixed faces — 0x04/0x05 —
-so eleven are single faces today). Their counter is
+so twelve are single faces today). Their counter is
 constant — 0/1/2/3 for the document-self bucket, 1 for the graph's faces.
 It carries no information and costs one byte on every such key.
 
@@ -93,7 +93,8 @@ assembles a key writes a slot the same way.
 0x08  graph in                     [ns][0x08][dst NodeRef][edge_id]
 0x09  graph predicate+out          [ns][0x09][predicate_id][src ref][edge_id]
 0x0A  graph predicate+in           [ns][0x0A][predicate_id][dst ref][edge_id]
-0x0B–0x0F                      free for future fixed faces
+0x0B  vector index snapshot        [ns][0x0B][shard u16 BE]     → built graph (okm-vector cache)
+0x0C–0x0F                      free for future fixed faces
 (Update 2026-10-17: rows are grouped by ROLE — a vocabulary precedes the
 faces that read its ids; the NUMBERS are the mechanism.)
 ```
@@ -153,7 +154,7 @@ byte, no counter, nothing to enumerate.
   migration.
 - **Moving the delimiter to widen the fixed-face space** (e.g. first byte
   < 0x80 → 1 byte, giving 128 fixed faces and 8 counting families). Not
-  taken today: 11 of 16 fixed faces and 3 of 15 counting families are in
+  taken today: 12 of 16 fixed faces and 3 of 15 counting families are in
   use. Recorded as the growth path — `k` is the only knob: top `k` bits
   zero → `2^(8−k)` fixed faces, `2^k − 1` counting families.
 - **A 3-byte slot for counting families** (family byte + full u16 counter,

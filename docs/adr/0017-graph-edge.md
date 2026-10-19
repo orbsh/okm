@@ -162,7 +162,7 @@ inference. Splitting one vocabulary by id band was rejected for the same
 class of reason the project separates physically elsewhere: a band is a
 convention that breaks silently on the first out-of-band allocation,
 while a second face pair is structural. Cost: one fixed-face pair of the
-sixteen (0x04/0x05, ADR-0030; 0x0B–0x0F stay free) and two vocabularies
+sixteen (0x04/0x05, ADR-0030; 0x0C–0x0F stay free (0x0B went to okm-vector's index snapshot)) and two vocabularies
 in the edge collection. The field-name vocabulary (0x02/0x03) keeps its
 document-side meaning for the payload's own names.
 

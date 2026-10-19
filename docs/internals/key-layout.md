@@ -57,7 +57,7 @@ counting family   first byte high nibble != 0   slot = 2 bytes   [ns][0x1n][nn]
                                                                  counter = (n << 8) | nn
 ```
 
-**Fixed faces** (1 byte, 16 numbers, 11 in use) — a family that is a single
+**Fixed faces** (1 byte, 16 numbers, 12 in use) — a family that is a single
 face, with nothing to enumerate. Big-endian is why the high nibble leads,
 and why the rule holds: 0x00–0x0F can never equal a counting family's first
 byte (≥ 0x10).
@@ -74,7 +74,8 @@ byte (≥ 0x10).
 0x08  graph in                     [ns][0x08][dst NodeRef][edge_id]
 0x09  graph predicate+out          [ns][0x09][predicate_id][src ref][edge_id]
 0x0A  graph predicate+in           [ns][0x0A][predicate_id][dst ref][edge_id]
-0x0B–0x0F  free for future fixed faces
+0x0B  vector index snapshot        [ns][0x0B][shard u16 BE]    → built graph (okm-vector cache, droppable)
+0x0C–0x0F  free for future fixed faces
 (rows are grouped by ROLE: the two vocabularies first, then the graph faces
 that read their ids — a vocabulary leads the faces it serves; the NUMBERS
 are the mechanism.)

@@ -16,7 +16,8 @@ None of the three capabilities needs a new storage primitive:
 FTS     = multi-value function index (n-gram/token → N entries)
           + caller-side BM25 rerank
 Vector  = single-value function index (fixed-width embedding bytes)
-          + quantized-bucket prefix scan + edge entries as the ANN graph
+          + exact contiguous scan (small N) / in-memory HNSW over quantized
+          codes, snapshotted one blob per shard (fixed face 0x0B)
 Graph   = edge entries (neighbors = one prefix scan)
           + ordered-stream folds (label propagation / PageRank)
 ```
@@ -118,13 +119,15 @@ Approximate counting (UV, hot terms) should prefer the degradation to
 
 `okm-ngram` / `okm-vector` / `okm-graph` share three constraints:
 
-1. **Zero storage responsibility** — no private table structures, no
-   bypassing `KvIndex`/`JunctionEncode`; all data flows through declared
-   entries.
+1. **Zero storage responsibility** — no private ROW structures, no
+   bypassing `KvIndex`/`JunctionEncode`; row data flows through declared
+   entries. A built artifact may cache itself under a fixed face it owns —
+   okm-vector's graph does, at 0x0B — and that blob stays derived and
+   droppable, never a row's storage.
 2. **Replaceable algorithms** — the crates ship minimal working recipes
-   (n-gram + BM25, bucket scan + rerank, LP + PageRank); heavier
-   solutions (Tantivy, arroy/HNSW, Louvain) are the caller's to attach
-   against the same entry layout.
+   (n-gram + BM25, exact scan / HNSW + rerank, LP + PageRank); heavier
+   solutions (Tantivy, Louvain) are the caller's to attach against the same
+   layout, and even the shipped ANN is a layer with a swappable backend.
 3. **Minimal dependencies** — no external dependencies unless truly
    needed (e.g. an ANN library); when needed, they live in that crate,
    never in core.
