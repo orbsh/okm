@@ -64,7 +64,7 @@ pkey 的边界**不在 key 里**。一个 collection 的 pkey 宽度是 schema �
 
 **Slot 布局与普通文档的关系（2026-09-20 更新）**——明确说明，不追求严格一致：
 
-- **节点 collection = 标准文档布局，不变。** 节点 kind 面不是新种类的 slot：它是计数族 0x1 里一个普通访问方法（固定本体形态是一条 `#[ok_index]` 声明，动态形态是用户分配的 `AccessMethod` slot）。节点 kind 走 collection 自己的 0x02/0x03 字典——每个 collection 都有同一本字典。与任何文档 collection 布局零差异；"某个字段是 kind"是建模约定，不是布局事实。
+- **节点 collection = 标准文档布局，不变。** 节点 kind 面不是新种类的 slot：它是计数族 0x1 里一个普通访问方法（固定本体形态是一条 `#[ok_index]` 声明，动态形态是用户分配的 `AccessMethod` slot）。节点 kind 走 collection 自己的 **kind 词汇表**（固定面 0x04/0x05，与图的谓词同一条规则）——与它的 props 名所用的字段名字典（0x02/0x03）分开。与任何文档 collection 布局零差异；"某个字段是 kind"是建模约定，不是布局事实。
 - **Edge collection = 上表那几类条目，用同一套 slot 词汇写成的另一种 collection 形态。** 0x00/0x01/0x02/0x03 保留文档侧的含义（主表、动态段、字典）；0x06–0x0A 是图自己的面、0x04/0x05 是它自己的谓词字典，都落在固定面区间里——不引入新**种类**的 slot。值侧也不是第二套编码：边的载荷**就是**一份 obj（ADR-0012）。把它与文档 collection 区分开的是图的面与自描述端点，不是它自己的载荷格式。
 
 - **主表（0x00）**：边本体——`[src NodeRef][dst NodeRef][predicate_id][obj 载荷]`，其中 `predicate_id` 是**谓词**（边的类型）作为 key 维度承载：2 字节，来自图自己的谓词字典（0x04/0x05），也靠它按名字读回。尾部区域就是一份普通的 obj 载荷（ADR-0012）：`[version u8][hot_len u16 BE][热段][冷 TLV]`，与任何文档行同一套编码。`src` / `dst` / `predicate_id` 是图自己的头部，载荷起始位置可算——引用自描述、`predicate_id` 定宽。
