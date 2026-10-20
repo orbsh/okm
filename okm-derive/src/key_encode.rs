@@ -162,6 +162,23 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> Vec<Field> {
                 quote! { 1 },
                 Some(quote! { ::okm_core::FieldType::U8 }),
             ),
+            _ if ty_str.starts_with("Vocab<") => {
+                // Vocab<T> (ADR-0032): one byte, the id in this FIELD's data
+                // vocabulary. The label is the in-memory value; interning
+                // happens in `__okm_intern` before this encoder runs.
+                let inner = ty_str
+                    .trim_start_matches("Vocab<")
+                    .trim_end_matches('>')
+                    .to_string();
+                let inner_ty: syn::Type = syn::parse_str(&inner)
+                    .unwrap_or_else(|_| panic!("{ctx}: bad Vocab domain type {inner}"));
+                (
+                    quote! { buf.push(self.#id.to_wire()[0]); },
+                    quote! { let #id = <::okm_core::Vocab<#inner_ty>>::from_wire(&b[offset..offset+1]); offset += 1; },
+                    quote! { 1 },
+                    Some(quote! { ::okm_core::FieldType::Vocab(0) }),
+                )
+            }
             _ if ty_str.starts_with("[u8;") => {
                 let n: usize = ty_str
                     .trim_start_matches("[u8;")

@@ -250,6 +250,12 @@ pub trait Document: Sized + Clone {
     /// batch. Default no-op (no categorical fields). Interning past 255 distinct
     /// labels in one field is a loud error, never a wrap.
     fn __okm_intern(&mut self, _store: &mut dyn VirtualStorage, _header: &[u8]) {}
+    /// Resolve every `Vocab<T>` field's decoded id back into its label
+    /// (ADR-0032), so the document API and `to_map` see names. Called by the
+    /// read path after `__okm_embed_deref`; default no-op (no categorical
+    /// fields). A missing vocabulary entry leaves the value unresolved rather
+    /// than inventing a name.
+    fn __okm_deref_vocab(&mut self, _store: &dyn VirtualStorage) {}
     /// document -> map: every declared field lifted into a run-time
     /// DynamicValue (ADR-0012 document-map bridge; derive-generated).
     fn to_map(&self) -> std::collections::BTreeMap<String, crate::model::obj_dynamic::DynamicValue>;
