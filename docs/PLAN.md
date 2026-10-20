@@ -1265,3 +1265,41 @@ bytes; doing them after P3 means hex locks change once, not twice.
       `save_with_prev_into` covers every call site; a batch delete has no
       semantic sibling yet (deletes still go through the point path), add one
       when a caller needs atomic delete + reduce.
+
+## Categorical values as data (ADR-0032, 2026-10-20)
+
+- [x] Per-field data vocabularies in counting family 4 (`segment::VOCAB = 0x4`):
+      `vocab_faces(i)` yields one face pair per declared `Vocab<T>` field in
+      declaration order (4/0,4/1 for field #0; 4/2,4/3 for #1; …). The two
+      collection-wide name domains stay on their fixed faces (0x02/0x03 field
+      names, 0x04/0x05 predicate tokens) — fixed in number, so no allocation and
+      no data migration. Core 37 suites + okm-dynamic 6 suites green.
+- [x] `Vocab<T>` type (`okm-core/src/model/vocab.rs`): name in memory, one-byte
+      id on the wire, `MAX_VOCAB_ID = 255`; equality by label; encoding an
+      uninterned value panics. 5 unit tests.
+- [x] `FieldType::Vocab(u16)` (payload = the field's id face; name face = id+1)
+      + schema serialization (`"Vocab"`, variant 12) + bridge mapping (Arrow
+      UInt8, tooling "integer", export carries ids) + okm-dynamic arms
+      (`"U8 (vocab id)"`; decode panics until the read path resolves names).
+- [x] Write-path scaffolding: `Document::HAS_VOCAB` (default false) and
+      `Document::__okm_intern(&mut self, &mut dyn VirtualStorage, &[u8])`
+      (default no-op); `Collection::put` interns on a mutable copy when
+      `HAS_VOCAB`, so tables without categorical fields pay nothing but the
+      constant. `VocabCache` methods take `?Sized` stores so the `&dyn` hook
+      shape works.
+- [ ] Derive: recognize `Vocab<Domain>` fields — payload 1-byte encode/decode,
+      `FieldType::Vocab(id_face)`, `HAS_VOCAB = true`, generated `__okm_intern`,
+      name resolution in `__okm_embed_deref`, and to_map/from_map lifting the
+      label. **Until this lands a document cannot declare a Vocab field** (the
+      dynamic decode arm is deliberately `unreachable!`).
+- [ ] `save_with_prev_into` interning through `BatchStore` (vocabulary growth +
+      row + faces in one batch); `save_into` stays encoding-only and therefore
+      requires pre-interned documents.
+- [ ] Retire `Enum<T>` / `EnumTag` (delete `wrappers/enum_tag.rs`), migrate the
+      wrappers tests and hex locks, and drop the `okm-dynamic` `Enum` arms.
+- [ ] Docs: MODELING gains "Payload field types and wrappers" (the table the
+      current guide lacks — `Enum` was never documented at all), README status
+      line, and the ADR status flips from "in progress" to landed.
+- [ ] Migration note for existing data: old one-byte `Enum` tags decode without
+      error into a DIFFERENT category; one layout change, version bump, no
+      silent path. Same window as the vocabulary-face move (no production data).

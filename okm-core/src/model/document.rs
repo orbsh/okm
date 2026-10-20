@@ -80,6 +80,21 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     /// `delete_by_pkey`) exist; the reduce, by contrast, is a mutable
     /// aggregate under one group key and MUST compensate.
     pub fn put(&mut self, key: &K, document: &R) {
+        // Categorical values (ADR-0032): a `Vocab<T>` field holds a NAME until
+        // the write path interns it, and the payload byte is the id. Tables
+        // with no Vocab field hand the caller's document straight through; the
+        // clone is the price of `put(&R)`'s immutable signature, paid only by
+        // the tables that declare a categorical field.
+        let interned;
+        let document = if R::HAS_VOCAB {
+            let header = self.header();
+            let mut copy = document.clone();
+            copy.__okm_intern(&mut self.store, &header);
+            interned = copy;
+            &interned
+        } else {
+            document
+        };
         // Overwrite detection doubles as the unfold source: the stored
         // document (if any) is exactly what the reduce groups currently
         // include for this key.

@@ -183,6 +183,13 @@ pub fn decode_payload(schema: &CollectionSchema, bytes: &[u8]) -> Result<ValueMa
                 FieldType::Bytes => Value::Bytes(vec![0; f.width]),
                 FieldType::FixedBytes => Value::Bytes(vec![0; f.width]),
                 FieldType::Enum => Value::U8(0),
+                // ADR-0032: a Vocab field's wire is the id byte and its NAME
+                // lives in that field's data vocabulary. Resolving it belongs to
+                // the derive-wired read path; no document can declare a Vocab
+                // field until that lands, so this arms only once it does.
+                FieldType::Vocab(_) => {
+                    unreachable!("Vocab decode lands with the derive wiring (ADR-0032)")
+                }
                 // Vector default = empty frame (count 0) — the natural
                 // default for a variable-length list.
                 FieldType::Vector { .. } => Value::Bytes(vec![0, 0, 0, 0]),
@@ -221,7 +228,7 @@ fn decode_fixed(
         // generic fixed walk treats it as raw bytes.
         FieldType::Vector { .. } => Value::Bytes(raw.to_vec()), // frame payload as-is
         FieldType::Str | FieldType::Bytes | FieldType::VarInt | FieldType::Quant(_)
-        | FieldType::Enum | FieldType::Offset(_) => {
+        | FieldType::Enum | FieldType::Vocab(_) | FieldType::Offset(_) => {
             return Err(CodecError::TypeMismatch {
                 field: name,
                 expected: "hot-capable fixed-width kind",
