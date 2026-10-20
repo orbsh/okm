@@ -205,7 +205,9 @@ store.commit_batch(batch)?;                    // 行、面与账本一起落地
 里对同一组的两次 fold 看见的是本批已产出的值，不会重复计数
 （[ADR-0031](docs/adr/0031-batch-write-semantics.md)）。subscribe 事件按裁
 决留在 batch 路径之外：批量写者的事件归它自己，在未提交的批里发事件等于
-宣布一次可能永不落地的写。
+宣布一次可能永不落地的写。调用方不手推 op 进批——`save_with_prev_into` /
+`link_into` 替它们编码键与面；op 列表本身是引擎、wire 帧与 dynamic plan
+消费的内部接缝。
 
 ### 6. 引擎后端
 
@@ -242,7 +244,7 @@ okm-core = { version = "0.1", features = ["fjall"] }    # 或 "slatedb" / "redb"
 | `VirtualStorage` | 同步契约 | `put` / `get` / `del` / `scan_suffix` / `scan_range` / `scan_range_iter` / `commit_batch`；写操作取 `&self`（ADR-0026）；`scan_range` 是**唯一**的有序读原语——`scan_suffix` 与 `scan_range_iter` 都以它为默认实现 |
 | `VirtualStorageAsync` | 异步镜像 | 同一套面，改为 await（`SlatedbStore`、`WireClient` 实现） |
 | `SharedVirtualStorage` | 能力 | `shared_handle()` 返回**同一份物理键空间**的句柄，绝不是副本；`NestStorage` 与 `scan_range_iter` 的回表都依赖它 |
-| `MemBatch` | 载体 | 有序 op 列表；调用方往里填，一次 `commit_batch` 作为一次引擎级写落盘 |
+| `MemBatch` | 载体 | 有序 op 列表（`ops: Vec<(key, Option<value>)>`：`Some` 是 put、`None` 是 del，**不去重**，按序回放）。`Default` + `put` / `del` 就是它的全部 API，填它的是装配点；一次 `commit_batch` 作为一次引擎级写落盘 |
 | `ScanIter` | 迭代器 | 覆盖各后端原生 owned 迭代器的封闭枚举（fjall / redb / slatedb / remote / buffered）；引擎能倒走的地方就保留 `DoubleEndedIterator` |
 | `BatchStore<'a, S>` | 适配器 | 把 batch 当成写入器：点读先看本批待写项（倒序最新）再看 store，写只追加，扫描形态 panic（ADR-0031） |
 
@@ -258,6 +260,20 @@ okm-core = { version = "0.1", features = ["fjall"] }    # 或 "slatedb" / "redb"
 | `TestStore` | `engine/test_engine.rs` | 跑真实引擎的测试矩阵（slatedb 内存 / fjall / redb） | 是 |
 | `EngineBox` | `bindings/okm-entry` | **适配器**：分派到进程内 `TestStore` 或宿主注入的 `Engine`（四个字节方法）——让宿主可以持有另一份 okm 构建 | 否 |
 | `BatchStore` | `engine/storage.rs` | **适配器**：装饰一个 `S`，把写重定向进 `MemBatch`，自己什么都不落盘 | 否 |
+
+#### `BatchStore` 是门面，不是后端
+
+它实现它装饰的那个接口（`impl VirtualStorage for BatchStore<'_, S>`）——reduce 的
+读-改-写因此能在不知道自己正往批里写的前提下跑完。它给的是重定向，不是能力：
+
+- **写不穿透**——`put` / `del` 只追加进 `MemBatch`；**读穿透**——`get` 先看该键在批里
+  最新的一条，再落 store；
+- 自己不持有数据、只借用引擎（`store: &'a S`）：绑在借来的 batch 上的一次性视图，
+  不能长期持有，也不能传出去；
+- **提交在它外面**——`commit_batch` 是调用方对引擎的调用；在适配器上调用只会把内层 op
+  并进外层批；
+- 不实现 `SharedVirtualStorage`（所以 `NestStorage` 与 `scan_range_iter` 的回表都拒它），
+  且所有扫描形态 panic，而不是给一份部分视图。
 
 决策记录见 [docs/adr/](docs/adr/)；落地状态见 [docs/PLAN.md](docs/PLAN.md)。
 

@@ -218,6 +218,9 @@ same batch already produced instead of double-counting
 ([ADR-0031](docs/adr/0031-batch-write-semantics.md)). Subscribe emission stays
 out of the batch path by decision: a batch writer owns its events, and
 announcing an uncommitted write would announce one that may never land.
+Callers do not push ops into the batch by hand — `save_with_prev_into` /
+`link_into` encode the keys and faces for them; the op list itself is the
+internal seam the engines, the wire frames and the dynamic plan consume.
 
 ### 6. Engine backends
 
@@ -256,7 +259,7 @@ One contract, two worlds, one carrier, two adapters:
 | `VirtualStorage` | sync contract | `put` / `get` / `del` / `scan_suffix` / `scan_range` / `scan_range_iter` / `commit_batch`; writes take `&self` (ADR-0026); `scan_range` is the ONE ordered-read primitive — `scan_suffix` and `scan_range_iter` default onto it |
 | `VirtualStorageAsync` | async mirror | the same surface, awaited (`SlatedbStore`, `WireClient`) |
 | `SharedVirtualStorage` | capability | `shared_handle()` returns a handle to the SAME physical keyspace, never a copy; required by `NestStorage` and by fetch-back inside `scan_range_iter` |
-| `MemBatch` | carrier | an ordered op list; callers fill it, one `commit_batch` flushes it as a single engine-level write |
+| `MemBatch` | carrier | an ordered op list (`ops: Vec<(key, Option<value>)>`: `Some` = put, `None` = del, **no dedupe** — the list is replayed in order). `Default` + `put` / `del` is its whole API, and the assembly points are what fill it; one `commit_batch` flushes it as a single engine-level write |
 | `ScanIter` | iterator | opaque enum over each backend's native owned iterator (fjall / redb / slatedb / remote / buffered); `DoubleEndedIterator` wherever the engine can walk backwards |
 | `BatchStore<'a, S>` | adapter | a batch as a writer: point reads see pending ops newest-first then the store, writes only append, scan shapes panic (ADR-0031) |
 
@@ -272,6 +275,22 @@ Eight types implement the sync contract — six backends and two adapters:
 | `TestStore` | `engine/test_engine.rs` | test matrix over the real engines (slatedb-mem / fjall / redb) | yes |
 | `EngineBox` | `bindings/okm-entry` | **adapter**: dispatches to an in-process `TestStore` or a host-injected `Engine` (four byte methods) — what lets a host hold a different okm build | no |
 | `BatchStore` | `engine/storage.rs` | **adapter**: decorates an `S`, redirects writes into a `MemBatch`, lands nothing itself | no |
+
+#### `BatchStore` is a façade, not a backend
+
+It implements the trait it decorates (`impl VirtualStorage for BatchStore<'_, S>`),
+which is how the reduce read-modify-write runs through a batch without knowing
+it is writing into one. What it adds is a redirection, not a capability:
+
+- **writes do not pass through** — `put` / `del` only append to the `MemBatch`;
+  **reads do** — `get` checks the batch's newest op for that key, then the store;
+- it owns no data and borrows the engine (`store: &'a S`): a temporary view
+  bound to the borrowed batch, not something to hold on to or hand out;
+- **the commit lives outside it** — `commit_batch` is the caller's call on the
+  engine; called on the adapter instead, it only merges the inner ops into the
+  outer batch;
+- no `SharedVirtualStorage` (so `NestStorage` and `scan_range_iter`'s fetch-back
+  refuse it), and every scan shape panics rather than answer a partial view.
 
 Decision records live in [docs/adr/](docs/adr/); implementation status is
 [docs/PLAN.md](docs/PLAN.md).
