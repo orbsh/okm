@@ -2,9 +2,9 @@
 
 > ORM experience, Redis speed, PostgreSQL durability, and functions without boundaries.
 
-OKM is the KV counterpart of ORM: the logic is defined ORM-style, code generation produces the underlying KV operations. ORM maps objects onto relational tables, OKM maps objects onto KV keyspaces. Declarative derive macros (`#[derive(KeyEncode)]` / `#[derive(JunctionEncode)]`) plus numeric namespace IDs build a zero-cost semantic data layer — as declarative as an ORM at development time, compiled down to pure pointer-offset arithmetic.
+OKM is the KV counterpart of ORM: the logic is defined ORM-style, code generation produces the underlying KV operations. ORM maps objects onto relational tables, OKM maps objects onto KV keyspaces. Declarative derive macros (`KeyEncode` / `DocumentEncode` / `JunctionEncode` / `GraphEncode`) plus numeric namespace IDs build a zero-cost semantic data layer — as declarative as an ORM at development time, compiled down to pure pointer-offset arithmetic.
 
-Related reading: [KV Storage Engine](https://github.com/orbsh/wiki/blob/main/kv-storage-engine-en.md) — underlying architecture and design patterns (encoding principles, index strategies, engine-level trade-offs); [Architecture](docs/ARCHITECTURE.md) — the two-layer declaration machine (derive expansion + constant tables); [Modeling Guide](docs/MODELING.md) — the normative schema-modeling method (four layers, mandatory access methods, covering-index restraint, composite-key boundary); [Query Recipes](docs/query-recipes.md) — composing merge_join / group_by / walk into SQL shapes, the WHERE boundary record.
+Related reading: [KV Storage Engine](https://github.com/orbsh/wiki/blob/main/kv-storage-engine-en.md) — underlying architecture and design patterns (encoding principles, index strategies, engine-level trade-offs); [Architecture](docs/ARCHITECTURE.md) — the two-layer declaration machine (derive expansion + constant tables); [Modeling Guide](docs/MODELING.md) — the normative schema-modeling method (four layers, mandatory access methods, covering-index restraint, composite-key boundary); [Query Recipes](docs/query-recipes.md) — composing merge_join / group_by / walk into SQL shapes, the WHERE boundary record; [Graph Query Recipes](docs/graph-queries.md) — the graph's faces composed into Cypher-shaped traversals.
 
 ## Why: code as DDL
 
@@ -49,7 +49,8 @@ Implemented:
 - **Document API** — `get_document` / `put_document` / `get_fields` / `put_fields` / `delete_fields`: unknown field names allocate in the per-table field-name vocabulary and land in the dynamic segment (n-TLV frames, nested objects recursive, no CBOR); the row-map bridge lifts declared fields to logical types (`Quant`→`F64`, `Enum`→variant name, `Offset`→`i64`).
 - **Dynamic codec bindings** — schema export drives embedded-language readers: `bindings/okm-python` (PyO3) and `bindings/okm-steel`, byte-identical with the Rust derive.
 - **Path indexes over the dynamic segment** ([ADR-0029](docs/adr/0029-path-index.md)) — `AccessMethod::path(slot, Path::parse("author.name")?, FieldType::Str)?`: nested and array paths declared as access methods, one entry per resolved value (a wildcard is the absence of an `Index` component), maintained on the dynamic-segment write path; the value type is declared, and the entry key carries the slot, never the path.
-- Engine backends behind Cargo features: `fjall` (sync `FjallStore`), `slatedb` (async `SlatedbStore` + `AsyncJunction`), plus an in-memory `MockStore` for tests.
+- Engine backends behind Cargo features: `fjall` (sync `FjallStore`), `redb` (sync `RedbStore`), `slatedb` (async `SlatedbStore` + `AsyncJunction`); tests run the real engines through the `TestStore` matrix (slatedb-mem / fjall / redb), no mock to drift from them.
+- **Semantic batch write path** ([ADR-0031](docs/adr/0031-batch-write-semantics.md)) — `BatchStore` (a batch as a writer: point reads see pending ops newest-first, scans refused) + `Collection::save_with_prev_into(batch, key, doc, prev)`: primary + faces into the caller's `MemBatch`, the reduce fold/unfold applied through the adapter, and the faces the new document no longer produces deleted — so a table with a ledger joins a multi-table atomic commit instead of re-implementing it.
 - Multi-engine mixing — different engines per ns segment in one process (fjall for transactions, slatedb for logs); atomicity stops at one engine, ns numbering globally unique.
 - Field-level encoding wrappers (`Enum<T>`, `Offset<T>`, `VarInt<T>`, `Quant<P>`, `Reverse<T>`, `Vector<T>`, `Bytes`) and variable-length payload/index fields (`String`), keys stay fixed-width.
 - Snapshot export — rows → Parquet, engine-independent (backup / data exchange / lakehouse); ns restored to descriptive text, columns = field names.
@@ -60,47 +61,86 @@ Implemented:
 
 ## Usage
 
-### 1. Define endpoint keys and edges (declarations)
+### 1. Declarations: keys, rows, and relations
 
-The full declaration vocabulary (`KeyEncode` / `JunctionEncode` / `DocumentEncode`,
-the `fields`/`includes`/`key`/`func`/`where` annotations of `#[ok_index]`) is in the
-[Modeling Guide](docs/MODELING.md), "Declaration basics". Summary:
+The full declaration vocabulary (`KeyEncode` / `DocumentEncode` /
+`JunctionEncode` / `GraphEncode`, the `fields`/`includes`/`key`/`func`/`where`
+annotations of `#[ok_index]`) is in the [Modeling Guide](docs/MODELING.md),
+"Declaration basics". The four shapes:
 
 ```rust
-#[derive(KeyEncode)] #[ok_ns(1)]
+#[derive(KeyEncode)]                        // identity: fixed-width fields, BE, no separators
 pub struct UserKey { pub org_id: u32, pub user_id: u64 }
 
-#[derive(JunctionEncode)] #[ok_junction(1)]
+#[derive(DocumentEncode)]                   // row: identity + payload + access methods
+#[ok_ref(UserKey)]                          // the row pins its key type
+#[ok_ns(1)]                                 // the ns is declared HERE, not at the assembly site
+#[ok_index(by_org { fields(org_id) })]      // a face: entry key = indexed fields + key tail
+pub struct User { pub org_id: u32, pub bio_len: u32 }
+
+#[derive(JunctionEncode)] #[ok_junction(1)] // many-to-many with typed endpoints
 pub struct UserToSession {
     #[ok_head(org_id, user_id)]
     pub user: Ref<User, UserKey>,
     pub session: Ref<Session, SessionKey>,
 }
+
+#[derive(GraphEncode, Clone, Default)]       // ONE declaration IS the graph (ADR-0017)
+#[ok_ns(100)]
+#[ok_nodes(EmploymentNodes)]                 // the member set: a compile-time enum of collections
+#[ok_index(by_since { fields(since_year) })] // attributes are declared faces — nothing implied
+pub struct Employment { pub since_year: u16, pub weight: u32 }
+
+pub enum EmploymentNodes { Users, Orgs }
+impl NodeSet for EmploymentNodes { const NS_VALUES: &'static [u16] = &[10, 11]; }
 ```
 
-### 2. Runtime: linking and reading/writing (overview)
+An index declaration names its access-method type mechanically:
+`ok_index(by_org ...)` generates `__OkmIndex_User_by_org` (no case
+conversion), which is what `scan::<…>` takes — `use __OkmIndex_User_by_org
+as ByOrg` gives the short form.
 
-Full usage (reverse queries, truncated identities, scans with fetch-back,
-schema stability tests) is in the [Modeling Guide](docs/MODELING.md),
-runtime subsections after "Declaration basics".
+### 2. Documents at runtime (`Collection`)
 
 ```rust
-// Junction: two one-way entries (one per endpoint ns) + queries in both directions
-let mut edges: Junction<_, UserToSession> = Junction::new(store);
-edges.link(&user, &s1);
-let sessions = user.get_session(&edges);
+use okm_core::{Collection, Document};
 
-// Row: writes the primary key + all index entries; scan by access method
-let mut t = <User as Document>::collection(store);
-t.put(&user, &user_row);
-let rows = t.scan::<ByOrg>(&7u32.to_be_bytes());
+let mut users = <User as Document>::collection(store.clone());
+let key = UserKey { org_id: 7, user_id: 101 };
+
+// Write: primary entry + one entry per declared face, one store instance.
+users.put(&key, &User { org_id: 7, bio_len: 240 });
+let row: Option<User> = users.get(&key);
+
+// Read by access method: leftmost-prefix scan, then fetch-back.
+for (pk, row) in users.scan::<ByOrg>(&7u32.to_be_bytes()) {
+    // pk.decoded: UserKey, row: Option<User>
+}
+
+// A comparison on the leading index field is a physical key interval —
+// byte order is value order, so this reads only rows inside [1, 100).
+users.scan_range::<ByOrg>(&1u32.to_be_bytes(), Some(&100u32.to_be_bytes()));
+
+// Delete: primary + exactly the faces this document produced.
+users.delete(&key, &row.expect("row"));
 ```
 
-`ByOrg` comes from the index name: `ok_index(by_org ...)` generates the
-type `__OkmIndex_User_by_org` (mechanical concatenation, no case
-conversion); `use __OkmIndex_User_by_org as ByOrg` gives the short form.
-For declarations see the [Modeling Guide](docs/MODELING.md), "Declaration
-basics".
+Overwrite semantics differ by design: `put` unfolds the stored document from
+every declared reduce group before folding the new one in, while faces are
+per-document derivations — an overwrite whose indexed value changed lands at
+a NEW entry key, so the stale face is the caller's to remove (or
+`save_with_prev_into`'s, section 5).
+
+A ledger is a declaration line, not a table you maintain (ADR-0023):
+
+```rust
+#[ok_reduce(Count { group(org_id) })]          // rows per group, exactly reversible
+#[ok_reduce(Sum(bio_len) { group(org_id) })]   // field total; signed and Quant stay exact
+```
+
+The accumulator entry is `[ns 2B][reduce slot][group segment]`, read-modify-written
+by the same `put`/`delete` that writes the row — one store instance, so the
+ledger shares the row's atomicity.
 
 ### 3. Dynamic fields: the document API
 
@@ -110,10 +150,17 @@ land in the dynamic segment (`[id][type][len][value]` frames, nested
 objects recursive). Declared fields stay typed and indexable.
 
 ```rust
-// read: declared fields lifted to logical types + dynamic fields by name
-let (row, dynamic) = t.get_document(&key);
-// write: matched names -> typed path; unknown names -> dynamic segment
-t.put_document(&key, &fields);
+// Read: declared fields lifted to logical types, merged over dynamic ones.
+// One name-keyed map — the object model, not a row plus an attachment.
+let obj = users.get_document(&key)?;          // BTreeMap<String, DynamicValue>
+
+// Write: names matching the declaration take the typed path (indexes,
+// reduces and events included); unknown names land in the dynamic segment.
+users.put_document(&key, &obj);
+
+// The segment alone, when the caller owns both halves separately:
+let dynamic = users.get_fields(&key);         // Option<BTreeMap<String, DynamicValue>>
+users.put_fields(&key, &dynamic.unwrap_or_default());
 ```
 
 Embedded-language readers (Python / Steel Booths) consume the schema
@@ -121,33 +168,113 @@ export through the dynamic codec — `bindings/okm-python` (PyO3) and
 `bindings/okm-steel` encode/decode byte-identically with the Rust
 derive; version-default migration applies on that path too.
 
-### 4. Engine backends
+### 4. Relations at runtime: junction and graph
+
+```rust
+// Junction: two one-way entries (one per endpoint ns), queries both ways.
+let mut edges: Junction<_, UserToSession> = Junction::new(store.clone());
+edges.link(&user, &session);                  // forward + reverse, one instance
+let sessions = user.get_session(&edges);      // method generated on the key type
+edges.unlink(&user, &session);
+
+// Graph: endpoints are self-describing refs — no registry, no width table.
+let mut g: Graph<_, Employment> = Graph::new(store.clone());
+g.link(&EdgeHead {
+    src: NodeRef::new(&10u16.to_be_bytes(), &1u64.to_be_bytes()),  // [ns][len][pkey]
+    dst: NodeRef::new(&11u16.to_be_bytes(), &9u64.to_be_bytes()),
+    predicate: "employs".into(),                                  // runtime data, vocabularised
+}, &Employment { since_year: 2020, weight: 7 }, 1)?;             // edge id is the caller's
+
+g.out_nodes(&user_ref);                       // one-hop neighbours as NodeRefs
+g.typed_out("employs", &user_ref);            // predicate-qualified traversal (0x09 face)
+g.in_edges(&org_ref);                         // who points here
+g.predicates();                               // every relation type: one 0x04 prefix scan
+g.by_attr_face(<BySince as KvIndex>::SLOT, &2020u16.to_be_bytes()); // declared attribute face
+g.unlink(1)?;                                 // decodes the body, deletes exactly those faces
+```
+
+Division of labour: `Refs`/`Junction` are for fixed, typed endpoint pairs;
+a graph edge is for open endpoints, runtime predicates, parallel edges and
+attributes. Node "types" stay ordinary document collections — the ns is the
+type marker, so node-kind filtering is that collection's own index.
+
+### 5. Multi-table atomic writes: the batch path
+
+One `MemBatch`, one commit, everything or nothing (ADR-0003). Document
+writes encode with `save_with_prev_into`, edges and junctions with their
+`*_into` siblings:
+
+```rust
+let mut batch = MemBatch::default();
+users.save_with_prev_into(&mut batch, &key, &new_row, Some(&old_row));
+g.link_into(&mut batch, &head, &attrs, 7)?;
+store.commit_batch(batch)?;                    // rows, faces and ledgers land together
+```
+
+`save_with_prev_into` is the SEMANTIC sibling of `save_into` (encoding only):
+the reduce fold/unfold and the stale-face cleanup run through a `BatchStore`
+— a read-through view of the batch, so a same-group fold sees the value the
+same batch already produced instead of double-counting
+([ADR-0031](docs/adr/0031-batch-write-semantics.md)). Subscribe emission stays
+out of the batch path by decision: a batch writer owns its events, and
+announcing an uncommitted write would announce one that may never land.
+
+### 6. Engine backends
 
 ```toml
 [dependencies]
-okm-core = { version = "0.1", features = ["fjall"] }    # or "slatedb"
+okm-core = { version = "0.1", features = ["fjall"] }    # or "slatedb" / "redb"
 ```
 
 - **fjall** (sync): `FjallStore::open(path)` — local LSM engine, single `Database` handle, `persist` on demand.
 - **slatedb** (async): `SlatedbStore::open(path, Arc<dyn ObjectStore>)` — object-storage-backed; use `slatedb::object_store` re-exports to construct stores so versions always match slatedb's internals. Async traversal goes through `AsyncJunction`.
-- **MockStore**: in-memory `BTreeMap` with memcmp ordering — identical iteration semantics to real engines, used by the test suite.
+- **TestStore**: the test matrix over the real engines (slatedb in-memory, fjall temp dir, redb temp file) — no mock implementation to drift from the real ones.
 
-## Project layout
+## Interface layers
 
-```
-okm-derive/        proc-macro crate: KeyEncode, DocumentEncode, JunctionEncode (zero I/O)
-okm-core/src/key.rs     KeyEncode trait + PrefixKey
-okm-core/src/index.rs   Row + KvIndex traits, index scan helpers
-okm-core/src/junction.rs    KvJunction trait + segment-0x3 slot keys
-okm-core/src/storage.rs  VirtualStorage trait + MockStore
-okm-core/src/table.rs       Collection<S, K, R> node assembly point
-okm-core/src/collection.rs  Junction<S, E> junction assembly point
-okm-core/src/fjall_backend.rs    fjall adapter (feature "fjall")
-okm-core/src/slatedb_backend.rs  slatedb adapter (feature "slatedb")
-okm-query/         extension operator crate: merge_join, group_by (consumes scan streams, zero core changes)
-okm-core/tests/         integration + index_test (MockStore), fjall_eval, slatedb_eval
-docs/adr/          architecture decision records (docs/PLAN.md = implementation plan)
-```
+Four tiers, each built on the one below it. The rule across all four: **a tier
+speaks in the currency of the one below it** — declarations emit bytes, assembly
+points call the engine contract, engines see nothing but bytes.
+
+| Tier | The interface | What it commits to |
+|---|---|---|
+| Declaration | `KeyEncode` / `DocumentEncode` / `JunctionEncode` / `GraphEncode` (okm-derive) | pure `Vec<u8>` in/out — no storage, no I/O, no engine type; that is what keeps each derive a single-item pure function |
+| Assembly | `Collection<S, K, R>` / `Junction<S, E>` / `Graph<S, E>`, plus the reduce and subscribe hooks | binds ONE engine instance; `&mut self` writes, `&self` reads; the declaration IS the registry, so there is no runtime schema object to keep in sync |
+| Engine contract | `VirtualStorage` / `VirtualStorageAsync` / `SharedVirtualStorage` (`okm-core/src/engine/storage.rs`) | the seven methods over encoded bytes — the only thing a backend must speak |
+| Consumers | okm-query / okm-stream / okm-graph / okm-vector / okm-ngram / bindings | sit above the assembly tier and consume its outputs (ordered scan streams, subscribe events, documents) with zero core changes |
+
+Both schema carriers — compiled declarations (okm-derive) and schema data
+(okm-dynamic) — reach the same two lower tiers, so "which mode" never changes
+the engine contract or the bytes.
+
+### The engine tier in full
+
+One contract, two worlds, one carrier, two adapters:
+
+| Item | Kind | Contract |
+|---|---|---|
+| `VirtualStorage` | sync contract | `put` / `get` / `del` / `scan_suffix` / `scan_range` / `scan_range_iter` / `commit_batch`; writes take `&self` (ADR-0026); `scan_range` is the ONE ordered-read primitive — `scan_suffix` and `scan_range_iter` default onto it |
+| `VirtualStorageAsync` | async mirror | the same surface, awaited (`SlatedbStore`, `WireClient`) |
+| `SharedVirtualStorage` | capability | `shared_handle()` returns a handle to the SAME physical keyspace, never a copy; required by `NestStorage` and by fetch-back inside `scan_range_iter` |
+| `MemBatch` | carrier | an ordered op list; callers fill it, one `commit_batch` flushes it as a single engine-level write |
+| `ScanIter` | iterator | opaque enum over each backend's native owned iterator (fjall / redb / slatedb / remote / buffered); `DoubleEndedIterator` wherever the engine can walk backwards |
+| `BatchStore<'a, S>` | adapter | a batch as a writer: point reads see pending ops newest-first then the store, writes only append, scan shapes panic (ADR-0031) |
+
+Eight types implement the sync contract — six backends and two adapters:
+
+| Type | Where | Kind | Shared |
+|---|---|---|---|
+| `FjallStore` | `engine/fjall_backend.rs` | local LSM (feature `fjall`) | yes |
+| `RedbStore` | `engine/redb_backend.rs` | COW B-tree (feature `redb`) | yes |
+| `SlatedbSync` | `engine/slatedb_backend.rs` | sync view over slatedb; the async face is `SlatedbStore` | no |
+| `LocalStorageStore` | `engine/localstorage_backend.rs` | browser localStorage (feature `localstorage`) | yes |
+| `RemoteStore` | `engine/nest.rs` | wire client; its server half `NestStorage` is a pump over one engine mutex, NOT a `VirtualStorage` | no |
+| `TestStore` | `engine/test_engine.rs` | test matrix over the real engines (slatedb-mem / fjall / redb) | yes |
+| `EngineBox` | `bindings/okm-entry` | **adapter**: dispatches to an in-process `TestStore` or a host-injected `Engine` (four byte methods) — what lets a host hold a different okm build | no |
+| `BatchStore` | `engine/storage.rs` | **adapter**: decorates an `S`, redirects writes into a `MemBatch`, lands nothing itself | no |
+
+Decision records live in [docs/adr/](docs/adr/); implementation status is
+[docs/PLAN.md](docs/PLAN.md).
 
 ## Design notes
 

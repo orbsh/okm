@@ -4,9 +4,9 @@
 
 > 英文版为主文档（[README.md](README.md)），本文为对应中文版。
 
-OKM 是对标 ORM 的范式——逻辑定义是 ORM 式的，代码生成产出底层 KV 操作。ORM 将对象映射到关系表，OKM 将对象映射到 KV 键空间。通过派生宏 `#[derive(KeyEncode)]` / `#[derive(JunctionEncode)]` + 数字命名空间 ID，构建零成本抽象语义数据层：开发侧如同 ORM 般声明式，编译后退化为纯指针偏移计算。
+OKM 是对标 ORM 的范式——逻辑定义是 ORM 式的，代码生成产出底层 KV 操作。ORM 将对象映射到关系表，OKM 将对象映射到 KV 键空间。通过派生宏（`KeyEncode` / `DocumentEncode` / `JunctionEncode` / `GraphEncode`）+ 数字命名空间 ID，构建零成本抽象语义数据层：开发侧如同 ORM 般声明式，编译后退化为纯指针偏移计算。
 
-关联阅读：[KV 存储引擎](https://github.com/orbsh/wiki/blob/main/kv-storage-engine.md) — 底层架构与设计模式（编码原理、索引策略、引擎层取舍）；[架构总览](docs/ARCHITECTURE.md)——双层声明机器（derive 展开 + 常量表）；[建模指南](docs/MODELING.zh-CN.md) — 规范性 schema 建模方法（四层建模法、访问方法强制、覆盖索引克制、主键复合边界）。
+关联阅读：[KV 存储引擎](https://github.com/orbsh/wiki/blob/main/kv-storage-engine.md) — 底层架构与设计模式（编码原理、索引策略、引擎层取舍）；[架构总览](docs/ARCHITECTURE.zh-CN.md)——双层声明机器（derive 展开 + 常量表）；[建模指南](docs/MODELING.zh-CN.md) — 规范性 schema 建模方法（四层建模法、访问方法强制、覆盖索引克制、主键复合边界）；[查询配方](docs/query-recipes.zh-CN.md)——把 merge_join / group_by / walk 组合成 SQL 形状，WHERE 边界记录；[图查询配方](docs/graph-queries.zh-CN.md)——图的面组合成 Cypher 形状的遍历。
 
 ## 为什么：代码即 DDL
 
@@ -14,7 +14,7 @@ SQL 的核心价值不是执行性能，而是关系模型交付的可读性、�
 
 - **Struct 即 DDL**：SQL 定义表结构，Rust Struct 定义 Key 编码。编译器保证格式一致——任何试图写入错误格式 Key 的代码在编译期直接报错，不需要运行时校验。
 - **无模式是陷阱**：无模式存储来者不拒（数字字段可以写成字符串 `"25"` 甚至数组 `[25]`），代价是所有消费端代码写满防御性解析。强类型把脏数据在 `cargo check` 阶段熔断——连生成的资格都没有——同时保留 KV 引擎的硬件级速度，免掉 PG 的运行时 DDL 锁开销和 SQL 字符串解析税。
-- **Hex 稳定性测试**：编码漂移的最终防线。硬编码历史 hex 字节锁定物理 Key 布局；任何改动 ns、字段顺序或宽度的行为都让 CI 立刻失败（见 `okm/tests/integration.rs`）。
+- **Hex 稳定性测试**：编码漂移的最终防线。硬编码历史 hex 字节锁定物理 Key 布局；任何改动 ns、字段顺序或宽度的行为都让 CI 立刻失败（见 `okm-core/tests/integration.rs`）。
 
 判定：SQL 的核心价值是面向人类的结构化纪律。KV 只要贯彻「代码即 DDL 的强类型编码 + 多版本 Enum 懒迁移 + 双写 Key 指针契约 + hex 硬编码单元测试」，就同时获得了：编译期 Schema 安全（Rust 编译器）+ 运行时极致性能（LSM-Tree）+ 零停机演进（版本化 Enum）+ 团队可维护性（Struct 注释即文档）+ 编码漂移防护（hex 单元测试）。在 Schema 安全性上完成对 SurrealDB（无模式）和 PostgreSQL（运行时 DDL 锁）的双向反超。
 
@@ -45,10 +45,11 @@ crate 分工：okm-core = 共享运行时（引擎契约、`Collection`、docume
 - `JunctionEncode` — junction（SQL 多对多连接表）：每端 ns 一条单向条目，4 字节头 `[ns u16][slot u16]`（0x3 段），各端点身份宽度可独立声明（`#[ok_head(...)]`），`#[ok_junction(n)]` 区分号，查询方法生成在端点 key 类型上。
 - `Junction<S, E>` — junction 装配点：引擎 + junction 类型 = 一条关系的操作面（`link` / `unlink` / `forward` / `reverse` / `reverse_prefix`）。
 - `GraphEncode` + `Graph<S, E>` + `NodeSet`/`NodeRef` — 图边，第三种关系载体（ADR-0017）：**一份声明就是这张图**（ns + 边自己的载荷 + 显式 `#[ok_index]` 面 + `#[ok_nodes]` 成员集），开放端点走自描述引用 `[ns 2B][len][pkey]`（pkey 宽度住在引用自身——无注册表），平行边携带调用方选定的 id，谓词走图自己的谓词词汇表（0x04/0x05——列举就是一扫前缀），声明属性面就是普通计数族 0x1 索引；`link`/`unlink` 一个 batch 写/删全部面，`unlink` 解码载荷后精确删除；无类型/谓词/谓词过滤/属性四种扫描。
-- 引擎后端走 Cargo feature：`fjall`（同步 `FjallStore`）、`slatedb`（异步 `SlatedbStore` + `AsyncJunction`），测试用内存 `MockStore`。
+- 引擎后端走 Cargo feature：`fjall`（同步 `FjallStore`）、`redb`（同步 `RedbStore`）、`slatedb`（异步 `SlatedbStore` + `AsyncJunction`）；测试用 `TestStore` 引擎矩阵（slatedb 内存 / fjall / redb）跑真实引擎，没有会漂移的 mock。
 
 - 二级索引（访问方法）——**行 struct** 上的 `#[ok_index(name { fields(…), includes(…), key(…), func(…), where(…) })]`：对 **payload 字段**（按声明序）建组合索引；无 per-index slot/ns——2 字节表命名空间已区分所有 entry；最左前缀扫描；`key(…)` 把 key 尾部携带的主键截断到命名子集（`encode_prefix_named`），默认取满主键；`includes` 覆盖索引定位为高扇出查询的物化视图；`func(path)` 用普通 fn 的返回值替代数据段（探针端调同一路径）；`where(path)` 是行级谓词——部分索引，被拒绝的行不产生任何条目。
 - `Collection<S, K, R>` 行装配点——`put`/`delete` 在同一 store 实例内一次写入主键与全部声明的索引条目（声明即注册表）；`scan` 经任意访问方法的最左前缀返回 `(Key, Option<Row>)`。
+- **语义化 batch 写路径**（[ADR-0031](docs/adr/0031-batch-write-semantics.md)）——`BatchStore`（把 batch 当成写入器：点读先看本批待写项、scan 一律拒绝）+ `Collection::save_with_prev_into(batch, key, doc, prev)`：主键 + 面写进调用方的 `MemBatch`，reduce 的折/回折经适配器完成，新文档不再产出的面一并删除——带账本的表从此能加入跨表原子提交，而不必自己重写一份账本。
 - 字段级编码 wrapper（`Enum<T>`、`Offset<T>`、`VarInt<T>`、`Quant<P>`、`Reverse<T>`、`Vector<T>`、`Bytes`）与变长载荷/索引字段（`String`），key 保持定宽。
 - 多引擎混用——同一进程内不同 ns 段可绑不同引擎（交易走 fjall、日志走 slatedb）；原子性止于单引擎内，ns 编号全库唯一。
 - 快照导出——行 → Parquet，与引擎无关（备份 / 数据交换 / lakehouse 分析）；ns 还原为描述性文本，列名即字段名。
@@ -62,80 +63,203 @@ crate 分工：okm-core = 共享运行时（引擎契约、`Collection`、docume
 
 ## 使用方法
 
-### 1. 定义端点 key 与边（声明）
+### 1. 声明：key、行与关系
 
-完整的声明词汇（`KeyEncode` / `JunctionEncode` / `DocumentEncode`、`#[ok_index]` 的 `fields`/`includes`/`key`/`func`/`where` 注解）见[建模指南](docs/MODELING.zh-CN.md)「声明基础」。摘要：
+完整的声明词汇（`KeyEncode` / `DocumentEncode` / `JunctionEncode` /
+`GraphEncode`，以及 `#[ok_index]` 的 `fields`/`includes`/`key`/`func`/`where`
+注解）见[建模指南](docs/MODELING.zh-CN.md)「声明基础」。四种形态：
 
 ```rust
-#[derive(KeyEncode)] #[ok_ns(1)]
+#[derive(KeyEncode)]                        // 身份：定宽字段、大端、无分隔符
 pub struct UserKey { pub org_id: u32, pub user_id: u64 }
 
-#[derive(JunctionEncode)] #[ok_junction(1)]
+#[derive(DocumentEncode)]                   // 行：身份 + 载荷 + 访问方法
+#[ok_ref(UserKey)]                          // 行自己钉住 key 类型
+#[ok_ns(1)]                                 // ns 声明在这里，不在组装处
+#[ok_index(by_org { fields(org_id) })]      // 一个面：条目键 = 被索引字段 + key 尾段
+pub struct User { pub org_id: u32, pub bio_len: u32 }
+
+#[derive(JunctionEncode)] #[ok_junction(1)] // 多对多，端点强类型
 pub struct UserToSession {
     #[ok_head(org_id, user_id)]
     pub user: Ref<User, UserKey>,
     pub session: Ref<Session, SessionKey>,
 }
+
+#[derive(GraphEncode, Clone, Default)]       // 一份声明就是这张图（ADR-0017）
+#[ok_ns(100)]
+#[ok_nodes(EmploymentNodes)]                 // 成员集：编译期枚举，取值为 collection
+#[ok_index(by_since { fields(since_year) })] // 属性是显式声明的面——不做任何隐含
+pub struct Employment { pub since_year: u16, pub weight: u32 }
+
+pub enum EmploymentNodes { Users, Orgs }
+impl NodeSet for EmploymentNodes { const NS_VALUES: &'static [u16] = &[10, 11]; }
 ```
 
-### 2. 运行时：连边与读写（速览）
+索引声明机械地生成访问方法类型：`ok_index(by_org ...)` 产出
+`__OkmIndex_User_by_org`（无大小写转换），`scan::<…>` 要的就是它——
+`use __OkmIndex_User_by_org as ByOrg` 给出短名。
 
-完整用法（含反向查询、截断身份、扫描回表、Schema 稳定性测试）见[建模指南](docs/MODELING.zh-CN.md)「声明基础」之后的运行时小节。
+### 2. 运行时：文档（`Collection`）
 
 ```rust
-// junction：每端 ns 一条单向条目（共两条）+ 双向查询
-let mut edges: Junction<_, UserToSession> = Junction::new(store);
-edges.link(&user, &s1);
-let sessions = user.get_session(&edges);
+use okm_core::{Collection, Document};
 
-// 行：写主键 + 全部索引条目；按访问方法扫描
-let mut t = <User as Document>::collection(store);
-t.put(&user, &user_row);
-let rows = t.scan::<ByOrg>(&7u32.to_be_bytes());
+let mut users = <User as Document>::collection(store.clone());
+let key = UserKey { org_id: 7, user_id: 101 };
+
+// 写：主表条目 + 每个声明的面一条，同一个 store 实例。
+users.put(&key, &User { org_id: 7, bio_len: 240 });
+let row: Option<User> = users.get(&key);
+
+// 按访问方法读：最左前缀扫描 + 回表。
+for (pk, row) in users.scan::<ByOrg>(&7u32.to_be_bytes()) {
+    // pk.decoded: UserKey，row: Option<User>
+}
+
+// 索引首字段上的比较就是一段物理键区间——字节序即值序，
+// 所以这里只读 [1, 100) 内的行。
+users.scan_range::<ByOrg>(&1u32.to_be_bytes(), Some(&100u32.to_be_bytes()));
+
+// 删：主表 + 恰是这份文档产出的那些面。
+users.delete(&key, &row.expect("row"));
 ```
 
-`scan::<ByOrg>` 的 `ByOrg` 来自索引名：`ok_index(by_org ...)` 生成类型 `__OkmIndex_User_by_org`（机械拼接，无大小写转换），`use __OkmIndex_User_by_org as ByOrg` 后即可用短名。声明怎么写见[建模指南](docs/MODELING.zh-CN.md)「声明基础」。
+覆盖语义按设计分成两半：`put` 先把已存文档从每个声明的 reduce 组里回折，
+再折入新文档；而面是逐文档派生——被索引的值一改，条目就落到新键上，旧面
+由调用方负责删除（或者交给 `save_with_prev_into`，见第 5 节）。
+
+账本是一行声明，不是你自己维护的一张表（ADR-0023）：
+
+```rust
+#[ok_reduce(Count { group(org_id) })]          // 每组的行数，精确可逆
+#[ok_reduce(Sum(bio_len) { group(org_id) })]   // 字段求和；有符号与 Quant 保持精确
+```
+
+累加器条目是 `[ns 2B][reduce slot][group 段]`，由写行的同一个 `put`/`delete`
+读-改-写——同一个 store 实例，所以账本与行共享同一个原子性边界。
 
 ### 3. 动态字段：document API
 
 一套编码服务声明行与外部数据。未知字段名是正常输入：在每表的字段名词汇表里分配编号，落进动态段（`[id][type][len][value]` 帧、嵌套对象递归）。声明字段保持 typed 且可索引。
 
 ```rust
-// 读：声明字段 lift 到逻辑类型 + 动态字段按名字
-let (row, dynamic) = t.get_document(&key);
-// 写：匹配的名字 -> typed 路径；未知名字 -> 动态段
-t.put_document(&key, &fields);
+// 读：声明字段 lift 到逻辑类型，叠在动态字段之上。
+// 一张按名字索引的 map——这是 object 模型，不是"行 + 附件"。
+let obj = users.get_document(&key)?;          // BTreeMap<String, DynamicValue>
+
+// 写：命中声明的名字走 typed 路径（索引、reduce、事件一并生效），
+// 未知名字落进动态段。
+users.put_document(&key, &obj);
+
+// 调用方自己分别持有两半时，直接用段级接口：
+let dynamic = users.get_fields(&key);         // Option<BTreeMap<String, DynamicValue>>
+users.put_fields(&key, &dynamic.unwrap_or_default());
 ```
 
 嵌入式语言读取器（Python / Steel 摊位）经 schema 导出消费动态 codec——`bindings/okm-python`（PyO3）与 `bindings/okm-steel` 与 Rust derive 字节一致；版本默认值迁移在该路径同样生效。
 
-### 4. 引擎后端
+### 4. 运行时：关系（junction 与图）
+
+```rust
+// junction：每端 ns 一条单向条目（共两条），双向都能查。
+let mut edges: Junction<_, UserToSession> = Junction::new(store.clone());
+edges.link(&user, &session);                  // 正向 + 反向，一个实例内
+let sessions = user.get_session(&edges);      // 方法生成在 key 类型上
+edges.unlink(&user, &session);
+
+// 图：端点是自描述引用——没有注册表，没有宽度表。
+let mut g: Graph<_, Employment> = Graph::new(store.clone());
+g.link(&EdgeHead {
+    src: NodeRef::new(&10u16.to_be_bytes(), &1u64.to_be_bytes()),  // [ns][len][pkey]
+    dst: NodeRef::new(&11u16.to_be_bytes(), &9u64.to_be_bytes()),
+    predicate: "employs".into(),                                  // 运行期数据，进词汇表
+}, &Employment { since_year: 2020, weight: 7 }, 1)?;             // edge id 由调用方给
+
+g.out_nodes(&user_ref);                       // 一跳邻居，以 NodeRef 返回
+g.typed_out("employs", &user_ref);            // 谓词限定的遍历（0x09 面）
+g.in_edges(&org_ref);                         // 谁指向这里
+g.predicates();                               // 全部关系类型：一次 0x04 前缀扫描
+g.by_attr_face(<BySince as KvIndex>::SLOT, &2020u16.to_be_bytes()); // 声明的属性面
+g.unlink(1)?;                                 // 解码边体，精确删除它产出的那些面
+```
+
+分工：`Refs`/`Junction` 面向固定、强类型的端点对；图边面向开放端点、
+运行期谓词、平行边与属性。节点的"类型"仍是普通文档 collection——ns 就是
+类型标记，所以按节点种类过滤用的是那个 collection 自己的索引。
+
+### 5. 跨表原子写：batch 路径
+
+一个 `MemBatch`、一次提交，要么全活要么全无（ADR-0003）。文档写入用
+`save_with_prev_into`，图与 junction 用各自的 `*_into` 兄弟：
+
+```rust
+let mut batch = MemBatch::default();
+users.save_with_prev_into(&mut batch, &key, &new_row, Some(&old_row));
+g.link_into(&mut batch, &head, &attrs, 7)?;
+store.commit_batch(batch)?;                    // 行、面与账本一起落地
+```
+
+`save_with_prev_into` 是 `save_into`（只管编码）的语义兄弟：reduce 的
+折/回折与旧面清理都经 `BatchStore`（batch 的读穿透视图）完成，所以同一批
+里对同一组的两次 fold 看见的是本批已产出的值，不会重复计数
+（[ADR-0031](docs/adr/0031-batch-write-semantics.md)）。subscribe 事件按裁
+决留在 batch 路径之外：批量写者的事件归它自己，在未提交的批里发事件等于
+宣布一次可能永不落地的写。
+
+### 6. 引擎后端
 
 ```toml
 [dependencies]
-okm = { version = "0.1", features = ["fjall"] }    # 或 "slatedb"
+okm-core = { version = "0.1", features = ["fjall"] }    # 或 "slatedb" / "redb"
 ```
 
 - **fjall**（同步）：`FjallStore::open(path)` — 本地 LSM 引擎，单 `Database` 句柄，按需 `persist`。
 - **slatedb**（异步）：`SlatedbStore::open(path, Arc<dyn ObjectStore>)` — 对象存储后端；构造 store 用 `slatedb::object_store` 的 re-export，版本永远和 slatedb 内部一致。异步遍历走 `AsyncJunction`。
-- **MockStore**：内存 `BTreeMap`，memcmp 序——与真实引擎迭代语义一致，测试套件使用。
+- **TestStore**：测试用的引擎矩阵，跑的是真实引擎（slatedb 内存、fjall 临时目录、redb 临时文件）——没有会与真实实现漂移的 mock。
 
-## 项目结构
+## 接口层级
 
-```
-okm-derive/        过程宏 crate：KeyEncode、DocumentEncode、JunctionEncode（零 I/O）
-okm/src/key.rs     KeyEncode trait + PrefixKey
-okm/src/index.rs   Row + KvIndex trait + 索引扫描辅助
-okm/src/junction.rs    KvJunction trait + 0x3 段 slot key
-okm/src/storage.rs  VirtualStorage trait + MockStore
-okm/src/table.rs       Collection<S, K, R> 行装配点
-okm/src/collection.rs  Junction<S, E> junction 装配点
-okm/src/fjall_backend.rs    fjall 适配（feature "fjall"）
-okm/src/slatedb_backend.rs  slatedb 适配（feature "slatedb"）
-okm-query/         扩展算子 crate：merge_join、group_by（消费 scan 有序流，零 core 依赖）
-okm/tests/         integration（MockStore）、fjall_eval、slatedb_eval
-docs/adr/          架构决策记录（docs/PLAN.md 为实施计划）
-```
+四层，每层建在下一层之上。贯穿四层的规则是：**每层用下一层的货币说话**——声明层产出字节，
+装配点调用引擎契约，引擎只看见字节。
+
+| 层 | 接口 | 它承诺什么 |
+|---|---|---|
+| 声明层 | `KeyEncode` / `DocumentEncode` / `JunctionEncode` / `GraphEncode`（okm-derive） | 纯 `Vec<u8>` 进出——没有存储、没有 I/O、没有引擎类型；这正是每个 derive 保持单 item 纯函数的前提 |
+| 装配层 | `Collection<S, K, R>` / `Junction<S, E>` / `Graph<S, E>`，加 reduce 与 subscribe 钩子 | 绑定**一个**引擎实例；写取 `&mut self`、读取 `&self`；声明本身就是注册表，没有需要在运行期同步的 schema 对象 |
+| 引擎契约 | `VirtualStorage` / `VirtualStorageAsync` / `SharedVirtualStorage`（`okm-core/src/engine/storage.rs`） | 编码字节上的七个方法——后端唯一必须说的一种语言 |
+| 消费层 | okm-query / okm-stream / okm-graph / okm-vector / okm-ngram / bindings | 位于装配层之上，消费它的产物（有序扫描流、subscribe 事件、document），对 core 零改动 |
+
+两种 schema 载体——编译期声明（okm-derive）与 schema 数据（okm-dynamic）——落到的都是下面
+同样两层，所以「用哪种模式」从不改变引擎契约，也不改变字节。
+
+### 引擎层的全貌
+
+一套契约、两个世界、一个载体、两个适配器：
+
+| 项 | 种类 | 契约 |
+|---|---|---|
+| `VirtualStorage` | 同步契约 | `put` / `get` / `del` / `scan_suffix` / `scan_range` / `scan_range_iter` / `commit_batch`；写操作取 `&self`（ADR-0026）；`scan_range` 是**唯一**的有序读原语——`scan_suffix` 与 `scan_range_iter` 都以它为默认实现 |
+| `VirtualStorageAsync` | 异步镜像 | 同一套面，改为 await（`SlatedbStore`、`WireClient` 实现） |
+| `SharedVirtualStorage` | 能力 | `shared_handle()` 返回**同一份物理键空间**的句柄，绝不是副本；`NestStorage` 与 `scan_range_iter` 的回表都依赖它 |
+| `MemBatch` | 载体 | 有序 op 列表；调用方往里填，一次 `commit_batch` 作为一次引擎级写落盘 |
+| `ScanIter` | 迭代器 | 覆盖各后端原生 owned 迭代器的封闭枚举（fjall / redb / slatedb / remote / buffered）；引擎能倒走的地方就保留 `DoubleEndedIterator` |
+| `BatchStore<'a, S>` | 适配器 | 把 batch 当成写入器：点读先看本批待写项（倒序最新）再看 store，写只追加，扫描形态 panic（ADR-0031） |
+
+同步契约共有八个实现——六个后端、两个适配器：
+
+| 类型 | 位置 | 形态 | Shared |
+|---|---|---|---|
+| `FjallStore` | `engine/fjall_backend.rs` | 本地 LSM（feature `fjall`） | 是 |
+| `RedbStore` | `engine/redb_backend.rs` | COW B-tree（feature `redb`） | 是 |
+| `SlatedbSync` | `engine/slatedb_backend.rs` | slatedb 的同步视图；异步面是 `SlatedbStore` | 否 |
+| `LocalStorageStore` | `engine/localstorage_backend.rs` | 浏览器 localStorage（feature `localstorage`） | 是 |
+| `RemoteStore` | `engine/nest.rs` | 线上客户端；它的服务端半边 `NestStorage` 是一个引擎互斥量上的泵，**不是** `VirtualStorage` | 否 |
+| `TestStore` | `engine/test_engine.rs` | 跑真实引擎的测试矩阵（slatedb 内存 / fjall / redb） | 是 |
+| `EngineBox` | `bindings/okm-entry` | **适配器**：分派到进程内 `TestStore` 或宿主注入的 `Engine`（四个字节方法）——让宿主可以持有另一份 okm 构建 | 否 |
+| `BatchStore` | `engine/storage.rs` | **适配器**：装饰一个 `S`，把写重定向进 `MemBatch`，自己什么都不落盘 | 否 |
+
+决策记录见 [docs/adr/](docs/adr/)；落地状态见 [docs/PLAN.md](docs/PLAN.md)。
 
 ## 设计要点
 
