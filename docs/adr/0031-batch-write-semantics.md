@@ -59,7 +59,7 @@ impl VirtualStorage for BatchStore<'_, S> { /* get / put / del, read-through */ 
    panics with the contract rather than answering a partial view (every scan
    shape funnels through `scan_range`). A caller that needs a scan during a
    batch is modelling a different operation (read, decide, then open a batch).
-3. **`Collection::save_with_prev_into(batch, key, doc, prev)`** — the semantic
+3. **`Collection::save_with_prev_into(&mut self, batch, key, doc, prev)`** — the semantic
    sibling of `save_into`: primary + faces (as today), `prev`'s faces that the
    new document no longer produces deleted, the embedded children `prev` held
    that the new document no longer does released (as `put` does), and the
@@ -72,6 +72,16 @@ impl VirtualStorage for BatchStore<'_, S> { /* get / put / del, read-through */ 
 5. **Subscribe emission stays out of the batch path** — declared absent, not
    silently dropped. A batch writer's events belong to it; emitting them from
    inside an uncommitted batch would announce writes that may never land.
+
+**Vocabulary growth cannot ride the batch.** Interning asks a vocabulary for its
+next id, and that answer comes from a scan of the id face — which `BatchStore`
+refuses by construction. So `save_with_prev_into` interns against the ENGINE
+before it opens the batch (`&mut self` exists for exactly this one reason). A
+batch that never commits may leave allocated-but-unused labels; ids are
+append-only and never reused, so that is dead weight, not corruption. The
+alternative — a cursor face per vocabulary so allocation becomes two point
+reads — spends a family slot per categorical field to buy an atomicity nobody
+needs.
 
 ## Consequences
 

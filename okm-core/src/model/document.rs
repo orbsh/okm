@@ -105,7 +105,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
             .map(|v| R::decode_payload(&v));
         if let Some(old) = &prev {
             let header = self.header();
-        R::__okm_apply_reduces(&mut self.store, key, old, &header, false);
+            R::__okm_apply_reduces(&mut self.store, key, old, &header, false);
         }
         self.store.put(pkey, document.encode_payload());
         for (ek, ev) in R::index_entries(key, document, &self.header()) {
@@ -209,7 +209,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     /// are its own concern — emitting from an uncommitted batch would
     /// announce writes that may never land.
     pub fn save_with_prev_into(
-        &self,
+        &mut self,
         batch: &mut crate::engine::storage::MemBatch,
         key: &K,
         document: &R,
@@ -217,14 +217,37 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     ) {
         let pkey = self.primary_key(key);
         let header = self.header();
+
+        // Intern FIRST, against the ENGINE rather than the batch (ADR-0032):
+        // allocation asks the vocabulary for its next id, that answer comes from
+        // a scan, and `BatchStore` refuses scans by design (ADR-0031) — a batch
+        // view cannot merge its pending ops with the engine's iterator. So
+        // vocabulary growth commits just ahead of the batch. A batch that never
+        // commits can therefore leave allocated-but-unused labels: harmless,
+        // because ids are append-only and never reused. What must NOT happen —
+        // and cannot — is a committed row pointing at an id the store never saw.
+        let interned: Option<R> = if R::HAS_VOCAB {
+            let mut copy = document.clone();
+            copy.__okm_intern(&mut self.store, &header);
+            Some(copy)
+        } else {
+            None
+        };
+        let document = interned.as_ref().unwrap_or(document);
+
         let mut adapter = crate::engine::storage::BatchStore::new(&self.store, batch);
 
         // The old row: the caller's, or read through the adapter so a pending
         // write of the SAME key in this batch counts as the old row.
-        let prev_owned = match prev {
+        let mut prev_owned = match prev {
             Some(_) => None,
             None => adapter.get(&pkey).map(|v| R::decode_payload(&v)),
         };
+        // A decoded row carries ids, not labels: name it, so a reduce group on a
+        // categorical field folds and unfolds under the same key `put` uses.
+        if let Some(old) = prev_owned.as_mut() {
+            old.__okm_deref_vocab(&self.store);
+        }
         let prev = prev.or(prev_owned.as_ref());
 
         // Unfold the old document from every reduce group before folding the

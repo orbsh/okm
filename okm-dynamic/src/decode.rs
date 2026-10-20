@@ -254,7 +254,7 @@ fn decode_fixed(
         // generic fixed walk treats it as raw bytes.
         FieldType::Vector { .. } => Value::Bytes(raw.to_vec()), // frame payload as-is
         FieldType::Str | FieldType::Bytes | FieldType::VarInt | FieldType::Quant(_)
-        | FieldType::Vocab(_) | FieldType::Offset(_) => {
+        | FieldType::Offset(_) => {
             return Err(CodecError::TypeMismatch {
                 field: name,
                 expected: "hot-capable fixed-width kind",
