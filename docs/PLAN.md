@@ -1236,3 +1236,32 @@ bytes; doing them after P3 means hex locks change once, not twice.
       connection, explicit-Err teardown, no tokio). `VirtualStorageAsync`
       relocates slatedb_backend → storage.rs. Details, rejected options,
       and the panel-migration baseline: ADR-0028.
+
+## Semantic batch writes (ADR-0031, 2026-10-20)
+
+- [x] `BatchStore` (`okm-core/src/engine/storage.rs`): the batch as a
+      *writer* — `get` reads the batch's pending ops newest-first, then the
+      store (put-then-del and del-then-put both answer correctly), `put`/`del`
+      only append, and every scan shape panics with the contract instead of
+      answering a partial ordered view. `VirtualStorage`'s writes take
+      `&self` (ADR-0026), so the borrowed batch sits behind a `RefCell`; the
+      caller keeps ownership of the op list.
+- [x] `Collection::save_with_prev_into(batch, key, doc, prev)` (ADR-0031):
+      the semantic sibling of `save_into` — primary + faces into the caller's
+      batch, the faces `prev` produced that the new document no longer
+      produces deleted, embedded children `prev` held released, and the
+      reduce fold/unfold applied through `BatchStore` (so two writes of one
+      group in one batch accumulate instead of each folding from the
+      pre-batch value). `prev = None` reads through the adapter, which also
+      sees a row the same batch already wrote. Subscribe emission stays out
+      by decision: a batch writer owns its events.
+- [x] Tests (`okm-core/tests/save_into_test.rs`): one group written twice in
+      one batch counts twice, an in-batch overwrite unfolds the pending row,
+      stale faces removed, caller-supplied `prev`, an abandoned batch moves
+      neither the row nor the ledger, document + junction + ledger in one
+      commit, read-through ordering, scan refusal.
+- [ ] Owed: subscribe emission for batch writers (its own decision — fire at
+      commit, or stay the caller's); a `save_into` deprecation path once
+      `save_with_prev_into` covers every call site; a batch delete has no
+      semantic sibling yet (deletes still go through the point path), add one
+      when a caller needs atomic delete + reduce.

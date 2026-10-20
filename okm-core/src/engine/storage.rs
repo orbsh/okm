@@ -245,6 +245,77 @@ impl MemBatch {
     }
 }
 
+/// A batch seen as a *writer* the semantic write path can use (ADR-0031):
+/// reads consult the batch's pending ops first (last op per key wins),
+/// then fall through to the store; writes only accumulate into the batch.
+/// Nothing reaches the engine until the caller's own `commit_batch`.
+///
+/// This is what lets `Collection::save_with_prev_into` run the reduce
+/// fold/unfold through a batch: the read-modify-write of a group
+/// accumulator needs a `get`, and `MemBatch` alone has none — so a
+/// same-group fold would read the pre-batch value twice and double-count.
+/// Read-through also covers the batch's own writes, in order.
+///
+/// `VirtualStorage`'s writes take `&self` (ADR-0026), so the borrowed
+/// batch sits behind a `RefCell`; the caller keeps ownership and gets the
+/// accumulated ops back when the adapter is dropped.
+///
+/// **Point reads only.** A scan that merges pending ops with the store's
+/// iterator is a different operation (read, decide, then open a batch),
+/// and a partial view would be worse than none: every scan shape
+/// (`scan_range`, and the `scan_suffix` / `scan_range_iter` defaults that
+/// funnel through it) panics with the contract instead of answering.
+pub struct BatchStore<'a, S: VirtualStorage> {
+    store: &'a S,
+    batch: std::cell::RefCell<&'a mut MemBatch>,
+}
+
+impl<'a, S: VirtualStorage> BatchStore<'a, S> {
+    pub fn new(store: &'a S, batch: &'a mut MemBatch) -> Self {
+        Self {
+            store,
+            batch: std::cell::RefCell::new(batch),
+        }
+    }
+}
+
+impl<S: VirtualStorage> VirtualStorage for BatchStore<'_, S> {
+    fn put(&self, key: Vec<u8>, value: Vec<u8>) {
+        self.batch.borrow_mut().put(key, value);
+    }
+
+    fn get(&self, key: &[u8]) -> Option<Vec<u8>> {
+        // Newest op wins: a put-then-del leaves a `del` that shadows the
+        // put, a del-then-put leaves the put — both answer correctly.
+        let pending = self
+            .batch
+            .borrow()
+            .ops
+            .iter()
+            .rev()
+            .find(|(k, _)| k.as_slice() == key)
+            .map(|(_, v)| v.clone());
+        match pending {
+            Some(v) => v,
+            None => self.store.get(key),
+        }
+    }
+
+    fn del(&self, key: &[u8]) {
+        self.batch.borrow_mut().del(key);
+    }
+
+    fn scan_range(&self, _begin: &[u8], _end: Option<&[u8]>) -> Vec<Vec<u8>> {
+        // Funnels every scan shape here: `scan_suffix` and
+        // `scan_range_iter` both default through this method.
+        panic!(
+            "BatchStore refuses scans (ADR-0031): a batch's pending ops and the \
+             store's iterator cannot be merged into one ordered view. Return to \
+             the store, read what you need, then open the batch."
+        )
+    }
+}
+
 /// 异步引擎最小接口（与同步 VirtualStorage 对齐，ADR-0027：
 /// 对齐的是审计后的同步面——scan_suffix_kv/batch 不在 trait 上）。
 /// ADR-0028 relocated it from slatedb_backend: the aligned surface is

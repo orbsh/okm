@@ -30,5 +30,6 @@
 - [0028 — 浏览器内的 VirtualStorage 家族：localStorage 引擎 + 异步线协议客户端](0028-in-browser-virtualstorage.md)（已接受并实现）— [中文](0028-in-browser-virtualstorage.zh-CN.md)
 - [0029 — 路径索引：在无 schema 区上声明的路径](0029-path-index.md)（已接受并实现——Path 组件词汇 + 自定界无计数编码 + 一路径一 slot；挂在动态段写路径上）— [中文](0029-path-index.zh-CN.md)
 - [0030 — slot：固定面一字节，计数族两字节](0030-slot-fixed-faces-and-counting-families.md)（已接受并落地——单张面的族各占一个 1 字节号 0x00–0x0A（含图的一对谓词词汇表 0x04/0x05）；计数族保留 2 字节 slot 与 12 位计数，号码与上限不变）— [中文](0030-slot-fixed-faces-and-counting-families.zh-CN.md)
+- [0031 — 批量写路径承载语义：BatchStore 适配器](0031-batch-write-semantics.md)（已接受并落地——点读穿透 batch、scan 大声拒绝；`save_with_prev_into` 让跨表原子提交与 reduce 并存，旧面在同一批内删除）— [中文](0031-batch-write-semantics.zh-CN.md)
 
 实施计划见 [docs/PLAN.md](../PLAN.md)。

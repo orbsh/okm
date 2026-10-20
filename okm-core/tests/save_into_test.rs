@@ -2,9 +2,15 @@
 //! (ADR-0003): a document collection and a junction encode into one batch,
 //! one commit makes them live or die together. Covers both orderings
 //! (nothing written before commit; everything written after).
+//!
+//! Plus the SEMANTIC batch path (ADR-0031): `save_with_prev_into` runs the
+//! reduce fold/unfold and the face cleanup through `BatchStore`, so a table
+//! with a ledger can join a batch — same-group writes accumulate, overwrites
+//! leave no stale faces, and an uncommitted batch moves no accumulator.
 
 use okm_core::{
     DocumentEncode, JunctionEncode, KeyEncode, Ref, VirtualStorage, TestStore, Collection,
+    Document, ReduceCodec,
 };
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
@@ -96,3 +102,245 @@ fn cross_collection_one_batch() {
 }
 
 use __OkmIndex_Post_by_author as Post_ByAuthor;
+
+// ---- the semantic batch path (ADR-0031) ----
+
+#[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
+pub struct EntryKey {
+    pub id: u64,
+}
+
+/// A row carrying both a ledger (reduce) and a face (index): every hook the
+/// semantic batch path must honor is declared here, so one call exercises
+/// all of them.
+#[derive(DocumentEncode, Clone, PartialEq, Debug)]
+#[ok_ref(EntryKey)]
+#[ok_index(by_account { fields(account) })]
+#[ok_reduce(Count { group(account) })]
+#[ok_ns(44)]
+pub struct Entry {
+    pub account: u64,
+    pub amount: u32,
+}
+
+use __OkmIndex_Entry_by_account as Entry_ByAccount;
+
+/// Group accumulator as the STORE (not the batch) currently holds it.
+fn ledger(t: &Collection<TestStore, EntryKey, Entry>, account: u64) -> Option<u64> {
+    okm_core::reduce_get::<_, __OkmReduce_Entry_0>(
+        t.store(),
+        <Entry as okm_core::Document>::NS_PREFIX,
+        &EntryKey { id: 0 },
+        &Entry { account, amount: 0 },
+    )
+}
+
+fn entry(id: u64, account: u64, amount: u32) -> (EntryKey, Entry) {
+    (EntryKey { id }, Entry { account, amount })
+}
+
+#[test]
+fn same_group_twice_in_one_batch_accumulates() {
+    // The double-count the ADR removes: without read-through both writes
+    // would fold from the pre-batch accumulator and the group would end at 1.
+    let mut store = TestStore::slatedb_mem();
+    let t = <Entry as Document>::collection(store.clone());
+    let mut batch = okm_core::MemBatch::default();
+
+    let (k1, r1) = entry(1, 7, 10);
+    let (k2, r2) = entry(2, 7, 5);
+    t.save_with_prev_into(&mut batch, &k1, &r1, None);
+    t.save_with_prev_into(&mut batch, &k2, &r2, None);
+
+    // Nothing is visible before the commit — the ledger included.
+    assert!(ledger(&t, 7).is_none(), "an uncommitted batch owns no accumulator");
+
+    store.commit_batch(batch).expect("commit");
+    assert_eq!(ledger(&t, 7), Some(2), "both writes folded, in batch order");
+}
+
+#[test]
+fn overwrite_in_one_batch_reads_the_pending_old_row() {
+    // prev = None reads through the adapter, so the row THIS batch produced
+    // is the old row: its fold is undone before the new fold lands.
+    let mut store = TestStore::slatedb_mem();
+    let t = <Entry as Document>::collection(store.clone());
+    let (k, v1) = entry(1, 7, 10);
+    let v2 = Entry { account: 8, amount: 10 };
+    let mut batch = okm_core::MemBatch::default();
+    t.save_with_prev_into(&mut batch, &k, &v1, None);
+    t.save_with_prev_into(&mut batch, &k, &v2, None);
+    store.commit_batch(batch).expect("commit");
+
+    assert_eq!(ledger(&t, 7), Some(0), "the stale fold was unfolded");
+    assert_eq!(ledger(&t, 8), Some(1), "the new fold counted once");
+    assert!(
+        t.scan::<Entry_ByAccount>(&7u64.to_be_bytes()).is_empty(),
+        "the old value's face is gone — no dangling index entry"
+    );
+    assert_eq!(t.scan::<Entry_ByAccount>(&8u64.to_be_bytes()).len(), 1);
+}
+
+#[test]
+fn caller_supplied_prev_drives_the_unfold_and_the_cleanup() {
+    // The common shape: the caller already read the old row in a prior batch.
+    let mut store = TestStore::slatedb_mem();
+    let t = <Entry as Document>::collection(store.clone());
+    let (k, v1) = entry(1, 7, 10);
+
+    let mut batch = okm_core::MemBatch::default();
+    t.save_with_prev_into(&mut batch, &k, &v1, None);
+    store.commit_batch(batch).expect("commit");
+    assert_eq!(ledger(&t, 7), Some(1));
+
+    let v2 = Entry { account: 8, amount: 10 };
+    let mut batch = okm_core::MemBatch::default();
+    t.save_with_prev_into(&mut batch, &k, &v2, Some(&v1));
+    store.commit_batch(batch).expect("commit");
+
+    assert_eq!(ledger(&t, 7), Some(0));
+    assert_eq!(ledger(&t, 8), Some(1));
+    assert!(t.scan::<Entry_ByAccount>(&7u64.to_be_bytes()).is_empty());
+}
+
+#[test]
+fn an_uncommitted_batch_moves_neither_the_row_nor_the_ledger() {
+    let mut store = TestStore::slatedb_mem();
+    let t = <Entry as Document>::collection(store.clone());
+    let (k, v1) = entry(1, 7, 1);
+    let mut batch = okm_core::MemBatch::default();
+    t.save_with_prev_into(&mut batch, &k, &v1, None);
+    store.commit_batch(batch).expect("commit");
+
+    // Abandoned: the unfold and the fold both live only in the dropped batch.
+    let mut batch = okm_core::MemBatch::default();
+    t.save_with_prev_into(&mut batch, &k, &Entry { account: 8, amount: 2 }, None);
+    drop(batch);
+
+    assert_eq!(ledger(&t, 7), Some(1), "the unfold never landed");
+    assert_eq!(ledger(&t, 8), None, "the fold never landed");
+    assert_eq!(t.get(&k).expect("row").account, 7);
+}
+
+#[test]
+fn atomic_write_and_reduce_in_one_commit() {
+    // The ADR's headline: multi-table atomicity AND a ledger, together.
+    let mut store = TestStore::slatedb_mem();
+    let mut batch = okm_core::MemBatch::default();
+    let t = <Entry as Document>::collection(store.clone());
+    let edges: okm_core::Junction<TestStore, AuthorPost> = okm_core::Junction::new(store.clone());
+
+    let (k, r) = entry(1, 7, 3);
+    t.save_with_prev_into(&mut batch, &k, &r, None);
+    edges.save_into(&mut batch, &AuthorKey { id: 7 }, &PostKey { id: 1 });
+    store.commit_batch(batch).expect("commit");
+
+    assert_eq!(ledger(&t, 7), Some(1));
+    assert_eq!(edges.forward(&AuthorKey { id: 7 }), vec![PostKey { id: 1 }]);
+}
+
+#[test]
+fn batch_store_reads_pending_ops_newest_first() {
+    let store = TestStore::slatedb_mem();
+    store.put(b"k1".to_vec(), b"stored".to_vec());
+    let mut batch = okm_core::MemBatch::default();
+    {
+        let view = okm_core::BatchStore::new(&store, &mut batch);
+        view.put(b"k1".to_vec(), b"fresh".to_vec());
+        view.del(b"k2");
+        view.put(b"k2".to_vec(), b"revived".to_vec());
+        view.put(b"k3".to_vec(), b"new".to_vec());
+
+        // Pending put shadows the store; del-then-put answers the put.
+        assert_eq!(view.get(b"k1").as_deref(), Some(&b"fresh"[..]));
+        assert_eq!(view.get(b"k2").as_deref(), Some(&b"revived"[..]));
+        assert_eq!(view.get(b"k3").as_deref(), Some(&b"new"[..]));
+        // Put-then-del answers the del.
+        view.del(b"k1");
+        assert_eq!(view.get(b"k1"), None, "the later del shadows the put");
+        // The store itself never moved.
+        assert_eq!(store.get(b"k1").as_deref(), Some(&b"stored"[..]));
+        assert!(store.get(b"k3").is_none());
+    }
+    // The caller still owns the batch, with every op in order (two puts and
+    // one del for k1/k2, one put for k3).
+    assert_eq!(batch.ops.len(), 5);
+}
+
+#[test]
+fn scans_on_a_batch_view_are_refused() {
+    let store = TestStore::slatedb_mem();
+    let mut batch = okm_core::MemBatch::default();
+    let view = okm_core::BatchStore::new(&store, &mut batch);
+    let refused = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| view.scan_suffix(b"x")));
+    assert!(refused.is_err(), "a partial ordered view must never be answered");
+}
+
+// ---- embedded children on the batch path ----
+
+#[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
+pub struct CardKey {
+    pub id: u64,
+}
+
+#[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
+pub struct ContactKey {
+    pub card_id: u64,
+    pub kind: u8,
+}
+
+#[derive(DocumentEncode, Clone, PartialEq, Debug)]
+#[ok_ref(ContactKey)]
+#[ok_ns(46)]
+pub struct Contact {
+    pub number: String,
+}
+
+#[derive(DocumentEncode, Clone, PartialEq, Debug)]
+#[ok_ref(CardKey)]
+#[ok_ns(45)]
+pub struct Card {
+    pub kind: u8,
+    pub contact: Ref<Contact, ContactKey>,
+}
+
+#[test]
+fn embedded_children_are_written_and_released_in_the_batch() {
+    let mut store = TestStore::slatedb_mem();
+    let cards = <Card as Document>::collection(store.clone());
+    let contacts: Collection<TestStore, ContactKey, Contact> = Collection::new(store.clone());
+    let k = CardKey { id: 1 };
+    let c1 = ContactKey { card_id: 1, kind: 1 };
+    let c2 = ContactKey { card_id: 1, kind: 2 };
+
+    let mut batch = okm_core::MemBatch::default();
+    cards.save_with_prev_into(
+        &mut batch,
+        &k,
+        &Card {
+            kind: 1,
+            contact: Ref::own(c1.clone(), Contact { number: "111".into() }),
+        },
+        None,
+    );
+    store.commit_batch(batch).expect("commit");
+    assert!(contacts.get(&c1).is_some(), "child lands with the parent");
+
+    // Overwrite pointing somewhere else: the old child is released in the
+    // same batch, exactly as put's overwrite pass does.
+    let old = cards.get(&k).expect("old card");
+    let mut batch = okm_core::MemBatch::default();
+    cards.save_with_prev_into(
+        &mut batch,
+        &k,
+        &Card {
+            kind: 2,
+            contact: Ref::own(c2.clone(), Contact { number: "222".into() }),
+        },
+        Some(&old),
+    );
+    store.commit_batch(batch).expect("commit");
+
+    assert!(contacts.get(&c1).is_none(), "the dropped child is released");
+    assert_eq!(contacts.get(&c2).map(|c| c.number), Some("222".to_string()));
+}

@@ -156,16 +156,104 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     /// them live or die together.
     ///
     /// Note: save_into bypasses put's higher write-path hooks (reduce
-    /// folds, subscribe emission, overwrite unfold) — it is the encoding
-    /// surface, not the semantic one. Documents that participate in reduce or
-    /// subscriptions must go through `put`/`upsert_with`; save_into is
-    /// for batch-aligned bulk loads where the consumer settles those
-    /// folds itself.
+    /// folds, subscribe emission, overwrite unfold, stale-face cleanup) —
+    /// it is the encoding surface, not the semantic one. A table that
+    /// declares `#[ok_reduce]`, or an overwrite that must not leave a
+    /// dangling face, goes through [`Self::save_with_prev_into`] (the
+    /// semantic sibling, ADR-0031) or the point path `put`/`upsert_with`;
+    /// save_into stays for batch-aligned bulk loads where the consumer
+    /// settles those folds itself.
     pub fn save_into(&self, batch: &mut crate::engine::storage::MemBatch, key: &K, document: &R) {
         batch.put(self.primary_key(key), document.encode_payload());
         for (ek, ev) in R::index_entries(key, document, &self.header()) {
             batch.put(ek, ev);
         }
+    }
+
+    /// The semantic sibling of [`save_into`](Self::save_into) (ADR-0031):
+    /// same primary + face encoding into the caller's batch, plus the write
+    /// path's semantics that `save_into` leaves to the caller —
+    ///
+    /// - **reduce fold/unfold**, applied through a
+    ///   [`BatchStore`](crate::engine::storage::BatchStore) (a batch
+    ///   read-through view) so a table declaring `#[ok_reduce]` can join a
+    ///   batch at all, and two writes to one group in one batch accumulate
+    ///   instead of each folding from the pre-batch value;
+    /// - **faces the new document no longer produces are deleted**: an
+    ///   entry key encodes the indexed value, so a changed value lands at a
+    ///   new key — the old entry would dangle forever (`put`'s documented
+    ///   contract), and this path removes it in the same batch;
+    /// - **embedded documents released**, exactly as `put` does: children
+    ///   `prev` pointed at that the new document does not are deleted.
+    ///
+    /// `prev` is the caller's old row when it holds it (the common case: it
+    /// just read it); `None` reads it through the adapter, which also sees a
+    /// document this same batch has already produced for the key.
+    ///
+    /// Subscribe emission stays OUT (ADR-0031 §5): a batch writer's events
+    /// are its own concern — emitting from an uncommitted batch would
+    /// announce writes that may never land.
+    pub fn save_with_prev_into(
+        &self,
+        batch: &mut crate::engine::storage::MemBatch,
+        key: &K,
+        document: &R,
+        prev: Option<&R>,
+    ) {
+        let pkey = self.primary_key(key);
+        let header = self.header();
+        let mut adapter = crate::engine::storage::BatchStore::new(&self.store, batch);
+
+        // The old row: the caller's, or read through the adapter so a pending
+        // write of the SAME key in this batch counts as the old row.
+        let prev_owned = match prev {
+            Some(_) => None,
+            None => adapter.get(&pkey).map(|v| R::decode_payload(&v)),
+        };
+        let prev = prev.or(prev_owned.as_ref());
+
+        // Unfold the old document from every reduce group before folding the
+        // new one in — without this the second write double-counts.
+        if let Some(old) = prev {
+            R::__okm_apply_reduces(&mut adapter, key, old, &header, false);
+        }
+
+        adapter.put(pkey, document.encode_payload());
+
+        // Faces: write the new set, drop the old set's leftovers. An entry
+        // key present in both sets holds the same (key, value) pair, so it is
+        // written once and never deleted.
+        let new_faces = R::index_entries(key, document, &header);
+        if let Some(old) = prev {
+            let fresh: std::collections::HashSet<&Vec<u8>> =
+                new_faces.iter().map(|(ek, _)| ek).collect();
+            for (ek, _) in R::index_entries(key, old, &header) {
+                if !fresh.contains(&ek) {
+                    adapter.del(&ek);
+                }
+            }
+        }
+        for (ek, ev) in new_faces {
+            adapter.put(ek, ev);
+        }
+
+        // Embedded documents: write children carried with Some(value), and
+        // release references the OLD document held that the new one does not.
+        for (ck, cp) in R::__okm_embed_entries(document) {
+            adapter.put(ck, cp);
+        }
+        if let Some(old) = prev {
+            let new_keys: std::collections::HashSet<Vec<u8>> =
+                R::__okm_embed_keys(document).into_iter().collect();
+            for old_key in R::__okm_embed_keys(old) {
+                if !new_keys.contains(&old_key) {
+                    adapter.del(&old_key);
+                }
+            }
+        }
+
+        // Fold the new document into each declared group.
+        R::__okm_apply_reduces(&mut adapter, key, document, &header, true);
     }
 
     /// Index entry key for access method `I` derived from `key` + `document`.
