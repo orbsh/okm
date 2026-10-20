@@ -55,17 +55,22 @@ use it today (field names 0x02/0x03, predicate/kind tokens 0x04/0x05).
 
    ```
    FIELD_VOCAB      = 0x02, 0x03    // field names — fixed faces, unchanged
+                      0x0C          // …and their allocation cursor
    PREDICATE_VOCAB  = 0x04, 0x05    // predicates / kind tokens — unchanged
+                      0x0D          // …and their allocation cursor
    0x1nnn / 0x2nnn  label → id / id → label   nnn = the vocabulary's number
+   0x3nnn           allocation cursor          same nnn
    ```
 
-   Field #0 takes counter 1: `0x1001` (label → id) and `0x2001` (id → label).
-   Field #1 takes counter 2, and so on. One number per vocabulary means the pair
-   cannot be split by an off-by-one, the capacity is the full 12-bit range (4095
-   vocabularies), and no family carries a parity convention inside it.
+   Field #0 takes counter 1: `0x1001` (label → id), `0x2001` (id → label) and
+   `0x3001` (the cursor). Field #1 takes counter 2, and so on. One number per
+   vocabulary means the three faces cannot be split by an off-by-one, the
+   capacity is the full 12-bit range (4095 vocabularies), and no family carries a
+   parity convention inside it. The cursor sits NEXT to the two directions
+   because it belongs to the vocabulary, not to any consumer of it.
 
-   The rest of the family space shifts up to make room: declared indexes 0x3nnn,
-   reduces 0x4nnn, junctions 0x5nnn. That is one layout change, done now, with
+   The rest of the family space shifts up to make room: declared indexes 0x4nnn,
+   reduces 0x5nnn, junctions 0x6nnn. That is one layout change, done now, with
    no production data — the alternative (packing vocabularies into an existing
    family's counter range) buys nothing once a renumbering is already on the
    table.
@@ -75,7 +80,17 @@ use it today (field names 0x02/0x03, predicate/kind tokens 0x04/0x05).
    migration (moving them would mean copying live name tables — a silent failure
    mode, see Consequences).
 
-3. **The id width is the declaration's choice, and its ceiling is exact.**
+3. **A cursor entry, so allocation is a point read.** The next id is stored —
+   one entry `[ns][0x3nnn] → next` — instead of being derived from `max + 1`
+   over the id face. Two consequences, both load-bearing: the hot path never
+   scans (an earlier cut loaded the whole vocabulary on every `put`, because the
+   derive builds one cache per field per call), and a batch writer can intern
+   inside its own batch, since a batch serves point reads and refuses ordered
+   ones (ADR-0031). A store written before cursors existed is recognised without
+   a scan — id zero is absent exactly when the vocabulary is empty — and the
+   first allocation writes the cursor that retires the fallback.
+
+4. **The id width is the declaration's choice, and its ceiling is exact.**
    `Vocab<u8>` spends one byte and holds 256 labels (ids 0–255); `Vocab<u16>`
    two bytes and 65536; through `Vocab<u128>`. UTF-8 labels are the only value
    form — a numeric code is a number field and enum semantics belong to the

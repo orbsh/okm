@@ -2,7 +2,7 @@
 //! derive 生成 `Reduce` impl + Document hook；Collection::put/delete 读改写。
 //! 覆盖：计数+求和复合 acc 的可逆往返、delete_by_pkey 同一路径、
 //! 同 group 多次 fold 累积、scan_reduces 全组扫描、entry 布局
-//! `[ns 2B][slot 2B][group 段]`（reduce 族 0x2，独立计数器）。
+//! `[ns 2B][slot 2B][group 段]`（reduce 族 0x5，独立计数器）。
 
 use okm_core::{Reduce, ReduceLogic, ReduceCodec, TestStore, Document, DocumentEncode};
 
@@ -188,10 +188,10 @@ fn entry_layout_is_ns_slot_group() {
     t.put(&k, &r);
 
     // author_id 是 u64 → group 段 = 8B BE；reduce 走独立段 0x4
-    // （计数 1 → slot 0x4001，ADR-0016：不再续接索引计数器）。
+    // （计数 1 → slot 0x5001，ADR-0016：不再续接索引计数器）。
     let ek = <AuthorStats as Reduce>::entry_key(<Post as Document>::NS_PREFIX, &k, &r);
     assert_eq!(ek.len(), 4 + 8);
     assert_eq!(&ek[..2], &[0, 21]);
-    assert_eq!(&ek[2..4], &[0x40, 0x01]);
+    assert_eq!(&ek[2..4], &[0x50, 0x01]);
     assert_eq!(&ek[4..], &55u64.to_be_bytes());
 }

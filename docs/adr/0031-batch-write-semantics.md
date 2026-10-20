@@ -59,7 +59,7 @@ impl VirtualStorage for BatchStore<'_, S> { /* get / put / del, read-through */ 
    panics with the contract rather than answering a partial view (every scan
    shape funnels through `scan_range`). A caller that needs a scan during a
    batch is modelling a different operation (read, decide, then open a batch).
-3. **`Collection::save_with_prev_into(&mut self, batch, key, doc, prev)`** — the semantic
+3. **`Collection::save_with_prev_into(batch, key, doc, prev)`** — the semantic
    sibling of `save_into`: primary + faces (as today), `prev`'s faces that the
    new document no longer produces deleted, the embedded children `prev` held
    that the new document no longer does released (as `put` does), and the
@@ -73,15 +73,14 @@ impl VirtualStorage for BatchStore<'_, S> { /* get / put / del, read-through */ 
    silently dropped. A batch writer's events belong to it; emitting them from
    inside an uncommitted batch would announce writes that may never land.
 
-**Vocabulary growth cannot ride the batch.** Interning asks a vocabulary for its
-next id, and that answer comes from a scan of the id face — which `BatchStore`
-refuses by construction. So `save_with_prev_into` interns against the ENGINE
-before it opens the batch (`&mut self` exists for exactly this one reason). A
-batch that never commits may leave allocated-but-unused labels; ids are
-append-only and never reused, so that is dead weight, not corruption. The
-alternative — a cursor face per vocabulary so allocation becomes two point
-reads — spends a family slot per categorical field to buy an atomicity nobody
-needs.
+**Vocabulary growth rides the batch, through the cursor.** Interning allocates an
+id, and this ADR's scan refusal is what constrains how: the first cut derived
+`max + 1` from a scan of the id face, which a batch cannot do, so
+`save_with_prev_into` had to intern against the engine first. ADR-0032's cursor
+face removed the scan — allocation is now one point read of `[ns][0x3nnn]` plus
+three point writes, all of which `BatchStore` serves, and the pending batch
+answers its own cursor reads. So a batch writer's vocabulary growth, row and
+faces commit together, and `save_with_prev_into` keeps `&self`.
 
 ## Consequences
 

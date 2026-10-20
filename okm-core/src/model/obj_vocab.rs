@@ -38,8 +38,9 @@
 
 use crate::engine::storage::{scan_suffix_kv, MemBatch, VirtualStorage};
 use crate::model::index::{
-    segment, slot, write_slot, Slot, FIELD_VOCAB_ID_SLOT, FIELD_VOCAB_NAME_SLOT,
-    PREDICATE_VOCAB_ID_SLOT, PREDICATE_VOCAB_NAME_SLOT,
+    segment, slot, write_slot, Slot, FIELD_VOCAB_CURSOR_SLOT, FIELD_VOCAB_ID_SLOT,
+    FIELD_VOCAB_NAME_SLOT, PREDICATE_VOCAB_CURSOR_SLOT, PREDICATE_VOCAB_ID_SLOT,
+    PREDICATE_VOCAB_NAME_SLOT,
 };
 use crate::model::vocab::VocabId;
 use std::collections::HashMap;
@@ -53,6 +54,11 @@ pub struct VocabFaces {
     pub id_slot: Slot,
     /// label → id
     pub name_slot: Slot,
+    /// Allocation: one entry, the next id to hand out. It is what turns
+    /// allocation into a point read — and a point read is the only read a batch
+    /// can serve (`BatchStore` refuses scans), so it is also what lets a batch
+    /// writer intern inside its own batch.
+    pub cursor_slot: Slot,
 }
 
 /// The data vocabulary of ONE declared `Vocab<N>` field, picked by that field's
@@ -65,6 +71,7 @@ pub const fn data_vocab(field_index: u16) -> VocabFaces {
     VocabFaces {
         id_slot: slot(segment::VOCAB_ID, counter),
         name_slot: slot(segment::VOCAB_LABEL, counter),
+        cursor_slot: slot(segment::VOCAB_CURSOR, counter),
     }
 }
 
@@ -73,9 +80,11 @@ impl VocabFaces {
     /// field's `FieldType::Vocab(id_slot)`: the label direction is the SAME
     /// counter in the other family (ADR-0032).
     pub const fn from_id_slot(id_slot: Slot) -> Self {
+        let counter = id_slot & 0x0FFF;
         Self {
             id_slot,
-            name_slot: slot(segment::VOCAB_LABEL, id_slot & 0x0FFF),
+            name_slot: slot(segment::VOCAB_LABEL, counter),
+            cursor_slot: slot(segment::VOCAB_CURSOR, counter),
         }
     }
 }
@@ -96,23 +105,36 @@ pub fn vocab_label<S: VirtualStorage + ?Sized>(
 }
 
 /// Field names of the payload, in the document's own ns (ADR-0012).
-pub const FIELD_VOCAB: VocabFaces =
-    VocabFaces { id_slot: FIELD_VOCAB_ID_SLOT, name_slot: FIELD_VOCAB_NAME_SLOT };
+pub const FIELD_VOCAB: VocabFaces = VocabFaces {
+    id_slot: FIELD_VOCAB_ID_SLOT,
+    name_slot: FIELD_VOCAB_NAME_SLOT,
+    cursor_slot: FIELD_VOCAB_CURSOR_SLOT,
+};
 /// The collection's predicate vocabulary: a graph's predicates, a node
 /// collection's kind tokens (ADR-0017 §3).
-pub const PREDICATE_VOCAB: VocabFaces =
-    VocabFaces { id_slot: PREDICATE_VOCAB_ID_SLOT, name_slot: PREDICATE_VOCAB_NAME_SLOT };
+pub const PREDICATE_VOCAB: VocabFaces = VocabFaces {
+    id_slot: PREDICATE_VOCAB_ID_SLOT,
+    name_slot: PREDICATE_VOCAB_NAME_SLOT,
+    cursor_slot: PREDICATE_VOCAB_CURSOR_SLOT,
+};
 
-/// One vocabulary cache, bound to one ns segment, one face pair, and one id
-/// width `I`. Both directions plus the allocation cursor; lazily loaded from
-/// the engine on first touch.
+/// One vocabulary cache, bound to one ns segment, one face triple, and one id
+/// width `I`.
+///
+/// The hot path never scans. A write probes the label face (a pending batch
+/// counts — `BatchStore::get` answers from its ops), reads the cursor, and
+/// commits three point writes; a read probes the id face. The in-memory maps are
+/// a per-call memo, NOT a loaded snapshot: loading the vocabulary on first touch
+/// cost a full two-face scan per `put`, because the derive builds one cache per
+/// field per call.
 #[derive(Debug)]
 pub struct VocabCache<I: VocabId = u16> {
     faces: VocabFaces,
     by_id: HashMap<I, String>,
     by_name: HashMap<String, I>,
-    next_id: I,
-    loaded: bool,
+    /// The next id this cache knows about: `None` until the first allocation in
+    /// this cache asks the store.
+    next_id: Option<I>,
 }
 
 impl<I: VocabId> VocabCache<I> {
@@ -121,27 +143,50 @@ impl<I: VocabId> VocabCache<I> {
             faces,
             by_id: HashMap::new(),
             by_name: HashMap::new(),
-            next_id: I::ZERO,
-            loaded: false,
+            next_id: None,
         }
     }
 
-    /// Look up (or allocate) the id for `label` against the engine.
-    /// `header` = the collection's key header (`[ns]`) — vocabulary keys live
-    /// inside the same ns segment as the data they name. Exhausting the width
-    /// panics: the alternative is a wrapped id naming the wrong label forever.
+    fn name_key(&self, header: &[u8], label: &str) -> Vec<u8> {
+        let mut key = header.to_vec();
+        write_slot(&mut key, self.faces.name_slot);
+        key.extend_from_slice(label.as_bytes());
+        key
+    }
+
+    fn id_key(&self, header: &[u8], id: I) -> Vec<u8> {
+        let mut key = header.to_vec();
+        write_slot(&mut key, self.faces.id_slot);
+        key.extend_from_slice(&id.to_be());
+        key
+    }
+
+    fn cursor_key(&self, header: &[u8]) -> Vec<u8> {
+        let mut key = header.to_vec();
+        write_slot(&mut key, self.faces.cursor_slot);
+        key
+    }
+
+    /// Look up (or allocate) the id for `label`. `header` = the collection's key
+    /// header (`[ns]`) — vocabulary keys live in the same ns segment as the data
+    /// they name. Exhausting the width panics: the alternative is a wrapped id
+    /// naming the wrong label forever.
     pub fn id_for<S: VirtualStorage + ?Sized>(
         &mut self,
         store: &mut S,
         header: &[u8],
         label: &str,
     ) -> I {
-        self.load(store, header);
-        if let Some(id) = self.by_name.get(label) {
-            return *id;
+        // Already interned? ONE point probe — no scan, and through a BatchStore
+        // it sees a label this same batch allocated earlier.
+        let name_key = self.name_key(header, label);
+        if let Some(id) = store.get(&name_key).and_then(|raw| I::from_be(&raw)) {
+            self.remember(id, label);
+            return id;
         }
-        let id = self.next_id;
-        self.next_id = match id.succ() {
+
+        let id = self.take_next(store, header);
+        let next = match id.succ() {
             Some(next) => next,
             None => panic!(
                 "vocabulary exhausted: {} labels fill a {}-byte id (ADR-0032); this label \
@@ -150,94 +195,100 @@ impl<I: VocabId> VocabCache<I> {
                 I::WIDTH
             ),
         };
-        // One engine batch writes both directions: the vocabulary is consistent
-        // even if the caller's own write fails later (extra entries are
-        // harmless — numbers are append-only).
+
+        // ONE batch, three point writes: label → id, id → label, and the bumped
+        // cursor. Through `BatchStore` the batch is the CALLER's batch, so a
+        // batch writer gets vocabulary growth, its row and its faces atomically.
         let mut batch = MemBatch::default();
-        let mut name_key = header.to_vec();
-        write_slot(&mut name_key, self.faces.name_slot);
-        name_key.extend_from_slice(label.as_bytes());
+        let id_key = self.id_key(header, id);
         batch.put(name_key, id.to_be());
-        let mut id_key = header.to_vec();
-        write_slot(&mut id_key, self.faces.id_slot);
-        id_key.extend_from_slice(&id.to_be());
         batch.put(id_key, label.as_bytes().to_vec());
+        batch.put(self.cursor_key(header), next.to_be());
         let _ = store.commit_batch(batch);
-        self.by_id.insert(id, label.to_owned());
-        self.by_name.insert(label.to_owned(), id);
+
+        self.next_id = Some(next);
+        self.remember(id, label);
         id
     }
 
-    /// Resolve ids from decoded frames to labels. Unknown ids (a writer added
-    /// entries this cache has not loaded — impossible under single-writer,
-    /// possible with shared engines) fall back to a direct engine probe, then to
-    /// `None` (the caller leaves the value unresolved or renders a placeholder).
+    /// Resolve an id to its label. One point probe (memoized); an id the
+    /// vocabulary does not know yields `None` — the caller leaves the value
+    /// unresolved rather than inventing a name.
     pub fn name_for<S: VirtualStorage + ?Sized>(
         &mut self,
         store: &S,
         header: &[u8],
         id: I,
     ) -> Option<String> {
-        self.load(store, header);
-        if let Some(n) = self.by_id.get(&id) {
-            return Some(n.clone());
+        if let Some(name) = self.by_id.get(&id) {
+            return Some(name.clone());
         }
-        // Direct probe before giving up (shared-engine catch-up).
-        let mut key = header.to_vec();
-        write_slot(&mut key, self.faces.id_slot);
-        key.extend_from_slice(&id.to_be());
-        let name = store.get(&key)?;
-        let name = String::from_utf8(name).ok()?;
-        self.by_id.insert(id, name.clone());
-        self.by_name.insert(name.clone(), id);
-        if let Some(next) = id.succ() {
-            self.next_id = self.next_id.max(next);
-        }
+        let raw = store.get(&self.id_key(header, id))?;
+        let name = String::from_utf8(raw).ok()?;
+        self.remember(id, &name);
         Some(name)
     }
 
-    /// Non-allocating label → id probe that LOADS first: a handle that never
-    /// wrote anything still answers (the discipline "prime the cache before a
-    /// typed read" is retired — the read itself primes).
+    /// Non-allocating label → id probe. One point probe (memoized).
     pub fn id_get<S: VirtualStorage + ?Sized>(
         &mut self,
         store: &S,
         header: &[u8],
         label: &str,
     ) -> Option<I> {
-        self.load(store, header);
-        self.by_name.get(label).copied()
+        if let Some(id) = self.by_name.get(label) {
+            return Some(*id);
+        }
+        let raw = store.get(&self.name_key(header, label))?;
+        let id = I::from_be(&raw)?;
+        self.remember(id, label);
+        Some(id)
     }
 
-    /// Load both directions from the engine once. Full-vocabulary load, not
-    /// per-id probes: the vocabulary is small and append-only, so one scan
-    /// covers every future read until this process writes a new label itself.
-    fn load<S: VirtualStorage + ?Sized>(&mut self, store: &S, header: &[u8]) {
-        if self.loaded {
-            return;
+    fn remember(&mut self, id: I, label: &str) {
+        self.by_id.insert(id, label.to_owned());
+        self.by_name.insert(label.to_owned(), id);
+    }
+
+    /// The next id to hand out: the cursor entry when the store has one, else —
+    /// a vocabulary that has never allocated — id zero. A store written before
+    /// cursors existed is recognisable WITHOUT a scan: id zero is absent exactly
+    /// when the vocabulary is empty (ids are never deleted), so a populated
+    /// legacy vocabulary falls through to the one-time max + 1 scan, and the
+    /// allocation writes the cursor that retires that path forever.
+    fn take_next<S: VirtualStorage + ?Sized>(&mut self, store: &S, header: &[u8]) -> I {
+        if let Some(next) = self.next_id {
+            return next;
         }
-        let mut p2 = header.to_vec();
-        write_slot(&mut p2, self.faces.id_slot);
-        for (suffix, name) in scan_suffix_kv(store, &p2) {
-            let Some(id) = I::from_be(&suffix) else {
-                continue;
-            };
-            if let Ok(label) = String::from_utf8(name) {
-                self.by_id.insert(id, label);
-            }
-        }
-        // The label direction mirrors; also derives next_id (max + 1).
-        let mut p3 = header.to_vec();
-        write_slot(&mut p3, self.faces.name_slot);
-        for (suffix, idv) in scan_suffix_kv(store, &p3) {
-            if let (Ok(label), Some(id)) = (String::from_utf8(suffix), I::from_be(&idv)) {
-                self.by_name.insert(label, id);
-                if let Some(next) = id.succ() {
-                    self.next_id = self.next_id.max(next);
+        let next = match store
+            .get(&self.cursor_key(header))
+            .and_then(|raw| I::from_be(&raw))
+        {
+            Some(cursor) => cursor,
+            None => {
+                if store.get(&self.id_key(header, I::ZERO)).is_none() {
+                    I::ZERO
+                } else {
+                    self.scan_max_plus_one(store, header)
                 }
             }
+        };
+        self.next_id = Some(next);
+        next
+    }
+
+    fn scan_max_plus_one<S: VirtualStorage + ?Sized>(&self, store: &S, header: &[u8]) -> I {
+        let mut prefix = header.to_vec();
+        write_slot(&mut prefix, self.faces.id_slot);
+        let mut next = I::ZERO;
+        for (suffix, _) in scan_suffix_kv(store, &prefix) {
+            if let Some(id) = I::from_be(&suffix)
+                && let Some(after) = id.succ()
+            {
+                next = next.max(after);
+            }
         }
-        self.loaded = true;
+        next
     }
 }
 

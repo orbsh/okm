@@ -1295,13 +1295,19 @@ bytes; doing them after P3 means hex locks change once, not twice.
       and to_map/from_map lifting the label. `tests/vocab_test.rs` proves two
       categorical fields on one row: per-field id spaces, labels across put/get,
       the map bridge, from_map + re-intern, and the schema's per-field faces.
-- [x] `save_with_prev_into` interns before it opens the batch — through the
-      ENGINE, because allocation's cursor comes from a scan and `BatchStore`
-      refuses scans (ADR-0031). Growth therefore commits just ahead of the row:
-      a rolled-back batch can leave allocated-but-unused labels, which is dead
-      weight, not corruption (ids never repeat). The signature takes `&mut self`
-      for that one reason. `save_into` stays encoding-only and therefore requires
-      pre-interned documents.
+- [x] `save_with_prev_into` interns INSIDE the batch: the vocabulary's cursor
+      face (0x3nnn) makes allocation one point read plus three point writes, all
+      of which `BatchStore` serves, so growth + row + faces commit together and
+      the signature keeps `&self`. `save_into` stays encoding-only and therefore
+      requires pre-interned documents.
+- [x] Vocabulary allocation cursor: `[ns][0x3nnn] → next id`, one entry per
+      vocabulary, sitting next to its two directions. It replaces the `max + 1`
+      scan, so (a) `put` and `read` on a categorical table use point operations
+      only (proved by `vocab_test::a_put_on_a_categorical_table_never_scans`,
+      which runs against a store that panics on every scan) and (b) batches can
+      allocate. Fixed-name vocabularies get fixed cursors (0x0C, 0x0D); the
+      dynamic plan surface emits the same cursor op, keeping `put_fields` and
+      `plan_put_fields` byte-identical.
 - [x] okm-dynamic: a `Vocab` field decodes to its LABEL. The pure decoder hands
       out the id as raw `Bytes` (it has no store) and the collection's read paths
       run `resolve_vocab_labels` — one point probe per categorical field against

@@ -87,16 +87,18 @@ whose instances are enumerated by declaration order or by a discriminator:
 ```text
 0x1nnn  vocabulary: label → id  [ns][0x1nnn][label bytes]       nnn = the vocabulary's number
 0x2nnn  vocabulary: id → label  [ns][0x2nnn][id bytes BE]       same nnn, other family
-0x3nnn  declared index          [ns][0x3nnn][index fields][pkey prefix]  nnn = declaration order
-0x4nnn  reduce                  [ns][0x4nnn][group seg]         nnn = declaration order,
+0x3nnn  vocabulary: cursor      [ns][0x3nnn] → next id BE       same nnn; one entry
+0x4nnn  declared index          [ns][0x4nnn][index fields][pkey prefix]  nnn = declaration order
+0x5nnn  reduce                  [ns][0x5nnn][group seg]         nnn = declaration order,
                                                                 independent counter
-0x5nnn  junction                [ns][0x5nnn][local id][peer id] nnn = discriminator << 1
+0x6nnn  junction                [ns][0x6nnn][local id][peer id] nnn = discriminator << 1
                                                                 | direction
-segments 0x6–0x0F  free
+segments 0x7–0x0F  free
 ```
 
-A declared `Vocab<N>` field (ADR-0032) spends ONE number: its two directions are
-the two families 0x1 and 0x2. The direction is the family, never a parity
+A declared `Vocab<N>` field (ADR-0032) spends ONE number and occupies three
+faces: 0x1nnn / 0x2nnn for the two directions and 0x3nnn for the allocation
+cursor, so the three sit next to each other and the pairs stay recognisable. The direction is the family, never a parity
 convention inside one family — `0x1001` and `0x2001` are the label → id and
 id → label faces of the first categorical field, `0x1002`/`0x2002` the second.
 The two collection-wide name domains are older than this scheme and keep their
