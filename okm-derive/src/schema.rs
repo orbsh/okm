@@ -352,7 +352,7 @@ fn inner_kind(ty: &str) -> TS2 {
 }
 
 fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> Vec<FieldSchema> {
-    let mut fs = Vec::new();
+    let mut fs: Vec<FieldSchema> = Vec::new();
     for f in named.named.iter() {
         let id = f.ident.clone().unwrap();
         let ty = &f.ty;
@@ -829,6 +829,31 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> Vec<FieldSchema> {
                     quote! { 1 },
                     quote! { 1 },
                     Some(quote! { ::okm_core::FieldType::Enum }),
+                )
+            }
+            _ if ty_str.starts_with("Vocab<") => {
+                // Vocab<T> (ADR-0032): one byte, the id in this FIELD's data
+                // vocabulary. The schema carries that field's id face so a
+                // dynamic reader resolves names without the declaration
+                // (name face = id face + 1).
+                let inner = ty_str
+                    .trim_start_matches("Vocab<")
+                    .trim_end_matches('>')
+                    .to_string();
+                let inner_ty: syn::Type = syn::parse_str(&inner)
+                    .unwrap_or_else(|_| panic!("{ctx}: bad Vocab domain type {inner}"));
+                // Declaration-order index among the Vocab fields: `fs` holds
+                // only the fields already pushed, so this IS the counter.
+                let vi = fs.iter().filter(|f| f.ty_str.starts_with("Vocab<")).count() as u16;
+                let vi_lit = proc_macro2::Literal::u16_unsuffixed(vi);
+                (
+                    quote! { buf.push(self.#id.to_wire()[0]); },
+                    quote! {{ let v = <::okm_core::Vocab<#inner_ty>>::from_wire(&b[offset..offset+1]); offset += 1; v }},
+                    quote! { 1 },
+                    quote! { 1 },
+                    Some(quote! {
+                        ::okm_core::FieldType::Vocab(::okm_core::index::vocab_faces(#vi_lit).0)
+                    }),
                 )
             }
             _ if ty_str == "Offset" || offset_base.is_some() => {

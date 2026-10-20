@@ -334,6 +334,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         let v = self.store.get(&k)?;
         let mut document = R::decode_payload(&v);
         R::__okm_embed_deref(&mut document, &self.store);
+        R::__okm_deref_vocab(&mut document, &self.store);
         Some(document)
     }
 
@@ -498,6 +499,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
                     v.map(|v| {
                         let mut document = R::decode_payload(&v);
                         R::__okm_embed_deref(&mut document, &store);
+                        R::__okm_deref_vocab(&mut document, &store);
                         document
                     })
                 } else {
