@@ -45,7 +45,7 @@ pub use model::presets::{Count, HighWater, LowAcc, LowWater, ReduceFieldSource, 
 pub use model::collection::Junction;
 pub use model::junction::KvJunction;
 pub use model::graph::{EdgeBody, EdgeHead, EdgeKey, Graph, GraphEncode, NodeRef, NodeSet};
-pub use engine::storage::{VirtualStorage, VirtualStorageAsync, MemBatch, SharedVirtualStorage, scan_suffix_kv, scan_suffix_kv_async};
+pub use engine::storage::{BatchStore, VirtualStorage, VirtualStorageAsync, MemBatch, SharedVirtualStorage, scan_suffix_kv, scan_suffix_kv_async};
 #[cfg(any(feature = "test-engines", feature = "fjall", feature = "redb"))]
 pub use engine::test_engine::TestStore;
 pub use engine::nest::{NestStorage, RemoteStore, VirtualHandle};
