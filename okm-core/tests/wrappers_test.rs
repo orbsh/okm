@@ -1,8 +1,8 @@
-//! Wrapper codecs: VarInt / Quant / Enum / Offset — payload TLV framing,
+//! Wrapper codecs: VarInt / Quant / Offset — payload TLV framing,
 //! FieldDesc reporting, and Arrow/Parquet round trips (ADR-0007 Phase 2).
 
 use okm_core::{
-    Enum, EnumTag, FieldType, KeyEncode, TestStore, Offset, Quant, Reverse, Document,
+    FieldType, KeyEncode, TestStore, Offset, Quant, Reverse, Document,
     DocumentEncode, Collection, VarInt, offset_decode, offset_encode,
 };
 
@@ -12,27 +12,13 @@ pub struct WKey {
     pub id: u64,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum State {
-    Active,
-    Suspended,
-    Closed,
-}
-
-// Tags are an explicit wire contract — non-contiguous on purpose (9
-// reserves room) and independent of declaration order.
-impl EnumTag for State {
-    const TAGS: &'static [(Self, u8)] =
-        &[(State::Active, 0), (State::Suspended, 1), (State::Closed, 9)];
-}
-
 #[derive(DocumentEncode, Clone, PartialEq, Debug)]
 #[ok_ref(WKey)]
 #[ok_ns(7)]
 pub struct WRow {
     pub hits: VarInt<u64>,
     pub ratio: Quant<3>,
-    pub state: Enum<State>,
+    pub flag: u8,
     #[ok_offset(base = 1_700_000_000)]
     pub created: Offset,
 }
@@ -41,7 +27,7 @@ fn sample(i: u64) -> WRow {
     WRow {
         hits: VarInt(1_000 + i * 7),
         ratio: Quant::<3>::new(0.5 + i as f64 / 10.0),
-        state: Enum([State::Active, State::Suspended, State::Closed][i as usize % 3]),
+        flag: (i % 3) as u8,
         created: Offset(1_700_000_000 + i as i64 * 86_400),
     }
 }
@@ -63,13 +49,13 @@ fn varint_frame_is_variable_length() {
     let document = WRow {
         hits: VarInt(1_000),
         ratio: Quant::<3>::new(0.0),
-        state: Enum(State::Active),
+        flag: 0,
         created: Offset(1_700_000_000),
     };
-    // [ver u8][hot_len u16 BE][ratio 8][state 1][created 4][hits TLV].
+    // [ver u8][hot_len u16 BE][ratio 8][flag 1][created 4][hits TLV].
     // hits=1000 → 2 bytes; cold frame = 1 tag + 1 len + 2 val at 16.
     let p = document.encode_payload();
-    assert_eq!(&p[1..3], &[0, 13], "hot = ratio(8)+state(1)+created(4)");
+    assert_eq!(&p[1..3], &[0, 13], "hot = ratio(8)+flag(1)+created(4)");
     assert_eq!(p[16], 0); // tag 0 = first declared field
     assert_eq!(p[17], 2); // len varint = 2
     assert_eq!(&p[18..20], &[0x83, 0xE8]); // varint(1000): w=2, byte order = value order
@@ -93,7 +79,7 @@ fn field_desc_reports_wrapper_kinds() {
     assert_eq!(fs[0].width, 0); // variable-length regime
     assert_eq!(fs[1].ty, FieldType::Quant(3));
     assert_eq!(fs[1].width, 8);
-    assert_eq!(fs[2].ty, FieldType::Enum);
+    assert_eq!(fs[2].ty, FieldType::U8);
     assert_eq!(fs[2].width, 1);
     assert_eq!(fs[3].ty, FieldType::Offset(1_700_000_000));
     assert_eq!(fs[3].width, 4);
@@ -153,11 +139,11 @@ mod parquet {
             .iter()
             .map(|f| f.name().to_string())
             .collect();
-        assert_eq!(&names[2..], &["hits", "ratio", "state", "created"]);
+        assert_eq!(&names[2..], &["hits", "ratio", "flag", "created"]);
         let dts: Vec<_> = schema.fields().iter().map(|f| f.data_type().clone()).collect();
         assert_eq!(dts[2], arrow::datatypes::DataType::UInt64); // VarInt → logical integer
         assert_eq!(dts[3], arrow::datatypes::DataType::Float64); // Quant → dequantized
-        assert_eq!(dts[4], arrow::datatypes::DataType::UInt8); // Enum → tag
+        assert_eq!(dts[4], arrow::datatypes::DataType::UInt8); // flag: u8
         assert_eq!(dts[5], arrow::datatypes::DataType::Int64); // Offset → absolute
 
         // Spot-check document 0's logical values.

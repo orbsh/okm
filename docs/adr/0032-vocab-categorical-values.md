@@ -1,8 +1,10 @@
 # ADR-0032: Categorical values are data — `Vocab<T>` over a fourth vocabulary family
 
-**Status**: Accepted (2026-10-20) — implementation in progress; stage 1 (the
-vocabulary class moving into counting family 4) has landed, `Vocab<T>` itself
-follows
+**Status**: Accepted (2026-10-20) — implemented. `Vocab<T>` works end to end
+(derive recognition, interning on write, deref on read, one vocabulary pair per
+declared field), and `Enum<T>` / `EnumTag` / `FieldType::Enum` are removed: a
+consumer that wants enum semantics wraps the field in its own Rust enum and
+converts at the edge.
 **Date**: 2026-10-20
 **Chinese**: [0032-vocab-categorical-values.zh-CN.md](0032-vocab-categorical-values.zh-CN.md)
 **Depends on**: ADR-0012 (field-name vocabulary), ADR-0017 §3 (token

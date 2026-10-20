@@ -1287,19 +1287,23 @@ bytes; doing them after P3 means hex locks change once, not twice.
       `HAS_VOCAB`, so tables without categorical fields pay nothing but the
       constant. `VocabCache` methods take `?Sized` stores so the `&dyn` hook
       shape works.
-- [ ] Derive: recognize `Vocab<Domain>` fields — payload 1-byte encode/decode,
+- [x] Derive: recognize `Vocab<Domain>` fields — payload 1-byte encode/decode,
       `FieldType::Vocab(id_face)`, `HAS_VOCAB = true`, generated `__okm_intern`,
-      name resolution in `__okm_embed_deref`, and to_map/from_map lifting the
-      label. **Until this lands a document cannot declare a Vocab field** (the
-      dynamic decode arm is deliberately `unreachable!`).
+      `__okm_deref_vocab` (called by the read path after the embedded-ref hook),
+      and to_map/from_map lifting the label. `tests/vocab_test.rs` proves two
+      categorical fields on one row: per-field id spaces, labels across put/get,
+      the map bridge, from_map + re-intern, and the schema's per-field faces.
 - [ ] `save_with_prev_into` interning through `BatchStore` (vocabulary growth +
       row + faces in one batch); `save_into` stays encoding-only and therefore
       requires pre-interned documents.
-- [ ] Retire `Enum<T>` / `EnumTag` (delete `wrappers/enum_tag.rs`), migrate the
-      wrappers tests and hex locks, and drop the `okm-dynamic` `Enum` arms.
-- [ ] Docs: MODELING gains "Payload field types and wrappers" (the table the
-      current guide lacks — `Enum` was never documented at all), README status
-      line, and the ADR status flips from "in progress" to landed.
+- [x] Retire `Enum<T>` / `EnumTag` / `FieldType::Enum`: the wrapper module is
+      gone, every match site (schema serde, Arrow/tooling bridges, okm-dynamic,
+      both bindings, the derive arms) is clean, and `wrappers_test` covers the
+      same byte layout with a plain `u8` field. Consumer-side enum semantics are
+      the consumer's own wrapper.
+- [x] Docs: MODELING (both languages) gains "Payload field types and wrappers" —
+      the full wire table plus the three rules (categorical values are `Vocab`,
+      `Option` is not a field type, interning is a write-path step).
 - [ ] Migration note for existing data: old one-byte `Enum` tags decode without
       error into a DIFFERENT category; one layout change, version bump, no
       silent path. Same window as the vocabulary-face move (no production data).

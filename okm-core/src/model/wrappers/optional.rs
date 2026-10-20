@@ -8,7 +8,7 @@
 //!
 //! Why not std's `Option<T>` directly in field position: the derive's fixed-width
 //! pipeline needs a wrapper contract (wire width, default, encode/decode)
-//! exactly like `Enum<T>`/`Offset<T>`/`VarInt<T>`. `Optional` also
+//! exactly like `Offset<T>`/`VarInt<T>`. `Optional` also
 //! inherits the value's own semantics — a missing field and a field set
 //! to zero are different facts.
 //!
@@ -18,7 +18,7 @@
 //! to `Option(None)` unless `#[ok_default(Some(x))]` says otherwise.
 
 /// The presence wrapper. `T` is any fixed-width codec field
-/// (`u8..u64`, `[u8; N]`, `Enum<E>`, another wrapper...).
+/// (`u8..u64`, `[u8; N]`, `Quant<P>`, another wrapper...).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Option<T>(pub ::std::option::Option<T>);
 

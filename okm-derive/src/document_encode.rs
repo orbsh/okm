@@ -851,7 +851,6 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> TS2 {
         let is_fixedbytes = ty_str.starts_with("[u8;");
         let is_f64 = ty_str.starts_with("Quant<") || ty_str.starts_with("Quant <");
         let is_varint = ty_str.starts_with("VarInt<") || ty_str.starts_with("VarInt <");
-        let is_enum = ty_str.starts_with("Enum<") || ty_str.starts_with("Enum <");
         let is_offset = ty_str.starts_with("Offset");
         let is_embed = ty_str.starts_with("Ref<") || ty_str.starts_with("Ref <") || ty_str.starts_with("Refs<");
         // Ref<D, K>: extract the K type for key encode/decode.
@@ -985,26 +984,6 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> TS2 {
                 #id: match map.get(#name) {
                     Some(::okm_core::obj_dynamic::DynamicValue::Str(v)) => {
                         ::okm_core::Vocab::<#inner_ty>::of(v.clone())
-                    }
-                    _ => #dflt,
-                },
-            });
-        } else if is_enum {
-            // Enum<T>(pub T): the map view carries the VARIANT NAME
-            // (semantic value, not the wire tag). name()/from_name() are
-            // EnumTag methods on the enum type itself — defined once per
-            // enum, shared by every table that uses it (nothing
-            // per-table is generated here).
-            to_map_arms.extend(quote! {
-                out.insert(#name.to_string(), ::okm_core::obj_dynamic::DynamicValue::Str(self.#id.0.name()));
-            });
-            from_map_arms.extend(quote! {
-                #id: match map.get(#name) {
-                    Some(::okm_core::obj_dynamic::DynamicValue::Str(v)) => {
-                        match ::okm_core::wrappers::enum_from_name(v) {
-                            Some(e) => ::okm_core::Enum::from_dyn(e),
-                            None => #dflt,
-                        }
                     }
                     _ => #dflt,
                 },

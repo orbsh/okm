@@ -810,27 +810,6 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> Vec<FieldSchema> {
                     Some(quote! { ::okm_core::FieldType::Bytes }),
                 )
             }
-            _ if ty_str.starts_with("Enum<") => {
-                // Enum<T> — one-byte explicit tag via the user's EnumTag
-                // impl (tags are a wire contract, never positional).
-                let inner = ty_str
-                    .trim_start_matches("Enum<")
-                    .trim_end_matches('>')
-                    .to_string();
-                let inner_ty: syn::Type = syn::parse_str(&inner)
-                    .unwrap_or_else(|_| panic!("{ctx}: bad Enum inner type {inner}"));
-                (
-                    quote! { buf.extend_from_slice(&self.#id.encode()); },
-                    quote! {{
-                        let v = ::okm_core::Enum::<#inner_ty>::decode(&b[offset..offset+1]);
-                        offset += 1;
-                        v
-                    }},
-                    quote! { 1 },
-                    quote! { 1 },
-                    Some(quote! { ::okm_core::FieldType::Enum }),
-                )
-            }
             _ if ty_str.starts_with("Vocab<") => {
                 // Vocab<T> (ADR-0032): one byte, the id in this FIELD's data
                 // vocabulary. The schema carries that field's id face so a

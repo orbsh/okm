@@ -653,6 +653,44 @@ The dynamic codec (schema-driven encoders in Python/Steel) mirrors this
 rule from `CollectionSchema` — per-field defaults travel with the schema so
 the dynamic reader applies the same migration semantics.
 
+### Payload field types and wrappers
+
+Every declared field is one of these wire shapes. This is the map from the Rust
+type in the struct to the bytes in the hot or cold segment; the derive
+recognizes wrappers by name, so the spelling matters.
+
+| Rust type | Wire | Width | Use for |
+|---|---|---|---|
+| `u8` `u16` `u32` `u64`, `i8` … `i64` | BE fixed-width | 1/2/4/8 | numbers, ids, counters |
+| `[u8; N]` | raw N bytes | N | digests, fixed blobs |
+| `String` | UTF-8, TLV frame | 0 (cold) | text, free-form labels |
+| `Bytes` | raw bytes, TLV frame | 0 (cold) | opaque payloads |
+| `Vocab<T>` | one id byte into that field's data vocabulary | 1 | categorical values (status, kind, colour) |
+| `VarInt<T>` | prefix-monotonic variable-length integer | 0 (cold), byte order = value order | integers that must sort in an index but often stay small |
+| `Quant<P>` (bare `Quant` = P3) | fixed-point `i64` | 8 | decimals stored exactly |
+| `Offset` + `#[ok_offset(base = N)]` | `u32` displacement from `base` | 4 | timestamps or monotonic values in a known window |
+| `Reverse<T>` | bit-flipped `T` | width of `T` | descending order in an index without a second column |
+| `Vector<T>` | `[count u32 BE][elements]` | 0 (cold) | homogeneous numeric lists (embeddings) |
+| `Ref<D, K>` / `Refs<D, K>` | the child key bytes | key width / 0 | a document relation carried in the payload (`Embedded documents`) |
+
+Three rules follow from the shapes:
+
+- **A categorical value is `Vocab<T>`, never a Rust enum.** The label↔id mapping
+  lives in the collection's data vocabulary, so a dynamic writer can introduce a
+  category and a dynamic reader can name it, at one byte of wire cost. `T` is a
+  zero-size domain marker: `Vocab<Status>` cannot be assigned a colour, and each
+  `Vocab` field owns its own table and its own 255-value budget. There is no
+  ordering — a field that must sort semantically declares a separate rank column.
+  Consumer-side enum semantics (match arms, exhaustiveness) belong to the
+  consumer: wrap the field in your own enum and convert at the edge.
+- **`Option<T>` is not a field type.** Absence is a sentinel value chosen per
+  field; the derive has no `Option` arm (see the next section).
+- **A `Vocab` field is interned on write.** `Collection::put` and
+  `save_with_prev_into` intern labels before encoding; `save_into` is
+  encoding-only and therefore requires a document already interned through the
+  collection. Interning the 256th distinct label in one field panics — narrow the
+  domain or model that value as `String`.
+
 ### Optional fields: sentinel values, not `Option<T>` (ADR-0027 audit)
 
 Declared `Option<T>` fields are **not supported** — the
