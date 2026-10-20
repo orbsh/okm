@@ -114,7 +114,7 @@ pub trait VirtualStorage {
 /// ONE pass over [`VirtualStorage::scan_range_iter`] (ADR-0027 moved this
 /// off the trait — its old default derived from `scan_suffix` + `get`,
 /// an N+1 shape no engine ever overrode).
-pub fn scan_suffix_kv<S: VirtualStorage>(
+pub fn scan_suffix_kv<S: VirtualStorage + ?Sized>(
     store: &S,
     prefix: &[u8],
 ) -> Vec<(Vec<u8>, Vec<u8>)> {

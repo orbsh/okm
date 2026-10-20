@@ -39,6 +39,12 @@ pub mod segment {
     pub const REDUCE: u16 = 0x2;
     /// Junctions (one one-way entry per endpoint ns, ADR-0015).
     pub const JUNCTION: u16 = 0x3;
+    /// Vocabularies (ADR-0032): every name↔id table lives in this family, two
+    /// counters per table (id→name, name→id). A vocabulary is a face PAIR and
+    /// the class is open-ended, so it cannot be a fixed-face budget: the
+    /// 12-bit counter gives 4095 faces, and the fixed faces stay reserved for
+    /// single faces.
+    pub const VOCAB: u16 = 0x4;
 }
 
 /// Assemble a counting family's slot from its family number and counter.
@@ -76,15 +82,44 @@ pub const fn slot_len(slot: Slot) -> usize {
 pub const PRIMARY_SLOT: Slot = 0x00;
 /// obj dynamic segment (ADR-0012), per-row undeclared fields: fixed face 0x01.
 pub const DYNAMIC_SLOT: Slot = 0x01;
+/// Vocabulary counters inside family 4 (ADR-0032): the PER-FIELD data
+/// vocabularies. Each declared `Vocab<T>` field allocates its own pair in
+/// declaration order — the same discipline `#[ok_index]` uses for its slots,
+/// and the reason this class needs a 12-bit counter instead of the 16-face
+/// budget. The two collection-wide name domains keep their fixed faces
+/// (0x02/0x03 field names, 0x04/0x05 predicate tokens): their NUMBER is fixed,
+/// so they need no allocation, and leaving them in place costs no migration.
+///
+/// ```text
+/// 0x02, 0x03   field names (ADR-0012)          — fixed faces, unchanged
+/// 0x04, 0x05   predicate / node-kind tokens    — fixed faces, unchanged
+/// 4/0,  4/1    Vocab<T> field #0   (id → name, name → id)
+/// 4/2,  4/3    Vocab<T> field #1
+/// …
+/// ```
+pub const VOCAB_FIELD_BASE_COUNTER: u16 = 0;
+
+/// The `(id_slot, name_slot)` pair a `Vocab<T>` field occupies, by its
+/// declaration-order index among the document's `Vocab` fields. Per FIELD, not
+/// per collection: two categorical fields are two independent domains with
+/// independent 255-value budgets, and each one's names are enumerable on their
+/// own.
+pub const fn vocab_faces(field_index: u16) -> (Slot, Slot) {
+    (
+        slot(segment::VOCAB, VOCAB_FIELD_BASE_COUNTER + field_index * 2),
+        slot(segment::VOCAB, VOCAB_FIELD_BASE_COUNTER + field_index * 2 + 1),
+    )
+}
+
 /// Field-name vocabulary, number → name (ADR-0012): fixed face 0x02.
 pub const FIELD_VOCAB_ID_SLOT: Slot = 0x02;
 /// Field-name vocabulary, name → number (ADR-0012): fixed face 0x03.
 pub const FIELD_VOCAB_NAME_SLOT: Slot = 0x03;
 /// Predicate vocabulary, number → name: fixed face 0x04. A collection's token
-/// vocabulary BEYOND field names — a graph's predicates, a node
-/// collection's kind tokens (ADR-0017 §3). A pair of its own, never a band
-/// inside 0x02/0x03: two allocators in one id space hand the same id to two
-/// different names silently.
+/// vocabulary BEYOND field names — a graph's predicates, a node collection's
+/// kind tokens (ADR-0017 §3). A pair of its own, never a band inside 0x02/0x03:
+/// two allocators in one id space hand the same id to two different names
+/// silently.
 pub const PREDICATE_VOCAB_ID_SLOT: Slot = 0x04;
 /// Predicate vocabulary, name → number: fixed face 0x05 (the mirror of
 /// [`PREDICATE_VOCAB_ID_SLOT`]).
@@ -203,6 +238,18 @@ pub trait Document: Sized + Clone {
     fn __okm_embed_keys(&self) -> Vec<Vec<u8>> {
         Vec::new()
     }
+    /// Whether this document declares any `Vocab<T>` field (ADR-0032). `put`
+    /// reads it to choose between encoding the caller's document directly and
+    /// taking a mutable copy for the intern step — tables without categorical
+    /// values pay only the constant.
+    const HAS_VOCAB: bool = false;
+    /// Resolve every `Vocab<T>` field's label to its id in that FIELD's data
+    /// vocabulary (ADR-0032), writing the vocabulary entries through `store`.
+    /// Called by `put` before encoding — and by `save_with_prev_into` through
+    /// `BatchStore`, so vocabulary growth, the row and its faces land in one
+    /// batch. Default no-op (no categorical fields). Interning past 255 distinct
+    /// labels in one field is a loud error, never a wrap.
+    fn __okm_intern(&mut self, _store: &mut dyn VirtualStorage, _header: &[u8]) {}
     /// document -> map: every declared field lifted into a run-time
     /// DynamicValue (ADR-0012 document-map bridge; derive-generated).
     fn to_map(&self) -> std::collections::BTreeMap<String, crate::model::obj_dynamic::DynamicValue>;

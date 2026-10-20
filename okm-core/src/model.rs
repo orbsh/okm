@@ -14,4 +14,5 @@ pub mod reduce;
 pub mod presets;
 pub mod reverse;
 pub mod schema;
+pub mod vocab;
 pub mod wrappers;

@@ -33,7 +33,7 @@
 //! acceptable for a vocabulary that only grows.
 
 use crate::engine::storage::{scan_suffix_kv, MemBatch, VirtualStorage};
-use crate::model::index::{FIELD_VOCAB_ID_SLOT, FIELD_VOCAB_NAME_SLOT, PREDICATE_VOCAB_ID_SLOT, PREDICATE_VOCAB_NAME_SLOT, Slot, write_slot};
+use crate::model::index::{vocab_faces, FIELD_VOCAB_ID_SLOT, FIELD_VOCAB_NAME_SLOT, PREDICATE_VOCAB_ID_SLOT, PREDICATE_VOCAB_NAME_SLOT, Slot, write_slot};
 use std::collections::HashMap;
 
 /// The pair of faces one vocabulary occupies. Numbers are structural
@@ -47,6 +47,16 @@ pub struct VocabFaces {
     pub name_slot: Slot,
 }
 
+/// The data vocabulary of ONE declared `Vocab<T>` field, picked by that
+/// field's declaration-order index among the document's `Vocab` fields
+/// (ADR-0032). Per field, not per collection: two categorical fields are two
+/// independent domains — independent id space, independent 255-value budget,
+/// and each field's names are enumerable on their own (one prefix scan of its
+/// id face).
+pub const fn data_vocab(field_index: u16) -> VocabFaces {
+    let (id_slot, name_slot) = vocab_faces(field_index);
+    VocabFaces { id_slot, name_slot }
+}
 /// Field names of the payload, in the document's own ns (ADR-0012).
 pub const FIELD_VOCAB: VocabFaces = VocabFaces { id_slot: FIELD_VOCAB_ID_SLOT, name_slot: FIELD_VOCAB_NAME_SLOT };
 /// The collection's predicate vocabulary: a graph's predicates, a node
@@ -80,7 +90,7 @@ impl VocabCache {
     /// Look up (or allocate) the id for `name` against the engine.
     /// `header` = the collection's key header (`[ns]`) — vocabulary keys
     /// live inside the same ns segment as the data they name.
-    pub fn id_for<S: VirtualStorage>(
+    pub fn id_for<S: VirtualStorage + ?Sized>(
         &mut self,
         store: &mut S,
         header: &[u8],
@@ -115,7 +125,7 @@ impl VocabCache {
     /// single-writer, possible with shared engines) fall back to a
     /// direct engine probe, then to `None` (caller renders a placeholder
     /// or drops the field).
-    pub fn name_for<S: VirtualStorage>(
+    pub fn name_for<S: VirtualStorage + ?Sized>(
         &mut self,
         store: &S,
         header: &[u8],
@@ -142,7 +152,7 @@ impl VocabCache {
     /// Non-allocating name → id probe that LOADS first: a handle that never
     /// wrote anything still answers (the discipline "prime the cache before
     /// a typed read" is retired — the read itself primes).
-    pub fn id_get<S: VirtualStorage>(&mut self, store: &S, header: &[u8], name: &str) -> Option<u16> {
+    pub fn id_get<S: VirtualStorage + ?Sized>(&mut self, store: &S, header: &[u8], name: &str) -> Option<u16> {
         self.load(store, header);
         self.by_name.get(name).copied()
     }
@@ -150,7 +160,7 @@ impl VocabCache {
     /// Load both directions from the engine once. Full-vocabulary load, not
     /// per-id probes: the vocabulary is small and append-only, so one scan
     /// covers every future read until this process writes a new name itself.
-    fn load<S: VirtualStorage>(&mut self, store: &S, header: &[u8]) {
+    fn load<S: VirtualStorage + ?Sized>(&mut self, store: &S, header: &[u8]) {
         if self.loaded {
             return;
         }
@@ -263,5 +273,27 @@ mod tests {
         batch.put(key(HEADER, FIELD_VOCAB_NAME_SLOT, b"big"), 0x1234u16.to_be_bytes().to_vec());
         let _ = store.commit_batch(batch);
         assert_eq!(d.name_for(&store, HEADER, 0x1234).unwrap(), "big");
+    }
+
+    #[test]
+    fn data_vocabularies_are_one_pair_per_field_in_family_four() {
+        // Per FIELD (ADR-0032): each declared Vocab<T> field owns its own pair,
+        // allocated in declaration order inside counting family 4.
+        let (id0, name0) = (data_vocab(0).id_slot, data_vocab(0).name_slot);
+        let (id1, name1) = (data_vocab(1).id_slot, data_vocab(1).name_slot);
+        assert_ne!(id0, id1, "one pair per field");
+        assert_eq!(id0 >> 12, 4, "vocabularies live in counting family 4");
+        assert_eq!(id1, id0 + 2, "declaration order, two counters per field");
+        assert_eq!(name0, id0 + 1);
+        assert_eq!(name1, id1 + 1);
+        // Two fields no longer share an id space: the same number in two
+        // fields names two different values.
+        let mut store = TestStore::slatedb_mem();
+        let mut status = VocabCache::new(data_vocab(0));
+        let mut color = VocabCache::new(data_vocab(1));
+        assert_eq!(status.id_for(&mut store, HEADER, "active"), 0);
+        assert_eq!(color.id_for(&mut store, HEADER, "red"), 0);
+        assert_eq!(status.name_for(&store, HEADER, 0).unwrap(), "active");
+        assert_eq!(color.name_for(&store, HEADER, 0).unwrap(), "red");
     }
 }

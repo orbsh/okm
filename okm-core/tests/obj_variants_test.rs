@@ -1,5 +1,5 @@
 //! ADR-0012: obj dynamic-segment read/write API over slots 0/1 and the
-//! field-name vocabulary (slots 2/3).
+//! field-name vocabulary (ADR-0032: counting family 4, counters 2/3).
 
 use okm_core::{
     KeyEncode, DocumentEncode, Collection, TestStore, VirtualStorage,
@@ -44,8 +44,11 @@ fn obj_variants_round_trip_over_two_slots() {
     // Typed get is untouched: declared fields live in slot 0.
     assert_eq!(t.get(&UserKey { id: 1 }).unwrap().level, 2);
 
-    // Vocabulary landed in fixed faces 0x02/0x03 under the same ns.
-    let vocab_scan = t.store().scan_suffix(&[0, 9, 2]); // [ns 2B][FIELD_VOCAB_ID_SLOT 0x02]
+    // Vocabulary landed in the vocabulary family (ADR-0032: family 4, counter 2)
+    // under the same ns.
+    let mut vocab_prefix = vec![0u8, 9];
+    okm_core::write_slot(&mut vocab_prefix, okm_core::index::FIELD_VOCAB_ID_SLOT);
+    let vocab_scan = t.store().scan_suffix(&vocab_prefix);
     assert_eq!(vocab_scan.len(), 3, "three names allocated");
 }
 

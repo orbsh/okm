@@ -30,8 +30,14 @@ pub enum FieldType {
     /// `Quant<f64, P>` — fixed-point i64 wire (8 bytes); the payload is the
     /// decimal precision P. Logical type is f64 (wire / 10^P).
     Quant(u32),
-    /// `Enum<T>` — one-byte explicit tag (see `EnumTag`).
+    /// `Enum<T>` — one-byte explicit tag (see `EnumTag`). Retired by ADR-0032;
+    /// kept only until the wrapper is removed.
     Enum,
+    /// `Vocab<T>` — an interned categorical value (ADR-0032): one byte, the id
+    /// in that FIELD's data vocabulary. The payload is the field's id face, so
+    /// a dynamic reader resolves names with `VocabFaces { id_slot, name_slot:
+    /// id_slot + 1 }` without knowing the rest of the declaration.
+    Vocab(u16),
     /// `Offset<T>` — `value − base` stored as u32; the payload is the
     /// static base. Logical type is i64 (base + wire).
     Offset(i64),

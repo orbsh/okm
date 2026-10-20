@@ -327,12 +327,29 @@ fn hex_lock_one_link() {
     assert_eq!(body, [src.clone(), dst.clone(), pid.clone(), payload].concat());
 
     // The graph's faces are fixed faces — one byte each (ADR-0030), and the
-    // vocabulary precedes the faces that read its ids.
+    // vocabulary precedes the faces that read its ids. The vocabulary class
+    // itself is counting family 4 since ADR-0032 (two-byte slots).
     let key = |parts: &[Vec<u8>]| parts.concat();
-    assert!(store.get(&key(&[ns.to_vec(), slot(0x04), pid.clone()])).is_some(), "0x04 id → name");
+    let vocab = |s: u16| slot(s);
     assert!(
-        store.get(&key(&[ns.to_vec(), slot(0x05), b"employs".to_vec()])).is_some(),
-        "0x05 name → id"
+        store
+            .get(&key(&[
+                ns.to_vec(),
+                vocab(okm_core::index::PREDICATE_VOCAB_ID_SLOT),
+                pid.clone()
+            ]))
+            .is_some(),
+        "predicate id → name"
+    );
+    assert!(
+        store
+            .get(&key(&[
+                ns.to_vec(),
+                vocab(okm_core::index::PREDICATE_VOCAB_NAME_SLOT),
+                b"employs".to_vec()
+            ]))
+            .is_some(),
+        "predicate name → id"
     );
     assert!(
         store.get(&key(&[ns.to_vec(), slot(0x06), pid.clone(), id.clone()])).is_some(),
@@ -348,9 +365,13 @@ fn hex_lock_one_link() {
         store.get(&key(&[ns.to_vec(), slot(0x0A), pid, dst, id.clone()])).is_some(),
         "predicate+in"
     );
-    // Nothing in the retired 0x02/0x03 band names a predicate: the field
-    // vocabulary holds only what the payload declared.
-    assert!(store.get(&key(&[ns.to_vec(), slot(0x02), 0u16.to_be_bytes().to_vec()])).is_none());
+    // Nothing in the retired 0x02/0x03 band names a predicate: that band is
+    // now free (the field vocabulary moved to family 4, ADR-0032).
+    assert!(
+        store
+            .get(&key(&[ns.to_vec(), slot(0x02), 0u16.to_be_bytes().to_vec()]))
+            .is_none()
+    );
 
     // Declared face (counting family 0x1, declaration order):
     // since_year=2020 — two bytes, unlike the fixed faces above.

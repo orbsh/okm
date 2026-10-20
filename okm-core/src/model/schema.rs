@@ -274,6 +274,9 @@ mod serde_impls {
                     s.serialize_newtype_variant("FieldType", 7, "Quant", p)
                 }
                 FieldType::Enum => s.serialize_unit_variant("FieldType", 8, "Enum"),
+                FieldType::Vocab(id_slot) => {
+                    s.serialize_newtype_variant("FieldType", 12, "Vocab", id_slot)
+                }
                 FieldType::Offset(b) => {
                     s.serialize_newtype_variant("FieldType", 9, "Offset", b)
                 }
