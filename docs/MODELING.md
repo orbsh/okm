@@ -926,7 +926,13 @@ g.by_attr_face(<BySince as KvIndex>::SLOT, &2020u16.to_be_bytes());
   set from `E::Nodes` — the same shape as `Collection<S, K, R>`, which also
   takes only the engine.
 - **Parallel edges** are separate edges: each link carries a
-  caller-chosen `edge_id`; a live id is rejected, never reused.
+  caller-chosen `edge_id`; `link` rejects a live id. An edge's
+  IN-PLACE REWRITE is the one exception, and it has exactly one
+  entry: `unlink_into` + `link_into` put the same id's delete and
+  write in ONE batch, so at commit the edge was never absent and no
+  second id is born — k10r's functional adjudication and its counter
+  bumps both take this path (ADR-0010's owed item). A deleted id is
+  never reused.
 - **Filtering**: the most selective face first, ids converged in
   memory — no composite faces by default (`(*)-[predicate]->(:node kind)`
   = 0x09 scan intersected with the node kind face's pkey set).
