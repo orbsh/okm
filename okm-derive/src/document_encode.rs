@@ -9,7 +9,7 @@
 //!    fixed-width fields today but keeps the same frame for the
 //!    variable-length regime later.
 //! 3. `#[ok_index(idx_name { fields(a, b), includes(c) })]` — one access
-//!    method per declaration, slots start at DECLARED_SLOT_BASE (0x4001) in attribute order
+//!    method per declaration, slots start at DECLARED_SLOT_BASE (0x3001) in attribute order
 //!    (`0` is reserved for the primary table, ADR-0005). Generates a
 //!    marker struct per index plus `Document::index_entries`, so `put`/
 //!    `delete` cover every declared access method with no runtime
@@ -36,8 +36,8 @@ use proc_macro2::TokenStream as TS2;
 /// segment (independent counters). Literals, not runtime constants — a
 /// proc-macro crate cannot name okm_core at its own compile time. Keep in
 /// sync with `okm_core::index::DECLARED_SLOT_BASE` / `REDUCE_SLOT_BASE`.
-const DECLARED_SLOT_BASE: u16 = 0x4001;
-const REDUCE_SLOT_BASE: u16 = 0x5001;
+const DECLARED_SLOT_BASE: u16 = 0x3001;
+const REDUCE_SLOT_BASE: u16 = 0x4001;
 use quote::{format_ident, quote};
 use syn::{parse_macro_input, DeriveInput};
 

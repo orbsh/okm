@@ -38,9 +38,8 @@
 
 use crate::engine::storage::{scan_suffix_kv, MemBatch, VirtualStorage};
 use crate::model::index::{
-    segment, slot, write_slot, Slot, FIELD_VOCAB_CURSOR_SLOT, FIELD_VOCAB_ID_SLOT,
-    FIELD_VOCAB_NAME_SLOT, PREDICATE_VOCAB_CURSOR_SLOT, PREDICATE_VOCAB_ID_SLOT,
-    PREDICATE_VOCAB_NAME_SLOT,
+    segment, slot, write_slot, Slot, FIELD_VOCAB_ID_SLOT, FIELD_VOCAB_NAME_SLOT,
+    PREDICATE_VOCAB_ID_SLOT, PREDICATE_VOCAB_NAME_SLOT,
 };
 use crate::model::vocab::VocabId;
 use std::collections::HashMap;
@@ -50,15 +49,15 @@ use std::collections::HashMap;
 /// inside another family.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct VocabFaces {
-    /// id → label
+    /// id → label. Also carries the allocation cursor as its FACE-LEVEL
+    /// SINGLETON: the key `[ns][id_slot]` with NO suffix, holding the next id.
+    /// A real entry of this face is always `[ns][id_slot][id bytes]`, so the two
+    /// cannot collide — the singleton is impossible to confuse with data by
+    /// LENGTH, not by a reserved value. The label face cannot host one (the
+    /// empty label is legal), which is why the cursor lives here.
     pub id_slot: Slot,
     /// label → id
     pub name_slot: Slot,
-    /// Allocation: one entry, the next id to hand out. It is what turns
-    /// allocation into a point read — and a point read is the only read a batch
-    /// can serve (`BatchStore` refuses scans), so it is also what lets a batch
-    /// writer intern inside its own batch.
-    pub cursor_slot: Slot,
 }
 
 /// The data vocabulary of ONE declared `Vocab<N>` field, picked by that field's
@@ -71,7 +70,6 @@ pub const fn data_vocab(field_index: u16) -> VocabFaces {
     VocabFaces {
         id_slot: slot(segment::VOCAB_ID, counter),
         name_slot: slot(segment::VOCAB_LABEL, counter),
-        cursor_slot: slot(segment::VOCAB_CURSOR, counter),
     }
 }
 
@@ -84,7 +82,6 @@ impl VocabFaces {
         Self {
             id_slot,
             name_slot: slot(segment::VOCAB_LABEL, counter),
-            cursor_slot: slot(segment::VOCAB_CURSOR, counter),
         }
     }
 }
@@ -105,18 +102,12 @@ pub fn vocab_label<S: VirtualStorage + ?Sized>(
 }
 
 /// Field names of the payload, in the document's own ns (ADR-0012).
-pub const FIELD_VOCAB: VocabFaces = VocabFaces {
-    id_slot: FIELD_VOCAB_ID_SLOT,
-    name_slot: FIELD_VOCAB_NAME_SLOT,
-    cursor_slot: FIELD_VOCAB_CURSOR_SLOT,
-};
+pub const FIELD_VOCAB: VocabFaces =
+    VocabFaces { id_slot: FIELD_VOCAB_ID_SLOT, name_slot: FIELD_VOCAB_NAME_SLOT };
 /// The collection's predicate vocabulary: a graph's predicates, a node
 /// collection's kind tokens (ADR-0017 §3).
-pub const PREDICATE_VOCAB: VocabFaces = VocabFaces {
-    id_slot: PREDICATE_VOCAB_ID_SLOT,
-    name_slot: PREDICATE_VOCAB_NAME_SLOT,
-    cursor_slot: PREDICATE_VOCAB_CURSOR_SLOT,
-};
+pub const PREDICATE_VOCAB: VocabFaces =
+    VocabFaces { id_slot: PREDICATE_VOCAB_ID_SLOT, name_slot: PREDICATE_VOCAB_NAME_SLOT };
 
 /// One vocabulary cache, bound to one ns segment, one face triple, and one id
 /// width `I`.
@@ -161,9 +152,12 @@ impl<I: VocabId> VocabCache<I> {
         key
     }
 
+    /// The face-level singleton: the id face's prefix with NO id suffix. Every
+    /// real entry of that face carries exactly `I::WIDTH` bytes after the slot,
+    /// so a zero-length key is not expressible as data.
     fn cursor_key(&self, header: &[u8]) -> Vec<u8> {
         let mut key = header.to_vec();
-        write_slot(&mut key, self.faces.cursor_slot);
+        write_slot(&mut key, self.faces.id_slot);
         key
     }
 

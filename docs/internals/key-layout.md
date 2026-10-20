@@ -87,20 +87,31 @@ whose instances are enumerated by declaration order or by a discriminator:
 ```text
 0x1nnn  vocabulary: label → id  [ns][0x1nnn][label bytes]       nnn = the vocabulary's number
 0x2nnn  vocabulary: id → label  [ns][0x2nnn][id bytes BE]       same nnn, other family
-0x3nnn  vocabulary: cursor      [ns][0x3nnn] → next id BE       same nnn; one entry
-0x4nnn  declared index          [ns][0x4nnn][index fields][pkey prefix]  nnn = declaration order
-0x5nnn  reduce                  [ns][0x5nnn][group seg]         nnn = declaration order,
+                                                                (+ its cursor at the bare prefix)
+0x3nnn  declared index          [ns][0x3nnn][index fields][pkey prefix]  nnn = declaration order
+0x4nnn  reduce                  [ns][0x4nnn][group seg]         nnn = declaration order,
                                                                 independent counter
-0x6nnn  junction                [ns][0x6nnn][local id][peer id] nnn = discriminator << 1
+0x5nnn  junction                [ns][0x5nnn][local id][peer id] nnn = discriminator << 1
                                                                 | direction
-segments 0x7–0x0F  free
+segments 0x6–0x0F  free
 ```
 
-A declared `Vocab<N>` field (ADR-0032) spends ONE number and occupies three
-faces: 0x1nnn / 0x2nnn for the two directions and 0x3nnn for the allocation
-cursor, so the three sit next to each other and the pairs stay recognisable. The direction is the family, never a parity
-convention inside one family — `0x1001` and `0x2001` are the label → id and
-id → label faces of the first categorical field, `0x1002`/`0x2002` the second.
+A declared `Vocab<N>` field (ADR-0032) spends ONE number: 0x1nnn / 0x2nnn are
+its two directions. The direction is the family, never a parity convention
+inside one family — `0x1001` and `0x2001` are the label → id and id → label
+faces of the first categorical field, `0x1002`/`0x2002` the second.
+
+**Face-level singletons.** A face may hold ONE metadata value whose key is the
+bare face prefix — `[ns][slot]` with no suffix. It is legitimate exactly when
+every real entry of that face carries at least one suffix byte, because then a
+zero-length suffix is not expressible as data: the two cannot collide by
+construction, not by a reserved value. The vocabulary's allocation cursor is the
+first such value (`[ns][0x2nnn] → next id`); the id face qualifies because every
+id entry is exactly `N` bytes, and the label face does NOT (the empty label is
+legal), which is why the cursor lives on the id side. A reader decides "data or
+singleton" by LENGTH, and every id decoder enforces the width already, so the
+singleton decodes to nothing instead of to some id. A reduce face cannot host
+one: in no-group mode its entry key IS the bare prefix.
 The two collection-wide name domains are older than this scheme and keep their
 fixed faces (0x02/0x03 field names, 0x04/0x05 predicate tokens).
 

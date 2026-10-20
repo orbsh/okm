@@ -111,12 +111,12 @@ ordinary declared indexes, family 0x1, in the edge collection's own ns.
 ```text
 0x1nnn  vocabularies       label → id; counter = the vocabulary's number (from 1)
 0x2nnn  vocabularies       id → label; same counter, other direction/family
-0x3nnn  vocabularies       allocation cursor (one entry, the next id); same counter
-0x4nnn  declared indexes   counter = declaration order (from 1 → 4095 per collection)
-0x5nnn  reduces            counter = declaration order, independent quota (4095)
-0x6nnn  junctions          counter = discriminator << 1 | direction
+                           (plus the allocation cursor at the bare prefix)
+0x3nnn  declared indexes   counter = declaration order (from 1 → 4095 per collection)
+0x4nnn  reduces            counter = declaration order, independent quota (4095)
+0x5nnn  junctions          counter = discriminator << 1 | direction
                            discriminator 11 bits → 2048 per endpoint pair
-segments 0x7–0x0F          free (9 segments)
+segments 0x6–0x0F          free (10 segments)
 ```
 
 Not one of these numbers moves, and neither does the counter width: a
@@ -179,6 +179,18 @@ byte, no counter, nothing to enumerate.
   a compile-time constant at every site, so prefix assembly and the
   primary-key tail slicing stay static arithmetic — no runtime probing.
 
+**A face-level singleton is not a band.** One metadata value per face may take
+the bare face prefix as its key — `[ns][slot]` with no suffix. It is admissible
+only when every real entry of that face carries at least one suffix byte; then a
+zero-length suffix is unrepresentable as data, so the collision this ADR's "no
+bands" rule exists to prevent cannot happen at all — it is excluded by LENGTH,
+not by a reserved id or a reserved label. The rule generalises to any
+one-value-per-face metadata (a version stamp, a watermark), and its two
+counter-examples are part of it: the LABEL face (the empty label is legal) and a
+no-group REDUCE face (its entry key is the bare prefix) admit no singleton.
+Readers separate the two cases by suffix length, and every fixed-width decoder
+already rejects a length mismatch.
+
 ## Consequences
 
 - **Key-format break, pre-release.** Primary and the graph's faces lose one
@@ -191,7 +203,7 @@ byte, no counter, nothing to enumerate.
   entries rebuild from documents, the dynamic segment and the dictionaries
   ride the same rebuild.
 - `SlotMap` (schema export) keeps its `u16` fields — the values are now
-  0x00–0x0A for the fixed faces and 0x1nnn–0x6nnn for the
+  0x00–0x0A for the fixed faces and 0x1nnn–0x5nnn for the
   counting families, with the width implied by the value. The bindings'
   slot arguments are unchanged.
 - ADR-0016's segment table is superseded; its head-width decision survives

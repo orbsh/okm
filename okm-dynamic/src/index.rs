@@ -58,7 +58,7 @@ pub enum AccessMethodKind {
 
 /// One declared access method over a dynamic table.
 pub struct AccessMethod {
-    /// Entry header slot (index segment, u16: 0x4001, 0x4002, …; the
+    /// Entry header slot (index segment, u16: 0x3001, 0x3002, …; the
     /// primary is 0x0000 — ADR-0016).
     pub slot: u16,
     /// Indexed fields by schema name, in sort order. Fields may live in

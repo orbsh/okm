@@ -14,9 +14,7 @@
 //! slot constants — every byte rule stays here, one source.
 
 use okm_core::model::obj_dynamic::{decode_named, put_frame_named};
-use okm_core::model::index::{
-    DYNAMIC_SLOT, FIELD_VOCAB_CURSOR_SLOT, FIELD_VOCAB_ID_SLOT, FIELD_VOCAB_NAME_SLOT,
-};
+use okm_core::model::index::{DYNAMIC_SLOT, FIELD_VOCAB_ID_SLOT, FIELD_VOCAB_NAME_SLOT};
 use okm_core::storage::{scan_suffix_kv, VirtualStorage};
 
 use crate::{Value, ValueMap};
@@ -63,8 +61,11 @@ impl VocabMirror {
                     }
                 }
         }
+        // The cursor is the id face's bare-prefix singleton: `[ns][0x02]` with
+        // no id bytes (ADR-0032) — unrepresentable as an id entry, so the two
+        // cannot collide.
         let mut cursor_key = ns.to_vec();
-        okm_core::write_slot(&mut cursor_key, FIELD_VOCAB_CURSOR_SLOT);
+        okm_core::write_slot(&mut cursor_key, FIELD_VOCAB_ID_SLOT);
         if let Some(raw) = store.get(&cursor_key)
             && raw.len() == 2 {
             let cursor = u16::from_be_bytes([raw[0], raw[1]]);
@@ -182,7 +183,7 @@ pub fn plan_put_fields(
     // the next allocation (on either side) would hand out a duplicate id.
     if !vocab.written.is_empty() {
         let mut cursor_key = ns.to_vec();
-        okm_core::write_slot(&mut cursor_key, FIELD_VOCAB_CURSOR_SLOT);
+        okm_core::write_slot(&mut cursor_key, FIELD_VOCAB_ID_SLOT);
         vocab_ops.push((cursor_key, Some(vocab.next_id.to_be_bytes().to_vec())));
     }
     let k = fields_key(ns, pkey);
