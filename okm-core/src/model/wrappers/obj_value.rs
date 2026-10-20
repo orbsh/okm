@@ -11,7 +11,7 @@
 //! list (id, type, len, value), structure information living in the
 //! values, not in a per-document schema.
 //!
-//! Tag discipline mirrors [`crate::model::wrappers::EnumTag`]: explicit values,
+//! Tag discipline: explicit values,
 //! stable under later insertion (append-only growth; never renumber —
 //! stored bytes reference these numbers forever).
 
@@ -90,7 +90,7 @@ mod tests {
     #[test]
     fn tags_are_stable_contract() {
         // Explicit byte values, hex-locked: stored frames reference these
-        // forever (EnumTag discipline — append-only, never renumber).
+        // forever (append-only, never renumber).
         assert_eq!(ObjValueType::UInt.to_byte(), 0);
         assert_eq!(ObjValueType::F64.to_byte(), 1);
         assert_eq!(ObjValueType::Str.to_byte(), 2);

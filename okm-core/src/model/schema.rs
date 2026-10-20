@@ -273,7 +273,6 @@ mod serde_impls {
                 FieldType::Quant(p) => {
                     s.serialize_newtype_variant("FieldType", 7, "Quant", p)
                 }
-                FieldType::Enum => s.serialize_unit_variant("FieldType", 8, "Enum"),
                 FieldType::Vocab(id_slot) => {
                     s.serialize_newtype_variant("FieldType", 12, "Vocab", id_slot)
                 }
@@ -381,7 +380,6 @@ mod serde_impls {
                 Str,
                 VarInt,
                 Quant(u32),
-                Enum,
                 Offset(i64),
                 Vector { elem: String },
             }
@@ -394,7 +392,7 @@ mod serde_impls {
                 Repr::Str => FieldType::Str,
                 Repr::VarInt => FieldType::VarInt,
                 Repr::Quant(p) => FieldType::Quant(p),
-                Repr::Enum => FieldType::Enum,
+                
                 Repr::Offset(b) => FieldType::Offset(b),
                 // Leak is bounded: the element-type vocabulary is a tiny
                 // closed set written by the serializer, never attacker data.

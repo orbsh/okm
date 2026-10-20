@@ -37,7 +37,6 @@ pub fn json_schema<K: KeyEncode, R: Document<Key = K>>() -> String {
             FieldType::Bytes => "string",      // base64, matches Arrow BinaryArray
             FieldType::VarInt => "integer",    // logical: the decoded integer
             FieldType::Quant(_) => "number",   // logical: dequantized f64
-            FieldType::Enum => "integer",      // the u8 tag
             FieldType::Vocab(_) => "integer",  // the interned id byte
             FieldType::Offset(_) => "integer", // logical: base + offset
             FieldType::Vector { .. } => "array", // element sequence (dynamic-length)
@@ -131,10 +130,6 @@ pub mod parquet_io {
                 let c = col.as_any().downcast_ref::<arrow::array::Float64Array>().unwrap();
                 wire_to_be_bytes(quantize(c.value(document), p))
             }
-            FieldType::Enum => {
-                let c = col.as_any().downcast_ref::<arrow::array::UInt8Array>().unwrap();
-                vec![c.value(document)]
-            }
             FieldType::Vocab(_) => {
                 // The logical value is not in the column: the wire is the id
                 // byte, and a name→id resolution would need the collection's
@@ -181,7 +176,6 @@ pub mod parquet_io {
                     FieldType::Str => unreachable!("handled above"),
                     FieldType::VarInt
                     | FieldType::Quant(_)
-                    | FieldType::Enum
                     | FieldType::Vocab(_)
                     | FieldType::Offset(_)
                     | FieldType::Vector { .. } => unreachable!("handled above"),

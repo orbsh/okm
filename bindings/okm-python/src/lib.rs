@@ -578,7 +578,6 @@ impl Collection {
 	        FieldType::U64 | FieldType::VarInt | FieldType::Quant(_) | FieldType::Offset(_) => {
 	            Value::U64(v.extract::<u64>().map_err(|_| bad("u64"))?)
 	        }
-	        FieldType::Enum => Value::U8(v.extract::<u64>().map_err(|_| bad("enum tag u8"))? as u8),
 	        FieldType::FixedBytes | FieldType::Bytes => {
 	            Value::Bytes(v.extract::<Vec<u8>>().map_err(|_| bad("bytes"))?)
 	        }

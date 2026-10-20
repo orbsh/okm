@@ -40,7 +40,6 @@ fn arrow_type(ty: FieldType) -> DataType {
         // to f64, Offset re-adds the base.
         FieldType::VarInt => DataType::UInt64,
         FieldType::Quant(_) => DataType::Float64,
-        FieldType::Enum => DataType::UInt8,
         FieldType::Vocab(_) => DataType::UInt8,
         FieldType::Offset(_) => DataType::Int64,
         // Variable-length frame → opaque binary column (like Bytes); the
@@ -78,7 +77,6 @@ fn logical_value(raw: &[u8], ty: FieldType) -> Vec<u8> {
             let w = i64::from_be_bytes(raw.try_into().expect("quant width"));
             (w as f64 / 10f64.powi(p as i32)).to_le_bytes().to_vec()
         }
-        FieldType::Enum => raw.to_vec(),
         FieldType::Vocab(_) => raw.to_vec(),
         FieldType::Offset(base) => {
             let off = u32::from_be_bytes(raw.try_into().expect("offset width")) as i64;
@@ -378,7 +376,7 @@ fn swap_be(src: &[u8], off: usize, width: usize, ty: FieldType) -> Vec<u8> {
         FieldType::U64 => raw.iter().rev().copied().collect(),
         FieldType::Vector { .. } => raw.to_vec(), // already LE by contract
         FieldType::Str | FieldType::Bytes => unreachable!("Str/Bytes columns bypass swap_be"),
-        FieldType::VarInt | FieldType::Quant(_) | FieldType::Enum | FieldType::Vocab(_) | FieldType::Offset(_) => {
+        FieldType::VarInt | FieldType::Quant(_) | FieldType::Vocab(_) | FieldType::Offset(_) => {
             unreachable!("transformed kinds bypass swap_be (see logical_value)")
         }
     }

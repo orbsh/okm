@@ -10,7 +10,6 @@
 mod bytes;
 mod refs;
 mod ref_mod;
-mod enum_tag;
 pub mod obj_value;
 mod offset;
 mod optional;
@@ -22,7 +21,6 @@ pub mod vector;
 pub use bytes::Bytes;
 pub use refs::Refs;
 pub use ref_mod::Ref;
-pub use enum_tag::{enum_from_name, Enum, EnumTag};
 pub use obj_value::ObjValueType;
 pub use optional::{Option, OptionalEnc, WireWidth};
 pub use offset::{Offset, offset_decode, offset_encode};

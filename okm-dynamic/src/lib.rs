@@ -161,7 +161,6 @@ pub(crate) fn field_pair<'a>(
         // VarInt → U64.
         | (okm_core::field::FieldType::Quant(_), Value::U64(_))
         | (okm_core::field::FieldType::Offset(_), Value::U64(_))
-        | (okm_core::field::FieldType::Enum, Value::U8(_))
         | (okm_core::field::FieldType::Vocab(_), Value::U8(_))
         | (okm_core::field::FieldType::VarInt, Value::U64(_)) => true,
         _ => false,
@@ -187,7 +186,6 @@ fn schema_predicate_vocab_name(ty: okm_core::field::FieldType) -> &'static str {
         okm_core::field::FieldType::Bytes => "bytes",
         okm_core::field::FieldType::VarInt => "U64 (VarInt storage form)",
         okm_core::field::FieldType::Quant(_) => "U64 (fixed-point storage form)",
-        okm_core::field::FieldType::Enum => "U8 (tag)",
         okm_core::field::FieldType::Vocab(_) => "U8 (vocab id)",
         okm_core::field::FieldType::Offset(_) => "U64 (biased storage form)",
         okm_core::field::FieldType::Vector { .. } => "bytes (flat LE vector)",

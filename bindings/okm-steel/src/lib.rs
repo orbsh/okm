@@ -69,7 +69,6 @@ fn steel_to_value(
                     | FieldType::Offset(_) => {
                         Value::U64(u64::try_from(i).map_err(|_| bad("u64"))?)
                     }
-                    FieldType::Enum => Value::U8(u8::try_from(i).map_err(|_| bad("enum tag u8"))?),
                     _ => return Err(bad("numeric kind")),
                 }
             }

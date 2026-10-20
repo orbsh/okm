@@ -403,6 +403,38 @@ pub struct User {
 
 dynamic codec（Python/Steel 的 schema 驱动编解码）从 `CollectionSchema` 镜像同一规则——字段默认值随 schema 走，动态读取器执行同样的迁移语义。
 
+### Payload 字段类型与包装类型
+
+每个声明字段都落在这几种 wire 形态里。下表是"结构体里的 Rust 类型 → hot/cold 段里的字节"的
+映射；derive 按类型名识别包装类型，所以拼写是契约。
+
+| Rust 类型 | wire | 宽度 | 用于 |
+|---|---|---|---|
+| `u8` `u16` `u32` `u64`、`i8` … `i64` | 定宽 BE | 1/2/4/8 | 数字、id、计数器 |
+| `[u8; N]` | 原样 N 字节 | N | 摘要、定长二进制 |
+| `String` | UTF-8，TLV 帧 | 0（cold） | 文本、自由标签 |
+| `Bytes` | 原始字节，TLV 帧 | 0（cold） | 不透明载荷 |
+| `Vocab<T>` | 该字段数据词表里的一字节 id | 1 | 分类值（状态、种类、颜色） |
+| `VarInt<T>` | 前缀单调变长整数 | 0（cold），字节序 = 值序 | 需要进索引排序、但通常很小的整数 |
+| `Quant<P>`（裸 `Quant` = P3） | 定点 `i64` | 8 | 需要精确存储的小数 |
+| `Offset` + `#[ok_offset(base = N)]` | 相对 `base` 的 `u32` 位移 | 4 | 已知窗口内的时间戳或单调值 |
+| `Reverse<T>` | 位翻转的 `T` | `T` 的宽度 | 不另开一列就能让索引降序 |
+| `Vector<T>` | `[count u32 BE][元素]` | 0（cold） | 同质数值列表（嵌入向量） |
+| `Ref<D, K>` / `Refs<D, K>` | 子文档的 key 字节 | key 宽度 / 0 | 进 payload 的文档关系（见「嵌入文档」） |
+
+由这些形态推出三条规则：
+
+- **分类值是 `Vocab<T>`，不是 Rust enum。** 标签↔id 的映射住在 collection 的数据词表里，
+  于是动态写入方能引入一个分类、动态读者能说出它，而 wire 代价只有一字节。`T` 是零尺寸的
+  值域标记：`Vocab<Status>` 接不上颜色；每个 `Vocab` 字段拥有自己的词表与自己的 255 值预算。
+  它没有顺序——需要按语义排序的字段另声明一个 rank 列。消费侧的 enum 语义（match 分支、
+  穷尽性检查）归消费方：自己包一层 enum，在边界处转换。
+- **`Option<T>` 不是字段类型。** 缺失由每个字段自选的哨兵值表达，derive 没有 `Option` 分支
+  （见下一节）。
+- **`Vocab` 字段在写路径上 intern。** `Collection::put` 与 `save_with_prev_into` 在编码前把
+  标签换成 id；`save_into` 只负责编码，因此要求文档已经通过 collection intern 过。一个字段里
+  intern 第 256 个不同标签会 panic——收窄值域，或者把这个值建成 `String`。
+
 ### 可空字段：哨兵值，而非 `Option<T>`（ADR-0027 审计）
 
 声明的 `Option<T>` 字段**不受支持**——derive 识别的后续讨论已在未实现状态下关闭（PLAN.md Phase 9，2026-09-20 REJECTED：审计过的表没有一个需要它，定宽 presence 字节相比「普通字段 + 哨兵」什么也换不来）。替代惯用法是**从类型的单位元取哨兵值**：
