@@ -84,7 +84,7 @@ use it today (field names 0x02/0x03, predicate/kind tokens 0x04/0x05).
 
 4. **Interning is a write-path step, and the batch path carries it.**
    `put` interns before encoding (the document clone this costs is paid only by
-   tables that declare a `Vocab` field); `save_with_prev_into` interns through
+   tables that declare a `Vocab` field); `save_with_prev_into` interns ahead of the batch, through the engine
    `BatchStore`, so vocabulary growth, the row and its faces land in ONE batch
    (the discipline `VocabCache::id_for` already follows); `save_into` cannot
    intern — it is the encoding-only surface with no store by contract — so it

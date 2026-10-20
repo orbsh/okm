@@ -62,7 +62,7 @@ intern、读路径补名、每个声明字段一对词表），`Enum<T>` / `Enum
    `N`，或者把这个值建成 `String` 字段。
 
 4. **intern 是写路径的一步，由 batch 路径承载。** `put` 在编码前 intern（这次 clone 只由
-   声明了 `Vocab` 字段的表支付）；`save_with_prev_into` 经 `BatchStore` intern，于是词汇表
+   声明了 `Vocab` 字段的表支付）；`save_with_prev_into` 在批之前经引擎 intern，于是词汇表
    增长、行与面落在**同一个批**里（`VocabCache::id_for` 本来就是这个纪律）；`save_into`
    无法 intern——它是契约上的"只编码"面、手里没有 store——所以它要求调用方已经通过
    collection 把 `Vocab` 字段 intern 过。这就是"编码是纯函数"这条规则弯折的具体位置，

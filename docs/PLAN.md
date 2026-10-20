@@ -1295,9 +1295,13 @@ bytes; doing them after P3 means hex locks change once, not twice.
       and to_map/from_map lifting the label. `tests/vocab_test.rs` proves two
       categorical fields on one row: per-field id spaces, labels across put/get,
       the map bridge, from_map + re-intern, and the schema's per-field faces.
-- [ ] `save_with_prev_into` interning through `BatchStore` (vocabulary growth +
-      row + faces in one batch); `save_into` stays encoding-only and therefore
-      requires pre-interned documents.
+- [x] `save_with_prev_into` interns before it opens the batch — through the
+      ENGINE, because allocation's cursor comes from a scan and `BatchStore`
+      refuses scans (ADR-0031). Growth therefore commits just ahead of the row:
+      a rolled-back batch can leave allocated-but-unused labels, which is dead
+      weight, not corruption (ids never repeat). The signature takes `&mut self`
+      for that one reason. `save_into` stays encoding-only and therefore requires
+      pre-interned documents.
 - [x] okm-dynamic: a `Vocab` field decodes to its LABEL. The pure decoder hands
       out the id as raw `Bytes` (it has no store) and the collection's read paths
       run `resolve_vocab_labels` — one point probe per categorical field against

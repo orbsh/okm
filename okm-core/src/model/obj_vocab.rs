@@ -191,9 +191,7 @@ impl<I: VocabId> VocabCache<I> {
         self.by_id.insert(id, name.clone());
         self.by_name.insert(name.clone(), id);
         if let Some(next) = id.succ() {
-            if next > self.next_id {
-                self.next_id = next;
-            }
+            self.next_id = self.next_id.max(next);
         }
         Some(name)
     }
@@ -235,9 +233,7 @@ impl<I: VocabId> VocabCache<I> {
             if let (Ok(label), Some(id)) = (String::from_utf8(suffix), I::from_be(&idv)) {
                 self.by_name.insert(label, id);
                 if let Some(next) = id.succ() {
-                    if next > self.next_id {
-                        self.next_id = next;
-                    }
+                    self.next_id = self.next_id.max(next);
                 }
             }
         }
@@ -339,8 +335,8 @@ mod tests {
         // 0x1/2) — never a parity convention inside one family.
         let (id0, label0) = (data_vocab(0).id_slot, data_vocab(0).name_slot);
         let (id1, label1) = (data_vocab(1).id_slot, data_vocab(1).name_slot);
-        assert_eq!(id0 >> 12, segment::VOCAB_ID as u16, "id → label family");
-        assert_eq!(label0 >> 12, segment::VOCAB_LABEL as u16, "label → id family");
+        assert_eq!(id0 >> 12, segment::VOCAB_ID, "id → label family");
+        assert_eq!(label0 >> 12, segment::VOCAB_LABEL, "label → id family");
         assert_eq!(id0 & 0xFFF, label0 & 0xFFF, "one counter per vocabulary");
         assert_eq!(id1 & 0xFFF, (id0 & 0xFFF) + 1, "declaration order");
         assert_eq!(label1 & 0xFFF, id1 & 0xFFF);
