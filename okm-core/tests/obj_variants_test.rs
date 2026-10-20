@@ -44,12 +44,19 @@ fn obj_variants_round_trip_over_two_slots() {
     // Typed get is untouched: declared fields live in slot 0.
     assert_eq!(t.get(&UserKey { id: 1 }).unwrap().level, 2);
 
-    // Vocabulary landed in the vocabulary family (ADR-0032: family 4, counter 2)
-    // under the same ns.
+    // Vocabulary landed in the vocabulary family (ADR-0032: family 2, id
+    // direction) under the same ns. Counting NAMES is counting 2-byte suffixes:
+    // the face also holds its allocation cursor at the BARE prefix — the
+    // face-level singleton, whose zero-length suffix is unrepresentable as an id.
     let mut vocab_prefix = vec![0u8, 9];
     okm_core::write_slot(&mut vocab_prefix, okm_core::index::FIELD_VOCAB_ID_SLOT);
     let vocab_scan = t.store().scan_suffix(&vocab_prefix);
-    assert_eq!(vocab_scan.len(), 3, "three names allocated");
+    let names: Vec<&Vec<u8>> = vocab_scan.iter().filter(|s| s.len() == 2).collect();
+    assert_eq!(names.len(), 3, "three names allocated");
+    assert!(
+        vocab_scan.iter().any(|s| s.is_empty()),
+        "plus the cursor singleton at the bare prefix"
+    );
 }
 
 #[test]

@@ -92,7 +92,7 @@ fn byte_layout_and_queries() {
     // A 端 entry = [ns_user][slot][A·身份][B·全量身份]：头 4B + 12B + 12B。
     // 本端身份在前（扫描前缀 `[ns][slot][A·身份]` 必须能命中）；对端身份是后缀。
     assert_eq!(fk.len(), 4 + 12 + 12);
-    assert_eq!(&fk[..4], &[0, 1, 0x60, 2]); // ns=1 原值 + slot 0x6002（A 侧，dir=0）
+    assert_eq!(&fk[..4], &[0, 1, 0x50, 2]); // ns=1 原值 + slot 0x5002（A 侧，dir=0）
     assert_eq!(&fk[4..8], &7u32.to_be_bytes()); // user.org_id（本端）
     assert_eq!(&fk[8..16], &101u64.to_be_bytes()); // user.user_id（本端）
     assert_eq!(&fk[16..20], &7u32.to_be_bytes()); // session.org_id（对端）
@@ -103,7 +103,7 @@ fn byte_layout_and_queries() {
     // B 端 entry = [ns_session][slot][A·身份（ok_head 截断到 org_id+user_id，全量 12B）]
     // B 端 entry = [ns_session][slot][B·全量身份][A·身份]：session 本端在前
     assert_eq!(rk.len(), 4 + 12 + 12);
-    assert_eq!(&rk[..4], &[0, 2, 0x60, 3]); // ns=2 + slot 0x6003（B 侧，dir=1）
+    assert_eq!(&rk[..4], &[0, 2, 0x50, 3]); // ns=2 + slot 0x5003（B 侧，dir=1）
     assert_eq!(&rk[4..8], &7u32.to_be_bytes()); // session.org_id（本端）
     assert_eq!(&rk[8..16], &1001u64.to_be_bytes()); // session.session_id（本端）
     assert_eq!(&rk[16..20], &7u32.to_be_bytes()); // user.org_id（对端）
@@ -134,10 +134,10 @@ fn byte_layout_and_queries() {
 #[test]
 fn head_disjointness() {
     // 自反 junction（两端同 ns）时方向位区分两个方向的扫描前缀：
-    // n=1 → A 侧 slot 0x6002、B 侧 slot 0x6003（低 bit = dir）。
+    // n=1 → A 侧 slot 0x5002、B 侧 slot 0x5003（低 bit = dir）。
     // 端点不同的 junction 两端 ns 不同，方向位只是多余的确定性。
-    let a_side = [0u8, 1, 0x60, 2];
-    let b_side = [0u8, 2, 0x60, 3];
+    let a_side = [0u8, 1, 0x50, 2];
+    let b_side = [0u8, 2, 0x50, 3];
     assert_ne!(a_side[2..4], b_side[2..4], "direction bit separates the two scan prefixes");
     assert_eq!(a_side[..2], [0, 1]);
     // 段号分派：junction(0x3) ≠ index(0x1) ≠ reduce(0x2)——同一 ns 内不串扰。

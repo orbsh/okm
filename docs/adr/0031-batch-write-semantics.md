@@ -77,8 +77,8 @@ impl VirtualStorage for BatchStore<'_, S> { /* get / put / del, read-through */ 
 id, and this ADR's scan refusal is what constrains how: the first cut derived
 `max + 1` from a scan of the id face, which a batch cannot do, so
 `save_with_prev_into` had to intern against the engine first. ADR-0032's cursor
-face removed the scan — allocation is now one point read of `[ns][0x3nnn]` plus
-three point writes, all of which `BatchStore` serves, and the pending batch
+removed the scan — allocation is now one point read of the id face's bare-prefix
+singleton plus three point writes, all of which `BatchStore` serves, and the pending batch
 answers its own cursor reads. So a batch writer's vocabulary growth, row and
 faces commit together, and `save_with_prev_into` keeps `&self`.
 

@@ -1300,14 +1300,18 @@ bytes; doing them after P3 means hex locks change once, not twice.
       of which `BatchStore` serves, so growth + row + faces commit together and
       the signature keeps `&self`. `save_into` stays encoding-only and therefore
       requires pre-interned documents.
-- [x] Vocabulary allocation cursor: `[ns][0x3nnn] → next id`, one entry per
-      vocabulary, sitting next to its two directions. It replaces the `max + 1`
-      scan, so (a) `put` and `read` on a categorical table use point operations
-      only (proved by `vocab_test::a_put_on_a_categorical_table_never_scans`,
-      which runs against a store that panics on every scan) and (b) batches can
-      allocate. Fixed-name vocabularies get fixed cursors (0x0C, 0x0D); the
-      dynamic plan surface emits the same cursor op, keeping `put_fields` and
-      `plan_put_fields` byte-identical.
+- [x] Vocabulary allocation cursor: the id face's FACE-LEVEL SINGLETON —
+      `[ns][0x2nnn]` with no suffix, holding the next id. No extra family and no
+      extra fixed face: every real entry of that face carries exactly N bytes, so
+      a zero-length key cannot be data. It replaces the `max + 1` scan, so (a)
+      `put` and `read` on a categorical table use point operations only (proved
+      by `vocab_test::a_put_on_a_categorical_table_never_scans`, which runs
+      against a store that panics on every scan) and (b) batches can allocate.
+      The dynamic plan surface emits the same cursor op, keeping `put_fields` and
+      `plan_put_fields` byte-identical. Generalised as a layout rule in ADR-0030:
+      any one-value-per-face metadata may take the bare prefix when all of that
+      face's entries carry a non-empty suffix — and NOT on the label face (empty
+      label) nor on a no-group reduce face (its entry key is the bare prefix).
 - [x] okm-dynamic: a `Vocab` field decodes to its LABEL. The pure decoder hands
       out the id as raw `Bytes` (it has no store) and the collection's read paths
       run `resolve_vocab_labels` — one point probe per categorical field against

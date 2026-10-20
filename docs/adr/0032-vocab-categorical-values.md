@@ -81,8 +81,13 @@ use it today (field names 0x02/0x03, predicate/kind tokens 0x04/0x05).
    mode, see Consequences).
 
 3. **A cursor entry, so allocation is a point read.** The next id is stored —
-   one entry `[ns][0x3nnn] → next` — instead of being derived from `max + 1`
-   over the id face. Two consequences, both load-bearing: the hot path never
+   ONE entry, and it costs no face at all: it is the id face's **face-level
+   singleton**, keyed by the bare prefix `[ns][0x2nnn]` with no id suffix. Every
+   real entry of that face carries exactly `N` bytes after the slot, so a
+   zero-length key is not expressible as data and the two cannot collide — by
+   length, not by a reserved id. (It cannot live on the label face: the empty
+   label is a legal label. ADR-0030 states the general rule.) It replaces the
+   `max + 1` derived from a scan. Two consequences, both load-bearing: the hot path never
    scans (an earlier cut loaded the whole vocabulary on every `put`, because the
    derive builds one cache per field per call), and a batch writer can intern
    inside its own batch, since a batch serves point reads and refuses ordered
