@@ -162,20 +162,38 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> Vec<Field> {
                 quote! { 1 },
                 Some(quote! { ::okm_core::FieldType::U8 }),
             ),
-            _ if ty_str.starts_with("Vocab<") => {
-                // Vocab<T> (ADR-0032): one byte, the id in this FIELD's data
-                // vocabulary. The label is the in-memory value; interning
-                // happens in `__okm_intern` before this encoder runs.
-                let inner = ty_str
-                    .trim_start_matches("Vocab<")
-                    .trim_end_matches('>')
-                    .to_string();
-                let inner_ty: syn::Type = syn::parse_str(&inner)
-                    .unwrap_or_else(|_| panic!("{ctx}: bad Vocab domain type {inner}"));
+            _ if ty_str.starts_with("Vocab<") || ty_str == "Vocab" => {
+                // Vocab<N> (ADR-0032): an N-byte interned id in the index key,
+                // same width as in the payload so key order stays id order.
+                let id_ty = if ty_str == "Vocab" {
+                    "u8".to_string()
+                } else {
+                    ty_str
+                        .trim_start_matches("Vocab<")
+                        .trim_end_matches('>')
+                        .to_string()
+                };
+                let width: u16 = match id_ty.as_str() {
+                    "u8" => 1,
+                    "u16" => 2,
+                    "u32" => 4,
+                    "u64" => 8,
+                    "u128" => 16,
+                    other => panic!(
+                        "{ctx}: Vocab<{other}> — the id width must be u8, u16, u32, u64 or u128"
+                    ),
+                };
+                let id_ty: syn::Type = syn::parse_str(&id_ty)
+                    .unwrap_or_else(|_| panic!("{ctx}: bad Vocab id width type"));
+                let w_lit = proc_macro2::Literal::u16_unsuffixed(width);
+                let off_lit = proc_macro2::Literal::u16_unsuffixed(16 - width);
                 (
-                    quote! { buf.push(self.#id.to_wire()[0]); },
-                    quote! { let #id = <::okm_core::Vocab<#inner_ty>>::from_wire(&b[offset..offset+1]); offset += 1; },
-                    quote! { 1 },
+                    quote! {{
+                        let img = self.#id.wire16();
+                        buf.extend_from_slice(&img[#off_lit..]);
+                    }},
+                    quote! { let #id = <::okm_core::Vocab<#id_ty>>::from_wire(&b[offset..offset+#w_lit]); offset += #w_lit; },
+                    quote! { #w_lit },
                     Some(quote! { ::okm_core::FieldType::Vocab(0) }),
                 )
             }

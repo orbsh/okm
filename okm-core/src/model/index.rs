@@ -33,18 +33,20 @@ pub type Slot = u16;
 /// kinds whose instances are enumerated. An enumeration, not a space
 /// allocation.
 pub mod segment {
+    /// Declared vocabularies (ADR-0032), the label → id direction: the key is
+    /// the label, the value the id. Counter = the vocabulary's own number
+    /// (declaration order among the document's `Vocab<N>` fields) — ONE number
+    /// per vocabulary, because the DIRECTION is the family.
+    pub const VOCAB_LABEL: u16 = 0x1;
+    /// Declared vocabularies, the id → label direction: same counter, other
+    /// family. `vocab_faces(i) = (0x2/i, 0x1/i)`.
+    pub const VOCAB_ID: u16 = 0x2;
     /// Declared indexes (declaration-order counter).
-    pub const INDEX: u16 = 0x1;
+    pub const INDEX: u16 = 0x3;
     /// Declared reduces (independent declaration-order counter).
-    pub const REDUCE: u16 = 0x2;
+    pub const REDUCE: u16 = 0x4;
     /// Junctions (one one-way entry per endpoint ns, ADR-0015).
-    pub const JUNCTION: u16 = 0x3;
-    /// Vocabularies (ADR-0032): every name↔id table lives in this family, two
-    /// counters per table (id→name, name→id). A vocabulary is a face PAIR and
-    /// the class is open-ended, so it cannot be a fixed-face budget: the
-    /// 12-bit counter gives 4095 faces, and the fixed faces stay reserved for
-    /// single faces.
-    pub const VOCAB: u16 = 0x4;
+    pub const JUNCTION: u16 = 0x5;
 }
 
 /// Assemble a counting family's slot from its family number and counter.
@@ -82,35 +84,6 @@ pub const fn slot_len(slot: Slot) -> usize {
 pub const PRIMARY_SLOT: Slot = 0x00;
 /// obj dynamic segment (ADR-0012), per-row undeclared fields: fixed face 0x01.
 pub const DYNAMIC_SLOT: Slot = 0x01;
-/// Vocabulary counters inside family 4 (ADR-0032): the PER-FIELD data
-/// vocabularies. Each declared `Vocab<T>` field allocates its own pair in
-/// declaration order — the same discipline `#[ok_index]` uses for its slots,
-/// and the reason this class needs a 12-bit counter instead of the 16-face
-/// budget. The two collection-wide name domains keep their fixed faces
-/// (0x02/0x03 field names, 0x04/0x05 predicate tokens): their NUMBER is fixed,
-/// so they need no allocation, and leaving them in place costs no migration.
-///
-/// ```text
-/// 0x02, 0x03   field names (ADR-0012)          — fixed faces, unchanged
-/// 0x04, 0x05   predicate / node-kind tokens    — fixed faces, unchanged
-/// 4/0,  4/1    Vocab<T> field #0   (id → name, name → id)
-/// 4/2,  4/3    Vocab<T> field #1
-/// …
-/// ```
-pub const VOCAB_FIELD_BASE_COUNTER: u16 = 0;
-
-/// The `(id_slot, name_slot)` pair a `Vocab<T>` field occupies, by its
-/// declaration-order index among the document's `Vocab` fields. Per FIELD, not
-/// per collection: two categorical fields are two independent domains with
-/// independent 255-value budgets, and each one's names are enumerable on their
-/// own.
-pub const fn vocab_faces(field_index: u16) -> (Slot, Slot) {
-    (
-        slot(segment::VOCAB, VOCAB_FIELD_BASE_COUNTER + field_index * 2),
-        slot(segment::VOCAB, VOCAB_FIELD_BASE_COUNTER + field_index * 2 + 1),
-    )
-}
-
 /// Field-name vocabulary, number → name (ADR-0012): fixed face 0x02.
 pub const FIELD_VOCAB_ID_SLOT: Slot = 0x02;
 /// Field-name vocabulary, name → number (ADR-0012): fixed face 0x03.
@@ -238,19 +211,19 @@ pub trait Document: Sized + Clone {
     fn __okm_embed_keys(&self) -> Vec<Vec<u8>> {
         Vec::new()
     }
-    /// Whether this document declares any `Vocab<T>` field (ADR-0032). `put`
+    /// Whether this document declares any `Vocab<N>` field (ADR-0032). `put`
     /// reads it to choose between encoding the caller's document directly and
     /// taking a mutable copy for the intern step — tables without categorical
     /// values pay only the constant.
     const HAS_VOCAB: bool = false;
-    /// Resolve every `Vocab<T>` field's label to its id in that FIELD's data
+    /// Resolve every `Vocab<N>` field's label to its id in that FIELD's data
     /// vocabulary (ADR-0032), writing the vocabulary entries through `store`.
     /// Called by `put` before encoding — and by `save_with_prev_into` through
     /// `BatchStore`, so vocabulary growth, the row and its faces land in one
     /// batch. Default no-op (no categorical fields). Interning past 255 distinct
     /// labels in one field is a loud error, never a wrap.
     fn __okm_intern(&mut self, _store: &mut dyn VirtualStorage, _header: &[u8]) {}
-    /// Resolve every `Vocab<T>` field's decoded id back into its label
+    /// Resolve every `Vocab<N>` field's decoded id back into its label
     /// (ADR-0032), so the document API and `to_map` see names. Called by the
     /// read path after `__okm_embed_deref`; default no-op (no categorical
     /// fields). A missing vocabulary entry leaves the value unresolved rather
@@ -381,7 +354,7 @@ pub trait KvIndex {
     /// The document type this access method reads its index fields from.
     type Document: Document<Key = Self::Key>;
     /// Item-local slot, allocated by attribute order (index segment,
-    /// 0x1001, 0x1002, …; primary = 0x0000). 2 bytes in the entry header,
+    /// 0x3001, 0x3002, …; primary = 0x0000). 2 bytes in the entry header,
     /// big-endian (ADR-0016).
     const SLOT: Slot;
     /// Indexed payload fields, in sort order.

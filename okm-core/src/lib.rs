@@ -41,7 +41,7 @@ pub use model::wrappers::{Bytes, Ref, Refs, Offset, Quant, VarInt, VarIntEnc, Ve
 pub use model::wrappers::wire::{put_len, take_len};
 
 pub use model::reduce::{reduce_get, scan_reduces, ReduceCodec, Reduce, ReduceLogic};
-pub use model::vocab::{Vocab, MAX_VOCAB_ID};
+pub use model::vocab::{Vocab, VocabId};
 pub use model::presets::{Count, HighWater, LowAcc, LowWater, ReduceFieldSource, Sum};
 pub use model::collection::Junction;
 pub use model::junction::KvJunction;

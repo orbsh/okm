@@ -80,7 +80,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     /// `delete_by_pkey`) exist; the reduce, by contrast, is a mutable
     /// aggregate under one group key and MUST compensate.
     pub fn put(&mut self, key: &K, document: &R) {
-        // Categorical values (ADR-0032): a `Vocab<T>` field holds a NAME until
+        // Categorical values (ADR-0032): a `Vocab<N>` field holds a NAME until
         // the write path interns it, and the payload byte is the id. Tables
         // with no Vocab field hand the caller's document straight through; the
         // clone is the price of `put(&R)`'s immutable signature, paid only by

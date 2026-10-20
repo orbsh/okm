@@ -30,7 +30,7 @@ pub enum FieldType {
     /// `Quant<f64, P>` — fixed-point i64 wire (8 bytes); the payload is the
     /// decimal precision P. Logical type is f64 (wire / 10^P).
     Quant(u32),
-    /// `Vocab<T>` — an interned categorical value (ADR-0032): one byte, the id
+    /// `Vocab<N>` — an interned categorical value (ADR-0032): one byte, the id
     /// in that FIELD's data vocabulary. The payload is the field's id face, so
     /// a dynamic reader resolves names with `VocabFaces { id_slot, name_slot:
     /// id_slot + 1 }` without knowing the rest of the declaration.

@@ -9,7 +9,7 @@
 //!    fixed-width fields today but keeps the same frame for the
 //!    variable-length regime later.
 //! 3. `#[ok_index(idx_name { fields(a, b), includes(c) })]` — one access
-//!    method per declaration, slots start at DECLARED_SLOT_BASE (16) in attribute order
+//!    method per declaration, slots start at DECLARED_SLOT_BASE (0x3001) in attribute order
 //!    (`0` is reserved for the primary table, ADR-0005). Generates a
 //!    marker struct per index plus `Document::index_entries`, so `put`/
 //!    `delete` cover every declared access method with no runtime
@@ -36,8 +36,8 @@ use proc_macro2::TokenStream as TS2;
 /// segment (independent counters). Literals, not runtime constants — a
 /// proc-macro crate cannot name okm_core at its own compile time. Keep in
 /// sync with `okm_core::index::DECLARED_SLOT_BASE` / `REDUCE_SLOT_BASE`.
-const DECLARED_SLOT_BASE: u16 = 0x1001;
-const REDUCE_SLOT_BASE: u16 = 0x2001;
+const DECLARED_SLOT_BASE: u16 = 0x3001;
+const REDUCE_SLOT_BASE: u16 = 0x4001;
 use quote::{format_ident, quote};
 use syn::{parse_macro_input, DeriveInput};
 
@@ -825,7 +825,7 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> TS2 {
     // `#[ok_default]` / `Default` — same evolution rule as the payload
     // decoder. `String`/`Bytes` clone; fixed `[u8; N]` converts.
     let mut to_map_arms = quote! {};
-    // ADR-0032: (field, domain marker) for every `Vocab<T>` field, in
+    // ADR-0032: (field, id-width type) for every `Vocab<N>` field, in
     // declaration order. The index into this list IS that field's vocabulary
     // counter, and every generated arm below uses it the same way.
     let mut vocab_fields: Vec<(syn::Ident, syn::Type)> = Vec::new();
@@ -960,30 +960,35 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> TS2 {
                     _ => #dflt,
                 },
             });
-        } else if ty_str.starts_with("Vocab<") || ty_str.starts_with("Vocab <") {
-            // Vocab<T> (ADR-0032): the map carries the LABEL — the semantic
+        } else if ty_str.starts_with("Vocab<") || ty_str == "Vocab" {
+            // Vocab<N> (ADR-0032): the map carries the LABEL — the semantic
             // value. An unresolved value (decoded, not yet deref'd) carries its
             // id as a number: nothing is invented.
-            let inner = ty_str
-                .trim_start_matches("Vocab <")
-                .trim_start_matches("Vocab<")
-                .trim_end_matches('>')
-                .to_string();
-            let inner_ty: syn::Type = syn::parse_str(&inner)
-                .unwrap_or_else(|e| panic!("bridge: bad Vocab domain type `{inner}`: {e}"));
-            vocab_fields.push((id.clone(), inner_ty.clone()));
+            let id_ty_str = if ty_str == "Vocab" {
+                "u8".to_string()
+            } else {
+                ty_str
+                    .trim_start_matches("Vocab<")
+                    .trim_end_matches('>')
+                    .to_string()
+            };
+            let id_ty: syn::Type = syn::parse_str(&id_ty_str)
+                .unwrap_or_else(|e| panic!("bridge: bad Vocab id width `{id_ty_str}`: {e}"));
+            vocab_fields.push((id.clone(), id_ty.clone()));
             to_map_arms.extend(quote! {
                 out.insert(#name.to_string(), match self.#id.as_str() {
                     Some(s) => ::okm_core::obj_dynamic::DynamicValue::Str(s.to_string()),
                     None => ::okm_core::obj_dynamic::DynamicValue::UInt(
-                        self.#id.id().unwrap_or(0) as u64
+                        self.#id.id()
+                            .map(|i| ::okm_core::VocabId::as_u128(i) as u64)
+                            .unwrap_or(0)
                     ),
                 });
             });
             from_map_arms.extend(quote! {
                 #id: match map.get(#name) {
                     Some(::okm_core::obj_dynamic::DynamicValue::Str(v)) => {
-                        ::okm_core::Vocab::<#inner_ty>::of(v.clone())
+                        ::okm_core::Vocab::<#id_ty>::of(v.clone())
                     }
                     _ => #dflt,
                 },
@@ -1229,35 +1234,27 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> TS2 {
     let vocab_hooks = if vocab_fields.is_empty() {
         quote! {}
     } else {
-        let intern_arms = vocab_fields.iter().enumerate().map(|(vi, (fid, _d))| {
+        let intern_arms = vocab_fields.iter().enumerate().map(|(vi, (fid, d))| {
             let vi_lit = proc_macro2::Literal::u16_suffixed(vi as u16);
-            let fname = fid.to_string();
             quote! {
                 if let Some(label) = self.#fid.as_str().map(|s| s.to_owned()) {
-                    let mut cache = ::okm_core::obj_vocab::VocabCache::new(
+                    let mut cache = ::okm_core::obj_vocab::VocabCache::<#d>::new(
                         ::okm_core::obj_vocab::data_vocab(#vi_lit),
                     );
-                    let id = cache.id_for(store, header, &label);
-                    if id > ::okm_core::MAX_VOCAB_ID {
-                        panic!(
-                            "Vocab field `{}`: more than 255 distinct labels — the wire is one \
-                             byte (ADR-0032). Narrow the domain or model this value as a String field.",
-                            #fname
-                        );
-                    }
-                    self.#fid.set_id(id as u8);
+                    // Exhausting the declared width panics inside the cache.
+                    self.#fid.set_id(cache.id_for(&mut *store, header, &label));
                 }
             }
         });
-        let deref_arms = vocab_fields.iter().enumerate().map(|(vi, (fid, _d))| {
+        let deref_arms = vocab_fields.iter().enumerate().map(|(vi, (fid, d))| {
             let vi_lit = proc_macro2::Literal::u16_suffixed(vi as u16);
             quote! {
                 if self.#fid.as_str().is_none() {
                     if let Some(id) = self.#fid.id() {
-                        let mut cache = ::okm_core::obj_vocab::VocabCache::new(
+                        let mut cache = ::okm_core::obj_vocab::VocabCache::<#d>::new(
                             ::okm_core::obj_vocab::data_vocab(#vi_lit),
                         );
-                        if let Some(name) = cache.name_for(store, &header, id as u16) {
+                        if let Some(name) = cache.name_for(store, &header, id) {
                             self.#fid.set_name(name);
                         }
                     }

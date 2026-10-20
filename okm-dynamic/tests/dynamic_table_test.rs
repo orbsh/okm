@@ -56,8 +56,8 @@ fn dynamic_table(store: TestStore) -> DynamicCollection<TestStore> {
         41,
         schema(),
         vec![
-            AccessMethod::plain(0x1001, vec!["level".into()], vec![]),
-            AccessMethod::plain(0x1002, vec!["score".into()], vec!["level".into()]),
+            AccessMethod::plain(0x3001, vec!["level".into()], vec![]),
+            AccessMethod::plain(0x3002, vec!["score".into()], vec!["level".into()]),
         ],
     )
 }
@@ -101,7 +101,7 @@ fn dynamic_scan_finds_by_access_method() {
     t.put(&key_bytes(1, 12), &values(1, 12, 4, 200, "c")).unwrap();
 
     // by_level (slot 16): level = 4 → users 10 and 12.
-    let hits = t.scan(0x1001, &4u32.to_be_bytes()).unwrap();
+    let hits = t.scan(0x3001, &4u32.to_be_bytes()).unwrap();
     let mut ids: Vec<u64> = hits
         .iter()
         .map(|k| match k.get("user_id") {
@@ -115,12 +115,12 @@ fn dynamic_scan_finds_by_access_method() {
     // by_score (slot 17): score = 100 -> users 10 and 11.
     let mut prefix = Vec::new();
     prefix.extend_from_slice(&100u16.to_be_bytes());
-    assert_eq!(t.scan(0x1002, &prefix).unwrap().len(), 2);
+    assert_eq!(t.scan(0x3002, &prefix).unwrap().len(), 2);
 
     // No match: org 2 has nobody.
     let mut prefix = Vec::new();
     prefix.extend_from_slice(&999u16.to_be_bytes());
-    assert!(t.scan(0x1002, &prefix).unwrap().is_empty());
+    assert!(t.scan(0x3002, &prefix).unwrap().is_empty());
 }
 
 #[test]
@@ -132,9 +132,9 @@ fn dynamic_overwrite_sweeps_stale_entries() {
     // level 4) must be gone, the new one present.
     t.put(&key_bytes(1, 10), &values(1, 10, 9, 100, "a")).unwrap();
 
-    let level4 = t.scan(0x1001, &4u32.to_be_bytes()).unwrap();
+    let level4 = t.scan(0x3001, &4u32.to_be_bytes()).unwrap();
     assert!(level4.is_empty(), "stale by_level entry must be swept");
-    let level9 = t.scan(0x1001, &9u32.to_be_bytes()).unwrap();
+    let level9 = t.scan(0x3001, &9u32.to_be_bytes()).unwrap();
     assert_eq!(level9.len(), 1);
 }
 
@@ -144,10 +144,10 @@ fn dynamic_delete_removes_all_entries() {
     t.put(&key_bytes(1, 10), &values(1, 10, 4, 100, "a")).unwrap();
     t.delete(&key_bytes(1, 10)).unwrap();
 
-    assert!(t.scan(0x1001, &4u32.to_be_bytes()).unwrap().is_empty());
+    assert!(t.scan(0x3001, &4u32.to_be_bytes()).unwrap().is_empty());
     let mut prefix = Vec::new();
     prefix.extend_from_slice(&100u16.to_be_bytes());
-    assert!(t.scan(0x1002, &prefix).unwrap().is_empty());
+    assert!(t.scan(0x3002, &prefix).unwrap().is_empty());
     assert!(t.get(&key_bytes(1, 10)).unwrap().is_none());
 }
 
@@ -424,7 +424,7 @@ fn dynamic_variable_width_index_matches_typed_bytes() {
         TestStore::slatedb_mem(),
         43,
         schema.clone(),
-        vec![AccessMethod::plain(0x1001, vec!["email".into()], vec![])],
+        vec![AccessMethod::plain(0x3001, vec!["email".into()], vec![])],
     );
 
     let doc = |email: &str| Subscriber { email: email.into() };
@@ -456,7 +456,7 @@ fn dynamic_variable_width_index_matches_typed_bytes() {
 
     // Equality probe with the FULL string (longer than nothing — the
     // pkey tail cuts the raw UTF-8): rows 1 and 2 match, 3 does not.
-    let hits = dynamic.scan(0x1001, b"a@x").expect("equality probe");
+    let hits = dynamic.scan(0x3001, b"a@x").expect("equality probe");
     let mut ids: Vec<u64> = hits
         .iter()
         .map(|k| match k.get("id") {
@@ -472,7 +472,7 @@ fn dynamic_variable_width_index_matches_typed_bytes() {
     m.insert("id".to_string(), Value::U64(3));
     m.insert("email".to_string(), Value::Str("a@x".into()));
     dynamic.put(&EmailKey { id: 3 }.encode(), &m).unwrap();
-    let hits = dynamic.scan(0x1001, b"a@x").unwrap();
+    let hits = dynamic.scan(0x3001, b"a@x").unwrap();
     let mut ids: Vec<u64> = hits
         .iter()
         .filter_map(|k| match k.get("id") {
@@ -507,7 +507,7 @@ fn dynamic_variable_width_index_declaration_errors() {
         pub b: String,
     }
     let two_str_schema = CollectionSchema::of::<TwoStrKey, TwoStr>();
-    let two_variable = AccessMethod::plain(0x1001, vec!["a".into(), "b".into()], vec![]);
+    let two_variable = AccessMethod::plain(0x3001, vec!["a".into(), "b".into()], vec![]);
     assert!(two_variable.fields_width(&two_str_schema).is_err());
 
     // Includes segments share the rule.

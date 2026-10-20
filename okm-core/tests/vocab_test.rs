@@ -1,4 +1,4 @@
-//! `Vocab<T>` end to end (ADR-0032): labels in memory, one-byte ids on the
+//! `Vocab<N>` end to end (ADR-0032): labels in memory, an N-byte id on the
 //! wire, one data vocabulary per declared field.
 
 use okm_core::{Collection, Document, DocumentEncode, FieldType, KeyEncode, TestStore, Vocab};
@@ -9,19 +9,14 @@ pub struct VKey {
     pub id: u64,
 }
 
-/// Zero-size domain markers: two categorical fields that must not share a
-/// vocabulary, and must not accept each other's labels.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Status;
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Color;
-
 #[derive(DocumentEncode, Clone, PartialEq, Debug)]
 #[ok_ref(VKey)]
 #[ok_ns(11)]
 pub struct VRow {
-    pub status: Vocab<Status>,
-    pub color: Vocab<Color>,
+    /// One byte of id: up to 256 labels.
+    pub status: Vocab<u8>,
+    /// Two bytes: the same label mechanism with a wider id space.
+    pub color: Vocab<u16>,
     pub n: u32,
 }
 
@@ -46,13 +41,17 @@ fn labels_round_trip_through_per_field_vocabularies() {
     assert_eq!(a.color.as_str(), Some("red"));
     assert_eq!(a.n, 7);
     // Per-FIELD id spaces: each field's first label is its id 0.
-    assert_eq!(a.status.id(), Some(0));
-    assert_eq!(a.color.id(), Some(0));
+    assert_eq!(a.status.id(), Some(0u8));
+    assert_eq!(a.color.id(), Some(0u16));
 
     let b = c.get(&VKey { org: 1, id: 2 }).unwrap();
     assert_eq!(b.status.as_str(), Some("closed"));
-    assert_eq!(b.status.id(), Some(1), "second label in the status field");
-    assert_eq!(b.color.id(), Some(0), "red was already the color field's id 0");
+    assert_eq!(b.status.id(), Some(1u8), "second label in the status field");
+    assert_eq!(
+        b.color.id(),
+        Some(0u16),
+        "red was already the color field's id 0"
+    );
 
     // The map bridge lifts the label, not the id.
     let m = a.to_map();
@@ -71,18 +70,29 @@ fn labels_round_trip_through_per_field_vocabularies() {
     c.put(&VKey { org: 1, id: 3 }, &d);
     let e = c.get(&VKey { org: 1, id: 3 }).unwrap();
     assert_eq!(e.status.as_str(), Some("suspended"));
-    assert_eq!(e.status.id(), Some(2));
-    assert_eq!(e.color.as_str(), Some("red"), "untouched field keeps its label");
+    assert_eq!(e.status.id(), Some(2u8));
+    assert_eq!(
+        e.color.as_str(),
+        Some("red"),
+        "untouched field keeps its label"
+    );
 
-    // The schema carries each field's own id face, in counting family 4.
-    let faces: Vec<u16> = VRow::FIELDS
+    // Each field's vocabulary is its own face pair in counting families 1/2, and
+    // the schema carries the id face so a dynamic reader can resolve labels.
+    let faces: Vec<(u16, usize)> = VRow::FIELDS
         .iter()
         .filter_map(|f| match f.ty {
-            FieldType::Vocab(slot) => Some(slot),
+            FieldType::Vocab(slot) => Some((slot, f.width)),
             _ => None,
         })
         .collect();
     assert_eq!(faces.len(), 2);
-    assert_eq!(faces[0] >> 12, 4, "family 4");
-    assert_ne!(faces[0], faces[1], "one face pair per field");
+    assert_eq!(faces[0].0 >> 12, 2, "id → label lives in family 2");
+    assert_eq!(faces[1].0 >> 12, 2);
+    assert_ne!(faces[0].0, faces[1].0, "one vocabulary per field");
+    assert_eq!(
+        (faces[0].1, faces[1].1),
+        (1, 2),
+        "the declaration picked the id widths"
+    );
 }
