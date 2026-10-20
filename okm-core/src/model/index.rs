@@ -39,14 +39,20 @@ pub mod segment {
     /// per vocabulary, because the DIRECTION is the family.
     pub const VOCAB_LABEL: u16 = 0x1;
     /// Declared vocabularies, the id → label direction: same counter, other
-    /// family. `vocab_faces(i) = (0x2/i, 0x1/i)`.
+    /// family. `vocab_faces(i)` pairs the two with the cursor below.
     pub const VOCAB_ID: u16 = 0x2;
+    /// Declared vocabularies, ALLOCATION: one entry per vocabulary, the next id
+    /// to hand out (ADR-0032). It sits next to the two directions because it
+    /// belongs to the vocabulary, not to any consumer: with it, allocation is a
+    /// point read, and a point read is the only read a batch can do — so a batch
+    /// writer's vocabulary growth rides the same batch as its row.
+    pub const VOCAB_CURSOR: u16 = 0x3;
     /// Declared indexes (declaration-order counter).
-    pub const INDEX: u16 = 0x3;
+    pub const INDEX: u16 = 0x4;
     /// Declared reduces (independent declaration-order counter).
-    pub const REDUCE: u16 = 0x4;
+    pub const REDUCE: u16 = 0x5;
     /// Junctions (one one-way entry per endpoint ns, ADR-0015).
-    pub const JUNCTION: u16 = 0x5;
+    pub const JUNCTION: u16 = 0x6;
 }
 
 /// Assemble a counting family's slot from its family number and counter.
@@ -88,6 +94,8 @@ pub const DYNAMIC_SLOT: Slot = 0x01;
 pub const FIELD_VOCAB_ID_SLOT: Slot = 0x02;
 /// Field-name vocabulary, name → number (ADR-0012): fixed face 0x03.
 pub const FIELD_VOCAB_NAME_SLOT: Slot = 0x03;
+/// Field-name vocabulary allocation cursor (ADR-0032): fixed face 0x0C.
+pub const FIELD_VOCAB_CURSOR_SLOT: Slot = 0x0C;
 /// Predicate vocabulary, number → name: fixed face 0x04. A collection's token
 /// vocabulary BEYOND field names — a graph's predicates, a node collection's
 /// kind tokens (ADR-0017 §3). A pair of its own, never a band inside 0x02/0x03:
@@ -97,6 +105,9 @@ pub const PREDICATE_VOCAB_ID_SLOT: Slot = 0x04;
 /// Predicate vocabulary, name → number: fixed face 0x05 (the mirror of
 /// [`PREDICATE_VOCAB_ID_SLOT`]).
 pub const PREDICATE_VOCAB_NAME_SLOT: Slot = 0x05;
+/// Predicate / kind-token vocabulary allocation cursor (ADR-0032): fixed face
+/// 0x0D.
+pub const PREDICATE_VOCAB_CURSOR_SLOT: Slot = 0x0D;
 /// Slot base available to `#[ok_index]` declaration-order allocation —
 /// counters start at 1 (0 reserved), so 4095 declared indexes per collection.
 pub const DECLARED_SLOT_BASE: Slot = slot(segment::INDEX, 1);
@@ -354,7 +365,7 @@ pub trait KvIndex {
     /// The document type this access method reads its index fields from.
     type Document: Document<Key = Self::Key>;
     /// Item-local slot, allocated by attribute order (index segment,
-    /// 0x3001, 0x3002, …; primary = 0x0000). 2 bytes in the entry header,
+    /// 0x4001, 0x4002, …; primary = 0x0000). 2 bytes in the entry header,
     /// big-endian (ADR-0016).
     const SLOT: Slot;
     /// Indexed payload fields, in sort order.

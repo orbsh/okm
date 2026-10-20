@@ -1,7 +1,10 @@
 //! `Vocab<N>` end to end (ADR-0032): labels in memory, an N-byte id on the
 //! wire, one data vocabulary per declared field.
 
-use okm_core::{Collection, Document, DocumentEncode, FieldType, KeyEncode, TestStore, Vocab};
+use okm_core::{
+    Collection, Document, DocumentEncode, FieldType, KeyEncode, MemBatch, TestStore,
+    VirtualStorage, Vocab,
+};
 
 #[derive(KeyEncode, Clone, PartialEq, Debug)]
 pub struct VKey {
@@ -95,4 +98,45 @@ fn labels_round_trip_through_per_field_vocabularies() {
         (1, 2),
         "the declaration picked the id widths"
     );
+}
+/// A store that refuses every ordered read. Writes and point reads are real
+/// (they go to the engine inside), so a write path that survives here uses
+/// point operations only — which is the whole reason the vocabulary keeps an
+/// allocation cursor instead of deriving `max + 1` from a scan, and therefore
+/// the reason a batch writer can intern inside its own batch (a batch cannot
+/// scan at all).
+struct NoScan(TestStore);
+
+impl VirtualStorage for NoScan {
+    fn put(&self, key: Vec<u8>, value: Vec<u8>) {
+        self.0.put(key, value);
+    }
+    fn get(&self, key: &[u8]) -> Option<Vec<u8>> {
+        self.0.get(key)
+    }
+    fn del(&self, key: &[u8]) {
+        self.0.del(key);
+    }
+    fn scan_range(&self, _begin: &[u8], _end: Option<&[u8]>) -> Vec<Vec<u8>> {
+        panic!("the categorical hot path must not scan");
+    }
+    fn commit_batch(&mut self, batch: MemBatch) -> Result<(), String> {
+        self.0.commit_batch(batch)
+    }
+}
+
+#[test]
+fn a_put_on_a_categorical_table_never_scans() {
+    let mut c = Collection::<_, VKey, VRow>::new(NoScan(TestStore::slatedb_mem()));
+
+    // First write allocates two labels; the second reuses them (label-face
+    // probe); the third allocates two more through the cursor.
+    c.put(&VKey { org: 1, id: 1 }, &row("active", "red", 1));
+    c.put(&VKey { org: 1, id: 1 }, &row("active", "red", 2));
+    c.put(&VKey { org: 1, id: 2 }, &row("closed", "blue", 3));
+
+    let two = c.get(&VKey { org: 1, id: 2 }).expect("row");
+    assert_eq!(two.status.as_str(), Some("closed"));
+    assert_eq!(two.color.as_str(), Some("blue"));
+    assert_eq!(two.status.id(), Some(1u8), "second label of the status field");
 }

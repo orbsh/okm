@@ -14,7 +14,9 @@
 //! slot constants — every byte rule stays here, one source.
 
 use okm_core::model::obj_dynamic::{decode_named, put_frame_named};
-use okm_core::model::index::{FIELD_VOCAB_ID_SLOT, FIELD_VOCAB_NAME_SLOT, DYNAMIC_SLOT};
+use okm_core::model::index::{
+    DYNAMIC_SLOT, FIELD_VOCAB_CURSOR_SLOT, FIELD_VOCAB_ID_SLOT, FIELD_VOCAB_NAME_SLOT,
+};
 use okm_core::storage::{scan_suffix_kv, VirtualStorage};
 
 use crate::{Value, ValueMap};
@@ -32,9 +34,10 @@ pub struct VocabMirror {
 }
 
 impl VocabMirror {
-    /// Both directions of one table's vocabulary from the engine (one
-    /// prefix scan each; the watermark derives from the mirror — max +
-    /// 1, the load-once discipline `VocabCache` records).
+    /// Both directions of one table's vocabulary from the engine, plus the
+    /// allocation cursor when the store has one (ADR-0032). Without a cursor —
+    /// a vocabulary written before it existed — the watermark falls back to
+    /// max + 1, which is what the scans below compute anyway.
     pub fn load<S: VirtualStorage>(store: &S, ns: &[u8]) -> Self {
         let mut d = Self::default();
         let mut p2 = ns.to_vec();
@@ -59,6 +62,13 @@ impl VocabMirror {
                         d.next_id = id + 1;
                     }
                 }
+        }
+        let mut cursor_key = ns.to_vec();
+        okm_core::write_slot(&mut cursor_key, FIELD_VOCAB_CURSOR_SLOT);
+        if let Some(raw) = store.get(&cursor_key)
+            && raw.len() == 2 {
+            let cursor = u16::from_be_bytes([raw[0], raw[1]]);
+            d.next_id = d.next_id.max(cursor);
         }
         d
     }
@@ -166,6 +176,14 @@ pub fn plan_put_fields(
             let dv = value_to_dyn_value(value)?;
             put_frame_named(&mut body, name, &dv, &mut resolver);
         }
+    }
+    // The allocation cursor, exactly as `VocabCache::id_for` writes it: without
+    // this op the plan's vocabulary and the typed path's vocabulary diverge, and
+    // the next allocation (on either side) would hand out a duplicate id.
+    if !vocab.written.is_empty() {
+        let mut cursor_key = ns.to_vec();
+        okm_core::write_slot(&mut cursor_key, FIELD_VOCAB_CURSOR_SLOT);
+        vocab_ops.push((cursor_key, Some(vocab.next_id.to_be_bytes().to_vec())));
     }
     let k = fields_key(ns, pkey);
     if body.is_empty() {
@@ -294,10 +312,10 @@ mod tests {
             plan.new_vocab_entries,
             vec![("note".to_string(), 0u16), ("weight".to_string(), 1u16)]
         );
-        // 2 names x 2 directions + the entry = 5 ops, entry LAST.
-        assert_eq!(plan.ops.len(), 5);
-        assert_eq!(plan.ops[4].0, fields_key(&ns(), b"k"));
-        assert!(plan.ops[4].1.is_some());
+        // 2 names x 2 directions + the cursor + the entry = 6 ops, entry LAST.
+        assert_eq!(plan.ops.len(), 6);
+        assert_eq!(plan.ops[5].0, fields_key(&ns(), b"k"));
+        assert!(plan.ops[5].1.is_some());
     }
 
     #[test]

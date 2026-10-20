@@ -79,7 +79,7 @@ mod rust_reduce {
     }
 
     impl Reduce for GroupCount {
-        const SLOT: u16 = 0x4001;
+        const SLOT: u16 = 0x5001;
         const GROUP: &'static [&'static str] = &["level"];
         fn group_bytes(_key: &UserKey, document: &User) -> Vec<u8> {
             // Hand-written mirror of the derive's payload walk: the
@@ -163,9 +163,9 @@ fn dynamic_table(store: TestStore) -> DynamicCollection<TestStore> {
         42,
         schema(),
         vec![
-            AccessMethod::plain(0x3001, vec!["level".into()], vec!["score".into()]),
+            AccessMethod::plain(0x4001, vec!["level".into()], vec!["score".into()]),
             AccessMethod {
-                slot: 0x3002,
+                slot: 0x4002,
                 fields: vec![], // func: the derive result IS the segment
                 includes: vec![],
                 kind: AccessMethodKind::Func(Box::new(func_tags)),
@@ -178,7 +178,7 @@ fn dynamic_table(store: TestStore) -> DynamicCollection<TestStore> {
             },
         ],
         vec![ReduceSpec {
-            slot: 0x4001,
+            slot: 0x5001,
             group_fields: vec!["level".into()],
             logic: Box::new(GroupCount),
         }],
@@ -187,7 +187,7 @@ fn dynamic_table(store: TestStore) -> DynamicCollection<TestStore> {
 
 fn reduce_entry_key(t: &DynamicCollection<TestStore>, level: u32) -> Vec<u8> {
     let reduce = BoundReduce::new(ReduceSpec {
-        slot: 0x4001,
+        slot: 0x5001,
         group_fields: vec!["level".into()],
         logic: Box::new(GroupCount),
     });
@@ -210,19 +210,19 @@ fn func_index_fans_out_and_sweeps() {
     let o = (b'o' as u32).to_be_bytes();
     // Duplicate derived values ('b' twice in "bob") map to the SAME
     // entry key and collapse — identical to the Rust-side fan-out.
-    assert_eq!(t.scan(0x3002, &b).unwrap().len(), 1, "collapsed 'b' entry");
-    assert_eq!(t.scan(0x3002, &o).unwrap().len(), 1, "one 'o' entry");
+    assert_eq!(t.scan(0x4002, &b).unwrap().len(), 1, "collapsed 'b' entry");
+    assert_eq!(t.scan(0x4002, &o).unwrap().len(), 1, "one 'o' entry");
 
     // Overwrite to a name sharing no characters: all old entries swept.
     t.put(&key_bytes(1, 2), &values(1, 2, 4, 77, "zig")).unwrap();
-    assert!(t.scan(0x3002, &b).unwrap().is_empty());
-    assert!(t.scan(0x3002, &o).unwrap().is_empty());
+    assert!(t.scan(0x4002, &b).unwrap().is_empty());
+    assert!(t.scan(0x4002, &o).unwrap().is_empty());
     let z = (b'z' as u32).to_be_bytes();
-    assert_eq!(t.scan(0x3002, &z).unwrap().len(), 1);
+    assert_eq!(t.scan(0x4002, &z).unwrap().len(), 1);
 
     // Delete removes the fan-out entirely.
     t.delete(&key_bytes(1, 2)).unwrap();
-    assert!(t.scan(0x3002, &z).unwrap().is_empty());
+    assert!(t.scan(0x4002, &z).unwrap().is_empty());
 }
 
 #[test]
@@ -324,13 +324,13 @@ fn func_index_exact_scan() {
     t.put(&key_bytes(1, 10), &values(1, 10, 4, 100, "zig"))
         .unwrap();
     let z = (b'z' as u32).to_be_bytes();
-    assert_eq!(t.scan(0x3002, &z).unwrap().len(), 1, "the value is a prefix hit");
-    assert_eq!(t.scan_exact(0x3002, &z).unwrap().len(), 1, "…and an exact hit");
+    assert_eq!(t.scan(0x4002, &z).unwrap().len(), 1, "the value is a prefix hit");
+    assert_eq!(t.scan_exact(0x4002, &z).unwrap().len(), 1, "…and an exact hit");
     // The key tail follows the 4-byte value with no boundary byte, so the
     // 5-byte probe (value + the key's first byte, 0x00 for org 1) is
     // satisfied by this entry's BYTES. It is not a match on the value for
     // either variant: the stored value is shorter than the probe.
     let spill = [z.as_slice(), b"\x00"].concat();
-    assert!(t.scan(0x3002, &spill).unwrap().is_empty(), "spill is no prefix hit");
-    assert!(t.scan_exact(0x3002, &spill).unwrap().is_empty(), "spill is no exact hit");
+    assert!(t.scan(0x4002, &spill).unwrap().is_empty(), "spill is no prefix hit");
+    assert!(t.scan_exact(0x4002, &spill).unwrap().is_empty(), "spill is no exact hit");
 }

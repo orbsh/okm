@@ -144,7 +144,7 @@ fn same_group_twice_in_one_batch_accumulates() {
     // The double-count the ADR removes: without read-through both writes
     // would fold from the pre-batch accumulator and the group would end at 1.
     let mut store = TestStore::slatedb_mem();
-    let mut t = <Entry as Document>::collection(store.clone());
+    let t = <Entry as Document>::collection(store.clone());
     let mut batch = okm_core::MemBatch::default();
 
     let (k1, r1) = entry(1, 7, 10);
@@ -164,7 +164,7 @@ fn overwrite_in_one_batch_reads_the_pending_old_row() {
     // prev = None reads through the adapter, so the row THIS batch produced
     // is the old row: its fold is undone before the new fold lands.
     let mut store = TestStore::slatedb_mem();
-    let mut t = <Entry as Document>::collection(store.clone());
+    let t = <Entry as Document>::collection(store.clone());
     let (k, v1) = entry(1, 7, 10);
     let v2 = Entry { account: 8, amount: 10 };
     let mut batch = okm_core::MemBatch::default();
@@ -185,7 +185,7 @@ fn overwrite_in_one_batch_reads_the_pending_old_row() {
 fn caller_supplied_prev_drives_the_unfold_and_the_cleanup() {
     // The common shape: the caller already read the old row in a prior batch.
     let mut store = TestStore::slatedb_mem();
-    let mut t = <Entry as Document>::collection(store.clone());
+    let t = <Entry as Document>::collection(store.clone());
     let (k, v1) = entry(1, 7, 10);
 
     let mut batch = okm_core::MemBatch::default();
@@ -206,7 +206,7 @@ fn caller_supplied_prev_drives_the_unfold_and_the_cleanup() {
 #[test]
 fn an_uncommitted_batch_moves_neither_the_row_nor_the_ledger() {
     let mut store = TestStore::slatedb_mem();
-    let mut t = <Entry as Document>::collection(store.clone());
+    let t = <Entry as Document>::collection(store.clone());
     let (k, v1) = entry(1, 7, 1);
     let mut batch = okm_core::MemBatch::default();
     t.save_with_prev_into(&mut batch, &k, &v1, None);
@@ -227,7 +227,7 @@ fn atomic_write_and_reduce_in_one_commit() {
     // The ADR's headline: multi-table atomicity AND a ledger, together.
     let mut store = TestStore::slatedb_mem();
     let mut batch = okm_core::MemBatch::default();
-    let mut t = <Entry as Document>::collection(store.clone());
+    let t = <Entry as Document>::collection(store.clone());
     let edges: okm_core::Junction<TestStore, AuthorPost> = okm_core::Junction::new(store.clone());
 
     let (k, r) = entry(1, 7, 3);
@@ -307,7 +307,7 @@ pub struct Card {
 #[test]
 fn embedded_children_are_written_and_released_in_the_batch() {
     let mut store = TestStore::slatedb_mem();
-    let mut cards = <Card as Document>::collection(store.clone());
+    let cards = <Card as Document>::collection(store.clone());
     let contacts: Collection<TestStore, ContactKey, Contact> = Collection::new(store.clone());
     let k = CardKey { id: 1 };
     let c1 = ContactKey { card_id: 1, kind: 1 };
@@ -366,9 +366,9 @@ pub struct LogRow {
 }
 
 #[test]
-fn save_with_prev_into_interns_ahead_of_the_batch() {
+fn save_with_prev_into_interns_inside_the_batch() {
     let mut store = TestStore::slatedb_mem();
-    let mut c = Collection::<_, LogKey, LogRow>::new(store.clone());
+    let c = Collection::<_, LogKey, LogRow>::new(store.clone());
     let k = LogKey { id: 1 };
 
     let row = LogRow {
@@ -379,16 +379,16 @@ fn save_with_prev_into_interns_ahead_of_the_batch() {
         note: "slow upstream".into(),
     };
 
-    // The ROW is not live before the commit. Its vocabulary entries are: a
-    // batch cannot allocate ids (the cursor comes from a scan, and BatchStore
-    // refuses scans), so growth commits just ahead of the batch — append-only,
-    // never reused, and therefore safe to land before the row does.
+    // Nothing is live before the commit — not the row, not its vocabulary. The
+    // allocation's three writes (label → id, id → label, cursor) go through
+    // BatchStore, so they ride the caller's batch.
     let mut batch = okm_core::MemBatch::default();
     c.save_with_prev_into(&mut batch, &k, &row, None);
     assert!(c.get(&k).is_none(), "an uncommitted batch moves nothing");
     store.commit_batch(batch).expect("commit");
 
-    // After the commit the row reads back with LABELS.
+    // After the commit the row reads back with LABELS: the id → label entries
+    // travelled in the same batch as the payload.
     let back = c.get(&k).expect("row landed");
     assert_eq!(back.event.as_str(), Some("http.request"));
     assert_eq!(back.status.as_str(), Some("warn"));

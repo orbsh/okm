@@ -55,13 +55,15 @@ ns 头之后是 slot。它的首字节自己说明后面还跟不跟计数字节
 ```text
 0x1nnn  词表：label → id   [ns][0x1nnn][label 字节]        nnn = 词表自己的编号
 0x2nnn  词表：id → label   [ns][0x2nnn][id BE 字节]        同一个 nnn，另一个族
-0x3nnn  声明索引           [ns][0x3nnn][索引字段][主键前缀]   nnn = 声明序
-0x4nnn  reduce             [ns][0x4nnn][group 段]            nnn = 声明序，独立计数器
-0x5nnn  junction           [ns][0x5nnn][本端身份][对端身份]   nnn = 区分号 << 1 | 方向
-段 0x6–0x0F                空着
+0x3nnn  词表：游标         [ns][0x3nnn] → 下一个 id BE     同一个 nnn；一条项
+0x4nnn  声明索引           [ns][0x4nnn][索引字段][主键前缀]   nnn = 声明序
+0x5nnn  reduce             [ns][0x5nnn][group 段]            nnn = 声明序，独立计数器
+0x6nnn  junction           [ns][0x6nnn][本端身份][对端身份]   nnn = 区分号 << 1 | 方向
+段 0x7–0x0F                空着
 ```
 
-一个声明的 `Vocab<N>` 字段（ADR-0032）只花**一个**编号：它的两个方向就是 0x1 与 0x2 两族。
+一个声明的 `Vocab<N>` 字段（ADR-0032）只花**一个**编号、占三张面：0x1nnn / 0x2nnn 两个方向
+加 0x3nnn 的分配游标，三张面彼此相邻，配对关系一眼可认。
 方向住在族号里，绝不靠族内奇偶约定——`0x1001`/`0x2001` 是第一个分类字段的
 label → id / id → label 两面，`0x1002`/`0x2002` 是第二个。两个 collection 级的名称域早于此
 方案，继续留在固定面（0x02/0x03 字段名、0x04/0x05 谓词 token）。
