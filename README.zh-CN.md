@@ -50,7 +50,7 @@ crate 分工：okm-core = 共享运行时（引擎契约、`Collection`、docume
 - 二级索引（访问方法）——**行 struct** 上的 `#[ok_index(name { fields(…), includes(…), key(…), func(…), where(…) })]`：对 **payload 字段**（按声明序）建组合索引；无 per-index slot/ns——2 字节表命名空间已区分所有 entry；最左前缀扫描；`key(…)` 把 key 尾部携带的主键截断到命名子集（`encode_prefix_named`），默认取满主键；`includes` 覆盖索引定位为高扇出查询的物化视图；`func(path)` 用普通 fn 的返回值替代数据段（探针端调同一路径）；`where(path)` 是行级谓词——部分索引，被拒绝的行不产生任何条目。
 - `Collection<S, K, R>` 行装配点——`put`/`delete` 在同一 store 实例内一次写入主键与全部声明的索引条目（声明即注册表）；`scan` 经任意访问方法的最左前缀返回 `(Key, Option<Row>)`。
 - **语义化 batch 写路径**（[ADR-0031](docs/adr/0031-batch-write-semantics.md)）——`BatchStore`（把 batch 当成写入器：点读先看本批待写项、scan 一律拒绝）+ `Collection::save_with_prev_into(batch, key, doc, prev)`：主键 + 面写进调用方的 `MemBatch`，reduce 的折/回折经适配器完成，新文档不再产出的面一并删除——带账本的表从此能加入跨表原子提交，而不必自己重写一份账本。
-- 字段级编码 wrapper（`Vocab<T>`、`Offset<T>`、`VarInt<T>`、`Quant<P>`、`Reverse<T>`、`Vector<T>`、`Bytes`）与变长载荷/索引字段（`String`），key 保持定宽。
+- 字段级编码 wrapper（`Vocab<N>`、`Offset<T>`、`VarInt<T>`、`Quant<P>`、`Reverse<T>`、`Vector<T>`、`Bytes`）与变长载荷/索引字段（`String`），key 保持定宽。
 - 多引擎混用——同一进程内不同 ns 段可绑不同引擎（交易走 fjall、日志走 slatedb）；原子性止于单引擎内，ns 编号全库唯一。
 - 快照导出——行 → Parquet，与引擎无关（备份 / 数据交换 / lakehouse 分析）；ns 还原为描述性文本，列名即字段名。
 - **Document API**——`get_document` / `put_document` / `get_fields` / `put_fields` / `delete_fields`：未知字段名在每表字段名词汇表里分配编号，落进动态段（n-TLV 帧、嵌套对象递归、无 CBOR）；行-映射桥把声明字段 lift 到逻辑类型（`Quant`→`F64`、`Vocab`→标签、`Offset`→`i64`）。

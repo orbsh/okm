@@ -117,12 +117,12 @@ fn no_group_mode_single_entry() {
     assert_eq!(max.len(), 1);
     assert_eq!(max[0].1, 12);
 
-    // slot 续接声明序：Count=0x2001，HighWater=0x2002（独立 reduce 段计数器）。
+    // slot 续接声明序：Count=0x4001，HighWater=0x4002（独立 reduce 段计数器；族 0x4）。
     let ek = <__OkmReduce_Vote_0 as Reduce>::entry_key(ns, &VoteKey { id: 1 }, &r);
     assert_eq!(ek.len(), 4);
-    assert_eq!(&ek[2..4], &[0x20, 0x01]);
+    assert_eq!(&ek[2..4], &[0x40, 0x01]);
     let ek = <__OkmReduce_Vote_1 as Reduce>::entry_key(ns, &VoteKey { id: 1 }, &r);
-    assert_eq!(&ek[2..4], &[0x20, 0x02]);
+    assert_eq!(&ek[2..4], &[0x40, 0x02]);
 }
 
 #[test]

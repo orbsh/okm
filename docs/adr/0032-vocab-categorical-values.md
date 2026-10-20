@@ -1,6 +1,6 @@
-# ADR-0032: Categorical values are data — `Vocab<T>` over a fourth vocabulary family
+# ADR-0032: Categorical values are data — `Vocab<N>` with its own two families
 
-**Status**: Accepted (2026-10-20) — implemented. `Vocab<T>` works end to end
+**Status**: Accepted (2026-10-20) — implemented. `Vocab<N>` works end to end
 (derive recognition, interning on write, deref on read, one vocabulary pair per
 declared field), and `Enum<T>` / `EnumTag` / `FieldType::Enum` are removed: a
 consumer that wants enum semantics wraps the field in its own Rust enum and
@@ -41,41 +41,46 @@ use it today (field names 0x02/0x03, predicate/kind tokens 0x04/0x05).
 
 ## Decision
 
-**Categorical values become one more vocabulary, and `Vocab<T>` replaces
+**Categorical values become one more vocabulary, and `Vocab<N>` replaces
 `Enum<T>`.**
 
-1. **The mapping is data.** `Vocab<T>` holds the NAME in memory and a one-byte
-   id on the wire; the name↔id table lives in the collection's ns as ordinary
+1. **The mapping is data.** `Vocab<N>` holds the LABEL in memory and an
+   `N`-byte id on the wire (`N` = `u8` … `u128`); the name↔id table lives in the collection's ns as ordinary
    vocabulary entries. `Enum<T>` / `EnumTag` retire: one way to model a
    categorical value, not two.
 
-2. **The per-field vocabularies live in counting family 4.** Two `Vocab<T>`
-   fields are two independent domains, so the table is per FIELD, and a
-   vocabulary is a face PAIR — allocated in declaration order, the same
-   discipline `#[ok_index]` uses for its slots:
+2. **A vocabulary is two counting families, one counter.** Two `Vocab<N>`
+   fields are two independent domains, so the table is per FIELD; and a
+   vocabulary has two directions, so the DIRECTION is the family:
 
    ```
    FIELD_VOCAB      = 0x02, 0x03    // field names — fixed faces, unchanged
    PREDICATE_VOCAB  = 0x04, 0x05    // predicates / kind tokens — unchanged
-   DATA_VOCAB #0    = 4/0,  4/1     // first declared Vocab<T> field
-   DATA_VOCAB #1    = 4/2,  4/3     // second …
+   0x1nnn / 0x2nnn  label → id / id → label   nnn = the vocabulary's number
    ```
 
-   The two collection-wide name domains stay on their fixed faces: their NUMBER
-   is fixed, so they need no allocation, and leaving them in place costs no
-   data migration (moving them would mean copying live name tables — a silent
-   failure mode, see Consequences). Family 4 carries the open-ended part:
-   12-bit counters give 4095 faces, i.e. ~2047 categorical fields per document,
-   and the fixed-face space stays reserved for single faces. Family 1 is NOT
-   reused for this: its members are access methods, and mixing name tables in
-   would end "scan family 1 to enumerate a table's indexes".
+   Field #0 takes counter 1: `0x1001` (label → id) and `0x2001` (id → label).
+   Field #1 takes counter 2, and so on. One number per vocabulary means the pair
+   cannot be split by an off-by-one, the capacity is the full 12-bit range (4095
+   vocabularies), and no family carries a parity convention inside it.
 
-3. **One byte, 255 as a hard ceiling PER FIELD.** A table of its own keeps the
-   id space to one field's categorical values (schema growth does not consume
-   it), which is what makes one byte viable: a `Vocab<T>` field stays
-   hot-segment eligible at exactly the cost `Enum<T>` had. Interning the 256th
-   distinct value of one field is a loud error, not a wrap — the answer is a
-   narrower domain or a `String` field.
+   The rest of the family space shifts up to make room: declared indexes 0x3nnn,
+   reduces 0x4nnn, junctions 0x5nnn. That is one layout change, done now, with
+   no production data — the alternative (packing vocabularies into an existing
+   family's counter range) buys nothing once a renumbering is already on the
+   table.
+
+   The two collection-wide name domains keep their fixed faces: their NUMBER is
+   fixed, so they need no allocation, and leaving them in place costs no data
+   migration (moving them would mean copying live name tables — a silent failure
+   mode, see Consequences).
+
+3. **The id width is the declaration's choice, and its ceiling is exact.**
+   `Vocab<u8>` spends one byte and holds 256 labels (ids 0–255); `Vocab<u16>`
+   two bytes and 65536; through `Vocab<u128>`. UTF-8 labels are the only value
+   form — a numeric code is a number field and enum semantics belong to the
+   consumer. Interning past the width is a loud error, not a wrap: the answer is
+   a wider `N`, or a `String` field.
 
 4. **Interning is a write-path step, and the batch path carries it.**
    `put` interns before encoding (the document clone this costs is paid only by
@@ -116,7 +121,7 @@ use it today (field names 0x02/0x03, predicate/kind tokens 0x04/0x05).
 - The vocabulary class ends up in two homes BY ALLOCATION REGIME, and that is
   deliberate: the two collection-wide name domains are fixed in number (fixed
   faces, no allocation), the per-field data vocabularies are declaration-order
-  and open-ended (family 4). The split is exactly what avoids migrating live
+  and open-ended (families 0x1/0x2). The split is exactly what avoids migrating live
   name tables: a face move would have to COPY entries, and forgetting that
   makes `get_fields` drop fields silently (unknown ids drop the field).
 - Migration is therefore about categories only, and it is NOT silent: old

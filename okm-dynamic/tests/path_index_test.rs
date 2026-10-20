@@ -39,8 +39,8 @@ fn key(id: u64) -> Vec<u8> {
     NodeKey { id }.encode()
 }
 
-const SLOT_AUTHOR: u16 = 0x1001;
-const SLOT_TAGS: u16 = 0x1002;
+const SLOT_AUTHOR: u16 = 0x3001;
+const SLOT_TAGS: u16 = 0x3002;
 const SLOT_RANK: u16 = 0x1003;
 const SLOT_PINNED: u16 = 0x1004;
 

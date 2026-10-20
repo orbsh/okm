@@ -1268,15 +1268,17 @@ bytes; doing them after P3 means hex locks change once, not twice.
 
 ## Categorical values as data (ADR-0032, 2026-10-20)
 
-- [x] Per-field data vocabularies in counting family 4 (`segment::VOCAB = 0x4`):
-      `vocab_faces(i)` yields one face pair per declared `Vocab<T>` field in
-      declaration order (4/0,4/1 for field #0; 4/2,4/3 for #1; …). The two
-      collection-wide name domains stay on their fixed faces (0x02/0x03 field
-      names, 0x04/0x05 predicate tokens) — fixed in number, so no allocation and
-      no data migration. Core 37 suites + okm-dynamic 6 suites green.
-- [x] `Vocab<T>` type (`okm-core/src/model/vocab.rs`): name in memory, one-byte
-      id on the wire, `MAX_VOCAB_ID = 255`; equality by label; encoding an
-      uninterned value panics. 5 unit tests.
+- [x] Per-field data vocabularies own two counting families: `0x1nnn`
+      (label → id) and `0x2nnn` (id → label), ONE counter per `Vocab<N>` field
+      (`data_vocab(i)` → counter 1 + i). Declared indexes moved to 0x3nnn,
+      reduces to 0x4nnn, junctions to 0x5nnn (one layout change, no production
+      data). The two collection-wide name domains keep their fixed faces
+      (0x02/0x03 field names, 0x04/0x05 predicate tokens).
+- [x] `Vocab<N>` type (`okm-core/src/model/vocab.rs`): the label in memory, an
+      `N`-byte big-endian id on the wire (`VocabId` for u8/u16/u32/u64/u128,
+      default `u8`); equality by label; encoding an uninterned value panics; the
+      vocabulary cache is typed by the same `N`, so exhausting the width panics
+      instead of wrapping. Unit tests cover both a 1-byte and a 2-byte field.
 - [x] `FieldType::Vocab(u16)` (payload = the field's id face; name face = id+1)
       + schema serialization (`"Vocab"`, variant 12) + bridge mapping (Arrow
       UInt8, tooling "integer", export carries ids) + okm-dynamic arms

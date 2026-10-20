@@ -810,28 +810,53 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> Vec<FieldSchema> {
                     Some(quote! { ::okm_core::FieldType::Bytes }),
                 )
             }
-            _ if ty_str.starts_with("Vocab<") => {
-                // Vocab<T> (ADR-0032): one byte, the id in this FIELD's data
-                // vocabulary. The schema carries that field's id face so a
-                // dynamic reader resolves names without the declaration
-                // (name face = id face + 1).
-                let inner = ty_str
-                    .trim_start_matches("Vocab<")
-                    .trim_end_matches('>')
-                    .to_string();
-                let inner_ty: syn::Type = syn::parse_str(&inner)
-                    .unwrap_or_else(|_| panic!("{ctx}: bad Vocab domain type {inner}"));
+            _ if ty_str.starts_with("Vocab<") || ty_str == "Vocab" => {
+                // Vocab<N> (ADR-0032): the label in memory, an N-byte id on the
+                // wire, interned in this FIELD's own data vocabulary. The schema
+                // carries that field's id face so a dynamic reader resolves
+                // labels without the declaration.
+                let id_ty = if ty_str == "Vocab" {
+                    "u8".to_string()
+                } else {
+                    ty_str
+                        .trim_start_matches("Vocab<")
+                        .trim_end_matches('>')
+                        .to_string()
+                };
+                let width: u16 = match id_ty.as_str() {
+                    "u8" => 1,
+                    "u16" => 2,
+                    "u32" => 4,
+                    "u64" => 8,
+                    "u128" => 16,
+                    other => panic!(
+                        "{ctx}: Vocab<{other}> — the id width must be u8, u16, u32, u64 or u128"
+                    ),
+                };
+                let id_ty: syn::Type = syn::parse_str(&id_ty)
+                    .unwrap_or_else(|_| panic!("{ctx}: bad Vocab id width type"));
+                let w_lit = proc_macro2::Literal::u16_unsuffixed(width);
+                let off_lit = proc_macro2::Literal::u16_unsuffixed(16 - width);
                 // Declaration-order index among the Vocab fields: `fs` holds
                 // only the fields already pushed, so this IS the counter.
-                let vi = fs.iter().filter(|f| f.ty_str.starts_with("Vocab<")).count() as u16;
+                let vi = fs
+                    .iter()
+                    .filter(|f| f.ty_str.starts_with("Vocab"))
+                    .count() as u16;
                 let vi_lit = proc_macro2::Literal::u16_unsuffixed(vi);
                 (
-                    quote! { buf.push(self.#id.to_wire()[0]); },
-                    quote! {{ let v = <::okm_core::Vocab<#inner_ty>>::from_wire(&b[offset..offset+1]); offset += 1; v }},
-                    quote! { 1 },
-                    quote! { 1 },
+                    quote! {{
+                        // The field encoder serves BOTH the payload builder
+                        // (owned Vec) and the index builders (&mut Vec), so it
+                        // pushes through a method that auto-derefs either way.
+                        let img = self.#id.wire16();
+                        buf.extend_from_slice(&img[#off_lit..]);
+                    }},
+                    quote! {{ let v = <::okm_core::Vocab<#id_ty>>::from_wire(&b[offset..offset+#w_lit]); offset += #w_lit; v }},
+                    quote! { #w_lit },
+                    quote! { #w_lit },
                     Some(quote! {
-                        ::okm_core::FieldType::Vocab(::okm_core::index::vocab_faces(#vi_lit).0)
+                        ::okm_core::FieldType::Vocab(::okm_core::obj_vocab::data_vocab(#vi_lit).id_slot)
                     }),
                 )
             }

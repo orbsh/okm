@@ -16,7 +16,7 @@ A collection's entries come in two shapes, decided by the slot's first byte:
 
 ```text
 fixed face      [ ns 2B BE ][ slot 0x00–0x0F ]                             value = TLV payload (primary)
-counting family [ ns 2B BE ][ slot 0x1nnn ][ index fields ][ pkey ]        value = includes TLV (declared index)
+counting family [ ns 2B BE ][ slot 0x3nnn ][ index fields ][ pkey ]        value = includes TLV (declared index)
 ```
 
 The discriminator = the 2-byte namespace + the slot: the ns segment scopes

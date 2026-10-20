@@ -414,7 +414,7 @@ dynamic codec（Python/Steel 的 schema 驱动编解码）从 `CollectionSchema`
 | `[u8; N]` | 原样 N 字节 | N | 摘要、定长二进制 |
 | `String` | UTF-8，TLV 帧 | 0（cold） | 文本、自由标签 |
 | `Bytes` | 原始字节，TLV 帧 | 0（cold） | 不透明载荷 |
-| `Vocab<T>` | 该字段数据词表里的一字节 id | 1 | 分类值（状态、种类、颜色） |
+| `Vocab<N>` | 该字段数据词表里的 N 字节 id（`N` = `u8`…`u128`，默认 `u8`） | 1/2/4/8/16 | 分类值（状态、种类、颜色） |
 | `VarInt<T>` | 前缀单调变长整数 | 0（cold），字节序 = 值序 | 需要进索引排序、但通常很小的整数 |
 | `Quant<P>`（裸 `Quant` = P3） | 定点 `i64` | 8 | 需要精确存储的小数 |
 | `Offset` + `#[ok_offset(base = N)]` | 相对 `base` 的 `u32` 位移 | 4 | 已知窗口内的时间戳或单调值 |
@@ -424,10 +424,11 @@ dynamic codec（Python/Steel 的 schema 驱动编解码）从 `CollectionSchema`
 
 由这些形态推出三条规则：
 
-- **分类值是 `Vocab<T>`，不是 Rust enum。** 标签↔id 的映射住在 collection 的数据词表里，
-  于是动态写入方能引入一个分类、动态读者能说出它，而 wire 代价只有一字节。`T` 是零尺寸的
-  值域标记：`Vocab<Status>` 接不上颜色；每个 `Vocab` 字段拥有自己的词表与自己的 255 值预算。
-  它没有顺序——需要按语义排序的字段另声明一个 rank 列。消费侧的 enum 语义（match 分支、
+- **分类值是 `Vocab<N>`，不是 Rust enum。** 标签↔id 的映射住在 collection 的数据词表里，
+  于是动态写入方能引入一个分类、动态读者能说出它。`N` 是 id 宽度，也是唯一可调的旋钮：
+  `Vocab<u8>`（默认）每字段 256 个标签、每行一字节；`Vocab<u16>` 65536 个、两字节；依次到
+  `u128`。每个字段拥有自己的词表，所以预算按字段算。它没有顺序——需要按语义排序的字段
+  另声明一个 rank 列。消费侧的 enum 语义（match 分支、
   穷尽性检查）归消费方：自己包一层 enum，在边界处转换。
 - **`Option<T>` 不是字段类型。** 缺失由每个字段自选的哨兵值表达，derive 没有 `Option` 分支
   （见下一节）。
