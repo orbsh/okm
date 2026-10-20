@@ -24,6 +24,31 @@ pub fn decode_key(schema: &CollectionSchema, bytes: &[u8]) -> Result<ValueMap, C
     Ok(out)
 }
 
+/// Replace every `Vocab` field's raw id bytes with its LABEL (ADR-0032),
+/// reading the field's own data vocabulary through `store`. The pure decoder
+/// cannot do this (no store), so the collection runs this right after decoding:
+/// a `Value::Bytes` for a Vocab field means "id bytes", and an id the vocabulary
+/// does not know STAYS bytes — the reader never invents a label.
+pub fn resolve_vocab_labels<S: okm_core::VirtualStorage + ?Sized>(
+    schema: &CollectionSchema,
+    store: &S,
+    header: &[u8],
+    values: &mut ValueMap,
+) {
+    for f in &schema.hot_fields {
+        let FieldType::Vocab(id_slot) = f.ty else {
+            continue;
+        };
+        let Some(Value::Bytes(raw)) = values.get(&f.name) else {
+            continue;
+        };
+        let faces = okm_core::obj_vocab::VocabFaces::from_id_slot(id_slot);
+        if let Some(label) = okm_core::obj_vocab::vocab_label(store, header, faces, raw) {
+            values.insert(f.name.clone(), Value::Str(label));
+        }
+    }
+}
+
 /// Decode the payload bytes (the two-segment region, no key bytes):
 /// header version checked against the schema, hot fields sliced at
 /// static offsets, cold TLV frames matched by tag. Unknown tags are
@@ -182,13 +207,10 @@ pub fn decode_payload(schema: &CollectionSchema, bytes: &[u8]) -> Result<ValueMa
                 FieldType::Str => Value::Str(String::new()),
                 FieldType::Bytes => Value::Bytes(vec![0; f.width]),
                 FieldType::FixedBytes => Value::Bytes(vec![0; f.width]),
-                // ADR-0032: a Vocab field's wire is the id byte and its NAME
-                // lives in that field's data vocabulary. Resolving it belongs to
-                // the derive-wired read path; no document can declare a Vocab
-                // field until that lands, so this arms only once it does.
-                FieldType::Vocab(_) => {
-                    unreachable!("Vocab decode lands with the derive wiring (ADR-0032)")
-                }
+                // ADR-0032: absent Vocab field → a zero id image of the declared
+                // width; `resolve_vocab_labels` turns it into a label when the
+                // vocabulary has id 0.
+                FieldType::Vocab(_) => Value::Bytes(vec![0; f.width]),
                 // Vector default = empty frame (count 0) — the natural
                 // default for a variable-length list.
                 FieldType::Vector { .. } => Value::Bytes(vec![0, 0, 0, 0]),
@@ -222,6 +244,11 @@ fn decode_fixed(
             raw.try_into().map_err(|_| need(raw.len()))?,
         )),
         FieldType::FixedBytes => Value::Bytes(raw.to_vec()),
+        // ADR-0032: the id in the field's data vocabulary, handed out as raw
+        // bytes — `resolve_vocab_labels` (store-aware, run by the collection)
+        // replaces it with the label. This decoder has no store, so it never
+        // invents one.
+        FieldType::Vocab(_) => Value::Bytes(raw.to_vec()),
         // Str/Bytes are cold-only; hot segment never carries them (width 0).
         // Vector is hot-capable but decoded via its own arm below — the
         // generic fixed walk treats it as raw bytes.

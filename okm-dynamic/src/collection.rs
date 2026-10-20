@@ -191,7 +191,19 @@ impl<S: VirtualStorage> DynamicCollection<S> {
         self
             .store
             .get(&self.primary_key(pkey))
-            .map(|payload| decode_payload(&self.schema, &payload).map_err(codec))
+            .map(|payload| {
+                decode_payload(&self.schema, &payload)
+                    .map(|mut values| {
+                        crate::decode::resolve_vocab_labels(
+                            &self.schema,
+                            &self.store,
+                            &self.ns,
+                            &mut values,
+                        );
+                        values
+                    })
+                    .map_err(codec)
+            })
             .transpose()
     }
 
@@ -221,7 +233,19 @@ impl<S: VirtualStorage> DynamicCollection<S> {
         self
             .store
             .get(&self.primary_key(pkey))
-            .map(|payload| decode_payload(&self.schema, &payload).map_err(codec))
+            .map(|payload| {
+                decode_payload(&self.schema, &payload)
+                    .map(|mut values| {
+                        crate::decode::resolve_vocab_labels(
+                            &self.schema,
+                            &self.store,
+                            &self.ns,
+                            &mut values,
+                        );
+                        values
+                    })
+                    .map_err(codec)
+            })
             .transpose()
     }
 
