@@ -692,6 +692,26 @@ Three rules follow from the shapes:
   collection. Interning the 256th distinct label in one field panics — narrow the
   domain or model that value as `String`.
 
+#### Recipe: a log table
+
+High-volume append-only logs want the widest fields to pay for themselves. This
+declaration follows from the table above:
+
+| Field | Type | Why |
+|---|---|---|
+| `ts` | `u64` | milliseconds since epoch: no wrapper, no conversion, and it sorts in an ordinary index |
+| `level` | `u8` | 0–5 is a CODE, not a label — the consumer owns the mapping, and it stays one byte |
+| `event` | `Vocab<u16>` | an open-ended label set (`http.request`, `db.timeout`, …) a dynamic writer can extend without a rebuild; `u16` because 256 event types run out fast |
+| `module`, `path` | `Vocab<u16>` | same reasoning when the row carries a source module or an access path; omit the field entirely when it does not |
+| `note` | `String` | free text, never a vocabulary — those values are not enumerable |
+| everything else | the dynamic segment | shape varies per event type; the declared fields are the ones every query filters or groups on |
+
+The rules behind it: put a field in the payload when you filter, sort or group on
+it AND its type is stable; make it categorical when the value is a label from a
+set that keeps growing; leave it dynamic when the shape varies per record. The
+vocabulary must be shared by the table, so it cannot live in the dynamic segment
+(those values are per row).
+
 ### Optional fields: sentinel values, not `Option<T>` (ADR-0027 audit)
 
 Declared `Option<T>` fields are **not supported** — the

@@ -68,6 +68,33 @@ pub const fn data_vocab(field_index: u16) -> VocabFaces {
     }
 }
 
+impl VocabFaces {
+    /// The pair that owns a given id face — for readers that only know the
+    /// field's `FieldType::Vocab(id_slot)`: the label direction is the SAME
+    /// counter in the other family (ADR-0032).
+    pub const fn from_id_slot(id_slot: Slot) -> Self {
+        Self {
+            id_slot,
+            name_slot: slot(segment::VOCAB_LABEL, id_slot & 0x0FFF),
+        }
+    }
+}
+
+/// Point lookup of a label from raw id bytes, for readers that keep no cache
+/// (the dynamic path): one engine probe, and `None` when the vocabulary has no
+/// such id — a reader never invents a label.
+pub fn vocab_label<S: VirtualStorage + ?Sized>(
+    store: &S,
+    header: &[u8],
+    faces: VocabFaces,
+    id_be: &[u8],
+) -> Option<String> {
+    let mut key = header.to_vec();
+    write_slot(&mut key, faces.id_slot);
+    key.extend_from_slice(id_be);
+    String::from_utf8(store.get(&key)?).ok()
+}
+
 /// Field names of the payload, in the document's own ns (ADR-0012).
 pub const FIELD_VOCAB: VocabFaces =
     VocabFaces { id_slot: FIELD_VOCAB_ID_SLOT, name_slot: FIELD_VOCAB_NAME_SLOT };

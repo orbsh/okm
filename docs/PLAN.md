@@ -1298,11 +1298,12 @@ bytes; doing them after P3 means hex locks change once, not twice.
 - [ ] `save_with_prev_into` interning through `BatchStore` (vocabulary growth +
       row + faces in one batch); `save_into` stays encoding-only and therefore
       requires pre-interned documents.
-- [ ] okm-dynamic: a `Vocab` field decodes to its LABEL (today the arm is
-      `unreachable!` — a document can declare a Vocab field now, so a dynamic
-      read of one panics). The reader has the store and the field's id face in
-      `FieldType::Vocab(id_slot)`, so it resolves through the same `VocabCache`
-      the compiled path uses; a missing entry must degrade visibly, not panic.
+- [x] okm-dynamic: a `Vocab` field decodes to its LABEL. The pure decoder hands
+      out the id as raw `Bytes` (it has no store) and the collection's read paths
+      run `resolve_vocab_labels` — one point probe per categorical field against
+      the field's own vocabulary; an unknown id stays bytes rather than an
+      invented label. `okm-dynamic/tests/vocab_read_test.rs` reads a typed-written
+      row dynamically and gets both labels back (u8 and u16 fields).
 - [x] Retire `Enum<T>` / `EnumTag` / `FieldType::Enum`: the wrapper module is
       gone, every match site (schema serde, Arrow/tooling bridges, okm-dynamic,
       both bindings, the derive arms) is clean, and `wrappers_test` covers the
