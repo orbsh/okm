@@ -1377,3 +1377,32 @@ bytes; doing them after P3 means hex locks change once, not twice.
 - [ ] Migration note for existing data: old one-byte `Enum` tags decode without
       error into a DIFFERENT category; one layout change, version bump, no
       silent path. Same window as the vocabulary-face move (no production data).
+
+## ADR-0034 — table names and the export shape (2026-10-21)
+
+- [x] `#[ok_name("...")]` → `Document::TABLE_NAME` (trait default `""` = unnamed;
+      derive emits the override; both `DocumentEncode` and `GraphEncode` parse it,
+      since a graph row goes through the same schema). An unnamed table is refused
+      by an export rather than spelled from the struct.
+- [x] `parquet_io::export_parquet_with_variant` — the bridge's variant column
+      (`Collection::to_record_batch_with_variant`) finally has an export call, so a
+      file keeps the dynamic segment instead of only the declared half.
+- [x] `Graph::put_fields_into` / `get_fields` own the edge's 0x01 dynamic segment
+      (field-name vocabulary, `[ns][0x01][edge_id]`), and `link_into` deletes the
+      previous segment in the same batch — a rewrite must not inherit attributes.
+      Before this, the consumer wrote that segment by hand: a documented layout with
+      no owner.
+- [x] `Graph::to_record_batch_table(name_of)` — the edge set as ONE table:
+      `[src_table, src_pkey, dst_table, dst_pkey, predicate]`, the declaration's
+      fields, then `variant`. Endpoint keys are RAW bytes (an edge table spans node
+      collections and cannot decode another table's key); an ns the caller's map does
+      not know is NULL, never a guessed name. `Graph::edge_ids()` scans slot 0 only.
+- [x] `parquet_io::export_reduces::<_, A>(store, ns, table, path)` — `(table,
+      reduce, group, value)`, one row per entry. A restore MUST replay these before
+      the next write: a missing watermark hands out ids already in the table.
+- [x] Tests: `the_table_name_is_declared_beside_the_ns` (named / unnamed),
+      `the_edge_set_exports_as_a_table_with_named_endpoints` (column order, raw key
+      bytes, predicate label, unknown ns → NULL),
+      `the_reduce_table_exports_as_its_own_file` (slot, groups 1→40 and 2→7).
+- [ ] Consumer side (Krystallizer): a catalog file, a door addressed by TABLE NAME,
+      and its fact table switching from a 501 to the edge-table export.
