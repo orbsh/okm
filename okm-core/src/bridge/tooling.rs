@@ -146,7 +146,7 @@ pub mod parquet_io {
         tables: &[(&str, u16)],
         path: &std::path::Path,
     ) -> parquet::errors::Result<()> {
-        use arrow::array::{Array, RecordBatch, StringArray, UInt16Array};
+        use arrow::array::{Array, RecordBatch, UInt16Array};
         use arrow::datatypes::{DataType, Field as ArrowField, Schema as ArrowSchema};
 
         let mut names = arrow::array::StringBuilder::new();
