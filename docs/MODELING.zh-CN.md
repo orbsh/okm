@@ -436,7 +436,7 @@ dynamic codec（Python/Steel 的 schema 驱动编解码）从 `CollectionSchema`
   标签换成 id；`save_into` 只负责编码，因此要求文档已经通过 collection intern 过。一个字段里
   intern 第 256 个不同标签会 panic——收窄值域，或者把这个值建成 `String`。
 
-#### 菜谱：日志表
+#### 案例：日志表
 
 高频只追加的日志，宽字段必须自己挣回成本。按上面那张表推出来的声明：
 
@@ -597,6 +597,48 @@ g.by_attr_face(<BySince as KvIndex>::SLOT, &2020u16.to_be_bytes());
   性质——这里表现为多条 Edge collection 引用同一批节点）。真正分离
   的域互相到达：从一张图收集 NodeRef 集合去探另一张的面，或退回普通
   文档读取——没有跨图 match 语法，也不需要。
+
+#### 案例：标签森林是行 + junction，不是图
+
+mudra 的标签森林正是让人想上图的形状：多根、没有单一根、一个节点同时活在
+多棵树里。它由两个载体构成，两个都不是 Edge collection。
+
+```rust
+#[derive(DocumentEncode, Clone, PartialEq, Eq, Debug, Default)]
+#[ok_ref(TagKey)]
+#[ok_ns(1)]
+#[ok_index(by_parent { fields(parent_id) })]   // 树：-1 = 根节点
+#[ok_index(by_name { func(tag_name) })]        // 裸名寻址
+struct Tag { parent_id: i32, name: String, rank: i32, deleted: u8, /* … */ }
+
+#[derive(JunctionEncode, Clone, Debug)]
+#[ok_junction(1)]
+struct PageTag { page: Ref<Page, PageKey>, tag: Ref<Tag, TagKey> }
+```
+
+**树是自引用行。** 一个 tag 带 `parent_id: i32`，`-1` 作根哨兵——"多根"
+不需要虚拟 super-root；一次 `by_parent` 上的 scan 就取出某节点的子节点。
+反向（"谁是我的子节点"）不需要任何边行，因为它**就是**那条索引。这也是树
+与多对多的分界线：父指针的反向是一次 scan，junction 的反向没有单独一行可以
+落脚。
+
+两个值得照抄的后果：键保持代理形态（`TagKey { id }`），所以兄弟次序搭不上
+键序——它是 `rank` payload 字段，scan 之后在内存里排；也没有 path / closure
+表，路径靠向上走 parent 推出来。
+
+**成员关系是 junction。** page↔tag 是端点编译期定型的多对多，于是 `link`
+就是原子双写（每个端点的 ns 各落一条），两个方向都是一等 scan（derive
+生成的 `get_tag` / `get_page`）。junction 自己不声明 ns：方向由 entry 落在
+哪个端点的 ns 表达。
+
+**为什么不是图边。** 这里的边没有属性、没有自己的身份、不允许平行边、端点
+在编译期封闭——ADR-0017 里让 Edge 成为第三种载体的四个性质一个都没用上。
+一个都用不上的森林就是"行指针 + junction"；硬上第三种载体，正是上一节划线
+拦的"什么都是图"那种失效。
+
+顺带一个值得写明的收益：粗粒度的成员位（"收藏"/"星标"）因此没有新地方要
+安放——它就是对一条既有轴某个 rank 子节点的一条边，所以不需要自己的
+collection。
 
 ## 集合成员关系：按基数选倒排索引或 bloom
 
