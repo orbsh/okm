@@ -53,6 +53,11 @@ pub use engine::nest::{NestStorage, RemoteStore, VirtualHandle};
 pub use engine::wire_client::{WireClient, WireTransport};
 pub use okm_wire::{OpFrame, OpResponse};
 pub use model::field::{FieldDesc, FieldType};
+/// One exported batch — re-exported so a consumer can pass the graph's edge
+/// table to `parquet_io::write_batch` without taking an Arrow dependency of its
+/// own (ADR-0034).
+#[cfg(feature = "parquet")]
+pub use arrow::array::RecordBatch;
 pub use model::index::{Document, IndexFuncResult, IndexFuncValues, KvIndex, PRIMARY_SLOT, scan_index, scan_index_exact, slot_len, write_slot};
 pub use model::key::{KeyEncode, PrefixKey};
 pub use subscribe::{ChannelCell, Event, Op};

@@ -123,6 +123,50 @@ pub mod parquet_io {
         Ok(())
     }
 
+    /// Write an already-built batch to a Parquet file — the seam for exports
+    /// whose rows come from somewhere other than a collection (the graph's edge
+    /// table, the catalog). One writer, so every file in a backup has the same
+    /// provenance.
+    pub fn write_batch(
+        batch: &arrow::array::RecordBatch,
+        path: &std::path::Path,
+    ) -> parquet::errors::Result<()> {
+        let file = std::fs::File::create(path)?;
+        let mut w = parquet::arrow::ArrowWriter::try_new(file, batch.schema(), None)?;
+        w.write(batch)?;
+        w.close()?;
+        Ok(())
+    }
+
+    /// The CATALOG (ADR-0034 §1): one row per table, `(name, ns)`. Pure analysis
+    /// does not read it — the exported columns are already labeled — but an import
+    /// needs the name→ns direction, and so does anyone asking "what is ns 41 called".
+    /// It travels as its own file, beside the tables it names.
+    pub fn catalog_parquet(
+        tables: &[(&str, u16)],
+        path: &std::path::Path,
+    ) -> parquet::errors::Result<()> {
+        use arrow::array::{Array, RecordBatch, StringArray, UInt16Array};
+        use arrow::datatypes::{DataType, Field as ArrowField, Schema as ArrowSchema};
+
+        let mut names = arrow::array::StringBuilder::new();
+        for (name, _) in tables {
+            names.append_value(*name);
+        }
+        let schema = Arc::new(ArrowSchema::new(vec![
+            ArrowField::new("table", DataType::Utf8, false),
+            ArrowField::new("ns", DataType::UInt16, false),
+        ]));
+        let arrays: Vec<Arc<dyn Array>> = vec![
+            Arc::new(names.finish()),
+            Arc::new(UInt16Array::from(
+                tables.iter().map(|(_, ns)| *ns).collect::<Vec<u16>>(),
+            )),
+        ];
+        let batch = RecordBatch::try_new(schema, arrays)?;
+        write_batch(&batch, path)
+    }
+
     /// The DERIVED reduce table (ADR-0034): one row per reduce entry —
     /// `(table, reduce, group, value)`.
     ///
@@ -137,7 +181,7 @@ pub mod parquet_io {
         table: &str,
         path: &std::path::Path,
     ) -> parquet::errors::Result<()> {
-        use arrow::array::{Array, BinaryArray, StringArray, UInt16Array};
+        use arrow::array::{Array, BinaryArray, UInt16Array};
         use arrow::buffer::{Buffer, OffsetBuffer, ScalarBuffer};
         use arrow::datatypes::{DataType, Field as ArrowField, Schema as ArrowSchema};
 
