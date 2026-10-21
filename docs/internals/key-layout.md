@@ -135,7 +135,10 @@ anything else reads two), not a lookup in a maintained table — the same
 posture as the ns escape byte below and the self-describing endpoint
 references (ADR-0017 §2). A family-prefix scan is therefore exact without
 consulting anything: `[ns][0x07]` cannot match a counting family, and
-`[ns][0x1n][nn]` cannot match a fixed face.
+`[ns][0x1n][nn]` cannot match a fixed face. Iteration needs no bound of its
+own either: a prefix scan ends at the prefix's byte-order successor, so it
+cannot walk into a sibling face — the one-byte/two-byte seam included
+(ADR-0033).
 
 Counting capacity is 4096 per family: declared indexes and reduces occupy
 1–4095 (0 reserved), junction uses the whole range for
