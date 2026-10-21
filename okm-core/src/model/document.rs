@@ -38,6 +38,13 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         &self.store
     }
 
+    /// Mutable store handle for a caller-owned write path that must reach the
+    /// engine outside `put`/`save_into` — the Parquet import is the one: it
+    /// re-interns labels into the destination vocabulary BEFORE the rows land.
+    pub(crate) fn store_mut(&mut self) -> &mut S {
+        &mut self.store
+    }
+
     /// The table's key header: `[0xFF][part 1B] (if declared)[ns 2B]` — every
     /// key byte sequence this table writes starts with it. ADR-0014 §5:
     /// the partition segment precedes the ns header (workload isolation

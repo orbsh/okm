@@ -55,25 +55,21 @@ use it today (field names 0x02/0x03, predicate/kind tokens 0x04/0x05).
 
    ```
    FIELD_VOCAB      = 0x02, 0x03    // field names — fixed faces, unchanged
-                      0x0C          // …and their allocation cursor
    PREDICATE_VOCAB  = 0x04, 0x05    // predicates / kind tokens — unchanged
-                      0x0D          // …and their allocation cursor
    0x1nnn / 0x2nnn  label → id / id → label   nnn = the vocabulary's number
-   0x3nnn           allocation cursor          same nnn
    ```
 
-   Field #0 takes counter 1: `0x1001` (label → id), `0x2001` (id → label) and
-   `0x3001` (the cursor). Field #1 takes counter 2, and so on. One number per
-   vocabulary means the three faces cannot be split by an off-by-one, the
-   capacity is the full 12-bit range (4095 vocabularies), and no family carries a
-   parity convention inside it. The cursor sits NEXT to the two directions
-   because it belongs to the vocabulary, not to any consumer of it.
+   Field #0 takes counter 1: `0x1001` (label → id) and `0x2001` (id → label).
+   Field #1 takes counter 2, and so on. One number per vocabulary means the two
+   directions cannot be split by an off-by-one, the capacity is the full 12-bit
+   range (4095 vocabularies), and no family carries a parity convention inside
+   it.
 
-   The rest of the family space shifts up to make room: declared indexes 0x4nnn,
-   reduces 0x5nnn, junctions 0x6nnn. That is one layout change, done now, with
-   no production data — the alternative (packing vocabularies into an existing
-   family's counter range) buys nothing once a renumbering is already on the
-   table.
+   The allocation cursor spends no number at all: it is the ID FACE's
+   face-level singleton (ADR-0030), `[ns][0x2nnn]` with no id bytes, so the
+   families below keep the numbers they already had — the alternative, a
+   dedicated cursor family, would have moved declared indexes, reduces and
+   junctions by one and bought nothing.
 
    The two collection-wide name domains keep their fixed faces: their NUMBER is
    fixed, so they need no allocation, and leaving them in place costs no data
@@ -126,6 +122,21 @@ use it today (field names 0x02/0x03, predicate/kind tokens 0x04/0x05).
    never exercised (no test or doc declared one) and was invisible to every
    dynamic reader anyway.
 
+7. **A snapshot carries the label, never the id.** The Arrow/Parquet export
+   resolves each categorical field through one scan of its id face and emits a
+   nullable `Utf8` column: NULL when the id has no label (the hole is recorded,
+   not filled — inventing a label is the one forbidden outcome). Parquet's own
+   physical dictionary (on by default, one dictionary page per column chunk)
+   then gives each chunk a local vocabulary: every distinct label is stored once
+   per chunk and the rows carry indices, so the wider value form is not paid per
+   row (beyond the 1 MiB dictionary limit a chunk falls back to plain values).
+   Import reverses it through the destination's vocabulary — it
+   interns each label, so the restored rows carry the destination's numbering,
+   and every restored row is named by construction: the old id-carrying round
+   trip was the one path that could produce an unnameable value. No compatibility
+   path exists for files written by that earlier form; the import refuses them by
+   column type.
+
 ## Consequences
 
 - A dynamic writer can introduce a category, and a dynamic reader can name it —
@@ -149,6 +160,7 @@ use it today (field names 0x02/0x03, predicate/kind tokens 0x04/0x05).
   rewrite happens under a layout version bump — one layout change, no
   compatibility shim.
 - Owed: `okm-python` / `okm-steel` exposure of `Vocab` (the bindings currently
-  see the storage form); a snapshot/export path for a collection's vocabulary
-  faces (today they are derived state outside the slot-0 export, exactly like
-  index entries).
+  see the storage form). The old owed item — "a snapshot/export path for the
+  vocabulary faces" — closed differently: a snapshot exports LABELS and the
+  import re-interns them, so the faces rebuild from the rows instead of
+  travelling beside them.

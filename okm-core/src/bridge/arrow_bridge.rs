@@ -40,7 +40,11 @@ fn arrow_type(ty: FieldType) -> DataType {
         // to f64, Offset re-adds the base.
         FieldType::VarInt => DataType::UInt64,
         FieldType::Quant(_) => DataType::Float64,
-        FieldType::Vocab(_) => DataType::UInt8,
+        // A categorical value exports its LABEL (ADR-0032): the id is the
+        // store's internal numbering, not something a warehouse can name. The
+        // column is nullable because a row may name an id the vocabulary does
+        // not know — the export records that hole instead of inventing a label.
+        FieldType::Vocab(_) => DataType::Utf8,
         FieldType::Offset(_) => DataType::Int64,
         // Variable-length frame → opaque binary column (like Bytes); the
         // element type lives in the schema, Arrow stays byte-opaque.
@@ -104,7 +108,10 @@ impl<K: KeyEncode, R: Document<Key = K>> Projection<K, R> {
             fields.push(ArrowField::new(f.name, arrow_type(f.ty), false));
         }
         for f in row_fields {
-            fields.push(ArrowField::new(f.name, arrow_type(f.ty), false));
+            // A `Vocab` column can hold a NULL: an id the field's vocabulary
+            // does not name (see `vocab_labels`). Everything else is total.
+            let nullable = matches!(f.ty, FieldType::Vocab(_));
+            fields.push(ArrowField::new(f.name, arrow_type(f.ty), nullable));
         }
         Self {
             schema: Schema::new(fields),
@@ -120,6 +127,59 @@ impl<K: KeyEncode, R: Document<Key = K>> Projection<K, R> {
     }
 }
 
+/// Per-row-field `id bytes → label` maps for the categorical fields (ADR-0032),
+/// each from ONE prefix scan of that field's id face. Empty for a table with no
+/// `Vocab` field.
+///
+/// The scan is bounded by the VOCABULARY, not by the row count, and export is a
+/// read path, so it is legal here (`BatchStore` refuses ordered reads, but a
+/// snapshot never runs against a pending batch). Rows then resolve by an
+/// in-memory lookup on the id bytes — no per-row probe, and no width matching:
+/// the map key IS the payload slice.
+fn vocab_labels<S: VirtualStorage + ?Sized>(
+    store: &S,
+    header: &[u8],
+    row_fields: &'static [FieldDesc],
+) -> std::collections::HashMap<usize, std::collections::HashMap<Vec<u8>, String>> {
+    let mut out = std::collections::HashMap::new();
+    for (fi, f) in row_fields.iter().enumerate() {
+        let FieldType::Vocab(id_slot) = f.ty else {
+            continue;
+        };
+        let mut prefix = header.to_vec();
+        crate::model::index::write_slot(&mut prefix, id_slot);
+        let mut by_id = std::collections::HashMap::new();
+        for (suffix, label) in crate::engine::storage::scan_suffix_kv(store, &prefix) {
+            // A real entry of the id face is exactly the id width; the
+            // bare-prefix singleton (the allocation cursor) is zero bytes and
+            // falls out here by length.
+            if suffix.len() != f.width {
+                continue;
+            }
+            if let Ok(name) = String::from_utf8(label) {
+                by_id.insert(suffix, name);
+            }
+        }
+        out.insert(fi, by_id);
+    }
+    out
+}
+
+/// The label maps for one collection: its ns header (`[part][ns]`, the same one
+/// the intern hook writes through) plus the row fields of its projection.
+/// Tables with no `Vocab` field pay one constant check and no scan.
+fn labels_for<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>>(
+    collection: &Collection<S, K, R>,
+    proj: &Projection<K, R>,
+) -> std::collections::HashMap<usize, std::collections::HashMap<Vec<u8>, String>> {
+    if !R::HAS_VOCAB {
+        return std::collections::HashMap::new();
+    }
+    let mut header = R::PARTITION_PREFIX.to_vec();
+    header.extend_from_slice(R::NS_PREFIX);
+    vocab_labels::<S>(collection.store(), &header, proj.row_fields)
+}
+
 /// Buffer adapter: arrow wants `Buffer` + length; the bytes come from a
 /// caller-owned `Vec`. Each column is a contiguous BE run of the source
 /// bytes, so per-column we produce (offset, len) views of the document buffer.
@@ -131,6 +191,7 @@ impl<K: KeyEncode, R: Document<Key = K>> Projection<K, R> {
 fn build_batch<K: KeyEncode, R: Document<Key = K>>(
     proj: &Projection<K, R>,
     documents: &[(Vec<u8>, Vec<u8>)],
+    labels: &std::collections::HashMap<usize, std::collections::HashMap<Vec<u8>, String>>,
 ) -> RecordBatch {
     let n = documents.len();
     let mut columns: Vec<Vec<Vec<u8>>> = Vec::with_capacity(proj.schema.fields().len());
@@ -193,10 +254,31 @@ fn build_batch<K: KeyEncode, R: Document<Key = K>>(
         columns.push(col);
     }
 
+    // Field descs in column order (key half, then payload half): assembly
+    // dispatches on the DECLARED type, not the Arrow type — a `Str` column and
+    // a `Vocab` column are both Utf8, and only the latter holds ids to resolve.
+    let descs: Vec<&FieldDesc> = proj.key_fields.iter().chain(proj.row_fields.iter()).collect();
+    let nkey = proj.key_fields.len();
     let arrays: Vec<Arc<dyn arrow::array::Array>> = columns
         .iter()
-        .zip(proj.schema.fields().iter())
-        .map(|(col, field)| -> Arc<dyn arrow::array::Array> {
+        .enumerate()
+        .map(|(ci, col)| -> Arc<dyn arrow::array::Array> {
+            let field = &proj.schema.fields()[ci];
+            if let FieldType::Vocab(_) = descs[ci].ty {
+                // id bytes → label; a hole stays NULL (never an invented name).
+                // Key columns have no map (a `Vocab` key is not a supported
+                // declaration), so they answer NULL rather than panicking.
+                let empty = std::collections::HashMap::new();
+                let by_id = ci
+                    .checked_sub(nkey)
+                    .and_then(|fi| labels.get(&fi))
+                    .unwrap_or(&empty);
+                let vals: Vec<Option<&str>> = col
+                    .iter()
+                    .map(|raw| by_id.get(raw).map(String::as_str))
+                    .collect();
+                return Arc::new(arrow::array::StringArray::from_iter(vals));
+            }
             match field.data_type() {
             DataType::UInt8 => {
                 let vals: Vec<u8> = col.iter().map(|c| c[0]).collect();
@@ -385,16 +467,19 @@ fn swap_be(src: &[u8], off: usize, width: usize, ty: FieldType) -> Vec<u8> {
 impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> {
     /// Export all documents as one Arrow `RecordBatch` (ADR-0007 Phase 1).
     ///
-    /// Columns: key fields (declaration order) then payload fields. All
-    /// current field kinds are fixed-width and non-nullable; `String`
-    /// payload fields map to `Utf8` when the variable-length regime lands.
+    /// Columns: key fields (declaration order) then payload fields. Key and
+    /// ordinary payload columns are non-nullable; a `Vocab` column is `Utf8`
+    /// (labels) and NULLABLE — null means the row's id has no label in the
+    /// field's vocabulary, which the export records rather than invents.
     ///
     /// Reads through the engine's scan surface — engine-independent, same
-    /// batch shape for fjall / slatedb-backed tables.
+    /// batch shape for fjall / slatedb-backed tables. Categorical fields cost
+    /// one prefix scan of their id face, not a probe per row.
     pub fn to_record_batch(&self) -> RecordBatch {
         let proj = Projection::<K, R>::new();
         let documents: Vec<(Vec<u8>, Vec<u8>)> = self.scan_documents_raw().into_iter().collect();
-        build_batch(&proj, &documents)
+        let labels = labels_for(self, &proj);
+        build_batch(&proj, &documents, &labels)
     }
 
     /// Export with a `variant` column appended: each row's dynamic segment
@@ -413,7 +498,8 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         let documents: Vec<(Vec<u8>, Vec<u8>)> = self.scan_documents_raw().into_iter().collect();
 
         // Base (typed) columns from the same projection.
-        let base = build_batch(&proj, &documents);
+        let labels = labels_for(self, &proj);
+        let base = build_batch(&proj, &documents, &labels);
 
         // One Variant per document from its dynamic segment: metadata and
         // value buffers CONCATENATED per row (the Variant spec's wire form

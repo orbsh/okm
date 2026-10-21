@@ -191,6 +191,15 @@ no-group REDUCE face (its entry key is the bare prefix) admit no singleton.
 Readers separate the two cases by suffix length, and every fixed-width decoder
 already rejects a length mismatch.
 
+Every vocabulary pair takes one, and the key is DERIVED rather than numbered:
+the cursor is `[ns][id face]`, so the exported slot map (`SlotMap`) names both
+faces of each pair and no cursor at all. A host-side writer that allocates
+ids itself therefore has to build the key from the id slot
+(`obj_vocab::cursor_key`) and bump it in the same commit as the entries that
+spend it. That is the one place the convention leaves the schema — stated here
+because the alternative, giving the cursor a slot number, would make it a face
+of its own, which is what this ADR's "no bands" rule exists to prevent.
+
 ## Consequences
 
 - **Key-format break, pre-release.** Primary and the graph's faces lose one

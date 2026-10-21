@@ -84,17 +84,19 @@ pub const fn slot_len(slot: Slot) -> usize {
 pub const PRIMARY_SLOT: Slot = 0x00;
 /// obj dynamic segment (ADR-0012), per-row undeclared fields: fixed face 0x01.
 pub const DYNAMIC_SLOT: Slot = 0x01;
-/// Field-name vocabulary, number → name (ADR-0012): fixed face 0x02.
+/// Field-name vocabulary, number → name (ADR-0012): fixed face 0x02. It also
+/// carries the pair's allocation cursor as its FACE-LEVEL SINGLETON — the bare
+/// prefix `[ns][0x02]`, no suffix (ADR-0030's rule, applied by ADR-0032);
+/// `obj_vocab::cursor_key` builds that key.
 pub const FIELD_VOCAB_ID_SLOT: Slot = 0x02;
 /// Field-name vocabulary, name → number (ADR-0012): fixed face 0x03.
-/// Its allocation cursor is the FACE-LEVEL SINGLETON of 0x02 — the bare prefix
-/// `[ns][0x02]`, no suffix (ADR-0032).
 pub const FIELD_VOCAB_NAME_SLOT: Slot = 0x03;
 /// Predicate vocabulary, number → name: fixed face 0x04. A collection's token
 /// vocabulary BEYOND field names — a graph's predicates, a node collection's
 /// kind tokens (ADR-0017 §3). A pair of its own, never a band inside 0x02/0x03:
 /// two allocators in one id space hand the same id to two different names
-/// silently.
+/// silently. Carries its pair's allocation cursor at the bare prefix
+/// `[ns][0x04]`, exactly like 0x02 — same rule, same derived key.
 pub const PREDICATE_VOCAB_ID_SLOT: Slot = 0x04;
 /// Predicate vocabulary, name → number: fixed face 0x05 (the mirror of
 /// [`PREDICATE_VOCAB_ID_SLOT`]).

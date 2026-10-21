@@ -113,7 +113,22 @@ singleton" by LENGTH, and every id decoder enforces the width already, so the
 singleton decodes to nothing instead of to some id. A reduce face cannot host
 one: in no-group mode its entry key IS the bare prefix.
 The two collection-wide name domains are older than this scheme and keep their
-fixed faces (0x02/0x03 field names, 0x04/0x05 predicate tokens).
+fixed faces (0x02/0x03 field names, 0x04/0x05 predicate tokens) — including
+their cursors, in the same shape: `[ns][0x02]` and `[ns][0x04]` each hold the
+pair's next id. Enumerating readers drop them for free, because every one of
+them already filters by suffix width.
+
+**The cursor key is derived, and that is part of the exported contract.** It
+carries no number of its own: it is the ID FACE's number with no id bytes after
+it. So the exported schema names both faces of each vocabulary pair and says
+nothing about cursors — a host-side writer (a remote binding replaying a plan, a
+language binding allocating ids itself) builds the key from the id slot with
+`obj_vocab::cursor_key`, reads the entry for its next id, and writes the bumped
+value in the SAME commit as the entries that spend it. That commit coupling is
+the whole point: a host that allocates without reading the cursor, or writes the
+entries without the cursor, hands out ids the store has already used, and
+nothing in the key layout catches it — it surfaces later as a label that
+resolves to the wrong name.
 
 The width rule is a fact about the byte (`b & 0xF0 == 0` reads one slot byte,
 anything else reads two), not a lookup in a maintained table — the same
