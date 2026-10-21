@@ -37,7 +37,7 @@ pub fn json_schema<K: KeyEncode, R: Document<Key = K>>() -> String {
             FieldType::Bytes => "string",      // base64, matches Arrow BinaryArray
             FieldType::VarInt => "integer",    // logical: the decoded integer
             FieldType::Quant(_) => "number",   // logical: dequantized f64
-            FieldType::Vocab(_) => "integer",  // the interned id byte
+            FieldType::Vocab(_) => "string",   // the label (ADR-0032 export)
             FieldType::Offset(_) => "integer", // logical: base + offset
             FieldType::Vector { .. } => "array", // element sequence (dynamic-length)
         }
@@ -107,9 +107,57 @@ pub mod parquet_io {
     /// Read one document's value from column `col` at `document` as the BE wire bytes
     /// the key encoding / TLV frames expect (reverses the export-side LE
     /// conversion).
-    fn wire_bytes(col: &dyn Array, document: usize, width: usize, ty: FieldType) -> Vec<u8> {
+    ///
+    /// `Err` is a refusal, never a guess: a `Vocab` label the destination
+    /// vocabulary cannot name (a NULL in the column), or a file whose `Vocab`
+    /// column is not a label column — the pre-label export carried raw ids and
+    /// is NOT readable here (no compatibility path: the vocabulary that would
+    /// name those ids is not in the file).
+    fn wire_bytes<S: VirtualStorage>(
+        col: &dyn Array,
+        document: usize,
+        field: &crate::model::field::FieldDesc,
+        store: &mut S,
+        ns_header: &[u8],
+    ) -> Result<Vec<u8>, String> {
         use crate::model::wrappers::{VarIntEnc as _, quantize, wire_to_be_bytes};
-        match ty {
+        let ty = field.ty;
+        let width = field.width;
+        if let FieldType::Vocab(id_slot) = ty {
+            let labels = col
+                .as_any()
+                .downcast_ref::<arrow::array::StringArray>()
+                .ok_or_else(|| {
+                    format!(
+                        "column `{}` is not a label column — this file predates the label \
+                         export (it carries ids, and the vocabulary is not in the file); \
+                         re-export it from the source store",
+                        field.name
+                    )
+                })?;
+            if labels.is_null(document) {
+                return Err(format!(
+                    "column `{}` row {}: NULL label — the source row names an id its \
+                     vocabulary does not define; refusing to invent one",
+                    field.name, document
+                ));
+            }
+            let faces = crate::model::obj_vocab::VocabFaces::from_id_slot(id_slot);
+            return crate::model::obj_vocab::vocab_id(
+                store,
+                ns_header,
+                faces,
+                width,
+                labels.value(document),
+            )
+            .ok_or_else(|| {
+                format!(
+                    "column `{}`: no vocabulary id width matches {} byte(s)",
+                    field.name, width
+                )
+            });
+        }
+        let raw: Vec<u8> = match ty {
             FieldType::FixedBytes => {
                 let col = col.as_any().downcast_ref::<BinaryArray>().unwrap();
                 col.value(document).to_vec()
@@ -129,13 +177,6 @@ pub mod parquet_io {
                 // declared precision; wire is the fixed-point i64 BE.
                 let c = col.as_any().downcast_ref::<arrow::array::Float64Array>().unwrap();
                 wire_to_be_bytes(quantize(c.value(document), p))
-            }
-            FieldType::Vocab(_) => {
-                // The logical value is not in the column: the wire is the id
-                // byte, and a name→id resolution would need the collection's
-                // vocabulary. The export round-trip therefore carries ids.
-                let c = col.as_any().downcast_ref::<arrow::array::UInt8Array>().unwrap();
-                vec![c.value(document)]
             }
             FieldType::Offset(base) => {
                 let c = col.as_any().downcast_ref::<arrow::array::Int64Array>().unwrap();
@@ -183,13 +224,20 @@ pub mod parquet_io {
                 debug_assert_eq!(raw.len(), width, "width mismatch on import");
                 raw
             }
-        }
+        };
+        Ok(raw)
     }
 
     /// Import documents from a Parquet file previously written by
     /// [`export_parquet`], writing each document back through [`Collection::put`]
     /// (primary key + index entries — the normal write contract). This is
     /// the restore path, not a second write channel.
+    ///
+    /// Categorical fields arrive as LABELS and are re-interned into THIS
+    /// collection's vocabulary before the row bytes are assembled, so the ids in
+    /// the restored rows are the destination's own numbering — the snapshot
+    /// carries names, not codes. A file from the pre-label export (raw id
+    /// columns) is refused rather than misread.
     ///
     /// Returns the number of documents restored.
     pub fn import_parquet<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>>(
@@ -209,46 +257,65 @@ pub mod parquet_io {
             let batch: RecordBatch = batch?;
             let n = batch.num_rows();
 
-            // Reassemble per-document: key encoding (declaration-order BE fields)
-            // then the two-segment payload — [ver u8][hot_len u16 BE]
-            // [hot segment][cold TLV] — matching the export-side layout.
-            let mut keys: Vec<Vec<u8>> = vec![Vec::with_capacity(K::KEY_LEN); n];
-            for (fi, f) in key_fields.iter().enumerate() {
-                let col = batch.column(fi);
-                for (document, krow) in keys.iter_mut().enumerate() {
-                    krow.extend_from_slice(&wire_bytes(col, document, f.width, f.ty));
+            // Vocabulary keys live under the same `[part][ns]` header the
+            // intern hook writes through.
+            let mut ns_header = <R as Document>::PARTITION_PREFIX.to_vec();
+            ns_header.extend_from_slice(<R as Document>::NS_PREFIX);
+
+            // Phase 1 — reassemble per-document bytes: key encoding
+            // (declaration-order BE fields) then the two-segment payload —
+            // [ver u8][hot_len u16 BE][hot segment][cold TLV] — matching the
+            // export-side layout. Labels intern here, so this phase borrows the
+            // store mutably; it ends before the rows land.
+            let (keys, payloads) = {
+                let store = collection.store_mut();
+                let mut keys: Vec<Vec<u8>> = vec![Vec::with_capacity(K::KEY_LEN); n];
+                for (fi, f) in key_fields.iter().enumerate() {
+                    let col = batch.column(fi);
+                    for (document, krow) in keys.iter_mut().enumerate() {
+                        let wb = wire_bytes(col, document, f, store, &ns_header)
+                            .map_err(parquet::errors::ParquetError::General)?;
+                        krow.extend_from_slice(&wb);
+                    }
                 }
-            }
-            let hot_width: usize = row_fields.iter().filter(|f| f.width > 0).map(|f| f.width).sum();
-            let ver = <R as Document>::LAYOUT_VERSION;
-            let header = vec![ver, (hot_width >> 8) as u8, hot_width as u8];
-            let mut payloads: Vec<Vec<u8>> = vec![header; n];
-            // Hot segment: contiguous fixed-width runs (no frame headers).
-            for (fi, f) in row_fields.iter().enumerate() {
-                if f.width == 0 {
-                    continue;
+                let hot_width: usize =
+                    row_fields.iter().filter(|f| f.width > 0).map(|f| f.width).sum();
+                let ver = <R as Document>::LAYOUT_VERSION;
+                let pay_header = vec![ver, (hot_width >> 8) as u8, hot_width as u8];
+                let mut payloads: Vec<Vec<u8>> = vec![pay_header; n];
+                // Hot segment: contiguous fixed-width runs (no frame headers).
+                for (fi, f) in row_fields.iter().enumerate() {
+                    if f.width == 0 {
+                        continue;
+                    }
+                    let col = batch.column(nkey + fi);
+                    for (document, prow) in payloads.iter_mut().enumerate() {
+                        let wb = wire_bytes(col, document, f, store, &ns_header)
+                            .map_err(parquet::errors::ParquetError::General)?;
+                        prow.extend_from_slice(&wb);
+                    }
                 }
-                let col = batch.column(nkey + fi);
-                for (document, prow) in payloads.iter_mut().enumerate() {
-                    prow.extend_from_slice(&wire_bytes(col, document, f.width, f.ty));
+                // Cold segment: one TLV frame per variable-length field, tag =
+                // the field's declaration index.
+                for (fi, f) in row_fields.iter().enumerate() {
+                    if f.width > 0 {
+                        continue;
+                    }
+                    let col = batch.column(nkey + fi);
+                    for (document, prow) in payloads.iter_mut().enumerate() {
+                        let wb = wire_bytes(col, document, f, store, &ns_header)
+                            .map_err(parquet::errors::ParquetError::General)?;
+                        prow.push(fi as u8);
+                        // P2 wire: frame length is the prefix-monotonic varint
+                        // (shared codec — one length discipline everywhere).
+                        crate::put_len(prow, wb.len());
+                        prow.extend_from_slice(&wb);
+                    }
                 }
-            }
-            // Cold segment: one TLV frame per variable-length field, tag =
-            // the field's declaration index.
-            for (fi, f) in row_fields.iter().enumerate() {
-                if f.width > 0 {
-                    continue;
-                }
-                let col = batch.column(nkey + fi);
-                for (document, prow) in payloads.iter_mut().enumerate() {
-                    let wb = wire_bytes(col, document, f.width, f.ty);
-                    prow.push(fi as u8);
-                    // P2 wire: frame length is the prefix-monotonic varint
-                    // (shared codec — one length discipline everywhere).
-                    crate::put_len(prow, wb.len());
-                    prow.extend_from_slice(&wb);
-                }
-            }
+                (keys, payloads)
+            };
+
+            // Phase 2 — the normal write contract (primary + indexes + faces).
             for document in 0..n {
                 let key = K::decode(&keys[document]);
                 let rv = R::decode_payload(&payloads[document]);

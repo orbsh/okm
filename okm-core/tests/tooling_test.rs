@@ -131,3 +131,113 @@ fn fielddesc_tables_back_the_audit() {
     // Silence the unused-warning for the FieldDesc import used above.
     let _: Option<FieldDesc> = None;
 }
+
+// ================= Categorical values in the snapshot (ADR-0032) =================
+//
+// The exported column carries the LABEL, not the id: a warehouse can read the
+// name, and Parquet's own per-chunk dictionary does the compressing. Restoring
+// re-interns labels in the destination, so the ids there are its own numbering.
+
+use okm_core::Vocab;
+
+#[derive(KeyEncode, Clone, PartialEq, Debug)]
+pub struct VKey {
+    pub id: u64,
+}
+
+#[derive(DocumentEncode, Clone, PartialEq, Debug)]
+#[ok_ref(VKey)]
+#[ok_ns(21)]
+pub struct VRow {
+    pub status: Vocab<u8>,
+    pub color: Vocab<u16>,
+    pub score: u32,
+}
+
+#[test]
+fn parquet_roundtrip_carries_labels_not_ids() {
+    use arrow::array::{Array, StringArray};
+    use arrow::datatypes::DataType;
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("vocab.parquet");
+
+    let statuses = ["active", "suspended", "active", ""];
+    let colors = ["red", "green", "多字节 ✓", "red"];
+    let mut t1: Collection<TestStore, VKey, VRow> = Collection::new(TestStore::slatedb_mem());
+    for (i, (s, c)) in statuses.iter().zip(colors.iter()).enumerate() {
+        t1.put(
+            &VKey { id: i as u64 },
+            &VRow { status: Vocab::of(*s), color: Vocab::of(*c), score: i as u32 },
+        );
+    }
+
+    // The exported column is the label, and it is NULLABLE — an id the
+    // vocabulary cannot name has nowhere else to go.
+    let batch = t1.to_record_batch();
+    let field = batch.schema().field_with_name("status").unwrap().clone();
+    assert_eq!(field.data_type(), &DataType::Utf8);
+    assert!(field.is_nullable(), "an unnamed id exports as null");
+    let status_col = batch
+        .column_by_name("status")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .unwrap();
+    assert_eq!(status_col.value(0), "active");
+    assert_eq!(status_col.value(3), "", "the empty label is a value, not a null");
+
+    parquet_io::export_parquet(&t1, &path).unwrap();
+
+    // Restore into a FRESH table: labels come back through the destination's own
+    // vocabulary (which the import rebuilds), and the restored rows resolve.
+    let mut t2: Collection<TestStore, VKey, VRow> = Collection::new(TestStore::slatedb_mem());
+    let n = parquet_io::import_parquet(&mut t2, &path).unwrap();
+    assert_eq!(n, 4);
+    for (i, (s, c)) in statuses.iter().zip(colors.iter()).enumerate() {
+        let r = t2.get(&VKey { id: i as u64 }).expect("row restored");
+        assert_eq!(r.status.as_str(), Some(*s));
+        assert_eq!(r.color.as_str(), Some(*c));
+        assert_eq!(r.score, i as u32);
+    }
+
+    // The declaration's JSON view agrees with the column: a categorical field is
+    // a string, not a code.
+    let schema: serde_json::Value =
+        serde_json::from_str(&okm_core::tooling::json_schema::<VKey, VRow>()).unwrap();
+    assert_eq!(schema["properties"]["status"]["type"], "string");
+}
+
+#[test]
+fn an_unnamed_id_exports_as_null_and_import_refuses_it() {
+    use arrow::array::{Array, StringArray};
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("unnamed.parquet");
+
+    // `from_id` names an id directly; the vocabulary was never told about it, so
+    // the row carries a value nothing can name (the state the old id-based
+    // export→import produced by design).
+    let mut t1: Collection<TestStore, VKey, VRow> = Collection::new(TestStore::slatedb_mem());
+    t1.put(
+        &VKey { id: 0 },
+        &VRow { status: Vocab::from_id(7), color: Vocab::of("red"), score: 1 },
+    );
+
+    let batch = t1.to_record_batch();
+    let status_col = batch
+        .column_by_name("status")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .unwrap();
+    assert!(status_col.is_null(0), "unnamed id → NULL, never an invented label");
+
+    parquet_io::export_parquet(&t1, &path).unwrap();
+    let mut t2: Collection<TestStore, VKey, VRow> = Collection::new(TestStore::slatedb_mem());
+    let err = parquet_io::import_parquet(&mut t2, &path).unwrap_err();
+    assert!(
+        err.to_string().contains("NULL label"),
+        "import must refuse an unnamed value, got: {err}"
+    );
+}

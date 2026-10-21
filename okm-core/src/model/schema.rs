@@ -144,6 +144,19 @@ fn lookup_default(
 /// Fixed-role slots and declared-slot segment bases (ADR-0016: slot =
 /// 4-bit segment + 12-bit counter); declared index/reduce counters start
 /// at 1 inside their segments.
+///
+/// Where each family of entries lives in a collection's key space. A host that
+/// reads or writes keys itself (a remote binding replaying a plan, a dynamic
+/// reader) needs this table, so it is part of the exported contract — not an
+/// internal convenience.
+///
+/// The four vocabulary slots are two pairs, each an ID face plus a name face;
+/// every pair ALSO owns one allocation cursor, keyed at its ID face's bare
+/// prefix — `[ns][field_vocab_id]` with no id bytes, the same for the predicate
+/// pair (ADR-0030's face-level singleton, ADR-0032's cursor). That key is
+/// DERIVED, so it is not a field here: `okm_core::obj_vocab::cursor_key` builds
+/// it. A host-side writer that allocates ids itself reads and writes that
+/// entry; going around it hands out ids the store has already used.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SlotMap {
     pub primary: u16,

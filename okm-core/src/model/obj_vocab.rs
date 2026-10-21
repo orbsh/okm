@@ -86,6 +86,22 @@ impl VocabFaces {
     }
 }
 
+/// The key of a vocabulary's allocation cursor: the id face's bare prefix,
+/// `[ns][id_slot]` with no id bytes (ADR-0030's face-level singleton, applied
+/// here by ADR-0032).
+///
+/// ONE definition for every reader and writer of the entry — the typed cache,
+/// the dynamic mirror, the plan surface a host replays. The key is DERIVED from
+/// the id face's number rather than carrying one, which is why it is not a
+/// field of the exported schema: a host that allocates ids itself (rather than
+/// through `plan_put_fields`) builds the key with this function instead of
+/// re-deriving the rule.
+pub fn cursor_key(header: &[u8], faces: VocabFaces) -> Vec<u8> {
+    let mut key = header.to_vec();
+    write_slot(&mut key, faces.id_slot);
+    key
+}
+
 /// Point lookup of a label from raw id bytes, for readers that keep no cache
 /// (the dynamic path): one engine probe, and `None` when the vocabulary has no
 /// such id — a reader never invents a label.
@@ -99,6 +115,30 @@ pub fn vocab_label<S: VirtualStorage + ?Sized>(
     write_slot(&mut key, faces.id_slot);
     key.extend_from_slice(id_be);
     String::from_utf8(store.get(&key)?).ok()
+}
+
+/// Inverse of [`vocab_label`]: the id bytes naming `label`, ALLOCATING on first
+/// sight. A write-path call — export never needs it (export reads labels), the
+/// Parquet import does: a snapshot carries labels, and restoring one has to
+/// re-derive ids in the destination's own numbering.
+///
+/// `width` is the field's declared id width in bytes. `None` when no vocabulary
+/// width matches — a schema/bridge disagreement, not a data condition.
+pub fn vocab_id<S: VirtualStorage + ?Sized>(
+    store: &mut S,
+    header: &[u8],
+    faces: VocabFaces,
+    width: usize,
+    label: &str,
+) -> Option<Vec<u8>> {
+    Some(match width {
+        1 => VocabId::to_be(VocabCache::<u8>::new(faces).id_for(store, header, label)),
+        2 => VocabId::to_be(VocabCache::<u16>::new(faces).id_for(store, header, label)),
+        4 => VocabId::to_be(VocabCache::<u32>::new(faces).id_for(store, header, label)),
+        8 => VocabId::to_be(VocabCache::<u64>::new(faces).id_for(store, header, label)),
+        16 => VocabId::to_be(VocabCache::<u128>::new(faces).id_for(store, header, label)),
+        _ => return None,
+    })
 }
 
 /// Field names of the payload, in the document's own ns (ADR-0012).
@@ -154,11 +194,11 @@ impl<I: VocabId> VocabCache<I> {
 
     /// The face-level singleton: the id face's prefix with NO id suffix. Every
     /// real entry of that face carries exactly `I::WIDTH` bytes after the slot,
-    /// so a zero-length key is not expressible as data.
+    /// so a zero-length key is not expressible as data. Delegates to
+    /// [`cursor_key`] — the same definition the dynamic mirror and any host
+    /// writer use.
     fn cursor_key(&self, header: &[u8]) -> Vec<u8> {
-        let mut key = header.to_vec();
-        write_slot(&mut key, self.faces.id_slot);
-        key
+        cursor_key(header, self.faces)
     }
 
     /// Look up (or allocate) the id for `label`. `header` = the collection's key

@@ -1296,10 +1296,10 @@ bytes; doing them after P3 means hex locks change once, not twice.
       categorical fields on one row: per-field id spaces, labels across put/get,
       the map bridge, from_map + re-intern, and the schema's per-field faces.
 - [x] `save_with_prev_into` interns INSIDE the batch: the vocabulary's cursor
-      face (0x3nnn) makes allocation one point read plus three point writes, all
-      of which `BatchStore` serves, so growth + row + faces commit together and
-      the signature keeps `&self`. `save_into` stays encoding-only and therefore
-      requires pre-interned documents.
+      (the id face's bare-prefix singleton) makes allocation one point read plus
+      three point writes, all of which `BatchStore` serves, so growth + row +
+      faces commit together and the signature keeps `&self`. `save_into` stays
+      encoding-only and therefore requires pre-interned documents.
 - [x] Vocabulary allocation cursor: the id face's FACE-LEVEL SINGLETON —
       `[ns][0x2nnn]` with no suffix, holding the next id. No extra family and no
       extra fixed face: every real entry of that face carries exactly N bytes, so
@@ -1312,6 +1312,54 @@ bytes; doing them after P3 means hex locks change once, not twice.
       any one-value-per-face metadata may take the bare prefix when all of that
       face's entries carry a non-empty suffix — and NOT on the label face (empty
       label) nor on a no-group reduce face (its entry key is the bare prefix).
+      The two fixed-name vocabularies use the same shape (no extra fixed faces):
+      `[ns][0x02]` for field names, `[ns][0x04]` for predicates / kind tokens,
+      each holding the next id in place of its data suffix. Their readers already
+      filter by suffix width: `Graph::predicates` (`suffix.len() == 2`),
+      `VocabMirror::load` (same check) and `scan_max_plus_one`
+      (`VocabId::from_be` rejects any length ≠ W).
+- [x] The PREDICATE arbitration cursor has a test of its own:
+      `graph_edge_test::the_predicate_cursor_is_the_id_faces_bare_prefix` pins
+      `[ns][0x04]` (next id, no suffix), asserts that a predicate allocation
+      writes no field-name cursor at `[ns][0x02]`, and links a second predicate
+      through a FRESH graph so the resume-past-a-process-boundary case is
+      actually crossed. Bites by construction: pointing `PREDICATE_VOCAB`'s id
+      face at 0x02 fails it on the first assertion.
+- [x] The singleton convention IS part of the exported schema contract — the
+      host reads and writes this cursor itself, so it cannot stay a Rust-side
+      private habit. Shape: the schema keeps naming both faces of each vocabulary
+      pair and NO cursor field (the key is derived — the id face's bare prefix;
+      a numbered cursor face is exactly what ADR-0030's "no bands" rule forbids),
+      `SlotMap`'s own doc states the derivation and the same-commit rule, and
+      `obj_vocab::cursor_key` is its ONE definition — the typed cache, the
+      dynamic mirror (`VocabMirror::load`) and the plan surface
+      (`plan_put_fields`, whose ops a host replays) all call it. Prose:
+      `docs/internals/key-layout.md` + ADR-0030, both languages.
+- [x] Arrow/Parquet export of a `Vocab` column: LABELS cross, ids do not.
+      The export resolves each categorical field through ONE scan of its id face
+      (`arrow_bridge::vocab_labels`) and emits a NULLABLE `Utf8` column; an id
+      with no label becomes NULL, never an invented name. The import re-interns
+      each label in the DESTINATION vocabulary (`obj_vocab::vocab_id`, dispatched
+      by the field's declared width) before the row bytes are assembled, so
+      restored rows carry the destination's numbering and are named by
+      construction — the id-carrying round trip was the one path that produced
+      unnameable values, and it is gone. Files from that older form are refused
+      by column type (no compatibility path, by decision). Parquet's physical
+      dictionary (default on, one dictionary page per column chunk, 1 MiB limit)
+      then gives each chunk a local vocabulary on its own: every distinct label
+      is stored once per chunk and the rows carry indices, so the wider value
+      form is not paid per row. The export still passes
+      `WriterProperties::None`, i.e. dictionary encoding WITHOUT a compression
+      codec — a separate knob, left alone.
+      Tests: `tooling_test::parquet_roundtrip_carries_labels_not_ids` (column
+      type, nullability, the empty label is a value, restore into a fresh store,
+      the JSON-schema view) and
+      `::an_unnamed_id_exports_as_null_and_import_refuses_it`.
+      Recorded: ADR-0032 §7 and ADR-0007's type mapping, both languages.
+- [ ] Owed: the vocabulary as Parquet file key-value metadata — a warehouse can
+      read the labels already, but a consumer that wants the full id↔label table
+      (including labels no row used) has nothing to read. Additive: one footer
+      entry per categorical field.
 - [x] okm-dynamic: a `Vocab` field decodes to its LABEL. The pure decoder hands
       out the id as raw `Bytes` (it has no store) and the collection's read paths
       run `resolve_vocab_labels` — one point probe per categorical field against

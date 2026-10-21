@@ -15,6 +15,7 @@
 
 use okm_core::model::obj_dynamic::{decode_named, put_frame_named};
 use okm_core::model::index::{DYNAMIC_SLOT, FIELD_VOCAB_ID_SLOT, FIELD_VOCAB_NAME_SLOT};
+use okm_core::model::obj_vocab::FIELD_VOCAB;
 use okm_core::storage::{scan_suffix_kv, VirtualStorage};
 
 use crate::{Value, ValueMap};
@@ -63,10 +64,8 @@ impl VocabMirror {
         }
         // The cursor is the id face's bare-prefix singleton: `[ns][0x02]` with
         // no id bytes (ADR-0032) — unrepresentable as an id entry, so the two
-        // cannot collide.
-        let mut cursor_key = ns.to_vec();
-        okm_core::write_slot(&mut cursor_key, FIELD_VOCAB_ID_SLOT);
-        if let Some(raw) = store.get(&cursor_key)
+        // cannot collide. One definition, shared with the typed cache.
+        if let Some(raw) = store.get(&okm_core::obj_vocab::cursor_key(ns, FIELD_VOCAB))
             && raw.len() == 2 {
             let cursor = u16::from_be_bytes([raw[0], raw[1]]);
             d.next_id = d.next_id.max(cursor);
@@ -180,11 +179,12 @@ pub fn plan_put_fields(
     }
     // The allocation cursor, exactly as `VocabCache::id_for` writes it: without
     // this op the plan's vocabulary and the typed path's vocabulary diverge, and
-    // the next allocation (on either side) would hand out a duplicate id.
+    // the next allocation (on either side) would hand out a duplicate id. The
+    // key comes from `obj_vocab::cursor_key` — the host replays these ops, so
+    // the derivation has exactly one definition.
     if !vocab.written.is_empty() {
-        let mut cursor_key = ns.to_vec();
-        okm_core::write_slot(&mut cursor_key, FIELD_VOCAB_ID_SLOT);
-        vocab_ops.push((cursor_key, Some(vocab.next_id.to_be_bytes().to_vec())));
+        let key = okm_core::obj_vocab::cursor_key(ns, FIELD_VOCAB);
+        vocab_ops.push((key, Some(vocab.next_id.to_be_bytes().to_vec())));
     }
     let k = fields_key(ns, pkey);
     if body.is_empty() {

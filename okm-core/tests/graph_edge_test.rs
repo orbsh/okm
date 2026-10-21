@@ -134,6 +134,55 @@ fn predicates_are_listed_from_the_predicate_vocabulary() {
 }
 
 #[test]
+fn the_predicate_cursor_is_the_id_faces_bare_prefix() {
+    // ADR-0030/ADR-0032: the allocation cursor is the id face's face-level
+    // singleton — `[ns][0x04]` with NO predicate id after it. Pinning it pins
+    // the FACE, which is the part that can rot silently: a cursor written onto
+    // the field-name face (0x02) breaks nothing here and now, it resurfaces as
+    // ids restarting after a process boundary and colliding with names already
+    // allocated.
+    let store = okm_core::TestStore::slatedb_mem();
+    let ns: &[u8] = &100u16.to_be_bytes();
+    let bare = |s: u16| {
+        let mut k = ns.to_vec();
+        okm_core::write_slot(&mut k, s);
+        k
+    };
+    let mut g: Graph<_, Employment> = Graph::new(store.clone());
+    g.link(&head(user(1), org(9), "employs"), &Employment::default(), 1)
+        .unwrap();
+
+    assert_eq!(
+        store.get(&bare(okm_core::index::PREDICATE_VOCAB_ID_SLOT)),
+        Some(1u16.to_be_bytes().to_vec()),
+        "next predicate id: one entry, no suffix"
+    );
+    assert!(
+        store
+            .get(&bare(okm_core::index::FIELD_VOCAB_ID_SLOT))
+            .is_none(),
+        "a predicate allocation writes no field-name cursor"
+    );
+
+    // A second handle is a fresh cache — the process-boundary case the cursor
+    // exists for. Numbering resumes past the allocated predicate instead of
+    // restarting at zero.
+    let mut g2: Graph<_, Employment> = Graph::new(store.clone());
+    assert_eq!(g2.predicate_vocab_name(0).as_deref(), Some("employs"));
+    g2.link(&head(user(2), org(9), "contracts"), &Employment::default(), 2)
+        .unwrap();
+    assert_eq!(
+        g2.predicates(),
+        vec![(0u16, "employs".to_string()), (1u16, "contracts".to_string())]
+    );
+    assert_eq!(
+        store.get(&bare(okm_core::index::PREDICATE_VOCAB_ID_SLOT)),
+        Some(2u16.to_be_bytes().to_vec()),
+        "the cursor advanced with the second allocation"
+    );
+}
+
+#[test]
 fn unlink_and_relabeled_parallel_edges() {
     let store = okm_core::TestStore::slatedb_mem();
     let mut g: Graph<_, Employment> = Graph::new(store.clone());
