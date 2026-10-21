@@ -215,6 +215,11 @@ pub trait Document: Sized + Clone {
     fn __okm_embed_keys(&self) -> Vec<Vec<u8>> {
         Vec::new()
     }
+    /// The table's NAME (`#[ok_name("...")]`), beside the ns it belongs to.
+    /// The ns is the store's address; the name is the identity a table carries
+    /// OUT of it — the export's catalog column and the import-side lookup.
+    /// Empty = unnamed: an export refuses it rather than spelling the struct.
+    const TABLE_NAME: &'static str = "";
     /// Whether this document declares any `Vocab<N>` field (ADR-0032). `put`
     /// reads it to choose between encoding the caller's document directly and
     /// taking a mutable copy for the intern step — tables without categorical

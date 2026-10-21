@@ -17,6 +17,7 @@ pub struct ExportKey {
 #[derive(DocumentEncode, Clone, PartialEq, Debug)]
 #[ok_ref(ExportKey)]
 #[ok_ns(11)]
+#[ok_name("export_rows")]
 pub struct ExportRow {
     pub reputation: u32,
     pub bio_len: u16,
@@ -160,4 +161,20 @@ fn empty_table_exports_full_schema() {
     let batch = t.to_record_batch();
     assert_eq!(batch.num_rows(), 0);
     assert_eq!(batch.num_columns(), 6);
+}
+
+/// An unnamed table answers the trait default — the export refuses it rather than
+/// spelling the struct's name, which is a Rust name and not a table's.
+#[derive(DocumentEncode, Clone, PartialEq, Debug)]
+#[ok_ref(ExportKey)]
+#[ok_ns(12)]
+pub struct UnnamedRow {
+    pub payload: u32,
+}
+
+#[test]
+fn the_table_name_is_declared_beside_the_ns() {
+    assert_eq!(ExportRow::TABLE_NAME, "export_rows");
+    assert_eq!(<ExportRow as Document>::TABLE_NAME, "export_rows");
+    assert_eq!(<UnnamedRow as Document>::TABLE_NAME, "");
 }

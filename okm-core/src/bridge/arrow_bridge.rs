@@ -25,6 +25,7 @@ use crate::model::index::Document;
 use crate::model::key::KeyEncode;
 use crate::model::obj_dynamic::DynamicValue;
 use crate::model::document::Collection;
+use crate::model::graph::{EdgeKey, Graph, GraphEncode};
 
 /// Arrow column type for a declared field kind.
 fn arrow_type(ty: FieldType) -> DataType {
@@ -581,5 +582,153 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     /// Approximate per-batch memory: one document's full field width.
     pub fn row_width(&self) -> usize {
         Projection::<K, R>::new().total_width()
+    }
+}
+
+// ---- the graph's edge set as ONE table (ADR-0034) -------------------------
+
+impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
+    /// The graph's edges as one `RecordBatch`, in the shape a table has:
+    /// `[src_table, src_pkey, dst_table, dst_pkey, predicate]`, then the edge
+    /// declaration's own fields, then the edge's OPEN ATTRIBUTES as a `variant`
+    /// column (the 0x01 segment, if the store has one for that edge).
+    ///
+    /// The endpoints are (table, primary key) pairs — what a node reference IS —
+    /// with the pkey as RAW BYTES: one edge table spans node collections, so it
+    /// cannot decode another table's key into that table's fields without that
+    /// table's declaration. `name_of` maps an ns to its table name; an ns it does
+    /// not know yields a null cell, never an invented name.
+    pub fn to_record_batch_table<F>(&mut self, name_of: F) -> RecordBatch
+    where
+        F: Fn(u16) -> Option<String>,
+    {
+        use arrow::array::{Array, BinaryArray};
+        use arrow::buffer::{Buffer, NullBuffer, OffsetBuffer, ScalarBuffer};
+        use arrow::datatypes::{Field as ArrowField, Schema as ArrowSchema};
+
+        let ids = self.edge_ids();
+        let mut documents: Vec<(Vec<u8>, Vec<u8>)> = Vec::with_capacity(ids.len());
+        // (src name, src pkey, dst name, dst pkey, predicate) per row
+        let mut rows: Vec<(Option<String>, Vec<u8>, Option<String>, Vec<u8>, String)> =
+            Vec::with_capacity(ids.len());
+        let mut variants: Vec<Option<Vec<u8>>> = Vec::with_capacity(ids.len());
+
+        for id in ids {
+            let Some(body) = self.get_edge(id) else { continue };
+            let predicate = self
+                .predicate_vocab_name(body.predicate_vocab_id)
+                .unwrap_or_default();
+            rows.push((
+                name_of(body.src.ns_id()),
+                body.src.pkey.clone(),
+                name_of(body.dst.ns_id()),
+                body.dst.pkey.clone(),
+                predicate,
+            ));
+            variants.push(self.get_fields(id).map(|fields| {
+                let mut b = parquet_variant::VariantBuilder::new();
+                let map: std::collections::BTreeMap<String, DynamicValue> =
+                    fields.into_iter().collect();
+                push_variant(&mut b, &DynamicValue::Obj(map));
+                let (md, val) = b.finish();
+                let mut wire = (md.len() as u32).to_be_bytes().to_vec();
+                wire.extend_from_slice(&md);
+                wire.extend_from_slice(&val);
+                wire
+            }));
+            documents.push((id.to_be_bytes().to_vec(), body.payload));
+        }
+
+        // The declaration's own columns: the edge key (the bare edge id) then the
+        // payload fields, exactly the document projection.
+        let proj = Projection::<EdgeKey, E>::new();
+        let mut header = E::PARTITION_PREFIX.to_vec();
+        header.extend_from_slice(E::NS_PREFIX);
+        let labels = if E::HAS_VOCAB {
+            vocab_labels::<S>(self.store(), &header, proj.row_fields)
+        } else {
+            std::collections::HashMap::new()
+        };
+        let base = build_batch(&proj, &documents, &labels);
+
+        // The table columns, in front.
+        let string_col = |vals: &[Option<String>]| -> Arc<dyn Array> {
+            let mut buf = arrow::array::StringBuilder::new();
+            for v in vals {
+                match v {
+                    Some(s) => buf.append_value(s),
+                    None => buf.append_null(),
+                }
+            }
+            Arc::new(buf.finish())
+        };
+        let binary_col = |vals: &[Vec<u8>]| -> Arc<dyn Array> {
+            let mut offsets: Vec<i32> = Vec::with_capacity(vals.len() + 1);
+            offsets.push(0);
+            let mut data = Vec::new();
+            for v in vals {
+                data.extend_from_slice(v);
+                offsets.push(data.len() as i32);
+            }
+            Arc::new(BinaryArray::new(
+                OffsetBuffer::new(ScalarBuffer::from(offsets)),
+                Buffer::from(data),
+                None,
+            ))
+        };
+
+        let src_tables: Vec<Option<String>> = rows.iter().map(|r| r.0.clone()).collect();
+        let src_pkeys: Vec<Vec<u8>> = rows.iter().map(|r| r.1.clone()).collect();
+        let dst_tables: Vec<Option<String>> = rows.iter().map(|r| r.2.clone()).collect();
+        let dst_pkeys: Vec<Vec<u8>> = rows.iter().map(|r| r.3.clone()).collect();
+        let predicates: Vec<Option<String>> = rows.iter().map(|r| Some(r.4.clone())).collect();
+
+        let mut fields: Vec<ArrowField> = vec![
+            ArrowField::new("src_table", DataType::Utf8, true),
+            ArrowField::new("src_pkey", DataType::Binary, false),
+            ArrowField::new("dst_table", DataType::Utf8, true),
+            ArrowField::new("dst_pkey", DataType::Binary, false),
+            ArrowField::new("predicate", DataType::Utf8, false),
+        ];
+        for f in base.schema().fields() {
+            fields.push(f.as_ref().clone());
+        }
+        fields.push(variant_field("variant", true));
+        let schema = Arc::new(ArrowSchema::new(fields));
+
+        let mut arrays: Vec<Arc<dyn Array>> = vec![
+            string_col(&src_tables),
+            binary_col(&src_pkeys),
+            string_col(&dst_tables),
+            binary_col(&dst_pkeys),
+            string_col(&predicates),
+        ];
+        arrays.extend(base.columns().iter().cloned());
+
+        // The variant column, same wire rule as the document path.
+        let mut offsets: Vec<i32> = Vec::with_capacity(variants.len() + 1);
+        offsets.push(0);
+        let mut data = Vec::new();
+        let mut nulls = Vec::with_capacity(variants.len());
+        for wire in &variants {
+            match wire {
+                Some(bytes) => {
+                    data.extend_from_slice(bytes);
+                    offsets.push(data.len() as i32);
+                    nulls.push(true);
+                }
+                None => {
+                    offsets.push(data.len() as i32);
+                    nulls.push(false);
+                }
+            }
+        }
+        arrays.push(Arc::new(BinaryArray::new(
+            OffsetBuffer::new(ScalarBuffer::from(offsets)),
+            Buffer::from(data),
+            Some(NullBuffer::from(nulls)),
+        )));
+
+        RecordBatch::try_new(schema, arrays).expect("edge table batch")
     }
 }

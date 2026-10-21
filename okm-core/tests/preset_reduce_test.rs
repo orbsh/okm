@@ -213,3 +213,70 @@ fn sum_acc_type_follows_field() {
     assert_eq!(sum_i, Some(100i64));
     assert_eq!(sum_q, Some(1250i64));
 }
+
+/// ADR-0034: reduces travel as their own derived table — `(table, reduce,
+/// group, value)` — because a restored table whose watermark is missing hands
+/// out ids it already used.
+#[cfg(feature = "parquet")]
+#[test]
+fn the_reduce_table_exports_as_its_own_file() {
+    use arrow::array::{Array, BinaryArray, UInt16Array};
+    use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut t: okm_core::Collection<TestStore, PostKey, Post> =
+        okm_core::Collection::new(TestStore::slatedb_mem());
+    for (forum, views) in [(1u64, 10u32), (1, 40), (2, 7)] {
+        t.put(&PostKey { id: forum * 100 + views as u64 }, &Post { forum, views });
+    }
+
+    let path = dir.path().join("post_reduces.parquet");
+    okm_core::bridge::tooling::parquet_io::export_reduces::<_, __OkmReduce_Post_2>(
+        t.store(),
+        Post::NS_PREFIX,
+        "posts",
+        &path,
+    )
+    .unwrap();
+
+    let file = std::fs::File::open(&path).unwrap();
+    let batch = ParquetRecordBatchReaderBuilder::try_new(file)
+        .unwrap()
+        .build()
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap();
+    let schema = batch.schema();
+    assert_eq!(batch.num_columns(), 4);
+    assert_eq!(schema.field(0).name(), "table");
+    assert_eq!(schema.field(1).name(), "reduce");
+
+    let table = batch
+        .column(0)
+        .as_any()
+        .downcast_ref::<arrow::array::StringArray>()
+        .unwrap();
+    assert_eq!(table.value(0), "posts");
+
+    let reduce = batch
+        .column(1)
+        .as_any()
+        .downcast_ref::<UInt16Array>()
+        .unwrap();
+    assert_eq!(reduce.value(0), <__OkmReduce_Post_2 as Reduce>::SLOT);
+
+    // Two groups (forum 1 and 2): the watermark of forum 1 is 40, of 2 it is 7.
+    let mut rows = Vec::new();
+    let groups = batch.column(2).as_any().downcast_ref::<BinaryArray>().unwrap();
+    let values = batch.column(3).as_any().downcast_ref::<BinaryArray>().unwrap();
+    for i in 0..batch.num_rows() {
+        rows.push((
+            u64::from_be_bytes(groups.value(i).try_into().unwrap()),
+            u64::from_be_bytes(values.value(i).try_into().unwrap()),
+        ));
+    }
+    rows.sort();
+    assert_eq!(rows, vec![(1, 40), (2, 7)]);
+    assert!(groups.null_count() == 0 && values.null_count() == 0);
+}

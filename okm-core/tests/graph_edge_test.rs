@@ -465,3 +465,90 @@ fn neighbor_nodes_resolve_to_node_refs() {
     deduped.dedup();
     assert_eq!(deduped, vec![org(9)]);
 }
+/// ADR-0034: the edge set is ONE table. The endpoints are (table, primary key)
+/// pairs — with the pkey as raw bytes, because one edge table spans node
+/// collections and cannot decode another table's key — the declaration's fields
+/// are typed columns, and the edge's open attributes ride a `variant` column.
+#[cfg(feature = "parquet")]
+#[test]
+fn the_edge_set_exports_as_a_table_with_named_endpoints() {
+    use arrow::array::{Array, BinaryArray};
+    use std::collections::BTreeMap;
+
+    let mut store = okm_core::TestStore::slatedb_mem();
+    let mut g: Graph<_, Employment> = Graph::new(store.clone());
+    g.link(
+        &head(user(1), org(9), "employs"),
+        &Employment {
+            since_year: 2020,
+            weight: 7,
+        },
+        1,
+    )
+    .unwrap();
+
+    let mut attrs: BTreeMap<String, okm_core::obj_dynamic::DynamicValue> = BTreeMap::new();
+    attrs.insert(
+        "role".to_string(),
+        okm_core::obj_dynamic::DynamicValue::Str("lead".to_string()),
+    );
+    let mut batch = okm_core::MemBatch::default();
+    g.put_fields_into(&mut batch, 1, &attrs);
+    store.commit_batch(batch).unwrap();
+    assert_eq!(
+        g.get_fields(1).map(|f| f.len()),
+        Some(1),
+        "the attribute segment reads back"
+    );
+
+    let names = |ns: u16| match ns {
+        10 => Some("users".to_string()),
+        11 => Some("orgs".to_string()),
+        _ => None,
+    };
+    let batch = g.to_record_batch_table(names);
+    let schema = batch.schema();
+    let column = |name: &str| schema.index_of(name).expect("column present");
+
+    assert_eq!(batch.num_rows(), 1);
+    assert_eq!(column("src_table"), 0);
+    assert_eq!(column("dst_table"), 2);
+    assert_eq!(column("predicate"), 4);
+    assert!(
+        schema.index_of("variant").unwrap() > column("weight"),
+        "the variant column sits after the declaration's fields"
+    );
+    assert_eq!(
+        schema.index_of("src_pkey").unwrap(),
+        1,
+        "the two refs are adjacent (name, pkey)"
+    );
+
+    let src_table = batch
+        .column(column("src_table"))
+        .as_any()
+        .downcast_ref::<arrow::array::StringArray>()
+        .unwrap();
+    assert_eq!(src_table.value(0), "users");
+    let src_pkey = batch
+        .column(column("src_pkey"))
+        .as_any()
+        .downcast_ref::<BinaryArray>()
+        .unwrap();
+    assert_eq!(src_pkey.value(0), &1u64.to_be_bytes(), "the raw key bytes");
+    let predicate = batch
+        .column(column("predicate"))
+        .as_any()
+        .downcast_ref::<arrow::array::StringArray>()
+        .unwrap();
+    assert_eq!(predicate.value(0), "employs");
+    assert_eq!(
+        batch.column(column("dst_table")).null_count(),
+        0,
+        "a known ns is never null"
+    );
+
+    // A node ns the caller's map does not know stays null rather than guessed.
+    let unnamed = g.to_record_batch_table(|_| None);
+    assert_eq!(unnamed.column(0).null_count(), 1);
+}
