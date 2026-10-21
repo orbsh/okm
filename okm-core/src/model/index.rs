@@ -335,6 +335,13 @@ pub trait Document: Sized + Clone {
     /// declared — a layout-only document that never materializes a collection).
     const NS_PREFIX: &'static [u8] = &[];
 
+    /// The same ns as a NUMBER: `NS_PREFIX` decoded (`None` = no ns declared).
+    /// A reader that reasons about collections rather than keys uses this one —
+    /// a graph's `#[ok_nodes]` lists document types and takes their ns from
+    /// here, so a membership set can never disagree with the table's own
+    /// `#[ok_ns]`. Both constants come from that one declaration.
+    const NS: Option<u16> = None;
+
     /// The collection's partition id (ADR-0014 §5): `Some(N)` prepends a
     /// 2-byte escape segment `[0xFF][N]` before the ns header — physical
     /// partition routing (Fjall) and workload isolation in the key space.

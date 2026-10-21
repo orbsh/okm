@@ -6,7 +6,9 @@
 use okm_core::obj_dynamic::DynamicValue;
 use okm_core::schema::CollectionSchema;
 use okm_core::storage::VirtualStorage;
-use okm_core::{EdgeHead, EdgeKey, Graph as StaticGraph, GraphEncode, NodeRef, NodeSet};
+use okm_core::{
+    DocumentEncode, EdgeHead, EdgeKey, Graph as StaticGraph, GraphEncode, KeyEncode, NodeRef,
+};
 use okm_dynamic::{DynEdge, Graph};
 use std::collections::BTreeMap;
 
@@ -34,21 +36,45 @@ fn dyn_edge(src: NodeRef, dst: NodeRef, predicate: &str, since: u16) -> DynEdge 
     DynEdge { src, dst, predicate: predicate.into(), attrs: attrs(since) }
 }
 
+// ---- the node collections the member set names (tables, by type) ----
+
+#[derive(Clone, Default, KeyEncode)]
+pub struct PersonId {
+    pub id: u64,
+}
+
+#[derive(Clone, Default, DocumentEncode)]
+#[ok_ns(0x10)]
+#[ok_ref(PersonId)]
+pub struct Person {}
+
+#[derive(Clone, Default, KeyEncode)]
+pub struct OrgId {
+    pub id: u64,
+}
+
+#[derive(Clone, Default, DocumentEncode)]
+#[ok_ns(0x11)]
+#[ok_ref(OrgId)]
+pub struct Org {}
+
+#[derive(Clone, Default, KeyEncode)]
+pub struct TeamId {
+    pub id: u64,
+}
+
+#[derive(Clone, Default, DocumentEncode)]
+#[ok_ns(0x12)]
+#[ok_ref(TeamId)]
+pub struct Team {}
+
 /// The fixed-ontology twin: same ns, no declared payload fields — the
-/// byte-equality counterpart of the empty dynamic declaration.
+/// byte-equality counterpart of the empty dynamic declaration. Its member set
+/// is GENERATED from the three node tables (ns 0x10/0x11/0x12).
 #[derive(Clone, Default, GraphEncode)]
 #[ok_ns(400)]
-#[ok_nodes(WorksAtNodes)]
+#[ok_nodes(Person, Org, Team)]
 pub struct WorksAt {}
-
-pub enum WorksAtNodes {
-    People,
-    Orgs,
-}
-
-impl NodeSet for WorksAtNodes {
-    const NS_VALUES: &'static [u16] = &[0x10, 0x11, 0x12];
-}
 
 fn works_at_schema() -> CollectionSchema {
     CollectionSchema::of_graph::<WorksAt>()

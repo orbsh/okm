@@ -81,9 +81,10 @@ pub fn derive_junction(input: TokenStream) -> TokenStream {
 /// Graph Edge (ADR-0017 §4): one declaration IS the graph — the edge
 /// collection's ns (`#[ok_ns]`), its own document payload, the attribute
 /// faces it declares explicitly (`#[ok_index]`), and the member node
-/// collections (`#[ok_nodes]`). Endpoints need no declaration — refs are
-/// self-describing; they travel as runtime `NodeRef`s, never as declared
-/// struct fields.
+/// collections (`#[ok_nodes]` — a list of the node TABLES' types, from which
+/// the member-set enum and its `NodeSet` impl are generated with each table's
+/// own ns). Endpoints need no declaration — refs are self-describing; they
+/// travel as runtime `NodeRef`s, never as declared struct fields.
 #[proc_macro_derive(GraphEncode, attributes(ok_ns, ok_nodes, ok_name, ok_ref, ok_partition, ok_index, ok_reduce, ok_offset, ok_layout, ok_default, ok_subscribe, ok_event_enum, ok_len))]
 pub fn derive_graph_encode(input: TokenStream) -> TokenStream {
     let out = graph_encode::derive(input.clone());
