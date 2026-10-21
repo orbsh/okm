@@ -351,10 +351,13 @@ mod serde_impls {
                 #[serde(alias = "dict_name")]
                 field_vocab_name: u16,
                 /// Schemas written before the predicate vocabulary existed carry
-                /// no pair; the fixed faces are the fallback numbers.
-                #[serde(default = "default_predicate_vocab_id", alias = "kind_id")]
+                /// no pair; the fixed faces are the fallback numbers. (No alias
+                /// for the retired `kind_id`/`kind_name` spelling: "kind" is not
+                /// this slot's name since ADR-0017 — the edge's type is the
+                /// predicate, and a schema either carries the pair or defaults.)
+                #[serde(default = "default_predicate_vocab_id")]
                 predicate_vocab_id: u16,
-                #[serde(default = "default_predicate_vocab_name", alias = "kind_name")]
+                #[serde(default = "default_predicate_vocab_name")]
                 predicate_vocab_name: u16,
                 declared_index_base: u16,
                 declared_reduce_base: u16,

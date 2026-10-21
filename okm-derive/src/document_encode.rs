@@ -760,7 +760,10 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> TS2 {
         Some(n) => {
             let hi = (n >> 8) as u8;
             let lo = (n & 0xff) as u8;
-            quote! { const NS_PREFIX: &'static [u8] = &[#hi, #lo]; }
+            quote! {
+                const NS_PREFIX: &'static [u8] = &[#hi, #lo];
+                const NS: ::core::option::Option<u16> = ::core::option::Option::Some(#n);
+            }
         }
         None => quote! {},
     };
