@@ -692,7 +692,7 @@ Three rules follow from the shapes:
   collection. Interning the 256th distinct label in one field panics — narrow the
   domain or model that value as `String`.
 
-#### Recipe: a log table
+#### Case: a log table
 
 High-volume append-only logs want the widest fields to pay for themselves. This
 declaration follows from the table above:
@@ -1033,6 +1033,54 @@ that stop it:
   sets from one graph and probing the other's faces, or by dropping to
   plain document reads — there is no cross-graph match syntax, and
   none is needed.
+
+#### Case: a tag forest is rows and a junction, not a graph
+
+mudra's tag forest is the shape people reach for a graph on: many roots, no
+single root, a node living in several trees at once. It is two carriers, and
+neither is an Edge collection.
+
+```rust
+#[derive(DocumentEncode, Clone, PartialEq, Eq, Debug, Default)]
+#[ok_ref(TagKey)]
+#[ok_ns(1)]
+#[ok_index(by_parent { fields(parent_id) })]   // the tree; -1 = a root node
+#[ok_index(by_name { func(tag_name) })]        // bare-name addressing
+struct Tag { parent_id: i32, name: String, rank: i32, deleted: u8, /* … */ }
+
+#[derive(JunctionEncode, Clone, Debug)]
+#[ok_junction(1)]
+struct PageTag { page: Ref<Page, PageKey>, tag: Ref<Tag, TagKey> }
+```
+
+**The tree is a self-referential row.** A tag carries `parent_id: i32` with
+`-1` as the root sentinel, so "many roots" needs no virtual super-root; one
+scan on `by_parent` returns a node's children. The reverse direction — "who
+are my children" — needs no edge row, because it *is* that index. This is the
+line between a tree and a many-to-many: a parent pointer's reverse is a scan,
+a junction's reverse has no single row to live in.
+
+Two consequences worth copying: keys stay surrogate (`TagKey { id }`), so
+sibling order cannot ride key order — it is a `rank` payload field, sorted in
+memory after the scan; and there is no path or closure table, the path is
+derived by walking up.
+
+**Membership is a junction.** page↔tag is many-to-many with compile-time typed
+endpoints, so `link` is the atomic double write (one entry in each endpoint's
+ns) and both directions are first-class scans (the derive's `get_tag` /
+`get_page`). The junction declares no ns of its own: the direction is which
+endpoint's ns the entry lives in.
+
+**Why not a graph edge.** An edge here would carry no attributes and no
+identity of its own, allows no parallel edges, and its endpoints are closed at
+compile time — the four properties that earn Edge its place as the third
+carrier (ADR-0017) all go unused. A forest that needs none of them is a row
+pointer plus a junction; reaching for the third carrier anyway is the
+"everything is a graph" failure the section above draws its lines against.
+
+A payoff worth stating: a coarse membership flag ("favorite", "starred") then
+has nowhere new to live — it is an edge to a rank child of an axis that already
+exists, so the flag needs no collection of its own.
 
 ## Set membership: inverted index or bloom, by cardinality
 
