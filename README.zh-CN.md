@@ -88,12 +88,12 @@ pub struct UserToSession {
 
 #[derive(GraphEncode, Clone, Default)]       // 一份声明就是这张图（ADR-0017）
 #[ok_ns(100)]
-#[ok_nodes(EmploymentNodes)]                 // 成员集：编译期枚举，取值为 collection
+#[ok_nodes(User, Org)]                       // 成员集：节点**表**，按类型列出
 #[ok_index(by_since { fields(since_year) })] // 属性是显式声明的面——不做任何隐含
 pub struct Employment { pub since_year: u16, pub weight: u32 }
 
-pub enum EmploymentNodes { Users, Orgs }
-impl NodeSet for EmploymentNodes { const NS_VALUES: &'static [u16] = &[10, 11]; }
+// 生成：`pub enum EmploymentNodes { User, Org }` 及其 `NodeSet` 实现，
+// 每个 ns 取自那张表自己的 `#[ok_ns]`——不写两遍
 ```
 
 索引声明机械地生成访问方法类型：`ok_index(by_org ...)` 产出

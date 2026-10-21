@@ -1,7 +1,7 @@
 # ADR-0017：图 Edge——第三种关系载体
 
 日期：2026-09-19
-状态：已接受（2026-09-20；两种形态均已实现——EdgeEncode derive + Graph<S, E> 固定本体、okm-dynamic Graph<S> 全动态）。2026-09-20 更新：§2 端点引用改选方案 b（自描述 [ns 2B][len varint][pkey]）——方案 c（注册表）废弃；§3 增补声明属性字段、节点侧 kind 过滤、slot 布局说明。2026-10-17 更新：§3 边的载荷改成 obj（ADR-0012）——一份文档声明同时生成双向编解码与声明面，derive 那套只有编码半的 `attrs()` / `attr_faces()` / `ATTR_SLOTS` 退役；§3 写入协议、§4 与「后果」随之改，§2 已废弃的注册表措辞从 §4、§5、「后果」清掉。2026-10-17 第二次更新：声明就是**图的声明**（`GraphEncode`——一个 ns、边自己的载荷、显式声明的属性面，外加一个编译期节点类型枚举）；`EdgeEncode` 连同它那套只有编码半的机制一起退役；`Graph<S, E>` 是**句柄**，不声明任何东西（不带 ns 参数、不带节点名单、不带 schema）；成员节点集住在代码里（`Nodes` 枚举），永不占 slot；`unlink` 靠解码边本体精确删；背景里 PGQ 那句措辞纠正。代码状态：2026-10-19 已落地——`GraphEncode` derive（成员集走 `#[ok_nodes(Enum)]`）、谓词词汇表 0x04/0x05、面 0x06–0x0A、`Graph::new(store)`、精确 unlink；okm-dynamic 的句柄收 ns + schema 一对（`CollectionSchema::ns_prefix`）。
+状态：已接受（2026-09-20；两种形态均已实现——EdgeEncode derive + Graph<S, E> 固定本体、okm-dynamic Graph<S> 全动态）。2026-09-20 更新：§2 端点引用改选方案 b（自描述 [ns 2B][len varint][pkey]）——方案 c（注册表）废弃；§3 增补声明属性字段、节点侧 kind 过滤、slot 布局说明。2026-10-17 更新：§3 边的载荷改成 obj（ADR-0012）——一份文档声明同时生成双向编解码与声明面，derive 那套只有编码半的 `attrs()` / `attr_faces()` / `ATTR_SLOTS` 退役；§3 写入协议、§4 与「后果」随之改，§2 已废弃的注册表措辞从 §4、§5、「后果」清掉。2026-10-17 第二次更新：声明就是**图的声明**（`GraphEncode`——一个 ns、边自己的载荷、显式声明的属性面，外加一个编译期节点类型枚举）；`EdgeEncode` 连同它那套只有编码半的机制一起退役；`Graph<S, E>` 是**句柄**，不声明任何东西（不带 ns 参数、不带节点名单、不带 schema）；成员节点集住在代码里（`Nodes` 枚举），永不占 slot；`unlink` 靠解码边本体精确删；背景里 PGQ 那句措辞纠正。2026-10-21 更新：`#[ok_nodes]` 改为按类型列出成员**表**（`#[ok_nodes(EntityRow, MemberRow)]`），由 derive 生成成员集枚举及其 `NodeSet` impl，每个 ns 取自那张表自己的 `#[ok_ns]`；手写枚举退役。代码状态：2026-10-19 已落地——`GraphEncode` derive（成员集走 `#[ok_nodes]`，2026-10-21 起由 derive 生成）、谓词词汇表 0x04/0x05、面 0x06–0x0A、`Graph::new(store)`、精确 unlink；okm-dynamic 的句柄收 ns + schema 一对（`CollectionSchema::ns_prefix`）。
 关联：ADR-0015（关系分类学）、ADR-0016（4 字节头、段号制 slot）、ADR-0002（命名空间词汇表）
 
 ## 背景
@@ -83,25 +83,28 @@ pkey 的边界**不在 key 里**。一个 collection 的 pkey 宽度是 schema �
 ```text
 #[derive(GraphEncode)]                     这张图的边集合
 #[ok_ns(37)]                               图的 ns —— ns 的唯一来源
-#[ok_nodes(FactNodes)]                     成员集（编译期枚举）
+#[ok_nodes(EntityRow, MemberRow)]          成员集：节点**表**，按类型列出
 #[ok_index(since { fields(since) })]       边的属性面，显式声明（§3）
 pub struct FactEdge { … }                  边的载荷 = 它的属性
 ```
 
-一条 derive 就是一份声明：宏生成整个 `GraphEncode` impl（载荷编解码、声明的面、ns），`type Nodes` 绑定属性里点名的那个枚举。再手写 `impl GraphEncode for FactEdge { type Nodes = … }` 等于给同一个 trait 写第二个 impl——Rust 的关联类型也没有默认值可留白。
+一条 derive 就是一份声明：宏生成整个 `GraphEncode` impl（载荷编解码、声明的面、ns）、成员集枚举以及它的 `NodeSet` impl，`type Nodes` 绑定这个枚举。再手写 `impl GraphEncode for FactEdge { type Nodes = … }` 等于给同一个 trait 写第二个 impl——Rust 的关联类型也没有默认值可留白。
 
-成员集是一个**类型**——枚举，变体就是节点集合，于是"允许哪些节点"是代码里的编译期事实，而不是挂在载荷上的注记：
+成员集是一个**类型**——枚举，变体就是节点集合，于是"允许哪些节点"是代码里的编译期事实，而不是挂在载荷上的注记。属性列的是**表**（代码里一张表由它的文档类型命名），枚举由 derive 写出，所以一个成员的 ns 不会被写两遍：
 
 ```text
-pub enum FactNodes { Entities, Users, Facts }   // 变体是**集合**
+#[ok_nodes(EntityRow, MemberRow)]
+
+// 生成：
+pub enum FactNodes { EntityRow, MemberRow }   // 变体是**集合**
 impl NodeSet for FactNodes {
-    const NS_VALUES: &'static [u16] = &[36, 35, 37];   // 每个变体一个 ns
+    const NS_VALUES: &'static [u16] = &[36, 42];   // 各表自己的 #[ok_ns]
 }
 ```
 
-成员的单位是**集合**（它的 ns），不是文档类型——引用里带的就是那个号，所以成员判定在 ns 层（§2）。静态声明可以让变体带上它代表的集合的 key 类型，用于端点类型化解码；但图声明的成员集是一组**集合**。
+成员的单位是**集合**（它的 ns），不是文档类型——引用里带的就是那个号，所以成员判定在 ns 层（§2）。文档类型只是表在声明处的**名字**；图声明的成员集是一组**集合**，生成的变体不携带任何东西（没有访问器、没有 key 类型——ns 就是全部内容）。
 
-一张图 = 一份边声明（该图所有边共享）+ 一个 `Nodes` 枚举 + 一个 ns。边与边的差别是谓词（运行期数据，走词汇表分配）；节点与节点的差别是枚举变体（编译期类型）。两者都由声明派生——没有手写表，也没有装配期声明。
+一张图 = 一份边声明（该图所有边共享）+ 一个生成的 `Nodes` 枚举 + 一个 ns。边与边的差别是谓词（运行期数据，走词汇表分配）；节点与节点的差别是枚举变体（编译期类型）。两者都由声明派生——没有手写表，也没有装配期声明。
 
 **装配只是一个运行期句柄，仅此而已。** `Graph<S, E: GraphEncode>` 绑定一个引擎**实例**（同一份声明可挂到 mock、Fjall 或远端存储上——ADR-0025 的 one keyspace），以及无法住在类型里的每实例状态：词汇表缓存（谓词号分配的单写者纪律）与 edge_id 分配位置。它不带 ns 参数（ns 来自 `E::NS_PREFIX`）、不带节点名单、不带 schema：本决策之后，装配点的声明内容为零。
 

@@ -1,7 +1,7 @@
 # ADR-0017: Graph Edge — the third relation carrier
 
 Date: 2026-09-19
-Status: Accepted (2026-09-20; both forms implemented — EdgeEncode derive + Graph<S, E> fixed-ontology, okm-dynamic Graph<S> fully dynamic). Updates 2026-09-20: §2 endpoint refs re-decided to scheme b (self-describing [ns 2B][len varint][pkey]) — scheme c (registry) abandoned; §3 declared attribute fields, node-side kind filtering, slot-layout clarification. Updates 2026-10-17: §3's edge payload is an obj (ADR-0012) — one document declaration generates both codec directions and the declared faces, so the derive's encoder-only `attrs()` / `attr_faces()` / `ATTR_SLOTS` half-mechanism retires; §3's write protocol, §4 and Consequences follow, and the registry wording §2 abandoned is swept out of §4, §5 and Consequences. Updates 2026-10-17 (second): the declaration is a GRAPH declaration (`GraphEncode` — one ns, the edge's own payload, explicitly declared attribute faces, plus a compile-time node-type enum); `EdgeEncode` retires with its encoder-only half; `Graph<S, E>` is a runtime HANDLE that declares nothing (no ns parameter, no node list, no schema); the member node set lives in code as a `Nodes` enum, never in a slot; `unlink` deletes precisely by decoding the edge body; Context's PGQ sentence corrected. Code status: LANDED 2026-10-19 — `GraphEncode` derive (member set via `#[ok_nodes(Enum)]`), predicate vocabulary at 0x04/0x05, faces 0x06–0x0A, `Graph::new(store)`, exact unlink; okm-dynamic's handle takes the ns + schema pair (`CollectionSchema::ns_prefix`).
+Status: Accepted (2026-09-20; both forms implemented — EdgeEncode derive + Graph<S, E> fixed-ontology, okm-dynamic Graph<S> fully dynamic). Updates 2026-09-20: §2 endpoint refs re-decided to scheme b (self-describing [ns 2B][len varint][pkey]) — scheme c (registry) abandoned; §3 declared attribute fields, node-side kind filtering, slot-layout clarification. Updates 2026-10-17: §3's edge payload is an obj (ADR-0012) — one document declaration generates both codec directions and the declared faces, so the derive's encoder-only `attrs()` / `attr_faces()` / `ATTR_SLOTS` half-mechanism retires; §3's write protocol, §4 and Consequences follow, and the registry wording §2 abandoned is swept out of §4, §5 and Consequences. Updates 2026-10-17 (second): the declaration is a GRAPH declaration (`GraphEncode` — one ns, the edge's own payload, explicitly declared attribute faces, plus a compile-time node-type enum); `EdgeEncode` retires with its encoder-only half; `Graph<S, E>` is a runtime HANDLE that declares nothing (no ns parameter, no node list, no schema); the member node set lives in code as a `Nodes` enum, never in a slot; `unlink` deletes precisely by decoding the edge body; Context's PGQ sentence corrected. Updates 2026-10-21: `#[ok_nodes]` now takes the member TABLES by type (`#[ok_nodes(EntityRow, MemberRow)]`) and the derive generates the member-set enum plus its `NodeSet` impl, each ns read off the table's own `#[ok_ns]`; the hand-written enum is gone. Code status: LANDED 2026-10-19 — `GraphEncode` derive (member set via `#[ok_nodes]`, generated 2026-10-21), predicate vocabulary at 0x04/0x05, faces 0x06–0x0A, `Graph::new(store)`, exact unlink; okm-dynamic's handle takes the ns + schema pair (`CollectionSchema::ns_prefix`).
 Related: ADR-0015 (relation taxonomy), ADR-0016 (4-byte head, segment-numbered slots), ADR-0002 (namespace vocabulary)
 
 ## Context
@@ -302,36 +302,42 @@ The declaration IS the graph (Update 2026-10-17):
 ```text
 #[derive(GraphEncode)]                    the graph's edge collection
 #[ok_ns(37)]                              the graph's ns — the ONLY ns source
-#[ok_nodes(FactNodes)]                    the member set (a compile-time enum)
+#[ok_nodes(NodeRow, OtherNodeRow)]        the member set: the node TABLES, by type
 #[ok_index(since { fields(since) })]      the edge's attribute faces, explicit (§3)
 pub struct FactEdge { … }                 the edge's payload = its attributes
 ```
 
 One derive, one declaration: the macro emits the whole `GraphEncode` impl
-(the payload codec, the declared faces, the ns) with `type Nodes` bound to the
-enum the attribute names. A hand-written `impl GraphEncode for FactEdge { type
-Nodes = … }` alongside the derive would be a second impl of the same trait —
-Rust has no associated-type defaults to leave the slot open.
+(the payload codec, the declared faces, the ns), the member-set enum, and its
+`NodeSet` impl, with `type Nodes` bound to that enum. A hand-written
+`impl GraphEncode for FactEdge { type Nodes = … }` alongside the derive would
+be a second impl of the same trait — Rust has no associated-type defaults to
+leave the slot open.
 
 plus the member set as a TYPE — an enum over the node collections, so
 "which nodes" is a compile-time fact in code rather than an annotation on
-a payload:
+a payload. The attribute lists TABLES (a table is named in code by its document
+type) and the derive writes the enum, so a member's ns is never typed twice:
 
 ```text
-pub enum FactNodes { Entities, Users, Facts }   // the variants are COLLECTIONS
+#[ok_nodes(EntityRow, MemberRow)]
+
+// generated:
+pub enum FactNodes { EntityRow, MemberRow }   // the variants are COLLECTIONS
 impl NodeSet for FactNodes {
-    const NS_VALUES: &'static [u16] = &[36, 35, 37];   // one ns per variant
+    const NS_VALUES: &'static [u16] = &[36, 42];   // each table's own #[ok_ns]
 }
 ```
 
 The member unit is a COLLECTION (its ns), not a document type — the ref
 carries exactly that number, so membership is a check at the ns level
-(§2). A static declaration may let a variant name the key type of the
-collection it stands for, for typed endpoint decoding; the set the graph
-declares is a set of collections.
+(§2). The document type is only how the table is NAMED at the declaration
+site; the set the graph declares is a set of collections, and the generated
+variants carry nothing (no accessor, no key type — the ns is the whole
+content).
 
 One graph = one edge declaration (shared by every edge it holds) + one
-`Nodes` enum + one ns. What separates edges from each other is the
+generated `Nodes` enum + one ns. What separates edges from each other is the
 predicate (runtime data, vocabulary-allocated); what separates nodes from
 each other is the enum variant (compile-time). Both are derived from the
 declaration — no hand-written tables, no assembly-time declaration.

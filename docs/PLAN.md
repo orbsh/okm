@@ -794,10 +794,11 @@ Unchanged: primary payload layout `[version][hot_len][hot][cold TLV]`
       own identity).
 - [x] Landing (LANDED 2026-10-19 — code is the new shape):
       · derive: `GraphEncode` replaced `EdgeEncode`; ns from `#[ok_ns]`, faces
-        from explicit `#[ok_index]`, and the member set named by
-        `#[ok_nodes(Enum)]` (a derive cannot leave an associated type open for
-        a hand-written impl, and Rust has no associated-type defaults — one
-        declaration, one impl). It generates the whole `Document` impl
+        from explicit `#[ok_index]`, and the member set given as
+        `#[ok_nodes(Table, …)]` — a list of node TYPES, from which the derive
+        generates the enum and its `NodeSet` impl (ns off each table's
+        `#[ok_ns]`; 2026-10-21: it used to name a hand-written enum). Rust has
+        no associated-type defaults, so one declaration, one impl. It generates the whole `Document` impl
         (`okm-derive`'s row emitter, with `type Key = EdgeKey`) plus
         `impl GraphEncode`; `attrs()` / `attr_faces()` / `ATTR_SLOTS` /
         `KvGraph` are gone.
