@@ -44,7 +44,8 @@
 //! the body and an index dimension on the faces.
 
 use crate::engine::storage::{MemBatch, VirtualStorage, scan_suffix_kv};
-use crate::model::index::{Document, PRIMARY_SLOT, Slot, write_slot};
+use crate::model::index::{Document, DYNAMIC_SLOT, PRIMARY_SLOT, Slot, write_slot};
+use crate::model::obj_dynamic::{DynamicValue, decode_named, put_frame_named};
 use crate::model::key::KeyEncode;
 use crate::model::obj_vocab::{VocabCache, PREDICATE_VOCAB};
 
@@ -369,6 +370,84 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
         self.write_into(batch, head, payload, edge_id)
     }
 
+    /// The edge's DYNAMIC segment (face 0x01) — its open attributes, one entry
+    /// per edge, keyed `[ns][0x01][edge_id]`.
+    /// Every edge id in this graph, in key order — the scan an export needs.
+    /// Slot 0 only: the ns also holds faces, and an unfiltered scan would read
+    /// them as rows (the same trap a document export hit).
+    pub fn edge_ids(&self) -> Vec<u64> {
+        let mut prefix = E::NS_PREFIX.to_vec();
+        write_slot(&mut prefix, PRIMARY_SLOT);
+        scan_suffix_kv(&self.store, &prefix)
+            .into_iter()
+            .filter_map(|(suffix, _)| {
+                <[u8; 8]>::try_from(suffix.as_slice())
+                    .ok()
+                    .map(u64::from_be_bytes)
+            })
+            .collect()
+    }
+
+    fn dynamic_key(&self, edge_id: u64) -> Vec<u8> {
+        let mut key = E::NS_PREFIX.to_vec();
+        write_slot(&mut key, DYNAMIC_SLOT);
+        key.extend_from_slice(&edge_id.to_be_bytes());
+        key
+    }
+
+    /// Write the edge's open attributes, in the SAME batch as the row so one
+    /// commit carries both. Names allocate in the edge ns's field-name
+    /// vocabulary (0x02/0x03), which is separate from the predicate vocabulary
+    /// the row's write touches.
+    ///
+    /// A rewrite replaces the segment outright: the previous assertion's
+    /// attributes are deleted first, so nothing inherits a stale prop.
+    pub fn put_fields_into(
+        &mut self,
+        batch: &mut MemBatch,
+        edge_id: u64,
+        fields: &std::collections::BTreeMap<String, DynamicValue>,
+    ) {
+        let key = self.dynamic_key(edge_id);
+        batch.del(&key);
+        if fields.is_empty() {
+            return;
+        }
+        let mut body = Vec::new();
+        {
+            let mut dict = VocabCache::new(crate::model::obj_vocab::FIELD_VOCAB);
+            let store = &mut self.store;
+            let mut resolver = |name: &str| dict.id_for(store, E::NS_PREFIX, name);
+            for (name, value) in fields {
+                put_frame_named(&mut body, name, value, &mut resolver);
+            }
+        }
+        batch.put(key, body);
+    }
+
+    /// The edge's open attributes, when it has any. A name whose id the
+    /// vocabulary cannot resolve is dropped rather than invented, and an empty
+    /// segment answers `None` (no attributes) — the same rule the document path
+    /// follows.
+    pub fn get_fields(
+        &self,
+        edge_id: u64,
+    ) -> Option<std::collections::BTreeMap<String, DynamicValue>> {
+        let raw = self.store.get(&self.dynamic_key(edge_id))?;
+        let mut dict = VocabCache::new(crate::model::obj_vocab::FIELD_VOCAB);
+        let frames = decode_named(&raw, &mut |id| dict.name_for(&self.store, E::NS_PREFIX, id));
+        if frames.is_empty() {
+            return None;
+        }
+        let mut out = std::collections::BTreeMap::new();
+        for frame in frames {
+            if let Some(name) = dict.name_for(&self.store, E::NS_PREFIX, frame.id) {
+                out.insert(name, frame.value);
+            }
+        }
+        Some(out)
+    }
+
     fn write_into(
         &mut self,
         batch: &mut MemBatch,
@@ -384,6 +463,10 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
         let dst_wire = head.dst.encode();
         let id_be = edge_id.to_be_bytes();
 
+        // A rewrite replaces the edge outright, so the previous assertion's open
+        // attributes must not survive it. The 0x01 entry is derived from the row
+        // that is being overwritten — one delete, in the same batch.
+        batch.del(&self.dynamic_key(edge_id));
         batch.put(self.primary_key(edge_id), body);
         // predicate index (0x06): [predicate_vocab_id][edge_id]
         batch.put(

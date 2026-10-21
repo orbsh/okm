@@ -84,6 +84,7 @@ pub fn json_schema<K: KeyEncode, R: Document<Key = K>>() -> String {
 /// Parquet snapshot tier (ADR-0007 Phase 3): batch → file, file → store.
 #[cfg(feature = "parquet")]
 pub mod parquet_io {
+    use std::sync::Arc;
     use super::*;
     use crate::engine::storage::VirtualStorage;
     use crate::model::document::Collection;
@@ -97,6 +98,90 @@ pub mod parquet_io {
         path: &std::path::Path,
     ) -> parquet::errors::Result<()> {
         let batch = collection.to_record_batch();
+        let file = std::fs::File::create(path)?;
+        let mut w = parquet::arrow::ArrowWriter::try_new(file, batch.schema(), None)?;
+        w.write(&batch)?;
+        w.close()?;
+        Ok(())
+    }
+
+    /// Export with the dynamic segment as a `variant` column (ADR-0007's
+    /// analytics twin of the dynamic path). The declared fields stay typed
+    /// columns; rows without a dynamic segment get `null` in that column.
+    ///
+    /// This is the export a BACKUP wants: without it the file holds the typed
+    /// half of every row and silently loses the open half.
+    pub fn export_parquet_with_variant<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>>(
+        collection: &mut Collection<S, K, R>,
+        path: &std::path::Path,
+    ) -> parquet::errors::Result<()> {
+        let batch = collection.to_record_batch_with_variant();
+        let file = std::fs::File::create(path)?;
+        let mut w = parquet::arrow::ArrowWriter::try_new(file, batch.schema(), None)?;
+        w.write(&batch)?;
+        w.close()?;
+        Ok(())
+    }
+
+    /// The DERIVED reduce table (ADR-0034): one row per reduce entry —
+    /// `(table, reduce, group, value)`.
+    ///
+    /// Reduces are not rows: they live in their own slot family and hold an
+    /// accumulator, not a document. They still have to travel with a backup,
+    /// because a restored table whose watermark is missing hands out ids it
+    /// already used. One row per entry keeps the shape ordinary: a table name, the
+    /// reduce's slot, the group bytes (empty = the whole table), and the value.
+    pub fn export_reduces<S: VirtualStorage, A: crate::model::reduce::Reduce>(
+        store: &S,
+        ns_prefix: &[u8],
+        table: &str,
+        path: &std::path::Path,
+    ) -> parquet::errors::Result<()> {
+        use arrow::array::{Array, BinaryArray, StringArray, UInt16Array};
+        use arrow::buffer::{Buffer, OffsetBuffer, ScalarBuffer};
+        use arrow::datatypes::{DataType, Field as ArrowField, Schema as ArrowSchema};
+
+        let mut prefix = ns_prefix.to_vec();
+        crate::model::index::write_slot(&mut prefix, A::SLOT);
+        let entries = crate::engine::storage::scan_suffix_kv(store, &prefix);
+
+        let binary = |vals: &[Vec<u8>]| -> BinaryArray {
+            let mut offsets: Vec<i32> = Vec::with_capacity(vals.len() + 1);
+            offsets.push(0);
+            let mut data = Vec::new();
+            for v in vals {
+                data.extend_from_slice(v);
+                offsets.push(data.len() as i32);
+            }
+            BinaryArray::new(
+                OffsetBuffer::new(ScalarBuffer::from(offsets)),
+                Buffer::from(data),
+                None,
+            )
+        };
+
+        let tables: Vec<Option<String>> = entries.iter().map(|_| Some(table.to_string())).collect();
+        let mut t_builder = arrow::array::StringBuilder::new();
+        for t in &tables {
+            t_builder.append_option(t.clone());
+        }
+        let slots: Vec<u16> = entries.iter().map(|_| A::SLOT).collect();
+        let groups: Vec<Vec<u8>> = entries.iter().map(|(suffix, _)| suffix.clone()).collect();
+        let values: Vec<Vec<u8>> = entries.iter().map(|(_, value)| value.clone()).collect();
+
+        let schema = Arc::new(ArrowSchema::new(vec![
+            ArrowField::new("table", DataType::Utf8, false),
+            ArrowField::new("reduce", DataType::UInt16, false),
+            ArrowField::new("group", DataType::Binary, false),
+            ArrowField::new("value", DataType::Binary, false),
+        ]));
+        let arrays: Vec<Arc<dyn Array>> = vec![
+            Arc::new(t_builder.finish()),
+            Arc::new(UInt16Array::from(slots)),
+            Arc::new(binary(&groups)),
+            Arc::new(binary(&values)),
+        ];
+        let batch = arrow::array::RecordBatch::try_new(schema, arrays)?;
         let file = std::fs::File::create(path)?;
         let mut w = parquet::arrow::ArrowWriter::try_new(file, batch.schema(), None)?;
         w.write(&batch)?;

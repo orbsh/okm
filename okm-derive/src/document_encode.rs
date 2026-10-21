@@ -746,6 +746,16 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> TS2 {
     let key_ty = &schema.key_ty;
     // #[ok_ns(N)] → the document's table ns prefix bytes (big-endian u16,
     // matching the raw `[ns 2B]` header). Absent = default empty.
+    // #[ok_name("...")] → the table's NAME: what a table is called outside the
+    // store (export columns, the catalog, import). Absent = the trait's "" —
+    // unnamed, and an export refuses it instead of spelling the struct name.
+    let name_const = match &schema.name {
+        Some(n) => {
+            let lit = proc_macro2::Literal::string(n);
+            quote! { const TABLE_NAME: &'static str = #lit; }
+        }
+        None => quote! {},
+    };
     let ns_const = match schema.ns {
         Some(n) => {
             let hi = (n >> 8) as u8;
@@ -1291,6 +1301,7 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> TS2 {
             type Key = #key_ty;
             #part_const
             #ns_const
+            #name_const
             const LAYOUT_VERSION: u8 = #ver_lit;
             const PAYLOAD_FIELDS: &'static [(&'static str, usize)] = &[ #((#name_strs, #widths)),* ];
             const FIELDS: &'static [::okm_core::FieldDesc] = #row_desc;

@@ -64,7 +64,7 @@ pub fn derive_key_encode(input: TokenStream) -> TokenStream {
     out
 }
 
-#[proc_macro_derive(DocumentEncode, attributes(ok_ref, ok_ns, ok_partition, ok_index, ok_reduce, ok_offset, ok_layout, ok_default, ok_subscribe, ok_event_enum, ok_len))]
+#[proc_macro_derive(DocumentEncode, attributes(ok_ref, ok_ns, ok_name, ok_partition, ok_index, ok_reduce, ok_offset, ok_layout, ok_default, ok_subscribe, ok_event_enum, ok_len))]
 pub fn derive_document_encode(input: TokenStream) -> TokenStream {
     let out = document_encode::derive(input.clone());
     dump("DocumentEncode", input, &out.clone().into());
@@ -84,7 +84,7 @@ pub fn derive_junction(input: TokenStream) -> TokenStream {
 /// collections (`#[ok_nodes]`). Endpoints need no declaration — refs are
 /// self-describing; they travel as runtime `NodeRef`s, never as declared
 /// struct fields.
-#[proc_macro_derive(GraphEncode, attributes(ok_ns, ok_nodes, ok_ref, ok_partition, ok_index, ok_reduce, ok_offset, ok_layout, ok_default, ok_subscribe, ok_event_enum, ok_len))]
+#[proc_macro_derive(GraphEncode, attributes(ok_ns, ok_nodes, ok_name, ok_ref, ok_partition, ok_index, ok_reduce, ok_offset, ok_layout, ok_default, ok_subscribe, ok_event_enum, ok_len))]
 pub fn derive_graph_encode(input: TokenStream) -> TokenStream {
     let out = graph_encode::derive(input.clone());
     dump("GraphEncode", input, &out.clone().into());

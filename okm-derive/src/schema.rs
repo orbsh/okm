@@ -1025,6 +1025,11 @@ pub(crate) struct DocumentSchema {
     /// `#[ok_ns(N)]` — the document's table namespace. None = not declared
     /// (layout-only document; table-less usage keeps an empty prefix).
     pub ns: Option<u16>,
+    /// `#[ok_name("...")]` — the table's NAME. The namespace is the store's
+    /// address; the name is the identity a table carries OUT of the store
+    /// (export columns, the catalog row, the import-side name lookup). None
+    /// = unnamed, and an export refuses it rather than spelling the struct.
+    pub name: Option<String>,
     /// `#[ok_partition]` / `#[ok_partition(N)]` — the document's table
     /// partition id. None = no partition segment in the key (default;
     /// zero cost for tables without partition needs). Some(id) prepends
@@ -1089,6 +1094,19 @@ pub(crate) fn parse_schema_with_key(input: DeriveInput, key_ty: syn::Type) -> Do
                 None
             }
         });
+
+    // #[ok_name("...")] — the table's name, beside the ns it belongs to.
+    let name: Option<String> = input.attrs.iter().find_map(|a| {
+        if a.path().is_ident("ok_name") {
+            Some(
+                a.parse_args::<syn::LitStr>()
+                    .expect("ok_name format: #[ok_name(\"table_name\")]")
+                    .value(),
+            )
+        } else {
+            None
+        }
+    });
 
     // #[ok_partition] / #[ok_partition(N)] — the table's partition id.
     // None = no partition segment (default). Declared on the document.
@@ -1223,6 +1241,7 @@ pub(crate) fn parse_schema_with_key(input: DeriveInput, key_ty: syn::Type) -> Do
         row_name,
         key_ty,
         ns,
+        name,
         partition,
         layout_version,
         fields: fs,
