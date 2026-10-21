@@ -531,7 +531,7 @@ junction 与索引机制上同构（都是"指向身份的次级 key 布局"）�
 
 Junction 覆盖的多对多绑定在**编译期端点类型**上。知识图谱打破这个绑定：一个图连接多种类型的节点，边**谓词**是运行期数据，平行边是不同的事实，边还携带属性。图边是第三种关系载体（ADR-0017）——独立身份、属性、平行边、开放端点，且声明**就是**这张图。
 
-节点就是普通 document collection：节点的"类型"是它的 collection（ns 即类型标记），节点 kind / 属性过滤走 collection 自己的声明索引和词汇表——与任何文档 collection 布局零差异。新增的东西都在边这一侧：
+节点就是普通 document collection。类型集在编译期封闭时，节点的"类型"是它的 collection（ns 即类型标记）；kind 在运行期才到达时，kind 是一个 collection 内部带索引的字段（k10r 案例见下）。两种形态下，节点 kind / 属性过滤都走 collection 自己的声明索引和词汇表——与任何文档 collection 布局零差异。新增的东西都在边这一侧：
 
 ```rust
 use okm_core::{Graph, GraphEncode, NodeRef, NodeSet};
@@ -542,16 +542,18 @@ use okm_core::{Graph, GraphEncode, NodeRef, NodeSet};
 /// （[ns 2B][len][pkey]）——但"可以有哪些集合当节点"要声明。
 #[derive(GraphEncode, Clone, Default)]
 #[ok_ns(100)]
-#[ok_nodes(EmploymentNodes)]                   // 成员集：一个编译期枚举
+#[ok_nodes(User, Org)]                         // 成员集：节点**表**，按类型列出
 #[ok_index(by_since { fields(since_year) })]   // 面是声明，不自动生成
 struct Employment {
     since_year: u16,
     weight: u32,
 }
 
-/// 成员集是一组**集合**（每个变体 = 一个 ns）。
-enum EmploymentNodes { Users, Orgs }
-impl NodeSet for EmploymentNodes { const NS_VALUES: &'static [u16] = &[10, 11]; }
+// 由 derive **生成**——不手写，也不需要人跟着改：
+//   enum EmploymentNodes { User, Org }
+//   impl NodeSet for EmploymentNodes { const NS_VALUES: &'static [u16] = &[10, 11]; }
+// 每个变体就是一个 COLLECTION（成员资格 = 该 ns 在不在集合里），每个 ns 取自那张表
+// 自己的 `#[ok_ns]`——加一个成员就是在边声明里多写一个类型名。
 
 let mut g: Graph<_, Employment> = Graph::new(store);
 let attrs = Employment { since_year: 2020, weight: 7 };
@@ -566,13 +568,26 @@ use __OkmIndex_Employment_by_since as BySince;   // 声明生成的那条面的�
 g.by_attr_face(<BySince as KvIndex>::SLOT, &2020u16.to_be_bytes());
 ```
 
-- **端点引用**是 `[ns 2B][len varint][pkey]`——ns 充当类型标记，pkey 宽度以单字节 varint 住在引用自身。任意 collection 的文档免声明参与：同节点 = 同字节（遍历面精确前缀命中），不同 pkey 宽度共存，没有需要声明、维护、防错的注册表。图边让 Ref 纪律退役——引用自带宽度，连同 ns 知识一起。成员集是唯一要声明的东西（`Nodes` 枚举），在写入与解码两处作为一次校验；宽度仍是 wire 数据，成员是声明。
-- **面**：一次 `link` 写主表（固定面 0x00，`edge_id` u64）+ 谓词索引（0x06）+ 出入遍历（0x07/0x08）+ 谓词过滤遍历（0x09/0x0A）+ 每条**声明**的 `#[ok_index]` 一条面（计数族 0x1），一个 batch；`unlink` 解码边本体、精确删掉这些条目（声明面按解码出的载荷重新生成，不做前缀清扫）；全动态形态把开放属性写进动态段（固定面 0x01，每条边一条条目）。谓词名走**图自己的谓词词汇表**（固定面 0x04/0x05，先见者得号；节点集合的 kind token 用同一对号）——与载荷的字段名词汇表（0x02/0x03）分开，所以"列出这张图的谓词"就是扫一次 0x04 前缀，永不靠走索引面反推。
+- **端点引用**是 `[ns 2B][len varint][pkey]`——ns 充当类型标记，pkey 宽度以单字节 varint 住在引用自身。任意 collection 的文档免声明参与：同节点 = 同字节（遍历面精确前缀命中），不同 pkey 宽度共存，没有需要声明、维护、防错的注册表。图边让 Ref 纪律退役——引用自带宽度，连同 ns 知识一起。成员集是唯一要声明的东西——以**表的清单**形式（`#[ok_nodes(User, Org)]`），derive 据此生成 `Nodes` 枚举与 `NodeSet` 实现，每个 ns 取自那张表自己，在写入与解码两处作为一次校验；宽度仍是 wire 数据，成员是声明。
+- **面**：一次 `link` 写主表（固定面 0x00，`edge_id` u64）+ 谓词索引（0x06）+ 出入遍历（0x07/0x08）+ 谓词过滤遍历（0x09/0x0A）+ 每条**声明**的 `#[ok_index]` 一条面（计数族 0x1），一个 batch；`unlink` 解码边本体、精确删掉这些条目（声明面按解码出的载荷重新生成，不做前缀清扫）；全动态形态把开放属性写进动态段（固定面 0x01，每条边一条条目）。谓词名走**图自己的谓词词汇表**（固定面 0x04/0x05，先见者得号）——与载荷的字段名词汇表（0x02/0x03）以及任何节点字段的词汇表都分开，所以"列出这张图的谓词"就是扫一次 0x04 前缀，永不靠走索引面反推。
 - **句柄不声明任何东西。** `Graph<S, E>` 绑定一个引擎实例与每实例状态（谓词词汇表缓存）；ns 来自声明、成员集来自 `E::Nodes`——与 `Collection<S, K, R>` 同形，后者也只收引擎。
 - **平行边**是各自独立的边：每次 link 携带调用方选定的 `edge_id`；`link` 拒绝 live id。一条边的**就地改写**是唯一例外，入口也只有一对：`unlink_into` + `link_into` 把同一个 id 的删与写编进同一批，提交点上那条边从未缺席、第二个 id 也不会诞生——k10r 的 functional 裁决和计数器回写都走这条路（ADR-0010 的 owed item）。已删的 id 不复用。
 - **过滤**：先走选择度最高的面，id 在内存收敛——默认不建复合面（`(*)-[谓词]->(:节点 kind)` = 0x09 扫描与节点 kind 面的 pkey 集合求交）。
 
 分界线：`Refs` = 一对多；`Junction` = 多对多、固定端点、无属性；**图边** = 独立身份、属性、平行边、开放端点。
+
+### 谓词：边的类型
+
+关系的名字住在边的**头部**、与端点并列——`EdgeHead { src, dst, predicate }`——而它是这三段里唯一没有编译期声明的东西。这正是 junction 比不上的一环：junction 的类型是它的 Rust struct（`PageTag`），写代码时就定了；边的类型是**数据**。
+
+- **在图自己的词汇表里 intern**：名字 → `u16` id，只追加、先见者得号、永不重排。谓词面与遍历面都以这个 id 为键，所以每一次"按关系过滤"的读都是对 id 的前缀扫，而不是载荷比较。
+- **两个方向、一本词表**（`名字 → id` 与 `id → 名字`）："这张图到底有哪些关系"是一次前缀扫，于是谓词集合是可枚举的元数据，而不是从边反推出来的猜测。
+- **加一条关系不是一次迁移。** 没有逐谓词的声明、没有代码改动、没有一关系一个 ns：一条边 collection 同时装着 `employs`、`reports_to`、`blocked_by`。id 空间按图划分，所以谓词永远撞不上节点 kind、字段名或另一张图的谓词。
+- **谓词是关系，不是属性。** 把 `is_admin` 做成谓词、指向一个 `true` 字面量节点，是典型的失效形态；那个标志是行上的一个字段。谓词回答"这两个东西怎么相关"，"这个节点是什么"该由节点自己的声明回答。
+- **节点的 KIND 是字段，不是谓词词汇表。** kind 是载荷里的分类值——`kind: Vocab<u16>`，由 `by_kind` 索引（ADR-0032）——标签集归那个字段、宽度就是声明，别的一点规则都不需要。谓词 = 边在**头部**的类型；kind = 节点在**载荷**里的类型。字段名是 `kind` 而不是 `kind_id`：`Vocab<N>` 下值就是标签、id 只是编码，`_id` 后缀会声称调用方在处理数字。
+- **方向是断言的一部分。** `link` 写的是 src → dst；反向关系是另一个谓词（或同一个谓词、端点互换），库从不替你推导。同一对端点上的两条边是两条不同断言——靠各自的谓词与 `edge_id` 区分，这正是平行边的用途。
+
+**为什么一个 `Vocab` 字段替代不了它。** `Vocab<N>` 字段 intern 一个标签，面只有你在 `#[ok_index]` 里声明的那几条；它住在**载荷**里，在载荷自己的帧之后。谓词挪不进去：遍历面以它为键（`[predicate_id][src NodeRef][edge_id]`、`[predicate_id][dst …]`），而端点是**头部**字节、不是载荷字段，任何载荷索引都产不出这些条目；id 还必须待在边本体的可计算偏移上，`unlink` 才能不先解载荷就删掉一条边；而且每条边恰好一个谓词，正是这一点让它能直接进键、不需要存在性检查。两者共用的是底下那套机制——同一个 intern 式标签↔id 协议（只追加、先见者得号、两个面）——所以这是一个原语的两个位置，不是两套机制：词汇表归图的**键**所有，与词汇表归载荷**字段**所有。
 
 ### 什么该进图
 
@@ -639,6 +654,78 @@ struct PageTag { page: Ref<Page, PageKey>, tag: Ref<Tag, TagKey> }
 顺带一个值得写明的收益：粗粒度的成员位（"收藏"/"星标"）因此没有新地方要
 安放——它就是对一条既有轴某个 rank 子节点的一条边，所以不需要自己的
 collection。
+
+#### 案例：k10r 的事实图——真正用得上边载体的形状
+
+k10r（记忆服务）把从对话中抽出的内容存成事实：一条事实 = 两个节点 + 一条边。实体是一个节点 collection（ns 36），用户是另一个（ns 42），事实是一条边 collection（ns 37）——三个声明，而标签森林一个都用不上的性质，在这里全部承重。
+
+```rust
+/// 节点：一个 collection，kind 是字段。
+#[derive(KeyEncode, Clone, PartialEq, Debug)]
+#[ok_ns(36)]
+struct EntityKey { scope: u64, node_id: u64 }
+
+#[derive(DocumentEncode, Clone, PartialEq, Debug)]
+#[ok_ref(EntityKey)]
+#[ok_ns(36)]
+#[ok_index(
+    by_kind { fields(kind) },             // "某 kind 的全部节点"
+    by_name { fields(name) },             // 精确入口
+    by_community { fields(community_id) },// 桶读
+)]
+struct EntityRow {
+    kind: Vocab<u16>,       // 分类字段：写入时 intern 它的标签
+    literal_num: i64,       // 字面量的整数投影（否则 0）
+    community_id: u64,      // 写侧的分桶结果
+    name: String,           // 属性，永不充当键材料
+    embedding: Vector<f32>, // 不声明面：向量没有键序
+}
+
+/// 用户：封闭类型的 collection——人是被登记的，不是被发现的。
+#[derive(KeyEncode, Clone, PartialEq, Debug)]
+#[ok_ns(42)]
+struct MemberKey { channel_id: u64, member_id: u64 }
+
+#[derive(DocumentEncode, Clone, PartialEq, Debug)]
+#[ok_ref(MemberKey)]
+#[ok_ns(42)]
+struct MemberRow { display_name: String, role: u8 }  // 没有 kind 字段，没有向量
+
+/// 边：声明**就是**这张图。
+#[derive(GraphEncode, Clone, Default)]
+#[ok_ns(37)]
+#[ok_nodes(EntityRow, MemberRow)]            // 成员集：节点**表**
+#[ok_index(
+    by_since { fields(since) },                // 时间入口
+    by_scope_weight { fields(scope, weight) }, // 渐进读取入口
+)]
+struct FactEdge { /* scope、since、confidence、weight、五个计数器 */ }
+
+// 成员集由上面那份清单**生成**：`FactNodes { EntityRow, MemberRow }`——每个节点
+// collection 一个变体（成员资格 = 该 ns 在不在集合里），每个 ns 取自那张表自己的
+// `#[ok_ns]`（36、42）。成员关系是编译期事实，写入与解码各校验一次；引用仍是
+// wire 数据。人与物住在不同 collection，同在一张图里。
+```
+
+**节点 kind 是运行期数据，所以 kind 是字段，不是 collection。** 摄入侧收的是开放类型词汇表：调用方的事实元组点名的 kind 没有任何人声明过——一个术语、一个概念、一个日期。而 collection 是编译期的 `#[ok_ns]` 加一个 derive。于是所有实体住在一个 collection 里，`kind: Vocab<u16>` 就是一个普通声明字段：写入时 intern 它的标签，`by_kind` 给它建索引，读方经该字段自己的词汇表把标签解回来——没有分配代码、没有保留面、没有自己的规则，宽度是唯一的旋钮（两字节 65536 个 kind）。字段名是 `kind` 而不是 `kind_id`：用了 `Vocab<N>`，值**就是**标签、id 只是它的编码，带 `_id` 后缀等于声称调用方在跟数字打交道。判据是：类型集封闭 → 每型一个 collection；kind 集开放 → 一个 collection、kind 作带索引的 `Vocab` 字段。
+
+**域里的人也是节点——都不是抽出来的那种。** k10r 的用户是封闭类型，于是自成一个 collection（ns 42），而他们说明了成员集的用途：这张图不是"我抽到的那些东西的集合"。用户行是管理出来的（显示名、人或 agent），从不是抽出来的，也没有 `embedding`——落点索引只从实体 collection 建，所以查询永远不会落在一个人身上。检索落在知识上；人靠遍历进入，上下文头部就是其中一次 walk。一条画像事实是 `user -[PREFERS]-> iced_americano`：head 在 ns 42，tail 在 ns 36，同一张图。成员在 wire 上给自己命名（`member-{channel}-{member}`），核心把它解析成一条引用——这个字符串从不作为节点名存储，所以改名挪不动任何事实。两个节点 collection 之所以能相遇，是因为引用自带 ns——不把身份行复制进抽取出来的 collection，不做联合节点类型，改名也只动行上那个字段、不动任何边。
+
+**关系就是边的谓词，所以加一条关系就是加一个名字。** 摄入时元组给出关系的名字（`PREFERS`、`RUNS`、`BLOCKED_BY`），图把它 intern 成谓词 id——没有字段、没有枚举、没有声明、没有迁移。于是一条边 collection 装着这段记忆能表达的全部关系，而"这份语料用了哪些关系"是对图的谓词词汇表扫一次，不是把边过一遍。节点那一侧的孪生是 `kind`：同样是标签、同样 intern，但它是节点载荷里的 `Vocab` 字段——它给**节点**定型，谓词给**断言**定型。
+
+**属性是边存在的理由。** 一条事实带着它自己的断言语境：`since`（调用方的时钟）、`confidence`、以及权重系统折成 `weight` 的五个计数器；关系的开放 props（cause、condition、strength、逐断言的 `functional` 标记）落在边的动态段。junction 没有自己的身份，这些全都没有落脚处。
+
+**平行边就是事实。** 同一对节点之间的两次断言是两条真相——来源不同、时钟不同、置信度不同——所以多值是默认，各拿自己的 `edge_id`。一源一值的关系由**每一次断言**自己声明（`functional` prop），因为丢掉一条事实是净损失，多一条边是可以回收的。裁决就是机制那节点名的就地改写：在位者与挑战者互相判定（`since >`，或 `confidence >=`），胜者的行以 `unlink_into` + `link_into` 编进同一批、沿**同一个** id 写成——提交点上那条边从未缺席。计数器回写走同一条路。
+
+**属性落在事实的哪一侧，由它描述谁决定。** 描述**关系**的 props 落边；描述**实体**的 props 落节点行的动态段并且合并——同名属性取较新的值，其余存活。于是一个实体被多条事实共享的属性只有一个家。
+
+**租户不是图的边界。** `scope`（一个用户的语料）领节点 key——`[scope 8B][node_id 8B]`——而边的 key 完全不带 scope，因为边 collection 自己造键。scope 骑在**端点**上：实体的主键带着它，遍历从某个带 scope 的节点出发，就留在同一个 scope 内。边行保留一份冗余的 `scope` 字段，唯一理由是排序面只能按它编码的东西探。用户节点是唯一**不带** scope 的端点（一个 channel 属于一个 scope，所以成员行是 store 全局的），把这种事实留在写入时的那个 scope 里的，正是边行自己那份副本。一个语义域 = 一张图；域**内部**的分区是 key 前缀加端点，永远不是第二张图——按租户分 ns 会把声明、谓词词汇表和代码路径按用户复制一遍。
+
+**不是每一种关系都是一条边。** 一条事实可以在 props 的 `ref` 里点另一条事实的 id——一个 id，或一列——当那条事实不够中心、不值得坐到 head 里。没有任何校验：读的人自己决定跟不跟（`fact_in_scope`，一个 id），悬空链接是读方的 404。可被取用的指针，永远不是写方强塞的子树。
+
+**派生的东西不进图。** `embedding` 是没有声明面的 `Vector<f32>`——向量没有键序——所以搜索是 okm-vector 的 `ExactIndex`，首次使用时从行的帧重建、每次写入即丢弃。面只在有读者时才声明：边上两条，`by_since` 与 `by_scope_weight`，各自报出自己的扫描方。没有扫描方的面，是每次触碰都白付的一次写。
+
+标签森林省下来的性质在这里全部在用：逐断言的身份、断言上的属性、作为不同事实的平行边、以及自带 ns 的端点——一个人与一个物在同一张图里。这就是"伸手去拿第三种载体"与"用错它"之间的全部差别。
 
 ## 集合成员关系：按基数选倒排索引或 bloom
 

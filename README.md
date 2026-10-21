@@ -87,12 +87,12 @@ pub struct UserToSession {
 
 #[derive(GraphEncode, Clone, Default)]       // ONE declaration IS the graph (ADR-0017)
 #[ok_ns(100)]
-#[ok_nodes(EmploymentNodes)]                 // the member set: a compile-time enum of collections
+#[ok_nodes(User, Org)]                       // the member set: the node TABLES, by type
 #[ok_index(by_since { fields(since_year) })] // attributes are declared faces — nothing implied
 pub struct Employment { pub since_year: u16, pub weight: u32 }
 
-pub enum EmploymentNodes { Users, Orgs }
-impl NodeSet for EmploymentNodes { const NS_VALUES: &'static [u16] = &[10, 11]; }
+// generated: `pub enum EmploymentNodes { User, Org }` + its `NodeSet` impl,
+// each ns read off that table's own `#[ok_ns]` — never typed twice
 ```
 
 An index declaration names its access-method type mechanically:
