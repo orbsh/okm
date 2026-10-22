@@ -78,6 +78,15 @@ enum Avro {
         element_id: i64,
         items: Box<Avro>,
     },
+    /// An array-of-key/value-record that a reader must bind as a MAP. Iceberg
+    /// spells maps this way in Avro (non-string keys have no other form), and
+    /// the `logicalType` is what tells a reader it is a map: without it DuckDB
+    /// binds the column as `STRUCT(key, value)[]` and then fails to convert it
+    /// into the `MAP` its Iceberg layer expects.
+    MapArray {
+        element_id: i64,
+        items: Box<Avro>,
+    },
 }
 
 #[derive(Clone)]
@@ -110,7 +119,7 @@ fn avro_map(
     field(
         name,
         field_id,
-        Avro::Opt(Box::new(Avro::Array {
+        Avro::Opt(Box::new(Avro::MapArray {
             element_id: field_id,
             items: Box::new(items),
         })),
@@ -152,6 +161,11 @@ impl Avro {
             }
             Avro::Array { element_id, items } => format!(
                 "{{\"type\":\"array\",\"element-id\":{},\"items\":{}}}",
+                element_id,
+                items.json()
+            ),
+            Avro::MapArray { element_id, items } => format!(
+                "{{\"type\":\"array\",\"element-id\":{},\"items\":{},\"logicalType\":\"map\"}}",
                 element_id,
                 items.json()
             ),
@@ -410,9 +424,31 @@ fn uuid_like() -> String {
     )
 }
 
-fn file_uri(path: &Path) -> String {
-    let abs = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-    format!("file://{}", abs.display())
+/// A path as the METADATA records it: RELATIVE to the table directory whenever
+/// the file lives inside it, `/`-separated.
+///
+/// This is what makes a bundle relocatable: the export is written in a temp
+/// directory and read after being moved (or on another machine), so an absolute
+/// URI recorded here would point at a directory that no longer exists. Iceberg
+/// resolves a relative path against the table's location, which for a directory
+/// warehouse is the directory the reader was pointed at — so the file travels.
+/// A file OUTSIDE the table directory has no relative form and keeps its
+/// absolute URI (the caller placed it somewhere this writer cannot describe).
+fn recorded_path(table_dir: &Path, path: &Path) -> String {
+    let relative = path
+        .strip_prefix(table_dir)
+        .or_else(|_| path.strip_prefix(table_dir.canonicalize().unwrap_or_default()));
+    match relative {
+        Ok(inside) => inside
+            .components()
+            .map(|c| c.as_os_str().to_string_lossy().into_owned())
+            .collect::<Vec<_>>()
+            .join("/"),
+        Err(_) => {
+            let abs = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+            format!("file://{}", abs.display())
+        }
+    }
 }
 
 fn now_ms() -> u64 {
@@ -481,7 +517,7 @@ fn write_with_columns(
             status: 1, // ADDED
             snapshot_id: snapshot_id as i64,
             sequence_number: sequence,
-            file_path: file_uri(path),
+            file_path: recorded_path(table_dir, path),
             file_size: std::fs::metadata(path).map(|m| m.len() as i64).unwrap_or(0),
             record_count: *rows as i64,
         };
@@ -493,7 +529,7 @@ fn write_with_columns(
     // Manifest list: one row naming that manifest.
     let list_path = meta_dir.join(format!("snap-{snapshot_id}-0-{uuid}.avro"));
     let mut list = Vec::new();
-    put_str(&mut list, &file_uri(&manifest_path));
+    put_str(&mut list, &recorded_path(table_dir, &manifest_path));
     list.extend(zigzag(manifest_len));
     list.extend(zigzag(0)); // partition_spec_id
     list.extend(zigzag(0)); // content = DATA
@@ -557,13 +593,13 @@ fn write_with_columns(
             "}}\n"
         ),
         uuid = uuid,
-        location = file_uri(table_dir),
+        location = ".",
         sequence = sequence,
         now = now,
         last_column = columns.len(),
         fields = schema_fields.join(","),
         snapshot = snapshot_id,
-        manifest_list = file_uri(&list_path),
+        manifest_list = recorded_path(table_dir, &list_path),
         files = data_files.len(),
         rows = total_rows,
     );
@@ -603,6 +639,27 @@ mod tests {
                 .map(String::as_str),
             Some("2")
         );
+    }
+
+    #[test]
+    fn the_metadata_records_paths_a_moved_table_can_still_resolve() {
+        // The bundle is written in a temp directory and opened after being
+        // moved, so a recorded absolute URI would point at nothing. Everything
+        // inside the table directory is relative to it, and the table's own
+        // location is the reader's directory.
+        let dir = tempfile::tempdir().unwrap();
+        let table = dir.path().join("t1");
+        std::fs::create_dir_all(table.join("data")).unwrap();
+        let data = table.join("data/t1.parquet");
+        std::fs::write(&data, b"not really parquet").unwrap();
+        assert_eq!(recorded_path(&table, &data), "data/t1.parquet");
+        let inner = table.join("metadata/x-m0.avro");
+        assert_eq!(recorded_path(&table, &inner), "metadata/x-m0.avro");
+        // A file outside the table keeps an absolute URI: it has no relative
+        // form this writer could describe.
+        let outside = dir.path().join("elsewhere.parquet");
+        std::fs::write(&outside, b"x").unwrap();
+        assert!(recorded_path(&table, &outside).starts_with("file://"));
     }
 
     #[test]
