@@ -9,7 +9,7 @@
 - [0005 — 二级索引：item 内 slot 自动编号，索引不占手动 ns](0005-secondary-index-slots.md)（已实现；挂载点由 [0006](0006-row-node-model.md) 移到行结构体）
 - [0006 — Row/Node 模型：单宏声明行，ValueEncode 并入，Node 与 Edge 平级](0006-row-node-model.md)（已实现）
 - [0007 — Arrow/DataFrame 桥：行 → RecordBatch，快照分层](0007-arrow-dataframe-bridge.md)（已实现：eager 桥 + Parquet 快照；lazy pushdown 载入门控）— [中文](0007-arrow-dataframe-bridge.zh-CN.md)
-- [0008 — 事件层：reduce 改名、subscribe 通道、okm-stream](0008-event-layer-reduce-subscribe-stream.md)（已实现：bare `#[ok_subscribe]`、批次 epoch、okm-stream）— [中文](0008-event-layer-reduce-subscribe-stream.zh-CN.md)
+- [0008 — 事件层：reduce、subscribe、okm-stream](0008-event-layer-reduce-subscribe-stream.md)（已实现：bare `#[ok_subscribe]`、批次 epoch、okm-stream）— [中文](0008-event-layer-reduce-subscribe-stream.zh-CN.md)
 - [0009 — FRP 对照：Spacetimedb 订阅 vs okm-stream](0009-frp-comparison-subscriptions-stream.md)（分析；无实现义务）— [中文](0009-frp-comparison-subscriptions-stream.zh-CN.md)
 - [0010 — VirtualStorage：KvEngine 即存储边界，远端字节走既有通道](0010-virtual-storage-remote-bytes.md)（已接受，实现待做——PLAN Phase 7）— [中文](0010-virtual-storage-remote-bytes.zh-CN.md)
 - [0011 — 存储完整键：不剥前缀](0011-full-keys-in-storage.md)（已接受）— [中文](0011-full-keys-in-storage.zh-CN.md)
