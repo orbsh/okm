@@ -980,7 +980,7 @@ pub(crate) struct ReduceDecl {
 /// One `#[ok_subscribe]` declaration: bare only. The event enum name comes
 /// from `#[ok_event_enum(Alias)]` (default `RowEvent`); the variant IS the
 /// document type name (build.rs derives it — no hand-written mapping, no
-/// per-document-type fallback channel; the bare-channel degraded shape is
+/// per-document-type fallback subscription; the bare-subscription degraded shape is
 /// explicitly unsupported).
 pub(crate) struct SubDecl {
     /// Generated event enum name for this document's events (`RowEvent` unless
@@ -1222,7 +1222,7 @@ pub(crate) fn parse_schema_with_key(input: DeriveInput, key_ty: syn::Type) -> Do
     // two-source walk (key wins on ambiguity).
 
     // #[ok_subscribe] (bare) + optional #[ok_event_enum(Alias)] — at most
-    // one subscribe per document type (two declarations = one channel send per
+    // one subscribe per document type (two declarations = one subscription send per
     // write, ambiguous shape; reject rather than multiply sends).
     let mut sub_iter = input.attrs.iter().filter(|a| a.path().is_ident("ok_subscribe"));
     let sub_attr = sub_iter.next();

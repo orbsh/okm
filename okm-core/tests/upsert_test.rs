@@ -54,7 +54,7 @@ fn upsert_with_full_paths() {
     // ---------- write path fired: subscribe emission ----------
     let seen: std::sync::Arc<std::sync::Mutex<Vec<u64>>> = Default::default();
     let sink = seen.clone();
-    okm_subscribe::CHANNEL_ROWEVENT.register(move |ev: okm_subscribe::RowEvent| {
+    okm_subscribe::SINK_ROWEVENT.register(move |ev: okm_subscribe::RowEvent| {
         let okm_subscribe::RowEvent::Counter(ev) = ev else { return false };
         sink.lock().unwrap().push(ev.document.hits);
         true

@@ -1,7 +1,7 @@
 //! Subscribe channel integration (ADR-0008): `#[ok_subscribe]` (bare)
 //! annotated rows emit events on the write path, build.rs collects them
 //! into the `RowEvent` enum (variant = document type name) +
-//! `crate::okm_subscribe::CHANNEL_ROWEVENT`, and a registered sink
+//! `crate::okm_subscribe::SINK_ROWEVENT`, and a registered sink
 //! receives put/delete events. Also covers no-sink drop semantics.
 //!
 //! Document types + the generated module live in subscribe_common.rs (shared
@@ -22,7 +22,7 @@ fn subscribe_round_trip() {
     // crossbeam queue, etc. — transport is not the core's business.
     let seen: std::sync::Arc<std::sync::Mutex<Vec<String>>> = Default::default();
     let sink = seen.clone();
-    okm_subscribe::CHANNEL_ROWEVENT.register(move |ev: okm_subscribe::RowEvent| {
+    okm_subscribe::SINK_ROWEVENT.register(move |ev: okm_subscribe::RowEvent| {
         let mut q = sink.lock().unwrap();
         if q.len() >= 8 {
             return false; // simulate a bounded transport dropping
@@ -37,7 +37,7 @@ fn subscribe_round_trip() {
         q.push(format!("{:?}#{epoch}#{tag}", op));
         true
     });
-    assert!(okm_subscribe::CHANNEL_ROWEVENT.has_sink());
+    assert!(okm_subscribe::SINK_ROWEVENT.has_sink());
 
     let mut t: Collection<TestStore, AccountKey, Account> = Collection::new(TestStore::slatedb_mem());
     t.put(&AccountKey { id: 1 }, &Account { balance: 10 });

@@ -60,7 +60,7 @@ pub use model::field::{FieldDesc, FieldType};
 pub use arrow::array::RecordBatch;
 pub use model::index::{Document, IndexFuncResult, IndexFuncValues, KvIndex, PRIMARY_SLOT, scan_index, scan_index_exact, slot_len, write_slot};
 pub use model::key::{KeyEncode, PrefixKey};
-pub use subscribe::{ChannelCell, Event, Op};
+pub use subscribe::{SinkCell, Event, Op};
 pub use model::document::Collection;
 
 #[cfg(feature = "arrow")]

@@ -1,20 +1,20 @@
-//! Subscribe — the channel half of the event layer (ADR-0008).
+//! Subscribe — the second half of the event layer (ADR-0008).
 //!
-//! `#[ok_subscribe]` on a `DocumentEncode` struct declares: this document type's
-//! write-path events enter a channel. There is NO handler at the
+//! `#[ok_subscribe]` on a `DocumentEncode` struct declares: this document
+//! type's write-path events enter a subscription. There is NO handler at the
 //! annotation site — the derive only emits a uniform-format send; the
-//! processing logic belongs entirely to the consumer, and the combinators
+//! processing logic belongs entirely to the subscriber, and the combinators
 //! (okm-stream, deferred) are the adapter layer.
 //!
 //! Delivery semantics: best-effort. The send is a synchronous sink call
 //! on the write path — with no sink registered events are dropped; with
 //! a bounded queue behind the sink a full queue drops rather than
 //! blocking the write. No delivery guarantee is offered. Inline
-//! consumers (reduce) that need exactly-once MUST NOT ride the channel.
+//! consumers (reduce) that need exactly-once MUST NOT ride a subscription.
 //!
-//! The core deliberately knows nothing about tokio (or any executor): a
-//! channel is whatever the caller registers via [`ChannelCell::register`]
-//! — a tokio mpsc sender, a crossbeam queue, a no-op. Transport is an
+//! The core deliberately knows nothing about tokio (or any executor): the
+//! sink is whatever the caller registers via [`SinkCell::register`] — a
+//! tokio mpsc sender, a crossbeam queue, a no-op. Transport is an
 //! assembly-site decision, same discipline as engine choice.
 
 /// Operation carried by a subscribe event.
@@ -24,7 +24,7 @@ pub enum Op {
     Delete,
 }
 
-/// One channel event — typed payload plus the operation that produced it.
+/// One subscription event — typed payload plus the operation that produced it.
 ///
 /// `epoch` is the emitting collection's monotonic write-batch counter (ADR-0008
 /// §5): events produced by one collection share the counter's order, so a
@@ -69,17 +69,17 @@ impl<E, F: Fn(E) -> bool + Send + Sync> EventSink<E> for F {
 /// [`Self::emit`] — no sink registered means events are dropped (the
 /// zero-cost default: subscribed documents whose stream nobody consumes pay
 /// only one atomic load per write).
-pub struct ChannelCell<E> {
+pub struct SinkCell<E> {
     sink: std::sync::RwLock<Option<std::sync::Arc<dyn EventSink<E>>>>,
 }
 
-impl<E: 'static> Default for ChannelCell<E> {
+impl<E: 'static> Default for SinkCell<E> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<E: 'static> ChannelCell<E> {
+impl<E: 'static> SinkCell<E> {
     pub const fn new() -> Self {
         Self {
             sink: std::sync::RwLock::new(None),

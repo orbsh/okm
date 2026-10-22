@@ -4,7 +4,7 @@
 //! (filter by field, keep a previous-row cache, fold to an epoch
 //! boundary, fan-in several tables) is algorithm-layer work and lives
 //! here. Zero storage responsibility: every input is an existing
-//! `ChannelCell` / generated `CHANNEL_<ENUM>` sink; pull-mode fan-in
+//! `SinkCell` / generated `SINK_<ENUM>` sink; pull-mode fan-in
 //! stays in `okm-query`.
 //!
 //! Execution model: synchronous. Events are produced by the write path's

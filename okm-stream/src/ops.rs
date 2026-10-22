@@ -2,13 +2,13 @@
 //! receives events and pushes derived results to its own downstream.
 //! Combinators wrap one stream in another, so chains build push-mode
 //! pipelines: `filter_field(...).with_previous(...)` attached to a
-//! generated `CHANNEL_<ENUM>` via `register`.
+//! generated `SINK_<ENUM>` via `register`.
 //!
 //! Everything here is best-effort by inheritance: the write path's
 //! `try_send` contract passes through unchanged — a downstream that
 //! rejects (`false`) makes the whole chain reject, and the event is
 //! dropped at the source. No buffering, no retry: precision-bound
-//! consumers belong inline (reduce), not on a channel.
+//! consumers belong inline (reduce), not on a subscription.
 
 use std::collections::HashMap;
 use std::hash::Hash;
@@ -67,7 +67,7 @@ impl<E: 'static> Stream<E> {
     /// stream receives `E2`, applies `f`, forwards `E` to this stage's
     /// downstream. (Push pipelines compose inside-out — the existing
     /// sink is downstream, the returned stream is what registers at the
-    /// channel cell.)
+    /// sink cell.)
     pub fn map<E2: 'static>(self, f: impl Fn(E2) -> E + Send + Sync + 'static) -> Stream<E2> {
         let inner = self.sink;
         Stream::<E2>::new(move |e| (inner.lock().unwrap())(f(e)))
@@ -99,7 +99,7 @@ where
 ///
 /// Note: the cache reflects what this consumer has *seen*, not what the
 /// store holds — dropped events (best-effort) desync it until the next
-/// put re-primes the entry. That is the channel contract, not a defect.
+/// put re-primes the entry. That is the subscription contract, not a defect.
 #[allow(clippy::type_complexity)] // the pair type IS the combinator's contract
 pub fn with_previous<K, R>(
 ) -> impl Fn(Stream<Event<K, (Option<R>, R)>>) -> Stream<Event<K, R>>
