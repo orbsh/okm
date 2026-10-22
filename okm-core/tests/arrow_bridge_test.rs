@@ -3,7 +3,7 @@
 //! round trip against struct decode.
 
 use arrow::datatypes::DataType;
-use okm_core::{FieldDesc, FieldType, KeyEncode, TestStore, Document, DocumentEncode, Collection};
+use okm_core::{FieldDesc, FieldType, KeyEncode, TestStore, Document, DocumentEncode, Collection, Vector, VectorElem};
 
 /// UserKey：org 内的用户身份（主键）。字段类型覆盖四种 kind。
 #[derive(KeyEncode, Clone, PartialEq, Debug)]
@@ -152,6 +152,44 @@ fn fixed_bytes_maps_to_binary() {
     assert_eq!(name.value(0), b"abcd");
     let n = batch.column(2).as_any().downcast_ref::<arrow::array::UInt32Array>().unwrap();
     assert_eq!(n.value(0), 9);
+}
+
+/// A `Vector<u32>` field maps to Binary: the column value is the frame payload
+/// exactly (`[count u32 BE][bare LE u32 × n]`).
+///
+/// This doubles as the regression for the cold-frame locator: it enumerated only
+/// `Str | VarInt` as variable-length and therefore tripped on EVERY exported
+/// `Vector` (and would have tripped on `Bytes`) — while the repo's definition of
+/// the cold segment is simply `width == 0`.
+#[test]
+fn vector_field_maps_to_binary() {
+    #[derive(KeyEncode, Clone, PartialEq, Debug)]
+    #[ok_ns(13)]
+    pub struct RingKey {
+        pub id: u64,
+    }
+    #[derive(DocumentEncode, Clone, PartialEq, Debug)]
+    #[ok_ref(RingKey)]
+    pub struct RingRow {
+        pub n: u32,
+        pub ring: Vector<u32>,
+    }
+
+    let mut t: Collection<TestStore, RingKey, RingRow> = Collection::new(TestStore::slatedb_mem());
+    t.put(
+        &RingKey { id: 1 },
+        &RingRow { n: 7, ring: Vector::new(vec![1, 2, 3]) },
+    );
+
+    let batch = t.to_record_batch();
+    let n = batch.column(1).as_any().downcast_ref::<arrow::array::UInt32Array>().unwrap();
+    assert_eq!(n.value(0), 7);
+    let ring = batch.column(2).as_any().downcast_ref::<arrow::array::BinaryArray>().unwrap();
+    let mut expected = 3u32.to_be_bytes().to_vec();
+    for v in [1u32, 2, 3] {
+        expected.extend_from_slice(&v.to_le_bytes());
+    }
+    assert_eq!(ring.value(0), &expected[..], "the column IS the frame payload");
 }
 
 /// 空表导出：batch 零行、schema 完整。
