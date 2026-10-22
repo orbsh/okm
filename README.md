@@ -91,7 +91,7 @@ pub struct UserToSession {
 #[ok_index(by_since { fields(since_year) })] // attributes are declared faces — nothing implied
 pub struct Employment { pub since_year: u16, pub weight: u32 }
 
-// generated: `pub enum EmploymentNodes { User, Org }` + its `NodeSet` impl,
+// generated: `pub enum EmploymentNode { User, Org }` + its `NodeSet` impl,
 // each ns read off that table's own `#[ok_ns]` — never typed twice
 ```
 

@@ -16,8 +16,8 @@
 //! }
 //!
 //! // generated, never written by hand:
-//! // pub enum EmploymentNodes { User, Org }
-//! // impl okm_core::NodeSet for EmploymentNodes {
+//! // pub enum EmploymentNode { User, Org }
+//! // impl okm_core::NodeSet for EmploymentNode {
 //! //     const NS_VALUES: &'static [u16] = &[10, 11];   // the tables' own ns
 //! // }
 //! ```
@@ -37,7 +37,12 @@
 //!
 //! Generated: the full `Document` impl (payload codec, `#[ok_index]` marker
 //! structs and entries, `NS_PREFIX`/`NS` from `#[ok_ns]`), the member-set enum
-//! `<Name>Nodes`, its `NodeSet` impl, and `impl GraphEncode { type Nodes }`.
+//! `<Name>Node`, its `NodeSet` impl, and `impl GraphEncode { type Nodes }`.
+//! The suffix is SINGULAR because a type name names one value: a value of this
+//! enum names one node collection (one ns), and the plural role — "the set of
+//! collections this graph admits" — belongs to `NodeSet::NS_VALUES`, never to
+//! the enum's name. `<Name>Nodes` would claim the type holds many nodes, which
+//! no value ever does.
 //! Identity is the mechanism's `EdgeKey` (the bare `edge_id`) — a graph
 //! declares no key struct.
 
@@ -99,7 +104,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
         }
         variants.push(ident);
     }
-    let set_ident = quote::format_ident!("{}Nodes", name);
+    let set_ident = quote::format_ident!("{}Node", name);
 
     // One ns per listed table, read off that table's own declaration. `NS` is
     // `None` only for a layout-only document: a member must be a collection, so

@@ -796,7 +796,9 @@ Unchanged: primary payload layout `[version][hot_len][hot][cold TLV]`
       · derive: `GraphEncode` replaced `EdgeEncode`; ns from `#[ok_ns]`, faces
         from explicit `#[ok_index]`, and the member set given as
         `#[ok_nodes(Table, …)]` — a list of node TYPES, from which the derive
-        generates the enum and its `NodeSet` impl (ns off each table's
+        generates the `<Graph>Node` enum (SINGULAR: a value names one node
+        collection, while the set role lives in `NodeSet::NS_VALUES`) and its
+        `NodeSet` impl (ns off each table's
         `#[ok_ns]`; 2026-10-21: it used to name a hand-written enum). Rust has
         no associated-type defaults, so one declaration, one impl. It generates the whole `Document` impl
         (`okm-derive`'s row emitter, with `type Key = EdgeKey`) plus

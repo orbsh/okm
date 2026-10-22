@@ -13,7 +13,7 @@
 //! A reference is `[ns 2B BE][len varint][pkey]` — the ns acts as the type
 //! marker and the pkey width rides inside the reference. The pkey boundary
 //! is therefore wire data: no registry, no side table, mixed widths
-//! coexist. What IS declared is the member SET (the `Nodes` enum of the
+//! coexist. What IS declared is the member SET (the `Node` enum of the
 //! declaration), applied as a check at write and at decode — width is wire
 //! data, membership is a declaration.
 //!

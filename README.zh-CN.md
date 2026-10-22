@@ -92,7 +92,7 @@ pub struct UserToSession {
 #[ok_index(by_since { fields(since_year) })] // 属性是显式声明的面——不做任何隐含
 pub struct Employment { pub since_year: u16, pub weight: u32 }
 
-// 生成：`pub enum EmploymentNodes { User, Org }` 及其 `NodeSet` 实现，
+// 生成：`pub enum EmploymentNode { User, Org }` 及其 `NodeSet` 实现，
 // 每个 ns 取自那张表自己的 `#[ok_ns]`——不写两遍
 ```
 
