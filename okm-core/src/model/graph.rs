@@ -44,10 +44,10 @@
 //! the body and an index dimension on the faces.
 
 use crate::engine::storage::{MemBatch, VirtualStorage, scan_suffix_kv};
-use crate::model::index::{Document, DYNAMIC_SLOT, PRIMARY_SLOT, Slot, write_slot};
-use crate::model::obj_dynamic::{DynamicValue, decode_named, put_frame_named};
+use crate::model::index::{DYNAMIC_SLOT, Document, PRIMARY_SLOT, Slot, write_slot};
 use crate::model::key::KeyEncode;
-use crate::model::obj_vocab::{VocabCache, PREDICATE_VOCAB};
+use crate::model::obj_dynamic::{DynamicValue, decode_named, put_frame_named};
+use crate::model::obj_vocab::{PREDICATE_VOCAB, VocabCache};
 
 /// Fixed face 0x06: predicate index — an edge-collection-internal detail, not
 /// a declared document index, hence a graph number rather than counting
@@ -85,7 +85,10 @@ impl NodeRef {
     /// header) and its key encoding.
     pub fn new(ns_prefix: &[u8], pkey: &[u8]) -> Self {
         assert!(ns_prefix.len() == 2, "NodeRef ns header must be [ns 2B]");
-        Self { ns: [ns_prefix[0], ns_prefix[1]], pkey: pkey.to_vec() }
+        Self {
+            ns: [ns_prefix[0], ns_prefix[1]],
+            pkey: pkey.to_vec(),
+        }
     }
 
     /// The `[ns 2B]` header slice.
@@ -121,7 +124,10 @@ impl NodeRef {
             return None;
         }
         Some((
-            Self { ns: [wire[0], wire[1]], pkey: wire[2 + len_n..total].to_vec() },
+            Self {
+                ns: [wire[0], wire[1]],
+                pkey: wire[2 + len_n..total].to_vec(),
+            },
             total,
         ))
     }
@@ -151,11 +157,16 @@ impl KeyEncode for EdgeKey {
     }
 
     fn decode(bytes: &[u8]) -> Self {
-        Self(u64::from_be_bytes(bytes[..8].try_into().expect("EdgeKey: 8 bytes")))
+        Self(u64::from_be_bytes(
+            bytes[..8].try_into().expect("EdgeKey: 8 bytes"),
+        ))
     }
 
     fn encode_prefix_named(&self, buf: &mut Vec<u8>, names: &[&str]) -> usize {
-        assert!(names.len() <= 1, "EdgeKey has one field; a prefix cannot be longer");
+        assert!(
+            names.len() <= 1,
+            "EdgeKey has one field; a prefix cannot be longer"
+        );
         if names.len() == 1 {
             assert_eq!(names[0], "edge_id", "EdgeKey's only field is `edge_id`");
             buf.extend_from_slice(&self.0.to_be_bytes());
@@ -166,7 +177,10 @@ impl KeyEncode for EdgeKey {
     }
 
     fn prefix_width(names: &[&str]) -> usize {
-        assert!(names.len() <= 1, "EdgeKey has one field; a prefix cannot be longer");
+        assert!(
+            names.len() <= 1,
+            "EdgeKey has one field; a prefix cannot be longer"
+        );
         if names.len() == 1 {
             assert_eq!(names[0], "edge_id", "EdgeKey's only field is `edge_id`");
             8
@@ -220,9 +234,8 @@ pub struct EdgeHead {
 /// `[src NodeRef][dst NodeRef][predicate_vocab_id u16 BE][obj payload]` — refs are
 /// self-describing and the payload starts at a computable offset.
 fn edge_body(head: &EdgeHead, predicate_vocab_id: u16, payload: &[u8]) -> Vec<u8> {
-    let mut v = Vec::with_capacity(
-        3 + head.src.pkey.len() + 3 + head.dst.pkey.len() + 2 + payload.len(),
-    );
+    let mut v =
+        Vec::with_capacity(3 + head.src.pkey.len() + 3 + head.dst.pkey.len() + 2 + payload.len());
     v.extend_from_slice(&head.src.encode());
     v.extend_from_slice(&head.dst.encode());
     v.extend_from_slice(&predicate_vocab_id.to_be_bytes());
@@ -270,11 +283,22 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
     /// The handle takes the engine and nothing else: the ns comes from the
     /// declaration (`E::NS_PREFIX`), the member set from `E::Nodes`.
     pub fn new(store: S) -> Self {
-        Self { store, vocab: VocabCache::new(PREDICATE_VOCAB), _pd: std::marker::PhantomData }
+        Self {
+            store,
+            vocab: VocabCache::new(PREDICATE_VOCAB),
+            _pd: std::marker::PhantomData,
+        }
     }
 
     pub fn store(&self) -> &S {
         &self.store
+    }
+
+    /// Mutable access to the underlying storage — the restore path's need:
+    /// assembling a row's bytes interns vocabulary labels, which is a write,
+    /// and the write happens before the row's own batch is committed.
+    pub fn store_mut(&mut self) -> &mut S {
+        &mut self.store
     }
 
     fn primary_key(&self, edge_id: u64) -> Vec<u8> {
@@ -478,9 +502,15 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
             Vec::new(),
         );
         // out (0x07): [src NodeRef][edge_id]
-        batch.put(self.face_key(EDGE_OUT_SLOT, &[&src_wire, &id_be]), Vec::new());
+        batch.put(
+            self.face_key(EDGE_OUT_SLOT, &[&src_wire, &id_be]),
+            Vec::new(),
+        );
         // in (0x08): [dst NodeRef][edge_id]
-        batch.put(self.face_key(EDGE_IN_SLOT, &[&dst_wire, &id_be]), Vec::new());
+        batch.put(
+            self.face_key(EDGE_IN_SLOT, &[&dst_wire, &id_be]),
+            Vec::new(),
+        );
         // predicate+out (0x09): [predicate_vocab_id][src NodeRef][edge_id]
         batch.put(
             self.face_key(EDGE_PREDICATE_OUT_SLOT, &[&predicate_be, &src_wire, &id_be]),
@@ -554,7 +584,8 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
 
     /// The edge's payload decoded into the declaration's own type.
     pub fn edge(&self, edge_id: u64) -> Option<E> {
-        self.get_edge(edge_id).map(|b| E::decode_payload(&b.payload))
+        self.get_edge(edge_id)
+            .map(|b| E::decode_payload(&b.payload))
     }
 
     /// All edge ids on one traversal face, decoded back through the
@@ -614,7 +645,10 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
             Some(id) => id,
             None => return Vec::new(),
         };
-        let p = self.face_key(EDGE_PREDICATE_INDEX_SLOT, &[&predicate_vocab_id.to_be_bytes()]);
+        let p = self.face_key(
+            EDGE_PREDICATE_INDEX_SLOT,
+            &[&predicate_vocab_id.to_be_bytes()],
+        );
         self.store
             .scan_suffix(&p)
             .iter()
@@ -740,7 +774,11 @@ mod tests {
 
     #[test]
     fn body_layout_is_ref_ref_predicate_payload() {
-        let head = EdgeHead { src: person(1), dst: org(9), predicate: "has".into() };
+        let head = EdgeHead {
+            src: person(1),
+            dst: org(9),
+            predicate: "has".into(),
+        };
         let body = edge_body(&head, 0x0102, &[0xAA, 0xBB]);
         // [ns 2B][len 1B][pkey 8B] twice, then the predicate id, then payload.
         assert_eq!(&body[..2], &0x10u16.to_be_bytes());

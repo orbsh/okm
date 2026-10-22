@@ -5,4 +5,6 @@
 
 #[cfg(feature = "arrow")]
 pub mod arrow_bridge;
+#[cfg(feature = "arrow")]
+pub mod iceberg;
 pub mod tooling;
