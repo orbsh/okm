@@ -1,4 +1,4 @@
-use okm_core::subscribe::{ChannelCell, Event, Op};
+use okm_core::subscribe::{SinkCell, Event, Op};
 use okm_stream::{filter_field, with_previous, Stream};
 
 #[derive(Clone, PartialEq, Debug)]
@@ -9,7 +9,7 @@ pub struct Price {
 
 #[test]
 fn field_filter_keeps_declared_interest_only() {
-    let cell: ChannelCell<Event<String, Price>> = ChannelCell::new();
+    let cell: SinkCell<Event<String, Price>> = SinkCell::new();
     let seen: std::sync::Arc<std::sync::Mutex<Vec<u64>>> = Default::default();
     let sink = seen.clone();
 
@@ -36,7 +36,7 @@ fn field_filter_keeps_declared_interest_only() {
 
 #[test]
 fn with_previous_derives_before_after() {
-    let cell: ChannelCell<Event<String, Price>> = ChannelCell::new();
+    let cell: SinkCell<Event<String, Price>> = SinkCell::new();
     type SeenPair = (Option<u64>, u64);
     let seen: std::sync::Arc<std::sync::Mutex<Vec<SeenPair>>> = Default::default();
     let sink = seen.clone();
