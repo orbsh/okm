@@ -550,10 +550,12 @@ struct Employment {
 }
 
 // 由 derive **生成**——不手写，也不需要人跟着改：
-//   enum EmploymentNodes { User, Org }
-//   impl NodeSet for EmploymentNodes { const NS_VALUES: &'static [u16] = &[10, 11]; }
-// 每个变体就是一个 COLLECTION（成员资格 = 该 ns 在不在集合里），每个 ns 取自那张表
-// 自己的 `#[ok_ns]`——加一个成员就是在边声明里多写一个类型名。
+//   enum EmploymentNode { User, Org }
+//   impl NodeSet for EmploymentNode { const NS_VALUES: &'static [u16] = &[10, 11]; }
+// 枚举名单数（图名 + `Node`）：一个类型名命名一个值，一个值指名一个 COLLECTION
+// （成员资格 = 该 ns 在不在集合里）；"这些 collection 是这张图的成员"归
+// `NodeSet::NS_VALUES`。每个 ns 取自那张表自己的 `#[ok_ns]`——加一个成员就是在边
+// 声明里多写一个类型名。
 
 let mut g: Graph<_, Employment> = Graph::new(store);
 let attrs = Employment { since_year: 2020, weight: 7 };
@@ -568,7 +570,7 @@ use __OkmIndex_Employment_by_since as BySince;   // 声明生成的那条面的�
 g.by_attr_face(<BySince as KvIndex>::SLOT, &2020u16.to_be_bytes());
 ```
 
-- **端点引用**是 `[ns 2B][len varint][pkey]`——ns 充当类型标记，pkey 宽度以单字节 varint 住在引用自身。任意 collection 的文档免声明参与：同节点 = 同字节（遍历面精确前缀命中），不同 pkey 宽度共存，没有需要声明、维护、防错的注册表。图边让 Ref 纪律退役——引用自带宽度，连同 ns 知识一起。成员集是唯一要声明的东西——以**表的清单**形式（`#[ok_nodes(User, Org)]`），derive 据此生成 `Nodes` 枚举与 `NodeSet` 实现，每个 ns 取自那张表自己，在写入与解码两处作为一次校验；宽度仍是 wire 数据，成员是声明。
+- **端点引用**是 `[ns 2B][len varint][pkey]`——ns 充当类型标记，pkey 宽度以单字节 varint 住在引用自身。任意 collection 的文档免声明参与：同节点 = 同字节（遍历面精确前缀命中），不同 pkey 宽度共存，没有需要声明、维护、防错的注册表。图边让 Ref 纪律退役——引用自带宽度，连同 ns 知识一起。成员集是唯一要声明的东西——以**表的清单**形式（`#[ok_nodes(User, Org)]`），derive 据此生成 `XxxNode` 枚举与 `NodeSet` 实现，每个 ns 取自那张表自己，在写入与解码两处作为一次校验；宽度仍是 wire 数据，成员是声明。
 - **面**：一次 `link` 写主表（固定面 0x00，`edge_id` u64）+ 谓词索引（0x06）+ 出入遍历（0x07/0x08）+ 谓词过滤遍历（0x09/0x0A）+ 每条**声明**的 `#[ok_index]` 一条面（计数族 0x1），一个 batch；`unlink` 解码边本体、精确删掉这些条目（声明面按解码出的载荷重新生成，不做前缀清扫）；全动态形态把开放属性写进动态段（固定面 0x01，每条边一条条目）。谓词名走**图自己的谓词词汇表**（固定面 0x04/0x05，先见者得号）——与载荷的字段名词汇表（0x02/0x03）以及任何节点字段的词汇表都分开，所以"列出这张图的谓词"就是扫一次 0x04 前缀，永不靠走索引面反推。
 - **句柄不声明任何东西。** `Graph<S, E>` 绑定一个引擎实例与每实例状态（谓词词汇表缓存）；ns 来自声明、成员集来自 `E::Nodes`——与 `Collection<S, K, R>` 同形，后者也只收引擎。
 - **平行边**是各自独立的边：每次 link 携带调用方选定的 `edge_id`；`link` 拒绝 live id。一条边的**就地改写**是唯一例外，入口也只有一对：`unlink_into` + `link_into` 把同一个 id 的删与写编进同一批，提交点上那条边从未缺席、第二个 id 也不会诞生——k10r 的 functional 裁决和计数器回写都走这条路（ADR-0010 的 owed item）。已删的 id 不复用。
@@ -691,7 +693,7 @@ struct MemberKey { channel_id: u64, member_id: u64 }
 #[ok_ns(42)]
 struct MemberRow { display_name: String, role: u8 }  // 没有 kind 字段，没有向量
 
-/// 边：声明**就是**这张图。
+/// 图 Facts：一份声明**就是**这张图。
 #[derive(GraphEncode, Clone, Default)]
 #[ok_ns(37)]
 #[ok_nodes(EntityRow, MemberRow)]            // 成员集：节点**表**
@@ -699,12 +701,13 @@ struct MemberRow { display_name: String, role: u8 }  // 没有 kind 字段，没
     by_since { fields(since) },                // 时间入口
     by_scope_weight { fields(scope, weight) }, // 渐进读取入口
 )]
-struct FactEdge { /* scope、since、confidence、weight、五个计数器 */ }
+struct Facts { /* scope、since、confidence、weight、五个计数器 */ }
 
-// 成员集由上面那份清单**生成**：`FactNodes { EntityRow, MemberRow }`——每个节点
+// 成员集由上面那份清单**生成**：`FactsNode { EntityRow, MemberRow }`——每个节点
 // collection 一个变体（成员资格 = 该 ns 在不在集合里），每个 ns 取自那张表自己的
-// `#[ok_ns]`（36、42）。成员关系是编译期事实，写入与解码各校验一次；引用仍是
-// wire 数据。人与物住在不同 collection，同在一张图里。
+// `#[ok_ns]`（36、42）。枚举名单数（图名 + `Node`）：一个值指名一个 collection，
+// "这组 collection 是成员"归 `NodeSet::NS_VALUES`。成员关系是编译期事实，写入与解码
+// 各校验一次；引用仍是 wire 数据。人与物住在不同 collection，同在一张图里。
 ```
 
 **节点 kind 是运行期数据，所以 kind 是字段，不是 collection。** 摄入侧收的是开放类型词汇表：调用方的事实元组点名的 kind 没有任何人声明过——一个术语、一个概念、一个日期。而 collection 是编译期的 `#[ok_ns]` 加一个 derive。于是所有实体住在一个 collection 里，`kind: Vocab<u16>` 就是一个普通声明字段：写入时 intern 它的标签，`by_kind` 给它建索引，读方经该字段自己的词汇表把标签解回来——没有分配代码、没有保留面、没有自己的规则，宽度是唯一的旋钮（两字节 65536 个 kind）。字段名是 `kind` 而不是 `kind_id`：用了 `Vocab<N>`，值**就是**标签、id 只是它的编码，带 `_id` 后缀等于声称调用方在跟数字打交道。判据是：类型集封闭 → 每型一个 collection；kind 集开放 → 一个 collection、kind 作带索引的 `Vocab` 字段。

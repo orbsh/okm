@@ -149,7 +149,7 @@ fn member_set_travels_in_the_schema_and_is_enforced() {
     // The declaration's member set reaches a runtime writer as DATA — the
     // half of a graph declaration the payload layout cannot carry.
     let schema = works_at_schema();
-    assert_eq!(schema.members, vec![0x10, 0x11, 0x12], "Nodes::NS_VALUES exported");
+    assert_eq!(schema.members, vec![0x10, 0x11, 0x12], "WorksAtNode::NS_VALUES exported");
 
     let store = okm_core::TestStore::slatedb_mem();
     let mut g: Graph<_> = Graph::new(store.clone(), NS, schema);
