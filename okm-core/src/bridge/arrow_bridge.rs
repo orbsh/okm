@@ -433,9 +433,12 @@ fn tlv_value<'a>(
             .expect("cold frame: truncated length prefix");
         let val = off + 1 + len_n;
         if *decl == fi {
-            debug_assert!(
-                matches!(f.ty, FieldType::Str | FieldType::VarInt) || len == f.width
-            );
+            // A cold frame carries its own length; a FIXED-width field never
+            // reaches this path. `width == 0` IS the repo's definition of
+            // "variable length", so it covers Str, VarInt, Bytes and Vector
+            // alike — enumerating a subset of them was how `Vector` slipped
+            // through and tripped this assertion on every exported ring.
+            debug_assert!(f.width == 0 || len == f.width);
             return &cold[val..val + len];
         }
         off = val + len;
