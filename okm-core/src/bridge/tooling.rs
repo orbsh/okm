@@ -84,11 +84,11 @@ pub fn json_schema<K: KeyEncode, R: Document<Key = K>>() -> String {
 /// Parquet snapshot tier (ADR-0007 Phase 3): batch → file, file → store.
 #[cfg(feature = "parquet")]
 pub mod parquet_io {
-    use std::sync::Arc;
     use super::*;
     use crate::engine::storage::VirtualStorage;
     use crate::model::document::Collection;
     use arrow::array::{Array, BinaryArray, RecordBatch};
+    use std::sync::Arc;
 
     /// Export all documents to a Parquet file (overwrite). Typed columns, schema
     /// from the declaration — the same batch shape as
@@ -98,11 +98,7 @@ pub mod parquet_io {
         path: &std::path::Path,
     ) -> parquet::errors::Result<()> {
         let batch = collection.to_record_batch();
-        let file = std::fs::File::create(path)?;
-        let mut w = parquet::arrow::ArrowWriter::try_new(file, batch.schema(), None)?;
-        w.write(&batch)?;
-        w.close()?;
-        Ok(())
+        write_batch(&batch, path)
     }
 
     /// Export with the dynamic segment as a `variant` column (ADR-0007's
@@ -116,11 +112,7 @@ pub mod parquet_io {
         path: &std::path::Path,
     ) -> parquet::errors::Result<()> {
         let batch = collection.to_record_batch_with_variant();
-        let file = std::fs::File::create(path)?;
-        let mut w = parquet::arrow::ArrowWriter::try_new(file, batch.schema(), None)?;
-        w.write(&batch)?;
-        w.close()?;
-        Ok(())
+        write_batch(&batch, path)
     }
 
     /// Write an already-built batch to a Parquet file — the seam for exports
@@ -131,9 +123,15 @@ pub mod parquet_io {
         batch: &arrow::array::RecordBatch,
         path: &std::path::Path,
     ) -> parquet::errors::Result<()> {
+        // Every file a backup holds carries column field ids 1..N in column
+        // order — the numbering the Iceberg metadata declares
+        // (`crate::bridge::iceberg`). A reader that identifies columns by id
+        // (which is every Iceberg reader) then needs no name mapping, and the
+        // two sides cannot drift because both count positions.
+        let batch = crate::bridge::iceberg::stamp_batch(batch);
         let file = std::fs::File::create(path)?;
         let mut w = parquet::arrow::ArrowWriter::try_new(file, batch.schema(), None)?;
-        w.write(batch)?;
+        w.write(&batch)?;
         w.close()?;
         Ok(())
     }
@@ -226,11 +224,7 @@ pub mod parquet_io {
             Arc::new(binary(&values)),
         ];
         let batch = arrow::array::RecordBatch::try_new(schema, arrays)?;
-        let file = std::fs::File::create(path)?;
-        let mut w = parquet::arrow::ArrowWriter::try_new(file, batch.schema(), None)?;
-        w.write(&batch)?;
-        w.close()?;
-        Ok(())
+        write_batch(&batch, path)
     }
 
     /// Read one document's value from column `col` at `document` as the BE wire bytes
@@ -242,7 +236,7 @@ pub mod parquet_io {
     /// column is not a label column — the pre-label export carried raw ids and
     /// is NOT readable here (no compatibility path: the vocabulary that would
     /// name those ids is not in the file).
-    fn wire_bytes<S: VirtualStorage>(
+    pub(crate) fn wire_bytes<S: VirtualStorage>(
         col: &dyn Array,
         document: usize,
         field: &crate::model::field::FieldDesc,
@@ -292,11 +286,17 @@ pub mod parquet_io {
                 col.value(document).to_vec()
             }
             FieldType::Str => {
-                let col = col.as_any().downcast_ref::<arrow::array::StringArray>().unwrap();
+                let col = col
+                    .as_any()
+                    .downcast_ref::<arrow::array::StringArray>()
+                    .unwrap();
                 col.value(document).as_bytes().to_vec()
             }
             FieldType::VarInt => {
-                let c = col.as_any().downcast_ref::<arrow::array::UInt64Array>().unwrap();
+                let c = col
+                    .as_any()
+                    .downcast_ref::<arrow::array::UInt64Array>()
+                    .unwrap();
                 let mut buf = Vec::with_capacity(10);
                 c.value(document).varint_encode(&mut buf);
                 buf
@@ -304,16 +304,34 @@ pub mod parquet_io {
             FieldType::Quant(p) => {
                 // Re-quantize from the dequantized f64 column value at the
                 // declared precision; wire is the fixed-point i64 BE.
-                let c = col.as_any().downcast_ref::<arrow::array::Float64Array>().unwrap();
+                let c = col
+                    .as_any()
+                    .downcast_ref::<arrow::array::Float64Array>()
+                    .unwrap();
                 wire_to_be_bytes(quantize(c.value(document), p))
             }
             FieldType::Offset(base) => {
-                let c = col.as_any().downcast_ref::<arrow::array::Int64Array>().unwrap();
+                let c = col
+                    .as_any()
+                    .downcast_ref::<arrow::array::Int64Array>()
+                    .unwrap();
                 crate::offset_encode(c.value(document), base)
+            }
+            // A `Vector` exports as the OPAQUE frame bytes (the bridge keeps the
+            // element type in the schema and the column byte-opaque), so the
+            // import is the same read: the bytes go back verbatim.
+            FieldType::Vector { .. } => {
+                let col = col.as_any().downcast_ref::<BinaryArray>().unwrap();
+                col.value(document).to_vec()
             }
             other => {
                 let raw: Vec<u8> = match other {
-                    FieldType::U8 => vec![col.as_any().downcast_ref::<arrow::array::UInt8Array>().unwrap().value(document)],
+                    FieldType::U8 => vec![
+                        col.as_any()
+                            .downcast_ref::<arrow::array::UInt8Array>()
+                            .unwrap()
+                            .value(document),
+                    ],
                     FieldType::U16 => col
                         .as_any()
                         .downcast_ref::<arrow::array::UInt16Array>()
@@ -336,13 +354,12 @@ pub mod parquet_io {
                         .to_be_bytes()
                         .to_vec(),
                     FieldType::FixedBytes => unreachable!(),
-                    FieldType::Bytes => {
-                        col.as_any()
-                            .downcast_ref::<arrow::array::BinaryArray>()
-                            .unwrap()
-                            .value(document)
-                            .to_vec()
-                    }
+                    FieldType::Bytes => col
+                        .as_any()
+                        .downcast_ref::<arrow::array::BinaryArray>()
+                        .unwrap()
+                        .value(document)
+                        .to_vec(),
                     FieldType::Str => unreachable!("handled above"),
                     FieldType::VarInt
                     | FieldType::Quant(_)
@@ -407,8 +424,11 @@ pub mod parquet_io {
                         krow.extend_from_slice(&wb);
                     }
                 }
-                let hot_width: usize =
-                    row_fields.iter().filter(|f| f.width > 0).map(|f| f.width).sum();
+                let hot_width: usize = row_fields
+                    .iter()
+                    .filter(|f| f.width > 0)
+                    .map(|f| f.width)
+                    .sum();
                 let ver = <R as Document>::LAYOUT_VERSION;
                 let pay_header = vec![ver, (hot_width >> 8) as u8, hot_width as u8];
                 let mut payloads: Vec<Vec<u8>> = vec![pay_header; n];
@@ -454,5 +474,364 @@ pub mod parquet_io {
         }
         Ok(count)
     }
-}
 
+    /// The restore half of [`Graph::to_record_batch_table`]: write an edge table
+    /// back through the graph's own write path (`link_into` + `put_fields_into`,
+    /// one commit per edge), so every derived face entry follows and no second
+    /// write channel appears.
+    ///
+    /// The endpoints arrive as `(table name, raw key)` pairs — one edge table spans
+    /// node collections, so the key cannot be decoded without the declaration of
+    /// the collection it belongs to; `ns_of` turns a name into that collection's
+    /// `[ns 2B]` header. An unknown name is a REFUSAL naming the row, never a
+    /// guessed ns. The edge id rides the first key column, so a restore keeps the
+    /// ids the backup carries instead of renumbering (§5's rule for watermarks,
+    /// applied to the edge sequence).
+    #[cfg(feature = "parquet")]
+    impl<S: crate::engine::storage::VirtualStorage, E: crate::model::graph::GraphEncode>
+        crate::model::graph::Graph<S, E>
+    {
+        /// The file form of [`Self::import_table`]: read every batch and land it,
+        /// so a caller never assembles a batch the export did not hand it. An empty
+        /// file restores nothing (0), which is the export of an empty table.
+        pub fn import_file<F>(&mut self, path: &std::path::Path, ns_of: F) -> Result<usize, String>
+        where
+            F: Fn(&str) -> Option<u16>,
+        {
+            let file = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+            let reader =
+                parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(file)
+                    .map_err(|e| format!("{}: {e}", path.display()))?
+                    .build()
+                    .map_err(|e| format!("{}: {e}", path.display()))?;
+            let mut rows = 0usize;
+            for batch in reader {
+                let batch = batch.map_err(|e| format!("{}: {e}", path.display()))?;
+                rows += self.import_table(&batch, &ns_of)?;
+            }
+            Ok(rows)
+        }
+
+        pub fn import_table<F>(
+            &mut self,
+            batch: &arrow::array::RecordBatch,
+            ns_of: F,
+        ) -> Result<usize, String>
+        where
+            F: Fn(&str) -> Option<u16>,
+        {
+            use crate::model::graph::{EdgeHead, EdgeKey, NodeRef};
+            use arrow::array::{Array, BinaryArray, StringArray};
+
+            let key_fields = <EdgeKey as KeyEncode>::FIELDS;
+            let row_fields = <E as Document>::FIELDS;
+            let (nkey, nrow) = (key_fields.len(), row_fields.len());
+            let columns = 5 + nkey + nrow + 1;
+            if batch.num_columns() != columns {
+                return Err(format!(
+                    "edge table has {} columns; this graph's declaration needs {columns} \
+                 (src_table, src_pkey, dst_table, dst_pkey, predicate, {nkey} key \
+                 field(s), {nrow} payload field(s), variant)",
+                    batch.num_columns()
+                ));
+            }
+            let n = batch.num_rows();
+            let endpoint =
+                |table_col: usize, key_col: usize, row: usize| -> Result<NodeRef, String> {
+                    let tables = batch
+                        .column(table_col)
+                        .as_any()
+                        .downcast_ref::<StringArray>()
+                        .ok_or_else(|| format!("column {table_col} is not a table-name column"))?;
+                    let keys = batch
+                        .column(key_col)
+                        .as_any()
+                        .downcast_ref::<BinaryArray>()
+                        .ok_or_else(|| format!("column {key_col} is not a raw-key column"))?;
+                    if tables.is_null(row) {
+                        return Err(format!(
+                            "row {row}: column {table_col} has no table name — the endpoint's \
+                     collection is unknown, and a name is never invented"
+                        ));
+                    }
+                    let name = tables.value(row);
+                    let ns = ns_of(name).ok_or_else(|| {
+                        format!("row {row}: no collection named `{name}` in this store")
+                    })?;
+                    Ok(NodeRef::new(&ns.to_be_bytes(), keys.value(row)))
+                };
+
+            let mut heads: Vec<EdgeHead> = Vec::with_capacity(n);
+            let mut ids: Vec<u64> = Vec::with_capacity(n);
+            let mut payloads: Vec<E> = Vec::with_capacity(n);
+            let mut props: Vec<
+                std::collections::BTreeMap<String, crate::model::obj_dynamic::DynamicValue>,
+            > = Vec::with_capacity(n);
+            {
+                let store = self.store_mut();
+                let mut ns_header = <E as Document>::PARTITION_PREFIX.to_vec();
+                ns_header.extend_from_slice(<E as Document>::NS_PREFIX);
+                let hot_width: usize = row_fields
+                    .iter()
+                    .filter(|f| f.width > 0)
+                    .map(|f| f.width)
+                    .sum();
+                for row in 0..n {
+                    let src = endpoint(0, 1, row)?;
+                    let dst = endpoint(2, 3, row)?;
+                    let predicates = batch
+                        .column(4)
+                        .as_any()
+                        .downcast_ref::<StringArray>()
+                        .ok_or("column 4 is not a predicate column")?;
+                    if predicates.is_null(row) {
+                        return Err(format!("row {row}: the edge has no predicate"));
+                    }
+                    // The key half: the edge id, at the key column's own width.
+                    let key_bytes =
+                        wire_bytes(batch.column(5), row, &key_fields[0], store, &ns_header)?;
+                    let id_bytes: [u8; 8] = key_bytes.as_slice().try_into().map_err(|_| {
+                        format!(
+                            "row {row}: edge key is {} bytes, not a u64",
+                            key_bytes.len()
+                        )
+                    })?;
+                    // The payload: `[ver][hot_len][hot][cold TLV]`, the export's
+                    // layout, reassembled from the typed columns.
+                    let mut payload = vec![
+                        <E as Document>::LAYOUT_VERSION,
+                        (hot_width >> 8) as u8,
+                        hot_width as u8,
+                    ];
+                    for (fi, f) in row_fields.iter().enumerate() {
+                        if f.width == 0 {
+                            continue;
+                        }
+                        payload.extend(wire_bytes(
+                            batch.column(5 + nkey + fi),
+                            row,
+                            f,
+                            store,
+                            &ns_header,
+                        )?);
+                    }
+                    for (fi, f) in row_fields.iter().enumerate() {
+                        if f.width > 0 {
+                            continue;
+                        }
+                        let wb =
+                            wire_bytes(batch.column(5 + nkey + fi), row, f, store, &ns_header)?;
+                        payload.push(fi as u8);
+                        crate::put_len(&mut payload, wb.len());
+                        payload.extend_from_slice(&wb);
+                    }
+                    heads.push(EdgeHead {
+                        src,
+                        dst,
+                        predicate: predicates.value(row).to_string(),
+                    });
+                    ids.push(u64::from_be_bytes(id_bytes));
+                    payloads.push(E::decode_payload(&payload));
+                    props.push(variant_map(batch.column(columns - 1), row)?);
+                }
+            }
+
+            for ((head, (id, payload)), fields) in heads
+                .iter()
+                .zip(ids.iter().zip(payloads.iter()))
+                .zip(props.iter())
+            {
+                let mut batch = crate::engine::storage::MemBatch::default();
+                self.link_into(&mut batch, head, payload, *id)?;
+                self.put_fields_into(&mut batch, *id, fields);
+                self.store_mut()
+                    .commit_batch(batch)
+                    .map_err(|e| format!("edge {id}: {e}"))?;
+            }
+            Ok(n)
+        }
+    }
+
+    /// The open-attributes column (a Variant holding one object) back to the map a
+    /// write takes. A null cell is "no attributes", which is not an error; a cell
+    /// that is not an object is one.
+    #[cfg(feature = "parquet")]
+    fn variant_map(
+        col: &dyn arrow::array::Array,
+        row: usize,
+    ) -> Result<std::collections::BTreeMap<String, crate::model::obj_dynamic::DynamicValue>, String>
+    {
+        use arrow::array::{Array, BinaryArray};
+
+        let col = col
+            .as_any()
+            .downcast_ref::<BinaryArray>()
+            .ok_or_else(|| format!("row {row}: the attribute column is not binary"))?;
+        if col.is_null(row) {
+            return Ok(std::collections::BTreeMap::new());
+        }
+        let raw = col.value(row);
+        if raw.len() < 4 {
+            return Err(format!(
+                "row {row}: the attribute wire is shorter than its header"
+            ));
+        }
+        let md_len = u32::from_be_bytes([raw[0], raw[1], raw[2], raw[3]]) as usize;
+        if raw.len() < 4 + md_len {
+            return Err(format!(
+                "row {row}: metadata length {md_len} exceeds the {} remaining bytes",
+                raw.len() - 4
+            ));
+        }
+        let variant = parquet_variant::Variant::new(&raw[4..4 + md_len], &raw[4 + md_len..]);
+        let obj = variant
+            .as_object()
+            .ok_or_else(|| format!("row {row}: the attribute wire is not an object"))?;
+        let mut out = std::collections::BTreeMap::new();
+        for (name, value) in obj.iter() {
+            out.insert(name.to_string(), to_dynamic(&value));
+        }
+        Ok(out)
+    }
+
+    #[cfg(feature = "parquet")]
+    fn to_dynamic(v: &parquet_variant::Variant<'_, '_>) -> crate::model::obj_dynamic::DynamicValue {
+        use crate::model::obj_dynamic::DynamicValue;
+        if v.as_null().is_some() {
+            return DynamicValue::Null;
+        }
+        if let Some(b) = v.as_boolean() {
+            return DynamicValue::Bool(b);
+        }
+        if let Some(s) = v.as_string() {
+            return DynamicValue::Str(s.to_string());
+        }
+        if let Some(b) = v.as_u8_slice() {
+            return DynamicValue::Bytes(b.to_vec());
+        }
+        if let Some(u) = v.as_u64() {
+            return DynamicValue::UInt(u);
+        }
+        if let Some(i) = v.as_int64() {
+            return DynamicValue::Int(i);
+        }
+        if let Some(f) = v.as_f64() {
+            return DynamicValue::F64(f);
+        }
+        if let Some(list) = v.as_list() {
+            return DynamicValue::Array(list.iter().map(|it| to_dynamic(&it)).collect());
+        }
+        if let Some(obj) = v.as_object() {
+            let mut map = std::collections::BTreeMap::new();
+            for (name, val) in obj.iter() {
+                map.insert(name.to_string(), to_dynamic(&val));
+            }
+            return DynamicValue::Obj(map);
+        }
+        DynamicValue::Null
+    }
+
+    /// The restore half of [`export_reduces`]: read the derived table
+    /// `(table, reduce, group, value)` and put each accumulator back, keeping the
+    /// HIGHER of the two when the entry already exists.
+    ///
+    /// A restored table whose watermark is missing hands out ids it already used
+    /// (ADR-0034 §5), so the watermark travels with the table — and a restore never
+    /// LOWERS one, because a lower watermark re-issues ids that live rows still
+    /// carry. `A::Acc: PartialOrd` is the price of that rule: the reduces that
+    /// travel are watermarks (a running maximum), and a reduce whose accumulator
+    /// has no order must not be pushed through this door.
+    #[cfg(feature = "parquet")]
+    pub fn import_reduces<
+        S: crate::engine::storage::VirtualStorage,
+        A: crate::model::reduce::Reduce,
+    >(
+        store: &S,
+        ns_prefix: &[u8],
+        table: &str,
+        path: &std::path::Path,
+    ) -> parquet::errors::Result<usize>
+    where
+        A::Acc: PartialOrd,
+    {
+        use crate::model::reduce::ReduceCodec;
+        use arrow::array::{Array, BinaryArray, StringArray, UInt16Array};
+
+        let file = std::fs::File::open(path)?;
+        let reader = parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(file)?
+            .build()?;
+        let mut prefix = ns_prefix.to_vec();
+        crate::model::index::write_slot(&mut prefix, A::SLOT);
+
+        let mut count = 0usize;
+        for batch in reader {
+            let batch: arrow::array::RecordBatch = batch?;
+            if batch.num_columns() != 4 {
+                return Err(parquet::errors::ParquetError::General(format!(
+                    "reduce table has {} columns, expected (table, reduce, group, value)",
+                    batch.num_columns()
+                )));
+            }
+            let names = batch
+                .column(0)
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .ok_or_else(|| {
+                    parquet::errors::ParquetError::General("column 0 is not a table name".into())
+                })?;
+            let slots = batch
+                .column(1)
+                .as_any()
+                .downcast_ref::<UInt16Array>()
+                .ok_or_else(|| {
+                    parquet::errors::ParquetError::General("column 1 is not a reduce slot".into())
+                })?;
+            let groups = batch
+                .column(2)
+                .as_any()
+                .downcast_ref::<BinaryArray>()
+                .ok_or_else(|| {
+                    parquet::errors::ParquetError::General("column 2 is not a group column".into())
+                })?;
+            let values = batch
+                .column(3)
+                .as_any()
+                .downcast_ref::<BinaryArray>()
+                .ok_or_else(|| {
+                    parquet::errors::ParquetError::General("column 3 is not a value column".into())
+                })?;
+            for row in 0..batch.num_rows() {
+                if names.value(row) != table {
+                    return Err(parquet::errors::ParquetError::General(format!(
+                        "row {row}: the file holds table `{}`, not `{table}`",
+                        names.value(row)
+                    )));
+                }
+                if slots.value(row) != A::SLOT {
+                    return Err(parquet::errors::ParquetError::General(format!(
+                        "row {row}: the file holds reduce slot {}, this table declares {}",
+                        slots.value(row),
+                        A::SLOT
+                    )));
+                }
+                let mut key = prefix.clone();
+                key.extend_from_slice(groups.value(row));
+                let incoming = A::Acc::decode_acc(values.value(row));
+                let existing = store.get(&key);
+                let bytes = match existing {
+                    Some(bytes) => {
+                        let current = A::Acc::decode_acc(&bytes);
+                        if current >= incoming {
+                            continue;
+                        }
+                        incoming.encode_acc()
+                    }
+                    None => incoming.encode_acc(),
+                };
+                store.put(key, bytes);
+                count += 1;
+            }
+        }
+        Ok(count)
+    }
+}
