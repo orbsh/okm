@@ -1186,7 +1186,7 @@ struct MemberRow { display_name: String, role: u8 }  // no kind field, no vector
     by_since { fields(since) },               // the temporal entrance
     by_scope_weight { fields(scope, weight) },// the progressive one
 )]
-struct Facts { /* scope, since, confidence, weight, five counters */ }
+struct Facts { /* scope, since, confidence, weight, three counters, two clocks, 8-slot recent ring */ }
 
 // The member set is GENERATED from that list: `FactsNode { EntityRow,
 // MemberRow }` — one variant per node collection (membership is "is this ns in
@@ -1232,11 +1232,20 @@ graph's predicate vocabulary rather than a pass over edges. The node-side twin i
 it types the NODE, where a predicate types the ASSERTION.
 
 **Attributes are what earn the edge.** A fact carries its assertion context:
-`since` (the caller's clock), `confidence`, and the five counters the weight
-system folds into `weight`. The relation's open props (cause, condition,
-strength, and the per-assertion `functional` flag) ride the edge's dynamic
-segment. A junction has no identity of its own, so none of this would have a
-place to live.
+`since` (the caller's clock), `confidence`, and the three counters plus two
+access clocks the weight system folds into `weight`. The relation's open props
+(cause, condition, strength, and the per-assertion `functional` flag) ride the
+edge's dynamic segment. A junction has no identity of its own, so none of this
+would have a place to live.
+
+**Recent accesses live in a fixed-size ring, not in the counters.** Counters
+answer "how many" and the two clocks answer "how recently"; neither answers "what
+did the distribution look like" — and the decay bill is decided by exactly that
+distribution. So the row's tail gains `recent: Vector<u32>`: 8 slots, a second
+offset from 2026-01-01, ascending, `0` = unused, shifted right by one on write,
+with rows written before the ring decoding to the declared default (8 zeros). Why
+not `Offset`, not `Bytes`, no cursor and no wrapper is the case in "Homogeneous
+lists".
 
 **Parallel edges are facts.** Two assertions between the same pair are two
 truths — different sources, different clocks, different confidences — so
@@ -1373,6 +1382,60 @@ a cache, droppable at any time. Code-level distances are the graph's output;
 re-scoring against the stored vector is the caller's step. Storage stays
 byte-opaque: the corpus is still just the frame bytes.
 
+#### Case: a fixed-size access ring lives in `Vector<u32>`, not in the counters
+
+k10r's fact row has to answer something no counter can: were those 50 reads
+bunched into one week, or spread over two years? The weight system's decay bills
+exactly that distribution, while `read_count` plus "last access" leaves two
+numbers. The shape it landed on is one 8-slot ring:
+
+```rust
+pub struct Facts {
+    // …hot segment: three counters + two access clocks…
+    #[ok_default(::okm_core::Vector::new(vec![0u32; RECENT_SLOTS]))]
+    #[ok_len(8)]
+    pub recent: Vector<u32>,   // cold frame: the last 8 accesses, oldest first
+}
+```
+
+Each slot is a SECOND offset from `1_767_225_600` (2026-01-01T00:00:00Z);
+ascending, `0` = unused (that instant is never a real access, so it doubles as the
+sentinel); shifted right by one on write, so the tail slot is the last access. The
+window covers the last 8 only and anything older stays summarized by the counters
+— a fixed-price trade between row width and fidelity, not an omission.
+
+Four rejections, each of them the cheaper wrong answer:
+
+- **Not `Offset`.** That is a scalar field's spelling (`#[ok_offset(base)]` stores
+  an i64 as a u32 delta), while a `Vector`'s elements are only
+  `f32/u32/i32/u64/i64/String` — so the base stays a consumer constant and okm
+  stores a plain `u32`.
+- **Not `Bytes`.** `Vector<u32>` already gives the bare-V zero-overhead layout for
+  fixed-width elements, the `FieldType::Vector` column type, and the `#[ok_len]` /
+  `expect_len` write-boundary contract; opaque bytes would have all three rewritten
+  by hand, and neither the dynamic reader nor the arrow bridge could read it.
+- **No cursor.** Every touch changes `weight`, so the whole row is re-encoded and
+  all eight slots are written no matter how they are arranged — the shift costs
+  nothing; a cursor only buys a reader that must rotate its view and a `0` sentinel
+  that is no longer always at the front.
+- **No wrapper.** The ring has no new wire form (it IS `[count][u32 × 8]`), and K,
+  the epoch and the second granularity are all application parameters — hoisting
+  them into the codec hands every other consumer a clock semantics it never asked
+  for, the same discipline as the bloom filter.
+
+Adding the field needs no rebuild: a tail append is the only legal way to add a
+field, an older row simply lacks the cold frame and decodes to the declared
+default (8 zeros), and `#[ok_len(8)]` only constrains rows being written. The one
+trap is on the application side: `Default` must be hand-written, because a derived
+`Default` hands back an empty `Vector` and the first encode panics at the write
+boundary.
+
+Nor is it a candidate for "let the library count for me": reduce is a cross-row
+GROUP-BY (its unit is "how many rows in this group") and subscribe only emits the
+write as an event and never rewrites a field. Incrementing on every access is the
+caller's read-modify-write, and the single-writer discipline keeps it from
+interleaving.
+
 ## Cross-row pre-aggregation
 
 Every index entry is an append-only derived view that lives and dies
@@ -1476,31 +1539,34 @@ is a different mechanism, outside this model. The overwrite unfold
 compensation happens inside put; upsert_with does not settle the
 ledger twice (see the internals doc on the reduce mechanism).
 
-## Write-path events: two mechanisms (reduce, `#[ok_subscribe]`) and the trigger attribution
+## Write-path events: two mechanisms (reduce, subscribe)
 
-Reduce answers "what does the accumulated state look like"; a second
-class of consumers needs the write itself as an event — side effects,
-search-index sync, downstream notifications. The event layer (ADR-0008)
-classifies them by FAILURE SEMANTICS. The judging question: what happens
-if this consumer LOSES an event? A corrupted ledger = inline (the reduce
-mechanism); nothing = trigger (application code — okm has no mechanism
-for it); reconcilable later = channel (the `#[ok_subscribe]` mechanism).
-**There are exactly two mechanisms** — reduce and channel; the trigger is
-a third ATTRIBUTION, not a third mechanism.
+Reduce answers "what does the accumulated state look like"; a second class of
+consumers wants the write itself as an event — side effects, search-index sync,
+downstream notifications. The line between the two mechanisms is not who runs
+first, it is WHERE THE CONSUMER'S CODE LIVES: reduce puts the consumer inside
+the write — the fold IS part of the write; subscribe puts it outside — there is
+no handler at the annotation site, only one send. The judging question is
+unchanged, and it is still about failure semantics: what happens if this
+consumer LOSES an event? A corrupted ledger = reduce (in-write, exactly-once by
+construction); reconcilable later = subscribe (after the write, best-effort);
+nothing = your own code (a side effect at the write path's edge, for which okm
+provides no mechanism and has no declaration surface). **There are exactly two
+mechanisms**; the third class gets no name, because there is nothing to declare
+or assemble.
 
-- **Inline** (reduce): runs inside the write path, exactly-once by
-  construction — the fold IS part of the write. Reduce never consumes
-  a channel.
-- **Trigger** (plain application code — no okm mechanism, no declaration
-  surface): synchronous at the write path's edge, but AT-MOST-ONCE with no
-  transaction boundary and no undo — "already notified" and "already wrote
-  the other table" cannot be rolled back. A trigger's failure neither rolls
-  back the write nor earns a retry; do not hang anything on it that must
-  happen exactly once. The asymmetry with reduce (reversible vs
-  at-most-once, on the SAME event source) is a deliberate design, recorded
-  in ADR-0008 — do not unify them, and do not misread the trigger as a third
-  mechanism: okm provides nothing for it and needs to; this class of side
-  effect belongs to the caller's own code.
+- **reduce** (`#[ok_reduce]`): runs inside the write path, exactly-once by
+  construction — the fold IS part of the write. Reduce never consumes a
+  subscription.
+- **A side effect at the write path's edge** (not a mechanism): plain
+  application code — no okm mechanism, no declaration surface. It runs
+  synchronously inside the write sequence, but AT-MOST-ONCE, with no
+  transaction boundary and no undo — "already notified" and "already wrote the
+  other table" cannot be rolled back, and its failure neither rolls back the
+  write nor earns a retry; do not hang anything on it that must happen exactly
+  once. Its asymmetry with reduce (reversible vs at-most-once, on the SAME
+  event source) is a deliberate design, recorded in ADR-0008 — do not try to
+  turn it into a second declaration surface.
 
   Again, this is NOT a declaration — it is ordinary code at the write
   path's edge, after the row and its derived entries are durable:
@@ -1511,28 +1577,26 @@ a third ATTRIBUTION, not a third mechanism.
   fn save_config(store: &mut impl VirtualStorage, cfg: &Config) -> Result<()> {
       let mut t = Collection::new(store.shared_handle());
       t.put(&cfg.key(), cfg)?;                       // the write: exactly-once
-      let _ = METRICS_GAUGE.set(cfg.name(), cfg.ttl_secs()); // trigger: at-most-once
-      let _ = notifier.send(cfg.name());             // trigger: fire and forget
+      let _ = METRICS_GAUGE.set(cfg.name(), cfg.ttl_secs()); // side effect: at-most-once
+      let _ = notifier.send(cfg.name());             // side effect: fire and forget
       Ok(())
   }
   ```
 
-  The line between a trigger and a channel consumer: a trigger runs
-  IN the caller's write sequence (its cost lands on the write's
-  latency, its panic propagates); a channel consumer runs AFTER the
-  write returned. If the side effect must observe every write even
-  under load, it is a channel consumer with a durable feed — not a
-  trigger.
+  The line between that side effect and a subscriber: the side effect runs
+  IN the caller's write sequence (its cost lands on the write's latency, its
+  panic propagates); a subscriber runs AFTER the write returned. If the side
+  effect must observe every write even under load, it needs a sink with a
+  durable feed — not a few lines after `put`.
 
-- **Channel** (`#[ok_subscribe]`): best-effort delivery, no guarantee.
-  The annotation declares that this row type's write-path events enter
-  a channel; there is no handler at the annotation site — the derive
-  only emits a send, and the consumer registers a transport at
-  assembly time:
+- **subscribe** (`#[ok_subscribe]`): best-effort delivery, no guarantee.
+  The annotation declares that this row type's write-path events enter a
+  subscription; there is no handler at the annotation site — the derive only
+  emits a send, and the subscriber registers a sink at assembly time:
 
 ```rust
-// declaration: bare — this row type's write events join the channel;
-// the event enum (variant = row type name) is generated by build.rs
+// declaration: bare — this row type's write events join the subscription;
+// the event enum (variant = row type name, `RowEvent` by default) is generated by build.rs
 #[derive(DocumentEncode, Clone, Debug)]
 #[ok_ref(AccountKey)]
 #[ok_subscribe]                        // Account now emits Put/Delete events
@@ -1541,10 +1605,10 @@ pub struct Account {
     pub balance: u64,
 }
 
-// consumption, at assembly time: register the transport once
+// consumption, at assembly time: register the sink once
 // (tokio mpsc, crossbeam, a no-op — transport is not the model's business)
-ACCOUNT_EVENTS.register(move |ev: AccountEvent| {
-    let AccountEvent::Account(e) = ev else { return false };
+okm_subscribe::SINK_ROWEVENT.register(move |ev: okm_subscribe::RowEvent| {
+    let okm_subscribe::RowEvent::Account(e) = ev else { return false };
     index_sync(e.op, &e.key, &e.document);   // e.g. search-index sync:
     e.epoch == last_epoch(e.key)             //   lossy + re-syncable
 });
@@ -1556,7 +1620,7 @@ ACCOUNT_EVENTS.register(move |ev: AccountEvent| {
   `register` returns nothing and delivery is best-effort: a full queue
   drops, a missing sink drops, the write never notices. That is the
   contract — a consumer that cannot tolerate a dropped event belongs
-  inline, not here.
+  in-write, not here.
 
 Two properties of the event stream, independent of which class consumes
 it: events carry a monotonic **write-batch epoch** (the emitting table's
@@ -1569,19 +1633,19 @@ eventually-consistent by structure).
 
 Three disciplines of use:
 
-- **A trigger's failure never rolls back the write.** It is an at-most-once side
-  effect — a failure is neither retried nor undone, and the write path does not pay
-  for it; conversely, any logic whose failure would need compensating does not
-  belong in a write-path-edge side effect.
-- **Never put correctness on the channel.** A full queue drops, a
+- **A write-path-edge side effect's failure never rolls back the write.** It is
+  an at-most-once side effect — a failure is neither retried nor undone, and the
+  write path does not pay for it; conversely, any logic whose failure would need
+  compensating does not belong in a write-path-edge side effect.
+- **Never put correctness on a subscription.** A full queue drops, a
   missing sink drops silently; anything that must happen exactly once
-  (like reduce) belongs inline. The channel is for consumers that can
+  (like reduce) belongs in-write. A subscription is for consumers that can
   tolerate loss and reconcile later.
 - **Purity applies to event payloads too**: the row snapshot rides the
   event as-is; deriving extra context at consume time re-reads storage
   the event no longer guarantees to describe.
 
-The transport is an assembly-site decision (`ChannelCell::register`
+The transport is an assembly-site decision (`SinkCell::register`
 accepts any sink — tokio mpsc, crossbeam queue, no-op); the core stays
 synchronous and knows no executor. Combinators over the receivers
 (map/filter/merge/fold to an epoch boundary) are the stream layer's

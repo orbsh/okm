@@ -16,7 +16,7 @@ FTS    = 多值函数索引（n-gram/token → N 条 entry）+ 调用方 BM25 �
 
 ## 事件层边界
 
-写路径同时发出 subscribe 事件（`#[ok_subscribe]`，best-effort channel——见建模文档）。对扩展消费者有一条不对称值得单列：**delete 事件携带完整行，不只是 key。** 这是模型逼出来的，不是附赠——索引条目和 reduce 折叠都从行的字段派生，所以 `delete` 必须拿着行（`delete_by_pkey` 内部先取回），发出的事件直接复用它。对消费者的推论：搜索索引同步、缓存失效仅凭事件本身就能卸载被删行的派生物，无需回读一个删除即将改变状态的存储。下游触发保持对称（put/delete 都带行），而 reduce 严格留在 inline——永不搭 channel，其恰好一次契约不被事件层触及。
+写路径同时发出 subscribe 事件（`#[ok_subscribe]`，best-effort subscribe——见建模文档）。对扩展消费者有一条不对称值得单列：**delete 事件携带完整行，不只是 key。** 这是模型逼出来的，不是附赠——索引条目和 reduce 折叠都从行的字段派生，所以 `delete` 必须拿着行（`delete_by_pkey` 内部先取回），发出的事件直接复用它。对消费者的推论：搜索索引同步、缓存失效仅凭事件本身就能卸载被删行的派生物，无需回读一个删除即将改变状态的存储。下游触发保持对称（put/delete 都带行），而 reduce 严格留在 inline——永不搭 channel，其恰好一次契约不被事件层触及。
 
 ## 预计算的两层分界
 

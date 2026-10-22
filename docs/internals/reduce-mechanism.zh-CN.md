@@ -52,7 +52,7 @@ put(key, row)
   ├─ 写主表条目（slot 0）
   ├─ 写索引条目（每个 access method）
   ├─ fold(新) 每个声明 group
-  └─ emit 事件（epoch +1，best-effort channel）
+  └─ emit 事件（epoch +1，best-effort subscribe）
 ```
 
 delete 是同一条路径的 unfold 分支（`add=false`，单调用点，`delete_by_pkey` 内部 get 后到达同一处）。

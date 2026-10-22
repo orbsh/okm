@@ -11,7 +11,7 @@ Two things were conflated in that ruling. Separating them is the reason it chang
 
 ### What ADR-0008 actually rules
 
-ADR-0008 rules on the **event layer**: reduce/subscribe are inline/channel consumers of a row-event stream, and the fold hook lives inside the write path's engine-locked read-modify-write. Its real invariant is: *fold and the document write must see the same engine state — the exactly-once property of the accumulator update*. Nothing in ADR-0008 says the fold function must be Rust, or that it must be executed inside okm-core. ADR-0008 never mentions bindings or the dynamic mode; the "per ADR-0008" citation in okm-dynamic's ceiling note was an over-extension of the exactly-once argument to a claim about implementation language.
+ADR-0008 rules on the **event layer**: reduce/subscribe are in-write/subscriber consumers of a row-event stream, and the fold hook lives inside the write path's engine-locked read-modify-write. Its real invariant is: *fold and the document write must see the same engine state — the exactly-once property of the accumulator update*. Nothing in ADR-0008 says the fold function must be Rust, or that it must be executed inside okm-core. ADR-0008 never mentions bindings or the dynamic mode; the "per ADR-0008" citation in okm-dynamic's ceiling note was an over-extension of the exactly-once argument to a claim about implementation language.
 
 ### What actually changed since the ruling
 

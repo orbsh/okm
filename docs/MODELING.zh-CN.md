@@ -701,7 +701,7 @@ struct MemberRow { display_name: String, role: u8 }  // 没有 kind 字段，没
     by_since { fields(since) },                // 时间入口
     by_scope_weight { fields(scope, weight) }, // 渐进读取入口
 )]
-struct Facts { /* scope、since、confidence、weight、五个计数器 */ }
+struct Facts { /* scope、since、confidence、weight、三个计数、两个时钟、8 槽 recent 环 */ }
 
 // 成员集由上面那份清单**生成**：`FactsNode { EntityRow, MemberRow }`——每个节点
 // collection 一个变体（成员资格 = 该 ns 在不在集合里），每个 ns 取自那张表自己的
@@ -716,7 +716,9 @@ struct Facts { /* scope、since、confidence、weight、五个计数器 */ }
 
 **关系就是边的谓词，所以加一条关系就是加一个名字。** 摄入时元组给出关系的名字（`PREFERS`、`RUNS`、`BLOCKED_BY`），图把它 intern 成谓词 id——没有字段、没有枚举、没有声明、没有迁移。于是一条边 collection 装着这段记忆能表达的全部关系，而"这份语料用了哪些关系"是对图的谓词词汇表扫一次，不是把边过一遍。节点那一侧的孪生是 `kind`：同样是标签、同样 intern，但它是节点载荷里的 `Vocab` 字段——它给**节点**定型，谓词给**断言**定型。
 
-**属性是边存在的理由。** 一条事实带着它自己的断言语境：`since`（调用方的时钟）、`confidence`、以及权重系统折成 `weight` 的五个计数器；关系的开放 props（cause、condition、strength、逐断言的 `functional` 标记）落在边的动态段。junction 没有自己的身份，这些全都没有落脚处。
+**属性是边存在的理由。** 一条事实带着它自己的断言语境：`since`（调用方的时钟）、`confidence`、以及权重系统折成 `weight` 的三个计数与两个访问时钟；关系的开放 props（cause、condition、strength、逐断言的 `functional` 标记）落在边的动态段。junction 没有自己的身份，这些全都没有落脚处。
+
+**近期访问住在一个定长环里，不在计数里。** 计数回答"多少次"、两个时钟回答"多近"，都答不了"这个分布长什么样"——而衰减的账单正是这个分布决定的。行尾因此多了一个 `recent: Vector<u32>`：8 槽、从 2026-01-01 起的秒偏移、升序、`0` 表示未用、写入时右移一格，旧版本行缺这一帧时按声明的默认补满 8 槽。为什么不是 `Offset`、不是 `Bytes`、不设游标、也不做成 wrapper，见「同质列表」一节的案例。
 
 **平行边就是事实。** 同一对节点之间的两次断言是两条真相——来源不同、时钟不同、置信度不同——所以多值是默认，各拿自己的 `edge_id`。一源一值的关系由**每一次断言**自己声明（`functional` prop），因为丢掉一条事实是净损失，多一条边是可以回收的。裁决就是机制那节点名的就地改写：在位者与挑战者互相判定（`since >`，或 `confidence >=`），胜者的行以 `unlink_into` + `link_into` 编进同一批、沿**同一个** id 写成——提交点上那条边从未缺席。计数器回写走同一条路。
 
@@ -763,6 +765,32 @@ pub struct Doc {
 元素是**纯值**——身份分界线（上文多对多一节）把 Vector 挡在关系载体之外：标量没有 key，对它做 key 引用是范畴错误。一对多 → `Refs`；多对多 → `Junction`；表达顺序的值列表 → `Vector`；异质动态列表 → `DynamicValue::Array`（固定面 0x01）。`get_document` 时 Vector 提升为 `DynVal::Array`——动态层没有 Vector 类型，Vector 是存储层格式。多维形状是应用层解释（扁平序列按行优先），wire 上什么都不存。
 
 消费侧（okm-vector）在其上分层构建搜索：精确连续扫描（小规模路径，也是召回的参照系）、量化码上的内存 HNSW（int8 余弦或乘积量化码），以及按分片组织的句柄——每分片一份快照存在固定面 0x0B 下，是缓存、随时可丢。图给出的是码级距离，回存量的 f32 重打分由调用方做。存储保持字节不透明：语料仍然只是那些帧字节。
+
+#### 案例：定长访问环住在 `Vector<u32>` 里，不住在计数里
+
+k10r 的事实行要回答一个计数回答不了的问题：这 50 次读是挤在一周里，还是摊在两年里？权重系统的衰减正是按这个分布计账的，而 `read_count` 加「上次访问」只留下两个数字。它给出的形状是一行 8 槽的定长环：
+
+```rust
+pub struct Facts {
+    // …热段：三个计数 + 两个访问时钟…
+    #[ok_default(::okm_core::Vector::new(vec![0u32; RECENT_SLOTS]))]
+    #[ok_len(8)]
+    pub recent: Vector<u32>,   // 冷段帧：最近 8 次访问，最旧在前
+}
+```
+
+每槽是从 `1_767_225_600`（2026-01-01T00:00:00Z）起的**秒**偏移；升序、`0` = 未用（那个瞬间永不是一次真实访问，天然可当哨兵）；写入时整体右移一格，队尾就是上次访问。窗口只覆盖最近 8 次，更早的量仍由计数概括——这是行宽与保真之间固定价码的交换，不是遗漏。
+
+四条否定，每一条都是更省事的错答案：
+
+- **不用 `Offset`。** 它是标量字段的拼写（`#[ok_offset(base)]` 把 i64 存成 u32 差值），而 `Vector` 的元素只认 `f32/u32/i32/u64/i64/String`——base 只能留在消费端的常量里，okm 看到的是普通 `u32`。
+- **不用 `Bytes`。** `Vector<u32>` 已经给了定宽元素裸 V 的零开销布局、`FieldType::Vector` 的列类型，以及 `#[ok_len]` / `expect_len` 这条写边界契约；用不透明字节，这三样都要在应用层重写一遍，而且动态 reader 与 arrow bridge 都读不懂它。
+- **不设游标。** 每次触碰 `weight` 都会变，整行本来就要重编码，8 个槽无论怎么摆都要写一遍——右移的成本是零；游标换来的只有读时必须旋转视图、`0` 哨兵位置不再固定。
+- **不做成 wrapper。** 环没有新的 wire 形态（就是 `[count][u32 × 8]`），K、起点、秒级全是应用参数——抬进 codec 等于让每个消费者继承一个它没要求的时钟语义，与 bloom filter 那条纪律同构。
+
+加这个字段不需要清库：尾部追加是加字段的唯一合法方式，旧行缺这个冷段帧就按 `#[ok_default]` 补 8 个 0，`#[ok_len(8)]` 只约束新写的行。唯一要记住的坑在应用侧：`Default` 必须手写，派生的 `Default` 会给一个空 `Vector`，第一次编码就在写边界 panic。
+
+它也不是「让库替我数」的候选：reduce 是跨行 GROUP-BY（累加器的单位是「组里有几行」），subscribe 只把写当事件发出去、从不改字段。「每次访问 +1」只有调用方读-改-写，单写者纪律保证它不被交错。
 
 ## 跨行预聚合
 
@@ -813,12 +841,12 @@ reduce 之外，写路径还有命令式的一半——`Collection::upsert_with(
 
 两者共用同一条写路径（put），所以索引维护、reduce 折叠、事件发射全部照常触发，无特例。也共用同一个正确性边界：**单写者**。OKM 是进程内库、写序串行（`&mut self`），get→f→put 不可能交错——无需 CAS，这也是 reduce 恰好一次的同一约束。多写者未来（乐观 CAS）是不同机制，不在此模型内。覆盖写的 unfold 补偿由 put 内部完成，upsert_with 不另平账（见 internals 的 reduce 机制）。
 
-## 写路径事件：两种机制（reduce、`#[ok_subscribe]`）与 trigger 归属
+## 写路径事件：两个机制（reduce、subscribe）
 
-reduce 回答"累计后的状态长什么样"；另一类消费者需要的是写本身作为事件——副作用、搜索索引同步、下游通知。事件层（ADR-0008）按**失败语义**判别它们的归属。判据一句话：这个消费者丢了一个事件会怎样？账本错 = inline（reduce 机制）；无所谓 = trigger（应用代码，okm 无机制）；能事后追平 = channel（`#[ok_subscribe]` 机制）。**机制只有两种**——reduce 与 channel；trigger 是第三种归属，不是第三个机制。
+reduce 回答"累计后的状态长什么样"；另一类消费者要的是写本身作为事件——副作用、搜索索引同步、下游通知。两个机制的分界不是"谁先跑"，而是**消费者代码放在哪里**：reduce 把消费者放进写内，fold 就是写的一部分；subscribe 把消费者放到写外，注解处没有 handler，只有一次 send。判据仍是失败语义：这个消费者丢了一个事件会怎样？账本错 = reduce（写内，构造上恰好一次）；能事后追平 = subscribe（写后，尽力而为）；无所谓 = 你自己的代码（写路径边缘的旁路副作用，okm 不提供机制，也没有声明面）。**机制只有两个**；第三类不配名字，因为它没有可声明、可装配的东西。
 
-- **Inline**（reduce）：运行在写路径内部，构造上恰好一次——fold 就是写的一部分。reduce 永远不消费 channel。
-- **Trigger**（普通应用代码，okm 无机制、无声明面）：同步跑在写路径边上，但**至多一次**、无事务边界、无 undo——「已经通知过」「已经写了另一张表」撤不回来。trigger 的失败既不回滚写入、也不赢得重试；任何必须恰好一次的东西都不要挂在它上面。它与 reduce 的不对称（可逆 vs 至多一次，同一个事件源上）是刻意的设计（ADR-0008 记录在案），不要统一它们——也不要把它误读为第三个机制：okm 不为它提供任何东西，也不需要提供，这类副作用就归调用方自己的代码。
+- **reduce**（`#[ok_reduce]`）：运行在写路径内部，构造上恰好一次——fold 就是写的一部分。reduce 永远不消费订阅。
+- **写路径边缘的旁路副作用**（不是机制）：普通应用代码，okm 无机制、无声明面。它同步跑在写序列里，但**至多一次**、无事务边界、无 undo——「已经通知过」「已经写了另一张表」撤不回来，失败既不回滚写入也不赢得重试；任何必须恰好一次的东西都不要挂在它上面。它与 reduce 的不对称（可逆 vs 至多一次，同一个事件源上）是刻意的设计（ADR-0008 记录在案），不要试图把它做成第二个声明面。
 
   这不是声明，是写路径边缘的普通代码——行与它的派生条目落定之后顺手执行：
 
@@ -827,22 +855,23 @@ reduce 回答"累计后的状态长什么样"；另一类消费者需要的是�
   fn save_config(store: &mut impl VirtualStorage, cfg: &Config) -> Result<()> {
       let mut t = Collection::new(store.shared_handle());
       t.put(&cfg.key(), cfg)?;                       // 写：恰好一次
-      let _ = METRICS_GAUGE.set(cfg.name(), cfg.ttl_secs()); // trigger：至多一次
-      let _ = notifier.send(cfg.name());             // trigger：发后即忘
+      let _ = METRICS_GAUGE.set(cfg.name(), cfg.ttl_secs()); // 旁路副作用：至多一次
+      let _ = notifier.send(cfg.name());             // 旁路副作用：发后即忘
       Ok(())
   }
   ```
 
-  trigger 与 channel 消费者的分界：trigger 跑在**调用方的写序列内**（它的耗时记在写的
-  延迟上，它的 panic 会传出来）；channel 消费者跑在**写返回之后**。如果副作用必须在任何
-  负载下观察到每一次写，那它是带持久供给的 channel 消费者——不是 trigger。
+  旁路副作用与 subscriber 的分界：前者跑在**调用方的写序列内**（它的耗时记在写的延迟上，
+  它的 panic 会传出来）；后者跑在**写返回之后**。如果副作用必须在任何负载下观察到每一次
+  写，那它得是带持久供给的 sink 消费者，而不是 put 旁边顺手的那几行。
 
-- **Channel**（`#[ok_subscribe]`）：best-effort 投递，无保证。注解声明"该行类型的写路径
-  事件进入 channel"；注解处没有 handler——derive 只发一次 send，消费者在装配期注册传输：
+- **subscribe**（`#[ok_subscribe]`）：best-effort 投递，无保证。注解声明"该行类型的写路径
+  事件进入订阅"；注解处没有 handler——derive 只发一次 send，订阅者（subscriber）在装配期
+  注册 sink：
 
 ```rust
-// 声明：bare——该行类型的写事件进入 channel；
-// 事件 enum（variant = 行类型名）由 build.rs 收集生成
+// 声明：bare——该行类型的写事件进入订阅；
+// 事件 enum（variant = 行类型名，默认 `RowEvent`）由 build.rs 收集生成
 #[derive(DocumentEncode, Clone, Debug)]
 #[ok_ref(AccountKey)]
 #[ok_subscribe]                        // Account 现在会发出 Put/Delete 事件
@@ -851,10 +880,10 @@ pub struct Account {
     pub balance: u64,
 }
 
-// 消费，装配期一次性注册传输
+// 消费：装配期一次性注册 sink
 // （tokio mpsc、crossbeam、no-op 均可——传输不是模型的事）
-ACCOUNT_EVENTS.register(move |ev: AccountEvent| {
-    let AccountEvent::Account(e) = ev else { return false };
+okm_subscribe::SINK_ROWEVENT.register(move |ev: okm_subscribe::RowEvent| {
+    let okm_subscribe::RowEvent::Account(e) = ev else { return false };
     index_sync(e.op, &e.key, &e.document);   // 例如搜索索引同步：
     e.epoch == last_epoch(e.key)             //   会丢、可重同步
 });
@@ -862,18 +891,18 @@ ACCOUNT_EVENTS.register(move |ev: AccountEvent| {
 
 消费者收到的是：`op`（Put/Delete）、该行的 `epoch`（发出集合的单调写计数器——精确的
 同表顺序边界）、key、完整行快照。`register` 无返回值，投递是尽力而为：队列满会丢、
-没有 sink 会丢、写路径毫无察觉。这就是契约——容忍不了丢事件的消费者属于 inline，
+没有 sink 会丢、写路径毫无察觉。这就是契约——容忍不了丢事件的消费者属于写内（reduce），
 不在这里。
 
 事件流还有两条与消费类别无关的性质：事件带单调递增的**写批次 epoch**（发出表的写计数器——同表事件带精确的批次边界，消费者组合子可以恰好折叠到边界为止，glitch-free，而非靠去抖启发式）；流只在进程内有意义——不持久化，重启归零，不提供跨表顺序（独立 put 之间不存在原子性的"两者都已更新"时刻，多表 fan-in 结构上就是最终一致）。
 
 三条使用纪律：
 
-- **trigger 的失败不回滚写入。** 它是至多一次的副作用——失败了既不重试也不撤销，写路径不为它买单；反过来，凡是失败需要补偿的逻辑都不该写成写路径边的旁路副作用。
-- **正确性永不放上 channel。** 队列满会丢、没有 sink 会静默丢；必须恰好一次发生的事（如 reduce）属于 inline。channel 的位置是容忍丢失、事后可对账的消费者。
+- **旁路副作用的失败不回滚写入。** 它是至多一次的副作用——失败了既不重试也不撤销，写路径不为它买单；反过来，凡是失败需要补偿的逻辑都不该写成写路径边的旁路副作用。
+- **正确性永不放上 subscribe。** 队列满会丢、没有 sink 会静默丢；必须恰好一次发生的事（如 reduce）属于写内。subscribe 的位置是容忍丢失、事后可对账的消费者。
 - **纯度约束同样适用于事件载荷**：行快照按原样随事件走；消费时再去派生额外上下文，等于重读一个事件已不再保证描述的存储。
 
-传输是组装点决策（`ChannelCell::register` 接受任意 sink——tokio mpsc、crossbeam 队列、no-op）；core 保持同步、不认识任何 executor。对 receiver 的组合子（map/filter/merge/折叠到 epoch 边界）属于 stream 层的职责，不属于模型层。
+传输是组装点决策（`SinkCell::register` 接受任意 sink——tokio mpsc、crossbeam 队列、no-op）；core 保持同步、不认识任何 executor。对 receiver 的组合子（map/filter/merge/折叠到 epoch 边界）属于 stream 层的职责，不属于模型层。
 
 ## 访问方法强制
 

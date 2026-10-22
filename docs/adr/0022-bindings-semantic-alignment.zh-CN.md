@@ -11,7 +11,7 @@
 
 ### ADR-0008 实际裁决的是什么
 
-ADR-0008 裁决的是**事件层**：reduce/subscribe 是行事件流的 inline/channel 消费者，fold 钩子活在写路径的引擎锁内读-改-写里。它真正的不变量是：*fold 与文档写必须看到同一份引擎状态——累加器更新的 exactly-once 性质*。ADR-0008 从未说过 fold 函数必须是 Rust，也从未说过必须在 okm-core 内执行。ADR-0008 通篇没有提 bindings 或动态模式；okm-dynamic 上限注记里「per ADR-0008」的引用，是把 exactly-once 论证过度延伸成了对实现语言的主张。
+ADR-0008 裁决的是**事件层**：reduce/subscribe 是行事件流的 写内/subscriber 消费者，fold 钩子活在写路径的引擎锁内读-改-写里。它真正的不变量是：*fold 与文档写必须看到同一份引擎状态——累加器更新的 exactly-once 性质*。ADR-0008 从未说过 fold 函数必须是 Rust，也从未说过必须在 okm-core 内执行。ADR-0008 通篇没有提 bindings 或动态模式；okm-dynamic 上限注记里「per ADR-0008」的引用，是把 exactly-once 论证过度延伸成了对实现语言的主张。
 
 ### 裁决之后什么变了
 
@@ -32,7 +32,7 @@ ADR-0008 裁决的是**事件层**：reduce/subscribe 是行事件流的 inline/
 
 - **function 索引**：`Schema.add_func_index(name, fn, includes=[])`——callable 把解码后的文档映射为一个编码值或值的迭代器（多 entry fan-out，即倒排索引形态）。partial 索引的 `admits` 同形：一个谓词 callable。
 - **reduce**：`Schema.add_reduce(name, group_fields, fold, unfold, acc_codec)`——callable 在宿主语言里实现 `ReduceLogic` 的 fold/unfold；累加器 codec 是声明的字节布局规则（u64 = 8 字节 BE 是种子；复合累加器走字节透明形态，与 Rust 的 `Vec<u8>` 逃生舱相同）。
-- **subscribe：维持排除。** 事件发射是写路径广播，消费侧有协议（epoch 折叠、通道注册、okm-stream 组合）。它不是逐文档派生，callable 化没有收益。这一面保留上限。
+- **subscribe：维持排除。** 事件发射是写路径广播，消费侧有协议（epoch 折叠、sink 注册、okm-stream 组合）。它不是逐文档派生，callable 化没有收益。这一面保留上限。
 
 ### 取代上限的不变量
 
@@ -62,4 +62,4 @@ ADR-0008 的 exactly-once 关切由**部署形态契约**保全，而非由实�
 - okm-dynamic 增加携带 callable 的面：`AccessMethod` 增加 func/admits 变体；`DynamicCollection::put`/`delete` 增加 reduce 调用纪律。字节布局的工作量小（编码器已存在）；正确性住在调用纪律里。
 - okm-dynamic doc comment 与 PLAN 条目中的「永久上限」措辞修正为本 ADR 的有范围裁决：**subscribe 排除；其余在部署形态契约下皆可 callable 实现**。
 - ADR-0008 不修改：其事件层设计对 Rust 原生路径成立，其 exactly-once 不变量正是本 ADR 以部署形态契约（而非实现语言禁令）重新推导的东西。
-- 「暂不、非永不」：subscribe 对齐。若宿主语言的消费者故事出现（摊位 要在进程内消费 reduce 组事件），以通道协议为设计面重新开启。
+- 「暂不、非永不」：subscribe 对齐。若宿主语言的消费者故事出现（摊位 要在进程内消费 reduce 组事件），以订阅协议为设计面重新开启。

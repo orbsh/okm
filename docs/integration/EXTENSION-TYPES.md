@@ -30,7 +30,7 @@ primitives** (→ integration crate) or a **new primitive** (→ core)?
 ## Event-layer boundaries
 
 The write path also emits subscribe events (`#[ok_subscribe]`, best-effort
-channel — see the modeling doc). One asymmetry matters to extension
+subscribe — see the modeling doc). One asymmetry matters to extension
 consumers: **a delete event carries the full row, not just the key.** This
 is forced by the model, not a courtesy — index entries and reduce folds are
 derived from the row's fields, so `delete` requires the row in hand
@@ -38,8 +38,8 @@ derived from the row's fields, so `delete` requires the row in hand
 reuses it. Consequence for consumers: search-index sync and cache
 invalidation can uninstall the derived artifacts of a deleted row from the
 event alone, with no read-back of a storage state the delete is about to
-change. Downstream triggers stay symmetric (put and delete both carry the
-row), while reduce stays strictly inline — it never rides the channel, so
+change. Downstream side effects stay symmetric (put and delete both carry the
+row), while reduce stays strictly inline — it never rides a subscription, so
 its exactly-once contract is untouched by the event layer.
 
 ## The two layers of precomputation
