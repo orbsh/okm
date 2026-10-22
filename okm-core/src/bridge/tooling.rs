@@ -476,7 +476,7 @@ pub mod parquet_io {
     }
 
     /// The restore half of [`Graph::to_record_batch_table`]: write an edge table
-    /// back through the graph's own write path (`link_into` + `put_fields_into`,
+    /// back through the graph's own write path (`link_into` + `replace_into`,
     /// one commit per edge), so every derived face entry follows and no second
     /// write channel appears.
     ///
@@ -643,7 +643,7 @@ pub mod parquet_io {
             {
                 let mut batch = crate::engine::storage::MemBatch::default();
                 self.link_into(&mut batch, head, payload, *id)?;
-                self.put_fields_into(&mut batch, *id, fields);
+                self.replace_into(&mut batch, *id, fields);
                 self.store_mut()
                     .commit_batch(batch)
                     .map_err(|e| format!("edge {id}: {e}"))?;

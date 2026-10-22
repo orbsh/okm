@@ -53,7 +53,7 @@ crate 分工：okm-core = 共享运行时（引擎契约、`Collection`、docume
 - 字段级编码 wrapper（`Vocab<N>`、`Offset<T>`、`VarInt<T>`、`Quant<P>`、`Reverse<T>`、`Vector<T>`、`Bytes`）与变长载荷/索引字段（`String`），key 保持定宽。
 - 多引擎混用——同一进程内不同 ns 段可绑不同引擎（交易走 fjall、日志走 slatedb）；原子性止于单引擎内，ns 编号全库唯一。
 - 快照导出——行 → Parquet，与引擎无关（备份 / 数据交换 / lakehouse 分析）；ns 还原为描述性文本，列名即字段名。
-- **Document API**——`get_document` / `put_document` / `get_fields` / `put_fields` / `delete_fields`：未知字段名在每表字段名词汇表里分配编号，落进动态段（n-TLV 帧、嵌套对象递归、无 CBOR）；行-映射桥把声明字段 lift 到逻辑类型（`Quant`→`F64`、`Vocab`→标签、`Offset`→`i64`）。
+- **Document API**——静态段说结构体（`get` / `put` / `delete`），整份文档说一个名字键 map：`view`（两槽的投影读）、`merge`（只动点名的字段）、`replace`（map 就是文档）、`purge`（两槽一起清）；每次写一个引擎提交。未知字段名在每表字段名词汇表里分配编号，落进动态段（n-TLV 帧、嵌套对象递归、无 CBOR）；行-映射桥把声明字段 lift 到逻辑类型（`Quant`→`F64`、`Vocab`→标签、`Offset`→`i64`）。
 - **动态 codec binding**——schema 导出驱动嵌入式语言读取器：`bindings/okm-python`（PyO3）与 `bindings/okm-steel`，与 Rust derive 字节一致。
 - **动态段上的路径索引**（[ADR-0029](docs/adr/0029-path-index.zh-CN.md)）——`AccessMethod::path(slot, Path::parse("author.name")?, FieldType::Str)?`：把嵌套路径与数组路径声明成访问方法，每个解析出的值一条条目（通配 = 没有 `Index` 组件），维护挂在动态段写路径上；值类型随声明，条目键携带 slot、从不携带路径。
 - **Document 模型**——声明式 row 与外部数据共用单一编码（[ADR-0012](docs/adr/0012-object-model-and-field-dictionary.md)）。OKM 面向文档：document 逻辑上全动态（运行期可出现任意字段），且**声明的静态字段嵌入动态整体**——hot/cold 段、索引、schema 导出照常生效。声明 struct 是只有静态路径的退化 document；纯 document（MQ payload、JSON）是只有动态路径的退化 document；两者同一编码。嵌入光谱上的术语：
@@ -145,16 +145,18 @@ users.delete(&key, &row.expect("row"));
 
 ```rust
 // 读：声明字段 lift 到逻辑类型，叠在动态字段之上。
-// 一张按名字索引的 map——这是 object 模型，不是"行 + 附件"。
-let obj = users.get_document(&key)?;          // BTreeMap<String, DynamicValue>
+// 一张按名字索引的 map——这是文档本身，不是"行 + 附件"。
+let obj = users.view(&key)?;                  // BTreeMap<String, DynamicValue>
 
-// 写：命中声明的名字走 typed 路径（索引、reduce、事件一并生效），
-// 未知名字落进动态段。
-users.put_document(&key, &obj);
+// merge：命中声明的名字走 typed 路径（索引、reduce、事件一并生效），
+// 未知名字并入动态段。只动点名的字段，其余保持库里已有的值。
+users.merge(&key, &patch);
 
-// 调用方自己分别持有两半时，直接用段级接口：
-let dynamic = users.get_fields(&key);         // Option<BTreeMap<String, DynamicValue>>
-users.put_fields(&key, &dynamic.unwrap_or_default());
+// replace：map 就是文档（缺席的声明字段取默认，未点名的动态名被移除）。
+users.replace(&key, &obj);
+
+// purge：两槽一起清，一次提交。
+users.purge(&key);
 ```
 
 嵌入式语言读取器（Python / Steel 摊位）经 schema 导出消费动态 codec——`bindings/okm-python`（PyO3）与 `bindings/okm-steel` 与 Rust derive 字节一致；版本默认值迁移在该路径同样生效。
@@ -190,7 +192,11 @@ g.unlink(1)?;                                 // 解码边体，精确删除它�
 
 ### 5. 跨表原子写：batch 路径
 
-一个 `MemBatch`、一次提交，要么全活要么全无（ADR-0003）。文档写入用
+一个 `MemBatch`、一次提交，要么全活要么全无（ADR-0003）。单集合的常规写入
+不需要调用方持有 batch：`put`、`delete`、`merge`、`replace`、`purge` 自己建一个——主条目、
+索引面、内嵌子文档、旧文档释放的引用、reduce 的折/回折、词表增长——一次提交，
+所以一次语义写就是一次引擎提交、一个崩溃边界。下面这个调用方持有的 batch 是
+给跨装配点的写入用的。文档写入用
 `save_with_prev_into`，图与 junction 用各自的 `*_into` 兄弟：
 
 ```rust

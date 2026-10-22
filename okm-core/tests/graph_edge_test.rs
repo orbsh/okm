@@ -498,10 +498,10 @@ fn the_edge_set_exports_as_a_table_with_named_endpoints() {
         okm_core::obj_dynamic::DynamicValue::Str("lead".to_string()),
     );
     let mut batch = okm_core::MemBatch::default();
-    g.put_fields_into(&mut batch, 1, &attrs);
+    g.replace_into(&mut batch, 1, &attrs);
     store.commit_batch(batch).unwrap();
     assert_eq!(
-        g.get_fields(1).map(|f| f.len()),
+        g.attrs(1).map(|f| f.len()),
         Some(1),
         "the attribute segment reads back"
     );

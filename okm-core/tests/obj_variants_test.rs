@@ -1,9 +1,11 @@
-//! ADR-0012: obj dynamic-segment read/write API over slots 0/1 and the
-//! field-name vocabulary (ADR-0032: counting family 4, counters 2/3).
+//! ADR-0035: the whole-document API over slots 0 and 1 (ADR-0012 layout,
+//! ADR-0032 vocabulary): one name-keyed map surface — `view` / `merge` /
+//! `replace` / `purge` — beside the typed `get` / `put` / `delete`.
 
-use okm_core::{
-    KeyEncode, DocumentEncode, Collection, TestStore, VirtualStorage,
-};
+use std::collections::BTreeMap;
+
+use okm_core::obj_dynamic::DynamicValue;
+use okm_core::{Collection, DocumentEncode, KeyEncode, TestStore, VirtualStorage};
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
 pub struct UserKey {
@@ -12,109 +14,158 @@ pub struct UserKey {
 
 #[derive(DocumentEncode, Clone, PartialEq, Debug)]
 #[ok_ref(UserKey)]
+#[ok_index(by_level { fields(level) })]
 #[ok_ns(9)]
 pub struct User {
     pub legacy: u32,
     pub level: u32,
 }
 
-// ---- ADR-0012: obj dynamic-segment API over the two slots ----
+use __OkmIndex_User_by_level as ByLevel;
+
+fn key(id: u64) -> UserKey {
+    UserKey { id }
+}
+
+fn user(legacy: u32, level: u32) -> User {
+    User { legacy, level }
+}
+
+fn dmap(pairs: &[(&str, DynamicValue)]) -> BTreeMap<String, DynamicValue> {
+    pairs
+        .iter()
+        .map(|(name, value)| ((*name).to_string(), value.clone()))
+        .collect()
+}
 
 #[test]
-fn obj_variants_round_trip_over_two_slots() {
+fn view_projects_both_slots_and_leaves_the_typed_read_alone() {
     let mut t: Collection<TestStore, UserKey, User> = Collection::new(TestStore::slatedb_mem());
-    t.put(&UserKey { id: 1 }, &User { legacy: 1, level: 2 });
+    t.put(&key(1), &user(1, 2));
 
-    // No dynamic entry yet.
-    assert!(t.get_fields(&UserKey { id: 1 }).is_none());
+    // A static-only document: the view carries the declared names.
+    let row_only = t.view(&key(1)).unwrap();
+    assert_eq!(row_only.len(), 2);
+    assert_eq!(row_only["level"], DynamicValue::UInt(2));
 
-    let mut v = std::collections::BTreeMap::new();
-    v.insert("score".to_string(), okm_core::obj_dynamic::DynamicValue::UInt(99));
-    v.insert("note".to_string(), okm_core::obj_dynamic::DynamicValue::Str("hello".into()));
-    v.insert("flag".to_string(), okm_core::obj_dynamic::DynamicValue::Bool(true));
-    t.put_fields(&UserKey { id: 1 }, &v);
+    // Dynamic names join the same view; the typed read stays slot 0.
+    t.merge(
+        &key(1),
+        &dmap(&[
+            ("score", DynamicValue::UInt(99)),
+            ("note", DynamicValue::Str("hello".into())),
+        ]),
+    );
+    let got = t.view(&key(1)).unwrap();
+    assert_eq!(got.len(), 4);
+    assert_eq!(got["score"], DynamicValue::UInt(99));
+    assert_eq!(got["note"], DynamicValue::Str("hello".into()));
+    assert_eq!(t.get(&key(1)).unwrap(), user(1, 2));
 
-    // Name-keyed read; ids live only inside the frames.
-    let got = t.get_fields(&UserKey { id: 1 }).unwrap();
-    assert_eq!(got.len(), 3);
-    assert_eq!(got["score"], okm_core::obj_dynamic::DynamicValue::UInt(99));
-    assert_eq!(got["note"], okm_core::obj_dynamic::DynamicValue::Str("hello".into()));
-    assert_eq!(got["flag"], okm_core::obj_dynamic::DynamicValue::Bool(true));
-
-    // Typed get is untouched: declared fields live in slot 0.
-    assert_eq!(t.get(&UserKey { id: 1 }).unwrap().level, 2);
-
-    // Vocabulary landed in the vocabulary family (ADR-0032: family 2, id
-    // direction) under the same ns. Counting NAMES is counting 2-byte suffixes:
-    // the face also holds its allocation cursor at the BARE prefix — the
-    // face-level singleton, whose zero-length suffix is unrepresentable as an id.
-    let mut vocab_prefix = vec![0u8, 9];
-    okm_core::write_slot(&mut vocab_prefix, okm_core::index::FIELD_VOCAB_ID_SLOT);
-    let vocab_scan = t.store().scan_suffix(&vocab_prefix);
-    let names: Vec<&Vec<u8>> = vocab_scan.iter().filter(|s| s.len() == 2).collect();
-    assert_eq!(names.len(), 3, "three names allocated");
+    // Vocabulary landed in the id family under the same ns, cursor included
+    // (ADR-0032: the face holds its allocation cursor at the bare prefix).
+    let mut prefix = vec![0u8, 9];
+    okm_core::write_slot(&mut prefix, okm_core::index::FIELD_VOCAB_ID_SLOT);
+    let scan = t.store().scan_suffix(&prefix);
+    assert_eq!(
+        scan.iter().filter(|s| s.len() == 2).count(),
+        2,
+        "two names allocated"
+    );
     assert!(
-        vocab_scan.iter().any(|s| s.is_empty()),
+        scan.iter().any(|s| s.is_empty()),
         "plus the cursor singleton at the bare prefix"
     );
+
+    // A dynamic-only document still views: the document is the PAIR of slots,
+    // not the primary entry.
+    t.merge(&key(9), &dmap(&[("only", DynamicValue::UInt(1))]));
+    assert!(t.get(&key(9)).is_none(), "no static segment");
+    assert_eq!(t.view(&key(9)).unwrap().len(), 1);
 }
 
 #[test]
-fn obj_set_variants_replaces_wholesale_and_delete_clears() {
+fn merge_touches_only_the_names_it_is_given() {
     let mut t: Collection<TestStore, UserKey, User> = Collection::new(TestStore::slatedb_mem());
-    t.put(&UserKey { id: 1 }, &User { legacy: 1, level: 2 });
+    t.put(&key(1), &user(1, 5));
 
-    let mut v1 = std::collections::BTreeMap::new();
-    v1.insert("a".to_string(), okm_core::obj_dynamic::DynamicValue::UInt(1));
-    v1.insert("b".to_string(), okm_core::obj_dynamic::DynamicValue::UInt(2));
-    t.put_fields(&UserKey { id: 1 }, &v1);
+    t.merge(
+        &key(1),
+        &dmap(&[("a", DynamicValue::UInt(1)), ("b", DynamicValue::UInt(2))]),
+    );
+    // Per-name: `c` joins, `a` and `b` survive (a wholesale write would drop them).
+    t.merge(&key(1), &dmap(&[("c", DynamicValue::UInt(3))]));
 
-    // Wholesale replace: `a` disappears (it is not merged).
-    let mut v2 = std::collections::BTreeMap::new();
-    v2.insert("c".to_string(), okm_core::obj_dynamic::DynamicValue::Str("x".into()));
-    t.put_fields(&UserKey { id: 1 }, &v2);
-    let got = t.get_fields(&UserKey { id: 1 }).unwrap();
-    assert_eq!(got.len(), 1);
-    assert!(got.contains_key("c"));
-
-    assert!(t.delete_fields(&UserKey { id: 1 }));
-    assert!(t.get_fields(&UserKey { id: 1 }).is_none());
-    assert!(!t.delete_fields(&UserKey { id: 1 }), "second delete is a no-op");
+    let got = t.view(&key(1)).unwrap();
+    assert_eq!(got.len(), 5, "2 declared + 3 dynamic");
+    for name in ["a", "b", "c"] {
+        assert!(got.contains_key(name), "{name} must survive a partial merge");
+    }
 }
 
 #[test]
-fn obj_bridge_typed_and_dynamic_merge() {
+fn merge_of_a_declared_field_is_an_rmw_and_cleans_the_old_face() {
     let mut t: Collection<TestStore, UserKey, User> = Collection::new(TestStore::slatedb_mem());
-    t.put(&UserKey { id: 1 }, &User { legacy: 5, level: 7 });
+    t.put(&key(1), &user(1, 5));
+    assert_eq!(t.scan::<ByLevel>(&5u32.to_be_bytes()).len(), 1);
 
-    // put_document: declared fields route to slot 0, unknown to slot 1.
-    let mut obj = std::collections::BTreeMap::new();
-    obj.insert("level".to_string(), okm_core::obj_dynamic::DynamicValue::UInt(30));
-    obj.insert("extra".to_string(), okm_core::obj_dynamic::DynamicValue::Str("dyn".into()));
-    t.put_document(&UserKey { id: 1 }, &obj);
+    t.merge(&key(1), &dmap(&[("level", DynamicValue::UInt(30))]));
 
-    // Typed path wrote slot 0 (level 5 → 30); declared field `legacy`
-    // kept its value (RMW, not default-clobbered).
-    let document = t.get(&UserKey { id: 1 }).unwrap();
-    assert_eq!(document.level, 30);
-    assert_eq!(document.legacy, 5);
+    let row = t.get(&key(1)).unwrap();
+    assert_eq!((row.legacy, row.level), (1, 30), "unnamed declared field kept");
+    assert!(
+        t.scan::<ByLevel>(&5u32.to_be_bytes()).is_empty(),
+        "the previous value's face is gone — merge cleans, put does not"
+    );
+    assert_eq!(t.scan::<ByLevel>(&30u32.to_be_bytes()).len(), 1);
+}
 
-    // get_document merges: declared (to_map) + dynamic (vocabulary).
-    let got = t.get_document(&UserKey { id: 1 }).unwrap();
-    assert_eq!(got["level"], okm_core::obj_dynamic::DynamicValue::UInt(30));
-    assert_eq!(got["legacy"], okm_core::obj_dynamic::DynamicValue::UInt(5));
-    assert_eq!(got["extra"], okm_core::obj_dynamic::DynamicValue::Str("dyn".into()));
+#[test]
+fn replace_is_the_whole_document() {
+    let mut t: Collection<TestStore, UserKey, User> = Collection::new(TestStore::slatedb_mem());
+    t.put(&key(1), &user(9, 9));
+    t.merge(&key(1), &dmap(&[("gone", DynamicValue::UInt(1))]));
 
-    // Fresh document via put_document: absent declared fields default, no get first.
-    let mut obj2 = std::collections::BTreeMap::new();
-    obj2.insert("id".to_string(), okm_core::obj_dynamic::DynamicValue::UInt(2));
-    obj2.insert("level".to_string(), okm_core::obj_dynamic::DynamicValue::UInt(1));
-    obj2.insert("legacy".to_string(), okm_core::obj_dynamic::DynamicValue::UInt(3));
-    t.put_document(&UserKey { id: 2 }, &obj2);
-    let row2 = t.get(&UserKey { id: 2 }).unwrap();
-    assert_eq!((row2.legacy, row2.level), (3, 1));
+    // `legacy` is not named → default; the dynamic segment is EXACTLY the map's
+    // non-declared names, so `gone` disappears.
+    t.replace(
+        &key(1),
+        &dmap(&[
+            ("level", DynamicValue::UInt(4)),
+            ("kept", DynamicValue::Str("y".into())),
+        ]),
+    );
+    assert_eq!(t.get(&key(1)).unwrap(), user(0, 4));
+    let got = t.view(&key(1)).unwrap();
+    assert!(!got.contains_key("gone"), "replace drops unnamed dynamic names");
+    assert_eq!(got["kept"], DynamicValue::Str("y".into()));
+    assert!(
+        t.scan::<ByLevel>(&9u32.to_be_bytes()).is_empty(),
+        "the old face is gone"
+    );
 
-    // Unknown names allocate into the vocabulary (external-data rule),
-    // and get_document surfaces them.
-    assert!(!t.get_fields(&UserKey { id: 2 }).unwrap().is_empty());
+    // A fresh key: the map alone builds the row (absent fields default).
+    t.replace(&key(3), &dmap(&[("legacy", DynamicValue::UInt(7))]));
+    assert_eq!(t.get(&key(3)).unwrap(), user(7, 0));
+
+    // An empty map IS the empty document.
+    t.replace(&key(1), &BTreeMap::new());
+    assert!(t.view(&key(1)).is_none());
+}
+
+#[test]
+fn purge_clears_both_slots_in_one_call() {
+    let mut t: Collection<TestStore, UserKey, User> = Collection::new(TestStore::slatedb_mem());
+    t.put(&key(2), &user(1, 1));
+    t.merge(&key(2), &dmap(&[("x", DynamicValue::UInt(1))]));
+    assert!(t.view(&key(2)).is_some());
+
+    assert!(t.purge(&key(2)));
+    assert!(t.view(&key(2)).is_none(), "both slots gone");
+    assert!(!t.purge(&key(2)), "second purge is a no-op");
+
+    // A dynamic-only document is purgeable too.
+    t.merge(&key(4), &dmap(&[("y", DynamicValue::UInt(1))]));
+    assert!(t.purge(&key(4)));
+    assert!(t.view(&key(4)).is_none());
 }

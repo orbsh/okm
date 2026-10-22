@@ -17,7 +17,7 @@ The taxes, named so they are recognizable elsewhere:
 
 1. **Binary fidelity is lost at a boundary that had no business existing.** A round trip through text is exact only if every writer remembers to encode; one that forgets writes a silently corrupt value.
 2. **Size.** base64 inflates by a third; JSON text adds its own quoting and escaping; a `Vec<u8>` through `serde_json` becomes an array of numbers, roughly 3–4× its bytes.
-3. **The value model is destroyed.** A stored blob is opaque to the engine: no field-level index, no scan by field, no reduce, no comparison, no typed path, no schema evolution. okm's value model exists exactly to avoid this — `DynamicValue` carries `Bytes(Vec<u8>)` natively, and the document API (`put_document` / `get_document`) writes declared fields through the typed path and everything else into the dynamic segment in one call.
+3. **The value model is destroyed.** A stored blob is opaque to the engine: no field-level index, no scan by field, no reduce, no comparison, no typed path, no schema evolution. okm's value model exists exactly to avoid this — `DynamicValue` carries `Bytes(Vec<u8>)` natively, and the document API (`merge` / `replace`) writes declared fields through the typed path and everything else into the dynamic segment in one call.
 
 ## Decision
 

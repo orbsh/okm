@@ -423,14 +423,16 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
         key
     }
 
-    /// Write the edge's open attributes, in the SAME batch as the row so one
+    /// Replace the edge's open attributes, in the SAME batch as the row so one
     /// commit carries both. Names allocate in the edge ns's field-name
     /// vocabulary (0x02/0x03), which is separate from the predicate vocabulary
     /// the row's write touches.
     ///
     /// A rewrite replaces the segment outright: the previous assertion's
-    /// attributes are deleted first, so nothing inherits a stale prop.
-    pub fn put_fields_into(
+    /// attributes are deleted first, so nothing inherits a stale prop — this is
+    /// `replace` semantics, not a per-name merge (an edge has no partial-update
+    /// caller yet; add `merge_into` the day one appears).
+    pub fn replace_into(
         &mut self,
         batch: &mut MemBatch,
         edge_id: u64,
@@ -453,11 +455,12 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
         batch.put(key, body);
     }
 
-    /// The edge's open attributes, when it has any. A name whose id the
+    /// The edge's open attributes, when it has any — the dynamic half of an edge
+    /// (its typed half is the payload, which is not a map). A name whose id the
     /// vocabulary cannot resolve is dropped rather than invented, and an empty
     /// segment answers `None` (no attributes) — the same rule the document path
     /// follows.
-    pub fn get_fields(
+    pub fn attrs(
         &self,
         edge_id: u64,
     ) -> Option<std::collections::BTreeMap<String, DynamicValue>> {

@@ -210,7 +210,9 @@ fn dynamic_fields_equal_typed_fields() {
     let mut fields = BTreeMap::new();
     fields.insert("note".to_string(), DynamicValue::Str("hello".into()));
     fields.insert("weight".to_string(), DynamicValue::UInt(9));
-    typed.put_fields(&UserKey { org_id: 1, user_id: 2 }, &fields);
+    // The typed side starts with an empty segment, so a per-name merge and the
+    // dynamic facade's whole-segment replace produce the same entry here.
+    typed.merge(&UserKey { org_id: 1, user_id: 2 }, &fields);
     let mut dfields: BTreeMap<String, Value> = BTreeMap::new();
     dfields.insert("note".to_string(), Value::Str("hello".into()));
     dfields.insert("weight".to_string(), Value::U64(9));

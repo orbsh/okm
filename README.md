@@ -46,7 +46,7 @@ Implemented:
 - `DocumentEncode` — one macro declares a row (Node): `#[ok_ref]` identity + TLV payload fields + `#[ok_index(...)]` access methods; the `ValueEncode` derive is absorbed into it.
 - Secondary indexes (access methods) — `#[ok_index(name { fields(…), includes(…), key(…), func(…), where(…) })]` on **row structs**: composite indexes over payload fields (declaration order), no per-index slot/ns — the 2-byte table namespace already discriminates every entry; leftmost-prefix scans with fetch-back; `key(…)` truncates the carried primary-key tail to the named subset (`encode_prefix_named`), full key by default; `includes` covering positioned as a materialized view for high-fanout queries; `func(path)` replaces the data segment with a plain fn's return value (probe side calls the same path); `where(path)` is a row-level predicate — a partial index, rows the predicate rejects contribute no entries.
 - `Collection<S, K, R>` node assembly point — `put`/`delete` write the primary key and every declared index entry in one store instance (the declaration IS the registry); `scan` returns `(Key, Option<Row>)` via leftmost-prefix on any access method.
-- **Document API** — `get_document` / `put_document` / `get_fields` / `put_fields` / `delete_fields`: unknown field names allocate in the per-table field-name vocabulary and land in the dynamic segment (n-TLV frames, nested objects recursive, no CBOR); the row-map bridge lifts declared fields to logical types (`Quant`→`F64`, `Vocab`→label, `Offset`→`i64`).
+- **Document API** — the static segment speaks the struct (`get` / `put` / `delete`), the whole document speaks one name-keyed map: `view` (merged projection), `merge` (only the names given), `replace` (the map IS the document), `purge` (both slots) — one engine commit per write. Unknown field names allocate in the per-table field-name vocabulary and land in the dynamic segment (n-TLV frames, nested objects recursive, no CBOR); the row-map bridge lifts declared fields to logical types (`Quant`→`F64`, `Vocab`→label, `Offset`→`i64`).
 - **Dynamic codec bindings** — schema export drives embedded-language readers: `bindings/okm-python` (PyO3) and `bindings/okm-steel`, byte-identical with the Rust derive.
 - **Path indexes over the dynamic segment** ([ADR-0029](docs/adr/0029-path-index.md)) — `AccessMethod::path(slot, Path::parse("author.name")?, FieldType::Str)?`: nested and array paths declared as access methods, one entry per resolved value (a wildcard is the absence of an `Index` component), maintained on the dynamic-segment write path; the value type is declared, and the entry key carries the slot, never the path.
 - Engine backends behind Cargo features: `fjall` (sync `FjallStore`), `redb` (sync `RedbStore`), `slatedb` (async `SlatedbStore` + `AsyncJunction`); tests run the real engines through the `TestStore` matrix (slatedb-mem / fjall / redb), no mock to drift from them.
@@ -151,16 +151,20 @@ objects recursive). Declared fields stay typed and indexable.
 
 ```rust
 // Read: declared fields lifted to logical types, merged over dynamic ones.
-// One name-keyed map — the object model, not a row plus an attachment.
-let obj = users.get_document(&key)?;          // BTreeMap<String, DynamicValue>
+// One name-keyed map — the document, not a row plus an attachment.
+let obj = users.view(&key)?;                  // BTreeMap<String, DynamicValue>
 
-// Write: names matching the declaration take the typed path (indexes,
-// reduces and events included); unknown names land in the dynamic segment.
-users.put_document(&key, &obj);
+// Merge: names matching the declaration take the typed path (indexes,
+// reduces and events included); unknown names join the dynamic segment.
+// Only the names given are touched — the rest keep their stored values.
+users.merge(&key, &patch);
 
-// The segment alone, when the caller owns both halves separately:
-let dynamic = users.get_fields(&key);         // Option<BTreeMap<String, DynamicValue>>
-users.put_fields(&key, &dynamic.unwrap_or_default());
+// Replace: the map IS the document (absent declared fields default,
+// unnamed dynamic names are removed).
+users.replace(&key, &obj);
+
+// Purge: both slots, one commit.
+users.purge(&key);
 ```
 
 Embedded-language readers (Python / Steel Booths) consume the schema
@@ -200,9 +204,14 @@ type marker, so node-kind filtering is that collection's own index.
 
 ### 5. Multi-table atomic writes: the batch path
 
-One `MemBatch`, one commit, everything or nothing (ADR-0003). Document
-writes encode with `save_with_prev_into`, edges and junctions with their
-`*_into` siblings:
+One `MemBatch`, one commit, everything or nothing (ADR-0003). A routine
+single-collection write needs no batch from the caller: `put`, `delete`,
+`merge`, `replace` and `purge` build one internally — primary entry, faces, embedded children,
+the releases the old document dropped, the reduce RMWs and vocabulary growth —
+and commit it once, so one semantic write is one engine commit and one crash
+boundary. The caller-owned batch below is for writes that span assembly
+points. Document writes encode with `save_with_prev_into`, edges and
+junctions with their `*_into` siblings:
 
 ```rust
 let mut batch = MemBatch::default();

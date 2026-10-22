@@ -1,8 +1,9 @@
 # ADR-0034：表有名字，导出是表的形状
 
 **状态**：已接受（2026-10-21）——同一轮已落地：`#[ok_name]`、
-`export_parquet_with_variant`、`Graph::to_record_batch_table`、`Graph::put_fields_into` /
-`get_fields`、`export_reduces`。
+`export_parquet_with_variant`、`Graph::to_record_batch_table`、
+`Graph::replace_into` / `attrs`（ADR-0035 之前的名字是 `put_fields_into` /
+`get_fields`）、`export_reduces`。
 **日期**：2026-10-21
 **英文版**：[0034-table-names-and-export-shape.md](0034-table-names-and-export-shape.md)
 **依赖**：ADR-0007（Arrow 桥）、ADR-0012（字段名词汇表）、ADR-0017 §3（边的 ns
@@ -55,7 +56,7 @@ NULL，而不是猜一个名字。
 
 ### 4. 边的开放属性归图
 
-`Graph::put_fields_into(batch, edge_id, &map)` / `get_fields(edge_id)` 拥有 0x01 段，键是
+`Graph::replace_into(batch, edge_id, &map)` / `attrs(edge_id)`（ADR-0035 改名） 拥有 0x01 段，键是
 `[ns][0x01][edge_id]`，名字在字段名词汇表里分配。重写（`link_into`）会在**同一个批**里删掉
 上一段：属性派生自刚刚被覆盖的那条断言，继承它等于把旧主张的条件挂到新主张上。
 

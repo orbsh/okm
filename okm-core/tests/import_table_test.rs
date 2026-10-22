@@ -1,5 +1,5 @@
 //! The restore mirrors: an edge table and a reduce table go back through the
-//! SAME write contracts the live path uses (`link_into` / `put_fields_into`,
+//! SAME write contracts the live path uses (`link_into` / `replace_into`,
 //! the accumulator entry), so a restored store is indistinguishable from one
 //! that was never exported — ids included.
 
@@ -125,7 +125,7 @@ fn an_edge_table_restores_into_a_fresh_graph() {
     let mut attrs = BTreeMap::new();
     attrs.insert("note".to_string(), DynamicValue::Str("hi".into()));
     let mut batch = MemBatch::default();
-    g.put_fields_into(&mut batch, 2, &attrs);
+    g.replace_into(&mut batch, 2, &attrs);
     g.store_mut().commit_batch(batch).unwrap();
 
     // Export, write, and READ THE FILE BACK — the restore's real input.
@@ -149,11 +149,11 @@ fn an_edge_table_restores_into_a_fresh_graph() {
     assert_eq!((payload.since_year, payload.weight), (2020, 7));
     assert_eq!(r.edge(2).unwrap().since_year, 2021);
     assert_eq!(
-        r.get_fields(2).unwrap().get("note"),
+        r.attrs(2).unwrap().get("note"),
         Some(&DynamicValue::Str("hi".into()))
     );
     assert!(
-        r.get_fields(1).is_none(),
+        r.attrs(1).is_none(),
         "an edge with no attributes has none"
     );
 

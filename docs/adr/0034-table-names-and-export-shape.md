@@ -1,8 +1,9 @@
 # ADR-0034: A table has a name, and an export has the shape of a table
 
 **Status**: Accepted (2026-10-21) — implemented in the same round: `#[ok_name]`,
-`export_parquet_with_variant`, `Graph::to_record_batch_table`, `Graph::put_fields_into` /
-`get_fields`, `export_reduces`.
+`export_parquet_with_variant`, `Graph::to_record_batch_table`,
+`Graph::replace_into` / `attrs` (named `put_fields_into` / `get_fields` until
+ADR-0035), `export_reduces`.
 **Date**: 2026-10-21
 **Chinese**: [0034-table-names-and-export-shape.zh-CN.md](0034-table-names-and-export-shape.zh-CN.md)
 **Depends on**: ADR-0007 (the Arrow bridge), ADR-0012 (field-name vocabulary),
@@ -70,7 +71,7 @@ than a guessed name.
 
 ### 4. The edge's open attributes belong to the graph
 
-`Graph::put_fields_into(batch, edge_id, &map)` / `get_fields(edge_id)` own the 0x01
+`Graph::replace_into(batch, edge_id, &map)` / `attrs(edge_id)` (renamed by ADR-0035) own the 0x01
 segment, keyed `[ns][0x01][edge_id]`, names allocated in the field-name vocabulary.
 A rewrite (`link_into`) DELETES the previous segment in the same batch: attributes
 are derived from the assertion that was just overwritten, so inheriting them would
