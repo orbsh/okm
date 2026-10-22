@@ -448,22 +448,25 @@ One encoding serves declared rows and external data. Declared fields ride
 the hot/cold segments as usual; anything else lands in the **dynamic
 segment** (fixed face 0x01) as n-TLV frames — `[field-id][type][len][bytes]` —
 with names allocated on first sight in the **field-name vocabulary**
-(fixed faces 0x02/0x03). Runtime surface on `Collection`:
+(fixed faces 0x02/0x03). Runtime surface on `Collection` — the static segment speaks the struct, the
+whole document speaks one name-keyed map (ADR-0035):
 
 ```rust
 // The row-map bridge: every field (declared + dynamic) lifts to its logical
 // type (Quant -> F64, VarInt -> u64, Enum -> variant name, Offset -> i64).
-let fields = t.get_document(&key);          // Option<BTreeMap<String, DynamicValue>>, None = no row
+let fields = t.view(&key);                    // Option<BTreeMap<String, DynamicValue>>, None = no document
 
-// Whole-document write: fields matching the declared struct go to the typed
-// path; unknown names allocate in the vocabulary and land in fixed face 0x01.
-t.put_document(&key, &fields);                      // BTreeMap<String, DynamicValue>
+// Partial update: declared names are a row RMW (typed path, previous faces
+// cleaned), unknown names overwrite just those names in the dynamic segment.
+t.merge(&key, &patch);                        // BTreeMap<String, DynamicValue>
 
-// Dynamic-only views (fixed face 0x01 directly):
-t.get_fields(&key);                             // name-keyed map or None
-t.put_fields(&key, &map);                       // whole-entry put, absent fields removed
-t.delete_fields(&key);                          // clear the dynamic segment
-t.delete(&key);                                   // remove slot 0 + index entries
+// Whole-document replacement: the map IS the document — absent declared
+// fields take defaults, unnamed dynamic names are removed.
+t.replace(&key, &fields);
+
+// Both slots, one commit; and the typed removal that takes the old row.
+t.purge(&key);                                // -> bool (something was there)
+t.delete(&key, &row);                         // slot 0 + the faces that row produced
 ```
 
 - `DynamicValue` carries the open value vocabulary: `UInt`/`Int`/`F64`/
@@ -536,8 +539,8 @@ let by_first_href = AccessMethod::path(0x1003, Path::parse("refs[0].href")?, Fie
   value reads back as `U64`), which is what keeps an entry's bytes a function
   of the stored value — the overwrite sweep recomputes exactly the keys the
   write built, so no entry survives a changed value.
-- **Maintenance rides the dynamic-segment write path** (`put_fields` /
-  `delete_fields`). The primary document path skips path declarations by
+- **Maintenance rides the whole-document write path** (`merge` / `replace` /
+  `purge`). The primary document path skips path declarations by
   construction: a depth-1 path over the primary document is what a plain
   index already is, and one entry set has exactly one maintainer.
 - A value whose variant does not match the declared type produces no entry
@@ -1369,7 +1372,7 @@ above) keeps Vector out of the relation carriers: a scalar has no key,
 a key reference to it is a category error. One-to-many -> `Refs`; many-
 to-many -> `Junction`; order-expressing value lists -> `Vector`;
 heterogeneous dynamic lists -> `DynamicValue::Array` (fixed face 0x01). On
-`get_document` a Vector lifts to `DynVal::Array` — the dynamic layer
+`view` a Vector lifts to `DynVal::Array` — the dynamic layer
 has no Vector type; Vector is a storage-layer format. Multi-dimensional
 shape is application-layer interpretation (row-major over the flat
 sequence); nothing on the wire.

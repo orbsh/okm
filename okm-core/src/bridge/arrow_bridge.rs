@@ -511,7 +511,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         let mut per_row: Vec<Option<Vec<u8>>> = Vec::with_capacity(documents.len());
         for (kenc, _) in &documents {
             let key = K::decode(kenc);
-            match self.get_fields(&key) {
+            match self.slot1_map(&key) {
                 Some(fields) => {
                     let mut b = parquet_variant::VariantBuilder::new();
                     let map: std::collections::BTreeMap<String, DynamicValue> =
@@ -628,7 +628,7 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
                 body.dst.pkey.clone(),
                 predicate,
             ));
-            variants.push(self.get_fields(id).map(|fields| {
+            variants.push(self.attrs(id).map(|fields| {
                 let mut b = parquet_variant::VariantBuilder::new();
                 let map: std::collections::BTreeMap<String, DynamicValue> =
                     fields.into_iter().collect();

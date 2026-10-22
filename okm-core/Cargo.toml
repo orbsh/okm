@@ -126,6 +126,10 @@ name = "wrappers_test"
 required-features = ["test-engines"]
 
 [[test]]
+name = "write_commit_test"
+required-features = ["test-engines"]
+
+[[test]]
 name = "bare_shard_test"
 required-features = ["test-engines"]
 

@@ -269,17 +269,18 @@ let hits = t.scan::<ByToken>(b"rust");
 ```rust
 // 行-映射桥：全部字段（声明 + 动态）lift 到逻辑类型
 // （Quant -> F64、VarInt -> u64、Enum -> 变体名、Offset -> i64）。
-let fields = t.get_document(&key);          // Option<BTreeMap<String, DynamicValue>>，None = 行不存在
+let fields = t.view(&key);                    // Option<BTreeMap<String, DynamicValue>>，None = 文档不存在
 
-// 整体写：名字匹配声明结构体的字段走 typed 路径；
-// 未知名字在词汇表里分配编号，落进固定面 0x01。
-t.put_document(&key, &fields);                      // BTreeMap<String, DynamicValue>
+// 局部更新：命中声明的名字是一次行 RMW（走 typed 路径，旧面一并清理），
+// 未知名字只覆盖动态段里对应的那些名字。
+t.merge(&key, &patch);                        // BTreeMap<String, DynamicValue>
 
-// 仅动态段的视图（直接操作固定面 0x01）：
-t.get_fields(&key);                             // 名字键 map 或 None
-t.put_fields(&key, &map);                       // 整段替换，缺席字段被移除
-t.delete_fields(&key);                          // 清空动态段
-t.delete(&key);                                   // 移除 slot 0 + 全部索引条目
+// 整体替换：map 就是文档——缺席的声明字段取默认，未点名的动态名被移除。
+t.replace(&key, &fields);
+
+// 两槽一次提交；以及带旧行的 typed 删除。
+t.purge(&key);                                // -> bool（原来有东西）
+t.delete(&key, &row);                         // slot 0 + 该行产生的全部面
 ```
 
 - `DynamicValue` 承载开放的值词汇表：`UInt`/`Int`/`F64`/`Str`/`Bytes`/
@@ -336,7 +337,7 @@ let by_first_href = AccessMethod::path(0x1003, Path::parse("refs[0].href")?, Fie
   字段可查。无符号类型还接受动态读路径产生的加宽形态（写入的 `U32` 读回是
   `U64`）——这正是让"条目字节是存储值的函数"成立的东西：覆写清扫重算出的键
   与写入时构造的完全一致，值变更后不会留下旧条目。
-- **维护挂在动态段写路径上**（`put_fields` / `delete_fields`）。主文档路径按
+- **维护挂在整文档写路径上**（`merge` / `replace` / `purge`）。主文档路径按
   构造跳过路径声明：主文档上深度为 1 的路径恰恰就是普通索引；一个条目集合只有
   一个维护者。
 - 变体与声明类型不符的值不产条目、也不报错——"属性缺失即空结果"同一条规则。
@@ -762,7 +763,7 @@ pub struct Doc {
 
 长度是数据不是 schema：换嵌入模型（384 -> 768 维）只是不同的帧，无需 wire 迁移。应用确实知道预期长度时（合同约定的嵌入维度），`#[ok_len(384)]` 加一个编码期检查——写入边界即承诺执行处；解码不检查（绕过解码器是读取者自己的问题——原始帧字节与未渲染的图片同样不透明）。同一合同导出给动态 reader（`FieldSchema::expect_len`），Python 侧被一致地强制。它是应用合同，绝不是格式约束。
 
-元素是**纯值**——身份分界线（上文多对多一节）把 Vector 挡在关系载体之外：标量没有 key，对它做 key 引用是范畴错误。一对多 → `Refs`；多对多 → `Junction`；表达顺序的值列表 → `Vector`；异质动态列表 → `DynamicValue::Array`（固定面 0x01）。`get_document` 时 Vector 提升为 `DynVal::Array`——动态层没有 Vector 类型，Vector 是存储层格式。多维形状是应用层解释（扁平序列按行优先），wire 上什么都不存。
+元素是**纯值**——身份分界线（上文多对多一节）把 Vector 挡在关系载体之外：标量没有 key，对它做 key 引用是范畴错误。一对多 → `Refs`；多对多 → `Junction`；表达顺序的值列表 → `Vector`；异质动态列表 → `DynamicValue::Array`（固定面 0x01）。`view` 时 Vector 提升为 `DynVal::Array`——动态层没有 Vector 类型，Vector 是存储层格式。多维形状是应用层解释（扁平序列按行优先），wire 上什么都不存。
 
 消费侧（okm-vector）在其上分层构建搜索：精确连续扫描（小规模路径，也是召回的参照系）、量化码上的内存 HNSW（int8 余弦或乘积量化码），以及按分片组织的句柄——每分片一份快照存在固定面 0x0B 下，是缓存、随时可丢。图给出的是码级距离，回存量的 f32 重打分由调用方做。存储保持字节不透明：语料仍然只是那些帧字节。
 

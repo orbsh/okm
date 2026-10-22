@@ -10,8 +10,8 @@
 //! deep copy, a kept clone would observe a different engine.
 
 use okm_core::{
-    KeyEncode, NestStorage, RemoteStore, DocumentEncode, Collection, TestStore, VirtualHandle,
-    VirtualStorage,
+    KeyEncode, NestStorage, RemoteStore, DocumentEncode, Collection, ReduceCodec, TestStore,
+    VirtualHandle, VirtualStorage,
 };
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
@@ -227,4 +227,66 @@ fn remote_unbounded_stream_crosses_pages() {
     assert_eq!(items.get(255).unwrap().0, b"k/0255");
     assert_eq!(items.get(256).unwrap().0, b"k/0256");
     assert_eq!(items.last().unwrap().0, b"k/0599");
+}
+
+#[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
+pub struct EntryKey {
+    pub id: u64,
+}
+
+/// A row with a face AND a ledger, so one routine `put` exercises every
+/// destination the batch carries across the wire.
+#[derive(DocumentEncode, Clone, PartialEq, Debug)]
+#[ok_ref(EntryKey)]
+#[ok_index(by_account { fields(account) })]
+#[ok_reduce(Count { group(account) })]
+#[ok_ns(8)]
+pub struct Entry {
+    pub account: u64,
+    pub amount: u32,
+}
+
+use __OkmIndex_Entry_by_account as Entry_ByAccount;
+
+fn entry_ledger<S: VirtualStorage>(
+    t: &Collection<S, EntryKey, Entry>,
+    account: u64,
+) -> Option<u64> {
+    okm_core::reduce_get::<_, __OkmReduce_Entry_0>(
+        t.store(),
+        <Entry as okm_core::Document>::NS_PREFIX,
+        &EntryKey { id: 0 },
+        &Entry { account, amount: 0 },
+    )
+}
+
+/// The routine write path over the wire: one semantic `put` = one commit =
+/// ONE frame, and the receiver's single `commit_batch` carries the primary
+/// entry, the face and the ledger RMW together. What makes it a test rather
+/// than a claim: the row becoming readable implies the face and the ledger are
+/// readable too, because they land in the same engine write — not "shortly
+/// after" in a following frame.
+#[test]
+fn routine_put_carries_face_and_ledger_in_one_frame() {
+    let handle = spawn_host(TestStore::default(), &[0x00, 0x12]);
+    let mut t: Collection<RemoteStore, EntryKey, Entry> = Collection::new(handle.open());
+    let k = EntryKey { id: 1 };
+
+    t.put(&k, &Entry { account: 7, amount: 10 });
+    wait_for(|| t.get(&k).is_some(), "row to land");
+    // Face: an index scan round trip (entry key + fetch-back).
+    assert_eq!(t.scan::<Entry_ByAccount>(&7u64.to_be_bytes()).len(), 1);
+    // Ledger: the accumulator the fold wrote in the same frame.
+    assert_eq!(entry_ledger(&t, 7), Some(1), "the fold landed with the row");
+
+    // Overwrite: unfold + refold travel in one frame as well.
+    t.put(&k, &Entry { account: 8, amount: 20 });
+    wait_for(|| entry_ledger(&t, 8) == Some(1), "refold to land");
+    assert_eq!(entry_ledger(&t, 7), Some(0), "the old group was unfolded");
+
+    // Delete: the removals and the unfold share a frame too.
+    t.delete(&k, &Entry { account: 8, amount: 20 });
+    wait_for(|| t.get(&k).is_none(), "delete to propagate");
+    assert_eq!(entry_ledger(&t, 8), Some(0));
+    assert!(t.scan::<Entry_ByAccount>(&8u64.to_be_bytes()).is_empty());
 }

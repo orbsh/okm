@@ -36,7 +36,7 @@ fn variant_column_export() {
     );
     let k1 = UserKey { org_id: 1, user_id: 10 };
     t.put(&k1, &User { level: 4, name: "alice".into() });
-    t.put_fields(&k1, &dyn1);
+    t.merge(&k1, &dyn1);
 
     // Document 2: declared fields only -> variant column null.
     let k2 = UserKey { org_id: 1, user_id: 11 };

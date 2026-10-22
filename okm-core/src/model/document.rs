@@ -1,7 +1,9 @@
 //! Collection — the document assembly point (ADR-0006): binds an engine instance, a
-//! key type, and a document type. `put` writes the primary key (slot 0) and one
-//! entry per access method in the same store instance, so atomicity holds
-//! within a single engine; cross-ns atomicity is the store instance's
+//! key type, and a document type. `put` builds the whole write set — the
+//! primary key (slot 0), one entry per access method, embedded children, the
+//! releases of the old document's references and the reduce RMWs — into one
+//! batch and commits it once, so a semantic write is one engine commit and one
+//! crash boundary; cross-ns atomicity is the store instance's
 //! boundary, never the Collection's. Index entries derive from the document payload
 //! (indexed + includes fields live there), so put and delete are both
 //! document-shaped.
@@ -87,64 +89,73 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     /// `delete_by_pkey`) exist; the reduce, by contrast, is a mutable
     /// aggregate under one group key and MUST compensate.
     pub fn put(&mut self, key: &K, document: &R) {
+        // ONE engine commit per semantic write. The whole write set — primary
+        // entry, every declared face, embedded children with their own faces,
+        // the releases of children the old document no longer points at, and
+        // the reduce RMWs — accumulates in one `MemBatch` and reaches the
+        // engine as a single `commit_batch` (ADR-0003's "internal buffer" half:
+        // the same batch `save_into` exposes to callers, owned here by the
+        // routine path). `BatchStore` is the read-through view that lets a
+        // reduce fold see the writes this same batch already produced
+        // (ADR-0031), so the op order below is exactly the old call order.
+        // Beyond the call count, this makes the write atomic under a crash,
+        // not merely under the single writer: the primary entry, its faces and
+        // the ledgers land in one engine commit or not at all.
+        let header = self.header();
+        let pkey = self.primary_key(key);
+        let mut batch = crate::engine::storage::MemBatch::default();
         // Categorical values (ADR-0032): a `Vocab<N>` field holds a NAME until
         // the write path interns it, and the payload byte is the id. Tables
         // with no Vocab field hand the caller's document straight through; the
         // clone is the price of `put(&R)`'s immutable signature, paid only by
-        // the tables that declare a categorical field.
-        let interned;
-        let document = if R::HAS_VOCAB {
-            let header = self.header();
-            let mut copy = document.clone();
-            copy.__okm_intern(&mut self.store, &header);
-            interned = copy;
-            &interned
-        } else {
-            document
-        };
-        // Overwrite detection doubles as the unfold source: the stored
-        // document (if any) is exactly what the reduce groups currently
-        // include for this key.
-        let pkey = self.primary_key(key);
-        let prev = self
-            .store
-            .get(&pkey)
-            .map(|v| R::decode_payload(&v));
-        if let Some(old) = &prev {
-            let header = self.header();
-            R::__okm_apply_reduces(&mut self.store, key, old, &header, false);
-        }
-        self.store.put(pkey, document.encode_payload());
-        for (ek, ev) in R::index_entries(key, document, &self.header()) {
-            self.store.put(ek, ev);
-        }
-        // Embedded documents: write children carried with Some(value), and
-        // release references the OLD document pointed at that the new one
-        // no longer does (key change). Reference semantics — no cascade.
-        for (ck, cp) in R::__okm_embed_entries(document) {
-            self.store.put(ck, cp);
-        }
-        if let Some(old) = &prev {
-            let new_keys: std::collections::HashSet<Vec<u8>> =
-                R::__okm_embed_keys(document).into_iter().collect();
-            for old_key in R::__okm_embed_keys(old) {
-                if !new_keys.contains(&old_key) {
-                    self.store.del(&old_key);
+        // the tables that declare a categorical field. Interning writes into
+        // the same batch, so the vocabulary's growth commits with the row.
+        let mut interned: Option<R> = None;
+        {
+            let mut store = crate::engine::storage::BatchStore::new(&self.store, &mut batch);
+            if R::HAS_VOCAB {
+                let mut copy = document.clone();
+                copy.__okm_intern(&mut store, &header);
+                interned = Some(copy);
+            }
+            let document = interned.as_ref().unwrap_or(document);
+            // Overwrite detection doubles as the unfold source: the stored
+            // document (if any) is exactly what the reduce groups currently
+            // include for this key.
+            let prev = store.get(&pkey).map(|v| R::decode_payload(&v));
+            if let Some(old) = &prev {
+                R::__okm_apply_reduces(&mut store, key, old, &header, false);
+            }
+            store.put(pkey, document.encode_payload());
+            for (ek, ev) in R::index_entries(key, document, &header) {
+                store.put(ek, ev);
+            }
+            // Embedded documents: write children carried with Some(value), and
+            // release references the OLD document pointed at that the new one
+            // no longer does (key change). Reference semantics — no cascade.
+            for (ck, cp) in R::__okm_embed_entries(document) {
+                store.put(ck, cp);
+            }
+            if let Some(old) = &prev {
+                let new_keys: std::collections::HashSet<Vec<u8>> =
+                    R::__okm_embed_keys(document).into_iter().collect();
+                for old_key in R::__okm_embed_keys(old) {
+                    if !new_keys.contains(&old_key) {
+                        store.del(&old_key);
+                    }
                 }
             }
+            // Cross-document reduces: fold this document into each declared
+            // group.
+            R::__okm_apply_reduces(&mut store, key, document, &header, true);
         }
-        // Cross-document reduces: fold this document into each declared group.
-        // Same store instance, so the RMW shares the engine's atomicity
-        // boundary with the document + index writes.
-        let header = self.header();
-        R::__okm_apply_reduces(&mut self.store, key, document, &header, true);
-        // Subscribe: write-path event into the declared channel
-        // (best-effort try_send — full channel drops, never blocks).
-        // The event carries the table's post-write epoch (monotonic
-        // write-batch boundary, ADR-0008 §5).
-        self.epoch += 1;
-        R::__okm_emit_event(crate::subscribe::Op::Put, self.epoch, key, document);
-        let _ = prev; // kept alive for the unfold above; dropped here
+        self.commit(batch);
+        R::__okm_emit_event(
+            crate::subscribe::Op::Put,
+            self.epoch,
+            key,
+            interned.as_ref().unwrap_or(document),
+        );
     }
 
     /// Commanded RMW: `get` → `f(old)` → `put(key, new)` through the
@@ -318,17 +329,24 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     /// [`Self::delete_by_pkey`], which derives both halves from the same
     /// read.
     pub fn delete(&mut self, key: &K, document: &R) {
-        self.store.del(&self.primary_key(key));
-        for (ek, _) in R::index_entries(key, document, &self.header()) {
-            self.store.del(&ek);
-        }
-        // Unfold from every declared reduce group (single call site —
-        // delete_by_pkey reaches here after its internal get).
+        // Same one-commit rule as `put`: the removal set — the primary entry,
+        // every face this document produced, and the reduce unfolds — lands in
+        // one engine commit.
         let header = self.header();
-        R::__okm_apply_reduces(&mut self.store, key, document, &header, false);
+        let mut batch = crate::engine::storage::MemBatch::default();
+        {
+            let mut store = crate::engine::storage::BatchStore::new(&self.store, &mut batch);
+            store.del(&self.primary_key(key));
+            for (ek, _) in R::index_entries(key, document, &header) {
+                store.del(&ek);
+            }
+            // Unfold from every declared reduce group (single call site —
+            // delete_by_pkey reaches here after its internal get).
+            R::__okm_apply_reduces(&mut store, key, document, &header, false);
+        }
+        self.commit(batch);
         // Subscribe: deletion event (same best-effort contract as put),
         // stamped with the table's post-write epoch.
-        self.epoch += 1;
         R::__okm_emit_event(crate::subscribe::Op::Delete, self.epoch, key, document);
     }
 
@@ -644,11 +662,106 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         buf
     }
 
-    /// Read the obj's dynamic fields: slot 1 frames decoded to names via
-    /// the field-name vocabulary. `None` = the obj has no dynamic entry
-    /// (distinct from an empty entry, which is also None here — a
-    /// zero-frame list is never written).
-    pub fn get_fields(&mut self, key: &K) -> Option<BTreeMap<String, DynamicValue>> {
+    /// The document as a name-keyed map: declared fields (typed, from slot 0)
+    /// under the dynamic segment's names (slot 1). Declared names win by
+    /// construction — the typed side is compile-time and the vocabulary only
+    /// allocates names it has never seen.
+    ///
+    /// `None` = nothing stored in EITHER slot. A dynamic-only document (no
+    /// primary entry) still answers its dynamic map: "the document" is the pair
+    /// of slots, not the primary entry.
+    pub fn view(&self, key: &K) -> Option<BTreeMap<String, DynamicValue>> {
+        let row = self.get(key);
+        let stored = self.slot1_map(key);
+        if row.is_none() && stored.is_none() {
+            return None;
+        }
+        let mut out = row.map(|r| r.to_map()).unwrap_or_default();
+        if let Some(fields) = stored {
+            out.extend(fields);
+        }
+        Some(out)
+    }
+
+    /// Partial whole-document update, ONE engine commit.
+    ///
+    /// - A name that matches a declared field is a read-modify-write of the row:
+    ///   the stored document is decoded, the named fields overwrite their slots
+    ///   in its map, and the row is rewritten through the semantic path — so
+    ///   faces the PREVIOUS values produced are removed. (`put` deliberately
+    ///   leaves that cleanup to `delete(old row)`; a whole-document entry point
+    ///   has no old row in hand, so it cleans.)
+    /// - Any other name is a dynamic field: it overwrites that name in slot 1
+    ///   and leaves the other dynamic names alone.
+    ///
+    /// Declared fields the map does NOT name keep their stored values. Use
+    /// [`replace`](Self::replace) when the map is meant to be the whole document.
+    pub fn merge(&mut self, key: &K, object: &BTreeMap<String, DynamicValue>) {
+        let (typed, dynamic) = self.split_names(object);
+        let mut batch = crate::engine::storage::MemBatch::default();
+        if !typed.is_empty() {
+            let prev = self.get(key);
+            let mut merged = prev.as_ref().map(|r| r.to_map()).unwrap_or_default();
+            merged.extend(typed);
+            let document = R::from_map(&merged);
+            self.save_with_prev_into(&mut batch, key, &document, prev.as_ref());
+        }
+        if !dynamic.is_empty() {
+            let mut stored = self.slot1_map(key).unwrap_or_default();
+            stored.extend(dynamic);
+            self.slot1_into(&mut batch, key, &stored);
+        }
+        self.commit(batch);
+    }
+
+    /// Whole-document replacement, ONE engine commit: the map IS the document.
+    ///
+    /// - Declared names rebuild the row; a declared field the map does not name
+    ///   takes the struct's default (the payload is positional — a half row
+    ///   cannot be encoded). The row's previous faces are removed.
+    /// - A map with NO declared name leaves the static segment absent, deleting
+    ///   the row if it existed. The dynamic segment is exactly the map's
+    ///   non-declared names, so `replace(key, &empty_map)` is
+    ///   [`purge`](Self::purge).
+    pub fn replace(&mut self, key: &K, object: &BTreeMap<String, DynamicValue>) {
+        let (typed, dynamic) = self.split_names(object);
+        let mut batch = crate::engine::storage::MemBatch::default();
+        if typed.is_empty() {
+            if let Some(prev) = self.get(key) {
+                self.delete_into(&mut batch, key, &prev);
+            }
+        } else {
+            let document = R::from_map(&typed);
+            self.save_with_prev_into(&mut batch, key, &document, None);
+        }
+        self.slot1_into(&mut batch, key, &dynamic);
+        self.commit(batch);
+    }
+
+    /// Remove the whole document — both slots — in one commit. `false` = there
+    /// was nothing to remove.
+    pub fn purge(&mut self, key: &K) -> bool {
+        let prev = self.get(key);
+        let has_segment = self.store.get(&self.fields_key(key)).is_some();
+        if prev.is_none() && !has_segment {
+            return false;
+        }
+        let mut batch = crate::engine::storage::MemBatch::default();
+        if let Some(document) = &prev {
+            self.delete_into(&mut batch, key, document);
+        }
+        if has_segment {
+            batch.del(&self.fields_key(key));
+        }
+        self.commit(batch);
+        true
+    }
+
+    /// The stored dynamic segment as a name-keyed map. `None` = no entry; a
+    /// zero-frame list is never written, so empty and absent are one state.
+    /// Crate-visible for the export bridge, which needs the segment WITHOUT the
+    /// declared half (the variant column) — the public read is [`view`].
+    pub(crate) fn slot1_map(&self, key: &K) -> Option<BTreeMap<String, DynamicValue>> {
         let raw = self.store.get(&self.fields_key(key))?;
         let mut d = VocabCache::new(FIELD_VOCAB);
         let header = self.header();
@@ -672,121 +785,81 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         Some(out)
     }
 
-    /// Replace the obj's dynamic fields wholesale: the map becomes the
-    /// entire slot-1 entry (fields absent from `variants` are removed —
-    /// this is a whole-entry put, not a per-field merge). First-seen
-    /// names allocate ids through the vocabulary; one engine batch
-    /// carries any vocabulary growth plus the entry itself.
-    pub fn put_fields(
-        &mut self,
+    /// Encode the whole slot-1 entry into `batch` (vocabulary growth included);
+    /// an empty map removes the entry instead of writing a zero-frame list.
+    fn slot1_into(
+        &self,
+        batch: &mut crate::engine::storage::MemBatch,
         key: &K,
         variants: &BTreeMap<String, DynamicValue>,
     ) {
-        let mut d = VocabCache::new(FIELD_VOCAB);
-        let header = self.header().clone();
-        let store = &mut self.store;
-        let mut resolver = |name: &str| d.id_for(store, &header, name);
-        let mut body = Vec::new();
-        for (name, value) in variants {
-            // put_frame_named recurses into nested Obj values, sharing
-            // the vocabulary (id_for allocates on first sight).
-            crate::model::obj_dynamic::put_frame_named(&mut body, name, value, &mut resolver);
-        }
-        self.epoch += 1;
+        let header = self.header();
         let k = self.fields_key(key);
+        let mut d = VocabCache::new(FIELD_VOCAB);
+        let mut store = crate::engine::storage::BatchStore::new(&self.store, batch);
+        let mut body = Vec::new();
+        {
+            let mut resolver = |name: &str| d.id_for(&mut store, &header, name);
+            for (name, value) in variants {
+                // put_frame_named recurses into nested Obj values, sharing the
+                // vocabulary (id_for allocates on first sight).
+                crate::model::obj_dynamic::put_frame_named(&mut body, name, value, &mut resolver);
+            }
+        }
         if body.is_empty() {
-            self.store.del(&k);
+            store.del(&k);
         } else {
-            self.store.put(k, body);
+            store.put(k, body);
         }
     }
 
-    /// The whole obj as a name-keyed map: declared fields (typed, from
-    /// slot 0 via FieldDesc) merged over the dynamic segment (slot 1).
-    /// Declared names win by construction — the two paths cannot collide
-    /// because the typed side is compile-time and the vocabulary only
-    /// allocates names it has never seen (a dynamic name equal to a
-    /// declared name would have to be allocated first; convention:
-    /// callers don't, and `get_fields` exposes any violation).
-    pub fn get_document(&mut self, key: &K) -> Option<BTreeMap<String, DynamicValue>> {
-        let document = self.get(key)?;
-        let mut out = document.to_map();
-        if let Some(v) = self.get_fields(key) {
-            out.extend(v);
-        }
-        Some(out)
-    }
-
-    /// Whole-obj write: fields whose names match the document struct go to
-    /// the typed path (slot 0, `R::decode_payload` + field assignment),
-    /// the rest to the dynamic segment. Unknown names allocate (this is
-    /// the external-data entry point — unknown fields are normal input,
-    /// unlike the typed decoder where they are caller bugs). One call,
-    /// two slots, one epoch bump.
-    ///
-    /// The input IS a map — there is no root-wrapping convention for
-    /// scalar/array tops (no synthetic `"_root"` field). Callers holding
-    /// a non-object document decide themselves: wrap in a named field,
-    /// reject, or split; the storage layer does not guess.
-    pub fn put_document(
-        &mut self,
+    /// Encode a document's removal into `batch`: primary entry, every face it
+    /// produced, and the reduce unfolds (which read through the batch view).
+    fn delete_into(
+        &self,
+        batch: &mut crate::engine::storage::MemBatch,
         key: &K,
-        object: &BTreeMap<String, DynamicValue>,
+        document: &R,
     ) {
-        // Split by declared/undeclared: declared names go through the
-        // typed path (slot 0 via from_map + put — full pipeline incl.
-        // indexes/reduces/events), the rest to the dynamic segment.
+        let header = self.header();
+        let mut store = crate::engine::storage::BatchStore::new(&self.store, batch);
+        store.del(&self.primary_key(key));
+        for (ek, _) in R::index_entries(key, document, &header) {
+            store.del(&ek);
+        }
+        R::__okm_apply_reduces(&mut store, key, document, &header, false);
+    }
+
+    /// Split a name-keyed map along the declaration: declared names are the
+    /// static segment, the rest the dynamic one.
+    fn split_names(
+        &self,
+        object: &BTreeMap<String, DynamicValue>,
+    ) -> (
+        BTreeMap<String, DynamicValue>,
+        BTreeMap<String, DynamicValue>,
+    ) {
         let declared: std::collections::HashSet<&str> =
             R::FIELDS.iter().map(|f| f.name).collect();
-        let typed_names: Vec<&String> = object
-            .keys()
-            .filter(|n| declared.contains(n.as_str()))
-            .collect();
-        if !typed_names.is_empty() {
-            // Read-modify-write: absent declared fields keep their current
-            // values (fresh documents default).
-            let mut document = match self.get(key) {
-                Some(r) => r,
-                None => R::from_map(&BTreeMap::new()), // all-default document
-            };
-            // from_map over the TYPED subset only: the current document's map
-            // (or all-default for a fresh key) overwritten by the given
-            // declared fields — absent fields keep their values.
-            let mut merged = document.to_map();
-            for n in &typed_names {
-                if let Some(v) = object.get(*n) {
-                    merged.insert((*n).clone(), v.clone());
-                }
+        let mut typed = BTreeMap::new();
+        let mut dynamic = BTreeMap::new();
+        for (name, value) in object {
+            if declared.contains(name.as_str()) {
+                typed.insert(name.clone(), value.clone());
+            } else {
+                dynamic.insert(name.clone(), value.clone());
             }
-            document = R::from_map(&merged);
-            self.put(key, &document);
         }
-        let dynamic: BTreeMap<String, DynamicValue> = object
-            .iter()
-            .filter(|(n, _)| !declared.contains(n.as_str()))
-            .map(|(n, v)| (n.clone(), v.clone()))
-            .collect();
-        self.put_fields(key, &dynamic);
+        (typed, dynamic)
     }
 
-    /// Drop the dynamic entry (declared fields untouched). True if an
-    /// entry existed.
-    /// Delete the whole document: slot 0 (primary + index entries) AND
-    /// the dynamic segment (slot 1). One semantic action, both slots.
-    pub fn delete_document(&mut self, key: &K) -> bool {
-        let fields_gone = self.delete_fields(key);
-        let primary_gone = self.delete_by_pkey(key);
-        fields_gone || primary_gone
-    }
-
-    pub fn delete_fields(&mut self, key: &K) -> bool {
-        let k = self.fields_key(key);
-        if self.store.get(&k).is_some() {
-            self.store.del(&k);
-            self.epoch += 1;
-            true
-        } else {
-            false
+    /// Commit one semantic write and advance the epoch. The engine's error has
+    /// no channel in this API, so it surfaces as a panic carrying the engine's
+    /// own text (never a generic message that hides it).
+    fn commit(&mut self, batch: crate::engine::storage::MemBatch) {
+        if let Err(e) = self.store.commit_batch(batch) {
+            panic!("okm: commit_batch failed: {e}");
         }
+        self.epoch += 1;
     }
 }

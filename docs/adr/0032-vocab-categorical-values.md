@@ -154,7 +154,7 @@ use it today (field names 0x02/0x03, predicate/kind tokens 0x04/0x05).
   faces, no allocation), the per-field data vocabularies are declaration-order
   and open-ended (families 0x1/0x2). The split is exactly what avoids migrating live
   name tables: a face move would have to COPY entries, and forgetting that
-  makes `get_fields` drop fields silently (unknown ids drop the field).
+  makes the dynamic-segment read drop fields silently (unknown ids drop the field).
 - Migration is therefore about categories only, and it is NOT silent: old
   one-byte `Enum` tags decode without error into a DIFFERENT category, so the
   rewrite happens under a layout version bump — one layout change, no

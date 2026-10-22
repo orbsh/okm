@@ -245,7 +245,7 @@ explicitly, though not identical-by-construction:
 - **Dynamic attributes (fixed face 0x01)**: the edge's open attributes are the
   obj's dynamic segment — ONE entry per edge, `[ns][0x01][edge_id]`, nTLV
   frames whose field names are vocabulary numbers (ADR-0012) — i.e.
-  the same entry, codec and `put_fields`/`get_fields` surface any
+  the same entry, codec and `replace_into`/`attrs` surface any
   document row has. The graph assembly owns that entry (callers stop
   hand-rolling frames). An open attribute a query later needs is
   reached through a path index over its declared path (ADR-0029 — one

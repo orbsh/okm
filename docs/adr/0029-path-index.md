@@ -88,7 +88,7 @@ declares a path plus the value type its entries are ordered by.**
    are empty results" rule), and so does a missing path.
 
 6. **Path indexes attach to the dynamic-segment write path**
-   (`put_fields` / `delete_fields`), never to the primary document path. The
+   (the whole-document writes `merge` / `replace` / `purge`, ADR-0035), never to the primary document path. The
    primary document holds schema-declared fields only, where a depth-1 path is
    exactly what `Plain` already indexes; nested content exists only in the
    schema-free zone. Exactly ONE maintainer per entry set: the primary path's
@@ -126,7 +126,7 @@ difference as a refinement rather than a bug:
   (`< 0xFF` one byte, `0xFF` + u16 BE) instead of inventing a width. With
   fixed-width handles the only variable-width component is `Key`.
 - The draft left the attachment point open (an interface question: the plan
-  surface's `put_fields` signature would have had to grow an `old fields`
+  surface's whole-document write signature would have had to grow an `old fields`
   argument). The landing attaches path indexes to the dynamic-segment write
   path and reads the old map there only when a path index is declared, so the
   plan surface and every binding call site are untouched.

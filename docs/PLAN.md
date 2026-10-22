@@ -22,9 +22,16 @@ Design decisions live in `docs/adr/`. This plan tracks implementation status.
 - [x] Payload encoding: TLV frames `[tag u8][len u32 BE][value BE]`, tag =
       field declaration index (decoupled from names); fixed-width fields
       today, same frame kept for the variable-length regime later.
-- [x] `Table<S, K, R>` assembly point: plain generics, no assembly macro;
-      holds the shared engine instance; `put(row)` = primary key write +
-      index entries in one engine batch; `Row::table(store, ns)` constructor.
+- [x] `Collection<S, K, R>` assembly point (formerly `Table`): plain generics,
+      no assembly macro; holds the shared engine instance. `put(row)` writes
+      the whole set — primary entry, one face per access method, embedded
+      children with their faces, the releases the old document dropped, the
+      reduce fold/unfold RMWs and any vocabulary growth — as ONE engine commit
+      (landed 2026-10-22: the "internal buffer" half of ADR-0003's division of
+      labour; `delete` and the whole-document writes (`merge` / `replace` / `purge`,
+      ADR-0035) follow the same rule, and the reduce
+      RMW reads through `BatchStore` so a fold sees its own batch's writes).
+      `Row::table(store, ns)` constructor.
 - [x] `save_into(batch, key, value)` cross-collection atomic path (ADR-0003
       mechanism note): encode into an externally owned engine batch without
       touching the collection's internal buffer; for primary + index across
@@ -564,7 +571,8 @@ key bare in the tail) recorded in ADR-0005.
       per declared path with the path OUT of the entry key; the value
       type declared at declaration (only U8/U16/U32/U64/FixedBytes/Str).
       Maintenance hangs off the DYNAMIC-segment write path
-      (`put_fields` / `delete_fields`; the primary path's `index_entries`
+      (the whole-document writes `merge` / `replace` / `purge`, ADR-0035; the
+      primary path's `index_entries`
       skips `Path` declarations by construction — one maintainer per
       entry set), and the old map is read only when a path index is
       declared, so the plan surface and every binding call site are
@@ -889,9 +897,10 @@ Document-oriented naming, one sweep before crates.io:
   the structured schema export is a per-collection declaration; the serde
   JSON field shapes are unchanged in kind, consumers rename the type).
 - `ObjEncode` -> `DocumentEncode`; trait `Row` -> `Document` (assoc types too).
-- API verbs: `get`/`put`/`delete` (typed, unchanged) + `get_document` /
-  `put_document` / `delete_document` (both slots) + `get_fields` /
-  `put_fields` / `delete_fields` (dynamic segment; the old `variants`
+- API verbs: `get`/`put`/`delete` (typed, unchanged) + `view` / `merge` /
+  `replace` / `purge` (whole document, ADR-0035 — this list first landed with
+  the slot-split names `get_document` / `put_document` / `delete_document` +
+  `get_fields` / `put_fields` / `delete_fields`, retired 2026-10-22; the old `variants`
   name retired — dynamic fields ARE the document's fields).
 - Public concept: **document** (OKM is document-oriented; declared static
   fields embed into the dynamic whole). "obj"/"object" retired from docs;
@@ -932,7 +941,7 @@ the open question and the assessment:
   fields, via host callables). Export is a read-side projection, not a
   write-path capability.
 - **Plan**: bump `parquet` optional dep 54 → 60; build Variant values
-  from `get_fields`' map (names resolved); append as `variant` column
+  from the dynamic segment's map (names resolved); append as `variant` column
   via parquet-variant's Arrow integration; feature-gate
   `parquet-variant` separately so plain typed export stays on 54 if
   version coupling proves painful. Decide version strategy at
@@ -1159,7 +1168,7 @@ offsets).
       as a whole). Final form follows the original definition: a variable-
       length cold TLV frame like String, header carries the count, elements
       are bare V when homogeneous (the payoff vs Array) and per-element LV
-      when dynamic-width (`Vector<String>`). `get_document` lifts it to
+      when dynamic-width (`Vector<String>`). `view` lifts it to
       `DynVal::Array` — the dynamic layer has no Vector type; Vector is a
       STORAGE-layer format. Embedding vectors are the anchor use case.
       Elements are pure values — the identity line keeps this out of
@@ -1392,7 +1401,8 @@ bytes; doing them after P3 means hex locks change once, not twice.
 - [x] `parquet_io::export_parquet_with_variant` — the bridge's variant column
       (`Collection::to_record_batch_with_variant`) finally has an export call, so a
       file keeps the dynamic segment instead of only the declared half.
-- [x] `Graph::put_fields_into` / `get_fields` own the edge's 0x01 dynamic segment
+- [x] `Graph::replace_into` / `attrs` (named `put_fields_into` / `get_fields`
+      until ADR-0035) own the edge's 0x01 dynamic segment
       (field-name vocabulary, `[ns][0x01][edge_id]`), and `link_into` deletes the
       previous segment in the same batch — a rewrite must not inherit attributes.
       Before this, the consumer wrote that segment by hand: a documented layout with
@@ -1411,3 +1421,122 @@ bytes; doing them after P3 means hex locks change once, not twice.
       `the_reduce_table_exports_as_its_own_file` (slot, groups 1→40 and 2→7).
 - [ ] Consumer side (Krystallizer): a catalog file, a door addressed by TABLE NAME,
       and its fact table switching from a 501 to the edge-table export.
+
+## Whole-document API: merge / replace / purge / view (ADR-0035 — A landed 2026-10-22, B/C open)
+
+The slot-split document API (`get`/`put`/`delete_document` +
+`get`/`put`/`delete_fields`) made the caller choose a slot, and every
+whole-document write cost two engine commits. The surface collapses onto two
+axes: the static segment speaks the STRUCT (`get` / `put` / `delete`,
+unchanged — whole-struct replace is already the only typed write, and the derive
+generates no per-field setters), the whole document speaks a name-keyed map, and
+every write is ONE engine commit.
+
+| operation | covers | commits | replaces |
+|---|---|---|---|
+| `get(key) -> Option<R>` | static segment (typed) | — | unchanged |
+| `put(key, &R)` | static segment + faces + ledgers | 1 | unchanged |
+| `delete(key, &R)` | static segment + faces + ledgers | 1 | unchanged |
+| `view(key) -> Option<BTreeMap<String, DynamicValue>>` | merged projection of both slots | — | `get_document` + `get_fields` |
+| `merge(key, &map)` | declared names → row RMW; dynamic names → per-name overwrite of slot 1 | 1 | `put_document` (merge half) + `put_fields` |
+| `replace(key, &map)` | row rebuilt from the map (absent declared fields take defaults); slot 1 = exactly the map's dynamic names | 1 | — (stronger than `put_document`) |
+| `purge(key) -> bool` | both slots removed | 1 | `delete_document` + `delete_fields` |
+
+Decisions:
+
+- `merge` / `replace` clean the previous document's faces (through
+  `save_with_prev_into`). `put` keeps its documented contract — "never cleans;
+  `delete(old row)` owns the dangling face" — which `index_test.rs` locks.
+  Rationale: a whole-document entry point has no old row in hand, and the dynamic
+  facade (`DynamicCollection::put`) already cleans; two entry points must not
+  have two face lifecycles.
+- `merge` vs `replace` split on ABSENT declared fields: merge keeps the current
+  value, replace takes the default. This is the distinction `put_document`
+  blurred — named put, behaved as merge.
+- The merged read is named `view`: a short verb in the same family, and the value
+  IS a projection of two slots rather than a stored shape.
+- `Graph`'s edge-attribute face drops the slot-carve-out names too, but NOT by
+  copying the document verbs: `get_fields` → `attrs` (it answers the attributes
+  only — an edge's typed half is the payload, not a map, so `view` would
+  over-claim) and `put_fields_into` → `replace_into` (it replaces the segment
+  outright, so `merge_into` would describe behaviour it does not have).
+- The six old names retire with no aliases.
+- Private op builders shared by the writers: `delete_into(batch, key, doc)` and
+  `slot1_into(batch, key, map)` — that is what makes a whole-document write one
+  `MemBatch` and one commit.
+
+Tasks:
+
+- [x] A `okm-core`: the whole-document surface — `view` / `merge` / `replace` /
+      `purge` beside `get` / `put` / `delete`; every write composes row ops +
+      slot-1 ops into one `MemBatch` (`delete_into`, `slot1_into`, `commit`);
+      the six old names retired with no aliases; `Graph` aligned
+      (`attrs` / `replace_into`). Landed 2026-10-22 with ADR-0035.
+- [x] A tests: `write_commit_test` counts commits and ops per operation (insert
+      3, overwrite 4, +1 for a stale-face delete, +1 per slot-1 entry);
+      `obj_variants_test` rewritten for the map surface (merge per-name,
+      replace = whole document, purge = both slots, dynamic-only documents
+      viewable, face cleanup on merge). `remote_test` proves the composed write
+      stays one frame. All green: 40 okm-core suites, 64 workspace suites.
+- [x] A docs: ADR-0035 (bilingual) + index, MODELING en/zh, README en/zh,
+      ADR-0018's reference, this PLAN.
+- [ ] B `okm-dynamic`: `DynamicCollection` gains `merge` / `replace` / `purge`,
+      retires the slot-1 trio, and its plan surface emits a whole-document plan
+      (typed ops + dynamic ops in one list, one replay one commit). Bindings ride
+      the plan surface and need no new call shape.
+- [ ] C consumers: aura / krystallizer / effector (18 call sites). Push okm,
+      then `cargo update -p okm-core`; same work session.
+- [ ] Separate item, own commit: `from_map` silently defaults a value whose kind
+      does not match the declared field (`_ => #dflt`). Make it a named panic;
+      absent fields keep defaulting (that is the version-evolution rule, not the
+      same thing).
+
+### `#[ok_offrow]` off-row columns (approved 2026-10-22 — name and layout settled, not implemented)
+
+A field declared `#[ok_offrow]` does not live in the row payload: its value sits
+under its own key, so a named-update path (`merge`) can write that column
+without rewriting the row.
+
+**Layout — fixed face 0x0C, one slot for every off-row field:**
+
+`[ns 2B][0x0C][pkey][ordinal u16 BE]` → the field's value, bare (`[count][elems]`
+for a `Vector`, raw bytes for a `Bytes` field). The slot byte stays single
+(0x0C–0x0F are free; 0x06–0x0A are the graph's faces, 0x0B the vector
+snapshot), and one prefix scan `[ns][0x0C][pkey]` returns every off-row field of
+one document — one round trip on the remote path, where a counting family would
+cost one per field.
+
+Rejected: a counting family 0x6 (`[ns][0x6<decl>][pkey]`). It buys a
+column-wide scan across the table that no consumer needs (an export scans the
+whole slot anyway) and pays for it with #fields point reads per document.
+
+Rules:
+
+- `ordinal` = declaration order among `#[ok_offrow]` fields, 0-based and
+  **append-only** — deleting a middle one shifts every later ordinal onto the
+  wrong column, the same silent corruption the index slots avoid with the
+  deprecated reservation.
+- Only COLD (variable-width) fields may be declared: a fixed-width field moved
+  out of the hot segment would leave a hole and buy nothing.
+
+Facts the mechanism must respect:
+
+- `decode_payload` takes bytes only, so off-row fields are filled by a
+  post-decode hook (`__okm_load_offrow`) — the `__okm_embed_deref` /
+  `__okm_deref_vocab` pattern. Read cost: one prefix scan per document.
+- Write side: the derive emits `__okm_offrow_entries(key, doc)` beside
+  `__okm_embed_entries`. `merge` writes only the named columns; `put` / `replace`
+  own the whole document and rewrite every off-row key. WITHOUT a named-update
+  path the annotation buys nothing — `put(&R)` writes the same bytes, merely
+  under a different key.
+- Constraints: an off-row field cannot be indexed or reduce-grouped (index keys
+  are fixed-width); the derive rejects it at compile time.
+- Export / snapshot must carry off-row values — they are DATA, unlike the derived
+  index entries: one pass over the 0x0C slot, joined on pkey.
+- Out of scope: appending to a huge array. Writing that key still rewrites the
+  whole value; the ring case needs per-element keys (`seq` in the key), not
+  off-row storage. Two different problems.
+- Naming: `#[ok_offrow]`, not `#[ok_wide]` — wide-column lineage means many
+  columns per row (the opposite emphasis of "this one value is big"); the
+  annotation chooses a storage LOCATION (SQL Server's off-row LOB, Oracle's
+  out-of-line LOB).
