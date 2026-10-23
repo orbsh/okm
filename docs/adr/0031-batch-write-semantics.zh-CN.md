@@ -9,12 +9,12 @@
 ## 背景
 
 `Collection::save_into(&mut batch, …)` 是跨表原子路径（ADR-0003）：几张表写进同一个
-外部持有的 `MemBatch`，一次 `commit_batch` 让它们一起活或一起死。它自己的契约写着
+外部持有的 `Batch`，一次 `commit_batch` 让它们一起活或一起死。它自己的契约写着
 它是**编码**面而不是**语义**面——它绕过 `put` 的高层写路径钩子：reduce 的 fold/
 unfold、嵌入文档的释放、subscribe 事件。于是两件事全部压到每个批量写者身上：
 
 - **参与 reduce 的表根本没法写进 batch。** reduce 是一次对组条目的读-改-写
-  （`apply_row` 收 `&mut S where S: VirtualStorage`），而 `MemBatch` 只是操作收集器，
+  （`apply_row` 收 `&mut S where S: VirtualStorage`），而 `Batch` 只是操作收集器，
   没有 `get`：RMW 读不到当前累加器——也读不到**同一批**里已经为同一组产生的值，于是
   一批里的两次写各自从旧值起算，重复计数。
 - **覆盖写会把上一份文档的索引条目留成悬挂**（`put` 的既有契约：条目键编码了被索引
@@ -35,7 +35,7 @@ pub struct BatchStore<'a, S: VirtualStorage> {
     store: &'a S,
     /// batch 放在 cell 后面，因为 `VirtualStorage` 的写操作取 `&self`
     /// （ADR-0026）；操作列表仍归调用方所有。
-    batch: RefCell<&'a mut MemBatch>,
+    batch: RefCell<&'a mut Batch>,
 }
 impl VirtualStorage for BatchStore<'_, S> { /* get / put / del，读穿透 */ }
 ```

@@ -31,17 +31,17 @@ suspects:
 2. **`batch()` leaves the trait; `commit_batch(ops)` stays.** The commit
    point must hold the engine: fjall executes the op list in its own
    `Batch`, redb in ONE write transaction (both override `commit_batch` —
-   the atomicity is real). `batch()` returned the CONCRETE `MemBatch`, so
+   the atomicity is real). `batch()` returned the CONCRETE `Batch`, so
    no engine could ever wrap a different carrier — its three "overrides"
    (fjall / redb / RemoteStore) were one-line bodies copying the trait
-   default. The old fjall doc ("batch() returns MemBatch for encoding;
+   default. The old fjall doc ("batch() returns Batch for encoding;
    commit replays into fjall's own Batch") described the commit honestly
    but sold `batch()` as an extension point it could never be.
-3. **The `KvBatch` trait is deleted; `MemBatch` keeps inherent `put`/`del`.**
+3. **The `KvBatch` trait is deleted; `Batch` keeps inherent `put`/`del`.**
    Evidence: one implementation, of its only default carrier; `KvBatch::commit`
    had ZERO callers (all `.commit()` hits in the tree are engine internals —
    fjall's `wb.commit()`, redb's `txn.commit()`); `save_into(&mut impl
-   KvBatch)` could never receive a non-`MemBatch`. The accumulation API is
+   KvBatch)` could never receive a non-`Batch`. The accumulation API is
    identical after deletion — inherent methods, zero call-site churn.
 4. **`VirtualStorageAsync` gains the aligned surface.** Counted against the
    PRE-audit sync trait it lacked 4 methods (`scan_range_iter`,
@@ -67,13 +67,13 @@ into a paged stream).
 ## Why Not
 
 - **Keep `KvBatch` as "future extensibility."** The extensibility was
-  structurally dead: `batch(&mut self) -> MemBatch` pins the carrier type,
+  structurally dead: `batch(&mut self) -> Batch` pins the carrier type,
   so the trait could not be satisfied by a native builder. A slot that
   cannot be filled is ceremony, not flexibility (Occam: entities must
   self-justify against a real problem).
 - **Make `commit_batch` take `impl KvBatch`.** Same trap one layer up —
-  only `MemBatch` implements it, and the engines consume `&[(key,
-  Option<value>)]`, which IS `MemBatch.ops`. Passing the list directly
+  only `Batch` implements it, and the engines consume `&[(key,
+  Option<value>)]`, which IS `Batch.ops`. Passing the list directly
   states the one thing the engines actually need.
 - **Delete `scan_range` as "derivable from `scan_range_iter`."** Derivable
   in code, wrong in protocol: `RemoteStore::scan_range` is ONE OP_SCAN
@@ -125,10 +125,10 @@ is ruled out as a universal contract — not "unsupported yet", structurally
 impossible for redb. `WriteTransaction<'db>` borrows `&self` and redb 4.2.0
 has no owned transaction type; an associated `type Batch` must be owned
 (returned by value from `fn batch(&self)`), so redb can only fill it with an
-op-list carrier (MemBatch renamed) or a NoopBatch placeholder. A placeholder
+op-list carrier (Batch renamed) or a NoopBatch placeholder. A placeholder
 degrades either to per-op replay (losing redb's today-real single-
 transaction atomicity — regression) or to a Vec inside the "placeholder"
-(= MemBatch with a new name). Neither beats the status quo. fjall and
+(= Batch with a new name). Neither beats the status quo. fjall and
 slatedb CAN host native builders (fjall `Batch` is owned; slatedb
 `WriteBatch::new()` is detached) — but a unified contract is capped by its
 weakest engine, and this is the same failure shape as `KvBatch::commit(self)`:

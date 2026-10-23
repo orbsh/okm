@@ -73,7 +73,7 @@ The surface splits by VALUE SHAPE rather than by slot.
    moved with the verb). It is the ONE removal verb: a document is the pair of
    slots, so "delete the row, keep the segment" has no sound use.
 6. **Every write is one engine commit.** Row ops and the slot-1 entry accumulate
-   in one `MemBatch` and reach the engine once, so a crash lands all of them or
+   in one `Batch` and reach the engine once, so a crash lands all of them or
    none.
 7. **The six old names are retired with no aliases** (pre-1.0; consumers ride
    the git dependency and are swept in the same session), and so are `delete`
@@ -94,6 +94,17 @@ The surface splits by VALUE SHAPE rather than by slot.
    `map`. The Parquet backup carries both halves as well — the typed columns plus
    the `variant` column for the open half — so a segment-only document restores
    as one instead of gaining an invented row of defaults.
+10. **The write verbs take `&self`; exclusivity comes from the type, not the
+   borrow.** Building a write set is `&self` work — the batch carrier is a local
+   value, and a batch is already a read-through writer (its pending ops sit in a
+   `RefCell`), so `commit_batch` takes a shared store handle too. The engine APIs
+   behind it are all `&self` (`fjall`'s `db.batch()`, redb's `begin_write()`,
+   slatedb's `write()`), and the remote engines already hold their transport
+   behind `Rc<RefCell<…>>`. What a `merge`'s read-modify-write actually needs is
+   that no second writer interleaves; that is now the collection being `!Sync` —
+   the epoch counter, the one piece of mutable state a write touches, is a
+   `Cell`. One owner per collection, checked at compile time, and no verb needs a
+   `&mut` binding to be called in a row.
 
 ## Why not
 
@@ -147,6 +158,6 @@ The surface splits by VALUE SHAPE rather than by slot.
 - `okm-dynamic` keeps its own `DynamicCollection` surface (it does not wrap the
   typed assembly point) and carries the same verbs on the whole document —
   `fetch` / `merge` / `replace` / `purge` — with its replay committing one
-  `MemBatch`. Its plan surface emits one op list per document (`plan_merge` /
+  `Batch`. Its plan surface emits one op list per document (`plan_merge` /
   `plan_replace` / `plan_purge` → `PlannedWrite`: row ops, segment ops and the
   path-index sweep), so a remote plan stays one replay.

@@ -27,7 +27,7 @@
 pub struct PostPayload { pub mime: String, pub body: Bytes }
 ```
 
-读一列 `payloads.get(&key)`（一次点读，行根本不解码），写一列 `payloads.put(&key, &payload)`（一次行写，热行根本不重编），成对地写则父表与副表各 `save_with_prev_into` 进同一个 `MemBatch`、再一次 `commit_batch`（ADR-0003、ADR-0031），所以这一对是一次提交。建模侧的案例写在 [MODELING](../MODELING.zh-CN.md#字段太大放进副表)。
+读一列 `payloads.get(&key)`（一次点读，行根本不解码），写一列 `payloads.put(&key, &payload)`（一次行写，热行根本不重编），成对地写则父表与副表各 `save_with_prev_into` 进同一个 `Batch`、再一次 `commit_batch`（ADR-0003、ADR-0031），所以这一对是一次提交。建模侧的案例写在 [MODELING](../MODELING.zh-CN.md#字段太大放进副表)。
 
 三条理由，按它们定案的顺序：
 
@@ -81,5 +81,5 @@ ADR-0035 前一天刚落地的规则是：文档面就是一个名字键 map，�
 - 没有代码、没有 schema 变更、没有迁移。`FieldDesc`、`FieldSchema`、四个文档动词、derive 的 walk、动态 plan 面全部原样。
 - 建模规则作为案例写进 MODELING（中英）：同一个键类型、自己一个 ns、写的那一对走一个批；并记下删的那一对归调用方（这个模型里没有级联——junction 是同一个形状）。
 - 两处声明代替了原来的一处。配对由编译器钉住：副表复用父表的键类型，所以 key payload 构造上逐字节相同，只有 ns 与表名不同。
-- 这个决定只留一项接口面工作：公开可进批的删除（`Collection::purge_into(&mut MemBatch, &K)`，包住已经私有的 `delete_into`）。它记在 PLAN 里，不在这篇里。
+- 这个决定只留一项接口面工作：公开可进批的删除（`Collection::purge_into(&mut Batch, &K)`，包住已经私有的 `delete_into`）。它记在 PLAN 里，不在这篇里。
 - 重新打开要靠证据，不靠口味：payload 进入多 MB 量级、整文档读必须一次 round trip、并且测出副表多出来的那次点读就是瓶颈。今天没有任何消费方接近这个形状。

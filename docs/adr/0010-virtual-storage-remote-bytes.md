@@ -47,7 +47,7 @@ Adding a backend = one more `impl VirtualStorage`. The trait gains no methods.
 
 The write path in OKM is already double-write (primary + index entries in
 one batch). The wire frame is exactly that batch:
-`commit_batch`'s `MemBatch` op list, hand-framed with counted lengths —
+`commit_batch`'s `Batch` op list, hand-framed with counted lengths —
 `[op][batch bytes]`.
 No semantic parsing anywhere:
 

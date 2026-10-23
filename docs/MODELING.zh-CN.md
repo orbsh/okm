@@ -173,7 +173,7 @@ fn is_open(row: &Ticket) -> bool { row.status == 0 }
 use okm_core::Junction;
 
 let store = okm_core::TestStore::default(); // slatedb-mem；另有 FjallStore / SlatedbStore / RedbStore
-let mut edges: Junction<_, UserToSession> = Junction::new(store);
+let edges: Junction<_, UserToSession> = Junction::new(store);
 
 let user = UserKey { org_id: 7, user_id: 101 };
 let s1 = SessionKey { org_id: 7, session_id: 1001 };
@@ -226,7 +226,7 @@ for pk in edges.reverse_prefix(&s1) {
 use okm_core::TestStore;
 use __OkmIndex_User_by_org as ByOrg; // 索引类型：ok_index(by_org) 的派生物
 
-let mut t = <User as Document>::collection(TestStore::default());
+let t = <User as Document>::collection(TestStore::default());
 
 t.put(&user, &User { org_id: 7, created_at: 30, reputation: 100, bio_len: 2 });
 
@@ -823,7 +823,7 @@ pub struct PostPayload { pub mime: String, pub body: Bytes }
 |---|---|
 | 读一列 | `payloads.get(&key)`——一次点读，行根本不解码 |
 | 写一列 | `payloads.put(&key, &payload)`——一次行写，热行根本不重编 |
-| 成对写且原子 | 两张 collection 各 `save_with_prev_into` 进同一个 `MemBatch`，再一次 `commit_batch`（ADR-0003、ADR-0031） |
+| 成对写且原子 | 两张 collection 各 `save_with_prev_into` 进同一个 `Batch`，再一次 `commit_batch`（ADR-0003、ADR-0031） |
 | 整文档 | 两次读，按需——拆分换来的就是这个 |
 | 「有没有 payload」 | 副表的这一行是否在场；不需要 `Option` 字段，也不需要哨兵 |
 
@@ -880,7 +880,7 @@ reduce 之外，写路径还有命令式的一半——`Collection::upsert_with(
 - **reduce（声明式）**：`#[ok_reduce(Logic { group(f) })]` 在编译期定死——哪些行进哪个组、fold/unfold 怎么算，都是类型声明的一部分，框架驱动。适合与行结构同步演化的聚合（计数、求和）。
 - **upsert_with（命令式）**：`f(Option<R>) -> R` 在运行时收到旧行，任意逻辑。适合调用方才知道的更新（余额加减、条件修补）。`None` = key 不存在（插入路径）。
 
-两者共用同一条写路径（put），所以索引维护、reduce 折叠、事件发射全部照常触发，无特例。也共用同一个正确性边界：**单写者**。OKM 是进程内库、写序串行（`&mut self`），get→f→put 不可能交错——无需 CAS，这也是 reduce 恰好一次的同一约束。多写者未来（乐观 CAS）是不同机制，不在此模型内。覆盖写的 unfold 补偿由 put 内部完成，upsert_with 不另平账（见 internals 的 reduce 机制）。
+两者共用同一条写路径（put），所以索引维护、reduce 折叠、事件发射全部照常触发，无特例。也共用同一个正确性边界：**单写者**。OKM 是进程内库、每个集合一个持有者，动词取 `&self`，所以这条边界由类型承担：epoch 计数器是一次写唯一触碰的可变状态，它是 `Cell`，于是集合是 `!Sync`，第二个持有者在 get→f→put 进行中无从插手。无需 CAS，这也是 reduce 恰好一次的同一性质。多写者未来（乐观 CAS）是不同机制，不在此模型内。覆盖写的 unfold 补偿由 put 内部完成，upsert_with 不另平账（见 internals 的 reduce 机制）。
 
 ## 写路径事件：两个机制（reduce、subscribe）
 
@@ -894,7 +894,7 @@ reduce 回答"累计后的状态长什么样"；另一类消费者要的是写�
   ```rust
   // 调用方自己的 put 封装：行写入保持恰好一次，通知顺带发出、尽力而为、绝不重试
   fn save_config(store: &mut impl VirtualStorage, cfg: &Config) -> Result<()> {
-      let mut t = Collection::new(store.shared_handle());
+      let t = Collection::new(store.shared_handle());
       t.put(&cfg.key(), cfg)?;                       // 写：恰好一次
       let _ = METRICS_GAUGE.set(cfg.name(), cfg.ttl_secs()); // 旁路副作用：至多一次
       let _ = notifier.send(cfg.name());             // 旁路副作用：发后即忘
