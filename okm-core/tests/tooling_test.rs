@@ -241,3 +241,51 @@ fn an_unnamed_id_exports_as_null_and_import_refuses_it() {
         "import must refuse an unnamed value, got: {err}"
     );
 }
+
+/// A backup carries the WHOLE document (ADR-0035's pair of slots): the typed
+/// half in the typed columns, the open half in the `variant` column — and a
+/// document that has only a segment comes back as a segment, with no invented
+/// row of default values.
+#[test]
+fn parquet_with_variant_restores_both_halves_and_segment_only_documents() {
+    use okm_core::model::obj_dynamic::DynamicValue;
+    use std::collections::BTreeMap;
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("backup.parquet");
+
+    let mut t1: Collection<TestStore, TKey, TRow> = Collection::new(TestStore::slatedb_mem());
+    let with_row = TKey { org_id: 1, user_id: 1 };
+    t1.put(
+        &with_row,
+        &TRow { reputation: 100, level: 7, tag: [1, 0, 0xFF, 0x42] },
+    );
+    let mut open = BTreeMap::new();
+    open.insert("note".to_string(), DynamicValue::Str("hello".into()));
+    t1.merge(&with_row, &open);
+    let segment_only = TKey { org_id: 1, user_id: 2 };
+    t1.merge(&segment_only, &open);
+
+    parquet_io::export_parquet_with_variant(&mut t1, &path).unwrap();
+
+    let mut t2: Collection<TestStore, TKey, TRow> = Collection::new(TestStore::slatedb_mem());
+    let n = parquet_io::import_parquet(&mut t2, &path).unwrap();
+    assert_eq!(n, 1, "one document has a row; the other is segment-only");
+
+    assert_eq!(t2.get(&with_row).expect("the row came back").reputation, 100);
+    assert_eq!(
+        t2.fetch(&with_row).expect("the document").get("note"),
+        Some(&DynamicValue::Str("hello".into())),
+        "the open half came back"
+    );
+
+    assert!(t2.get(&segment_only).is_none(), "no row was invented");
+    assert_eq!(
+        t2.fetch(&segment_only).expect("the segment-only document").get("note"),
+        Some(&DynamicValue::Str("hello".into())),
+        "a segment-only document restores as a segment-only document"
+    );
+    // ...and the two enumeration modes agree with what came back.
+    assert_eq!(t2.scan_keys(), vec![with_row.clone()]);
+    assert_eq!(t2.scan_document_keys(), vec![with_row, segment_only]);
+}
