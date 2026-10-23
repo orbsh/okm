@@ -47,7 +47,7 @@ pub struct ShardDoc {
 #[test]
 fn shard_table_via_bare_host_lands_on_its_ns_segment() {
     let handle = NestStorage::bare(TestStore::default());
-    let mut t: Collection<RemoteStore, ShardDocKey, ShardDoc> = Collection::new(handle.open());
+    let t: Collection<RemoteStore, ShardDocKey, ShardDoc> = Collection::new(handle.open());
 
     t.put(&ShardDocKey { id: 5 }, &ShardDoc { title: 3 });
     for _ in 0..200 {

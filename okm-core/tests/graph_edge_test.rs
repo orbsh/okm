@@ -4,7 +4,7 @@
 //! faces, exact unlink, membership checks, and the cross-collection batch.
 
 use okm_core::{
-    DocumentEncode, EdgeHead, Graph, GraphEncode, KeyEncode, MemBatch, NodeRef, NodeSet,
+    DocumentEncode, EdgeHead, Graph, GraphEncode, KeyEncode, Batch, NodeRef, NodeSet,
     VirtualStorage, PRIMARY_SLOT,
 };
 
@@ -231,13 +231,13 @@ fn rewrite_is_one_batch() {
     // A functional rewrite is unlink + link in ONE batch (ADR-0010's owed
     // item): same edge_id, new endpoints/predicate/payload, and every stale
     // face goes with the old row — no window between two commits.
-    let mut store = okm_core::TestStore::slatedb_mem();
+    let store = okm_core::TestStore::slatedb_mem();
     let mut g: Graph<_, Employment> = Graph::new(store.clone());
     let a = Employment { since_year: 2020, weight: 1 };
     let b = Employment { since_year: 2021, weight: 2 };
     g.link(&head(user(1), org(9), "employs"), &a, 1).unwrap();
 
-    let mut batch = MemBatch::default();
+    let mut batch = Batch::default();
     g.unlink_into(&mut batch, 1).unwrap();
     g.link_into(&mut batch, &head(user(1), org(10), "contracts"), &b, 1)
         .unwrap();
@@ -275,11 +275,11 @@ fn member_set_is_checked_at_write() {
 
 #[test]
 fn link_into_shares_one_batch_with_documents() {
-    let mut store = okm_core::TestStore::slatedb_mem();
+    let store = okm_core::TestStore::slatedb_mem();
     let mut g: Graph<_, Employment> = Graph::new(store.clone());
     let nodes = okm_core::Collection::new(store.clone());
 
-    let mut batch = MemBatch::default();
+    let mut batch = Batch::default();
     // A document write and an edge write into ONE batch.
     nodes.save_into(&mut batch, &UserId { id: 1 }, &User { active: 1 });
     g.link_into(&mut batch, &head(user(1), org(9), "employs"), &Employment::default(), 1)
@@ -296,7 +296,7 @@ fn node_kind_filter_intersects_typed_traversal() {
     // `(:User)-[employs]->(:Org kind=2)` = predicate face ∪ node kind
     // face, intersected in memory — two cheap faces, one convergence.
     let store = okm_core::TestStore::slatedb_mem();
-    let mut orgs = okm_core::Collection::new(store.clone());
+    let orgs = okm_core::Collection::new(store.clone());
     let mut g: Graph<_, Employment> = Graph::new(store.clone());
 
     // Org 9 kind=2, Org 10 kind=3.
@@ -480,7 +480,7 @@ fn the_edge_set_exports_as_a_table_with_named_endpoints() {
     use arrow::array::{Array, BinaryArray};
     use std::collections::BTreeMap;
 
-    let mut store = okm_core::TestStore::slatedb_mem();
+    let store = okm_core::TestStore::slatedb_mem();
     let mut g: Graph<_, Employment> = Graph::new(store.clone());
     g.link(
         &head(user(1), org(9), "employs"),
@@ -497,7 +497,7 @@ fn the_edge_set_exports_as_a_table_with_named_endpoints() {
         "role".to_string(),
         okm_core::obj_dynamic::DynamicValue::Str("lead".to_string()),
     );
-    let mut batch = okm_core::MemBatch::default();
+    let mut batch = okm_core::Batch::default();
     g.replace_into(&mut batch, 1, &attrs);
     store.commit_batch(batch).unwrap();
     assert_eq!(

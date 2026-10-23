@@ -33,7 +33,7 @@ fn nest_derive_end_to_end() {
 
     let handle = AppStorage::serve(TestStore::slatedb_mem());
     let remote = handle.open();
-    let mut t: Collection<RemoteStore, ItemKey, Item> = Collection::new(remote);
+    let t: Collection<RemoteStore, ItemKey, Item> = Collection::new(remote);
 
     t.put(&ItemKey { id: 1 }, &Item { kind: 7 });
 

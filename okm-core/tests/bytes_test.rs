@@ -43,7 +43,7 @@ fn bytes_wire_hex_lock() {
 #[test]
 fn bytes_put_get_roundtrip() {
     let store = TestStore::default();
-    let mut col = Collection::new(store.clone());
+    let col = Collection::new(store.clone());
     let doc = Blob {
         payload: Bytes::new(vec![1, 2, 3, 0xFF]),
         tag: Bytes::default(),

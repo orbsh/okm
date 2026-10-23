@@ -18,7 +18,14 @@ pub struct Collection<S, K: KeyEncode, R: Document<Key = K>> {
     /// bumped on every put/delete, stamped on emitted subscribe events so
     /// consumers can fold to exact same-table batch boundaries. Resets on
     /// restart — meaningful only within one process lifetime.
-    epoch: u64,
+    ///
+    /// A `Cell` because it is the ONLY mutable state a write touches, and the
+    /// write verbs take `&self` (ADR-0035 rule 10): building the whole write
+    /// set is `&self` work through a local [`Batch`], so the exclusivity a
+    /// merge's read-modify-write needs no longer comes from `&mut self`. The
+    /// `Cell` is what keeps that sound — `Cell` is `!Sync`, so a set of writes
+    /// cannot be interleaved by another thread holding the same `&Collection`.
+    epoch: std::cell::Cell<u64>,
     _marker: std::marker::PhantomData<(K, R)>,
 }
 
@@ -31,7 +38,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     pub fn new(store: S) -> Self {
         Self {
             store,
-            epoch: 0,
+            epoch: std::cell::Cell::new(0),
             _marker: std::marker::PhantomData,
         }
     }
@@ -88,11 +95,11 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     /// — the stale entry dangles, which is why `purge` exists; the reduce,
     /// by contrast, is a mutable
     /// aggregate under one group key and MUST compensate.
-    pub fn put(&mut self, key: &K, document: &R) {
+    pub fn put(&self, key: &K, document: &R) {
         // ONE engine commit per semantic write. The whole write set — primary
         // entry, every declared face, embedded children with their own faces,
         // the releases of children the old document no longer points at, and
-        // the reduce RMWs — accumulates in one `MemBatch` and reaches the
+        // the reduce RMWs — accumulates in one `Batch` and reaches the
         // engine as a single `commit_batch` (ADR-0003's "internal buffer" half:
         // the same batch `save_into` exposes to callers, owned here by the
         // routine path). `BatchStore` is the read-through view that lets a
@@ -103,7 +110,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         // the ledgers land in one engine commit or not at all.
         let header = self.header();
         let pkey = self.primary_key(key);
-        let mut batch = crate::engine::storage::MemBatch::default();
+        let mut batch = crate::engine::storage::Batch::default();
         // Categorical values (ADR-0032): a `Vocab<N>` field holds a NAME until
         // the write path interns it, and the payload byte is the id. Tables
         // with no Vocab field hand the caller's document straight through; the
@@ -152,7 +159,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         self.commit(batch);
         R::__okm_emit_event(
             crate::subscribe::Op::Put,
-            self.epoch,
+            self.epoch.get(),
             key,
             interned.as_ref().unwrap_or(document),
         );
@@ -163,9 +170,13 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     /// emission all fire without special-casing. Returns the written document.
     /// `f` receives `None` when the key has no document yet (insert path).
     ///
-    /// Single-writer only: OKM is an in-process library with a serial
-    /// write order (`&mut self`), so get→f→put cannot interleave — no
-    /// CAS needed. Same constraint that backs reduce's exactly-once.
+    /// Single-writer only: OKM is an in-process library with one owner per
+    /// collection and a serial write order, so get→f→put cannot interleave —
+    /// no CAS needed. Same constraint that backs reduce's exactly-once. The
+    /// order is not `&mut self`'s any more (writes take `&self`, see
+    /// [`put`](Self::put)); what keeps it is `Collection` being `!Sync` — the
+    /// epoch counter is a `Cell` — so no second owner can hold the same
+    /// collection while a write is in flight.
     /// Cross-process exclusion is the engine's job, not OKM's: fjall
     /// takes a file lock on open (a second process fails to open the
     /// same directory), slatedb fences with a writer epoch in the
@@ -175,7 +186,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     /// only double-guard what the engine already enforces. The
     /// multi-writer future (optimistic CAS) triggers only if multiple
     /// live writers over one store become a real requirement.
-    pub fn upsert_with(&mut self, key: &K, f: impl FnOnce(Option<R>) -> R) -> R {
+    pub fn upsert_with(&self, key: &K, f: impl FnOnce(Option<R>) -> R) -> R {
         let new = f(self.get(key));
         self.put(key, &new);
         new
@@ -196,7 +207,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     /// semantic sibling, ADR-0031) or the point path `put`/`upsert_with`;
     /// save_into stays for batch-aligned bulk loads where the consumer
     /// settles those folds itself.
-    pub fn save_into(&self, batch: &mut crate::engine::storage::MemBatch, key: &K, document: &R) {
+    pub fn save_into(&self, batch: &mut crate::engine::storage::Batch, key: &K, document: &R) {
         batch.put(self.primary_key(key), document.encode_payload());
         for (ek, ev) in R::index_entries(key, document, &self.header()) {
             batch.put(ek, ev);
@@ -228,7 +239,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     /// announce writes that may never land.
     pub fn save_with_prev_into(
         &self,
-        batch: &mut crate::engine::storage::MemBatch,
+        batch: &mut crate::engine::storage::Batch,
         key: &K,
         document: &R,
         prev: Option<&R>,
@@ -580,7 +591,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     /// (`[ns][deprecated slot]` prefix scan, delete each). Returns the
     /// number of entries removed. Idempotent — a second call finds
     /// nothing. Does NOT touch live slots or the primary table.
-    pub fn prune_deprecated_slots(&mut self) -> usize {
+    pub fn prune_deprecated_slots(&self) -> usize {
         let mut removed = 0;
         for slot in R::DEPRECATED_SLOTS {
             let mut p = self.header();
@@ -709,9 +720,9 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     ///
     /// Declared fields the map does NOT name keep their stored values. Use
     /// [`replace`](Self::replace) when the map is meant to be the whole document.
-    pub fn merge(&mut self, key: &K, object: &BTreeMap<String, DynamicValue>) {
+    pub fn merge(&self, key: &K, object: &BTreeMap<String, DynamicValue>) {
         let (typed, dynamic) = self.split_names(object);
-        let mut batch = crate::engine::storage::MemBatch::default();
+        let mut batch = crate::engine::storage::Batch::default();
         if !typed.is_empty() {
             let prev = self.get(key);
             let mut merged = prev.as_ref().map(|r| r.to_map()).unwrap_or_default();
@@ -736,9 +747,9 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     ///   the row if it existed. The dynamic segment is exactly the map's
     ///   non-declared names, so `replace(key, &empty_map)` is
     ///   [`purge`](Self::purge).
-    pub fn replace(&mut self, key: &K, object: &BTreeMap<String, DynamicValue>) {
+    pub fn replace(&self, key: &K, object: &BTreeMap<String, DynamicValue>) {
         let (typed, dynamic) = self.split_names(object);
-        let mut batch = crate::engine::storage::MemBatch::default();
+        let mut batch = crate::engine::storage::Batch::default();
         if typed.is_empty() {
             if let Some(prev) = self.get(key) {
                 self.delete_into(&mut batch, key, &prev);
@@ -757,13 +768,13 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
 
     /// Remove the whole document — both slots — in one commit. `false` = there
     /// was nothing to remove.
-    pub fn purge(&mut self, key: &K) -> bool {
+    pub fn purge(&self, key: &K) -> bool {
         let prev = self.get(key);
         let has_segment = self.store.get(&self.fields_key(key)).is_some();
         if prev.is_none() && !has_segment {
             return false;
         }
-        let mut batch = crate::engine::storage::MemBatch::default();
+        let mut batch = crate::engine::storage::Batch::default();
         if let Some(document) = &prev {
             self.delete_into(&mut batch, key, document);
         }
@@ -775,7 +786,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         // stamped with the table's post-write epoch. A segment-only document
         // has no row to hand the event, so it emits nothing.
         if let Some(document) = &prev {
-            R::__okm_emit_event(crate::subscribe::Op::Delete, self.epoch, key, document);
+            R::__okm_emit_event(crate::subscribe::Op::Delete, self.epoch.get(), key, document);
         }
         true
     }
@@ -812,7 +823,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     /// an empty map removes the entry instead of writing a zero-frame list.
     fn slot1_into(
         &self,
-        batch: &mut crate::engine::storage::MemBatch,
+        batch: &mut crate::engine::storage::Batch,
         key: &K,
         variants: &BTreeMap<String, DynamicValue>,
     ) {
@@ -840,7 +851,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     /// produced, and the reduce unfolds (which read through the batch view).
     fn delete_into(
         &self,
-        batch: &mut crate::engine::storage::MemBatch,
+        batch: &mut crate::engine::storage::Batch,
         key: &K,
         document: &R,
     ) {
@@ -879,10 +890,10 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     /// Commit one semantic write and advance the epoch. The engine's error has
     /// no channel in this API, so it surfaces as a panic carrying the engine's
     /// own text (never a generic message that hides it).
-    fn commit(&mut self, batch: crate::engine::storage::MemBatch) {
+    fn commit(&self, batch: crate::engine::storage::Batch) {
         if let Err(e) = self.store.commit_batch(batch) {
             panic!("okm: commit_batch failed: {e}");
         }
-        self.epoch += 1;
+        self.epoch.set(self.epoch.get() + 1);
     }
 }

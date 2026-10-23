@@ -123,7 +123,7 @@ fn parquet_roundtrip_with_string_columns() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("snapshot.parquet");
 
-    let mut t1: Collection<TestStore, SKey, SRow> = Collection::new(TestStore::slatedb_mem());
+    let t1: Collection<TestStore, SKey, SRow> = Collection::new(TestStore::slatedb_mem());
     let names = ["", "alice", "多字节 ✓ 名称"];
     for (i, name) in names.iter().enumerate() {
         t1.put(

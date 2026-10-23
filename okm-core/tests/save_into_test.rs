@@ -50,8 +50,8 @@ pub struct AuthorPost {
 
 #[test]
 fn save_into_defers_until_commit() {
-    let mut store = TestStore::slatedb_mem();
-    let mut batch = okm_core::MemBatch::default();
+    let store = TestStore::slatedb_mem();
+    let mut batch = okm_core::Batch::default();
     let t: Collection<TestStore, PostKey, Post> = Collection::new(store.clone());
 
     // Encode-only: nothing lands in any store.
@@ -74,8 +74,8 @@ fn save_into_defers_until_commit() {
 #[test]
 fn cross_collection_one_batch() {
     // Document collection + junction share one batch: both live or neither does.
-    let mut store = TestStore::slatedb_mem();
-    let mut batch = okm_core::MemBatch::default();
+    let store = TestStore::slatedb_mem();
+    let mut batch = okm_core::Batch::default();
 
     {
         let t: Collection<TestStore, PostKey, Post> = Collection::new(store.clone());
@@ -143,9 +143,9 @@ fn entry(id: u64, account: u64, amount: u32) -> (EntryKey, Entry) {
 fn same_group_twice_in_one_batch_accumulates() {
     // The double-count the ADR removes: without read-through both writes
     // would fold from the pre-batch accumulator and the group would end at 1.
-    let mut store = TestStore::slatedb_mem();
+    let store = TestStore::slatedb_mem();
     let t = <Entry as Document>::collection(store.clone());
-    let mut batch = okm_core::MemBatch::default();
+    let mut batch = okm_core::Batch::default();
 
     let (k1, r1) = entry(1, 7, 10);
     let (k2, r2) = entry(2, 7, 5);
@@ -163,11 +163,11 @@ fn same_group_twice_in_one_batch_accumulates() {
 fn overwrite_in_one_batch_reads_the_pending_old_row() {
     // prev = None reads through the adapter, so the row THIS batch produced
     // is the old row: its fold is undone before the new fold lands.
-    let mut store = TestStore::slatedb_mem();
+    let store = TestStore::slatedb_mem();
     let t = <Entry as Document>::collection(store.clone());
     let (k, v1) = entry(1, 7, 10);
     let v2 = Entry { account: 8, amount: 10 };
-    let mut batch = okm_core::MemBatch::default();
+    let mut batch = okm_core::Batch::default();
     t.save_with_prev_into(&mut batch, &k, &v1, None);
     t.save_with_prev_into(&mut batch, &k, &v2, None);
     store.commit_batch(batch).expect("commit");
@@ -184,17 +184,17 @@ fn overwrite_in_one_batch_reads_the_pending_old_row() {
 #[test]
 fn caller_supplied_prev_drives_the_unfold_and_the_cleanup() {
     // The common shape: the caller already read the old row in a prior batch.
-    let mut store = TestStore::slatedb_mem();
+    let store = TestStore::slatedb_mem();
     let t = <Entry as Document>::collection(store.clone());
     let (k, v1) = entry(1, 7, 10);
 
-    let mut batch = okm_core::MemBatch::default();
+    let mut batch = okm_core::Batch::default();
     t.save_with_prev_into(&mut batch, &k, &v1, None);
     store.commit_batch(batch).expect("commit");
     assert_eq!(ledger(&t, 7), Some(1));
 
     let v2 = Entry { account: 8, amount: 10 };
-    let mut batch = okm_core::MemBatch::default();
+    let mut batch = okm_core::Batch::default();
     t.save_with_prev_into(&mut batch, &k, &v2, Some(&v1));
     store.commit_batch(batch).expect("commit");
 
@@ -205,15 +205,15 @@ fn caller_supplied_prev_drives_the_unfold_and_the_cleanup() {
 
 #[test]
 fn an_uncommitted_batch_moves_neither_the_row_nor_the_ledger() {
-    let mut store = TestStore::slatedb_mem();
+    let store = TestStore::slatedb_mem();
     let t = <Entry as Document>::collection(store.clone());
     let (k, v1) = entry(1, 7, 1);
-    let mut batch = okm_core::MemBatch::default();
+    let mut batch = okm_core::Batch::default();
     t.save_with_prev_into(&mut batch, &k, &v1, None);
     store.commit_batch(batch).expect("commit");
 
     // Abandoned: the unfold and the fold both live only in the dropped batch.
-    let mut batch = okm_core::MemBatch::default();
+    let mut batch = okm_core::Batch::default();
     t.save_with_prev_into(&mut batch, &k, &Entry { account: 8, amount: 2 }, None);
     drop(batch);
 
@@ -225,8 +225,8 @@ fn an_uncommitted_batch_moves_neither_the_row_nor_the_ledger() {
 #[test]
 fn atomic_write_and_reduce_in_one_commit() {
     // The ADR's headline: multi-table atomicity AND a ledger, together.
-    let mut store = TestStore::slatedb_mem();
-    let mut batch = okm_core::MemBatch::default();
+    let store = TestStore::slatedb_mem();
+    let mut batch = okm_core::Batch::default();
     let t = <Entry as Document>::collection(store.clone());
     let edges: okm_core::Junction<TestStore, AuthorPost> = okm_core::Junction::new(store.clone());
 
@@ -243,7 +243,7 @@ fn atomic_write_and_reduce_in_one_commit() {
 fn batch_store_reads_pending_ops_newest_first() {
     let store = TestStore::slatedb_mem();
     store.put(b"k1".to_vec(), b"stored".to_vec());
-    let mut batch = okm_core::MemBatch::default();
+    let mut batch = okm_core::Batch::default();
     {
         let view = okm_core::BatchStore::new(&store, &mut batch);
         view.put(b"k1".to_vec(), b"fresh".to_vec());
@@ -270,7 +270,7 @@ fn batch_store_reads_pending_ops_newest_first() {
 #[test]
 fn scans_on_a_batch_view_are_refused() {
     let store = TestStore::slatedb_mem();
-    let mut batch = okm_core::MemBatch::default();
+    let mut batch = okm_core::Batch::default();
     let view = okm_core::BatchStore::new(&store, &mut batch);
     let refused = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| view.scan_suffix(b"x")));
     assert!(refused.is_err(), "a partial ordered view must never be answered");
@@ -306,14 +306,14 @@ pub struct Card {
 
 #[test]
 fn embedded_children_are_written_and_released_in_the_batch() {
-    let mut store = TestStore::slatedb_mem();
+    let store = TestStore::slatedb_mem();
     let cards = <Card as Document>::collection(store.clone());
     let contacts: Collection<TestStore, ContactKey, Contact> = Collection::new(store.clone());
     let k = CardKey { id: 1 };
     let c1 = ContactKey { card_id: 1, kind: 1 };
     let c2 = ContactKey { card_id: 1, kind: 2 };
 
-    let mut batch = okm_core::MemBatch::default();
+    let mut batch = okm_core::Batch::default();
     cards.save_with_prev_into(
         &mut batch,
         &k,
@@ -329,7 +329,7 @@ fn embedded_children_are_written_and_released_in_the_batch() {
     // Overwrite pointing somewhere else: the old child is released in the
     // same batch, exactly as put's overwrite pass does.
     let old = cards.get(&k).expect("old card");
-    let mut batch = okm_core::MemBatch::default();
+    let mut batch = okm_core::Batch::default();
     cards.save_with_prev_into(
         &mut batch,
         &k,
@@ -367,7 +367,7 @@ pub struct LogRow {
 
 #[test]
 fn save_with_prev_into_interns_inside_the_batch() {
-    let mut store = TestStore::slatedb_mem();
+    let store = TestStore::slatedb_mem();
     let c = Collection::<_, LogKey, LogRow>::new(store.clone());
     let k = LogKey { id: 1 };
 
@@ -382,7 +382,7 @@ fn save_with_prev_into_interns_inside_the_batch() {
     // Nothing is live before the commit — not the row, not its vocabulary. The
     // allocation's three writes (label → id, id → label, cursor) go through
     // BatchStore, so they ride the caller's batch.
-    let mut batch = okm_core::MemBatch::default();
+    let mut batch = okm_core::Batch::default();
     c.save_with_prev_into(&mut batch, &k, &row, None);
     assert!(c.get(&k).is_none(), "an uncommitted batch moves nothing");
     store.commit_batch(batch).expect("commit");
@@ -397,7 +397,7 @@ fn save_with_prev_into_interns_inside_the_batch() {
 
     // A second row, a second batch, two labels the store never saw: ids
     // continue from the first batch instead of restarting at 0.
-    let mut batch = okm_core::MemBatch::default();
+    let mut batch = okm_core::Batch::default();
     c.save_with_prev_into(
         &mut batch,
         &LogKey { id: 2 },

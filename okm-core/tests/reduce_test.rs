@@ -63,7 +63,7 @@ impl ReduceLogic for AuthorStats {
 
 #[test]
 fn fold_unfold_roundtrip_is_exact() {
-    let mut t = <Post as Document>::collection(TestStore::slatedb_mem());
+    let t = <Post as Document>::collection(TestStore::slatedb_mem());
 
     let k1 = PostKey { id: 1 };
     let r1 = Post {
@@ -150,7 +150,7 @@ impl ReduceLogic for TopicStats {
 
 #[test]
 fn group_and_fold_use_key_fields() {
-    let mut t = <Topic as Document>::collection(TestStore::slatedb_mem());
+    let t = <Topic as Document>::collection(TestStore::slatedb_mem());
 
     let k1 = TopicKey { forum: 7, id: 100 };
     let k2 = TopicKey { forum: 7, id: 42 };
@@ -179,7 +179,7 @@ fn group_and_fold_use_key_fields() {
 
 #[test]
 fn entry_layout_is_ns_slot_group() {
-    let mut t = <Post as Document>::collection(TestStore::slatedb_mem());
+    let t = <Post as Document>::collection(TestStore::slatedb_mem());
     let k = PostKey { id: 9 };
     let r = Post {
         author_id: 55,

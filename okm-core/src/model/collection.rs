@@ -28,7 +28,7 @@ impl<S: VirtualStorage, E: KvJunction> Junction<S, E> {
     }
 
     /// Atomic double write: one entry in each endpoint's ns.
-    pub fn link(&mut self, a: &<E::A as crate::model::index::Document>::Key, b: &<E::B as crate::model::index::Document>::Key) {
+    pub fn link(&self, a: &<E::A as crate::model::index::Document>::Key, b: &<E::B as crate::model::index::Document>::Key) {
         let e = E::from_parts(a.clone(), b.clone());
         let ak = e.a_side_key();
         let bk = e.b_side_key();
@@ -42,7 +42,7 @@ impl<S: VirtualStorage, E: KvJunction> Junction<S, E> {
     /// them all.
     pub fn save_into(
         &self,
-        batch: &mut crate::engine::storage::MemBatch,
+        batch: &mut crate::engine::storage::Batch,
         a: &<E::A as crate::model::index::Document>::Key,
         b: &<E::B as crate::model::index::Document>::Key,
     ) {
@@ -52,7 +52,7 @@ impl<S: VirtualStorage, E: KvJunction> Junction<S, E> {
     }
 
     /// Removes both entries.
-    pub fn unlink(&mut self, a: &<E::A as crate::model::index::Document>::Key, b: &<E::B as crate::model::index::Document>::Key) {
+    pub fn unlink(&self, a: &<E::A as crate::model::index::Document>::Key, b: &<E::B as crate::model::index::Document>::Key) {
         let e = E::from_parts(a.clone(), b.clone());
         self.store.del(&e.a_side_key());
         self.store.del(&e.b_side_key());

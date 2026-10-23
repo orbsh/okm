@@ -24,7 +24,7 @@ fn verify_engine(store: TestStore) {
     assert_eq!(s2.get(b"k1").as_deref(), Some(b"v1".as_slice()), "{name}: shared handle");
 
     // Batch atomicity: 100 ops in ONE commit_batch.
-    let mut batch = okm_core::MemBatch::default();
+    let mut batch = okm_core::Batch::default();
     for i in 0..100u64 {
         batch.put(format!("batch:{i}").into_bytes(), b"ok".to_vec());
     }
@@ -35,7 +35,7 @@ fn verify_engine(store: TestStore) {
     assert_eq!(s.scan_suffix(b"batch:").len(), 100, "{name}: all batch entries");
 
     // Batch failure handling: empty batch commits clean.
-    let empty = okm_core::MemBatch::default();
+    let empty = okm_core::Batch::default();
     s.commit_batch(empty).expect("{name}: empty batch");
 }
 

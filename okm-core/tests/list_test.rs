@@ -28,9 +28,9 @@ pub struct DeptKey {
 
 #[test]
 fn list_roundtrip_and_stale_release() {
-    let mut depts: okm_core::Collection<TestStore, DeptKey, Dept> =
+    let depts: okm_core::Collection<TestStore, DeptKey, Dept> =
         okm_core::Collection::new(TestStore::slatedb_mem());
-    let mut rooms: okm_core::Collection<TestStore, RoomKey, Room> =
+    let rooms: okm_core::Collection<TestStore, RoomKey, Room> =
         okm_core::Collection::new(depts.store().clone());
 
     let dept_key = DeptKey { dept_id: 1 };

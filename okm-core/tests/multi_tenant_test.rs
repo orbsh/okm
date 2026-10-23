@@ -114,7 +114,7 @@ fn table_write_path_inside_tenant_segment() {
     let handle = AppStorage::serve(TestStore::slatedb_mem());
     let t: Collection<RemoteStore, DocKey, Doc> = Collection::new(handle.open());
 
-    let mut t = t;
+    let t = t;
     t.put(&DocKey { id: 9 }, &Doc { title: 5 });
 
     // Both entries (primary slot-0 + index slot-1) are visible through

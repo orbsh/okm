@@ -54,11 +54,11 @@ pub struct Org {
 
 #[test]
 fn two_level_embed_roundtrip() {
-    let mut orgs: okm_core::Collection<TestStore, OrgKey, Org> =
+    let orgs: okm_core::Collection<TestStore, OrgKey, Org> =
         okm_core::Collection::new(TestStore::slatedb_mem());
-    let mut depts: okm_core::Collection<TestStore, DeptKey, DeptV2> =
+    let depts: okm_core::Collection<TestStore, DeptKey, DeptV2> =
         okm_core::Collection::new(orgs.store().clone());
-    let mut floors: okm_core::Collection<TestStore, FloorKey, Floor> =
+    let floors: okm_core::Collection<TestStore, FloorKey, Floor> =
         okm_core::Collection::new(orgs.store().clone());
 
     let org_key = OrgKey { org_id: 7 };

@@ -20,7 +20,7 @@ use crate::index::index_entries;
 use crate::{decode_payload, encode_payload, DynamicCollection, ValueMap};
 use okm_core::schema::CollectionSchema;
 
-/// One planned write: the engine-shaped op list (MemBatch's
+/// One planned write: the engine-shaped op list (Batch's
 /// `(key, Option<value>)` — None = delete) plus the new accumulator
 /// values the caller must adopt into its local cache.
 #[derive(Debug, Clone, PartialEq)]

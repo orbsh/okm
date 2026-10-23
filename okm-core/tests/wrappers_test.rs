@@ -89,7 +89,7 @@ fn field_desc_reports_wrapper_kinds() {
 
 #[test]
 fn table_round_trip_with_wrappers() {
-    let mut t: Collection<TestStore, WKey, WRow> = Collection::new(TestStore::slatedb_mem());
+    let t: Collection<TestStore, WKey, WRow> = Collection::new(TestStore::slatedb_mem());
     for i in 0..5u64 {
         t.put(&WKey { org: 1, id: i }, &sample(i));
     }
@@ -111,7 +111,7 @@ mod parquet {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("wrappers.parquet");
 
-        let mut t1: Collection<TestStore, WKey, WRow> = Collection::new(TestStore::slatedb_mem());
+        let t1: Collection<TestStore, WKey, WRow> = Collection::new(TestStore::slatedb_mem());
         for i in 0..4u64 {
             t1.put(&WKey { org: 2, id: i }, &sample(i));
         }
@@ -127,7 +127,7 @@ mod parquet {
 
     #[test]
     fn record_batch_columns_are_logical_types() {
-        let mut t: Collection<TestStore, WKey, WRow> = Collection::new(TestStore::slatedb_mem());
+        let t: Collection<TestStore, WKey, WRow> = Collection::new(TestStore::slatedb_mem());
         for i in 0..3u64 {
             t.put(&WKey { org: 3, id: i }, &sample(i));
         }

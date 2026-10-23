@@ -5,7 +5,7 @@
 //! key encoding itself, so different edge types sharing a keyspace do not
 //! conflict.
 
-use crate::engine::storage::{VirtualStorage, MemBatch};
+use crate::engine::storage::{VirtualStorage, Batch};
 use fjall::{Database, Keyspace, KeyspaceCreateOptions};
 
 /// Clone is a handle clone: Arc-inner in fjall, clones share the keyspace.
@@ -59,8 +59,8 @@ impl VirtualStorage for FjallStore {
     }
     /// fjall native: the op list executes in fjall's own cross-keyspace
     /// `Batch` — one `Batch::commit()` = one real WAL write; the carrier
-    /// stays engine-agnostic (MemBatch), the atomicity is fjall's.
-    fn commit_batch(&mut self, batch: MemBatch) -> Result<(), String> {
+    /// stays engine-agnostic (Batch), the atomicity is fjall's.
+    fn commit_batch(&self, batch: Batch) -> Result<(), String> {
         let mut wb = self.db.batch();
         for (k, v) in &batch.ops {
             match v {

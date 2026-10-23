@@ -343,7 +343,7 @@ impl VirtualStorageAsync for SlatedbStore {
     /// Native batch (ADR-0027): slatedb's `WriteBatch` ships as ONE
     /// `db.write` — a real single-write atomic form, not a replay; the
     /// durable wait mirrors the sync engines' WAL boundary.
-    async fn commit_batch(&mut self, batch: crate::engine::storage::MemBatch) -> Result<(), String> {
+    async fn commit_batch(&self, batch: crate::engine::storage::Batch) -> Result<(), String> {
         let mut wb = slatedb::WriteBatch::new();
         for (k, v) in &batch.ops {
             match v {

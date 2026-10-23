@@ -127,7 +127,7 @@ impl VocabMirror {
 
 /// One planned dynamic-segment write: the field entry plus the
 /// vocabulary growth that first-seen names require. The ops are
-/// MemBatch-shaped (`None` = delete): replay or ship as one wire frame
+/// Batch-shaped (`None` = delete): replay or ship as one wire frame
 /// (ADR-0010's single `commit_batch`) — both land byte-identical.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PlannedFields {

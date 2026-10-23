@@ -22,7 +22,7 @@ use std::rc::Rc;
 use std::task::{Context, Poll, Waker};
 
 use okm_core::{
-    MemBatch, NestStorage, OpFrame, OpResponse, TestStore, VirtualStorageAsync, WireClient,
+    Batch, NestStorage, OpFrame, OpResponse, TestStore, VirtualStorageAsync, WireClient,
     WireTransport,
 };
 
@@ -178,8 +178,8 @@ fn post_failure_dies_immediately() {
         Poll::Ready(Err(e)) => assert_eq!(e, "socket gone"),
         _ => panic!("expected immediate Err, got a park"),
     }
-    let mut c2 = WireClient::new(Dead);
-    let mut cb = Box::pin(c2.commit_batch(MemBatch::default()));
+    let c2 = WireClient::new(Dead);
+    let mut cb = Box::pin(c2.commit_batch(Batch::default()));
     match cb.as_mut().poll(&mut cx) {
         Poll::Ready(Err(e)) => assert_eq!(e, "socket gone"),
         Poll::Ready(Ok(())) => panic!("dead transport accepted a batch"),
@@ -234,11 +234,11 @@ fn scan_range_iter_pages_to_completion() {
     let (host, client, loop_t) = pair();
     // one write batch frame, not 600 single-put frames (fjall pays one
     // WAL commit per apply — 600 fsyncs would drown the test clock)
-    let mut batch = MemBatch::default();
+    let mut batch = Batch::default();
     for i in 0..600u32 {
         batch.put(format!("k/{i:04}").into_bytes(), b"v".to_vec());
     }
-    let mut cm = client.clone();
+    let cm = client.clone();
     drive(cm.commit_batch(batch), &host, &client, &loop_t).expect("batch on a live loop");
     let pairs = drive(client.scan_range_iter(b"k", None), &host, &client, &loop_t);
     let items: Vec<_> = pairs.collect();
@@ -251,13 +251,13 @@ fn scan_range_iter_pages_to_completion() {
 #[test]
 fn commit_batch_is_one_frame_one_pass() {
     let (host, client, loop_t) = pair();
-    let mut batch = MemBatch::default();
+    let mut batch = Batch::default();
     batch.put(b"p/1".to_vec(), b"a".to_vec());
     batch.del(b"p/missing".as_ref());
     batch.put(b"p/2".to_vec(), b"b".to_vec());
     // commit_batch takes &mut self (sync-trait mirror): run it on a
     // handle clone, pump through the other handle (same inner Rc).
-    let mut cm = client.clone();
+    let cm = client.clone();
     drive(cm.commit_batch(batch), &host, &client, &loop_t).expect("batch on a live loop");
     // exactly one outbound write frame (no per-op frames, no leftovers)
     assert!(loop_t.out.borrow().is_empty());

@@ -39,7 +39,7 @@ fn subscribe_round_trip() {
     });
     assert!(okm_subscribe::SINK_ROWEVENT.has_sink());
 
-    let mut t: Collection<TestStore, AccountKey, Account> = Collection::new(TestStore::slatedb_mem());
+    let t: Collection<TestStore, AccountKey, Account> = Collection::new(TestStore::slatedb_mem());
     t.put(&AccountKey { id: 1 }, &Account { balance: 10 });
     t.put(&AccountKey { id: 2 }, &Account { balance: 20 });
     t.purge(&AccountKey { id: 1 });
@@ -47,7 +47,7 @@ fn subscribe_round_trip() {
     // Epoch: the table's monotonic write-batch counter — 1, 2, 3 across
     // the three writes, giving consumers an exact same-table boundary.
     // Fan-in: the second document type lands in the same enum (tag 100+).
-    let mut a: Collection<TestStore, AuditKey, Audit> = Collection::new(TestStore::slatedb_mem());
+    let a: Collection<TestStore, AuditKey, Audit> = Collection::new(TestStore::slatedb_mem());
     a.put(&AuditKey { id: 7 }, &Audit { note: "hi".into() });
     a.purge(&AuditKey { id: 7 });
 
@@ -69,7 +69,7 @@ fn no_sink_drops_silently() {
     // panic — the zero-cost default. A write round-trip works regardless
     // of event delivery. (Ghost rides its own `ShadowEvents` enum, so
     // this test cannot race the RowEvent consumers above.)
-    let mut t: Collection<TestStore, GhostKey, Ghost> = Collection::new(TestStore::slatedb_mem());
+    let t: Collection<TestStore, GhostKey, Ghost> = Collection::new(TestStore::slatedb_mem());
     t.put(&GhostKey { id: 3 }, &Ghost { v: 30 });
     assert!(t.get(&GhostKey { id: 3 }).is_some());
 }

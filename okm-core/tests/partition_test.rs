@@ -39,8 +39,8 @@ fn partition_segment_precedes_ns_header() {
     // （0xFF 逃逸字节：合法 ns 头首字节永不取 0xFF → 结构性无碰撞）；
     // 无 partition 表的主键 = [ns 7 BE][slot 0][key]（无 part 段）。
     let store = TestStore::default();
-    let mut pt: okm_core::Collection<_, PlainKey, Partitioned> = okm_core::Collection::new(store.clone());
-    let mut pl: okm_core::Collection<_, PlainKey, Plain> = okm_core::Collection::new(store.clone());
+    let pt: okm_core::Collection<_, PlainKey, Partitioned> = okm_core::Collection::new(store.clone());
+    let pl: okm_core::Collection<_, PlainKey, Plain> = okm_core::Collection::new(store.clone());
 
     let k = PlainKey { id: 1 };
     let pk = pt.primary_key(&k);

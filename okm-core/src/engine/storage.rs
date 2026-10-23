@@ -89,7 +89,7 @@ pub trait VirtualStorage {
     /// Prefix scan returning `(key suffix, value)` pairs, in key order,
     /// is NOT a trait method — it lives as the free function
     /// [`scan_suffix_kv`] (ADR-0027).
-    /// Commit an accumulated [`MemBatch`]: one engine-level write over
+    /// Commit an accumulated [`Batch`]: one engine-level write over
     /// all ops in the list. This is the cross-collection atomicity
     /// primitive (ADR-0003): single-collection writes are already atomic
     /// inside `Collection::put`; primary + index across two assembly
@@ -99,7 +99,7 @@ pub trait VirtualStorage {
     /// (fjall `Batch`, redb one write txn) override to execute the list
     /// as ONE engine-level atomic unit — the single WAL commit is real,
     /// not a replay.
-    fn commit_batch(&mut self, batch: MemBatch) -> Result<(), String> {
+    fn commit_batch(&self, batch: Batch) -> Result<(), String> {
         for (k, v) in batch.ops {
             match v {
                 Some(v) => self.put(k, v),
@@ -232,11 +232,11 @@ pub trait SharedVirtualStorage: VirtualStorage {
 /// could ever wrap a different carrier, and `KvBatch::commit` had zero
 /// callers: the commit boundary is the engine method, never the carrier).
 #[derive(Default)]
-pub struct MemBatch {
+pub struct Batch {
     pub ops: Vec<(Vec<u8>, Option<Vec<u8>>)>,
 }
 
-impl MemBatch {
+impl Batch {
     pub fn put(&mut self, key: Vec<u8>, value: Vec<u8>) {
         self.ops.push((key, Some(value)));
     }
@@ -252,7 +252,7 @@ impl MemBatch {
 ///
 /// This is what lets `Collection::save_with_prev_into` run the reduce
 /// fold/unfold through a batch: the read-modify-write of a group
-/// accumulator needs a `get`, and `MemBatch` alone has none — so a
+/// accumulator needs a `get`, and `Batch` alone has none — so a
 /// same-group fold would read the pre-batch value twice and double-count.
 /// Read-through also covers the batch's own writes, in order.
 ///
@@ -267,11 +267,11 @@ impl MemBatch {
 /// funnel through it) panics with the contract instead of answering.
 pub struct BatchStore<'a, S: VirtualStorage> {
     store: &'a S,
-    batch: std::cell::RefCell<&'a mut MemBatch>,
+    batch: std::cell::RefCell<&'a mut Batch>,
 }
 
 impl<'a, S: VirtualStorage> BatchStore<'a, S> {
-    pub fn new(store: &'a S, batch: &'a mut MemBatch) -> Self {
+    pub fn new(store: &'a S, batch: &'a mut Batch) -> Self {
         Self {
             store,
             batch: std::cell::RefCell::new(batch),
@@ -355,7 +355,7 @@ pub trait VirtualStorageAsync {
     /// write over all accumulated ops. Default replays through put/del;
     /// engines with a native batch override (SlatedbStore ships slatedb's
     /// `WriteBatch` as ONE `db.write` + durable wait).
-    async fn commit_batch(&mut self, batch: MemBatch) -> Result<(), String> {
+    async fn commit_batch(&self, batch: Batch) -> Result<(), String> {
         for (k, v) in batch.ops {
             match v {
                 Some(v) => self.put(k, v).await,

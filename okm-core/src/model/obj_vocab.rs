@@ -36,7 +36,7 @@
 //! degrades to connection lifetime (reload on reconnect) — acceptable for a
 //! vocabulary that only grows.
 
-use crate::engine::storage::{scan_suffix_kv, MemBatch, VirtualStorage};
+use crate::engine::storage::{scan_suffix_kv, Batch, VirtualStorage};
 use crate::model::index::{
     segment, slot, write_slot, Slot, FIELD_VOCAB_ID_SLOT, FIELD_VOCAB_NAME_SLOT,
     PREDICATE_VOCAB_ID_SLOT, PREDICATE_VOCAB_NAME_SLOT,
@@ -233,7 +233,7 @@ impl<I: VocabId> VocabCache<I> {
         // ONE batch, three point writes: label → id, id → label, and the bumped
         // cursor. Through `BatchStore` the batch is the CALLER's batch, so a
         // batch writer gets vocabulary growth, its row and its faces atomically.
-        let mut batch = MemBatch::default();
+        let mut batch = Batch::default();
         let id_key = self.id_key(header, id);
         batch.put(name_key, id.to_be());
         batch.put(id_key, label.as_bytes().to_vec());
@@ -403,10 +403,10 @@ mod tests {
 
     #[test]
     fn a_sparse_seeded_id_still_reads_back() {
-        let mut store = TestStore::slatedb_mem();
+        let store = TestStore::slatedb_mem();
         let mut d = VocabCache::<u16>::new(FIELD_VOCAB);
         // Seed a high id directly, then read it through the cache.
-        let mut batch = MemBatch::default();
+        let mut batch = Batch::default();
         batch.put(key(HEADER, FIELD_VOCAB_ID_SLOT, &0x1234u16.to_be_bytes()), b"big".to_vec());
         batch.put(key(HEADER, FIELD_VOCAB_NAME_SLOT, b"big"), 0x1234u16.to_be_bytes().to_vec());
         let _ = store.commit_batch(batch);

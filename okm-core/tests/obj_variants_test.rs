@@ -40,7 +40,7 @@ fn dmap(pairs: &[(&str, DynamicValue)]) -> BTreeMap<String, DynamicValue> {
 
 #[test]
 fn view_projects_both_slots_and_leaves_the_typed_read_alone() {
-    let mut t: Collection<TestStore, UserKey, User> = Collection::new(TestStore::slatedb_mem());
+    let t: Collection<TestStore, UserKey, User> = Collection::new(TestStore::slatedb_mem());
     t.put(&key(1), &user(1, 2));
 
     // A static-only document: the view carries the declared names.
@@ -86,7 +86,7 @@ fn view_projects_both_slots_and_leaves_the_typed_read_alone() {
 
 #[test]
 fn merge_touches_only_the_names_it_is_given() {
-    let mut t: Collection<TestStore, UserKey, User> = Collection::new(TestStore::slatedb_mem());
+    let t: Collection<TestStore, UserKey, User> = Collection::new(TestStore::slatedb_mem());
     t.put(&key(1), &user(1, 5));
 
     t.merge(
@@ -105,7 +105,7 @@ fn merge_touches_only_the_names_it_is_given() {
 
 #[test]
 fn merge_of_a_declared_field_is_an_rmw_and_cleans_the_old_face() {
-    let mut t: Collection<TestStore, UserKey, User> = Collection::new(TestStore::slatedb_mem());
+    let t: Collection<TestStore, UserKey, User> = Collection::new(TestStore::slatedb_mem());
     t.put(&key(1), &user(1, 5));
     assert_eq!(t.scan::<ByLevel>(&5u32.to_be_bytes()).len(), 1);
 
@@ -122,7 +122,7 @@ fn merge_of_a_declared_field_is_an_rmw_and_cleans_the_old_face() {
 
 #[test]
 fn replace_is_the_whole_document() {
-    let mut t: Collection<TestStore, UserKey, User> = Collection::new(TestStore::slatedb_mem());
+    let t: Collection<TestStore, UserKey, User> = Collection::new(TestStore::slatedb_mem());
     t.put(&key(1), &user(9, 9));
     t.merge(&key(1), &dmap(&[("gone", DynamicValue::UInt(1))]));
 
@@ -155,7 +155,7 @@ fn replace_is_the_whole_document() {
 
 #[test]
 fn purge_clears_both_slots_in_one_call() {
-    let mut t: Collection<TestStore, UserKey, User> = Collection::new(TestStore::slatedb_mem());
+    let t: Collection<TestStore, UserKey, User> = Collection::new(TestStore::slatedb_mem());
     t.put(&key(2), &user(1, 1));
     t.merge(&key(2), &dmap(&[("x", DynamicValue::UInt(1))]));
     assert!(t.fetch(&key(2)).is_some());
