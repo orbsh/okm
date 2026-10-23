@@ -49,7 +49,7 @@ pub struct PostPayload { pub mime: String, pub body: Bytes }
 Read one column with `payloads.get(&key)` (one point read, the row never
 decoded), write one with `payloads.put(&key, &payload)` (one row write, the hot
 row never re-encoded), write the pair with `save_with_prev_into` on both
-collections into one `MemBatch` and one `commit_batch` (ADR-0003, ADR-0031), so
+collections into one `Batch` and one `commit_batch` (ADR-0003, ADR-0031), so
 the pair is one commit. The modelling case is in
 [MODELING](../MODELING.md#a-value-too-big-for-the-row-its-own-ns-the-same-key).
 
@@ -149,7 +149,7 @@ better "has payload" flag than an absent key: it is one state, not an absence.
 - Two declarations exist where one did. The compiler holds the pairing: the side
   table reuses the parent's key type, so the key payload is byte-identical by
   construction and only the ns and the table name differ.
-- A public batchable removal (`Collection::purge_into(&mut MemBatch, &K)` over
+- A public batchable removal (`Collection::purge_into(&mut Batch, &K)` over
   the existing private `delete_into`) is the one surface item this leaves
   behind; it is recorded in PLAN, not here.
 - It would reopen on evidence, not on taste: a payload in the multi-megabyte

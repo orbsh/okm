@@ -37,7 +37,7 @@ Design decisions live in `docs/adr/`. This plan tracks implementation status.
       touching the collection's internal buffer; for primary + index across
       two assembly points (single-table case already covered by `put`).
       Landed 2026-09-11: `KvBatch` trait + `KvEngine::batch`/`commit_batch`
-      (default carrier MemBatch — op list replayed; fjall overrides
+      (default carrier Batch — op list replayed; fjall overrides
       commit_batch with its native cross-keyspace Batch, one real WAL
       write). `Table::save_into` (primary + all index entries) and
       `EdgeTable::save_into` (forward + reverse) encode into the batch;
@@ -398,7 +398,7 @@ key bare in the tail) recorded in ADR-0005.
       one write transaction; in the TestStore engine matrix
       (engine_matrix_test runs the same verification across all
       enabled backends).
-- [x] Remote backend (sender side): impl VirtualStorage; write = MemBatch
+- [x] Remote backend (sender side): impl VirtualStorage; write = Batch
       op list hand-framed with counted lengths into a frame
       `[op][batch bytes]` — no serde/postcard, the frame is counted
       fields, not a protocol (ADR-0010 §2 frame layout; codec lives in
@@ -540,7 +540,7 @@ key bare in the tail) recorded in ADR-0005.
       `(wire frame bytes, new_accs receipt)` out; `decode_stored` refills
       the booth's old-document cache) — Python wraps, all encoding lives
       Rust-side. okm-wire gains `OpFrame::write_batch` (the ADR-0010 §2
-      MemBatch→frame mapping; `RemoteStore::commit_batch` now shares it;
+      Batch→frame mapping; `RemoteStore::commit_batch` now shares it;
       zero new op tags). Locked by accept_remote.py: the same scenario
       (fresh put / same-group overwrite / cross-group move / delete)
       planned Python-side and Rust-side lands hex-identical frames.
@@ -1466,13 +1466,13 @@ Decisions:
 - The six old names retire with no aliases.
 - Private op builders shared by the writers: `delete_into(batch, key, doc)` and
   `slot1_into(batch, key, map)` — that is what makes a whole-document write one
-  `MemBatch` and one commit.
+  `Batch` and one commit.
 
 Tasks:
 
 - [x] A `okm-core`: the whole-document surface — `view` / `merge` / `replace` /
       `purge` beside `get` / `put` / `delete`; every write composes row ops +
-      slot-1 ops into one `MemBatch` (`delete_into`, `slot1_into`, `commit`);
+      slot-1 ops into one `Batch` (`delete_into`, `slot1_into`, `commit`);
       the six old names retired with no aliases; `Graph` aligned
       (`attrs` / `replace_into`). Landed 2026-10-22 with ADR-0035.
 - [x] A tests: `write_commit_test` counts commits and ops per operation (insert
@@ -1488,7 +1488,7 @@ Tasks:
       whole-document plan — `plan_merge` / `plan_replace` / `plan_purge`, each
       returning one `PlannedWrite` (ops + acc receipts + vocabulary growth):
       row ops, segment ops and the path-index sweep in one list, one replay.
-      Four facts the port settled: (a) `replay` now builds a `MemBatch` and calls
+      Four facts the port settled: (a) `replay` now builds a `Batch` and calls
       `commit_batch`, so a whole-document write is one engine commit, not a loop
       of point writes; (b) `split_names` classifies by the PAYLOAD declaration only — a
       key field's name in a map is a value field (OKM is KV; the key is the
@@ -1599,6 +1599,27 @@ Tasks:
       The reduce ledger needs no change and is now locked by a test: it follows
       the ROW — a segment-only patch folds nothing, a patch writing both halves in
       one call folds ONCE (ADR-0035 rule 9).
+- [x] H the write verbs take `&self` (2026-10-23, ADR-0035 rule 10) — the same
+      shape the KV beneath already has (`VirtualStorage::put` / `del` are `&self`),
+      so a write no longer needs an exclusive binding it never used for
+      exclusion. The exclusivity `merge`'s read-modify-write needs is not the borrow: it is the
+      collection being `!Sync`, i.e. `epoch: Cell<u64>` (the only mutable state a
+      write touches). `VirtualStorage::commit_batch` (sync + async) drops `&mut`
+      with it — the engines' own batch APIs are `&self` (`fjall::db.batch()`,
+      redb `begin_write()`, slatedb `write()`) and the remote engines hold their
+      transport behind `Rc<RefCell<…>>`/channels. `Graph` keeps `&mut self`: its
+      predicate vocabulary IS a mutable cache field, a different shape. The
+      carrier lost a misleading prefix in the same pass — `MemBatch` → `Batch`
+      (every batch is in memory; serialisation is a different type). Locked by
+      `write_commit_test::the_verbs_take_a_shared_handle_and_still_commit_once_each`:
+      a plain `&Collection` drives put/merge/replace/purge, one commit each.
+- [x] Declined (2026-10-23): a `Hit` / `Prefix` result type that carries the
+      verbs — a key does not know its collection, so the wrapper can only hold a
+      `&Collection` and take it as a parameter anyway, and it drags the partial-key
+      and covered-value states into the type for nothing. Chaining is not a goal;
+      the scan result stays what it is. (A separate, still-open question: `scan`
+      fetch-backs every hit eagerly — laziness is worth having on its own terms,
+      and it does not need a new type.)
 - [ ] Separate item, own commit: `from_map` silently defaults a value whose kind
       does not match the declared field (`_ => #dflt`). Make it a named panic;
       absent fields keep defaulting (that is the version-evolution rule, not the
@@ -1615,7 +1636,7 @@ pair is already one commit through ADR-0003's batch, and `R` stays complete.
 
 Tasks:
 
-- [ ] Publish the batchable removal: `Collection::purge_into(&mut MemBatch,
+- [ ] Publish the batchable removal: `Collection::purge_into(&mut Batch,
       &K) -> bool` over the existing private `delete_into` (reading the stored row
       and segment through a `BatchStore`, so a pending write in the same batch
       counts as the old state), so a parent row and its side table leave in one

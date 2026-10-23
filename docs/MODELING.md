@@ -329,7 +329,7 @@ put.
 use okm_core::Junction;
 
 let store = okm_core::TestStore::default(); // slatedb-mem; also FjallStore / SlatedbStore / RedbStore
-let mut edges: Junction<_, UserToSession> = Junction::new(store);
+let edges: Junction<_, UserToSession> = Junction::new(store);
 
 let user = UserKey { org_id: 7, user_id: 101 };
 let s1 = SessionKey { org_id: 7, session_id: 1001 };
@@ -398,7 +398,7 @@ builds the assembly point without repeating the key type at the call site:
 use okm_core::TestStore;
 use __OkmIndex_User_by_org as ByOrg; // index type: derived from ok_index(by_org)
 
-let mut t = <User as Document>::collection(TestStore::default());
+let t = <User as Document>::collection(TestStore::default());
 
 t.put(&user, &User { org_id: 7, created_at: 30, reputation: 100, bio_len: 2 });
 
@@ -1481,7 +1481,7 @@ pub struct PostPayload { pub mime: String, pub body: Bytes }
 |---|---|
 | read one column | `payloads.get(&key)` — one point read, the row never decoded |
 | write one column | `payloads.put(&key, &payload)` — one row write, the hot row never re-encoded |
-| write both atomically | `save_with_prev_into` both collections into one `MemBatch`, then one `commit_batch` (ADR-0003, ADR-0031) |
+| write both atomically | `save_with_prev_into` both collections into one `Batch`, then one `commit_batch` (ADR-0003, ADR-0031) |
 | whole document | two reads, opt-in — that is the point of splitting |
 | "has a payload" | presence of the side row; no `Option` field, no sentinel |
 
@@ -1596,9 +1596,12 @@ follows one question: who knows the logic?
 Both go through the same write path (put), so index maintenance,
 reduce folds and event emission all fire without special-casing. Both
 rest on the same correctness boundary: **single-writer**. OKM is an
-in-process library with a serial write order (`&mut self`), so
-get→f→put cannot interleave — no CAS needed; the same constraint that
-backs reduce's exactly-once. The multi-writer future (optimistic CAS)
+in-process library with one owner per collection, and the verbs take
+`&self`, so the boundary is carried by the type: the epoch counter — the
+one piece of mutable state a write touches — is a `Cell`, which makes the
+collection `!Sync` and leaves no way for a second owner to hold it while
+get→f→put is in flight. No CAS needed; the same property backs reduce's
+exactly-once. The multi-writer future (optimistic CAS)
 is a different mechanism, outside this model. The overwrite unfold
 compensation happens inside put; upsert_with does not settle the
 ledger twice (see the internals doc on the reduce mechanism).
@@ -1639,7 +1642,7 @@ or assemble.
   // caller-side put wrapper: the row write stays exactly-once, the
   // notification rides along best-effort and is never retried
   fn save_config(store: &mut impl VirtualStorage, cfg: &Config) -> Result<()> {
-      let mut t = Collection::new(store.shared_handle());
+      let t = Collection::new(store.shared_handle());
       t.put(&cfg.key(), cfg)?;                       // the write: exactly-once
       let _ = METRICS_GAUGE.set(cfg.name(), cfg.ttl_secs()); // side effect: at-most-once
       let _ = notifier.send(cfg.name());             // side effect: fire and forget

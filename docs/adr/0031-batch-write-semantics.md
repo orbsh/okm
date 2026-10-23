@@ -9,7 +9,7 @@ in `okm-core/src/model/document.rs`; covered by `okm-core/tests/save_into_test.r
 ## Context
 
 `Collection::save_into(&mut batch, …)` is the cross-collection atomic path
-(ADR-0003): several tables write into one externally owned `MemBatch` and one
+(ADR-0003): several tables write into one externally owned `Batch` and one
 `commit_batch` makes them live or die together. Its own contract says it is the
 ENCODING surface, not the semantic one — it bypasses `put`'s higher write-path
 hooks: the reduce fold/unfold, the embedded-document release, and the subscribe
@@ -17,7 +17,7 @@ emission. Two consequences follow, and both push work onto every batch writer:
 
 - **A table that participates in a reduce cannot be written into a batch at
   all.** A reduce is a read-modify-write over a group entry (`apply_row` takes
-  `&mut S where S: VirtualStorage`); a `MemBatch` is an operation collector with
+  `&mut S where S: VirtualStorage`); a `Batch` is an operation collector with
   no `get`, so the RMW cannot see the current accumulator — and cannot see a
   value the SAME batch has already produced for the same group, which would make
   two writes in one batch each fold from the stale value and double-count.
@@ -43,7 +43,7 @@ pub struct BatchStore<'a, S: VirtualStorage> {
     store: &'a S,
     /// Behind a cell because `VirtualStorage`'s writes take `&self`
     /// (ADR-0026); the caller still owns the op list.
-    batch: RefCell<&'a mut MemBatch>,
+    batch: RefCell<&'a mut Batch>,
 }
 impl VirtualStorage for BatchStore<'_, S> { /* get / put / del, read-through */ }
 ```

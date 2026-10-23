@@ -49,7 +49,7 @@ crate 分工：okm-core = 共享运行时（引擎契约、`Collection`、docume
 
 - 二级索引（访问方法）——**行 struct** 上的 `#[ok_index(name { fields(…), includes(…), key(…), func(…), where(…) })]`：对 **payload 字段**（按声明序）建组合索引；无 per-index slot/ns——2 字节表命名空间已区分所有 entry；最左前缀扫描；`key(…)` 把 key 尾部携带的主键截断到命名子集（`encode_prefix_named`），默认取满主键；`includes` 覆盖索引定位为高扇出查询的物化视图；`func(path)` 用普通 fn 的返回值替代数据段（探针端调同一路径）；`where(path)` 是行级谓词——部分索引，被拒绝的行不产生任何条目。
 - `Collection<S, K, R>` 行装配点——`put`/`purge` 在同一 store 实例内一次写入（或删除）主键与全部声明的索引条目（声明即注册表）；`scan` 经任意访问方法的最左前缀返回 `(Key, Option<Row>)`。
-- **语义化 batch 写路径**（[ADR-0031](docs/adr/0031-batch-write-semantics.md)）——`BatchStore`（把 batch 当成写入器：点读先看本批待写项、scan 一律拒绝）+ `Collection::save_with_prev_into(batch, key, doc, prev)`：主键 + 面写进调用方的 `MemBatch`，reduce 的折/回折经适配器完成，新文档不再产出的面一并删除——带账本的表从此能加入跨表原子提交，而不必自己重写一份账本。
+- **语义化 batch 写路径**（[ADR-0031](docs/adr/0031-batch-write-semantics.md)）——`BatchStore`（把 batch 当成写入器：点读先看本批待写项、scan 一律拒绝）+ `Collection::save_with_prev_into(batch, key, doc, prev)`：主键 + 面写进调用方的 `Batch`，reduce 的折/回折经适配器完成，新文档不再产出的面一并删除——带账本的表从此能加入跨表原子提交，而不必自己重写一份账本。
 - 字段级编码 wrapper（`Vocab<N>`、`Offset<T>`、`VarInt<T>`、`Quant<P>`、`Reverse<T>`、`Vector<T>`、`Bytes`）与变长载荷/索引字段（`String`），key 保持定宽。
 - 多引擎混用——同一进程内不同 ns 段可绑不同引擎（交易走 fjall、日志走 slatedb）；原子性止于单引擎内，ns 编号全库唯一。
 - 快照导出——行 → Parquet，与引擎无关（备份 / 数据交换 / lakehouse 分析）；ns 还原为描述性文本，列名即字段名。
@@ -105,10 +105,11 @@ pub struct Employment { pub since_year: u16, pub weight: u32 }
 ```rust
 use okm_core::{Collection, Document};
 
-let mut users = <User as Document>::collection(store.clone());
+let users = <User as Document>::collection(store.clone());
 let key = UserKey { org_id: 7, user_id: 101 };
 
 // 写：主表条目 + 每个声明的面一条，同一个 store 实例。
+// 动词取 &self（与底层 KV 的 put/del 一致），独占性由集合 !Sync 保证。
 users.put(&key, &User { org_id: 7, bio_len: 240 });
 let row: Option<User> = users.get(&key);
 
@@ -181,7 +182,7 @@ users.purge(&key);
 
 ```rust
 // junction：每端 ns 一条单向条目（共两条），双向都能查。
-let mut edges: Junction<_, UserToSession> = Junction::new(store.clone());
+let edges: Junction<_, UserToSession> = Junction::new(store.clone());
 edges.link(&user, &session);                  // 正向 + 反向，一个实例内
 let sessions = user.get_session(&edges);      // 方法生成在 key 类型上
 edges.unlink(&user, &session);
@@ -208,7 +209,7 @@ g.unlink(1)?;                                 // 解码边体，精确删除它�
 
 ### 5. 跨表原子写：batch 路径
 
-一个 `MemBatch`、一次提交，要么全活要么全无（ADR-0003）。单集合的常规写入
+一个 `Batch`、一次提交，要么全活要么全无（ADR-0003）。单集合的常规写入
 不需要调用方持有 batch：`put`、`purge`、`merge`、`replace` 自己建一个——主条目、
 索引面、内嵌子文档、旧文档释放的引用、reduce 的折/回折、词表增长——一次提交，
 所以一次语义写就是一次引擎提交、一个崩溃边界。下面这个调用方持有的 batch 是
@@ -216,7 +217,7 @@ g.unlink(1)?;                                 // 解码边体，精确删除它�
 `save_with_prev_into`，图与 junction 用各自的 `*_into` 兄弟：
 
 ```rust
-let mut batch = MemBatch::default();
+let mut batch = Batch::default();
 users.save_with_prev_into(&mut batch, &key, &new_row, Some(&old_row));
 g.link_into(&mut batch, &head, &attrs, 7)?;
 store.commit_batch(batch)?;                    // 行、面与账本一起落地
@@ -250,7 +251,7 @@ okm-core = { version = "0.1", features = ["fjall"] }    # 或 "slatedb" / "redb"
 | 层 | 接口 | 它承诺什么 |
 |---|---|---|
 | 声明层 | `KeyEncode` / `DocumentEncode` / `JunctionEncode` / `GraphEncode`（okm-derive） | 纯 `Vec<u8>` 进出——没有存储、没有 I/O、没有引擎类型；这正是每个 derive 保持单 item 纯函数的前提 |
-| 装配层 | `Collection<S, K, R>` / `Junction<S, E>` / `Graph<S, E>`，加 reduce 与 subscribe 钩子 | 绑定**一个**引擎实例；写取 `&mut self`、读取 `&self`；声明本身就是注册表，没有需要在运行期同步的 schema 对象 |
+| 装配层 | `Collection<S, K, R>` / `Junction<S, E>` / `Graph<S, E>`，加 reduce 与 subscribe 钩子 | 绑定**一个**引擎实例；读写都取 `&self`（写不需要 `&mut`：集合是 `!Sync`，单持有者在编译期就定死）；`Graph` 仍是 `&mut self`，它的谓词词表是可变的缓存字段；声明本身就是注册表，没有需要在运行期同步的 schema 对象 |
 | 引擎契约 | `VirtualStorage` / `VirtualStorageAsync` / `SharedVirtualStorage`（`okm-core/src/engine/storage.rs`） | 编码字节上的七个方法——后端唯一必须说的一种语言 |
 | 消费层 | okm-query / okm-stream / okm-graph / okm-vector / okm-ngram / bindings | 位于装配层之上，消费它的产物（有序扫描流、subscribe 事件、document），对 core 零改动 |
 
@@ -266,7 +267,7 @@ okm-core = { version = "0.1", features = ["fjall"] }    # 或 "slatedb" / "redb"
 | `VirtualStorage` | 同步契约 | `put` / `get` / `del` / `scan_suffix` / `scan_range` / `scan_range_iter` / `commit_batch`；写操作取 `&self`（ADR-0026）；`scan_range` 是**唯一**的有序读原语——`scan_suffix` 与 `scan_range_iter` 都以它为默认实现 |
 | `VirtualStorageAsync` | 异步镜像 | 同一套面，改为 await（`SlatedbStore`、`WireClient` 实现） |
 | `SharedVirtualStorage` | 能力 | `shared_handle()` 返回**同一份物理键空间**的句柄，绝不是副本；`NestStorage` 与 `scan_range_iter` 的回表都依赖它 |
-| `MemBatch` | 载体 | 有序 op 列表（`ops: Vec<(key, Option<value>)>`：`Some` 是 put、`None` 是 del，**不去重**，按序回放）。`Default` + `put` / `del` 就是它的全部 API，填它的是装配点；一次 `commit_batch` 作为一次引擎级写落盘 |
+| `Batch` | 载体 | 有序 op 列表（`ops: Vec<(key, Option<value>)>`：`Some` 是 put、`None` 是 del，**不去重**，按序回放）。`Default` + `put` / `del` 就是它的全部 API，填它的是装配点；一次 `commit_batch` 作为一次引擎级写落盘 |
 | `ScanIter` | 迭代器 | 覆盖各后端原生 owned 迭代器的封闭枚举（fjall / redb / slatedb / remote / buffered）；引擎能倒走的地方就保留 `DoubleEndedIterator` |
 | `BatchStore<'a, S>` | 适配器 | 把 batch 当成写入器：点读先看本批待写项（倒序最新）再看 store，写只追加，扫描形态 panic（ADR-0031） |
 
@@ -281,14 +282,14 @@ okm-core = { version = "0.1", features = ["fjall"] }    # 或 "slatedb" / "redb"
 | `RemoteStore` | `engine/nest.rs` | 线上客户端；它的服务端半边 `NestStorage` 是一个引擎互斥量上的泵，**不是** `VirtualStorage` | 否 |
 | `TestStore` | `engine/test_engine.rs` | 跑真实引擎的测试矩阵（slatedb 内存 / fjall / redb） | 是 |
 | `EngineBox` | `bindings/okm-entry` | **适配器**：分派到进程内 `TestStore` 或宿主注入的 `Engine`（四个字节方法）——让宿主可以持有另一份 okm 构建 | 否 |
-| `BatchStore` | `engine/storage.rs` | **适配器**：装饰一个 `S`，把写重定向进 `MemBatch`，自己什么都不落盘 | 否 |
+| `BatchStore` | `engine/storage.rs` | **适配器**：装饰一个 `S`，把写重定向进 `Batch`，自己什么都不落盘 | 否 |
 
 #### `BatchStore` 是门面，不是后端
 
 它实现它装饰的那个接口（`impl VirtualStorage for BatchStore<'_, S>`）——reduce 的
 读-改-写因此能在不知道自己正往批里写的前提下跑完。它给的是重定向，不是能力：
 
-- **写不穿透**——`put` / `del` 只追加进 `MemBatch`；**读穿透**——`get` 先看该键在批里
+- **写不穿透**——`put` / `del` 只追加进 `Batch`；**读穿透**——`get` 先看该键在批里
   最新的一条，再落 store；
 - 自己不持有数据、只借用引擎（`store: &'a S`）：绑在借来的 batch 上的一次性视图，
   不能长期持有，也不能传出去；

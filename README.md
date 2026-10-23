@@ -50,7 +50,7 @@ Implemented:
 - **Dynamic codec bindings** — schema export drives embedded-language readers: `bindings/okm-python` (PyO3) and `bindings/okm-steel`, byte-identical with the Rust derive.
 - **Path indexes over the dynamic segment** ([ADR-0029](docs/adr/0029-path-index.md)) — `AccessMethod::path(slot, Path::parse("author.name")?, FieldType::Str)?`: nested and array paths declared as access methods, one entry per resolved value (a wildcard is the absence of an `Index` component), maintained on the dynamic-segment write path; the value type is declared, and the entry key carries the slot, never the path.
 - Engine backends behind Cargo features: `fjall` (sync `FjallStore`), `redb` (sync `RedbStore`), `slatedb` (async `SlatedbStore` + `AsyncJunction`); tests run the real engines through the `TestStore` matrix (slatedb-mem / fjall / redb), no mock to drift from them.
-- **Semantic batch write path** ([ADR-0031](docs/adr/0031-batch-write-semantics.md)) — `BatchStore` (a batch as a writer: point reads see pending ops newest-first, scans refused) + `Collection::save_with_prev_into(batch, key, doc, prev)`: primary + faces into the caller's `MemBatch`, the reduce fold/unfold applied through the adapter, and the faces the new document no longer produces deleted — so a table with a ledger joins a multi-table atomic commit instead of re-implementing it.
+- **Semantic batch write path** ([ADR-0031](docs/adr/0031-batch-write-semantics.md)) — `BatchStore` (a batch as a writer: point reads see pending ops newest-first, scans refused) + `Collection::save_with_prev_into(batch, key, doc, prev)`: primary + faces into the caller's `Batch`, the reduce fold/unfold applied through the adapter, and the faces the new document no longer produces deleted — so a table with a ledger joins a multi-table atomic commit instead of re-implementing it.
 - Multi-engine mixing — different engines per ns segment in one process (fjall for transactions, slatedb for logs); atomicity stops at one engine, ns numbering globally unique.
 - Field-level encoding wrappers (`Vocab<N>`, `Offset<T>`, `VarInt<T>`, `Quant<P>`, `Reverse<T>`, `Vector<T>`, `Bytes`) and variable-length payload/index fields (`String`), keys stay fixed-width.
 - Snapshot export — rows → Parquet, engine-independent (backup / data exchange / lakehouse); ns restored to descriptive text, columns = field names.
@@ -105,10 +105,12 @@ as ByOrg` gives the short form.
 ```rust
 use okm_core::{Collection, Document};
 
-let mut users = <User as Document>::collection(store.clone());
+let users = <User as Document>::collection(store.clone());
 let key = UserKey { org_id: 7, user_id: 101 };
 
 // Write: primary entry + one entry per declared face, one store instance.
+// The verbs take `&self` (same shape as the KV beneath them); exclusivity is
+// the collection being `!Sync`.
 users.put(&key, &User { org_id: 7, bio_len: 240 });
 let row: Option<User> = users.get(&key);
 
@@ -198,7 +200,7 @@ derive; version-default migration applies on that path too.
 
 ```rust
 // Junction: two one-way entries (one per endpoint ns), queries both ways.
-let mut edges: Junction<_, UserToSession> = Junction::new(store.clone());
+let edges: Junction<_, UserToSession> = Junction::new(store.clone());
 edges.link(&user, &session);                  // forward + reverse, one instance
 let sessions = user.get_session(&edges);      // method generated on the key type
 edges.unlink(&user, &session);
@@ -226,7 +228,7 @@ type marker, so node-kind filtering is that collection's own index.
 
 ### 5. Multi-table atomic writes: the batch path
 
-One `MemBatch`, one commit, everything or nothing (ADR-0003). A routine
+One `Batch`, one commit, everything or nothing (ADR-0003). A routine
 single-collection write needs no batch from the caller: `put`, `purge`,
 `merge`, `replace` and `purge` build one internally — primary entry, faces, embedded children,
 the releases the old document dropped, the reduce RMWs and vocabulary growth —
@@ -236,7 +238,7 @@ points. Document writes encode with `save_with_prev_into`, edges and
 junctions with their `*_into` siblings:
 
 ```rust
-let mut batch = MemBatch::default();
+let mut batch = Batch::default();
 users.save_with_prev_into(&mut batch, &key, &new_row, Some(&old_row));
 g.link_into(&mut batch, &head, &attrs, 7)?;
 store.commit_batch(batch)?;                    // rows, faces and ledgers land together
@@ -273,7 +275,7 @@ points call the engine contract, engines see nothing but bytes.
 | Tier | The interface | What it commits to |
 |---|---|---|
 | Declaration | `KeyEncode` / `DocumentEncode` / `JunctionEncode` / `GraphEncode` (okm-derive) | pure `Vec<u8>` in/out — no storage, no I/O, no engine type; that is what keeps each derive a single-item pure function |
-| Assembly | `Collection<S, K, R>` / `Junction<S, E>` / `Graph<S, E>`, plus the reduce and subscribe hooks | binds ONE engine instance; `&mut self` writes, `&self` reads; the declaration IS the registry, so there is no runtime schema object to keep in sync |
+| Assembly | `Collection<S, K, R>` / `Junction<S, E>` / `Graph<S, E>`, plus the reduce and subscribe hooks | binds ONE engine instance; `&self` for both (writes hold no `&mut`: the collection is `!Sync`, so one owner is checked at compile time); `Graph` keeps `&mut self` because its predicate vocabulary is a mutable cache field; the declaration IS the registry, so there is no runtime schema object to keep in sync |
 | Engine contract | `VirtualStorage` / `VirtualStorageAsync` / `SharedVirtualStorage` (`okm-core/src/engine/storage.rs`) | the seven methods over encoded bytes — the only thing a backend must speak |
 | Consumers | okm-query / okm-stream / okm-graph / okm-vector / okm-ngram / bindings | sit above the assembly tier and consume its outputs (ordered scan streams, subscribe events, documents) with zero core changes |
 
@@ -290,7 +292,7 @@ One contract, two worlds, one carrier, two adapters:
 | `VirtualStorage` | sync contract | `put` / `get` / `del` / `scan_suffix` / `scan_range` / `scan_range_iter` / `commit_batch`; writes take `&self` (ADR-0026); `scan_range` is the ONE ordered-read primitive — `scan_suffix` and `scan_range_iter` default onto it |
 | `VirtualStorageAsync` | async mirror | the same surface, awaited (`SlatedbStore`, `WireClient`) |
 | `SharedVirtualStorage` | capability | `shared_handle()` returns a handle to the SAME physical keyspace, never a copy; required by `NestStorage` and by fetch-back inside `scan_range_iter` |
-| `MemBatch` | carrier | an ordered op list (`ops: Vec<(key, Option<value>)>`: `Some` = put, `None` = del, **no dedupe** — the list is replayed in order). `Default` + `put` / `del` is its whole API, and the assembly points are what fill it; one `commit_batch` flushes it as a single engine-level write |
+| `Batch` | carrier | an ordered op list (`ops: Vec<(key, Option<value>)>`: `Some` = put, `None` = del, **no dedupe** — the list is replayed in order). `Default` + `put` / `del` is its whole API, and the assembly points are what fill it; one `commit_batch` flushes it as a single engine-level write |
 | `ScanIter` | iterator | opaque enum over each backend's native owned iterator (fjall / redb / slatedb / remote / buffered); `DoubleEndedIterator` wherever the engine can walk backwards |
 | `BatchStore<'a, S>` | adapter | a batch as a writer: point reads see pending ops newest-first then the store, writes only append, scan shapes panic (ADR-0031) |
 
@@ -305,7 +307,7 @@ Eight types implement the sync contract — six backends and two adapters:
 | `RemoteStore` | `engine/nest.rs` | wire client; its server half `NestStorage` is a pump over one engine mutex, NOT a `VirtualStorage` | no |
 | `TestStore` | `engine/test_engine.rs` | test matrix over the real engines (slatedb-mem / fjall / redb) | yes |
 | `EngineBox` | `bindings/okm-entry` | **adapter**: dispatches to an in-process `TestStore` or a host-injected `Engine` (four byte methods) — what lets a host hold a different okm build | no |
-| `BatchStore` | `engine/storage.rs` | **adapter**: decorates an `S`, redirects writes into a `MemBatch`, lands nothing itself | no |
+| `BatchStore` | `engine/storage.rs` | **adapter**: decorates an `S`, redirects writes into a `Batch`, lands nothing itself | no |
 
 #### `BatchStore` is a façade, not a backend
 
@@ -313,7 +315,7 @@ It implements the trait it decorates (`impl VirtualStorage for BatchStore<'_, S>
 which is how the reduce read-modify-write runs through a batch without knowing
 it is writing into one. What it adds is a redirection, not a capability:
 
-- **writes do not pass through** — `put` / `del` only append to the `MemBatch`;
+- **writes do not pass through** — `put` / `del` only append to the `Batch`;
   **reads do** — `get` checks the batch's newest op for that key, then the store;
 - it owns no data and borrows the engine (`store: &'a S`): a temporary view
   bound to the borrowed batch, not something to hold on to or hand out;
