@@ -949,7 +949,9 @@ okm_subscribe::SINK_ROWEVENT.register(move |ev: okm_subscribe::RowEvent| {
 
 查询只走 `get`（主键点查）或 `scan::<I>`（具名访问方法）。没有通用全表扫描的查询面。
 
-仅有的裸扫描是 `scan_rows_raw` / `scan_keys`——它们是 snapshot 导出器与 Arrow bridge 的维护面，不是应用查询路径。应用代码伸手用它们，说明缺一条访问方法声明，不是捷径。
+仅有的裸扫描是 `scan_rows_raw` / `scan_keys` / `scan_document_keys`——它们是 snapshot 导出器与 Arrow bridge 的维护面，不是应用查询路径。应用代码伸手用它们，说明缺一条访问方法声明，不是捷径。
+
+枚举有两种模式，因为文档是**两个槽**（ADR-0035）：`scan_keys` 枚举**行**（一次前缀扫——只有段的文档不在这里），`scan_document_keys` 枚举**文档**（行槽与段槽在内存里归并，一次没有声明名的 `merge` 也因此在列）。物化不归任何一种模式管——`fetch` 是那道门，所以 key 变成文档就是一次朴素的 `map`；而归并不能做成适配器，适配器无法吐出一个从未被扫到的东西。
 
 ## 键的命名：朴素前缀 + 访问方法组合
 
