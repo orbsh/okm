@@ -202,3 +202,46 @@ fn version_default_migration_on_dynamic_read() {
     assert!(v2.hot_fields.iter().all(|f| f.default.is_none()));
     // (zero fallback covered by encode: a truncated tail decodes as zero)
 }
+
+/// ADR-0035's classifier is the PAYLOAD declaration (hot + cold). A key field's
+/// name in a value map is therefore NOT identity: OKM is a KV store, the key and
+/// the value are independent, so the name is just a value field and lands in the
+/// dynamic segment — in both modes (MODELING: "the key is independent of the value").
+#[test]
+fn a_key_name_in_a_map_is_a_value_field_in_both_modes() {
+    use okm_core::model::obj_dynamic::DynamicValue;
+
+    let mut typed: Collection<TestStore, UserKey, User> =
+        Collection::new(TestStore::slatedb_mem());
+    let mut dynamic = okm_dynamic::DynamicCollection::new(
+        TestStore::slatedb_mem(),
+        41,
+        CollectionSchema::of::<UserKey, User>(),
+        vec![],
+    );
+    let key = UserKey { org_id: 7, user_id: 1 };
+
+    let mut typed_map = BTreeMap::new();
+    typed_map.insert("org_id".to_string(), DynamicValue::UInt(999));
+    typed_map.insert("note".to_string(), DynamicValue::Str("hi".into()));
+    typed.merge(&key, &typed_map);
+
+    let mut dyn_map = BTreeMap::new();
+    dyn_map.insert("org_id".to_string(), Value::U32(999));
+    dyn_map.insert("note".to_string(), Value::Str("hi".into()));
+    dynamic.merge(&key.encode(), &dyn_map).unwrap();
+
+    // No payload name was given, so no row is written on either side: the value
+    // stands alone, addressed by the pkey.
+    assert!(typed.get(&key).is_none(), "no payload name = no row");
+    assert!(
+        typed.fetch(&key).unwrap().contains_key("org_id"),
+        "the name is a value field on the typed side"
+    );
+    assert!(
+        dynamic.fetch(&key.encode()).unwrap().unwrap().contains_key("org_id"),
+        "the name is a value field on the dynamic side"
+    );
+    // The identity is the pkey and a map cannot move it: this invented no row.
+    assert!(typed.fetch(&UserKey { org_id: 999, user_id: 1 }).is_none());
+}

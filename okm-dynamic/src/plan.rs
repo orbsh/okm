@@ -262,15 +262,21 @@ impl<S: VirtualStorage> DynamicCollection<S> {
         Ok(())
     }
 
-    /// Split a name-keyed map along the declaration (ADR-0035's rule): declared
-    /// names are the static segment, every other name the dynamic one. "Declared"
-    /// includes KEY fields — they are the schema's names, and the dynamic segment
-    /// must never be able to claim one.
+    /// Split a name-keyed map along the PAYLOAD declaration: a name the row carries
+    /// (hot or cold) is the static segment, every other name the dynamic one.
+    ///
+    /// KEY fields are deliberately NOT part of the test. The key is the identity
+    /// and it is a separate thing from the value — OKM is a KV store whose row
+    /// is a name-keyed map, so a value may perfectly well carry a field that
+    /// happens to share a key field's name. It is a value field, it lands in the
+    /// dynamic segment, and the identity still comes from the pkey (which no map
+    /// can move). Rejecting it would be a rule about a collision that cannot
+    /// happen: the row half never carries key names, so nothing is shadowed.
     pub(crate) fn split_names(&self, object: &ValueMap) -> (ValueMap, ValueMap) {
         let mut declared = ValueMap::new();
         let mut dynamic = ValueMap::new();
         for (name, value) in object {
-            if self.is_declared(name) {
+            if self.is_payload_field(name) {
                 declared.insert(name.clone(), value.clone());
             } else {
                 dynamic.insert(name.clone(), value.clone());
@@ -279,6 +285,21 @@ impl<S: VirtualStorage> DynamicCollection<S> {
         (declared, dynamic)
     }
 
+    /// Is this name part of the row's PAYLOAD? Key fields are not: they are the
+    /// identity, and the identity has its own door (the `pkey`). This is the
+    /// CLASSIFIER — the segment rule is about the value, not about the key.
+    pub(crate) fn is_payload_field(&self, name: &str) -> bool {
+        self.schema()
+            .hot_fields
+            .iter()
+            .chain(self.schema().cold_fields.iter())
+            .any(|f| f.name == name)
+    }
+
+    /// Is this name one the schema OWNS at all (identity or payload)? The row
+    /// map an assembled write carries holds both — `row_base` folds the identity
+    /// in from the pkey — so validation asks this, while classification asks
+    /// [`Self::is_payload_field`].
     pub(crate) fn is_declared(&self, name: &str) -> bool {
         self.schema()
             .key_fields
@@ -292,9 +313,9 @@ impl<S: VirtualStorage> DynamicCollection<S> {
     /// the caller's declared names), the identity decoded out of `pkey`, then
     /// the schema's defaults for whatever is still absent.
     ///
-    /// The identity comes from the KEY, never from a map — a caller that names a
-    /// key field re-states it, it cannot move it (the same rule `put` follows:
-    /// the pkey is authoritative). `encode_payload` requires every declared
+    /// The identity comes from the KEY, never from a map: a map that names a key
+    /// field is writing a DYNAMIC field of that name (see `split_names`), not the
+    /// identity — the pkey stays authoritative. `encode_payload` requires every declared
     /// field, and "absent" means the default on the decode side too
     /// ([`crate::decode::fill_schema_defaults`], one definition).
     fn row_base(&self, pkey: &[u8], carried: &[&ValueMap]) -> Result<ValueMap, String> {
