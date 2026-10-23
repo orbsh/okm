@@ -1,9 +1,9 @@
 //! The plan surface for the dynamic segment (ADR-0037 4.16a): the
 //! fields ops as pure functions over caller-held state — vocabulary
 //! mirror in, ops out, no engine access. The embedded paths
-//! (`DynamicCollection::put_fields` / `get_fields`) load a mirror from
-//! their store and call the same functions, so a remote plan and the
-//! embedded replay land byte-identical by construction (the documented
+//! (`DynamicCollection`'s `merge` / `replace` / `purge` / `fetch`) load a
+//! mirror from their store and call the same functions, so a remote plan and
+//! the embedded replay land byte-identical by construction (the documented
 //! plan+replay discipline of `plan.rs`, extended from the typed segment
 //! to the dynamic one).
 //!
@@ -133,8 +133,8 @@ pub fn fields_key(ns: &[u8], pkey: &[u8]) -> Vec<u8> {
 /// `vocab` is the caller's vocabulary mirror; first-seen names allocate
 /// through it and grow the plan's vocabulary ops (both directions, the
 /// same batch-consistency shape `VocabCache::id_for` writes). An empty
-/// map deletes the entry (the whole-entry-replace rule of `put_fields`,
-/// mirrored here). Nested `Obj` values share the vocabulary, recursed
+/// map deletes the entry (the segment's whole-entry rule, and what `replace`
+/// with no dynamic name plans). Nested `Obj` values share the vocabulary, recursed
 /// by `put_frame_named`.
 pub fn plan_put_fields(
     ns: &[u8],
@@ -209,11 +209,11 @@ pub fn plan_delete_fields(ns: &[u8], pkey: &[u8]) -> PlannedFields {
 }
 
 /// Resolve stored dynamic frames to a name-keyed map with a caller-held
-/// mirror (the remote read surface; the embedded `get_fields` loads a
-/// mirror from its engine and calls this). Unknown ids drop the field —
-/// the vocabulary-absent rule `get_fields` records (single-writer
-/// cannot hit it; the embedded path reloads the mirror per call, so
-/// even shared-engine catch-up lands in the fresh load).
+/// mirror (the remote read surface; the embedded `fetch` loads a mirror from
+/// its engine and calls this). Unknown ids drop the field — the
+/// vocabulary-absent rule the dynamic reader records (single-writer cannot
+/// hit it; the embedded path reloads the mirror per call, so even
+/// shared-engine catch-up lands in the fresh load).
 pub fn fields_from_frames(raw: &[u8], vocab: &VocabMirror) -> Result<ValueMap, String> {
     let frames = decode_named(raw, &mut |id| vocab.name_for(id).map(str::to_string));
     let mut out = ValueMap::new();

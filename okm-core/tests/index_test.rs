@@ -120,7 +120,7 @@ fn table_put_writes_primary_and_indexes() {
     assert!(t.store().get(&e1).is_some());
 
     // delete：主键 + 全部声明索引一并移除（声明即注册表）
-    t.delete(&k, &r);
+    t.purge(&k);
     assert!(t.store().get(&t.primary_key(&k)).is_none());
     assert!(t.store().get(&t.index_key::<ByReputation>(&k, &r)).is_none());
 }
@@ -132,13 +132,13 @@ fn delete_by_pkey_fetches_row_and_cleans_indexes() {
     t.put(&k, &r);
 
     // 只给主键：内部 get 回 document，两半同源派生
-    assert!(t.delete_by_pkey(&k));
+    assert!(t.purge(&k));
     assert!(t.store().get(&t.primary_key(&k)).is_none());
     assert!(t.store().get(&t.index_key::<ByReputation>(&k, &r)).is_none());
 
     // 不存在的主键：no-op，返回 false
     let (missing, _) = mk_user(999, 1);
-    assert!(!t.delete_by_pkey(&missing));
+    assert!(!t.purge(&missing));
 }
 
 #[test]
@@ -500,7 +500,7 @@ fn function_index_normalizes_both_sides() {
     assert_eq!(ids, [1, 2]); // 字典序（同结果 → 主键序）
 
     // delete：函数索引 entry 一并移除
-    t.delete(k, r);
+    t.purge(k);
     assert!(t.store().get(&e).is_none());
 }
 
@@ -550,7 +550,7 @@ fn multi_entry_function_index_fans_out() {
     assert_eq!(kv_rows[0].0.decoded.id, 1);
 
     // 删除：delete 沿 entry_pairs 逐条清除，无悬挂条目
-    t.delete(&rows[0].0, &rows[0].1);
+    t.purge(&rows[0].0);
     let remaining = t.scan::<ByTag>(b"rust").len();
     assert_eq!(remaining, 1); // 只剩 id 2
 }
@@ -664,7 +664,7 @@ fn partial_index_admits_only_matching_rows() {
     assert_eq!(covered[1].1, 2u32.to_be_bytes().to_vec());
 
     // delete 走同一个 entry_pairs：被接纳的行清干净
-    t.delete(&open_a.0, &open_a.1);
+    t.purge(&open_a.0);
     assert!(t.store().get(&t.index_key::<ByOpenAssignee>(&open_a.0, &open_a.1)).is_none());
     assert_eq!(t.scan::<ByOpenAssignee>(&7u64.to_be_bytes()).len(), 1);
 }
@@ -688,22 +688,39 @@ fn partial_index_flip_needs_delete_then_put() {
     assert_eq!(hit.len(), 1);
     assert_eq!(hit[0].1.as_ref().unwrap().status, 1, "扫描返回了谓词拒绝的行");
 
-    // 纪律：delete 用「当时存储的行」（= 生成旧条目那一行）再 put 新状态。
-    // 顺序颠倒的补救见下。
+    // 删除集合由「存储的行」派生：先清再写就干净。
     let mut t2 = <Ticket as Document>::collection(TestStore::slatedb_mem());
     t2.put(&k, &open);
-    t2.delete(&k, &open); // 删除集合由旧状态派生 → 条目清掉
+    t2.purge(&k); // 派生自 open → 条目清掉
     t2.put(&k, &closed);
     assert!(t2.store().get(&e).is_none());
     assert!(t2.scan::<ByOpenAssignee>(&7u64.to_be_bytes()).is_empty());
 
-    // delete 的删除集合也由传入行派生：closed 行不产条目，所以
-    // delete(closed) 清不掉悬挂条目，必须用旧状态的行再删一次
-    t.delete(&k, &closed);
-    assert!(t.store().get(&e).is_some(), "delete 沿 entry_pairs 派生，closed 行是 no-op");
-    t.delete(&k, &open);
-    assert!(t.store().get(&e).is_none());
-    assert!(t.scan::<ByOpenAssignee>(&7u64.to_be_bytes()).is_empty());
+    // 但存储的行此时已是 closed，而 closed 不产条目 —— 所以 purge 清不掉
+    // 早前那次裸 put 覆盖留下的悬挂条目：没有任何 API 能再点到「产生它的
+    // 那一行」。这条即 put 的覆盖写契约的代价（ADR-0035：put 不清旧面）。
+    t.purge(&k);
+    assert!(
+        t.store().get(&e).is_some(),
+        "purge 派生自存储行（closed 不产条目），悬挂条目留在库里"
+    );
+
+    // 该走的覆盖路径：merge / replace 先扫存储行的面再写 —— 同一次覆盖
+    // 不产生悬挂条目。put 是「新行」快路径，不是更新路径。
+    let mut t3 = <Ticket as Document>::collection(TestStore::slatedb_mem());
+    t3.put(&k, &open);
+    t3.merge(&k, &closed.to_map());
+    assert!(t3.store().get(&e).is_none(), "merge 扫掉存储行的面：没有悬挂条目");
+    assert!(t3.scan::<ByOpenAssignee>(&7u64.to_be_bytes()).is_empty());
+
+    // replace 也是覆盖路径：它读存储行（重建或删行只有存储行说了算），
+    // 所以旧值产生的面同样随之扫掉。这是 rule 4「row's previous faces are
+    // removed」的可执行版本 —— prev 传 None 会留下悬挂条目。
+    let mut t4 = <Ticket as Document>::collection(TestStore::slatedb_mem());
+    t4.put(&k, &open);
+    t4.replace(&k, &closed.to_map());
+    assert!(t4.store().get(&e).is_none(), "replace 扫掉存储行的面");
+    assert_eq!(t4.get(&k).unwrap().status, 1, "map 就是文档");
 }
 
 #[test]
@@ -728,7 +745,7 @@ fn function_index_empty_vec_skips_row() {
     assert_eq!(rust[0].0.decoded.id, 1);
 
     // delete 对称：写入集合与删除集合同源（空 Vec 的行删除是 no-op）
-    t.delete(&open.0, &open.1);
+    t.purge(&open.0);
     assert_eq!(t.scan::<ByLiveToken>(b"rust").len(), 0);
 }
 

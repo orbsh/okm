@@ -162,66 +162,26 @@ impl<S: VirtualStorage> DynamicCollection<S> {
         buf
     }
 
-    /// Write one document: primary entry, one index entry per access
-    ///   method, and the reduce calling discipline (ADR-0022). Overwrite
-    ///   first removes the old document's index entries (they are keyed by
-    ///   indexed values — a changed value would otherwise leave a dangling
-    ///   entry), unfolds the old document from every reduce group, then
-    ///   folds the new one. The expansion is the SHARED plan surface
-    ///   (`plan::plan_put`) — the embedded path is plan + local engine
-    ///   replay, so remote plans land byte-identical by construction.
-    pub fn put(&mut self, pkey: &[u8], document: &ValueMap) -> Result<(), String> {
-        // The embedded path reads its own state: old document + accs.
-        let old = self.stored_document(pkey)?;
-        let store = &self.store;
-        let plan = self.plan_put(pkey, document, old.as_ref(), &|ek| store.get(ek))?;
-        self.replay(&plan.ops);
-        Ok(())
-    }
-
-    /// Point read by primary key (dynamic `Collection::get`).
-    pub fn get(&self, pkey: &[u8]) -> Result<Option<ValueMap>, String> {
-        if pkey.len() != self.schema.key_len {
-            return Err(format!(
-                "key width mismatch: got {}, schema declares {}",
-                pkey.len(),
-                self.schema.key_len
-            ));
+    /// The static segment takes declared names only — the row plan's
+    /// invariant (`plan_put`). A map is the schema's stand-in for the struct
+    /// here, so a name the schema does not declare is a caller bug rather than
+    /// a value silently dropped on the floor. The whole-document verbs split by
+    /// declaration before they get here, so this fires only on a direct
+    /// `plan_put`; dynamic names belong to `merge` / `replace`.
+    pub(crate) fn check_declared(&self, document: &ValueMap) -> Result<(), String> {
+        for name in document.keys() {
+            if !self.is_declared(name) {
+                return Err(format!(
+                    "the static segment takes declared names: `{name}` is not a \
+                     declared field of this table — merge / replace write the segment"
+                ));
+            }
         }
-        self
-            .store
-            .get(&self.primary_key(pkey))
-            .map(|payload| {
-                decode_payload(&self.schema, &payload)
-                    .map(|mut values| {
-                        crate::decode::resolve_vocab_labels(
-                            &self.schema,
-                            &self.store,
-                            &self.ns,
-                            &mut values,
-                        );
-                        values
-                    })
-                    .map_err(codec)
-            })
-            .transpose()
-    }
-
-    /// Delete a document: primary entry + every access method's entry for
-    /// this key (entries are recomputed from the stored document — the delete
-    /// path must see the same indexed values the write produced) + the
-    /// unfold arm of the reduce calling discipline. Same shared plan core.
-    pub fn delete(&mut self, pkey: &[u8]) -> Result<(), String> {
-        let Some(old) = self.stored_document(pkey)? else {
-            return Ok(()); // missing key: a no-op (mirrored by plan_delete)
-        };
-        let plan = self.plan_delete(pkey, &old, &|ek| self.store.get(ek))?;
-        self.replay(&plan.ops);
         Ok(())
     }
 
-    /// The stored document at `pkey`, decoded (None = absent). The
-    /// embedded path's read its own state before planning.
+    /// The stored document at `pkey`, decoded (None = absent): the row half
+    /// of `fetch`, and the state every write verb reads before planning.
     fn stored_document(&self, pkey: &[u8]) -> Result<Option<ValueMap>, String> {
         if pkey.len() != self.schema.key_len {
             return Err(format!(
@@ -249,15 +209,28 @@ impl<S: VirtualStorage> DynamicCollection<S> {
             .transpose()
     }
 
-    /// Replay a plan's ops against the local engine, in order (the
-    /// embedded execution arm — one engine instance, same atomicity
-    /// boundary as index entries).
+    /// Replay a plan's ops against the local engine as ONE commit (the
+    /// embedded execution arm). A native batch backend (fjall, redb, slatedb)
+    /// executes the list as a single WAL unit; the trait's default replays the
+    /// ops in order inside one call. Either way the document write, its faces,
+    /// the reduce ledger and the dynamic-segment entry land together — the same
+    /// one-commit rule the typed `Collection` keeps (ADR-0035 rule 6).
     fn replay(&mut self, ops: &[(Vec<u8>, Option<Vec<u8>>)]) {
+        if ops.is_empty() {
+            return;
+        }
+        let mut batch = okm_core::MemBatch::default();
         for (key, value) in ops {
             match value {
-                Some(v) => self.store.put(key.clone(), v.clone()),
-                None => self.store.del(key),
+                Some(v) => batch.put(key.clone(), v.clone()),
+                None => batch.del(key),
             }
+        }
+        // The engine's error has no channel in this API (host-language callers
+        // get values, not typed hierarchies) — it surfaces as a panic carrying
+        // the engine's own text, never as a generic message.
+        if let Err(e) = self.store.commit_batch(batch) {
+            panic!("dynamic write failed: {e}");
         }
     }
 
@@ -321,71 +294,137 @@ impl<S: VirtualStorage> DynamicCollection<S> {
         crate::plan_fields::fields_key(&self.ns, pkey)
     }
 
-    /// Read the document's dynamic fields (decoded to names via the
-    /// vocabulary). `None` = no dynamic entry (a zero-frame list is
-    /// never written).
-    pub fn get_fields(&self, pkey: &[u8]) -> Result<Option<ValueMap>, String> {
+    /// The stored dynamic segment as a name-keyed map (`None` = no entry; a
+    /// zero-frame list is never written, so empty and absent are one state).
+    /// The read half every whole-document verb shares: `fetch` merges it with
+    /// the row, `merge` / `replace` read-modify-write it.
+    fn dynamic_map(&self, pkey: &[u8]) -> Result<Option<ValueMap>, String> {
         let raw = match self.store.get(&self.fields_key(pkey)) {
             Some(r) => r,
             None => return Ok(None),
         };
-        // Fresh load per call — the embedded mirror of the old
-        // per-call VocabCache (single writer: a reload always sees the
-        // truth it wrote).
+        // Fresh load per call — the embedded mirror of the old per-call
+        // VocabCache (single writer: a reload always sees the truth it wrote).
         let vocab = crate::plan_fields::VocabMirror::load(&self.store, &self.ns);
         Ok(Some(crate::plan_fields::fields_from_frames(&raw, &vocab)?))
     }
 
-    /// Replace the document's dynamic fields wholesale (the map becomes
-    /// the entire slot-1 entry; fields absent from the map are removed).
-    /// First-seen names allocate vocabulary ids; one batch carries any
-    /// vocabulary growth plus the entry itself. An empty map deletes the
-    /// entry. Composite values (Obj/Array) are legitimate here.
+    /// The document as ONE name-keyed map — the read door of the whole-document
+    /// surface (ADR-0035), paired with `merge` / `replace` / `purge`. `None` =
+    /// nothing in either slot: a dynamic-only document still fetches, because
+    /// the document is the pair of slots, not the primary entry.
     ///
-    /// Path indexes (ADR-0029) are maintained HERE and not on the primary
-    /// path: a path addresses nested content, which only the dynamic
-    /// segment carries. The old map is read first when a path index is
-    /// declared — entries are keyed by resolved values, so a changed
-    /// value would otherwise leave a dangling entry (the same sweep rule
-    /// the primary path runs through `index_entries`).
-    pub fn put_fields(&mut self, pkey: &[u8], fields: &ValueMap) -> Result<(), String> {
-        let old = if self.has_path_index() {
-            self.get_fields(pkey)?
-        } else {
-            None
-        };
-        let mut vocab = crate::plan_fields::VocabMirror::load(&self.store, &self.ns);
-        let plan = crate::plan_fields::plan_put_fields(&self.ns, pkey, fields, &mut vocab)?;
-        let mut ops = plan.ops;
-        if let Some(old_map) = old.as_ref() {
-            ops.extend(self.path_entry_ops(pkey, old_map, false)?);
+    /// A dynamic name that collides with a declared one shadows it, the rule
+    /// the typed `fetch` applies (its `extend` order). `merge` and `replace`
+    /// split by declaration and therefore cannot produce such a name; the only
+    /// source is a write that predates this surface.
+    pub fn fetch(&self, pkey: &[u8]) -> Result<Option<ValueMap>, String> {
+        let row = self.stored_document(pkey)?;
+        let dynamic = self.dynamic_map(pkey)?;
+        if row.is_none() && dynamic.is_none() {
+            return Ok(None);
         }
-        ops.extend(self.path_entry_ops(pkey, fields, true)?);
-        self.replay(&ops);
+        let mut out = row.unwrap_or_default();
+        if let Some(fields) = dynamic {
+            out.extend(fields);
+        }
+        Ok(Some(out))
+    }
+
+    /// Partial whole-document update, ONE commit (ADR-0035 rule 3).
+    ///
+    /// - A name the schema declares is a read-modify-write of the row: the
+    ///   stored document is decoded, the named fields overwrite it, and the row
+    ///   is rewritten through the semantic path — the previous values' faces are
+    ///   removed and the reduce ledger unfolds then refolds. Declared fields the
+    ///   map does not name keep their stored values; a fresh row takes the
+    ///   schema's defaults.
+    /// - Every other name overwrites that name in the dynamic segment and
+    ///   leaves the other dynamic names alone.
+    /// - A map with no declared name never writes the row — and never READS it
+    ///   either: the schema answers which arm the plan takes, so the stored
+    ///   state is read per arm, not per verb (a dynamic-only map pays one
+    ///   segment read, a declared-only map one row read).
+    pub fn merge(&mut self, pkey: &[u8], object: &ValueMap) -> Result<(), String> {
+        let (declared, dynamic) = self.split_names(object);
+        let old_row = if declared.is_empty() {
+            None
+        } else {
+            self.stored_document(pkey)?
+        };
+        let old_dynamic = if dynamic.is_empty() {
+            None
+        } else {
+            self.dynamic_map(pkey)?
+        };
+        let plan = {
+            let store = &self.store;
+            let mut vocab = crate::plan_fields::VocabMirror::load(store, &self.ns);
+            self.plan_merge(
+                pkey,
+                object,
+                old_row.as_ref(),
+                old_dynamic.as_ref(),
+                &|ek| store.get(ek),
+                &mut vocab,
+            )?
+        };
+        self.replay(&plan.ops);
         Ok(())
     }
 
-    /// Drop the dynamic entry (declared fields untouched). True if an
-    /// entry existed.
+    /// Whole-document replacement, ONE commit: the map IS the document
+    /// (ADR-0035 rule 4).
     ///
-    /// Path-index entries ride the removal: they are keyed by the values
-    /// the entry carried, so they are recomputed from the stored map
-    /// before it goes (best-effort — this method's shape is boolean for
-    /// the bindings, and `path_index_entries` has no failure mode of its
-    /// own; only a corrupt dynamic entry can make the recompute fail).
-    pub fn delete_fields(&mut self, pkey: &[u8]) -> bool {
-        let k = self.fields_key(pkey);
-        let had = self.store.get(&k).is_some();
-        if had {
-            if self.has_path_index()
-                && let Ok(Some(old)) = self.get_fields(pkey)
-                && let Ok(ops) = self.path_entry_ops(pkey, &old, false)
-            {
-                self.replay(&ops);
-            }
-            self.store.del(&k);
+    /// - Declared names rebuild the row; a declared field the map does not name
+    ///   takes the schema's default (the payload is positional — a half row
+    ///   cannot be encoded). The row's previous faces are removed.
+    /// - A map with NO declared name leaves the static segment absent, deleting
+    ///   the row if it existed; the result is a dynamic-only document.
+    /// - The dynamic segment is exactly the map's non-declared names, so
+    ///   `replace(pkey, &empty_map)` is `purge(pkey)`.
+    ///
+    /// Reads: the row always (it is either rebuilt — sweep its faces — or
+    /// deleted, and only the stored row says which); the segment only when a
+    /// path index has entries to sweep, because the entry is written wholesale
+    /// from the map (an empty map deletes it).
+    pub fn replace(&mut self, pkey: &[u8], object: &ValueMap) -> Result<(), String> {
+        let old_row = self.stored_document(pkey)?;
+        let old_dynamic = if self.has_path_index() {
+            self.dynamic_map(pkey)?
+        } else {
+            None
+        };
+        let plan = {
+            let store = &self.store;
+            let mut vocab = crate::plan_fields::VocabMirror::load(store, &self.ns);
+            self.plan_replace(
+                pkey,
+                object,
+                old_row.as_ref(),
+                old_dynamic.as_ref(),
+                &|ek| store.get(ek),
+                &mut vocab,
+            )?
+        };
+        self.replay(&plan.ops);
+        Ok(())
+    }
+
+    /// Remove the whole document — both slots — in one commit. `false` = there
+    /// was nothing to remove (mirrors the typed `purge`).
+    pub fn purge(&mut self, pkey: &[u8]) -> Result<bool, String> {
+        let old_row = self.stored_document(pkey)?;
+        let old_dynamic = self.dynamic_map(pkey)?;
+        if old_row.is_none() && old_dynamic.is_none() {
+            return Ok(false);
         }
-        had
+        let plan = {
+            let store = &self.store;
+            self.plan_purge(pkey, old_row.as_ref(), old_dynamic.as_ref(), &|ek| store.get(ek))?
+        };
+        self.replay(&plan.ops);
+        Ok(true)
     }
 
     /// Is any path index declared on this table? The gate that keeps the
@@ -398,8 +437,9 @@ impl<S: VirtualStorage> DynamicCollection<S> {
 
     /// Path-index ops for one dynamic map: entries when `write`, the same
     /// entry keys as deletions otherwise (the sweep arm). Empty when no
-    /// path index is declared.
-    fn path_entry_ops(
+    /// path index is declared. `pub(crate)` because the whole-document plan
+    /// arms (`plan_dynamic`, `plan_purge`) owe the same sweep.
+    pub(crate) fn path_entry_ops(
         &self,
         pkey: &[u8],
         fields: &ValueMap,

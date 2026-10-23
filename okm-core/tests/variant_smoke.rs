@@ -15,8 +15,8 @@ pub struct User {
 
 #[test]
 fn variant_build_smoke() {
-    // Build one Variant object from a DynamicValue tree (the shape
-    // get_fields returns).
+    // Build one Variant object from a DynamicValue tree (the shape the
+    // dynamic segment's frames decode to).
     let mut obj: BTreeMap<String, DynamicValue> = BTreeMap::new();
     obj.insert("score".into(), DynamicValue::UInt(99));
     obj.insert("tags".into(), DynamicValue::Array(vec![

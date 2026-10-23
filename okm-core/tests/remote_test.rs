@@ -74,7 +74,7 @@ fn table_semantics_over_remote() {
     assert_eq!(all.len(), 2);
 
     // Delete removes both halves remotely.
-    t.delete(&UserKey { id: 42 }, &document);
+    t.purge(&UserKey { id: 42 });
     wait_for(
         || t.get(&UserKey { id: 42 }).is_none(),
         "delete to propagate",
@@ -285,7 +285,7 @@ fn routine_put_carries_face_and_ledger_in_one_frame() {
     assert_eq!(entry_ledger(&t, 7), Some(0), "the old group was unfolded");
 
     // Delete: the removals and the unfold share a frame too.
-    t.delete(&k, &Entry { account: 8, amount: 20 });
+    t.purge(&k);
     wait_for(|| t.get(&k).is_none(), "delete to propagate");
     assert_eq!(entry_ledger(&t, 8), Some(0));
     assert!(t.scan::<Entry_ByAccount>(&8u64.to_be_bytes()).is_empty());

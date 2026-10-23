@@ -1,7 +1,7 @@
 //! The plan surface (ADR-0022 remote mode): the put/delete expansion as
 //! a pure function over caller-held state — no engine access.
 //!
-//! Embedded mode's `DynamicCollection::put`/`delete` and the remote
+//! Embedded mode's `DynamicCollection::put`/`purge` and the remote
 //! mode's `plan_put`/`plan_delete` share ONE expansion: the embedded
 //! path is plan + local engine replay, the remote path ships the plan's
 //! ops as one wire frame (ADR-0010 single `commit_batch` — document
@@ -39,6 +39,18 @@ pub struct PlannedPut {
 pub struct PlannedDelete {
     pub ops: Vec<(Vec<u8>, Option<Vec<u8>>)>,
     pub new_accs: Vec<(Vec<u8>, Vec<u8>)>,
+}
+
+/// One planned whole-document write (ADR-0035's map verbs, dynamic arm): the
+/// row ops, the dynamic-segment ops and the path-index sweep in ONE list, so a
+/// remote frame and the embedded replay land byte-identical ops and one commit.
+/// `new_vocab_entries` is the field-name vocabulary growth the dynamic arm
+/// allocated — the caller adopts it into its mirror before the next plan.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct PlannedWrite {
+    pub ops: Vec<(Vec<u8>, Option<Vec<u8>>)>,
+    pub new_accs: Vec<(Vec<u8>, Vec<u8>)>,
+    pub new_vocab_entries: Vec<(String, u16)>,
 }
 
 /// Current-accumulator lookup for one group entry key. `None` = the
@@ -82,6 +94,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
         acc_of: &AccOf,
     ) -> Result<PlannedPut, String> {
         self.check_key(pkey)?;
+        self.check_declared(document)?;
         let mut plan = PlannedPut { ops: Vec::new(), new_accs: Vec::new() };
         let mut overlay = AccOverlay::new(acc_of);
         // Overwrite: sweep the old document's index entries + unfold it
@@ -126,6 +139,172 @@ impl<S: VirtualStorage> DynamicCollection<S> {
         self.plan_reduces(pkey, old, false, &mut plan, &mut overlay)?;
         plan.ops.push((self.primary_key(pkey), None));
         Ok(plan)
+    }
+
+    /// Plan one partial whole-document update (ADR-0035's `merge`), WITHOUT
+    /// touching an engine. `old_row` / `old_dynamic` are the two stored halves
+    /// the caller holds (a fresh key = both `None`); `vocab` is the caller's
+    /// field-name mirror — it allocates ids for first-seen dynamic names, and
+    /// the receipt rides the plan.
+    ///
+    /// Declared names are a row read-modify-write through [`plan_put`]
+    /// (Self::plan_put): faces swept, ledger unfolded then refolded. Every other
+    /// name is a read-modify-write of the dynamic segment. A map with no
+    /// declared name emits no row op at all.
+    pub fn plan_merge(
+        &self,
+        pkey: &[u8],
+        object: &ValueMap,
+        old_row: Option<&ValueMap>,
+        old_dynamic: Option<&ValueMap>,
+        acc_of: &AccOf,
+        vocab: &mut crate::plan_fields::VocabMirror,
+    ) -> Result<PlannedWrite, String> {
+        self.check_key(pkey)?;
+        let (declared, dynamic) = self.split_names(object);
+        let mut plan = PlannedWrite::default();
+        if !declared.is_empty() {
+            let mut carried: Vec<&ValueMap> = Vec::with_capacity(2);
+            if let Some(old) = old_row {
+                carried.push(old);
+            }
+            carried.push(&declared);
+            let row_map = self.row_base(pkey, &carried)?;
+            let row = self.plan_put(pkey, &row_map, old_row, acc_of)?;
+            plan.ops.extend(row.ops);
+            plan.new_accs = row.new_accs;
+        }
+        if !dynamic.is_empty() {
+            let mut stored = old_dynamic.cloned().unwrap_or_default();
+            stored.extend(dynamic);
+            self.plan_dynamic(pkey, old_dynamic, &stored, vocab, &mut plan)?;
+        }
+        Ok(plan)
+    }
+
+    /// Plan one whole-document replacement (ADR-0035's `replace`): the map IS
+    /// the document. Declared names rebuild the row (absent ones take the
+    /// schema's default); a map with NO declared name deletes the row and
+    /// leaves a dynamic-only document. The segment is exactly the map's
+    /// non-declared names, so an empty map plans the purge.
+    pub fn plan_replace(
+        &self,
+        pkey: &[u8],
+        object: &ValueMap,
+        old_row: Option<&ValueMap>,
+        old_dynamic: Option<&ValueMap>,
+        acc_of: &AccOf,
+        vocab: &mut crate::plan_fields::VocabMirror,
+    ) -> Result<PlannedWrite, String> {
+        self.check_key(pkey)?;
+        let (declared, dynamic) = self.split_names(object);
+        let mut plan = PlannedWrite::default();
+        if declared.is_empty() {
+            if let Some(old) = old_row {
+                let row = self.plan_delete(pkey, old, acc_of)?;
+                plan.ops.extend(row.ops);
+                plan.new_accs = row.new_accs;
+            }
+        } else {
+            let row_map = self.row_base(pkey, &[&declared])?;
+            let row = self.plan_put(pkey, &row_map, old_row, acc_of)?;
+            plan.ops.extend(row.ops);
+            plan.new_accs = row.new_accs;
+        }
+        self.plan_dynamic(pkey, old_dynamic, &dynamic, vocab, &mut plan)?;
+        Ok(plan)
+    }
+
+    /// Plan one whole-document removal (ADR-0035's `purge`): the row arm when
+    /// the caller holds a stored row, the dynamic entry plus its path-index
+    /// sweep when it holds a stored segment. Nothing to remove plans no ops.
+    pub fn plan_purge(
+        &self,
+        pkey: &[u8],
+        old_row: Option<&ValueMap>,
+        old_dynamic: Option<&ValueMap>,
+        acc_of: &AccOf,
+    ) -> Result<PlannedWrite, String> {
+        self.check_key(pkey)?;
+        let mut plan = PlannedWrite::default();
+        if let Some(old) = old_row {
+            let row = self.plan_delete(pkey, old, acc_of)?;
+            plan.ops.extend(row.ops);
+            plan.new_accs = row.new_accs;
+        }
+        if let Some(old) = old_dynamic {
+            plan.ops.extend(self.path_entry_ops(pkey, old, false)?);
+            plan.ops.push((crate::plan_fields::fields_key(&self.ns, pkey), None));
+        }
+        Ok(plan)
+    }
+
+    /// The dynamic-segment arm shared by `plan_merge` / `plan_replace`: the
+    /// entry's ops (plus any vocabulary growth) and the path-index sweep.
+    /// Order matters — the entry and its path entries are distinct keys, and a
+    /// value present in both the old and the new map must end on its PUT, never
+    /// on the delete that follows.
+    fn plan_dynamic(
+        &self,
+        pkey: &[u8],
+        old: Option<&ValueMap>,
+        new: &ValueMap,
+        vocab: &mut crate::plan_fields::VocabMirror,
+        plan: &mut PlannedWrite,
+    ) -> Result<(), String> {
+        let fields = crate::plan_fields::plan_put_fields(&self.ns, pkey, new, vocab)?;
+        plan.ops.extend(fields.ops);
+        plan.new_vocab_entries = fields.new_vocab_entries;
+        if let Some(old) = old {
+            plan.ops.extend(self.path_entry_ops(pkey, old, false)?);
+        }
+        plan.ops.extend(self.path_entry_ops(pkey, new, true)?);
+        Ok(())
+    }
+
+    /// Split a name-keyed map along the declaration (ADR-0035's rule): declared
+    /// names are the static segment, every other name the dynamic one. "Declared"
+    /// includes KEY fields — they are the schema's names, and the dynamic segment
+    /// must never be able to claim one.
+    pub(crate) fn split_names(&self, object: &ValueMap) -> (ValueMap, ValueMap) {
+        let mut declared = ValueMap::new();
+        let mut dynamic = ValueMap::new();
+        for (name, value) in object {
+            if self.is_declared(name) {
+                declared.insert(name.clone(), value.clone());
+            } else {
+                dynamic.insert(name.clone(), value.clone());
+            }
+        }
+        (declared, dynamic)
+    }
+
+    pub(crate) fn is_declared(&self, name: &str) -> bool {
+        self.schema()
+            .key_fields
+            .iter()
+            .chain(self.schema().hot_fields.iter())
+            .chain(self.schema().cold_fields.iter())
+            .any(|f| f.name == name)
+    }
+
+    /// The complete row a write starts from: the carried maps (stored row, then
+    /// the caller's declared names), the identity decoded out of `pkey`, then
+    /// the schema's defaults for whatever is still absent.
+    ///
+    /// The identity comes from the KEY, never from a map — a caller that names a
+    /// key field re-states it, it cannot move it (the same rule `put` follows:
+    /// the pkey is authoritative). `encode_payload` requires every declared
+    /// field, and "absent" means the default on the decode side too
+    /// ([`crate::decode::fill_schema_defaults`], one definition).
+    fn row_base(&self, pkey: &[u8], carried: &[&ValueMap]) -> Result<ValueMap, String> {
+        let mut out = ValueMap::new();
+        for map in carried {
+            out.extend((*map).clone());
+        }
+        out.extend(crate::decode_key(self.schema(), pkey).map_err(|e| e.to_string())?);
+        crate::decode::fill_schema_defaults(self.schema(), &mut out);
+        Ok(out)
     }
 
     /// The reduce calling discipline, planned form: same order and the

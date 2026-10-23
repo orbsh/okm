@@ -46,7 +46,7 @@ fn embed_roundtrip() {
     let u2 = users.get(&ukey2).expect("user2");
     assert_eq!(u2.address.value, Some(addr.clone()));
     // deleted child reads back as None
-    addrs.delete_by_pkey(&akey);
+    addrs.purge(&akey);
     let u3 = users.get(&ukey2).expect("user3");
     assert_eq!(u3.address.value, None);
 }

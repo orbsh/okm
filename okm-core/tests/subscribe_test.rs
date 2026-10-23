@@ -42,14 +42,14 @@ fn subscribe_round_trip() {
     let mut t: Collection<TestStore, AccountKey, Account> = Collection::new(TestStore::slatedb_mem());
     t.put(&AccountKey { id: 1 }, &Account { balance: 10 });
     t.put(&AccountKey { id: 2 }, &Account { balance: 20 });
-    t.delete_by_pkey(&AccountKey { id: 1 });
+    t.purge(&AccountKey { id: 1 });
 
     // Epoch: the table's monotonic write-batch counter — 1, 2, 3 across
     // the three writes, giving consumers an exact same-table boundary.
     // Fan-in: the second document type lands in the same enum (tag 100+).
     let mut a: Collection<TestStore, AuditKey, Audit> = Collection::new(TestStore::slatedb_mem());
     a.put(&AuditKey { id: 7 }, &Audit { note: "hi".into() });
-    a.delete_by_pkey(&AuditKey { id: 7 });
+    a.purge(&AuditKey { id: 7 });
 
     assert_eq!(
         *seen.lock().unwrap(),

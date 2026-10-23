@@ -81,7 +81,7 @@ fn list_roundtrip_and_stale_release() {
     assert!(rooms.get(&k2).is_some());
 
     // Dangling reference reads back as None.
-    rooms.delete_by_pkey(&k1);
+    rooms.purge(&k1);
     let d2 = depts.get(&dept_key).expect("dept2");
     assert!(d2.rooms.values[0].is_none(), "dangling -> None");
     assert!(d2.rooms.values[1].is_some());

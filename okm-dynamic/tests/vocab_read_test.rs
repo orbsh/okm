@@ -52,7 +52,7 @@ fn dynamic_read_names_vocab_labels() {
     let dynamic = DynamicCollection::new(store, 13, schema, vec![]);
 
     let first = dynamic
-        .get(&VKey { org: 1, id: 1 }.encode())
+        .fetch(&VKey { org: 1, id: 1 }.encode())
         .expect("dynamic read")
         .expect("row exists");
     assert_eq!(
@@ -70,7 +70,7 @@ fn dynamic_read_names_vocab_labels() {
     // Ids stay per field: the second row's status is id 1 while its event is
     // also id 1 — two independent vocabularies, two different labels.
     let second = dynamic
-        .get(&VKey { org: 1, id: 2 }.encode())
+        .fetch(&VKey { org: 1, id: 2 }.encode())
         .expect("dynamic read")
         .expect("row exists");
     assert_eq!(second.get("status"), Some(&Value::Str("error".into())));

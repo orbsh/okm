@@ -9,7 +9,7 @@
 //!   index addresses exactly one element (`refs[0].href`);
 //! - a missing path and a value whose variant does not match the
 //!   declared type produce NO entry and no error;
-//! - overwrite sweeps the stale entries, `delete_fields` removes them;
+//! - overwrite sweeps the stale entries, `replace` without dynamic names removes them;
 //! - the entry key is `[ns 2B][slot 2B][value][pkey]` — the path itself
 //!   never rides the key (the slot is its identity).
 
@@ -136,11 +136,11 @@ fn entry_keys<S: VirtualStorage>(store: &S, slot: u16) -> Vec<Vec<u8>> {
 #[test]
 fn nested_and_top_level_paths_resolve_to_entries() {
     let mut t = table(TestStore::slatedb_mem());
-    t.put(&key(1), &declared(7)).unwrap();
-    t.put_fields(&key(1), &fields(Some("alice"), &["rust"], Some(Value::U32(4)), &[]))
+    t.merge(&key(1), &declared(7)).unwrap();
+    t.merge(&key(1), &fields(Some("alice"), &["rust"], Some(Value::U32(4)), &[]))
         .unwrap();
-    t.put(&key(2), &declared(7)).unwrap();
-    t.put_fields(&key(2), &fields(Some("bob"), &["rust", "db"], Some(Value::U32(9)), &[]))
+    t.merge(&key(2), &declared(7)).unwrap();
+    t.merge(&key(2), &fields(Some("bob"), &["rust", "db"], Some(Value::U32(9)), &[]))
         .unwrap();
 
     // Nested field: `author.name`.
@@ -167,8 +167,8 @@ fn exact_scan_ignores_a_probe_completed_by_the_key_tail() {
     let mut t = table(TestStore::slatedb_mem());
     let trap = 0x3100_0000_0000_0001;
     for (id, name) in [(trap, "ad"), (2, "ad1"), (3, "ad1_to_cart")] {
-        t.put(&key(id), &declared(7)).unwrap();
-        t.put_fields(&key(id), &fields(Some(name), &[], None, &[]))
+        t.merge(&key(id), &declared(7)).unwrap();
+        t.merge(&key(id), &fields(Some(name), &[], None, &[]))
             .unwrap();
     }
 
@@ -196,8 +196,8 @@ fn exact_scan_ignores_a_probe_completed_by_the_key_tail() {
 #[test]
 fn array_path_fans_out_and_pinned_index_selects_one() {
     let mut t = table(TestStore::slatedb_mem());
-    t.put(&key(1), &declared(7)).unwrap();
-    t.put_fields(
+    t.merge(&key(1), &declared(7)).unwrap();
+    t.merge(
         &key(1),
         &fields(None, &["rust", "db"], None, &["first", "second"]),
     )
@@ -217,10 +217,10 @@ fn array_path_fans_out_and_pinned_index_selects_one() {
 #[test]
 fn missing_path_and_type_mismatch_produce_no_entry() {
     let mut t = table(TestStore::slatedb_mem());
-    t.put(&key(1), &declared(7)).unwrap();
+    t.merge(&key(1), &declared(7)).unwrap();
     // No `author`, and `meta.rank` carries a Str where the declaration
     // says U32 — both are empty results, never errors.
-    t.put_fields(
+    t.merge(
         &key(1),
         &fields(None, &["rust"], Some(Value::Str("high".into())), &[]),
     )
@@ -235,8 +235,8 @@ fn missing_path_and_type_mismatch_produce_no_entry() {
 #[test]
 fn entry_layout_is_ns_slot_value_pkey() {
     let mut t = table(TestStore::slatedb_mem());
-    t.put(&key(3), &declared(7)).unwrap();
-    t.put_fields(
+    t.merge(&key(3), &declared(7)).unwrap();
+    t.merge(
         &key(3),
         &fields(Some("alice"), &[], Some(Value::U32(4)), &[]),
     )
@@ -252,10 +252,10 @@ fn entry_layout_is_ns_slot_value_pkey() {
 #[test]
 fn overwrite_sweeps_stale_entries() {
     let mut t = table(TestStore::slatedb_mem());
-    t.put(&key(1), &declared(7)).unwrap();
-    t.put_fields(&key(1), &fields(Some("alice"), &["old"], Some(Value::U32(1)), &[]))
+    t.merge(&key(1), &declared(7)).unwrap();
+    t.merge(&key(1), &fields(Some("alice"), &["old"], Some(Value::U32(1)), &[]))
         .unwrap();
-    t.put_fields(&key(1), &fields(Some("bob"), &["new"], Some(Value::U32(2)), &[]))
+    t.merge(&key(1), &fields(Some("bob"), &["new"], Some(Value::U32(2)), &[]))
         .unwrap();
 
     assert!(t.scan(SLOT_AUTHOR, b"alice").unwrap().is_empty());
@@ -280,11 +280,11 @@ fn entry_bytes_depend_on_the_stored_number_not_the_writer_s_variant() {
     // would make that recompute land on a DIFFERENT key set than the
     // write built, silently leaving the old entry behind.
     let mut t = table(TestStore::slatedb_mem());
-    t.put(&key(1), &declared(7)).unwrap();
-    t.put_fields(&key(1), &fields(None, &[], Some(Value::U32(4)), &[]))
+    t.merge(&key(1), &declared(7)).unwrap();
+    t.merge(&key(1), &fields(None, &[], Some(Value::U32(4)), &[]))
         .unwrap();
-    t.put(&key(2), &declared(7)).unwrap();
-    t.put_fields(&key(2), &fields(None, &[], Some(Value::U64(4)), &[]))
+    t.merge(&key(2), &declared(7)).unwrap();
+    t.merge(&key(2), &fields(None, &[], Some(Value::U64(4)), &[]))
         .unwrap();
 
     // Same probe finds both documents.
@@ -322,34 +322,37 @@ fn out_of_range_and_non_numeric_values_produce_no_entry() {
     );
     let mut one = BTreeMap::new();
     one.insert("meta".into(), obj(&[("small", Value::U64(300))]));
-    t.put(&key(1), &declared(7)).unwrap();
-    t.put_fields(&key(1), &one).unwrap();
+    t.merge(&key(1), &declared(7)).unwrap();
+    t.merge(&key(1), &one).unwrap();
     // 300 does not fit the declared U8 → no entry, no error.
     assert!(entry_keys(t.store(), 0x1005).is_empty());
 
     let mut fits = BTreeMap::new();
     fits.insert("meta".into(), obj(&[("small", Value::U64(200))]));
-    t.put_fields(&key(1), &fits).unwrap();
+    t.merge(&key(1), &fits).unwrap();
     assert_eq!(ids(t.scan(0x1005, &[200u8]).unwrap()), vec![1]);
 
     let mut wrong_kind = BTreeMap::new();
     wrong_kind.insert("meta".into(), obj(&[("small", Value::Str("big".into()))]));
-    t.put_fields(&key(1), &wrong_kind).unwrap();
+    t.merge(&key(1), &wrong_kind).unwrap();
     assert!(entry_keys(t.store(), 0x1005).is_empty());
 }
 
 #[test]
-fn delete_fields_removes_the_entries_and_keeps_the_document() {
+fn replace_with_the_declared_map_drops_the_entries_and_keeps_the_document() {
+    // The segment is no longer independently deletable (ADR-0035 retired the
+    // slot-1 verbs): a whole-document `replace` whose map carries no dynamic
+    // name empties it, and the path entries ride the sweep.
     let mut t = table(TestStore::slatedb_mem());
-    t.put(&key(1), &declared(7)).unwrap();
-    t.put_fields(&key(1), &fields(Some("alice"), &["rust"], Some(Value::U32(4)), &[]))
+    t.merge(&key(1), &declared(7)).unwrap();
+    t.merge(&key(1), &fields(Some("alice"), &["rust"], Some(Value::U32(4)), &[]))
         .unwrap();
-    assert!(t.delete_fields(&key(1)));
+    t.replace(&key(1), &declared(7)).unwrap();
 
     for slot in [SLOT_AUTHOR, SLOT_TAGS, SLOT_RANK] {
         assert!(entry_keys(t.store(), slot).is_empty(), "slot {slot} not swept");
     }
     assert!(t.scan(SLOT_AUTHOR, b"").unwrap().is_empty());
-    // The declared document is untouched by a dynamic-segment delete.
-    assert_eq!(t.get(&key(1)).unwrap().unwrap().get("kind"), Some(&Value::U32(7)));
+    // The declared document survives the replacement.
+    assert_eq!(t.fetch(&key(1)).unwrap().unwrap().get("kind"), Some(&Value::U32(7)));
 }

@@ -139,7 +139,7 @@ impl<S: VirtualStorage> Graph<S> {
 
     /// Attribute frames → name-keyed map (ids resolved via the field
     /// vocabulary; unknown ids dropped — the shared-engine degraded mode,
-    /// same rule as `get_fields`).
+    /// the same rule the dynamic reader (`fetch`) follows).
     fn attrs_from(&mut self, wire: &[u8]) -> std::collections::BTreeMap<String, DynamicValue> {
         let frames = decode_named(wire, &mut |id| self.fields.name_for(&self.store, &self.ns, id));
         let mut out = std::collections::BTreeMap::new();

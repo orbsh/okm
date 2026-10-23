@@ -91,7 +91,7 @@ fn grouped_presets_fold_unfold_scan() {
 
     // Count/Sum unfold 精确：删 r2 后 sum 回到 100；HighWater/LowWater
     // no-op unfold：max 仍 100（watermark），min 仍 40（低水位不动）。
-    t.delete_by_pkey(&k(2));
+    t.purge(&k(2));
     let (c, s, mx, mn) = probe(t.store(), 7);
     assert_eq!(c, Some(1));
     assert_eq!(s, Some(100));
@@ -201,7 +201,7 @@ fn sum_acc_type_follows_field() {
     assert_eq!(sum_q, Some(1050i64));
 
     // 可逆：删 r_neg 后两者回到 100 / 1250。
-    t.delete_by_pkey(&k(2));
+    t.purge(&k(2));
     let sum_i = okm_core::reduce::scan_reduces::<_, __OkmReduce_Entry_0>(t.store(), ns)
         .into_iter()
         .find(|(sfx, _)| sfx.as_slice() == gb.as_slice())
