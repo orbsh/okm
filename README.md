@@ -153,10 +153,10 @@ convenience:
 | `get` / `put` | the declared row only (`R`), never the dynamic segment | no field-name vocabulary load, no segment read — the compiled-schema path |
 | `fetch` / `merge` / `replace` | the whole document: one name-keyed map over both halves | only the arms the names actually touch |
 
-`get` / `put` are the static-mode optimization, not a legacy corner:
-`users.get(&key) -> Option<User>`, and a `put` whose map (were there one) named
-an undeclared field is refused, so the type can have no open fields at all. They
-never load the field-name vocabulary and never read or write the segment.
+`get` / `put` are the static-mode optimization, not a legacy corner: the row is
+a struct and the struct is all of it — `put(&key, &R)` has no way to name a field
+the declaration does not carry. They never load the field-name vocabulary and
+never read or write the segment.
 
 `fetch` / `merge` / `replace` are the general form, for tables that carry open
 fields. `merge` classifies the patch before it plans anything: declared names
