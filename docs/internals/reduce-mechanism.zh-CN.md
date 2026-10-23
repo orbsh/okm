@@ -55,4 +55,4 @@ put(key, row)
   └─ emit 事件（epoch +1，best-effort subscribe）
 ```
 
-delete 是同一条路径的 unfold 分支（`add=false`，单调用点，`delete_by_pkey` 内部 get 后到达同一处）。
+`purge` 是同一条路径的 unfold 分支（`add=false`，单调用点：它内部 get 出存储行后到达同一处）。

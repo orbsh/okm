@@ -14,7 +14,7 @@ The first production consumer (aura's state table, ADR-0018 step 2) hit the cons
 
 The hook chain never lacks the key:
 
-- Every write-side call site (`Collection::put` / `delete_by_pkey` / `upsert_with`) invokes `R::__okm_apply_reduces(&mut self.store, key, document, &header, add)` — the generated hook's signature already carries `_key: &Self::Key`; the derive simply does not pass it on to fold.
+- Every write-side call site (`Collection::put` / `purge` / `upsert_with`) invokes `R::__okm_apply_reduces(&mut self.store, key, document, &header, add)` — the generated hook's signature already carries `_key: &Self::Key`; the derive simply does not pass it on to fold.
 - The key at that point is the CALLER'S DECODED, TYPED reference (`put(key: &K, ..)`'s own argument), not raw bytes. `Key::decode` is only used on the INDEX side (recovering a key from entry-suffix bytes); the reduce write path is not on that path.
 
 So "pass the key to fold" means handing an existing object reference one level deeper — zero serialization, zero decoding, zero copies. The user's framing holds: item is already the un-serialized object reference (`&Document`); key joins it in the same form (`&Key`).

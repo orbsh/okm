@@ -897,8 +897,9 @@ Document-oriented naming, one sweep before crates.io:
   the structured schema export is a per-collection declaration; the serde
   JSON field shapes are unchanged in kind, consumers rename the type).
 - `ObjEncode` -> `DocumentEncode`; trait `Row` -> `Document` (assoc types too).
-- API verbs: `get`/`put`/`delete` (typed, unchanged) + `view` / `merge` /
-  `replace` / `purge` (whole document, ADR-0035 — this list first landed with
+- API verbs: `get`/`put` (typed, the struct door) + `fetch` / `merge` /
+  `replace` / `purge` (whole document, the document door — dynamic side has
+  these and only these, 2026-10-23; this list first landed with
   the slot-split names `get_document` / `put_document` / `delete_document` +
   `get_fields` / `put_fields` / `delete_fields`, retired 2026-10-22; the old `variants`
   name retired — dynamic fields ARE the document's fields).
@@ -1447,14 +1448,16 @@ Decisions:
 - `merge` / `replace` clean the previous document's faces (through
   `save_with_prev_into`). `put` keeps its documented contract — "never cleans;
   `delete(old row)` owns the dangling face" — which `index_test.rs` locks.
-  Rationale: a whole-document entry point has no old row in hand, and the dynamic
-  facade (`DynamicCollection::put`) already cleans; two entry points must not
-  have two face lifecycles.
+  Rationale: `put` is the one write that does not read the row first, so it is
+  the only one that can leave a stale face; the whole-document verbs read the
+  stored row and sweep it. Two entry points must not have two face lifecycles.
 - `merge` vs `replace` split on ABSENT declared fields: merge keeps the current
   value, replace takes the default. This is the distinction `put_document`
   blurred — named put, behaved as merge.
-- The merged read is named `view`: a short verb in the same family, and the value
-  IS a projection of two slots rather than a stored shape.
+- The document read is named `fetch` (it was `view` until 2026-10-23): a *view*
+  is a projection of a row, and the map is not a projection of two slots any
+  more — it is the document. `fetch` is the read door of the write verbs it
+  pairs with.
 - `Graph`'s edge-attribute face drops the slot-carve-out names too, but NOT by
   copying the document verbs: `get_fields` → `attrs` (it answers the attributes
   only — an edge's typed half is the payload, not a map, so `view` would
@@ -1480,12 +1483,85 @@ Tasks:
       stays one frame. All green: 40 okm-core suites, 64 workspace suites.
 - [x] A docs: ADR-0035 (bilingual) + index, MODELING en/zh, README en/zh,
       ADR-0018's reference, this PLAN.
-- [ ] B `okm-dynamic`: `DynamicCollection` gains `merge` / `replace` / `purge`,
-      retires the slot-1 trio, and its plan surface emits a whole-document plan
-      (typed ops + dynamic ops in one list, one replay one commit). Bindings ride
-      the plan surface and need no new call shape.
-- [ ] C consumers: aura / krystallizer / effector (18 call sites). Push okm,
-      then `cargo update -p okm-core`; same work session.
+- [x] B `okm-dynamic`: `DynamicCollection` gains `view` / `merge` / `replace` /
+      `purge`, retires the slot-1 trio, and its plan surface emits a
+      whole-document plan — `plan_merge` / `plan_replace` / `plan_purge`, each
+      returning one `PlannedWrite` (ops + acc receipts + vocabulary growth):
+      row ops, segment ops and the path-index sweep in one list, one replay.
+      Four facts the port settled: (a) `replay` now builds a `MemBatch` and calls
+      `commit_batch`, so a whole-document write is one engine commit, not a loop
+      of point writes; (b) `split_names` treats KEY fields as declared, so a key
+      name can never be claimed by the dynamic segment, and the row's identity is
+      decoded out of the pkey (a map re-states it, it cannot move it);
+      (c) `delete` is RETIRED from the dynamic facade — the document is the pair
+      of slots, so `purge` is the one deletion verb (a row-less document, which
+      `replace` can still produce, purges the same way); (d) `put` now REJECTS a
+      name the schema does not declare, on the embedded path and in `plan_put`:
+      the map stands in for the struct on this side, so an undeclared name is a
+      caller bug, never a value silently dropped — dynamic names belong to
+      `merge` / `replace`.
+      "Absent declared field" has ONE definition — `decode::fill_schema_defaults`,
+      shared by the payload decoder's version migration and `replace`'s map.
+      Tests: `dynamic_table_test` rewritten around merge/replace/purge
+      (unnamed dynamic names kept by merge, dropped by replace, `replace(empty)`
+      == purge, `delete` keeps the segment, one row-less document still views),
+      `path_index_test` ported (`put_fields` → `merge`; the segment-drop test
+      becomes a declared-only `replace`), `plan_merge_equals_embedded_merge`
+      locks the remote/embedded byte equality. Landed 2026-10-23; 64 workspace
+      suites green.
+- [ ] C consumers: aura / krystallizer / effector. Push okm, then
+      `cargo update -p okm-core` (and `-p okm-dynamic`); same work session.
+      The sweep now covers the dynamic trio as well as the typed six names
+      (17 call sites seen on 2026-10-23: aura `realm/src/meta.rs` ×3,
+      `realm/src/store_exec.rs` ×3 plus its `coll.delete(&k)` ×1 — now `purge`;
+      krystallizer `mem-core` log ×1, channel ×1, graph ×6) plus the typed
+      `delete` sites (aura `mq.rs` ×3, `store_exec.rs`'s dynamic `delete` ×1,
+      krystallizer `log.rs` ×1, mudra `mudra-store` ×1 → `purge`). Mapping rule,
+      per site — no mechanical rename:
+      `put_fields(map)` WAS a whole-segment replace, so it is `merge` when the
+      map is partial and `replace` when the map is the document;
+      `get_fields` + mutate + `put_fields` is `merge` with just the changed
+      names (or read `view`, mutate, `replace`); `delete_fields` (drop the
+      segment, keep the row) is `replace` with the declared-only map; a
+      `put_fields` on a key whose row write is meant to ride along becomes one
+      `merge`/`replace` (one commit instead of two).
+- [x] D `delete` retired on BOTH sides (2026-10-23): `purge` is the one removal
+      verb. A row cannot outlive its segment, so `delete(&K, &R)` /
+      `delete_by_pkey` / the dynamic `delete` were only ways to leave a dangling
+      segment. `purge` reads the stored row + the segment, clears both in ONE
+      commit, and now carries the Delete event `delete` used to emit (a
+      segment-only document has no row to hand the event, so it emits nothing).
+      `delete_into` stays as the private op builder. Consequence recorded, not
+      hidden: the removal set derives from the STORED row, so a stale face left
+      by a bare `put` overwrite is no longer removable — the overwrite path is
+      `merge` / `replace`, which sweep the stored row before writing.
+      `index_test::partial_index_flip…` now locks both halves (the dangling entry
+      survives purge; the same overwrite through `merge` leaves none).
+- [x] E the read door is `fetch`, and the dynamic side has no `get` / `put`
+      (2026-10-23). `view` named a projection of a row; the map is the document,
+      so the read door is `fetch` — the verb its three write partners imply and
+      the one thing a caller holding an external map needed. On
+      `okm-dynamic` the pair `get` / `put` retired: `put` was `merge` restricted
+      to declared names (identical op list), a restriction invisible in the
+      signature — the same mistake that made `put_document` a lie. It costs no
+      read: every verb reads per ARM (a map of dynamic names never reads the
+      row, a map of declared names never reads the segment, both kinds read
+      both), and `put` read the same row its declared arm reads. What it does
+      cost is the reference-round-trip check `put_rejects_a_name_…`, which
+      became `an_undeclared_name_is_a_dynamic_name_on_this_side` — the surface
+      no longer has a declared-only door, so nothing on that side checks a typo.
+      The typed side keeps `get` / `put`: it has a struct to speak.
+      `dynamic_table_test::a_verb_reads_only_the_state_its_arm_consumes` locks
+      the read discipline key-by-key (the vocabulary cursor probe is a read too,
+      so the test asks which keys, not how many).
+- [x] F the same pass found typed `replace` passing `prev = None`, so its face
+      sweep never ran: `replace` now reads the stored row in the rebuild arm too
+      (`index_test::…` locks that the old entry is gone). Rule 4 said "the
+      row's previous faces are removed"; the code had not, and the dynamic side
+      always had (it passes the stored row it read).
+      Python binding swept in the same pass (`put`/`get`/`delete` →
+      `merge`/`fetch`/`purge`, plus the missing `FieldType::Vocab` coercion arm
+      that had kept the binding uncompilable).
 - [ ] Separate item, own commit: `from_map` silently defaults a value whose kind
       does not match the declared field (`_ => #dflt`). Make it a named panic;
       absent fields keep defaulting (that is the version-evolution rule, not the
@@ -1502,11 +1578,12 @@ pair is already one commit through ADR-0003's batch, and `R` stays complete.
 
 Tasks:
 
-- [ ] Publish the batchable row delete: `Collection::delete_from(&mut MemBatch,
-      &K, &R)` over the existing private `delete_into`, so a parent row and its
-      side table leave in one commit. A surface addition, not a mechanism — the
-      private builder already exists; only the door is missing, and the pair's
-      WRITE is already one commit.
+- [ ] Publish the batchable removal: `Collection::purge_into(&mut MemBatch,
+      &K) -> bool` over the existing private `delete_into` (reading the stored row
+      and segment through a `BatchStore`, so a pending write in the same batch
+      counts as the old state), so a parent row and its side table leave in one
+      commit. A surface addition, not a mechanism — the builder exists; only the
+      door is missing, and the pair's WRITE is already one commit.
 
 ### Vocabulary allocation: one rule, two implementations, only one checked
 

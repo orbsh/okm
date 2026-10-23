@@ -23,7 +23,7 @@ OKM carries ONE storage engine contract and ONE key layout, reached by two schem
 - **Static mode (code generation)** — Rust types + `#[derive(...)]` (okm-derive). The compiler IS the schema validator: key widths, offsets, and index declarations are compile-time facts; `Collection<S, K, R>` is the assembly point. For Rust hosts and wasm booths compiled from Rust source.
 - **Dynamic mode (schema data)** — a `CollectionSchema` value (exported from the static side by `okm_core::schema::CollectionSchema::of`, or authored as data) + okm-dynamic. `DynamicCollection` takes a run-time ns and the schema value; encode/decode mirrors the derive byte-for-byte. For embedded-language booths (Python/Steel via the bindings), hosts assembling collections at run time (aura ADR-0026: one real ns per booth type, allocated from a registry).
 
-The two modes produce IDENTICAL bytes for the same declaration: same header discipline, same key encoding, same payload frames, same vocabulary behavior. Data written by a compiled collection reads back through the dynamic one and vice versa — mode is a property of the WRITER, not the data. External API is aligned on purpose (put/get/scan/delete + document map), so application code shapes do not fork.
+The two modes produce IDENTICAL bytes for the same declaration: same header discipline, same key encoding, same payload frames, same vocabulary behavior. Data written by a compiled collection reads back through the dynamic one and vice versa — mode is a property of the WRITER, not the data. The write verbs are aligned on purpose (`merge` / `replace` / `purge` / `scan` + the document map), so application code shapes do not fork; the typed side adds `get` / `put`, which speak the struct.
 
 Division of labor across crates: okm-core = the shared runtime (engine contract, `Collection`, document/dynamic-segment machinery, reduce, subscribe); okm-derive = static codegen; okm-dynamic = the schema-driven codec and `DynamicCollection`; okm-wire = the wire format for remote engines; okm-query/stream/graph/vector/ngram = consumer-side operators above the core.
 
@@ -45,8 +45,8 @@ Implemented:
 - `GraphEncode` + `Graph<S, E>` + `NodeSet`/`NodeRef` — graph edges, the third relation carrier (ADR-0017): ONE declaration is the graph (ns + the edge's own payload + explicit `#[ok_index]` faces + the `#[ok_nodes]` member set), open endpoints as self-describing `[ns 2B][len][pkey]` refs (width rides in the ref — no registry), parallel edges with caller-chosen ids, predicates through the graph's own PREDICATE vocabulary (0x04/0x05 — listing them is one prefix scan), declared attribute faces as ordinary counting-family 0x1 indexes; `link`/`unlink` write and delete every face in one batch, `unlink` decoding the payload to delete exactly; untyped/typed/predicate/attribute scans.
 - `DocumentEncode` — one macro declares a row (Node): `#[ok_ref]` identity + TLV payload fields + `#[ok_index(...)]` access methods; the `ValueEncode` derive is absorbed into it.
 - Secondary indexes (access methods) — `#[ok_index(name { fields(…), includes(…), key(…), func(…), where(…) })]` on **row structs**: composite indexes over payload fields (declaration order), no per-index slot/ns — the 2-byte table namespace already discriminates every entry; leftmost-prefix scans with fetch-back; `key(…)` truncates the carried primary-key tail to the named subset (`encode_prefix_named`), full key by default; `includes` covering positioned as a materialized view for high-fanout queries; `func(path)` replaces the data segment with a plain fn's return value (probe side calls the same path); `where(path)` is a row-level predicate — a partial index, rows the predicate rejects contribute no entries.
-- `Collection<S, K, R>` node assembly point — `put`/`delete` write the primary key and every declared index entry in one store instance (the declaration IS the registry); `scan` returns `(Key, Option<Row>)` via leftmost-prefix on any access method.
-- **Document API** — the static segment speaks the struct (`get` / `put` / `delete`), the whole document speaks one name-keyed map: `view` (merged projection), `merge` (only the names given), `replace` (the map IS the document), `purge` (both slots) — one engine commit per write. Unknown field names allocate in the per-table field-name vocabulary and land in the dynamic segment (n-TLV frames, nested objects recursive, no CBOR); the row-map bridge lifts declared fields to logical types (`Quant`→`F64`, `Vocab`→label, `Offset`→`i64`).
+- `Collection<S, K, R>` node assembly point — `put`/`purge` write the primary key and every declared index entry in one store instance (the declaration IS the registry); `scan` returns `(Key, Option<Row>)` via leftmost-prefix on any access method.
+- **Document API** — two read doors and three write verbs. The struct door: `get` / `put` speak `R` (typed side only). The document door: `fetch` reads the whole document as one name-keyed map (both slots merged), `merge` writes only the names given, `replace` makes the map the document, `purge` removes both slots — one engine commit per write. The dynamic side has only the document door: there is no struct there to speak. Unknown field names allocate in the per-table field-name vocabulary and land in the dynamic segment (n-TLV frames, nested objects recursive, no CBOR); the row-map bridge lifts declared fields to logical types (`Quant`→`F64`, `Vocab`→label, `Offset`→`i64`).
 - **Dynamic codec bindings** — schema export drives embedded-language readers: `bindings/okm-python` (PyO3) and `bindings/okm-steel`, byte-identical with the Rust derive.
 - **Path indexes over the dynamic segment** ([ADR-0029](docs/adr/0029-path-index.md)) — `AccessMethod::path(slot, Path::parse("author.name")?, FieldType::Str)?`: nested and array paths declared as access methods, one entry per resolved value (a wildcard is the absence of an `Index` component), maintained on the dynamic-segment write path; the value type is declared, and the entry key carries the slot, never the path.
 - Engine backends behind Cargo features: `fjall` (sync `FjallStore`), `redb` (sync `RedbStore`), `slatedb` (async `SlatedbStore` + `AsyncJunction`); tests run the real engines through the `TestStore` matrix (slatedb-mem / fjall / redb), no mock to drift from them.
@@ -121,8 +121,9 @@ for (pk, row) in users.scan::<ByOrg>(&7u32.to_be_bytes()) {
 // byte order is value order, so this reads only rows inside [1, 100).
 users.scan_range::<ByOrg>(&1u32.to_be_bytes(), Some(&100u32.to_be_bytes()));
 
-// Delete: primary + exactly the faces this document produced.
-users.delete(&key, &row.expect("row"));
+// Remove: primary + faces + dynamic segment, one commit. The row's faces
+// derive from the STORED row, so the caller cannot hand it the wrong one.
+users.purge(&key);
 ```
 
 Overwrite semantics differ by design: `put` unfolds the stored document from
@@ -139,7 +140,7 @@ A ledger is a declaration line, not a table you maintain (ADR-0023):
 ```
 
 The accumulator entry is `[ns 2B][reduce slot][group segment]`, read-modify-written
-by the same `put`/`delete` that writes the row — one store instance, so the
+by the same `put`/`purge` that writes the row — one store instance, so the
 ledger shares the row's atomicity.
 
 ### 3. Dynamic fields: the document API
@@ -152,7 +153,7 @@ objects recursive). Declared fields stay typed and indexable.
 ```rust
 // Read: declared fields lifted to logical types, merged over dynamic ones.
 // One name-keyed map — the document, not a row plus an attachment.
-let obj = users.view(&key)?;                  // BTreeMap<String, DynamicValue>
+let obj = users.fetch(&key)?;                 // BTreeMap<String, DynamicValue>
 
 // Merge: names matching the declaration take the typed path (indexes,
 // reduces and events included); unknown names join the dynamic segment.
@@ -205,7 +206,7 @@ type marker, so node-kind filtering is that collection's own index.
 ### 5. Multi-table atomic writes: the batch path
 
 One `MemBatch`, one commit, everything or nothing (ADR-0003). A routine
-single-collection write needs no batch from the caller: `put`, `delete`,
+single-collection write needs no batch from the caller: `put`, `purge`,
 `merge`, `replace` and `purge` build one internally — primary entry, faces, embedded children,
 the releases the old document dropped, the reduce RMWs and vocabulary growth —
 and commit it once, so one semantic write is one engine commit and one crash

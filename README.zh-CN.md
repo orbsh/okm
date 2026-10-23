@@ -25,7 +25,7 @@ OKM 只有一个存储引擎契约、一套键布局，但有两个 schema 载�
 - **静态模式（代码生成）**——Rust 类型 + `#[derive(...)]`（okm-derive）。编译器即 schema 校验器：键宽、偏移、索引声明都是编译期事实；组装点是 `Collection<S, K, R>`。面向 Rust 宿主与 Rust 源码编译的 wasm 摊位。
 - **动态模式（schema 数据）**——一个 `CollectionSchema` 值（静态侧经 `okm_core::schema::CollectionSchema::of` 导出，或直接以数据形式编写）+ okm-dynamic。`DynamicCollection` 接受运行时 ns 与 schema 值；编解码与 derive 逐字节一致。面向嵌入式语言 摊位（经 bindings 的 Python/Steel）与运行时组装 collection 的宿主（aura ADR-0026：每 摊位 类型一个真实 ns，从注册表分配）。
 
-两种模式对同一声明产生**完全相同的字节**：同一 header 纪律、同一键编码、同一 payload 帧、同一词汇表行为。编译期 collection 写的数据，动态侧读得回来，反之亦然——模式是**写入方**的属性，不是数据的属性。外部 API 刻意对齐（put/get/scan/delete + document map），应用代码形状不分叉。
+两种模式对同一声明产生**完全相同的字节**：同一 header 纪律、同一键编码、同一 payload 帧、同一词汇表行为。编译期 collection 写的数据，动态侧读得回来，反之亦然——模式是**写入方**的属性，不是数据的属性。写动词刻意对齐（`merge` / `replace` / `purge` / `scan` + document map），应用代码形状不分叉；typed 侧的 `get` / `put` 是说结构体的那一道门。
 
 crate 分工：okm-core = 共享运行时（引擎契约、`Collection`、document/动态段机制、reduce、subscribe）；okm-derive = 静态代码生成；okm-dynamic = schema 驱动编解码与 `DynamicCollection`；okm-wire = 远程引擎 wire 格式；okm-query/stream/graph/vector/ngram = core 之上的消费侧算子。
 
@@ -48,12 +48,12 @@ crate 分工：okm-core = 共享运行时（引擎契约、`Collection`、docume
 - 引擎后端走 Cargo feature：`fjall`（同步 `FjallStore`）、`redb`（同步 `RedbStore`）、`slatedb`（异步 `SlatedbStore` + `AsyncJunction`）；测试用 `TestStore` 引擎矩阵（slatedb 内存 / fjall / redb）跑真实引擎，没有会漂移的 mock。
 
 - 二级索引（访问方法）——**行 struct** 上的 `#[ok_index(name { fields(…), includes(…), key(…), func(…), where(…) })]`：对 **payload 字段**（按声明序）建组合索引；无 per-index slot/ns——2 字节表命名空间已区分所有 entry；最左前缀扫描；`key(…)` 把 key 尾部携带的主键截断到命名子集（`encode_prefix_named`），默认取满主键；`includes` 覆盖索引定位为高扇出查询的物化视图；`func(path)` 用普通 fn 的返回值替代数据段（探针端调同一路径）；`where(path)` 是行级谓词——部分索引，被拒绝的行不产生任何条目。
-- `Collection<S, K, R>` 行装配点——`put`/`delete` 在同一 store 实例内一次写入主键与全部声明的索引条目（声明即注册表）；`scan` 经任意访问方法的最左前缀返回 `(Key, Option<Row>)`。
+- `Collection<S, K, R>` 行装配点——`put`/`purge` 在同一 store 实例内一次写入（或删除）主键与全部声明的索引条目（声明即注册表）；`scan` 经任意访问方法的最左前缀返回 `(Key, Option<Row>)`。
 - **语义化 batch 写路径**（[ADR-0031](docs/adr/0031-batch-write-semantics.md)）——`BatchStore`（把 batch 当成写入器：点读先看本批待写项、scan 一律拒绝）+ `Collection::save_with_prev_into(batch, key, doc, prev)`：主键 + 面写进调用方的 `MemBatch`，reduce 的折/回折经适配器完成，新文档不再产出的面一并删除——带账本的表从此能加入跨表原子提交，而不必自己重写一份账本。
 - 字段级编码 wrapper（`Vocab<N>`、`Offset<T>`、`VarInt<T>`、`Quant<P>`、`Reverse<T>`、`Vector<T>`、`Bytes`）与变长载荷/索引字段（`String`），key 保持定宽。
 - 多引擎混用——同一进程内不同 ns 段可绑不同引擎（交易走 fjall、日志走 slatedb）；原子性止于单引擎内，ns 编号全库唯一。
 - 快照导出——行 → Parquet，与引擎无关（备份 / 数据交换 / lakehouse 分析）；ns 还原为描述性文本，列名即字段名。
-- **Document API**——静态段说结构体（`get` / `put` / `delete`），整份文档说一个名字键 map：`view`（两槽的投影读）、`merge`（只动点名的字段）、`replace`（map 就是文档）、`purge`（两槽一起清）；每次写一个引擎提交。未知字段名在每表字段名词汇表里分配编号，落进动态段（n-TLV 帧、嵌套对象递归、无 CBOR）；行-映射桥把声明字段 lift 到逻辑类型（`Quant`→`F64`、`Vocab`→标签、`Offset`→`i64`）。
+- **Document API**——两道读门、三个写动词。结构体门：`get` / `put` 说 `R`（只有 typed 侧有）。文档门：`fetch` 读整份文档（两槽合并的名字键 map）、`merge` 只动点名的名字、`replace` 让 map 就是文档、`purge` 清掉两槽；每次写一个引擎提交。动态侧只有文档门——那边没有结构体可说。未知字段名在每表字段名词汇表里分配编号，落进动态段（n-TLV 帧、嵌套对象递归、无 CBOR）；行-映射桥把声明字段 lift 到逻辑类型（`Quant`→`F64`、`Vocab`→标签、`Offset`→`i64`）。
 - **动态 codec binding**——schema 导出驱动嵌入式语言读取器：`bindings/okm-python`（PyO3）与 `bindings/okm-steel`，与 Rust derive 字节一致。
 - **动态段上的路径索引**（[ADR-0029](docs/adr/0029-path-index.zh-CN.md)）——`AccessMethod::path(slot, Path::parse("author.name")?, FieldType::Str)?`：把嵌套路径与数组路径声明成访问方法，每个解析出的值一条条目（通配 = 没有 `Index` 组件），维护挂在动态段写路径上；值类型随声明，条目键携带 slot、从不携带路径。
 - **Document 模型**——声明式 row 与外部数据共用单一编码（[ADR-0012](docs/adr/0012-object-model-and-field-dictionary.md)）。OKM 面向文档：document 逻辑上全动态（运行期可出现任意字段），且**声明的静态字段嵌入动态整体**——hot/cold 段、索引、schema 导出照常生效。声明 struct 是只有静态路径的退化 document；纯 document（MQ payload、JSON）是只有动态路径的退化 document；两者同一编码。嵌入光谱上的术语：
@@ -122,7 +122,7 @@ for (pk, row) in users.scan::<ByOrg>(&7u32.to_be_bytes()) {
 users.scan_range::<ByOrg>(&1u32.to_be_bytes(), Some(&100u32.to_be_bytes()));
 
 // 删：主表 + 恰是这份文档产出的那些面。
-users.delete(&key, &row.expect("row"));
+users.purge(&key);   // 主条目 + 面 + 动态段，一次提交；删除集合派生自存储行
 ```
 
 覆盖语义按设计分成两半：`put` 先把已存文档从每个声明的 reduce 组里回折，
@@ -136,7 +136,7 @@ users.delete(&key, &row.expect("row"));
 #[ok_reduce(Sum(bio_len) { group(org_id) })]   // 字段求和；有符号与 Quant 保持精确
 ```
 
-累加器条目是 `[ns 2B][reduce slot][group 段]`，由写行的同一个 `put`/`delete`
+累加器条目是 `[ns 2B][reduce slot][group 段]`，由写行的同一个 `put`/`purge`
 读-改-写——同一个 store 实例，所以账本与行共享同一个原子性边界。
 
 ### 3. 动态字段：document API
@@ -146,7 +146,7 @@ users.delete(&key, &row.expect("row"));
 ```rust
 // 读：声明字段 lift 到逻辑类型，叠在动态字段之上。
 // 一张按名字索引的 map——这是文档本身，不是"行 + 附件"。
-let obj = users.view(&key)?;                  // BTreeMap<String, DynamicValue>
+let obj = users.fetch(&key)?;                 // BTreeMap<String, DynamicValue>
 
 // merge：命中声明的名字走 typed 路径（索引、reduce、事件一并生效），
 // 未知名字并入动态段。只动点名的字段，其余保持库里已有的值。
@@ -193,7 +193,7 @@ g.unlink(1)?;                                 // 解码边体，精确删除它�
 ### 5. 跨表原子写：batch 路径
 
 一个 `MemBatch`、一次提交，要么全活要么全无（ADR-0003）。单集合的常规写入
-不需要调用方持有 batch：`put`、`delete`、`merge`、`replace`、`purge` 自己建一个——主条目、
+不需要调用方持有 batch：`put`、`purge`、`merge`、`replace` 自己建一个——主条目、
 索引面、内嵌子文档、旧文档释放的引用、reduce 的折/回折、词表增长——一次提交，
 所以一次语义写就是一次引擎提交、一个崩溃边界。下面这个调用方持有的 batch 是
 给跨装配点的写入用的。文档写入用

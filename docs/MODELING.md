@@ -184,8 +184,8 @@ byte order = time order); hourly rollups and timelines are one prefix
 scan. The same primitive directly covers tokenized full-text search
 (a tokenizer returning `Vec<String>`) and multi-valued fields (split
 tags). \`okm-core\` ships no tokenizer — splitting/bucketing logic belongs to
-the business layer. The func contract is **purity**: delete regenerates
-the entry set from the row, so an impure function (clock / randomness /
+the business layer. The func contract is **purity**: purge re-derives
+the entry set from the stored row, so an impure function (clock / randomness /
 external state) produces a different set at delete time than at write
 time, leaving dangling entries. An empty `Vec` is one way to filter at
 row level (the row produces no entries at all), but a row-level condition
@@ -208,15 +208,17 @@ fn is_open(row: &Ticket) -> bool { row.status == 0 }
 ```
 
 The predicate sits at the same level as `func` and carries the same purity
-contract: delete re-derives the removal set from the row, so a predicate
+contract: purge re-derives the removal set from the stored row, so a predicate
 reading a clock or external state produces a different set at delete time
 than at write time, leaving dangling entries. The predicate's guarantee
 ends at the write side — entries are addressed by the indexed fields, and
 the predicate only decides "write it this time or not", so an overwriting
 `put` does not clean the old entry: when a row goes from admitted to
 rejected, the old entry dangles (the same pre-existing contract as "a
-changed value leaves a dangling entry"), and clearing it means deleting
-with **the row that generated it**. Nothing checks completeness on the
+changed value leaves a dangling entry"), and no verb can clear it any more —
+`purge` derives from the STORED row, which is no longer the one that produced
+the entry (ADR-0035, 2026-10-23). The overwrite path is `merge` / `replace`:
+they sweep the stored row's faces before writing. Nothing checks completeness on the
 read side either — a partial index is complete only for queries whose
 condition implies the predicate, okm has no query planner, and choosing
 the index is the caller's job. That discipline belongs to modeling, not
@@ -406,7 +408,7 @@ for (key, row) in rows {
     // key: decoded UserKey, row: Some(decoded User) when the payload exists
 }
 
-t.delete(&user); // removes the primary key + all declared index entries
+t.purge(&user); // removes the primary key + all declared index entries (+ the dynamic segment)
 // (multi-value indexes clear entry by entry — no dangling entries)
 ```
 
@@ -454,7 +456,7 @@ whole document speaks one name-keyed map (ADR-0035):
 ```rust
 // The row-map bridge: every field (declared + dynamic) lifts to its logical
 // type (Quant -> F64, VarInt -> u64, Enum -> variant name, Offset -> i64).
-let fields = t.view(&key);                    // Option<BTreeMap<String, DynamicValue>>, None = no document
+let fields = t.fetch(&key);                    // Option<BTreeMap<String, DynamicValue>>, None = no document
 
 // Partial update: declared names are a row RMW (typed path, previous faces
 // cleaned), unknown names overwrite just those names in the dynamic segment.
@@ -464,9 +466,9 @@ t.merge(&key, &patch);                        // BTreeMap<String, DynamicValue>
 // fields take defaults, unnamed dynamic names are removed.
 t.replace(&key, &fields);
 
-// Both slots, one commit; and the typed removal that takes the old row.
+// Both slots, one commit — the ONE removal verb (a row cannot outlive its
+// segment, so there is no row-only delete to get wrong).
 t.purge(&key);                                // -> bool (something was there)
-t.delete(&key, &row);                         // slot 0 + the faces that row produced
 ```
 
 - `DynamicValue` carries the open value vocabulary: `UInt`/`Int`/`F64`/
@@ -795,7 +797,7 @@ singular.
 
 The access methods defined by `#[ok_index]` are **table-local** — their
 data source is the row's own payload, kept in sync automatically by
-`put`/`delete`. Cross-table relationships (one-to-many, many-to-many)
+`put` / `purge`. Cross-table relationships (one-to-many, many-to-many)
 are facts between two independent entities; a payload index cannot
 reach them. One-to-many is carried by `Refs` (see "Embedded documents");
 many-to-many is carried by the **junction**:
@@ -1372,7 +1374,7 @@ above) keeps Vector out of the relation carriers: a scalar has no key,
 a key reference to it is a category error. One-to-many -> `Refs`; many-
 to-many -> `Junction`; order-expressing value lists -> `Vector`;
 heterogeneous dynamic lists -> `DynamicValue::Array` (fixed face 0x01). On
-`view` a Vector lifts to `DynVal::Array` — the dynamic layer
+`fetch` lifts a Vector to `DynVal::Array` — the dynamic layer
 has no Vector type; Vector is a storage-layer format. Multi-dimensional
 shape is application-layer interpretation (row-major over the flat
 sequence); nothing on the wire.
@@ -1474,7 +1476,7 @@ pub struct PostPayload { pub mime: String, pub body: Bytes }
 
 Deletion is the caller's: nothing cascades in this model (junction entries are the
 same shape), so the pair is deleted together by the caller. The write pair is one
-commit; the delete pair is two until a public batchable row delete lands (PLAN).
+commit; the delete pair is two until a batchable `purge_into` lands (PLAN).
 
 Split when the column is large AND accessed on its own — a download, a thumbnail,
 a re-embedding pass. Do NOT split when every access reads it with the row: that
@@ -1490,7 +1492,7 @@ exchange for at most one round trip on a whole-document read.
 ## Cross-row pre-aggregation
 
 Every index entry is an append-only derived view that lives and dies
-with its row — delete regenerates the exact set via the same function,
+with its row — purge regenerates the exact set via the same function,
 so nothing dangles. One class of requirements sits outside that
 discipline by nature: post counts per author, hourly rollups, exact
 counters. These are **cross-row** — func's `fn(&Row)` signature sees
@@ -1919,7 +1921,7 @@ only pays more as business complexity grows.
 
 `includes(...)` copies payload fields into the index entry so
 `scan_covered` needs no fetch-back. A real win for high-fanout read
-paths — but every put/delete pays a permanent write cost.
+paths — but every put/purge pays a permanent write cost.
 
 Discipline:
 

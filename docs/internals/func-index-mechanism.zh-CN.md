@@ -66,7 +66,7 @@ fn entry_pairs(table_ns, key, row) -> Vec<(Vec<u8>, Vec<u8>)> {
 
 - **每条 entry 共享同一 includes value**——倒排场景下 value 是整行 payload 的覆盖段，N 个 token 指向同一行的同一份物化。
 - `index_entries`（put/delete 的实际入口）对每个声明索引调用 `entry_pairs` 并展平，对 fan-out 无感知：写循环只看见"N 对"，普通索引是 N=1 的特例。
-- delete 用同一函数生成待删集合（`Table::delete` 逐条 `del`）——只要 func 是纯函数，写入多少条就删除多少条，**纯度是契约**：func 内读外部状态（时钟、随机数）会让 delete 生成与写入不同的集合，留下悬挂 entry。
+- `purge` 用同一函数生成待删集合（逐条 `del`）——只要 func 是纯函数，写入多少条就删除多少条，**纯度是契约**：func 内读外部状态（时钟、随机数）会让 delete 生成与写入不同的集合，留下悬挂 entry。
 
 ## 读侧：探针归一化，无新扫描路径
 

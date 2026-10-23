@@ -34,7 +34,7 @@ subscribe — see the modeling doc). One asymmetry matters to extension
 consumers: **a delete event carries the full row, not just the key.** This
 is forced by the model, not a courtesy — index entries and reduce folds are
 derived from the row's fields, so `delete` requires the row in hand
-(`delete_by_pkey` fetches it internally), and the emitted event simply
+(`purge` fetches it internally), and the emitted event simply
 reuses it. Consequence for consumers: search-index sync and cache
 invalidation can uninstall the derived artifacts of a deleted row from the
 event alone, with no read-back of a storage state the delete is about to

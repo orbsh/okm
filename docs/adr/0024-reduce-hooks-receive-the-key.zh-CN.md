@@ -14,7 +14,7 @@ reduce 钩子契约（ADR-0008）是 `fold(acc: &mut Acc, item: &Self::Document)
 
 钩子链路从不缺 key：
 
-- 写侧每个调用点（`Collection::put` / `delete_by_pkey` / `upsert_with`）调的都是
+- 写侧每个调用点（`Collection::put` / `purge` / `upsert_with`）调的都是
   `R::__okm_apply_reduces(&mut self.store, key, document, &header, add)`——生成钩子的签名里**本来就有** `_key: &Self::Key`，只是 derive 没有把它继续传给 fold。
 - 那一刻的 key 是**调用方手上的解码后类型化引用**（`put(key: &K, ..)` 自己的入参），不是裸字节。`Key::decode` 只在 index 一侧使用（从 entry 尾字节还原 key）；reduce 写路径不在那条路上。
 

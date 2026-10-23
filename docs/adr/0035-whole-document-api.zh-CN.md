@@ -1,6 +1,6 @@
-# ADR-0035：整文档只有一个接口面 —— `view` / `merge` / `replace` / `purge`
+# ADR-0035：整文档只有一个接口面 —— `fetch` / `merge` / `replace` / `purge`
 
-**状态**：Accepted（2026-10-22）——与本文一并落地
+**状态**：Accepted（2026-10-22）——与本文一并落地。**2026-10-23 更新**：`okm-dynamic` 那一半已落地（`fetch` / `merge` / `replace` / `purge`，槽 1 的三个旧动词退役，plan 面对整文档产出）；**删除动词收敛成 `purge` 一个**——`delete` / `delete_by_pkey` 退役，因为行不可能活过它的动态段，「只删行」恰好是留下悬挂段的写法；**`view` 改名 `fetch`**——它是文档面的读门（*view* 是行的投影，而这张 map 不再是投影，它就是文档）；**动态侧取消 `get` / `put`**——那边没有结构体可说，它的 `put` 只能表示「静态段」，而这个语义在签名上完全看不见，而 `merge` 产出的 op 列表完全相同。剩下的只有消费方清扫。
 **日期**：2026-10-22
 **英文**：[0035-whole-document-api.md](0035-whole-document-api.md)
 
@@ -22,33 +22,33 @@ document API 是按**存储布局**切的，不是按调用方的意图切的：
 |---|---|---|---|
 | `get(&key) -> Option<R>` | 静态段（结构体） | — | 不变 |
 | `put(&key, &R)` | 静态段 + 面 + 账本 | 1 | 不变 |
-| `delete(&key, &R)` | 静态段 + 面 + 账本 | 1 | 不变 |
-| `view(&key) -> Option<BTreeMap<String, DynamicValue>>` | 两槽的合并投影 | — | `get_document` + `get_fields` |
+| `fetch(&key) -> Option<BTreeMap<String, DynamicValue>>` | 整份文档（两槽合并） | — | `get_document` + `get_fields` |
 | `merge(&key, &map)` | 声明名 → 行 RMW；其余名字 → 槽 1 里对应的那一个名字 | 1 | `put_document`（merge 那一半）+ `put_fields` |
 | `replace(&key, &map)` | 由 map 重建行；槽 1 = map 里非声明名的集合 | 1 | ——（比 `put_document` 语义强） |
 | `purge(&key) -> bool` | 两槽一起清除 | 1 | `delete_document` + `delete_fields` |
 
-1. **静态段说结构体。** `get` / `put` / `delete` 契约不变。尤其是 `put` 保持"不清旧面、由 `delete(旧行)` 收尾"——`index_test.rs` 有意锁着这条。
-2. **整文档说一个名字键 map。** `view` 投影两槽；只有动态段的文档也能 view，因为文档是**两槽这一对**，不是主条目。
-3. **`merge` 只动点名的字段。** 声明名是一次行读-改-写，走语义路径（`save_with_prev_into`），所以旧值产生的面**会**被清掉、reduce 账本也会回折补偿。其余名字覆盖槽 1 里的同名项，别的名字不动。map 里没有声明名时完全不写行。
-4. **`replace` 把 map 当成整份文档。** 声明名重建行；map 没点名的声明字段取 `from_map` 的默认值（payload 是位置编码，半行编不出来）。槽 1 恰好是 map 里的非声明名，所以 `replace(&空 map)` 就是 `purge`。map 里没有声明名时静态段缺席，原来有行就删掉。
-5. **`purge` 清两槽**，一次提交，并回答原来有没有东西。
+1. **静态段说结构体。** `get` / `put` 契约不变。尤其是 `put` 保持"不清旧面"——`index_test.rs` 有意锁着这条——而且现在没有任何动词能拿「手里的旧行」去清它：覆盖写走 `merge` / `replace`，它们扫的是**存储的**那一行。`put` 是「新行」快路径。
+2. **整文档说一个名字键 map。** `fetch` 把两槽读成一张 map；只有动态段的文档也能 fetch，因为文档是**两槽这一对**，不是主条目。它是 `merge` / `replace` / `purge` 的读半边——读写说同一种形状。**它也是动态侧唯一的读门**：`get` / `put` 是**结构体门**，而 schema 即数据的 collection 没有结构体，那边它们只能表示「静态段」，却挂着一个整文档的名字。
+3. **`merge` 只动点名的字段。** 声明名是一次行读-改-写，走语义路径（`save_with_prev_into`），所以旧值产生的面**会**被清掉、reduce 账本也会回折补偿。其余名字覆盖槽 1 里的同名项，别的名字不动。map 里没有声明名时完全不写行——也不读行：动词碰哪一段由 schema 按臂判定，判定不花一次读。
+4. **`replace` 把 map 当成整份文档。** 声明名重建行；map 没点名的声明字段取 `from_map` 的默认值（payload 是位置编码，半行编不出来）。槽 1 恰好是 map 里的非声明名，所以 `replace(&空 map)` 就是 `purge`。map 里没有声明名时静态段缺席，原来有行就删掉。因此**存储行总是要读**——重建意味着要扫它的面，缺席意味着要删掉它，而哪一种只有存储行说了算。
+5. **`purge` 清两槽**，一次提交，回答原来有没有东西，并把 Delete 事件带给 subscribe（信号随动词一起搬过来）。它是唯一的删除动词：文档是两槽这一对，所以"删行、留段"没有正当用法。
 6. **每次写一个引擎提交。** 行的全部 op 和槽 1 的条目攒进同一个 `MemBatch`，一次落到引擎，崩溃时要么都落要么都不落。
-7. **六个旧名直接退役，不留别名**（1.0 之前；消费方骑 git 依赖，同一会话内扫完）。
-8. **`Graph` 的边属性面同样去掉按槽切分的词汇**：`get_fields` → `attrs`，`put_fields_into` → `replace_into`。那个函数是整段替换，叫 `merge_into` 会描述一件它没做的事；边的 typed 半边是 payload 而不是 map，叫 `view` 同样超出事实。
+7. **六个旧名直接退役，不留别名**（1.0 之前；消费方骑 git 依赖，同一会话内扫完）；`delete` 与 `delete_by_pkey` 同样退役。
+8. **`Graph` 的边属性面同样去掉按槽切分的词汇**：`get_fields` → `attrs`，`put_fields_into` → `replace_into`。那个函数是整段替换，叫 `merge_into` 会描述一件它没做的事；边的 typed 半边是 payload 而不是 map，叫 `fetch` 同样超出事实。
 
 ## 为什么不
 
 - **新旧并存**。同一份文档两套写法，其中一套名字是错的（`put_document` 行为是 merge）、原子性只有一半。留下的代价是每个后来的读者都要先学会布局才能选。
 - **把 `put` 也改成收 map（只留一个写动词）**。typed 路径是快路径：结构体写不分配 map，而 `put(&R)` 正是每个消费方手里已有的东西。为了统一拼写去给它加税，只服务了外部数据这一个入口。
 - **为声明字段生成 setter**。一个字段一套接口面（1000 字段 = 1000 个方法），而每个 setter 本来就是整 payload 的读-改-写——和 `merge` 用一个名字做的事完全一样。结构体进、结构体出更小也更快。
-- **让 `merge` 继承 `put` 的面契约（把旧条目漏在库里）**。整文档入口手里没有旧行，无法执行那条契约委派给调用方的清理。`DynamicCollection::put` 早就在清；两个入口不该有两套面生命周期。
+- **让 `merge` 继承 `put` 的面契约（把旧条目漏在库里）**。`put` 是唯一不先读行的写，所以也只有它会留下陈旧的面；整文档动词都读存储行并扫掉它。两个入口不该有两套面生命周期——所以 `put` 按它本来是什么命名（结构体门、新行快路径），不带整文档的声明。
 - **在这里顺手拒绝"名字命中声明字段但值类型不符"**。`from_map` 现在退化成默认值（`_ => #dflt`）。改成指名 panic 是对的，但那是 derive 的改动、影响面独立——单独立项，不夹带在改名的提交里。
 
 ## 后果
 
 - 一次语义写一次提交：崩溃不会再出现主条目已落、面与账本没落。`write_commit_test` 锁着 op 数——插入 3、覆写 4、需要删旧面时 +1、每个槽 1 条目 +1。
-- 调用方不再选槽。外部 map（HTTP body、解出来的 Parquet 行、宿主语言 dict）用 `merge` / `replace` 写，用 `view` 读。
-- `view` 会回答只有动态段的文档；旧的 `get_document` 在主条目缺席时一律返回 `None`，把那段藏了。
-- 成本：`view` 两次点读（行 + 段），`merge` 多一次用于行的 RMW。
-- `okm-dynamic` 保留自己的 `DynamicCollection` 接口面（它不包 typed 装配点），并在整文档上补齐同样三个写动词；它的 plan 面将为一份文档产出同一张 op 列表，远程 plan 仍然一次 replay。
+- 调用方不再选槽。外部 map（HTTP body、解出来的 Parquet 行、宿主语言 dict）用 `merge` / `replace` 写，用 `fetch` 读。
+- `fetch` 会回答只有动态段的文档；旧的 `get_document` 在主条目缺席时一律返回 `None`，把那段藏了。
+- 成本：`fetch` 两次点读（行 + 段），`merge` 多一次用于行的 RMW。
+- 动态侧只有一个读门，没有 `get` / `put`。它原来的 `put` 就是限定在声明名上的 `merge`——op 列表完全相同——那个限定只对读过文档的人可见，而一个写错的名字到底是被拒还是变成动态名，从签名里看不出来。它没有代价到读的次数上：每个动词是按**臂**读，不是按动词读——只有动态名的 map 从不读行，只有声明名的 map 从不读段，两类都有才读两次。原来的 `put` 读的正是它要改写的那一行，与声明名臂完全一样，所以随 `put` 一起走的只有那道检查。`scan` 保留——那是走访问方法的读，不是点读。
+- `okm-dynamic` 保留自己的 `DynamicCollection` 接口面（它不包 typed 装配点），并在整文档上带同样的动词——`fetch` / `merge` / `replace` / `purge`，replay 一次提交一个 `MemBatch`。它的 plan 面对一份文档产出一张 op 列表（`plan_merge` / `plan_replace` / `plan_purge` → `PlannedWrite`：行的 op、动态段的 op、路径索引的清扫），远程 plan 仍然一次 replay。
