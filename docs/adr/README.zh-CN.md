@@ -35,6 +35,6 @@
 - [0033 — slot 留在 ns 之后，面的元数据留在面上](0033-slot-order-and-face-metadata.md)（已接受——迭代由前缀端点界定、无需逐键边界校验；数据与元数据按后缀长度分离，代价每条一次比较；游标不单开族也不搬 keyspace；slot 前置会让 ns 偏移浮动、挤走 0xFF 转义、把 collection 的连续区间按面切碎）— [中文](0033-slot-order-and-face-metadata.zh-CN.md)
 - [0034 — 表名与导出的形状](0034-table-names-and-export-shape.md)（已接受并落地——`#[ok_name]` → `TABLE_NAME`、边集合导出成一张表、reduce 表单独导出、图边属性面归 `Graph` 自己）— [中文](0034-table-names-and-export-shape.zh-CN.md)
 - [0035 — 整文档只有一个接口面：view / merge / replace / purge](0035-whole-document-api.md)（已接受并落地——静态段说结构体、整文档说一个名字键 map；每次写一个引擎提交；六个按槽切分的旧名退役，无别名）— [中文](0035-whole-document-api.zh-CN.md)
-- [0036 — 放不进行的值，就是它自己的一张表](0036-value-too-big-is-its-own-table.md)（拒绝 `#[ok_offrow]`——复杂度大、功能提升小，且与 ADR-0035 的整文档面语义冲突；替代是独立 ns、同主键的第二张表，配对写仍是一次提交）— [中文](0036-value-too-big-is-its-own-table.zh-CN.md)
+- [0036 — 字段太大，放进副表](0036-value-too-big-is-its-own-table.md)（拒绝 `#[ok_offrow]`——复杂度大、功能提升小，且与 ADR-0035 的整文档面语义冲突；替代是独立 ns、同主键的副表，配对写仍是一次提交）— [中文](0036-value-too-big-is-its-own-table.zh-CN.md)
 
 实施计划见 [docs/PLAN.md](../PLAN.md)。

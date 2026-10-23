@@ -134,7 +134,7 @@ element have identity, and homogeneous vs heterogeneous.
   contract (exported to the dynamic reader as `expect_len`; decode
   never checks — bypassing the decoder is the reader's own problem).
   Canonical use: embedding vectors (okm-vector), numeric sequences.
-  On `view` it lifts to `DynVal::Array` — the dynamic layer has
+  On `fetch` it lifts to `DynVal::Array` — the dynamic layer has
   no Vector type. Multi-dim shape is application-layer. Elements are
   pure values — NOT a relation carrier.
 - **Array (heterogeneous list)**: `DynamicValue::Array` — mixed

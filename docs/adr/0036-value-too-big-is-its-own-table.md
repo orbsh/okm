@@ -60,7 +60,7 @@ Three reasons, in the order they decided it:
 Off-row adds a fifth storage location to the row model, and every consumer of
 the row layout has to learn it: a third dimension on `FieldDesc` (payload hot /
 payload cold / off-row), a third bucket in `FieldSchema`, a name that
-`split_names` must route away from the dynamic segment, branches in `view` /
+`split_names` must route away from the dynamic segment, branches in `fetch` /
 `merge` / `replace` / `purge` / `delete`, a trait associated type and a const
 table for the tag enum, four derive walks that must skip the field, an unused
 post-decode hook, a write-side entry generator, and the dynamic facade's plan
@@ -79,7 +79,7 @@ name-keyed map and one write is one commit. Off-row breaks that at five points:
 
 - `R` stops being the document. A `Document` whose declared fields are not in
   it is a declaration that disagrees with its own type.
-- `view` must either omit a declared column (a projection that silently drops a
+- `fetch` must either omit a declared column (a projection that silently drops a
   field — the lie ADR-0035 was written to remove) or pay a scan on every use.
 - `replace` can no longer mean "the map IS the document", so the documented
   identity `replace(&empty_map) == purge` fails: either off-row data survives a
@@ -87,8 +87,8 @@ name-keyed map and one write is one commit. Off-row breaks that at five points:
   otherwise never touches.
 - `put(&R)` stops meaning "this document's state": an off-row column outlives
   it, which is correct behaviour that the type no longer expresses.
-- `delete(&key, &R)` cannot clean what `R` cannot carry, so every delete needs a
-  prefix scan it did not have.
+- `purge` reads the stored row and, when one exists, the segment; an off-row
+  face would add a prefix scan to every purge.
 
 And the field-level accessor is a second selector for a value the name-keyed
 map already selects: a tag enum cannot carry the field's type, so the accessor
@@ -149,9 +149,9 @@ better "has payload" flag than an absent key: it is one state, not an absence.
 - Two declarations exist where one did. The compiler holds the pairing: the side
   table reuses the parent's key type, so the key payload is byte-identical by
   construction and only the ns and the table name differ.
-- A public batchable row delete (`Collection::delete_from(&mut MemBatch, &K,
-  &R)` over the existing private `delete_into`) is the one surface item this
-  leaves behind; it is recorded in PLAN, not here.
+- A public batchable removal (`Collection::purge_into(&mut MemBatch, &K)` over
+  the existing private `delete_into`) is the one surface item this leaves
+  behind; it is recorded in PLAN, not here.
 - It would reopen on evidence, not on taste: a payload in the multi-megabyte
   range where the whole-document read must stay one round trip, and where the
   side table's extra point read is measured as the bottleneck. Nothing in the
