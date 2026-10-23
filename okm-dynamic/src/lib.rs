@@ -50,7 +50,7 @@ pub use path::{Component, Path};
 pub use collection::DynamicCollection;
 pub use graph::{DynEdge, Graph};
 pub use reduce::{scan_reduces, reduce_get, ReduceLogic, ReduceLogicObj, BoundReduce, ReduceSpec, PresetKind, PresetLogic};
-pub use plan::{decode_stored, PlannedDelete, PlannedPut, PlannedWrite};
+pub use plan::{decode_stored, PlannedDelete, PlannedPut, PlannedWrite, Stored};
 pub use plan_fields::{
     VocabMirror, PlannedFields, fields_from_frames, fields_key, plan_delete_fields,
     plan_put_fields,

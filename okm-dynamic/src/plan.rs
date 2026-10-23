@@ -66,6 +66,16 @@ struct AccOverlay<'a> {
     written: std::collections::HashMap<Vec<u8>, Option<Vec<u8>>>,
 }
 
+/// The stored document a plan reads: the row slot and the segment slot, each
+/// absent when empty. One value instead of two arguments keeps the plan
+/// signatures readable (`plan_merge` / `plan_replace` take the split halves AND
+/// the stored pair).
+#[derive(Clone, Copy, Default)]
+pub struct Stored<'a> {
+    pub row: Option<&'a ValueMap>,
+    pub dynamic: Option<&'a ValueMap>,
+}
+
 impl<'a> AccOverlay<'a> {
     fn new(base: &'a AccOf<'a>) -> Self {
         Self { base, written: std::collections::HashMap::new() }
@@ -151,33 +161,36 @@ impl<S: VirtualStorage> DynamicCollection<S> {
     /// (Self::plan_put): faces swept, ledger unfolded then refolded. Every other
     /// name is a read-modify-write of the dynamic segment. A map with no
     /// declared name emits no row op at all.
+    ///
+    /// The halves arrive ALREADY split: the caller split them once to decide
+    /// which arm to read, and splitting again would clone the whole map a second
+    /// time for nothing.
     pub fn plan_merge(
         &self,
         pkey: &[u8],
-        object: &ValueMap,
-        old_row: Option<&ValueMap>,
-        old_dynamic: Option<&ValueMap>,
+        declared: &ValueMap,
+        dynamic: &ValueMap,
+        stored: Stored<'_>,
         acc_of: &AccOf,
         vocab: &mut crate::plan_fields::VocabMirror,
     ) -> Result<PlannedWrite, String> {
         self.check_key(pkey)?;
-        let (declared, dynamic) = self.split_names(object);
         let mut plan = PlannedWrite::default();
         if !declared.is_empty() {
             let mut carried: Vec<&ValueMap> = Vec::with_capacity(2);
-            if let Some(old) = old_row {
+            if let Some(old) = stored.row {
                 carried.push(old);
             }
-            carried.push(&declared);
+            carried.push(declared);
             let row_map = self.row_base(pkey, &carried)?;
-            let row = self.plan_put(pkey, &row_map, old_row, acc_of)?;
+            let row = self.plan_put(pkey, &row_map, stored.row, acc_of)?;
             plan.ops.extend(row.ops);
             plan.new_accs = row.new_accs;
         }
         if !dynamic.is_empty() {
-            let mut stored = old_dynamic.cloned().unwrap_or_default();
-            stored.extend(dynamic);
-            self.plan_dynamic(pkey, old_dynamic, &stored, vocab, &mut plan)?;
+            let mut merged = stored.dynamic.cloned().unwrap_or_default();
+            merged.extend(dynamic.iter().map(|(k, v)| (k.clone(), v.clone())));
+            self.plan_dynamic(pkey, stored.dynamic, &merged, vocab, &mut plan)?;
         }
         Ok(plan)
     }
@@ -190,28 +203,27 @@ impl<S: VirtualStorage> DynamicCollection<S> {
     pub fn plan_replace(
         &self,
         pkey: &[u8],
-        object: &ValueMap,
-        old_row: Option<&ValueMap>,
-        old_dynamic: Option<&ValueMap>,
+        declared: &ValueMap,
+        dynamic: &ValueMap,
+        stored: Stored<'_>,
         acc_of: &AccOf,
         vocab: &mut crate::plan_fields::VocabMirror,
     ) -> Result<PlannedWrite, String> {
         self.check_key(pkey)?;
-        let (declared, dynamic) = self.split_names(object);
         let mut plan = PlannedWrite::default();
         if declared.is_empty() {
-            if let Some(old) = old_row {
+            if let Some(old) = stored.row {
                 let row = self.plan_delete(pkey, old, acc_of)?;
                 plan.ops.extend(row.ops);
                 plan.new_accs = row.new_accs;
             }
         } else {
-            let row_map = self.row_base(pkey, &[&declared])?;
-            let row = self.plan_put(pkey, &row_map, old_row, acc_of)?;
+            let row_map = self.row_base(pkey, &[declared])?;
+            let row = self.plan_put(pkey, &row_map, stored.row, acc_of)?;
             plan.ops.extend(row.ops);
             plan.new_accs = row.new_accs;
         }
-        self.plan_dynamic(pkey, old_dynamic, &dynamic, vocab, &mut plan)?;
+        self.plan_dynamic(pkey, stored.dynamic, dynamic, vocab, &mut plan)?;
         Ok(plan)
     }
 

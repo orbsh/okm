@@ -280,3 +280,48 @@ fn the_reduce_table_exports_as_its_own_file() {
     assert_eq!(rows, vec![(1, 40), (2, 7)]);
     assert!(groups.null_count() == 0 && values.null_count() == 0);
 }
+
+/// The ledger follows the ROW (ADR-0035): a patch naming no declared field writes
+/// only the segment and folds nothing, and a patch writing BOTH halves in one
+/// call folds ONCE — the fold hangs off the row arm, not off the map's size.
+#[test]
+fn a_merge_folds_the_ledger_once_and_only_through_the_row_arm() {
+    use okm_core::model::obj_dynamic::DynamicValue;
+    use std::collections::BTreeMap;
+
+    let mut t = <Post as Document>::collection(TestStore::slatedb_mem());
+    let k = PostKey { id: 1 };
+    t.put(&k, &Post { forum: 7, views: 100 });
+    let ns = <Post as Document>::NS_PREFIX;
+    let group = 7u64.to_be_bytes();
+    let acc = |v: Vec<(Vec<u8>, u64)>| {
+        v.into_iter()
+            .find(|(sfx, _)| sfx.as_slice() == group.as_slice())
+            .map(|(_, a)| a)
+    };
+    let count = |store: &TestStore| {
+        acc(okm_core::reduce::scan_reduces::<_, __OkmReduce_Post_0>(store, ns))
+    };
+    let sum = |store: &TestStore| {
+        acc(okm_core::reduce::scan_reduces::<_, __OkmReduce_Post_1>(store, ns))
+    };
+    assert_eq!(count(t.store()), Some(1));
+
+    // Segment-only patch: the open half gains a name, the row (and the ledger)
+    // is not touched.
+    let mut open = BTreeMap::new();
+    open.insert("note".to_string(), DynamicValue::Str("x".into()));
+    t.merge(&k, &open);
+    assert_eq!(count(t.store()), Some(1), "a segment-only patch folds nothing");
+    assert_eq!(t.fetch(&k).unwrap().get("note"), Some(&DynamicValue::Str("x".into())));
+
+    // Both halves in ONE call: the row arm folds (the usual unfold-then-fold
+    // pair), the segment arm does not — one fold, not one per arm.
+    let mut both = BTreeMap::new();
+    both.insert("views".to_string(), DynamicValue::UInt(7));
+    both.insert("tag".to_string(), DynamicValue::Str("y".into()));
+    t.merge(&k, &both);
+    assert_eq!(count(t.store()), Some(1), "one merge folds once, not once per arm");
+    assert_eq!(sum(t.store()), Some(7), "the Sum followed the row's new value");
+    assert_eq!(t.fetch(&k).unwrap().get("tag"), Some(&DynamicValue::Str("y".into())));
+}

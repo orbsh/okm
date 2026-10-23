@@ -507,9 +507,11 @@ fn plan_merge_equals_embedded_merge() {
     let p1 = planner
         .plan_merge(
             &k,
+            // Every name here is dynamic on this table, so the declared half is
+            // empty — the same split the collection makes before planning.
+            &okm_dynamic::ValueMap::new(),
             &dfields(&[("note", "hello"), ("weight", "9")]),
-            None,
-            None,
+            okm_dynamic::Stored::default(),
             &|_ek: &[u8]| None,
             &mut vocab,
         )
