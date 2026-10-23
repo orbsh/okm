@@ -250,6 +250,44 @@ impl<S: VirtualStorage> DynamicCollection<S> {
         scan_access_method(&self.store, &self.schema, &self.ns, index, encoded_prefix)
     }
 
+    /// Every document's KEY (the pkey bytes), in key order: the rows (slot 0)
+    /// merged with the segments that have NO row (slot 1) — the dynamic face's
+    /// twin of `okm_core::Collection::scan_document_keys`.
+    ///
+    /// A document is the pair of slots (ADR-0035), so a `merge` / `replace` that
+    /// carried no declared name left a document a primary scan cannot see. Two
+    /// prefix scans plus an in-memory merge, no point read; materializing is
+    /// [`fetch`](Self::fetch)'s job.
+    pub fn scan_document_keys(&self) -> Vec<Vec<u8>> {
+        let mut rows = self.ns.clone();
+        okm_core::write_slot(&mut rows, okm_core::index::PRIMARY_SLOT);
+        let mut segs = self.ns.clone();
+        okm_core::write_slot(&mut segs, okm_core::index::DYNAMIC_SLOT);
+        let rows = self.store.scan_suffix(&rows);
+        let segs = self.store.scan_suffix(&segs);
+        let mut out = Vec::with_capacity(rows.len() + segs.len());
+        let (mut i, mut j) = (0usize, 0usize);
+        while i < rows.len() || j < segs.len() {
+            let take_row = match (rows.get(i), segs.get(j)) {
+                (Some(r), Some(s)) => r <= s,
+                (Some(_), None) => true,
+                (None, Some(_)) => false,
+                (None, None) => break,
+            };
+            if take_row {
+                if segs.get(j) == rows.get(i) {
+                    j += 1; // a row and its segment are ONE document
+                }
+                out.push(rows[i].clone());
+                i += 1;
+            } else {
+                out.push(segs[j].clone());
+                j += 1;
+            }
+        }
+        out
+    }
+
     /// Equality scan over one access method (same routing primitive as
     /// [`scan`](Self::scan)): only documents whose field segment is exactly
     /// the probe — the probe must name every field of the data segment.
@@ -369,9 +407,9 @@ impl<S: VirtualStorage> DynamicCollection<S> {
             };
             self.plan_merge(
                 pkey,
-                object,
-                old_row.as_ref(),
-                old_dynamic.as_ref(),
+                &declared,
+                &dynamic,
+                crate::plan::Stored { row: old_row.as_ref(), dynamic: old_dynamic.as_ref() },
                 &|ek| store.get(ek),
                 &mut vocab,
             )?
@@ -402,7 +440,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
         } else {
             None
         };
-        let (_, dynamic) = self.split_names(object);
+        let (declared, dynamic) = self.split_names(object);
         let plan = {
             let store = &self.store;
             // Same rule as `merge`: with no dynamic name to write and no stored
@@ -414,9 +452,9 @@ impl<S: VirtualStorage> DynamicCollection<S> {
             };
             self.plan_replace(
                 pkey,
-                object,
-                old_row.as_ref(),
-                old_dynamic.as_ref(),
+                &declared,
+                &dynamic,
+                crate::plan::Stored { row: old_row.as_ref(), dynamic: old_dynamic.as_ref() },
                 &|ek| store.get(ek),
                 &mut vocab,
             )?

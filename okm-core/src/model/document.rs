@@ -528,28 +528,51 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
             .collect()
     }
 
-    /// Raw documents: `(key encoding suffix, TLV payload)` per primary entry,
-    /// in key order — the byte-level scan surface the Arrow bridge and
-    /// snapshot exporter consume without struct materialization. Slot-0
-    /// only: the ns segment also holds index entries (slots 1+), which
-    /// are derived state excluded from export (rebuilt deterministically
-    /// on import via put).
-    pub fn scan_documents_raw(&self) -> Vec<(Vec<u8>, Vec<u8>)> {
-        let mut prefix = self.header();
-        crate::model::index::write_slot(&mut prefix, crate::model::index::PRIMARY_SLOT);
-        self.store
-            .scan_suffix(&prefix)
-            .into_iter()
-            .filter_map(|suffix| {
-                let full = [prefix.as_slice(), suffix.as_slice()].concat();
-                let v = self.store.get(&full)?;
-                Some((suffix, v))
-            })
-            .collect()
+    /// Raw documents: `(key encoding suffix, payload)` per document, in key
+    /// order — the byte-level scan surface the Arrow bridge and snapshot
+    /// exporter consume without struct materialization. Index entries (slots
+    /// 2+) are derived state, rebuilt on import, so they are not here.
+    ///
+    /// `Some(payload)` is a row (slot 0); `None` is a document that exists only
+    /// as a segment (slot 1) — ADR-0035's document is the PAIR of slots, and a
+    /// `merge` / `replace` naming no declared field leaves exactly that. The row
+    /// half is one prefix scan WITH values, the segment half a key-only scan, and
+    /// the union is a two-pointer merge: no point read per document.
+    pub fn scan_documents_raw(&self) -> Vec<(Vec<u8>, Option<Vec<u8>>)> {
+        let mut rows = self.header();
+        crate::model::index::write_slot(&mut rows, crate::model::index::PRIMARY_SLOT);
+        let mut segs = self.header();
+        crate::model::index::write_slot(&mut segs, crate::model::index::DYNAMIC_SLOT);
+        let rows = scan_suffix_kv(&self.store, &rows);
+        let segs = self.store.scan_suffix(&segs);
+        let mut out = Vec::with_capacity(rows.len() + segs.len());
+        let (mut i, mut j) = (0usize, 0usize);
+        while i < rows.len() || j < segs.len() {
+            let take_row = match (rows.get(i), segs.get(j)) {
+                (Some((r, _)), Some(s)) => r <= s,
+                (Some(_), None) => true,
+                (None, Some(_)) => false,
+                (None, None) => break,
+            };
+            if take_row {
+                let (suffix, payload) = &rows[i];
+                if segs.get(j) == Some(suffix) {
+                    j += 1; // a row and its segment are ONE document
+                }
+                out.push((suffix.clone(), Some(payload.clone())));
+                i += 1;
+            } else {
+                out.push((segs[j].clone(), None));
+                j += 1;
+            }
+        }
+        out
     }
 
     /// Full-ns scan of primary keys (slot-0 entries only — the same
     /// slot-0 discipline as `scan_documents_raw`; index entries are slots 1+).
+    /// This is the ROW mode: a segment with no row is not here. For the document
+    /// mode see [`scan_document_keys`](Self::scan_document_keys).
     /// Clear stale entries under deprecated index slots (ADR-0005):
     /// a `#[ok_index(..., deprecated)]` declaration keeps its slot
     /// reserved but writes nothing; entries written before the
@@ -572,6 +595,10 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         removed
     }
 
+    /// Full-ns scan of primary keys (slot-0 entries only — the same
+    /// slot-0 discipline as `scan_documents_raw`; index entries are slots 1+).
+    /// This is the ROW mode: a segment with no row is not here. For the document
+    /// mode see [`scan_document_keys`](Self::scan_document_keys).
     pub fn scan_keys(&self) -> Vec<K> {
         let mut p = self.header();
         crate::model::index::write_slot(&mut p, crate::model::index::PRIMARY_SLOT);
@@ -583,6 +610,49 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
                 K::decode(&suffix[suffix.len() - K::KEY_LEN..])
             })
             .collect()
+    }
+
+    /// Every document's KEY, in key order: the rows (slot 0) merged with the
+    /// segments that have NO row (slot 1). [`scan_keys`](Self::scan_keys) is the
+    /// other mode — rows only, one prefix scan, no join.
+    ///
+    /// Two modes, because a document is the PAIR of slots (ADR-0035): a `merge` /
+    /// `replace` carrying no declared name leaves a segment with no row, and that
+    /// document is invisible to a slot-0 scan. This one costs a second prefix
+    /// scan and an in-memory merge, and no point read at all.
+    ///
+    /// Materializing is deliberately NOT this method's job — `fetch` is the door,
+    /// so a key becomes a document with `.map(|k| collection.fetch(&k))`.
+    pub fn scan_document_keys(&self) -> Vec<K> {
+        let mut rows = self.header();
+        crate::model::index::write_slot(&mut rows, crate::model::index::PRIMARY_SLOT);
+        let mut segs = self.header();
+        crate::model::index::write_slot(&mut segs, crate::model::index::DYNAMIC_SLOT);
+        let rows = self.store.scan_suffix(&rows);
+        let segs = self.store.scan_suffix(&segs);
+        // The suffix IS the key encoding in both slots, and a scan hands back key
+        // order — so the union is a two-pointer merge: no set, no sort, no read.
+        let mut out = Vec::with_capacity(rows.len() + segs.len());
+        let (mut i, mut j) = (0usize, 0usize);
+        while i < rows.len() || j < segs.len() {
+            let take_row = match (rows.get(i), segs.get(j)) {
+                (Some(r), Some(s)) => r <= s,
+                (Some(_), None) => true,
+                (None, Some(_)) => false,
+                (None, None) => break,
+            };
+            if take_row {
+                if segs.get(j) == rows.get(i) {
+                    j += 1; // a row and its segment are ONE document
+                }
+                out.push(K::decode(&rows[i]));
+                i += 1;
+            } else {
+                out.push(K::decode(&segs[j]));
+                j += 1;
+            }
+        }
+        out
     }
 }
 

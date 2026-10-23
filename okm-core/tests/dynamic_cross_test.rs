@@ -245,3 +245,63 @@ fn a_key_name_in_a_map_is_a_value_field_in_both_modes() {
     // The identity is the pkey and a map cannot move it: this invented no row.
     assert!(typed.fetch(&UserKey { org_id: 999, user_id: 1 }).is_none());
 }
+
+/// Two enumeration modes, because a document is the PAIR of slots (ADR-0035):
+/// `scan_keys` is the row mode (one prefix scan), `scan_document_keys` the
+/// document mode (a second prefix scan merged in memory) — and materializing
+/// either is `fetch`'s job, so the adapter is a plain `map` over the keys.
+#[test]
+fn the_two_enumeration_modes_see_the_two_kinds_of_document() {
+    use okm_core::model::obj_dynamic::DynamicValue;
+
+    let mut typed: Collection<TestStore, UserKey, User> =
+        Collection::new(TestStore::slatedb_mem());
+    let with_row = UserKey { org_id: 1, user_id: 1 };
+    let segment_only = UserKey { org_id: 2, user_id: 2 };
+    typed.put(
+        &with_row,
+        &User { level: 3, score: 4, name: "row".into() },
+    );
+    let mut dynamic_only = BTreeMap::new();
+    dynamic_only.insert("note".to_string(), DynamicValue::Str("no row".into()));
+    typed.merge(&segment_only, &dynamic_only);
+
+    assert_eq!(typed.scan_keys(), vec![with_row.clone()], "row mode: rows only");
+    assert_eq!(
+        typed.scan_document_keys(),
+        vec![with_row.clone(), segment_only.clone()],
+        "document mode: the union, key order, one entry per document"
+    );
+
+    let docs: Vec<_> = typed
+        .scan_document_keys()
+        .iter()
+        .map(|k| typed.fetch(k).expect("a document"))
+        .collect();
+    assert_eq!(docs.len(), 2, "the adapter is a map over keys + fetch");
+    assert!(docs[1].contains_key("note"), "the segment-only document fetched");
+
+    // The dynamic face answers the same two modes over the same two kinds.
+    let mut dynamic = okm_dynamic::DynamicCollection::new(
+        TestStore::slatedb_mem(),
+        41,
+        CollectionSchema::of::<UserKey, User>(),
+        vec![],
+    );
+    let mut row_map = BTreeMap::new();
+    row_map.insert("level".to_string(), Value::U32(3));
+    dynamic.merge(&with_row.encode(), &row_map).unwrap();
+    let mut dyn_only = BTreeMap::new();
+    dyn_only.insert("note".to_string(), Value::Str("no row".into()));
+    dynamic.merge(&segment_only.encode(), &dyn_only).unwrap();
+    assert_eq!(
+        dynamic.scan_document_keys(),
+        vec![with_row.encode(), segment_only.encode()],
+        "the dynamic face merges the same two slots"
+    );
+    assert!(dynamic
+        .fetch(&segment_only.encode())
+        .unwrap()
+        .expect("a document")
+        .contains_key("note"));
+}
