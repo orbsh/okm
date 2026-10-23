@@ -95,10 +95,11 @@ fn schema() -> CollectionSchema {
     CollectionSchema::of::<UserKey, User>()
 }
 
-fn values(org_id: u32, user_id: u64, level: u32, score: u16, name: &str) -> ValueMap {
+/// The PAYLOAD names only: the identity is the pkey's business, and a map
+/// naming a key field would be writing a DYNAMIC field of that name (ADR-0035:
+/// the classifier is the payload declaration, not the schema's whole name set).
+fn values(level: u32, score: u16, name: &str) -> ValueMap {
     let mut m = BTreeMap::new();
-    m.insert("org_id".into(), Value::U32(org_id));
-    m.insert("user_id".into(), Value::U64(user_id));
     m.insert("level".into(), Value::U32(level));
     m.insert("score".into(), Value::U16(score));
     m.insert("name".into(), Value::Str(name.into()));
@@ -204,7 +205,7 @@ fn acc_of(t: &DynamicCollection<TestStore>, level: u32) -> Option<u64> {
 fn func_index_fans_out_and_sweeps() {
     let mut t = dynamic_table(TestStore::slatedb_mem());
     // "bob" → entries for 'b' 'o' 'b' (two 'b' entries, one 'o').
-    t.merge(&key_bytes(1, 2), &values(1, 2, 4, 77, "bob")).unwrap();
+    t.merge(&key_bytes(1, 2), &values(4, 77, "bob")).unwrap();
 
     let b = (b'b' as u32).to_be_bytes();
     let o = (b'o' as u32).to_be_bytes();
@@ -214,7 +215,7 @@ fn func_index_fans_out_and_sweeps() {
     assert_eq!(t.scan(0x3002, &o).unwrap().len(), 1, "one 'o' entry");
 
     // Overwrite to a name sharing no characters: all old entries swept.
-    t.merge(&key_bytes(1, 2), &values(1, 2, 4, 77, "zig")).unwrap();
+    t.merge(&key_bytes(1, 2), &values(4, 77, "zig")).unwrap();
     assert!(t.scan(0x3002, &b).unwrap().is_empty());
     assert!(t.scan(0x3002, &o).unwrap().is_empty());
     let z = (b'z' as u32).to_be_bytes();
@@ -229,20 +230,20 @@ fn func_index_fans_out_and_sweeps() {
 fn partial_index_admits_gates_entries() {
     let mut t = dynamic_table(TestStore::slatedb_mem());
     // Not active ("bob"): no entry in the partial index.
-    t.merge(&key_bytes(1, 10), &values(1, 10, 4, 100, "bob")).unwrap();
+    t.merge(&key_bytes(1, 10), &values(4, 100, "bob")).unwrap();
     assert!(t.scan(0x1003, &4u32.to_be_bytes()).unwrap().is_empty());
 
     // Overwrite to active ("a"): the entry appears (predicate flip on
     // overwrite inserts without a stale entry to remove).
-    t.merge(&key_bytes(1, 10), &values(1, 10, 4, 100, "a")).unwrap();
+    t.merge(&key_bytes(1, 10), &values(4, 100, "a")).unwrap();
     assert_eq!(t.scan(0x1003, &4u32.to_be_bytes()).unwrap().len(), 1);
 
     // Overwrite back to inactive: the entry is swept.
-    t.merge(&key_bytes(1, 10), &values(1, 10, 4, 100, "zig")).unwrap();
+    t.merge(&key_bytes(1, 10), &values(4, 100, "zig")).unwrap();
     assert!(t.scan(0x1003, &4u32.to_be_bytes()).unwrap().is_empty());
 
     // Delete of an admitted document removes its partial entry.
-    t.merge(&key_bytes(1, 11), &values(1, 11, 9, 50, "a")).unwrap();
+    t.merge(&key_bytes(1, 11), &values(9, 50, "a")).unwrap();
     t.purge(&key_bytes(1, 11)).unwrap();
     assert!(t.scan(0x1003, &9u32.to_be_bytes()).unwrap().is_empty());
 }
@@ -252,21 +253,21 @@ fn reduce_calling_discipline() {
     let mut t = dynamic_table(TestStore::slatedb_mem());
 
     // put (no old document): fold only. Two documents in group level=4.
-    t.merge(&key_bytes(1, 10), &values(1, 10, 4, 100, "a")).unwrap();
-    t.merge(&key_bytes(1, 11), &values(1, 11, 4, 200, "b")).unwrap();
+    t.merge(&key_bytes(1, 10), &values(4, 100, "a")).unwrap();
+    t.merge(&key_bytes(1, 11), &values(4, 200, "b")).unwrap();
     assert_eq!(acc_of(&t, 4), Some(2));
 
     // put into another group: independent accumulators.
-    t.merge(&key_bytes(1, 12), &values(1, 12, 9, 50, "c")).unwrap();
+    t.merge(&key_bytes(1, 12), &values(9, 50, "c")).unwrap();
     assert_eq!(acc_of(&t, 9), Some(1));
     assert_eq!(acc_of(&t, 4), Some(2));
 
     // overwrite within a group: unfold old, fold new → net zero.
-    t.merge(&key_bytes(1, 10), &values(1, 10, 4, 100, "a2")).unwrap();
+    t.merge(&key_bytes(1, 10), &values(4, 100, "a2")).unwrap();
     assert_eq!(acc_of(&t, 4), Some(2), "overwrite must not drift the acc");
 
     // overwrite across groups: old group unfolds, new group folds.
-    t.merge(&key_bytes(1, 12), &values(1, 12, 4, 50, "c")).unwrap();
+    t.merge(&key_bytes(1, 12), &values(4, 50, "c")).unwrap();
     assert_eq!(acc_of(&t, 9), Some(0), "group 9 emptied: zero acc, entry kept (no GC)");
     assert_eq!(acc_of(&t, 4), Some(3));
 
@@ -285,7 +286,7 @@ fn reduce_entry_layout_matches_rust_side() {
     // Rust-side Reduce::entry_key layout: [ns 2B][slot u16 BE][group
     // segment].
     let mut t = dynamic_table(TestStore::slatedb_mem());
-    t.merge(&key_bytes(1, 10), &values(1, 10, 4, 100, "a")).unwrap();
+    t.merge(&key_bytes(1, 10), &values(4, 100, "a")).unwrap();
 
     let expected = reduce_entry_key(&t, 4);
     assert!(
@@ -321,7 +322,7 @@ fn reduce_entry_layout_matches_rust_side() {
 #[test]
 fn func_index_exact_scan() {
     let mut t = dynamic_table(TestStore::slatedb_mem());
-    t.merge(&key_bytes(1, 10), &values(1, 10, 4, 100, "zig"))
+    t.merge(&key_bytes(1, 10), &values(4, 100, "zig"))
         .unwrap();
     let z = (b'z' as u32).to_be_bytes();
     assert_eq!(t.scan(0x3002, &z).unwrap().len(), 1, "the value is a prefix hit");
