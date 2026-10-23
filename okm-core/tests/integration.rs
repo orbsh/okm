@@ -55,7 +55,7 @@ pub struct UserToSession {
 #[test]
 fn byte_layout_and_queries() {
     let store = TestStore::slatedb_mem();
-    let mut edges: okm_core::Junction<TestStore, UserToSession> = okm_core::Junction::new(store);
+    let edges: okm_core::Junction<TestStore, UserToSession> = okm_core::Junction::new(store);
 
     let u_org1 = UserKey {
         org_id: 7,

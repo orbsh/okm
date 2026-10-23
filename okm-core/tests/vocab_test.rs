@@ -2,7 +2,7 @@
 //! wire, one data vocabulary per declared field.
 
 use okm_core::{
-    Collection, Document, DocumentEncode, FieldType, KeyEncode, MemBatch, TestStore,
+    Collection, Document, DocumentEncode, FieldType, KeyEncode, Batch, TestStore,
     VirtualStorage, Vocab,
 };
 
@@ -34,7 +34,7 @@ fn row(status: &str, color: &str, n: u32) -> VRow {
 #[test]
 fn labels_round_trip_through_per_field_vocabularies() {
     let store = TestStore::slatedb_mem();
-    let mut c = Collection::<_, VKey, VRow>::new(store);
+    let c = Collection::<_, VKey, VRow>::new(store);
 
     c.put(&VKey { org: 1, id: 1 }, &row("active", "red", 7));
     c.put(&VKey { org: 1, id: 2 }, &row("closed", "red", 8));
@@ -120,14 +120,14 @@ impl VirtualStorage for NoScan {
     fn scan_range(&self, _begin: &[u8], _end: Option<&[u8]>) -> Vec<Vec<u8>> {
         panic!("the categorical hot path must not scan");
     }
-    fn commit_batch(&mut self, batch: MemBatch) -> Result<(), String> {
+    fn commit_batch(&self, batch: Batch) -> Result<(), String> {
         self.0.commit_batch(batch)
     }
 }
 
 #[test]
 fn a_put_on_a_categorical_table_never_scans() {
-    let mut c = Collection::<_, VKey, VRow>::new(NoScan(TestStore::slatedb_mem()));
+    let c = Collection::<_, VKey, VRow>::new(NoScan(TestStore::slatedb_mem()));
 
     // First write allocates two labels; the second reuses them (label-face
     // probe); the third allocates two more through the cursor.

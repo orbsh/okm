@@ -23,7 +23,7 @@ pub struct Row {
 #[test]
 fn range_scan_reads_only_the_interval() {
     let store = TestStore::default();
-    let mut col: Collection<_, RowId, Row> = Collection::new(store.clone());
+    let col: Collection<_, RowId, Row> = Collection::new(store.clone());
 
     let rows: Vec<(u32, u32)> = (0..100).map(|i| (i, i * 7)).collect();
     for (id, (a, tag)) in rows.iter().enumerate() {
@@ -90,7 +90,7 @@ fn range_scan_redb() {
 #[test]
 fn lazy_range_scan_matches_buffered() {
     let store = TestStore::default();
-    let mut col: Collection<_, RowId, Row> = Collection::new(store.clone());
+    let col: Collection<_, RowId, Row> = Collection::new(store.clone());
     for i in 0..100u32 {
         col.put(&RowId { id: i as u64 }, &Row { a: i, tag: i * 7 });
     }

@@ -15,7 +15,7 @@
 
 use okm_core::engine::storage::ScanIter;
 use okm_core::{
-    Collection, DocumentEncode, KeyEncode, MemBatch, TestStore, VirtualStorage,
+    Collection, DocumentEncode, KeyEncode, Batch, TestStore, VirtualStorage,
 };
 use okm_core::schema::CollectionSchema;
 use okm_dynamic::{AccessMethod, DynamicCollection, Value, ValueMap};
@@ -119,7 +119,7 @@ impl<S: VirtualStorage> VirtualStorage for Reads<S> {
         self.inner.scan_range_iter(begin, end)
     }
 
-    fn commit_batch(&mut self, batch: MemBatch) -> Result<(), String> {
+    fn commit_batch(&self, batch: Batch) -> Result<(), String> {
         self.inner.commit_batch(batch)
     }
 }
@@ -139,8 +139,8 @@ fn segment_key(org_id: u32, user_id: u64) -> Vec<u8> {
 
 #[test]
 fn dynamic_entries_equal_typed_entries() {
-    let mut typed: Collection<TestStore, UserKey, User> = Collection::new(TestStore::slatedb_mem());
-    let mut dynamic = dynamic_table(TestStore::slatedb_mem());
+    let typed: Collection<TestStore, UserKey, User> = Collection::new(TestStore::slatedb_mem());
+    let dynamic = dynamic_table(TestStore::slatedb_mem());
 
     let document = User { level: 4, score: 77, name: "bob".into() };
     typed.put(&UserKey { org_id: 1, user_id: 2 }, &document);
@@ -166,7 +166,7 @@ fn dynamic_entries_equal_typed_entries() {
 
 #[test]
 fn dynamic_scan_finds_by_access_method() {
-    let mut t = dynamic_table(TestStore::slatedb_mem());
+    let t = dynamic_table(TestStore::slatedb_mem());
     t.merge(&key_bytes(1, 10), &values(4, 100, "a")).unwrap();
     t.merge(&key_bytes(1, 11), &values(9, 100, "b")).unwrap();
     t.merge(&key_bytes(1, 12), &values(4, 200, "c")).unwrap();
@@ -196,7 +196,7 @@ fn dynamic_scan_finds_by_access_method() {
 
 #[test]
 fn dynamic_overwrite_sweeps_stale_entries() {
-    let mut t = dynamic_table(TestStore::slatedb_mem());
+    let t = dynamic_table(TestStore::slatedb_mem());
     t.merge(&key_bytes(1, 10), &values(4, 100, "a")).unwrap();
 
     // Overwrite changes `level` 4 → 9: the old by_level entry (slot 16,
@@ -211,7 +211,7 @@ fn dynamic_overwrite_sweeps_stale_entries() {
 
 #[test]
 fn dynamic_purge_removes_all_entries() {
-    let mut t = dynamic_table(TestStore::slatedb_mem());
+    let t = dynamic_table(TestStore::slatedb_mem());
     t.merge(&key_bytes(1, 10), &values(4, 100, "a")).unwrap();
     t.purge(&key_bytes(1, 10)).unwrap();
 
@@ -224,7 +224,7 @@ fn dynamic_purge_removes_all_entries() {
 
 #[test]
 fn dynamic_get_round_trips() {
-    let mut t = dynamic_table(TestStore::slatedb_mem());
+    let t = dynamic_table(TestStore::slatedb_mem());
     t.merge(&key_bytes(7, 8), &values(2, 300, "zoe")).unwrap();
     let document = t.fetch(&key_bytes(7, 8)).unwrap().expect("document present");
     assert_eq!(document.get("level"), Some(&Value::U32(2)));
@@ -242,7 +242,7 @@ fn a_verb_reads_only_the_state_its_arm_consumes() {
     // read the segment. So `merge` is not "one read more" than the retired
     // `put` — `put` read the row it was about to rewrite, and so does the
     // declared arm.
-    let mut t = dynamic_table(Reads::new(TestStore::slatedb_mem()));
+    let t = dynamic_table(Reads::new(TestStore::slatedb_mem()));
     let (row, seg) = (row_key(1, 2), segment_key(1, 2));
 
     // Dynamic names only → the segment, never the row.
@@ -286,7 +286,7 @@ fn an_undeclared_name_is_a_dynamic_name_on_this_side() {
     // name outside the schema is a dynamic name — the segment's normal
     // population, not a caller bug. The typed side keeps the struct (`put(&R)`)
     // and therefore cannot express the mistake at all (ADR-0035).
-    let mut t = dynamic_table(TestStore::slatedb_mem());
+    let t = dynamic_table(TestStore::slatedb_mem());
     t.merge(&key_bytes(1, 2), &values(4, 77, "bob")).unwrap();
     t.merge(&key_bytes(1, 2), &dfields(&[("extra", "x")])).unwrap();
     let back = t.fetch(&key_bytes(1, 2)).unwrap().unwrap();
@@ -335,8 +335,8 @@ fn dynamic_rejects_key_field_indexes() {
 fn dynamic_fields_equal_typed_fields() {
     use okm_core::model::obj_dynamic::DynamicValue;
 
-    let mut typed: Collection<TestStore, UserKey, User> = Collection::new(TestStore::slatedb_mem());
-    let mut dynamic = dynamic_table(TestStore::slatedb_mem());
+    let typed: Collection<TestStore, UserKey, User> = Collection::new(TestStore::slatedb_mem());
+    let dynamic = dynamic_table(TestStore::slatedb_mem());
 
     let document = User { level: 1, score: 5, name: "a".into() };
     typed.put(&UserKey { org_id: 1, user_id: 2 }, &document);
@@ -375,7 +375,7 @@ fn dynamic_fields_equal_typed_fields() {
 
 #[test]
 fn merge_keeps_the_unnamed_dynamic_name_and_never_writes_the_row() {
-    let mut t = dynamic_table(TestStore::slatedb_mem());
+    let t = dynamic_table(TestStore::slatedb_mem());
     t.merge(&key_bytes(1, 3), &values(1, 5, "a")).unwrap();
     t.merge(&key_bytes(1, 3), &dfields(&[("a", "x"), ("b", "1")]))
         .unwrap();
@@ -397,7 +397,7 @@ fn merge_keeps_the_unnamed_dynamic_name_and_never_writes_the_row() {
 
 #[test]
 fn replace_is_the_whole_document_and_empty_is_purge() {
-    let mut t = dynamic_table(TestStore::slatedb_mem());
+    let t = dynamic_table(TestStore::slatedb_mem());
     t.merge(&key_bytes(1, 4), &values(1, 5, "a")).unwrap();
     t.merge(&key_bytes(1, 4), &dfields(&[("a", "x"), ("b", "1")]))
         .unwrap();
@@ -435,7 +435,7 @@ fn replace_is_the_whole_document_and_empty_is_purge() {
 
 #[test]
 fn purge_is_the_one_deletion_verb_and_takes_both_slots() {
-    let mut t = dynamic_table(TestStore::slatedb_mem());
+    let t = dynamic_table(TestStore::slatedb_mem());
     t.merge(&key_bytes(1, 5), &values(1, 5, "a")).unwrap();
     t.merge(&key_bytes(1, 5), &dfields(&[("note", "kept")]))
         .unwrap();
@@ -458,7 +458,7 @@ fn purge_is_the_one_deletion_verb_and_takes_both_slots() {
 #[test]
 fn dynamic_fields_carry_composites() {
     use std::collections::BTreeMap as M;
-    let mut t = dynamic_table(TestStore::slatedb_mem());
+    let t = dynamic_table(TestStore::slatedb_mem());
     t.merge(&key_bytes(1, 6), &values(1, 5, "a")).unwrap();
 
     // Nested Obj + heterogeneous Array round-trip through the bridge.
@@ -524,7 +524,7 @@ fn plan_merge_equals_embedded_merge() {
     }
     vocab.adopt(&p1.new_vocab_entries);
 
-    let mut emb = dynamic_table(TestStore::slatedb_mem());
+    let emb = dynamic_table(TestStore::slatedb_mem());
     emb.merge(&k, &dfields(&[("note", "hello"), ("weight", "9")]))
         .unwrap();
 
@@ -589,9 +589,9 @@ fn dynamic_variable_width_index_matches_typed_bytes() {
         pub email: String, // cold TLV in the payload; raw UTF-8 in the index
     }
 
-    let mut typed: Collection<TestStore, EmailKey, Subscriber> = Collection::new(TestStore::slatedb_mem());
+    let typed: Collection<TestStore, EmailKey, Subscriber> = Collection::new(TestStore::slatedb_mem());
     let schema = CollectionSchema::of::<EmailKey, Subscriber>();
-    let mut dynamic = DynamicCollection::new(
+    let dynamic = DynamicCollection::new(
         TestStore::slatedb_mem(),
         43,
         schema.clone(),

@@ -48,11 +48,11 @@ async fn slatedb_roundtrip() {
 #[tokio::test]
 async fn slatedb_async_surface_alignment() {
     let store = slatedb::object_store::memory::InMemory::new();
-    let mut db = SlatedbStore::open("okm-align", std::sync::Arc::new(store))
+    let db = SlatedbStore::open("okm-align", std::sync::Arc::new(store))
         .await
         .unwrap();
 
-    let mut batch = okm_core::MemBatch::default();
+    let mut batch = okm_core::Batch::default();
     batch.put(b"a/1".to_vec(), b"v1".to_vec());
     batch.put(b"a/2".to_vec(), b"v2".to_vec());
     batch.del(b"a/1"); // a mixed op list commits as ONE frame of work

@@ -744,7 +744,7 @@ fn dynamic_from_variant(
                 .zip(ids.iter().zip(payloads.iter()))
                 .zip(props.iter())
             {
-                let mut batch = crate::engine::storage::MemBatch::default();
+                let mut batch = crate::engine::storage::Batch::default();
                 self.link_into(&mut batch, head, payload, *id)?;
                 self.replace_into(&mut batch, *id, fields);
                 self.store_mut()

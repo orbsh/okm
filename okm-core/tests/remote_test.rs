@@ -51,7 +51,7 @@ fn table_semantics_over_remote() {
     let handle = spawn_host(TestStore::default(), &[0x00, 0x09]);
     let remote = handle.open();
 
-    let mut t: Collection<RemoteStore, UserKey, User> = Collection::new(remote);
+    let t: Collection<RemoteStore, UserKey, User> = Collection::new(remote);
     t.put(&UserKey { id: 42 }, &User { level: 3 });
     t.put(&UserKey { id: 43 }, &User { level: 5 });
 
@@ -118,12 +118,12 @@ fn prefix_isolation_between_two_hosts() {
 #[test]
 fn commit_batch_is_one_frame_one_commit() {
     let handle = spawn_host(TestStore::default(), &[0x00, 0x03]);
-    let mut remote = handle.open();
+    let remote = handle.open();
 
     // Cross-assembly atomicity (ADR-0003): the whole batch ships as one
     // frame; the receiver commits the op list in one `commit_batch` —
     // the sender's WAL boundary maps onto the receiver's.
-    let mut batch = okm_core::MemBatch::default();
+    let mut batch = okm_core::Batch::default();
     batch.put(b"k1".to_vec(), b"v1".to_vec());
     batch.put(b"k2".to_vec(), b"v2".to_vec());
     batch.del(b"k0");
@@ -143,7 +143,7 @@ fn commit_batch_is_one_frame_one_commit() {
 #[test]
 fn remote_scan_range_iter_is_lazy_paged() {
     let handle = spawn_host(TestStore::default(), &[0x00, 0x11]);
-    let mut t: Collection<RemoteStore, UserKey, User> = Collection::new(handle.open());
+    let t: Collection<RemoteStore, UserKey, User> = Collection::new(handle.open());
     let remote = handle.open();
     for i in 0..40u64 {
         t.put(&UserKey { id: i }, &User { level: (i % 4) as u32 });
@@ -209,12 +209,12 @@ fn remote_unbounded_stream_crosses_pages() {
     let handle = spawn_host(TestStore::default(), &[0x00, 0x11]);
     let remote = handle.open();
     // 600 keys, page default 256 => three pages (256 + 256 + 88)
-    let mut batch = okm_core::MemBatch::default();
+    let mut batch = okm_core::Batch::default();
     for i in 0..600u32 {
         batch.put(format!("k/{i:04}").into_bytes(), b"v".to_vec());
     }
     // second endpoint on the SAME handle: writes commit through it
-    let mut writer = handle.open();
+    let writer = handle.open();
     writer.commit_batch(batch).expect("batch frame accepted");
     wait_for(
         || remote.scan_suffix(b"k/").len() == 600,
@@ -269,7 +269,7 @@ fn entry_ledger<S: VirtualStorage>(
 #[test]
 fn routine_put_carries_face_and_ledger_in_one_frame() {
     let handle = spawn_host(TestStore::default(), &[0x00, 0x12]);
-    let mut t: Collection<RemoteStore, EntryKey, Entry> = Collection::new(handle.open());
+    let t: Collection<RemoteStore, EntryKey, Entry> = Collection::new(handle.open());
     let k = EntryKey { id: 1 };
 
     t.put(&k, &Entry { account: 7, amount: 10 });

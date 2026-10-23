@@ -29,7 +29,7 @@ pub struct User {
 
 #[test]
 fn deprecated_slot_is_reserved_and_not_written() {
-    let mut t: Collection<TestStore, UserKey, User> = Collection::new(TestStore::slatedb_mem());
+    let t: Collection<TestStore, UserKey, User> = Collection::new(TestStore::slatedb_mem());
     t.put(&UserKey { id: 1 }, &User { legacy: 99, level: 7 });
 
     // Only the LIVE index writes — the deprecated index slot (0x3001)
@@ -56,7 +56,7 @@ fn prune_deletes_only_deprecated_prefix() {
     ]
     .concat();
     store.put(stale, Vec::new());
-    let mut t: Collection<TestStore, UserKey, User> = Collection::new(store);
+    let t: Collection<TestStore, UserKey, User> = Collection::new(store);
     t.put(&UserKey { id: 1 }, &User { legacy: 99, level: 7 });
     t.put(&UserKey { id: 2 }, &User { legacy: 50, level: 8 });
 
@@ -79,7 +79,7 @@ fn no_deprecated_declarations_prunes_nothing() {
         pub level: u32,
     }
 
-    let mut t: Collection<TestStore, UserKey, PlainUser> = Collection::new(TestStore::slatedb_mem());
+    let t: Collection<TestStore, UserKey, PlainUser> = Collection::new(TestStore::slatedb_mem());
     t.put(&UserKey { id: 1 }, &PlainUser { level: 3 });
     assert_eq!(t.prune_deprecated_slots(), 0);
 }

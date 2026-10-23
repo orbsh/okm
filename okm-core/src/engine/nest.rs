@@ -34,7 +34,7 @@ use okm_wire::{
     OP_DELETE, OP_GET, OP_PUT, OP_SCAN, OP_SCAN_STREAM, OpFrame, OpResponse, TAIL_FINAL, TAIL_MORE,
 };
 
-use crate::engine::storage::{MemBatch, SharedVirtualStorage, VirtualStorage, prefix_end};
+use crate::engine::storage::{Batch, SharedVirtualStorage, VirtualStorage, prefix_end};
 
 // ============ sender side ============
 
@@ -174,7 +174,7 @@ impl VirtualStorage for RemoteStore {
     /// One `commit_batch` = one frame = one receiver execution pass: the
     /// cross-assembly-point atomic path (ADR-0003) survives remoteness
     /// because the receiver commits the whole op list in one call.
-    fn commit_batch(&mut self, batch: MemBatch) -> Result<(), String> {
+    fn commit_batch(&self, batch: Batch) -> Result<(), String> {
         self.send_write(&OpFrame::write_batch(&batch.ops));
         Ok(())
     }
@@ -390,19 +390,19 @@ impl<S: VirtualStorage> ExecCore<S> {
             .0
             .iter()
             .any(|(tag, _, _)| matches!(*tag, OP_GET | OP_SCAN | OP_SCAN_STREAM));
-        let mut engine = self.engine.lock().expect("engine lock");
-        let mut batch = MemBatch::default();
+        let engine = self.engine.lock().expect("engine lock");
+        let mut batch = Batch::default();
         let mut resp = OpResponse::default();
         for (tag, key, value) in frame.0 {
             match tag {
                 OP_PUT => batch.put(hosted_key(&self.prefix, &key), value),
                 OP_DELETE => batch.del(&hosted_key(&self.prefix, &key)),
                 OP_GET => {
-                    engine.commit_batch(MemBatch::default()).ok(); // flush pending mutations first: reads see prior ops in the same frame
+                    engine.commit_batch(Batch::default()).ok(); // flush pending mutations first: reads see prior ops in the same frame
                     resp.value = engine.get(&hosted_key(&self.prefix, &key));
                 }
                 OP_SCAN => {
-                    engine.commit_batch(MemBatch::default()).ok();
+                    engine.commit_batch(Batch::default()).ok();
                     let hk = hosted_key(&self.prefix, &key);
                     // Wire contract: answers are PREFIX-RELATIVE keys —
                     // the sender's key space never sees the hosted prefix
@@ -440,7 +440,7 @@ impl<S: VirtualStorage> ExecCore<S> {
                     // flag moves inclusivity, not the bytes). page:
                     // 0 = engine default (256), 0xFF = one giant page
                     // (the legacy buffered shape).
-                    engine.commit_batch(MemBatch::default()).ok();
+                    engine.commit_batch(Batch::default()).ok();
                     // Grammar: [flag][end bytes?][page u8] — page is
                     // always the last byte; the flag says whether an end
                     // span sits between it and the flag.

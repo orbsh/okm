@@ -27,7 +27,7 @@ fn parquet_export_import_roundtrip_restores_rows_and_indexes() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("snapshot.parquet");
 
-    let mut t1: Collection<TestStore, TKey, TRow> = Collection::new(TestStore::slatedb_mem());
+    let t1: Collection<TestStore, TKey, TRow> = Collection::new(TestStore::slatedb_mem());
     for i in 0..5u64 {
         let k = TKey { org_id: 1, user_id: i };
         let r = TRow {
@@ -164,7 +164,7 @@ fn parquet_roundtrip_carries_labels_not_ids() {
 
     let statuses = ["active", "suspended", "active", ""];
     let colors = ["red", "green", "多字节 ✓", "red"];
-    let mut t1: Collection<TestStore, VKey, VRow> = Collection::new(TestStore::slatedb_mem());
+    let t1: Collection<TestStore, VKey, VRow> = Collection::new(TestStore::slatedb_mem());
     for (i, (s, c)) in statuses.iter().zip(colors.iter()).enumerate() {
         t1.put(
             &VKey { id: i as u64 },
@@ -218,7 +218,7 @@ fn an_unnamed_id_exports_as_null_and_import_refuses_it() {
     // `from_id` names an id directly; the vocabulary was never told about it, so
     // the row carries a value nothing can name (the state the old id-based
     // export→import produced by design).
-    let mut t1: Collection<TestStore, VKey, VRow> = Collection::new(TestStore::slatedb_mem());
+    let t1: Collection<TestStore, VKey, VRow> = Collection::new(TestStore::slatedb_mem());
     t1.put(
         &VKey { id: 0 },
         &VRow { status: Vocab::from_id(7), color: Vocab::of("red"), score: 1 },

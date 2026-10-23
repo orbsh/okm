@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use okm_core::bridge::tooling::parquet_io;
 use okm_core::obj_dynamic::DynamicValue;
 use okm_core::{
-    Document, DocumentEncode, EdgeHead, Graph, GraphEncode, KeyEncode, MemBatch, NodeRef,
+    Document, DocumentEncode, EdgeHead, Graph, GraphEncode, KeyEncode, Batch, NodeRef,
     ReduceCodec, TestStore, VirtualStorage,
 };
 
@@ -124,7 +124,7 @@ fn an_edge_table_restores_into_a_fresh_graph() {
     // One edge carries open attributes (the 0x01 segment).
     let mut attrs = BTreeMap::new();
     attrs.insert("note".to_string(), DynamicValue::Str("hi".into()));
-    let mut batch = MemBatch::default();
+    let mut batch = Batch::default();
     g.replace_into(&mut batch, 2, &attrs);
     g.store_mut().commit_batch(batch).unwrap();
 
@@ -184,12 +184,12 @@ fn an_unknown_endpoint_collection_is_refused_by_name() {
 fn a_column_set_that_is_not_an_edge_table_is_refused() {
     let dir = tempfile::tempdir().unwrap();
     let store = TestStore::slatedb_mem();
-    let mut log = <LogRow as Document>::collection(store.clone());
+    let log = <LogRow as Document>::collection(store.clone());
     log.put(&LogKey { seq: 1 }, &LogRow { seq: 1 });
 
     // A DOCUMENT table handed to the edge importer: the column count is the
     // declaration's, and it does not match an edge table's shape.
-    let mut log = <LogRow as Document>::collection(store.clone());
+    let log = <LogRow as Document>::collection(store.clone());
     let wrong = log.to_record_batch();
     let file = dir.path().join("log.parquet");
     parquet_io::write_batch(&wrong, &file).unwrap();
@@ -206,7 +206,7 @@ fn a_column_set_that_is_not_an_edge_table_is_refused() {
 fn a_watermark_restores_and_is_never_lowered() {
     let dir = tempfile::tempdir().unwrap();
     let src = TestStore::slatedb_mem();
-    let mut log = <LogRow as Document>::collection(src.clone());
+    let log = <LogRow as Document>::collection(src.clone());
     log.put(&LogKey { seq: 5 }, &LogRow { seq: 5 });
 
     let file = dir.path().join("log__reduces.parquet");
@@ -251,7 +251,7 @@ fn a_watermark_restores_and_is_never_lowered() {
 fn a_reduce_file_for_another_table_is_refused() {
     let dir = tempfile::tempdir().unwrap();
     let src = TestStore::slatedb_mem();
-    let mut log = <LogRow as Document>::collection(src.clone());
+    let log = <LogRow as Document>::collection(src.clone());
     log.put(&LogKey { seq: 1 }, &LogRow { seq: 1 });
     let file = dir.path().join("log__reduces.parquet");
     parquet_io::export_reduces::<_, __OkmReduce_LogRow_0>(

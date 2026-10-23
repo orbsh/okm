@@ -203,7 +203,7 @@ fn acc_of(t: &DynamicCollection<TestStore>, level: u32) -> Option<u64> {
 
 #[test]
 fn func_index_fans_out_and_sweeps() {
-    let mut t = dynamic_table(TestStore::slatedb_mem());
+    let t = dynamic_table(TestStore::slatedb_mem());
     // "bob" → entries for 'b' 'o' 'b' (two 'b' entries, one 'o').
     t.merge(&key_bytes(1, 2), &values(4, 77, "bob")).unwrap();
 
@@ -228,7 +228,7 @@ fn func_index_fans_out_and_sweeps() {
 
 #[test]
 fn partial_index_admits_gates_entries() {
-    let mut t = dynamic_table(TestStore::slatedb_mem());
+    let t = dynamic_table(TestStore::slatedb_mem());
     // Not active ("bob"): no entry in the partial index.
     t.merge(&key_bytes(1, 10), &values(4, 100, "bob")).unwrap();
     assert!(t.scan(0x1003, &4u32.to_be_bytes()).unwrap().is_empty());
@@ -250,7 +250,7 @@ fn partial_index_admits_gates_entries() {
 
 #[test]
 fn reduce_calling_discipline() {
-    let mut t = dynamic_table(TestStore::slatedb_mem());
+    let t = dynamic_table(TestStore::slatedb_mem());
 
     // put (no old document): fold only. Two documents in group level=4.
     t.merge(&key_bytes(1, 10), &values(4, 100, "a")).unwrap();
@@ -285,7 +285,7 @@ fn reduce_entry_layout_matches_rust_side() {
     // The dynamic reduce entry key must be byte-identical to the
     // Rust-side Reduce::entry_key layout: [ns 2B][slot u16 BE][group
     // segment].
-    let mut t = dynamic_table(TestStore::slatedb_mem());
+    let t = dynamic_table(TestStore::slatedb_mem());
     t.merge(&key_bytes(1, 10), &values(4, 100, "a")).unwrap();
 
     let expected = reduce_entry_key(&t, 4);
@@ -321,7 +321,7 @@ fn reduce_entry_layout_matches_rust_side() {
 
 #[test]
 fn func_index_exact_scan() {
-    let mut t = dynamic_table(TestStore::slatedb_mem());
+    let t = dynamic_table(TestStore::slatedb_mem());
     t.merge(&key_bytes(1, 10), &values(4, 100, "zig"))
         .unwrap();
     let z = (b'z' as u32).to_be_bytes();

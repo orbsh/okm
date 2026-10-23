@@ -89,7 +89,7 @@ fn dynamic_encode_equals_rust_derive_bytes() {
 #[test]
 fn rust_write_dynamic_read_and_reverse() {
     let schema = CollectionSchema::of::<UserKey, User>();
-    let mut t: Collection<TestStore, UserKey, User> = Collection::new(TestStore::slatedb_mem());
+    let t: Collection<TestStore, UserKey, User> = Collection::new(TestStore::slatedb_mem());
     let key = UserKey { org_id: 1, user_id: 2 };
     t.put(&key, &User { level: 4, score: 77, name: "bob".into() });
 
@@ -211,9 +211,9 @@ fn version_default_migration_on_dynamic_read() {
 fn a_key_name_in_a_map_is_a_value_field_in_both_modes() {
     use okm_core::model::obj_dynamic::DynamicValue;
 
-    let mut typed: Collection<TestStore, UserKey, User> =
+    let typed: Collection<TestStore, UserKey, User> =
         Collection::new(TestStore::slatedb_mem());
-    let mut dynamic = okm_dynamic::DynamicCollection::new(
+    let dynamic = okm_dynamic::DynamicCollection::new(
         TestStore::slatedb_mem(),
         41,
         CollectionSchema::of::<UserKey, User>(),
@@ -254,7 +254,7 @@ fn a_key_name_in_a_map_is_a_value_field_in_both_modes() {
 fn the_two_enumeration_modes_see_the_two_kinds_of_document() {
     use okm_core::model::obj_dynamic::DynamicValue;
 
-    let mut typed: Collection<TestStore, UserKey, User> =
+    let typed: Collection<TestStore, UserKey, User> =
         Collection::new(TestStore::slatedb_mem());
     let with_row = UserKey { org_id: 1, user_id: 1 };
     let segment_only = UserKey { org_id: 2, user_id: 2 };
@@ -282,7 +282,7 @@ fn the_two_enumeration_modes_see_the_two_kinds_of_document() {
     assert!(docs[1].contains_key("note"), "the segment-only document fetched");
 
     // The dynamic face answers the same two modes over the same two kinds.
-    let mut dynamic = okm_dynamic::DynamicCollection::new(
+    let dynamic = okm_dynamic::DynamicCollection::new(
         TestStore::slatedb_mem(),
         41,
         CollectionSchema::of::<UserKey, User>(),

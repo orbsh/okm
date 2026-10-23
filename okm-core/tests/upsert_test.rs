@@ -17,7 +17,7 @@ use __OkmIndex_Counter_by_bucket as Counter_ByBucket;
 
 #[test]
 fn upsert_with_full_paths() {
-    let mut t: Collection<TestStore, CounterKey, Counter> = Collection::new(TestStore::slatedb_mem());
+    let t: Collection<TestStore, CounterKey, Counter> = Collection::new(TestStore::slatedb_mem());
 
     // ---------- insert path: old = None ----------
     let written = t.upsert_with(&CounterKey { id: 1 }, |old| {

@@ -34,7 +34,7 @@ use okm_wire::{
     OP_DELETE, OP_GET, OP_PUT, OP_SCAN, OP_SCAN_STREAM, OpFrame, OpResponse, TAIL_MORE,
 };
 
-use crate::engine::storage::{MemBatch, ScanIter, VirtualStorageAsync};
+use crate::engine::storage::{Batch, ScanIter, VirtualStorageAsync};
 
 /// The injected transport: hand it one request frame, it carries it to
 /// the receiver. Returning `Err` means the connection is gone — the
@@ -352,7 +352,7 @@ impl<T: WireTransport> VirtualStorageAsync for WireClient<T> {
     /// One `commit_batch` = one frame = one receiver execution pass —
     /// the cross-assembly-point atomic path (ADR-0003) survives
     /// remoteness and async transport alike.
-    async fn commit_batch(&mut self, batch: MemBatch) -> Result<(), String> {
+    async fn commit_batch(&self, batch: Batch) -> Result<(), String> {
         let inner = Rc::clone(&self.inner);
         let inner = inner.borrow_mut();
         if let Some(reason) = inner.dead.clone() {

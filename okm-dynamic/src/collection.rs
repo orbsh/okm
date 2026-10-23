@@ -6,8 +6,9 @@
 //! bytes as the derive (codec shared with the typed path, byte equality
 //! locked by the cross tests).
 //!
-//! Single-writer only (same contract as `Collection`): `&mut self` puts, the
-//! engine arbitrates cross-process exclusion.
+//! Single-writer only (same contract as `Collection`): writes take `&self`,
+//! so one owner per table — `_owned` carries a `Cell` marker and keeps this
+//! type `!Sync`. The engine arbitrates cross-process exclusion.
 //!
 //! Capability scope (ADR-0022): subscribe stays excluded; reduce and
 //! function/partial indexes are binding-implementable via host-language
@@ -42,6 +43,11 @@ pub struct DynamicCollection<S: VirtualStorage> {
     pub(crate) ns: Vec<u8>,
     pub(crate) indexes: Vec<AccessMethod>,
     pub(crate) reduces: Vec<BoundReduce>,
+    /// Single-writer by construction, not by convention: `!Sync`, so a
+    /// `&DynamicCollection` cannot be handed to a second thread while a
+    /// read-modify-write is in flight (the typed `Collection` gets the same
+    /// property from its `Cell` epoch counter).
+    _owned: std::marker::PhantomData<std::cell::Cell<()>>,
 }
 
 impl<S: VirtualStorage> DynamicCollection<S> {
@@ -90,6 +96,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
             ns: ns.to_be_bytes().to_vec(),
             indexes,
             reduces: reduces.into_iter().map(BoundReduce::new).collect(),
+            _owned: std::marker::PhantomData,
         }
     }
 
@@ -215,11 +222,11 @@ impl<S: VirtualStorage> DynamicCollection<S> {
     /// ops in order inside one call. Either way the document write, its faces,
     /// the reduce ledger and the dynamic-segment entry land together — the same
     /// one-commit rule the typed `Collection` keeps (ADR-0035 rule 6).
-    fn replay(&mut self, ops: &[(Vec<u8>, Option<Vec<u8>>)]) {
+    fn replay(&self, ops: &[(Vec<u8>, Option<Vec<u8>>)]) {
         if ops.is_empty() {
             return;
         }
-        let mut batch = okm_core::MemBatch::default();
+        let mut batch = okm_core::Batch::default();
         for (key, value) in ops {
             match value {
                 Some(v) => batch.put(key.clone(), v.clone()),
@@ -383,7 +390,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
     ///   either: the schema answers which arm the plan takes, so the stored
     ///   state is read per arm, not per verb (a dynamic-only map pays one
     ///   segment read, a declared-only map one row read).
-    pub fn merge(&mut self, pkey: &[u8], object: &ValueMap) -> Result<(), String> {
+    pub fn merge(&self, pkey: &[u8], object: &ValueMap) -> Result<(), String> {
         let (declared, dynamic) = self.split_names(object);
         let old_row = if declared.is_empty() {
             None
@@ -433,7 +440,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
     /// deleted, and only the stored row says which); the segment only when a
     /// path index has entries to sweep, because the entry is written wholesale
     /// from the map (an empty map deletes it).
-    pub fn replace(&mut self, pkey: &[u8], object: &ValueMap) -> Result<(), String> {
+    pub fn replace(&self, pkey: &[u8], object: &ValueMap) -> Result<(), String> {
         let old_row = self.stored_document(pkey)?;
         let old_dynamic = if self.has_path_index() {
             self.dynamic_map(pkey)?
@@ -465,7 +472,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
 
     /// Remove the whole document — both slots — in one commit. `false` = there
     /// was nothing to remove (mirrors the typed `purge`).
-    pub fn purge(&mut self, pkey: &[u8]) -> Result<bool, String> {
+    pub fn purge(&self, pkey: &[u8]) -> Result<bool, String> {
         let old_row = self.stored_document(pkey)?;
         let old_dynamic = self.dynamic_map(pkey)?;
         if old_row.is_none() && old_dynamic.is_none() {

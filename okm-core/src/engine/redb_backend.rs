@@ -13,7 +13,7 @@
 //! `shared_handle` is an Arc-kernel clone (`Database` clones share the
 //! file lock and keyspace).
 
-use crate::engine::storage::{MemBatch, VirtualStorage};
+use crate::engine::storage::{Batch, VirtualStorage};
 use redb::{Database, ReadableDatabase, TableDefinition};
 
 /// The single table holding the whole OKM keyspace (ns prefixes come
@@ -146,8 +146,8 @@ impl VirtualStorage for RedbStore {
 
     /// redb native: ONE write transaction over the whole batch — redb's
     /// own atomicity carries the mapping (the carrier stays
-    /// engine-agnostic, MemBatch, same as fjall).
-    fn commit_batch(&mut self, batch: MemBatch) -> Result<(), String> {
+    /// engine-agnostic, Batch, same as fjall).
+    fn commit_batch(&self, batch: Batch) -> Result<(), String> {
         let txn = self
             .db
             .begin_write()

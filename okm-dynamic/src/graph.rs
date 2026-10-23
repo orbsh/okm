@@ -31,7 +31,7 @@ use okm_core::model::graph::{
 use okm_core::obj_vocab::{VocabCache, FIELD_VOCAB, PREDICATE_VOCAB};
 use okm_core::obj_dynamic::{decode_named, put_frame_named, DynamicValue};
 use okm_core::schema::CollectionSchema;
-use okm_core::storage::{scan_suffix_kv, MemBatch, VirtualStorage};
+use okm_core::storage::{scan_suffix_kv, Batch, VirtualStorage};
 
 /// One dynamic edge: endpoints by reference, predicate by name,
 /// attributes as a name-keyed map (nTLV frames on the wire, ids allocated
@@ -182,7 +182,7 @@ impl<S: VirtualStorage> Graph<S> {
         if self.store.get(&pk).is_some() {
             return Err(format!("edge_id {edge_id} already live"));
         }
-        let mut batch = MemBatch::default();
+        let mut batch = Batch::default();
         self.write_into(&mut batch, edge, edge_id)?;
         self.store
             .commit_batch(batch)
@@ -193,7 +193,7 @@ impl<S: VirtualStorage> Graph<S> {
     /// cross-collection atomic path.
     pub fn link_into(
         &mut self,
-        batch: &mut MemBatch,
+        batch: &mut Batch,
         edge: &DynEdge,
         edge_id: u64,
     ) -> Result<(), String> {
@@ -202,7 +202,7 @@ impl<S: VirtualStorage> Graph<S> {
 
     fn write_into(
         &mut self,
-        batch: &mut MemBatch,
+        batch: &mut Batch,
         edge: &DynEdge,
         edge_id: u64,
     ) -> Result<(), String> {
@@ -251,7 +251,7 @@ impl<S: VirtualStorage> Graph<S> {
         let id_be = edge_id.to_be_bytes();
         let predicate_be = predicate_vocab_id.to_be_bytes();
 
-        let mut batch = MemBatch::default();
+        let mut batch = Batch::default();
         batch.del(&pk);
         batch.del(&self.fields_key(edge_id));
         batch.del(&self.face_key(EDGE_PREDICATE_INDEX_SLOT, &[&predicate_be, &id_be]));

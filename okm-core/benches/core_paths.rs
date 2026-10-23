@@ -148,12 +148,12 @@ fn bench_payload(c: &mut Criterion) {
 fn bench_scan(c: &mut Criterion) {
     let mut g = c.benchmark_group("index-scan");
     for &fanout in &[1usize, 100, 10_000] {
-        let mut t: Collection<TestStore, BenchKey, BenchRow> = Collection::new(TestStore::slatedb_mem());
+        let t: Collection<TestStore, BenchKey, BenchRow> = Collection::new(TestStore::slatedb_mem());
         for i in 0..fanout as u64 {
             let k = make_key(1_000_000 + i);
             // Same tag for all rows in this group → one prefix value,
             // fanout rows behind it.
-            t.merge(
+            t.put(
                 &k,
                 &BenchRow {
                     level: 7,
@@ -183,17 +183,17 @@ fn bench_scan(c: &mut Criterion) {
 fn bench_write_mock(c: &mut Criterion) {
     let mut g = c.benchmark_group("write-mock");
     g.bench_function("put/row_with_index+reduce", |b| {
-        let mut t: Collection<TestStore, BenchKey, BenchRow> = Collection::new(TestStore::slatedb_mem());
+        let t: Collection<TestStore, BenchKey, BenchRow> = Collection::new(TestStore::slatedb_mem());
         let mut i = 0u64;
         b.iter(|| {
-            t.merge(&make_key(i), &make_row(i));
+            t.put(&make_key(i), &make_row(i));
             i += 1;
             black_box(())
         })
     });
     g.bench_function("get/point", |b| {
-        let mut t: Collection<TestStore, BenchKey, BenchRow> = Collection::new(TestStore::slatedb_mem());
-        t.merge(&make_key(1), &make_row(1));
+        let t: Collection<TestStore, BenchKey, BenchRow> = Collection::new(TestStore::slatedb_mem());
+        t.put(&make_key(1), &make_row(1));
         b.iter(|| black_box(t.fetch(&make_key(1)).is_some()))
     });
     g.bench_function("batch_commit/100_ops", |b| {
@@ -201,14 +201,14 @@ fn bench_write_mock(c: &mut Criterion) {
         b.iter_batched(
             || {
                 let store = store.clone();
-                let mut batch = okm_core::MemBatch::default();
+                let mut batch = okm_core::Batch::default();
                 for i in 0..100u64 {
                     let k = make_key(i);
-                    batch.merge(k.encode(), make_row(i).encode_payload());
+                    batch.put(k.encode(), make_row(i).encode_payload());
                 }
                 (store, batch)
             },
-            |(mut store, batch)| black_box(store.commit_batch(batch).is_ok()),
+            |(store, batch)| black_box(store.commit_batch(batch).is_ok()),
             BatchSize::SmallInput,
         )
     });

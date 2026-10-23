@@ -46,7 +46,7 @@ pub struct Vote {
 
 #[test]
 fn grouped_presets_fold_unfold_scan() {
-    let mut t = <Post as Document>::collection(TestStore::slatedb_mem());
+    let t = <Post as Document>::collection(TestStore::slatedb_mem());
     let r1 = Post { forum: 7, views: 100 };
     let r2 = Post { forum: 7, views: 40 };
     let r3 = Post { forum: 8, views: 9 };
@@ -101,7 +101,7 @@ fn grouped_presets_fold_unfold_scan() {
 
 #[test]
 fn no_group_mode_single_entry() {
-    let mut t = <Vote as Document>::collection(TestStore::slatedb_mem());
+    let t = <Vote as Document>::collection(TestStore::slatedb_mem());
     let r = Vote { score: 5 };
     t.put(&VoteKey { id: 1 }, &r);
     t.put(&VoteKey { id: 2 }, &Vote { score: 12 });
@@ -178,7 +178,7 @@ pub struct Entry {
 
 #[test]
 fn sum_acc_type_follows_field() {
-    let mut t = <Entry as Document>::collection(TestStore::slatedb_mem());
+    let t = <Entry as Document>::collection(TestStore::slatedb_mem());
     let k = |id: u64| LedgerKey { id };
     let r_pos = Entry { account: 7, delta: 100, amount: Quant::<2>::new(12.5) };
     let r_neg = Entry { account: 7, delta: -30, amount: Quant::<2>::new(-2.0) };
@@ -224,7 +224,7 @@ fn the_reduce_table_exports_as_its_own_file() {
     use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 
     let dir = tempfile::tempdir().unwrap();
-    let mut t: okm_core::Collection<TestStore, PostKey, Post> =
+    let t: okm_core::Collection<TestStore, PostKey, Post> =
         okm_core::Collection::new(TestStore::slatedb_mem());
     for (forum, views) in [(1u64, 10u32), (1, 40), (2, 7)] {
         t.put(&PostKey { id: forum * 100 + views as u64 }, &Post { forum, views });
@@ -289,7 +289,7 @@ fn a_merge_folds_the_ledger_once_and_only_through_the_row_arm() {
     use okm_core::model::obj_dynamic::DynamicValue;
     use std::collections::BTreeMap;
 
-    let mut t = <Post as Document>::collection(TestStore::slatedb_mem());
+    let t = <Post as Document>::collection(TestStore::slatedb_mem());
     let k = PostKey { id: 1 };
     t.put(&k, &Post { forum: 7, views: 100 });
     let ns = <Post as Document>::NS_PREFIX;

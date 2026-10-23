@@ -5,7 +5,7 @@
 //! set — primary
 //! entry, declared faces, embedded children with their faces, the releases of
 //! children the old document dropped, the reduce RMWs, and vocabulary growth —
-//! into one `MemBatch` and hand it to the engine in one `commit_batch`. The
+//! into one `Batch` and hand it to the engine in one `commit_batch`. The
 //! counting wrapper below is the proof: it sees every bare `put`/`del` (one
 //! engine op each) and every commit, so a regression back to per-op writes
 //! fails here instead of hiding in a latency profile. It also makes the crash
@@ -16,7 +16,7 @@ use std::cell::Cell;
 
 use okm_core::engine::storage::ScanIter;
 use okm_core::{
-    Document, DocumentEncode, KeyEncode, MemBatch, ReduceCodec, TestStore, VirtualStorage,
+    Document, DocumentEncode, KeyEncode, Batch, ReduceCodec, TestStore, VirtualStorage,
 };
 
 /// An engine handle that counts how writes arrive: bare single-op writes
@@ -76,7 +76,7 @@ impl<S: VirtualStorage> VirtualStorage for Counting<S> {
         self.inner.scan_range_iter(begin, end)
     }
 
-    fn commit_batch(&mut self, batch: MemBatch) -> Result<(), String> {
+    fn commit_batch(&self, batch: Batch) -> Result<(), String> {
         self.commits.set(self.commits.get() + 1);
         self.ops_committed
             .set(self.ops_committed.get() + batch.ops.len());
@@ -118,7 +118,7 @@ fn row(account: u64) -> LedgerRow {
 
 #[test]
 fn put_is_one_engine_commit() {
-    let mut t = <LedgerRow as Document>::collection(Counting::new(TestStore::slatedb_mem()));
+    let t = <LedgerRow as Document>::collection(Counting::new(TestStore::slatedb_mem()));
     t.put(&LedgerKey { id: 1 }, &row(7));
 
     let c = t.store();
@@ -139,7 +139,7 @@ fn put_is_one_engine_commit() {
 
 #[test]
 fn overwrite_is_one_engine_commit() {
-    let mut t = <LedgerRow as Document>::collection(Counting::new(TestStore::slatedb_mem()));
+    let t = <LedgerRow as Document>::collection(Counting::new(TestStore::slatedb_mem()));
     let k = LedgerKey { id: 1 };
     t.put(&k, &row(7));
     t.store().reset();
@@ -158,7 +158,7 @@ fn overwrite_is_one_engine_commit() {
 
 #[test]
 fn delete_is_one_engine_commit() {
-    let mut t = <LedgerRow as Document>::collection(Counting::new(TestStore::slatedb_mem()));
+    let t = <LedgerRow as Document>::collection(Counting::new(TestStore::slatedb_mem()));
     let k = LedgerKey { id: 1 };
     t.put(&k, &row(7));
     t.store().reset();
@@ -176,7 +176,7 @@ fn delete_is_one_engine_commit() {
 
 #[test]
 fn dynamic_write_including_vocabulary_growth_is_one_engine_commit() {
-    let mut t = <LedgerRow as Document>::collection(Counting::new(TestStore::slatedb_mem()));
+    let t = <LedgerRow as Document>::collection(Counting::new(TestStore::slatedb_mem()));
     t.store().reset();
 
     let mut fields = std::collections::BTreeMap::new();
@@ -203,7 +203,7 @@ fn dynamic_write_including_vocabulary_growth_is_one_engine_commit() {
 
 #[test]
 fn merge_of_a_declared_field_is_one_engine_commit() {
-    let mut t = <LedgerRow as Document>::collection(Counting::new(TestStore::slatedb_mem()));
+    let t = <LedgerRow as Document>::collection(Counting::new(TestStore::slatedb_mem()));
     let k = LedgerKey { id: 1 };
     t.put(&k, &row(7));
     t.store().reset();
@@ -220,7 +220,7 @@ fn merge_of_a_declared_field_is_one_engine_commit() {
 
 #[test]
 fn replace_is_one_engine_commit_across_both_slots() {
-    let mut t = <LedgerRow as Document>::collection(Counting::new(TestStore::slatedb_mem()));
+    let t = <LedgerRow as Document>::collection(Counting::new(TestStore::slatedb_mem()));
     let k = LedgerKey { id: 1 };
     t.put(&k, &row(7));
     // Intern the dynamic name first, so the replace below measures the write
@@ -254,7 +254,7 @@ fn replace_is_one_engine_commit_across_both_slots() {
 
 #[test]
 fn purge_is_one_engine_commit() {
-    let mut t = <LedgerRow as Document>::collection(Counting::new(TestStore::slatedb_mem()));
+    let t = <LedgerRow as Document>::collection(Counting::new(TestStore::slatedb_mem()));
     let k = LedgerKey { id: 1 };
     t.put(&k, &row(7));
     t.merge(&k, &map_of(&[("colour", okm_core::obj_dynamic::DynamicValue::Str("amber".into()))]));
@@ -274,4 +274,36 @@ fn map_of(pairs: &[(&str, okm_core::obj_dynamic::DynamicValue)]) -> std::collect
         .iter()
         .map(|(name, value)| ((*name).to_string(), value.clone()))
         .collect()
+}
+/// The verbs take `&self`, so one shared handle drives a whole sequence.
+///
+/// The exclusivity a `merge` needs for its read-modify-write is NOT `&mut self`
+/// any more: it is the collection being `!Sync` (the epoch counter is a `Cell`),
+/// so one owner holds it and no second thread can interleave. What this test
+/// pins is the API half of that: a plain `&Collection` — no `mut` binding, no
+/// `&mut` parameter — writes, and every verb still lands exactly one commit.
+#[test]
+fn the_verbs_take_a_shared_handle_and_still_commit_once_each() {
+    fn drive<S: VirtualStorage>(t: &okm_core::Collection<S, LedgerKey, LedgerRow>) {
+        let k = LedgerKey { id: 1 };
+        t.put(&k, &row(7));
+        t.merge(
+            &k,
+            &map_of(&[("amount", okm_core::obj_dynamic::DynamicValue::UInt(2))]),
+        );
+        t.replace(
+            &k,
+            &map_of(&[("amount", okm_core::obj_dynamic::DynamicValue::UInt(3))]),
+        );
+        assert!(t.purge(&k), "purge addresses the document it was given");
+    }
+
+    let t = <LedgerRow as Document>::collection(Counting::new(TestStore::slatedb_mem()));
+    drive(&t);
+
+    let c = t.store();
+    assert_eq!(c.commits.get(), 4, "one commit per verb, on a shared handle");
+    assert_eq!(c.bare_puts.get(), 0);
+    assert_eq!(c.bare_dels.get(), 0);
+    assert_eq!(t.get(&LedgerKey { id: 1 }), None, "purge took the row");
 }

@@ -51,7 +51,7 @@ fn payload_roundtrip_le() {
 
 #[test]
 fn cold_frame_roundtrip() {
-    let mut t: Collection<TestStore, DocKey, Doc> = Collection::new(TestStore::slatedb_mem());
+    let t: Collection<TestStore, DocKey, Doc> = Collection::new(TestStore::slatedb_mem());
     let k = DocKey { id: 1 };
     let r = Doc {
         id: 1,
@@ -68,7 +68,7 @@ fn cold_frame_roundtrip() {
 #[test]
 fn length_is_data_not_schema() {
     // 同一个文档类型，不同长度的向量都是合法数据（换模型 = 换帧长）。
-    let mut t: Collection<TestStore, DocKey, Doc> = Collection::new(TestStore::slatedb_mem());
+    let t: Collection<TestStore, DocKey, Doc> = Collection::new(TestStore::slatedb_mem());
     t.put(&DocKey { id: 1 }, &Doc { id: 1, embed: Vector::new(vec![1.0]), score: 1 });
     t.put(
         &DocKey { id: 2 },
@@ -83,7 +83,7 @@ fn ok_len_contract_enforced_at_encode() {
     // #[ok_len(2)]：合同在编码期（写入边界）执行——count != 2 的 put 即 panic；
     // 解码不检查（绕过解码器 = 乱码自负，与直接看图片字节流同理）。
     let bad = std::panic::catch_unwind(|| {
-        let mut t: Collection<TestStore, DocKey, ContractedDoc> =
+        let t: Collection<TestStore, DocKey, ContractedDoc> =
             Collection::new(TestStore::slatedb_mem());
         t.put(
             &DocKey { id: 1 },

@@ -167,7 +167,7 @@ impl OpFrame {
         Self(vec![(tag, key, value)])
     }
 
-    /// MemBatch-shaped ops (None = delete) → one write frame — the
+    /// Batch-shaped ops (None = delete) → one write frame — the
     /// ADR-0010 §2 mapping, shared by the remote backend's
     /// `commit_batch` and the binding plan surface (a planned put IS a
     /// batch: primary + index entries + acc updates in one frame).

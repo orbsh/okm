@@ -43,7 +43,7 @@
 //! reads and `unlink` need only the id; the predicate is a VALUE segment in
 //! the body and an index dimension on the faces.
 
-use crate::engine::storage::{MemBatch, VirtualStorage, scan_suffix_kv};
+use crate::engine::storage::{Batch, VirtualStorage, scan_suffix_kv};
 use crate::model::index::{DYNAMIC_SLOT, Document, PRIMARY_SLOT, Slot, write_slot};
 use crate::model::key::KeyEncode;
 use crate::model::obj_dynamic::{DynamicValue, decode_named, put_frame_named};
@@ -375,7 +375,7 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
         if self.store.get(&pk).is_some() {
             return Err(format!("edge_id {edge_id} already live"));
         }
-        let mut batch = MemBatch::default();
+        let mut batch = Batch::default();
         self.write_into(&mut batch, head, payload, edge_id)?;
         self.store
             .commit_batch(batch)
@@ -390,7 +390,7 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
     /// harmless by the same rule the obj vocabulary documents.
     pub fn link_into(
         &mut self,
-        batch: &mut MemBatch,
+        batch: &mut Batch,
         head: &EdgeHead,
         payload: &E,
         edge_id: u64,
@@ -434,7 +434,7 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
     /// caller yet; add `merge_into` the day one appears).
     pub fn replace_into(
         &mut self,
-        batch: &mut MemBatch,
+        batch: &mut Batch,
         edge_id: u64,
         fields: &std::collections::BTreeMap<String, DynamicValue>,
     ) {
@@ -481,7 +481,7 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
 
     fn write_into(
         &mut self,
-        batch: &mut MemBatch,
+        batch: &mut Batch,
         head: &EdgeHead,
         payload: &E,
         edge_id: u64,
@@ -537,7 +537,7 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
     /// the declaration's type — no prefix sweep, so an unrelated edge with
     /// a shared attribute value cannot be touched.
     pub fn unlink(&mut self, edge_id: u64) -> Result<(), String> {
-        let mut batch = MemBatch::default();
+        let mut batch = Batch::default();
         self.unlink_into(&mut batch, edge_id)?;
         self.store
             .commit_batch(batch)
@@ -549,7 +549,7 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
     /// commit instead of two (`unlink_into` + `link_into` into the same
     /// batch: the incumbent's primary is deleted and re-put in order, and
     /// every stale face goes with it).
-    pub fn unlink_into(&mut self, batch: &mut MemBatch, edge_id: u64) -> Result<(), String> {
+    pub fn unlink_into(&mut self, batch: &mut Batch, edge_id: u64) -> Result<(), String> {
         let pk = self.primary_key(edge_id);
         let bytes = self
             .store

@@ -143,7 +143,7 @@ fn fixed_bytes_maps_to_binary() {
         pub n: u32,
     }
 
-    let mut t: Collection<TestStore, BinKey, BinRow> = Collection::new(TestStore::slatedb_mem());
+    let t: Collection<TestStore, BinKey, BinRow> = Collection::new(TestStore::slatedb_mem());
     let k = BinKey { id: 1, name: *b"abcd" };
     t.put(&k, &BinRow { n: 9 });
 
@@ -175,7 +175,7 @@ fn vector_field_maps_to_binary() {
         pub ring: Vector<u32>,
     }
 
-    let mut t: Collection<TestStore, RingKey, RingRow> = Collection::new(TestStore::slatedb_mem());
+    let t: Collection<TestStore, RingKey, RingRow> = Collection::new(TestStore::slatedb_mem());
     t.put(
         &RingKey { id: 1 },
         &RingRow { n: 7, ring: Vector::new(vec![1, 2, 3]) },
