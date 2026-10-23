@@ -1613,6 +1613,30 @@ Tasks:
       (every batch is in memory; serialisation is a different type). Locked by
       `write_commit_test::the_verbs_take_a_shared_handle_and_still_commit_once_each`:
       a plain `&Collection` drives put/merge/replace/purge, one commit each.
+- [x] `docs/CONCURRENCY.md` (+ zh) records the multi-writer analysis: the two
+      layers and which one is single-writer, five mechanisms that assume one
+      writer, the four shapes (mutex / wrapper+RwLock / writer thread / channel as
+      store), what a frame buys, and the four debts a real multi-writer design owes.
+- [ ] The remote frame's mid-frame flush is dead code (2026-10-23, found while
+      writing CONCURRENCY §4): `ExecCore::apply` accumulates a frame's writes in a
+      local batch committed AFTER the op loop, while the `commit_batch(Batch::default())`
+      before an `OP_GET` / `OP_SCAN` commits an EMPTY batch — so a query never sees
+      the same frame's pending writes, contrary to the comment there. No production
+      caller builds a mixed frame, so nothing is broken today; a mixed frame's
+      read-your-own-writes needs the query routed through a `BatchStore` view.
+- [ ] includes are written and never read (2026-10-23, OPEN — next). Two
+      independent holes: (a) dynamic side — `AccessMethod::plain(.., includes)`
+      writes the covered fields into the entry VALUE, but `scan_access_method`
+      does a key-only suffix scan and never reads it; (b) typed side — `scan`
+      ignores includes entirely (it fetch-backs every hit), and the only door,
+      `scan_covered`, hands the raw bytes out undecoded. Fix both so a scan can
+      answer the covered fields without a fetch-back.
+- [ ] Downstream bump after H is incomplete (2026-10-23): mudra / effector / aura
+      ride `ba0fb72` and `cargo check` clean. krystallizer still imports
+      `okm_core::MemBatch` (`crates/mem-core/src/graph.rs`) and that file is also
+      carrying uncommitted work of the user's, so the rename was NOT applied
+      there; gravity and prism fail through it, and gravity additionally carries
+      the older krystallizer skew (`view::DEFAULT_USER_NODE`, `note_verdict`).
 - [x] Declined (2026-10-23): a `Hit` / `Prefix` result type that carries the
       verbs — a key does not know its collection, so the wrapper can only hold a
       `&Collection` and take it as a parameter anyway, and it drags the partial-key
