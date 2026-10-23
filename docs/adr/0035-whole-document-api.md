@@ -54,17 +54,20 @@ The surface splits by VALUE SHAPE rather than by slot.
 3. **`merge` touches only the names it is given.** A declared name is a row
    read-modify-write through the semantic path (`save_with_prev_into`), so the
    previous values' faces ARE removed and the reduce ledger compensates. Any
-   other name overwrites that name in slot 1 and leaves the rest alone. A map
+   any other name overwrites that name in slot 1 and leaves the rest alone. A map
    with no declared name never writes the row — nor reads it: the stored state a
-   verb touches is decided per arm by the schema, which costs no read.
-- **`replace` treats the map as the whole document.** Declared names rebuild
-  the row; a declared field the map does not name takes `from_map`'s default
-  (the payload is positional — a half row cannot be encoded). The dynamic
-  segment is exactly the map's non-declared names, so `replace(&empty_map)` is
-  `purge`. A map with no declared name leaves the static segment absent,
-  deleting the row if it existed. The stored row is therefore ALWAYS read —
-  rebuilt means its faces must be swept, absent means it must be deleted, and
-  only the stored row says which.
+   verb touches is decided per arm by the schema, which costs no read. The
+   field-name vocabulary is the segment arm's too: it is loaded only when the map
+   carries a non-declared name (a declared-only patch on a table with no open
+   fields would otherwise pay two prefix scans and a cursor read for nothing).
+4. **`replace` treats the map as the whole document.** Declared names rebuild
+   the row; a declared field the map does not name takes `from_map`'s default
+   (the payload is positional — a half row cannot be encoded). The dynamic
+   segment is exactly the map's non-declared names, so `replace(&empty_map)` is
+   `purge`. A map with no declared name leaves the static segment absent,
+   deleting the row if it existed. The stored row is therefore ALWAYS read —
+   rebuilt means its faces must be swept, absent means it must be deleted, and
+   only the stored row says which.
 5. **`purge` removes both slots** in one commit, answers whether there was
    anything to remove, and carries the Delete event for subscribers (the signal
    moved with the verb). It is the ONE removal verb: a document is the pair of
@@ -116,8 +119,10 @@ The surface splits by VALUE SHAPE rather than by slot.
   host-language dict) writes with `merge` / `replace` and reads with `fetch`.
 - `fetch` answers a dynamic-only document; the old `get_document` returned `None`
   whenever the primary entry was absent, hiding the segment.
-- Cost: `fetch` costs two point reads (row + segment), `merge` one more for the
-  row RMW.
+- Cost: `fetch` costs two point reads (row + segment) plus the vocabulary
+  lookups its dynamic names need; `merge` adds the row read only when its map
+  names a declared field, and loads the vocabulary only when it names a
+  non-declared one.
 - The dynamic side has ONE read door and no `get` / `put`. Its `put` was a
   `merge` restricted to declared names — the same op list — so the restriction
   was only visible to whoever read the docs, and a mistyped name was either

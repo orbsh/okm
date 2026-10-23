@@ -451,7 +451,10 @@ the hot/cold segments as usual; anything else lands in the **dynamic
 segment** (fixed face 0x01) as n-TLV frames — `[field-id][type][len][bytes]` —
 with names allocated on first sight in the **field-name vocabulary**
 (fixed faces 0x02/0x03). Runtime surface on `Collection` — the static segment speaks the struct, the
-whole document speaks one name-keyed map (ADR-0035):
+whole document speaks one name-keyed map (ADR-0035). Two doors, and the split is
+about what a call may look at: `get` / `put` are the **struct door** (the row
+only — no vocabulary load, no segment access; the compiled-schema path), while
+`fetch` / `merge` / `replace` / `purge` are the **whole-document door**:
 
 ```rust
 // The row-map bridge: every field (declared + dynamic) lifts to its logical
