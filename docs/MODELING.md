@@ -1720,10 +1720,19 @@ business, not the model's.
 Queries go through `get` (primary key) or `scan::<I>` (a named access
 method). There is no general-purpose full-scan query surface.
 
-The only raw scans are `scan_rows_raw` / `scan_keys` — maintenance
-surfaces for the snapshot exporter and the Arrow bridge, not application
-query paths. If application code reaches for them, that is a missing
-access-method declaration, not a shortcut.
+The only raw scans are `scan_rows_raw` / `scan_keys` / `scan_document_keys`
+— maintenance surfaces for the snapshot exporter and the Arrow bridge, not
+application query paths. If application code reaches for them, that is a
+missing access-method declaration, not a shortcut.
+
+Enumeration has two modes, because a document is the PAIR of slots
+(ADR-0035): `scan_keys` enumerates ROWS (one prefix scan — a segment with no
+row is not there), `scan_document_keys` enumerates DOCUMENTS (the row slot
+merged in memory with the segment slot, so a `merge` that carried no declared
+name still shows up). Materializing is neither mode's job — `fetch` is the
+door, so a key becomes a document with a plain `map` over the keys; a union
+cannot be an adapter, because an adapter cannot surface an item that was never
+scanned.
 
 ## Key naming: plain prefixes + composable access methods
 

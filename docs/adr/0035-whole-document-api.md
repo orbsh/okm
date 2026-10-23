@@ -83,6 +83,17 @@ The surface splits by VALUE SHAPE rather than by slot.
    replaces the segment outright, so naming it `merge_into` would describe
    behaviour it does not have; an edge's typed half is the payload, not a map,
    so `fetch` would over-claim as well.
+9. **The ledger and the enumeration follow the ROW.** A segment-only document
+   folds nothing — `Count` / `Sum` / `HighWater` are written by the row arm — and
+   one `merge` folds ONCE: the fold belongs to the arm, not to the number of names
+   in the map, so a patch writing both halves does not count twice. Enumeration
+   has two modes for the same reason the document does: `scan_keys` enumerates
+   rows (one prefix scan), `scan_document_keys` enumerates documents (that scan
+   plus a key-only scan of the segment slot, merged in memory, no point read);
+   materializing is `fetch`'s job, so a key becomes a document with a plain
+   `map`. The Parquet backup carries both halves as well — the typed columns plus
+   the `variant` column for the open half — so a segment-only document restores
+   as one instead of gaining an invented row of defaults.
 
 ## Why not
 

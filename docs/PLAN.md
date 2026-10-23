@@ -1580,6 +1580,25 @@ Tasks:
       Python binding swept in the same pass (`put`/`get`/`delete` →
       `merge`/`fetch`/`purge`, plus the missing `FieldType::Vocab` coercion arm
       that had kept the binding uncompilable).
+- [x] G the document surface reaches the READ-side tools (2026-10-23). Three
+      facts, one theme — a document is the pair of slots, so anything that walks
+      documents owes the second slot: (a) enumeration has two modes —
+      `scan_keys` is rows only (one prefix scan), `scan_document_keys` is the
+      union of the two slots (that scan plus a key-only scan of the segment slot,
+      two-pointer merged in memory, zero point reads); materializing is `fetch`'s
+      job, so a key becomes a document with a plain `map` — a union cannot be an
+      adapter, because an adapter cannot surface an item that was never scanned;
+      (b) `scan_documents_raw` now yields `(suffix, Option<payload>)`, `None`
+      meaning "this document has only a segment", and every payload column in the
+      Arrow/Parquet export is NULLABLE (key columns stay non-nullable) — the
+      segment-only row exports with its key and a Variant, nothing inverted into
+      a default; (c) `import_parquet` finally reads the `variant` column back
+      (it had exported it and ignored it, so a backup lost every dynamic segment):
+      a row whose payload columns are all null imports as a segment alone and
+      gains no row, and the segment lands through `merge`, leaving the row alone.
+      The reduce ledger needs no change and is now locked by a test: it follows
+      the ROW — a segment-only patch folds nothing, a patch writing both halves in
+      one call folds ONCE (ADR-0035 rule 9).
 - [ ] Separate item, own commit: `from_map` silently defaults a value whose kind
       does not match the declared field (`_ => #dflt`). Make it a named panic;
       absent fields keep defaulting (that is the version-evolution rule, not the
