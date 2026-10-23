@@ -464,16 +464,119 @@ pub mod parquet_io {
                 (keys, payloads)
             };
 
-            // Phase 2 — the normal write contract (primary + indexes + faces).
+            // Phase 2 — the normal write contract (primary + indexes + faces),
+            // plus the dynamic segment the `variant` column carries. A row whose
+            // payload columns are ALL null is a segment-only document (ADR-0035's
+            // pair of slots): it imports as a segment and NO row, instead of an
+            // invented default payload the export never had.
+            let variant_idx = batch
+                .schema()
+                .fields()
+                .iter()
+                .position(|f| f.name() == "variant");
+            let payload_cols: Vec<usize> = (nkey..batch.num_columns())
+                .filter(|i| Some(*i) != variant_idx)
+                .collect();
             for document in 0..n {
                 let key = K::decode(&keys[document]);
-                let rv = R::decode_payload(&payloads[document]);
-                collection.put(&key, &rv);
-                count += 1;
+                // No payload columns at all (a fieldless row) cannot be told
+                // apart from a segment-only document here, so the row is written:
+                // an empty payload is the only thing a fieldless table exports.
+                let has_row = payload_cols.is_empty()
+                    || payload_cols.iter().any(|i| !batch.column(*i).is_null(document));
+                if has_row {
+                    let rv = R::decode_payload(&payloads[document]);
+                    collection.put(&key, &rv);
+                    count += 1;
+                }
+                let segment = match variant_idx {
+                    Some(vi) => segment_from_variant(batch.column(vi), document)
+                        .map_err(parquet::errors::ParquetError::General)?,
+                    None => None,
+                };
+                if let Some(map) = segment {
+                    // Segment names are by construction non-declared, so this
+                    // merge writes the segment and leaves the row alone.
+                    collection.merge(&key, &map);
+                }
             }
         }
         Ok(count)
     }
+
+/// One document's dynamic segment out of its `variant` cell:
+/// `[md_len u32 BE][metadata][value]` → the name-keyed map the segment stores.
+/// The export's `push_variant` written backwards; names come back resolved
+/// because the Variant's own metadata carries them.
+fn segment_from_variant(
+    col: &dyn arrow::array::Array,
+    row: usize,
+) -> Result<Option<std::collections::BTreeMap<String, crate::model::obj_dynamic::DynamicValue>>, String>
+{
+    if col.is_null(row) {
+        return Ok(None);
+    }
+    let arr = col
+        .as_any()
+        .downcast_ref::<arrow::array::BinaryArray>()
+        .ok_or_else(|| "the variant column is not a binary array".to_string())?;
+    let wire = arr.value(row);
+    if wire.len() < 4 {
+        return Err("variant cell is shorter than its metadata length".into());
+    }
+    let md_len = u32::from_be_bytes(wire[..4].try_into().expect("4 bytes")) as usize;
+    let rest = &wire[4..];
+    if rest.len() < md_len {
+        return Err("variant metadata is truncated".into());
+    }
+    let (md, val) = rest.split_at(md_len);
+    let variant = parquet_variant::Variant::try_new(md, val).map_err(|e| e.to_string())?;
+    match dynamic_from_variant(variant) {
+        crate::model::obj_dynamic::DynamicValue::Obj(map) => Ok(Some(map)),
+        _ => Err("a document's variant cell holds an object, not a scalar".into()),
+    }
+}
+
+/// Variant → DynamicValue. Integers come back SIGNED (the export widens UInt to
+/// i64, a documented limitation), so a non-negative value is restored as `UInt`
+/// and a negative one as `Int` — the export cannot tell them apart.
+fn dynamic_from_variant(
+    v: parquet_variant::Variant<'_, '_>,
+) -> crate::model::obj_dynamic::DynamicValue {
+    use crate::model::obj_dynamic::DynamicValue as DV;
+    if v.as_null().is_some() {
+        return DV::Null;
+    }
+    if let Some(b) = v.as_boolean() {
+        return DV::Bool(b);
+    }
+    if let Some(s) = v.as_string() {
+        return DV::Str(s.to_string());
+    }
+    if let Some(u) = v.as_u64() {
+        return DV::UInt(u);
+    }
+    if let Some(i) = v.as_int64() {
+        return DV::Int(i);
+    }
+    if let Some(f) = v.as_f64() {
+        return DV::F64(f);
+    }
+    if let Some(bytes) = v.as_u8_slice() {
+        return DV::Bytes(bytes.to_vec());
+    }
+    if let Some(obj) = v.as_object() {
+        return DV::Obj(
+            obj.iter()
+                .map(|(name, field)| (name.to_string(), dynamic_from_variant(field)))
+                .collect(),
+        );
+    }
+    if let Some(list) = v.as_list() {
+        return DV::Array(list.iter().map(dynamic_from_variant).collect());
+    }
+    DV::Null
+}
 
     /// The restore half of [`Graph::to_record_batch_table`]: write an edge table
     /// back through the graph's own write path (`link_into` + `replace_into`,

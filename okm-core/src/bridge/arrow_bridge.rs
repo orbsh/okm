@@ -16,7 +16,6 @@
 use std::sync::Arc;
 
 use arrow::array::RecordBatch;
-use arrow::buffer::Buffer;
 use arrow::datatypes::{DataType, Field as ArrowField, Schema};
 
 use crate::engine::storage::VirtualStorage;
@@ -109,10 +108,12 @@ impl<K: KeyEncode, R: Document<Key = K>> Projection<K, R> {
             fields.push(ArrowField::new(f.name, arrow_type(f.ty), false));
         }
         for f in row_fields {
-            // A `Vocab` column can hold a NULL: an id the field's vocabulary
-            // does not name (see `vocab_labels`). Everything else is total.
-            let nullable = matches!(f.ty, FieldType::Vocab(_));
-            fields.push(ArrowField::new(f.name, arrow_type(f.ty), nullable));
+            // Every payload column can hold a NULL, for two reasons: a document
+            // with no row (ADR-0035's segment-only document — the whole payload
+            // half is NULL, nothing is invented) and a `Vocab` id the field's
+            // vocabulary does not name (see `vocab_labels`). Key columns stay
+            // non-nullable: every document has an identity.
+            fields.push(ArrowField::new(f.name, arrow_type(f.ty), true));
         }
         Self {
             schema: Schema::new(fields),
@@ -191,11 +192,11 @@ fn labels_for<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>>(
 /// little-endian, so a byte-swapping copy is required per value.
 fn build_batch<K: KeyEncode, R: Document<Key = K>>(
     proj: &Projection<K, R>,
-    documents: &[(Vec<u8>, Vec<u8>)],
+    documents: &[(Vec<u8>, Option<Vec<u8>>)],
     labels: &std::collections::HashMap<usize, std::collections::HashMap<Vec<u8>, String>>,
 ) -> RecordBatch {
     let n = documents.len();
-    let mut columns: Vec<Vec<Vec<u8>>> = Vec::with_capacity(proj.schema.fields().len());
+    let mut columns: Vec<Vec<Option<Vec<u8>>>> = Vec::with_capacity(proj.schema.fields().len());
 
     // Precompute the declaration-order byte offset of every key field
     // (computed once, applied per document).
@@ -213,10 +214,10 @@ fn build_batch<K: KeyEncode, R: Document<Key = K>>(
     // order BE fields), so per-field runs are contiguous offsets into it.
     // One value per document per column (column-major list of per-document values).
     for (fi, f) in proj.key_fields.iter().enumerate() {
-        let mut col = Vec::with_capacity(n);
+        let mut col: Vec<Option<Vec<u8>>> = Vec::with_capacity(n);
         for (kenc, _) in documents {
             let off = key_offsets[fi];
-            col.push(swap_be(kenc, off, f.width, f.ty));
+            col.push(Some(swap_be(kenc, off, f.width, f.ty)));
         }
         columns.push(col);
     }
@@ -232,8 +233,14 @@ fn build_batch<K: KeyEncode, R: Document<Key = K>>(
         .filter(|(_, f)| f.width == 0)
         .collect();
     for (fi, f) in proj.row_fields.iter().enumerate() {
-        let mut col: Vec<Vec<u8>> = Vec::with_capacity(n);
+        let mut col: Vec<Option<Vec<u8>>> = Vec::with_capacity(n);
         for (_, v) in documents {
+            // No row at all: the whole payload half is NULL for this document.
+            // Nothing is inverted into a default — the row simply is not there.
+            let Some(v) = v.as_deref() else {
+                col.push(None);
+                continue;
+            };
             if f.width > 0 {
                 // Hot: header + sum of prior hot field widths.
                 let off = header
@@ -242,13 +249,13 @@ fn build_batch<K: KeyEncode, R: Document<Key = K>>(
                         .filter(|g| g.width > 0)
                         .map(|g| g.width)
                         .sum::<usize>();
-                col.push(logical_value(&v[off..off + f.width], f.ty));
+                col.push(Some(logical_value(&v[off..off + f.width], f.ty)));
             } else {
                 let val = tlv_value(&v[header + hot_width..], &cold_fields, fi);
                 if f.ty == FieldType::Str {
-                    col.push(val.to_vec());
+                    col.push(Some(val.to_vec()));
                 } else {
-                    col.push(logical_value(val, f.ty));
+                    col.push(Some(logical_value(val, f.ty)));
                 }
             }
         }
@@ -260,6 +267,8 @@ fn build_batch<K: KeyEncode, R: Document<Key = K>>(
     // a `Vocab` column are both Utf8, and only the latter holds ids to resolve.
     let descs: Vec<&FieldDesc> = proj.key_fields.iter().chain(proj.row_fields.iter()).collect();
     let nkey = proj.key_fields.len();
+    // A `None` cell is an Arrow NULL: no row (segment-only document) or a Vocab
+    // id the vocabulary does not name. Key cells are never NULL.
     let arrays: Vec<Arc<dyn arrow::array::Array>> = columns
         .iter()
         .enumerate()
@@ -276,66 +285,60 @@ fn build_batch<K: KeyEncode, R: Document<Key = K>>(
                     .unwrap_or(&empty);
                 let vals: Vec<Option<&str>> = col
                     .iter()
-                    .map(|raw| by_id.get(raw).map(String::as_str))
+                    .map(|raw| raw.as_ref().and_then(|r| by_id.get(r).map(String::as_str)))
                     .collect();
                 return Arc::new(arrow::array::StringArray::from_iter(vals));
             }
+            if matches!(field.data_type(), DataType::Binary) {
+                return Arc::new(arrow::array::BinaryArray::from_iter(
+                    col.iter().map(|c| c.as_deref()),
+                ));
+            }
+            if matches!(field.data_type(), DataType::Utf8) {
+                return Arc::new(arrow::array::StringArray::from_iter(col.iter().map(|c| {
+                    c.as_deref()
+                        .map(|b| std::str::from_utf8(b).expect("Utf8 column holds UTF-8"))
+                })));
+            }
             match field.data_type() {
             DataType::UInt8 => {
-                let vals: Vec<u8> = col.iter().map(|c| c[0]).collect();
-                Arc::new(arrow::array::UInt8Array::from(vals))
+                let vals: Vec<Option<u8>> = col.iter().map(|c| c.as_ref().map(|b| b[0])).collect();
+                Arc::new(arrow::array::UInt8Array::from_iter(vals))
             }
             DataType::UInt16 => {
-                let vals: Vec<u16> = col.iter().map(|c| u16::from_le_bytes(c.as_chunks::<2>().0[0])).collect();
-                Arc::new(arrow::array::UInt16Array::from(vals))
+                let vals: Vec<Option<u16>> = col
+                    .iter()
+                    .map(|c| c.as_ref().map(|b| u16::from_le_bytes(b.as_chunks::<2>().0[0])))
+                    .collect();
+                Arc::new(arrow::array::UInt16Array::from_iter(vals))
             }
             DataType::UInt32 => {
-                let vals: Vec<u32> = col.iter().map(|c| u32::from_le_bytes(c.as_chunks::<4>().0[0])).collect();
-                Arc::new(arrow::array::UInt32Array::from(vals))
+                let vals: Vec<Option<u32>> = col
+                    .iter()
+                    .map(|c| c.as_ref().map(|b| u32::from_le_bytes(b.as_chunks::<4>().0[0])))
+                    .collect();
+                Arc::new(arrow::array::UInt32Array::from_iter(vals))
             }
             DataType::UInt64 => {
-                let vals: Vec<u64> = col.iter().map(|c| u64::from_le_bytes(c.as_chunks::<8>().0[0])).collect();
-                Arc::new(arrow::array::UInt64Array::from(vals))
+                let vals: Vec<Option<u64>> = col
+                    .iter()
+                    .map(|c| c.as_ref().map(|b| u64::from_le_bytes(b.as_chunks::<8>().0[0])))
+                    .collect();
+                Arc::new(arrow::array::UInt64Array::from_iter(vals))
             }
             DataType::Float64 => {
-                let vals: Vec<f64> = col.iter().map(|c| f64::from_le_bytes(c.as_chunks::<8>().0[0])).collect();
-                Arc::new(arrow::array::Float64Array::from(vals))
+                let vals: Vec<Option<f64>> = col
+                    .iter()
+                    .map(|c| c.as_ref().map(|b| f64::from_le_bytes(b.as_chunks::<8>().0[0])))
+                    .collect();
+                Arc::new(arrow::array::Float64Array::from_iter(vals))
             }
             DataType::Int64 => {
-                let vals: Vec<i64> = col.iter().map(|c| i64::from_le_bytes(c.as_chunks::<8>().0[0])).collect();
-                Arc::new(arrow::array::Int64Array::from(vals))
-            }
-            DataType::Binary => {
-                let mut offsets: Vec<i32> = Vec::with_capacity(n + 1);
-                offsets.push(0);
-                let mut data = Vec::new();
-                for chunk in col {
-                    data.extend_from_slice(chunk);
-                    offsets.push(data.len() as i32);
-                }
-                Arc::new(arrow::array::BinaryArray::new(
-                    arrow::buffer::OffsetBuffer::new(
-                        arrow::buffer::ScalarBuffer::from(offsets),
-                    ),
-                    Buffer::from(data),
-                    None,
-                ))
-            }
-            DataType::Utf8 => {
-                let mut offsets: Vec<i32> = Vec::with_capacity(n + 1);
-                offsets.push(0);
-                let mut data = Vec::new();
-                for chunk in col {
-                    data.extend_from_slice(chunk);
-                    offsets.push(data.len() as i32);
-                }
-                Arc::new(arrow::array::StringArray::new(
-                    arrow::buffer::OffsetBuffer::new(
-                        arrow::buffer::ScalarBuffer::from(offsets),
-                    ),
-                    Buffer::from(data),
-                    None,
-                ))
+                let vals: Vec<Option<i64>> = col
+                    .iter()
+                    .map(|c| c.as_ref().map(|b| i64::from_le_bytes(b.as_chunks::<8>().0[0])))
+                    .collect();
+                Arc::new(arrow::array::Int64Array::from_iter(vals))
             }
             other => unreachable!("no bridge mapping for {other:?}"),
             }
@@ -481,7 +484,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     /// one prefix scan of their id face, not a probe per row.
     pub fn to_record_batch(&self) -> RecordBatch {
         let proj = Projection::<K, R>::new();
-        let documents: Vec<(Vec<u8>, Vec<u8>)> = self.scan_documents_raw().into_iter().collect();
+        let documents = self.scan_documents_raw();
         let labels = labels_for(self, &proj);
         build_batch(&proj, &documents, &labels)
     }
@@ -499,7 +502,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         use arrow::datatypes::{Field as ArrowField, Schema as ArrowSchema};
 
         let proj = Projection::<K, R>::new();
-        let documents: Vec<(Vec<u8>, Vec<u8>)> = self.scan_documents_raw().into_iter().collect();
+        let documents = self.scan_documents_raw();
 
         // Base (typed) columns from the same projection.
         let labels = labels_for(self, &proj);
@@ -610,7 +613,8 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
         use arrow::datatypes::{Field as ArrowField, Schema as ArrowSchema};
 
         let ids = self.edge_ids();
-        let mut documents: Vec<(Vec<u8>, Vec<u8>)> = Vec::with_capacity(ids.len());
+        // Edge rows always have a body: `None` (no row) does not arise here.
+        let mut documents: Vec<(Vec<u8>, Option<Vec<u8>>)> = Vec::with_capacity(ids.len());
         // (src name, src pkey, dst name, dst pkey, predicate) per row
         let mut rows: Vec<(Option<String>, Vec<u8>, Option<String>, Vec<u8>, String)> =
             Vec::with_capacity(ids.len());
@@ -639,7 +643,7 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
                 wire.extend_from_slice(&val);
                 wire
             }));
-            documents.push((id.to_be_bytes().to_vec(), body.payload));
+            documents.push((id.to_be_bytes().to_vec(), Some(body.payload)));
         }
 
         // The declaration's own columns: the edge key (the bare edge id) then the
