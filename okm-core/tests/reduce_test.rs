@@ -89,12 +89,12 @@ fn fold_unfold_roundtrip_is_exact() {
     assert_eq!(acc, CountSum { count: 2, sum: 42 });
 
     // delete_by_pkey 走同一条 unfold 路径（内部 get 出 document）。
-    t.delete_by_pkey(&k2);
+    t.purge(&k2);
     let acc = okm_core::reduce_get::<_, AuthorStats>(t.store(), <Post as Document>::NS_PREFIX, &k1, &r1).expect("group exists");
     assert_eq!(acc, CountSum { count: 1, sum: 30 });
 
     // 可逆往返：删空后 acc 回到单位元。
-    t.delete_by_pkey(&k1);
+    t.purge(&k1);
     let acc = okm_core::reduce_get::<_, AuthorStats>(t.store(), <Post as Document>::NS_PREFIX, &k1, &r1).expect("entry survives");
     assert_eq!(acc, CountSum::default());
 

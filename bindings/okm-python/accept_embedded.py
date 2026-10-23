@@ -118,30 +118,30 @@ def main() -> int:
     t.add_reduce(0x2001, ["level"], make_logic())
 
     # --- put folds ----------------------------------------------------
-    t.put(key(1, 10), doc(1, 10, 4, 100, "a"))
-    t.put(key(1, 11), doc(1, 11, 4, 200, "b"))
+    t.merge(key(1, 10), doc(1, 10, 4, 100, "a"))
+    t.merge(key(1, 11), doc(1, 11, 4, 200, "b"))
     acc = t.reduce_get({"level": 4})
     assert acc == (2).to_bytes(8, "big"), f"acc after two puts: {acc!r}"
 
     # --- overwrite: unfold old + fold new, no drift --------------------
-    t.put(key(1, 10), doc(1, 10, 4, 100, "a2"))
+    t.merge(key(1, 10), doc(1, 10, 4, 100, "a2"))
     acc = t.reduce_get({"level": 4})
     assert acc == (2).to_bytes(8, "big"), f"overwrite drifted: {acc!r}"
 
     # --- overwrite across groups ---------------------------------------
-    t.put(key(1, 11), doc(1, 11, 9, 200, "b"))
+    t.merge(key(1, 11), doc(1, 11, 9, 200, "b"))
     assert t.reduce_get({"level": 4}) == (1).to_bytes(8, "big")
     assert t.reduce_get({"level": 9}) == (1).to_bytes(8, "big")
 
     # --- delete unfolds -------------------------------------------------
-    t.delete(key(1, 11))
+    t.purge(key(1, 11))
     assert t.reduce_get({"level": 9}) == (0).to_bytes(8, "big")
 
     # --- func index: fan-out entries + scan -----------------------------
     hits = t.scan(0x1002, (ord("a") & 0xFF).to_bytes(4, "big"))
     assert len(hits) == 1 and hits[0]["user_id"] == 10, hits
     # overwrite to a name without 'a': the entry sweeps
-    t.put(key(1, 10), doc(1, 10, 4, 100, "zig"))
+    t.merge(key(1, 10), doc(1, 10, 4, 100, "zig"))
     assert t.scan(0x1002, (ord("a") & 0xFF).to_bytes(4, "big")) == []
     assert len(t.scan(0x1002, (ord("z") & 0xFF).to_bytes(4, "big"))) == 1
 
@@ -161,9 +161,9 @@ def main() -> int:
     # --- partial index: predicate gates entry existence ------------------
     # name "zig" is not admitted → no entry even though level=4 exists
     assert t.scan(0x1003, (4).to_bytes(4, "big")) == []
-    t.put(key(1, 12), doc(1, 12, 4, 50, "a"))
+    t.merge(key(1, 12), doc(1, 12, 4, 50, "a"))
     assert len(t.scan(0x1003, (4).to_bytes(4, "big"))) == 1
-    t.delete(key(1, 12))
+    t.purge(key(1, 12))
     assert t.scan(0x1003, (4).to_bytes(4, "big")) == []
 
     print("embedded-mode acceptance: ALL PASS")

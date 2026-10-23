@@ -163,7 +163,7 @@ fn delete_is_one_engine_commit() {
     t.put(&k, &row(7));
     t.store().reset();
 
-    t.delete(&k, &row(7));
+    t.purge(&k);
 
     let c = t.store();
     assert_eq!(c.commits.get(), 1, "a removal is one engine commit");
@@ -195,7 +195,7 @@ fn dynamic_write_including_vocabulary_growth_is_one_engine_commit() {
     );
     assert_eq!((c.bare_puts.get(), c.bare_dels.get()), (0, 0));
     assert_eq!(
-        t.view(&LedgerKey { id: 1 })
+        t.fetch(&LedgerKey { id: 1 })
             .and_then(|m| m.get("colour").cloned()),
         Some(okm_core::obj_dynamic::DynamicValue::Str("amber".into()))
     );
@@ -247,7 +247,7 @@ fn replace_is_one_engine_commit_across_both_slots() {
     assert_eq!(t.get(&k).unwrap().account, 8);
     assert_eq!(t.get(&k).unwrap().amount, 0, "unnamed declared field defaults");
     assert_eq!(
-        t.view(&k).and_then(|m| m.get("colour").cloned()),
+        t.fetch(&k).and_then(|m| m.get("colour").cloned()),
         Some(okm_core::obj_dynamic::DynamicValue::Str("slate".into()))
     );
 }
@@ -266,7 +266,7 @@ fn purge_is_one_engine_commit() {
     assert_eq!(c.commits.get(), 1, "a whole-document removal is one commit");
     assert_eq!(c.ops_committed.get(), 4, "del primary + del face + unfold + del slot 1");
     assert_eq!((c.bare_puts.get(), c.bare_dels.get()), (0, 0));
-    assert!(t.view(&k).is_none());
+    assert!(t.fetch(&k).is_none());
 }
 
 fn map_of(pairs: &[(&str, okm_core::obj_dynamic::DynamicValue)]) -> std::collections::BTreeMap<String, okm_core::obj_dynamic::DynamicValue> {

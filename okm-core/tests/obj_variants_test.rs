@@ -44,7 +44,7 @@ fn view_projects_both_slots_and_leaves_the_typed_read_alone() {
     t.put(&key(1), &user(1, 2));
 
     // A static-only document: the view carries the declared names.
-    let row_only = t.view(&key(1)).unwrap();
+    let row_only = t.fetch(&key(1)).unwrap();
     assert_eq!(row_only.len(), 2);
     assert_eq!(row_only["level"], DynamicValue::UInt(2));
 
@@ -56,7 +56,7 @@ fn view_projects_both_slots_and_leaves_the_typed_read_alone() {
             ("note", DynamicValue::Str("hello".into())),
         ]),
     );
-    let got = t.view(&key(1)).unwrap();
+    let got = t.fetch(&key(1)).unwrap();
     assert_eq!(got.len(), 4);
     assert_eq!(got["score"], DynamicValue::UInt(99));
     assert_eq!(got["note"], DynamicValue::Str("hello".into()));
@@ -81,7 +81,7 @@ fn view_projects_both_slots_and_leaves_the_typed_read_alone() {
     // not the primary entry.
     t.merge(&key(9), &dmap(&[("only", DynamicValue::UInt(1))]));
     assert!(t.get(&key(9)).is_none(), "no static segment");
-    assert_eq!(t.view(&key(9)).unwrap().len(), 1);
+    assert_eq!(t.fetch(&key(9)).unwrap().len(), 1);
 }
 
 #[test]
@@ -96,7 +96,7 @@ fn merge_touches_only_the_names_it_is_given() {
     // Per-name: `c` joins, `a` and `b` survive (a wholesale write would drop them).
     t.merge(&key(1), &dmap(&[("c", DynamicValue::UInt(3))]));
 
-    let got = t.view(&key(1)).unwrap();
+    let got = t.fetch(&key(1)).unwrap();
     assert_eq!(got.len(), 5, "2 declared + 3 dynamic");
     for name in ["a", "b", "c"] {
         assert!(got.contains_key(name), "{name} must survive a partial merge");
@@ -136,7 +136,7 @@ fn replace_is_the_whole_document() {
         ]),
     );
     assert_eq!(t.get(&key(1)).unwrap(), user(0, 4));
-    let got = t.view(&key(1)).unwrap();
+    let got = t.fetch(&key(1)).unwrap();
     assert!(!got.contains_key("gone"), "replace drops unnamed dynamic names");
     assert_eq!(got["kept"], DynamicValue::Str("y".into()));
     assert!(
@@ -150,7 +150,7 @@ fn replace_is_the_whole_document() {
 
     // An empty map IS the empty document.
     t.replace(&key(1), &BTreeMap::new());
-    assert!(t.view(&key(1)).is_none());
+    assert!(t.fetch(&key(1)).is_none());
 }
 
 #[test]
@@ -158,14 +158,14 @@ fn purge_clears_both_slots_in_one_call() {
     let mut t: Collection<TestStore, UserKey, User> = Collection::new(TestStore::slatedb_mem());
     t.put(&key(2), &user(1, 1));
     t.merge(&key(2), &dmap(&[("x", DynamicValue::UInt(1))]));
-    assert!(t.view(&key(2)).is_some());
+    assert!(t.fetch(&key(2)).is_some());
 
     assert!(t.purge(&key(2)));
-    assert!(t.view(&key(2)).is_none(), "both slots gone");
+    assert!(t.fetch(&key(2)).is_none(), "both slots gone");
     assert!(!t.purge(&key(2)), "second purge is a no-op");
 
     // A dynamic-only document is purgeable too.
     t.merge(&key(4), &dmap(&[("y", DynamicValue::UInt(1))]));
     assert!(t.purge(&key(4)));
-    assert!(t.view(&key(4)).is_none());
+    assert!(t.fetch(&key(4)).is_none());
 }

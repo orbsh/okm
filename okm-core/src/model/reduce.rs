@@ -82,7 +82,7 @@ pub trait ReduceLogic: 'static {
 /// - `fold`/`unfold` receive the document by immutable reference — the hook
 ///   never mutates the source document (put hands over `&document` before any
 ///   serialization; delete reaches the same hook through
-///   `delete_by_pkey`'s internal get, so there is exactly one call site
+///   `purge`'s internal get, so there is exactly one call site
 ///   per direction).
 /// - Reversibility `unfold(fold(a, x)) = a` is the implementor's
 ///   obligation (count, sum, min/max qualify; median/distinct do not —

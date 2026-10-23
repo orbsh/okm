@@ -451,7 +451,7 @@ pub trait KvIndex {
     /// All entries this access method produces for one document: plain and
     /// single-value function indexes yield one `(key, value)` pair;
     /// multi-value function indexes yield one pair per produced value —
-    /// the write side (`Collection::put`/`delete` via `index_entries`) just
+    /// the write side (`Collection::put` / `purge` via `index_entries`) just
     /// iterates. Each entry shares the same includes value.
     ///
     /// Partial indexes (`where(path)` declaration clause) short-circuit

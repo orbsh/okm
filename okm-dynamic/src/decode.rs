@@ -186,6 +186,20 @@ pub fn decode_payload(schema: &CollectionSchema, bytes: &[u8]) -> Result<ValueMa
     // lacks tail fields; the dynamic reader fills them from the schema's
     // exported defaults (mirrors the Rust decoder's #[ok_default]/Default
     // rule). Zero fallback when the export carries no literal.
+    fill_schema_defaults(schema, &mut out);
+    Ok(out)
+}
+
+/// Fill every declared payload field the map does not carry with the schema's
+/// default: the exported literal when `CollectionSchema` has one, else the
+/// kind's zero image (a `Vector` gets an empty frame, a `Vocab` a zero id).
+///
+/// ONE definition, two readers: [`decode_payload`]'s version migration and the
+/// whole-document `replace` arm (`plan_replace`), which rebuilds a row from a
+/// name-keyed map that may name only some declared fields. A map that skips a
+/// field is not an error — the payload is positional and a half row cannot be
+/// encoded — so the default is what "absent" means on both paths.
+pub(crate) fn fill_schema_defaults(schema: &CollectionSchema, out: &mut ValueMap) {
     for f in schema.hot_fields.iter().chain(schema.cold_fields.iter()) {
         if out.contains_key(&f.name) {
             continue;
@@ -218,7 +232,6 @@ pub fn decode_payload(schema: &CollectionSchema, bytes: &[u8]) -> Result<ValueMa
         };
         out.insert(f.name.clone(), v);
     }
-    Ok(out)
 }
 
 fn decode_fixed(

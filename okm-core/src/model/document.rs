@@ -85,8 +85,8 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     /// undo). Index entries need no counterpart: they are derived
     /// per-document and the entry key encodes the indexed fields, so an
     /// overwrite with different indexed values lands at a different key
-    /// — the stale entry dangles, which is why `delete` (and
-    /// `delete_by_pkey`) exist; the reduce, by contrast, is a mutable
+    /// — the stale entry dangles, which is why `purge` exists; the reduce,
+    /// by contrast, is a mutable
     /// aggregate under one group key and MUST compensate.
     pub fn put(&mut self, key: &K, document: &R) {
         // ONE engine commit per semantic write. The whole write set — primary
@@ -313,65 +313,6 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     /// Index entry key for access method `I` derived from `key` + `document`.
     pub fn index_key<I: KvIndex<Key = K, Document = R>>(&self, key: &K, document: &R) -> Vec<u8> {
         I::entry_key(&self.header(), key, document)
-    }
-
-    /// Delete a document: primary key + all declared index entries, all
-    /// derived from the document being removed (the declaration IS the
-    /// registry).
-    ///
-    /// Contract: `document` MUST be the document currently stored under `key` —
-    /// the index entries are derived from `document`'s field values while the
-    /// primary entry is derived from `key` alone, and a mismatched pair
-    /// silently leaves dangling index entries (the KV layer's `del` is a
-    /// no-op on absent keys, so nothing errors). The typical sound
-    /// source is the `document` just fetched for `key` (get / scan 回表).
-    /// When the document is not in hand or its provenance is doubtful, use
-    /// [`Self::delete_by_pkey`], which derives both halves from the same
-    /// read.
-    pub fn delete(&mut self, key: &K, document: &R) {
-        // Same one-commit rule as `put`: the removal set — the primary entry,
-        // every face this document produced, and the reduce unfolds — lands in
-        // one engine commit.
-        let header = self.header();
-        let mut batch = crate::engine::storage::MemBatch::default();
-        {
-            let mut store = crate::engine::storage::BatchStore::new(&self.store, &mut batch);
-            store.del(&self.primary_key(key));
-            for (ek, _) in R::index_entries(key, document, &header) {
-                store.del(&ek);
-            }
-            // Unfold from every declared reduce group (single call site —
-            // delete_by_pkey reaches here after its internal get).
-            R::__okm_apply_reduces(&mut store, key, document, &header, false);
-        }
-        self.commit(batch);
-        // Subscribe: deletion event (same best-effort contract as put),
-        // stamped with the table's post-write epoch.
-        R::__okm_emit_event(crate::subscribe::Op::Delete, self.epoch, key, document);
-    }
-
-    /// Delete by primary key only: fetch the document from the primary table
-    /// first, then delegate to [`Self::delete`]. Both halves of the
-    /// removal (primary entry + index entries) derive from the same
-    /// fetched document, so a mismatched key/document pair is structurally
-    /// impossible. No-op (returns false) when the key has no document.
-    ///
-    /// The fetch costs one primary-table point read; when the caller
-    /// already holds the document from a prior get/scan, prefer
-    /// [`Self::delete`] with it.
-    ///
-    /// Not atomic: a concurrent writer between the internal get and the
-    /// deletes could still orphan index entries. Sound under the
-    /// current single-writer engine; revisit with transactional
-    /// backends.
-    pub fn delete_by_pkey(&mut self, key: &K) -> bool {
-        match self.get(key) {
-            Some(document) => {
-                self.delete(key, &document);
-                true
-            }
-            None => false,
-        }
     }
 
     /// Point lookup: decode key payload + TLV payload.
@@ -662,15 +603,17 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         buf
     }
 
-    /// The document as a name-keyed map: declared fields (typed, from slot 0)
-    /// under the dynamic segment's names (slot 1). Declared names win by
-    /// construction — the typed side is compile-time and the vocabulary only
-    /// allocates names it has never seen.
+    /// The document as a name-keyed map — the read door of the whole-document
+    /// surface, paired with `merge` / `replace` / `purge` (ADR-0035). Declared
+    /// fields (typed, from slot 0) come first, the dynamic segment's names
+    /// (slot 1) extend them. Declared names win by construction — the typed
+    /// side is compile-time and the vocabulary only allocates names it has
+    /// never seen.
     ///
     /// `None` = nothing stored in EITHER slot. A dynamic-only document (no
-    /// primary entry) still answers its dynamic map: "the document" is the pair
-    /// of slots, not the primary entry.
-    pub fn view(&self, key: &K) -> Option<BTreeMap<String, DynamicValue>> {
+    /// primary entry) still fetches: "the document" is the pair of slots, not
+    /// the primary entry. `get` is the other read door — it speaks `R`.
+    pub fn fetch(&self, key: &K) -> Option<BTreeMap<String, DynamicValue>> {
         let row = self.get(key);
         let stored = self.slot1_map(key);
         if row.is_none() && stored.is_none() {
@@ -689,7 +632,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     ///   the stored document is decoded, the named fields overwrite their slots
     ///   in its map, and the row is rewritten through the semantic path — so
     ///   faces the PREVIOUS values produced are removed. (`put` deliberately
-    ///   leaves that cleanup to `delete(old row)`; a whole-document entry point
+    ///   leaves that cleanup to `purge`; a whole-document entry point
     ///   has no old row in hand, so it cleans.)
     /// - Any other name is a dynamic field: it overwrites that name in slot 1
     ///   and leaves the other dynamic names alone.
@@ -731,8 +674,12 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
                 self.delete_into(&mut batch, key, &prev);
             }
         } else {
+            // The stored row is the face-sweep source: without it the previous
+            // values' entries would dangle, exactly what `put` is allowed to do
+            // and a whole-document verb is not.
+            let prev = self.get(key);
             let document = R::from_map(&typed);
-            self.save_with_prev_into(&mut batch, key, &document, None);
+            self.save_with_prev_into(&mut batch, key, &document, prev.as_ref());
         }
         self.slot1_into(&mut batch, key, &dynamic);
         self.commit(batch);
@@ -754,13 +701,19 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
             batch.del(&self.fields_key(key));
         }
         self.commit(batch);
+        // Subscribe: deletion event (same best-effort contract as put),
+        // stamped with the table's post-write epoch. A segment-only document
+        // has no row to hand the event, so it emits nothing.
+        if let Some(document) = &prev {
+            R::__okm_emit_event(crate::subscribe::Op::Delete, self.epoch, key, document);
+        }
         true
     }
 
     /// The stored dynamic segment as a name-keyed map. `None` = no entry; a
     /// zero-frame list is never written, so empty and absent are one state.
     /// Crate-visible for the export bridge, which needs the segment WITHOUT the
-    /// declared half (the variant column) — the public read is [`view`].
+    /// declared half (the variant column) — the public read is [`fetch`].
     pub(crate) fn slot1_map(&self, key: &K) -> Option<BTreeMap<String, DynamicValue>> {
         let raw = self.store.get(&self.fields_key(key))?;
         let mut d = VocabCache::new(FIELD_VOCAB);

@@ -191,16 +191,16 @@ impl Collection {
     /// injection checks, embedded harnesses). Same executor, same
     /// `DynamicCollection` calls the #[pymethods] shell makes — the
     /// python shell adds only dict <-> ValueMap coercion on top.
-    pub fn put_doc(&self, pkey: &[u8], document: &ValueMap) -> Result<(), String> {
-        self.inner.lock().unwrap().put(pkey, document).map_err(|e| e.to_string())
+    pub fn merge_doc(&self, pkey: &[u8], document: &ValueMap) -> Result<(), String> {
+        self.inner.lock().unwrap().merge(pkey, document).map_err(|e| e.to_string())
     }
 
-    pub fn get_doc(&self, pkey: &[u8]) -> Result<Option<ValueMap>, String> {
-        self.inner.lock().unwrap().get(pkey).map_err(|e| e.to_string())
+    pub fn fetch_doc(&self, pkey: &[u8]) -> Result<Option<ValueMap>, String> {
+        self.inner.lock().unwrap().fetch(pkey).map_err(|e| e.to_string())
     }
 
-    pub fn delete_doc(&self, pkey: &[u8]) -> Result<(), String> {
-        self.inner.lock().unwrap().delete(pkey).map_err(|e| e.to_string())
+    pub fn purge_doc(&self, pkey: &[u8]) -> Result<bool, String> {
+        self.inner.lock().unwrap().purge(pkey).map_err(|e| e.to_string())
     }
 
     /// Declared-index scan by slot + encoded prefix → decoded keys.
@@ -309,27 +309,29 @@ impl Collection {
 	            .map_err(PyValueError::new_err)
 	    }
 
-	    /// Write one document: `{field: value}` — key + payload fields in
-	    /// one dict (the schema splits them). Runs the index entry lifecycle
-	    /// and the reduce calling discipline.
-	    fn put(&self, pkey: Vec<u8>, document: &Bound<'_, PyAny>) -> PyResult<()> {
+	    /// Update one document: `{name: value}` — a declared name rewrites that
+	    /// field of the row, any other name rides the dynamic segment. Runs the
+	    /// index entry lifecycle and the reduce calling discipline. This is the
+	    /// write door: there is no `put` here (ADR-0035 — the whole-document
+	    /// verbs are the surface, and `merge` covers the same op list).
+	    fn merge(&self, pkey: Vec<u8>, document: &Bound<'_, PyAny>) -> PyResult<()> {
 	        // Schema-coerced (Python ints carry no width; the schema kind
 	        // drives the coercion — same rule as the codec surface).
 	        let map = py_values_to_map(&self.schema, document)?;
 	        self.inner
 	            .lock()
 	            .unwrap()
-	            .put(&pkey, &map)
+	            .merge(&pkey, &map)
 	            .map_err(PyValueError::new_err)
 	    }
 
-	    /// Point read by primary key → dict or None.
-	    fn get(&self, pkey: Vec<u8>) -> PyResult<Option<Py<PyAny>>> {
+	    /// The whole document (both slots) → dict or None: the read door.
+	    fn fetch(&self, pkey: Vec<u8>) -> PyResult<Option<Py<PyAny>>> {
 	        let doc = self
 	            .inner
 	            .lock()
 	            .unwrap()
-	            .get(&pkey)
+	            .fetch(&pkey)
 	            .map_err(PyValueError::new_err)?;
 	        match doc {
 	            Some(m) => Python::attach(|py| Ok(Some(map_to_dict(py, &m)?.unbind().into_any()))),
@@ -337,12 +339,13 @@ impl Collection {
 	        }
 	    }
 
-	    /// Delete a document (index entries + unfold).
-	    fn delete(&self, pkey: Vec<u8>) -> PyResult<()> {
+	    /// Remove the whole document — row, faces, ledger, dynamic segment — in
+	    /// one commit. `True` = there was something to remove.
+	    fn purge(&self, pkey: Vec<u8>) -> PyResult<bool> {
 	        self.inner
 	            .lock()
 	            .unwrap()
-	            .delete(&pkey)
+	            .purge(&pkey)
 	            .map_err(PyValueError::new_err)
 	    }
 
@@ -582,6 +585,11 @@ impl Collection {
 	            Value::Bytes(v.extract::<Vec<u8>>().map_err(|_| bad("bytes"))?)
 	        }
 	        FieldType::Str => Value::Str(v.extract::<String>().map_err(|_| bad("str"))?),
+	        // ADR-0032: a Vocab field travels as its id on the wire; the read
+	        // side resolves ids to labels through the vocabulary.
+	        FieldType::Vocab(_) => {
+	            Value::U8(v.extract::<u64>().map_err(|_| bad("vocab id (u8)"))? as u8)
+	        }
 	        FieldType::Vector { .. } => {
 	            Value::Bytes(v.extract::<Vec<u8>>().map_err(|_| bad("flat LE vector bytes"))?)
 	        }
