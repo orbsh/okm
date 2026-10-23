@@ -12,7 +12,7 @@
 //!   no process-wide id accretion).
 //! - `register_storage_fns` for the script-side surface: SIX global fns
 //!   with fixed names, the collection addressed by a NAME STRING —
-//!   `(collection-put! "Counters" pkey doc)`. Fixed names exist because
+//!   `(collection-merge! "Counters" pkey doc)`. Fixed names exist because
 //!   steel resolves free identifiers at DEFINE-COMPILE time: the
 //!   introspection throwaway engine must carry the same names (the ctx-
 //!   stub precedent — a dotted per-collection shim like `Counters.put`
@@ -104,43 +104,44 @@ impl StorageRegistry {
 
     /// Install the six script-facing functions over THIS registry into
     /// a VM. All address the collection by its declared name:
-    /// - `(collection-put! name pkey doc)` → void
-    /// - `(collection-get! name pkey)` → hash? or void (absent document)
-    /// - `(collection-delete! name pkey)` → void
+    /// - `(collection-merge! name pkey doc)` → void (declared names rewrite
+    ///   that field of the row, other names ride the dynamic segment)
+    /// - `(collection-fetch! name pkey)` → hash? or void (the whole document)
+    /// - `(collection-purge! name pkey)` → void (both slots)
     /// - `(collection-scan! name slot prefix)` → vector of hashes
     /// - `(collection-reduce-get! name group-hash)` → acc bytes or void
     /// - `(collection-scan-reduces! name slot)` → vector of `[group acc]`
     pub fn register_into(&self, vm: &mut Engine) {
         let reg = self.clone();
-        vm.register_fn("collection-put!", {
+        vm.register_fn("collection-merge!", {
             let reg = reg.clone();
             move |name: String, pkey: SteelVal, doc: SteelVal| -> Result<SteelVal, String> {
                 let pkey = steel_bytes_to_vec(&pkey)?;
                 reg.with_bound(&name, |b| {
                     let map = hash_to_map(&b.schema, &doc)?;
-                    b.table.lock().unwrap().put(&pkey, &map)?;
+                    b.table.lock().unwrap().merge(&pkey, &map)?;
                     Ok(SteelVal::Void)
                 })
             }
         });
-        vm.register_fn("collection-get!", {
+        vm.register_fn("collection-fetch!", {
             let reg = reg.clone();
             move |name: String, pkey: SteelVal| -> Result<SteelVal, String> {
                 let pkey = steel_bytes_to_vec(&pkey)?;
                 reg.with_bound(&name, |b| {
-                    Ok(match b.table.lock().unwrap().get(&pkey)? {
+                    Ok(match b.table.lock().unwrap().fetch(&pkey)? {
                         Some(m) => crate::value_map_to_steel(&m),
                         None => SteelVal::Void,
                     })
                 })
             }
         });
-        vm.register_fn("collection-delete!", {
+        vm.register_fn("collection-purge!", {
             let reg = reg.clone();
             move |name: String, pkey: SteelVal| -> Result<SteelVal, String> {
                 let pkey = steel_bytes_to_vec(&pkey)?;
                 reg.with_bound(&name, |b| {
-                    b.table.lock().unwrap().delete(&pkey)?;
+                    b.table.lock().unwrap().purge(&pkey)?;
                     Ok(SteelVal::Void)
                 })
             }
@@ -200,14 +201,14 @@ impl StorageRegistry {
         // a 2/3-arg call site would ArityMismatch even in a stub).
         // register_fn wants 'static closures, so each arm inlines its
         // own message (the shared `stub` helper would be a borrow).
-        vm.register_fn("collection-put!", |_: String, _: SteelVal, _: SteelVal| -> Result<SteelVal, String> {
-            Err("okm: collection-put! called outside a session — introspection only".to_string())
+        vm.register_fn("collection-merge!", |_: String, _: SteelVal, _: SteelVal| -> Result<SteelVal, String> {
+            Err("okm: collection-merge! called outside a session — introspection only".to_string())
         });
-        vm.register_fn("collection-get!", |_: String, _: SteelVal| -> Result<SteelVal, String> {
-            Err("okm: collection-get! called outside a session — introspection only".to_string())
+        vm.register_fn("collection-fetch!", |_: String, _: SteelVal| -> Result<SteelVal, String> {
+            Err("okm: collection-fetch! called outside a session — introspection only".to_string())
         });
-        vm.register_fn("collection-delete!", |_: String, _: SteelVal| -> Result<SteelVal, String> {
-            Err("okm: collection-delete! called outside a session — introspection only".to_string())
+        vm.register_fn("collection-purge!", |_: String, _: SteelVal| -> Result<SteelVal, String> {
+            Err("okm: collection-purge! called outside a session — introspection only".to_string())
         });
         vm.register_fn("collection-scan!", |_: String, _: i64, _: SteelVal| -> Result<SteelVal, String> {
             Err("okm: collection-scan! called outside a session — introspection only".to_string())
