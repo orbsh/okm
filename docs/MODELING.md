@@ -454,7 +454,15 @@ with names allocated on first sight in the **field-name vocabulary**
 whole document speaks one name-keyed map (ADR-0035). Two doors, and the split is
 about what a call may look at: `get` / `put` are the **struct door** (the row
 only — no vocabulary load, no segment access; the compiled-schema path), while
-`fetch` / `merge` / `replace` / `purge` are the **whole-document door**:
+`fetch` / `merge` / `replace` / `purge` are the **whole-document door**.
+
+The classifier is the payload declaration — hot or cold — and nothing else. A
+name that coincides with a key field is not special: OKM is a key-value store,
+the key and the value are separate things, so such a name is simply a field in
+the value and lands in the dynamic segment. The identity still comes from the
+key: no map can move it, and a map naming `org_id` creates no row at `org_id`.
+Nothing needs checking here, and no confusion needs preventing — a caller that
+stores a field named like a key field gets exactly what it asked for.
 
 ```rust
 // The row-map bridge: every field (declared + dynamic) lifts to its logical

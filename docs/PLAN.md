@@ -1490,9 +1490,11 @@ Tasks:
       row ops, segment ops and the path-index sweep in one list, one replay.
       Four facts the port settled: (a) `replay` now builds a `MemBatch` and calls
       `commit_batch`, so a whole-document write is one engine commit, not a loop
-      of point writes; (b) `split_names` treats KEY fields as declared, so a key
-      name can never be claimed by the dynamic segment, and the row's identity is
-      decoded out of the pkey (a map re-states it, it cannot move it);
+      of point writes; (b) `split_names` classifies by the PAYLOAD declaration only — a
+      key field's name in a map is a value field (OKM is KV; the key is the
+      identity and it is independent of the value, so nothing is checked and
+      nothing is rejected), and the row's identity is decoded out of the pkey (a
+      map cannot move it);
       (c) `delete` is RETIRED from the dynamic facade — the document is the pair
       of slots, so `purge` is the one deletion verb (a row-less document, which
       `replace` can still produce, purges the same way); (d) `put` now REJECTS a
