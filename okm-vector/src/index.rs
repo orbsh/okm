@@ -18,7 +18,7 @@
 //! caller decides when to rebuild (write count, a timer) and swaps the whole
 //! handle; there is no per-node invalidation to get wrong.
 
-use okm_core::engine::storage::{MemBatch, VirtualStorage};
+use okm_core::engine::storage::{Batch, VirtualStorage};
 
 use crate::codec::{Codec, Reader, put_u16};
 use crate::hnsw::{Hnsw, HnswParams};
@@ -103,7 +103,7 @@ impl VectorIndex {
     /// snapshot: either every shard is the new build or every shard is the old
     /// one).
     pub fn save<S: VirtualStorage + ?Sized>(&self, store: &mut S) -> Result<(), String> {
-        let mut batch = MemBatch::default();
+        let mut batch = Batch::default();
         for (id, shard) in self.shards.iter().enumerate() {
             let mut w = Vec::with_capacity(4096);
             w.extend_from_slice(MAGIC);
