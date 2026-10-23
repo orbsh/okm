@@ -1509,7 +1509,7 @@ Tasks:
       becomes a declared-only `replace`), `plan_merge_equals_embedded_merge`
       locks the remote/embedded byte equality. Landed 2026-10-23; 64 workspace
       suites green.
-- [ ] C consumers: aura / krystallizer / effector. Push okm, then
+- [x] C consumers: aura / krystallizer / effector. Push okm, then
       `cargo update -p okm-core` (and `-p okm-dynamic`); same work session.
       The sweep now covers the dynamic trio as well as the typed six names
       (17 call sites seen on 2026-10-23: aura `realm/src/meta.rs` ×3,
@@ -1525,6 +1525,22 @@ Tasks:
       segment, keep the row) is `replace` with the declared-only map; a
       `put_fields` on a key whose row write is meant to ride along becomes one
       `merge`/`replace` (one commit instead of two).
+      Landed 2026-10-23 across six repositories (aura, effector, krystallizer,
+      mudra, prism, gravity — every lock on the same rev). Three findings worth
+      keeping: (a) TWO consumers encoded the primary-slot prefix by hand as
+      `PRIMARY_SLOT.to_be_bytes()` (2 bytes), while the slot has been a 1-byte
+      fixed face since ADR-0030 — mudra's `schema_contract` and aura's MQ backlog
+      scan both silently found nothing; `okm_core::write_slot` is the fix and the
+      only thing either side should use. (b) `put_fields`'s whole-segment
+      replace has NO whole-document equivalent for free: dropping a name means
+      rebuilding the document from its declared half plus the given map and
+      calling `replace`, which reads what the delta verbs never read. aura's
+      `PutFields` op was therefore redefined as `merge` (a delta — names not
+      given survive), while its `DeleteFields` op keeps the rebuild because the
+      document is a pair and only `replace` can leave no segment. (c) `merge` /
+      `replace` loaded the field-name vocabulary unconditionally; the mirror is
+      the segment arm's business, so both now load it only when a non-declared
+      name (or a stored segment) is in play.
 - [x] D `delete` retired on BOTH sides (2026-10-23): `purge` is the one removal
       verb. A row cannot outlive its segment, so `delete(&K, &R)` /
       `delete_by_pkey` / the dynamic `delete` were only ways to leave a dangling
@@ -1608,9 +1624,14 @@ The predicate vocabulary has no hole today (it only goes through `VocabCache`,
 via `okm-dynamic/src/graph.rs`), but a graph plan surface would copy those three
 lines verbatim. So the fix goes in the primitive, not at the call sites:
 
-- [ ] One checked successor in `obj_vocab` — one definition, one message — used
-      by `VocabCache::id_for`, the three `VocabMirror` sites, and the cursor
-      write; a test that a mirror at `u16::MAX` panics instead of wrapping.
+- [x] One checked successor — one definition, one message — used by the three
+      `VocabMirror` sites (`okm-dynamic/src/plan_fields.rs`). `VocabCache::id_for`
+      already had it. The rule as landed: LOADING saturates (`saturating_add` —
+      a table may already hold the last id, and a read must not panic), CLAIMING
+      is checked (`claim_id`, the same refusal the typed cache makes, neither
+      handing out the last representable id because the watermark could not move
+      past it). Tests: `a_full_vocabulary_dies_loudly_instead_of_wrapping`,
+      `a_vocabulary_holding_the_last_id_still_loads` (2026-10-23).
 - [ ] Same class, separate item: `index::slot(family, counter)` masks the
       counter with `0x0FFF`, so a declaration counter past 4095 silently lands
       on another counter. "4095 declared indexes" was never checked either.

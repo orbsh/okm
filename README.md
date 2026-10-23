@@ -145,6 +145,27 @@ ledger shares the row's atomicity.
 
 ### 3. Dynamic fields: the document API
 
+Two groups of verbs, and the split is about what a call may look at — not about
+convenience:
+
+| verbs | see | pay |
+|---|---|---|
+| `get` / `put` | the declared row only (`R`), never the dynamic segment | no field-name vocabulary load, no segment read — the compiled-schema path |
+| `fetch` / `merge` / `replace` | the whole document: one name-keyed map over both halves | only the arms the names actually touch |
+
+`get` / `put` are the static-mode optimization, not a legacy corner:
+`users.get(&key) -> Option<User>`, and a `put` whose map (were there one) named
+an undeclared field is refused, so the type can have no open fields at all. They
+never load the field-name vocabulary and never read or write the segment.
+
+`fetch` / `merge` / `replace` are the general form, for tables that carry open
+fields. `merge` classifies the patch before it plans anything: declared names
+take the typed path (row RMW, faces, reduces, events), the rest join the
+segment — a patch with no declared name reads no row, a patch with no dynamic
+name reads no segment and loads no vocabulary. `replace` treats the map AS the
+document (unnamed declared fields take their defaults, unnamed dynamic names are
+removed). `purge` is the only deletion verb, on both sides.
+
 One encoding for declared rows and external data. Unknown field names are
 normal input: they allocate in the per-table field-name vocabulary and
 land in the dynamic segment (`[id][type][len][value]` frames, nested
