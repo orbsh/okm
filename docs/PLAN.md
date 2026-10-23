@@ -1491,52 +1491,49 @@ Tasks:
       absent fields keep defaulting (that is the version-evolution rule, not the
       same thing).
 
-### `#[ok_offrow]` off-row columns (approved 2026-10-22 — name and layout settled, not implemented)
+### A value too big for the row is its own table (ADR-0036, decided 2026-10-23)
 
-A field declared `#[ok_offrow]` does not live in the row payload: its value sits
-under its own key, so a named-update path (`merge`) can write that column
-without rewriting the row.
+`#[ok_offrow]` is **rejected** — approved 2026-10-22 (fixed face 0x0C, off-row
+fields out of the generated type, a per-document tag enum as the field-level
+selector), withdrawn 2026-10-23. Three reasons and the comparison table live in
+ADR-0036; the modelling recipe is a case in MODELING (en / zh). Nothing to build
+here: a second table keyed by the parent's own key type does the job, its write
+pair is already one commit through ADR-0003's batch, and `R` stays complete.
 
-**Layout — fixed face 0x0C, one slot for every off-row field:**
+Tasks:
 
-`[ns 2B][0x0C][pkey][ordinal u16 BE]` → the field's value, bare (`[count][elems]`
-for a `Vector`, raw bytes for a `Bytes` field). The slot byte stays single
-(0x0C–0x0F are free; 0x06–0x0A are the graph's faces, 0x0B the vector
-snapshot), and one prefix scan `[ns][0x0C][pkey]` returns every off-row field of
-one document — one round trip on the remote path, where a counting family would
-cost one per field.
+- [ ] Publish the batchable row delete: `Collection::delete_from(&mut MemBatch,
+      &K, &R)` over the existing private `delete_into`, so a parent row and its
+      side table leave in one commit. A surface addition, not a mechanism — the
+      private builder already exists; only the door is missing, and the pair's
+      WRITE is already one commit.
 
-Rejected: a counting family 0x6 (`[ns][0x6<decl>][pkey]`). It buys a
-column-wide scan across the table that no consumer needs (an export scans the
-whole slot anyway) and pays for it with #fields point reads per document.
+### Vocabulary allocation: one rule, two implementations, only one checked
 
-Rules:
+`#[ok_offrow]` is gone; this defect surfaced with it and stands on its own.
 
-- `ordinal` = declaration order among `#[ok_offrow]` fields, 0-based and
-  **append-only** — deleting a middle one shifts every later ordinal onto the
-  wrong column, the same silent corruption the index slots avoid with the
-  deprecated reservation.
-- Only COLD (variable-width) fields may be declared: a fixed-width field moved
-  out of the hot segment would leave a hole and buy nothing.
+The rule is "first-seen claims next, append-only, exhausting the width is a loud
+error, never a wrap" (ADR-0012 / ADR-0032), and it lives in two places:
 
-Facts the mechanism must respect:
+- `VocabCache::id_for` (`okm-core/src/model/obj_vocab.rs`) checks —
+  `id.succ() == None` panics "vocabulary exhausted". Correct.
+- `VocabMirror` (`okm-dynamic/src/plan_fields.rs`) does raw `u16` arithmetic at
+  three sites: `load` (`next_id = id + 1`), `adopt_entries` (the same line), and
+  the `plan_put_fields` resolver (`let id = *next_id; *next_id += 1`).
 
-- `decode_payload` takes bytes only, so off-row fields are filled by a
-  post-decode hook (`__okm_load_offrow`) — the `__okm_embed_deref` /
-  `__okm_deref_vocab` pattern. Read cost: one prefix scan per document.
-- Write side: the derive emits `__okm_offrow_entries(key, doc)` beside
-  `__okm_embed_entries`. `merge` writes only the named columns; `put` / `replace`
-  own the whole document and rewrite every off-row key. WITHOUT a named-update
-  path the annotation buys nothing — `put(&R)` writes the same bytes, merely
-  under a different key.
-- Constraints: an off-row field cannot be indexed or reduce-grouped (index keys
-  are fixed-width); the derive rejects it at compile time.
-- Export / snapshot must carry off-row values — they are DATA, unlike the derived
-  index entries: one pass over the 0x0C slot, joined on pkey.
-- Out of scope: appending to a huge array. Writing that key still rewrites the
-  whole value; the ring case needs per-element keys (`seq` in the key), not
-  off-row storage. Two different problems.
-- Naming: `#[ok_offrow]`, not `#[ok_wide]` — wide-column lineage means many
-  columns per row (the opposite emphasis of "this one value is big"); the
-  annotation chooses a storage LOCATION (SQL Server's off-row LOB, Oracle's
-  out-of-line LOB).
+No `[profile]` section in the workspace, so release keeps overflow-checks off:
+65535 + 1 wraps to 0, the next new name takes id 0, that face's "0 → name" entry
+is overwritten, and every row already written resolves its frame to a different
+name. That is the plausible-but-wrong id ADR-0032 forbids, on the plan surface
+the bindings and the remote path use — the one without the check.
+
+The predicate vocabulary has no hole today (it only goes through `VocabCache`,
+via `okm-dynamic/src/graph.rs`), but a graph plan surface would copy those three
+lines verbatim. So the fix goes in the primitive, not at the call sites:
+
+- [ ] One checked successor in `obj_vocab` — one definition, one message — used
+      by `VocabCache::id_for`, the three `VocabMirror` sites, and the cursor
+      write; a test that a mirror at `u16::MAX` panics instead of wrapping.
+- [ ] Same class, separate item: `index::slot(family, counter)` masks the
+      counter with `0x0FFF`, so a declaration counter past 4095 silently lands
+      on another counter. "4095 declared indexes" was never checked either.

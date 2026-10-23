@@ -1439,6 +1439,54 @@ write as an event and never rewrites a field. Incrementing on every access is th
 caller's read-modify-write, and the single-writer discipline keeps it from
 interleaving.
 
+## A value too big for the row: its own ns, the same key
+
+One column can be orders of magnitude larger than the rest of the row — a blob, a
+rendered document, an embedding. Left in the payload it is paid for on every read
+of the row and re-encoded on every write of ANY field. The answer is not a new
+storage location inside the row codec (ADR-0036): it is a second table whose key
+type is the parent's own key type.
+
+```rust
+#[derive(KeyEncode, Clone, PartialEq, Debug)]
+pub struct PostKey { pub id: u64 }
+
+#[derive(DocumentEncode, Clone, PartialEq, Debug)]
+#[ok_ref(PostKey)]
+#[ok_ns(1)]
+#[ok_name("posts")]
+pub struct Post { /* hot columns only: author_id, ts, title */ }
+
+#[derive(DocumentEncode, Clone, PartialEq, Debug)]
+#[ok_ref(PostKey)]          // the SAME key type: byte-identical key payload
+#[ok_ns(44)]                // one ns of its own — the whole cost
+#[ok_name("post_payloads")]
+pub struct PostPayload { pub mime: String, pub body: Bytes }
+```
+
+| Want | Do |
+|---|---|
+| read one column | `payloads.get(&key)` — one point read, the row never decoded |
+| write one column | `payloads.put(&key, &payload)` — one row write, the hot row never re-encoded |
+| write both atomically | `save_with_prev_into` both collections into one `MemBatch`, then one `commit_batch` (ADR-0003, ADR-0031) |
+| whole document | two reads, opt-in — that is the point of splitting |
+| "has a payload" | presence of the side row; no `Option` field, no sentinel |
+
+Deletion is the caller's: nothing cascades in this model (junction entries are the
+same shape), so the pair is deleted together by the caller. The write pair is one
+commit; the delete pair is two until a public batchable row delete lands (PLAN).
+
+Split when the column is large AND accessed on its own — a download, a thumbnail,
+a re-embedding pass. Do NOT split when every access reads it with the row: that
+pays a second read for nothing, and the payload is the cheaper place.
+
+Rejected: a dedicated annotation inside the row codec (`#[ok_offrow]`, extracting
+the value to its own face under the same row key, plus a per-document tag enum as
+the field-level selector, ADR-0036). It costs a fifth storage location threaded
+through `FieldDesc`, `FieldSchema`, `split_names`, the four whole-document verbs
+and the derive walks, and it forbids indexing or reduce-grouping that column — in
+exchange for at most one round trip on a whole-document read.
+
 ## Cross-row pre-aggregation
 
 Every index entry is an append-only derived view that lives and dies

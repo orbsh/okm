@@ -793,6 +793,41 @@ pub struct Facts {
 
 它也不是「让库替我数」的候选：reduce 是跨行 GROUP-BY（累加器的单位是「组里有几行」），subscribe 只把写当事件发出去、从不改字段。「每次访问 +1」只有调用方读-改-写，单写者纪律保证它不被交错。
 
+## 放不进行的值，就是它自己的一张表：同一个 ns，同一个键
+
+一列的体量可以比这一行其余部分大几个数量级——一个 blob、一份渲染好的文档、一个 embedding。留在 payload 里，它的代价是：读这一行必付、写这一行的**任何**字段都要把它重编一遍。答案不是往行 codec 里再加一个存储位置（ADR-0036），而是一张键类型为父表键类型的第二张表。
+
+```rust
+#[derive(KeyEncode, Clone, PartialEq, Debug)]
+pub struct PostKey { pub id: u64 }
+
+#[derive(DocumentEncode, Clone, PartialEq, Debug)]
+#[ok_ref(PostKey)]
+#[ok_ns(1)]
+#[ok_name("posts")]
+pub struct Post { /* 只放热列：author_id、ts、title */ }
+
+#[derive(DocumentEncode, Clone, PartialEq, Debug)]
+#[ok_ref(PostKey)]          // 同一个键类型：key payload 逐字节相同
+#[ok_ns(44)]                // 自己占一个 ns——这就是全部代价
+#[ok_name("post_payloads")]
+pub struct PostPayload { pub mime: String, pub body: Bytes }
+```
+
+| 要做的事 | 做法 |
+|---|---|
+| 读一列 | `payloads.get(&key)`——一次点读，行根本不解码 |
+| 写一列 | `payloads.put(&key, &payload)`——一次行写，热行根本不重编 |
+| 成对写且原子 | 两张 collection 各 `save_with_prev_into` 进同一个 `MemBatch`，再一次 `commit_batch`（ADR-0003、ADR-0031） |
+| 整文档 | 两次读，按需——拆分换来的就是这个 |
+| 「有没有 payload」 | 侧行是否在场；不需要 `Option` 字段，也不需要哨兵 |
+
+删除归调用方：这个模型里没有级联（junction 条目是同一个形状），所以这一对由调用方一起删。写的那一对是一次提交；删的那一对在公开的可进批行删除落地之前是两次（见 PLAN）。
+
+拆的时机：这一列很大，**并且**它单独被访问——下载、缩略图、一批重算 embedding。不拆的时机：每次访问都连行一起读，那样只是白付一次读，payload 才是更便宜的位置。
+
+否决：行 codec 内的专用标注（`#[ok_offrow]`，把值抽到同一个行键下的独立面，再配一个 per-document 的 tag enum 当字段级选择子，ADR-0036）。它的代价是第五个存储位置穿过 `FieldDesc`、`FieldSchema`、`split_names`、四个整文档动词与 derive 的各条 walk，而且禁止对这一列建索引或 reduce 分组——换来的只是整文档读最多省一次 round trip。
+
 ## 跨行预聚合
 
 索引的每个条目都是**随行生灭**的 append-only 派生视图——delete 用同一个函数重新生成待删集合，永不悬挂。有一类需求天然落在这个纪律之外：按作者统计发文数、按小时的 rollup、精确计数器。它们是**跨行**的——func 的签名 `fn(&Row)` 只看得见一行，答案落在 entry value 的**读-改-写**上，即第四个原语（可变聚合 entry）。
