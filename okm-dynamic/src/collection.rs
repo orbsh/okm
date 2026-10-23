@@ -359,7 +359,14 @@ impl<S: VirtualStorage> DynamicCollection<S> {
         };
         let plan = {
             let store = &self.store;
-            let mut vocab = crate::plan_fields::VocabMirror::load(store, &self.ns);
+            // The vocabulary is the segment arm's business: a patch with no
+            // non-declared name allocates nothing, so the mirror (two prefix
+            // scans + a cursor read) is not loaded at all.
+            let mut vocab = if dynamic.is_empty() {
+                crate::plan_fields::VocabMirror::default()
+            } else {
+                crate::plan_fields::VocabMirror::load(store, &self.ns)
+            };
             self.plan_merge(
                 pkey,
                 object,
@@ -395,9 +402,16 @@ impl<S: VirtualStorage> DynamicCollection<S> {
         } else {
             None
         };
+        let (_, dynamic) = self.split_names(object);
         let plan = {
             let store = &self.store;
-            let mut vocab = crate::plan_fields::VocabMirror::load(store, &self.ns);
+            // Same rule as `merge`: with no dynamic name to write and no stored
+            // segment to name, nothing needs the vocabulary.
+            let mut vocab = if dynamic.is_empty() && old_dynamic.is_none() {
+                crate::plan_fields::VocabMirror::default()
+            } else {
+                crate::plan_fields::VocabMirror::load(store, &self.ns)
+            };
             self.plan_replace(
                 pkey,
                 object,
