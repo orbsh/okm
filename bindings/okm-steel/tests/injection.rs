@@ -109,8 +109,8 @@ fn script_writes_land_in_the_host_engine() {
             r#"
 (define schema (okm-schema-from-json! "{sj}"))
 (define pkey (okm-encode-key! schema (hash "org_id" 1 "user_id" 2)))
-(collection-put! "Counters" pkey {doc})
-(define read (collection-get! "Counters" pkey))
+(collection-merge! "Counters" pkey {doc})
+(define read (collection-fetch! "Counters" pkey))
 (assert! (string=? (hash-ref read "name") "alice"))
 (assert! (= (hash-ref read "level") 9))
 (assert! (= (hash-ref read "score") 500))
@@ -131,7 +131,7 @@ fn script_writes_land_in_the_host_engine() {
             r#"
 (define schema (okm-schema-from-json! "{sj}"))
 (define pkey (okm-encode-key! schema (hash "org_id" 1 "user_id" 2)))
-(define read (collection-get! "Counters" pkey))
+(define read (collection-fetch! "Counters" pkey))
 (assert! (string=? (hash-ref read "name") "alice"))
 'done
 "#
@@ -179,7 +179,7 @@ fn script_writes_land_in_the_host_engine() {
         r#"
 (define schema (okm-schema-from-json! "{sj}"))
 (define pkey (okm-encode-key! schema (hash "org_id" 1 "user_id" 2)))
-(collection-delete! "Counters" pkey)
+(collection-purge! "Counters" pkey)
 'done
 "#
     ))
@@ -208,7 +208,7 @@ fn get_absent_document_is_void() {
             r#"
 (define schema (okm-schema-from-json! "{sj}"))
 (define pkey (okm-encode-key! schema (hash "org_id" 7 "user_id" 7)))
-(void? (collection-get! "Counters" pkey))
+(void? (collection-fetch! "Counters" pkey))
 "#
         ))
         .unwrap();
@@ -225,7 +225,7 @@ fn unknown_collection_names_the_error() {
     reg.inject(engine, "Counters", &entry_json(), 41).unwrap();
     let mut vm = build_vm(&reg);
     let err = vm
-        .run(r#"(collection-get! "Ghost" (list->vector (list 0 0 0 0 0 0 0 0 0 0 0 0)))"#)
+        .run(r#"(collection-fetch! "Ghost" (list->vector (list 0 0 0 0 0 0 0 0 0 0 0 0)))"#)
         .expect_err("unknown collection must fail");
     assert!(format!("{err:?}").contains("Ghost"), "{err:?}");
 }
@@ -241,7 +241,7 @@ fn introspection_stubs_keep_dotted_scripts_loading() {
     okm_steel::register(&mut vm);
     StorageRegistry::register_stubs(&mut vm);
     vm.run(
-        r#"(define (handler ev) (collection-put! "Counters" (list->vector (list 0)) (hash)))"#,
+        r#"(define (handler ev) (collection-merge! "Counters" (list->vector (list 0)) (hash)))"#,
     )
     .expect("handler referencing the stubbed fns must load under stubs");
     let err = vm
