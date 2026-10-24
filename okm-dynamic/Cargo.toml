@@ -14,3 +14,6 @@ okm-core = { path = "../okm-core", features = ["test-engines"] }
 [features]
 default = []
 serde = ["dep:serde"]
+
+[lints]
+workspace = true

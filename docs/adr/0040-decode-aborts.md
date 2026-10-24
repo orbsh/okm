@@ -104,9 +104,11 @@ allow **carrying this reason**, not reshaping the tool into `Result` soup.
 
 ## Consequences
 
-- **`okm-core`'s runtime half is clean** under `clippy::unwrap_used`,
-  `clippy::expect_used` and `clippy::panic` — zero warnings. That is what the gate
-  item in `docs/PLAN.md` was waiting on.
+- **The gate is in the manifest, not in a reviewer's habits.** `Cargo.toml` denies
+  `unwrap_used`, `expect_used`, `panic`, `unwrap_in_result` and
+  `panic_in_result_fn`, and all nine members inherit it, test targets opt back in
+  per crate. A whole-workspace `cargo clippy --all-targets` is clean, and the gate
+  was proven to bite: an injected `unwrap` fails the build.
 - **The compile-time surface is the allow class, not a rewrite queue.** `okm-derive`
   (130 warnings) and `okm-core/build.rs` (9) stop the build when they reject a
   declaration: the abort IS the error report, and no caller can act on it. Per the
