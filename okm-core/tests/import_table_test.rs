@@ -125,7 +125,7 @@ fn an_edge_table_restores_into_a_fresh_graph() {
     let mut attrs = BTreeMap::new();
     attrs.insert("note".to_string(), DynamicValue::Str("hi".into()));
     let mut batch = Batch::default();
-    g.replace_into(&mut batch, 2, &attrs);
+    g.replace_into(&mut batch, 2, &attrs).unwrap();
     g.store_mut().commit_batch(batch).unwrap();
 
     // Export, write, and READ THE FILE BACK — the restore's real input.
@@ -185,7 +185,7 @@ fn a_column_set_that_is_not_an_edge_table_is_refused() {
     let dir = tempfile::tempdir().unwrap();
     let store = TestStore::slatedb_mem();
     let log = <LogRow as Document>::collection(store.clone());
-    log.put(&LogKey { seq: 1 }, &LogRow { seq: 1 });
+    log.put(&LogKey { seq: 1 }, &LogRow { seq: 1 }).unwrap();
 
     // A DOCUMENT table handed to the edge importer: the column count is the
     // declaration's, and it does not match an edge table's shape.
@@ -207,7 +207,7 @@ fn a_watermark_restores_and_is_never_lowered() {
     let dir = tempfile::tempdir().unwrap();
     let src = TestStore::slatedb_mem();
     let log = <LogRow as Document>::collection(src.clone());
-    log.put(&LogKey { seq: 5 }, &LogRow { seq: 5 });
+    log.put(&LogKey { seq: 5 }, &LogRow { seq: 5 }).unwrap();
 
     let file = dir.path().join("log__reduces.parquet");
     parquet_io::export_reduces::<_, __OkmReduce_LogRow_0>(
@@ -252,7 +252,7 @@ fn a_reduce_file_for_another_table_is_refused() {
     let dir = tempfile::tempdir().unwrap();
     let src = TestStore::slatedb_mem();
     let log = <LogRow as Document>::collection(src.clone());
-    log.put(&LogKey { seq: 1 }, &LogRow { seq: 1 });
+    log.put(&LogKey { seq: 1 }, &LogRow { seq: 1 }).unwrap();
     let file = dir.path().join("log__reduces.parquet");
     parquet_io::export_reduces::<_, __OkmReduce_LogRow_0>(
         &src,

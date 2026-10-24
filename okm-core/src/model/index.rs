@@ -50,8 +50,24 @@ pub mod segment {
 }
 
 /// Assemble a counting family's slot from its family number and counter.
+///
+/// Both halves are CHECKED, because the slot's meaning is positional: the high
+/// nibble is the family and the low 12 bits are the counter. Masking either
+/// half would land the value on a legitimate-looking slot of ANOTHER kind —
+/// `0x3FFF + 1 = 0x4001` is the reduce family, and a family above `0xF` wraps
+/// into the fixed-face space — so an out-of-range number silently becomes a
+/// different table's entry. A `const fn`, so a bad declaration-time constant
+/// fails at compile time and a runtime caller gets the same refusal.
 pub const fn slot(family: u16, counter: u16) -> Slot {
-    (family << 12) | (counter & 0x0FFF)
+    assert!(
+        family <= 0x000F,
+        "slot family out of range: the high nibble is 4 bits, so 0x0-0xF is the whole space",
+    );
+    assert!(
+        counter <= 0x0FFF,
+        "slot counter out of range: the low 12 bits hold 0-4095, and a masked counter is another family member's slot",
+    );
+    (family << 12) | counter
 }
 
 /// Highest fixed-face number — the whole one-byte space. A fixed face carries
@@ -231,7 +247,13 @@ pub trait Document: Sized + Clone {
     /// `BatchStore`, so vocabulary growth, the row and its faces land in one
     /// batch. Default no-op (no categorical fields). Interning past 255 distinct
     /// labels in one field is a loud error, never a wrap.
-    fn __okm_intern(&mut self, _store: &mut dyn VirtualStorage, _header: &[u8]) {}
+    fn __okm_intern(
+        &mut self,
+        _store: &mut dyn VirtualStorage,
+        _header: &[u8],
+    ) -> crate::error::Result<()> {
+        ::core::result::Result::Ok(())
+    }
     /// Resolve every `Vocab<N>` field's decoded id back into its label
     /// (ADR-0032), so the document API and `to_map` see names. Called by the
     /// read path after `__okm_embed_deref`; default no-op (no categorical
@@ -241,9 +263,20 @@ pub trait Document: Sized + Clone {
     /// document -> map: every declared field lifted into a run-time
     /// DynamicValue (ADR-0012 document-map bridge; derive-generated).
     fn to_map(&self) -> std::collections::BTreeMap<String, crate::model::obj_dynamic::DynamicValue>;
-    /// map -> document: matched fields assigned from DynamicValue; missing
-    /// fields fall back to `#[ok_default]`/Default (derive-generated).
-    fn from_map(map: &std::collections::BTreeMap<String, crate::model::obj_dynamic::DynamicValue>) -> Self
+    /// map -> document, fallibly: matched fields assigned from `DynamicValue`.
+    ///
+    /// Two rules, and the difference is PRESENCE. An absent name takes its
+    /// declared default (`#[ok_default]` / `Default`) — the append-only
+    /// evolution rule, the same thing the payload decoder does with a field an
+    /// older layout lacks. A name the map CARRIES with another kind, or a value
+    /// that cannot be represented in the declared field, comes back as
+    /// [`Error::KindMismatch`](crate::error::Error::KindMismatch) /
+    /// [`Error::ValueOutOfRange`](crate::error::Error::ValueOutOfRange): the
+    /// caller spelled a value, so defaulting or truncating it would write
+    /// something they never asked for.
+    fn try_from_map(
+        map: &std::collections::BTreeMap<String, crate::model::obj_dynamic::DynamicValue>,
+    ) -> crate::error::Result<Self>
     where
         Self: Sized;
     /// Identity type this document hangs off (from `#[ok_ref(...)]`).

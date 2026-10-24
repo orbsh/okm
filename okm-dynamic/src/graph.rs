@@ -122,19 +122,25 @@ impl<S: VirtualStorage> Graph<S> {
 
     /// Resolve (or allocate) the predicate id through the graph's KIND
     /// VOCABULARY (0x04/0x05) — first-seen-claims-next, append-only.
-    fn predicate_vocab_id(&mut self, predicate: &str) -> u16 {
-        self.predicates.id_for(&mut self.store, &self.ns, predicate)
+    fn predicate_vocab_id(&mut self, predicate: &str) -> Result<u16, String> {
+        self.predicates
+            .id_for(&mut self.store, &self.ns, predicate)
+            .map_err(|e| e.to_string())
     }
 
     /// Attribute map → nTLV frames (ids via the field vocabulary; values are
     /// self-describing typed frames — the dynamic segment's own wire).
-    fn attrs_wire(&mut self, attrs: &std::collections::BTreeMap<String, DynamicValue>) -> Vec<u8> {
+    fn attrs_wire(
+        &mut self,
+        attrs: &std::collections::BTreeMap<String, DynamicValue>,
+    ) -> Result<Vec<u8>, String> {
         let mut body = Vec::new();
         let mut resolver = |name: &str| self.fields.id_for(&mut self.store, &self.ns, name);
         for (name, value) in attrs {
-            put_frame_named(&mut body, name, value, &mut resolver);
+            put_frame_named(&mut body, name, value, &mut resolver)
+                .map_err(|e| e.to_string())?;
         }
-        body
+        Ok(body)
     }
 
     /// Attribute frames → name-keyed map (ids resolved via the field
@@ -207,9 +213,9 @@ impl<S: VirtualStorage> Graph<S> {
         edge_id: u64,
     ) -> Result<(), String> {
         self.check_members(&edge.src, &edge.dst)?;
-        let predicate_vocab_id = self.predicate_vocab_id(&edge.predicate);
+        let predicate_vocab_id = self.predicate_vocab_id(&edge.predicate)?;
         let body = self.body_of(edge, predicate_vocab_id);
-        let attr_wire = self.attrs_wire(&edge.attrs);
+        let attr_wire = self.attrs_wire(&edge.attrs)?;
         let src_wire = edge.src.encode();
         let dst_wire = edge.dst.encode();
         let predicate_be = predicate_vocab_id.to_be_bytes();

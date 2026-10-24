@@ -143,7 +143,7 @@ fn dynamic_entries_equal_typed_entries() {
     let dynamic = dynamic_table(TestStore::slatedb_mem());
 
     let document = User { level: 4, score: 77, name: "bob".into() };
-    typed.put(&UserKey { org_id: 1, user_id: 2 }, &document);
+    typed.put(&UserKey { org_id: 1, user_id: 2 }, &document).unwrap();
     dynamic
         .merge(&key_bytes(1, 2), &values(4, 77, "bob"))
         .expect("dynamic put");
@@ -398,7 +398,7 @@ fn dynamic_fields_equal_typed_fields() {
     let dynamic = dynamic_table(TestStore::slatedb_mem());
 
     let document = User { level: 1, score: 5, name: "a".into() };
-    typed.put(&UserKey { org_id: 1, user_id: 2 }, &document);
+    typed.put(&UserKey { org_id: 1, user_id: 2 }, &document).unwrap();
     dynamic.merge(&key_bytes(1, 2), &values(1, 5, "a")).unwrap();
 
     // One map, both modes: no declared name is named here, so both sides
@@ -406,7 +406,9 @@ fn dynamic_fields_equal_typed_fields() {
     let mut fields = BTreeMap::new();
     fields.insert("note".to_string(), DynamicValue::Str("hello".into()));
     fields.insert("weight".to_string(), DynamicValue::UInt(9));
-    typed.merge(&UserKey { org_id: 1, user_id: 2 }, &fields);
+    typed
+        .merge(&UserKey { org_id: 1, user_id: 2 }, &fields)
+        .unwrap();
     dynamic
         .merge(&key_bytes(1, 2), &dfields(&[("note", "hello"), ("weight", "9")]))
         .unwrap();
@@ -662,7 +664,7 @@ fn dynamic_variable_width_index_matches_typed_bytes() {
     let _ = put;
 
     for (id, email) in [(1u64, "a@x"), (2, "a@x"), (3, "b@x")] {
-        typed.put(&EmailKey { id }, &doc(email));
+        typed.put(&EmailKey { id }, &doc(email)).unwrap();
         // Payload names only: the identity rides the pkey. Naming a key field
         // here would be a dynamic field of that name, not the identity (see
         // `a_key_field_name_in_the_map_is_a_dynamic_field`).

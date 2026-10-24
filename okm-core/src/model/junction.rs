@@ -75,7 +75,15 @@ pub trait KvJunction: Sized {
     /// simply never observe the bit — each ns only ever hosts one
     /// direction.
     fn dir_slot(dir: u16) -> Slot {
-        JUNCTION_SLOT_BASE + (((Self::JUNCTION_ID & 0x07FF) << 1) | dir)
+        // The discriminator is NOT masked: a `#[ok_junction(n)]` past the 11-bit
+        // space would land on another junction's slot, and the derive refuses
+        // that declaration at expansion time — this assert is the runtime half
+        // of the same rule (and folds away: both operands are constants).
+        assert!(
+            Self::JUNCTION_ID <= 0x07FF,
+            "junction discriminator out of range: `id << 1 | dir` must fit the 12-bit slot counter (0x0000-0x07FF)",
+        );
+        JUNCTION_SLOT_BASE + (Self::JUNCTION_ID << 1) + dir
     }
 
     /// `[ns_a 2B BE][slot 2B BE][A·identity][B·identity]` — the fact seen

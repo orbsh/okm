@@ -273,6 +273,7 @@ pub mod parquet_io {
                 width,
                 labels.value(document),
             )
+            .map_err(|e| e.to_string())?
             .ok_or_else(|| {
                 format!(
                     "column `{}`: no vocabulary id width matches {} byte(s)",
@@ -486,7 +487,9 @@ pub mod parquet_io {
                     || payload_cols.iter().any(|i| !batch.column(*i).is_null(document));
                 if has_row {
                     let rv = R::decode_payload(&payloads[document]);
-                    collection.put(&key, &rv);
+                    collection
+                        .put(&key, &rv)
+                        .map_err(|e| parquet::errors::ParquetError::General(e.to_string()))?;
                     count += 1;
                 }
                 let segment = match variant_idx {
@@ -496,8 +499,12 @@ pub mod parquet_io {
                 };
                 if let Some(map) = segment {
                     // Segment names are by construction non-declared, so this
-                    // merge writes the segment and leaves the row alone.
-                    collection.merge(&key, &map);
+                    // merge writes the segment and leaves the row alone. A
+                    // declared name would come back as an error rather than a
+                    // silent default — the import path propagates it.
+                    collection
+                        .merge(&key, &map)
+                        .map_err(|e| parquet::errors::ParquetError::General(e.to_string()))?;
                 }
             }
         }
@@ -745,8 +752,10 @@ fn dynamic_from_variant(
                 .zip(props.iter())
             {
                 let mut batch = crate::engine::storage::Batch::default();
-                self.link_into(&mut batch, head, payload, *id)?;
-                self.replace_into(&mut batch, *id, fields);
+                self.link_into(&mut batch, head, payload, *id)
+                    .map_err(|e| e.to_string())?;
+                self.replace_into(&mut batch, *id, fields)
+                    .map_err(|e| e.to_string())?;
                 self.store_mut()
                     .commit_batch(batch)
                     .map_err(|e| format!("edge {id}: {e}"))?;

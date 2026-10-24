@@ -267,7 +267,10 @@ fn member_set_is_checked_at_write() {
     let err = g
         .link(&head(user(1), stranger, "employs"), &Employment::default(), 1)
         .unwrap_err();
-    assert!(err.contains("not a member"), "unexpected error: {err}");
+    assert!(
+        err.to_string().contains("not a member"),
+        "unexpected error: {err}"
+    );
     assert!(g.get_edge(1).is_none(), "nothing was written");
     // A member pair still lands.
     g.link(&head(user(1), org(9), "employs"), &Employment::default(), 1).unwrap();
@@ -300,8 +303,8 @@ fn node_kind_filter_intersects_typed_traversal() {
     let mut g: Graph<_, Employment> = Graph::new(store.clone());
 
     // Org 9 kind=2, Org 10 kind=3.
-    orgs.put(&OrgId { id: 9 }, &Org { kind: 2, active: 1 });
-    orgs.put(&OrgId { id: 10 }, &Org { kind: 3, active: 1 });
+    orgs.put(&OrgId { id: 9 }, &Org { kind: 2, active: 1 }).unwrap();
+    orgs.put(&OrgId { id: 10 }, &Org { kind: 3, active: 1 }).unwrap();
     g.link(&head(user(1), org(9), "employs"), &Employment::default(), 1).unwrap();
     g.link(&head(user(1), org(10), "employs"), &Employment::default(), 2).unwrap();
 
@@ -498,7 +501,7 @@ fn the_edge_set_exports_as_a_table_with_named_endpoints() {
         okm_core::obj_dynamic::DynamicValue::Str("lead".to_string()),
     );
     let mut batch = okm_core::Batch::default();
-    g.replace_into(&mut batch, 1, &attrs);
+    g.replace_into(&mut batch, 1, &attrs).unwrap();
     store.commit_batch(batch).unwrap();
     assert_eq!(
         g.attrs(1).map(|f| f.len()),

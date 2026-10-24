@@ -23,7 +23,7 @@ fn upsert_with_full_paths() {
     let written = t.upsert_with(&CounterKey { id: 1 }, |old| {
         assert!(old.is_none(), "missing key must arrive as None");
         Counter { bucket: 7, hits: 10 }
-    });
+    }).unwrap();
     assert_eq!(written.hits, 10);
     assert_eq!(t.get(&CounterKey { id: 1 }).unwrap().hits, 10);
 
@@ -32,7 +32,7 @@ fn upsert_with_full_paths() {
         let mut c = old.expect("existing key must arrive as Some");
         c.hits += 5;
         c
-    });
+    }).unwrap();
     assert_eq!(written.hits, 15);
     assert_eq!(t.get(&CounterKey { id: 1 }).unwrap().hits, 15);
 
@@ -63,6 +63,6 @@ fn upsert_with_full_paths() {
         let mut c = old.expect("rmw");
         c.hits += 1;
         c
-    });
+    }).unwrap();
     assert_eq!(*seen.lock().unwrap(), vec![16]);
 }

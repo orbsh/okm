@@ -67,18 +67,18 @@ fn two_level_embed_roundtrip() {
     let floor = Floor { room_count: 12 };
 
     // Write the leaf first, then reference it up the chain.
-    floors.put(&floor_key, &floor);
+    floors.put(&floor_key, &floor).unwrap();
     let dept = DeptV2 {
         name: "platform".into(),
         floor_count: 3,
         main_floor: Ref::ref_key(floor_key.clone()),
     };
-    depts.put(&dept_key, &dept);
+    depts.put(&dept_key, &dept).unwrap();
     let org = Org {
         name: "acme".into(),
         hq: Ref::ref_key(dept_key.clone()),
     };
-    orgs.put(&org_key, &org);
+    orgs.put(&org_key, &org).unwrap();
 
     // Top-level get dereferences the whole chain.
     let got = orgs.get(&org_key).expect("org");
@@ -93,7 +93,7 @@ fn two_level_embed_roundtrip() {
         main_floor: Ref::own(floor_key.clone(), Floor { room_count: 20 }),
         ..dept.clone()
     };
-    depts.put(&dept_key, &dept2);
+    depts.put(&dept_key, &dept2).unwrap();
     assert_eq!(floors.get(&floor_key), Some(Floor { room_count: 20 }));
     // And the org still dereferences to the updated dept.
     let got2 = orgs.get(&org_key).expect("org2");

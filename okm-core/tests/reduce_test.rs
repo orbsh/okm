@@ -80,21 +80,21 @@ fn fold_unfold_roundtrip_is_exact() {
         author_id: 200,
         title_len: 7,
     };
-    t.put(&k1, &r1);
-    t.put(&k2, &r2);
-    t.put(&k3, &r3);
+    t.put(&k1, &r1).unwrap();
+    t.put(&k2, &r2).unwrap();
+    t.put(&k3, &r3).unwrap();
 
     // author 100: count=2, sum=42；author 200: count=1, sum=7。
     let acc = okm_core::reduce_get::<_, AuthorStats>(t.store(), <Post as Document>::NS_PREFIX, &k1, &r1).expect("group exists");
     assert_eq!(acc, CountSum { count: 2, sum: 42 });
 
     // delete_by_pkey 走同一条 unfold 路径（内部 get 出 document）。
-    t.purge(&k2);
+    t.purge(&k2).unwrap();
     let acc = okm_core::reduce_get::<_, AuthorStats>(t.store(), <Post as Document>::NS_PREFIX, &k1, &r1).expect("group exists");
     assert_eq!(acc, CountSum { count: 1, sum: 30 });
 
     // 可逆往返：删空后 acc 回到单位元。
-    t.purge(&k1);
+    t.purge(&k1).unwrap();
     let acc = okm_core::reduce_get::<_, AuthorStats>(t.store(), <Post as Document>::NS_PREFIX, &k1, &r1).expect("entry survives");
     assert_eq!(acc, CountSum::default());
 
@@ -156,9 +156,9 @@ fn group_and_fold_use_key_fields() {
     let k2 = TopicKey { forum: 7, id: 42 };
     let k3 = TopicKey { forum: 8, id: 5 };
     let r = Topic { title_len: 3 };
-    t.put(&k1, &r);
-    t.put(&k2, &r);
-    t.put(&k3, &r);
+    t.put(&k1, &r).unwrap();
+    t.put(&k2, &r).unwrap();
+    t.put(&k3, &r).unwrap();
 
     // group 段 = key 字段 forum 的编码（u32 4B BE），而非任何 payload。
     let ek = <TopicStats as Reduce>::entry_key(<Topic as Document>::NS_PREFIX, &k1, &r);
@@ -185,7 +185,7 @@ fn entry_layout_is_ns_slot_group() {
         author_id: 55,
         title_len: 1,
     };
-    t.put(&k, &r);
+    t.put(&k, &r).unwrap();
 
     // author_id 是 u64 → group 段 = 8B BE；reduce 走独立段 0x4
     // （计数 1 → slot 0x4001，ADR-0016：不再续接索引计数器）。

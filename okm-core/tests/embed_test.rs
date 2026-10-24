@@ -33,7 +33,7 @@ fn embed_roundtrip() {
     users.put(&ukey, &User {
         level: 4,
         address: Ref::own(akey.clone(), addr.clone()),
-    });
+    }).unwrap();
     // child written at its own key
     assert_eq!(addrs.get(&akey), Some(addr.clone()));
     // deref on read
@@ -41,12 +41,12 @@ fn embed_roundtrip() {
     assert_eq!(u.address.value, Some(addr.clone()));
     // reference-only write: new user pointing at the same address
     let ukey2 = OwnerKey { org_id: 1, user_id: 3 };
-    users.put(&ukey2, &User { level: 9, address: Ref::ref_key(akey.clone()) });
+    users.put(&ukey2, &User { level: 9, address: Ref::ref_key(akey.clone()) }).unwrap();
     assert_eq!(addrs.get(&akey), Some(addr.clone()));
     let u2 = users.get(&ukey2).expect("user2");
     assert_eq!(u2.address.value, Some(addr.clone()));
     // deleted child reads back as None
-    addrs.purge(&akey);
+    addrs.purge(&akey).unwrap();
     let u3 = users.get(&ukey2).expect("user3");
     assert_eq!(u3.address.value, None);
 }

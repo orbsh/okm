@@ -53,10 +53,10 @@ fn partition_segment_precedes_ns_header() {
     // 键首字节恒为 0xFF——前缀空间天然不相交，无需编号对齐。
 
     // 表内 put/get/scan 正常（经 partition 前缀域）。
-    pt.put(&k, &Partitioned { value: 42 });
+    pt.put(&k, &Partitioned { value: 42 }).unwrap();
     assert_eq!(pt.get(&k).unwrap().value, 42);
     assert_eq!(pt.scan_keys().len(), 1);
-    pl.put(&k, &Plain { value: 7 });
+    pl.put(&k, &Plain { value: 7 }).unwrap();
     assert_eq!(pl.get(&k).unwrap().value, 7);
     assert_eq!(pl.scan_keys().len(), 1);
 

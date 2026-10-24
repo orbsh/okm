@@ -95,7 +95,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     /// — the stale entry dangles, which is why `purge` exists; the reduce,
     /// by contrast, is a mutable
     /// aggregate under one group key and MUST compensate.
-    pub fn put(&self, key: &K, document: &R) {
+    pub fn put(&self, key: &K, document: &R) -> crate::error::Result<()> {
         // ONE engine commit per semantic write. The whole write set — primary
         // entry, every declared face, embedded children with their own faces,
         // the releases of children the old document no longer points at, and
@@ -122,7 +122,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
             let mut store = crate::engine::storage::BatchStore::new(&self.store, &mut batch);
             if R::HAS_VOCAB {
                 let mut copy = document.clone();
-                copy.__okm_intern(&mut store, &header);
+                copy.__okm_intern(&mut store, &header)?;
                 interned = Some(copy);
             }
             let document = interned.as_ref().unwrap_or(document);
@@ -156,13 +156,14 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
             // group.
             R::__okm_apply_reduces(&mut store, key, document, &header, true);
         }
-        self.commit(batch);
+        self.commit(batch)?;
         R::__okm_emit_event(
             crate::subscribe::Op::Put,
             self.epoch.get(),
             key,
             interned.as_ref().unwrap_or(document),
         );
+        Ok(())
     }
 
     /// Commanded RMW: `get` → `f(old)` → `put(key, new)` through the
@@ -186,10 +187,14 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     /// only double-guard what the engine already enforces. The
     /// multi-writer future (optimistic CAS) triggers only if multiple
     /// live writers over one store become a real requirement.
-    pub fn upsert_with(&self, key: &K, f: impl FnOnce(Option<R>) -> R) -> R {
+    pub fn upsert_with(
+        &self,
+        key: &K,
+        f: impl FnOnce(Option<R>) -> R,
+    ) -> crate::error::Result<R> {
         let new = f(self.get(key));
-        self.put(key, &new);
-        new
+        self.put(key, &new)?;
+        Ok(new)
     }
 
     /// Encode this document's full write set (primary entry + one entry per
@@ -243,7 +248,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         key: &K,
         document: &R,
         prev: Option<&R>,
-    ) {
+    ) -> crate::error::Result<()> {
         let pkey = self.primary_key(key);
         let header = self.header();
 
@@ -270,7 +275,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         // a scan is exactly what a batch cannot do.
         let interned: Option<R> = if R::HAS_VOCAB {
             let mut copy = document.clone();
-            copy.__okm_intern(&mut adapter, &header);
+            copy.__okm_intern(&mut adapter, &header)?;
             Some(copy)
         } else {
             None
@@ -319,6 +324,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
 
         // Fold the new document into each declared group.
         R::__okm_apply_reduces(&mut adapter, key, document, &header, true);
+        Ok(())
     }
 
     /// Index entry key for access method `I` derived from `key` + `document`.
@@ -598,7 +604,8 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     /// (`[ns][deprecated slot]` prefix scan, delete each). Returns the
     /// number of entries removed. Idempotent — a second call finds
     /// nothing. Does NOT touch live slots or the primary table.
-    pub fn prune_deprecated_slots(&self) -> usize {
+    pub fn prune_deprecated_slots(&self) -> crate::error::Result<usize> {
+        let mut batch = crate::engine::storage::Batch::default();
         let mut removed = 0;
         for slot in R::DEPRECATED_SLOTS {
             let mut p = self.header();
@@ -606,11 +613,16 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
             for sfx in self.store.scan_suffix(&p) {
                 let mut full = p.clone();
                 full.extend_from_slice(&sfx);
-                self.store.del(&full);
+                batch.del(&full);
                 removed += 1;
             }
         }
-        removed
+        // One commit for the whole sweep: the deletes land together, and the
+        // engine's refusal comes back instead of dying inside a per-entry `del`.
+        if removed > 0 {
+            self.commit(batch)?;
+        }
+        Ok(removed)
     }
 
     /// Full-ns scan of primary keys (slot-0 entries only — the same
@@ -727,22 +739,32 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     ///
     /// Declared fields the map does NOT name keep their stored values. Use
     /// [`replace`](Self::replace) when the map is meant to be the whole document.
-    pub fn merge(&self, key: &K, object: &BTreeMap<String, DynamicValue>) {
+    ///
+    /// Fallible because the map is CALLER data: a name that matches a declared
+    /// field but carries the wrong kind (or a value that does not fit it) comes
+    /// back as [`Error`](crate::error::Error) instead of silently defaulting.
+    /// The check runs before any op enters the batch, so a refused merge leaves
+    /// the store exactly as it was — the dynamic half included.
+    pub fn merge(
+        &self,
+        key: &K,
+        object: &BTreeMap<String, DynamicValue>,
+    ) -> crate::error::Result<()> {
         let (typed, dynamic) = self.split_names(object);
         let mut batch = crate::engine::storage::Batch::default();
         if !typed.is_empty() {
             let prev = self.get(key);
             let mut merged = prev.as_ref().map(|r| r.to_map()).unwrap_or_default();
             merged.extend(typed);
-            let document = R::from_map(&merged);
-            self.save_with_prev_into(&mut batch, key, &document, prev.as_ref());
+            let document = R::try_from_map(&merged)?;
+            self.save_with_prev_into(&mut batch, key, &document, prev.as_ref())?;
         }
         if !dynamic.is_empty() {
             let mut stored = self.slot1_map(key).unwrap_or_default();
             stored.extend(dynamic);
-            self.slot1_into(&mut batch, key, &stored);
+            self.slot1_into(&mut batch, key, &stored)?;
         }
-        self.commit(batch);
+        self.commit(batch)
     }
 
     /// Whole-document replacement, ONE engine commit: the map IS the document.
@@ -754,7 +776,15 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     ///   the row if it existed. The dynamic segment is exactly the map's
     ///   non-declared names, so `replace(key, &empty_map)` is
     ///   [`purge`](Self::purge).
-    pub fn replace(&self, key: &K, object: &BTreeMap<String, DynamicValue>) {
+    ///
+    /// Fallible for the same reason as [`merge`](Self::merge): the map is caller
+    /// data, and a declared name that carries the wrong kind is refused before
+    /// anything is written.
+    pub fn replace(
+        &self,
+        key: &K,
+        object: &BTreeMap<String, DynamicValue>,
+    ) -> crate::error::Result<()> {
         let (typed, dynamic) = self.split_names(object);
         let mut batch = crate::engine::storage::Batch::default();
         if typed.is_empty() {
@@ -766,20 +796,20 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
             // values' entries would dangle, exactly what `put` is allowed to do
             // and a whole-document verb is not.
             let prev = self.get(key);
-            let document = R::from_map(&typed);
-            self.save_with_prev_into(&mut batch, key, &document, prev.as_ref());
+            let document = R::try_from_map(&typed)?;
+            self.save_with_prev_into(&mut batch, key, &document, prev.as_ref())?;
         }
-        self.slot1_into(&mut batch, key, &dynamic);
-        self.commit(batch);
+        self.slot1_into(&mut batch, key, &dynamic)?;
+        self.commit(batch)
     }
 
     /// Remove the whole document — both slots — in one commit. `false` = there
     /// was nothing to remove.
-    pub fn purge(&self, key: &K) -> bool {
+    pub fn purge(&self, key: &K) -> crate::error::Result<bool> {
         let prev = self.get(key);
         let has_segment = self.store.get(&self.fields_key(key)).is_some();
         if prev.is_none() && !has_segment {
-            return false;
+            return Ok(false);
         }
         let mut batch = crate::engine::storage::Batch::default();
         if let Some(document) = &prev {
@@ -788,14 +818,14 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         if has_segment {
             batch.del(&self.fields_key(key));
         }
-        self.commit(batch);
+        self.commit(batch)?;
         // Subscribe: deletion event (same best-effort contract as put),
         // stamped with the table's post-write epoch. A segment-only document
         // has no row to hand the event, so it emits nothing.
         if let Some(document) = &prev {
             R::__okm_emit_event(crate::subscribe::Op::Delete, self.epoch.get(), key, document);
         }
-        true
+        Ok(true)
     }
 
     /// The stored dynamic segment as a name-keyed map. `None` = no entry; a
@@ -833,7 +863,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         batch: &mut crate::engine::storage::Batch,
         key: &K,
         variants: &BTreeMap<String, DynamicValue>,
-    ) {
+    ) -> crate::error::Result<()> {
         let header = self.header();
         let k = self.fields_key(key);
         let mut d = VocabCache::new(FIELD_VOCAB);
@@ -844,7 +874,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
             for (name, value) in variants {
                 // put_frame_named recurses into nested Obj values, sharing the
                 // vocabulary (id_for allocates on first sight).
-                crate::model::obj_dynamic::put_frame_named(&mut body, name, value, &mut resolver);
+                crate::model::obj_dynamic::put_frame_named(&mut body, name, value, &mut resolver)?;
             }
         }
         if body.is_empty() {
@@ -852,6 +882,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         } else {
             store.put(k, body);
         }
+        Ok(())
     }
 
     /// Encode a document's removal into `batch`: primary entry, every face it
@@ -894,13 +925,14 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         (typed, dynamic)
     }
 
-    /// Commit one semantic write and advance the epoch. The engine's error has
-    /// no channel in this API, so it surfaces as a panic carrying the engine's
-    /// own text (never a generic message that hides it).
-    fn commit(&self, batch: crate::engine::storage::Batch) {
-        if let Err(e) = self.store.commit_batch(batch) {
-            panic!("okm: commit_batch failed: {e}");
-        }
+    /// Commit one semantic write and advance the epoch — fallible, so a verb
+    /// that promises a `Result` can hand the engine's refusal up. The error
+    /// carries the engine's OWN text, never a generic message that hides it.
+    fn commit(&self, batch: crate::engine::storage::Batch) -> crate::error::Result<()> {
+        self.store
+            .commit_batch(batch)
+            .map_err(crate::error::Error::Engine)?;
         self.epoch.set(self.epoch.get() + 1);
+        Ok(())
     }
 }

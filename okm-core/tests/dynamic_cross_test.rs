@@ -91,7 +91,7 @@ fn rust_write_dynamic_read_and_reverse() {
     let schema = CollectionSchema::of::<UserKey, User>();
     let t: Collection<TestStore, UserKey, User> = Collection::new(TestStore::slatedb_mem());
     let key = UserKey { org_id: 1, user_id: 2 };
-    t.put(&key, &User { level: 4, score: 77, name: "bob".into() });
+    t.put(&key, &User { level: 4, score: 77, name: "bob".into() }).unwrap();
 
     // Rust wrote; dynamic reads through schema + the SAME physical bytes
     // (primary entry value = payload; primary key suffix = key encoding).
@@ -121,7 +121,7 @@ fn rust_write_dynamic_read_and_reverse() {
     assert_eq!(rust_decoded.level, 9);
     assert_eq!(rust_key.org_id, 0x0A0B_0C0D);
     assert_eq!(rust_key.user_id, 0x1122_3344_5566_7788);
-    t.put(&rust_key, &rust_decoded);
+    t.put(&rust_key, &rust_decoded).unwrap();
     let document = t.get(&rust_key).expect("rust reads dynamic-encoded bytes");
     assert_eq!(document.name, "alice");
     assert_eq!(document.level, 9);
@@ -224,7 +224,7 @@ fn a_key_name_in_a_map_is_a_value_field_in_both_modes() {
     let mut typed_map = BTreeMap::new();
     typed_map.insert("org_id".to_string(), DynamicValue::UInt(999));
     typed_map.insert("note".to_string(), DynamicValue::Str("hi".into()));
-    typed.merge(&key, &typed_map);
+    typed.merge(&key, &typed_map).unwrap();
 
     let mut dyn_map = BTreeMap::new();
     dyn_map.insert("org_id".to_string(), Value::U32(999));
@@ -261,10 +261,10 @@ fn the_two_enumeration_modes_see_the_two_kinds_of_document() {
     typed.put(
         &with_row,
         &User { level: 3, score: 4, name: "row".into() },
-    );
+    ).unwrap();
     let mut dynamic_only = BTreeMap::new();
     dynamic_only.insert("note".to_string(), DynamicValue::Str("no row".into()));
-    typed.merge(&segment_only, &dynamic_only);
+    typed.merge(&segment_only, &dynamic_only).unwrap();
 
     assert_eq!(typed.scan_keys(), vec![with_row.clone()], "row mode: rows only");
     assert_eq!(

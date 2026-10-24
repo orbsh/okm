@@ -319,14 +319,14 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
 
     /// Membership: the declared set is checked against the refs' ns at
     /// write and at decode (width stays wire data; membership does not).
-    fn check_members(&self, src: &NodeRef, dst: &NodeRef) -> Result<(), String> {
+    fn check_members(&self, src: &NodeRef, dst: &NodeRef) -> crate::error::Result<()> {
         for (side, node) in [("src", src), ("dst", dst)] {
             if !E::Nodes::contains(node.ns_id()) {
-                return Err(format!(
-                    "{side} ns {} is not a member of graph ns {}",
-                    node.ns_id(),
-                    u16::from_be_bytes([E::NS_PREFIX[0], E::NS_PREFIX[1]])
-                ));
+                return Err(crate::error::Error::EdgeNotMember {
+                    side,
+                    ns: node.ns_id(),
+                    graph_ns: u16::from_be_bytes([E::NS_PREFIX[0], E::NS_PREFIX[1]]),
+                });
             }
         }
         Ok(())
@@ -337,7 +337,7 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
     /// same discipline as every other vocabulary in OKM. Separate from the
     /// payload's field-name vocabulary (0x02/0x03): two allocators in one
     /// id space would hand the same id to two names.
-    fn predicate_vocab_id(&mut self, predicate: &str) -> u16 {
+    fn predicate_vocab_id(&mut self, predicate: &str) -> crate::error::Result<u16> {
         self.vocab.id_for(&mut self.store, E::NS_PREFIX, predicate)
     }
 
@@ -370,16 +370,16 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
     /// are separate edges — each call carries a caller-chosen `edge_id`
     /// (identity allocation stays with the caller; `link` verifies
     /// non-collision with one point read).
-    pub fn link(&mut self, head: &EdgeHead, payload: &E, edge_id: u64) -> Result<(), String> {
+    pub fn link(&mut self, head: &EdgeHead, payload: &E, edge_id: u64) -> crate::error::Result<()> {
         let pk = self.primary_key(edge_id);
         if self.store.get(&pk).is_some() {
-            return Err(format!("edge_id {edge_id} already live"));
+            return Err(crate::error::Error::EdgeAlreadyLive { edge_id });
         }
         let mut batch = Batch::default();
         self.write_into(&mut batch, head, payload, edge_id)?;
         self.store
             .commit_batch(batch)
-            .map_err(|e| format!("graph link commit failed: {e}"))
+            .map_err(crate::error::Error::Engine)
     }
 
     /// Encode the full write set into an externally owned batch — the
@@ -394,7 +394,7 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
         head: &EdgeHead,
         payload: &E,
         edge_id: u64,
-    ) -> Result<(), String> {
+    ) -> crate::error::Result<()> {
         self.write_into(batch, head, payload, edge_id)
     }
 
@@ -437,11 +437,11 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
         batch: &mut Batch,
         edge_id: u64,
         fields: &std::collections::BTreeMap<String, DynamicValue>,
-    ) {
+    ) -> crate::error::Result<()> {
         let key = self.dynamic_key(edge_id);
         batch.del(&key);
         if fields.is_empty() {
-            return;
+            return Ok(());
         }
         let mut body = Vec::new();
         {
@@ -449,10 +449,11 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
             let store = &mut self.store;
             let mut resolver = |name: &str| dict.id_for(store, E::NS_PREFIX, name);
             for (name, value) in fields {
-                put_frame_named(&mut body, name, value, &mut resolver);
+                put_frame_named(&mut body, name, value, &mut resolver)?;
             }
         }
         batch.put(key, body);
+        Ok(())
     }
 
     /// The edge's open attributes, when it has any — the dynamic half of an edge
@@ -485,9 +486,9 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
         head: &EdgeHead,
         payload: &E,
         edge_id: u64,
-    ) -> Result<(), String> {
+    ) -> crate::error::Result<()> {
         self.check_members(&head.src, &head.dst)?;
-        let predicate_vocab_id = self.predicate_vocab_id(&head.predicate);
+        let predicate_vocab_id = self.predicate_vocab_id(&head.predicate)?;
         let predicate_be = predicate_vocab_id.to_be_bytes();
         let body = edge_body(head, predicate_vocab_id, &payload.encode_payload());
         let src_wire = head.src.encode();
@@ -536,12 +537,12 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
     /// wrote. Declared faces are re-derived by decoding the payload into
     /// the declaration's type — no prefix sweep, so an unrelated edge with
     /// a shared attribute value cannot be touched.
-    pub fn unlink(&mut self, edge_id: u64) -> Result<(), String> {
+    pub fn unlink(&mut self, edge_id: u64) -> crate::error::Result<()> {
         let mut batch = Batch::default();
         self.unlink_into(&mut batch, edge_id)?;
         self.store
             .commit_batch(batch)
-            .map_err(|e| format!("graph unlink commit failed: {e}"))
+            .map_err(crate::error::Error::Engine)
     }
 
     /// Encode the full delete set into an externally owned batch — the
@@ -549,12 +550,12 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
     /// commit instead of two (`unlink_into` + `link_into` into the same
     /// batch: the incumbent's primary is deleted and re-put in order, and
     /// every stale face goes with it).
-    pub fn unlink_into(&mut self, batch: &mut Batch, edge_id: u64) -> Result<(), String> {
+    pub fn unlink_into(&mut self, batch: &mut Batch, edge_id: u64) -> crate::error::Result<()> {
         let pk = self.primary_key(edge_id);
         let bytes = self
             .store
             .get(&pk)
-            .ok_or_else(|| format!("unlink: edge_id {edge_id} not found"))?;
+            .ok_or(crate::error::Error::EdgeNotFound { edge_id })?;
         let parsed = decode_body(&bytes);
         self.check_members(&parsed.src, &parsed.dst)?;
         let src_wire = parsed.src.encode();

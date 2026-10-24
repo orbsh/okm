@@ -204,12 +204,12 @@ mod tests {
         // Edge owns its engine; link phase returns the store.
         let follows: okm_core::Junction<TestStore, FollowsEdge> =
             okm_core::Junction::new(TestStore::slatedb_mem());
-        follows.link(&mk(1), &mk(2));
-        follows.link(&mk(3), &mk(1)); // incoming for node 1
+        follows.link(&mk(1), &mk(2)).unwrap();
+        follows.link(&mk(3), &mk(1)).unwrap(); // incoming for node 1
         let mut store = follows.store;
         let mentions: okm_core::Junction<TestStore, MentionsEdge> =
             okm_core::Junction::new(std::mem::take(&mut store));
-        mentions.link(&mk(1), &mk(4));
+        mentions.link(&mk(1), &mk(4)).unwrap();
         let store = mentions.store;
 
         let f = FollowsNeighbors;
@@ -268,8 +268,8 @@ mod tests {
         let follows: okm_core::Junction<TestStore, FollowsEdge> =
             okm_core::Junction::new(TestStore::slatedb_mem());
         // 1 → 2 → 3: two hops from 1 reach 3.
-        follows.link(&mk(1), &mk(2));
-        follows.link(&mk(2), &mk(3));
+        follows.link(&mk(1), &mk(2)).unwrap();
+        follows.link(&mk(2), &mk(3)).unwrap();
         let store = follows.store;
 
         let f = FollowsNeighbors;

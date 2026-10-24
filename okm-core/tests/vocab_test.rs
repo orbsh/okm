@@ -36,8 +36,8 @@ fn labels_round_trip_through_per_field_vocabularies() {
     let store = TestStore::slatedb_mem();
     let c = Collection::<_, VKey, VRow>::new(store);
 
-    c.put(&VKey { org: 1, id: 1 }, &row("active", "red", 7));
-    c.put(&VKey { org: 1, id: 2 }, &row("closed", "red", 8));
+    c.put(&VKey { org: 1, id: 1 }, &row("active", "red", 7)).unwrap();
+    c.put(&VKey { org: 1, id: 2 }, &row("closed", "red", 8)).unwrap();
 
     let a = c.get(&VKey { org: 1, id: 1 }).unwrap();
     assert_eq!(a.status.as_str(), Some("active"));
@@ -68,9 +68,9 @@ fn labels_round_trip_through_per_field_vocabularies() {
     );
 
     // A label the store never saw interns on write, after a from_map round trip.
-    let mut d = VRow::from_map(&m);
+    let mut d = VRow::try_from_map(&m).unwrap();
     d.status = Vocab::of("suspended");
-    c.put(&VKey { org: 1, id: 3 }, &d);
+    c.put(&VKey { org: 1, id: 3 }, &d).unwrap();
     let e = c.get(&VKey { org: 1, id: 3 }).unwrap();
     assert_eq!(e.status.as_str(), Some("suspended"));
     assert_eq!(e.status.id(), Some(2u8));
@@ -131,9 +131,9 @@ fn a_put_on_a_categorical_table_never_scans() {
 
     // First write allocates two labels; the second reuses them (label-face
     // probe); the third allocates two more through the cursor.
-    c.put(&VKey { org: 1, id: 1 }, &row("active", "red", 1));
-    c.put(&VKey { org: 1, id: 1 }, &row("active", "red", 2));
-    c.put(&VKey { org: 1, id: 2 }, &row("closed", "blue", 3));
+    c.put(&VKey { org: 1, id: 1 }, &row("active", "red", 1)).unwrap();
+    c.put(&VKey { org: 1, id: 1 }, &row("active", "red", 2)).unwrap();
+    c.put(&VKey { org: 1, id: 2 }, &row("closed", "blue", 3)).unwrap();
 
     let two = c.get(&VKey { org: 1, id: 2 }).expect("row");
     assert_eq!(two.status.as_str(), Some("closed"));
