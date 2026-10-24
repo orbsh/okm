@@ -1,7 +1,9 @@
-# ADR-0037: the map-facing write verbs return `Result`
+# ADR-0037: the write verbs return `Result`
 
-Status: Accepted (2026-10-24). Refines ADR-0035 for `merge` / `replace`; the
-typed verbs are unchanged.
+Status: Accepted (2026-10-24). Refines ADR-0035; widened to every write verb
+after the first draft — the map-facing half alone left the typed verbs
+panicking, and a verb that cannot report a refused write has no error channel
+at all.
 
 ## Context
 

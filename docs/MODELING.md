@@ -400,15 +400,15 @@ use __OkmIndex_User_by_org as ByOrg; // index type: derived from ok_index(by_org
 
 let t = <User as Document>::collection(TestStore::default());
 
-t.put(&user, &User { org_id: 7, created_at: 30, reputation: 100, bio_len: 2 });
+t.put(&user, &User { org_id: 7, created_at: 30, reputation: 100, bio_len: 2 })?;
 
 // Leftmost-prefix scan on any access method, with fetch-back:
-let rows = t.scan::<ByOrg>(&7u32.to_be_bytes());
+let rows = t.scan::<ByOrg>(&7u32.to_be_bytes())?;
 for (key, row) in rows {
     // key: decoded UserKey, row: Some(decoded User) when the payload exists
 }
 
-t.purge(&user); // removes the primary key + all declared index entries (+ the dynamic segment)
+t.purge(&user)?; // removes the primary key + all declared index entries (+ the dynamic segment)
 // (multi-value indexes clear entry by entry — no dangling entries)
 ```
 
@@ -434,7 +434,7 @@ use __OkmIndex_Doc_by_token as ByToken;
 
 // Write: one row of "rust kv" fans out into two entries (rust → key, kv → key)
 // Query: prefix scan by token → fetch-back, exactly like a plain index
-let hits = t.scan::<ByToken>(b"rust");
+let hits = t.scan::<ByToken>(b"rust")?;
 ```
 
 Beyond the equality prefix, a comparison on the leading index field is
@@ -467,19 +467,19 @@ stores a field named like a key field gets exactly what it asked for.
 ```rust
 // The row-map bridge: every field (declared + dynamic) lifts to its logical
 // type (Quant -> F64, VarInt -> u64, Enum -> variant name, Offset -> i64).
-let fields = t.fetch(&key);                    // Option<BTreeMap<String, DynamicValue>>, None = no document
+let fields = t.fetch(&key)?;                   // Option<BTreeMap<String, DynamicValue>>, None = no document
 
 // Partial update: declared names are a row RMW (typed path, previous faces
 // cleaned), unknown names overwrite just those names in the dynamic segment.
-t.merge(&key, &patch);                        // BTreeMap<String, DynamicValue>
+t.merge(&key, &patch)?;                       // BTreeMap<String, DynamicValue>
 
 // Whole-document replacement: the map IS the document — absent declared
 // fields take defaults, unnamed dynamic names are removed.
-t.replace(&key, &fields);
+t.replace(&key, &fields)?;
 
 // Both slots, one commit — the ONE removal verb (a row cannot outlive its
 // segment, so there is no row-only delete to get wrong).
-t.purge(&key);                                // -> bool (something was there)
+t.purge(&key)?;                               // -> bool (something was there)
 ```
 
 - `DynamicValue` carries the open value vocabulary: `UInt`/`Int`/`F64`/
