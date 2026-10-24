@@ -27,7 +27,7 @@ pub struct BenchKey {
 #[derive(DocumentEncode, Clone, PartialEq, Debug)]
 #[ok_ref(BenchKey)]
 #[ok_ns(9)]
-#[ok_index(by_level { fields(level) })]
+#[ok_index(by_level { fields(level), includes(score) })]
 #[ok_reduce(TagTotals { group(level) })]
 pub struct BenchRow {
     pub level: u32,        // hot 4B
@@ -169,11 +169,9 @@ fn bench_scan(c: &mut Criterion) {
         g.bench_function(format!("scan_index+fetch_back/fanout_{fanout}"), |b| {
             b.iter(|| black_box(t.scan::<ByLevel>(&probe).len()))
         });
-        if fanout == 1 {
-            g.bench_function("scan_covered/fanout_1", |b| {
-                b.iter(|| black_box(t.scan_covered::<ByLevel>(&probe).len()))
-            });
-        }
+        g.bench_function(format!("scan_covered/fanout_{fanout}"), |b| {
+            b.iter(|| black_box(t.scan_covered::<ByLevel>(&probe).len()))
+        });
     }
     g.finish()
 }

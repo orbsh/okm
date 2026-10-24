@@ -485,16 +485,46 @@ fn scan_access_method_filtered<S: VirtualStorage>(
     encoded_prefix: &[u8],
     exact: bool,
 ) -> Result<Vec<ValueMap>, String> {
-    // `encoded_prefix` is the leftmost prefix of the indexed-field
-    // segment, already encoded (empty slice = whole index). Func
-    // indexes have no declared-field width — the segment is the
-    // callable's result encoding, caller-owned; any prefix is legal.
-    // With a trailing VARIABLE-WIDTH field the probe may be LONGER than
-    // the fixed-width head (the equality probe carries the full string,
-    // the entry tail is raw UTF-8 — prefix comparison still matches);
-    // a probe that exceeds the head is legal exactly when the
-    // declaration's last field IS variable-width. A probe beyond the
-    // head on an all-fixed-width declaration is a caller bug.
+    let p = entry_scan_prefix(schema, ns, index, encoded_prefix)?;
+    let kl = schema.key_len;
+    let mut out = Vec::new();
+    for suffix in store.scan_suffix(&p) {
+        // The key tail's width is known, so the field segment's length is one
+        // length compare away: below it the probe was satisfied by tail bytes
+        // (the stored value is SHORTER than the probe — not a match, and such
+        // data is legal: values mix letters and digits), while exact
+        // additionally wants nothing left after the probe.
+        let matched = if exact { suffix.len() == kl } else { suffix.len() >= kl };
+        if !matched {
+            continue;
+        }
+        let start = suffix.len() - kl;
+        out.push(
+            crate::decode_key(schema, &suffix[start..]).map_err(|e: crate::CodecError| e.to_string())?,
+        );
+    }
+    Ok(out)
+}
+
+/// The scan prefix `[ns][slot][probe]` for one access method, after checking
+/// the probe against the index-field segment's width. Shared by the key-only
+/// scan and the covered scan — one range, two readings.
+///
+/// `encoded_prefix` is the leftmost prefix of the indexed-field segment,
+/// already encoded (empty slice = whole index). Func indexes have no
+/// declared-field width — the segment is the callable's result encoding,
+/// caller-owned; any prefix is legal. With a trailing VARIABLE-WIDTH field the
+/// probe may be LONGER than the fixed-width head (the equality probe carries
+/// the full string, the entry tail is raw UTF-8 — prefix comparison still
+/// matches); a probe that exceeds the head is legal exactly when the
+/// declaration's last field IS variable-width. A probe beyond the head on an
+/// all-fixed-width declaration is a caller bug.
+fn entry_scan_prefix(
+    schema: &CollectionSchema,
+    ns: &[u8],
+    index: &AccessMethod,
+    encoded_prefix: &[u8],
+) -> Result<Vec<u8>, String> {
     if !matches!(
         index.kind,
         AccessMethodKind::Func(_) | AccessMethodKind::Path { .. }
@@ -514,22 +544,106 @@ fn scan_access_method_filtered<S: VirtualStorage>(
     p.extend_from_slice(ns);
     okm_core::write_slot(&mut p, index.slot);
     p.extend_from_slice(encoded_prefix);
+    Ok(p)
+}
+
+/// Covered scan over one access method: the same range and prefix semantics as
+/// [`scan_access_method`], but it reads each entry's VALUE (the includes
+/// segment) instead of only the key, and hands it back decoded. No document is
+/// fetched — the dynamic counterpart of `KvIndex::decode_covered`, and the
+/// read half of `includes`.
+///
+/// Returns `(key fields, covered fields)` per hit, both name-keyed. The two
+/// maps stay separate because a key field name and a payload field name may
+/// collide, and the key is the identity rather than payload data. An access
+/// method declaring no `includes` covers nothing: the second map is empty, and
+/// this door costs what `scan` costs plus the value read.
+pub fn scan_access_method_covered<S: VirtualStorage>(
+    store: &S,
+    schema: &CollectionSchema,
+    ns: &[u8],
+    index: &AccessMethod,
+    encoded_prefix: &[u8],
+) -> Result<Vec<(ValueMap, ValueMap)>, String> {
+    let p = entry_scan_prefix(schema, ns, index, encoded_prefix)?;
     let kl = schema.key_len;
     let mut out = Vec::new();
-    for suffix in store.scan_suffix(&p) {
-        // The key tail's width is known, so the field segment's length is one
-        // length compare away: below it the probe was satisfied by tail bytes
-        // (the stored value is SHORTER than the probe — not a match, and such
-        // data is legal: values mix letters and digits), while exact
-        // additionally wants nothing left after the probe.
-        let matched = if exact { suffix.len() == kl } else { suffix.len() >= kl };
-        if !matched {
+    for (suffix, value) in okm_core::scan_suffix_kv(store, &p) {
+        // Same false-hit test as the key-only scan: below the tail width the
+        // probe was satisfied by tail bytes, so the stored value is SHORTER
+        // than the probe and cannot start with it.
+        if suffix.len() < kl {
             continue;
         }
         let start = suffix.len() - kl;
-        out.push(
-            crate::decode_key(schema, &suffix[start..]).map_err(|e: crate::CodecError| e.to_string())?,
-        );
+        let key = crate::decode_key(schema, &suffix[start..])
+            .map_err(|e: crate::CodecError| e.to_string())?;
+        out.push((key, decode_includes(schema, index, &value)?));
+    }
+    Ok(out)
+}
+
+/// Decode one entry's includes segment into a name-keyed map — the dynamic
+/// counterpart of the typed side's generated `decode_covered`.
+///
+/// The segment is a bare concatenation of payload encodings (no frames, no
+/// length prefixes), so it is located by width alone: fixed-width fields cut at
+/// their declared width, a trailing variable-width field (at most one, last
+/// only — the same order rule the indexed segment follows) takes the
+/// remainder. Only `Str` has a variable-width encoding here, matching the
+/// write side (`encode_variable`).
+pub fn decode_includes(
+    schema: &CollectionSchema,
+    index: &AccessMethod,
+    raw: &[u8],
+) -> Result<ValueMap, String> {
+    let mut out = ValueMap::new();
+    let mut off = 0usize;
+    for name in &index.includes {
+        if schema.key_fields.iter().any(|f| &f.name == name) {
+            return Err(format!(
+                "includes field `{name}` is a key field; includes take payload fields only"
+            ));
+        }
+        let f = find_field(schema, name)
+            .ok_or_else(|| format!("includes field `{name}` not in schema"))?;
+        let v = if f.width == 0 {
+            let rest = raw.get(off..).ok_or_else(|| {
+                format!("includes field `{name}`: segment is shorter than its head")
+            })?;
+            off = raw.len();
+            match f.ty {
+                okm_core::field::FieldType::Str => Value::Str(
+                    String::from_utf8(rest.to_vec())
+                        .map_err(|e| format!("includes field `{name}` is not valid UTF-8: {e}"))?,
+                ),
+                other => {
+                    return Err(format!(
+                        "includes field `{name}`: variable-width kind {other:?} has no includes encoding"
+                    ));
+                }
+            }
+        } else {
+            let end = off + f.width;
+            if end > raw.len() {
+                return Err(format!(
+                    "includes field `{name}`: segment is {} bytes, needs {end}",
+                    raw.len()
+                ));
+            }
+            let v = crate::decode::decode_fixed(name.clone(), f.ty, f.width, &raw[off..end])
+                .map_err(|e| format!("includes field `{name}`: {e:?}"))?;
+            off = end;
+            v
+        };
+        out.insert(name.clone(), v);
+    }
+    if off != raw.len() {
+        return Err(format!(
+            "includes segment: {} bytes left over (declares {})",
+            raw.len() - off,
+            index.includes.len()
+        ));
     }
     Ok(out)
 }

@@ -236,12 +236,13 @@ fn timeline_is_a_list_encoding() {
     assert_eq!(listed[0].0.decoded.id, 502); // created_at=10 最先
     assert!(listed[0].1.is_some());
 
-    // scan_covered：includes(title_len) 在 value 里，无需回表即可读；
+    // scan_covered：includes(title_len) 在 value 里，无需回表即可读——
+    // 解出来的是生成的覆盖结构体，不是字节
     // 按 (author, created_at) 升序：10, 20, 30 → title_len 12, 11, 10
     let covered = t.scan_covered::<ByTimeline>(&7u64.to_be_bytes());
     assert_eq!(covered.len(), 3);
-    assert_eq!(covered[0].1, 12u32.to_be_bytes().to_vec());
-    assert_eq!(covered[2].1, 10u32.to_be_bytes().to_vec());
+    assert_eq!(covered[0].1.title_len, 12);
+    assert_eq!(covered[2].1.title_len, 10);
 }
 
 #[test]
@@ -274,10 +275,9 @@ fn truncated_key_prefix_drops_redundant_tail() {
     assert_eq!(listed[0].0.taken, 8);
     assert!(listed[0].1.is_none()); // 截断身份 → 不回表
 
-    // 覆盖扫描本例无 includes → value 全空；仅验证条数与顺序
+    // 覆盖扫描本例无 includes → `Covered = ()`：仅验证条数与顺序
     let covered = t.scan_covered::<ByKind>(&[3]);
     assert_eq!(covered.len(), 3);
-    assert!(covered.iter().all(|(_, v)| v.is_empty()));
 }
 
 #[test]
@@ -660,8 +660,8 @@ fn partial_index_admits_only_matching_rows() {
     // 覆盖扫描不受谓词影响：includes(title_len) 仍在 value 里
     let covered = t.scan_covered::<ByOpenAssignee>(&7u64.to_be_bytes());
     assert_eq!(covered.len(), 2);
-    assert_eq!(covered[0].1, 3u32.to_be_bytes().to_vec());
-    assert_eq!(covered[1].1, 2u32.to_be_bytes().to_vec());
+    assert_eq!(covered[0].1.title_len, 3);
+    assert_eq!(covered[1].1.title_len, 2);
 
     // delete 走同一个 entry_pairs：被接纳的行清干净
     t.purge(&open_a.0);
@@ -774,3 +774,62 @@ fn function_index_with_where_filters_row() {
     assert_eq!(t.scan::<ByOpenToken>(b"rust").len(), 1);
 }
 
+// ---- 覆盖段（includes）的读侧：解出来是字段，不是字节 ----------------------
+
+/// Note：includes 里放一个变宽字段（String）。覆盖段是裸拼接，变宽字段取
+/// “该条 value 的剩余字节”，所以它只能排在最后（声明期规则，与 fields 同一条）。
+#[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
+pub struct NoteKey {
+    pub id: u64,
+}
+
+#[derive(DocumentEncode, Clone, PartialEq, Debug)]
+#[ok_ref(NoteKey)]
+#[ok_index(by_note_author { fields(author_id), includes(rank, title) })]
+#[ok_ns(24)]
+pub struct Note {
+    pub author_id: u64,
+    pub rank: u32,
+    /// 变宽字段：includes 里它只能排最后
+    pub title: String,
+}
+
+use __OkmCovered_Post_by_timeline as PostCovered;
+use __OkmIndex_Note_by_note_author as ByNoteAuthor;
+
+#[test]
+fn covered_scan_answers_without_the_primary_table() {
+    // includes 是派生副本，不是第二份真相：主表行删掉（索引条目留着），覆盖
+    // 扫描照样答得出。一次 entry-value 解码代替一次点读 + 整行解码，这就是
+    // includes 用字节换回来的东西。
+    let t = <Post as Document>::collection(TestStore::slatedb_mem());
+    let (k, r) = mk_post(601, 7, 11, 77);
+    t.put(&k, &r);
+
+    // 生成的覆盖结构体：名字与字段即契约（一个 include 字段 = 一个字段）
+    let covered = t.scan_covered::<ByTimeline>(&7u64.to_be_bytes());
+    assert_eq!(covered[0].1, PostCovered { title_len: 77 });
+
+    t.store().del(&t.primary_key(&k));
+    assert!(t.get(&k).is_none(), "主表行已不在");
+    let covered = t.scan_covered::<ByTimeline>(&7u64.to_be_bytes());
+    assert_eq!(covered.len(), 1);
+    assert_eq!(covered[0].1.title_len, 77);
+}
+
+#[test]
+fn covered_includes_walk_fixed_widths_then_the_variable_tail() {
+    // 覆盖段按声明顺序解：定宽字段按宽度切（rank 4B），最后一个变宽字段取
+    // 剩余字节——两条不同长度的 title 各自解回自己，rank 不串位。
+    let t = <Note as Document>::collection(TestStore::slatedb_mem());
+    t.put(&NoteKey { id: 1 }, &Note { author_id: 7, rank: 5, title: "短".into() });
+    t.put(&NoteKey { id: 2 }, &Note { author_id: 7, rank: 9, title: "更长的标题文本".into() });
+    t.put(&NoteKey { id: 3 }, &Note { author_id: 8, rank: 1, title: "别人".into() });
+
+    let covered = t.scan_covered::<ByNoteAuthor>(&7u64.to_be_bytes());
+    assert_eq!(covered.len(), 2);
+    assert_eq!(covered[0].1.rank, 5);
+    assert_eq!(covered[0].1.title, "短");
+    assert_eq!(covered[1].1.rank, 9);
+    assert_eq!(covered[1].1.title, "更长的标题文本");
+}

@@ -316,6 +316,33 @@ impl<S: VirtualStorage> DynamicCollection<S> {
             encoded_prefix,
         )
     }
+
+    /// Covered scan over one access method: same range as [`scan`](Self::scan),
+    /// but the entries' VALUE (the declared `includes` fields) is read and
+    /// decoded, so the answer needs no document fetch. Returns
+    /// `(key fields, covered fields)` per hit, both name-keyed.
+    ///
+    /// The read half of `includes`: `scan` returns keys and callers `fetch` each
+    /// hit; this pays one entry-value decode instead. An access method declaring
+    /// no `includes` covers nothing — the second map is empty.
+    pub fn scan_covered(
+        &self,
+        index_slot: u16,
+        encoded_prefix: &[u8],
+    ) -> Result<Vec<(ValueMap, ValueMap)>, String> {
+        let index = self
+            .indexes
+            .iter()
+            .find(|i| i.slot == index_slot)
+            .ok_or_else(|| format!("no access method with slot {index_slot}"))?;
+        crate::index::scan_access_method_covered(
+            &self.store,
+            &self.schema,
+            &self.ns,
+            index,
+            encoded_prefix,
+        )
+    }
     // --- Dynamic segment bridge (slot 1, vocabulary slots 2/3) -----------
     // The same per-document extension the typed Collection exposes:
     // name-keyed fields outside the schema's declared vocabulary, encoded
