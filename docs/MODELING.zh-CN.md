@@ -1024,7 +1024,7 @@ reduce  HighWater(id) { group(global) }  → id 发号（点读水位、+1）
 
 上述约束不是免费的，但代价有界，且换来的结构收益大于成本：
 
-**key 里直接取 vs 访问方法取。** 剩余标识烧进 key，扫描时随条目免费带回（key 尾字节直接在手）；走访问方法，这个维度要经一次间接操作取回——`scan` 回表每条多一次主表点读加一次 `decode_payload` 解析，`scan_covered` 免点读但仍多一次 entry value 解析。单条确实多付一次解析。
+**key 里直接取 vs 访问方法取。** 剩余标识烧进 key，扫描时随条目免费带回（key 尾字节直接在手）；走访问方法，这个维度要经一次间接操作取回——`scan` 回表每条多一次主表点读加一次 `decode_payload` 解析，`scan_covered` 免点读，代价改解条目 value 里的 includes 段（一个 `Covered` 结构体）。单条仍然多付一次解析。
 
 **单次成本不高，摊销了。** 那一次间接是常规 LSM 点查/一次 TLV 解析，不在热路径的量级上；换来的是键布局不用为每个"还要按 X 查"的维度变形，业务增长时加 `#[ok_index]` 而不是重新设计 key。
 
@@ -1034,7 +1034,7 @@ reduce  HighWater(id) { group(global) }  → id 发号（点读水位、+1）
 
 ## 覆盖索引克制
 
-`includes(...)` 把 payload 字段复制进索引条目，`scan_covered` 因此免回表。这对高扇出读路径是真实收益——但每次 put/delete 都要付永久的写成本。
+`includes(...)` 把 payload 字段复制进索引条目，`scan_covered` 因此免回表，并直接返回解码后的覆盖字段（`I::Covered`，每个带 includes 的声明生成一个结构体）。这对高扇出读路径是真实收益——但每次 put/delete 都要付永久的写成本。
 
 纪律：
 

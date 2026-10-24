@@ -189,3 +189,50 @@ separator inside the VALUE (`last\x00first`), the application owning that
 contract — the KEY still carries no terminator, so the rule below stands. The
 rule to carry away: NAKED bytes cannot sit mid-segment; a SELF-DELIMITING frame
 can.
+
+## Update 2026-10-24: `includes` gains its read half — and the value segment was never TLV
+
+Two defects and one correction.
+
+**The correction.** This ADR and ADR-0006 wrote "value = includes fields TLV".
+The value has always been a BARE concatenation of the covered fields' payload
+encodings — no tag byte, no length prefix, laid down in `INCLUDES` order by
+`entry_value`. That is not a wart to be fixed: locating a field by its declared
+width is exactly what makes the segment decodable without a frame, the same
+trick the indexed segment uses, and it costs nothing beyond the field bytes.
+Both documents say so now.
+
+**The defect.** The write side had copied the covered fields into every entry
+since the feature landed; no read path read them. `Collection::scan_covered`
+existed but returned the raw value bytes — a door with the lock still on — and
+the dynamic side (`scan_access_method`) was a KEY-ONLY scan, so the copy was paid
+on every write and consumed by nobody. A feature that only has its cost is worse
+than no feature.
+
+**The read side, as landed.**
+
+- `KvIndex` gains `type Covered` and `fn decode_covered(b: &[u8]) -> Self::Covered`.
+  Per covering declaration the derive generates a struct
+  `__OkmCovered_{Row}_{index}` whose fields are the `INCLUDES` names in order,
+  typed exactly as in the document, and the decode walks the segment by width:
+  fixed-width fields cut at their declared width, the trailing variable-width
+  field (at most one, last only — the existing declaration-order rule) takes the
+  remainder. A declaration without `includes` gets `Covered = ()`: nothing was
+  copied, so there is nothing to decode.
+- `Collection::scan_covered` returns `(PrefixKey<K>, I::Covered)` instead of
+  `(PrefixKey<K>, Vec<u8>)`. The raw-bytes door is gone on purpose: bytes are
+  what `scan_suffix_kv` hands out, and a covered scan that stops at bytes has not
+  answered anything.
+- Dynamic side: `DynamicCollection::scan_covered` (over
+  `okm_dynamic::scan_access_method_covered` / `decode_includes`) returns
+  `(key fields, covered fields)` as two name-keyed maps. Two maps, not one,
+  because a key field name and a payload field name may collide and the key is
+  the identity rather than payload data.
+
+**Why this is not a second source of truth.** The segment is derived state,
+regenerated wholesale on every write: `entry_pairs` is the single entry producer,
+`put` lands the row and every entry in ONE batch/commit, and
+`merge` / `replace` / `purge` reach the same producer through the stored row. No
+second writer, no incremental bookkeeping, no extra commit — the cost is bytes in
+the entry. Per the ADR-0006 positioning, that cost is worth paying only for a
+measured high-fanout read path, which is what the covered door is for.

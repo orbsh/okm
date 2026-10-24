@@ -142,7 +142,7 @@ Index key layout (supersedes the slot mechanism — the 2-byte table namespace
 alone discriminates entries; each index derives its own ns from the table's):
 
 ```
-[table_ns 2B][indexed fields][primary key prefix]   value = includes fields TLV (empty when absent)
+[table_ns 2B][indexed fields][primary key prefix]   value = includes segment: the covered fields' bare encodings, INCLUDES order (empty when absent)
 ```
 
 - The indexed fields come from the **row payload** (payload-side encoders,
@@ -151,7 +151,10 @@ alone discriminates entries; each index derives its own ns from the table's):
   `key(…)` — truncation changes row-level uniqueness, not grouping; use it
   only when the subset is unique per row.
 - `includes(age)` copies payload fields into the index **value**, making the
-  scan self-sufficient (no point-lookup back to the row). **Positioning: this
+  scan self-sufficient (no point-lookup back to the row): the value is a bare
+  concatenation located by declared width, and `Collection::scan_covered` decodes
+  it into a typed `Covered` struct — the read half of the feature, per ADR-0005's
+  2026-10-24 update. **Positioning: this
   is a materialized view for high-fanout queries, not a default optimization**
   — in KV, "回表" is one bloom-filtered point lookup, cheap; widening every
   index entry and enlarging the update surface to save a couple of point
