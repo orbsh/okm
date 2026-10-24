@@ -1829,15 +1829,16 @@ panic lints allowed only in the places it names. So the runtime half of
       open hands back an iterator whose one item is the error), and redb's
       `scan_range_iter` reports a failed `begin_read` / `range` the same way.
       `localStorage` had no production read panic left.
-- [ ] Then the gate (runtime half ready: `okm-core` lib reports 0 warnings under
-      the three panic lints; blocked only on the compile-time surface below):
+- [x] The gate (landed 2026-10-24):
       `[workspace.lints.clippy]` denying `unwrap_used`,
       `expect_used`, `panic`, `unwrap_in_result`, `panic_in_result_fn`, inherited by
       every member. Tests keep the vocabulary through one crate-root
       `#![cfg_attr(test, allow(..))]` per crate, plus one `#![allow(..)]` line per
       `tests/` crate: `[lints]` is per-package and covers every target, and neither
       Cargo.toml nor clippy.toml can scope a lint to lib/bins (2026-10-24, verified
-      on the seven sibling repos that now carry the gate).
+      on the seven sibling repos that now carry the gate). All nine members inherit
+      it; the three binding crates are separate workspaces and still carry 29
+      `unwrap`s in their own bodies, so they are a separate decision.
 - [x] Poison, 28 production sites (bindings/okm-steel 7, okm-python 8,
       okm-stream 5, `okm-core/build.rs` 3, subscribe 3, nest 2):
       `unwrap_or_else(std::sync::PoisonError::into_inner)`, with the reason stated

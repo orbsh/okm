@@ -12,3 +12,6 @@ tokio = ["dep:tokio"]
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"] }
+
+[lints]
+workspace = true

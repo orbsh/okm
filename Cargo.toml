@@ -1,3 +1,14 @@
 [workspace]
 resolver = "2"
 members = ["okm-core", "okm-derive", "okm-wire", "okm-dynamic", "okm-query", "okm-ngram", "okm-vector", "okm-graph", "okm-stream"]
+
+# The panic gate: a caller that can act on a failure gets a `Result` (ADR-0037 /
+# 0038 / 0039), and the places where nobody can act say so in place and are listed
+# in ADR-0040. Test targets opt back in per crate (`#![cfg_attr(test, allow(..))]`)
+# because `[lints]` is per-package and covers every target.
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+unwrap_in_result = "deny"
+panic_in_result_fn = "deny"
