@@ -33,23 +33,25 @@ pub struct UserV3 {
 struct MemEngine(Mutex<BTreeMap<Vec<u8>, Vec<u8>>>);
 
 impl okm_steel::okm_entry::Engine for MemEngine {
-    fn put(&self, key: Vec<u8>, value: Vec<u8>) {
+    fn put(&self, key: Vec<u8>, value: Vec<u8>) -> Result<(), String> {
         self.0.lock().unwrap().insert(key, value);
+        Ok(())
     }
-    fn get(&self, key: &[u8]) -> Option<Vec<u8>> {
-        self.0.lock().unwrap().get(key).cloned()
+    fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, String> {
+        Ok(self.0.lock().unwrap().get(key).cloned())
     }
-    fn del(&self, key: &[u8]) {
+    fn del(&self, key: &[u8]) -> Result<(), String> {
         self.0.lock().unwrap().remove(key);
+        Ok(())
     }
-    fn scan_range(&self, begin: &[u8], end: Option<&[u8]>) -> Vec<Vec<u8>> {
+    fn scan_range(&self, begin: &[u8], end: Option<&[u8]>) -> Result<Vec<Vec<u8>>, String> {
         let rows = self.0.lock().unwrap();
         let start = begin.to_vec();
         let iter: Box<dyn Iterator<Item = (&Vec<u8>, &Vec<u8>)>> = match end {
             Some(e) => Box::new(rows.range(start..e.to_vec())),
             None => Box::new(rows.range(start..)),
         };
-        iter.map(|(k, _)| k.clone()).collect()
+        Ok(iter.map(|(k, _)| k.clone()).collect())
     }
 }
 

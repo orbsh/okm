@@ -23,11 +23,18 @@ use std::sync::Arc;
 /// hold a different okm build than the binding. Semantics mirror
 /// `VirtualStorage` (ordered keys, `None` end = unbounded, scan returns
 /// FULL keys).
+///
+/// The four methods answer `Result<_, String>` for the same
+/// rev-independence reason: since ADR-0038/0039 a storage failure is a
+/// value the caller must hear about, and it must cross this seam as a
+/// plain string rather than as `okm_core::Error` — the host may hold a
+/// different okm build, and its error type is not ours to name. A binding
+/// maps the string into whatever its own error type is.
 pub trait Engine: Send + Sync {
-    fn put(&self, key: Vec<u8>, value: Vec<u8>);
-    fn get(&self, key: &[u8]) -> Option<Vec<u8>>;
-    fn del(&self, key: &[u8]);
-    fn scan_range(&self, begin: &[u8], end: Option<&[u8]>) -> Vec<Vec<u8>>;
+    fn put(&self, key: Vec<u8>, value: Vec<u8>) -> Result<(), String>;
+    fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, String>;
+    fn del(&self, key: &[u8]) -> Result<(), String>;
+    fn scan_range(&self, begin: &[u8], end: Option<&[u8]>) -> Result<Vec<Vec<u8>>, String>;
 }
 
 /// The collection's engine: the embedded mode's in-process store or an
@@ -40,28 +47,34 @@ pub enum EngineBox {
 }
 
 impl okm_core::storage::VirtualStorage for EngineBox {
-    fn put(&self, key: Vec<u8>, value: Vec<u8>) {
+    fn put(&self, key: Vec<u8>, value: Vec<u8>) -> okm_core::error::Result<()> {
         match self {
             Self::Test(s) => s.put(key, value),
-            Self::Injected(e) => e.put(key, value),
+            Self::Injected(e) => e.put(key, value).map_err(okm_core::error::Error::Engine),
         }
     }
-    fn get(&self, key: &[u8]) -> Option<Vec<u8>> {
+    fn get(&self, key: &[u8]) -> okm_core::error::Result<Option<Vec<u8>>> {
         match self {
             Self::Test(s) => s.get(key),
-            Self::Injected(e) => e.get(key),
+            Self::Injected(e) => e.get(key).map_err(okm_core::error::Error::Engine),
         }
     }
-    fn del(&self, key: &[u8]) {
+    fn del(&self, key: &[u8]) -> okm_core::error::Result<()> {
         match self {
             Self::Test(s) => s.del(key),
-            Self::Injected(e) => e.del(key),
+            Self::Injected(e) => e.del(key).map_err(okm_core::error::Error::Engine),
         }
     }
-    fn scan_range(&self, begin: &[u8], end: Option<&[u8]>) -> Vec<Vec<u8>> {
+    fn scan_range(
+        &self,
+        begin: &[u8],
+        end: Option<&[u8]>,
+    ) -> okm_core::error::Result<Vec<Vec<u8>>> {
         match self {
             Self::Test(s) => s.scan_range(begin, end),
-            Self::Injected(e) => e.scan_range(begin, end),
+            Self::Injected(e) => e
+                .scan_range(begin, end)
+                .map_err(okm_core::error::Error::Engine),
         }
     }
 }
