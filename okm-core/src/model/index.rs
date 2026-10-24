@@ -220,7 +220,12 @@ pub trait Document: Sized + Clone {
     /// parent payload decodes, fetch each `Unit` field's child document
     /// by its stored key and backfill `value`. Default no-op (no embedded
     /// fields). Derive-generated; failures leave `value: None`.
-    fn __okm_embed_deref(&mut self, _store: &dyn VirtualStorage) {}
+    fn __okm_embed_deref(
+        &mut self,
+        _store: &dyn VirtualStorage,
+    ) -> crate::error::Result<()> {
+        ::core::result::Result::Ok(())
+    }
     /// Embedded-field (Ref/Refs) write entries: `(child pkey, child payload)` pairs
     /// for fields carrying `value: Some(_)`. Default empty.
     fn __okm_embed_entries(&self) -> Vec<(Vec<u8>, Vec<u8>)> {
@@ -259,7 +264,9 @@ pub trait Document: Sized + Clone {
     /// read path after `__okm_embed_deref`; default no-op (no categorical
     /// fields). A missing vocabulary entry leaves the value unresolved rather
     /// than inventing a name.
-    fn __okm_deref_vocab(&mut self, _store: &dyn VirtualStorage) {}
+    fn __okm_deref_vocab(&mut self, _store: &dyn VirtualStorage) -> crate::error::Result<()> {
+        ::core::result::Result::Ok(())
+    }
     /// document -> map: every declared field lifted into a run-time
     /// DynamicValue (ADR-0012 document-map bridge; derive-generated).
     fn to_map(&self) -> std::collections::BTreeMap<String, crate::model::obj_dynamic::DynamicValue>;
@@ -569,7 +576,7 @@ pub fn scan_index<S: VirtualStorage, I: KvIndex>(
     store: &S,
     ns_prefix: &[u8],
     encoded: &[u8],
-) -> Vec<PrefixKey<I::Key>> {
+) -> crate::error::Result<Vec<PrefixKey<I::Key>>> {
     scan_index_filtered::<S, I>(store, ns_prefix, encoded, false)
 }
 
@@ -584,7 +591,7 @@ pub fn scan_index_exact<S: VirtualStorage, I: KvIndex>(
     store: &S,
     ns_prefix: &[u8],
     encoded: &[u8],
-) -> Vec<PrefixKey<I::Key>> {
+) -> crate::error::Result<Vec<PrefixKey<I::Key>>> {
     scan_index_filtered::<S, I>(store, ns_prefix, encoded, true)
 }
 
@@ -593,12 +600,12 @@ fn scan_index_filtered<S: VirtualStorage, I: KvIndex>(
     ns_prefix: &[u8],
     encoded: &[u8],
     exact: bool,
-) -> Vec<PrefixKey<I::Key>> {
+) -> crate::error::Result<Vec<PrefixKey<I::Key>>> {
     let p = I::entry_prefix(ns_prefix, encoded);
     let taken = I::key_prefix_width();
     let kl = I::Key::KEY_LEN;
-    store
-        .scan_suffix(&p)
+    Ok(store
+        .scan_suffix(&p)?
         .iter()
         .filter_map(|suffix| {
             // The tail's width is known, so the field segment's length is
@@ -621,5 +628,5 @@ fn scan_index_filtered<S: VirtualStorage, I: KvIndex>(
             };
             Some(PrefixKey { decoded, taken })
         })
-        .collect()
+        .collect())
 }

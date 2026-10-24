@@ -165,9 +165,17 @@ impl VirtualStorage for LocalStorageStore {
             .expect("localStorage put failed (quota?)");
     }
 
-    fn get(&self, key: &[u8]) -> Option<Vec<u8>> {
-        let text = self.storage.get_item(&b64_encode(key)).ok()??;
-        b64_decode(&text)
+    fn get(&self, key: &[u8]) -> crate::error::Result<Option<Vec<u8>>> {
+        let text = match self.storage.get_item(&b64_encode(key)) {
+            Ok(Some(text)) => text,
+            Ok(None) => return Ok(None),
+            Err(e) => {
+                return Err(crate::error::Error::Engine(format!(
+                    "localStorage get_item: {e:?}"
+                )))
+            }
+        };
+        Ok(b64_decode(&text))
     }
 
     fn del(&self, key: &[u8]) {
@@ -176,24 +184,29 @@ impl VirtualStorage for LocalStorageStore {
             .expect("localStorage remove failed");
     }
 
-    fn scan_suffix(&self, prefix: &[u8]) -> Vec<Vec<u8>> {
-        self.rows_sorted()
+    fn scan_suffix(&self, prefix: &[u8]) -> crate::error::Result<Vec<Vec<u8>>> {
+        Ok(self
+            .rows_sorted()
             .into_iter()
             .filter_map(|k| k.strip_prefix(prefix).map(|s| s.to_vec()))
-            .collect()
+            .collect())
     }
 
-    fn scan_range(&self, begin: &[u8], end: Option<&[u8]>) -> Vec<Vec<u8>> {
+    fn scan_range(
+        &self,
+        begin: &[u8],
+        end: Option<&[u8]>,
+    ) -> crate::error::Result<Vec<Vec<u8>>> {
         if let Some(end) = end
             && end <= begin
         {
-            return Vec::new();
+            return Ok(Vec::new());
         }
         // `end = None` is genuinely UNBOUNDED (reaching prefix_end here
         // would be wrong twice: begin-only ranges must run to the
         // keyspace end, and prefix_end() is scan_suffix's derivation —
         // the trait default already composes them).
-        match end {
+        Ok(match end {
             Some(end) => self
                 .rows_sorted()
                 .into_iter()
@@ -204,7 +217,7 @@ impl VirtualStorage for LocalStorageStore {
                 .into_iter()
                 .filter(|k| k.as_slice() >= begin)
                 .collect(),
-        }
+        })
     }
 
     fn scan_range_iter(&self, begin: &[u8], end: Option<&[u8]>) -> crate::engine::storage::ScanIter {
@@ -227,7 +240,13 @@ impl VirtualStorage for LocalStorageStore {
             }
         }
         pairs.sort_by(|a, b| a.0.cmp(&b.0));
-        crate::engine::storage::ScanIter::Buffered(pairs.into_iter())
+        crate::engine::storage::ScanIter::Buffered(
+            pairs
+                .into_iter()
+                .map(::core::result::Result::Ok)
+                .collect::<Vec<_>>()
+                .into_iter(),
+        )
     }
 }
 

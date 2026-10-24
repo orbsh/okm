@@ -128,9 +128,11 @@ pub fn reduce_get<S: VirtualStorage, A: Reduce>(
     ns_prefix: &[u8],
     key: &<A::Document as Document>::Key,
     document: &A::Document,
-) -> Option<A::Acc> {
-    let bytes = store.get(&A::entry_key(ns_prefix, key, document))?;
-    Some(A::Acc::decode_acc(&bytes))
+) -> crate::error::Result<Option<A::Acc>> {
+    let Some(bytes) = store.get(&A::entry_key(ns_prefix, key, document))? else {
+        return Ok(None);
+    };
+    Ok(Some(A::Acc::decode_acc(&bytes)))
 }
 
 /// Scan every group of one reduce: full group segment + acc bytes.
@@ -138,14 +140,14 @@ pub fn reduce_get<S: VirtualStorage, A: Reduce>(
 pub fn scan_reduces<S: VirtualStorage, A: Reduce>(
     store: &S,
     ns_prefix: &[u8],
-) -> Vec<(Vec<u8>, A::Acc)> {
+) -> crate::error::Result<Vec<(Vec<u8>, A::Acc)>> {
     let mut prefix = Vec::with_capacity(ns_prefix.len() + crate::model::index::slot_len(A::SLOT));
     prefix.extend_from_slice(ns_prefix);
     crate::model::index::write_slot(&mut prefix, A::SLOT);
-    scan_suffix_kv(store, &prefix)
+    Ok(scan_suffix_kv(store, &prefix)?
         .into_iter()
         .map(|(suffix, value)| (suffix, A::Acc::decode_acc(&value)))
-        .collect()
+        .collect())
 }
 
 /// The write-side hook on the Document trait (default no-op: undecorated
