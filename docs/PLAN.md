@@ -1813,9 +1813,12 @@ binding surfaces below.
       pump's `catch_unwind` swallows it and a writer carries no reply box
       (ADR-0010 §6). Making writes answer costs the fire-and-forget shape — the
       decision comes first.
-- [ ] The read arms of the slatedb driver (`scan` / `iter`), redb's `begin_read`
-      / `range`, and `localStorage`'s `get_item`: the same mechanical conversion
-      ADR-0039 did for writes, on the face ADR-0038 already made `Result`.
+- [x] The read arms, same round: the slatedb driver's `Get` / `ScanRange` /
+      `ScanSuffix` / `ScanStream` answer `Result<_, String>` over the channel
+      (`SlatedbSync::request` returns `crate::error::Result`; a scan that cannot
+      open hands back an iterator whose one item is the error), and redb's
+      `scan_range_iter` reports a failed `begin_read` / `range` the same way.
+      `localStorage` had no production read panic left.
 - [ ] Then the gate: `[workspace.lints.clippy]` denying `unwrap_used`,
       `expect_used`, `panic`, `unwrap_in_result`, `panic_in_result_fn`, inherited by
       every member. Tests keep the vocabulary through one crate-root
@@ -1834,9 +1837,11 @@ binding surfaces below.
       invariant: `bridge/arrow_bridge.rs:60` (VarInt frame), `:436` (cold-frame
       length prefix), `model/graph.rs:260-261` (`NodeRef::decode` returns `Option`
       — the call site expects it away).
-- [ ] Bindings, 43 sites (`okm-python` 26, `okm-steel` 17): a panic there is a dead
-      interpreter or a dead host process, so the error face is `PyErr` / steel's
-      value, not a message on stderr.
+- [ ] Bindings' own bodies, 29 sites (`okm-python` 18, `okm-steel` 10,
+      `okm-entry` 1): a panic there is a dead interpreter or a dead host process,
+      so the error face is `PyErr` / steel's value, not a message on stderr. (The
+      host-injected seam itself already answers `Result<_, String>` — commit
+      `38c5c6c`; these are the poison and host-call sites inside the bindings.)
 - [ ] Compile-time code, 173 sites (`okm-derive` 161, `okm-core/build.rs` 12): the
       derive's `panic!`s are diagnostics — `syn::Error` → `to_compile_error` carries
       a span, which the panic machinery does not. `build.rs:132,137,143` emits

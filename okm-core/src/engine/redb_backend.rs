@@ -54,6 +54,12 @@ fn eng<E: std::fmt::Display>(e: E) -> crate::error::Error {
     crate::error::Error::Engine(e.to_string())
 }
 
+/// An iterator whose ONE item is a failure: what a streaming constructor answers
+/// when it cannot open the range (ADR-0038 keeps the error on the item).
+fn one_error(e: crate::error::Error) -> super::storage::ScanIter {
+    super::storage::ScanIter::Buffered(vec![Err(e)].into_iter())
+}
+
 impl VirtualStorage for RedbStore {
     /// redb note: the table is created on first write (`open_table`
     /// inside a write transaction creates it; read paths treat a
@@ -142,17 +148,27 @@ impl VirtualStorage for RedbStore {
         begin: &[u8],
         end: Option<&[u8]>,
     ) -> super::storage::ScanIter {
-        let txn = self.db.begin_read().expect("redb begin_read");
+        // A failure to even OPEN the range rides the ITEM (ADR-0038): the
+        // constructor cannot answer for it, and swallowing it is how "failed"
+        // used to read as "empty".
+        let txn = match self.db.begin_read() {
+            Ok(txn) => txn,
+            Err(e) => return one_error(eng(e)),
+        };
         let Ok(table) = txn.open_table(TABLE) else {
-            return super::storage::ScanIter::Buffered(std::iter::empty().collect::<Vec<_>>().into_iter());
+            // Missing table = empty keyspace (no writes yet), not a fault.
+            let empty: Vec<crate::error::Result<(Vec<u8>, Vec<u8>)>> = Vec::new();
+            return super::storage::ScanIter::Buffered(empty.into_iter());
         };
         let iter = match end {
             Some(end) => table.range_owned(begin..end),
             None => table.range_owned(begin..),
-        }
-        .expect("redb range");
+        };
         let _ = txn; // guard moved into the iterator via range_owned's Arc
-        super::storage::ScanIter::Redb(iter)
+        match iter {
+            Ok(iter) => super::storage::ScanIter::Redb(iter),
+            Err(e) => one_error(eng(e)),
+        }
     }
 
     /// redb native: ONE write transaction over the whole batch — redb's

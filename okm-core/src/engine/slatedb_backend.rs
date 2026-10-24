@@ -30,20 +30,33 @@ use std::sync::Arc;
 pub struct SlatedbIter {
     rx: ItemStream,
     done: bool,
-    back_buf: Option<std::vec::IntoIter<(Vec<u8>, Vec<u8>)>>,
+    back_buf: Option<std::vec::IntoIter<crate::error::Result<(Vec<u8>, Vec<u8>)>>>,
 }
 
 impl Iterator for SlatedbIter {
-    type Item = (Vec<u8>, Vec<u8>);
+    type Item = crate::error::Result<(Vec<u8>, Vec<u8>)>;
     fn next(&mut self) -> Option<Self::Item> {
         if self.done {
             return None;
         }
         match self.rx.recv() {
-            Ok(Some(kv)) => Some(kv),
-            Ok(None) | Err(_) => {
+            Ok(Some(Ok(kv))) => Some(Ok(kv)),
+            // The driver reported a fault: the item says so and the stream ends.
+            Ok(Some(Err(text))) => {
+                self.done = true;
+                Some(Err(crate::error::Error::Engine(text)))
+            }
+            Ok(None) => {
                 self.done = true;
                 None
+            }
+            // The driver thread is gone mid-stream: a fault, not the end of the
+            // range — say it once, then stop.
+            Err(e) => {
+                self.done = true;
+                Some(Err(crate::error::Error::Engine(format!(
+                    "slatedb driver gone mid-scan: {e}"
+                ))))
             }
         }
     }
@@ -57,7 +70,12 @@ impl DoubleEndedIterator for SlatedbIter {
             // BLOCKING drain to the stream's end sentinel (a try_iter
             // would race the driver and silently drop items it has
             // not sent yet).
-            let mut tail: Vec<(Vec<u8>, Vec<u8>)> = self.rx.iter().flatten().collect();
+            let mut tail: Vec<crate::error::Result<(Vec<u8>, Vec<u8>)>> = self
+                .rx
+                .iter()
+                .flatten()
+                .map(|item| item.map_err(crate::error::Error::Engine))
+                .collect();
             tail.reverse();
             self.back_buf = Some(tail.into_iter());
             self.done = true;
@@ -69,7 +87,10 @@ impl DoubleEndedIterator for SlatedbIter {
 /// The per-item channel of a lazy scan stream (the driver produces
 /// `Some((k, v))` items, `None` ends the range; a dropped consumer
 /// stops the producer on its send error).
-type ItemStream = std::sync::mpsc::Receiver<Option<(Vec<u8>, Vec<u8>)>>;
+/// Items carry the driver's verdict: a read fault rides the ITEM (ADR-0038 — a
+/// failed read is not an absent row), so the iterator reports it instead of the
+/// driver thread dying with nobody to tell.
+type ItemStream = std::sync::mpsc::Receiver<Option<Result<(Vec<u8>, Vec<u8>), String>>>;
 
 /// Commands the driver thread executes against the async Db. Every
 /// arm is flat (no re-entrant nesting — okm's call shapes are engine
@@ -85,7 +106,7 @@ enum Cmd {
     },
     Get {
         key: Vec<u8>,
-        reply: std::sync::mpsc::Sender<Option<Vec<u8>>>,
+        reply: std::sync::mpsc::Sender<Result<Option<Vec<u8>>, String>>,
     },
     Del {
         key: Vec<u8>,
@@ -96,13 +117,13 @@ enum Cmd {
     ScanRange {
         begin: Vec<u8>,
         end: Option<Vec<u8>>,
-        reply: std::sync::mpsc::Sender<Vec<Vec<u8>>>,
+        reply: std::sync::mpsc::Sender<Result<Vec<Vec<u8>>, String>>,
     },
     /// Keys MINUS the prefix under `prefix` (the `scan_suffix_sync`
     /// contract).
     ScanSuffix {
         prefix: Vec<u8>,
-        reply: std::sync::mpsc::Sender<Vec<Vec<u8>>>,
+        reply: std::sync::mpsc::Sender<Result<Vec<Vec<u8>>, String>>,
     },
     /// Lazy forward stream: the driver produces `(key, value)` items
     /// until drained or the consumer drops the iterator (send fails).
@@ -143,11 +164,8 @@ fn drive(rt: tokio::runtime::Runtime, db: Db, rx: std::sync::mpsc::Receiver<Cmd>
                 let _ = reply.send(out.map_err(|e| e.to_string()));
             }
             Cmd::Get { key, reply } => {
-                let v = rt
-                    .block_on(db.get(&key))
-                    .expect("slatedb get failed")
-                    .map(|v| v.to_vec());
-                let _ = reply.send(v);
+                let out = rt.block_on(db.get(&key)).map(|v| v.map(|v| v.to_vec()));
+                let _ = reply.send(out.map_err(|e| e.to_string()));
             }
             Cmd::Del { key, reply } => {
                 let out = rt.block_on(async {
@@ -157,29 +175,29 @@ fn drive(rt: tokio::runtime::Runtime, db: Db, rx: std::sync::mpsc::Receiver<Cmd>
                 let _ = reply.send(out.map_err(|e| e.to_string()));
             }
             Cmd::ScanRange { begin, end, reply } => {
-                let mut it = match end {
-                    Some(end) => rt
-                        .block_on(db.scan_prefix(b"", begin..end))
-                        .expect("slatedb scan failed"),
-                    None => rt
-                        .block_on(db.scan_prefix(b"", begin..))
-                        .expect("slatedb scan failed"),
-                };
-                let mut out = Vec::new();
-                while let Some(kv) = rt.block_on(it.next()).expect("slatedb iter failed") {
-                    out.push(kv.key.to_vec());
-                }
-                let _ = reply.send(out);
+                let out = rt.block_on(async {
+                    let mut it = match &end {
+                        Some(end) => db.scan_prefix(b"", begin.as_slice()..end.as_slice()).await?,
+                        None => db.scan_prefix(b"", begin.as_slice()..).await?,
+                    };
+                    let mut out = Vec::new();
+                    while let Some(kv) = it.next().await? {
+                        out.push(kv.key.to_vec());
+                    }
+                    Ok::<Vec<Vec<u8>>, slatedb::Error>(out)
+                });
+                let _ = reply.send(out.map_err(|e| e.to_string()));
             }
             Cmd::ScanSuffix { prefix, reply } => {
-                let mut it = rt
-                    .block_on(db.scan_prefix(&prefix, RangeFull))
-                    .expect("slatedb scan failed");
-                let mut out = Vec::new();
-                while let Some(kv) = rt.block_on(it.next()).expect("slatedb iter failed") {
-                    out.push(kv.key[prefix.len()..].to_vec());
-                }
-                let _ = reply.send(out);
+                let out = rt.block_on(async {
+                    let mut it = db.scan_prefix(&prefix, RangeFull).await?;
+                    let mut out = Vec::new();
+                    while let Some(kv) = it.next().await? {
+                        out.push(kv.key[prefix.len()..].to_vec());
+                    }
+                    Ok::<Vec<Vec<u8>>, slatedb::Error>(out)
+                });
+                let _ = reply.send(out.map_err(|e| e.to_string()));
             }
             Cmd::ScanStream { begin, end, reply } => {
                 let (item_tx, item_rx) = std::sync::mpsc::channel();
@@ -187,19 +205,27 @@ fn drive(rt: tokio::runtime::Runtime, db: Db, rx: std::sync::mpsc::Receiver<Cmd>
                 if reply.send(item_rx).is_err() {
                     continue;
                 }
-                let mut it = match end {
-                    Some(end) => rt
-                        .block_on(db.scan_prefix(b"", begin..end))
-                        .expect("slatedb scan failed"),
-                    None => rt
-                        .block_on(db.scan_prefix(b"", begin..))
-                        .expect("slatedb scan failed"),
+                // Every failure — opening the range or a bad step inside it —
+                // rides the stream as one Err item, so the consumer learns what
+                // happened instead of watching the thread die.
+                let opened = rt.block_on(async {
+                    match &end {
+                        Some(end) => db.scan_prefix(b"", begin.as_slice()..end.as_slice()).await,
+                        None => db.scan_prefix(b"", begin.as_slice()..).await,
+                    }
+                });
+                let mut it = match opened {
+                    Ok(it) => it,
+                    Err(e) => {
+                        let _ = item_tx.send(Some(Err(e.to_string())));
+                        continue;
+                    }
                 };
                 loop {
                     match rt.block_on(it.next()) {
                         Ok(Some(kv)) => {
                             if item_tx
-                                .send(Some((kv.key.to_vec(), kv.value.to_vec())))
+                                .send(Some(Ok((kv.key.to_vec(), kv.value.to_vec()))))
                                 .is_err()
                             {
                                 break; // consumer dropped the iterator
@@ -209,7 +235,10 @@ fn drive(rt: tokio::runtime::Runtime, db: Db, rx: std::sync::mpsc::Receiver<Cmd>
                             let _ = item_tx.send(None);
                             break;
                         }
-                        Err(e) => panic!("slatedb iter failed: {e}"),
+                        Err(e) => {
+                            let _ = item_tx.send(Some(Err(e.to_string())));
+                            break;
+                        }
                     }
                 }
             }
@@ -256,10 +285,37 @@ impl SlatedbSync {
         Self { tx: Arc::new(cmd_tx) }
     }
 
-    fn request<R>(&self, make: impl FnOnce(std::sync::mpsc::Sender<R>) -> Cmd) -> R {
+    /// One round trip whose answer is `Result<_, String>`: the driver's verdict
+    /// reaches the caller as a value instead of a panic on a thread nobody can
+    /// see. Every read and write verb rides this.
+    fn request<R>(
+        &self,
+        make: impl FnOnce(std::sync::mpsc::Sender<Result<R, String>>) -> Cmd,
+    ) -> crate::error::Result<R> {
         let (tx, rx) = std::sync::mpsc::channel();
-        self.tx.send(make(tx)).expect("slatedb driver alive");
-        rx.recv().expect("slatedb driver reply")
+        self.tx
+            .send(make(tx))
+            .map_err(|e| crate::error::Error::Engine(format!("slatedb driver gone: {e}")))?;
+        match rx.recv() {
+            Ok(Ok(v)) => Ok(v),
+            Ok(Err(text)) => Err(crate::error::Error::Engine(text)),
+            Err(e) => Err(crate::error::Error::Engine(format!(
+                "slatedb driver reply missing: {e}"
+            ))),
+        }
+    }
+
+    /// The one arm whose answer is a live STREAM rather than a value.
+    fn request_stream(
+        &self,
+        make: impl FnOnce(std::sync::mpsc::Sender<ItemStream>) -> Cmd,
+    ) -> crate::error::Result<ItemStream> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.tx
+            .send(make(tx))
+            .map_err(|e| crate::error::Error::Engine(format!("slatedb driver gone: {e}")))?;
+        rx.recv()
+            .map_err(|e| crate::error::Error::Engine(format!("slatedb driver reply missing: {e}")))
     }
 }
 
@@ -494,40 +550,24 @@ impl SlatedbSync {
     /// durable wait inside the driver mirrors `commit_batch` (the WAL boundary),
     /// and channel ORDER still guarantees a later read observes this write.
     pub fn put_sync(&self, key: Vec<u8>, value: Vec<u8>) -> crate::error::Result<()> {
-        let (tx, rx) = std::sync::mpsc::channel();
-        self.tx
-            .send(Cmd::Put { key, value, reply: tx })
-            .map_err(|e| crate::error::Error::Engine(format!("slatedb driver gone: {e}")))?;
-        match rx.recv() {
-            Ok(Ok(())) => Ok(()),
-            Ok(Err(text)) => Err(crate::error::Error::Engine(text)),
-            Err(e) => Err(crate::error::Error::Engine(format!(
-                "slatedb driver reply missing: {e}"
-            ))),
-        }
+        self.request(|reply| Cmd::Put { key, value, reply })
     }
-    pub fn get_sync(&self, key: &[u8]) -> Option<Vec<u8>> {
+    pub fn get_sync(&self, key: &[u8]) -> crate::error::Result<Option<Vec<u8>>> {
         let key = key.to_vec();
         self.request(|reply| Cmd::Get { key, reply })
     }
     pub fn del_sync(&self, key: &[u8]) -> crate::error::Result<()> {
-        let (tx, rx) = std::sync::mpsc::channel();
-        self.tx
-            .send(Cmd::Del { key: key.to_vec(), reply: tx })
-            .map_err(|e| crate::error::Error::Engine(format!("slatedb driver gone: {e}")))?;
-        match rx.recv() {
-            Ok(Ok(())) => Ok(()),
-            Ok(Err(text)) => Err(crate::error::Error::Engine(text)),
-            Err(e) => Err(crate::error::Error::Engine(format!(
-                "slatedb driver reply missing: {e}"
-            ))),
-        }
+        self.request(|reply| Cmd::Del { key: key.to_vec(), reply })
     }
-    pub fn scan_range_sync(&self, begin: &[u8], end: Option<&[u8]>) -> Vec<Vec<u8>> {
+    pub fn scan_range_sync(
+        &self,
+        begin: &[u8],
+        end: Option<&[u8]>,
+    ) -> crate::error::Result<Vec<Vec<u8>>> {
         if let Some(end) = end
             && end <= begin
         {
-            return Vec::new();
+            return Ok(Vec::new());
         }
         let begin = begin.to_vec();
         let end = end.map(|e| e.to_vec());
@@ -549,11 +589,20 @@ impl SlatedbSync {
         }
         let begin = begin.to_vec();
         let end = end.map(|e| e.to_vec());
-        let rx = self.request(|reply| Cmd::ScanStream { begin, end, reply });
-        super::storage::ScanIter::Slatedb(SlatedbIter { rx, done: false, back_buf: None })
+        match self.request_stream(|reply| Cmd::ScanStream { begin, end, reply }) {
+            Ok(rx) => {
+                super::storage::ScanIter::Slatedb(SlatedbIter { rx, done: false, back_buf: None })
+            }
+            // The stream could not even be opened: hand back an iterator whose
+            // one item is the failure, so the consumer still learns about it.
+            Err(e) => {
+                let one = vec![Err(e)];
+                super::storage::ScanIter::Buffered(one.into_iter())
+            }
+        }
     }
 
-    pub fn scan_suffix_sync(&self, prefix: &[u8]) -> Vec<Vec<u8>> {
+    pub fn scan_suffix_sync(&self, prefix: &[u8]) -> crate::error::Result<Vec<Vec<u8>>> {
         let prefix = prefix.to_vec();
         self.request(|reply| Cmd::ScanSuffix { prefix, reply })
     }
@@ -564,14 +613,14 @@ impl VirtualStorage for SlatedbSync {
         self.put_sync(key, value)
     }
     fn get(&self, key: &[u8]) -> crate::error::Result<Option<Vec<u8>>> {
-        Ok(self.get_sync(key))
+        self.get_sync(key)
     }
     fn del(&self, key: &[u8]) -> crate::error::Result<()> {
         self.del_sync(key)
     }
     fn scan_suffix(&self, prefix: &[u8]) -> crate::error::Result<Vec<Vec<u8>>> {
         Ok(self
-            .scan_range_sync(prefix, None)
+            .scan_range_sync(prefix, None)?
             .into_iter()
             .filter_map(|k| k.strip_prefix(prefix).map(|s| s.to_vec()))
             .collect())
@@ -581,7 +630,7 @@ impl VirtualStorage for SlatedbSync {
         begin: &[u8],
         end: Option<&[u8]>,
     ) -> crate::error::Result<Vec<Vec<u8>>> {
-        Ok(self.scan_range_sync(begin, end))
+        self.scan_range_sync(begin, end)
     }
     fn scan_range_iter(
         &self,
