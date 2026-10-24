@@ -76,11 +76,11 @@ refused write is a store saying no, and the writer is the party that must hear i
   would report one error for N ops with no way to say which.
 - **`put` kept, plus a `try_put`.** Two verbs for one operation invites the
   silent path — the same shape ADR-0037 rejected as "half-Result".
-- **Make the host-injected `Engine` trait in `bindings/` return `Result` too.**
-  That trait is an FFI contract that deliberately carries no okm types
-  ("bytes in, bytes out", rev-independent), and the host answers with its own
-  failure convention. The box that adapts it maps into okm's error type; the
-  boundary itself stays byte-shaped.
+- **Make the host-injected `Engine` trait in `bindings/` carry `okm_core::Error`.**
+  That trait is an FFI contract that deliberately carries no okm types ("bytes in,
+  bytes out", rev-independent): the host may hold a different okm build, so its
+  failure type is not ours to name. It answers `Result<_, String>` instead (which
+  is what landed), and the box that adapts it maps the string into `Error::Engine`.
 
 ## Consequences
 
@@ -92,15 +92,23 @@ refused write is a store saying no, and the writer is the party that must hear i
   a latency change on the sync path — the correctness it buys is that `Ok` means
   committed, which the other sync engines (redb commit, fjall insert) already
   meant.
-- `bindings/*` are NOT workspace members; their `impl VirtualStorage for EngineBox`
-  is already stale against ADR-0037/0038 (it still spells `get -> Option`), and
-  they need their own pass before they can consume this trait.
-- Still closed, and named rather than implied: the **read** arms of the slatedb
-  driver (scan / iter), redb's `begin_read` / `range`, and `localStorage`'s
-  `get_item` — all read-side, all "integrity reporting" in ADR-0037's sense, and
-  all mechanical now that the face they feed already answers `Result`. `nest`'s
-  executor invariants (exec_rx lock, serve twice, engine lock, begin present) and
-  `test_engine`'s open helpers stay as they are.
+- `bindings/*` are NOT workspace members, so no workspace check or test sees them.
+  The host-injected seam is `Result<_, String>` now (commit `38c5c6c`, ADR-0037 §1):
+  okm's error type must not cross that boundary, a plain string can. What is still
+  open there is the bindings' own bodies — 18 `unwrap`/`expect` in `okm-python`,
+  10 in `okm-steel`, 1 in `okm-entry` — i.e. poison and host-call handling, not the
+  storage contract.
+- **The read arms went with it** (same round): the slatedb driver's `Get`,
+  `ScanRange`, `ScanSuffix` and `ScanStream` answer `Result<_, String>` over the
+  channel (`SlatedbSync::request` returns `crate::error::Result`, and a scan that
+  cannot open hands back an iterator whose ONE item is the error), and redb's
+  `scan_range_iter` reports a failed `begin_read`/`range` the same way — the item
+  carries the fault, per ADR-0038, because a streaming constructor cannot answer
+  for it. `localStorage` had no production read panic left. What remains in the
+  engine layer is construction and invariants only: `SlatedbSync::open_mem`'s
+  runtime/thread spawn (two `expect`s on a path that runs once), `nest`'s executor
+  invariants (exec_rx lock, serve twice, engine lock, begin present), and
+  `test_engine`'s open helpers.
 - **A refused write comes back as `Err`, and tests lock it** (same round):
   `write_refusal_test::a_refused_write_comes_back_as_the_engines_text` drives a
   store that refuses through `Collection::put` and asserts the engine's own text,

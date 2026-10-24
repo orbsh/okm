@@ -10,8 +10,8 @@ fn verify_engine(store: TestStore) {
 
     // Point ops.
     let s = store.clone();
-    s.put(b"k1".to_vec(), b"v1".to_vec());
-    s.put(b"k2".to_vec(), b"v2".to_vec());
+    s.put(b"k1".to_vec(), b"v1".to_vec()).unwrap();
+    s.put(b"k2".to_vec(), b"v2".to_vec()).unwrap();
     assert_eq!(s.get(b"k1").unwrap().as_deref(), Some(b"v1".as_slice()), "{name}: point get");
     assert_eq!(s.get(b"missing").unwrap(), None, "{name}: absent key");
 

@@ -211,7 +211,7 @@ impl Iterator for ScanIter {
                 Err(e) => Err(crate::error::Error::Engine(e.to_string())),
             }),
             #[cfg(feature = "slatedb")]
-            ScanIter::Slatedb(it) => it.next().map(Ok),
+            ScanIter::Slatedb(it) => it.next(),
             ScanIter::Remote(it) => it.next(),
             ScanIter::Buffered(it) => it.next(),
         }
@@ -232,7 +232,7 @@ impl DoubleEndedIterator for ScanIter {
                 Err(e) => Err(crate::error::Error::Engine(e.to_string())),
             }),
             #[cfg(feature = "slatedb")]
-            ScanIter::Slatedb(it) => it.next_back().map(Ok),
+            ScanIter::Slatedb(it) => it.next_back(),
             ScanIter::Remote(it) => it.next_back(),
             ScanIter::Buffered(it) => it.next_back(),
         }
