@@ -81,9 +81,9 @@ impl StorageRegistry {
     pub fn schema_json(&self, name: &str) -> Option<String> {
         self.inner
             .lock()
-            .unwrap()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(name)
-            .map(|b| serde_json::to_value(b.schema.as_ref()).unwrap())
+            .and_then(|b| serde_json::to_value(b.schema.as_ref()).ok())
             .map(|v| v.to_string())
     }
 
@@ -95,7 +95,7 @@ impl StorageRegistry {
         let bound = self
             .inner
             .lock()
-            .unwrap()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(name)
             .cloned()
             .ok_or_else(|| format!("okm: no collection `{name}` injected for this session"))?;

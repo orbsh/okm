@@ -1837,8 +1837,11 @@ panic lints allowed only in the places it names. So the runtime half of
       `tests/` crate: `[lints]` is per-package and covers every target, and neither
       Cargo.toml nor clippy.toml can scope a lint to lib/bins (2026-10-24, verified
       on the seven sibling repos that now carry the gate). All nine members inherit
-      it; the three binding crates are separate workspaces and still carry 29
-      `unwrap`s in their own bodies, so they are a separate decision.
+      it. The three binding crates are separate workspaces (`bindings/*`), so they
+      need their own `[lints]` to inherit it; their bodies now carry zero
+      `unwrap`/`expect`/`panic` (the 29 measured before the poison pass were 15
+      single-line lock sites plus 14 others, all fixed), so turning the gate on
+      there is just the manifest edit.
 - [x] Poison, 28 production sites (bindings/okm-steel 7, okm-python 8,
       okm-stream 5, `okm-core/build.rs` 3, subscribe 3, nest 2):
       `unwrap_or_else(std::sync::PoisonError::into_inner)`, with the reason stated
