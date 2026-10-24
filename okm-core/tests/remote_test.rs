@@ -102,8 +102,8 @@ fn prefix_isolation_between_two_hosts() {
     let ra = ha.open();
     let rb = hb.open();
 
-    ra.put(b"user:1".to_vec(), b"hello".to_vec());
-    rb.put(b"user:1".to_vec(), b"world".to_vec());
+    ra.put(b"user:1".to_vec(), b"hello".to_vec()).unwrap();
+    rb.put(b"user:1".to_vec(), b"world".to_vec()).unwrap();
 
     wait_for(|| ra.get(b"user:1").unwrap().is_some(), "host A write to land");
     assert_eq!(ra.get(b"user:1").unwrap().as_deref(), Some(b"hello".as_slice()));

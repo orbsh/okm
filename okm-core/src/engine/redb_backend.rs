@@ -58,15 +58,14 @@ impl VirtualStorage for RedbStore {
     /// redb note: the table is created on first write (`open_table`
     /// inside a write transaction creates it; read paths treat a
     /// missing table as an empty keyspace).
-    fn put(&self, key: Vec<u8>, value: Vec<u8>) {
-        let txn = self.db.begin_write().expect("redb begin_write");
+    fn put(&self, key: Vec<u8>, value: Vec<u8>) -> crate::error::Result<()> {
+        let txn = self.db.begin_write().map_err(eng)?;
         {
-            let mut table = txn.open_table(TABLE).expect("redb open_table");
-            table
-                .insert(key.as_slice(), value.as_slice())
-                .expect("redb insert");
+            let mut table = txn.open_table(TABLE).map_err(eng)?;
+            table.insert(key.as_slice(), value.as_slice()).map_err(eng)?;
         }
-        txn.commit().expect("redb commit");
+        txn.commit().map_err(eng)?;
+        Ok(())
     }
 
     fn get(&self, key: &[u8]) -> crate::error::Result<Option<Vec<u8>>> {
@@ -78,13 +77,14 @@ impl VirtualStorage for RedbStore {
         Ok(table.get(key).map_err(eng)?.map(|v| v.value().to_vec()))
     }
 
-    fn del(&self, key: &[u8]) {
-        let txn = self.db.begin_write().expect("redb begin_write");
+    fn del(&self, key: &[u8]) -> crate::error::Result<()> {
+        let txn = self.db.begin_write().map_err(eng)?;
         {
-            let mut table = txn.open_table(TABLE).expect("redb open_table");
-            table.remove(key).expect("redb remove");
+            let mut table = txn.open_table(TABLE).map_err(eng)?;
+            table.remove(key).map_err(eng)?;
         }
-        txn.commit().expect("redb commit");
+        txn.commit().map_err(eng)?;
+        Ok(())
     }
 
     fn scan_suffix(&self, prefix: &[u8]) -> crate::error::Result<Vec<Vec<u8>>> {

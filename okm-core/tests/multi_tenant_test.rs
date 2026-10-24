@@ -52,8 +52,8 @@ fn one_engine_two_tenants_prefix_segments_disjoint() {
     let sb = hb.open();
 
     // Same sender key bytes into both tenants.
-    sa.put(b"doc:1".to_vec(), b"a".to_vec());
-    sb.put(b"doc:1".to_vec(), b"b".to_vec());
+    sa.put(b"doc:1".to_vec(), b"a".to_vec()).unwrap();
+    sb.put(b"doc:1".to_vec(), b"b".to_vec()).unwrap();
 
     // Wait for both fire-and-forget writes to land (cross reads).
     for _ in 0..200 {
@@ -90,8 +90,8 @@ fn internal_tenant_sharding_is_a_plain_key_field() {
 
     // tenant_id is the leading key-payload field: sender-side business
     // data, opaque to the receiver.
-    s.put(b"t1:doc:1".to_vec(), b"x".to_vec());
-    s.put(b"t2:doc:1".to_vec(), b"y".to_vec());
+    s.put(b"t1:doc:1".to_vec(), b"x".to_vec()).unwrap();
+    s.put(b"t2:doc:1".to_vec(), b"y".to_vec()).unwrap();
 
     // Fire-and-forget writes: poll until the round trips see both keys.
     for _ in 0..200 {

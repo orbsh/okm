@@ -50,18 +50,18 @@ impl<S> Counting<S> {
 }
 
 impl<S: VirtualStorage> VirtualStorage for Counting<S> {
-    fn put(&self, key: Vec<u8>, value: Vec<u8>) {
+    fn put(&self, key: Vec<u8>, value: Vec<u8>) -> okm_core::error::Result<()> {
         self.bare_puts.set(self.bare_puts.get() + 1);
-        self.inner.put(key, value);
+        self.inner.put(key, value)
     }
 
     fn get(&self, key: &[u8]) -> okm_core::error::Result<Option<Vec<u8>>> {
         self.inner.get(key)
     }
 
-    fn del(&self, key: &[u8]) {
+    fn del(&self, key: &[u8]) -> okm_core::error::Result<()> {
         self.bare_dels.set(self.bare_dels.get() + 1);
-        self.inner.del(key);
+        self.inner.del(key)
     }
 
     fn scan_suffix(&self, prefix: &[u8]) -> okm_core::error::Result<Vec<Vec<u8>>> {

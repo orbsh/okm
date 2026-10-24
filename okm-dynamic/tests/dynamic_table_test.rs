@@ -94,7 +94,7 @@ impl<S> Reads<S> {
 }
 
 impl<S: VirtualStorage> VirtualStorage for Reads<S> {
-    fn put(&self, key: Vec<u8>, value: Vec<u8>) {
+    fn put(&self, key: Vec<u8>, value: Vec<u8>) -> okm_core::error::Result<()> {
         self.inner.put(key, value)
     }
 
@@ -103,7 +103,7 @@ impl<S: VirtualStorage> VirtualStorage for Reads<S> {
         self.inner.get(key)
     }
 
-    fn del(&self, key: &[u8]) {
+    fn del(&self, key: &[u8]) -> okm_core::error::Result<()> {
         self.inner.del(key)
     }
 
@@ -583,8 +583,8 @@ fn plan_merge_equals_embedded_merge() {
         .unwrap();
     for (key, v) in &p1.ops {
         match v {
-            Some(b) => store.put(key.clone(), b.clone()),
-            None => store.del(key),
+            Some(b) => store.put(key.clone(), b.clone()).unwrap(),
+            None => store.del(key).unwrap(),
         }
     }
     vocab.adopt(&p1.new_vocab_entries);

@@ -945,7 +945,9 @@ fn dynamic_from_variant(
                     }
                     None => incoming.encode_acc(),
                 };
-                store.put(key, bytes);
+                store
+                    .put(key, bytes)
+                    .map_err(|e| parquet::errors::ParquetError::General(e.to_string()))?;
                 count += 1;
             }
         }

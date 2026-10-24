@@ -96,7 +96,7 @@ fn pump(host: &NestStorage<TestStore>, client: &WireClient<Loop>, loop_t: &Loop)
 fn put_then_get_round_trip() {
     let (host, client, loop_t) = pair();
     // write frames: no waiter, no response consumed
-    drive(client.put(b"a".to_vec(), b"1".to_vec()), &host, &client, &loop_t);
+    drive(client.put(b"a".to_vec(), b"1".to_vec()), &host, &client, &loop_t).unwrap();
     let got = drive(client.get(b"a"), &host, &client, &loop_t);
     assert_eq!(got.unwrap().as_deref(), Some(b"1".as_slice()));
 }
@@ -104,8 +104,8 @@ fn put_then_get_round_trip() {
 #[test]
 fn fifo_pairing_across_interleaved_queries() {
     let (host, client, loop_t) = pair();
-    drive(client.put(b"x".to_vec(), b"10".to_vec()), &host, &client, &loop_t);
-    drive(client.put(b"y".to_vec(), b"20".to_vec()), &host, &client, &loop_t);
+    drive(client.put(b"x".to_vec(), b"10".to_vec()), &host, &client, &loop_t).unwrap();
+    drive(client.put(b"y".to_vec(), b"20".to_vec()), &host, &client, &loop_t).unwrap();
 
     // Kick three queries WITHOUT pumping between them: every waiter is
     // queued (and every frame posted) before any answer exists. The
@@ -222,7 +222,7 @@ fn stray_answer_finds_no_waiter_and_harmless() {
 fn scan_range_and_suffix_frames() {
     let (host, client, loop_t) = pair();
     for k in [b"m/1".as_slice(), b"m/2", b"z/1"] {
-        drive(client.put(k.to_vec(), b"v".to_vec()), &host, &client, &loop_t);
+        drive(client.put(k.to_vec(), b"v".to_vec()), &host, &client, &loop_t).unwrap();
     }
     // A bare host strips ONLY its own (empty) hosting prefix: range
     // answers are full keys (begin is NOT stripped — same rule as the
@@ -287,7 +287,7 @@ fn hosted_prefix_is_invisible_to_the_client() {
     let (host, _handle) = NestStorage::new(TestStore::default(), &[0x42, 0x00]);
     let loop_t = Loop::default();
     let client = WireClient::new(loop_t.clone());
-    drive(client.put(b"a".to_vec(), b"1".to_vec()), &host, &client, &loop_t);
+    drive(client.put(b"a".to_vec(), b"1".to_vec()), &host, &client, &loop_t).unwrap();
     // the ENGINE holds the hosted key — checked through the receiver's
     // own intake with the raw hosted bytes (no backdoor accessor)
     // the receiver prepends ITS prefix to whatever key the frame

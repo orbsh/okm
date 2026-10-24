@@ -38,5 +38,6 @@
 - [0036 — 字段太大，放进副表](0036-value-too-big-is-its-own-table.md)（拒绝 `#[ok_offrow]`——复杂度大、功能提升小，且与 ADR-0035 的整文档面语义冲突；替代是独立 ns、同主键的副表，配对写仍是一次提交）— [中文](0036-value-too-big-is-its-own-table.zh-CN.md)
 - [0037 — 写动词返回 `Result`](0037-write-verb-error-surface.md)（已接受并落地——`okm_core::Error`（thiserror）：调用方数据用 `KindMismatch`/`ValueOutOfRange`，引擎拒绝用 `Engine`，图的拒绝用 `Edge*`；`from_map` 改 `try_from_map`；**每一个**写动词可失败、无写动词 panic，被拒绝的 `merge`/`replace` 一个字节都不写）— [中文](0037-write-verb-error-surface.zh-CN.md)
 - [0038 — 读失败不是行不存在](0038-read-primitive-error-surface.md)（已接受并落地——缺席用 `Option`、故障用 `Result`；存储边界读原语与 `ScanIter::Item` 可失败；wire 应答新增 `fault` 帧（`[2][len][utf8]`，`0`/`1` 不变）；三个读钩子与 junction 查询方法可失败；`decode_payload` 仍 panic 且写明理由）— [中文](0038-read-primitive-error-surface.zh-CN.md)
+- [0039 — 存储 trait 的写动词返回 `Result`](0039-storage-write-error-surface.md)（已接受并落地——`put`/`del` 及异步孪生返回 `Result<()>`，`del` 的 `Ok` 也覆盖"本来就没有"；每个后端映射自己的错误，slatedb 同步路径改为一次往返、由驱动等待 durability 后回答；`WireClient` 报告死连接与被拒 post；读侧（驱动 scan/iter、redb begin_read/range、localStorage get_item）仍闭合）— [中文](0039-storage-write-error-surface.zh-CN.md)
 
 实施计划见 [docs/PLAN.md](../PLAN.md)。

@@ -140,22 +140,22 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
             if let Some(old) = &prev {
                 R::__okm_apply_reduces(&mut store, key, old, &header, false)?;
             }
-            store.put(pkey, document.encode_payload());
+            store.put(pkey, document.encode_payload())?;
             for (ek, ev) in R::index_entries(key, document, &header) {
-                store.put(ek, ev);
+                store.put(ek, ev)?;
             }
             // Embedded documents: write children carried with Some(value), and
             // release references the OLD document pointed at that the new one
             // no longer does (key change). Reference semantics — no cascade.
             for (ck, cp) in R::__okm_embed_entries(document) {
-                store.put(ck, cp);
+                store.put(ck, cp)?;
             }
             if let Some(old) = &prev {
                 let new_keys: std::collections::HashSet<Vec<u8>> =
                     R::__okm_embed_keys(document).into_iter().collect();
                 for old_key in R::__okm_embed_keys(old) {
                     if !new_keys.contains(&old_key) {
-                        store.del(&old_key);
+                        store.del(&old_key)?;
                     }
                 }
             }
@@ -295,7 +295,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
             R::__okm_apply_reduces(&mut adapter, key, old, &header, false)?;
         }
 
-        adapter.put(pkey, document.encode_payload());
+        adapter.put(pkey, document.encode_payload())?;
 
         // Faces: write the new set, drop the old set's leftovers. An entry
         // key present in both sets holds the same (key, value) pair, so it is
@@ -306,25 +306,25 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
                 new_faces.iter().map(|(ek, _)| ek).collect();
             for (ek, _) in R::index_entries(key, old, &header) {
                 if !fresh.contains(&ek) {
-                    adapter.del(&ek);
+                    adapter.del(&ek)?;
                 }
             }
         }
         for (ek, ev) in new_faces {
-            adapter.put(ek, ev);
+            adapter.put(ek, ev)?;
         }
 
         // Embedded documents: write children carried with Some(value), and
         // release references the OLD document held that the new one does not.
         for (ck, cp) in R::__okm_embed_entries(document) {
-            adapter.put(ck, cp);
+            adapter.put(ck, cp)?;
         }
         if let Some(old) = prev {
             let new_keys: std::collections::HashSet<Vec<u8>> =
                 R::__okm_embed_keys(document).into_iter().collect();
             for old_key in R::__okm_embed_keys(old) {
                 if !new_keys.contains(&old_key) {
-                    adapter.del(&old_key);
+                    adapter.del(&old_key)?;
                 }
             }
         }
@@ -925,9 +925,9 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
             }
         }
         if body.is_empty() {
-            store.del(&k);
+            store.del(&k)?;
         } else {
-            store.put(k, body);
+            store.put(k, body)?;
         }
         Ok(())
     }
@@ -942,9 +942,9 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     ) -> crate::error::Result<()> {
         let header = self.header();
         let mut store = crate::engine::storage::BatchStore::new(&self.store, batch);
-        store.del(&self.primary_key(key));
+        store.del(&self.primary_key(key))?;
         for (ek, _) in R::index_entries(key, document, &header) {
-            store.del(&ek);
+            store.del(&ek)?;
         }
         R::__okm_apply_reduces(&mut store, key, document, &header, false)
     }

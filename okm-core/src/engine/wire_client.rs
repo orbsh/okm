@@ -269,28 +269,36 @@ impl<T: WireTransport> WireClient<T> {
 }
 
 impl<T: WireTransport> VirtualStorageAsync for WireClient<T> {
-    async fn put(&self, key: Vec<u8>, value: Vec<u8>) {
-        // fire-and-forget: one frame, no waiter (ADR-0010 §6 — the
-        // delivery guarantee is the transport's, never the frame's).
+    async fn put(&self, key: Vec<u8>, value: Vec<u8>) -> crate::error::Result<()> {
+        // fire-and-forget: one frame, no waiter (ADR-0010 §6 — the delivery
+        // guarantee is the transport's, never the frame's). What the client CAN
+        // report is its own half: a dead connection or a refused POST means this
+        // frame never left, so the write is lost with a reason instead of by fate.
         let inner = Rc::clone(&self.inner);
         let inner = inner.borrow_mut();
-        if inner.dead.is_some() {
-            return; // writes on a dead connection are lost by contract
+        if let Some(reason) = inner.dead.clone() {
+            return Err(crate::error::Error::Engine(format!(
+                "wire connection dead: {reason}"
+            )));
         }
-        let _ = inner
+        inner
             .transport
-            .post(&OpFrame::one(OP_PUT, key, value).encode());
+            .post(&OpFrame::one(OP_PUT, key, value).encode())
+            .map_err(crate::error::Error::Engine)
     }
 
-    async fn del(&self, key: &[u8]) {
+    async fn del(&self, key: &[u8]) -> crate::error::Result<()> {
         let inner = Rc::clone(&self.inner);
         let inner = inner.borrow_mut();
-        if inner.dead.is_some() {
-            return;
+        if let Some(reason) = inner.dead.clone() {
+            return Err(crate::error::Error::Engine(format!(
+                "wire connection dead: {reason}"
+            )));
         }
-        let _ = inner
+        inner
             .transport
-            .post(&OpFrame::one(OP_DELETE, key.to_vec(), Vec::new()).encode());
+            .post(&OpFrame::one(OP_DELETE, key.to_vec(), Vec::new()).encode())
+            .map_err(crate::error::Error::Engine)
     }
 
     async fn get(&self, key: &[u8]) -> crate::error::Result<Option<Vec<u8>>> {

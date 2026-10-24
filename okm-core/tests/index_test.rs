@@ -810,7 +810,7 @@ fn covered_scan_answers_without_the_primary_table() {
     let covered = t.scan_covered::<ByTimeline>(&7u64.to_be_bytes()).unwrap();
     assert_eq!(covered[0].1, PostCovered { title_len: 77 });
 
-    t.store().del(&t.primary_key(&k));
+    t.store().del(&t.primary_key(&k)).unwrap();
     assert!(t.get(&k).unwrap().is_none(), "主表行已不在");
     let covered = t.scan_covered::<ByTimeline>(&7u64.to_be_bytes()).unwrap();
     assert_eq!(covered.len(), 1);

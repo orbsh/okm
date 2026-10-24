@@ -68,8 +68,8 @@ fn two_instances_isolated_by_declared_prefix() {
     let s1 = h1.open();
     let s2 = h2.open();
 
-    s1.put(b"k".to_vec(), b"one".to_vec());
-    s2.put(b"k".to_vec(), b"two".to_vec());
+    s1.put(b"k".to_vec(), b"one".to_vec()).unwrap();
+    s2.put(b"k".to_vec(), b"two".to_vec()).unwrap();
 
     // Fire-and-forget writes: poll until each round trip sees its value.
     for _ in 0..200 {

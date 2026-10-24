@@ -45,8 +45,10 @@ impl crate::engine::storage::SharedVirtualStorage for FjallStore {
 }
 
 impl VirtualStorage for FjallStore {
-    fn put(&self, key: Vec<u8>, value: Vec<u8>) {
-        self.ks.insert(key, value).expect("fjall insert failed");
+    fn put(&self, key: Vec<u8>, value: Vec<u8>) -> crate::error::Result<()> {
+        self.ks
+            .insert(key, value)
+            .map_err(|e| crate::error::Error::Engine(e.to_string()))
     }
     fn get(&self, key: &[u8]) -> crate::error::Result<Option<Vec<u8>>> {
         self.ks
@@ -54,8 +56,10 @@ impl VirtualStorage for FjallStore {
             .map(|v| v.map(|v| v.to_vec()))
             .map_err(|e| crate::error::Error::Engine(e.to_string()))
     }
-    fn del(&self, key: &[u8]) {
-        self.ks.remove(key).expect("fjall remove failed");
+    fn del(&self, key: &[u8]) -> crate::error::Result<()> {
+        self.ks
+            .remove(key)
+            .map_err(|e| crate::error::Error::Engine(e.to_string()))
     }
     /// fjall native: the op list executes in fjall's own cross-keyspace
     /// `Batch` — one `Batch::commit()` = one real WAL write; the carrier

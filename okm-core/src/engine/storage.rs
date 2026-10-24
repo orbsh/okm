@@ -28,13 +28,21 @@ pub fn prefix_end(prefix: &[u8]) -> Option<Vec<u8>> {
 }
 
 pub trait VirtualStorage {
-    fn put(&self, key: Vec<u8>, value: Vec<u8>);
+    /// Point write. `Err` is the engine refusing the bytes — the mirror of
+    /// `get`'s error, and the reason this answers `Result` instead of `()`:
+    /// a write that cannot report a refused commit has no error channel at all,
+    /// so every backend used to swallow the failure as a panic in its own text
+    /// (ADR-0037's follow-up, the storage trait).
+    fn put(&self, key: Vec<u8>, value: Vec<u8>) -> crate::error::Result<()>;
     /// Point read. `Ok(None)` is "no such key" — the normal answer of a KV
     /// read, never an error. `Err` is the engine failing to answer at all
     /// (I/O, a fenced handle, a dead transport): the two used to be the same
     /// `None`, which made a read failure look like an absent row.
     fn get(&self, key: &[u8]) -> crate::error::Result<Option<Vec<u8>>>;
-    fn del(&self, key: &[u8]);
+    /// Point delete. `Ok(())` also covers "there was nothing to delete": absence
+    /// is not a failure, the same rule `get` follows for `Ok(None)`. `Err` is the
+    /// engine refusing the operation.
+    fn del(&self, key: &[u8]) -> crate::error::Result<()>;
     /// Prefix scan; returns each matching key's "suffix" (prefix removed).
     /// A convenience bound over [`scan_range`](Self::scan_range): the
     /// physical operation is the same ordered iteration, the prefix is
@@ -123,8 +131,8 @@ pub trait VirtualStorage {
     fn commit_batch(&self, batch: Batch) -> crate::error::Result<()> {
         for (k, v) in batch.ops {
             match v {
-                Some(v) => self.put(k, v),
-                None => self.del(&k),
+                Some(v) => self.put(k, v)?,
+                None => self.del(&k)?,
             }
         }
         Ok(())
@@ -290,8 +298,10 @@ impl<'a, S: VirtualStorage> BatchStore<'a, S> {
 }
 
 impl<S: VirtualStorage> VirtualStorage for BatchStore<'_, S> {
-    fn put(&self, key: Vec<u8>, value: Vec<u8>) {
+    fn put(&self, key: Vec<u8>, value: Vec<u8>) -> crate::error::Result<()> {
+        // Buffering an op cannot fail; the commit is where the engine answers.
         self.batch.borrow_mut().put(key, value);
+        Ok(())
     }
 
     fn get(&self, key: &[u8]) -> crate::error::Result<Option<Vec<u8>>> {
@@ -311,8 +321,10 @@ impl<S: VirtualStorage> VirtualStorage for BatchStore<'_, S> {
         }
     }
 
-    fn del(&self, key: &[u8]) {
+    fn del(&self, key: &[u8]) -> crate::error::Result<()> {
+        // Buffering an op cannot fail; the commit is where the engine answers.
         self.batch.borrow_mut().del(key);
+        Ok(())
     }
 
     fn scan_range(
@@ -333,11 +345,14 @@ impl<S: VirtualStorage> VirtualStorage for BatchStore<'_, S> {
 /// the wire (`WireClient`) need it with no slatedb in sight.
 #[allow(async_fn_in_trait)] // engine contract: impls are in-crate backends and wasm senders; ADR-0010 keeps the surface byte-only
 pub trait VirtualStorageAsync {
-    async fn put(&self, key: Vec<u8>, value: Vec<u8>);
+    /// The async mirror of the sync `put`: `Err` is the engine (or the
+    /// transport) refusing the bytes.
+    async fn put(&self, key: Vec<u8>, value: Vec<u8>) -> crate::error::Result<()>;
     /// The async mirror of the sync `get`: `Ok(None)` is absence, `Err` is the
     /// engine (or the transport) failing to answer.
     async fn get(&self, key: &[u8]) -> crate::error::Result<Option<Vec<u8>>>;
-    async fn del(&self, key: &[u8]);
+    /// The async mirror of the sync `del`: `Ok(())` covers "nothing there".
+    async fn del(&self, key: &[u8]) -> crate::error::Result<()>;
     /// 前缀扫描，返回每个 key 的"剩余段"（去掉 prefix）
     async fn scan_suffix(&self, prefix: &[u8]) -> crate::error::Result<Vec<Vec<u8>>>;
     /// Range scan over FULL keys: `[begin, end)` byte order; None end =
@@ -384,8 +399,8 @@ pub trait VirtualStorageAsync {
     async fn commit_batch(&self, batch: Batch) -> crate::error::Result<()> {
         for (k, v) in batch.ops {
             match v {
-                Some(v) => self.put(k, v).await,
-                None => self.del(&k).await,
+                Some(v) => self.put(k, v).await?,
+                None => self.del(&k).await?,
             }
         }
         Ok(())

@@ -128,7 +128,7 @@ impl crate::engine::storage::SharedVirtualStorage for TestStore {
     allow(unused_variables)
 )]
 impl VirtualStorage for TestStore {
-    fn put(&self, key: Vec<u8>, value: Vec<u8>) {
+    fn put(&self, key: Vec<u8>, value: Vec<u8>) -> crate::error::Result<()> {
         match self {
             #[cfg(feature = "slatedb")]
             Self::Slatedb(s) => s.put_sync(key, value),
@@ -137,7 +137,9 @@ impl VirtualStorage for TestStore {
             #[cfg(feature = "redb")]
             Self::Redb { store, .. } => store.clone().put(key, value),
             #[cfg(not(any(feature = "slatedb", feature = "fjall", feature = "redb")))]
-            _ => unreachable!("TestStore: no engine features enabled"),
+            _ => Err(crate::error::Error::Engine(
+                "TestStore: no engine features enabled".into(),
+            )),
         }
     }
     fn get(&self, key: &[u8]) -> crate::error::Result<Option<Vec<u8>>> {
@@ -152,7 +154,7 @@ impl VirtualStorage for TestStore {
             _ => unreachable!("TestStore: no engine features enabled"),
         }
     }
-    fn del(&self, key: &[u8]) {
+    fn del(&self, key: &[u8]) -> crate::error::Result<()> {
         match self {
             #[cfg(feature = "slatedb")]
             Self::Slatedb(s) => s.del_sync(key),
@@ -161,7 +163,9 @@ impl VirtualStorage for TestStore {
             #[cfg(feature = "redb")]
             Self::Redb { store, .. } => store.clone().del(key),
             #[cfg(not(any(feature = "slatedb", feature = "fjall", feature = "redb")))]
-            _ => unreachable!("TestStore: no engine features enabled"),
+            _ => Err(crate::error::Error::Engine(
+                "TestStore: no engine features enabled".into(),
+            )),
         }
     }
     fn scan_suffix(&self, prefix: &[u8]) -> crate::error::Result<Vec<Vec<u8>>> {
