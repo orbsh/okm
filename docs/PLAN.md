@@ -1873,6 +1873,13 @@ panic lints allowed only in the places it names. So the runtime half of
       (`syn::Error::to_compile_error`) beats a panic message. The generated-code
       copy of the sink cell (`build.rs`'s `RUNTIME` template) was already fixed with
       the poison pass, since that text ships into consumer crates.
-- [ ] Unreachable arms and contract serialization (tooling 3, arrow_bridge 4,
-      `okm-vector/src/codec.rs:192`; `model/obj_dynamic.rs:567-568`): fall back to a
-      value, or keep the site with a stated why.
+- [x] The last 12 sites the gate reported, decided one by one: nine were code with
+      no reason to panic and lost the panic arm — `okm-query`'s merge-join run drain
+      (`if let Some`), `okm-dynamic`'s two post-length-check conversions and
+      `graph.rs`'s suffix decode (`first_chunk`), `encode.rs`'s missing cold tag
+      (`CodecError::ColdFieldWithoutTag`, the schema is caller data), a refused
+      dynamic write (`replay` answers `Err`, it used to panic), and an exhausted
+      field vocabulary (`claim_id` answers `Err` — a new name at runtime is input).
+      Two stayed: `okm-vector/src/codec.rs` reads codes this build wrote, so a
+      mismatch or a short code aborts, and that file-level allow is registered in
+      ADR-0040. The workspace now passes all five panic lints under `-D`.

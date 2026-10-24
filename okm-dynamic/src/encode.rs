@@ -37,7 +37,9 @@ pub fn encode_payload(schema: &CollectionSchema, values: &ValueMap) -> Result<Ve
     buf.extend_from_slice(&hot);
     for f in &schema.cold_fields {
         let v = field_pair(&f.name, f.ty, values)?;
-        let tag = f.tag.expect("cold field carries a tag");
+        let Some(tag) = f.tag else {
+            return Err(CodecError::ColdFieldWithoutTag(f.name.clone()));
+        };
         buf.push(tag);
         match v {
             Value::Str(s) => {

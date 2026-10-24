@@ -32,20 +32,25 @@ pub struct VocabMirror {
     written: Vec<(String, u16)>,
 }
 
-/// Claim the next id, or die loudly. Exhausting the width is a loud error, never
-/// a wrap (ADR-0012 / ADR-0032): a wrap would hand id 0 to a brand-new name and
-/// make every stored row decode as a different field. Same policy as the typed
+/// Claim the next id, or refuse. Exhausting the width is an error, never a wrap
+/// (ADR-0012 / ADR-0032): a wrap would hand id 0 to a brand-new name and make
+/// every stored row decode as a different field. Same policy as the typed
 /// cache's `id_for` — both vocabularies fail the same way, and neither hands out
 /// the last representable id (the watermark could not move past it).
-fn claim_id(next_id: &mut u16) -> u16 {
+///
+/// A brand-new field name arriving at runtime is exactly the input this crate
+/// handles, so running out of ids is an answer for the caller (which can model
+/// the value as a `String` field instead), not a process-level stop.
+fn claim_id(next_id: &mut u16) -> okm_core::error::Result<u16> {
     let id = *next_id;
-    *next_id = id.checked_add(1).unwrap_or_else(|| {
-        panic!(
+    *next_id = id.checked_add(1).ok_or_else(|| {
+        okm_core::Error::Engine(
             "vocabulary exhausted: field names fill a 2-byte id (ADR-0032); this name does not \
              fit — model the value as a String field instead"
+                .into(),
         )
-    });
-    id
+    })?;
+    Ok(id)
 }
 
 impl VocabMirror {
@@ -178,7 +183,7 @@ pub fn plan_put_fields(
             if let Some(id) = by_name.get(name) {
                 return Ok(*id);
             }
-            let id = claim_id(next_id);
+            let id = claim_id(next_id)?;
             by_name.insert(name.to_string(), id);
             by_id.insert(id, name.to_string());
             written.push((name.to_string(), id));
@@ -354,22 +359,27 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "vocabulary exhausted")]
-    fn a_full_vocabulary_dies_loudly_instead_of_wrapping() {
-        // One id short of the width: the next claim is the loud error, not id 0.
+    fn a_full_vocabulary_answers_err_instead_of_wrapping() {
+        // One id short of the width: the next claim is a refusal naming the
+        // reason, not id 0 and not a panic (the caller can model the value as a
+        // String field instead).
         let mut vocab = VocabMirror {
             next_id: u16::MAX,
             ..VocabMirror::default()
         };
         let mut f = ValueMap::new();
         f.insert("one_too_many".into(), Value::Bool(true));
-        let _ = plan_put_fields(&ns(), b"k", &f, &mut vocab);
+        let err = plan_put_fields(&ns(), b"k", &f, &mut vocab)
+            .expect_err("the claim must refuse, not wrap or abort");
+        assert!(err.contains("vocabulary exhausted"), "{err}");
+        // The mirror is untouched: a refused plan allocates nothing.
+        assert!(vocab.by_name.is_empty());
     }
 
     #[test]
     fn a_vocabulary_holding_the_last_id_still_loads() {
         // Reaching the last id is not itself an error — adoption saturates (a
-        // read must not panic), and the ALLOCATOR is what dies on the next claim.
+        // read must not panic), and the ALLOCATOR is what refuses the next claim.
         let vocab = VocabMirror::from_pairs([("last", u16::MAX)]);
         assert_eq!(vocab.next_id, u16::MAX);
         assert_eq!(vocab.by_name.get("last"), Some(&u16::MAX));

@@ -39,9 +39,12 @@ rev_decode / offset_decode / varint_decode / dec_wire  -> Self
 | `bridge/iceberg.rs::stamp_batch` | 函数 | field-id 压印保证的是我们自己的列位 |
 | `SlatedbSync::open_mem` | 函数 | 构造，只跑一次：起不了 runtime/线程就没有存储 |
 | `TestStore::slatedb_mem` | 函数 | 测试替身的构造 |
+| `okm-vector/src/codec.rs` | 整个文件 | 存下来的 code 是本构建自己写的字节；`Codec`/`Prepared` 配不上、或 code 比它自己的 norm 前缀还短，说明这行来自别处，而编出来的距离会被直接折回图的边里 |
 | `Nest::serve`、`Nest::apply` | 函数 | `serve` 被调用两次；scan 帧丢了它的 begin |
 
-**5. 什么仍然是 `Result`。** 凡是字节来自外部、或存储可能答不上来的地方：存储动词（ADR-0037 / 0039）、scan item（ADR-0038），以及**导入**路径——由别的生产者写出的 Parquet 文件属于输入，所以列的实际 arrow 类型与声明不符时返回 `Err`（`column_as`，`tooling.rs`）；变体元数据帧改用 `first_chunk` 读取，不再是"先查长度再 expect"。判据是字节的来源，不是调用的方向。
+**5. 什么仍然是 `Result`。** 凡是字节来自外部、或存储可能答不上来的地方：存储动词（ADR-0037 / 0039）、scan item（ADR-0038），以及**导入**路径——由别的生产者写出的 Parquet 文件属于输入，所以列的实际 arrow 类型与声明不符时返回 `Err`（`column_as`，`tooling.rs`）；变体元数据帧改用 `first_chunk` 读取，不再是"先查长度再 expect"。判据是字节的来源，不是调用的方向。动态侧几乎整片都属于这一类——它的
+schema 是以数据形式来的（走 JSON 往返）、字段名是运行时才出现的——所以冷字段没有 tag、
+字段 id 用尽宽度、写到引擎被拒，在那一边都是 `Err`，不是中止。
 
 ## 边界：什么时候 panic 仍然是对的
 
