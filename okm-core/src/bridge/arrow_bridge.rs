@@ -13,6 +13,11 @@
 //!
 //! Read-only by contract (ADR-0007 Boundaries): nothing here writes back.
 
+// The export side reads bytes this SDK wrote and assembles batches from arrays it
+// built itself: a failure here is the codec/construction being wrong, not input
+// (ADR-0040 — the import side, where the file is foreign, answers `Err` instead).
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+
 use std::sync::Arc;
 
 use arrow::array::RecordBatch;

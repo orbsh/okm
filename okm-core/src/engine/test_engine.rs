@@ -51,6 +51,9 @@ impl TestStore {
     }
 
     #[cfg(feature = "slatedb")]
+    // Test-double construction: a machine that cannot open an in-memory slatedb
+    // has nothing to test against.
+    #[allow(clippy::expect_used, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
     pub fn slatedb_mem() -> Self {
         Self::Slatedb(std::sync::Arc::new(
             crate::engine::slatedb_backend::SlatedbSync::open_mem("okm-test")

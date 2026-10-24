@@ -10,13 +10,12 @@
 //!   writer, an I/O failure, a remote frame error). The engine's own text rides
 //!   inside: the layer above needs the engine's words, not a generic message.
 //!
-//! Only the map-facing verbs are fallible today (`merge`, `replace`,
-//! `Document::try_from_map`). A typed verb (`put`, `purge`) receives a value
-//! that is already typed, so its only possible failure is the engine's — that
-//! path still panics, which is the single-writer in-process contract recorded in
-//! ADR-0035 and `docs/CONCURRENCY.md`. Widening it is a separate decision with
-//! its own surface cost (every call site in every consumer); the error type
-//! below is what that decision would hang on.
+//! Every verb that touches a store is fallible now, including the typed ones:
+//! `put` / `purge` answer the engine's refusal rather than aborting (ADR-0039),
+//! and the storage trait under them does the same. What still aborts is the
+//! CODEC — bytes this SDK did not write cannot be decoded back into a document,
+//! and a half-true row would corrupt the derived state written from it
+//! (ADR-0040, which also lists where the panic lints are allowed).
 
 use thiserror::Error;
 

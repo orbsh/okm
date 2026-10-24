@@ -1536,6 +1536,10 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> TS2 {
                 #encode_body
                 buf
             }
+            // Decode is allowed to abort (ADR-0040): a payload this SDK cannot
+            // read was not written by this SDK, and a half-decoded document would
+            // corrupt the derived state written back from it.
+            #[allow(clippy::expect_used, clippy::unwrap_used)]
             fn decode_payload(b: &[u8]) -> Self {
                 #decode_body
                 Self { #(#names),* }
