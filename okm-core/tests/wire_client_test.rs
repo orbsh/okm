@@ -13,6 +13,8 @@
 //! re-poll), which is exactly the wasm shape — the event loop calls
 //! `deliver`, the task wakes.
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+
 #![cfg(feature = "test-engines")]
 
 use std::cell::RefCell;
@@ -56,10 +58,11 @@ fn pair() -> (NestStorage<TestStore>, WireClient<Loop>, Loop) {
 }
 
 /// Pump every currently-queued outbound frame through the host and feed
-/// answers back through `deliver`, polling `fut` until Ready. A frame
-/// whose apply answers `None` (a write) consumes no response — the same
-/// rule the real receiver enforces. Generic so callers pass their own
-/// concrete futures (no Box, no 'static bound).
+/// answers back through `deliver`, polling `fut` until Ready. Every
+/// well-formed frame answers exactly once — a write's answer is the empty
+/// ack — so every frame consumes exactly one answer: the same rule the real
+/// receiver enforces. Generic so callers pass their own concrete futures
+/// (no Box, no 'static bound).
 fn drive<T>(
     fut: impl Future<Output = T>,
     host: &NestStorage<TestStore>,
@@ -79,9 +82,9 @@ fn drive<T>(
     }
 }
 
-/// One pump pass: every queued frame executes on the host; query
-/// answers (and only those — apply returns None for pure-write frames)
-/// feed the client's FIFO waiter queue.
+/// One pump pass: every queued frame executes on the host; every answer —
+/// a query's or a write's empty ack — feeds the client's FIFO waiter
+/// queue.
 fn pump(host: &NestStorage<TestStore>, client: &WireClient<Loop>, loop_t: &Loop) {
     while let Some(frame) = loop_t.out.borrow_mut().pop_front() {
         if let Some(resp) = host.apply(&frame) {
@@ -95,7 +98,7 @@ fn pump(host: &NestStorage<TestStore>, client: &WireClient<Loop>, loop_t: &Loop)
 #[test]
 fn put_then_get_round_trip() {
     let (host, client, loop_t) = pair();
-    // write frames: no waiter, no response consumed
+    // a write waits for its empty ack; the ack is what reports a refusal
     drive(client.put(b"a".to_vec(), b"1".to_vec()), &host, &client, &loop_t).unwrap();
     let got = drive(client.get(b"a"), &host, &client, &loop_t);
     assert_eq!(got.unwrap().as_deref(), Some(b"1".as_slice()));
@@ -342,7 +345,9 @@ fn a_write_whose_post_fails_answers_err() {
 
 /// Before ADR-0039 a write on a dead connection was dropped in silence, which made
 /// a lost write indistinguishable from a committed one. It is an error now, and the
-/// text carries the reason `fail` recorded.
+/// text carries the reason `fail` recorded — the write rides the same round trip as
+/// a read since writes gained an answer, so it reports the transport's own words
+/// rather than a write-specific wrapper.
 #[test]
 fn a_write_on_a_dead_connection_answers_err() {
     let (host, client, loop_t) = pair();
@@ -351,14 +356,14 @@ fn a_write_on_a_dead_connection_answers_err() {
     let err = drive(client.put(b"k".to_vec(), b"v".to_vec()), &host, &client, &loop_t)
         .expect_err("a dead connection must not answer Ok for a write");
     match &err {
-        Error::Engine(text) => assert!(text.contains("wire connection dead"), "{text}"),
+        Error::Engine(text) => assert!(text.contains("connection lost"), "{text}"),
         other => panic!("expected Error::Engine, got {other:?}"),
     }
 
     let err = drive(client.del(b"k"), &host, &client, &loop_t)
         .expect_err("a dead connection must not answer Ok for a delete");
     match &err {
-        Error::Engine(text) => assert!(text.contains("wire connection dead"), "{text}"),
+        Error::Engine(text) => assert!(text.contains("connection lost"), "{text}"),
         other => panic!("expected Error::Engine, got {other:?}"),
     }
 }

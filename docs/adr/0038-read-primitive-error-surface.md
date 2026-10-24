@@ -73,7 +73,9 @@ the store returned something it promised not to, and no caller has an action
 for that; making it `Err` would thread a `Result` through every derive
 decoder, every index decode, the covered-scan decode and the Parquet export
 paths — a change larger than this whole refactor, for an error nobody can
-handle. It stays a loud abort, documented where it lives.
+handle. It stays a loud abort, documented where it lives — ADR-0040 states the
+general rule this is one case of: a panic is wrong where someone could act on the
+failure, not everywhere.
 
 ## Alternatives rejected
 

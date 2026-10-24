@@ -16,7 +16,9 @@ mudra R3（mudra `PLAN.md` §11）在浏览器里放了两个存储角色：
    结构不合。
 2. **远端业务数据**——面板已手写了一个 RemoteStore-over-WS（mudra
    `crates/mudra-panel/src/remote.rs`）：一条 WS 消息 = 一个 `okm-wire`
-   帧、查询帧与响应 FIFO 配对、写帧 fire-and-forget。它是补齐后异步面
+   帧、查询帧与响应 FIFO 配对、写帧 fire-and-forget（更正：写现在会答 ack，
+   共享客户端每帧都配对——见 ADR-0039 里已落地的后续项）。这个手写面板客户端
+   已退役；它曾是补齐后异步面
    （ADR-0027）的第一个生产消费者；R3 的问题是：把这个模式上收成 okm
    的共享线协议客户端。
 

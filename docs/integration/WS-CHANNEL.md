@@ -57,9 +57,13 @@ directly. `NestStorage` (engine + prefix + `apply`) lives in an `Arc`
 and is `Send + Sync` by construction — it needs no wrapper. Execution
 is three steps — receive a frame, apply it, send back whatever comes
 out — with NO read/write fork: all four ops (put/delete/get/scan) share
-one frame format, and `apply` decides by its return value whether a
-response exists — get/scan return Some (response frame), put/delete
-return None (no response, and none needed):
+one frame format, and every well-formed frame answers exactly once: a
+read answers its value / absence / page, a write answers the empty ack
+(that answer IS its commit outcome), and a host that could not serve the
+frame answers a FAULT (`OpResponse.fault`, wire `[2][len][utf8]`,
+ADR-0038) — never an empty success. `None` is reserved for a frame that
+does not decode at all. So "absent" and "failed" stay different answers,
+and a write that was lost is never reported as one that landed:
 
 ```rust
 // Aura side: after constructing the host, hand the Arc<NestStorage> to
@@ -70,11 +74,12 @@ let nest: Arc<NestStorage<_>> = host.serve();  // pump starts and hands back the
 // WS message handling — envelope parsing is the WS side's own code; OKM
 // takes no part in it:
 fn on_ws_message(nest: &NestStorage<MyEngine>, envelope: Envelope) {
-    // One frame per op: apply → send a response back if there is one,
-    // send nothing otherwise. The envelope's kind does NOT distinguish
-    // reads from writes — that is not OKM semantics; the frame carries it.
+    // One frame per op, one answer per frame. The envelope's kind does NOT
+    // distinguish reads from writes — that is not OKM semantics; the frame
+    // carries it. A response with `fault` set is the host refusing, not an
+    // absent row, and a write's answer is the empty ack.
     if let Some(resp) = nest.apply(&envelope.payload) {
-        send_ws(envelope.reply_to, resp);   // get/scan responses over the same connection
+        send_ws(envelope.reply_to, resp);
     }
     // other application messages...
 }
@@ -91,13 +96,14 @@ Sender side (Krystallizer): the sender is just normal storage I/O —
 (`put/get/del/scan_suffix`) have signatures identical to a local
 engine. Callers cannot tell they are remote. The remoteness is pressed
 entirely into the implementation: each op is encoded into a frame,
-shipped inside an envelope to the peer. get/scan **await** their
-response: the request carries a correlation id (envelope slot 2) and the
-current task suspends on it — not a blocking thread wait, because WS is
-a message stream, not a request/reply pipe: responses arrive
-asynchronously and may interleave with other requests' responses; the id
-pairing wakes the right task. put/delete carry no wait and return
-immediately (fire-and-forget). Swapping the transport (mpsc to WS)
+shipped inside an envelope to the peer. Every op **awaits** its
+response, writes included: the request carries a correlation id
+(envelope slot 2) and the current task suspends on it — not a blocking
+thread wait, because WS is a message stream, not a request/reply pipe:
+responses arrive asynchronously and may interleave with other requests'
+responses; the id pairing wakes the right task. A write's answer is the
+empty ack, which is how a refused commit reaches the caller instead of
+looking like a successful write. Swapping the transport (mpsc to WS)
 touches only the two private send/await helpers inside `RemoteStore` —
 the `VirtualStorage` interface and its callers do not change.
 
@@ -149,8 +155,10 @@ binary payload — that is the whole isolation mechanism.
   disjoint key ranges).
 - **Reads**: any connection can serve reads; the host's engine mutex
   serializes them against the write pump.
-- **Reconnect**: a dropped WS loses in-flight frames (fire-and-forget
-  writes have no ack). If the sender needs delivery guarantees, that is
+- **Reconnect**: a dropped WS loses in-flight frames, writes included —
+  the write's ack is what tells an in-flight write from a landed one, so a
+  lost ack is a failed write, not a silent one. If the sender needs
+  delivery guarantees beyond that, that is
   a channel-level concern (ack envelope + retry idempotency), not an
   OKM concern — OKM's engine ops are idempotent by key, so replaying a
   put is safe, replaying a delete is a no-op, but a put-delete-put
