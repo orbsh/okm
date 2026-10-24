@@ -1647,12 +1647,17 @@ Tasks:
       bench now measures both doors at every fanout (index carries
       `includes(score)`): 100 hits 515 µs → 104 µs, 10 000 hits 60.8 ms →
       10.7 ms (docs/internals/benchmarks.md).
-- [ ] Downstream bump after H is incomplete (2026-10-23): mudra / effector / aura
-      ride `ba0fb72` and `cargo check` clean. krystallizer still imports
-      `okm_core::MemBatch` (`crates/mem-core/src/graph.rs`) and that file is also
-      carrying uncommitted work of the user's, so the rename was NOT applied
-      there; gravity and prism fail through it, and gravity additionally carries
-      the older krystallizer skew (`view::DEFAULT_USER_NODE`, `note_verdict`).
+- [x] Downstream bump after H is complete (2026-10-24): mudra / effector / aura
+      ride `ba0fb72` and check clean; krystallizer followed with its own
+      `9bee7f5` ("MemBatch is Batch, and the verbs take `&self`"), and no
+      `MemBatch` reference remains anywhere under `~/world`; gravity and prism
+      check clean through it — the older krystallizer skew
+      (`view::DEFAULT_USER_NODE`, `note_verdict`) went away with that commit, so
+      nothing was left to patch there. The `&self` change did leave a residue of
+      pointless `let mut` bindings at the downstream call sites: 17 in
+      `aura-realm` (meta.rs / mq.rs / store_exec.rs) and 9 in `prism`
+      (identity.rs / nodes.rs / lib.rs). Cleared — every downstream repo checks
+      warning-free again, which is what "the bump is done" has to mean.
 - [x] Declined (2026-10-23): a `Hit` / `Prefix` result type that carries the
       verbs — a key does not know its collection, so the wrapper can only hold a
       `&Collection` and take it as a parameter anyway, and it drags the partial-key
