@@ -1804,11 +1804,15 @@ binding surfaces below.
 
 - [x] Write verbs gain an error face (ADR-0037 for the typed verbs, ADR-0039 for
       the storage trait; both landed 2026-10-24).
-- [ ] A failing double per backend, proving a refused write comes back as `Err`
-      instead of a panic: a store that answers `Engine` on `put`/`del` and a test
-      per backend (slatedb sync + async, redb, fjall, localStorage, the remote
-      store, the wire client's dead-connection path). ADR-0039 claims the error
-      face, not that any test exercises it.
+- [x] A failing double for the write path, proving a refused write comes back as
+      `Err`: `tests/write_refusal_test.rs` (a refusing store through
+      `Collection::put`, plus the replayed-batch boundary) and two wire tests
+      (dead connection, refused POST). Not covered, and said so in the ADR: fault
+      injection into the native engines, and the nest's "executor gone" arm.
+- [ ] A write that panics inside the engine is invisible to its sender: the nest
+      pump's `catch_unwind` swallows it and a writer carries no reply box
+      (ADR-0010 §6). Making writes answer costs the fire-and-forget shape — the
+      decision comes first.
 - [ ] The read arms of the slatedb driver (`scan` / `iter`), redb's `begin_read`
       / `range`, and `localStorage`'s `get_item`: the same mechanical conversion
       ADR-0039 did for writes, on the face ADR-0038 already made `Result`.
