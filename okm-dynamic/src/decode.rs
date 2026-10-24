@@ -234,7 +234,7 @@ pub(crate) fn fill_schema_defaults(schema: &CollectionSchema, out: &mut ValueMap
     }
 }
 
-fn decode_fixed(
+pub(crate) fn decode_fixed(
     name: String,
     ty: FieldType,
     width: usize,

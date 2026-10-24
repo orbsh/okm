@@ -195,6 +195,65 @@ fn dynamic_scan_finds_by_access_method() {
 }
 
 #[test]
+fn dynamic_covered_scan_answers_without_fetching_documents() {
+    let t = dynamic_table(TestStore::slatedb_mem());
+    t.merge(&key_bytes(1, 10), &values(4, 100, "a")).unwrap();
+    t.merge(&key_bytes(1, 11), &values(9, 100, "b")).unwrap();
+    t.merge(&key_bytes(1, 12), &values(4, 200, "c")).unwrap();
+
+    // by_score (slot 0x3002) declares includes(level): the entry VALUE carries
+    // it, so the covered scan answers `level` per hit without fetching a doc.
+    let mut prefix = Vec::new();
+    prefix.extend_from_slice(&100u16.to_be_bytes());
+    let covered = t.scan_covered(0x3002, &prefix).unwrap();
+    assert_eq!(covered.len(), 2);
+    let mut got: Vec<(u64, u32)> = covered
+        .iter()
+        .map(|(k, c)| match (k.get("user_id"), c.get("level")) {
+            (Some(Value::U64(id)), Some(Value::U32(level))) => (*id, *level),
+            other => panic!("unexpected covered decode: {other:?}"),
+        })
+        .collect();
+    got.sort();
+    assert_eq!(got, vec![(10, 4), (11, 9)]);
+
+    // A declaration without includes covers nothing: the map is empty, and the
+    // call is still a normal (error-free) scan.
+    let covered = t.scan_covered(0x3001, &4u32.to_be_bytes()).unwrap();
+    assert_eq!(covered.len(), 2);
+    assert!(covered.iter().all(|(_, c)| c.is_empty()));
+}
+
+#[test]
+fn dynamic_covered_str_include_decodes_the_trailing_remainder() {
+    // A Str include is the variable-width tail: raw UTF-8 with no length
+    // prefix, so the decoder takes the remainder — per entry, not per index.
+    let t = DynamicCollection::new(
+        TestStore::slatedb_mem(),
+        41,
+        schema(),
+        vec![AccessMethod::plain(
+            0x3001,
+            vec!["level".into()],
+            vec!["name".into()],
+        )],
+    );
+    t.merge(&key_bytes(1, 10), &values(4, 100, "短")).unwrap();
+    t.merge(&key_bytes(1, 11), &values(4, 100, "更长的名字")).unwrap();
+
+    let covered = t.scan_covered(0x3001, &4u32.to_be_bytes()).unwrap();
+    assert_eq!(covered.len(), 2);
+    let names: Vec<&str> = covered
+        .iter()
+        .map(|(_, c)| match c.get("name") {
+            Some(Value::Str(s)) => s.as_str(),
+            other => panic!("unexpected covered decode: {other:?}"),
+        })
+        .collect();
+    assert_eq!(names, vec!["短", "更长的名字"]);
+}
+
+#[test]
 fn dynamic_overwrite_sweeps_stale_entries() {
     let t = dynamic_table(TestStore::slatedb_mem());
     t.merge(&key_bytes(1, 10), &values(4, 100, "a")).unwrap();

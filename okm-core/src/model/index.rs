@@ -448,6 +448,25 @@ pub trait KvIndex {
         buf
     }
 
+    /// Decoded form of [`entry_value`](Self::entry_value): the covered
+    /// payload fields, in `INCLUDES` order, as a generated struct
+    /// (`__OkmCovered_{Row}_{index}`). `()` when the declaration covers
+    /// nothing — an index without `includes` has an empty value segment, so
+    /// there is nothing to decode and a scan over it is a key scan.
+    type Covered;
+
+    /// Decode one entry's includes segment (the entry VALUE) into
+    /// [`Covered`](Self::Covered) — the read half of `includes`, and the only
+    /// door that answers without the primary table.
+    ///
+    /// The segment is a bare concatenation of payload-field encodings: no
+    /// tags, no length prefixes, located by width alone — fixed-width fields
+    /// cut at their declared width, a trailing variable-width field takes the
+    /// remainder (the same order rule `FIELDS` follows, enforced at
+    /// declaration time). `b` must be exactly one entry value: a short head or
+    /// leftover bytes is a layout error and panics (never caller input).
+    fn decode_covered(b: &[u8]) -> Self::Covered;
+
     /// All entries this access method produces for one document: plain and
     /// single-value function indexes yield one `(key, value)` pair;
     /// multi-value function indexes yield one pair per produced value —

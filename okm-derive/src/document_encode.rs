@@ -41,7 +41,7 @@ const REDUCE_SLOT_BASE: u16 = 0x4001;
 use quote::{format_ident, quote};
 use syn::{parse_macro_input, DeriveInput};
 
-use crate::schema::{parse_schema, DocumentSchema};
+use crate::schema::{parse_schema, DocumentSchema, IdxDecl};
 
 /// One match arm per payload field name — each arm appends that field's
 /// raw encoding (no TLV frame; the index segment is a plain
@@ -257,6 +257,74 @@ fn emit_payload_decode(schema: &DocumentSchema) -> TS2 {
     }
 }
 
+/// The read half of `includes` (ADR-0006): one generated struct holding a
+/// covering declaration's payload fields in `INCLUDES` order, typed exactly as
+/// in the document, plus the body of `KvIndex::decode_covered`.
+///
+/// Returns `(struct declaration, Covered type, decode body)`. A declaration
+/// with no `includes` covers nothing — the entry value is empty by
+/// construction, so `Covered = ()` and the body decodes nothing.
+///
+/// The segment is located by width alone (the payload encoders write raw field
+/// bytes, no frame header), so the decode walks the same order: fixed-width
+/// fields cut at their declared width, the trailing variable-width field (at
+/// most one, last only — a parse-time rule) takes the remainder, which is
+/// exactly the length the payload decoder's `len` local expects.
+fn emit_covered(schema: &DocumentSchema, idx: &IdxDecl) -> (TS2, TS2, TS2) {
+    let row_name = &schema.row_name;
+    if idx.includes.is_empty() {
+        return (quote! {}, quote! { () }, quote! {});
+    }
+    let iname = &idx.ident;
+    let covered_ident = format_ident!("__OkmCovered_{}_{}", row_name, iname);
+    let mut decls = Vec::new();
+    let mut stmts = Vec::new();
+    let mut names = Vec::new();
+    for name in &idx.includes {
+        let f = schema
+            .fields
+            .iter()
+            .find(|f| f.ident == *name)
+            .unwrap_or_else(|| {
+                panic!("ok_index[{iname}]: includes field `{name}` is not a payload field")
+            });
+        let id = &f.ident;
+        let dec = &f.dec;
+        let ty: syn::Type = syn::parse_str(&f.ty_str).unwrap_or_else(|e| {
+            panic!("ok_index[{iname}]: covered field `{name}` type `{}`: {e}", f.ty_str)
+        });
+        decls.push(quote! { pub #id: #ty });
+        if f.hot {
+            stmts.push(quote! { let #id = { #dec }; });
+        } else {
+            stmts.push(quote! { let len = b.len() - offset; let #id = { #dec }; });
+        }
+        names.push(id.clone());
+    }
+    let includes_lit: Vec<&String> = idx.includes.iter().collect();
+    let decl = quote! {
+        #[doc = concat!("Covered fields of access method `", stringify!(#iname), "` over `", stringify!(#row_name), "` — the decoded `includes` segment (ADR-0006).")]
+        #[allow(non_camel_case_types)] // generated identity (ADR-0027)
+        #[derive(Clone, Debug, PartialEq)]
+        pub struct #covered_ident {
+            #(#decls),*
+        }
+    };
+    let body = quote! {
+        let mut offset = 0usize;
+        #(#stmts)*
+        assert!(
+            offset == b.len(),
+            "covered segment of `{}`: {} bytes left over (INCLUDES {:?})",
+            stringify!(#iname),
+            b.len() - offset,
+            &[#(#includes_lit),*]
+        );
+        #covered_ident { #(#names),* }
+    };
+    (decl, quote! { #covered_ident }, body)
+}
+
 /// One marker struct + `KvIndex` impl per declared `#[ok_index]` (slot
 /// order). A `where(path)` clause contributes an `admits` override
 /// (partial index); a `func(path)` clause contributes an `entry_pairs`
@@ -374,11 +442,14 @@ fn emit_index_structs(schema: &DocumentSchema) -> TS2 {
         // For Reverse<T> payload fields the payload encoder reads
         // `self.field`; __okm_encode_named is an inherent method with a
         // real `self`, so the arm bodies work verbatim.
+        let (covered_decl, covered_ty, covered_body) = emit_covered(schema, idx);
         index_out.extend(quote! {
             #[doc = concat!("Access method `", stringify!(#iname), "` over `", stringify!(#row_name), "` (slot ", #slot_doc, ", ADR-0005/0006).")]
             #[allow(non_camel_case_types, non_snake_case)] // generated identities (ADR-0027)
             #[derive(Clone, Copy, Debug)]
             pub struct #struct_ident;
+
+            #covered_decl
 
             impl ::okm_core::KvIndex for #struct_ident {
                 type Key = #key_ty;
@@ -388,6 +459,13 @@ fn emit_index_structs(schema: &DocumentSchema) -> TS2 {
                 const INCLUDES: &'static [&'static str] = &[#(#includes),*];
                 const KEY_PREFIX: &'static [&'static str] = &[#(#key_names),*];
                 const FUNC: &'static str = #func_str;
+
+                type Covered = #covered_ty;
+
+                #[allow(clippy::ptr_arg, unused_variables)] // &mut Vec is the encoder-API shape; `len` is unused by some cold decoders
+                fn decode_covered(b: &[u8]) -> Self::Covered {
+                    #covered_body
+                }
 
                 #[allow(clippy::ptr_arg)] // &mut Vec is the encoder-API shape
                 fn encode_named(

@@ -508,13 +508,20 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     }
 
     /// Covered scan over access method `I`: the includes segment lives in
-    /// the entry value, so a full-covering index answers without going
-    /// back to the primary table (materialized view, ADR-0006). Returns
-    /// `(key prefix, entry value bytes)`.
+    /// the entry value, so a covering index answers without going back to
+    /// the primary table (materialized view, ADR-0006). Returns each hit's
+    /// decoded covered fields — `I::Covered`, `()` when the declaration
+    /// covers nothing.
+    ///
+    /// This is what a covered scan can do that [`scan`](Self::scan) cannot:
+    /// no point read and no full payload decode per hit. `scan` returns whole
+    /// documents and therefore fetch-backs by definition; a caller that wants
+    /// only the covered fields takes this door and pays one entry-value
+    /// decode per hit.
     pub fn scan_covered<I: KvIndex<Key = K, Document = R>>(
         &self,
         encoded: &[u8],
-    ) -> Vec<(PrefixKey<K>, Vec<u8>)> {
+    ) -> Vec<(PrefixKey<K>, I::Covered)> {
         let p = I::entry_prefix(&self.header(), encoded);
         let taken = I::key_prefix_width();
         let kl = K::KEY_LEN;
@@ -534,7 +541,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
                     buf[..taken].copy_from_slice(&suffix[start..]);
                     K::decode(&buf)
                 };
-                Some((PrefixKey { decoded, taken }, v))
+                Some((PrefixKey { decoded, taken }, I::decode_covered(&v)))
             })
             .collect()
     }
