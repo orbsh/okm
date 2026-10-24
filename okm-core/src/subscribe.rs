@@ -90,20 +90,25 @@ impl<E: 'static> SinkCell<E> {
     /// time; a later registration replaces the previous sink (one stream,
     /// one consumer — forking the stream is the caller's move: register a
     /// sink that fans out).
+    ///
+    /// Poison recovery, not propagation: a sink that panicked mid-delivery
+    /// leaves the slot merely poisoned, and the slot is recoverable state (the
+    /// next `register` replaces it) — it is not an invariant the caller broke.
+    /// Propagating would let one bad sink wedge every later write.
     pub fn register(&self, sink: impl EventSink<E> + 'static) {
-        *self.sink.write().unwrap() = Some(std::sync::Arc::new(sink));
+        *self.sink.write().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(std::sync::Arc::new(sink));
     }
 
     /// Whether a sink is registered (test/inspection use).
     pub fn has_sink(&self) -> bool {
-        self.sink.read().unwrap().is_some()
+        self.sink.read().unwrap_or_else(std::sync::PoisonError::into_inner).is_some()
     }
 
     /// Best-effort send: `false` when no sink is registered or the sink
     /// rejected the event. Never blocks, never panics, never fails the
     /// write that produced the event.
     pub fn emit(&self, event: E) -> bool {
-        match &*self.sink.read().unwrap() {
+        match &*self.sink.read().unwrap_or_else(std::sync::PoisonError::into_inner) {
             Some(sink) => sink.try_send(event),
             None => false,
         }

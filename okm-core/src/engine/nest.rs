@@ -39,11 +39,13 @@ use crate::engine::storage::{Batch, SharedVirtualStorage, VirtualStorage, prefix
 // ============ sender side ============
 
 /// Sender handle over the in-process reference transport. Implements
-/// [`VirtualStorage`]: writes ship as one framed batch (fire-and-forget —
-/// one frame = one receiver execution pass; channel order = write order),
-/// reads block on the round trip. A TCP client would be another `impl
-/// VirtualStorage` with the same `okm-wire` frames over a stream —
-/// everything here is transport-shaped, not contract-shaped.
+/// [`VirtualStorage`]: writes ship as one framed batch and WAIT for the
+/// frame's answer (one frame = one receiver execution pass; channel order
+/// = write order), because a write that never hears back cannot report a
+/// commit the engine refused — the receiver's ack is empty, its refusal is
+/// a fault. Reads block on the same round trip. A TCP client would be
+/// another `impl VirtualStorage` with the same `okm-wire` frames over a
+/// stream — everything here is transport-shaped, not contract-shaped.
 pub struct RemoteStore {
     exec_tx: mpsc::Sender<(mpsc::Sender<OpResponse>, Vec<u8>)>,
 }
@@ -102,15 +104,6 @@ impl VirtualHandle {
 }
 
 impl RemoteStore {
-    /// A write frame with no waiter: the executor's channel is the only
-    /// thing that can refuse it, and a closed channel is a real error (the
-    /// nest went away) — not something to panic over.
-    fn send_write(&self, frame: &OpFrame) -> crate::error::Result<()> {
-        self.exec_tx
-            .send((mpsc::channel().0, frame.encode()))
-            .map_err(|e| crate::error::Error::Engine(format!("nest executor gone: {e}")))
-    }
-
     fn round_trip(&self, frame: &OpFrame) -> crate::error::Result<OpResponse> {
         let (reply_tx, reply_rx) = mpsc::channel();
         self.exec_tx
@@ -127,8 +120,11 @@ impl RemoteStore {
 }
 
 impl VirtualStorage for RemoteStore {
+    /// The write waits for the frame's answer: an empty ack means the host
+    /// committed it, a fault means it could not (`round_trip` turns that into
+    /// `Err`). Fire-and-forget made a lost write look like a successful one.
     fn put(&self, key: Vec<u8>, value: Vec<u8>) -> crate::error::Result<()> {
-        self.send_write(&OpFrame::one(OP_PUT, key, value))
+        self.round_trip(&OpFrame::one(OP_PUT, key, value)).map(|_ack| ())
     }
 
     fn get(&self, key: &[u8]) -> crate::error::Result<Option<Vec<u8>>> {
@@ -138,7 +134,8 @@ impl VirtualStorage for RemoteStore {
     }
 
     fn del(&self, key: &[u8]) -> crate::error::Result<()> {
-        self.send_write(&OpFrame::one(OP_DELETE, key.to_vec(), Vec::new()))
+        self.round_trip(&OpFrame::one(OP_DELETE, key.to_vec(), Vec::new()))
+            .map(|_ack| ())
     }
 
     fn scan_suffix(&self, prefix: &[u8]) -> crate::error::Result<Vec<Vec<u8>>> {
@@ -192,7 +189,8 @@ impl VirtualStorage for RemoteStore {
     /// cross-assembly-point atomic path (ADR-0003) survives remoteness
     /// because the receiver commits the whole op list in one call.
     fn commit_batch(&self, batch: Batch) -> crate::error::Result<()> {
-        self.send_write(&OpFrame::write_batch(&batch.ops))
+        self.round_trip(&OpFrame::write_batch(&batch.ops))
+            .map(|_ack| ())
     }
 }
 
@@ -365,26 +363,43 @@ impl<S: SharedVirtualStorage + Send + 'static> NestStorage<S> {
     /// adapter calls `apply` on it directly — see
     /// `docs/integration/WS-CHANNEL.md`). An async receiver would
     /// task-spawn the same loop.
+    // `serve` twice is a caller bug (the pump owns its receiver exactly once);
+    // aborting is the point.
+    #[allow(clippy::expect_used, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
     pub fn serve(self) -> Arc<Self> {
         // The receiver end moves into the pump thread (it owns its end
         // exclusively, the correct shape anyway). Pump and returned
         // intake share the SAME core, so `apply` from a WS adapter and
         // the pump serialize on the same engine mutex.
+        // Poison recovery on the lock (a panicking pump must not wedge the
+        // intake); `take` answering None IS the invariant — `serve` runs once.
         let pump_rx = self
             .exec_rx
             .lock()
-            .expect("exec_rx lock")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take()
             .expect("serve called twice");
         let pump_core = Arc::clone(&self.core);
         std::thread::spawn(move || {
             for (reply_tx, bytes) in pump_rx {
                 let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| pump_core.apply(&bytes)));
-                if let Ok(Some(resp)) = r {
-                    // Fire-and-forget writers (put/delete) drop their reply
-                    // box before the answer arrives — a failed send is the
-                    // NORMAL case for them, never a pump death. Round-trip
-                    // readers self-heal: each request carries a fresh box.
+                let answer = match r {
+                    Ok(Some(resp)) => Some(resp),
+                    // Does not decode: no id, nothing stored, nothing to say.
+                    Ok(None) => None,
+                    // The engine panicked inside this frame. The sender is
+                    // WAITING for an answer, so unwinding past it would leave
+                    // that caller parked forever — the panic becomes a fault
+                    // like any other refusal.
+                    Err(_) => Some(OpResponse {
+                        fault: Some("nest: the host panicked while applying the frame".to_string()),
+                        ..OpResponse::default()
+                    }),
+                };
+                if let Some(resp) = answer {
+                    // Every sender waits for its frame's answer, a write's empty
+                    // ack included, so a failed send means the caller gave up
+                    // (it dropped its own box) — never a pump death.
                     let _ = reply_tx.send(resp);
                 }
             }
@@ -394,7 +409,8 @@ impl<S: SharedVirtualStorage + Send + 'static> NestStorage<S> {
 
     /// Transport-free intake: the WS/UDS adapter calls this on the
     /// `Arc<NestStorage>` returned by `serve` (see
-    /// `docs/integration/WS-CHANNEL.md`).
+    /// `docs/integration/WS-CHANNEL.md`). One well-formed frame in, one
+    /// answer out — a write's answer is the empty ack, a failure is a `fault`.
     pub fn apply(&self, bytes: &[u8]) -> Option<OpResponse> {
         self.core.apply(bytes)
     }
@@ -402,22 +418,28 @@ impl<S: SharedVirtualStorage + Send + 'static> NestStorage<S> {
 
 impl<S: VirtualStorage> ExecCore<S> {
     /// Apply one request frame — THE execution surface, all ops:
-    /// decode (malformed = `None`, garbage in / nothing stored), then
-    /// execute in frame order. Mutating ops (put/delete) commit together
-    /// in one `commit_batch` = one engine WAL write (ADR-0010 §2);
-    /// query ops (get/scan) run after them and fill the response.
-    /// `None` = NOTHING to answer: a malformed frame, or a pure-write
-    /// frame (WS-CHANNEL: the transport answers only what `apply`
-    /// returns `Some` — put/delete frames need no response, and a
-    /// positional-FIFO sender would mis-attach a stray empty answer to
-    /// the next waiter). Mixed frames answer their queries normally.
+    /// decode, then execute in frame order. Mutating ops (put/delete)
+    /// commit together in one `commit_batch` = one engine WAL write
+    /// (ADR-0010 §2); query ops (get/scan) run after them and fill the
+    /// response.
+    ///
+    /// Every well-formed frame answers EXACTLY once — a read with its
+    /// value/absence/page, a write with the empty ack, either with a
+    /// `fault` if the host could not serve it. `None` is reserved for a
+    /// frame that does not decode at all: garbage in, nothing stored, and
+    /// no id to key an answer to. A well-formed frame answering nothing
+    /// would be a lie — an unacknowledged write cannot report the commit
+    /// the engine refused — and on the positional answer stream it would
+    /// shift every later answer by one.
+    // A scan frame always carries its begin: the encoder writes it, so a
+    // missing one is our own wire bug (ADR-0040's abort class).
+    #[allow(clippy::expect_used, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
     fn apply(&self, bytes: &[u8]) -> Option<OpResponse> {
         let frame = OpFrame::decode(bytes)?;
-        let has_query = frame
-            .0
-            .iter()
-            .any(|(tag, _, _)| matches!(*tag, OP_GET | OP_SCAN | OP_SCAN_STREAM));
-        let engine = self.engine.lock().expect("engine lock");
+        let engine = self
+            .engine
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut batch = Batch::default();
         let mut resp = OpResponse::default();
         for (tag, key, value) in frame.0 {
@@ -425,7 +447,13 @@ impl<S: VirtualStorage> ExecCore<S> {
                 OP_PUT => batch.put(hosted_key(&self.prefix, &key), value),
                 OP_DELETE => batch.del(&hosted_key(&self.prefix, &key)),
                 OP_GET => {
-                    engine.commit_batch(Batch::default()).ok(); // flush pending mutations first: reads see prior ops in the same frame
+                    // Flush pending mutations first: reads see prior ops in the
+                    // same frame. A flush that cannot land makes every later
+                    // answer a guess, so the frame stops here with a fault.
+                    if let Err(e) = engine.commit_batch(Batch::default()) {
+                        resp.fault = Some(e.to_string());
+                        return Some(resp);
+                    }
                     // A read the engine could not answer is a FAULT in the
                     // answer, never an absent row: the sender's `get` turns it
                     // back into an `Err` instead of reporting "no such key".
@@ -435,7 +463,10 @@ impl<S: VirtualStorage> ExecCore<S> {
                     }
                 }
                 OP_SCAN => {
-                    engine.commit_batch(Batch::default()).ok();
+                    if let Err(e) = engine.commit_batch(Batch::default()) {
+                        resp.fault = Some(e.to_string());
+                        return Some(resp);
+                    }
                     let hk = hosted_key(&self.prefix, &key);
                     // Wire contract: answers are PREFIX-RELATIVE keys —
                     // the sender's key space never sees the hosted prefix
@@ -480,7 +511,10 @@ impl<S: VirtualStorage> ExecCore<S> {
                     // flag moves inclusivity, not the bytes). page:
                     // 0 = engine default (256), 0xFF = one giant page
                     // (the legacy buffered shape).
-                    engine.commit_batch(Batch::default()).ok();
+                    if let Err(e) = engine.commit_batch(Batch::default()) {
+                        resp.fault = Some(e.to_string());
+                        return Some(resp);
+                    }
                     // Grammar: [flag][end bytes?][page u8] — page is
                     // always the last byte; the flag says whether an end
                     // span sits between it and the flag.
@@ -553,9 +587,15 @@ impl<S: VirtualStorage> ExecCore<S> {
                 _ => return None, // unknown op tag = malformed frame
             }
         }
-        engine.commit_batch(batch).ok();
-        // pure-write frames execute fully but answer nothing (above).
-        has_query.then_some(resp)
+        // The frame's mutations land as ONE engine write (ADR-0010 §2). A
+        // commit that cannot land fails the caller's whole frame, so it answers
+        // a fault even when the frame carried no query: a write has no other
+        // way to report anything, and silence would read as success.
+        if let Err(e) = engine.commit_batch(batch) {
+            resp.fault = Some(e.to_string());
+            return Some(resp);
+        }
+        Some(resp)
     }
 }
 
@@ -594,7 +634,7 @@ mod tests {
             Ok(())
         }
         fn get(&self, key: &[u8]) -> crate::error::Result<Option<Vec<u8>>> {
-            Ok(self.0.lock().unwrap().get(key).cloned())
+            Ok(self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(key).cloned())
         }
         fn del(&self, key: &[u8]) -> crate::error::Result<()> {
             self.0
@@ -618,7 +658,7 @@ mod tests {
             begin: &[u8],
             end: Option<&[u8]>,
         ) -> crate::error::Result<Vec<Vec<u8>>> {
-            let map = self.0.lock().unwrap();
+            let map = self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             let iter = map.range(begin.to_vec()..);
             Ok(iter
                 .take_while(|(k, _)| match end {
@@ -650,10 +690,81 @@ mod tests {
     fn apply_put_get_round_trip() {
         let (host, _handle) = NestStorage::new(TestEngine::default(), &[0, 9]);
         let put = OpFrame::one(OP_PUT, b"k".to_vec(), b"v".to_vec());
-        let r = host.apply(&put.encode());
-        assert!(r.is_none(), "pure-write frames execute but answer nothing");
+        let ack = host
+            .apply(&put.encode())
+            .expect("a write frame answers its ack");
+        assert!(
+            ack.fault.is_none() && ack.value.is_none(),
+            "a successful write's answer is the empty ack"
+        );
         let get = OpFrame::one(OP_GET, b"k".to_vec(), Vec::new());
         let r = host.apply(&get.encode());
         assert_eq!(r.unwrap().value.as_deref(), Some(b"v".as_slice()));
+    }
+
+    /// The engine refuses every batch — what a full disk or a broken WAL looks
+    /// like from above. Reads still work, so the refusal cannot be mistaken
+    /// for a dead store.
+    #[derive(Default, Clone)]
+    struct RefusingEngine(TestEngine);
+
+    impl VirtualStorage for RefusingEngine {
+        fn put(&self, key: Vec<u8>, value: Vec<u8>) -> crate::error::Result<()> {
+            self.0.put(key, value)
+        }
+        fn get(&self, key: &[u8]) -> crate::error::Result<Option<Vec<u8>>> {
+            self.0.get(key)
+        }
+        fn del(&self, key: &[u8]) -> crate::error::Result<()> {
+            self.0.del(key)
+        }
+        fn scan_suffix(&self, prefix: &[u8]) -> crate::error::Result<Vec<Vec<u8>>> {
+            self.0.scan_suffix(prefix)
+        }
+        fn scan_range(
+            &self,
+            begin: &[u8],
+            end: Option<&[u8]>,
+        ) -> crate::error::Result<Vec<Vec<u8>>> {
+            self.0.scan_range(begin, end)
+        }
+        fn commit_batch(&self, _batch: Batch) -> crate::error::Result<()> {
+            Err(crate::error::Error::Engine("the batch was refused".into()))
+        }
+    }
+
+    impl SharedVirtualStorage for RefusingEngine {
+        fn shared_handle(&self) -> Self {
+            self.clone()
+        }
+    }
+
+    #[test]
+    fn a_refused_commit_answers_a_fault() {
+        let (host, _handle) = NestStorage::new(RefusingEngine::default(), &[0, 9]);
+        let put = OpFrame::one(OP_PUT, b"k".to_vec(), b"v".to_vec());
+        let resp = host
+            .apply(&put.encode())
+            .expect("a write frame answers even when it failed");
+        let fault = resp
+            .fault
+            .expect("the refusal IS the answer to the frame");
+        assert!(
+            fault.contains("refused"),
+            "the fault carries the engine's reason: {fault}"
+        );
+    }
+
+    #[test]
+    fn the_sender_reads_a_refused_commit_as_an_error() {
+        let handle = NestStorage::bare(RefusingEngine::default());
+        let rs: RemoteStore = handle.open();
+        let err = rs
+            .put(b"k".to_vec(), b"v".to_vec())
+            .expect_err("a refused commit is not a landed write");
+        assert!(
+            err.to_string().contains("refused"),
+            "the caller sees the engine's own reason, not a bare failure: {err}"
+        );
     }
 }

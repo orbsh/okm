@@ -5,6 +5,12 @@
 //! collection reliable — the structural fix proc-macro file exchange
 //! cannot provide; see PLAN event-enum decision).
 
+// A build script that cannot read its inputs or write its output has no way to
+// continue and nobody to tell: the crate does not build either way, and the panic
+// is the report (ADR-0040's one-shot class).
+
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -129,18 +135,18 @@ impl<E: 'static> EnumChannel<E> {
     /// previous sink (one stream, one consumer — fan-out is the
     /// consumer's job: register a sink that broadcasts).
     pub fn register(&self, sink: impl okm_core::subscribe::EventSink<E> + 'static) {
-        *self.sink.write().unwrap() = Some(std::sync::Arc::new(sink));
+        *self.sink.write().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(std::sync::Arc::new(sink));
     }
 
     #[allow(dead_code)] // generated API: consumer-side probe (register/emit pair)
     pub fn has_sink(&self) -> bool {
-        self.sink.read().unwrap().is_some()
+        self.sink.read().unwrap_or_else(std::sync::PoisonError::into_inner).is_some()
     }
 
     /// Best-effort: `false` when no sink is registered or the sink
     /// rejected the event. Never blocks, never fails the write.
     pub fn emit(&self, event: E) -> bool {
-        match &*self.sink.read().unwrap() {
+        match &*self.sink.read().unwrap_or_else(std::sync::PoisonError::into_inner) {
             Some(s) => s.try_send(event),
             None => false,
         }

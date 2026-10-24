@@ -65,7 +65,7 @@ impl StorageRegistry {
     ) -> Result<(), String> {
         let (schema, table) =
             okm_entry::collection_from_entry(okm_entry::EngineBox::Injected(engine), entry, ns)?;
-        self.inner.lock().unwrap().insert(
+        self.inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(
             name.to_string(),
             Bound {
                 table: Arc::new(Mutex::new(table)),
@@ -119,7 +119,7 @@ impl StorageRegistry {
                 let pkey = steel_bytes_to_vec(&pkey)?;
                 reg.with_bound(&name, |b| {
                     let map = hash_to_map(&b.schema, &doc)?;
-                    b.table.lock().unwrap().merge(&pkey, &map)?;
+                    b.table.lock().unwrap_or_else(std::sync::PoisonError::into_inner).merge(&pkey, &map)?;
                     Ok(SteelVal::Void)
                 })
             }
@@ -129,7 +129,7 @@ impl StorageRegistry {
             move |name: String, pkey: SteelVal| -> Result<SteelVal, String> {
                 let pkey = steel_bytes_to_vec(&pkey)?;
                 reg.with_bound(&name, |b| {
-                    Ok(match b.table.lock().unwrap().fetch(&pkey)? {
+                    Ok(match b.table.lock().unwrap_or_else(std::sync::PoisonError::into_inner).fetch(&pkey)? {
                         Some(m) => crate::value_map_to_steel(&m),
                         None => SteelVal::Void,
                     })
@@ -141,7 +141,7 @@ impl StorageRegistry {
             move |name: String, pkey: SteelVal| -> Result<SteelVal, String> {
                 let pkey = steel_bytes_to_vec(&pkey)?;
                 reg.with_bound(&name, |b| {
-                    b.table.lock().unwrap().purge(&pkey)?;
+                    b.table.lock().unwrap_or_else(std::sync::PoisonError::into_inner).purge(&pkey)?;
                     Ok(SteelVal::Void)
                 })
             }
@@ -151,7 +151,7 @@ impl StorageRegistry {
             move |name: String, slot: i64, prefix: SteelVal| -> Result<SteelVal, String> {
                 let prefix = steel_bytes_to_vec(&prefix)?;
                 reg.with_bound(&name, |b| {
-                    let rows = b.table.lock().unwrap().scan(slot as u16, &prefix)?;
+                    let rows = b.table.lock().unwrap_or_else(std::sync::PoisonError::into_inner).scan(slot as u16, &prefix)?;
                     Ok(vector_of(
                         rows.iter().map(crate::value_map_to_steel).collect::<Vec<_>>(),
                     ))
@@ -163,7 +163,7 @@ impl StorageRegistry {
             move |name: String, group: SteelVal| -> Result<SteelVal, String> {
                 reg.with_bound(&name, |b| {
                     let map = hash_to_map(&b.schema, &group)?;
-                    let guard = b.table.lock().unwrap();
+                    let guard = b.table.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                     let ek = guard.reduce_entry_key(b.ns, &map)?;
                     Ok(match guard.store().get(&ek).map_err(|e| e.to_string())? {
                         Some(bytes) => vec_to_steel(bytes),
@@ -177,7 +177,7 @@ impl StorageRegistry {
             move |name: String, slot: i64| -> Result<SteelVal, String> {
                 reg.with_bound(&name, |b| {
                     let pairs = {
-                        let guard = b.table.lock().unwrap();
+                        let guard = b.table.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                         okm_dynamic::scan_reduces(guard.store(), &b.ns.to_be_bytes(), slot as u16)
                             .map_err(|e| e.to_string())?
                     };
