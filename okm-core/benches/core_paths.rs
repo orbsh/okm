@@ -7,6 +7,8 @@
 //! (feature-gated engines get their own benches: fjall via
 //! `cargo bench -p okm-core --features fjall --bench engine_fjall` when added).
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+
 use criterion::{criterion_group, criterion_main, BatchSize, Criterion, Throughput};
 use std::hint::black_box;
 

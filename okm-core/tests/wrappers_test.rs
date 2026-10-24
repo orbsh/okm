@@ -1,6 +1,8 @@
 //! Wrapper codecs: VarInt / Quant / Offset — payload TLV framing,
 //! FieldDesc reporting, and Arrow/Parquet round trips (ADR-0007 Phase 2).
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+
 use okm_core::{
     FieldType, KeyEncode, TestStore, Offset, Quant, Reverse, Document,
     DocumentEncode, Collection, VarInt, offset_decode, offset_encode,

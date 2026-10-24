@@ -9,6 +9,8 @@
 //! (`__OkmReduce_<Doc>_<n>`); tests name those types via
 //! `okm_core::reduce::scan_reduces` / `Reduce::entry_key` generics.
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+
 use okm_core::{Document, DocumentEncode, KeyEncode, Quant, Reduce, ReduceCodec, ReduceLogic, TestStore};
 
 /// 分组模式：按 forum 分组，四种 preset 各占一个 slot。

@@ -1,6 +1,8 @@
 //! 基础集成测试：TestStore 上验证字节布局、双向查询、PrefixKey。
 //! fjall 评估见 tests/fjall_eval.rs（--features fjall）。
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+
 use okm_core::{DocumentEncode, JunctionEncode, KeyEncode, KvJunction, Ref, TestStore};
 
 // ================= 端点文档（derive DocumentEncode） =================

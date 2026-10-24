@@ -6,6 +6,8 @@
 //! into a no-op: the probe/tail test read a suffix one prefix too long, so a
 //! spill was never dropped and exact matching could never fire.
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+
 use okm_core::storage::VirtualStorage;
 use std::collections::BTreeMap;
 use std::sync::Mutex;

@@ -3,6 +3,8 @@
 //! byte-equality test against the fixed-ontology form is the drift lock — the
 //! two forms MUST land identical bytes for the same edge.
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+
 use okm_core::obj_dynamic::DynamicValue;
 use okm_core::schema::CollectionSchema;
 use okm_core::storage::VirtualStorage;

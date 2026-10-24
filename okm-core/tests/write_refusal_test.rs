@@ -13,6 +13,8 @@
 //! here: the pump thread lives exactly as long as any sender, so the branch cannot
 //! fire while the test holds the store — it stays as a defensive arm.
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+
 #![cfg(feature = "test-engines")]
 
 use std::cell::Cell;

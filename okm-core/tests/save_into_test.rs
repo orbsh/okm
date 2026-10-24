@@ -8,6 +8,8 @@
 //! with a ledger can join a batch — same-group writes accumulate, overwrites
 //! leave no stale faces, and an uncommitted batch moves no accumulator.
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+
 use okm_core::{
     DocumentEncode, JunctionEncode, KeyEncode, Ref, VirtualStorage, TestStore, Collection,
     Document, ReduceCodec, Vocab,

@@ -10,6 +10,8 @@
 //!   callable contract (`unfold(fold(a, x)) = a`) is the implementor's
 //!   obligation, same as the Rust-side `ReduceLogic`.
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+
 use okm_core::{DocumentEncode, KeyEncode, TestStore, VirtualStorage};
 use okm_core::schema::CollectionSchema;
 use okm_dynamic::{

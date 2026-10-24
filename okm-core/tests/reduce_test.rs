@@ -4,6 +4,8 @@
 //! 同 group 多次 fold 累积、scan_reduces 全组扫描、entry 布局
 //! `[ns 2B][slot 2B][group 段]`（reduce 族 0x5，独立计数器）。
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+
 use okm_core::{Reduce, ReduceLogic, ReduceCodec, TestStore, Document, DocumentEncode};
 
 /// PostKey：代理主键。

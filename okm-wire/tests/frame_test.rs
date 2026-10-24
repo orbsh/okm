@@ -3,6 +3,8 @@
 //! discipline as the key/index hex tests). Covers the length codec's four
 //! buckets, the op header, round trips, and malformed-frame rejection.
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+
 use okm_wire::{put_len, OpFrame, OpResponse, OP_SCAN_STREAM, TAIL_FINAL, TAIL_MORE};
 
 #[test]

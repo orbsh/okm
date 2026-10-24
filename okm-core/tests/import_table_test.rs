@@ -3,6 +3,8 @@
 //! the accumulator entry), so a restored store is indistinguishable from one
 //! that was never exported — ids included.
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+
 use std::collections::BTreeMap;
 
 use okm_core::bridge::tooling::parquet_io;

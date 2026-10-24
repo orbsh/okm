@@ -2,6 +2,8 @@
 //! produces one Variant value per document from its dynamic segment —
 //! declared fields stay typed columns, dynamic fields ride the Variant
 //! column, and documents without dynamic entries read as null.
+
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
 use okm_core::{DocumentEncode, KeyEncode, obj_dynamic::DynamicValue, TestStore};
 use std::collections::BTreeMap;
 

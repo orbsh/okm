@@ -12,6 +12,8 @@
 //! story checkable: the row, its faces and its ledgers live in one commit or
 //! in none.
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+
 use std::cell::Cell;
 
 use okm_core::engine::storage::ScanIter;
