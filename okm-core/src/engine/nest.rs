@@ -113,9 +113,13 @@ impl RemoteStore {
         self.exec_tx
             .send((reply_tx, frame.encode()))
             .map_err(|e| crate::error::Error::Engine(format!("nest executor gone: {e}")))?;
-        reply_rx
+        let resp = reply_rx
             .recv()
-            .map_err(|e| crate::error::Error::Engine(format!("nest reply missing: {e}")))
+            .map_err(|e| crate::error::Error::Engine(format!("nest reply missing: {e}")))?;
+        match resp.fault {
+            Some(fault) => Err(crate::error::Error::Engine(fault)),
+            None => Ok(resp),
+        }
     }
 }
 
@@ -418,11 +422,13 @@ impl<S: VirtualStorage> ExecCore<S> {
                 OP_DELETE => batch.del(&hosted_key(&self.prefix, &key)),
                 OP_GET => {
                     engine.commit_batch(Batch::default()).ok(); // flush pending mutations first: reads see prior ops in the same frame
-                    // The frame protocol has no error field (OpResponse is
-                    // value/suffixes/tail), so a receiver-side read failure
-                    // still answers "absent" — the ONE place the old collapse
-                    // survives, and it is a WIRE change to fix (ADR-0037 note).
-                    resp.value = engine.get(&hosted_key(&self.prefix, &key)).ok().flatten();
+                    // A read the engine could not answer is a FAULT in the
+                    // answer, never an absent row: the sender's `get` turns it
+                    // back into an `Err` instead of reporting "no such key".
+                    match engine.get(&hosted_key(&self.prefix, &key)) {
+                        Ok(value) => resp.value = value,
+                        Err(e) => resp.fault = Some(e.to_string()),
+                    }
                 }
                 OP_SCAN => {
                     engine.commit_batch(Batch::default()).ok();
@@ -434,28 +440,25 @@ impl<S: VirtualStorage> ExecCore<S> {
                     // full key; prefix answers are already relative.
                     let plen = self.prefix.as_ref().map_or(0, Vec::len);
                     let strip = move |k: Vec<u8>| k[plen..].to_vec();
-                    resp.suffixes = match value.first() {
+                    let scanned = match value.first() {
                         // [0x01][end] = bounded range; [0x00] alone =
                         // begin-only range (unbounded end); EMPTY value =
                         // the legacy prefix scan. (A begin-only range and
                         // a prefix scan are different predicates.)
-                        Some(&0x00) if value.len() == 1 => engine
-                            .scan_range(&hk, None)
-                            .unwrap_or_default()
-                            .into_iter()
-                            .map(strip)
-                            .collect(),
+                        Some(&0x00) if value.len() == 1 => engine.scan_range(&hk, None),
                         Some(&0x01) => {
                             let end = hosted_key(&self.prefix, &value[1..]);
-                            engine
-                                .scan_range(&hk, Some(&end))
-                                .unwrap_or_default()
-                                .into_iter()
-                                .map(strip)
-                                .collect()
+                            engine.scan_range(&hk, Some(&end))
                         }
                         // empty value = prefix scan
-                        _ => engine.scan_suffix(&hk).unwrap_or_default(),
+                        _ => engine.scan_suffix(&hk),
+                    };
+                    resp.suffixes = match scanned {
+                        Ok(keys) => keys.into_iter().map(strip).collect(),
+                        Err(e) => {
+                            resp.fault = Some(e.to_string());
+                            Vec::new()
+                        }
                     };
                 }
                 OP_SCAN_STREAM => {
@@ -509,18 +512,24 @@ impl<S: VirtualStorage> ExecCore<S> {
                     // Hits are prefix-relative (same contract as OP_SCAN):
                     // the sender owns cursor bytes it can re-send verbatim.
                     let plen = self.prefix.as_ref().map_or(0, Vec::len);
-                    let pairs: Vec<(Vec<u8>, Vec<u8>)> = engine
-                        .scan_range_iter(
-                            begin.as_deref().expect("begin present"),
-                            end.as_deref(),
-                        )
-                        // A page whose items fail is cut there (same wire
-                        // limitation as OP_GET: no error field to carry it).
-                        .take_while(|item| item.is_ok())
-                        .filter_map(|item| item.ok())
-                        .take(want)
-                        .map(|(k, v)| (k[plen..].to_vec(), v))
-                        .collect();
+                    let mut pairs: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+                    for item in engine.scan_range_iter(
+                        begin.as_deref().expect("begin present"),
+                        end.as_deref(),
+                    ) {
+                        match item {
+                            Ok((k, v)) => pairs.push((k[plen..].to_vec(), v)),
+                            // A page that cannot be read is a fault; the
+                            // sender turns it into an error item.
+                            Err(e) => {
+                                resp.fault = Some(e.to_string());
+                                break;
+                            }
+                        }
+                        if pairs.len() == want {
+                            break;
+                        }
+                    }
                     // More pages only when the page filled to its exact
                     // budget (0xFF = giant page is always FINAL — it asked
                     // for the whole buffered answer).

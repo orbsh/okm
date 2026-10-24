@@ -203,7 +203,13 @@ impl<T: WireTransport> WireClient<T> {
     }
 
     async fn ask(&self, frame: &OpFrame) -> Result<OpResponse, String> {
-        self.round_trip(frame).await
+        let resp = self.round_trip(frame).await?;
+        // A receiver-reported fault is the transport's Err: a failed read on
+        // the far side must not arrive as an absent row.
+        match resp.fault {
+            Some(fault) => Err(fault),
+            None => Ok(resp),
+        }
     }
 
     /// The raw request surface: one frame in, one answer out, the
