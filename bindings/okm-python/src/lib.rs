@@ -192,20 +192,20 @@ impl Collection {
     /// `DynamicCollection` calls the #[pymethods] shell makes — the
     /// python shell adds only dict <-> ValueMap coercion on top.
     pub fn merge_doc(&self, pkey: &[u8], document: &ValueMap) -> Result<(), String> {
-        self.inner.lock().unwrap().merge(pkey, document).map_err(|e| e.to_string())
+        self.inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner).merge(pkey, document).map_err(|e| e.to_string())
     }
 
     pub fn fetch_doc(&self, pkey: &[u8]) -> Result<Option<ValueMap>, String> {
-        self.inner.lock().unwrap().fetch(pkey).map_err(|e| e.to_string())
+        self.inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner).fetch(pkey).map_err(|e| e.to_string())
     }
 
     pub fn purge_doc(&self, pkey: &[u8]) -> Result<bool, String> {
-        self.inner.lock().unwrap().purge(pkey).map_err(|e| e.to_string())
+        self.inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner).purge(pkey).map_err(|e| e.to_string())
     }
 
     /// Declared-index scan by slot + encoded prefix → decoded keys.
     pub fn scan_doc(&self, slot: u16, encoded_prefix: &[u8]) -> Result<Vec<ValueMap>, String> {
-        self.inner.lock().unwrap().scan(slot, encoded_prefix).map_err(|e| e.to_string())
+        self.inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner).scan(slot, encoded_prefix).map_err(|e| e.to_string())
     }
 }
 
@@ -390,7 +390,7 @@ impl Collection {
 	    /// `ReduceLogic` class writes.
 	    fn reduce_get(&self, group: &Bound<'_, PyAny>) -> PyResult<Option<Vec<u8>>> {
 	        let map = py_values_to_map(&self.schema, group)?;
-	        let t = self.inner.lock().unwrap();
+	        let t = self.inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
 	        let ek = t
 	            .reduce_entry_key(self.ns, &map)
 	            .map_err(PyValueError::new_err)?;
@@ -401,7 +401,7 @@ impl Collection {
 	    /// Scan every group of one reduce: list of (group segment bytes,
 	    /// acc bytes). Group fields decode with the schema's BE rule.
 	    fn scan_reduces(&self, slot: u16) -> PyResult<Vec<(Vec<u8>, Vec<u8>)>> {
-	        let t = self.inner.lock().unwrap();
+	        let t = self.inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
 	        okm_dynamic::scan_reduces(t.store(), &self.ns.to_be_bytes(), slot)
 	            .map_err(|e| PyValueError::new_err(e))
 	    }
@@ -430,7 +430,7 @@ impl Collection {
 	            None => None,
 	        };
 	        let accs = accs_dict(accs)?;
-	        let t = self.inner.lock().unwrap();
+	        let t = self.inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
 	        let plan = t
 	            .plan_put(&pkey, &map, old.as_ref(), &|ek| {
 	                Ok(accs.as_ref().and_then(|a| a.get(ek).cloned()))
@@ -452,7 +452,7 @@ impl Collection {
 	    ) -> PyResult<PlanReceipt> {
 	        let old = py_values_to_map(&self.schema, old)?;
 	        let accs = accs_dict(accs)?;
-	        let t = self.inner.lock().unwrap();
+	        let t = self.inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
 	        let plan = t
 	            .plan_delete(&pkey, &old, &|ek| {
 	                Ok(accs.as_ref().and_then(|a| a.get(ek).cloned()))

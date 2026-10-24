@@ -42,7 +42,7 @@ impl<E: 'static> Stream<E> {
 
 impl<E: 'static> okm_core::subscribe::EventSink<E> for Stream<E> {
     fn try_send(&self, event: E) -> bool {
-        (self.sink.lock().unwrap())(event)
+        (self.sink.lock().unwrap_or_else(std::sync::PoisonError::into_inner))(event)
     }
 }
 
@@ -53,7 +53,7 @@ impl<E: 'static> Stream<E> {
         let inner = self.sink;
         Self::new(move |e| {
             if pred(&e) {
-                (inner.lock().unwrap())(e)
+                (inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner))(e)
             } else {
                 true // filtered out = delivered-to-nothing, not rejected
             }
@@ -70,7 +70,7 @@ impl<E: 'static> Stream<E> {
     /// sink cell.)
     pub fn map<E2: 'static>(self, f: impl Fn(E2) -> E + Send + Sync + 'static) -> Stream<E2> {
         let inner = self.sink;
-        Stream::<E2>::new(move |e| (inner.lock().unwrap())(f(e)))
+        Stream::<E2>::new(move |e| (inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner))(f(e)))
     }
 }
 
@@ -110,7 +110,7 @@ where
     move |stream| {
         let cache: std::sync::Arc<std::sync::Mutex<HashMap<K, R>>> = Default::default();
         stream.map::<Event<K, R>>(move |ev| {
-            let old = cache.lock().unwrap().insert(ev.key.clone(), ev.document.clone());
+            let old = cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(ev.key.clone(), ev.document.clone());
             Event::<K, (Option<R>, R)>::new(ev.op, ev.epoch, ev.key, (old, ev.document))
         })
     }
@@ -130,7 +130,7 @@ where
         let cache: std::sync::Arc<std::sync::Mutex<HashMap<K, R>>> = Default::default();
         let changed = changed.clone();
         stream.map::<Event<K, R>>(move |ev| {
-            let old = cache.lock().unwrap().insert(ev.key.clone(), ev.document.clone());
+            let old = cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(ev.key.clone(), ev.document.clone());
             let is_changed = match old.as_ref() {
                 Some(o) => changed(o, &ev.document),
                 None => true,
