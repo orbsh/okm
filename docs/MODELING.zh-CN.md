@@ -228,15 +228,15 @@ use __OkmIndex_User_by_org as ByOrg; // 索引类型：ok_index(by_org) 的派�
 
 let t = <User as Document>::collection(TestStore::default());
 
-t.put(&user, &User { org_id: 7, created_at: 30, reputation: 100, bio_len: 2 });
+t.put(&user, &User { org_id: 7, created_at: 30, reputation: 100, bio_len: 2 })?;
 
 // 任意访问方法上的最左前缀扫描，带回表：
-let rows = t.scan::<ByOrg>(&7u32.to_be_bytes());
+let rows = t.scan::<ByOrg>(&7u32.to_be_bytes())?;
 for (key, row) in rows {
     // key: 解码的 UserKey，row: payload 存在时为 Some(解码的 User)
 }
 
-t.purge(&user); // 删除主键 + 所有已声明的索引 entry（+ 动态段；多值索引逐条清除，无悬挂条目）
+t.purge(&user)?; // 删除主键 + 所有已声明的索引 entry（+ 动态段；多值索引逐条清除，无悬挂条目）
 ```
 
 多值函数索引的声明与查询（倒排索引形态——token 是数据段，主键前缀从尾部反推）。func 返回 `Vec` 是契约而非偷懒：put 收到返回值后立即逐条写入，惰性迭代器没有收益，一次 `collect` 换 trait 面最小：
@@ -257,7 +257,7 @@ use __OkmIndex_Doc_by_token as ByToken;
 
 // 写入：一行 "rust kv" 展开为两条 entry（rust → key，kv → key）
 // 查询：token 前缀扫 → 回表，与普通索引无异
-let hits = t.scan::<ByToken>(b"rust");
+let hits = t.scan::<ByToken>(b"rust")?;
 ```
 
 等值前缀之外，索引首字段上的比较谓词是一个物理 key 区间（ADR-0020）：`scan_range::<I>(begin, end)` / `scan_range_iter::<I>(..)`——OKM 每种编码都保持字节序 == 值序，`1 < a < 100` 只读 `[1, 100)` 内的行。配方见[查询指南](query-recipes.zh-CN.md)「where 的形态」一节。
@@ -274,11 +274,11 @@ let hits = t.scan::<ByToken>(b"rust");
 ```rust
 // 行-映射桥：全部字段（声明 + 动态）lift 到逻辑类型
 // （Quant -> F64、VarInt -> u64、Enum -> 变体名、Offset -> i64）。
-let fields = t.fetch(&key);                    // Option<BTreeMap<String, DynamicValue>>，None = 文档不存在
+let fields = t.fetch(&key)?;                   // Option<BTreeMap<String, DynamicValue>>，None = 文档不存在
 
 // 局部更新：命中声明的名字是一次行 RMW（走 typed 路径，旧面一并清理），
 // 未知名字只覆盖动态段里对应的那些名字。
-t.merge(&key, &patch);                        // BTreeMap<String, DynamicValue>
+t.merge(&key, &patch)?;                       // BTreeMap<String, DynamicValue>
 
 // 整体替换：map 就是文档——缺席的声明字段取默认，未点名的动态名被移除。
 t.replace(&key, &fields);

@@ -1694,6 +1694,22 @@ Tasks:
       `NameResolver`), because interning is the one allocation a write performs.
       `a_refused_merge_returns_the_error_and_writes_nothing` locks the "a refusal
       writes nothing" half.
+- [x] Read side (ADR-0038, LANDED 2026-10-24): the same disease on the other
+      half — every read answered `Option`, so "the row is gone" and "the store
+      broke" were the same value, and the wire had no error field at all.
+      Now: absence stays `Option`, failure is `Result` (`Result<Option<R>>` /
+      `Result<Vec<…>>` at the semantic verbs); `VirtualStorage` /
+      `VirtualStorageAsync` read primitives return `crate::error::Result` and
+      `ScanIter::Item` is `Result<(Vec<u8>, Vec<u8>)>` (six backends, none
+      `expect`s on a read); `OpResponse.fault` gives the wire its third answer
+      (`[2][len][utf8]`, `0`/`1` byte-identical, receiver sets it in `OP_GET` /
+      `OP_SCAN` / per `OP_SCAN_STREAM` page, sender folds it back to `Err`);
+      the three read hooks (`__okm_embed_deref`, `__okm_deref_vocab`,
+      `__okm_apply_reduces`) and the junction's generated `get_*` queries are
+      fallible; `Error::Corrupt` / `Error::ScanThroughBatch` replace two aborts.
+      `decode_payload` still panics by decision (ADR-0038, "deliberately not
+      done"). Suite: okm-core 225, okm-dynamic 50, okm-query 3; the whole
+      workspace under `--all-features` is 327 passed / 0 failed.
 
 ### A value too big for the row is its own table (ADR-0036, decided 2026-10-23)
 
