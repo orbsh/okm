@@ -125,3 +125,16 @@ slot 的首字节自己说明后面还跟不跟计数字节：
 - `SlotMap`（schema 导出）保持 `u16` 字段——值现在是固定面的 0x00–0x0A 与计数族的 0x1nnn / 0x2nnn / 0x3nnn，宽度由值本身蕴含。绑定侧传的 slot 参数不变。
 - ADR-0016 的段表被取代；它的头宽决策对计数族继续有效，它的 junction 落位部分原样成立。
 - docs/internals/key-layout 与 slot-mechanism 承载布局表，那里的机制文字与本决策成为一对。
+
+## Update 2026-10-24：上限在「算号码的地方」被检查
+
+此前本 ADR 里的三个上限（4095 条索引、4095 条 reduce、2048 个 junction 区分号）只是文字：
+每一个**拼出** slot 的地方都把越界的部分掩掉了。`index::slot(family, counter)` 写的是
+`(family << 12) | (counter & 0x0FFF)`，derive 直接发 `DECLARED_SLOT_BASE + n` 不设界，
+`KvJunction::dir_slot` 用 `0x07FF` 掩区分号。被掩掉的值不是「一个错的数字」，而是**另一个族的
+合法槽位**：`0x3FFF + 1 = 0x4001` 正是 reduce 族，第 4096 条索引会被写进 reduce 段并被当作
+reduce 行读回；族号过 `0xF` 则会绕进固定面空间。
+
+三处现在都是拒绝而不是掩码——号码是声明期常量的地方在编译期拒绝（`slot` 是 `const fn`；
+derive 的 `declared_slot` 与 `#[ok_junction(n)]` 校验在展开期跑），其余在运行期（`dir_slot`）。
+上限本身没变，消失的只是「静默落到隔壁槽位」这条路。

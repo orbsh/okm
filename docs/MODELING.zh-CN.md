@@ -439,8 +439,10 @@ dynamic codec（Python/Steel 的 schema 驱动编解码）从 `CollectionSchema`
 - **`Option<T>` 不是字段类型。** 缺失由每个字段自选的哨兵值表达，derive 没有 `Option` 分支
   （见下一节）。
 - **`Vocab` 字段在写路径上 intern。** `Collection::put` 与 `save_with_prev_into` 在编码前把
-  标签换成 id；`save_into` 只负责编码，因此要求文档已经通过 collection intern 过。一个字段里
-  intern 第 256 个不同标签会 panic——收窄值域，或者把这个值建成 `String`。
+  标签换成 id；`save_into` 只负责编码，因此要求文档已经通过 collection intern 过。一个字段的
+  词表满了是写错误（`Error::VocabularyExhausted`），不是 panic——收窄值域，或者把这个值建成
+  `String`。容量比宽度少一：分配需要"下一个 id"存在才能推进游标，所以 `Vocab<u8>` 放 255 个
+  标签，不是 256 个。
 
 #### 案例：日志表
 

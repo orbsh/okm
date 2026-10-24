@@ -127,9 +127,13 @@ The surface splits by VALUE SHAPE rather than by slot.
   what it is (the struct door, the fresh-row fast path) and carries no
   whole-document claim.
 - **Reject a value whose kind mismatches the declaration here.** `from_map`
-  currently falls back to the default (`_ => #dflt`). Making that a named panic
-  is right, but it is a derive change with its own blast radius — queued as a
-  separate item rather than smuggled into an API rename.
+  used to fall back to the default (`_ => #dflt`). **Landed 2026-10-24 as its
+  own change** — the blast radius was the reason to queue it, not to skip it.
+  The rule is presence, not the value: an ABSENT name takes its declared default
+  (the append-only evolution rule), while a name the map CARRIES with another
+  kind, or a value that does not fit the declared width, comes back as
+  `okm_core::Error` — `merge` / `replace` return `Result`, and nothing is written
+  when they refuse (ADR-0037).
 
 ## Consequences
 
