@@ -63,7 +63,7 @@ fn range_scan_reads_only_the_interval() {
 #[test]
 fn range_scan_fjall() {
     let store = TestStore::fjall_tmp();
-    let mut col: Collection<_, RowId, Row> = Collection::new(store);
+    let col: Collection<_, RowId, Row> = Collection::new(store);
     for i in 0..50u32 {
         col.put(&RowId { id: i as u64 }, &Row { a: i, tag: 0 }).unwrap();
     }
@@ -75,7 +75,7 @@ fn range_scan_fjall() {
 #[test]
 fn range_scan_redb() {
     let store = TestStore::redb_tmp();
-    let mut col: Collection<_, RowId, Row> = Collection::new(store);
+    let col: Collection<_, RowId, Row> = Collection::new(store);
     for i in 0..50u32 {
         col.put(&RowId { id: i as u64 }, &Row { a: i, tag: 0 }).unwrap();
     }
@@ -127,7 +127,7 @@ fn lazy_range_scan_matches_buffered() {
 #[test]
 fn lazy_range_scan_fjall_native_double_ended() {
     let store = TestStore::fjall_tmp();
-    let mut col: Collection<_, RowId, Row> = Collection::new(store);
+    let col: Collection<_, RowId, Row> = Collection::new(store);
     for i in 0..50u32 {
         col.put(&RowId { id: i as u64 }, &Row { a: i, tag: 0 }).unwrap();
     }

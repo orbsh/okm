@@ -12,6 +12,13 @@ use crate::engine::storage::{scan_suffix_kv, SharedVirtualStorage, VirtualStorag
 use crate::model::index::{KvIndex, Document};
 use crate::model::key::{KeyEncode, PrefixKey};
 
+/// One document as the byte-level scans hand it over: `(key encoding suffix,
+/// Some(payload))` for a row, `(key encoding suffix, None)` for a document that
+/// exists only as a segment. Named because three call sites (the raw scan, the
+/// Arrow bridge, the snapshot exporter) carry it and a bare
+/// `Vec<(Vec<u8>, Option<Vec<u8>>)>` stops being readable.
+pub type RawDocument = (Vec<u8>, Option<Vec<u8>>);
+
 pub struct Collection<S, K: KeyEncode, R: Document<Key = K>> {
     store: S,
     /// Monotonic write-batch counter (in-process only, never persisted):
@@ -575,7 +582,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     /// `merge` / `replace` naming no declared field leaves exactly that. The row
     /// half is one prefix scan WITH values, the segment half a key-only scan, and
     /// the union is a two-pointer merge: no point read per document.
-    pub fn scan_documents_raw(&self) -> crate::error::Result<Vec<(Vec<u8>, Option<Vec<u8>>)>> {
+    pub fn scan_documents_raw(&self) -> crate::error::Result<Vec<RawDocument>> {
         let mut rows = self.header();
         crate::model::index::write_slot(&mut rows, crate::model::index::PRIMARY_SLOT);
         let mut segs = self.header();

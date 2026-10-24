@@ -621,8 +621,8 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
         // Edge rows always have a body: `None` (no row) does not arise here.
         let mut documents: Vec<(Vec<u8>, Option<Vec<u8>>)> = Vec::with_capacity(ids.len());
         // (src name, src pkey, dst name, dst pkey, predicate) per row
-        let mut rows: Vec<(Option<String>, Vec<u8>, Option<String>, Vec<u8>, String)> =
-            Vec::with_capacity(ids.len());
+        type EdgeRow = (Option<String>, Vec<u8>, Option<String>, Vec<u8>, String);
+        let mut rows: Vec<EdgeRow> = Vec::with_capacity(ids.len());
         let mut variants: Vec<Option<Vec<u8>>> = Vec::with_capacity(ids.len());
 
         for id in ids {

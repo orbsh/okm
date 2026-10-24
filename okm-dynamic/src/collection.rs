@@ -438,7 +438,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
                 &declared,
                 &dynamic,
                 crate::plan::Stored { row: old_row.as_ref(), dynamic: old_dynamic.as_ref() },
-                &|ek| store.get(ek).unwrap(),
+                &|ek| store.get(ek).map_err(|e| e.to_string()),
                 &mut vocab,
             )?
         };
@@ -483,7 +483,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
                 &declared,
                 &dynamic,
                 crate::plan::Stored { row: old_row.as_ref(), dynamic: old_dynamic.as_ref() },
-                &|ek| store.get(ek).unwrap(),
+                &|ek| store.get(ek).map_err(|e| e.to_string()),
                 &mut vocab,
             )?
         };
@@ -501,7 +501,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
         }
         let plan = {
             let store = &self.store;
-            self.plan_purge(pkey, old_row.as_ref(), old_dynamic.as_ref(), &|ek| store.get(ek).unwrap())?
+            self.plan_purge(pkey, old_row.as_ref(), old_dynamic.as_ref(), &|ek| store.get(ek).map_err(|e| e.to_string()))?
         };
         self.replay(&plan.ops);
         Ok(true)

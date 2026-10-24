@@ -577,7 +577,7 @@ fn plan_merge_equals_embedded_merge() {
             &okm_dynamic::ValueMap::new(),
             &dfields(&[("note", "hello"), ("weight", "9")]),
             okm_dynamic::Stored::default(),
-            &|_ek: &[u8]| None,
+            &|_ek: &[u8]| Ok(None),
             &mut vocab,
         )
         .unwrap();
