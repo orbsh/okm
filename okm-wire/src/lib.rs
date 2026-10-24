@@ -239,11 +239,27 @@ pub struct OpResponse {
     /// OP_SCAN_STREAM chunk trailer: `Some(TAIL_MORE)` / `Some(TAIL_FINAL)`
     /// marks the bytes as a stream chunk; `None` = plain (non-chunk) answer.
     pub tail: Option<u8>,
+    /// The receiver's own failure — a read the hosting engine could not
+    /// answer. Encoded as a `[2][len][utf8]` frame that carries nothing else,
+    /// because an answer that is a failure has no value, no suffixes and no
+    /// page. Without it a failed read on the far side arrived as `None` /
+    /// `[]`, i.e. as "the row is gone", and no sender could tell the two apart.
+    pub fault: Option<String>,
 }
+
+/// Leading answer discriminant: the value byte of the plain grammar (`0` =
+/// absent, `1` = present) or `FAULT_CODE` for a receiver-reported failure.
+const FAULT_CODE: u8 = 2;
 
 impl OpResponse {
     pub fn encode(&self) -> Vec<u8> {
         let mut buf = Vec::new();
+        if let Some(fault) = &self.fault {
+            buf.push(FAULT_CODE);
+            put_len(&mut buf, fault.len());
+            buf.extend_from_slice(fault.as_bytes());
+            return buf;
+        }
         match &self.value {
             Some(v) => {
                 buf.push(1);
@@ -278,7 +294,22 @@ impl OpResponse {
 
     pub fn decode(frame: &[u8]) -> Option<Self> {
         let mut pos = 0;
-        let value = match frame.first()? {
+        let value = match *frame.first()? {
+            FAULT_CODE => {
+                pos += 1;
+                let len = get_len(frame, &mut pos)?;
+                let bytes = take(frame, &mut pos, len)?;
+                if pos != frame.len() {
+                    return None; // a fault frame carries nothing else
+                }
+                return Some(Self {
+                    value: None,
+                    suffixes: Vec::new(),
+                    hits: Vec::new(),
+                    tail: None,
+                    fault: Some(String::from_utf8(bytes).ok()?),
+                });
+            }
             0 => {
                 pos += 1;
                 None
@@ -304,6 +335,7 @@ impl OpResponse {
             suffixes,
             hits: Vec::new(),
             tail: None,
+            fault: None,
         })
     }
 
@@ -314,7 +346,22 @@ impl OpResponse {
     /// a plain suffix list of the right parity can masquerade as pairs).
     pub fn decode_chunk(frame: &[u8]) -> Option<Self> {
         let mut pos = 0;
-        let value = match frame.first()? {
+        let value = match *frame.first()? {
+            FAULT_CODE => {
+                pos += 1;
+                let len = get_len(frame, &mut pos)?;
+                let bytes = take(frame, &mut pos, len)?;
+                if pos != frame.len() {
+                    return None; // a fault frame carries nothing else
+                }
+                return Some(Self {
+                    value: None,
+                    suffixes: Vec::new(),
+                    hits: Vec::new(),
+                    tail: None,
+                    fault: Some(String::from_utf8(bytes).ok()?),
+                });
+            }
             0 => {
                 pos += 1;
                 None
@@ -344,7 +391,92 @@ impl OpResponse {
             suffixes: Vec::new(),
             hits,
             tail: Some(tail),
+            fault: None,
         })
     }
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A plain answer: value + suffixes survive the codec byte for byte.
+    #[test]
+    fn a_plain_answer_round_trips() {
+        let resp = OpResponse {
+            value: Some(b"v".to_vec()),
+            suffixes: vec![b"a".to_vec(), b"bb".to_vec()],
+            ..Default::default()
+        };
+        let back = OpResponse::decode(&resp.encode()).expect("decodes");
+        assert_eq!(back.value.as_deref(), Some(b"v".as_slice()));
+        assert_eq!(back.suffixes, resp.suffixes);
+        assert_eq!(back.fault, None);
+        assert_eq!(back.tail, None);
+    }
+
+    /// An ABSENT row and a FAULT are different answers, and the codec keeps
+    /// them apart: absence is `[0][0]`, a fault is its own leading code.
+    #[test]
+    fn absence_and_fault_are_different_answers() {
+        let absent = OpResponse::default();
+        let bytes = absent.encode();
+        assert_eq!(bytes, vec![0, 0], "absence is value-none + no suffixes");
+        let back = OpResponse::decode(&bytes).expect("decodes");
+        assert_eq!(back.value, None);
+        assert_eq!(back.fault, None, "absence is not a fault");
+
+        let failed = OpResponse {
+            fault: Some("fjall: disk gone".into()),
+            ..Default::default()
+        };
+        let bytes = failed.encode();
+        assert_eq!(bytes[0], FAULT_CODE);
+        let back = OpResponse::decode(&bytes).expect("decodes");
+        assert_eq!(back.fault.as_deref(), Some("fjall: disk gone"));
+        assert_eq!(back.value, None);
+        assert!(back.suffixes.is_empty());
+    }
+
+    /// A fault frame is legal in the chunk grammar too, and it carries no
+    /// page: the sender must see the failure, not an empty page.
+    #[test]
+    fn a_fault_is_legal_in_the_chunk_grammar() {
+        let failed = OpResponse {
+            fault: Some("transport died mid-page".into()),
+            ..Default::default()
+        };
+        let back = OpResponse::decode_chunk(&failed.encode()).expect("decodes");
+        assert_eq!(back.fault.as_deref(), Some("transport died mid-page"));
+        assert!(back.hits.is_empty());
+        assert_eq!(back.tail, None, "a fault is not a chunk");
+    }
+
+    /// A chunk still round-trips through its own grammar (pairs + tail).
+    #[test]
+    fn a_chunk_round_trips() {
+        let chunk = OpResponse {
+            hits: vec![(b"k1".to_vec(), b"v1".to_vec())],
+            tail: Some(TAIL_MORE),
+            ..Default::default()
+        };
+        let back = OpResponse::decode_chunk(&chunk.encode()).expect("decodes");
+        assert_eq!(back.hits, chunk.hits);
+        assert_eq!(back.tail, Some(TAIL_MORE));
+        assert_eq!(back.fault, None);
+    }
+
+    /// A fault frame carries nothing after its string: trailing bytes are a
+    /// malformed frame, not a value to ignore.
+    #[test]
+    fn a_fault_frame_rejects_trailing_bytes() {
+        let mut bytes = OpResponse {
+            fault: Some("x".into()),
+            ..Default::default()
+        }
+        .encode();
+        bytes.push(0xAA);
+        assert!(OpResponse::decode(&bytes).is_none());
+    }
+}

@@ -81,6 +81,7 @@ fn response_round_trip() {
         suffixes: vec![b"1".to_vec(), b"2".to_vec()],
         hits: Vec::new(),
         tail: None,
+        fault: None,
     };
     let back = OpResponse::decode(&resp.encode()).expect("round trip");
     assert_eq!(back.value.as_deref(), Some(b"hello".as_slice()));
@@ -107,6 +108,7 @@ fn stream_chunk_round_trip() {
             (b"k2".to_vec(), b"v2".to_vec()),
         ],
         tail: Some(TAIL_MORE),
+        fault: None,
     };
     let bytes = chunk.encode();
     // Layout lock: [has_value 0][count 2][klen 2]"k1"[vlen 2]"v1"[klen 2]"k2"[vlen 2]"v2"[tail 0x00]
@@ -126,6 +128,7 @@ fn stream_chunk_round_trip() {
         suffixes: Vec::new(),
         hits: Vec::new(),
         tail: Some(TAIL_FINAL),
+        fault: None,
     };
     let bytes = empty_final.encode();
     assert_eq!(&bytes, &[0, 0, 0x01]);
@@ -147,6 +150,7 @@ fn stream_chunk_round_trip() {
         suffixes: vec![b"s".to_vec()],
         hits: Vec::new(),
         tail: None,
+        fault: None,
     };
     assert!(OpResponse::decode_chunk(&plain.encode()).is_none());
 }
