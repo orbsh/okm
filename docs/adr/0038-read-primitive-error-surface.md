@@ -54,6 +54,12 @@ data loss.
    behind a write — `Document::__okm_apply_reduces`, which reads the group's
    accumulator before folding. The junction's generated query methods
    (`get_session`, `get_user`) follow: they call `forward` / `reverse_raw`.
+   The dynamic side follows too, and its shape is the one that shows why the
+   rule is not about verbs: `AccOf`, the caller-supplied "what is this group's
+   accumulator right now" closure, returned `Option<Vec<u8>>`, so every
+   implementation was written `&|ek| store.get(ek).unwrap()` — a store failure
+   panicking inside a closure the plan calls. It answers
+   `Result<Option<Vec<u8>>, String>` now, `okm_dynamic::reduce_get` with it.
 5. **Two store-contract violations stop aborting.** A junction `forward` whose
    endpoint set is truncated cannot decode the far side back into its key type
    (`Error::Corrupt`), and a `BatchStore` cannot be scanned at all
@@ -86,6 +92,8 @@ handle. It stays a loud abort, documented where it lives.
   `.unwrap()` in tests and benches where the store is known-good.
 - The wire codec gained its first tests of its own (round trip, absence,
   fault in both grammars, a fault frame refusing trailing bytes).
+- One cleanup fell out of the same audit: the alert is worth nothing if the
+  wrapper a caller hands us may panic, which is how `AccOf` was shaped.
 - `kv_nest_test::nest_derive_end_to_end` caught a real regression on the way:
   the receive side must NOT strip the hosted prefix from a prefix-scan answer
   (those suffixes are already relative to the hosted key); stripping the range

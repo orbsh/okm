@@ -18,7 +18,7 @@
 1. **缺席继续用 `Option`，故障用 `Result`。** 它们是两个不同的答案，各自保留类型：语义读动词返回 `Result<Option<R>>`（`get`、`fetch`、`edge`、`get_edge`、`attrs`、`reduce_get`、`predicate_vocab_name`），集合形状的返回 `Result<Vec<…>>`（`scan`、`scan_exact`、`scan_range`、`scan_covered`、`scan_keys`、`scan_document_keys`、`scan_documents_raw`、`slot1_map`、`edge_ids`、`predicates`、junction 的 `forward` / `reverse*` 全家、图的遍历全家）。把两者合成一个三态枚举被否决：那让每个调用点为一个多数调用方不需要的区分付费。
 2. **存储边界说 `Result`。** `VirtualStorage` / `VirtualStorageAsync` 的 `get`、`scan_range`、`scan_suffix`、`commit_batch` 全部返回 `crate::error::Result`，`ScanIter::Item` 变成 `Result<(Vec<u8>, Vec<u8>)>`——中途死掉的遍历必须在死掉的那一点说出来，而不是提前结束。六个后端（fjall、redb、slatedb、localstorage、测试引擎、remote）跟上，没有一个还在读路径上 `expect`。redb 因为每种操作抛不同类型，新增 `fn eng<E: Display>(e: E) -> Error`。
 3. **wire 应答可以是一个 fault。** `OpResponse` 新增 `fault: Option<String>`，编码成独立的 `[2][len][utf8]` 帧。`0`（缺席）与 `1`（有值）逐字节不变，所以读旧文法的一方行为不变；`2` 原本是畸形帧、解码成 `None`，没有消费方能把它误读成数据。fault 应答不带 value、不带 suffixes、不带 page——一个失败的答案本来就没有这些东西。接收侧负责设它（`OP_GET`、`OP_SCAN`、以及 `OP_SCAN_STREAM` 的每一页——那一页失败就中断遍历，而不是静默截断）；发送侧把它折回 `Err`。
-4. **三个读钩子变成可失败**，因为它们要读：`Document::__okm_embed_deref`、`Document::__okm_deref_vocab`，以及那个藏在写路径后面的 `Document::__okm_apply_reduces`——它在折叠之前先读组的累加器。junction 生成的两个查询方法（`get_session`、`get_user`）跟上：它们调 `forward` / `reverse_raw`。
+4. **三个读钩子变成可失败**，因为它们要读：`Document::__okm_embed_deref`、`Document::__okm_deref_vocab`，以及那个藏在写路径后面的 `Document::__okm_apply_reduces`——它在折叠之前先读组的累加器。junction 生成的两个查询方法（`get_session`、`get_user`）跟上：它们调 `forward` / `reverse_raw`。动态侧也跟上，而它的形状正好说明规则不针对某个动词：`AccOf`——调用方提供的「这个组当前累加器是多少」闭包——原本返回 `Option<Vec<u8>>`，于是每个实现都写成 `&|ek| store.get(ek).unwrap()`，存储故障在 plan 调用的闭包里 panic。它现在返回 `Result<Option<Vec<u8>>, String>`，`okm_dynamic::reduce_get` 一同改。
 5. **两处存储违约不再 abort。** junction 的 `forward` 在端点集合被截断时无法把对端解码回 key 类型（`Error::Corrupt`）；`BatchStore` 根本不能被扫描（`Error::ScanThroughBatch`）。两者都是用错调用方，按错误报告。
 6. `Error::Engine` 不再渲染成 "engine commit failed"：读也会走到这个变体。
 
@@ -37,4 +37,6 @@
 
 - 每个读调用点自己说出想要什么：在乎失败的地方用 `?`，测试与 bench 里存储已知可用处用 `.unwrap()`。
 - wire 编解码器第一次有了属于自己的测试（往返、缺席、两种文法下的 fault、fault 帧拒绝尾随字节）。
+- 同一次排查还带出一处清理：如果调用方交进来的闭包自己会 panic，外层的 `Result` 一点用都没有——这正是 `AccOf` 原来的形状。
+- 同一次排查还带出一处清理：调用方交进来的闭包自己会 panic 的话，外层的 `Result` 一点用都没有——这正是 `AccOf` 原来的形状。
 - 落地途中 `kv_nest_test::nest_derive_end_to_end` 抓到一个真实回归：接收侧**不能**对前缀扫描的答案剥托管前缀（那些后缀本来就是相对托管 key 的），该剥的是区间扫描的答案——那才是 wire 契约要求的那一半。

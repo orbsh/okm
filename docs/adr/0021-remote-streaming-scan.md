@@ -12,14 +12,14 @@ ADR-0020 made lazy iteration the streaming contract of `VirtualStorage::scan_ran
 These are the properties the wire contract already locks (ADR-0010); a streaming design that breaks any of them is rejected by construction:
 
 1. **Frames are opaque payloads; the transport never parses them.** Any chunking, acknowledgment, or cursor mechanics must live inside okm-wire's frame grammar — the WS/UDS/mpsc adapters stay "one `Vec<u8>` in, one `Vec<u8>` out".
-2. **The executor surface is ONE method**: `NestStorage::apply(frame) -> Option<OpResponse>`. A streaming design may not require the host to hold per-consumer state between `apply` calls — `apply` is stateless by contract (the receiver hosts an engine, not sessions; ADR-0010 §7).
+2. **The executor surface is ONE method**: `NestStorage::apply(frame) -> Result<OpResponse>` (it was `Option<OpResponse>` when this was written; ADR-0038 gave the answer a failure shape). A streaming design may not require the host to hold per-consumer state between `apply` calls — `apply` is stateless by contract (the receiver hosts an engine, not sessions; ADR-0010 §7).
 3. **Read correlation lives on the sender side of the transport envelope**, never in frame bytes (ADR-0010 §6). The mpsc reference transport carries `(reply_tx, frame)`; WS adapters correlate by envelope reply-to. The frame format itself has no request id.
 4. **Zero OKM semantics in the wire**: keys/values are opaque bytes; the codec knows op tags and length buckets, nothing else.
 5. **Write batching and order are already solved**: mutating ops in one frame commit together; scan runs after them (reads see prior same-frame writes). A streaming redesign must not reorder or split that guarantee.
 
 ### What exactly must change today
 
-`OpResponse` has two fields — `value: Option<Vec<u8>>` (get) and `suffixes: Vec<Vec<u8>>` (scan). Both are whole-answer shapes. The scan answer also loses the values: `scan_range` on the wire returns key suffixes only, and the sender's `scan_range_iter` re-fetches each value with a per-key `OP_GET` round trip (`nest.rs`'s buffered path does `scan_range` + N × `get`). So the remote lazy path today is not just un-streamed, it is N+1 round trips on top.
+`OpResponse` had two fields when this was written — `value: Option<Vec<u8>>` (get) and `suffixes: Vec<Vec<u8>>` (scan). Both are whole-answer shapes; `hits` and `tail` (this ADR's chunk) and `fault` (ADR-0038's failure answer) arrived later, each of them whole-answer shaped in the same way. The scan answer also loses the values: `scan_range` on the wire returns key suffixes only, and the sender's `scan_range_iter` re-fetches each value with a per-key `OP_GET` round trip (`nest.rs`'s buffered path does `scan_range` + N × `get`). So the remote lazy path today is not just un-streamed, it is N+1 round trips on top.
 
 ## Decision
 
@@ -87,7 +87,7 @@ The trait's return type does not change (`ScanIter` gains a `Remote` arm behind 
 
 - `OP_SCAN` stays as-is: `scan`/`scan_suffix` consumers are equality-shaped, the buffered answer is their natural shape, and keeping them off the streaming path means the old grammar has one fewer moving part.
 - `OP_GET` stays unary: a point lookup IS one item.
-- The `apply` signature stays `Option<OpResponse>` — but it now answers a *page*, not a range. The host holds nothing between calls; the "stream" is the sender stitching pages together.
+- The `apply` signature keeps one answer type (`Option<OpResponse>` as written; `Result<OpResponse>` since ADR-0038) — but it now answers a *page*, not a range. The host holds nothing between calls; the "stream" is the sender stitching pages together.
 - No frame-level request ids, no acknowledgment frames, no receiver-side cursors: correlation and retry stay where ADR-0010 §6 put them (the transport envelope and the sender).
 
 ### Alternatives rejected
