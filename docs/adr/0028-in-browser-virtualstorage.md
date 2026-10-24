@@ -17,7 +17,9 @@ mudra R3 (mudra `PLAN.md` §11) puts two storage roles inside the browser:
 2. **remote business data** — the panel already hand-rolled a
    RemoteStore-over-WS (mudra `crates/mudra-panel/src/remote.rs`): one WS
    message = one `okm-wire` frame, query frames paired FIFO with responses,
-   write frames fire-and-forget. It is the FIRST production consumer of the
+   write frames fire-and-forget (corrected: writes answer an ack now, so a
+   shared client pairs every frame — see ADR-0039's landed follow-up). That
+   hand-rolled panel client is retired; it was the FIRST production consumer of the
    aligned async surface (ADR-0027); R3 asks: lift the pattern into okm as a
    shared wire client.
 

@@ -39,7 +39,7 @@ Krystallizer 进程                         Aura 节点进程
                                         └──────────────────────────────┘
 ```
 
-**接收侧（Aura）**：WS handler 收到信封，按信封约定取出 OKM 载荷，直接调 `NestStorage` 的唯一入口（引擎 + 前缀 + `apply`）。它在 `Arc` 里天然 `Send + Sync`，不需要任何包装。执行是"接收指令、执行、回发"三步，**读写不分岔**：四个操作（put/delete/get/scan）同一帧格式，`apply` 按返回值决定有没有响应——get/scan 返回 Some（响应帧），put/delete 返回 None（无响应，也不需要发）：
+**接收侧（Aura）**：WS handler 收到信封，按信封约定取出 OKM 载荷，直接调 `NestStorage` 的唯一入口（引擎 + 前缀 + `apply`）。它在 `Arc` 里天然 `Send + Sync`，不需要任何包装。执行是"接收指令、执行、回发"三步，**读写不分岔**：四个操作（put/delete/get/scan）同一帧格式，每个解码成功的帧恰好答一次——读答值／缺席／一页，写答空 ack（这个应答就是它的提交结果），宿主服务不了这一帧则答 `fault`（`OpResponse.fault`，wire `[2][len][utf8]`，ADR-0038），绝不会答成空成功；`None` 只留给解码不了的帧。于是"缺席"与"失败"仍是两个答案，丢掉的写也不会被报成写成功：
 
 ```rust
 // Aura 侧：宿主构造后，把 Arc<NestStorage> 存进 WS 会话状态
@@ -48,10 +48,10 @@ let nest: Arc<NestStorage<_>> = host.serve();   // 泵启动并交回 Arc；mpsc
 
 // WS 消息处理（信封解析是 WS 侧自己的代码，OKM 不参与）：
 fn on_ws_message(nest: &NestStorage<MyEngine>, envelope: Envelope) {
-    // 每个操作帧独立：执行 → 有响应就发回，没有就什么都不发。
+    // 每帧一个应答：读答值／页，写答空 ack，服务不了答 fault。
     // 信封里的 kind 不区分读写——那不是 OKM 的语义，帧内容自带。
     if let Some(resp) = nest.apply(&envelope.payload) {
-        send_ws(envelope.reply_to, resp);   // get/scan 的响应帧走同连接
+        send_ws(envelope.reply_to, resp);   // 应答帧走同连接
     }
     // 其它应用消息……
 }
@@ -59,7 +59,7 @@ fn on_ws_message(nest: &NestStorage<MyEngine>, envelope: Envelope) {
 
 WS 特有的部分（信封解析、路由、请求 id）全在 handler 的解析代码里——OKM 侧给传输的东西就一个 `Arc<NestStorage>` 的一个方法，没有任何需要适配的结构体。mpsc 接线保留为参考传输，与新入口共享同一执行核心，行为零分叉。
 
-**发送侧（Krystallizer）**：发送侧就是正常的存储读写——`RemoteStore` 实现 `VirtualStorage`，`put/get/del/scan_suffix` 四个操作的签名和本地引擎完全一致，调用方感知不到远端。差异被压在实现内部：每个操作编码成帧，经信封送到对端。get/scan 是**异步等待**：发出时带一个关联 id（信封槽位 2），把等待挂起在当前 task 上（不是阻塞线程——WS 是消息流不是请求/应答管道，响应会异步到达且可能与其它请求的响应交错，全靠 id 配对唤醒）；put/delete 不带等待，发完即回（fire-and-forget）。换传输（mpsc → WS）只改 `RemoteStore` 内部的发送/等待两个私有方法，`VirtualStorage` 接口和调用方零变化。
+**发送侧（Krystallizer）**：发送侧就是正常的存储读写——`RemoteStore` 实现 `VirtualStorage`，`put/get/del/scan_suffix` 四个操作的签名和本地引擎完全一致，调用方感知不到远端。差异被压在实现内部：每个操作编码成帧，经信封送到对端。每个操作（写也一样）都**等待**自己的应答：发出时带一个关联 id（信封槽位 2），把等待挂起在当前 task 上（不是阻塞线程——WS 是消息流不是请求/应答管道，响应会异步到达且可能与其它请求的响应交错，全靠 id 配对唤醒）。写的应答是空 ack——正是它让被拒绝的提交回到调用方，而不是看起来写成功了。换传输（mpsc → WS）只改 `RemoteStore` 内部的发送/等待两个私有方法，`VirtualStorage` 接口和调用方零变化。
 
 注意**什么没有变**：帧字节、codec、host、前缀纪律、batch 原子性映射。发送侧看不到信封——它只看到正常的 VirtualStorage 读写；信封只存在于接收侧 handler 的解析代码里。
 
@@ -80,7 +80,7 @@ WS 特有的部分（信封解析、路由、请求 id）全在 handler 的解�
 
 - **写顺序**：WS 消息按发送序到达（单连接内）；宿主写泵按到达序应用。一帧 = 一次引擎 `commit_batch`，发送方的 batch 原子性 1:1 映射。多条连接打同一个宿主 = 无全序——把每个发送方的写路由到它自己的宿主实例（本来就该每应用一个 `NestStorage` (with `#[ok_ns]`)），或接受交错（发送方触碰不相交 key 范围时无害）。
 - **读**：任何连接都能服务读；宿主的引擎互斥锁让它们与写泵串行。
-- **重连**：WS 断开丢失在途帧（fire-and-forget 写没有 ack）。发送方若需要送达保证，那是通道层的关切（ack 信封 + 重试幂等），不是 OKM 的——OKM 的引擎操作按 key 幂等：重放 put 安全，重放 delete 是 no-op，但 put-delete-put 序列从检查点重放需要检查点在发送方。需求真实时在信封层设计，不要预防性建设。
+- **重连**：WS 断开丢失在途帧，写也在内——写的 ack 正是区分「在途」与「已落盘」的东西，丢 ack 即失败，不是静默成功。发送方若需要送达保证，那是通道层的关切（ack 信封 + 重试幂等），不是 OKM 的——OKM 的引擎操作按 key 幂等：重放 put 安全，重放 delete 是 no-op，但 put-delete-put 序列从检查点重放需要检查点在发送方。需求真实时在信封层设计，不要预防性建设。
 
 ## 为什么不进 okm-core
 

@@ -124,11 +124,13 @@ refused write is a store saying no, and the writer is the party that must hear i
   `a_replayed_batch_leaves_the_ops_before_the_refusal` locks that boundary. It is
   also why ADR-0037's "a refused write writes nothing" holds for *validation*
   refusals (they run before any op enters the batch) but not for engine refusals.
-- **A write that panics inside the engine is still invisible to its sender.** The
-  nest pump wraps each frame in `catch_unwind` and a writer carries no reply box
-  (ADR-0010 §6), so an engine panic during a write looks like success. Making
-  writes answer would cost the fire-and-forget shape — its own decision, queued in
-  PLAN.md.
+- **A write answers now, so an engine panic in one is visible too.** The nest
+  pump wraps each frame in `catch_unwind`; a writer used to carry no reply box
+  (ADR-0010 §6), so a panic during a write looked like success. That follow-up
+  landed in the same wave: every well-formed frame answers exactly once (a write's
+  answer is the empty ack, a refusal is a `fault`), both senders wait for it, and
+  the pump turns a caught panic into a fault instead of leaving its caller parked.
+  The cost is the fire-and-forget write shape: a write is now a round trip.
 - Downstream migration is mechanical and is the reason this ships as one API
   break: `?` where the caller already returns a result, `.unwrap()` in tests
   (ADR-0037's migration rule).

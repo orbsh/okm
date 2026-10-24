@@ -269,35 +269,22 @@ impl<T: WireTransport> WireClient<T> {
 }
 
 impl<T: WireTransport> VirtualStorageAsync for WireClient<T> {
+    /// The write WAITS for its frame's answer. Fire-and-forget (ADR-0010 §6)
+    /// could report only the client's own half — a dead connection or a refused
+    /// POST — while the case that matters stayed invisible: the host took the
+    /// frame and could not commit it. A commit answers an empty ack; a refusal
+    /// answers a fault, which `ask` turns into `Err`.
     async fn put(&self, key: Vec<u8>, value: Vec<u8>) -> crate::error::Result<()> {
-        // fire-and-forget: one frame, no waiter (ADR-0010 §6 — the delivery
-        // guarantee is the transport's, never the frame's). What the client CAN
-        // report is its own half: a dead connection or a refused POST means this
-        // frame never left, so the write is lost with a reason instead of by fate.
-        let inner = Rc::clone(&self.inner);
-        let inner = inner.borrow_mut();
-        if let Some(reason) = inner.dead.clone() {
-            return Err(crate::error::Error::Engine(format!(
-                "wire connection dead: {reason}"
-            )));
-        }
-        inner
-            .transport
-            .post(&OpFrame::one(OP_PUT, key, value).encode())
+        self.ask(&OpFrame::one(OP_PUT, key, value))
+            .await
+            .map(|_ack| ())
             .map_err(crate::error::Error::Engine)
     }
 
     async fn del(&self, key: &[u8]) -> crate::error::Result<()> {
-        let inner = Rc::clone(&self.inner);
-        let inner = inner.borrow_mut();
-        if let Some(reason) = inner.dead.clone() {
-            return Err(crate::error::Error::Engine(format!(
-                "wire connection dead: {reason}"
-            )));
-        }
-        inner
-            .transport
-            .post(&OpFrame::one(OP_DELETE, key.to_vec(), Vec::new()).encode())
+        self.ask(&OpFrame::one(OP_DELETE, key.to_vec(), Vec::new()))
+            .await
+            .map(|_ack| ())
             .map_err(crate::error::Error::Engine)
     }
 
@@ -373,16 +360,13 @@ impl<T: WireTransport> VirtualStorageAsync for WireClient<T> {
     /// One `commit_batch` = one frame = one receiver execution pass —
     /// the cross-assembly-point atomic path (ADR-0003) survives
     /// remoteness and async transport alike.
+    /// One frame = one receiver execution pass (ADR-0003), and the answer is
+    /// the commit outcome: waiting for it is what makes a refused batch an
+    /// `Err` here instead of a lost write that looked like a successful one.
     async fn commit_batch(&self, batch: Batch) -> crate::error::Result<()> {
-        let inner = Rc::clone(&self.inner);
-        let inner = inner.borrow_mut();
-        if let Some(reason) = inner.dead.clone() {
-            return Err(crate::error::Error::Engine(reason));
-        }
-        inner
-            .transport
-            .post(&OpFrame::write_batch(&batch.ops).encode())
-            .map_err(crate::error::Error::Engine)?;
-        Ok(())
+        self.ask(&OpFrame::write_batch(&batch.ops))
+            .await
+            .map(|_ack| ())
+            .map_err(crate::error::Error::Engine)
     }
 }
