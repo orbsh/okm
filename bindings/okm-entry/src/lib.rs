@@ -196,8 +196,11 @@ pub fn preset_reduce(v: &serde_json::Value) -> Result<okm_dynamic::ReduceSpec, S
             "count" => okm_dynamic::PresetKind::Count,
             other => return Err(format!("unknown reduce kind `{other}`")),
         }
-    } else if let Some(o) = kind_v.as_object().filter(|o| o.len() == 1) {
-        let (k, f) = o.iter().next().unwrap();
+    } else if let Some((k, f)) = kind_v
+        .as_object()
+        .filter(|o| o.len() == 1)
+        .and_then(|o| o.iter().next())
+    {
         let field = f
             .as_str()
             .ok_or_else(|| "reduce kind field must be a string".to_string())?

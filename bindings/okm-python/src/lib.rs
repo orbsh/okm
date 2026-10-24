@@ -250,7 +250,7 @@ impl Collection {
 	        };
 	        self.inner
 	            .lock()
-	            .unwrap()
+	            .unwrap_or_else(std::sync::PoisonError::into_inner)
 	            .declare_index(AccessMethod {
 	                slot,
 	                fields: vec![], // the derive result IS the segment
@@ -283,7 +283,7 @@ impl Collection {
 	        };
 	        self.inner
 	            .lock()
-	            .unwrap()
+	            .unwrap_or_else(std::sync::PoisonError::into_inner)
 	            .declare_index(AccessMethod {
 	                slot,
 	                fields,
@@ -300,7 +300,7 @@ impl Collection {
 	        let logic = PyReduce { obj: logic };
 	        self.inner
 	            .lock()
-	            .unwrap()
+	            .unwrap_or_else(std::sync::PoisonError::into_inner)
 	            .declare_reduce(okm_dynamic::ReduceSpec {
 	                slot,
 	                group_fields,
@@ -320,7 +320,7 @@ impl Collection {
 	        let map = py_values_to_map(&self.schema, document)?;
 	        self.inner
 	            .lock()
-	            .unwrap()
+	            .unwrap_or_else(std::sync::PoisonError::into_inner)
 	            .merge(&pkey, &map)
 	            .map_err(PyValueError::new_err)
 	    }
@@ -330,7 +330,7 @@ impl Collection {
 	        let doc = self
 	            .inner
 	            .lock()
-	            .unwrap()
+	            .unwrap_or_else(std::sync::PoisonError::into_inner)
 	            .fetch(&pkey)
 	            .map_err(PyValueError::new_err)?;
 	        match doc {
@@ -344,7 +344,7 @@ impl Collection {
 	    fn purge(&self, pkey: Vec<u8>) -> PyResult<bool> {
 	        self.inner
 	            .lock()
-	            .unwrap()
+	            .unwrap_or_else(std::sync::PoisonError::into_inner)
 	            .purge(&pkey)
 	            .map_err(PyValueError::new_err)
 	    }
@@ -355,7 +355,7 @@ impl Collection {
 	        let docs = self
 	            .inner
 	            .lock()
-	            .unwrap()
+	            .unwrap_or_else(std::sync::PoisonError::into_inner)
 	            .scan(slot, &encoded_prefix)
 	            .map_err(PyValueError::new_err)?;
 	        Python::attach(|py| {
@@ -375,7 +375,7 @@ impl Collection {
 	        let docs = self
 	            .inner
 	            .lock()
-	            .unwrap()
+	            .unwrap_or_else(std::sync::PoisonError::into_inner)
 	            .scan_exact(slot, &encoded_prefix)
 	            .map_err(PyValueError::new_err)?;
 	        Python::attach(|py| {
@@ -527,16 +527,16 @@ impl Collection {
 	    /// Decode key bytes → `{field: value}`.
 	    fn decode_key(&self, bytes: &[u8]) -> PyResult<Py<PyAny>> {
 	        okm_dynamic::decode_key(&self.inner, bytes)
-	            .map(|m| Python::attach(|py| map_to_dict(py, &m).unwrap().unbind().into_any()))
 	            .map_err(codec_err)
+	            .and_then(|m| Python::attach(|py| map_to_dict(py, &m).map(|d| d.unbind().into_any())))
 	    }
 
 	    /// Decode payload bytes → `{field: value}`. Absent tail fields arrive
 	    /// as their schema defaults (version migration).
 	    fn decode_payload(&self, bytes: &[u8]) -> PyResult<Py<PyAny>> {
 	        okm_dynamic::decode_payload(&self.inner, bytes)
-	            .map(|m| Python::attach(|py| map_to_dict(py, &m).unwrap().unbind().into_any()))
 	            .map_err(codec_err)
+	            .and_then(|m| Python::attach(|py| map_to_dict(py, &m).map(|d| d.unbind().into_any())))
 	    }
 	}
 
