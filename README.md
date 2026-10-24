@@ -46,7 +46,7 @@ Implemented:
 - `DocumentEncode` — one macro declares a row (Node): `#[ok_ref]` identity + TLV payload fields + `#[ok_index(...)]` access methods; the `ValueEncode` derive is absorbed into it.
 - Secondary indexes (access methods) — `#[ok_index(name { fields(…), includes(…), key(…), func(…), where(…) })]` on **row structs**: composite indexes over payload fields (declaration order), no per-index slot/ns — the 2-byte table namespace already discriminates every entry; leftmost-prefix scans with fetch-back; `key(…)` truncates the carried primary-key tail to the named subset (`encode_prefix_named`), full key by default; `includes` covering positioned as a materialized view for high-fanout queries; `func(path)` replaces the data segment with a plain fn's return value (probe side calls the same path); `where(path)` is a row-level predicate — a partial index, rows the predicate rejects contribute no entries.
 - `Collection<S, K, R>` node assembly point — `put`/`purge` write the primary key and every declared index entry in one store instance (the declaration IS the registry); `scan` returns `(Key, Option<Row>)` via leftmost-prefix on any access method.
-- **Document API** — two read doors and three write verbs. The struct door: `get` / `put` speak `R` (typed side only). The document door: `fetch` reads the whole document as one name-keyed map (both slots merged), `merge` writes only the names given, `replace` makes the map the document, `purge` removes both slots — one engine commit per write. The dynamic side has only the document door: there is no struct there to speak. Unknown field names allocate in the per-table field-name vocabulary and land in the dynamic segment (n-TLV frames, nested objects recursive, no CBOR); the row-map bridge lifts declared fields to logical types (`Quant`→`F64`, `Vocab`→label, `Offset`→`i64`).
+- **Document API** — two read doors and three write verbs. The struct door: `get` / `put` speak `R` (typed side only). The document door: `fetch` reads the whole document as one name-keyed map (both slots merged), `merge` writes only the names given, `replace` makes the map the document, `purge` removes both slots — one engine commit per write. **Every write verb is fallible** (`okm_core::Result`): no write panics — the engine's refusal, a full vocabulary and a map that does not fit the declaration all come back as `okm_core::Error` (ADR-0037). The dynamic side has only the document door: there is no struct there to speak. Unknown field names allocate in the per-table field-name vocabulary and land in the dynamic segment (n-TLV frames, nested objects recursive, no CBOR); the row-map bridge lifts declared fields to logical types (`Quant`→`F64`, `Vocab`→label, `Offset`→`i64`).
 - **Dynamic codec bindings** — schema export drives embedded-language readers: `bindings/okm-python` (PyO3) and `bindings/okm-steel`, byte-identical with the Rust derive.
 - **Path indexes over the dynamic segment** ([ADR-0029](docs/adr/0029-path-index.md)) — `AccessMethod::path(slot, Path::parse("author.name")?, FieldType::Str)?`: nested and array paths declared as access methods, one entry per resolved value (a wildcard is the absence of an `Index` component), maintained on the dynamic-segment write path; the value type is declared, and the entry key carries the slot, never the path.
 - Engine backends behind Cargo features: `fjall` (sync `FjallStore`), `redb` (sync `RedbStore`), `slatedb` (async `SlatedbStore` + `AsyncJunction`); tests run the real engines through the `TestStore` matrix (slatedb-mem / fjall / redb), no mock to drift from them.
@@ -111,7 +111,7 @@ let key = UserKey { org_id: 7, user_id: 101 };
 // Write: primary entry + one entry per declared face, one store instance.
 // The verbs take `&self` (same shape as the KV beneath them); exclusivity is
 // the collection being `!Sync`.
-users.put(&key, &User { org_id: 7, bio_len: 240 });
+users.put(&key, &User { org_id: 7, bio_len: 240 })?;
 let row: Option<User> = users.get(&key);
 
 // Read by access method: leftmost-prefix scan, then fetch-back.
@@ -125,7 +125,7 @@ users.scan_range::<ByOrg>(&1u32.to_be_bytes(), Some(&100u32.to_be_bytes()));
 
 // Remove: primary + faces + dynamic segment, one commit. The row's faces
 // derive from the STORED row, so the caller cannot hand it the wrong one.
-users.purge(&key);
+users.purge(&key)?;
 ```
 
 Overwrite semantics differ by design: `put` unfolds the stored document from
@@ -161,7 +161,10 @@ the declaration does not carry. They never load the field-name vocabulary and
 never read or write the segment.
 
 `fetch` / `merge` / `replace` are the general form, for tables that carry open
-fields. `merge` classifies the patch before it plans anything: declared names
+fields. `merge` and `replace` are the two fallible writes (`okm_core::Error`):
+their input is caller data, so a name that matches a declaration but carries the
+wrong kind comes back as an error instead of being silently defaulted. `merge`
+classifies the patch before it plans anything: declared names
 take the typed path (row RMW, faces, reduces, events), the rest join the
 segment — a patch with no declared name reads no row, a patch with no dynamic
 name reads no segment and loads no vocabulary. `replace` treats the map AS the
@@ -181,14 +184,16 @@ let obj = users.fetch(&key)?;                 // BTreeMap<String, DynamicValue>
 // Merge: names matching the declaration take the typed path (indexes,
 // reduces and events included); unknown names join the dynamic segment.
 // Only the names given are touched — the rest keep their stored values.
-users.merge(&key, &patch);
+// Fallible on CALLER DATA: a declared name carrying the wrong kind is
+// `Error::KindMismatch`, never a silent default (and nothing is written).
+users.merge(&key, &patch)?;
 
 // Replace: the map IS the document (absent declared fields default,
 // unnamed dynamic names are removed).
-users.replace(&key, &obj);
+users.replace(&key, &obj)?;
 
 // Purge: both slots, one commit.
-users.purge(&key);
+users.purge(&key)?;
 ```
 
 Embedded-language readers (Python / Steel Booths) consume the schema

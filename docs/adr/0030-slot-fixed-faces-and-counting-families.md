@@ -219,3 +219,21 @@ of its own, which is what this ADR's "no bands" rule exists to prevent.
   for the counting families, and its junction placement stands untouched.
 - docs/internals/key-layout and slot-mechanism carry the layout tables;
   the mechanism text there is the pair of this decision.
+
+## Update 2026-10-24: the caps are checked where the numbers are built
+
+Until now the caps in this ADR (4095 indexes, 4095 reduces, 2048 junction
+discriminators) were prose: every place that ASSEMBLED a slot masked the excess
+away. `index::slot(family, counter)` did `(family << 12) | (counter & 0x0FFF)`,
+the derive emitted `DECLARED_SLOT_BASE + n` without a bound, and
+`KvJunction::dir_slot` masked the discriminator with `0x07FF`. A masked value is
+not a wrong number — it is a legitimate slot of another kind: `0x3FFF + 1 =
+0x4001` is the reduce family, so a 4096th index would have been written into the
+reduce segment and read back as a reduce row, and a family above `0xF` wraps into
+the fixed-face space.
+
+Each of the three sites now refuses instead of masking — at compile time where
+the number is a declaration-time constant (`slot` is a `const fn`; the derive's
+`declared_slot` and `#[ok_junction(n)]` validation run during expansion), at run
+time otherwise (`dir_slot`). The caps are unchanged; only the silent path to a
+neighbouring slot is gone.

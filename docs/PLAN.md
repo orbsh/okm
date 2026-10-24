@@ -1291,9 +1291,11 @@ bytes; doing them after P3 means hex locks change once, not twice.
       (0x02/0x03 field names, 0x04/0x05 predicate tokens).
 - [x] `Vocab<N>` type (`okm-core/src/model/vocab.rs`): the label in memory, an
       `N`-byte big-endian id on the wire (`VocabId` for u8/u16/u32/u64/u128,
-      default `u8`); equality by label; encoding an uninterned value panics; the
-      vocabulary cache is typed by the same `N`, so exhausting the width panics
-      instead of wrapping. Unit tests cover both a 1-byte and a 2-byte field.
+      default `u8`); equality by label; encoding an uninterned value panics (see
+      the residue note under ADR-0037: `save_into` is encoding-only by design);
+      the vocabulary cache is typed by the same `N`, so exhausting the width is
+      `Error::VocabularyExhausted` instead of a wrap. Unit tests cover both a
+      1-byte and a 2-byte field.
 - [x] `FieldType::Vocab(u16)` (payload = the field's id face; name face = id+1)
       + schema serialization (`"Vocab"`, variant 12) + bridge mapping (Arrow
       UInt8, tooling "integer", export carries ids) + okm-dynamic arms
@@ -1665,10 +1667,33 @@ Tasks:
       the scan result stays what it is. (A separate, still-open question: `scan`
       fetch-backs every hit eagerly — laziness is worth having on its own terms,
       and it does not need a new type.)
-- [ ] Separate item, own commit: `from_map` silently defaults a value whose kind
-      does not match the declared field (`_ => #dflt`). Make it a named panic;
-      absent fields keep defaulting (that is the version-evolution rule, not the
-      same thing).
+- [x] `from_map` refuses a present field it cannot honour (2026-10-24, the
+      item queued as "own commit"): absent names still take their declared
+      default (the append-only evolution rule), but a name the map CARRIES with
+      another kind — or a value that does not fit the declared field — is
+      refused by name at run time (`obj_dynamic::from_map_kind_mismatch` /
+      `from_map_bad_value`). Closed class-wide rather than only at the reported
+      `_ => #dflt`: the two `unwrap_or_else`ed conversions in the same arms were
+      silently defaulting too (fixed `[u8; N]` from the wrong length,
+      `Reverse<T>` from an out-of-range value), and the `as #t` narrowing casts
+      now go through `TryFrom`. `Vocab` accepts BOTH forms `to_map` emits — the
+      label, or the unresolved id (narrowed by width, so an id can never wrap
+      onto another label). Locked by
+      `obj_variants_test::from_map_defaults_an_absent_name`,
+      `...::from_map_refuses_a_present_name_of_the_wrong_kind`,
+      `...::from_map_refuses_a_value_that_does_not_fit_the_declared_width`.
+      Superseding the panic: ADR-0037 puts the refusal on the type —
+      `okm_core::Error` (thiserror) + `Document::try_from_map`, with
+      `Error::Engine` carrying the engine's own text. The same decision then
+      went all the way: EVERY write verb returns `Result` (no write panics) —
+      `put`, `upsert_with`, `purge`, `prune_deprecated_slots`, `merge`,
+      `replace`, `save_with_prev_into`, the junction's `link`/`unlink`, the
+      graph's `link`/`link_into`/`unlink`/`unlink_into`/`replace_into` (whose
+      `String` errors became `Edge*` variants). The intern chain is fallible end
+      to end (`__okm_intern`, `VocabCache::id_for`, `put_frame*`,
+      `NameResolver`), because interning is the one allocation a write performs.
+      `a_refused_merge_returns_the_error_and_writes_nothing` locks the "a refusal
+      writes nothing" half.
 
 ### A value too big for the row is its own table (ADR-0036, decided 2026-10-23)
 
@@ -1696,7 +1721,8 @@ The rule is "first-seen claims next, append-only, exhausting the width is a loud
 error, never a wrap" (ADR-0012 / ADR-0032), and it lives in two places:
 
 - `VocabCache::id_for` (`okm-core/src/model/obj_vocab.rs`) checks —
-  `id.succ() == None` panics "vocabulary exhausted". Correct.
+  `id.succ() == None` returns `Error::VocabularyExhausted` (a panic until
+  ADR-0037; a write verb reports, it does not abort the process).
 - `VocabMirror` (`okm-dynamic/src/plan_fields.rs`) does raw `u16` arithmetic at
   three sites: `load` (`next_id = id + 1`), `adopt_entries` (the same line), and
   the `plan_put_fields` resolver (`let id = *next_id; *next_id += 1`).
@@ -1719,6 +1745,15 @@ lines verbatim. So the fix goes in the primitive, not at the call sites:
       handing out the last representable id because the watermark could not move
       past it). Tests: `a_full_vocabulary_dies_loudly_instead_of_wrapping`,
       `a_vocabulary_holding_the_last_id_still_loads` (2026-10-23).
-- [ ] Same class, separate item: `index::slot(family, counter)` masks the
-      counter with `0x0FFF`, so a declaration counter past 4095 silently lands
-      on another counter. "4095 declared indexes" was never checked either.
+- [x] Slot assembly is checked, not masked (2026-10-24): `index::slot` asserts
+      BOTH halves (family ≤ 0xF, counter ≤ 0x0FFF) — masking landed the value on
+      another family's legitimate slot (`0x3FFF + 1 = 0x4001` is the reduce
+      family), so those entries were read back as a different kind of row. The
+      declaration side is checked where the counter is BUILT: the derive's
+      `declared_slot` refuses declaration 4096 (ADR-0030's 4095 cap was prose
+      until now) and `#[ok_junction(n)]` past 0x07FF is refused at expansion
+      time (`compilefail/junction_id_out_of_range.rs`), with
+      `KvJunction::dir_slot` asserting instead of masking. Tests:
+      `integration::slot_counter_is_checked_not_masked`,
+      `...::slot_family_is_checked_not_wrapped`,
+      `okm-derive::tests::one_past_the_last_declaration_is_refused`.

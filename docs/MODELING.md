@@ -705,8 +705,10 @@ Three rules follow from the shapes:
 - **A `Vocab` field is interned on write.** `Collection::put` and
   `save_with_prev_into` intern labels before encoding; `save_into` is
   encoding-only and therefore requires a document already interned through the
-  collection. Interning the 256th distinct label in one field panics — narrow the
-  domain or model that value as `String`.
+  collection. A full field vocabulary is a write error
+  (`Error::VocabularyExhausted`) — narrow the domain, or model that value as
+  `String`. The capacity is one short of the width: allocation needs the next id
+  to exist so the cursor can advance, so `Vocab<u8>` holds 255 labels, not 256.
 
 #### Case: a log table
 
