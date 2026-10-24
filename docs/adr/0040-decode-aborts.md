@@ -109,12 +109,20 @@ allow **carrying this reason**, not reshaping the tool into `Result` soup.
   `panic_in_result_fn`, and all nine members inherit it, test targets opt back in
   per crate. A whole-workspace `cargo clippy --all-targets` is clean, and the gate
   was proven to bite: an injected `unwrap` fails the build.
-- **The compile-time surface is the allow class, not a rewrite queue.** `okm-derive`
-  (130 warnings) and `okm-core/build.rs` (9) stop the build when they reject a
-  declaration: the abort IS the error report, and no caller can act on it. Per the
-  scope above they get a crate-root allow carrying that reason, not 139 `Result`
-  signatures. Where a nicer diagnostic is worth the work — `syn::Error::to_compile_error`
-  carries a span, the panic machinery does not — it is polish, taken site by site.
+- **A proc macro's abort is an error report with a span, so it is worth the
+  widening.** `okm-derive` was going to keep a crate-root allow on the argument that
+  nobody can act on a rejected declaration; what that argument missed is that the
+  compiler SHOWS the abort, and a `panic!` shows it in the worst place ("proc macro
+  panicked" at the derive, with the message in a help line) while
+  `syn::Error` → `compile_error!` shows it on the token that is wrong. 116 sites
+  were converted for that: every parse/validation path returns `syn::Result`, each
+  entry point renders it with `to_compile_error()`. 35 abort sites remain inside
+  `quote!` and are not macro aborts at all — they are the decoder's aborts, emitted
+  into the consumer's crate. 16 internal invariants stay behind eleven narrow
+  allows with their reasons.
+- **`okm-core/build.rs` keeps its crate-root allow.** A build script that cannot
+  read its inputs or write its output has no caller to tell and no output to fall
+  back on; unlike a diagnostic, that abort is not a message anyone reads.
 - **A store holding foreign bytes now aborts the reader.** That is the accepted
   trade. It is also why the protocol rev check belongs at the seam: the boundary
   should refuse a foreign rev before the codec has to.

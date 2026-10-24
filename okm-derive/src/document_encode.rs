@@ -28,7 +28,6 @@
 //! a generated artifact = adding an `emit_*(&DocumentSchema)` function; the
 //! emit functions share no temporary state.
 
-use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TS2;
 
 /// Declared-slot segment bases (ADR-0016): slot = 4-bit segment + 12-bit
@@ -47,16 +46,25 @@ const REDUCE_SLOT_BASE: u16 = 0x4001;
 /// family's first slot (index `0x3FFF + 1 = 0x4001` is the reduce family). A
 /// declaration-count mistake is a source-level mistake — refuse it here instead
 /// of masking the counter and writing entries another table reads back.
-fn declared_slot(base: u16, n: usize, what: &str) -> u16 {
-    assert!(
-        n < 0x0FFF,
-        "ok_{what}: at most 4095 declarations per collection — the slot counter is 12 bits, \n         and declaration #{} would land on the next family's first slot",
-        n + 1
-    );
-    base + n as u16
+fn declared_slot(
+    base: u16,
+    n: usize,
+    what: &str,
+    span: proc_macro2::Span,
+) -> syn::Result<u16> {
+    if n >= 0x0FFF {
+        return Err(syn::Error::new(
+            span,
+            format!(
+                "ok_{what}: at most 4095 declarations per collection — the slot counter is 12 bits, \n         and declaration #{} would land on the next family's first slot",
+                n + 1
+            ),
+        ));
+    }
+    Ok(base + n as u16)
 }
 use quote::{format_ident, quote};
-use syn::{parse_macro_input, DeriveInput};
+use syn::DeriveInput;
 
 use crate::schema::{parse_schema, DocumentSchema, IdxDecl};
 
@@ -131,6 +139,9 @@ fn emit_named_walk(schema: &DocumentSchema) -> TS2 {
 }
 
 /// FieldDesc table entries: `(name, FieldType, width)`, declaration order.
+// reason: every supported field kind carries a `kind` — an unsupported type
+// already failed in `field_encoders`, so `kind` is Some here.
+#[allow(clippy::expect_used)]
 fn field_desc_entries(schema: &DocumentSchema) -> TS2 {
     let documents = schema.fields.iter().map(|f| {
         let name = f.ident.to_string();
@@ -155,6 +166,9 @@ fn defaults_entries(schema: &DocumentSchema) -> TS2 {
 }
 
 /// ---- encode: [version u8][hot_len u16 BE][hot segment][cold TLV] ----
+// reason: the field comes out of `schema.fields`, so `position` is Some —
+// the tag is its declaration index.
+#[allow(clippy::unwrap_used)]
 fn emit_payload_encode(schema: &DocumentSchema) -> TS2 {
     let ver_lit = proc_macro2::Literal::u8_unsuffixed(schema.layout_version);
 
@@ -205,6 +219,9 @@ fn emit_payload_encode(schema: &DocumentSchema) -> TS2 {
 /// Each field becomes `let <name> = if <present> { <dec_val> } else {
 /// <default> };` — dec blocks read from b[offset..], advance offset, and
 /// yield the value.
+// reason: same as `emit_payload_encode` — the tag is the field's position in
+// `schema.fields`, which the iterator just yielded it from.
+#[allow(clippy::unwrap_used)]
 fn emit_payload_decode(schema: &DocumentSchema) -> TS2 {
     let ver_lit = proc_macro2::Literal::u8_unsuffixed(schema.layout_version);
     let ver_str = schema.layout_version.to_string();
@@ -287,10 +304,10 @@ fn emit_payload_decode(schema: &DocumentSchema) -> TS2 {
 /// fields cut at their declared width, the trailing variable-width field (at
 /// most one, last only — a parse-time rule) takes the remainder, which is
 /// exactly the length the payload decoder's `len` local expects.
-fn emit_covered(schema: &DocumentSchema, idx: &IdxDecl) -> (TS2, TS2, TS2) {
+fn emit_covered(schema: &DocumentSchema, idx: &IdxDecl) -> syn::Result<(TS2, TS2, TS2)> {
     let row_name = &schema.row_name;
     if idx.includes.is_empty() {
-        return (quote! {}, quote! { () }, quote! {});
+        return Ok((quote! {}, quote! { () }, quote! {}));
     }
     let iname = &idx.ident;
     let covered_ident = format_ident!("__OkmCovered_{}_{}", row_name, iname);
@@ -302,14 +319,20 @@ fn emit_covered(schema: &DocumentSchema, idx: &IdxDecl) -> (TS2, TS2, TS2) {
             .fields
             .iter()
             .find(|f| f.ident == *name)
-            .unwrap_or_else(|| {
-                panic!("ok_index[{iname}]: includes field `{name}` is not a payload field")
-            });
+            .ok_or_else(|| {
+                syn::Error::new(
+                    iname.span(),
+                    format!("ok_index[{iname}]: includes field `{name}` is not a payload field"),
+                )
+            })?;
         let id = &f.ident;
         let dec = &f.dec;
-        let ty: syn::Type = syn::parse_str(&f.ty_str).unwrap_or_else(|e| {
-            panic!("ok_index[{iname}]: covered field `{name}` type `{}`: {e}", f.ty_str)
-        });
+        let ty: syn::Type = syn::parse_str(&f.ty_str).map_err(|e| {
+            syn::Error::new(
+                id.span(),
+                format!("ok_index[{iname}]: covered field `{name}` type `{}`: {e}", f.ty_str),
+            )
+        })?;
         decls.push(quote! { pub #id: #ty });
         if f.hot {
             stmts.push(quote! { let #id = { #dec }; });
@@ -339,7 +362,7 @@ fn emit_covered(schema: &DocumentSchema, idx: &IdxDecl) -> (TS2, TS2, TS2) {
         );
         #covered_ident { #(#names),* }
     };
-    (decl, quote! { #covered_ident }, body)
+    Ok((decl, quote! { #covered_ident }, body))
 }
 
 /// One marker struct + `KvIndex` impl per declared `#[ok_index]` (slot
@@ -347,7 +370,7 @@ fn emit_covered(schema: &DocumentSchema, idx: &IdxDecl) -> (TS2, TS2, TS2) {
 /// (partial index); a `func(path)` clause contributes an `entry_pairs`
 /// override (multi-entry fan-out) and the function-index `encode_named`
 /// body. Both may coexist on one declaration.
-fn emit_index_structs(schema: &DocumentSchema) -> TS2 {
+fn emit_index_structs(schema: &DocumentSchema) -> syn::Result<TS2> {
     let row_name = &schema.row_name;
     let key_ty = &schema.key_ty;
 
@@ -360,8 +383,13 @@ fn emit_index_structs(schema: &DocumentSchema) -> TS2 {
         if idx.deprecated {
             continue;
         }
-        let slot_lit = proc_macro2::Literal::u16_unsuffixed(declared_slot(DECLARED_SLOT_BASE, n, "index"));
         let iname = &idx.ident;
+        let slot_lit = proc_macro2::Literal::u16_unsuffixed(declared_slot(
+            DECLARED_SLOT_BASE,
+            n,
+            "index",
+            iname.span(),
+        )?);
         let struct_ident = format_ident!("__OkmIndex_{}_{}", row_name, iname);
         let fields: Vec<&String> = idx.fields.iter().collect();
         let includes: Vec<&String> = idx.includes.iter().collect();
@@ -373,8 +401,12 @@ fn emit_index_structs(schema: &DocumentSchema) -> TS2 {
         let pairs_impl = if idx.func.is_empty() {
             quote! {}
         } else {
-            let fpath = syn::parse_str::<syn::Expr>(&idx.func)
-                .unwrap_or_else(|e| panic!("ok_index[{}]: bad func path `{}`: {e}", idx.ident, idx.func));
+            let fpath = syn::parse_str::<syn::Expr>(&idx.func).map_err(|e| {
+                syn::Error::new_spanned(
+                    iname,
+                    format!("ok_index[{}]: bad func path `{}`: {e}", idx.ident, idx.func),
+                )
+            })?;
             quote! {
                 fn entry_pairs(
                     ns_prefix: &[u8],
@@ -417,9 +449,12 @@ fn emit_index_structs(schema: &DocumentSchema) -> TS2 {
         let admits_impl = if idx.filter.is_empty() {
             quote! {}
         } else {
-            let fpath = syn::parse_str::<syn::Expr>(&idx.filter).unwrap_or_else(|e| {
-                panic!("ok_index[{}]: bad where path `{}`: {e}", idx.ident, idx.filter)
-            });
+            let fpath = syn::parse_str::<syn::Expr>(&idx.filter).map_err(|e| {
+                syn::Error::new_spanned(
+                    iname,
+                    format!("ok_index[{}]: bad where path `{}`: {e}", idx.ident, idx.filter),
+                )
+            })?;
             quote! {
                 fn admits(document: &Self::Document) -> bool {
                     #fpath(document)
@@ -440,8 +475,12 @@ fn emit_index_structs(schema: &DocumentSchema) -> TS2 {
             // with a real `self` receiver.
             quote! { <Self::Document>::__okm_encode_named(document, names, buf) }
         } else {
-            let fpath = syn::parse_str::<syn::Expr>(&idx.func)
-                .unwrap_or_else(|e| panic!("ok_index[{}]: bad func path `{}`: {e}", idx.ident, idx.func));
+            let fpath = syn::parse_str::<syn::Expr>(&idx.func).map_err(|e| {
+                syn::Error::new_spanned(
+                    iname,
+                    format!("ok_index[{}]: bad func path `{}`: {e}", idx.ident, idx.func),
+                )
+            })?;
             quote! {{
                 // Function index: result(s) → index-segment encoding. A
                 // single value encodes once; a Vec encodes its first value
@@ -459,7 +498,7 @@ fn emit_index_structs(schema: &DocumentSchema) -> TS2 {
         // For Reverse<T> payload fields the payload encoder reads
         // `self.field`; __okm_encode_named is an inherent method with a
         // real `self`, so the arm bodies work verbatim.
-        let (covered_decl, covered_ty, covered_body) = emit_covered(schema, idx);
+        let (covered_decl, covered_ty, covered_body) = emit_covered(schema, idx)?;
         index_out.extend(quote! {
             #[doc = concat!("Access method `", stringify!(#iname), "` over `", stringify!(#row_name), "` (slot ", #slot_doc, ", ADR-0005/0006).")]
             #[allow(non_camel_case_types, non_snake_case)] // generated identities (ADR-0027)
@@ -498,14 +537,14 @@ fn emit_index_structs(schema: &DocumentSchema) -> TS2 {
             }
         });
     }
-    index_out
+    Ok(index_out)
 }
 
 /// index_entries: statically expands every (entry_key, entry_value) pair
 /// per declared #[ok_index] (slot order) — no runtime registry needed;
 /// the declaration is the registry. Function indexes may fan out to
 /// multiple pairs per document (multi-entry regime).
-fn emit_index_entries(schema: &DocumentSchema) -> TS2 {
+fn emit_index_entries(schema: &DocumentSchema) -> syn::Result<TS2> {
     let row_name = &schema.row_name;
     let entry_calls = schema.indexes.iter().filter(|idx| !idx.deprecated).map(|idx| {
         let struct_ident = format_ident!("__OkmIndex_{}_{}", row_name, idx.ident);
@@ -516,30 +555,33 @@ fn emit_index_entries(schema: &DocumentSchema) -> TS2 {
     // Deprecated slots: declaration positions (1-based) whose entries are
     // stale after the declaration was marked `deprecated` — consumed by
     // `Collection::prune_deprecated_slots` (prefix-scan + delete).
-    let dep_slots: Vec<_> = schema
-        .indexes
-        .iter()
-        .enumerate()
-        .filter(|(_, idx)| idx.deprecated)
-        .map(|(n, _)| {
-            let lit = proc_macro2::Literal::u16_unsuffixed(declared_slot(DECLARED_SLOT_BASE, n, "index"));
-            quote! { #lit }
-        })
-        .collect();
+    let mut dep_slots: Vec<TS2> = Vec::new();
+    for (n, idx) in schema.indexes.iter().enumerate() {
+        if !idx.deprecated {
+            continue;
+        }
+        let lit = proc_macro2::Literal::u16_unsuffixed(declared_slot(
+            DECLARED_SLOT_BASE,
+            n,
+            "index",
+            idx.ident.span(),
+        )?);
+        dep_slots.push(quote! { #lit });
+    }
     let dep_const = quote! {
         /// Slots reserved by `deprecated` index declarations — entries
         /// here are stale (written before the deprecation) and are
         /// cleared by `Collection::prune_deprecated_slots`.
         const DEPRECATED_SLOTS: &'static [::okm_core::index::Slot] = &[#(#dep_slots),*];
     };
-    quote! {
+    Ok(quote! {
         fn index_entries(key: &Self::Key, document: &Self, ns: &[u8]) -> Vec<(Vec<u8>, Vec<u8>)> {
             let mut out = Vec::new();
             #(#entry_calls)*
             out
         }
         #dep_const
-    }
+    })
 }
 
 /// Reduces: `#[ok_reduce(MyLogic { group(a, b) })]` — the user
@@ -548,14 +590,19 @@ fn emit_index_entries(schema: &DocumentSchema) -> TS2 {
 /// (SLOT/GROUP come from the declaration) plus the Document hook override
 /// running each reduce's read-modify-write. Returns
 /// (trait impls, hook fn body to splice inside `impl Document`).
-fn emit_reduces(schema: &DocumentSchema) -> (TS2, TS2) {
+fn emit_reduces(schema: &DocumentSchema) -> syn::Result<(TS2, TS2)> {
     let row_name = &schema.row_name;
     let _n_idx = schema.indexes.len();
 
     let mut impls = quote! {};
     let mut calls = quote! {};
     for (n, red) in schema.reduces.iter().enumerate() {
-        let slot_lit = proc_macro2::Literal::u16_unsuffixed(declared_slot(REDUCE_SLOT_BASE, n, "reduce"));
+        let slot_lit = proc_macro2::Literal::u16_unsuffixed(declared_slot(
+            REDUCE_SLOT_BASE,
+            n,
+            "reduce",
+            red.ident.span(),
+        )?);
         let group: Vec<&String> = red.group.iter().collect();
 
         // Preset combinators (ADR-0023): `Count`/`Sum(f)`/`HighWater(f)`/
@@ -577,9 +624,12 @@ fn emit_reduces(schema: &DocumentSchema) -> (TS2, TS2) {
         let logic: TS2 = if is_preset {
             quote! { #marker }
         } else {
-            let ty: syn::Type = syn::parse_str(&red.logic).unwrap_or_else(|e| {
-                panic!("ok_reduce[{}]: bad logic type `{}`: {e}", red.ident, red.logic)
-            });
+            let ty: syn::Type = syn::parse_str(&red.logic).map_err(|e| {
+                syn::Error::new_spanned(
+                    &red.ident,
+                    format!("ok_reduce[{}]: bad logic type `{}`: {e}", red.ident, red.logic),
+                )
+            })?;
             quote! { #ty }
         };
 
@@ -587,13 +637,15 @@ fn emit_reduces(schema: &DocumentSchema) -> (TS2, TS2) {
             let forward = match red.logic.as_str() {
                 "Count" => quote! { ::okm_core::Count::<#row_name> },
                 other => {
+                    // Internal invariant: every non-Count preset is parsed with a
+                    // required field argument, so its x_source marker exists.
+                    #[allow(clippy::unwrap_used, clippy::unwrap_in_result)]
                     let fm = field_marker.as_ref().unwrap();
                     let preset = quote::format_ident!("{}", other);
                     quote! { ::okm_core::#preset::<#fm> }
                 }
             };
-            if let Some(fm) = &field_marker {
-                let field = red.field.as_ref().unwrap();
+            if let (Some(fm), Some(field)) = (&field_marker, &red.field) {
                 // The ACC TYPE follows the FIELD (ADR-0023 amendment):
                 // the declared payload field's type drives the readback
                 // branch and the accumulator. Unsigned integers widen to
@@ -677,10 +729,15 @@ fn emit_reduces(schema: &DocumentSchema) -> (TS2, TS2) {
                             )
                         }),
                     ),
-                    Some(other) => panic!(
-                        "ok_reduce[{}]: field `{}` has type `{}` — Sum supports unsigned/signed integers and Quant; other shapes stay user-written ReduceLogic",
-                        red.ident, field, other
-                    ),
+                    Some(other) => {
+                        return Err(syn::Error::new_spanned(
+                            &red.ident,
+                            format!(
+                                "ok_reduce[{}]: field `{}` has type `{}` — Sum supports unsigned/signed integers and Quant; other shapes stay user-written ReduceLogic",
+                                red.ident, field, other
+                            ),
+                        ))
+                    }
                 };
                 let u64_method = match readback_u64 {
                     Some(panic_body) => quote! {
@@ -770,7 +827,7 @@ fn emit_reduces(schema: &DocumentSchema) -> (TS2, TS2) {
         }});
     }
     if schema.reduces.is_empty() {
-        return (quote! {}, quote! {});
+        return Ok((quote! {}, quote! {}));
     }
     let hook = quote! {
         fn __okm_apply_reduces<S: ::okm_core::VirtualStorage>(
@@ -784,7 +841,7 @@ fn emit_reduces(schema: &DocumentSchema) -> (TS2, TS2) {
             ::core::result::Result::Ok(())
         }
     };
-    (impls, hook)
+    Ok((impls, hook))
 }
 
 /// Subscribe: `#[ok_subscribe]` or `#[ok_subscribe(RowEvent::User)]` —
@@ -796,18 +853,27 @@ fn emit_reduces(schema: &DocumentSchema) -> (TS2, TS2) {
 /// variant (variant = document type name) and goes through that enum's global
 /// sink cell (`::okm_subscribe::` module generated by the build
 /// script). The per-document-type bare subscription is explicitly unsupported.
-fn emit_subscribe(schema: &DocumentSchema) -> (TS2, TS2) {
+fn emit_subscribe(schema: &DocumentSchema) -> syn::Result<(TS2, TS2)> {
     let row_name = &schema.row_name;
     let Some(sub) = &schema.subscribe else {
-        return (quote! {}, quote! {});
+        return Ok((quote! {}, quote! {}));
     };
-    let en = syn::parse_str::<syn::Ident>(&sub.enum_name)
-        .unwrap_or_else(|e| panic!("ok_subscribe: bad enum name `{}`: {e}", sub.enum_name));
+    let en = syn::parse_str::<syn::Ident>(&sub.enum_name).map_err(|e| {
+        syn::Error::new_spanned(
+            row_name,
+            format!("ok_subscribe: bad enum name `{}`: {e}", sub.enum_name),
+        )
+    })?;
     // The variant IS the document type name — derived by build.rs, so a send
     // site can never drift from the declaration (compile error on mismatch).
     let var = row_name;
     let cell = syn::parse_str::<syn::Ident>(&format!("SINK_{}", sub.enum_name.to_uppercase()))
-        .unwrap_or_else(|e| panic!("ok_subscribe: bad cell name from `{}`: {e}", sub.enum_name));
+        .map_err(|e| {
+            syn::Error::new_spanned(
+                row_name,
+                format!("ok_subscribe: bad cell name from `{}`: {e}", sub.enum_name),
+            )
+        })?;
     let hook = quote! {
         fn __okm_emit_event(
             _op: ::okm_core::subscribe::Op,
@@ -832,12 +898,16 @@ fn emit_subscribe(schema: &DocumentSchema) -> (TS2, TS2) {
     };
     // The enum cell lives in ::okm_subscribe (build script) — no per-document
     // statics in the document's own module.
-    (quote! {}, hook)
+    Ok((quote! {}, hook))
 }
 
 /// The inherent named-field walk + the full `Document` trait impl, assembled
 /// from the other emit functions' output.
-pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> TS2 {
+// reason: two internal invariants — `field_desc_entries` needs `kind` (Some for
+// every supported field kind) and the `Ref`/`Refs` arms need the key type that
+// was parsed in the same iteration that pushed `embed_fields`.
+#[allow(clippy::expect_used, clippy::unwrap_in_result)]
+pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> syn::Result<TS2> {
     let row_name = &schema.row_name;
     let key_ty = &schema.key_ty;
     // #[ok_ns(N)] → the document's table ns prefix bytes (big-endian u16,
@@ -873,14 +943,9 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> TS2 {
     // is required to avoid the "Some(0) = no segment" ambiguity.
     let part_const = match schema.partition {
         Some(id) => {
+            // `Some(0)` was refused by `parse_schema_with_key`, so this is a
+            // real partition id.
             let lit = proc_macro2::Literal::u8_unsuffixed(id);
-            if id == 0 {
-                return syn::Error::new(
-                    proc_macro2::Span::call_site(),
-                    "#[ok_partition(0)] is invalid: partition 0 means \"no partition segment\" — omit the attribute instead",
-                )
-                .to_compile_error();
-            }
             let id_lit = proc_macro2::Literal::u8_unsuffixed(id);
             quote! {
                 const PARTITION_ID: Option<u8> = Some(#lit);
@@ -924,10 +989,10 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> TS2 {
         .sum();
     let hot_width_lit = proc_macro2::Literal::usize_unsuffixed(hot_width_total);
     let named_walk = emit_named_walk(schema);
-    let index_structs = emit_index_structs(schema);
-    let index_entries = emit_index_entries(schema);
-    let (agg_impls, agg_hook) = emit_reduces(schema);
-    let (sub_statics, sub_hook) = emit_subscribe(schema);
+    let index_structs = emit_index_structs(schema)?;
+    let index_entries = emit_index_entries(schema)?;
+    let (agg_impls, agg_hook) = emit_reduces(schema)?;
+    let (sub_statics, sub_hook) = emit_subscribe(schema)?;
     // ---- document <-> map bridge (ADR-0012): per-field lift into
     // DynamicValue and back. The derive owns the concrete Rust types, so
     // each arm emits the exact cast. `from_map` has ONE defaulting rule and it
@@ -953,8 +1018,9 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> TS2 {
         let name = id.to_string();
         let dflt = &f.default_expr;
         let ty_str = &f.ty_str;
-        let t: syn::Type = syn::parse_str(ty_str)
-            .unwrap_or_else(|e| panic!("bridge: bad type `{}`: {e}", ty_str));
+        let t: syn::Type = syn::parse_str(ty_str).map_err(|e| {
+            syn::Error::new_spanned(id, format!("bridge: bad type `{}`: {e}", ty_str))
+        })?;
         // Signed integers: widen to i64, store as UInt of the two's-
         // complement bits? No — DynamicValue has no signed variant yet;
         // negative values round-trip through the typed path, and the map
@@ -976,9 +1042,13 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> TS2 {
                 .trim_end_matches('>')
                 .rsplit_once(',')
                 .map(|(_, k)| k.trim().to_string())
-                .expect("ref: <D, K>");
-            let k_ty: syn::Type = syn::parse_str(&k_ty_str)
-                .unwrap_or_else(|e| panic!("bridge: bad Ref key type `{k_ty_str}`: {e}"));
+                .ok_or_else(|| syn::Error::new_spanned(id, "ref: <D, K>"))?;
+            let k_ty: syn::Type = syn::parse_str(&k_ty_str).map_err(|e| {
+                syn::Error::new_spanned(
+                    id,
+                    format!("bridge: bad Ref key type `{k_ty_str}`: {e}"),
+                )
+            })?;
             quote! { ::okm_core::Ref { key: <#k_ty as ::core::default::Default>::default(), value: None } }
         } else if ty_str.starts_with("Refs<") {
             quote! { ::okm_core::Refs { keys: ::std::vec::Vec::new(), values: ::std::vec::Vec::new() } }
@@ -996,11 +1066,13 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> TS2 {
             let (d_str, k_str) = d_k
                 .rsplit_once(',')
                 .map(|(d, k)| (d.trim().to_string(), k.trim().to_string()))
-                .expect("ref: <D, K>");
-            let d_ty: syn::Type = syn::parse_str(&d_str)
-                .unwrap_or_else(|e| panic!("bridge: bad Ref doc type `{d_str}`: {e}"));
-            let k_ty: syn::Type = syn::parse_str(&k_str)
-                .unwrap_or_else(|e| panic!("bridge: bad Ref key type `{k_str}`: {e}"));
+                .ok_or_else(|| syn::Error::new_spanned(id, "ref: <D, K>"))?;
+            let d_ty: syn::Type = syn::parse_str(&d_str).map_err(|e| {
+                syn::Error::new_spanned(id, format!("bridge: bad Ref doc type `{d_str}`: {e}"))
+            })?;
+            let k_ty: syn::Type = syn::parse_str(&k_str).map_err(|e| {
+                syn::Error::new_spanned(id, format!("bridge: bad Ref key type `{k_str}`: {e}"))
+            })?;
             embed_fields.push((id.clone(), d_ty, k_ty, ty_str.starts_with("Refs")));
         }
         let embed_k: Option<syn::Type> = if is_embed {
@@ -1125,8 +1197,12 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> TS2 {
                     .trim_end_matches('>')
                     .to_string()
             };
-            let id_ty: syn::Type = syn::parse_str(&id_ty_str)
-                .unwrap_or_else(|e| panic!("bridge: bad Vocab id width `{id_ty_str}`: {e}"));
+            let id_ty: syn::Type = syn::parse_str(&id_ty_str).map_err(|e| {
+                syn::Error::new_spanned(
+                    id,
+                    format!("bridge: bad Vocab id width `{id_ty_str}`: {e}"),
+                )
+            })?;
             vocab_fields.push((id.clone(), id_ty.clone()));
             to_map_arms.extend(quote! {
                 out.insert(#name.to_string(), match self.#id.as_str() {
@@ -1221,8 +1297,12 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> TS2 {
                 .trim_end_matches('>')
                 .trim()
                 .to_string();
-            let inner_ty: syn::Type = syn::parse_str(&inner)
-                .unwrap_or_else(|e| panic!("bridge: bad Reverse inner type `{inner}`: {e}"));
+            let inner_ty: syn::Type = syn::parse_str(&inner).map_err(|e| {
+                syn::Error::new_spanned(
+                    id,
+                    format!("bridge: bad Reverse inner type `{inner}`: {e}"),
+                )
+            })?;
             to_map_arms.extend(quote! {
                 out.insert(#name.to_string(), ::okm_core::obj_dynamic::DynamicValue::UInt(
                     (!self.#id.0) as u64
@@ -1511,7 +1591,7 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> TS2 {
         }
     };
 
-    quote! {
+    Ok(quote! {
         #index_structs
         #agg_impls
         #sub_statics
@@ -1565,30 +1645,44 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> TS2 {
             #agg_hook
             #sub_hook
         }
-    }
+    })
 }
 
-pub fn derive(input: TokenStream) -> TokenStream {
-    let input = parse_macro_input!(input as DeriveInput);
-    let schema = parse_schema(input);
-    emit_row_impl(&schema).into()
+/// Parse + validate the declaration, then expand it. A malformed declaration
+/// comes back as a span-carrying `syn::Error` — the caller turns it into
+/// `compile_error!` on the offending token.
+pub fn expand(input: DeriveInput) -> syn::Result<TS2> {
+    let schema = parse_schema(input)?;
+    emit_row_impl(&schema)
 }
 
 #[cfg(test)]
+// reason: test assertions unwrap the very values under test.
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::declared_slot;
+    use proc_macro2::Span;
 
     #[test]
     fn declaration_slots_stay_inside_their_family() {
         // The last legal declaration: counter 0x0FFF is the family's top slot.
-        assert_eq!(declared_slot(0x3001, 0x0FFE, "index"), 0x3FFF);
-        assert_eq!(declared_slot(0x4001, 0x0FFE, "reduce"), 0x4FFF);
+        assert_eq!(
+            declared_slot(0x3001, 0x0FFE, "index", Span::call_site()).unwrap(),
+            0x3FFF
+        );
+        assert_eq!(
+            declared_slot(0x4001, 0x0FFE, "reduce", Span::call_site()).unwrap(),
+            0x4FFF
+        );
     }
 
     #[test]
-    #[should_panic(expected = "at most 4095 declarations")]
     fn one_past_the_last_declaration_is_refused() {
         // Declaration 4096 would carry counter 0x1000 — the NEXT family.
-        let _ = declared_slot(0x3001, 0x0FFF, "index");
+        let err = declared_slot(0x3001, 0x0FFF, "index", Span::call_site()).unwrap_err();
+        assert!(
+            err.to_string().contains("at most 4095 declarations"),
+            "{err}"
+        );
     }
 }

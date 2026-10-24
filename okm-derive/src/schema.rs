@@ -41,7 +41,7 @@ pub(crate) struct IdxDecl {
     pub deprecated: bool,
 }
 
-pub(crate) fn parse_index_attr(attr: &syn::Attribute) -> Vec<IdxDecl> {
+pub(crate) fn parse_index_attr(attr: &syn::Attribute) -> syn::Result<Vec<IdxDecl>> {
     let mut out = Vec::new();
     let ts: Vec<TokenTree> = attr.to_token_stream().into_iter().collect();
     // Shape: `#[ok_index(…)]` — take the top-level Bracket group, then the
@@ -52,14 +52,16 @@ pub(crate) fn parse_index_attr(attr: &syn::Attribute) -> Vec<IdxDecl> {
             TokenTree::Group(g) if g.delimiter() == Delimiter::Bracket => Some(g.stream()),
             _ => None,
         })
-        .expect("ok_index: missing attribute brackets");
+        .ok_or_else(|| syn::Error::new_spanned(attr, "ok_index: missing attribute brackets"))?;
     let body = outer
         .into_iter()
         .find_map(|t| match t {
             TokenTree::Group(g) if g.delimiter() == Delimiter::Parenthesis => Some(g.stream()),
             _ => None,
         })
-        .expect("ok_index: missing argument parentheses");
+        .ok_or_else(|| {
+            syn::Error::new_spanned(attr, "ok_index: missing argument parentheses")
+        })?;
     let ts: Vec<TokenTree> = body.into_iter().collect();
 
     let mut i = 0usize;
@@ -72,7 +74,12 @@ pub(crate) fn parse_index_attr(attr: &syn::Attribute) -> Vec<IdxDecl> {
         // Expect: index name (Ident).
         let ident = match &ts[i] {
             TokenTree::Ident(id) => id.clone(),
-            t => panic!("ok_index: expected index name Ident, got {t}"),
+            t => {
+                return Err(syn::Error::new_spanned(
+                    t,
+                    format!("ok_index: expected index name Ident, got {t}"),
+                ))
+            }
         };
         i += 1;
         // Optional `deprecated` marker BEFORE the brace group.
@@ -83,7 +90,12 @@ pub(crate) fn parse_index_attr(attr: &syn::Attribute) -> Vec<IdxDecl> {
         // Expect: { … } brace group.
         let body = match ts.get(i) {
             Some(TokenTree::Group(g)) if g.delimiter() == Delimiter::Brace => g.stream(),
-            t => panic!("ok_index[{ident}]: expected {{ fields(…) }} block, got {t:?}"),
+            t => {
+                return Err(syn::Error::new(
+                    t.map_or_else(|| ident.span(), TokenTree::span),
+                    format!("ok_index[{ident}]: expected {{ fields(…) }} block, got {t:?}"),
+                ))
+            }
         };
         i += 1;
         // Optional `deprecated` marker AFTER the brace group (trailing) —
@@ -106,21 +118,36 @@ pub(crate) fn parse_index_attr(attr: &syn::Attribute) -> Vec<IdxDecl> {
         let toks: Vec<TokenTree> = body.into_iter().collect();
         let mut j = 0usize;
         while j < toks.len() {
-            let kw = match &toks[j] {
-                TokenTree::Ident(id) => id.to_string(),
-                t => panic!("ok_index[{ident}]: expected fields/includes/key, got {t}"),
+            let (kw, kw_tok) = match &toks[j] {
+                TokenTree::Ident(id) => (id.to_string(), id.clone()),
+                t => {
+                    return Err(syn::Error::new_spanned(
+                        t,
+                        format!("ok_index[{ident}]: expected fields/includes/key, got {t}"),
+                    ))
+                }
             };
             let list: Vec<String> = match toks.get(j + 1) {
-                Some(TokenTree::Group(g)) if g.delimiter() == Delimiter::Parenthesis => g
-                    .stream()
-                    .into_iter()
-                    .filter_map(|t| match t {
-                        TokenTree::Ident(id) => Some(id.to_string()),
-                        TokenTree::Punct(_) => None,
-                        t => panic!("ok_index[{ident}].{kw}: illegal token {t}"),
-                    })
-                    .collect(),
-                t => panic!("ok_index[{ident}].{kw}: expected paren group, got {t:?}"),
+                Some(TokenTree::Group(g)) if g.delimiter() == Delimiter::Parenthesis => {
+                    let mut list = Vec::new();
+                    for t in g.stream() {
+                        match t {
+                            TokenTree::Ident(id) => list.push(id.to_string()),
+                            TokenTree::Punct(_) => {}
+                            t => {
+                                let msg = format!("ok_index[{ident}].{kw}: illegal token {t}");
+                                return Err(syn::Error::new_spanned(&t, msg));
+                            }
+                        }
+                    }
+                    list
+                }
+                t => {
+                    return Err(syn::Error::new(
+                        t.map_or_else(|| ident.span(), TokenTree::span),
+                        format!("ok_index[{ident}].{kw}: expected paren group, got {t:?}"),
+                    ))
+                }
             };
             match kw.as_str() {
                 "fields" => fields = list,
@@ -130,7 +157,10 @@ pub(crate) fn parse_index_attr(attr: &syn::Attribute) -> Vec<IdxDecl> {
                     // func(path) — the function path spliced verbatim into
                     // the generated impl (called as `path(&document)`).
                     if list.len() != 1 {
-                        panic!("ok_index[{ident}].func: expected exactly one function path");
+                        return Err(syn::Error::new_spanned(
+                            &kw_tok,
+                            format!("ok_index[{ident}].func: expected exactly one function path"),
+                        ));
                     }
                     func = list[0].clone();
                 }
@@ -140,14 +170,20 @@ pub(crate) fn parse_index_attr(attr: &syn::Attribute) -> Vec<IdxDecl> {
                     // override. Legal on plain AND function indexes
                     // (row membership is orthogonal to the sort segment).
                     if list.len() != 1 {
-                        panic!("ok_index[{ident}].where: expected exactly one predicate path");
+                        return Err(syn::Error::new_spanned(
+                            &kw_tok,
+                            format!("ok_index[{ident}].where: expected exactly one predicate path"),
+                        ));
                     }
                     filter = list[0].clone();
                 }
                 other => {
-                    panic!(
-                        "ok_index[{ident}]: unknown key {other} (supported: fields/includes/key/func/where)"
-                    )
+                    return Err(syn::Error::new_spanned(
+                        &kw_tok,
+                        format!(
+                            "ok_index[{ident}]: unknown key {other} (supported: fields/includes/key/func/where)"
+                        ),
+                    ))
                 }
             }
             j += 2;
@@ -162,12 +198,18 @@ pub(crate) fn parse_index_attr(attr: &syn::Attribute) -> Vec<IdxDecl> {
         // applies only to plain field indexes.
         if !func.is_empty() {
             if !fields.is_empty() || !includes.is_empty() {
-                panic!(
-                    "ok_index[{ident}]: func(...) and fields/includes are exclusive — the function result IS the sort segment"
-                );
+                return Err(syn::Error::new(
+                    ident.span(),
+                    format!(
+                        "ok_index[{ident}]: func(...) and fields/includes are exclusive — the function result IS the sort segment"
+                    ),
+                ));
             }
         } else if fields.is_empty() && !deprecated {
-            panic!("ok_index[{ident}]: fields must not be empty");
+            return Err(syn::Error::new(
+                ident.span(),
+                format!("ok_index[{ident}]: fields must not be empty"),
+            ));
         }
         // key(...) prefix validation happens at encode time (the generated
         // encode_prefix_named match panics on non-prefix names), same
@@ -182,12 +224,12 @@ pub(crate) fn parse_index_attr(attr: &syn::Attribute) -> Vec<IdxDecl> {
             deprecated,
         });
     }
-    out
+    Ok(out)
 }
 
 /// Parse `#[ok_reduce(name { group(a, b) })]` — same Ident + brace
 /// shape as one `ok_index` declaration, only the keyword set differs.
-pub(crate) fn parse_reduce_attr(attr: &syn::Attribute) -> ReduceDecl {
+pub(crate) fn parse_reduce_attr(attr: &syn::Attribute) -> syn::Result<ReduceDecl> {
     let ts: Vec<TokenTree> = attr.to_token_stream().into_iter().collect();
     let outer = ts
         .iter()
@@ -195,19 +237,26 @@ pub(crate) fn parse_reduce_attr(attr: &syn::Attribute) -> ReduceDecl {
             TokenTree::Group(g) if g.delimiter() == Delimiter::Bracket => Some(g.stream()),
             _ => None,
         })
-        .expect("ok_reduce: missing attribute brackets");
+        .ok_or_else(|| syn::Error::new_spanned(attr, "ok_reduce: missing attribute brackets"))?;
     let body = outer
         .into_iter()
         .find_map(|t| match t {
             TokenTree::Group(g) if g.delimiter() == Delimiter::Parenthesis => Some(g.stream()),
             _ => None,
         })
-        .expect("ok_reduce: missing argument parentheses");
+        .ok_or_else(|| {
+            syn::Error::new_spanned(attr, "ok_reduce: missing argument parentheses")
+        })?;
     let toks: Vec<TokenTree> = body.into_iter().collect();
 
     let ident = match toks.first() {
         Some(TokenTree::Ident(id)) => id.clone(),
-        t => panic!("ok_reduce: expected reduce name Ident, got {t:?}"),
+        t => {
+            return Err(syn::Error::new_spanned(
+                attr,
+                format!("ok_reduce: expected reduce name Ident, got {t:?}"),
+            ))
+        }
     };
     // Optional field argument for the preset combinators:
     // `Sum(title_len) { group(..) }` / `HighWater(id)`. `Count` takes none.
@@ -217,7 +266,12 @@ pub(crate) fn parse_reduce_attr(attr: &syn::Attribute) -> ReduceDecl {
             let ftoks: Vec<TokenTree> = g.stream().into_iter().collect();
             let f = match ftoks.as_slice() {
                 [TokenTree::Ident(f)] => Some(f.to_string()),
-                _ => panic!("ok_reduce[{ident}]: expected exactly one field name in (...)"),
+                _ => {
+                    return Err(syn::Error::new(
+                        g.span(),
+                        format!("ok_reduce[{ident}]: expected exactly one field name in (...)"),
+                    ))
+                }
             };
             iter.next(); // consume the field-argument group
             f
@@ -225,55 +279,87 @@ pub(crate) fn parse_reduce_attr(attr: &syn::Attribute) -> ReduceDecl {
         _ => None,
     };
     if field.is_some() && !matches!(ident.to_string().as_str(), "Sum" | "HighWater" | "LowWater") {
-        panic!(
-            "ok_reduce[{ident}]: field argument only applies to the preset combinators Sum/HighWater/LowWater"
-        );
+        return Err(syn::Error::new(
+            ident.span(),
+            format!(
+                "ok_reduce[{ident}]: field argument only applies to the preset combinators Sum/HighWater/LowWater"
+            ),
+        ));
     }
     if field.is_none() && matches!(ident.to_string().as_str(), "Sum" | "HighWater" | "LowWater") {
-        panic!("ok_reduce[{ident}]: preset combinator requires a field argument, e.g. {ident}(field_name)");
+        return Err(syn::Error::new(
+            ident.span(),
+            format!("ok_reduce[{ident}]: preset combinator requires a field argument, e.g. {ident}(field_name)"),
+        ));
     }
     if field.is_some() && ident == "Count" {
-        panic!("ok_reduce[Count]: takes no field argument — it counts rows");
+        return Err(syn::Error::new(
+            ident.span(),
+            "ok_reduce[Count]: takes no field argument — it counts rows",
+        ));
     }
     let group_body = match iter.next() {
         // `{ group(…) }` block; ABSENT for the no-group (whole-table,
         // single-group) declaration — `#[ok_reduce(Count)]` (ADR-0023).
         Some(TokenTree::Group(g)) if g.delimiter() == Delimiter::Brace => Some(g.stream()),
-        Some(t) => panic!("ok_reduce[{ident}]: expected {{ group(…) }} block, got {t:?}"),
+        Some(t) => {
+            return Err(syn::Error::new_spanned(
+                t,
+                format!("ok_reduce[{ident}]: expected {{ group(…) }} block, got {t:?}"),
+            ))
+        }
         None => None,
     };
     let group = match group_body {
         None => Vec::new(),
         Some(group_body) => {
             let gtoks: Vec<TokenTree> = group_body.into_iter().collect();
-            let kw = match gtoks.first() {
-                Some(TokenTree::Ident(id)) => id.to_string(),
-                t => panic!("ok_reduce[{ident}]: expected group(...), got {t:?}"),
+            let (kw, kw_tok) = match gtoks.first() {
+                Some(TokenTree::Ident(id)) => (id.to_string(), id.clone()),
+                t => {
+                    return Err(syn::Error::new(
+                        t.map_or_else(|| ident.span(), TokenTree::span),
+                        format!("ok_reduce[{ident}]: expected group(...), got {t:?}"),
+                    ))
+                }
             };
             if kw != "group" {
-                panic!("ok_reduce[{ident}]: unknown key {kw} (supported: group)");
+                return Err(syn::Error::new_spanned(
+                    &kw_tok,
+                    format!("ok_reduce[{ident}]: unknown key {kw} (supported: group)"),
+                ));
             }
             let group: Vec<String> = match gtoks.get(1) {
-                Some(TokenTree::Group(g)) if g.delimiter() == Delimiter::Parenthesis => g
-                    .stream()
-                    .into_iter()
-                    .filter_map(|t| match t {
-                        TokenTree::Ident(id) => Some(id.to_string()),
-                        TokenTree::Punct(_) => None,
-                        t => panic!("ok_reduce[{ident}].group: illegal token {t}"),
-                    })
-                    .collect(),
-                t => panic!("ok_reduce[{ident}]: expected paren group, got {t:?}"),
+                Some(TokenTree::Group(g)) if g.delimiter() == Delimiter::Parenthesis => {
+                    let mut group = Vec::new();
+                    for t in g.stream() {
+                        match t {
+                            TokenTree::Ident(id) => group.push(id.to_string()),
+                            TokenTree::Punct(_) => {}
+                            t => {
+                                let msg = format!("ok_reduce[{ident}].group: illegal token {t}");
+                                return Err(syn::Error::new_spanned(&t, msg));
+                            }
+                        }
+                    }
+                    group
+                }
+                t => {
+                    return Err(syn::Error::new(
+                        t.map_or_else(|| ident.span(), TokenTree::span),
+                        format!("ok_reduce[{ident}]: expected paren group, got {t:?}"),
+                    ))
+                }
             };
             group
         }
     };
-    ReduceDecl {
+    Ok(ReduceDecl {
         logic: ident.to_string(),
         ident,
         group,
         field,
-    }
+    })
 }
 
 /// Is this payload field variable-width (no static width)? Width-0 kinds:
@@ -329,42 +415,52 @@ pub(crate) struct FieldSchema {
 
 /// Encoded width of a plain primitive type name (for `Reverse<T>` fields —
 /// same width as the unwrapped encoding).
-fn inner_w(ty: &str) -> TS2 {
+fn inner_w(ty: &str, span: &syn::Type) -> syn::Result<TS2> {
     match ty {
-        "u8" | "i8" => quote! { 1 },
-        "u16" | "i16" => quote! { 2 },
-        "u32" | "i32" => quote! { 4 },
-        "u64" | "i64" => quote! { 8 },
-        other => panic!("Reverse<{other}>: inner type not on the Reversible whitelist"),
+        "u8" | "i8" => Ok(quote! { 1 }),
+        "u16" | "i16" => Ok(quote! { 2 }),
+        "u32" | "i32" => Ok(quote! { 4 }),
+        "u64" | "i64" => Ok(quote! { 8 }),
+        other => Err(syn::Error::new_spanned(
+            span,
+            format!("Reverse<{other}>: inner type not on the Reversible whitelist"),
+        )),
     }
 }
 
 /// FieldType of a plain primitive type name (Reverse keeps the inner kind —
 /// the wire is still a fixed-width integer, just bit-flipped).
-fn inner_kind(ty: &str) -> TS2 {
+fn inner_kind(ty: &str, span: &syn::Type) -> syn::Result<TS2> {
     match ty {
-        "u8" | "i8" => quote! { ::okm_core::FieldType::U8 },
-        "u16" | "i16" => quote! { ::okm_core::FieldType::U16 },
-        "u32" | "i32" => quote! { ::okm_core::FieldType::U32 },
-        "u64" | "i64" => quote! { ::okm_core::FieldType::U64 },
-        other => panic!("Reverse<{other}>: inner type not on the Reversible whitelist"),
+        "u8" | "i8" => Ok(quote! { ::okm_core::FieldType::U8 }),
+        "u16" | "i16" => Ok(quote! { ::okm_core::FieldType::U16 }),
+        "u32" | "i32" => Ok(quote! { ::okm_core::FieldType::U32 }),
+        "u64" | "i64" => Ok(quote! { ::okm_core::FieldType::U64 }),
+        other => Err(syn::Error::new_spanned(
+            span,
+            format!("Reverse<{other}>: inner type not on the Reversible whitelist"),
+        )),
     }
 }
 
-fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> Vec<FieldSchema> {
+fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> syn::Result<Vec<FieldSchema>> {
     let mut fs: Vec<FieldSchema> = Vec::new();
     for f in named.named.iter() {
+        // Internal invariant: `syn::FieldsNamed` holds only named fields, so
+        // every field carries an ident.
+        #[allow(clippy::unwrap_used, clippy::unwrap_in_result)]
         let id = f.ident.clone().unwrap();
         let ty = &f.ty;
         let ty_str = quote!(#ty).to_string().replace(' ', "");
         // #[ok_default(expr)] or #[ok_default = expr] — value used when an
         // older-layout payload lacks this field (append-only schema
         // evolution). Optional; fallback is `<T as Default>::default()`.
-        let ok_default: Option<TS2> = f
+        let ok_default: Option<TS2> = match f
             .attrs
             .iter()
             .find(|a| a.path().is_ident("ok_default"))
-            .map(|a| {
+        {
+            Some(a) => {
                 let mut e = None;
                 let _ = a.parse_nested_meta(|meta| {
                     if meta.path.is_ident("expr") {
@@ -372,21 +468,31 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> Vec<FieldSchema> {
                     }
                     Ok(())
                 });
-                e.map(|x| quote! { #x })
-                    .or_else(|| a.parse_args::<syn::Expr>().ok().map(|x| quote! { #x }))
-                    .expect("ok_default: expected `#[ok_default(expr)]` or `#[ok_default = expr]`")
-            });
+                Some(
+                    e.map(|x| quote! { #x })
+                        .or_else(|| a.parse_args::<syn::Expr>().ok().map(|x| quote! { #x }))
+                        .ok_or_else(|| {
+                            syn::Error::new_spanned(
+                                a,
+                                "ok_default: expected `#[ok_default(expr)]` or `#[ok_default = expr]`",
+                            )
+                        })?,
+                )
+            }
+            None => None,
+        };
         // #[ok_len(N)] — Vector element-count expectation (decode check).
-        let _ok_len: Option<usize> = f
-            .attrs
-            .iter()
-            .find(|a| a.path().is_ident("ok_len"))
-            .map(|a| {
+        let _ok_len: Option<usize> = match f.attrs.iter().find(|a| a.path().is_ident("ok_len")) {
+            Some(a) => Some(
                 a.parse_args::<syn::LitInt>()
-                    .expect("ok_len: expected `#[ok_len(N)]`")
-                    .base10_parse()
-                    .expect("ok_len: N must be a usize literal")
-            });
+                    .map_err(|_| syn::Error::new_spanned(a, "ok_len: expected `#[ok_len(N)]`"))?
+                    .base10_parse::<usize>()
+                    .map_err(|_| {
+                        syn::Error::new_spanned(a, "ok_len: N must be a usize literal")
+                    })?,
+            ),
+            None => None,
+        };
         // Literal detection: `#[ok_default(3)]` etc. exports as data for
         // the dynamic reader; non-literal exprs stay Rust-only.
         let ok_default_lit: Option<TS2> = ok_default.as_ref().and_then(|e| {
@@ -427,32 +533,36 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> Vec<FieldSchema> {
         });
         // #[ok_offset(base = <i64 literal>)] — the Offset wrapper's static
         // base, required exactly when the type is Offset-shaped.
-        let offset_base: Option<i64> = f
-            .attrs
-            .iter()
-            .find(|a| a.path().is_ident("ok_offset"))
-            .map(|a| {
+        let offset_base: Option<i64> = match f.attrs.iter().find(|a| a.path().is_ident("ok_offset")) {
+            Some(a) => {
                 let mut b = None;
                 let _ = a.parse_nested_meta(|meta| {
                     if meta.path.is_ident("base") {
                         let v: syn::LitInt = meta.value()?.parse()?;
-                        b = Some(v.base10_parse::<i64>().expect("ok_offset: base must be an i64 literal"));
+                        b = Some(v.base10_parse::<i64>().map_err(|_| {
+                            syn::Error::new_spanned(&v, "ok_offset: base must be an i64 literal")
+                        })?);
                     }
                     Ok(())
                 });
-                b.expect("ok_offset: missing `base = <i64>`")
-            });
+                Some(b.ok_or_else(|| {
+                    syn::Error::new_spanned(a, "ok_offset: missing `base = <i64>`")
+                })?)
+            }
+            None => None,
+        };
         // #[ok_len(N)] — Vector element-count expectation (decode check).
-        let ok_len: Option<usize> = f
-            .attrs
-            .iter()
-            .find(|a| a.path().is_ident("ok_len"))
-            .map(|a| {
+        let ok_len: Option<usize> = match f.attrs.iter().find(|a| a.path().is_ident("ok_len")) {
+            Some(a) => Some(
                 a.parse_args::<syn::LitInt>()
-                    .expect("ok_len: expected `#[ok_len(N)]`")
-                    .base10_parse()
-                    .expect("ok_len: N must be a usize literal")
-            });
+                    .map_err(|_| syn::Error::new_spanned(a, "ok_len: expected `#[ok_len(N)]`"))?
+                    .base10_parse::<usize>()
+                    .map_err(|_| {
+                        syn::Error::new_spanned(a, "ok_len: N must be a usize literal")
+                    })?,
+            ),
+            None => None,
+        };
         let (enc, dec, width, len_expr, kind) = match ty_str.as_str() {
             "u64" => (
                 quote! { buf.extend_from_slice(&self.#id.to_be_bytes()); },
@@ -520,7 +630,9 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> Vec<FieldSchema> {
                     .trim_start_matches("[u8;")
                     .trim_end_matches(']')
                     .parse()
-                    .expect("[u8; N]: N must be an integer literal");
+                    .map_err(|_| {
+                        syn::Error::new_spanned(ty, "[u8; N]: N must be an integer literal")
+                    })?;
                 let nlit = proc_macro2::Literal::usize_unsuffixed(n);
                 (
                     quote! { buf.extend_from_slice(&self.#id); },
@@ -545,10 +657,11 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> Vec<FieldSchema> {
                     .trim_start_matches("Reverse<")
                     .trim_end_matches('>')
                     .to_string();
-                let inner_ty: syn::Type = syn::parse_str(&inner)
-                    .unwrap_or_else(|_| panic!("{ctx}: bad Reverse inner type {inner}"));
-                let w = inner_w(&inner);
-                let kind = inner_kind(&inner);
+                let inner_ty: syn::Type = syn::parse_str(&inner).map_err(|_| {
+                    syn::Error::new_spanned(ty, format!("{ctx}: bad Reverse inner type {inner}"))
+                })?;
+                let w = inner_w(&inner, ty)?;
+                let kind = inner_kind(&inner, ty)?;
                 (
                     quote! { buf.extend_from_slice(&self.#id.encode()); },
                     quote! {{ let v = ::okm_core::Reverse(#inner_ty::rev_decode(&b[offset..offset+#w])); offset += #w; v }},
@@ -567,10 +680,14 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> Vec<FieldSchema> {
                     .trim_end_matches('>')
                     .to_string();
                 if !matches!(inner.as_str(), "u16" | "u32" | "u64") {
-                    panic!("{ctx}: VarInt<{inner}> unsupported (u16/u32/u64 only)");
+                    return Err(syn::Error::new_spanned(
+                        ty,
+                        format!("{ctx}: VarInt<{inner}> unsupported (u16/u32/u64 only)"),
+                    ));
                 }
-                let inner_ty: syn::Type = syn::parse_str(&inner)
-                    .unwrap_or_else(|_| panic!("{ctx}: bad VarInt inner type {inner}"));
+                let inner_ty: syn::Type = syn::parse_str(&inner).map_err(|_| {
+                    syn::Error::new_spanned(ty, format!("{ctx}: bad VarInt inner type {inner}"))
+                })?;
                 (
                     quote! { buf.extend_from_slice(&self.#id.encode()); },
                     quote! {{
@@ -598,11 +715,17 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> Vec<FieldSchema> {
                     Some((i, p)) => (i.trim().to_string(), p.trim().to_string()),
                     None => ("f64".to_string(), args),
                 };
-                let p: u32 = p_str
-                    .parse()
-                    .unwrap_or_else(|_| panic!("{ctx}: Quant precision P must be an integer literal, got {p_str}"));
+                let p: u32 = p_str.parse().map_err(|_| {
+                    syn::Error::new_spanned(
+                        ty,
+                        format!("{ctx}: Quant precision P must be an integer literal, got {p_str}"),
+                    )
+                })?;
                 if inner != "f64" {
-                    panic!("{ctx}: Quant<{inner}> unsupported (f64 only)");
+                    return Err(syn::Error::new_spanned(
+                        ty,
+                        format!("{ctx}: Quant<{inner}> unsupported (f64 only)"),
+                    ));
                 }
                 let plit = proc_macro2::Literal::u32_unsuffixed(p);
                 (
@@ -631,8 +754,12 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> Vec<FieldSchema> {
                     .trim_end_matches('>')
                     .to_string();
                 let t_lit = &t_str;
-                let t_ty: syn::Type = syn::parse_str(&t_str)
-                    .unwrap_or_else(|e| panic!("{ctx}: bad Vector element type `{t_str}`: {e}"));
+                let t_ty: syn::Type = syn::parse_str(&t_str).map_err(|e| {
+                    syn::Error::new_spanned(
+                        ty,
+                        format!("{ctx}: bad Vector element type `{t_str}`: {e}"),
+                    )
+                })?;
                 let (elem_enc, elem_dec, elem_fixed): (proc_macro2::TokenStream, proc_macro2::TokenStream, usize) = match t_str.as_str() {
                     "f32" | "u32" | "i32" => (
                         quote! {
@@ -676,7 +803,12 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> Vec<FieldSchema> {
                         }},
                         0usize,
                     ),
-                    other => panic!("{ctx}: unsupported Vector element type `{other}` (scalars: f32/u32/i32/u64/i64; dynamic-width: String)"),
+                    other => {
+                        return Err(syn::Error::new_spanned(
+                            ty,
+                            format!("{ctx}: unsupported Vector element type `{other}` (scalars: f32/u32/i32/u64/i64; dynamic-width: String)"),
+                        ))
+                    }
                 };
                 // #[ok_len] is an ENCODE-time contract check (the write
                 // boundary is where the application's dimension promise is
@@ -745,10 +877,19 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> Vec<FieldSchema> {
                 // — the child must be a plain document type).
                 let (_d_ty, k_ty) = match generics.rsplit_once(',') {
                     Some((d, k)) => (d.trim().to_string(), k.trim().to_string()),
-                    None => panic!("{ctx}: Ref requires <D, K> (field {id})"),
+                    None => {
+                        return Err(syn::Error::new_spanned(
+                            ty,
+                            format!("{ctx}: Ref requires <D, K> (field {id})"),
+                        ))
+                    }
                 };
-                let k_ty_parsed: syn::Type = syn::parse_str(&k_ty)
-                    .unwrap_or_else(|e| panic!("{ctx}: bad Ref key type `{k_ty}`: {e}"));
+                let k_ty_parsed: syn::Type = syn::parse_str(&k_ty).map_err(|e| {
+                    syn::Error::new_spanned(
+                        ty,
+                        format!("{ctx}: bad Ref key type `{k_ty}`: {e}"),
+                    )
+                })?;
                 (
                     // enc: the child key bytes only
                     quote! { buf.extend_from_slice(&self.#id.key.encode()); },
@@ -775,10 +916,19 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> Vec<FieldSchema> {
                     .to_string();
                 let (_d_ty, k_ty) = match generics.rsplit_once(',') {
                     Some((d, k)) => (d.trim().to_string(), k.trim().to_string()),
-                    None => panic!("{ctx}: Refs requires <D, K> (field {id})"),
+                    None => {
+                        return Err(syn::Error::new_spanned(
+                            ty,
+                            format!("{ctx}: Refs requires <D, K> (field {id})"),
+                        ))
+                    }
                 };
-                let k_parsed: syn::Type = syn::parse_str(&k_ty)
-                    .unwrap_or_else(|e| panic!("{ctx}: bad Refs key type `{k_ty}`: {e}"));
+                let k_parsed: syn::Type = syn::parse_str(&k_ty).map_err(|e| {
+                    syn::Error::new_spanned(
+                        ty,
+                        format!("{ctx}: bad Refs key type `{k_ty}`: {e}"),
+                    )
+                })?;
                 (
                     // enc: [count u32 BE][key bytes × n] — child keys share
                     // one static KEY_LEN (the K type is fixed-width).
@@ -829,12 +979,16 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> Vec<FieldSchema> {
                     "u32" => 4,
                     "u64" => 8,
                     "u128" => 16,
-                    other => panic!(
-                        "{ctx}: Vocab<{other}> — the id width must be u8, u16, u32, u64 or u128"
-                    ),
+                    other => {
+                        return Err(syn::Error::new_spanned(
+                            ty,
+                            format!("{ctx}: Vocab<{other}> — the id width must be u8, u16, u32, u64 or u128"),
+                        ))
+                    }
                 };
-                let id_ty: syn::Type = syn::parse_str(&id_ty)
-                    .unwrap_or_else(|_| panic!("{ctx}: bad Vocab id width type"));
+                let id_ty: syn::Type = syn::parse_str(&id_ty).map_err(|_| {
+                    syn::Error::new_spanned(ty, format!("{ctx}: bad Vocab id width type"))
+                })?;
                 let w_lit = proc_macro2::Literal::u16_unsuffixed(width);
                 let off_lit = proc_macro2::Literal::u16_unsuffixed(16 - width);
                 // Declaration-order index among the Vocab fields: `fs` holds
@@ -864,10 +1018,17 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> Vec<FieldSchema> {
                 // Offset — #[ok_offset(base = N)] i64 fields stored as a u32
                 // displacement from the static base. Base and shape must
                 // agree: missing either half is a declaration error.
-                let base = offset_base
-                    .unwrap_or_else(|| panic!("{ctx}: {id} is Offset but lacks #[ok_offset(base = <i64>)]"));
+                let base = offset_base.ok_or_else(|| {
+                    syn::Error::new_spanned(
+                        ty,
+                        format!("{ctx}: {id} is Offset but lacks #[ok_offset(base = <i64>)]"),
+                    )
+                })?;
                 if ty_str != "Offset" {
-                    panic!("{ctx}: {id} has #[ok_offset] but is not an Offset field");
+                    return Err(syn::Error::new_spanned(
+                        ty,
+                        format!("{ctx}: {id} has #[ok_offset] but is not an Offset field"),
+                    ));
                 }
                 let blit = proc_macro2::Literal::i64_unsuffixed(base);
                 (
@@ -905,7 +1066,10 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> Vec<FieldSchema> {
                 // Retired spelling: `Vec<u8>` carried BYTE-STRING semantics
                 // under a LIST-shaped name. The declared field is now spelled
                 // `Bytes` (okm_core::Bytes) — same wire, honest name.
-                panic!("{ctx}: `Vec<u8>` is retired as a field spelling — use `Bytes` (okm_core::Bytes) for raw-byte fields (field {id})")
+                return Err(syn::Error::new_spanned(
+                    ty,
+                    format!("{ctx}: `Vec<u8>` is retired as a field spelling — use `Bytes` (okm_core::Bytes) for raw-byte fields (field {id})"),
+                ));
             }
             _ if ty_str.starts_with("Bytes") || ty_str == "Bytes" => {
                 // Bytes — same variable-length TLV frame as String, minus
@@ -923,7 +1087,12 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> Vec<FieldSchema> {
                     Some(quote! { ::okm_core::FieldType::Bytes }),
                 )
             }
-            other => panic!("{ctx}: unsupported type {other} (field {id})"),
+            other => {
+                return Err(syn::Error::new_spanned(
+                    ty,
+                    format!("{ctx}: unsupported type {other} (field {id})"),
+                ))
+            }
         };
         fs.push(FieldSchema {
             ty_str: ty_str.clone(),
@@ -945,9 +1114,13 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> Vec<FieldSchema> {
                     .trim_end_matches('>')
                     .rsplit_once(',')
                     .map(|(_, k)| k.trim().to_string())
-                    .expect("embedded: <D, K>");
-                let k_ty: syn::Type = syn::parse_str(&k_ty_str)
-                    .unwrap_or_else(|e| panic!("{ctx}: bad Ref key type `{k_ty_str}`: {e}"));
+                    .ok_or_else(|| syn::Error::new_spanned(ty, "embedded: <D, K>"))?;
+                let k_ty: syn::Type = syn::parse_str(&k_ty_str).map_err(|e| {
+                    syn::Error::new_spanned(
+                        ty,
+                        format!("{ctx}: bad Ref key type `{k_ty_str}`: {e}"),
+                    )
+                })?;
                 quote! { ::okm_core::Ref { key: <#k_ty as ::core::default::Default>::default(), value: None } }
             } else if ty_str.starts_with("Refs<") {
                 quote! { ::okm_core::Refs { keys: ::std::vec::Vec::new(), values: ::std::vec::Vec::new() } }
@@ -959,7 +1132,7 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> Vec<FieldSchema> {
             ok_len: if ty_str.starts_with("Vector<") || ty_str.starts_with("Vector <") { ok_len } else { None },
         });
     }
-    fs
+    Ok(fs)
 }
 
 /// One `#[ok_reduce(name { group(a, b) })]` declaration. The fold /
@@ -990,16 +1163,19 @@ pub(crate) struct SubDecl {
 
 /// Parse `#[ok_subscribe]` (bare). Any parenthesized argument is rejected:
 /// the enum name lives in `#[ok_event_enum]`, not here.
-pub(crate) fn parse_subscribe_attr(attr: &syn::Attribute) -> SubDecl {
+pub(crate) fn parse_subscribe_attr(attr: &syn::Attribute) -> syn::Result<SubDecl> {
     if attr.parse_args::<syn::ExprPath>().is_ok() {
-        panic!(
-            "ok_subscribe: variant paths are not supported — declare `#[ok_subscribe]` \
+        return Err(syn::Error::new_spanned(
+            attr,
+            format!(
+                "ok_subscribe: variant paths are not supported — declare `#[ok_subscribe]` \
              (bare); the event enum is `{}` and the variant is the document type name \
              (rename the enum with `#[ok_event_enum(...)]`)",
-            DEFAULT_EVENT_ENUM
-        );
+                DEFAULT_EVENT_ENUM
+            ),
+        ));
     }
-    SubDecl { enum_name: DEFAULT_EVENT_ENUM.to_string() }
+    Ok(SubDecl { enum_name: DEFAULT_EVENT_ENUM.to_string() })
 }
 
 pub(crate) const DEFAULT_EVENT_ENUM: &str = "RowEvent";
@@ -1007,15 +1183,23 @@ pub(crate) const DEFAULT_EVENT_ENUM: &str = "RowEvent";
 /// Optional `#[ok_event_enum(Alias)]`: renames the generated event enum
 /// this document's events dispatch through. Only read on documents that also carry
 /// `#[ok_subscribe]`.
-pub(crate) fn parse_event_enum_attr(attr: &syn::Attribute) -> String {
+pub(crate) fn parse_event_enum_attr(attr: &syn::Attribute) -> syn::Result<String> {
     let ts = match attr.parse_args::<syn::ExprPath>() {
         Ok(p) => p.to_token_stream().to_string().replace(' ', ""),
-        Err(_) => panic!("ok_event_enum: expected an enum name, e.g. `#[ok_event_enum(MyEvents)]`"),
+        Err(_) => {
+            return Err(syn::Error::new_spanned(
+                attr,
+                "ok_event_enum: expected an enum name, e.g. `#[ok_event_enum(MyEvents)]`",
+            ))
+        }
     };
     if ts.split("::").count() != 1 {
-        panic!("ok_event_enum: expected a bare enum name, got `{ts}`");
+        return Err(syn::Error::new_spanned(
+            attr,
+            format!("ok_event_enum: expected a bare enum name, got `{ts}`"),
+        ));
     }
-    ts
+    Ok(ts)
 }
 
 /// Whole-macro IR: parse once, consumed by every emit function.
@@ -1053,90 +1237,104 @@ pub(crate) struct DocumentSchema {
 }
 
 /// Parse + validate the derive input. Returns a fully validated schema —
-/// the emit functions never panic.
-pub(crate) fn parse_schema(input: DeriveInput) -> DocumentSchema {
+/// the emit functions can then only fail on their own internal invariants.
+pub(crate) fn parse_schema(input: DeriveInput) -> syn::Result<DocumentSchema> {
     // #[ok_ref(KeyType)] — the identity struct the document hangs off.
-    let key_ty: syn::Type = input
-        .attrs
-        .iter()
-        .find_map(|a| {
-            if a.path().is_ident("ok_ref") {
-                Some(a.parse_args::<syn::Type>().unwrap())
-            } else {
-                None
-            }
-        })
-        .expect("missing #[ok_ref(KeyType)]");
+    let key_ty: syn::Type = match input.attrs.iter().find(|a| a.path().is_ident("ok_ref")) {
+        Some(a) => a
+            .parse_args::<syn::Type>()
+            .map_err(|e| syn::Error::new_spanned(a, e))?,
+        None => {
+            return Err(syn::Error::new(
+                input.ident.span(),
+                "missing #[ok_ref(KeyType)]",
+            ))
+        }
+    };
     parse_schema_with_key(input, key_ty)
 }
 
 /// Parse with a caller-supplied key type. The graph declaration's identity is
 /// the mechanism's own `EdgeKey` (the bare `edge_id`) — it has no `#[ok_ref]`
 /// to read, and no key struct of its own to declare.
-pub(crate) fn parse_schema_with_key(input: DeriveInput, key_ty: syn::Type) -> DocumentSchema {
+pub(crate) fn parse_schema_with_key(
+    input: DeriveInput,
+    key_ty: syn::Type,
+) -> syn::Result<DocumentSchema> {
     let row_name = input.ident.clone();
 
     // #[ok_ns(N)] — the table's namespace segment, declared on the document
     // (the document is the table's declaration point: #[ok_ref] pins the key
     // type, so the document determines Collection<S, K, R> entirely). Absent = None.
-    let ns: Option<u16> = input
-        .attrs
-        .iter()
-        .find_map(|a| {
-            if a.path().is_ident("ok_ns") {
-                Some(
-                    a.parse_args::<syn::LitInt>()
-                        .expect("ok_ns format: #[ok_ns(N)]")
-                        .base10_parse()
-                        .expect("ok_ns must be a u16 literal"),
-                )
-            } else {
-                None
-            }
-        });
+    let ns: Option<u16> = match input.attrs.iter().find(|a| a.path().is_ident("ok_ns")) {
+        Some(a) => Some(
+            a.parse_args::<syn::LitInt>()
+                .map_err(|_| syn::Error::new_spanned(a, "ok_ns format: #[ok_ns(N)]"))?
+                .base10_parse::<u16>()
+                .map_err(|_| syn::Error::new_spanned(a, "ok_ns must be a u16 literal"))?,
+        ),
+        None => None,
+    };
 
     // #[ok_name("...")] — the table's name, beside the ns it belongs to.
-    let name: Option<String> = input.attrs.iter().find_map(|a| {
-        if a.path().is_ident("ok_name") {
-            Some(
-                a.parse_args::<syn::LitStr>()
-                    .expect("ok_name format: #[ok_name(\"table_name\")]")
-                    .value(),
-            )
-        } else {
-            None
-        }
-    });
+    let name: Option<String> = match input.attrs.iter().find(|a| a.path().is_ident("ok_name")) {
+        Some(a) => Some(
+            a.parse_args::<syn::LitStr>()
+                .map_err(|_| {
+                    syn::Error::new_spanned(a, "ok_name format: #[ok_name(\"table_name\")]")
+                })?
+                .value(),
+        ),
+        None => None,
+    };
 
     // #[ok_partition] / #[ok_partition(N)] — the table's partition id.
     // None = no partition segment (default). Declared on the document.
-    let partition: Option<u8> = input
+    let partition_attr = input
         .attrs
         .iter()
-        .find_map(|a| {
-            if a.path().is_ident("ok_partition") {
-                Some(
-                    a.parse_args::<syn::LitInt>()
-                        .ok()
-                        .and_then(|l| l.base10_parse::<u8>().ok())
-                        .unwrap_or(0),
-                )
-            } else {
-                None
-            }
+        .find(|a| a.path().is_ident("ok_partition"))
+        .map(|a| {
+            (
+                a,
+                a.parse_args::<syn::LitInt>()
+                    .ok()
+                    .and_then(|l| l.base10_parse::<u8>().ok())
+                    .unwrap_or(0),
+            )
         });
     // `None` attr vs bare `#[ok_partition]` distinction: bare form = Some(0)
     // is NOT wanted (partition 0 = no segment). So: attr present → Some(N)
-    // (bare = Some(0) is disallowed to avoid ambiguity — enforce below).
+    // (bare = Some(0) is disallowed to avoid ambiguity — refused here, on the
+    // attribute token itself).
+    if let Some((attr, id)) = partition_attr {
+        if id == 0 {
+            return Err(syn::Error::new_spanned(
+                attr,
+                "#[ok_partition(0)] is invalid: partition 0 means \"no partition segment\" — omit the attribute instead",
+            ));
+        }
+    }
+    let partition: Option<u8> = partition_attr.map(|(_, id)| id);
 
     let named = match &input.data {
         Data::Struct(s) => match &s.fields {
             Fields::Named(f) => f,
-            _ => panic!("DocumentEncode only supports structs with named fields"),
+            _ => {
+                return Err(syn::Error::new(
+                    input.ident.span(),
+                    "DocumentEncode only supports structs with named fields",
+                ))
+            }
         },
-        _ => panic!("DocumentEncode only supports structs"),
+        _ => {
+            return Err(syn::Error::new(
+                input.ident.span(),
+                "DocumentEncode only supports structs",
+            ))
+        }
     };
-    let fs = field_encoders(named, "DocumentEncode");
+    let fs = field_encoders(named, "DocumentEncode")?;
     let name_strs: Vec<_> = fs.iter().map(|f| f.ident.to_string()).collect();
 
     // #[ok_layout(version = N)] — document header layout version. Absent = 1.
@@ -1144,38 +1342,44 @@ pub(crate) fn parse_schema_with_key(input: DeriveInput, key_ty: syn::Type) -> Do
     // accepts payloads written by any *older* version (append-only rule:
     // new fields go to the tail of their segment, missing ones get their
     // declared default) and rejects anything newer.
-    let layout_version: u8 = input
-        .attrs
-        .iter()
-        .find(|a| a.path().is_ident("ok_layout"))
-        .map(|a| {
+    let layout_version: u8 = match input.attrs.iter().find(|a| a.path().is_ident("ok_layout")) {
+        Some(a) => {
             let mut v = None;
             let _ = a.parse_nested_meta(|meta| {
                 if meta.path.is_ident("version") {
                     let lit: syn::LitInt = meta.value()?.parse()?;
-                    v = Some(lit.base10_parse::<u8>().expect("ok_layout: version must be a u8 literal"));
+                    v = Some(lit.base10_parse::<u8>().map_err(|_| {
+                        syn::Error::new_spanned(
+                            &lit,
+                            "ok_layout: version must be a u8 literal",
+                        )
+                    })?);
                 }
                 Ok(())
             });
-            v.expect("ok_layout: expected `version = <u8 literal>`")
-        })
-        .unwrap_or(1);
+            v.ok_or_else(|| {
+                syn::Error::new_spanned(a, "ok_layout: expected `version = <u8 literal>`")
+            })?
+        }
+        None => 1,
+    };
 
     // #[ok_index(...)]: slots start at 1 (0 is the primary table) and
     // increment in attribute-declaration order.
-    let idx_decls: Vec<IdxDecl> = input
-        .attrs
-        .iter()
-        .filter(|a| a.path().is_ident("ok_index"))
-        .flat_map(parse_index_attr)
-        .collect();
+    let mut idx_decls: Vec<IdxDecl> = Vec::new();
+    for attr in input.attrs.iter().filter(|a| a.path().is_ident("ok_index")) {
+        idx_decls.extend(parse_index_attr(attr)?);
+    }
 
     // Validate that every index field/includes name refers to a real document
     // payload field (compile-time; the name list is right here).
     for idx in &idx_decls {
         for n in idx.fields.iter().chain(&idx.includes) {
             if !name_strs.contains(n) {
-                panic!("ok_index[{}]: field `{n}` is not a document payload field", idx.ident);
+                return Err(syn::Error::new(
+                    idx.ident.span(),
+                    format!("ok_index[{}]: field `{n}` is not a document payload field", idx.ident),
+                ));
             }
         }
         // Variable-length payload fields (String, VarInt — width 0) have no
@@ -1193,16 +1397,22 @@ pub(crate) fn parse_schema_with_key(input: DeriveInput, key_ty: syn::Type) -> Do
                 .find(|(_, n)| variable_width(&fs, &name_strs, n))
             {
                 if vi != fslice.len() - 1 {
-                    panic!(
-                        "ok_index[{}]: variable-length field `{}` in {kw} must be the last field — fields after it cannot be located (no static width)",
-                        idx.ident, list[vi]
-                    );
+                    return Err(syn::Error::new(
+                        idx.ident.span(),
+                        format!(
+                            "ok_index[{}]: variable-length field `{}` in {kw} must be the last field — fields after it cannot be located (no static width)",
+                            idx.ident, list[vi]
+                        ),
+                    ));
                 }
                 if fslice[..vi].iter().any(|n| variable_width(&fs, &name_strs, n)) {
-                    panic!(
-                        "ok_index[{}]: at most one variable-length field allowed in {kw}",
-                        idx.ident
-                    );
+                    return Err(syn::Error::new(
+                        idx.ident.span(),
+                        format!(
+                            "ok_index[{}]: at most one variable-length field allowed in {kw}",
+                            idx.ident
+                        ),
+                    ));
                 }
             }
         }
@@ -1210,12 +1420,10 @@ pub(crate) fn parse_schema_with_key(input: DeriveInput, key_ty: syn::Type) -> Do
 
     // #[ok_reduce(name { group(a, b) })]: slots CONTINUE the index
     // counter (append-only, never reused) — slot = last index slot + 1 + n.
-    let agg_decls: Vec<ReduceDecl> = input
-        .attrs
-        .iter()
-        .filter(|a| a.path().is_ident("ok_reduce"))
-        .map(parse_reduce_attr)
-        .collect();
+    let mut agg_decls: Vec<ReduceDecl> = Vec::new();
+    for attr in input.attrs.iter().filter(|a| a.path().is_ident("ok_reduce")) {
+        agg_decls.push(parse_reduce_attr(attr)?);
+    }
     // Group-field validation note (ADR-0024): no payload-only check here —
     // key fields are invisible at this expansion point (separate derive), so
     // source resolution and unknown-name rejection live in the generated
@@ -1226,18 +1434,24 @@ pub(crate) fn parse_schema_with_key(input: DeriveInput, key_ty: syn::Type) -> Do
     // write, ambiguous shape; reject rather than multiply sends).
     let mut sub_iter = input.attrs.iter().filter(|a| a.path().is_ident("ok_subscribe"));
     let sub_attr = sub_iter.next();
-    if sub_iter.next().is_some() {
-        panic!("ok_subscribe: duplicate declaration — at most one per document type");
+    if let Some(dup) = sub_iter.next() {
+        return Err(syn::Error::new_spanned(
+            dup,
+            "ok_subscribe: duplicate declaration — at most one per document type",
+        ));
     }
-    let sub_decl = sub_attr.map(|a| {
-        let mut decl = parse_subscribe_attr(a);
-        for attr in input.attrs.iter().filter(|a| a.path().is_ident("ok_event_enum")) {
-            decl.enum_name = parse_event_enum_attr(attr);
+    let sub_decl = match sub_attr {
+        Some(a) => {
+            let mut decl = parse_subscribe_attr(a)?;
+            for attr in input.attrs.iter().filter(|a| a.path().is_ident("ok_event_enum")) {
+                decl.enum_name = parse_event_enum_attr(attr)?;
+            }
+            Some(decl)
         }
-        decl
-    });
+        None => None,
+    };
 
-    DocumentSchema {
+    Ok(DocumentSchema {
         row_name,
         key_ty,
         ns,
@@ -1248,5 +1462,5 @@ pub(crate) fn parse_schema_with_key(input: DeriveInput, key_ty: syn::Type) -> Do
         indexes: idx_decls,
         reduces: agg_decls,
         subscribe: sub_decl,
-    }
+    })
 }

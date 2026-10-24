@@ -1869,14 +1869,17 @@ panic lints allowed only in the places it names. So the runtime half of
       so the error face is `PyErr` / steel's value, not a message on stderr. (The
       host-injected seam itself already answers `Result<_, String>` — commit
       `38c5c6c`; these are the poison and host-call sites inside the bindings.)
-- [x] Compile-time code, 139 sites (`okm-derive` 130, `okm-core/build.rs` 9):
-      settled as the ALLOW class, not a rewrite (ADR-0040: a proc macro or build
-      script that rejects a declaration stops the build, and the abort is the
-      report). Both crates carry a crate-root allow with that reason. What remains
-      is polish, taken site by site where a span-carrying diagnostic
-      (`syn::Error::to_compile_error`) beats a panic message. The generated-code
-      copy of the sink cell (`build.rs`'s `RUNTIME` template) was already fixed with
-      the poison pass, since that text ships into consumer crates.
+- [x] Compile-time code: `okm-derive`'s diagnostics now carry spans. 116 of its
+      167 abort sites became `syn::Result` → `compile_error!` on the offending token
+      (a malformed `#[ok_index(..)]` reports at the token, not as "proc macro
+      panicked" at the derive); 35 live inside `quote!` — that is generated code
+      (the decoder's own aborts), not macro aborts — and 16 internal invariants
+      stay behind eleven narrow `#[allow]`s, each with its reason. The crate-root
+      allow is gone, and the seven trybuild fixtures were re-blessed: only the
+      header line and the span changed, every message byte-identical.
+      `okm-core/build.rs` keeps its crate-root allow (a build script that cannot
+      read its inputs has nobody to tell); its generated-code copy of the sink cell
+      was fixed with the poison pass, since that text ships into consumer crates.
 - [x] The last 12 sites the gate reported, decided one by one: nine were code with
       no reason to panic and lost the panic arm — `okm-query`'s merge-join run drain
       (`if let Some`), `okm-dynamic`'s two post-length-check conversions and

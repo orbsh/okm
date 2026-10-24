@@ -13,46 +13,50 @@
 //! implementation. The generated host wraps `okm_core::NestStorage`
 //! internally — the reference implementation this derive targets.
 
-use proc_macro::TokenStream;
+use proc_macro2::TokenStream as TS2;
 use quote::quote;
-use syn::{parse_macro_input, Data, DeriveInput};
+use syn::{Data, DeriveInput};
 
-pub fn derive(input: TokenStream) -> TokenStream {
-    let input = parse_macro_input!(input as DeriveInput);
+/// Parse + validate the declaration, then expand it. A malformed declaration
+/// comes back as a span-carrying `syn::Error` — the caller turns it into
+/// `compile_error!` on the offending token.
+pub fn expand(input: DeriveInput) -> syn::Result<TS2> {
     let name = &input.ident;
 
     match &input.data {
         Data::Struct(s) if s.fields.is_empty() => {}
-        _ => panic!("NestStorage only supports unit/empty structs — the host carries no data"),
+        _ => {
+            return Err(syn::Error::new(
+                name.span(),
+                "NestStorage only supports unit/empty structs — the host carries no data",
+            ))
+        }
     }
 
     // `#[ok_ns(N)]` — the prefix this host serves. Required: a host with
     // no prefix would accept any sender's bytes into the root segment,
     // which is exactly the escape the declaration exists to make
     // inexpressible (ADR-0010 §4).
-    let ns: u16 = input
-        .attrs
-        .iter()
-        .find_map(|a| {
-            if a.path().is_ident("ok_ns") {
-                Some(
-                    a.parse_args::<syn::LitInt>()
-                        .expect("#[ok_ns(N)] format")
-                        .base10_parse()
-                        .expect("ok_ns must be a u16 literal"),
-                )
-            } else {
-                None
-            }
-        })
-        .expect("missing #[ok_ns(N)] — the declared prefix IS the host's isolation boundary");
+    let ns: u16 = match input.attrs.iter().find(|a| a.path().is_ident("ok_ns")) {
+        Some(a) => a
+            .parse_args::<syn::LitInt>()
+            .map_err(|_| syn::Error::new_spanned(a, "#[ok_ns(N)] format"))?
+            .base10_parse::<u16>()
+            .map_err(|_| syn::Error::new_spanned(a, "ok_ns must be a u16 literal"))?,
+        None => {
+            return Err(syn::Error::new(
+                name.span(),
+                "missing #[ok_ns(N)] — the declared prefix IS the host's isolation boundary",
+            ))
+        }
+    };
     let prefix_lit = {
         let hi = (ns >> 8) as u8;
         let lo = (ns & 0xff) as u8;
         quote! { &[#hi, #lo] }
     };
 
-    quote! {
+    Ok(quote! {
         impl #name {
             /// The declared namespace prefix this host serves (big-endian
             /// `[ns 2B]`, same encoding as `Document::NS_PREFIX`).
@@ -71,6 +75,5 @@ pub fn derive(input: TokenStream) -> TokenStream {
                 handle
             }
         }
-    }
-    .into()
+    })
 }

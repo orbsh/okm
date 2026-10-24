@@ -46,24 +46,28 @@
 //! Identity is the mechanism's `EdgeKey` (the bare `edge_id`) — a graph
 //! declares no key struct.
 
-use proc_macro::TokenStream;
+use proc_macro2::TokenStream as TS2;
 use quote::quote;
-use syn::parse_macro_input;
 use syn::punctuated::Punctuated;
 use syn::Token;
 
 use crate::document_encode::emit_row_impl;
 use crate::schema::parse_schema_with_key;
 
-pub fn derive(input: TokenStream) -> TokenStream {
-    let input = parse_macro_input!(input as syn::DeriveInput);
+/// Parse + validate the declaration, then expand it. A malformed declaration
+/// comes back as a span-carrying `syn::Error` — the caller turns it into
+/// `compile_error!` on the offending token.
+pub fn expand(input: syn::DeriveInput) -> syn::Result<TS2> {
     let name = input.ident.clone();
     let vis = input.vis.clone();
 
     if !input.attrs.iter().any(|a| a.path().is_ident("ok_ns")) {
-        panic!(
-            "GraphEncode[{name}]: missing #[ok_ns(N)] — the declaration is the only ns source (ADR-0017 §4)"
-        );
+        return Err(syn::Error::new(
+            name.span(),
+            format!(
+                "GraphEncode[{name}]: missing #[ok_ns(N)] — the declaration is the only ns source (ADR-0017 §4)"
+            ),
+        ));
     }
 
     // #[ok_nodes(User, Org, …)] — the member set is a list of node TABLES.
@@ -71,16 +75,27 @@ pub fn derive(input: TokenStream) -> TokenStream {
         .attrs
         .iter()
         .find(|a| a.path().is_ident("ok_nodes"))
-        .unwrap_or_else(|| {
-            panic!(
-                "GraphEncode[{name}]: missing #[ok_nodes(NodeTable, …)] — the member set lists the node collections' document types, checked at write and decode"
+        .ok_or_else(|| {
+            syn::Error::new(
+                name.span(),
+                format!(
+                    "GraphEncode[{name}]: missing #[ok_nodes(NodeTable, …)] — the member set lists the node collections' document types, checked at write and decode"
+                ),
             )
-        });
+        })?;
     let tables: Punctuated<syn::Type, Token![,]> = nodes_attr
         .parse_args_with(Punctuated::parse_terminated)
-        .unwrap_or_else(|e| panic!("ok_nodes format: #[ok_nodes(NodeTable, OtherTable)] — {e}"));
+        .map_err(|e| {
+            syn::Error::new_spanned(
+                nodes_attr,
+                format!("ok_nodes format: #[ok_nodes(NodeTable, OtherTable)] — {e}"),
+            )
+        })?;
     if tables.is_empty() {
-        panic!("GraphEncode[{name}]: #[ok_nodes()] must name at least one node table");
+        return Err(syn::Error::new_spanned(
+            nodes_attr,
+            format!("GraphEncode[{name}]: #[ok_nodes()] must name at least one node table"),
+        ));
     }
 
     let mut variants: Vec<syn::Ident> = Vec::with_capacity(tables.len());
@@ -91,16 +106,26 @@ pub fn derive(input: TokenStream) -> TokenStream {
                 .segments
                 .last()
                 .map(|segment| segment.ident.clone())
-                .unwrap_or_else(|| panic!("ok_nodes: `{}` has no type name", quote!(#ty))),
-            other => panic!(
-                "ok_nodes: every member must be a document TYPE, got `{}`",
-                quote!(#other)
-            ),
+                .ok_or_else(|| {
+                    syn::Error::new_spanned(
+                        ty,
+                        format!("ok_nodes: `{}` has no type name", quote!(#ty)),
+                    )
+                })?,
+            other => {
+                return Err(syn::Error::new_spanned(
+                    other,
+                    format!("ok_nodes: every member must be a document TYPE, got `{}`", quote!(#other)),
+                ))
+            }
         };
         if variants.contains(&ident) {
-            panic!(
-                "GraphEncode[{name}]: ok_nodes names `{ident}` twice — a table is one collection, listed once"
-            );
+            return Err(syn::Error::new_spanned(
+                ty,
+                format!(
+                    "GraphEncode[{name}]: ok_nodes names `{ident}` twice — a table is one collection, listed once"
+                ),
+            ));
         }
         variants.push(ident);
     }
@@ -123,10 +148,10 @@ pub fn derive(input: TokenStream) -> TokenStream {
     });
 
     let key_ty: syn::Type = syn::parse_quote!(::okm_core::EdgeKey);
-    let schema = parse_schema_with_key(input, key_ty);
-    let row = emit_row_impl(&schema);
+    let schema = parse_schema_with_key(input, key_ty)?;
+    let row = emit_row_impl(&schema)?;
 
-    quote! {
+    Ok(quote! {
         #row
 
         /// The member set of this graph, generated from `#[ok_nodes(...)]`:
@@ -146,6 +171,5 @@ pub fn derive(input: TokenStream) -> TokenStream {
         impl ::okm_core::GraphEncode for #name {
             type Nodes = #set_ident;
         }
-    }
-    .into()
+    })
 }

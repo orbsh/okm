@@ -10,59 +10,78 @@
 //! endpoint's identity width (empty = full identity); generates the
 //! `KvJunction` impl plus query traits hanging off the endpoint key types.
 
-use proc_macro::TokenStream;
+use proc_macro2::TokenStream as TS2;
 use quote::{format_ident, quote};
-use syn::{parse_macro_input, Data, DeriveInput, Fields};
+use syn::{Data, DeriveInput, Fields};
 
-pub fn derive(input: TokenStream) -> TokenStream {
-    let input = parse_macro_input!(input as DeriveInput);
+/// Parse + validate the declaration, then expand it. A malformed declaration
+/// comes back as a span-carrying `syn::Error` — the caller turns it into
+/// `compile_error!` on the offending token.
+pub fn expand(input: DeriveInput) -> syn::Result<TS2> {
     let edge_name = &input.ident;
 
-    let junction_id: u16 = input
-        .attrs
-        .iter()
-        .find_map(|a| {
-            if a.path().is_ident("ok_junction") {
-                Some(
-                    a.parse_args::<syn::LitInt>()
-                        .unwrap()
-                        .base10_parse()
-                        .unwrap(),
-                )
-            } else {
-                None
-            }
-        })
-        .expect("missing #[ok_junction(n)]");
+    let junction_attr = input.attrs.iter().find(|a| a.path().is_ident("ok_junction"));
+    let junction_id: u16 = match junction_attr {
+        Some(a) => a
+            .parse_args::<syn::LitInt>()
+            .map_err(|e| syn::Error::new_spanned(a, e))?
+            .base10_parse::<u16>()
+            .map_err(|e| syn::Error::new_spanned(a, e))?,
+        None => {
+            return Err(syn::Error::new(
+                edge_name.span(),
+                "missing #[ok_junction(n)]",
+            ))
+        }
+    };
     // The discriminator rides the 12-bit slot counter as `id << 1 | dir`, so
     // 0x0000-0x07FF is the whole space. Masking it downstream would send an
     // out-of-range declaration onto another junction's slot — refuse the
     // declaration instead, where the mistake is visible.
-    assert!(
-        junction_id <= 0x07FF,
-        "#[ok_junction(0x{junction_id:04X})] is out of range: the discriminator is the 12-bit slot \
+    if junction_id > 0x07FF {
+        return Err(syn::Error::new_spanned(
+            junction_attr,
+            format!(
+                "#[ok_junction(0x{junction_id:04X})] is out of range: the discriminator is the 12-bit slot \
          counter's high bits (`id << 1 | dir`), so 0x0000-0x07FF is the whole space"
-    );
+            ),
+        ));
+    }
 
     let named = match &input.data {
         Data::Struct(s) => match &s.fields {
             Fields::Named(f) => &f.named,
-            _ => panic!("JunctionEncode only supports structs with named fields"),
+            _ => {
+                return Err(syn::Error::new(
+                    edge_name.span(),
+                    "JunctionEncode only supports structs with named fields",
+                ))
+            }
         },
-        _ => panic!("JunctionEncode only supports structs"),
+        _ => {
+            return Err(syn::Error::new(
+                edge_name.span(),
+                "JunctionEncode only supports structs",
+            ))
+        }
     };
     let fields: Vec<_> = named.iter().collect();
     if fields.len() != 2 {
-        panic!("JunctionEncode needs exactly two fields (endpoint documents)");
+        return Err(syn::Error::new(
+            edge_name.span(),
+            "JunctionEncode needs exactly two fields (endpoint documents)",
+        ));
     }
     let (fa, fb) = (&fields[0], &fields[1]);
     let (ta, tb) = (&fa.ty, &fb.ty);
-    let ia = fa.ident.clone().unwrap();
-    let ib = fb.ident.clone().unwrap();
+    // Internal invariants: `Fields::Named` guarantees idents, and the length
+    // check above guarantees two fields.
+    #[allow(clippy::unwrap_used)]
+    let (ia, ib) = (fa.ident.clone().unwrap(), fb.ident.clone().unwrap());
 
     // Endpoint document type: parse `Ref<User, UserKey>` → doc = User,
     // key = UserKey. The ns comes from the doc type (ADR-0015/0016).
-    fn endpoint_parts(ty: &syn::Type, role: &str) -> (syn::Type, syn::Type) {
+    fn endpoint_parts(ty: &syn::Type, role: &str) -> syn::Result<(syn::Type, syn::Type)> {
         let s = quote!(#ty).to_string().replace(' ', "");
         let inner = s
             .trim_start_matches("Ref<")
@@ -72,36 +91,37 @@ pub fn derive(input: TokenStream) -> TokenStream {
         let (d, k) = inner
             .rsplit_once(',')
             .map(|(d, k)| (d.trim().to_string(), k.trim().to_string()))
-            .unwrap_or_else(|| panic!("{role}: endpoint must be Ref<Doc, Key>"));
-        let d_ty: syn::Type = syn::parse_str(&d)
-            .unwrap_or_else(|e| panic!("{role}: bad endpoint doc type `{d}`: {e}"));
-        let k_ty: syn::Type = syn::parse_str(&k)
-            .unwrap_or_else(|e| panic!("{role}: bad endpoint key type `{k}`: {e}"));
-        (d_ty, k_ty)
+            .ok_or_else(|| {
+                syn::Error::new_spanned(ty, format!("{role}: endpoint must be Ref<Doc, Key>"))
+            })?;
+        let d_ty: syn::Type = syn::parse_str(&d).map_err(|e| {
+            syn::Error::new_spanned(ty, format!("{role}: bad endpoint doc type `{d}`: {e}"))
+        })?;
+        let k_ty: syn::Type = syn::parse_str(&k).map_err(|e| {
+            syn::Error::new_spanned(ty, format!("{role}: bad endpoint key type `{k}`: {e}"))
+        })?;
+        Ok((d_ty, k_ty))
     }
-    let (doc_a, key_a) = endpoint_parts(ta, "first field");
-    let (doc_b, _key_b) = endpoint_parts(tb, "second field");
+    let (doc_a, key_a) = endpoint_parts(ta, "first field")?;
+    let (doc_b, _key_b) = endpoint_parts(tb, "second field")?;
 
     // #[ok_head(field, ...)] → &["a", "b"]; no attribute = full identity
     // (empty slice).
-    fn head_names(field: &syn::Field) -> Vec<String> {
-        field
-            .attrs
-            .iter()
-            .find_map(|a| {
-                if a.path().is_ident("ok_head") {
-                    let list: syn::punctuated::Punctuated<syn::Ident, syn::Token![,]> = a
-                        .parse_args_with(syn::punctuated::Punctuated::parse_terminated)
-                        .expect("ok_head format: #[ok_head(field, ...)]");
-                    Some(list.iter().map(|i| i.to_string()).collect())
-                } else {
-                    None
-                }
-            })
-            .unwrap_or_default()
+    fn head_names(field: &syn::Field) -> syn::Result<Vec<String>> {
+        match field.attrs.iter().find(|a| a.path().is_ident("ok_head")) {
+            Some(a) => {
+                let list: syn::punctuated::Punctuated<syn::Ident, syn::Token![,]> = a
+                    .parse_args_with(syn::punctuated::Punctuated::parse_terminated)
+                    .map_err(|_| {
+                        syn::Error::new_spanned(a, "ok_head format: #[ok_head(field, ...)]")
+                    })?;
+                Ok(list.iter().map(|i| i.to_string()).collect())
+            }
+            None => Ok(Vec::new()),
+        }
     }
-    let head_a = head_names(fa);
-    let head_b = head_names(fb);
+    let head_a = head_names(fa)?;
+    let head_b = head_names(fb)?;
 
     // Method name: counterpart field role_id → get_role.
     let strip = |id: &syn::Ident| -> syn::Ident {
@@ -115,7 +135,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
     let a_trait = format_ident!("{}_Ops", edge_name);
     let b_trait = format_ident!("{}ColR", edge_name);
 
-    quote! {
+    Ok(quote! {
         impl ::okm_core::KvJunction for #edge_name {
             type A = #doc_a;
             type B = #doc_b;
@@ -179,6 +199,5 @@ pub fn derive(input: TokenStream) -> TokenStream {
                     .collect())
             }
         }
-    }
-    .into()
+    })
 }
