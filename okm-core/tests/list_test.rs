@@ -1,5 +1,5 @@
 // Tests keep the vocabulary (a panicking test is a failing test with a stack
-trace); this file is its own crate, so `cfg(test)` does not reach it.
+// trace); this file is its own crate, so `cfg(test)` does not reach it.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
 
 use okm_core::{DocumentEncode, KeyEncode, Refs, TestStore};
