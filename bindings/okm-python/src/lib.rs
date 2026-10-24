@@ -394,17 +394,16 @@ impl Collection {
 	        let ek = t
 	            .reduce_entry_key(self.ns, &map)
 	            .map_err(PyValueError::new_err)?;
-	        Ok(t.store().get(&ek))
+	        t.store()
+	            .get(&ek)
+	            .map_err(|e| PyValueError::new_err(e.to_string()))
 	    }
 	    /// Scan every group of one reduce: list of (group segment bytes,
 	    /// acc bytes). Group fields decode with the schema's BE rule.
 	    fn scan_reduces(&self, slot: u16) -> PyResult<Vec<(Vec<u8>, Vec<u8>)>> {
 	        let t = self.inner.lock().unwrap();
-	        Ok(okm_dynamic::scan_reduces(
-	            t.store(),
-	            &self.ns.to_be_bytes(),
-	            slot,
-	        ))
+	        okm_dynamic::scan_reduces(t.store(), &self.ns.to_be_bytes(), slot)
+	            .map_err(|e| PyValueError::new_err(e))
 	    }
 
 	    // ---- remote mode (ADR-0022): plan surfaces, Python wraps only ----
@@ -434,7 +433,7 @@ impl Collection {
 	        let t = self.inner.lock().unwrap();
 	        let plan = t
 	            .plan_put(&pkey, &map, old.as_ref(), &|ek| {
-	                accs.as_ref().and_then(|a| a.get(ek).cloned())
+	                Ok(accs.as_ref().and_then(|a| a.get(ek).cloned()))
 	            })
 	            .map_err(PyValueError::new_err)?;
 	        let frame = okm_wire::OpFrame::write_batch(&plan.ops).encode();
@@ -456,7 +455,7 @@ impl Collection {
 	        let t = self.inner.lock().unwrap();
 	        let plan = t
 	            .plan_delete(&pkey, &old, &|ek| {
-	                accs.as_ref().and_then(|a| a.get(ek).cloned())
+	                Ok(accs.as_ref().and_then(|a| a.get(ek).cloned()))
 	            })
 	            .map_err(PyValueError::new_err)?;
 	        let frame = okm_wire::OpFrame::write_batch(&plan.ops).encode();

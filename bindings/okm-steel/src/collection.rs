@@ -165,7 +165,7 @@ impl StorageRegistry {
                     let map = hash_to_map(&b.schema, &group)?;
                     let guard = b.table.lock().unwrap();
                     let ek = guard.reduce_entry_key(b.ns, &map)?;
-                    Ok(match guard.store().get(&ek) {
+                    Ok(match guard.store().get(&ek).map_err(|e| e.to_string())? {
                         Some(bytes) => vec_to_steel(bytes),
                         None => SteelVal::Void,
                     })
@@ -179,6 +179,7 @@ impl StorageRegistry {
                     let pairs = {
                         let guard = b.table.lock().unwrap();
                         okm_dynamic::scan_reduces(guard.store(), &b.ns.to_be_bytes(), slot as u16)
+                            .map_err(|e| e.to_string())?
                     };
                     Ok(vector_of(
                         pairs
