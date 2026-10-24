@@ -108,14 +108,14 @@ fn labels_round_trip_through_per_field_vocabularies() {
 struct NoScan(TestStore);
 
 impl VirtualStorage for NoScan {
-    fn put(&self, key: Vec<u8>, value: Vec<u8>) {
-        self.0.put(key, value);
+    fn put(&self, key: Vec<u8>, value: Vec<u8>) -> okm_core::error::Result<()> {
+        self.0.put(key, value)
     }
     fn get(&self, key: &[u8]) -> okm_core::error::Result<Option<Vec<u8>>> {
         self.0.get(key)
     }
-    fn del(&self, key: &[u8]) {
-        self.0.del(key);
+    fn del(&self, key: &[u8]) -> okm_core::error::Result<()> {
+        self.0.del(key)
     }
     fn scan_range(
         &self,

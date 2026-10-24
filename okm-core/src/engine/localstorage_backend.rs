@@ -159,10 +159,11 @@ impl LocalStorageStore {
 }
 
 impl VirtualStorage for LocalStorageStore {
-    fn put(&self, key: Vec<u8>, value: Vec<u8>) {
+    fn put(&self, key: Vec<u8>, value: Vec<u8>) -> crate::error::Result<()> {
+        // A quota refusal is the browser saying no, not a corrupted store.
         self.storage
             .set_item(&b64_encode(&key), &b64_encode(&value))
-            .expect("localStorage put failed (quota?)");
+            .map_err(|e| crate::error::Error::Engine(format!("localStorage set_item: {e:?}")))
     }
 
     fn get(&self, key: &[u8]) -> crate::error::Result<Option<Vec<u8>>> {
@@ -178,10 +179,10 @@ impl VirtualStorage for LocalStorageStore {
         Ok(b64_decode(&text))
     }
 
-    fn del(&self, key: &[u8]) {
+    fn del(&self, key: &[u8]) -> crate::error::Result<()> {
         self.storage
             .remove_item(&b64_encode(key))
-            .expect("localStorage remove failed");
+            .map_err(|e| crate::error::Error::Engine(format!("localStorage remove_item: {e:?}")))
     }
 
     fn scan_suffix(&self, prefix: &[u8]) -> crate::error::Result<Vec<Vec<u8>>> {

@@ -23,16 +23,24 @@ impl MemStore {
 }
 
 impl VirtualStorage for MemStore {
-    fn put(&self, key: Vec<u8>, value: Vec<u8>) {
-        self.map.lock().unwrap().insert(key, value);
+    fn put(&self, key: Vec<u8>, value: Vec<u8>) -> okm_core::error::Result<()> {
+        self.map
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(key, value);
+        Ok(())
     }
 
     fn get(&self, key: &[u8]) -> okm_core::error::Result<Option<Vec<u8>>> {
         Ok(self.map.lock().unwrap().get(key).cloned())
     }
 
-    fn del(&self, key: &[u8]) {
-        self.map.lock().unwrap().remove(key);
+    fn del(&self, key: &[u8]) -> okm_core::error::Result<()> {
+        self.map
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(key);
+        Ok(())
     }
 
     fn scan_range(
@@ -101,7 +109,7 @@ fn snapshot_roundtrip_over_storage() {
     // A missing shard is a failed load, never a partial index.
     let mut store2 = MemStore::new();
     idx.save(&mut store2).expect("save");
-    store2.del(&idx.slot_key(3));
+    store2.del(&idx.slot_key(3)).unwrap();
     assert!(VectorIndex::load(&store2, ns).expect("a store read").is_none());
 }
 

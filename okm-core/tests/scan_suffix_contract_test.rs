@@ -18,14 +18,22 @@ struct RawOnly {
 }
 
 impl VirtualStorage for RawOnly {
-    fn put(&self, key: Vec<u8>, value: Vec<u8>) {
-        self.rows.lock().unwrap().insert(key, value);
+    fn put(&self, key: Vec<u8>, value: Vec<u8>) -> okm_core::error::Result<()> {
+        self.rows
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(key, value);
+        Ok(())
     }
     fn get(&self, key: &[u8]) -> okm_core::error::Result<Option<Vec<u8>>> {
         Ok(self.rows.lock().unwrap().get(key).cloned())
     }
-    fn del(&self, key: &[u8]) {
-        self.rows.lock().unwrap().remove(key);
+    fn del(&self, key: &[u8]) -> okm_core::error::Result<()> {
+        self.rows
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(key);
+        Ok(())
     }
     fn scan_range(
         &self,
@@ -47,10 +55,10 @@ const NS: &[u8] = &[0x00, 0x2A, 0x10, 0x01];
 #[test]
 fn default_scan_suffix_strips_the_prefix() {
     let s = RawOnly::default();
-    s.put([NS, b"ad\x31\x00"].concat(), b"1".to_vec());
-    s.put([NS, b"ad1to"].concat(), b"2".to_vec());
-    s.put([NS, b"a"].concat(), b"3".to_vec());
-    s.put([&[0x00, 0x2A, 0x10, 0x02][..], b"ad"].concat(), b"4".to_vec());
+    s.put([NS, b"ad\x31\x00"].concat(), b"1".to_vec()).unwrap();
+    s.put([NS, b"ad1to"].concat(), b"2".to_vec()).unwrap();
+    s.put([NS, b"a"].concat(), b"3".to_vec()).unwrap();
+    s.put([&[0x00, 0x2A, 0x10, 0x02][..], b"ad"].concat(), b"4".to_vec()).unwrap();
 
     let got = s.scan_suffix(NS).unwrap();
     // Suffixes, never full keys: the length a probe/tail judgement reads is the
@@ -72,8 +80,8 @@ fn default_scan_suffix_handles_the_prefix_itself() {
     // and an all-0xFF prefix (whose `prefix_end` is `None`, i.e. an unbounded
     // range) still returns matching suffixes only.
     let s = RawOnly::default();
-    s.put(NS.to_vec(), b"self".to_vec());
-    s.put([NS, b"x"].concat(), b"child".to_vec());
+    s.put(NS.to_vec(), b"self".to_vec()).unwrap();
+    s.put([NS, b"x"].concat(), b"child".to_vec()).unwrap();
     assert_eq!(
         s.scan_suffix(NS).unwrap(),
         vec![Vec::<u8>::new(), b"x".to_vec()],
@@ -81,8 +89,8 @@ fn default_scan_suffix_handles_the_prefix_itself() {
     );
 
     let s = RawOnly::default();
-    s.put(vec![0xFF, 0xFF, 0x01], b"a".to_vec());
-    s.put(vec![0xFF, 0xFF], b"b".to_vec());
+    s.put(vec![0xFF, 0xFF, 0x01], b"a".to_vec()).unwrap();
+    s.put(vec![0xFF, 0xFF], b"b".to_vec()).unwrap();
     assert_eq!(
         s.scan_suffix(&[0xFF, 0xFF]).unwrap(),
         vec![Vec::<u8>::new(), vec![0x01]],

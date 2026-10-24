@@ -55,7 +55,7 @@ fn prune_deletes_only_deprecated_prefix() {
         1u64.to_be_bytes().to_vec(),
     ]
     .concat();
-    store.put(stale, Vec::new());
+    store.put(stale, Vec::new()).unwrap();
     let t: Collection<TestStore, UserKey, User> = Collection::new(store);
     t.put(&UserKey { id: 1 }, &User { legacy: 99, level: 7 }).unwrap();
     t.put(&UserKey { id: 2 }, &User { legacy: 50, level: 8 }).unwrap();

@@ -1781,3 +1781,63 @@ lines verbatim. So the fix goes in the primitive, not at the call sites:
       `integration::slot_counter_is_checked_not_masked`,
       `...::slot_family_is_checked_not_wrapped`,
       `okm-derive::tests::one_past_the_last_declaration_is_refused`.
+
+## Panic surface audit and the unwrap gate (2026-10-24, gated)
+
+A read-only sweep of the workspace's production sources — 136 `.rs` files, with
+`tests/`, `benches/`, `examples/` and `#[cfg(test)]` modules excluded — counts 118
+`panic!`/`unreachable!`/`todo!`, 115 `unwrap()`, 98 `expect()` and (inside those
+two counts) 24 lock-poison sites, across 41 files. The test surface holds 1064
+`unwrap()`s; that is the normal shape of a test crate and needs no work. The
+classes below are ordered by what blocks what, not by size.
+
+**The gate's first blocker is discharged.** `VirtualStorage::put` and `del`
+(`okm-core/src/engine/storage.rs:31,37`) returned `()`, so a backend had nowhere
+to put an I/O refusal: `slatedb_backend.rs` spent 18 `expect`s plus one
+`panic!("slatedb iter failed")` on that gap, `redb_backend.rs` 10 more. ADR-0037
+gave the typed write verbs their `Result`; ADR-0039 opened the storage trait
+(`put`/`del` and their async twins), the slatedb sync path (a reply channel on
+`Cmd::Put`/`Cmd::Del`, driver-side durability), `RemoteStore::send_write`, and the
+two `WireClient` senders. What remains between the gate and the tree is the READ
+side, which ADR-0037/0038 keep panic-capable on purpose, and the compile-time /
+binding surfaces below.
+
+- [x] Write verbs gain an error face (ADR-0037 for the typed verbs, ADR-0039 for
+      the storage trait; both landed 2026-10-24).
+- [ ] A failing double per backend, proving a refused write comes back as `Err`
+      instead of a panic: a store that answers `Engine` on `put`/`del` and a test
+      per backend (slatedb sync + async, redb, fjall, localStorage, the remote
+      store, the wire client's dead-connection path). ADR-0039 claims the error
+      face, not that any test exercises it.
+- [ ] The read arms of the slatedb driver (`scan` / `iter`), redb's `begin_read`
+      / `range`, and `localStorage`'s `get_item`: the same mechanical conversion
+      ADR-0039 did for writes, on the face ADR-0038 already made `Result`.
+- [ ] Then the gate: `[workspace.lints.clippy]` denying `unwrap_used`,
+      `expect_used`, `panic`, `unwrap_in_result`, `panic_in_result_fn`, inherited by
+      every member. Tests keep the vocabulary through one crate-root
+      `#![cfg_attr(test, allow(..))]` per crate, plus one `#![allow(..)]` line per
+      `tests/` crate: `[lints]` is per-package and covers every target, and neither
+      Cargo.toml nor clippy.toml can scope a lint to lib/bins (2026-10-24, verified
+      on the seven sibling repos that now carry the gate).
+- [ ] Poison, 24 sites (nest 4, subscribe 3, `okm-stream/src/ops.rs` 5, the rest in
+      the bindings): `unwrap_or_else(std::sync::PoisonError::into_inner)`; a map
+      behind a lock is not torn by another thread's panic.
+- [ ] Fixed-width conversions that already checked the length
+      (`model/wrappers/vector.rs` 5, `model/reduce.rs` 2, `bridge/arrow_bridge.rs`
+      3, `model/graph.rs` 2, `bridge/tooling.rs` 1, `okm-vector/src/codec.rs` 1):
+      copy into `[u8; N]` instead of asking `try_into` for an error just ruled out.
+- [ ] Decode paths over OUTSIDE bytes, where truncation is an input and not an
+      invariant: `bridge/arrow_bridge.rs:60` (VarInt frame), `:436` (cold-frame
+      length prefix), `model/graph.rs:260-261` (`NodeRef::decode` returns `Option`
+      — the call site expects it away).
+- [ ] Bindings, 43 sites (`okm-python` 26, `okm-steel` 17): a panic there is a dead
+      interpreter or a dead host process, so the error face is `PyErr` / steel's
+      value, not a message on stderr.
+- [ ] Compile-time code, 173 sites (`okm-derive` 161, `okm-core/build.rs` 12): the
+      derive's `panic!`s are diagnostics — `syn::Error` → `to_compile_error` carries
+      a span, which the panic machinery does not. `build.rs:132,137,143` emits
+      `sink.read().unwrap()` into GENERATED code, so those three lines are the
+      template to fix, not a call site.
+- [ ] Unreachable arms and contract serialization (tooling 3, arrow_bridge 4,
+      `okm-vector/src/codec.rs:192`; `model/obj_dynamic.rs:567-568`): fall back to a
+      value, or keep the site with a stated why.

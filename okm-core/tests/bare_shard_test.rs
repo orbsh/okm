@@ -17,7 +17,7 @@ fn bare_host_executes_frames_byte_identical() {
 
     // Keys land exactly as sent — no prefix prepended (compare: hosted
     // hosts turn `user:1` into `[0,21]user:1`).
-    s.put(b"user:1".to_vec(), b"one".to_vec());
+    s.put(b"user:1".to_vec(), b"one".to_vec()).unwrap();
     for _ in 0..200 {
         if s.get(b"user:1").unwrap().is_some() {
             break;
@@ -84,8 +84,8 @@ fn bare_and_hosted_coexist_with_allocation_discipline() {
     let hs = hosted.open();
 
     // Shard writes ns-1 keys; hosted app B's segment is [0,30].
-    bs.put([1u8, 5].to_vec(), b"shard-document".to_vec());
-    hs.put(b"appkey".to_vec(), b"app-b".to_vec());
+    bs.put([1u8, 5].to_vec(), b"shard-document".to_vec()).unwrap();
+    hs.put(b"appkey".to_vec(), b"app-b".to_vec()).unwrap();
 
     for _ in 0..200 {
         if bs.get(&[1u8, 5]).unwrap().is_some() && hs.get(b"appkey").unwrap().is_some() {

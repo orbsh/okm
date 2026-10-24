@@ -243,21 +243,21 @@ fn atomic_write_and_reduce_in_one_commit() {
 #[test]
 fn batch_store_reads_pending_ops_newest_first() {
     let store = TestStore::slatedb_mem();
-    store.put(b"k1".to_vec(), b"stored".to_vec());
+    store.put(b"k1".to_vec(), b"stored".to_vec()).unwrap();
     let mut batch = okm_core::Batch::default();
     {
         let view = okm_core::BatchStore::new(&store, &mut batch);
-        view.put(b"k1".to_vec(), b"fresh".to_vec());
-        view.del(b"k2");
-        view.put(b"k2".to_vec(), b"revived".to_vec());
-        view.put(b"k3".to_vec(), b"new".to_vec());
+        view.put(b"k1".to_vec(), b"fresh".to_vec()).unwrap();
+        view.del(b"k2").unwrap();
+        view.put(b"k2".to_vec(), b"revived".to_vec()).unwrap();
+        view.put(b"k3".to_vec(), b"new".to_vec()).unwrap();
 
         // Pending put shadows the store; del-then-put answers the put.
         assert_eq!(view.get(b"k1").unwrap().as_deref(), Some(&b"fresh"[..]));
         assert_eq!(view.get(b"k2").unwrap().as_deref(), Some(&b"revived"[..]));
         assert_eq!(view.get(b"k3").unwrap().as_deref(), Some(&b"new"[..]));
         // Put-then-del answers the del.
-        view.del(b"k1");
+        view.del(b"k1").unwrap();
         assert_eq!(view.get(b"k1").unwrap(), None, "the later del shadows the put");
         // The store itself never moved.
         assert_eq!(store.get(b"k1").unwrap().as_deref(), Some(&b"stored"[..]));

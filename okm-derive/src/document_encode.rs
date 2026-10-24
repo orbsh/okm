@@ -766,7 +766,7 @@ fn emit_reduces(schema: &DocumentSchema) -> (TS2, TS2) {
             } else {
                 <#logic as ::okm_core::ReduceLogic>::unfold(&mut __okm_acc, _key, _row);
             }
-            _store.put(__okm_ek, <#logic as ::okm_core::ReduceLogic>::Acc::encode_acc(&__okm_acc));
+            _store.put(__okm_ek, <#logic as ::okm_core::ReduceLogic>::Acc::encode_acc(&__okm_acc))?;
         }});
     }
     if schema.reduces.is_empty() {

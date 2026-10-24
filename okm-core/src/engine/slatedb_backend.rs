@@ -78,6 +78,10 @@ enum Cmd {
     Put {
         key: Vec<u8>,
         value: Vec<u8>,
+        /// The engine's answer, not just "accepted": the caller is a write verb
+        /// that owes its own caller a `Result`, so the driver cannot swallow an
+        /// I/O refusal into its own panic (ADR-0039).
+        reply: std::sync::mpsc::Sender<Result<(), String>>,
     },
     Get {
         key: Vec<u8>,
@@ -85,6 +89,7 @@ enum Cmd {
     },
     Del {
         key: Vec<u8>,
+        reply: std::sync::mpsc::Sender<Result<(), String>>,
     },
     /// Full keys in [begin, end) (the `scan_range_sync` contract);
     /// `end: None` = unbounded tail.
@@ -130,8 +135,12 @@ pub struct SlatedbSync {
 fn drive(rt: tokio::runtime::Runtime, db: Db, rx: std::sync::mpsc::Receiver<Cmd>) {
     while let Ok(cmd) = rx.recv() {
         match cmd {
-            Cmd::Put { key, value } => {
-                rt.block_on(db.put(key, value)).expect("slatedb put failed");
+            Cmd::Put { key, value, reply } => {
+                let out = rt.block_on(async {
+                    let h = db.put(key, value).await?;
+                    h.await_durable().await
+                });
+                let _ = reply.send(out.map_err(|e| e.to_string()));
             }
             Cmd::Get { key, reply } => {
                 let v = rt
@@ -140,8 +149,12 @@ fn drive(rt: tokio::runtime::Runtime, db: Db, rx: std::sync::mpsc::Receiver<Cmd>
                     .map(|v| v.to_vec());
                 let _ = reply.send(v);
             }
-            Cmd::Del { key } => {
-                rt.block_on(db.delete(key)).expect("slatedb delete failed");
+            Cmd::Del { key, reply } => {
+                let out = rt.block_on(async {
+                    let h = db.delete(key).await?;
+                    h.await_durable().await
+                });
+                let _ = reply.send(out.map_err(|e| e.to_string()));
             }
             Cmd::ScanRange { begin, end, reply } => {
                 let mut it = match end {
@@ -268,8 +281,17 @@ impl SlatedbStore {
 }
 
 impl VirtualStorageAsync for SlatedbStore {
-    async fn put(&self, key: Vec<u8>, value: Vec<u8>) {
-        self.db.put(key, value).await.expect("slatedb put failed");
+    async fn put(&self, key: Vec<u8>, value: Vec<u8>) -> crate::error::Result<()> {
+        let h = self
+            .db
+            .put(key, value)
+            .await
+            .map_err(|e| crate::error::Error::Engine(e.to_string()))?;
+        // The durable wait mirrors the sync engines' WAL boundary: `Ok` here
+        // means the store HAS the bytes, not just that it accepted the call.
+        h.await_durable()
+            .await
+            .map_err(|e| crate::error::Error::Engine(e.to_string()))
     }
     async fn get(&self, key: &[u8]) -> crate::error::Result<Option<Vec<u8>>> {
         self.db
@@ -278,8 +300,15 @@ impl VirtualStorageAsync for SlatedbStore {
             .map(|v| v.map(|v| v.to_vec()))
             .map_err(|e| crate::error::Error::Engine(e.to_string()))
     }
-    async fn del(&self, key: &[u8]) {
-        self.db.delete(key).await.expect("slatedb delete failed");
+    async fn del(&self, key: &[u8]) -> crate::error::Result<()> {
+        let h = self
+            .db
+            .delete(key)
+            .await
+            .map_err(|e| crate::error::Error::Engine(e.to_string()))?;
+        h.await_durable()
+            .await
+            .map_err(|e| crate::error::Error::Engine(e.to_string()))
     }
     async fn scan_suffix(&self, prefix: &[u8]) -> crate::error::Result<Vec<Vec<u8>>> {
         let mut it = self
@@ -414,16 +443,16 @@ impl<S: VirtualStorageAsync, E: KvJunction> AsyncJunction<S, E> {
     }
 
     /// 原子双写：两端各一条单向 entry（slatedb 单 put 原子；崩溃窗口由上层 reconcile）
-    pub async fn link(&self, a: &AKey<E>, b: &BKey<E>) {
+    pub async fn link(&self, a: &AKey<E>, b: &BKey<E>) -> crate::error::Result<()> {
         let e = E::from_parts(a.clone(), b.clone());
-        self.store.put(e.a_side_key(), Vec::new()).await;
-        self.store.put(e.b_side_key(), Vec::new()).await;
+        self.store.put(e.a_side_key(), Vec::new()).await?;
+        self.store.put(e.b_side_key(), Vec::new()).await
     }
 
-    pub async fn unlink(&self, a: &AKey<E>, b: &BKey<E>) {
+    pub async fn unlink(&self, a: &AKey<E>, b: &BKey<E>) -> crate::error::Result<()> {
         let e = E::from_parts(a.clone(), b.clone());
-        self.store.del(&e.a_side_key()).await;
-        self.store.del(&e.b_side_key()).await;
+        self.store.del(&e.a_side_key()).await?;
+        self.store.del(&e.b_side_key()).await
     }
 
     /// A 端扫描：与 a 相连的全部 B 身份（要求 B 全量身份，可 decode）。
@@ -460,24 +489,39 @@ impl SlatedbSync {
     /// thread (that is the panic the driver-thread shape exists to kill:
     /// aura's realm drives these inside spawn_blocking, a live tokio
     /// context).
-    pub fn put_sync(&self, key: Vec<u8>, value: Vec<u8>) {
+    /// One round trip: the driver answers with the engine's verdict, so an I/O
+    /// refusal reaches the caller instead of dying on the driver thread. The
+    /// durable wait inside the driver mirrors `commit_batch` (the WAL boundary),
+    /// and channel ORDER still guarantees a later read observes this write.
+    pub fn put_sync(&self, key: Vec<u8>, value: Vec<u8>) -> crate::error::Result<()> {
+        let (tx, rx) = std::sync::mpsc::channel();
         self.tx
-            .send(Cmd::Put { key, value })
-            .expect("slatedb driver alive");
-        // Fire-and-forget is safe by channel ORDER: one mpsc, one
-        // driver — a later command (the Collection's read-back of its
-        // own batch, or the next write) is processed after this Put.
-        // Consumers that must observe a write against EXTERNAL writers
-        // ride Get, whose reply round trip closes the gap.
+            .send(Cmd::Put { key, value, reply: tx })
+            .map_err(|e| crate::error::Error::Engine(format!("slatedb driver gone: {e}")))?;
+        match rx.recv() {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(text)) => Err(crate::error::Error::Engine(text)),
+            Err(e) => Err(crate::error::Error::Engine(format!(
+                "slatedb driver reply missing: {e}"
+            ))),
+        }
     }
     pub fn get_sync(&self, key: &[u8]) -> Option<Vec<u8>> {
         let key = key.to_vec();
         self.request(|reply| Cmd::Get { key, reply })
     }
-    pub fn del_sync(&self, key: &[u8]) {
+    pub fn del_sync(&self, key: &[u8]) -> crate::error::Result<()> {
+        let (tx, rx) = std::sync::mpsc::channel();
         self.tx
-            .send(Cmd::Del { key: key.to_vec() })
-            .expect("slatedb driver alive");
+            .send(Cmd::Del { key: key.to_vec(), reply: tx })
+            .map_err(|e| crate::error::Error::Engine(format!("slatedb driver gone: {e}")))?;
+        match rx.recv() {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(text)) => Err(crate::error::Error::Engine(text)),
+            Err(e) => Err(crate::error::Error::Engine(format!(
+                "slatedb driver reply missing: {e}"
+            ))),
+        }
     }
     pub fn scan_range_sync(&self, begin: &[u8], end: Option<&[u8]>) -> Vec<Vec<u8>> {
         if let Some(end) = end
@@ -516,13 +560,13 @@ impl SlatedbSync {
 }
 
 impl VirtualStorage for SlatedbSync {
-    fn put(&self, key: Vec<u8>, value: Vec<u8>) {
+    fn put(&self, key: Vec<u8>, value: Vec<u8>) -> crate::error::Result<()> {
         self.put_sync(key, value)
     }
     fn get(&self, key: &[u8]) -> crate::error::Result<Option<Vec<u8>>> {
         Ok(self.get_sync(key))
     }
-    fn del(&self, key: &[u8]) {
+    fn del(&self, key: &[u8]) -> crate::error::Result<()> {
         self.del_sync(key)
     }
     fn scan_suffix(&self, prefix: &[u8]) -> crate::error::Result<Vec<Vec<u8>>> {

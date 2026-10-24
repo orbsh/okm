@@ -29,8 +29,8 @@ async fn slatedb_roundtrip() {
         session_id: 1002,
     };
 
-    edges.link(&u, &s1).await;
-    edges.link(&u, &s2).await;
+    edges.link(&u, &s1).await.unwrap();
+    edges.link(&u, &s2).await.unwrap();
 
     let sessions = edges.forward(&u).await.unwrap();
     assert_eq!(sessions.len(), 2);
@@ -38,7 +38,7 @@ async fn slatedb_roundtrip() {
     let raw = edges.reverse_raw(&s1).await.unwrap();
     assert_eq!(raw.len(), 1);
 
-    edges.unlink(&u, &s1).await;
+    edges.unlink(&u, &s1).await.unwrap();
     assert_eq!(edges.forward(&u).await.unwrap().len(), 1);
 }
 

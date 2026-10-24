@@ -102,10 +102,13 @@ impl VirtualHandle {
 }
 
 impl RemoteStore {
-    fn send_write(&self, frame: &OpFrame) {
+    /// A write frame with no waiter: the executor's channel is the only
+    /// thing that can refuse it, and a closed channel is a real error (the
+    /// nest went away) — not something to panic over.
+    fn send_write(&self, frame: &OpFrame) -> crate::error::Result<()> {
         self.exec_tx
             .send((mpsc::channel().0, frame.encode()))
-            .expect("channel open");
+            .map_err(|e| crate::error::Error::Engine(format!("nest executor gone: {e}")))
     }
 
     fn round_trip(&self, frame: &OpFrame) -> crate::error::Result<OpResponse> {
@@ -124,8 +127,8 @@ impl RemoteStore {
 }
 
 impl VirtualStorage for RemoteStore {
-    fn put(&self, key: Vec<u8>, value: Vec<u8>) {
-        self.send_write(&OpFrame::one(OP_PUT, key, value));
+    fn put(&self, key: Vec<u8>, value: Vec<u8>) -> crate::error::Result<()> {
+        self.send_write(&OpFrame::one(OP_PUT, key, value))
     }
 
     fn get(&self, key: &[u8]) -> crate::error::Result<Option<Vec<u8>>> {
@@ -134,8 +137,8 @@ impl VirtualStorage for RemoteStore {
             .value)
     }
 
-    fn del(&self, key: &[u8]) {
-        self.send_write(&OpFrame::one(OP_DELETE, key.to_vec(), Vec::new()));
+    fn del(&self, key: &[u8]) -> crate::error::Result<()> {
+        self.send_write(&OpFrame::one(OP_DELETE, key.to_vec(), Vec::new()))
     }
 
     fn scan_suffix(&self, prefix: &[u8]) -> crate::error::Result<Vec<Vec<u8>>> {
@@ -189,8 +192,7 @@ impl VirtualStorage for RemoteStore {
     /// cross-assembly-point atomic path (ADR-0003) survives remoteness
     /// because the receiver commits the whole op list in one call.
     fn commit_batch(&self, batch: Batch) -> crate::error::Result<()> {
-        self.send_write(&OpFrame::write_batch(&batch.ops));
-        Ok(())
+        self.send_write(&OpFrame::write_batch(&batch.ops))
     }
 }
 
@@ -584,14 +586,22 @@ mod tests {
     struct TestEngine(std::sync::Arc<std::sync::Mutex<BTreeMap<Vec<u8>, Vec<u8>>>>);
 
     impl VirtualStorage for TestEngine {
-        fn put(&self, key: Vec<u8>, value: Vec<u8>) {
-            self.0.lock().unwrap().insert(key, value);
+        fn put(&self, key: Vec<u8>, value: Vec<u8>) -> crate::error::Result<()> {
+            self.0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(key, value);
+            Ok(())
         }
         fn get(&self, key: &[u8]) -> crate::error::Result<Option<Vec<u8>>> {
             Ok(self.0.lock().unwrap().get(key).cloned())
         }
-        fn del(&self, key: &[u8]) {
-            self.0.lock().unwrap().remove(key);
+        fn del(&self, key: &[u8]) -> crate::error::Result<()> {
+            self.0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remove(key);
+            Ok(())
         }
         fn scan_suffix(&self, prefix: &[u8]) -> crate::error::Result<Vec<Vec<u8>>> {
             Ok(self
@@ -632,7 +642,7 @@ mod tests {
         // path bare_shard_test exercises.
         let handle = NestStorage::bare(TestEngine::default());
         let rs: RemoteStore = handle.open();
-        rs.put(b"k".to_vec(), b"v".to_vec());
+        rs.put(b"k".to_vec(), b"v".to_vec()).unwrap();
         assert_eq!(rs.get(b"k").unwrap().as_deref(), Some(b"v".as_slice()));
     }
 
