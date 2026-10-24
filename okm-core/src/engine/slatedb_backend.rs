@@ -30,7 +30,7 @@ use std::sync::Arc;
 pub struct SlatedbIter {
     rx: ItemStream,
     done: bool,
-    back_buf: Option<std::vec::IntoIter<crate::error::Result<(Vec<u8>, Vec<u8>)>>>,
+    back_buf: Option<BackBuf>,
 }
 
 impl Iterator for SlatedbIter {
@@ -91,6 +91,9 @@ impl DoubleEndedIterator for SlatedbIter {
 /// failed read is not an absent row), so the iterator reports it instead of the
 /// driver thread dying with nobody to tell.
 type ItemStream = std::sync::mpsc::Receiver<Option<Result<(Vec<u8>, Vec<u8>), String>>>;
+
+/// The reverse buffer `next_back` drains into (pairs, or the one fault item).
+type BackBuf = std::vec::IntoIter<crate::error::Result<(Vec<u8>, Vec<u8>)>>;
 
 /// Commands the driver thread executes against the async Db. Every
 /// arm is flat (no re-entrant nesting — okm's call shapes are engine
@@ -251,6 +254,9 @@ impl SlatedbSync {
     /// (each call builds a fresh InMemory object store). The open runs
     /// on the driver thread — the caller may hold a tokio context, and
     /// `block_on` there panics.
+    // Construction, once per store: a machine that cannot build a current-thread
+    // runtime or spawn the driver thread cannot host a store at all.
+    #[allow(clippy::expect_used, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
     pub fn open_mem(name: &str) -> Result<Self, slatedb::Error> {
         let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
         let (ready_tx, ready_rx) = std::sync::mpsc::channel();

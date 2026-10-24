@@ -47,6 +47,9 @@ pub fn stamp_field_ids(schema: &ArrowSchema) -> ArrowSchema {
 
 /// The same stamping for a batch about to be written: the returned batch's
 /// schema is the stamped one, so the writer's schema and the data agree.
+// Column-vs-schema shape after stamping is our own construction, not input
+// (ADR-0040).
+#[allow(clippy::expect_used, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
 pub fn stamp_batch(batch: &RecordBatch) -> RecordBatch {
     let schema = Arc::new(stamp_field_ids(batch.schema().as_ref()));
     RecordBatch::try_new(schema, batch.columns().to_vec())

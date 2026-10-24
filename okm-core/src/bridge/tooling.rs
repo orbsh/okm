@@ -241,6 +241,18 @@ pub mod parquet_io {
     /// column is not a label column — the pre-label export carried raw ids and
     /// is NOT readable here (no compatibility path: the vocabulary that would
     /// name those ids is not in the file).
+    /// Downcast one column of a parquet file written by SOMETHING ELSE. A column
+    /// whose arrow type does not match the declared field is an input error the
+    /// caller must hear about — unlike the codec's own decode, whose bytes can only
+    /// have come from this SDK (ADR-0040).
+    fn column_as<'a, T: 'static>(col: &'a dyn Array, field_name: &str) -> Result<&'a T, String> {
+        col.as_any().downcast_ref::<T>().ok_or_else(|| {
+            format!(
+                "column `{field_name}`: the file's arrow type is not the one this field declares"
+            )
+        })
+    }
+
     pub(crate) fn wire_bytes<S: VirtualStorage>(
         col: &dyn Array,
         document: usize,
@@ -288,21 +300,15 @@ pub mod parquet_io {
         }
         let raw: Vec<u8> = match ty {
             FieldType::FixedBytes => {
-                let col = col.as_any().downcast_ref::<BinaryArray>().unwrap();
+                let col = column_as::<BinaryArray>(col, field.name)?;
                 col.value(document).to_vec()
             }
             FieldType::Str => {
-                let col = col
-                    .as_any()
-                    .downcast_ref::<arrow::array::StringArray>()
-                    .unwrap();
+                let col = column_as::<arrow::array::StringArray>(col, field.name)?;
                 col.value(document).as_bytes().to_vec()
             }
             FieldType::VarInt => {
-                let c = col
-                    .as_any()
-                    .downcast_ref::<arrow::array::UInt64Array>()
-                    .unwrap();
+                let c = column_as::<arrow::array::UInt64Array>(col, field.name)?;
                 let mut buf = Vec::with_capacity(10);
                 c.value(document).varint_encode(&mut buf);
                 buf
@@ -310,61 +316,36 @@ pub mod parquet_io {
             FieldType::Quant(p) => {
                 // Re-quantize from the dequantized f64 column value at the
                 // declared precision; wire is the fixed-point i64 BE.
-                let c = col
-                    .as_any()
-                    .downcast_ref::<arrow::array::Float64Array>()
-                    .unwrap();
+                let c = column_as::<arrow::array::Float64Array>(col, field.name)?;
                 wire_to_be_bytes(quantize(c.value(document), p))
             }
             FieldType::Offset(base) => {
-                let c = col
-                    .as_any()
-                    .downcast_ref::<arrow::array::Int64Array>()
-                    .unwrap();
+                let c = column_as::<arrow::array::Int64Array>(col, field.name)?;
                 crate::offset_encode(c.value(document), base)
             }
             // A `Vector` exports as the OPAQUE frame bytes (the bridge keeps the
             // element type in the schema and the column byte-opaque), so the
             // import is the same read: the bytes go back verbatim.
             FieldType::Vector { .. } => {
-                let col = col.as_any().downcast_ref::<BinaryArray>().unwrap();
+                let col = column_as::<BinaryArray>(col, field.name)?;
                 col.value(document).to_vec()
             }
             other => {
                 let raw: Vec<u8> = match other {
                     FieldType::U8 => vec![
-                        col.as_any()
-                            .downcast_ref::<arrow::array::UInt8Array>()
-                            .unwrap()
-                            .value(document),
+                        column_as::<arrow::array::UInt8Array>(col, field.name)?.value(document),
                     ],
-                    FieldType::U16 => col
-                        .as_any()
-                        .downcast_ref::<arrow::array::UInt16Array>()
-                        .unwrap()
-                        .value(document)
+                    FieldType::U16 => column_as::<arrow::array::UInt16Array>(col, field.name)?.value(document)
                         .to_be_bytes()
                         .to_vec(),
-                    FieldType::U32 => col
-                        .as_any()
-                        .downcast_ref::<arrow::array::UInt32Array>()
-                        .unwrap()
-                        .value(document)
+                    FieldType::U32 => column_as::<arrow::array::UInt32Array>(col, field.name)?.value(document)
                         .to_be_bytes()
                         .to_vec(),
-                    FieldType::U64 => col
-                        .as_any()
-                        .downcast_ref::<arrow::array::UInt64Array>()
-                        .unwrap()
-                        .value(document)
+                    FieldType::U64 => column_as::<arrow::array::UInt64Array>(col, field.name)?.value(document)
                         .to_be_bytes()
                         .to_vec(),
                     FieldType::FixedBytes => unreachable!(),
-                    FieldType::Bytes => col
-                        .as_any()
-                        .downcast_ref::<arrow::array::BinaryArray>()
-                        .unwrap()
-                        .value(document)
+                    FieldType::Bytes => column_as::<arrow::array::BinaryArray>(col, field.name)?.value(document)
                         .to_vec(),
                     FieldType::Str => unreachable!("handled above"),
                     FieldType::VarInt
@@ -533,10 +514,10 @@ fn segment_from_variant(
         .downcast_ref::<arrow::array::BinaryArray>()
         .ok_or_else(|| "the variant column is not a binary array".to_string())?;
     let wire = arr.value(row);
-    if wire.len() < 4 {
+    let Some(head) = wire.first_chunk::<4>() else {
         return Err("variant cell is shorter than its metadata length".into());
-    }
-    let md_len = u32::from_be_bytes(wire[..4].try_into().expect("4 bytes")) as usize;
+    };
+    let md_len = u32::from_be_bytes(*head) as usize;
     let rest = &wire[4..];
     if rest.len() < md_len {
         return Err("variant metadata is truncated".into());

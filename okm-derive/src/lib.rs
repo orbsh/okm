@@ -10,6 +10,13 @@
 //! Schema stability is locked by hex assertions in the test suite
 //! (docs/adr/0002, docs/adr/0005, docs/adr/0006).
 
+// A proc macro rejects a malformed declaration by stopping the build, and the
+// abort IS the diagnostic; no caller can act on it, so `Result` here would only
+// move the same stop one frame up (ADR-0040, "where a panic is still the right
+// answer"). What the generated CODE carries is separate — the derive emits its
+// own narrow allows where the decode is allowed to abort.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+
 mod junction_encode;
 mod key_encode;
 mod document_encode;

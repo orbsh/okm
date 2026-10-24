@@ -379,7 +379,9 @@ frames on it.
 segment) + one `OpResponse` (`[has_value][value][suffixes]`), replacing
 the WriteFrame/ReadFrame/ReadResponse trio. Receiver intake unified —
 `NestStorage::apply(bytes) -> Option<OpResponse>` is the single
-transport-free surface (Some = get/scan, None = put/delete); the mpsc
+transport-free surface (every decodable frame answers: a write's answer is
+the empty ack, a refusal rides inside it as `fault`, ADR-0038; `None` =
+the frame does not decode); the mpsc
 pump and a WS adapter call the same `Arc<NestStorage>`; sender side is
 plain `VirtualStorage` (`RemoteStore`), unaware of nesting. The unused
 `kv_nest` attribute registration was dropped — `#[ok_ns]` is the one
@@ -412,7 +414,8 @@ key bare in the tail) recorded in ADR-0005.
 - [x] `NestStorage` derive: empty struct + prefix declaration (`#[ok_ns
       (N)]`) → NO data methods, exactly one execution surface (`serve`
       engine → `Arc<NestStorage>` whose `apply(bytes) -> Option<OpResponse>`
-      is the transport-free intake; prepend declared prefix → plain
+      is the transport-free intake (every decodable frame answers once — a
+      write's empty ack included — and a refusal is a `fault` in it); prepend declared prefix → plain
       byte-level engine execution → response frame back). Receiver
       holds no OKM semantics; storing garbage is indistinguishable from
       storing data. Declaration shares `#[ok_ns]` with every other
@@ -1798,9 +1801,13 @@ to put an I/O refusal: `slatedb_backend.rs` spent 18 `expect`s plus one
 gave the typed write verbs their `Result`; ADR-0039 opened the storage trait
 (`put`/`del` and their async twins), the slatedb sync path (a reply channel on
 `Cmd::Put`/`Cmd::Del`, driver-side durability), `RemoteStore::send_write`, and the
-two `WireClient` senders. What remains between the gate and the tree is the READ
-side, which ADR-0037/0038 keep panic-capable on purpose, and the compile-time /
-binding surfaces below.
+two `WireClient` senders. The READ side followed (ADR-0039's second half), and ADR-0040 closed
+the last
+runtime class by declaring the CODEC's decode half infallible on purpose, with the
+panic lints allowed only in the places it names. So the runtime half of
+`okm-core` now reports zero warnings under `unwrap_used` / `expect_used` /
+`panic`; what stands between the gate and the tree is the compile-time surface
+(`okm-derive` + `build.rs`) and the bindings' own bodies, below.
 
 - [x] Write verbs gain an error face (ADR-0037 for the typed verbs, ADR-0039 for
       the storage trait; both landed 2026-10-24).
@@ -1809,44 +1816,63 @@ binding surfaces below.
       `Collection::put`, plus the replayed-batch boundary) and two wire tests
       (dead connection, refused POST). Not covered, and said so in the ADR: fault
       injection into the native engines, and the nest's "executor gone" arm.
-- [ ] A write that panics inside the engine is invisible to its sender: the nest
-      pump's `catch_unwind` swallows it and a writer carries no reply box
-      (ADR-0010 §6). Making writes answer costs the fire-and-forget shape — the
-      decision comes first.
+- [x] Writes answer (LANDED 2026-10-24, the decision ADR-0039 queued here): every
+      well-formed frame answers exactly once — a write's answer is the empty ack, a
+      refusal or a panic inside the engine is a `fault` — and both senders wait for
+      it (`RemoteStore::round_trip`, `WireClient::ask`). Cost, accepted: a write is
+      now a round trip, so the fire-and-forget write shape (ADR-0010 §6, ADR-0028)
+      is superseded on the commit path. `None` is reserved for a frame that does not
+      decode.
 - [x] The read arms, same round: the slatedb driver's `Get` / `ScanRange` /
       `ScanSuffix` / `ScanStream` answer `Result<_, String>` over the channel
       (`SlatedbSync::request` returns `crate::error::Result`; a scan that cannot
       open hands back an iterator whose one item is the error), and redb's
       `scan_range_iter` reports a failed `begin_read` / `range` the same way.
       `localStorage` had no production read panic left.
-- [ ] Then the gate: `[workspace.lints.clippy]` denying `unwrap_used`,
+- [ ] Then the gate (runtime half ready: `okm-core` lib reports 0 warnings under
+      the three panic lints; blocked only on the compile-time surface below):
+      `[workspace.lints.clippy]` denying `unwrap_used`,
       `expect_used`, `panic`, `unwrap_in_result`, `panic_in_result_fn`, inherited by
       every member. Tests keep the vocabulary through one crate-root
       `#![cfg_attr(test, allow(..))]` per crate, plus one `#![allow(..)]` line per
       `tests/` crate: `[lints]` is per-package and covers every target, and neither
       Cargo.toml nor clippy.toml can scope a lint to lib/bins (2026-10-24, verified
       on the seven sibling repos that now carry the gate).
-- [ ] Poison, 24 sites (nest 4, subscribe 3, `okm-stream/src/ops.rs` 5, the rest in
-      the bindings): `unwrap_or_else(std::sync::PoisonError::into_inner)`; a map
-      behind a lock is not torn by another thread's panic.
-- [ ] Fixed-width conversions that already checked the length
-      (`model/wrappers/vector.rs` 5, `model/reduce.rs` 2, `bridge/arrow_bridge.rs`
-      3, `model/graph.rs` 2, `bridge/tooling.rs` 1, `okm-vector/src/codec.rs` 1):
-      copy into `[u8; N]` instead of asking `try_into` for an error just ruled out.
-- [ ] Decode paths over OUTSIDE bytes, where truncation is an input and not an
-      invariant: `bridge/arrow_bridge.rs:60` (VarInt frame), `:436` (cold-frame
-      length prefix), `model/graph.rs:260-261` (`NodeRef::decode` returns `Option`
-      — the call site expects it away).
+- [x] Poison, 28 production sites (bindings/okm-steel 7, okm-python 8,
+      okm-stream 5, `okm-core/build.rs` 3, subscribe 3, nest 2):
+      `unwrap_or_else(std::sync::PoisonError::into_inner)`, with the reason stated
+      at `subscribe.rs::register` (a sink that panicked mid-delivery leaves
+      recoverable state, not a broken invariant — propagating would let one bad
+      sink wedge every later write). `build.rs` carried a copy of that same cell in
+      its generated-code template and was fixed in the same pass, or the panic
+      would have shipped into every consumer.
+- [x] Fixed-width conversions and outside-byte decode paths: resolved as a
+      decision, not a conversion (ADR-0040). Every one of them sat in an
+      infallible-signature decoder (`VectorElem::decode_le`, `ReduceCodec::decode_acc`,
+      `EdgeKey::decode`, `offset_decode`, `varint_decode`, `dec_wire`,
+      `Vector::decode_payload`), so `?` had nowhere to go; the answer is that the
+      codec aborts on bytes it did not write, and the panic lints are allowed there
+      and only there. The genuinely foreign input — a Parquet file from another
+      producer — was converted instead: column downcasts answer `Err`
+      (`tooling.rs::column_as`) and the variant metadata frame reads with
+      `first_chunk`.
+- [x] (folded into the item above) Decode over outside bytes: the boundary is the
+      SOURCE of the bytes. Arrow-export reads (`arrow_bridge.rs:60`, `:436`) read
+      frames this SDK wrote, so they abort with a message; the Parquet import path
+      reads a foreign file, so it answers `Err`.
 - [ ] Bindings' own bodies, 29 sites (`okm-python` 18, `okm-steel` 10,
       `okm-entry` 1): a panic there is a dead interpreter or a dead host process,
       so the error face is `PyErr` / steel's value, not a message on stderr. (The
       host-injected seam itself already answers `Result<_, String>` — commit
       `38c5c6c`; these are the poison and host-call sites inside the bindings.)
-- [ ] Compile-time code, 173 sites (`okm-derive` 161, `okm-core/build.rs` 12): the
-      derive's `panic!`s are diagnostics — `syn::Error` → `to_compile_error` carries
-      a span, which the panic machinery does not. `build.rs:132,137,143` emits
-      `sink.read().unwrap()` into GENERATED code, so those three lines are the
-      template to fix, not a call site.
+- [x] Compile-time code, 139 sites (`okm-derive` 130, `okm-core/build.rs` 9):
+      settled as the ALLOW class, not a rewrite (ADR-0040: a proc macro or build
+      script that rejects a declaration stops the build, and the abort is the
+      report). Both crates carry a crate-root allow with that reason. What remains
+      is polish, taken site by site where a span-carrying diagnostic
+      (`syn::Error::to_compile_error`) beats a panic message. The generated-code
+      copy of the sink cell (`build.rs`'s `RUNTIME` template) was already fixed with
+      the poison pass, since that text ships into consumer crates.
 - [ ] Unreachable arms and contract serialization (tooling 3, arrow_bridge 4,
       `okm-vector/src/codec.rs:192`; `model/obj_dynamic.rs:567-568`): fall back to a
       value, or keep the site with a stated why.
