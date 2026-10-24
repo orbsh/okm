@@ -129,7 +129,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
             // Overwrite detection doubles as the unfold source: the stored
             // document (if any) is exactly what the reduce groups currently
             // include for this key.
-            let prev = store.get(&pkey).map(|v| R::decode_payload(&v));
+            let prev = store.get(&pkey)?.map(|v| R::decode_payload(&v));
             if let Some(old) = &prev {
                 R::__okm_apply_reduces(&mut store, key, old, &header, false);
             }
@@ -192,7 +192,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         key: &K,
         f: impl FnOnce(Option<R>) -> R,
     ) -> crate::error::Result<R> {
-        let new = f(self.get(key));
+        let new = f(self.get(key)?);
         self.put(key, &new)?;
         Ok(new)
     }
@@ -258,12 +258,12 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         // write of the SAME key in this batch counts as the old row.
         let mut prev_owned = match prev {
             Some(_) => None,
-            None => adapter.get(&pkey).map(|v| R::decode_payload(&v)),
+            None => adapter.get(&pkey)?.map(|v| R::decode_payload(&v)),
         };
         // A decoded row carries ids, not labels: name it, so a reduce group on a
         // categorical field folds and unfolds under the same key `put` uses.
         if let Some(old) = prev_owned.as_mut() {
-            old.__okm_deref_vocab(&self.store);
+            old.__okm_deref_vocab(&self.store)?;
         }
         let prev = prev.or(prev_owned.as_ref());
 
@@ -333,13 +333,16 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     }
 
     /// Point lookup: decode key payload + TLV payload.
-    pub fn get(&self, key: &K) -> Option<R> {
+    pub fn get(&self, key: &K) -> crate::error::Result<Option<R>> {
         let k = self.primary_key(key);
-        let v = self.store.get(&k)?;
+        let v = match self.store.get(&k)? {
+            Some(v) => v,
+            None => return Ok(None),
+        };
         let mut document = R::decode_payload(&v);
-        R::__okm_embed_deref(&mut document, &self.store);
-        R::__okm_deref_vocab(&mut document, &self.store);
-        Some(document)
+        R::__okm_embed_deref(&mut document, &self.store)?;
+        R::__okm_deref_vocab(&mut document, &self.store)?;
+        Ok(Some(document))
     }
 
     /// Leftmost-prefix scan over access method `I`, then fetch-back
@@ -353,18 +356,20 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     /// bytes were satisfied by primary-key tail bytes are dropped, never
     /// returned (`"ad"` + tail `0x31…` vs the probe `"ad1"`) — exact
     /// matching on the value is [`scan_exact`](Self::scan_exact).
-    pub fn scan<I: KvIndex<Key = K, Document = R>>(&self, encoded: &[u8]) -> Vec<(PrefixKey<K>, Option<R>)> {
-        crate::scan_index::<S, I>(&self.store, &self.header(), encoded)
-            .into_iter()
-            .map(|pk| {
-                let document = if pk.taken == K::KEY_LEN {
-                    self.get(&pk.decoded)
-                } else {
-                    None
-                };
-                (pk, document)
-            })
-            .collect()
+    pub fn scan<I: KvIndex<Key = K, Document = R>>(
+        &self,
+        encoded: &[u8],
+    ) -> crate::error::Result<Vec<(PrefixKey<K>, Option<R>)>> {
+        let mut out = Vec::new();
+        for pk in crate::scan_index::<S, I>(&self.store, &self.header(), encoded)? {
+            let document = if pk.taken == K::KEY_LEN {
+                self.get(&pk.decoded)?
+            } else {
+                None
+            };
+            out.push((pk, document));
+        }
+        Ok(out)
     }
 
     /// Equality scan over access method `I`: only entries whose field
@@ -377,18 +382,17 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     pub fn scan_exact<I: KvIndex<Key = K, Document = R>>(
         &self,
         encoded: &[u8],
-    ) -> Vec<(PrefixKey<K>, Option<R>)> {
-        crate::scan_index_exact::<S, I>(&self.store, &self.header(), encoded)
-            .into_iter()
-            .map(|pk| {
-                let document = if pk.taken == K::KEY_LEN {
-                    self.get(&pk.decoded)
-                } else {
-                    None
-                };
-                (pk, document)
-            })
-            .collect()
+    ) -> crate::error::Result<Vec<(PrefixKey<K>, Option<R>)>> {
+        let mut out = Vec::new();
+        for pk in crate::scan_index_exact::<S, I>(&self.store, &self.header(), encoded)? {
+            let document = if pk.taken == K::KEY_LEN {
+                self.get(&pk.decoded)?
+            } else {
+                None
+            };
+            out.push((pk, document));
+        }
+        Ok(out)
     }
 
     /// Range scan over access method `I`: `begin`/`end` are the ENCODED
@@ -405,7 +409,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         &self,
         begin: &[u8],
         end: Option<&[u8]>,
-    ) -> Vec<(PrefixKey<K>, Option<R>)> {
+    ) -> crate::error::Result<Vec<(PrefixKey<K>, Option<R>)>> {
         let header = self.header();
         let mut b = I::entry_prefix(&header, &[]);
         b.extend_from_slice(begin);
@@ -416,30 +420,28 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         });
         let taken = I::key_prefix_width();
         let kl = K::KEY_LEN;
-        self.store
-            .scan_range(&b, e.as_deref())
-            .iter()
-            .filter_map(|full| {
-                let suffix = &full[b.len()..];
-                if suffix.len() < taken {
-                    return None;
-                }
-                let start = suffix.len() - taken;
-                let decoded = if taken == kl {
-                    I::Key::decode(&suffix[start..])
-                } else {
-                    let mut buf = vec![0u8; kl];
-                    buf[..taken].copy_from_slice(&suffix[start..]);
-                    I::Key::decode(&buf)
-                };
-                let document = if taken == kl {
-                    self.get(&decoded)
-                } else {
-                    None
-                };
-                Some((PrefixKey { decoded, taken }, document))
-            })
-            .collect()
+        let mut out = Vec::new();
+        for full in self.store.scan_range(&b, e.as_deref())? {
+            let suffix = &full[b.len()..];
+            if suffix.len() < taken {
+                continue;
+            }
+            let start = suffix.len() - taken;
+            let decoded = if taken == kl {
+                I::Key::decode(&suffix[start..])
+            } else {
+                let mut buf = vec![0u8; kl];
+                buf[..taken].copy_from_slice(&suffix[start..]);
+                I::Key::decode(&buf)
+            };
+            let document = if taken == kl {
+                self.get(&decoded)?
+            } else {
+                None
+            };
+            out.push((PrefixKey { decoded, taken }, document));
+        }
+        Ok(out)
     }
 
     /// Lazy range scan over access method `I`: identical bounds to
@@ -451,7 +453,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         &self,
         begin: &[u8],
         end: Option<&[u8]>,
-    ) -> impl DoubleEndedIterator<Item = (PrefixKey<K>, Option<R>)>
+    ) -> impl DoubleEndedIterator<Item = crate::error::Result<(PrefixKey<K>, Option<R>)>>
     where
         S: SharedVirtualStorage,
     {
@@ -474,7 +476,11 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         let b_len = b.len();
         self.store
             .scan_range_iter(&b, e.as_deref())
-            .filter_map(move |(full, _value)| {
+            .filter_map(move |item| {
+                let (full, _value) = match item {
+                    Ok(kv) => kv,
+                    Err(e) => return Some(Err(e)),
+                };
                 let suffix = &full[b_len..];
                 // Same false-hit test as the prefix scan: a probe whose
                 // bytes were satisfied by the primary-key tail is not a
@@ -499,17 +505,24 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
                     let mut k = header.clone();
                     crate::model::index::write_slot(&mut k, crate::model::index::PRIMARY_SLOT);
                     k.extend_from_slice(&decoded.encode());
-                    let v = store.get(&k);
-                    v.map(|v| {
-                        let mut document = R::decode_payload(&v);
-                        R::__okm_embed_deref(&mut document, &store);
-                        R::__okm_deref_vocab(&mut document, &store);
-                        document
-                    })
+                    match store.get(&k) {
+                        Ok(Some(v)) => {
+                            let mut document = R::decode_payload(&v);
+                            if let Err(e) = R::__okm_embed_deref(&mut document, &store) {
+                                return Some(Err(e));
+                            }
+                            if let Err(e) = R::__okm_deref_vocab(&mut document, &store) {
+                                return Some(Err(e));
+                            }
+                            Some(document)
+                        }
+                        Ok(None) => None,
+                        Err(e) => return Some(Err(e)),
+                    }
                 } else {
                     None
                 };
-                Some((PrefixKey { decoded, taken }, document))
+                Some(Ok((PrefixKey { decoded, taken }, document)))
             })
     }
 
@@ -527,11 +540,11 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     pub fn scan_covered<I: KvIndex<Key = K, Document = R>>(
         &self,
         encoded: &[u8],
-    ) -> Vec<(PrefixKey<K>, I::Covered)> {
+    ) -> crate::error::Result<Vec<(PrefixKey<K>, I::Covered)>> {
         let p = I::entry_prefix(&self.header(), encoded);
         let taken = I::key_prefix_width();
         let kl = K::KEY_LEN;
-        scan_suffix_kv(&self.store, &p)
+        Ok(scan_suffix_kv(&self.store, &p)?
             .into_iter()
             .filter_map(|(suffix, v)| {
                 // Entries whose probe bytes were satisfied by the tail are
@@ -549,7 +562,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
                 };
                 Some((PrefixKey { decoded, taken }, I::decode_covered(&v)))
             })
-            .collect()
+            .collect())
     }
 
     /// Raw documents: `(key encoding suffix, payload)` per document, in key
@@ -562,13 +575,13 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     /// `merge` / `replace` naming no declared field leaves exactly that. The row
     /// half is one prefix scan WITH values, the segment half a key-only scan, and
     /// the union is a two-pointer merge: no point read per document.
-    pub fn scan_documents_raw(&self) -> Vec<(Vec<u8>, Option<Vec<u8>>)> {
+    pub fn scan_documents_raw(&self) -> crate::error::Result<Vec<(Vec<u8>, Option<Vec<u8>>)>> {
         let mut rows = self.header();
         crate::model::index::write_slot(&mut rows, crate::model::index::PRIMARY_SLOT);
         let mut segs = self.header();
         crate::model::index::write_slot(&mut segs, crate::model::index::DYNAMIC_SLOT);
-        let rows = scan_suffix_kv(&self.store, &rows);
-        let segs = self.store.scan_suffix(&segs);
+        let rows = scan_suffix_kv(&self.store, &rows)?;
+        let segs = self.store.scan_suffix(&segs)?;
         let mut out = Vec::with_capacity(rows.len() + segs.len());
         let (mut i, mut j) = (0usize, 0usize);
         while i < rows.len() || j < segs.len() {
@@ -590,7 +603,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
                 j += 1;
             }
         }
-        out
+        Ok(out)
     }
 
     /// Full-ns scan of primary keys (slot-0 entries only — the same
@@ -610,7 +623,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         for slot in R::DEPRECATED_SLOTS {
             let mut p = self.header();
             crate::model::index::write_slot(&mut p, *slot);
-            for sfx in self.store.scan_suffix(&p) {
+            for sfx in self.store.scan_suffix(&p)? {
                 let mut full = p.clone();
                 full.extend_from_slice(&sfx);
                 batch.del(&full);
@@ -629,17 +642,26 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     /// slot-0 discipline as `scan_documents_raw`; index entries are slots 1+).
     /// This is the ROW mode: a segment with no row is not here. For the document
     /// mode see [`scan_document_keys`](Self::scan_document_keys).
-    pub fn scan_keys(&self) -> Vec<K> {
+    pub fn scan_keys(&self) -> crate::error::Result<Vec<K>> {
         let mut p = self.header();
         crate::model::index::write_slot(&mut p, crate::model::index::PRIMARY_SLOT);
-        self.store
-            .scan_suffix(&p)
-            .iter()
-            .map(|suffix| {
-                assert!(suffix.len() >= K::KEY_LEN, "primary entry shorter than key");
-                K::decode(&suffix[suffix.len() - K::KEY_LEN..])
-            })
-            .collect()
+        let mut out = Vec::new();
+        for suffix in self.store.scan_suffix(&p)? {
+            // A primary entry is `[header][slot][key]`: shorter than its own
+            // key means the stored bytes are not what the declaration says,
+            // so this is a CORRUPT store — reported, not asserted away.
+            if suffix.len() < K::KEY_LEN {
+                return Err(crate::error::Error::Corrupt {
+                    what: format!(
+                        "a primary entry is {} byte(s), shorter than the {}-byte key ",
+                        suffix.len(),
+                        K::KEY_LEN
+                    ),
+                });
+            }
+            out.push(K::decode(&suffix[suffix.len() - K::KEY_LEN..]));
+        }
+        Ok(out)
     }
 
     /// Every document's KEY, in key order: the rows (slot 0) merged with the
@@ -653,13 +675,13 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     ///
     /// Materializing is deliberately NOT this method's job — `fetch` is the door,
     /// so a key becomes a document with `.map(|k| collection.fetch(&k))`.
-    pub fn scan_document_keys(&self) -> Vec<K> {
+    pub fn scan_document_keys(&self) -> crate::error::Result<Vec<K>> {
         let mut rows = self.header();
         crate::model::index::write_slot(&mut rows, crate::model::index::PRIMARY_SLOT);
         let mut segs = self.header();
         crate::model::index::write_slot(&mut segs, crate::model::index::DYNAMIC_SLOT);
-        let rows = self.store.scan_suffix(&rows);
-        let segs = self.store.scan_suffix(&segs);
+        let rows = self.store.scan_suffix(&rows)?;
+        let segs = self.store.scan_suffix(&segs)?;
         // The suffix IS the key encoding in both slots, and a scan hands back key
         // order — so the union is a two-pointer merge: no set, no sort, no read.
         let mut out = Vec::with_capacity(rows.len() + segs.len());
@@ -682,7 +704,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
                 j += 1;
             }
         }
-        out
+        Ok(out)
     }
 }
 
@@ -713,17 +735,17 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     /// `None` = nothing stored in EITHER slot. A dynamic-only document (no
     /// primary entry) still fetches: "the document" is the pair of slots, not
     /// the primary entry. `get` is the other read door — it speaks `R`.
-    pub fn fetch(&self, key: &K) -> Option<BTreeMap<String, DynamicValue>> {
-        let row = self.get(key);
-        let stored = self.slot1_map(key);
+    pub fn fetch(&self, key: &K) -> crate::error::Result<Option<BTreeMap<String, DynamicValue>>> {
+        let row = self.get(key)?;
+        let stored = self.slot1_map(key)?;
         if row.is_none() && stored.is_none() {
-            return None;
+            return Ok(None);
         }
         let mut out = row.map(|r| r.to_map()).unwrap_or_default();
         if let Some(fields) = stored {
             out.extend(fields);
         }
-        Some(out)
+        Ok(Some(out))
     }
 
     /// Partial whole-document update, ONE engine commit.
@@ -753,14 +775,14 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         let (typed, dynamic) = self.split_names(object);
         let mut batch = crate::engine::storage::Batch::default();
         if !typed.is_empty() {
-            let prev = self.get(key);
+            let prev = self.get(key)?;
             let mut merged = prev.as_ref().map(|r| r.to_map()).unwrap_or_default();
             merged.extend(typed);
             let document = R::try_from_map(&merged)?;
             self.save_with_prev_into(&mut batch, key, &document, prev.as_ref())?;
         }
         if !dynamic.is_empty() {
-            let mut stored = self.slot1_map(key).unwrap_or_default();
+            let mut stored = self.slot1_map(key)?.unwrap_or_default();
             stored.extend(dynamic);
             self.slot1_into(&mut batch, key, &stored)?;
         }
@@ -788,14 +810,14 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         let (typed, dynamic) = self.split_names(object);
         let mut batch = crate::engine::storage::Batch::default();
         if typed.is_empty() {
-            if let Some(prev) = self.get(key) {
+            if let Some(prev) = self.get(key)? {
                 self.delete_into(&mut batch, key, &prev);
             }
         } else {
             // The stored row is the face-sweep source: without it the previous
             // values' entries would dangle, exactly what `put` is allowed to do
             // and a whole-document verb is not.
-            let prev = self.get(key);
+            let prev = self.get(key)?;
             let document = R::try_from_map(&typed)?;
             self.save_with_prev_into(&mut batch, key, &document, prev.as_ref())?;
         }
@@ -806,8 +828,8 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     /// Remove the whole document — both slots — in one commit. `false` = there
     /// was nothing to remove.
     pub fn purge(&self, key: &K) -> crate::error::Result<bool> {
-        let prev = self.get(key);
-        let has_segment = self.store.get(&self.fields_key(key)).is_some();
+        let prev = self.get(key)?;
+        let has_segment = self.store.get(&self.fields_key(key))?.is_some();
         if prev.is_none() && !has_segment {
             return Ok(false);
         }
@@ -832,28 +854,46 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     /// zero-frame list is never written, so empty and absent are one state.
     /// Crate-visible for the export bridge, which needs the segment WITHOUT the
     /// declared half (the variant column) — the public read is [`fetch`].
-    pub(crate) fn slot1_map(&self, key: &K) -> Option<BTreeMap<String, DynamicValue>> {
-        let raw = self.store.get(&self.fields_key(key))?;
+    pub(crate) fn slot1_map(
+        &self,
+        key: &K,
+    ) -> crate::error::Result<Option<BTreeMap<String, DynamicValue>>> {
+        let raw = match self.store.get(&self.fields_key(key))? {
+            Some(raw) => raw,
+            None => return Ok(None),
+        };
         let mut d = VocabCache::new(FIELD_VOCAB);
         let header = self.header();
         // decode_named resolves nested obj field ids through the same
-        // vocabulary — nested maps come back fully name-keyed.
+        // vocabulary — nested maps come back fully name-keyed. The resolver
+        // answers ids, so an engine failure is parked and re-raised after the
+        // walk (a nested decode has nowhere else to put it).
+        let mut failed: Option<crate::error::Error> = None;
         let frames = crate::model::obj_dynamic::decode_named(&raw, &mut |id| {
-            d.name_for(&self.store, &header, id)
+            match d.name_for(&self.store, &header, id) {
+                Ok(name) => name,
+                Err(e) => {
+                    failed = Some(e);
+                    None
+                }
+            }
         });
+        if let Some(e) = failed {
+            return Err(e);
+        }
         if frames.is_empty() {
-            return None;
+            return Ok(None);
         }
         let mut out = BTreeMap::new();
         for f in frames {
-            if let Some(name) = d.name_for(&self.store, &header, f.id) {
+            if let Some(name) = d.name_for(&self.store, &header, f.id)? {
                 out.insert(name, f.value);
             }
             // Unknown id (vocabulary entry absent): drop the field. Under
             // single-writer this cannot happen; with shared engines it is
             // the same degraded mode the cache documents.
         }
-        Some(out)
+        Ok(Some(out))
     }
 
     /// Encode the whole slot-1 entry into `batch` (vocabulary growth included);
@@ -929,9 +969,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     /// that promises a `Result` can hand the engine's refusal up. The error
     /// carries the engine's OWN text, never a generic message that hides it.
     fn commit(&self, batch: crate::engine::storage::Batch) -> crate::error::Result<()> {
-        self.store
-            .commit_batch(batch)
-            .map_err(crate::error::Error::Engine)?;
+        self.store.commit_batch(batch)?;
         self.epoch.set(self.epoch.get() + 1);
         Ok(())
     }

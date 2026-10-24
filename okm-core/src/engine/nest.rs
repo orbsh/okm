@@ -68,7 +68,7 @@ impl RemoteStore {
         end: Option<&[u8]>,
         exclusive: bool,
         page: u8,
-    ) -> OpResponse {
+    ) -> crate::error::Result<OpResponse> {
         let mut value = vec![match (exclusive, end.is_some()) {
             (true, true) => 0x02,
             (true, false) => 0x03, // unbounded + exclusive (ADR-0021
@@ -79,9 +79,9 @@ impl RemoteStore {
             value.extend_from_slice(end);
         }
         value.push(page);
-        let resp = self.round_trip(&OpFrame::one(OP_SCAN_STREAM, begin.to_vec(), value));
+        let resp = self.round_trip(&OpFrame::one(OP_SCAN_STREAM, begin.to_vec(), value))?;
         debug_assert!(resp.tail.is_some(), "stream answer is a chunk");
-        resp
+        Ok(resp)
     }
 }
 
@@ -108,12 +108,14 @@ impl RemoteStore {
             .expect("channel open");
     }
 
-    fn round_trip(&self, frame: &OpFrame) -> OpResponse {
+    fn round_trip(&self, frame: &OpFrame) -> crate::error::Result<OpResponse> {
         let (reply_tx, reply_rx) = mpsc::channel();
         self.exec_tx
             .send((reply_tx, frame.encode()))
-            .expect("channel open");
-        reply_rx.recv().expect("response")
+            .map_err(|e| crate::error::Error::Engine(format!("nest executor gone: {e}")))?;
+        reply_rx
+            .recv()
+            .map_err(|e| crate::error::Error::Engine(format!("nest reply missing: {e}")))
     }
 }
 
@@ -122,31 +124,39 @@ impl VirtualStorage for RemoteStore {
         self.send_write(&OpFrame::one(OP_PUT, key, value));
     }
 
-    fn get(&self, key: &[u8]) -> Option<Vec<u8>> {
-        self.round_trip(&OpFrame::one(OP_GET, key.to_vec(), Vec::new()))
-            .value
+    fn get(&self, key: &[u8]) -> crate::error::Result<Option<Vec<u8>>> {
+        Ok(self
+            .round_trip(&OpFrame::one(OP_GET, key.to_vec(), Vec::new()))?
+            .value)
     }
 
     fn del(&self, key: &[u8]) {
         self.send_write(&OpFrame::one(OP_DELETE, key.to_vec(), Vec::new()));
     }
 
-    fn scan_suffix(&self, prefix: &[u8]) -> Vec<Vec<u8>> {
-        self.round_trip(&OpFrame::one(OP_SCAN, prefix.to_vec(), Vec::new()))
-            .suffixes
+    fn scan_suffix(&self, prefix: &[u8]) -> crate::error::Result<Vec<Vec<u8>>> {
+        Ok(self
+            .round_trip(&OpFrame::one(OP_SCAN, prefix.to_vec(), Vec::new()))?
+            .suffixes)
     }
     /// Range scan rides the SAME OP_SCAN frame: the value segment —
     /// empty for a prefix scan — carries `[0x01][end bytes]` when a
     /// finite end exists, `[0x00]` for unbounded. No wire change: the
     /// frame already has a value field; prefix is just the special case
     /// with an empty value.
-    fn scan_range(&self, begin: &[u8], end: Option<&[u8]>) -> Vec<Vec<u8>> {
+    fn scan_range(
+        &self,
+        begin: &[u8],
+        end: Option<&[u8]>,
+    ) -> crate::error::Result<Vec<Vec<u8>>> {
         let mut value = vec![0u8];
         if let Some(end) = end {
             value[0] = 1;
             value.extend_from_slice(end);
         }
-        self.round_trip(&OpFrame::one(OP_SCAN, begin.to_vec(), value)).suffixes
+        Ok(self
+            .round_trip(&OpFrame::one(OP_SCAN, begin.to_vec(), value))?
+            .suffixes)
     }
 
     /// Lazy paged stream (ADR-0021): one `ScanIter::Remote` whose refill
@@ -174,7 +184,7 @@ impl VirtualStorage for RemoteStore {
     /// One `commit_batch` = one frame = one receiver execution pass: the
     /// cross-assembly-point atomic path (ADR-0003) survives remoteness
     /// because the receiver commits the whole op list in one call.
-    fn commit_batch(&self, batch: Batch) -> Result<(), String> {
+    fn commit_batch(&self, batch: Batch) -> crate::error::Result<()> {
         self.send_write(&OpFrame::write_batch(&batch.ops));
         Ok(())
     }
@@ -201,9 +211,9 @@ pub struct RemoteScanIter {
 }
 
 impl RemoteScanIter {
-    fn refill(&mut self) {
+    fn refill(&mut self) -> crate::error::Result<()> {
         if self.done {
-            return;
+            return Ok(());
         }
         let (exclusive, begin) = match self.cursor.take() {
             // Resume: the last CONSUMED key is the cursor — re-sent as
@@ -211,9 +221,12 @@ impl RemoteScanIter {
             Some(last) => (true, last),
             None => (false, std::mem::take(&mut self.begin)),
         };
-        let resp = self.store.stream_page(&begin, self.end.as_deref(), exclusive, self.page);
+        let resp = self
+            .store
+            .stream_page(&begin, self.end.as_deref(), exclusive, self.page)?;
         self.done = resp.tail != Some(TAIL_MORE);
         self.buf.extend(resp.hits);
+        Ok(())
     }
 
     fn consume_front(&mut self) -> Option<(Vec<u8>, Vec<u8>)> {
@@ -230,13 +243,16 @@ impl RemoteScanIter {
 }
 
 impl Iterator for RemoteScanIter {
-    type Item = (Vec<u8>, Vec<u8>);
+    type Item = crate::error::Result<(Vec<u8>, Vec<u8>)>;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.buf.is_empty() && !self.done {
-            self.refill();
+            if let Err(e) = self.refill() {
+                self.done = true;
+                return Some(Err(e));
+            }
         }
-        self.consume_front()
+        self.consume_front().map(Ok)
     }
 }
 
@@ -248,9 +264,12 @@ impl DoubleEndedIterator for RemoteScanIter {
     /// where the wire shape cannot give it back (the slatedb rule).
     fn next_back(&mut self) -> Option<Self::Item> {
         while self.buf.is_empty() && !self.done {
-            self.refill();
+            if let Err(e) = self.refill() {
+                self.done = true;
+                return Some(Err(e));
+            }
         }
-        self.consume_back()
+        self.consume_back().map(Ok)
     }
 }
 
@@ -399,7 +418,11 @@ impl<S: VirtualStorage> ExecCore<S> {
                 OP_DELETE => batch.del(&hosted_key(&self.prefix, &key)),
                 OP_GET => {
                     engine.commit_batch(Batch::default()).ok(); // flush pending mutations first: reads see prior ops in the same frame
-                    resp.value = engine.get(&hosted_key(&self.prefix, &key));
+                    // The frame protocol has no error field (OpResponse is
+                    // value/suffixes/tail), so a receiver-side read failure
+                    // still answers "absent" — the ONE place the old collapse
+                    // survives, and it is a WIRE change to fix (ADR-0037 note).
+                    resp.value = engine.get(&hosted_key(&self.prefix, &key)).ok().flatten();
                 }
                 OP_SCAN => {
                     engine.commit_batch(Batch::default()).ok();
@@ -416,18 +439,23 @@ impl<S: VirtualStorage> ExecCore<S> {
                         // begin-only range (unbounded end); EMPTY value =
                         // the legacy prefix scan. (A begin-only range and
                         // a prefix scan are different predicates.)
-                        Some(&0x00) if value.len() == 1 => {
-                            engine.scan_range(&hk, None).into_iter().map(strip).collect()
-                        }
+                        Some(&0x00) if value.len() == 1 => engine
+                            .scan_range(&hk, None)
+                            .unwrap_or_default()
+                            .into_iter()
+                            .map(strip)
+                            .collect(),
                         Some(&0x01) => {
                             let end = hosted_key(&self.prefix, &value[1..]);
                             engine
                                 .scan_range(&hk, Some(&end))
+                                .unwrap_or_default()
                                 .into_iter()
                                 .map(strip)
                                 .collect()
                         }
-                        _ => engine.scan_suffix(&hk), // empty value = prefix scan
+                        // empty value = prefix scan
+                        _ => engine.scan_suffix(&hk).unwrap_or_default(),
                     };
                 }
                 OP_SCAN_STREAM => {
@@ -486,6 +514,10 @@ impl<S: VirtualStorage> ExecCore<S> {
                             begin.as_deref().expect("begin present"),
                             end.as_deref(),
                         )
+                        // A page whose items fail is cut there (same wire
+                        // limitation as OP_GET: no error field to carry it).
+                        .take_while(|item| item.is_ok())
+                        .filter_map(|item| item.ok())
                         .take(want)
                         .map(|(k, v)| (k[plen..].to_vec(), v))
                         .collect();
@@ -539,30 +571,36 @@ mod tests {
         fn put(&self, key: Vec<u8>, value: Vec<u8>) {
             self.0.lock().unwrap().insert(key, value);
         }
-        fn get(&self, key: &[u8]) -> Option<Vec<u8>> {
-            self.0.lock().unwrap().get(key).cloned()
+        fn get(&self, key: &[u8]) -> crate::error::Result<Option<Vec<u8>>> {
+            Ok(self.0.lock().unwrap().get(key).cloned())
         }
         fn del(&self, key: &[u8]) {
             self.0.lock().unwrap().remove(key);
         }
-        fn scan_suffix(&self, prefix: &[u8]) -> Vec<Vec<u8>> {
-            self.0
+        fn scan_suffix(&self, prefix: &[u8]) -> crate::error::Result<Vec<Vec<u8>>> {
+            Ok(self
+                .0
                 .lock()
                 .unwrap()
                 .range(prefix.to_vec()..)
                 .take_while(|(k, _)| k.starts_with(prefix))
                 .map(|(k, _)| k[prefix.len()..].to_vec())
-                .collect()
+                .collect())
         }
-        fn scan_range(&self, begin: &[u8], end: Option<&[u8]>) -> Vec<Vec<u8>> {
+        fn scan_range(
+            &self,
+            begin: &[u8],
+            end: Option<&[u8]>,
+        ) -> crate::error::Result<Vec<Vec<u8>>> {
             let map = self.0.lock().unwrap();
             let iter = map.range(begin.to_vec()..);
-            iter.take_while(|(k, _)| match end {
-                Some(end) => k.as_slice() < end,
-                None => true,
-            })
-            .map(|(k, _)| k.clone())
-            .collect()
+            Ok(iter
+                .take_while(|(k, _)| match end {
+                    Some(end) => k.as_slice() < end,
+                    None => true,
+                })
+                .map(|(k, _)| k.clone())
+                .collect())
         }
     }
 

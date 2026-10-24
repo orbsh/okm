@@ -48,11 +48,11 @@ impl VirtualStorage for FjallStore {
     fn put(&self, key: Vec<u8>, value: Vec<u8>) {
         self.ks.insert(key, value).expect("fjall insert failed");
     }
-    fn get(&self, key: &[u8]) -> Option<Vec<u8>> {
+    fn get(&self, key: &[u8]) -> crate::error::Result<Option<Vec<u8>>> {
         self.ks
             .get(key)
-            .expect("fjall get failed")
-            .map(|v| v.to_vec())
+            .map(|v| v.map(|v| v.to_vec()))
+            .map_err(|e| crate::error::Error::Engine(e.to_string()))
     }
     fn del(&self, key: &[u8]) {
         self.ks.remove(key).expect("fjall remove failed");
@@ -60,7 +60,7 @@ impl VirtualStorage for FjallStore {
     /// fjall native: the op list executes in fjall's own cross-keyspace
     /// `Batch` — one `Batch::commit()` = one real WAL write; the carrier
     /// stays engine-agnostic (Batch), the atomicity is fjall's.
-    fn commit_batch(&self, batch: Batch) -> Result<(), String> {
+    fn commit_batch(&self, batch: Batch) -> crate::error::Result<()> {
         let mut wb = self.db.batch();
         for (k, v) in &batch.ops {
             match v {
@@ -68,31 +68,47 @@ impl VirtualStorage for FjallStore {
                 None => wb.remove(&self.ks, k.clone()),
             }
         }
-        wb.commit().map_err(|e| e.to_string())
+        wb.commit()
+            .map_err(|e| crate::error::Error::Engine(e.to_string()))
     }
-    fn scan_suffix(&self, prefix: &[u8]) -> Vec<Vec<u8>> {
-        self.ks
-            .prefix(prefix)
-            .filter_map(|g| g.key().ok())
-            .map(|k| k[prefix.len()..].to_vec())
-            .collect()
+    fn scan_suffix(&self, prefix: &[u8]) -> crate::error::Result<Vec<Vec<u8>>> {
+        let mut out = Vec::new();
+        for g in self.ks.prefix(prefix) {
+            let k = g
+                .key()
+                .map_err(|e| crate::error::Error::Engine(e.to_string()))?;
+            out.push(k[prefix.len()..].to_vec());
+        }
+        Ok(out)
     }
 
-    fn scan_range(&self, begin: &[u8], end: Option<&[u8]>) -> Vec<Vec<u8>> {
+    fn scan_range(
+        &self,
+        begin: &[u8],
+        end: Option<&[u8]>,
+    ) -> crate::error::Result<Vec<Vec<u8>>> {
+        let mut out = Vec::new();
         match end {
-            Some(end) => self
-                .ks
-                .range(begin..end)
-                .filter_map(|g| g.key().ok())
-                .map(|k| k.to_vec())
-                .collect(),
-            None => self
-                .ks
-                .range(begin..)
-                .filter_map(|g| g.key().ok())
-                .map(|k| k.to_vec())
-                .collect(),
+            Some(end) => {
+                for g in self.ks.range(begin..end) {
+                    out.push(
+                        g.key()
+                            .map_err(|e| crate::error::Error::Engine(e.to_string()))?
+                            .to_vec(),
+                    );
+                }
+            }
+            None => {
+                for g in self.ks.range(begin..) {
+                    out.push(
+                        g.key()
+                            .map_err(|e| crate::error::Error::Engine(e.to_string()))?
+                            .to_vec(),
+                    );
+                }
+            }
         }
+        Ok(out)
     }
 
     /// fjall's `Iter` is an owned, 'static lazy iterator (snapshot

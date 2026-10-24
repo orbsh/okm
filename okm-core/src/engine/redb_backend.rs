@@ -47,6 +47,13 @@ impl RedbStore {
     }
 }
 
+/// redb raises a different error type per operation (transaction, table,
+/// storage); one Display-based mapper keeps every read path reporting the
+/// engine's own text.
+fn eng<E: std::fmt::Display>(e: E) -> crate::error::Error {
+    crate::error::Error::Engine(e.to_string())
+}
+
 impl VirtualStorage for RedbStore {
     /// redb note: the table is created on first write (`open_table`
     /// inside a write transaction creates it; read paths treat a
@@ -62,13 +69,13 @@ impl VirtualStorage for RedbStore {
         txn.commit().expect("redb commit");
     }
 
-    fn get(&self, key: &[u8]) -> Option<Vec<u8>> {
-        let txn = self.db.begin_read().expect("redb begin_read");
+    fn get(&self, key: &[u8]) -> crate::error::Result<Option<Vec<u8>>> {
+        let txn = self.db.begin_read().map_err(eng)?;
         // Missing table = empty keyspace (no writes yet).
         let Ok(table) = txn.open_table(TABLE) else {
-            return None;
+            return Ok(None);
         };
-        table.get(key).expect("redb get").map(|v| v.value().to_vec())
+        Ok(table.get(key).map_err(eng)?.map(|v| v.value().to_vec()))
     }
 
     fn del(&self, key: &[u8]) {
@@ -80,47 +87,51 @@ impl VirtualStorage for RedbStore {
         txn.commit().expect("redb commit");
     }
 
-    fn scan_suffix(&self, prefix: &[u8]) -> Vec<Vec<u8>> {
-        let txn = self.db.begin_read().expect("redb begin_read");
+    fn scan_suffix(&self, prefix: &[u8]) -> crate::error::Result<Vec<Vec<u8>>> {
+        let txn = self.db.begin_read().map_err(eng)?;
         let Ok(table) = txn.open_table(TABLE) else {
-            return Vec::new(); // missing table = empty keyspace
+            return Ok(Vec::new()); // missing table = empty keyspace
         };
         // redb ranges are inclusive on the start bound; prefix scan =
         // range from `prefix` while keys start with it.
-        table
-            .range(prefix..)
-            .expect("redb range")
-            .take_while(|r| {
-                r.as_ref()
-                    .expect("redb range item")
-                    .0
-                    .value()
-                    .starts_with(prefix)
-            })
-            .map(|r| {
-                let (k, _) = r.expect("redb range item");
-                k.value()[prefix.len()..].to_vec()
-            })
-            .collect()
+        let mut out = Vec::new();
+        for r in table.range(prefix..).map_err(eng)? {
+            let (k, _) = r.map_err(eng)?;
+            if !k.value().starts_with(prefix) {
+                break;
+            }
+            out.push(k.value()[prefix.len()..].to_vec());
+        }
+        Ok(out)
     }
 
-    fn scan_range(&self, begin: &[u8], end: Option<&[u8]>) -> Vec<Vec<u8>> {
-        let txn = self.db.begin_read().expect("redb begin_read");
+    fn scan_range(
+        &self,
+        begin: &[u8],
+        end: Option<&[u8]>,
+    ) -> crate::error::Result<Vec<Vec<u8>>> {
+        let txn = self.db.begin_read().map_err(eng)?;
         let Ok(table) = txn.open_table(TABLE) else {
-            return Vec::new(); // missing table = empty keyspace
+            return Ok(Vec::new()); // missing table = empty keyspace
         };
         // redb's RangeBounds on `&[u8]` keys: begin inclusive, end
         // exclusive via `..end`; unbounded when no end.
-        let iter = match end {
-            Some(end) => table.range(begin..end),
-            None => table.range(begin..),
+        let mut out = Vec::new();
+        match end {
+            Some(end) => {
+                for r in table.range(begin..end).map_err(eng)? {
+                    let (k, _) = r.map_err(eng)?;
+                    out.push(k.value().to_vec());
+                }
+            }
+            None => {
+                for r in table.range(begin..).map_err(eng)? {
+                    let (k, _) = r.map_err(eng)?;
+                    out.push(k.value().to_vec());
+                }
+            }
         }
-        .expect("redb range");
-        iter.map(|r| {
-                let (k, _) = r.expect("redb range item");
-                k.value().to_vec()
-            })
-            .collect()
+        Ok(out)
     }
 
     /// redb's `OwnedRange` is 'static (Arc'd transaction guard inside) —
@@ -147,27 +158,27 @@ impl VirtualStorage for RedbStore {
     /// redb native: ONE write transaction over the whole batch — redb's
     /// own atomicity carries the mapping (the carrier stays
     /// engine-agnostic, Batch, same as fjall).
-    fn commit_batch(&self, batch: Batch) -> Result<(), String> {
+    fn commit_batch(&self, batch: Batch) -> crate::error::Result<()> {
         let txn = self
             .db
             .begin_write()
-            .map_err(|e| format!("redb begin_write: {e}"))?;
+            .map_err(eng)?;
         {
             let mut table = txn
                 .open_table(TABLE)
-                .map_err(|e| format!("redb open_table: {e}"))?;
+                .map_err(eng)?;
             for (key, value) in batch.ops {
                 match value {
                     Some(v) => table
                         .insert(key.as_slice(), v.as_slice())
-                        .map_err(|e| format!("redb insert: {e}"))?,
+                        .map_err(eng)?,
                     None => table
                         .remove(key.as_slice())
-                        .map_err(|e| format!("redb remove: {e}"))?,
+                        .map_err(eng)?,
                 };
             }
         }
-        txn.commit().map_err(|e| format!("redb commit: {e}"))?;
+        txn.commit().map_err(eng)?;
         Ok(())
     }
 }

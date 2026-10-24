@@ -29,7 +29,11 @@ pub fn prefix_end(prefix: &[u8]) -> Option<Vec<u8>> {
 
 pub trait VirtualStorage {
     fn put(&self, key: Vec<u8>, value: Vec<u8>);
-    fn get(&self, key: &[u8]) -> Option<Vec<u8>>;
+    /// Point read. `Ok(None)` is "no such key" — the normal answer of a KV
+    /// read, never an error. `Err` is the engine failing to answer at all
+    /// (I/O, a fenced handle, a dead transport): the two used to be the same
+    /// `None`, which made a read failure look like an absent row.
+    fn get(&self, key: &[u8]) -> crate::error::Result<Option<Vec<u8>>>;
     fn del(&self, key: &[u8]);
     /// Prefix scan; returns each matching key's "suffix" (prefix removed).
     /// A convenience bound over [`scan_range`](Self::scan_range): the
@@ -37,8 +41,9 @@ pub trait VirtualStorage {
     /// the range whose end is the prefix's terminator (see
     /// [`prefix_end`]). Engines override when their native prefix scan
     /// beats a range (`slatedb`'s `scan_prefix(prefix, subrange)`).
-    fn scan_suffix(&self, prefix: &[u8]) -> Vec<Vec<u8>> {
-        self.scan_range(prefix, prefix_end(prefix).as_deref())
+    fn scan_suffix(&self, prefix: &[u8]) -> crate::error::Result<Vec<Vec<u8>>> {
+        Ok(self
+            .scan_range(prefix, prefix_end(prefix).as_deref())?
             .into_iter()
             // The default MUST honor the documented return shape: `scan_range`
             // hands back FULL keys, so the prefix is stripped here. A default
@@ -50,7 +55,7 @@ pub trait VirtualStorage {
             // holds exactly the keys carrying `prefix`, so the slice is total;
             // `get` keeps it panic-free regardless.
             .map(|k| k.get(prefix.len()..).unwrap_or(&[]).to_vec())
-            .collect()
+            .collect())
     }
     /// Range scan over FULL keys: `[begin, end)` in byte order —
     /// `None` end = unbounded. Begin is inclusive. This is the ONE
@@ -59,7 +64,7 @@ pub trait VirtualStorage {
     /// order for every OKM-encoded field (BE fixed-width, VarInt's
     /// prefix-monotonic encoding), so a `1 < a < 100` predicate IS a
     /// key interval — the engine reads only rows inside it.
-    fn scan_range(&self, begin: &[u8], end: Option<&[u8]>) -> Vec<Vec<u8>>;
+    fn scan_range(&self, begin: &[u8], end: Option<&[u8]>) -> crate::error::Result<Vec<Vec<u8>>>;
 
     /// LAZY range scan: full `(key, value)` pairs in byte order, pulled
     /// on demand — half-way abandonment (LIMIT, first-match) costs only
@@ -79,11 +84,27 @@ pub trait VirtualStorage {
         // iterators (fjall / redb / slatedb) override this method; the
         // default materializes the whole range first (a borrow cannot
         // span the trait boundary) and hands back an owned iterator.
-        let pairs: Vec<(Vec<u8>, Vec<u8>)> = self
-            .scan_range(begin, end)
-            .into_iter()
-            .filter_map(|k| Some((k.clone(), self.get(&k)?)))
-            .collect();
+        // Errors ride the ITEMS: the constructor cannot fail on behalf of
+        // an engine whose failure shows up per key.
+        let mut pairs: Vec<crate::error::Result<(Vec<u8>, Vec<u8>)>> = Vec::new();
+        match self.scan_range(begin, end) {
+            Ok(keys) => {
+                for k in keys {
+                    match self.get(&k) {
+                        Ok(Some(v)) => pairs.push(Ok((k, v))),
+                        // The key vanished between the scan and the read: the
+                        // range is not a snapshot, and a missing value is a
+                        // normal race, not a failure.
+                        Ok(None) => {}
+                        Err(e) => {
+                            pairs.push(Err(e));
+                            break;
+                        }
+                    }
+                }
+            }
+            Err(e) => pairs.push(Err(e)),
+        }
         ScanIter::Buffered(pairs.into_iter())
     }
     /// Prefix scan returning `(key suffix, value)` pairs, in key order,
@@ -99,7 +120,7 @@ pub trait VirtualStorage {
     /// (fjall `Batch`, redb one write txn) override to execute the list
     /// as ONE engine-level atomic unit — the single WAL commit is real,
     /// not a replay.
-    fn commit_batch(&self, batch: Batch) -> Result<(), String> {
+    fn commit_batch(&self, batch: Batch) -> crate::error::Result<()> {
         for (k, v) in batch.ops {
             match v {
                 Some(v) => self.put(k, v),
@@ -117,17 +138,14 @@ pub trait VirtualStorage {
 pub fn scan_suffix_kv<S: VirtualStorage + ?Sized>(
     store: &S,
     prefix: &[u8],
-) -> Vec<(Vec<u8>, Vec<u8>)> {
+) -> crate::error::Result<Vec<(Vec<u8>, Vec<u8>)>> {
     let end = prefix_end(prefix);
-    store
-        .scan_range_iter(prefix, end.as_deref())
-        .map(|(full, v)| {
-            (
-                full.get(prefix.len()..).unwrap_or(&[]).to_vec(),
-                v,
-            )
-        })
-        .collect()
+    let mut out = Vec::new();
+    for item in store.scan_range_iter(prefix, end.as_deref()) {
+        let (full, v) = item?;
+        out.push((full.get(prefix.len()..).unwrap_or(&[]).to_vec(), v));
+    }
+    Ok(out)
 }
 
 /// An engine that can be genuinely shared across hosts and handles:
@@ -162,32 +180,30 @@ pub enum ScanIter {
     /// OP_SCAN_STREAM page per refill; `next_back` degrades to buffered.
     Remote(super::nest::RemoteScanIter),
     /// Owned buffer: the trait default, and any test map.
-    Buffered(std::vec::IntoIter<(Vec<u8>, Vec<u8>)>),
+    Buffered(std::vec::IntoIter<crate::error::Result<(Vec<u8>, Vec<u8>)>>),
 }
 
 impl Iterator for ScanIter {
-    type Item = (Vec<u8>, Vec<u8>);
+    /// An error can surface mid-scan (a native iterator fault, a dropped
+    /// transport on a remote page), so it rides the ITEM — the constructor
+    /// cannot answer for it, and swallowing it is how "failed" used to read as
+    /// "empty".
+    type Item = crate::error::Result<(Vec<u8>, Vec<u8>)>;
 
     fn next(&mut self) -> Option<Self::Item> {
         match self {
             #[cfg(feature = "fjall")]
-            ScanIter::Fjall(it) => it
-                .next()
-                .map(|g| {
-                    let (k, v) = g
-                        .into_inner()
-                        .unwrap_or_else(|e| panic!("fjall iter guard: {e}"));
-                    (k.to_vec(), v.to_vec())
-                }),
+            ScanIter::Fjall(it) => it.next().map(|g| match g.into_inner() {
+                Ok((k, v)) => Ok((k.to_vec(), v.to_vec())),
+                Err(e) => Err(crate::error::Error::Engine(e.to_string())),
+            }),
             #[cfg(feature = "redb")]
-            ScanIter::Redb(it) => it
-                .next()
-                .map(|r| {
-                    let (k, v) = r.expect("redb range item");
-                    (k.value().to_vec(), v.value().to_vec())
-                }),
+            ScanIter::Redb(it) => it.next().map(|r| match r {
+                Ok((k, v)) => Ok((k.value().to_vec(), v.value().to_vec())),
+                Err(e) => Err(crate::error::Error::Engine(e.to_string())),
+            }),
             #[cfg(feature = "slatedb")]
-            ScanIter::Slatedb(it) => it.next(),
+            ScanIter::Slatedb(it) => it.next().map(Ok),
             ScanIter::Remote(it) => it.next(),
             ScanIter::Buffered(it) => it.next(),
         }
@@ -198,23 +214,17 @@ impl DoubleEndedIterator for ScanIter {
     fn next_back(&mut self) -> Option<Self::Item> {
         match self {
             #[cfg(feature = "fjall")]
-            ScanIter::Fjall(it) => it
-                .next_back()
-                .map(|g| {
-                    let (k, v) = g
-                        .into_inner()
-                        .unwrap_or_else(|e| panic!("fjall iter guard: {e}"));
-                    (k.to_vec(), v.to_vec())
-                }),
+            ScanIter::Fjall(it) => it.next_back().map(|g| match g.into_inner() {
+                Ok((k, v)) => Ok((k.to_vec(), v.to_vec())),
+                Err(e) => Err(crate::error::Error::Engine(e.to_string())),
+            }),
             #[cfg(feature = "redb")]
-            ScanIter::Redb(it) => it
-                .next_back()
-                .map(|r| {
-                    let (k, v) = r.expect("redb range item");
-                    (k.value().to_vec(), v.value().to_vec())
-                }),
+            ScanIter::Redb(it) => it.next_back().map(|r| match r {
+                Ok((k, v)) => Ok((k.value().to_vec(), v.value().to_vec())),
+                Err(e) => Err(crate::error::Error::Engine(e.to_string())),
+            }),
             #[cfg(feature = "slatedb")]
-            ScanIter::Slatedb(it) => it.next_back(),
+            ScanIter::Slatedb(it) => it.next_back().map(Ok),
             ScanIter::Remote(it) => it.next_back(),
             ScanIter::Buffered(it) => it.next_back(),
         }
@@ -284,7 +294,7 @@ impl<S: VirtualStorage> VirtualStorage for BatchStore<'_, S> {
         self.batch.borrow_mut().put(key, value);
     }
 
-    fn get(&self, key: &[u8]) -> Option<Vec<u8>> {
+    fn get(&self, key: &[u8]) -> crate::error::Result<Option<Vec<u8>>> {
         // Newest op wins: a put-then-del leaves a `del` that shadows the
         // put, a del-then-put leaves the put — both answer correctly.
         let pending = self
@@ -296,7 +306,7 @@ impl<S: VirtualStorage> VirtualStorage for BatchStore<'_, S> {
             .find(|(k, _)| k.as_slice() == key)
             .map(|(_, v)| v.clone());
         match pending {
-            Some(v) => v,
+            Some(v) => Ok(v),
             None => self.store.get(key),
         }
     }
@@ -305,14 +315,14 @@ impl<S: VirtualStorage> VirtualStorage for BatchStore<'_, S> {
         self.batch.borrow_mut().del(key);
     }
 
-    fn scan_range(&self, _begin: &[u8], _end: Option<&[u8]>) -> Vec<Vec<u8>> {
+    fn scan_range(
+        &self,
+        _begin: &[u8],
+        _end: Option<&[u8]>,
+    ) -> crate::error::Result<Vec<Vec<u8>>> {
         // Funnels every scan shape here: `scan_suffix` and
         // `scan_range_iter` both default through this method.
-        panic!(
-            "BatchStore refuses scans (ADR-0031): a batch's pending ops and the \
-             store's iterator cannot be merged into one ordered view. Return to \
-             the store, read what you need, then open the batch."
-        )
+        Err(crate::error::Error::ScanThroughBatch)
     }
 }
 
@@ -324,13 +334,19 @@ impl<S: VirtualStorage> VirtualStorage for BatchStore<'_, S> {
 #[allow(async_fn_in_trait)] // engine contract: impls are in-crate backends and wasm senders; ADR-0010 keeps the surface byte-only
 pub trait VirtualStorageAsync {
     async fn put(&self, key: Vec<u8>, value: Vec<u8>);
-    async fn get(&self, key: &[u8]) -> Option<Vec<u8>>;
+    /// The async mirror of the sync `get`: `Ok(None)` is absence, `Err` is the
+    /// engine (or the transport) failing to answer.
+    async fn get(&self, key: &[u8]) -> crate::error::Result<Option<Vec<u8>>>;
     async fn del(&self, key: &[u8]);
     /// 前缀扫描，返回每个 key 的"剩余段"（去掉 prefix）
-    async fn scan_suffix(&self, prefix: &[u8]) -> Vec<Vec<u8>>;
+    async fn scan_suffix(&self, prefix: &[u8]) -> crate::error::Result<Vec<Vec<u8>>>;
     /// Range scan over FULL keys: `[begin, end)` byte order; None end =
     /// unbounded. The async mirror of the sync trait's `scan_range`.
-    async fn scan_range(&self, begin: &[u8], end: Option<&[u8]>) -> Vec<Vec<u8>>;
+    async fn scan_range(
+        &self,
+        begin: &[u8],
+        end: Option<&[u8]>,
+    ) -> crate::error::Result<Vec<Vec<u8>>>;
     /// Async mirror of the sync `scan_range_iter` (ADR-0027). The default
     /// BUFFERS via `scan_range` + per-key `get` (N+1); SlatedbStore
     /// overrides with a ONE-PASS materialization (see impl). Laziness is
@@ -343,11 +359,21 @@ pub trait VirtualStorageAsync {
         begin: &[u8],
         end: Option<&[u8]>,
     ) -> ScanIter {
-        let mut pairs = Vec::new();
-        for k in self.scan_range(begin, end).await {
-            if let Some(v) = self.get(&k).await {
-                pairs.push((k, v));
+        let mut pairs: Vec<crate::error::Result<(Vec<u8>, Vec<u8>)>> = Vec::new();
+        match self.scan_range(begin, end).await {
+            Ok(keys) => {
+                for k in keys {
+                    match self.get(&k).await {
+                        Ok(Some(v)) => pairs.push(Ok((k, v))),
+                        Ok(None) => {}
+                        Err(e) => {
+                            pairs.push(Err(e));
+                            break;
+                        }
+                    }
+                }
             }
+            Err(e) => pairs.push(Err(e)),
         }
         ScanIter::Buffered(pairs.into_iter())
     }
@@ -355,7 +381,7 @@ pub trait VirtualStorageAsync {
     /// write over all accumulated ops. Default replays through put/del;
     /// engines with a native batch override (SlatedbStore ships slatedb's
     /// `WriteBatch` as ONE `db.write` + durable wait).
-    async fn commit_batch(&self, batch: Batch) -> Result<(), String> {
+    async fn commit_batch(&self, batch: Batch) -> crate::error::Result<()> {
         for (k, v) in batch.ops {
             match v {
                 Some(v) => self.put(k, v).await,
@@ -372,13 +398,14 @@ pub trait VirtualStorageAsync {
 pub async fn scan_suffix_kv_async<S: VirtualStorageAsync + ?Sized>(
     store: &S,
     prefix: &[u8],
-) -> Vec<(Vec<u8>, Vec<u8>)> {
+) -> crate::error::Result<Vec<(Vec<u8>, Vec<u8>)>> {
     let end = prefix_end(prefix);
-    store
-        .scan_range_iter(prefix, end.as_deref())
-        .await
-        .map(|(full, v)| (full.get(prefix.len()..).unwrap_or(&[]).to_vec(), v))
-        .collect()
+    let mut out = Vec::new();
+    for item in store.scan_range_iter(prefix, end.as_deref()).await {
+        let (full, v) = item?;
+        out.push((full.get(prefix.len()..).unwrap_or(&[]).to_vec(), v));
+    }
+    Ok(out)
 }
 
 

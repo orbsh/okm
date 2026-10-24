@@ -342,16 +342,16 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
     }
 
     /// Resolve predicate id → name for display/diagnostics.
-    pub fn predicate_vocab_name(&mut self, id: u16) -> Option<String> {
+    pub fn predicate_vocab_name(&mut self, id: u16) -> crate::error::Result<Option<String>> {
         self.vocab.name_for(&self.store, E::NS_PREFIX, id)
     }
 
     /// Every predicate this graph has, id-ordered: ONE prefix scan of 0x04.
     /// A listing, never an inference walked back from the index faces.
-    pub fn predicates(&mut self) -> Vec<(u16, String)> {
+    pub fn predicates(&mut self) -> crate::error::Result<Vec<(u16, String)>> {
         let mut p = E::NS_PREFIX.to_vec();
         write_slot(&mut p, crate::model::index::PREDICATE_VOCAB_ID_SLOT);
-        let mut out: Vec<(u16, String)> = scan_suffix_kv(&self.store, &p)
+        let mut out: Vec<(u16, String)> = scan_suffix_kv(&self.store, &p)?
             .into_iter()
             .filter(|(suffix, _)| suffix.len() == 2)
             .filter_map(|(suffix, name)| {
@@ -361,7 +361,7 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
             })
             .collect();
         out.sort_by_key(|(id, _)| *id);
-        out
+        Ok(out)
     }
 
     /// Write one edge: primary + predicate index + four traversal faces +
@@ -372,14 +372,12 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
     /// non-collision with one point read).
     pub fn link(&mut self, head: &EdgeHead, payload: &E, edge_id: u64) -> crate::error::Result<()> {
         let pk = self.primary_key(edge_id);
-        if self.store.get(&pk).is_some() {
+        if self.store.get(&pk)?.is_some() {
             return Err(crate::error::Error::EdgeAlreadyLive { edge_id });
         }
         let mut batch = Batch::default();
         self.write_into(&mut batch, head, payload, edge_id)?;
-        self.store
-            .commit_batch(batch)
-            .map_err(crate::error::Error::Engine)
+        self.store.commit_batch(batch)
     }
 
     /// Encode the full write set into an externally owned batch — the
@@ -403,17 +401,17 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
     /// Every edge id in this graph, in key order — the scan an export needs.
     /// Slot 0 only: the ns also holds faces, and an unfiltered scan would read
     /// them as rows (the same trap a document export hit).
-    pub fn edge_ids(&self) -> Vec<u64> {
+    pub fn edge_ids(&self) -> crate::error::Result<Vec<u64>> {
         let mut prefix = E::NS_PREFIX.to_vec();
         write_slot(&mut prefix, PRIMARY_SLOT);
-        scan_suffix_kv(&self.store, &prefix)
+        Ok(scan_suffix_kv(&self.store, &prefix)?
             .into_iter()
             .filter_map(|(suffix, _)| {
                 <[u8; 8]>::try_from(suffix.as_slice())
                     .ok()
                     .map(u64::from_be_bytes)
             })
-            .collect()
+            .collect())
     }
 
     fn dynamic_key(&self, edge_id: u64) -> Vec<u8> {
@@ -464,20 +462,35 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
     pub fn attrs(
         &self,
         edge_id: u64,
-    ) -> Option<std::collections::BTreeMap<String, DynamicValue>> {
-        let raw = self.store.get(&self.dynamic_key(edge_id))?;
+    ) -> crate::error::Result<Option<std::collections::BTreeMap<String, DynamicValue>>> {
+        let raw = match self.store.get(&self.dynamic_key(edge_id))? {
+            Some(raw) => raw,
+            None => return Ok(None),
+        };
         let mut dict = VocabCache::new(crate::model::obj_vocab::FIELD_VOCAB);
-        let frames = decode_named(&raw, &mut |id| dict.name_for(&self.store, E::NS_PREFIX, id));
+        let mut failed: Option<crate::error::Error> = None;
+        let frames = decode_named(&raw, &mut |id| {
+            match dict.name_for(&self.store, E::NS_PREFIX, id) {
+                Ok(name) => name,
+                Err(e) => {
+                    failed = Some(e);
+                    None
+                }
+            }
+        });
+        if let Some(e) = failed {
+            return Err(e);
+        }
         if frames.is_empty() {
-            return None;
+            return Ok(None);
         }
         let mut out = std::collections::BTreeMap::new();
         for frame in frames {
-            if let Some(name) = dict.name_for(&self.store, E::NS_PREFIX, frame.id) {
+            if let Some(name) = dict.name_for(&self.store, E::NS_PREFIX, frame.id)? {
                 out.insert(name, frame.value);
             }
         }
-        Some(out)
+        Ok(Some(out))
     }
 
     fn write_into(
@@ -540,9 +553,7 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
     pub fn unlink(&mut self, edge_id: u64) -> crate::error::Result<()> {
         let mut batch = Batch::default();
         self.unlink_into(&mut batch, edge_id)?;
-        self.store
-            .commit_batch(batch)
-            .map_err(crate::error::Error::Engine)
+        self.store.commit_batch(batch)
     }
 
     /// Encode the full delete set into an externally owned batch — the
@@ -554,7 +565,7 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
         let pk = self.primary_key(edge_id);
         let bytes = self
             .store
-            .get(&pk)
+            .get(&pk)?
             .ok_or(crate::error::Error::EdgeNotFound { edge_id })?;
         let parsed = decode_body(&bytes);
         self.check_members(&parsed.src, &parsed.dst)?;
@@ -579,100 +590,117 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
     /// Decode an edge body by id (the fetch-back step of every face scan).
     /// Non-member refs (a corrupt or foreign row) answer `None` here rather
     /// than travelling as if they belonged to this graph.
-    pub fn get_edge(&self, edge_id: u64) -> Option<EdgeBody> {
-        let body = self.store.get(&self.primary_key(edge_id))?;
+    pub fn get_edge(&self, edge_id: u64) -> crate::error::Result<Option<EdgeBody>> {
+        let body = match self.store.get(&self.primary_key(edge_id))? {
+            Some(body) => body,
+            None => return Ok(None),
+        };
         let parsed = decode_body(&body);
-        self.check_members(&parsed.src, &parsed.dst).ok()?;
-        Some(parsed)
+        // A row whose endpoints are not members of this graph is not this
+        // graph's edge: filtered out, exactly as before.
+        if self.check_members(&parsed.src, &parsed.dst).is_err() {
+            return Ok(None);
+        }
+        Ok(Some(parsed))
     }
 
     /// The edge's payload decoded into the declaration's own type.
-    pub fn edge(&self, edge_id: u64) -> Option<E> {
-        self.get_edge(edge_id)
-            .map(|b| E::decode_payload(&b.payload))
+    pub fn edge(&self, edge_id: u64) -> crate::error::Result<Option<E>> {
+        Ok(self
+            .get_edge(edge_id)?
+            .map(|b| E::decode_payload(&b.payload)))
     }
 
     /// All edge ids on one traversal face, decoded back through the
     /// primary. `slot` selects out/in; the prefix must be the full
     /// NodeRef wire (a full ref leads every traversal entry).
-    fn traverse(&self, slot: Slot, node: &NodeRef) -> Vec<u64> {
+    fn traverse(&self, slot: Slot, node: &NodeRef) -> crate::error::Result<Vec<u64>> {
         let p = self.face_key(slot, &[&node.encode()]);
-        self.store
-            .scan_suffix(&p)
-            .iter()
-            .filter(|sfx| sfx.len() == 8)
-            .map(|sfx| u64::from_be_bytes(sfx.as_slice().try_into().unwrap()))
-            .collect()
+        Ok(self
+            .store
+            .scan_suffix(&p)?
+            .into_iter()
+            .filter_map(|sfx| <[u8; 8]>::try_from(sfx.as_slice()).ok())
+            .map(u64::from_be_bytes)
+            .collect())
     }
 
     /// Out-edges of one node (untyped, 0x07).
-    pub fn out_edges(&self, src: &NodeRef) -> Vec<u64> {
+    pub fn out_edges(&self, src: &NodeRef) -> crate::error::Result<Vec<u64>> {
         self.traverse(EDGE_OUT_SLOT, src)
     }
 
     /// In-edges of one node (untyped, 0x08).
-    pub fn in_edges(&self, dst: &NodeRef) -> Vec<u64> {
+    pub fn in_edges(&self, dst: &NodeRef) -> crate::error::Result<Vec<u64>> {
         self.traverse(EDGE_IN_SLOT, dst)
     }
 
     /// Predicate-qualified traversal (0x09/0x0A): all edge ids of one
     /// predicate from one node. An unknown predicate scans nothing — there
     /// is no face to match.
-    pub fn typed_edges(&mut self, slot: Slot, predicate: &str, node: &NodeRef) -> Vec<u64> {
-        let predicate_vocab_id = match self.vocab.id_get(&self.store, E::NS_PREFIX, predicate) {
+    pub fn typed_edges(
+        &mut self,
+        slot: Slot,
+        predicate: &str,
+        node: &NodeRef,
+    ) -> crate::error::Result<Vec<u64>> {
+        let predicate_vocab_id = match self.vocab.id_get(&self.store, E::NS_PREFIX, predicate)? {
             Some(id) => id,
-            None => return Vec::new(),
+            None => return Ok(Vec::new()),
         };
         let p = self.face_key(slot, &[&predicate_vocab_id.to_be_bytes(), &node.encode()]);
-        self.store
-            .scan_suffix(&p)
-            .iter()
-            .filter(|sfx| sfx.len() == 8)
-            .map(|sfx| u64::from_be_bytes(sfx.as_slice().try_into().unwrap()))
-            .collect()
+        Ok(self
+            .store
+            .scan_suffix(&p)?
+            .into_iter()
+            .filter_map(|sfx| <[u8; 8]>::try_from(sfx.as_slice()).ok())
+            .map(u64::from_be_bytes)
+            .collect())
     }
 
     /// Predicate-qualified out-edges (0x09).
-    pub fn typed_out(&mut self, predicate: &str, src: &NodeRef) -> Vec<u64> {
+    pub fn typed_out(&mut self, predicate: &str, src: &NodeRef) -> crate::error::Result<Vec<u64>> {
         self.typed_edges(EDGE_PREDICATE_OUT_SLOT, predicate, src)
     }
 
     /// Predicate-qualified in-edges (0x0A).
-    pub fn typed_in(&mut self, predicate: &str, dst: &NodeRef) -> Vec<u64> {
+    pub fn typed_in(&mut self, predicate: &str, dst: &NodeRef) -> crate::error::Result<Vec<u64>> {
         self.typed_edges(EDGE_PREDICATE_IN_SLOT, predicate, dst)
     }
 
     /// All edges of one predicate, regardless of endpoints (0x06) — the
     /// `MATCH ()-[r:has]->()` entry point.
-    pub fn edges_of_predicate(&mut self, predicate: &str) -> Vec<u64> {
-        let predicate_vocab_id = match self.vocab.id_get(&self.store, E::NS_PREFIX, predicate) {
+    pub fn edges_of_predicate(&mut self, predicate: &str) -> crate::error::Result<Vec<u64>> {
+        let predicate_vocab_id = match self.vocab.id_get(&self.store, E::NS_PREFIX, predicate)? {
             Some(id) => id,
-            None => return Vec::new(),
+            None => return Ok(Vec::new()),
         };
         let p = self.face_key(
             EDGE_PREDICATE_INDEX_SLOT,
             &[&predicate_vocab_id.to_be_bytes()],
         );
-        self.store
-            .scan_suffix(&p)
-            .iter()
-            .filter(|sfx| sfx.len() == 8)
-            .map(|sfx| u64::from_be_bytes(sfx.as_slice().try_into().unwrap()))
-            .collect()
+        Ok(self
+            .store
+            .scan_suffix(&p)?
+            .into_iter()
+            .filter_map(|sfx| <[u8; 8]>::try_from(sfx.as_slice()).ok())
+            .map(u64::from_be_bytes)
+            .collect())
     }
 
     /// Filter by declared attribute (a counting-family 0x1 face): scan the
     /// face with the caller-encoded probe and return edge ids. The derive
     /// emits the per-field marker structs; this is the shared byte-level
     /// walk.
-    pub fn by_attr_face(&self, slot: Slot, encoded: &[u8]) -> Vec<u64> {
+    pub fn by_attr_face(&self, slot: Slot, encoded: &[u8]) -> crate::error::Result<Vec<u64>> {
         let p = self.face_key(slot, &[encoded]);
-        self.store
-            .scan_suffix(&p)
-            .iter()
-            .filter(|sfx| sfx.len() == 8)
-            .map(|sfx| u64::from_be_bytes(sfx.as_slice().try_into().unwrap()))
-            .collect()
+        Ok(self
+            .store
+            .scan_suffix(&p)?
+            .into_iter()
+            .filter_map(|sfx| <[u8; 8]>::try_from(sfx.as_slice()).ok())
+            .map(u64::from_be_bytes)
+            .collect())
     }
 
     /// The NEIGHBOR nodes one hop out (untyped, 0x07): edge ids resolved
@@ -682,36 +710,38 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
     /// matter. Parallel edges collapse into repeated refs; dedupe if
     /// the caller wants a set (`NodeRef` is Hash + Ord for exactly
     /// this), or keep the repeats as multiplicity.
-    pub fn out_nodes(&self, src: &NodeRef) -> Vec<NodeRef> {
-        self.out_edges(src)
-            .iter()
-            .filter_map(|id| self.get_edge(*id))
-            .map(|b| b.dst)
-            .collect()
+    pub fn out_nodes(&self, src: &NodeRef) -> crate::error::Result<Vec<NodeRef>> {
+        let ids = self.out_edges(src)?;
+        self.endpoints(ids, |b| &b.dst)
     }
 
     /// Neighbor nodes one hop in (untyped, 0x08) — the in-direction
     /// mirror of [`out_nodes`](Self::out_nodes).
-    pub fn in_nodes(&self, dst: &NodeRef) -> Vec<NodeRef> {
-        self.in_edges(dst)
-            .iter()
-            .filter_map(|id| self.get_edge(*id))
-            .map(|b| b.src)
-            .collect()
+    pub fn in_nodes(&self, dst: &NodeRef) -> crate::error::Result<Vec<NodeRef>> {
+        let ids = self.in_edges(dst)?;
+        self.endpoints(ids, |b| &b.src)
     }
 
     /// Predicate-qualified neighbors (0x09/0x0A): `typed_out`/`typed_in`
     /// resolved to far endpoints. Unknown predicates scan empty, like their
     /// edge-id counterparts.
-    pub fn typed_out_nodes(&mut self, predicate: &str, src: &NodeRef) -> Vec<NodeRef> {
-        let ids = self.typed_out(predicate, src);
+    pub fn typed_out_nodes(
+        &mut self,
+        predicate: &str,
+        src: &NodeRef,
+    ) -> crate::error::Result<Vec<NodeRef>> {
+        let ids = self.typed_out(predicate, src)?;
         self.endpoints(ids, |b| &b.dst)
     }
 
     /// Predicate-qualified in-neighbors (0x0A) — the in-direction mirror of
     /// [`typed_out_nodes`](Self::typed_out_nodes).
-    pub fn typed_in_nodes(&mut self, predicate: &str, dst: &NodeRef) -> Vec<NodeRef> {
-        let ids = self.typed_in(predicate, dst);
+    pub fn typed_in_nodes(
+        &mut self,
+        predicate: &str,
+        dst: &NodeRef,
+    ) -> crate::error::Result<Vec<NodeRef>> {
+        let ids = self.typed_in(predicate, dst)?;
         self.endpoints(ids, |b| &b.src)
     }
 
@@ -719,11 +749,20 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
     /// endpoint. A dead id (concurrent unlink between scan and fetch)
     /// drops out silently — neighbors are a scan snapshot, not a
     /// transaction.
-    fn endpoints(&self, ids: Vec<u64>, side: impl Fn(&EdgeBody) -> &NodeRef) -> Vec<NodeRef> {
-        ids.iter()
-            .filter_map(|id| self.get_edge(*id))
-            .map(|b| side(&b).clone())
-            .collect()
+    fn endpoints(
+        &self,
+        ids: Vec<u64>,
+        side: impl Fn(&EdgeBody) -> &NodeRef,
+    ) -> crate::error::Result<Vec<NodeRef>> {
+        let mut out = Vec::with_capacity(ids.len());
+        for id in ids {
+            // A dead id (concurrent unlink between scan and fetch) drops out:
+            // neighbors are a scan snapshot, not a transaction.
+            if let Some(body) = self.get_edge(id)? {
+                out.push(side(&body).clone());
+            }
+        }
+        Ok(out)
     }
 }
 

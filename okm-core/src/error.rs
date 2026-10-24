@@ -71,6 +71,18 @@ pub enum Error {
         ns: u16,
         graph_ns: u16,
     },
+    /// Stored bytes that the declaration says cannot exist (a primary entry
+    /// shorter than its own key). The store is broken, not the caller — but a
+    /// read verb reports it instead of aborting the process.
+    #[error("{what}")]
+    Corrupt { what: String },
+    /// A scan was issued through a `BatchStore`. A batch's pending ops and the
+    /// store's iterator cannot be merged into one ordered view, so this is a
+    /// caller mistake rather than a store condition — reported, never hidden.
+    #[error(
+        "a BatchStore refuses scans: a batch's pending ops and the store's iterator cannot be          merged into one ordered view. Return to the store, read what you need, then open the          batch"
+    )]
+    ScanThroughBatch,
     /// The engine refused the commit; the text is the engine's own.
     #[error("engine commit failed: {0}")]
     Engine(String),

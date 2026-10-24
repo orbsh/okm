@@ -206,11 +206,11 @@ impl<T: WireTransport> WireClient<T> {
         self.round_trip(frame).await
     }
 
-    /// The explicit-error surface: the trait methods above swallow
-    /// failures into the empty shapes their signatures allow (`None` /
-    /// `[]`). A wasm event loop that wants to DISTINGUISH "absent" from
-    /// "connection died" — to reconnect, to park writes — calls this.
-    /// Same FIFO discipline; the Err is the transport failure reason.
+    /// The raw request surface: one frame in, one answer out, the
+    /// transport failure as `Err`. The trait methods above already report
+    /// `Err` — "absent" and "connection died" stopped being the same
+    /// answer — so this is for callers sending frames the trait has no
+    /// verb for. Same FIFO discipline.
     pub fn query(&self, frame: &OpFrame) -> impl Future<Output = Result<OpResponse, String>> + Unpin {
         self.round_trip(frame)
     }
@@ -287,33 +287,38 @@ impl<T: WireTransport> VirtualStorageAsync for WireClient<T> {
             .post(&OpFrame::one(OP_DELETE, key.to_vec(), Vec::new()).encode());
     }
 
-    async fn get(&self, key: &[u8]) -> Option<Vec<u8>> {
-        self.ask(&OpFrame::one(OP_GET, key.to_vec(), Vec::new()))
+    async fn get(&self, key: &[u8]) -> crate::error::Result<Option<Vec<u8>>> {
+        Ok(self
+            .ask(&OpFrame::one(OP_GET, key.to_vec(), Vec::new()))
             .await
-            .ok()
-            .and_then(|r| r.value)
+            .map_err(crate::error::Error::Engine)?
+            .value)
     }
 
-    async fn scan_suffix(&self, prefix: &[u8]) -> Vec<Vec<u8>> {
+    async fn scan_suffix(&self, prefix: &[u8]) -> crate::error::Result<Vec<Vec<u8>>> {
         // legacy prefix-scan shape: empty value segment
-        self.ask(&OpFrame::one(OP_SCAN, prefix.to_vec(), Vec::new()))
+        Ok(self
+            .ask(&OpFrame::one(OP_SCAN, prefix.to_vec(), Vec::new()))
             .await
-            .ok()
-            .map(|r| r.suffixes)
-            .unwrap_or_default()
+            .map_err(crate::error::Error::Engine)?
+            .suffixes)
     }
 
-    async fn scan_range(&self, begin: &[u8], end: Option<&[u8]>) -> Vec<Vec<u8>> {
+    async fn scan_range(
+        &self,
+        begin: &[u8],
+        end: Option<&[u8]>,
+    ) -> crate::error::Result<Vec<Vec<u8>>> {
         let mut value = vec![0u8];
         if let Some(end) = end {
             value[0] = 1;
             value.extend_from_slice(end);
         }
-        self.ask(&OpFrame::one(OP_SCAN, begin.to_vec(), value))
+        Ok(self
+            .ask(&OpFrame::one(OP_SCAN, begin.to_vec(), value))
             .await
-            .ok()
-            .map(|r| r.suffixes)
-            .unwrap_or_default()
+            .map_err(crate::error::Error::Engine)?
+            .suffixes)
     }
 
     /// Buffered page walk (ADR-0028 boundary): the async trait must hand
@@ -336,30 +341,33 @@ impl<T: WireTransport> VirtualStorageAsync for WireClient<T> {
             cursor: None,
             done: false,
         };
-        // Any wire failure ends the walk where it stands — a truncated
-        // stream beats a panic, and the `Vec` return loses the error
-        // anyway (the trait surface has no Result; the same truncation
-        // shape the sync remote's buffered default has).
+        // A wire failure stops the walk and is handed to the CONSUMER as one
+        // error item: the stream is truncated where it stands, but "truncated
+        // because the transport died" is no longer indistinguishable from
+        // "the range ended".
+        let mut items: Vec<crate::error::Result<(Vec<u8>, Vec<u8>)>> = Vec::new();
         while !st.done {
-            if self.refill(&mut st).await.is_err() {
+            if let Err(e) = self.refill(&mut st).await {
+                items.push(Err(crate::error::Error::Engine(e)));
                 break;
             }
         }
-        // ScanIter::Buffered speaks `vec::IntoIter`; collect once.
-        ScanIter::Buffered(st.buf.into_iter().collect::<Vec<_>>().into_iter())
+        items.extend(st.buf.drain(..).map(Ok));
+        ScanIter::Buffered(items.into_iter())
     }
 
     /// One `commit_batch` = one frame = one receiver execution pass —
     /// the cross-assembly-point atomic path (ADR-0003) survives
     /// remoteness and async transport alike.
-    async fn commit_batch(&self, batch: Batch) -> Result<(), String> {
+    async fn commit_batch(&self, batch: Batch) -> crate::error::Result<()> {
         let inner = Rc::clone(&self.inner);
         let inner = inner.borrow_mut();
         if let Some(reason) = inner.dead.clone() {
-            return Err(reason);
+            return Err(crate::error::Error::Engine(reason));
         }
-        inner
+        let _ = inner
             .transport
-            .post(&OpFrame::write_batch(&batch.ops).encode())
+            .post(&OpFrame::write_batch(&batch.ops).encode());
+        Ok(())
     }
 }

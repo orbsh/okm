@@ -33,9 +33,7 @@ impl<S: VirtualStorage, E: KvJunction> Junction<S, E> {
         self.save_into(&mut batch, a, b);
         // Both entries ride ONE commit: a half-written junction is a
         // relationship that exists in one direction only.
-        self.store
-            .commit_batch(batch)
-            .map_err(crate::error::Error::Engine)
+        self.store.commit_batch(batch)
     }
 
     /// Encode this junction's double write into an externally owned batch —
@@ -59,43 +57,50 @@ impl<S: VirtualStorage, E: KvJunction> Junction<S, E> {
         let mut batch = crate::engine::storage::Batch::default();
         batch.del(&e.a_side_key());
         batch.del(&e.b_side_key());
-        self.store
-            .commit_batch(batch)
-            .map_err(crate::error::Error::Engine)
+        self.store.commit_batch(batch)
     }
 
     /// A-side scan: Bs linked to `a` (reads A's collection). Requires B to
     /// have full identity (decodable).
-    pub fn forward(&self, a: &<E::A as crate::model::index::Document>::Key) -> Vec<<E::B as crate::model::index::Document>::Key> {
-        assert!(
-            E::B_HEAD.is_empty(),
-            "forward requires B full identity to decode back into the key type"
-        );
+    pub fn forward(&self, a: &<E::A as crate::model::index::Document>::Key) -> crate::error::Result<Vec<<E::B as crate::model::index::Document>::Key>> {
+        if !E::B_HEAD.is_empty() {
+            return Err(crate::error::Error::Corrupt {
+                what: "forward requires B full identity to decode back into the key type; \
+                       use reverse_prefix when the endpoint is truncated"
+                    .into(),
+            });
+        }
         let p = E::a_side_prefix(a);
-        self.store
-            .scan_suffix(&p)
+        Ok(self
+            .store
+            .scan_suffix(&p)?
             .iter()
             .map(|suffix| <E::B as crate::model::index::Document>::Key::decode(suffix))
-            .collect()
+            .collect())
     }
 
     /// B-side scan, raw prefix bytes (returned for a collection prefix scan
     /// when A's identity is truncated and cannot be decoded).
-    pub fn reverse_raw(&self, b: &<E::B as crate::model::index::Document>::Key) -> Vec<Vec<u8>> {
+    pub fn reverse_raw(
+        &self,
+        b: &<E::B as crate::model::index::Document>::Key,
+    ) -> crate::error::Result<Vec<Vec<u8>>> {
         let p = E::b_side_prefix(b);
         self.store.scan_suffix(&p)
     }
 
     /// B-side scan, decodes back into A's key type when A has full identity.
-    pub fn reverse(&self, b: &<E::B as crate::model::index::Document>::Key) -> Vec<<E::A as crate::model::index::Document>::Key> {
-        assert!(
-            E::A_HEAD.is_empty(),
-            "A is a truncated identity and cannot be decoded; use reverse_raw"
-        );
-        self.reverse_raw(b)
+    pub fn reverse(&self, b: &<E::B as crate::model::index::Document>::Key) -> crate::error::Result<Vec<<E::A as crate::model::index::Document>::Key>> {
+        if !E::A_HEAD.is_empty() {
+            return Err(crate::error::Error::Corrupt {
+                what: "A is a truncated identity and cannot be decoded; use reverse_raw".into(),
+            });
+        }
+        Ok(self
+            .reverse_raw(b)?
             .iter()
             .map(|sfx| <E::A as crate::model::index::Document>::Key::decode(sfx))
-            .collect()
+            .collect())
     }
 
     /// B-side scan (truncated-identity product): only the first `taken`
@@ -103,18 +108,19 @@ impl<S: VirtualStorage, E: KvJunction> Junction<S, E> {
     pub fn reverse_prefix(
         &self,
         b: &<E::B as crate::model::index::Document>::Key,
-    ) -> Vec<PrefixKey<<E::A as crate::model::index::Document>::Key>> {
+    ) -> crate::error::Result<Vec<PrefixKey<<E::A as crate::model::index::Document>::Key>>> {
         let taken = if E::A_HEAD.is_empty() {
             <<E::A as crate::model::index::Document>::Key as KeyEncode>::KEY_LEN
         } else {
             <<E::A as crate::model::index::Document>::Key as KeyEncode>::prefix_width(E::A_HEAD)
         };
-        self.reverse_raw(b)
+        Ok(self
+            .reverse_raw(b)?
             .iter()
             .map(|sfx| PrefixKey {
                 decoded: <E::A as crate::model::index::Document>::Key::decode(sfx),
                 taken,
             })
-            .collect()
+            .collect())
     }
 }

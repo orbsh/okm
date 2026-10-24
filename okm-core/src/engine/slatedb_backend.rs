@@ -271,32 +271,43 @@ impl VirtualStorageAsync for SlatedbStore {
     async fn put(&self, key: Vec<u8>, value: Vec<u8>) {
         self.db.put(key, value).await.expect("slatedb put failed");
     }
-    async fn get(&self, key: &[u8]) -> Option<Vec<u8>> {
+    async fn get(&self, key: &[u8]) -> crate::error::Result<Option<Vec<u8>>> {
         self.db
             .get(key)
             .await
-            .expect("slatedb get failed")
-            .map(|v| v.to_vec())
+            .map(|v| v.map(|v| v.to_vec()))
+            .map_err(|e| crate::error::Error::Engine(e.to_string()))
     }
     async fn del(&self, key: &[u8]) {
         self.db.delete(key).await.expect("slatedb delete failed");
     }
-    async fn scan_suffix(&self, prefix: &[u8]) -> Vec<Vec<u8>> {
+    async fn scan_suffix(&self, prefix: &[u8]) -> crate::error::Result<Vec<Vec<u8>>> {
         let mut it = self
             .db
             .scan_prefix(prefix, RangeFull)
             .await
-            .expect("slatedb scan failed");
+            .map_err(|e| crate::error::Error::Engine(e.to_string()))?;
         let mut out = Vec::new();
-        while let Some(kv) = it.next().await.expect("slatedb iter failed") {
-            out.push(kv.key[prefix.len()..].to_vec());
+        loop {
+            let kv = it
+                .next()
+                .await
+                .map_err(|e| crate::error::Error::Engine(e.to_string()))?;
+            match kv {
+                Some(kv) => out.push(kv.key[prefix.len()..].to_vec()),
+                None => break,
+            }
         }
-        out
+        Ok(out)
     }
-    async fn scan_range(&self, begin: &[u8], end: Option<&[u8]>) -> Vec<Vec<u8>> {
+    async fn scan_range(
+        &self,
+        begin: &[u8],
+        end: Option<&[u8]>,
+    ) -> crate::error::Result<Vec<Vec<u8>>> {
         if let Some(end) = end
             && end <= begin {
-                return Vec::new();
+                return Ok(Vec::new());
             }
         // The subrange is relative to the prefix (slatedb semantics);
         // an empty prefix makes the FULL-key range the subrange.
@@ -304,12 +315,19 @@ impl VirtualStorageAsync for SlatedbStore {
             Some(end) => self.db.scan_prefix(b"", begin..end).await,
             None => self.db.scan_prefix(b"", begin..).await,
         }
-        .expect("slatedb scan failed");
+        .map_err(|e| crate::error::Error::Engine(e.to_string()))?;
         let mut out = Vec::new();
-        while let Some(kv) = it.next().await.expect("slatedb iter failed") {
-            out.push(kv.key.to_vec());
+        loop {
+            let kv = it
+                .next()
+                .await
+                .map_err(|e| crate::error::Error::Engine(e.to_string()))?;
+            match kv {
+                Some(kv) => out.push(kv.key.to_vec()),
+                None => break,
+            }
         }
-        out
+        Ok(out)
     }
     /// Override of the buffered default (ADR-0027): materialize the range
     /// in ONE native pass — keys and values come from the same
@@ -329,21 +347,37 @@ impl VirtualStorageAsync for SlatedbStore {
                     Vec::new().into_iter(),
                 );
             }
-        let mut it = match end {
+        let mut pairs: Vec<crate::error::Result<(Vec<u8>, Vec<u8>)>> = Vec::new();
+        let opened = match end {
             Some(end) => self.db.scan_prefix(b"", begin..end).await,
             None => self.db.scan_prefix(b"", begin..).await,
-        }
-        .expect("slatedb scan failed");
-        let mut pairs = Vec::new();
-        while let Some(kv) = it.next().await.expect("slatedb iter failed") {
-            pairs.push((kv.key.to_vec(), kv.value.to_vec()));
+        };
+        let mut it = match opened {
+            Ok(it) => it,
+            Err(e) => {
+                pairs.push(Err(crate::error::Error::Engine(e.to_string())));
+                return crate::engine::storage::ScanIter::Buffered(pairs.into_iter());
+            }
+        };
+        loop {
+            match it.next().await {
+                Ok(Some(kv)) => pairs.push(Ok((kv.key.to_vec(), kv.value.to_vec()))),
+                Ok(None) => break,
+                Err(e) => {
+                    pairs.push(Err(crate::error::Error::Engine(e.to_string())));
+                    break;
+                }
+            }
         }
         crate::engine::storage::ScanIter::Buffered(pairs.into_iter())
     }
     /// Native batch (ADR-0027): slatedb's `WriteBatch` ships as ONE
     /// `db.write` — a real single-write atomic form, not a replay; the
     /// durable wait mirrors the sync engines' WAL boundary.
-    async fn commit_batch(&self, batch: crate::engine::storage::Batch) -> Result<(), String> {
+    async fn commit_batch(
+        &self,
+        batch: crate::engine::storage::Batch,
+    ) -> crate::error::Result<()> {
         let mut wb = slatedb::WriteBatch::new();
         for (k, v) in &batch.ops {
             match v {
@@ -351,8 +385,14 @@ impl VirtualStorageAsync for SlatedbStore {
                 None => wb.delete(k.as_slice()),
             }
         }
-        let h = self.db.write(wb).await.map_err(|e| e.to_string())?;
-        h.await_durable().await.map_err(|e| e.to_string())
+        let h = self
+            .db
+            .write(wb)
+            .await
+            .map_err(|e| crate::error::Error::Engine(e.to_string()))?;
+        h.await_durable()
+            .await
+            .map_err(|e| crate::error::Error::Engine(e.to_string()))
     }
 }
 
@@ -387,22 +427,24 @@ impl<S: VirtualStorageAsync, E: KvJunction> AsyncJunction<S, E> {
     }
 
     /// A 端扫描：与 a 相连的全部 B 身份（要求 B 全量身份，可 decode）。
-    pub async fn forward(&self, a: &AKey<E>) -> Vec<BKey<E>> {
-        assert!(
-            E::B_HEAD.is_empty(),
-            "forward 需要 B 全量身份才能 decode 回类型"
-        );
+    pub async fn forward(&self, a: &AKey<E>) -> crate::error::Result<Vec<BKey<E>>> {
+        if !E::B_HEAD.is_empty() {
+            return Err(crate::error::Error::Corrupt {
+                what: "forward needs B's full identity to decode back into the key type".into(),
+            });
+        }
         let p = E::a_side_prefix(a);
-        self.store
+        Ok(self
+            .store
             .scan_suffix(&p)
-            .await
+            .await?
             .iter()
             .map(|sfx| BKey::<E>::decode(sfx))
-            .collect()
+            .collect())
     }
 
     /// B 端扫描的原始前缀字节（A 为截断身份时无法 decode）
-    pub async fn reverse_raw(&self, b: &BKey<E>) -> Vec<Vec<u8>> {
+    pub async fn reverse_raw(&self, b: &BKey<E>) -> crate::error::Result<Vec<Vec<u8>>> {
         let p = E::b_side_prefix(b);
         self.store.scan_suffix(&p).await
     }
@@ -458,7 +500,7 @@ impl SlatedbSync {
         if let Some(end) = end
             && end <= begin
         {
-            let empty: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+            let empty: Vec<crate::error::Result<(Vec<u8>, Vec<u8>)>> = Vec::new();
             return super::storage::ScanIter::Buffered(empty.into_iter());
         }
         let begin = begin.to_vec();
@@ -477,20 +519,25 @@ impl VirtualStorage for SlatedbSync {
     fn put(&self, key: Vec<u8>, value: Vec<u8>) {
         self.put_sync(key, value)
     }
-    fn get(&self, key: &[u8]) -> Option<Vec<u8>> {
-        self.get_sync(key)
+    fn get(&self, key: &[u8]) -> crate::error::Result<Option<Vec<u8>>> {
+        Ok(self.get_sync(key))
     }
     fn del(&self, key: &[u8]) {
         self.del_sync(key)
     }
-    fn scan_suffix(&self, prefix: &[u8]) -> Vec<Vec<u8>> {
-        self.scan_range_sync(prefix, None)
+    fn scan_suffix(&self, prefix: &[u8]) -> crate::error::Result<Vec<Vec<u8>>> {
+        Ok(self
+            .scan_range_sync(prefix, None)
             .into_iter()
             .filter_map(|k| k.strip_prefix(prefix).map(|s| s.to_vec()))
-            .collect()
+            .collect())
     }
-    fn scan_range(&self, begin: &[u8], end: Option<&[u8]>) -> Vec<Vec<u8>> {
-        self.scan_range_sync(begin, end)
+    fn scan_range(
+        &self,
+        begin: &[u8],
+        end: Option<&[u8]>,
+    ) -> crate::error::Result<Vec<Vec<u8>>> {
+        Ok(self.scan_range_sync(begin, end))
     }
     fn scan_range_iter(
         &self,

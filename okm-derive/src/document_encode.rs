@@ -1355,9 +1355,9 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> TS2 {
                             let mut pkey = <#d_ty as ::okm_core::Document>::NS_PREFIX.to_vec();
                             ::okm_core::write_slot(&mut pkey, ::okm_core::PRIMARY_SLOT);
                             pkey.extend_from_slice(&self.#fid.keys[i].encode());
-                            if let Some(payload) = store.get(&pkey) {
+                            if let Some(payload) = store.get(&pkey)? {
                                 let mut child = <#d_ty as ::okm_core::Document>::decode_payload(&payload);
-                                <#d_ty as ::okm_core::Document>::__okm_embed_deref(&mut child, store);
+                                <#d_ty as ::okm_core::Document>::__okm_embed_deref(&mut child, store)?;
                                 self.#fid.values[i] = Some(child);
                             }
                         }
@@ -1369,9 +1369,9 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> TS2 {
                         let mut pkey = <#d_ty as ::okm_core::Document>::NS_PREFIX.to_vec();
                         ::okm_core::write_slot(&mut pkey, ::okm_core::PRIMARY_SLOT);
                         pkey.extend_from_slice(&self.#fid.key.encode());
-                        if let Some(payload) = store.get(&pkey) {
+                        if let Some(payload) = store.get(&pkey)? {
                             let mut child = <#d_ty as ::okm_core::Document>::decode_payload(&payload);
-                            <#d_ty as ::okm_core::Document>::__okm_embed_deref(&mut child, store);
+                            <#d_ty as ::okm_core::Document>::__okm_embed_deref(&mut child, store)?;
                             self.#fid.value = Some(child);
                         }
                     }
@@ -1435,8 +1435,12 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> TS2 {
             }
         });
         quote! {
-            fn __okm_embed_deref(&mut self, store: &dyn ::okm_core::VirtualStorage) {
+            fn __okm_embed_deref(
+                &mut self,
+                store: &dyn ::okm_core::VirtualStorage,
+            ) -> ::okm_core::error::Result<()> {
                 #(#deref_arms)*
+                ::core::result::Result::Ok(())
             }
             fn __okm_embed_entries(&self) -> ::std::vec::Vec<(::std::vec::Vec<u8>, ::std::vec::Vec<u8>)> {
                 let mut entries = ::std::vec::Vec::new();
@@ -1477,7 +1481,7 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> TS2 {
                         let mut cache = ::okm_core::obj_vocab::VocabCache::<#d>::new(
                             ::okm_core::obj_vocab::data_vocab(#vi_lit),
                         );
-                        if let Some(name) = cache.name_for(store, &header, id) {
+                        if let Some(name) = cache.name_for(store, &header, id)? {
                             self.#fid.set_name(name);
                         }
                     }
@@ -1494,10 +1498,14 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> TS2 {
                 #(#intern_arms)*
                 ::core::result::Result::Ok(())
             }
-            fn __okm_deref_vocab(&mut self, store: &dyn ::okm_core::VirtualStorage) {
+            fn __okm_deref_vocab(
+                &mut self,
+                store: &dyn ::okm_core::VirtualStorage,
+            ) -> ::okm_core::error::Result<()> {
                 let mut header = <Self as ::okm_core::Document>::PARTITION_PREFIX.to_vec();
                 header.extend_from_slice(<Self as ::okm_core::Document>::NS_PREFIX);
                 #(#deref_arms)*
+                ::core::result::Result::Ok(())
             }
         }
     };

@@ -110,11 +110,12 @@ pub fn vocab_label<S: VirtualStorage + ?Sized>(
     header: &[u8],
     faces: VocabFaces,
     id_be: &[u8],
-) -> Option<String> {
+) -> crate::error::Result<Option<String>> {
     let mut key = header.to_vec();
     write_slot(&mut key, faces.id_slot);
     key.extend_from_slice(id_be);
-    String::from_utf8(store.get(&key)?).ok()
+    let raw = store.get(&key)?;
+    Ok(raw.and_then(|raw| String::from_utf8(raw).ok()))
 }
 
 /// Inverse of [`vocab_label`]: the id bytes naming `label`, ALLOCATING on first
@@ -216,12 +217,12 @@ impl<I: VocabId> VocabCache<I> {
         // Already interned? ONE point probe — no scan, and through a BatchStore
         // it sees a label this same batch allocated earlier.
         let name_key = self.name_key(header, label);
-        if let Some(id) = store.get(&name_key).and_then(|raw| I::from_be(&raw)) {
+        if let Some(id) = store.get(&name_key)?.and_then(|raw| I::from_be(&raw)) {
             self.remember(id, label);
             return Ok(id);
         }
 
-        let id = self.take_next(store, header);
+        let id = self.take_next(store, header)?;
         let next = match id.succ() {
             Some(next) => next,
             None => {
@@ -240,9 +241,7 @@ impl<I: VocabId> VocabCache<I> {
         batch.put(name_key, id.to_be());
         batch.put(id_key, label.as_bytes().to_vec());
         batch.put(self.cursor_key(header), next.to_be());
-        store
-            .commit_batch(batch)
-            .map_err(crate::error::Error::Engine)?;
+        store.commit_batch(batch)?;
 
         self.next_id = Some(next);
         self.remember(id, label);
@@ -257,14 +256,21 @@ impl<I: VocabId> VocabCache<I> {
         store: &S,
         header: &[u8],
         id: I,
-    ) -> Option<String> {
+    ) -> crate::error::Result<Option<String>> {
         if let Some(name) = self.by_id.get(&id) {
-            return Some(name.clone());
+            return Ok(Some(name.clone()));
         }
-        let raw = store.get(&self.id_key(header, id))?;
-        let name = String::from_utf8(raw).ok()?;
+        let raw = match store.get(&self.id_key(header, id))? {
+            Some(raw) => raw,
+            None => return Ok(None),
+        };
+        // Bytes that are not a label: the entry is corrupt, and an unknown id
+        // is the answer the caller already handles (never an invented name).
+        let Ok(name) = String::from_utf8(raw) else {
+            return Ok(None);
+        };
         self.remember(id, &name);
-        Some(name)
+        Ok(Some(name))
     }
 
     /// Non-allocating label → id probe. One point probe (memoized).
@@ -273,14 +279,19 @@ impl<I: VocabId> VocabCache<I> {
         store: &S,
         header: &[u8],
         label: &str,
-    ) -> Option<I> {
+    ) -> crate::error::Result<Option<I>> {
         if let Some(id) = self.by_name.get(label) {
-            return Some(*id);
+            return Ok(Some(*id));
         }
-        let raw = store.get(&self.name_key(header, label))?;
-        let id = I::from_be(&raw)?;
+        let raw = match store.get(&self.name_key(header, label))? {
+            Some(raw) => raw,
+            None => return Ok(None),
+        };
+        let Some(id) = I::from_be(&raw) else {
+            return Ok(None);
+        };
         self.remember(id, label);
-        Some(id)
+        Ok(Some(id))
     }
 
     fn remember(&mut self, id: I, label: &str) {
@@ -294,39 +305,47 @@ impl<I: VocabId> VocabCache<I> {
     /// when the vocabulary is empty (ids are never deleted), so a populated
     /// legacy vocabulary falls through to the one-time max + 1 scan, and the
     /// allocation writes the cursor that retires that path forever.
-    fn take_next<S: VirtualStorage + ?Sized>(&mut self, store: &S, header: &[u8]) -> I {
+    fn take_next<S: VirtualStorage + ?Sized>(
+        &mut self,
+        store: &S,
+        header: &[u8],
+    ) -> crate::error::Result<I> {
         if let Some(next) = self.next_id {
-            return next;
+            return Ok(next);
         }
         let next = match store
-            .get(&self.cursor_key(header))
+            .get(&self.cursor_key(header))?
             .and_then(|raw| I::from_be(&raw))
         {
             Some(cursor) => cursor,
             None => {
-                if store.get(&self.id_key(header, I::ZERO)).is_none() {
+                if store.get(&self.id_key(header, I::ZERO))?.is_none() {
                     I::ZERO
                 } else {
-                    self.scan_max_plus_one(store, header)
+                    self.scan_max_plus_one(store, header)?
                 }
             }
         };
         self.next_id = Some(next);
-        next
+        Ok(next)
     }
 
-    fn scan_max_plus_one<S: VirtualStorage + ?Sized>(&self, store: &S, header: &[u8]) -> I {
+    fn scan_max_plus_one<S: VirtualStorage + ?Sized>(
+        &self,
+        store: &S,
+        header: &[u8],
+    ) -> crate::error::Result<I> {
         let mut prefix = header.to_vec();
         write_slot(&mut prefix, self.faces.id_slot);
         let mut next = I::ZERO;
-        for (suffix, _) in scan_suffix_kv(store, &prefix) {
+        for (suffix, _) in scan_suffix_kv(store, &prefix)? {
             if let Some(id) = I::from_be(&suffix)
                 && let Some(after) = id.succ()
             {
                 next = next.max(after);
             }
         }
-        next
+        Ok(next)
     }
 }
 

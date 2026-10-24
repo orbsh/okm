@@ -140,10 +140,10 @@ impl VirtualStorage for TestStore {
             _ => unreachable!("TestStore: no engine features enabled"),
         }
     }
-    fn get(&self, key: &[u8]) -> Option<Vec<u8>> {
+    fn get(&self, key: &[u8]) -> crate::error::Result<Option<Vec<u8>>> {
         match self {
             #[cfg(feature = "slatedb")]
-            Self::Slatedb(s) => s.get_sync(key),
+            Self::Slatedb(s) => Ok(s.get_sync(key)),
             #[cfg(feature = "fjall")]
             Self::Fjall { store, .. } => store.get(key),
             #[cfg(feature = "redb")]
@@ -164,10 +164,10 @@ impl VirtualStorage for TestStore {
             _ => unreachable!("TestStore: no engine features enabled"),
         }
     }
-    fn scan_suffix(&self, prefix: &[u8]) -> Vec<Vec<u8>> {
+    fn scan_suffix(&self, prefix: &[u8]) -> crate::error::Result<Vec<Vec<u8>>> {
         match self {
             #[cfg(feature = "slatedb")]
-            Self::Slatedb(s) => s.scan_suffix_sync(prefix),
+            Self::Slatedb(s) => Ok(s.scan_suffix_sync(prefix)),
             #[cfg(feature = "fjall")]
             Self::Fjall { store, .. } => store.scan_suffix(prefix),
             #[cfg(feature = "redb")]
@@ -176,10 +176,14 @@ impl VirtualStorage for TestStore {
             _ => unreachable!("TestStore: no engine features enabled"),
         }
     }
-    fn scan_range(&self, begin: &[u8], end: Option<&[u8]>) -> Vec<Vec<u8>> {
+    fn scan_range(
+        &self,
+        begin: &[u8],
+        end: Option<&[u8]>,
+    ) -> crate::error::Result<Vec<Vec<u8>>> {
         match self {
             #[cfg(feature = "slatedb")]
-            Self::Slatedb(s) => s.scan_range_sync(begin, end),
+            Self::Slatedb(s) => Ok(s.scan_range_sync(begin, end)),
             #[cfg(feature = "fjall")]
             Self::Fjall { store, .. } => store.scan_range(begin, end),
             #[cfg(feature = "redb")]
