@@ -54,11 +54,11 @@ fn partition_segment_precedes_ns_header() {
 
     // 表内 put/get/scan 正常（经 partition 前缀域）。
     pt.put(&k, &Partitioned { value: 42 }).unwrap();
-    assert_eq!(pt.get(&k).unwrap().value, 42);
-    assert_eq!(pt.scan_keys().len(), 1);
+    assert_eq!(pt.get(&k).unwrap().unwrap().value, 42);
+    assert_eq!(pt.scan_keys().unwrap().len(), 1);
     pl.put(&k, &Plain { value: 7 }).unwrap();
-    assert_eq!(pl.get(&k).unwrap().value, 7);
-    assert_eq!(pl.scan_keys().len(), 1);
+    assert_eq!(pl.get(&k).unwrap().unwrap().value, 7);
+    assert_eq!(pl.scan_keys().unwrap().len(), 1);
 
     // 跨表字节空间独立：两表在 TestStore（无物理 partition）下靠键
     // 前缀区分——partition 段保证两者键永不重合。

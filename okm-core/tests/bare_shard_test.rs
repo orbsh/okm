@@ -19,13 +19,13 @@ fn bare_host_executes_frames_byte_identical() {
     // hosts turn `user:1` into `[0,21]user:1`).
     s.put(b"user:1".to_vec(), b"one".to_vec());
     for _ in 0..200 {
-        if s.get(b"user:1").is_some() {
+        if s.get(b"user:1").unwrap().is_some() {
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
-    assert_eq!(s.get(b"user:1").as_deref(), Some(b"one".as_slice()));
-    assert_eq!(s.scan_suffix(b"user:"), vec![b"1".to_vec()]);
+    assert_eq!(s.get(b"user:1").unwrap().as_deref(), Some(b"one".as_slice()));
+    assert_eq!(s.scan_suffix(b"user:").unwrap(), vec![b"1".to_vec()]);
 }
 
 // The shard's OKM instance models its own domain (ns 1 = its table) —
@@ -51,7 +51,7 @@ fn shard_table_via_bare_host_lands_on_its_ns_segment() {
 
     t.put(&ShardDocKey { id: 5 }, &ShardDoc { title: 3 }).unwrap();
     for _ in 0..200 {
-        if t.get(&ShardDocKey { id: 5 }).is_some() {
+        if t.get(&ShardDocKey { id: 5 }).unwrap().is_some() {
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(10));
@@ -62,7 +62,7 @@ fn shard_table_via_bare_host_lands_on_its_ns_segment() {
     // local Collection on this engine would have written them. (The engine's
     // map itself is unreachable by design: hosts own the only handles,
     // and the sender-side view is the contract.)
-    let keys = t.scan_keys();
+    let keys = t.scan_keys().unwrap();
     assert_eq!(keys, vec![ShardDocKey { id: 5 }]);
 }
 
@@ -88,11 +88,11 @@ fn bare_and_hosted_coexist_with_allocation_discipline() {
     hs.put(b"appkey".to_vec(), b"app-b".to_vec());
 
     for _ in 0..200 {
-        if bs.get(&[1u8, 5]).is_some() && hs.get(b"appkey").is_some() {
+        if bs.get(&[1u8, 5]).unwrap().is_some() && hs.get(b"appkey").unwrap().is_some() {
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
-    assert_eq!(bs.get(&[1u8, 5]).as_deref(), Some(b"shard-document".as_slice()));
-    assert_eq!(hs.get(b"appkey").as_deref(), Some(b"app-b".as_slice()));
+    assert_eq!(bs.get(&[1u8, 5]).unwrap().as_deref(), Some(b"shard-document".as_slice()));
+    assert_eq!(hs.get(b"appkey").unwrap().as_deref(), Some(b"app-b".as_slice()));
 }

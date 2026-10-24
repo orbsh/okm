@@ -167,10 +167,10 @@ fn bench_scan(c: &mut Criterion) {
 
         g.throughput(Throughput::Elements(fanout as u64));
         g.bench_function(format!("scan_index+fetch_back/fanout_{fanout}"), |b| {
-            b.iter(|| black_box(t.scan::<ByLevel>(&probe).len()))
+            b.iter(|| black_box(t.scan::<ByLevel>(&probe).unwrap().len()))
         });
         g.bench_function(format!("scan_covered/fanout_{fanout}"), |b| {
-            b.iter(|| black_box(t.scan_covered::<ByLevel>(&probe).len()))
+            b.iter(|| black_box(t.scan_covered::<ByLevel>(&probe).unwrap().len()))
         });
     }
     g.finish()
@@ -192,7 +192,7 @@ fn bench_write_mock(c: &mut Criterion) {
     g.bench_function("get/point", |b| {
         let t: Collection<TestStore, BenchKey, BenchRow> = Collection::new(TestStore::slatedb_mem());
         t.put(&make_key(1), &make_row(1)).unwrap();
-        b.iter(|| black_box(t.fetch(&make_key(1)).is_some()))
+        b.iter(|| black_box(t.fetch(&make_key(1)).unwrap().is_some()))
     });
     g.bench_function("batch_commit/100_ops", |b| {
         let store = TestStore::slatedb_mem();

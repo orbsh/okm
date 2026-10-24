@@ -250,7 +250,9 @@ impl Iterator for RemoteScanIter {
     type Item = crate::error::Result<(Vec<u8>, Vec<u8>)>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.buf.is_empty() && !self.done {
+        // Same shape as `next_back`: refill until there is something to hand
+        // out (a refill either fills the buffer or marks the walk done).
+        while self.buf.is_empty() && !self.done {
             if let Err(e) = self.refill() {
                 self.done = true;
                 return Some(Err(e));
@@ -440,21 +442,26 @@ impl<S: VirtualStorage> ExecCore<S> {
                     // full key; prefix answers are already relative.
                     let plen = self.prefix.as_ref().map_or(0, Vec::len);
                     let strip = move |k: Vec<u8>| k[plen..].to_vec();
-                    let scanned = match value.first() {
+                    let scanned: crate::error::Result<Vec<Vec<u8>>> = match value.first() {
                         // [0x01][end] = bounded range; [0x00] alone =
                         // begin-only range (unbounded end); EMPTY value =
                         // the legacy prefix scan. (A begin-only range and
                         // a prefix scan are different predicates.)
-                        Some(&0x00) if value.len() == 1 => engine.scan_range(&hk, None),
+                        Some(&0x00) if value.len() == 1 => {
+                            engine.scan_range(&hk, None).map(|ks| ks.into_iter().map(&strip).collect())
+                        }
                         Some(&0x01) => {
                             let end = hosted_key(&self.prefix, &value[1..]);
-                            engine.scan_range(&hk, Some(&end))
+                            engine
+                                .scan_range(&hk, Some(&end))
+                                .map(|ks| ks.into_iter().map(&strip).collect())
                         }
-                        // empty value = prefix scan
+                        // A prefix answer is ALREADY relative to `hk`; stripping
+                        // the hosted prefix again would eat real key bytes.
                         _ => engine.scan_suffix(&hk),
                     };
                     resp.suffixes = match scanned {
-                        Ok(keys) => keys.into_iter().map(strip).collect(),
+                        Ok(keys) => keys,
                         Err(e) => {
                             resp.fault = Some(e.to_string());
                             Vec::new()
@@ -626,7 +633,7 @@ mod tests {
         let handle = NestStorage::bare(TestEngine::default());
         let rs: RemoteStore = handle.open();
         rs.put(b"k".to_vec(), b"v".to_vec());
-        assert_eq!(rs.get(b"k").as_deref(), Some(b"v".as_slice()));
+        assert_eq!(rs.get(b"k").unwrap().as_deref(), Some(b"v".as_slice()));
     }
 
     #[test]

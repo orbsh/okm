@@ -129,7 +129,7 @@ fn an_edge_table_restores_into_a_fresh_graph() {
     g.store_mut().commit_batch(batch).unwrap();
 
     // Export, write, and READ THE FILE BACK — the restore's real input.
-    let table = g.to_record_batch_table(name_of);
+    let table = g.to_record_batch_table(name_of).unwrap();
     assert_eq!(table.num_rows(), 2);
     let file = dir.path().join("facts.parquet");
     parquet_io::write_batch(&table, &file).unwrap();
@@ -139,28 +139,28 @@ fn an_edge_table_restores_into_a_fresh_graph() {
     assert_eq!(n, 2);
 
     // Ids, endpoints, predicate, payload, attributes: all back as they were.
-    let one = r.get_edge(1).unwrap();
+    let one = r.get_edge(1).unwrap().unwrap();
     assert_eq!((one.src.clone(), one.dst.clone()), (user(1), org(9)));
     assert_eq!(
-        r.predicate_vocab_name(one.predicate_vocab_id).unwrap(),
+        r.predicate_vocab_name(one.predicate_vocab_id).unwrap().unwrap(),
         "employs"
     );
-    let payload = r.edge(1).unwrap();
+    let payload = r.edge(1).unwrap().unwrap();
     assert_eq!((payload.since_year, payload.weight), (2020, 7));
-    assert_eq!(r.edge(2).unwrap().since_year, 2021);
+    assert_eq!(r.edge(2).unwrap().unwrap().since_year, 2021);
     assert_eq!(
-        r.attrs(2).unwrap().get("note"),
+        r.attrs(2).unwrap().unwrap().get("note"),
         Some(&DynamicValue::Str("hi".into()))
     );
     assert!(
-        r.attrs(1).is_none(),
+        r.attrs(1).unwrap().is_none(),
         "an edge with no attributes has none"
     );
 
     // Derived faces follow the write: traversal answers on the restored graph.
-    assert_eq!(r.out_edges(&user(1)), vec![1]);
-    assert_eq!(r.typed_in("employs", &org(9)), vec![1]);
-    assert_eq!(r.predicates().len(), 2);
+    assert_eq!(r.out_edges(&user(1)).unwrap(), vec![1]);
+    assert_eq!(r.typed_in("employs", &org(9)).unwrap(), vec![1]);
+    assert_eq!(r.predicates().unwrap().len(), 2);
 }
 
 #[test]
@@ -169,7 +169,7 @@ fn an_unknown_endpoint_collection_is_refused_by_name() {
     let mut g: Graph<_, Employment> = Graph::new(store.clone());
     g.link(&head(user(1), org(9), "employs"), &Employment::default(), 1)
         .unwrap();
-    let table = g.to_record_batch_table(name_of);
+    let table = g.to_record_batch_table(name_of).unwrap();
 
     let fresh = TestStore::slatedb_mem();
     let mut r: Graph<_, Employment> = Graph::new(fresh);
@@ -190,7 +190,7 @@ fn a_column_set_that_is_not_an_edge_table_is_refused() {
     // A DOCUMENT table handed to the edge importer: the column count is the
     // declaration's, and it does not match an edge table's shape.
     let log = <LogRow as Document>::collection(store.clone());
-    let wrong = log.to_record_batch();
+    let wrong = log.to_record_batch().unwrap();
     let file = dir.path().join("log.parquet");
     parquet_io::write_batch(&wrong, &file).unwrap();
 
@@ -231,7 +231,7 @@ fn a_watermark_restores_and_is_never_lowered() {
     let restored = okm_core::reduce::scan_reduces::<_, __OkmReduce_LogRow_0>(
         &dst,
         <LogRow as Document>::NS_PREFIX,
-    );
+    ).unwrap();
     assert_eq!(restored.len(), 1);
     assert_eq!(restored[0].1, 5);
 

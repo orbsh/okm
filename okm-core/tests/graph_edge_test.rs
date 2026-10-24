@@ -92,31 +92,31 @@ fn link_traverse_and_fetch_back_with_attributes() {
     g.link(&head(user(1), org(9), "employs"), &attrs, 1).unwrap();
 
     // Traversal faces answer.
-    assert_eq!(g.out_edges(&user(1)), vec![1]);
-    assert_eq!(g.in_edges(&org(9)), vec![1]);
-    assert_eq!(g.typed_out("employs", &user(1)), vec![1]);
-    assert_eq!(g.typed_in("employs", &org(9)), vec![1]);
-    assert_eq!(g.edges_of_predicate("employs"), vec![1]);
+    assert_eq!(g.out_edges(&user(1)).unwrap(), vec![1]);
+    assert_eq!(g.in_edges(&org(9)).unwrap(), vec![1]);
+    assert_eq!(g.typed_out("employs", &user(1)).unwrap(), vec![1]);
+    assert_eq!(g.typed_in("employs", &org(9)).unwrap(), vec![1]);
+    assert_eq!(g.edges_of_predicate("employs").unwrap(), vec![1]);
     // An unknown predicate scans nothing (no face, no panic) — and a fresh
     // handle answers without anyone priming the cache first.
-    assert!(g.typed_out("owns", &user(1)).is_empty());
-    assert!(g.edges_of_predicate("owns").is_empty());
+    assert!(g.typed_out("owns", &user(1)).unwrap().is_empty());
+    assert!(g.edges_of_predicate("owns").unwrap().is_empty());
 
     // Fetch back: both refs cut, predicate name via the graph's own
     // vocabulary, payload decoded into the declaration's type.
-    let body = g.get_edge(1).unwrap();
+    let body = g.get_edge(1).unwrap().unwrap();
     assert_eq!(body.src, user(1));
     assert_eq!(body.dst, org(9));
-    assert_eq!(g.predicate_vocab_name(body.predicate_vocab_id).unwrap(), "employs");
-    let back = g.edge(1).unwrap();
+    assert_eq!(g.predicate_vocab_name(body.predicate_vocab_id).unwrap().unwrap(), "employs");
+    let back = g.edge(1).unwrap().unwrap();
     assert_eq!((back.since_year, back.weight), (2020, 7));
 
     // Declared-attribute face: scan [since_year = 2020] → edge 1.
     let slot = <__OkmIndex_Employment_by_since as okm_core::KvIndex>::SLOT;
-    let ids = g.by_attr_face(slot, &2020u16.to_be_bytes());
+    let ids = g.by_attr_face(slot, &2020u16.to_be_bytes()).unwrap();
     assert_eq!(ids, vec![1]);
     // A value no edge carries scans empty.
-    assert!(g.by_attr_face(slot, &1999u16.to_be_bytes()).is_empty());
+    assert!(g.by_attr_face(slot, &1999u16.to_be_bytes()).unwrap().is_empty());
 }
 
 #[test]
@@ -131,11 +131,11 @@ fn predicates_are_listed_from_the_predicate_vocabulary() {
     // One 0x04 prefix scan — an exact list, id-ordered, never inferred
     // from the index faces.
     assert_eq!(
-        g.predicates(),
+        g.predicates().unwrap(),
         vec![(0u16, "employs".to_string()), (1u16, "contracts".to_string())]
     );
     // Repeating an existing name allocates nothing new.
-    assert_eq!(g.predicates().len(), 2);
+    assert_eq!(g.predicates().unwrap().len(), 2);
 }
 
 #[test]
@@ -158,13 +158,13 @@ fn the_predicate_cursor_is_the_id_faces_bare_prefix() {
         .unwrap();
 
     assert_eq!(
-        store.get(&bare(okm_core::index::PREDICATE_VOCAB_ID_SLOT)),
+        store.get(&bare(okm_core::index::PREDICATE_VOCAB_ID_SLOT)).unwrap(),
         Some(1u16.to_be_bytes().to_vec()),
         "next predicate id: one entry, no suffix"
     );
     assert!(
         store
-            .get(&bare(okm_core::index::FIELD_VOCAB_ID_SLOT))
+            .get(&bare(okm_core::index::FIELD_VOCAB_ID_SLOT)).unwrap()
             .is_none(),
         "a predicate allocation writes no field-name cursor"
     );
@@ -173,15 +173,15 @@ fn the_predicate_cursor_is_the_id_faces_bare_prefix() {
     // exists for. Numbering resumes past the allocated predicate instead of
     // restarting at zero.
     let mut g2: Graph<_, Employment> = Graph::new(store.clone());
-    assert_eq!(g2.predicate_vocab_name(0).as_deref(), Some("employs"));
+    assert_eq!(g2.predicate_vocab_name(0).unwrap().as_deref(), Some("employs"));
     g2.link(&head(user(2), org(9), "contracts"), &Employment::default(), 2)
         .unwrap();
     assert_eq!(
-        g2.predicates(),
+        g2.predicates().unwrap(),
         vec![(0u16, "employs".to_string()), (1u16, "contracts".to_string())]
     );
     assert_eq!(
-        store.get(&bare(okm_core::index::PREDICATE_VOCAB_ID_SLOT)),
+        store.get(&bare(okm_core::index::PREDICATE_VOCAB_ID_SLOT)).unwrap(),
         Some(2u16.to_be_bytes().to_vec()),
         "the cursor advanced with the second allocation"
     );
@@ -197,14 +197,14 @@ fn unlink_and_relabeled_parallel_edges() {
 
     // Parallel edges (same endpoints, different predicates) are
     // independent edges on every face.
-    assert_eq!(g.typed_out("employs", &user(1)), vec![1]);
-    assert_eq!(g.typed_out("contracts", &user(1)), vec![2]);
-    assert_eq!(g.edges_of_predicate("contracts"), vec![2]);
+    assert_eq!(g.typed_out("employs", &user(1)).unwrap(), vec![1]);
+    assert_eq!(g.typed_out("contracts", &user(1)).unwrap(), vec![2]);
+    assert_eq!(g.edges_of_predicate("contracts").unwrap(), vec![2]);
 
     g.unlink(1).unwrap();
-    assert_eq!(g.typed_out("employs", &user(1)), Vec::<u64>::new());
-    assert_eq!(g.edges_of_predicate("employs"), Vec::<u64>::new());
-    assert_eq!(g.out_edges(&user(1)), vec![2], "the other edge survives");
+    assert_eq!(g.typed_out("employs", &user(1)).unwrap(), Vec::<u64>::new());
+    assert_eq!(g.edges_of_predicate("employs").unwrap(), Vec::<u64>::new());
+    assert_eq!(g.out_edges(&user(1)).unwrap(), vec![2], "the other edge survives");
 }
 
 #[test]
@@ -217,12 +217,12 @@ fn unlink_deletes_the_declared_face_entry_exactly() {
     g.link(&head(user(2), org(9), "employs"), &b, 2).unwrap();
 
     let slot = <__OkmIndex_Employment_by_since as okm_core::KvIndex>::SLOT;
-    assert_eq!(g.by_attr_face(slot, &2020u16.to_be_bytes()), vec![1, 2]);
+    assert_eq!(g.by_attr_face(slot, &2020u16.to_be_bytes()).unwrap(), vec![1, 2]);
 
     g.unlink(1).unwrap();
     // Exact deletion: the payload was decoded, the same declared value was
     // re-derived, and only edge 1's entry went away.
-    assert_eq!(g.by_attr_face(slot, &2020u16.to_be_bytes()), vec![2]);
+    assert_eq!(g.by_attr_face(slot, &2020u16.to_be_bytes()).unwrap(), vec![2]);
     assert!(g.unlink(1).is_err(), "double unlink errors, not silently re-deletes");
 }
 
@@ -244,18 +244,18 @@ fn rewrite_is_one_batch() {
     store.commit_batch(batch).unwrap();
 
     // The row is the new fact, under the same identity.
-    let body = g.get_edge(1).unwrap();
+    let body = g.get_edge(1).unwrap().unwrap();
     assert_eq!(body.dst, org(10));
-    assert_eq!(g.predicate_vocab_name(body.predicate_vocab_id).unwrap(), "contracts");
+    assert_eq!(g.predicate_vocab_name(body.predicate_vocab_id).unwrap().unwrap(), "contracts");
     // Faces: the old destination and the old predicate are gone, the new ones
     // answer, and the declared face moved with the payload.
-    assert!(g.in_edges(&org(9)).is_empty());
-    assert_eq!(g.in_edges(&org(10)), vec![1]);
-    assert!(g.edges_of_predicate("employs").is_empty());
-    assert_eq!(g.edges_of_predicate("contracts"), vec![1]);
+    assert!(g.in_edges(&org(9)).unwrap().is_empty());
+    assert_eq!(g.in_edges(&org(10)).unwrap(), vec![1]);
+    assert!(g.edges_of_predicate("employs").unwrap().is_empty());
+    assert_eq!(g.edges_of_predicate("contracts").unwrap(), vec![1]);
     let slot = <__OkmIndex_Employment_by_since as okm_core::KvIndex>::SLOT;
-    assert!(g.by_attr_face(slot, &2020u16.to_be_bytes()).is_empty());
-    assert_eq!(g.by_attr_face(slot, &2021u16.to_be_bytes()), vec![1]);
+    assert!(g.by_attr_face(slot, &2020u16.to_be_bytes()).unwrap().is_empty());
+    assert_eq!(g.by_attr_face(slot, &2021u16.to_be_bytes()).unwrap(), vec![1]);
 }
 
 #[test]
@@ -271,7 +271,7 @@ fn member_set_is_checked_at_write() {
         err.to_string().contains("not a member"),
         "unexpected error: {err}"
     );
-    assert!(g.get_edge(1).is_none(), "nothing was written");
+    assert!(g.get_edge(1).unwrap().is_none(), "nothing was written");
     // A member pair still lands.
     g.link(&head(user(1), org(9), "employs"), &Employment::default(), 1).unwrap();
 }
@@ -289,8 +289,8 @@ fn link_into_shares_one_batch_with_documents() {
         .unwrap();
     store.commit_batch(batch).unwrap();
 
-    assert!(nodes.get(&UserId { id: 1 }).is_some(), "document landed");
-    assert_eq!(g.out_edges(&user(1)), vec![1], "edge landed in the same commit");
+    assert!(nodes.get(&UserId { id: 1 }).unwrap().is_some(), "document landed");
+    assert_eq!(g.out_edges(&user(1)).unwrap(), vec![1], "edge landed in the same commit");
 }
 
 #[test]
@@ -310,7 +310,7 @@ fn node_kind_filter_intersects_typed_traversal() {
 
     // Node kind face = Org's own declared index (standard document layout).
     let kind2: Vec<u64> = orgs
-        .scan::<__OkmIndex_Org_by_kind>(&2u8.to_be_bytes())
+        .scan::<__OkmIndex_Org_by_kind>(&2u8.to_be_bytes()).unwrap()
         .into_iter()
         .filter_map(|(pk, _)| if pk.taken == 8 { Some(pk.decoded.id) } else { None })
         .collect();
@@ -319,10 +319,10 @@ fn node_kind_filter_intersects_typed_traversal() {
     // Predicate-filtered traversal from user(1), keep only edges whose dst
     // is in the kind-2 node set.
     let kept: Vec<u64> = g
-        .typed_out("employs", &user(1))
+        .typed_out("employs", &user(1)).unwrap()
         .into_iter()
         .filter(|id| {
-            let b = g.get_edge(*id).unwrap();
+            let b = g.get_edge(*id).unwrap().unwrap();
             let dst_id = u64::from_be_bytes(b.dst.pkey.as_slice().try_into().unwrap());
             kind2.contains(&dst_id)
         })
@@ -369,7 +369,7 @@ fn hex_lock_one_link() {
     okm_core::write_slot(&mut primary, PRIMARY_SLOT);
     assert_eq!(primary.len(), 3, "primary head = ns 2B + fixed face 0x00, one byte");
     primary.extend_from_slice(&id);
-    let body = store.get(&primary).unwrap();
+    let body = store.get(&primary).unwrap().unwrap();
     // Body = [src][dst][predicate_vocab_id][obj payload]; the payload is the same
     // two-segment obj a document row carries: [version u8][hot_len u16 BE]
     // [hot segment] — since_year u16 then weight u32, both fixed-width.
@@ -394,7 +394,7 @@ fn hex_lock_one_link() {
                 ns.to_vec(),
                 vocab(okm_core::index::PREDICATE_VOCAB_ID_SLOT),
                 pid.clone()
-            ]))
+            ])).unwrap()
             .is_some(),
         "predicate id → name"
     );
@@ -404,29 +404,29 @@ fn hex_lock_one_link() {
                 ns.to_vec(),
                 vocab(okm_core::index::PREDICATE_VOCAB_NAME_SLOT),
                 b"employs".to_vec()
-            ]))
+            ])).unwrap()
             .is_some(),
         "predicate name → id"
     );
     assert!(
-        store.get(&key(&[ns.to_vec(), slot(0x06), pid.clone(), id.clone()])).is_some(),
+        store.get(&key(&[ns.to_vec(), slot(0x06), pid.clone(), id.clone()])).unwrap().is_some(),
         "predicate index"
     );
-    assert!(store.get(&key(&[ns.to_vec(), slot(0x07), src.clone(), id.clone()])).is_some(), "out");
-    assert!(store.get(&key(&[ns.to_vec(), slot(0x08), dst.clone(), id.clone()])).is_some(), "in");
+    assert!(store.get(&key(&[ns.to_vec(), slot(0x07), src.clone(), id.clone()])).unwrap().is_some(), "out");
+    assert!(store.get(&key(&[ns.to_vec(), slot(0x08), dst.clone(), id.clone()])).unwrap().is_some(), "in");
     assert!(
-        store.get(&key(&[ns.to_vec(), slot(0x09), pid.clone(), src.clone(), id.clone()])).is_some(),
+        store.get(&key(&[ns.to_vec(), slot(0x09), pid.clone(), src.clone(), id.clone()])).unwrap().is_some(),
         "predicate+out"
     );
     assert!(
-        store.get(&key(&[ns.to_vec(), slot(0x0A), pid, dst, id.clone()])).is_some(),
+        store.get(&key(&[ns.to_vec(), slot(0x0A), pid, dst, id.clone()])).unwrap().is_some(),
         "predicate+in"
     );
     // Nothing in the retired 0x02/0x03 band names a predicate: that band is
     // now free (the field vocabulary moved to family 4, ADR-0032).
     assert!(
         store
-            .get(&key(&[ns.to_vec(), slot(0x02), 0u16.to_be_bytes().to_vec()]))
+            .get(&key(&[ns.to_vec(), slot(0x02), 0u16.to_be_bytes().to_vec()])).unwrap()
             .is_none()
     );
 
@@ -437,7 +437,7 @@ fn hex_lock_one_link() {
     face.extend_from_slice(&2020u16.to_be_bytes());
     face.extend_from_slice(&id);
     assert_eq!(face.len(), 2 + 2 + 2 + 8);
-    assert!(store.get(&face).is_some(), "declared-attribute face");
+    assert!(store.get(&face).unwrap().is_some(), "declared-attribute face");
 }
 
 #[test]
@@ -451,15 +451,15 @@ fn neighbor_nodes_resolve_to_node_refs() {
     g.link(&head(user(1), org(10), "employs"), &a2, 2).unwrap();
 
     // One-hop neighbors as NodeRef — the traversal currency.
-    let mut outs = g.out_nodes(&user(1));
+    let mut outs = g.out_nodes(&user(1)).unwrap();
     outs.sort();
     assert_eq!(outs, vec![org(9), org(10)]);
-    assert_eq!(g.in_nodes(&org(9)), vec![user(1)]);
+    assert_eq!(g.in_nodes(&org(9)).unwrap(), vec![user(1)]);
 
     // Predicate-qualified neighbors share the resolve step.
-    assert_eq!(g.typed_out_nodes("employs", &user(1)), vec![org(9), org(10)]);
-    assert_eq!(g.typed_out_nodes("contracts", &user(1)), Vec::<NodeRef>::new());
-    assert_eq!(g.typed_in_nodes("employs", &org(10)), vec![user(1)]);
+    assert_eq!(g.typed_out_nodes("employs", &user(1)).unwrap(), vec![org(9), org(10)]);
+    assert_eq!(g.typed_out_nodes("contracts", &user(1)).unwrap(), Vec::<NodeRef>::new());
+    assert_eq!(g.typed_in_nodes("employs", &org(10)).unwrap(), vec![user(1)]);
 
     // Parallel-edge collapse: two heads between the same pair produce
     // the same neighbor twice — multiplicity preserved, dedupe is the
@@ -467,8 +467,8 @@ fn neighbor_nodes_resolve_to_node_refs() {
     let a3 = Employment { since_year: 2022, weight: 3 };
     g.link(&head(user(2), org(9), "employs"), &a3, 3).unwrap();
     g.link(&head(user(2), org(9), "employs"), &a3, 4).unwrap();
-    assert_eq!(g.out_nodes(&user(2)), vec![org(9), org(9)]);
-    let mut deduped = g.out_nodes(&user(2));
+    assert_eq!(g.out_nodes(&user(2)).unwrap(), vec![org(9), org(9)]);
+    let mut deduped = g.out_nodes(&user(2)).unwrap();
     deduped.sort();
     deduped.dedup();
     assert_eq!(deduped, vec![org(9)]);
@@ -504,7 +504,7 @@ fn the_edge_set_exports_as_a_table_with_named_endpoints() {
     g.replace_into(&mut batch, 1, &attrs).unwrap();
     store.commit_batch(batch).unwrap();
     assert_eq!(
-        g.attrs(1).map(|f| f.len()),
+        g.attrs(1).unwrap().map(|f| f.len()),
         Some(1),
         "the attribute segment reads back"
     );
@@ -514,7 +514,7 @@ fn the_edge_set_exports_as_a_table_with_named_endpoints() {
         11 => Some("orgs".to_string()),
         _ => None,
     };
-    let batch = g.to_record_batch_table(names);
+    let batch = g.to_record_batch_table(names).unwrap();
     let schema = batch.schema();
     let column = |name: &str| schema.index_of(name).expect("column present");
 
@@ -557,6 +557,6 @@ fn the_edge_set_exports_as_a_table_with_named_endpoints() {
     );
 
     // A node ns the caller's map does not know stays null rather than guessed.
-    let unnamed = g.to_record_batch_table(|_| None);
+    let unnamed = g.to_record_batch_table(|_| None).unwrap();
     assert_eq!(unnamed.column(0).null_count(), 1);
 }

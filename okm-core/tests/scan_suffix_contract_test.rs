@@ -21,20 +21,24 @@ impl VirtualStorage for RawOnly {
     fn put(&self, key: Vec<u8>, value: Vec<u8>) {
         self.rows.lock().unwrap().insert(key, value);
     }
-    fn get(&self, key: &[u8]) -> Option<Vec<u8>> {
-        self.rows.lock().unwrap().get(key).cloned()
+    fn get(&self, key: &[u8]) -> okm_core::error::Result<Option<Vec<u8>>> {
+        Ok(self.rows.lock().unwrap().get(key).cloned())
     }
     fn del(&self, key: &[u8]) {
         self.rows.lock().unwrap().remove(key);
     }
-    fn scan_range(&self, begin: &[u8], end: Option<&[u8]>) -> Vec<Vec<u8>> {
+    fn scan_range(
+        &self,
+        begin: &[u8],
+        end: Option<&[u8]>,
+    ) -> okm_core::error::Result<Vec<Vec<u8>>> {
         let rows = self.rows.lock().unwrap();
         let start = begin.to_vec();
         let iter: Box<dyn Iterator<Item = (&Vec<u8>, &Vec<u8>)>> = match end {
             Some(e) => Box::new(rows.range(start..e.to_vec())),
             None => Box::new(rows.range(start..)),
         };
-        iter.map(|(k, _)| k.clone()).collect()
+        Ok(iter.map(|(k, _)| k.clone()).collect())
     }
 }
 
@@ -48,7 +52,7 @@ fn default_scan_suffix_strips_the_prefix() {
     s.put([NS, b"a"].concat(), b"3".to_vec());
     s.put([&[0x00, 0x2A, 0x10, 0x02][..], b"ad"].concat(), b"4".to_vec());
 
-    let got = s.scan_suffix(NS);
+    let got = s.scan_suffix(NS).unwrap();
     // Suffixes, never full keys: the length a probe/tail judgement reads is the
     // entry's remainder, not the whole key.
     assert_eq!(
@@ -71,7 +75,7 @@ fn default_scan_suffix_handles_the_prefix_itself() {
     s.put(NS.to_vec(), b"self".to_vec());
     s.put([NS, b"x"].concat(), b"child".to_vec());
     assert_eq!(
-        s.scan_suffix(NS),
+        s.scan_suffix(NS).unwrap(),
         vec![Vec::<u8>::new(), b"x".to_vec()],
         "the self key strips to empty"
     );
@@ -80,7 +84,7 @@ fn default_scan_suffix_handles_the_prefix_itself() {
     s.put(vec![0xFF, 0xFF, 0x01], b"a".to_vec());
     s.put(vec![0xFF, 0xFF], b"b".to_vec());
     assert_eq!(
-        s.scan_suffix(&[0xFF, 0xFF]),
+        s.scan_suffix(&[0xFF, 0xFF]).unwrap(),
         vec![Vec::<u8>::new(), vec![0x01]],
         "unbounded range still strips"
     );

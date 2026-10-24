@@ -58,35 +58,35 @@ fn table_semantics_over_remote() {
     // Writes are fire-and-forget (channel order = write order, but the
     // pump applies them asynchronously) — wait for the round trip to
     // catch up before asserting.
-    wait_for(|| t.get(&UserKey { id: 42 }).is_some(), "first put to land");
+    wait_for(|| t.get(&UserKey { id: 42 }).unwrap().is_some(), "first put to land");
 
     // Index scan over the remote: same API, bytes travel twice.
-    let hits = t.scan::<ByLevel>(&3u32.to_be_bytes());
+    let hits = t.scan::<ByLevel>(&3u32.to_be_bytes()).unwrap();
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].1.as_ref().unwrap().level, 3);
 
     // Point get via the table (full round trip: frame → host → engine → back).
-    let document = t.get(&UserKey { id: 42 }).expect("document round-tripped");
+    let document = t.get(&UserKey { id: 42 }).unwrap().expect("document round-tripped");
     assert_eq!(document.level, 3);
 
     // Both rows' primary + index entries landed (read-side observation).
-    let all = t.scan::<ByLevel>(&[]);
+    let all = t.scan::<ByLevel>(&[]).unwrap();
     assert_eq!(all.len(), 2);
 
     // Delete removes both halves remotely.
     t.purge(&UserKey { id: 42 }).unwrap();
     wait_for(
-        || t.get(&UserKey { id: 42 }).is_none(),
+        || t.get(&UserKey { id: 42 }).unwrap().is_none(),
         "delete to propagate",
     );
-    assert_eq!(t.scan::<ByLevel>(&3u32.to_be_bytes()).len(), 0);
+    assert_eq!(t.scan::<ByLevel>(&3u32.to_be_bytes()).unwrap().len(), 0);
     // Overwrite path too (put on existing key = unfold + refold remotely).
     t.put(&UserKey { id: 42 }, &User { level: 8 }).unwrap();
     wait_for(
-        || !t.scan::<ByLevel>(&8u32.to_be_bytes()).is_empty(),
+        || !t.scan::<ByLevel>(&8u32.to_be_bytes()).unwrap().is_empty(),
         "overwrite to land",
     );
-    let hits = t.scan::<ByLevel>(&8u32.to_be_bytes());
+    let hits = t.scan::<ByLevel>(&8u32.to_be_bytes()).unwrap();
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].0.decoded.id, 42);
 }
@@ -105,14 +105,14 @@ fn prefix_isolation_between_two_hosts() {
     ra.put(b"user:1".to_vec(), b"hello".to_vec());
     rb.put(b"user:1".to_vec(), b"world".to_vec());
 
-    wait_for(|| ra.get(b"user:1").is_some(), "host A write to land");
-    assert_eq!(ra.get(b"user:1").as_deref(), Some(b"hello".as_slice()));
-    assert_eq!(rb.get(b"user:1").as_deref(), Some(b"world".as_slice()));
+    wait_for(|| ra.get(b"user:1").unwrap().is_some(), "host A write to land");
+    assert_eq!(ra.get(b"user:1").unwrap().as_deref(), Some(b"hello".as_slice()));
+    assert_eq!(rb.get(b"user:1").unwrap().as_deref(), Some(b"world".as_slice()));
 
     // Scans stay inside the host's own prefix: neither sender sees the
     // other's bytes even though the stored sender-key bytes are identical.
-    assert_eq!(ra.scan_suffix(b"user:"), vec![b"1".to_vec()]);
-    assert_eq!(rb.scan_suffix(b"user:"), vec![b"1".to_vec()]);
+    assert_eq!(ra.scan_suffix(b"user:").unwrap(), vec![b"1".to_vec()]);
+    assert_eq!(rb.scan_suffix(b"user:").unwrap(), vec![b"1".to_vec()]);
 }
 
 #[test]
@@ -129,11 +129,11 @@ fn commit_batch_is_one_frame_one_commit() {
     batch.del(b"k0");
     remote.commit_batch(batch).expect("frame ships");
 
-    wait_for(|| remote.get(b"k1").is_some(), "batched writes to land");
-    assert_eq!(remote.get(b"k1").as_deref(), Some(b"v1".as_slice()));
-    assert_eq!(remote.get(b"k2").as_deref(), Some(b"v2".as_slice()));
+    wait_for(|| remote.get(b"k1").unwrap().is_some(), "batched writes to land");
+    assert_eq!(remote.get(b"k1").unwrap().as_deref(), Some(b"v1".as_slice()));
+    assert_eq!(remote.get(b"k2").unwrap().as_deref(), Some(b"v2".as_slice()));
     // Delete op in the frame also executed (no-op on absent key = fine).
-    assert_eq!(remote.get(b"k0"), None);
+    assert_eq!(remote.get(b"k0").unwrap(), None);
 }
 
 /// ADR-0021 end-to-end: the remote path joins the lazy contract —
@@ -148,7 +148,7 @@ fn remote_scan_range_iter_is_lazy_paged() {
     for i in 0..40u64 {
         t.put(&UserKey { id: i }, &User { level: (i % 4) as u32 }).unwrap();
     }
-    wait_for(|| t.get(&UserKey { id: 39 }).is_some(), "writes to land");
+    wait_for(|| t.get(&UserKey { id: 39 }).unwrap().is_some(), "writes to land");
 
     // Sender-side bounds: `[ns 2B][fixed face 0x00][pkey 8B]` (User
     // declares no partition, so no 0xFF escape). The hosted prefix
@@ -166,12 +166,14 @@ fn remote_scan_range_iter_is_lazy_paged() {
         e
     };
     let buffered: Vec<(Vec<u8>, Vec<u8>)> = remote
-        .scan_range(&begin, Some(&end))
+        .scan_range(&begin, Some(&end)).unwrap()
         .into_iter()
-        .filter_map(|k| remote.get(&k).map(|v| (k, v)))
+        .map(|k| (k.clone(), remote.get(&k).unwrap().expect("a read after a scan")))
         .collect();
-    let lazy: Vec<(Vec<u8>, Vec<u8>)> =
-        remote.scan_range_iter(&begin, Some(&end)).collect();
+    let lazy: Vec<(Vec<u8>, Vec<u8>)> = remote
+        .scan_range_iter(&begin, Some(&end))
+        .map(|item| item.expect("a page item"))
+        .collect();
     assert_eq!(lazy.len(), 40);
     assert_eq!(lazy, buffered, "lazy paged walk == buffered answer");
 
@@ -192,6 +194,7 @@ fn remote_scan_range_iter_is_lazy_paged() {
     // the reverse of the forward answer.
     let last_two: Vec<_> = remote
         .scan_range_iter(&begin, Some(&end))
+        .map(|item| item.expect("a page item"))
         .rev()
         .take(2)
         .collect();
@@ -217,10 +220,13 @@ fn remote_unbounded_stream_crosses_pages() {
     let writer = handle.open();
     writer.commit_batch(batch).expect("batch frame accepted");
     wait_for(
-        || remote.scan_suffix(b"k/").len() == 600,
+        || remote.scan_suffix(b"k/").map(|s| s.len()).unwrap_or(0) == 600,
         "600 writes to land",
     );
-    let items: Vec<_> = remote.scan_range_iter(b"k", None).collect();
+    let items: Vec<_> = remote
+        .scan_range_iter(b"k", None)
+        .map(|item| item.expect("a page item"))
+        .collect();
     assert_eq!(items.len(), 600, "unbounded walk must not truncate at a page edge");
     // byte order holds across the page seams
     assert_eq!(items.first().unwrap().0, b"k/0000");
@@ -258,6 +264,7 @@ fn entry_ledger<S: VirtualStorage>(
         &EntryKey { id: 0 },
         &Entry { account, amount: 0 },
     )
+    .expect("a reduce read on a working store")
 }
 
 /// The routine write path over the wire: one semantic `put` = one commit =
@@ -273,9 +280,9 @@ fn routine_put_carries_face_and_ledger_in_one_frame() {
     let k = EntryKey { id: 1 };
 
     t.put(&k, &Entry { account: 7, amount: 10 }).unwrap();
-    wait_for(|| t.get(&k).is_some(), "row to land");
+    wait_for(|| t.get(&k).unwrap().is_some(), "row to land");
     // Face: an index scan round trip (entry key + fetch-back).
-    assert_eq!(t.scan::<Entry_ByAccount>(&7u64.to_be_bytes()).len(), 1);
+    assert_eq!(t.scan::<Entry_ByAccount>(&7u64.to_be_bytes()).unwrap().len(), 1);
     // Ledger: the accumulator the fold wrote in the same frame.
     assert_eq!(entry_ledger(&t, 7), Some(1), "the fold landed with the row");
 
@@ -286,7 +293,7 @@ fn routine_put_carries_face_and_ledger_in_one_frame() {
 
     // Delete: the removals and the unfold share a frame too.
     t.purge(&k).unwrap();
-    wait_for(|| t.get(&k).is_none(), "delete to propagate");
+    wait_for(|| t.get(&k).unwrap().is_none(), "delete to propagate");
     assert_eq!(entry_ledger(&t, 8), Some(0));
-    assert!(t.scan::<Entry_ByAccount>(&8u64.to_be_bytes()).is_empty());
+    assert!(t.scan::<Entry_ByAccount>(&8u64.to_be_bytes()).unwrap().is_empty());
 }

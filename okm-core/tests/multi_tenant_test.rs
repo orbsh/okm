@@ -57,26 +57,26 @@ fn one_engine_two_tenants_prefix_segments_disjoint() {
 
     // Wait for both fire-and-forget writes to land (cross reads).
     for _ in 0..200 {
-        if sa.get(b"doc:1").is_some() && sb.get(b"doc:1").is_some() {
+        if sa.get(b"doc:1").unwrap().is_some() && sb.get(b"doc:1").unwrap().is_some() {
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
 
     // Each tenant reads back its own value under the identical sender key.
-    assert_eq!(sa.get(b"doc:1").as_deref(), Some(b"a".as_slice()));
-    assert_eq!(sb.get(b"doc:1").as_deref(), Some(b"b".as_slice()));
+    assert_eq!(sa.get(b"doc:1").unwrap().as_deref(), Some(b"a".as_slice()));
+    assert_eq!(sb.get(b"doc:1").unwrap().as_deref(), Some(b"b".as_slice()));
 
     // Scan segmentation: each sender's scan over the shared sender-key
     // prefix returns exactly its own segment's entry — the host prefix
     // split the engine's key space into disjoint segments.
-    assert_eq!(sa.scan_suffix(b"doc:"), vec![b"1".to_vec()]);
-    assert_eq!(sb.scan_suffix(b"doc:"), vec![b"1".to_vec()]);
+    assert_eq!(sa.scan_suffix(b"doc:").unwrap(), vec![b"1".to_vec()]);
+    assert_eq!(sb.scan_suffix(b"doc:").unwrap(), vec![b"1".to_vec()]);
     // Cross-tenant reads are structurally absent: each sender holds only
     // its own host's handle, so there is no expression for "read tenant
     // B's bytes from sender A" — verified by A's view being unchanged
     // after B's write.
-    assert_eq!(sa.get(b"doc:1").as_deref(), Some(b"a".as_slice()));
+    assert_eq!(sa.get(b"doc:1").unwrap().as_deref(), Some(b"a".as_slice()));
 }
 
 /// Tenant partitioning INSIDE one application is a plain key field
@@ -95,16 +95,16 @@ fn internal_tenant_sharding_is_a_plain_key_field() {
 
     // Fire-and-forget writes: poll until the round trips see both keys.
     for _ in 0..200 {
-        if s.get(b"t1:doc:1").is_some() && s.get(b"t2:doc:1").is_some() {
+        if s.get(b"t1:doc:1").unwrap().is_some() && s.get(b"t2:doc:1").unwrap().is_some() {
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
 
     // Same host, same ns segment — the tenant distinction is sender bytes.
-    assert_eq!(s.get(b"t1:doc:1").as_deref(), Some(b"x".as_slice()));
-    assert_eq!(s.get(b"t2:doc:1").as_deref(), Some(b"y".as_slice()));
-    assert_eq!(s.scan_suffix(b"t1:"), vec![b"doc:1".to_vec()]);
+    assert_eq!(s.get(b"t1:doc:1").unwrap().as_deref(), Some(b"x".as_slice()));
+    assert_eq!(s.get(b"t2:doc:1").unwrap().as_deref(), Some(b"y".as_slice()));
+    assert_eq!(s.scan_suffix(b"t1:").unwrap(), vec![b"doc:1".to_vec()]);
 }
 
 /// The document-level write path through a hosted tenant: Collection semantics
@@ -123,11 +123,11 @@ fn table_write_path_inside_tenant_segment() {
     // the engine's map is out of reach BY DESIGN (the host owns the only
     // handle) — the sender-side view is the contract.
     for _ in 0..200 {
-        if t.get(&DocKey { id: 9 }).is_some() {
+        if t.get(&DocKey { id: 9 }).unwrap().is_some() {
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
-    assert_eq!(t.get(&DocKey { id: 9 }).unwrap().title, 5);
-    assert_eq!(t.scan_keys().len(), 1);
+    assert_eq!(t.get(&DocKey { id: 9 }).unwrap().unwrap().title, 5);
+    assert_eq!(t.scan_keys().unwrap().len(), 1);
 }

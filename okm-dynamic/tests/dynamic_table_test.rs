@@ -98,7 +98,7 @@ impl<S: VirtualStorage> VirtualStorage for Reads<S> {
         self.inner.put(key, value)
     }
 
-    fn get(&self, key: &[u8]) -> Option<Vec<u8>> {
+    fn get(&self, key: &[u8]) -> okm_core::error::Result<Option<Vec<u8>>> {
         self.read.borrow_mut().push(key.to_vec());
         self.inner.get(key)
     }
@@ -107,11 +107,15 @@ impl<S: VirtualStorage> VirtualStorage for Reads<S> {
         self.inner.del(key)
     }
 
-    fn scan_suffix(&self, prefix: &[u8]) -> Vec<Vec<u8>> {
+    fn scan_suffix(&self, prefix: &[u8]) -> okm_core::error::Result<Vec<Vec<u8>>> {
         self.inner.scan_suffix(prefix)
     }
 
-    fn scan_range(&self, begin: &[u8], end: Option<&[u8]>) -> Vec<Vec<u8>> {
+    fn scan_range(
+        &self,
+        begin: &[u8],
+        end: Option<&[u8]>,
+    ) -> okm_core::error::Result<Vec<Vec<u8>>> {
         self.inner.scan_range(begin, end)
     }
 
@@ -119,7 +123,7 @@ impl<S: VirtualStorage> VirtualStorage for Reads<S> {
         self.inner.scan_range_iter(begin, end)
     }
 
-    fn commit_batch(&self, batch: Batch) -> Result<(), String> {
+    fn commit_batch(&self, batch: Batch) -> okm_core::error::Result<()> {
         self.inner.commit_batch(batch)
     }
 }
@@ -150,14 +154,14 @@ fn dynamic_entries_equal_typed_entries() {
 
     // The real lock: typed store's full entry set == dynamic store's.
     let mut typed_entries: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
-    for full in typed.store().scan_suffix(&[]) {
-        let v = typed.store().get(&full).unwrap_or_default();
+    for full in typed.store().scan_suffix(&[]).expect("a scan on a working store") {
+        let v = typed.store().get(&full).unwrap().unwrap_or_default();
         typed_entries.push((full, v));
     }
     typed_entries.sort();
     let mut dyn_entries: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
-    for full in dynamic.store().scan_suffix(&[]) {
-        let v = dynamic.store().get(&full).unwrap_or_default();
+    for full in dynamic.store().scan_suffix(&[]).expect("a scan on a working store") {
+        let v = dynamic.store().get(&full).unwrap().unwrap_or_default();
         dyn_entries.push((full, v));
     }
     dyn_entries.sort();
@@ -414,14 +418,14 @@ fn dynamic_fields_equal_typed_fields() {
         .unwrap();
 
     let mut typed_entries: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
-    for full in typed.store().scan_suffix(&[]) {
-        let v = typed.store().get(&full).unwrap_or_default();
+    for full in typed.store().scan_suffix(&[]).expect("a scan on a working store") {
+        let v = typed.store().get(&full).unwrap().unwrap_or_default();
         typed_entries.push((full, v));
     }
     typed_entries.sort();
     let mut dyn_entries: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
-    for full in dynamic.store().scan_suffix(&[]) {
-        let v = dynamic.store().get(&full).unwrap_or_default();
+    for full in dynamic.store().scan_suffix(&[]).expect("a scan on a working store") {
+        let v = dynamic.store().get(&full).unwrap().unwrap_or_default();
         dyn_entries.push((full, v));
     }
     dyn_entries.sort();
@@ -591,14 +595,16 @@ fn plan_merge_equals_embedded_merge() {
 
     let mut planned: Vec<(Vec<u8>, Vec<u8>)> = store
         .scan_suffix(&[])
+        .expect("a scan on a working store")
         .into_iter()
-        .map(|full| (full.clone(), store.get(&full).unwrap_or_default()))
+        .map(|full| (full.clone(), store.get(&full).unwrap().unwrap_or_default()))
         .collect();
     let mut embedded: Vec<(Vec<u8>, Vec<u8>)> = emb
         .store()
         .scan_suffix(&[])
+        .expect("a scan on a working store")
         .into_iter()
-        .map(|full| (full.clone(), emb.store().get(&full).unwrap_or_default()))
+        .map(|full| (full.clone(), emb.store().get(&full).unwrap().unwrap_or_default()))
         .collect();
     planned.sort();
     embedded.sort();
@@ -606,7 +612,10 @@ fn plan_merge_equals_embedded_merge() {
 
     // The remote read side: frames + the caller's own mirror decode to the
     // same dynamic half the embedded path reads.
-    let raw = store.get(&okm_dynamic::fields_key(&nsb, &k)).unwrap();
+    let raw = store
+        .get(&okm_dynamic::fields_key(&nsb, &k))
+        .expect("a store read")
+        .expect("the segment");
     let back = okm_dynamic::fields_from_frames(&raw, &vocab).unwrap();
     assert_eq!(back, dfields(&[("note", "hello"), ("weight", "9")]));
 }
@@ -675,14 +684,14 @@ fn dynamic_variable_width_index_matches_typed_bytes() {
 
     // The real lock: identical entry sets.
     let mut typed_entries: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
-    for full in typed.store().scan_suffix(&[]) {
-        let v = typed.store().get(&full).unwrap_or_default();
+    for full in typed.store().scan_suffix(&[]).expect("a scan on a working store") {
+        let v = typed.store().get(&full).unwrap().unwrap_or_default();
         typed_entries.push((full, v));
     }
     typed_entries.sort();
     let mut dyn_entries: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
-    for full in dynamic.store().scan_suffix(&[]) {
-        let v = dynamic.store().get(&full).unwrap_or_default();
+    for full in dynamic.store().scan_suffix(&[]).expect("a scan on a working store") {
+        let v = dynamic.store().get(&full).unwrap().unwrap_or_default();
         dyn_entries.push((full, v));
     }
     dyn_entries.sort();

@@ -333,7 +333,8 @@ pub trait Document: Sized + Clone {
         _row: &Self,
         _ns: &[u8],
         _add: bool,
-    ) {
+    ) -> crate::error::Result<()> {
+        ::core::result::Result::Ok(())
     }
 
     /// Subscribe emit hook (see [`crate::subscribe`]): send this document's

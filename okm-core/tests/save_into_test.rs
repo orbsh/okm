@@ -61,14 +61,14 @@ fn save_into_defers_until_commit() {
         &Post { author_id: 7, title: "hello".into() },
     );
     assert!(
-        t.get(&PostKey { id: 1 }).is_none(),
+        t.get(&PostKey { id: 1 }).unwrap().is_none(),
         "save_into must not write"
     );
 
     // Commit: primary + index entries land together.
     store.commit_batch(batch).expect("commit");
     let t2: Collection<TestStore, PostKey, Post> = Collection::new(store.clone());
-    assert!(t2.get(&PostKey { id: 1 }).is_some(), "document lands at commit");
+    assert!(t2.get(&PostKey { id: 1 }).unwrap().is_some(), "document lands at commit");
 }
 
 #[test]
@@ -93,10 +93,10 @@ fn cross_collection_one_batch() {
 
     // Both landed through the ONE committed store instance.
     let t: Collection<TestStore, PostKey, Post> = Collection::new(store.clone());
-    let scanned = t.scan::<Post_ByAuthor>(&7u64.to_be_bytes());
+    let scanned = t.scan::<Post_ByAuthor>(&7u64.to_be_bytes()).unwrap();
     assert_eq!(scanned.len(), 1);
     let edges: okm_core::Junction<TestStore, AuthorPost> = okm_core::Junction::new(store);
-    let fwd = edges.forward(&AuthorKey { id: 7 });
+    let fwd = edges.forward(&AuthorKey { id: 7 }).unwrap();
     assert_eq!(fwd.len(), 1);
     assert_eq!(fwd[0], PostKey { id: 1 });
 }
@@ -133,6 +133,7 @@ fn ledger(t: &Collection<TestStore, EntryKey, Entry>, account: u64) -> Option<u6
         &EntryKey { id: 0 },
         &Entry { account, amount: 0 },
     )
+    .expect("a reduce read on a working store")
 }
 
 fn entry(id: u64, account: u64, amount: u32) -> (EntryKey, Entry) {
@@ -175,10 +176,10 @@ fn overwrite_in_one_batch_reads_the_pending_old_row() {
     assert_eq!(ledger(&t, 7), Some(0), "the stale fold was unfolded");
     assert_eq!(ledger(&t, 8), Some(1), "the new fold counted once");
     assert!(
-        t.scan::<Entry_ByAccount>(&7u64.to_be_bytes()).is_empty(),
+        t.scan::<Entry_ByAccount>(&7u64.to_be_bytes()).unwrap().is_empty(),
         "the old value's face is gone — no dangling index entry"
     );
-    assert_eq!(t.scan::<Entry_ByAccount>(&8u64.to_be_bytes()).len(), 1);
+    assert_eq!(t.scan::<Entry_ByAccount>(&8u64.to_be_bytes()).unwrap().len(), 1);
 }
 
 #[test]
@@ -200,7 +201,7 @@ fn caller_supplied_prev_drives_the_unfold_and_the_cleanup() {
 
     assert_eq!(ledger(&t, 7), Some(0));
     assert_eq!(ledger(&t, 8), Some(1));
-    assert!(t.scan::<Entry_ByAccount>(&7u64.to_be_bytes()).is_empty());
+    assert!(t.scan::<Entry_ByAccount>(&7u64.to_be_bytes()).unwrap().is_empty());
 }
 
 #[test]
@@ -219,7 +220,7 @@ fn an_uncommitted_batch_moves_neither_the_row_nor_the_ledger() {
 
     assert_eq!(ledger(&t, 7), Some(1), "the unfold never landed");
     assert_eq!(ledger(&t, 8), None, "the fold never landed");
-    assert_eq!(t.get(&k).expect("row").account, 7);
+    assert_eq!(t.get(&k).unwrap().expect("row").account, 7);
 }
 
 #[test]
@@ -236,7 +237,7 @@ fn atomic_write_and_reduce_in_one_commit() {
     store.commit_batch(batch).expect("commit");
 
     assert_eq!(ledger(&t, 7), Some(1));
-    assert_eq!(edges.forward(&AuthorKey { id: 7 }), vec![PostKey { id: 1 }]);
+    assert_eq!(edges.forward(&AuthorKey { id: 7 }).unwrap(), vec![PostKey { id: 1 }]);
 }
 
 #[test]
@@ -252,15 +253,15 @@ fn batch_store_reads_pending_ops_newest_first() {
         view.put(b"k3".to_vec(), b"new".to_vec());
 
         // Pending put shadows the store; del-then-put answers the put.
-        assert_eq!(view.get(b"k1").as_deref(), Some(&b"fresh"[..]));
-        assert_eq!(view.get(b"k2").as_deref(), Some(&b"revived"[..]));
-        assert_eq!(view.get(b"k3").as_deref(), Some(&b"new"[..]));
+        assert_eq!(view.get(b"k1").unwrap().as_deref(), Some(&b"fresh"[..]));
+        assert_eq!(view.get(b"k2").unwrap().as_deref(), Some(&b"revived"[..]));
+        assert_eq!(view.get(b"k3").unwrap().as_deref(), Some(&b"new"[..]));
         // Put-then-del answers the del.
         view.del(b"k1");
-        assert_eq!(view.get(b"k1"), None, "the later del shadows the put");
+        assert_eq!(view.get(b"k1").unwrap(), None, "the later del shadows the put");
         // The store itself never moved.
-        assert_eq!(store.get(b"k1").as_deref(), Some(&b"stored"[..]));
-        assert!(store.get(b"k3").is_none());
+        assert_eq!(store.get(b"k1").unwrap().as_deref(), Some(&b"stored"[..]));
+        assert!(store.get(b"k3").unwrap().is_none());
     }
     // The caller still owns the batch, with every op in order (two puts and
     // one del for k1/k2, one put for k3).
@@ -272,7 +273,7 @@ fn scans_on_a_batch_view_are_refused() {
     let store = TestStore::slatedb_mem();
     let mut batch = okm_core::Batch::default();
     let view = okm_core::BatchStore::new(&store, &mut batch);
-    let refused = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| view.scan_suffix(b"x")));
+    let refused = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| view.scan_suffix(b"x").unwrap()));
     assert!(refused.is_err(), "a partial ordered view must never be answered");
 }
 
@@ -324,11 +325,11 @@ fn embedded_children_are_written_and_released_in_the_batch() {
         None,
     ).unwrap();
     store.commit_batch(batch).expect("commit");
-    assert!(contacts.get(&c1).is_some(), "child lands with the parent");
+    assert!(contacts.get(&c1).unwrap().is_some(), "child lands with the parent");
 
     // Overwrite pointing somewhere else: the old child is released in the
     // same batch, exactly as put's overwrite pass does.
-    let old = cards.get(&k).expect("old card");
+    let old = cards.get(&k).expect("store").expect("old card");
     let mut batch = okm_core::Batch::default();
     cards.save_with_prev_into(
         &mut batch,
@@ -341,8 +342,8 @@ fn embedded_children_are_written_and_released_in_the_batch() {
     ).unwrap();
     store.commit_batch(batch).expect("commit");
 
-    assert!(contacts.get(&c1).is_none(), "the dropped child is released");
-    assert_eq!(contacts.get(&c2).map(|c| c.number), Some("222".to_string()));
+    assert!(contacts.get(&c1).unwrap().is_none(), "the dropped child is released");
+    assert_eq!(contacts.get(&c2).unwrap().map(|c| c.number), Some("222".to_string()));
 }
 
 // ---------- vocabulary growth rides the batch (ADR-0032 × ADR-0031) ----------
@@ -384,12 +385,12 @@ fn save_with_prev_into_interns_inside_the_batch() {
     // BatchStore, so they ride the caller's batch.
     let mut batch = okm_core::Batch::default();
     c.save_with_prev_into(&mut batch, &k, &row, None).unwrap();
-    assert!(c.get(&k).is_none(), "an uncommitted batch moves nothing");
+    assert!(c.get(&k).unwrap().is_none(), "an uncommitted batch moves nothing");
     store.commit_batch(batch).expect("commit");
 
     // After the commit the row reads back with LABELS: the id → label entries
     // travelled in the same batch as the payload.
-    let back = c.get(&k).expect("row landed");
+    let back = c.get(&k).unwrap().expect("row landed");
     assert_eq!(back.event.as_str(), Some("http.request"));
     assert_eq!(back.status.as_str(), Some("warn"));
     assert_eq!(back.level, 3);
@@ -412,7 +413,7 @@ fn save_with_prev_into_interns_inside_the_batch() {
     ).unwrap();
     store.commit_batch(batch).expect("commit");
 
-    let second = c.get(&LogKey { id: 2 }).expect("row landed");
+    let second = c.get(&LogKey { id: 2 }).unwrap().expect("row landed");
     assert_eq!(second.event.as_str(), Some("db.timeout"));
     assert_eq!(second.status.as_str(), Some("error"));
     assert_ne!(
@@ -422,7 +423,7 @@ fn save_with_prev_into_interns_inside_the_batch() {
     );
 
     // And the first row still names both of its own labels.
-    let again = c.get(&k).expect("row still there");
+    let again = c.get(&k).unwrap().expect("row still there");
     assert_eq!(again.event.as_str(), Some("http.request"));
     assert_eq!(again.status.as_str(), Some("warn"));
 }

@@ -48,7 +48,7 @@ fn parquet_export_import_roundtrip_restores_rows_and_indexes() {
 
     for i in 0..5u64 {
         let k = TKey { org_id: 1, user_id: i };
-        let r = t2.get(&k).expect("document restored");
+        let r = t2.get(&k).unwrap().expect("document restored");
         assert_eq!(r.reputation, (i * 100) as u32);
         assert_eq!(r.level, (i as u16) + 7);
         assert_eq!(r.tag, [i as u8, 0, 0xFF, 0x42]);
@@ -57,7 +57,7 @@ fn parquet_export_import_roundtrip_restores_rows_and_indexes() {
     // Index entries were rewritten by put; the hand impl sorts by payload
     // `reputation` = i*100, so matching the first value requires its BE
     // bytes — here just scan the whole index (empty prefix).
-    let scanned = t2.scan::<__OkmIndex_TRow_by_org>(&[]);
+    let scanned = t2.scan::<__OkmIndex_TRow_by_org>(&[]).unwrap();
     assert_eq!(scanned.len(), 5, "index rebuilt on import");
 
     // Exported column names = field names in declaration order (key
@@ -174,7 +174,7 @@ fn parquet_roundtrip_carries_labels_not_ids() {
 
     // The exported column is the label, and it is NULLABLE — an id the
     // vocabulary cannot name has nowhere else to go.
-    let batch = t1.to_record_batch();
+    let batch = t1.to_record_batch().unwrap();
     let field = batch.schema().field_with_name("status").unwrap().clone();
     assert_eq!(field.data_type(), &DataType::Utf8);
     assert!(field.is_nullable(), "an unnamed id exports as null");
@@ -195,7 +195,7 @@ fn parquet_roundtrip_carries_labels_not_ids() {
     let n = parquet_io::import_parquet(&mut t2, &path).unwrap();
     assert_eq!(n, 4);
     for (i, (s, c)) in statuses.iter().zip(colors.iter()).enumerate() {
-        let r = t2.get(&VKey { id: i as u64 }).expect("row restored");
+        let r = t2.get(&VKey { id: i as u64 }).unwrap().expect("row restored");
         assert_eq!(r.status.as_str(), Some(*s));
         assert_eq!(r.color.as_str(), Some(*c));
         assert_eq!(r.score, i as u32);
@@ -224,7 +224,7 @@ fn an_unnamed_id_exports_as_null_and_import_refuses_it() {
         &VRow { status: Vocab::from_id(7), color: Vocab::of("red"), score: 1 },
     ).unwrap();
 
-    let batch = t1.to_record_batch();
+    let batch = t1.to_record_batch().unwrap();
     let status_col = batch
         .column_by_name("status")
         .unwrap()
@@ -272,20 +272,20 @@ fn parquet_with_variant_restores_both_halves_and_segment_only_documents() {
     let n = parquet_io::import_parquet(&mut t2, &path).unwrap();
     assert_eq!(n, 1, "one document has a row; the other is segment-only");
 
-    assert_eq!(t2.get(&with_row).expect("the row came back").reputation, 100);
+    assert_eq!(t2.get(&with_row).unwrap().expect("the row came back").reputation, 100);
     assert_eq!(
-        t2.fetch(&with_row).expect("the document").get("note"),
+        t2.fetch(&with_row).unwrap().expect("the document").get("note"),
         Some(&DynamicValue::Str("hello".into())),
         "the open half came back"
     );
 
-    assert!(t2.get(&segment_only).is_none(), "no row was invented");
+    assert!(t2.get(&segment_only).unwrap().is_none(), "no row was invented");
     assert_eq!(
-        t2.fetch(&segment_only).expect("the segment-only document").get("note"),
+        t2.fetch(&segment_only).unwrap().expect("the segment-only document").get("note"),
         Some(&DynamicValue::Str("hello".into())),
         "a segment-only document restores as a segment-only document"
     );
     // ...and the two enumeration modes agree with what came back.
-    assert_eq!(t2.scan_keys(), vec![with_row.clone()]);
-    assert_eq!(t2.scan_document_keys(), vec![with_row, segment_only]);
+    assert_eq!(t2.scan_keys().unwrap(), vec![with_row.clone()]);
+    assert_eq!(t2.scan_document_keys().unwrap(), vec![with_row, segment_only]);
 }

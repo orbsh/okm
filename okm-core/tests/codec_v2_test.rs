@@ -142,7 +142,7 @@ fn parquet_roundtrip_with_string_columns() {
     let n = parquet_io::import_parquet(&mut t2, &path).unwrap();
     assert_eq!(n, 3);
     for (i, name) in names.iter().enumerate() {
-        let r = t2.get(&SKey { shard: 1, id: i as u64 }).expect("document");
+        let r = t2.get(&SKey { shard: 1, id: i as u64 }).unwrap().expect("document");
         assert_eq!(&r.name, name);
         assert_eq!(r.note, format!("note-{i}"));
     }

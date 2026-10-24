@@ -39,7 +39,7 @@ fn labels_round_trip_through_per_field_vocabularies() {
     c.put(&VKey { org: 1, id: 1 }, &row("active", "red", 7)).unwrap();
     c.put(&VKey { org: 1, id: 2 }, &row("closed", "red", 8)).unwrap();
 
-    let a = c.get(&VKey { org: 1, id: 1 }).unwrap();
+    let a = c.get(&VKey { org: 1, id: 1 }).unwrap().unwrap();
     assert_eq!(a.status.as_str(), Some("active"));
     assert_eq!(a.color.as_str(), Some("red"));
     assert_eq!(a.n, 7);
@@ -47,7 +47,7 @@ fn labels_round_trip_through_per_field_vocabularies() {
     assert_eq!(a.status.id(), Some(0u8));
     assert_eq!(a.color.id(), Some(0u16));
 
-    let b = c.get(&VKey { org: 1, id: 2 }).unwrap();
+    let b = c.get(&VKey { org: 1, id: 2 }).unwrap().unwrap();
     assert_eq!(b.status.as_str(), Some("closed"));
     assert_eq!(b.status.id(), Some(1u8), "second label in the status field");
     assert_eq!(
@@ -71,7 +71,7 @@ fn labels_round_trip_through_per_field_vocabularies() {
     let mut d = VRow::try_from_map(&m).unwrap();
     d.status = Vocab::of("suspended");
     c.put(&VKey { org: 1, id: 3 }, &d).unwrap();
-    let e = c.get(&VKey { org: 1, id: 3 }).unwrap();
+    let e = c.get(&VKey { org: 1, id: 3 }).unwrap().unwrap();
     assert_eq!(e.status.as_str(), Some("suspended"));
     assert_eq!(e.status.id(), Some(2u8));
     assert_eq!(
@@ -111,16 +111,20 @@ impl VirtualStorage for NoScan {
     fn put(&self, key: Vec<u8>, value: Vec<u8>) {
         self.0.put(key, value);
     }
-    fn get(&self, key: &[u8]) -> Option<Vec<u8>> {
+    fn get(&self, key: &[u8]) -> okm_core::error::Result<Option<Vec<u8>>> {
         self.0.get(key)
     }
     fn del(&self, key: &[u8]) {
         self.0.del(key);
     }
-    fn scan_range(&self, _begin: &[u8], _end: Option<&[u8]>) -> Vec<Vec<u8>> {
+    fn scan_range(
+        &self,
+        _begin: &[u8],
+        _end: Option<&[u8]>,
+    ) -> okm_core::error::Result<Vec<Vec<u8>>> {
         panic!("the categorical hot path must not scan");
     }
-    fn commit_batch(&self, batch: Batch) -> Result<(), String> {
+    fn commit_batch(&self, batch: Batch) -> okm_core::error::Result<()> {
         self.0.commit_batch(batch)
     }
 }
@@ -135,7 +139,7 @@ fn a_put_on_a_categorical_table_never_scans() {
     c.put(&VKey { org: 1, id: 1 }, &row("active", "red", 2)).unwrap();
     c.put(&VKey { org: 1, id: 2 }, &row("closed", "blue", 3)).unwrap();
 
-    let two = c.get(&VKey { org: 1, id: 2 }).expect("row");
+    let two = c.get(&VKey { org: 1, id: 2 }).unwrap().expect("row");
     assert_eq!(two.status.as_str(), Some("closed"));
     assert_eq!(two.color.as_str(), Some("blue"));
     assert_eq!(two.status.id(), Some(1u8), "second label of the status field");

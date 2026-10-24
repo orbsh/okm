@@ -25,7 +25,7 @@ fn upsert_with_full_paths() {
         Counter { bucket: 7, hits: 10 }
     }).unwrap();
     assert_eq!(written.hits, 10);
-    assert_eq!(t.get(&CounterKey { id: 1 }).unwrap().hits, 10);
+    assert_eq!(t.get(&CounterKey { id: 1 }).unwrap().unwrap().hits, 10);
 
     // ---------- RMW path: old in hand ----------
     let written = t.upsert_with(&CounterKey { id: 1 }, |old| {
@@ -34,12 +34,12 @@ fn upsert_with_full_paths() {
         c
     }).unwrap();
     assert_eq!(written.hits, 15);
-    assert_eq!(t.get(&CounterKey { id: 1 }).unwrap().hits, 15);
+    assert_eq!(t.get(&CounterKey { id: 1 }).unwrap().unwrap().hits, 15);
 
     // ---------- write path fired: index entries present ----------
     // by_bucket(7) scan must see the document (index entry written by the put
     // inside upsert_with, not bypassed).
-    let scanned = t.scan::<Counter_ByBucket>(&7u32.to_be_bytes());
+    let scanned = t.scan::<Counter_ByBucket>(&7u32.to_be_bytes()).unwrap();
     assert_eq!(scanned.len(), 1);
     assert_eq!(scanned[0].1.as_ref().unwrap().hits, 15);
 
@@ -48,6 +48,7 @@ fn upsert_with_full_paths() {
     // __okm_apply_reduces inside put).
     let probe = Counter { bucket: 7, hits: 0 };
     let acc = okm_core::reduce_get::<_, CounterTotals>(t.store(), <Counter as Document>::NS_PREFIX, &CounterKey { id: 1 }, &probe)
+        .expect("store")
         .expect("group exists");
     assert_eq!(acc, CountSum { count: 1, sum: 15 });
 

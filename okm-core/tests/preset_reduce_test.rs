@@ -69,10 +69,10 @@ fn grouped_presets_fold_unfold_scan() {
                 .map(|(_, a)| a)
         };
         (
-            find(okm_core::reduce::scan_reduces::<_, __OkmReduce_Post_0>(store, ns)),
-            find(okm_core::reduce::scan_reduces::<_, __OkmReduce_Post_1>(store, ns)),
-            find(okm_core::reduce::scan_reduces::<_, __OkmReduce_Post_2>(store, ns)),
-            find_min(okm_core::reduce::scan_reduces::<_, __OkmReduce_Post_3>(store, ns)),
+            find(okm_core::reduce::scan_reduces::<_, __OkmReduce_Post_0>(store, ns).unwrap()),
+            find(okm_core::reduce::scan_reduces::<_, __OkmReduce_Post_1>(store, ns).unwrap()),
+            find(okm_core::reduce::scan_reduces::<_, __OkmReduce_Post_2>(store, ns).unwrap()),
+            find_min(okm_core::reduce::scan_reduces::<_, __OkmReduce_Post_3>(store, ns).unwrap()),
         )
     };
 
@@ -108,12 +108,12 @@ fn no_group_mode_single_entry() {
 
     let ns = <Vote as Document>::NS_PREFIX;
     // 不分组：entry key = [ns 2B][slot 2B]，无 group 段。每组恰一条。
-    let count = okm_core::reduce::scan_reduces::<_, __OkmReduce_Vote_0>(t.store(), ns);
+    let count = okm_core::reduce::scan_reduces::<_, __OkmReduce_Vote_0>(t.store(), ns).unwrap();
     assert_eq!(count.len(), 1);
     assert_eq!(count[0].0.len(), 0, "no group segment");
     assert_eq!(count[0].1, 2);
 
-    let max = okm_core::reduce::scan_reduces::<_, __OkmReduce_Vote_1>(t.store(), ns);
+    let max = okm_core::reduce::scan_reduces::<_, __OkmReduce_Vote_1>(t.store(), ns).unwrap();
     assert_eq!(max.len(), 1);
     assert_eq!(max[0].1, 12);
 
@@ -188,13 +188,13 @@ fn sum_acc_type_follows_field() {
     let ns = <Entry as Document>::NS_PREFIX;
     let gb = 7u64.to_be_bytes().to_vec();
     // i64 acc：100 + (−30) = 70，负数参与求和精确。
-    let sum_i = okm_core::reduce::scan_reduces::<_, __OkmReduce_Entry_0>(t.store(), ns)
+    let sum_i = okm_core::reduce::scan_reduces::<_, __OkmReduce_Entry_0>(t.store(), ns).unwrap()
         .into_iter()
         .find(|(sfx, _)| sfx.as_slice() == gb.as_slice())
         .map(|(_, a)| a);
     assert_eq!(sum_i, Some(70i64));
     // Quant<2> 定点 wire 累加：1250 + (−200) = 1050（= 10.50）。
-    let sum_q = okm_core::reduce::scan_reduces::<_, __OkmReduce_Entry_1>(t.store(), ns)
+    let sum_q = okm_core::reduce::scan_reduces::<_, __OkmReduce_Entry_1>(t.store(), ns).unwrap()
         .into_iter()
         .find(|(sfx, _)| sfx.as_slice() == gb.as_slice())
         .map(|(_, a)| a);
@@ -202,11 +202,11 @@ fn sum_acc_type_follows_field() {
 
     // 可逆：删 r_neg 后两者回到 100 / 1250。
     t.purge(&k(2)).unwrap();
-    let sum_i = okm_core::reduce::scan_reduces::<_, __OkmReduce_Entry_0>(t.store(), ns)
+    let sum_i = okm_core::reduce::scan_reduces::<_, __OkmReduce_Entry_0>(t.store(), ns).unwrap()
         .into_iter()
         .find(|(sfx, _)| sfx.as_slice() == gb.as_slice())
         .map(|(_, a)| a);
-    let sum_q = okm_core::reduce::scan_reduces::<_, __OkmReduce_Entry_1>(t.store(), ns)
+    let sum_q = okm_core::reduce::scan_reduces::<_, __OkmReduce_Entry_1>(t.store(), ns).unwrap()
         .into_iter()
         .find(|(sfx, _)| sfx.as_slice() == gb.as_slice())
         .map(|(_, a)| a);
@@ -300,10 +300,10 @@ fn a_merge_folds_the_ledger_once_and_only_through_the_row_arm() {
             .map(|(_, a)| a)
     };
     let count = |store: &TestStore| {
-        acc(okm_core::reduce::scan_reduces::<_, __OkmReduce_Post_0>(store, ns))
+        acc(okm_core::reduce::scan_reduces::<_, __OkmReduce_Post_0>(store, ns).unwrap())
     };
     let sum = |store: &TestStore| {
-        acc(okm_core::reduce::scan_reduces::<_, __OkmReduce_Post_1>(store, ns))
+        acc(okm_core::reduce::scan_reduces::<_, __OkmReduce_Post_1>(store, ns).unwrap())
     };
     assert_eq!(count(t.store()), Some(1));
 
@@ -313,7 +313,7 @@ fn a_merge_folds_the_ledger_once_and_only_through_the_row_arm() {
     open.insert("note".to_string(), DynamicValue::Str("x".into()));
     t.merge(&k, &open).unwrap();
     assert_eq!(count(t.store()), Some(1), "a segment-only patch folds nothing");
-    assert_eq!(t.fetch(&k).unwrap().get("note"), Some(&DynamicValue::Str("x".into())));
+    assert_eq!(t.fetch(&k).unwrap().unwrap().get("note"), Some(&DynamicValue::Str("x".into())));
 
     // Both halves in ONE call: the row arm folds (the usual unfold-then-fold
     // pair), the segment arm does not — one fold, not one per arm.
@@ -323,5 +323,5 @@ fn a_merge_folds_the_ledger_once_and_only_through_the_row_arm() {
     t.merge(&k, &both).unwrap();
     assert_eq!(count(t.store()), Some(1), "one merge folds once, not once per arm");
     assert_eq!(sum(t.store()), Some(7), "the Sum followed the row's new value");
-    assert_eq!(t.fetch(&k).unwrap().get("tag"), Some(&DynamicValue::Str("y".into())));
+    assert_eq!(t.fetch(&k).unwrap().unwrap().get("tag"), Some(&DynamicValue::Str("y".into())));
 }

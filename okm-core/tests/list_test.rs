@@ -51,9 +51,9 @@ fn list_roundtrip_and_stale_release() {
         ),
     }).unwrap();
     for k in [&k1, &k2, &k3] {
-        assert!(rooms.get(k).is_some(), "child written");
+        assert!(rooms.get(k).unwrap().is_some(), "child written");
     }
-    let d = depts.get(&dept_key).expect("dept");
+    let d = depts.get(&dept_key).expect("store").expect("dept");
     assert_eq!(d.rooms.values.len(), 3);
     assert_eq!(d.rooms.values[0].as_ref().unwrap().label, "alpha");
     assert_eq!(d.rooms.values[2].as_ref().unwrap().label, "gamma");
@@ -69,20 +69,20 @@ fn list_roundtrip_and_stale_release() {
             ],
         ),
     }).unwrap();
-    assert!(rooms.get(&k3).is_none(), "stale child released");
-    assert_eq!(rooms.get(&k2).unwrap().label, "beta2");
+    assert!(rooms.get(&k3).unwrap().is_none(), "stale child released");
+    assert_eq!(rooms.get(&k2).unwrap().unwrap().label, "beta2");
 
     // Reference-only: list of keys, children untouched.
     depts.put(&dept_key, &Dept {
         name: "platform".into(),
         rooms: Refs::new(vec![k1.clone(), k2.clone()]),
     }).unwrap();
-    assert_eq!(rooms.get(&k1).unwrap().label, "alpha");
-    assert!(rooms.get(&k2).is_some());
+    assert_eq!(rooms.get(&k1).unwrap().unwrap().label, "alpha");
+    assert!(rooms.get(&k2).unwrap().is_some());
 
     // Dangling reference reads back as None.
     rooms.purge(&k1).unwrap();
-    let d2 = depts.get(&dept_key).expect("dept2");
+    let d2 = depts.get(&dept_key).expect("store").expect("dept2");
     assert!(d2.rooms.values[0].is_none(), "dangling -> None");
     assert!(d2.rooms.values[1].is_some());
 }

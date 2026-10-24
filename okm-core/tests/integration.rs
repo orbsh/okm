@@ -110,13 +110,13 @@ fn byte_layout_and_queries() {
     assert_eq!(&rk[20..], &101u64.to_be_bytes()); // user.user_id（对端）
 
     // ---------- A 端：user → sessions（decode 回 SessionKey） ----------
-    let sessions = u_org1.get_session(&edges);
+    let sessions = u_org1.get_session(&edges).unwrap();
     assert_eq!(sessions, vec![s1.clone(), s2.clone()]);
-    let sessions2 = u_org2.get_session(&edges);
+    let sessions2 = u_org2.get_session(&edges).unwrap();
     assert_eq!(sessions2, vec![s3.clone()]);
 
     // ---------- B 端：session → user（截断身份返回 PrefixKey） ----------
-    let users = s1.get_user(&edges);
+    let users = s1.get_user(&edges).unwrap();
     assert_eq!(users.len(), 1);
     // 前缀字段 (org_id, user_id) 可信
     assert_eq!(users[0].decoded.org_id, 7);
@@ -126,7 +126,7 @@ fn byte_layout_and_queries() {
 
     // ---------- unlink ----------
     edges.unlink(&u_org2, &s3).unwrap();
-    assert!(u_org2.get_session(&edges).is_empty());
+    assert!(u_org2.get_session(&edges).unwrap().is_empty());
 }
 
 /// 段号语义：A/B 两端 entry 的 ns 不同（1 vs 2），同端点对的其它 junction

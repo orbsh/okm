@@ -374,11 +374,11 @@ mod tests {
 
         // Both directions landed in the engine.
         assert_eq!(
-            store.get(&key(HEADER, FIELD_VOCAB_ID_SLOT, &0u16.to_be_bytes())).unwrap(),
-            b"alpha"
+            store.get(&key(HEADER, FIELD_VOCAB_ID_SLOT, &0u16.to_be_bytes())).unwrap().unwrap(),
+            b"alpha".to_vec()
         );
         assert_eq!(
-            store.get(&key(HEADER, FIELD_VOCAB_NAME_SLOT, b"beta")).unwrap(),
+            store.get(&key(HEADER, FIELD_VOCAB_NAME_SLOT, b"beta")).unwrap().unwrap(),
             &1u16.to_be_bytes()
         );
     }
@@ -392,16 +392,16 @@ mod tests {
         // different things — that is precisely what the split permits.
         assert_eq!(fields.id_for(&mut store, HEADER, "since").unwrap(), 0);
         assert_eq!(kinds.id_for(&mut store, HEADER, "has").unwrap(), 0);
-        assert_eq!(fields.name_for(&store, HEADER, 0).unwrap(), "since");
-        assert_eq!(kinds.name_for(&store, HEADER, 0).unwrap(), "has");
+        assert_eq!(fields.name_for(&store, HEADER, 0).unwrap().unwrap(), "since");
+        assert_eq!(kinds.name_for(&store, HEADER, 0).unwrap().unwrap(), "has");
         // …and they land on different faces.
         assert_eq!(
-            store.get(&key(HEADER, PREDICATE_VOCAB_ID_SLOT, &0u16.to_be_bytes())).unwrap(),
-            b"has"
+            store.get(&key(HEADER, PREDICATE_VOCAB_ID_SLOT, &0u16.to_be_bytes())).unwrap().unwrap(),
+            b"has".to_vec()
         );
         assert_eq!(
-            store.get(&key(HEADER, FIELD_VOCAB_ID_SLOT, &0u16.to_be_bytes())).unwrap(),
-            b"since"
+            store.get(&key(HEADER, FIELD_VOCAB_ID_SLOT, &0u16.to_be_bytes())).unwrap().unwrap(),
+            b"since".to_vec()
         );
     }
 
@@ -415,13 +415,13 @@ mod tests {
         }
         // A brand-new cache (process restart) resumes after the max.
         let mut d2 = VocabCache::<u16>::new(PREDICATE_VOCAB);
-        assert_eq!(d2.name_for(&store, HEADER, 0).unwrap(), "one");
-        assert_eq!(d2.name_for(&store, HEADER, 1).unwrap(), "two");
+        assert_eq!(d2.name_for(&store, HEADER, 0).unwrap().unwrap(), "one");
+        assert_eq!(d2.name_for(&store, HEADER, 1).unwrap().unwrap(), "two");
         let fresh = d2.id_for(&mut store, HEADER, "three").unwrap();
         assert_eq!(fresh, 2, "numbering resumes after the loaded max");
         // A read-only handle answers without the caller priming anything.
         let mut d3 = VocabCache::<u16>::new(PREDICATE_VOCAB);
-        assert_eq!(d3.id_get(&store, HEADER, "two"), Some(1));
+        assert_eq!(d3.id_get(&store, HEADER, "two").unwrap(), Some(1));
     }
 
     #[test]
@@ -433,7 +433,7 @@ mod tests {
         batch.put(key(HEADER, FIELD_VOCAB_ID_SLOT, &0x1234u16.to_be_bytes()), b"big".to_vec());
         batch.put(key(HEADER, FIELD_VOCAB_NAME_SLOT, b"big"), 0x1234u16.to_be_bytes().to_vec());
         let _ = store.commit_batch(batch);
-        assert_eq!(d.name_for(&store, HEADER, 0x1234).unwrap(), "big");
+        assert_eq!(d.name_for(&store, HEADER, 0x1234).unwrap().unwrap(), "big");
     }
 
     #[test]
@@ -456,8 +456,8 @@ mod tests {
         let mut color = VocabCache::<u8>::new(data_vocab(1));
         assert_eq!(status.id_for(&mut store, HEADER, "active").unwrap(), 0);
         assert_eq!(color.id_for(&mut store, HEADER, "red").unwrap(), 0);
-        assert_eq!(status.name_for(&store, HEADER, 0).unwrap(), "active");
-        assert_eq!(color.name_for(&store, HEADER, 0).unwrap(), "red");
+        assert_eq!(status.name_for(&store, HEADER, 0).unwrap().unwrap(), "active");
+        assert_eq!(color.name_for(&store, HEADER, 0).unwrap().unwrap(), "red");
     }
 
     #[test]

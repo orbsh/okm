@@ -371,9 +371,10 @@ impl<T: WireTransport> VirtualStorageAsync for WireClient<T> {
         if let Some(reason) = inner.dead.clone() {
             return Err(crate::error::Error::Engine(reason));
         }
-        let _ = inner
+        inner
             .transport
-            .post(&OpFrame::write_batch(&batch.ops).encode());
+            .post(&OpFrame::write_batch(&batch.ops).encode())
+            .map_err(crate::error::Error::Engine)?;
         Ok(())
     }
 }

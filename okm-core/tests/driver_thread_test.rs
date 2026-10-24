@@ -18,13 +18,13 @@ async fn slatedb_sync_ops_run_inside_a_tokio_context() {
     let handle = store.shared_handle();
     store.put(b"a".to_vec(), b"1".to_vec());
     store.put(b"b".to_vec(), b"2".to_vec());
-    assert_eq!(handle.get(b"a").as_deref(), Some(&b"1"[..]));
-    assert_eq!(handle.scan_range(b"a", Some(b"c")).len(), 2);
-    assert_eq!(handle.scan_suffix(b""), vec![b"a".to_vec(), b"b".to_vec()]);
+    assert_eq!(handle.get(b"a").unwrap().as_deref(), Some(&b"1"[..]));
+    assert_eq!(handle.scan_range(b"a", Some(b"c")).unwrap().len(), 2);
+    assert_eq!(handle.scan_suffix(b"").unwrap(), vec![b"a".to_vec(), b"b".to_vec()]);
     let items: Vec<_> = handle.scan_range_iter(b"", None).collect();
     assert_eq!(items.len(), 2);
     handle.del(b"a");
-    assert_eq!(handle.get(b"a"), None);
+    assert_eq!(handle.get(b"a").unwrap(), None);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
@@ -38,6 +38,7 @@ async fn slatedb_backwards_walk_drains_to_completion() {
     }
     let last_three: Vec<_> = store
         .scan_range_iter(&0u32.to_be_bytes(), None)
+        .map(|item| item.expect("a page item"))
         .rev()
         .take(3)
         .collect();

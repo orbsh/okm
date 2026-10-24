@@ -141,13 +141,13 @@ pub fn derive(input: TokenStream) -> TokenStream {
             fn #m_on_a<S: ::okm_core::VirtualStorage>(
                 &self,
                 c: &::okm_core::Junction<S, #edge_name>,
-            ) -> Vec<<#doc_b as ::okm_core::Document>::Key>;
+            ) -> ::okm_core::error::Result<Vec<<#doc_b as ::okm_core::Document>::Key>>;
         }
         impl #a_trait for <#doc_a as ::okm_core::Document>::Key {
             fn #m_on_a<S: ::okm_core::VirtualStorage>(
                 &self,
                 c: &::okm_core::Junction<S, #edge_name>,
-            ) -> Vec<<#doc_b as ::okm_core::Document>::Key> {
+            ) -> ::okm_core::error::Result<Vec<<#doc_b as ::okm_core::Document>::Key>> {
                 c.forward(self)
             }
         }
@@ -158,14 +158,14 @@ pub fn derive(input: TokenStream) -> TokenStream {
             fn #m_on_b<S: ::okm_core::VirtualStorage>(
                 &self,
                 c: &::okm_core::Junction<S, #edge_name>,
-            ) -> Vec<::okm_core::PrefixKey<#key_a>>;
+            ) -> ::okm_core::error::Result<Vec<::okm_core::PrefixKey<#key_a>>>;
         }
         impl #b_trait for <#doc_b as ::okm_core::Document>::Key {
             fn #m_on_b<S: ::okm_core::VirtualStorage>(
                 &self,
                 c: &::okm_core::Junction<S, #edge_name>,
-            ) -> Vec<::okm_core::PrefixKey<#key_a>> {
-                c.reverse_raw(self)
+            ) -> ::okm_core::error::Result<Vec<::okm_core::PrefixKey<#key_a>>> {
+                ::core::result::Result::Ok(c.reverse_raw(self)?
                     .into_iter()
                     .map(|suffix| {
                         ::okm_core::PrefixKey {
@@ -176,7 +176,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
                                 .sum(),
                         }
                     })
-                    .collect()
+                    .collect())
             }
         }
     }

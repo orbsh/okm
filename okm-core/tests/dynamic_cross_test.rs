@@ -96,7 +96,7 @@ fn rust_write_dynamic_read_and_reverse() {
     // Rust wrote; dynamic reads through schema + the SAME physical bytes
     // (primary entry value = payload; primary key suffix = key encoding).
     let pkey = t.primary_key(&key);
-    let payload_bytes = t.store().get(&pkey).expect("rust write landed");
+    let payload_bytes = t.store().get(&pkey).unwrap().expect("rust write landed");
     let values = decode_payload(&schema, &payload_bytes).expect("dynamic payload decode");
     assert_eq!(values.get("level"), Some(&Value::U32(4)));
     assert_eq!(values.get("score"), Some(&Value::U16(77)));
@@ -122,7 +122,7 @@ fn rust_write_dynamic_read_and_reverse() {
     assert_eq!(rust_key.org_id, 0x0A0B_0C0D);
     assert_eq!(rust_key.user_id, 0x1122_3344_5566_7788);
     t.put(&rust_key, &rust_decoded).unwrap();
-    let document = t.get(&rust_key).expect("rust reads dynamic-encoded bytes");
+    let document = t.get(&rust_key).unwrap().expect("rust reads dynamic-encoded bytes");
     assert_eq!(document.name, "alice");
     assert_eq!(document.level, 9);
 }
@@ -233,9 +233,9 @@ fn a_key_name_in_a_map_is_a_value_field_in_both_modes() {
 
     // No payload name was given, so no row is written on either side: the value
     // stands alone, addressed by the pkey.
-    assert!(typed.get(&key).is_none(), "no payload name = no row");
+    assert!(typed.get(&key).unwrap().is_none(), "no payload name = no row");
     assert!(
-        typed.fetch(&key).unwrap().contains_key("org_id"),
+        typed.fetch(&key).unwrap().unwrap().contains_key("org_id"),
         "the name is a value field on the typed side"
     );
     assert!(
@@ -243,7 +243,7 @@ fn a_key_name_in_a_map_is_a_value_field_in_both_modes() {
         "the name is a value field on the dynamic side"
     );
     // The identity is the pkey and a map cannot move it: this invented no row.
-    assert!(typed.fetch(&UserKey { org_id: 999, user_id: 1 }).is_none());
+    assert!(typed.fetch(&UserKey { org_id: 999, user_id: 1 }).unwrap().is_none());
 }
 
 /// Two enumeration modes, because a document is the PAIR of slots (ADR-0035):
@@ -266,17 +266,17 @@ fn the_two_enumeration_modes_see_the_two_kinds_of_document() {
     dynamic_only.insert("note".to_string(), DynamicValue::Str("no row".into()));
     typed.merge(&segment_only, &dynamic_only).unwrap();
 
-    assert_eq!(typed.scan_keys(), vec![with_row.clone()], "row mode: rows only");
+    assert_eq!(typed.scan_keys().unwrap(), vec![with_row.clone()], "row mode: rows only");
     assert_eq!(
-        typed.scan_document_keys(),
+        typed.scan_document_keys().unwrap(),
         vec![with_row.clone(), segment_only.clone()],
         "document mode: the union, key order, one entry per document"
     );
 
     let docs: Vec<_> = typed
-        .scan_document_keys()
+        .scan_document_keys().unwrap()
         .iter()
-        .map(|k| typed.fetch(k).expect("a document"))
+        .map(|k| typed.fetch(k).unwrap().expect("a document"))
         .collect();
     assert_eq!(docs.len(), 2, "the adapter is a map over keys + fetch");
     assert!(docs[1].contains_key("note"), "the segment-only document fetched");
@@ -295,13 +295,12 @@ fn the_two_enumeration_modes_see_the_two_kinds_of_document() {
     dyn_only.insert("note".to_string(), Value::Str("no row".into()));
     dynamic.merge(&segment_only.encode(), &dyn_only).unwrap();
     assert_eq!(
-        dynamic.scan_document_keys(),
+        dynamic.scan_document_keys().unwrap(),
         vec![with_row.encode(), segment_only.encode()],
         "the dynamic face merges the same two slots"
     );
     assert!(dynamic
-        .fetch(&segment_only.encode())
+        .fetch(&segment_only.encode()).unwrap()
         .unwrap()
-        .expect("a document")
         .contains_key("note"));
 }

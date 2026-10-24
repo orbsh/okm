@@ -35,7 +35,7 @@ fn range_scan_reads_only_the_interval() {
     let hits = col.scan_range::<__OkmIndex_Row_by_a>(
         &1u32.to_be_bytes(),
         Some(&100u32.to_be_bytes()),
-    );
+    ).unwrap();
     assert_eq!(hits.len(), 99); // a = 1..=99
     assert_eq!(hits.first().unwrap().0.decoded.id, 1);
     assert_eq!(hits.last().unwrap().0.decoded.id, 99);
@@ -47,14 +47,14 @@ fn range_scan_reads_only_the_interval() {
     assert_eq!(hits[0].1.as_ref().unwrap().a, 1);
 
     // Unbounded end: a >= 50.
-    let hits = col.scan_range::<__OkmIndex_Row_by_a>(&50u32.to_be_bytes(), None);
+    let hits = col.scan_range::<__OkmIndex_Row_by_a>(&50u32.to_be_bytes(), None).unwrap();
     assert_eq!(hits.len(), 50);
 
     // Empty interval: end <= begin.
     let hits = col.scan_range::<__OkmIndex_Row_by_a>(
         &100u32.to_be_bytes(),
         Some(&1u32.to_be_bytes()),
-    );
+    ).unwrap();
     assert!(hits.is_empty());
 }
 
@@ -67,7 +67,7 @@ fn range_scan_fjall() {
     for i in 0..50u32 {
         col.put(&RowId { id: i as u64 }, &Row { a: i, tag: 0 }).unwrap();
     }
-    let hits = col.scan_range::<__OkmIndex_Row_by_a>(&10u32.to_be_bytes(), Some(&20u32.to_be_bytes()));
+    let hits = col.scan_range::<__OkmIndex_Row_by_a>(&10u32.to_be_bytes(), Some(&20u32.to_be_bytes())).unwrap();
     assert_eq!(hits.len(), 10);
 }
 
@@ -79,7 +79,7 @@ fn range_scan_redb() {
     for i in 0..50u32 {
         col.put(&RowId { id: i as u64 }, &Row { a: i, tag: 0 }).unwrap();
     }
-    let hits = col.scan_range::<__OkmIndex_Row_by_a>(&10u32.to_be_bytes(), Some(&20u32.to_be_bytes()));
+    let hits = col.scan_range::<__OkmIndex_Row_by_a>(&10u32.to_be_bytes(), Some(&20u32.to_be_bytes())).unwrap();
     assert_eq!(hits.len(), 10);
 }
 
@@ -99,8 +99,8 @@ fn lazy_range_scan_matches_buffered() {
         .scan_range_iter::<__OkmIndex_Row_by_a>(&1u32.to_be_bytes(), Some(&100u32.to_be_bytes()))
         .collect();
     assert_eq!(lazy.len(), 99);
-    assert_eq!(lazy[0].1.as_ref().unwrap().a, 1);
-    assert_eq!(lazy.last().unwrap().1.as_ref().unwrap().a, 99);
+    assert_eq!(lazy[0].as_ref().unwrap().1.as_ref().unwrap().a, 1);
+    assert_eq!(lazy.last().unwrap().as_ref().unwrap().1.as_ref().unwrap().a, 99);
 
     // Backwards walk (rev() requires DoubleEndedIterator) — "last N
     // entries" without buffering the forward pass.
@@ -110,8 +110,8 @@ fn lazy_range_scan_matches_buffered() {
         .take(3)
         .collect();
     assert_eq!(last_three.len(), 3);
-    assert_eq!(last_three[0].1.as_ref().unwrap().a, 99);
-    assert_eq!(last_three[2].1.as_ref().unwrap().a, 97);
+    assert_eq!(last_three[0].as_ref().unwrap().1.as_ref().unwrap().a, 99);
+    assert_eq!(last_three[2].as_ref().unwrap().1.as_ref().unwrap().a, 97);
 
     // Early abandon costs only the pulled entries — lazy by construction
     // (take before collect); just lock the semantics.
@@ -120,7 +120,7 @@ fn lazy_range_scan_matches_buffered() {
         .take(2)
         .collect();
     assert_eq!(first_two.len(), 2);
-    assert_eq!(first_two[1].1.as_ref().unwrap().a, 2);
+    assert_eq!(first_two[1].as_ref().unwrap().1.as_ref().unwrap().a, 2);
 }
 
 #[cfg(feature = "fjall")]
@@ -133,12 +133,14 @@ fn lazy_range_scan_fjall_native_double_ended() {
     }
     let fwd: Vec<(u64, u32)> = col
         .scan_range_iter::<__OkmIndex_Row_by_a>(&10u32.to_be_bytes(), Some(&20u32.to_be_bytes()))
-        .map(|(k, d)| (k.decoded.id, d.unwrap().a))
+        .map(|item| item.expect("a page item"))
+        .map(|(k, d)| (k.decoded.id, d.expect("a row").a))
         .collect();
     let mut bwd: Vec<(u64, u32)> = col
         .scan_range_iter::<__OkmIndex_Row_by_a>(&10u32.to_be_bytes(), Some(&20u32.to_be_bytes()))
         .rev()
-        .map(|(k, d)| (k.decoded.id, d.unwrap().a))
+        .map(|item| item.expect("a page item"))
+        .map(|(k, d)| (k.decoded.id, d.expect("a row").a))
         .collect();
     bwd.reverse();
     assert_eq!(fwd, bwd);

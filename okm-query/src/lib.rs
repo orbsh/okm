@@ -233,11 +233,13 @@ mod tests {
             let n = UserKey::decode(node);
             let mut out = t
                 .forward(&n)
+                .expect("a junction read")
                 .into_iter()
                 .map(|p| p.encode())
                 .collect::<Vec<_>>();
             out.extend(
                 t.reverse(&n)
+                    .expect("a junction read")
                     .into_iter()
                     .map(|p| p.encode()),
             );
@@ -251,11 +253,13 @@ mod tests {
             let n = UserKey::decode(node);
             let mut out = t
                 .forward(&n)
+                .expect("a junction read")
                 .into_iter()
                 .map(|p| p.encode())
                 .collect::<Vec<_>>();
             out.extend(
                 t.reverse(&n)
+                    .expect("a junction read")
                     .into_iter()
                     .map(|p| p.encode()),
             );
