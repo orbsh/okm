@@ -101,10 +101,19 @@ t.scan_exact::<I>(&encoded)
 ```text
 store.scan_suffix_kv(&p)            连 key 与 value 一起取
   → 尾段仍从 key 切出（宽度同上）
-  → value TLV 解出 includes 字段
+  → value 段按宽度切出 includes 字段（裸拼接，无 tag、无长度前缀）
 ```
 
-返回 `(PrefixKey<K>, Vec<u8>)`（value 为原始 TLV 字节）。它是高扇出查询的物化视图——每次 put/delete 付永久写成本，纪律见[建模指南「覆盖索引克制」](../MODELING.zh-CN.md)。
+返回 `(PrefixKey<K>, I::Covered)`。`Covered` 是 derive 为每个带 includes 的声明生成的
+结构体 `__OkmCovered_{Row}_{索引名}`：字段与 `INCLUDES` 同序、同 Rust 类型，所以读侧
+拿到的是字段值，不是字节。变宽字段只能排最后（与 `fields` 同一条声明期规则），解码时
+它取该条 value 的剩余字节；没有 includes 的声明 `Covered = ()`——没复制，也就没有可解的。
+
+动态侧的对应物是 `DynamicCollection::scan_covered`，返回 `(key 字段, 覆盖字段)` 两张
+名字映射（分开返回：key 字段名与 payload 字段名可能撞，而 key 是身份不是 payload）。
+
+它是高扇出查询的物化视图——每次 put/delete 付永久写成本（每个条目多 |includes| 字节；
+条目本来就整体重写，所以 op 数与 commit 数不变），纪律见[建模指南「覆盖索引克制」](../MODELING.zh-CN.md)。
 
 ## 写路径的同步
 

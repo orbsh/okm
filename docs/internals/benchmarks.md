@@ -44,6 +44,8 @@ heap copy; hot-segment arithmetic is sub-ns.
 
 ## Index scan + fetch-back (per prefix value)
 
+Recorded 2026-09-12:
+
 | fanout | scan_index + fetch-back | scan_covered |
 |---|---|---|
 | 1 | 124 ns | 85 ns |
@@ -51,7 +53,25 @@ heap copy; hot-segment arithmetic is sub-ns.
 | 10,000 | 1.29 ms (~129 ns/row) | — |
 
 Linear in fanout (~110-130 ns/row: key decode + payload point-read per
-hit). scan_covered at fanout 1 saves the fetch-back read (~30%).
+hit). scan_covered at fanout 1 saved the fetch-back read (~30%).
+
+Re-run 2026-10-24, after `includes` gained its read side and both doors became
+comparable at every fanout (the bench index is now
+`by_level { fields(level), includes(score) }`, so the covered scan really decodes
+an 8-byte field instead of an empty segment):
+
+| fanout | scan (fetch-back) | scan_covered | ratio |
+|---|---|---|---|
+| 1 | 11.0 µs | 6.4 µs | 1.7× |
+| 100 | 515 µs (5.2 µs/row) | 104 µs (1.0 µs/row) | 4.9× |
+| 10,000 | 60.8 ms (6.1 µs/row) | 10.7 ms (1.1 µs/row) | 5.7× |
+
+The absolute values do not line up with the 2026-09-12 block (runner and engine
+version both moved), so compare ratios within a block, never across. What the
+ratio says: one fetch-back hit costs ~5 µs more than a covered hit, so a
+high-fanout read is ~5× faster through the covered door — that gap is the whole
+reason `includes` exists, and the reason it is opt-in (every row write pays for
+the copied bytes).
 
 ## Write path (in-memory engine)
 

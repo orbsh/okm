@@ -1912,8 +1912,8 @@ burned into the key rides back for free with every entry (tail bytes in
 hand); via an access method, that dimension comes back through one
 indirection — a `scan` fetch-back pays one primary-table point read
 plus one `decode_payload` per entry; `scan_covered` skips the point
-read but still pays one entry-value parse. Per entry, yes, one extra
-parse.
+read and decodes the entry's includes segment instead — one entry-value
+parse rather than a point read plus a whole-payload parse.
 
 **The per-hit cost is small, and amortized.** That indirection is a
 routine LSM point get / one TLV parse — not hot-path scale; what it
@@ -1943,8 +1943,10 @@ only pays more as business complexity grows.
 ## Covering indexes, with restraint
 
 `includes(...)` copies payload fields into the index entry so
-`scan_covered` needs no fetch-back. A real win for high-fanout read
-paths — but every put/purge pays a permanent write cost.
+`scan_covered` needs no fetch-back — it returns the covered fields
+decoded (`I::Covered`, one generated struct per covering declaration). A
+real win for high-fanout read paths — but every put/purge pays a
+permanent write cost.
 
 Discipline:
 

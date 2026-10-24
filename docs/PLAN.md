@@ -1624,13 +1624,29 @@ Tasks:
       the same frame's pending writes, contrary to the comment there. No production
       caller builds a mixed frame, so nothing is broken today; a mixed frame's
       read-your-own-writes needs the query routed through a `BatchStore` view.
-- [ ] includes are written and never read (2026-10-23, OPEN — next). Two
-      independent holes: (a) dynamic side — `AccessMethod::plain(.., includes)`
-      writes the covered fields into the entry VALUE, but `scan_access_method`
-      does a key-only suffix scan and never reads it; (b) typed side — `scan`
-      ignores includes entirely (it fetch-backs every hit), and the only door,
-      `scan_covered`, hands the raw bytes out undecoded. Fix both so a scan can
-      answer the covered fields without a fetch-back.
+- [x] includes gain their read half (2026-10-24) — both holes closed.
+      (a) dynamic side: `scan_access_method_covered` / `decode_includes` (over
+      `okm_core::scan_suffix_kv`) read the entry VALUE and decode the segment by
+      declared width; exposed as `DynamicCollection::scan_covered`, returning
+      `(key fields, covered fields)` as two name-keyed maps.
+      (b) typed side: `KvIndex::Covered` + `decode_covered`; the derive generates
+      `__OkmCovered_{Row}_{index}` (fields = INCLUDES order, same Rust types;
+      `()` when the declaration covers nothing) and `Collection::scan_covered`
+      now returns `(PrefixKey<K>, I::Covered)` instead of raw bytes. The segment
+      is a bare concatenation located by width — no frames — so the decoder is
+      the write walk read backwards; a trailing variable-width include (Str,
+      last-only rule) takes the remainder and reuses the payload decoder with
+      `len = remainder`. ADR-0005's 2026-10-24 update records the landing and
+      corrects this repo's "value = includes TLV" wording, which the code never
+      did. Locked by
+      `index_test::covered_scan_answers_without_the_primary_table` (the primary
+      row is deleted from the store and the covered scan still answers — the
+      whole point), `index_test::covered_includes_carry_a_variable_width_tail`,
+      `dynamic_table_test::dynamic_covered_scan_answers_without_fetching_documents`
+      and `…::dynamic_covered_str_include_decodes_the_trailing_remainder`. The
+      bench now measures both doors at every fanout (index carries
+      `includes(score)`): 100 hits 515 µs → 104 µs, 10 000 hits 60.8 ms →
+      10.7 ms (docs/internals/benchmarks.md).
 - [ ] Downstream bump after H is incomplete (2026-10-23): mudra / effector / aura
       ride `ba0fb72` and `cargo check` clean. krystallizer still imports
       `okm_core::MemBatch` (`crates/mem-core/src/graph.rs`) and that file is also
