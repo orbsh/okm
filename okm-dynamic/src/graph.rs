@@ -442,7 +442,6 @@ impl<S: VirtualStorage> Graph<S> {
 fn ids_from_suffixes(suffixes: Vec<Vec<u8>>) -> Vec<u64> {
     suffixes
         .iter()
-        .filter(|s| s.len() == 8)
-        .map(|s| u64::from_be_bytes(s.as_slice().try_into().unwrap()))
+        .filter_map(|s| s.first_chunk::<8>().map(|b| u64::from_be_bytes(*b)))
         .collect()
 }

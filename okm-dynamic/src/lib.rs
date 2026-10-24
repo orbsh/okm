@@ -118,6 +118,11 @@ pub enum CodecError {
     UnknownTag(u8),
     /// Invalid UTF-8 in a Str field.
     InvalidUtf8(String),
+    /// A cold payload field carries no TLV tag. The schema is caller-supplied
+    /// (it round-trips through JSON), so this is input, not an invariant of
+    /// this crate — and an untagged cold frame would encode to a payload the
+    /// reader cannot walk back.
+    ColdFieldWithoutTag(String),
 }
 
 impl std::fmt::Display for CodecError {
@@ -136,6 +141,10 @@ impl std::fmt::Display for CodecError {
             }
             CodecError::UnknownTag(t) => write!(f, "unknown cold TLV tag {t}"),
             CodecError::InvalidUtf8(n) => write!(f, "field `{n}`: invalid UTF-8"),
+            CodecError::ColdFieldWithoutTag(n) => write!(
+                f,
+                "cold field `{n}` carries no tag (the schema's cold fields are ordered TLV frames)"
+            ),
         }
     }
 }

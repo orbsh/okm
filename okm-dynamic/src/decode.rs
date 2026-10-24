@@ -140,14 +140,14 @@ pub fn decode_payload(schema: &CollectionSchema, bytes: &[u8]) -> Result<ValueMa
                         // element decoding is consumer-side (the value
                         // stays an opaque Bytes frame); the schema-side
                         // expect_len contract is enforced HERE.
-                        if value.len() < 4 {
+                        let Some(head) = value.first_chunk::<4>() else {
                             return Err(CodecError::Truncated {
                                 field: f.name.clone(),
                                 needed: 4,
                                 got: value.len(),
                             });
-                        }
-                        let count = u32::from_be_bytes(value[0..4].try_into().unwrap());
+                        };
+                        let count = u32::from_be_bytes(*head);
                         if let Some(expect) = f.expect_len
                             && count as usize != expect {
                                 return Err(CodecError::TypeMismatch {
@@ -158,14 +158,14 @@ pub fn decode_payload(schema: &CollectionSchema, bytes: &[u8]) -> Result<ValueMa
                         Value::Bytes(value.to_vec())
                     }
                     FieldType::VarInt | FieldType::Quant(_) | FieldType::Offset(_) => {
-                        if value.len() != 8 {
+                        let Ok(bytes) = <&[u8; 8]>::try_from(value) else {
                             return Err(CodecError::Truncated {
                                 field: f.name.clone(),
                                 needed: 8,
                                 got: value.len(),
                             });
-                        }
-                        let x = u64::from_be_bytes(value.try_into().unwrap());
+                        };
+                        let x = u64::from_be_bytes(*bytes);
                         Value::U64(x)
                     }
                     _ => {

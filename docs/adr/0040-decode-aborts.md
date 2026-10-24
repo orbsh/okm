@@ -60,14 +60,19 @@ allow carries its reason in place:
 | `SlatedbSync::open_mem` | fn | construction, once: no runtime/thread ⇒ no store |
 | `TestStore::slatedb_mem` | fn | test-double construction |
 | `Nest::serve`, `Nest::apply` | fn | `serve` twice; a scan frame that lost its begin |
+| `okm-vector/src/codec.rs` | file | a stored code is this build's own bytes; a `Codec`/`Prepared` mismatch or a code shorter than its own norm prefix means the row came from somewhere else, and an invented distance would be folded straight back into the graph's edges |
 
-**5. What stays `Result`.** Everything where the bytes are foreign, or the store
-may be unable to answer: the storage verbs (ADR-0037 / 0039), scan items
+**5. What stays `Result`.** Everything where the bytes are foreign, where the input
+is the caller's own data, or where the store may be unable to answer: the storage verbs (ADR-0037 / 0039), scan items
 (ADR-0038), and the **import** path — a Parquet file written by another producer is
 input, so a column whose arrow type does not match the declaration answers
 `Err` (`column_as`, `tooling.rs`), and the variant metadata frame is read with
 `first_chunk` instead of a length check plus `expect`. The distinction is the
-source of the bytes, not the direction of the call.
+source of the bytes, not the direction of the call. The dynamic side is almost
+entirely that class — its schema arrives as data (it round-trips through JSON) and
+its field names arrive at runtime — so a cold field with no tag, a run of field ids
+that runs out of width, and a write the engine refused are all `Err`s there, not
+aborts.
 
 ## Scope: where a panic is still the right answer
 

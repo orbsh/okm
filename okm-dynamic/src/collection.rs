@@ -215,9 +215,9 @@ impl<S: VirtualStorage> DynamicCollection<S> {
     /// ops in order inside one call. Either way the document write, its faces,
     /// the reduce ledger and the dynamic-segment entry land together — the same
     /// one-commit rule the typed `Collection` keeps (ADR-0035 rule 6).
-    fn replay(&self, ops: &[(Vec<u8>, Option<Vec<u8>>)]) {
+    fn replay(&self, ops: &[(Vec<u8>, Option<Vec<u8>>)]) -> Result<(), String> {
         if ops.is_empty() {
-            return;
+            return Ok(());
         }
         let mut batch = okm_core::Batch::default();
         for (key, value) in ops {
@@ -226,12 +226,12 @@ impl<S: VirtualStorage> DynamicCollection<S> {
                 None => batch.del(key),
             }
         }
-        // The engine's error has no channel in this API (host-language callers
-        // get values, not typed hierarchies) — it surfaces as a panic carrying
-        // the engine's own text, never as a generic message.
-        if let Err(e) = self.store.commit_batch(batch) {
-            panic!("dynamic write failed: {e}");
-        }
+        // The engine's refusal travels out as the write verb's `Err` — the same
+        // `String` channel every other dynamic verb answers on, carrying the
+        // engine's own text rather than a generic message.
+        self.store
+            .commit_batch(batch)
+            .map_err(|e| format!("dynamic write failed: {e}"))
     }
 
     /// Access-method scan (leftmost prefix over the indexed fields,
@@ -442,7 +442,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
                 &mut vocab,
             )?
         };
-        self.replay(&plan.ops);
+        self.replay(&plan.ops)?;
         Ok(())
     }
 
@@ -487,7 +487,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
                 &mut vocab,
             )?
         };
-        self.replay(&plan.ops);
+        self.replay(&plan.ops)?;
         Ok(())
     }
 
@@ -503,7 +503,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
             let store = &self.store;
             self.plan_purge(pkey, old_row.as_ref(), old_dynamic.as_ref(), &|ek| store.get(ek).map_err(|e| e.to_string()))?
         };
-        self.replay(&plan.ops);
+        self.replay(&plan.ops)?;
         Ok(true)
     }
 

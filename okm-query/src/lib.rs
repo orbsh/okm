@@ -59,21 +59,21 @@ pub fn merge_join<K: Ord, L: Clone, R: Clone>(
                 // nested-loop over the equal runs, matching SQL join
                 // semantics when keys duplicate. The run key is the
                 // run's first key, taken by value — no `K: Clone`.
-                let (run_key, v0) = li.next().unwrap();
+                let Some((run_key, v0)) = li.next() else {
+                    break;
+                };
                 let mut lrun = vec![v0];
-                loop {
-                    let same = li.peek().is_some_and(|(k, _)| *k == run_key);
-                    if !same {
-                        break;
+                while li.peek().is_some_and(|(k, _)| *k == run_key) {
+                    // `peek` just answered; `next` answers too. Spelled as an
+                    // `if let` so the guarantee costs no panic arm.
+                    if let Some((_, v)) = li.next() {
+                        lrun.push(v);
                     }
-                    lrun.push(li.next().unwrap().1);
                 }
-                loop {
-                    let same = ri.peek().is_some_and(|(k, _)| *k == run_key);
-                    if !same {
+                while ri.peek().is_some_and(|(k, _)| *k == run_key) {
+                    let Some((_, r)) = ri.next() else {
                         break;
-                    }
-                    let r = ri.next().unwrap().1;
+                    };
                     for l in &lrun {
                         out.push((l.clone(), r.clone()));
                     }
