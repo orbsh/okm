@@ -11,7 +11,7 @@ use common::*;
 fn fjall_roundtrip() {
     let dir = tempfile::tempdir().unwrap();
     let store = FjallStore::open(dir.path(), "edges").unwrap();
-    let mut edges: Junction<FjallStore, UserToSessionEdge> = Junction::new(store);
+    let edges: Junction<FjallStore, UserToSessionEdge> = Junction::new(store);
 
     let u = UserKey {
         org_id: 7,

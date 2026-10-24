@@ -9,7 +9,7 @@ fn verify_engine(store: TestStore) {
     let name = store.name();
 
     // Point ops.
-    let mut s = store.clone();
+    let s = store.clone();
     s.put(b"k1".to_vec(), b"v1".to_vec());
     s.put(b"k2".to_vec(), b"v2".to_vec());
     assert_eq!(s.get(b"k1").unwrap().as_deref(), Some(b"v1".as_slice()), "{name}: point get");
@@ -67,7 +67,7 @@ pub struct MRow {
 #[test]
 fn engine_matrix_table_round_trip() {
     for (name, store) in TestStore::matrix() {
-        let mut t: okm_core::Collection<TestStore, MKey, MRow> = okm_core::Collection::new(store);
+        let t: okm_core::Collection<TestStore, MKey, MRow> = okm_core::Collection::new(store);
         t.put(&MKey { id: 7 }, &MRow { score: 55 }).unwrap();
         let back = t
             .get(&MKey { id: 7 })

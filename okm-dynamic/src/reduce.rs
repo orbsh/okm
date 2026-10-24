@@ -154,8 +154,8 @@ impl BoundReduce {
 pub fn reduce_get<S: VirtualStorage>(
     store: &S,
     entry_key: &[u8],
-) -> Option<Vec<u8>> {
-    store.get(entry_key).unwrap()
+) -> Result<Option<Vec<u8>>, String> {
+    store.get(entry_key).map_err(|e| e.to_string())
 }
 
 /// Scan every group of one reduce: group segment + acc bytes. Prefix
@@ -164,12 +164,17 @@ pub fn scan_reduces<S: VirtualStorage>(
     store: &S,
     ns: &[u8],
     slot: u16,
-) -> Result<Vec<(Vec<u8>, Vec<u8>)>, String> {
+) -> Result<GroupAccs, String> {
     let mut prefix = Vec::with_capacity(ns.len() + 2);
     prefix.extend_from_slice(ns);
     okm_core::write_slot(&mut prefix, slot);
     okm_core::storage::scan_suffix_kv(store, &prefix).map_err(|e| e.to_string())
 }
+
+/// One reduce's groups: `(group segment, accumulator bytes)` per group, in
+/// key order — what `scan_reduces` hands the caller and the shape the plan's
+/// overlay writes back.
+pub type GroupAccs = Vec<(Vec<u8>, Vec<u8>)>;
 
 /// The shipped presets as dynamic-side logic (the same u64 BE
 /// accumulator okm-core's derive presets use): `count` folds +1 and

@@ -54,8 +54,10 @@ pub struct PlannedWrite {
 }
 
 /// Current-accumulator lookup for one group entry key. `None` = the
-/// actor's cache has no entry for the group (first fold seeds it).
-pub type AccOf<'a> = dyn Fn(&[u8]) -> Option<Vec<u8>> + 'a;
+/// caller's cache has no entry for the group (first fold seeds it); `Err` =
+/// the read behind it failed — a cache miss and a broken store are not the
+/// same answer here either.
+pub type AccOf<'a> = dyn Fn(&[u8]) -> Result<Option<Vec<u8>>, String> + 'a;
 
 /// The plan's own acc overlay: within ONE plan, a later arm reads the
 /// acc a prior arm wrote (overwrite = unfold-then-fold on the same
@@ -80,9 +82,9 @@ impl<'a> AccOverlay<'a> {
     fn new(base: &'a AccOf<'a>) -> Self {
         Self { base, written: std::collections::HashMap::new() }
     }
-    fn get(&self, ek: &[u8]) -> Option<Vec<u8>> {
+    fn get(&self, ek: &[u8]) -> Result<Option<Vec<u8>>, String> {
         match self.written.get(ek) {
-            Some(v) => v.clone(),
+            Some(v) => Ok(v.clone()),
             None => (self.base)(ek),
         }
     }
@@ -356,7 +358,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
         let key = crate::decode_key(self.schema(), pkey).map_err(|e| e.to_string())?;
         for reduce in &self.reduces {
             let ek = reduce.entry_key(self.schema(), &self.ns, &key, document)?;
-            let mut acc = match overlay.get(&ek) {
+            let mut acc = match overlay.get(&ek)? {
                 Some(bytes) => bytes,
                 // Seed only on the fold arm (same rule as embedded):
                 // an unfold hitting a missing entry is a discipline

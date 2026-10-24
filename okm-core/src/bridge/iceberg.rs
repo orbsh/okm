@@ -405,8 +405,8 @@ fn uuid_like() -> String {
         .map(|d| d.as_nanos())
         .unwrap_or(0);
     let pid = std::process::id() as u128;
-    let hi = (nanos as u128) ^ (pid << 64);
-    let lo = ((nanos >> 64) as u128) ^ pid;
+    let hi = nanos ^ (pid << 64);
+    let lo = (nanos >> 64) ^ pid;
     let bytes = (hi.to_le_bytes(), lo.to_le_bytes());
     let hex: String = bytes
         .0
@@ -504,7 +504,7 @@ fn write_with_columns(
     let meta_dir = table_dir.join("metadata");
     std::fs::create_dir_all(&meta_dir)?;
 
-    let snapshot_id = 6_000_000_000_000_000_000u64 + (now_ms() % 1_000_000) as u64;
+    let snapshot_id = 6_000_000_000_000_000_000u64 + now_ms() % 1_000_000;
     let sequence = 1i64;
     let now = now_ms();
 
