@@ -94,10 +94,18 @@ refused write is a store saying no, and the writer is the party that must hear i
   meant.
 - `bindings/*` are NOT workspace members, so no workspace check or test sees them.
   The host-injected seam is `Result<_, String>` now (commit `38c5c6c`, ADR-0037 §1):
-  okm's error type must not cross that boundary, a plain string can. What is still
-  open there is the bindings' own bodies — 18 `unwrap`/`expect` in `okm-python`,
-  10 in `okm-steel`, 1 in `okm-entry` — i.e. poison and host-call handling, not the
-  storage contract.
+  okm's error type must not cross that boundary, a plain string can. What was still
+  open there were the bindings' own bodies — 29 `unwrap`/`expect`, of which 15 were
+  the same poisoned-lock pattern a single line below the one the poison pass
+  matched. Both rounds landed (`08c961e`, `9f2ee32`) and those bodies now carry
+  zero; what remains is the decision to give the three separate workspaces their
+  own `[lints]`, since a separate workspace does not inherit the root gate.
+- **`Error` is `#[non_exhaustive]`.** This ADR and ADR-0038 were each a new arm of
+  the same enum, so the next one must be additive by construction: a new variant
+  has to be a compile-time no-op for everyone downstream. Matching `Error` from
+  another crate costs one `_ =>` arm, which is the price of being able to answer a
+  new failure at all. No crate in the family matched it exhaustively, so nothing
+  moved when the attribute landed.
 - **The read arms went with it** (same round): the slatedb driver's `Get`,
   `ScanRange`, `ScanSuffix` and `ScanStream` answer `Result<_, String>` over the
   channel (`SlatedbSync::request` returns `crate::error::Result`, and a scan that

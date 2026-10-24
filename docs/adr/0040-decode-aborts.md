@@ -109,6 +109,11 @@ allow **carrying this reason**, not reshaping the tool into `Result` soup.
   `panic_in_result_fn`, and all nine members inherit it, test targets opt back in
   per crate. A whole-workspace `cargo clippy --all-targets` is clean, and the gate
   was proven to bite: an injected `unwrap` fails the build.
+- **`CodecError` is `#[non_exhaustive]`.** The dynamic side answers errors rather
+  than aborting precisely because the schema is caller data, so its failure surface
+  will keep growing as more of that data gets checked. A new variant must not break
+  a caller, which is what the attribute buys: matching it costs one `_ =>` arm, and
+  `ColdFieldWithoutTag` landed without touching anyone.
 - **A proc macro's abort is an error report with a span, so it is worth the
   widening.** `okm-derive` was going to keep a crate-root allow on the argument that
   nobody can act on a rejected declaration; what that argument missed is that the
