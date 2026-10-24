@@ -172,9 +172,9 @@ pub fn plan_put_fields(
         let by_id = &mut vocab.by_id;
         let next_id = &mut vocab.next_id;
         let written = &mut vocab.written;
-        let mut resolver = |name: &str| -> u16 {
+        let mut resolver = |name: &str| -> okm_core::error::Result<u16> {
             if let Some(id) = by_name.get(name) {
-                return *id;
+                return Ok(*id);
             }
             let id = claim_id(next_id);
             by_name.insert(name.to_string(), id);
@@ -188,11 +188,11 @@ pub fn plan_put_fields(
             okm_core::write_slot(&mut name_key, FIELD_VOCAB_NAME_SLOT);
             name_key.extend_from_slice(name.as_bytes());
             vocab_ops.push((name_key, Some(id.to_be_bytes().to_vec())));
-            id
+            Ok(id)
         };
         for (name, value) in fields {
             let dv = value_to_dyn_value(value)?;
-            put_frame_named(&mut body, name, &dv, &mut resolver);
+            put_frame_named(&mut body, name, &dv, &mut resolver).map_err(|e| e.to_string())?;
         }
     }
     // The allocation cursor, exactly as `VocabCache::id_for` writes it: without

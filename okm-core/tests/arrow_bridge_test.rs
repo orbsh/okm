@@ -37,7 +37,7 @@ fn put_rows(t: &mut Collection<TestStore, ExportKey, ExportRow>) -> Vec<(ExportK
             bio_len: 20 + i as u16,
             flags: (i * 7) as u8,
         };
-        t.put(&k, &r);
+        t.put(&k, &r).unwrap();
         out.push((k, r));
     }
     out
@@ -145,7 +145,7 @@ fn fixed_bytes_maps_to_binary() {
 
     let t: Collection<TestStore, BinKey, BinRow> = Collection::new(TestStore::slatedb_mem());
     let k = BinKey { id: 1, name: *b"abcd" };
-    t.put(&k, &BinRow { n: 9 });
+    t.put(&k, &BinRow { n: 9 }).unwrap();
 
     let batch = t.to_record_batch();
     let name = batch.column(1).as_any().downcast_ref::<arrow::array::BinaryArray>().unwrap();
@@ -179,7 +179,7 @@ fn vector_field_maps_to_binary() {
     t.put(
         &RingKey { id: 1 },
         &RingRow { n: 7, ring: Vector::new(vec![1, 2, 3]) },
-    );
+    ).unwrap();
 
     let batch = t.to_record_batch();
     let n = batch.column(1).as_any().downcast_ref::<arrow::array::UInt32Array>().unwrap();

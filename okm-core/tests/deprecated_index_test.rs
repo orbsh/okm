@@ -30,7 +30,7 @@ pub struct User {
 #[test]
 fn deprecated_slot_is_reserved_and_not_written() {
     let t: Collection<TestStore, UserKey, User> = Collection::new(TestStore::slatedb_mem());
-    t.put(&UserKey { id: 1 }, &User { legacy: 99, level: 7 });
+    t.put(&UserKey { id: 1 }, &User { legacy: 99, level: 7 }).unwrap();
 
     // Only the LIVE index writes — the deprecated index slot (0x3001)
     // produces nothing; the live one (0x3002, declaration order preserved)
@@ -57,10 +57,10 @@ fn prune_deletes_only_deprecated_prefix() {
     .concat();
     store.put(stale, Vec::new());
     let t: Collection<TestStore, UserKey, User> = Collection::new(store);
-    t.put(&UserKey { id: 1 }, &User { legacy: 99, level: 7 });
-    t.put(&UserKey { id: 2 }, &User { legacy: 50, level: 8 });
+    t.put(&UserKey { id: 1 }, &User { legacy: 99, level: 7 }).unwrap();
+    t.put(&UserKey { id: 2 }, &User { legacy: 50, level: 8 }).unwrap();
 
-    let pruned = t.prune_deprecated_slots();
+    let pruned = t.prune_deprecated_slots().unwrap();
     assert_eq!(pruned, 1, "the simulated stale index-slot entry is pruned");
     assert!(t.store().scan_suffix(&[0, 9, 0x30, 0x01]).is_empty());
     // Live entries untouched.
@@ -80,6 +80,6 @@ fn no_deprecated_declarations_prunes_nothing() {
     }
 
     let t: Collection<TestStore, UserKey, PlainUser> = Collection::new(TestStore::slatedb_mem());
-    t.put(&UserKey { id: 1 }, &PlainUser { level: 3 });
-    assert_eq!(t.prune_deprecated_slots(), 0);
+    t.put(&UserKey { id: 1 }, &PlainUser { level: 3 }).unwrap();
+    assert_eq!(t.prune_deprecated_slots().unwrap(), 0);
 }

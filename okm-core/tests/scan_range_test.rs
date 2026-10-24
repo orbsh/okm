@@ -28,7 +28,7 @@ fn range_scan_reads_only_the_interval() {
     let rows: Vec<(u32, u32)> = (0..100).map(|i| (i, i * 7)).collect();
     for (id, (a, tag)) in rows.iter().enumerate() {
         let row = Row { a: *a, tag: *tag };
-        col.put(&RowId { id: id as u64 }, &row);
+        col.put(&RowId { id: id as u64 }, &row).unwrap();
     }
 
     // 1 <= a < 100 (u32 BE; value order == byte order).
@@ -65,7 +65,7 @@ fn range_scan_fjall() {
     let store = TestStore::fjall_tmp();
     let mut col: Collection<_, RowId, Row> = Collection::new(store);
     for i in 0..50u32 {
-        col.put(&RowId { id: i as u64 }, &Row { a: i, tag: 0 });
+        col.put(&RowId { id: i as u64 }, &Row { a: i, tag: 0 }).unwrap();
     }
     let hits = col.scan_range::<__OkmIndex_Row_by_a>(&10u32.to_be_bytes(), Some(&20u32.to_be_bytes()));
     assert_eq!(hits.len(), 10);
@@ -77,7 +77,7 @@ fn range_scan_redb() {
     let store = TestStore::redb_tmp();
     let mut col: Collection<_, RowId, Row> = Collection::new(store);
     for i in 0..50u32 {
-        col.put(&RowId { id: i as u64 }, &Row { a: i, tag: 0 });
+        col.put(&RowId { id: i as u64 }, &Row { a: i, tag: 0 }).unwrap();
     }
     let hits = col.scan_range::<__OkmIndex_Row_by_a>(&10u32.to_be_bytes(), Some(&20u32.to_be_bytes()));
     assert_eq!(hits.len(), 10);
@@ -92,7 +92,7 @@ fn lazy_range_scan_matches_buffered() {
     let store = TestStore::default();
     let col: Collection<_, RowId, Row> = Collection::new(store.clone());
     for i in 0..100u32 {
-        col.put(&RowId { id: i as u64 }, &Row { a: i, tag: i * 7 });
+        col.put(&RowId { id: i as u64 }, &Row { a: i, tag: i * 7 }).unwrap();
     }
 
     let lazy: Vec<_> = col
@@ -129,7 +129,7 @@ fn lazy_range_scan_fjall_native_double_ended() {
     let store = TestStore::fjall_tmp();
     let mut col: Collection<_, RowId, Row> = Collection::new(store);
     for i in 0..50u32 {
-        col.put(&RowId { id: i as u64 }, &Row { a: i, tag: 0 });
+        col.put(&RowId { id: i as u64 }, &Row { a: i, tag: 0 }).unwrap();
     }
     let fwd: Vec<(u64, u32)> = col
         .scan_range_iter::<__OkmIndex_Row_by_a>(&10u32.to_be_bytes(), Some(&20u32.to_be_bytes()))

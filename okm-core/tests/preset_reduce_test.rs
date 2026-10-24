@@ -51,9 +51,9 @@ fn grouped_presets_fold_unfold_scan() {
     let r2 = Post { forum: 7, views: 40 };
     let r3 = Post { forum: 8, views: 9 };
     let k = |id: u64| PostKey { id };
-    t.put(&k(1), &r1);
-    t.put(&k(2), &r2);
-    t.put(&k(3), &r3);
+    t.put(&k(1), &r1).unwrap();
+    t.put(&k(2), &r2).unwrap();
+    t.put(&k(3), &r3).unwrap();
 
     let ns = <Post as Document>::NS_PREFIX;
     let probe = |store: &TestStore, forum: u64| -> (Option<u64>, Option<u64>, Option<u64>, Option<okm_core::LowAcc>) {
@@ -91,7 +91,7 @@ fn grouped_presets_fold_unfold_scan() {
 
     // Count/Sum unfold 精确：删 r2 后 sum 回到 100；HighWater/LowWater
     // no-op unfold：max 仍 100（watermark），min 仍 40（低水位不动）。
-    t.purge(&k(2));
+    t.purge(&k(2)).unwrap();
     let (c, s, mx, mn) = probe(t.store(), 7);
     assert_eq!(c, Some(1));
     assert_eq!(s, Some(100));
@@ -103,8 +103,8 @@ fn grouped_presets_fold_unfold_scan() {
 fn no_group_mode_single_entry() {
     let t = <Vote as Document>::collection(TestStore::slatedb_mem());
     let r = Vote { score: 5 };
-    t.put(&VoteKey { id: 1 }, &r);
-    t.put(&VoteKey { id: 2 }, &Vote { score: 12 });
+    t.put(&VoteKey { id: 1 }, &r).unwrap();
+    t.put(&VoteKey { id: 2 }, &Vote { score: 12 }).unwrap();
 
     let ns = <Vote as Document>::NS_PREFIX;
     // 不分组：entry key = [ns 2B][slot 2B]，无 group 段。每组恰一条。
@@ -182,8 +182,8 @@ fn sum_acc_type_follows_field() {
     let k = |id: u64| LedgerKey { id };
     let r_pos = Entry { account: 7, delta: 100, amount: Quant::<2>::new(12.5) };
     let r_neg = Entry { account: 7, delta: -30, amount: Quant::<2>::new(-2.0) };
-    t.put(&k(1), &r_pos);
-    t.put(&k(2), &r_neg);
+    t.put(&k(1), &r_pos).unwrap();
+    t.put(&k(2), &r_neg).unwrap();
 
     let ns = <Entry as Document>::NS_PREFIX;
     let gb = 7u64.to_be_bytes().to_vec();
@@ -201,7 +201,7 @@ fn sum_acc_type_follows_field() {
     assert_eq!(sum_q, Some(1050i64));
 
     // 可逆：删 r_neg 后两者回到 100 / 1250。
-    t.purge(&k(2));
+    t.purge(&k(2)).unwrap();
     let sum_i = okm_core::reduce::scan_reduces::<_, __OkmReduce_Entry_0>(t.store(), ns)
         .into_iter()
         .find(|(sfx, _)| sfx.as_slice() == gb.as_slice())
@@ -227,7 +227,7 @@ fn the_reduce_table_exports_as_its_own_file() {
     let t: okm_core::Collection<TestStore, PostKey, Post> =
         okm_core::Collection::new(TestStore::slatedb_mem());
     for (forum, views) in [(1u64, 10u32), (1, 40), (2, 7)] {
-        t.put(&PostKey { id: forum * 100 + views as u64 }, &Post { forum, views });
+        t.put(&PostKey { id: forum * 100 + views as u64 }, &Post { forum, views }).unwrap();
     }
 
     let path = dir.path().join("post_reduces.parquet");
@@ -291,7 +291,7 @@ fn a_merge_folds_the_ledger_once_and_only_through_the_row_arm() {
 
     let t = <Post as Document>::collection(TestStore::slatedb_mem());
     let k = PostKey { id: 1 };
-    t.put(&k, &Post { forum: 7, views: 100 });
+    t.put(&k, &Post { forum: 7, views: 100 }).unwrap();
     let ns = <Post as Document>::NS_PREFIX;
     let group = 7u64.to_be_bytes();
     let acc = |v: Vec<(Vec<u8>, u64)>| {
@@ -311,7 +311,7 @@ fn a_merge_folds_the_ledger_once_and_only_through_the_row_arm() {
     // is not touched.
     let mut open = BTreeMap::new();
     open.insert("note".to_string(), DynamicValue::Str("x".into()));
-    t.merge(&k, &open);
+    t.merge(&k, &open).unwrap();
     assert_eq!(count(t.store()), Some(1), "a segment-only patch folds nothing");
     assert_eq!(t.fetch(&k).unwrap().get("note"), Some(&DynamicValue::Str("x".into())));
 
@@ -320,7 +320,7 @@ fn a_merge_folds_the_ledger_once_and_only_through_the_row_arm() {
     let mut both = BTreeMap::new();
     both.insert("views".to_string(), DynamicValue::UInt(7));
     both.insert("tag".to_string(), DynamicValue::Str("y".into()));
-    t.merge(&k, &both);
+    t.merge(&k, &both).unwrap();
     assert_eq!(count(t.store()), Some(1), "one merge folds once, not once per arm");
     assert_eq!(sum(t.store()), Some(7), "the Sum followed the row's new value");
     assert_eq!(t.fetch(&k).unwrap().get("tag"), Some(&DynamicValue::Str("y".into())));

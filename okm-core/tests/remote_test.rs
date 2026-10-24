@@ -52,8 +52,8 @@ fn table_semantics_over_remote() {
     let remote = handle.open();
 
     let t: Collection<RemoteStore, UserKey, User> = Collection::new(remote);
-    t.put(&UserKey { id: 42 }, &User { level: 3 });
-    t.put(&UserKey { id: 43 }, &User { level: 5 });
+    t.put(&UserKey { id: 42 }, &User { level: 3 }).unwrap();
+    t.put(&UserKey { id: 43 }, &User { level: 5 }).unwrap();
 
     // Writes are fire-and-forget (channel order = write order, but the
     // pump applies them asynchronously) — wait for the round trip to
@@ -74,14 +74,14 @@ fn table_semantics_over_remote() {
     assert_eq!(all.len(), 2);
 
     // Delete removes both halves remotely.
-    t.purge(&UserKey { id: 42 });
+    t.purge(&UserKey { id: 42 }).unwrap();
     wait_for(
         || t.get(&UserKey { id: 42 }).is_none(),
         "delete to propagate",
     );
     assert_eq!(t.scan::<ByLevel>(&3u32.to_be_bytes()).len(), 0);
     // Overwrite path too (put on existing key = unfold + refold remotely).
-    t.put(&UserKey { id: 42 }, &User { level: 8 });
+    t.put(&UserKey { id: 42 }, &User { level: 8 }).unwrap();
     wait_for(
         || !t.scan::<ByLevel>(&8u32.to_be_bytes()).is_empty(),
         "overwrite to land",
@@ -146,7 +146,7 @@ fn remote_scan_range_iter_is_lazy_paged() {
     let t: Collection<RemoteStore, UserKey, User> = Collection::new(handle.open());
     let remote = handle.open();
     for i in 0..40u64 {
-        t.put(&UserKey { id: i }, &User { level: (i % 4) as u32 });
+        t.put(&UserKey { id: i }, &User { level: (i % 4) as u32 }).unwrap();
     }
     wait_for(|| t.get(&UserKey { id: 39 }).is_some(), "writes to land");
 
@@ -272,7 +272,7 @@ fn routine_put_carries_face_and_ledger_in_one_frame() {
     let t: Collection<RemoteStore, EntryKey, Entry> = Collection::new(handle.open());
     let k = EntryKey { id: 1 };
 
-    t.put(&k, &Entry { account: 7, amount: 10 });
+    t.put(&k, &Entry { account: 7, amount: 10 }).unwrap();
     wait_for(|| t.get(&k).is_some(), "row to land");
     // Face: an index scan round trip (entry key + fetch-back).
     assert_eq!(t.scan::<Entry_ByAccount>(&7u64.to_be_bytes()).len(), 1);
@@ -280,12 +280,12 @@ fn routine_put_carries_face_and_ledger_in_one_frame() {
     assert_eq!(entry_ledger(&t, 7), Some(1), "the fold landed with the row");
 
     // Overwrite: unfold + refold travel in one frame as well.
-    t.put(&k, &Entry { account: 8, amount: 20 });
+    t.put(&k, &Entry { account: 8, amount: 20 }).unwrap();
     wait_for(|| entry_ledger(&t, 8) == Some(1), "refold to land");
     assert_eq!(entry_ledger(&t, 7), Some(0), "the old group was unfolded");
 
     // Delete: the removals and the unfold share a frame too.
-    t.purge(&k);
+    t.purge(&k).unwrap();
     wait_for(|| t.get(&k).is_none(), "delete to propagate");
     assert_eq!(entry_ledger(&t, 8), Some(0));
     assert!(t.scan::<Entry_ByAccount>(&8u64.to_be_bytes()).is_empty());

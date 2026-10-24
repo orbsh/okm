@@ -37,7 +37,8 @@ fn dynamic_read_names_vocab_labels() {
             event: Vocab::of("http.request"),
             note: "slow upstream".into(),
         },
-    );
+    )
+    .unwrap();
     typed.put(
         &VKey { org: 1, id: 2 },
         &VRow {
@@ -45,7 +46,8 @@ fn dynamic_read_names_vocab_labels() {
             event: Vocab::of("db.timeout"),
             note: "pool exhausted".into(),
         },
-    );
+    )
+    .unwrap();
 
     // The dynamic side reads the same table through the exported schema.
     let schema = CollectionSchema::of::<VKey, VRow>();

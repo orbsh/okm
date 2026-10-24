@@ -38,6 +38,23 @@ use proc_macro2::TokenStream as TS2;
 /// sync with `okm_core::index::DECLARED_SLOT_BASE` / `REDUCE_SLOT_BASE`.
 const DECLARED_SLOT_BASE: u16 = 0x3001;
 const REDUCE_SLOT_BASE: u16 = 0x4001;
+
+/// Declaration-order slot from a family base, CHECKED at expansion time.
+///
+/// The counter is the low 12 bits, so a 0-based declaration position `n` sits at
+/// counter `n + 1` (both bases start at counter 1) and the last legal `n` is
+/// `0x0FFE`: declaration 4096 would carry counter 0x1000 and land on the NEXT
+/// family's first slot (index `0x3FFF + 1 = 0x4001` is the reduce family). A
+/// declaration-count mistake is a source-level mistake — refuse it here instead
+/// of masking the counter and writing entries another table reads back.
+fn declared_slot(base: u16, n: usize, what: &str) -> u16 {
+    assert!(
+        n < 0x0FFF,
+        "ok_{what}: at most 4095 declarations per collection — the slot counter is 12 bits, \n         and declaration #{} would land on the next family's first slot",
+        n + 1
+    );
+    base + n as u16
+}
 use quote::{format_ident, quote};
 use syn::{parse_macro_input, DeriveInput};
 
@@ -343,7 +360,7 @@ fn emit_index_structs(schema: &DocumentSchema) -> TS2 {
         if idx.deprecated {
             continue;
         }
-        let slot_lit = proc_macro2::Literal::u16_unsuffixed(DECLARED_SLOT_BASE + n as u16);
+        let slot_lit = proc_macro2::Literal::u16_unsuffixed(declared_slot(DECLARED_SLOT_BASE, n, "index"));
         let iname = &idx.ident;
         let struct_ident = format_ident!("__OkmIndex_{}_{}", row_name, iname);
         let fields: Vec<&String> = idx.fields.iter().collect();
@@ -505,7 +522,7 @@ fn emit_index_entries(schema: &DocumentSchema) -> TS2 {
         .enumerate()
         .filter(|(_, idx)| idx.deprecated)
         .map(|(n, _)| {
-            let lit = proc_macro2::Literal::u16_unsuffixed(DECLARED_SLOT_BASE + n as u16);
+            let lit = proc_macro2::Literal::u16_unsuffixed(declared_slot(DECLARED_SLOT_BASE, n, "index"));
             quote! { #lit }
         })
         .collect();
@@ -538,7 +555,7 @@ fn emit_reduces(schema: &DocumentSchema) -> (TS2, TS2) {
     let mut impls = quote! {};
     let mut calls = quote! {};
     for (n, red) in schema.reduces.iter().enumerate() {
-        let slot_lit = proc_macro2::Literal::u16_unsuffixed(REDUCE_SLOT_BASE + n as u16);
+        let slot_lit = proc_macro2::Literal::u16_unsuffixed(declared_slot(REDUCE_SLOT_BASE, n, "reduce"));
         let group: Vec<&String> = red.group.iter().collect();
 
         // Preset combinators (ADR-0023): `Count`/`Sum(f)`/`HighWater(f)`/
@@ -912,9 +929,15 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> TS2 {
     let (sub_statics, sub_hook) = emit_subscribe(schema);
     // ---- document <-> map bridge (ADR-0012): per-field lift into
     // DynamicValue and back. The derive owns the concrete Rust types, so
-    // each arm emits the exact cast; from_map fills missing fields from
-    // `#[ok_default]` / `Default` — same evolution rule as the payload
-    // decoder. `String`/`Bytes` clone; fixed `[u8; N]` converts.
+    // each arm emits the exact cast. `from_map` has ONE defaulting rule and it
+    // is about ABSENCE: a name the map does not carry takes `#[ok_default]` /
+    // `Default` (the append-only evolution rule, same as the payload decoder).
+    // A name the map DOES carry with the wrong kind — or a value that cannot be
+    // represented in the declared field — is refused by name
+    // (`okm_core::error::Error::kind_mismatch` / `bad_value`, returned from
+    // `try_from_map`): defaulting or truncating it would write a value the
+    // caller never asked for.
+    // `String`/`Bytes` clone; fixed `[u8; N]` converts.
     let mut to_map_arms = quote! {};
     // ADR-0032: (field, id-width type) for every `Vocab<N>` field, in
     // declaration order. The index into this list IS that field's vocabulary
@@ -996,8 +1019,15 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> TS2 {
             });
             from_map_arms.extend(quote! {
                 #id: match map.get(#name) {
-                    Some(::okm_core::obj_dynamic::DynamicValue::Int(v)) => (*v) as #t,
-                    _ => #dflt,
+                    Some(::okm_core::obj_dynamic::DynamicValue::Int(v)) => {
+                        <#t as ::core::convert::TryFrom<i64>>::try_from(*v).map_err(|_| {
+                            ::okm_core::error::Error::bad_value(#name, stringify!(#t), *v)
+                        })?
+                    }
+                    None => #dflt,
+                    Some(__okm_got) => {
+                        return ::core::result::Result::Err(::okm_core::error::Error::kind_mismatch(#name, "Int", __okm_got))
+                    }
                 },
             });
         } else if is_bool {
@@ -1007,7 +1037,10 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> TS2 {
             from_map_arms.extend(quote! {
                 #id: match map.get(#name) {
                     Some(::okm_core::obj_dynamic::DynamicValue::Bool(v)) => *v,
-                    _ => #dflt,
+                    None => #dflt,
+                    Some(__okm_got) => {
+                        return ::core::result::Result::Err(::okm_core::error::Error::kind_mismatch(#name, "Bool", __okm_got))
+                    }
                 },
             });
         } else if is_string {
@@ -1017,7 +1050,10 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> TS2 {
             from_map_arms.extend(quote! {
                 #id: match map.get(#name) {
                     Some(::okm_core::obj_dynamic::DynamicValue::Str(v)) => v.clone(),
-                    _ => #dflt,
+                    None => #dflt,
+                    Some(__okm_got) => {
+                        return ::core::result::Result::Err(::okm_core::error::Error::kind_mismatch(#name, "Str", __okm_got))
+                    }
                 },
             });
         } else if is_bytes {
@@ -1027,7 +1063,10 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> TS2 {
             from_map_arms.extend(quote! {
                 #id: match map.get(#name) {
                     Some(::okm_core::obj_dynamic::DynamicValue::Bytes(v)) => ::okm_core::Bytes(v.clone()),
-                    _ => #dflt,
+                    None => #dflt,
+                    Some(__okm_got) => {
+                        return ::core::result::Result::Err(::okm_core::error::Error::kind_mismatch(#name, "Bytes", __okm_got))
+                    }
                 },
             });
         } else if is_fixedbytes {
@@ -1036,8 +1075,25 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> TS2 {
             });
             from_map_arms.extend(quote! {
                 #id: match map.get(#name) {
-                    Some(::okm_core::obj_dynamic::DynamicValue::Bytes(v)) => v.clone().try_into().unwrap_or_else(|_| #dflt),
-                    _ => #dflt,
+                    Some(::okm_core::obj_dynamic::DynamicValue::Bytes(v)) => {
+                        let __okm_len = v.len();
+                        match <#t as ::core::convert::TryFrom<::std::vec::Vec<u8>>>::try_from(v.clone()) {
+                            Ok(__okm_bytes) => __okm_bytes,
+                            Err(_) => {
+                                return ::core::result::Result::Err(
+                                    ::okm_core::error::Error::bad_value(
+                                        #name,
+                                        stringify!(#t),
+                                        ::std::format_args!("{} bytes", __okm_len),
+                                    ),
+                                )
+                            }
+                        }
+                    }
+                    None => #dflt,
+                    Some(__okm_got) => {
+                        return ::core::result::Result::Err(::okm_core::error::Error::kind_mismatch(#name, "Bytes", __okm_got))
+                    }
                 },
             });
         } else if is_varint {
@@ -1047,8 +1103,13 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> TS2 {
             });
             from_map_arms.extend(quote! {
                 #id: match map.get(#name) {
-                    Some(::okm_core::obj_dynamic::DynamicValue::UInt(v)) => ::okm_core::VarInt::from_dyn(*v),
-                    _ => #dflt,
+                    Some(::okm_core::obj_dynamic::DynamicValue::UInt(v)) => {
+                        ::okm_core::VarInt::from_dyn(*v)
+                    }
+                    None => #dflt,
+                    Some(__okm_got) => {
+                        return ::core::result::Result::Err(::okm_core::error::Error::kind_mismatch(#name, "UInt", __okm_got))
+                    }
                 },
             });
         } else if ty_str.starts_with("Vocab<") || ty_str == "Vocab" {
@@ -1081,7 +1142,27 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> TS2 {
                     Some(::okm_core::obj_dynamic::DynamicValue::Str(v)) => {
                         ::okm_core::Vocab::<#id_ty>::of(v.clone())
                     }
-                    _ => #dflt,
+                    Some(::okm_core::obj_dynamic::DynamicValue::UInt(v)) => {
+                        // The unresolved form `to_map` emits (an id without its
+                        // label): narrowing checks the width, because a wrapped
+                        // id would name another label.
+                        ::okm_core::Vocab::<#id_ty>::from_id(
+                            ::okm_core::obj_dynamic::vocab_id_from_u64::<#id_ty>(*v)
+                                .ok_or_else(|| ::okm_core::error::Error::bad_value(
+                                    #name,
+                                    stringify!(#id_ty),
+                                    *v,
+                                ))?,
+                        )
+                    }
+                    None => #dflt,
+                    Some(__okm_got) => {
+                        return ::core::result::Result::Err(::okm_core::error::Error::kind_mismatch(
+                            #name,
+                            "Str (a label) or UInt (an unresolved id)",
+                            __okm_got,
+                        ))
+                    }
                 },
             });
         } else if ty_str.starts_with("Vector<") || ty_str.starts_with("Vector <") {
@@ -1096,7 +1177,10 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> TS2 {
                     Some(::okm_core::obj_dynamic::DynamicValue::Bytes(b)) => {
                         ::okm_core::Vector::decode_payload(b)
                     }
-                    _ => #dflt,
+                    None => #dflt,
+                    Some(__okm_got) => {
+                        return ::core::result::Result::Err(::okm_core::error::Error::kind_mismatch(#name, "Bytes", __okm_got))
+                    }
                 },
             });
         } else if is_offset {
@@ -1107,7 +1191,10 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> TS2 {
             from_map_arms.extend(quote! {
                 #id: match map.get(#name) {
                     Some(::okm_core::obj_dynamic::DynamicValue::Int(v)) => #t(*v),
-                    _ => #dflt,
+                    None => #dflt,
+                    Some(__okm_got) => {
+                        return ::core::result::Result::Err(::okm_core::error::Error::kind_mismatch(#name, "Int", __okm_got))
+                    }
                 },
             });
         } else if is_f64 || ty_str.starts_with("Quant <") {
@@ -1118,7 +1205,10 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> TS2 {
             from_map_arms.extend(quote! {
                 #id: match map.get(#name) {
                     Some(::okm_core::obj_dynamic::DynamicValue::F64(v)) => ::okm_core::Quant::from_dyn(*v),
-                    _ => #dflt,
+                    None => #dflt,
+                    Some(__okm_got) => {
+                        return ::core::result::Result::Err(::okm_core::error::Error::kind_mismatch(#name, "F64", __okm_got))
+                    }
                 },
             });
         } else if ty_str.starts_with("Reverse<") || ty_str.starts_with("Reverse <") {
@@ -1143,10 +1233,17 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> TS2 {
                     // bits — construct the wrapper by flipping back.
                     Some(::okm_core::obj_dynamic::DynamicValue::UInt(v)) => {
                         let logical = <#inner_ty as ::core::convert::TryFrom<u64>>::try_from(*v)
-                            .unwrap_or_else(|_| 0);
+                            .map_err(|_| ::okm_core::error::Error::bad_value(
+                                #name,
+                                stringify!(#inner_ty),
+                                *v,
+                            ))?;
                         ::okm_core::Reverse(!logical)
                     }
-                    _ => #dflt,
+                    None => #dflt,
+                    Some(__okm_got) => {
+                        return ::core::result::Result::Err(::okm_core::error::Error::kind_mismatch(#name, "UInt", __okm_got))
+                    }
                 },
             });
         } else if is_embed && (ty_str.starts_with("Ref<") || ty_str.starts_with("Ref <")) {
@@ -1165,8 +1262,15 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> TS2 {
                             value: None,
                         }
                     }
-                    _ => {
+                    None => {
                                 #embed_default
+                    }
+                    Some(__okm_got) => {
+                        return ::core::result::Result::Err(::okm_core::error::Error::kind_mismatch(
+                            #name,
+                            "Bytes (the child key encoding)",
+                            __okm_got,
+                        ))
                     }
                 },
             });
@@ -1182,15 +1286,34 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> TS2 {
                 #id: match map.get(#name) {
                     Some(::okm_core::obj_dynamic::DynamicValue::Array(items)) => {
                         ::okm_core::Refs {
-                            keys: items.iter().filter_map(|v| match v {
-                                ::okm_core::obj_dynamic::DynamicValue::Bytes(b) =>
-                                    Some(<#kt as ::okm_core::KeyEncode>::decode(b)),
-                                _ => None,
-                            }).collect(),
+                            keys: {
+                                let mut __okm_keys = ::std::vec::Vec::with_capacity(items.len());
+                                for __okm_item in items.iter() {
+                                    match __okm_item {
+                                        ::okm_core::obj_dynamic::DynamicValue::Bytes(b) =>
+                                            __okm_keys.push(
+                                                <#kt as ::okm_core::KeyEncode>::decode(b)
+                                            ),
+                                        __okm_got => {
+                                            return ::core::result::Result::Err(
+                                                ::okm_core::error::Error::kind_mismatch(
+                                                    #name,
+                                                    "an Array of Bytes (child key encodings)",
+                                                    __okm_got,
+                                                ),
+                                            )
+                                        }
+                                    }
+                                }
+                                __okm_keys
+                            },
                             values: (0..items.len()).map(|_| ::core::option::Option::None).collect(),
                         }
                     }
-                    _ => #embed_default,
+                    None => #embed_default,
+                    Some(__okm_got) => {
+                        return ::core::result::Result::Err(::okm_core::error::Error::kind_mismatch(#name, "Array", __okm_got))
+                    }
                 },
             });
         } else {
@@ -1200,8 +1323,15 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> TS2 {
             });
             from_map_arms.extend(quote! {
                 #id: match map.get(#name) {
-                    Some(::okm_core::obj_dynamic::DynamicValue::UInt(v)) => (*v) as #t,
-                    _ => #dflt,
+                    Some(::okm_core::obj_dynamic::DynamicValue::UInt(v)) => {
+                        <#t as ::core::convert::TryFrom<u64>>::try_from(*v).map_err(|_| {
+                            ::okm_core::error::Error::bad_value(#name, stringify!(#t), *v)
+                        })?
+                    }
+                    None => #dflt,
+                    Some(__okm_got) => {
+                        return ::core::result::Result::Err(::okm_core::error::Error::kind_mismatch(#name, "UInt", __okm_got))
+                    }
                 },
             });
         }
@@ -1332,8 +1462,10 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> TS2 {
                     let mut cache = ::okm_core::obj_vocab::VocabCache::<#d>::new(
                         ::okm_core::obj_vocab::data_vocab(#vi_lit),
                     );
-                    // Exhausting the declared width panics inside the cache.
-                    self.#fid.set_id(cache.id_for(&mut *store, header, &label));
+                    // A full width (or a refused commit) comes back as an
+                    // error, never a wrapped id.
+                    self.#fid
+                        .set_id(cache.id_for(&mut *store, header, &label)?);
                 }
             }
         });
@@ -1358,8 +1490,9 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> TS2 {
                 &mut self,
                 store: &mut dyn ::okm_core::VirtualStorage,
                 header: &[u8],
-            ) {
+            ) -> ::okm_core::error::Result<()> {
                 #(#intern_arms)*
+                ::core::result::Result::Ok(())
             }
             fn __okm_deref_vocab(&mut self, store: &dyn ::okm_core::VirtualStorage) {
                 let mut header = <Self as ::okm_core::Document>::PARTITION_PREFIX.to_vec();
@@ -1405,13 +1538,15 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> TS2 {
                 #to_map_arms
                 out
             }
-            /// map -> document: matched fields assigned from DynamicValue,
-            /// missing fields fall back to `#[ok_default]`/Default — the
-            /// same evolution rule as the payload decoder.
-            fn from_map(map: &::std::collections::BTreeMap<String, ::okm_core::obj_dynamic::DynamicValue>) -> Self {
-                Self {
+            /// map -> document, fallibly: matched fields assigned from
+            /// DynamicValue. An ABSENT name takes `#[ok_default]`/Default (the
+            /// same evolution rule as the payload decoder); a name that IS
+            /// present with the wrong kind — or a value that cannot be
+            /// represented — comes back as an `okm_core::Error`.
+            fn try_from_map(map: &::std::collections::BTreeMap<String, ::okm_core::obj_dynamic::DynamicValue>) -> ::okm_core::error::Result<Self> {
+                ::core::result::Result::Ok(Self {
                     #from_map_arms
-                }
+                })
             }
             #index_entries
             #agg_hook
@@ -1424,4 +1559,23 @@ pub fn derive(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     let schema = parse_schema(input);
     emit_row_impl(&schema).into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::declared_slot;
+
+    #[test]
+    fn declaration_slots_stay_inside_their_family() {
+        // The last legal declaration: counter 0x0FFF is the family's top slot.
+        assert_eq!(declared_slot(0x3001, 0x0FFE, "index"), 0x3FFF);
+        assert_eq!(declared_slot(0x4001, 0x0FFE, "reduce"), 0x4FFF);
+    }
+
+    #[test]
+    #[should_panic(expected = "at most 4095 declarations")]
+    fn one_past_the_last_declaration_is_refused() {
+        // Declaration 4096 would carry counter 0x1000 — the NEXT family.
+        let _ = declared_slot(0x3001, 0x0FFF, "index");
+    }
 }

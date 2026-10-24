@@ -49,7 +49,7 @@ fn list_roundtrip_and_stale_release() {
                 Room { label: "gamma".into() },
             ],
         ),
-    });
+    }).unwrap();
     for k in [&k1, &k2, &k3] {
         assert!(rooms.get(k).is_some(), "child written");
     }
@@ -68,7 +68,7 @@ fn list_roundtrip_and_stale_release() {
                 Room { label: "beta2".into() },
             ],
         ),
-    });
+    }).unwrap();
     assert!(rooms.get(&k3).is_none(), "stale child released");
     assert_eq!(rooms.get(&k2).unwrap().label, "beta2");
 
@@ -76,12 +76,12 @@ fn list_roundtrip_and_stale_release() {
     depts.put(&dept_key, &Dept {
         name: "platform".into(),
         rooms: Refs::new(vec![k1.clone(), k2.clone()]),
-    });
+    }).unwrap();
     assert_eq!(rooms.get(&k1).unwrap().label, "alpha");
     assert!(rooms.get(&k2).is_some());
 
     // Dangling reference reads back as None.
-    rooms.purge(&k1);
+    rooms.purge(&k1).unwrap();
     let d2 = depts.get(&dept_key).expect("dept2");
     assert!(d2.rooms.values[0].is_none(), "dangling -> None");
     assert!(d2.rooms.values[1].is_some());

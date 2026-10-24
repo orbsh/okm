@@ -35,12 +35,12 @@ fn variant_column_export() {
         ])),
     );
     let k1 = UserKey { org_id: 1, user_id: 10 };
-    t.put(&k1, &User { level: 4, name: "alice".into() });
-    t.merge(&k1, &dyn1);
+    t.put(&k1, &User { level: 4, name: "alice".into() }).unwrap();
+    t.merge(&k1, &dyn1).unwrap();
 
     // Document 2: declared fields only -> variant column null.
     let k2 = UserKey { org_id: 1, user_id: 11 };
-    t.put(&k2, &User { level: 9, name: "bob".into() });
+    t.put(&k2, &User { level: 9, name: "bob".into() }).unwrap();
 
     let batch = t.to_record_batch_with_variant();
 

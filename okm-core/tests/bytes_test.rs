@@ -49,7 +49,7 @@ fn bytes_put_get_roundtrip() {
         tag: Bytes::default(),
     };
     let key = BlobId { id: 42 };
-    col.put(&key, &doc);
+    col.put(&key, &doc).unwrap();
     let got = col.get(&key).unwrap();
     assert_eq!(got, doc);
 }
@@ -65,7 +65,7 @@ fn bytes_map_bridge() {
         m.get("payload"),
         Some(&okm_core::obj_dynamic::DynamicValue::Bytes(b"xyz".to_vec()))
     );
-    let back = Blob::from_map(&m);
+    let back = Blob::try_from_map(&m).unwrap();
     assert_eq!(back, doc);
 }
 

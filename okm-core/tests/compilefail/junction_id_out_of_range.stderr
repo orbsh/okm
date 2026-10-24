@@ -1,0 +1,7 @@
+error: proc-macro derive panicked
+  --> tests/compilefail/junction_id_out_of_range.rs:18:10
+   |
+18 | #[derive(JunctionEncode, Clone)]
+   |          ^^^^^^^^^^^^^^
+   |
+   = help: message: #[ok_junction(0x0800)] is out of range: the discriminator is the 12-bit slot counter's high bits (`id << 1 | dir`), so 0x0000-0x07FF is the whole space

@@ -28,12 +28,14 @@ impl<S: VirtualStorage, E: KvJunction> Junction<S, E> {
     }
 
     /// Atomic double write: one entry in each endpoint's ns.
-    pub fn link(&self, a: &<E::A as crate::model::index::Document>::Key, b: &<E::B as crate::model::index::Document>::Key) {
-        let e = E::from_parts(a.clone(), b.clone());
-        let ak = e.a_side_key();
-        let bk = e.b_side_key();
-        self.store.put(ak, Vec::new());
-        self.store.put(bk, Vec::new());
+    pub fn link(&self, a: &<E::A as crate::model::index::Document>::Key, b: &<E::B as crate::model::index::Document>::Key) -> crate::error::Result<()> {
+        let mut batch = crate::engine::storage::Batch::default();
+        self.save_into(&mut batch, a, b);
+        // Both entries ride ONE commit: a half-written junction is a
+        // relationship that exists in one direction only.
+        self.store
+            .commit_batch(batch)
+            .map_err(crate::error::Error::Engine)
     }
 
     /// Encode this junction's double write into an externally owned batch —
@@ -52,10 +54,14 @@ impl<S: VirtualStorage, E: KvJunction> Junction<S, E> {
     }
 
     /// Removes both entries.
-    pub fn unlink(&self, a: &<E::A as crate::model::index::Document>::Key, b: &<E::B as crate::model::index::Document>::Key) {
+    pub fn unlink(&self, a: &<E::A as crate::model::index::Document>::Key, b: &<E::B as crate::model::index::Document>::Key) -> crate::error::Result<()> {
         let e = E::from_parts(a.clone(), b.clone());
-        self.store.del(&e.a_side_key());
-        self.store.del(&e.b_side_key());
+        let mut batch = crate::engine::storage::Batch::default();
+        batch.del(&e.a_side_key());
+        batch.del(&e.b_side_key());
+        self.store
+            .commit_batch(batch)
+            .map_err(crate::error::Error::Engine)
     }
 
     /// A-side scan: Bs linked to `a` (reads A's collection). Requires B to

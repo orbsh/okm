@@ -58,7 +58,7 @@ fn cold_frame_roundtrip() {
         embed: Vector::new(vec![0.25, -3.5, 1e6]),
         score: 7,
     };
-    t.put(&k, &r);
+    t.put(&k, &r).unwrap();
 
     let got = t.get(&k).unwrap();
     assert_eq!(got.embed, Vector::new(vec![0.25, -3.5, 1e6]));
@@ -69,11 +69,11 @@ fn cold_frame_roundtrip() {
 fn length_is_data_not_schema() {
     // 同一个文档类型，不同长度的向量都是合法数据（换模型 = 换帧长）。
     let t: Collection<TestStore, DocKey, Doc> = Collection::new(TestStore::slatedb_mem());
-    t.put(&DocKey { id: 1 }, &Doc { id: 1, embed: Vector::new(vec![1.0]), score: 1 });
+    t.put(&DocKey { id: 1 }, &Doc { id: 1, embed: Vector::new(vec![1.0]), score: 1 }).unwrap();
     t.put(
         &DocKey { id: 2 },
         &Doc { id: 2, embed: Vector::new(vec![1.0, 2.0, 3.0, 4.0]), score: 2 },
-    );
+    ).unwrap();
     assert_eq!(t.get(&DocKey { id: 1 }).unwrap().embed.len(), 1);
     assert_eq!(t.get(&DocKey { id: 2 }).unwrap().embed.len(), 4);
 }
@@ -88,7 +88,7 @@ fn ok_len_contract_enforced_at_encode() {
         t.put(
             &DocKey { id: 1 },
             &ContractedDoc { id: 1, embed: Vector::new(vec![1.0, 2.0, 3.0]) },
-        );
+        ).unwrap();
     });
     assert!(bad.is_err(), "count 3 violates the #[ok_len(2)] contract");
 }

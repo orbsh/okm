@@ -35,7 +35,7 @@ fn parquet_export_import_roundtrip_restores_rows_and_indexes() {
             level: (i as u16) + 7,
             tag: [i as u8, 0, 0xFF, 0x42],
         };
-        t1.put(&k, &r);
+        t1.put(&k, &r).unwrap();
     }
 
     parquet_io::export_parquet(&t1, &path).unwrap();
@@ -169,7 +169,7 @@ fn parquet_roundtrip_carries_labels_not_ids() {
         t1.put(
             &VKey { id: i as u64 },
             &VRow { status: Vocab::of(*s), color: Vocab::of(*c), score: i as u32 },
-        );
+        ).unwrap();
     }
 
     // The exported column is the label, and it is NULLABLE — an id the
@@ -222,7 +222,7 @@ fn an_unnamed_id_exports_as_null_and_import_refuses_it() {
     t1.put(
         &VKey { id: 0 },
         &VRow { status: Vocab::from_id(7), color: Vocab::of("red"), score: 1 },
-    );
+    ).unwrap();
 
     let batch = t1.to_record_batch();
     let status_col = batch
@@ -259,12 +259,12 @@ fn parquet_with_variant_restores_both_halves_and_segment_only_documents() {
     t1.put(
         &with_row,
         &TRow { reputation: 100, level: 7, tag: [1, 0, 0xFF, 0x42] },
-    );
+    ).unwrap();
     let mut open = BTreeMap::new();
     open.insert("note".to_string(), DynamicValue::Str("hello".into()));
-    t1.merge(&with_row, &open);
+    t1.merge(&with_row, &open).unwrap();
     let segment_only = TKey { org_id: 1, user_id: 2 };
-    t1.merge(&segment_only, &open);
+    t1.merge(&segment_only, &open).unwrap();
 
     parquet_io::export_parquet_with_variant(&mut t1, &path).unwrap();
 

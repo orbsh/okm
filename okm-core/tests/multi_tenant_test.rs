@@ -115,7 +115,7 @@ fn table_write_path_inside_tenant_segment() {
     let t: Collection<RemoteStore, DocKey, Doc> = Collection::new(handle.open());
 
     let t = t;
-    t.put(&DocKey { id: 9 }, &Doc { title: 5 });
+    t.put(&DocKey { id: 9 }, &Doc { title: 5 }).unwrap();
 
     // Both entries (primary slot-0 + index slot-1) are visible through
     // the tenant's sender; the sender's own ns [0,1] rides inside the

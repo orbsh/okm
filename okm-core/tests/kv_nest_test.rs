@@ -35,7 +35,7 @@ fn nest_derive_end_to_end() {
     let remote = handle.open();
     let t: Collection<RemoteStore, ItemKey, Item> = Collection::new(remote);
 
-    t.put(&ItemKey { id: 1 }, &Item { kind: 7 });
+    t.put(&ItemKey { id: 1 }, &Item { kind: 7 }).unwrap();
 
     // Fire-and-forget write: poll until the round trip sees the document.
     for _ in 0..200 {

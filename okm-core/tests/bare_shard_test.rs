@@ -49,7 +49,7 @@ fn shard_table_via_bare_host_lands_on_its_ns_segment() {
     let handle = NestStorage::bare(TestStore::default());
     let t: Collection<RemoteStore, ShardDocKey, ShardDoc> = Collection::new(handle.open());
 
-    t.put(&ShardDocKey { id: 5 }, &ShardDoc { title: 3 });
+    t.put(&ShardDocKey { id: 5 }, &ShardDoc { title: 3 }).unwrap();
     for _ in 0..200 {
         if t.get(&ShardDocKey { id: 5 }).is_some() {
             break;

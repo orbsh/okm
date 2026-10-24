@@ -47,11 +47,47 @@ pub struct DynamicField {
     pub value: DynamicValue,
 }
 
+/// The kind's NAME — the bridge's vocabulary for its own refusals
+/// (`from_map` says what it got, not what it wanted).
+pub fn dyn_kind(v: &DynamicValue) -> &'static str {
+    match v {
+        DynamicValue::UInt(_) => "UInt",
+        DynamicValue::Int(_) => "Int",
+        DynamicValue::F64(_) => "F64",
+        DynamicValue::Str(_) => "Str",
+        DynamicValue::Bytes(_) => "Bytes",
+        DynamicValue::Bool(_) => "Bool",
+        DynamicValue::Null => "Null",
+        DynamicValue::Array(_) => "Array",
+        DynamicValue::Obj(_) => "Obj",
+    }
+}
+
+/// Narrow a `u64` id back into a vocabulary's declared width, `None` when it
+/// does not fit. Used by `from_map` for the unresolved form `to_map` emits (an
+/// id without its label): a silent truncation would point at another label's
+/// id, which is the one thing an id must never do.
+pub fn vocab_id_from_u64<N: crate::model::vocab::VocabId>(v: u64) -> Option<N> {
+    let w = <N as crate::model::vocab::VocabId>::WIDTH;
+    let mut img = [0u8; 16];
+    img[16 - 8..].copy_from_slice(&v.to_be_bytes());
+    // Everything left of the width must be zero, otherwise the value does not
+    // fit — the same check a big-endian narrowing would do.
+    if img[..16 - w].iter().any(|b| *b != 0) {
+        return None;
+    }
+    <N as crate::model::vocab::VocabId>::from_be(&img[16 - w..])
+}
+
 /// Append one frame. `id < 0xFF` takes the short form; anything larger
 /// escapes through `0xFF`. Nested `DynamicValue::Obj` values are NOT
 /// supported here (their ids must be resolved first) — use
 /// [`put_frame_named`] with a name resolver.
-pub fn put_frame(buf: &mut Vec<u8>, id: u16, value: &DynamicValue) {
+pub fn put_frame(
+    buf: &mut Vec<u8>,
+    id: u16,
+    value: &DynamicValue,
+) -> crate::error::Result<()> {
     if id < 0xFF {
         buf.push(id as u8);
     } else {
@@ -59,29 +95,29 @@ pub fn put_frame(buf: &mut Vec<u8>, id: u16, value: &DynamicValue) {
         buf.extend_from_slice(&id.to_be_bytes());
     }
     // No vocabulary here (the id is caller-resolved): a nested Obj value
-    // cannot allocate names — the resolver panics instead of silently
-    // emitting an empty body (the documented put_frame contract). Arrays
-    // of scalars are fine.
-    let mut no_vocab = |name: &str| -> u16 {
-        panic!(
-            "put_frame: nested object requires the vocabulary (name `{name}` unresolved) — use put_frame_named"
-        );
+    // cannot allocate names, so the resolver reports it instead of guessing.
+    // Arrays of scalars are fine.
+    let mut no_vocab = |name: &str| -> crate::error::Result<u16> {
+        Err(crate::error::Error::VocabularyRequired {
+            name: name.to_owned(),
+        })
     };
-    let (ty, mut body) = encode_value(value, &mut no_vocab);
+    let (ty, mut body) = encode_value(value, &mut no_vocab)?;
     buf.push(ty.to_byte());
     put_len(buf, body.len());
     buf.append(&mut body);
+    Ok(())
 }
 
 /// Name resolver: returns the vocabulary id for `name`, allocating
 /// through the closure on first sight (the caller's vocabulary owns
 /// allocation discipline — single writer, engine mutex).
 pub trait NameResolver {
-    fn resolve(&mut self, name: &str) -> u16;
+    fn resolve(&mut self, name: &str) -> crate::error::Result<u16>;
 }
 
-impl<F: FnMut(&str) -> u16> NameResolver for F {
-    fn resolve(&mut self, name: &str) -> u16 {
+impl<F: FnMut(&str) -> crate::error::Result<u16>> NameResolver for F {
+    fn resolve(&mut self, name: &str) -> crate::error::Result<u16> {
         self(name)
     }
 }
@@ -94,8 +130,8 @@ pub fn put_frame_named<R: NameResolver>(
     name: &str,
     value: &DynamicValue,
     vocab: &mut R,
-) {
-    put_frame_named_inner(buf, name, value, vocab);
+) -> crate::error::Result<()> {
+    put_frame_named_inner(buf, name, value, vocab)
 }
 
 fn put_frame_named_inner<R: NameResolver>(
@@ -103,8 +139,8 @@ fn put_frame_named_inner<R: NameResolver>(
     name: &str,
     value: &DynamicValue,
     vocab: &mut R,
-) {
-    let id = vocab.resolve(name);
+) -> crate::error::Result<()> {
+    let id = vocab.resolve(name)?;
     if id < 0xFF {
         buf.push(id as u8);
     } else {
@@ -117,19 +153,20 @@ fn put_frame_named_inner<R: NameResolver>(
             // nested nTLV list — same shape, same vocabulary.
             let mut body = Vec::new();
             for (k, v) in map {
-                put_frame_named_inner(&mut body, k, v, vocab);
+                put_frame_named_inner(&mut body, k, v, vocab)?;
             }
             buf.push(ObjValueType::Obj.to_byte());
             put_len(buf, body.len());
             buf.append(&mut body);
         }
         other => {
-            let (ty, mut body) = encode_value(other, vocab);
+            let (ty, mut body) = encode_value(other, vocab)?;
             buf.push(ty.to_byte());
             put_len(buf, body.len());
             buf.append(&mut body);
         }
     }
+    Ok(())
 }
 
 /// Value → (type tag, body bytes). Nested objects need the vocabulary
@@ -140,8 +177,11 @@ fn put_frame_named_inner<R: NameResolver>(
 /// Obj is encoded by `put_frame_named`'s own arm, but an Obj nested
 /// inside an Array reaches THIS arm — composites must encode fully
 /// wherever they appear.
-fn encode_value<R: NameResolver>(value: &DynamicValue, vocab: &mut R) -> (ObjValueType, Vec<u8>) {
-    match value {
+fn encode_value<R: NameResolver>(
+    value: &DynamicValue,
+    vocab: &mut R,
+) -> crate::error::Result<(ObjValueType, Vec<u8>)> {
+    Ok(match value {
         DynamicValue::Int(v) => {
             // Minimal big-endian two's-complement width.
             let be = v.to_be_bytes();
@@ -167,7 +207,7 @@ fn encode_value<R: NameResolver>(value: &DynamicValue, vocab: &mut R) -> (ObjVal
             let mut body = Vec::new();
             put_len(&mut body, items.len());
             for item in items {
-                let (ty, mut b) = encode_value(item, vocab);
+                let (ty, mut b) = encode_value(item, vocab)?;
                 body.push(ty.to_byte());
                 put_len(&mut body, b.len());
                 body.append(&mut b);
@@ -179,11 +219,11 @@ fn encode_value<R: NameResolver>(value: &DynamicValue, vocab: &mut R) -> (ObjVal
             // frame-level Obj arm produces — same vocabulary recursion.
             let mut body = Vec::new();
             for (k, v) in map {
-                put_frame_named_inner(&mut body, k, v, vocab);
+                put_frame_named_inner(&mut body, k, v, vocab)?;
             }
             (ObjValueType::Obj, body)
         }
-    }
+    })
 }
 
 /// Decode one frame starting at `*off`; advances past it. `None` on
@@ -635,13 +675,15 @@ mod tests {
             DynamicValue::Obj(nested),
         )]));
         let mut body = Vec::new();
-        let mut resolver = |name: &str| match name {
-            "a" => 1,
-            "item" => 2,
-            "c" => 3,
-            _ => 99,
+        let mut resolver = |name: &str| -> crate::error::Result<u16> {
+            Ok(match name {
+                "a" => 1,
+                "item" => 2,
+                "c" => 3,
+                _ => 99,
+            })
         };
-        put_frame_named(&mut body, "a", &DynamicValue::Array(vec![val]), &mut resolver);
+        put_frame_named(&mut body, "a", &DynamicValue::Array(vec![val]), &mut resolver).unwrap();
         let frames = decode_named(&body, &mut |id| match id {
             1 => Some("a".into()),
             2 => Some("item".into()),
@@ -685,7 +727,7 @@ mod tests {
         ];
         for (id, v) in &cases {
             let mut buf = Vec::new();
-            put_frame(&mut buf, *id, v);
+            put_frame(&mut buf, *id, v).unwrap();
             let mut off = 0usize;
             let f = decode_frame(&buf, &mut off);
             if f.is_err() {
@@ -701,13 +743,13 @@ mod tests {
     #[test]
     fn short_ids_take_one_byte_and_large_escape() {
         let mut buf = Vec::new();
-        put_frame(&mut buf, 0xFE, &DynamicValue::UInt(1));
+        put_frame(&mut buf, 0xFE, &DynamicValue::UInt(1)).unwrap();
         assert_eq!(buf[0], 0xFE, "id 254 stays in the u8 lane");
         let mut buf = Vec::new();
-        put_frame(&mut buf, 0xFF, &DynamicValue::UInt(1));
+        put_frame(&mut buf, 0xFF, &DynamicValue::UInt(1)).unwrap();
         assert_eq!(&buf[..3], &[0xFF, 0x00, 0xFF], "id 255 escapes");
         let mut buf = Vec::new();
-        put_frame(&mut buf, 0x1234, &DynamicValue::UInt(1));
+        put_frame(&mut buf, 0x1234, &DynamicValue::UInt(1)).unwrap();
         assert_eq!(&buf[..3], &[0xFF, 0x12, 0x34]);
         let fields = decode_variants(&buf);
         assert_eq!(fields[0].id, 0x1234);
@@ -716,7 +758,7 @@ mod tests {
     #[test]
     fn list_decode_is_partial_on_malformed_tail() {
         let mut buf = Vec::new();
-        put_frame(&mut buf, 1, &DynamicValue::UInt(7));
+        put_frame(&mut buf, 1, &DynamicValue::UInt(7)).unwrap();
         buf.extend_from_slice(&[0x05, 0x00, 0x09, 0xAA]); // torn tail: len 9, only 1 byte follows
         let fields = decode_variants(&buf);
         assert_eq!(fields.len(), 1);
@@ -726,10 +768,10 @@ mod tests {
     #[test]
     fn unknown_value_type_skips_by_length() {
         let mut buf = Vec::new();
-        put_frame(&mut buf, 1, &DynamicValue::UInt(7));
+        put_frame(&mut buf, 1, &DynamicValue::UInt(7)).unwrap();
         // Hand-rolled frame with a not-yet-defined type (0xFE).
         buf.extend_from_slice(&[0x02, 0xFE, 0x03, 0xAA, 0xBB, 0xCC]);
-        put_frame(&mut buf, 3, &DynamicValue::Str("after".into()));
+        put_frame(&mut buf, 3, &DynamicValue::Str("after".into())).unwrap();
         let fields = decode_variants(&buf);
         assert_eq!(fields.len(), 2, "unknown frame skipped by length");
         assert_eq!(fields[0].id, 1);
@@ -752,14 +794,14 @@ mod nested_tests {
         }
     }
     impl NameResolver for StubVocab {
-        fn resolve(&mut self, name: &str) -> u16 {
+        fn resolve(&mut self, name: &str) -> crate::error::Result<u16> {
             if let Some(&id) = self.names.get(name) {
-                return id;
+                return Ok(id);
             }
             let id = self.next;
             self.next += 1;
             self.names.insert(name.to_string(), id);
-            id
+            Ok(id)
         }
     }
 
@@ -775,7 +817,7 @@ mod nested_tests {
         let mut vocab = StubVocab::new();
         let mut buf = Vec::new();
         for (k, v) in &outer {
-            put_frame_named(&mut buf, k, v, &mut vocab);
+            put_frame_named(&mut buf, k, v, &mut vocab).unwrap();
         }
 
         // Decode with name resolution.
@@ -820,7 +862,7 @@ mod nested_tests {
         let mut vocab = StubVocab::new();
         let mut buf = Vec::new();
         for (k, v) in &top {
-            put_frame_named(&mut buf, k, v, &mut vocab);
+            put_frame_named(&mut buf, k, v, &mut vocab).unwrap();
         }
         // Vocabulary saw: mid, leaf, v — shared vocabulary across levels.
         assert_eq!(vocab.names.len(), 3);

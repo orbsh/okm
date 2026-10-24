@@ -134,7 +134,7 @@ fn parquet_roundtrip_with_string_columns() {
                 note: format!("note-{i}"),
                 flag: i as u8,
             },
-        );
+        ).unwrap();
     }
     parquet_io::export_parquet(&t1, &path).unwrap();
 

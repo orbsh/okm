@@ -149,8 +149,8 @@ fn same_group_twice_in_one_batch_accumulates() {
 
     let (k1, r1) = entry(1, 7, 10);
     let (k2, r2) = entry(2, 7, 5);
-    t.save_with_prev_into(&mut batch, &k1, &r1, None);
-    t.save_with_prev_into(&mut batch, &k2, &r2, None);
+    t.save_with_prev_into(&mut batch, &k1, &r1, None).unwrap();
+    t.save_with_prev_into(&mut batch, &k2, &r2, None).unwrap();
 
     // Nothing is visible before the commit — the ledger included.
     assert!(ledger(&t, 7).is_none(), "an uncommitted batch owns no accumulator");
@@ -168,8 +168,8 @@ fn overwrite_in_one_batch_reads_the_pending_old_row() {
     let (k, v1) = entry(1, 7, 10);
     let v2 = Entry { account: 8, amount: 10 };
     let mut batch = okm_core::Batch::default();
-    t.save_with_prev_into(&mut batch, &k, &v1, None);
-    t.save_with_prev_into(&mut batch, &k, &v2, None);
+    t.save_with_prev_into(&mut batch, &k, &v1, None).unwrap();
+    t.save_with_prev_into(&mut batch, &k, &v2, None).unwrap();
     store.commit_batch(batch).expect("commit");
 
     assert_eq!(ledger(&t, 7), Some(0), "the stale fold was unfolded");
@@ -189,13 +189,13 @@ fn caller_supplied_prev_drives_the_unfold_and_the_cleanup() {
     let (k, v1) = entry(1, 7, 10);
 
     let mut batch = okm_core::Batch::default();
-    t.save_with_prev_into(&mut batch, &k, &v1, None);
+    t.save_with_prev_into(&mut batch, &k, &v1, None).unwrap();
     store.commit_batch(batch).expect("commit");
     assert_eq!(ledger(&t, 7), Some(1));
 
     let v2 = Entry { account: 8, amount: 10 };
     let mut batch = okm_core::Batch::default();
-    t.save_with_prev_into(&mut batch, &k, &v2, Some(&v1));
+    t.save_with_prev_into(&mut batch, &k, &v2, Some(&v1)).unwrap();
     store.commit_batch(batch).expect("commit");
 
     assert_eq!(ledger(&t, 7), Some(0));
@@ -209,12 +209,12 @@ fn an_uncommitted_batch_moves_neither_the_row_nor_the_ledger() {
     let t = <Entry as Document>::collection(store.clone());
     let (k, v1) = entry(1, 7, 1);
     let mut batch = okm_core::Batch::default();
-    t.save_with_prev_into(&mut batch, &k, &v1, None);
+    t.save_with_prev_into(&mut batch, &k, &v1, None).unwrap();
     store.commit_batch(batch).expect("commit");
 
     // Abandoned: the unfold and the fold both live only in the dropped batch.
     let mut batch = okm_core::Batch::default();
-    t.save_with_prev_into(&mut batch, &k, &Entry { account: 8, amount: 2 }, None);
+    t.save_with_prev_into(&mut batch, &k, &Entry { account: 8, amount: 2 }, None).unwrap();
     drop(batch);
 
     assert_eq!(ledger(&t, 7), Some(1), "the unfold never landed");
@@ -231,7 +231,7 @@ fn atomic_write_and_reduce_in_one_commit() {
     let edges: okm_core::Junction<TestStore, AuthorPost> = okm_core::Junction::new(store.clone());
 
     let (k, r) = entry(1, 7, 3);
-    t.save_with_prev_into(&mut batch, &k, &r, None);
+    t.save_with_prev_into(&mut batch, &k, &r, None).unwrap();
     edges.save_into(&mut batch, &AuthorKey { id: 7 }, &PostKey { id: 1 });
     store.commit_batch(batch).expect("commit");
 
@@ -322,7 +322,7 @@ fn embedded_children_are_written_and_released_in_the_batch() {
             contact: Ref::own(c1.clone(), Contact { number: "111".into() }),
         },
         None,
-    );
+    ).unwrap();
     store.commit_batch(batch).expect("commit");
     assert!(contacts.get(&c1).is_some(), "child lands with the parent");
 
@@ -338,7 +338,7 @@ fn embedded_children_are_written_and_released_in_the_batch() {
             contact: Ref::own(c2.clone(), Contact { number: "222".into() }),
         },
         Some(&old),
-    );
+    ).unwrap();
     store.commit_batch(batch).expect("commit");
 
     assert!(contacts.get(&c1).is_none(), "the dropped child is released");
@@ -383,7 +383,7 @@ fn save_with_prev_into_interns_inside_the_batch() {
     // allocation's three writes (label → id, id → label, cursor) go through
     // BatchStore, so they ride the caller's batch.
     let mut batch = okm_core::Batch::default();
-    c.save_with_prev_into(&mut batch, &k, &row, None);
+    c.save_with_prev_into(&mut batch, &k, &row, None).unwrap();
     assert!(c.get(&k).is_none(), "an uncommitted batch moves nothing");
     store.commit_batch(batch).expect("commit");
 
@@ -409,7 +409,7 @@ fn save_with_prev_into_interns_inside_the_batch() {
             note: "pool exhausted".into(),
         },
         None,
-    );
+    ).unwrap();
     store.commit_batch(batch).expect("commit");
 
     let second = c.get(&LogKey { id: 2 }).expect("row landed");

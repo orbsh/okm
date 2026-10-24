@@ -34,6 +34,15 @@ pub fn derive(input: TokenStream) -> TokenStream {
             }
         })
         .expect("missing #[ok_junction(n)]");
+    // The discriminator rides the 12-bit slot counter as `id << 1 | dir`, so
+    // 0x0000-0x07FF is the whole space. Masking it downstream would send an
+    // out-of-range declaration onto another junction's slot — refuse the
+    // declaration instead, where the mistake is visible.
+    assert!(
+        junction_id <= 0x07FF,
+        "#[ok_junction(0x{junction_id:04X})] is out of range: the discriminator is the 12-bit slot \
+         counter's high bits (`id << 1 | dir`), so 0x0000-0x07FF is the whole space"
+    );
 
     let named = match &input.data {
         Data::Struct(s) => match &s.fields {

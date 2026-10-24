@@ -64,7 +64,7 @@ pub struct MRow {
 fn engine_matrix_table_round_trip() {
     for (name, store) in TestStore::matrix() {
         let mut t: okm_core::Collection<TestStore, MKey, MRow> = okm_core::Collection::new(store);
-        t.put(&MKey { id: 7 }, &MRow { score: 55 });
+        t.put(&MKey { id: 7 }, &MRow { score: 55 }).unwrap();
         let back = t.get(&MKey { id: 7 }).expect("{name}: document round trip");
         assert_eq!(back.score, 55, "{name}");
         let keys = t.scan_keys();

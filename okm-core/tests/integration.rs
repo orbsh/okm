@@ -78,9 +78,9 @@ fn byte_layout_and_queries() {
         session_id: 2001,
     };
 
-    edges.link(&u_org1, &s1);
-    edges.link(&u_org1, &s2);
-    edges.link(&u_org2, &s3);
+    edges.link(&u_org1, &s1).unwrap();
+    edges.link(&u_org1, &s2).unwrap();
+    edges.link(&u_org2, &s3).unwrap();
 
     // ---------- 字节布局 ----------
     // A 端 entry 头 = [ns_user 2B BE][slot 2B BE]：ns=1、junction 段 n=1 → [0,1,0x30,1]
@@ -125,7 +125,7 @@ fn byte_layout_and_queries() {
     assert_eq!(users[0].taken, 12);
 
     // ---------- unlink ----------
-    edges.unlink(&u_org2, &s3);
+    edges.unlink(&u_org2, &s3).unwrap();
     assert!(u_org2.get_session(&edges).is_empty());
 }
 
@@ -149,4 +149,19 @@ fn head_disjointness() {
         okm_core::index::REDUCE_SLOT_BASE >> 12,
         okm_core::index::DECLARED_SLOT_BASE >> 12
     );
+}
+
+/// 槽位是位置语义：高半字节是族，低 12 位是计数器。越界值不再被掩码——
+/// 掩码会把它落到另一个族里合法-looking 的槽位上（0x3FFF + 1 = 0x4001 是
+/// reduce 族），条目会被另一张表读回去。构造即拒绝。
+#[test]
+#[should_panic(expected = "slot counter out of range")]
+fn slot_counter_is_checked_not_masked() {
+    let _ = okm_core::index::slot(okm_core::index::segment::INDEX, 0x1000);
+}
+
+#[test]
+#[should_panic(expected = "slot family out of range")]
+fn slot_family_is_checked_not_wrapped() {
+    let _ = okm_core::index::slot(0x10, 1);
 }

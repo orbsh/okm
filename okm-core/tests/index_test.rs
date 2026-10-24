@@ -100,7 +100,7 @@ fn mk_session(user: u64, sid: u64, kind: u8) -> (SessionKey, Session) {
 fn table_put_writes_primary_and_indexes() {
     let t = <User as Document>::collection(TestStore::slatedb_mem());
     let (k, r) = mk_user(101, 100);
-    t.put(&k, &r);
+    t.put(&k, &r).unwrap();
 
     // 主键写入固定面 0x00：头 [0,9,0]（ns 2B + 固定面 1 字节）+ key payload
     let kl = <UserKey as KeyEncode>::KEY_LEN;
@@ -120,7 +120,7 @@ fn table_put_writes_primary_and_indexes() {
     assert!(t.store().get(&e1).is_some());
 
     // delete：主键 + 全部声明索引一并移除（声明即注册表）
-    t.purge(&k);
+    t.purge(&k).unwrap();
     assert!(t.store().get(&t.primary_key(&k)).is_none());
     assert!(t.store().get(&t.index_key::<ByReputation>(&k, &r)).is_none());
 }
@@ -129,16 +129,16 @@ fn table_put_writes_primary_and_indexes() {
 fn delete_by_pkey_fetches_row_and_cleans_indexes() {
     let t = <User as Document>::collection(TestStore::slatedb_mem());
     let (k, r) = mk_user(101, 100);
-    t.put(&k, &r);
+    t.put(&k, &r).unwrap();
 
     // 只给主键：内部 get 回 document，两半同源派生
-    assert!(t.purge(&k));
+    assert!(t.purge(&k).unwrap());
     assert!(t.store().get(&t.primary_key(&k)).is_none());
     assert!(t.store().get(&t.index_key::<ByReputation>(&k, &r)).is_none());
 
     // 不存在的主键：no-op，返回 false
     let (missing, _) = mk_user(999, 1);
-    assert!(!t.purge(&missing));
+    assert!(!t.purge(&missing).unwrap());
 }
 
 #[test]
@@ -151,7 +151,7 @@ fn scan_via_index_returns_rows() {
         mk_user(104, 40),
     ];
     for (k, r) in &rows_in {
-        t.put(k, r);
+        t.put(k, r).unwrap();
     }
 
     // 最左前缀 reputation=10 → 1 行回表（key 前缀取满，可完整解码）
@@ -217,7 +217,7 @@ fn timeline_is_a_list_encoding() {
         mk_post(503, 8, 40, 13), // 另一位作者，不进作者 7 的列表
     ];
     for (k, r) in &rows {
-        t.put(k, r);
+        t.put(k, r).unwrap();
     }
 
     // 原始前缀扫描：author=7 → 3 条 entry。suffix（去掉 ns+author 前缀）
@@ -258,7 +258,7 @@ fn truncated_key_prefix_drops_redundant_tail() {
         mk_session(10, 780, 5),  // 另一类型，不进 kind=3 的列表
     ];
     for (k, r) in &rows {
-        t.put(k, r);
+        t.put(k, r).unwrap();
     }
 
     let p = ByKind::entry_prefix(<Session as Document>::NS_PREFIX, &[3]);
@@ -355,7 +355,7 @@ fn variable_length_index_text_first() {
         mk_doc(4, 20, "alpha"),      // 同名不同城市，city 维度隔开
     ];
     for (k, r) in &rows {
-        t.put(k, r);
+        t.put(k, r).unwrap();
     }
 
     // entry 布局：[ns 2B][slot 2B][city 4B][name 裸 UTF-8][id 8B]
@@ -407,7 +407,7 @@ fn probe_never_spills_into_the_key_tail() {
         mk_doc(3, 10, "ad1_to_cart"),
     ];
     for (k, r) in &rows {
-        t.put(k, r);
+        t.put(k, r).unwrap();
     }
 
     // 前言落实情况：假命中确实存在——entry 的字节以探针为前缀
@@ -479,7 +479,7 @@ fn function_index_normalizes_both_sides() {
         mk_docf(3, 10, "banana"),
     ];
     for (k, r) in &rows {
-        t.put(k, r);
+        t.put(k, r).unwrap();
     }
 
     // entry 布局：[ns 2B][slot 2B][func 结果裸字节][id 8B]——无 fields 段
@@ -500,7 +500,7 @@ fn function_index_normalizes_both_sides() {
     assert_eq!(ids, [1, 2]); // 字典序（同结果 → 主键序）
 
     // delete：函数索引 entry 一并移除
-    t.purge(k);
+    t.purge(k).unwrap();
     assert!(t.store().get(&e).is_none());
 }
 
@@ -529,7 +529,7 @@ fn multi_entry_function_index_fans_out() {
         (DocKey { id: 2 }, DocTags { tags: "rust,storage".into() }),
     ];
     for (k, r) in &rows {
-        t.put(k, r);
+        t.put(k, r).unwrap();
     }
 
     // 一行两条 entry：token 居数据段（变长，贴主键前），主键 8B 从尾部切出
@@ -550,7 +550,7 @@ fn multi_entry_function_index_fans_out() {
     assert_eq!(kv_rows[0].0.decoded.id, 1);
 
     // 删除：delete 沿 entry_pairs 逐条清除，无悬挂条目
-    t.purge(&rows[0].0);
+    t.purge(&rows[0].0).unwrap();
     let remaining = t.scan::<ByTag>(b"rust").len();
     assert_eq!(remaining, 1); // 只剩 id 2
 }
@@ -639,7 +639,7 @@ fn partial_index_admits_only_matching_rows() {
     let closed = mk_ticket(2, 7, 20, 5, 1, "");
     let open_b = mk_ticket(3, 7, 30, 2, 0, "");
     for (k, r) in [&open_a, &closed, &open_b] {
-        t.put(k, r);
+        t.put(k, r).unwrap();
     }
 
     // 谓词在 entry_pairs 里短路：被拒的行主表条目在、索引条目不在。
@@ -664,7 +664,7 @@ fn partial_index_admits_only_matching_rows() {
     assert_eq!(covered[1].1.title_len, 2);
 
     // delete 走同一个 entry_pairs：被接纳的行清干净
-    t.purge(&open_a.0);
+    t.purge(&open_a.0).unwrap();
     assert!(t.store().get(&t.index_key::<ByOpenAssignee>(&open_a.0, &open_a.1)).is_none());
     assert_eq!(t.scan::<ByOpenAssignee>(&7u64.to_be_bytes()).len(), 1);
 }
@@ -677,11 +677,11 @@ fn partial_index_flip_needs_delete_then_put() {
     // 且扫描把它当被接纳的行返回——谓词的保证到 delete 为止。
     let t = <Ticket as Document>::collection(TestStore::slatedb_mem());
     let (k, open) = mk_ticket(1, 7, 10, 3, 0, "");
-    t.put(&k, &open);
+    t.put(&k, &open).unwrap();
     let e = t.index_key::<ByOpenAssignee>(&k, &open);
 
     let closed = Ticket { status: 1, ..open.clone() };
-    t.put(&k, &closed);
+    t.put(&k, &closed).unwrap();
     assert_eq!(e, t.index_key::<ByOpenAssignee>(&k, &closed));
     assert!(t.store().get(&e).is_some(), "悬挂条目——既有覆盖写契约，非谓词引入");
     let hit = t.scan::<ByOpenAssignee>(&7u64.to_be_bytes());
@@ -690,16 +690,16 @@ fn partial_index_flip_needs_delete_then_put() {
 
     // 删除集合由「存储的行」派生：先清再写就干净。
     let t2 = <Ticket as Document>::collection(TestStore::slatedb_mem());
-    t2.put(&k, &open);
-    t2.purge(&k); // 派生自 open → 条目清掉
-    t2.put(&k, &closed);
+    t2.put(&k, &open).unwrap();
+    t2.purge(&k).unwrap(); // 派生自 open → 条目清掉
+    t2.put(&k, &closed).unwrap();
     assert!(t2.store().get(&e).is_none());
     assert!(t2.scan::<ByOpenAssignee>(&7u64.to_be_bytes()).is_empty());
 
     // 但存储的行此时已是 closed，而 closed 不产条目 —— 所以 purge 清不掉
     // 早前那次裸 put 覆盖留下的悬挂条目：没有任何 API 能再点到「产生它的
     // 那一行」。这条即 put 的覆盖写契约的代价（ADR-0035：put 不清旧面）。
-    t.purge(&k);
+    t.purge(&k).unwrap();
     assert!(
         t.store().get(&e).is_some(),
         "purge 派生自存储行（closed 不产条目），悬挂条目留在库里"
@@ -708,8 +708,8 @@ fn partial_index_flip_needs_delete_then_put() {
     // 该走的覆盖路径：merge / replace 先扫存储行的面再写 —— 同一次覆盖
     // 不产生悬挂条目。put 是「新行」快路径，不是更新路径。
     let t3 = <Ticket as Document>::collection(TestStore::slatedb_mem());
-    t3.put(&k, &open);
-    t3.merge(&k, &closed.to_map());
+    t3.put(&k, &open).unwrap();
+    t3.merge(&k, &closed.to_map()).unwrap();
     assert!(t3.store().get(&e).is_none(), "merge 扫掉存储行的面：没有悬挂条目");
     assert!(t3.scan::<ByOpenAssignee>(&7u64.to_be_bytes()).is_empty());
 
@@ -717,8 +717,8 @@ fn partial_index_flip_needs_delete_then_put() {
     // 所以旧值产生的面同样随之扫掉。这是 rule 4「row's previous faces are
     // removed」的可执行版本 —— prev 传 None 会留下悬挂条目。
     let t4 = <Ticket as Document>::collection(TestStore::slatedb_mem());
-    t4.put(&k, &open);
-    t4.replace(&k, &closed.to_map());
+    t4.put(&k, &open).unwrap();
+    t4.replace(&k, &closed.to_map()).unwrap();
     assert!(t4.store().get(&e).is_none(), "replace 扫掉存储行的面");
     assert_eq!(t4.get(&k).unwrap().status, 1, "map 就是文档");
 }
@@ -728,8 +728,8 @@ fn function_index_empty_vec_skips_row() {
     let t = <Ticket as Document>::collection(TestStore::slatedb_mem());
     let open = mk_ticket(1, 7, 10, 3, 0, "rust,kv");
     let closed = mk_ticket(2, 7, 20, 5, 1, "rust");
-    t.put(&open.0, &open.1);
-    t.put(&closed.0, &closed.1);
+    t.put(&open.0, &open.1).unwrap();
+    t.put(&closed.0, &closed.1).unwrap();
 
     // 被接纳的行 fan out 成 2 条 token entry；空 Vec → 0 条
     assert_eq!(
@@ -745,7 +745,7 @@ fn function_index_empty_vec_skips_row() {
     assert_eq!(rust[0].0.decoded.id, 1);
 
     // delete 对称：写入集合与删除集合同源（空 Vec 的行删除是 no-op）
-    t.purge(&open.0);
+    t.purge(&open.0).unwrap();
     assert_eq!(t.scan::<ByLiveToken>(b"rust").len(), 0);
 }
 
@@ -756,8 +756,8 @@ fn function_index_with_where_filters_row() {
     let t = <Ticket as Document>::collection(TestStore::slatedb_mem());
     let open = mk_ticket(1, 7, 10, 3, 0, "rust,kv");
     let closed = mk_ticket(2, 7, 20, 5, 1, "rust");
-    t.put(&open.0, &open.1);
-    t.put(&closed.0, &closed.1);
+    t.put(&open.0, &open.1).unwrap();
+    t.put(&closed.0, &closed.1).unwrap();
 
     assert_eq!(
         ByOpenToken::entry_pairs(<Ticket as Document>::NS_PREFIX, &open.0, &open.1).len(),
@@ -804,7 +804,7 @@ fn covered_scan_answers_without_the_primary_table() {
     // includes 用字节换回来的东西。
     let t = <Post as Document>::collection(TestStore::slatedb_mem());
     let (k, r) = mk_post(601, 7, 11, 77);
-    t.put(&k, &r);
+    t.put(&k, &r).unwrap();
 
     // 生成的覆盖结构体：名字与字段即契约（一个 include 字段 = 一个字段）
     let covered = t.scan_covered::<ByTimeline>(&7u64.to_be_bytes());
@@ -822,9 +822,9 @@ fn covered_includes_walk_fixed_widths_then_the_variable_tail() {
     // 覆盖段按声明顺序解：定宽字段按宽度切（rank 4B），最后一个变宽字段取
     // 剩余字节——两条不同长度的 title 各自解回自己，rank 不串位。
     let t = <Note as Document>::collection(TestStore::slatedb_mem());
-    t.put(&NoteKey { id: 1 }, &Note { author_id: 7, rank: 5, title: "短".into() });
-    t.put(&NoteKey { id: 2 }, &Note { author_id: 7, rank: 9, title: "更长的标题文本".into() });
-    t.put(&NoteKey { id: 3 }, &Note { author_id: 8, rank: 1, title: "别人".into() });
+    t.put(&NoteKey { id: 1 }, &Note { author_id: 7, rank: 5, title: "短".into() }).unwrap();
+    t.put(&NoteKey { id: 2 }, &Note { author_id: 7, rank: 9, title: "更长的标题文本".into() }).unwrap();
+    t.put(&NoteKey { id: 3 }, &Note { author_id: 8, rank: 1, title: "别人".into() }).unwrap();
 
     let covered = t.scan_covered::<ByNoteAuthor>(&7u64.to_be_bytes());
     assert_eq!(covered.len(), 2);

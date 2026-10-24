@@ -31,6 +31,9 @@ pub use okm_derive::{JunctionEncode, GraphEncode, KeyEncode, NestStorage, Docume
 
 pub mod model;
 pub mod engine;
+pub mod error;
+
+pub use error::{Error, Result};
 pub mod bridge;
 pub mod subscribe;
 

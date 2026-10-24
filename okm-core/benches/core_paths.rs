@@ -161,7 +161,7 @@ fn bench_scan(c: &mut Criterion) {
                     visits: VarInt(i),
                     name: format!("u{i}"),
                 },
-            );
+            ).unwrap();
         }
         let probe = 7u32.to_be_bytes(); // level=7 for every seeded row
 
@@ -184,14 +184,14 @@ fn bench_write_mock(c: &mut Criterion) {
         let t: Collection<TestStore, BenchKey, BenchRow> = Collection::new(TestStore::slatedb_mem());
         let mut i = 0u64;
         b.iter(|| {
-            t.put(&make_key(i), &make_row(i));
+            t.put(&make_key(i), &make_row(i)).unwrap();
             i += 1;
             black_box(())
         })
     });
     g.bench_function("get/point", |b| {
         let t: Collection<TestStore, BenchKey, BenchRow> = Collection::new(TestStore::slatedb_mem());
-        t.put(&make_key(1), &make_row(1));
+        t.put(&make_key(1), &make_row(1)).unwrap();
         b.iter(|| black_box(t.fetch(&make_key(1)).is_some()))
     });
     g.bench_function("batch_commit/100_ops", |b| {

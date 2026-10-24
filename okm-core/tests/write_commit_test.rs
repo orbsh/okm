@@ -119,7 +119,7 @@ fn row(account: u64) -> LedgerRow {
 #[test]
 fn put_is_one_engine_commit() {
     let t = <LedgerRow as Document>::collection(Counting::new(TestStore::slatedb_mem()));
-    t.put(&LedgerKey { id: 1 }, &row(7));
+    t.put(&LedgerKey { id: 1 }, &row(7)).unwrap();
 
     let c = t.store();
     assert_eq!(c.commits.get(), 1, "a semantic write is one engine commit");
@@ -141,10 +141,10 @@ fn put_is_one_engine_commit() {
 fn overwrite_is_one_engine_commit() {
     let t = <LedgerRow as Document>::collection(Counting::new(TestStore::slatedb_mem()));
     let k = LedgerKey { id: 1 };
-    t.put(&k, &row(7));
+    t.put(&k, &row(7)).unwrap();
     t.store().reset();
 
-    t.put(&k, &LedgerRow { account: 8, amount: 2 });
+    t.put(&k, &LedgerRow { account: 8, amount: 2 }).unwrap();
 
     let c = t.store();
     assert_eq!(c.commits.get(), 1, "the unfold and the fold share the commit");
@@ -160,10 +160,10 @@ fn overwrite_is_one_engine_commit() {
 fn delete_is_one_engine_commit() {
     let t = <LedgerRow as Document>::collection(Counting::new(TestStore::slatedb_mem()));
     let k = LedgerKey { id: 1 };
-    t.put(&k, &row(7));
+    t.put(&k, &row(7)).unwrap();
     t.store().reset();
 
-    t.purge(&k);
+    t.purge(&k).unwrap();
 
     let c = t.store();
     assert_eq!(c.commits.get(), 1, "a removal is one engine commit");
@@ -184,7 +184,7 @@ fn dynamic_write_including_vocabulary_growth_is_one_engine_commit() {
         "colour".to_string(),
         okm_core::obj_dynamic::DynamicValue::Str("amber".into()),
     );
-    t.merge(&LedgerKey { id: 1 }, &fields);
+    t.merge(&LedgerKey { id: 1 }, &fields).unwrap();
 
     let c = t.store();
     assert_eq!(c.commits.get(), 1, "vocabulary growth rides the entry's commit");
@@ -205,10 +205,10 @@ fn dynamic_write_including_vocabulary_growth_is_one_engine_commit() {
 fn merge_of_a_declared_field_is_one_engine_commit() {
     let t = <LedgerRow as Document>::collection(Counting::new(TestStore::slatedb_mem()));
     let k = LedgerKey { id: 1 };
-    t.put(&k, &row(7));
+    t.put(&k, &row(7)).unwrap();
     t.store().reset();
 
-    t.merge(&k, &map_of(&[("amount", okm_core::obj_dynamic::DynamicValue::UInt(9))]));
+    t.merge(&k, &map_of(&[("amount", okm_core::obj_dynamic::DynamicValue::UInt(9))])).unwrap();
 
     let c = t.store();
     assert_eq!(c.commits.get(), 1, "merge is one engine commit");
@@ -222,10 +222,10 @@ fn merge_of_a_declared_field_is_one_engine_commit() {
 fn replace_is_one_engine_commit_across_both_slots() {
     let t = <LedgerRow as Document>::collection(Counting::new(TestStore::slatedb_mem()));
     let k = LedgerKey { id: 1 };
-    t.put(&k, &row(7));
+    t.put(&k, &row(7)).unwrap();
     // Intern the dynamic name first, so the replace below measures the write
     // set only (a first-seen name adds its three vocabulary ops).
-    t.merge(&k, &map_of(&[("colour", okm_core::obj_dynamic::DynamicValue::Str("amber".into()))]));
+    t.merge(&k, &map_of(&[("colour", okm_core::obj_dynamic::DynamicValue::Str("amber".into()))])).unwrap();
     t.store().reset();
 
     t.replace(
@@ -234,7 +234,7 @@ fn replace_is_one_engine_commit_across_both_slots() {
             ("account", okm_core::obj_dynamic::DynamicValue::UInt(8)),
             ("colour", okm_core::obj_dynamic::DynamicValue::Str("slate".into())),
         ]),
-    );
+    ).unwrap();
 
     let c = t.store();
     assert_eq!(c.commits.get(), 1, "both slots ride one commit");
@@ -256,11 +256,11 @@ fn replace_is_one_engine_commit_across_both_slots() {
 fn purge_is_one_engine_commit() {
     let t = <LedgerRow as Document>::collection(Counting::new(TestStore::slatedb_mem()));
     let k = LedgerKey { id: 1 };
-    t.put(&k, &row(7));
-    t.merge(&k, &map_of(&[("colour", okm_core::obj_dynamic::DynamicValue::Str("amber".into()))]));
+    t.put(&k, &row(7)).unwrap();
+    t.merge(&k, &map_of(&[("colour", okm_core::obj_dynamic::DynamicValue::Str("amber".into()))])).unwrap();
     t.store().reset();
 
-    assert!(t.purge(&k));
+    assert!(t.purge(&k).unwrap());
 
     let c = t.store();
     assert_eq!(c.commits.get(), 1, "a whole-document removal is one commit");
@@ -286,16 +286,19 @@ fn map_of(pairs: &[(&str, okm_core::obj_dynamic::DynamicValue)]) -> std::collect
 fn the_verbs_take_a_shared_handle_and_still_commit_once_each() {
     fn drive<S: VirtualStorage>(t: &okm_core::Collection<S, LedgerKey, LedgerRow>) {
         let k = LedgerKey { id: 1 };
-        t.put(&k, &row(7));
+        t.put(&k, &row(7)).unwrap();
         t.merge(
             &k,
             &map_of(&[("amount", okm_core::obj_dynamic::DynamicValue::UInt(2))]),
-        );
+        ).unwrap();
         t.replace(
             &k,
             &map_of(&[("amount", okm_core::obj_dynamic::DynamicValue::UInt(3))]),
+        ).unwrap();
+        assert!(
+            t.purge(&k).unwrap(),
+            "purge addresses the document it was given"
         );
-        assert!(t.purge(&k), "purge addresses the document it was given");
     }
 
     let t = <LedgerRow as Document>::collection(Counting::new(TestStore::slatedb_mem()));

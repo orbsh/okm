@@ -91,7 +91,7 @@ fn field_desc_reports_wrapper_kinds() {
 fn table_round_trip_with_wrappers() {
     let t: Collection<TestStore, WKey, WRow> = Collection::new(TestStore::slatedb_mem());
     for i in 0..5u64 {
-        t.put(&WKey { org: 1, id: i }, &sample(i));
+        t.put(&WKey { org: 1, id: i }, &sample(i)).unwrap();
     }
     for i in 0..5u64 {
         let r = t.get(&WKey { org: 1, id: i }).expect("document");
@@ -113,7 +113,7 @@ mod parquet {
 
         let t1: Collection<TestStore, WKey, WRow> = Collection::new(TestStore::slatedb_mem());
         for i in 0..4u64 {
-            t1.put(&WKey { org: 2, id: i }, &sample(i));
+            t1.put(&WKey { org: 2, id: i }, &sample(i)).unwrap();
         }
         parquet_io::export_parquet(&t1, &path).unwrap();
 
@@ -129,7 +129,7 @@ mod parquet {
     fn record_batch_columns_are_logical_types() {
         let t: Collection<TestStore, WKey, WRow> = Collection::new(TestStore::slatedb_mem());
         for i in 0..3u64 {
-            t.put(&WKey { org: 3, id: i }, &sample(i));
+            t.put(&WKey { org: 3, id: i }, &sample(i)).unwrap();
         }
         let batch = t.to_record_batch();
         let schema = batch.schema();

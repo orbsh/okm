@@ -26,8 +26,8 @@ fn fjall_roundtrip() {
         session_id: 1002,
     };
 
-    edges.link(&u, &s1);
-    edges.link(&u, &s2);
+    edges.link(&u, &s1).unwrap();
+    edges.link(&u, &s2).unwrap();
 
     let sessions = u.get_session(&edges);
     assert_eq!(sessions.len(), 2);
@@ -36,7 +36,7 @@ fn fjall_roundtrip() {
     assert_eq!(users.len(), 1);
     assert_eq!(users[0].decoded.user_id, 101);
 
-    edges.unlink(&u, &s1);
+    edges.unlink(&u, &s1).unwrap();
     assert_eq!(u.get_session(&edges).len(), 1);
     edges.store.persist().unwrap();
 

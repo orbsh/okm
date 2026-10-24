@@ -130,15 +130,17 @@ pub fn vocab_id<S: VirtualStorage + ?Sized>(
     faces: VocabFaces,
     width: usize,
     label: &str,
-) -> Option<Vec<u8>> {
-    Some(match width {
-        1 => VocabId::to_be(VocabCache::<u8>::new(faces).id_for(store, header, label)),
-        2 => VocabId::to_be(VocabCache::<u16>::new(faces).id_for(store, header, label)),
-        4 => VocabId::to_be(VocabCache::<u32>::new(faces).id_for(store, header, label)),
-        8 => VocabId::to_be(VocabCache::<u64>::new(faces).id_for(store, header, label)),
-        16 => VocabId::to_be(VocabCache::<u128>::new(faces).id_for(store, header, label)),
-        _ => return None,
-    })
+) -> crate::error::Result<Option<Vec<u8>>> {
+    // Allocation can fail (a full width, a refused commit), so the answer is
+    // `Result<Option<_>>`: `None` stays the schema/bridge disagreement.
+    Ok(Some(match width {
+        1 => VocabId::to_be(VocabCache::<u8>::new(faces).id_for(store, header, label)?),
+        2 => VocabId::to_be(VocabCache::<u16>::new(faces).id_for(store, header, label)?),
+        4 => VocabId::to_be(VocabCache::<u32>::new(faces).id_for(store, header, label)?),
+        8 => VocabId::to_be(VocabCache::<u64>::new(faces).id_for(store, header, label)?),
+        16 => VocabId::to_be(VocabCache::<u128>::new(faces).id_for(store, header, label)?),
+        _ => return Ok(None),
+    }))
 }
 
 /// Field names of the payload, in the document's own ns (ADR-0012).
@@ -203,31 +205,31 @@ impl<I: VocabId> VocabCache<I> {
 
     /// Look up (or allocate) the id for `label`. `header` = the collection's key
     /// header (`[ns]`) — vocabulary keys live in the same ns segment as the data
-    /// they name. Exhausting the width panics: the alternative is a wrapped id
-    /// naming the wrong label forever.
+    /// they name. Exhausting the width is an error, never a wrap: a wrapped id
+    /// names another label forever.
     pub fn id_for<S: VirtualStorage + ?Sized>(
         &mut self,
         store: &mut S,
         header: &[u8],
         label: &str,
-    ) -> I {
+    ) -> crate::error::Result<I> {
         // Already interned? ONE point probe — no scan, and through a BatchStore
         // it sees a label this same batch allocated earlier.
         let name_key = self.name_key(header, label);
         if let Some(id) = store.get(&name_key).and_then(|raw| I::from_be(&raw)) {
             self.remember(id, label);
-            return id;
+            return Ok(id);
         }
 
         let id = self.take_next(store, header);
         let next = match id.succ() {
             Some(next) => next,
-            None => panic!(
-                "vocabulary exhausted: {} labels fill a {}-byte id (ADR-0032); this label \
-                 does not fit — widen the field's N or model the value as a String field",
-                id.as_u128() + 1,
-                I::WIDTH
-            ),
+            None => {
+                return Err(crate::error::Error::VocabularyExhausted {
+                    width: I::WIDTH,
+                    next: id.as_u128() + 1,
+                })
+            }
         };
 
         // ONE batch, three point writes: label → id, id → label, and the bumped
@@ -238,11 +240,13 @@ impl<I: VocabId> VocabCache<I> {
         batch.put(name_key, id.to_be());
         batch.put(id_key, label.as_bytes().to_vec());
         batch.put(self.cursor_key(header), next.to_be());
-        let _ = store.commit_batch(batch);
+        store
+            .commit_batch(batch)
+            .map_err(crate::error::Error::Engine)?;
 
         self.next_id = Some(next);
         self.remember(id, label);
-        id
+        Ok(id)
     }
 
     /// Resolve an id to its label. One point probe (memoized); an id the
@@ -344,9 +348,9 @@ mod tests {
     fn allocates_sequentially_and_is_cached() {
         let mut store = TestStore::slatedb_mem();
         let mut d = VocabCache::<u16>::new(FIELD_VOCAB);
-        let a = d.id_for(&mut store, HEADER, "alpha");
-        let b = d.id_for(&mut store, HEADER, "beta");
-        let a2 = d.id_for(&mut store, HEADER, "alpha");
+        let a = d.id_for(&mut store, HEADER, "alpha").unwrap();
+        let b = d.id_for(&mut store, HEADER, "beta").unwrap();
+        let a2 = d.id_for(&mut store, HEADER, "alpha").unwrap();
         assert_eq!((a, b, a2), (0, 1, 0), "first-seen claims next, repeat hits cache");
 
         // Both directions landed in the engine.
@@ -367,8 +371,8 @@ mod tests {
         let mut kinds = VocabCache::<u16>::new(PREDICATE_VOCAB);
         // The same label allocates in both; the same number names two
         // different things — that is precisely what the split permits.
-        assert_eq!(fields.id_for(&mut store, HEADER, "since"), 0);
-        assert_eq!(kinds.id_for(&mut store, HEADER, "has"), 0);
+        assert_eq!(fields.id_for(&mut store, HEADER, "since").unwrap(), 0);
+        assert_eq!(kinds.id_for(&mut store, HEADER, "has").unwrap(), 0);
         assert_eq!(fields.name_for(&store, HEADER, 0).unwrap(), "since");
         assert_eq!(kinds.name_for(&store, HEADER, 0).unwrap(), "has");
         // …and they land on different faces.
@@ -387,14 +391,14 @@ mod tests {
         let mut store = TestStore::slatedb_mem();
         {
             let mut d = VocabCache::<u16>::new(PREDICATE_VOCAB);
-            d.id_for(&mut store, HEADER, "one");
-            d.id_for(&mut store, HEADER, "two");
+            d.id_for(&mut store, HEADER, "one").unwrap();
+            d.id_for(&mut store, HEADER, "two").unwrap();
         }
         // A brand-new cache (process restart) resumes after the max.
         let mut d2 = VocabCache::<u16>::new(PREDICATE_VOCAB);
         assert_eq!(d2.name_for(&store, HEADER, 0).unwrap(), "one");
         assert_eq!(d2.name_for(&store, HEADER, 1).unwrap(), "two");
-        let fresh = d2.id_for(&mut store, HEADER, "three");
+        let fresh = d2.id_for(&mut store, HEADER, "three").unwrap();
         assert_eq!(fresh, 2, "numbering resumes after the loaded max");
         // A read-only handle answers without the caller priming anything.
         let mut d3 = VocabCache::<u16>::new(PREDICATE_VOCAB);
@@ -431,20 +435,30 @@ mod tests {
         let mut store = TestStore::slatedb_mem();
         let mut status = VocabCache::<u8>::new(data_vocab(0));
         let mut color = VocabCache::<u8>::new(data_vocab(1));
-        assert_eq!(status.id_for(&mut store, HEADER, "active"), 0);
-        assert_eq!(color.id_for(&mut store, HEADER, "red"), 0);
+        assert_eq!(status.id_for(&mut store, HEADER, "active").unwrap(), 0);
+        assert_eq!(color.id_for(&mut store, HEADER, "red").unwrap(), 0);
         assert_eq!(status.name_for(&store, HEADER, 0).unwrap(), "active");
         assert_eq!(color.name_for(&store, HEADER, 0).unwrap(), "red");
     }
 
     #[test]
-    #[should_panic(expected = "vocabulary exhausted")]
     fn a_u8_vocabulary_stops_after_256_labels() {
         let mut store = TestStore::slatedb_mem();
         let mut d = VocabCache::<u8>::new(data_vocab(0));
-        // 0..=255 all fit; the 257th label is the loud error.
-        for i in 0..=256u16 {
-            d.id_for(&mut store, HEADER, &format!("label-{i}"));
+        // Ids 0..=254 fit: allocation needs `succ()` to exist so the cursor can
+        // be bumped, so the last usable id is one short of the width. The 256th
+        // label is refused — an error, not a wrap and not a panic (ADR-0037: a
+        // write verb reports, it does not abort the process).
+        for i in 0..=254u16 {
+            d.id_for(&mut store, HEADER, &format!("label-{i}"))
+                .expect("ids 0..=254 all fit");
         }
+        let err = d
+            .id_for(&mut store, HEADER, "label-255")
+            .expect_err("a u8 vocabulary is full");
+        assert!(
+            matches!(err, crate::error::Error::VocabularyExhausted { width: 1, .. }),
+            "unexpected error: {err:?}"
+        );
     }
 }
