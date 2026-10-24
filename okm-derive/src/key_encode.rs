@@ -7,10 +7,9 @@
 //! itself validates the requested prefix, and each arm's width is a
 //! compile-time constant sum.
 
-use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TS2;
 use quote::quote;
-use syn::{parse_macro_input, Data, DeriveInput, Fields};
+use syn::{Data, DeriveInput, Fields};
 
 /// Identity-side field encoder: same shape as the payload-side triple in
 /// `document_encode` (u8/u16/u32/u64 BE, `[u8; N]`).
@@ -24,6 +23,9 @@ struct Field {
 }
 
 /// FieldDesc table entries: `(name, FieldType, width)`, declaration order.
+// reason: every supported key field kind carries a `kind` — an unsupported type
+// already failed in `field_encoders`, so `kind` is Some here.
+#[allow(clippy::expect_used)]
 fn field_desc_entries(fs: &[Field]) -> TS2 {
     let documents = fs.iter().map(|f| {
         let name = f.ident.to_string();
@@ -34,19 +36,31 @@ fn field_desc_entries(fs: &[Field]) -> TS2 {
     quote! { &[ #(#documents),* ] }
 }
 
-pub fn derive(input: TokenStream) -> TokenStream {
-    let input = parse_macro_input!(input as DeriveInput);
+/// Parse + validate the declaration, then expand it. A malformed declaration
+/// comes back as a span-carrying `syn::Error` — the caller turns it into
+/// `compile_error!` on the offending token.
+pub fn expand(input: DeriveInput) -> syn::Result<TS2> {
     let name = &input.ident;
 
     let named = match &input.data {
         Data::Struct(s) => match &s.fields {
             Fields::Named(f) => f,
-            _ => panic!("KeyEncode only supports structs with named fields"),
+            _ => {
+                return Err(syn::Error::new(
+                    name.span(),
+                    "KeyEncode only supports structs with named fields",
+                ))
+            }
         },
-        _ => panic!("KeyEncode only supports structs"),
+        _ => {
+            return Err(syn::Error::new(
+                name.span(),
+                "KeyEncode only supports structs",
+            ))
+        }
     };
 
-    let fs = field_encoders(named, "KeyEncode");
+    let fs = field_encoders(named, "KeyEncode")?;
     let desc = field_desc_entries(&fs);
 
     let names: Vec<_> = fs.iter().map(|f| &f.ident).collect();
@@ -71,7 +85,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
         width_arms.extend(quote! { #name_lit => { #w } });
     }
 
-    quote! {
+    Ok(quote! {
         impl ::okm_core::KeyEncode for #name {
             const KEY_LEN: usize = 0 #(+ #widths)*;
             const FIELD_WIDTHS: &'static [(&'static str, usize)] = &[ #((#name_strs, #widths)),* ];
@@ -127,13 +141,15 @@ pub fn derive(input: TokenStream) -> TokenStream {
                 )*
             }
         }
-    }
-    .into()
+    })
 }
 
-fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> Vec<Field> {
+fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> syn::Result<Vec<Field>> {
     let mut fs = Vec::new();
     for f in named.named.iter() {
+        // Internal invariant: `syn::FieldsNamed` holds only named fields, so
+        // every field carries an ident.
+        #[allow(clippy::unwrap_used, clippy::unwrap_in_result)]
         let id = f.ident.clone().unwrap();
         let ty = &f.ty;
         let ty_str = quote!(#ty).to_string().replace(' ', "");
@@ -179,12 +195,16 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> Vec<Field> {
                     "u32" => 4,
                     "u64" => 8,
                     "u128" => 16,
-                    other => panic!(
-                        "{ctx}: Vocab<{other}> — the id width must be u8, u16, u32, u64 or u128"
-                    ),
+                    other => {
+                        return Err(syn::Error::new_spanned(
+                            ty,
+                            format!("{ctx}: Vocab<{other}> — the id width must be u8, u16, u32, u64 or u128"),
+                        ))
+                    }
                 };
-                let id_ty: syn::Type = syn::parse_str(&id_ty)
-                    .unwrap_or_else(|_| panic!("{ctx}: bad Vocab id width type"));
+                let id_ty: syn::Type = syn::parse_str(&id_ty).map_err(|_| {
+                    syn::Error::new_spanned(ty, format!("{ctx}: bad Vocab id width type"))
+                })?;
                 let w_lit = proc_macro2::Literal::u16_unsuffixed(width);
                 let off_lit = proc_macro2::Literal::u16_unsuffixed(16 - width);
                 (
@@ -202,7 +222,9 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> Vec<Field> {
                     .trim_start_matches("[u8;")
                     .trim_end_matches(']')
                     .parse()
-                    .expect("[u8; N]: N must be an integer literal");
+                    .map_err(|_| {
+                        syn::Error::new_spanned(ty, "[u8; N]: N must be an integer literal")
+                    })?;
                 let nlit = proc_macro2::Literal::usize_unsuffixed(n);
                 (
                     quote! { buf.extend_from_slice(&self.#id); },
@@ -216,28 +238,42 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> Vec<Field> {
                 )
             }
             _ if ty_str.starts_with("Reverse<") => {
-                panic!(
-                    "{ctx}: Reverse<T> on key field {id} — keys are fixed-width identity; \
+                return Err(syn::Error::new_spanned(
+                    ty,
+                    format!(
+                        "{ctx}: Reverse<T> on key field {id} — keys are fixed-width identity; \
                      put Reverse fields in the document payload instead"
-                )
+                    ),
+                ))
             }
             _ if ty_str.starts_with("VarInt<")
                 | ty_str.starts_with("Quant<")
                 | ty_str.starts_with("Enum<")
                 | ty_str.starts_with("Offset<") =>
             {
-                panic!(
-                    "{ctx}: wrapper type {ty_str} on key field {id} — keys are fixed-width \
+                return Err(syn::Error::new_spanned(
+                    ty,
+                    format!(
+                        "{ctx}: wrapper type {ty_str} on key field {id} — keys are fixed-width \
                      identity; wrapper codecs belong in the document payload"
-                )
+                    ),
+                ))
             }
             _ if ty_str.starts_with("String") => {
-                panic!(
-                    "{ctx}: String on key field {id} — the key encoding is fixed-width \
+                return Err(syn::Error::new_spanned(
+                    ty,
+                    format!(
+                        "{ctx}: String on key field {id} — the key encoding is fixed-width \
                      (pure pointer slicing); use [u8; N] or a hash"
-                )
+                    ),
+                ))
             }
-            other => panic!("{ctx}: unsupported type {other} (field {id})"),
+            other => {
+                return Err(syn::Error::new_spanned(
+                    ty,
+                    format!("{ctx}: unsupported type {other} (field {id})"),
+                ))
+            }
         };
         fs.push(Field {
             ident: id,
@@ -247,5 +283,5 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> Vec<Field> {
             kind,
         });
     }
-    fs
+    Ok(fs)
 }

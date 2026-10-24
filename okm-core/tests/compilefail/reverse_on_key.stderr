@@ -1,7 +1,5 @@
-error: proc-macro derive panicked
- --> tests/compilefail/reverse_on_key.rs:3:10
+error: KeyEncode: Reverse<T> on key field ts — keys are fixed-width identity; put Reverse fields in the document payload instead
+ --> tests/compilefail/reverse_on_key.rs:6:9
   |
-3 | #[derive(KeyEncode)]
-  |          ^^^^^^^^^
-  |
-  = help: message: KeyEncode: Reverse<T> on key field ts — keys are fixed-width identity; put Reverse fields in the document payload instead
+6 |     ts: Reverse<u64>,
+  |         ^^^^^^^^^^^^

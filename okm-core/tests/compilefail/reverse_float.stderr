@@ -1,10 +1,8 @@
-error: proc-macro derive panicked
- --> tests/compilefail/reverse_float.rs:9:10
-  |
-9 | #[derive(DocumentEncode)]
-  |          ^^^^^^^^^^^^^^
-  |
-  = help: message: Reverse<f64>: inner type not on the Reversible whitelist
+error: Reverse<f64>: inner type not on the Reversible whitelist
+  --> tests/compilefail/reverse_float.rs:12:8
+   |
+12 |     f: Reverse<f64>,
+   |        ^^^^^^^^^^^^
 
 error[E0277]: the trait bound `K: Clone` is not satisfied
  --> tests/compilefail/reverse_float.rs:5:8
