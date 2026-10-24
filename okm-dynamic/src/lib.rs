@@ -103,6 +103,7 @@ pub type ValueMap = BTreeMap<String, Value>;
 /// Codec errors: schema/value mismatches, out-of-range values, truncated
 /// bytes. Dynamic-side mistakes are normal input — errors, never panics.
 #[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub enum CodecError {
     /// Field present in the value tree but absent from the schema.
     UnknownField(String),

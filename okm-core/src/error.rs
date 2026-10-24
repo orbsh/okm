@@ -16,12 +16,18 @@
 //! CODEC — bytes this SDK did not write cannot be decoded back into a document,
 //! and a half-true row would corrupt the derived state written from it
 //! (ADR-0040, which also lists where the panic lints are allowed).
+//!
+//! The enum is `#[non_exhaustive]`: this crate's failure surface has grown once
+//! per decision (ADR-0038 gave reads a shape, ADR-0039 writes), and a new variant
+//! must be a compile-time no-op for everyone downstream rather than a breaking
+//! change. Matching it from another crate costs one `_ =>` arm.
 
 use thiserror::Error;
 
 use crate::model::obj_dynamic::{dyn_kind, DynamicValue};
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
+#[non_exhaustive]
 pub enum Error {
     /// A name that matches a DECLARED field carries a `DynamicValue` of another
     /// kind. Absence is NOT this error: an absent name takes the declared
