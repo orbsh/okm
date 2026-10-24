@@ -1708,8 +1708,16 @@ Tasks:
       `__okm_apply_reduces`) and the junction's generated `get_*` queries are
       fallible; `Error::Corrupt` / `Error::ScanThroughBatch` replace two aborts.
       `decode_payload` still panics by decision (ADR-0038, "deliberately not
-      done"). Suite: okm-core 225, okm-dynamic 50, okm-query 3; the whole
-      workspace under `--all-features` is 327 passed / 0 failed.
+      done"). The dynamic plan's `AccOf` closure is fallible too (it was
+      `&|ek| store.get(ek).unwrap()`, a panic behind a `Result` the caller had
+      already paid for); `okm_dynamic::reduce_get` follows. Suite: okm-core
+      225, okm-dynamic 50, okm-query 3; the whole workspace under
+      `--all-features` is 327 passed / 0 failed.
+- [x] Warning sweep (LANDED 2026-10-24): the twelve clippy warnings the `&self`
+      write pass orphaned are gone (six `let mut` on tests, three
+      `type_complexity` — `RawDocument` / `EdgeRow` / `GroupAccs` name the
+      tuples, three `unnecessary_cast` in the Iceberg bridge). `cargo clippy
+      --workspace --all-targets --all-features` is now silent.
 
 ### A value too big for the row is its own table (ADR-0036, decided 2026-10-23)
 

@@ -12,14 +12,14 @@ ADR-0020 把惰性迭代定为 `VirtualStorage::scan_range_iter` 的流式契约
 这些是 wire 契约已经锁定的性质（ADR-0010）；破坏其中任何一条的流式设计按构造即被否决：
 
 1. **帧是通道的不透明载荷，传输层永不解析。** 所有分块、确认、游标机制必须活在 okm-wire 的帧语法之内——WS/UDS/mpsc 适配器保持「一条 `Vec<u8>` 进，一条 `Vec<u8>` 出」。
-2. **执行面是唯一一个方法**：`NestStorage::apply(frame) -> Option<OpResponse>`。流式设计不得要求主机在两次 `apply` 之间为某个消费者保存状态——`apply` 按契约无状态（接收方承载引擎，不承载会话；ADR-0010 §7）。
+2. **执行面是唯一一个方法**：`NestStorage::apply(frame) -> Result<OpResponse>`（写作时是 `Option<OpResponse>`，ADR-0038 给应答加上了失败形状）。流式设计不得要求主机在两次 `apply` 之间为某个消费者保存状态——`apply` 按契约无状态（接收方承载引擎，不承载会话；ADR-0010 §7）。
 3. **读关联活在传输信封的发送侧**，绝不进帧字节（ADR-0010 §6）。mpsc 参考传输在信封里带 `(reply_tx, frame)`；WS 适配器靠信封 reply-to 关联。帧格式本身没有 request id。
 4. **wire 零 OKM 语义**：key/value 是不透明字节；codec 只认识 op tag 和长度分桶，别的什么都不知道。
 5. **写批与写序已经解决**：同一帧内的变更 op 一起提交；scan 排在其后执行（读可见同帧先行的写）。流式重构不得重排或拆散这条保证。
 
 ### 今天到底要改什么
 
-`OpResponse` 只有两个字段——`value: Option<Vec<u8>>`（get）与 `suffixes: Vec<Vec<u8>>`（scan），都是整答案形状。scan 答案还丢掉了 value：wire 上的 `scan_range` 只返回 key 后缀，发送端的 `scan_range_iter` 要对每条 key 补一次 `OP_GET` 往返（`nest.rs` 的缓冲路径就是 `scan_range` + N 次 `get`）。所以远端惰性路径今天不只是没流式化，而是在缓冲之上还有 N+1 往返。
+`OpResponse` 写作时只有两个字段——`value: Option<Vec<u8>>`（get）与 `suffixes: Vec<Vec<u8>>`（scan），都是整答案形状；`hits` 与 `tail`（本 ADR 的分片）以及 `fault`（ADR-0038 的失败应答）是后来才有的，各自同样是一个整答案。scan 答案还丢掉了 value：wire 上的 `scan_range` 只返回 key 后缀，发送端的 `scan_range_iter` 要对每条 key 补一次 `OP_GET` 往返（`nest.rs` 的缓冲路径就是 `scan_range` + N 次 `get`）。所以远端惰性路径今天不只是没流式化，而是在缓冲之上还有 N+1 往返。
 
 ## 决策
 
@@ -85,7 +85,7 @@ trait 返回类型不变（`ScanIter` 在既有枚举后增加 `Remote` 臂—�
 
 - `OP_SCAN` 保持原样：`scan`/`scan_suffix` 的消费者是等值形状，缓冲应答就是它们的自然形状；把它们留在流式路径之外，旧语法就少一个活动部件。
 - `OP_GET` 保持一元：点查本来就是一条。
-- `apply` 签名保持 `Option<OpResponse>`——只是它现在应答的是一页，不是一个区间。主机在调用之间不持有任何东西；「流」是发送端把页缝合起来的结果。
+- `apply` 签名保持单一答案类型（写作时是 `Option<OpResponse>`，ADR-0038 之后是 `Result<OpResponse>`）——只是它现在应答的是一页，不是一个区间。主机在调用之间不持有任何东西；「流」是发送端把页缝合起来的结果。
 - 无帧级 request id、无确认帧、无接收方游标：关联与重试留在 ADR-0010 §6 安放它们的地方（传输信封与发送端）。
 
 ### 被否决的备选
