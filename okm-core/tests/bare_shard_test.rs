@@ -8,6 +8,8 @@
 //! bare instances' ns numbers off the hosted segments' numbers (an
 //! allocation duty, not a runtime check).
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+
 use okm_core::{KeyEncode, NestStorage, RemoteStore, DocumentEncode, Collection, TestStore, VirtualStorage};
 
 #[test]

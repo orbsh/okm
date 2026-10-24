@@ -3,6 +3,8 @@
 //! the sender endpoint plugs into a `Collection` whose write path runs
 //! entirely over the wire.
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+
 use okm_core::{KeyEncode, TestStore, RemoteStore, DocumentEncode, Collection, VirtualStorage};
 
 // Receiver declaration: no data methods, one execution surface.

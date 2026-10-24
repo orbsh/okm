@@ -13,6 +13,8 @@
 //! indexes and reduce are callable-implementable —
 //! dynamic_semantics_test.rs is the calling-discipline acceptance.
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+
 use okm_core::engine::storage::ScanIter;
 use okm_core::{
     Collection, DocumentEncode, KeyEncode, Batch, TestStore, VirtualStorage,

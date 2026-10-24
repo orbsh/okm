@@ -9,6 +9,8 @@
 //! write → Rust read), cold TLV frames, version rejection, unknown-field
 //! rejection.
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+
 use okm_core::{KeyEncode, TestStore, Document, DocumentEncode, Collection, VirtualStorage};
 use okm_core::schema::CollectionSchema;
 use okm_dynamic::{decode_key, decode_payload, encode_key, encode_payload, CodecError, Value, ValueMap};

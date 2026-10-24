@@ -5,6 +5,8 @@
 //! exactly what aura's realm (spawn_blocking keeps the context) hit
 //! when the injection face constructed and drove collections. This
 //! locks the consumer-side contract, not just the happy path.
+
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
 #![cfg(feature = "test-engines")]
 
 use okm_core::TestStore;

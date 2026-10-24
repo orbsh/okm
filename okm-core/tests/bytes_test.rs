@@ -3,6 +3,8 @@
 //! suite carries the diagnostic); the wire bytes are IDENTICAL to the
 //! old `Vec<u8>` encoding (cold TLV frame), so no storage migration.
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+
 use okm_core::{DocumentEncode, Document, KeyEncode, TestStore, Collection, Bytes};
 
 #[derive(KeyEncode, Clone, Debug, PartialEq)]

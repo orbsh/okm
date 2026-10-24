@@ -9,6 +9,8 @@
 //! trips), never through a kept TestStore clone — TestStore::clone is a
 //! deep copy, a kept clone would observe a different engine.
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+
 use okm_core::{
     KeyEncode, NestStorage, RemoteStore, DocumentEncode, Collection, ReduceCodec, TestStore,
     VirtualHandle, VirtualStorage,

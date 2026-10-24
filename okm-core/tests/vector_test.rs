@@ -1,6 +1,8 @@
 //! `Vector<T>` — typed variable-length homogeneous list (ADR-0015 §4, P3.5).
 //! Frame layout hex lock, cold-segment integration, `#[ok_len]` contract.
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+
 use okm_core::{
     DocumentEncode, KeyEncode, TestStore, Collection, Vector, VectorElem,
 };

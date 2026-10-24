@@ -2,6 +2,8 @@
 //! ADR-0032 vocabulary): one name-keyed map surface — `view` / `merge` /
 //! `replace` / `purge` — beside the typed `get` / `put` / `delete`.
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+
 use std::collections::BTreeMap;
 
 use okm_core::obj_dynamic::DynamicValue;

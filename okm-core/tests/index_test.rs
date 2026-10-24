@@ -3,6 +3,8 @@
 //! [key前缀]，value = includes 段）、最左前缀扫描、includes 覆盖、
 //! 截断 key 前缀（尾段去冗余，前提：剩余字段已唯一）。
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+
 use okm_core::{KeyEncode, VirtualStorage, KvIndex, TestStore, PrefixKey, Document, DocumentEncode};
 
 // marker struct 生成在 derive 展开点（本文件），直接引用

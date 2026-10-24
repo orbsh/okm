@@ -13,6 +13,12 @@
 //! multi-value-func contract, or a dedicated engine (Tantivy et al.)
 //! next to okm-core — not this crate growing a second opinion.
 
+// Tests keep the vocabulary: a panicking test is a failing test with a stack trace
+// (and the oracle for every failable path is "assert on the error VALUE"). This line
+// is per-crate because `[lints]` is per-package and covers every target, with no way
+// to scope a lint to lib/bins — the manifest cannot express `cfg(test)`.
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn))]
+
 /// Character n-grams of width `n`. Panics on `n == 0` — a zero-width
 /// gram is a modeling error, not an empty result.
 pub fn ngrams(text: &str, n: usize) -> Vec<String> {

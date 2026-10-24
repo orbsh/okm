@@ -8,6 +8,8 @@
 //! with upsert_test — the generated enum's `super::` references must
 //! resolve in every binary that includes it).
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+
 use okm_core::{TestStore, Collection};
 
 #[path = "subscribe_common.rs"]

@@ -6,6 +6,8 @@
 //! surface. Its stale entries stay in the engine until
 //! `Collection::prune_deprecated_slots` deletes them by prefix.
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+
 use okm_core::{
     KeyEncode, TestStore, DocumentEncode, Collection, VirtualStorage,
 };

@@ -1,6 +1,8 @@
 //! `Vocab<N>` end to end (ADR-0032): labels in memory, an N-byte id on the
 //! wire, one data vocabulary per declared field.
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+
 use okm_core::{
     Collection, Document, DocumentEncode, FieldType, KeyEncode, Batch, TestStore,
     VirtualStorage, Vocab,

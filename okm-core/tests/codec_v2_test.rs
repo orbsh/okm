@@ -6,6 +6,8 @@
 //! Compile-time rejections (String / Reverse on key side, non-whitelist
 //! Reverse inner) live in `codec_compilefail.rs` via trybuild.
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+
 use okm_core::{KeyEncode, TestStore, Reversible, Reverse, Document, DocumentEncode, Collection, parquet_io};
 
 // ================= String (variable length) =================

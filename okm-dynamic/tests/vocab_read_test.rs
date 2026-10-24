@@ -2,6 +2,8 @@
 //! lands as the id on the wire, and the store-aware read pass turns it into the
 //! label — the promise that a booth sees categories, not bare numbers.
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+
 use okm_core::schema::CollectionSchema;
 use okm_core::{Collection, DocumentEncode, KeyEncode, TestStore, Vocab};
 use okm_dynamic::{DynamicCollection, Value};

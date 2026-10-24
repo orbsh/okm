@@ -1,6 +1,8 @@
 //! End-to-end checks over a real `VirtualStorage` implementation: the snapshot
 //! blob set, shard routing/merge, and the two codecs.
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+
 use std::collections::BTreeMap;
 use std::ops::Bound;
 use std::sync::Mutex;

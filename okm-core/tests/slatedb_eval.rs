@@ -1,6 +1,8 @@
 //! slatedb 真实引擎评估（InMemory object store）。
 //! 运行：cargo test --features slatedb
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+
 #![cfg(feature = "slatedb")]
 
 use okm_core::slatedb_backend::{AsyncJunction, SlatedbStore};

@@ -7,6 +7,8 @@
 //! mechanism, which is why this test is all the multi-tenancy code there
 //! is.
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+
 use okm_core::{KeyEncode, TestStore, RemoteStore, DocumentEncode, Collection, VirtualStorage};
 
 // TestStore now has handle-clone semantics (Arc kernel) and implements

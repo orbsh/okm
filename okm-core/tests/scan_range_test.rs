@@ -4,6 +4,8 @@
 //! against the real engine matrix, through the DERIVE-generated access
 //! method (no hand-written KvIndex).
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+
 use okm_core::{Collection, DocumentEncode, KeyEncode, TestStore};
 
 #[derive(KeyEncode, Clone, PartialEq, Debug)]

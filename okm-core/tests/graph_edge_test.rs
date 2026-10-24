@@ -3,6 +3,8 @@
 //! vocabulary (0x04/0x05), the five graph faces (0x06–0x0A), declared-index
 //! faces, exact unlink, membership checks, and the cross-collection batch.
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+
 use okm_core::{
     DocumentEncode, EdgeHead, Graph, GraphEncode, KeyEncode, Batch, NodeRef, NodeSet,
     VirtualStorage, PRIMARY_SLOT,

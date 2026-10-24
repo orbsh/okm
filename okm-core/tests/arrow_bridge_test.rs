@@ -2,6 +2,8 @@
 //! FieldDesc, byte-level column extraction, BE→LE value conversion,
 //! round trip against struct decode.
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+
 use arrow::datatypes::DataType;
 use okm_core::{FieldDesc, FieldType, KeyEncode, TestStore, Document, DocumentEncode, Collection, Vector, VectorElem};
 

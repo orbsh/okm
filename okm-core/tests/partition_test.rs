@@ -2,6 +2,8 @@
 //! （Some(N) → `[part 1B]` 前缀，None → 无段零成本）、表内 put/scan
 //! 正常工作、跨表字节空间独立（part 段在 ns 段之前）。
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+
 use okm_core::{KeyEncode, Document, DocumentEncode, TestStore};
 
 /// 普通 key：无 partition（默认布局，无 part 段）。

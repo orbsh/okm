@@ -1,6 +1,8 @@
 //! Tooling interfaces (PLAN Phase 4): schema export and the
 //! Parquet snapshot round trip (export → import through `Collection::put`).
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+
 use okm_core::{FieldDesc, FieldType, KeyEncode, TestStore, Document, DocumentEncode, Collection, parquet_io};
 
 #[derive(KeyEncode, Clone, PartialEq, Debug)]

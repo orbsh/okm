@@ -9,6 +9,8 @@
 //! lives HERE — the generated enum spans all of them, so they must share
 //! one compilation unit per test binary.
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+
 use okm_core::{KeyEncode, ReduceLogic, ReduceCodec, DocumentEncode};
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]

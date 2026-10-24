@@ -5,6 +5,12 @@
 //! live here. Zero core changes: every input is an existing `scan` /
 //! `scan_index` output.
 
+// Tests keep the vocabulary: a panicking test is a failing test with a stack trace
+// (and the oracle for every failable path is "assert on the error VALUE"). This line
+// is per-crate because `[lints]` is per-package and covers every target, with no way
+// to scope a lint to lib/bins — the manifest cannot express `cfg(test)`.
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn))]
+
 use okm_core::VirtualStorage;
 
 /// Merge join over two key-ordered entry streams: both sides must already

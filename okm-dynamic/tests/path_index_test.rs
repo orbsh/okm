@@ -13,6 +13,8 @@
 //! - the entry key is `[ns 2B][slot 2B][value][pkey]` — the path itself
 //!   never rides the key (the slot is its identity).
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+
 use std::collections::BTreeMap;
 
 use okm_core::schema::CollectionSchema;
