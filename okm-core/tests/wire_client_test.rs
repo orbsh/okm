@@ -22,7 +22,7 @@ use std::rc::Rc;
 use std::task::{Context, Poll, Waker};
 
 use okm_core::{
-    Batch, NestStorage, OpFrame, OpResponse, TestStore, VirtualStorageAsync, WireClient,
+    Batch, Error, NestStorage, OpFrame, OpResponse, TestStore, VirtualStorageAsync, WireClient,
     WireTransport,
 };
 
@@ -309,3 +309,56 @@ fn get_frame(key: &[u8]) -> OpFrame {
     okm_wire::OpFrame::one(okm_wire::OP_GET, key.to_vec(), Vec::new())
 }
 
+/// A transport whose POST fails locally — a closed socket, a frame the adapter
+/// rejected before it left. ADR-0039 says the client reports that half.
+struct RefusingTransport;
+
+impl WireTransport for RefusingTransport {
+    fn post(&self, _frame: &[u8]) -> Result<(), String> {
+        Err("socket closed: simulated".to_string())
+    }
+}
+
+/// Poll a future that must already be ready (the write verbs never await anything
+/// but their own transport call).
+fn ready_now<T>(fut: impl Future<Output = T>) -> T {
+    let mut cx = Context::from_waker(Waker::noop());
+    match Box::pin(fut).as_mut().poll(&mut cx) {
+        Poll::Ready(v) => v,
+        Poll::Pending => panic!("a write verb must not park on anything"),
+    }
+}
+
+#[test]
+fn a_write_whose_post_fails_answers_err() {
+    let client = WireClient::new(RefusingTransport);
+    let err = ready_now(client.put(b"k".to_vec(), b"v".to_vec()))
+        .expect_err("a refused POST means the frame never left");
+    match &err {
+        Error::Engine(text) => assert!(text.contains("socket closed"), "{text}"),
+        other => panic!("expected Error::Engine, got {other:?}"),
+    }
+}
+
+/// Before ADR-0039 a write on a dead connection was dropped in silence, which made
+/// a lost write indistinguishable from a committed one. It is an error now, and the
+/// text carries the reason `fail` recorded.
+#[test]
+fn a_write_on_a_dead_connection_answers_err() {
+    let (host, client, loop_t) = pair();
+    client.fail("connection lost: simulated");
+
+    let err = drive(client.put(b"k".to_vec(), b"v".to_vec()), &host, &client, &loop_t)
+        .expect_err("a dead connection must not answer Ok for a write");
+    match &err {
+        Error::Engine(text) => assert!(text.contains("wire connection dead"), "{text}"),
+        other => panic!("expected Error::Engine, got {other:?}"),
+    }
+
+    let err = drive(client.del(b"k"), &host, &client, &loop_t)
+        .expect_err("a dead connection must not answer Ok for a delete");
+    match &err {
+        Error::Engine(text) => assert!(text.contains("wire connection dead"), "{text}"),
+        other => panic!("expected Error::Engine, got {other:?}"),
+    }
+}

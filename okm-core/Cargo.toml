@@ -79,6 +79,10 @@ name = "deprecated_index_test"
 required-features = ["test-engines"]
 
 [[test]]
+name = "write_refusal_test"
+required-features = ["test-engines"]
+
+[[test]]
 name = "dynamic_cross_test"
 required-features = ["test-engines"]
 

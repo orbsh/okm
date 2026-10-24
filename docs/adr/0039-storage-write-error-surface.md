@@ -101,9 +101,26 @@ refused write is a store saying no, and the writer is the party that must hear i
   all mechanical now that the face they feed already answers `Result`. `nest`'s
   executor invariants (exec_rx lock, serve twice, engine lock, begin present) and
   `test_engine`'s open helpers stay as they are.
-- **No test yet proves a refused write comes back as `Err`.** Every backend needs
-  a failing double for the write path the way `write_commit_test` counts bare
-  puts. That gap is queued in PLAN.md, not claimed here.
+- **A refused write comes back as `Err`, and tests lock it** (same round):
+  `write_refusal_test::a_refused_write_comes_back_as_the_engines_text` drives a
+  store that refuses through `Collection::put` and asserts the engine's own text,
+  and `wire_client_test::a_write_on_a_dead_connection_answers_err` /
+  `a_write_whose_post_fails_answers_err` cover the sender's half. Still NOT
+  covered: fault injection into the native engines themselves (forcing redb /
+  fjall / slatedb to refuse means corrupting a live store; their mapping is one
+  `map_err` line with no branch to get wrong), and the nest's "executor gone" arm,
+  which cannot fire while any sender is alive — it stays a defensive arm.
+- **The default `commit_batch` is not atomic under a refusal.** It replays ops
+  through `put`/`del`, so an engine that refuses op N leaves ops 1..N applied —
+  only engines with a native batch (fjall, redb, slatedb) commit all-or-nothing.
+  `a_replayed_batch_leaves_the_ops_before_the_refusal` locks that boundary. It is
+  also why ADR-0037's "a refused write writes nothing" holds for *validation*
+  refusals (they run before any op enters the batch) but not for engine refusals.
+- **A write that panics inside the engine is still invisible to its sender.** The
+  nest pump wraps each frame in `catch_unwind` and a writer carries no reply box
+  (ADR-0010 §6), so an engine panic during a write looks like success. Making
+  writes answer would cost the fire-and-forget shape — its own decision, queued in
+  PLAN.md.
 - Downstream migration is mechanical and is the reason this ships as one API
   break: `?` where the caller already returns a result, `.unwrap()` in tests
   (ADR-0037's migration rule).

@@ -38,5 +38,7 @@ ADR-0037 让每个写动词都可失败，并记下了它刻意没碰的东西�
 - slatedb 的同步写现在等待 durability 与驱动的回答。这是同步路径上的一处延迟变化——换来的正确性是 `Ok` 表示已提交，而这本就是其它同步引擎（redb 的 commit、fjall 的 insert）的含义。
 - `bindings/*` 不是 workspace 成员；它们的 `impl VirtualStorage for EngineBox` 相对 ADR-0037/0038 早已过时（仍写成 `get -> Option`），在消费这个 trait 之前需要自己的一趟。
 - 仍然闭合、且是写明的而不是暗示的：slatedb 驱动的**读**臂（scan / iter）、redb 的 `begin_read` / `range`、`localStorage` 的 `get_item`——都在读侧，都属于 ADR-0037 所说的\"完整性报告\"，而且它们所喂的那个面已经返回 `Result`，转换是机械的。`nest` 的 executor 不变量（exec_rx 锁、serve 两次、engine 锁、begin present）与 `test_engine` 的 open 助手保持原样。
-- **尚无测试证明被拒绝的写会以 `Err` 回来。** 每个后端都需要一个写路径的失败替身，就像 `write_commit_test` 统计裸 put 那样。这个缺口记在 PLAN.md，不再在此处声称为已完成。
+- **被拒绝的写会以 `Err` 回来，且有测试锁住**（同一轮）：`write_refusal_test::a_refused_write_comes_back_as_the_engines_text` 用一个拒绝写入的 store 走 `Collection::put`，断言引擎自己的原文；`wire_client_test::a_write_on_a_dead_connection_answers_err` / `a_write_whose_post_fails_answers_err` 覆盖发送端那一半。**仍未覆盖**：对原生引擎本身做故障注入（逼 redb / fjall / slatedb 拒绝意味着破坏一个活着的存储；它们的映射是一行 `map_err`，没有可写错的分支），以及 nest 的"executor 不在"臂——只要有发送端活着它就触发不了，保持为防御臂。
+- **默认的 `commit_batch` 在拒绝下不原子。** 它逐条重放 `put`/`del`，所以引擎拒绝第 N 条时，第 1..N 条已经落地——只有带原生 batch 的引擎（fjall、redb、slatedb）才是全有或全无。`a_replayed_batch_leaves_the_ops_before_the_refusal` 锁住这条边界。这也解释了为什么 ADR-0037 的"被拒绝的写什么都不写"对**校验**类拒绝成立（它们发生在任何 op 进入 batch 之前），对引擎拒绝不成立。
+- **引擎内部 panic 的写，对发送端仍然不可见。** nest 的泵把每一帧包在 `catch_unwind` 里，而写者不携带 reply 箱（ADR-0010 §6），所以写路径上的引擎 panic 看起来像成功。让写也回答会牺牲 fire-and-forget 形态——那是另一个决定，已记入 PLAN.md。
 - 下游迁移是机械的，也正是这次作为一次 API 断裂发布的原因：调用方本来就返回 Result 的地方补 `?`，测试里补 `.unwrap()`（ADR-0037 的迁移规则）。
