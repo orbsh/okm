@@ -6,6 +6,39 @@ OKM is the KV counterpart of ORM: the logic is defined ORM-style, code generatio
 
 Related reading: [KV Storage Engine](https://github.com/orbsh/wiki/blob/main/kv-storage-engine-en.md) — underlying architecture and design patterns (encoding principles, index strategies, engine-level trade-offs); [Architecture](docs/ARCHITECTURE.md) — the two-layer declaration machine (derive expansion + constant tables); [Modeling Guide](docs/MODELING.md) — the normative schema-modeling method (four layers, mandatory access methods, covering-index restraint, composite-key boundary); [Query Recipes](docs/query-recipes.md) — composing merge_join / group_by / walk into SQL shapes, the WHERE boundary record; [Graph Query Recipes](docs/graph-queries.md) — the graph's faces composed into Cypher-shaped traversals; [Concurrency and Writers](docs/CONCURRENCY.md) — what single-writer means, which mechanisms assume it, and the four shapes that carry more.
 
+## The bet: a smaller surface, an asymmetric payoff
+
+Every capability OKM declines is declined for one reason: it could only exist
+at run time, in a layer between the declaration and the bytes.
+
+- **No query language.** Queries are code, not text. Nothing parses SQL, and no
+  planner decides which access method to use — the call site names it.
+- **No optimizer.** No cost model, no statistics, no plan selection. The
+  physical path is the one the declaration and the call spell out.
+- **No schema-less mode.** The schema lives in the type system; a change is a
+  deploy, not a run-time DDL statement.
+- **No ad-hoc queries.** Shapes outside the declared access methods (arbitrary
+  filters, unindexed joins) are not slow — they are not expressible. Joins are
+  client-side `merge_join` over two ordered scans.
+- **Some patterns unsupported on purpose.** Atomicity stops at one engine; a
+  scan inside a batch is refused rather than answered partially; the write side
+  is single-writer by construction.
+
+What that buys is not "less code" but a different shape of cost. The loss is
+paid ONCE, by the author at declaration time and by the compiler at build time.
+The gain is paid EVERY operation: a key is a pointer into fixed-width bytes, a
+decode is a slice, a semantic write is one commit, and engine choice is free
+because bytes are bytes.
+
+That asymmetry is the whole argument — a one-time restriction against a
+per-operation payoff. It is also what "breaking an abstraction layer" means
+here: the interpreter that would sit between declaration and engine (planner,
+schema catalog, query runtime) is not optimized away, it is absent. Each layer
+removed that way moves its cost to the compiler or to the author, which is the
+only place where paying once is possible. A restriction that is not statically
+checkable breaks the bet: it returns to run time, and the cost becomes
+per-operation again.
+
 ## Why: code as DDL
 
 SQL's core value is not execution performance — it is the readability, modeling discipline, and team-coordination determinism delivered by the relational model. Raw binary keys degrade into spaghetti: nobody on the team can reason about key layout rules. The solution is to replace SQL DDL with the Rust type system, moving schema correctness from a runtime database engine to the compile-time compiler.
