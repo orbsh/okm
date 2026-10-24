@@ -131,7 +131,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
             // include for this key.
             let prev = store.get(&pkey)?.map(|v| R::decode_payload(&v));
             if let Some(old) = &prev {
-                R::__okm_apply_reduces(&mut store, key, old, &header, false);
+                R::__okm_apply_reduces(&mut store, key, old, &header, false)?;
             }
             store.put(pkey, document.encode_payload());
             for (ek, ev) in R::index_entries(key, document, &header) {
@@ -154,7 +154,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
             }
             // Cross-document reduces: fold this document into each declared
             // group.
-            R::__okm_apply_reduces(&mut store, key, document, &header, true);
+            R::__okm_apply_reduces(&mut store, key, document, &header, true)?;
         }
         self.commit(batch)?;
         R::__okm_emit_event(
@@ -285,7 +285,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         // Unfold the old document from every reduce group before folding the
         // new one in — without this the second write double-counts.
         if let Some(old) = prev {
-            R::__okm_apply_reduces(&mut adapter, key, old, &header, false);
+            R::__okm_apply_reduces(&mut adapter, key, old, &header, false)?;
         }
 
         adapter.put(pkey, document.encode_payload());
@@ -323,7 +323,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         }
 
         // Fold the new document into each declared group.
-        R::__okm_apply_reduces(&mut adapter, key, document, &header, true);
+        R::__okm_apply_reduces(&mut adapter, key, document, &header, true)?;
         Ok(())
     }
 
@@ -811,7 +811,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         let mut batch = crate::engine::storage::Batch::default();
         if typed.is_empty() {
             if let Some(prev) = self.get(key)? {
-                self.delete_into(&mut batch, key, &prev);
+                self.delete_into(&mut batch, key, &prev)?;
             }
         } else {
             // The stored row is the face-sweep source: without it the previous
@@ -835,7 +835,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         }
         let mut batch = crate::engine::storage::Batch::default();
         if let Some(document) = &prev {
-            self.delete_into(&mut batch, key, document);
+            self.delete_into(&mut batch, key, document)?;
         }
         if has_segment {
             batch.del(&self.fields_key(key));
@@ -932,14 +932,14 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         batch: &mut crate::engine::storage::Batch,
         key: &K,
         document: &R,
-    ) {
+    ) -> crate::error::Result<()> {
         let header = self.header();
         let mut store = crate::engine::storage::BatchStore::new(&self.store, batch);
         store.del(&self.primary_key(key));
         for (ek, _) in R::index_entries(key, document, &header) {
             store.del(&ek);
         }
-        R::__okm_apply_reduces(&mut store, key, document, &header, false);
+        R::__okm_apply_reduces(&mut store, key, document, &header, false)
     }
 
     /// Split a name-keyed map along the declaration: declared names are the

@@ -27,22 +27,26 @@ impl VirtualStorage for MemStore {
         self.map.lock().unwrap().insert(key, value);
     }
 
-    fn get(&self, key: &[u8]) -> Option<Vec<u8>> {
-        self.map.lock().unwrap().get(key).cloned()
+    fn get(&self, key: &[u8]) -> okm_core::error::Result<Option<Vec<u8>>> {
+        Ok(self.map.lock().unwrap().get(key).cloned())
     }
 
     fn del(&self, key: &[u8]) {
         self.map.lock().unwrap().remove(key);
     }
 
-    fn scan_range(&self, begin: &[u8], end: Option<&[u8]>) -> Vec<Vec<u8>> {
+    fn scan_range(
+        &self,
+        begin: &[u8],
+        end: Option<&[u8]>,
+    ) -> okm_core::error::Result<Vec<Vec<u8>>> {
         let map = self.map.lock().unwrap();
         let lower = Bound::Included(begin.to_vec());
         let upper = match end {
             Some(e) => Bound::Excluded(e.to_vec()),
             None => Bound::Unbounded,
         };
-        map.range((lower, upper)).map(|(k, _)| k.clone()).collect()
+        Ok(map.range((lower, upper)).map(|(k, _)| k.clone()).collect())
     }
 }
 
@@ -86,7 +90,9 @@ fn snapshot_roundtrip_over_storage() {
     let mut store = MemStore::new();
     idx.save(&mut store).expect("save");
 
-    let back = VectorIndex::load(&store, ns).expect("load");
+    let back = VectorIndex::load(&store, ns)
+        .expect("a store read")
+        .expect("load");
     assert_eq!(back.shard_count(), 4);
     assert_eq!(back.len(), idx.len());
     assert_eq!(back.live(), idx.live());
@@ -96,7 +102,7 @@ fn snapshot_roundtrip_over_storage() {
     let mut store2 = MemStore::new();
     idx.save(&mut store2).expect("save");
     store2.del(&idx.slot_key(3));
-    assert!(VectorIndex::load(&store2, ns).is_none());
+    assert!(VectorIndex::load(&store2, ns).expect("a store read").is_none());
 }
 
 #[test]

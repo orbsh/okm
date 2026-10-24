@@ -39,16 +39,16 @@ fn nest_derive_end_to_end() {
 
     // Fire-and-forget write: poll until the round trip sees the document.
     for _ in 0..200 {
-        if t.get(&ItemKey { id: 1 }).is_some() {
+        if t.get(&ItemKey { id: 1 }).unwrap().is_some() {
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
 
-    let document = t.get(&ItemKey { id: 1 }).expect("document round-tripped");
+    let document = t.get(&ItemKey { id: 1 }).unwrap().expect("document round-tripped");
     assert_eq!(document.kind, 7);
 
-    let hits = t.scan::<ByKind>(&7u32.to_be_bytes());
+    let hits = t.scan::<ByKind>(&7u32.to_be_bytes()).unwrap();
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].1.as_ref().unwrap().kind, 7);
 }
@@ -73,12 +73,12 @@ fn two_instances_isolated_by_declared_prefix() {
 
     // Fire-and-forget writes: poll until each round trip sees its value.
     for _ in 0..200 {
-        if s1.get(b"k").is_some() && s2.get(b"k").is_some() {
+        if s1.get(b"k").unwrap().is_some() && s2.get(b"k").unwrap().is_some() {
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
 
-    assert_eq!(s1.get(b"k").as_deref(), Some(b"one".as_slice()));
-    assert_eq!(s2.get(b"k").as_deref(), Some(b"two".as_slice()));
+    assert_eq!(s1.get(b"k").unwrap().as_deref(), Some(b"one".as_slice()));
+    assert_eq!(s2.get(b"k").unwrap().as_deref(), Some(b"two".as_slice()));
 }

@@ -97,7 +97,9 @@ pub mod parquet_io {
         collection: &Collection<S, K, R>,
         path: &std::path::Path,
     ) -> parquet::errors::Result<()> {
-        let batch = collection.to_record_batch();
+        let batch = collection
+            .to_record_batch()
+            .map_err(|e| parquet::errors::ParquetError::General(e.to_string()))?;
         write_batch(&batch, path)
     }
 
@@ -111,7 +113,9 @@ pub mod parquet_io {
         collection: &mut Collection<S, K, R>,
         path: &std::path::Path,
     ) -> parquet::errors::Result<()> {
-        let batch = collection.to_record_batch_with_variant();
+        let batch = collection
+            .to_record_batch_with_variant()
+            .map_err(|e| parquet::errors::ParquetError::General(e.to_string()))?;
         write_batch(&batch, path)
     }
 
@@ -185,7 +189,8 @@ pub mod parquet_io {
 
         let mut prefix = ns_prefix.to_vec();
         crate::model::index::write_slot(&mut prefix, A::SLOT);
-        let entries = crate::engine::storage::scan_suffix_kv(store, &prefix);
+        let entries = crate::engine::storage::scan_suffix_kv(store, &prefix)
+            .map_err(|e| parquet::errors::ParquetError::General(e.to_string()))?;
 
         let binary = |vals: &[Vec<u8>]| -> BinaryArray {
             let mut offsets: Vec<i32> = Vec::with_capacity(vals.len() + 1);
@@ -929,7 +934,7 @@ fn dynamic_from_variant(
                 let mut key = prefix.clone();
                 key.extend_from_slice(groups.value(row));
                 let incoming = A::Acc::decode_acc(values.value(row));
-                let existing = store.get(&key);
+                let existing = store.get(&key).map_err(|e| parquet::errors::ParquetError::General(e.to_string()))?;
                 let bytes = match existing {
                     Some(bytes) => {
                         let current = A::Acc::decode_acc(&bytes);

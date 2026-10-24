@@ -198,7 +198,7 @@ fn reduce_entry_key(t: &DynamicCollection<TestStore>, level: u32) -> Vec<u8> {
 }
 
 fn acc_of(t: &DynamicCollection<TestStore>, level: u32) -> Option<u64> {
-    t.store().get(&reduce_entry_key(t, level)).map(|b| be_u64(&b))
+    t.store().get(&reduce_entry_key(t, level)).expect("a store read").map(|b| be_u64(&b))
 }
 
 #[test]
@@ -290,13 +290,16 @@ fn reduce_entry_layout_matches_rust_side() {
 
     let expected = reduce_entry_key(&t, 4);
     assert!(
-        t.store().get(&expected).is_some(),
+        t.store().get(&expected).expect("a store read").is_some(),
         "dynamic reduce entry must land at the Rust-side layout key"
     );
 
     // And the accumulator value must match the Rust fold's encoding:
     // one document folded → u64 BE of 1.
-    assert_eq!(t.store().get(&expected).unwrap(), 1u64.to_be_bytes().to_vec());
+    assert_eq!(
+        t.store().get(&expected).expect("a store read"),
+        Some(1u64.to_be_bytes().to_vec())
+    );
 
     // The typed side must land the SAME bytes: group_bytes for the
     // equivalent document (level=4), assembled through the trait's
@@ -315,7 +318,7 @@ fn reduce_entry_layout_matches_rust_side() {
     <rust_reduce::GroupCount as okm_core::model::reduce::ReduceLogic>::fold(&mut acc, &key, &doc);
     assert_eq!(
         okm_core::model::reduce::ReduceCodec::encode_acc(&acc),
-        t.store().get(&typed).unwrap()
+        t.store().get(&typed).expect("a store read").expect("the accumulator")
     );
 }
 

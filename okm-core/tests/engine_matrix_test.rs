@@ -12,16 +12,16 @@ fn verify_engine(store: TestStore) {
     let mut s = store.clone();
     s.put(b"k1".to_vec(), b"v1".to_vec());
     s.put(b"k2".to_vec(), b"v2".to_vec());
-    assert_eq!(s.get(b"k1").as_deref(), Some(b"v1".as_slice()), "{name}: point get");
-    assert_eq!(s.get(b"missing"), None, "{name}: absent key");
+    assert_eq!(s.get(b"k1").unwrap().as_deref(), Some(b"v1".as_slice()), "{name}: point get");
+    assert_eq!(s.get(b"missing").unwrap(), None, "{name}: absent key");
 
     // Prefix scan: suffixes in key order.
-    let sfx = s.scan_suffix(b"k");
+    let sfx = s.scan_suffix(b"k").expect("a scan on a working store");
     assert_eq!(sfx, vec![b"1".to_vec(), b"2".to_vec()], "{name}: scan_suffix");
 
     // Handle sharing: a clone sees the same keyspace.
     let s2 = store.shared_handle();
-    assert_eq!(s2.get(b"k1").as_deref(), Some(b"v1".as_slice()), "{name}: shared handle");
+    assert_eq!(s2.get(b"k1").unwrap().as_deref(), Some(b"v1".as_slice()), "{name}: shared handle");
 
     // Batch atomicity: 100 ops in ONE commit_batch.
     let mut batch = okm_core::Batch::default();
@@ -30,9 +30,13 @@ fn verify_engine(store: TestStore) {
     }
     batch.del(b"k1");
     s.commit_batch(batch).expect("{name}: batch commit");
-    assert_eq!(s.get(b"batch:50").as_deref(), Some(b"ok".as_slice()), "{name}: batch write");
-    assert_eq!(s.get(b"k1"), None, "{name}: batch delete");
-    assert_eq!(s.scan_suffix(b"batch:").len(), 100, "{name}: all batch entries");
+    assert_eq!(s.get(b"batch:50").unwrap().as_deref(), Some(b"ok".as_slice()), "{name}: batch write");
+    assert_eq!(s.get(b"k1").unwrap(), None, "{name}: batch delete");
+    assert_eq!(
+        s.scan_suffix(b"batch:").expect("a scan on a working store").len(),
+        100,
+        "{name}: all batch entries"
+    );
 
     // Batch failure handling: empty batch commits clean.
     let empty = okm_core::Batch::default();
@@ -65,9 +69,12 @@ fn engine_matrix_table_round_trip() {
     for (name, store) in TestStore::matrix() {
         let mut t: okm_core::Collection<TestStore, MKey, MRow> = okm_core::Collection::new(store);
         t.put(&MKey { id: 7 }, &MRow { score: 55 }).unwrap();
-        let back = t.get(&MKey { id: 7 }).expect("{name}: document round trip");
+        let back = t
+            .get(&MKey { id: 7 })
+            .expect("a store read")
+            .expect("{name}: document round trip");
         assert_eq!(back.score, 55, "{name}");
-        let keys = t.scan_keys();
+        let keys = t.scan_keys().unwrap();
         assert_eq!(keys, vec![MKey { id: 7 }], "{name}: scan_keys");
     }
 }

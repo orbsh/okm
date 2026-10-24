@@ -124,6 +124,7 @@ fn entry_keys<S: VirtualStorage>(store: &S, slot: u16) -> Vec<Vec<u8>> {
     prefix.extend_from_slice(&slot.to_be_bytes());
     store
         .scan_suffix(&prefix)
+        .expect("a scan on a working store")
         .into_iter()
         .map(|suffix| {
             let mut full = prefix.clone();

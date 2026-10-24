@@ -34,7 +34,7 @@ pub fn resolve_vocab_labels<S: okm_core::VirtualStorage + ?Sized>(
     store: &S,
     header: &[u8],
     values: &mut ValueMap,
-) {
+) -> Result<(), String> {
     for f in &schema.hot_fields {
         let FieldType::Vocab(id_slot) = f.ty else {
             continue;
@@ -43,10 +43,11 @@ pub fn resolve_vocab_labels<S: okm_core::VirtualStorage + ?Sized>(
             continue;
         };
         let faces = okm_core::obj_vocab::VocabFaces::from_id_slot(id_slot);
-        if let Some(label) = okm_core::obj_vocab::vocab_label(store, header, faces, raw) {
+        if let Some(label) = okm_core::obj_vocab::vocab_label(store, header, faces, raw).map_err(|e| e.to_string())? {
             values.insert(f.name.clone(), Value::Str(label));
         }
     }
+    Ok(())
 }
 
 /// Decode the payload bytes (the two-segment region, no key bytes):

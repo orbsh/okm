@@ -53,11 +53,11 @@ impl VocabMirror {
     /// allocation cursor when the store has one (ADR-0032). Without a cursor —
     /// a vocabulary written before it existed — the watermark falls back to
     /// max + 1, which is what the scans below compute anyway.
-    pub fn load<S: VirtualStorage>(store: &S, ns: &[u8]) -> Self {
+    pub fn load<S: VirtualStorage>(store: &S, ns: &[u8]) -> Result<Self, String> {
         let mut d = Self::default();
         let mut p2 = ns.to_vec();
         okm_core::write_slot(&mut p2, FIELD_VOCAB_ID_SLOT);
-        for (suffix, name) in scan_suffix_kv(store, &p2) {
+        for (suffix, name) in scan_suffix_kv(store, &p2).map_err(|e| e.to_string())? {
             if suffix.len() != 2 {
                 continue;
             }
@@ -68,7 +68,7 @@ impl VocabMirror {
         }
         let mut p3 = ns.to_vec();
         okm_core::write_slot(&mut p3, FIELD_VOCAB_NAME_SLOT);
-        for (suffix, idv) in scan_suffix_kv(store, &p3) {
+        for (suffix, idv) in scan_suffix_kv(store, &p3).map_err(|e| e.to_string())? {
             if let Ok(n) = String::from_utf8(suffix)
                 && idv.len() == 2 {
                     let id = u16::from_be_bytes([idv[0], idv[1]]);
@@ -84,12 +84,14 @@ impl VocabMirror {
         // The cursor is the id face's bare-prefix singleton: `[ns][0x02]` with
         // no id bytes (ADR-0032) — unrepresentable as an id entry, so the two
         // cannot collide. One definition, shared with the typed cache.
-        if let Some(raw) = store.get(&okm_core::obj_vocab::cursor_key(ns, FIELD_VOCAB))
-            && raw.len() == 2 {
+        if let Some(raw) = store
+            .get(&okm_core::obj_vocab::cursor_key(ns, FIELD_VOCAB)).map_err(|e| e.to_string())?
+            && raw.len() == 2
+        {
             let cursor = u16::from_be_bytes([raw[0], raw[1]]);
             d.next_id = d.next_id.max(cursor);
         }
-        d
+        Ok(d)
     }
 
     /// Build from caller-held pairs (the remote binding's receipt

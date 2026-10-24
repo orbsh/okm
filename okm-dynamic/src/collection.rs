@@ -197,23 +197,16 @@ impl<S: VirtualStorage> DynamicCollection<S> {
                 self.schema.key_len
             ));
         }
-        self
+        let Some(payload) = self
             .store
             .get(&self.primary_key(pkey))
-            .map(|payload| {
-                decode_payload(&self.schema, &payload)
-                    .map(|mut values| {
-                        crate::decode::resolve_vocab_labels(
-                            &self.schema,
-                            &self.store,
-                            &self.ns,
-                            &mut values,
-                        );
-                        values
-                    })
-                    .map_err(codec)
-            })
-            .transpose()
+            .map_err(|e| e.to_string())?
+        else {
+            return Ok(None);
+        };
+        let mut values = decode_payload(&self.schema, &payload).map_err(codec)?;
+        crate::decode::resolve_vocab_labels(&self.schema, &self.store, &self.ns, &mut values)?;
+        Ok(Some(values))
     }
 
     /// Replay a plan's ops against the local engine as ONE commit (the
@@ -265,13 +258,13 @@ impl<S: VirtualStorage> DynamicCollection<S> {
     /// carried no declared name left a document a primary scan cannot see. Two
     /// prefix scans plus an in-memory merge, no point read; materializing is
     /// [`fetch`](Self::fetch)'s job.
-    pub fn scan_document_keys(&self) -> Vec<Vec<u8>> {
+    pub fn scan_document_keys(&self) -> Result<Vec<Vec<u8>>, String> {
         let mut rows = self.ns.clone();
         okm_core::write_slot(&mut rows, okm_core::index::PRIMARY_SLOT);
         let mut segs = self.ns.clone();
         okm_core::write_slot(&mut segs, okm_core::index::DYNAMIC_SLOT);
-        let rows = self.store.scan_suffix(&rows);
-        let segs = self.store.scan_suffix(&segs);
+        let rows = self.store.scan_suffix(&rows).map_err(|e| e.to_string())?;
+        let segs = self.store.scan_suffix(&segs).map_err(|e| e.to_string())?;
         let mut out = Vec::with_capacity(rows.len() + segs.len());
         let (mut i, mut j) = (0usize, 0usize);
         while i < rows.len() || j < segs.len() {
@@ -292,7 +285,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
                 j += 1;
             }
         }
-        out
+        Ok(out)
     }
 
     /// Equality scan over one access method (same routing primitive as
@@ -371,13 +364,14 @@ impl<S: VirtualStorage> DynamicCollection<S> {
     /// The read half every whole-document verb shares: `fetch` merges it with
     /// the row, `merge` / `replace` read-modify-write it.
     fn dynamic_map(&self, pkey: &[u8]) -> Result<Option<ValueMap>, String> {
-        let raw = match self.store.get(&self.fields_key(pkey)) {
+        let raw = match self.store.get(&self.fields_key(pkey)).map_err(|e| e.to_string())? {
             Some(r) => r,
             None => return Ok(None),
         };
         // Fresh load per call — the embedded mirror of the old per-call
         // VocabCache (single writer: a reload always sees the truth it wrote).
-        let vocab = crate::plan_fields::VocabMirror::load(&self.store, &self.ns);
+        let vocab = crate::plan_fields::VocabMirror::load(&self.store, &self.ns)
+            .map_err(|e| e.to_string())?;
         Ok(Some(crate::plan_fields::fields_from_frames(&raw, &vocab)?))
     }
 
@@ -437,14 +431,14 @@ impl<S: VirtualStorage> DynamicCollection<S> {
             let mut vocab = if dynamic.is_empty() {
                 crate::plan_fields::VocabMirror::default()
             } else {
-                crate::plan_fields::VocabMirror::load(store, &self.ns)
+                crate::plan_fields::VocabMirror::load(store, &self.ns).map_err(|e| e.to_string())?
             };
             self.plan_merge(
                 pkey,
                 &declared,
                 &dynamic,
                 crate::plan::Stored { row: old_row.as_ref(), dynamic: old_dynamic.as_ref() },
-                &|ek| store.get(ek),
+                &|ek| store.get(ek).unwrap(),
                 &mut vocab,
             )?
         };
@@ -482,14 +476,14 @@ impl<S: VirtualStorage> DynamicCollection<S> {
             let mut vocab = if dynamic.is_empty() && old_dynamic.is_none() {
                 crate::plan_fields::VocabMirror::default()
             } else {
-                crate::plan_fields::VocabMirror::load(store, &self.ns)
+                crate::plan_fields::VocabMirror::load(store, &self.ns).map_err(|e| e.to_string())?
             };
             self.plan_replace(
                 pkey,
                 &declared,
                 &dynamic,
                 crate::plan::Stored { row: old_row.as_ref(), dynamic: old_dynamic.as_ref() },
-                &|ek| store.get(ek),
+                &|ek| store.get(ek).unwrap(),
                 &mut vocab,
             )?
         };
@@ -507,7 +501,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
         }
         let plan = {
             let store = &self.store;
-            self.plan_purge(pkey, old_row.as_ref(), old_dynamic.as_ref(), &|ek| store.get(ek))?
+            self.plan_purge(pkey, old_row.as_ref(), old_dynamic.as_ref(), &|ek| store.get(ek).unwrap())?
         };
         self.replay(&plan.ops);
         Ok(true)

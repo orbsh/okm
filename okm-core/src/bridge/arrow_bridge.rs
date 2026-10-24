@@ -142,7 +142,7 @@ fn vocab_labels<S: VirtualStorage + ?Sized>(
     store: &S,
     header: &[u8],
     row_fields: &'static [FieldDesc],
-) -> std::collections::HashMap<usize, std::collections::HashMap<Vec<u8>, String>> {
+) -> crate::error::Result<std::collections::HashMap<usize, std::collections::HashMap<Vec<u8>, String>>> {
     let mut out = std::collections::HashMap::new();
     for (fi, f) in row_fields.iter().enumerate() {
         let FieldType::Vocab(id_slot) = f.ty else {
@@ -151,7 +151,7 @@ fn vocab_labels<S: VirtualStorage + ?Sized>(
         let mut prefix = header.to_vec();
         crate::model::index::write_slot(&mut prefix, id_slot);
         let mut by_id = std::collections::HashMap::new();
-        for (suffix, label) in crate::engine::storage::scan_suffix_kv(store, &prefix) {
+        for (suffix, label) in crate::engine::storage::scan_suffix_kv(store, &prefix)? {
             // A real entry of the id face is exactly the id width; the
             // bare-prefix singleton (the allocation cursor) is zero bytes and
             // falls out here by length.
@@ -164,7 +164,7 @@ fn vocab_labels<S: VirtualStorage + ?Sized>(
         }
         out.insert(fi, by_id);
     }
-    out
+    Ok(out)
 }
 
 /// The label maps for one collection: its ns header (`[part][ns]`, the same one
@@ -173,9 +173,9 @@ fn vocab_labels<S: VirtualStorage + ?Sized>(
 fn labels_for<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>>(
     collection: &Collection<S, K, R>,
     proj: &Projection<K, R>,
-) -> std::collections::HashMap<usize, std::collections::HashMap<Vec<u8>, String>> {
+) -> crate::error::Result<std::collections::HashMap<usize, std::collections::HashMap<Vec<u8>, String>>> {
     if !R::HAS_VOCAB {
-        return std::collections::HashMap::new();
+        return Ok(std::collections::HashMap::new());
     }
     let mut header = R::PARTITION_PREFIX.to_vec();
     header.extend_from_slice(R::NS_PREFIX);
@@ -482,11 +482,11 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     /// Reads through the engine's scan surface — engine-independent, same
     /// batch shape for fjall / slatedb-backed tables. Categorical fields cost
     /// one prefix scan of their id face, not a probe per row.
-    pub fn to_record_batch(&self) -> RecordBatch {
+    pub fn to_record_batch(&self) -> crate::error::Result<RecordBatch> {
         let proj = Projection::<K, R>::new();
-        let documents = self.scan_documents_raw();
-        let labels = labels_for(self, &proj);
-        build_batch(&proj, &documents, &labels)
+        let documents = self.scan_documents_raw()?;
+        let labels = labels_for(self, &proj)?;
+        Ok(build_batch(&proj, &documents, &labels))
     }
 
     /// Export with a `variant` column appended: each row's dynamic segment
@@ -496,16 +496,16 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     /// typed columns — Variant is the analytics-layer twin of the
     /// dynamic path, not a replacement for it (ADR-0007).
     #[cfg(feature = "parquet")]
-    pub fn to_record_batch_with_variant(&mut self) -> RecordBatch {
+    pub fn to_record_batch_with_variant(&mut self) -> crate::error::Result<RecordBatch> {
         use arrow::array::BinaryArray;
         use arrow::buffer::{Buffer, OffsetBuffer, ScalarBuffer};
         use arrow::datatypes::{Field as ArrowField, Schema as ArrowSchema};
 
         let proj = Projection::<K, R>::new();
-        let documents = self.scan_documents_raw();
+        let documents = self.scan_documents_raw()?;
 
         // Base (typed) columns from the same projection.
-        let labels = labels_for(self, &proj);
+        let labels = labels_for(self, &proj)?;
         let base = build_batch(&proj, &documents, &labels);
 
         // One Variant per document from its dynamic segment: metadata and
@@ -514,7 +514,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         let mut per_row: Vec<Option<Vec<u8>>> = Vec::with_capacity(documents.len());
         for (kenc, _) in &documents {
             let key = K::decode(kenc);
-            match self.slot1_map(&key) {
+            match self.slot1_map(&key)? {
                 Some(fields) => {
                     let mut b = parquet_variant::VariantBuilder::new();
                     let map: std::collections::BTreeMap<String, DynamicValue> =
@@ -570,7 +570,9 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
             base.columns().to_vec();
         arrays.push(variant_col);
 
-        RecordBatch::try_new(schema, arrays).expect("batch with variant column")
+        // Assembly invariants (column count vs schema) are this function's
+        // own shape, not a store condition — the fallible part above is the read.
+        Ok(RecordBatch::try_new(schema, arrays).expect("batch with variant column"))
     }
 
     /// Exported column names (key fields then payload fields) with their
@@ -604,7 +606,10 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
     /// cannot decode another table's key into that table's fields without that
     /// table's declaration. `name_of` maps an ns to its table name; an ns it does
     /// not know yields a null cell, never an invented name.
-    pub fn to_record_batch_table<F>(&mut self, name_of: F) -> RecordBatch
+    pub fn to_record_batch_table<F>(
+        &mut self,
+        name_of: F,
+    ) -> crate::error::Result<RecordBatch>
     where
         F: Fn(u16) -> Option<String>,
     {
@@ -612,7 +617,7 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
         use arrow::buffer::{Buffer, NullBuffer, OffsetBuffer, ScalarBuffer};
         use arrow::datatypes::{Field as ArrowField, Schema as ArrowSchema};
 
-        let ids = self.edge_ids();
+        let ids = self.edge_ids()?;
         // Edge rows always have a body: `None` (no row) does not arise here.
         let mut documents: Vec<(Vec<u8>, Option<Vec<u8>>)> = Vec::with_capacity(ids.len());
         // (src name, src pkey, dst name, dst pkey, predicate) per row
@@ -621,9 +626,9 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
         let mut variants: Vec<Option<Vec<u8>>> = Vec::with_capacity(ids.len());
 
         for id in ids {
-            let Some(body) = self.get_edge(id) else { continue };
+            let Some(body) = self.get_edge(id)? else { continue };
             let predicate = self
-                .predicate_vocab_name(body.predicate_vocab_id)
+                .predicate_vocab_name(body.predicate_vocab_id)?
                 .unwrap_or_default();
             rows.push((
                 name_of(body.src.ns_id()),
@@ -632,7 +637,7 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
                 body.dst.pkey.clone(),
                 predicate,
             ));
-            variants.push(self.attrs(id).map(|fields| {
+            variants.push(self.attrs(id)?.map(|fields| {
                 let mut b = parquet_variant::VariantBuilder::new();
                 let map: std::collections::BTreeMap<String, DynamicValue> =
                     fields.into_iter().collect();
@@ -652,7 +657,7 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
         let mut header = E::PARTITION_PREFIX.to_vec();
         header.extend_from_slice(E::NS_PREFIX);
         let labels = if E::HAS_VOCAB {
-            vocab_labels::<S>(self.store(), &header, proj.row_fields)
+            vocab_labels::<S>(self.store(), &header, proj.row_fields)?
         } else {
             std::collections::HashMap::new()
         };
@@ -736,6 +741,8 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
             Some(NullBuffer::from(nulls)),
         )));
 
-        RecordBatch::try_new(schema, arrays).expect("edge table batch")
+        // Same split as the document export: the read above is fallible, the
+        // column-vs-schema shape is this function's own invariant.
+        Ok(RecordBatch::try_new(schema, arrays).expect("edge table batch"))
     }
 }

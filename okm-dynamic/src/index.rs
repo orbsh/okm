@@ -488,7 +488,7 @@ fn scan_access_method_filtered<S: VirtualStorage>(
     let p = entry_scan_prefix(schema, ns, index, encoded_prefix)?;
     let kl = schema.key_len;
     let mut out = Vec::new();
-    for suffix in store.scan_suffix(&p) {
+    for suffix in store.scan_suffix(&p).map_err(|e| e.to_string())? {
         // The key tail's width is known, so the field segment's length is one
         // length compare away: below it the probe was satisfied by tail bytes
         // (the stored value is SHORTER than the probe — not a match, and such
@@ -568,7 +568,7 @@ pub fn scan_access_method_covered<S: VirtualStorage>(
     let p = entry_scan_prefix(schema, ns, index, encoded_prefix)?;
     let kl = schema.key_len;
     let mut out = Vec::new();
-    for (suffix, value) in okm_core::scan_suffix_kv(store, &p) {
+    for (suffix, value) in okm_core::scan_suffix_kv(store, &p).map_err(|e| e.to_string())? {
         // Same false-hit test as the key-only scan: below the tail width the
         // probe was satisfied by tail bytes, so the stored value is SHORTER
         // than the probe and cannot start with it.

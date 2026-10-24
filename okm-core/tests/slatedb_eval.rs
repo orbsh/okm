@@ -32,14 +32,14 @@ async fn slatedb_roundtrip() {
     edges.link(&u, &s1).await;
     edges.link(&u, &s2).await;
 
-    let sessions = edges.forward(&u).await;
+    let sessions = edges.forward(&u).await.unwrap();
     assert_eq!(sessions.len(), 2);
 
-    let raw = edges.reverse_raw(&s1).await;
+    let raw = edges.reverse_raw(&s1).await.unwrap();
     assert_eq!(raw.len(), 1);
 
     edges.unlink(&u, &s1).await;
-    assert_eq!(edges.forward(&u).await.len(), 1);
+    assert_eq!(edges.forward(&u).await.unwrap().len(), 1);
 }
 
 /// ADR-0027 async-surface alignment: commit_batch takes the native
@@ -58,10 +58,12 @@ async fn slatedb_async_surface_alignment() {
     batch.del(b"a/1"); // a mixed op list commits as ONE frame of work
     db.commit_batch(batch).await.expect("native batch commit");
 
-    assert_eq!(db.get(b"a/1").await, None, "delete op landed");
-    assert_eq!(db.get(b"a/2").await.as_deref(), Some(b"v2".as_slice()));
+    assert_eq!(db.get(b"a/1").await.unwrap(), None, "delete op landed");
+    assert_eq!(db.get(b"a/2").await.unwrap().as_deref(), Some(b"v2".as_slice()));
 
     // pair scan over the prefix: single surviving entry, suffix-relative.
-    let pairs = okm_core::scan_suffix_kv_async(&db, b"a/").await;
+    let pairs = okm_core::scan_suffix_kv_async(&db, b"a/")
+        .await
+        .expect("suffix scan");
     assert_eq!(pairs, vec![(b"2".to_vec(), b"v2".to_vec())], "suffix-pair scan");
 }

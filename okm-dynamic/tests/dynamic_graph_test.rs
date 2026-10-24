@@ -87,16 +87,16 @@ fn dynamic_link_traverse_and_fetch_back() {
 
     g.link(&dyn_edge(person(1), org(9), "works_at", 2020), 1).unwrap();
 
-    assert_eq!(g.out_edges(&person(1)), vec![1]);
-    assert_eq!(g.in_edges(&org(9)), vec![1]);
-    assert_eq!(g.typed_out("works_at", &person(1)), vec![1]);
-    assert_eq!(g.typed_in("works_at", &org(9)), vec![1]);
-    assert_eq!(g.edges_of_predicate("works_at"), vec![1]);
+    assert_eq!(g.out_edges(&person(1)).unwrap(), vec![1]);
+    assert_eq!(g.in_edges(&org(9)).unwrap(), vec![1]);
+    assert_eq!(g.typed_out("works_at", &person(1)).unwrap(), vec![1]);
+    assert_eq!(g.typed_in("works_at", &org(9)).unwrap(), vec![1]);
+    assert_eq!(g.edges_of_predicate("works_at").unwrap(), vec![1]);
     // Unknown predicates scan empty (no face, no panic) — on a handle that
     // was never primed: the read itself loads the vocabulary.
-    assert!(g.typed_out("owns", &person(1)).is_empty());
+    assert!(g.typed_out("owns", &person(1)).unwrap().is_empty());
 
-    let back = g.get_edge(1).unwrap();
+    let back = g.get_edge(1).unwrap().unwrap();
     assert_eq!(back.src, person(1));
     assert_eq!(back.dst, org(9));
     assert_eq!(back.predicate, "works_at");
@@ -104,8 +104,8 @@ fn dynamic_link_traverse_and_fetch_back() {
 
     // The predicate is listed from the predicate vocabulary (0x04), never from
     // the index faces, and attribute names never share its id space.
-    assert_eq!(g.predicates(), vec![(0u16, "works_at".to_string())]);
-    assert_eq!(g.predicate_vocab_name(0).unwrap(), "works_at");
+    assert_eq!(g.predicates().unwrap(), vec![(0u16, "works_at".to_string())]);
+    assert_eq!(g.predicate_vocab_name(0).unwrap().unwrap(), "works_at");
 }
 
 #[test]
@@ -117,15 +117,15 @@ fn dynamic_unlink_removes_all_faces() {
     g.link(&dyn_edge(person(2), org(9), "works_at", 2021), 2).unwrap();
     g.unlink(1).unwrap();
 
-    assert_eq!(g.out_edges(&person(1)), Vec::<u64>::new());
-    assert_eq!(g.edges_of_predicate("works_at"), vec![2]);
-    assert!(g.get_edge(1).is_none());
+    assert_eq!(g.out_edges(&person(1)).unwrap(), Vec::<u64>::new());
+    assert_eq!(g.edges_of_predicate("works_at").unwrap(), vec![2]);
+    assert!(g.get_edge(1).unwrap().is_none());
     assert!(g.unlink(1).is_err(), "double unlink errors");
     // The dynamic segment entry goes with it: no attribute frame survives.
     let mut dyn_key = NS.to_be_bytes().to_vec();
     okm_core::write_slot(&mut dyn_key, okm_core::index::DYNAMIC_SLOT);
     dyn_key.extend_from_slice(&1u64.to_be_bytes());
-    assert!(store.get(&dyn_key).is_none());
+    assert!(store.get(&dyn_key).unwrap().is_none());
 }
 
 #[test]
@@ -139,9 +139,9 @@ fn dynamic_rejects_live_id_and_handles_mixed_pkey_widths() {
     // len. A 4-byte-key node round-trips beside an 8-byte one.
     let team = NodeRef::new(&0x12u16.to_be_bytes(), &7u32.to_be_bytes());
     g.link(&dyn_edge(person(1), team.clone(), "joins", 2021), 2).unwrap();
-    let back = g.get_edge(2).unwrap();
+    let back = g.get_edge(2).unwrap().unwrap();
     assert_eq!(back.dst.pkey, 7u32.to_be_bytes().to_vec());
-    assert_eq!(g.in_edges(&team), vec![2]);
+    assert_eq!(g.in_edges(&team).unwrap(), vec![2]);
 }
 
 #[test]
@@ -160,7 +160,7 @@ fn member_set_travels_in_the_schema_and_is_enforced() {
         .link(&dyn_edge(person(1), stranger, "works_at", 2020), 1)
         .unwrap_err();
     assert!(err.contains("not a member"), "unexpected error: {err}");
-    assert!(g.get_edge(1).is_none(), "nothing was written");
+    assert!(g.get_edge(1).unwrap().is_none(), "nothing was written");
 
     // An EMPTY set declares no membership (a writer without a graph
     // declaration): nothing is checked, nothing is guessed.
@@ -216,7 +216,7 @@ fn byte_equality_with_fixed_ontology_form() {
 
     let collect = |store: &okm_core::TestStore, prefix: &[u8]| -> Vec<Vec<u8>> {
         let mut out = Vec::new();
-        for sfx in store.scan_suffix(prefix) {
+        for sfx in store.scan_suffix(prefix).expect("a scan on a working store") {
             let mut full = prefix.to_vec();
             full.extend_from_slice(&sfx);
             out.push(full);

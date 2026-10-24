@@ -83,8 +83,10 @@ pub enum Error {
         "a BatchStore refuses scans: a batch's pending ops and the store's iterator cannot be          merged into one ordered view. Return to the store, read what you need, then open the          batch"
     )]
     ScanThroughBatch,
-    /// The engine refused the commit; the text is the engine's own.
-    #[error("engine commit failed: {0}")]
+    /// The engine (or the transport to one) refused the operation; the text
+    /// is the engine's own. Reads reach this variant too — a failure is not
+    /// a commit-shaped event only.
+    #[error("{0}")]
     Engine(String),
 }
 

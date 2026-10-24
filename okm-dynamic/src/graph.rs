@@ -146,15 +146,36 @@ impl<S: VirtualStorage> Graph<S> {
     /// Attribute frames → name-keyed map (ids resolved via the field
     /// vocabulary; unknown ids dropped — the shared-engine degraded mode,
     /// the same rule the dynamic reader (`fetch`) follows).
-    fn attrs_from(&mut self, wire: &[u8]) -> std::collections::BTreeMap<String, DynamicValue> {
-        let frames = decode_named(wire, &mut |id| self.fields.name_for(&self.store, &self.ns, id));
+    fn attrs_from(
+        &mut self,
+        wire: &[u8],
+    ) -> Result<std::collections::BTreeMap<String, DynamicValue>, String> {
+        // Nested ids resolve through the same mirror; a store failure is parked
+        // and raised after the walk (a nested decode has nowhere else to put it).
+        let mut failed: Option<String> = None;
+        let frames = decode_named(wire, &mut |id| {
+            match self.fields.name_for(&self.store, &self.ns, id) {
+                Ok(name) => name,
+                Err(e) => {
+                    failed = Some(e.to_string());
+                    None
+                }
+            }
+        });
+        if let Some(e) = failed {
+            return Err(e);
+        }
         let mut out = std::collections::BTreeMap::new();
         for f in frames {
-            if let Some(name) = self.fields.name_for(&self.store, &self.ns, f.id) {
+            if let Some(name) = self
+                .fields
+                .name_for(&self.store, &self.ns, f.id)
+                .map_err(|e| e.to_string())?
+            {
                 out.insert(name, f.value);
             }
         }
-        out
+        Ok(out)
     }
 
     /// Build the primary value: `[src ref][dst ref][predicate_vocab_id][obj
@@ -185,7 +206,7 @@ impl<S: VirtualStorage> Graph<S> {
     /// primary's value (nTLV frames after `[src][dst][predicate_vocab_id]`).
     pub fn link(&mut self, edge: &DynEdge, edge_id: u64) -> Result<(), String> {
         let pk = self.primary_key(edge_id);
-        if self.store.get(&pk).is_some() {
+        if self.store.get(&pk).map_err(|e| e.to_string())?.is_some() {
             return Err(format!("edge_id {edge_id} already live"));
         }
         let mut batch = Batch::default();
@@ -251,7 +272,7 @@ impl<S: VirtualStorage> Graph<S> {
         let pk = self.primary_key(edge_id);
         let body = self
             .store
-            .get(&pk)
+            .get(&pk).map_err(|e| e.to_string())?
             .ok_or_else(|| format!("unlink: edge_id {edge_id} not found"))?;
         let (src_wire, dst_wire, predicate_vocab_id) = self.parse_body_head(&body)?;
         let id_be = edge_id.to_be_bytes();
@@ -289,77 +310,113 @@ impl<S: VirtualStorage> Graph<S> {
 
     /// Fetch one edge, decoded: endpoints, predicate resolved to name,
     /// attributes as a name-keyed map.
-    pub fn get_edge(&mut self, edge_id: u64) -> Option<DynEdge> {
-        let body = self.store.get(&self.primary_key(edge_id))?;
-        let (src, n1) = NodeRef::decode(&body)?;
-        let (dst, n2) = NodeRef::decode(&body[n1..])?;
-        self.check_members(&src, &dst).ok()?;
+    pub fn get_edge(&mut self, edge_id: u64) -> Result<Option<DynEdge>, String> {
+        let Some(body) = self.store.get(&self.primary_key(edge_id)).map_err(|e| e.to_string())? else {
+            return Ok(None);
+        };
+        let Some((src, n1)) = NodeRef::decode(&body) else {
+            return Ok(None);
+        };
+        let Some((dst, n2)) = NodeRef::decode(&body[n1..]) else {
+            return Ok(None);
+        };
+        if self.check_members(&src, &dst).is_err() {
+            return Ok(None);
+        }
         let after_dst = n1 + n2;
         let predicate_vocab_id = u16::from_be_bytes([body[after_dst], body[after_dst + 1]]);
-        let predicate = self
+        let Some(predicate) = self
             .predicates
-            .name_for(&self.store, &self.ns, predicate_vocab_id)?;
+            .name_for(&self.store, &self.ns, predicate_vocab_id)
+            .map_err(|e| e.to_string())?
+        else {
+            // An id whose label is gone: not this graph's edge to describe.
+            return Ok(None);
+        };
         // Open attributes live in the dynamic segment, not in the body.
-        let attrs = match self.store.get(&self.fields_key(edge_id)) {
-            Some(wire) => self.attrs_from(&wire),
+        let attrs = match self
+            .store
+            .get(&self.fields_key(edge_id))
+            .map_err(|e| e.to_string())?
+        {
+            Some(wire) => self.attrs_from(&wire)?,
             None => std::collections::BTreeMap::new(),
         };
-        Some(DynEdge { src, dst, predicate, attrs })
+        Ok(Some(DynEdge { src, dst, predicate, attrs }))
     }
 
     /// Edge ids on one traversal face (full NodeRef leads — refs are
     /// self-describing, so the caller just encodes the node).
-    fn traverse(&self, slot: u16, node: &NodeRef) -> Vec<u64> {
+    fn traverse(&self, slot: u16, node: &NodeRef) -> Result<Vec<u64>, String> {
         let p = self.face_key(slot, &[&node.encode()]);
-        ids_from_suffixes(self.store.scan_suffix(&p))
+        Ok(ids_from_suffixes(
+            self.store.scan_suffix(&p).map_err(|e| e.to_string())?,
+        ))
     }
 
     /// Out-edges of one node (0x07).
-    pub fn out_edges(&self, src: &NodeRef) -> Vec<u64> {
+    pub fn out_edges(&self, src: &NodeRef) -> Result<Vec<u64>, String> {
         self.traverse(EDGE_OUT_SLOT, src)
     }
 
     /// In-edges of one node (0x08).
-    pub fn in_edges(&self, dst: &NodeRef) -> Vec<u64> {
+    pub fn in_edges(&self, dst: &NodeRef) -> Result<Vec<u64>, String> {
         self.traverse(EDGE_IN_SLOT, dst)
     }
 
     /// Predicate-qualified traversal (0x09/0x0A): unknown predicates scan
     /// empty (no face).
-    pub fn typed_edges(&mut self, slot: u16, predicate: &str, node: &NodeRef) -> Vec<u64> {
-        let predicate_vocab_id = match self.predicates.id_get(&self.store, &self.ns, predicate) {
+    pub fn typed_edges(
+        &mut self,
+        slot: u16,
+        predicate: &str,
+        node: &NodeRef,
+    ) -> Result<Vec<u64>, String> {
+        let predicate_vocab_id = match self
+            .predicates
+            .id_get(&self.store, &self.ns, predicate)
+            .map_err(|e| e.to_string())?
+        {
             Some(id) => id,
-            None => return Vec::new(),
+            None => return Ok(Vec::new()),
         };
         let p = self.face_key(slot, &[&predicate_vocab_id.to_be_bytes(), &node.encode()]);
-        ids_from_suffixes(self.store.scan_suffix(&p))
+        Ok(ids_from_suffixes(
+            self.store.scan_suffix(&p).map_err(|e| e.to_string())?,
+        ))
     }
 
     /// Predicate-qualified out-edges (0x09).
-    pub fn typed_out(&mut self, predicate: &str, src: &NodeRef) -> Vec<u64> {
+    pub fn typed_out(&mut self, predicate: &str, src: &NodeRef) -> Result<Vec<u64>, String> {
         self.typed_edges(EDGE_PREDICATE_OUT_SLOT, predicate, src)
     }
 
     /// Predicate-qualified in-edges (0x0A).
-    pub fn typed_in(&mut self, predicate: &str, dst: &NodeRef) -> Vec<u64> {
+    pub fn typed_in(&mut self, predicate: &str, dst: &NodeRef) -> Result<Vec<u64>, String> {
         self.typed_edges(EDGE_PREDICATE_IN_SLOT, predicate, dst)
     }
 
     /// All edges of one predicate (0x06) — the `MATCH ()-[r:has]->()` entry.
-    pub fn edges_of_predicate(&mut self, predicate: &str) -> Vec<u64> {
-        let predicate_vocab_id = match self.predicates.id_get(&self.store, &self.ns, predicate) {
+    pub fn edges_of_predicate(&mut self, predicate: &str) -> Result<Vec<u64>, String> {
+        let predicate_vocab_id = match self
+            .predicates
+            .id_get(&self.store, &self.ns, predicate)
+            .map_err(|e| e.to_string())?
+        {
             Some(id) => id,
-            None => return Vec::new(),
+            None => return Ok(Vec::new()),
         };
         let p = self.face_key(EDGE_PREDICATE_INDEX_SLOT, &[&predicate_vocab_id.to_be_bytes()]);
-        ids_from_suffixes(self.store.scan_suffix(&p))
+        Ok(ids_from_suffixes(
+            self.store.scan_suffix(&p).map_err(|e| e.to_string())?,
+        ))
     }
 
     /// Every predicate this graph has, id-ordered: one 0x04 prefix scan.
-    pub fn predicates(&mut self) -> Vec<(u16, String)> {
+    pub fn predicates(&mut self) -> Result<Vec<(u16, String)>, String> {
         let mut p = self.ns.clone();
         okm_core::write_slot(&mut p, okm_core::index::PREDICATE_VOCAB_ID_SLOT);
-        let mut out: Vec<(u16, String)> = scan_suffix_kv(&self.store, &p)
+        let mut out: Vec<(u16, String)> = scan_suffix_kv(&self.store, &p).map_err(|e| e.to_string())?
             .into_iter()
             .filter(|(suffix, _)| suffix.len() == 2)
             .filter_map(|(suffix, name)| {
@@ -369,12 +426,14 @@ impl<S: VirtualStorage> Graph<S> {
             })
             .collect();
         out.sort_by_key(|(id, _)| *id);
-        out
+        Ok(out)
     }
 
     /// Predicate id → name (diagnostics surface).
-    pub fn predicate_vocab_name(&mut self, id: u16) -> Option<String> {
-        self.predicates.name_for(&self.store, &self.ns, id)
+    pub fn predicate_vocab_name(&mut self, id: u16) -> Result<Option<String>, String> {
+        self.predicates
+            .name_for(&self.store, &self.ns, id)
+            .map_err(|e| e.to_string())
     }
 }
 

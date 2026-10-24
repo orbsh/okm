@@ -29,21 +29,21 @@ fn fjall_roundtrip() {
     edges.link(&u, &s1).unwrap();
     edges.link(&u, &s2).unwrap();
 
-    let sessions = u.get_session(&edges);
+    let sessions = u.get_session(&edges).unwrap();
     assert_eq!(sessions.len(), 2);
 
-    let users = s1.get_user(&edges);
+    let users = s1.get_user(&edges).unwrap();
     assert_eq!(users.len(), 1);
     assert_eq!(users[0].decoded.user_id, 101);
 
     edges.unlink(&u, &s1).unwrap();
-    assert_eq!(u.get_session(&edges).len(), 1);
+    assert_eq!(u.get_session(&edges).unwrap().len(), 1);
     edges.store.persist().unwrap();
 
     // 重新打开验证持久化（unlink 已生效，剩 1 条）
     drop(edges);
     let store2 = FjallStore::open(dir.path(), "edges").unwrap();
     let edges2: Junction<FjallStore, UserToSessionEdge> = Junction::new(store2);
-    let sessions2 = u.get_session(&edges2);
+    let sessions2 = u.get_session(&edges2).unwrap();
     assert_eq!(sessions2, vec![s2]);
 }

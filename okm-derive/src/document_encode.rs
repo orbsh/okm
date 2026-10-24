@@ -757,7 +757,7 @@ fn emit_reduces(schema: &DocumentSchema) -> (TS2, TS2) {
         });
         calls.extend(quote! {{
             let __okm_ek = <#logic as ::okm_core::Reduce>::entry_key(_ns, _key, _row);
-            let mut __okm_acc = match _store.get(&__okm_ek) {
+            let mut __okm_acc = match _store.get(&__okm_ek)? {
                 Some(b) => <#logic as ::okm_core::ReduceLogic>::Acc::decode_acc(&b),
                 None => ::core::default::Default::default(),
             };
@@ -779,8 +779,9 @@ fn emit_reduces(schema: &DocumentSchema) -> (TS2, TS2) {
             _row: &Self,
             _ns: &[u8],
             _add: bool,
-        ) {
+        ) -> ::okm_core::error::Result<()> {
             #calls
+            ::core::result::Result::Ok(())
         }
     };
     (impls, hook)

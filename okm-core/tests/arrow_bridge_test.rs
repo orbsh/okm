@@ -91,7 +91,7 @@ fn batch_values_roundtrip_through_struct_decode() {
     let mut t: Collection<TestStore, ExportKey, ExportRow> = Collection::new(TestStore::slatedb_mem());
     let rows = put_rows(&mut t);
 
-    let batch = t.to_record_batch();
+    let batch = t.to_record_batch().unwrap();
     assert_eq!(batch.num_rows(), rows.len());
 
     let cols = t.export_columns();
@@ -121,7 +121,7 @@ fn batch_respects_key_order() {
     // scan_suffix 返回 key 序，导出应保持该顺序（user_id 升序）
     let mut t: Collection<TestStore, ExportKey, ExportRow> = Collection::new(TestStore::slatedb_mem());
     put_rows(&mut t);
-    let batch = t.to_record_batch();
+    let batch = t.to_record_batch().unwrap();
     let uid = batch.column(1).as_any().downcast_ref::<arrow::array::UInt64Array>().unwrap();
     for i in 1..batch.num_rows() {
         assert!(uid.value(i - 1) < uid.value(i), "document {i} out of key order");
@@ -147,7 +147,7 @@ fn fixed_bytes_maps_to_binary() {
     let k = BinKey { id: 1, name: *b"abcd" };
     t.put(&k, &BinRow { n: 9 }).unwrap();
 
-    let batch = t.to_record_batch();
+    let batch = t.to_record_batch().unwrap();
     let name = batch.column(1).as_any().downcast_ref::<arrow::array::BinaryArray>().unwrap();
     assert_eq!(name.value(0), b"abcd");
     let n = batch.column(2).as_any().downcast_ref::<arrow::array::UInt32Array>().unwrap();
@@ -181,7 +181,7 @@ fn vector_field_maps_to_binary() {
         &RingRow { n: 7, ring: Vector::new(vec![1, 2, 3]) },
     ).unwrap();
 
-    let batch = t.to_record_batch();
+    let batch = t.to_record_batch().unwrap();
     let n = batch.column(1).as_any().downcast_ref::<arrow::array::UInt32Array>().unwrap();
     assert_eq!(n.value(0), 7);
     let ring = batch.column(2).as_any().downcast_ref::<arrow::array::BinaryArray>().unwrap();
@@ -196,7 +196,7 @@ fn vector_field_maps_to_binary() {
 #[test]
 fn empty_table_exports_full_schema() {
     let t: Collection<TestStore, ExportKey, ExportRow> = Collection::new(TestStore::slatedb_mem());
-    let batch = t.to_record_batch();
+    let batch = t.to_record_batch().unwrap();
     assert_eq!(batch.num_rows(), 0);
     assert_eq!(batch.num_columns(), 6);
 }

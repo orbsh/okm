@@ -50,7 +50,7 @@ fn bytes_put_get_roundtrip() {
     };
     let key = BlobId { id: 42 };
     col.put(&key, &doc).unwrap();
-    let got = col.get(&key).unwrap();
+    let got = col.get(&key).unwrap().unwrap();
     assert_eq!(got, doc);
 }
 

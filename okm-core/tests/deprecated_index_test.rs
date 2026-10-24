@@ -35,11 +35,11 @@ fn deprecated_slot_is_reserved_and_not_written() {
     // Only the LIVE index writes — the deprecated index slot (0x3001)
     // produces nothing; the live one (0x3002, declaration order preserved)
     // writes. Slot is 2 bytes BE now (ADR-0016).
-    let slot_dep = t.store().scan_suffix(&[0, 9, 0x30, 0x01]);
-    let slot_live = t.store().scan_suffix(&[0, 9, 0x30, 0x02]);
+    let slot_dep = t.store().scan_suffix(&[0, 9, 0x30, 0x01]).unwrap();
+    let slot_live = t.store().scan_suffix(&[0, 9, 0x30, 0x02]).unwrap();
     assert!(slot_dep.is_empty(), "deprecated slot must not receive writes");
     assert_eq!(slot_live.len(), 1, "live index after the deprecated one keeps its slot");
-    assert_eq!(t.store().scan_suffix(&[0, 9]).len(), 2, "primary + one live index entry");
+    assert_eq!(t.store().scan_suffix(&[0, 9]).unwrap().len(), 2, "primary + one live index entry");
 }
 
 #[test]
@@ -62,11 +62,11 @@ fn prune_deletes_only_deprecated_prefix() {
 
     let pruned = t.prune_deprecated_slots().unwrap();
     assert_eq!(pruned, 1, "the simulated stale index-slot entry is pruned");
-    assert!(t.store().scan_suffix(&[0, 9, 0x30, 0x01]).is_empty());
+    assert!(t.store().scan_suffix(&[0, 9, 0x30, 0x01]).unwrap().is_empty());
     // Live entries untouched.
-    assert_eq!(t.store().scan_suffix(&[0, 9, 0x30, 0x02]).len(), 2);
-    assert_eq!(t.get(&UserKey { id: 1 }).unwrap().level, 7);
-    assert_eq!(t.get(&UserKey { id: 2 }).unwrap().level, 8);
+    assert_eq!(t.store().scan_suffix(&[0, 9, 0x30, 0x02]).unwrap().len(), 2);
+    assert_eq!(t.get(&UserKey { id: 1 }).unwrap().unwrap().level, 7);
+    assert_eq!(t.get(&UserKey { id: 2 }).unwrap().unwrap().level, 8);
 }
 
 #[test]

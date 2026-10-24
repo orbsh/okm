@@ -114,25 +114,34 @@ impl VectorIndex {
             shard.encode_into(&mut w);
             batch.put(self.slot_key(id), w);
         }
-        store.commit_batch(batch)
+        store.commit_batch(batch).map_err(|e| e.to_string())
     }
 
-    /// Read the snapshot back. `None` when any shard is missing or the blob set
-    /// disagrees on shape — the caller then rebuilds from the corpus.
-    pub fn load<S: VirtualStorage + ?Sized>(store: &S, ns: [u8; 2]) -> Option<Self> {
-        let first = store.get(&slot_key(ns, 0))?;
-        let (shard_count, shard0) = decode_shard(&first, ns, 0)?;
+    /// Read the snapshot back. `Ok(None)` when any shard is missing or the blob
+    /// set disagrees on shape — the caller then rebuilds from the corpus.
+    /// `Err` is the store failing to answer at all, which is a different fact.
+    pub fn load<S: VirtualStorage + ?Sized>(store: &S, ns: [u8; 2]) -> Result<Option<Self>, String> {
+        let Some(first) = store.get(&slot_key(ns, 0)).map_err(|e| e.to_string())? else {
+            return Ok(None);
+        };
+        let Some((shard_count, shard0)) = decode_shard(&first, ns, 0) else {
+            return Ok(None);
+        };
         let mut shards = Vec::with_capacity(shard_count);
         shards.push(shard0);
         for id in 1..shard_count {
-            let blob = store.get(&slot_key(ns, id))?;
-            let (count, shard) = decode_shard(&blob, ns, id)?;
+            let Some(blob) = store.get(&slot_key(ns, id)).map_err(|e| e.to_string())? else {
+                return Ok(None);
+            };
+            let Some((count, shard)) = decode_shard(&blob, ns, id) else {
+                return Ok(None);
+            };
             if count != shard_count {
-                return None;
+                return Ok(None);
             }
             shards.push(shard);
         }
-        Some(VectorIndex { ns, shards })
+        Ok(Some(VectorIndex { ns, shards }))
     }
 
     pub fn slot_key(&self, shard: usize) -> Vec<u8> {

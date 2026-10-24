@@ -71,5 +71,5 @@ fn no_sink_drops_silently() {
     // this test cannot race the RowEvent consumers above.)
     let t: Collection<TestStore, GhostKey, Ghost> = Collection::new(TestStore::slatedb_mem());
     t.put(&GhostKey { id: 3 }, &Ghost { v: 30 }).unwrap();
-    assert!(t.get(&GhostKey { id: 3 }).is_some());
+    assert!(t.get(&GhostKey { id: 3 }).unwrap().is_some());
 }

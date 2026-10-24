@@ -98,7 +98,7 @@ fn put_then_get_round_trip() {
     // write frames: no waiter, no response consumed
     drive(client.put(b"a".to_vec(), b"1".to_vec()), &host, &client, &loop_t);
     let got = drive(client.get(b"a"), &host, &client, &loop_t);
-    assert_eq!(got.as_deref(), Some(b"1".as_slice()));
+    assert_eq!(got.unwrap().as_deref(), Some(b"1".as_slice()));
 }
 
 #[test]
@@ -127,9 +127,9 @@ fn fifo_pairing_across_interleaved_queries() {
     let vx = match fx.as_mut().poll(&mut cx) { Poll::Ready(v) => v, _ => panic!("x") };
     let vy = match fy.as_mut().poll(&mut cx) { Poll::Ready(v) => v, _ => panic!("y") };
     let vm = match fm.as_mut().poll(&mut cx) { Poll::Ready(v) => v, _ => panic!("m") };
-    assert_eq!(vx.as_deref(), Some(b"10".as_slice()));
-    assert_eq!(vy.as_deref(), Some(b"20".as_slice()));
-    assert_eq!(vm, None);
+    assert_eq!(vx.unwrap().as_deref(), Some(b"10".as_slice()));
+    assert_eq!(vy.unwrap().as_deref(), Some(b"20".as_slice()));
+    assert_eq!(vm.unwrap(), None);
 }
 
 // ---------- failure discipline ----------
@@ -146,17 +146,24 @@ fn transport_death_fails_outstanding_waiters() {
     // answers never delivered; the owner reports the connection dead:
     client.fail("connection reset");
     match f.as_mut().poll(&mut cx) {
-        Poll::Ready(v) => assert_eq!(v, None), // trait surface: Err -> None
+        // A dead connection is a failure, not an absent row: the read now
+        // says so instead of answering `None`.
+        Poll::Ready(Err(e)) => assert_eq!(e.to_string(), "connection reset"),
+        Poll::Ready(Ok(v)) => panic!("dead connection answered a read: {v:?}"),
         Poll::Pending => panic!("waiter parked after fail — the exact bug this contract forbids"),
     }
     match q.as_mut().poll(&mut cx) {
-        Poll::Ready(Err(e)) => assert_eq!(e, "connection reset"),
+        Poll::Ready(Err(e)) => assert_eq!(e.to_string(), "connection reset"),
         Poll::Ready(Ok(_)) => panic!("dead connection answered Ok"),
         Poll::Pending => panic!("query waiter parked after fail"),
     }
-    // a dead client answers NEW queries immediately — nothing further
-    // goes out on the wire
-    assert!(drive(client.get(b"b"), &host, &client, &loop_t).is_none());
+    // a dead client answers NEW queries immediately — and the answer is the
+    // failure, not an absent row; nothing further goes out on the wire
+    let after = drive(client.get(b"b"), &host, &client, &loop_t);
+    assert_eq!(
+        after.expect_err("a dead client fails new reads").to_string(),
+        "connection reset"
+    );
     assert!(loop_t.out.borrow().is_empty());
 }
 
@@ -175,13 +182,13 @@ fn post_failure_dies_immediately() {
     let qf = get_frame(b"k");
     let mut q = Box::pin(client.query(&qf));
     match q.as_mut().poll(&mut cx) {
-        Poll::Ready(Err(e)) => assert_eq!(e, "socket gone"),
+        Poll::Ready(Err(e)) => assert_eq!(e.to_string(), "socket gone"),
         _ => panic!("expected immediate Err, got a park"),
     }
     let c2 = WireClient::new(Dead);
     let mut cb = Box::pin(c2.commit_batch(Batch::default()));
     match cb.as_mut().poll(&mut cx) {
-        Poll::Ready(Err(e)) => assert_eq!(e, "socket gone"),
+        Poll::Ready(Err(e)) => assert_eq!(e.to_string(), "socket gone"),
         Poll::Ready(Ok(())) => panic!("dead transport accepted a batch"),
         Poll::Pending => panic!("commit_batch parked on a dead transport"),
     }
@@ -220,10 +227,10 @@ fn scan_range_and_suffix_frames() {
     // A bare host strips ONLY its own (empty) hosting prefix: range
     // answers are full keys (begin is NOT stripped — same rule as the
     // sync remote; prefix-relative = relative to the RECEIVER prefix).
-    let mut keys = drive(client.scan_range(b"m", Some(b"z")), &host, &client, &loop_t);
+    let mut keys = drive(client.scan_range(b"m", Some(b"z")), &host, &client, &loop_t).unwrap();
     keys.sort();
     assert_eq!(keys, vec![b"m/1".to_vec(), b"m/2".to_vec()]);
-    let suffixed = drive(client.scan_suffix(b"z/"), &host, &client, &loop_t);
+    let suffixed = drive(client.scan_suffix(b"z/"), &host, &client, &loop_t).unwrap();
     assert_eq!(suffixed, vec![b"1".to_vec()]);
 }
 
@@ -244,8 +251,8 @@ fn scan_range_iter_pages_to_completion() {
     let items: Vec<_> = pairs.collect();
     assert_eq!(items.len(), 600);
     // bare host: hits carry FULL engine keys (the sync-stream rule)
-    assert_eq!(items[0].0, b"k/0000".to_vec());
-    assert_eq!(items[0].1, b"v".to_vec());
+    assert_eq!(items[0].as_ref().unwrap().0, b"k/0000".to_vec());
+    assert_eq!(items[0].as_ref().unwrap().1, b"v".to_vec());
 }
 
 #[test]
@@ -262,11 +269,11 @@ fn commit_batch_is_one_frame_one_pass() {
     // exactly one outbound write frame (no per-op frames, no leftovers)
     assert!(loop_t.out.borrow().is_empty());
     assert_eq!(
-        drive(client.get(b"p/1"), &host, &client, &loop_t).as_deref(),
+        drive(client.get(b"p/1"), &host, &client, &loop_t).unwrap().as_deref(),
         Some(b"a".as_slice())
     );
     assert_eq!(
-        drive(client.get(b"p/2"), &host, &client, &loop_t).as_deref(),
+        drive(client.get(b"p/2"), &host, &client, &loop_t).unwrap().as_deref(),
         Some(b"b".as_slice())
     );
 }
@@ -291,7 +298,7 @@ fn hosted_prefix_is_invisible_to_the_client() {
     assert_eq!(resp.value.as_deref(), Some(b"1".as_slice()));
     // and the client's round trip still speaks its own key
     assert_eq!(
-        drive(client.get(b"a"), &host, &client, &loop_t).as_deref(),
+        drive(client.get(b"a"), &host, &client, &loop_t).unwrap().as_deref(),
         Some(b"1".as_slice())
     );
 }

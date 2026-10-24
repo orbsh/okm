@@ -163,6 +163,6 @@ pub fn apply_row<S: VirtualStorage, R: Document>(
     document: &R,
     ns_prefix: &[u8],
     add: bool,
-) {
-    R::__okm_apply_reduces(store, key, document, ns_prefix, add);
+) -> crate::error::Result<()> {
+    R::__okm_apply_reduces(store, key, document, ns_prefix, add)
 }

@@ -94,7 +94,7 @@ fn table_round_trip_with_wrappers() {
         t.put(&WKey { org: 1, id: i }, &sample(i)).unwrap();
     }
     for i in 0..5u64 {
-        let r = t.get(&WKey { org: 1, id: i }).expect("document");
+        let r = t.get(&WKey { org: 1, id: i }).unwrap().expect("document");
         assert_eq!(r, sample(i));
     }
 }
@@ -121,7 +121,7 @@ mod parquet {
         let n = parquet_io::import_parquet(&mut t2, &path).unwrap();
         assert_eq!(n, 4);
         for i in 0..4u64 {
-            assert_eq!(t2.get(&WKey { org: 2, id: i }).unwrap(), sample(i));
+            assert_eq!(t2.get(&WKey { org: 2, id: i }).unwrap().unwrap(), sample(i));
         }
     }
 
@@ -131,7 +131,7 @@ mod parquet {
         for i in 0..3u64 {
             t.put(&WKey { org: 3, id: i }, &sample(i)).unwrap();
         }
-        let batch = t.to_record_batch();
+        let batch = t.to_record_batch().unwrap();
         let schema = batch.schema();
         // hits (key: org, id) then payload columns.
         let names: Vec<_> = schema
