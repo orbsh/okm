@@ -1425,8 +1425,15 @@ bytes; doing them after P3 means hex locks change once, not twice.
       `the_edge_set_exports_as_a_table_with_named_endpoints` (column order, raw key
       bytes, predicate label, unknown ns → NULL),
       `the_reduce_table_exports_as_its_own_file` (slot, groups 1→40 and 2→7).
-- [ ] Consumer side (Krystallizer): a catalog file, a door addressed by TABLE NAME,
-      and its fact table switching from a 501 to the edge-table export.
+- [x] Consumer side (Krystallizer) LANDED 2026-10-21 — the three asks, each
+      answered on the consumer's side and verified there: `GET /export` is the
+      catalog generated from the declarations at request time (`(table, ns)`), so
+      the names are declared where the ns is (`#[ok_name]` → `Document::TABLE_NAME`,
+      ADR-0034 §1) and k10r keeps no second list; `GET /export/{table}` is the door
+      addressed by TABLE NAME, with an unknown name a 404 pointing at the catalog;
+      and the FACT table exports through `Graph::to_record_batch_table` as okm's
+      edge table (`(src_table, src_pkey, dst_table, dst_pkey, predicate)` + the
+      declaration's fields + a props variant) instead of a 501.
 
 ## Whole-document API: merge / replace / purge / view (ADR-0035 — A landed 2026-10-22, B/C open)
 
