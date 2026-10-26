@@ -74,6 +74,13 @@ required-features = ["parquet", "test-engines"]
 name = "tooling_test"
 required-features = ["parquet"]
 
+# parquet for the export/import mirrors, test-engines for the store they run on:
+# the file calls `TestStore::slatedb_mem()` and `Graph::to_record_batch_table`,
+# so neither feature alone compiles it.
+[[test]]
+name = "import_table_test"
+required-features = ["parquet", "test-engines"]
+
 [[test]]
 name = "deprecated_index_test"
 required-features = ["test-engines"]
