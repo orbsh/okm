@@ -62,6 +62,9 @@ impl TestStore {
     }
 
     #[cfg(feature = "fjall")]
+    // Test-double construction: a machine that cannot open a temp-dir engine
+    // has nothing to test against.
+    #[allow(clippy::expect_used, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
     pub fn fjall_tmp() -> Self {
         let dir = tempfile::TempDir::new().expect("tempdir");
         let store = crate::engine::fjall_backend::FjallStore::open(dir.path(), "okm-test")
@@ -70,6 +73,9 @@ impl TestStore {
     }
 
     #[cfg(feature = "redb")]
+    // Test-double construction: a machine that cannot open a temp-file engine
+    // has nothing to test against.
+    #[allow(clippy::expect_used, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
     pub fn redb_tmp() -> Self {
         let dir = tempfile::TempDir::new().expect("tempdir");
         let store = crate::engine::redb_backend::RedbStore::open(&dir.path().join("okm.redb"))
