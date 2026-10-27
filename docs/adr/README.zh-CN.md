@@ -41,4 +41,5 @@
 - [0039 — 存储 trait 的写动词返回 `Result`](0039-storage-write-error-surface.md)（已接受并落地——`put`/`del` 及异步孪生返回 `Result<()>`，`del` 的 `Ok` 也覆盖"本来就没有"；每个后端映射自己的错误，slatedb 同步路径改为一次往返、由驱动等待 durability 后回答；`WireClient` 报告死连接与被拒 post；读侧（驱动 scan/iter、redb begin_read/range、localStorage get_item）仍闭合）— [中文](0039-storage-write-error-surface.zh-CN.md)
 
 - [0040 — 解码中止，而不是返回 `Result`](0040-decode-aborts.md)（已接受并落地——编解码的解码半边保持不会失败的签名，字节不符即带消息中止：编码器与解码器是同一件产物，本 SDK 解不开的字节不是它写的，而解错的行会被写回派生状态、静默且持久；panic 类 lint 只在登记过的位置放开（`model` 模块、derive 生成的 `decode_payload`、`arrow_bridge`、`iceberg::stamp_batch`、`open_mem`、`slatedb_mem`、`Nest::serve`/`apply`），外来输入（Parquet 导入的列 downcast、变体元数据帧）仍然返回 `Err`；`okm-core` 运行时半边在这三条 lint 下零告警）— [中文](0040-decode-aborts.zh-CN.md)
-实施计划见 [docs/PLAN.md](../PLAN.md)。
+
+- [0041 — 图的索引带着两端](0041-graph-faces-carry-both-endpoints.md)（已接受并落地——五个面各自只点名一端，于是「这条断言已经在图里吗」只能靠扫源节点的全部出度再过滤；四张面改为 `[src][dst][edge]`、`[dst][src][edge]`、`[pred][src][dst][edge]`、`[pred][dst][src][edge]`，谓词索引退役（0x08 的裸 `[predicate]` 前缀就是它），slot 压实到 0x06–0x09 且向量快照搬到 0x0A，`Graph::reindex` 清面重建；没有「边→两端」的面——主行本来就带着两端，而且 edge id 领衔会毁掉邻接）— [中文](0041-graph-faces-carry-both-endpoints.zh-CN.md)实施计划见 [docs/PLAN.md](../PLAN.md)。

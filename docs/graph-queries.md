@@ -67,11 +67,15 @@ written (org 9 -> user 1 since 2020, org 9 -> user 2 since 2021).
 ```text
 Cypher shape                        okm landing (face)
 ──────────────────────────────────────────────────────────
-(:org {id:9})-[]->()                out_edges          (0x07)
-()<-[]-(:user {id:1})               in_edges           (0x08)
-()-[r:employs]->()                  edges_of_predicate      (0x06)
-(:org {id:9})-[r:employs]->()       typed_out          (0x09)
-()-[r:employs]->(:user {id:1})      typed_in           (0x0A)
+(:org {id:9})-[]->()                out_edges          (0x06)
+()<-[]-(:user {id:1})               in_edges           (0x07)
+(:org {id:9})-[]->(:user {id:1})    out_edges_to       (0x06, pair)
+()-[r:employs]->()                  edges_of_predicate (0x08 bare prefix)
+(:org {id:9})-[r:employs]->()       typed_out          (0x08)
+()-[r:employs]->(:user {id:1})      typed_in           (0x09)
+(:org {id:9})-[r:employs]->(:user {id:1})
+                                    typed_out_to       (0x08, pair: the
+                                                        assertion identity)
 ()-[r:employs {since: 2020}]->()    by_attr_face       (family 0x1)
 ```
 
@@ -80,11 +84,17 @@ Cypher shape                        okm landing (face)
 g.out_edges(&org9);                  // -> [1, 2]
 g.in_edges(&user1);                  // -> [1]
 
-// Predicate-filtered traversal — the predicate leads the scan prefix (0x09/0x0A).
+// Predicate-filtered traversal — the predicate leads the scan prefix (0x08/0x09).
 g.typed_out("employs", &org9);       // -> [1, 2]
 g.typed_in("employs", &user1);       // -> [1]
 
+// Pair lookups: both endpoints are in the key, so these are one seek each —
+// the predicate-qualified one IS the assertion identity check.
+g.out_edges_to(&org9, &user1);              // -> [1]  (any predicate)
+g.typed_out_to("employs", &org9, &user1);   // -> [1]  (this predicate)
+
 // Whole-graph predicate scan — the `MATCH ()-[r:employs]->()` entry point.
+// There is no predicate face: this is 0x08's bare `[predicate]` prefix.
 g.edges_of_predicate("employs");          // -> [1, 2]
 
 // Attribute face — a declared `#[ok_index]` of the edge, exact-match probe.
@@ -191,7 +201,7 @@ queries:
   `DynEdge` (attrs resolved through the field-name vocabulary).
 - The dynamic form has NO 0x1 attribute face (attribute names are
   runtime data, so exact-match attr scans are structurally absent —
-  predicate filtering via 0x06/0x09/0x0A is complete, not a gap).
+  predicate filtering via 0x08/0x09 is complete, not a gap).
 - Node-side "kind" is NOT an edge-layer concern: nodes are ordinary
   document collections, their kinds live in their own declared indexes
   and dictionaries. `(:node_type)` filtering = the edge face scan ∩

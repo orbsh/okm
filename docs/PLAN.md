@@ -1897,3 +1897,23 @@ panic lints allowed only in the places it names. So the runtime half of
       Two stayed: `okm-vector/src/codec.rs` reads codes this build wrote, so a
       mismatch or a short code aborts, and that file-level allow is registered in
       ADR-0040. The workspace now passes all five panic lints under `-D`.
+
+## 2026-10-27 — the graph faces carry both endpoints (ADR-0041)
+
+- [x] Four faces instead of five, each naming both endpoints in traversal order:
+      `[src][dst][edge_id]`, `[dst][src][edge_id]`, `[pred][src][dst][edge_id]`,
+      `[pred][dst][src][edge_id]`. The old predicate index retired — its edge set is
+      the bare `[predicate]` prefix of the predicate+out face, so one fewer put and
+      one fewer delete per link. Slots compacted to 0x06–0x09 with the vector index
+      snapshot moved to 0x0A.
+- [x] New lookups: `out_edges_to`, `in_edges_from`, `typed_out_to`, `typed_in_from`
+      (and their okm-dynamic twins). `typed_out_to` is the assertion identity check
+      k10r's `ingest` now uses (k10r ADR-0020) — one seek instead of a scan over the
+      source's out-degree.
+- [x] `Graph::reindex()`: wipes the four graph slots and re-derives every entry from
+      the primary rows. Mandatory rather than optional, because the numbers changed
+      too — the retired predicate index sat exactly where out-edges live now, so an
+      older store's entries would otherwise be read as something they are not.
+- [ ] To pay later: a schema version + background reindex for stores too large to
+      rebuild in one batch (nobody needs it yet), and the vector snapshot's own wipe
+      after its move (a stale blob fails its magic and reads as a miss today).
