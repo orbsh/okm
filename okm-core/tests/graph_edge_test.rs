@@ -410,19 +410,58 @@ fn hex_lock_one_link() {
             .is_some(),
         "predicate name → id"
     );
+    // Every face carries BOTH endpoints: the pair is in the key, so the id is
+    // the last segment of a single-node entry and the whole suffix of a pair one.
     assert!(
-        store.get(&key(&[ns.to_vec(), slot(0x06), pid.clone(), id.clone()])).unwrap().is_some(),
-        "predicate index"
+        store
+            .get(&key(&[ns.to_vec(), slot(0x06), src.clone(), dst.clone(), id.clone()]))
+            .unwrap()
+            .is_some(),
+        "out (pair-qualified)"
     );
-    assert!(store.get(&key(&[ns.to_vec(), slot(0x07), src.clone(), id.clone()])).unwrap().is_some(), "out");
-    assert!(store.get(&key(&[ns.to_vec(), slot(0x08), dst.clone(), id.clone()])).unwrap().is_some(), "in");
     assert!(
-        store.get(&key(&[ns.to_vec(), slot(0x09), pid.clone(), src.clone(), id.clone()])).unwrap().is_some(),
+        store
+            .get(&key(&[ns.to_vec(), slot(0x07), dst.clone(), src.clone(), id.clone()]))
+            .unwrap()
+            .is_some(),
+        "in (pair-qualified)"
+    );
+    assert!(
+        store
+            .get(&key(&[
+                ns.to_vec(),
+                slot(0x08),
+                pid.clone(),
+                src.clone(),
+                dst.clone(),
+                id.clone()
+            ]))
+            .unwrap()
+            .is_some(),
         "predicate+out"
     );
     assert!(
-        store.get(&key(&[ns.to_vec(), slot(0x0A), pid, dst, id.clone()])).unwrap().is_some(),
+        store
+            .get(&key(&[
+                ns.to_vec(),
+                slot(0x09),
+                pid.clone(),
+                dst.clone(),
+                src.clone(),
+                id.clone()
+            ]))
+            .unwrap()
+            .is_some(),
         "predicate+in"
+    );
+    // The retired predicate index (0x06 under the old numbering) is gone: the
+    // same key now names an out-edge, and nothing writes `[predicate][id]`.
+    assert!(
+        store
+            .get(&key(&[ns.to_vec(), slot(0x06), pid.clone(), id.clone()]))
+            .unwrap()
+            .is_none(),
+        "no predicate-only face"
     );
     // Nothing in the retired 0x02/0x03 band names a predicate: that band is
     // now free (the field vocabulary moved to family 4, ADR-0032).

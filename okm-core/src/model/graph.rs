@@ -24,12 +24,29 @@
 //! 0x01    dynamic segment   [edge_id u64 BE]        → the edge's open attributes (nTLV)
 //! 0x02/0x03  field-name vocabulary (the payload's own names ↔ ids)
 //! 0x04/0x05  PREDICATE VOCABULARY      (predicate name ↔ predicate_vocab_id)
-//! 0x06    predicate index   [predicate_vocab_id u16 BE]   → edge_id set
-//! 0x07    out-edges         [src NodeRef][edge_id u64 BE]
-//! 0x08    in-edges          [dst NodeRef][edge_id u64 BE]
-//! 0x09    predicate+out     [predicate_vocab_id][src NodeRef][edge_id]
-//! 0x0A    predicate+in      [predicate_vocab_id][dst NodeRef][edge_id]
+//! 0x06    out-edges         [src NodeRef][dst NodeRef][edge_id u64 BE]
+//! 0x07    in-edges          [dst NodeRef][src NodeRef][edge_id u64 BE]
+//! 0x08    predicate+out     [predicate_vocab_id][src NodeRef][dst NodeRef][edge_id]
+//! 0x09    predicate+in      [predicate_vocab_id][dst NodeRef][src NodeRef][edge_id]
 //! ```
+//!
+//! **Every index carries BOTH endpoints.** A face entry states where an edge
+//! came from and where it went, so the pair is addressable: `(src, dst)` on
+//! 0x06, `(predicate, src, dst)` on 0x08. That is what makes "is this fact
+//! already here" one seek instead of a scan over a hub's whole out-degree.
+//!
+//! **The suffix rule follows the prefix.** After ONE node the entry is
+//! `other endpoint + edge_id`, so the id is the trailing eight bytes (the
+//! `NodeRef` is self-delimiting — it cannot be confused with them). After a
+//! PAIR — or a predicate and a pair — the prefix already consumed both
+//! endpoints and the suffix IS the id, the fixed-width rule the old
+//! single-node faces had.
+//!
+//! **There is no separate predicate index.** It used to be 0x06
+//! (`[predicate][edge_id]`); scanning 0x08 by its `[predicate]` prefix yields
+//! exactly the same edge set with longer keys, so the face was a denormalized
+//! copy of information 0x08 already held — one fewer put, one fewer delete and
+//! one fewer slot per edge.
 //!
 //! A vocabulary precedes the faces that read its ids. Declared attribute
 //! faces are ordinary `#[ok_index]` declarations — counting family 0x1,
@@ -49,18 +66,19 @@ use crate::model::key::KeyEncode;
 use crate::model::obj_dynamic::{DynamicValue, decode_named, put_frame_named};
 use crate::model::obj_vocab::{PREDICATE_VOCAB, VocabCache};
 
-/// Fixed face 0x06: predicate index — an edge-collection-internal detail, not
-/// a declared document index, hence a graph number rather than counting
-/// family 0x1.
-pub const EDGE_PREDICATE_INDEX_SLOT: Slot = 0x06;
-/// Fixed face 0x07: out-edge traversal.
-pub const EDGE_OUT_SLOT: Slot = 0x07;
-/// Fixed face 0x08: in-edge traversal.
-pub const EDGE_IN_SLOT: Slot = 0x08;
-/// Fixed face 0x09: predicate-qualified out-edge face (predicate leads).
-pub const EDGE_PREDICATE_OUT_SLOT: Slot = 0x09;
-/// Fixed face 0x0A: predicate-qualified in-edge face (predicate leads).
-pub const EDGE_PREDICATE_IN_SLOT: Slot = 0x0A;
+/// Fixed face 0x06: out-edge traversal, pair-qualified
+/// (`[src][dst][edge_id]`): prefix on `src` deliberately keeps the "all of a
+/// node's out-edges" read the face has always served, and the pair in front of
+/// the id adds the exact one.
+pub const EDGE_OUT_SLOT: Slot = 0x06;
+/// Fixed face 0x07: in-edge traversal, pair-qualified (`[dst][src][edge_id]`).
+pub const EDGE_IN_SLOT: Slot = 0x07;
+/// Fixed face 0x08: predicate-qualified out edges — `[predicate][src][dst][id]`.
+/// Its bare `[predicate]` prefix is the predicate index the graph used to keep
+/// in its own slot.
+pub const EDGE_PREDICATE_OUT_SLOT: Slot = 0x08;
+/// Fixed face 0x09: predicate-qualified in edges — `[predicate][dst][src][id]`.
+pub const EDGE_PREDICATE_IN_SLOT: Slot = 0x09;
 
 /// Self-describing endpoint reference: `[ns 2B BE][len varint][pkey]`.
 /// The ns is the type marker; the pkey width rides IN the ref as a
@@ -513,29 +531,30 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
         // that is being overwritten — one delete, in the same batch.
         batch.del(&self.dynamic_key(edge_id));
         batch.put(self.primary_key(edge_id), body);
-        // predicate index (0x06): [predicate_vocab_id][edge_id]
+        // out (0x06): [src][dst][edge_id]
         batch.put(
-            self.face_key(EDGE_PREDICATE_INDEX_SLOT, &[&predicate_be, &id_be]),
+            self.face_key(EDGE_OUT_SLOT, &[&src_wire, &dst_wire, &id_be]),
             Vec::new(),
         );
-        // out (0x07): [src NodeRef][edge_id]
+        // in (0x07): [dst][src][edge_id]
         batch.put(
-            self.face_key(EDGE_OUT_SLOT, &[&src_wire, &id_be]),
+            self.face_key(EDGE_IN_SLOT, &[&dst_wire, &src_wire, &id_be]),
             Vec::new(),
         );
-        // in (0x08): [dst NodeRef][edge_id]
+        // predicate+out (0x08): [predicate_vocab_id][src][dst][edge_id]
         batch.put(
-            self.face_key(EDGE_IN_SLOT, &[&dst_wire, &id_be]),
+            self.face_key(
+                EDGE_PREDICATE_OUT_SLOT,
+                &[&predicate_be, &src_wire, &dst_wire, &id_be],
+            ),
             Vec::new(),
         );
-        // predicate+out (0x09): [predicate_vocab_id][src NodeRef][edge_id]
+        // predicate+in (0x09): [predicate_vocab_id][dst][src][edge_id]
         batch.put(
-            self.face_key(EDGE_PREDICATE_OUT_SLOT, &[&predicate_be, &src_wire, &id_be]),
-            Vec::new(),
-        );
-        // predicate+in (0x0A): [predicate_vocab_id][dst NodeRef][edge_id]
-        batch.put(
-            self.face_key(EDGE_PREDICATE_IN_SLOT, &[&predicate_be, &dst_wire, &id_be]),
+            self.face_key(
+                EDGE_PREDICATE_IN_SLOT,
+                &[&predicate_be, &dst_wire, &src_wire, &id_be],
+            ),
             Vec::new(),
         );
         // Declared faces: the payload's own #[ok_index] declarations, the
@@ -576,11 +595,16 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
         let payload: E = E::decode_payload(&parsed.payload);
 
         batch.del(&pk);
-        batch.del(&self.face_key(EDGE_PREDICATE_INDEX_SLOT, &[&predicate_be, &id_be]));
-        batch.del(&self.face_key(EDGE_OUT_SLOT, &[&src_wire, &id_be]));
-        batch.del(&self.face_key(EDGE_IN_SLOT, &[&dst_wire, &id_be]));
-        batch.del(&self.face_key(EDGE_PREDICATE_OUT_SLOT, &[&predicate_be, &src_wire, &id_be]));
-        batch.del(&self.face_key(EDGE_PREDICATE_IN_SLOT, &[&predicate_be, &dst_wire, &id_be]));
+        batch.del(&self.face_key(EDGE_OUT_SLOT, &[&src_wire, &dst_wire, &id_be]));
+        batch.del(&self.face_key(EDGE_IN_SLOT, &[&dst_wire, &src_wire, &id_be]));
+        batch.del(&self.face_key(
+            EDGE_PREDICATE_OUT_SLOT,
+            &[&predicate_be, &src_wire, &dst_wire, &id_be],
+        ));
+        batch.del(&self.face_key(
+            EDGE_PREDICATE_IN_SLOT,
+            &[&predicate_be, &dst_wire, &src_wire, &id_be],
+        ));
         for (key, _) in E::index_entries(&EdgeKey(edge_id), &payload, E::NS_PREFIX) {
             batch.del(&key);
         }
@@ -611,28 +635,75 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
             .map(|b| E::decode_payload(&b.payload)))
     }
 
+    /// The ids at the end of single-node entries: `other endpoint + edge_id`,
+    /// so the id is the trailing eight bytes. A suffix too short to hold an
+    /// endpoint and an id is not one of ours and is skipped — the same
+    /// fail-closed direction the fixed-width decoder used to give.
+    fn ids_after_endpoint(suffixes: Vec<Vec<u8>>) -> Vec<u64> {
+        suffixes
+            .iter()
+            .filter(|sfx| sfx.len() > 8)
+            .filter_map(|sfx| sfx[sfx.len() - 8..].try_into().ok())
+            .map(u64::from_be_bytes)
+            .collect()
+    }
+
+    /// The ids at the end of PAIR entries: the prefix consumed both endpoints,
+    /// so the suffix IS the id (fixed width, exactly as before).
+    fn ids_after_pair(suffixes: Vec<Vec<u8>>) -> Vec<u64> {
+        suffixes
+            .iter()
+            .filter_map(|sfx| <[u8; 8]>::try_from(sfx.as_slice()).ok())
+            .map(u64::from_be_bytes)
+            .collect()
+    }
+
     /// All edge ids on one traversal face, decoded back through the
     /// primary. `slot` selects out/in; the prefix must be the full
     /// NodeRef wire (a full ref leads every traversal entry).
     fn traverse(&self, slot: Slot, node: &NodeRef) -> crate::error::Result<Vec<u64>> {
         let p = self.face_key(slot, &[&node.encode()]);
-        Ok(self
-            .store
-            .scan_suffix(&p)?
-            .into_iter()
-            .filter_map(|sfx| <[u8; 8]>::try_from(sfx.as_slice()).ok())
-            .map(u64::from_be_bytes)
-            .collect())
+        Ok(Self::ids_after_endpoint(self.store.scan_suffix(&p)?))
     }
 
-    /// Out-edges of one node (untyped, 0x07).
+    /// One traversal face, PAIR-qualified: the prefix names both endpoints, so
+    /// the suffix is the id alone.
+    fn traverse_pair(
+        &self,
+        slot: Slot,
+        from: &NodeRef,
+        to: &NodeRef,
+    ) -> crate::error::Result<Vec<u64>> {
+        let p = self.face_key(slot, &[&from.encode(), &to.encode()]);
+        Ok(Self::ids_after_pair(self.store.scan_suffix(&p)?))
+    }
+
+    /// Out-edges of one node (untyped, 0x06).
     pub fn out_edges(&self, src: &NodeRef) -> crate::error::Result<Vec<u64>> {
         self.traverse(EDGE_OUT_SLOT, src)
     }
 
-    /// In-edges of one node (untyped, 0x08).
+    /// In-edges of one node (untyped, 0x07).
     pub fn in_edges(&self, dst: &NodeRef) -> crate::error::Result<Vec<u64>> {
         self.traverse(EDGE_IN_SLOT, dst)
+    }
+
+    /// Edges from one node to another, whatever the predicate (0x06 pair).
+    pub fn out_edges_to(
+        &self,
+        src: &NodeRef,
+        dst: &NodeRef,
+    ) -> crate::error::Result<Vec<u64>> {
+        self.traverse_pair(EDGE_OUT_SLOT, src, dst)
+    }
+
+    /// Edges into one node from another, whatever the predicate (0x07 pair).
+    pub fn in_edges_from(
+        &self,
+        dst: &NodeRef,
+        src: &NodeRef,
+    ) -> crate::error::Result<Vec<u64>> {
+        self.traverse_pair(EDGE_IN_SLOT, dst, src)
     }
 
     /// Predicate-qualified traversal (0x09/0x0A): all edge ids of one
@@ -649,43 +720,147 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
             None => return Ok(Vec::new()),
         };
         let p = self.face_key(slot, &[&predicate_vocab_id.to_be_bytes(), &node.encode()]);
-        Ok(self
-            .store
-            .scan_suffix(&p)?
-            .into_iter()
-            .filter_map(|sfx| <[u8; 8]>::try_from(sfx.as_slice()).ok())
-            .map(u64::from_be_bytes)
-            .collect())
+        Ok(Self::ids_after_endpoint(self.store.scan_suffix(&p)?))
     }
 
-    /// Predicate-qualified out-edges (0x09).
+    /// Predicate-qualified out-edges (0x08).
     pub fn typed_out(&mut self, predicate: &str, src: &NodeRef) -> crate::error::Result<Vec<u64>> {
         self.typed_edges(EDGE_PREDICATE_OUT_SLOT, predicate, src)
     }
 
-    /// Predicate-qualified in-edges (0x0A).
+    /// Predicate-qualified in-edges (0x09).
     pub fn typed_in(&mut self, predicate: &str, dst: &NodeRef) -> crate::error::Result<Vec<u64>> {
         self.typed_edges(EDGE_PREDICATE_IN_SLOT, predicate, dst)
     }
 
-    /// All edges of one predicate, regardless of endpoints (0x06) — the
-    /// `MATCH ()-[r:has]->()` entry point.
+    /// Predicate-qualified edges from `src` to `dst` (0x08, both endpoints and
+    /// the predicate in the prefix) — the ASSERTION IDENTITY lookup: one seek,
+    /// whatever the source node's out-degree.
+    pub fn typed_out_to(
+        &mut self,
+        predicate: &str,
+        src: &NodeRef,
+        dst: &NodeRef,
+    ) -> crate::error::Result<Vec<u64>> {
+        let predicate_vocab_id = match self.vocab.id_get(&self.store, E::NS_PREFIX, predicate)? {
+            Some(id) => id,
+            None => return Ok(Vec::new()),
+        };
+        let p = self.face_key(
+            EDGE_PREDICATE_OUT_SLOT,
+            &[&predicate_vocab_id.to_be_bytes(), &src.encode(), &dst.encode()],
+        );
+        Ok(Self::ids_after_pair(self.store.scan_suffix(&p)?))
+    }
+
+    /// The same lookup on the incoming face (0x09).
+    pub fn typed_in_from(
+        &mut self,
+        predicate: &str,
+        dst: &NodeRef,
+        src: &NodeRef,
+    ) -> crate::error::Result<Vec<u64>> {
+        let predicate_vocab_id = match self.vocab.id_get(&self.store, E::NS_PREFIX, predicate)? {
+            Some(id) => id,
+            None => return Ok(Vec::new()),
+        };
+        let p = self.face_key(
+            EDGE_PREDICATE_IN_SLOT,
+            &[&predicate_vocab_id.to_be_bytes(), &dst.encode(), &src.encode()],
+        );
+        Ok(Self::ids_after_pair(self.store.scan_suffix(&p)?))
+    }
+
+    /// All edges of one predicate, regardless of endpoints — the
+    /// `MATCH ()-[r:has]->()` entry point. The bare `[predicate]` prefix of
+    /// 0x08 IS the predicate index: this face used to be a slot of its own,
+    /// holding the same set under shorter keys.
+    ///
+    /// The cost is bytes, not entries: each suffix here carries two endpoints
+    /// before the id, where the old face carried the id alone.
     pub fn edges_of_predicate(&mut self, predicate: &str) -> crate::error::Result<Vec<u64>> {
         let predicate_vocab_id = match self.vocab.id_get(&self.store, E::NS_PREFIX, predicate)? {
             Some(id) => id,
             None => return Ok(Vec::new()),
         };
         let p = self.face_key(
-            EDGE_PREDICATE_INDEX_SLOT,
+            EDGE_PREDICATE_OUT_SLOT,
             &[&predicate_vocab_id.to_be_bytes()],
         );
-        Ok(self
+        Ok(Self::ids_after_endpoint(self.store.scan_suffix(&p)?))
+    }
+
+    /// Rebuild every graph face from the primary rows.
+    ///
+    /// A store written before the faces carried both endpoints holds entries at
+    /// keys this build never reads — and, because the slots were renumbered, at
+    /// SLOT NUMBERS this build reads as something else (the retired predicate
+    /// index sat exactly where out-edges live now). So the graph slots are
+    /// WIPED and re-derived; the primary table is never touched, and neither is
+    /// anything outside the edge namespace.
+    ///
+    /// Wiping the vector snapshot's slot is the vector layer's business, not
+    /// this one's: a stale blob there decodes as garbage and is a cache miss.
+    pub fn reindex(&mut self) -> crate::error::Result<usize> {
+        let slots = [
+            EDGE_OUT_SLOT,
+            EDGE_IN_SLOT,
+            EDGE_PREDICATE_OUT_SLOT,
+            EDGE_PREDICATE_IN_SLOT,
+        ];
+        let mut batch = Batch::default();
+        for slot in slots {
+            for (key, _) in scan_suffix_kv(&self.store, &self.face_key(slot, &[]))? {
+                batch.del(&key);
+            }
+        }
+        // The edges themselves come from the primary: ids then, not scans of a
+        // face we just emptied.
+        let primary = self.face_key(PRIMARY_SLOT, &[]);
+        let ids: Vec<u64> = self
             .store
-            .scan_suffix(&p)?
+            .scan_suffix(&primary)?
             .into_iter()
             .filter_map(|sfx| <[u8; 8]>::try_from(sfx.as_slice()).ok())
             .map(u64::from_be_bytes)
-            .collect())
+            .collect();
+        for edge_id in &ids {
+            let Some(bytes) = self.store.get(&self.primary_key(*edge_id))? else {
+                continue;
+            };
+            let parsed = decode_body(&bytes);
+            if self.check_members(&parsed.src, &parsed.dst).is_err() {
+                continue;
+            }
+            let src_wire = parsed.src.encode();
+            let dst_wire = parsed.dst.encode();
+            let predicate_be = parsed.predicate_vocab_id.to_be_bytes();
+            let id_be = edge_id.to_be_bytes();
+            batch.put(
+                self.face_key(EDGE_OUT_SLOT, &[&src_wire, &dst_wire, &id_be]),
+                Vec::new(),
+            );
+            batch.put(
+                self.face_key(EDGE_IN_SLOT, &[&dst_wire, &src_wire, &id_be]),
+                Vec::new(),
+            );
+            batch.put(
+                self.face_key(
+                    EDGE_PREDICATE_OUT_SLOT,
+                    &[&predicate_be, &src_wire, &dst_wire, &id_be],
+                ),
+                Vec::new(),
+            );
+            batch.put(
+                self.face_key(
+                    EDGE_PREDICATE_IN_SLOT,
+                    &[&predicate_be, &dst_wire, &src_wire, &id_be],
+                ),
+                Vec::new(),
+            );
+        }
+        self.store.commit_batch(batch)?;
+        Ok(ids.len())
     }
 
     /// Filter by declared attribute (a counting-family 0x1 face): scan the

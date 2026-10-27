@@ -25,8 +25,8 @@
 
 use okm_core::index::PRIMARY_SLOT;
 use okm_core::model::graph::{
-    EDGE_IN_SLOT, EDGE_OUT_SLOT, EDGE_PREDICATE_INDEX_SLOT, EDGE_PREDICATE_IN_SLOT,
-    EDGE_PREDICATE_OUT_SLOT, NodeRef,
+    EDGE_IN_SLOT, EDGE_OUT_SLOT, EDGE_PREDICATE_IN_SLOT, EDGE_PREDICATE_OUT_SLOT,
+    NodeRef,
 };
 use okm_core::obj_vocab::{VocabCache, FIELD_VOCAB, PREDICATE_VOCAB};
 use okm_core::obj_dynamic::{decode_named, put_frame_named, DynamicValue};
@@ -249,17 +249,25 @@ impl<S: VirtualStorage> Graph<S> {
             batch.put(self.fields_key(edge_id), attr_wire);
         }
         batch.put(
-            self.face_key(EDGE_PREDICATE_INDEX_SLOT, &[&predicate_be, &id_be]),
-            Vec::new(),
-        );
-        batch.put(self.face_key(EDGE_OUT_SLOT, &[&src_wire, &id_be]), Vec::new());
-        batch.put(self.face_key(EDGE_IN_SLOT, &[&dst_wire, &id_be]), Vec::new());
-        batch.put(
-            self.face_key(EDGE_PREDICATE_OUT_SLOT, &[&predicate_be, &src_wire, &id_be]),
+            self.face_key(EDGE_OUT_SLOT, &[&src_wire, &dst_wire, &id_be]),
             Vec::new(),
         );
         batch.put(
-            self.face_key(EDGE_PREDICATE_IN_SLOT, &[&predicate_be, &dst_wire, &id_be]),
+            self.face_key(EDGE_IN_SLOT, &[&dst_wire, &src_wire, &id_be]),
+            Vec::new(),
+        );
+        batch.put(
+            self.face_key(
+                EDGE_PREDICATE_OUT_SLOT,
+                &[&predicate_be, &src_wire, &dst_wire, &id_be],
+            ),
+            Vec::new(),
+        );
+        batch.put(
+            self.face_key(
+                EDGE_PREDICATE_IN_SLOT,
+                &[&predicate_be, &dst_wire, &src_wire, &id_be],
+            ),
             Vec::new(),
         );
         Ok(())
@@ -281,11 +289,16 @@ impl<S: VirtualStorage> Graph<S> {
         let mut batch = Batch::default();
         batch.del(&pk);
         batch.del(&self.fields_key(edge_id));
-        batch.del(&self.face_key(EDGE_PREDICATE_INDEX_SLOT, &[&predicate_be, &id_be]));
-        batch.del(&self.face_key(EDGE_OUT_SLOT, &[&src_wire, &id_be]));
-        batch.del(&self.face_key(EDGE_IN_SLOT, &[&dst_wire, &id_be]));
-        batch.del(&self.face_key(EDGE_PREDICATE_OUT_SLOT, &[&predicate_be, &src_wire, &id_be]));
-        batch.del(&self.face_key(EDGE_PREDICATE_IN_SLOT, &[&predicate_be, &dst_wire, &id_be]));
+        batch.del(&self.face_key(EDGE_OUT_SLOT, &[&src_wire, &dst_wire, &id_be]));
+        batch.del(&self.face_key(EDGE_IN_SLOT, &[&dst_wire, &src_wire, &id_be]));
+        batch.del(&self.face_key(
+            EDGE_PREDICATE_OUT_SLOT,
+            &[&predicate_be, &src_wire, &dst_wire, &id_be],
+        ));
+        batch.del(&self.face_key(
+            EDGE_PREDICATE_IN_SLOT,
+            &[&predicate_be, &dst_wire, &src_wire, &id_be],
+        ));
         self.store
             .commit_batch(batch)
             .map_err(|e| format!("dynamic graph unlink commit failed: {e}"))
@@ -354,17 +367,17 @@ impl<S: VirtualStorage> Graph<S> {
         ))
     }
 
-    /// Out-edges of one node (0x07).
+    /// Out-edges of one node (0x06).
     pub fn out_edges(&self, src: &NodeRef) -> Result<Vec<u64>, String> {
         self.traverse(EDGE_OUT_SLOT, src)
     }
 
-    /// In-edges of one node (0x08).
+    /// In-edges of one node (0x07).
     pub fn in_edges(&self, dst: &NodeRef) -> Result<Vec<u64>, String> {
         self.traverse(EDGE_IN_SLOT, dst)
     }
 
-    /// Predicate-qualified traversal (0x09/0x0A): unknown predicates scan
+    /// Predicate-qualified traversal (0x08/0x09): unknown predicates scan
     /// empty (no face).
     pub fn typed_edges(
         &mut self,
@@ -391,9 +404,55 @@ impl<S: VirtualStorage> Graph<S> {
         self.typed_edges(EDGE_PREDICATE_OUT_SLOT, predicate, src)
     }
 
-    /// Predicate-qualified in-edges (0x0A).
+    /// Predicate-qualified in-edges (0x09).
     pub fn typed_in(&mut self, predicate: &str, dst: &NodeRef) -> Result<Vec<u64>, String> {
         self.typed_edges(EDGE_PREDICATE_IN_SLOT, predicate, dst)
+    }
+
+    /// Edges from one node to another, whatever the predicate (0x06 pair): the
+    /// prefix names both endpoints, so the suffix is the id alone.
+    pub fn out_edges_to(&self, src: &NodeRef, dst: &NodeRef) -> Result<Vec<u64>, String> {
+        let p = self.face_key(EDGE_OUT_SLOT, &[&src.encode(), &dst.encode()]);
+        Ok(ids_from_pair_suffixes(
+            self.store.scan_suffix(&p).map_err(|e| e.to_string())?,
+        ))
+    }
+
+    /// The same lookup on the incoming face (0x07).
+    pub fn in_edges_from(&self, dst: &NodeRef, src: &NodeRef) -> Result<Vec<u64>, String> {
+        let p = self.face_key(EDGE_IN_SLOT, &[&dst.encode(), &src.encode()]);
+        Ok(ids_from_pair_suffixes(
+            self.store.scan_suffix(&p).map_err(|e| e.to_string())?,
+        ))
+    }
+
+    /// Predicate-qualified edge from `src` to `dst` (0x08): the assertion
+    /// identity lookup, one seek whatever the source's out-degree.
+    pub fn typed_out_to(
+        &mut self,
+        predicate: &str,
+        src: &NodeRef,
+        dst: &NodeRef,
+    ) -> Result<Vec<u64>, String> {
+        let predicate_vocab_id = match self
+            .predicates
+            .id_get(&self.store, &self.ns, predicate)
+            .map_err(|e| e.to_string())?
+        {
+            Some(id) => id,
+            None => return Ok(Vec::new()),
+        };
+        let p = self.face_key(
+            EDGE_PREDICATE_OUT_SLOT,
+            &[
+                &predicate_vocab_id.to_be_bytes(),
+                &src.encode(),
+                &dst.encode(),
+            ],
+        );
+        Ok(ids_from_pair_suffixes(
+            self.store.scan_suffix(&p).map_err(|e| e.to_string())?,
+        ))
     }
 
     /// All edges of one predicate (0x06) — the `MATCH ()-[r:has]->()` entry.
@@ -406,7 +465,10 @@ impl<S: VirtualStorage> Graph<S> {
             Some(id) => id,
             None => return Ok(Vec::new()),
         };
-        let p = self.face_key(EDGE_PREDICATE_INDEX_SLOT, &[&predicate_vocab_id.to_be_bytes()]);
+        // The bare `[predicate]` prefix of the predicate+out face IS the
+        // predicate index; the old dedicated face held the same set under
+        // shorter keys.
+        let p = self.face_key(EDGE_PREDICATE_OUT_SLOT, &[&predicate_vocab_id.to_be_bytes()]);
         Ok(ids_from_suffixes(
             self.store.scan_suffix(&p).map_err(|e| e.to_string())?,
         ))
@@ -439,9 +501,23 @@ impl<S: VirtualStorage> Graph<S> {
 
 /// Face-suffix → edge ids: every traversal/predicate face ends in an 8-byte
 /// BE edge id; shorter suffixes are foreign entries and are skipped.
+/// The ids at the end of single-node entries (`other endpoint + edge_id`, so the
+/// id is the trailing eight bytes), and — for the pair-qualified scans — the ids
+/// that ARE the suffix. Two helpers because the two rules differ, and a shared
+/// "take eight bytes" would silently mis-read one of them.
 fn ids_from_suffixes(suffixes: Vec<Vec<u8>>) -> Vec<u64> {
     suffixes
         .iter()
-        .filter_map(|s| s.first_chunk::<8>().map(|b| u64::from_be_bytes(*b)))
+        .filter(|s| s.len() > 8)
+        .filter_map(|s| s[s.len() - 8..].try_into().ok())
+        .map(u64::from_be_bytes)
+        .collect()
+}
+
+fn ids_from_pair_suffixes(suffixes: Vec<Vec<u8>>) -> Vec<u64> {
+    suffixes
+        .iter()
+        .filter_map(|s| <[u8; 8]>::try_from(s.as_slice()).ok())
+        .map(u64::from_be_bytes)
         .collect()
 }
