@@ -1301,8 +1301,10 @@ reader's 404. A pointer someone may take, never a subtree the writer forces in.
 
 **Derived data stays off the graph.** `embedding` is a `Vector<f32>` with no
 declared face — a vector has no key order — so search is okm-vector's
-`ExactIndex`, rebuilt from the rows' frames on first use and dropped on every
-write. Faces are declared only where a reader exists: two on the edge,
+`ExactIndex`: derived state rebuilt wholesale from the table the vector lives in,
+invalidated by a write and never maintained row by row (its home is a side table,
+see "A value too big for the row", so a write to the parent table never
+invalidates it). Faces are declared only where a reader exists: two on the edge,
 `by_since` and `by_scope_weight`, each naming its scanner. An unscanned face is
 a write nobody asked for, on every touch.
 
@@ -1491,16 +1493,76 @@ Deletion is the caller's: nothing cascades in this model (junction entries are t
 same shape), so the pair is deleted together by the caller. The write pair is one
 commit; the delete pair is two until a batchable `purge_into` lands (PLAN).
 
-Split when the column is large AND accessed on its own — a download, a thumbnail,
-a re-embedding pass. Do NOT split when every access reads it with the row: that
-pays a second read for nothing, and the payload is the cheaper place.
+### When to split
 
-Rejected: a dedicated annotation inside the row codec (`#[ok_offrow]`, extracting
-the value to its own face under the same row key, plus a per-document tag enum as
-the field-level selector, ADR-0036). It costs a fifth storage location threaded
-through `FieldDesc`, `FieldSchema`, `split_names`, the four whole-document verbs
-and the derive walks, and it forbids indexing or reduce-grouping that column — in
-exchange for at most one round trip on a whole-document read.
+Two triggers; either one is enough.
+
+- **Large AND accessed on its own.** A download, a thumbnail, a re-embedding pass —
+  those readers want that column and not the row.
+- **Write-frequency asymmetry.** A row is written whole (ADR-0035), so a write of ANY
+  field re-encodes the large column. When the same row also carries a small field that
+  changes faster — a counter, a clock, a status — the frequent writer pays for the large
+  column on every write, and the split is worth it even though every read wants both.
+  The test is not "is it read on its own" but "does anything else in this row get
+  written more often than this column changes": k10r's node vector (1.5 KB at 384 dims,
+  2 KB at 512) sharing a row with a usage counter is the worked example (k10r
+  ADR-0019).
+
+Do NOT split when every access reads it with the row AND nothing writes more often than
+it — that pays a second point read for nothing, and the payload is the cheaper place.
+
+### How to split
+
+- **The key type is the parent's own key type.** The key payload is therefore
+  byte-identical, the pairing is pinned by the compiler, and only the ns and the table
+  name differ — the side table takes an ns of its own, and that is the whole cost.
+- **Presence is the side row.** No `Option` field, no zero-length sentinel: "has one" is
+  a state, not an absence.
+- **Write the pair into one batch** (both collections `save_with_prev_into`, one
+  `commit_batch`) and delete it as a pair — nothing cascades in this model, so deletion
+  is the caller's; once a batchable `purge_into` lands, the delete is one commit too.
+- **The parent row stays whole.** `R` is still the document's full set of declared
+  fields; the side table is its second table, not a patch on it — so `fetch` /
+  `replace` / `put` keep their meaning unchanged.
+- **The side table may have everything a table has**: its own declared faces, reduce
+  groups, its own `#[ok_layout]` version, and free export/import per `(K, R)` — because
+  it is an ordinary table, not a fifth storage location in the row codec.
+
+### Three shapes this is not
+
+- **An off-row annotation inside the row codec** (`#[ok_offrow]`, ADR-0036): the value
+  stays under the same row key, merely on another face, with a per-document tag enum as
+  the field-level selector. It costs a fifth storage location threaded through
+  `FieldDesc`, `FieldSchema`, `split_names`, the four whole-document verbs and the
+  derive walks — and it FORBIDS indexing or reduce-grouping that column — in exchange
+  for at most one round trip on a whole-document read.
+- **The dynamic segment (slot 1)**: slot 1 is rewritten whole, exactly like the row, so
+  it isolates nothing; and it is the schema-less area, not where a declared, typed
+  column belongs.
+- **A `Ref<D, K>` field on the parent**: that type says "the child belongs to the
+  parent" — identity, lifetime and dereference bound together — where what is wanted is
+  "two parts of one identity, each with its own writer". Four costs: `get`
+  dereferences, so every read of the parent also reads the large column (read
+  amplification is back); `Ref::own` makes the parent's write write the child (the write
+  coupling is back); `purge` deletes the primary entry, the faces and the reduce ledgers
+  but never the child, so deleting the row leaves the side row behind as an orphan; and
+  the release that happens on overwrite does not distinguish `own` from `ref_key`, so
+  it deletes a child another parent still references.
+
+### Indexes and derived state
+
+A table's index entries are derived from the WHOLE row and live and die with it, so the
+write path recomputes the new row's entry set wholesale; `merge` / `replace` then delete
+the entries the old row no longer produces, and `put` leaves a dangling one to `purge`.
+There is no "which field changed, which faces does it feed" map here, because no write
+path writes a single field — the off-row shape is precisely the thing that needs that
+map.
+
+A side table's indexes are its own: derived from that table alone, so a side-table write
+does not disturb the parent's indexes and a parent write does not disturb the side
+table's. A column with no key order has no declared face at all (a vector), and its
+search index is derived state rebuilt wholesale from the table it lives in — invalidated
+by a write, never maintained row by row.
 
 ## Cross-row pre-aggregation
 
