@@ -23,13 +23,14 @@ use okm_core::engine::storage::{Batch, VirtualStorage};
 use crate::codec::{Codec, Reader, put_u16};
 use crate::hnsw::{Hnsw, HnswParams};
 
-/// Fixed face 0x0B holds the built graph per shard:
-/// `[ns 2B][0x0B][shard u16 BE] → blob`.
+/// Fixed face 0x0A holds the built graph per shard:
+/// `[ns 2B][0x0A][shard u16 BE] → blob`.
 ///
 /// It is a cache entry, not a row-derived one: nothing in the corpus points at
-/// it, and discarding every blob loses only rebuild time. ADR-0030 leaves
-/// 0x0B–0x0F free for fixed faces; this is the first consumer.
-pub const VECTOR_INDEX_SLOT: u8 = 0x0B;
+/// it, and discarding every blob loses only rebuild time. It sits directly after
+/// the graph's four faces (0x06–0x09) with no slot left empty between them;
+/// 0x0B–0x0F stay free for fixed faces.
+pub const VECTOR_INDEX_SLOT: u8 = 0x0A;
 
 const MAGIC: &[u8; 8] = b"OKMVEC1\0";
 const VERSION: u16 = 1;
