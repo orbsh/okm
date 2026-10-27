@@ -23,6 +23,11 @@ so twelve are single faces today). Their counter is
 constant — 0/1/2/3 for the document-self bucket, 1 for the graph's faces.
 It carries no information and costs one byte on every such key.
 
+**Update 2026-10-27 (ADR-0041):** the graph's predicate index retired — its edge
+set is the bare `[predicate]` prefix of the predicate+out face — and the remaining
+four faces were renumbered 0x06–0x09 with the vector snapshot moved to 0x0A. The
+graph is four single faces now, and no slot is left empty between them.
+
 Those nine also encode the same kind of thing two different ways: the four
 document-self faces are counters inside segment 0x0 (a fossil of the
 pre-0016 flat role table, where roles 0–15 were one numbering space), while

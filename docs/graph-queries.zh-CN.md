@@ -44,11 +44,14 @@ pub struct EdgeBody {
 ```text
 Cypher 形状                          okm 落点（面）
 ──────────────────────────────────────────────────────────
-(:org {id:9})-[]->()                out_edges          (0x07)
-()<-[]-(:user {id:1})               in_edges           (0x08)
-()-[r:employs]->()                  edges_of_predicate      (0x06)
-(:org {id:9})-[r:employs]->()       typed_out          (0x09)
-()-[r:employs]->(:user {id:1})      typed_in           (0x0A)
+(:org {id:9})-[]->()                out_edges          (0x06)
+()<-[]-(:user {id:1})               in_edges           (0x07)
+(:org {id:9})-[]->(:user {id:1})    out_edges_to       (0x06，成对)
+()-[r:employs]->()                  edges_of_predicate (0x08 裸前缀)
+(:org {id:9})-[r:employs]->()       typed_out          (0x08)
+()-[r:employs]->(:user {id:1})      typed_in           (0x09)
+(:org {id:9})-[r:employs]->(:user {id:1})
+                                    typed_out_to       (0x08，成对：断言同一性)
 ()-[r:employs {since: 2020}]->()    by_attr_face       (计数族 0x1)
 ```
 
@@ -57,7 +60,7 @@ Cypher 形状                          okm 落点（面）
 g.out_edges(&org9);                  // -> [1, 2]
 g.in_edges(&user1);                  // -> [1]
 
-// 谓词过滤遍历——谓词领衔扫描前缀（0x09/0x0A）。
+// 谓词过滤遍历——谓词领衔扫描前缀（0x08/0x09）。
 g.typed_out("employs", &org9);       // -> [1, 2]
 g.typed_in("employs", &user1);       // -> [1]
 
@@ -136,7 +139,7 @@ walk 成为热路径时，把边 collection 的热谓词提升为声明的 `#[ok
 `Graph<S, E>`（固定本体：属性是声明 struct 字段，body 取类型化字节）与 `okm_dynamic::Graph<S>`（属性是运行时 nTLV 帧，`DynEdge { predicate: String, attrs: BTreeMap<..> }`）在相同的面上暴露相同的读方法。查询可见的差异：
 
 - `get_edge` 返回原始 body（`EdgeBody.payload` = 载荷字节），`edge` 再把它解成声明的类型；对比解码后的 `DynEdge`（属性经字段名词汇表还原）。
-- 动态形态没有 0x1 属性面（属性名是运行时数据，等值属性扫描结构性缺席——0x06/0x09/0x0A 的谓词过滤是完整的，不是缺口）。
+- 动态形态没有 0x1 属性面（属性名是运行时数据，等值属性扫描结构性缺席——0x08/0x09 的谓词过滤是完整的，不是缺口）。
 - 节点侧的 "kind" 不是边层的关切：节点是普通文档 collection，其 kind 活在自己声明的索引与词汇表里。`(:node_type)` 过滤 = 边面扫描 ∩ 节点 collection 自己的 kind 面扫描，内存交集。
 
 什么不该建为图——按信任域定能合不拆、型与态分置（实例态留在

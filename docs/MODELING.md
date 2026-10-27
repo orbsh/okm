@@ -977,7 +977,7 @@ g.link(&EdgeHead {
     predicate: "employs".into(),   // the edge's type: a head segment + the graph's own vocabulary
 }, &attrs, 1).unwrap();            // the payload is encoded by the declaration itself
 
-g.typed_out("employs", &user1);   // 0x09 face: predicate-filtered traversal
+g.typed_out("employs", &user1);   // 0x08 face: predicate-filtered traversal
 use __OkmIndex_Employment_by_since as BySince;   // the face type the declaration generated
 g.by_attr_face(<BySince as KvIndex>::SLOT, &2020u16.to_be_bytes());
 ```
@@ -994,9 +994,12 @@ g.by_attr_face(<BySince as KvIndex>::SLOT, &2020u16.to_be_bytes());
   table's own ns, applied as a check at write and at decode; width stays wire
   data, membership is a declaration.
 - **Faces**: one `link` writes primary (fixed face 0x00, `edge_id` u64) +
-  predicate index (0x06) + out/in traversal (0x07/0x08) + predicate-qualified
-  traversal (0x09/0x0A) + ONE face per DECLARED `#[ok_index]` (counting
-  family 0x1), all in one batch; `unlink` decodes the edge body and
+  out/in traversal (0x06/0x07) + predicate-qualified traversal (0x08/0x09) + ONE
+  face per DECLARED `#[ok_index]` (counting family 0x1), all in one batch. Each
+  traversal entry carries BOTH endpoints (`[src][dst][edge_id]`, the predicate
+  leading where it is qualified), so the pair is addressable and the assertion
+  identity is one seek; there is no separate predicate index — the bare
+  `[predicate]` prefix of 0x08 IS it. `unlink` decodes the edge body and
   deletes exactly those entries (the declared faces are re-derived from the
   decoded payload, never swept by prefix); the fully dynamic form writes its
   open attributes into the dynamic segment (fixed face 0x01, one entry per
@@ -1020,7 +1023,7 @@ g.by_attr_face(<BySince as KvIndex>::SLOT, &2020u16.to_be_bytes());
   never reused.
 - **Filtering**: the most selective face first, ids converged in
   memory — no composite faces by default (`(*)-[predicate]->(:node kind)`
-  = 0x09 scan intersected with the node kind face's pkey set).
+  = 0x08 scan intersected with the node kind face's pkey set).
 
 Division line: `Refs` = one-to-many; `Junction` = many-to-many, fixed
 endpoints, no attributes; **Graph Edge** = independent identity,
@@ -1397,7 +1400,7 @@ sequence); nothing on the wire.
 The consumer (okm-vector) builds search on top, in layers: an exact
 contiguous scan (the small-corpus path and the recall reference), an
 in-memory HNSW over quantized codes (int8 cosine or product codes), and a
-sharded handle whose snapshot is one blob per shard under fixed face 0x0B —
+sharded handle whose snapshot is one blob per shard under fixed face 0x0A —
 a cache, droppable at any time. Code-level distances are the graph's output;
 re-scoring against the stored vector is the caller's step. Storage stays
 byte-opaque: the corpus is still just the frame bytes.

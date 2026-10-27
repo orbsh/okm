@@ -69,12 +69,11 @@ byte (≥ 0x10).
 0x03  field-name vocabulary        [ns][0x03][name]                            → field-id
 0x04  predicate vocabulary         [ns][0x04][predicate_id]                    → name
 0x05  predicate vocabulary         [ns][0x05][name]                            → predicate_id
-0x06  graph predicate index        [ns][0x06][predicate_id][edge_id]
-0x07  graph out                    [ns][0x07][src NodeRef][edge_id]
-0x08  graph in                     [ns][0x08][dst NodeRef][edge_id]
-0x09  graph predicate+out          [ns][0x09][predicate_id][src ref][edge_id]
-0x0A  graph predicate+in           [ns][0x0A][predicate_id][dst ref][edge_id]
-0x0B  vector index snapshot        [ns][0x0B][shard u16 BE]    → built graph (okm-vector cache, droppable)
+0x06  graph out                    [ns][0x06][src ref][dst ref][edge_id]
+0x07  graph in                     [ns][0x07][dst ref][src ref][edge_id]
+0x08  graph predicate+out          [ns][0x08][predicate_id][src ref][dst ref][edge_id]
+0x09  graph predicate+in           [ns][0x09][predicate_id][dst ref][src ref][edge_id]
+0x0A  vector index snapshot        [ns][0x0A][shard u16 BE]    → built graph (okm-vector cache, droppable)
 0x0C–0x0F  free for future fixed faces
 (rows are grouped by ROLE: the two vocabularies first, then the graph faces
 that read their ids — a vocabulary leads the faces it serves; the NUMBERS
@@ -197,7 +196,8 @@ For scans, the prefixes inside one ns segment enumerate everything derived
 for this document: fixed faces 0x00–0x03 (primary, dynamic segment, both
 field-name vocabulary directions), then counting families 0x1 indexes, 0x2
 reduces, 0x3 junctions. A graph (edge collection) adds its own fixed faces:
-the predicate vocabulary 0x04/0x05 (its predicates) and 0x06–0x0A (predicate index,
-out/in edges, predicate±endpoint). A document collection that carries kind
+the predicate vocabulary 0x04/0x05 (its predicates) and 0x06–0x09 (out/in edges and
+the two predicate-qualified faces, each carrying BOTH endpoints — the predicate index
+is the bare-prefix scan of 0x08, not a face of its own). A document collection that carries kind
 tokens declares the same vocabulary pair — one rule, whichever collection
 needs it. Mechanism in [reduce mechanism](reduce-mechanism.md).
