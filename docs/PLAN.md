@@ -1975,20 +1975,26 @@ panic lints allowed only in the places it names. So the runtime half of
 
 ## 2026-10-28 — the change log: capture at the commit boundary, drain out of process (ADR-0045)
 
-- [ ] `ChangelogConfig { dir, segment_bytes: 64 MiB, segment_seconds: 300,
+- [x] `ChangelogConfig { dir, segment_bytes: 64 MiB, segment_seconds: 300,
       buffer_bytes: 1 MiB, sync_data: false }` plus
       `Collection::with_changelog(store, config) -> Result<Self>` — the fallible
       constructor is where the table's directory is opened; `new` stays I/O-free
       (ADR-0043). No cargo feature: the writer needs no dependency, and the cost
       when off is one `Option` check per commit.
-- [ ] Capture in `Collection::commit`, after `commit_batch` returns `Ok`,
+- [x] Capture in `Collection::commit`, after `commit_batch` returns `Ok`,
       filtered in memory before it — the only funnel that sees every semantic
-      write (`put`/`delete`/`merge`/`replace`/`purge`/`save_with_prev_into`'s
-      callers). The subscribe sink cannot do this: `save_with_prev_into` emits
-      nothing by design (ADR-0031 §5), so merging and batch writes would vanish.
-- [ ] Filter is an EXCLUDE list, stated once and failing closed toward the lake:
+      write (`put`/`delete`/`merge`/`replace`/`purge`). `save_into` bypasses it
+      (the caller commits to the store directly), so the assembly point also
+      gained **`Collection::commit_batch`** — stage, commit, append, same path.
+- [ ] Cross-table batches: each collection stages its own share BEFORE the one
+      commit and flushes after it (a staged/flush split). Today one publication
+      captures the keys under its own header and drops the rest, which is the
+      hole patch 1 above documents rather than hides.
+- [x] Filter is an EXCLUDE list, stated once and failing closed toward the lake:
       carry the set an export carries — primary `0x00`, dynamic `0x01`, field-name
-      vocabulary `0x02`/`0x03`, predicate vocabulary `0x04`/`0x05`; drop declared
+      vocabulary `0x02`/`0x03`, predicate vocabulary `0x04`/`0x05`, and both
+      directions of every declared categorical vocabulary (`0x1nnn`/`0x2nnn`, the
+      labels are truth because the payload stores ids); drop declared
       index `0x3nnn`, reduce `0x4nnn`, junction `0x5nnn`, graph faces `0x06`–`0x09`
       (`Graph::reindex` rebuilds them from the primary rows, so an edge rides as a
       row), vector snapshot `0x0A`,
@@ -1996,22 +2002,24 @@ panic lints allowed only in the places it names. So the runtime half of
       bare prefix, ADR-0032), and anything unrecognised. A visibly incomplete log
       can be repaired by a reconciliation scan; a lake holding derived state
       cannot.
-- [ ] Frame = `okm_wire::OpFrame::write_batch(&ops)` behind an outer length
+- [x] Frame = the op-frame encoding (`put_len` + `put_op_header`, the primitives
+      `OpFrame::encode` itself uses — `write_batch` would clone every key and
+      value) behind an outer length
       prefix — the codec deliberately carries no total-length header (a
       byte-stream transport owns delimiting), so one committed batch is one frame
       and vocabulary growth needs no record of its own.
-- [ ] Segments: `<root>/<header hex>/<nnnnnnnn>.partial` while being written,
+- [x] Segments: `<root>/<header hex>/<nnnnnnnn>.partial` while being written,
       renamed to `.segment` on seal (the suffix names the artifact, not the
       transport — `.log` reads as an application log); rotation on bytes and on
       wall clock. The next segment number is the highest name in the directory
       plus one, and the offset is the append position — so there is no producer
       counter, no reservation, and no sequence holes.
-- [ ] The write side has no reader: a collection with the changelog on appends and
+- [x] The write side has no reader: a collection with the changelog on appends and
       rotates and forgets the file, and the drainer opens a DIRECTORY (never the
       store), so it can be another process on another machine fed by copied or
       synced files. Only two invariants cross: a `.segment` never changes, and
       nothing is deleted before its consumer's watermark passes it.
-- [ ] Reader: sealed segments in name order, frames in append order, stopping at
+- [x] Reader: sealed segments in name order, frames in append order, stopping at
       the first incomplete frame of an unsealed segment (a torn tail is a normal
       end; a torn frame inside a sealed segment is an error).
 - [ ] Schema sidecar: `CollectionSchema::of::<K, R>()` JSON per layout version
@@ -2020,15 +2028,22 @@ panic lints allowed only in the places it names. So the runtime half of
       lists with tags, `layout_version` and the slot map, which is everything a
       column builder needs. Without it the log is readable as bytes and useless as
       columns.
-- [ ] Tests: frame round trip through a file; `merge`/`replace`/`purge` captured;
-      derived faces and the vocabulary cursor absent; unsealed tail ignored;
-      sealed-segment truncation refused; both rotation triggers; one sidecar per
-      layout version.
+- [x] Tests (`okm-core/tests/changelog_test.rs`, 7 locks): frame round trip through
+      a file; `merge`/`replace`/`purge` captured; derived faces and the vocabulary
+      cursor absent; the categorical labels present; unsealed tail ignored;
+      sealed-segment truncation refused; both rotation triggers; the
+      `commit_batch` verb capturing `save_into`; status clean for an unused log.
+- [ ] Bench the capture tax: the hook exists (`write-changelog/put/plain` vs
+      `put/captured` in `core_paths.rs`, a fixed key so only the capture differs),
+      but the criterion harness on this machine hangs BEFORE any measurement —
+      reproduced with a pure-CPU filter (`key-encode/encode/typical_16B`) and with
+      `--list`, so it is the harness, not the change. Re-run once it works and put
+      the delta beside the recorded 1.31 µs semantic put.
 - [ ] Drain-side pieces that stay outside core (documented here, built where they
       are owned): the reconciliation scan for one window, the single-consumer
       watermark that IS the lake's commit, and the multi-consumer watermark file
       written by atomic rename.
-- [ ] Order is commit-then-append, so the guarantee is at-most-once and never a
+- [x] Order is commit-then-append, so the guarantee is at-most-once and never a
       phantom row: `sync_data` narrows the crash window but does not change the
       class, and deleting rows after an export waits for "window sealed and taken"
       plus a reconciliation scan. Written down because the alternative order makes

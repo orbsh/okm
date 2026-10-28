@@ -103,6 +103,13 @@ pub enum Error {
     /// a commit-shaped event only.
     #[error("{0}")]
     Engine(String),
+    /// The change log could not be opened or read (ADR-0045). Deliberately NOT
+    /// on the write path: a log that cannot be appended records itself in
+    /// `Collection::changelog_status` instead, because the write it describes is
+    /// already committed and turning that into an error would report a failure
+    /// the store did not have.
+    #[error("changelog: {what}")]
+    Changelog { what: String },
 }
 
 impl Error {

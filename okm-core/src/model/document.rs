@@ -33,6 +33,11 @@ pub struct Collection<S, K: KeyEncode, R: Document<Key = K>> {
     /// `Cell` is what keeps that sound — `Cell` is `!Sync`, so a set of writes
     /// cannot be interleaved by another thread holding the same `&Collection`.
     epoch: std::cell::Cell<u64>,
+    /// The table's change log (ADR-0045), when the assembly point attached one.
+    /// A `RefCell` for the same reason `epoch` is a `Cell`: the write verbs take
+    /// `&self`, and the writer is per-collection state. `!Sync` either way, so
+    /// two threads cannot interleave writes through one `&Collection`.
+    changelog: Option<std::cell::RefCell<crate::changelog::Changelog>>,
     _marker: std::marker::PhantomData<(K, R)>,
 }
 
@@ -46,8 +51,27 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         Self {
             store,
             epoch: std::cell::Cell::new(0),
+            changelog: None,
             _marker: std::marker::PhantomData,
         }
+    }
+
+    /// The same assembly point with a change log attached (ADR-0045): the
+    /// FALLIBLE constructor, because it is the one that touches the filesystem —
+    /// `new` stays I/O-free on purpose (ADR-0043), exactly as it does for the
+    /// meta stamp.
+    ///
+    /// The switch lives here rather than in a derive attribute because it is a
+    /// per-instance policy, the same kind of decision as engine choice.
+    pub fn with_changelog(
+        store: S,
+        config: crate::changelog::ChangelogConfig,
+    ) -> crate::error::Result<Self> {
+        let mut this = Self::new(store);
+        let header = this.header();
+        let log = crate::changelog::Changelog::open(config, &header)?;
+        this.changelog = Some(std::cell::RefCell::new(log));
+        Ok(this)
     }
 
     pub fn store(&self) -> &S {
@@ -1012,8 +1036,43 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     /// that promises a `Result` can hand the engine's refusal up. The error
     /// carries the engine's OWN text, never a generic message that hides it.
     fn commit(&self, batch: crate::engine::storage::Batch) -> crate::error::Result<()> {
+        // Capture BEFORE the commit, append AFTER it (ADR-0045 §6): a record must
+        // never describe a write the engine refused. `stage` only fills memory,
+        // so it cannot fail a write; the append can, and when it does the write
+        // is already durable — the failure lands in `changelog_status` instead
+        // of turning a committed write into an error.
+        if let Some(log) = &self.changelog {
+            log.borrow_mut().stage(&batch.ops);
+        }
         self.store.commit_batch(batch)?;
         self.epoch.set(self.epoch.get() + 1);
+        if let Some(log) = &self.changelog {
+            let _ = log.borrow_mut().commit_staged();
+        }
         Ok(())
+    }
+
+    /// Commit a caller-built batch through THIS collection, so its changelog
+    /// captures the writes (ADR-0045).
+    ///
+    /// `save_into` hands the caller a batch and the caller used to reach the
+    /// store directly, which no collection-level hook can see. That path is the
+    /// cross-collection atomic one (ADR-0003), and ADR-0031 §5 already says a
+    /// batch writer's events are its own concern — this verb is how it discharges
+    /// that.
+    ///
+    /// A batch may carry another table's keys; a log directory belongs to ONE
+    /// header, so this captures the keys under THIS collection's header and drops
+    /// the rest. A batch that also writes another table needs that table's capture
+    /// too — the staged/flush split that makes it safe is recorded in PLAN.
+    pub fn commit_batch(&self, batch: crate::engine::storage::Batch) -> crate::error::Result<()> {
+        self.commit(batch)
+    }
+
+    /// What the change log owes: the open segment, bytes still buffered, records
+    /// dropped while the sink was broken, and the last write failure. `None` when
+    /// no changelog is attached.
+    pub fn changelog_status(&self) -> Option<crate::changelog::ChangelogStatus> {
+        self.changelog.as_ref().map(|log| log.borrow().status())
     }
 }
