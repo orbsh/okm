@@ -1972,3 +1972,92 @@ panic lints allowed only in the places it names. So the runtime half of
       side table whose ns is PREPENDED to the address with the key payload
       untouched — queryable, separately committed, and composable only by two point
       reads.
+
+## 2026-10-28 — the change log: capture at the commit boundary, drain out of process (ADR-0045)
+
+- [ ] `ChangelogConfig { dir, segment_bytes: 64 MiB, segment_seconds: 300,
+      buffer_bytes: 1 MiB, sync_data: false }` plus
+      `Collection::with_changelog(store, config) -> Result<Self>` — the fallible
+      constructor is where the table's directory is opened; `new` stays I/O-free
+      (ADR-0043). No cargo feature: the writer needs no dependency, and the cost
+      when off is one `Option` check per commit.
+- [ ] Capture in `Collection::commit`, after `commit_batch` returns `Ok`,
+      filtered in memory before it — the only funnel that sees every semantic
+      write (`put`/`delete`/`merge`/`replace`/`purge`/`save_with_prev_into`'s
+      callers). The subscribe sink cannot do this: `save_with_prev_into` emits
+      nothing by design (ADR-0031 §5), so merging and batch writes would vanish.
+- [ ] Filter is an EXCLUDE list, stated once and failing closed toward the lake:
+      carry the set an export carries — primary `0x00`, dynamic `0x01`, field-name
+      vocabulary `0x02`/`0x03`, predicate vocabulary `0x04`/`0x05`; drop declared
+      index `0x3nnn`, reduce `0x4nnn`, junction `0x5nnn`, graph faces `0x06`–`0x09`
+      (`Graph::reindex` rebuilds them from the primary rows, so an edge rides as a
+      row), vector snapshot `0x0A`,
+      meta `0x0F`, bare-face singleton keys (the vocabulary cursor is a face's
+      bare prefix, ADR-0032), and anything unrecognised. A visibly incomplete log
+      can be repaired by a reconciliation scan; a lake holding derived state
+      cannot.
+- [ ] Frame = `okm_wire::OpFrame::write_batch(&ops)` behind an outer length
+      prefix — the codec deliberately carries no total-length header (a
+      byte-stream transport owns delimiting), so one committed batch is one frame
+      and vocabulary growth needs no record of its own.
+- [ ] Segments: `<root>/<header hex>/<nnnnnnnn>.partial` while being written,
+      renamed to `.segment` on seal (the suffix names the artifact, not the
+      transport — `.log` reads as an application log); rotation on bytes and on
+      wall clock. The next segment number is the highest name in the directory
+      plus one, and the offset is the append position — so there is no producer
+      counter, no reservation, and no sequence holes.
+- [ ] The write side has no reader: a collection with the changelog on appends and
+      rotates and forgets the file, and the drainer opens a DIRECTORY (never the
+      store), so it can be another process on another machine fed by copied or
+      synced files. Only two invariants cross: a `.segment` never changes, and
+      nothing is deleted before its consumer's watermark passes it.
+- [ ] Reader: sealed segments in name order, frames in append order, stopping at
+      the first incomplete frame of an unsealed segment (a torn tail is a normal
+      end; a torn frame inside a sealed segment is an error).
+- [ ] Schema sidecar: `CollectionSchema::of::<K, R>()` JSON per layout version
+      beside the segments. Names ride in the log; types and key layout do not —
+      the sidecar carries `key_len`/`key_fields` (offsets + widths), the hot/cold
+      lists with tags, `layout_version` and the slot map, which is everything a
+      column builder needs. Without it the log is readable as bytes and useless as
+      columns.
+- [ ] Tests: frame round trip through a file; `merge`/`replace`/`purge` captured;
+      derived faces and the vocabulary cursor absent; unsealed tail ignored;
+      sealed-segment truncation refused; both rotation triggers; one sidecar per
+      layout version.
+- [ ] Drain-side pieces that stay outside core (documented here, built where they
+      are owned): the reconciliation scan for one window, the single-consumer
+      watermark that IS the lake's commit, and the multi-consumer watermark file
+      written by atomic rename.
+- [ ] Order is commit-then-append, so the guarantee is at-most-once and never a
+      phantom row: `sync_data` narrows the crash window but does not change the
+      class, and deleting rows after an export waits for "window sealed and taken"
+      plus a reconciliation scan. Written down because the alternative order makes
+      the lake disagree with the store, which is the one failure a derived copy
+      must not have.
+- [ ] Output is a WINDOW, not a table format: sealed Parquet files + the schema
+      sidecar + a manifest of what the window holds. Three layers: the store
+      produces segments and the sidecar; the DRAINER groups N sealed segments into
+      a window (its policy — the sink sets the file target); the ADAPTER loads
+      windows into a table format. Semantics do not vary with the format:
+      append-only windows, current state via compaction (rewrite) or a sink that
+      can express deletes, and no sink may weaken §6's ordering to buy a cheaper
+      capture.
+- [ ] Where each part lives: the drainer (`okm-drain`, in this workspace — it only
+      needs okm-wire + okm-dynamic + arrow/parquet, all already here) and the sink
+      adapter (its own repo, `okm-iceberg`, depending on this one — never the
+      reverse). The split is by DEPENDENCY, not by taste: the adapter is what
+      pulls in a catalog client, HTTP and auth, so it must not sit in this build.
+- [ ] Sink capability contract, written once for third-party adapters too: key
+      columns; some route to current state (native upsert key / delete files /
+      periodic compaction); the dynamic segment natively as a variant type, or
+      degraded to a JSON string under okm's mapping (Binary as base64, `Int`/`UInt`
+      kept as numbers, lists and maps as arrays and objects). The mapping is okm's
+      to publish — otherwise every adapter invents a dialect.
+- [ ] Not in this unit: Iceberg snapshot append with delete files, partitioning
+      and file-size targets (`write_table_metadata` writes one snapshot over the
+      files it is handed); any Parquet read path; a schema-driven Arrow builder on
+      okm-core's bridge (the drainer that does not link the app's rows needs one,
+      since okm-dynamic decodes payloads but has no `RecordBatch` surface today —
+      **it goes beside `arrow_bridge`, reusing `arrow_type`, and the Iceberg
+      WRITER goes in its own crate**, because `bridge::iceberg` is a zero-dependency
+      metadata encoder and must stay one); the SQL-to-okm planner.
