@@ -43,3 +43,5 @@
 - [0040 — 解码中止，而不是返回 `Result`](0040-decode-aborts.md)（已接受并落地——编解码的解码半边保持不会失败的签名，字节不符即带消息中止：编码器与解码器是同一件产物，本 SDK 解不开的字节不是它写的，而解错的行会被写回派生状态、静默且持久；panic 类 lint 只在登记过的位置放开（`model` 模块、derive 生成的 `decode_payload`、`arrow_bridge`、`iceberg::stamp_batch`、`open_mem`、`slatedb_mem`、`Nest::serve`/`apply`），外来输入（Parquet 导入的列 downcast、变体元数据帧）仍然返回 `Err`；`okm-core` 运行时半边在这三条 lint 下零告警）— [中文](0040-decode-aborts.zh-CN.md)
 
 - [0041 — 图的索引带着两端](0041-graph-faces-carry-both-endpoints.md)（已接受并落地——五个面各自只点名一端，于是「这条断言已经在图里吗」只能靠扫源节点的全部出度再过滤；四张面改为 `[src][dst][edge]`、`[dst][src][edge]`、`[pred][src][dst][edge]`、`[pred][dst][src][edge]`，谓词索引退役（0x08 的裸 `[predicate]` 前缀就是它），slot 压实到 0x06–0x09 且向量快照搬到 0x0A，`Graph::reindex` 清面重建；没有「边→两端」的面——主行本来就带着两端，而且 edge id 领衔会毁掉邻接）— [中文](0041-graph-faces-carry-both-endpoints.zh-CN.md)实施计划见 [docs/PLAN.md](../PLAN.md)。
+
+- [0042 — 布局版本是戳记，不是兼容承诺](0042-layout-versions-are-stamps.md)（已接受——版本字节记录形状，不是可读性的承诺；字段按读者顺序放、形状一变号就重置、兼容必须由记录主张、迁移走导出导入）— [中文](0042-layout-versions-are-stamps.zh-CN.md)
