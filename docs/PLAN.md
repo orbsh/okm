@@ -1917,3 +1917,13 @@ panic lints allowed only in the places it names. So the runtime half of
 - [ ] To pay later: a schema version + background reindex for stores too large to
       rebuild in one batch (nobody needs it yet), and the vector snapshot's own wipe
       after its move (a stale blob fails its magic and reads as a miss today).
+
+## 2026-10-27 — layout versions are stamps (ADR-0042)
+
+- [x] Written down after two changes were shaped by the codec: the entity row's
+      usage counters were appended at the tail because "appending is legal", and
+      the vector's removal was argued as a migration. Neither is the policy any
+      more: fields go where a reader looks, a shape change resets the number, and
+      compatibility exists only where a record claims it.
+- [x] k10r's `EntityRow` reset to `version = 1` with its counters at the FRONT
+      (kind, invoke_calls, invoke_ok, last_invoked, then the rest).

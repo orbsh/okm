@@ -632,6 +632,12 @@ lifecycle).
 
 ### Payload versions and field defaults
 
+The version byte is a STAMP of the shape, never a compatibility promise (ADR-0042):
+a field is placed where its reader looks for it, a shape change resets the number,
+and a store written by an older build is rebuilt — migrated, if it ever must be, by
+export and import. The rules below describe what the DECODER does; they do not
+oblige any table to keep an old shape readable.
+
 The payload carries a version byte (`#[ok_layout(version = N)]`, default 1).
 Decode rule: a payload whose header version is **newer** than the reading
 schema's is rejected; **older** payloads are accepted, and fields the old
@@ -656,8 +662,10 @@ pub struct User {
   the bytes. Newly written payloads always carry every field (the writer
   stamps its own version), so this is version-migration semantics, not a
   "field default" for absent values.
-- Append-at-the-tail is the only legal way to add fields: a field the
-  reader knows but finds missing must be at the tail of its segment
+- Append-at-the-tail is the only legal way for the DECODER to absorb an added
+  field (a field the reader knows but finds missing must be at the tail of its
+  segment). It is not a reason to append: a table that does not claim
+  compatibility (ADR-0042) places fields where they belong and resets the number
   (header `hot_len` marks the boundary for hot fields; absent cold TLV
   frames simply aren't there). Mid-insertion changes the position of
   existing fields = layout change = version bump + clean rebuild, never
