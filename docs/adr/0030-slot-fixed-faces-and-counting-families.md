@@ -104,6 +104,14 @@ assembles a key writes a slot the same way.
 faces that read its ids; the NUMBERS are the mechanism.)
 ```
 
+> **Update 2026-10-28.** The rows for 0x06–0x0B above were superseded by ADR-0041
+> (graph faces compacted to 0x06–0x09, the vector snapshot moved to 0x0A), and the
+> top of the band is now taken: **0x0F is the table meta face** (ADR-0043). Current
+> assignment — 0x00 primary, 0x01 dynamic, 0x02/0x03 field vocab, 0x04/0x05
+> predicate vocab, 0x06–0x09 graph faces, 0x0A vector snapshot, **0x0B–0x0E free**,
+> 0x0F meta. The live table is `docs/internals/key-layout.md`; this record keeps the
+> migration history.
+
 **Update 2026-10-17: the PREDICATE VOCABULARY holds its own pair (0x04/0x05).**
 A collection's token vocabulary beyond field names — a graph's predicates, a
 node collection's kind tokens — is no longer the payload's field-name

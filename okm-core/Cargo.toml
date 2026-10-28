@@ -86,6 +86,14 @@ name = "deprecated_index_test"
 required-features = ["test-engines"]
 
 [[test]]
+name = "meta_test"
+required-features = ["test-engines"]
+
+[[test]]
+name = "key_row_split_test"
+required-features = ["test-engines"]
+
+[[test]]
 name = "write_refusal_test"
 required-features = ["test-engines"]
 

@@ -44,4 +44,8 @@
 
 - [0041 — 图的索引带着两端](0041-graph-faces-carry-both-endpoints.md)（已接受并落地——五个面各自只点名一端，于是「这条断言已经在图里吗」只能靠扫源节点的全部出度再过滤；四张面改为 `[src][dst][edge]`、`[dst][src][edge]`、`[pred][src][dst][edge]`、`[pred][dst][src][edge]`，谓词索引退役（0x08 的裸 `[predicate]` 前缀就是它），slot 压实到 0x06–0x09 且向量快照搬到 0x0A，`Graph::reindex` 清面重建；没有「边→两端」的面——主行本来就带着两端，而且 edge id 领衔会毁掉邻接）— [中文](0041-graph-faces-carry-both-endpoints.zh-CN.md)实施计划见 [docs/PLAN.md](../PLAN.md)。
 
-- [0042 — 布局版本是戳记，不是兼容承诺](0042-layout-versions-are-stamps.md)（已接受——版本字节记录形状，不是可读性的承诺；字段按读者顺序放、形状一变号就重置、兼容必须由记录主张、迁移走导出导入）— [中文](0042-layout-versions-are-stamps.zh-CN.md)
+- [0042 — 布局版本是戳记，不是兼容承诺](0042-layout-versions-are-stamps.md)（已接受——版本字节记录形状，不是可读性的承诺；字段按读者顺序放、形状一变号就跟着变（递增是常规写法，重置同样合法，号只需能区分不兼容的形状）、没有哪张表欠旧形状一个读取器、兼容必须由记录主张、迁移是旧构建导出 → 新构建导入）— [中文](0042-layout-versions-are-stamps.zh-CN.md)
+
+- [0043 — 表元信息住在最高的固定面上](0043-table-meta.md)（已接受并落地——固定面 0x0F 每表一条 `[ns][0x0F]`，值是「名字 → 字节」的映射，运行时写 `version`（与 payload 头同一数字），其余名字由调用方 `set_meta` 记录；取最高面是因为 `slot <= 0x0F` 正是单/双字节定界判据，元信息坐在边界上、空闲带 0x0B–0x0E 保持连续；`ensure_layout` 在挂载时种子化或拒绝（`LayoutMismatch`），它是检测装置而非兼容承诺——不读、不迁移、不进导出）— [中文](0043-table-meta.zh-CN.md)
+
+- [0044 — 键与行是两处独立的声明](0044-keys-and-rows-are-separate-declarations.md)（已接受——键是 `KeyEncode` 独立声明，行用 `#[ok_ref]` 指名它而不嵌入，`Collection<S,K,R>` 同时携带两者；一个键类型可给多张表当键——副表就是第二个行类型挂在父表键类型上，键 payload 逐字节相同（ADR-0036），一张表只有一个键类型；后果：同一个名字可以同时出现在键和值里，两个字段互不相关——不去重、不报错、读路径不比较，分类器只看载荷声明，键的字节从不进 `fetch` 的 map；并记下与 SQL 的分界——关系库把键藏在行里、off-row 切分是引擎内部细节（行 id + 追加的分块序号），okm 没有键之外的行，所以切分是一张声明出来的副表：ns 前置在地址最前面、键 payload 不变）— [中文](0044-keys-and-rows-are-separate-declarations.zh-CN.md)

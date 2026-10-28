@@ -1923,7 +1923,52 @@ panic lints allowed only in the places it names. So the runtime half of
 - [x] Written down after two changes were shaped by the codec: the entity row's
       usage counters were appended at the tail because "appending is legal", and
       the vector's removal was argued as a migration. Neither is the policy any
-      more: fields go where a reader looks, a shape change resets the number, and
-      compatibility exists only where a record claims it.
+      more: fields go where a reader looks, a shape change changes the number
+      (incrementing is the ordinary style), and no build owes an old shape a
+      reader — migration is export → import (ADR-0042).
 - [x] k10r's `EntityRow` reset to `version = 1` with its counters at the FRONT
       (kind, invoke_calls, invoke_ok, last_invoked, then the rest).
+
+## 2026-10-28 — the table's own record (ADR-0043)
+
+- [x] Fixed face **0x0F** = table meta, `[partition?][ns][0x0F]`, no suffix. The
+      highest face on purpose: `slot <= 0x0F` is the one/two-byte delimiter, so the
+      meta sits on the boundary and 0x0B–0x0E stays the contiguous free band.
+- [x] Value = name → bytes map (`[count u16][name_len varint][name][value_len
+      varint][value]`), names inline so stamping never touches the field-name
+      vocabulary. `version` is the runtime's name (same number as the payload
+      header); other names are the caller's.
+- [x] `Collection::{meta, ensure_layout, set_meta}` — I/O-free `new` stays as it is;
+      `ensure_layout` seeds an absent row, answers a matching one, and refuses
+      `LayoutMismatch { stored, current }` otherwise. Detection, not compatibility
+      (ADR-0042): nothing is read through it and nothing migrates.
+- [x] `okm-core/tests/meta_test.rs` — 7 locks: address hex, seeded payload hex, the
+      write-once stamp, a second name beside it, both refusal shapes, and row scans
+      never surfacing the entry.
+- [ ] `okm-dynamic`: a `DynamicCollection::ensure_layout` through the same helper
+      (`okm_core::meta::ensure`, its own `schema.layout_version`). The FORMAT is
+      shared already; the verb lands with the first dynamic consumer that attaches
+      to a store — the typed assembly point is what stamps today.
+
+## 2026-10-28 — a table is a key type plus a row type (ADR-0044)
+
+- [x] Written down once instead of argued per case: the key is its own declaration
+      (`KeyEncode`, fixed width, its own name list) and the row NAMES it
+      (`#[ok_ref]` → `Document::Key`) without embedding it. Two consequences that
+      used to be implicit now have a stated reason.
+- [x] Side tables (ADR-0036): one key type, many row types, byte-identical key
+      payload, separate ns and separate commits.
+- [x] The same name may appear in the key and in the value, and the two fields are
+      unrelated: nothing dedupes, nothing errors, nothing compares them on a read.
+      The classifier is the payload declaration, and the key's bytes never enter
+      the map `fetch` returns.
+- [x] `okm-core/tests/key_row_split_test.rs` — 3 locks: the same name in both
+      halves (payload copy may disagree with the address), the shared key type
+      across two tables (primary keys differ only in the ns), and a map name that
+      matches a payload field writing the row rather than the segment.
+- [x] The SQL contrast recorded in the same ADR: a relational engine keeps the key
+      inside the row and hides an off-row split as overflow pages (row id + chunk
+      ordinal appended); okm has no row outside a key, so the split is a declared
+      side table whose ns is PREPENDED to the address with the key payload
+      untouched — queryable, separately committed, and composable only by two point
+      reads.

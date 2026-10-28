@@ -444,6 +444,56 @@ encoding, so `1 < a < 100` reads only the rows inside `[1, 100)`.
 Recipes live in the [query guide](query-recipes.md), "the forms of
 WHERE".
 
+### A table is a key type plus a row type
+
+Two declarations, not one (ADR-0044). The key is the address — `KeyEncode`,
+fixed width, ordered bytes. The row is the value — `DocumentEncode` — and
+`#[ok_ref(ProfileKey)]` BINDS it to the key without embedding it: no key bytes
+live in the row.
+
+```rust
+#[derive(KeyEncode, Clone, PartialEq, Debug)]
+pub struct ProfileKey {
+    pub org_id: u32,
+    pub user_id: u64,
+}
+
+#[derive(DocumentEncode, Clone, PartialEq, Debug)]
+#[ok_ref(ProfileKey)]
+#[ok_ns(41)]
+pub struct Profile {
+    pub user_id: u64, // same NAME as a key field: a different, unrelated field
+    pub bio: String,
+}
+```
+
+`Collection<S, K, R>` carries both halves and `R::Key = K` pins them together at
+compile time; `Document::collection(store)` reads `K` off `R`, so the call site
+never restates the key type. Three consequences, all deliberate:
+
+- **One key type, many tables.** This is the side-table form (ADR-0036): a second
+  row type over the parent's key type, in its own ns, with a byte-identical key
+  payload — `ProfileStats { views: u32 }` over `ProfileKey` costs one more point
+  read, not a second key space. Everything else about the two tables is separate,
+  including their commits.
+- **`user_id` above is two fields, not one stored twice.** The key's `user_id` is
+  the address; the row's `user_id` is data that may legitimately differ — a
+  denormalized copy for an index, or so a reader need not re-derive it from the
+  key. Nothing dedupes, nothing errors, nothing compares them on a read.
+- **Names are classified by the declaration, not by the key.** In a whole-document
+  write a name that is a declared payload field updates the row; anything else
+  lands in the dynamic segment (ADR-0012). The key's own bytes never appear in the
+  map `fetch` returns — that map is payload fields plus segment.
+
+The boundary with SQL is structural, and it sits here. A relational engine hides
+the key inside the row, so a value split off into overflow pages is an engine
+detail addressed by the row id with a chunk ordinal appended. okm has no row
+outside a key — the table IS a key space — so the same split is a DECLARED side
+table whose ns sits at the FRONT of the address while the key payload stays
+byte-identical. Hence: the side table is still scanned by the parent's key prefix,
+it commits on its own, and nothing can join the two halves back — composition is
+the application's two point reads (ADR-0036).
+
 ### Dynamic fields: the document API (ADR-0012)
 
 One encoding serves declared rows and external data. Declared fields ride
@@ -633,25 +683,28 @@ lifecycle).
 ### Payload versions and field defaults
 
 The version byte is a STAMP of the shape, never a compatibility promise (ADR-0042):
-a field is placed where its reader looks for it, a shape change resets the number,
-and a store written by an older build is rebuilt — migrated, if it ever must be, by
-export and import. The rules below describe what the DECODER does; they do not
-oblige any table to keep an old shape readable.
+a field is placed where its reader looks for it, the number changes when the shape
+does (incrementing is the ordinary style, resetting is equally legitimate — its only
+duty is to tell two incompatible shapes apart), and no build owes a reader for the
+shape it replaced. A store written by another shape is regenerated, or carried
+across by export (the build that wrote it) → import (the build that reads it). The
+rules below describe what the DECODER does; they do not oblige any table to keep an
+old shape readable.
 
 The payload carries a version byte (`#[ok_layout(version = N)]`, default 1).
 Decode rule: a payload whose header version is **newer** than the reading
 schema's is rejected; **older** payloads are accepted, and fields the old
-payload lacks (appended at the tail after that version was written) take
+payload lacks (added after that version was written) take
 their defaults:
 
 ```rust
 #[derive(DocumentEncode, Clone, PartialEq, Debug)]
 #[ok_ref(UserKey)]
-#[ok_layout(version = 2)]            // bump when the field set changed
+#[ok_layout(version = 2)]            // the shape changed: the number changes with it
 pub struct User {
     pub org_id: u32,                 // existed since v1
-    #[ok_default(100)]               // explicit default for pre-v2 payloads
-    pub reputation: u32,             // appended at v2's tail
+    #[ok_default(100)]               // what the decoder supplies for a v1 payload
+    pub reputation: u32,             // the field this shape added
     pub bio_len: u16,                // no #[ok_default] → T::default() (0)
 }
 ```
@@ -660,22 +713,59 @@ pub struct User {
   call); omitting it falls back to `<T as Default>::default()`.
 - Defaults apply ONLY to decoding older payloads — a field missing from
   the bytes. Newly written payloads always carry every field (the writer
-  stamps its own version), so this is version-migration semantics, not a
-  "field default" for absent values.
-- Append-at-the-tail is the only legal way for the DECODER to absorb an added
-  field (a field the reader knows but finds missing must be at the tail of its
-  segment). It is not a reason to append: a table that does not claim
-  compatibility (ADR-0042) places fields where they belong and resets the number
-  (header `hot_len` marks the boundary for hot fields; absent cold TLV
-  frames simply aren't there). Mid-insertion changes the position of
-  existing fields = layout change = version bump + clean rebuild, never
-  silent.
-- Lazy migration: old records stay in the old format; upgrading happens
-  in memory on read. Unread rows never burn write bandwidth.
+  stamps its own version), so this is what the DECODER does when an older
+  payload turns up, not a "field default" for absent values.
+- Append-at-the-tail is what the DECODER can absorb — a field the reader knows but
+  finds missing has to be at the tail of its segment (header `hot_len` marks the
+  boundary for hot fields; absent cold TLV frames simply aren't there). It is not a
+  reason to append anything: a table that claims no compatibility (ADR-0042) places
+  fields where they belong, and moving an existing field is a layout change whose
+  number changes with it.
+- There is NO upgrade-on-read path: an old payload that happens to decode is a lucky
+  landing, not a migration. Carrying a corpus across a shape change is export (by the
+  build that wrote it) → import (by the build that reads it).
+- A production upgrade is a BLUE/GREEN move, not a reader: the new build runs as a
+  second process on its own store, the old instance exports while both stay live, the
+  new one imports the bulk, then a short stop covers the incremental catch-up and
+  traffic switches over. Two builds never write one store (a KV store is
+  single-writer), so even a format-compatible upgrade costs a stop-and-swap. SQL can
+  change a schema online (DDL), which is a real edge for DEVELOPMENT; in production the
+  edge shrinks, because the complexity sits in the application — multi-environment
+  testing, a snapshot before the release, a rollback plan. The stop-and-swap itself is
+  paid in seconds: inside the latency users already blame on the network, hidden by a
+  gateway retry, and schedulable in a predicted idle window. Bulk volume belongs on the
+  cold side (a lakehouse export, or an engine that owns its own format), not in a
+  tolerant decoder here.
+
+### The table's own record (fixed face 0x0F)
+
+A table can describe itself. Fixed face **0x0F** holds ONE entry per table —
+`[partition?][ns][0x0F]`, no suffix — whose value is a **name → bytes map**
+(ADR-0043). `version` is the name the runtime writes, and its value is the same
+number the payload header carries; anything else a consumer wants to record about
+the store rides beside it without a layout decision.
+
+```text
+[count u16 BE] ( [name_len varint][name UTF-8][value_len varint][bytes] )*
+```
+
+`Collection::ensure_layout()` is the first-touch verb: absent → seed this build's
+version; matching → answer the row; another version, or a row with no version →
+`Error::LayoutMismatch { stored, current }` naming both numbers. `set_meta(name,
+value)` records a caller-owned name (the runtime re-stamps `version` afterwards).
+Call it at attach: one point read per table, never a per-row cost — and
+`Collection::new` stays I/O-free because of that.
+
+Three boundaries. The entry is **not a row**: row scans and the export path filter
+by slot, so 0x0F is skipped like 0x01/0x02. It does **not** travel in
+export/snapshot: it describes the WRITER's shape, and the importing build stamps
+its own. And it is a **detection** device, not a compatibility promise (ADR-0042):
+it turns a wrong-shape store into a refusal at attach instead of a decode failure
+on the first row, and it never makes an old shape readable.
 
 The dynamic codec (schema-driven encoders in Python/Steel) mirrors this
 rule from `CollectionSchema` — per-field defaults travel with the schema so
-the dynamic reader applies the same migration semantics.
+the dynamic reader applies the same decoder rule.
 
 ### Payload field types and wrappers
 
@@ -2118,9 +2208,10 @@ to "declare it, then never touch it".
   derived state: absent from export and snapshot, rebuilt
   deterministically from the rows by `put`. Changing a key layout or a
   segment order is a re-declaration plus a clean rebuild, never an
-  in-place migration. What may evolve at runtime is the payload shape
-  (fields appended at the tail, absent ones filled from defaults, per the
-  payload-version rules above), never the layout.
+  in-place migration. What may change in a payload is its SHAPE — and it
+  changes as a whole: the new shape carries its own number, and rows of the
+  old shape are regenerated or carried across by export/import (ADR-0042).
+  Key layout, segments and slots never move.
 - **A declaration has two moments; the runtime one covers data shape
   only.** The typed path (compile-time derive) and the schema path (a
   runtime `CollectionSchema` that the Python and Steel bindings build

@@ -74,10 +74,13 @@ byte (≥ 0x10).
 0x08  graph predicate+out          [ns][0x08][predicate_id][src ref][dst ref][edge_id]
 0x09  graph predicate+in           [ns][0x09][predicate_id][dst ref][src ref][edge_id]
 0x0A  vector index snapshot        [ns][0x0A][shard u16 BE]    → built graph (okm-vector cache, droppable)
-0x0C–0x0F  free for future fixed faces
+0x0B–0x0E  free for future fixed faces
+0x0F  table meta                    [ns][0x0F]                  → name → bytes map (ADR-0043)
 (rows are grouped by ROLE: the two vocabularies first, then the graph faces
 that read their ids — a vocabulary leads the faces it serves; the NUMBERS
-are the mechanism.)
+are the mechanism. 0x0F is the HIGHEST face on purpose: `slot <= 0x0F` is the
+one-byte/two-byte delimiter, so the meta sits on the boundary and no face added
+later can squeeze it out.)
 ```
 
 **Counting families** (2 bytes, 12-bit counter, numbers unchanged) — a family
