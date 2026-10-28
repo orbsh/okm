@@ -62,6 +62,16 @@ pub enum Error {
         "nested object requires the vocabulary (name `{name}` unresolved) — use put_frame_named"
     )]
     VocabularyRequired { name: String },
+    /// The store's meta entry is stamped with another payload shape (ADR-0043),
+    /// or names no version at all. Not a compatibility failure and not a
+    /// migration prompt: the shape this build writes is the only one it reads,
+    /// so the store is exported by the build that wrote it (or deleted) and the
+    /// rows come back through import (ADR-0042).
+    #[error(
+        "table layout mismatch: the store is stamped {stored:?}, this build writes {current} — \
+         export the store with the build that stamped it, or delete it (ADR-0042)"
+    )]
+    LayoutMismatch { stored: Option<u8>, current: u8 },
     /// `Graph::link` on an id that is already live — identity stays with the
     /// caller, so a collision is the caller's bug, not a retry.
     #[error("edge_id {edge_id} already live")]
