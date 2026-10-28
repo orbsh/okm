@@ -39,11 +39,20 @@ about this codebase decide what the record can be and where it may live.
 ## Decision
 
 **1. The capture point is `Collection::commit`,** the private funnel every
-semantic write passes through — `put`, `delete`, `merge`, `replace`, `purge`, and
-the callers of `save_with_prev_into`. Filtering happens in memory before the
-commit; the append happens only after `commit_batch` returns `Ok`. Not the
-storage boundary (it cannot tell a row from an index entry), not the subscribe
-sink (ADR-0031 §5).
+semantic write passes through — `put`, `delete`, `merge`, `replace`, `purge`. A
+`save_into` caller reaches the store directly, which no collection-level hook can
+see, so the assembly point also exposes **`Collection::commit_batch`**: stage,
+commit, append, through the same path. ADR-0031 §5 already says a batch writer's
+events are its own concern; this is how it discharges that. Filtering happens in
+memory before the commit; the append happens only after the engine commit
+returned `Ok`. Not the storage boundary (it cannot tell a row from an index
+entry), not the subscribe sink (ADR-0031 §5).
+
+A batch may carry another table's keys; a log directory belongs to one header, so
+a publication captures the keys under THIS collection's header and drops the rest.
+Covering a multi-table batch needs a staged/flush split (each collection stages
+its own share before the single commit, then flushes after it) — a PLAN item, not
+a v1 behaviour.
 
 **2. One committed batch is one frame, encoded by `okm_wire::OpFrame`.** That is
 the encoding the remote path already uses (`write_batch` over
@@ -54,7 +63,9 @@ length prefix. No second format, and vocabulary growth needs no record of its ow
 
 **3. The filter is an EXCLUDE list, stated once, and it fails closed toward the
 lake.** Carried — the set an export carries: primary `0x00`, dynamic segment
-`0x01`, field-name vocabulary `0x02`/`0x03`, predicate vocabulary `0x04`/`0x05`.
+`0x01`, field-name vocabulary `0x02`/`0x03`, predicate vocabulary `0x04`/`0x05`,
+and BOTH directions of every declared categorical vocabulary (`0x1nnn`/`0x2nnn`,
+ADR-0032 — the payload stores ids, so the labels are truth, not decoration).
 Dropped: declared index `0x3nnn`, reduce `0x4nnn`, junction `0x5nnn`, graph faces
 `0x06`–`0x09` (`Graph::reindex` empties and rebuilds them from the primary rows,
 so an edge rides as a row like anything else), vector snapshot `0x0A`, table meta

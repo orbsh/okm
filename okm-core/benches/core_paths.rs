@@ -215,6 +215,51 @@ fn bench_write_mock(c: &mut Criterion) {
     g.finish()
 }
 
+// ---------- the change log's tax (ADR-0045) ----------
+
+/// A FIXED key and row, so every iteration is the same overwrite: the workload
+/// is constant, the in-memory engine cannot grow under the measurement, and the
+/// only difference between the two arms is whether a changelog is attached. (A
+/// fresh key per iteration makes the store grow into the millions and turns the
+/// run into an engine-compaction benchmark instead.)
+fn bench_write_changelog(c: &mut Criterion) {
+    let mut g = c.benchmark_group("write-changelog");
+    g.sample_size(20);
+    g.measurement_time(std::time::Duration::from_secs(2));
+
+    g.bench_function("put/plain", |b| {
+        let t: Collection<TestStore, BenchKey, BenchRow> =
+            Collection::new(TestStore::slatedb_mem());
+        let key = make_key(7);
+        let row = make_row(7);
+        b.iter(|| {
+            t.put(&key, &row).unwrap();
+            black_box(())
+        })
+    });
+    g.bench_function("put/captured", |b| {
+        // The directory lives in cargo's own tmp area (on disk) and is removed
+        // after the run; it must outlive the collection, so it is declared first.
+        let root = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("changelog-bench");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let t: Collection<TestStore, BenchKey, BenchRow> = Collection::with_changelog(
+            TestStore::slatedb_mem(),
+            okm_core::changelog::ChangelogConfig::new(&root),
+        )
+        .unwrap();
+        let key = make_key(7);
+        let row = make_row(7);
+        b.iter(|| {
+            t.put(&key, &row).unwrap();
+            black_box(())
+        });
+        drop(t);
+        let _ = std::fs::remove_dir_all(&root);
+    });
+    g.finish()
+}
+
 // ---------- dynamic codec tax ----------
 
 fn bench_dynamic(c: &mut Criterion) {
@@ -258,6 +303,7 @@ criterion_group!(
     bench_payload,
     bench_scan,
     bench_write_mock,
+    bench_write_changelog,
     bench_dynamic
 );
 criterion_main!(benches);

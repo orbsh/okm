@@ -42,6 +42,9 @@ pub mod error;
 pub use error::{Error, Result};
 pub mod bridge;
 pub mod subscribe;
+/// The change log (ADR-0045): append-only segment files written at the commit
+/// boundary, drained out of process.
+pub mod changelog;
 
 // ================= re-exports (stable public surface) =================
 
@@ -60,7 +63,7 @@ pub use engine::storage::{BatchStore, VirtualStorage, VirtualStorageAsync, Batch
 pub use engine::test_engine::TestStore;
 pub use engine::nest::{NestStorage, RemoteStore, VirtualHandle};
 pub use engine::wire_client::{WireClient, WireTransport};
-pub use okm_wire::{OpFrame, OpResponse};
+pub use okm_wire::{OpFrame, OpResponse, OP_DELETE, OP_PUT};
 pub use model::field::{FieldDesc, FieldType};
 /// One exported batch — re-exported so a consumer can pass the graph's edge
 /// table to `parquet_io::write_batch` without taking an Arrow dependency of its

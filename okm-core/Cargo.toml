@@ -89,6 +89,12 @@ required-features = ["test-engines"]
 name = "meta_test"
 required-features = ["test-engines"]
 
+# The change log (ADR-0045) runs on a real engine like every other write-path
+# suite, so it needs `test-engines`; nothing else.
+[[test]]
+name = "changelog_test"
+required-features = ["test-engines"]
+
 [[test]]
 name = "key_row_split_test"
 required-features = ["test-engines"]
