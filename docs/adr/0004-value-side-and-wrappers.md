@@ -22,6 +22,8 @@ pub struct AgentMemoryValue {
 
 The macro emits `encode_value` / `decode_value`; `decode_value` matches the version byte and dispatches to the layout decoder for that version. **Lazy migration**: `decode_v1` upgrades in memory on read; unread old records stay in the old format and never burn write bandwidth — impossible for SQL `ALTER TABLE`, which must rewrite every row. Discipline: fields may only be **appended at the tail**; mid-insert breaks old readers and is blocked by the version bump.
 
+> **Update (ADR-0042, 2026-10-28).** The lazy-migration framing above is the history of this comparison, not the policy. No table keeps a reader for the shape it replaced: tail-append is what the DECODER can absorb, not the rule for where a field goes, and carrying rows across a shape change is export (the build that wrote them) → import (the build that reads them). The version byte is a stamp — it may simply increment, and it promises nothing.
+
 ## L2: Tagged/TLV extension section (main axis)
 
 L1's pain: every new field bumps the version and requires an old-version decoder. TLV demotes "evolution" from version dispatch to **field self-description**: the payload splits into a fixed-width hot section (existing `KeyEncode`-style direct offsets, position contract unchanged) + a tagged extension section (`field_id: u8 + len: u16 + bytes`):
