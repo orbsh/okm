@@ -22,6 +22,7 @@ pub mod junction;
 pub mod key;
 pub mod obj_vocab;
 pub mod obj_dynamic;
+pub mod meta;
 pub mod reduce;
 pub mod presets;
 pub mod reverse;

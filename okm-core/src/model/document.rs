@@ -73,6 +73,42 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         buf
     }
 
+    /// The table's meta entry (fixed face 0x0F, ADR-0043): `None` when the store
+    /// was never stamped. One point read; an engine failure comes back as `Err`.
+    pub fn meta(&self) -> crate::error::Result<Option<crate::model::meta::TableMeta>> {
+        crate::model::meta::read(&self.store, &self.header())
+    }
+
+    /// First-touch verb (ADR-0043): stamp THIS build's payload shape on a fresh
+    /// store, or answer the stamp the store already carries.
+    ///
+    /// Call it once per table at attach/boot — never on the write path (one
+    /// point read per call). `Error::LayoutMismatch` means the store was written
+    /// in another shape: export it with the build that stamped it, or delete it
+    /// (ADR-0042). `new` stays I/O-free on purpose, which is why this is a verb
+    /// rather than constructor work.
+    pub fn ensure_layout(&self) -> crate::error::Result<crate::model::meta::TableMeta> {
+        crate::model::meta::ensure(&self.store, &self.header(), R::LAYOUT_VERSION)
+    }
+
+    /// Record one caller-owned name in the meta entry (ADR-0043), stamping the
+    /// table first when it is fresh. `version` is the runtime's: it is re-stamped
+    /// from `R::LAYOUT_VERSION` after the caller's name is applied, so the shape
+    /// stamp cannot be edited away through this verb.
+    ///
+    /// Read-modify-write of ONE singleton key, committed as a single write.
+    pub fn set_meta(
+        &self,
+        name: &str,
+        value: Vec<u8>,
+    ) -> crate::error::Result<crate::model::meta::TableMeta> {
+        let mut meta = crate::model::meta::ensure(&self.store, &self.header(), R::LAYOUT_VERSION)?;
+        meta.set(name, value);
+        meta.set(crate::model::meta::VERSION, vec![R::LAYOUT_VERSION]);
+        crate::model::meta::write(&self.store, &self.header(), &meta)?;
+        Ok(meta)
+    }
+
     /// Primary key entry (fixed face 0x00, one byte):
     /// `[0xFF][part 1B] (if declared)[ns 2B][0x00][key payload]`, value = the
     /// document's TLV payload. The partition segment precedes the ns header

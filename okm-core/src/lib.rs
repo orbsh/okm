@@ -67,7 +67,7 @@ pub use model::field::{FieldDesc, FieldType};
 /// own (ADR-0034).
 #[cfg(feature = "parquet")]
 pub use arrow::array::RecordBatch;
-pub use model::index::{Document, IndexFuncResult, IndexFuncValues, KvIndex, PRIMARY_SLOT, scan_index, scan_index_exact, slot_len, write_slot};
+pub use model::index::{Document, IndexFuncResult, IndexFuncValues, KvIndex, META_SLOT, PRIMARY_SLOT, scan_index, scan_index_exact, slot_len, write_slot};
 pub use model::key::{KeyEncode, PrefixKey};
 pub use subscribe::{SinkCell, Event, Op};
 pub use model::document::Collection;
@@ -99,6 +99,8 @@ pub use model::obj_dynamic as obj_dynamic;
 pub use model::reduce as reduce;
 pub use model::reverse as reverse;
 pub use model::document as document;
+pub use model::meta as meta;
+pub use model::meta::TableMeta;
 pub use model::collection as collection;
 pub use model::junction as junction;
 pub use model::wrappers as wrappers;
