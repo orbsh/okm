@@ -2022,12 +2022,32 @@ panic lints allowed only in the places it names. So the runtime half of
 - [x] Reader: sealed segments in name order, frames in append order, stopping at
       the first incomplete frame of an unsealed segment (a torn tail is a normal
       end; a torn frame inside a sealed segment is an error).
-- [ ] Schema sidecar: `CollectionSchema::of::<K, R>()` JSON per layout version
-      beside the segments. Names ride in the log; types and key layout do not —
-      the sidecar carries `key_len`/`key_fields` (offsets + widths), the hot/cold
-      lists with tags, `layout_version` and the slot map, which is everything a
-      column builder needs. Without it the log is readable as bytes and useless as
-      columns.
+- [x] Schema sidecar: `CollectionSchema::of::<K, R>()` JSON per layout version
+      beside the segments, written by `with_changelog` when `schema-serde` is on
+      (`schema-v<N>.json`, write-then-rename, idempotent, and a REFUSAL when the
+      same version already describes another shape). Names ride in the log; types
+      and key layout do not — the sidecar carries `key_len`/`key_fields` (offsets +
+      widths), the hot/cold lists with tags, `layout_version` and the slot map.
+      Without it the log is readable as bytes and useless as columns.
+- [x] Wrapper kinds in the dynamic codec, which had diverged from the typed one
+      in three ways: `encode::storage_be_bytes` wrote an 8-byte BE image for
+      `VarInt`/`Quant`/`Offset` (the typed side writes a prefix-monotonic varint
+      and a 4-byte biased u32); the decoder demanded exactly 8 bytes for all
+      three; and `decode_fixed` REJECTED a hot `Quant`/`Offset` field outright, so
+      a table declaring one could not be read dynamically at all. Fixed by
+      dispatching on the field KIND and letting the value be LOGICAL — the codec
+      applies `Quant`'s precision and `Offset`'s base, which the schema already
+      carries. `dynamic_cross_test` now locks byte equality with the derive for a
+      row of all three kinds (4-byte biased offset, 8-byte fixed-point quant,
+      2-byte varint 300) plus both round-trip directions, and the storage-form
+      contract is gone from `field_pair` (a quant field fed its wire is a type
+      error, not a silent integer). Bindings coerced by kind and were updated to
+      hand over f64 / i64.
+- [ ] Schema-driven columns: `ValueMap` (+ key bytes) → `RecordBatch` in
+      okm-dynamic behind an `arrow` feature, reusing `okm_core::bridge::arrow_bridge::arrow_type`
+      (now public: the ONE `FieldType → DataType` mapping). Acceptance is the drift
+      lock: the same rows through the typed bridge and through this builder must
+      produce identical schemas and arrays.
 - [x] Tests (`okm-core/tests/changelog_test.rs`, 7 locks): frame round trip through
       a file; `merge`/`replace`/`purge` captured; derived faces and the vocabulary
       cursor absent; the categorical labels present; unsealed tail ignored;

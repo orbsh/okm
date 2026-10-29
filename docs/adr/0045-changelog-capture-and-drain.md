@@ -128,6 +128,13 @@ into columns; without it the log is readable as bytes and useless as a table.
 The schema is sufficient on its own: it carries `key_len` and `key_fields` with
 their offsets and widths, the hot/cold field lists with tags, `layout_version` and
 the slot map — the same facts the typed Arrow bridge builds its columns from.
+Sufficient **as a declaration**: the value side has to agree with it. The wrapper
+kinds are where a value-only dispatch goes wrong — they are not "an integer", they
+are a prefix-monotonic varint, a fixed-point i64 and a 4-byte biased u32 — so the
+codec dispatches on the field kind and hands over the LOGICAL value (it applies
+`Quant`'s precision and `Offset`'s base, both of which the schema carries), locked
+against the derive byte for byte by `dynamic_cross_test`. A column builder can now
+be built on the decode rather than beside it.
 
 **10. This is not a third event mechanism.** The event layer is `reduce` and
 `subscribe` (ADR-0008). This is an entry in the write set plus a file: no
