@@ -2145,3 +2145,70 @@ panic lints allowed only in the places it names. So the runtime half of
       schema-driven Arrow builder is NO LONGER here: it landed as
       `okm_dynamic::arrow`, reusing `arrow_type`, with the typed bridge as its
       drift lock.
+
+## 2026-10-28 — the append-only log (ADR-0046)
+
+A sibling crate, `okm-series`, for data whose whole life is "append in time order, read
+by offset or time, drop the old end". Queues sit above it; time series use it. It is
+NOT an okm table and does not implement `VirtualStorage` — the reason is retention:
+in an LSM every dropped record leaves a tombstone, and the file is the only unit
+that can be dropped in one syscall. Design in ADR-0046. Nothing below is built.
+
+- [ ] `okm-series`: `log.meta` (epoch, precision, bucket), `LOCK`, `<bucket>/part-<n>.log`
+      + `.dict`, seal by rename, retention by `remove_dir_all`.
+- [ ] The record and part headers: `[len][ts delta varint][nTLV body]`, `base_ts` +
+      monotone deltas, `first_offset` / `record_count`. **No per-record checksum** — a
+      crash can only truncate the tail (nothing is acknowledged before its fsync, and a
+      part is only written at its end), so the torn record is the one whose `len` runs
+      past EOF. Integrity against a lying storage stack belongs to the storage stack;
+      the part footer carries one whole-part digest for copies and exports.
+- [ ] Blocks: 64 KiB of records compressed per block (zstd 1-3, lz4 where CPU matters
+      more), at buffer flush rather than at seal — every block, not only the long ones,
+      because a threshold makes two file shapes and still cannot predict a ratio. The
+      ADR says out loud that this overlaps the dictionary and that `dict_policy` is a
+      per-log switch decided by measurement.
+- [ ] `part-<n>.idx`: one row per block `[first_ts][first_offset][file_offset][len_c]
+      [len_u][records]`, appended when the block is written; seek = parts' first rows,
+      then the rows inside the part. Per part, NOT in `log.meta` (identity, read at
+      every open, written once) and not per bucket (an index spanning parts cannot be
+      dropped with one of them).
+- [ ] The seal footer: records, compressed and uncompressed bytes, min/max ts, block
+      count, dictionary entries, whole-part digest. PHYSICAL only — no field-level
+      statistics (that is Iceberg's job in the lake and the drainer's when it writes
+      Parquet; a log with per-field stats is a column store with a worse layout).
+- [ ] Partitioning by one field, declared at creation and never changed:
+      `<bucket>/<value>/part-<n>.*`, one open part and one `LOCK` per partition, the
+      dictionary per (partition, part), retention still per bucket.
+- [ ] `append(ts, body) -> offset` with fsync before the return, plus a `sync` verb for
+      callers that accept a window; single writer enforced by `LOCK`.
+- [ ] `read(from_offset, max)` and `read_by_time(from, to)`: pick the part by the range
+      in its header, then seek inside it through `part-<n>.idx` (§8 of the ADR), which
+      is why the index is in v1 and not deferred.
+- [ ] nTLV string forms: `n = 0` inline, `n >= 1` dictionary `n - 1` with width
+      `u16 << k` from the block header; the same for tag and value halves.
+- [ ] `part-<n>.dict`: first block at a fixed offset, `prev_offset` chain walked
+      backwards from the newest block (which `part-<n>.dict.tail` names, replaced by
+      rename), escalation to a doubled width when a block's id space is exhausted. No
+      in-place patching anywhere: a part that never mutates is what makes "a crash can
+      only truncate the tail" true.
+- [ ] Promotion by tiers of the code's own width, `[[4, 10], [8, 5], [16, 3], [0, 2]]`:
+      `L <= W` never (a string shorter than its own code only grows), `W < L <= 4W`
+      at 10, `4W..8W` at 5, `8W..16W` at 3, `16W` and beyond at 2 — the long row is
+      what makes a long error message intern on its second occurrence. The list is
+      configuration, not format: changing it changes what FUTURE parts promote.
+      Counts are per part and restart hourly, which is why the short end is the only
+      conservative row. Nothing is rewritten when a string is promoted late.
+- [ ] Tests to write first: a part that survives a torn tail; a string promoted at the
+      tenth occurrence with the first nine still inline; a long value promoted at the
+      second; an escalation to u32 that a reader resolves by walking `prev_offset`;
+      retention that leaves no tombstone (the bucket directory is gone and the log
+      still appends).
+- [ ] The changelog's segments ride this substrate (ADR-0045 is the first append-only
+      file format in the repo and `okm-series` is the second; one of them has to go).
+      The body codec differs (key-only op frames vs timestamped nTLV records) and so
+      does the durability knob (at-most-once after the commit vs fsync before the
+      ack), which is exactly the shape of a plug-in: the envelope, seal/rotate,
+      retention and torn-tail recovery come from `okm-series`, the body and the
+      durability policy stay with the caller. Do it when `okm-series` has its first
+      green test, not before — `okm-drain` reads the current format and must keep
+      reading it either way.
