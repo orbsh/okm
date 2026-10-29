@@ -277,6 +277,9 @@ impl Log {
     }
 
     /// Read up to `max` records from a logical offset, across parts and partitions.
+    ///
+    /// With partitions the offset applies to EVERY stream (offsets are per stream, see
+    /// ADR-0046 9) and rows come back in time order.
     pub fn read(&self, from: u64, max: usize) -> Result<Vec<(u64, u64, Body)>, Error> {
         let mut rows = Vec::new();
         for (_, _, path) in self.parts_by_offset()? {
@@ -409,6 +412,20 @@ impl Log {
         partition: &Option<String>,
         ts: u64,
     ) -> Result<(), Error> {
+        // Time has moved into a later bucket: the previous one's part is finished. Left
+        // open it would keep its bucket permanent, because retention refuses to drop a
+        // bucket that still has a writer.
+        let stale: Vec<usize> = self
+            .active
+            .iter()
+            .enumerate()
+            .filter(|(_, active)| active.partition == *partition && active.bucket < bucket)
+            .map(|(index, _)| index)
+            .collect();
+        for index in stale.into_iter().rev() {
+            let active = self.active.remove(index);
+            active.writer.seal()?;
+        }
         let full = match self.active_index(bucket, partition.as_deref()) {
             None => true,
             Some(index) => {
