@@ -2054,6 +2054,18 @@ panic lints allowed only in the places it names. So the runtime half of
       field's TLV tag is its declaration index). A `Vocab` column resolves through
       the caller's replayed vocabulary and is NULL — never invented — without one;
       a present value of the wrong kind is an error, not another NULL.
+- [x] `okm-drain`: the SECOND layer — `drain(root, cfg)` walks the table
+      directories, replays a window of N sealed segments, decodes through the
+      sidecar schema and builds ONE Parquet file with the schema-driven columns.
+      The header comes from the directory name (it is `<header hex>`), vocabulary
+      labels are replayed from the id faces the log carries, and a watermark file
+      per consumer moves only AFTER the file exists (atomic rename), so a window is
+      never drained twice and never half-recorded. A window is history: the same
+      key may appear twice and collapsing it is the sink's compaction, not this
+      crate's promise. What it refuses: a window holding a DELETE (the declaration
+      has no column for a removal) and a table with no sidecar (bytes, not
+      columns) — both stop with the watermark untouched and no artefact written.
+
 - [x] `--features arrow` alone did not build: `bridge::iceberg` (a Parquet
       METADATA writer) and `Graph::to_record_batch_table` (the variant column) were
       gated on `arrow` while using the `parquet` crate. Both are `parquet` now, and

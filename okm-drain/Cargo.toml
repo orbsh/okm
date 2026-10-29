@@ -1,0 +1,22 @@
+[package]
+name = "okm-drain"
+version = "0.1.0"
+edition = "2024"
+description = "Drain the change log into windows: sealed segments + schema sidecar → Parquet."
+
+[dependencies]
+okm-core = { path = "../okm-core", features = ["schema-serde", "parquet"] }
+okm-wire = { path = "../okm-wire" }
+okm-dynamic = { path = "../okm-dynamic", features = ["arrow"] }
+arrow = "60"
+parquet = { version = "60", default-features = false, features = ["arrow"] }
+serde_json = "1"
+
+[dev-dependencies]
+okm-derive = { path = "../okm-derive" }
+okm-core = { path = "../okm-core", features = ["test-engines", "schema-serde", "parquet"] }
+parquet = { version = "60", default-features = false, features = ["arrow"] }
+tempfile = "3"
+
+[lints]
+workspace = true
