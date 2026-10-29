@@ -27,6 +27,9 @@ pub struct PartWriter {
     header: PartHeader,
     block_bytes: usize,
     level: i32,
+    /// `Raw` skips compression entirely; otherwise the block is compressed and kept
+    /// only when that made it smaller.
+    codec: Codec,
     /// Offsets inside this part are logical record numbers, not bytes.
     next_offset: u64,
     last_ts: Option<u64>,
@@ -49,6 +52,7 @@ impl PartWriter {
         header: PartHeader,
         block_bytes: usize,
         level: i32,
+        codec: Codec,
         dict: Option<&DictConfig>,
     ) -> Result<Self, Error> {
         let dict = match dict {
@@ -69,6 +73,7 @@ impl PartWriter {
             header,
             block_bytes,
             level,
+            codec,
             next_offset: header.first_offset,
             last_ts: None,
             file_off: 0,
@@ -96,6 +101,7 @@ impl PartWriter {
         path: &Path,
         block_bytes: usize,
         level: i32,
+        codec: Codec,
         dict: Option<&DictConfig>,
     ) -> Result<Self, Error> {
         let dict = match dict {
@@ -179,6 +185,7 @@ impl PartWriter {
             header,
             block_bytes,
             level,
+            codec,
             next_offset,
             last_ts,
             file_off,
@@ -209,9 +216,13 @@ impl PartWriter {
         self.path.as_path()
     }
 
-    /// Append one body at `ts`. Returns its logical offset. The record is buffered
-    /// until a block fills, so the caller that wants per-record durability flushes a
-    /// block per record (`Log::append_durable`).
+    /// Append one body at `ts`, returning its offset.
+    ///
+    /// Offsets belong to the STREAM, which is a partition (or the log itself when no
+    /// partition is declared) — not to the whole log. A block header carries only the
+    /// first offset, and the reader walks a block's records by counting up from it, so a
+    /// part whose records were interleaved with another partition's could not be read
+    /// back. One counter per stream, never shared.
     pub fn append(&mut self, ts: u64, body: &Body) -> Result<u64, Error> {
         let encoded = body.encode_with(self.dict.as_mut());
         let delta = match self.last_ts {
@@ -261,11 +272,17 @@ impl PartWriter {
             dict.flush_if_dirty()?;
         }
         let raw = std::mem::take(&mut self.block);
-        let compressed = zstd::bulk::compress(&raw, self.level).map_err(|_| Error::Codec)?;
-        let (codec, payload) = if compressed.len() < raw.len() {
-            (Codec::Zstd, compressed)
-        } else {
-            (Codec::Raw, raw.clone())
+        let (codec, payload) = match self.codec {
+            Codec::Raw => (Codec::Raw, raw.clone()),
+            Codec::Zstd => {
+                let compressed =
+                    zstd::bulk::compress(&raw, self.level).map_err(|_| Error::Codec)?;
+                if compressed.len() < raw.len() {
+                    (Codec::Zstd, compressed)
+                } else {
+                    (Codec::Raw, raw.clone())
+                }
+            }
         };
         let block = BlockHeader {
             codec,
@@ -283,8 +300,10 @@ impl PartWriter {
         self.blocks += 1;
         self.digest.update(&raw);
         let row = IndexRow::from_header(&block, self.file_off).ok_or(Error::Overflow)?;
+        // The index is DERIVED data: adoption rebuilds it from the block headers, so it
+        // is not fsynced per block. That halves the syncs on the write path, and the
+        // measurement says each sync pair cost about a millisecond.
         self.index.write_all(&row.encode())?;
-        self.index.sync_data()?;
         self.file_off += BLOCK_HEADER_LEN + u64::from(block.len_c);
         self.block = Vec::with_capacity(self.block_bytes);
         self.block_records = 0;
@@ -329,6 +348,9 @@ pub struct PartReader {
     rows: Vec<IndexRow>,
     sealed: bool,
     dict: Option<Dict>,
+    /// The first and last timestamp this part covers. Computed at open, because an open
+    /// part has no footer and its last block's `first_ts` is not the last record's.
+    span: Option<(u64, u64)>,
 }
 
 impl PartReader {
@@ -355,6 +377,23 @@ impl PartReader {
             None
         };
         let rows = read_index(&index_path_for(path)?)?;
+        let span = match (rows.first(), footer) {
+            (None, _) => None,
+            (Some(first), Some(footer)) => Some((first.first_ts, footer.last_ts)),
+            (Some(first), None) => {
+                // An open part: the truth about its last record is in its last block.
+                let last_row = rows.last().ok_or(Error::BadFrame("index"))?;
+                let mut block_raw = vec![0u8; last_row.len_c as usize];
+                file.seek(SeekFrom::Start(u64::from(last_row.file_offset)))?;
+                let mut head = [0u8; BLOCK_HEADER_LEN as usize];
+                read_full(&mut file, &mut head)?;
+                let block = BlockHeader::decode(&head).ok_or(Error::BadFrame("block header"))?;
+                read_full(&mut file, &mut block_raw)?;
+                let raw = decode_payload(&block_raw, &block)?;
+                let last_ts = last_ts_of(&raw, block.first_ts)?.unwrap_or(block.first_ts);
+                Some((first.first_ts, last_ts))
+            }
+        };
         Ok(PartReader {
             path: path.to_path_buf(),
             header,
@@ -362,6 +401,7 @@ impl PartReader {
             rows,
             sealed,
             dict,
+            span,
         })
     }
 
@@ -383,12 +423,7 @@ impl PartReader {
     }
 
     pub fn ts_span(&self) -> Option<(u64, u64)> {
-        let first = self.rows.first()?.first_ts;
-        let last = match self.footer {
-            Some(footer) => footer.last_ts,
-            None => self.rows.last()?.first_ts,
-        };
-        Some((first, last))
+        self.span
     }
 
     pub fn rows(&self) -> &[IndexRow] {

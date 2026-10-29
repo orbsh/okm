@@ -2176,11 +2176,20 @@ that can be dropped in one syscall. Design in ADR-0046. Nothing below is built.
       byte sizes (the file has a length, the index has the rows), not the first
       timestamp (the header has it), not the dictionary count (the dict file counts
       itself) — a footer that repeats the disk is a second copy that can disagree.
-- [ ] Partitioning by one field, declared at creation and never changed (the one slice
-      left):
-      `<bucket>/<value>/part-<n>.*`, one open part and one `LOCK` per partition, the
-      dictionary per (partition, part), retention still per bucket. Not built: nothing
-      needs it yet, and it changes the reader's walk.
+- [x] Partitioning by one field, declared at creation and never changed: the value of
+      a declared body tag becomes `<bucket>/p-<hex(value)>/part-<n>.*`, the dictionary is
+      per (partition, part), retention is still per bucket, and a record without the tag
+      is refused (`MissingPartition`). Two things the implementation settled that the
+      design had wrong or vague:
+      **offsets are per stream** (a block header carries only its first offset and the
+      reader counts up, so a global counter would make an interleaved part unreadable),
+      and **there is one `LOCK` per log, not per partition** (the writer that holds it
+      owns every partition; a per-partition lock only matters if two processes write
+      different partitions of one log, and nothing asks for that).
+- [x] Fixed while building partitions: an OPEN part reported its time span from its last
+      index row, which is its last block's FIRST record, so a range read could skip a
+      part whose later records were in range. The span is now computed at open from the
+      last block, and there is a test that reads a range out of an unsealed part.
 - [x] `append(ts, body) -> offset`, buffered until a block fills, with
       `append_durable` as the fsync-before-ack path (a block per record, which is the
       trade the caller chose). Single writer enforced by `LOCK`.

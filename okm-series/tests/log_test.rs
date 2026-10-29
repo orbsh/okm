@@ -14,7 +14,9 @@ fn config() -> Config {
         block_bytes: 64 * 1024,
         part_bytes: 64 * 1024 * 1024,
         zstd_level: 1,
+        block_codec: okm_series::Codec::Zstd,
         dict: Some(okm_series::DictConfig::default()),
+        partition_tag: None,
     }
 }
 
@@ -128,10 +130,11 @@ fn sealing_is_a_rename_and_the_footer_carries_the_totals() {
     let base = 1_700_000_000_000u64;
     log.append(base, &body("info", "one")).unwrap();
     log.append(base + 1, &body("info", "two")).unwrap();
-    let footer = log.seal().unwrap().expect("a footer");
-    assert_eq!(footer.records, 2);
-    assert_eq!(footer.last_ts, base + 1);
-    assert_eq!(footer.blocks, 1);
+    let footers = log.seal().unwrap();
+    assert_eq!(footers.len(), 1, "one open part, one footer");
+    assert_eq!(footers[0].records, 2);
+    assert_eq!(footers[0].last_ts, base + 1);
+    assert_eq!(footers[0].blocks, 1);
 
     let parts = log.parts().unwrap();
     assert_eq!(parts.len(), 1);
@@ -194,6 +197,29 @@ fn a_time_range_reads_only_what_it_covers() {
     assert_eq!(rows.len(), 3, "inclusive on both ends");
     assert_eq!(rows[0].1, 3);
     assert_eq!(rows[2].1, 5);
+}
+
+#[test]
+fn a_time_range_reads_an_unsealed_part_correctly() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut log = Log::open(dir.path(), config()).unwrap();
+    let base = 1_700_000_000_000u64;
+    // Everything in one block, nothing sealed: the part's time span has to come from its
+    // last block, not from its last index row (which is the block's FIRST record).
+    for step in 0..6u64 {
+        log.append(base + step * 1_000, &body("info", &format!("row {step}")))
+            .unwrap();
+    }
+    log.flush().unwrap();
+
+    let rows = log.read_by_time(base + 4_000, base + 5_000, 100).unwrap();
+    assert_eq!(
+        rows.len(),
+        2,
+        "the part must not be skipped as out of range"
+    );
+    assert_eq!(rows[0].1, 4);
+    assert_eq!(rows[1].1, 5);
 }
 
 #[test]

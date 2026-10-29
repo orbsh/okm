@@ -190,44 +190,60 @@ Reading the table honestly:
 
 ## The series log's write path (`okm-series`)
 
-`cargo run -p okm-series --release --example series_tax` — 50,000 records into one
-part of 64 KiB blocks, one bucket, 256 distinct bodies (or one per record for the
-"unique id" shape), three runs. Byte counts are deterministic; times are given as
-ranges across those runs.
+`cargo run -p okm-series --release --example series_tax` — 50,000 records into one part
+of 64 KiB blocks, one bucket, three shapes of body (256 distinct bodies for the first
+two, one per record for the third). Bytes are deterministic; times are single-run
+figures whose run-to-run spread is about ±25%, so read them as magnitudes, not decimals.
 
 | workload | shape | bytes | B/rec | x smaller than raw | write ns/rec | read M rec/s |
 | --- | --- | --- | --- | --- | --- | --- |
-| repetitive text | dictionary on, zstd 1 | 64,517 | 1.3 | 73x | 570–770 | 9.5–11 |
-| repetitive text | dictionary off, zstd 1 | 249,694 | 5.0 | 19x | 1,330–1,690 | 6.4–9.9 |
-| repetitive text | dictionary on, zstd 3 | 58,437 | 1.2 | 81x | 500–650 | 11–21 |
-| repetitive text | dictionary off, zstd 3 | 227,118 | 4.5 | 21x | 1,490–1,530 | 9–15 |
-| identity heavy | dictionary on, zstd 1 | 29,136 | 0.6 | 62x | 480–610 | 7.2–9.5 |
-| identity heavy | dictionary off, zstd 1 | 104,812 | 2.1 | 17x | 670–730 | 6.0–7.2 |
-| identity heavy | dictionary on, zstd 3 | 29,094 | 0.6 | 62x | 470–670 | 7.1–8.3 |
-| identity heavy | dictionary off, zstd 3 | 41,792 | 0.8 | 43x | 620–790 | 6.6–6.7 |
-| unique id per record | dictionary on, zstd 1 | 251,179 | 5.0 | 15.3x | 1,340–1,700 | 4.1–6.9 |
-| unique id per record | dictionary off, zstd 1 | 259,980 | 5.2 | 14.8x | 1,160–1,430 | 4.4–5.9 |
-| unique id per record | dictionary on, zstd 3 | 250,453 | 5.0 | 15.3x | 1,360–1,930 | 4.8–8.1 |
-| unique id per record | dictionary off, zstd 3 | 259,114 | 5.2 | 14.8x | 1,220–1,360 | 4.6–6.1 |
+| repetitive text | no compression, dictionary on | 1,419,466 | 28.4 | 3.3x | 347 | 9.3 |
+| repetitive text | no compression, dictionary off | 4,984,033 | 99.7 | 0.9x | 862 | 8.8 |
+| repetitive text | zstd 1, dictionary on | 64,517 | 1.3 | 73x | 357 | 15.6 |
+| repetitive text | zstd 1, dictionary off | 249,694 | 5.0 | 18.9x | 812 | 15.2 |
+| repetitive text | zstd 3, dictionary on | 58,437 | 1.2 | 81x | 348 | 17.3 |
+| identity heavy | no compression, dictionary on | 1,302,483 | 26.0 | 1.4x | 353 | 8.8 |
+| identity heavy | no compression, dictionary off | 2,062,171 | 41.2 | 0.9x | 386 | 8.5 |
+| identity heavy | zstd 1, dictionary on | 29,136 | 0.6 | 62x | 348 | 7.2 |
+| identity heavy | zstd 1, dictionary off | 104,812 | 2.1 | 17.3x | 363 | 7.3 |
+| identity heavy | zstd 3, dictionary on | 29,094 | 0.6 | 62x | 318 | 10.2 |
+| unique id per record | no compression, dictionary on | 3,340,331 | 66.8 | 1.1x | 857 | 8.1 |
+| unique id per record | no compression, dictionary off | 4,090,999 | 81.8 | 0.9x | 894 | 5.6 |
+| unique id per record | zstd 1, dictionary on | 251,179 | 5.0 | 15.3x | 872 | 7.4 |
+| unique id per record | zstd 1, dictionary off | 259,980 | 5.2 | 14.8x | 683 | 6.3 |
+| unique id per record | zstd 3, dictionary on | 250,453 | 5.0 | 15.3x | 859 | 5.6 |
 
-How to read it, because the two compression layers are not interchangeable:
+Block size, same 50,000 unique-id records, zstd 1, dictionary on:
 
-- **The dictionary is not a codec.** It removes repeated strings before the codec runs,
-  which is why it is both smaller AND faster on the first two workloads: with 256
-  distinct bodies the block has little left to compress, so the write path spends
-  570–770 ns instead of 1,330–1,690 ns per record. The codec, by contrast, is
-  indifferent to how the repetition was produced.
-- **On the shape a real log has — one unique id per record — the dictionary buys 3% of
-  the bytes and costs 15–25% of the write time.** That is the case `Config::dict =
-  None` exists for, and the deciding question is not "is this text" but "are these
-  values a small closed set, or is every record new".
-- **Reads are 4–21 M records/s** and the spread tracks compressibility, not record
-  count: a block that decompresses to less work is read faster. One block is
-  decompressed at a time, and nothing is cached between calls.
-- These numbers are single-threaded, on XFS over NVMe (`/tmp` here is not tmpfs, so the
-  `fsync` per block is real), with no concurrent readers, and 48 blocks per run means
-  the fsync cost is amortized over ~1,000 records each. A smaller `block_bytes` moves
-  that cost into the per-record figure.
+| block | write ns/record | blocks on disk | bytes |
+| --- | --- | --- | --- |
+| 16 KiB | 2,267 | 235 | 276,179 |
+| 64 KiB | 942 | 59 | 251,179 |
+| 256 KiB | 556 | 15 | 245,302 |
+
+How to read it:
+
+- **Compression is free at 64 KiB blocks, and that is why it is on by default.** A block
+  is compressed once per ~1,000 records, so the codec's cost sits inside the run-to-run
+  noise; on the two shapes that compress well the compressed path is even faster than the
+  uncompressed one, because the write syscall carries 20–70x fewer bytes.
+- **Block size is worth more than compression level.** The per-block work (compress,
+  write, fsync, index row) dominates the per-record work: 16 KiB blocks cost 2.3 µs per
+  record and 256 KiB blocks cost 0.56 µs. Level 3 buys 9% of the bytes on highly
+  repetitive data and nothing measurable elsewhere.
+- **The index is not fsynced per block, deliberately** — it is derived data and adoption
+  rebuilds it. Dropping that second sync took the write path from 1,345 to 882 ns/record
+  at 64 KiB blocks.
+- **The dictionary and the codec are not interchangeable.** On closed-set values interning
+  removes repetition before the codec sees it: 4x fewer bytes on top of compression, and
+  no write-time cost (872 against 683 ns/record is the counter-case). With one unique id
+  per record it buys 3% of the bytes for ~15% of the write time — that is the shape
+  `Config::dict = None` is for.
+- **Reads are 5–17 M records/s**, one block decompressed at a time and nothing cached
+  between calls; the spread tracks how much work each block's decompression is, not how
+  many records it holds.
+- Single-threaded, XFS on NVMe (`/tmp` here is not tmpfs, so the fsync per block is real),
+  no concurrent readers, 59 blocks per run.
 
 ## Not yet benched
 
