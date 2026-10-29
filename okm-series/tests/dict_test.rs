@@ -15,6 +15,7 @@ fn config() -> Config {
         block_codec: okm_series::Codec::Zstd,
         dict: Some(DictConfig::default()),
         partition_tag: None,
+        clock: Some(clock_step(BASE, 1)),
     }
 }
 
@@ -40,16 +41,23 @@ fn dict_bytes(log: &Log) -> u64 {
         .sum()
 }
 
+const BASE: u64 = 1_700_000_000_000;
+
+/// A deterministic clock: `step` in the log's precision per call, starting at `start`.
+fn clock_step(start: u64, step: u64) -> okm_series::Clock {
+    let next = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(start));
+    std::sync::Arc::new(move || next.fetch_add(step, std::sync::atomic::Ordering::Relaxed))
+}
+
 #[test]
 fn a_long_string_earns_a_code_at_its_second_occurrence() {
     let dir = tempfile::tempdir().unwrap();
     let mut log = Log::open(dir.path(), config()).unwrap();
     let text = "GET /v1/instances/42/events?since=1700000000000 HTTP/1.1";
-    let base = 1_700_000_000_000u64;
-    for step in 0..3u64 {
-        log.append(base + step, &one_string(text)).unwrap();
+    for _step in 0..3u64 {
+        log.append(&one_string(text)).unwrap();
     }
-    log.append_durable(base + 3, &one_string(text)).unwrap();
+    log.append_durable(&one_string(text)).unwrap();
 
     assert!(
         dict_bytes(&log) > 0,
@@ -66,12 +74,11 @@ fn a_long_string_earns_a_code_at_its_second_occurrence() {
 fn a_string_no_longer_than_its_code_is_never_interned() {
     let dir = tempfile::tempdir().unwrap();
     let mut log = Log::open(dir.path(), config()).unwrap();
-    let base = 1_700_000_000_000u64;
-    for step in 0..200u64 {
+    for _step in 0..200u64 {
         // Two bytes against a two-byte id: interning it could only grow the file.
-        log.append(base + step, &one_string("AB")).unwrap();
+        log.append(&one_string("AB")).unwrap();
     }
-    log.append_durable(base + 200, &one_string("AB")).unwrap();
+    log.append_durable(&one_string("AB")).unwrap();
 
     assert_eq!(count_entries(&read_dict(&log)), 0, "nothing earned a code");
     let rows = log.read(0, 500).unwrap();
@@ -83,13 +90,12 @@ fn a_string_no_longer_than_its_code_is_never_interned() {
 fn the_first_nine_copies_stay_inline_and_the_tenth_is_coded() {
     let dir = tempfile::tempdir().unwrap();
     let mut log = Log::open(dir.path(), config()).unwrap();
-    let base = 1_700_000_000_000u64;
     // Three bytes against a two-byte code lands in the `W..4W` tier: ten occurrences.
     let text = "abc";
-    for step in 0..12u64 {
-        log.append(base + step, &one_string(text)).unwrap();
+    for _step in 0..12u64 {
+        log.append(&one_string(text)).unwrap();
     }
-    log.append_durable(base + 12, &one_string(text)).unwrap();
+    log.append_durable(&one_string(text)).unwrap();
 
     // The dictionary holds one entry, and every copy still reads back as itself.
     let rows = log.read(0, 20).unwrap();
@@ -116,13 +122,12 @@ fn a_full_block_widens_the_chain_and_the_reader_still_resolves_old_codes() {
         block_entries: 3,
     });
     let mut log = Log::open(dir.path(), config).unwrap();
-    let base = 1_700_000_000_000u64;
     let mut texts = Vec::new();
     for index in 0..8u64 {
         let text = format!("a message long enough to earn a code, number {index:04}");
         texts.push(text.clone());
-        log.append(base + index * 2, &one_string(&text)).unwrap();
-        log.append(base + index * 2 + 1, &one_string(&text))
+        log.append(&one_string(&text)).unwrap();
+        log.append(&one_string(&text))
             .unwrap();
     }
     log.seal().unwrap();
@@ -144,14 +149,13 @@ fn a_full_block_widens_the_chain_and_the_reader_still_resolves_old_codes() {
 #[test]
 fn codes_survive_a_reopen_and_a_new_block_can_still_be_coded() {
     let dir = tempfile::tempdir().unwrap();
-    let base = 1_700_000_000_000u64;
     let text = "a long enough message that the dictionary takes it on the second sight";
     {
         let mut log = Log::open(dir.path(), config()).unwrap();
-        for step in 0..4u64 {
-            log.append(base + step, &one_string(text)).unwrap();
+        for _step in 0..4u64 {
+            log.append(&one_string(text)).unwrap();
         }
-        log.append_durable(base + 4, &one_string(text)).unwrap();
+        log.append_durable(&one_string(text)).unwrap();
     }
 
     let mut log = Log::open(dir.path(), config()).unwrap();
@@ -165,7 +169,7 @@ fn codes_survive_a_reopen_and_a_new_block_can_still_be_coded() {
 
     // The adopted dictionary knows the string already, so the next record is coded
     // without a second entry.
-    let offset = log.append_durable(base + 5, &one_string(text)).unwrap();
+    let offset = log.append_durable(&one_string(text)).unwrap();
     assert_eq!(offset, 5);
     let rows = log.read(0, 10).unwrap();
     assert_eq!(rows.len(), 6);

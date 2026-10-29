@@ -73,16 +73,30 @@ A record is:
 a busy stream (one or two bytes at any precision) and honest for a sparse one (a
 varint grows instead of the file lying about resolution).
 
-**Timestamps must not go backwards.** A record older than its predecessor is
-rejected by the writer, not clamped: the file's byte order IS the time order, and a
-file whose order and clock disagree cannot be read by either. A caller with skewed
-writers gets one writer per log (the `LOCK` file) and an error it can act on.
+**The writer stamps the time; the caller cannot.** `append` takes a body and nothing
+else. There is no timestamp argument to get wrong, no configuration naming a "time
+field" that might collide with a real one, and no clock to trust per record: the log
+reads its own clock at the moment of the write, and the time axis is therefore
+INGESTION order. A body may carry the application's own time under any tag it likes —
+that value is data, and it does not touch the record's address.
 
-Monotone time is a property of the STREAM, not of a part, and the difference is a real
-hole: a record an hour older than its predecessor lands in an older bucket, opens a
-fresh part that has no history of its own, and would pass a per-part check. The log
-therefore remembers the newest timestamp each stream has seen — recovered from the parts
-on open — and refuses before any file is touched.
+Two consequences, both deliberate:
+
+- **No backfill.** You cannot import last week's samples into last week's buckets; they
+  will be stamped now. A log whose time axis is ingestion order cannot also be a
+  warehouse of historical time, and pretending otherwise is how a "one hour per
+  directory" layout starts lying about its own directory names.
+- **A clock that steps backwards is clamped, not refused.** NTP steps, a suspended
+  machine, a container restored from a snapshot: the caller did nothing wrong, so the
+  record is written at the newest timestamp its stream has seen. Two records may share a
+  timestamp, and their offsets still order them.
+
+Monotone time is then a property of the STREAM rather than of a part — a distinction
+that was a real hole while callers supplied timestamps, because a record an hour earlier
+lands in an older bucket and opens a fresh part with no history to compare against. The
+log remembers the newest timestamp each stream has seen, recovered from the parts on
+open, and uses it as the floor. (The read side gives the timestamp back under a name of
+its own — the Python binding calls it `_ts` — because a body has tags, not names.)
 
 **There is no per-record checksum, and that is a decision.** Given §3 (nothing is
 acknowledged before it is fsynced) and the fact that a part is only ever written at

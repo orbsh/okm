@@ -84,6 +84,10 @@ fn config(dict: bool, level: i32, compress: bool) -> Config {
             None
         },
         partition_tag: None,
+        clock: Some(std::sync::Arc::new({
+            let next = std::sync::atomic::AtomicU64::new(BASE_TS);
+            move || next.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        })),
     }
 }
 
@@ -138,7 +142,7 @@ fn run(config: &Config, bodies: &[Body]) -> Result<(u64, u64, u64, f64), Box<dyn
         .sum();
     let start = Instant::now();
     for index in 0..RECORDS {
-        log.append(BASE_TS + index, &bodies[index as usize % bodies.len()])?;
+        log.append(&bodies[index as usize % bodies.len()])?;
     }
     log.seal()?;
     let write_ns = start.elapsed().as_nanos() as u64;

@@ -40,9 +40,7 @@ fn a_python_caller_appends_reads_and_keeps_its_types() {
         body.set_item(3u16, -7i64)?;
         body.set_item(4u16, 0.5f64)?;
         body.set_item(5u16, pyo3::types::PyBytes::new(py, b"raw"))?;
-        let offset: u64 = log
-            .call_method1("append", (1_700_000_000_000u64, body))?
-            .extract()?;
+        let offset: u64 = log.call_method1("append", (body,))?.extract()?;
         assert_eq!(offset, 0);
         log.call_method0("flush")?;
 
@@ -50,7 +48,8 @@ fn a_python_caller_appends_reads_and_keeps_its_types() {
         let list = records.cast::<PyList>()?;
         assert_eq!(list.len(), 1);
         let record = list.get_item(0)?;
-        assert_eq!(record.getattr("ts")?.extract::<u64>()?, 1_700_000_000_000);
+        let ts: u64 = record.getattr("ts")?.extract()?;
+        assert!(ts > 0, "the log stamped the record at write time");
         assert_eq!(record.getattr("offset")?.extract::<u64>()?, 0);
         let read_back: Bound<'_, PyDict> = record.getattr("body")?.cast_into()?;
         assert_eq!(
@@ -82,7 +81,7 @@ fn named_tags_work_when_the_log_is_opened_with_them() {
         let body = PyDict::new(py);
         body.set_item("level", "warn")?;
         body.set_item("message", "disk almost full")?;
-        log.call_method1("append", (10u64, body))?;
+        log.call_method1("append", (body,))?;
         log.call_method0("flush")?;
 
         let records = log.call_method1("read", (0u64, 10usize))?;
@@ -115,14 +114,14 @@ fn a_partitioned_log_needs_the_field() {
 
         let missing = PyDict::new(py);
         missing.set_item(1u16, "no partition")?;
-        let refused = log.call_method1("append", (10u64, missing));
+        let refused = log.call_method1("append", (missing,));
         let error = refused.expect_err("a partitioned log refuses a record without the tag");
         assert!(error.to_string().contains("partition"), "{}", error);
 
         let with_partition = PyDict::new(py);
         with_partition.set_item(1u16, "row")?;
         with_partition.set_item(9u16, "eu")?;
-        log.call_method1("append", (10u64, with_partition))?;
+        log.call_method1("append", (with_partition,))?;
         log.call_method0("flush")?;
 
         let parts = log.call_method0("parts")?;
@@ -140,7 +139,7 @@ fn a_partitioned_log_needs_the_field() {
 }
 
 #[test]
-fn time_backwards_and_retention_come_across_as_python_errors_and_results() {
+fn the_write_time_is_the_logs_and_shows_up_under_its_own_name() {
     Python::attach(|py| -> PyResult<()> {
         let dir = tempfile::tempdir().unwrap();
         let module = module(py)?;
@@ -151,33 +150,80 @@ fn time_backwards_and_retention_come_across_as_python_errors_and_results() {
             &[("precision", "ms".into_pyobject(py)?.into_any())],
         )?;
 
+        // No timestamp argument exists: the caller appends a body, the log stamps it.
         let body = PyDict::new(py);
         body.set_item(1u16, "first")?;
-        log.call_method1("append", (7_200_000u64, body))?;
+        log.call_method1("append", (body,))?;
         let body2 = PyDict::new(py);
-        body2.set_item(1u16, "earlier")?;
-        let refused = log.call_method1("append", (1_000u64, body2));
-        assert!(refused.is_err(), "an older record is refused, not clamped");
-        log.call_method0("seal")?;
+        body2.set_item(1u16, "second")?;
+        log.call_method1("append", (body2,))?;
+        log.call_method0("flush")?;
 
-        // A second bucket, then retention drops the older one and reports which.
-        let body3 = PyDict::new(py);
-        body3.set_item(1u16, "later")?;
-        log.call_method1("append", (14_400_000u64, body3))?;
-        log.call_method0("seal")?;
-        let dropped: Vec<u64> = log
-            .call_method1("retain_before", (14_400_000u64,))?
-            .extract()?;
+        let records = log.call_method1("read", (0u64, 10usize))?;
+        let list = records.cast::<PyList>()?;
+        assert_eq!(list.len(), 2);
+        let first = list.get_item(0)?;
+        let second = list.get_item(1)?;
+        let ts_first: u64 = first.getattr("ts")?.extract()?;
+        let ts_second: u64 = second.getattr("ts")?.extract()?;
+        assert!(ts_second >= ts_first, "the log's time never goes backwards");
+
+        // The record's own time is readable as a field, next to the caller's data.
+        let body_first: Bound<'_, PyDict> = first.getattr("body")?.cast_into()?;
         assert_eq!(
-            dropped,
-            vec![2],
-            "the 02:00 bucket goes, the 04:00 one stays"
+            body_first.get_item("_ts")?.unwrap().extract::<u64>()?,
+            ts_first
+        );
+        assert_eq!(
+            body_first.get_item(1)?.unwrap().extract::<String>()?,
+            "first"
         );
 
         let meta: Bound<'_, PyDict> = log.getattr("meta")?.cast_into()?;
         assert_eq!(
             meta.get_item("precision")?.unwrap().extract::<String>()?,
             "ms"
+        );
+
+        // The name is configurable, and None turns the extra field off.
+        let renamed = open_log(
+            py,
+            &module,
+            &dir.path().join("renamed"),
+            &[
+                ("precision", "ms".into_pyobject(py)?.into_any()),
+                ("ts_field", "written_at".into_pyobject(py)?.into_any()),
+            ],
+        )?;
+        let body3 = PyDict::new(py);
+        body3.set_item(1u16, "row")?;
+        renamed.call_method1("append", (body3,))?;
+        renamed.call_method0("flush")?;
+        let rows = renamed.call_method1("read", (0u64, 10usize))?;
+        let rows = rows.cast::<PyList>()?;
+        let only: Bound<'_, PyDict> = rows.get_item(0)?.getattr("body")?.cast_into()?;
+        assert!(only.get_item("written_at")?.is_some());
+        assert!(only.get_item("_ts")?.is_none());
+
+        let bare = open_log(
+            py,
+            &module,
+            &dir.path().join("bare"),
+            &[
+                ("precision", "ms".into_pyobject(py)?.into_any()),
+                ("ts_field", py.None().into_bound(py)),
+            ],
+        )?;
+        let body4 = PyDict::new(py);
+        body4.set_item(1u16, "row")?;
+        bare.call_method1("append", (body4,))?;
+        bare.call_method0("flush")?;
+        let rows = bare.call_method1("read", (0u64, 10usize))?;
+        let rows = rows.cast::<PyList>()?;
+        let only: Bound<'_, PyDict> = rows.get_item(0)?.getattr("body")?.cast_into()?;
+        assert!(
+            only.get_item("_ts")?.is_none(),
+            "ts_field=None adds nothing"
         );
         Ok(())
     })

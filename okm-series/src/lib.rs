@@ -83,7 +83,7 @@ impl From<std::io::Error> for Error {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Config {
     pub precision: Precision,
     /// Seconds per bucket. One hour by default; buckets are aligned to absolute Unix
@@ -103,6 +103,32 @@ pub struct Config {
     /// The body tag whose value partitions the log, declared once and never changed.
     /// `None` = every part lives directly under its bucket.
     pub partition_tag: Option<u16>,
+    /// The log's notion of "now". `None` = the system clock, which is what production
+    /// uses; tests set it to make buckets and windows deterministic.
+    ///
+    /// It is NOT a way for a caller to stamp a record: `append` takes no timestamp at
+    /// all, because the write time is the log's to decide (ADR-0046 §2).
+    pub clock: Option<Clock>,
+}
+
+/// A source of timestamps in the log's precision. Tests use it; production leaves
+/// `Config::clock` empty.
+pub type Clock = std::sync::Arc<dyn Fn() -> u64 + Send + Sync>;
+
+impl std::fmt::Debug for Config {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Config")
+            .field("precision", &self.precision)
+            .field("bucket_seconds", &self.bucket_seconds)
+            .field("block_bytes", &self.block_bytes)
+            .field("part_bytes", &self.part_bytes)
+            .field("zstd_level", &self.zstd_level)
+            .field("block_codec", &self.block_codec)
+            .field("dict", &self.dict)
+            .field("partition_tag", &self.partition_tag)
+            .field("clock", &self.clock.as_ref().map(|_| "<fn>"))
+            .finish()
+    }
 }
 
 impl Default for Config {
@@ -116,6 +142,7 @@ impl Default for Config {
             block_codec: Codec::Zstd,
             dict: Some(DictConfig::default()),
             partition_tag: None,
+            clock: None,
         }
     }
 }
@@ -237,23 +264,25 @@ impl Log {
         self.root.as_path()
     }
 
-    /// Append one body. Returns its logical offset, which is the only address this
-    /// crate hands out: `read(offset)` is `read` starting there.
+    /// Append one body at the write time. Returns its logical offset, which is the only
+    /// address this crate hands out: `read(offset)` is `read` starting there.
+    ///
+    /// **The caller does not supply the time** (ADR-0046 §2). There is no timestamp
+    /// argument: the log stamps the record when it is written, so the time axis is
+    /// ingestion order and cannot contradict itself. A body may of course carry the
+    /// application's own time under any tag it likes — that value is data, not the
+    /// record's address.
     ///
     /// The record is buffered until a block fills, so a reader sees it after the flush,
     /// not after the call (see `append_durable` and `flush` for the callers who will not
     /// accept that window).
-    pub fn append(&mut self, ts: u64, body: &Body) -> Result<u64, Error> {
-        let bucket = self.bucket_of(ts);
+    pub fn append(&mut self, body: &Body) -> Result<u64, Error> {
         let partition = match self.meta.partition_tag {
             Some(tag) => Some(partition_of(body, tag)?),
             None => None,
         };
-        if let Some(last) = self.last_ts.get(&partition).copied()
-            && ts < last
-        {
-            return Err(Error::TimeBackwards { last, given: ts });
-        }
+        let ts = self.now(&partition);
+        let bucket = self.bucket_of(ts);
         self.ensure_part(bucket, &partition, ts)?;
         let index = self
             .active_index(bucket, partition.as_deref())
@@ -266,8 +295,8 @@ impl Log {
     /// Append and make it durable before returning: the block holding this record is
     /// written and fsynced. Costs a block per record, which is the trade the caller
     /// chose.
-    pub fn append_durable(&mut self, ts: u64, body: &Body) -> Result<u64, Error> {
-        let offset = self.append(ts, body)?;
+    pub fn append_durable(&mut self, body: &Body) -> Result<u64, Error> {
+        let offset = self.append(body)?;
         self.flush()?;
         Ok(offset)
     }
@@ -391,6 +420,23 @@ impl Log {
             });
         }
         Ok(parts)
+    }
+
+    /// The write time for the next record of this stream, in the log's precision.
+    ///
+    /// A system clock can step backwards (NTP, a suspended machine). That is not the
+    /// caller's error and must not become a failed write, so the timestamp is clamped to
+    /// the stream's last one: two records may share a timestamp, and their offsets still
+    /// order them.
+    fn now(&self, partition: &Option<String>) -> u64 {
+        let raw = match self.config.clock.as_ref() {
+            Some(clock) => clock(),
+            None => unix_now(self.meta.precision),
+        };
+        match self.last_ts.get(partition) {
+            Some(last) => raw.max(*last),
+            None => raw,
+        }
     }
 
     pub fn bucket_of(&self, ts: u64) -> u64 {
@@ -737,6 +783,21 @@ fn acquire_lock(root: &Path) -> Result<(), Error> {
     file.write_all(format!("{}\n", std::process::id()).as_bytes())?;
     file.sync_all()?;
     Ok(())
+}
+
+/// Wall clock in the log's precision. Seconds/millis/micros are exact; nanos come from
+/// the nanosecond field, which is the whole point of declaring a precision at all.
+fn unix_now(precision: Precision) -> u64 {
+    let now = match SystemTime::now().duration_since(UNIX_EPOCH) {
+        Ok(now) => now,
+        Err(_) => return 0,
+    };
+    match precision {
+        Precision::S => now.as_secs(),
+        Precision::Ms => now.as_millis() as u64,
+        Precision::Us => now.as_micros() as u64,
+        Precision::Ns => now.as_nanos() as u64,
+    }
 }
 
 fn now_unix_ms() -> Result<u64, Error> {
