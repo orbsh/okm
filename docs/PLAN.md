@@ -2154,55 +2154,54 @@ NOT an okm table and does not implement `VirtualStorage` — the reason is reten
 in an LSM every dropped record leaves a tombstone, and the file is the only unit
 that can be dropped in one syscall. Design in ADR-0046. Nothing below is built.
 
-- [ ] `okm-series`: `log.meta` (epoch, precision, bucket), `LOCK`, `<bucket>/part-<n>.log`
-      + `.dict`, seal by rename, retention by `remove_dir_all`.
-- [ ] The record and part headers: `[len][ts delta varint][nTLV body]`, `base_ts` +
+- [x] `okm-series`: `log.meta` (epoch, precision, bucket), `LOCK`, `<bucket>/part-<n>.open`
+      → `.log` by rename, retention by `remove_dir_all`. The lock is a pid file: a live
+      pid refuses, a stale one is taken over — no `flock`, because a stale lock after a
+      crash must not need an operator.
+- [x] The record and part headers: `[len][ts delta varint][nTLV body]`, `base_ts` +
       monotone deltas, `first_offset` / `record_count`. **No per-record checksum** — a
       crash can only truncate the tail (nothing is acknowledged before its fsync, and a
       part is only written at its end), so the torn record is the one whose `len` runs
       past EOF. Integrity against a lying storage stack belongs to the storage stack;
       the part footer carries one whole-part digest for copies and exports.
-- [ ] Blocks: 64 KiB of records compressed per block (zstd 1-3, lz4 where CPU matters
-      more), at buffer flush rather than at seal — every block, not only the long ones,
-      because a threshold makes two file shapes and still cannot predict a ratio. The
-      ADR says out loud that this overlaps the dictionary and that `dict_policy` is a
-      per-log switch decided by measurement.
-- [ ] `part-<n>.idx`: one row per block `[first_ts][first_offset][file_offset][len_c]
+- [x] Blocks: 64 KiB of records compressed per block (zstd level 1; `Raw` when the
+      compressed bytes are no smaller), at buffer flush rather than at seal — every
+      block, not only the long ones. `Config::dict = None` switches interning off,
+      because block compression covers part of what it was for; the choice is a
+      measurement, not an argument.
+- [x] `part-<n>.idx`: one row per block `[first_ts][first_offset][file_offset][len_c]
       [len_u][records]`, appended when the block is written; seek = parts' first rows,
-      then the rows inside the part. Per part, NOT in `log.meta` (identity, read at
-      every open, written once) and not per bucket (an index spanning parts cannot be
-      dropped with one of them).
-- [ ] The seal footer: records, compressed and uncompressed bytes, min/max ts, block
-      count, dictionary entries, whole-part digest. PHYSICAL only — no field-level
-      statistics (that is Iceberg's job in the lake and the drainer's when it writes
-      Parquet; a log with per-field stats is a column store with a worse layout).
+      then the rows inside the part. Per part, NOT in `log.meta` and not per bucket.
+- [x] The seal footer: records, last timestamp, block count, whole-part digest. Not the
+      byte sizes (the file has a length, the index has the rows), not the first
+      timestamp (the header has it), not the dictionary count (the dict file counts
+      itself) — a footer that repeats the disk is a second copy that can disagree.
 - [ ] Partitioning by one field, declared at creation and never changed:
       `<bucket>/<value>/part-<n>.*`, one open part and one `LOCK` per partition, the
-      dictionary per (partition, part), retention still per bucket.
-- [ ] `append(ts, body) -> offset` with fsync before the return, plus a `sync` verb for
-      callers that accept a window; single writer enforced by `LOCK`.
-- [ ] `read(from_offset, max)` and `read_by_time(from, to)`: pick the part by the range
-      in its header, then seek inside it through `part-<n>.idx` (§8 of the ADR), which
-      is why the index is in v1 and not deferred.
-- [ ] nTLV string forms: `n = 0` inline, `n >= 1` dictionary `n - 1` with width
-      `u16 << k` from the block header; the same for tag and value halves.
-- [ ] `part-<n>.dict`: first block at a fixed offset, `prev_offset` chain walked
-      backwards from the newest block (which `part-<n>.dict.tail` names, replaced by
-      rename), escalation to a doubled width when a block's id space is exhausted. No
-      in-place patching anywhere: a part that never mutates is what makes "a crash can
-      only truncate the tail" true.
-- [ ] Promotion by tiers of the code's own width, `[[4, 10], [8, 5], [16, 3], [0, 2]]`:
-      `L <= W` never (a string shorter than its own code only grows), `W < L <= 4W`
-      at 10, `4W..8W` at 5, `8W..16W` at 3, `16W` and beyond at 2 — the long row is
-      what makes a long error message intern on its second occurrence. The list is
-      configuration, not format: changing it changes what FUTURE parts promote.
-      Counts are per part and restart hourly, which is why the short end is the only
-      conservative row. Nothing is rewritten when a string is promoted late.
-- [ ] Tests to write first: a part that survives a torn tail; a string promoted at the
-      tenth occurrence with the first nine still inline; a long value promoted at the
-      second; an escalation to u32 that a reader resolves by walking `prev_offset`;
-      retention that leaves no tombstone (the bucket directory is gone and the log
-      still appends).
+      dictionary per (partition, part), retention still per bucket. Not built: nothing
+      needs it yet, and it changes the reader's walk.
+- [x] `append(ts, body) -> offset`, buffered until a block fills, with
+      `append_durable` as the fsync-before-ack path (a block per record, which is the
+      trade the caller chose). Single writer enforced by `LOCK`.
+- [x] `read(from_offset, max)` and `read_by_time(from, to)`: the part is picked by the
+      range in its header, then `part-<n>.idx` seeks inside it.
+- [x] nTLV string forms: `kind = 0` inline, `kind = 16 + k` = the id of a string in
+      dictionary block k, whose width the block header declares. An unresolvable code
+      is an error, never a wrong string.
+- [x] `part-<n>.dict`: blocks are assembled in memory and written COMPLETE, so a block
+      carries an exact count and nothing is ever patched; `prev_offset` chains them
+      newest-first, and `<part>.dict.tail` (renamed into place) names the newest. The
+      chain widens when a block reaches `block_entries` (65536 by default): u16 → u32 →
+      u64. The dictionary is flushed BEFORE the records that refer to it.
+- [x] Promotion by tiers of the code's own width, `[[4, 10], [8, 5], [16, 3], [0, 2]]`:
+      `L <= W` never, `W..4W` at 10, `4W..8W` at 5, `8W..16W` at 3, `16W` and beyond at
+      2. Configuration, not format; counts are per part and restart hourly, which is
+      why the short end is the only conservative row.
+- [x] Tests: a part that survives a torn tail and keeps appending; a string promoted at
+      its tenth occurrence with the first nine inline; a long value promoted at its
+      second; a string no longer than its code never interned; an escalation to a wider
+      block that the reader resolves; retention that drops a bucket directory; a
+      dictionary that survives a reopen and still codes the next record.
 - [ ] The changelog's segments ride this substrate (ADR-0045 is the first append-only
       file format in the repo and `okm-series` is the second; one of them has to go).
       The body codec differs (key-only op frames vs timestamped nTLV records) and so

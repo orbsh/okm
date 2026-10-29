@@ -249,9 +249,12 @@ Why the index is per part and not in `log.meta`, and not per bucket:
   dropped with one of them, and retention is `remove_dir_all(<bucket>)` only because
   nothing else lives beside the parts.
 
-A part's footer (written at seal) adds the totals: records, compressed and
-uncompressed bytes, min/max ts, block count, dictionary entries, and the whole-part
-digest from §2.
+A part's footer (written at seal) carries what a reader cannot derive cheaply:
+records, last timestamp, block count, and the whole-part digest. Deliberately NOT in
+there: byte sizes (the file has a length and the index has a row per block), the first
+timestamp (the header has it), and dictionary entries (the dict file counts itself).
+A footer that repeats what is already on disk is a second copy that can disagree with
+the first.
 
 ### 9. Statistics and partitioning: where the lakehouse comparison stops
 
