@@ -27,9 +27,14 @@ use crate::engine::storage::VirtualStorage;
 use crate::model::field::{FieldDesc, FieldType};
 use crate::model::index::Document;
 use crate::model::key::KeyEncode;
+// The graph's edge table (and the variant column it appends) is a PARQUET
+// shape, so these two are too: `--features arrow` alone must stay buildable.
+#[cfg(feature = "parquet")]
 use crate::model::obj_dynamic::DynamicValue;
 use crate::model::document::Collection;
-use crate::model::graph::{EdgeKey, Graph, GraphEncode};
+#[cfg(feature = "parquet")]
+use crate::model::graph::EdgeKey;
+use crate::model::graph::{Graph, GraphEncode};
 
 /// Arrow column type for a declared field kind.
 ///
@@ -619,6 +624,7 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
     /// cannot decode another table's key into that table's fields without that
     /// table's declaration. `name_of` maps an ns to its table name; an ns it does
     /// not know yields a null cell, never an invented name.
+    #[cfg(feature = "parquet")]
     pub fn to_record_batch_table<F>(
         &mut self,
         name_of: F,
