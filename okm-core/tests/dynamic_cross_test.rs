@@ -11,7 +11,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
 
-use okm_core::{KeyEncode, TestStore, Document, DocumentEncode, Collection, VirtualStorage};
+use okm_core::{KeyEncode, TestStore, Document, DocumentEncode, Collection, VirtualStorage, Offset, Quant, VarInt};
 use okm_core::schema::CollectionSchema;
 use okm_dynamic::{decode_key, decode_payload, encode_key, encode_payload, CodecError, Value, ValueMap};
 use std::collections::BTreeMap;
@@ -305,4 +305,96 @@ fn the_two_enumeration_modes_see_the_two_kinds_of_document() {
         .fetch(&segment_only.encode()).unwrap()
         .unwrap()
         .contains_key("note"));
+}
+
+/// The wrapper kinds are where a "framing" codec and a "typed" codec diverge
+/// silently: `Quant` is a fixed-point i64, `Offset` a 4-byte biased u32, `VarInt`
+/// a prefix-monotonic varint whose frame length is the encoding's own. Writing
+/// them as one 8-byte BE image (what a value-only dispatch does) makes a typed
+/// reader overrun a varint frame, truncate an offset frame, and return an
+/// integer for a quantised value.
+#[derive(DocumentEncode, Clone, PartialEq, Debug)]
+#[ok_ref(UserKey)]
+#[ok_ns(42)]
+pub struct Wrapped {
+    pub n: u32, // hot, 4
+    #[ok_offset(base = 1_700_000_000)]
+    pub created: Offset, // hot, u32 wire
+    pub price: Quant<3>, // hot, i64 wire (f64 logical)
+    pub views: VarInt<u64>, // cold TLV, variable width
+}
+
+fn wrapped_row() -> Wrapped {
+    Wrapped {
+        n: 7,
+        created: Offset(1_700_000_050),
+        price: Quant::<3>(12.345),
+        views: VarInt(300u64),
+    }
+}
+
+fn wrapped_values() -> ValueMap {
+    let mut m = BTreeMap::new();
+    m.insert("n".into(), Value::U32(7));
+    m.insert("created".into(), Value::I64(1_700_000_050));
+    m.insert("price".into(), Value::F64(12.345));
+    m.insert("views".into(), Value::U64(300));
+    m
+}
+
+#[test]
+fn wrapper_kinds_encode_as_the_schema_says_and_the_derive_does() {
+    let schema = CollectionSchema::of::<UserKey, Wrapped>();
+    let rust = wrapped_row().encode_payload();
+
+    let dyn_payload = encode_payload(&schema, &wrapped_values()).expect("dynamic encode");
+    assert_eq!(
+        dyn_payload, rust,
+        "wrapper frames must be the derive's bytes: 4-byte biased offset, \
+         8-byte fixed-point quant, varint views"
+    );
+
+    // Stated once, so a regression names the kind it broke.
+    assert!(
+        rust.windows(4).any(|w| w == 50u32.to_be_bytes()),
+        "Offset: base + 50 lands as the 4-byte biased wire"
+    );
+    assert!(
+        rust.windows(8).any(|w| w == 12_345i64.to_be_bytes()),
+        "Quant: 12.345 at P=3 lands as 12345"
+    );
+    // VarInt 300 = 2 bytes: prefix(2) | high bits, then the low byte.
+    assert!(
+        rust.windows(4).any(|w| w == [3, 2, 0x81, 0x2C]),
+        "VarInt: cold tag 3, frame len 2, prefix-encoded 300"
+    );
+
+    // And back: the dynamic reader returns the LOGICAL value, the shape a
+    // decoded row has (`UInt` for the varint, `Int` for the offset, `F64` for
+    // the quant — the same faces the derive's `to_map` emits).
+    let back = decode_payload(&schema, &dyn_payload).expect("dynamic decode");
+    assert_eq!(back.get("created"), Some(&Value::I64(1_700_000_050)));
+    assert_eq!(back.get("price"), Some(&Value::F64(12.345)));
+    assert_eq!(back.get("views"), Some(&Value::U64(300)));
+
+    // The typed reader accepts the dynamic bytes as its own.
+    assert_eq!(<Wrapped as Document>::decode_payload(&dyn_payload), wrapped_row());
+}
+
+#[test]
+fn a_wrapper_value_outside_its_wire_is_an_error_not_a_panic() {
+    let schema = CollectionSchema::of::<UserKey, Wrapped>();
+    let mut below_base = wrapped_values();
+    below_base.insert("created".into(), Value::I64(1_699_999_999));
+    assert!(
+        encode_payload(&schema, &below_base).is_err(),
+        "Offset has no representation below its base (offset_encode would panic)"
+    );
+
+    let mut storage_form = wrapped_values();
+    storage_form.insert("price".into(), Value::U64(12_345));
+    assert!(
+        encode_payload(&schema, &storage_form).is_err(),
+        "a quant field fed its wire instead of its value is a type error"
+    );
 }

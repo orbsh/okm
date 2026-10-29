@@ -170,15 +170,15 @@ pub(crate) fn field_pair<'a>(
         | (okm_core::field::FieldType::U64, Value::U64(_))
         | (okm_core::field::FieldType::FixedBytes, Value::Bytes(_))
         | (okm_core::field::FieldType::Str, Value::Str(_))
-        // VarInt/Quant/Enum/Offset are payload wrappers with host-specific
-        // dynamic encodings in v1 scope: encode their STORAGE form via
-        // the matching integer/bytes variant (documented per-field in the
-        // binding layer). Here: Quant/Offset → U64 storage, Enum → U8,
-        // VarInt → U64.
-        | (okm_core::field::FieldType::Quant(_), Value::U64(_))
-        | (okm_core::field::FieldType::Offset(_), Value::U64(_))
-        | (okm_core::field::FieldType::Vocab(_), Value::U8(_))
-        | (okm_core::field::FieldType::VarInt, Value::U64(_)) => true,
+        // Wrapper kinds carry their parameters in the schema (`Quant<P>`,
+        // `Offset<B>`) and the codec applies them, so the value tree holds the
+        // LOGICAL value — the same shape a decoded row has. A storage-form
+        // contract would make `Quant` indistinguishable from a plain integer.
+        | (okm_core::field::FieldType::Quant(_), Value::F64(_))
+        | (okm_core::field::FieldType::Offset(_), Value::I64(_))
+        | (okm_core::field::FieldType::VarInt, Value::U64(_))
+        // ADR-0032: the id, not the label.
+        | (okm_core::field::FieldType::Vocab(_), Value::U8(_)) => true,
         _ => false,
     };
     if ok {

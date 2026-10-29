@@ -157,7 +157,30 @@ pub fn decode_payload(schema: &CollectionSchema, bytes: &[u8]) -> Result<ValueMa
                             }
                         Value::Bytes(value.to_vec())
                     }
-                    FieldType::VarInt | FieldType::Quant(_) | FieldType::Offset(_) => {
+                    FieldType::VarInt => {
+                        // Variable width: the first byte's prefix says how many
+                        // bytes the frame IS, so a frame whose length disagrees
+                        // with its prefix is mis-framed (a reader that took a
+                        // fixed 8 bytes here ate the following frame's tag).
+                        let Some(&first) = value.first() else {
+                            return Err(CodecError::Truncated {
+                                field: f.name.clone(),
+                                needed: 1,
+                                got: 0,
+                            });
+                        };
+                        let w = okm_core::prefix_width(first);
+                        if value.len() != w {
+                            return Err(CodecError::Truncated {
+                                field: f.name.clone(),
+                                needed: w,
+                                got: value.len(),
+                            });
+                        }
+                        Value::U64(okm_core::VarInt::<u64>::decode(value).0)
+                    }
+                    // Fixed point: the wire is the quantised integer.
+                    FieldType::Quant(p) => {
                         let Ok(bytes) = <&[u8; 8]>::try_from(value) else {
                             return Err(CodecError::Truncated {
                                 field: f.name.clone(),
@@ -165,8 +188,19 @@ pub fn decode_payload(schema: &CollectionSchema, bytes: &[u8]) -> Result<ValueMa
                                 got: value.len(),
                             });
                         };
-                        let x = u64::from_be_bytes(*bytes);
-                        Value::U64(x)
+                        Value::F64(okm_core::dequantize(i64::from_be_bytes(*bytes), p))
+                    }
+                    // Biased u32: the base is the schema's, so the logical
+                    // value comes back here rather than in every reader.
+                    FieldType::Offset(base) => {
+                        let Ok(bytes) = <&[u8; 4]>::try_from(value) else {
+                            return Err(CodecError::Truncated {
+                                field: f.name.clone(),
+                                needed: 4,
+                                got: value.len(),
+                            });
+                        };
+                        Value::I64(base + u32::from_be_bytes(*bytes) as i64)
                     }
                     _ => {
                         return Err(CodecError::TypeMismatch {
@@ -216,9 +250,14 @@ pub(crate) fn fill_schema_defaults(schema: &CollectionSchema, out: &mut ValueMap
                 FieldType::U8 => Value::U8(0),
                 FieldType::U16 => Value::U16(0),
                 FieldType::U32 => Value::U32(0),
-                FieldType::U64 | FieldType::VarInt | FieldType::Quant(_) | FieldType::Offset(_) => {
-                    Value::U64(0)
-                }
+                FieldType::U64 => Value::U64(0),
+                // The zero IMAGE of a wrapper kind is not logical zero: an
+                // absent `Offset` field decodes from a zeroed u32 to `base`,
+                // so the default must be `base` or a version migration would
+                // invent a different value than the typed reader's.
+                FieldType::Offset(base) => Value::I64(base),
+                FieldType::Quant(_) => Value::F64(0.0),
+                FieldType::VarInt => Value::U64(0),
                 FieldType::Str => Value::Str(String::new()),
                 FieldType::Bytes => Value::Bytes(vec![0; f.width]),
                 FieldType::FixedBytes => Value::Bytes(vec![0; f.width]),
@@ -258,6 +297,17 @@ pub(crate) fn decode_fixed(
             raw.try_into().map_err(|_| need(raw.len()))?,
         )),
         FieldType::FixedBytes => Value::Bytes(raw.to_vec()),
+        // Wrapper kinds: the wire is not the value. `Quant` is fixed point —
+        // /10^P gives the f64 the column type promises; `Offset` is biased by
+        // the schema's base. Both are 8/4 bytes wide, so both can be hot, and
+        // before this arm existed the whole ROW failed to decode.
+        FieldType::Quant(p) => Value::F64(okm_core::dequantize(
+            i64::from_be_bytes(raw.try_into().map_err(|_| need(raw.len()))?),
+            p,
+        )),
+        FieldType::Offset(base) => Value::I64(
+            base + u32::from_be_bytes(raw.try_into().map_err(|_| need(raw.len()))?) as i64,
+        ),
         // ADR-0032: the id in the field's data vocabulary, handed out as raw
         // bytes — `resolve_vocab_labels` (store-aware, run by the collection)
         // replaces it with the label. This decoder has no store, so it never
@@ -267,8 +317,7 @@ pub(crate) fn decode_fixed(
         // Vector is hot-capable but decoded via its own arm below — the
         // generic fixed walk treats it as raw bytes.
         FieldType::Vector { .. } => Value::Bytes(raw.to_vec()), // frame payload as-is
-        FieldType::Str | FieldType::Bytes | FieldType::VarInt | FieldType::Quant(_)
-        | FieldType::Offset(_) => {
+        FieldType::Str | FieldType::Bytes | FieldType::VarInt => {
             return Err(CodecError::TypeMismatch {
                 field: name,
                 expected: "hot-capable fixed-width kind",

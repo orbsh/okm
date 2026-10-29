@@ -65,15 +65,23 @@ fn steel_to_value(
                     FieldType::U8 => Value::U8(u8::try_from(i).map_err(|_| bad("u8"))?),
                     FieldType::U16 => Value::U16(u16::try_from(i).map_err(|_| bad("u16"))?),
                     FieldType::U32 => Value::U32(u32::try_from(i).map_err(|_| bad("u32"))?),
-                    FieldType::U64 | FieldType::VarInt | FieldType::Quant(_)
-                    | FieldType::Offset(_) => {
+                    FieldType::U64 | FieldType::VarInt => {
                         Value::U64(u64::try_from(i).map_err(|_| bad("u64"))?)
                     }
+                    // A wrapper carries its arithmetic in the schema, so the
+                    // value here is LOGICAL: an f64 for `Quant<P>` (the codec
+                    // quantises), an i64 for `Offset<B>` (the codec biases).
+                    FieldType::Quant(_) => Value::F64(i as f64),
+                    FieldType::Offset(_) => Value::I64(i as i64),
                     _ => return Err(bad("numeric kind")),
                 }
             }
-            NumV(f) if kind == FieldType::U64 || matches!(kind, FieldType::VarInt | FieldType::Quant(_) | FieldType::Offset(_)) => {
-                Value::U64(*f as u64)
+            NumV(f) if matches!(kind, FieldType::U64 | FieldType::VarInt | FieldType::Quant(_) | FieldType::Offset(_)) => {
+                match kind {
+                    FieldType::Quant(_) => Value::F64(*f),
+                    FieldType::Offset(_) => Value::I64(*f as i64),
+                    _ => Value::U64(*f as u64),
+                }
             }
             BoolV(b) => Value::Bool(*b),
             _ => return Err(bad("numeric")),
