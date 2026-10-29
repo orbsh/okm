@@ -12,7 +12,9 @@ fn config() -> Config {
         block_bytes: 4096,
         part_bytes: 64 * 1024 * 1024,
         zstd_level: 1,
+        block_codec: okm_series::Codec::Zstd,
         dict: Some(DictConfig::default()),
+        partition_tag: None,
     }
 }
 

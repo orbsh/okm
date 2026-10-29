@@ -1,12 +1,13 @@
 //! An append-only log of timestamped records.
 //!
-//! The shape is ADR-0046: one directory per bucket (an hour by default), parts
-//! inside it that are pure append and sealed by rename, varint deltas for time,
-//! compressed blocks with an index beside them, and a body that is nTLV so a reader
-//! can look without a schema.
+//! The shape is ADR-0046: one directory per bucket (an hour by default), parts inside
+//! it that are pure append and sealed by rename, varint deltas for time, compressed
+//! blocks with an index beside them, and a body that is nTLV so a reader can look
+//! without a schema. A log may declare ONE partition field, whose value becomes a
+//! directory between the bucket and the parts.
 //!
-//! What this crate is NOT: a queue (no ack, no redelivery, no per-consumer cursor),
-//! a table (no keys, faces, reduces or changelog), or a time-series database (no
+//! What this crate is NOT: a queue (no ack, no redelivery, no per-consumer cursor), a
+//! table (no keys, faces, reduces or changelog), or a time-series database (no
 //! aggregation). It is the append-and-read half, and the reason it can be a file
 //! instead of a table is retention — a directory is dropped in one syscall, where an
 //! LSM row leaves a tombstone behind.
@@ -27,6 +28,10 @@ pub use format::{Codec, Footer, IndexRow, PartHeader, Precision};
 
 use part::{PartReader, PartWriter};
 
+/// The prefix a partition directory carries. Hex, so any value that fits in a body can
+/// be one, and the prefix separates it from a bucket directory (which is all digits).
+const PARTITION_PREFIX: &str = "p-";
+
 #[derive(Debug)]
 pub enum Error {
     Io(std::io::Error),
@@ -41,6 +46,9 @@ pub enum Error {
         last: u64,
         given: u64,
     },
+    /// A partitioned log got a record without the declared partition field. Refused
+    /// rather than filed somewhere plausible: a layout that lies cannot be read back.
+    MissingPartition(u16),
     Locked(u32),
     ConfigMismatch(String),
 }
@@ -56,6 +64,9 @@ impl std::fmt::Display for Error {
             Error::Overflow => write!(f, "a length or offset does not fit"),
             Error::TimeBackwards { last, given } => {
                 write!(f, "time went backwards: last {last}, given {given}")
+            }
+            Error::MissingPartition(tag) => {
+                write!(f, "the record has no partition field (tag {tag})")
             }
             Error::Locked(pid) => write!(f, "the log is held by process {pid}"),
             Error::ConfigMismatch(what) => write!(f, "log.meta disagrees: {what}"),
@@ -77,15 +88,20 @@ pub struct Config {
     /// Seconds per bucket. One hour by default; buckets are aligned to absolute Unix
     /// seconds, so two logs on one machine agree on a directory name.
     pub bucket_seconds: u64,
-    /// Records are compressed this many bytes at a time.
+    /// Records are compressed this many bytes at a time. This is the write path's main
+    /// knob: the per-record cost is dominated by the per-block work.
     pub block_bytes: usize,
     /// A part is sealed when it would grow past this, so retention has a unit.
     pub part_bytes: u64,
     pub zstd_level: i32,
-    /// `Some` interns strings; `None` writes every string inline. The switch exists
-    /// because block compression covers part of what interning was for (ADR-0046 §8),
-    /// so the choice belongs to a measurement.
-    pub dict: Option<crate::dict::DictConfig>,
+    /// `Codec::Raw` writes blocks uncompressed. Compression is on by default because
+    /// the measurement says it is nearly free (`docs/internals/benchmarks.md`).
+    pub block_codec: Codec,
+    /// `Some` interns strings; `None` writes every string inline.
+    pub dict: Option<DictConfig>,
+    /// The body tag whose value partitions the log, declared once and never changed.
+    /// `None` = every part lives directly under its bucket.
+    pub partition_tag: Option<u16>,
 }
 
 impl Default for Config {
@@ -96,7 +112,9 @@ impl Default for Config {
             block_bytes: 64 * 1024,
             part_bytes: 64 * 1024 * 1024,
             zstd_level: part::DEFAULT_ZSTD_LEVEL,
-            dict: Some(crate::dict::DictConfig::default()),
+            block_codec: Codec::Zstd,
+            dict: Some(DictConfig::default()),
+            partition_tag: None,
         }
     }
 }
@@ -109,10 +127,12 @@ pub struct Meta {
     pub epoch_unix_ms: u64,
     pub precision: Precision,
     pub bucket_seconds: u64,
+    pub partition_tag: Option<u16>,
 }
 
 struct Active {
     bucket: u64,
+    partition: Option<String>,
     writer: PartWriter,
 }
 
@@ -120,9 +140,9 @@ pub struct Log {
     root: PathBuf,
     config: Config,
     meta: Meta,
-    active: Option<Active>,
-    /// The next logical offset a new part starts at.
-    next_offset: u64,
+    /// One writer per (bucket, partition): a partition is a file's worth of writer, and
+    /// the single-writer rule is per file.
+    active: Vec<Active>,
 }
 
 impl Log {
@@ -146,12 +166,19 @@ impl Log {
                     meta.bucket_seconds, config.bucket_seconds
                 )));
             }
+            if meta.partition_tag != config.partition_tag {
+                return Err(Error::ConfigMismatch(format!(
+                    "partition tag is {:?}, not {:?}",
+                    meta.partition_tag, config.partition_tag
+                )));
+            }
             meta
         } else {
             let meta = Meta {
                 epoch_unix_ms: now_unix_ms()?,
                 precision: config.precision,
                 bucket_seconds: config.bucket_seconds,
+                partition_tag: config.partition_tag,
             };
             write_meta(&meta_path, &meta)?;
             meta
@@ -161,26 +188,33 @@ impl Log {
         let dict_config = config.dict.clone();
         let block_bytes = config.block_bytes;
         let zstd_level = config.zstd_level;
+        let block_codec = config.block_codec;
         let mut log = Log {
             root: root.to_path_buf(),
             config,
             meta,
-            active: None,
-            next_offset: 0,
+            active: Vec::new(),
         };
 
-        // Recover: adopt the one open part if there is one, and learn where offsets
-        // continue from the parts that are already there.
-        for (bucket, path) in log.all_parts()? {
+        // Recover: adopt the open parts (at most one per partition), and learn where
+        // offsets continue from everything that is already there.
+        for (bucket, partition, path) in log.all_parts()? {
             let reader = PartReader::open(&path, dict_config.as_ref())?;
-            let (_, end) = reader.offset_span();
-            log.next_offset = log.next_offset.max(end);
-            if !reader.sealed() && log.active.is_none() {
-                let writer =
-                    PartWriter::adopt(&path, block_bytes, zstd_level, dict_config.as_ref())?;
-                log.next_offset = log.next_offset.max(writer.next_offset());
-                log.active = Some(Active { bucket, writer });
+            if reader.sealed() || log.active_part(bucket, partition.as_deref()).is_some() {
+                continue;
             }
+            let writer = PartWriter::adopt(
+                &path,
+                block_bytes,
+                zstd_level,
+                block_codec,
+                dict_config.as_ref(),
+            )?;
+            log.active.push(Active {
+                bucket,
+                partition,
+                writer,
+            });
         }
         Ok(log)
     }
@@ -196,18 +230,20 @@ impl Log {
     /// Append one body. Returns its logical offset, which is the only address this
     /// crate hands out: `read(offset)` is `read` starting there.
     ///
-    /// The record is buffered until a block fills, so a reader sees it after the
-    /// flush, not after the call (see `append_durable` for the caller that will not
+    /// The record is buffered until a block fills, so a reader sees it after the flush,
+    /// not after the call (see `append_durable` and `flush` for the callers who will not
     /// accept that window).
     pub fn append(&mut self, ts: u64, body: &Body) -> Result<u64, Error> {
         let bucket = self.bucket_of(ts);
-        self.ensure_part(bucket, ts)?;
-        let active = match self.active.as_mut() {
-            Some(active) => active,
-            None => return Err(Error::BadPath),
+        let partition = match self.meta.partition_tag {
+            Some(tag) => Some(partition_of(body, tag)?),
+            None => None,
         };
-        let offset = active.writer.append(ts, body)?;
-        self.next_offset = self.next_offset.max(offset + 1);
+        self.ensure_part(bucket, &partition, ts)?;
+        let index = self
+            .active_index(bucket, partition.as_deref())
+            .ok_or(Error::BadPath)?;
+        let offset = self.active[index].writer.append(ts, body)?;
         Ok(offset)
     }
 
@@ -216,35 +252,34 @@ impl Log {
     /// chose.
     pub fn append_durable(&mut self, ts: u64, body: &Body) -> Result<u64, Error> {
         let offset = self.append(ts, body)?;
-        if let Some(active) = self.active.as_mut() {
-            active.writer.flush_block()?;
-        }
+        self.flush()?;
         Ok(offset)
     }
 
-    /// Write and fsync the buffered block without appending anything. This is the
+    /// Write and fsync every buffered block without appending anything. This is the
     /// durability boundary a caller who batches wants: `append` a batch, then `flush`,
     /// then treat the batch as on disk.
     pub fn flush(&mut self) -> Result<(), Error> {
-        match self.active.as_mut() {
-            Some(active) => active.writer.flush_block(),
-            None => Ok(()),
+        for active in self.active.iter_mut() {
+            active.writer.flush_block()?;
         }
+        Ok(())
     }
 
-    /// Close the open part (footer, fsync, rename). The log stays usable: the next
-    /// append opens a new part.
-    pub fn seal(&mut self) -> Result<Option<Footer>, Error> {
-        match self.active.take() {
-            Some(active) => Ok(Some(active.writer.seal()?)),
-            None => Ok(None),
+    /// Close every open part (footer, fsync, rename). The log stays usable: the next
+    /// append opens new parts.
+    pub fn seal(&mut self) -> Result<Vec<Footer>, Error> {
+        let mut footers = Vec::with_capacity(self.active.len());
+        for active in std::mem::take(&mut self.active) {
+            footers.push(active.writer.seal()?);
         }
+        Ok(footers)
     }
 
-    /// Read up to `max` records from a logical offset, across parts.
+    /// Read up to `max` records from a logical offset, across parts and partitions.
     pub fn read(&self, from: u64, max: usize) -> Result<Vec<(u64, u64, Body)>, Error> {
         let mut rows = Vec::new();
-        for (_, path) in self.all_parts()? {
+        for (_, _, path) in self.parts_by_offset()? {
             if rows.len() >= max {
                 break;
             }
@@ -257,6 +292,9 @@ impl Log {
             // record the log still has: the caller sees the gap in the offsets.
             reader.read_from(from.max(start), max, &mut rows)?;
         }
+        // Across partitions the parts arrive in directory order, so the caller gets a
+        // time order it can act on rather than a directory order it did not ask for.
+        rows.sort_by_key(|(ts, offset, _)| (*ts, *offset));
         Ok(rows)
     }
 
@@ -268,7 +306,7 @@ impl Log {
         max: usize,
     ) -> Result<Vec<(u64, u64, Body)>, Error> {
         let mut rows = Vec::new();
-        for (_, path) in self.all_parts()? {
+        for (_, _, path) in self.parts_by_offset()? {
             if rows.len() >= max {
                 break;
             }
@@ -284,8 +322,8 @@ impl Log {
         Ok(rows)
     }
 
-    /// Drop every bucket older than the one `ts` falls in. This is the retention the
-    /// crate exists for: one `remove_dir_all`, no tombstones.
+    /// Drop every bucket older than the one `ts` falls in — every partition inside it,
+    /// because a bucket is a time interval and a partition is not.
     pub fn retain_before(&mut self, ts: u64) -> Result<Vec<u64>, Error> {
         let cutoff = self.bucket_of(ts);
         let mut dropped = Vec::new();
@@ -303,12 +341,7 @@ impl Log {
                 Ok(bucket) => bucket,
                 Err(_) => continue,
             };
-            if bucket >= cutoff {
-                continue;
-            }
-            if let Some(active) = self.active.as_ref()
-                && active.bucket == bucket
-            {
+            if bucket >= cutoff || self.active.iter().any(|active| active.bucket == bucket) {
                 continue;
             }
             std::fs::remove_dir_all(entry.path())?;
@@ -318,16 +351,17 @@ impl Log {
         Ok(dropped)
     }
 
-    /// Every part on disk, oldest bucket first.
+    /// Every part on disk, ordered by bucket and then by the offset it starts at.
     pub fn parts(&self) -> Result<Vec<PartInfo>, Error> {
         let mut parts = Vec::new();
-        for (bucket, path) in self.all_parts()? {
+        for (bucket, partition, path) in self.parts_by_offset()? {
             let reader = PartReader::open(&path, self.config.dict.as_ref())?;
             let (first_offset, end) = reader.offset_span();
             let (first_ts, last_ts) = reader.ts_span().unwrap_or((0, 0));
             let bytes = std::fs::metadata(&path)?.len();
             parts.push(PartInfo {
                 bucket,
+                partition,
                 path,
                 sealed: reader.sealed(),
                 first_offset,
@@ -350,22 +384,46 @@ impl Log {
         self.root.join(format!("{bucket:012}"))
     }
 
-    fn ensure_part(&mut self, bucket: u64, ts: u64) -> Result<(), Error> {
-        let needs_new = match self.active.as_ref() {
+    fn partition_dir(&self, bucket: u64, partition: Option<&str>) -> PathBuf {
+        let dir = self.bucket_dir(bucket);
+        match partition {
+            Some(value) => dir.join(format!("{PARTITION_PREFIX}{}", hex(value.as_bytes()))),
+            None => dir,
+        }
+    }
+
+    fn active_index(&self, bucket: u64, partition: Option<&str>) -> Option<usize> {
+        self.active
+            .iter()
+            .position(|active| active.bucket == bucket && active.partition.as_deref() == partition)
+    }
+
+    fn active_part(&self, bucket: u64, partition: Option<&str>) -> Option<&PartWriter> {
+        self.active_index(bucket, partition)
+            .map(|index| &self.active[index].writer)
+    }
+
+    fn ensure_part(
+        &mut self,
+        bucket: u64,
+        partition: &Option<String>,
+        ts: u64,
+    ) -> Result<(), Error> {
+        let full = match self.active_index(bucket, partition.as_deref()) {
             None => true,
-            Some(active) => {
-                active.bucket != bucket
-                    || active.writer.written_bytes() + active.writer.pending_bytes() as u64
-                        >= self.config.part_bytes
+            Some(index) => {
+                let writer = &self.active[index].writer;
+                writer.written_bytes() + writer.pending_bytes() as u64 >= self.config.part_bytes
             }
         };
-        if !needs_new {
+        if !full {
             return Ok(());
         }
-        if self.active.is_some() {
-            self.seal()?;
+        if let Some(index) = self.active_index(bucket, partition.as_deref()) {
+            let active = self.active.remove(index);
+            active.writer.seal()?;
         }
-        let dir = self.bucket_dir(bucket);
+        let dir = self.partition_dir(bucket, partition.as_deref());
         std::fs::create_dir_all(&dir)?;
         let number = part::part_numbers(&dir)?.last().map(|n| n + 1).unwrap_or(0);
         for candidate in number..number.saturating_add(1024) {
@@ -377,7 +435,7 @@ impl Log {
                 precision: self.meta.precision,
                 bucket,
                 base_ts: ts,
-                first_offset: self.next_offset,
+                first_offset: self.stream_next_offset(bucket, partition.as_deref())?,
                 created_unix_ms: now_unix_ms()?,
             };
             let writer = PartWriter::create(
@@ -385,16 +443,40 @@ impl Log {
                 header,
                 self.config.block_bytes,
                 self.config.zstd_level,
+                self.config.block_codec,
                 self.config.dict.as_ref(),
             )?;
-            self.active = Some(Active { bucket, writer });
+            self.active.push(Active {
+                bucket,
+                partition: partition.clone(),
+                writer,
+            });
             return Ok(());
         }
         Err(Error::BadPath)
     }
 
-    /// Every part in the log, as (bucket, path), oldest first.
-    fn all_parts(&self) -> Result<Vec<(u64, PathBuf)>, Error> {
+    /// Where the next part of one stream starts: the highest offset any part of that
+    /// (bucket, partition) reached. Offsets are per stream, because a block header holds
+    /// only the first one and the reader counts up from there.
+    fn stream_next_offset(&self, bucket: u64, partition: Option<&str>) -> Result<u64, Error> {
+        let dir = self.partition_dir(bucket, partition);
+        let mut paths = part::sealed_parts(&dir)?;
+        if let Some(open) = part::open_part(&dir)? {
+            paths.push(open);
+        }
+        let mut end = 0u64;
+        for path in paths {
+            if let Ok(reader) = PartReader::open(&path, None) {
+                let (_, high) = reader.offset_span();
+                end = end.max(high);
+            }
+        }
+        Ok(end)
+    }
+
+    /// Every part, ordered by bucket, then partition, then part number.
+    fn all_parts(&self) -> Result<Vec<(u64, Option<String>, PathBuf)>, Error> {
         let mut buckets: Vec<(u64, PathBuf)> = Vec::new();
         for entry in std::fs::read_dir(&self.root)? {
             let entry = entry?;
@@ -411,16 +493,57 @@ impl Log {
             }
         }
         buckets.sort_by_key(|(bucket, _)| *bucket);
+
         let mut parts = Vec::new();
         for (bucket, dir) in buckets {
             for path in part::sealed_parts(&dir)? {
-                parts.push((bucket, path));
+                parts.push((bucket, None, path));
             }
             if let Some(path) = part::open_part(&dir)? {
-                parts.push((bucket, path));
+                parts.push((bucket, None, path));
+            }
+            let mut partitions: Vec<(String, PathBuf)> = Vec::new();
+            for entry in std::fs::read_dir(&dir)? {
+                let entry = entry?;
+                if !entry.file_type()?.is_dir() {
+                    continue;
+                }
+                let name = entry.file_name();
+                let name = match name.to_str() {
+                    Some(name) => name,
+                    None => continue,
+                };
+                if let Some(value) = partition_of_dir(name) {
+                    partitions.push((value, entry.path()));
+                }
+            }
+            partitions.sort_by(|left, right| left.0.cmp(&right.0));
+            for (value, partition_dir) in partitions {
+                for path in part::sealed_parts(&partition_dir)? {
+                    parts.push((bucket, Some(value.clone()), path));
+                }
+                if let Some(path) = part::open_part(&partition_dir)? {
+                    parts.push((bucket, Some(value), path));
+                }
             }
         }
         Ok(parts)
+    }
+
+    /// The same parts, ordered by the logical offset they start at — the order a reader
+    /// has to walk them in once offsets are global and partitions interleave.
+    fn parts_by_offset(&self) -> Result<Vec<(u64, Option<String>, PathBuf)>, Error> {
+        let parts = self.all_parts()?;
+        let mut keyed = Vec::with_capacity(parts.len());
+        for part in parts {
+            let first_offset = match PartReader::open(&part.2, None) {
+                Ok(reader) => reader.offset_span().0,
+                Err(_) => continue,
+            };
+            keyed.push((first_offset, part));
+        }
+        keyed.sort_by_key(|(first_offset, _)| *first_offset);
+        Ok(keyed.into_iter().map(|(_, part)| part).collect())
     }
 }
 
@@ -429,6 +552,8 @@ impl Log {
 #[derive(Clone, Debug)]
 pub struct PartInfo {
     pub bucket: u64,
+    /// The partition value this part lives under, decoded from the directory name.
+    pub partition: Option<String>,
     pub path: PathBuf,
     pub sealed: bool,
     pub first_offset: u64,
@@ -438,11 +563,53 @@ pub struct PartInfo {
     pub bytes: u64,
 }
 
+/// The value of the declared partition tag, rendered for a directory name. A record
+/// without it is refused: filing it somewhere plausible would make the layout lie.
+fn partition_of(body: &Body, tag: u16) -> Result<String, Error> {
+    let value = body.get(tag).ok_or(Error::MissingPartition(tag))?;
+    Ok(match value {
+        Value::Str(text) => text.clone(),
+        Value::U64(number) => number.to_string(),
+        Value::I64(number) => number.to_string(),
+        Value::F64(number) => number.to_string(),
+        Value::Bytes(bytes) => hex(bytes),
+    })
+}
+
+fn hex(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push(char::from_digit(u32::from(byte >> 4), 16).unwrap_or('0'));
+        out.push(char::from_digit(u32::from(byte & 0x0f), 16).unwrap_or('0'));
+    }
+    out
+}
+
+fn unhex(text: &str) -> Option<Vec<u8>> {
+    if !text.len().is_multiple_of(2) {
+        return None;
+    }
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(text.len() / 2);
+    for pair in bytes.chunks(2) {
+        let high = (pair[0] as char).to_digit(16)?;
+        let low = (pair[1] as char).to_digit(16)?;
+        out.push((high * 16 + low) as u8);
+    }
+    Some(out)
+}
+
+fn partition_of_dir(name: &str) -> Option<String> {
+    let rest = name.strip_prefix(PARTITION_PREFIX)?;
+    String::from_utf8(unhex(rest)?).ok()
+}
+
 fn read_meta(path: &Path) -> Result<Meta, Error> {
     let text = std::fs::read_to_string(path)?;
     let mut epoch_unix_ms = 0u64;
     let mut precision = Precision::Ns;
     let mut bucket_seconds = 3600u64;
+    let mut partition_tag = None;
     let mut seen = false;
     for line in text.lines() {
         let line = line.trim();
@@ -473,6 +640,13 @@ fn read_meta(path: &Path) -> Result<Meta, Error> {
                     .parse()
                     .map_err(|_| Error::BadMeta("bucket".to_string()))?
             }
+            "partition" if value != "-" => {
+                partition_tag = Some(
+                    value
+                        .parse()
+                        .map_err(|_| Error::BadMeta("partition".to_string()))?,
+                );
+            }
             _ => {}
         }
     }
@@ -486,16 +660,22 @@ fn read_meta(path: &Path) -> Result<Meta, Error> {
         epoch_unix_ms,
         precision,
         bucket_seconds,
+        partition_tag,
     })
 }
 
 fn write_meta(path: &Path, meta: &Meta) -> Result<(), Error> {
+    let partition = match meta.partition_tag {
+        Some(tag) => tag.to_string(),
+        None => "-".to_string(),
+    };
     let text = format!(
-        "okm-series {}\nepoch {}\nprecision {}\nbucket {}\n",
+        "okm-series {}\nepoch {}\nprecision {}\nbucket {}\npartition {}\n",
         format::VERSION,
         meta.epoch_unix_ms,
         meta.precision.label(),
-        meta.bucket_seconds
+        meta.bucket_seconds,
+        partition
     );
     let temp = path.with_extension("meta.tmp");
     {

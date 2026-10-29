@@ -30,10 +30,11 @@ fn main() -> Result<(), Box<dyn Error>> {
             "shape", "bytes", "B/rec", "x smaller", "w ns/rec", "r Mrec/s"
         );
         for (label, config) in [
-            ("dictionary on, zstd 1", config(true, 1)),
-            ("dictionary off, zstd 1", config(false, 1)),
-            ("dictionary on, zstd 3", config(true, 3)),
-            ("dictionary off, zstd 3", config(false, 3)),
+            ("no compression, dictionary on", config(true, 1, false)),
+            ("no compression, dictionary off", config(false, 1, false)),
+            ("zstd 1, dictionary on", config(true, 1, true)),
+            ("zstd 1, dictionary off", config(false, 1, true)),
+            ("zstd 3, dictionary on", config(true, 3, true)),
         ] {
             let (bytes, raw, write_ns, read_mrec_s) = run(&config, &bodies)?;
             println!(
@@ -48,21 +49,41 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
         println!();
     }
+
+    // What one fsync per block costs: same records, larger blocks.
+    println!("block size, unique id per record, zstd 1, dictionary on");
+    let bodies = unique_per_record();
+    for block_kib in [16usize, 64, 256] {
+        let mut config = config(true, 1, true);
+        config.block_bytes = block_kib * 1024;
+        let (bytes, raw, write_ns, _read) = run(&config, &bodies)?;
+        let blocks = raw.div_ceil(block_kib as u64 * 1024);
+        println!(
+            "  {block_kib:>4} KiB blocks: {:>6} ns/record, {blocks:>4} blocks, {bytes:>8} bytes",
+            write_ns / RECORDS
+        );
+    }
     Ok(())
 }
 
-fn config(dict: bool, level: i32) -> Config {
+fn config(dict: bool, level: i32, compress: bool) -> Config {
     Config {
         precision: Precision::Ms,
         bucket_seconds: 3600,
         block_bytes: 64 * 1024,
         part_bytes: 256 * 1024 * 1024,
         zstd_level: level,
+        block_codec: if compress {
+            okm_series::Codec::Zstd
+        } else {
+            okm_series::Codec::Raw
+        },
         dict: if dict {
             Some(DictConfig::default())
         } else {
             None
         },
+        partition_tag: None,
     }
 }
 

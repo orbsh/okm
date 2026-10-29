@@ -222,11 +222,26 @@ on its own (zstd level 1–3; lz4 where the CPU matters more than the ratio).
 
 **The overlap with the dictionary (§5) is real, and the measurement says it is narrower
 than the paper argument suggested** (`docs/internals/benchmarks.md`): on values drawn
-from small closed sets, interning cuts the bytes 4x ON TOP of compression and makes the
-write faster, because the codec is handed a smaller body; with one unique id per record
-it buys 3% of the bytes for 15–25% of the write time. So `Config::dict` is a per-log
-switch that defaults to on, and the deciding question is not "is this text" but "are
-these values a closed set, or is every record new".
+from small closed sets, interning cuts the bytes 4x ON TOP of compression and — because
+the codec is handed a smaller body — does not cost write time; with one unique id per
+record it buys 3% of the bytes for ~15% of the write time. So `Config::dict` is a
+per-log switch that defaults to on, and the deciding question is not "is this text" but
+"are these values a closed set, or is every record new".
+
+**Compression is on by default (zstd level 1), and the measurement is the reason, not a
+preference.** At 64 KiB blocks a block is compressed once per ~1,000 records, so the
+codec's cost is inside the noise of the append path: 872 ns/record with compression and
+857 without on the shape that compresses worst, and on the shapes that compress well the
+compressed path is measurably FASTER (357 against 347 + a 22x smaller file, because the
+write syscall carries less). Level 3 is not the default: it buys 9% of the bytes on
+highly repetitive data and nothing elsewhere, and the block size is worth more than the
+level — the same 50,000 records cost 2,267 ns/record at 16 KiB blocks, 942 at 64 KiB and
+556 at 256 KiB, because the per-block work (compress, write, fsync, index row) dominates
+the per-record work. `Codec::Raw` exists for callers whose bodies are already compressed.
+
+The index is deliberately NOT fsynced per block: it is derived data, adoption rebuilds it
+from the block headers, and dropping that second sync cut the write path by about a
+third (1,345 → 882 ns/record at 64 KiB blocks).
 
 The index is `<bucket>/part-<n>.idx`, one row per block, appended when the block is
 written — the same pure-append discipline as the log itself, no coordination, no
@@ -269,16 +284,27 @@ exactly the point at which the comparison with a lakehouse has to stop.
   question. It is what Iceberg manifests and a drainer computing Parquet footer
   statistics are for. A log that grew field-level stats would be a column store with
   a worse layout and a hotter write path.
-- **Partitioning by a field is a path, not an index.** A log may declare one
-  partition field at creation: `<bucket>/<partition value>/part-<n>.log`. The reader
-  walks the partition directories it needs; the writer keeps one open part per
-  partition, and therefore one `LOCK` per partition (the single-writer rule is per
-  file, and a partition is a file's worth of writer). The dictionary becomes per
-  (partition, part), which is better locality for exactly the fields worth
-  partitioning on. Retention stays per bucket — a bucket is a time interval, not a
-  value.
+- **Partitioning by a field is a path, not an index.** A log declares one body tag at
+  creation; its value becomes a directory: `<bucket>/p-<hex(value)>/part-<n>.log`. Hex,
+  so any value a body can hold is a legal directory name, and the `p-` prefix keeps it
+  distinct from a bucket directory (all digits). The writer keeps one open part per
+  partition; the dictionary becomes per (partition, part), which is better locality for
+  exactly the fields worth partitioning on; retention stays per bucket, because a bucket
+  is a time interval and a partition is not.
+- **Offsets are per stream, and that is a consequence of the block layout.** A block
+  header carries its first offset and the reader counts up from there — so a part whose
+  records were interleaved with another partition's could not be read back at all if the
+  counter were global. Offsets therefore belong to (bucket, partition) — or to the log
+  itself when no partition is declared, which is the same rule with one stream. Reads
+  return rows in time order across partitions rather than in directory order.
+- **One `LOCK` per log, not per partition** — a deviation from what this ADR first said.
+  The writer that holds the lock owns every partition under the root; a per-partition
+  lock would only matter if two processes could write different partitions of one log,
+  and nothing asks for that yet. The lock is still the thing that makes "one writer" true.
 - Declared at creation and never changed, for the same reason `bucket` cannot change:
-  a reader that cannot tell which layout a directory is in cannot read it.
+  a reader that cannot tell which layout a directory is in cannot read it. A record
+  without the declared tag is refused (`MissingPartition`), never filed somewhere
+  plausible — a layout that lies cannot be read back.
 
 ## Consequences
 
@@ -286,8 +312,10 @@ exactly the point at which the comparison with a lakehouse has to stop.
   redelivery and no per-consumer cursor (that is a protocol over offsets, and it can
   live above this file); it has no aggregation (that is a reduce over records, and it
   can live above too). It is the append-and-read half, done once.
-- Offsets are a single writer's u64 counter, continued across restarts from the last
-  sealed part's header. Truncation never rewinds it.
+- Offsets are one writer's u64 counter PER STREAM — a stream being a (bucket,
+  partition) or the log itself when no partition is declared — continued after a
+  restart from the highest offset any part of that stream reached (§9). Truncation never
+  rewinds it.
 - The lake path comes for free: a bucket directory is already a window.
 - **ADR-0045's segments do NOT move onto this substrate**, and the earlier version of
   this bullet had it backwards. What the two share is a convention — a directory of
