@@ -32,7 +32,15 @@ use crate::model::document::Collection;
 use crate::model::graph::{EdgeKey, Graph, GraphEncode};
 
 /// Arrow column type for a declared field kind.
-fn arrow_type(ty: FieldType) -> DataType {
+///
+/// THE mapping: a schema-driven column builder (the drain path, a third-party
+/// adapter) must call this rather than restate `FieldType → DataType`, or the
+/// same table exports as two different Arrow schemas depending on who wrote the
+/// file. Logical kinds are resolved here once — `VarInt` is its integer, `Quant`
+/// its dequantized f64, `Offset` its rebased i64, `Vocab` its LABEL (the id is
+/// the store's numbering, not something a warehouse can name, and the column is
+/// nullable because a row may name an id the vocabulary does not know).
+pub fn arrow_type(ty: FieldType) -> DataType {
     match ty {
         FieldType::U8 => DataType::UInt8,
         FieldType::U16 => DataType::UInt16,

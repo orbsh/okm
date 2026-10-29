@@ -363,3 +363,43 @@ fn status_reports_a_log_that_never_took_a_write() {
     let plain: Collection<TestStore, LogKey, LogRow> = Collection::new(TestStore::slatedb_mem());
     assert!(plain.changelog_status().is_none());
 }
+
+/// The sidecar is the half of the declaration the log cannot carry. It is
+/// written by `with_changelog` (the one place that knows both the schema and the
+/// directory), it round-trips, and a DIFFERENT shape behind the same version is
+/// refused rather than overwritten — a version that can mean two shapes has
+/// stopped meaning anything (ADR-0042).
+#[cfg(feature = "schema-serde")]
+#[test]
+fn the_sidecar_is_written_once_per_layout_version() {
+    use okm_core::changelog::{sidecar_name, table_dir, write_sidecar};
+    use okm_core::schema::CollectionSchema;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let app: Collection<TestStore, LogKey, LogRow> =
+        Collection::with_changelog(TestStore::slatedb_mem(), ChangelogConfig::new(dir.path()))
+            .expect("open");
+
+    let table = table_dir(dir.path(), LOG_NS);
+    let path = table.join(sidecar_name(<LogRow as Document>::LAYOUT_VERSION));
+    let json = std::fs::read_to_string(&path).expect("with_changelog stamps the sidecar");
+    let parsed: CollectionSchema = serde_json::from_str(&json).expect("sidecar round-trips");
+    assert_eq!(parsed, CollectionSchema::of::<LogKey, LogRow>());
+    assert_eq!(
+        parsed.key_fields.len(),
+        1,
+        "the sidecar carries the KEY layout, which no log byte does"
+    );
+
+    // Same schema again: idempotent, same path, no error.
+    assert_eq!(write_sidecar(&table, &parsed).expect("same schema"), path);
+
+    // A different shape behind the same number: refused.
+    let mut other = parsed.clone();
+    other.key_len += 1;
+    assert!(
+        write_sidecar(&table, &other).is_err(),
+        "one version must not describe two shapes"
+    );
+    drop(app);
+}

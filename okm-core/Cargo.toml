@@ -7,6 +7,7 @@ edition = "2024"
 okm-derive = { path = "../okm-derive" }
 okm-wire = { path = "../okm-wire" }
 serde = { version = "1", features = ["derive"], optional = true }
+serde_json = { version = "1", optional = true }
 thiserror = "2"
 fjall = { version = "3.1.10", optional = true }
 redb = { version = "4.2", optional = true }
@@ -26,7 +27,7 @@ syn = { version = "2", features = ["full", "parsing"] }
 
 [features]
 default = []
-schema-serde = ["dep:serde"]
+schema-serde = ["dep:serde", "dep:serde_json"]
 test-engines = ["slatedb"]
 slatedb = ["dep:slatedb", "dep:tokio"]
 fjall = ["dep:fjall", "dep:tempfile"]
