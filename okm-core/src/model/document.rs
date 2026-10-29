@@ -1107,6 +1107,71 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         }
     }
 
+    /// Re-capture the rows that still exist — the repair for a log that is visibly
+    /// incomplete (a crash between the commit and the append, ADR-0045 §7).
+    ///
+    /// The rows are emitted as the log's own PUT frames, so a sink folds them like
+    /// any other write: an upsert-capable sink converges, and a window that already
+    /// carried a row carries it twice — which is what a window is allowed to be.
+    /// What this CANNOT repair is a removal: a key that is gone looks exactly like
+    /// a key that was never written, so a delete lost between commit and append
+    /// stays lost. The honest repair for that is the operator's: drop the key range
+    /// in the sink and replay the window.
+    ///
+    /// Whole table. Use [`Self::reconcile_range`] for a slice — staging is memory.
+    pub fn reconcile(&self) -> crate::error::Result<usize> {
+        if self.changelog.is_none() {
+            return Ok(0);
+        }
+        let mut prefix = self.header();
+        crate::model::index::write_slot(&mut prefix, crate::model::index::PRIMARY_SLOT);
+        // `scan_suffix_kv` hands back SUFFIXES (the prefix is the caller's); a
+        // frame records the whole key, so the header goes back on.
+        let rows = crate::engine::storage::scan_suffix_kv(&self.store, &prefix)?
+            .into_iter()
+            .map(|(suffix, value)| {
+                let mut key = prefix.clone();
+                key.extend_from_slice(&suffix);
+                (key, value)
+            })
+            .collect();
+        Ok(self.stage_rows(rows))
+    }
+
+    /// Re-capture the rows in `[begin, end)`, both bounds being KEY suffixes: the
+    /// header and the primary slot are the collection's to add, not the caller's.
+    pub fn reconcile_range(&self, begin: &[u8], end: &[u8]) -> crate::error::Result<usize> {
+        if self.changelog.is_none() {
+            return Ok(0);
+        }
+        let mut from = self.header();
+        crate::model::index::write_slot(&mut from, crate::model::index::PRIMARY_SLOT);
+        let row_len = from.len() + K::KEY_LEN;
+        from.extend_from_slice(begin);
+        let mut to = self.header();
+        crate::model::index::write_slot(&mut to, crate::model::index::PRIMARY_SLOT);
+        to.extend_from_slice(end);
+        let mut rows = Vec::new();
+        for pair in self.store.scan_range_iter(&from, Some(&to)) {
+            let (key, value) = pair?;
+            // A row is the primary face with a suffix of exactly one key; a
+            // face-level single value has no key to attribute and no row to repair.
+            if key.len() == row_len {
+                rows.push((key, value));
+            }
+        }
+        Ok(self.stage_rows(rows))
+    }
+
+    /// Turn stored rows into the log's PUT frames and stage them.
+    fn stage_rows(&self, rows: Vec<(Vec<u8>, Vec<u8>)>) -> usize {
+        let ops: Vec<(Vec<u8>, Option<Vec<u8>>)> = rows
+            .into_iter()
+            .map(|(key, value)| (key, Some(value)))
+            .collect();
+        self.stage_capture(&ops)
+    }
+
     /// What the change log owes: the open segment, bytes still buffered, records
     /// dropped while the sink was broken, and the last write failure. `None` when
     /// no changelog is attached.
