@@ -78,6 +78,12 @@ rejected by the writer, not clamped: the file's byte order IS the time order, an
 file whose order and clock disagree cannot be read by either. A caller with skewed
 writers gets one writer per log (the `LOCK` file) and an error it can act on.
 
+Monotone time is a property of the STREAM, not of a part, and the difference is a real
+hole: a record an hour older than its predecessor lands in an older bucket, opens a
+fresh part that has no history of its own, and would pass a per-part check. The log
+therefore remembers the newest timestamp each stream has seen — recovered from the parts
+on open — and refuses before any file is touched.
+
 **There is no per-record checksum, and that is a decision.** Given §3 (nothing is
 acknowledged before it is fsynced) and the fact that a part is only ever written at
 its end, the only damage a crash can do is truncate the tail — so the torn record is

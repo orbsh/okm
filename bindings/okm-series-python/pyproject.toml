@@ -1,0 +1,14 @@
+[build-system]
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "okm-series"
+version = "0.1.0"
+description = "Append-only log of timestamped records: buckets by the hour, blocks, an index, and a dictionary that earns its place."
+requires-python = ">=3.8"
+
+[tool.maturin]
+features = ["pyo3/extension-module"]
+module-name = "okm_series"
+python-source = "."
