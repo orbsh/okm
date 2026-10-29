@@ -577,9 +577,14 @@ impl Collection {
 	        FieldType::U8 => Value::U8(v.extract::<u64>().map_err(|_| bad("u8"))? as u8),
 	        FieldType::U16 => Value::U16(v.extract::<u64>().map_err(|_| bad("u16"))? as u16),
 	        FieldType::U32 => Value::U32(v.extract::<u64>().map_err(|_| bad("u32"))? as u32),
-	        FieldType::U64 | FieldType::VarInt | FieldType::Quant(_) | FieldType::Offset(_) => {
+	        FieldType::U64 | FieldType::VarInt => {
 	            Value::U64(v.extract::<u64>().map_err(|_| bad("u64"))?)
 	        }
+	        // A wrapper carries its own arithmetic in the schema, so its value is
+	        // LOGICAL here: `Quant` takes an f64 (the codec quantises with P) and
+	        // `Offset` an i64 (the codec biases with the base).
+	        FieldType::Quant(_) => Value::F64(v.extract::<f64>().map_err(|_| bad("f64"))?),
+	        FieldType::Offset(_) => Value::I64(v.extract::<i64>().map_err(|_| bad("i64"))?),
 	        FieldType::FixedBytes | FieldType::Bytes => {
 	            Value::Bytes(v.extract::<Vec<u8>>().map_err(|_| bad("bytes"))?)
 	        }

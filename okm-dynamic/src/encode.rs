@@ -47,9 +47,7 @@ pub fn encode_payload(schema: &CollectionSchema, values: &ValueMap) -> Result<Ve
                 buf.extend_from_slice(s.as_bytes());
             }
             other => {
-                // Variable-width wrapper kinds arrive in their storage
-                // form; frame them through their integer encoding.
-                let bytes = storage_be_bytes(other, &f.name)?;
+                let bytes = cold_frame_bytes(f, other)?;
                 okm_core::put_len(&mut buf, bytes.len());
                 buf.extend_from_slice(&bytes);
             }
@@ -106,6 +104,34 @@ fn encode_field(
 ) -> Result<(), CodecError> {
     let v = field_pair(&f.name, f.ty, values)?;
     debug_assert_eq!(buf.len(), f.offset, "static placement must be contiguous");
+    // Wrapper kinds carry their parameters in the SCHEMA — `Quant<P>` its
+    // precision, `Offset<B>` its base — so the codec does the arithmetic. The
+    // other contract, "hand me the storage form", pushes the precision and the
+    // base back into every caller's hands and is exactly the drift the schema
+    // export exists to prevent (and what made these kinds write an 8-byte image
+    // no typed reader could consume).
+    match f.ty {
+        okm_core::FieldType::Quant(p) => {
+            let Value::F64(x) = v else {
+                return Err(type_err(&f.name, "f64 (Quant's logical value)"));
+            };
+            buf.extend_from_slice(&okm_core::wire_to_be_bytes(okm_core::quantize(*x, p)));
+            return Ok(());
+        }
+        okm_core::FieldType::Offset(base) => {
+            let Value::I64(x) = v else {
+                return Err(type_err(&f.name, "i64 (Offset's logical value)"));
+            };
+            buf.extend_from_slice(&offset_bytes(*x, base, &f.name)?);
+            return Ok(());
+        }
+        // Variable width, so cold by construction: a hot walk that reaches a
+        // VarInt field means the schema disagrees with the declaration.
+        okm_core::FieldType::VarInt => {
+            return Err(type_err(&f.name, "cold TLV (VarInt has no static width)"));
+        }
+        _ => {}
+    }
     match v {
         Value::U8(x) => buf.push(*x),
         Value::U16(x) => buf.extend_from_slice(&x.to_be_bytes()),
@@ -140,17 +166,102 @@ fn encode_field(
     Ok(())
 }
 
-/// Variable-width wrapper kinds in storage form (VarInt LEB128, Enum tag
-/// byte already covered by U8, Quant/Offset are fixed 8B/4B BE).
-fn storage_be_bytes(v: &Value, name: &str) -> Result<Vec<u8>, CodecError> {
-    Ok(match v {
-        Value::U64(x) => x.to_be_bytes().to_vec(),
-        Value::U8(x) => vec![*x],
-        _ => {
-            return Err(CodecError::TypeMismatch {
-                field: name.to_string(),
-                expected: "integer storage form",
-            })
+/// Cold TLV frame bytes for a kind other than `Str`.
+///
+/// Dispatch is on the FIELD KIND, never on the value alone: `VarInt` is a
+/// prefix-monotonic varint (its frame length is the encoding's), `Quant` a
+/// fixed-point i64 wire, `Offset` a 4-byte biased u32, `Vocab` one id byte.
+/// Writing all of them as an 8-byte BE image — which is what a value-only
+/// dispatch did — produces frames the typed reader cannot consume: a 3-byte
+/// varint frame overruns, a 4-byte offset frame truncates, and a quantised
+/// value comes back as an integer.
+fn cold_frame_bytes(
+    f: &okm_core::schema::FieldSchema,
+    v: &Value,
+) -> Result<Vec<u8>, CodecError> {
+    Ok(match f.ty {
+        okm_core::FieldType::VarInt => {
+            let Value::U64(x) = v else {
+                return Err(type_err(&f.name, "u64 (VarInt's logical value)"));
+            };
+            okm_core::VarInt::<u64>(*x).encode()
+        }
+        okm_core::FieldType::Quant(p) => {
+            let Value::F64(x) = v else {
+                return Err(type_err(&f.name, "f64 (Quant's logical value)"));
+            };
+            okm_core::wire_to_be_bytes(okm_core::quantize(*x, p))
+        }
+        okm_core::FieldType::Offset(base) => {
+            let Value::I64(x) = v else {
+                return Err(type_err(&f.name, "i64 (Offset's logical value)"));
+            };
+            offset_bytes(*x, base, &f.name)?
+        }
+        // ADR-0032: the frame is the id; a label is what a reader resolves, not
+        // something a writer stores. Both spellings of an id are accepted so a
+        // decoded row (`Bytes`) re-encodes without a translation step.
+        okm_core::FieldType::Vocab(_) => match v {
+            Value::U8(x) => vec![*x],
+            Value::Bytes(b) if b.len() == f.width => b.clone(),
+            _ => return Err(type_err(&f.name, "the vocabulary id (u8 / width bytes)")),
+        },
+        okm_core::FieldType::Bytes => match v {
+            Value::Bytes(b) => b.clone(),
+            Value::Str(s) => s.as_bytes().to_vec(),
+            _ => return Err(type_err(&f.name, "raw bytes")),
+        },
+        okm_core::FieldType::FixedBytes => match v {
+            Value::Bytes(b) if b.len() == f.width => b.clone(),
+            _ => return Err(type_err(&f.name, "bytes of the declared width")),
+        },
+        okm_core::FieldType::U8 => match v {
+            Value::U8(x) => vec![*x],
+            _ => return Err(type_err(&f.name, "u8")),
+        },
+        okm_core::FieldType::U16 => match v {
+            Value::U16(x) => x.to_be_bytes().to_vec(),
+            _ => return Err(type_err(&f.name, "u16")),
+        },
+        okm_core::FieldType::U32 => match v {
+            Value::U32(x) => x.to_be_bytes().to_vec(),
+            _ => return Err(type_err(&f.name, "u32")),
+        },
+        okm_core::FieldType::U64 => match v {
+            Value::U64(x) => x.to_be_bytes().to_vec(),
+            _ => return Err(type_err(&f.name, "u64")),
+        },
+        // Str is framed by `encode_payload` (no length prefix inside the frame
+        // beyond the TLV's own) and Vector frames are not built here yet.
+        okm_core::FieldType::Str => return Err(type_err(&f.name, "Str (framed as UTF-8)")),
+        okm_core::FieldType::Vector { .. } => {
+            return Err(type_err(
+                &f.name,
+                "a Vector frame — the dynamic codec does not build element frames yet",
+            ));
         }
     })
+}
+
+/// `value − base` as a 4-byte BE u32, WITHOUT the panic in
+/// [`okm_core::offset_encode`]: this codec takes caller-supplied values, so an
+/// out-of-window offset is an error the caller can act on, not a crash.
+fn offset_bytes(value: i64, base: i64, name: &str) -> Result<Vec<u8>, CodecError> {
+    value
+        .checked_sub(base)
+        .filter(|d| (0..=u32::MAX as i64).contains(d))
+        .map(|d| (d as u32).to_be_bytes().to_vec())
+        .ok_or_else(|| {
+            type_err(
+                name,
+                "an Offset value inside [base, base + 2^32) (u32 wire)",
+            )
+        })
+}
+
+fn type_err(field: &str, expected: &'static str) -> CodecError {
+    CodecError::TypeMismatch {
+        field: field.to_string(),
+        expected,
+    }
 }
