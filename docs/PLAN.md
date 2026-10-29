@@ -2176,7 +2176,8 @@ that can be dropped in one syscall. Design in ADR-0046. Nothing below is built.
       byte sizes (the file has a length, the index has the rows), not the first
       timestamp (the header has it), not the dictionary count (the dict file counts
       itself) — a footer that repeats the disk is a second copy that can disagree.
-- [ ] Partitioning by one field, declared at creation and never changed:
+- [ ] Partitioning by one field, declared at creation and never changed (the one slice
+      left):
       `<bucket>/<value>/part-<n>.*`, one open part and one `LOCK` per partition, the
       dictionary per (partition, part), retention still per bucket. Not built: nothing
       needs it yet, and it changes the reader's walk.
@@ -2197,6 +2198,15 @@ that can be dropped in one syscall. Design in ADR-0046. Nothing below is built.
       `L <= W` never, `W..4W` at 10, `4W..8W` at 5, `8W..16W` at 3, `16W` and beyond at
       2. Configuration, not format; counts are per part and restart hourly, which is
       why the short end is the only conservative row.
+- [x] `flush()`: the durability boundary for a caller who batches — write and fsync the
+      buffered block without a phantom record. `append_durable` remains the per-record
+      path (a block per record, the trade the caller chose).
+- [x] Measured, three runs, in `docs/internals/benchmarks.md`: 0.5–1.9 µs/record to
+      write and 4–21 M records/s to read. The interesting result is that the dictionary
+      and the block codec are not interchangeable — on closed-set fields the dictionary
+      cuts the bytes 4x on top of compression AND makes the write faster (a smaller body
+      gives the codec less to chew), while one unique id per record makes it buy 3% for
+      15–25% of the write time. That is the shape `Config::dict = None` is for.
 - [x] Tests: a part that survives a torn tail and keeps appending; a string promoted at
       its tenth occurrence with the first nine inline; a long value promoted at its
       second; a string no longer than its code never interned; an escalation to a wider

@@ -220,12 +220,13 @@ on its own (zstd level 1–3; lz4 where the CPU matters more than the ratio).
   turn every seal into a rewrite of the part — 2x write amplification for a few
   percent of ratio.
 
-**This partly overlaps the dictionary (§5), and the ADR says so instead of pretending
-otherwise.** A block codec with back-references already collapses a repeated string to
-about the size of a code; interning removes the repetition before the codec sees it,
-which makes the codec faster and the stream smaller, but its marginal byte win is
-smaller than it looks in isolation. `dict_policy` is therefore a per-log switch, and
-the choice belongs in a measurement, not in an argument.
+**The overlap with the dictionary (§5) is real, and the measurement says it is narrower
+than the paper argument suggested** (`docs/internals/benchmarks.md`): on values drawn
+from small closed sets, interning cuts the bytes 4x ON TOP of compression and makes the
+write faster, because the codec is handed a smaller body; with one unique id per record
+it buys 3% of the bytes for 15–25% of the write time. So `Config::dict` is a per-log
+switch that defaults to on, and the deciding question is not "is this text" but "are
+these values a closed set, or is every record new".
 
 The index is `<bucket>/part-<n>.idx`, one row per block, appended when the block is
 written — the same pure-append discipline as the log itself, no coordination, no

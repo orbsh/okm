@@ -222,6 +222,16 @@ impl Log {
         Ok(offset)
     }
 
+    /// Write and fsync the buffered block without appending anything. This is the
+    /// durability boundary a caller who batches wants: `append` a batch, then `flush`,
+    /// then treat the batch as on disk.
+    pub fn flush(&mut self) -> Result<(), Error> {
+        match self.active.as_mut() {
+            Some(active) => active.writer.flush_block(),
+            None => Ok(()),
+        }
+    }
+
     /// Close the open part (footer, fsync, rename). The log stays usable: the next
     /// append opens a new part.
     pub fn seal(&mut self) -> Result<Option<Footer>, Error> {
