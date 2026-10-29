@@ -57,6 +57,19 @@ pub struct TagRow {
     pub body: String,
 }
 
+/// The second table of the cross-table test: same key type, DIFFERENT ns, so the
+/// two collections have different headers — which is what "cross-table" means to
+/// a capture filter.
+#[derive(DocumentEncode, Clone, PartialEq, Debug)]
+#[ok_ref(LogKey)]
+#[ok_ns(59)]
+pub struct OtherRow {
+    pub author: u64,
+    pub title: String,
+}
+
+const OTHER_NS: &[u8] = <OtherRow as Document>::NS_PREFIX;
+
 const LOG_NS: &[u8] = <LogRow as Document>::NS_PREFIX;
 const TAG_NS: &[u8] = <TagRow as Document>::NS_PREFIX;
 
@@ -402,4 +415,71 @@ fn the_sidecar_is_written_once_per_layout_version() {
         "one version must not describe two shapes"
     );
     drop(app);
+}
+
+/// A batch that spans two tables: each collection stages its OWN share before the
+/// one commit and appends after it (the staged/flush split). Without it the
+/// committer's log records only its own keys and the other table's writes never
+/// reach a lake — the hole this verb pair closes.
+#[test]
+fn a_cross_table_batch_captures_each_tables_own_share() {
+    let root_a = tempfile::tempdir().expect("a");
+    let root_b = tempfile::tempdir().expect("b");
+    let a: Collection<TestStore, LogKey, LogRow> = Collection::with_changelog(
+        TestStore::slatedb_mem(),
+        ChangelogConfig::new(root_a.path()),
+    )
+    .expect("open a");
+    let b: Collection<TestStore, LogKey, OtherRow> = Collection::with_changelog(
+        TestStore::slatedb_mem(),
+        ChangelogConfig::new(root_b.path()),
+    )
+    .expect("open b");
+
+    // One batch carrying both tables' keys.
+    let mut batch = Batch::default();
+    let ka = LogKey { id: 1 };
+    let kb = LogKey { id: 2 };
+    a.save_into(
+        &mut batch,
+        &ka,
+        &LogRow {
+            author: 7,
+            title: "a".into(),
+        },
+    );
+    b.save_into(
+        &mut batch,
+        &kb,
+        &OtherRow {
+            author: 8,
+            title: "b".into(),
+        },
+    );
+    let pa = a.primary_key(&ka);
+    let pb = b.primary_key(&kb);
+
+    // Stage before the commit: each collection takes its own ops and no one
+    // else's (a directory belongs to one header).
+    assert_eq!(a.stage_capture(&batch.ops), 1, "a takes its own op");
+    assert_eq!(b.stage_capture(&batch.ops), 1, "b takes its own op");
+
+    a.commit_batch(batch).expect("one commit");
+    a.flush_capture().expect("a appends after the commit");
+    b.flush_capture().expect("b appends after the commit");
+
+    let frames_a = drain(a, root_a.path());
+    drop(b);
+    let frames_b: Vec<CapturedFrame> = sealed_segments(root_b.path(), OTHER_NS)
+        .expect("b's segments")
+        .iter()
+        .flat_map(|path| read_sealed(path).expect("b's frames"))
+        .map(|frame| frame.0)
+        .collect();
+    assert_eq!(frames_a.len(), 1, "a: one committed batch, one frame");
+    assert_eq!(frames_a[0].len(), 1, "a: only its own row");
+    assert_eq!(frames_a[0][0].1, pa, "a's key, in a's log");
+    assert_eq!(frames_b.len(), 1, "b: one frame, from its own stage");
+    assert_eq!(frames_b[0].len(), 1, "b: only its own row");
+    assert_eq!(frames_b[0][0].1, pb, "b's key, in b's log");
 }

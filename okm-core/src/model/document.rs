@@ -8,8 +8,8 @@
 //! (indexed + includes fields live there), so put and delete are both
 //! document-shaped.
 
-use crate::engine::storage::{scan_suffix_kv, SharedVirtualStorage, VirtualStorage};
-use crate::model::index::{KvIndex, Document};
+use crate::engine::storage::{SharedVirtualStorage, VirtualStorage, scan_suffix_kv};
+use crate::model::index::{Document, KvIndex};
 use crate::model::key::{KeyEncode, PrefixKey};
 
 /// One document as the byte-level scans hand it over: `(key encoding suffix,
@@ -263,11 +263,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     /// only double-guard what the engine already enforces. The
     /// multi-writer future (optimistic CAS) triggers only if multiple
     /// live writers over one store become a real requirement.
-    pub fn upsert_with(
-        &self,
-        key: &K,
-        f: impl FnOnce(Option<R>) -> R,
-    ) -> crate::error::Result<R> {
+    pub fn upsert_with(&self, key: &K, f: impl FnOnce(Option<R>) -> R) -> crate::error::Result<R> {
         let new = f(self.get(key)?);
         self.put(key, &new)?;
         Ok(new)
@@ -786,8 +782,8 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
 
 use std::collections::BTreeMap;
 
-use crate::model::obj_vocab::{VocabCache, FIELD_VOCAB};
 use crate::model::obj_dynamic::DynamicValue;
+use crate::model::obj_vocab::{FIELD_VOCAB, VocabCache};
 
 impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> {
     /// Dynamic-segment key: `[header][0x01][key payload]` — the per-document
@@ -921,7 +917,12 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         // stamped with the table's post-write epoch. A segment-only document
         // has no row to hand the event, so it emits nothing.
         if let Some(document) = &prev {
-            R::__okm_emit_event(crate::subscribe::Op::Delete, self.epoch.get(), key, document);
+            R::__okm_emit_event(
+                crate::subscribe::Op::Delete,
+                self.epoch.get(),
+                key,
+                document,
+            );
         }
         Ok(true)
     }
@@ -945,13 +946,15 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         // answers ids, so an engine failure is parked and re-raised after the
         // walk (a nested decode has nowhere else to put it).
         let mut failed: Option<crate::error::Error> = None;
-        let frames = crate::model::obj_dynamic::decode_named(&raw, &mut |id| {
-            match d.name_for(&self.store, &header, id) {
-                Ok(name) => name,
-                Err(e) => {
-                    failed = Some(e);
-                    None
-                }
+        let frames = crate::model::obj_dynamic::decode_named(&raw, &mut |id| match d.name_for(
+            &self.store,
+            &header,
+            id,
+        ) {
+            Ok(name) => name,
+            Err(e) => {
+                failed = Some(e);
+                None
             }
         });
         if let Some(e) = failed {
@@ -1027,8 +1030,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         BTreeMap<String, DynamicValue>,
         BTreeMap<String, DynamicValue>,
     ) {
-        let declared: std::collections::HashSet<&str> =
-            R::FIELDS.iter().map(|f| f.name).collect();
+        let declared: std::collections::HashSet<&str> = R::FIELDS.iter().map(|f| f.name).collect();
         let mut typed = BTreeMap::new();
         let mut dynamic = BTreeMap::new();
         for (name, value) in object {
@@ -1051,7 +1053,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         // is already durable — the failure lands in `changelog_status` instead
         // of turning a committed write into an error.
         if let Some(log) = &self.changelog {
-            log.borrow_mut().stage(&batch.ops);
+            let _ = log.borrow_mut().stage(&batch.ops);
         }
         self.store.commit_batch(batch)?;
         self.epoch.set(self.epoch.get() + 1);
@@ -1072,10 +1074,37 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     ///
     /// A batch may carry another table's keys; a log directory belongs to ONE
     /// header, so this captures the keys under THIS collection's header and drops
-    /// the rest. A batch that also writes another table needs that table's capture
-    /// too — the staged/flush split that makes it safe is recorded in PLAN.
+    /// the rest. For a batch that writes several tables, use the staged/flush
+    /// split instead of this shorthand: every participating collection stages its
+    /// own share before the ONE commit ([`Self::stage_capture`]) and appends after
+    /// the commit returned Ok ([`Self::flush_capture`]) — the capture follows the
+    /// keys to their own logs, and none of it describes a write the engine
+    /// refused.
     pub fn commit_batch(&self, batch: crate::engine::storage::Batch) -> crate::error::Result<()> {
         self.commit(batch)
+    }
+
+    /// Stage this collection's share of `ops` for capture, WITHOUT appending:
+    /// the first half of the staged/flush split for a batch that spans tables.
+    ///
+    /// Returns how many ops were carried (0 when the batch holds nothing under
+    /// this header, and when no log is attached). Staging is memory only, so it
+    /// cannot fail a write; a staged frame whose commit never happens is dropped
+    /// by the next `stage` call — at-most-once, never a phantom row.
+    pub fn stage_capture(&self, ops: &[(Vec<u8>, Option<Vec<u8>>)]) -> usize {
+        match &self.changelog {
+            Some(log) => log.borrow_mut().stage(ops),
+            None => 0,
+        }
+    }
+
+    /// Append what [`Self::stage_capture`] staged. Call it AFTER the one commit
+    /// returned Ok, for every collection that staged.
+    pub fn flush_capture(&self) -> crate::error::Result<()> {
+        match &self.changelog {
+            Some(log) => log.borrow_mut().commit_staged(),
+            None => Ok(()),
+        }
     }
 
     /// What the change log owes: the open segment, bytes still buffered, records
