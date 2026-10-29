@@ -1986,10 +1986,14 @@ panic lints allowed only in the places it names. So the runtime half of
       write (`put`/`delete`/`merge`/`replace`/`purge`). `save_into` bypasses it
       (the caller commits to the store directly), so the assembly point also
       gained **`Collection::commit_batch`** — stage, commit, append, same path.
-- [ ] Cross-table batches: each collection stages its own share BEFORE the one
-      commit and flushes after it (a staged/flush split). Today one publication
-      captures the keys under its own header and drops the rest, which is the
-      hole patch 1 above documents rather than hides.
+- [x] Cross-table batches: `stage_capture(ops)` stages a collection's own share
+      BEFORE the one commit and `flush_capture()` appends after it returned Ok, so
+      every participating table's log gets its rows and none of them describes a
+      write the engine refused. `commit_batch` stays the single-collection
+      shorthand (it captures its own header's keys and drops the rest, which is
+      what a one-table publication wants). `changelog_test` locks the split: one
+      batch carrying two tables' keys, two stages, one commit, and each log holds
+      only its own row.
 - [x] Filter is an EXCLUDE list, stated once and failing closed toward the lake:
       carry the set an export carries — primary `0x00`, dynamic `0x01`, field-name
       vocabulary `0x02`/`0x03`, predicate vocabulary `0x04`/`0x05`, and both
@@ -2081,40 +2085,45 @@ panic lints allowed only in the places it names. So the runtime half of
       reproduced with a pure-CPU filter (`key-encode/encode/typical_16B`) and with
       `--list`, so it is the harness, not the change. Re-run once it works and put
       the delta beside the recorded 1.31 µs semantic put.
-- [ ] Drain-side pieces that stay outside core (documented here, built where they
-      are owned): the reconciliation scan for one window, the single-consumer
-      watermark that IS the lake's commit, and the multi-consumer watermark file
-      written by atomic rename.
+- [x] Drain-side pieces that stay outside core, built where they are owned: the
+      watermark, one file per consumer, replaced by atomic rename and moved only
+      after the window's Parquet file exists (`okm-drain`). Still owed: the
+      reconciliation scan for one window (the repair path for a log that is
+      visibly incomplete), which needs a window reader and is not written yet.
 - [x] Order is commit-then-append, so the guarantee is at-most-once and never a
       phantom row: `sync_data` narrows the crash window but does not change the
       class, and deleting rows after an export waits for "window sealed and taken"
       plus a reconciliation scan. Written down because the alternative order makes
       the lake disagree with the store, which is the one failure a derived copy
       must not have.
-- [ ] Output is a WINDOW, not a table format: sealed Parquet files + the schema
-      sidecar + a manifest of what the window holds. Three layers: the store
+- [x] Output is a WINDOW, not a table format: sealed Parquet files + the schema
+      sidecar (`okm-drain` writes the file; the sidecar stays beside the segments
+      it describes), plus a MANIFEST per window (`<stem>.manifest.json`: table,
+      layout version, the segments covered, row count, columns with their Arrow
+      types and nullability, and the file's name) written before the watermark
+      moves. Three layers: the store
       produces segments and the sidecar; the DRAINER groups N sealed segments into
       a window (its policy — the sink sets the file target); the ADAPTER loads
       windows into a table format. Semantics do not vary with the format:
       append-only windows, current state via compaction (rewrite) or a sink that
       can express deletes, and no sink may weaken §6's ordering to buy a cheaper
       capture.
-- [ ] Where each part lives: the drainer (`okm-drain`, in this workspace — it only
+- [x] Where each part lives: the drainer is `okm-drain` in this workspace (it only
       needs okm-wire + okm-dynamic + arrow/parquet, all already here) and the sink
-      adapter (its own repo, `okm-iceberg`, depending on this one — never the
+      adapter is its own repo (`okm-iceberg`, depending on this one — never the
       reverse). The split is by DEPENDENCY, not by taste: the adapter is what
       pulls in a catalog client, HTTP and auth, so it must not sit in this build.
-- [ ] Sink capability contract, written once for third-party adapters too: key
-      columns; some route to current state (native upsert key / delete files /
+- [x] Sink capability contract, written once for third-party adapters too
+      (`docs/drain-contract.md`): key columns; some route to current state (native upsert key / delete files /
       periodic compaction); the dynamic segment natively as a variant type, or
       degraded to a JSON string under okm's mapping (Binary as base64, `Int`/`UInt`
       kept as numbers, lists and maps as arrays and objects). The mapping is okm's
       to publish — otherwise every adapter invents a dialect.
 - [ ] Not in this unit: Iceberg snapshot append with delete files, partitioning
       and file-size targets (`write_table_metadata` writes one snapshot over the
-      files it is handed); any Parquet read path; a schema-driven Arrow builder on
-      okm-core's bridge (the drainer that does not link the app's rows needs one,
-      since okm-dynamic decodes payloads but has no `RecordBatch` surface today —
-      **it goes beside `arrow_bridge`, reusing `arrow_type`, and the Iceberg
-      WRITER goes in its own crate**, because `bridge::iceberg` is a zero-dependency
-      metadata encoder and must stay one); the SQL-to-okm planner.
+      files it is handed); any Parquet read path; the Iceberg WRITER
+      (it goes in its own crate, because `bridge::iceberg` is a zero-dependency
+      metadata encoder and must stay one); the SQL-to-okm planner. The
+      schema-driven Arrow builder is NO LONGER here: it landed as
+      `okm_dynamic::arrow`, reusing `arrow_type`, with the typed bridge as its
+      drift lock.

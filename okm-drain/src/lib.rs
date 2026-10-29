@@ -133,6 +133,26 @@ pub struct Report {
     pub files: Vec<PathBuf>,
 }
 
+/// What one window file holds, written beside it (`<same stem>.manifest.json`).
+///
+/// The Parquet file is self-describing about TYPES and says nothing about where it
+/// came from: which log, which segments, how many rows, under which layout
+/// version. That is what a sink needs to record a provenance entry without
+/// reading the file, and what an operator needs to answer "did window 7 land".
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq)]
+pub struct WindowManifest {
+    /// The table directory's name — its header in hex, the only name the log has.
+    pub table: String,
+    pub layout_version: u8,
+    /// The segments this window covers, in order, as file names.
+    pub segments: Vec<String>,
+    pub rows: usize,
+    /// `(name, arrow type, nullable)` in column order, keys first.
+    pub columns: Vec<(String, String, bool)>,
+    /// The Parquet file's name, beside this manifest.
+    pub file: String,
+}
+
 /// Drain every table directory under `root`.
 pub fn drain(root: &Path, cfg: &DrainConfig) -> Result<Report> {
     let mut report = Report::default();
@@ -237,7 +257,31 @@ fn drain_table(dir: &Path, cfg: &DrainConfig, report: &mut Report) -> Result<()>
     let out = cfg.out_dir.join(format!("{table}-{first}-{last}.parquet"));
     okm_core::bridge::tooling::parquet_io::write_batch(&batch, &out)?;
 
-    // Only now: the file that covers the window exists.
+    // The manifest lands with the file: a sink records provenance from it without
+    // opening the Parquet, and an operator answers "did window N land".
+    let manifest = WindowManifest {
+        table: table.clone(),
+        layout_version: schema.layout_version,
+        segments: window.iter().map(|p| file_name(p)).collect(),
+        rows: rows.len(),
+        columns: batch
+            .schema()
+            .fields()
+            .iter()
+            .map(|f| {
+                (
+                    f.name().clone(),
+                    format!("{:?}", f.data_type()),
+                    f.is_nullable(),
+                )
+            })
+            .collect(),
+        file: file_name(&out),
+    };
+    let manifest_path = out.with_extension("manifest.json");
+    write_atomic(&manifest_path, &serde_json::to_string_pretty(&manifest)?)?;
+
+    // Only now: the file that covers the window exists, and so does its manifest.
     write_atomic(&watermark_path, &format!("{last}.segment"))?;
 
     report.segments += window.len();

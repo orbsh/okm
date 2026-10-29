@@ -50,9 +50,10 @@ entry), not the subscribe sink (ADR-0031 §5).
 
 A batch may carry another table's keys; a log directory belongs to one header, so
 a publication captures the keys under THIS collection's header and drops the rest.
-Covering a multi-table batch needs a staged/flush split (each collection stages
-its own share before the single commit, then flushes after it) — a PLAN item, not
-a v1 behaviour.
+A multi-table batch is covered by the staged/flush split: each participating
+collection stages its own share before the single commit (`stage_capture`) and
+appends after it returned `Ok` (`flush_capture`), so no table's writes are lost and
+none of them describe a write the engine refused.
 
 **2. One committed batch is one frame, encoded by `okm_wire::OpFrame`.** That is
 the encoding the remote path already uses (`write_batch` over
@@ -155,7 +156,9 @@ every write; it needs its own decision, not a flag.
 
 **13. okm produces a window, not a table format.** The output side of this
 mechanism is a sealed set of Parquet files beside the schema sidecar plus a
-manifest of what the window holds. The three layers are distinct: the store
+manifest of what the window holds (`<stem>.manifest.json`: the segments it covers,
+the layout version, the row count and the columns with their Arrow types — written
+before the watermark moves, so a window is never half-described). The three layers are distinct: the store
 produces segments and the sidecar, the drainer groups N sealed segments into one
 window (the window's size is the DRAINER's policy, because the sink decides its
 own file target), and the adapter loads windows into a table format. Iceberg,
@@ -235,14 +238,14 @@ guarantee the writer cannot provide.
   writes one snapshot over the files it is handed, so a naive "one flush, one
   table" turns the lake into a set of small unpartitioned tables.
 - The drainer needs less than the application and more than the file: `okm-wire`
-  reads the frames, and the sidecar supplies the types, so `okm-dynamic` can
-  decode payloads against a schema but has no Arrow/`RecordBatch` surface today.
-  A drainer that does not link the
-  application's rows has to gain one (schema-driven column construction) or link
-  the typed assembly point and carry the declarations. Whichever it is, it is
-  drain-side work, not a change to the log — but the column builder itself belongs
-  in core beside the typed bridge (it must reuse `arrow_type`, or the same
-  `FieldType → DataType` mapping exists twice), while the Iceberg writer
+  reads the frames, and the sidecar supplies the types — but a drainer that does
+  not link the application's rows needs columns from a DECLARATION, and the typed
+  bridge cannot give it those. That builder landed as `okm_dynamic::arrow`, not in
+  core beside the bridge: the decode it builds on lives in okm-dynamic, which sits
+  ABOVE okm-core, so the builder could not have been in core without the codec
+  being duplicated. What is shared instead is the mapping — `arrow_type` is public
+  for exactly that reason — so the same `FieldType → DataType` still exists once.
+  The Iceberg writer
   (snapshot append, delete files, catalog) belongs in its own crate: that is the
   piece with real dependencies, and `bridge::iceberg` today is a metadata encoder
   with none.

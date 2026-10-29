@@ -2210,6 +2210,7 @@ dependencies = [
  "okm-dynamic",
  "okm-wire",
  "parquet",
+ "serde",
  "serde_json",
  "tempfile",
 ]
