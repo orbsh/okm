@@ -486,6 +486,31 @@ dynamic codec（Python/Steel 的 schema 驱动编解码）从 `CollectionSchema`
 
 背后的取舍：会被过滤、排序、分组、且类型稳定的字段进 payload；值是"还在增长的集合里的标签"就做成词汇表；形态逐条变化的留在动态段。词表必须是整表共享的，所以它不能住在动态段里（动态值是每行的）。
 
+#### 案例：队列就是代际
+
+队列的保留是一个边界，而它的设计通常忘掉这一点。aura 的 `MqData` 是现成的例子：键 `[event_id][instance_key_id][seq]`，序号由 `HighWater` reduce 发，投递是游标之后的范围扫描，深度是 `Count` reduce——而压缩调用 `delete_before`：扫该 slice 的前缀、逐行 `purge`。每一行都是独立提交，而且每次都要展开 `Count` reduce，所以丢弃已消费数据的代价是 O(n 次提交 × (主键 + reduce 读-改-写))，永久支付，而那张表可见的变化只是变小。
+
+换个提法：队列的地址是 **(代, 序号)**，不是"一条我可能删掉的行"——一代是一个连续前缀，于是旧数据是一个数字。
+
+| 表 | 键 | 值 |
+|---|---|---|
+| `MqData` | `[event][instance][gen u16][seq u64]` | payload |
+| `MqSliceHead` | `[event][instance]` | `{ gen, floor, high_water }` |
+| `MqCursor` | `[event][instance][booth]` | `{ gen, seq }` |
+
+`gen` 放在 `seq` 前面就是整个机制：一个 slice 的一代是一个连续前缀。
+
+- **转动** = 头部更新与新代的第一条记录写在**同一个批**里。一次提交，所以不存在"消息在、头不指它"的窗口。
+- **读** = 从游标到它所在那代的末尾，再从下一代的 `floor` 起。跨代顺序读，没有归并。
+- **深度** = `Σ over live gens (high_water - max(cursor, floor))`。`Count` reduce 消失，随它消失的是每次追加上的一次读-改-写。
+- **丢弃** = 该 slice 的所有游标都越过第 G 代时，用一个批删掉前缀 `[event][instance][G]`（`Batch` + `commit_batch`；`prune_deprecated_slots` 就是先例）。
+
+不需要新的注解，而这正是要点：`gen` 是普通键字段，头部是普通一行，游标多两个字段，转动搭在本来就有的批上。
+
+换不来的东西：丢弃仍然每行写一个 tombstone。变的是**形状**——一次提交而不是 n 次、没有 reduce 展开、连续范围而不是穿插在追加之间的删除。真正零成本的丢弃需要引擎能一步忘掉一个前缀，而这里的引擎都做不到（fjall 3.1.10 没有 partition drop，slatedb 也没有），这正是 `okm-series` 的 part 建在文件上的原因：文件是唯一能在不需要引擎配合的前提下用一次系统调用丢掉的东西。
+
+什么时候不要这么做：消费者少、积压小的时候，逐行 `purge` 更简单也更诚实。这个协议在每次读和每次写上都要付：多一个键字段、一次头部点读、带代的游标。
+
 ### 可空字段：哨兵值，而非 `Option<T>`（ADR-0027 审计）
 
 声明的 `Option<T>` 字段**不受支持**——derive 识别的后续讨论已在未实现状态下关闭（PLAN.md Phase 9，2026-09-20 REJECTED：审计过的表没有一个需要它，定宽 presence 字节相比「普通字段 + 哨兵」什么也换不来）。替代惯用法是**从类型的单位元取哨兵值**：
