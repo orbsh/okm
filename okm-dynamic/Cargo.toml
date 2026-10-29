@@ -6,14 +6,22 @@ edition = "2024"
 [dependencies]
 okm-core = { path = "../okm-core" }
 serde = { version = "1", features = ["derive"], optional = true }
+arrow = { version = "60", optional = true }
 
 [dev-dependencies]
 okm-derive = { path = "../okm-derive" }
-okm-core = { path = "../okm-core", features = ["test-engines"] }
+okm-core = { path = "../okm-core", features = ["test-engines", "arrow"] }
 
 [features]
 default = []
 serde = ["dep:serde"]
+# The schema-driven column builder: a drainer has no row type, so the export it
+# needs is the one built from the declaration (ADR-0045 §9).
+arrow = ["dep:arrow", "okm-core/arrow"]
+
+[[test]]
+name = "arrow_columns_test"
+required-features = ["arrow"]
 
 [lints]
 workspace = true

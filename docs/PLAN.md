@@ -2043,11 +2043,21 @@ panic lints allowed only in the places it names. So the runtime half of
       contract is gone from `field_pair` (a quant field fed its wire is a type
       error, not a silent integer). Bindings coerced by kind and were updated to
       hand over f64 / i64.
-- [ ] Schema-driven columns: `ValueMap` (+ key bytes) → `RecordBatch` in
-      okm-dynamic behind an `arrow` feature, reusing `okm_core::bridge::arrow_bridge::arrow_type`
-      (now public: the ONE `FieldType → DataType` mapping). Acceptance is the drift
-      lock: the same rows through the typed bridge and through this builder must
-      produce identical schemas and arrays.
+- [x] Schema-driven columns: `ValueMap` (+ key bytes) → `RecordBatch`
+      (`okm_dynamic::arrow::record_batch`, `arrow` feature), reusing
+      `arrow_backend::arrow_type` — now public as the ONE `FieldType → DataType`
+      mapping — and `dynamic_cross_test`'s sibling `arrow_columns_test` locks it:
+      the same rows through the typed bridge and through this builder produce the
+      same schema and equal column data, including a row that declares a COLD
+      field first and another between hot ones (`ordered_fields` puts the
+      hot/cold split back into declaration order, which works because a cold
+      field's TLV tag is its declaration index). A `Vocab` column resolves through
+      the caller's replayed vocabulary and is NULL — never invented — without one;
+      a present value of the wrong kind is an error, not another NULL.
+- [x] `--features arrow` alone did not build: `bridge::iceberg` (a Parquet
+      METADATA writer) and `Graph::to_record_batch_table` (the variant column) were
+      gated on `arrow` while using the `parquet` crate. Both are `parquet` now, and
+      the imports they used followed.
 - [x] Tests (`okm-core/tests/changelog_test.rs`, 7 locks): frame round trip through
       a file; `merge`/`replace`/`purge` captured; derived faces and the vocabulary
       cursor absent; the categorical labels present; unsealed tail ignored;
