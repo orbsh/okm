@@ -2214,9 +2214,10 @@ that can be dropped in one syscall. Design in ADR-0046. Nothing below is built.
       index row, which is its last block's FIRST record, so a range read could skip a
       part whose later records were in range. The span is now computed at open from the
       last block, and there is a test that reads a range out of an unsealed part.
-- [x] `append(ts, body) -> offset`, buffered until a block fills, with
-      `append_durable` as the fsync-before-ack path (a block per record, which is the
-      trade the caller chose). Single writer enforced by `LOCK`.
+- [x] `append(body) -> offset`, buffered until a block fills, with `append_durable` as
+      the fsync-before-ack path (a block per record, which is the trade the caller
+      chose). Single writer enforced by `LOCK`. No timestamp argument: the log stamps the
+      write time (see the entry on write-time stamping above).
 - [x] `read(from_offset, max)` and `read_by_time(from, to)`: the part is picked by the
       range in its header, then `part-<n>.idx` seeks inside it.
 - [x] nTLV string forms: `kind = 0` inline, `kind = 16 + k` = the id of a string in
@@ -2253,3 +2254,38 @@ that can be dropped in one syscall. Design in ADR-0046. Nothing below is built.
       commit and repairs holes by rescanning the store), and retention by time (there it
       is a per-consumer watermark). What may still be borrowed, without accepting any of
       that: block compression inside a segment, if segment size is ever shown to matter.
+
+### Owed on `okm-series`
+
+Not bugs found and postponed — the list of things this crate does not do, written where
+the next decision can find it.
+
+- [ ] Owed: **a production caller.** Nothing writes to this crate outside its tests, the
+      `series_tax` example and the Python smoke script; `okm-drain` still reads the
+      changelog's segments. The API has been checked by tests and one binding and has not
+      been worn by a real user, so its shape may still be wrong in ways tests cannot see.
+- [ ] Owed: **config drift is silent.** `log.meta` pins `precision`, `bucket_seconds` and
+      `partition_tag`; `block_bytes`, `zstd_level`, `block_codec` and `dict` are NOT in it,
+      so two opens can disagree about them without a word — new parts simply use the new
+      values. Decide: pin them (and refuse a mismatch, as `partition_tag` does) or record
+      them as "properties of the part, not of the log" and say so in the ADR.
+- [ ] Owed: **an idle log's part is never sealed.** Sealing happens on a bucket crossing,
+      on `part_bytes`, or on an explicit `seal()`. A log that stops writing keeps its last
+      part `.open` forever — no footer, no whole-part digest — and `retain_before` refuses
+      to drop that bucket because retention never touches a bucket with a live writer. The
+      fix is a seal policy (`seal_after_seconds`, driven by the next append or by a
+      caller's tick) and it must not be a background thread (ADR-0046 §3 has no timer).
+- [ ] Owed: **reading one stream.** `read(from)` applies `from` to every partition. A
+      caller that wants one partition filters `parts()` by hand and reads the files itself.
+- [ ] Owed: **`Error::TimeBackwards` is unreachable from the API** — it survives as the
+      writer's internal assertion (`part.rs`), and the log clamps instead. Either delete
+      the public variant or document it as an internal invariant that no caller can hit.
+- [ ] Owed: **no concurrency test.** One writer is enforced by the `LOCK` pid file, and the
+      stale-pid takeover is a heuristic: a reused pid makes a legitimate open fail. No test
+      covers two openers, two readers during a flush, or a `kill -9` mid-block.
+- [ ] Owed: **packaging.** No `maturin build` / `pip install` round trip, so the wheel is
+      untested (only a hand-copied `.so` on `PYTHONPATH`), and no CI for either crate.
+- [ ] Owed: **`parts_by_offset` opens each part twice** — once for its offset span, once
+      to read. Small, but it is the read path's only obvious waste.
+- [ ] Owed: **the binding reads everything at once.** `read(from, max)` returns a list;
+      there is no iterator/streaming form, no partition filter, and no async surface.
