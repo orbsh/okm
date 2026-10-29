@@ -70,6 +70,15 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         let mut this = Self::new(store);
         let header = this.header();
         let log = crate::changelog::Changelog::open(config, &header)?;
+        // The sidecar is the half of the declaration the log cannot carry (types
+        // and key layout — the payload is positional and the key has no field
+        // boundaries), and this is the one place that knows both the schema and
+        // the directory. Absent the `schema-serde` feature the caller writes it.
+        #[cfg(feature = "schema-serde")]
+        crate::changelog::write_sidecar(
+            log.dir(),
+            &crate::model::schema::CollectionSchema::of::<K, R>(),
+        )?;
         this.changelog = Some(std::cell::RefCell::new(log));
         Ok(this)
     }

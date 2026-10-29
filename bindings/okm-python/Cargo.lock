@@ -1463,6 +1463,7 @@ dependencies = [
  "proc-macro2",
  "quote",
  "serde",
+ "serde_json",
  "slatedb",
  "syn 2.0.119",
  "thiserror 2.0.20",

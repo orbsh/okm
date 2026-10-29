@@ -357,6 +357,57 @@ pub fn table_dir(root: &Path, header: &[u8]) -> PathBuf {
     root.join(hex(header))
 }
 
+/// Name of the schema sidecar for one layout version. One file per version, not
+/// per segment: the declaration is a property of the shape, and a shape change
+/// changes the number (ADR-0042).
+#[cfg(feature = "schema-serde")]
+pub fn sidecar_name(layout_version: u8) -> String {
+    format!("schema-v{layout_version}.json")
+}
+
+/// Write the table's declaration beside its segments, ONCE per layout version.
+///
+/// The log carries names (the vocabulary faces ride as ops); it does not carry
+/// types or key layout — the payload is positional and the key is a fixed-width
+/// concatenation with no field boundaries. This file is that half, and without
+/// it the log is readable as bytes and useless as columns.
+///
+/// Idempotent for the same schema, and a REFUSAL for a different one at the same
+/// version: two shapes behind one number means the number stopped meaning
+/// anything (ADR-0042), and a reader that guessed which one it got would be
+/// wrong half the time.
+#[cfg(feature = "schema-serde")]
+pub fn write_sidecar(
+    dir: &Path,
+    schema: &crate::model::schema::CollectionSchema,
+) -> Result<PathBuf> {
+    let name = sidecar_name(schema.layout_version);
+    let path = dir.join(&name);
+    let json = serde_json::to_string_pretty(schema).map_err(|e| Error::Changelog {
+        what: format!("{name}: {e}"),
+    })?;
+    match std::fs::read_to_string(&path) {
+        Ok(existing) if existing == json => return Ok(path),
+        Ok(_) => {
+            return Err(Error::Changelog {
+                what: format!(
+                    "{}: a DIFFERENT schema is already stamped for layout version {} — \
+                     a shape change needs a new version (ADR-0042)",
+                    path.display(),
+                    schema.layout_version
+                ),
+            });
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(io_err(&path, e)),
+    }
+    // Write-then-rename: a reader must never see half a schema.
+    let tmp = dir.join(format!("{name}.partial"));
+    std::fs::write(&tmp, &json).map_err(|e| io_err(&tmp, e))?;
+    std::fs::rename(&tmp, &path).map_err(|e| io_err(&path, e))?;
+    Ok(path)
+}
+
 /// Sealed segments of one table, in name (= write) order.
 pub fn sealed_segments(root: &Path, header: &[u8]) -> Result<Vec<PathBuf>> {
     let dir = table_dir(root, header);
