@@ -90,6 +90,30 @@ fn one_window_becomes_one_parquet_file_and_the_watermark_moves() {
         "keys first, then the row"
     );
 
+    // The manifest beside it says where the file came from — the answer a sink's
+    // provenance entry and an operator's "did window N land" both need.
+    let manifest_path = report.files[0].with_extension("manifest.json");
+    let manifest: okm_drain::WindowManifest =
+        serde_json::from_str(&std::fs::read_to_string(&manifest_path).expect("manifest"))
+            .expect("manifest parses");
+    assert_eq!(manifest.rows, 2);
+    assert_eq!(
+        manifest.layout_version,
+        <R as okm_core::Document>::LAYOUT_VERSION
+    );
+    assert_eq!(manifest.segments.len(), 1);
+    assert_eq!(
+        manifest.columns.len(),
+        4,
+        "keys first, then the row, as the file has them"
+    );
+    assert_eq!(
+        manifest.columns[0],
+        ("org".to_string(), "UInt32".to_string(), false),
+        "a key column: typed, not nullable"
+    );
+    assert!(manifest.columns[3].2, "a payload column is nullable");
+
     // Second run: the watermark holds, so the same window is not drained twice.
     let again = drain(root.path(), &cfg).expect("second drain");
     assert_eq!(again.rows, 0);
