@@ -229,6 +229,14 @@ guarantee the writer cannot provide.
   256 B fjall put.
 - A directory per table header, so a partitioned table's streams cannot collide,
   and the sidecar sits beside the segments.
+- **The segment files are not this ADR's format to keep.** They are the repo's first
+  append-only file format; ADR-0046's `okm-series` is the second, and one of the two
+  must go. The split that resolves it is already visible here: the envelope, the
+  seal/rotate discipline, retention and torn-tail recovery belong to the substrate,
+  while the BODY (key-only `OpFrame`s) and the durability policy (append after the
+  commit, at most once, repaired by the reconciliation scan) belong to this log. The
+  plan item under ADR-0046 carries the move; nothing in this ADR's guarantees
+  changes when it happens.
 - Deleting rows from the store after an export is only safe once the window is
   sealed and taken; after a crash the reconciliation scan runs before any
   deletion resumes. This is part of the offload procedure, not the caller's
