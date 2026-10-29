@@ -828,6 +828,55 @@ set that keeps growing; leave it dynamic when the shape varies per record. The
 vocabulary must be shared by the table, so it cannot live in the dynamic segment
 (those values are per row).
 
+#### Case: a queue as generations
+
+A queue's retention is a boundary, and its design usually forgets it. aura's
+`MqData` is the worked example: key `[event_id][instance_key_id][seq]`, the
+sequence issued by a `HighWater` reduce, delivery a range scan past a cursor,
+depth a `Count` reduce — and compaction calls `delete_before`, which scans the
+slice prefix and purges row by row. Each purge is its own commit that also unfolds
+the `Count` reduce, so dropping consumed data costs O(n commits x (primary +
+reduce read-modify-write)), forever, on a table whose only visible change is
+shrinking.
+
+The reframe is that a queue's address is **(generation, sequence)**, not "a row I
+may delete": a generation is a contiguous key prefix, so old data is a number.
+
+| Table | Key | Value |
+|---|---|---|
+| `MqData` | `[event][instance][gen u16][seq u64]` | payload |
+| `MqSliceHead` | `[event][instance]` | `{ gen, floor, high_water }` |
+| `MqCursor` | `[event][instance][booth]` | `{ gen, seq }` |
+
+`gen` before `seq` is the whole mechanism: one generation of one slice is one
+contiguous prefix.
+
+- **Rotate** = the head update and the first record of the new generation in ONE
+  batch. One commit, so there is no window where a message exists and the head does
+  not point at it.
+- **Read** = from the cursor to the end of its generation, then the next generation
+  from its `floor`. Sequential across a boundary, no merge sort.
+- **Depth** = `sum over live generations of (high_water - max(cursor, floor))`. The
+  `Count` reduce disappears, and with it a read-modify-write on every append.
+- **Drop** = when every cursor has passed generation G, delete the prefix
+  `[event][instance][G]` in one batch (`Batch` + `commit_batch`;
+  `prune_deprecated_slots` is the precedent).
+
+No new annotation is needed and that is the point: `gen` is an ordinary key field,
+the head is an ordinary row, the cursor grows two fields, and rotation rides the
+batch that already exists.
+
+What it does not buy: the drop still writes one tombstone per row. The *shape*
+changes — one commit instead of n, no reduce unfold, a contiguous range instead of
+deletes interleaved with appends. A drop that costs nothing needs an engine that
+can forget a prefix in one step, and none here can (fjall 3.1.10 has no partition
+drop, slatedb none either), which is why `okm-series`' parts are files: a file is
+the only unit that can be dropped in one syscall with no engine cooperation.
+
+When not to: with few consumers and a small backlog, per-row `purge` is simpler and
+honest. The protocol costs a key field, a head point read and a generation-carrying
+cursor on every read and write.
+
 ### Optional fields: sentinel values, not `Option<T>` (ADR-0027 audit)
 
 Declared `Option<T>` fields are **not supported** — the
