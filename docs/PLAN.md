@@ -2202,12 +2202,11 @@ that can be dropped in one syscall. Design in ADR-0046. Nothing below is built.
       second; a string no longer than its code never interned; an escalation to a wider
       block that the reader resolves; retention that drops a bucket directory; a
       dictionary that survives a reopen and still codes the next record.
-- [ ] The changelog's segments ride this substrate (ADR-0045 is the first append-only
-      file format in the repo and `okm-series` is the second; one of them has to go).
-      The body codec differs (key-only op frames vs timestamped nTLV records) and so
-      does the durability knob (at-most-once after the commit vs fsync before the
-      ack), which is exactly the shape of a plug-in: the envelope, seal/rotate,
-      retention and torn-tail recovery come from `okm-series`, the body and the
-      durability policy stay with the caller. Do it when `okm-series` has its first
-      green test, not before — `okm-drain` reads the current format and must keep
-      reading it either way.
+- [x] Decided: the changelog's segments do NOT ride this substrate. The shared part is
+      a convention (a directory of parts, seal by rename, cut a torn tail, ~150 lines);
+      the contract runs the other way on three points — a monotone timestamp per record
+      (the changelog has no clock, and a capture path that fails because the host's
+      clock stepped is worse than none), fsync before the ack (there it acks after the
+      commit and repairs holes by rescanning the store), and retention by time (there it
+      is a per-consumer watermark). What may still be borrowed, without accepting any of
+      that: block compression inside a segment, if segment size is ever shown to matter.
