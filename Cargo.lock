@@ -2248,6 +2248,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "okm-series"
+version = "0.1.0"
+dependencies = [
+ "okm-wire",
+ "tempfile",
+ "xxhash-rust",
+ "zstd",
+]
+
+[[package]]
 name = "okm-stream"
 version = "0.1.0"
 dependencies = [
