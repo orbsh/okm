@@ -141,6 +141,23 @@ fn sealing_is_a_rename_and_the_footer_carries_the_totals() {
 }
 
 #[test]
+fn a_flush_is_a_durability_boundary_without_a_record() {
+    let dir = tempfile::tempdir().unwrap();
+    let base = 1_700_000_000_000u64;
+    {
+        let mut log = Log::open(dir.path(), config()).unwrap();
+        for step in 0..3u64 {
+            log.append(base + step, &body("info", "batched")).unwrap();
+        }
+        // Nothing is visible to a reader until this returns.
+        log.flush().unwrap();
+    }
+    let log = Log::open(dir.path(), config()).unwrap();
+    let rows = log.read(0, 10).unwrap();
+    assert_eq!(rows.len(), 3, "a flushed batch survives a reopen");
+}
+
+#[test]
 fn retention_drops_a_bucket_directory() {
     let dir = tempfile::tempdir().unwrap();
     let mut log = Log::open(dir.path(), config()).unwrap();

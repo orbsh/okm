@@ -188,6 +188,47 @@ Reading the table honestly:
   needed, wrapping a host in the service's connection plane rebuilds
   the Redis shape without the Redis patterns.
 
+## The series log's write path (`okm-series`)
+
+`cargo run -p okm-series --release --example series_tax` — 50,000 records into one
+part of 64 KiB blocks, one bucket, 256 distinct bodies (or one per record for the
+"unique id" shape), three runs. Byte counts are deterministic; times are given as
+ranges across those runs.
+
+| workload | shape | bytes | B/rec | x smaller than raw | write ns/rec | read M rec/s |
+| --- | --- | --- | --- | --- | --- | --- |
+| repetitive text | dictionary on, zstd 1 | 64,517 | 1.3 | 73x | 570–770 | 9.5–11 |
+| repetitive text | dictionary off, zstd 1 | 249,694 | 5.0 | 19x | 1,330–1,690 | 6.4–9.9 |
+| repetitive text | dictionary on, zstd 3 | 58,437 | 1.2 | 81x | 500–650 | 11–21 |
+| repetitive text | dictionary off, zstd 3 | 227,118 | 4.5 | 21x | 1,490–1,530 | 9–15 |
+| identity heavy | dictionary on, zstd 1 | 29,136 | 0.6 | 62x | 480–610 | 7.2–9.5 |
+| identity heavy | dictionary off, zstd 1 | 104,812 | 2.1 | 17x | 670–730 | 6.0–7.2 |
+| identity heavy | dictionary on, zstd 3 | 29,094 | 0.6 | 62x | 470–670 | 7.1–8.3 |
+| identity heavy | dictionary off, zstd 3 | 41,792 | 0.8 | 43x | 620–790 | 6.6–6.7 |
+| unique id per record | dictionary on, zstd 1 | 251,179 | 5.0 | 15.3x | 1,340–1,700 | 4.1–6.9 |
+| unique id per record | dictionary off, zstd 1 | 259,980 | 5.2 | 14.8x | 1,160–1,430 | 4.4–5.9 |
+| unique id per record | dictionary on, zstd 3 | 250,453 | 5.0 | 15.3x | 1,360–1,930 | 4.8–8.1 |
+| unique id per record | dictionary off, zstd 3 | 259,114 | 5.2 | 14.8x | 1,220–1,360 | 4.6–6.1 |
+
+How to read it, because the two compression layers are not interchangeable:
+
+- **The dictionary is not a codec.** It removes repeated strings before the codec runs,
+  which is why it is both smaller AND faster on the first two workloads: with 256
+  distinct bodies the block has little left to compress, so the write path spends
+  570–770 ns instead of 1,330–1,690 ns per record. The codec, by contrast, is
+  indifferent to how the repetition was produced.
+- **On the shape a real log has — one unique id per record — the dictionary buys 3% of
+  the bytes and costs 15–25% of the write time.** That is the case `Config::dict =
+  None` exists for, and the deciding question is not "is this text" but "are these
+  values a small closed set, or is every record new".
+- **Reads are 4–21 M records/s** and the spread tracks compressibility, not record
+  count: a block that decompresses to less work is read faster. One block is
+  decompressed at a time, and nothing is cached between calls.
+- These numbers are single-threaded, on XFS over NVMe (`/tmp` here is not tmpfs, so the
+  `fsync` per block is real), with no concurrent readers, and 48 blocks per run means
+  the fsync cost is amortized over ~1,000 records each. A smaller `block_bytes` moves
+  that cost into the per-record figure.
+
 ## Not yet benched
 
 - fjall / slatedb engine paths (feature benches)
