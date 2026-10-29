@@ -2089,14 +2089,17 @@ panic lints allowed only in the places it names. So the runtime half of
       The criterion harness still hangs here before any measurement (reproduced with
       a pure-CPU filter and with `--list`), so the hook in `core_paths.rs` stays a
       baseline for a machine where it runs.
-- [ ] The in-memory slatedb test engine stalls under volume — FOUND while benching,
-      not caused by the log: `TestStore::slatedb_mem()` stops returning somewhere
-      past ~1,000 sequential puts (5,000 never finish; the caller parks in
-      `futex_wait`, the store's runtime thread idles in `epoll_wait`). Every test in
-      this repo writes tens of rows, so nothing has hit it. Needs a minimal
-      reproduction against `SlatedbSync` alone and then a decision: a bounded
-      in-flight window in `drive()`, or a different test engine. Until then the
-      volume bench uses fjall.
+- [x] The in-memory slatedb test engine stalls under volume — FOUND while benching,
+      diagnosed and fixed. It was not a deadlock: `SlatedbSync` awaited
+      `WriteHandle::await_durable` on every `put`, and durability waits for the next
+      WAL flush — slatedb's default `flush_interval` is **100 ms**, so a serial put
+      loop ran at 10 writes/second flat (measured 101 ms/put; 300 puts = 30.3 s),
+      which reads as a hang under any long loop. `drive()` now takes durability as a
+      property of the STORE: the in-memory engine skips the wait (its object store
+      dies with the process — nothing to recover), a Db handed in by a host keeps
+      it. Same 300-put loop: 30,296 ms -> 5 ms (~17 µs/put). The capture tax is still
+      measured on fjall, because a memory store is not an honest arm for a
+      durability-related cost.
 - [x] Drain-side pieces that stay outside core, built where they are owned: the
       watermark, one file per consumer, replaced by atomic rename and moved only
       after the window's Parquet file exists (`okm-drain`). The repair path landed

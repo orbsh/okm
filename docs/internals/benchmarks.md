@@ -121,12 +121,14 @@ touch the store's own cost. The spread is the machine, not the code — the two 
 are two fjall stores compacting on their own schedule, which is why the numbers come
 from paired rounds with the order flipped each time.
 
-Measured against `fjall_tmp` because `TestStore::slatedb_mem()` **stalls** past
-roughly a thousand durable puts (5,000 puts never return; the driver thread parks in
-`futex_wait` and its runtime thread sits idle in `epoll_wait`). That reproduces with
-a 20-line loop and no changelog involved, so it is a defect of that test backend, not
-of the capture path — and it is the reason `cargo bench … write-changelog` produces
-no numbers here.
+Measured against `fjall_tmp`, a durable store — which is the honest arm for a
+capture tax. The in-memory engine was NOT usable for this until now: `SlatedbSync`
+awaited `WriteHandle::await_durable` on every `put`, and durability waits for the
+next WAL flush, whose slatedb default is **100 ms** — measured 101 ms per put, flat,
+independent of store size (300 puts = 30.3 s), which is what made `cargo bench …
+write-changelog` look like a hang. The in-memory engine now skips the wait (the
+object store dies with the process: there is nothing to recover), and the same loop
+runs in 5 ms (**~17 µs/put**, 6,000x).
 
 ## Context: versus a network KV service (Redis, public data)
 

@@ -68,11 +68,9 @@ fn main() {
     const OPS: u64 = 5_000;
     const ROUNDS: usize = 9;
 
-    // `fjall_tmp`, not `slatedb_mem`: the in-memory slatedb test engine stalls past
-    // roughly a thousand durable puts (measured: the driver thread parks and never
-    // wakes, so a 5k-put loop never returns). That is a defect of that backend, not
-    // something a benchmark can wait out — `cargo test --test store_volume_probe`
-    // in the session log reproduces it without any of this code.
+    // `fjall_tmp`, a durable store: the honest arm for a capture tax. `slatedb_mem`
+    // is a memory object store, so the log's durability story does not apply to it —
+    // and before it stopped awaiting the WAL on every put it cost 101 ms/write.
     let plain: Collection<TestStore, TaxKey, TaxRow> = Collection::new(TestStore::fjall_tmp());
     let root = std::env::temp_dir().join("okm-changelog-tax");
     let _ = std::fs::remove_dir_all(&root);

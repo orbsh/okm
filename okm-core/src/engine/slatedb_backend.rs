@@ -156,13 +156,25 @@ pub struct SlatedbSync {
     tx: Arc<std::sync::mpsc::Sender<Cmd>>,
 }
 
-fn drive(rt: tokio::runtime::Runtime, db: Db, rx: std::sync::mpsc::Receiver<Cmd>) {
+/// Run the command loop for one Db.
+///
+/// `durable` decides whether a single write waits for the WAL before it returns.
+/// It is a property of the STORE, not of the caller, because it is about what
+/// there is to recover: the in-memory object store dies with the process, so the
+/// wait buys nothing — and it costs a LOT: `await_durable` waits for the next WAL
+/// flush, whose default interval is 100 ms, so a serial put loop runs at 10
+/// writes/second (measured: 101 ms per put, flat, no matter how big the store is).
+fn drive(rt: tokio::runtime::Runtime, db: Db, rx: std::sync::mpsc::Receiver<Cmd>, durable: bool) {
     while let Ok(cmd) = rx.recv() {
         match cmd {
             Cmd::Put { key, value, reply } => {
                 let out = rt.block_on(async {
                     let h = db.put(key, value).await?;
-                    h.await_durable().await
+                    if durable {
+                        h.await_durable().await
+                    } else {
+                        Ok(())
+                    }
                 });
                 let _ = reply.send(out.map_err(|e| e.to_string()));
             }
@@ -173,14 +185,21 @@ fn drive(rt: tokio::runtime::Runtime, db: Db, rx: std::sync::mpsc::Receiver<Cmd>
             Cmd::Del { key, reply } => {
                 let out = rt.block_on(async {
                     let h = db.delete(key).await?;
-                    h.await_durable().await
+                    if durable {
+                        h.await_durable().await
+                    } else {
+                        Ok(())
+                    }
                 });
                 let _ = reply.send(out.map_err(|e| e.to_string()));
             }
             Cmd::ScanRange { begin, end, reply } => {
                 let out = rt.block_on(async {
                     let mut it = match &end {
-                        Some(end) => db.scan_prefix(b"", begin.as_slice()..end.as_slice()).await?,
+                        Some(end) => {
+                            db.scan_prefix(b"", begin.as_slice()..end.as_slice())
+                                .await?
+                        }
                         None => db.scan_prefix(b"", begin.as_slice()..).await?,
                     };
                     let mut out = Vec::new();
@@ -256,7 +275,11 @@ impl SlatedbSync {
     /// `block_on` there panics.
     // Construction, once per store: a machine that cannot build a current-thread
     // runtime or spawn the driver thread cannot host a store at all.
-    #[allow(clippy::expect_used, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+    #[allow(
+        clippy::expect_used,
+        clippy::unwrap_in_result,
+        clippy::panic_in_result_fn
+    )]
     pub fn open_mem(name: &str) -> Result<Self, slatedb::Error> {
         let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
         let (ready_tx, ready_rx) = std::sync::mpsc::channel();
@@ -271,7 +294,9 @@ impl SlatedbSync {
             match rt.block_on(slatedb::Db::open(format!("/{name}"), store)) {
                 Ok(db) => {
                     let _ = ready_tx.send(Ok(()));
-                    drive(rt, db, cmd_rx);
+                    // Not durable on purpose: see `drive`. Nothing to recover, and
+                    // the wait is 100 ms per write.
+                    drive(rt, db, cmd_rx, false);
                 }
                 Err(e) => {
                     let _ = ready_tx.send(Err(e));
@@ -279,16 +304,26 @@ impl SlatedbSync {
             }
         });
         ready_rx.recv().expect("slatedb open thread")?;
-        Ok(Self { tx: Arc::new(cmd_tx) })
+        Ok(Self {
+            tx: Arc::new(cmd_tx),
+        })
     }
 
     /// Sync adapter over an already-open async Db (the production
     /// shape: the caller built the Db on its own runtime; this hands
     /// the Db AND the runtime to a driver thread).
+    ///
+    /// Writes here wait for the WAL, because this Db is somebody's durable
+    /// store — see [`drive`] for what that costs and why the in-memory
+    /// constructor opts out. A host that opens slatedb over an in-memory object
+    /// store should either build it with a small `flush_interval` or route through
+    /// [`SlatedbSync::open_mem`].
     pub fn from_db(rt: tokio::runtime::Runtime, db: Db) -> Self {
         let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || drive(rt, db, cmd_rx));
-        Self { tx: Arc::new(cmd_tx) }
+        std::thread::spawn(move || drive(rt, db, cmd_rx, true));
+        Self {
+            tx: Arc::new(cmd_tx),
+        }
     }
 
     /// One round trip whose answer is `Result<_, String>`: the driver's verdict
@@ -397,9 +432,10 @@ impl VirtualStorageAsync for SlatedbStore {
         end: Option<&[u8]>,
     ) -> crate::error::Result<Vec<Vec<u8>>> {
         if let Some(end) = end
-            && end <= begin {
-                return Ok(Vec::new());
-            }
+            && end <= begin
+        {
+            return Ok(Vec::new());
+        }
         // The subrange is relative to the prefix (slatedb semantics);
         // an empty prefix makes the FULL-key range the subrange.
         let mut it = match end {
@@ -433,11 +469,10 @@ impl VirtualStorageAsync for SlatedbStore {
         end: Option<&[u8]>,
     ) -> crate::engine::storage::ScanIter {
         if let Some(end) = end
-            && end <= begin {
-                return crate::engine::storage::ScanIter::Buffered(
-                    Vec::new().into_iter(),
-                );
-            }
+            && end <= begin
+        {
+            return crate::engine::storage::ScanIter::Buffered(Vec::new().into_iter());
+        }
         let mut pairs: Vec<crate::error::Result<(Vec<u8>, Vec<u8>)>> = Vec::new();
         let opened = match end {
             Some(end) => self.db.scan_prefix(b"", begin..end).await,
@@ -465,10 +500,7 @@ impl VirtualStorageAsync for SlatedbStore {
     /// Native batch (ADR-0027): slatedb's `WriteBatch` ships as ONE
     /// `db.write` — a real single-write atomic form, not a replay; the
     /// durable wait mirrors the sync engines' WAL boundary.
-    async fn commit_batch(
-        &self,
-        batch: crate::engine::storage::Batch,
-    ) -> crate::error::Result<()> {
+    async fn commit_batch(&self, batch: crate::engine::storage::Batch) -> crate::error::Result<()> {
         let mut wb = slatedb::WriteBatch::new();
         for (k, v) in &batch.ops {
             match v {
@@ -563,7 +595,10 @@ impl SlatedbSync {
         self.request(|reply| Cmd::Get { key, reply })
     }
     pub fn del_sync(&self, key: &[u8]) -> crate::error::Result<()> {
-        self.request(|reply| Cmd::Del { key: key.to_vec(), reply })
+        self.request(|reply| Cmd::Del {
+            key: key.to_vec(),
+            reply,
+        })
     }
     pub fn scan_range_sync(
         &self,
@@ -596,9 +631,11 @@ impl SlatedbSync {
         let begin = begin.to_vec();
         let end = end.map(|e| e.to_vec());
         match self.request_stream(|reply| Cmd::ScanStream { begin, end, reply }) {
-            Ok(rx) => {
-                super::storage::ScanIter::Slatedb(SlatedbIter { rx, done: false, back_buf: None })
-            }
+            Ok(rx) => super::storage::ScanIter::Slatedb(SlatedbIter {
+                rx,
+                done: false,
+                back_buf: None,
+            }),
             // The stream could not even be opened: hand back an iterator whose
             // one item is the failure, so the consumer still learns about it.
             Err(e) => {
@@ -631,18 +668,10 @@ impl VirtualStorage for SlatedbSync {
             .filter_map(|k| k.strip_prefix(prefix).map(|s| s.to_vec()))
             .collect())
     }
-    fn scan_range(
-        &self,
-        begin: &[u8],
-        end: Option<&[u8]>,
-    ) -> crate::error::Result<Vec<Vec<u8>>> {
+    fn scan_range(&self, begin: &[u8], end: Option<&[u8]>) -> crate::error::Result<Vec<Vec<u8>>> {
         self.scan_range_sync(begin, end)
     }
-    fn scan_range_iter(
-        &self,
-        begin: &[u8],
-        end: Option<&[u8]>,
-    ) -> super::storage::ScanIter {
+    fn scan_range_iter(&self, begin: &[u8], end: Option<&[u8]>) -> super::storage::ScanIter {
         self.scan_range_iter_sync(begin, end)
     }
 }
