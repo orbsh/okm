@@ -5,6 +5,9 @@
 
 #[cfg(feature = "arrow")]
 pub mod arrow_bridge;
-#[cfg(feature = "arrow")]
+/// Parquet METADATA (manifests, `v1.metadata.json`), so it is a `parquet`
+/// feature: `arrow` alone must build without the writer crate (a consumer that
+/// only builds columns should not pay for the format).
+#[cfg(feature = "parquet")]
 pub mod iceberg;
 pub mod tooling;
