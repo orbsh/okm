@@ -55,6 +55,10 @@ harness = false
 name = "py_helper"
 required-features = ["schema-serde"]
 
+[[example]]
+name = "changelog_tax"
+required-features = ["test-engines", "fjall"]
+
 [[test]]
 name = "arrow_bridge_test"
 required-features = ["arrow"]

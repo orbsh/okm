@@ -99,6 +99,35 @@ faster than derive) indicates the derive's String TLV path allocates
 more than the schema walk — worth an investigate later, not a blocker.
 Dynamic decode benchmarks land with the PyO3 binding work.
 
+## The change log's capture tax
+
+`cargo run --release --example changelog_tax -p okm-core --features test-engines,fjall`
+(9 paired rounds × 5,000 puts, order flipped each round, median of the per-round
+ratios — two fjall stores compact on their own schedule, so an unpaired median drifts):
+
+| path | mean |
+|---|---|
+| put, no log | 1.32–1.55 µs |
+| put, captured | 1.37–1.71 µs |
+| capture tax | **+84 to +99 ns/write, +6.9 to +8.5%** (one outlier run: +54 ns, +5.4%) |
+
+Six runs on this machine: +54/+5.4%, +84/+7.2%, +95/+8.5%, +99/+6.9%, +132/+4.7%,
+and one unpaired early run that printed a NEGATIVE tax (that is what the paired
+rounds fixed). Read it as **~+50 to +135 ns/write, ~5 to 8%**, call it ~90 ns.
+
+The tax is the encode of the frame plus a memcpy into the segment buffer: at 16 B
+keys and a ~45 B payload it is well under a tenth of a durable put, and it does not
+touch the store's own cost. The spread is the machine, not the code — the two arms
+are two fjall stores compacting on their own schedule, which is why the numbers come
+from paired rounds with the order flipped each time.
+
+Measured against `fjall_tmp` because `TestStore::slatedb_mem()` **stalls** past
+roughly a thousand durable puts (5,000 puts never return; the driver thread parks in
+`futex_wait` and its runtime thread sits idle in `epoll_wait`). That reproduces with
+a 20-line loop and no changelog involved, so it is a defect of that test backend, not
+of the capture path — and it is the reason `cargo bench … write-changelog` produces
+no numbers here.
+
 ## Context: versus a network KV service (Redis, public data)
 
 Public redis-benchmark data (official docs, same-AZ r7g/c6i measurements):

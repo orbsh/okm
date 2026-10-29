@@ -2079,17 +2079,32 @@ panic lints allowed only in the places it names. So the runtime half of
       cursor absent; the categorical labels present; unsealed tail ignored;
       sealed-segment truncation refused; both rotation triggers; the
       `commit_batch` verb capturing `save_into`; status clean for an unused log.
-- [ ] Bench the capture tax: the hook exists (`write-changelog/put/plain` vs
-      `put/captured` in `core_paths.rs`, a fixed key so only the capture differs),
-      but the criterion harness on this machine hangs BEFORE any measurement —
-      reproduced with a pure-CPU filter (`key-encode/encode/typical_16B`) and with
-      `--list`, so it is the harness, not the change. Re-run once it works and put
-      the delta beside the recorded 1.31 µs semantic put.
+- [x] Bench the capture tax: **~+50 to +135 ns/write (~5 to 8%)**, typically ~90 ns,
+      on a durable `fjall_tmp` put (1.32–1.55 µs plain); 9 paired rounds x
+      5,000 puts, order flipped each round, median of per-round ratios — two fjall
+      stores compact on their own schedule, and an unpaired median printed a NEGATIVE
+      tax once). Run with `cargo run --release --example changelog_tax -p okm-core
+      --features test-engines,fjall`; the numbers sit in
+      `docs/internals/benchmarks.md` beside the recorded 1.31 µs semantic put.
+      The criterion harness still hangs here before any measurement (reproduced with
+      a pure-CPU filter and with `--list`), so the hook in `core_paths.rs` stays a
+      baseline for a machine where it runs.
+- [ ] The in-memory slatedb test engine stalls under volume — FOUND while benching,
+      not caused by the log: `TestStore::slatedb_mem()` stops returning somewhere
+      past ~1,000 sequential puts (5,000 never finish; the caller parks in
+      `futex_wait`, the store's runtime thread idles in `epoll_wait`). Every test in
+      this repo writes tens of rows, so nothing has hit it. Needs a minimal
+      reproduction against `SlatedbSync` alone and then a decision: a bounded
+      in-flight window in `drive()`, or a different test engine. Until then the
+      volume bench uses fjall.
 - [x] Drain-side pieces that stay outside core, built where they are owned: the
       watermark, one file per consumer, replaced by atomic rename and moved only
-      after the window's Parquet file exists (`okm-drain`). Still owed: the
-      reconciliation scan for one window (the repair path for a log that is
-      visibly incomplete), which needs a window reader and is not written yet.
+      after the window's Parquet file exists (`okm-drain`). The repair path landed
+      too, on the side that owns the store: `Collection::reconcile()` (whole table)
+      and `reconcile_range(begin, end)` re-emit the rows that still exist as the
+      log's own PUT frames, so a sink folds them like any other write. What no scan
+      can repair is a REMOVAL — a key that is gone looks exactly like a key that was
+      never written — and that limitation is written into the method's doc.
 - [x] Order is commit-then-append, so the guarantee is at-most-once and never a
       phantom row: `sync_data` narrows the crash window but does not change the
       class, and deleting rows after an export waits for "window sealed and taken"
