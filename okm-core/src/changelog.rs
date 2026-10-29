@@ -167,14 +167,16 @@ impl Changelog {
     ///
     /// An empty carried set stages nothing: a batch made only of derived writes
     /// (an index rebuild, a reduce settle) is not a change to the truth.
-    pub fn stage(&mut self, ops: &[(Vec<u8>, Option<Vec<u8>>)]) {
+    /// Returns how many ops it carried: the staged/flush split (`stage_capture`
+    /// / `flush_capture`) has to tell "nothing to say" from "say it later".
+    pub fn stage(&mut self, ops: &[(Vec<u8>, Option<Vec<u8>>)]) -> usize {
         self.staged.clear();
         let count = ops
             .iter()
             .filter(|(key, _)| carried(&self.header, key))
             .count();
         if count == 0 {
-            return;
+            return 0;
         }
         let start = self.staged.len();
         // The outer length prefix: a file is a byte stream, and the frame codec
@@ -209,11 +211,12 @@ impl Changelog {
             // frame's own count field either; drop the record rather than write
             // a length the reader would misinterpret.
             self.staged.truncate(start);
-            return;
+            return 0;
         };
         if let Some(prefix) = self.staged.get_mut(start..start + 4) {
             prefix.copy_from_slice(&len.to_be_bytes());
         }
+        count
     }
 
     /// Move the staged frame into the file buffer and flush/rotate if due.
