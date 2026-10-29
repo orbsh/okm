@@ -30,6 +30,8 @@
 // to scope a lint to lib/bins — the manifest cannot express `cfg(test)`.
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn))]
 
+#[cfg(feature = "arrow")]
+pub mod arrow;
 mod decode;
 mod encode;
 mod graph;
@@ -124,6 +126,9 @@ pub enum CodecError {
     /// this crate — and an untagged cold frame would encode to a payload the
     /// reader cannot walk back.
     ColdFieldWithoutTag(String),
+    /// A column could not be built (the arrow-level assembly, not the codec):
+    /// carries its own text because there is no single field to point at.
+    Column { what: String },
 }
 
 impl std::fmt::Display for CodecError {
@@ -146,6 +151,7 @@ impl std::fmt::Display for CodecError {
                 f,
                 "cold field `{n}` carries no tag (the schema's cold fields are ordered TLV frames)"
             ),
+            CodecError::Column { what } => write!(f, "column: {what}"),
         }
     }
 }
