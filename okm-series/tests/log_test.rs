@@ -161,6 +161,28 @@ fn a_flush_is_a_durability_boundary_without_a_record() {
 }
 
 #[test]
+fn moving_into_a_later_bucket_finishes_the_previous_part() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut log = Log::open(dir.path(), config()).unwrap();
+    // 1970-01-01T00:00 then 02:00: the first bucket's part must be sealed, or retention
+    // could never drop that bucket (it refuses to touch a bucket that still has a writer).
+    log.append(1_000, &body("info", "first hour")).unwrap();
+    log.append(7_200_000 + 1_000, &body("info", "third hour"))
+        .unwrap();
+
+    let parts = log.parts().unwrap();
+    assert_eq!(parts.len(), 2);
+    assert!(
+        parts
+            .iter()
+            .filter(|part| part.bucket == 0)
+            .all(|part| part.sealed),
+        "crossing a bucket boundary seals what came before it"
+    );
+    assert_eq!(log.retain_before(7_200_000).unwrap(), vec![0]);
+}
+
+#[test]
 fn retention_drops_a_bucket_directory() {
     let dir = tempfile::tempdir().unwrap();
     let mut log = Log::open(dir.path(), config()).unwrap();
