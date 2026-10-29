@@ -483,3 +483,54 @@ fn a_cross_table_batch_captures_each_tables_own_share() {
     assert_eq!(frames_b[0].len(), 1, "b: only its own row");
     assert_eq!(frames_b[0][0].1, pb, "b's key, in b's log");
 }
+
+/// The repair path: a crash between the commit and the append leaves a log that is
+/// visibly incomplete, and the rows that still exist are what can be re-emitted.
+#[test]
+fn reconcile_re_emits_the_rows_that_still_exist() {
+    let root = tempfile::tempdir().expect("root");
+    let c: Collection<TestStore, LogKey, LogRow> =
+        Collection::with_changelog(TestStore::slatedb_mem(), ChangelogConfig::new(root.path()))
+            .expect("open");
+    for id in 1..=3u64 {
+        c.put(
+            &LogKey { id },
+            &LogRow {
+                author: id,
+                title: format!("row-{id}"),
+            },
+        )
+        .expect("put");
+    }
+
+    // The whole table: three rows, three frames staged, nothing else picked up.
+    assert_eq!(c.reconcile().expect("scan"), 3, "every row is re-emitted");
+    c.flush_capture().expect("flush");
+
+    // A slice of it: the bounds are KEY suffixes, so [1, 3) is the first two rows —
+    // the header and the primary slot are the collection's to add.
+    assert_eq!(
+        c.reconcile_range(&1u64.to_be_bytes(), &3u64.to_be_bytes())
+            .expect("range scan"),
+        2,
+        "a range re-emits only what is inside it"
+    );
+    c.flush_capture().expect("flush");
+    assert_eq!(c.reconcile().expect("scan"), 3, "idempotent re-read");
+
+    let pkeys: Vec<Vec<u8>> = (1..=3u64)
+        .map(|id| c.primary_key(&LogKey { id }))
+        .collect();
+    let frames = drain(c, root.path());
+    // A window may carry a row more than once, so the frames are three separate
+    // batches: the three puts, the table reconcile, the range reconcile.
+    assert_eq!(frames.len(), 5, "three puts, then one frame per reconcile");
+    let keys: Vec<Vec<u8>> = frames
+        .iter()
+        .flat_map(|f| f.iter().map(|(_, key, _)| key.clone()))
+        .collect();
+    assert_eq!(keys.len(), 8, "3 puts + 3 whole-table + 2 in range");
+    for want in &pkeys {
+        assert!(keys.contains(want), "the row came back");
+    }
+}
