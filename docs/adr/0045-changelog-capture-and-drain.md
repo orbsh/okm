@@ -229,14 +229,17 @@ guarantee the writer cannot provide.
   256 B fjall put.
 - A directory per table header, so a partitioned table's streams cannot collide,
   and the sidecar sits beside the segments.
-- **The segment files are not this ADR's format to keep.** They are the repo's first
-  append-only file format; ADR-0046's `okm-series` is the second, and one of the two
-  must go. The split that resolves it is already visible here: the envelope, the
-  seal/rotate discipline, retention and torn-tail recovery belong to the substrate,
-  while the BODY (key-only `OpFrame`s) and the durability policy (append after the
-  commit, at most once, repaired by the reconciliation scan) belong to this log. The
-  plan item under ADR-0046 carries the move; nothing in this ADR's guarantees
-  changes when it happens.
+- **The segment files stay this log's own.** ADR-0046's `okm-series` shares the
+  convention — a directory of parts, seal by rename, cut a torn tail — but not the
+  contract, and three of that crate's requirements are ones this log must not take:
+  a monotone timestamp on every record (there is no clock here at all, only `Instant`
+  for segment age, and a capture path that can fail because the host's clock stepped
+  backwards is worse than no capture), an fsync before the ack (this log acks after
+  the commit and repairs holes by rescanning the store, so an fsync here is a latency
+  tax on every write), and retention by time (retention here is a per-consumer
+  watermark: a segment may be dropped only once the lake has taken it). What could be
+  borrowed without any of that is block compression inside a segment, when segment
+  size is shown to matter — the drainer already compresses what it writes.
 - Deleting rows from the store after an export is only safe once the window is
   sealed and taken; after a crash the reconciliation scan runs before any
   deletion resumes. This is part of the offload procedure, not the caller's

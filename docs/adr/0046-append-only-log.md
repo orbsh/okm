@@ -288,13 +288,20 @@ exactly the point at which the comparison with a lakehouse has to stop.
 - Offsets are a single writer's u64 counter, continued across restarts from the last
   sealed part's header. Truncation never rewinds it.
 - The lake path comes for free: a bucket directory is already a window.
-- **ADR-0045's changelog segments become this substrate.** It is the first
-  append-only file format in the repo and this is the second, which is one too many:
-  the envelope, the seal/rotate discipline, retention and torn-tail recovery move
-  here, while the changelog keeps its body codec (key-only `OpFrame`s) and its
-  durability policy (append AFTER the commit, at most once — the opposite of §3).
-  That split is the point of a substrate: what differs between the two is exactly the
-  two plug-ins, and what does not is a file format nobody should write twice.
+- **ADR-0045's segments do NOT move onto this substrate**, and the earlier version of
+  this bullet had it backwards. What the two share is a convention — a directory of
+  parts, seal by rename, cut a torn tail — and that is about 150 lines. What they do
+  not share is the contract, and it runs in opposite directions on three points:
+  every record here needs a monotone timestamp (the changelog has no clock at all, and
+  giving it one would let an NTP step turn every subsequent commit's capture into an
+  error), every acknowledged record here is fsynced first (the changelog acks after
+  the commit and repairs holes by rescanning, so adopting this would either add an
+  fsync to the write path or make this crate's guarantee false), and retention here is
+  a clock (there it is a per-consumer watermark — a segment may only be dropped once
+  the lake has taken it). Two implementations of the same convention is the cheaper
+  side of that trade; the changelog's is already tested and already drained. The one
+  thing worth borrowing later is block compression inside a segment, which
+  `changelog.rs` can do on its own without taking on a clock.
 - okm core is untouched. This is a sibling crate (`okm-series`), depending on
   `okm-wire` for nothing more than the varint and nTLV primitives it already owns;
   it does not satisfy `VirtualStorage`, does not have keys, faces, reduces or a
