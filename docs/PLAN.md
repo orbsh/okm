@@ -2186,6 +2186,15 @@ that can be dropped in one syscall. Design in ADR-0046. Nothing below is built.
       and **there is one `LOCK` per log, not per partition** (the writer that holds it
       owns every partition; a per-partition lock only matters if two processes write
       different partitions of one log, and nothing asks for that).
+- [x] The write time is the log's, not the caller's: `append(body)` takes no timestamp.
+      No configuration names a "time field" (it would collide with a real tag and nothing
+      can predict that), no per-record clock to trust, and the time axis is ingestion
+      order — which means **no backfill**, stated out loud in ADR-0046 §2. A clock that
+      steps back is clamped to the stream's newest timestamp instead of failing a write
+      the caller did nothing to deserve. Tests drive this through `Config::clock` (a
+      test-only seam; the binding deliberately does not expose it — a Python caller
+      cannot stamp a record). Reading exposes the stamp as a field name, `_ts` by default,
+      configurable to another name or to `None`.
 - [x] Fixed while writing the Python binding: monotone time is a property of the STREAM,
       not of a part. A record an hour older than its predecessor lands in an older
       bucket, opens a fresh part with no history, and passed the per-part check — so

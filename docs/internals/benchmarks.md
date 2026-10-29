@@ -193,7 +193,10 @@ Reading the table honestly:
 `cargo run -p okm-series --release --example series_tax` — 50,000 records into one part
 of 64 KiB blocks, one bucket, three shapes of body (256 distinct bodies for the first
 two, one per record for the third). Bytes are deterministic; times are single-run
-figures whose run-to-run spread is about ±25%, so read them as magnitudes, not decimals.
+figures, and re-running them on a loaded machine moves them by up to a factor of two
+(the same shape measured 872, 1,083, 1,494 and 1,826 ns/record across four runs of the
+same binary). Read the ORDER of the columns, not the digits. Each append now also reads
+the log's clock, because the caller cannot supply a time (ADR-0046 §2).
 
 | workload | shape | bytes | B/rec | x smaller than raw | write ns/rec | read M rec/s |
 | --- | --- | --- | --- | --- | --- | --- |

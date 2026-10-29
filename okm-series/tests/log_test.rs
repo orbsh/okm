@@ -17,7 +17,32 @@ fn config() -> Config {
         block_codec: okm_series::Codec::Zstd,
         dict: Some(okm_series::DictConfig::default()),
         partition_tag: None,
+        clock: Some(clock_step(BASE, 1)),
     }
+}
+
+const BASE: u64 = 1_700_000_000_000;
+
+/// A deterministic clock: `step` in the log's precision per call, starting at `start`.
+fn clock_step(start: u64, step: u64) -> okm_series::Clock {
+    let next = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(start));
+    std::sync::Arc::new(move || next.fetch_add(step, std::sync::atomic::Ordering::Relaxed))
+}
+
+/// A clock that hands out these values in order, then repeats the last one.
+fn clock_seq(values: &[u64]) -> okm_series::Clock {
+    let queue = std::sync::Arc::new(std::sync::Mutex::new(values.to_vec()));
+    std::sync::Arc::new(move || {
+        let mut guard = match queue.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if guard.len() > 1 {
+            guard.remove(0)
+        } else {
+            guard.first().copied().unwrap_or(0)
+        }
+    })
 }
 
 fn body(level: &str, message: &str) -> Body {
@@ -30,11 +55,12 @@ fn body(level: &str, message: &str) -> Body {
 #[test]
 fn records_come_back_in_time_order() {
     let dir = tempfile::tempdir().unwrap();
-    let mut log = Log::open(dir.path(), config()).unwrap();
-    let base = 1_700_000_000_000u64;
+    let mut config = config();
+    config.clock = Some(clock_step(BASE, 250));
+    let mut log = Log::open(dir.path(), config).unwrap();
     for step in 0..3 {
         let offset = log
-            .append(base + step * 250, &body("info", &format!("row {step}")))
+            .append(&body("info", &format!("row {step}")))
             .unwrap();
         assert_eq!(offset, step);
     }
@@ -42,21 +68,29 @@ fn records_come_back_in_time_order() {
 
     let rows = log.read(0, 10).unwrap();
     assert_eq!(rows.len(), 3);
-    assert_eq!(rows[0].0, base);
-    assert_eq!(rows[2].0, base + 500);
+    assert_eq!(rows[0].0, BASE);
+    assert_eq!(rows[2].0, BASE + 500);
     assert_eq!(rows[1].2.get(2).unwrap().as_str().unwrap(), "row 1");
 }
 
 #[test]
-fn time_cannot_go_backwards() {
+fn a_clock_that_steps_back_is_clamped_not_refused() {
     let dir = tempfile::tempdir().unwrap();
-    let mut log = Log::open(dir.path(), config()).unwrap();
-    log.append(2_000, &body("a", "first")).unwrap();
-    let refused = log.append(1_999, &body("a", "second"));
-    assert!(
-        refused.is_err(),
-        "an older record must be refused, not clamped"
-    );
+    let mut config = config();
+    // NTP steps, a suspended machine, a container resumed from a snapshot: the caller
+    // did nothing wrong, so the record is written at the newest time the stream has seen.
+    config.clock = Some(clock_seq(&[2_000, 1_999, 2_500]));
+    let mut log = Log::open(dir.path(), config).unwrap();
+    log.append(&body("a", "first")).unwrap();
+    log.append(&body("a", "second")).unwrap();
+    log.append(&body("a", "third")).unwrap();
+    log.flush().unwrap();
+
+    let rows = log.read(0, 10).unwrap();
+    assert_eq!(rows.len(), 3);
+    assert_eq!(rows[0].0, 2_000);
+    assert_eq!(rows[1].0, 2_000, "clamped to the stream's newest time");
+    assert_eq!(rows[2].0, 2_500);
 }
 
 #[test]
@@ -65,11 +99,8 @@ fn blocks_rotate_and_the_index_still_finds_the_offset() {
     let mut config = config();
     config.block_bytes = 96; // a few records per block
     let mut log = Log::open(dir.path(), config).unwrap();
-    let base = 1_700_000_000_000u64;
     for step in 0..40u64 {
-        log.append(
-            base + step,
-            &body("info", &format!("message number {step}")),
+        log.append(&body("info", &format!("message number {step}")),
         )
         .unwrap();
     }
@@ -91,15 +122,14 @@ fn blocks_rotate_and_the_index_still_finds_the_offset() {
 #[test]
 fn a_torn_tail_is_cut_and_the_log_keeps_appending() {
     let dir = tempfile::tempdir().unwrap();
-    let base = 1_700_000_000_000u64;
     {
         let mut log = Log::open(dir.path(), config()).unwrap();
         for step in 0..5u64 {
-            log.append(base + step, &body("info", &format!("row {step}")))
+            log.append(&body("info", &format!("row {step}")))
                 .unwrap();
         }
         // Durability boundary, then a crash: half a block of garbage lands at the end.
-        log.append_durable(base + 5, &body("info", "row 5"))
+        log.append_durable(&body("info", "row 5"))
             .unwrap();
         let part = find_open_part(dir.path()).expect("an open part");
         let mut file = std::fs::OpenOptions::new()
@@ -115,25 +145,26 @@ fn a_torn_tail_is_cut_and_the_log_keeps_appending() {
     assert_eq!(rows.len(), 6, "the garbage is not a record");
     // Offsets continue from the recovered tail, not from the last sealed part.
     let next = log
-        .append_durable(base + 6, &body("info", "row 6"))
+        .append_durable(&body("info", "row 6"))
         .unwrap();
     assert_eq!(next, 6);
     let rows = log.read(0, 100).unwrap();
     assert_eq!(rows.len(), 7);
-    assert_eq!(rows[6].0, base + 6);
+    // The test clock starts over at BASE on every open, while the stream's newest time
+    // was recovered as BASE + 5: the record is written at that, not in the past.
+    assert_eq!(rows[6].0, BASE + 5);
 }
 
 #[test]
 fn sealing_is_a_rename_and_the_footer_carries_the_totals() {
     let dir = tempfile::tempdir().unwrap();
     let mut log = Log::open(dir.path(), config()).unwrap();
-    let base = 1_700_000_000_000u64;
-    log.append(base, &body("info", "one")).unwrap();
-    log.append(base + 1, &body("info", "two")).unwrap();
+    log.append(&body("info", "one")).unwrap();
+    log.append(&body("info", "two")).unwrap();
     let footers = log.seal().unwrap();
     assert_eq!(footers.len(), 1, "one open part, one footer");
     assert_eq!(footers[0].records, 2);
-    assert_eq!(footers[0].last_ts, base + 1);
+    assert_eq!(footers[0].last_ts, BASE + 1);
     assert_eq!(footers[0].blocks, 1);
 
     let parts = log.parts().unwrap();
@@ -146,11 +177,10 @@ fn sealing_is_a_rename_and_the_footer_carries_the_totals() {
 #[test]
 fn a_flush_is_a_durability_boundary_without_a_record() {
     let dir = tempfile::tempdir().unwrap();
-    let base = 1_700_000_000_000u64;
     {
         let mut log = Log::open(dir.path(), config()).unwrap();
-        for step in 0..3u64 {
-            log.append(base + step, &body("info", "batched")).unwrap();
+        for _step in 0..3u64 {
+            log.append(&body("info", "batched")).unwrap();
         }
         // Nothing is visible to a reader until this returns.
         log.flush().unwrap();
@@ -161,29 +191,15 @@ fn a_flush_is_a_durability_boundary_without_a_record() {
 }
 
 #[test]
-fn time_cannot_go_back_across_a_bucket() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut log = Log::open(dir.path(), config()).unwrap();
-    // Monotone time is a property of the STREAM: a record an hour older than its
-    // predecessor would land in an older bucket with a fresh part and no history.
-    log.append(7_200_000, &body("info", "third hour")).unwrap();
-    let refused = log.append(1_000, &body("info", "first hour"));
-    assert!(
-        matches!(refused, Err(okm_series::Error::TimeBackwards { .. })),
-        "an older bucket is still backwards time"
-    );
-    let parts = log.parts().unwrap();
-    assert_eq!(parts.len(), 1, "the refused record opened nothing");
-}
-
-#[test]
 fn moving_into_a_later_bucket_finishes_the_previous_part() {
     let dir = tempfile::tempdir().unwrap();
-    let mut log = Log::open(dir.path(), config()).unwrap();
+    let mut config = config();
+    config.clock = Some(clock_seq(&[1_000, 7_200_001]));
+    let mut log = Log::open(dir.path(), config).unwrap();
     // 1970-01-01T00:00 then 02:00: the first bucket's part must be sealed, or retention
     // could never drop that bucket (it refuses to touch a bucket that still has a writer).
-    log.append(1_000, &body("info", "first hour")).unwrap();
-    log.append(7_200_000 + 1_000, &body("info", "third hour"))
+    log.append(&body("info", "first hour")).unwrap();
+    log.append(&body("info", "third hour"))
         .unwrap();
 
     let parts = log.parts().unwrap();
@@ -201,10 +217,12 @@ fn moving_into_a_later_bucket_finishes_the_previous_part() {
 #[test]
 fn retention_drops_a_bucket_directory() {
     let dir = tempfile::tempdir().unwrap();
-    let mut log = Log::open(dir.path(), config()).unwrap();
+    let mut config = config();
+    config.clock = Some(clock_seq(&[1_000, 7_200_001]));
+    let mut log = Log::open(dir.path(), config).unwrap();
     // 1970-01-01T00:00 and 02:00, two buckets.
-    log.append(1_000, &body("info", "first hour")).unwrap();
-    log.append(7_200_000 + 1_000, &body("info", "third hour"))
+    log.append(&body("info", "first hour")).unwrap();
+    log.append(&body("info", "third hour"))
         .unwrap();
     log.seal().unwrap();
 
@@ -223,15 +241,16 @@ fn retention_drops_a_bucket_directory() {
 #[test]
 fn a_time_range_reads_only_what_it_covers() {
     let dir = tempfile::tempdir().unwrap();
-    let mut log = Log::open(dir.path(), config()).unwrap();
-    let base = 1_700_000_000_000u64;
+    let mut config = config();
+    config.clock = Some(clock_step(BASE, 1_000));
+    let mut log = Log::open(dir.path(), config).unwrap();
     for step in 0..10u64 {
-        log.append(base + step * 1_000, &body("info", &format!("row {step}")))
+        log.append(&body("info", &format!("row {step}")))
             .unwrap();
     }
     log.seal().unwrap();
 
-    let rows = log.read_by_time(base + 3_000, base + 5_000, 100).unwrap();
+    let rows = log.read_by_time(BASE + 3_000, BASE + 5_000, 100).unwrap();
     assert_eq!(rows.len(), 3, "inclusive on both ends");
     assert_eq!(rows[0].1, 3);
     assert_eq!(rows[2].1, 5);
@@ -240,17 +259,18 @@ fn a_time_range_reads_only_what_it_covers() {
 #[test]
 fn a_time_range_reads_an_unsealed_part_correctly() {
     let dir = tempfile::tempdir().unwrap();
-    let mut log = Log::open(dir.path(), config()).unwrap();
-    let base = 1_700_000_000_000u64;
+    let mut config = config();
+    config.clock = Some(clock_step(BASE, 1_000));
+    let mut log = Log::open(dir.path(), config).unwrap();
     // Everything in one block, nothing sealed: the part's time span has to come from its
     // last block, not from its last index row (which is the block's FIRST record).
     for step in 0..6u64 {
-        log.append(base + step * 1_000, &body("info", &format!("row {step}")))
+        log.append(&body("info", &format!("row {step}")))
             .unwrap();
     }
     log.flush().unwrap();
 
-    let rows = log.read_by_time(base + 4_000, base + 5_000, 100).unwrap();
+    let rows = log.read_by_time(BASE + 4_000, BASE + 5_000, 100).unwrap();
     assert_eq!(
         rows.len(),
         2,
@@ -264,11 +284,10 @@ fn a_time_range_reads_an_unsealed_part_correctly() {
 fn repetitive_bodies_compress_on_disk() {
     let dir = tempfile::tempdir().unwrap();
     let mut log = Log::open(dir.path(), config()).unwrap();
-    let base = 1_700_000_000_000u64;
     let message =
         "the same long line, over and over, because that is what a log looks like".repeat(4);
-    for step in 0..40u64 {
-        log.append(base + step, &body("error", &message)).unwrap();
+    for _step in 0..40u64 {
+        log.append(&body("error", &message)).unwrap();
     }
     log.seal().unwrap();
     let parts = log.parts().unwrap();

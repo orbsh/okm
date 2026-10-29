@@ -73,6 +73,9 @@ pub struct PyLog {
     inner: Mutex<Log>,
     tags: HashMap<String, u16>,
     names: HashMap<u16, String>,
+    /// The name the record's write time is exposed under when a body is read back.
+    /// `None` disables it; `Record.ts` is always there regardless.
+    ts_field: Option<String>,
 }
 
 #[pymethods]
@@ -80,7 +83,8 @@ impl PyLog {
     #[new]
     #[pyo3(signature = (root, *, precision = "ns", bucket_seconds = 3600,
         block_bytes = 64 * 1024, part_bytes = 64 * 1024 * 1024, dictionary = true,
-        compress = true, zstd_level = 1, partition_tag = None, tags = None))]
+        compress = true, zstd_level = 1, partition_tag = None, tags = None,
+        ts_field = Some("_ts".to_string())))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         root: PathBuf,
@@ -93,6 +97,7 @@ impl PyLog {
         zstd_level: i32,
         partition_tag: Option<u16>,
         tags: Option<HashMap<String, u16>>,
+        ts_field: Option<String>,
     ) -> PyResult<Self> {
         let config = Config {
             precision: precision_of(precision)?,
@@ -107,6 +112,9 @@ impl PyLog {
                 None
             },
             partition_tag,
+            // The time is the log's: a Python caller cannot supply it, and no clock
+            // hook is exposed on purpose.
+            clock: None,
         };
         let log = Log::open(&root, config).map_err(map_error)?;
         let tags = tags.unwrap_or_default();
@@ -118,42 +126,48 @@ impl PyLog {
             inner: Mutex::new(log),
             tags,
             names,
+            ts_field,
         })
     }
 
-    /// Append one record; returns its offset (the address `read` starts from).
+    /// Append one record at the write time; returns its offset (the address `read`
+    /// starts from).
+    ///
+    /// There is no timestamp argument: the log stamps the record when it is written
+    /// (ADR-0046 §2). If the application has its own time, put it in the body under a
+    /// tag of your choosing — it is data, not the record's address.
     ///
     /// The record is buffered until a block fills, so a reader sees it after `flush`
     /// — use `append_durable` for "on disk when this returns".
-    fn append(&self, py: Python<'_>, ts: u64, body: &Bound<'_, PyDict>) -> PyResult<u64> {
+    fn append(&self, py: Python<'_>, body: &Bound<'_, PyDict>) -> PyResult<u64> {
         let body = self.body_from_py(body)?;
         py.detach(|| {
             let mut log = self.lock()?;
-            log.append(ts, &body).map_err(map_error)
+            log.append(&body).map_err(map_error)
         })
     }
 
     /// Append one record and fsync the block holding it before returning.
-    fn append_durable(&self, py: Python<'_>, ts: u64, body: &Bound<'_, PyDict>) -> PyResult<u64> {
+    fn append_durable(&self, py: Python<'_>, body: &Bound<'_, PyDict>) -> PyResult<u64> {
         let body = self.body_from_py(body)?;
         py.detach(|| {
             let mut log = self.lock()?;
-            log.append_durable(ts, &body).map_err(map_error)
+            log.append_durable(&body).map_err(map_error)
         })
     }
 
-    /// Append a batch: `[(ts, body), ...]` in time order. Returns the offsets.
+    /// Append a batch of bodies. Returns the offsets, in the order given.
     fn append_many(&self, py: Python<'_>, records: &Bound<'_, PyList>) -> PyResult<Vec<u64>> {
         let mut prepared = Vec::with_capacity(records.len());
         for item in records.iter() {
-            let (ts, body): (u64, Bound<'_, PyDict>) = item.extract()?;
-            prepared.push((ts, self.body_from_py(&body)?));
+            let body: Bound<'_, PyDict> = item.extract()?;
+            prepared.push(self.body_from_py(&body)?);
         }
         py.detach(|| {
             let mut log = self.lock()?;
             let mut offsets = Vec::with_capacity(prepared.len());
-            for (ts, body) in &prepared {
-                offsets.push(log.append(*ts, body).map_err(map_error)?);
+            for body in &prepared {
+                offsets.push(log.append(body).map_err(map_error)?);
             }
             Ok(offsets)
         })
@@ -355,6 +369,13 @@ impl PyLog {
     fn record_from(&self, ts: u64, offset: u64, body: &Body) -> PyResult<Py<Record>> {
         Python::attach(|py| {
             let dict = PyDict::new(py);
+            // The write time under a name of its own, unless the body already claimed
+            // that name (then the caller's value stays: their data is theirs).
+            if let Some(name) = self.ts_field.as_deref() {
+                if !dict.contains(name)? {
+                    dict.set_item(name, ts)?;
+                }
+            }
             for (tag, value) in body.items() {
                 let key: Bound<'_, PyAny> = match self.names.get(tag) {
                     Some(name) => name.into_pyobject(py)?.into_any(),
