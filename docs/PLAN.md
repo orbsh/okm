@@ -2186,6 +2186,21 @@ that can be dropped in one syscall. Design in ADR-0046. Nothing below is built.
       and **there is one `LOCK` per log, not per partition** (the writer that holds it
       owns every partition; a per-partition lock only matters if two processes write
       different partitions of one log, and nothing asks for that).
+- [x] Fixed while writing the Python binding: monotone time is a property of the STREAM,
+      not of a part. A record an hour older than its predecessor lands in an older
+      bucket, opens a fresh part with no history, and passed the per-part check — so
+      "time cannot go backwards" was only true inside one bucket. The log now remembers
+      the newest timestamp each stream has seen (recovered from the parts on open) and
+      refuses before anything is written.
+- [x] `bindings/okm-series-python`: a PyO3 binding, standalone crate (not a workspace
+      member, same posture as `okm-python`), `import okm_series`, `Log(...)` with
+      `append`/`append_durable`/`append_many`/`flush`/`seal`/`read`/`read_by_time`/
+      `retain_before`/`parts`, bodies as dicts keyed by tag or by the names given to
+      `Log(tags=...)`, values as str/int/float/bool/bytes, `OSError` for IO and
+      `ValueError` for refusals. Its `host-tests` build links the interpreter, so the
+      tests run with `--no-default-features --features host-tests` (the wheel posture
+      must not link libpython). Verified end to end by importing the built `.so` from
+      Python, not just from Rust.
 - [x] Fixed while building partitions: an OPEN part reported its time span from its last
       index row, which is its last block's FIRST record, so a range read could skip a
       part whose later records were in range. The span is now computed at open from the

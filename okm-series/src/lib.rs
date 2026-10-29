@@ -17,6 +17,7 @@ pub mod dict;
 pub mod format;
 pub mod part;
 
+use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -143,6 +144,10 @@ pub struct Log {
     /// One writer per (bucket, partition): a partition is a file's worth of writer, and
     /// the single-writer rule is per file.
     active: Vec<Active>,
+    /// The newest timestamp each stream has seen. Monotone time is a property of the
+    /// STREAM, not of a part: without this, a record an hour older than its predecessor
+    /// would land in an older bucket, open a fresh part with no history, and pass.
+    last_ts: HashMap<Option<String>, u64>,
 }
 
 impl Log {
@@ -194,12 +199,17 @@ impl Log {
             config,
             meta,
             active: Vec::new(),
+            last_ts: HashMap::new(),
         };
 
         // Recover: adopt the open parts (at most one per partition), and learn where
         // offsets continue from everything that is already there.
         for (bucket, partition, path) in log.all_parts()? {
             let reader = PartReader::open(&path, dict_config.as_ref())?;
+            if let Some((_, last)) = reader.ts_span() {
+                let seen = log.last_ts.entry(partition.clone()).or_insert(last);
+                *seen = (*seen).max(last);
+            }
             if reader.sealed() || log.active_part(bucket, partition.as_deref()).is_some() {
                 continue;
             }
@@ -239,11 +249,17 @@ impl Log {
             Some(tag) => Some(partition_of(body, tag)?),
             None => None,
         };
+        if let Some(last) = self.last_ts.get(&partition).copied()
+            && ts < last
+        {
+            return Err(Error::TimeBackwards { last, given: ts });
+        }
         self.ensure_part(bucket, &partition, ts)?;
         let index = self
             .active_index(bucket, partition.as_deref())
             .ok_or(Error::BadPath)?;
         let offset = self.active[index].writer.append(ts, body)?;
+        self.last_ts.insert(partition, ts);
         Ok(offset)
     }
 

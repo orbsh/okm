@@ -161,6 +161,22 @@ fn a_flush_is_a_durability_boundary_without_a_record() {
 }
 
 #[test]
+fn time_cannot_go_back_across_a_bucket() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut log = Log::open(dir.path(), config()).unwrap();
+    // Monotone time is a property of the STREAM: a record an hour older than its
+    // predecessor would land in an older bucket with a fresh part and no history.
+    log.append(7_200_000, &body("info", "third hour")).unwrap();
+    let refused = log.append(1_000, &body("info", "first hour"));
+    assert!(
+        matches!(refused, Err(okm_series::Error::TimeBackwards { .. })),
+        "an older bucket is still backwards time"
+    );
+    let parts = log.parts().unwrap();
+    assert_eq!(parts.len(), 1, "the refused record opened nothing");
+}
+
+#[test]
 fn moving_into_a_later_bucket_finishes_the_previous_part() {
     let dir = tempfile::tempdir().unwrap();
     let mut log = Log::open(dir.path(), config()).unwrap();

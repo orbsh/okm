@@ -1,0 +1,31 @@
+[package]
+name = "okm-series-python"
+version = "0.1.0"
+edition = "2021"
+description = "PyO3 binding for okm-series: append timestamped records from Python."
+
+[lib]
+name = "okm_series_py"
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = ["extension-module"]
+# A wheel must not link libpython (the interpreter hosts it).
+extension-module = ["pyo3/extension-module"]
+# Tests that build Python objects need the interpreter linked; opt-in so the default
+# `cargo test` keeps the wheel posture.
+host-tests = ["pyo3/auto-initialize"]
+
+[[test]]
+name = "binding"
+required-features = ["host-tests"]
+
+[dev-dependencies]
+tempfile = "3"
+
+[dependencies]
+okm-series = { path = "../../okm-series" }
+pyo3 = { version = "0.29" }
+
+# standalone crate — keep out of the okm root workspace
+[workspace]
