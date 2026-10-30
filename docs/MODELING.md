@@ -314,6 +314,50 @@ write a name that is a declared payload field updates the row; anything else lan
 
 The boundary with SQL is structural, and it sits here. A relational engine hides the key inside the row, so a value split off into overflow pages is an engine detail addressed by the row id with a chunk ordinal appended. okm has no row outside a key — the table IS a key space — so the same split is a DECLARED side table whose ns sits at the FRONT of the address while the key payload stays byte-identical. Hence: the side table is still scanned by the parent's key prefix, it commits on its own, and nothing can join the two halves back — composition is the application's two point reads (ADR-0036).
 
+#### Case: the key is the identity — prism's rewrite, and the five mirrors that stay
+
+The relational instinct is that a row owns an id: a surrogate key in a column, an index over that column, and every read handing the id back out of the row. okm has no row outside a key, so the instinct costs a second copy of the address and creates key-versus-payload state that only the writer keeps honest. prism's identity tables were rewritten to delete exactly that (`crates/prism/src/identity.rs`, 2026-10-30):
+
+```rust
+// before: a u64 counter in the key, mirrored into the row so a reduce could fold over it
+pub struct AccountKey { pub id: u64 }
+#[ok_ref(AccountKey)]
+#[ok_index(by_name { fields(username) })]
+#[ok_reduce(HighWater(id) { group(global) })]   // next id = MAX over the payload
+pub struct Account { pub id: u64, pub username: String, pub nickname: String, pub password_hash: String, pub global: u32 }
+
+// after: the key IS the id, and the row says only what the key cannot
+pub type UserId = Uuid7;
+#[ok_ref(Uuid7)]
+#[ok_index(by_name { fields(username) })]
+pub struct Account { pub username: String, pub nickname: String, pub password_hash: String }
+```
+
+All three tables (`Account` ns 50, `Device` ns 51, `Token` ns 53) now carry no id field. Three pieces of machinery left with it: the mirrored field, the `HighWater` reduce that issued u64 ids, and the constant `global` group column that existed only because a reduce needs a group. A `Uuid7` issues itself, so nothing has to count.
+
+The key is not the cheap substitute for a column. It is stronger in four ways, and none of them is available to a field inside the row:
+
+- **It is ordered.** Key bytes ARE the sort order of every scan (BE fixed width, prefix-monotonic VarInt). `Uuid7` in the key makes creation order readable to the millisecond with no timestamp field and no index — ties inside one millisecond sort by their random tail, and that is enough for insert locality, which is why a btree's hot page stays hot. `Uuid4` for the token says, by choice of type, that a credential has no order worth keeping.
+- **It is prefix-scannable.** "Every device of this user" is key composition, not an index: put the user at the front and the prefix scan is the answer.
+- **It cannot drift.** One writer builds the address once. There is no second copy to update and no read path that could compare two ids and disagree.
+- **It is already in hand on every read.** `fetch` takes the key the caller passed; `scan` and `scan_covered` return `PrefixKey<K>` beside every hit. A mirrored id hands a caller something it already had.
+
+What a value SHOULD carry is the id of something else — `Device.user`, `Token.device`: a foreign relationship the key does not encode. That is data, it may change, and no read can recover it from the address.
+
+A pass over every declared row in the family (aura, prism, krystallizer, mudra, effector, gravity) finds five mirrors, and each one has its reason written beside it:
+
+| site | mirrored | why it is there | retires when |
+|---|---|---|---|
+| aura `meta.rs` `BoothName.id` | the issued proxy id | the `HighWater(id)` reduce folds over payload fields | ADR-0024's key-field groups reach the derive (aura's own note) |
+| aura `mq.rs` `InstanceKeyRegistry.id` | the issued proxy id | the same reduce | the same |
+| aura `mq.rs` `EventRoute.booth_id` | a key segment | `ok_index` fields must be payload fields, and `by_booth` scans this one | an index can name a key segment |
+| aura `meta.rs` `CodeBlob.sha256` | the whole key | observability: a raw scan shows its own content address (this table declares no index) | whenever — the cheapest of the five |
+| prism `nodes.rs` `Node.id` | the issued node id | `HighWater(id)` again | when node ids stop being a local counter |
+
+None of the five is SQL habit; each is a workaround for something the model does not yet allow, and four are written down with their retirement condition. The habit worth watching for is the sixth kind — a field that is always equal to the key above it and has no condition attached. That field is the address said twice: delete it, do not add a check that compares the two.
+
+The far end of the same spectrum is aura's `MqData`, whose row type is empty (`pub struct MqData {}`): event, instance key and sequence are the key, depth and write head are reduces, and nothing needs saying twice.
+
 ### Dynamic fields: the document API (ADR-0012)
 
 One encoding serves declared rows and external data. Declared fields ride the hot/cold segments as usual; anything else lands in the **dynamic segment** (fixed face 0x01) as n-TLV frames — `[field-id][type][len][bytes]` — with names allocated on first sight in the **field-name vocabulary** (fixed faces 0x02/0x03). Runtime surface on `Collection` — the static segment speaks the struct, the whole document speaks one name-keyed map (ADR-0035). Two doors, and the split is about what a call may look at: `get` / `put` are the **struct door** (the row only — no vocabulary load, no segment access; the compiled-schema path), while `fetch` / `merge` / `replace` / `purge` are the **whole-document door**.
