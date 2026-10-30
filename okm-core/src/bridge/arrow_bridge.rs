@@ -52,6 +52,9 @@ pub fn arrow_type(ty: FieldType) -> DataType {
         FieldType::U32 => DataType::UInt32,
         FieldType::U64 => DataType::UInt64,
         FieldType::FixedBytes => DataType::Binary,
+        // A uuid is a 16-byte id: fixed-size binary, not a variable one. It exports as bytes —
+        // the hyphenated text is a display form, and a warehouse column should keep the value.
+        FieldType::Uuid4 | FieldType::Uuid7 => DataType::FixedSizeBinary(16),
         FieldType::Str => DataType::Utf8,
         FieldType::Bytes => DataType::Binary,
         // Logical types: VarInt decodes to its integer, Quant dequantizes
@@ -477,7 +480,9 @@ fn swap_be(src: &[u8], off: usize, width: usize, ty: FieldType) -> Vec<u8> {
     debug_assert_ne!(ty, FieldType::Str);
     let raw = &src[off..off + width];
     match ty {
-        FieldType::U8 | FieldType::FixedBytes => raw.to_vec(),
+        FieldType::U8 | FieldType::FixedBytes | FieldType::Uuid4 | FieldType::Uuid7 => {
+            raw.to_vec() // a uuid's byte order IS its order (v7: time); never swap it
+        }
         FieldType::U16 => raw.iter().rev().copied().collect(),
         FieldType::U32 => raw.iter().rev().copied().collect(),
         FieldType::U64 => raw.iter().rev().copied().collect(),

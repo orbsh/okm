@@ -282,6 +282,8 @@ mod serde_impls {
                 }
                 FieldType::Str => s.serialize_unit_variant("FieldType", 5, "Str"),
                 FieldType::Bytes => s.serialize_unit_variant("FieldType", 10, "Bytes"),
+                FieldType::Uuid4 => s.serialize_unit_variant("FieldType", 13, "Uuid4"),
+                FieldType::Uuid7 => s.serialize_unit_variant("FieldType", 14, "Uuid7"),
                 FieldType::VarInt => s.serialize_unit_variant("FieldType", 6, "VarInt"),
                 FieldType::Quant(p) => {
                     s.serialize_newtype_variant("FieldType", 7, "Quant", p)

@@ -15,6 +15,8 @@ mod offset;
 mod optional;
 mod quant;
 pub mod varint;
+pub mod uuid;
+pub use uuid::{Uuid4, Uuid7};
 pub mod wire;
 pub mod vector;
 
