@@ -77,17 +77,17 @@ The mapping, because it is what makes the columns comparable: an OKM **put** is 
 
 | arm | put | get | batch (100 rows) | scan (10,000 rows) | covered | on disk / in server |
 |---|---|---|---|---|---|---|
-| okm + fjall (Buffer mode) | 4.8 µs | 1.1 µs | 0.93 µs/row | 9.8 ms (0.98 µs/row) | 5.8 ms (0.58 µs/row) | 208 MB |
-| bare fjall (no okm) | 1.7 µs | 777 ns | — | 4.4 ms (0.44 µs/row) | 1.3 ms (0.13 µs/row) | 208 MB |
-| parquet (zstd 1) | 0.12 µs | — | — | 25.0 ms, full pass (25 ns/row) | — | 3.3 MB |
-| redis / valkey (loopback) | 22 µs | 8.3 µs | 2.7 µs/row | 2.8 ms (0.28 µs/row) | 1.1 ms (0.11 µs/row) | 171 MB |
+| okm + fjall (Buffer mode) | 4.8 µs | 1.2 µs | 0.97 µs/row | 10.1 ms (1.01 µs/row) | 5.0 ms (0.50 µs/row) | 208 MB |
+| bare fjall (no okm) | 1.7 µs | 782 ns | — | 4.4 ms (0.44 µs/row) | 1.2 ms (0.12 µs/row) | 208 MB |
+| parquet (zstd 1) | 0.12 µs | — | — | 25.4 ms, full pass (25 ns/row) | — | 3.3 MB |
+| redis / valkey (loopback) | 22 µs | 8.4 µs | 3.1 µs/row | 4.4 ms (0.44 µs/row) | 1.2 ms (0.12 µs/row) | 171 MB |
 
 How to read it:
 
 - **Point lookups are what this store is for, and at this size fjall is an order of magnitude ahead**: 777 ns bare, 1.1 µs through okm, 8.3 µs on Redis. The gap is not memory against disk — by the storage hierarchy in the wiki, that difference is one order of magnitude at most, and zero when the working set sits in the page cache — it is one round trip, which every Redis read pays.
 - **Batch scanning is not the core scenario, and it belongs to Parquet anyway**: okm exports Parquet (Iceberg after that), at 3.4 bytes per row and 25 ns per row for a full pass. Judging a store by "scan a hundred rows, scan ten thousand" is analytic work pushed into an OLTP engine.
 - **And in the case Redis is supposed to win — one set, every member in one round trip — it does not win much.** Against bare fjall: fanout 100 is 109 ns per row for the LSM against 192 for Redis; 1,000 rows is 102 against 121; 10,000 is 132 against 116; 100,000 is 196 against 136. Redis's advantage appears past ten thousand rows and tops out at 1.4x, while below a thousand the LSM is faster.
-- **okm's own scan is slower than both** (530 ns per row at fanout 100, 5x bare fjall), and that difference is the model layer: decoding index entries and materialising documents. It is implementation cost, not a structural weakness of an LSM, and it is fixable — see the streaming-door item in PLAN. Charging it to "disk is slow" is the misattribution the wiki argues against.
+- **okm's own scan is slower than both** (490 ns per row at fanout 100, 4.6x bare fjall), and that difference is the model layer, not the engine. Where it goes, measured: one redundant copy (the suffix of each entry re-allocated so the prefix could be dropped) was worth 26 ns per row in isolation — 151 ns against 125 ns over the same 10,000 entries, now drained instead of copied — and the rest is `ScanIter` handing back an owned `(Vec, Vec)` per row plus the typed entry decode. Removing those copies is a `VirtualStorage` trait change, and it is not worth it for a scenario whose real home is Parquet. Charging any of this to "disk is slow" is the misattribution the wiki argues against.
 - **Writes: 1.7 µs bare, 22 µs on Redis.** Nothing in those 22 µs is the data structure; it is round trips and protocol parsing.
 - **The durability knob is worth 76x**: the same fjall, same put, 4.8 µs buffered against 0.37 ms with an fsync per write.
 - **Footprints**: fjall's LSM files at 208 MB (218 B/row; 130–208 MB across runs depending on where compaction stood), Redis's 171 MB of `used_memory`, Parquet's 3.3 MB. None is comparable with the series log's 56 B/record — a KV store with an index and a reduce is a different job.
@@ -96,19 +96,19 @@ How to read it:
 
 | fanout | okm scan | bare fjall | redis | bare fjall ÷ redis |
 |---|---|---|---|---|
-| 1 | 6.7 µs | 952 ns | 8.0 µs | 0.1x |
-| 10 | 1.1 µs | 159 ns | 865 ns | 0.2x |
-| 100 | 530 ns | 109 ns | 192 ns | 0.6x |
-| 1,000 | 477 ns | 102 ns | 121 ns | 0.8x |
-| 10,000 | 624 ns | 132 ns | 116 ns | 1.1x |
-| 100,000 | 383 ns | 196 ns | 136 ns | 1.4x |
+| 1 | 7.0 µs | 842 ns | 7.8 µs | 0.1x |
+| 10 | 1.1 µs | 144 ns | 879 ns | 0.2x |
+| 100 | 490 ns | 107 ns | 197 ns | 0.5x |
+| 1,000 | 452 ns | 102 ns | 128 ns | 0.8x |
+| 10,000 | 495 ns | 124 ns | 177 ns | 0.7x |
+| 100,000 | 356 ns | 188 ns | 142 ns | 1.3x |
 
 Cost per row, no row reads, one run.
 
-- **Redis's "batching advantage" only exists against okm's model layer.** Against the bare LSM it is slower below a thousand rows, 1.1x faster at ten thousand and 1.4x at a hundred thousand — in its best shape (one set, one `SMEMBERS`, no decoding), that is the whole win.
-- **Bare fjall is 100–200 ns per row and nearly flat**; the 380–630 ns okm shows is about 4x model layer (decode and materialise), not engine.
+- **Redis's "batching advantage" only exists against okm's model layer.** Against the bare LSM it is slower below a thousand rows and at best 1.3x faster at a hundred thousand — in its best shape (one set, one `SMEMBERS`, no decoding), that is the whole win.
+- **Bare fjall is 100–190 ns per row and nearly flat**; the 356–495 ns okm shows is about 4x model layer (the engine iterator's owned pair per row, the typed decode, the result vector), not engine.
 - **At fanout 1 none of the three is cheap** (6.7 µs / 952 ns / 8.0 µs): opening a range, decoding one entry and building a result set is fixed cost. Asking for one row should be a primary-key read — the get column: 1.1 µs okm, 777 ns bare, 8.3 µs Redis.
-- **A covered row costs less than a point get** (576 ns against 1.1 µs through okm, and far less bare): the index half was never the expensive half; the row reads are, and a batch scenario should avoid them or hand them to Parquet.
+- **A covered row costs less than half a point get** (500 ns against 1.2 µs through okm, and a sixth of one bare): the index half was never the expensive half; the row reads are, and a batch scenario should avoid them or hand them to Parquet.
 - **So**: point lookups lose to Redis by an order of magnitude, batch scans win by 1.1–1.4x at best, and batch scans are not what a store is for. That is the wiki's critique measured — Redis's problem is not that in-memory is bad, it is that it is ahead in neither direction and still costs a network hop and a process to operate.
 
 ## Dynamic codec tax (okm-dynamic vs Rust derive, same declaration)
