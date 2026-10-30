@@ -150,8 +150,12 @@ pub fn scan_suffix_kv<S: VirtualStorage + ?Sized>(
     let end = prefix_end(prefix);
     let mut out = Vec::new();
     for item in store.scan_range_iter(prefix, end.as_deref()) {
-        let (full, v) = item?;
-        out.push((full.get(prefix.len()..).unwrap_or(&[]).to_vec(), v));
+        let (mut full, v) = item?;
+        // Drop the prefix from the key the iterator already allocated instead of copying
+        // the suffix into a second buffer: the range guarantees the key starts with the
+        // prefix, so this is a memmove inside one allocation, not two allocations.
+        full.drain(..prefix.len().min(full.len()));
+        out.push((full, v));
     }
     Ok(out)
 }
