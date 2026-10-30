@@ -261,6 +261,9 @@ pub(crate) fn fill_schema_defaults(schema: &CollectionSchema, out: &mut ValueMap
                 FieldType::Str => Value::Str(String::new()),
                 FieldType::Bytes => Value::Bytes(vec![0; f.width]),
                 FieldType::FixedBytes => Value::Bytes(vec![0; f.width]),
+                // Zero is not a uuid either, but an absent uuid field decodes to the zero image the
+                // typed reader would produce; a caller that needs validity must look at the value.
+                FieldType::Uuid4 | FieldType::Uuid7 => Value::Bytes(vec![0; 16]),
                 // ADR-0032: absent Vocab field → a zero id image of the declared
                 // width; `resolve_vocab_labels` turns it into a label when the
                 // vocabulary has id 0.
@@ -297,6 +300,11 @@ pub(crate) fn decode_fixed(
             raw.try_into().map_err(|_| need(raw.len()))?,
         )),
         FieldType::FixedBytes => Value::Bytes(raw.to_vec()),
+        // A uuid is 16 raw bytes on the wire; the text form is the edge's business.
+        FieldType::Uuid4 | FieldType::Uuid7 => {
+            let raw = raw.get(..16).ok_or_else(|| need(raw.len()))?;
+            Value::Bytes(raw.to_vec())
+        }
         // Wrapper kinds: the wire is not the value. `Quant` is fixed point —
         // /10^P gives the f64 the column type promises; `Offset` is biased by
         // the schema's base. Both are 8/4 bytes wide, so both can be hot, and

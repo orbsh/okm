@@ -625,6 +625,28 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> syn::Result<Vec<FieldS
                 quote! { 1 },
                 Some(quote! { ::okm_core::FieldType::U8 }),
             ),
+            _ if ty_str == "Uuid4" || ty_str == "Uuid7" => {
+                // The derive already knows which one it is: emit the kind directly, because
+                // `FIELDS` is a const array and a runtime `if` cannot live there.
+                let kind_ty = if ty_str == "Uuid4" {
+                    quote! { ::okm_core::FieldType::Uuid4 }
+                } else {
+                    quote! { ::okm_core::FieldType::Uuid7 }
+                };
+                (
+                // 16 raw bytes; the text form (hyphenated / base64) belongs to the edge.
+                quote! { buf.extend_from_slice(self.#id.as_bytes()); },
+                quote! {{
+                    let mut v = [0u8; 16];
+                    v.copy_from_slice(&b[offset..offset + 16]);
+                    offset += 16;
+                    <#ty as ::core::convert::From<[u8; 16]>>::from(v)
+                }},
+                quote! { 16 },
+                quote! { 16 },
+                Some(quote! { #kind_ty }),
+                )
+            }
             _ if ty_str.starts_with("[u8;") => {
                 let n: usize = ty_str
                     .trim_start_matches("[u8;")

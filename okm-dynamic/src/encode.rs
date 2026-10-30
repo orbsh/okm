@@ -215,6 +215,11 @@ fn cold_frame_bytes(
             Value::Bytes(b) if b.len() == f.width => b.clone(),
             _ => return Err(type_err(&f.name, "bytes of the declared width")),
         },
+        // A uuid is exactly 16 bytes: the length check is the type check.
+        okm_core::FieldType::Uuid4 | okm_core::FieldType::Uuid7 => match v {
+            Value::Bytes(b) if b.len() == 16 => b.clone(),
+            _ => return Err(type_err(&f.name, "bytes of a 16-byte uuid")),
+        },
         okm_core::FieldType::U8 => match v {
             Value::U8(x) => vec![*x],
             _ => return Err(type_err(&f.name, "u8")),

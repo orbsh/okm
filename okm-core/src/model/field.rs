@@ -38,6 +38,12 @@ pub enum FieldType {
     /// `Offset<T>` — `value − base` stored as u32; the payload is the
     /// static base. Logical type is i64 (base + wire).
     Offset(i64),
+    /// `Uuid4` — 16 raw bytes, 128 random bits. A CREDENTIAL-shaped id (a token): no structure,
+    /// nothing to order by, nothing to predict from a neighbour.
+    Uuid4,
+    /// `Uuid7` — 16 raw bytes, 48-bit millisecond prefix then randomness. An IDENTITY-shaped id:
+    /// byte order is time order, so inserts land at the end of the keyspace.
+    Uuid7,
     /// `Vector<T>` — typed homogeneous list (ADR-0015 §4): a variable-
     /// length frame `[count u32 BE][elements per T]`; `elem` names the
     /// element type ("f32", "String", …). Logical type is the element

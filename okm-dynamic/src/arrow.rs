@@ -17,6 +17,7 @@
 
 use crate::{CodecError, Value, ValueMap, decode_key};
 use arrow::array::{
+    FixedSizeBinaryArray,
     ArrayRef, BinaryArray, Float64Array, Int64Array, StringArray, UInt8Array, UInt16Array,
     UInt32Array, UInt64Array,
 };
@@ -217,6 +218,20 @@ fn column(
                 })
                 .collect();
             Arc::new(StringArray::from_iter(named.iter().map(|s| s.as_deref())))
+        }
+        // A uuid is a FIXED 16-byte column (matching `arrow_type`), so absent values are the only
+        // nulls and every present one must be exactly 16 bytes.
+        FieldType::Uuid4 | FieldType::Uuid7 => {
+            let items = gather(f, vals, |v| match v {
+                Value::Bytes(b) if b.len() == 16 => Some(b.as_slice()),
+                _ => None,
+            })?;
+            Arc::new(
+                FixedSizeBinaryArray::try_from_sparse_iter_with_size(items.into_iter(), 16)
+                    .map_err(|e| CodecError::Column {
+                        what: format!("{}: {}", f.name, e),
+                    })?,
+            )
         }
         FieldType::FixedBytes | FieldType::Bytes | FieldType::Vector { .. } => {
             Arc::new(BinaryArray::from_iter(gather(f, vals, |v| match v {

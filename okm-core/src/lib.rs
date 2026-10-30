@@ -49,7 +49,7 @@ pub mod changelog;
 // ================= re-exports (stable public surface) =================
 
 pub use model::reverse::{Reversible, Reverse};
-pub use model::wrappers::{Bytes, Ref, Refs, Offset, Quant, VarInt, VarIntEnc, Vector, VectorElem, dequantize, offset_decode, offset_encode, quantize, wire_to_be_bytes};
+pub use model::wrappers::{Bytes, Ref, Refs, Offset, Quant, Uuid4, Uuid7, VarInt, VarIntEnc, Vector, VectorElem, dequantize, offset_decode, offset_encode, quantize, wire_to_be_bytes};
 pub use model::wrappers::wire::{put_len, take_len, prefix_width};
 
 pub use model::reduce::{reduce_get, scan_reduces, ReduceCodec, Reduce, ReduceLogic};

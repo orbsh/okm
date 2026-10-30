@@ -1030,6 +1030,7 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> syn::Result<TS2> {
         let is_string = ty_str.starts_with("String");
         let is_bytes = ty_str.starts_with("Bytes");
         let is_fixedbytes = ty_str.starts_with("[u8;");
+        let is_uuid = ty_str.starts_with("Uuid4") || ty_str.starts_with("Uuid7");
         let is_f64 = ty_str.starts_with("Quant<") || ty_str.starts_with("Quant <");
         let is_varint = ty_str.starts_with("VarInt<") || ty_str.starts_with("VarInt <");
         let is_offset = ty_str.starts_with("Offset");
@@ -1163,6 +1164,30 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> syn::Result<TS2> {
                             }
                         }
                     }
+                    None => #dflt,
+                    Some(__okm_got) => {
+                        return ::core::result::Result::Err(::okm_core::error::Error::kind_mismatch(#name, "Bytes", __okm_got))
+                    }
+                },
+            });
+        } else if is_uuid {
+            // The map view (and therefore an index over this field) sees the 16 raw bytes; the
+            // text form belongs to the edge, not to the store.
+            to_map_arms.extend(quote! {
+                out.insert(#name.to_string(), ::okm_core::obj_dynamic::DynamicValue::Bytes(self.#id.as_bytes().to_vec()));
+            });
+            from_map_arms.extend(quote! {
+                #id: match map.get(#name) {
+                    Some(::okm_core::obj_dynamic::DynamicValue::Bytes(v)) => match <[u8; 16]>::try_from(v.as_slice()) {
+                        Ok(__okm_raw) => <#t as ::core::convert::From<[u8; 16]>>::from(__okm_raw),
+                        Err(_) => {
+                            return ::core::result::Result::Err(::okm_core::error::Error::bad_value(
+                                #name,
+                                stringify!(#t),
+                                ::std::format_args!("{} bytes, a uuid is 16", v.len()),
+                            ))
+                        }
+                    },
                     None => #dflt,
                     Some(__okm_got) => {
                         return ::core::result::Result::Err(::okm_core::error::Error::kind_mismatch(#name, "Bytes", __okm_got))

@@ -204,6 +204,7 @@ fn schema_predicate_vocab_name(ty: okm_core::field::FieldType) -> &'static str {
         okm_core::field::FieldType::U32 => "U32",
         okm_core::field::FieldType::U64 => "U64",
         okm_core::field::FieldType::FixedBytes => "bytes",
+        okm_core::field::FieldType::Uuid4 | okm_core::field::FieldType::Uuid7 => "bytes (uuid)",
         okm_core::field::FieldType::Str => "string",
         okm_core::field::FieldType::Bytes => "bytes",
         okm_core::field::FieldType::VarInt => "U64 (VarInt storage form)",

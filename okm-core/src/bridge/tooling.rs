@@ -33,6 +33,7 @@ pub fn json_schema<K: KeyEncode, R: Document<Key = K>>() -> String {
         match ty {
             FieldType::U8 | FieldType::U16 | FieldType::U32 | FieldType::U64 => "integer",
             FieldType::FixedBytes => "string", // base64, matches Arrow BinaryArray
+            FieldType::Uuid4 | FieldType::Uuid7 => "string", // hyphenated text, 16 bytes on the wire
             FieldType::Str => "string",        // UTF-8, matches Arrow Utf8Array
             FieldType::Bytes => "string",      // base64, matches Arrow BinaryArray
             FieldType::VarInt => "integer",    // logical: the decoded integer
@@ -303,6 +304,12 @@ pub mod parquet_io {
                 let col = column_as::<BinaryArray>(col, field.name)?;
                 col.value(document).to_vec()
             }
+            // 16 fixed bytes back from the warehouse column, byte order untouched.
+            FieldType::Uuid4 | FieldType::Uuid7 => {
+                let col =
+                    column_as::<arrow::array::FixedSizeBinaryArray>(col, field.name)?;
+                col.value(document).to_vec()
+            }
             FieldType::Str => {
                 let col = column_as::<arrow::array::StringArray>(col, field.name)?;
                 col.value(document).as_bytes().to_vec()
@@ -344,7 +351,7 @@ pub mod parquet_io {
                     FieldType::U64 => column_as::<arrow::array::UInt64Array>(col, field.name)?.value(document)
                         .to_be_bytes()
                         .to_vec(),
-                    FieldType::FixedBytes => unreachable!(),
+                    FieldType::FixedBytes | FieldType::Uuid4 | FieldType::Uuid7 => unreachable!(),
                     FieldType::Bytes => column_as::<arrow::array::BinaryArray>(col, field.name)?.value(document)
                         .to_vec(),
                     FieldType::Str => unreachable!("handled above"),
