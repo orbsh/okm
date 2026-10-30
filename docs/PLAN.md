@@ -454,14 +454,20 @@ key bare in the tail) recorded in ADR-0005.
       what the first version of the harness did until the 1M run showed it stuck.
 - [x] A fanout sweep through all three (1 / 10 / 100 / 1,000 / 10,000 / 100,000 rows behind
       one index value, one level each), covered and fetch-back. Covered per row: bare fjall
-      102–196 ns, Redis 116–192 ns, okm's scan 383–624 ns. **The point this records: Redis's
+      102–188 ns, Redis 128–197 ns, okm's scan 356–495 ns. **The point this records: Redis's
       batching advantage exists only against okm's model layer — against the bare LSM it is
-      slower below 1,000 rows and only 1.1–1.4x faster at 10,000–100,000, in its best shape
-      (one set, one `SMEMBERS`, no decoding).** Point lookups, the core scenario, are 8.3 µs
-      against 777 ns. Batch scanning belongs to Parquet (okm exports it; Iceberg later), not
-      to any KV. That 4x between okm's scan and bare fjall is model-layer cost — decode and
-      materialisation — and it is owed: there is no streaming door for index values
-      (`scan_range_iter` covers key ranges only).
+      slower below 1,000 rows and at best 1.3x faster at 100,000, in its best shape (one set,
+      one `SMEMBERS`, no decoding).** Point lookups, the core scenario, are 8.4 µs against
+      782 ns. Batch scanning belongs to Parquet (okm exports it; Iceberg later), not to any KV.
+- [x] One part of that model-layer gap was a real defect and is fixed: `scan_suffix_kv`
+      re-allocated each entry's key suffix so it could drop the prefix. Dropping it with
+      `Vec::drain` instead — 151 -> 125 ns per row over the same 10,000 entries — takes okm's
+      covered scan from ~530 to ~490 ns per row at fanout 100. No API change.
+- [ ] The rest of the gap (`ScanIter` handing back an owned `(Vec, Vec)` per row, plus the
+      typed decode) needs a borrowed-iterator door on `VirtualStorage` — a trait change
+      touching three engines. **Not worth it**: this is analytic work whose home is Parquet.
+      Same verdict for the missing streaming door for index values (`scan_range_iter` covers
+      key ranges only).
       Tables in `docs/internals/benchmarks.md`（中文版 `benchmarks.zh-CN.md`）.
 - [~] Dynamic codec (Python first, then Steel): schema-driven
       encoder/decoder/scan built from structured schema exports —
