@@ -599,20 +599,23 @@ fn read_footer(file: &mut File) -> Result<Option<Footer>, Error> {
     Ok(Footer::decode(&buf))
 }
 
+/// Read a whole index file. One `read` for the file, not one per row: an unbuffered
+/// `File` costs about 200 ns per call whatever its size, and a million-record part has
+/// two thousand blocks — row-at-a-time it turned every point read into half a
+/// millisecond of syscalls (measured in `examples/log_vs_parquet.rs`).
 fn read_index(path: &Path) -> Result<Vec<IndexRow>, Error> {
-    let mut file = match File::open(path) {
-        Ok(file) => file,
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
         Err(_) => return Ok(Vec::new()),
     };
-    let mut header = [0u8; INDEX_HEADER_LEN as usize];
-    if read_full(&mut file, &mut header).is_err() {
-        return Ok(Vec::new());
-    }
-    let mut rows = Vec::new();
-    let mut row = [0u8; INDEX_ROW_LEN as usize];
-    while read_full(&mut file, &mut row).is_ok() {
-        match IndexRow::decode(&row) {
-            Some(decoded) => rows.push(decoded),
+    let body = match bytes.get(INDEX_HEADER_LEN as usize..) {
+        Some(body) => body,
+        None => return Ok(Vec::new()),
+    };
+    let mut rows = Vec::with_capacity(body.len() / INDEX_ROW_LEN as usize);
+    for chunk in body.as_chunks::<{ INDEX_ROW_LEN as usize }>().0 {
+        match IndexRow::decode(chunk) {
+            Some(row) => rows.push(row),
             None => break,
         }
     }
