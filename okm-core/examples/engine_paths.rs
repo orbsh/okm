@@ -124,6 +124,9 @@ struct Line {
     bytes: Option<u64>,
     /// (fanout, fetch-back total ns, covered total ns) for the fanout sweep.
     sweep: Vec<(u64, f64, f64)>,
+    /// Per-row cost of the two ways to drop a prefix from an iterator's key.
+    suffix_copy_ns: Option<f64>,
+    suffix_drain_ns: Option<f64>,
     notes: Vec<String>,
 }
 
@@ -262,6 +265,8 @@ fn measure_fjall(dir: &Path, rows: u64) -> Line {
         scan_fetch_ns: Some(scan_fetch_ns),
         scan_covered_ns: Some(scan_covered_ns),
         bytes: Some(dir_bytes(dir)),
+        suffix_copy_ns: None,
+        suffix_drain_ns: None,
         notes: vec![
             "Buffer persist mode: written to the page cache, fsynced on fjall's schedule"
                 .to_string(),
@@ -388,6 +393,32 @@ fn measure_fjall_raw(dir: &Path, rows: u64) -> Line {
         sweep.push((fanout, fetch_total, covered_total));
     }
 
+    // The suffix copy `scan_suffix_kv` no longer pays: the same iteration over the same
+    // 10,000 entries, once copying the suffix into a second buffer and once draining the
+    // prefix out of the key the read already allocated.
+    let prefix = (RAW_LEVEL + 4).to_be_bytes();
+    let copy_ns = median_of(3, || {
+        let started = Instant::now();
+        let mut sum = 0u64;
+        for entry in index.prefix(prefix) {
+            let key = entry.key().expect("key").to_vec();
+            sum = sum.wrapping_add(key[prefix.len()..].to_vec().len() as u64);
+        }
+        black_box(sum);
+        started.elapsed().as_nanos() as f64 / 10_000.0
+    });
+    let drain_ns = median_of(3, || {
+        let started = Instant::now();
+        let mut sum = 0u64;
+        for entry in index.prefix(prefix) {
+            let mut key = entry.key().expect("key").to_vec();
+            key.drain(..prefix.len());
+            sum = sum.wrapping_add(key.len() as u64);
+        }
+        black_box(sum);
+        started.elapsed().as_nanos() as f64 / 10_000.0
+    });
+
     Line {
         put_ns: Some(put_ns),
         get_ns: Some(get_ns),
@@ -396,6 +427,8 @@ fn measure_fjall_raw(dir: &Path, rows: u64) -> Line {
         scan_covered_ns,
         bytes: Some(dir_bytes(&path)),
         sweep,
+        suffix_copy_ns: Some(copy_ns),
+        suffix_drain_ns: Some(drain_ns),
         notes: vec![
             "no okm: fjall's own iterator over (level, score) keys, documents in a second keyspace"
                 .to_string(),
@@ -496,6 +529,8 @@ fn measure_parquet(path: &Path, rows: u64) -> Line {
         scan_covered_ns: None,
         bytes: std::fs::metadata(path).ok().map(|meta| meta.len()),
         sweep: Vec::new(),
+        suffix_copy_ns: None,
+        suffix_drain_ns: None,
         notes: vec![
             "file, not a store: no point get, no secondary index, no partial overwrite".to_string(),
             format!("the scan column is one full pass over all {rows} rows"),
@@ -872,6 +907,8 @@ fn measure_redis(url: &str, rows: u64) -> Option<Line> {
         scan_covered_ns: Some(scan_covered_ns),
         bytes: (used > 0).then_some(used),
         sweep,
+        suffix_copy_ns: None,
+        suffix_drain_ns: None,
         notes: vec![
             "each operation is a round trip on loopback; that is the protocol, not an overhead to subtract"
                 .to_string(),
@@ -1048,6 +1085,15 @@ fn main() {
                 redis.scan_covered_ns.unwrap_or(0.0) / fanout_for(rows) as f64
             )),
             cell(redis.get_ns),
+        );
+    }
+
+    if let (Some(copy), Some(drain)) = (raw.suffix_copy_ns, raw.suffix_drain_ns) {
+        println!(
+            "\n  dropping a prefix from an iterator's key, 10,000 entries: copy the suffix {} per row, drain it {} per row ({:.1}x)",
+            cell(Some(copy)),
+            cell(Some(drain)),
+            copy / drain,
         );
     }
 
