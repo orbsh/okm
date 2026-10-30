@@ -39,7 +39,7 @@ fn steel_to_value(
             StringV(s) => Value::Str(s.to_string()),
             _ => return Err(bad("string")),
         },
-        FieldType::Bytes | FieldType::FixedBytes => {
+        FieldType::Bytes | FieldType::FixedBytes | FieldType::Uuid4 | FieldType::Uuid7 => {
             // Bytes cross as a scheme vector of integers (0-255) — steel's
             // ByteVector field is private to the crate, a vector is the
             // natural lossless literal.

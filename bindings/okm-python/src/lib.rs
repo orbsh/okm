@@ -588,6 +588,11 @@ impl Collection {
 	        FieldType::FixedBytes | FieldType::Bytes => {
 	            Value::Bytes(v.extract::<Vec<u8>>().map_err(|_| bad("bytes"))?)
 	        }
+	        // A uuid crosses as its 16 raw bytes, like any fixed-width binary field.
+	        FieldType::Uuid4 | FieldType::Uuid7 => Value::Bytes(
+	            v.extract::<Vec<u8>>()
+	                .map_err(|_| bad("16 bytes (uuid)"))?,
+	        ),
 	        FieldType::Str => Value::Str(v.extract::<String>().map_err(|_| bad("str"))?),
 	        // ADR-0032: a Vocab field travels as its id on the wire; the read
 	        // side resolves ids to labels through the vocabulary.
