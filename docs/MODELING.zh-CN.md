@@ -288,6 +288,50 @@ pub struct Profile {
 
 与 SQL 的分界是结构性的，就在这里。关系引擎把键藏在行里，一个被切出去放进溢出页的值只是引擎细节，用行 id 加一个追加在后的分块序号定位。okm 没有键之外的行——一张表**就是**一段键空间——所以同样的切分是一张**声明出来的副表**，它的 ns 坐在地址最前面，键 payload 逐字节不变。于是：副表仍然按父表的键前缀扫描、自己独立提交，而没有任何东西能把两半 join 回来——组合是应用自己的两次点读（ADR-0036）。
 
+#### 案例：key 就是身份——prism 的改写，以及仍然留下的五处镜像
+
+关系模型的习惯是"行自己拥有一个 id"：一个替代键占一列，一列之上建一个索引，每次读再把 id 从行里带出来。okm 没有键之外的行，于是这个习惯要付两笔账——地址存了第二份，以及一份只有写者靠自觉才维持得住的"键与载荷"状态。prism 的身份三张表被改写过，删掉的就是这两笔（`crates/prism/src/identity.rs`，2026-10-30）：
+
+```rust
+// 改前：u64 计数器在键里，再镜像进行里，好让一个 reduce 能在载荷上折叠
+pub struct AccountKey { pub id: u64 }
+#[ok_ref(AccountKey)]
+#[ok_index(by_name { fields(username) })]
+#[ok_reduce(HighWater(id) { group(global) })]   // 下一个 id = 载荷上的 MAX
+pub struct Account { pub id: u64, pub username: String, pub nickname: String, pub password_hash: String, pub global: u32 }
+
+// 改后：键就是 id，行只说自己说不出、键也说不出以外的东西
+pub type UserId = Uuid7;
+#[ok_ref(Uuid7)]
+#[ok_index(by_name { fields(username) })]
+pub struct Account { pub username: String, pub nickname: String, pub password_hash: String }
+```
+
+三张表（`Account` ns 50、`Device` ns 51、`Token` ns 53）现在都不带 id 字段。一起走的还有三件机器：镜像字段本身、发 u64 id 的那个 `HighWater` reduce，以及只为"reduce 需要一个组"而存在的常量列 `global`。`Uuid7` 自己就是自己的编号，没有东西需要计数。
+
+键不是列的廉价替代品，它在四个方向上更强，而这四条都不是行内字段能提供的：
+
+- **它有序。** 键的字节就是所有扫描的排序（定宽大端、前缀单调的 VarInt）。键里放 `Uuid7`，创建顺序精确到毫秒，不用时间戳字段、不用索引就读得出来——同一毫秒内按随机尾部排序，而这对插入局部性已经够用，这也是 btree 的热页能一直热的原因。token 用 `Uuid4`，等于用类型声明"凭据没有值得保留的顺序"。
+- **它可以前缀扫描。** "这个用户的全部设备"是键的组合，不是索引：把用户放在前面，前缀扫描就是答案。
+- **它不会漂。** 地址由写者一次构造，没有第二份要同步，也没有任何读路径能比较两个 id 然后发现不一致。
+- **每次读它都已经在手上。** `fetch` 用的就是调用方传进来的键；`scan` 与 `scan_covered` 在每条命中旁边返回 `PrefixKey<K>`。镜像出来的 id 交给调用方的，是它本来就有的东西。
+
+值**应该**携带的是别人的 id——`Device.user`、`Token.device`：键没有编码进去的外部关系。那是数据，它可能变化，而且没有任何读能从地址里把它推导出来。
+
+把这一族每个声明过的行都过一遍（aura、prism、krystallizer、mudra、effector、gravity），找到五处镜像，每一处旁边都写着自己的理由：
+
+| 位置 | 镜像的是 | 为什么在那 | 什么时候退休 |
+|---|---|---|---|
+| aura `meta.rs` `BoothName.id` | 发出的代理 id | `HighWater(id)` 这个 reduce 在载荷字段上折叠 | ADR-0024 的键字段组进到 derive 之后（aura 自己的注释这么写） |
+| aura `mq.rs` `InstanceKeyRegistry.id` | 发出的代理 id | 同一个 reduce | 同上 |
+| aura `mq.rs` `EventRoute.booth_id` | 一段键 | `ok_index` 的字段必须是载荷字段，而 `by_booth` 扫的是它 | 索引能指名键的一段之后 |
+| aura `meta.rs` `CodeBlob.sha256` | 整个键 | 可观察性：裸扫描能看到自己的内容地址（这张表没有声明任何索引） | 随时——五处里最便宜的一处 |
+| prism `nodes.rs` `Node.id` | 发出的节点 id | 又是 `HighWater(id)` | 节点 id 不再是本地计数器之后 |
+
+五处都不是 SQL 习惯的残留，每一处都是对模型**目前还不允许**的东西的绕行，其中四处已经把退休条件写在了旁边。真正要提防的是第六种：一个永远等于它上面那个键、又没有任何退休条件的字段。那个字段就是"地址说了两遍"——删掉它，而不是加一处比较把两者对齐。
+
+同一谱系的另一端是 aura 的 `MqData`，它的行类型是空的（`pub struct MqData {}`）：事件、实例键、序号就是键，深度与写头是两个 reduce，没有东西需要说第二遍。
+
 ### 动态字段：document API（ADR-0012）
 
 一套编码同时服务声明行与外部数据。声明字段照常走热/冷段；其余落进**动态段**（固定面 0x01），以 n-TLV 帧——`[字段编号][类型][长度][字节]`——存储，名字在**字段名词汇表**（固定面 0x02/0x03）里首次出现时分配。`Collection` 上两组动词，区别在“这次调用能看到什么”：`get` / `put` 是**结构体门**（只有行——不载入词汇表、不碰动态段，编译期 schema 这条路），`fetch` / `merge` / `replace` / `purge` 是**整文档门**。
