@@ -1,38 +1,27 @@
 # Modeling Guide
 
-How to map a domain onto OKM keyspaces: four layers per entity, access
-methods mandatory, covering indexes restrained, composite keys bounded.
-This guide is normative for application schema; for mechanism details see
-the ADRs and the [README](../README.md).
+How to map a domain onto OKM keyspaces: four layers per entity, access methods mandatory, covering indexes restrained, composite keys bounded. This guide is normative for application schema; for mechanism details see the ADRs and the [README](../README.md).
 
 > **Languages:** [English](MODELING.md) (primary) · [中文](MODELING.zh-CN.md)
 
 ## The four layers
 
-Every entity is modeled in four layers: **namespace → primary key →
-primary sort field → access methods**.
+Every entity is modeled in four layers: **namespace → primary key → primary sort field → access methods**.
 
 1. **Namespace (`ns`)** — which keyspace the entity lives in. One entity
-   class = one ns. The 2-byte ns already discriminates every entry; do
-   not encode entity type into keys.
+class = one ns. The 2-byte ns already discriminates every entry; do not encode entity type into keys.
 2. **Primary key** — identity, and nothing else. Proxy keys (auto-increm
-   id, UUID) are the default: attributes are payload, not identity.
+id, UUID) are the default: attributes are payload, not identity.
 3. **Primary sort field** — the third segment of the key
-   (`[ns][pkey...][order]`). Placed at the key tail, it keeps entries
-   under the same pkey physically adjacent and ordered: a prefix scan
-   *is* the timeline / range read. Other sort dimensions stay out of the
-   key and surface through `#[ok_index]`. How physical decisions trade
-   against indirect costs: see "Design constraints on performance".
+(`[ns][pkey...][order]`). Placed at the key tail, it keeps entries under the same pkey physically adjacent and ordered: a prefix scan *is* the timeline / range read. Other sort dimensions stay out of the key and surface through `#[ok_index]`. How physical decisions trade against indirect costs: see "Design constraints on performance".
 4. **Access methods** — declared `#[ok_index]` entries. Each one is a
-   standing answer to "how is this entity queried?".
+standing answer to "how is this entity queried?".
 
-If you cannot name the access methods, the model is not finished — the
-questions you cannot name become full scans.
+If you cannot name the access methods, the model is not finished — the questions you cannot name become full scans.
 
 ## Declaration basics
 
-The four layers land in code as three derive macros. The full declaration
-vocabulary:
+The four layers land in code as three derive macros. The full declaration vocabulary:
 
 ### Endpoint keys: `KeyEncode`
 
@@ -60,9 +49,7 @@ Physical layout of `UserKey { org_id: 7, user_id: 101 }`:
 [ org_id: 4B BE ][ user_id: 8B BE ]   = 12 bytes, zero padding
 ```
 
-Primary keys are fixed-width: fields are big-endian encoded in declaration
-order, `KEY_LEN` locked at compile time. Keys stay fixed-width; variability
-is a property of index entries, not keys.
+Primary keys are fixed-width: fields are big-endian encoded in declaration order, `KEY_LEN` locked at compile time. Keys stay fixed-width; variability is a property of index entries, not keys.
 
 ### Junctions: `JunctionEncode`
 
@@ -89,14 +76,7 @@ pub struct UserToSession {
 }
 ```
 
-`#[ok_junction(n)]` sets the segment-0x3 discriminator, separating
-multiple junctions over one endpoint pair. `#[ok_head(field, ...)]`
-declares which fields of the endpoint count as its identity **in this
-junction**; omitting it means the full key is the identity. Names must
-be a declaration-order prefix of the endpoint's fields (compile-time
-generated check). One declaration produces the one-way entry in each
-endpoint's ns automatically (direction is carried by which ns the entry
-lives in — see "Many-to-many relationships" below).
+`#[ok_junction(n)]` sets the segment-0x3 discriminator, separating multiple junctions over one endpoint pair. `#[ok_head(field, ...)]` declares which fields of the endpoint count as its identity **in this junction**; omitting it means the full key is the identity. Names must be a declaration-order prefix of the endpoint's fields (compile-time generated check). One declaration produces the one-way entry in each endpoint's ns automatically (direction is carried by which ns the entry lives in — see "Many-to-many relationships" below).
 
 ### Rows and indexes: `DocumentEncode`
 
@@ -120,44 +100,23 @@ pub struct User {
 ```
 
 - `#[ok_ref(UserKey)]` — which primary key the row hangs off; identity
-  belongs to the key, business dimensions to the row.
+belongs to the key, business dimensions to the row.
 - `#[ok_ns(1)]` — the table's namespace segment, declared on the ROW (the
-  row is the table's declaration point: `#[ok_ref]` pins the key type, so
-  the row determines `Collection<S, K, R>` entirely). A key type carries no ns —
-  the same key shape may serve several rows/tables, each with its own ns.
-  `Collection::new(store)` takes no ns argument; the assembly site picks the
-  engine only. A junction declares no ns — each endpoint document carries its
-  own (JunctionEncode).
+row is the table's declaration point: `#[ok_ref]` pins the key type, so the row determines `Collection<S, K, R>` entirely). A key type carries no ns — the same key shape may serve several rows/tables, each with its own ns. `Collection::new(store)` takes no ns argument; the assembly site picks the engine only. A junction declares no ns — each endpoint document carries its own (JunctionEncode).
 - `fields(...)` — payload fields to sort/group by, declaration order,
-  first field = the grouping dimension.
+first field = the grouping dimension.
 - `includes(...)` — covering index: copies payload fields into the entry
-  value (see "Covering indexes, with restraint").
+value (see "Covering indexes, with restraint").
 - `key(...)` — truncates the primary-key tail carried at the entry end to
-  the named subset (default: full). Truncation changes row-uniqueness, not
-  grouping: the `fields` prefix drives ordering, the key tail distinguishes
-  rows; `key(user_id)` is safe only when the named subset is unique per row —
-  otherwise rows overwrite each other's entries.
+the named subset (default: full). Truncation changes row-uniqueness, not grouping: the `fields` prefix drives ordering, the key tail distinguishes rows; `key(user_id)` is safe only when the named subset is unique per row — otherwise rows overwrite each other's entries.
 - `func(path)` — function index: the data segment is the encoding of
-  `path(&row)`'s return value, replacing fields. The function is a plain
-  Rust fn (implemented in business code), and the query side calls the
-  **same declared path** on its probe value — encoding and scanning share
-  one definition, so normalization (lowercase, encoding transforms) cannot
-  drift between the two sides. One declaration drives both sides;
-  declaration is registration.
+`path(&row)`'s return value, replacing fields. The function is a plain Rust fn (implemented in business code), and the query side calls the **same declared path** on its probe value — encoding and scanning share one definition, so normalization (lowercase, encoding transforms) cannot drift between the two sides. One declaration drives both sides; declaration is registration.
 - `where(path)` — partial index: a row for which `path(&row) -> bool` is
-  false does not exist in this index (a partial index). The predicate
-  receives the whole row and may read any column (not necessarily an
-  indexed one); it composes with plain field indexes and function indexes
-  alike.
+false does not exist in this index (a partial index). The predicate receives the whole row and may read any column (not necessarily an indexed one); it composes with plain field indexes and function indexes alike.
 - Raw-byte fields: `Bytes` (`okm_core::Bytes`) — a variable-length cold
-  TLV frame, the same encoding as `String` minus the UTF-8 constraint
-  (hashes, ciphertext, serialized blobs). The retired `Vec<u8>` spelling
-  is rejected at compile time with a pointer here: a list-shaped name
-  misdescribed byte-string semantics.
+TLV frame, the same encoding as `String` minus the UTF-8 constraint (hashes, ciphertext, serialized blobs). The retired `Vec<u8>` spelling is rejected at compile time with a pointer here: a list-shaped name misdescribed byte-string semantics.
 
-**Basic use 1: single-value function index (write-side precomputation).**
-The data segment is the encoding of the function's return value, one
-entry per row, entries still live and die with the row:
+**Basic use 1: single-value function index (write-side precomputation).** The data segment is the encoding of the function's return value, one entry per row, entries still live and die with the row:
 
 ```text
 fn lower_name(row: &Doc) -> String { row.name.to_lowercase() }
@@ -165,10 +124,7 @@ fn lower_name(row: &Doc) -> String { row.name.to_lowercase() }
 #[ok_index(by_name { func(lower_name) })]   // "Apple"/"APPLE" co-located
 ```
 
-**Basic use 2: multi-value function index (one row fans out into N
-entries).** A `Vec<V>` return fans one row into N entries; the token is
-the data segment (variable-length, hugging the primary-key prefix), and
-the read path is identical to a plain index (`scan::<I>`):
+**Basic use 2: multi-value function index (one row fans out into N entries).** A `Vec<V>` return fans one row into N entries; the token is the data segment (variable-length, hugging the primary-key prefix), and the read path is identical to a plain index (`scan::<I>`):
 
 ```text
 fn hour_bucket(row: &Post) -> Vec<u64> {
@@ -178,24 +134,9 @@ fn hour_bucket(row: &Post) -> Vec<u64> {
 #[ok_index(by_hour { func(hour_bucket) })]   // scan with a bucket id = that hour's posts
 ```
 
-Time bucketing is this shape at its cheapest — a single-element Vec that
-folds the timestamp into a bucket number at write time (fixed-width BE,
-byte order = time order); hourly rollups and timelines are one prefix
-scan. The same primitive directly covers tokenized full-text search
-(a tokenizer returning `Vec<String>`) and multi-valued fields (split
-tags). \`okm-core\` ships no tokenizer — splitting/bucketing logic belongs to
-the business layer. The func contract is **purity**: purge re-derives
-the entry set from the stored row, so an impure function (clock / randomness /
-external state) produces a different set at delete time than at write
-time, leaving dangling entries. An empty `Vec` is one way to filter at
-row level (the row produces no entries at all), but a row-level condition
-reads better as a declared `where` predicate.
+Time bucketing is this shape at its cheapest — a single-element Vec that folds the timestamp into a bucket number at write time (fixed-width BE, byte order = time order); hourly rollups and timelines are one prefix scan. The same primitive directly covers tokenized full-text search (a tokenizer returning `Vec<String>`) and multi-valued fields (split tags). \`okm-core\` ships no tokenizer — splitting/bucketing logic belongs to the business layer. The func contract is **purity**: purge re-derives the entry set from the stored row, so an impure function (clock / randomness / external state) produces a different set at delete time than at write time, leaving dangling entries. An empty `Vec` is one way to filter at row level (the row produces no entries at all), but a row-level condition reads better as a declared `where` predicate.
 
-**Basic use 3: partial index (a `where` predicate).** Only rows the
-predicate admits are indexed — when most of the stored rows never use the
-access method (a ticket table that is 99% closed, say, indexing only the
-open ones), entry volume and maintenance cost are paid on the admitted
-subset:
+**Basic use 3: partial index (a `where` predicate).** Only rows the predicate admits are indexed — when most of the stored rows never use the access method (a ticket table that is 99% closed, say, indexing only the open ones), entry volume and maintenance cost are paid on the admitted subset:
 
 ```text
 fn is_open(row: &Ticket) -> bool { row.status == 0 }
@@ -207,32 +148,9 @@ fn is_open(row: &Ticket) -> bool { row.status == 0 }
 })]
 ```
 
-The predicate sits at the same level as `func` and carries the same purity
-contract: purge re-derives the removal set from the stored row, so a predicate
-reading a clock or external state produces a different set at delete time
-than at write time, leaving dangling entries. The predicate's guarantee
-ends at the write side — entries are addressed by the indexed fields, and
-the predicate only decides "write it this time or not", so an overwriting
-`put` does not clean the old entry: when a row goes from admitted to
-rejected, the old entry dangles (the same pre-existing contract as "a
-changed value leaves a dangling entry"), and no verb can clear it any more —
-`purge` derives from the STORED row, which is no longer the one that produced
-the entry (ADR-0035, 2026-10-23). The overwrite path is `merge` / `replace`:
-they sweep the stored row's faces before writing. Nothing checks completeness on the
-read side either — a partial index is complete only for queries whose
-condition implies the predicate, okm has no query planner, and choosing
-the index is the caller's job. That discipline belongs to modeling, not
-to the mechanism.
+The predicate sits at the same level as `func` and carries the same purity contract: purge re-derives the removal set from the stored row, so a predicate reading a clock or external state produces a different set at delete time than at write time, leaving dangling entries. The predicate's guarantee ends at the write side — entries are addressed by the indexed fields, and the predicate only decides "write it this time or not", so an overwriting `put` does not clean the old entry: when a row goes from admitted to rejected, the old entry dangles (the same pre-existing contract as "a changed value leaves a dangling entry"), and no verb can clear it any more — `purge` derives from the STORED row, which is no longer the one that produced the entry (ADR-0035, 2026-10-23). The overwrite path is `merge` / `replace`: they sweep the stored row's faces before writing. Nothing checks completeness on the read side either — a partial index is complete only for queries whose condition implies the predicate, okm has no query planner, and choosing the index is the caller's job. That discipline belongs to modeling, not to the mechanism.
 
-`func(path)` and the `#[ok_reduce]` declaration below are the two
-external extension mechanisms: func is **per-row derivation** (computed
-at write time; entries still live and die with the row), reduce is
-**cross-row aggregation** (mutable value, read-modify-write). How the
-heavier integrations (FTS / vector / graph algorithms) land on the
-primitives is covered in the [integration boundary
-doc](integration/EXTENSION-TYPES.md). Implementation details (encoding contract,
-`entry_pairs` override, probe normalization) live in the internals doc
-[func-index-mechanism.zh-CN.md](internals/func-index-mechanism.zh-CN.md).
+`func(path)` and the `#[ok_reduce]` declaration below are the two external extension mechanisms: func is **per-row derivation** (computed at write time; entries still live and die with the row), reduce is **cross-row aggregation** (mutable value, read-modify-write). How the heavier integrations (FTS / vector / graph algorithms) land on the primitives is covered in the [integration boundary doc](integration/EXTENSION-TYPES.md). Implementation details (encoding contract, `entry_pairs` override, probe normalization) live in the internals doc [func-index-mechanism.zh-CN.md](internals/func-index-mechanism.zh-CN.md).
 
 Physical index entry layout (ADR-0005):
 
@@ -240,87 +158,33 @@ Physical index entry layout (ADR-0005):
 [ ns 2B BE ][ slot 2B BE ][ fields segment BE ][ primary key prefix (default: full) ]   value = included fields TLV (empty when no includes)
 ```
 
-The discriminator is namespace + slot: the ns segment scopes the table,
-the slot's segment number distinguishes entry kinds within it
-(primary/index/reduce/junction, ADR-0016); declaration is the
-registry, no runtime index bookkeeping. **Index declarations are
-append-only**: add at the tail only — never insert into or reorder the
-middle. An insertion shifts the slot of every later index; entries
-already on disk stay in the old slot position, and after the shift
-`scan` reads a new prefix and returns empty results (a silent error,
-not a slowdown). Removing a declaration merely leaves a harmless slot
-hole (same discipline as ns IDs never being reused, ADR-0002). Also
-note there is no index backfill: a newly appended index only sees rows
-written afterwards; existing rows get no entries — migrate with
-double-writes if existing data must be covered.
+The discriminator is namespace + slot: the ns segment scopes the table, the slot's segment number distinguishes entry kinds within it (primary/index/reduce/junction, ADR-0016); declaration is the registry, no runtime index bookkeeping. **Index declarations are append-only**: add at the tail only — never insert into or reorder the middle. An insertion shifts the slot of every later index; entries already on disk stay in the old slot position, and after the shift `scan` reads a new prefix and returns empty results (a silent error, not a slowdown). Removing a declaration merely leaves a harmless slot hole (same discipline as ns IDs never being reused, ADR-0002). Also note there is no index backfill: a newly appended index only sees rows written afterwards; existing rows get no entries — migrate with double-writes if existing data must be covered.
 
-The fields segment is semantically an **ordered sequence of dimensions**:
-the leading field is the grouping/equality dimension, the rest sort
-within it. Two constraints govern it —
+The fields segment is semantically an **ordered sequence of dimensions**: the leading field is the grouping/equality dimension, the rest sort within it. Two constraints govern it —
 
 - **Decode constraint**: at most one variable-length field, and it must
-  sit immediately before the primary-key prefix. The primary key is
-  fixed-width (`KEY_LEN`) and is sliced off from the tail; any further
-  fixed-width fields are sliced right-to-left; whatever remains is the
-  single variable-length segment — its length is never stored, the
-  boundary is inferred from the fixed-width anchor on its right. Two
-  variable-length segments (e.g. `fields(token, name)`) share no
-  boundary byte and are undecodable; the derive rejects this at compile
-  time.
+sit immediately before the primary-key prefix. The primary key is fixed-width (`KEY_LEN`) and is sliced off from the tail; any further fixed-width fields are sliced right-to-left; whatever remains is the single variable-length segment — its length is never stored, the boundary is inferred from the fixed-width anchor on its right. Two variable-length segments (e.g. `fields(token, name)`) share no boundary byte and are undecodable; the derive rejects this at compile time.
 - **Query constraint (leftmost-prefix)**: prefix scans specify fields
-  fully from the left, in declaration order. A variable-length field
-  that is not last breaks prefix semantics — raw bytes `"beijing"` have
-  no terminator, so a scan for it also matches `"beijing2"`. Variable
-  fields go last; equality/fixed-width dimensions go first. The mirror
-  family — a probe LONGER than the stored value, its bytes completed by
-  the carried key tail — is not a match and is dropped by the scan's
-  length test ([index-mechanism.zh-CN.md](internals/index-mechanism.zh-CN.md));
-  full-field equality is `scan_exact`.
+fully from the left, in declaration order. A variable-length field that is not last breaks prefix semantics — raw bytes `"beijing"` have no terminator, so a scan for it also matches `"beijing2"`. Variable fields go last; equality/fixed-width dimensions go first. The mirror family — a probe LONGER than the stored value, its bytes completed by the carried key tail — is not a match and is dropped by the scan's length test ([index-mechanism.zh-CN.md](internals/index-mechanism.zh-CN.md)); full-field equality is `scan_exact`.
 
-Note that `includes` is not part of the fields segment — it lives in
-the entry value and takes no part in key structure or ordering.
-Expressing "carry more data in the entry" by adding fields is a
-modeling mistake; the correct outlets are `includes` (copy to skip
-table lookups) or nested entries (store together).
+Note that `includes` is not part of the fields segment — it lives in the entry value and takes no part in key structure or ordering. Expressing "carry more data in the entry" by adding fields is a modeling mistake; the correct outlets are `includes` (copy to skip table lookups) or nested entries (store together).
 
-**Several text dimensions do not violate this constraint — they change
-shape.** The bound is on NAKED variable-length segments (one, last), not on how
-many text dimensions an entity may have. When several are needed, pick a shape in
-this order:
+**Several text dimensions do not violate this constraint — they change shape.** The bound is on NAKED variable-length segments (one, last), not on how many text dimensions an entity may have. When several are needed, pick a shape in this order:
 
 - **Hierarchical dimensions become proxy ids (fixed width).** Province / city /
-  district is `fields(province_id, city_id, district_id)`: three fixed-width
-  segments, legal, and `[province]`, `[province][city]`,
-  `[province][city][district]` are each one prefix scan — how deep the grouping
-  goes comes free from declaration order. Names ride the open-vocabulary set (row
-  payload + a `by_name` face). It buys more than legality: a rename never moves
-  the key, keys never grow with the text, and no terminator ambiguity exists.
+district is `fields(province_id, city_id, district_id)`: three fixed-width segments, legal, and `[province]`, `[province][city]`, `[province][city][district]` are each one prefix scan — how deep the grouping goes comes free from declaration order. Names ride the open-vocabulary set (row payload + a `by_name` face). It buys more than legality: a rename never moves the key, keys never grow with the text, and no terminator ambiguity exists.
 - **One face per text dimension** (`by_name`, `by_city`, …): each face holds that
-  single variable segment, legal — at the price of one more entry per row, i.e. a
-  permanent write cost per face.
+single variable segment, legal — at the price of one more entry per row, i.e. a permanent write cost per face.
 - **A fixed-width sort dimension AFTER a text one rides the key tail.**
-  `fields(name)` with the tail carrying time/identity gives the entry
-  `[name][tail]`, i.e. a `(name, time)` composite order: the carried tail is the
-  only thing allowed to follow a variable segment — its third job.
+`fields(name)` with the tail carrying time/identity gives the entry `[name][tail]`, i.e. a `(name, time)` composite order: the carried tail is the only thing allowed to follow a variable segment — its third job.
 - **Two text dimensions that must BOTH order the bytes → one computed segment.**
-  A `func` index makes the data segment a single string with the separator inside
-  the VALUE (`last\x00first`): still one naked variable segment, still no
-  terminator in the key, and the prefix `last\x00` means "everyone with that
-  surname". Choosing the separator is that declaration's contract (the same
-  one-declaration-drives-both-sides rule as probe normalization); it must stay
-  outside the value domain or the classic escaping problem returns — owned by the
-  value-layer function rather than the key layout. The other lookup direction is
-  a second face (a func fan-out).
+A `func` index makes the data segment a single string with the separator inside the VALUE (`last\x00first`): still one naked variable segment, still no terminator in the key, and the prefix `last\x00` means "everyone with that surname". Choosing the separator is that declaration's contract (the same one-declaration-drives-both-sides rule as probe normalization); it must stay outside the value domain or the classic escaping problem returns — owned by the value-layer function rather than the key layout. The other lookup direction is a second face (a func fan-out).
 - **Fixed width before VarInt.** Two `VarInt` fields hit the same bound; spelling
-  the width out (`u32`/`u64` BE) removes it — fixed width is the norm in a sort
-  segment, VarInt is a space-saving device.
+the width out (`u32`/`u64` BE) removes it — fixed width is the norm in a sort segment, VarInt is a space-saving device.
 - **The genuine last resort is a self-delimiting frame**: two adjacent naked
-  variable segments are structurally undecodable; that route works but trades
-  away zero-cost slicing and the compile-time layout lock (ADR-0005's 2026-10-17
-  update).
+variable segments are structurally undecodable; that route works but trades away zero-cost slicing and the compile-time layout lock (ADR-0005's 2026-10-17 update).
 
-Every extra face is paid on the write side: one more entry set to maintain per
-put.
+Every extra face is paid on the write side: one more entry set to maintain per put.
 
 
 ### Link, unlink, query (`Junction`)
@@ -351,20 +215,9 @@ Physical key layout (two-ns residency, ADR-0015/0016):
 [ ns_b u16 BE ][ slot u16 BE: 0x3 seg ][ B·identity ][ A·identity ]   in B's collection
 ```
 
-The local identity leads (the scan prefix `[ns][slot][local identity]`
-must match); the peer identity is the suffix. The discriminator's low
-bit carries the direction — needed only for self-reflexive junctions,
-where both endpoints share one ns.
+The local identity leads (the scan prefix `[ns][slot][local identity]` must match); the peer identity is the suffix. The discriminator's low bit carries the direction — needed only for self-reflexive junctions, where both endpoints share one ns.
 
-Each entry is one-way: the entry in `ns_org` answers "all members of this
-organization", the one in `ns_user` answers "all organizations this user
-belongs to". Direction is carried by which ns the entry lives in — no
-direction slots (the old 14/15 pair is gone). `nnn` is the junction
-discriminator (`#[ok_junction(n)]`) for multiple junctions over one
-endpoint pair. The junction's fields reference **document types**; the
-derive resolves their `Key` and `NS_PREFIX` — ns is declared once, on the
-document. See ADR-0015/ADR-0016 and the slot table in
-[key-layout](docs/internals/key-layout.md).
+Each entry is one-way: the entry in `ns_org` answers "all members of this organization", the one in `ns_user` answers "all organizations this user belongs to". Direction is carried by which ns the entry lives in — no direction slots (the old 14/15 pair is gone). `nnn` is the junction discriminator (`#[ok_junction(n)]`) for multiple junctions over one endpoint pair. The junction's fields reference **document types**; the derive resolves their `Key` and `NS_PREFIX` — ns is declared once, on the document. See ADR-0015/ADR-0016 and the slot table in [key-layout](docs/internals/key-layout.md).
 
 ### Reverse queries and truncated identities
 
@@ -387,12 +240,7 @@ The derive macro also generates query methods on the endpoint types themselves (
 
 ### Rows at runtime (`Collection`)
 
-Declaring rows and indexes (`DocumentEncode` + `#[ok_index]`) is covered in the
-[Modeling Guide](docs/MODELING.md), "Declaration basics". The index declaration's derivative is generated at the expansion point
-(this file): `ok_index(by_org ...)` generates the index type
-`__OkmIndex_User_by_org` (mechanical concatenation, no case conversion);
-alias it with `use` and it serves as the generic parameter. `Document::collection`
-builds the assembly point without repeating the key type at the call site:
+Declaring rows and indexes (`DocumentEncode` + `#[ok_index]`) is covered in the [Modeling Guide](docs/MODELING.md), "Declaration basics". The index declaration's derivative is generated at the expansion point (this file): `ok_index(by_org ...)` generates the index type `__OkmIndex_User_by_org` (mechanical concatenation, no case conversion); alias it with `use` and it serves as the generic parameter. `Document::collection` builds the assembly point without repeating the key type at the call site:
 
 ```rust
 use okm_core::TestStore;
@@ -412,11 +260,7 @@ t.purge(&user)?; // removes the primary key + all declared index entries (+ the 
 // (multi-value indexes clear entry by entry — no dangling entries)
 ```
 
-Multi-value function index, declared and queried (inverted-index shape —
-the token is the data segment, the primary-key prefix is cut off the tail).
-The `Vec` return is contract, not laziness: put consumes the values
-immediately, entry by entry, so a lazy iterator buys nothing — one
-`collect` for the smallest trait surface:
+Multi-value function index, declared and queried (inverted-index shape — the token is the data segment, the primary-key prefix is cut off the tail). The `Vec` return is contract, not laziness: put consumes the values immediately, entry by entry, so a lazy iterator buys nothing — one `collect` for the smallest trait surface:
 
 ```rust
 fn tokens(row: &Doc) -> Vec<String> {
@@ -437,19 +281,11 @@ use __OkmIndex_Doc_by_token as ByToken;
 let hits = t.scan::<ByToken>(b"rust")?;
 ```
 
-Beyond the equality prefix, a comparison on the leading index field is
-a physical key interval (ADR-0020): `scan_range::<I>(begin, end)` /
-`scan_range_iter::<I>(..)` — byte order == value order for every OKM
-encoding, so `1 < a < 100` reads only the rows inside `[1, 100)`.
-Recipes live in the [query guide](query-recipes.md), "the forms of
-WHERE".
+Beyond the equality prefix, a comparison on the leading index field is a physical key interval (ADR-0020): `scan_range::<I>(begin, end)` / `scan_range_iter::<I>(..)` — byte order == value order for every OKM encoding, so `1 < a < 100` reads only the rows inside `[1, 100)`. Recipes live in the [query guide](query-recipes.md), "the forms of WHERE".
 
 ### A table is a key type plus a row type
 
-Two declarations, not one (ADR-0044). The key is the address — `KeyEncode`,
-fixed width, ordered bytes. The row is the value — `DocumentEncode` — and
-`#[ok_ref(ProfileKey)]` BINDS it to the key without embedding it: no key bytes
-live in the row.
+Two declarations, not one (ADR-0044). The key is the address — `KeyEncode`, fixed width, ordered bytes. The row is the value — `DocumentEncode` — and `#[ok_ref(ProfileKey)]` BINDS it to the key without embedding it: no key bytes live in the row.
 
 ```rust
 #[derive(KeyEncode, Clone, PartialEq, Debug)]
@@ -467,52 +303,22 @@ pub struct Profile {
 }
 ```
 
-`Collection<S, K, R>` carries both halves and `R::Key = K` pins them together at
-compile time; `Document::collection(store)` reads `K` off `R`, so the call site
-never restates the key type. Three consequences, all deliberate:
+`Collection<S, K, R>` carries both halves and `R::Key = K` pins them together at compile time; `Document::collection(store)` reads `K` off `R`, so the call site never restates the key type. Three consequences, all deliberate:
 
 - **One key type, many tables.** This is the side-table form (ADR-0036): a second
-  row type over the parent's key type, in its own ns, with a byte-identical key
-  payload — `ProfileStats { views: u32 }` over `ProfileKey` costs one more point
-  read, not a second key space. Everything else about the two tables is separate,
-  including their commits.
+row type over the parent's key type, in its own ns, with a byte-identical key payload — `ProfileStats { views: u32 }` over `ProfileKey` costs one more point read, not a second key space. Everything else about the two tables is separate, including their commits.
 - **`user_id` above is two fields, not one stored twice.** The key's `user_id` is
-  the address; the row's `user_id` is data that may legitimately differ — a
-  denormalized copy for an index, or so a reader need not re-derive it from the
-  key. Nothing dedupes, nothing errors, nothing compares them on a read.
+the address; the row's `user_id` is data that may legitimately differ — a denormalized copy for an index, or so a reader need not re-derive it from the key. Nothing dedupes, nothing errors, nothing compares them on a read.
 - **Names are classified by the declaration, not by the key.** In a whole-document
-  write a name that is a declared payload field updates the row; anything else
-  lands in the dynamic segment (ADR-0012). The key's own bytes never appear in the
-  map `fetch` returns — that map is payload fields plus segment.
+write a name that is a declared payload field updates the row; anything else lands in the dynamic segment (ADR-0012). The key's own bytes never appear in the map `fetch` returns — that map is payload fields plus segment.
 
-The boundary with SQL is structural, and it sits here. A relational engine hides
-the key inside the row, so a value split off into overflow pages is an engine
-detail addressed by the row id with a chunk ordinal appended. okm has no row
-outside a key — the table IS a key space — so the same split is a DECLARED side
-table whose ns sits at the FRONT of the address while the key payload stays
-byte-identical. Hence: the side table is still scanned by the parent's key prefix,
-it commits on its own, and nothing can join the two halves back — composition is
-the application's two point reads (ADR-0036).
+The boundary with SQL is structural, and it sits here. A relational engine hides the key inside the row, so a value split off into overflow pages is an engine detail addressed by the row id with a chunk ordinal appended. okm has no row outside a key — the table IS a key space — so the same split is a DECLARED side table whose ns sits at the FRONT of the address while the key payload stays byte-identical. Hence: the side table is still scanned by the parent's key prefix, it commits on its own, and nothing can join the two halves back — composition is the application's two point reads (ADR-0036).
 
 ### Dynamic fields: the document API (ADR-0012)
 
-One encoding serves declared rows and external data. Declared fields ride
-the hot/cold segments as usual; anything else lands in the **dynamic
-segment** (fixed face 0x01) as n-TLV frames — `[field-id][type][len][bytes]` —
-with names allocated on first sight in the **field-name vocabulary**
-(fixed faces 0x02/0x03). Runtime surface on `Collection` — the static segment speaks the struct, the
-whole document speaks one name-keyed map (ADR-0035). Two doors, and the split is
-about what a call may look at: `get` / `put` are the **struct door** (the row
-only — no vocabulary load, no segment access; the compiled-schema path), while
-`fetch` / `merge` / `replace` / `purge` are the **whole-document door**.
+One encoding serves declared rows and external data. Declared fields ride the hot/cold segments as usual; anything else lands in the **dynamic segment** (fixed face 0x01) as n-TLV frames — `[field-id][type][len][bytes]` — with names allocated on first sight in the **field-name vocabulary** (fixed faces 0x02/0x03). Runtime surface on `Collection` — the static segment speaks the struct, the whole document speaks one name-keyed map (ADR-0035). Two doors, and the split is about what a call may look at: `get` / `put` are the **struct door** (the row only — no vocabulary load, no segment access; the compiled-schema path), while `fetch` / `merge` / `replace` / `purge` are the **whole-document door**.
 
-The classifier is the payload declaration — hot or cold — and nothing else. A
-name that coincides with a key field is not special: OKM is a key-value store,
-the key and the value are separate things, so such a name is simply a field in
-the value and lands in the dynamic segment. The identity still comes from the
-key: no map can move it, and a map naming `org_id` creates no row at `org_id`.
-Nothing needs checking here, and no confusion needs preventing — a caller that
-stores a field named like a key field gets exactly what it asked for.
+The classifier is the payload declaration — hot or cold — and nothing else. A name that coincides with a key field is not special: OKM is a key-value store, the key and the value are separate things, so such a name is simply a field in the value and lands in the dynamic segment. The identity still comes from the key: no map can move it, and a map naming `org_id` creates no row at `org_id`. Nothing needs checking here, and no confusion needs preventing — a caller that stores a field named like a key field gets exactly what it asked for.
 
 ```rust
 // The row-map bridge: every field (declared + dynamic) lifts to its logical
@@ -533,47 +339,21 @@ t.purge(&key)?;                               // -> bool (something was there)
 ```
 
 - `DynamicValue` carries the open value vocabulary: `UInt`/`Int`/`F64`/
-  `Str`/`Bytes`/`Bool`/`Null`/`Array`/`Obj` — nested objects recurse as
-  native frames (type tag 7) sharing the table's vocabulary; no CBOR.
+`Str`/`Bytes`/`Bool`/`Null`/`Array`/`Obj` — nested objects recurse as native frames (type tag 7) sharing the table's vocabulary; no CBOR.
 - The value form crosses a boundary as itself, not as a hand-written
-  `match` per direction: `Serialize`/`Deserialize` for `DynamicValue` ride
-  the same `schema-serde` feature. `Deserialize` goes through
-  `deserialize_any`, so the format must be self-describing (JSON, CBOR —
-  not bincode); in JSON two collapses are unavoidable and documented —
-  `Bytes` renders as a number array (CBOR keeps a byte string), and a
-  non-negative `Int` reads back as `UInt`. The storage encoding is
-  untouched: frames + vocabulary ids remain the representation at rest.
+`match` per direction: `Serialize`/`Deserialize` for `DynamicValue` ride the same `schema-serde` feature. `Deserialize` goes through `deserialize_any`, so the format must be self-describing (JSON, CBOR — not bincode); in JSON two collapses are unavoidable and documented — `Bytes` renders as a number array (CBOR keeps a byte string), and a non-negative `Int` reads back as `UInt`. The storage encoding is untouched: frames + vocabulary ids remain the representation at rest.
 - `Bytes` is the **opaque member** of the vocabulary: the store
-  interprets nothing — tag and total length only; content and its
-  meaning belong to the application. Opaque means the CONTENT: the
-  frame's `[len]` prefix is payload delimiting (the encoding layer's
-  job — how multi-field payloads are sliced), not interpretation;
-  `String` carries the same header. It is the standard escape hatch
-  for extension types: a new encoding starts life as Bytes, and
-  promoting it to a first-class type later is an additive change. The
-  field name carries the semantics the tag deliberately does not
-  (`embed_v1`, `attrs_cbor`).
+interprets nothing — tag and total length only; content and its meaning belong to the application. Opaque means the CONTENT: the frame's `[len]` prefix is payload delimiting (the encoding layer's job — how multi-field payloads are sliced), not interpretation; `String` carries the same header. It is the standard escape hatch for extension types: a new encoding starts life as Bytes, and promoting it to a first-class type later is an additive change. The field name carries the semantics the tag deliberately does not (`embed_v1`, `attrs_cbor`).
 - Unknown names are **normal input** here (external data, MQ payloads);
-  the typed decoder's unknown-field rejection applies only to the
-  declared path.
+the typed decoder's unknown-field rejection applies only to the declared path.
 - Declared fields are indexable through their own 0x1 faces. A dynamic
-  field is indexable through a path index over its declared path
-  (ADR-0029: one entry per resolved value, the value types with a
-  storage-form encoding — U8/U16/U32/U64/FixedBytes/Str), landed on the
-  schema-driven (`DynamicCollection`) write path; a typed collection's
-  own dynamic segment has no such maintenance wired yet. What dynamic
-  names can never be is KEY material: a name is runtime data, so a
-  dynamic path is addressed by its declaration, never by the key.
+field is indexable through a path index over its declared path (ADR-0029: one entry per resolved value, the value types with a storage-form encoding — U8/U16/U32/U64/FixedBytes/Str), landed on the schema-driven (`DynamicCollection`) write path; a typed collection's own dynamic segment has no such maintenance wired yet. What dynamic names can never be is KEY material: a name is runtime data, so a dynamic path is addressed by its declaration, never by the key.
 - The schema export (`CollectionSchema`, serde behind `schema-serde`) drives
-  the dynamic codec for embedded-language readers — Python (PyO3) and
-  Steel bindings live in `bindings/`, byte-identical with the Rust
-  derive (cross tests lock this). Version-default migration works on the
-  dynamic read path too: literal `#[ok_default]` travels with the schema.
+the dynamic codec for embedded-language readers — Python (PyO3) and Steel bindings live in `bindings/`, byte-identical with the Rust derive (cross tests lock this). Version-default migration works on the dynamic read path too: literal `#[ok_default]` travels with the schema.
 
 ### Path indexes over the dynamic segment (ADR-0029)
 
-An access method can name a PATH into the schema-free zone instead of a
-declared field:
+An access method can name a PATH into the schema-free zone instead of a declared field:
 
 ```rust
 use okm_dynamic::{AccessMethod, FieldType, Path};
@@ -587,39 +367,21 @@ let by_first_href = AccessMethod::path(0x1003, Path::parse("refs[0].href")?, Fie
 ```
 
 - **Components**: `Field(name)` — an object key, interned through the table's
-  field-name vocabulary; `Index(u32)` — an array position (data: never
-  interned, and not stable across mutations); `Key(bytes)` — a literal key,
-  no interning. The first pair and `Index` are two namespaces and two walker
-  operations (map lookup vs subscript), not one niched integer.
+field-name vocabulary; `Index(u32)` — an array position (data: never interned, and not stable across mutations); `Key(bytes)` — a literal key, no interning. The first pair and `Index` are two namespaces and two walker operations (map lookup vs subscript), not one niched integer.
 - **Resolution**: any component after an array fans out over every element
-  (a wildcard is the ABSENCE of `Index`), a path ending at an array fans out
-  over its scalar leaves, and an `Index` pins exactly one element. A missing
-  name, an out-of-range index, or a path ending at an object resolves to
-  nothing.
+(a wildcard is the ABSENCE of `Index`), a path ending at an array fans out over its scalar leaves, and an `Index` pins exactly one element. A missing name, an out-of-range index, or a path ending at an object resolves to nothing.
 - **The value type is declared** (`FieldType`): an entry segment is
-  byte-ordered and a path has no schema field to consult. Unsigned kinds also
-  accept the widened form the dynamic read path produces (a `U32` written
-  value reads back as `U64`), which is what keeps an entry's bytes a function
-  of the stored value — the overwrite sweep recomputes exactly the keys the
-  write built, so no entry survives a changed value.
+byte-ordered and a path has no schema field to consult. Unsigned kinds also accept the widened form the dynamic read path produces (a `U32` written value reads back as `U64`), which is what keeps an entry's bytes a function of the stored value — the overwrite sweep recomputes exactly the keys the write built, so no entry survives a changed value.
 - **Maintenance rides the whole-document write path** (`merge` / `replace` /
-  `purge`). The primary document path skips path declarations by
-  construction: a depth-1 path over the primary document is what a plain
-  index already is, and one entry set has exactly one maintainer.
+`purge`). The primary document path skips path declarations by construction: a depth-1 path over the primary document is what a plain index already is, and one entry set has exactly one maintainer.
 - A value whose variant does not match the declared type produces no entry
-  and no error — the "absent attribute values are empty results" rule.
+and no error — the "absent attribute values are empty results" rule.
 - **Queries** are the ordinary leftmost-prefix scans (`scan(slot, prefix)`),
-  ADR-0020's range scan covering ranges over the value. The canonical path
-  encoding (self-delimiting, no leading component count) is the form paths
-  take where they are DATA — declaration carriers and exported schemas; the
-  entry key carries the slot, never the path.
+ADR-0020's range scan covering ranges over the value. The canonical path encoding (self-delimiting, no leading component count) is the form paths take where they are DATA — declaration carriers and exported schemas; the entry key carries the slot, never the path.
 
 ### Embedded documents (`Ref<D, K>` and `Refs<D, K>`)
 
-A child document embedded **by key reference**: the parent's field
-carries only the child's key on the wire (fixed width, hot segment);
-the child is a complete document at its own ns/key with its own
-indexes. In memory the field is `key` + `Option<value>`:
+A child document embedded **by key reference**: the parent's field carries only the child's key on the wire (fixed width, hot segment); the child is a complete document at its own ns/key with its own indexes. In memory the field is `key` + `Option<value>`:
 
 ```rust
 #[derive(KeyEncode)]
@@ -643,59 +405,29 @@ pub struct User {
 ```
 
 - **Write, `Some(value)`** (`Ref::own(key, value)`): the parent's
-  `put` also writes the child payload + the child's index entries, in
-  the same store batch (one atomic boundary).
+`put` also writes the child payload + the child's index entries, in the same store batch (one atomic boundary).
 - **Write, `None`** (`Ref::ref_key(key)`): reference an existing
-  child — the parent stores the key and touches nothing else. This is
-  the shared, many-to-one form (many users pointing at one address).
+child — the parent stores the key and touches nothing else. This is the shared, many-to-one form (many users pointing at one address).
 - **Read**: `get` dereferences automatically — the child is fetched by
-  the stored key and backfilled. A missing child (deleted independently
-  under reference semantics) reads back as `value: None` — visible
-  absence, not a panic. Queries return the nested struct directly.
+the stored key and backfilled. A missing child (deleted independently under reference semantics) reads back as `value: None` — visible absence, not a panic. Queries return the nested struct directly.
 - **Overwrite**: changing the key releases the old reference — keys the
-  OLD document pointed at but the new one doesn't are deleted. No
-  cascade: a shared child survives; an owned-cascade option
-  (`#[ok_embed(own)]`) is a possible future extension.
+OLD document pointed at but the new one doesn't are deleted. No cascade: a shared child survives; an owned-cascade option (`#[ok_embed(own)]`) is a possible future extension.
 - No attribute is required: the derive recognizes `Ref<D, K>` / `List<D, K>`
-  from the field type, the same discipline as `Reverse<T>` / `Quant<P>`.
+from the field type, the same discipline as `Reverse<T>` / `Quant<P>`.
 - **Lists**: `Refs<D, K>` embeds many children — wire is a cold TLV frame
-  `[count][key × n]`; memory is `keys` + index-aligned
-  `values: Vec<Option<D>>` (dangling refs stay visible). Child keys must
-  carry their own list identity (`owner_id + seq`) — OKM never appends
-  positional numbers to keys. Stale release covers shortening: keys the
-  old list held and the new one doesn't are deleted. `Refs` is the
-  declarative carrier of the one-to-many relation above: children stay
-  normalized in their own ns, the parent field holds the foreign-key set.
+`[count][key × n]`; memory is `keys` + index-aligned `values: Vec<Option<D>>` (dangling refs stay visible). Child keys must carry their own list identity (`owner_id + seq`) — OKM never appends positional numbers to keys. Stale release covers shortening: keys the old list held and the new one doesn't are deleted. `Refs` is the declarative carrier of the one-to-many relation above: children stay normalized in their own ns, the parent field holds the foreign-key set.
 - **The identity line**: elements WITH identity (own indexes, sharing,
-  independent updates) belong in `Ref`/`Refs`; pure-value elements
-  (`Vec<String>` fields, dynamic `Array` frames) do not — a scalar has no
-  key, and a key reference to it is a category error.
+independent updates) belong in `Ref`/`Refs`; pure-value elements (`Vec<String>` fields, dynamic `Array` frames) do not — a scalar has no key, and a key reference to it is a category error.
 - The map view (`to_map`) lifts an embedded field to
-  `Bytes(child key)` — the wire truth; the child's value belongs to the
-  child collection, not this map.
+`Bytes(child key)` — the wire truth; the child's value belongs to the child collection, not this map.
 
-Embedded is one of three ways fields relate across documents —
-`includes` copies values into an index entry (skip the fetch), dynamic
-frames nest values inside one payload, and embedding references a
-separate document (shared identity, independent indexes, independent
-lifecycle).
+Embedded is one of three ways fields relate across documents — `includes` copies values into an index entry (skip the fetch), dynamic frames nest values inside one payload, and embedding references a separate document (shared identity, independent indexes, independent lifecycle).
 
 ### Payload versions and field defaults
 
-The version byte is a STAMP of the shape, never a compatibility promise (ADR-0042):
-a field is placed where its reader looks for it, the number changes when the shape
-does (incrementing is the ordinary style, resetting is equally legitimate — its only
-duty is to tell two incompatible shapes apart), and no build owes a reader for the
-shape it replaced. A store written by another shape is regenerated, or carried
-across by export (the build that wrote it) → import (the build that reads it). The
-rules below describe what the DECODER does; they do not oblige any table to keep an
-old shape readable.
+The version byte is a STAMP of the shape, never a compatibility promise (ADR-0042): a field is placed where its reader looks for it, the number changes when the shape does (incrementing is the ordinary style, resetting is equally legitimate — its only duty is to tell two incompatible shapes apart), and no build owes a reader for the shape it replaced. A store written by another shape is regenerated, or carried across by export (the build that wrote it) → import (the build that reads it). The rules below describe what the DECODER does; they do not oblige any table to keep an old shape readable.
 
-The payload carries a version byte (`#[ok_layout(version = N)]`, default 1).
-Decode rule: a payload whose header version is **newer** than the reading
-schema's is rejected; **older** payloads are accepted, and fields the old
-payload lacks (added after that version was written) take
-their defaults:
+The payload carries a version byte (`#[ok_layout(version = N)]`, default 1). Decode rule: a payload whose header version is **newer** than the reading schema's is rejected; **older** payloads are accepted, and fields the old payload lacks (added after that version was written) take their defaults:
 
 ```rust
 #[derive(DocumentEncode, Clone, PartialEq, Debug)]
@@ -710,68 +442,33 @@ pub struct User {
 ```
 
 - `#[ok_default(expr)]` is any expression (literal, constant, function
-  call); omitting it falls back to `<T as Default>::default()`.
+call); omitting it falls back to `<T as Default>::default()`.
 - Defaults apply ONLY to decoding older payloads — a field missing from
-  the bytes. Newly written payloads always carry every field (the writer
-  stamps its own version), so this is what the DECODER does when an older
-  payload turns up, not a "field default" for absent values.
+the bytes. Newly written payloads always carry every field (the writer stamps its own version), so this is what the DECODER does when an older payload turns up, not a "field default" for absent values.
 - Append-at-the-tail is what the DECODER can absorb — a field the reader knows but
-  finds missing has to be at the tail of its segment (header `hot_len` marks the
-  boundary for hot fields; absent cold TLV frames simply aren't there). It is not a
-  reason to append anything: a table that claims no compatibility (ADR-0042) places
-  fields where they belong, and moving an existing field is a layout change whose
-  number changes with it.
+finds missing has to be at the tail of its segment (header `hot_len` marks the boundary for hot fields; absent cold TLV frames simply aren't there). It is not a reason to append anything: a table that claims no compatibility (ADR-0042) places fields where they belong, and moving an existing field is a layout change whose number changes with it.
 - There is NO upgrade-on-read path: an old payload that happens to decode is a lucky
-  landing, not a migration. Carrying a corpus across a shape change is export (by the
-  build that wrote it) → import (by the build that reads it).
+landing, not a migration. Carrying a corpus across a shape change is export (by the build that wrote it) → import (by the build that reads it).
 - A production upgrade is a BLUE/GREEN move, not a reader: the new build runs as a
-  second process on its own store, the old instance exports while both stay live, the
-  new one imports the bulk, then a short stop covers the incremental catch-up and
-  traffic switches over. Two builds never write one store (a KV store is
-  single-writer), so even a format-compatible upgrade costs a stop-and-swap. SQL can
-  change a schema online (DDL), which is a real edge for DEVELOPMENT; in production the
-  edge shrinks, because the complexity sits in the application — multi-environment
-  testing, a snapshot before the release, a rollback plan. The stop-and-swap itself is
-  paid in seconds: inside the latency users already blame on the network, hidden by a
-  gateway retry, and schedulable in a predicted idle window. Bulk volume belongs on the
-  cold side (a lakehouse export, or an engine that owns its own format), not in a
-  tolerant decoder here.
+second process on its own store, the old instance exports while both stay live, the new one imports the bulk, then a short stop covers the incremental catch-up and traffic switches over. Two builds never write one store (a KV store is single-writer), so even a format-compatible upgrade costs a stop-and-swap. SQL can change a schema online (DDL), which is a real edge for DEVELOPMENT; in production the edge shrinks, because the complexity sits in the application — multi-environment testing, a snapshot before the release, a rollback plan. The stop-and-swap itself is paid in seconds: inside the latency users already blame on the network, hidden by a gateway retry, and schedulable in a predicted idle window. Bulk volume belongs on the cold side (a lakehouse export, or an engine that owns its own format), not in a tolerant decoder here.
 
 ### The table's own record (fixed face 0x0F)
 
-A table can describe itself. Fixed face **0x0F** holds ONE entry per table —
-`[partition?][ns][0x0F]`, no suffix — whose value is a **name → bytes map**
-(ADR-0043). `version` is the name the runtime writes, and its value is the same
-number the payload header carries; anything else a consumer wants to record about
-the store rides beside it without a layout decision.
+A table can describe itself. Fixed face **0x0F** holds ONE entry per table — `[partition?][ns][0x0F]`, no suffix — whose value is a **name → bytes map** (ADR-0043). `version` is the name the runtime writes, and its value is the same number the payload header carries; anything else a consumer wants to record about the store rides beside it without a layout decision.
 
 ```text
 [count u16 BE] ( [name_len varint][name UTF-8][value_len varint][bytes] )*
 ```
 
-`Collection::ensure_layout()` is the first-touch verb: absent → seed this build's
-version; matching → answer the row; another version, or a row with no version →
-`Error::LayoutMismatch { stored, current }` naming both numbers. `set_meta(name,
-value)` records a caller-owned name (the runtime re-stamps `version` afterwards).
-Call it at attach: one point read per table, never a per-row cost — and
-`Collection::new` stays I/O-free because of that.
+`Collection::ensure_layout()` is the first-touch verb: absent → seed this build's version; matching → answer the row; another version, or a row with no version → `Error::LayoutMismatch { stored, current }` naming both numbers. `set_meta(name, value)` records a caller-owned name (the runtime re-stamps `version` afterwards). Call it at attach: one point read per table, never a per-row cost — and `Collection::new` stays I/O-free because of that.
 
-Three boundaries. The entry is **not a row**: row scans and the export path filter
-by slot, so 0x0F is skipped like 0x01/0x02. It does **not** travel in
-export/snapshot: it describes the WRITER's shape, and the importing build stamps
-its own. And it is a **detection** device, not a compatibility promise (ADR-0042):
-it turns a wrong-shape store into a refusal at attach instead of a decode failure
-on the first row, and it never makes an old shape readable.
+Three boundaries. The entry is **not a row**: row scans and the export path filter by slot, so 0x0F is skipped like 0x01/0x02. It does **not** travel in export/snapshot: it describes the WRITER's shape, and the importing build stamps its own. And it is a **detection** device, not a compatibility promise (ADR-0042): it turns a wrong-shape store into a refusal at attach instead of a decode failure on the first row, and it never makes an old shape readable.
 
-The dynamic codec (schema-driven encoders in Python/Steel) mirrors this
-rule from `CollectionSchema` — per-field defaults travel with the schema so
-the dynamic reader applies the same decoder rule.
+The dynamic codec (schema-driven encoders in Python/Steel) mirrors this rule from `CollectionSchema` — per-field defaults travel with the schema so the dynamic reader applies the same decoder rule.
 
 ### Payload field types and wrappers
 
-Every declared field is one of these wire shapes. This is the map from the Rust
-type in the struct to the bytes in the hot or cold segment; the derive
-recognizes wrappers by name, so the spelling matters.
+Every declared field is one of these wire shapes. This is the map from the Rust type in the struct to the bytes in the hot or cold segment; the derive recognizes wrappers by name, so the spelling matters.
 
 | Rust type | Wire | Width | Use for |
 |---|---|---|---|
@@ -790,28 +487,15 @@ recognizes wrappers by name, so the spelling matters.
 Three rules follow from the shapes:
 
 - **A categorical value is `Vocab<N>`, never a Rust enum.** The label↔id mapping
-  lives in the collection's data vocabulary, so a dynamic writer can introduce a
-  category and a dynamic reader can name it. `N` is the id width and the only
-  knob: `Vocab<u8>` (the default) buys 256 labels per field at one byte per row,
-  `Vocab<u16>` 65536 at two, and so on. Each field owns its own table, so the
-  budget is per field. There is no ordering — a field that must sort
-  semantically declares a separate rank column.
-  Consumer-side enum semantics (match arms, exhaustiveness) belong to the
-  consumer: wrap the field in your own enum and convert at the edge.
+lives in the collection's data vocabulary, so a dynamic writer can introduce a category and a dynamic reader can name it. `N` is the id width and the only knob: `Vocab<u8>` (the default) buys 256 labels per field at one byte per row, `Vocab<u16>` 65536 at two, and so on. Each field owns its own table, so the budget is per field. There is no ordering — a field that must sort semantically declares a separate rank column. Consumer-side enum semantics (match arms, exhaustiveness) belong to the consumer: wrap the field in your own enum and convert at the edge.
 - **`Option<T>` is not a field type.** Absence is a sentinel value chosen per
-  field; the derive has no `Option` arm (see the next section).
+field; the derive has no `Option` arm (see the next section).
 - **A `Vocab` field is interned on write.** `Collection::put` and
-  `save_with_prev_into` intern labels before encoding; `save_into` is
-  encoding-only and therefore requires a document already interned through the
-  collection. A full field vocabulary is a write error
-  (`Error::VocabularyExhausted`) — narrow the domain, or model that value as
-  `String`. The capacity is one short of the width: allocation needs the next id
-  to exist so the cursor can advance, so `Vocab<u8>` holds 255 labels, not 256.
+`save_with_prev_into` intern labels before encoding; `save_into` is encoding-only and therefore requires a document already interned through the collection. A full field vocabulary is a write error (`Error::VocabularyExhausted`) — narrow the domain, or model that value as `String`. The capacity is one short of the width: allocation needs the next id to exist so the cursor can advance, so `Vocab<u8>` holds 255 labels, not 256.
 
 #### Case: a log table
 
-High-volume append-only logs want the widest fields to pay for themselves. This
-declaration follows from the table above:
+High-volume append-only logs want the widest fields to pay for themselves. This declaration follows from the table above:
 
 | Field | Type | Why |
 |---|---|---|
@@ -822,25 +506,13 @@ declaration follows from the table above:
 | `note` | `String` | free text, never a vocabulary — those values are not enumerable |
 | everything else | the dynamic segment | shape varies per event type; the declared fields are the ones every query filters or groups on |
 
-The rules behind it: put a field in the payload when you filter, sort or group on
-it AND its type is stable; make it categorical when the value is a label from a
-set that keeps growing; leave it dynamic when the shape varies per record. The
-vocabulary must be shared by the table, so it cannot live in the dynamic segment
-(those values are per row).
+The rules behind it: put a field in the payload when you filter, sort or group on it AND its type is stable; make it categorical when the value is a label from a set that keeps growing; leave it dynamic when the shape varies per record. The vocabulary must be shared by the table, so it cannot live in the dynamic segment (those values are per row).
 
 #### Case: a queue as generations
 
-A queue's retention is a boundary, and its design usually forgets it. aura's
-`MqData` is the worked example: key `[event_id][instance_key_id][seq]`, the
-sequence issued by a `HighWater` reduce, delivery a range scan past a cursor,
-depth a `Count` reduce — and compaction calls `delete_before`, which scans the
-slice prefix and purges row by row. Each purge is its own commit that also unfolds
-the `Count` reduce, so dropping consumed data costs O(n commits x (primary +
-reduce read-modify-write)), forever, on a table whose only visible change is
-shrinking.
+A queue's retention is a boundary, and its design usually forgets it. aura's `MqData` is the worked example: key `[event_id][instance_key_id][seq]`, the sequence issued by a `HighWater` reduce, delivery a range scan past a cursor, depth a `Count` reduce — and compaction calls `delete_before`, which scans the slice prefix and purges row by row. Each purge is its own commit that also unfolds the `Count` reduce, so dropping consumed data costs O(n commits x (primary + reduce read-modify-write)), forever, on a table whose only visible change is shrinking.
 
-The reframe is that a queue's address is **(generation, sequence)**, not "a row I
-may delete": a generation is a contiguous key prefix, so old data is a number.
+The reframe is that a queue's address is **(generation, sequence)**, not "a row I may delete": a generation is a contiguous key prefix, so old data is a number.
 
 | Table | Key | Value |
 |---|---|---|
@@ -848,66 +520,38 @@ may delete": a generation is a contiguous key prefix, so old data is a number.
 | `MqSliceHead` | `[event][instance]` | `{ gen, floor, high_water }` |
 | `MqCursor` | `[event][instance][booth]` | `{ gen, seq }` |
 
-`gen` before `seq` is the whole mechanism: one generation of one slice is one
-contiguous prefix.
+`gen` before `seq` is the whole mechanism: one generation of one slice is one contiguous prefix.
 
 - **Rotate** = the head update and the first record of the new generation in ONE
-  batch. One commit, so there is no window where a message exists and the head does
-  not point at it.
+batch. One commit, so there is no window where a message exists and the head does not point at it.
 - **Read** = from the cursor to the end of its generation, then the next generation
-  from its `floor`. Sequential across a boundary, no merge sort.
+from its `floor`. Sequential across a boundary, no merge sort.
 - **Depth** = `sum over live generations of (high_water - max(cursor, floor))`. The
-  `Count` reduce disappears, and with it a read-modify-write on every append.
+`Count` reduce disappears, and with it a read-modify-write on every append.
 - **Drop** = when every cursor has passed generation G, delete the prefix
-  `[event][instance][G]` in one batch (`Batch` + `commit_batch`;
-  `prune_deprecated_slots` is the precedent).
+`[event][instance][G]` in one batch (`Batch` + `commit_batch`; `prune_deprecated_slots` is the precedent).
 
-No new annotation is needed and that is the point: `gen` is an ordinary key field,
-the head is an ordinary row, the cursor grows two fields, and rotation rides the
-batch that already exists.
+No new annotation is needed and that is the point: `gen` is an ordinary key field, the head is an ordinary row, the cursor grows two fields, and rotation rides the batch that already exists.
 
-What it does not buy: the drop still writes one tombstone per row. The *shape*
-changes — one commit instead of n, no reduce unfold, a contiguous range instead of
-deletes interleaved with appends. A drop that costs nothing needs an engine that
-can forget a prefix in one step, and none here can (fjall 3.1.10 has no partition
-drop, slatedb none either), which is why `okm-series`' parts are files: a file is
-the only unit that can be dropped in one syscall with no engine cooperation.
+What it does not buy: the drop still writes one tombstone per row. The *shape* changes — one commit instead of n, no reduce unfold, a contiguous range instead of deletes interleaved with appends. A drop that costs nothing needs an engine that can forget a prefix in one step, and none here can (fjall 3.1.10 has no partition drop, slatedb none either), which is why `okm-series`' parts are files: a file is the only unit that can be dropped in one syscall with no engine cooperation.
 
-When not to: with few consumers and a small backlog, per-row `purge` is simpler and
-honest. The protocol costs a key field, a head point read and a generation-carrying
-cursor on every read and write.
+When not to: with few consumers and a small backlog, per-row `purge` is simpler and honest. The protocol costs a key field, a head point read and a generation-carrying cursor on every read and write.
 
 ### Optional fields: sentinel values, not `Option<T>` (ADR-0027 audit)
 
-Declared `Option<T>` fields are **not supported** — the
-derive-recognition followup was closed without implementation (PLAN.md
-Phase 9, REJECTED 2026-09-20: no audited table needs it, and a
-fixed-width presence byte buys nothing over a plain field + sentinel).
-The idiom instead is **sentinel values drawn from the type's identity
-element**:
+Declared `Option<T>` fields are **not supported** — the derive-recognition followup was closed without implementation (PLAN.md Phase 9, REJECTED 2026-09-20: no audited table needs it, and a fixed-width presence byte buys nothing over a plain field + sentinel). The idiom instead is **sentinel values drawn from the type's identity element**:
 
 - `String` / `Bytes` cleared → the empty value (length 0 — the identity
-  of concatenation). Clearing = writing the identity, idempotent, no
-  separate null marker.
+of concatenation). Clearing = writing the identity, idempotent, no separate null marker.
 - Timestamps (`updated_at`-style) never updated → `0` ("did not happen";
-  mudra's lifecycle fields `opened_at`/`closed_at`/`deleted_at` all use
-  it, and rebinding re-clears `closed_at` back to 0 — the sentinel also
-  carries the reopened state).
+mudra's lifecycle fields `opened_at`/`closed_at`/`deleted_at` all use it, and rebinding re-clears `closed_at` back to 0 — the sentinel also carries the reopened state).
 - "No parent" ids → `0` where real ids start at 1.
 - Flags → `u8` 0/1, not `bool` (no payload `Option` in the wire;
-  2..=255 stays free for future states).
+2..=255 stays free for future states).
 
-The cost is semantic overload: `""` cannot distinguish "explicitly
-cleared" from "never set". When a field genuinely needs that third
-state, the answer is **not** a nullable wrapper but an explicit enum
-(`Unset | Cleared | Set(v)`) — one extra tag byte, and the reader stops
-guessing. `DynamicValue::Null` is already this shape on the dynamic
-segment: Null is a variant of the open vocabulary, not an `Option`
-wrapper.
+The cost is semantic overload: `""` cannot distinguish "explicitly cleared" from "never set". When a field genuinely needs that third state, the answer is **not** a nullable wrapper but an explicit enum (`Unset | Cleared | Set(v)`) — one extra tag byte, and the reader stops guessing. `DynamicValue::Null` is already this shape on the dynamic segment: Null is a variant of the open vocabulary, not an `Option` wrapper.
 
-Rule of thumb: if the field's empty state coincides with the type's
-identity element, use the sentinel; if "cleared" and "never set" must
-differ, declare a state enum — do not encode state in sentinels.
+Rule of thumb: if the field's empty state coincides with the type's identity element, use the sentinel; if "cleared" and "never set" must differ, declare a state enum — do not encode state in sentinels.
 
 ### Schema stability tests
 
@@ -928,39 +572,15 @@ assert_eq!(&rk[..4], &[0, 2, 0x30, 3]); // ns=2 (Session), slot 0x3003 (n=1, dir
 
 ## One-to-many relationships
 
-Access methods are not only about ordering: **one-to-many relationships
-also land as prefix grouping**. A layout like
-`[tenant_id][org_id][user_id]` takes all users of one org by prefix
-scan — this is the physical form of the relational "foreign key + list".
+Access methods are not only about ordering: **one-to-many relationships also land as prefix grouping**. A layout like `[tenant_id][org_id][user_id]` takes all users of one org by prefix scan — this is the physical form of the relational "foreign key + list".
 
-In OKM it appears as an independent ns plus a secondary index. The index
-entry layout is `[ns 2B][slot][fields segment][primary-key prefix]`:
-`fields(org_id)` is the grouping/sort segment in the middle of the entry
-(payload fields encoded in declaration order, derive-generated,
-compile-time layout locked) and provides the grouping prefix;
-`includes(...)` is the entry value, copying frequently used fields so
-the scan needs no fetch-back. Note this is independent of the primary
-key layout: the grouping dimension lives in the index entry — composable,
-retirable, with no "nowhere to decode the suffix" problem. You could
-also store user data directly inside the list entries (the nested form;
-"denormalized storage" in SQL terms). Storing together is efficient but
-locks the user to the org — a job change moves data, the same trap as
-primary-key composition.
+In OKM it appears as an independent ns plus a secondary index. The index entry layout is `[ns 2B][slot][fields segment][primary-key prefix]`: `fields(org_id)` is the grouping/sort segment in the middle of the entry (payload fields encoded in declaration order, derive-generated, compile-time layout locked) and provides the grouping prefix; `includes(...)` is the entry value, copying frequently used fields so the scan needs no fetch-back. Note this is independent of the primary key layout: the grouping dimension lives in the index entry — composable, retirable, with no "nowhere to decode the suffix" problem. You could also store user data directly inside the list entries (the nested form; "denormalized storage" in SQL terms). Storing together is efficient but locks the user to the org — a job change moves data, the same trap as primary-key composition.
 
-Against SQL normalization: the independent ns *is* the normalized form —
-org attributes like parent_id and org_name are stored once on the org
-row, not on user rows. Storing together (denormalized) is efficient but
-couples; apart (normalized) pays one indirection but keeps identity
-singular.
+Against SQL normalization: the independent ns *is* the normalized form — org attributes like parent_id and org_name are stored once on the org row, not on user rows. Storing together (denormalized) is efficient but couples; apart (normalized) pays one indirection but keeps identity singular.
 
 ## Many-to-many relationships: junctions
 
-The access methods defined by `#[ok_index]` are **table-local** — their
-data source is the row's own payload, kept in sync automatically by
-`put` / `purge`. Cross-table relationships (one-to-many, many-to-many)
-are facts between two independent entities; a payload index cannot
-reach them. One-to-many is carried by `Refs` (see "Embedded documents");
-many-to-many is carried by the **junction**:
+The access methods defined by `#[ok_index]` are **table-local** — their data source is the row's own payload, kept in sync automatically by `put` / `purge`. Cross-table relationships (one-to-many, many-to-many) are facts between two independent entities; a payload index cannot reach them. One-to-many is carried by `Refs` (see "Embedded documents"); many-to-many is carried by the **junction**:
 
 ```text
 #[derive(JunctionEncode)]
@@ -972,122 +592,39 @@ struct OrgUser {
 }
 ```
 
-A junction materializes as one one-way key per endpoint ns (segment 0x3,
-direction carried by which ns the entry lives in, ADR-0015/0016): the
-A-side prefix `[ns_org][0x3nnn][org]` fetches all members of an org in
-one scan (the list side); the prefix in `ns_user` fetches all orgs a
-user belongs to. A job change = adding/removing one junction entry;
-identity never moves. `#[ok_head(...)]` declares which identity fields
-the endpoint is truncated to on that direction (absent = full identity),
-letting each endpoint use a shorter prefix — entry key length and
-grouping granularity are trimmed per direction, which is how "the
-primary key varies by direction" is expressed. `ok_head` selects a
-subset of *declared identity fields*, not free bytes; its decidability
-follows the same principle as the index tail.
+A junction materializes as one one-way key per endpoint ns (segment 0x3, direction carried by which ns the entry lives in, ADR-0015/0016): the A-side prefix `[ns_org][0x3nnn][org]` fetches all members of an org in one scan (the list side); the prefix in `ns_user` fetches all orgs a user belongs to. A job change = adding/removing one junction entry; identity never moves. `#[ok_head(...)]` declares which identity fields the endpoint is truncated to on that direction (absent = full identity), letting each endpoint use a shorter prefix — entry key length and grouping granularity are trimmed per direction, which is how "the primary key varies by direction" is expressed. `ok_head` selects a subset of *declared identity fields*, not free bytes; its decidability follows the same principle as the index tail.
 
-Junctions and indexes are isomorphic at the mechanism level (both are
-"secondary key layouts pointing at identity") but their roles cannot be
-swapped:
+Junctions and indexes are isomorphic at the mechanism level (both are "secondary key layouts pointing at identity") but their roles cannot be swapped:
 
 - **Data source**: an index's data source is the row's own payload —
-  the user never writes entries by hand. A junction's data source is the
-  relationship between two entities — a business fact in its own right,
-  requiring explicit double-write and double-delete.
+the user never writes entries by hand. A junction's data source is the relationship between two entities — a business fact in its own right, requiring explicit double-write and double-delete.
 - **Endpoints**: an index's tail points at its own table's primary key;
-  a junction points at another collection's entity (two endpoints, one
-  one-way entry per endpoint ns).
+a junction points at another collection's entity (two endpoints, one one-way entry per endpoint ns).
 
-**Bidirectionality is an obligation, not an option.** A REV entry costs
-one extra key of storage (LSM sequential append — the cheapest write
-there is); skipping it buys: reverse lookups degenerate into full scans
-of the FWD segment (violating access-method discipline), or a later
-backfill migration (orders of magnitude more expensive). The contrast
-with indexes makes this sharper: an index has only one direction,
-because the reverse lookup goes through the primary-key `get`; both
-endpoints of a junction are secondary vantage points — neither holds the
-primary key — so both directions need an entry. Bidirectionality also
-makes unbinding O(1): both keys' identities are in hand, so it is an
-exact `delete`, not scan-then-delete. The real restraint is not "do we
-need the REV direction" (no choice there) but **whether this junction
-should exist at all**: a relationship with no reverse-lookup need and a
-small cardinality (a config-style one-to-one) can live in a payload
-field, with no junction declared; add one later when needed — junction
-double-writes sync automatically, no backfill.
+**Bidirectionality is an obligation, not an option.** A REV entry costs one extra key of storage (LSM sequential append — the cheapest write there is); skipping it buys: reverse lookups degenerate into full scans of the FWD segment (violating access-method discipline), or a later backfill migration (orders of magnitude more expensive). The contrast with indexes makes this sharper: an index has only one direction, because the reverse lookup goes through the primary-key `get`; both endpoints of a junction are secondary vantage points — neither holds the primary key — so both directions need an entry. Bidirectionality also makes unbinding O(1): both keys' identities are in hand, so it is an exact `delete`, not scan-then-delete. The real restraint is not "do we need the REV direction" (no choice there) but **whether this junction should exist at all**: a relationship with no reverse-lookup need and a small cardinality (a config-style one-to-one) can live in a payload field, with no junction declared; add one later when needed — junction double-writes sync automatically, no backfill.
 
-One sentence: **an index is a derived view of one row; a junction is
-first-class relationship data**. The convenience of `#[ok_index]`
-(declare-to-register, no manual ns numbering — ADR-0005's motivation
-was precisely eliminating per-index manual numbering and hole
-bookkeeping) is a secondary bonus, not the dividing line; the dividing
-line is the data source.
+One sentence: **an index is a derived view of one row; a junction is first-class relationship data**. The convenience of `#[ok_index]` (declare-to-register, no manual ns numbering — ADR-0005's motivation was precisely eliminating per-index manual numbering and hole bookkeeping) is a secondary bonus, not the dividing line; the dividing line is the data source.
 
-**The interface is the verb pair, not a field** (ADR-0015 §B, decided
-2026-09-20). A field-position `#[ok_relation(JunctionType)]` on a
-`Refs` field — put-time diff auto link/unlink, generalizing Refs'
-stale-release — was analyzed and rejected: Refs works because the
-parent row is the single owner (one-directional by structure); a
-junction's endpoints are peers, so a one-side field declaration leaves
-the peer's delete unable to clean up (a stale field key resurrects a
-deleted edge on the next put), and two write entry points (field diff +
-explicit `link`/`unlink`) fight each other. The imperative pairing
-keeps the call site as the causal record — the code says what happened,
-no old state is ever reconstructed, and no write ever crosses into the
-peer's ns implicitly. Do not model a junction as a document field; if
-set-shaped mutation over one endpoint becomes a real need, the escape
-is an explicit command, never put-path magic.
+**The interface is the verb pair, not a field** (ADR-0015 §B, decided 2026-09-20). A field-position `#[ok_relation(JunctionType)]` on a `Refs` field — put-time diff auto link/unlink, generalizing Refs' stale-release — was analyzed and rejected: Refs works because the parent row is the single owner (one-directional by structure); a junction's endpoints are peers, so a one-side field declaration leaves the peer's delete unable to clean up (a stale field key resurrects a deleted edge on the next put), and two write entry points (field diff + explicit `link`/`unlink`) fight each other. The imperative pairing keeps the call site as the causal record — the code says what happened, no old state is ever reconstructed, and no write ever crosses into the peer's ns implicitly. Do not model a junction as a document field; if set-shaped mutation over one endpoint becomes a real need, the escape is an explicit command, never put-path magic.
 
 ### Refs or Junction: deciding, and migrating when the answer changes
 
-The two carriers answer different ownership questions — pick by asking
-which side needs set-shaped lookup:
+The two carriers answer different ownership questions — pick by asking which side needs set-shaped lookup:
 
 - **"Which sessions does this user hold?"** — a one-directional need.
-  The relation is an attribute of the user row: `Refs` in field
-  position, the user row is the single truth source, sessions live in
-  their own ns and never point back. A sync-shaped mutation (an import
-  pushes the whole list, a form submits the new set) is naturally
-  served by the put diff — the field IS the state, overwrite-and-diff
-  is already the mechanism.
+The relation is an attribute of the user row: `Refs` in field position, the user row is the single truth source, sessions live in their own ns and never point back. A sync-shaped mutation (an import pushes the whole list, a form submits the new set) is naturally served by the put diff — the field IS the state, overwrite-and-diff is already the mechanism.
 - **"AND: which users follow this session?"** — both directions are
-  now first-class set queries. The relation has outgrown any single
-  row: a user-side field cannot answer the session-side question
-  without a full scan, so the fact must be materialized in both
-  endpoints' ns — a `Junction`, linked/unlinked as explicit events.
+now first-class set queries. The relation has outgrown any single row: a user-side field cannot answer the session-side question without a full scan, so the fact must be materialized in both endpoints' ns — a `Junction`, linked/unlinked as explicit events.
 
-The second question arriving later is a **schema migration, not a
-retrofit**: promoting a `Refs` field to a `Junction` means (a) declare
-the junction type with the same endpoint pair and a fresh
-`#[ok_junction(n)]` discriminator; (b) backfill by walking the parent
-collection and `link`ing each row's current key set (junction entries
-have no backfill mechanism — the same discipline as index append-only:
-a new access method only sees writes made after it exists); (c) drop
-the field from the document in the same layout-version bump, since the
-field and the junction would otherwise be two truth sources fighting
-over the same fact (the exact dual-entry-point conflict that killed
-`#[ok_relation]`). Reverse migration (junction back to `Refs`) applies
-when one endpoint's lookup need disappears — the reverse-scan demand
-was the only reason the fact left the row.
+The second question arriving later is a **schema migration, not a retrofit**: promoting a `Refs` field to a `Junction` means (a) declare the junction type with the same endpoint pair and a fresh `#[ok_junction(n)]` discriminator; (b) backfill by walking the parent collection and `link`ing each row's current key set (junction entries have no backfill mechanism — the same discipline as index append-only: a new access method only sees writes made after it exists); (c) drop the field from the document in the same layout-version bump, since the field and the junction would otherwise be two truth sources fighting over the same fact (the exact dual-entry-point conflict that killed `#[ok_relation]`). Reverse migration (junction back to `Refs`) applies when one endpoint's lookup need disappears — the reverse-scan demand was the only reason the fact left the row.
 
-The rejected `#[ok_relation]` proposal effectively assumed the first
-shape while storing the second; that mismatch — a set-shaped truth
-source living in one endpoint's field while the relation is defined by
-both — is precisely why it could not stand.
+The rejected `#[ok_relation]` proposal effectively assumed the first shape while storing the second; that mismatch — a set-shaped truth source living in one endpoint's field while the relation is defined by both — is precisely why it could not stand.
 
 ## Graph edges: the third relation carrier
 
-Junctions cover many-to-many with **compile-time typed endpoints**. A
-knowledge graph breaks that binding: one graph connects nodes of many
-types, edge predicates are runtime data, parallel edges are distinct
-facts, and edges carry attributes. The graph edge is the third relation
-carrier (ADR-0017) — independent identity, attributes, parallel edges,
-open endpoints, and a declaration that IS the graph.
+Junctions cover many-to-many with **compile-time typed endpoints**. A knowledge graph breaks that binding: one graph connects nodes of many types, edge predicates are runtime data, parallel edges are distinct facts, and edges carry attributes. The graph edge is the third relation carrier (ADR-0017) — independent identity, attributes, parallel edges, open endpoints, and a declaration that IS the graph.
 
-Nodes are ordinary document collections. When the type set is closed at
-compile time, a node's "type" is its collection (the ns is the type marker);
-when kinds arrive at runtime, the kind is an indexed field inside ONE
-collection (the k10r case below). Either way, node-kind/attribute filtering
-rides the collection's own declared indexes and vocabulary — zero layout
-difference from any document collection. What is new lives on the edge side:
+Nodes are ordinary document collections. When the type set is closed at compile time, a node's "type" is its collection (the ns is the type marker); when kinds arrive at runtime, the kind is an indexed field inside ONE collection (the k10r case below). Either way, node-kind/attribute filtering rides the collection's own declared indexes and vocabulary — zero layout difference from any document collection. What is new lives on the edge side:
 
 ```rust
 use okm_core::{Graph, GraphEncode, NodeRef};
@@ -1130,140 +667,51 @@ g.by_attr_face(<BySince as KvIndex>::SLOT, &2020u16.to_be_bytes());
 ```
 
 - **Endpoint references** are `[ns 2B][len varint][pkey]` — the ns is
-  the type marker, the pkey width rides IN the ref as a one-byte
-  varint. Any collection's document participates with no declaration:
-  same node = same bytes (traversal faces prefix-match exactly), mixed
-  pkey widths coexist, and there is no registry to declare, maintain,
-  or fail on. Graph edges retire the Ref discipline — the reference
-  carries its own width, ns knowledge and all. The member set is the one
-  thing declared — as a LIST OF TABLES (`#[ok_nodes(User, Org)]`), from which
-  the derive generates the `XxxNode` enum and its `NodeSet` impl with each
-  table's own ns, applied as a check at write and at decode; width stays wire
-  data, membership is a declaration.
+the type marker, the pkey width rides IN the ref as a one-byte varint. Any collection's document participates with no declaration: same node = same bytes (traversal faces prefix-match exactly), mixed pkey widths coexist, and there is no registry to declare, maintain, or fail on. Graph edges retire the Ref discipline — the reference carries its own width, ns knowledge and all. The member set is the one thing declared — as a LIST OF TABLES (`#[ok_nodes(User, Org)]`), from which the derive generates the `XxxNode` enum and its `NodeSet` impl with each table's own ns, applied as a check at write and at decode; width stays wire data, membership is a declaration.
 - **Faces**: one `link` writes primary (fixed face 0x00, `edge_id` u64) +
-  out/in traversal (0x06/0x07) + predicate-qualified traversal (0x08/0x09) + ONE
-  face per DECLARED `#[ok_index]` (counting family 0x1), all in one batch. Each
-  traversal entry carries BOTH endpoints (`[src][dst][edge_id]`, the predicate
-  leading where it is qualified), so the pair is addressable and the assertion
-  identity is one seek; there is no separate predicate index — the bare
-  `[predicate]` prefix of 0x08 IS it. `unlink` decodes the edge body and
-  deletes exactly those entries (the declared faces are re-derived from the
-  decoded payload, never swept by prefix); the fully dynamic form writes its
-  open attributes into the dynamic segment (fixed face 0x01, one entry per
-  edge). The predicate's name resolves through the
-  graph's OWN PREDICATE VOCABULARY (fixed faces 0x04/0x05, first-seen-claims-next)
-  — separate from the payload's field-name vocabulary (0x02/0x03) and from the
-  vocabulary any node field carries, so
-  listing a graph's predicates is one prefix scan of 0x04, never an
-  inference walked back from the index faces.
+out/in traversal (0x06/0x07) + predicate-qualified traversal (0x08/0x09) + ONE face per DECLARED `#[ok_index]` (counting family 0x1), all in one batch. Each traversal entry carries BOTH endpoints (`[src][dst][edge_id]`, the predicate leading where it is qualified), so the pair is addressable and the assertion identity is one seek; there is no separate predicate index — the bare `[predicate]` prefix of 0x08 IS it. `unlink` decodes the edge body and deletes exactly those entries (the declared faces are re-derived from the decoded payload, never swept by prefix); the fully dynamic form writes its open attributes into the dynamic segment (fixed face 0x01, one entry per edge). The predicate's name resolves through the graph's OWN PREDICATE VOCABULARY (fixed faces 0x04/0x05, first-seen-claims-next) — separate from the payload's field-name vocabulary (0x02/0x03) and from the vocabulary any node field carries, so listing a graph's predicates is one prefix scan of 0x04, never an inference walked back from the index faces.
 - **The handle declares nothing.** `Graph<S, E>` binds an engine instance
-  and the per-instance state (the predicate vocabulary cache); the ns comes from the declaration and the member
-  set from `E::Nodes` — the same shape as `Collection<S, K, R>`, which also
-  takes only the engine.
+and the per-instance state (the predicate vocabulary cache); the ns comes from the declaration and the member set from `E::Nodes` — the same shape as `Collection<S, K, R>`, which also takes only the engine.
 - **Parallel edges** are separate edges: each link carries a
-  caller-chosen `edge_id`; `link` rejects a live id. An edge's
-  IN-PLACE REWRITE is the one exception, and it has exactly one
-  entry: `unlink_into` + `link_into` put the same id's delete and
-  write in ONE batch, so at commit the edge was never absent and no
-  second id is born — k10r's functional adjudication and its counter
-  bumps both take this path (ADR-0010's owed item). A deleted id is
-  never reused.
+caller-chosen `edge_id`; `link` rejects a live id. An edge's IN-PLACE REWRITE is the one exception, and it has exactly one entry: `unlink_into` + `link_into` put the same id's delete and write in ONE batch, so at commit the edge was never absent and no second id is born — k10r's functional adjudication and its counter bumps both take this path (ADR-0010's owed item). A deleted id is never reused.
 - **Filtering**: the most selective face first, ids converged in
-  memory — no composite faces by default (`(*)-[predicate]->(:node kind)`
-  = 0x08 scan intersected with the node kind face's pkey set).
+memory — no composite faces by default (`(*)-[predicate]->(:node kind)` = 0x08 scan intersected with the node kind face's pkey set).
 
-Division line: `Refs` = one-to-many; `Junction` = many-to-many, fixed
-endpoints, no attributes; **Graph Edge** = independent identity,
-attributes, parallel edges, open endpoints.
+Division line: `Refs` = one-to-many; `Junction` = many-to-many, fixed endpoints, no attributes; **Graph Edge** = independent identity, attributes, parallel edges, open endpoints.
 
 ### Predicates: the edge's type
 
-The relation's name lives in the edge's HEAD, next to the endpoints —
-`EdgeHead { src, dst, predicate }` — and it is the one part of that triple with no
-compile-time declaration. It is the piece a junction cannot match: a junction's
-type is its Rust struct (`PageTag`), fixed when the code is written, while an
-edge's type is data.
+The relation's name lives in the edge's HEAD, next to the endpoints — `EdgeHead { src, dst, predicate }` — and it is the one part of that triple with no compile-time declaration. It is the piece a junction cannot match: a junction's type is its Rust struct (`PageTag`), fixed when the code is written, while an edge's type is data.
 
 - **Interned in the graph's OWN vocabulary**: name → `u16` id, append-only,
-  first-seen-claims-next, never renumbered. The id is what the predicate and
-  traversal faces are keyed by, so every relation-filtered read is a prefix scan
-  on an id, never a payload comparison.
+first-seen-claims-next, never renumbered. The id is what the predicate and traversal faces are keyed by, so every relation-filtered read is a prefix scan on an id, never a payload comparison.
 - **Two directions, one vocabulary** (`name → id` and `id → name`): "which
-  relations does this graph actually hold?" is one prefix scan, so the predicate
-  set is enumerable metadata rather than an inference walked back from the edges.
+relations does this graph actually hold?" is one prefix scan, so the predicate set is enumerable metadata rather than an inference walked back from the edges.
 - **Adding a relation is not a migration.** No per-predicate declaration, no code
-  change, no ns per relation: one edge collection carries `employs`,
-  `reports_to`, `blocked_by`. The ids are one space per graph, so a predicate can
-  never collide with a node kind, a field name, or another graph's predicate.
+change, no ns per relation: one edge collection carries `employs`, `reports_to`, `blocked_by`. The ids are one space per graph, so a predicate can never collide with a node kind, a field name, or another graph's predicate.
 - **A predicate is a RELATION, not an attribute.** `is_admin` as a predicate
-  pointing at a `true` literal node is the failure mode; that flag is a field on
-  the row. A predicate answers "how are these two related"; "what is this node"
-  belongs to the node's own declaration.
+pointing at a `true` literal node is the failure mode; that flag is a field on the row. A predicate answers "how are these two related"; "what is this node" belongs to the node's own declaration.
 - **A node KIND is a field, and it is not the predicate vocabulary.** A kind is a
-  categorical value in the payload — `kind: Vocab<u16>`, indexed by `by_kind`
-  (ADR-0032) — so its label set belongs to that field, its width is the
-  declaration, and nothing about it needs a rule of its own. Predicate = the
-  edge's type in the HEAD; kind = the node's type in the PAYLOAD. The field is
-  named `kind`, not `kind_id`: with `Vocab<N>` the value IS the label and the id
-  is only its encoding — a `_id` suffix would claim the caller handles numbers.
+categorical value in the payload — `kind: Vocab<u16>`, indexed by `by_kind` (ADR-0032) — so its label set belongs to that field, its width is the declaration, and nothing about it needs a rule of its own. Predicate = the edge's type in the HEAD; kind = the node's type in the PAYLOAD. The field is named `kind`, not `kind_id`: with `Vocab<N>` the value IS the label and the id is only its encoding — a `_id` suffix would claim the caller handles numbers.
 - **Direction is part of the assertion.** `link` writes src → dst; the reverse
-  relation is a different predicate (or the same predicate with the endpoints
-  swapped), never something the store derives. Two edges between one pair are
-  distinct assertions — distinguished by their predicate and their own
-  `edge_id`, which is exactly what parallel edges are for.
+relation is a different predicate (or the same predicate with the endpoints swapped), never something the store derives. Two edges between one pair are distinct assertions — distinguished by their predicate and their own `edge_id`, which is exactly what parallel edges are for.
 
-**Why a `Vocab` field cannot replace it.** A `Vocab<N>` field interns a label and
-gets exactly the faces you declare with `#[ok_index]`; it lives in the PAYLOAD,
-behind the payload's own frame. The predicate cannot move there: the traversal
-faces are keyed by it (`[predicate_id][src NodeRef][edge_id]`, `[predicate_id][dst
-…]`) and endpoints are HEAD bytes rather than payload fields, so no payload index
-can produce those entries; the id must sit at a computable offset in the edge body
-so `unlink` deletes an edge without decoding its payload first; and every edge has
-exactly one predicate, which is what makes it safe to put in the key with no
-presence check. What the two share is the mechanism underneath — one interned
-label↔id protocol (append-only, first-seen-claims-next, two faces) — so this is
-one primitive at two positions, not two mechanisms: a vocabulary owned by the
-graph's KEY, and a vocabulary owned by a payload FIELD.
+**Why a `Vocab` field cannot replace it.** A `Vocab<N>` field interns a label and gets exactly the faces you declare with `#[ok_index]`; it lives in the PAYLOAD, behind the payload's own frame. The predicate cannot move there: the traversal faces are keyed by it (`[predicate_id][src NodeRef][edge_id]`, `[predicate_id][dst …]`) and endpoints are HEAD bytes rather than payload fields, so no payload index can produce those entries; the id must sit at a computable offset in the edge body so `unlink` deletes an edge without decoding its payload first; and every edge has exactly one predicate, which is what makes it safe to put in the key with no presence check. What the two share is the mechanism underneath — one interned label↔id protocol (append-only, first-seen-claims-next, two faces) — so this is one primitive at two positions, not two mechanisms: a vocabulary owned by the graph's KEY, and a vocabulary owned by a payload FIELD.
 
 ### What belongs in a graph
 
-Three modeling judgments sit above the mechanism — the open endpoints
-make it easy to put everything in a graph, and these are the lines
-that stop it:
+Three modeling judgments sit above the mechanism — the open endpoints make it easy to put everything in a graph, and these are the lines that stop it:
 
 - **One graph = one trust domain with related semantics — merge, don't
-  split.** The graph boundary is the ns: one Edge collection per graph
-  (ADR-0017), NOT a global implicit edge pool (the SurrealDB `RELATE`
-  shape, where every `RELATE` quietly joins one store-wide graph). The
-  PGQ "merge over split" criterion carries over: same trust domain and
-  related relation semantics = one graph; only domains that are
-  separate AND never queried together get two. Within one graph,
-  predicates are runtime data — one edge collection carries many relation
-  types, the PGQ "one graph, many relations" stance without its per-pair
-  declaration overhead.
+split.** The graph boundary is the ns: one Edge collection per graph (ADR-0017), NOT a global implicit edge pool (the SurrealDB `RELATE` shape, where every `RELATE` quietly joins one store-wide graph). The PGQ "merge over split" criterion carries over: same trust domain and related relation semantics = one graph; only domains that are separate AND never queried together get two. Within one graph, predicates are runtime data — one edge collection carries many relation types, the PGQ "one graph, many relations" stance without its per-pair declaration overhead.
 - **Model vs state (型/态): high-churn instance state stays OUT.** A
-  task's template, preconditions and references are graph nodes (slow
-  variables, traversal-worthy); its instance rows (items, claimed_at,
-  short lifecycle, exact-enumeration queries) are ordinary document
-  collections. Approximate traversal is the wrong carrier for exact
-  enumeration — "search for one memory" must not get mixed up with
-  "count one status". When an application's aggregate state must be
-  listed or counted exactly, that is a collection with access methods,
-  not a node.
+task's template, preconditions and references are graph nodes (slow variables, traversal-worthy); its instance rows (items, claimed_at, short lifecycle, exact-enumeration queries) are ordinary document collections. Approximate traversal is the wrong carrier for exact enumeration — "search for one memory" must not get mixed up with "count one status". When an application's aggregate state must be listed or counted exactly, that is a collection with access methods, not a node.
 - **Cross-graph: compose through NodeRefs, not graph syntax.** A
-  NodeRef is self-describing, so one document collection participates
-  in several graphs at once (the PGQ "one table, many graphs" property
-  — here as several Edge collections referencing the same nodes).
-  Genuinely separate domains reach each other by collecting NodeRef
-  sets from one graph and probing the other's faces, or by dropping to
-  plain document reads — there is no cross-graph match syntax, and
-  none is needed.
+NodeRef is self-describing, so one document collection participates in several graphs at once (the PGQ "one table, many graphs" property — here as several Edge collections referencing the same nodes). Genuinely separate domains reach each other by collecting NodeRef sets from one graph and probing the other's faces, or by dropping to plain document reads — there is no cross-graph match syntax, and none is needed.
 
 #### Case: a tag forest is rows and a junction, not a graph
 
-mudra's tag forest is the shape people reach for a graph on: many roots, no
-single root, a node living in several trees at once. It is two carriers, and
-neither is an Edge collection.
+mudra's tag forest is the shape people reach for a graph on: many roots, no single root, a node living in several trees at once. It is two carriers, and neither is an Edge collection.
 
 ```rust
 #[derive(DocumentEncode, Clone, PartialEq, Eq, Debug, Default)]
@@ -1278,41 +726,19 @@ struct Tag { parent_id: i32, name: String, rank: i32, deleted: u8, /* … */ }
 struct PageTag { page: Ref<Page, PageKey>, tag: Ref<Tag, TagKey> }
 ```
 
-**The tree is a self-referential row.** A tag carries `parent_id: i32` with
-`-1` as the root sentinel, so "many roots" needs no virtual super-root; one
-scan on `by_parent` returns a node's children. The reverse direction — "who
-are my children" — needs no edge row, because it *is* that index. This is the
-line between a tree and a many-to-many: a parent pointer's reverse is a scan,
-a junction's reverse has no single row to live in.
+**The tree is a self-referential row.** A tag carries `parent_id: i32` with `-1` as the root sentinel, so "many roots" needs no virtual super-root; one scan on `by_parent` returns a node's children. The reverse direction — "who are my children" — needs no edge row, because it *is* that index. This is the line between a tree and a many-to-many: a parent pointer's reverse is a scan, a junction's reverse has no single row to live in.
 
-Two consequences worth copying: keys stay surrogate (`TagKey { id }`), so
-sibling order cannot ride key order — it is a `rank` payload field, sorted in
-memory after the scan; and there is no path or closure table, the path is
-derived by walking up.
+Two consequences worth copying: keys stay surrogate (`TagKey { id }`), so sibling order cannot ride key order — it is a `rank` payload field, sorted in memory after the scan; and there is no path or closure table, the path is derived by walking up.
 
-**Membership is a junction.** page↔tag is many-to-many with compile-time typed
-endpoints, so `link` is the atomic double write (one entry in each endpoint's
-ns) and both directions are first-class scans (the derive's `get_tag` /
-`get_page`). The junction declares no ns of its own: the direction is which
-endpoint's ns the entry lives in.
+**Membership is a junction.** page↔tag is many-to-many with compile-time typed endpoints, so `link` is the atomic double write (one entry in each endpoint's ns) and both directions are first-class scans (the derive's `get_tag` / `get_page`). The junction declares no ns of its own: the direction is which endpoint's ns the entry lives in.
 
-**Why not a graph edge.** An edge here would carry no attributes and no
-identity of its own, allows no parallel edges, and its endpoints are closed at
-compile time — the four properties that earn Edge its place as the third
-carrier (ADR-0017) all go unused. A forest that needs none of them is a row
-pointer plus a junction; reaching for the third carrier anyway is the
-"everything is a graph" failure the section above draws its lines against.
+**Why not a graph edge.** An edge here would carry no attributes and no identity of its own, allows no parallel edges, and its endpoints are closed at compile time — the four properties that earn Edge its place as the third carrier (ADR-0017) all go unused. A forest that needs none of them is a row pointer plus a junction; reaching for the third carrier anyway is the "everything is a graph" failure the section above draws its lines against.
 
-A payoff worth stating: a coarse membership flag ("favorite", "starred") then
-has nowhere new to live — it is an edge to a rank child of an axis that already
-exists, so the flag needs no collection of its own.
+A payoff worth stating: a coarse membership flag ("favorite", "starred") then has nowhere new to live — it is an edge to a rank child of an axis that already exists, so the flag needs no collection of its own.
 
 #### Case: k10r's fact graph is the shape that earns the edge
 
-k10r (the memory service) stores what it extracts from a conversation as facts:
-one fact = two nodes + one edge. Entities are one node collection (ns 36), users
-another (ns 42), facts one edge collection (ns 37) — three declarations, and the
-properties a tag forest leaves unused are load-bearing here.
+k10r (the memory service) stores what it extracts from a conversation as facts: one fact = two nodes + one edge. Entities are one node collection (ns 36), users another (ns 42), facts one edge collection (ns 37) — three declarations, and the properties a tag forest leaves unused are load-bearing here.
 
 ```rust
 /// Nodes: ONE collection, the kind a field.
@@ -1365,153 +791,46 @@ struct Facts { /* scope, since, confidence, weight, three counters, two clocks, 
 // thing live in different collections and in one graph.
 ```
 
-**Node kinds are runtime data, so the kind is a field, not a collection.**
-Ingest takes an open type vocabulary: the caller's fact tuple names a kind
-nobody declared — a term, a concept, a date. A collection, by contrast, is a
-compile-time `#[ok_ns]` plus a derive. So every entity lives in one collection
-whose `kind: Vocab<u16>` is an ordinary declared field: it interns its label
-on write, `by_kind` indexes it, the reader resolves the label back through the
-field's own vocabulary — no allocation code, no reserved faces, no rule of its
-own, and the width is the only knob (65536 kinds at two bytes). The line: a
-closed type set → one collection per type; an open kind set → one collection,
-kind as a `Vocab` field with an index.
+**Node kinds are runtime data, so the kind is a field, not a collection.** Ingest takes an open type vocabulary: the caller's fact tuple names a kind nobody declared — a term, a concept, a date. A collection, by contrast, is a compile-time `#[ok_ns]` plus a derive. So every entity lives in one collection whose `kind: Vocab<u16>` is an ordinary declared field: it interns its label on write, `by_kind` indexes it, the reader resolves the label back through the field's own vocabulary — no allocation code, no reserved faces, no rule of its own, and the width is the only knob (65536 kinds at two bytes). The line: a closed type set → one collection per type; an open kind set → one collection, kind as a `Vocab` field with an index.
 
-**The domain's people are nodes too — none of them extracted.** k10r's users
-are a closed type, so they are their own collection (ns 42), and they show what
-the member set is for: the graph is not "the collection of things I extracted".
-A user row is administered (display name, human/agent), never extracted, and it
-carries no `embedding` — the landing index is built from the entity collection,
-so a query can never land on a person. Retrieval lands on knowledge; people are
-entered by traversal, the context head being one such walk. A profile fact is
-`user -[PREFERS]-> iced_americano`: head at ns 42, tail at ns 36, one graph. A
-member names itself on the wire (`member-{channel}-{member}`) and the core parses
-that into a ref — the string is never a stored node name, so a rename cannot move
-a fact. The two node collections meet because a ref carries its own ns — no
-identity row copied into the extracted collection, no union node type, and a
-rename touches a row's field and no edge.
+**The domain's people are nodes too — none of them extracted.** k10r's users are a closed type, so they are their own collection (ns 42), and they show what the member set is for: the graph is not "the collection of things I extracted". A user row is administered (display name, human/agent), never extracted, and it carries no `embedding` — the landing index is built from the entity collection, so a query can never land on a person. Retrieval lands on knowledge; people are entered by traversal, the context head being one such walk. A profile fact is `user -[PREFERS]-> iced_americano`: head at ns 42, tail at ns 36, one graph. A member names itself on the wire (`member-{channel}-{member}`) and the core parses that into a ref — the string is never a stored node name, so a rename cannot move a fact. The two node collections meet because a ref carries its own ns — no identity row copied into the extracted collection, no union node type, and a rename touches a row's field and no edge.
 
-**The relation IS the edge's predicate, so a new relation is a new name.**
-Ingest takes the relation's name from the tuple (`PREFERS`, `RUNS`,
-`BLOCKED_BY`) and the graph interns it as a predicate id — no field, no enum, no
-declaration, no migration. One edge collection therefore holds every relation the
-memory can express, and "which relations does this corpus use?" is one scan of the
-graph's predicate vocabulary rather than a pass over edges. The node-side twin is
-`kind`: also a label, also interned, but a `Vocab` field in the node payload —
-it types the NODE, where a predicate types the ASSERTION.
+**The relation IS the edge's predicate, so a new relation is a new name.** Ingest takes the relation's name from the tuple (`PREFERS`, `RUNS`, `BLOCKED_BY`) and the graph interns it as a predicate id — no field, no enum, no declaration, no migration. One edge collection therefore holds every relation the memory can express, and "which relations does this corpus use?" is one scan of the graph's predicate vocabulary rather than a pass over edges. The node-side twin is `kind`: also a label, also interned, but a `Vocab` field in the node payload — it types the NODE, where a predicate types the ASSERTION.
 
-**Attributes are what earn the edge.** A fact carries its assertion context:
-`since` (the caller's clock), `confidence`, and the three counters plus two
-access clocks the weight system folds into `weight`. The relation's open props
-(cause, condition, strength, and the per-assertion `functional` flag) ride the
-edge's dynamic segment. A junction has no identity of its own, so none of this
-would have a place to live.
+**Attributes are what earn the edge.** A fact carries its assertion context: `since` (the caller's clock), `confidence`, and the three counters plus two access clocks the weight system folds into `weight`. The relation's open props (cause, condition, strength, and the per-assertion `functional` flag) ride the edge's dynamic segment. A junction has no identity of its own, so none of this would have a place to live.
 
-**Recent accesses live in a fixed-size ring, not in the counters.** Counters
-answer "how many" and the two clocks answer "how recently"; neither answers "what
-did the distribution look like" — and the decay bill is decided by exactly that
-distribution. So the row's tail gains `recent: Vector<u32>`: 8 slots, a second
-offset from 2026-01-01, ascending, `0` = unused, shifted right by one on write,
-with rows written before the ring decoding to the declared default (8 zeros). Why
-not `Offset`, not `Bytes`, no cursor and no wrapper is the case in "Homogeneous
-lists".
+**Recent accesses live in a fixed-size ring, not in the counters.** Counters answer "how many" and the two clocks answer "how recently"; neither answers "what did the distribution look like" — and the decay bill is decided by exactly that distribution. So the row's tail gains `recent: Vector<u32>`: 8 slots, a second offset from 2026-01-01, ascending, `0` = unused, shifted right by one on write, with rows written before the ring decoding to the declared default (8 zeros). Why not `Offset`, not `Bytes`, no cursor and no wrapper is the case in "Homogeneous lists".
 
-**Parallel edges are facts.** Two assertions between the same pair are two
-truths — different sources, different clocks, different confidences — so
-multi-valued is the default and each gets its own `edge_id`. A relation that is
-one-valued per source says so PER ASSERTION (the `functional` prop), because a
-dropped fact is lost while an extra edge is recoverable. Adjudicating it is the
-in-place rewrite the mechanism section names: the incumbent and the challenger
-resolve against each other (`since >`, or `confidence >=`), and the winner's row
-is written as `unlink_into` + `link_into` in ONE batch under the SAME id — at
-commit the edge was never absent. Counter bumps take that path too.
+**Parallel edges are facts.** Two assertions between the same pair are two truths — different sources, different clocks, different confidences — so multi-valued is the default and each gets its own `edge_id`. A relation that is one-valued per source says so PER ASSERTION (the `functional` prop), because a dropped fact is lost while an extra edge is recoverable. Adjudicating it is the in-place rewrite the mechanism section names: the incumbent and the challenger resolve against each other (`since >`, or `confidence >=`), and the winner's row is written as `unlink_into` + `link_into` in ONE batch under the SAME id — at commit the edge was never absent. Counter bumps take that path too.
 
-**An attribute belongs on the side of the fact that owns it.** Props describing
-the RELATION land on the edge; props describing the ENTITY land on the node
-row's dynamic segment and merge — a same-named attribute takes the newer value,
-the rest survive. One entity's shared attributes therefore have one home across
-every fact about it.
+**An attribute belongs on the side of the fact that owns it.** Props describing the RELATION land on the edge; props describing the ENTITY land on the node row's dynamic segment and merge — a same-named attribute takes the newer value, the rest survive. One entity's shared attributes therefore have one home across every fact about it.
 
-**The tenant is not the graph boundary.** `scope` (one user's corpus) leads the
-NODE key — `[scope 8B][node_id 8B]` — and the edge key carries no scope at all,
-because the edge collection builds its own keys. Scope rides the ENDPOINTS: an
-entity's primary key carries it, and traversal starts at a scoped node, so it
-stays inside one scope. The edge row keeps a denormalized `scope` field solely
-because the ranking face can only be probed by what it encodes. The user node is
-the one UNscoped endpoint (a channel belongs to one scope, so the member row is
-store-global), and the edge's own copy is what holds such a fact in the scope it
-was written to. One semantic domain = one graph; a partition inside it is a key
-prefix plus an endpoint, never a second graph — an ns per tenant would replicate
-the declaration, the predicate vocabulary and the code path per user.
+**The tenant is not the graph boundary.** `scope` (one user's corpus) leads the NODE key — `[scope 8B][node_id 8B]` — and the edge key carries no scope at all, because the edge collection builds its own keys. Scope rides the ENDPOINTS: an entity's primary key carries it, and traversal starts at a scoped node, so it stays inside one scope. The edge row keeps a denormalized `scope` field solely because the ranking face can only be probed by what it encodes. The user node is the one UNscoped endpoint (a channel belongs to one scope, so the member row is store-global), and the edge's own copy is what holds such a fact in the scope it was written to. One semantic domain = one graph; a partition inside it is a key prefix plus an endpoint, never a second graph — an ns per tenant would replicate the declaration, the predicate vocabulary and the code path per user.
 
-**Not every relationship is an edge.** A fact may name another fact's id in its
-props under `ref` — one id, or a list — when that other fact is not central
-enough to sit in the head. Nothing validates the target: the reader decides
-whether to follow it (`fact_in_scope`, one id), and a dangling link is the
-reader's 404. A pointer someone may take, never a subtree the writer forces in.
+**Not every relationship is an edge.** A fact may name another fact's id in its props under `ref` — one id, or a list — when that other fact is not central enough to sit in the head. Nothing validates the target: the reader decides whether to follow it (`fact_in_scope`, one id), and a dangling link is the reader's 404. A pointer someone may take, never a subtree the writer forces in.
 
-**Derived data stays off the graph.** `embedding` is a `Vector<f32>` with no
-declared face — a vector has no key order — so search is okm-vector's
-`ExactIndex`: derived state rebuilt wholesale from the table the vector lives in,
-invalidated by a write and never maintained row by row (its home is a side table,
-see "A value too big for the row", so a write to the parent table never
-invalidates it). Faces are declared only where a reader exists: two on the edge,
-`by_since` and `by_scope_weight`, each naming its scanner. An unscanned face is
-a write nobody asked for, on every touch.
+**Derived data stays off the graph.** `embedding` is a `Vector<f32>` with no declared face — a vector has no key order — so search is okm-vector's `ExactIndex`: derived state rebuilt wholesale from the table the vector lives in, invalidated by a write and never maintained row by row (its home is a side table, see "A value too big for the row", so a write to the parent table never invalidates it). Faces are declared only where a reader exists: two on the edge, `by_since` and `by_scope_weight`, each naming its scanner. An unscanned face is a write nobody asked for, on every touch.
 
-The properties a tag forest leaves unused are all in use here: identity per
-assertion, attributes on the assertion, parallel edges as distinct facts, and
-endpoints that carry their own ns — a person and a thing in one graph. That is
-the whole difference between reaching for the third carrier and misusing it.
+The properties a tag forest leaves unused are all in use here: identity per assertion, attributes on the assertion, parallel edges as distinct facts, and endpoints that carry their own ns — a person and a thing in one graph. That is the whole difference between reaching for the third carrier and misusing it.
 
 ## Set membership: inverted index or bloom, by cardinality
 
-There is no dedicated `Set` type — membership is served by two
-application-layer paths, chosen by the collection's cardinality:
+There is no dedicated `Set` type — membership is served by two application-layer paths, chosen by the collection's cardinality:
 
-**Low cardinality — the multi-value function index IS the inverted
-index.** `#[ok_index(by_tag { func(tags) })]` fans one row into one
-entry per element (`element -> pkey`), so "which rows contain X" is one
-prefix scan and "does row R contain X" is one point lookup — exact, no
-false positives, and the inverted face collapses duplicates by put
-semantics (same element + same pkey = same entry key). The truth source
-stays on the row (the func regenerates the entry set from it), so
-delete unfolds correctly by the purity contract. Write cost is linear
-in the set size — pay it when the set is tens of elements, not
-thousands.
+**Low cardinality — the multi-value function index IS the inverted index.** `#[ok_index(by_tag { func(tags) })]` fans one row into one entry per element (`element -> pkey`), so "which rows contain X" is one prefix scan and "does row R contain X" is one point lookup — exact, no false positives, and the inverted face collapses duplicates by put semantics (same element + same pkey = same entry key). The truth source stays on the row (the func regenerates the entry set from it), so delete unfolds correctly by the purity contract. Write cost is linear in the set size — pay it when the set is tens of elements, not thousands.
 
-**High cardinality — an application-level bloom filter, stored as a
-`Bytes` field.** When per-put fan-out is unacceptable (a 100k-element
-set would write 100k entries per put), write the membership bitmap
-instead: k hash set-bits over m bits, O(1) per put, false positives in
-exchange. The storage layer sees only opaque bytes — hash family, m/n
-ratio, and error budget are application parameters; pushing them into
-the codec would put data-quality policy in the wrong layer. Two rules
-keep it honest:
+**High cardinality — an application-level bloom filter, stored as a `Bytes` field.** When per-put fan-out is unacceptable (a 100k-element set would write 100k entries per put), write the membership bitmap instead: k hash set-bits over m bits, O(1) per put, false positives in exchange. The storage layer sees only opaque bytes — hash family, m/n ratio, and error budget are application parameters; pushing them into the codec would put data-quality policy in the wrong layer. Two rules keep it honest:
 
 - **Truth-source discipline**: a bloom filter is a lossy derivative —
-  delete cannot unfold members from it. It must ride WITH a complete
-  member representation (`Vector<T>` on the row, or the set stored
-  outside the row entirely), never stand alone as the only record of
-  membership.
+delete cannot unfold members from it. It must ride WITH a complete member representation (`Vector<T>` on the row, or the set stored outside the row entirely), never stand alone as the only record of membership.
 - **Query semantics**: "possibly in the set" (verify through the
-  complete representation when it matters) vs the inverted path's
-  "definitely in the set". The two paths are complements, not
-  substitutes.
+complete representation when it matters) vs the inverted path's "definitely in the set". The two paths are complements, not substitutes.
 
 ## Homogeneous lists: `Vector<T>`
 
-The plural-modeling taxonomy (ADR-0015 §4) has a fourth member besides
-the two relation carriers and the heterogeneous `DynamicValue::Array`:
-the **typed homogeneous list**. `Vector<f32>` declares a list of
-floats; `Vector<String>` a list of strings — the element type is the
-schema, the length is data.
+The plural-modeling taxonomy (ADR-0015 §4) has a fourth member besides the two relation carriers and the heterogeneous `DynamicValue::Array`: the **typed homogeneous list**. `Vector<f32>` declares a list of floats; `Vector<String>` a list of strings — the element type is the schema, the length is data.
 
-Storage is a **variable-length cold TLV frame** (same slot as
-`String`): payload = `[count u32 BE]` + the elements. Homogeneity is
-the payoff — fixed-width scalar elements are **bare V** (zero
-per-element overhead; a 384-dim f32 embedding costs 1.5 KB, not the
-~10 bytes/element a heterogeneous Array would pay), while dynamic-
-width elements (`String`) are per-element **LV**.
+Storage is a **variable-length cold TLV frame** (same slot as `String`): payload = `[count u32 BE]` + the elements. Homogeneity is the payoff — fixed-width scalar elements are **bare V** (zero per-element overhead; a 384-dim f32 embedding costs 1.5 KB, not the ~10 bytes/element a heterogeneous Array would pay), while dynamic- width elements (`String`) are per-element **LV**.
 
 ```rust
 #[derive(DocumentEncode)]
@@ -1524,40 +843,15 @@ pub struct Doc {
 }
 ```
 
-Length is data, not schema: a different embedding model (384 -> 768
-dims) is just different frames — no wire migration. When the
-application DOES know the expected count (embedding dims by contract),
-`#[ok_len(384)]` adds an encode-time check — the write boundary is
-where the promise is enforced; decode never checks (bypassing the
-decoder is the reader's own problem — raw frame bytes are as opaque
-as an unrendered image). The same contract is exported to the dynamic
-reader (`FieldSchema::expect_len`) so the Python side is enforced
-identically. It is an application contract, never a format constraint.
+Length is data, not schema: a different embedding model (384 -> 768 dims) is just different frames — no wire migration. When the application DOES know the expected count (embedding dims by contract), `#[ok_len(384)]` adds an encode-time check — the write boundary is where the promise is enforced; decode never checks (bypassing the decoder is the reader's own problem — raw frame bytes are as opaque as an unrendered image). The same contract is exported to the dynamic reader (`FieldSchema::expect_len`) so the Python side is enforced identically. It is an application contract, never a format constraint.
 
-Elements are **pure values** — the identity dividing line (§Many-to-many
-above) keeps Vector out of the relation carriers: a scalar has no key,
-a key reference to it is a category error. One-to-many -> `Refs`; many-
-to-many -> `Junction`; order-expressing value lists -> `Vector`;
-heterogeneous dynamic lists -> `DynamicValue::Array` (fixed face 0x01). On
-`fetch` lifts a Vector to `DynVal::Array` — the dynamic layer
-has no Vector type; Vector is a storage-layer format. Multi-dimensional
-shape is application-layer interpretation (row-major over the flat
-sequence); nothing on the wire.
+Elements are **pure values** — the identity dividing line (§Many-to-many above) keeps Vector out of the relation carriers: a scalar has no key, a key reference to it is a category error. One-to-many -> `Refs`; many- to-many -> `Junction`; order-expressing value lists -> `Vector`; heterogeneous dynamic lists -> `DynamicValue::Array` (fixed face 0x01). On `fetch` lifts a Vector to `DynVal::Array` — the dynamic layer has no Vector type; Vector is a storage-layer format. Multi-dimensional shape is application-layer interpretation (row-major over the flat sequence); nothing on the wire.
 
-The consumer (okm-vector) builds search on top, in layers: an exact
-contiguous scan (the small-corpus path and the recall reference), an
-in-memory HNSW over quantized codes (int8 cosine or product codes), and a
-sharded handle whose snapshot is one blob per shard under fixed face 0x0A —
-a cache, droppable at any time. Code-level distances are the graph's output;
-re-scoring against the stored vector is the caller's step. Storage stays
-byte-opaque: the corpus is still just the frame bytes.
+The consumer (okm-vector) builds search on top, in layers: an exact contiguous scan (the small-corpus path and the recall reference), an in-memory HNSW over quantized codes (int8 cosine or product codes), and a sharded handle whose snapshot is one blob per shard under fixed face 0x0A — a cache, droppable at any time. Code-level distances are the graph's output; re-scoring against the stored vector is the caller's step. Storage stays byte-opaque: the corpus is still just the frame bytes.
 
 #### Case: a fixed-size access ring lives in `Vector<u32>`, not in the counters
 
-k10r's fact row has to answer something no counter can: were those 50 reads
-bunched into one week, or spread over two years? The weight system's decay bills
-exactly that distribution, while `read_count` plus "last access" leaves two
-numbers. The shape it landed on is one 8-slot ring:
+k10r's fact row has to answer something no counter can: were those 50 reads bunched into one week, or spread over two years? The weight system's decay bills exactly that distribution, while `read_count` plus "last access" leaves two numbers. The shape it landed on is one 8-slot ring:
 
 ```rust
 pub struct Facts {
@@ -1568,51 +862,26 @@ pub struct Facts {
 }
 ```
 
-Each slot is a SECOND offset from `1_767_225_600` (2026-01-01T00:00:00Z);
-ascending, `0` = unused (that instant is never a real access, so it doubles as the
-sentinel); shifted right by one on write, so the tail slot is the last access. The
-window covers the last 8 only and anything older stays summarized by the counters
-— a fixed-price trade between row width and fidelity, not an omission.
+Each slot is a SECOND offset from `1_767_225_600` (2026-01-01T00:00:00Z); ascending, `0` = unused (that instant is never a real access, so it doubles as the sentinel); shifted right by one on write, so the tail slot is the last access. The window covers the last 8 only and anything older stays summarized by the counters — a fixed-price trade between row width and fidelity, not an omission.
 
 Four rejections, each of them the cheaper wrong answer:
 
 - **Not `Offset`.** That is a scalar field's spelling (`#[ok_offset(base)]` stores
-  an i64 as a u32 delta), while a `Vector`'s elements are only
-  `f32/u32/i32/u64/i64/String` — so the base stays a consumer constant and okm
-  stores a plain `u32`.
+an i64 as a u32 delta), while a `Vector`'s elements are only `f32/u32/i32/u64/i64/String` — so the base stays a consumer constant and okm stores a plain `u32`.
 - **Not `Bytes`.** `Vector<u32>` already gives the bare-V zero-overhead layout for
-  fixed-width elements, the `FieldType::Vector` column type, and the `#[ok_len]` /
-  `expect_len` write-boundary contract; opaque bytes would have all three rewritten
-  by hand, and neither the dynamic reader nor the arrow bridge could read it.
+fixed-width elements, the `FieldType::Vector` column type, and the `#[ok_len]` / `expect_len` write-boundary contract; opaque bytes would have all three rewritten by hand, and neither the dynamic reader nor the arrow bridge could read it.
 - **No cursor.** Every touch changes `weight`, so the whole row is re-encoded and
-  all eight slots are written no matter how they are arranged — the shift costs
-  nothing; a cursor only buys a reader that must rotate its view and a `0` sentinel
-  that is no longer always at the front.
+all eight slots are written no matter how they are arranged — the shift costs nothing; a cursor only buys a reader that must rotate its view and a `0` sentinel that is no longer always at the front.
 - **No wrapper.** The ring has no new wire form (it IS `[count][u32 × 8]`), and K,
-  the epoch and the second granularity are all application parameters — hoisting
-  them into the codec hands every other consumer a clock semantics it never asked
-  for, the same discipline as the bloom filter.
+the epoch and the second granularity are all application parameters — hoisting them into the codec hands every other consumer a clock semantics it never asked for, the same discipline as the bloom filter.
 
-Adding the field needs no rebuild: a tail append is the only legal way to add a
-field, an older row simply lacks the cold frame and decodes to the declared
-default (8 zeros), and `#[ok_len(8)]` only constrains rows being written. The one
-trap is on the application side: `Default` must be hand-written, because a derived
-`Default` hands back an empty `Vector` and the first encode panics at the write
-boundary.
+Adding the field needs no rebuild: a tail append is the only legal way to add a field, an older row simply lacks the cold frame and decodes to the declared default (8 zeros), and `#[ok_len(8)]` only constrains rows being written. The one trap is on the application side: `Default` must be hand-written, because a derived `Default` hands back an empty `Vector` and the first encode panics at the write boundary.
 
-Nor is it a candidate for "let the library count for me": reduce is a cross-row
-GROUP-BY (its unit is "how many rows in this group") and subscribe only emits the
-write as an event and never rewrites a field. Incrementing on every access is the
-caller's read-modify-write, and the single-writer discipline keeps it from
-interleaving.
+Nor is it a candidate for "let the library count for me": reduce is a cross-row GROUP-BY (its unit is "how many rows in this group") and subscribe only emits the write as an event and never rewrites a field. Incrementing on every access is the caller's read-modify-write, and the single-writer discipline keeps it from interleaving.
 
 ## A value too big for the row: its own ns, the same key
 
-One column can be orders of magnitude larger than the rest of the row — a blob, a
-rendered document, an embedding. Left in the payload it is paid for on every read
-of the row and re-encoded on every write of ANY field. The answer is not a new
-storage location inside the row codec (ADR-0036): it is a second table whose key
-type is the parent's own key type.
+One column can be orders of magnitude larger than the rest of the row — a blob, a rendered document, an embedding. Left in the payload it is paid for on every read of the row and re-encoded on every write of ANY field. The answer is not a new storage location inside the row codec (ADR-0036): it is a second table whose key type is the parent's own key type.
 
 ```rust
 #[derive(KeyEncode, Clone, PartialEq, Debug)]
@@ -1639,134 +908,71 @@ pub struct PostPayload { pub mime: String, pub body: Bytes }
 | whole document | two reads, opt-in — that is the point of splitting |
 | "has a payload" | presence of the side row; no `Option` field, no sentinel |
 
-Deletion is the caller's: nothing cascades in this model (junction entries are the
-same shape), so the pair is deleted together by the caller. The write pair is one
-commit; the delete pair is two until a batchable `purge_into` lands (PLAN).
+Deletion is the caller's: nothing cascades in this model (junction entries are the same shape), so the pair is deleted together by the caller. The write pair is one commit; the delete pair is two until a batchable `purge_into` lands (PLAN).
 
 ### When to split
 
 Two triggers; either one is enough.
 
 - **Large AND accessed on its own.** A download, a thumbnail, a re-embedding pass —
-  those readers want that column and not the row.
+those readers want that column and not the row.
 - **Write-frequency asymmetry.** A row is written whole (ADR-0035), so a write of ANY
-  field re-encodes the large column. When the same row also carries a small field that
-  changes faster — a counter, a clock, a status — the frequent writer pays for the large
-  column on every write, and the split is worth it even though every read wants both.
-  The test is not "is it read on its own" but "does anything else in this row get
-  written more often than this column changes": k10r's node vector (1.5 KB at 384 dims,
-  2 KB at 512) sharing a row with a usage counter is the worked example (k10r
-  ADR-0019).
+field re-encodes the large column. When the same row also carries a small field that changes faster — a counter, a clock, a status — the frequent writer pays for the large column on every write, and the split is worth it even though every read wants both. The test is not "is it read on its own" but "does anything else in this row get written more often than this column changes": k10r's node vector (1.5 KB at 384 dims, 2 KB at 512) sharing a row with a usage counter is the worked example (k10r ADR-0019).
 
-Do NOT split when every access reads it with the row AND nothing writes more often than
-it — that pays a second point read for nothing, and the payload is the cheaper place.
+Do NOT split when every access reads it with the row AND nothing writes more often than it — that pays a second point read for nothing, and the payload is the cheaper place.
 
 ### How to split
 
 - **The key type is the parent's own key type.** The key payload is therefore
-  byte-identical, the pairing is pinned by the compiler, and only the ns and the table
-  name differ — the side table takes an ns of its own, and that is the whole cost.
+byte-identical, the pairing is pinned by the compiler, and only the ns and the table name differ — the side table takes an ns of its own, and that is the whole cost.
 - **Presence is the side row.** No `Option` field, no zero-length sentinel: "has one" is
-  a state, not an absence.
+a state, not an absence.
 - **Write the pair into one batch** (both collections `save_with_prev_into`, one
-  `commit_batch`) and delete it as a pair — nothing cascades in this model, so deletion
-  is the caller's; once a batchable `purge_into` lands, the delete is one commit too.
+`commit_batch`) and delete it as a pair — nothing cascades in this model, so deletion is the caller's; once a batchable `purge_into` lands, the delete is one commit too.
 - **The parent row stays whole.** `R` is still the document's full set of declared
-  fields; the side table is its second table, not a patch on it — so `fetch` /
-  `replace` / `put` keep their meaning unchanged.
+fields; the side table is its second table, not a patch on it — so `fetch` / `replace` / `put` keep their meaning unchanged.
 - **The side table may have everything a table has**: its own declared faces, reduce
-  groups, its own `#[ok_layout]` version, and free export/import per `(K, R)` — because
-  it is an ordinary table, not a fifth storage location in the row codec.
+groups, its own `#[ok_layout]` version, and free export/import per `(K, R)` — because it is an ordinary table, not a fifth storage location in the row codec.
 
 ### Three shapes this is not
 
 - **An off-row annotation inside the row codec** (`#[ok_offrow]`, ADR-0036): the value
-  stays under the same row key, merely on another face, with a per-document tag enum as
-  the field-level selector. It costs a fifth storage location threaded through
-  `FieldDesc`, `FieldSchema`, `split_names`, the four whole-document verbs and the
-  derive walks — and it FORBIDS indexing or reduce-grouping that column — in exchange
-  for at most one round trip on a whole-document read.
+stays under the same row key, merely on another face, with a per-document tag enum as the field-level selector. It costs a fifth storage location threaded through `FieldDesc`, `FieldSchema`, `split_names`, the four whole-document verbs and the derive walks — and it FORBIDS indexing or reduce-grouping that column — in exchange for at most one round trip on a whole-document read.
 - **The dynamic segment (slot 1)**: slot 1 is rewritten whole, exactly like the row, so
-  it isolates nothing; and it is the schema-less area, not where a declared, typed
-  column belongs.
+it isolates nothing; and it is the schema-less area, not where a declared, typed column belongs.
 - **A `Ref<D, K>` field on the parent**: that type says "the child belongs to the
-  parent" — identity, lifetime and dereference bound together — where what is wanted is
-  "two parts of one identity, each with its own writer". Four costs: `get`
-  dereferences, so every read of the parent also reads the large column (read
-  amplification is back); `Ref::own` makes the parent's write write the child (the write
-  coupling is back); `purge` deletes the primary entry, the faces and the reduce ledgers
-  but never the child, so deleting the row leaves the side row behind as an orphan; and
-  the release that happens on overwrite does not distinguish `own` from `ref_key`, so
-  it deletes a child another parent still references.
+parent" — identity, lifetime and dereference bound together — where what is wanted is "two parts of one identity, each with its own writer". Four costs: `get` dereferences, so every read of the parent also reads the large column (read amplification is back); `Ref::own` makes the parent's write write the child (the write coupling is back); `purge` deletes the primary entry, the faces and the reduce ledgers but never the child, so deleting the row leaves the side row behind as an orphan; and the release that happens on overwrite does not distinguish `own` from `ref_key`, so it deletes a child another parent still references.
 
 ### Indexes and derived state
 
-A table's index entries are derived from the WHOLE row and live and die with it, so the
-write path recomputes the new row's entry set wholesale; `merge` / `replace` then delete
-the entries the old row no longer produces, and `put` leaves a dangling one to `purge`.
-There is no "which field changed, which faces does it feed" map here, because no write
-path writes a single field — the off-row shape is precisely the thing that needs that
-map.
+A table's index entries are derived from the WHOLE row and live and die with it, so the write path recomputes the new row's entry set wholesale; `merge` / `replace` then delete the entries the old row no longer produces, and `put` leaves a dangling one to `purge`. There is no "which field changed, which faces does it feed" map here, because no write path writes a single field — the off-row shape is precisely the thing that needs that map.
 
-A side table's indexes are its own: derived from that table alone, so a side-table write
-does not disturb the parent's indexes and a parent write does not disturb the side
-table's. A column with no key order has no declared face at all (a vector), and its
-search index is derived state rebuilt wholesale from the table it lives in — invalidated
-by a write, never maintained row by row.
+A side table's indexes are its own: derived from that table alone, so a side-table write does not disturb the parent's indexes and a parent write does not disturb the side table's. A column with no key order has no declared face at all (a vector), and its search index is derived state rebuilt wholesale from the table it lives in — invalidated by a write, never maintained row by row.
 
 ## Cross-row pre-aggregation
 
-Every index entry is an append-only derived view that lives and dies
-with its row — purge regenerates the exact set via the same function,
-so nothing dangles. One class of requirements sits outside that
-discipline by nature: post counts per author, hourly rollups, exact
-counters. These are **cross-row** — func's `fn(&Row)` signature sees
-one row, and the answer lands on **read-modify-write of the entry
-value**, the fourth primitive (mutable aggregation entry).
+Every index entry is an append-only derived view that lives and dies with its row — purge regenerates the exact set via the same function, so nothing dangles. One class of requirements sits outside that discipline by nature: post counts per author, hourly rollups, exact counters. These are **cross-row** — func's `fn(&Row)` signature sees one row, and the answer lands on **read-modify-write of the entry value**, the fourth primitive (mutable aggregation entry).
 
-okm-core's stance splits in two layers: core ships no aggregation semantics
-(no built-in counter types, no distributed add protocol), but the
-mechanical half is provided as a helper facility, declared like an
-index:
+okm-core's stance splits in two layers: core ships no aggregation semantics (no built-in counter types, no distributed add protocol), but the mechanical half is provided as a helper facility, declared like an index:
 
 ```text
 #[ok_reduce(AuthorStats { group(author_id) })]
 ```
 
-`group(...)` takes the grouping segment from row fields (entry =
-`[ns][slot][group segment]`; the slot is a reduce-segment slot, independent of
-the index counter, ADR-0016);
-`AuthorStats` is a user type implementing `ReduceLogic` — an `Acc`
-(the accumulator type, implementing `ReduceCodec` for fixed-width BE
-encoding) plus `fold(acc, &row)` (on put) and `unfold(acc, &row)` (on
-delete). The write path performs the read-modify-write automatically:
-read the current acc, fold or unfold, write back. The read side is
-`reduce_get` for one group and `scan_reduces` for all groups. The
-mechanics (ledger invariant, the overwrite-unfold compensation, the
-write-path sequence) live in the internals doc
-[reduce-mechanism.zh-CN.md](internals/reduce-mechanism.zh-CN.md).
+`group(...)` takes the grouping segment from row fields (entry = `[ns][slot][group segment]`; the slot is a reduce-segment slot, independent of the index counter, ADR-0016); `AuthorStats` is a user type implementing `ReduceLogic` — an `Acc` (the accumulator type, implementing `ReduceCodec` for fixed-width BE encoding) plus `fold(acc, &row)` (on put) and `unfold(acc, &row)` (on delete). The write path performs the read-modify-write automatically: read the current acc, fold or unfold, write back. The read side is `reduce_get` for one group and `scan_reduces` for all groups. The mechanics (ledger invariant, the overwrite-unfold compensation, the write-path sequence) live in the internals doc [reduce-mechanism.zh-CN.md](internals/reduce-mechanism.zh-CN.md).
 
 Two disciplines of use:
 
 - **Reversibility is the contract**: `unfold(fold(a,x)) = a` must hold
-  exactly — count and sum qualify, median and distinct do not;
-  non-invertible reduces belong in an OLAP system beside the KV. A
-  compound acc (count + sum for averages) implements `ReduceCodec`
-  directly; okm-core only stores and fetches the bytes.
+exactly — count and sum qualify, median and distinct do not; non-invertible reduces belong in an OLAP system beside the KV. A compound acc (count + sum for averages) implements `ReduceCodec` directly; okm-core only stores and fetches the bytes.
 - **Single-writer boundary**: the hook is a read-modify-write, safe
-  under single-writer engines; multi-writer races and distributed add
-  protocols are outside this model (see the integration doc).
+under single-writer engines; multi-writer races and distributed add protocols are outside this model (see the integration doc).
 
-Zero-value GC is deliberately omitted: an emptied group keeps its
-entry (the acc back at the identity), which avoids tombstone logic;
-callers skip identity-element groups as needed.
+Zero-value GC is deliberately omitted: an emptied group keeps its entry (the acc back at the identity), which avoids tombstone logic; callers skip identity-element groups as needed.
 
 ## Reading a reduce
 
-The write path maintains the entry; the read path is two functions, and both
-take a marker TYPE, never a slot number — the derive generates one marker per
-`#[ok_reduce]` declaration, in declaration order, carrying that reduce's slot,
-group fields and group encoder:
+The write path maintains the entry; the read path is two functions, and both take a marker TYPE, never a slot number — the derive generates one marker per `#[ok_reduce]` declaration, in declaration order, carrying that reduce's slot, group fields and group encoder:
 
 ```text
 reduce_get::<Store, __OkmReduce_AuthorStats_0>(store, ns_prefix, &key, &row) -> Option<Acc>
@@ -1774,83 +980,35 @@ scan_reduces::<Store, __OkmReduce_AuthorStats_0>(store, ns_prefix)           -> 
 ```
 
 - **The entry key is `[ns][slot][group segment]`** — the group IS the identity,
-  and there is no key tail. The two trailing arguments (`&key`, `&row`) are used
-  for exactly one thing: encoding the group segment's bytes (the named group
-  fields, each from its own source — the two-source rule). When you only mean to
-  read, pass any value that carries the group fields.
+and there is no key tail. The two trailing arguments (`&key`, `&row`) are used for exactly one thing: encoding the group segment's bytes (the named group fields, each from its own source — the two-source rule). When you only mean to read, pass any value that carries the group fields.
 - **`None` is a real answer**: the group has never been created. Zero states are
-  not garbage-collected — an emptied group keeps its entry at the accumulator's
-  identity — so "absent" and "empty" are the caller's policy, not core's.
+not garbage-collected — an emptied group keeps its entry at the accumulator's identity — so "absent" and "empty" are the caller's policy, not core's.
 - **Slots are per-segment and append-only**: a reduce's slot comes from the
-  reduce segment (`0x2`), independent of the index counter, and is never reused —
-  so a declaration's slot is stable for the table's lifetime, and two reduces on
-  one table are told apart by it.
+reduce segment (`0x2`), independent of the index counter, and is never reused — so a declaration's slot is stable for the table's lifetime, and two reduces on one table are told apart by it.
 - **`scan_reduces` returns group segments, not decoded keys** (ADR-0024): the
-  caller knows the field widths and can decode them; the helper deliberately does
-  not hand back a typed key.
+caller knows the field widths and can decode them; the helper deliberately does not hand back a typed key.
 
 ## Two read-modify-writes: reduce and upsert_with
 
-Besides reduce, the write path has an imperative half —
-`Collection::upsert_with(key, f)`: read the old row, compute the new one in
-a closure, go through the normal put. Both RMWs share the same
-underlying shape (read → compute → write); the division of labor
-follows one question: who knows the logic?
+Besides reduce, the write path has an imperative half — `Collection::upsert_with(key, f)`: read the old row, compute the new one in a closure, go through the normal put. Both RMWs share the same underlying shape (read → compute → write); the division of labor follows one question: who knows the logic?
 
 - **reduce (declarative)**: `#[ok_reduce(Logic { group(f) })]` pins
-  everything at compile time — which rows land in which group, how
-  fold/unfold compute — as part of the type declaration, framework-
-  driven. Fits aggregations that evolve with the row structure
-  (counts, sums).
+everything at compile time — which rows land in which group, how fold/unfold compute — as part of the type declaration, framework- driven. Fits aggregations that evolve with the row structure (counts, sums).
 - **upsert_with (commanded)**: `f(Option<R>) -> R` receives the old
-  row at runtime, arbitrary logic. Fits updates only the caller knows
-  (balance adjustments, conditional patches). `None` = the key does
-  not exist yet (insert path).
+row at runtime, arbitrary logic. Fits updates only the caller knows (balance adjustments, conditional patches). `None` = the key does not exist yet (insert path).
 
-Both go through the same write path (put), so index maintenance,
-reduce folds and event emission all fire without special-casing. Both
-rest on the same correctness boundary: **single-writer**. OKM is an
-in-process library with one owner per collection, and the verbs take
-`&self`, so the boundary is carried by the type: the epoch counter — the
-one piece of mutable state a write touches — is a `Cell`, which makes the
-collection `!Sync` and leaves no way for a second owner to hold it while
-get→f→put is in flight. No CAS needed; the same property backs reduce's
-exactly-once. The multi-writer future (optimistic CAS)
-is a different mechanism, outside this model. The overwrite unfold
-compensation happens inside put; upsert_with does not settle the
-ledger twice (see the internals doc on the reduce mechanism).
+Both go through the same write path (put), so index maintenance, reduce folds and event emission all fire without special-casing. Both rest on the same correctness boundary: **single-writer**. OKM is an in-process library with one owner per collection, and the verbs take `&self`, so the boundary is carried by the type: the epoch counter — the one piece of mutable state a write touches — is a `Cell`, which makes the collection `!Sync` and leaves no way for a second owner to hold it while get→f→put is in flight. No CAS needed; the same property backs reduce's exactly-once. The multi-writer future (optimistic CAS) is a different mechanism, outside this model. The overwrite unfold compensation happens inside put; upsert_with does not settle the ledger twice (see the internals doc on the reduce mechanism).
 
 ## Write-path events: two mechanisms (reduce, subscribe)
 
-Reduce answers "what does the accumulated state look like"; a second class of
-consumers wants the write itself as an event — side effects, search-index sync,
-downstream notifications. The line between the two mechanisms is not who runs
-first, it is WHERE THE CONSUMER'S CODE LIVES: reduce puts the consumer inside
-the write — the fold IS part of the write; subscribe puts it outside — there is
-no handler at the annotation site, only one send. The judging question is
-unchanged, and it is still about failure semantics: what happens if this
-consumer LOSES an event? A corrupted ledger = reduce (in-write, exactly-once by
-construction); reconcilable later = subscribe (after the write, best-effort);
-nothing = your own code (a side effect at the write path's edge, for which okm
-provides no mechanism and has no declaration surface). **There are exactly two
-mechanisms**; the third class gets no name, because there is nothing to declare
-or assemble.
+Reduce answers "what does the accumulated state look like"; a second class of consumers wants the write itself as an event — side effects, search-index sync, downstream notifications. The line between the two mechanisms is not who runs first, it is WHERE THE CONSUMER'S CODE LIVES: reduce puts the consumer inside the write — the fold IS part of the write; subscribe puts it outside — there is no handler at the annotation site, only one send. The judging question is unchanged, and it is still about failure semantics: what happens if this consumer LOSES an event? A corrupted ledger = reduce (in-write, exactly-once by construction); reconcilable later = subscribe (after the write, best-effort); nothing = your own code (a side effect at the write path's edge, for which okm provides no mechanism and has no declaration surface). **There are exactly two mechanisms**; the third class gets no name, because there is nothing to declare or assemble.
 
 - **reduce** (`#[ok_reduce]`): runs inside the write path, exactly-once by
-  construction — the fold IS part of the write. Reduce never consumes a
-  subscription.
+construction — the fold IS part of the write. Reduce never consumes a subscription.
 - **A side effect at the write path's edge** (not a mechanism): plain
-  application code — no okm mechanism, no declaration surface. It runs
-  synchronously inside the write sequence, but AT-MOST-ONCE, with no
-  transaction boundary and no undo — "already notified" and "already wrote the
-  other table" cannot be rolled back, and its failure neither rolls back the
-  write nor earns a retry; do not hang anything on it that must happen exactly
-  once. Its asymmetry with reduce (reversible vs at-most-once, on the SAME
-  event source) is a deliberate design, recorded in ADR-0008 — do not try to
-  turn it into a second declaration surface.
+application code — no okm mechanism, no declaration surface. It runs synchronously inside the write sequence, but AT-MOST-ONCE, with no transaction boundary and no undo — "already notified" and "already wrote the other table" cannot be rolled back, and its failure neither rolls back the write nor earns a retry; do not hang anything on it that must happen exactly once. Its asymmetry with reduce (reversible vs at-most-once, on the SAME event source) is a deliberate design, recorded in ADR-0008 — do not try to turn it into a second declaration surface.
 
-  Again, this is NOT a declaration — it is ordinary code at the write
-  path's edge, after the row and its derived entries are durable:
+Again, this is NOT a declaration — it is ordinary code at the write path's edge, after the row and its derived entries are durable:
 
   ```rust
   // caller-side put wrapper: the row write stays exactly-once, the
@@ -1864,16 +1022,10 @@ or assemble.
   }
   ```
 
-  The line between that side effect and a subscriber: the side effect runs
-  IN the caller's write sequence (its cost lands on the write's latency, its
-  panic propagates); a subscriber runs AFTER the write returned. If the side
-  effect must observe every write even under load, it needs a sink with a
-  durable feed — not a few lines after `put`.
+The line between that side effect and a subscriber: the side effect runs IN the caller's write sequence (its cost lands on the write's latency, its panic propagates); a subscriber runs AFTER the write returned. If the side effect must observe every write even under load, it needs a sink with a durable feed — not a few lines after `put`.
 
 - **subscribe** (`#[ok_subscribe]`): best-effort delivery, no guarantee.
-  The annotation declares that this row type's write-path events enter a
-  subscription; there is no handler at the annotation site — the derive only
-  emits a send, and the subscriber registers a sink at assembly time:
+The annotation declares that this row type's write-path events enter a subscription; there is no handler at the annotation site — the derive only emits a send, and the subscriber registers a sink at assembly time:
 
 ```rust
 // declaration: bare — this row type's write events join the subscription;
@@ -1895,146 +1047,66 @@ okm_subscribe::SINK_ROWEVENT.register(move |ev: okm_subscribe::RowEvent| {
 });
 ```
 
-  What the consumer receives: `op` (Put/Delete), the row's `epoch`
-  (the emitting collection's monotonic write counter — an exact
-  same-table ordering boundary), the key, and the full row snapshot.
-  `register` returns nothing and delivery is best-effort: a full queue
-  drops, a missing sink drops, the write never notices. That is the
-  contract — a consumer that cannot tolerate a dropped event belongs
-  in-write, not here.
+What the consumer receives: `op` (Put/Delete), the row's `epoch` (the emitting collection's monotonic write counter — an exact same-table ordering boundary), the key, and the full row snapshot. `register` returns nothing and delivery is best-effort: a full queue drops, a missing sink drops, the write never notices. That is the contract — a consumer that cannot tolerate a dropped event belongs in-write, not here.
 
-Two properties of the event stream, independent of which class consumes
-it: events carry a monotonic **write-batch epoch** (the emitting table's
-write counter — same-table events arrive with an exact boundary, so a
-consumer combinator folds glitch-free to the boundary instead of
-debouncing), and the stream is in-process only — never persisted,
-resets on restart, no cross-table ordering (independent puts have no
-atomic "both updated" instant, so multi-table fan-in stays
-eventually-consistent by structure).
+Two properties of the event stream, independent of which class consumes it: events carry a monotonic **write-batch epoch** (the emitting table's write counter — same-table events arrive with an exact boundary, so a consumer combinator folds glitch-free to the boundary instead of debouncing), and the stream is in-process only — never persisted, resets on restart, no cross-table ordering (independent puts have no atomic "both updated" instant, so multi-table fan-in stays eventually-consistent by structure).
 
 Three disciplines of use:
 
 - **A write-path-edge side effect's failure never rolls back the write.** It is
-  an at-most-once side effect — a failure is neither retried nor undone, and the
-  write path does not pay for it; conversely, any logic whose failure would need
-  compensating does not belong in a write-path-edge side effect.
+an at-most-once side effect — a failure is neither retried nor undone, and the write path does not pay for it; conversely, any logic whose failure would need compensating does not belong in a write-path-edge side effect.
 - **Never put correctness on a subscription.** A full queue drops, a
-  missing sink drops silently; anything that must happen exactly once
-  (like reduce) belongs in-write. A subscription is for consumers that can
-  tolerate loss and reconcile later.
+missing sink drops silently; anything that must happen exactly once (like reduce) belongs in-write. A subscription is for consumers that can tolerate loss and reconcile later.
 - **Purity applies to event payloads too**: the row snapshot rides the
-  event as-is; deriving extra context at consume time re-reads storage
-  the event no longer guarantees to describe.
+event as-is; deriving extra context at consume time re-reads storage the event no longer guarantees to describe.
 
-The transport is an assembly-site decision (`SinkCell::register`
-accepts any sink — tokio mpsc, crossbeam queue, no-op); the core stays
-synchronous and knows no executor. Combinators over the receivers
-(map/filter/merge/fold to an epoch boundary) are the stream layer's
-business, not the model's.
+The transport is an assembly-site decision (`SinkCell::register` accepts any sink — tokio mpsc, crossbeam queue, no-op); the core stays synchronous and knows no executor. Combinators over the receivers (map/filter/merge/fold to an epoch boundary) are the stream layer's business, not the model's.
 
 ## Access methods are mandatory
 
-Queries go through `get` (primary key) or `scan::<I>` (a named access
-method). There is no general-purpose full-scan query surface.
+Queries go through `get` (primary key) or `scan::<I>` (a named access method). There is no general-purpose full-scan query surface.
 
-The only raw scans are `scan_rows_raw` / `scan_keys` / `scan_document_keys`
-— maintenance surfaces for the snapshot exporter and the Arrow bridge, not
-application query paths. If application code reaches for them, that is a
-missing access-method declaration, not a shortcut.
+The only raw scans are `scan_rows_raw` / `scan_keys` / `scan_document_keys` — maintenance surfaces for the snapshot exporter and the Arrow bridge, not application query paths. If application code reaches for them, that is a missing access-method declaration, not a shortcut.
 
-Enumeration has two modes, because a document is the PAIR of slots
-(ADR-0035): `scan_keys` enumerates ROWS (one prefix scan — a segment with no
-row is not there), `scan_document_keys` enumerates DOCUMENTS (the row slot
-merged in memory with the segment slot, so a `merge` that carried no declared
-name still shows up). Materializing is neither mode's job — `fetch` is the
-door, so a key becomes a document with a plain `map` over the keys; a union
-cannot be an adapter, because an adapter cannot surface an item that was never
-scanned.
+Enumeration has two modes, because a document is the PAIR of slots (ADR-0035): `scan_keys` enumerates ROWS (one prefix scan — a segment with no row is not there), `scan_document_keys` enumerates DOCUMENTS (the row slot merged in memory with the segment slot, so a `merge` that carried no declared name still shows up). Materializing is neither mode's job — `fetch` is the door, so a key becomes a document with a plain `map` over the keys; a union cannot be an adapter, because an adapter cannot surface an item that was never scanned.
 
 ## Key naming: plain prefixes + composable access methods
 
-A key has three segments: `[ns][pkey...][order]`. The sort field sits at
-the key tail (a big-endian u64 timestamp is byte-order = time order, a
-natural timeline): entries under the same pkey are physically adjacent
-and ordered, and a prefix scan directly *is* the timeline / range read —
-restoring a session, fetching the latest N, all one `scan`. Putting the
-primary sort field into the key is a physical decision; other sort
-dimensions stay in the payload and surface through `#[ok_index]`.
+A key has three segments: `[ns][pkey...][order]`. The sort field sits at the key tail (a big-endian u64 timestamp is byte-order = time order, a natural timeline): entries under the same pkey are physically adjacent and ordered, and a prefix scan directly *is* the timeline / range read — restoring a session, fetching the latest N, all one `scan`. Putting the primary sort field into the key is a physical decision; other sort dimensions stay in the payload and surface through `#[ok_index]`.
 
-Fancy prefix schemes are not recommended (path-style, semantically
-segmented prefixes) — the longer the prefix, the harder to manage; every
-prefix is an encoding convention that must be maintained. Prefer
-declaring more access methods: each `#[ok_index]` is an independent,
-composable, extensible read path — declared to register, one line
-deleted to retire.
+Fancy prefix schemes are not recommended (path-style, semantically segmented prefixes) — the longer the prefix, the harder to manage; every prefix is an encoding convention that must be maintained. Prefer declaring more access methods: each `#[ok_index]` is an independent, composable, extensible read path — declared to register, one line deleted to retire.
 
-**Consider a sort key only when the query result is plural.** The value
-of the `[order]` segment is gathering "a group of related entries" into
-a physically adjacent, ordered span that one prefix scan retrieves
-whole; for a single-result (point) query use `get` — hoarding sort
-segments in the key is meaningless.
+**Consider a sort key only when the query result is plural.** The value of the `[order]` segment is gathering "a group of related entries" into a physically adjacent, ordered span that one prefix scan retrieves whole; for a single-result (point) query use `get` — hoarding sort segments in the key is meaningless.
 
-Sort segments in composite keys deserve their own analysis. Start from
-the physical property of sort keys: **a sort key like time is highly
-selective and has no grouping power** — its values differ on almost
-every entry, so anything placed after it lands in groups of one, and
-intra-group ordering is impossible. Therefore appending fields after a
-highly selective sort key is meaningless: it can only contribute scan
-cost, never a read path.
+Sort segments in composite keys deserve their own analysis. Start from the physical property of sort keys: **a sort key like time is highly selective and has no grouping power** — its values differ on almost every entry, so anything placed after it lands in groups of one, and intra-group ordering is impossible. Therefore appending fields after a highly selective sort key is meaningless: it can only contribute scan cost, never a read path.
 
 Anti-pattern: `[session_id][user_id][time]` (session messages).
 
 - user_id sits before time, so entries are ordered "grouped by user,
-  then by time within the group" — queries that group a session *by
-  user* generally do not exist, and the user_id segment yields no read
-  path.
+then by time within the group" — queries that group a session *by user* generally do not exist, and the user_id segment yields no read path.
 - The cost is certain: even the most ordinary session replay (fetching
-  all messages) does not come back in time order — the read side must
-  re-sort; fetching the latest N means scanning the whole group and
-  sorting.
+all messages) does not come back in time order — the read side must re-sort; fetching the latest N means scanning the whole group and sorting.
 - If occasional per-user filtering is truly needed, a full scan with a
-  filter suffices — not worth changing the key layout for.
+filter suffices — not worth changing the key layout for.
 
-The correct form is `[ns][session_id][time]`: the pkey carries exactly
-one sort key, and session replay, pagination, and range reads are all
-one prefix scan away.
+The correct form is `[ns][session_id][time]`: the pkey carries exactly one sort key, and session replay, pagination, and range reads are all one prefix scan away.
 
-Generalized: **a trailing remainder after `[pkey][sort field]` is also
-an anti-pattern.** Stuffing a "also query/group by X" dimension into the
-key tail is, in essence, hand-maintaining an access method inside the
-key. Hand-maintained key prefixes can indeed buy performance in specific
-scenarios, but:
+Generalized: **a trailing remainder after `[pkey][sort field]` is also an anti-pattern.** Stuffing a "also query/group by X" dimension into the key tail is, in essence, hand-maintaining an access method inside the key. Hand-maintained key prefixes can indeed buy performance in specific scenarios, but:
 
 - **Scenario-dependent**: the key layout freezes one read path. As
-  business complexity grows, most tables need multiple access methods;
-  optimizing for just one is of little value.
+business complexity grows, most tables need multiple access methods; optimizing for just one is of little value.
 - **Business-logic-dependent**: whether the optimization holds depends
-  on the business happening to support that read pattern — not a
-  modeling technique.
+on the business happening to support that read pattern — not a modeling technique.
 - **Poor cost/benefit**: high development cost, and the performance
-  gain is small (quantified in the next section, "Design constraints on
-  performance").
+gain is small (quantified in the next section, "Design constraints on performance").
 - **Nowhere to decode the suffix**: a custom segment at the key tail
-  needs a matching decode method, which OKM explicitly does not
-  provide — the `KeyEncode` derive decodes only the declared full key
-  length (`KEY_LEN` locked at compile time), and `PrefixKey` decodes
-  only the truncated identity prefix (bytes beyond the prefix are
-  garbage by contract). Hand-writing offset arithmetic to decode a
-  suffix is complex and error-prone, precisely losing OKM's point:
-  zero-cost encode/decode with compile-time locked layouts.
+needs a matching decode method, which OKM explicitly does not provide — the `KeyEncode` derive decodes only the declared full key length (`KEY_LEN` locked at compile time), and `PrefixKey` decodes only the truncated identity prefix (bytes beyond the prefix are garbage by contract). Hand-writing offset arithmetic to decode a suffix is complex and error-prone, precisely losing OKM's point: zero-cost encode/decode with compile-time locked layouts.
 
-These dimensions all belong to access methods / secondary indexes:
-`#[ok_index]` registers on declaration — composable, extensible, added
-as the business grows — without touching the primary key layout.
+These dimensions all belong to access methods / secondary indexes: `#[ok_index]` registers on declaration — composable, extensible, added as the business grows — without touching the primary key layout.
 
 ## Open vocabularies: names become proxy ids
 
-A key segment is fixed-width byte identity — `KeyEncode` rejects `String`
-at compile time. A name that arrives from outside the schema (a user id,
-a tenant slug, an entity kind, a routing value) has no fixed width and
-data-scale cardinality: it cannot be declared as a key field, and it is
-not a compile-time constant per value either. Three parts turn it into a
-key:
+A key segment is fixed-width byte identity — `KeyEncode` rejects `String` at compile time. A name that arrives from outside the schema (a user id, a tenant slug, an entity kind, a routing value) has no fixed width and data-scale cardinality: it cannot be declared as a key field, and it is not a compile-time constant per value either. Three parts turn it into a key:
 
 ```text
 row     [ns][id u32]                     → name + payload
@@ -2043,145 +1115,67 @@ reduce  HighWater(id) { group(global) }  → id issuance (point read, +1)
 ```
 
 - **The row is keyed by the proxy id and carries the name** as a payload
-  field. The name is the only variable-width piece and never enters the
-  key.
+field. The name is the only variable-width piece and never enters the key.
 - **The `by_name` index is the lookup direction** (`name → id`). Index
-  text segments carry no length prefix and no separator (ADR-0005), so a
-  raw prefix scan can hit a longer name ("add" hits "add_to_cart") — that
-  is prefix semantics, not a false hit. For equality use `scan_exact::<I>`
-  (the probe consumes the whole field segment); the family whose probe
-  bytes are completed by the primary-key tail is dropped by the scan's
-  length test, so no row comparison is needed either way.
+text segments carry no length prefix and no separator (ADR-0005), so a raw prefix scan can hit a longer name ("add" hits "add_to_cart") — that is prefix semantics, not a false hit. For equality use `scan_exact::<I>` (the probe consumes the whole field segment); the family whose probe bytes are completed by the primary-key tail is dropped by the scan's length test, so no row comparison is needed either way.
 - **The `HighWater(id)` reduce issues ids**: read the watermark, +1,
-  write back. The watermark never falls (its unfold is a no-op), so
-  retracting rows does not lower the next id — the one place where the
-  ledger deliberately diverges from the row set, and exactly what makes
-  the preset usable as an issuer.
+write back. The watermark never falls (its unfold is a no-op), so retracting rows does not lower the next id — the one place where the ledger deliberately diverges from the row set, and exactly what makes the preset usable as an issuer.
 
 Two disciplines:
 
 - **Ids are append-only and never reused.** Reusing a proxy id reads old
-  rows as a new entity — the same rule as namespaces.
+rows as a new entity — the same rule as namespaces.
 - **The issuer is a single writer.** The watermark read-modify-write
-  rides the same single-writer boundary as every other read-modify-write
-  in this model.
+rides the same single-writer boundary as every other read-modify-write in this model.
 
-The reverse direction (`id → name`) is one `get` on the row — the point
-of a vocabulary over a hash: a hash into a fixed-width segment collides
-(a collision silently addresses another entity's rows) and cannot be
-rendered back, so operations cannot list the vocabulary in human terms.
+The reverse direction (`id → name`) is one `get` on the row — the point of a vocabulary over a hash: a hash into a fixed-width segment collides (a collision silently addresses another entity's rows) and cannot be rendered back, so operations cannot list the vocabulary in human terms.
 
-Closed vs open: a **closed** vocabulary — the distinct kinds the system
-itself declares — earns a real namespace (`#[ok_ns]`); an **open** one —
-names that arrive as data — earns a proxy id plus a text index. okm's own
-namespace and field-name dictionaries are built this way.
+Closed vs open: a **closed** vocabulary — the distinct kinds the system itself declares — earns a real namespace (`#[ok_ns]`); an **open** one — names that arrive as data — earns a proxy id plus a text index. okm's own namespace and field-name dictionaries are built this way.
 
 ## Two kinds of tails: index tails are decodable, primary-key tails are not
 
-"Carrying data in the key tail" comes in two forms with completely
-different decidability, and they are easy to confuse:
+"Carrying data in the key tail" comes in two forms with completely different decidability, and they are easy to confuse:
 
 ```text
 index entry     [ns 2B][slot][fields segment][primary-key prefix]  ← tail always decodable
 primary entry   [ns][pkey...][custom tail?]                    ← custom tail undecodable
 ```
 
-**Index tails are decodable**: the tail segment of an index entry key is
-the primary-key encoding — a struct declared via `#[ok_ref]`, whose
-exact layout the `KeyEncode` derive knows; cut it off the end of the
-entry key and decode it back into the primary key (`PrefixKey`; the
-ADR-0005 contract: "the tail is always decodable from the last bytes of
-the entry key"). The `fields(...)` segment is the same: payload fields
-encoded in declaration order, all encode/decode generated by the derive
-with compile-time locked layouts.
+**Index tails are decodable**: the tail segment of an index entry key is the primary-key encoding — a struct declared via `#[ok_ref]`, whose exact layout the `KeyEncode` derive knows; cut it off the end of the entry key and decode it back into the primary key (`PrefixKey`; the ADR-0005 contract: "the tail is always decodable from the last bytes of the entry key"). The `fields(...)` segment is the same: payload fields encoded in declaration order, all encode/decode generated by the derive with compile-time locked layouts.
 
-**Primary-key custom tails are not decodable**: the primary key's layout
-is whatever the user's key struct declares; `decode` decodes only the
-declared full length. Stuff a "remainder" into the key tail that the key
-struct does not contain, and no generated code knows its offset or
-width — the `PrefixKey` contract even states that bytes beyond the
-truncated prefix are garbage.
+**Primary-key custom tails are not decodable**: the primary key's layout is whatever the user's key struct declares; `decode` decodes only the declared full length. Stuff a "remainder" into the key tail that the key struct does not contain, and no generated code knows its offset or width — the `PrefixKey` contract even states that bytes beyond the truncated prefix are garbage.
 
-The root in one sentence: **a tail is decodable only if its layout is
-inside the declaration system.** The index tail (primary-key encoding,
-`fields` segment) is inside the declaration system, hence decodable; a
-primary-key "remainder" is outside it, hence undecodable — and should
-not be stuffed in; the need belongs to `fields(...)`.
+The root in one sentence: **a tail is decodable only if its layout is inside the declaration system.** The index tail (primary-key encoding, `fields` segment) is inside the declaration system, hence decodable; a primary-key "remainder" is outside it, hence undecodable — and should not be stuffed in; the need belongs to `fields(...)`.
 
-Terminology: **"access method" is the modeling-layer word** — a declared
-read path; this guide uses it. **"Secondary index" is the
-mechanism-layer word** — the index entry layout generated by
-`#[ok_index]`; the ADRs and README use it. `#[ok_index]` is the mount
-point for both. This document addresses modeling, so the body uses
-"access method" throughout and says "secondary index" only when
-touching mechanism layout.
+Terminology: **"access method" is the modeling-layer word** — a declared read path; this guide uses it. **"Secondary index" is the mechanism-layer word** — the index entry layout generated by `#[ok_index]`; the ADRs and README use it. `#[ok_index]` is the mount point for both. This document addresses modeling, so the body uses "access method" throughout and says "secondary index" only when touching mechanism layout.
 
 ## Design constraints on performance
 
-The constraints above are not free, but the cost is bounded and the
-structural benefit outweighs it:
+The constraints above are not free, but the cost is bounded and the structural benefit outweighs it:
 
-**Reading from the key vs reading via an access method.** A remainder
-burned into the key rides back for free with every entry (tail bytes in
-hand); via an access method, that dimension comes back through one
-indirection — a `scan` fetch-back pays one primary-table point read
-plus one `decode_payload` per entry; `scan_covered` skips the point
-read and decodes the entry's includes segment instead — one entry-value
-parse rather than a point read plus a whole-payload parse.
+**Reading from the key vs reading via an access method.** A remainder burned into the key rides back for free with every entry (tail bytes in hand); via an access method, that dimension comes back through one indirection — a `scan` fetch-back pays one primary-table point read plus one `decode_payload` per entry; `scan_covered` skips the point read and decodes the entry's includes segment instead — one entry-value parse rather than a point read plus a whole-payload parse.
 
-**The per-hit cost is small, and amortized.** That indirection is a
-routine LSM point get / one TLV parse — not hot-path scale; what it
-buys is a key layout that never deforms for every "also query by X"
-dimension. As the business grows you add `#[ok_index]` instead of
-redesigning keys.
+**The per-hit cost is small, and amortized.** That indirection is a routine LSM point get / one TLV parse — not hot-path scale; what it buys is a key layout that never deforms for every "also query by X" dimension. As the business grows you add `#[ok_index]` instead of redesigning keys.
 
-**Bulk reads come out ahead UNDER AN EQUALITY PREFIX.** Fetch-back looks
-like random point reads, but with the leading index field FIXED both
-streams are ordered: index entries are clustered by `[indexed fields]
-[carried key]` and the primary table by `[pkey]`, so the tails are the
-main-key bytes in order and the walk degenerates into a two-pointer merge
-(merge-join style), sequential I/O, far cheaper than per-entry random
-reads. A range ACROSS the leading field breaks that: the tails then sort
-by the varied dimension, so every hit is a separate point read and the
-locality is roughly the number of distinct leading values in the interval
-— put the ranged dimension in the key's `[order]` segment (the main
-table's own sequential read), or iterate lazily with an early stop so
-only survivors pay the fetch-back. Hand-optimized key layouts have no
-extra card to play in the bulk case.
+**Bulk reads come out ahead UNDER AN EQUALITY PREFIX.** Fetch-back looks like random point reads, but with the leading index field FIXED both streams are ordered: index entries are clustered by `[indexed fields] [carried key]` and the primary table by `[pkey]`, so the tails are the main-key bytes in order and the walk degenerates into a two-pointer merge (merge-join style), sequential I/O, far cheaper than per-entry random reads. A range ACROSS the leading field breaks that: the tails then sort by the varied dimension, so every hit is a separate point read and the locality is roughly the number of distinct leading values in the interval — put the ranged dimension in the key's `[order]` segment (the main table's own sequential read), or iterate lazily with an early stop so only survivors pay the fetch-back. Hand-optimized key layouts have no extra card to play in the bulk case.
 
-Conclusion: the indirect cost of an access method is one amortizable
-parse plus one mergeable ordered read; bounded, controlled runtime
-overhead in exchange for unbounded key-layout complexity — a trade that
-only pays more as business complexity grows.
+Conclusion: the indirect cost of an access method is one amortizable parse plus one mergeable ordered read; bounded, controlled runtime overhead in exchange for unbounded key-layout complexity — a trade that only pays more as business complexity grows.
 
 ## Covering indexes, with restraint
 
-`includes(...)` copies payload fields into the index entry so
-`scan_covered` needs no fetch-back — it returns the covered fields
-decoded (`I::Covered`, one generated struct per covering declaration). A
-real win for high-fanout read paths — but every put/purge pays a
-permanent write cost.
+`includes(...)` copies payload fields into the index entry so `scan_covered` needs no fetch-back — it returns the covered fields decoded (`I::Covered`, one generated struct per covering declaration). A real win for high-fanout read paths — but every put/purge pays a permanent write cost.
 
 Discipline:
 
 - **Default to `fields` only.** Model with sort fields first.
 - Add `includes` only after measurements show the fetch-back path is
-  hot. It is an optimization for a proven hot path, not a default
-  modeling move.
+hot. It is an optimization for a proven hot path, not a default modeling move.
 
 ## The boundary of primary-key composition
 
-Primary keys may be composite (see the four layers:
-`[ns][pkey...][order]`), but the composed components must be part of
-the identity structure — and identity structure is answered by the
-business, not by modeling technique.
+Primary keys may be composite (see the four layers: `[ns][pkey...][order]`), but the composed components must be part of the identity structure — and identity structure is answered by the business, not by modeling technique.
 
-The canonical case is SaaS multi-tenancy: tenant → org → user, three
-levels. tenant_id and org_id are bound (an org belongs to exactly one
-tenant); user_id is not bound to an org — a user can change jobs,
-changing org while identity stays. In concrete layout terms (square
-brackets = key segments, braces = row fields; a field that is both key
-and row is written in both places):
+The canonical case is SaaS multi-tenancy: tenant → org → user, three levels. tenant_id and org_id are bound (an org belongs to exactly one tenant); user_id is not bound to an org — a user can change jobs, changing org while identity stays. In concrete layout terms (square brackets = key segments, braces = row fields; a field that is both key and row is written in both places):
 
 ```text
 Org (with hierarchy; parent_id expresses the tree)
@@ -2192,83 +1186,35 @@ User
 ```
 
 - The org primary key is the composite `[tenant_id][org_id]`:
-  tenant_id draws the physical boundary of data ownership, org_id is
-  identity within the tenant — both are identity structure.
+tenant_id draws the physical boundary of data ownership, org_id is identity within the tenant — both are identity structure.
 - Trees do not cross tenants: the parent referenced by parent_id is in
-  the same tenant as the child, so `{parent_id}` on the org row is
-  enough to express the hierarchy — no separate adjacency-table entity
-  is needed. Level-by-level expansion (BFS/DFS) within the
-  `[ns:org][tenant_id]` prefix is just layered `get` by parent_id; one
-  access method covers it.
+the same tenant as the child, so `{parent_id}` on the org row is enough to express the hierarchy — no separate adjacency-table entity is needed. Level-by-level expansion (BFS/DFS) within the `[ns:org][tenant_id]` prefix is just layered `get` by parent_id; one access method covers it.
 - The user primary key is only `[user_id]`. org_id is a row field —
-  compose `(org_id, user_id)` into the primary key and a job change
-  means a key change: one physical person split into several
-  identities.
+compose `(org_id, user_id)` into the primary key and a job change means a key change: one physical person split into several identities.
 
-Reads by org go through an index: `#[ok_index(by_org {
-fields(org_id, ...) })]` answers org-scoped reads with one prefix scan
-while identity stays singular.
+Reads by org go through an index: `#[ok_index(by_org { fields(org_id, ...) })]` answers org-scoped reads with one prefix scan while identity stays singular.
 
-Ownership questions like "does user-generated data belong to the
-company or the person" follow the same logic — they are business
-questions, and when the answer changes (data migration, ownership
-transfer) identity should not. This is the row model's (ADR-0006)
-payload-not-identity rule, restated as modeling discipline.
+Ownership questions like "does user-generated data belong to the company or the person" follow the same logic — they are business questions, and when the answer changes (data migration, ownership transfer) identity should not. This is the row model's (ADR-0006) payload-not-identity rule, restated as modeling discipline.
 
 ## Decisions resolve at declaration time
 
-The disciplines in this guide are instances of one stance: every
-structural decision resolves at declaration time, and the runtime only
-executes the declaration. That stance is why the guide keeps returning
-to "declare it, then never touch it".
+The disciplines in this guide are instances of one stance: every structural decision resolves at declaration time, and the runtime only executes the declaration. That stance is why the guide keeps returning to "declare it, then never touch it".
 
 - **The runtime has no interpreter.** There is no query planner: a read
-  is a prefix scan, and whether a question is answerable is settled by
-  the declared segment order (the leftmost-prefix constraint above), not
-  chosen at query time. A dimension you cannot name as an access method
-  becomes a full scan.
+is a prefix scan, and whether a question is answerable is settled by the declared segment order (the leftmost-prefix constraint above), not chosen at query time. A dimension you cannot name as an access method becomes a full scan.
 - **A declaration expands into two synchronized artifacts.** The derive
-  emits generated byte-manipulation code — what the runtime runs — and
-  the constant tables (`PAYLOAD_FIELDS`, `FIELDS`, `HOT_WIDTH`,
-  `NS_PREFIX`, each access method's `SLOT`). Every non-hot-path consumer
-  (schema export, the dynamic reader, the Arrow/Parquet bridge, snapshot
-  tooling) reads those tables instead of re-deriving the declaration:
-  the declaration is the registry, and there is no runtime registry (see
-  [ARCHITECTURE](ARCHITECTURE.md)).
+emits generated byte-manipulation code — what the runtime runs — and the constant tables (`PAYLOAD_FIELDS`, `FIELDS`, `HOT_WIDTH`, `NS_PREFIX`, each access method's `SLOT`). Every non-hot-path consumer (schema export, the dynamic reader, the Arrow/Parquet bridge, snapshot tooling) reads those tables instead of re-deriving the declaration: the declaration is the registry, and there is no runtime registry (see [ARCHITECTURE](ARCHITECTURE.md)).
 - **Position is identity.** An access method's slot is its position in
-  the declaration, and a field's vocabulary id is its first-seen order.
-  Both are append-only and never reused (above): nothing in the layout is
-  "just a number" that may be reassigned.
+the declaration, and a field's vocabulary id is its first-seen order. Both are append-only and never reused (above): nothing in the layout is "just a number" that may be reassigned.
 - **Illegal shapes are unrepresentable at compile time.** Two
-  variable-width fields in one index segment have no boundary byte
-  between them, and the derive rejects the declaration; a junction's
-  endpoint identity must be a declaration-order prefix (a macro-generated
-  check); a variable-width field anywhere but last breaks prefix
-  semantics. All three are compile-time rejections rather than runtime
-  validation: an illegal model does not compile, instead of failing
-  later.
+variable-width fields in one index segment have no boundary byte between them, and the derive rejects the declaration; a junction's endpoint identity must be a declaration-order prefix (a macro-generated check); a variable-width field anywhere but last breaks prefix semantics. All three are compile-time rejections rather than runtime validation: an illegal model does not compile, instead of failing later.
 - **The address space is a budget.** ns is a 2-byte identity — one
-  entity class, one ns, never reused; the slot space is a 4-bit segment
-  (entry kind) plus a 12-bit counter, its segments reserved by kind
-  (ADR-0016); vocabulary ids only grow. Allocating them is a
-  declaration-time duty — when instances share one engine, ns allocation
-  is a deployment decision.
+entity class, one ns, never reused; the slot space is a 4-bit segment (entry kind) plus a 12-bit counter, its segments reserved by kind (ADR-0016); vocabulary ids only grow. Allocating them is a declaration-time duty — when instances share one engine, ns allocation is a deployment decision.
 - **A layout change is a rebuild, not a migration.** Index entries are
-  derived state: absent from export and snapshot, rebuilt
-  deterministically from the rows by `put`. Changing a key layout or a
-  segment order is a re-declaration plus a clean rebuild, never an
-  in-place migration. What may change in a payload is its SHAPE — and it
-  changes as a whole: the new shape carries its own number, and rows of the
-  old shape are regenerated or carried across by export/import (ADR-0042).
-  Key layout, segments and slots never move.
+derived state: absent from export and snapshot, rebuilt deterministically from the rows by `put`. Changing a key layout or a segment order is a re-declaration plus a clean rebuild, never an in-place migration. What may change in a payload is its SHAPE — and it changes as a whole: the new shape carries its own number, and rows of the old shape are regenerated or carried across by export/import (ADR-0042). Key layout, segments and slots never move.
 - **A declaration has two moments; the runtime one covers data shape
-  only.** The typed path (compile-time derive) and the schema path (a
-  runtime `CollectionSchema` that the Python and Steel bindings build
-  collections from, no Rust type in sight) are byte-identical by
-  contract. What differs between them is the payload shape; key layout,
-  segments and slots stay what the declaration said.
+only.** The typed path (compile-time derive) and the schema path (a runtime `CollectionSchema` that the Python and Steel bindings build collections from, no Rust type in sight) are byte-identical by contract. What differs between them is the payload shape; key layout, segments and slots stay what the declaration said.
 
 ## Evolution
 
-New modeling principles are appended to this document as sections;
-mechanism decisions go into ADRs and are referenced, not duplicated.
+New modeling principles are appended to this document as sections; mechanism decisions go into ADRs and are referenced, not duplicated.
