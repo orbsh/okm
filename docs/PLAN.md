@@ -444,6 +444,25 @@ key bare in the tail) recorded in ADR-0005.
       with their integrations; re-run with
       `cargo bench -p okm-core --bench core_paths -- --baseline initial`.
       No CI regression gates initially.
+- [x] Engine benches without criterion (`okm-core/examples/engine_paths.rs`): 1,000,000 rows
+      of the same shape in four places — OKM+fjall, **bare fjall (no okm)**, Redis (valkey
+      9.1.2 over loopback, RESP client inside the example) and a Parquet file. fjall through
+      okm: put 4.8 µs / get 1.1 µs / 10,000-row scan 9.8 ms (5.8 ms covered); bare fjall:
+      1.7 µs / 777 ns / 4.4 ms (1.3 ms); Redis: 22 µs / 8.3 µs / 2.8 ms (1.1 ms); Parquet
+      0.12 µs per row at 3.4 B/row with no point operations at all. An fsync per write costs
+      0.37 ms. Writes are one timed pass — a second pass would measure an overwrite, which is
+      what the first version of the harness did until the 1M run showed it stuck.
+- [x] A fanout sweep through all three (1 / 10 / 100 / 1,000 / 10,000 / 100,000 rows behind
+      one index value, one level each), covered and fetch-back. Covered per row: bare fjall
+      102–196 ns, Redis 116–192 ns, okm's scan 383–624 ns. **The point this records: Redis's
+      batching advantage exists only against okm's model layer — against the bare LSM it is
+      slower below 1,000 rows and only 1.1–1.4x faster at 10,000–100,000, in its best shape
+      (one set, one `SMEMBERS`, no decoding).** Point lookups, the core scenario, are 8.3 µs
+      against 777 ns. Batch scanning belongs to Parquet (okm exports it; Iceberg later), not
+      to any KV. That 4x between okm's scan and bare fjall is model-layer cost — decode and
+      materialisation — and it is owed: there is no streaming door for index values
+      (`scan_range_iter` covers key ranges only).
+      Tables in `docs/internals/benchmarks.md`（中文版 `benchmarks.zh-CN.md`）.
 - [~] Dynamic codec (Python first, then Steel): schema-driven
       encoder/decoder/scan built from structured schema exports —
       in-process use for embedded-language Booths. Capability ceiling
@@ -2255,6 +2274,20 @@ that can be dropped in one syscall. Design in ADR-0046. Nothing below is built.
       is a per-consumer watermark). What may still be borrowed, without accepting any of
       that: block compression inside a segment, if segment size is ever shown to matter.
 
+- [x] A million records, against Parquet (`examples/log_vs_parquet.rs`): 56.1 B/record
+      against 44.8, 1,881 ns/record to write against 650, and the one place the log wins
+      outright is fetching a single record — 68 µs against 887 µs at Parquet's cheapest
+      row-group shape (4,096 rows) and 6.6 ms at 65,536. Numbers and how to read them are
+      in `docs/internals/benchmarks.md`（中文版 `benchmarks.zh-CN.md`，同节同表）.
+- [x] Fixed by that test: the part index was read one row per `read` syscall, so a
+      point read of a million-record part spent 429 µs in syscalls before touching a
+      record (`read(offset, 1)`: 472 → 67 µs). The index is now read once and sliced.
+- [x] Fixed by that test: the dictionary's frequency table was keyed by an owned
+      `String`, so every string not yet interned allocated a copy just to be counted —
+      two million live strings on a trace-id-shaped field, and 1,077 ns/record. Keyed by
+      the string's 64-bit hash now, capped at 2^20 tracked strings (2,859 → 1,862
+      ns/record).
+
 ### Owed on `okm-series`
 
 Not bugs found and postponed — the list of things this crate does not do, written where
@@ -2285,7 +2318,29 @@ the next decision can find it.
       covers two openers, two readers during a flush, or a `kill -9` mid-block.
 - [ ] Owed: **packaging.** No `maturin build` / `pip install` round trip, so the wheel is
       untested (only a hand-copied `.so` on `PYTHONPATH`), and no CI for either crate.
-- [ ] Owed: **`parts_by_offset` opens each part twice** — once for its offset span, once
-      to read. Small, but it is the read path's only obvious waste.
+- [ ] Owed: **a point read re-opens and re-parses the part on every call.** 23 of the
+      68 µs above is the index parsed twice (`parts_by_offset` and then `read`), and
+      the rest is the 64 KiB block decompression. Caching the reader inside `Log`
+      would take the first part out; it needs an invalidation story for append,
+      seal and `retain_before`.
 - [ ] Owed: **the binding reads everything at once.** `read(from, max)` returns a list;
       there is no iterator/streaming form, no partition filter, and no async surface.
+
+## Uuid4 / Uuid7 — an id is 16 bytes, and identity belongs in the key
+
+`okm-core::Uuid4` / `Uuid7` (`model/wrappers/uuid.rs`) are scalar types, not a text convention:
+
+| type | layout | use |
+|---|---|---|
+| `Uuid4` | 128 random bits | a CREDENTIAL (a token): no locality wanted, unpredictability needed |
+| `Uuid7` | 48-bit ms + 74 random bits | IDENTITY (device, account): byte order is time order, inserts stay at the keyspace tail |
+
+- `KeyEncode` is implemented on them, so a collection is `Collection<S, Uuid7, Device>` — no
+  single-field wrapper struct, and no id mirror in the payload (`scan`/`get` hand the key back).
+- The derive accepts them as key fields AND as declared payload fields; `FieldType::Uuid4` /
+  `Uuid7` keep the kind (not `FixedBytes`), which is what the bridge, the Arrow schema and the
+  Parquet import read.
+- Arrow: `FixedSizeBinary(16)` — a uuid column is fixed width in the warehouse too; the
+  hyphenated text stays a display form at the edge.
+- `scan_keys()` returns v7 keys in clock order because the encoding is the clock: no index, no
+  re-sort. Locked by `okm-core/tests/uuid_key.rs`.
