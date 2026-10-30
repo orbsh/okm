@@ -67,13 +67,24 @@ struct Block {
     file_offset: u64,
 }
 
+/// How many distinct strings a part will count before it stops tracking new ones.
+const COUNT_TRACK_LIMIT: usize = 1 << 20;
+
 pub struct Dict {
     path: PathBuf,
     file: Option<File>,
     file_offset: u64,
     blocks: Vec<Block>,
     open: usize,
-    counts: HashMap<String, u32>,
+    /// Occurrences per string, keyed by the string's 64-bit hash. Not by the string
+    /// itself: a field that is unique per record (a trace id, a message with an id in
+    /// it) never reaches the second occurrence the tiers demand, and holding a copy of
+    /// every one of them turned a million-record part into two million live `String`s —
+    /// 200 MB and roughly a microsecond per append, measured in
+    /// `examples/log_vs_parquet.rs`. A hash collision can only promote a string that
+    /// really occurred once; it can never resolve to the wrong text, because `promoted`
+    /// and the blocks are keyed by the string.
+    counts: HashMap<u64, u32>,
     promoted: HashMap<String, (u8, u64)>,
     tiers: Vec<(u32, u32)>,
     block_entries: u32,
@@ -205,15 +216,28 @@ impl Dict {
         if let Some((block, id)) = self.promoted.get(text) {
             return Some((*block, *id));
         }
-        let entry = self.counts.entry(text.to_string()).or_insert(0);
-        *entry += 1;
-        let count = *entry;
+        let key = xxhash_rust::xxh64::xxh64(text.as_bytes(), 0);
+        let count = match self.counts.get_mut(&key) {
+            Some(count) => {
+                *count += 1;
+                *count
+            }
+            None => {
+                // A field that keeps arriving new has no history to reach a threshold
+                // with, so past this many tracked strings the table stops growing and
+                // new text settles as inline. Bounded memory beats a perfect count.
+                if self.counts.len() < COUNT_TRACK_LIMIT {
+                    self.counts.insert(key, 1);
+                }
+                1
+            }
+        };
         let width = self.blocks.get(self.open)?.width;
         let threshold = threshold_for(text.len(), width, &self.tiers)?;
         if count < threshold {
             return None;
         }
-        self.counts.remove(text);
+        self.counts.remove(&key);
         Some(self.promote(text))
     }
 

@@ -11,6 +11,10 @@ xxhash-rust = { version = "0.8", features = ["xxh64"] }
 
 [dev-dependencies]
 tempfile = "3"
+# Only for `examples/log_vs_parquet.rs`: the comparison needs a columnar writer, and the
+# log itself must stay free of it.
+arrow = "60"
+parquet = { version = "60", default-features = false, features = ["arrow", "zstd"] }
 
 [lints]
 workspace = true
