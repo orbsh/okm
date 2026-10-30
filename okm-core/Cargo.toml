@@ -44,7 +44,7 @@ okm-dynamic = { path = "../okm-dynamic" }
 okm-wire = { path = "../okm-wire" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 arrow = { version = "60" }
-parquet = { version = "60", default-features = false, features = ["arrow"] }
+parquet = { version = "60", default-features = false, features = ["arrow", "zstd"] }
 trybuild = "1"
 criterion = "0.5"
 
@@ -58,6 +58,10 @@ required-features = ["schema-serde"]
 
 [[example]]
 name = "changelog_tax"
+required-features = ["test-engines", "fjall"]
+
+[[example]]
+name = "engine_paths"
 required-features = ["test-engines", "fjall"]
 
 [[test]]
