@@ -519,3 +519,109 @@ fn save_with_prev_into_interns_inside_the_batch() {
     assert_eq!(again.event.as_str(), Some("http.request"));
     assert_eq!(again.status.as_str(), Some("warn"));
 }
+
+// ---- purge_into: the removal sibling of save_with_prev_into ----
+
+#[test]
+fn purge_into_defers_until_the_commit() {
+    let store = TestStore::slatedb_mem();
+    let t = <Entry as Document>::collection(store.clone());
+    let (k, v) = entry(1, 7, 10);
+    t.put(&k, &v).unwrap();
+    assert_eq!(ledger(&t, 7), Some(1));
+
+    let mut batch = okm_core::Batch::default();
+    assert!(t.purge_into(&mut batch, &k).unwrap(), "there was a row");
+    assert!(
+        t.get(&k).unwrap().is_some(),
+        "an uncommitted batch removes nothing"
+    );
+    assert_eq!(ledger(&t, 7), Some(1), "the fold is still in the store");
+
+    t.commit_batch(batch).unwrap();
+    assert!(t.get(&k).unwrap().is_none(), "the commit removes the row");
+    assert_eq!(ledger(&t, 7), Some(0), "the removal unfolds the ledger");
+    assert!(
+        t.scan::<Entry_ByAccount>(&7u64.to_be_bytes())
+            .unwrap()
+            .is_empty(),
+        "and takes the face with it"
+    );
+}
+
+#[test]
+fn purge_into_reads_the_batch_it_is_building() {
+    // The row is written by THIS batch. Reading the store would find nothing,
+    // answer `false`, and the commit would land a row whose face it never
+    // removed and whose fold it never unfolded.
+    let store = TestStore::slatedb_mem();
+    let t = <Entry as Document>::collection(store.clone());
+    let (k, v) = entry(1, 7, 10);
+    let mut batch = okm_core::Batch::default();
+    t.save_with_prev_into(&mut batch, &k, &v, None).unwrap();
+    assert!(
+        t.purge_into(&mut batch, &k).unwrap(),
+        "the pending write IS the state being removed"
+    );
+    t.commit_batch(batch).unwrap();
+
+    assert!(t.get(&k).unwrap().is_none());
+    assert_eq!(ledger(&t, 7), Some(0), "the staged fold was unfolded");
+    assert!(
+        t.scan::<Entry_ByAccount>(&7u64.to_be_bytes())
+            .unwrap()
+            .is_empty(),
+        "the staged face was removed"
+    );
+}
+
+#[test]
+fn purge_into_of_a_missing_key_writes_nothing() {
+    let store = TestStore::slatedb_mem();
+    let t = <Entry as Document>::collection(store.clone());
+    let mut batch = okm_core::Batch::default();
+    assert!(!t.purge_into(&mut batch, &EntryKey { id: 99 }).unwrap());
+    assert!(
+        batch.ops.is_empty(),
+        "nothing to remove, nothing to write: {:?}",
+        batch.ops.len()
+    );
+}
+
+#[test]
+fn two_tables_leave_in_one_commit() {
+    let store = TestStore::slatedb_mem();
+    let posts: Collection<TestStore, PostKey, Post> = Collection::new(store.clone());
+    let entries = <Entry as Document>::collection(store.clone());
+    posts
+        .put(
+            &PostKey { id: 1 },
+            &Post {
+                author_id: 7,
+                title: "hi".into(),
+            },
+        )
+        .unwrap();
+    let (ek, ev) = entry(1, 7, 10);
+    entries.put(&ek, &ev).unwrap();
+
+    let mut batch = okm_core::Batch::default();
+    assert!(posts.purge_into(&mut batch, &PostKey { id: 1 }).unwrap());
+    assert!(entries.purge_into(&mut batch, &ek).unwrap());
+    assert!(
+        posts.get(&PostKey { id: 1 }).unwrap().is_some(),
+        "the batch owns the removals until it lands"
+    );
+
+    // ONE commit, through either collection's door.
+    posts.commit_batch(batch).unwrap();
+    assert!(posts.get(&PostKey { id: 1 }).unwrap().is_none());
+    assert!(entries.get(&ek).unwrap().is_none());
+    assert!(
+        posts
+            .scan::<Post_ByAuthor>(&7u64.to_be_bytes())
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(ledger(&entries, 7), Some(0));
+}

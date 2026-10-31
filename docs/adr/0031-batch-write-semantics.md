@@ -66,6 +66,12 @@ impl VirtualStorage for BatchStore<'_, S> { /* get / put / del, read-through */ 
    reduce fold/unfold applied through a `BatchStore`. `prev` is the caller's
    when it holds the old row (the common case: it just read it) and is read
    through the adapter when it is `None`.
+
+   Its removal sibling is `Collection::purge_into(batch, key) -> bool`: the
+   writes `purge` makes — primary, faces, the dynamic segment — into the caller's
+   batch, with the same reads through the adapter, so a row this batch itself
+   wrote is the state being removed. No subscribe emission, for the reason above:
+   an uncommitted batch must not announce a write that may never land.
 4. **One commit, one ledger change.** The reduce entries written through the
    adapter are ordinary batch ops, so a batch that is never committed leaves no
    accumulator change — the ledger's atomicity now matches the rows'.

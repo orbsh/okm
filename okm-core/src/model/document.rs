@@ -900,11 +900,31 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         self.commit(batch)
     }
 
+    /// The reads a removal needs: the stored document, decoded exactly as
+    /// [`Self::get`] decodes it, and whether a dynamic segment exists. `store` is
+    /// a view, so a caller building a batch sees that batch's pending writes
+    /// (ADR-0031) — the state being removed is the state the caller produced.
+    fn removal_reads(
+        &self,
+        store: &dyn VirtualStorage,
+        key: &K,
+    ) -> crate::error::Result<(Option<R>, bool)> {
+        let document = match store.get(&self.primary_key(key))? {
+            Some(raw) => {
+                let mut document = R::decode_payload(&raw);
+                R::__okm_embed_deref(&mut document, store)?;
+                R::__okm_deref_vocab(&mut document, store)?;
+                Some(document)
+            }
+            None => None,
+        };
+        Ok((document, store.get(&self.fields_key(key))?.is_some()))
+    }
+
     /// Remove the whole document — both slots — in one commit. `false` = there
     /// was nothing to remove.
     pub fn purge(&self, key: &K) -> crate::error::Result<bool> {
-        let prev = self.get(key)?;
-        let has_segment = self.store.get(&self.fields_key(key))?.is_some();
+        let (prev, has_segment) = self.removal_reads(&self.store, key)?;
         if prev.is_none() && !has_segment {
             return Ok(false);
         }
@@ -926,6 +946,43 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
                 key,
                 document,
             );
+        }
+        Ok(true)
+    }
+
+    /// [`Self::purge`]'s writes, into a CALLER's batch and without its commit, so
+    /// a row and the other tables that hang off it leave in one engine write
+    /// (ADR-0003). `false` = there was nothing to remove, and then the batch is
+    /// untouched.
+    ///
+    /// The reads run through a [`BatchStore`] view of `batch`, so what the caller
+    /// has already staged for this key IS the state being removed: a `put` then a
+    /// `purge_into` for one key leaves nothing behind, where reading the store
+    /// directly would find no row, delete no faces, and let the pending put
+    /// reland a row whose index entries are gone.
+    ///
+    /// Subscribe emission stays OUT, for the reason [`Self::save_with_prev_into`]
+    /// gives: an uncommitted batch must not announce a write that may never land.
+    /// Landing it through [`Self::commit_batch`] carries the changelog half.
+    ///
+    /// [`BatchStore`]: crate::engine::storage::BatchStore
+    pub fn purge_into(
+        &self,
+        batch: &mut crate::engine::storage::Batch,
+        key: &K,
+    ) -> crate::error::Result<bool> {
+        let (prev, has_segment) = {
+            let view = crate::engine::storage::BatchStore::new(&self.store, batch);
+            self.removal_reads(&view, key)?
+        };
+        if prev.is_none() && !has_segment {
+            return Ok(false);
+        }
+        if let Some(document) = &prev {
+            self.delete_into(batch, key, document)?;
+        }
+        if has_segment {
+            batch.del(&self.fields_key(key));
         }
         Ok(true)
     }
