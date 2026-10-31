@@ -42,8 +42,15 @@ pub enum Error {
     BadPath,
     Codec,
     Overflow,
-    /// The log is monotone in time: a record older than its predecessor is refused,
-    /// not clamped, because the byte order IS the time order.
+    /// A record older than its predecessor, refused rather than filed out of order: the
+    /// byte order IS the time order.
+    ///
+    /// Raised by the PART-level writer (`part::PartWriter::append`), which owns the
+    /// invariant. `Log` never raises it — it stamps the time itself and clamps to
+    /// `max(clock, last)` (ADR-0046 §2), so a stepped clock is two records sharing one
+    /// timestamp, not a failed write. That is the layering, not a leftover: the log owns
+    /// policy (never lose a caller's record to a clock step), the writer owns the invariant
+    /// (never write a part out of order).
     TimeBackwards {
         last: u64,
         given: u64,
