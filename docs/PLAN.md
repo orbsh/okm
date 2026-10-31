@@ -44,9 +44,9 @@ Design decisions live in `docs/adr/`. This plan tracks implementation status.
       save_into is the encoding surface — reduce folds / subscribe
       emission / overwrite unfold stay put-path only (documented on the
       method).
-- [ ] Optimistic CAS write (`save_with_cas`, MVCC version compare-and-swap
-      retry loop) — future extension from the original design doc; no ADR
-      record yet.
+- [ ] Deferred (2026-10-31, owner): Optimistic CAS write (`save_with_cas`, MVCC version
+      compare-and-swap retry loop). Low priority — the single-writer boundary stands (ADR-0023),
+      and nothing has asked for a second live writer.
 - [x] `#[kv_version(n)]` versioned payload with lazy in-memory upgrade.
       Landed under the name `#[ok_layout(version = N)]` (renamed at
       implementation to avoid colliding with CAS/MVCC "row version";
@@ -177,7 +177,8 @@ to full 16 bits). The trigger is "edge needs a new discriminator", never
       (`x-okm-column-order` carries the authoritative column order);
       macro expansion dump to disk via
       `OKM_DERIVE_DUMP=<dir>` (formatted impl source per derive).
-- [ ] Publish to crates.io (`okm-core`, `okm-derive`).
+- [ ] Deferred (2026-10-31, owner): **distribution is GitHub**, not crates.io — repo plus releases;
+      nothing is published to an index.
 - [x] Push to github.com/orbsh/okm (repo referenced by wiki cross-links).
 
 ## Phase 5 — Event layer (ADR-0008): reduce, subscribe, okm-stream
@@ -2206,7 +2207,7 @@ panic lints allowed only in the places it names. So the runtime half of
       degraded to a JSON string under okm's mapping (Binary as base64, `Int`/`UInt`
       kept as numbers, lists and maps as arrays and objects). The mapping is okm's
       to publish — otherwise every adapter invents a dialect.
-- [ ] Not in this unit: Iceberg snapshot append with delete files, partitioning
+- [ ] Deferred (2026-10-31, owner): low priority. Not in this unit: Iceberg snapshot append with delete files, partitioning
       and file-size targets (`write_table_metadata` writes one snapshot over the
       files it is handed); any Parquet read path; the Iceberg WRITER
       (it goes in its own crate, because `bridge::iceberg` is a zero-dependency
@@ -2343,7 +2344,7 @@ that can be dropped in one syscall. Design in ADR-0046. Nothing below is built.
 Not bugs found and postponed — the list of things this crate does not do, written where
 the next decision can find it.
 
-- [ ] Owed: **a production caller.** Nothing writes to this crate outside its tests, the
+- [ ] Deferred (2026-10-31, owner): low priority. Owed: **a production caller.** Nothing writes to this crate outside its tests, the
       `series_tax` example and `bindings/okm-series-python/accept_embedded.py`; `okm-drain`
       still reads the changelog's segments. The API has been checked by tests and one
       binding and has not been worn by a real user, so its shape may still be wrong in ways
@@ -2454,7 +2455,8 @@ the next decision can find it.
       in-process: typed bodies, monotone time, named tags, the partition refusal and one
       part per partition, a seal footer, a `read_by_time` window, retention removing a
       bucket, and `meta` identity — including that reopening with another bucket size is
-      refused by name. Still owed: a publish story (nothing reaches an index).
+      refused by name. The delivery story is GitHub — a tag and a release carry the wheel; nothing
+      is published to an index (2026-10-31, owner).
 - [x] Half fixed 2026-10-31: **ordering the parts opened them.** The item said "23 of the
       68 µs is the index parsed twice", and the measurement says otherwise. Ordering
       `parts_by_offset` opened every part (`PartReader::open`) only to read
