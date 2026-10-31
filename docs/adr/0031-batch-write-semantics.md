@@ -98,7 +98,7 @@ faces commit together, and `save_with_prev_into` keeps `&self`.
   code in the writer all collapse into one call. That is the point — the ledger
   and the index maintenance are the engine's, and the consumer states its
   schema.
-- Single-writer boundary unchanged (ADR-0023 §"single writer"): the RMW still
+- Single-writer boundary unchanged (ADR-0042 §7 — a KV store has a single writer): the RMW still
   rides one serialized writer over one store handle; no CAS is introduced.
 - The batch is invisible to readers until it commits, because reads do not
   consult it — throughput under concurrent readers is untouched.
