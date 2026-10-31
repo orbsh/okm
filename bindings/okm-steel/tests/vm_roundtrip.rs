@@ -1,6 +1,15 @@
 //! Steel VM end-to-end: register the okm functions, run a scheme program
 //! that parses the schema, encodes a payload, decodes it back, and checks
 //! the values — mirroring the PyO3 verify.py round trip.
+
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unwrap_in_result,
+    clippy::panic_in_result_fn
+)]
+
 use okm_core::{schema::CollectionSchema, Document, DocumentEncode, KeyEncode};
 use steel::steel_vm::engine::Engine;
 

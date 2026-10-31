@@ -5,6 +5,15 @@
 //! store), the declared index sweeps, the count preset folds — and a
 //! SECOND registry over the same engine+ns reads the same rows back
 //! (the cross-check shape of aura's `py_injection.rs` lock).
+
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unwrap_in_result,
+    clippy::panic_in_result_fn
+)]
+
 use okm_core::schema::CollectionSchema;
 use okm_core::{DocumentEncode, KeyEncode};
 use okm_steel::collection::StorageRegistry;
