@@ -8,9 +8,9 @@
 use okm_core::schema::CollectionSchema;
 use okm_core::{DocumentEncode, KeyEncode};
 use okm_steel::collection::StorageRegistry;
-use steel::SteelVal;
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
+use steel::SteelVal;
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
 pub struct UserKey {
@@ -97,7 +97,8 @@ fn build_vm(reg: &StorageRegistry) -> steel::steel_vm::engine::Engine {
 fn script_writes_land_in_the_host_engine() {
     let engine = Arc::new(MemEngine(Mutex::new(Default::default())));
     let reg = StorageRegistry::default();
-    reg.inject(engine.clone(), "Counters", &entry_json(), 41).unwrap();
+    reg.inject(engine.clone(), "Counters", &entry_json(), 41)
+        .unwrap();
     let mut vm = build_vm(&reg);
 
     let sj = quote(&schema_json());
@@ -126,7 +127,8 @@ fn script_writes_land_in_the_host_engine() {
     // the same name (the cross-check — the bytes live in the host, not
     // an orphan).
     let reg2 = StorageRegistry::default();
-    reg2.inject(engine.clone(), "Counters", &entry_json(), 41).unwrap();
+    reg2.inject(engine.clone(), "Counters", &entry_json(), 41)
+        .unwrap();
     let mut vm2 = build_vm(&reg2);
     let out2 = vm2
         .run(format!(
@@ -160,12 +162,14 @@ fn script_writes_land_in_the_host_engine() {
     // The count preset folded through the ENGINE (not a cache): the
     // accumulator is a u64 BE in the host store.
     let out4 = vm2
-        .run(r#"
+        .run(
+            r#"
 (define acc (collection-reduce-get! "Counters" (hash)))
 (assert! (vector? acc))
 (assert! (= (vector-length acc) 8))
 'done
-"#)
+"#,
+        )
         .expect("reduce read failed");
     assert_eq!(last_sym(out4), "done");
     let stored = engine.0.lock().unwrap();
@@ -173,7 +177,10 @@ fn script_writes_land_in_the_host_engine() {
         .iter()
         .filter(|(k, v)| k.starts_with(&[0u8, 41]) && **v == 1u64.to_be_bytes().to_vec())
         .collect();
-    assert!(!acc_rows.is_empty(), "the folded count acc lives in the host engine");
+    assert!(
+        !acc_rows.is_empty(),
+        "the folded count acc lives in the host engine"
+    );
     drop(stored);
 
     // Delete sweeps the index entry and removes the primary row.
