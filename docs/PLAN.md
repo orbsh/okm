@@ -1305,9 +1305,7 @@ bytes; doing them after P3 means hex locks change once, not twice.
       commit, read-through ordering, scan refusal.
 - [ ] Owed: subscribe emission for batch writers (its own decision — fire at
       commit, or stay the caller's); a `save_into` deprecation path once
-      `save_with_prev_into` covers every call site; a batch delete has no
-      semantic sibling yet (deletes still go through the point path), add one
-      when a caller needs atomic delete + reduce.
+      `save_with_prev_into` covers every call site.
 
 ## Categorical values as data (ADR-0032, 2026-10-20)
 
@@ -1912,11 +1910,18 @@ panic lints allowed only in the places it names. So the runtime half of
       SOURCE of the bytes. Arrow-export reads (`arrow_bridge.rs:60`, `:436`) read
       frames this SDK wrote, so they abort with a message; the Parquet import path
       reads a foreign file, so it answers `Err`.
-- [ ] Bindings' own bodies, 29 sites (`okm-python` 18, `okm-steel` 10,
-      `okm-entry` 1): a panic there is a dead interpreter or a dead host process,
-      so the error face is `PyErr` / steel's value, not a message on stderr. (The
-      host-injected seam itself already answers `Result<_, String>` — commit
-      `38c5c6c`; these are the poison and host-call sites inside the bindings.)
+- [x] Paid 2026-10-31: **the bindings' own bodies — counted, and gated.** The 29 sites
+      (`okm-python` 18, `okm-steel` 10, `okm-entry` 1) are gone: a scan of all four binding
+      crates' sources finds no `unwrap` / `expect` / `panic!` / `unreachable!` / `todo!`, and no
+      `#[allow]` either — the error face is `PyErr` or steel's value where it is raised. What
+      holds that is the gate the root workspace already had and the bindings did not: each binding
+      crate now carries the same five clippy denies in its own `[lints.clippy]`. They are separate
+      workspaces, so the root's `[workspace.lints]` never reached them, and CI's
+      `cargo clippy --all-targets -- -D warnings` could not fire a restriction lint that defaults
+      off — the job was already there (`binding - ${{ matrix.dir }}`), the lints were not.
+      Verified live: a probe test with one `unwrap` aborts the clippy run, then removed. okm-steel's
+      two test files needed the standard `#![allow(...)]` header — the tests-may-unwrap convention
+      the rest of the repo uses; no production file needed one.
 - [x] Compile-time code: `okm-derive`'s diagnostics now carry spans. 116 of its
       167 abort sites became `syn::Result` → `compile_error!` on the offending token
       (a malformed `#[ok_index(..)]` reports at the token, not as "proc macro

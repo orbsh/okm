@@ -29,3 +29,13 @@ pyo3 = { version = "0.29" }
 
 # standalone crate — keep out of the okm root workspace
 [workspace]
+
+[lints.clippy]
+# The same five the workspace root denies, for the same reason: a panic here is a
+# dead interpreter or a dead host process, not a bad row. Nothing in these crates
+# panics today; this is what keeps that true.
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+unwrap_in_result = "deny"
+panic_in_result_fn = "deny"
