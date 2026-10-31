@@ -120,10 +120,7 @@ pub struct CollectionSchema {
 }
 
 /// `#[ok_len(N)]` lookup over a document's FIELD_CONTRACTS table.
-fn expect_len_of(
-    contracts: &'static [(&'static str, usize)],
-    name: &str,
-) -> Option<usize> {
+fn expect_len_of(contracts: &'static [(&'static str, usize)], name: &str) -> Option<usize> {
     contracts.iter().find(|(n, _)| *n == name).map(|(_, l)| *l)
 }
 
@@ -132,13 +129,16 @@ fn lookup_default(
     defaults: &'static [(&'static str, crate::model::field::DefaultValueConst)],
     name: &str,
 ) -> Option<DefaultValue> {
-    defaults.iter().find(|(n, _)| *n == name).map(|(_, d)| match d {
-        crate::model::field::DefaultValueConst::U64(x) => DefaultValue::U64(*x),
-        crate::model::field::DefaultValueConst::I64(x) => DefaultValue::I64(*x),
-        crate::model::field::DefaultValueConst::F64(x) => DefaultValue::F64(*x),
-        crate::model::field::DefaultValueConst::Bool(x) => DefaultValue::Bool(*x),
-        crate::model::field::DefaultValueConst::Str(x) => DefaultValue::Str(x.to_string()),
-    })
+    defaults
+        .iter()
+        .find(|(n, _)| *n == name)
+        .map(|(_, d)| match d {
+            crate::model::field::DefaultValueConst::U64(x) => DefaultValue::U64(*x),
+            crate::model::field::DefaultValueConst::I64(x) => DefaultValue::I64(*x),
+            crate::model::field::DefaultValueConst::F64(x) => DefaultValue::F64(*x),
+            crate::model::field::DefaultValueConst::Bool(x) => DefaultValue::Bool(*x),
+            crate::model::field::DefaultValueConst::Str(x) => DefaultValue::Str(x.to_string()),
+        })
 }
 
 /// Fixed-role slots and declared-slot segment bases (ADR-0016: slot =
@@ -264,7 +264,7 @@ impl CollectionSchema {
 
 #[cfg(feature = "schema-serde")]
 mod serde_impls {
-    use super::{DefaultValue, FieldSchema, ObjValueTypeSchema, SlotMap, CollectionSchema};
+    use super::{CollectionSchema, DefaultValue, FieldSchema, ObjValueTypeSchema, SlotMap};
     use crate::model::field::FieldType;
     use serde::{Deserialize, Serialize};
 
@@ -277,23 +277,17 @@ mod serde_impls {
                 FieldType::U16 => s.serialize_unit_variant("FieldType", 1, "U16"),
                 FieldType::U32 => s.serialize_unit_variant("FieldType", 2, "U32"),
                 FieldType::U64 => s.serialize_unit_variant("FieldType", 3, "U64"),
-                FieldType::FixedBytes => {
-                    s.serialize_unit_variant("FieldType", 4, "FixedBytes")
-                }
+                FieldType::FixedBytes => s.serialize_unit_variant("FieldType", 4, "FixedBytes"),
                 FieldType::Str => s.serialize_unit_variant("FieldType", 5, "Str"),
                 FieldType::Bytes => s.serialize_unit_variant("FieldType", 10, "Bytes"),
                 FieldType::Uuid4 => s.serialize_unit_variant("FieldType", 13, "Uuid4"),
                 FieldType::Uuid7 => s.serialize_unit_variant("FieldType", 14, "Uuid7"),
                 FieldType::VarInt => s.serialize_unit_variant("FieldType", 6, "VarInt"),
-                FieldType::Quant(p) => {
-                    s.serialize_newtype_variant("FieldType", 7, "Quant", p)
-                }
+                FieldType::Quant(p) => s.serialize_newtype_variant("FieldType", 7, "Quant", p),
                 FieldType::Vocab(id_slot) => {
                     s.serialize_newtype_variant("FieldType", 12, "Vocab", id_slot)
                 }
-                FieldType::Offset(b) => {
-                    s.serialize_newtype_variant("FieldType", 9, "Offset", b)
-                }
+                FieldType::Offset(b) => s.serialize_newtype_variant("FieldType", 9, "Offset", b),
                 FieldType::Vector { elem } => {
                     s.serialize_newtype_variant("FieldType", 11, "Vector", elem)
                 }
@@ -410,11 +404,13 @@ mod serde_impls {
                 Repr::Str => FieldType::Str,
                 Repr::VarInt => FieldType::VarInt,
                 Repr::Quant(p) => FieldType::Quant(p),
-                
+
                 Repr::Offset(b) => FieldType::Offset(b),
                 // Leak is bounded: the element-type vocabulary is a tiny
                 // closed set written by the serializer, never attacker data.
-                Repr::Vector { elem } => FieldType::Vector { elem: Box::leak(elem.into_boxed_str()) },
+                Repr::Vector { elem } => FieldType::Vector {
+                    elem: Box::leak(elem.into_boxed_str()),
+                },
             })
         }
     }
@@ -572,5 +568,4 @@ mod serde_impls {
             })
         }
     }
-
 }

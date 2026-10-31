@@ -3,14 +3,22 @@
 //! [key前缀]，value = includes 段）、最左前缀扫描、includes 覆盖、
 //! 截断 key 前缀（尾段去冗余，前提：剩余字段已唯一）。
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unwrap_in_result,
+    clippy::panic_in_result_fn
+)]
 
-use okm_core::{KeyEncode, VirtualStorage, KvIndex, TestStore, PrefixKey, Document, DocumentEncode};
+use okm_core::{
+    Document, DocumentEncode, KeyEncode, KvIndex, PrefixKey, TestStore, VirtualStorage,
+};
 
 // marker struct 生成在 derive 展开点（本文件），直接引用
-use __OkmIndex_User_by_reputation as ByReputation;
 use __OkmIndex_Post_by_timeline as ByTimeline;
 use __OkmIndex_Session_by_kind as ByKind;
+use __OkmIndex_User_by_reputation as ByReputation;
 
 /// UserKey：代理主键，不含任何属性信息。
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
@@ -124,7 +132,12 @@ fn table_put_writes_primary_and_indexes() {
     // delete：主键 + 全部声明索引一并移除（声明即注册表）
     t.purge(&k).unwrap();
     assert!(t.store().get(&t.primary_key(&k)).unwrap().is_none());
-    assert!(t.store().get(&t.index_key::<ByReputation>(&k, &r)).unwrap().is_none());
+    assert!(
+        t.store()
+            .get(&t.index_key::<ByReputation>(&k, &r))
+            .unwrap()
+            .is_none()
+    );
 }
 
 #[test]
@@ -136,7 +149,12 @@ fn delete_by_pkey_fetches_row_and_cleans_indexes() {
     // 只给主键：内部 get 回 document，两半同源派生
     assert!(t.purge(&k).unwrap());
     assert!(t.store().get(&t.primary_key(&k)).unwrap().is_none());
-    assert!(t.store().get(&t.index_key::<ByReputation>(&k, &r)).unwrap().is_none());
+    assert!(
+        t.store()
+            .get(&t.index_key::<ByReputation>(&k, &r))
+            .unwrap()
+            .is_none()
+    );
 
     // 不存在的主键：no-op，返回 false
     let (missing, _) = mk_user(999, 1);
@@ -194,7 +212,10 @@ fn entry_layout_hex_lock() {
     assert_eq!(&e2[12..20], &1700000000u64.to_be_bytes()); // created_at 来自 payload
     assert_eq!(&e2[20..], &pk.encode()[..]); // key 前缀取满
     assert_eq!(e2.len(), 4 + 8 + 8 + 8);
-    assert_eq!(ByTimeline::entry_value(&pk, &pr), 42u32.to_be_bytes().to_vec());
+    assert_eq!(
+        ByTimeline::entry_value(&pk, &pr),
+        42u32.to_be_bytes().to_vec()
+    );
 
     // Session.by_kind：ns = 15+1，索引字段 kind(1B)，key 前缀截断到
     // session_id(8B)——user_id 从尾段去掉（去冗余）
@@ -255,9 +276,9 @@ fn truncated_key_prefix_drops_redundant_tail() {
     let t = <Session as Document>::collection(TestStore::slatedb_mem());
     let rows = [
         mk_session(9, 777, 3),
-        mk_session(9, 778, 3),   // 同用户同类型的另一会话：session_id 区分，不覆盖
-        mk_session(10, 779, 3),  // 另一用户，同类型
-        mk_session(10, 780, 5),  // 另一类型，不进 kind=3 的列表
+        mk_session(9, 778, 3), // 同用户同类型的另一会话：session_id 区分，不覆盖
+        mk_session(10, 779, 3), // 另一用户，同类型
+        mk_session(10, 780, 5), // 另一类型，不进 kind=3 的列表
     ];
     for (k, r) in &rows {
         t.put(k, r).unwrap();
@@ -290,7 +311,10 @@ fn slot_allocation() {
     assert_eq!(<ByTimeline as KvIndex>::SLOT, 0x3001);
     assert_eq!(<ByKind as KvIndex>::SLOT, 0x3001);
     assert_eq!(<ByReputation as KvIndex>::FIELDS, &["reputation"]);
-    assert_eq!(<ByTimeline as KvIndex>::FIELDS, &["author_id", "created_at"]);
+    assert_eq!(
+        <ByTimeline as KvIndex>::FIELDS,
+        &["author_id", "created_at"]
+    );
     assert_eq!(<ByTimeline as KvIndex>::INCLUDES, &["title_len"]);
     assert_eq!(<ByTimeline as KvIndex>::KEY_PREFIX, &[] as &[&str]);
     assert_eq!(<ByKind as KvIndex>::KEY_PREFIX, &["session_id"]);
@@ -341,7 +365,13 @@ use __OkmIndex_Doc_by_city_name as ByCityName;
 use __OkmIndex_Doc_by_name as ByName;
 
 fn mk_doc(id: u64, city: u32, name: &str) -> (DocKey, Doc) {
-    (DocKey { id }, Doc { city, name: name.to_string() })
+    (
+        DocKey { id },
+        Doc {
+            city,
+            name: name.to_string(),
+        },
+    )
 }
 
 #[test]
@@ -352,9 +382,9 @@ fn variable_length_index_text_first() {
     let t = <Doc as Document>::collection(TestStore::slatedb_mem());
     let rows = [
         mk_doc(1, 10, "alpha"),
-        mk_doc(2, 10, "alphabet"),   // "alpha" 的扩展，字典序紧随其后
+        mk_doc(2, 10, "alphabet"), // "alpha" 的扩展，字典序紧随其后
         mk_doc(3, 10, "beta"),
-        mk_doc(4, 20, "alpha"),      // 同名不同城市，city 维度隔开
+        mk_doc(4, 20, "alpha"), // 同名不同城市，city 维度隔开
     ];
     for (k, r) in &rows {
         t.put(k, r).unwrap();
@@ -378,16 +408,19 @@ fn variable_length_index_text_first() {
     assert_eq!(hits.len(), 3); // city=10 的 3 行
 
     // scan API：name="beta"，回表核验后返回行
-    let listed = t.scan::<ByCityName>(
-        &[&10u32.to_be_bytes()[..], b"beta"].concat(),
-    ).unwrap();
+    let listed = t
+        .scan::<ByCityName>(&[&10u32.to_be_bytes()[..], b"beta"].concat())
+        .unwrap();
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0].0.decoded.id, 3);
     assert_eq!(listed[0].1.as_ref().unwrap(), &rows[2].1);
 
     // by_name：单字段文本索引，空前缀 = 全表按 name 字典序
     let all = t.scan::<ByName>(&[]).unwrap();
-    let names: Vec<&str> = all.iter().map(|(_, r)| r.as_ref().unwrap().name.as_str()).collect();
+    let names: Vec<&str> = all
+        .iter()
+        .map(|(_, r)| r.as_ref().unwrap().name.as_str())
+        .collect();
     assert_eq!(names, ["alpha", "alpha", "alphabet", "beta"]);
     // 精确匹配："alpha" 扫出 2 行（含 alphabet），去重靠主键
     let alphas = t.scan::<ByName>(b"alpha").unwrap();
@@ -467,7 +500,13 @@ pub struct DocFunc {
 use __OkmIndex_DocFunc_by_lower as ByLower;
 
 fn mk_docf(id: u64, city: u32, name: &str) -> (DocKey, DocFunc) {
-    (DocKey { id }, DocFunc { city, name: name.to_string() })
+    (
+        DocKey { id },
+        DocFunc {
+            city,
+            name: name.to_string(),
+        },
+    )
 }
 
 #[test]
@@ -495,8 +534,13 @@ fn function_index_normalizes_both_sides() {
     assert_eq!(ByLower::FUNC, "lower_name");
 
     // 查询端探针：同一函数归一化 probe 行 → 前缀扫描 → 回表
-    let probe = DocFunc { city: 0, name: "APPLE".to_string() };
-    let listed = t.scan::<ByLower>(probe.name.to_lowercase().as_bytes()).unwrap();
+    let probe = DocFunc {
+        city: 0,
+        name: "APPLE".to_string(),
+    };
+    let listed = t
+        .scan::<ByLower>(probe.name.to_lowercase().as_bytes())
+        .unwrap();
     assert_eq!(listed.len(), 2); // Apple + APPLE 归一化到同一区间
     let ids: Vec<u64> = listed.iter().map(|(pk, _)| pk.decoded.id).collect();
     assert_eq!(ids, [1, 2]); // 字典序（同结果 → 主键序）
@@ -527,8 +571,18 @@ fn multi_entry_function_index_fans_out() {
 
     let t = <DocTags as Document>::collection(TestStore::slatedb_mem());
     let rows = [
-        (DocKey { id: 1 }, DocTags { tags: "rust,kv".into() }),
-        (DocKey { id: 2 }, DocTags { tags: "rust,storage".into() }),
+        (
+            DocKey { id: 1 },
+            DocTags {
+                tags: "rust,kv".into(),
+            },
+        ),
+        (
+            DocKey { id: 2 },
+            DocTags {
+                tags: "rust,storage".into(),
+            },
+        ),
     ];
     for (k, r) in &rows {
         t.put(k, r).unwrap();
@@ -538,8 +592,7 @@ fn multi_entry_function_index_fans_out() {
     let e = ByTag::entry_pairs(<DocTags as Document>::NS_PREFIX, &rows[0].0, &rows[0].1);
     assert_eq!(e.len(), 2);
     let kl = <DocKey as KeyEncode>::KEY_LEN;
-    let mut toks: Vec<&[u8]> =
-        e.iter().map(|(k, _)| &k[4..k.len() - kl]).collect();
+    let mut toks: Vec<&[u8]> = e.iter().map(|(k, _)| &k[4..k.len() - kl]).collect();
     toks.sort();
     assert_eq!(toks, vec![b"kv".as_slice(), b"rust".as_slice()]);
 
@@ -605,9 +658,9 @@ pub struct Ticket {
     pub tags: String,
 }
 
-use __OkmIndex_Ticket_open_by_assignee as ByOpenAssignee;
 use __OkmIndex_Ticket_by_live_token as ByLiveToken;
 use __OkmIndex_Ticket_by_open_token as ByOpenToken;
+use __OkmIndex_Ticket_open_by_assignee as ByOpenAssignee;
 
 /// 无条件的 token 切分——过滤交给声明上的 where（函数索引形态的谓词）。
 fn all_tokens(document: &Ticket) -> Vec<String> {
@@ -660,15 +713,25 @@ fn partial_index_admits_only_matching_rows() {
     assert_eq!(t.scan::<ByOpenAssignee>(&[]).unwrap().len(), 2);
 
     // 覆盖扫描不受谓词影响：includes(title_len) 仍在 value 里
-    let covered = t.scan_covered::<ByOpenAssignee>(&7u64.to_be_bytes()).unwrap();
+    let covered = t
+        .scan_covered::<ByOpenAssignee>(&7u64.to_be_bytes())
+        .unwrap();
     assert_eq!(covered.len(), 2);
     assert_eq!(covered[0].1.title_len, 3);
     assert_eq!(covered[1].1.title_len, 2);
 
     // delete 走同一个 entry_pairs：被接纳的行清干净
     t.purge(&open_a.0).unwrap();
-    assert!(t.store().get(&t.index_key::<ByOpenAssignee>(&open_a.0, &open_a.1)).unwrap().is_none());
-    assert_eq!(t.scan::<ByOpenAssignee>(&7u64.to_be_bytes()).unwrap().len(), 1);
+    assert!(
+        t.store()
+            .get(&t.index_key::<ByOpenAssignee>(&open_a.0, &open_a.1))
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        t.scan::<ByOpenAssignee>(&7u64.to_be_bytes()).unwrap().len(),
+        1
+    );
 }
 
 #[test]
@@ -682,13 +745,23 @@ fn partial_index_flip_needs_delete_then_put() {
     t.put(&k, &open).unwrap();
     let e = t.index_key::<ByOpenAssignee>(&k, &open);
 
-    let closed = Ticket { status: 1, ..open.clone() };
+    let closed = Ticket {
+        status: 1,
+        ..open.clone()
+    };
     t.put(&k, &closed).unwrap();
     assert_eq!(e, t.index_key::<ByOpenAssignee>(&k, &closed));
-    assert!(t.store().get(&e).unwrap().is_some(), "悬挂条目——既有覆盖写契约，非谓词引入");
+    assert!(
+        t.store().get(&e).unwrap().is_some(),
+        "悬挂条目——既有覆盖写契约，非谓词引入"
+    );
     let hit = t.scan::<ByOpenAssignee>(&7u64.to_be_bytes()).unwrap();
     assert_eq!(hit.len(), 1);
-    assert_eq!(hit[0].1.as_ref().unwrap().status, 1, "扫描返回了谓词拒绝的行");
+    assert_eq!(
+        hit[0].1.as_ref().unwrap().status,
+        1,
+        "扫描返回了谓词拒绝的行"
+    );
 
     // 删除集合由「存储的行」派生：先清再写就干净。
     let t2 = <Ticket as Document>::collection(TestStore::slatedb_mem());
@@ -696,7 +769,11 @@ fn partial_index_flip_needs_delete_then_put() {
     t2.purge(&k).unwrap(); // 派生自 open → 条目清掉
     t2.put(&k, &closed).unwrap();
     assert!(t2.store().get(&e).unwrap().is_none());
-    assert!(t2.scan::<ByOpenAssignee>(&7u64.to_be_bytes()).unwrap().is_empty());
+    assert!(
+        t2.scan::<ByOpenAssignee>(&7u64.to_be_bytes())
+            .unwrap()
+            .is_empty()
+    );
 
     // 但存储的行此时已是 closed，而 closed 不产条目 —— 所以 purge 清不掉
     // 早前那次裸 put 覆盖留下的悬挂条目：没有任何 API 能再点到「产生它的
@@ -712,8 +789,15 @@ fn partial_index_flip_needs_delete_then_put() {
     let t3 = <Ticket as Document>::collection(TestStore::slatedb_mem());
     t3.put(&k, &open).unwrap();
     t3.merge(&k, &closed.to_map()).unwrap();
-    assert!(t3.store().get(&e).unwrap().is_none(), "merge 扫掉存储行的面：没有悬挂条目");
-    assert!(t3.scan::<ByOpenAssignee>(&7u64.to_be_bytes()).unwrap().is_empty());
+    assert!(
+        t3.store().get(&e).unwrap().is_none(),
+        "merge 扫掉存储行的面：没有悬挂条目"
+    );
+    assert!(
+        t3.scan::<ByOpenAssignee>(&7u64.to_be_bytes())
+            .unwrap()
+            .is_empty()
+    );
 
     // replace 也是覆盖路径：它读存储行（重建或删行只有存储行说了算），
     // 所以旧值产生的面同样随之扫掉。这是 rule 4「row's previous faces are
@@ -721,7 +805,10 @@ fn partial_index_flip_needs_delete_then_put() {
     let t4 = <Ticket as Document>::collection(TestStore::slatedb_mem());
     t4.put(&k, &open).unwrap();
     t4.replace(&k, &closed.to_map()).unwrap();
-    assert!(t4.store().get(&e).unwrap().is_none(), "replace 扫掉存储行的面");
+    assert!(
+        t4.store().get(&e).unwrap().is_none(),
+        "replace 扫掉存储行的面"
+    );
     assert_eq!(t4.get(&k).unwrap().unwrap().status, 1, "map 就是文档");
 }
 
@@ -738,8 +825,15 @@ fn function_index_empty_vec_skips_row() {
         ByLiveToken::entry_pairs(<Ticket as Document>::NS_PREFIX, &open.0, &open.1).len(),
         2
     );
-    assert!(ByLiveToken::entry_pairs(<Ticket as Document>::NS_PREFIX, &closed.0, &closed.1).is_empty());
-    assert!(t.store().get(&t.index_key::<ByLiveToken>(&closed.0, &closed.1)).unwrap().is_none());
+    assert!(
+        ByLiveToken::entry_pairs(<Ticket as Document>::NS_PREFIX, &closed.0, &closed.1).is_empty()
+    );
+    assert!(
+        t.store()
+            .get(&t.index_key::<ByLiveToken>(&closed.0, &closed.1))
+            .unwrap()
+            .is_none()
+    );
 
     // 扫描只见被接纳的行
     let rust = t.scan::<ByLiveToken>(b"rust").unwrap();
@@ -765,7 +859,9 @@ fn function_index_with_where_filters_row() {
         ByOpenToken::entry_pairs(<Ticket as Document>::NS_PREFIX, &open.0, &open.1).len(),
         2
     );
-    assert!(ByOpenToken::entry_pairs(<Ticket as Document>::NS_PREFIX, &closed.0, &closed.1).is_empty());
+    assert!(
+        ByOpenToken::entry_pairs(<Ticket as Document>::NS_PREFIX, &closed.0, &closed.1).is_empty()
+    );
     assert!(!ByOpenToken::admits(&closed.1));
 
     // 与空 Vec 写法等价（by_live_token 的 live_tokens 内嵌同一条件）
@@ -824,9 +920,33 @@ fn covered_includes_walk_fixed_widths_then_the_variable_tail() {
     // 覆盖段按声明顺序解：定宽字段按宽度切（rank 4B），最后一个变宽字段取
     // 剩余字节——两条不同长度的 title 各自解回自己，rank 不串位。
     let t = <Note as Document>::collection(TestStore::slatedb_mem());
-    t.put(&NoteKey { id: 1 }, &Note { author_id: 7, rank: 5, title: "短".into() }).unwrap();
-    t.put(&NoteKey { id: 2 }, &Note { author_id: 7, rank: 9, title: "更长的标题文本".into() }).unwrap();
-    t.put(&NoteKey { id: 3 }, &Note { author_id: 8, rank: 1, title: "别人".into() }).unwrap();
+    t.put(
+        &NoteKey { id: 1 },
+        &Note {
+            author_id: 7,
+            rank: 5,
+            title: "短".into(),
+        },
+    )
+    .unwrap();
+    t.put(
+        &NoteKey { id: 2 },
+        &Note {
+            author_id: 7,
+            rank: 9,
+            title: "更长的标题文本".into(),
+        },
+    )
+    .unwrap();
+    t.put(
+        &NoteKey { id: 3 },
+        &Note {
+            author_id: 8,
+            rank: 1,
+            title: "别人".into(),
+        },
+    )
+    .unwrap();
 
     let covered = t.scan_covered::<ByNoteAuthor>(&7u64.to_be_bytes()).unwrap();
     assert_eq!(covered.len(), 2);

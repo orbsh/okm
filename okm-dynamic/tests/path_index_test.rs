@@ -13,7 +13,13 @@
 //! - the entry key is `[ns 2B][slot 2B][value][pkey]` — the path itself
 //!   never rides the key (the slot is its identity).
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unwrap_in_result,
+    clippy::panic_in_result_fn
+)]
 
 use std::collections::BTreeMap;
 
@@ -52,8 +58,12 @@ fn table(store: TestStore) -> DynamicCollection<TestStore> {
         51,
         schema(),
         vec![
-            AccessMethod::path(SLOT_AUTHOR, Path::parse("author.name").unwrap(), FieldType::Str)
-                .unwrap(),
+            AccessMethod::path(
+                SLOT_AUTHOR,
+                Path::parse("author.name").unwrap(),
+                FieldType::Str,
+            )
+            .unwrap(),
             AccessMethod::path(SLOT_TAGS, Path::parse("tags").unwrap(), FieldType::Str).unwrap(),
             AccessMethod::path(SLOT_RANK, Path::parse("meta.rank").unwrap(), FieldType::U32)
                 .unwrap(),
@@ -140,11 +150,17 @@ fn entry_keys<S: VirtualStorage>(store: &S, slot: u16) -> Vec<Vec<u8>> {
 fn nested_and_top_level_paths_resolve_to_entries() {
     let t = table(TestStore::slatedb_mem());
     t.merge(&key(1), &declared(7)).unwrap();
-    t.merge(&key(1), &fields(Some("alice"), &["rust"], Some(Value::U32(4)), &[]))
-        .unwrap();
+    t.merge(
+        &key(1),
+        &fields(Some("alice"), &["rust"], Some(Value::U32(4)), &[]),
+    )
+    .unwrap();
     t.merge(&key(2), &declared(7)).unwrap();
-    t.merge(&key(2), &fields(Some("bob"), &["rust", "db"], Some(Value::U32(9)), &[]))
-        .unwrap();
+    t.merge(
+        &key(2),
+        &fields(Some("bob"), &["rust", "db"], Some(Value::U32(9)), &[]),
+    )
+    .unwrap();
 
     // Nested field: `author.name`.
     assert_eq!(ids(t.scan(SLOT_AUTHOR, b"alice").unwrap()), vec![1]);
@@ -152,8 +168,14 @@ fn nested_and_top_level_paths_resolve_to_entries() {
     assert!(t.scan(SLOT_AUTHOR, b"carol").unwrap().is_empty());
 
     // Nested fixed-width field: `meta.rank`, byte order == value order.
-    assert_eq!(ids(t.scan(SLOT_RANK, &4u32.to_be_bytes()).unwrap()), vec![1]);
-    assert_eq!(ids(t.scan(SLOT_RANK, &9u32.to_be_bytes()).unwrap()), vec![2]);
+    assert_eq!(
+        ids(t.scan(SLOT_RANK, &4u32.to_be_bytes()).unwrap()),
+        vec![1]
+    );
+    assert_eq!(
+        ids(t.scan(SLOT_RANK, &9u32.to_be_bytes()).unwrap()),
+        vec![2]
+    );
 
     // The empty prefix is legal for a path index (its segment width is
     // the caller's business, exactly like a func index).
@@ -256,17 +278,26 @@ fn entry_layout_is_ns_slot_value_pkey() {
 fn overwrite_sweeps_stale_entries() {
     let t = table(TestStore::slatedb_mem());
     t.merge(&key(1), &declared(7)).unwrap();
-    t.merge(&key(1), &fields(Some("alice"), &["old"], Some(Value::U32(1)), &[]))
-        .unwrap();
-    t.merge(&key(1), &fields(Some("bob"), &["new"], Some(Value::U32(2)), &[]))
-        .unwrap();
+    t.merge(
+        &key(1),
+        &fields(Some("alice"), &["old"], Some(Value::U32(1)), &[]),
+    )
+    .unwrap();
+    t.merge(
+        &key(1),
+        &fields(Some("bob"), &["new"], Some(Value::U32(2)), &[]),
+    )
+    .unwrap();
 
     assert!(t.scan(SLOT_AUTHOR, b"alice").unwrap().is_empty());
     assert_eq!(ids(t.scan(SLOT_AUTHOR, b"bob").unwrap()), vec![1]);
     assert!(t.scan(SLOT_TAGS, b"old").unwrap().is_empty());
     assert_eq!(ids(t.scan(SLOT_TAGS, b"new").unwrap()), vec![1]);
     assert!(t.scan(SLOT_RANK, &1u32.to_be_bytes()).unwrap().is_empty());
-    assert_eq!(ids(t.scan(SLOT_RANK, &2u32.to_be_bytes()).unwrap()), vec![1]);
+    assert_eq!(
+        ids(t.scan(SLOT_RANK, &2u32.to_be_bytes()).unwrap()),
+        vec![1]
+    );
     // One document, one entry per declared path (no accumulation).
     assert_eq!(entry_keys(t.store(), SLOT_AUTHOR).len(), 1);
     assert_eq!(entry_keys(t.store(), SLOT_RANK).len(), 1);
@@ -315,12 +346,7 @@ fn out_of_range_and_non_numeric_values_produce_no_entry() {
         51,
         schema(),
         vec![
-            AccessMethod::path(
-                0x1005,
-                Path::parse("meta.small").unwrap(),
-                FieldType::U8,
-            )
-            .unwrap(),
+            AccessMethod::path(0x1005, Path::parse("meta.small").unwrap(), FieldType::U8).unwrap(),
         ],
     );
     let mut one = BTreeMap::new();
@@ -348,14 +374,23 @@ fn replace_with_the_declared_map_drops_the_entries_and_keeps_the_document() {
     // name empties it, and the path entries ride the sweep.
     let t = table(TestStore::slatedb_mem());
     t.merge(&key(1), &declared(7)).unwrap();
-    t.merge(&key(1), &fields(Some("alice"), &["rust"], Some(Value::U32(4)), &[]))
-        .unwrap();
+    t.merge(
+        &key(1),
+        &fields(Some("alice"), &["rust"], Some(Value::U32(4)), &[]),
+    )
+    .unwrap();
     t.replace(&key(1), &declared(7)).unwrap();
 
     for slot in [SLOT_AUTHOR, SLOT_TAGS, SLOT_RANK] {
-        assert!(entry_keys(t.store(), slot).is_empty(), "slot {slot} not swept");
+        assert!(
+            entry_keys(t.store(), slot).is_empty(),
+            "slot {slot} not swept"
+        );
     }
     assert!(t.scan(SLOT_AUTHOR, b"").unwrap().is_empty());
     // The declared document survives the replacement.
-    assert_eq!(t.fetch(&key(1)).unwrap().unwrap().get("kind"), Some(&Value::U32(7)));
+    assert_eq!(
+        t.fetch(&key(1)).unwrap().unwrap().get("kind"),
+        Some(&Value::U32(7))
+    );
 }

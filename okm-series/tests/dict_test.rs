@@ -127,8 +127,7 @@ fn a_full_block_widens_the_chain_and_the_reader_still_resolves_old_codes() {
         let text = format!("a message long enough to earn a code, number {index:04}");
         texts.push(text.clone());
         log.append(&one_string(&text)).unwrap();
-        log.append(&one_string(&text))
-            .unwrap();
+        log.append(&one_string(&text)).unwrap();
     }
     log.seal().unwrap();
 

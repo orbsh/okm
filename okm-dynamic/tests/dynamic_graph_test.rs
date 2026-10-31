@@ -3,7 +3,13 @@
 //! byte-equality test against the fixed-ontology form is the drift lock — the
 //! two forms MUST land identical bytes for the same edge.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unwrap_in_result,
+    clippy::panic_in_result_fn
+)]
 
 use okm_core::obj_dynamic::DynamicValue;
 use okm_core::schema::CollectionSchema;
@@ -35,7 +41,12 @@ fn attrs(since: u16) -> BTreeMap<String, DynamicValue> {
 }
 
 fn dyn_edge(src: NodeRef, dst: NodeRef, predicate: &str, since: u16) -> DynEdge {
-    DynEdge { src, dst, predicate: predicate.into(), attrs: attrs(since) }
+    DynEdge {
+        src,
+        dst,
+        predicate: predicate.into(),
+        attrs: attrs(since),
+    }
 }
 
 // ---- the node collections the member set names (tables, by type) ----
@@ -87,7 +98,8 @@ fn dynamic_link_traverse_and_fetch_back() {
     let store = okm_core::TestStore::slatedb_mem();
     let mut g: Graph<_> = Graph::new(store.clone(), NS, works_at_schema());
 
-    g.link(&dyn_edge(person(1), org(9), "works_at", 2020), 1).unwrap();
+    g.link(&dyn_edge(person(1), org(9), "works_at", 2020), 1)
+        .unwrap();
 
     assert_eq!(g.out_edges(&person(1)).unwrap(), vec![1]);
     assert_eq!(g.in_edges(&org(9)).unwrap(), vec![1]);
@@ -106,7 +118,10 @@ fn dynamic_link_traverse_and_fetch_back() {
 
     // The predicate is listed from the predicate vocabulary (0x04), never from
     // the index faces, and attribute names never share its id space.
-    assert_eq!(g.predicates().unwrap(), vec![(0u16, "works_at".to_string())]);
+    assert_eq!(
+        g.predicates().unwrap(),
+        vec![(0u16, "works_at".to_string())]
+    );
     assert_eq!(g.predicate_vocab_name(0).unwrap().unwrap(), "works_at");
 }
 
@@ -115,8 +130,10 @@ fn dynamic_unlink_removes_all_faces() {
     let store = okm_core::TestStore::slatedb_mem();
     let mut g: Graph<_> = Graph::new(store.clone(), NS, works_at_schema());
 
-    g.link(&dyn_edge(person(1), org(9), "works_at", 2020), 1).unwrap();
-    g.link(&dyn_edge(person(2), org(9), "works_at", 2021), 2).unwrap();
+    g.link(&dyn_edge(person(1), org(9), "works_at", 2020), 1)
+        .unwrap();
+    g.link(&dyn_edge(person(2), org(9), "works_at", 2021), 2)
+        .unwrap();
     g.unlink(1).unwrap();
 
     assert_eq!(g.out_edges(&person(1)).unwrap(), Vec::<u64>::new());
@@ -134,13 +151,18 @@ fn dynamic_unlink_removes_all_faces() {
 fn dynamic_rejects_live_id_and_handles_mixed_pkey_widths() {
     let store = okm_core::TestStore::slatedb_mem();
     let mut g: Graph<_> = Graph::new(store.clone(), NS, works_at_schema());
-    g.link(&dyn_edge(person(1), org(9), "works_at", 2020), 1).unwrap();
-    assert!(g.link(&dyn_edge(person(2), org(8), "works_at", 2020), 1).is_err());
+    g.link(&dyn_edge(person(1), org(9), "works_at", 2020), 1)
+        .unwrap();
+    assert!(
+        g.link(&dyn_edge(person(2), org(8), "works_at", 2020), 1)
+            .is_err()
+    );
 
     // Mixed pkey widths need NO registration — refs carry their own
     // len. A 4-byte-key node round-trips beside an 8-byte one.
     let team = NodeRef::new(&0x12u16.to_be_bytes(), &7u32.to_be_bytes());
-    g.link(&dyn_edge(person(1), team.clone(), "joins", 2021), 2).unwrap();
+    g.link(&dyn_edge(person(1), team.clone(), "joins", 2021), 2)
+        .unwrap();
     let back = g.get_edge(2).unwrap().unwrap();
     assert_eq!(back.dst.pkey, 7u32.to_be_bytes().to_vec());
     assert_eq!(g.in_edges(&team).unwrap(), vec![2]);
@@ -151,7 +173,11 @@ fn member_set_travels_in_the_schema_and_is_enforced() {
     // The declaration's member set reaches a runtime writer as DATA — the
     // half of a graph declaration the payload layout cannot carry.
     let schema = works_at_schema();
-    assert_eq!(schema.members, vec![0x10, 0x11, 0x12], "WorksAtNode::NS_VALUES exported");
+    assert_eq!(
+        schema.members,
+        vec![0x10, 0x11, 0x12],
+        "WorksAtNode::NS_VALUES exported"
+    );
 
     let store = okm_core::TestStore::slatedb_mem();
     let mut g: Graph<_> = Graph::new(store.clone(), NS, schema);
@@ -210,7 +236,11 @@ fn byte_equality_with_fixed_ontology_form() {
     let store_fix = okm_core::TestStore::slatedb_mem();
     let mut gf: StaticGraph<_, WorksAt> = StaticGraph::new(store_fix.clone());
     gf.link(
-        &EdgeHead { src: person(1), dst: org(9), predicate: "works_at".into() },
+        &EdgeHead {
+            src: person(1),
+            dst: org(9),
+            predicate: "works_at".into(),
+        },
         &WorksAt::default(),
         7,
     )
@@ -218,7 +248,10 @@ fn byte_equality_with_fixed_ontology_form() {
 
     let collect = |store: &okm_core::TestStore, prefix: &[u8]| -> Vec<Vec<u8>> {
         let mut out = Vec::new();
-        for sfx in store.scan_suffix(prefix).expect("a scan on a working store") {
+        for sfx in store
+            .scan_suffix(prefix)
+            .expect("a scan on a working store")
+        {
             let mut full = prefix.to_vec();
             full.extend_from_slice(&sfx);
             out.push(full);

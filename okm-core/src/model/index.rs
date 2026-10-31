@@ -233,10 +233,7 @@ pub trait Document: Sized + Clone {
     /// parent payload decodes, fetch each `Unit` field's child document
     /// by its stored key and backfill `value`. Default no-op (no embedded
     /// fields). Derive-generated; failures leave `value: None`.
-    fn __okm_embed_deref(
-        &mut self,
-        _store: &dyn VirtualStorage,
-    ) -> crate::error::Result<()> {
+    fn __okm_embed_deref(&mut self, _store: &dyn VirtualStorage) -> crate::error::Result<()> {
         ::core::result::Result::Ok(())
     }
     /// Embedded-field (Ref/Refs) write entries: `(child pkey, child payload)` pairs
@@ -282,7 +279,8 @@ pub trait Document: Sized + Clone {
     }
     /// document -> map: every declared field lifted into a run-time
     /// DynamicValue (ADR-0012 document-map bridge; derive-generated).
-    fn to_map(&self) -> std::collections::BTreeMap<String, crate::model::obj_dynamic::DynamicValue>;
+    fn to_map(&self)
+    -> std::collections::BTreeMap<String, crate::model::obj_dynamic::DynamicValue>;
     /// map -> document, fallibly: matched fields assigned from `DynamicValue`.
     ///
     /// Two rules, and the difference is PRESENCE. An absent name takes its
@@ -355,19 +353,15 @@ pub trait Document: Sized + Clone {
     /// documents carrying `#[ok_subscribe]` override it. Best-effort by
     /// contract (try_send); never blocks or fails the write. `_epoch` is
     /// the emitting collection's monotonic write-batch counter.
-    fn __okm_emit_event(
-        _op: crate::subscribe::Op,
-        _epoch: u64,
-        _key: &Self::Key,
-        _row: &Self,
-    ) {
-    }
+    fn __okm_emit_event(_op: crate::subscribe::Op, _epoch: u64, _key: &Self::Key, _row: &Self) {}
 
     /// Assembly-point constructor: builds the document's `Collection`
     /// binding this document type to its `#[ok_ref]` key. The key type
     /// never appears at the call site — it is already pinned by
     /// `Self::Key`.
-    fn collection<S: VirtualStorage>(store: S) -> crate::model::document::Collection<S, Self::Key, Self> {
+    fn collection<S: VirtualStorage>(
+        store: S,
+    ) -> crate::model::document::Collection<S, Self::Key, Self> {
         crate::model::document::Collection::new(store)
     }
 
@@ -484,7 +478,8 @@ pub trait KvIndex {
     fn entry_key(ns_prefix: &[u8], key: &Self::Key, document: &Self::Document) -> Vec<u8> {
         let fb = Self::fields_bytes(key, document);
         let kp = Self::key_prefix_bytes(key);
-        let mut buf = Vec::with_capacity(ns_prefix.len() + slot_len(Self::SLOT) + fb.len() + kp.len());
+        let mut buf =
+            Vec::with_capacity(ns_prefix.len() + slot_len(Self::SLOT) + fb.len() + kp.len());
         buf.extend_from_slice(ns_prefix);
         write_slot(&mut buf, Self::SLOT);
         buf.extend_from_slice(&fb);
@@ -531,11 +526,18 @@ pub trait KvIndex {
     /// here: `admits` is consulted once per document, before any entry is
     /// built. Nothing else in the write path can create an entry, so the
     /// filter is complete by construction.
-    fn entry_pairs(ns_prefix: &[u8], key: &Self::Key, document: &Self::Document) -> Vec<(Vec<u8>, Vec<u8>)> {
+    fn entry_pairs(
+        ns_prefix: &[u8],
+        key: &Self::Key,
+        document: &Self::Document,
+    ) -> Vec<(Vec<u8>, Vec<u8>)> {
         if !Self::admits(document) {
             return Vec::new();
         }
-        vec![(Self::entry_key(ns_prefix, key, document), Self::entry_value(key, document))]
+        vec![(
+            Self::entry_key(ns_prefix, key, document),
+            Self::entry_value(key, document),
+        )]
     }
 
     /// Partial-index predicate — the `where(path)` clause of an
@@ -626,7 +628,11 @@ fn scan_index_filtered<S: VirtualStorage, I: KvIndex>(
             // `suffix.len() - taken` (plus the probe): below the tail width
             // the probe was satisfied by tail bytes — not a match. Exact
             // additionally wants nothing left after the probe.
-            let matched = if exact { suffix.len() == taken } else { suffix.len() >= taken };
+            let matched = if exact {
+                suffix.len() == taken
+            } else {
+                suffix.len() >= taken
+            };
             if !matched {
                 return None;
             }

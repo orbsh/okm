@@ -13,10 +13,10 @@
 //! callback + one read callback). The vocabulary, the nTLV frames, the
 //! slot constants — every byte rule stays here, one source.
 
-use okm_core::model::obj_dynamic::{decode_named, put_frame_named};
 use okm_core::model::index::{DYNAMIC_SLOT, FIELD_VOCAB_ID_SLOT, FIELD_VOCAB_NAME_SLOT};
+use okm_core::model::obj_dynamic::{decode_named, put_frame_named};
 use okm_core::model::obj_vocab::FIELD_VOCAB;
-use okm_core::storage::{scan_suffix_kv, VirtualStorage};
+use okm_core::storage::{VirtualStorage, scan_suffix_kv};
 
 use crate::{Value, ValueMap};
 
@@ -75,22 +75,24 @@ impl VocabMirror {
         okm_core::write_slot(&mut p3, FIELD_VOCAB_NAME_SLOT);
         for (suffix, idv) in scan_suffix_kv(store, &p3).map_err(|e| e.to_string())? {
             if let Ok(n) = String::from_utf8(suffix)
-                && idv.len() == 2 {
-                    let id = u16::from_be_bytes([idv[0], idv[1]]);
-                    d.by_name.insert(n, id);
-                    if id >= d.next_id {
-                        // Saturating on LOAD: a table may already hold the last
-                        // id, and reading it is not an allocation. Exhaustion is
-                        // the ALLOCATOR's error (`claim_id`), not the reader's.
-                        d.next_id = id.saturating_add(1);
-                    }
+                && idv.len() == 2
+            {
+                let id = u16::from_be_bytes([idv[0], idv[1]]);
+                d.by_name.insert(n, id);
+                if id >= d.next_id {
+                    // Saturating on LOAD: a table may already hold the last
+                    // id, and reading it is not an allocation. Exhaustion is
+                    // the ALLOCATOR's error (`claim_id`), not the reader's.
+                    d.next_id = id.saturating_add(1);
                 }
+            }
         }
         // The cursor is the id face's bare-prefix singleton: `[ns][0x02]` with
         // no id bytes (ADR-0032) — unrepresentable as an id entry, so the two
         // cannot collide. One definition, shared with the typed cache.
         if let Some(raw) = store
-            .get(&okm_core::obj_vocab::cursor_key(ns, FIELD_VOCAB)).map_err(|e| e.to_string())?
+            .get(&okm_core::obj_vocab::cursor_key(ns, FIELD_VOCAB))
+            .map_err(|e| e.to_string())?
             && raw.len() == 2
         {
             let cursor = u16::from_be_bytes([raw[0], raw[1]]);
@@ -255,7 +257,9 @@ pub fn fields_from_frames(raw: &[u8], vocab: &VocabMirror) -> Result<ValueMap, S
 /// okm-dynamic `Value` -> okm-core `DynamicValue` (the dynamic
 /// segment's currency). Composites map natively (the dynamic segment is
 /// the schema-free zone).
-pub(crate) fn value_to_dyn_value(v: &Value) -> Result<okm_core::model::obj_dynamic::DynamicValue, String> {
+pub(crate) fn value_to_dyn_value(
+    v: &Value,
+) -> Result<okm_core::model::obj_dynamic::DynamicValue, String> {
     use okm_core::model::obj_dynamic::DynamicValue;
     Ok(match v {
         Value::U8(x) => DynamicValue::UInt(*x as u64),

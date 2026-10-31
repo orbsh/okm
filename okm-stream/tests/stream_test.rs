@@ -1,8 +1,14 @@
 // Tests keep the vocabulary (a panicking test is a failing test with a stack
 // trace); this file is its own crate, so `cfg(test)` does not reach it.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unwrap_in_result,
+    clippy::panic_in_result_fn
+)]
 
-use okm_core::subscribe::{SinkCell, Event, Op};
+use okm_core::subscribe::{Event, Op, SinkCell};
 use okm_stream::{filter_field, with_previous, Stream};
 
 #[derive(Clone, PartialEq, Debug)]
@@ -32,7 +38,10 @@ fn field_filter_keeps_declared_interest_only() {
             Op::Put,
             1,
             "ACME".into(),
-            Price { symbol: "ACME".into(), cents },
+            Price {
+                symbol: "ACME".into(),
+                cents,
+            },
         ));
     }
     assert_eq!(*seen.lock().unwrap(), vec![12_345, 20_000]);
@@ -49,13 +58,31 @@ fn with_previous_derives_before_after() {
     // per-key cache in the combinator, zero write-path clone tax.
     let downstream = Stream::new(move |ev: Event<String, (Option<Price>, Price)>| {
         let (old, new) = &ev.document;
-        sink.lock().unwrap().push((old.as_ref().map(|p| p.cents), new.cents));
+        sink.lock()
+            .unwrap()
+            .push((old.as_ref().map(|p| p.cents), new.cents));
         true
     });
     let upstream = with_previous::<String, Price>()(downstream);
     cell.register(upstream);
 
-    cell.emit(Event::new(Op::Put, 1, "K".into(), Price { symbol: "K".into(), cents: 100 }));
-    cell.emit(Event::new(Op::Put, 2, "K".into(), Price { symbol: "K".into(), cents: 150 }));
+    cell.emit(Event::new(
+        Op::Put,
+        1,
+        "K".into(),
+        Price {
+            symbol: "K".into(),
+            cents: 100,
+        },
+    ));
+    cell.emit(Event::new(
+        Op::Put,
+        2,
+        "K".into(),
+        Price {
+            symbol: "K".into(),
+            cents: 150,
+        },
+    ));
     assert_eq!(*seen.lock().unwrap(), vec![(None, 100), (Some(100), 150)]);
 }

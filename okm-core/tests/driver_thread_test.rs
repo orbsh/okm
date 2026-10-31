@@ -6,7 +6,13 @@
 //! when the injection face constructed and drove collections. This
 //! locks the consumer-side contract, not just the happy path.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unwrap_in_result,
+    clippy::panic_in_result_fn
+)]
 #![cfg(feature = "test-engines")]
 
 use okm_core::TestStore;
@@ -22,7 +28,10 @@ async fn slatedb_sync_ops_run_inside_a_tokio_context() {
     store.put(b"b".to_vec(), b"2".to_vec()).unwrap();
     assert_eq!(handle.get(b"a").unwrap().as_deref(), Some(&b"1"[..]));
     assert_eq!(handle.scan_range(b"a", Some(b"c")).unwrap().len(), 2);
-    assert_eq!(handle.scan_suffix(b"").unwrap(), vec![b"a".to_vec(), b"b".to_vec()]);
+    assert_eq!(
+        handle.scan_suffix(b"").unwrap(),
+        vec![b"a".to_vec(), b"b".to_vec()]
+    );
     let items: Vec<_> = handle.scan_range_iter(b"", None).collect();
     assert_eq!(items.len(), 2);
     handle.del(b"a").unwrap();

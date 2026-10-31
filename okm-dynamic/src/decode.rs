@@ -19,7 +19,10 @@ pub fn decode_key(schema: &CollectionSchema, bytes: &[u8]) -> Result<ValueMap, C
     let mut out = BTreeMap::new();
     for f in &schema.key_fields {
         let raw = &bytes[f.offset..f.offset + f.width];
-        out.insert(f.name.clone(), decode_fixed(f.name.clone(), f.ty, f.width, raw)?);
+        out.insert(
+            f.name.clone(),
+            decode_fixed(f.name.clone(), f.ty, f.width, raw)?,
+        );
     }
     Ok(out)
 }
@@ -43,7 +46,9 @@ pub fn resolve_vocab_labels<S: okm_core::VirtualStorage + ?Sized>(
             continue;
         };
         let faces = okm_core::obj_vocab::VocabFaces::from_id_slot(id_slot);
-        if let Some(label) = okm_core::obj_vocab::vocab_label(store, header, faces, raw).map_err(|e| e.to_string())? {
+        if let Some(label) = okm_core::obj_vocab::vocab_label(store, header, faces, raw)
+            .map_err(|e| e.to_string())?
+        {
             values.insert(f.name.clone(), Value::Str(label));
         }
     }
@@ -84,7 +89,10 @@ pub fn decode_payload(schema: &CollectionSchema, bytes: &[u8]) -> Result<ValueMa
     for f in &schema.hot_fields {
         match hot.get(f.offset..f.offset + f.width) {
             Some(raw) => {
-                out.insert(f.name.clone(), decode_fixed(f.name.clone(), f.ty, f.width, raw)?);
+                out.insert(
+                    f.name.clone(),
+                    decode_fixed(f.name.clone(), f.ty, f.width, raw)?,
+                );
             }
             // Truncated tail: field appended after this payload's hot
             // segment was written → version-default fill (below), not an
@@ -120,11 +128,13 @@ pub fn decode_payload(schema: &CollectionSchema, bytes: &[u8]) -> Result<ValueMa
             });
         };
         pos += len_n;
-        let value = bytes.get(pos..pos + len).ok_or_else(|| CodecError::Truncated {
-            field: "<cold value>".into(),
-            needed: len,
-            got: bytes.len().saturating_sub(pos),
-        })?;
+        let value = bytes
+            .get(pos..pos + len)
+            .ok_or_else(|| CodecError::Truncated {
+                field: "<cold value>".into(),
+                needed: len,
+                got: bytes.len().saturating_sub(pos),
+            })?;
         pos += len;
         match by_tag.get(&tag) {
             // Known field: decode per its kind.
@@ -149,12 +159,13 @@ pub fn decode_payload(schema: &CollectionSchema, bytes: &[u8]) -> Result<ValueMa
                         };
                         let count = u32::from_be_bytes(*head);
                         if let Some(expect) = f.expect_len
-                            && count as usize != expect {
-                                return Err(CodecError::TypeMismatch {
-                                    field: f.name.clone(),
-                                    expected: "element count matching expect_len",
-                                });
-                            }
+                            && count as usize != expect
+                        {
+                            return Err(CodecError::TypeMismatch {
+                                field: f.name.clone(),
+                                expected: "element count matching expect_len",
+                            });
+                        }
                         Value::Bytes(value.to_vec())
                     }
                     FieldType::VarInt => {
@@ -206,7 +217,7 @@ pub fn decode_payload(schema: &CollectionSchema, bytes: &[u8]) -> Result<ValueMa
                         return Err(CodecError::TypeMismatch {
                             field: f.name.clone(),
                             expected: "cold-capable kind (Str / wrapper)",
-                        })
+                        });
                     }
                 };
                 out.insert(f.name.clone(), v);
@@ -329,7 +340,7 @@ pub(crate) fn decode_fixed(
             return Err(CodecError::TypeMismatch {
                 field: name,
                 expected: "hot-capable fixed-width kind",
-            })
+            });
         }
     })
 }

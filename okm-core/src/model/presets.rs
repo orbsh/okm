@@ -84,7 +84,11 @@ impl<D: Document + 'static> ReduceLogic for Count<D> {
     fn fold(acc: &mut Self::Acc, _key: &<Self::Document as Document>::Key, _item: &Self::Document) {
         *acc += 1;
     }
-    fn unfold(acc: &mut Self::Acc, _key: &<Self::Document as Document>::Key, _item: &Self::Document) {
+    fn unfold(
+        acc: &mut Self::Acc,
+        _key: &<Self::Document as Document>::Key,
+        _item: &Self::Document,
+    ) {
         *acc -= 1;
     }
 }
@@ -129,7 +133,11 @@ impl<S: ReduceFieldSource> ReduceLogic for HighWater<S> {
     fn fold(acc: &mut Self::Acc, key: &<Self::Document as Document>::Key, item: &Self::Document) {
         *acc = (*acc).max(S::reduce_field_u64(key, item));
     }
-    fn unfold(_acc: &mut Self::Acc, _key: &<Self::Document as Document>::Key, _item: &Self::Document) {
+    fn unfold(
+        _acc: &mut Self::Acc,
+        _key: &<Self::Document as Document>::Key,
+        _item: &Self::Document,
+    ) {
         // Watermark: never falls.
     }
 }
@@ -168,7 +176,11 @@ impl<S: ReduceFieldSource> ReduceLogic for LowWater<S> {
     fn fold(acc: &mut Self::Acc, key: &<Self::Document as Document>::Key, item: &Self::Document) {
         acc.0 = acc.0.min(S::reduce_field_u64(key, item));
     }
-    fn unfold(_acc: &mut Self::Acc, _key: &<Self::Document as Document>::Key, _item: &Self::Document) {
+    fn unfold(
+        _acc: &mut Self::Acc,
+        _key: &<Self::Document as Document>::Key,
+        _item: &Self::Document,
+    ) {
         // Low-water mark: never rises.
     }
 }

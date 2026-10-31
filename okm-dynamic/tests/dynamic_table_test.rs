@@ -13,13 +13,17 @@
 //! indexes and reduce are callable-implementable —
 //! dynamic_semantics_test.rs is the calling-discipline acceptance.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unwrap_in_result,
+    clippy::panic_in_result_fn
+)]
 
 use okm_core::engine::storage::ScanIter;
-use okm_core::{
-    Collection, DocumentEncode, KeyEncode, Batch, TestStore, VirtualStorage,
-};
 use okm_core::schema::CollectionSchema;
+use okm_core::{Batch, Collection, DocumentEncode, KeyEncode, TestStore, VirtualStorage};
 use okm_dynamic::{AccessMethod, DynamicCollection, Value, ValueMap};
 use std::collections::BTreeMap;
 
@@ -36,8 +40,8 @@ pub struct UserKey {
 #[ok_index(by_level { fields(level) })]
 #[ok_index(by_score { fields(score), includes(level) })]
 pub struct User {
-    pub level: u32,  // hot
-    pub score: u16,  // hot
+    pub level: u32,   // hot
+    pub score: u16,   // hot
     pub name: String, // cold TLV (tag = declaration index 2)
 }
 
@@ -83,7 +87,10 @@ struct Reads<S> {
 
 impl<S> Reads<S> {
     fn new(inner: S) -> Self {
-        Self { inner, read: std::cell::RefCell::new(Vec::new()) }
+        Self {
+            inner,
+            read: std::cell::RefCell::new(Vec::new()),
+        }
     }
 
     fn reset(&self) {
@@ -148,26 +155,49 @@ fn dynamic_entries_equal_typed_entries() {
     let typed: Collection<TestStore, UserKey, User> = Collection::new(TestStore::slatedb_mem());
     let dynamic = dynamic_table(TestStore::slatedb_mem());
 
-    let document = User { level: 4, score: 77, name: "bob".into() };
-    typed.put(&UserKey { org_id: 1, user_id: 2 }, &document).unwrap();
+    let document = User {
+        level: 4,
+        score: 77,
+        name: "bob".into(),
+    };
+    typed
+        .put(
+            &UserKey {
+                org_id: 1,
+                user_id: 2,
+            },
+            &document,
+        )
+        .unwrap();
     dynamic
         .merge(&key_bytes(1, 2), &values(4, 77, "bob"))
         .expect("dynamic put");
 
     // The real lock: typed store's full entry set == dynamic store's.
     let mut typed_entries: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
-    for full in typed.store().scan_suffix(&[]).expect("a scan on a working store") {
+    for full in typed
+        .store()
+        .scan_suffix(&[])
+        .expect("a scan on a working store")
+    {
         let v = typed.store().get(&full).unwrap().unwrap_or_default();
         typed_entries.push((full, v));
     }
     typed_entries.sort();
     let mut dyn_entries: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
-    for full in dynamic.store().scan_suffix(&[]).expect("a scan on a working store") {
+    for full in dynamic
+        .store()
+        .scan_suffix(&[])
+        .expect("a scan on a working store")
+    {
         let v = dynamic.store().get(&full).unwrap().unwrap_or_default();
         dyn_entries.push((full, v));
     }
     dyn_entries.sort();
-    assert_eq!(typed_entries, dyn_entries, "dynamic and typed tables must land identical entries");
+    assert_eq!(
+        typed_entries, dyn_entries,
+        "dynamic and typed tables must land identical entries"
+    );
 }
 
 #[test]
@@ -245,7 +275,8 @@ fn dynamic_covered_str_include_decodes_the_trailing_remainder() {
         )],
     );
     t.merge(&key_bytes(1, 10), &values(4, 100, "短")).unwrap();
-    t.merge(&key_bytes(1, 11), &values(4, 100, "更长的名字")).unwrap();
+    t.merge(&key_bytes(1, 11), &values(4, 100, "更长的名字"))
+        .unwrap();
 
     let covered = t.scan_covered(0x3001, &4u32.to_be_bytes()).unwrap();
     assert_eq!(covered.len(), 2);
@@ -291,7 +322,10 @@ fn dynamic_purge_removes_all_entries() {
 fn dynamic_get_round_trips() {
     let t = dynamic_table(TestStore::slatedb_mem());
     t.merge(&key_bytes(7, 8), &values(2, 300, "zoe")).unwrap();
-    let document = t.fetch(&key_bytes(7, 8)).unwrap().expect("document present");
+    let document = t
+        .fetch(&key_bytes(7, 8))
+        .unwrap()
+        .expect("document present");
     assert_eq!(document.get("level"), Some(&Value::U32(2)));
     assert_eq!(document.get("score"), Some(&Value::U16(300)));
     assert_eq!(document.get("name"), Some(&Value::Str("zoe".into())));
@@ -311,7 +345,8 @@ fn a_verb_reads_only_the_state_its_arm_consumes() {
     let (row, seg) = (row_key(1, 2), segment_key(1, 2));
 
     // Dynamic names only → the segment, never the row.
-    t.merge(&key_bytes(1, 2), &dfields(&[("note", "x")])).unwrap();
+    t.merge(&key_bytes(1, 2), &dfields(&[("note", "x")]))
+        .unwrap();
     assert!(!t.store().took(&row), "dynamic-only merge reads no row");
     assert!(t.store().took(&seg), "dynamic-only merge reads the segment");
 
@@ -319,14 +354,20 @@ fn a_verb_reads_only_the_state_its_arm_consumes() {
     t.store().reset();
     t.merge(&key_bytes(1, 2), &values(4, 77, "bob")).unwrap();
     assert!(t.store().took(&row), "declared-only merge reads the row");
-    assert!(!t.store().took(&seg), "declared-only merge reads no segment");
+    assert!(
+        !t.store().took(&seg),
+        "declared-only merge reads no segment"
+    );
 
     // Both kinds → both, which is the only case that pays two reads.
     t.store().reset();
     let mut both = values(4, 77, "bob");
     both.insert("note".into(), Value::Str("y".into()));
     t.merge(&key_bytes(1, 2), &both).unwrap();
-    assert!(t.store().took(&row) && t.store().took(&seg), "mixed merge reads both");
+    assert!(
+        t.store().took(&row) && t.store().took(&seg),
+        "mixed merge reads both"
+    );
 
     // `replace` always reads the row (rebuild or delete — only the stored row
     // says which), and the segment only for a path index's sweep: this table
@@ -334,15 +375,24 @@ fn a_verb_reads_only_the_state_its_arm_consumes() {
     t.store().reset();
     t.replace(&key_bytes(1, 2), &values(4, 77, "bob")).unwrap();
     assert!(t.store().took(&row), "replace reads the row");
-    assert!(!t.store().took(&seg), "no path index → replace reads no segment");
+    assert!(
+        !t.store().took(&seg),
+        "no path index → replace reads no segment"
+    );
 
     // The read door and the removal verb touch both slots.
     t.store().reset();
     t.fetch(&key_bytes(1, 2)).unwrap();
-    assert!(t.store().took(&row) && t.store().took(&seg), "fetch reads both");
+    assert!(
+        t.store().took(&row) && t.store().took(&seg),
+        "fetch reads both"
+    );
     t.store().reset();
     assert!(t.purge(&key_bytes(1, 2)).unwrap());
-    assert!(t.store().took(&row) && t.store().took(&seg), "purge reads both");
+    assert!(
+        t.store().took(&row) && t.store().took(&seg),
+        "purge reads both"
+    );
 }
 
 #[test]
@@ -353,7 +403,8 @@ fn an_undeclared_name_is_a_dynamic_name_on_this_side() {
     // and therefore cannot express the mistake at all (ADR-0035).
     let t = dynamic_table(TestStore::slatedb_mem());
     t.merge(&key_bytes(1, 2), &values(4, 77, "bob")).unwrap();
-    t.merge(&key_bytes(1, 2), &dfields(&[("extra", "x")])).unwrap();
+    t.merge(&key_bytes(1, 2), &dfields(&[("extra", "x")]))
+        .unwrap();
     let back = t.fetch(&key_bytes(1, 2)).unwrap().unwrap();
     assert_eq!(back.get("extra"), Some(&Value::Str("x".into())));
     assert_eq!(back.get("name"), Some(&Value::Str("bob".into())));
@@ -365,24 +416,28 @@ fn dynamic_rejects_key_field_indexes() {
     // the key IS the lookup target; indexing it is meaningless and
     // ambiguous under key/payload name collisions.
     let bad = AccessMethod::plain(0x1003, vec!["org_id".into()], vec![]);
-    assert!(okm_dynamic::index_entries(
-        &schema(),
-        &[41],
-        &[bad],
-        &key_bytes(1, 2),
-        &values(4, 77, "bob"),
-    )
-    .is_err());
+    assert!(
+        okm_dynamic::index_entries(
+            &schema(),
+            &[41],
+            &[bad],
+            &key_bytes(1, 2),
+            &values(4, 77, "bob"),
+        )
+        .is_err()
+    );
 
     let bad_inc = AccessMethod::plain(0x1003, vec!["level".into()], vec!["user_id".into()]);
-    assert!(okm_dynamic::index_entries(
-        &schema(),
-        &[41],
-        &[bad_inc],
-        &key_bytes(1, 2),
-        &values(4, 77, "bob"),
-    )
-    .is_err());
+    assert!(
+        okm_dynamic::index_entries(
+            &schema(),
+            &[41],
+            &[bad_inc],
+            &key_bytes(1, 2),
+            &values(4, 77, "bob"),
+        )
+        .is_err()
+    );
 }
 
 // --- Whole-document bridge (ADR-0035) --------------------------------
@@ -403,8 +458,20 @@ fn dynamic_fields_equal_typed_fields() {
     let typed: Collection<TestStore, UserKey, User> = Collection::new(TestStore::slatedb_mem());
     let dynamic = dynamic_table(TestStore::slatedb_mem());
 
-    let document = User { level: 1, score: 5, name: "a".into() };
-    typed.put(&UserKey { org_id: 1, user_id: 2 }, &document).unwrap();
+    let document = User {
+        level: 1,
+        score: 5,
+        name: "a".into(),
+    };
+    typed
+        .put(
+            &UserKey {
+                org_id: 1,
+                user_id: 2,
+            },
+            &document,
+        )
+        .unwrap();
     dynamic.merge(&key_bytes(1, 2), &values(1, 5, "a")).unwrap();
 
     // One map, both modes: no declared name is named here, so both sides
@@ -413,31 +480,55 @@ fn dynamic_fields_equal_typed_fields() {
     fields.insert("note".to_string(), DynamicValue::Str("hello".into()));
     fields.insert("weight".to_string(), DynamicValue::UInt(9));
     typed
-        .merge(&UserKey { org_id: 1, user_id: 2 }, &fields)
+        .merge(
+            &UserKey {
+                org_id: 1,
+                user_id: 2,
+            },
+            &fields,
+        )
         .unwrap();
     dynamic
-        .merge(&key_bytes(1, 2), &dfields(&[("note", "hello"), ("weight", "9")]))
+        .merge(
+            &key_bytes(1, 2),
+            &dfields(&[("note", "hello"), ("weight", "9")]),
+        )
         .unwrap();
 
     let mut typed_entries: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
-    for full in typed.store().scan_suffix(&[]).expect("a scan on a working store") {
+    for full in typed
+        .store()
+        .scan_suffix(&[])
+        .expect("a scan on a working store")
+    {
         let v = typed.store().get(&full).unwrap().unwrap_or_default();
         typed_entries.push((full, v));
     }
     typed_entries.sort();
     let mut dyn_entries: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
-    for full in dynamic.store().scan_suffix(&[]).expect("a scan on a working store") {
+    for full in dynamic
+        .store()
+        .scan_suffix(&[])
+        .expect("a scan on a working store")
+    {
         let v = dynamic.store().get(&full).unwrap().unwrap_or_default();
         dyn_entries.push((full, v));
     }
     dyn_entries.sort();
-    assert_eq!(typed_entries, dyn_entries, "dynamic and typed field writes must land identical entries (incl. vocabulary)");
+    assert_eq!(
+        typed_entries, dyn_entries,
+        "dynamic and typed field writes must land identical entries (incl. vocabulary)"
+    );
 
     // Read-back through the merged projection: the row AND the segment.
     let back = dynamic.fetch(&key_bytes(1, 2)).unwrap().unwrap();
     assert_eq!(back.get("note"), Some(&Value::Str("hello".into())));
     assert_eq!(back.get("weight"), Some(&Value::U64(9)));
-    assert_eq!(back.get("name"), Some(&Value::Str("a".into())), "view carries the row too");
+    assert_eq!(
+        back.get("name"),
+        Some(&Value::Str("a".into())),
+        "view carries the row too"
+    );
 }
 
 #[test]
@@ -453,7 +544,11 @@ fn merge_keeps_the_unnamed_dynamic_name_and_never_writes_the_row() {
     t.merge(&key_bytes(1, 3), &only_b).unwrap();
 
     let back = t.fetch(&key_bytes(1, 3)).unwrap().unwrap();
-    assert_eq!(back.get("a"), Some(&Value::Str("x".into())), "merge does not drop unnamed dynamic names");
+    assert_eq!(
+        back.get("a"),
+        Some(&Value::Str("x".into())),
+        "merge does not drop unnamed dynamic names"
+    );
     assert_eq!(back.get("b"), Some(&Value::U64(2)));
     assert_eq!(
         back.get("name"),
@@ -471,7 +566,8 @@ fn replace_is_the_whole_document_and_empty_is_purge() {
 
     // A map with NO declared name leaves the static segment absent: the
     // segment is the whole document (ADR-0035 rule 4).
-    t.replace(&key_bytes(1, 4), &dfields(&[("b", "1")])).unwrap();
+    t.replace(&key_bytes(1, 4), &dfields(&[("b", "1")]))
+        .unwrap();
     let only_dynamic = t
         .fetch(&key_bytes(1, 4))
         .unwrap()
@@ -481,7 +577,10 @@ fn replace_is_the_whole_document_and_empty_is_purge() {
         1,
         "no declared name in the map → no row: the fetch is exactly the segment"
     );
-    assert!(only_dynamic.contains_key("b"), "the map's dynamic name survives");
+    assert!(
+        only_dynamic.contains_key("b"),
+        "the map's dynamic name survives"
+    );
 
     // The declared map rebuilds the row and empties the segment.
     t.replace(&key_bytes(1, 4), &values(9, 6, "z")).unwrap();
@@ -516,7 +615,8 @@ fn purge_is_the_one_deletion_verb_and_takes_both_slots() {
 
     // A dynamic-only document (replace with no declared name) purges too —
     // that state is reachable through `replace`, and purge is what clears it.
-    t.replace(&key_bytes(1, 5), &dfields(&[("note", "orphan")])).unwrap();
+    t.replace(&key_bytes(1, 5), &dfields(&[("note", "orphan")]))
+        .unwrap();
     assert!(t.fetch(&key_bytes(1, 5)).unwrap().is_some());
     assert!(t.purge(&key_bytes(1, 5)).unwrap());
     assert!(t.fetch(&key_bytes(1, 5)).unwrap().is_none());
@@ -533,7 +633,10 @@ fn dynamic_fields_carry_composites() {
     nested.insert("n".into(), Value::Str("v".into()));
     let mut f: M<String, Value> = M::new();
     f.insert("obj".into(), Value::Obj(nested));
-    f.insert("tags".into(), Value::Array(vec![Value::Str("x".into()), Value::U64(3)]));
+    f.insert(
+        "tags".into(),
+        Value::Array(vec![Value::Str("x".into()), Value::U64(3)]),
+    );
     t.merge(&key_bytes(1, 6), &f).unwrap();
 
     let back = t.fetch(&key_bytes(1, 6)).unwrap().unwrap();
@@ -606,11 +709,19 @@ fn plan_merge_equals_embedded_merge() {
         .scan_suffix(&[])
         .expect("a scan on a working store")
         .into_iter()
-        .map(|full| (full.clone(), emb.store().get(&full).unwrap().unwrap_or_default()))
+        .map(|full| {
+            (
+                full.clone(),
+                emb.store().get(&full).unwrap().unwrap_or_default(),
+            )
+        })
         .collect();
     planned.sort();
     embedded.sort();
-    assert_eq!(planned, embedded, "engine-less plan replay == embedded merge, byte for byte");
+    assert_eq!(
+        planned, embedded,
+        "engine-less plan replay == embedded merge, byte for byte"
+    );
 
     // The remote read side: frames + the caller's own mirror decode to the
     // same dynamic half the embedded path reads.
@@ -661,7 +772,8 @@ fn dynamic_variable_width_index_matches_typed_bytes() {
         pub email: String, // cold TLV in the payload; raw UTF-8 in the index
     }
 
-    let typed: Collection<TestStore, EmailKey, Subscriber> = Collection::new(TestStore::slatedb_mem());
+    let typed: Collection<TestStore, EmailKey, Subscriber> =
+        Collection::new(TestStore::slatedb_mem());
     let schema = CollectionSchema::of::<EmailKey, Subscriber>();
     let dynamic = DynamicCollection::new(
         TestStore::slatedb_mem(),
@@ -670,7 +782,9 @@ fn dynamic_variable_width_index_matches_typed_bytes() {
         vec![AccessMethod::plain(0x3001, vec!["email".into()], vec![])],
     );
 
-    let doc = |email: &str| Subscriber { email: email.into() };
+    let doc = |email: &str| Subscriber {
+        email: email.into(),
+    };
     let put = |c: &mut Subscriber, email: &str| c.email = email.into();
     let _ = put;
 
@@ -681,23 +795,36 @@ fn dynamic_variable_width_index_matches_typed_bytes() {
         // `a_key_field_name_in_the_map_is_a_dynamic_field`).
         let mut m = BTreeMap::new();
         m.insert("email".to_string(), Value::Str(email.into()));
-        dynamic.merge(&EmailKey { id }.encode(), &m).expect("dynamic put");
+        dynamic
+            .merge(&EmailKey { id }.encode(), &m)
+            .expect("dynamic put");
     }
 
     // The real lock: identical entry sets.
     let mut typed_entries: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
-    for full in typed.store().scan_suffix(&[]).expect("a scan on a working store") {
+    for full in typed
+        .store()
+        .scan_suffix(&[])
+        .expect("a scan on a working store")
+    {
         let v = typed.store().get(&full).unwrap().unwrap_or_default();
         typed_entries.push((full, v));
     }
     typed_entries.sort();
     let mut dyn_entries: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
-    for full in dynamic.store().scan_suffix(&[]).expect("a scan on a working store") {
+    for full in dynamic
+        .store()
+        .scan_suffix(&[])
+        .expect("a scan on a working store")
+    {
         let v = dynamic.store().get(&full).unwrap().unwrap_or_default();
         dyn_entries.push((full, v));
     }
     dyn_entries.sort();
-    assert_eq!(typed_entries, dyn_entries, "variable-width index entries must be byte-identical across modes");
+    assert_eq!(
+        typed_entries, dyn_entries,
+        "variable-width index entries must be byte-identical across modes"
+    );
 
     // Equality probe with the FULL string (longer than nothing — the
     // pkey tail cuts the raw UTF-8): rows 1 and 2 match, 3 does not.
@@ -731,7 +858,10 @@ fn dynamic_variable_width_index_matches_typed_bytes() {
 #[test]
 fn dynamic_variable_width_index_declaration_errors() {
     let fields_last_ok = AccessMethod::plain(0x1003, vec!["name".into()], vec![]);
-    assert!(fields_last_ok.fields_width(&schema()).is_ok(), "trailing Str is legal");
+    assert!(
+        fields_last_ok.fields_width(&schema()).is_ok(),
+        "trailing Str is legal"
+    );
 
     // Variable-width NOT last: nothing can locate fields after it.
     let bad_order = AccessMethod::plain(0x1003, vec!["name".into(), "level".into()], vec![]);
@@ -755,24 +885,32 @@ fn dynamic_variable_width_index_declaration_errors() {
     assert!(two_variable.fields_width(&two_str_schema).is_err());
 
     // Includes segments share the rule.
-    let bad_inc = AccessMethod::plain(0x1003, vec!["level".into()], vec!["name".into(), "score".into()]);
-    assert!(okm_dynamic::index_entries(
-        &schema(),
-        &[41],
-        &[bad_inc],
-        &key_bytes(1, 2),
-        &values(4, 77, "bob"),
-    )
-    .is_err());
+    let bad_inc = AccessMethod::plain(
+        0x1003,
+        vec!["level".into()],
+        vec!["name".into(), "score".into()],
+    );
+    assert!(
+        okm_dynamic::index_entries(
+            &schema(),
+            &[41],
+            &[bad_inc],
+            &key_bytes(1, 2),
+            &values(4, 77, "bob"),
+        )
+        .is_err()
+    );
 
     // And the write path enforces it too (a Str field first in fields).
     let bad_write = AccessMethod::plain(0x1003, vec!["name".into(), "level".into()], vec![]);
-    assert!(okm_dynamic::index_entries(
-        &schema(),
-        &[41],
-        &[bad_write],
-        &key_bytes(1, 2),
-        &values(4, 77, "bob"),
-    )
-    .is_err());
+    assert!(
+        okm_dynamic::index_entries(
+            &schema(),
+            &[41],
+            &[bad_write],
+            &key_bytes(1, 2),
+            &values(4, 77, "bob"),
+        )
+        .is_err()
+    );
 }

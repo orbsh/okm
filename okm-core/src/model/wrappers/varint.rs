@@ -150,8 +150,21 @@ mod tests {
     #[test]
     fn byte_order_equals_value_order() {
         let values: Vec<u64> = vec![
-            0, 1, 42, 126, 127, 128, 129, 2_097_151, 2_097_152, 268_435_455,
-            268_435_456, u32::MAX as u64, u32::MAX as u64 + 1, u64::MAX - 1, u64::MAX,
+            0,
+            1,
+            42,
+            126,
+            127,
+            128,
+            129,
+            2_097_151,
+            2_097_152,
+            268_435_455,
+            268_435_456,
+            u32::MAX as u64,
+            u32::MAX as u64 + 1,
+            u64::MAX - 1,
+            u64::MAX,
         ];
         let mut pairs: Vec<(u64, Vec<u8>)> = values
             .iter()

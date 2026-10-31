@@ -2,7 +2,7 @@
 //! map. Key encoding is the flat concatenation of BE fields; payload is
 //! `[version u8][hot_len u16 BE][hot][cold TLV]`.
 
-use crate::{field_pair, CodecError, CollectionSchema, Value, ValueMap};
+use crate::{CodecError, CollectionSchema, Value, ValueMap, field_pair};
 
 /// Encode the key from the value map: fields in schema order, BE widths.
 /// Returns exactly `schema.key_len` bytes (nested segments recurse).
@@ -85,7 +85,7 @@ pub fn encode_fields(
                     return Err(CodecError::TypeMismatch {
                         field: f.name.clone(),
                         expected: "variable-width (Str)",
-                    })
+                    });
                 }
             }
         } else {
@@ -151,16 +151,21 @@ fn encode_field(
             return Err(CodecError::TypeMismatch {
                 field: f.name.clone(),
                 expected: "fixed-width (Str is a cold TLV kind)",
-            })
+            });
         }
         // Dynamic-segment parity kinds: typed-schema fields cannot declare
         // them yet (schema kinds are fixed-width), so in the static region
         // they are type errors. They become valid once a schema kind lands.
-        Value::I64(_) | Value::F64(_) | Value::Bool(_) | Value::Null | Value::Obj(_) | Value::Array(_) => {
+        Value::I64(_)
+        | Value::F64(_)
+        | Value::Bool(_)
+        | Value::Null
+        | Value::Obj(_)
+        | Value::Array(_) => {
             return Err(CodecError::TypeMismatch {
                 field: f.name.clone(),
                 expected: "fixed-width numeric/bytes (signed/float/bool/null are dynamic-segment kinds)",
-            })
+            });
         }
     }
     Ok(())
@@ -175,10 +180,7 @@ fn encode_field(
 /// dispatch did — produces frames the typed reader cannot consume: a 3-byte
 /// varint frame overruns, a 4-byte offset frame truncates, and a quantised
 /// value comes back as an integer.
-fn cold_frame_bytes(
-    f: &okm_core::schema::FieldSchema,
-    v: &Value,
-) -> Result<Vec<u8>, CodecError> {
+fn cold_frame_bytes(f: &okm_core::schema::FieldSchema, v: &Value) -> Result<Vec<u8>, CodecError> {
     Ok(match f.ty {
         okm_core::FieldType::VarInt => {
             let Value::U64(x) = v else {

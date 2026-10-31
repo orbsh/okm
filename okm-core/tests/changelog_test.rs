@@ -518,9 +518,7 @@ fn reconcile_re_emits_the_rows_that_still_exist() {
     c.flush_capture().expect("flush");
     assert_eq!(c.reconcile().expect("scan"), 3, "idempotent re-read");
 
-    let pkeys: Vec<Vec<u8>> = (1..=3u64)
-        .map(|id| c.primary_key(&LogKey { id }))
-        .collect();
+    let pkeys: Vec<Vec<u8>> = (1..=3u64).map(|id| c.primary_key(&LogKey { id })).collect();
     let frames = drain(c, root.path());
     // A window may carry a row more than once, so the frames are three separate
     // batches: the three puts, the table reconcile, the range reconcile.

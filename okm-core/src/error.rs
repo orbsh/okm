@@ -24,7 +24,7 @@
 
 use thiserror::Error;
 
-use crate::model::obj_dynamic::{dyn_kind, DynamicValue};
+use crate::model::obj_dynamic::{DynamicValue, dyn_kind};
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 #[non_exhaustive]
@@ -114,11 +114,7 @@ pub enum Error {
 
 impl Error {
     /// A present name whose kind does not match the declaration.
-    pub fn kind_mismatch(
-        field: impl Into<String>,
-        want: &'static str,
-        got: &DynamicValue,
-    ) -> Self {
+    pub fn kind_mismatch(field: impl Into<String>, want: &'static str, got: &DynamicValue) -> Self {
         Self::KindMismatch {
             field: field.into(),
             want,

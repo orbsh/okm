@@ -117,9 +117,8 @@ fn a_time_range_read_crosses_partitions() {
     let mut log = Log::open(dir.path(), config).unwrap();
     for step in 0..12u64 {
         let partition = if step < 6 { "eu" } else { "us" };
-        log.append(&body(partition, &format!("row {step}")),
-        )
-        .unwrap();
+        log.append(&body(partition, &format!("row {step}")))
+            .unwrap();
     }
     log.flush().unwrap();
 

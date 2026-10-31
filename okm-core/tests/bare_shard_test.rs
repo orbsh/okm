@@ -8,9 +8,17 @@
 //! bare instances' ns numbers off the hosted segments' numbers (an
 //! allocation duty, not a runtime check).
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unwrap_in_result,
+    clippy::panic_in_result_fn
+)]
 
-use okm_core::{KeyEncode, NestStorage, RemoteStore, DocumentEncode, Collection, TestStore, VirtualStorage};
+use okm_core::{
+    Collection, DocumentEncode, KeyEncode, NestStorage, RemoteStore, TestStore, VirtualStorage,
+};
 
 #[test]
 fn bare_host_executes_frames_byte_identical() {
@@ -26,7 +34,10 @@ fn bare_host_executes_frames_byte_identical() {
         }
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
-    assert_eq!(s.get(b"user:1").unwrap().as_deref(), Some(b"one".as_slice()));
+    assert_eq!(
+        s.get(b"user:1").unwrap().as_deref(),
+        Some(b"one".as_slice())
+    );
     assert_eq!(s.scan_suffix(b"user:").unwrap(), vec![b"1".to_vec()]);
 }
 
@@ -51,7 +62,8 @@ fn shard_table_via_bare_host_lands_on_its_ns_segment() {
     let handle = NestStorage::bare(TestStore::default());
     let t: Collection<RemoteStore, ShardDocKey, ShardDoc> = Collection::new(handle.open());
 
-    t.put(&ShardDocKey { id: 5 }, &ShardDoc { title: 3 }).unwrap();
+    t.put(&ShardDocKey { id: 5 }, &ShardDoc { title: 3 })
+        .unwrap();
     for _ in 0..200 {
         if t.get(&ShardDocKey { id: 5 }).unwrap().is_some() {
             break;
@@ -86,7 +98,8 @@ fn bare_and_hosted_coexist_with_allocation_discipline() {
     let hs = hosted.open();
 
     // Shard writes ns-1 keys; hosted app B's segment is [0,30].
-    bs.put([1u8, 5].to_vec(), b"shard-document".to_vec()).unwrap();
+    bs.put([1u8, 5].to_vec(), b"shard-document".to_vec())
+        .unwrap();
     hs.put(b"appkey".to_vec(), b"app-b".to_vec()).unwrap();
 
     for _ in 0..200 {
@@ -95,6 +108,12 @@ fn bare_and_hosted_coexist_with_allocation_discipline() {
         }
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
-    assert_eq!(bs.get(&[1u8, 5]).unwrap().as_deref(), Some(b"shard-document".as_slice()));
-    assert_eq!(hs.get(b"appkey").unwrap().as_deref(), Some(b"app-b".as_slice()));
+    assert_eq!(
+        bs.get(&[1u8, 5]).unwrap().as_deref(),
+        Some(b"shard-document".as_slice())
+    );
+    assert_eq!(
+        hs.get(b"appkey").unwrap().as_deref(),
+        Some(b"app-b".as_slice())
+    );
 }

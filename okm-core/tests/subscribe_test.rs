@@ -8,14 +8,20 @@
 //! with upsert_test — the generated enum's `super::` references must
 //! resolve in every binary that includes it).
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unwrap_in_result,
+    clippy::panic_in_result_fn
+)]
 
-use okm_core::{TestStore, Collection};
+use okm_core::{Collection, TestStore};
 
 #[path = "subscribe_common.rs"]
 mod subscribe_common;
-use subscribe_common::*;
 use subscribe_common::okm_subscribe;
+use subscribe_common::*;
 
 #[test]
 fn subscribe_round_trip() {
@@ -42,15 +48,18 @@ fn subscribe_round_trip() {
     assert!(okm_subscribe::SINK_ROWEVENT.has_sink());
 
     let t: Collection<TestStore, AccountKey, Account> = Collection::new(TestStore::slatedb_mem());
-    t.put(&AccountKey { id: 1 }, &Account { balance: 10 }).unwrap();
-    t.put(&AccountKey { id: 2 }, &Account { balance: 20 }).unwrap();
+    t.put(&AccountKey { id: 1 }, &Account { balance: 10 })
+        .unwrap();
+    t.put(&AccountKey { id: 2 }, &Account { balance: 20 })
+        .unwrap();
     t.purge(&AccountKey { id: 1 }).unwrap();
 
     // Epoch: the table's monotonic write-batch counter — 1, 2, 3 across
     // the three writes, giving consumers an exact same-table boundary.
     // Fan-in: the second document type lands in the same enum (tag 100+).
     let a: Collection<TestStore, AuditKey, Audit> = Collection::new(TestStore::slatedb_mem());
-    a.put(&AuditKey { id: 7 }, &Audit { note: "hi".into() }).unwrap();
+    a.put(&AuditKey { id: 7 }, &Audit { note: "hi".into() })
+        .unwrap();
     a.purge(&AuditKey { id: 7 }).unwrap();
 
     assert_eq!(

@@ -17,7 +17,16 @@
 // (and the oracle for every failable path is "assert on the error VALUE"). This line
 // is per-crate because `[lints]` is per-package and covers every target, with no way
 // to scope a lint to lib/bins — the manifest cannot express `cfg(test)`.
-#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn))]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::unwrap_in_result,
+        clippy::panic_in_result_fn
+    )
+)]
 
 /// Character n-grams of width `n`. Panics on `n == 0` — a zero-width
 /// gram is a modeling error, not an empty result.
@@ -27,10 +36,7 @@ pub fn ngrams(text: &str, n: usize) -> Vec<String> {
     if chars.len() < n {
         return vec![text.to_string()];
     }
-    chars
-        .windows(n)
-        .map(|w| w.iter().collect())
-        .collect()
+    chars.windows(n).map(|w| w.iter().collect()).collect()
 }
 
 /// BM25 (Okapi) scoring over recalled candidates. The caller supplies,
@@ -48,8 +54,7 @@ pub fn bm25_score(
     const K1: f64 = 1.2;
     const B: f64 = 0.75;
     let idf = ((total_docs - doc_freq + 0.5) / (doc_freq + 0.5) + 1.0).ln();
-    let tf_norm = term_freq * (K1 + 1.0)
-        / (term_freq + K1 * (1.0 - B + B * doc_len / avg_doc_len));
+    let tf_norm = term_freq * (K1 + 1.0) / (term_freq + K1 * (1.0 - B + B * doc_len / avg_doc_len));
     idf * tf_norm
 }
 

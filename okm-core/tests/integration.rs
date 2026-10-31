@@ -1,7 +1,13 @@
 //! 基础集成测试：TestStore 上验证字节布局、双向查询、PrefixKey。
 //! fjall 评估见 tests/fjall_eval.rs（--features fjall）。
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unwrap_in_result,
+    clippy::panic_in_result_fn
+)]
 
 use okm_core::{DocumentEncode, JunctionEncode, KeyEncode, KvJunction, Ref, TestStore};
 
@@ -87,8 +93,14 @@ fn byte_layout_and_queries() {
     // ---------- 字节布局 ----------
     // A 端 entry 头 = [ns_user 2B BE][slot 2B BE]：ns=1、junction 段 n=1 → [0,1,0x30,1]
     let e = UserToSession {
-        user: Ref::ref_key(UserKey { org_id: 7, user_id: 101 }),
-        session: Ref::ref_key(SessionKey { org_id: 7, session_id: 1001 }),
+        user: Ref::ref_key(UserKey {
+            org_id: 7,
+            user_id: 101,
+        }),
+        session: Ref::ref_key(SessionKey {
+            org_id: 7,
+            session_id: 1001,
+        }),
     };
     let fk = e.a_side_key();
     // A 端 entry = [ns_user][slot][A·身份][B·全量身份]：头 4B + 12B + 12B。
@@ -140,7 +152,11 @@ fn head_disjointness() {
     // 端点不同的 junction 两端 ns 不同，方向位只是多余的确定性。
     let a_side = [0u8, 1, 0x50, 2];
     let b_side = [0u8, 2, 0x50, 3];
-    assert_ne!(a_side[2..4], b_side[2..4], "direction bit separates the two scan prefixes");
+    assert_ne!(
+        a_side[2..4],
+        b_side[2..4],
+        "direction bit separates the two scan prefixes"
+    );
     assert_eq!(a_side[..2], [0, 1]);
     // 段号分派：junction(0x3) ≠ index(0x1) ≠ reduce(0x2)——同一 ns 内不串扰。
     assert_ne!(

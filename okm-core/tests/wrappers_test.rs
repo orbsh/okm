@@ -1,11 +1,17 @@
 //! Wrapper codecs: VarInt / Quant / Offset — payload TLV framing,
 //! FieldDesc reporting, and Arrow/Parquet round trips (ADR-0007 Phase 2).
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unwrap_in_result,
+    clippy::panic_in_result_fn
+)]
 
 use okm_core::{
-    FieldType, KeyEncode, TestStore, Offset, Quant, Reverse, Document,
-    DocumentEncode, Collection, VarInt, offset_decode, offset_encode,
+    Collection, Document, DocumentEncode, FieldType, KeyEncode, Offset, Quant, Reverse, TestStore,
+    VarInt, offset_decode, offset_encode,
 };
 
 #[derive(KeyEncode, Clone, PartialEq, Debug)]
@@ -142,7 +148,11 @@ mod parquet {
             .map(|f| f.name().to_string())
             .collect();
         assert_eq!(&names[2..], &["hits", "ratio", "flag", "created"]);
-        let dts: Vec<_> = schema.fields().iter().map(|f| f.data_type().clone()).collect();
+        let dts: Vec<_> = schema
+            .fields()
+            .iter()
+            .map(|f| f.data_type().clone())
+            .collect();
         assert_eq!(dts[2], arrow::datatypes::DataType::UInt64); // VarInt → logical integer
         assert_eq!(dts[3], arrow::datatypes::DataType::Float64); // Quant → dequantized
         assert_eq!(dts[4], arrow::datatypes::DataType::UInt8); // flag: u8

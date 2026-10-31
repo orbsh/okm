@@ -3,9 +3,15 @@
 //! discipline as the key/index hex tests). Covers the length codec's four
 //! buckets, the op header, round trips, and malformed-frame rejection.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unwrap_in_result,
+    clippy::panic_in_result_fn
+)]
 
-use okm_wire::{put_len, OpFrame, OpResponse, OP_SCAN_STREAM, TAIL_FINAL, TAIL_MORE};
+use okm_wire::{OP_SCAN_STREAM, OpFrame, OpResponse, TAIL_FINAL, TAIL_MORE, put_len};
 
 #[test]
 fn length_codec_four_buckets() {
@@ -61,9 +67,15 @@ fn frame_round_trip_and_layout() {
     // op 2: tag 1<<4, key len 2, value len 0, key "k0" (no value bytes)
     assert_eq!(&bytes[8..13], &[0x10, 0x02, 0x00, b'k', b'0']);
     // op 3: tag 2<<4 (get), key len 6, value len 0, key "get-me"
-    assert_eq!(&bytes[13..22], &[0x20, 0x06, 0x00, b'g', b'e', b't', b'-', b'm', b'e']);
+    assert_eq!(
+        &bytes[13..22],
+        &[0x20, 0x06, 0x00, b'g', b'e', b't', b'-', b'm', b'e']
+    );
     // op 4: tag 3<<4 (scan), key len 7, value len 0, key "scan-me"
-    assert_eq!(&bytes[22..32], &[0x30, 0x07, 0x00, b's', b'c', b'a', b'n', b'-', b'm', b'e']);
+    assert_eq!(
+        &bytes[22..32],
+        &[0x30, 0x07, 0x00, b's', b'c', b'a', b'n', b'-', b'm', b'e']
+    );
 
     let back = OpFrame::decode(&bytes).expect("round trip");
     assert_eq!(back.0.len(), 5);
@@ -116,7 +128,9 @@ fn stream_chunk_round_trip() {
     // Layout lock: [has_value 0][count 2][klen 2]"k1"[vlen 2]"v1"[klen 2]"k2"[vlen 2]"v2"[tail 0x00]
     assert_eq!(
         &bytes,
-        &[0, 2, 2, b'k', b'1', 2, b'v', b'1', 2, b'k', b'2', 2, b'v', b'2', 0x00]
+        &[
+            0, 2, 2, b'k', b'1', 2, b'v', b'1', 2, b'k', b'2', 2, b'v', b'2', 0x00
+        ]
     );
     let back = OpResponse::decode_chunk(&bytes).expect("chunk round trip");
     assert_eq!(back.hits, chunk.hits);
@@ -212,10 +226,10 @@ fn malformed_frames_rejected_not_panic() {
 fn stream_request_flags_are_exhaustive() {
     // [flag][end?][page] — the four (exclusive, bounded) combinations.
     let cases: [(u8, Option<&[u8]>, bool); 4] = [
-        (0x00, None, false),   // unbounded, inclusive begin
+        (0x00, None, false),       // unbounded, inclusive begin
         (0x01, Some(b"z"), false), // bounded, inclusive
         (0x02, Some(b"z"), true),  // bounded, exclusive (cursor resume)
-        (0x03, None, true),       // unbounded, exclusive — the 0x03 closure
+        (0x03, None, true),        // unbounded, exclusive — the 0x03 closure
     ];
     for (expected_flag, end, exclusive) in cases {
         let mut value = vec![expected_flag];

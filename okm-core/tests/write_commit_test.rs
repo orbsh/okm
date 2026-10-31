@@ -12,13 +12,19 @@
 //! story checkable: the row, its faces and its ledgers live in one commit or
 //! in none.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unwrap_in_result,
+    clippy::panic_in_result_fn
+)]
 
 use std::cell::Cell;
 
 use okm_core::engine::storage::ScanIter;
 use okm_core::{
-    Document, DocumentEncode, KeyEncode, Batch, ReduceCodec, TestStore, VirtualStorage,
+    Batch, Document, DocumentEncode, KeyEncode, ReduceCodec, TestStore, VirtualStorage,
 };
 
 /// An engine handle that counts how writes arrive: bare single-op writes
@@ -140,7 +146,12 @@ fn put_is_one_engine_commit() {
 
     // The commit really carried them: row, face and ledger are all visible.
     assert_eq!(t.get(&LedgerKey { id: 1 }).unwrap(), Some(row(7)));
-    assert_eq!(t.scan::<Ledger_ByAccount>(&7u64.to_be_bytes()).unwrap().len(), 1);
+    assert_eq!(
+        t.scan::<Ledger_ByAccount>(&7u64.to_be_bytes())
+            .unwrap()
+            .len(),
+        1
+    );
     assert_eq!(ledger(t.store(), 7), Some(1));
 }
 
@@ -151,10 +162,21 @@ fn overwrite_is_one_engine_commit() {
     t.put(&k, &row(7)).unwrap();
     t.store().reset();
 
-    t.put(&k, &LedgerRow { account: 8, amount: 2 }).unwrap();
+    t.put(
+        &k,
+        &LedgerRow {
+            account: 8,
+            amount: 2,
+        },
+    )
+    .unwrap();
 
     let c = t.store();
-    assert_eq!(c.commits.get(), 1, "the unfold and the fold share the commit");
+    assert_eq!(
+        c.commits.get(),
+        1,
+        "the unfold and the fold share the commit"
+    );
     assert_eq!(c.ops_committed.get(), 4, "unfold + primary + face + fold");
     assert_eq!((c.bare_puts.get(), c.bare_dels.get()), (0, 0));
 
@@ -177,7 +199,11 @@ fn delete_is_one_engine_commit() {
     assert_eq!(c.ops_committed.get(), 3, "del primary + del face + unfold");
     assert_eq!((c.bare_puts.get(), c.bare_dels.get()), (0, 0));
     assert!(t.get(&k).unwrap().is_none());
-    assert!(t.scan::<Ledger_ByAccount>(&7u64.to_be_bytes()).unwrap().is_empty());
+    assert!(
+        t.scan::<Ledger_ByAccount>(&7u64.to_be_bytes())
+            .unwrap()
+            .is_empty()
+    );
     assert_eq!(ledger(t.store(), 7), Some(0));
 }
 
@@ -194,7 +220,11 @@ fn dynamic_write_including_vocabulary_growth_is_one_engine_commit() {
     t.merge(&LedgerKey { id: 1 }, &fields).unwrap();
 
     let c = t.store();
-    assert_eq!(c.commits.get(), 1, "vocabulary growth rides the entry's commit");
+    assert_eq!(
+        c.commits.get(),
+        1,
+        "vocabulary growth rides the entry's commit"
+    );
     assert_eq!(
         c.ops_committed.get(),
         4,
@@ -202,7 +232,8 @@ fn dynamic_write_including_vocabulary_growth_is_one_engine_commit() {
     );
     assert_eq!((c.bare_puts.get(), c.bare_dels.get()), (0, 0));
     assert_eq!(
-        t.fetch(&LedgerKey { id: 1 }).unwrap()
+        t.fetch(&LedgerKey { id: 1 })
+            .unwrap()
             .and_then(|m| m.get("colour").cloned()),
         Some(okm_core::obj_dynamic::DynamicValue::Str("amber".into()))
     );
@@ -215,14 +246,22 @@ fn merge_of_a_declared_field_is_one_engine_commit() {
     t.put(&k, &row(7)).unwrap();
     t.store().reset();
 
-    t.merge(&k, &map_of(&[("amount", okm_core::obj_dynamic::DynamicValue::UInt(9))])).unwrap();
+    t.merge(
+        &k,
+        &map_of(&[("amount", okm_core::obj_dynamic::DynamicValue::UInt(9))]),
+    )
+    .unwrap();
 
     let c = t.store();
     assert_eq!(c.commits.get(), 1, "merge is one engine commit");
     assert_eq!(c.ops_committed.get(), 4, "unfold + primary + face + fold");
     assert_eq!((c.bare_puts.get(), c.bare_dels.get()), (0, 0));
     assert_eq!(t.get(&k).unwrap().unwrap().amount, 9);
-    assert_eq!(t.get(&k).unwrap().unwrap().account, 7, "unnamed declared field kept");
+    assert_eq!(
+        t.get(&k).unwrap().unwrap().account,
+        7,
+        "unnamed declared field kept"
+    );
 }
 
 #[test]
@@ -232,16 +271,27 @@ fn replace_is_one_engine_commit_across_both_slots() {
     t.put(&k, &row(7)).unwrap();
     // Intern the dynamic name first, so the replace below measures the write
     // set only (a first-seen name adds its three vocabulary ops).
-    t.merge(&k, &map_of(&[("colour", okm_core::obj_dynamic::DynamicValue::Str("amber".into()))])).unwrap();
+    t.merge(
+        &k,
+        &map_of(&[(
+            "colour",
+            okm_core::obj_dynamic::DynamicValue::Str("amber".into()),
+        )]),
+    )
+    .unwrap();
     t.store().reset();
 
     t.replace(
         &k,
         &map_of(&[
             ("account", okm_core::obj_dynamic::DynamicValue::UInt(8)),
-            ("colour", okm_core::obj_dynamic::DynamicValue::Str("slate".into())),
+            (
+                "colour",
+                okm_core::obj_dynamic::DynamicValue::Str("slate".into()),
+            ),
         ]),
-    ).unwrap();
+    )
+    .unwrap();
 
     let c = t.store();
     assert_eq!(c.commits.get(), 1, "both slots ride one commit");
@@ -252,7 +302,11 @@ fn replace_is_one_engine_commit_across_both_slots() {
     );
     assert_eq!((c.bare_puts.get(), c.bare_dels.get()), (0, 0));
     assert_eq!(t.get(&k).unwrap().unwrap().account, 8);
-    assert_eq!(t.get(&k).unwrap().unwrap().amount, 0, "unnamed declared field defaults");
+    assert_eq!(
+        t.get(&k).unwrap().unwrap().amount,
+        0,
+        "unnamed declared field defaults"
+    );
     assert_eq!(
         t.fetch(&k).unwrap().and_then(|m| m.get("colour").cloned()),
         Some(okm_core::obj_dynamic::DynamicValue::Str("slate".into()))
@@ -264,19 +318,32 @@ fn purge_is_one_engine_commit() {
     let t = <LedgerRow as Document>::collection(Counting::new(TestStore::slatedb_mem()));
     let k = LedgerKey { id: 1 };
     t.put(&k, &row(7)).unwrap();
-    t.merge(&k, &map_of(&[("colour", okm_core::obj_dynamic::DynamicValue::Str("amber".into()))])).unwrap();
+    t.merge(
+        &k,
+        &map_of(&[(
+            "colour",
+            okm_core::obj_dynamic::DynamicValue::Str("amber".into()),
+        )]),
+    )
+    .unwrap();
     t.store().reset();
 
     assert!(t.purge(&k).unwrap());
 
     let c = t.store();
     assert_eq!(c.commits.get(), 1, "a whole-document removal is one commit");
-    assert_eq!(c.ops_committed.get(), 4, "del primary + del face + unfold + del slot 1");
+    assert_eq!(
+        c.ops_committed.get(),
+        4,
+        "del primary + del face + unfold + del slot 1"
+    );
     assert_eq!((c.bare_puts.get(), c.bare_dels.get()), (0, 0));
     assert!(t.fetch(&k).unwrap().is_none());
 }
 
-fn map_of(pairs: &[(&str, okm_core::obj_dynamic::DynamicValue)]) -> std::collections::BTreeMap<String, okm_core::obj_dynamic::DynamicValue> {
+fn map_of(
+    pairs: &[(&str, okm_core::obj_dynamic::DynamicValue)],
+) -> std::collections::BTreeMap<String, okm_core::obj_dynamic::DynamicValue> {
     pairs
         .iter()
         .map(|(name, value)| ((*name).to_string(), value.clone()))
@@ -297,11 +364,13 @@ fn the_verbs_take_a_shared_handle_and_still_commit_once_each() {
         t.merge(
             &k,
             &map_of(&[("amount", okm_core::obj_dynamic::DynamicValue::UInt(2))]),
-        ).unwrap();
+        )
+        .unwrap();
         t.replace(
             &k,
             &map_of(&[("amount", okm_core::obj_dynamic::DynamicValue::UInt(3))]),
-        ).unwrap();
+        )
+        .unwrap();
         assert!(
             t.purge(&k).unwrap(),
             "purge addresses the document it was given"
@@ -312,8 +381,16 @@ fn the_verbs_take_a_shared_handle_and_still_commit_once_each() {
     drive(&t);
 
     let c = t.store();
-    assert_eq!(c.commits.get(), 4, "one commit per verb, on a shared handle");
+    assert_eq!(
+        c.commits.get(),
+        4,
+        "one commit per verb, on a shared handle"
+    );
     assert_eq!(c.bare_puts.get(), 0);
     assert_eq!(c.bare_dels.get(), 0);
-    assert_eq!(t.get(&LedgerKey { id: 1 }).unwrap(), None, "purge took the row");
+    assert_eq!(
+        t.get(&LedgerKey { id: 1 }).unwrap(),
+        None,
+        "purge took the row"
+    );
 }

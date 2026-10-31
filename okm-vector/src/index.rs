@@ -121,7 +121,10 @@ impl VectorIndex {
     /// Read the snapshot back. `Ok(None)` when any shard is missing or the blob
     /// set disagrees on shape — the caller then rebuilds from the corpus.
     /// `Err` is the store failing to answer at all, which is a different fact.
-    pub fn load<S: VirtualStorage + ?Sized>(store: &S, ns: [u8; 2]) -> Result<Option<Self>, String> {
+    pub fn load<S: VirtualStorage + ?Sized>(
+        store: &S,
+        ns: [u8; 2],
+    ) -> Result<Option<Self>, String> {
         let Some(first) = store.get(&slot_key(ns, 0)).map_err(|e| e.to_string())? else {
             return Ok(None);
         };

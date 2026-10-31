@@ -46,12 +46,7 @@ const REDUCE_SLOT_BASE: u16 = 0x4001;
 /// family's first slot (index `0x3FFF + 1 = 0x4001` is the reduce family). A
 /// declaration-count mistake is a source-level mistake — refuse it here instead
 /// of masking the counter and writing entries another table reads back.
-fn declared_slot(
-    base: u16,
-    n: usize,
-    what: &str,
-    span: proc_macro2::Span,
-) -> syn::Result<u16> {
+fn declared_slot(base: u16, n: usize, what: &str, span: proc_macro2::Span) -> syn::Result<u16> {
     if n >= 0x0FFF {
         return Err(syn::Error::new(
             span,
@@ -186,7 +181,11 @@ fn emit_payload_encode(schema: &DocumentSchema) -> TS2 {
     let mut cold_enc = quote! {};
     for f in &cold_fields {
         let tag = proc_macro2::Literal::u8_unsuffixed(
-            schema.fields.iter().position(|x| std::ptr::eq(x, *f)).unwrap() as u8,
+            schema
+                .fields
+                .iter()
+                .position(|x| std::ptr::eq(x, *f))
+                .unwrap() as u8,
         );
         let len = &f.len_expr;
         let enc = &f.enc;
@@ -248,7 +247,11 @@ fn emit_payload_decode(schema: &DocumentSchema) -> TS2 {
     let mut cold_dec = quote! {};
     for f in &cold_fields {
         let tag = proc_macro2::Literal::u8_unsuffixed(
-            schema.fields.iter().position(|x| std::ptr::eq(x, *f)).unwrap() as u8,
+            schema
+                .fields
+                .iter()
+                .position(|x| std::ptr::eq(x, *f))
+                .unwrap() as u8,
         );
         let id = &f.ident;
         let dec = &f.dec;
@@ -330,7 +333,10 @@ fn emit_covered(schema: &DocumentSchema, idx: &IdxDecl) -> syn::Result<(TS2, TS2
         let ty: syn::Type = syn::parse_str(&f.ty_str).map_err(|e| {
             syn::Error::new(
                 id.span(),
-                format!("ok_index[{iname}]: covered field `{name}` type `{}`: {e}", f.ty_str),
+                format!(
+                    "ok_index[{iname}]: covered field `{name}` type `{}`: {e}",
+                    f.ty_str
+                ),
             )
         })?;
         decls.push(quote! { pub #id: #ty });
@@ -452,7 +458,10 @@ fn emit_index_structs(schema: &DocumentSchema) -> syn::Result<TS2> {
             let fpath = syn::parse_str::<syn::Expr>(&idx.filter).map_err(|e| {
                 syn::Error::new_spanned(
                     iname,
-                    format!("ok_index[{}]: bad where path `{}`: {e}", idx.ident, idx.filter),
+                    format!(
+                        "ok_index[{}]: bad where path `{}`: {e}",
+                        idx.ident, idx.filter
+                    ),
                 )
             })?;
             quote! {
@@ -546,12 +555,16 @@ fn emit_index_structs(schema: &DocumentSchema) -> syn::Result<TS2> {
 /// multiple pairs per document (multi-entry regime).
 fn emit_index_entries(schema: &DocumentSchema) -> syn::Result<TS2> {
     let row_name = &schema.row_name;
-    let entry_calls = schema.indexes.iter().filter(|idx| !idx.deprecated).map(|idx| {
-        let struct_ident = format_ident!("__OkmIndex_{}_{}", row_name, idx.ident);
-        quote! {
-            out.extend(<#struct_ident as ::okm_core::KvIndex>::entry_pairs(ns, key, document));
-        }
-    });
+    let entry_calls = schema
+        .indexes
+        .iter()
+        .filter(|idx| !idx.deprecated)
+        .map(|idx| {
+            let struct_ident = format_ident!("__OkmIndex_{}_{}", row_name, idx.ident);
+            quote! {
+                out.extend(<#struct_ident as ::okm_core::KvIndex>::entry_pairs(ns, key, document));
+            }
+        });
     // Deprecated slots: declaration positions (1-based) whose entries are
     // stale after the declaration was marked `deprecated` — consumed by
     // `Collection::prune_deprecated_slots` (prefix-scan + delete).
@@ -618,16 +631,20 @@ fn emit_reduces(schema: &DocumentSchema) -> syn::Result<(TS2, TS2)> {
         let is_preset = PRESETS.contains(&red.logic.as_str());
         let red_doc = &red.logic;
         let marker = quote::format_ident!("__OkmReduce_{}_{}", row_name, n);
-        let field_marker: Option<syn::Ident> = red.field.as_ref().map(|f| {
-            quote::format_ident!("__OkmReduceSource_{}_{}_{}", row_name, n, f)
-        });
+        let field_marker: Option<syn::Ident> = red
+            .field
+            .as_ref()
+            .map(|f| quote::format_ident!("__OkmReduceSource_{}_{}_{}", row_name, n, f));
         let logic: TS2 = if is_preset {
             quote! { #marker }
         } else {
             let ty: syn::Type = syn::parse_str(&red.logic).map_err(|e| {
                 syn::Error::new_spanned(
                     &red.ident,
-                    format!("ok_reduce[{}]: bad logic type `{}`: {e}", red.ident, red.logic),
+                    format!(
+                        "ok_reduce[{}]: bad logic type `{}`: {e}",
+                        red.ident, red.logic
+                    ),
                 )
             })?;
             quote! { #ty }
@@ -966,8 +983,12 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> syn::Result<TS2> {
         .fields
         .iter()
         .filter_map(|f| {
-            f.ok_len
-                .map(|n| (f.ident.to_string(), proc_macro2::Literal::usize_unsuffixed(n)))
+            f.ok_len.map(|n| {
+                (
+                    f.ident.to_string(),
+                    proc_macro2::Literal::usize_unsuffixed(n),
+                )
+            })
         })
         .collect();
     let contracts_const = {
@@ -1034,7 +1055,9 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> syn::Result<TS2> {
         let is_f64 = ty_str.starts_with("Quant<") || ty_str.starts_with("Quant <");
         let is_varint = ty_str.starts_with("VarInt<") || ty_str.starts_with("VarInt <");
         let is_offset = ty_str.starts_with("Offset");
-        let is_embed = ty_str.starts_with("Ref<") || ty_str.starts_with("Ref <") || ty_str.starts_with("Refs<");
+        let is_embed = ty_str.starts_with("Ref<")
+            || ty_str.starts_with("Ref <")
+            || ty_str.starts_with("Refs<");
         // Ref<D, K>: extract the K type for key encode/decode.
         let embed_default = if ty_str.starts_with("Ref<") || ty_str.starts_with("Ref <") {
             let k_ty_str = ty_str
@@ -1045,10 +1068,7 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> syn::Result<TS2> {
                 .map(|(_, k)| k.trim().to_string())
                 .ok_or_else(|| syn::Error::new_spanned(id, "ref: <D, K>"))?;
             let k_ty: syn::Type = syn::parse_str(&k_ty_str).map_err(|e| {
-                syn::Error::new_spanned(
-                    id,
-                    format!("bridge: bad Ref key type `{k_ty_str}`: {e}"),
-                )
+                syn::Error::new_spanned(id, format!("bridge: bad Ref key type `{k_ty_str}`: {e}"))
             })?;
             quote! { ::okm_core::Ref { key: <#k_ty as ::core::default::Default>::default(), value: None } }
         } else if ty_str.starts_with("Refs<") {
@@ -1082,7 +1102,10 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> syn::Result<TS2> {
                 .trim_start_matches("Ref<")
                 .trim_end_matches('>')
                 .to_string();
-            generics.rsplit_once(',').map(|(_, k)| k.trim().to_string()).and_then(|k| syn::parse_str(&k).ok())
+            generics
+                .rsplit_once(',')
+                .map(|(_, k)| k.trim().to_string())
+                .and_then(|k| syn::parse_str(&k).ok())
         } else {
             None
         };
@@ -1446,7 +1469,6 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> syn::Result<TS2> {
     let names: Vec<_> = schema.fields.iter().map(|f| &f.ident).collect();
     let name_strs: Vec<_> = schema.fields.iter().map(|f| f.ident.to_string()).collect();
     let widths: Vec<_> = schema.fields.iter().map(|f| &f.width).collect();
-
 
     // ---- ref hooks (no-ops when the document has no embedded fields) ----
     let embed_hooks = if embed_fields.is_empty() {

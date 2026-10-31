@@ -487,15 +487,16 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
         };
         let mut dict = VocabCache::new(crate::model::obj_vocab::FIELD_VOCAB);
         let mut failed: Option<crate::error::Error> = None;
-        let frames = decode_named(&raw, &mut |id| {
-            match dict.name_for(&self.store, E::NS_PREFIX, id) {
+        let frames = decode_named(
+            &raw,
+            &mut |id| match dict.name_for(&self.store, E::NS_PREFIX, id) {
                 Ok(name) => name,
                 Err(e) => {
                     failed = Some(e);
                     None
                 }
-            }
-        });
+            },
+        );
         if let Some(e) = failed {
             return Err(e);
         }
@@ -689,20 +690,12 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
     }
 
     /// Edges from one node to another, whatever the predicate (0x06 pair).
-    pub fn out_edges_to(
-        &self,
-        src: &NodeRef,
-        dst: &NodeRef,
-    ) -> crate::error::Result<Vec<u64>> {
+    pub fn out_edges_to(&self, src: &NodeRef, dst: &NodeRef) -> crate::error::Result<Vec<u64>> {
         self.traverse_pair(EDGE_OUT_SLOT, src, dst)
     }
 
     /// Edges into one node from another, whatever the predicate (0x07 pair).
-    pub fn in_edges_from(
-        &self,
-        dst: &NodeRef,
-        src: &NodeRef,
-    ) -> crate::error::Result<Vec<u64>> {
+    pub fn in_edges_from(&self, dst: &NodeRef, src: &NodeRef) -> crate::error::Result<Vec<u64>> {
         self.traverse_pair(EDGE_IN_SLOT, dst, src)
     }
 
@@ -748,7 +741,11 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
         };
         let p = self.face_key(
             EDGE_PREDICATE_OUT_SLOT,
-            &[&predicate_vocab_id.to_be_bytes(), &src.encode(), &dst.encode()],
+            &[
+                &predicate_vocab_id.to_be_bytes(),
+                &src.encode(),
+                &dst.encode(),
+            ],
         );
         Ok(Self::ids_after_pair(self.store.scan_suffix(&p)?))
     }
@@ -766,7 +763,11 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
         };
         let p = self.face_key(
             EDGE_PREDICATE_IN_SLOT,
-            &[&predicate_vocab_id.to_be_bytes(), &dst.encode(), &src.encode()],
+            &[
+                &predicate_vocab_id.to_be_bytes(),
+                &dst.encode(),
+                &src.encode(),
+            ],
         );
         Ok(Self::ids_after_pair(self.store.scan_suffix(&p)?))
     }

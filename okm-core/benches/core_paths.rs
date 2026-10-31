@@ -7,23 +7,29 @@
 //! (feature-gated engines get their own benches: fjall via
 //! `cargo bench -p okm-core --features fjall --bench engine_fjall` when added).
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unwrap_in_result,
+    clippy::panic_in_result_fn
+)]
 
-use criterion::{criterion_group, criterion_main, BatchSize, Criterion, Throughput};
+use criterion::{BatchSize, Criterion, Throughput, criterion_group, criterion_main};
 use std::hint::black_box;
 
 use okm_core::{
-    KeyEncode, TestStore, ReduceCodec, ReduceLogic, Reversible, Reverse, Document, DocumentEncode,
-    Collection, VarInt, VirtualStorage,
+    Collection, Document, DocumentEncode, KeyEncode, ReduceCodec, ReduceLogic, Reverse, Reversible,
+    TestStore, VarInt, VirtualStorage,
 };
 
 // ---------- declarations under test ----------
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
 pub struct BenchKey {
-    pub org_id: u32,   // 4B
-    pub user_id: u64,  // 8B
-    pub tag: [u8; 4],  // 4B  → KEY_LEN = 16 ("typical" key)
+    pub org_id: u32,  // 4B
+    pub user_id: u64, // 8B
+    pub tag: [u8; 4], // 4B  → KEY_LEN = 16 ("typical" key)
 }
 
 #[derive(DocumentEncode, Clone, PartialEq, Debug)]
@@ -32,10 +38,10 @@ pub struct BenchKey {
 #[ok_index(by_level { fields(level), includes(score) })]
 #[ok_reduce(TagTotals { group(level) })]
 pub struct BenchRow {
-    pub level: u32,        // hot 4B
+    pub level: u32,          // hot 4B
     pub score: Reverse<u64>, // hot 8B (bit-flipped BE)
     pub visits: VarInt<u64>, // cold TLV
-    pub name: String,      // cold TLV
+    pub name: String,        // cold TLV
 }
 
 use __OkmIndex_BenchRow_by_level as ByLevel;
@@ -134,14 +140,18 @@ fn bench_payload(c: &mut Criterion) {
     let bytes = row.encode_payload();
 
     g.throughput(Throughput::Bytes(bytes.len() as u64));
-    g.bench_function("encode_payload/hot+cold", |b| b.iter(|| black_box(row.encode_payload())));
+    g.bench_function("encode_payload/hot+cold", |b| {
+        b.iter(|| black_box(row.encode_payload()))
+    });
     g.bench_function("decode_payload/hot+cold", |b| {
         b.iter(|| black_box(<BenchRow as Document>::decode_payload(black_box(&bytes))))
     });
 
     // Reverse<T> bit-flip (order-preserving descending index).
     g.throughput(Throughput::Bytes(8));
-    g.bench_function("reverse/u64_bitflip", |b| b.iter(|| black_box(Reverse(0x0123_4567_89AB_CDEFu64).encode())));
+    g.bench_function("reverse/u64_bitflip", |b| {
+        b.iter(|| black_box(Reverse(0x0123_4567_89AB_CDEFu64).encode()))
+    });
     g.finish()
 }
 
@@ -150,7 +160,8 @@ fn bench_payload(c: &mut Criterion) {
 fn bench_scan(c: &mut Criterion) {
     let mut g = c.benchmark_group("index-scan");
     for &fanout in &[1usize, 100, 10_000] {
-        let t: Collection<TestStore, BenchKey, BenchRow> = Collection::new(TestStore::slatedb_mem());
+        let t: Collection<TestStore, BenchKey, BenchRow> =
+            Collection::new(TestStore::slatedb_mem());
         for i in 0..fanout as u64 {
             let k = make_key(1_000_000 + i);
             // Same tag for all rows in this group → one prefix value,
@@ -163,7 +174,8 @@ fn bench_scan(c: &mut Criterion) {
                     visits: VarInt(i),
                     name: format!("u{i}"),
                 },
-            ).unwrap();
+            )
+            .unwrap();
         }
         let probe = 7u32.to_be_bytes(); // level=7 for every seeded row
 
@@ -183,7 +195,8 @@ fn bench_scan(c: &mut Criterion) {
 fn bench_write_mock(c: &mut Criterion) {
     let mut g = c.benchmark_group("write-mock");
     g.bench_function("put/row_with_index+reduce", |b| {
-        let t: Collection<TestStore, BenchKey, BenchRow> = Collection::new(TestStore::slatedb_mem());
+        let t: Collection<TestStore, BenchKey, BenchRow> =
+            Collection::new(TestStore::slatedb_mem());
         let mut i = 0u64;
         b.iter(|| {
             t.put(&make_key(i), &make_row(i)).unwrap();
@@ -192,7 +205,8 @@ fn bench_write_mock(c: &mut Criterion) {
         })
     });
     g.bench_function("get/point", |b| {
-        let t: Collection<TestStore, BenchKey, BenchRow> = Collection::new(TestStore::slatedb_mem());
+        let t: Collection<TestStore, BenchKey, BenchRow> =
+            Collection::new(TestStore::slatedb_mem());
         t.put(&make_key(1), &make_row(1)).unwrap();
         b.iter(|| black_box(t.fetch(&make_key(1)).unwrap().is_some()))
     });
@@ -264,7 +278,7 @@ fn bench_write_changelog(c: &mut Criterion) {
 
 fn bench_dynamic(c: &mut Criterion) {
     use okm_core::schema::CollectionSchema;
-    use okm_dynamic::{encode_key, encode_payload, Value, ValueMap};
+    use okm_dynamic::{Value, ValueMap, encode_key, encode_payload};
 
     let schema = CollectionSchema::of::<BenchKey, BenchRow>();
     let mut values = ValueMap::new();

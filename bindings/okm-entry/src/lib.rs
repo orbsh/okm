@@ -92,14 +92,11 @@ pub fn collection_from_entry(
     engine: EngineBox,
     entry: &serde_json::Value,
     ns: u16,
-) -> Result<
-    (
-        CollectionSchema,
-        okm_dynamic::DynamicCollection<EngineBox>,
-    ),
-    String,
-> {
-    let raw = entry.get("schema").cloned().unwrap_or_else(|| entry.clone());
+) -> Result<(CollectionSchema, okm_dynamic::DynamicCollection<EngineBox>), String> {
+    let raw = entry
+        .get("schema")
+        .cloned()
+        .unwrap_or_else(|| entry.clone());
     let schema: CollectionSchema =
         serde_json::from_value(raw).map_err(|e| format!("bad collection schema: {e}"))?;
     let mut indexes: Vec<AccessMethod> = Vec::new();
@@ -114,13 +111,8 @@ pub fn collection_from_entry(
             reduces.push(preset_reduce(e)?);
         }
     }
-    let table = okm_dynamic::DynamicCollection::with_reduces(
-        engine,
-        ns,
-        schema.clone(),
-        indexes,
-        reduces,
-    );
+    let table =
+        okm_dynamic::DynamicCollection::with_reduces(engine, ns, schema.clone(), indexes, reduces);
     Ok((schema, table))
 }
 
@@ -135,8 +127,7 @@ pub fn plain_access_method(v: &serde_json::Value) -> Result<AccessMethod, String
     let slot = obj
         .get("slot")
         .and_then(|x| x.as_u64())
-        .ok_or_else(|| "index missing slot".to_string())?
-        as u16;
+        .ok_or_else(|| "index missing slot".to_string())? as u16;
     let strings = |arr: &serde_json::Value| -> Vec<String> {
         arr.as_array()
             .map(|a| {
@@ -146,12 +137,12 @@ pub fn plain_access_method(v: &serde_json::Value) -> Result<AccessMethod, String
             })
             .unwrap_or_default()
     };
-    let fields = obj.get("fields").map(strings).ok_or_else(|| "index missing fields".to_string())?;
+    let fields = obj
+        .get("fields")
+        .map(strings)
+        .ok_or_else(|| "index missing fields".to_string())?;
     let includes = obj.get("includes").map(strings).unwrap_or_default();
-    let kind = obj
-        .get("kind")
-        .and_then(|x| x.as_str())
-        .unwrap_or("plain");
+    let kind = obj.get("kind").and_then(|x| x.as_str()).unwrap_or("plain");
     if kind != "plain" {
         return Err(format!(
             "index slot {slot}: kind `{kind}` needs a host callable — use the embedded add_* surface"
@@ -177,8 +168,7 @@ pub fn preset_reduce(v: &serde_json::Value) -> Result<okm_dynamic::ReduceSpec, S
     let slot = obj
         .get("slot")
         .and_then(|x| x.as_u64())
-        .ok_or_else(|| "reduce missing slot".to_string())?
-        as u16;
+        .ok_or_else(|| "reduce missing slot".to_string())? as u16;
     let group_fields = obj
         .get("group")
         .and_then(|x| x.as_array())

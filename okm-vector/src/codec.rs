@@ -24,8 +24,13 @@
 // (ADR-0040): a `Codec`/`Prepared` mismatch or a code shorter than its own 4-byte
 // norm prefix means the row did not come from this build, and a distance that
 // answered a made-up number would be folded straight back into the graph's edges.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
-
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unwrap_in_result,
+    clippy::panic_in_result_fn
+)]
 
 /// Codec tag bytes in the snapshot format.
 const TAG_I8: u8 = 0;

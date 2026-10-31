@@ -4,7 +4,13 @@
 //! against the real engine matrix, through the DERIVE-generated access
 //! method (no hand-written KvIndex).
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unwrap_in_result,
+    clippy::panic_in_result_fn
+)]
 
 use okm_core::{Collection, DocumentEncode, KeyEncode, TestStore};
 
@@ -34,10 +40,9 @@ fn range_scan_reads_only_the_interval() {
     }
 
     // 1 <= a < 100 (u32 BE; value order == byte order).
-    let hits = col.scan_range::<__OkmIndex_Row_by_a>(
-        &1u32.to_be_bytes(),
-        Some(&100u32.to_be_bytes()),
-    ).unwrap();
+    let hits = col
+        .scan_range::<__OkmIndex_Row_by_a>(&1u32.to_be_bytes(), Some(&100u32.to_be_bytes()))
+        .unwrap();
     assert_eq!(hits.len(), 99); // a = 1..=99
     assert_eq!(hits.first().unwrap().0.decoded.id, 1);
     assert_eq!(hits.last().unwrap().0.decoded.id, 99);
@@ -49,17 +54,17 @@ fn range_scan_reads_only_the_interval() {
     assert_eq!(hits[0].1.as_ref().unwrap().a, 1);
 
     // Unbounded end: a >= 50.
-    let hits = col.scan_range::<__OkmIndex_Row_by_a>(&50u32.to_be_bytes(), None).unwrap();
+    let hits = col
+        .scan_range::<__OkmIndex_Row_by_a>(&50u32.to_be_bytes(), None)
+        .unwrap();
     assert_eq!(hits.len(), 50);
 
     // Empty interval: end <= begin.
-    let hits = col.scan_range::<__OkmIndex_Row_by_a>(
-        &100u32.to_be_bytes(),
-        Some(&1u32.to_be_bytes()),
-    ).unwrap();
+    let hits = col
+        .scan_range::<__OkmIndex_Row_by_a>(&100u32.to_be_bytes(), Some(&1u32.to_be_bytes()))
+        .unwrap();
     assert!(hits.is_empty());
 }
-
 
 #[cfg(feature = "fjall")]
 #[test]
@@ -67,9 +72,12 @@ fn range_scan_fjall() {
     let store = TestStore::fjall_tmp();
     let col: Collection<_, RowId, Row> = Collection::new(store);
     for i in 0..50u32 {
-        col.put(&RowId { id: i as u64 }, &Row { a: i, tag: 0 }).unwrap();
+        col.put(&RowId { id: i as u64 }, &Row { a: i, tag: 0 })
+            .unwrap();
     }
-    let hits = col.scan_range::<__OkmIndex_Row_by_a>(&10u32.to_be_bytes(), Some(&20u32.to_be_bytes())).unwrap();
+    let hits = col
+        .scan_range::<__OkmIndex_Row_by_a>(&10u32.to_be_bytes(), Some(&20u32.to_be_bytes()))
+        .unwrap();
     assert_eq!(hits.len(), 10);
 }
 
@@ -79,9 +87,12 @@ fn range_scan_redb() {
     let store = TestStore::redb_tmp();
     let col: Collection<_, RowId, Row> = Collection::new(store);
     for i in 0..50u32 {
-        col.put(&RowId { id: i as u64 }, &Row { a: i, tag: 0 }).unwrap();
+        col.put(&RowId { id: i as u64 }, &Row { a: i, tag: 0 })
+            .unwrap();
     }
-    let hits = col.scan_range::<__OkmIndex_Row_by_a>(&10u32.to_be_bytes(), Some(&20u32.to_be_bytes())).unwrap();
+    let hits = col
+        .scan_range::<__OkmIndex_Row_by_a>(&10u32.to_be_bytes(), Some(&20u32.to_be_bytes()))
+        .unwrap();
     assert_eq!(hits.len(), 10);
 }
 
@@ -94,7 +105,8 @@ fn lazy_range_scan_matches_buffered() {
     let store = TestStore::default();
     let col: Collection<_, RowId, Row> = Collection::new(store.clone());
     for i in 0..100u32 {
-        col.put(&RowId { id: i as u64 }, &Row { a: i, tag: i * 7 }).unwrap();
+        col.put(&RowId { id: i as u64 }, &Row { a: i, tag: i * 7 })
+            .unwrap();
     }
 
     let lazy: Vec<_> = col
@@ -102,7 +114,10 @@ fn lazy_range_scan_matches_buffered() {
         .collect();
     assert_eq!(lazy.len(), 99);
     assert_eq!(lazy[0].as_ref().unwrap().1.as_ref().unwrap().a, 1);
-    assert_eq!(lazy.last().unwrap().as_ref().unwrap().1.as_ref().unwrap().a, 99);
+    assert_eq!(
+        lazy.last().unwrap().as_ref().unwrap().1.as_ref().unwrap().a,
+        99
+    );
 
     // Backwards walk (rev() requires DoubleEndedIterator) — "last N
     // entries" without buffering the forward pass.
@@ -131,7 +146,8 @@ fn lazy_range_scan_fjall_native_double_ended() {
     let store = TestStore::fjall_tmp();
     let col: Collection<_, RowId, Row> = Collection::new(store);
     for i in 0..50u32 {
-        col.put(&RowId { id: i as u64 }, &Row { a: i, tag: 0 }).unwrap();
+        col.put(&RowId { id: i as u64 }, &Row { a: i, tag: 0 })
+            .unwrap();
     }
     let fwd: Vec<(u64, u32)> = col
         .scan_range_iter::<__OkmIndex_Row_by_a>(&10u32.to_be_bytes(), Some(&20u32.to_be_bytes()))

@@ -129,7 +129,11 @@ mod tests {
     #[test]
     fn round_trips() {
         use ::std::option::Option as StdOption;
-        for v in [StdOption::None, StdOption::Some(0u32), StdOption::Some(u32::MAX)] {
+        for v in [
+            StdOption::None,
+            StdOption::Some(0u32),
+            StdOption::Some(u32::MAX),
+        ] {
             let mut buf = Vec::new();
             Option::<u32>(v).enc_wire(&mut buf);
             let back = Option::<u32>::dec_wire(buf[0], &buf[1..]);
@@ -144,6 +148,9 @@ mod tests {
 
     #[test]
     fn default_is_none() {
-        assert_eq!(Option::<u16>::default(), Option(::std::option::Option::None));
+        assert_eq!(
+            Option::<u16>::default(),
+            Option(::std::option::Option::None)
+        );
     }
 }

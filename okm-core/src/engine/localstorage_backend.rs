@@ -47,8 +47,16 @@ pub fn b64_encode(bytes: &[u8]) -> String {
         let n = (b[0] as u32) << 16 | (b[1] as u32) << 8 | b[2] as u32;
         out.push(B64[((n >> 18) & 63) as usize] as char);
         out.push(B64[((n >> 12) & 63) as usize] as char);
-        out.push(if chunk.len() > 1 { B64[((n >> 6) & 63) as usize] as char } else { '=' });
-        out.push(if chunk.len() > 2 { B64[(n & 63) as usize] as char } else { '=' });
+        out.push(if chunk.len() > 1 {
+            B64[((n >> 6) & 63) as usize] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            B64[(n & 63) as usize] as char
+        } else {
+            '='
+        });
     }
     out
 }
@@ -79,7 +87,11 @@ pub fn b64_decode(text: &str) -> Option<Vec<u8>> {
             if group[3] != b'=' {
                 return None; // '=' before a non-'=' in the same group
             }
-            let expect = if group[2] == b'=' && group[3] == b'=' { 2 } else { 1 };
+            let expect = if group[2] == b'=' && group[3] == b'=' {
+                2
+            } else {
+                1
+            };
             if pad != expect {
                 return None;
             }
@@ -173,7 +185,7 @@ impl VirtualStorage for LocalStorageStore {
             Err(e) => {
                 return Err(crate::error::Error::Engine(format!(
                     "localStorage get_item: {e:?}"
-                )))
+                )));
             }
         };
         Ok(b64_decode(&text))
@@ -193,11 +205,7 @@ impl VirtualStorage for LocalStorageStore {
             .collect())
     }
 
-    fn scan_range(
-        &self,
-        begin: &[u8],
-        end: Option<&[u8]>,
-    ) -> crate::error::Result<Vec<Vec<u8>>> {
+    fn scan_range(&self, begin: &[u8], end: Option<&[u8]>) -> crate::error::Result<Vec<Vec<u8>>> {
         if let Some(end) = end
             && end <= begin
         {
@@ -221,7 +229,11 @@ impl VirtualStorage for LocalStorageStore {
         })
     }
 
-    fn scan_range_iter(&self, begin: &[u8], end: Option<&[u8]>) -> crate::engine::storage::ScanIter {
+    fn scan_range_iter(
+        &self,
+        begin: &[u8],
+        end: Option<&[u8]>,
+    ) -> crate::engine::storage::ScanIter {
         // Materialize pairs in one enumeration pass (values come from the
         // same rows, no per-key second read), then hand back the owned
         // buffer — the trait default's shape, made single-pass here.
@@ -271,7 +283,11 @@ mod tests {
             let bytes: Vec<u8> = (0..len as u64).map(|i| (i * 37 + 200) as u8).collect();
             let text = b64_encode(&bytes);
             assert_eq!(text.len() % 4, 0);
-            assert_eq!(b64_decode(&text).as_deref(), Some(bytes.as_slice()), "len {len}");
+            assert_eq!(
+                b64_decode(&text).as_deref(),
+                Some(bytes.as_slice()),
+                "len {len}"
+            );
         }
     }
 
@@ -292,7 +308,12 @@ mod tests {
         // The filter is pure given rows_sorted(); test the interval
         // logic through the same code path the wasm build uses by
         // unit-testing a local replica of the predicate.
-        let rows: Vec<Vec<u8>> = vec![b"a".to_vec(), b"m/1".to_vec(), b"m/2".to_vec(), b"z".to_vec()];
+        let rows: Vec<Vec<u8>> = vec![
+            b"a".to_vec(),
+            b"m/1".to_vec(),
+            b"m/2".to_vec(),
+            b"z".to_vec(),
+        ];
         let filter = |begin: &[u8], end: Option<&[u8]>| -> Vec<Vec<u8>> {
             if let Some(e) = end
                 && e <= begin
@@ -307,8 +328,14 @@ mod tests {
             out.sort();
             out
         };
-        assert_eq!(filter(b"m", Some(b"z")), vec![b"m/1".to_vec(), b"m/2".to_vec()]);
-        assert_eq!(filter(b"m", None), vec![b"m/1".to_vec(), b"m/2".to_vec(), b"z".to_vec()]);
+        assert_eq!(
+            filter(b"m", Some(b"z")),
+            vec![b"m/1".to_vec(), b"m/2".to_vec()]
+        );
+        assert_eq!(
+            filter(b"m", None),
+            vec![b"m/1".to_vec(), b"m/2".to_vec(), b"z".to_vec()]
+        );
         assert!(filter(b"z", Some(b"a")).is_empty());
         assert_eq!(filter(b"m/1", Some(b"m/1")), Vec::<Vec<u8>>::new());
     }

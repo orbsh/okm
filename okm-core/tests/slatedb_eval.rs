@@ -1,12 +1,17 @@
 //! slatedb 真实引擎评估（InMemory object store）。
 //! 运行：cargo test --features slatedb
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
-
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unwrap_in_result,
+    clippy::panic_in_result_fn
+)]
 #![cfg(feature = "slatedb")]
 
-use okm_core::slatedb_backend::{AsyncJunction, SlatedbStore};
-use okm_core::VirtualStorageAsync; // ADR-0027: commit_batch / scan_range_iter on the async trait
+use okm_core::VirtualStorageAsync;
+use okm_core::slatedb_backend::{AsyncJunction, SlatedbStore}; // ADR-0027: commit_batch / scan_range_iter on the async trait
 mod common;
 use common::*;
 
@@ -61,11 +66,18 @@ async fn slatedb_async_surface_alignment() {
     db.commit_batch(batch).await.expect("native batch commit");
 
     assert_eq!(db.get(b"a/1").await.unwrap(), None, "delete op landed");
-    assert_eq!(db.get(b"a/2").await.unwrap().as_deref(), Some(b"v2".as_slice()));
+    assert_eq!(
+        db.get(b"a/2").await.unwrap().as_deref(),
+        Some(b"v2".as_slice())
+    );
 
     // pair scan over the prefix: single surviving entry, suffix-relative.
     let pairs = okm_core::scan_suffix_kv_async(&db, b"a/")
         .await
         .expect("suffix scan");
-    assert_eq!(pairs, vec![(b"2".to_vec(), b"v2".to_vec())], "suffix-pair scan");
+    assert_eq!(
+        pairs,
+        vec![(b"2".to_vec(), b"v2".to_vec())],
+        "suffix-pair scan"
+    );
 }

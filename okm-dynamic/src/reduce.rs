@@ -23,8 +23,8 @@
 //! leaves an empty group, not a deleted entry. No zero-garbage-collect —
 //! a zero-detection policy is the caller's (same as the Rust side).
 
-use okm_core::storage::VirtualStorage;
 use crate::{Value, ValueMap};
+use okm_core::storage::VirtualStorage;
 
 /// The host-language reduce logic — one object, the mirror of the
 /// Rust-side `ReduceLogic` + `ReduceCodec: Default` pair (ADR-0022).
@@ -110,9 +110,12 @@ impl BoundReduce {
                     .ok_or_else(|| format!("group field `{name}` not in schema"))?
             };
             let source: &ValueMap = if from_key { key } else { document };
-            let v = source
-                .get(name)
-                .ok_or_else(|| format!("group field `{name}` missing from {} map", if from_key { "key" } else { "document" }))?;
+            let v = source.get(name).ok_or_else(|| {
+                format!(
+                    "group field `{name}` missing from {} map",
+                    if from_key { "key" } else { "document" }
+                )
+            })?;
             // Fixed-width BE storage form (the same rule as index
             // segments: group segments take fixed-width kinds, matching
             // the Rust-side walk).
@@ -125,7 +128,7 @@ impl BoundReduce {
                 _ => {
                     return Err(format!(
                         "group field `{name}`: fixed-width numeric/bytes kind required"
-                    ))
+                    ));
                 }
             };
             buf.extend_from_slice(&bytes);
@@ -222,7 +225,12 @@ impl ReduceLogic for PresetLogic {
         *acc = cur.to_be_bytes().to_vec();
         Ok(())
     }
-    fn unfold(&self, acc: &mut Vec<u8>, _key: &ValueMap, _document: &ValueMap) -> Result<(), String> {
+    fn unfold(
+        &self,
+        acc: &mut Vec<u8>,
+        _key: &ValueMap,
+        _document: &ValueMap,
+    ) -> Result<(), String> {
         match &self.kind {
             PresetKind::Count => {
                 let mut cur = u64::from_be_bytes(acc.as_slice().try_into().unwrap_or([0u8; 8]));

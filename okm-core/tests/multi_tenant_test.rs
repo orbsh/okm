@@ -7,9 +7,15 @@
 //! mechanism, which is why this test is all the multi-tenancy code there
 //! is.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unwrap_in_result,
+    clippy::panic_in_result_fn
+)]
 
-use okm_core::{KeyEncode, TestStore, RemoteStore, DocumentEncode, Collection, VirtualStorage};
+use okm_core::{Collection, DocumentEncode, KeyEncode, RemoteStore, TestStore, VirtualStorage};
 
 // TestStore now has handle-clone semantics (Arc kernel) and implements
 // SharedVirtualStorage — the test-local SharedEngine workaround is gone.
@@ -104,8 +110,14 @@ fn internal_tenant_sharding_is_a_plain_key_field() {
     }
 
     // Same host, same ns segment — the tenant distinction is sender bytes.
-    assert_eq!(s.get(b"t1:doc:1").unwrap().as_deref(), Some(b"x".as_slice()));
-    assert_eq!(s.get(b"t2:doc:1").unwrap().as_deref(), Some(b"y".as_slice()));
+    assert_eq!(
+        s.get(b"t1:doc:1").unwrap().as_deref(),
+        Some(b"x".as_slice())
+    );
+    assert_eq!(
+        s.get(b"t2:doc:1").unwrap().as_deref(),
+        Some(b"y".as_slice())
+    );
     assert_eq!(s.scan_suffix(b"t1:").unwrap(), vec![b"doc:1".to_vec()]);
 }
 

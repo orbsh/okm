@@ -34,13 +34,13 @@ pub fn json_schema<K: KeyEncode, R: Document<Key = K>>() -> String {
             FieldType::U8 | FieldType::U16 | FieldType::U32 | FieldType::U64 => "integer",
             FieldType::FixedBytes => "string", // base64, matches Arrow BinaryArray
             FieldType::Uuid4 | FieldType::Uuid7 => "string", // hyphenated text, 16 bytes on the wire
-            FieldType::Str => "string",        // UTF-8, matches Arrow Utf8Array
-            FieldType::Bytes => "string",      // base64, matches Arrow BinaryArray
-            FieldType::VarInt => "integer",    // logical: the decoded integer
-            FieldType::Quant(_) => "number",   // logical: dequantized f64
-            FieldType::Vocab(_) => "string",   // the label (ADR-0032 export)
-            FieldType::Offset(_) => "integer", // logical: base + offset
-            FieldType::Vector { .. } => "array", // element sequence (dynamic-length)
+            FieldType::Str => "string",                      // UTF-8, matches Arrow Utf8Array
+            FieldType::Bytes => "string",                    // base64, matches Arrow BinaryArray
+            FieldType::VarInt => "integer",                  // logical: the decoded integer
+            FieldType::Quant(_) => "number",                 // logical: dequantized f64
+            FieldType::Vocab(_) => "string",                 // the label (ADR-0032 export)
+            FieldType::Offset(_) => "integer",               // logical: base + offset
+            FieldType::Vector { .. } => "array",             // element sequence (dynamic-length)
         }
     }
 
@@ -306,8 +306,7 @@ pub mod parquet_io {
             }
             // 16 fixed bytes back from the warehouse column, byte order untouched.
             FieldType::Uuid4 | FieldType::Uuid7 => {
-                let col =
-                    column_as::<arrow::array::FixedSizeBinaryArray>(col, field.name)?;
+                let col = column_as::<arrow::array::FixedSizeBinaryArray>(col, field.name)?;
                 col.value(document).to_vec()
             }
             FieldType::Str => {
@@ -342,17 +341,21 @@ pub mod parquet_io {
                     FieldType::U8 => vec![
                         column_as::<arrow::array::UInt8Array>(col, field.name)?.value(document),
                     ],
-                    FieldType::U16 => column_as::<arrow::array::UInt16Array>(col, field.name)?.value(document)
+                    FieldType::U16 => column_as::<arrow::array::UInt16Array>(col, field.name)?
+                        .value(document)
                         .to_be_bytes()
                         .to_vec(),
-                    FieldType::U32 => column_as::<arrow::array::UInt32Array>(col, field.name)?.value(document)
+                    FieldType::U32 => column_as::<arrow::array::UInt32Array>(col, field.name)?
+                        .value(document)
                         .to_be_bytes()
                         .to_vec(),
-                    FieldType::U64 => column_as::<arrow::array::UInt64Array>(col, field.name)?.value(document)
+                    FieldType::U64 => column_as::<arrow::array::UInt64Array>(col, field.name)?
+                        .value(document)
                         .to_be_bytes()
                         .to_vec(),
                     FieldType::FixedBytes | FieldType::Uuid4 | FieldType::Uuid7 => unreachable!(),
-                    FieldType::Bytes => column_as::<arrow::array::BinaryArray>(col, field.name)?.value(document)
+                    FieldType::Bytes => column_as::<arrow::array::BinaryArray>(col, field.name)?
+                        .value(document)
                         .to_vec(),
                     FieldType::Str => unreachable!("handled above"),
                     FieldType::VarInt
@@ -477,7 +480,9 @@ pub mod parquet_io {
                 // apart from a segment-only document here, so the row is written:
                 // an empty payload is the only thing a fieldless table exports.
                 let has_row = payload_cols.is_empty()
-                    || payload_cols.iter().any(|i| !batch.column(*i).is_null(document));
+                    || payload_cols
+                        .iter()
+                        .any(|i| !batch.column(*i).is_null(document));
                 if has_row {
                     let rv = R::decode_payload(&payloads[document]);
                     collection
@@ -504,79 +509,81 @@ pub mod parquet_io {
         Ok(count)
     }
 
-/// One document's dynamic segment out of its `variant` cell:
-/// `[md_len u32 BE][metadata][value]` → the name-keyed map the segment stores.
-/// The export's `push_variant` written backwards; names come back resolved
-/// because the Variant's own metadata carries them.
-fn segment_from_variant(
-    col: &dyn arrow::array::Array,
-    row: usize,
-) -> Result<Option<std::collections::BTreeMap<String, crate::model::obj_dynamic::DynamicValue>>, String>
-{
-    if col.is_null(row) {
-        return Ok(None);
+    /// One document's dynamic segment out of its `variant` cell:
+    /// `[md_len u32 BE][metadata][value]` → the name-keyed map the segment stores.
+    /// The export's `push_variant` written backwards; names come back resolved
+    /// because the Variant's own metadata carries them.
+    fn segment_from_variant(
+        col: &dyn arrow::array::Array,
+        row: usize,
+    ) -> Result<
+        Option<std::collections::BTreeMap<String, crate::model::obj_dynamic::DynamicValue>>,
+        String,
+    > {
+        if col.is_null(row) {
+            return Ok(None);
+        }
+        let arr = col
+            .as_any()
+            .downcast_ref::<arrow::array::BinaryArray>()
+            .ok_or_else(|| "the variant column is not a binary array".to_string())?;
+        let wire = arr.value(row);
+        let Some(head) = wire.first_chunk::<4>() else {
+            return Err("variant cell is shorter than its metadata length".into());
+        };
+        let md_len = u32::from_be_bytes(*head) as usize;
+        let rest = &wire[4..];
+        if rest.len() < md_len {
+            return Err("variant metadata is truncated".into());
+        }
+        let (md, val) = rest.split_at(md_len);
+        let variant = parquet_variant::Variant::try_new(md, val).map_err(|e| e.to_string())?;
+        match dynamic_from_variant(variant) {
+            crate::model::obj_dynamic::DynamicValue::Obj(map) => Ok(Some(map)),
+            _ => Err("a document's variant cell holds an object, not a scalar".into()),
+        }
     }
-    let arr = col
-        .as_any()
-        .downcast_ref::<arrow::array::BinaryArray>()
-        .ok_or_else(|| "the variant column is not a binary array".to_string())?;
-    let wire = arr.value(row);
-    let Some(head) = wire.first_chunk::<4>() else {
-        return Err("variant cell is shorter than its metadata length".into());
-    };
-    let md_len = u32::from_be_bytes(*head) as usize;
-    let rest = &wire[4..];
-    if rest.len() < md_len {
-        return Err("variant metadata is truncated".into());
-    }
-    let (md, val) = rest.split_at(md_len);
-    let variant = parquet_variant::Variant::try_new(md, val).map_err(|e| e.to_string())?;
-    match dynamic_from_variant(variant) {
-        crate::model::obj_dynamic::DynamicValue::Obj(map) => Ok(Some(map)),
-        _ => Err("a document's variant cell holds an object, not a scalar".into()),
-    }
-}
 
-/// Variant → DynamicValue. Integers come back SIGNED (the export widens UInt to
-/// i64, a documented limitation), so a non-negative value is restored as `UInt`
-/// and a negative one as `Int` — the export cannot tell them apart.
-fn dynamic_from_variant(
-    v: parquet_variant::Variant<'_, '_>,
-) -> crate::model::obj_dynamic::DynamicValue {
-    use crate::model::obj_dynamic::DynamicValue as DV;
-    if v.as_null().is_some() {
-        return DV::Null;
+    /// Variant → DynamicValue. Integers come back SIGNED (the export widens UInt to
+    /// i64, a documented limitation), so a non-negative value is restored as `UInt`
+    /// and a negative one as `Int` — the export cannot tell them apart.
+    fn dynamic_from_variant(
+        v: parquet_variant::Variant<'_, '_>,
+    ) -> crate::model::obj_dynamic::DynamicValue {
+        use crate::model::obj_dynamic::DynamicValue as DV;
+        if v.as_null().is_some() {
+            return DV::Null;
+        }
+        if let Some(b) = v.as_boolean() {
+            return DV::Bool(b);
+        }
+        if let Some(s) = v.as_string() {
+            return DV::Str(s.to_string());
+        }
+        if let Some(u) = v.as_u64() {
+            return DV::UInt(u);
+        }
+        if let Some(i) = v.as_int64() {
+            return DV::Int(i);
+        }
+        if let Some(f) = v.as_f64() {
+            return DV::F64(f);
+        }
+        if let Some(bytes) = v.as_u8_slice() {
+            return DV::Bytes(bytes.to_vec());
+        }
+        if let Some(obj) = v.as_object() {
+            return DV::Obj(
+                obj.iter()
+                    .map(|(name, field)| (name.to_string(), dynamic_from_variant(field)))
+                    .collect(),
+            );
+        }
+        if let Some(list) = v.as_list() {
+            return DV::Array(list.iter().map(dynamic_from_variant).collect());
+        }
+        DV::Null
     }
-    if let Some(b) = v.as_boolean() {
-        return DV::Bool(b);
-    }
-    if let Some(s) = v.as_string() {
-        return DV::Str(s.to_string());
-    }
-    if let Some(u) = v.as_u64() {
-        return DV::UInt(u);
-    }
-    if let Some(i) = v.as_int64() {
-        return DV::Int(i);
-    }
-    if let Some(f) = v.as_f64() {
-        return DV::F64(f);
-    }
-    if let Some(bytes) = v.as_u8_slice() {
-        return DV::Bytes(bytes.to_vec());
-    }
-    if let Some(obj) = v.as_object() {
-        return DV::Obj(
-            obj.iter()
-                .map(|(name, field)| (name.to_string(), dynamic_from_variant(field)))
-                .collect(),
-        );
-    }
-    if let Some(list) = v.as_list() {
-        return DV::Array(list.iter().map(dynamic_from_variant).collect());
-    }
-    DV::Null
-}
 
     /// The restore half of [`Graph::to_record_batch_table`]: write an edge table
     /// back through the graph's own write path (`link_into` + `replace_into`,
@@ -922,7 +929,9 @@ fn dynamic_from_variant(
                 let mut key = prefix.clone();
                 key.extend_from_slice(groups.value(row));
                 let incoming = A::Acc::decode_acc(values.value(row));
-                let existing = store.get(&key).map_err(|e| parquet::errors::ParquetError::General(e.to_string()))?;
+                let existing = store
+                    .get(&key)
+                    .map_err(|e| parquet::errors::ParquetError::General(e.to_string()))?;
                 let bytes = match existing {
                     Some(bytes) => {
                         let current = A::Acc::decode_acc(&bytes);

@@ -3,16 +3,16 @@
 //! engine-specific lives behind this module; the model layer sees only
 //! the trait.
 
-pub mod nest;
-pub mod storage;
-#[cfg(any(feature = "test-engines", feature = "fjall", feature = "redb"))]
-pub mod test_engine;
 #[cfg(feature = "fjall")]
 pub mod fjall_backend;
+#[cfg(feature = "localstorage")]
+pub mod localstorage_backend;
+pub mod nest;
 #[cfg(feature = "redb")]
 pub mod redb_backend;
 #[cfg(feature = "slatedb")]
 pub mod slatedb_backend;
-#[cfg(feature = "localstorage")]
-pub mod localstorage_backend;
+pub mod storage;
+#[cfg(any(feature = "test-engines", feature = "fjall", feature = "redb"))]
+pub mod test_engine;
 pub mod wire_client;

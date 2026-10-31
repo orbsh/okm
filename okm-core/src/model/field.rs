@@ -50,7 +50,9 @@ pub enum FieldType {
     /// sequence. No length in the schema — the frame carries its own
     /// count; application-level count contracts are `#[ok_len]` /
     /// `FieldSchema::expect_len` (decode-time checks).
-    Vector { elem: &'static str },
+    Vector {
+        elem: &'static str,
+    },
 }
 
 /// One declared field: name, primitive kind, byte width.

@@ -36,10 +36,10 @@
 //! degrades to connection lifetime (reload on reconnect) — acceptable for a
 //! vocabulary that only grows.
 
-use crate::engine::storage::{scan_suffix_kv, Batch, VirtualStorage};
+use crate::engine::storage::{Batch, VirtualStorage, scan_suffix_kv};
 use crate::model::index::{
-    segment, slot, write_slot, Slot, FIELD_VOCAB_ID_SLOT, FIELD_VOCAB_NAME_SLOT,
-    PREDICATE_VOCAB_ID_SLOT, PREDICATE_VOCAB_NAME_SLOT,
+    FIELD_VOCAB_ID_SLOT, FIELD_VOCAB_NAME_SLOT, PREDICATE_VOCAB_ID_SLOT, PREDICATE_VOCAB_NAME_SLOT,
+    Slot, segment, slot, write_slot,
 };
 use crate::model::vocab::VocabId;
 use std::collections::HashMap;
@@ -145,12 +145,16 @@ pub fn vocab_id<S: VirtualStorage + ?Sized>(
 }
 
 /// Field names of the payload, in the document's own ns (ADR-0012).
-pub const FIELD_VOCAB: VocabFaces =
-    VocabFaces { id_slot: FIELD_VOCAB_ID_SLOT, name_slot: FIELD_VOCAB_NAME_SLOT };
+pub const FIELD_VOCAB: VocabFaces = VocabFaces {
+    id_slot: FIELD_VOCAB_ID_SLOT,
+    name_slot: FIELD_VOCAB_NAME_SLOT,
+};
 /// The collection's predicate vocabulary: a graph's predicates, a node
 /// collection's kind tokens (ADR-0017 §3).
-pub const PREDICATE_VOCAB: VocabFaces =
-    VocabFaces { id_slot: PREDICATE_VOCAB_ID_SLOT, name_slot: PREDICATE_VOCAB_NAME_SLOT };
+pub const PREDICATE_VOCAB: VocabFaces = VocabFaces {
+    id_slot: PREDICATE_VOCAB_ID_SLOT,
+    name_slot: PREDICATE_VOCAB_NAME_SLOT,
+};
 
 /// One vocabulary cache, bound to one ns segment, one face triple, and one id
 /// width `I`.
@@ -229,7 +233,7 @@ impl<I: VocabId> VocabCache<I> {
                 return Err(crate::error::Error::VocabularyExhausted {
                     width: I::WIDTH,
                     next: id.as_u128() + 1,
-                })
+                });
             }
         };
 
@@ -370,15 +374,25 @@ mod tests {
         let a = d.id_for(&mut store, HEADER, "alpha").unwrap();
         let b = d.id_for(&mut store, HEADER, "beta").unwrap();
         let a2 = d.id_for(&mut store, HEADER, "alpha").unwrap();
-        assert_eq!((a, b, a2), (0, 1, 0), "first-seen claims next, repeat hits cache");
+        assert_eq!(
+            (a, b, a2),
+            (0, 1, 0),
+            "first-seen claims next, repeat hits cache"
+        );
 
         // Both directions landed in the engine.
         assert_eq!(
-            store.get(&key(HEADER, FIELD_VOCAB_ID_SLOT, &0u16.to_be_bytes())).unwrap().unwrap(),
+            store
+                .get(&key(HEADER, FIELD_VOCAB_ID_SLOT, &0u16.to_be_bytes()))
+                .unwrap()
+                .unwrap(),
             b"alpha".to_vec()
         );
         assert_eq!(
-            store.get(&key(HEADER, FIELD_VOCAB_NAME_SLOT, b"beta")).unwrap().unwrap(),
+            store
+                .get(&key(HEADER, FIELD_VOCAB_NAME_SLOT, b"beta"))
+                .unwrap()
+                .unwrap(),
             &1u16.to_be_bytes()
         );
     }
@@ -392,15 +406,24 @@ mod tests {
         // different things — that is precisely what the split permits.
         assert_eq!(fields.id_for(&mut store, HEADER, "since").unwrap(), 0);
         assert_eq!(kinds.id_for(&mut store, HEADER, "has").unwrap(), 0);
-        assert_eq!(fields.name_for(&store, HEADER, 0).unwrap().unwrap(), "since");
+        assert_eq!(
+            fields.name_for(&store, HEADER, 0).unwrap().unwrap(),
+            "since"
+        );
         assert_eq!(kinds.name_for(&store, HEADER, 0).unwrap().unwrap(), "has");
         // …and they land on different faces.
         assert_eq!(
-            store.get(&key(HEADER, PREDICATE_VOCAB_ID_SLOT, &0u16.to_be_bytes())).unwrap().unwrap(),
+            store
+                .get(&key(HEADER, PREDICATE_VOCAB_ID_SLOT, &0u16.to_be_bytes()))
+                .unwrap()
+                .unwrap(),
             b"has".to_vec()
         );
         assert_eq!(
-            store.get(&key(HEADER, FIELD_VOCAB_ID_SLOT, &0u16.to_be_bytes())).unwrap().unwrap(),
+            store
+                .get(&key(HEADER, FIELD_VOCAB_ID_SLOT, &0u16.to_be_bytes()))
+                .unwrap()
+                .unwrap(),
             b"since".to_vec()
         );
     }
@@ -430,8 +453,14 @@ mod tests {
         let mut d = VocabCache::<u16>::new(FIELD_VOCAB);
         // Seed a high id directly, then read it through the cache.
         let mut batch = Batch::default();
-        batch.put(key(HEADER, FIELD_VOCAB_ID_SLOT, &0x1234u16.to_be_bytes()), b"big".to_vec());
-        batch.put(key(HEADER, FIELD_VOCAB_NAME_SLOT, b"big"), 0x1234u16.to_be_bytes().to_vec());
+        batch.put(
+            key(HEADER, FIELD_VOCAB_ID_SLOT, &0x1234u16.to_be_bytes()),
+            b"big".to_vec(),
+        );
+        batch.put(
+            key(HEADER, FIELD_VOCAB_NAME_SLOT, b"big"),
+            0x1234u16.to_be_bytes().to_vec(),
+        );
         let _ = store.commit_batch(batch);
         assert_eq!(d.name_for(&store, HEADER, 0x1234).unwrap().unwrap(), "big");
     }
@@ -456,7 +485,10 @@ mod tests {
         let mut color = VocabCache::<u8>::new(data_vocab(1));
         assert_eq!(status.id_for(&mut store, HEADER, "active").unwrap(), 0);
         assert_eq!(color.id_for(&mut store, HEADER, "red").unwrap(), 0);
-        assert_eq!(status.name_for(&store, HEADER, 0).unwrap().unwrap(), "active");
+        assert_eq!(
+            status.name_for(&store, HEADER, 0).unwrap().unwrap(),
+            "active"
+        );
         assert_eq!(color.name_for(&store, HEADER, 0).unwrap().unwrap(), "red");
     }
 
@@ -476,7 +508,10 @@ mod tests {
             .id_for(&mut store, HEADER, "label-255")
             .expect_err("a u8 vocabulary is full");
         assert!(
-            matches!(err, crate::error::Error::VocabularyExhausted { width: 1, .. }),
+            matches!(
+                err,
+                crate::error::Error::VocabularyExhausted { width: 1, .. }
+            ),
             "unexpected error: {err:?}"
         );
     }

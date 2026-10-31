@@ -36,13 +36,18 @@ pub struct Stream<E> {
 
 impl<E: 'static> Stream<E> {
     pub fn new(sink: impl FnMut(E) -> bool + Send + Sync + 'static) -> Self {
-        Self { sink: std::sync::Arc::new(std::sync::Mutex::new(Box::new(sink))) }
+        Self {
+            sink: std::sync::Arc::new(std::sync::Mutex::new(Box::new(sink))),
+        }
     }
 }
 
 impl<E: 'static> okm_core::subscribe::EventSink<E> for Stream<E> {
     fn try_send(&self, event: E) -> bool {
-        (self.sink.lock().unwrap_or_else(std::sync::PoisonError::into_inner))(event)
+        (self
+            .sink
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner))(event)
     }
 }
 
@@ -53,13 +58,14 @@ impl<E: 'static> Stream<E> {
         let inner = self.sink;
         Self::new(move |e| {
             if pred(&e) {
-                (inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner))(e)
+                (inner
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner))(e)
             } else {
                 true // filtered out = delivered-to-nothing, not rejected
             }
         })
     }
-
 }
 
 impl<E: 'static> Stream<E> {
@@ -70,7 +76,11 @@ impl<E: 'static> Stream<E> {
     /// sink cell.)
     pub fn map<E2: 'static>(self, f: impl Fn(E2) -> E + Send + Sync + 'static) -> Stream<E2> {
         let inner = self.sink;
-        Stream::<E2>::new(move |e| (inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner))(f(e)))
+        Stream::<E2>::new(move |e| {
+            (inner
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner))(f(e))
+        })
     }
 }
 
@@ -101,8 +111,7 @@ where
 /// store holds — dropped events (best-effort) desync it until the next
 /// put re-primes the entry. That is the subscription contract, not a defect.
 #[allow(clippy::type_complexity)] // the pair type IS the combinator's contract
-pub fn with_previous<K, R>(
-) -> impl Fn(Stream<Event<K, (Option<R>, R)>>) -> Stream<Event<K, R>>
+pub fn with_previous<K, R>() -> impl Fn(Stream<Event<K, (Option<R>, R)>>) -> Stream<Event<K, R>>
 where
     K: Hash + Eq + Clone + Send + Sync + 'static,
     R: Clone + Send + Sync + 'static,
@@ -110,7 +119,10 @@ where
     move |stream| {
         let cache: std::sync::Arc<std::sync::Mutex<HashMap<K, R>>> = Default::default();
         stream.map::<Event<K, R>>(move |ev| {
-            let old = cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(ev.key.clone(), ev.document.clone());
+            let old = cache
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(ev.key.clone(), ev.document.clone());
             Event::<K, (Option<R>, R)>::new(ev.op, ev.epoch, ev.key, (old, ev.document))
         })
     }
@@ -130,7 +142,10 @@ where
         let cache: std::sync::Arc<std::sync::Mutex<HashMap<K, R>>> = Default::default();
         let changed = changed.clone();
         stream.map::<Event<K, R>>(move |ev| {
-            let old = cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(ev.key.clone(), ev.document.clone());
+            let old = cache
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(ev.key.clone(), ev.document.clone());
             let is_changed = match old.as_ref() {
                 Some(o) => changed(o, &ev.document),
                 None => true,

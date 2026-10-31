@@ -9,7 +9,16 @@
 // (and the oracle for every failable path is "assert on the error VALUE"). This line
 // is per-crate because `[lints]` is per-package and covers every target, with no way
 // to scope a lint to lib/bins — the manifest cannot express `cfg(test)`.
-#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn))]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::unwrap_in_result,
+        clippy::panic_in_result_fn
+    )
+)]
 
 use okm_core::VirtualStorage;
 
@@ -223,10 +232,7 @@ mod tests {
         let mut got = f.peers(store.clone(), &mk(1).encode());
         got.extend(m.peers(store.clone(), &mk(1).encode()));
         got.sort();
-        assert_eq!(
-            got,
-            vec![mk(2).encode(), mk(3).encode(), mk(4).encode()]
-        );
+        assert_eq!(got, vec![mk(2).encode(), mk(3).encode(), mk(4).encode()]);
     }
 
     struct FollowsNeighbors;
@@ -284,10 +290,7 @@ mod tests {
 
         let f = FollowsNeighbors;
         let got = walk(&[&f], store, &mk(1).encode(), 2);
-        let mut ids: Vec<u32> = got
-            .iter()
-            .map(|b| UserKey::decode(b).id)
-            .collect();
+        let mut ids: Vec<u32> = got.iter().map(|b| UserKey::decode(b).id).collect();
         ids.sort();
         assert_eq!(ids, vec![1, 2, 3]);
     }
@@ -295,12 +298,7 @@ mod tests {
     #[test]
     fn group_by_folds_consecutive_runs() {
         let rows = vec![(7u64, 10), (7, 20), (9, 30)];
-        let grouped = group_by(
-            rows,
-            |r| r.0,
-            || 0u64,
-            |acc, (_, v)| acc + v,
-        );
+        let grouped = group_by(rows, |r| r.0, || 0u64, |acc, (_, v)| acc + v);
         assert_eq!(grouped, vec![(7, 30), (9, 30)]);
     }
 }

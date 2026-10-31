@@ -6,9 +6,17 @@
 //! Compile-time rejections (String / Reverse on key side, non-whitelist
 //! Reverse inner) live in `codec_compilefail.rs` via trybuild.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unwrap_in_result,
+    clippy::panic_in_result_fn
+)]
 
-use okm_core::{KeyEncode, TestStore, Reversible, Reverse, Document, DocumentEncode, Collection, parquet_io};
+use okm_core::{
+    Collection, Document, DocumentEncode, KeyEncode, Reverse, Reversible, TestStore, parquet_io,
+};
 
 // ================= String (variable length) =================
 
@@ -45,7 +53,11 @@ fn string_tlv_round_trip_through_payload() {
     // hot_len = 5; the name TLV frame header starts at 8. Frame length
     // uses the P2 varint ("alice" = 5 bytes → single byte [0x05], < 64).
     assert_eq!(p[0], 1, "layout version 1");
-    assert_eq!(&p[1..3], &[0u8, 5], "hot segment = 5 bytes (u32 score + u8 flag)");
+    assert_eq!(
+        &p[1..3],
+        &[0u8, 5],
+        "hot segment = 5 bytes (u32 score + u8 flag)"
+    );
     assert_eq!(p[7], 0xA5, "flag hot byte");
     assert_eq!(p[8], 1, "field tag 1 (name)");
     assert_eq!(p[9], 5, "varint len: 5 fits the 1-byte lane (< 64)");
@@ -129,14 +141,18 @@ fn parquet_roundtrip_with_string_columns() {
     let names = ["", "alice", "多字节 ✓ 名称"];
     for (i, name) in names.iter().enumerate() {
         t1.put(
-            &SKey { shard: 1, id: i as u64 },
+            &SKey {
+                shard: 1,
+                id: i as u64,
+            },
             &SRow {
                 score: i as u32,
                 name: name.to_string(),
                 note: format!("note-{i}"),
                 flag: i as u8,
             },
-        ).unwrap();
+        )
+        .unwrap();
     }
     parquet_io::export_parquet(&t1, &path).unwrap();
 
@@ -144,7 +160,13 @@ fn parquet_roundtrip_with_string_columns() {
     let n = parquet_io::import_parquet(&mut t2, &path).unwrap();
     assert_eq!(n, 3);
     for (i, name) in names.iter().enumerate() {
-        let r = t2.get(&SKey { shard: 1, id: i as u64 }).unwrap().expect("document");
+        let r = t2
+            .get(&SKey {
+                shard: 1,
+                id: i as u64,
+            })
+            .unwrap()
+            .expect("document");
         assert_eq!(&r.name, name);
         assert_eq!(r.note, format!("note-{i}"));
     }
@@ -167,14 +189,19 @@ fn payload_wire_hex_snapshot() {
     // P2 varint frame lengths: the len prefix is a prefix-monotonic
     // varint — values < 64 are ONE byte (len 2 → [0x02], len 0 → [0x00]).
     let expect = [
-        1u8, 0, 5,             // version 1, hot_len 5
-        1, 2, 3, 4,            // score BE (hot)
-        0xFF,                  // flag (hot)
-        1, 2, b'a', b'b',            // name frame: tag 1, len 2 (1-byte varint), value
-        2, 0,                        // note frame: tag 2, len 0
+        1u8, 0, 5, // version 1, hot_len 5
+        1, 2, 3, 4,    // score BE (hot)
+        0xFF, // flag (hot)
+        1, 2, b'a', b'b', // name frame: tag 1, len 2 (1-byte varint), value
+        2, 0, // note frame: tag 2, len 0
     ]
     .to_vec();
-    assert_eq!(p, expect, "wire format snapshot (hex: {})", p.iter().map(|b| format!("{b:02x}")).collect::<String>());
+    assert_eq!(
+        p,
+        expect,
+        "wire format snapshot (hex: {})",
+        p.iter().map(|b| format!("{b:02x}")).collect::<String>()
+    );
     assert_eq!(SRow::decode_payload(&p), document);
 }
 
@@ -222,7 +249,12 @@ fn older_payload_decodes_with_appended_defaults() {
 
 #[test]
 fn newer_payload_version_is_rejected() {
-    let document = SRow { score: 1, name: "x".into(), note: String::new(), flag: 0 };
+    let document = SRow {
+        score: 1,
+        name: "x".into(),
+        note: String::new(),
+        flag: 0,
+    };
     let mut p = document.encode_payload();
     p[0] = 99; // a future layout version
     let err = std::panic::catch_unwind(|| SRow::decode_payload(&p));
@@ -248,7 +280,11 @@ pub struct DefaultedRow {
 
 #[test]
 fn ok_default_expression_used_for_missing_tail_field() {
-    let document = DefaultedRow { score: 5, name: "x".into(), flag: 77 };
+    let document = DefaultedRow {
+        score: 5,
+        name: "x".into(),
+        flag: 77,
+    };
     let p = document.encode_payload();
     assert_eq!(p[0], 3, "explicit layout version 3");
     // Simulate an older payload without flag: strip the hot tail byte AND

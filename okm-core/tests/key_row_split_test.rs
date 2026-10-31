@@ -60,12 +60,21 @@ fn a_name_may_live_in_the_key_and_in_the_payload() {
     let table = <Profile as Document>::collection(store.clone());
     // The address says 101; the payload says 999. Both are legal and unrelated.
     table
-        .put(&key(101), &Profile { user_id: 999, bio: "x".into() })
+        .put(
+            &key(101),
+            &Profile {
+                user_id: 999,
+                bio: "x".into(),
+            },
+        )
         .unwrap();
 
     let row = table.get(&key(101)).unwrap().unwrap();
     assert_eq!(row.user_id, 999, "the payload copy is its own field");
-    assert!(table.get(&key(999)).unwrap().is_none(), "the key's value still addresses");
+    assert!(
+        table.get(&key(999)).unwrap().is_none(),
+        "the key's value still addresses"
+    );
 
     let doc = table.fetch(&key(101)).unwrap().unwrap();
     assert_eq!(
@@ -82,7 +91,14 @@ fn the_same_key_type_addresses_a_side_table() {
     let side = <ProfileStats as Document>::collection(store.clone());
     let k = key(42);
 
-    main.put(&k, &Profile { user_id: 42, bio: "hello".into() }).unwrap();
+    main.put(
+        &k,
+        &Profile {
+            user_id: 42,
+            bio: "hello".into(),
+        },
+    )
+    .unwrap();
     side.put(&k, &ProfileStats { views: 3 }).unwrap();
 
     // Byte-identical key payload: the two primary keys differ only in the ns.
@@ -90,7 +106,11 @@ fn the_same_key_type_addresses_a_side_table() {
     let b = side.primary_key(&k);
     assert_eq!(a.len(), b.len());
     assert_ne!(a[..2], b[..2], "different tables, different ns");
-    assert_eq!(a[3..], b[3..], "the key payload is the same bytes by construction");
+    assert_eq!(
+        a[3..],
+        b[3..],
+        "the key payload is the same bytes by construction"
+    );
 
     assert_eq!(main.get(&k).unwrap().unwrap().bio, "hello");
     assert_eq!(side.get(&k).unwrap().unwrap().views, 3);
@@ -101,7 +121,15 @@ fn a_map_name_that_matches_a_payload_field_writes_the_row() {
     let store = TestStore::default();
     let table = <Profile as Document>::collection(store.clone());
     let k = key(7);
-    table.put(&k, &Profile { user_id: 1, bio: "a".into() }).unwrap();
+    table
+        .put(
+            &k,
+            &Profile {
+                user_id: 1,
+                bio: "a".into(),
+            },
+        )
+        .unwrap();
 
     // The classifier is the payload declaration, not the key: `user_id` is a
     // declared field, so this is a row update (the segment never sees it).

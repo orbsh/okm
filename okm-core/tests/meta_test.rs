@@ -15,9 +15,7 @@
 )]
 
 use okm_core::storage::VirtualStorage;
-use okm_core::{
-    meta, Document, DocumentEncode, Error, KeyEncode, TableMeta, TestStore,
-};
+use okm_core::{Document, DocumentEncode, Error, KeyEncode, TableMeta, TestStore, meta};
 
 /// ns 90 = `[0x00, 0x5A]` — the hex locks below spell it out.
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
@@ -52,7 +50,9 @@ fn the_stamp_lives_at_the_highest_fixed_face_with_no_suffix() {
     let payload = store.get(&key).unwrap().unwrap();
     assert_eq!(
         payload,
-        vec![0x00, 0x01, 0x07, b'v', b'e', b'r', b's', b'i', b'o', b'n', 0x01, 0x01],
+        vec![
+            0x00, 0x01, 0x07, b'v', b'e', b'r', b's', b'i', b'o', b'n', 0x01, 0x01
+        ],
     );
 }
 
@@ -99,7 +99,13 @@ fn a_store_stamped_with_another_shape_is_refused() {
     meta::write(&store, &header(), &TableMeta::stamped(2)).unwrap();
 
     let err = table.ensure_layout().unwrap_err();
-    assert_eq!(err, Error::LayoutMismatch { stored: Some(2), current: 1 });
+    assert_eq!(
+        err,
+        Error::LayoutMismatch {
+            stored: Some(2),
+            current: 1
+        }
+    );
     let text = err.to_string();
     assert!(text.contains("stamped Some(2)"), "{text}");
     assert!(text.contains("delete it"), "{text}");
@@ -114,7 +120,13 @@ fn a_meta_row_that_names_no_version_is_refused() {
     meta::write(&store, &header(), &foreign).unwrap();
 
     let err = table.ensure_layout().unwrap_err();
-    assert_eq!(err, Error::LayoutMismatch { stored: None, current: 1 });
+    assert_eq!(
+        err,
+        Error::LayoutMismatch {
+            stored: None,
+            current: 1
+        }
+    );
 }
 
 #[test]
@@ -122,7 +134,14 @@ fn row_scans_never_surface_the_meta_entry() {
     let store = TestStore::default();
     let table = <MetaRow as Document>::collection(store.clone());
     table.ensure_layout().unwrap();
-    table.put(&MetaKey { id: 7 }, &MetaRow { label: "row".into() }).unwrap();
+    table
+        .put(
+            &MetaKey { id: 7 },
+            &MetaRow {
+                label: "row".into(),
+            },
+        )
+        .unwrap();
 
     assert_eq!(table.scan_keys().unwrap(), vec![MetaKey { id: 7 }]);
     assert_eq!(table.scan_documents_raw().unwrap().len(), 1);

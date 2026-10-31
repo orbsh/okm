@@ -115,7 +115,10 @@ pub fn expand(input: syn::DeriveInput) -> syn::Result<TS2> {
             other => {
                 return Err(syn::Error::new_spanned(
                     other,
-                    format!("ok_nodes: every member must be a document TYPE, got `{}`", quote!(#other)),
+                    format!(
+                        "ok_nodes: every member must be a document TYPE, got `{}`",
+                        quote!(#other)
+                    ),
                 ))
             }
         };

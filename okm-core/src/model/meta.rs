@@ -24,7 +24,7 @@ use std::collections::BTreeMap;
 
 use crate::engine::storage::VirtualStorage;
 use crate::error::Result;
-use crate::model::index::{write_slot, Document, META_SLOT};
+use crate::model::index::{Document, META_SLOT, write_slot};
 use crate::model::wrappers::wire::{put_len, take_len};
 
 /// The one name the runtime writes: the payload shape the store was stamped
@@ -110,8 +110,7 @@ impl TableMeta {
         let mut off = 2;
         let mut entries = BTreeMap::new();
         for _ in 0..count {
-            let (name_len, n) =
-                take_len(&bytes[off..]).expect("table meta: truncated name length");
+            let (name_len, n) = take_len(&bytes[off..]).expect("table meta: truncated name length");
             off += n;
             assert!(
                 bytes.len() >= off + name_len,
@@ -184,10 +183,7 @@ pub fn ensure<S: VirtualStorage + ?Sized>(
         let meta = TableMeta::decode(&bytes);
         return match meta.version() {
             Some(stored) if stored == current => Ok(meta),
-            stored => Err(crate::error::Error::LayoutMismatch {
-                stored,
-                current,
-            }),
+            stored => Err(crate::error::Error::LayoutMismatch { stored, current }),
         };
     }
     let meta = TableMeta::stamped(current);
@@ -199,11 +195,7 @@ pub fn ensure<S: VirtualStorage + ?Sized>(
 ///
 /// `version` belongs to the runtime: `Collection::set_meta` re-stamps it after
 /// applying the caller's name, so the entry cannot be edited away by accident.
-pub fn write<S: VirtualStorage + ?Sized>(
-    store: &S,
-    header: &[u8],
-    meta: &TableMeta,
-) -> Result<()> {
+pub fn write<S: VirtualStorage + ?Sized>(store: &S, header: &[u8], meta: &TableMeta) -> Result<()> {
     store.put(meta_key(header), meta.encode())
 }
 

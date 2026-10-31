@@ -3,9 +3,15 @@
 //! identical behavior for the core operations — key round trips,
 //! prefix scans, batch atomicity, and SharedVirtualStorage sharing.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unwrap_in_result,
+    clippy::panic_in_result_fn
+)]
 
-use okm_core::{KeyEncode, DocumentEncode, TestStore, VirtualStorage};
+use okm_core::{DocumentEncode, KeyEncode, TestStore, VirtualStorage};
 
 fn verify_engine(store: TestStore) {
     let name = store.name();
@@ -14,16 +20,28 @@ fn verify_engine(store: TestStore) {
     let s = store.clone();
     s.put(b"k1".to_vec(), b"v1".to_vec()).unwrap();
     s.put(b"k2".to_vec(), b"v2".to_vec()).unwrap();
-    assert_eq!(s.get(b"k1").unwrap().as_deref(), Some(b"v1".as_slice()), "{name}: point get");
+    assert_eq!(
+        s.get(b"k1").unwrap().as_deref(),
+        Some(b"v1".as_slice()),
+        "{name}: point get"
+    );
     assert_eq!(s.get(b"missing").unwrap(), None, "{name}: absent key");
 
     // Prefix scan: suffixes in key order.
     let sfx = s.scan_suffix(b"k").expect("a scan on a working store");
-    assert_eq!(sfx, vec![b"1".to_vec(), b"2".to_vec()], "{name}: scan_suffix");
+    assert_eq!(
+        sfx,
+        vec![b"1".to_vec(), b"2".to_vec()],
+        "{name}: scan_suffix"
+    );
 
     // Handle sharing: a clone sees the same keyspace.
     let s2 = store.shared_handle();
-    assert_eq!(s2.get(b"k1").unwrap().as_deref(), Some(b"v1".as_slice()), "{name}: shared handle");
+    assert_eq!(
+        s2.get(b"k1").unwrap().as_deref(),
+        Some(b"v1".as_slice()),
+        "{name}: shared handle"
+    );
 
     // Batch atomicity: 100 ops in ONE commit_batch.
     let mut batch = okm_core::Batch::default();
@@ -32,10 +50,16 @@ fn verify_engine(store: TestStore) {
     }
     batch.del(b"k1");
     s.commit_batch(batch).expect("{name}: batch commit");
-    assert_eq!(s.get(b"batch:50").unwrap().as_deref(), Some(b"ok".as_slice()), "{name}: batch write");
+    assert_eq!(
+        s.get(b"batch:50").unwrap().as_deref(),
+        Some(b"ok".as_slice()),
+        "{name}: batch write"
+    );
     assert_eq!(s.get(b"k1").unwrap(), None, "{name}: batch delete");
     assert_eq!(
-        s.scan_suffix(b"batch:").expect("a scan on a working store").len(),
+        s.scan_suffix(b"batch:")
+            .expect("a scan on a working store")
+            .len(),
         100,
         "{name}: all batch entries"
     );

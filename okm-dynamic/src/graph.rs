@@ -25,13 +25,12 @@
 
 use okm_core::index::PRIMARY_SLOT;
 use okm_core::model::graph::{
-    EDGE_IN_SLOT, EDGE_OUT_SLOT, EDGE_PREDICATE_IN_SLOT, EDGE_PREDICATE_OUT_SLOT,
-    NodeRef,
+    EDGE_IN_SLOT, EDGE_OUT_SLOT, EDGE_PREDICATE_IN_SLOT, EDGE_PREDICATE_OUT_SLOT, NodeRef,
 };
-use okm_core::obj_vocab::{VocabCache, FIELD_VOCAB, PREDICATE_VOCAB};
-use okm_core::obj_dynamic::{decode_named, put_frame_named, DynamicValue};
+use okm_core::obj_dynamic::{DynamicValue, decode_named, put_frame_named};
+use okm_core::obj_vocab::{FIELD_VOCAB, PREDICATE_VOCAB, VocabCache};
 use okm_core::schema::CollectionSchema;
-use okm_core::storage::{scan_suffix_kv, Batch, VirtualStorage};
+use okm_core::storage::{Batch, VirtualStorage, scan_suffix_kv};
 
 /// One dynamic edge: endpoints by reference, predicate by name,
 /// attributes as a name-keyed map (nTLV frames on the wire, ids allocated
@@ -137,8 +136,7 @@ impl<S: VirtualStorage> Graph<S> {
         let mut body = Vec::new();
         let mut resolver = |name: &str| self.fields.id_for(&mut self.store, &self.ns, name);
         for (name, value) in attrs {
-            put_frame_named(&mut body, name, value, &mut resolver)
-                .map_err(|e| e.to_string())?;
+            put_frame_named(&mut body, name, value, &mut resolver).map_err(|e| e.to_string())?;
         }
         Ok(body)
     }
@@ -153,13 +151,15 @@ impl<S: VirtualStorage> Graph<S> {
         // Nested ids resolve through the same mirror; a store failure is parked
         // and raised after the walk (a nested decode has nowhere else to put it).
         let mut failed: Option<String> = None;
-        let frames = decode_named(wire, &mut |id| {
-            match self.fields.name_for(&self.store, &self.ns, id) {
-                Ok(name) => name,
-                Err(e) => {
-                    failed = Some(e.to_string());
-                    None
-                }
+        let frames = decode_named(wire, &mut |id| match self.fields.name_for(
+            &self.store,
+            &self.ns,
+            id,
+        ) {
+            Ok(name) => name,
+            Err(e) => {
+                failed = Some(e.to_string());
+                None
             }
         });
         if let Some(e) = failed {
@@ -280,7 +280,8 @@ impl<S: VirtualStorage> Graph<S> {
         let pk = self.primary_key(edge_id);
         let body = self
             .store
-            .get(&pk).map_err(|e| e.to_string())?
+            .get(&pk)
+            .map_err(|e| e.to_string())?
             .ok_or_else(|| format!("unlink: edge_id {edge_id} not found"))?;
         let (src_wire, dst_wire, predicate_vocab_id) = self.parse_body_head(&body)?;
         let id_be = edge_id.to_be_bytes();
@@ -324,7 +325,11 @@ impl<S: VirtualStorage> Graph<S> {
     /// Fetch one edge, decoded: endpoints, predicate resolved to name,
     /// attributes as a name-keyed map.
     pub fn get_edge(&mut self, edge_id: u64) -> Result<Option<DynEdge>, String> {
-        let Some(body) = self.store.get(&self.primary_key(edge_id)).map_err(|e| e.to_string())? else {
+        let Some(body) = self
+            .store
+            .get(&self.primary_key(edge_id))
+            .map_err(|e| e.to_string())?
+        else {
             return Ok(None);
         };
         let Some((src, n1)) = NodeRef::decode(&body) else {
@@ -355,7 +360,12 @@ impl<S: VirtualStorage> Graph<S> {
             Some(wire) => self.attrs_from(&wire)?,
             None => std::collections::BTreeMap::new(),
         };
-        Ok(Some(DynEdge { src, dst, predicate, attrs }))
+        Ok(Some(DynEdge {
+            src,
+            dst,
+            predicate,
+            attrs,
+        }))
     }
 
     /// Edge ids on one traversal face (full NodeRef leads — refs are
@@ -468,7 +478,10 @@ impl<S: VirtualStorage> Graph<S> {
         // The bare `[predicate]` prefix of the predicate+out face IS the
         // predicate index; the old dedicated face held the same set under
         // shorter keys.
-        let p = self.face_key(EDGE_PREDICATE_OUT_SLOT, &[&predicate_vocab_id.to_be_bytes()]);
+        let p = self.face_key(
+            EDGE_PREDICATE_OUT_SLOT,
+            &[&predicate_vocab_id.to_be_bytes()],
+        );
         Ok(ids_from_suffixes(
             self.store.scan_suffix(&p).map_err(|e| e.to_string())?,
         ))
@@ -478,7 +491,8 @@ impl<S: VirtualStorage> Graph<S> {
     pub fn predicates(&mut self) -> Result<Vec<(u16, String)>, String> {
         let mut p = self.ns.clone();
         okm_core::write_slot(&mut p, okm_core::index::PREDICATE_VOCAB_ID_SLOT);
-        let mut out: Vec<(u16, String)> = scan_suffix_kv(&self.store, &p).map_err(|e| e.to_string())?
+        let mut out: Vec<(u16, String)> = scan_suffix_kv(&self.store, &p)
+            .map_err(|e| e.to_string())?
             .into_iter()
             .filter(|(suffix, _)| suffix.len() == 2)
             .filter_map(|(suffix, name)| {

@@ -66,28 +66,48 @@ pub trait VectorElem: Copy {
 
 impl VectorElem for f32 {
     const ELEM_WIDTH: usize = 4;
-    fn encode_le(&self, buf: &mut Vec<u8>) { buf.extend_from_slice(&self.to_le_bytes()); }
-    fn decode_le(b: &[u8]) -> Self { f32::from_le_bytes(b.try_into().unwrap()) }
+    fn encode_le(&self, buf: &mut Vec<u8>) {
+        buf.extend_from_slice(&self.to_le_bytes());
+    }
+    fn decode_le(b: &[u8]) -> Self {
+        f32::from_le_bytes(b.try_into().unwrap())
+    }
 }
 impl VectorElem for u32 {
     const ELEM_WIDTH: usize = 4;
-    fn encode_le(&self, buf: &mut Vec<u8>) { buf.extend_from_slice(&self.to_le_bytes()); }
-    fn decode_le(b: &[u8]) -> Self { u32::from_le_bytes(b.try_into().unwrap()) }
+    fn encode_le(&self, buf: &mut Vec<u8>) {
+        buf.extend_from_slice(&self.to_le_bytes());
+    }
+    fn decode_le(b: &[u8]) -> Self {
+        u32::from_le_bytes(b.try_into().unwrap())
+    }
 }
 impl VectorElem for i32 {
     const ELEM_WIDTH: usize = 4;
-    fn encode_le(&self, buf: &mut Vec<u8>) { buf.extend_from_slice(&self.to_le_bytes()); }
-    fn decode_le(b: &[u8]) -> Self { i32::from_le_bytes(b.try_into().unwrap()) }
+    fn encode_le(&self, buf: &mut Vec<u8>) {
+        buf.extend_from_slice(&self.to_le_bytes());
+    }
+    fn decode_le(b: &[u8]) -> Self {
+        i32::from_le_bytes(b.try_into().unwrap())
+    }
 }
 impl VectorElem for u64 {
     const ELEM_WIDTH: usize = 8;
-    fn encode_le(&self, buf: &mut Vec<u8>) { buf.extend_from_slice(&self.to_le_bytes()); }
-    fn decode_le(b: &[u8]) -> Self { u64::from_le_bytes(b.try_into().unwrap()) }
+    fn encode_le(&self, buf: &mut Vec<u8>) {
+        buf.extend_from_slice(&self.to_le_bytes());
+    }
+    fn decode_le(b: &[u8]) -> Self {
+        u64::from_le_bytes(b.try_into().unwrap())
+    }
 }
 impl VectorElem for i64 {
     const ELEM_WIDTH: usize = 8;
-    fn encode_le(&self, buf: &mut Vec<u8>) { buf.extend_from_slice(&self.to_le_bytes()); }
-    fn decode_le(b: &[u8]) -> Self { i64::from_le_bytes(b.try_into().unwrap()) }
+    fn encode_le(&self, buf: &mut Vec<u8>) {
+        buf.extend_from_slice(&self.to_le_bytes());
+    }
+    fn decode_le(b: &[u8]) -> Self {
+        i64::from_le_bytes(b.try_into().unwrap())
+    }
 }
 
 impl<T: VectorElem> Vector<T> {

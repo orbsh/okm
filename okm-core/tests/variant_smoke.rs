@@ -1,13 +1,22 @@
 // Tests keep the vocabulary (a panicking test is a failing test with a stack
 // trace); this file is its own crate, so `cfg(test)` does not reach it.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unwrap_in_result,
+    clippy::panic_in_result_fn
+)]
 
-use okm_core::{KeyEncode, DocumentEncode, obj_dynamic::DynamicValue};
+use okm_core::{DocumentEncode, KeyEncode, obj_dynamic::DynamicValue};
 use parquet_variant::VariantBuilder;
 use std::collections::BTreeMap;
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
-pub struct UserKey { pub org_id: u32, pub user_id: u64 }
+pub struct UserKey {
+    pub org_id: u32,
+    pub user_id: u64,
+}
 
 #[derive(DocumentEncode, Clone, PartialEq, Debug)]
 #[ok_ref(UserKey)]
@@ -23,14 +32,20 @@ fn variant_build_smoke() {
     // dynamic segment's frames decode to).
     let mut obj: BTreeMap<String, DynamicValue> = BTreeMap::new();
     obj.insert("score".into(), DynamicValue::UInt(99));
-    obj.insert("tags".into(), DynamicValue::Array(vec![
-        DynamicValue::Str("a".into()),
-        DynamicValue::Str("b".into()),
-    ]));
-    obj.insert("nested".into(), DynamicValue::Obj(BTreeMap::from([
-        ("x".into(), DynamicValue::Int(-3)),
-        ("flag".into(), DynamicValue::Bool(true)),
-    ])));
+    obj.insert(
+        "tags".into(),
+        DynamicValue::Array(vec![
+            DynamicValue::Str("a".into()),
+            DynamicValue::Str("b".into()),
+        ]),
+    );
+    obj.insert(
+        "nested".into(),
+        DynamicValue::Obj(BTreeMap::from([
+            ("x".into(), DynamicValue::Int(-3)),
+            ("flag".into(), DynamicValue::Bool(true)),
+        ])),
+    );
 
     fn push<B: parquet_variant::VariantBuilderExt>(b: &mut B, v: &DynamicValue) {
         match v {
@@ -44,7 +59,9 @@ fn variant_build_smoke() {
             DynamicValue::Array(items) => {
                 // ListBuilder impls VariantBuilderExt — recurse directly.
                 let mut lb = b.new_list();
-                for it in items { push(&mut lb, it); }
+                for it in items {
+                    push(&mut lb, it);
+                }
                 lb.finish();
             }
             DynamicValue::Obj(map) => {
@@ -70,7 +87,9 @@ fn variant_build_smoke() {
                 }
                 DynamicValue::Array(items) => {
                     let mut sub = ob.new_list(k);
-                    for it in items { push(&mut sub, it); }
+                    for it in items {
+                        push(&mut sub, it);
+                    }
                     sub.finish();
                 }
                 other => {

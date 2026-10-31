@@ -1,11 +1,15 @@
 //! `Vector<T>` — typed variable-length homogeneous list (ADR-0015 §4, P3.5).
 //! Frame layout hex lock, cold-segment integration, `#[ok_len]` contract.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unwrap_in_result,
+    clippy::panic_in_result_fn
+)]
 
-use okm_core::{
-    DocumentEncode, KeyEncode, TestStore, Collection, Vector, VectorElem,
-};
+use okm_core::{Collection, DocumentEncode, KeyEncode, TestStore, Vector, VectorElem};
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
 pub struct DocKey {
@@ -71,11 +75,24 @@ fn cold_frame_roundtrip() {
 fn length_is_data_not_schema() {
     // 同一个文档类型，不同长度的向量都是合法数据（换模型 = 换帧长）。
     let t: Collection<TestStore, DocKey, Doc> = Collection::new(TestStore::slatedb_mem());
-    t.put(&DocKey { id: 1 }, &Doc { id: 1, embed: Vector::new(vec![1.0]), score: 1 }).unwrap();
+    t.put(
+        &DocKey { id: 1 },
+        &Doc {
+            id: 1,
+            embed: Vector::new(vec![1.0]),
+            score: 1,
+        },
+    )
+    .unwrap();
     t.put(
         &DocKey { id: 2 },
-        &Doc { id: 2, embed: Vector::new(vec![1.0, 2.0, 3.0, 4.0]), score: 2 },
-    ).unwrap();
+        &Doc {
+            id: 2,
+            embed: Vector::new(vec![1.0, 2.0, 3.0, 4.0]),
+            score: 2,
+        },
+    )
+    .unwrap();
     assert_eq!(t.get(&DocKey { id: 1 }).unwrap().unwrap().embed.len(), 1);
     assert_eq!(t.get(&DocKey { id: 2 }).unwrap().unwrap().embed.len(), 4);
 }
@@ -89,8 +106,12 @@ fn ok_len_contract_enforced_at_encode() {
             Collection::new(TestStore::slatedb_mem());
         t.put(
             &DocKey { id: 1 },
-            &ContractedDoc { id: 1, embed: Vector::new(vec![1.0, 2.0, 3.0]) },
-        ).unwrap();
+            &ContractedDoc {
+                id: 1,
+                embed: Vector::new(vec![1.0, 2.0, 3.0]),
+            },
+        )
+        .unwrap();
     });
     assert!(bad.is_err(), "count 3 violates the #[ok_len(2)] contract");
 }
@@ -99,7 +120,11 @@ fn ok_len_contract_enforced_at_encode() {
 fn field_contracts_exported() {
     // FIELD_CONTRACTS 进 CollectionSchema（动态 reader 用同一检查）。
     let schema = okm_core::schema::CollectionSchema::of::<DocKey, ContractedDoc>();
-    let cold = schema.cold_fields.iter().find(|f| f.name == "embed").unwrap();
+    let cold = schema
+        .cold_fields
+        .iter()
+        .find(|f| f.name == "embed")
+        .unwrap();
     assert_eq!(cold.expect_len, Some(2));
 }
 
@@ -115,9 +140,6 @@ fn schema_export_field_desc() {
     // FieldDesc: Vector { elem: "f32" }，宽度 0（冷段，变长）
     let fields = <Doc as okm_core::Document>::FIELDS;
     let fd = fields.iter().find(|f| f.name == "embed").unwrap();
-    assert_eq!(
-        fd.ty,
-        okm_core::field::FieldType::Vector { elem: "f32" }
-    );
+    assert_eq!(fd.ty, okm_core::field::FieldType::Vector { elem: "f32" });
     assert_eq!(fd.width, 0);
 }

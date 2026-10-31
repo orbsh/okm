@@ -31,49 +31,67 @@
 // (and the oracle for every failable path is "assert on the error VALUE"). This line
 // is per-crate because `[lints]` is per-package and covers every target, with no way
 // to scope a lint to lib/bins — the manifest cannot express `cfg(test)`.
-#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn))]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::unwrap_in_result,
+        clippy::panic_in_result_fn
+    )
+)]
 
-pub use okm_derive::{JunctionEncode, GraphEncode, KeyEncode, NestStorage, DocumentEncode};
+pub use okm_derive::{DocumentEncode, GraphEncode, JunctionEncode, KeyEncode, NestStorage};
 
-pub mod model;
 pub mod engine;
 pub mod error;
+pub mod model;
 
 pub use error::{Error, Result};
 pub mod bridge;
-pub mod subscribe;
 /// The change log (ADR-0045): append-only segment files written at the commit
 /// boundary, drained out of process.
 pub mod changelog;
+pub mod subscribe;
 
 // ================= re-exports (stable public surface) =================
 
-pub use model::reverse::{Reversible, Reverse};
-pub use model::wrappers::{Bytes, Ref, Refs, Offset, Quant, Uuid4, Uuid7, VarInt, VarIntEnc, Vector, VectorElem, dequantize, offset_decode, offset_encode, quantize, wire_to_be_bytes};
-pub use model::wrappers::wire::{put_len, take_len, prefix_width};
+pub use model::reverse::{Reverse, Reversible};
+pub use model::wrappers::wire::{prefix_width, put_len, take_len};
+pub use model::wrappers::{
+    Bytes, Offset, Quant, Ref, Refs, Uuid4, Uuid7, VarInt, VarIntEnc, Vector, VectorElem,
+    dequantize, offset_decode, offset_encode, quantize, wire_to_be_bytes,
+};
 
-pub use model::reduce::{reduce_get, scan_reduces, ReduceCodec, Reduce, ReduceLogic};
-pub use model::vocab::{Vocab, VocabId};
-pub use model::presets::{Count, HighWater, LowAcc, LowWater, ReduceFieldSource, Sum};
-pub use model::collection::Junction;
-pub use model::junction::KvJunction;
-pub use model::graph::{EdgeBody, EdgeHead, EdgeKey, Graph, GraphEncode, NodeRef, NodeSet};
-pub use engine::storage::{BatchStore, VirtualStorage, VirtualStorageAsync, Batch, SharedVirtualStorage, scan_suffix_kv, scan_suffix_kv_async};
-#[cfg(any(feature = "test-engines", feature = "fjall", feature = "redb"))]
-pub use engine::test_engine::TestStore;
-pub use engine::nest::{NestStorage, RemoteStore, VirtualHandle};
-pub use engine::wire_client::{WireClient, WireTransport};
-pub use okm_wire::{OpFrame, OpResponse, OP_DELETE, OP_PUT};
-pub use model::field::{FieldDesc, FieldType};
 /// One exported batch — re-exported so a consumer can pass the graph's edge
 /// table to `parquet_io::write_batch` without taking an Arrow dependency of its
 /// own (ADR-0034).
 #[cfg(feature = "parquet")]
 pub use arrow::array::RecordBatch;
-pub use model::index::{Document, IndexFuncResult, IndexFuncValues, KvIndex, META_SLOT, PRIMARY_SLOT, scan_index, scan_index_exact, slot_len, write_slot};
-pub use model::key::{KeyEncode, PrefixKey};
-pub use subscribe::{SinkCell, Event, Op};
+pub use engine::nest::{NestStorage, RemoteStore, VirtualHandle};
+pub use engine::storage::{
+    Batch, BatchStore, SharedVirtualStorage, VirtualStorage, VirtualStorageAsync, scan_suffix_kv,
+    scan_suffix_kv_async,
+};
+#[cfg(any(feature = "test-engines", feature = "fjall", feature = "redb"))]
+pub use engine::test_engine::TestStore;
+pub use engine::wire_client::{WireClient, WireTransport};
+pub use model::collection::Junction;
 pub use model::document::Collection;
+pub use model::field::{FieldDesc, FieldType};
+pub use model::graph::{EdgeBody, EdgeHead, EdgeKey, Graph, GraphEncode, NodeRef, NodeSet};
+pub use model::index::{
+    Document, IndexFuncResult, IndexFuncValues, KvIndex, META_SLOT, PRIMARY_SLOT, scan_index,
+    scan_index_exact, slot_len, write_slot,
+};
+pub use model::junction::KvJunction;
+pub use model::key::{KeyEncode, PrefixKey};
+pub use model::presets::{Count, HighWater, LowAcc, LowWater, ReduceFieldSource, Sum};
+pub use model::reduce::{Reduce, ReduceCodec, ReduceLogic, reduce_get, scan_reduces};
+pub use model::vocab::{Vocab, VocabId};
+pub use okm_wire::{OP_DELETE, OP_PUT, OpFrame, OpResponse};
+pub use subscribe::{Event, Op, SinkCell};
 
 #[cfg(feature = "arrow")]
 pub use bridge::arrow_bridge as arrow_backend;
@@ -82,44 +100,41 @@ pub use bridge::tooling::parquet_io;
 
 #[cfg(feature = "fjall")]
 pub use engine::fjall_backend::FjallStore;
-#[cfg(feature = "slatedb")]
-pub use engine::slatedb_backend::{
-    AsyncJunction, SlatedbStore,
-};
 #[cfg(feature = "localstorage")]
-pub use engine::localstorage_backend::{b64_decode, b64_encode, LocalStorageStore};
+pub use engine::localstorage_backend::{LocalStorageStore, b64_decode, b64_encode};
+#[cfg(feature = "slatedb")]
+pub use engine::slatedb_backend::{AsyncJunction, SlatedbStore};
 
 // ================= path-compat re-exports =================
 // Downstream crates (okm-dynamic, okm-query, bindings) and tests import
 // these module paths; keep them valid while callers migrate.
 
-pub use model::field as field;
-pub use model::index as index;
-pub use model::key as key;
-pub use model::schema as schema;
-pub use model::obj_vocab as obj_vocab;
-pub use model::obj_dynamic as obj_dynamic;
-pub use model::reduce as reduce;
-pub use model::reverse as reverse;
-pub use model::document as document;
-pub use model::meta as meta;
-pub use model::meta::TableMeta;
-pub use model::collection as collection;
-pub use model::junction as junction;
-pub use model::wrappers as wrappers;
-pub use engine::storage as storage;
-#[cfg(any(feature = "test-engines", feature = "fjall", feature = "redb"))]
-pub use engine::test_engine as test_engine;
-pub use engine::nest as nest;
-#[cfg(feature = "fjall")]
-pub use engine::fjall_backend as fjall_backend;
-#[cfg(feature = "redb")]
-pub use engine::redb_backend as redb_backend;
-#[cfg(feature = "slatedb")]
-pub use engine::slatedb_backend as slatedb_backend;
-#[cfg(feature = "localstorage")]
-pub use engine::localstorage_backend as localstorage_backend;
 #[cfg(feature = "arrow")]
-pub use bridge::arrow_bridge as arrow_bridge;
-pub use bridge::tooling as tooling;
-
+pub use bridge::arrow_bridge;
+pub use bridge::tooling;
+#[cfg(feature = "fjall")]
+pub use engine::fjall_backend;
+#[cfg(feature = "localstorage")]
+pub use engine::localstorage_backend;
+pub use engine::nest;
+#[cfg(feature = "redb")]
+pub use engine::redb_backend;
+#[cfg(feature = "slatedb")]
+pub use engine::slatedb_backend;
+pub use engine::storage;
+#[cfg(any(feature = "test-engines", feature = "fjall", feature = "redb"))]
+pub use engine::test_engine;
+pub use model::collection;
+pub use model::document;
+pub use model::field;
+pub use model::index;
+pub use model::junction;
+pub use model::key;
+pub use model::meta;
+pub use model::meta::TableMeta;
+pub use model::obj_dynamic;
+pub use model::obj_vocab;
+pub use model::reduce;
+pub use model::reverse;
+pub use model::schema;
+pub use model::wrappers;

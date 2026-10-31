@@ -4,9 +4,15 @@
 //! 同 group 多次 fold 累积、scan_reduces 全组扫描、entry 布局
 //! `[ns 2B][slot 2B][group 段]`（reduce 族 0x5，独立计数器）。
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unwrap_in_result,
+    clippy::panic_in_result_fn
+)]
 
-use okm_core::{Reduce, ReduceLogic, ReduceCodec, TestStore, Document, DocumentEncode};
+use okm_core::{Document, DocumentEncode, Reduce, ReduceCodec, ReduceLogic, TestStore};
 
 /// PostKey：代理主键。
 #[derive(okm_core::KeyEncode, Clone, PartialEq, Debug, Default)]
@@ -87,21 +93,31 @@ fn fold_unfold_roundtrip_is_exact() {
     t.put(&k3, &r3).unwrap();
 
     // author 100: count=2, sum=42；author 200: count=1, sum=7。
-    let acc = okm_core::reduce_get::<_, AuthorStats>(t.store(), <Post as Document>::NS_PREFIX, &k1, &r1).expect("store").expect("group exists");
+    let acc =
+        okm_core::reduce_get::<_, AuthorStats>(t.store(), <Post as Document>::NS_PREFIX, &k1, &r1)
+            .expect("store")
+            .expect("group exists");
     assert_eq!(acc, CountSum { count: 2, sum: 42 });
 
     // delete_by_pkey 走同一条 unfold 路径（内部 get 出 document）。
     t.purge(&k2).unwrap();
-    let acc = okm_core::reduce_get::<_, AuthorStats>(t.store(), <Post as Document>::NS_PREFIX, &k1, &r1).expect("store").expect("group exists");
+    let acc =
+        okm_core::reduce_get::<_, AuthorStats>(t.store(), <Post as Document>::NS_PREFIX, &k1, &r1)
+            .expect("store")
+            .expect("group exists");
     assert_eq!(acc, CountSum { count: 1, sum: 30 });
 
     // 可逆往返：删空后 acc 回到单位元。
     t.purge(&k1).unwrap();
-    let acc = okm_core::reduce_get::<_, AuthorStats>(t.store(), <Post as Document>::NS_PREFIX, &k1, &r1).expect("store").expect("entry survives");
+    let acc =
+        okm_core::reduce_get::<_, AuthorStats>(t.store(), <Post as Document>::NS_PREFIX, &k1, &r1)
+            .expect("store")
+            .expect("entry survives");
     assert_eq!(acc, CountSum::default());
 
     // acc 独立生命周期：组空了 entry 仍在（okm-core 不做零值 GC）。
-    let all = okm_core::scan_reduces::<_, AuthorStats>(t.store(), <Post as Document>::NS_PREFIX).unwrap();
+    let all =
+        okm_core::scan_reduces::<_, AuthorStats>(t.store(), <Post as Document>::NS_PREFIX).unwrap();
     assert_eq!(all.len(), 2);
 }
 
@@ -168,14 +184,17 @@ fn group_and_fold_use_key_fields() {
     assert_eq!(&ek[4..], &7u32.to_be_bytes());
 
     // fold 聚合 key 字段 id：forum 7 → max(100, 42) = 100。
-    let acc = okm_core::reduce_get::<_, TopicStats>(t.store(), <Topic as Document>::NS_PREFIX, &k1, &r)
-        .expect("store").expect("group exists");
+    let acc =
+        okm_core::reduce_get::<_, TopicStats>(t.store(), <Topic as Document>::NS_PREFIX, &k1, &r)
+            .expect("store")
+            .expect("group exists");
     assert_eq!(acc, MaxId(100));
 
     // forum 8 独立成组。
     let acc8 =
         okm_core::reduce_get::<_, TopicStats>(t.store(), <Topic as Document>::NS_PREFIX, &k3, &r)
-            .expect("store").expect("group exists");
+            .expect("store")
+            .expect("group exists");
     assert_eq!(acc8, MaxId(5));
 }
 

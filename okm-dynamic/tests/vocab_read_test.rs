@@ -2,7 +2,13 @@
 //! lands as the id on the wire, and the store-aware read pass turns it into the
 //! label — the promise that a booth sees categories, not bare numbers.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unwrap_in_result,
+    clippy::panic_in_result_fn
+)]
 
 use okm_core::schema::CollectionSchema;
 use okm_core::{Collection, DocumentEncode, KeyEncode, TestStore, Vocab};
@@ -32,24 +38,26 @@ fn dynamic_read_names_vocab_labels() {
     // The typed side writes: interning happens on the write path, so the
     // vocabulary faces exist by the time anybody reads.
     let typed = Collection::<_, VKey, VRow>::new(store.clone());
-    typed.put(
-        &VKey { org: 1, id: 1 },
-        &VRow {
-            status: Vocab::of("warn"),
-            event: Vocab::of("http.request"),
-            note: "slow upstream".into(),
-        },
-    )
-    .unwrap();
-    typed.put(
-        &VKey { org: 1, id: 2 },
-        &VRow {
-            status: Vocab::of("error"),
-            event: Vocab::of("db.timeout"),
-            note: "pool exhausted".into(),
-        },
-    )
-    .unwrap();
+    typed
+        .put(
+            &VKey { org: 1, id: 1 },
+            &VRow {
+                status: Vocab::of("warn"),
+                event: Vocab::of("http.request"),
+                note: "slow upstream".into(),
+            },
+        )
+        .unwrap();
+    typed
+        .put(
+            &VKey { org: 1, id: 2 },
+            &VRow {
+                status: Vocab::of("error"),
+                event: Vocab::of("db.timeout"),
+                note: "pool exhausted".into(),
+            },
+        )
+        .unwrap();
 
     // The dynamic side reads the same table through the exported schema.
     let schema = CollectionSchema::of::<VKey, VRow>();
