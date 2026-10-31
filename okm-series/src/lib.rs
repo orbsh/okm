@@ -17,10 +17,11 @@ pub mod dict;
 pub mod format;
 pub mod part;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub use body::{Body, Value};
@@ -51,6 +52,10 @@ pub enum Error {
     /// rather than filed somewhere plausible: a layout that lies cannot be read back.
     MissingPartition(u16),
     Locked(u32),
+    /// A second `Log` for the same root inside one process. The `LOCK` file names a pid,
+    /// which cannot distinguish two writers that share one, and two writers over one part
+    /// interleave their bytes into a record that neither of them wrote.
+    AlreadyOpen(PathBuf),
     ConfigMismatch(String),
 }
 
@@ -70,6 +75,11 @@ impl std::fmt::Display for Error {
                 write!(f, "the record has no partition field (tag {tag})")
             }
             Error::Locked(pid) => write!(f, "the log is held by process {pid}"),
+            Error::AlreadyOpen(root) => write!(
+                f,
+                "the log at {} is already open in this process",
+                root.display()
+            ),
             Error::ConfigMismatch(what) => write!(f, "log.meta disagrees: {what}"),
         }
     }
@@ -166,6 +176,9 @@ struct Active {
 
 pub struct Log {
     root: PathBuf,
+    /// The in-process claim on this root. Held for its `Drop` — dropping the log (or an
+    /// open that fails after the claim) releases it, so reopening after a close works.
+    _claim: RootClaim,
     config: Config,
     meta: Meta,
     /// One writer per (bucket, partition): a partition is a file's worth of writer, and
@@ -175,6 +188,20 @@ pub struct Log {
     /// STREAM, not of a part: without this, a record an hour older than its predecessor
     /// would land in an older bucket, open a fresh part with no history, and pass.
     last_ts: HashMap<Option<String>, u64>,
+}
+
+/// The identity a caller can act on. The writers, the per-stream clock and the held claim
+/// are left out on purpose — none of them is something a log's owner can do anything with,
+/// and `finish_non_exhaustive` says so rather than pretending the list is complete.
+impl std::fmt::Debug for Log {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Log")
+            .field("root", &self.root)
+            .field("precision", &self.meta.precision)
+            .field("bucket_seconds", &self.meta.bucket_seconds)
+            .field("partition_tag", &self.meta.partition_tag)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Log {
@@ -216,6 +243,10 @@ impl Log {
             meta
         };
         acquire_lock(root)?;
+        // The LOCK file is a pid, so it stops another process and says nothing about a
+        // second `Log` here. Two writers over one part interleave their bytes into a
+        // record neither of them wrote, so the claim is taken before any writer exists.
+        let claim = RootClaim::claim(std::fs::canonicalize(root)?)?;
 
         let dict_config = config.dict.clone();
         let block_bytes = config.block_bytes;
@@ -223,6 +254,7 @@ impl Log {
         let block_codec = config.block_codec;
         let mut log = Log {
             root: root.to_path_buf(),
+            _claim: claim,
             config,
             meta,
             active: Vec::new(),
@@ -766,6 +798,45 @@ fn write_meta(path: &Path, meta: &Meta) -> Result<(), Error> {
     }
     std::fs::rename(&temp, path)?;
     part::sync_dir(path.parent().unwrap_or(Path::new(".")))
+}
+
+/// The roots this process holds open, keyed by canonical path.
+///
+/// `LOCK` names a pid, so it enforces one writer per PROCESS, not one writer per root: a
+/// second `Log` for the same directory inside this process passes the pid check and
+/// interleaves its appends into the same part. That hole is what the registry closes, and
+/// it is why the key is canonical — `root`, `root/.`, and a symlink to `root` are one root.
+fn open_roots() -> &'static Mutex<HashSet<PathBuf>> {
+    static OPEN_ROOTS: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
+    OPEN_ROOTS.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+/// A claimed root, released when the log that holds it goes away — including the log of an
+/// open that fails after the claim, so a failed `Log::open` never wedges the directory.
+struct RootClaim {
+    root: PathBuf,
+}
+
+impl RootClaim {
+    fn claim(root: PathBuf) -> Result<Self, Error> {
+        // A poisoned registry means a holder panicked while the lock was taken; the set is
+        // still exactly as consistent as it was, so the entries are kept rather than
+        // thrown away and handed to a second writer.
+        let mut held = open_roots().lock().unwrap_or_else(PoisonError::into_inner);
+        if !held.insert(root.clone()) {
+            return Err(Error::AlreadyOpen(root));
+        }
+        Ok(RootClaim { root })
+    }
+}
+
+impl Drop for RootClaim {
+    fn drop(&mut self) {
+        open_roots()
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&self.root);
+    }
 }
 
 fn acquire_lock(root: &Path) -> Result<(), Error> {

@@ -144,9 +144,21 @@ def meta_is_the_logs_identity(root: str) -> None:
     assert meta["partition_tag"] == 9, meta
     assert meta["epoch_unix_ms"] > 0, meta
 
-    # A second open of the same root, with the same shape, sees the same identity.
+    # Identity lives in `log.meta`, not in the process that first wrote it: the same root
+    # opened again — after the first handle is gone — reports the same epoch.
+    del log
     again = okm_series.Log(root, precision="ms", bucket_seconds=60, partition_tag=9)
     assert again.meta["epoch_unix_ms"] == meta["epoch_unix_ms"], again.meta
+
+    # While it IS held, a second open in this process is refused: the LOCK file is a pid,
+    # so only an in-process registry can see two writers that share one.
+    try:
+        okm_series.Log(root, precision="ms", bucket_seconds=60, partition_tag=9)
+    except ValueError as error:
+        assert "already open" in str(error), error
+    else:  # pragma: no cover
+        raise AssertionError("a second log for one root in one process must be refused")
+    del again
 
     # And an open that disagrees with the pinned shape is refused by name — the pinned
     # names are precision / bucket / partition (block and codec settings are NOT pinned,
