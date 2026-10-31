@@ -2,7 +2,7 @@
 
 > **Languages:** [English](0046-append-only-log.md) (primary) · [中文](0046-append-only-log.zh-CN.md)
 
-**Status:** Proposed (2026-10-28) — design only; nothing is implemented. **Date:** 2026-10-28
+**Status:** Accepted (2026-10-28) — implemented (2026-10-31) as `okm-series`: the nTLV envelope, varint time deltas, block compression with an index beside it, a dictionary per part, sealing by rename, reads by offset and by time, retention dropping a bucket, one partition field, the read-only reader and the Python binding. Two questions it left open on purpose are still open — what replication does to offsets and to the dictionary, and whether a part's dictionary should be shared across shards — because both change the file layout and neither has a requirement yet. **Date:** 2026-10-28
 
 ## Context
 
