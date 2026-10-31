@@ -5,7 +5,9 @@
 **状态：** Accepted（2026-10-28）。随 `okm-core/src/model/meta.rs`、
 `Collection::{meta, ensure_layout, set_meta}`、`okm-core/tests/meta_test.rs` 一并落地。
 动态侧随后走同一套 helper 补齐（2026-10-30：`DynamicCollection::{meta, ensure_layout,
-set_meta}`，外加 Python 绑定的 `Collection.ensure_layout`），所以表由哪一侧声明都会盖章。
+set_meta}`），两个绑定也各自带了完整的三个动词（2026-10-31：Python `Collection.{ensure_layout,
+meta, set_meta}`、Steel `(collection-{ensure-layout,meta,set-meta}! name …)`），所以表由哪一侧
+声明，都能盖章、读回并记录调用方自己的名字。
 **日期：** 2026-10-28
 
 ## 背景

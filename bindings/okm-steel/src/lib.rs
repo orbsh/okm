@@ -165,6 +165,18 @@ pub(crate) fn value_map_to_steel(m: &ValueMap) -> SteelVal {
     SteelVal::HashMapV(SteelHashMap::from(steel::gc::Gc::new(inner)))
 }
 
+/// A table's meta record (ADR-0043) → `hash?` of name → byte vector, the
+/// same shape a `bytes` payload field decodes to. Goes through
+/// `value_map_to_steel` so meta bytes and payload bytes are one convention at
+/// the script face, not two.
+pub(crate) fn meta_to_steel(meta: &okm_core::TableMeta) -> SteelVal {
+    let mut m = ValueMap::new();
+    for (name, value) in meta.iter() {
+        m.insert(name.to_string(), Value::Bytes(value.to_vec()));
+    }
+    value_map_to_steel(&m)
+}
+
 fn err(e: okm_dynamic::CodecError) -> Result<SteelVal, String> {
     Err(format!("{e}"))
 }

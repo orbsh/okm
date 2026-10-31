@@ -1973,13 +1973,20 @@ panic lints allowed only in the places it names. So the runtime half of
 - [x] `okm-dynamic`: `DynamicCollection::{meta, ensure_layout, set_meta}` through the
       same helper (`okm_core::meta::{read, ensure, write}`, the table's own ns and
       `schema.layout_version`), answering with the crate's string errors like every
-      other dynamic verb. The Python binding carries it twice: `Collection.ensure_layout()`
-      (a `{name: bytes}` dict, `ValueError` on a mismatch) and the plain Rust
-      `ensure_layout_doc()` the carrier's load path can call — the injected engine face
-      is the dynamic caller that actually attaches to a realm's store.
+      other dynamic verb. Both bindings carry the whole set (2026-10-31), each with a
+      plain Rust face beside the script one: Python `Collection.{ensure_layout, meta,
+      set_meta}` (a `{name: bytes}` dict — `meta()` answers `None` before a stamp,
+      `ValueError` on a mismatch) over `{ensure_layout,meta,set_meta}_doc`, and Steel
+      `(collection-{ensure-layout,meta,set-meta}! name …)` over the same executor. The
+      injected engine face is the dynamic caller that actually attaches to a realm's
+      store, so it needs the verbs and not just the stamp.
       `okm-dynamic/tests/meta_test.rs` (6 locks): the stamp is byte-identical to the
       typed path's, either mode answers the other's stamp, both refusal shapes, a caller
       name beside the runtime's, and the entry never surfacing in a dynamic scan.
+      `bindings/okm-steel/tests/injection.rs` locks the script face (void before the
+      stamp, the same bytes after `ensure-layout!`, `set-meta!` re-stamping `version`,
+      and a second registry reading the record out of the host engine), and the Python
+      acceptance script asserts the same three verbs.
 
 ## 2026-10-28 — a table is a key type plus a row type (ADR-0044)
 
