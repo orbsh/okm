@@ -2395,12 +2395,24 @@ the next decision can find it.
       ships with the crate. What the heuristic still costs: a pid reused by an unrelated
       process makes a legitimate open fail until the reader is killed — refusing wrongly is
       the safe direction, but it is a wrong answer.
-- [ ] Owed: **no read-only open.** Every reader takes the `LOCK`, so a second process cannot
-      read while the writer is alive — "two readers during a flush" is not slow, it is
-      impossible by construction. Deliberate for now (the writer's part files are the same
-      files a reader would open, and an unsealed part's last block is in flux), but it is the
-      reason the log is one-writer-not-many-readers, and it is what a tail -f over the wire
-      would have to answer first.
+- [x] Paid 2026-10-31: **readers no longer take the lock.** `LogReader::open(root, config)` opens
+      an existing log with no `LOCK`, no in-process claim and no writers, so a second process — or
+      a thread holding the writer's handle — reads a live log. The premise it rests on is the
+      format's write order: a writer writes a block's bytes and only THEN appends the block's row
+      to the index, and the index parser drops a half-written trailing row. A reader therefore
+      sees whole blocks and a tail at most one block behind, which is all a reader can honestly
+      promise about a live file; the reader's cache is keyed by length, so the next read picks up
+      a grown part. It cannot create a log (`log.meta` must exist) and it checks the same three
+      identity fields a writer does. Getting there meant splitting the read half of `Log` into a
+      private `ReadSide` (root, meta, config, reader cache) that `Log` and `LogReader` both hold:
+      one code path answers both, and no `append` exists on the reader's type, so "read-only" is
+      the type's promise rather than a runtime check. Locked by
+      `okm-series/tests/read_only_test.rs` — a reader opens while the writer holds the log and
+      sees the flushes, does not see a buffered record (and does not error on it), reads one
+      stream while the writer runs, refuses a directory that is not a log, and refuses a
+      different identity. Still owed from the original item: a *tailing* API that reports how far
+      behind it is (the reader answers "what is on disk", a tail would need "and tell me when
+      more arrives"), and nothing in the binding exposes `LogReader` yet.
 - [ ] Owed: **packaging, mostly paid (2026-10-31).** `maturin build` never worked for this
       crate: `pyproject.toml` declared `python-source = "."` with no `okm_series/` package
       beside the crate, so every build failed on a directory that was never there. Removed
