@@ -23,7 +23,7 @@
 
 use okm_core::engine::storage::ScanIter;
 use okm_core::schema::CollectionSchema;
-use okm_core::{Batch, Collection, DocumentEncode, KeyEncode, TestStore, VirtualStorage};
+use okm_core::{Batch, Collection, Document, DocumentEncode, KeyEncode, TestStore, VirtualStorage};
 use okm_dynamic::{AccessMethod, DynamicCollection, Value, ValueMap};
 use std::collections::BTreeMap;
 
@@ -912,5 +912,45 @@ fn dynamic_variable_width_index_declaration_errors() {
             &values(4, 77, "bob"),
         )
         .is_err()
+    );
+}
+
+#[test]
+fn a_dynamic_store_stamps_the_number_its_schema_came_with() {
+    // ADR-0048: a schema exported from a Rust declaration carries that
+    // declaration's face fingerprint, so a dynamic writer stamps the same number
+    // the typed path would — and the typed path recognises its own store.
+    let store = TestStore::default();
+    let declared = schema();
+    let indexes = declared.indexes.clone();
+    let method = AccessMethod {
+        slot: indexes[0].slot,
+        fields: indexes[0].fields.clone(),
+        includes: indexes[0].includes.clone(),
+        kind: okm_dynamic::AccessMethodKind::Plain,
+    };
+    let table = DynamicCollection::new(store.clone(), 41, declared, vec![method]);
+    table.ensure_layout().unwrap();
+
+    let typed = User::collection(store.clone());
+    assert_eq!(
+        typed.faces_status().unwrap(),
+        okm_core::FaceStatus::Match,
+        "same number, so the two modes agree about the faces"
+    );
+    assert_eq!(typed.ensure_layout().unwrap().faces(), Some(User::FACES));
+
+    // The other half: a schema without a fingerprint (a hand-written one) leaves
+    // the store unremarkable rather than claiming wrongly.
+    let store = TestStore::default();
+    let mut bare = schema();
+    bare.faces = Vec::new();
+    let table = DynamicCollection::new(store.clone(), 41, bare, Vec::new());
+    table.ensure_layout().unwrap();
+    assert_eq!(
+        User::collection(store.clone()).faces_status().unwrap(),
+        okm_core::FaceStatus::Unknown {
+            current: User::FACES
+        },
     );
 }

@@ -365,6 +365,22 @@ pub trait Document: Sized + Clone {
         crate::model::document::Collection::new(store)
     }
 
+    /// The structural faces this declaration owns (ADR-0048): every declared
+    /// index with its slot, indexed fields, covered fields, function and
+    /// `deprecated` state, in declaration order. Emitted by the derive from the
+    /// same list that allocates the slots, so it cannot drift from them.
+    ///
+    /// Feeds [`Self::FACES`] and the schema export; a store whose faces were
+    /// built for another declaration is told apart by that fingerprint, which is
+    /// what `Collection::faces_status` answers.
+    const INDEX_DECLS: &'static [crate::model::faces::IndexDecl] = &[];
+
+    /// Fingerprint of [`Self::INDEX_DECLS`], computed at compile time.
+    /// A hand-kept number would be a silent-error machine; this one moves
+    /// whenever the declaration does.
+    const FACES: [u8; crate::model::faces::FINGERPRINT_LEN] =
+        crate::model::faces::fingerprint(Self::INDEX_DECLS);
+
     /// Slots reserved by `deprecated` index declarations (ADR-0005):
     /// entries under `[ns][slot]` for these slots are stale leftovers
     /// from before the declaration was deprecated — never written by the

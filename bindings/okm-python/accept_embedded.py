@@ -121,7 +121,11 @@ def main() -> int:
     # with `schema.layout_version`; a second call answers the stored row.
     assert t.meta() is None, "a fresh store carries no record — the read verb says so"
     meta = t.ensure_layout()
-    assert meta == {"version": bytes([schema.layout_version])}, f"meta: {meta!r}"
+    # ADR-0048: a fresh store carries BOTH names — the payload shape and the
+    # fingerprint of the faces the schema declares. This schema was exported from
+    # a Rust declaration, which is why it can name them at all.
+    assert meta["version"] == bytes([schema.layout_version]), f"meta: {meta!r}"
+    assert len(meta["faces"]) == 16, f"faces: {meta['faces']!r}"
     assert t.meta() == meta, "the read verb answers the row the stamp wrote"
     assert t.ensure_layout() == meta, "a stamped store answers the same row"
 

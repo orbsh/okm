@@ -117,6 +117,26 @@ pub struct CollectionSchema {
     /// know where the dynamic segment and the vocabulary live, and where
     /// declared index/reduce slots begin.
     pub slots: SlotMap,
+    /// The declared structural faces (ADR-0048), in declaration order. These
+    /// live outside the primary table, so nothing about them is visible in a
+    /// payload — this list is the only description of them the store can be
+    /// checked against.
+    pub indexes: Vec<IndexSchema>,
+    /// `R::FACES`: the fingerprint of `indexes`, as the store's meta row carries
+    /// it. Exported so an outside reader can compare without re-deriving.
+    pub faces: Vec<u8>,
+}
+
+/// One declared index face, as the export carries it (ADR-0048): the same six
+/// facts the compile-time fingerprint is taken over.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IndexSchema {
+    pub name: String,
+    pub slot: u16,
+    pub fields: Vec<String>,
+    pub includes: Vec<String>,
+    pub func: String,
+    pub deprecated: bool,
 }
 
 /// `#[ok_len(N)]` lookup over a document's FIELD_CONTRACTS table.
@@ -242,6 +262,18 @@ impl CollectionSchema {
                 declared_reduce_base: crate::model::index::REDUCE_SLOT_BASE,
                 junction_base: crate::model::index::JUNCTION_SLOT_BASE,
             },
+            indexes: <R as Document>::INDEX_DECLS
+                .iter()
+                .map(|d| IndexSchema {
+                    name: d.name.to_string(),
+                    slot: d.slot,
+                    fields: d.fields.iter().map(|f| (*f).to_string()).collect(),
+                    includes: d.includes.iter().map(|f| (*f).to_string()).collect(),
+                    func: d.func.to_string(),
+                    deprecated: d.deprecated,
+                })
+                .collect(),
+            faces: <R as Document>::FACES.to_vec(),
         }
     }
 
@@ -264,9 +296,64 @@ impl CollectionSchema {
 
 #[cfg(feature = "schema-serde")]
 mod serde_impls {
-    use super::{CollectionSchema, DefaultValue, FieldSchema, ObjValueTypeSchema, SlotMap};
+    use super::{
+        CollectionSchema, DefaultValue, FieldSchema, IndexSchema, ObjValueTypeSchema, SlotMap,
+    };
     use crate::model::field::FieldType;
     use serde::{Deserialize, Serialize};
+
+    /// Plain data: a flat struct of name/strings/bool, so the derive is the
+    /// honest serialization here (the hand-written impls above exist because
+    /// those types carry tagged variants).
+    impl Serialize for IndexSchema {
+        fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+            #[derive(serde::Serialize)]
+            struct Repr<'a> {
+                name: &'a str,
+                slot: u16,
+                fields: &'a [String],
+                includes: &'a [String],
+                func: &'a str,
+                deprecated: bool,
+            }
+            Repr {
+                name: &self.name,
+                slot: self.slot,
+                fields: &self.fields,
+                includes: &self.includes,
+                func: &self.func,
+                deprecated: self.deprecated,
+            }
+            .serialize(s)
+        }
+    }
+
+    impl<'de> Deserialize<'de> for IndexSchema {
+        fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+            #[derive(serde::Deserialize)]
+            struct Repr {
+                name: String,
+                slot: u16,
+                #[serde(default)]
+                fields: Vec<String>,
+                #[serde(default)]
+                includes: Vec<String>,
+                #[serde(default)]
+                func: String,
+                #[serde(default)]
+                deprecated: bool,
+            }
+            let r = Repr::deserialize(d)?;
+            Ok(Self {
+                name: r.name,
+                slot: r.slot,
+                fields: r.fields,
+                includes: r.includes,
+                func: r.func,
+                deprecated: r.deprecated,
+            })
+        }
+    }
 
     impl Serialize for FieldType {
         fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
@@ -516,6 +603,8 @@ mod serde_impls {
                 cold_fields: &'a [FieldSchema],
                 members: &'a [u16],
                 slots: &'a SlotMap,
+                indexes: &'a [IndexSchema],
+                faces: &'a [u8],
             }
             Repr {
                 key_len: self.key_len,
@@ -528,6 +617,8 @@ mod serde_impls {
                 cold_fields: &self.cold_fields,
                 members: &self.members,
                 slots: &self.slots,
+                indexes: &self.indexes,
+                faces: &self.faces,
             }
             .serialize(s)
         }
@@ -552,6 +643,13 @@ mod serde_impls {
                 #[serde(default)]
                 members: Vec<u16>,
                 slots: SlotMap,
+                /// Schemas written before faces were exported carry none. An
+                /// empty list means "not described", which reads as unknown
+                /// faces — never as "this table declares no index".
+                #[serde(default)]
+                indexes: Vec<IndexSchema>,
+                #[serde(default)]
+                faces: Vec<u8>,
             }
             let r = Repr::deserialize(d)?;
             Ok(Self {
@@ -565,6 +663,8 @@ mod serde_impls {
                 cold_fields: r.cold_fields,
                 members: r.members,
                 slots: r.slots,
+                indexes: r.indexes,
+                faces: r.faces,
             })
         }
     }

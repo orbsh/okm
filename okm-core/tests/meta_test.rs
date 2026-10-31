@@ -47,12 +47,35 @@ fn the_stamp_lives_at_the_highest_fixed_face_with_no_suffix() {
     assert_eq!(key, vec![0x00, 0x5A, 0x0F], "`[ns 2B][0x0F]`, no suffix");
 
     // [count u16 BE] [name_len varint] [name] [value_len varint] [value]
+    // A fresh store is stamped with BOTH names (ADR-0048): the payload shape and
+    // the fingerprint of the faces the declaration owns.
     let payload = store.get(&key).unwrap().unwrap();
+    let stamped_row = TableMeta::decode(&payload);
+    assert_eq!(stamped_row.version(), Some(1));
     assert_eq!(
-        payload,
+        stamped_row.faces(),
+        Some(MetaRow::FACES),
+        "the stamp is the declaration's own fingerprint, computed, never typed"
+    );
+    assert_eq!(
+        stamped_row.iter().map(|(n, _)| n).collect::<Vec<_>>(),
+        vec!["faces", "version"],
+    );
+
+    // The row an older build wrote — `version` and nothing else — still parses,
+    // and its bytes are locked so nothing grows into that shape silently.
+    let older = TestStore::default();
+    meta::write(&older, &header(), &TableMeta::stamped(1)).unwrap();
+    assert_eq!(
+        older.get(&key).unwrap().unwrap(),
         vec![
             0x00, 0x01, 0x07, b'v', b'e', b'r', b's', b'i', b'o', b'n', 0x01, 0x01
         ],
+    );
+    assert_eq!(
+        older.get(&key).unwrap().unwrap().len(),
+        12,
+        "one name, one byte — the shape older builds still read"
     );
 }
 
@@ -74,7 +97,7 @@ fn a_second_name_rides_beside_the_stamp() {
     let after = table.set_meta("build", b"20261028".to_vec()).unwrap();
     assert_eq!(after.version(), Some(1), "the runtime re-stamps version");
     assert_eq!(after.get("build"), Some(&b"20261028"[..]));
-    assert_eq!(after.len(), 2);
+    assert_eq!(after.len(), 3, "build, faces, version");
 
     // Deterministic order: `build` sorts before `version`, and the row decodes
     // into the same map (round trip through the stored bytes).
@@ -82,7 +105,7 @@ fn a_second_name_rides_beside_the_stamp() {
     assert_eq!(stored, after);
     assert_eq!(
         stored.iter().map(|(n, _)| n).collect::<Vec<_>>(),
-        vec!["build", "version"],
+        vec!["build", "faces", "version"],
     );
 
     // Writing a caller value under the runtime's name does not replace the
