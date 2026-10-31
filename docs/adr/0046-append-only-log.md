@@ -31,6 +31,8 @@ Bucket index = `floor(unix_seconds / bucket)`. Absolute alignment, not creation-
 
 A part is sealed by renaming `.partial` → the final name (ADR-0045's discipline, reused). A part may rotate early on a size cap; then a bucket holds several parts, and retention is `remove_dir_all(<bucket>)` — one syscall per hour, no tombstones, no scan.
 
+A part is sealed by a bucket crossing, by the size cap, by an explicit `seal()`, or lazily by one of two calls a caller already makes — there is no timer thread (§3). `retain_before` seals the parts it is about to drop, because a bucket that is still held open can never be dropped (`retention never touches a bucket with a live writer`), and an idle log would otherwise wait for an append that never comes. `Log::open` seals any part it finds in a bucket the clock has left: no record can land there (`a record carries max(clock, last)`), and an unsealed part has no footer and keeps its bucket alive. Both are the same rule — a part belongs to its bucket, and a bucket in the past is finished — applied wherever the log gets a chance to look.
+
 ### 2. Time inside a part: a base plus deltas
 
 The part header carries `first_offset` (u64), `base_ts` (full timestamp of the first record in the declared precision), `bucket` (u32, repeated so a file is self-describing), and `record_count` (filled at seal time; 0 while open).

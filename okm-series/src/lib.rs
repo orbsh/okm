@@ -284,6 +284,14 @@ impl Log {
                 block_codec,
                 dict_config.as_ref(),
             )?;
+            // A part in a bucket the clock has left is finished: no record can land in it
+            // (a record carries `max(clock, last)`), and an unsealed part has no footer and
+            // keeps its bucket from retention. Sealing it here is the restart half of the
+            // idle-log answer; the running half is `retain_before`.
+            if bucket < log.bucket_of(log.raw_now()) {
+                writer.seal()?;
+                continue;
+            }
             log.active.push(Active {
                 bucket,
                 partition,
@@ -411,6 +419,12 @@ impl Log {
     /// because a bucket is a time interval and a partition is not.
     pub fn retain_before(&mut self, ts: u64) -> Result<Vec<u64>, Error> {
         let cutoff = self.bucket_of(ts);
+        // A part older than the cutoff will not be appended to again, so sealing it here is
+        // what lets the drop below happen at all: otherwise "retention never touches a
+        // bucket with a live writer" keeps last night's bucket alive until some later append
+        // happens to cross a boundary — which for an idle log is never. ADR-0046 §3 has no
+        // timer, so the caller's own call is the tick.
+        self.seal_parts_older_than(cutoff, None)?;
         let mut dropped = Vec::new();
         for entry in std::fs::read_dir(&self.root)? {
             let entry = entry?;
@@ -466,13 +480,19 @@ impl Log {
     /// the stream's last one: two records may share a timestamp, and their offsets still
     /// order them.
     fn now(&self, partition: &Option<String>) -> u64 {
-        let raw = match self.config.clock.as_ref() {
-            Some(clock) => clock(),
-            None => unix_now(self.meta.precision),
-        };
+        let raw = self.raw_now();
         match self.last_ts.get(partition) {
             Some(last) => raw.max(*last),
             None => raw,
+        }
+    }
+
+    /// The clock, unclamped. Sealing decisions ask "which bucket does the clock say we are
+    /// in", not "what time may the next record carry".
+    fn raw_now(&self) -> u64 {
+        match self.config.clock.as_ref() {
+            Some(clock) => clock(),
+            None => unix_now(self.meta.precision),
         }
     }
 
@@ -505,6 +525,30 @@ impl Log {
             .map(|index| &self.active[index].writer)
     }
 
+    /// Seal every active part whose bucket is older than `cutoff`, optionally limited to one
+    /// partition. `ensure_part` calls it for the stream it is writing (a bucket crossing);
+    /// `retain_before` calls it with no filter, because a bucket it is about to drop must not
+    /// be held open by a writer that will never append there again.
+    fn seal_parts_older_than(
+        &mut self,
+        cutoff: u64,
+        only: Option<&Option<String>>,
+    ) -> Result<(), Error> {
+        let stale: Vec<usize> = self
+            .active
+            .iter()
+            .enumerate()
+            .filter(|(_, active)| active.bucket < cutoff)
+            .filter(|(_, active)| only.is_none_or(|partition| active.partition == *partition))
+            .map(|(index, _)| index)
+            .collect();
+        for index in stale.into_iter().rev() {
+            let active = self.active.remove(index);
+            active.writer.seal()?;
+        }
+        Ok(())
+    }
+
     fn ensure_part(
         &mut self,
         bucket: u64,
@@ -514,17 +558,7 @@ impl Log {
         // Time has moved into a later bucket: the previous one's part is finished. Left
         // open it would keep its bucket permanent, because retention refuses to drop a
         // bucket that still has a writer.
-        let stale: Vec<usize> = self
-            .active
-            .iter()
-            .enumerate()
-            .filter(|(_, active)| active.partition == *partition && active.bucket < bucket)
-            .map(|(index, _)| index)
-            .collect();
-        for index in stale.into_iter().rev() {
-            let active = self.active.remove(index);
-            active.writer.seal()?;
-        }
+        self.seal_parts_older_than(bucket, Some(partition))?;
         let full = match self.active_index(bucket, partition.as_deref()) {
             None => true,
             Some(index) => {
