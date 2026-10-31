@@ -101,7 +101,7 @@ Each row is a premise the proposal asserts and what the repository actually says
 
 | proposal says | code says |
 |---|---|
-| hypergraph takes face `0x0A` | `0x0A` is `EDGE_PREDICATE_IN_SLOT` (`okm-core/src/model/graph.rs:62`); free fixed faces are `0x0C–0x0F` (ADR-0030, line 97) |
+| hypergraph takes face `0x0A` | `0x0A` is `okm-vector`'s per-shard graph (`okm-vector/src/index.rs:33`); the graph's own faces stop at `0x09` (`EDGE_PREDICATE_IN_SLOT`, `okm-core/src/model/graph.rs:81`). Fixed faces in use: `0x00`–`0x0A`, `0x0B` a retired snapshot slot, `0x0F` the table meta (ADR-0043) — so the free band is `0x0C`–`0x0E`, three faces |
 | face slot is 2 bytes | a fixed face is **1 byte**; only counting families (`0x1nnn`/`0x2nnn`) are 2 bytes — ADR-0030 lines 45-46 and 85-97, implemented by `write_slot` (`okm-core/src/model/index.rs:81-91`) |
 | `NodeRef` = `[ns 2B][len u16][pkey]` | `[ns 2B][len **varint**][pkey]`, `len < 64` in one byte (`okm-core/src/model/graph.rs:104-111`) |
 | edge id is 4B/8B | `u64` (8-byte BE) everywhere: `link`, `edge_ids`, faces |
