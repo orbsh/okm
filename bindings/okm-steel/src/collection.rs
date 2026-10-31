@@ -23,11 +23,11 @@
 
 use okm_core::storage::VirtualStorage;
 use okm_dynamic::ValueMap;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use steel::steel_vm::engine::Engine;
 use steel::steel_vm::register_fn::RegisterFn;
 use steel::SteelVal;
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
 
 /// A registered binding: the shared table handle (the
 /// `DynamicCollection` code path is the single executor; the Mutex is
@@ -65,14 +65,17 @@ impl StorageRegistry {
     ) -> Result<(), String> {
         let (schema, table) =
             okm_entry::collection_from_entry(okm_entry::EngineBox::Injected(engine), entry, ns)?;
-        self.inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(
-            name.to_string(),
-            Bound {
-                table: Arc::new(Mutex::new(table)),
-                schema: Arc::new(schema),
-                ns,
-            },
-        );
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(
+                name.to_string(),
+                Bound {
+                    table: Arc::new(Mutex::new(table)),
+                    schema: Arc::new(schema),
+                    ns,
+                },
+            );
         Ok(())
     }
 
@@ -119,7 +122,10 @@ impl StorageRegistry {
                 let pkey = steel_bytes_to_vec(&pkey)?;
                 reg.with_bound(&name, |b| {
                     let map = hash_to_map(&b.schema, &doc)?;
-                    b.table.lock().unwrap_or_else(std::sync::PoisonError::into_inner).merge(&pkey, &map)?;
+                    b.table
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .merge(&pkey, &map)?;
                     Ok(SteelVal::Void)
                 })
             }
@@ -129,10 +135,17 @@ impl StorageRegistry {
             move |name: String, pkey: SteelVal| -> Result<SteelVal, String> {
                 let pkey = steel_bytes_to_vec(&pkey)?;
                 reg.with_bound(&name, |b| {
-                    Ok(match b.table.lock().unwrap_or_else(std::sync::PoisonError::into_inner).fetch(&pkey)? {
-                        Some(m) => crate::value_map_to_steel(&m),
-                        None => SteelVal::Void,
-                    })
+                    Ok(
+                        match b
+                            .table
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .fetch(&pkey)?
+                        {
+                            Some(m) => crate::value_map_to_steel(&m),
+                            None => SteelVal::Void,
+                        },
+                    )
                 })
             }
         });
@@ -141,7 +154,10 @@ impl StorageRegistry {
             move |name: String, pkey: SteelVal| -> Result<SteelVal, String> {
                 let pkey = steel_bytes_to_vec(&pkey)?;
                 reg.with_bound(&name, |b| {
-                    b.table.lock().unwrap_or_else(std::sync::PoisonError::into_inner).purge(&pkey)?;
+                    b.table
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .purge(&pkey)?;
                     Ok(SteelVal::Void)
                 })
             }
@@ -151,9 +167,15 @@ impl StorageRegistry {
             move |name: String, slot: i64, prefix: SteelVal| -> Result<SteelVal, String> {
                 let prefix = steel_bytes_to_vec(&prefix)?;
                 reg.with_bound(&name, |b| {
-                    let rows = b.table.lock().unwrap_or_else(std::sync::PoisonError::into_inner).scan(slot as u16, &prefix)?;
+                    let rows = b
+                        .table
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .scan(slot as u16, &prefix)?;
                     Ok(vector_of(
-                        rows.iter().map(crate::value_map_to_steel).collect::<Vec<_>>(),
+                        rows.iter()
+                            .map(crate::value_map_to_steel)
+                            .collect::<Vec<_>>(),
                     ))
                 })
             }
@@ -163,7 +185,10 @@ impl StorageRegistry {
             move |name: String, group: SteelVal| -> Result<SteelVal, String> {
                 reg.with_bound(&name, |b| {
                     let map = hash_to_map(&b.schema, &group)?;
-                    let guard = b.table.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let guard = b
+                        .table
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
                     let ek = guard.reduce_entry_key(b.ns, &map)?;
                     Ok(match guard.store().get(&ek).map_err(|e| e.to_string())? {
                         Some(bytes) => vec_to_steel(bytes),
@@ -177,14 +202,19 @@ impl StorageRegistry {
             move |name: String, slot: i64| -> Result<SteelVal, String> {
                 reg.with_bound(&name, |b| {
                     let pairs = {
-                        let guard = b.table.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                        let guard = b
+                            .table
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
                         okm_dynamic::scan_reduces(guard.store(), &b.ns.to_be_bytes(), slot as u16)
                             .map_err(|e| e.to_string())?
                     };
                     Ok(vector_of(
                         pairs
                             .into_iter()
-                            .map(|(group, acc)| vector_of(vec![vec_to_steel(group), vec_to_steel(acc)]))
+                            .map(|(group, acc)| {
+                                vector_of(vec![vec_to_steel(group), vec_to_steel(acc)])
+                            })
                             .collect::<Vec<_>>(),
                     ))
                 })
@@ -202,24 +232,60 @@ impl StorageRegistry {
         // a 2/3-arg call site would ArityMismatch even in a stub).
         // register_fn wants 'static closures, so each arm inlines its
         // own message (the shared `stub` helper would be a borrow).
-        vm.register_fn("collection-merge!", |_: String, _: SteelVal, _: SteelVal| -> Result<SteelVal, String> {
-            Err("okm: collection-merge! called outside a session — introspection only".to_string())
-        });
-        vm.register_fn("collection-fetch!", |_: String, _: SteelVal| -> Result<SteelVal, String> {
-            Err("okm: collection-fetch! called outside a session — introspection only".to_string())
-        });
-        vm.register_fn("collection-purge!", |_: String, _: SteelVal| -> Result<SteelVal, String> {
-            Err("okm: collection-purge! called outside a session — introspection only".to_string())
-        });
-        vm.register_fn("collection-scan!", |_: String, _: i64, _: SteelVal| -> Result<SteelVal, String> {
-            Err("okm: collection-scan! called outside a session — introspection only".to_string())
-        });
-        vm.register_fn("collection-reduce-get!", |_: String, _: SteelVal| -> Result<SteelVal, String> {
-            Err("okm: collection-reduce-get! called outside a session — introspection only".to_string())
-        });
-        vm.register_fn("collection-scan-reduces!", |_: String, _: i64| -> Result<SteelVal, String> {
-            Err("okm: collection-scan-reduces! called outside a session — introspection only".to_string())
-        });
+        vm.register_fn(
+            "collection-merge!",
+            |_: String, _: SteelVal, _: SteelVal| -> Result<SteelVal, String> {
+                Err(
+                    "okm: collection-merge! called outside a session — introspection only"
+                        .to_string(),
+                )
+            },
+        );
+        vm.register_fn(
+            "collection-fetch!",
+            |_: String, _: SteelVal| -> Result<SteelVal, String> {
+                Err(
+                    "okm: collection-fetch! called outside a session — introspection only"
+                        .to_string(),
+                )
+            },
+        );
+        vm.register_fn(
+            "collection-purge!",
+            |_: String, _: SteelVal| -> Result<SteelVal, String> {
+                Err(
+                    "okm: collection-purge! called outside a session — introspection only"
+                        .to_string(),
+                )
+            },
+        );
+        vm.register_fn(
+            "collection-scan!",
+            |_: String, _: i64, _: SteelVal| -> Result<SteelVal, String> {
+                Err(
+                    "okm: collection-scan! called outside a session — introspection only"
+                        .to_string(),
+                )
+            },
+        );
+        vm.register_fn(
+            "collection-reduce-get!",
+            |_: String, _: SteelVal| -> Result<SteelVal, String> {
+                Err(
+                    "okm: collection-reduce-get! called outside a session — introspection only"
+                        .to_string(),
+                )
+            },
+        );
+        vm.register_fn(
+            "collection-scan-reduces!",
+            |_: String, _: i64| -> Result<SteelVal, String> {
+                Err(
+                    "okm: collection-scan-reduces! called outside a session — introspection only"
+                        .to_string(),
+                )
+            },
+        );
     }
 }
 
@@ -231,24 +297,42 @@ impl StorageRegistry {
 /// declaring storage need the codec names to LOAD even when
 /// introspection never calls them.
 pub fn register_codec_stubs(vm: &mut Engine) {
-    vm.register_fn("okm-schema-from-json!", |_: String| -> Result<steel::SteelVal, String> {
-        Err("okm: schema functions called outside a session — introspection only".to_string())
-    });
-    vm.register_fn("okm-schema-version!", |_: i64| -> Result<steel::SteelVal, String> {
-        Err("okm: schema functions called outside a session — introspection only".to_string())
-    });
-    vm.register_fn("okm-encode-key!", |_: i64, _: SteelVal| -> Result<SteelVal, String> {
-        Err("okm: codec called outside a session — introspection only".to_string())
-    });
-    vm.register_fn("okm-encode-payload!", |_: i64, _: SteelVal| -> Result<SteelVal, String> {
-        Err("okm: codec called outside a session — introspection only".to_string())
-    });
-    vm.register_fn("okm-decode-key!", |_: i64, _: SteelVal| -> Result<SteelVal, String> {
-        Err("okm: codec called outside a session — introspection only".to_string())
-    });
-    vm.register_fn("okm-decode-payload!", |_: i64, _: SteelVal| -> Result<SteelVal, String> {
-        Err("okm: codec called outside a session — introspection only".to_string())
-    });
+    vm.register_fn(
+        "okm-schema-from-json!",
+        |_: String| -> Result<steel::SteelVal, String> {
+            Err("okm: schema functions called outside a session — introspection only".to_string())
+        },
+    );
+    vm.register_fn(
+        "okm-schema-version!",
+        |_: i64| -> Result<steel::SteelVal, String> {
+            Err("okm: schema functions called outside a session — introspection only".to_string())
+        },
+    );
+    vm.register_fn(
+        "okm-encode-key!",
+        |_: i64, _: SteelVal| -> Result<SteelVal, String> {
+            Err("okm: codec called outside a session — introspection only".to_string())
+        },
+    );
+    vm.register_fn(
+        "okm-encode-payload!",
+        |_: i64, _: SteelVal| -> Result<SteelVal, String> {
+            Err("okm: codec called outside a session — introspection only".to_string())
+        },
+    );
+    vm.register_fn(
+        "okm-decode-key!",
+        |_: i64, _: SteelVal| -> Result<SteelVal, String> {
+            Err("okm: codec called outside a session — introspection only".to_string())
+        },
+    );
+    vm.register_fn(
+        "okm-decode-payload!",
+        |_: i64, _: SteelVal| -> Result<SteelVal, String> {
+            Err("okm: codec called outside a session — introspection only".to_string())
+        },
+    );
 }
 
 /// SteelVal bytes (vector of integers 0-255) → Vec<u8> — the existing

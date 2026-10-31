@@ -11,12 +11,15 @@
 //! host callables); subscribe stays excluded.
 use okm_core::schema::CollectionSchema;
 use okm_dynamic::{decode_key, decode_payload, encode_key, encode_payload, Value, ValueMap};
-use steel::{SteelVal, SteelVal::{BoolV, IntV, NumV, StringV}};
+use std::collections::BTreeMap;
+use std::sync::Arc;
 use steel::rvals::SteelHashMap;
 use steel::steel_vm::engine::Engine;
 use steel::steel_vm::register_fn::RegisterFn;
-use std::collections::BTreeMap;
-use std::sync::Arc;
+use steel::{
+    SteelVal,
+    SteelVal::{BoolV, IntV, NumV, StringV},
+};
 
 pub mod collection;
 
@@ -27,11 +30,7 @@ pub use okm_entry;
 
 /// SteelVal → Value, with schema-kind coercion for integers (steel has one
 /// integer type; OKM fields are width-strict).
-fn steel_to_value(
-    name: &str,
-    kind: okm_core::FieldType,
-    v: &SteelVal,
-) -> Result<Value, String> {
+fn steel_to_value(name: &str, kind: okm_core::FieldType, v: &SteelVal) -> Result<Value, String> {
     use okm_core::FieldType;
     let bad = |expected: &str| format!("field `{name}`: expected {expected}, got {v:?}");
     Ok(match kind {
@@ -76,7 +75,12 @@ fn steel_to_value(
                     _ => return Err(bad("numeric kind")),
                 }
             }
-            NumV(f) if matches!(kind, FieldType::U64 | FieldType::VarInt | FieldType::Quant(_) | FieldType::Offset(_)) => {
+            NumV(f)
+                if matches!(
+                    kind,
+                    FieldType::U64 | FieldType::VarInt | FieldType::Quant(_) | FieldType::Offset(_)
+                ) =>
+            {
                 match kind {
                     FieldType::Quant(_) => Value::F64(*f),
                     FieldType::Offset(_) => Value::I64(*f as i64),
@@ -101,15 +105,22 @@ fn value_to_steel(v: &Value) -> SteelVal {
         Value::Bool(x) => BoolV(*x),
         Value::Null => SteelVal::Void,
         Value::Str(s) => SteelVal::StringV(s.as_str().into()),
-        Value::Bytes(b) => SteelVal::VectorV(steel::rvals::SteelVector::from(
-            steel::gc::Gc::new(b.iter().map(|x| IntV(*x as isize)).collect::<im_rc::Vector<SteelVal>>()),
-        )),
+        Value::Bytes(b) => SteelVal::VectorV(steel::rvals::SteelVector::from(steel::gc::Gc::new(
+            b.iter()
+                .map(|x| IntV(*x as isize))
+                .collect::<im_rc::Vector<SteelVal>>(),
+        ))),
         // Nested composites (okm 0c2a354, same mapping as okm-python's
         // map_to_dict): Obj → hash?, Array → vector, recursing.
         Value::Obj(fields) => value_map_to_steel(fields),
-        Value::Array(items) => SteelVal::VectorV(steel::rvals::SteelVector::from(
-            steel::gc::Gc::new(items.iter().map(value_to_steel).collect::<im_rc::Vector<SteelVal>>()),
-        )),
+        Value::Array(items) => {
+            SteelVal::VectorV(steel::rvals::SteelVector::from(steel::gc::Gc::new(
+                items
+                    .iter()
+                    .map(value_to_steel)
+                    .collect::<im_rc::Vector<SteelVal>>(),
+            )))
+        }
     }
 }
 
@@ -127,7 +138,10 @@ fn find_field<'a>(
 }
 
 /// Hash-map (steel `hash?`) → ValueMap with kind coercion.
-pub(crate) fn steel_hash_to_map(schema: &CollectionSchema, v: &SteelVal) -> Result<ValueMap, String> {
+pub(crate) fn steel_hash_to_map(
+    schema: &CollectionSchema,
+    v: &SteelVal,
+) -> Result<ValueMap, String> {
     let SteelVal::HashMapV(map) = v else {
         return Err(format!("values must be a hash (define/hash), got {v:?}"));
     };
@@ -192,34 +206,50 @@ pub(crate) fn steel_hash_to_map_for(id: isize, vals: SteelVal) -> Result<ValueMa
 }
 
 pub fn register(vm: &mut Engine) {
-    vm.register_fn("okm-schema-from-json!", |json: String| -> Result<SteelVal, String> {
-        let schema: CollectionSchema = serde_json::from_str(&json)
-            .map_err(|e| format!("bad schema json: {e}"))?;
-        let id = next_schema_id();
-        SCHEMAS.with(|r| r.borrow_mut().insert(id, Arc::new(schema)));
-        Ok(IntV(id as isize))
-    });
-    vm.register_fn("okm-schema-version!", |id: isize| -> Result<isize, String> {
-        with_schema(id, |s| s.layout_version as isize)
-    });
-    vm.register_fn("okm-encode-key!", |id: isize, vals: SteelVal| -> Result<SteelVal, String> {
-        let vals = steel_hash_to_map_for(id, vals)?;
-        let s = get_schema(id)?;
-        encode_key(&s, &vals)
-            .map_err(|e| e.to_string())
-            .map(|b| SteelVal::VectorV(steel::rvals::SteelVector::from(
-            steel::gc::Gc::new(b.into_iter().map(|x| IntV(x as isize)).collect::<im_rc::Vector<SteelVal>>()),
-        )))
-    });
-    vm.register_fn("okm-encode-payload!", |id: isize, vals: SteelVal| -> Result<SteelVal, String> {
-        let vals = steel_hash_to_map_for(id, vals)?;
-        let s = get_schema(id)?;
-        encode_payload(&s, &vals)
-            .map_err(|e| e.to_string())
-            .map(|b| SteelVal::VectorV(steel::rvals::SteelVector::from(
-            steel::gc::Gc::new(b.into_iter().map(|x| IntV(x as isize)).collect::<im_rc::Vector<SteelVal>>()),
-        )))
-    });
+    vm.register_fn(
+        "okm-schema-from-json!",
+        |json: String| -> Result<SteelVal, String> {
+            let schema: CollectionSchema =
+                serde_json::from_str(&json).map_err(|e| format!("bad schema json: {e}"))?;
+            let id = next_schema_id();
+            SCHEMAS.with(|r| r.borrow_mut().insert(id, Arc::new(schema)));
+            Ok(IntV(id as isize))
+        },
+    );
+    vm.register_fn(
+        "okm-schema-version!",
+        |id: isize| -> Result<isize, String> { with_schema(id, |s| s.layout_version as isize) },
+    );
+    vm.register_fn(
+        "okm-encode-key!",
+        |id: isize, vals: SteelVal| -> Result<SteelVal, String> {
+            let vals = steel_hash_to_map_for(id, vals)?;
+            let s = get_schema(id)?;
+            encode_key(&s, &vals).map_err(|e| e.to_string()).map(|b| {
+                SteelVal::VectorV(steel::rvals::SteelVector::from(steel::gc::Gc::new(
+                    b.into_iter()
+                        .map(|x| IntV(x as isize))
+                        .collect::<im_rc::Vector<SteelVal>>(),
+                )))
+            })
+        },
+    );
+    vm.register_fn(
+        "okm-encode-payload!",
+        |id: isize, vals: SteelVal| -> Result<SteelVal, String> {
+            let vals = steel_hash_to_map_for(id, vals)?;
+            let s = get_schema(id)?;
+            encode_payload(&s, &vals)
+                .map_err(|e| e.to_string())
+                .map(|b| {
+                    SteelVal::VectorV(steel::rvals::SteelVector::from(steel::gc::Gc::new(
+                        b.into_iter()
+                            .map(|x| IntV(x as isize))
+                            .collect::<im_rc::Vector<SteelVal>>(),
+                    )))
+                })
+        },
+    );
     fn steel_bytes_to_vec(v: &SteelVal) -> Result<Vec<u8>, String> {
         let SteelVal::VectorV(vec) = v else {
             return Err("bytes must be a vector of integers 0-255".to_string());
@@ -233,16 +263,22 @@ pub fn register(vm: &mut Engine) {
         }
         Ok(out)
     }
-    vm.register_fn("okm-decode-key!", |id: isize, b: SteelVal| -> Result<SteelVal, String> {
-        let s = get_schema(id)?;
-        decode_key(&s, &steel_bytes_to_vec(&b)?)
-            .map(|m| value_map_to_steel(&m))
-            .or_else(err)
-    });
-    vm.register_fn("okm-decode-payload!", |id: isize, b: SteelVal| -> Result<SteelVal, String> {
-        let s = get_schema(id)?;
-        decode_payload(&s, &steel_bytes_to_vec(&b)?)
-            .map(|m| value_map_to_steel(&m))
-            .or_else(err)
-    });
+    vm.register_fn(
+        "okm-decode-key!",
+        |id: isize, b: SteelVal| -> Result<SteelVal, String> {
+            let s = get_schema(id)?;
+            decode_key(&s, &steel_bytes_to_vec(&b)?)
+                .map(|m| value_map_to_steel(&m))
+                .or_else(err)
+        },
+    );
+    vm.register_fn(
+        "okm-decode-payload!",
+        |id: isize, b: SteelVal| -> Result<SteelVal, String> {
+            let s = get_schema(id)?;
+            decode_payload(&s, &steel_bytes_to_vec(&b)?)
+                .map(|m| value_map_to_steel(&m))
+                .or_else(err)
+        },
+    );
 }
