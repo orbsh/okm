@@ -622,12 +622,17 @@ key bare in the tail) recorded in ADR-0005.
       mismatch = no entry, entry layout lock, overwrite sweep, delete
       sweep) and path.rs unit tests (parse forms, resolution, no-count
       prefix property, compact-lane boundary, encode/decode roundtrip).
-      Open (not silently dropped): backfill for a path declared over
-      data that already exists (ADR-0020 range scan + one batch is the
-      shape), a durable path→slot registry, and a host-language
-      declaration surface (okm-python's `add_func_index` /
-      `add_partial_index` have no `add_path_index` counterpart yet —
-      declarations are Rust-side only for now).
+- [ ] Deferred (2026-10-31, owner): **path indexes over data that already exists, and the two
+      things that keep them a Rust-side habit.** Three parts, each small, none of them a design
+      question: (a) backfill for a path declared over rows that were written before the
+      declaration — ADR-0020's range scan plus one batch is the shape, and it is the same sweep +
+      derive pair `Collection::rebuild_faces` now runs for declared slots; (b) a durable path→slot
+      registry, since slots stay caller-allocated like every other access method; (c) a binding
+      surface — `okm-python`'s `add_func_index` / `add_partial_index` have no `add_path_index`
+      counterpart, and a pure-declaration method needs no callable bridge, so it is additive
+      rather than a design question. What landed is the write/read path itself
+      (`path_index_test.rs` + `path.rs` unit tests cover resolution, fan-out, sweeps and the
+      entry layout).
 - [x] Multi-tenancy: receiver-side prefix only — a remote OKM instance is
       one application = one domain model = one ns; to the receiver it is
       just another prefix. No app_id layer inside OKM, no multi-level ns
@@ -1448,6 +1453,16 @@ bytes; doing them after P3 means hex locks change once, not twice.
       import, the only path that re-interns their labels into the destination's vocabulary
       (ADR-0032 §7). No production data exists in the window; what was missing was the sentence,
       not the machinery.
+
+- [ ] Deferred (2026-10-31, owner): **`Vocab` exposed by the bindings.** ADR-0032's consequences
+      record it as owed and nothing tracks it: `okm-python` and `okm-steel` currently see `Vocab`
+      only in its storage form — a `FieldType::Vocab(_)` arm on the decode side — so a host-language
+      caller cannot declare one, cannot read one back as the label it is, and cannot intern a new
+      label itself. The typed Rust surface is complete (`Vocab<N>`, `VocabId`, the cursor and its
+      cache); what is missing is the seam, and the shape question behind it is whether interning
+      stays a write-path side effect (today: `put` / `save_with_prev_into` intern before encoding)
+      or becomes a verb the host can call, which changes what an uninterned value means at the
+      boundary.
 
 ## ADR-0034 — table names and the export shape (2026-10-21)
 
