@@ -477,7 +477,8 @@ key bare in the tail) recorded in ADR-0005.
       Same verdict for the missing streaming door for index values (`scan_range_iter` covers
       key ranges only).
       Tables in `docs/internals/benchmarks.md`（中文版 `benchmarks.zh-CN.md`）.
-- [~] Dynamic codec (Python first, then Steel): schema-driven
+- [x] Dynamic codec (Python first, then Steel) — shipped 2026-09-17 on both sides; nothing in
+      this entry is still owed: schema-driven
       encoder/decoder/scan built from structured schema exports —
       in-process use for embedded-language Booths. Capability ceiling
       RESCOPED (2026-09-22, ADR-0022): subscribe stays excluded; func/
@@ -2457,11 +2458,17 @@ the next decision can find it.
       `okm-series/tests/read_only_test.rs` — a reader opens while the writer holds the log and
       sees the flushes, does not see a buffered record (and does not error on it), reads one
       stream while the writer runs, refuses a directory that is not a log, and refuses a
-      different identity. Still owed from the original item: a *tailing* API that reports how far
-      behind it is (the reader answers "what is on disk", a tail would need "and tell me when
-      more arrives"). The Python binding exposes it as `okm_series.Reader` (same commit as the
-      cursor, below).
-- [ ] Owed: **packaging, mostly paid (2026-10-31).** `maturin build` never worked for this
+      different identity. No *tailing* API was added and none is needed (Declined 2026-10-31): a
+      tail is a `read(from)` loop — an offset is per stream and every record carries its own, so the
+      position is the caller's `u64`; a timestamp cannot be the resume point, because records share
+      a millisecond (`>` drops the rest of it, `>=` repeats them) and retention removes whole
+      buckets; an offset retired by retention resumes at the oldest record left, and the caller sees
+      the gap in the offsets it gets back; and lag is a subtraction over `PartInfo`, not an API. A
+      notification would need a thread and a clock the log does not own, and a writer in another
+      process could not reach the caller's — that is the engine's in-process event stream
+      (ADR-0047). The crate's own docs now say all of it ("Following a log"). The Python binding
+      exposes the reader as `okm_series.Reader`.
+- [x] Paid 2026-10-31: **packaging.** `maturin build` never worked for this
       crate: `pyproject.toml` declared `python-source = "."` with no `okm_series/` package
       beside the crate, so every build failed on a directory that was never there. Removed
       — the wheel is the bare extension — and CI now builds it, installs it into a clean
@@ -2470,8 +2477,13 @@ the next decision can find it.
       in-process: typed bodies, monotone time, named tags, the partition refusal and one
       part per partition, a seal footer, a `read_by_time` window, retention removing a
       bucket, and `meta` identity — including that reopening with another bucket size is
-      refused by name. The delivery story is GitHub — a tag and a release carry the wheel; nothing
-      is published to an index (2026-10-31, owner).
+      refused by name. The delivery story is GitHub (2026-10-31, owner): `.github/workflows/release.yml`
+      fires on a `v*` tag, builds both wheels with CI's own commands, installs each into a clean
+      venv, re-runs the acceptance script against the wheel it is about to upload (a release is the
+      one place a stale artifact would go unnoticed, because nothing else re-checks it), and attaches
+      it to the release — creating the release on the first matrix job, uploading with `--clobber` on
+      both. Nothing is published to an index. Not yet exercised: the workflow has never run, and
+      cannot be run outside GitHub — its first tag is its first test.
 - [x] Half fixed 2026-10-31: **ordering the parts opened them.** The item said "23 of the
       68 µs is the index parsed twice", and the measurement says otherwise. Ordering
       `parts_by_offset` opened every part (`PartReader::open`) only to read
