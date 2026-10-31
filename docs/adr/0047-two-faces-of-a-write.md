@@ -2,7 +2,7 @@
 
 > **Languages:** [English](0047-two-faces-of-a-write.md) (primary) · [中文](0047-two-faces-of-a-write.zh-CN.md)
 
-**Status:** Accepted (2026-10-31) — the pair stands; the batch half is decided, not built. **Date:** 2026-10-31
+**Status:** Accepted (2026-10-31) — both halves decided, and both held down by a test. **Date:** 2026-10-31
 
 ## Context
 
