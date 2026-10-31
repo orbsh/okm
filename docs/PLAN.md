@@ -2333,9 +2333,25 @@ the next decision can find it.
 - [ ] Owed: **`Error::TimeBackwards` is unreachable from the API** — it survives as the
       writer's internal assertion (`part.rs`), and the log clamps instead. Either delete
       the public variant or document it as an internal invariant that no caller can hit.
-- [ ] Owed: **no concurrency test.** One writer is enforced by the `LOCK` pid file, and the
-      stale-pid takeover is a heuristic: a reused pid makes a legitimate open fail. No test
-      covers two openers, two readers during a flush, or a `kill -9` mid-block.
+- [x] Paid 2026-10-31: **concurrency and the crash case.** `okm-series/tests/lock_test.rs`
+      covers the four claims the design had been resting on in prose: a second `Log` for one
+      root in the same process is refused (this was a hole — the pid check passes when both
+      writers share a pid, and two writers over one part interleave their bytes; the fix is
+      a registry keyed by the canonical root, `Error::AlreadyOpen`, released on `Drop`), the
+      same root under another name (`root/.`, `root/../root`, a symlink) is the same root, a
+      live foreign pid in `LOCK` is refused and named, a dead pid is taken over and `LOCK` is
+      rewritten, and a writer killed with `SIGKILL` mid-batch leaves a log the next process
+      opens, reads (offsets dense from 0 — no torn record), and appends to. The child half is
+      the test binary itself re-executed as `--ignored child_writer`, so no fixture binary
+      ships with the crate. What the heuristic still costs: a pid reused by an unrelated
+      process makes a legitimate open fail until the reader is killed — refusing wrongly is
+      the safe direction, but it is a wrong answer.
+- [ ] Owed: **no read-only open.** Every reader takes the `LOCK`, so a second process cannot
+      read while the writer is alive — "two readers during a flush" is not slow, it is
+      impossible by construction. Deliberate for now (the writer's part files are the same
+      files a reader would open, and an unsealed part's last block is in flux), but it is the
+      reason the log is one-writer-not-many-readers, and it is what a tail -f over the wire
+      would have to answer first.
 - [ ] Owed: **packaging, mostly paid (2026-10-31).** `maturin build` never worked for this
       crate: `pyproject.toml` declared `python-source = "."` with no `okm_series/` package
       beside the crate, so every build failed on a directory that was never there. Removed
