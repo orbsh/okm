@@ -6,7 +6,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
 
-use okm_core::{Collection, Document, DocumentEncode, KeyEncode, Ref, TestStore, Uuid4, Uuid7};
+use okm_core::{Collection, DocumentEncode, KeyEncode, Ref, TestStore, Uuid4, Uuid7};
 
 #[derive(DocumentEncode, Clone, PartialEq, Debug)]
 #[ok_ref(Uuid7)]
