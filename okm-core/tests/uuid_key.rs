@@ -4,7 +4,13 @@
 //! `KeyEncode` wrapper struct), and the keyspace orders by time because v7's byte order is its
 //! millisecond prefix. `Uuid4` is the same shape with no order — that is the token case.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unwrap_in_result,
+    clippy::panic_in_result_fn
+)]
 
 use okm_core::{Collection, DocumentEncode, KeyEncode, Ref, TestStore, Uuid4, Uuid7};
 
@@ -53,7 +59,11 @@ fn a_uuid_payload_field_keeps_its_kind_and_round_trips() {
     let token = Uuid4::new();
     rows.put(
         &device,
-        &Session { token, device, note: "kept".into() },
+        &Session {
+            token,
+            device,
+            note: "kept".into(),
+        },
     )
     .unwrap();
     let got = rows.get(&device).unwrap().expect("row");
@@ -95,10 +105,22 @@ fn rows_round_trip_by_uuid_key_and_scans_return_the_key() {
     let a = Uuid7::with_millis(1_000);
     let b = Uuid7::with_millis(2_000);
     devices
-        .put(&a, &Device { alias: "laptop".into(), seen: 10 })
+        .put(
+            &a,
+            &Device {
+                alias: "laptop".into(),
+                seen: 10,
+            },
+        )
         .unwrap();
     devices
-        .put(&b, &Device { alias: "phone".into(), seen: 20 })
+        .put(
+            &b,
+            &Device {
+                alias: "phone".into(),
+                seen: 20,
+            },
+        )
         .unwrap();
 
     let got = devices.get(&a).unwrap().expect("row a");
@@ -111,7 +133,13 @@ fn rows_round_trip_by_uuid_key_and_scans_return_the_key() {
     let tokens: Collection<_, Uuid4, Token> = Collection::new(store);
     let t = Uuid4::new();
     tokens
-        .put(&t, &Token { device: Ref::ref_key(a), expires: 99 })
+        .put(
+            &t,
+            &Token {
+                device: Ref::ref_key(a),
+                expires: 99,
+            },
+        )
         .unwrap();
     assert_eq!(tokens.get(&t).unwrap().expect("token row").device.key, a);
 }

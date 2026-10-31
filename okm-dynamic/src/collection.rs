@@ -18,9 +18,9 @@
 
 use okm_core::storage::VirtualStorage;
 
-use crate::index::{scan_access_method, AccessMethod};
+use crate::index::{AccessMethod, scan_access_method};
 use crate::reduce::{BoundReduce, ReduceSpec};
-use crate::{decode_payload, CollectionSchema, ValueMap};
+use crate::{CollectionSchema, ValueMap, decode_payload};
 
 /// Codec errors surfaced as strings (dynamic callers are host-language
 /// bridges — error values, not typed hierarchies).
@@ -144,11 +144,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
     /// A reduce group's entry key for a group-field value map (read-side
     /// probe: the caller names the GROUP fields, same rule as the
     /// Rust-side `reduce_get` probe).
-    pub fn reduce_entry_key(
-        &self,
-        _ns: u16,
-        group_values: &ValueMap,
-    ) -> Result<Vec<u8>, String> {
+    pub fn reduce_entry_key(&self, _ns: u16, group_values: &ValueMap) -> Result<Vec<u8>, String> {
         // The first registered reduce owns this probe shape (single-reduce
         // tables; multi-reduce probes go through BoundReduce directly).
         let reduce = self
@@ -237,11 +233,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
     /// Access-method scan (leftmost prefix over the indexed fields,
     /// caller-encoded): returns the matching documents' primary keys, decoded.
     /// THE routing primitive — an event resolves its targets here.
-    pub fn scan(
-        &self,
-        index_slot: u16,
-        encoded_prefix: &[u8],
-    ) -> Result<Vec<ValueMap>, String> {
+    pub fn scan(&self, index_slot: u16, encoded_prefix: &[u8]) -> Result<Vec<ValueMap>, String> {
         let index = self
             .indexes
             .iter()
@@ -364,7 +356,11 @@ impl<S: VirtualStorage> DynamicCollection<S> {
     /// The read half every whole-document verb shares: `fetch` merges it with
     /// the row, `merge` / `replace` read-modify-write it.
     fn dynamic_map(&self, pkey: &[u8]) -> Result<Option<ValueMap>, String> {
-        let raw = match self.store.get(&self.fields_key(pkey)).map_err(|e| e.to_string())? {
+        let raw = match self
+            .store
+            .get(&self.fields_key(pkey))
+            .map_err(|e| e.to_string())?
+        {
             Some(r) => r,
             None => return Ok(None),
         };
@@ -437,7 +433,10 @@ impl<S: VirtualStorage> DynamicCollection<S> {
                 pkey,
                 &declared,
                 &dynamic,
-                crate::plan::Stored { row: old_row.as_ref(), dynamic: old_dynamic.as_ref() },
+                crate::plan::Stored {
+                    row: old_row.as_ref(),
+                    dynamic: old_dynamic.as_ref(),
+                },
                 &|ek| store.get(ek).map_err(|e| e.to_string()),
                 &mut vocab,
             )?
@@ -482,7 +481,10 @@ impl<S: VirtualStorage> DynamicCollection<S> {
                 pkey,
                 &declared,
                 &dynamic,
-                crate::plan::Stored { row: old_row.as_ref(), dynamic: old_dynamic.as_ref() },
+                crate::plan::Stored {
+                    row: old_row.as_ref(),
+                    dynamic: old_dynamic.as_ref(),
+                },
                 &|ek| store.get(ek).map_err(|e| e.to_string()),
                 &mut vocab,
             )?
@@ -501,7 +503,9 @@ impl<S: VirtualStorage> DynamicCollection<S> {
         }
         let plan = {
             let store = &self.store;
-            self.plan_purge(pkey, old_row.as_ref(), old_dynamic.as_ref(), &|ek| store.get(ek).map_err(|e| e.to_string()))?
+            self.plan_purge(pkey, old_row.as_ref(), old_dynamic.as_ref(), &|ek| {
+                store.get(ek).map_err(|e| e.to_string())
+            })?
         };
         self.replay(&plan.ops)?;
         Ok(true)
