@@ -3,18 +3,24 @@
 //! What a Python caller gets is the crate's own shape, not a wrapper with opinions:
 //! a `Log` whose `append` returns an offset, `read` that starts at an offset,
 //! `read_by_time` for a window, `seal`, `retain_before`, and `parts` for the physical
-//! summary. Bodies are plain dicts keyed by tag (or by name, if the log was opened with
+//! summary. `Reader` is the same log opened for reading only — no `LOCK`, no claim — so a
+//! Python process can read a log another process is writing. `iter_records(partition, batch)`
+//! on either class pages one stream without materialising it.
+//!
+//! Bodies are plain dicts keyed by tag (or by name, if the log was opened with
 //! a `tags` map), and values are `str` / `int` / `float` / `bytes`.
 //!
 //! Errors cross as Python exceptions: an IO failure is `OSError`, everything else a
 //! refusal (time went backwards, a missing partition field, a layout mismatch) is
 //! `ValueError` — the caller can act on all of them.
 
-use std::collections::HashMap;
-use std::path::PathBuf;
+use std::collections::{HashMap, VecDeque};
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use ::okm_series::{Body, Codec, Config, DictConfig, Log, Precision, Value};
+use ::okm_series::{
+    Body, Codec, Config, DictConfig, Log, LogReader, Meta, PartInfo, Precision, Value,
+};
 use pyo3::exceptions::{PyOSError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyList};
@@ -198,13 +204,13 @@ impl PyLog {
     /// offset applies to every stream and rows come back in time order.
     #[pyo3(signature = (from_offset = 0, max = 100))]
     fn read(&self, py: Python<'_>, from_offset: u64, max: usize) -> PyResult<Vec<Py<Record>>> {
-        let rows = py.detach(|| {
-            let log = self.lock()?;
-            log.read(from_offset, max).map_err(map_error)
-        })?;
-        rows.into_iter()
-            .map(|(ts, offset, body)| self.record_from(ts, offset, &body))
-            .collect()
+        rows(
+            py,
+            &self.inner,
+            &self.names,
+            self.ts_field.as_deref(),
+            |log| log.read_rows(from_offset, max),
+        )
     }
 
     /// Read one stream: the records under `partition`, or — with `None` — the single stream
@@ -218,14 +224,13 @@ impl PyLog {
         from_offset: u64,
         max: usize,
     ) -> PyResult<Vec<Py<Record>>> {
-        let rows = py.detach(|| {
-            let log = self.lock()?;
-            log.read_stream(partition, from_offset, max)
-                .map_err(map_error)
-        })?;
-        rows.into_iter()
-            .map(|(ts, offset, body)| self.record_from(ts, offset, &body))
-            .collect()
+        rows(
+            py,
+            &self.inner,
+            &self.names,
+            self.ts_field.as_deref(),
+            |log| log.read_stream_rows(partition, from_offset, max),
+        )
     }
 
     /// Read every record whose timestamp is in `[from_ts, to_ts]`, up to `max`.
@@ -237,13 +242,13 @@ impl PyLog {
         to_ts: u64,
         max: usize,
     ) -> PyResult<Vec<Py<Record>>> {
-        let rows = py.detach(|| {
-            let log = self.lock()?;
-            log.read_by_time(from_ts, to_ts, max).map_err(map_error)
-        })?;
-        rows.into_iter()
-            .map(|(ts, offset, body)| self.record_from(ts, offset, &body))
-            .collect()
+        rows(
+            py,
+            &self.inner,
+            &self.names,
+            self.ts_field.as_deref(),
+            |log| log.read_by_time_rows(from_ts, to_ts, max),
+        )
     }
 
     /// Read one stream's records whose timestamp is in `[from_ts, to_ts]`, up to `max`.
@@ -256,14 +261,13 @@ impl PyLog {
         to_ts: u64,
         max: usize,
     ) -> PyResult<Vec<Py<Record>>> {
-        let rows = py.detach(|| {
-            let log = self.lock()?;
-            log.read_stream_by_time(partition, from_ts, to_ts, max)
-                .map_err(map_error)
-        })?;
-        rows.into_iter()
-            .map(|(ts, offset, body)| self.record_from(ts, offset, &body))
-            .collect()
+        rows(
+            py,
+            &self.inner,
+            &self.names,
+            self.ts_field.as_deref(),
+            |log| log.read_stream_by_time_rows(partition, from_ts, to_ts, max),
+        )
     }
 
     /// Drop every bucket older than the one `ts` falls in. Returns the bucket numbers
@@ -277,39 +281,30 @@ impl PyLog {
 
     /// The physical summary of every part: what a reader can know without opening them.
     fn parts(&self, py: Python<'_>) -> PyResult<Vec<Py<PyDict>>> {
-        let parts = py.detach(|| {
-            let log = self.lock()?;
-            log.parts().map_err(map_error)
-        })?;
-        parts
-            .into_iter()
-            .map(|part| {
-                let dict = PyDict::new(py);
-                dict.set_item("bucket", part.bucket)?;
-                dict.set_item("partition", part.partition)?;
-                dict.set_item("path", part.path.to_string_lossy().to_string())?;
-                dict.set_item("sealed", part.sealed)?;
-                dict.set_item("first_offset", part.first_offset)?;
-                dict.set_item("records", part.records)?;
-                dict.set_item("first_ts", part.first_ts)?;
-                dict.set_item("last_ts", part.last_ts)?;
-                dict.set_item("bytes", part.bytes)?;
-                Ok(dict.into())
-            })
-            .collect()
+        part_dicts(py, &self.inner)
     }
 
     /// What `log.meta` says: identity, the same for every process that opens the log.
     #[getter]
     fn meta(&self, py: Python<'_>) -> PyResult<Py<PyDict>> {
-        let log = self.lock()?;
-        let meta = log.meta();
-        let dict = PyDict::new(py);
-        dict.set_item("epoch_unix_ms", meta.epoch_unix_ms)?;
-        dict.set_item("precision", precision_label(meta.precision))?;
-        dict.set_item("bucket_seconds", meta.bucket_seconds)?;
-        dict.set_item("partition_tag", meta.partition_tag)?;
-        Ok(dict.into())
+        meta_dict(py, &self.inner)
+    }
+
+    /// Iterate one stream, `batch` records per read, without materialising the log.
+    ///
+    /// A cursor walks ONE stream: offsets are a stream's own counter, so the union's rows carry
+    /// several counters interleaved in time order and a single "next offset" would skip records.
+    /// An unpartitioned log has one stream (`iter_records()` is the whole log); with partitions,
+    /// iterate the values `parts()` reports.
+    #[pyo3(signature = (partition = None, batch = 1000))]
+    fn iter_records(
+        slf: PyRef<'_, Self>,
+        py: Python<'_>,
+        partition: Option<&str>,
+        batch: usize,
+    ) -> PyResult<Py<Records>> {
+        let source = slf.into_pyobject(py)?.into_any().unbind();
+        Py::new(py, Records::new(source, partition, batch))
     }
 
     #[getter]
@@ -396,43 +391,459 @@ impl PyLog {
             value.get_type().name()?
         )))
     }
+}
 
-    fn value_to_py<'py>(&self, py: Python<'py>, value: &Value) -> PyResult<Bound<'py, PyAny>> {
-        Ok(match value {
-            Value::Str(text) => text.into_pyobject(py)?.into_any(),
-            Value::U64(number) => number.into_pyobject(py)?.into_any(),
-            Value::I64(number) => number.into_pyobject(py)?.into_any(),
-            Value::F64(number) => number.into_pyobject(py)?.into_any(),
-            Value::Bytes(bytes) => PyBytes::new(py, bytes).into_any(),
+/// One record as Python sees it: the write time under a name of its own (unless the body
+/// already claimed that name — the caller's value stays, their data is theirs), then the body
+/// with tag names where the opener knew them.
+fn record_of(
+    py: Python<'_>,
+    names: &HashMap<u16, String>,
+    ts_field: Option<&str>,
+    ts: u64,
+    offset: u64,
+    body: &Body,
+) -> PyResult<Py<Record>> {
+    let dict = PyDict::new(py);
+    if let Some(name) = ts_field {
+        if !dict.contains(name)? {
+            dict.set_item(name, ts)?;
+        }
+    }
+    for (tag, value) in body.items() {
+        let key: Bound<'_, PyAny> = match names.get(tag) {
+            Some(name) => name.into_pyobject(py)?.into_any(),
+            None => tag.into_pyobject(py)?.into_any(),
+        };
+        dict.set_item(key, value_to_py(py, value)?)?;
+    }
+    Py::new(
+        py,
+        Record {
+            ts,
+            offset,
+            body: dict.into(),
+        },
+    )
+}
+
+fn value_to_py<'py>(py: Python<'py>, value: &Value) -> PyResult<Bound<'py, PyAny>> {
+    Ok(match value {
+        Value::Str(text) => text.into_pyobject(py)?.into_any(),
+        Value::U64(number) => number.into_pyobject(py)?.into_any(),
+        Value::I64(number) => number.into_pyobject(py)?.into_any(),
+        Value::F64(number) => number.into_pyobject(py)?.into_any(),
+        Value::Bytes(bytes) => PyBytes::new(py, bytes).into_any(),
+    })
+}
+
+/// The reading surface, implemented by both classes: `Log` holds a writer and a reader,
+/// `Reader` holds only the reader. Writing the six methods twice would be two copies of one
+/// behaviour, so the classes' `#[pymethods]` bodies are one line each and the work lives here.
+trait ReadFace {
+    fn read_rows(
+        &self,
+        from: u64,
+        max: usize,
+    ) -> Result<Vec<(u64, u64, Body)>, ::okm_series::Error>;
+    fn read_stream_rows(
+        &self,
+        partition: Option<&str>,
+        from: u64,
+        max: usize,
+    ) -> Result<Vec<(u64, u64, Body)>, ::okm_series::Error>;
+    fn read_by_time_rows(
+        &self,
+        from_ts: u64,
+        to_ts: u64,
+        max: usize,
+    ) -> Result<Vec<(u64, u64, Body)>, ::okm_series::Error>;
+    fn read_stream_by_time_rows(
+        &self,
+        partition: Option<&str>,
+        from_ts: u64,
+        to_ts: u64,
+        max: usize,
+    ) -> Result<Vec<(u64, u64, Body)>, ::okm_series::Error>;
+    fn part_infos(&self) -> Result<Vec<PartInfo>, ::okm_series::Error>;
+    fn meta(&self) -> &Meta;
+    fn root_path(&self) -> &Path;
+}
+
+impl ReadFace for Log {
+    fn read_rows(
+        &self,
+        from: u64,
+        max: usize,
+    ) -> Result<Vec<(u64, u64, Body)>, ::okm_series::Error> {
+        self.read(from, max)
+    }
+    fn read_stream_rows(
+        &self,
+        partition: Option<&str>,
+        from: u64,
+        max: usize,
+    ) -> Result<Vec<(u64, u64, Body)>, ::okm_series::Error> {
+        self.read_stream(partition, from, max)
+    }
+    fn read_by_time_rows(
+        &self,
+        from_ts: u64,
+        to_ts: u64,
+        max: usize,
+    ) -> Result<Vec<(u64, u64, Body)>, ::okm_series::Error> {
+        self.read_by_time(from_ts, to_ts, max)
+    }
+    fn read_stream_by_time_rows(
+        &self,
+        partition: Option<&str>,
+        from_ts: u64,
+        to_ts: u64,
+        max: usize,
+    ) -> Result<Vec<(u64, u64, Body)>, ::okm_series::Error> {
+        self.read_stream_by_time(partition, from_ts, to_ts, max)
+    }
+    fn part_infos(&self) -> Result<Vec<PartInfo>, ::okm_series::Error> {
+        self.parts()
+    }
+    fn meta(&self) -> &Meta {
+        Log::meta(self)
+    }
+    fn root_path(&self) -> &Path {
+        Log::root(self)
+    }
+}
+
+impl ReadFace for LogReader {
+    fn read_rows(
+        &self,
+        from: u64,
+        max: usize,
+    ) -> Result<Vec<(u64, u64, Body)>, ::okm_series::Error> {
+        self.read(from, max)
+    }
+    fn read_stream_rows(
+        &self,
+        partition: Option<&str>,
+        from: u64,
+        max: usize,
+    ) -> Result<Vec<(u64, u64, Body)>, ::okm_series::Error> {
+        self.read_stream(partition, from, max)
+    }
+    fn read_by_time_rows(
+        &self,
+        from_ts: u64,
+        to_ts: u64,
+        max: usize,
+    ) -> Result<Vec<(u64, u64, Body)>, ::okm_series::Error> {
+        self.read_by_time(from_ts, to_ts, max)
+    }
+    fn read_stream_by_time_rows(
+        &self,
+        partition: Option<&str>,
+        from_ts: u64,
+        to_ts: u64,
+        max: usize,
+    ) -> Result<Vec<(u64, u64, Body)>, ::okm_series::Error> {
+        self.read_stream_by_time(partition, from_ts, to_ts, max)
+    }
+    fn part_infos(&self) -> Result<Vec<PartInfo>, ::okm_series::Error> {
+        self.parts()
+    }
+    fn meta(&self) -> &Meta {
+        LogReader::meta(self)
+    }
+    fn root_path(&self) -> &Path {
+        LogReader::root(self)
+    }
+}
+
+/// Lock, read without the GIL, render. One of these per method shape; the classes' bodies are
+/// one call each, so `Log` and `Reader` cannot drift apart.
+fn rows<F: ReadFace + Send>(
+    py: Python<'_>,
+    face: &Mutex<F>,
+    names: &HashMap<u16, String>,
+    ts_field: Option<&str>,
+    run: impl FnOnce(&F) -> Result<Vec<(u64, u64, Body)>, ::okm_series::Error> + Send,
+) -> PyResult<Vec<Py<Record>>> {
+    let rows = py.detach(|| {
+        let face = face
+            .lock()
+            .map_err(|_| PyValueError::new_err("the log lock was poisoned by a failed call"))?;
+        run(&face).map_err(map_error)
+    })?;
+    rows.into_iter()
+        .map(|(ts, offset, body)| record_of(py, names, ts_field, ts, offset, &body))
+        .collect()
+}
+
+fn part_dicts<F: ReadFace + Send>(py: Python<'_>, face: &Mutex<F>) -> PyResult<Vec<Py<PyDict>>> {
+    let parts = py.detach(|| {
+        let face = face
+            .lock()
+            .map_err(|_| PyValueError::new_err("the log lock was poisoned by a failed call"))?;
+        face.part_infos().map_err(map_error)
+    })?;
+    parts
+        .into_iter()
+        .map(|part| {
+            let dict = PyDict::new(py);
+            dict.set_item("bucket", part.bucket)?;
+            dict.set_item("partition", part.partition)?;
+            dict.set_item("path", part.path.to_string_lossy().to_string())?;
+            dict.set_item("sealed", part.sealed)?;
+            dict.set_item("first_offset", part.first_offset)?;
+            dict.set_item("records", part.records)?;
+            dict.set_item("first_ts", part.first_ts)?;
+            dict.set_item("last_ts", part.last_ts)?;
+            dict.set_item("bytes", part.bytes)?;
+            Ok(dict.into())
+        })
+        .collect()
+}
+
+fn meta_dict<F: ReadFace + Send>(py: Python<'_>, face: &Mutex<F>) -> PyResult<Py<PyDict>> {
+    let face = face
+        .lock()
+        .map_err(|_| PyValueError::new_err("the log lock was poisoned by a failed call"))?;
+    let meta = face.meta();
+    let dict = PyDict::new(py);
+    dict.set_item("epoch_unix_ms", meta.epoch_unix_ms)?;
+    dict.set_item("precision", precision_label(meta.precision))?;
+    dict.set_item("bucket_seconds", meta.bucket_seconds)?;
+    dict.set_item("partition_tag", meta.partition_tag)?;
+    Ok(dict.into())
+}
+
+/// The same log, opened for READING only.
+///
+/// No `LOCK` is taken and no claim is registered, so a Python process can read a log that
+/// another process is writing, and a thread can read while the writer in this process holds its
+/// handle. What it sees is what is on disk: a record appended but not yet flushed is not there,
+/// and reading again — the reader caches each part by its file length — is how you see it later.
+/// A reader cannot create a log; the directory must already be one.
+#[pyclass(name = "Reader", module = "okm_series")]
+pub struct PyReader {
+    inner: Mutex<LogReader>,
+    names: HashMap<u16, String>,
+    ts_field: Option<String>,
+}
+
+#[pymethods]
+impl PyReader {
+    #[new]
+    #[pyo3(signature = (root, *, precision = "ns", bucket_seconds = 3600,
+        partition_tag = None, tags = None, ts_field = Some("_ts".to_string())))]
+    fn new(
+        root: PathBuf,
+        precision: &str,
+        bucket_seconds: u64,
+        partition_tag: Option<u16>,
+        tags: Option<HashMap<String, u16>>,
+        ts_field: Option<String>,
+    ) -> PyResult<Self> {
+        // Block size, codec and the dictionary are the WRITER's: each part's header says which
+        // codec its blocks use and `part-<n>.dict` beside it says whether codes are in play, so
+        // a reader that was told none of it still reads everything.
+        let config = Config {
+            precision: precision_of(precision)?,
+            bucket_seconds,
+            partition_tag,
+            ..Config::default()
+        };
+        let reader = LogReader::open(&root, config).map_err(map_error)?;
+        let mut names = HashMap::new();
+        for (name, tag) in tags.unwrap_or_default() {
+            names.insert(tag, name);
+        }
+        Ok(PyReader {
+            inner: Mutex::new(reader),
+            names,
+            ts_field,
         })
     }
 
-    fn record_from(&self, ts: u64, offset: u64, body: &Body) -> PyResult<Py<Record>> {
-        Python::attach(|py| {
-            let dict = PyDict::new(py);
-            // The write time under a name of its own, unless the body already claimed
-            // that name (then the caller's value stays: their data is theirs).
-            if let Some(name) = self.ts_field.as_deref() {
-                if !dict.contains(name)? {
-                    dict.set_item(name, ts)?;
+    /// Read up to `max` records starting at `from_offset`, across every stream, in time order.
+    #[pyo3(signature = (from_offset = 0, max = 100))]
+    fn read(&self, py: Python<'_>, from_offset: u64, max: usize) -> PyResult<Vec<Py<Record>>> {
+        rows(
+            py,
+            &self.inner,
+            &self.names,
+            self.ts_field.as_deref(),
+            |reader| reader.read_rows(from_offset, max),
+        )
+    }
+
+    /// Read one stream: the records under `partition`, or — with `None` — the single stream of an
+    /// unpartitioned log. Use the value `parts()` reports; `read` is the union of every stream.
+    #[pyo3(signature = (partition, from_offset = 0, max = 100))]
+    fn read_stream(
+        &self,
+        py: Python<'_>,
+        partition: Option<&str>,
+        from_offset: u64,
+        max: usize,
+    ) -> PyResult<Vec<Py<Record>>> {
+        rows(
+            py,
+            &self.inner,
+            &self.names,
+            self.ts_field.as_deref(),
+            |reader| reader.read_stream_rows(partition, from_offset, max),
+        )
+    }
+
+    /// Read every record whose timestamp is in `[from_ts, to_ts]`, up to `max`.
+    #[pyo3(signature = (from_ts, to_ts, max = 100))]
+    fn read_by_time(
+        &self,
+        py: Python<'_>,
+        from_ts: u64,
+        to_ts: u64,
+        max: usize,
+    ) -> PyResult<Vec<Py<Record>>> {
+        rows(
+            py,
+            &self.inner,
+            &self.names,
+            self.ts_field.as_deref(),
+            |reader| reader.read_by_time_rows(from_ts, to_ts, max),
+        )
+    }
+
+    /// Read one stream's records whose timestamp is in `[from_ts, to_ts]`, up to `max`.
+    #[pyo3(signature = (partition, from_ts, to_ts, max = 100))]
+    fn read_stream_by_time(
+        &self,
+        py: Python<'_>,
+        partition: Option<&str>,
+        from_ts: u64,
+        to_ts: u64,
+        max: usize,
+    ) -> PyResult<Vec<Py<Record>>> {
+        rows(
+            py,
+            &self.inner,
+            &self.names,
+            self.ts_field.as_deref(),
+            |reader| reader.read_stream_by_time_rows(partition, from_ts, to_ts, max),
+        )
+    }
+
+    /// The physical summary of every part: what a reader can know without opening them.
+    fn parts(&self, py: Python<'_>) -> PyResult<Vec<Py<PyDict>>> {
+        part_dicts(py, &self.inner)
+    }
+
+    /// What `log.meta` says: identity, the same for every process that opens the log.
+    #[getter]
+    fn meta(&self, py: Python<'_>) -> PyResult<Py<PyDict>> {
+        meta_dict(py, &self.inner)
+    }
+
+    #[getter]
+    fn root(&self) -> PyResult<String> {
+        let reader = self.lock()?;
+        Ok(reader.root_path().to_string_lossy().to_string())
+    }
+
+    /// Iterate one stream, `batch` records per read. See `Log.iter_records` for why a cursor
+    /// walks one stream rather than the union.
+    #[pyo3(signature = (partition = None, batch = 1000))]
+    fn iter_records(
+        slf: PyRef<'_, Self>,
+        py: Python<'_>,
+        partition: Option<&str>,
+        batch: usize,
+    ) -> PyResult<Py<Records>> {
+        let source = slf.into_pyobject(py)?.into_any().unbind();
+        Py::new(py, Records::new(source, partition, batch))
+    }
+
+    fn __repr__(&self) -> PyResult<String> {
+        let reader = self.lock()?;
+        let meta = reader.meta();
+        Ok(format!(
+            "Reader(root={:?}, precision={}, bucket_seconds={}, partition_tag={:?})",
+            reader.root().to_string_lossy(),
+            precision_label(meta.precision),
+            meta.bucket_seconds,
+            meta.partition_tag
+        ))
+    }
+}
+
+impl PyReader {
+    fn lock(&self) -> PyResult<std::sync::MutexGuard<'_, LogReader>> {
+        self.inner
+            .lock()
+            .map_err(|_| PyValueError::new_err("the reader lock was poisoned by a failed call"))
+    }
+}
+
+/// One stream, paged: each `next()` asks its source for `batch` records from where the previous
+/// call stopped.
+///
+/// A cursor walks ONE stream, not the union. Offsets are a stream's own counter (ADR-0046 §9),
+/// so `read(from, max)` over the union returns several counters interleaved in time order and
+/// "the next offset" is not a single number — paging it would skip records. An unpartitioned log
+/// has exactly one stream, so `iter_records()` is the whole log; a partitioned one is iterated
+/// per partition value, which is what `parts()` reports.
+#[pyclass(name = "Records", module = "okm_series")]
+pub struct Records {
+    /// The `Log` or `Reader` that answers `read_stream`. Held strongly: a cursor outliving the
+    /// log it reads is a use-after-close, not a convenience.
+    source: Py<PyAny>,
+    partition: Option<String>,
+    batch: usize,
+    next_offset: u64,
+    buffer: VecDeque<Py<Record>>,
+    done: bool,
+}
+
+impl Records {
+    fn new(source: Py<PyAny>, partition: Option<&str>, batch: usize) -> Self {
+        Records {
+            source,
+            partition: partition.map(str::to_string),
+            batch: batch.max(1),
+            next_offset: 0,
+            buffer: VecDeque::new(),
+            done: false,
+        }
+    }
+}
+
+#[pymethods]
+impl Records {
+    fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    fn __next__(mut slf: PyRefMut<'_, Self>) -> PyResult<Option<Py<Record>>> {
+        if slf.buffer.is_empty() && !slf.done {
+            let py = slf.py();
+            let read = slf.source.bind(py).getattr("read_stream")?;
+            let batch = read.call1((slf.partition.clone(), slf.next_offset, slf.batch))?;
+            let fetched: Vec<Py<Record>> = batch.extract()?;
+            match fetched.last() {
+                None => slf.done = true,
+                Some(last) => {
+                    slf.next_offset = last.borrow(py).offset.saturating_add(1);
+                    slf.buffer.extend(fetched);
                 }
             }
-            for (tag, value) in body.items() {
-                let key: Bound<'_, PyAny> = match self.names.get(tag) {
-                    Some(name) => name.into_pyobject(py)?.into_any(),
-                    None => tag.into_pyobject(py)?.into_any(),
-                };
-                dict.set_item(key, self.value_to_py(py, value)?)?;
-            }
-            Py::new(
-                py,
-                Record {
-                    ts,
-                    offset,
-                    body: dict.into(),
-                },
-            )
-        })
+        }
+        Ok(slf.buffer.pop_front())
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "Records(partition={:?}, batch={}, next_offset={}, done={})",
+            self.partition, self.batch, self.next_offset, self.done
+        )
     }
 }
 
@@ -440,7 +851,9 @@ impl PyLog {
 #[pyo3(name = "okm_series")]
 pub fn okm_series_module(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyLog>()?;
+    module.add_class::<PyReader>()?;
     module.add_class::<Record>()?;
+    module.add_class::<Records>()?;
     module.add("__version__", env!("CARGO_PKG_VERSION"))?;
     Ok(())
 }

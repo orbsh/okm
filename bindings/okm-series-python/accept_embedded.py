@@ -14,7 +14,9 @@ What is locked: a typed body round-trips through a block, the log stamps the rec
 and exposes it under `_ts`, the time never goes backwards, named tags work, a partitioned
 log refuses a record without the field and keeps one part per partition, `seal` writes a
 footer that `parts` then reports, `read_by_time` answers a window, retention removes an old
-bucket, and `meta` carries the log's identity.
+bucket, and `meta` carries the log's identity. And the read-only side: `Reader` reads a log the
+writer still holds (no LOCK, no claim), refuses a directory that is not a log, and `iter_records`
+pages one stream `batch` records at a time from both classes.
 """
 import tempfile
 
@@ -181,6 +183,68 @@ def meta_is_the_logs_identity(root: str) -> None:
     else:  # pragma: no cover
         raise AssertionError("a log opened with another bucket size must be refused")
 
+def a_reader_reads_a_log_the_writer_still_holds(root: str) -> None:
+    log = okm_series.Log(root, precision="ms")
+    for index in range(3):
+        log.append({1: index})
+    log.flush()
+
+    # The writer holds the LOCK and the in-process claim. A Reader takes neither, so this open
+    # succeeds while `log` is alive — that is the whole point of a read-only open.
+    reader = okm_series.Reader(root, precision="ms")
+    assert len(reader.read(0, 100)) == 3, "a reader sees what the writer flushed"
+    assert reader.meta["precision"] == "ms"
+    assert reader.parts()[0]["records"] == 3
+
+    log.append({1: 3})
+    log.flush()
+    assert len(reader.read(0, 100)) == 4, "and it sees the next flush"
+
+    # A record that is appended but not flushed is not on disk, so a reader must answer
+    # three — not error, and not four.
+    log.append({1: 4})
+    assert len(reader.read(0, 100)) == 4, "an unflushed record is not visible yet"
+    log.flush()
+    assert len(reader.read(0, 100)) == 5
+
+
+def a_reader_cannot_invent_a_log(root: str) -> None:
+    try:
+        okm_series.Reader(root, precision="ms")
+    except ValueError as error:
+        assert "log.meta" in str(error), error
+    else:  # pragma: no cover
+        raise AssertionError("a reader must not create the log it is only allowed to read")
+
+
+def a_cursor_pages_one_stream(root: str) -> None:
+    log = okm_series.Log(root, precision="ms")
+    for index in range(25):
+        log.append({1: index})
+    log.flush()
+
+    # `batch=7` means four reads instead of one 25-row list; the cursor keeps its place.
+    seen = [record.body[1] for record in log.iter_records(batch=7)]
+    assert seen == list(range(25)), seen
+
+    # The same cursor from a Reader, which can walk a log another process is writing.
+    reader = okm_series.Reader(root, precision="ms")
+    again = [record.offset for record in reader.iter_records(batch=10)]
+    assert again == list(range(25)), again
+
+    # A cursor is one stream. On a partitioned log the caller picks the stream by name — the
+    # union's rows carry several counters interleaved in time order, so paging it by offset
+    # would skip records.
+    split = root + "-split"
+    partitioned = okm_series.Log(split, precision="ms", partition_tag=9)
+    for tenant, index in [("eu", 0), ("us", 0), ("eu", 1), ("us", 1), ("eu", 2)]:
+        partitioned.append({9: tenant, 1: index})
+    partitioned.flush()
+    eu = [record.body[1] for record in partitioned.iter_records(partition="eu", batch=2)]
+    assert eu == [0, 1, 2], eu
+    us = [record.body[1] for record in partitioned.iter_records(partition="us", batch=2)]
+    assert us == [0, 1], us
+
 
 def main() -> int:
     print(f"okm_series: {okm_series.__file__}")
@@ -193,6 +257,9 @@ def main() -> int:
         read_by_time_answers_a_window,
         retention_removes_an_old_bucket,
         meta_is_the_logs_identity,
+        a_reader_reads_a_log_the_writer_still_holds,
+        a_reader_cannot_invent_a_log,
+        a_cursor_pages_one_stream,
     ]
     for check in checks:
         with tempfile.TemporaryDirectory() as root:
