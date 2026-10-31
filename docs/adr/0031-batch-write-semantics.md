@@ -8,12 +8,13 @@ in `okm-core/src/model/document.rs`; covered by `okm-core/tests/save_into_test.r
 
 ## Context
 
-`Collection::save_into(&mut batch, …)` is the cross-collection atomic path
-(ADR-0003): several tables write into one externally owned `Batch` and one
-`commit_batch` makes them live or die together. Its own contract says it is the
-ENCODING surface, not the semantic one — it bypasses `put`'s higher write-path
+The cross-collection atomic path (ADR-0003) is one externally owned `Batch` and
+one `commit_batch` that makes several tables live or die together. The verb that
+path shipped with, `Collection::save_into(&mut batch, …)`, declared itself the
+ENCODING surface, not the semantic one — it bypassed `put`'s higher write-path
 hooks: the reduce fold/unfold, the embedded-document release, and the subscribe
-emission. Two consequences follow, and both push work onto every batch writer:
+emission. That verb is since gone (see the last consequence): it is described here
+because the work below is what replaced it. Two consequences follow, and both push work onto every batch writer:
 
 - **A table that participates in a reduce cannot be written into a batch at
   all.** A reduce is a read-modify-write over a group entry (`apply_row` takes
@@ -59,8 +60,8 @@ impl VirtualStorage for BatchStore<'_, S> { /* get / put / del, read-through */ 
    panics with the contract rather than answering a partial view (every scan
    shape funnels through `scan_range`). A caller that needs a scan during a
    batch is modelling a different operation (read, decide, then open a batch).
-3. **`Collection::save_with_prev_into(batch, key, doc, prev)`** — the semantic
-   sibling of `save_into`: primary + faces (as today), `prev`'s faces that the
+3. **`Collection::save_with_prev_into(batch, key, doc, prev)`** — the one
+   document verb for this path: primary + faces (as before), `prev`'s faces that the
    new document no longer produces deleted, the embedded children `prev` held
    that the new document no longer does released (as `put` does), and the
    reduce fold/unfold applied through a `BatchStore`. `prev` is the caller's
@@ -106,5 +107,10 @@ faces commit together, and `save_with_prev_into` keeps `&self`.
   bulk path, its consumers are other processes, and the change log already
   carries it with the guarantee the in-process face cannot give (staged before
   the commit, appended after it returned `Ok`). A caller that wants events for a
-  batch turns the change log on. Still owed: a `save_into` deprecation path once
-  `save_with_prev_into` covers every call site.
+  batch turns the change log on.
+- `Collection::save_into` is gone. The count it was gated on came back at zero —
+  no caller in this repo and none in the five downstream repos used it — so there
+  was nobody to warn through a deprecation window, and `save_with_prev_into(…,
+  None)` covers what it did while also applying the rules it left to callers.
+  `Junction::save_into` stays: it is a different verb (two entries, no semantics
+  to apply).

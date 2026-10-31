@@ -8,10 +8,12 @@
 
 ## 背景
 
-`Collection::save_into(&mut batch, …)` 是跨表原子路径（ADR-0003）：几张表写进同一个
-外部持有的 `Batch`，一次 `commit_batch` 让它们一起活或一起死。它自己的契约写着
-它是**编码**面而不是**语义**面——它绕过 `put` 的高层写路径钩子：reduce 的 fold/
-unfold、嵌入文档的释放、subscribe 事件。于是两件事全部压到每个批量写者身上：
+跨表原子路径（ADR-0003）是：几张表写进同一个外部持有的 `Batch`，一次
+`commit_batch` 让它们一起活或一起死。这条路最初带着的动词
+`Collection::save_into(&mut batch, …)` 自己声明是**编码**面而不是**语义**面——它
+绕过 `put` 的高层写路径钩子：reduce 的 fold/unfold、嵌入文档的释放、subscribe
+事件。那个动词后来被移除了（见最后一条后果）：它留在这里，是因为下面这些工作
+正是替掉它的东西。于是两件事全部压到每个批量写者身上：
 
 - **参与 reduce 的表根本没法写进 batch。** reduce 是一次对组条目的读-改-写
   （`apply_row` 收 `&mut S where S: VirtualStorage`），而 `Batch` 只是操作收集器，
@@ -47,8 +49,8 @@ impl VirtualStorage for BatchStore<'_, S> { /* get / put / del，读穿透 */ }
    reduce 路径也不需要。scan 方法的返回类型是 `Vec`、没有错误通道，所以 `BatchStore`
    直接 panic 出契约，而不是给一份部分视图（所有扫描形态都汇到 `scan_range`）。
    批量期间要扫描的调用方建模的是另一种操作（先读、再判断、然后开一个批）。
-3. **`Collection::save_with_prev_into(batch, key, doc, prev)`**——`save_into` 的语义
-   兄弟：主表 + 面（同今天）、把 `prev` 不再产出的面删掉、把 `prev` 持有的嵌入子文档
+3. **`Collection::save_with_prev_into(batch, key, doc, prev)`**——这条路唯一的文档
+   动词：主表 + 面（同以前）、把 `prev` 不再产出的面删掉、把 `prev` 持有的嵌入子文档
    中新文档不再引用的那些释放掉（与 `put` 一致）、并通过 `BatchStore` 折/回折
    reduce。`prev` 由调用方给（常见情形：它刚读过旧行），为 `None` 时经适配器读。
 
@@ -69,5 +71,9 @@ impl VirtualStorage for BatchStore<'_, S> { /* get / put / del，读穿透 */ }
 - 单写者边界不变（ADR-0042 §7——KV 是单写的）：RMW 仍然在一个 store 句柄上的一个串行写者里
   完成，不引入 CAS。
 - 提交之前 batch 对读者不可见，因为读不查它——并发读者下的吞吐不受影响。
-- 欠：批量写者的 subscribe 事件（它自己的裁决：提交时发，还是留给调用方）；
-  `save_into` 的弃用路径，等 `save_with_prev_into` 覆盖全部调用点之后。
+- 批量写者不发 subscribe 事件（ADR-0047 的裁决：批量路径的消费者是别的进程，
+  变更日志带得动它，进程内那一面带不动）。
+- `Collection::save_into` 已移除。它等的那个计数回到了零——本仓没有调用方，五个
+  下游仓也没有——所以没有一个调用方需要靠弃用窗口去警告，而
+  `save_with_prev_into(…, None)` 干得成它干的活，还附带执行它推给调用方的那些
+  规则。`Junction::save_into` 留着：那是另一个动词（两条条目，没有语义要执行）。

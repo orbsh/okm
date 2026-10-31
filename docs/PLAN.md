@@ -1299,7 +1299,7 @@ bytes; doing them after P3 means hex locks change once, not twice.
       `&self` (ADR-0026), so the borrowed batch sits behind a `RefCell`; the
       caller keeps ownership of the op list.
 - [x] `Collection::save_with_prev_into(batch, key, doc, prev)` (ADR-0031):
-      the semantic sibling of `save_into` — primary + faces into the caller's
+      the one document verb for the batch path — primary + faces into the caller's
       batch, the faces `prev` produced that the new document no longer
       produces deleted, embedded children `prev` held released, and the
       reduce fold/unfold applied through `BatchStore` (so two writes of one
@@ -1321,7 +1321,12 @@ bytes; doing them after P3 means hex locks change once, not twice.
       write and `commit_batch` of the same rows announces nothing, both asserted in one test so an
       empty queue cannot also be read as "no sink was registered". Its own test binary because the
       sink is a process-global registry and two tests sharing one would race for the registration.
-      Still owed: a `save_into` deprecation path once `save_with_prev_into` covers every call site.
+      Also settled 2026-10-31: **`Collection::save_into` is removed.** The count it was gated on
+      came back at zero — no caller in this repo and none in the five downstream repos used it —
+      so there was nobody a deprecation window could warn, and `save_with_prev_into(…, None)`
+      covers the encoding-only job while also applying the rules that verb left to callers (the
+      reduce fold, the stale faces, the released children). `Junction::save_into` stays: a
+      different verb, two entries, no semantics to apply.
 
 ## Categorical values as data (ADR-0032, 2026-10-20)
 
@@ -1334,7 +1339,8 @@ bytes; doing them after P3 means hex locks change once, not twice.
 - [x] `Vocab<N>` type (`okm-core/src/model/vocab.rs`): the label in memory, an
       `N`-byte big-endian id on the wire (`VocabId` for u8/u16/u32/u64/u128,
       default `u8`); equality by label; encoding an uninterned value panics (see
-      the residue note under ADR-0037: `save_into` is encoding-only by design);
+      the residue note under ADR-0037: the encoder does not intern; every verb
+      does it first);
       the vocabulary cache is typed by the same `N`, so exhausting the width is
       `Error::VocabularyExhausted` instead of a wrap. Unit tests cover both a
       1-byte and a 2-byte field.

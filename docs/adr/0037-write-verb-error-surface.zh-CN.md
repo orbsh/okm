@@ -40,8 +40,10 @@ panic 是错误的通道，因为本库只有两类失败，而它们的区别�
   `a_refused_merge_returns_the_error_and_writes_nothing` 锁住"什么都没写"这一半。
 - 被拒绝的写不动存储：校验与 intern 都在任何 op 进 batch 之前跑，`commit` 是每个动词的最后一句。
 - 没有写动词会 panic。仍然 panic 的是**读**侧对损坏字节（`decode_payload`、edge body 解码）与逐条底层存储方法（`VirtualStorage::put` / `del`）——两者都是"存储不是它声称的样子"，不是调用方能处理的条件。拓宽任何一边都是另一个题目（完整性报告、存储 trait）。
-- 还剩一处写路径 panic，在**编码面**而不是动词里：`save_into` 按设计不 intern（它是批对齐
-  的辅助口），所以一个手工构造、`Vocab` 从未 intern 过的文档会死在 `Vocab::wire16`。把
-  payload 编码做成可失败意味着改 `encode_payload`——每个索引 entry、批写者和导出路径都调用的
-  trait 方法——那是另一个改动。`put` 与 `save_with_prev_into` 到不了那里：它们先 intern。
+- 还剩一处写路径 panic，在**编码面**而不是动词里：`Document::encode_payload` 不 intern——
+  它收一个文档、回一串字节——所以有东西直接调编码器时，一个手工构造、`Vocab` 从未 intern
+  过的文档会死在 `Vocab::wire16`。没有动词会走到那里：`put`、`save_with_prev_into` 与
+  `purge_into` 都先 intern，而曾经压在这条接缝上的那个只管编码的批动词已经移除（ADR-0031）。
+  把 payload 编码做成可失败意味着改 `encode_payload`——每个索引 entry、批写者和导出路径都
+  调用的 trait 方法——那是另一个改动。
 - 下游迁移是机械的：调用方本来就返回 Result 的地方补 `?`，测试里补 `.unwrap()`。仓外每个写调用点（约 87 处）都要动，所以这次作为一次 API 断裂发布，而不是留一长串半改的动词。

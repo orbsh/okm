@@ -1,4 +1,5 @@
-//! save_into / commit_batch — the cross-collection atomic path
+//! The batch verbs — `Collection::save_with_prev_into`, `Junction::save_into`,
+//! `commit_batch` — the cross-collection atomic path
 //! (ADR-0003): a document collection and a junction encode into one batch,
 //! one commit makes them live or die together. Covers both orderings
 //! (nothing written before commit; everything written after).
@@ -57,23 +58,25 @@ pub struct AuthorPost {
 }
 
 #[test]
-fn save_into_defers_until_commit() {
+fn a_batch_defers_until_commit() {
     let store = TestStore::slatedb_mem();
     let mut batch = okm_core::Batch::default();
     let t: Collection<TestStore, PostKey, Post> = Collection::new(store.clone());
 
-    // Encode-only: nothing lands in any store.
-    t.save_into(
+    // Building the batch writes nothing: it is ops in memory until the commit.
+    t.save_with_prev_into(
         &mut batch,
         &PostKey { id: 1 },
         &Post {
             author_id: 7,
             title: "hello".into(),
         },
-    );
+        None,
+    )
+    .unwrap();
     assert!(
         t.get(&PostKey { id: 1 }).unwrap().is_none(),
-        "save_into must not write"
+        "an uncommitted batch must not write"
     );
 
     // Commit: primary + index entries land together.
@@ -93,14 +96,16 @@ fn cross_collection_one_batch() {
 
     {
         let t: Collection<TestStore, PostKey, Post> = Collection::new(store.clone());
-        t.save_into(
+        t.save_with_prev_into(
             &mut batch,
             &PostKey { id: 1 },
             &Post {
                 author_id: 7,
                 title: "hi".into(),
             },
-        );
+            None,
+        )
+        .unwrap();
         let edges: okm_core::Junction<TestStore, AuthorPost> =
             okm_core::Junction::new(store.clone());
         edges.save_into(&mut batch, &AuthorKey { id: 7 }, &PostKey { id: 1 });

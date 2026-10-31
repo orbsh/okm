@@ -91,12 +91,13 @@ data enters: the map-facing verbs.
   failures, not conditions a caller can act on. Widening either is a different
   change with a different subject (integrity reporting, storage trait).
 - One write-path panic remains, and it is on the ENCODING surface rather than in
-  a verb: `save_into` does not intern by design (it is the batch-alignment
-  helper), so a hand-built document whose `Vocab` was never interned dies in
-  `Vocab::wire16`. Making the payload encoder fallible means changing
-  `encode_payload`, a trait method every index entry, batch writer and export
-  path calls — its own change. `put` and `save_with_prev_into` cannot reach it:
-  they intern first.
+  a verb: `Document::encode_payload` does not intern — it takes a document and
+  returns bytes — so a hand-built document whose `Vocab` was never interned dies
+  in `Vocab::wire16` when something calls the encoder directly. No verb reaches
+  it: `put`, `save_with_prev_into` and `purge_into` intern first, and the
+  encoding-only batch verb that used to sit on this seam is gone (ADR-0031).
+  Making the payload encoder fallible means changing `encode_payload`, a trait
+  method every index entry, batch writer and export path calls — its own change.
 - Downstream migration is mechanical: `?` where the caller already returns a
   result, `.unwrap()` in tests. Every write call site outside this repo (~87)
   needs it, which is why the change ships as one API break, not a long tail of

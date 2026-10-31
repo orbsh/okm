@@ -382,7 +382,9 @@ fn link_into_shares_one_batch_with_documents() {
 
     let mut batch = Batch::default();
     // A document write and an edge write into ONE batch.
-    nodes.save_into(&mut batch, &UserId { id: 1 }, &User { active: 1 });
+    nodes
+        .save_with_prev_into(&mut batch, &UserId { id: 1 }, &User { active: 1 }, None)
+        .unwrap();
     g.link_into(
         &mut batch,
         &head(user(1), org(9), "employs"),
