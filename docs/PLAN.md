@@ -2313,9 +2313,10 @@ Not bugs found and postponed — the list of things this crate does not do, writ
 the next decision can find it.
 
 - [ ] Owed: **a production caller.** Nothing writes to this crate outside its tests, the
-      `series_tax` example and the Python smoke script; `okm-drain` still reads the
-      changelog's segments. The API has been checked by tests and one binding and has not
-      been worn by a real user, so its shape may still be wrong in ways tests cannot see.
+      `series_tax` example and `bindings/okm-series-python/accept_embedded.py`; `okm-drain`
+      still reads the changelog's segments. The API has been checked by tests and one
+      binding and has not been worn by a real user, so its shape may still be wrong in ways
+      tests cannot see.
 - [ ] Owed: **config drift is silent.** `log.meta` pins `precision`, `bucket_seconds` and
       `partition_tag`; `block_bytes`, `zstd_level`, `block_codec` and `dict` are NOT in it,
       so two opens can disagree about them without a word — new parts simply use the new
@@ -2335,13 +2336,16 @@ the next decision can find it.
 - [ ] Owed: **no concurrency test.** One writer is enforced by the `LOCK` pid file, and the
       stale-pid takeover is a heuristic: a reused pid makes a legitimate open fail. No test
       covers two openers, two readers during a flush, or a `kill -9` mid-block.
-- [ ] Owed: **packaging, half paid (2026-10-31).** `maturin build` never worked for this
+- [ ] Owed: **packaging, mostly paid (2026-10-31).** `maturin build` never worked for this
       crate: `pyproject.toml` declared `python-source = "."` with no `okm_series/` package
       beside the crate, so every build failed on a directory that was never there. Removed
       — the wheel is the bare extension — and CI now builds it, installs it into a clean
-      venv and imports it by name (`.github/workflows/ci.yml`, job `series-wheel`). Still
-      owed: a Python-side acceptance script (the crate's meaning is only locked Rust-side),
-      and a publish story (nothing reaches an index).
+      venv and runs `accept_embedded.py` with `-P` (`.github/workflows/ci.yml`, job
+      `series-wheel`). The script locks eight behaviours through the WHEEL rather than
+      in-process: typed bodies, monotone time, named tags, the partition refusal and one
+      part per partition, a seal footer, a `read_by_time` window, retention removing a
+      bucket, and `meta` identity — including that reopening with another bucket size is
+      refused by name. Still owed: a publish story (nothing reaches an index).
 - [ ] Owed: **a point read re-opens and re-parses the part on every call.** 23 of the
       68 µs above is the index parsed twice (`parts_by_offset` and then `read`), and
       the rest is the 64 KiB block decompression. Caching the reader inside `Log`
@@ -2392,9 +2396,11 @@ been failing to compile by default features for a day while every green run used
   hand-copied `.so` shadows the installed wheel and the check passes against yesterday's
   code. The script now prints the module path it loaded, and its schema exporter resolves
   `../../okm-core` from `__file__` instead of the cwd, so it runs from anywhere.
-- **series-wheel** — the same round trip for `okm-series`, cut down to "the extension
-  imports": that crate has no Python-side acceptance script yet (see its Owed list, which
-  also records why `maturin build` had never worked there at all).
+- **series-wheel** — the same round trip for `okm-series`, which had no Python-side
+  acceptance script at all until now: `bindings/okm-series-python/accept_embedded.py` locks
+  eight behaviours through the wheel (typed bodies, monotone time, named tags, the
+  partition refusal, a seal footer, a `read_by_time` window, retention, and `meta`
+  identity, including a refusal when the log is reopened with another bucket size).
 
 Wheel round trips were verified locally against a real install before the workflow was
 written: `okm-0.1.0-cp314-cp314-manylinux_2_38_x86_64.whl` in a fresh venv, with the

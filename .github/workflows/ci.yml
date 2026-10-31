@@ -109,8 +109,9 @@ jobs:
       - name: build the wheel
         working-directory: bindings/okm-series-python
         run: pip install "maturin>=1.0,<2.0" && maturin build --release --out dist
-      # There is no Python-side acceptance script for this crate yet (its meaning lives in
-      # the Rust tests), so the round trip proves what the repo had never proved: the
-      # wheel builds, installs into a clean venv, and the extension imports by name.
-      - name: install and import it
-        run: python -m venv $RUNNER_TEMP/series-venv && $RUNNER_TEMP/series-venv/bin/pip install --no-index --find-links bindings/okm-series-python/dist okm-series && $RUNNER_TEMP/series-venv/bin/python -P -c "import okm_series; print(okm_series.Log, okm_series.Record)"
+      - name: install the wheel into a clean venv
+        run: python -m venv $RUNNER_TEMP/series-venv && $RUNNER_TEMP/series-venv/bin/pip install --no-index --find-links bindings/okm-series-python/dist okm-series
+      # `-P` for the same reason as the okm-python job: the acceptance lives beside the
+      # crate, and the wheel has to be what answers.
+      - name: acceptance against the installed wheel
+        run: $RUNNER_TEMP/series-venv/bin/python -P bindings/okm-series-python/accept_embedded.py
