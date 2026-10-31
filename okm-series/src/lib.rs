@@ -11,6 +11,25 @@
 //! aggregation). It is the append-and-read half, and the reason it can be a file
 //! instead of a table is retention — a directory is dropped in one syscall, where an
 //! LSM row leaves a tombstone behind.
+//!
+//! Following a log is a `read(from)` loop, and the position belongs to the caller:
+//! `read` takes an offset and every record comes back with its own, so stopping exactly
+//! where the last read stopped is arithmetic on a `u64` rather than a cursor this crate
+//! hands out.
+//!
+//! It is not a timestamp. Several records can share a millisecond — resuming with `>`
+//! drops the rest of that millisecond, resuming with `>=` delivers them twice — and
+//! retention removes whole buckets, so a clock can also be cut from behind. An offset is
+//! per STREAM (ADR-0046 §9): a partitioned log has one position per partition value,
+//! which is what `parts()` reports. An offset that retention (or a lost tail) retired
+//! resumes at the oldest record the log still has, and the caller sees the gap in the
+//! offsets it gets back and decides what a gap means.
+//!
+//! How far behind is the same arithmetic: `PartInfo` carries `first_offset`, `records`,
+//! `first_ts` and `last_ts`, so lag is a subtraction, not an API. A notification would
+//! need a thread and a clock this crate does not own — and a writer in another process
+//! could not reach the caller's — which is the engine's in-process event stream
+//! (ADR-0047), not this log's job.
 
 pub mod body;
 pub mod dict;
