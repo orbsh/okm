@@ -646,6 +646,21 @@ pub fn sealed_path_for(part: &Path) -> Result<PathBuf, Error> {
     Ok(part.with_file_name(name))
 }
 
+/// The first logical offset this part covers, from its 48-byte header alone.
+///
+/// `PartReader::open` answers the same question, but it pays for the index (70 KB on a
+/// million-record part) and, on an open part, for decoding the last block. Ordering parts
+/// is a header question: a caller that only needs "which part comes first" should not read
+/// an index to find out — `Log::read` was doing exactly that, then opening the part again
+/// to read one record.
+pub fn first_offset_of(path: &Path) -> Result<u64, Error> {
+    let mut file = File::open(path)?;
+    let mut head = [0u8; PART_HEADER_LEN as usize];
+    file.read_exact(&mut head)?;
+    let header = PartHeader::decode(&head).ok_or(Error::BadFrame("part header"))?;
+    Ok(header.first_offset)
+}
+
 pub fn open_path(dir: &Path, number: u32) -> PathBuf {
     dir.join(format!("part-{number:08}.open"))
 }

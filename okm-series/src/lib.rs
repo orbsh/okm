@@ -615,8 +615,10 @@ impl Log {
         let parts = self.all_parts()?;
         let mut keyed = Vec::with_capacity(parts.len());
         for part in parts {
-            let first_offset = match PartReader::open(&part.2, None) {
-                Ok(reader) => reader.offset_span().0,
+            // The header answers the ordering question; opening the part would parse an
+            // index that `read` is about to parse again.
+            let first_offset = match part::first_offset_of(&part.2) {
+                Ok(first_offset) => first_offset,
                 Err(_) => continue,
             };
             keyed.push((first_offset, part));
