@@ -18,7 +18,7 @@
 //! caller decides when to rebuild (write count, a timer) and swaps the whole
 //! handle; there is no per-node invalidation to get wrong.
 
-use okm_core::engine::storage::{Batch, VirtualStorage};
+use okm_core::engine::storage::{Batch, VirtualStorage, scan_suffix_kv};
 
 use crate::codec::{Codec, Reader, put_u16};
 use crate::hnsw::{Hnsw, HnswParams};
@@ -31,6 +31,11 @@ use crate::hnsw::{Hnsw, HnswParams};
 /// the graph's four faces (0x06–0x09) with no slot left empty between them;
 /// 0x0B–0x0F stay free for fixed faces.
 pub const VECTOR_INDEX_SLOT: u8 = 0x0A;
+
+/// Where the snapshot lived before ADR-0041 compacted the graph faces and moved
+/// it to [`VECTOR_INDEX_SLOT`]. Nothing reads this slot any more, so blobs an
+/// older build left there are space no other code will ever reclaim.
+pub const RETIRED_SNAPSHOT_SLOT: u8 = 0x0B;
 
 const MAGIC: &[u8; 8] = b"OKMVEC1\0";
 const VERSION: u16 = 1;
@@ -146,6 +151,38 @@ impl VectorIndex {
             shards.push(shard);
         }
         Ok(Some(VectorIndex { ns, shards }))
+    }
+
+    /// Delete every snapshot blob of `ns` in ONE batch, and answer how many went.
+    ///
+    /// The other half of [`Self::save`], and the verb a caller needs when the
+    /// corpus behind the snapshot is gone or rebuilt under a different codec: a
+    /// snapshot is a cache, and a cache nobody sweeps is space with no owner.
+    ///
+    /// It takes the RETIRED slot's blobs with it ([`RETIRED_SNAPSHOT_SLOT`]) —
+    /// one sweep for the space ADR-0041's renumbering left behind, not a second
+    /// mechanism. Nothing reads that slot, so those bytes would otherwise sit
+    /// there for the life of the store.
+    pub fn wipe<S: VirtualStorage + ?Sized>(store: &mut S, ns: [u8; 2]) -> Result<usize, String> {
+        let mut removed = 0;
+        let mut batch = Batch::default();
+        for slot in [VECTOR_INDEX_SLOT, RETIRED_SNAPSHOT_SLOT] {
+            let mut prefix = Vec::with_capacity(3);
+            prefix.extend_from_slice(&ns);
+            prefix.push(slot);
+            let blobs = scan_suffix_kv(&*store, &prefix).map_err(|e| e.to_string())?;
+            for (suffix, _) in &blobs {
+                let mut key = prefix.clone();
+                key.extend_from_slice(suffix);
+                batch.del(&key);
+                removed += 1;
+            }
+        }
+        if removed == 0 {
+            return Ok(0);
+        }
+        store.commit_batch(batch).map_err(|e| e.to_string())?;
+        Ok(removed)
     }
 
     pub fn slot_key(&self, shard: usize) -> Vec<u8> {

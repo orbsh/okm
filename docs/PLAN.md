@@ -1971,9 +1971,17 @@ panic lints allowed only in the places it names. So the runtime half of
       the primary rows. Mandatory rather than optional, because the numbers changed
       too — the retired predicate index sat exactly where out-edges live now, so an
       older store's entries would otherwise be read as something they are not.
-- [ ] To pay later: a schema version + background reindex for stores too large to
-      rebuild in one batch (nobody needs it yet), and the vector snapshot's own wipe
-      after its move (a stale blob fails its magic and reads as a miss today).
+- [x] Paid 2026-10-31: **the vector snapshot's own wipe.** `VectorIndex::wipe(store, ns)` deletes
+      every shard blob of a namespace in ONE batch and takes the retired slot's blobs with it —
+      `RETIRED_SNAPSHOT_SLOT = 0x0B`, where the snapshot lived before ADR-0041 moved it to 0x0A.
+      Nothing reads that slot, so those bytes had no owner and would have sat there for the life of
+      the store; sweeping them is one migration verb, not a second mechanism. Locked by
+      `vector_index_test::wipe_reclaims_every_blob_of_a_namespace` (four live shards plus the one
+      the old build left behind → 5, and a second sweep finds nothing) and
+      `::wipe_leaves_another_namespace_alone` (the key is namespace-scoped, so is the sweep).
+      `Graph::reindex` still does not touch the vector slot — it names the verb that does.
+- [ ] Deferred (2026-10-31): a schema version + background reindex for stores too large to rebuild
+      in one batch. Nobody needs it yet.
 
 ## 2026-10-27 — layout versions are stamps (ADR-0042)
 
