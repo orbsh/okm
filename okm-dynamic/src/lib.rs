@@ -28,22 +28,31 @@
 // (and the oracle for every failable path is "assert on the error VALUE"). This line
 // is per-crate because `[lints]` is per-package and covers every target, with no way
 // to scope a lint to lib/bins — the manifest cannot express `cfg(test)`.
-#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn))]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::unwrap_in_result,
+        clippy::panic_in_result_fn
+    )
+)]
 
 #[cfg(feature = "arrow")]
 pub mod arrow;
+mod collection;
 mod decode;
 mod encode;
 mod graph;
 mod index;
 mod path;
-mod collection;
-mod reduce;
 mod plan;
 mod plan_fields;
+mod reduce;
 
-pub use okm_core::schema::{FieldSchema, CollectionSchema};
 pub use okm_core::field::FieldType;
+pub use okm_core::schema::{CollectionSchema, FieldSchema};
 
 // NOTE (v1 scope): nested key segments are NOT supported by the dynamic
 // codec — `FieldType::Segment` does not exist (the key-composition
@@ -51,17 +60,22 @@ pub use okm_core::field::FieldType;
 // fields. Should segments return, the schema export already carries the
 // FieldType variant slot for them.
 
+pub use collection::DynamicCollection;
 pub use decode::{decode_key, decode_payload};
 pub use encode::{encode_fields, encode_key, encode_payload};
-pub use index::{decode_includes, index_entries, path_index_entries, scan_access_method, scan_access_method_covered, scan_access_method_exact, AccessMethod, AccessMethodKind, Admits, FuncDerive};
-pub use path::{Component, Path};
-pub use collection::DynamicCollection;
 pub use graph::{DynEdge, Graph};
-pub use reduce::{scan_reduces, reduce_get, ReduceLogic, ReduceLogicObj, BoundReduce, ReduceSpec, PresetKind, PresetLogic};
-pub use plan::{decode_stored, PlannedDelete, PlannedPut, PlannedWrite, Stored};
+pub use index::{
+    AccessMethod, AccessMethodKind, Admits, FuncDerive, decode_includes, index_entries,
+    path_index_entries, scan_access_method, scan_access_method_covered, scan_access_method_exact,
+};
+pub use path::{Component, Path};
+pub use plan::{PlannedDelete, PlannedPut, PlannedWrite, Stored, decode_stored};
 pub use plan_fields::{
-    VocabMirror, PlannedFields, fields_from_frames, fields_key, plan_delete_fields,
-    plan_put_fields,
+    PlannedFields, VocabMirror, fields_from_frames, fields_key, plan_delete_fields, plan_put_fields,
+};
+pub use reduce::{
+    BoundReduce, PresetKind, PresetLogic, ReduceLogic, ReduceLogicObj, ReduceSpec, reduce_get,
+    scan_reduces,
 };
 
 use std::collections::BTreeMap;
@@ -112,9 +126,16 @@ pub enum CodecError {
     /// Schema field missing from the value tree.
     MissingField(String),
     /// Value variant does not match the field's declared kind.
-    TypeMismatch { field: String, expected: &'static str },
+    TypeMismatch {
+        field: String,
+        expected: &'static str,
+    },
     /// Encoded bytes shorter than the schema requires.
-    Truncated { field: String, needed: usize, got: usize },
+    Truncated {
+        field: String,
+        needed: usize,
+        got: usize,
+    },
     /// Payload header version newer than the schema's.
     VersionMismatch { schema: u8, found: u8 },
     /// Cold TLV frame with a tag outside the schema's cold field set.
@@ -140,7 +161,10 @@ impl std::fmt::Display for CodecError {
                 write!(f, "field `{field}`: expected {expected}")
             }
             CodecError::Truncated { field, needed, got } => {
-                write!(f, "field `{field}` truncated: need {needed} bytes, got {got}")
+                write!(
+                    f,
+                    "field `{field}` truncated: need {needed} bytes, got {got}"
+                )
             }
             CodecError::VersionMismatch { schema, found } => {
                 write!(f, "payload version {found} newer than schema {schema}")
