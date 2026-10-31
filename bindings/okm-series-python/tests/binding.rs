@@ -27,6 +27,61 @@ fn open_log<'py>(
         .call((root.to_str().unwrap(),), Some(&kwargs))
 }
 
+/// A `Reader` opens while the writer holds the log, and a cursor pages one stream. Both go
+/// through Python objects: no Rust-side shortcut, so a method that only exists on one class
+/// shows up here as an AttributeError rather than as a passing test.
+#[test]
+fn a_reader_reads_while_the_writer_holds_and_a_cursor_pages() {
+    Python::attach(|py| -> PyResult<()> {
+        let dir = tempfile::tempdir().unwrap();
+        let module = module(py)?;
+        let log = open_log(py, &module, dir.path(), &[])?;
+        for index in 0..12u64 {
+            let body = PyDict::new(py);
+            body.set_item(1u16, index)?;
+            log.call_method1("append", (body,))?;
+        }
+        log.call_method0("flush")?;
+
+        // The writer is alive; the reader takes no LOCK and registers no claim.
+        let kwargs = PyDict::new(py);
+        kwargs.set_item("precision", "ns")?;
+        let reader = module
+            .getattr("Reader")?
+            .call((dir.path().to_str().unwrap(),), Some(&kwargs))?;
+        let rows = reader.call_method1("read", (0u64, 100usize))?;
+        assert_eq!(rows.cast::<PyList>()?.len(), 12);
+
+        // batch=5 → three reads of 5/5/2 through the iterator protocol.
+        let cursor = log.call_method1("iter_records", (py.None(), 5usize))?;
+        let mut seen = Vec::new();
+        loop {
+            match cursor.call_method0("__next__") {
+                Ok(item) if !item.is_none() => {
+                    seen.push(item.getattr("body")?.get_item(1u16)?.extract::<u64>()?)
+                }
+                Ok(_) => break,
+                Err(error) if error.is_instance_of::<pyo3::exceptions::PyStopIteration>(py) => {
+                    break
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        assert_eq!(seen, (0..12u64).collect::<Vec<_>>());
+
+        // The Reader has the same cursor, and reading a directory that is not a log is refused.
+        let reader_cursor = reader.call_method0("iter_records")?;
+        let first = reader_cursor.call_method0("__next__")?;
+        assert_eq!(first.getattr("offset")?.extract::<u64>()?, 0);
+        let empty = module
+            .getattr("Reader")?
+            .call((dir.path().join("nope").to_str().unwrap(),), Some(&kwargs));
+        assert!(empty.is_err(), "a reader must not create a log");
+        Ok(())
+    })
+    .unwrap();
+}
+
 #[test]
 fn a_python_caller_appends_reads_and_keeps_its_types() {
     Python::attach(|py| -> PyResult<()> {

@@ -2412,7 +2412,8 @@ the next decision can find it.
       stream while the writer runs, refuses a directory that is not a log, and refuses a
       different identity. Still owed from the original item: a *tailing* API that reports how far
       behind it is (the reader answers "what is on disk", a tail would need "and tell me when
-      more arrives"), and nothing in the binding exposes `LogReader` yet.
+      more arrives"). The Python binding exposes it as `okm_series.Reader` (same commit as the
+      cursor, below).
 - [ ] Owed: **packaging, mostly paid (2026-10-31).** `maturin build` never worked for this
       crate: `pyproject.toml` declared `python-source = "."` with no `okm_series/` package
       beside the crate, so every build failed on a directory that was never there. Removed
@@ -2445,10 +2446,16 @@ the next decision can find it.
       `okm-series/tests/reader_cache_test.rs`: a read after an append sees the grown part (a
       stale index would answer three records out of five), `parts()` re-parses after growth, and
       a sealed part answers the same from its new name.
-- [ ] Owed: **the binding reads everything at once.** `read(from, max)` returns a list, so a
-      caller pages by hand; there is no iterator/streaming form and no async surface. (A
-      partition filter it now has — `read_stream` — since one stream is the primitive the
-      union was built on.)
+- [x] Paid 2026-10-31: **the binding pages.** `Log.iter_records(partition=None, batch=1000)` and
+      `Reader.iter_records(...)` return a cursor (`Records`) that asks its source for `batch`
+      records from where the last call stopped, so a caller no longer materialises a whole log to
+      walk it. A cursor walks ONE stream by design: offsets are a stream's own counter, so the
+      union's rows carry several counters interleaved in time order and a single "next offset"
+      would skip records — an unpartitioned log has one stream, and a partitioned one is iterated
+      per value `parts()` reports. The same commit exposes the crate's `LogReader` as
+      `okm_series.Reader(...)`: no `LOCK`, no claim, so Python can read a log another process is
+      writing, or read while this process's writer holds it. Still owed: no async surface
+      (a cursor is synchronous, and `Reader` re-reads to see more rather than waiting).
 
 ## Uuid4 / Uuid7 — an id is 16 bytes, and identity belongs in the key
 
