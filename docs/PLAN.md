@@ -2369,9 +2369,19 @@ the next decision can find it.
       `PyDict_New`; on a nix host it also needs `RUSTFLAGS=-L native=<python3-env>/lib`.
       What this taught: a `required-features` gate with no job is the same as no test at all,
       and it stays green precisely because nothing tries to build it.
-- [ ] Owed: **`Error::TimeBackwards` is unreachable from the API** — it survives as the
-      writer's internal assertion (`part.rs`), and the log clamps instead. Either delete
-      the public variant or document it as an internal invariant that no caller can hit.
+- [x] Resolved 2026-10-31: **`Error::TimeBackwards` is reachable — but not from the log.**
+      The item offered "delete the variant or document it as internal"; the premise was half
+      wrong. `okm_series::part` is a public module, so `PartWriter::append` is a public entry
+      point and a caller writing a part by hand CAN see this error — that is where the
+      invariant lives, and it refuses rather than filing a record out of order. What is true:
+      `Log` never raises it, because it stamps the time itself and clamps to
+      `max(clock, last)` (ADR-0046 §2) — a stepped clock costs a shared timestamp, not a lost
+      record. That is a layering decision (the log owns policy, the writer owns the
+      invariant), so the variant stays and its doc now says which face raises it.
+      `okm-series/tests/time_backwards_test.rs` pins both halves: `PartWriter` refuses
+      1005 then 1004 and names both times, and accepts a repeated `1005`; and a `Log` with a
+      clock the test steps 5 seconds back still appends, offsets stay dense, and both records
+      carry the clamped timestamp.
 - [x] Paid 2026-10-31: **concurrency and the crash case.** `okm-series/tests/lock_test.rs`
       covers the four claims the design had been resting on in prose: a second `Log` for one
       root in the same process is refused (this was a hole — the pid check passes when both
