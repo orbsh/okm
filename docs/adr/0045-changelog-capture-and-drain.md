@@ -2,8 +2,12 @@
 
 > **Languages:** [English](0045-changelog-capture-and-drain.md) (primary) · [中文](0045-changelog-capture-and-drain.zh-CN.md)
 
-**Status:** Accepted (2026-10-28) — design only; nothing is implemented.
-**Date:** 2026-10-28
+**Status:** Accepted (2026-10-28) — capture implemented (2026-10-31) in
+`okm-core::changelog`. The commit funnel stages each semantic write's frame and appends only
+after the engine returned `Ok` (`stage_capture` / `flush_capture` cover the multi-table batch);
+segments seal by rename with a layout sidecar beside them; and the readers a drainer needs are
+here (`read_sealed`, `read_open_tail`, `sealed_segments`). The drain itself is out of process by
+decision and belongs to its consumer, not to this crate. **Date:** 2026-10-28
 
 ## Context
 

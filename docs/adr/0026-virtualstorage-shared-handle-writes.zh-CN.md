@@ -2,7 +2,10 @@
 
 > **Languages:** [English](0026-virtualstorage-shared-handle-writes.md) (primary) · [中文](0026-virtualstorage-shared-handle-writes.zh-CN.md)
 
-**Status:** Accepted (2026-09-26) — design; implementation pending, see Consequences
+**Status:** Accepted (2026-09-26) —— 同一轮在 `okm-core` 里已实现：`VirtualStorage` 的每个写
+都取 `&self`（`put` / `del` / `commit_batch`），所有实现跟着改；真正需要可变 op 列表的那一个
+调用方用 `RefCell<&mut Batch>`（`BatchStore`）持有。下游那一半（aura 的 `MqStore` 收窄、
+`store_exec` 接缝）由各自的仓记录。
 
 ## Context
 

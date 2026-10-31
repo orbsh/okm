@@ -2,8 +2,11 @@
 
 > **语言：** [English](0045-changelog-capture-and-drain.md)（主） · [中文](0045-changelog-capture-and-drain.zh-CN.md)
 
-**状态：** 已接受（2026-10-28）——只定设计，未实现。
-**日期：** 2026-10-28
+**状态：** 已接受（2026-10-28）——捕获侧已实现（2026-10-31），在
+`okm-core::changelog` 里。提交入口把每次语义写的帧暂存起来，只在引擎返回 `Ok` 之后追加
+（`stage_capture` / `flush_capture` 覆盖跨表的那一批）；段靠改名封存，旁边落一个布局 sidecar；
+抽干方需要的读端都在（`read_sealed`、`read_open_tail`、`sealed_segments`）。抽干本身按裁决在
+进程外，属于它的消费者，不属于这个 crate。**日期：** 2026-10-28
 
 ## 背景
 

@@ -2,7 +2,10 @@
 
 > **Languages:** [English](0026-virtualstorage-shared-handle-writes.md) (primary) · [中文](0026-virtualstorage-shared-handle-writes.zh-CN.md)
 
-**Status:** Accepted (2026-09-26) — design; implementation pending, see Consequences
+**Status:** Accepted (2026-09-26) — implemented in `okm-core` the same wave: every write on
+`VirtualStorage` takes `&self` (`put` / `del` / `commit_batch`), all impls follow, and the one
+caller that genuinely needs a mutable op list holds it as `RefCell<&mut Batch>` (`BatchStore`). The
+downstream halves (aura's `MqStore` narrowing, `store_exec` seams) are those repos' records.
 
 ## Context
 

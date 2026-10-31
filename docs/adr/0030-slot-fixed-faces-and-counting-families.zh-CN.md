@@ -1,6 +1,8 @@
 # ADR-0030：slot——固定面一字节，计数族两字节
 
-**状态**：已接受（2026-10-17）——设计定案；实现待做，见「后果」
+**状态**：已接受（2026-10-17）——已实现。slot 的自定界在 `index::slot` / `write_slot` 里
+（family nibble 非零 = 两字节，为零 = 一字节），上限是 assert 而不是掩码，在用的 family 是
+ADR-0032 重排之后的 0x3/0x4/0x5。
 **日期**：2026-10-17
 **英文版**：[0030-slot-fixed-faces-and-counting-families.md](0030-slot-fixed-faces-and-counting-families.md)
 **取代**：ADR-0016 的段表（4 字节头对计数族继续有效；slot 的宽度现在由族决定）
