@@ -152,6 +152,108 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         )
     }
 
+    /// Rebuild every declared face from the rows, then stamp `faces` (ADR-0048).
+    ///
+    /// Two phases, in this order, because they answer different questions. First
+    /// the faces are SWEPT: an entry's key encodes the value it indexes, so an
+    /// entry whose row has since changed hands answers at a key no row produces
+    /// any more, and re-deriving writes the new key without ever naming the old
+    /// one. Then they are DERIVED from the primary rows.
+    ///
+    /// `chunk` bounds the work between commits — ops per batch — so memory stays
+    /// flat on a table too large for one batch. That is the whole reason this verb
+    /// exists next to `put`: the atomic alternative is one batch holding every
+    /// entry of the table. The price is that a reader running DURING the rebuild
+    /// sees a half-built face; the stamp is written only on completion, so an
+    /// interrupted run still answers `Stale` and the next call starts over rather
+    /// than resuming into a state nobody described. Operator window: do not read
+    /// while it runs.
+    ///
+    /// Documents that exist only as a dynamic segment are not here: they carry no
+    /// declared field, and declared fields are the only thing a face indexes
+    /// (`put` does not derive faces for them either).
+    ///
+    /// Not this verb's business: reduce accumulators (data, not derived structure)
+    /// and the vector snapshot (it needs an embedding model, so its owner wipes
+    /// and re-adds — `okm_vector::VectorIndex::wipe`).
+    pub fn rebuild_faces(
+        &self,
+        chunk: usize,
+    ) -> crate::error::Result<crate::model::faces::RebuildReport> {
+        use crate::engine::storage::{Batch, prefix_end};
+        use crate::model::faces::RebuildReport;
+
+        let chunk = chunk.max(1);
+        let header = self.header();
+        let mut report = RebuildReport::default();
+
+        // Phase 1 — sweep every face this declaration derives today. Deprecated
+        // slots are skipped: their entries are stale by declaration, and
+        // `prune_deprecated_slots` is the verb that removes them.
+        let mut batch = Batch::default();
+        for decl in <R as Document>::INDEX_DECLS
+            .iter()
+            .filter(|d| !d.deprecated)
+        {
+            let mut prefix = header.clone();
+            crate::model::index::write_slot(&mut prefix, decl.slot);
+            let end = prefix_end(&prefix);
+            for item in self.store.scan_range_iter(&prefix, end.as_deref()) {
+                let (key, _) = item?;
+                batch.del(&key);
+                report.entries_deleted += 1;
+                if batch.ops.len() >= chunk {
+                    self.store.commit_batch(std::mem::take(&mut batch))?;
+                    report.chunks += 1;
+                }
+            }
+            report.faces_swept += 1;
+        }
+        if !batch.ops.is_empty() {
+            self.store.commit_batch(std::mem::take(&mut batch))?;
+            report.chunks += 1;
+        }
+
+        // Phase 2 — derive from the rows. `scan_range_iter` is the lazy face of
+        // the engine's own iterator, so this holds one chunk of ops, not one
+        // table of keys.
+        let mut prefix = header.clone();
+        crate::model::index::write_slot(&mut prefix, crate::model::index::PRIMARY_SLOT);
+        let end = prefix_end(&prefix);
+        for item in self.store.scan_range_iter(&prefix, end.as_deref()) {
+            let (key, value) = item?;
+            let suffix = &key[prefix.len()..];
+            if suffix.len() < K::KEY_LEN {
+                return Err(crate::error::Error::Corrupt {
+                    what: format!(
+                        "a primary entry is {} byte(s), shorter than the {}-byte key",
+                        suffix.len(),
+                        K::KEY_LEN
+                    ),
+                });
+            }
+            let decoded = K::decode(&suffix[suffix.len() - K::KEY_LEN..]);
+            let document = R::decode_payload(&value);
+            for (ek, ev) in R::index_entries(&decoded, &document, &header) {
+                batch.put(ek, ev);
+                report.entries_written += 1;
+            }
+            report.documents += 1;
+            if batch.ops.len() >= chunk {
+                self.store.commit_batch(std::mem::take(&mut batch))?;
+                report.chunks += 1;
+            }
+        }
+        if !batch.ops.is_empty() {
+            self.store.commit_batch(std::mem::take(&mut batch))?;
+            report.chunks += 1;
+        }
+
+        // Phase 3 — the stamp, the last write. Nothing above claims completion.
+        crate::model::meta::stamp_faces(&self.store, &header, R::LAYOUT_VERSION, R::FACES)?;
+        Ok(report)
+    }
+
     /// Record one caller-owned name in the meta entry (ADR-0043), stamping the
     /// table first when it is fresh. `version` is the runtime's: it is re-stamped
     /// from `R::LAYOUT_VERSION` after the caller's name is applied, so the shape

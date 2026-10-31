@@ -104,6 +104,10 @@ name = "faces_test"
 required-features = ["test-engines", "schema-serde"]
 
 [[test]]
+name = "rebuild_test"
+required-features = ["test-engines"]
+
+[[test]]
 name = "subscribe_batch_test"
 required-features = ["test-engines"]
 

@@ -460,7 +460,7 @@ pub struct User {
 [count u16 BE] ( [name_len varint][名字 UTF-8][value_len varint][字节] )*
 ```
 
-有两个名字属于运行时。`version` 是 payload 的形状。`faces` 是这份声明诸派生面的指纹——`#[ok_index]` 的槽住在它们自己的 ns 里，改动它们一个 payload 字节都不动（ADR-0048）——它从声明算出来，不是填出来的。`Collection::faces_status()` 比对它，答 `Match` / `Stale` / `Unknown`；`ensure_layout` 绝不为它拒绝：在这个机制之前写的库会挂在一个它永远满足不了的检查上，而过期的面是可修复的漂移，不是读不懂的行。
+有两个名字属于运行时。`version` 是 payload 的形状。`faces` 是这份声明诸派生面的指纹——`#[ok_index]` 的槽住在它们自己的 ns 里，改动它们一个 payload 字节都不动（ADR-0048）——它从声明算出来，不是填出来的。`Collection::faces_status()` 比对它，答 `Match` / `Stale` / `Unknown`，而 `Collection::rebuild_faces(chunk)` / `Graph::reindex(chunk)` 是修复 `Stale` 的动词，提交按块切分；`ensure_layout` 绝不为它拒绝：在这个机制之前写的库会挂在一个它永远满足不了的检查上，而过期的面是可修复的漂移，不是读不懂的行。
 
 `Collection::ensure_layout()` 是首次接触动词：缺席 → 种下本构建的版本与诸面；相同 → 返回该行；版本不同，或该行没写 version → `Error::LayoutMismatch { stored, current }`，两个数字都点名。`set_meta(name, value)` 记录调用方自己的名字（运行时随后重新盖 `version`）。调用点在挂载：每表一次点读，绝不是每行的成本——`Collection::new` 因此保持零 I/O。
 

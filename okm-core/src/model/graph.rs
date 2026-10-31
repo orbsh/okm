@@ -803,31 +803,51 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
     /// Wiping the vector snapshot's slot is the vector layer's business, not
     /// this one's: a stale blob there decodes as garbage and is a cache miss, and
     /// `okm_vector::VectorIndex::wipe` is the verb that reclaims it.
-    pub fn reindex(&mut self) -> crate::error::Result<usize> {
+    ///
+    /// `chunk` bounds the ops per commit. A reader running DURING the rebuild
+    /// sees a half-built face, which is why the operator contract is a window: do
+    /// not read while it runs. `usize::MAX` restores the old single-commit shape
+    /// (atomic, and one batch of every entry in the edge set).
+    pub fn reindex(&mut self, chunk: usize) -> crate::error::Result<usize> {
+        use crate::engine::storage::prefix_end;
+
+        let chunk = chunk.max(1);
         let slots = [
             EDGE_OUT_SLOT,
             EDGE_IN_SLOT,
             EDGE_PREDICATE_OUT_SLOT,
             EDGE_PREDICATE_IN_SLOT,
         ];
+
+        // Phase 1 — sweep. An edge id is the last segment of every face key, so a
+        // face entry from another layout sits at a key this build never builds;
+        // re-deriving cannot name it. Both phases commit every `chunk` ops, so a
+        // table of edges costs one chunk of memory rather than one batch of all.
         let mut batch = Batch::default();
         for slot in slots {
-            for (key, _) in scan_suffix_kv(&self.store, &self.face_key(slot, &[]))? {
+            let prefix = self.face_key(slot, &[]);
+            let end = prefix_end(&prefix);
+            for item in self.store.scan_range_iter(&prefix, end.as_deref()) {
+                let (key, _) = item?;
                 batch.del(&key);
+                if batch.ops.len() >= chunk {
+                    self.store.commit_batch(std::mem::take(&mut batch))?;
+                }
             }
         }
-        // The edges themselves come from the primary: ids then, not scans of a
-        // face we just emptied.
+        if !batch.ops.is_empty() {
+            self.store.commit_batch(std::mem::take(&mut batch))?;
+        }
+
+        // Phase 2 — derive from the primary, lazily: ids come from the walk, not
+        // from a face we just emptied.
         let primary = self.face_key(PRIMARY_SLOT, &[]);
-        let ids: Vec<u64> = self
-            .store
-            .scan_suffix(&primary)?
-            .into_iter()
-            .filter_map(|sfx| <[u8; 8]>::try_from(sfx.as_slice()).ok())
-            .map(u64::from_be_bytes)
-            .collect();
-        for edge_id in &ids {
-            let Some(bytes) = self.store.get(&self.primary_key(*edge_id))? else {
+        let end = prefix_end(&primary);
+        let mut rebuilt = 0usize;
+        for item in self.store.scan_range_iter(&primary, end.as_deref()) {
+            let (key, bytes) = item?;
+            let suffix = &key[primary.len()..];
+            let Some(id) = <[u8; 8]>::try_from(suffix).ok().map(u64::from_be_bytes) else {
                 continue;
             };
             let parsed = decode_body(&bytes);
@@ -837,7 +857,7 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
             let src_wire = parsed.src.encode();
             let dst_wire = parsed.dst.encode();
             let predicate_be = parsed.predicate_vocab_id.to_be_bytes();
-            let id_be = edge_id.to_be_bytes();
+            let id_be = id.to_be_bytes();
             batch.put(
                 self.face_key(EDGE_OUT_SLOT, &[&src_wire, &dst_wire, &id_be]),
                 Vec::new(),
@@ -860,9 +880,15 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
                 ),
                 Vec::new(),
             );
+            rebuilt += 1;
+            if batch.ops.len() >= chunk {
+                self.store.commit_batch(std::mem::take(&mut batch))?;
+            }
         }
-        self.store.commit_batch(batch)?;
-        Ok(ids.len())
+        if !batch.ops.is_empty() {
+            self.store.commit_batch(batch)?;
+        }
+        Ok(rebuilt)
     }
 
     /// Filter by declared attribute (a counting-family 0x1 face): scan the

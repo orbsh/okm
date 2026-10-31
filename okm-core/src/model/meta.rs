@@ -267,6 +267,30 @@ pub fn write<S: VirtualStorage + ?Sized>(store: &S, header: &[u8], meta: &TableM
     store.put(meta_key(header), meta.encode())
 }
 
+/// Write the face stamp, creating the meta row if the store has none.
+///
+/// This is the ONE verb that moves `faces` after a store already exists — the
+/// rebuild calls it on completion, which is why an interrupted rebuild needs no
+/// state of its own: the stamp simply was never written, so the next open still
+/// answers `Stale` (ADR-0048). `version` is only seeded on a fresh row and never
+/// rewritten here: a store whose payload shape does not match is a layout
+/// question for `ensure_layout`, not something a stamp write may quietly settle.
+pub fn stamp_faces<S: VirtualStorage + ?Sized>(
+    store: &S,
+    header: &[u8],
+    version: u8,
+    faces: [u8; crate::model::faces::FINGERPRINT_LEN],
+) -> Result<TableMeta> {
+    let key = meta_key(header);
+    let mut meta = match store.get(&key)? {
+        Some(bytes) => TableMeta::decode(&bytes),
+        None => TableMeta::stamped(version),
+    };
+    meta.set(FACES, faces.to_vec());
+    store.put(key, meta.encode())?;
+    Ok(meta)
+}
+
 /// The table header a `Document` writes under: `[partition?][ns]`.
 pub fn document_header<R: Document>() -> Vec<u8> {
     let mut header = Vec::with_capacity(3);

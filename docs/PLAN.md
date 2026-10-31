@@ -2018,15 +2018,26 @@ panic lints allowed only in the places it names. So the runtime half of
       (`dynamic_table_test::a_dynamic_store_stamps_the_number_its_schema_came_with` — an exported
       schema stamps the typed path's number and the typed path recognises its own store, while a
       hand-written one leaves it Unknown).
-- [ ] Deferred (2026-10-31): **a rebuild that runs in chunks**, for stores too large to rebuild in one
-      batch. The status above names the drift; nothing repairs it yet, and `Graph::reindex` is still
-      the only rebuild verb in the model layer (it reads every edge id into memory and commits one
-      batch). Whenever it is built it belongs on `Collection` and the vector layer, it deletes and
-      re-derives the faces the declaration names, and it writes `faces` ON COMPLETION — which is why
-      no "rebuilding" state is needed: an interrupted rebuild is simply a stamp that was never
-      written, so the next open answers Stale again and the work restarts. Chunked commits give up
-      the atomicity today's `reindex` has (a reader mid-rebuild sees faces missing entries), so the
-      contract is an operator window: don't read while it runs.
+- [x] Paid 2026-10-31: **the rebuild, in chunks.** `Collection::rebuild_faces(chunk)` and
+      `Graph::reindex(chunk)` — the two repairing verbs ADR-0048's stamp points at. Both run the
+      same two phases in the same order: sweep every face the declaration names, then re-derive
+      from the primary rows, committing every `chunk` ops so memory is one chunk rather than one
+      table. The sweep cannot be merged into the derive: an entry's key encodes the value it
+      indexes, so an entry whose row changed hands answers at a key no row produces any more.
+      `usize::MAX` restores the old single-commit shape, which is what the graph's `reindex` was.
+      The stamp is the last write, so an interrupted run leaves a store that still says `Stale` and
+      a next run that starts over — no "rebuilding" state exists, and a reader during the rebuild
+      sees a half-built face (the operator contract is a window: do not read while it runs).
+      Not in these verbs: reduce accumulators (data, not derived structure — a full-table fold is
+      a different mechanism, and they were never in the fingerprint) and the vector snapshot (an
+      embedding model is needed, so `okm_vector::VectorIndex::wipe` plus the owner's re-add is the
+      whole rebuild there). Tests: `okm-core/tests/rebuild_test.rs` (6 — a second declaration's
+      added face gets built, a lost entry comes back, one-chunk-per-op and one-commit rebuilds end
+      up byte-identical, an interrupted run writes no stamp and a rerun finishes, a table with no
+      faces only gets stamped, and the sweep runs over fjall's snapshot iterator, which is the one
+      backend where deleting the keys you are walking could plausibly trip) and one on the graph
+      side (`reindex_rebuilds_the_faces_one_chunk_at_a_time`: an emptied out-face is rebuilt from
+      the primary, and both chunkings agree).
 
 ## 2026-10-27 — layout versions are stamps (ADR-0042)
 

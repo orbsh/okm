@@ -36,6 +36,28 @@ pub struct IndexDecl {
 }
 
 /// Bytes in a fingerprint (two independent 64-bit lanes).
+/// What one [`Collection::rebuild_faces`](crate::Collection::rebuild_faces) run
+/// did, in the units an operator watching a large table cares about: how many
+/// entries were swept, how many rows were re-derived into how many entries, and
+/// how many commits that took.
+///
+/// A run that fails half way answers `Err` and does NOT stamp (ADR-0048), so the
+/// table keeps saying `Stale` and the next run starts over — the numbers here are
+/// for the run that finished.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct RebuildReport {
+    /// Face namespaces emptied in the sweep phase.
+    pub faces_swept: usize,
+    /// Entries deleted in the sweep phase.
+    pub entries_deleted: usize,
+    /// Rows read and re-derived.
+    pub documents: usize,
+    /// Entries written by the derive phase.
+    pub entries_written: usize,
+    /// Commits issued across both phases.
+    pub chunks: usize,
+}
+
 pub const FINGERPRINT_LEN: usize = 16;
 
 /// The two lanes' bases differ, so the second half is not a function of the
