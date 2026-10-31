@@ -6,9 +6,13 @@ nothing here is committed. The proposal in §1–§6 is an outside document
 the code as it stands today, and §8 lists what a real design would have to
 settle first.
 
-Companion: [hypergraph-population.md](hypergraph-population.md) — the ingestion
-side (how hyperedges get proposed and written without an LLM in the write path);
-the two are decidable independently.
+Companion: `~/world/krystallizer/docs/ideas/hypergraph-population.md` — the
+ingestion side (how hyperedges get proposed and written without an LLM in the
+write path). It moved to the service that owns the write side: okm offers no
+extraction, no learner and no thresholds, so that half is memory-layer policy, and
+only its constraints on this carrier are okm's business. The two are decidable
+separately except on arity — a bounded member list here forces the pipeline to
+merge before writing.
 
 ## 1. The claim
 

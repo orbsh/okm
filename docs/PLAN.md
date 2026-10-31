@@ -1463,15 +1463,18 @@ bytes; doing them after P3 means hex locks change once, not twice.
       (ADR-0032 §7). No production data exists in the window; what was missing was the sentence,
       not the machinery.
 
-- [ ] Deferred (2026-10-31, owner): **`Vocab` exposed by the bindings.** ADR-0032's consequences
-      record it as owed and nothing tracks it: `okm-python` and `okm-steel` currently see `Vocab`
-      only in its storage form — a `FieldType::Vocab(_)` arm on the decode side — so a host-language
-      caller cannot declare one, cannot read one back as the label it is, and cannot intern a new
-      label itself. The typed Rust surface is complete (`Vocab<N>`, `VocabId`, the cursor and its
-      cache); what is missing is the seam, and the shape question behind it is whether interning
-      stays a write-path side effect (today: `put` / `save_with_prev_into` intern before encoding)
-      or becomes a verb the host can call, which changes what an uninterned value means at the
-      boundary.
+- [ ] Deferred (2026-10-31, owner): **interning, exposed to the bindings.** ADR-0032's
+      consequences record "exposure of `Vocab`" as owed, and the exact scope is narrower than that
+      sentence reads. READING is already done on the dynamic path: `resolve_vocab_labels`
+      (`okm-dynamic/src/decode.rs:35`) runs inside `DynamicCollection::fetch`
+      (`collection.rs:497`) and replaces the id bytes with the field's LABEL, so a host gets a name
+      back, not a number. WRITING takes an id BY DECISION, not by omission: the frame IS the id
+      ("a label is what a reader resolves, not something a writer stores", `okm-dynamic/src/encode.rs`)
+      — so what a host lacks is only the label → id step, which in Rust happens in the derive's
+      intern hook before encoding. The shape question is whether that step becomes a verb the host
+      may call, and then what an uninterned value means at the boundary (today no such value can
+      reach the encoder at all). Declaring a `Vocab`-typed field already works: the type travels in
+      the schema JSON.
 
 ## ADR-0034 — table names and the export shape (2026-10-21)
 
@@ -2641,3 +2644,7 @@ Wheel round trips were verified locally against a real install before the workfl
 written: `okm-0.1.0-cp314-cp314-manylinux_2_38_x86_64.whl` in a fresh venv, with the
 in-tree `.so` deleted, prints
 `okm: /…/site-packages/okm/__init__.py` and then ALL PASS.
+
+## Ideas (recorded, not designed)
+
+- [ ] Deferred (2026-10-31, owner): **a native n-ary relation carrier** — `docs/ideas/hypergraph.md`. An outside proposal (2026-10-24) to add one payload row plus N membership faces so that "relations containing M" is a prefix scan and "containing M and N" is an intersection. Four things decide it, in the order they bite: (a) the query distribution — the binary graph already answers "relations touching M" with two prefix scans (out + in), so an N-member carrier only wins where N≥3 relations are the normal case; measure before building, with an out/in intersection probe over real data; (b) bounded or unbounded arity — bounded keeps the payload offset computable (the idea's zero-parsing claim), unbounded needs a count prefix in the body; (c) `edge_id` allocation, caller-supplied `u64` everywhere today; (d) the face band is 0x0C–0x0E, not 0x0C–0x0F (0x0F became the table meta face in ADR-0043), and a new carrier's faces have to enter the fingerprint (ADR-0048) with a rebuild verb like the other two carriers have. The ingestion half of the proposal lives in krystallizer — this repository has no extractor and no learner.
