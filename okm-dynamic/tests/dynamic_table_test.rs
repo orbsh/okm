@@ -917,19 +917,24 @@ fn dynamic_variable_width_index_declaration_errors() {
 
 #[test]
 fn a_dynamic_store_stamps_the_number_its_schema_came_with() {
-    // ADR-0048: a schema exported from a Rust declaration carries that
-    // declaration's face fingerprint, so a dynamic writer stamps the same number
-    // the typed path would — and the typed path recognises its own store.
+    // ADR-0048: a table that mirrors an exported declaration stamps the same number
+    // the typed path would, so the two modes agree about the faces. The names come
+    // from the export (a dynamic method has none), which is what makes the numbers
+    // equal rather than merely similar.
     let store = TestStore::default();
     let declared = schema();
-    let indexes = declared.indexes.clone();
-    let method = AccessMethod {
-        slot: indexes[0].slot,
-        fields: indexes[0].fields.clone(),
-        includes: indexes[0].includes.clone(),
-        kind: okm_dynamic::AccessMethodKind::Plain,
-    };
-    let table = DynamicCollection::new(store.clone(), 41, declared, vec![method]);
+    let methods: Vec<AccessMethod> = declared
+        .indexes
+        .iter()
+        .map(|i| AccessMethod {
+            slot: i.slot,
+            fields: i.fields.clone(),
+            includes: i.includes.clone(),
+            kind: okm_dynamic::AccessMethodKind::Plain,
+        })
+        .collect();
+    assert_eq!(methods.len(), 2, "the declaration names two faces");
+    let table = DynamicCollection::new(store.clone(), 41, declared, methods);
     table.ensure_layout().unwrap();
 
     let typed = User::collection(store.clone());
@@ -938,6 +943,24 @@ fn a_dynamic_store_stamps_the_number_its_schema_came_with() {
         okm_core::FaceStatus::Match,
         "same number, so the two modes agree about the faces"
     );
+
+    // The mirror has to be complete: the same export opened with ONE method is a
+    // different declaration, and the fingerprint says so instead of borrowing the
+    // exported number for a face the table never maintains.
+    let store = TestStore::default();
+    let declared = schema();
+    let first = AccessMethod {
+        slot: declared.indexes[0].slot,
+        fields: declared.indexes[0].fields.clone(),
+        includes: declared.indexes[0].includes.clone(),
+        kind: okm_dynamic::AccessMethodKind::Plain,
+    };
+    let table = DynamicCollection::new(store.clone(), 41, declared, vec![first]);
+    table.ensure_layout().unwrap();
+    assert!(matches!(
+        User::collection(store.clone()).faces_status().unwrap(),
+        okm_core::FaceStatus::Stale { .. }
+    ));
     assert_eq!(typed.ensure_layout().unwrap().faces(), Some(User::FACES));
 
     // The other half: a schema without a fingerprint (a hand-written one) leaves
@@ -947,10 +970,86 @@ fn a_dynamic_store_stamps_the_number_its_schema_came_with() {
     bare.faces = Vec::new();
     let table = DynamicCollection::new(store.clone(), 41, bare, Vec::new());
     table.ensure_layout().unwrap();
-    assert_eq!(
+    // A hand-written schema has no exported fingerprint, so the table's own access
+    // methods are hashed instead — and the typed declaration disagrees with them
+    // (its index is named, the dynamic one is `plain`), which is `Stale`: the store
+    // was built for a different declaration, not for no declaration at all.
+    assert!(matches!(
         User::collection(store.clone()).faces_status().unwrap(),
-        okm_core::FaceStatus::Unknown {
-            current: User::FACES
-        },
+        okm_core::FaceStatus::Stale { .. }
+    ));
+}
+
+#[test]
+fn a_hand_declared_table_stamps_its_faces_and_rebuilds_a_new_one() {
+    // ADR-0048 on the host-declared path: the access methods ARE the declaration,
+    // so the store is stamped with their fingerprint — and a table declared with
+    // one more method can both SEE the drift and repair it.
+    let store = TestStore::default();
+    let one = vec![AccessMethod::plain(
+        0x3001,
+        vec!["level".into()],
+        Vec::new(),
+    )];
+    let t = DynamicCollection::new(store.clone(), 41, schema(), one);
+    t.ensure_layout().unwrap();
+    assert_eq!(t.faces_status().unwrap(), okm_core::FaceStatus::Match);
+    t.merge(&key_bytes(1, 10), &values(4, 100, "a")).unwrap();
+    t.merge(&key_bytes(1, 11), &values(9, 100, "b")).unwrap();
+    assert_eq!(t.scan(0x3001, &4u32.to_be_bytes()).unwrap().len(), 1);
+
+    let two = vec![
+        AccessMethod::plain(0x3001, vec!["level".into()], Vec::new()),
+        AccessMethod::plain(0x3002, vec!["score".into()], Vec::new()),
+    ];
+    let t2 = DynamicCollection::new(store.clone(), 41, schema(), two);
+    assert!(matches!(
+        t2.faces_status().unwrap(),
+        okm_core::FaceStatus::Stale { .. }
+    ));
+    assert!(
+        t2.scan(0x3002, &100u16.to_be_bytes()).unwrap().is_empty(),
+        "the added face has never been derived"
+    );
+
+    let report = t2.rebuild_faces(1).unwrap();
+    assert_eq!(report.faces_swept, 2);
+    assert_eq!(report.documents, 2, "two rows, no segment-only documents");
+    assert!(report.entries_written >= 4, "{report:?}");
+    assert_eq!(t2.faces_status().unwrap(), okm_core::FaceStatus::Match);
+
+    assert_eq!(t2.scan(0x3002, &100u16.to_be_bytes()).unwrap().len(), 2);
+    assert_eq!(t2.scan(0x3001, &4u32.to_be_bytes()).unwrap().len(), 1);
+    assert_eq!(t2.scan(0x3001, &9u32.to_be_bytes()).unwrap().len(), 1);
+}
+
+#[test]
+fn a_reader_without_the_declaration_learns_what_each_path_slot_means() {
+    // ADR-0029: a path index's slot IS its identity — the entry key carries no
+    // path. So the declaration is recorded beside the stamp, and a process that
+    // never saw the declaration can still say what `0x3005` indexes.
+    let store = TestStore::default();
+    let method = AccessMethod::path(
+        0x3005,
+        okm_dynamic::Path::parse("note").unwrap(),
+        okm_core::field::FieldType::Str,
+    )
+    .unwrap();
+    let writer = DynamicCollection::new(store.clone(), 41, schema(), vec![method]);
+    writer.ensure_layout().unwrap();
+
+    let mut doc = ValueMap::new();
+    doc.insert("note".into(), Value::Str("hot".into()));
+    writer.merge(&key_bytes(1, 30), &doc).unwrap();
+    assert_eq!(writer.scan(0x3005, b"hot").unwrap().len(), 1);
+
+    // The reader knows nothing about the table's methods: an empty list.
+    let reader = DynamicCollection::new(store.clone(), 41, schema(), Vec::new());
+    assert!(reader.indexes().is_empty(), "the reader declared nothing");
+    let registry = reader.path_registry().unwrap();
+    assert_eq!(
+        registry.get(&0x3005).map(String::as_str),
+        Some("/f:note -> Str"),
+        "the slot names its path without the declaring host"
     );
 }

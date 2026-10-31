@@ -97,38 +97,59 @@ const fn mix_names(mut h: u64, names: &[&str]) -> u64 {
     h
 }
 
-/// The fingerprint of a declaration's faces: canonical bytes over the
-/// declarations in declaration order (order is a persistent contract — slot
-/// numbering follows it, so a reordering is a different set of faces).
+/// A face declaration in the shape a RUNTIME declaration can build: borrowed
+/// strings, no `'static` in sight.
 ///
-/// `const` so the number costs nothing at runtime and cannot be forgotten: it is
-/// a function of the declaration, which is where it belongs.
-pub const fn fingerprint(decls: &'static [IndexDecl]) -> [u8; FINGERPRINT_LEN] {
-    let mut a = mix_str(LANE_A, "okm.faces.v1");
-    let mut b = mix_str(LANE_B, "okm.faces.v1");
-    a = mix(a, (decls.len() >> 8) as u8);
-    a = mix(a, decls.len() as u8);
-    b = mix(b, (decls.len() >> 8) as u8);
-    b = mix(b, decls.len() as u8);
-    let mut i = 0;
-    while i < decls.len() {
-        let d = decls[i];
-        a = mix(a, (d.slot >> 8) as u8);
-        a = mix(a, d.slot as u8);
-        b = mix(b, (d.slot >> 8) as u8);
-        b = mix(b, d.slot as u8);
-        a = mix(a, d.deprecated as u8);
-        b = mix(b, d.deprecated as u8);
-        a = mix_str(a, d.name);
-        b = mix_str(b, d.name);
-        a = mix_names(a, d.fields);
-        b = mix_names(b, d.fields);
-        a = mix_names(a, d.includes);
-        b = mix_names(b, d.includes);
-        a = mix_str(a, d.func);
-        b = mix_str(b, d.func);
-        i += 1;
-    }
+/// [`IndexDecl`] is the compile-time shape (`&'static [&'static str]`) because
+/// the derive emits it into a `const`. A table declared by a host language has no
+/// `const` to emit into, so it describes its faces through this view and takes the
+/// same bytes out of [`fingerprint_specs`]. The two agree by construction: both
+/// call the one encoder below.
+pub struct FaceSpec<'a> {
+    pub name: &'a str,
+    pub slot: u16,
+    pub fields: &'a [&'a str],
+    pub includes: &'a [&'a str],
+    pub func: &'a str,
+    pub deprecated: bool,
+}
+
+/// The per-declaration half of the fingerprint, shared by the compile-time and the
+/// runtime entry points so they cannot drift apart.
+const fn mix_decl(mut a: u64, mut b: u64, d: &FaceSpec<'_>) -> (u64, u64) {
+    a = mix(a, (d.slot >> 8) as u8);
+    a = mix(a, d.slot as u8);
+    b = mix(b, (d.slot >> 8) as u8);
+    b = mix(b, d.slot as u8);
+    a = mix(a, d.deprecated as u8);
+    b = mix(b, d.deprecated as u8);
+    a = mix_str(a, d.name);
+    b = mix_str(b, d.name);
+    a = mix_names(a, d.fields);
+    b = mix_names(b, d.fields);
+    a = mix_names(a, d.includes);
+    b = mix_names(b, d.includes);
+    a = mix_str(a, d.func);
+    b = mix_str(b, d.func);
+    (a, b)
+}
+
+const fn seed() -> (u64, u64) {
+    (
+        mix_str(LANE_A, "okm.faces.v1"),
+        mix_str(LANE_B, "okm.faces.v1"),
+    )
+}
+
+const fn count(mut a: u64, mut b: u64, n: usize) -> (u64, u64) {
+    a = mix(a, (n >> 8) as u8);
+    a = mix(a, n as u8);
+    b = mix(b, (n >> 8) as u8);
+    b = mix(b, n as u8);
+    (a, b)
+}
+
+const fn finish(a: u64, b: u64) -> [u8; FINGERPRINT_LEN] {
     let mut out = [0u8; FINGERPRINT_LEN];
     let mut k = 0;
     while k < 8 {
@@ -137,6 +158,56 @@ pub const fn fingerprint(decls: &'static [IndexDecl]) -> [u8; FINGERPRINT_LEN] {
         k += 1;
     }
     out
+}
+
+/// The fingerprint of a declaration's faces: canonical bytes over the
+/// declarations in declaration order (order is a persistent contract — slot
+/// numbering follows it, so a reordering is a different set of faces).
+///
+/// `const` so the number costs nothing at runtime and cannot be forgotten: it is
+/// a function of the declaration, which is where it belongs.
+pub const fn fingerprint(decls: &'static [IndexDecl]) -> [u8; FINGERPRINT_LEN] {
+    let (mut a, mut b) = seed();
+    let (na, nb) = count(a, b, decls.len());
+    a = na;
+    b = nb;
+    let mut i = 0;
+    while i < decls.len() {
+        let d = decls[i];
+        let spec = FaceSpec {
+            name: d.name,
+            slot: d.slot,
+            fields: d.fields,
+            includes: d.includes,
+            func: d.func,
+            deprecated: d.deprecated,
+        };
+        let (na, nb) = mix_decl(a, b, &spec);
+        a = na;
+        b = nb;
+        i += 1;
+    }
+    finish(a, b)
+}
+
+/// The same bytes, from declarations a runtime built — a dynamic table naming its
+/// own access methods, where `fields` / `includes` are owned strings and a `func`
+/// / path may carry no name at all.
+///
+/// It is the same encoder, so a runtime declaration that mirrors a compile-time one
+/// (same name, slot, fields, includes, func) produces the SAME number — that is what
+/// makes a store built by one mode openable, and checkable, by the other.
+pub fn fingerprint_specs(specs: &[FaceSpec<'_>]) -> [u8; FINGERPRINT_LEN] {
+    let (mut a, mut b) = seed();
+    let (na, nb) = count(a, b, specs.len());
+    a = na;
+    b = nb;
+    for d in specs {
+        let (na, nb) = mix_decl(a, b, d);
+        a = na;
+        b = nb;
+    }
+    finish(a, b)
 }
 
 #[cfg(test)]
@@ -214,6 +285,23 @@ mod tests {
         ] {
             assert_ne!(base, other);
         }
+    }
+
+    #[test]
+    fn a_runtime_declaration_and_a_compile_time_one_agree() {
+        // The whole point of `FaceSpec`: a host-declared table must be able to
+        // produce the number the typed path would, so a store crosses between the
+        // two modes without a false `Stale`.
+        let spec = FaceSpec {
+            name: A.name,
+            slot: A.slot,
+            fields: A.fields,
+            includes: A.includes,
+            func: A.func,
+            deprecated: A.deprecated,
+        };
+        assert_eq!(fingerprint(&[A]), fingerprint_specs(&[spec]));
+        assert_eq!(fingerprint(&[]), fingerprint_specs(&[]));
     }
 
     #[test]

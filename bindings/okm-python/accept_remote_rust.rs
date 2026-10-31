@@ -74,7 +74,7 @@ fn dynamic_table() -> DynamicCollection<TestStore> {
                         .collect()),
                     _ => Err("name missing".into()),
                 })),
-            },
+                            },
             AccessMethod {
                 slot: 0x1003,
                 fields: vec!["level".into()],
@@ -82,7 +82,7 @@ fn dynamic_table() -> DynamicCollection<TestStore> {
                 kind: AccessMethodKind::Partial(Box::new(|d| {
                     Ok(matches!(d.get("name"), Some(Value::Str(s)) if s.as_bytes() == b"a"))
                 })),
-            },
+                            },
         ],
         vec![ReduceSpec {
             slot: 0x2001,

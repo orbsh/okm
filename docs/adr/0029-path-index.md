@@ -133,11 +133,19 @@ difference as a refinement rather than a bug:
 - Path entries carry an EMPTY value segment: `includes` is not supported for
   the `Path` kind in v1 (an includes request would need the same "one
   maintainer" analysis).
-- Still open (not implemented, not silently dropped): backfill for a path
-  index declared over data that already exists (ADR-0020's range scan plus one
-  batch is the shape), a durable path→slot registry — slots stay
-  caller-allocated like every other access method — and a host-language
-  declaration surface: `okm-python`'s `add_func_index` / `add_partial_index`
-  have no `add_path_index` counterpart yet, so path declarations are Rust-side
-  only for now (a pure-declaration method needs no callable bridge, so the
-  binding is a small additive change rather than a design question).
+- All three halves landed 2026-10-31. **Backfill** is
+  `DynamicCollection::rebuild_faces(chunk)`: it sweeps every declared method's
+  slot and re-derives, path entries included, then stamps — the same sweep →
+  derive → stamp order the typed verb uses, and the same reason for it (an entry's
+  key encodes the value it indexes). **The registry** is the meta row:
+  `ensure_layout` records one name per path face (`path:0x3001` → the canonical
+  text), and `path_registry()` reads it back for a process that never saw the
+  declaration — the slot is the face's identity, so without the record a reader
+  sees a number and nothing else. Drift detection is not the registry's job: the
+  fingerprint (ADR-0048) covers the components and the value type, so a changed
+  path answers `Stale` on its own. **The binding** is
+  `Collection.add_path_index(slot, path, value_ty="str")` in `okm-python` — a pure
+  declaration needs no callable bridge — together with the write path it needs:
+  `merge` now routes an undeclared name into the dynamic segment (typed by the
+  Python value), because a path index over declared fields would be what `Plain`
+  already covers.

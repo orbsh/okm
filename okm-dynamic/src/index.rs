@@ -96,6 +96,49 @@ impl std::fmt::Debug for AccessMethod {
 }
 
 impl AccessMethod {
+    /// The face's canonical TEXT, for the runtime fingerprint (ADR-0048): a
+    /// dynamic declaration has no `#[ok_index(name)]`, so the name is the kind
+    /// and the path/func text is what makes two declarations of one slot
+    /// distinguishable.
+    ///
+    /// What it can and cannot see: slot, fields, includes, kind, and — for a path
+    /// index — the components and the declared value type. A `Func` / `Partial`
+    /// CALLABLE is opaque (a boxed closure), so two different derives at the same
+    /// slot produce the same number; declaring one is a compile-time-free act here,
+    /// and no fingerprint can hash a function body.
+    pub fn face_spec(&self) -> (&'static str, String) {
+        match &self.kind {
+            AccessMethodKind::Plain => ("plain", String::new()),
+            AccessMethodKind::Partial(_) => ("partial", String::new()),
+            AccessMethodKind::Func(_) => ("func", String::new()),
+            AccessMethodKind::Path { path, value_ty } => {
+                let mut text = String::new();
+                for c in path.components() {
+                    text.push('/');
+                    match c {
+                        crate::path::Component::Field(n) => {
+                            text.push_str("f:");
+                            text.push_str(n);
+                        }
+                        crate::path::Component::Index(i) => {
+                            text.push_str("i:");
+                            text.push_str(&i.to_string());
+                        }
+                        crate::path::Component::Key(b) => {
+                            text.push_str("k:");
+                            for byte in b {
+                                text.push_str(&format!("{byte:02x}"));
+                            }
+                        }
+                    }
+                }
+                text.push_str(" -> ");
+                text.push_str(&format!("{value_ty:?}"));
+                ("path", text)
+            }
+        }
+    }
+
     /// A plain field index.
     pub fn plain(slot: u16, fields: Vec<String>, includes: Vec<String>) -> Self {
         Self {

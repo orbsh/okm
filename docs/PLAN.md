@@ -633,6 +633,14 @@ key bare in the tail) recorded in ADR-0005.
       rather than a design question. What landed is the write/read path itself
       (`path_index_test.rs` + `path.rs` unit tests cover resolution, fan-out, sweeps and the
       entry layout).
+      Paid 2026-10-31, all three halves. The backfill is `DynamicCollection::rebuild_faces(chunk)` (the
+      typed verb's twin: sweep every declared method's slot, re-derive document + path entries, stamp
+      last). The registry is the meta row — `ensure_layout` records `path:0x3001` → canonical text and
+      `path_registry()` reads it back for a process that never saw the declaration. The binding is
+      `add_path_index(slot, path, value_ty="str")` in `okm-python`, with the half it needed to be
+      useful: `merge` routes an undeclared name into the dynamic segment, typed by the Python value.
+      The one gap that remains is a change the structure cannot see: a swapped `Func` / `Partial`
+      callable is a closure, and no fingerprint can hash a function body.
 - [x] Multi-tenancy: receiver-side prefix only — a remote OKM instance is
       one application = one domain model = one ns; to the receiver it is
       just another prefix. No app_id layer inside OKM, no multi-level ns
