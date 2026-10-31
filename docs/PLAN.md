@@ -2317,11 +2317,21 @@ the next decision can find it.
       still reads the changelog's segments. The API has been checked by tests and one
       binding and has not been worn by a real user, so its shape may still be wrong in ways
       tests cannot see.
-- [ ] Owed: **config drift is silent.** `log.meta` pins `precision`, `bucket_seconds` and
-      `partition_tag`; `block_bytes`, `zstd_level`, `block_codec` and `dict` are NOT in it,
-      so two opens can disagree about them without a word — new parts simply use the new
-      values. Decide: pin them (and refuse a mismatch, as `partition_tag` does) or record
-      them as "properties of the part, not of the log" and say so in the ADR.
+- [x] Decided 2026-10-31: **`Config` has three scopes, and only one of them is the log's.**
+      The item asked to pin the four loose settings or document them; the answer is that they
+      are not all one kind. `block_bytes`, `zstd_level` and `block_codec` are per BLOCK — a
+      block header records its own codec, so a log reopened with other values reads the old
+      blocks and writes new ones its own way
+      (`config_drift_test.rs::block_settings_are_the_parts_own`). `dict` was the one real
+      hazard: it acted as a READER switch, so a log written with a dictionary and reopened by
+      a caller passing `dict: None` had every code in every block fail to decode — a log that
+      lies about its own data. `PartReader` now loads `part-<n>.dict` because the file is
+      there, not because anyone asked, so the hazard is gone by construction rather than
+      pinned, and a caller's `dict` is writer tuning
+      (`a_part_reads_back_its_dictionary_even_when_the_caller_asked_for_none`).
+      `precision`, `bucket_seconds` and `partition_tag` decide where a record lands, stay
+      identity, and stay refused by name (`the_pinned_trio_is_refused_by_name`). Written up in
+      ADR-0046, both languages.
 - [ ] Owed: **an idle log's part is never sealed.** Sealing happens on a bucket crossing,
       on `part_bytes`, or on an explicit `seal()`. A log that stops writing keeps its last
       part `.open` forever — no footer, no whole-part digest — and `retain_before` refuses

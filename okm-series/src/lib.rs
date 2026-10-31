@@ -106,9 +106,14 @@ pub struct Config {
     pub part_bytes: u64,
     pub zstd_level: i32,
     /// `Codec::Raw` writes blocks uncompressed. Compression is on by default because
-    /// the measurement says it is nearly free (`docs/internals/benchmarks.md`).
+    /// the measurement says it is nearly free (`docs/internals/benchmarks.md`). Per BLOCK,
+    /// not per log: every block header records its codec, so a log reopened with another
+    /// codec still reads the old blocks.
     pub block_codec: Codec,
-    /// `Some` interns strings; `None` writes every string inline.
+    /// `Some` interns strings when WRITING; `None` writes every string inline. Reading does
+    /// not depend on it — a part carries its dictionary beside it and the reader loads that
+    /// file whether or not anyone asked for one, because a code in a block needs it to mean
+    /// anything. This setting is a writer's tuning.
     pub dict: Option<DictConfig>,
     /// The body tag whose value partitions the log, declared once and never changed.
     /// `None` = every part lives directly under its bucket.

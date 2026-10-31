@@ -355,16 +355,22 @@ pub struct PartReader {
 
 impl PartReader {
     pub fn open(path: &Path, dict: Option<&DictConfig>) -> Result<Self, Error> {
-        let dict = match dict {
-            Some(config) => {
-                let dict_path = dict_path_for(path)?;
-                if dict_path.exists() {
-                    Some(Dict::load(&dict_path, config, DEFAULT_ZSTD_LEVEL)?)
-                } else {
-                    None
-                }
-            }
-            None => None,
+        // A part carries its dictionary BESIDE it, so the part decides whether codes are in
+        // play. The caller's `dict` is a writer preference (how promotion is tuned) and is
+        // not a statement about this file: a log written with a dictionary, reopened by a
+        // caller who passed `dict: None`, still has codes in its blocks — reading it without
+        // the dictionary turns every one of them into a decode error.
+        let dict_path = dict_path_for(path)?;
+        let default_config = DictConfig::default();
+        let dict = if dict_path.exists() {
+            // The tuning is the caller's; the file is the fact.
+            Some(Dict::load(
+                &dict_path,
+                dict.unwrap_or(&default_config),
+                DEFAULT_ZSTD_LEVEL,
+            )?)
+        } else {
+            None
         };
         let mut file = File::open(path)?;
         let mut head = vec![0u8; PART_HEADER_LEN as usize];
