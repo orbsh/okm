@@ -2420,13 +2420,23 @@ the next decision can find it.
       `read_from(one offset)` 42.3 µs + `PartReader::open` 11.3 + directory scan and
       header reads ~8 + `File::open` 0.6 — i.e. two thirds of it is decompressing and
       scanning the one 64 KiB block, which is the block-size knob, not an index defect.
-- [ ] Owed: **the rest of it: the reader is not cached.** Caching the open `PartReader`
-      inside `Log` would remove the 11.3 µs open and the ~8 µs directory scan on every
-      point read. It needs an invalidation story for `append`, `seal` and `retain_before`
-      (and for a second process sealing the part underneath us), which is why it is still
-      open: the surviving cost is the block decode, and that one is a format question.
-- [ ] Owed: **the binding reads everything at once.** `read(from, max)` returns a list;
-      there is no iterator/streaming form, no partition filter, and no async surface.
+- [x] Paid 2026-10-31: **the reader is cached.** `Log` keeps parsed `PartReader`s keyed by path
+      and validated by the file's LENGTH, which is sound without an invalidation protocol: a
+      part is append-only, so it can grow (another block landed) and it can be renamed at seal
+      (a new path is a new key), but its bytes never change behind a given length. The map is
+      bounded at 48 readers, dropped wholesale when full, and cleared on `seal` and
+      `retain_before` so renamed or removed parts are not kept open. On the million-record
+      example, same machine and day: `read(offset, 1)` 62.0 → **51.5 µs**, `log.parts()` 18.4
+      → 8.0 µs. The directory scan stays (~8 µs — listing the parts is not something a reader
+      cache can skip), so what remains of a point read is the block decode at 43.2 µs, and that
+      is a format question (block size), not a caching one. Locked by
+      `okm-series/tests/reader_cache_test.rs`: a read after an append sees the grown part (a
+      stale index would answer three records out of five), `parts()` re-parses after growth, and
+      a sealed part answers the same from its new name.
+- [ ] Owed: **the binding reads everything at once.** `read(from, max)` returns a list, so a
+      caller pages by hand; there is no iterator/streaming form and no async surface. (A
+      partition filter it now has — `read_stream` — since one stream is the primitive the
+      union was built on.)
 
 ## Uuid4 / Uuid7 — an id is 16 bytes, and identity belongs in the key
 

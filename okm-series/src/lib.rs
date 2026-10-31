@@ -222,7 +222,25 @@ pub struct Log {
     /// STREAM, not of a part: without this, a record an hour older than its predecessor
     /// would land in an older bucket, open a fresh part with no history, and pass.
     last_ts: HashMap<Option<String>, u64>,
+    /// Parsed part readers, keyed by path and held with the file length they were built from.
+    /// A point read is 62 µs, of which opening the part is 11 — header, footer, dictionary
+    /// and a 70 KB index — and that is the half a cache can pay once instead of per call.
+    /// See `readers_for`.
+    readers: Mutex<HashMap<PathBuf, CachedReader>>,
 }
+
+/// A `PartReader` and the file length it was built from. Length is the whole validity check:
+/// a part is append-only, so it can only grow, and a grown part means the index the reader
+/// parsed is missing rows. No mtime, no polling, no invalidation protocol.
+struct CachedReader {
+    bytes: u64,
+    reader: std::sync::Arc<PartReader>,
+}
+
+/// How many parsed readers to hold. Each costs its index (~70 KB on the measured shape) and a
+/// file descriptor, so this is a budget in the megabytes, not a free map: the point is the hot
+/// part of a tail or a recent-window scan, not every part the log ever had.
+const READER_CACHE_LIMIT: usize = 48;
 
 /// The identity a caller can act on. The writers, the per-stream clock and the held claim
 /// are left out on purpose — none of them is something a log's owner can do anything with,
@@ -293,6 +311,7 @@ impl Log {
             meta,
             active: Vec::new(),
             last_ts: HashMap::new(),
+            readers: Mutex::new(HashMap::new()),
         };
 
         // Recover: adopt the open parts (at most one per partition), and learn where
@@ -388,6 +407,11 @@ impl Log {
     /// Close every open part (footer, fsync, rename). The log stays usable: the next
     /// append opens new parts.
     pub fn seal(&mut self) -> Result<Vec<Footer>, Error> {
+        // Sealing renames every open part, so every cached path under the old name is dead.
+        self.readers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
         let mut footers = Vec::with_capacity(self.active.len());
         for active in std::mem::take(&mut self.active) {
             footers.push(active.writer.seal()?);
@@ -433,7 +457,7 @@ impl Log {
             if !which.covers(partition.as_deref()) {
                 continue;
             }
-            let reader = PartReader::open(&path, self.config.dict.as_ref())?;
+            let reader = self.reader_for(&path)?;
             let (start, end) = reader.offset_span();
             if end <= from {
                 continue;
@@ -488,7 +512,7 @@ impl Log {
             if !which.covers(partition.as_deref()) {
                 continue;
             }
-            let reader = PartReader::open(&path, self.config.dict.as_ref())?;
+            let reader = self.reader_for(&path)?;
             match reader.ts_span() {
                 Some((first, last)) if last < from_ts || first > to_ts => continue,
                 Some(_) => {}
@@ -512,6 +536,11 @@ impl Log {
         // happens to cross a boundary — which for an idle log is never. ADR-0046 §3 has no
         // timer, so the caller's own call is the tick.
         self.seal_parts_older_than(cutoff, None)?;
+        // Whatever the drop below removes must not stay open in the cache.
+        self.readers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
         let mut dropped = Vec::new();
         for entry in std::fs::read_dir(&self.root)? {
             let entry = entry?;
@@ -541,7 +570,7 @@ impl Log {
     pub fn parts(&self) -> Result<Vec<PartInfo>, Error> {
         let mut parts = Vec::new();
         for (bucket, partition, path) in self.parts_by_offset()? {
-            let reader = PartReader::open(&path, self.config.dict.as_ref())?;
+            let reader = self.reader_for(&path)?;
             let (first_offset, end) = reader.offset_span();
             let (first_ts, last_ts) = reader.ts_span().unwrap_or((0, 0));
             let bytes = std::fs::metadata(&path)?.len();
@@ -610,6 +639,41 @@ impl Log {
     fn active_part(&self, bucket: u64, partition: Option<&str>) -> Option<&PartWriter> {
         self.active_index(bucket, partition)
             .map(|index| &self.active[index].writer)
+    }
+
+    /// A parsed reader for one part, reused while the file has not grown.
+    ///
+    /// The validity key is the file's length, because a part is append-only: it can grow (an
+    /// open part taking another block) and it can be renamed at seal, but its bytes never
+    /// change behind a given length. A rename is a different path, so a sealed part simply
+    /// arrives as a new key; the old entry ages out of the bounded map. Concurrent reads share
+    /// one reader through an `Arc`, which is sound because `PartReader`'s read methods take
+    /// `&self`.
+    fn reader_for(&self, path: &Path) -> Result<std::sync::Arc<PartReader>, Error> {
+        let bytes = std::fs::metadata(path)?.len();
+        {
+            let cache = self.readers.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(cached) = cache.get(path)
+                && cached.bytes == bytes
+            {
+                return Ok(cached.reader.clone());
+            }
+        }
+        let reader = std::sync::Arc::new(PartReader::open(path, self.config.dict.as_ref())?);
+        let mut cache = self.readers.lock().unwrap_or_else(|e| e.into_inner());
+        if cache.len() >= READER_CACHE_LIMIT {
+            // No LRU bookkeeping: the workloads this serves walk the recent parts, and a
+            // wholesale drop costs one reopen each, not a rebuild.
+            cache.clear();
+        }
+        cache.insert(
+            path.to_path_buf(),
+            CachedReader {
+                bytes,
+                reader: reader.clone(),
+            },
+        );
+        Ok(reader)
     }
 
     /// Seal every active part whose bucket is older than `cutoff`, optionally limited to one

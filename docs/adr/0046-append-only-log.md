@@ -140,6 +140,8 @@ append path pays it once per 64 KiB instead of once per record, and the file is 
 
 The index is deliberately NOT fsynced per block: it is derived data, adoption rebuilds it from the block headers, and dropping that second sync cut the write path by about a third (1,345 → 882 ns/record at 64 KiB blocks).
 
+A reader caches its parsed index per part, keyed by the file's length — no invalidation protocol, because a part only ever grows: another block lands (length changes, the reader is re-parsed) or the part is sealed (a rename, so a new path, which is a new key). That removed the 11 µs open from the second and later point reads on the same part (62 → 51.5 µs on the million-record shape); the directory scan and the block decompression stay, and the decompression is the block-size question.
+
 The index is `<bucket>/part-<n>.idx`, one row per block, appended when the block is written — the same pure-append discipline as the log itself, no coordination, no seal-time rewrite:
 
 [first_ts u64][first_offset u64][file_offset u32][len_c u32][len_u u32][records u32]
