@@ -2,7 +2,11 @@
 
 > **Languages:** [English](0008-event-layer-reduce-subscribe-stream.md) (primary) · [中文](0008-event-layer-reduce-subscribe-stream.zh-CN.md)
 
-**Status:** Accepted（设计定案；实现待做——分阶段计划见 PLAN.md）。**2026-10-22 词汇统一：** channel/通道 → subscribe/订阅，`ChannelCell` → `SinkCell`，`CHANNEL_<ENUM>` → `SINK_<ENUM>`；「触发器」一词退役——它从来不是机制，那一类改称「写路径边缘的旁路副作用」。语义与决定未变。
+**Status:** Implemented（2026-09-11：裸 `#[ok_subscribe]` 配 build.rs 派生的 event enum、单调
+批次 epoch、`okm-stream` 组合子；逐行的兜底订阅被否决——见 PLAN 的订阅负载裁决）。
+**2026-10-22 词汇统一：** channel/通道 → subscribe/订阅，`ChannelCell` → `SinkCell`，
+`CHANNEL_<ENUM>` → `SINK_<ENUM>`；「触发器」退役——它从来不是机制，那一类改称「写路径边缘的
+旁路副作用」。语义与决定未变。
 
 ## 背景
 

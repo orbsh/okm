@@ -2,7 +2,8 @@
 
 > **Languages:** [English](0024-reduce-hooks-receive-the-key.md)（主文档） · [中文](0024-reduce-hooks-receive-the-key.zh-CN.md)
 
-**状态**：已接受（2026-09-22）；实现待排期，见 Consequences。修订 ADR-0023 的「不在此夹带」注记（Honest semantic cost 第三条）：key 侧量问题由本 ADR 解决，0023 的预置组合子在本 ADR 落地后即可聚合 key 字段。
+**状态**：已接受（2026-09-22）；已实现——reduce 条目的键是 `[ns][slot][FIELDS][key 前缀]`，
+`FIELDS` 由键或 payload 解析（`encode_named(key, document, …)`），所以钩子拿得到键是构造性的。修订 ADR-0023 的「不在此夹带」注记（Honest semantic cost 第三条）：key 侧量问题由本 ADR 解决，0023 的预置组合子在本 ADR 落地后即可聚合 key 字段。
 
 ## 背景
 

@@ -1,7 +1,8 @@
 # ADR-0030: Slot — one byte per fixed face, two for counting families
 
-**Status**: Accepted (2026-10-17) — design; implementation pending, see
-Consequences
+**Status**: Accepted (2026-10-17) — implemented. The slot is self-delimiting in
+`index::slot` / `write_slot` (a family nibble means two bytes, zero means one), the caps are
+asserts rather than masks, and the families in use are 0x3/0x4/0x5 after ADR-0032's renumbering.
 **Date**: 2026-10-17
 **Chinese**: [0030-slot-fixed-faces-and-counting-families.zh-CN.md](0030-slot-fixed-faces-and-counting-families.zh-CN.md)
 **Supersedes**: the segment table of ADR-0016 (the 4-byte head survives for

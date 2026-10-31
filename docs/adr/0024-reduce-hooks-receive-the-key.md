@@ -2,7 +2,9 @@
 
 > **Languages:** [English](0024-reduce-hooks-receive-the-key.md) (primary) · [中文](0024-reduce-hooks-receive-the-key.zh-CN.md)
 
-**Status:** Accepted (2026-09-22); implementation pending, see Consequences. Amends the "not carried here" note in ADR-0023 (Honest semantic cost, third bullet): the key-side quantity problem is solved by THIS ADR, and ADR-0023's preset combinators may aggregate key fields once it lands.
+**Status:** Accepted (2026-09-22); implemented — a reduce entry's key is
+`[ns][slot][FIELDS][key prefix]`, with `FIELDS` resolved from the key or the payload
+(`encode_named(key, document, …)`), so a hook receives the key by construction. Amends the "not carried here" note in ADR-0023 (Honest semantic cost, third bullet): the key-side quantity problem is solved by THIS ADR, and ADR-0023's preset combinators may aggregate key fields once it lands.
 
 ## Context
 

@@ -1,7 +1,8 @@
 # ADR-0007: DataFrame 桥 — Arrow RecordBatch 作为唯一接触面
 
 日期：2026-09-07
-状态：已接受（设计；实现待做）
+状态：已实现（2026-09-11：`to_record_batch` 即时桥、`parquet_io` 导出/导入；惰性下推按
+特性开关）
 英文版：[0007-arrow-dataframe-bridge.md](0007-arrow-dataframe-bridge.md)
 
 ## 背景
