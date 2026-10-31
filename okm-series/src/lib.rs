@@ -209,12 +209,12 @@ struct Active {
 }
 
 pub struct Log {
-    root: PathBuf,
+    /// Everything a reader needs. The write half adds the claim and the writers, and sharing
+    /// this struct with `LogReader` is why reading while a writer is alive takes no lock.
+    side: ReadSide,
     /// The in-process claim on this root. Held for its `Drop` — dropping the log (or an
     /// open that fails after the claim) releases it, so reopening after a close works.
     _claim: RootClaim,
-    config: Config,
-    meta: Meta,
     /// One writer per (bucket, partition): a partition is a file's worth of writer, and
     /// the single-writer rule is per file.
     active: Vec<Active>,
@@ -222,10 +222,19 @@ pub struct Log {
     /// STREAM, not of a part: without this, a record an hour older than its predecessor
     /// would land in an older bucket, open a fresh part with no history, and pass.
     last_ts: HashMap<Option<String>, u64>,
+}
+
+/// The read half of a log: the directory, its identity, the settings a reader needs, and the
+/// parsed-reader cache. `Log` holds one and can also write; `LogReader` holds one and cannot —
+/// the same code path answers both, and a reader needs no lock because every block it reads
+/// is already complete (a writer appends an index row only after its block is written).
+struct ReadSide {
+    root: PathBuf,
+    meta: Meta,
+    config: Config,
     /// Parsed part readers, keyed by path and held with the file length they were built from.
-    /// A point read is 62 µs, of which opening the part is 11 — header, footer, dictionary
+    /// A point read is 52 µs, of which opening the part is 11 — header, footer, dictionary
     /// and a 70 KB index — and that is the half a cache can pay once instead of per call.
-    /// See `readers_for`.
     readers: Mutex<HashMap<PathBuf, CachedReader>>,
 }
 
@@ -248,177 +257,18 @@ const READER_CACHE_LIMIT: usize = 48;
 impl std::fmt::Debug for Log {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Log")
-            .field("root", &self.root)
-            .field("precision", &self.meta.precision)
-            .field("bucket_seconds", &self.meta.bucket_seconds)
-            .field("partition_tag", &self.meta.partition_tag)
+            .field("root", &self.side.root)
+            .field("precision", &self.side.meta.precision)
+            .field("bucket_seconds", &self.side.meta.bucket_seconds)
+            .field("partition_tag", &self.side.meta.partition_tag)
             .finish_non_exhaustive()
     }
 }
 
-impl Log {
-    /// Open (or create) a log. The `LOCK` file names the writer; a stale pid is taken
-    /// over, a live one is refused.
-    pub fn open(root: &Path, config: Config) -> Result<Self, Error> {
-        std::fs::create_dir_all(root)?;
-        let meta_path = root.join("log.meta");
-        let meta = if meta_path.exists() {
-            let meta = read_meta(&meta_path)?;
-            if meta.precision != config.precision {
-                return Err(Error::ConfigMismatch(format!(
-                    "precision is {}, not {}",
-                    meta.precision.label(),
-                    config.precision.label()
-                )));
-            }
-            if meta.bucket_seconds != config.bucket_seconds {
-                return Err(Error::ConfigMismatch(format!(
-                    "bucket is {}s, not {}s",
-                    meta.bucket_seconds, config.bucket_seconds
-                )));
-            }
-            if meta.partition_tag != config.partition_tag {
-                return Err(Error::ConfigMismatch(format!(
-                    "partition tag is {:?}, not {:?}",
-                    meta.partition_tag, config.partition_tag
-                )));
-            }
-            meta
-        } else {
-            let meta = Meta {
-                epoch_unix_ms: now_unix_ms()?,
-                precision: config.precision,
-                bucket_seconds: config.bucket_seconds,
-                partition_tag: config.partition_tag,
-            };
-            write_meta(&meta_path, &meta)?;
-            meta
-        };
-        acquire_lock(root)?;
-        // The LOCK file is a pid, so it stops another process and says nothing about a
-        // second `Log` here. Two writers over one part interleave their bytes into a
-        // record neither of them wrote, so the claim is taken before any writer exists.
-        let claim = RootClaim::claim(std::fs::canonicalize(root)?)?;
-
-        let dict_config = config.dict.clone();
-        let block_bytes = config.block_bytes;
-        let zstd_level = config.zstd_level;
-        let block_codec = config.block_codec;
-        let mut log = Log {
-            root: root.to_path_buf(),
-            _claim: claim,
-            config,
-            meta,
-            active: Vec::new(),
-            last_ts: HashMap::new(),
-            readers: Mutex::new(HashMap::new()),
-        };
-
-        // Recover: adopt the open parts (at most one per partition), and learn where
-        // offsets continue from everything that is already there.
-        for (bucket, partition, path) in log.all_parts()? {
-            let reader = PartReader::open(&path, dict_config.as_ref())?;
-            if let Some((_, last)) = reader.ts_span() {
-                let seen = log.last_ts.entry(partition.clone()).or_insert(last);
-                *seen = (*seen).max(last);
-            }
-            if reader.sealed() || log.active_part(bucket, partition.as_deref()).is_some() {
-                continue;
-            }
-            let writer = PartWriter::adopt(
-                &path,
-                block_bytes,
-                zstd_level,
-                block_codec,
-                dict_config.as_ref(),
-            )?;
-            // A part in a bucket the clock has left is finished: no record can land in it
-            // (a record carries `max(clock, last)`), and an unsealed part has no footer and
-            // keeps its bucket from retention. Sealing it here is the restart half of the
-            // idle-log answer; the running half is `retain_before`.
-            if bucket < log.bucket_of(log.raw_now()) {
-                writer.seal()?;
-                continue;
-            }
-            log.active.push(Active {
-                bucket,
-                partition,
-                writer,
-            });
-        }
-        Ok(log)
-    }
-
-    pub fn meta(&self) -> &Meta {
-        &self.meta
-    }
-
-    pub fn root(&self) -> &Path {
-        self.root.as_path()
-    }
-
-    /// Append one body at the write time. Returns its logical offset, which is the only
-    /// address this crate hands out: `read(offset)` is `read` starting there.
-    ///
-    /// **The caller does not supply the time** (ADR-0046 §2). There is no timestamp
-    /// argument: the log stamps the record when it is written, so the time axis is
-    /// ingestion order and cannot contradict itself. A body may of course carry the
-    /// application's own time under any tag it likes — that value is data, not the
-    /// record's address.
-    ///
-    /// The record is buffered until a block fills, so a reader sees it after the flush,
-    /// not after the call (see `append_durable` and `flush` for the callers who will not
-    /// accept that window).
-    pub fn append(&mut self, body: &Body) -> Result<u64, Error> {
-        let partition = match self.meta.partition_tag {
-            Some(tag) => Some(partition_of(body, tag)?),
-            None => None,
-        };
-        let ts = self.now(&partition);
-        let bucket = self.bucket_of(ts);
-        self.ensure_part(bucket, &partition, ts)?;
-        let index = self
-            .active_index(bucket, partition.as_deref())
-            .ok_or(Error::BadPath)?;
-        let offset = self.active[index].writer.append(ts, body)?;
-        self.last_ts.insert(partition, ts);
-        Ok(offset)
-    }
-
-    /// Append and make it durable before returning: the block holding this record is
-    /// written and fsynced. Costs a block per record, which is the trade the caller
-    /// chose.
-    pub fn append_durable(&mut self, body: &Body) -> Result<u64, Error> {
-        let offset = self.append(body)?;
-        self.flush()?;
-        Ok(offset)
-    }
-
-    /// Write and fsync every buffered block without appending anything. This is the
-    /// durability boundary a caller who batches wants: `append` a batch, then `flush`,
-    /// then treat the batch as on disk.
-    pub fn flush(&mut self) -> Result<(), Error> {
-        for active in self.active.iter_mut() {
-            active.writer.flush_block()?;
-        }
-        Ok(())
-    }
-
-    /// Close every open part (footer, fsync, rename). The log stays usable: the next
-    /// append opens new parts.
-    pub fn seal(&mut self) -> Result<Vec<Footer>, Error> {
-        // Sealing renames every open part, so every cached path under the old name is dead.
-        self.readers
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clear();
-        let mut footers = Vec::with_capacity(self.active.len());
-        for active in std::mem::take(&mut self.active) {
-            footers.push(active.writer.seal()?);
-        }
-        Ok(footers)
-    }
-
+/// The read half's own methods: everything that only looks at bytes on disk. `Log` delegates
+/// to these so that a reader and a writer answer with the same code, and `LogReader` exposes
+/// them without the write half existing at all.
+impl ReadSide {
     /// Read up to `max` records from a logical offset, across parts and partitions.
     ///
     /// With partitions the offset applies to EVERY stream (offsets are per stream, see
@@ -526,46 +376,6 @@ impl Log {
         Ok(rows)
     }
 
-    /// Drop every bucket older than the one `ts` falls in — every partition inside it,
-    /// because a bucket is a time interval and a partition is not.
-    pub fn retain_before(&mut self, ts: u64) -> Result<Vec<u64>, Error> {
-        let cutoff = self.bucket_of(ts);
-        // A part older than the cutoff will not be appended to again, so sealing it here is
-        // what lets the drop below happen at all: otherwise "retention never touches a
-        // bucket with a live writer" keeps last night's bucket alive until some later append
-        // happens to cross a boundary — which for an idle log is never. ADR-0046 §3 has no
-        // timer, so the caller's own call is the tick.
-        self.seal_parts_older_than(cutoff, None)?;
-        // Whatever the drop below removes must not stay open in the cache.
-        self.readers
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clear();
-        let mut dropped = Vec::new();
-        for entry in std::fs::read_dir(&self.root)? {
-            let entry = entry?;
-            if !entry.file_type()?.is_dir() {
-                continue;
-            }
-            let name = entry.file_name();
-            let name = match name.to_str() {
-                Some(name) => name,
-                None => continue,
-            };
-            let bucket = match name.parse::<u64>() {
-                Ok(bucket) => bucket,
-                Err(_) => continue,
-            };
-            if bucket >= cutoff || self.active.iter().any(|active| active.bucket == bucket) {
-                continue;
-            }
-            std::fs::remove_dir_all(entry.path())?;
-            dropped.push(bucket);
-        }
-        dropped.sort_unstable();
-        Ok(dropped)
-    }
-
     /// Every part on disk, ordered by bucket and then by the offset it starts at.
     pub fn parts(&self) -> Result<Vec<PartInfo>, Error> {
         let mut parts = Vec::new();
@@ -589,29 +399,6 @@ impl Log {
         Ok(parts)
     }
 
-    /// The write time for the next record of this stream, in the log's precision.
-    ///
-    /// A system clock can step backwards (NTP, a suspended machine). That is not the
-    /// caller's error and must not become a failed write, so the timestamp is clamped to
-    /// the stream's last one: two records may share a timestamp, and their offsets still
-    /// order them.
-    fn now(&self, partition: &Option<String>) -> u64 {
-        let raw = self.raw_now();
-        match self.last_ts.get(partition) {
-            Some(last) => raw.max(*last),
-            None => raw,
-        }
-    }
-
-    /// The clock, unclamped. Sealing decisions ask "which bucket does the clock say we are
-    /// in", not "what time may the next record carry".
-    fn raw_now(&self) -> u64 {
-        match self.config.clock.as_ref() {
-            Some(clock) => clock(),
-            None => unix_now(self.meta.precision),
-        }
-    }
-
     pub fn bucket_of(&self, ts: u64) -> u64 {
         let per_second = u128::from(self.meta.precision.per_second());
         let bucket = u128::from(self.meta.bucket_seconds);
@@ -628,17 +415,6 @@ impl Log {
             Some(value) => dir.join(format!("{PARTITION_PREFIX}{}", hex(value.as_bytes()))),
             None => dir,
         }
-    }
-
-    fn active_index(&self, bucket: u64, partition: Option<&str>) -> Option<usize> {
-        self.active
-            .iter()
-            .position(|active| active.bucket == bucket && active.partition.as_deref() == partition)
-    }
-
-    fn active_part(&self, bucket: u64, partition: Option<&str>) -> Option<&PartWriter> {
-        self.active_index(bucket, partition)
-            .map(|index| &self.active[index].writer)
     }
 
     /// A parsed reader for one part, reused while the file has not grown.
@@ -674,106 +450,6 @@ impl Log {
             },
         );
         Ok(reader)
-    }
-
-    /// Seal every active part whose bucket is older than `cutoff`, optionally limited to one
-    /// partition. `ensure_part` calls it for the stream it is writing (a bucket crossing);
-    /// `retain_before` calls it with no filter, because a bucket it is about to drop must not
-    /// be held open by a writer that will never append there again.
-    fn seal_parts_older_than(
-        &mut self,
-        cutoff: u64,
-        only: Option<&Option<String>>,
-    ) -> Result<(), Error> {
-        let stale: Vec<usize> = self
-            .active
-            .iter()
-            .enumerate()
-            .filter(|(_, active)| active.bucket < cutoff)
-            .filter(|(_, active)| only.is_none_or(|partition| active.partition == *partition))
-            .map(|(index, _)| index)
-            .collect();
-        for index in stale.into_iter().rev() {
-            let active = self.active.remove(index);
-            active.writer.seal()?;
-        }
-        Ok(())
-    }
-
-    fn ensure_part(
-        &mut self,
-        bucket: u64,
-        partition: &Option<String>,
-        ts: u64,
-    ) -> Result<(), Error> {
-        // Time has moved into a later bucket: the previous one's part is finished. Left
-        // open it would keep its bucket permanent, because retention refuses to drop a
-        // bucket that still has a writer.
-        self.seal_parts_older_than(bucket, Some(partition))?;
-        let full = match self.active_index(bucket, partition.as_deref()) {
-            None => true,
-            Some(index) => {
-                let writer = &self.active[index].writer;
-                writer.written_bytes() + writer.pending_bytes() as u64 >= self.config.part_bytes
-            }
-        };
-        if !full {
-            return Ok(());
-        }
-        if let Some(index) = self.active_index(bucket, partition.as_deref()) {
-            let active = self.active.remove(index);
-            active.writer.seal()?;
-        }
-        let dir = self.partition_dir(bucket, partition.as_deref());
-        std::fs::create_dir_all(&dir)?;
-        let number = part::part_numbers(&dir)?.last().map(|n| n + 1).unwrap_or(0);
-        for candidate in number..number.saturating_add(1024) {
-            let path = part::open_path(&dir, candidate);
-            if path.exists() {
-                continue;
-            }
-            let header = PartHeader {
-                precision: self.meta.precision,
-                bucket,
-                base_ts: ts,
-                first_offset: self.stream_next_offset(bucket, partition.as_deref())?,
-                created_unix_ms: now_unix_ms()?,
-            };
-            let writer = PartWriter::create(
-                &path,
-                header,
-                self.config.block_bytes,
-                self.config.zstd_level,
-                self.config.block_codec,
-                self.config.dict.as_ref(),
-            )?;
-            self.active.push(Active {
-                bucket,
-                partition: partition.clone(),
-                writer,
-            });
-            return Ok(());
-        }
-        Err(Error::BadPath)
-    }
-
-    /// Where the next part of one stream starts: the highest offset any part of that
-    /// (bucket, partition) reached. Offsets are per stream, because a block header holds
-    /// only the first one and the reader counts up from there.
-    fn stream_next_offset(&self, bucket: u64, partition: Option<&str>) -> Result<u64, Error> {
-        let dir = self.partition_dir(bucket, partition);
-        let mut paths = part::sealed_parts(&dir)?;
-        if let Some(open) = part::open_part(&dir)? {
-            paths.push(open);
-        }
-        let mut end = 0u64;
-        for path in paths {
-            if let Ok(reader) = PartReader::open(&path, None) {
-                let (_, high) = reader.offset_span();
-                end = end.max(high);
-            }
-        }
-        Ok(end)
     }
 
     /// Every part, ordered by bucket, then partition, then part number.
@@ -848,6 +524,472 @@ impl Log {
         keyed.sort_by_key(|(first_offset, _)| *first_offset);
         Ok(keyed.into_iter().map(|(_, part)| part).collect())
     }
+
+    /// Where a stream's offsets continue: the highest end any of its parts reports. Read-only
+    /// by nature — the writer asks it before creating a part.
+    fn stream_next_offset(&self, bucket: u64, partition: Option<&str>) -> Result<u64, Error> {
+        let dir = self.partition_dir(bucket, partition);
+        let mut paths = part::sealed_parts(&dir)?;
+        if let Some(open) = part::open_part(&dir)? {
+            paths.push(open);
+        }
+        let mut end = 0u64;
+        for path in paths {
+            if let Ok(reader) = PartReader::open(&path, None) {
+                let (_, high) = reader.offset_span();
+                end = end.max(high);
+            }
+        }
+        Ok(end)
+    }
+}
+
+impl Log {
+    /// Open (or create) a log. The `LOCK` file names the writer; a stale pid is taken
+    /// over, a live one is refused.
+    pub fn open(root: &Path, config: Config) -> Result<Self, Error> {
+        std::fs::create_dir_all(root)?;
+        let meta = read_or_create_meta(root, &config)?;
+        acquire_lock(root)?;
+        // The LOCK file is a pid, so it stops another process and says nothing about a
+        // second `Log` here. Two writers over one part interleave their bytes into a
+        // record neither of them wrote, so the claim is taken before any writer exists.
+        let claim = RootClaim::claim(std::fs::canonicalize(root)?)?;
+
+        let dict_config = config.dict.clone();
+        let block_bytes = config.block_bytes;
+        let zstd_level = config.zstd_level;
+        let block_codec = config.block_codec;
+        let mut log = Log {
+            side: ReadSide {
+                root: root.to_path_buf(),
+                meta,
+                config,
+                readers: Mutex::new(HashMap::new()),
+            },
+            _claim: claim,
+            active: Vec::new(),
+            last_ts: HashMap::new(),
+        };
+
+        // Recover: adopt the open parts (at most one per partition), and learn where
+        // offsets continue from everything that is already there.
+        for (bucket, partition, path) in log.side.all_parts()? {
+            let reader = PartReader::open(&path, dict_config.as_ref())?;
+            if let Some((_, last)) = reader.ts_span() {
+                let seen = log.last_ts.entry(partition.clone()).or_insert(last);
+                *seen = (*seen).max(last);
+            }
+            if reader.sealed() || log.active_part(bucket, partition.as_deref()).is_some() {
+                continue;
+            }
+            let writer = PartWriter::adopt(
+                &path,
+                block_bytes,
+                zstd_level,
+                block_codec,
+                dict_config.as_ref(),
+            )?;
+            // A part in a bucket the clock has left is finished: no record can land in it
+            // (a record carries `max(clock, last)`), and an unsealed part has no footer and
+            // keeps its bucket from retention. Sealing it here is the restart half of the
+            // idle-log answer; the running half is `retain_before`.
+            if bucket < log.side.bucket_of(log.raw_now()) {
+                writer.seal()?;
+                continue;
+            }
+            log.active.push(Active {
+                bucket,
+                partition,
+                writer,
+            });
+        }
+        Ok(log)
+    }
+
+    pub fn meta(&self) -> &Meta {
+        &self.side.meta
+    }
+
+    pub fn root(&self) -> &Path {
+        self.side.root.as_path()
+    }
+
+    /// Read up to `max` records from a logical offset, across every stream. Rows come back in
+    /// time order. One stream at a time is `read_stream`; the work is `ReadSide::read`.
+    pub fn read(&self, from: u64, max: usize) -> Result<Vec<(u64, u64, Body)>, Error> {
+        self.side.read(from, max)
+    }
+
+    /// Read one stream — the records under one partition value, or the single stream of an
+    /// unpartitioned log. Offsets are that stream's own counter (ADR-0046 §9).
+    pub fn read_stream(
+        &self,
+        partition: Option<&str>,
+        from: u64,
+        max: usize,
+    ) -> Result<Vec<(u64, u64, Body)>, Error> {
+        self.side.read_stream(partition, from, max)
+    }
+
+    /// Read every record whose timestamp is in `[from_ts, to_ts]`, across every stream.
+    pub fn read_by_time(
+        &self,
+        from_ts: u64,
+        to_ts: u64,
+        max: usize,
+    ) -> Result<Vec<(u64, u64, Body)>, Error> {
+        self.side.read_by_time(from_ts, to_ts, max)
+    }
+
+    /// Read one stream's records whose timestamp is in `[from_ts, to_ts]`.
+    pub fn read_stream_by_time(
+        &self,
+        partition: Option<&str>,
+        from_ts: u64,
+        to_ts: u64,
+        max: usize,
+    ) -> Result<Vec<(u64, u64, Body)>, Error> {
+        self.side
+            .read_stream_by_time(partition, from_ts, to_ts, max)
+    }
+
+    /// Every part on disk, ordered by bucket and then by the offset it starts at.
+    pub fn parts(&self) -> Result<Vec<PartInfo>, Error> {
+        self.side.parts()
+    }
+
+    /// Which bucket a timestamp falls in — the unit retention and sealing are decided in.
+    pub fn bucket_of(&self, ts: u64) -> u64 {
+        self.side.bucket_of(ts)
+    }
+
+    /// Append one body at the write time. Returns its logical offset, which is the only
+    /// address this crate hands out: `read(offset)` is `read` starting there.
+    ///
+    /// **The caller does not supply the time** (ADR-0046 §2). There is no timestamp
+    /// argument: the log stamps the record when it is written, so the time axis is
+    /// ingestion order and cannot contradict itself. A body may of course carry the
+    /// application's own time under any tag it likes — that value is data, not the
+    /// record's address.
+    ///
+    /// The record is buffered until a block fills, so a reader sees it after the flush,
+    /// not after the call (see `append_durable` and `flush` for the callers who will not
+    /// accept that window).
+    pub fn append(&mut self, body: &Body) -> Result<u64, Error> {
+        let partition = match self.side.meta.partition_tag {
+            Some(tag) => Some(partition_of(body, tag)?),
+            None => None,
+        };
+        let ts = self.now(&partition);
+        let bucket = self.side.bucket_of(ts);
+        self.ensure_part(bucket, &partition, ts)?;
+        let index = self
+            .active_index(bucket, partition.as_deref())
+            .ok_or(Error::BadPath)?;
+        let offset = self.active[index].writer.append(ts, body)?;
+        self.last_ts.insert(partition, ts);
+        Ok(offset)
+    }
+
+    /// Append and make it durable before returning: the block holding this record is
+    /// written and fsynced. Costs a block per record, which is the trade the caller
+    /// chose.
+    pub fn append_durable(&mut self, body: &Body) -> Result<u64, Error> {
+        let offset = self.append(body)?;
+        self.flush()?;
+        Ok(offset)
+    }
+
+    /// Write and fsync every buffered block without appending anything. This is the
+    /// durability boundary a caller who batches wants: `append` a batch, then `flush`,
+    /// then treat the batch as on disk.
+    pub fn flush(&mut self) -> Result<(), Error> {
+        for active in self.active.iter_mut() {
+            active.writer.flush_block()?;
+        }
+        Ok(())
+    }
+
+    /// Close every open part (footer, fsync, rename). The log stays usable: the next
+    /// append opens new parts.
+    pub fn seal(&mut self) -> Result<Vec<Footer>, Error> {
+        // Sealing renames every open part, so every cached path under the old name is dead.
+        self.side
+            .readers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
+        let mut footers = Vec::with_capacity(self.active.len());
+        for active in std::mem::take(&mut self.active) {
+            footers.push(active.writer.seal()?);
+        }
+        Ok(footers)
+    }
+
+    /// Drop every bucket older than the one `ts` falls in — every partition inside it,
+    /// because a bucket is a time interval and a partition is not.
+    pub fn retain_before(&mut self, ts: u64) -> Result<Vec<u64>, Error> {
+        let cutoff = self.side.bucket_of(ts);
+        // A part older than the cutoff will not be appended to again, so sealing it here is
+        // what lets the drop below happen at all: otherwise "retention never touches a
+        // bucket with a live writer" keeps last night's bucket alive until some later append
+        // happens to cross a boundary — which for an idle log is never. ADR-0046 §3 has no
+        // timer, so the caller's own call is the tick.
+        self.seal_parts_older_than(cutoff, None)?;
+        // Whatever the drop below removes must not stay open in the cache.
+        self.side
+            .readers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
+        let mut dropped = Vec::new();
+        for entry in std::fs::read_dir(&self.side.root)? {
+            let entry = entry?;
+            if !entry.file_type()?.is_dir() {
+                continue;
+            }
+            let name = entry.file_name();
+            let name = match name.to_str() {
+                Some(name) => name,
+                None => continue,
+            };
+            let bucket = match name.parse::<u64>() {
+                Ok(bucket) => bucket,
+                Err(_) => continue,
+            };
+            if bucket >= cutoff || self.active.iter().any(|active| active.bucket == bucket) {
+                continue;
+            }
+            std::fs::remove_dir_all(entry.path())?;
+            dropped.push(bucket);
+        }
+        dropped.sort_unstable();
+        Ok(dropped)
+    }
+
+    /// The write time for the next record of this stream, in the log's precision.
+    ///
+    /// A system clock can step backwards (NTP, a suspended machine). That is not the
+    /// caller's error and must not become a failed write, so the timestamp is clamped to
+    /// the stream's last one: two records may share a timestamp, and their offsets still
+    /// order them.
+    fn now(&self, partition: &Option<String>) -> u64 {
+        let raw = self.raw_now();
+        match self.last_ts.get(partition) {
+            Some(last) => raw.max(*last),
+            None => raw,
+        }
+    }
+
+    /// The clock, unclamped. Sealing decisions ask "which bucket does the clock say we are
+    /// in", not "what time may the next record carry".
+    fn raw_now(&self) -> u64 {
+        match self.side.config.clock.as_ref() {
+            Some(clock) => clock(),
+            None => unix_now(self.side.meta.precision),
+        }
+    }
+
+    fn active_index(&self, bucket: u64, partition: Option<&str>) -> Option<usize> {
+        self.active
+            .iter()
+            .position(|active| active.bucket == bucket && active.partition.as_deref() == partition)
+    }
+
+    fn active_part(&self, bucket: u64, partition: Option<&str>) -> Option<&PartWriter> {
+        self.active_index(bucket, partition)
+            .map(|index| &self.active[index].writer)
+    }
+
+    /// Seal every active part whose bucket is older than `cutoff`, optionally limited to one
+    /// partition. `ensure_part` calls it for the stream it is writing (a bucket crossing);
+    /// `retain_before` calls it with no filter, because a bucket it is about to drop must not
+    /// be held open by a writer that will never append there again.
+    fn seal_parts_older_than(
+        &mut self,
+        cutoff: u64,
+        only: Option<&Option<String>>,
+    ) -> Result<(), Error> {
+        let stale: Vec<usize> = self
+            .active
+            .iter()
+            .enumerate()
+            .filter(|(_, active)| active.bucket < cutoff)
+            .filter(|(_, active)| only.is_none_or(|partition| active.partition == *partition))
+            .map(|(index, _)| index)
+            .collect();
+        for index in stale.into_iter().rev() {
+            let active = self.active.remove(index);
+            active.writer.seal()?;
+        }
+        Ok(())
+    }
+
+    fn ensure_part(
+        &mut self,
+        bucket: u64,
+        partition: &Option<String>,
+        ts: u64,
+    ) -> Result<(), Error> {
+        // Time has moved into a later bucket: the previous one's part is finished. Left
+        // open it would keep its bucket permanent, because retention refuses to drop a
+        // bucket that still has a writer.
+        self.seal_parts_older_than(bucket, Some(partition))?;
+        let full = match self.active_index(bucket, partition.as_deref()) {
+            None => true,
+            Some(index) => {
+                let writer = &self.active[index].writer;
+                writer.written_bytes() + writer.pending_bytes() as u64
+                    >= self.side.config.part_bytes
+            }
+        };
+        if !full {
+            return Ok(());
+        }
+        if let Some(index) = self.active_index(bucket, partition.as_deref()) {
+            let active = self.active.remove(index);
+            active.writer.seal()?;
+        }
+        let dir = self.side.partition_dir(bucket, partition.as_deref());
+        std::fs::create_dir_all(&dir)?;
+        let number = part::part_numbers(&dir)?.last().map(|n| n + 1).unwrap_or(0);
+        for candidate in number..number.saturating_add(1024) {
+            let path = part::open_path(&dir, candidate);
+            if path.exists() {
+                continue;
+            }
+            let header = PartHeader {
+                precision: self.side.meta.precision,
+                bucket,
+                base_ts: ts,
+                first_offset: self.side.stream_next_offset(bucket, partition.as_deref())?,
+                created_unix_ms: now_unix_ms()?,
+            };
+            let writer = PartWriter::create(
+                &path,
+                header,
+                self.side.config.block_bytes,
+                self.side.config.zstd_level,
+                self.side.config.block_codec,
+                self.side.config.dict.as_ref(),
+            )?;
+            self.active.push(Active {
+                bucket,
+                partition: partition.clone(),
+                writer,
+            });
+            return Ok(());
+        }
+        Err(Error::BadPath)
+    }
+}
+
+/// A log opened for READING ONLY: no `LOCK`, no claim, no writers, and nothing written to
+/// disk — not even a `log.meta`, if the directory does not already have one.
+///
+/// Every other open takes the lock, which makes a reader and a writer mutually exclusive
+/// across processes. The format does not need that: a writer writes a block's bytes and only
+/// then appends the block's row to the index, and the index parser ignores a half-written row
+/// at its end. A reader therefore sees whole blocks and a tail that is at most one block
+/// behind, which is the only thing a reader can honestly promise about a live file. What it
+/// cannot promise is staying current by itself: read again (the reader caches by file length,
+/// so a grown part is re-parsed) to see more.
+pub struct LogReader {
+    side: ReadSide,
+}
+
+impl LogReader {
+    /// Open an existing log for reading. A reader cannot create a log — `log.meta` must be
+    /// there, and the three identity fields are checked exactly as a writer's open checks them.
+    pub fn open(root: &Path, config: Config) -> Result<Self, Error> {
+        let meta_path = root.join("log.meta");
+        if !meta_path.exists() {
+            return Err(Error::BadMeta(format!(
+                "{} is not a log: no log.meta",
+                root.display()
+            )));
+        }
+        let meta = read_meta(&meta_path)?;
+        check_meta(&meta, &config)?;
+        Ok(LogReader {
+            side: ReadSide {
+                root: root.to_path_buf(),
+                meta,
+                config,
+                readers: Mutex::new(HashMap::new()),
+            },
+        })
+    }
+
+    pub fn meta(&self) -> &Meta {
+        &self.side.meta
+    }
+
+    pub fn root(&self) -> &Path {
+        self.side.root.as_path()
+    }
+
+    /// Every part on disk, ordered by bucket and then by the offset it starts at.
+    pub fn parts(&self) -> Result<Vec<PartInfo>, Error> {
+        self.side.parts()
+    }
+
+    /// Read up to `max` records from a logical offset, across every stream, in time order.
+    pub fn read(&self, from: u64, max: usize) -> Result<Vec<(u64, u64, Body)>, Error> {
+        self.side.read(from, max)
+    }
+
+    /// Read one stream — the records under one partition value, or the single stream of an
+    /// unpartitioned log. Offsets are that stream's own counter (ADR-0046 §9).
+    pub fn read_stream(
+        &self,
+        partition: Option<&str>,
+        from: u64,
+        max: usize,
+    ) -> Result<Vec<(u64, u64, Body)>, Error> {
+        self.side.read_stream(partition, from, max)
+    }
+
+    /// Read every record whose timestamp is in `[from_ts, to_ts]`, across every stream.
+    pub fn read_by_time(
+        &self,
+        from_ts: u64,
+        to_ts: u64,
+        max: usize,
+    ) -> Result<Vec<(u64, u64, Body)>, Error> {
+        self.side.read_by_time(from_ts, to_ts, max)
+    }
+
+    /// Read one stream's records whose timestamp is in `[from_ts, to_ts]`.
+    pub fn read_stream_by_time(
+        &self,
+        partition: Option<&str>,
+        from_ts: u64,
+        to_ts: u64,
+        max: usize,
+    ) -> Result<Vec<(u64, u64, Body)>, Error> {
+        self.side
+            .read_stream_by_time(partition, from_ts, to_ts, max)
+    }
+
+    /// Which bucket a timestamp falls in.
+    pub fn bucket_of(&self, ts: u64) -> u64 {
+        self.side.bucket_of(ts)
+    }
+}
+
+/// A reader's identity is the same four things a log's is — it has no writers, no clock and no
+/// claim to hide, but `finish_non_exhaustive` keeps the shape honest if one is added.
+impl std::fmt::Debug for LogReader {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LogReader")
+            .field("root", &self.side.root)
+            .field("precision", &self.side.meta.precision)
+            .field("bucket_seconds", &self.side.meta.bucket_seconds)
+            .field("partition_tag", &self.side.meta.partition_tag)
+            .finish_non_exhaustive()
+    }
 }
 
 /// What `parts()` reports: the physical summary of a part, which is as far as the
@@ -905,6 +1047,50 @@ fn unhex(text: &str) -> Option<Vec<u8>> {
 fn partition_of_dir(name: &str) -> Option<String> {
     let rest = name.strip_prefix(PARTITION_PREFIX)?;
     String::from_utf8(unhex(rest)?).ok()
+}
+
+/// The three fields that make a directory a particular log, checked on every open: a reader
+/// that cannot tell which layout it is looking at cannot read it, so a disagreement is refused
+/// and named rather than guessed at.
+fn check_meta(meta: &Meta, config: &Config) -> Result<(), Error> {
+    if meta.precision != config.precision {
+        return Err(Error::ConfigMismatch(format!(
+            "precision is {}, not {}",
+            meta.precision.label(),
+            config.precision.label()
+        )));
+    }
+    if meta.bucket_seconds != config.bucket_seconds {
+        return Err(Error::ConfigMismatch(format!(
+            "bucket is {}s, not {}s",
+            meta.bucket_seconds, config.bucket_seconds
+        )));
+    }
+    if meta.partition_tag != config.partition_tag {
+        return Err(Error::ConfigMismatch(format!(
+            "partition tag is {:?}, not {:?}",
+            meta.partition_tag, config.partition_tag
+        )));
+    }
+    Ok(())
+}
+
+/// Identity for a writer: read it if the directory is already a log, otherwise declare it.
+fn read_or_create_meta(root: &Path, config: &Config) -> Result<Meta, Error> {
+    let meta_path = root.join("log.meta");
+    if meta_path.exists() {
+        let meta = read_meta(&meta_path)?;
+        check_meta(&meta, config)?;
+        return Ok(meta);
+    }
+    let meta = Meta {
+        epoch_unix_ms: now_unix_ms()?,
+        precision: config.precision,
+        bucket_seconds: config.bucket_seconds,
+        partition_tag: config.partition_tag,
+    };
+    write_meta(&meta_path, &meta)?;
+    Ok(meta)
 }
 
 fn read_meta(path: &Path) -> Result<Meta, Error> {
