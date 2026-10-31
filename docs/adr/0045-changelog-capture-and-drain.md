@@ -263,6 +263,10 @@ guarantee the writer cannot provide.
 - The log does not make every table's delta cheap: it is the answer for tables
   with no usable time-ordered dimension. Where one exists, an interval scan over
   the key or an index is the cheaper delta, and this feature earns nothing.
+- This is not the event face (ADR-0008) and does not replace it: what this carries is bytes, what
+  it promises is eventual and repairable, and what it costs is a file. A consumer that lives in
+  the same process and wants the decoded document is served by that face; a consumer that lives
+  elsewhere, or wants a record it can replay, is served here (ADR-0047).
 - Configuration:
   `ChangelogConfig { dir, segment_bytes: 64 MiB, segment_seconds: 300, buffer_bytes: 1 MiB, sync_data: false }`
   — the first three are the writer's rotation policy, the last is the only knob
@@ -274,4 +278,4 @@ ADR-0008 (the event layer is `reduce` and `subscribe`), ADR-0010 (the storage
 boundary speaks bytes), ADR-0030/0033 (face numbering and slot order), ADR-0031 §5
 (batch writers emit no events), ADR-0032 (the vocabulary cursor is a bare
 prefix), ADR-0034 (table names and the export shape), ADR-0040 (bytes this SDK
-cannot decode are refused, never guessed), ADR-0043 (`new` stays I/O-free).
+cannot decode are refused, never guessed), ADR-0043 (`new` stays I/O-free), ADR-0047 (the two faces of a committed write, and why both).

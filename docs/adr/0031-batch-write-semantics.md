@@ -102,6 +102,9 @@ faces commit together, and `save_with_prev_into` keeps `&self`.
   rides one serialized writer over one store handle; no CAS is introduced.
 - The batch is invisible to readers until it commits, because reads do not
   consult it — throughput under concurrent readers is untouched.
-- Owed: subscribe emission for batch writers (its own decision: fire at commit,
-  or stay the caller's); a `save_into` deprecation path once
+- Batch writers emit no subscribe event, decided in ADR-0047: a batch is the
+  bulk path, its consumers are other processes, and the change log already
+  carries it with the guarantee the in-process face cannot give (staged before
+  the commit, appended after it returned `Ok`). A caller that wants events for a
+  batch turns the change log on. Still owed: a `save_into` deprecation path once
   `save_with_prev_into` covers every call site.

@@ -111,5 +111,8 @@ first; every later phase builds on the new name.
   downstream concerns (`okm-stream` or the application).
 - Multi-writer/distributed event delivery remains out of scope (single-writer discipline,
   same boundary as reduce's RMW hook).
-- No event replay/persistence: the subscription is live-only; durable change data capture is an
-  engine-layer capability (fjall watch) and stays out of the model layer.
+- No replay and no persistence in this face: an event is live-only. The durable record of a
+  committed write is the change log (ADR-0045), and it is a different face rather than a second
+  copy of this one — bytes instead of the decoded document, a segment file instead of a
+  lock-backed cell, another process instead of this call stack, eventual and repairable instead
+  of dropped-when-nobody-listens (ADR-0047).
