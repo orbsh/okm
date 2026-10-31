@@ -45,8 +45,8 @@ Design decisions live in `docs/adr/`. This plan tracks implementation status.
       emission / overwrite unfold stay put-path only (documented on the
       method).
 - [ ] Deferred (2026-10-31, owner): Optimistic CAS write (`save_with_cas`, MVCC version
-      compare-and-swap retry loop). Low priority — the single-writer boundary stands (ADR-0023),
-      and nothing has asked for a second live writer.
+      compare-and-swap retry loop). Low priority — the single-writer boundary stands (ADR-0042
+      §7: a KV store has a single writer), and nothing has asked for a second live writer.
 - [x] `#[kv_version(n)]` versioned payload with lazy in-memory upgrade.
       Landed under the name `#[ok_layout(version = N)]` (renamed at
       implementation to avoid colliding with CAS/MVCC "row version";
@@ -1233,7 +1233,7 @@ offsets).
       Breaking wire change (LEB128 payloads re-encoded); downstream (aura,
       k10r) declared zero VarInt fields. Acceptance: byte-order test over
       width boundaries passed, hex lock updated.
-- [ ] P2.5 — KDL as the CollectionSchema serialization (low priority). The
+- [ ] Deferred (2026-10-31, owner): low priority — P2.5, KDL as the CollectionSchema serialization. Not declined: it is a format taste with no capability behind it, so it stays available for the day someone wants it. The
       dynamic mode's schema serialization is JSON today (serde, bindings
       consume it). KDL would replace it for hand-written declaration
       consistency with the KDL config family; ~150-200 lines of manual
