@@ -153,7 +153,8 @@ pub fn plain_access_method(v: &serde_json::Value) -> Result<AccessMethod, String
         fields,
         includes,
         kind: AccessMethodKind::Plain,
-            })
+        version: 0,
+    })
 }
 
 /// One declared preset reduce from the schema-data spelling:

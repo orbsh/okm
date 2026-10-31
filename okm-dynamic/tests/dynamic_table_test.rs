@@ -931,6 +931,7 @@ fn a_dynamic_store_stamps_the_number_its_schema_came_with() {
             fields: i.fields.clone(),
             includes: i.includes.clone(),
             kind: okm_dynamic::AccessMethodKind::Plain,
+            version: 0,
         })
         .collect();
     assert_eq!(methods.len(), 2, "the declaration names two faces");
@@ -954,6 +955,7 @@ fn a_dynamic_store_stamps_the_number_its_schema_came_with() {
         fields: declared.indexes[0].fields.clone(),
         includes: declared.indexes[0].includes.clone(),
         kind: okm_dynamic::AccessMethodKind::Plain,
+        version: 0,
     };
     let table = DynamicCollection::new(store.clone(), 41, declared, vec![first]);
     table.ensure_layout().unwrap();
@@ -1052,4 +1054,50 @@ fn a_reader_without_the_declaration_learns_what_each_path_slot_means() {
         Some("/f:note -> Str"),
         "the slot names its path without the declaring host"
     );
+}
+
+#[test]
+fn a_derive_version_is_how_a_changed_callable_becomes_visible() {
+    // The blind spot: a `Func` / `Partial` callable is a closure, so the fingerprint
+    // cannot see a new one at an unchanged slot. `version` is the caller's claim,
+    // and it has to move the number — otherwise a swapped derive keeps answering
+    // `Match` over entries the old function wrote.
+    let store = TestStore::default();
+    let v0 = AccessMethod {
+        slot: 0x3007,
+        fields: Vec::new(),
+        includes: Vec::new(),
+        kind: okm_dynamic::AccessMethodKind::Func(Box::new(|d| {
+            Ok(vec![
+                d.get("name")
+                    .map(|v| format!("{v:?}").into_bytes())
+                    .unwrap_or_default(),
+            ])
+        })),
+        version: 0,
+    };
+    let t0 = DynamicCollection::new(store.clone(), 41, schema(), vec![v0]);
+    t0.ensure_layout().unwrap();
+    assert_eq!(t0.faces_status().unwrap(), okm_core::FaceStatus::Match);
+
+    // The same slot, the same fields, a DIFFERENT derive — and the caller says so.
+    let v1 = AccessMethod {
+        slot: 0x3007,
+        fields: Vec::new(),
+        includes: Vec::new(),
+        kind: okm_dynamic::AccessMethodKind::Func(Box::new(|_d| Ok(vec![b"other".to_vec()]))),
+        version: 1,
+    };
+    let t1 = DynamicCollection::new(store.clone(), 41, schema(), vec![v1]);
+    assert!(
+        matches!(
+            t1.faces_status().unwrap(),
+            okm_core::FaceStatus::Stale { .. }
+        ),
+        "a bumped version is a different declaration"
+    );
+
+    // And the rebuild is what turns it back into `Match`.
+    t1.rebuild_faces(usize::MAX).unwrap();
+    assert_eq!(t1.faces_status().unwrap(), okm_core::FaceStatus::Match);
 }

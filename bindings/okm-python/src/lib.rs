@@ -326,12 +326,17 @@ pub mod pyo3_impl {
         /// list[bytes]` produces one entry per derived value (multi-entry
         /// fan-out, the inverted-index regime). The slot must be unique
         /// within the table and outside the plain-index range used so far.
-        #[pyo3(signature = (slot, func, includes=None))]
+        /// `version` is the caller's claim that the DERIVE changed: a closure has no
+        /// hashable identity, so the fingerprint cannot see a new function at an
+        /// unchanged slot. Bump it and the table answers `Stale`; the rebuild
+        /// re-derives every entry. `0` means no claim.
+        #[pyo3(signature = (slot, func, includes=None, version=0))]
         fn add_func_index(
             &self,
             slot: u16,
             func: Py<PyAny>,
             includes: Option<Vec<String>>,
+            version: u32,
         ) -> PyResult<()> {
             let derive = move |document: &ValueMap| -> Result<Vec<Vec<u8>>, String> {
                 Python::attach(|py| {
@@ -351,6 +356,7 @@ pub mod pyo3_impl {
                     fields: vec![], // the derive result IS the segment
                     includes: includes.unwrap_or_default(),
                     kind: AccessMethodKind::Func(Box::new(derive)),
+                    version,
                 })
                 .map_err(PyValueError::new_err)
         }
@@ -358,13 +364,16 @@ pub mod pyo3_impl {
         /// Register a partial index: `admits(document) -> bool` gates whether
         /// the declared fields produce an entry (Postgres-style). Purity is
         /// the caller's contract (an impure predicate leaves dangling entries).
-        #[pyo3(signature = (slot, fields, admits, includes=None))]
+        /// `version`: the same claim as `add_func_index` — a predicate change alters
+        /// which entries exist and cannot be hashed.
+        #[pyo3(signature = (slot, fields, admits, includes=None, version=0))]
         fn add_partial_index(
             &self,
             slot: u16,
             fields: Vec<String>,
             admits: Py<PyAny>,
             includes: Option<Vec<String>>,
+            version: u32,
         ) -> PyResult<()> {
             let predicate = move |document: &ValueMap| -> Result<bool, String> {
                 Python::attach(|py| {
@@ -383,6 +392,7 @@ pub mod pyo3_impl {
                     fields,
                     includes: includes.unwrap_or_default(),
                     kind: AccessMethodKind::Partial(Box::new(predicate)),
+                    version,
                 })
                 .map_err(PyValueError::new_err)
         }
@@ -396,8 +406,14 @@ pub mod pyo3_impl {
         /// `value_ty` is one of `u8` / `u16` / `u32` / `u64` / `str` /
         /// `fixed`: the types the entry encoder can produce. Anything else is
         /// refused here rather than declared as a face that never answers.
-        #[pyo3(signature = (slot, path, value_ty = "str"))]
-        fn add_path_index(&self, slot: u16, path: &str, value_ty: &str) -> PyResult<()> {
+        #[pyo3(signature = (slot, path, value_ty = "str", version = 0))]
+        fn add_path_index(
+            &self,
+            slot: u16,
+            path: &str,
+            value_ty: &str,
+            version: u32,
+        ) -> PyResult<()> {
             let path = okm_dynamic::Path::parse(path).map_err(PyValueError::new_err)?;
             let value_ty = path_value_type(value_ty)?;
             self.inner
@@ -409,6 +425,7 @@ pub mod pyo3_impl {
                     fields: vec![],
                     includes: vec![],
                     kind: AccessMethodKind::Path { path, value_ty },
+                    version,
                 })
                 .map_err(PyValueError::new_err)
         }

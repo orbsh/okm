@@ -186,12 +186,14 @@ fn dynamic_table(store: TestStore) -> DynamicCollection<TestStore> {
                 fields: vec![], // func: the derive result IS the segment
                 includes: vec![],
                 kind: AccessMethodKind::Func(Box::new(func_tags)),
+                version: 0,
             },
             AccessMethod {
                 slot: 0x1003,
                 fields: vec!["level".into()],
                 includes: vec!["score".into()],
                 kind: AccessMethodKind::Partial(Box::new(active)),
+                version: 0,
             },
         ],
         vec![ReduceSpec {
