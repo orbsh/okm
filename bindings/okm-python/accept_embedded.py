@@ -200,6 +200,54 @@ def main() -> int:
     t.purge(key(1, 12))
     assert t.scan(0x1003, (4).to_bytes(4, "big")) == []
 
+    # --- path index (ADR-0029): a face over the schema-free segment ------
+    # `note` is NOT declared, so `merge` puts it in the dynamic segment — the only
+    # place a path index earns its keep (a declared field's depth-1 path is what a
+    # Plain index already covers). Declaring it before any write proves the face
+    # starts empty and fills from the documents.
+    t.add_path_index(0x1004, "note", "str")
+    assert t.scan(0x1004, b"hot") == [], "a declared face starts empty"
+    t.merge(key(1, 20), {"note": "hot"})
+    hits = t.scan(0x1004, b"hot")
+    assert len(hits) == 1 and hits[0]["user_id"] == 20, hits
+    # overwrite with a different value sweeps the old entry (the entry key encodes
+    # the value, so the sweep is the only thing that can reach it)
+    t.merge(key(1, 20), {"note": "cold"})
+    assert t.scan(0x1004, b"hot") == [], "the old entry is gone"
+    assert len(t.scan(0x1004, b"cold")) == 1
+
+    # Array fan-out: one entry per resolved value, positioned by the index.
+    t.add_path_index(0x1005, "tags[1]", "str")
+    t.merge(key(1, 21), {"tags": ["x", "y"]})
+    assert len(t.scan(0x1005, b"y")) == 1, "the pinned position resolved"
+    assert t.scan(0x1005, b"x") == [], "position 1 is not position 0"
+
+    # A value type the entry encoder cannot produce is refused at declaration,
+    # rather than declared as a face that would answer nothing forever.
+    try:
+        t.add_path_index(0x1006, "note", "uuid4")
+    except ValueError as e:
+        assert "u8/u16/u32/u64/str/fixed" in str(e), e
+    else:
+        raise AssertionError("an unencodable value type must be refused")
+
+    # --- faces_status + rebuild (ADR-0048) --------------------------------
+    # The store was stamped when the table was opened; every access method above was
+    # declared AFTER that, so the declaration the stamp describes is not the one the
+    # table now carries. That is `stale` — and it is the honest answer, because those
+    # faces have never been derived from these documents.
+    before = t.faces_status()
+    assert before["state"] == "stale", before
+    assert before["stored"] is not None
+
+    # The rebuild is the repair: sweep every declared face, re-derive from the
+    # documents, stamp last. After it the table agrees with its own declaration.
+    report = t.rebuild_faces()
+    assert report["faces_swept"] >= 4, report
+    assert t.faces_status()["state"] == "match", t.faces_status()
+    # The re-derived faces answer: the path index was declared before the writes.
+    assert len(t.scan(0x1004, b"cold")) == 1
+
     print("embedded-mode acceptance: ALL PASS")
     return 0
 

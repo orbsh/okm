@@ -133,12 +133,266 @@ impl<S: VirtualStorage> DynamicCollection<S> {
     /// A store stamped with another shape (or a meta row naming no version) is
     /// refused with `Error::LayoutMismatch`'s message, which names both numbers.
     pub fn ensure_layout(&self) -> Result<okm_core::TableMeta, String> {
-        // The dynamic schema names faces only when it was exported from a Rust
-        // declaration; a hand-written one says nothing, and its store reads back
-        // as `FaceStatus::Unknown` (ADR-0048).
-        let faces = <[u8; okm_core::FINGERPRINT_LEN]>::try_from(self.schema.faces.as_slice()).ok();
-        okm_core::meta::ensure(&self.store, &self.ns, self.schema.layout_version, faces)
-            .map_err(codec)
+        // An exported schema carries the compile-time fingerprint, and that value is
+        // authoritative — it is the number a Rust build will compare against.
+        //
+        // A hand-built schema names no faces, and this used to leave the store
+        // unstamped (`FaceStatus::Unknown` forever). That exempted exactly the path
+        // that drifts most easily: the host declares its access methods at runtime,
+        // no compiler answers for them. The methods ARE the declaration here, so
+        // they are what gets hashed (ADR-0048).
+        let faces = self.computed_faces();
+        let mut meta = okm_core::meta::ensure(
+            &self.store,
+            &self.ns,
+            self.schema.layout_version,
+            Some(faces),
+        )
+        .map_err(codec)?;
+
+        // ADR-0029: a path index's SLOT is its identity — the entry key carries no
+        // path — so a reader who is not the declarer sees `0x3001` and nothing else.
+        // The declaration is recorded beside the stamp, one name per path face
+        // (`path:0x3001` → the canonical text), which is what makes a slot
+        // answerable once the declaring process is gone. Drift detection stays the
+        // fingerprint's job; this record is for the reader.
+        let mut changed = false;
+        for method in &self.indexes {
+            if !matches!(method.kind, crate::AccessMethodKind::Path { .. }) {
+                continue;
+            }
+            let (_, text) = method.face_spec();
+            let name = format!("path:0x{:04X}", method.slot);
+            if meta.get(&name) != Some(text.as_bytes()) {
+                meta.set(&name, text.into_bytes());
+                changed = true;
+            }
+        }
+        if changed {
+            okm_core::meta::write(&self.store, &self.ns, &meta).map_err(codec)?;
+        }
+        Ok(meta)
+    }
+
+    /// The path faces this table's store declares, read from its own record:
+    /// `slot → canonical text` (`0x3001 → /f:note -> Str`).
+    ///
+    /// A reader that did not declare the methods (another process, another language,
+    /// an operator with a shell) learns what each path slot means without the
+    /// declaring host — the slot is the face's identity, and nothing else in the key
+    /// space names it. An empty answer means no path index was ever RECORDED, not
+    /// that the table has none: a table declared before this record existed answers
+    /// the same way, which is why `faces_status` is the drift check and this is not.
+    pub fn path_registry(&self) -> Result<std::collections::BTreeMap<u16, String>, String> {
+        let Some(meta) = okm_core::meta::read(&self.store, &self.ns).map_err(codec)? else {
+            return Ok(std::collections::BTreeMap::new());
+        };
+        let mut out = std::collections::BTreeMap::new();
+        for (name, value) in meta.iter() {
+            let Some(hex) = name.strip_prefix("path:0x") else {
+                continue;
+            };
+            let Ok(slot) = u16::from_str_radix(hex, 16) else {
+                continue;
+            };
+            out.insert(slot, String::from_utf8_lossy(value).into_owned());
+        }
+        Ok(out)
+    }
+
+    /// The fingerprint of the faces this table declares at runtime (ADR-0048).
+    ///
+    /// The runtime methods are the declaration: they are what the write path
+    /// maintains, and a host changes them without any compiler noticing. But their
+    /// NAMES do not exist — `#[ok_index(name)]` belongs to the derive — so a name is
+    /// borrowed from the exported schema when it has that slot, and synthesized from
+    /// the kind otherwise (`plain` / `partial` / `func` / `path(<components>)`).
+    ///
+    /// That borrowing is what makes the two modes agree: a dynamic table built from
+    /// an export and passing methods that mirror it reproduces the compiled number
+    /// exactly, so a store crosses between them without a false `Stale`. A method the
+    /// export does not describe (a host-declared index) can only be synthesized, and
+    /// then the two modes legitimately disagree — the fingerprint says which
+    /// declaration built the store, not whether the bytes happen to line up.
+    ///
+    /// What it cannot see: a `Func` / `Partial` CALLABLE is a boxed closure, so two
+    /// different derives at one slot produce the same number. No fingerprint can
+    /// hash a function body.
+    fn computed_faces(&self) -> [u8; okm_core::FINGERPRINT_LEN] {
+        let mut methods: Vec<&AccessMethod> = self.indexes.iter().collect();
+        methods.sort_by_key(|m| m.slot);
+
+        // Borrowed views have to outlive the spec list, hence the parallel vectors.
+        let fields: Vec<Vec<&str>> = methods
+            .iter()
+            .map(|m| m.fields.iter().map(String::as_str).collect())
+            .collect();
+        let includes: Vec<Vec<&str>> = methods
+            .iter()
+            .map(|m| m.includes.iter().map(String::as_str).collect())
+            .collect();
+        let synthesized: Vec<(&'static str, String)> = methods
+            .iter()
+            .map(
+                |m| match self.schema.indexes.iter().find(|i| i.slot == m.slot) {
+                    // The export names this slot: use its identifiers so the number
+                    // matches the compiled one.
+                    Some(_) => ("exported", String::new()),
+                    None => m.face_spec(),
+                },
+            )
+            .collect();
+        let exported: Vec<Option<&okm_core::schema::IndexSchema>> = methods
+            .iter()
+            .map(|m| self.schema.indexes.iter().find(|i| i.slot == m.slot))
+            .collect();
+
+        let specs: Vec<okm_core::FaceSpec<'_>> = (0..methods.len())
+            .map(|i| okm_core::FaceSpec {
+                name: match exported[i] {
+                    Some(e) => e.name.as_str(),
+                    None => synthesized[i].0,
+                },
+                slot: methods[i].slot,
+                fields: &fields[i],
+                includes: &includes[i],
+                func: match exported[i] {
+                    Some(e) => e.func.as_str(),
+                    None => synthesized[i].1.as_str(),
+                },
+                deprecated: exported[i].is_some_and(|e| e.deprecated),
+            })
+            .collect();
+        okm_core::fingerprint_specs(&specs)
+    }
+
+    /// Whether the store's faces were built for THIS declaration (ADR-0048), the
+    /// dynamic twin of the typed status verb: `Match`, `Stale { stored, current }`
+    /// (the table was declared with another set of access methods) or `Unknown`
+    /// (no stamp was ever recorded).
+    pub fn faces_status(&self) -> Result<okm_core::FaceStatus, String> {
+        let current = self.computed_faces();
+        Ok(
+            match okm_core::meta::read(&self.store, &self.ns).map_err(codec)? {
+                Some(meta) => meta.face_status(current),
+                None => okm_core::FaceStatus::Unknown { current },
+            },
+        )
+    }
+
+    /// Rebuild every face this table declares, then stamp the fingerprint — the
+    /// dynamic twin of [`okm_core::Collection::rebuild_faces`] (ADR-0048).
+    ///
+    /// Same two phases for the same reason: an entry's key encodes the value it
+    /// indexes, so the faces are swept first (a changed value left its entry at a
+    /// key no document produces any more) and then re-derived from the documents.
+    /// `chunk` bounds ops per commit, so a large table costs one chunk of memory.
+    ///
+    /// Both entry families are re-derived per document: the access methods
+    /// (`index_entries` — plain, partial and func) and the path indexes
+    /// (`path_index_entries`). Documents are walked through the two slots a
+    /// document occupies, so a segment-only document (a `merge` naming no declared
+    /// field) is rebuilt too — unlike the typed verb, which has no row to start
+    /// from.
+    ///
+    /// A reader running DURING the rebuild sees a half-built face; the stamp is
+    /// written last, so an interrupted run leaves the store answering `Stale`.
+    ///
+    /// `RebuildReport::documents` counts VISITS, not documents: a row-bearing
+    /// document with a dynamic segment is walked on both slots (the row pass derives
+    /// the access methods, the segment pass derives the path entries), so it is
+    /// counted twice. The typed verb, which has only one slot to walk, counts rows.
+    pub fn rebuild_faces(&self, chunk: usize) -> Result<okm_core::RebuildReport, String> {
+        use okm_core::engine::storage::{Batch, prefix_end};
+
+        let chunk = chunk.max(1);
+        let ns = self.ns.clone();
+        let mut report = okm_core::RebuildReport::default();
+
+        // Phase 1 — sweep every declared method's slot.
+        let mut batch = Batch::default();
+        for method in &self.indexes {
+            let mut prefix = ns.clone();
+            okm_core::write_slot(&mut prefix, method.slot);
+            let end = prefix_end(&prefix);
+            for item in self.store.scan_range_iter(&prefix, end.as_deref()) {
+                let (key, _) = item.map_err(codec)?;
+                batch.del(&key);
+                report.entries_deleted += 1;
+                if batch.ops.len() >= chunk {
+                    self.store
+                        .commit_batch(std::mem::take(&mut batch))
+                        .map_err(codec)?;
+                    report.chunks += 1;
+                }
+            }
+            report.faces_swept += 1;
+        }
+        if !batch.ops.is_empty() {
+            self.store
+                .commit_batch(std::mem::take(&mut batch))
+                .map_err(codec)?;
+            report.chunks += 1;
+        }
+
+        // Phase 2 — derive from the documents, one slot's worth at a time. A
+        // document is the PAIR of slots (ADR-0035), so both are walked; a document
+        // that has both is visited twice and writes the same entries twice, which
+        // is cheaper than a merge by key.
+        for slot in [okm_core::index::PRIMARY_SLOT, okm_core::index::DYNAMIC_SLOT] {
+            let mut prefix = ns.clone();
+            okm_core::write_slot(&mut prefix, slot);
+            let end = prefix_end(&prefix);
+            for item in self.store.scan_range_iter(&prefix, end.as_deref()) {
+                let (key, _) = item.map_err(codec)?;
+                let pkey = &key[prefix.len()..];
+                let Some(document) = self.fetch(pkey)? else {
+                    continue;
+                };
+                // The access methods address the PAYLOAD declaration, so they are
+                // derived on the row slot only: a segment-only document has no row to
+                // index, and a `Func` callable asking for a declared field there would
+                // see a map that never had one — the write path does not call it in
+                // that case either. A path index addresses the SEGMENT, so it is
+                // derived on both slots (same bytes for a row-bearing document, which
+                // is why the double derivation is harmless).
+                let mut entries = if slot == okm_core::index::PRIMARY_SLOT {
+                    crate::index::index_entries(&self.schema, &ns, &self.indexes, pkey, &document)?
+                } else {
+                    Vec::new()
+                };
+                entries.extend(crate::index::path_index_entries(
+                    &self.schema,
+                    &ns,
+                    &self.indexes,
+                    pkey,
+                    &document,
+                )?);
+                for (ek, ev) in entries {
+                    batch.put(ek, ev);
+                    report.entries_written += 1;
+                }
+                report.documents += 1;
+                if batch.ops.len() >= chunk {
+                    self.store
+                        .commit_batch(std::mem::take(&mut batch))
+                        .map_err(codec)?;
+                    report.chunks += 1;
+                }
+            }
+        }
+        if !batch.ops.is_empty() {
+            self.store
+                .commit_batch(std::mem::take(&mut batch))
+                .map_err(codec)?;
+            report.chunks += 1;
+        }
+
+        // Phase 3 — the stamp, the last write, exactly as the typed verb does it.
+        let faces = self.computed_faces();
+        okm_core::meta::stamp_faces(&self.store, &ns, self.schema.layout_version, faces)
+            .map_err(codec)?;
+        Ok(report)
     }
 
     /// Record one caller-owned name beside the stamp, re-stamping `version`

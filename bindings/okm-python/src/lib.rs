@@ -72,6 +72,26 @@ pub mod pyo3_impl {
         })
     }
 
+    /// The value types a path-index entry can encode (ADR-0029): the fixed
+    /// unsigned widths, `str`, and fixed-width bytes. Everything else is refused
+    /// at declaration — a face that can never produce an entry answers nothing,
+    /// silently, forever.
+    fn path_value_type(name: &str) -> PyResult<okm_core::field::FieldType> {
+        Ok(match name {
+            "u8" => okm_core::field::FieldType::U8,
+            "u16" => okm_core::field::FieldType::U16,
+            "u32" => okm_core::field::FieldType::U32,
+            "u64" => okm_core::field::FieldType::U64,
+            "str" => okm_core::field::FieldType::Str,
+            "fixed" => okm_core::field::FieldType::FixedBytes,
+            other => {
+                return Err(PyValueError::new_err(format!(
+                    "path index value type must be u8/u16/u32/u64/str/fixed, got {other}"
+                )));
+            }
+        })
+    }
+
     fn call_err(e: PyErr) -> String {
         e.to_string()
     }
@@ -367,6 +387,32 @@ pub mod pyo3_impl {
                 .map_err(PyValueError::new_err)
         }
 
+        /// Register a path index (ADR-0029): `path` resolves inside the
+        /// dynamic segment, one entry per resolved value (fan-out over
+        /// arrays), encoded as `value_ty`. The slot is the path's identity —
+        /// the entry key does not carry the path, so the same slot may not be
+        /// declared twice.
+        ///
+        /// `value_ty` is one of `u8` / `u16` / `u32` / `u64` / `str` /
+        /// `fixed`: the types the entry encoder can produce. Anything else is
+        /// refused here rather than declared as a face that never answers.
+        #[pyo3(signature = (slot, path, value_ty = "str"))]
+        fn add_path_index(&self, slot: u16, path: &str, value_ty: &str) -> PyResult<()> {
+            let path = okm_dynamic::Path::parse(path).map_err(PyValueError::new_err)?;
+            let value_ty = path_value_type(value_ty)?;
+            self.inner
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .declare_index(AccessMethod {
+                    slot,
+                    // The path IS the source; `fields` stays empty (ADR-0029).
+                    fields: vec![],
+                    includes: vec![],
+                    kind: AccessMethodKind::Path { path, value_ty },
+                })
+                .map_err(PyValueError::new_err)
+        }
+
         /// Register a reduce group: a `ReduceLogic` subclass instance whose
         /// seed/fold/unfold implement the accumulator semantics (the mirror
         /// of the Rust-side `ReduceLogic` + `ReduceCodec: Default` pair).
@@ -388,15 +434,73 @@ pub mod pyo3_impl {
                 .map_err(PyValueError::new_err)
         }
 
+        /// Whether the store's faces were built for THIS declaration (ADR-0048):
+        /// `{"state": "match" | "stale" | "unknown", "current": bytes,
+        /// "stored": bytes | None}`. A host that declares its methods at runtime
+        /// changes the declaration without a compiler noticing, so it needs a way to
+        /// ask — this is it.
+        fn faces_status(&self) -> PyResult<Py<PyAny>> {
+            use okm_core::FaceStatus;
+            let guard = self
+                .inner
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let status = guard.faces_status().map_err(PyValueError::new_err)?;
+            // `Match` carries no bytes of its own — the stored stamp IS the number,
+            // so read it once and report it as both sides.
+            let header = self.ns.to_be_bytes();
+            let stamped = okm_core::meta::read(guard.store(), &header)
+                .map_err(|e| PyValueError::new_err(e.to_string()))?
+                .and_then(|m| m.faces());
+            Python::attach(|py| {
+                let d = pyo3::types::PyDict::new(py);
+                let (state, current, stored) = match status {
+                    FaceStatus::Match => ("match", stamped.unwrap_or_default(), stamped),
+                    FaceStatus::Stale { stored, current } => ("stale", current, Some(stored)),
+                    FaceStatus::Unknown { current } => ("unknown", current, None),
+                };
+                d.set_item("state", state)?;
+                d.set_item("current", current.to_vec())?;
+                d.set_item("stored", stored.map(|f| f.to_vec()))?;
+                Ok(d.into_any().unbind())
+            })
+        }
+
+        /// Rebuild every face this table declares, then stamp (ADR-0048): the
+        /// repair for a `stale` answer. `chunk` bounds ops per commit — the default
+        /// is one commit, which is atomic but holds the whole face set in memory.
+        #[pyo3(signature = (chunk=None))]
+        fn rebuild_faces(&self, chunk: Option<usize>) -> PyResult<Py<PyAny>> {
+            let report = self
+                .inner
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .rebuild_faces(chunk.unwrap_or(usize::MAX))
+                .map_err(PyValueError::new_err)?;
+            Python::attach(|py| {
+                let d = pyo3::types::PyDict::new(py);
+                d.set_item("faces_swept", report.faces_swept)?;
+                d.set_item("entries_deleted", report.entries_deleted)?;
+                d.set_item("documents", report.documents)?;
+                d.set_item("entries_written", report.entries_written)?;
+                d.set_item("chunks", report.chunks)?;
+                Ok(d.into_any().unbind())
+            })
+        }
+
         /// Update one document: `{name: value}` — a declared name rewrites that
         /// field of the row, any other name rides the dynamic segment. Runs the
         /// index entry lifecycle and the reduce calling discipline. This is the
         /// write door: there is no `put` here (ADR-0035 — the whole-document
         /// verbs are the surface, and `merge` covers the same op list).
         fn merge(&self, pkey: Vec<u8>, document: &Bound<'_, PyAny>) -> PyResult<()> {
-            // Schema-coerced (Python ints carry no width; the schema kind
-            // drives the coercion — same rule as the codec surface).
-            let map = py_values_to_map(&self.schema, document)?;
+            // Schema-coerced for a DECLARED name (Python ints carry no width; the
+            // schema kind drives the coercion — same rule as the codec surface),
+            // and typed by the Python value for any other name, which rides the
+            // dynamic segment (ADR-0035). A path index (ADR-0029) indexes exactly
+            // that segment, so refusing undeclared names here would make
+            // `add_path_index` a face nothing can feed.
+            let map = py_values_to_map_any(&self.schema, document)?;
             self.inner
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -682,6 +786,82 @@ pub mod pyo3_impl {
                     Python::attach(|py| map_to_dict(py, &m).map(|d| d.unbind().into_any()))
                 })
         }
+    }
+
+    /// A document dict for a write verb: a DECLARED name is coerced by the schema
+    /// (Python ints carry no width), anything else is typed by its Python value and
+    /// rides the dynamic segment (ADR-0035).
+    fn py_values_to_map_any(
+        schema: &okm_core::schema::CollectionSchema,
+        values: &Bound<'_, PyAny>,
+    ) -> PyResult<ValueMap> {
+        let dict = values
+            .cast::<pyo3::types::PyDict>()
+            .map_err(|_| PyTypeError::new_err("values must be a dict {field: value}"))?;
+        let mut out = ValueMap::new();
+        for (k, v) in dict.iter() {
+            let name: String = k.extract()?;
+            let declared = schema
+                .key_fields
+                .iter()
+                .chain(schema.hot_fields.iter())
+                .chain(schema.cold_fields.iter())
+                .find(|f| f.name == name);
+            let value = match declared {
+                Some(f) => coerce(&name, f.ty, &v)?,
+                None => py_dynamic_value(&name, &v)?,
+            };
+            out.insert(name, value);
+        }
+        Ok(out)
+    }
+
+    /// Python value → dynamic-segment `Value`, typed by the Python type alone: the
+    /// segment carries no width, so an `int` has none either. `bool` is checked
+    /// before `int` (Python's `bool` IS an `int`), and a `list` / `dict` becomes the
+    /// segment's composite forms (ADR-0012 nTLV / count-prefixed elements).
+    fn py_dynamic_value(name: &str, v: &Bound<'_, PyAny>) -> PyResult<Value> {
+        use pyo3::types::{PyBool, PyBytes, PyDict, PyFloat, PyInt, PyList, PyString};
+        if v.is_none() {
+            return Ok(Value::Null);
+        }
+        if v.is_instance_of::<PyBool>() {
+            return Ok(Value::Bool(v.extract::<bool>()?));
+        }
+        if v.is_instance_of::<PyInt>() {
+            return Ok(Value::U64(v.extract::<u64>().map_err(|_| {
+                PyTypeError::new_err(format!("field `{name}`: negative or out-of-range int"))
+            })?));
+        }
+        if v.is_instance_of::<PyFloat>() {
+            return Ok(Value::F64(v.extract::<f64>()?));
+        }
+        if v.is_instance_of::<PyString>() {
+            return Ok(Value::Str(v.extract::<String>()?));
+        }
+        if v.is_instance_of::<PyBytes>() {
+            return Ok(Value::Bytes(v.extract::<Vec<u8>>()?));
+        }
+        if v.is_instance_of::<PyList>() {
+            let list = v.cast::<PyList>()?;
+            let mut items = Vec::with_capacity(list.len());
+            for item in list.iter() {
+                items.push(py_dynamic_value(name, &item)?);
+            }
+            return Ok(Value::Array(items));
+        }
+        if v.is_instance_of::<PyDict>() {
+            let dict = v.cast::<PyDict>()?;
+            let mut obj = ValueMap::new();
+            for (k, item) in dict.iter() {
+                let key: String = k.extract()?;
+                obj.insert(key.clone(), py_dynamic_value(&key, &item)?);
+            }
+            return Ok(Value::Obj(obj));
+        }
+        Err(PyTypeError::new_err(format!(
+            "field `{name}`: an undeclared name takes str / int / float / bool / bytes / list / dict / None"
+        )))
     }
 
     /// Schema-coerced dict → ValueMap (ints carry no Python width; the
