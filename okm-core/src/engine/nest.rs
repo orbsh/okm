@@ -422,9 +422,12 @@ impl<S: SharedVirtualStorage + Send + 'static> NestStorage<S> {
 impl<S: VirtualStorage> ExecCore<S> {
     /// Apply one request frame — THE execution surface, all ops:
     /// decode, then execute in frame order. Mutating ops (put/delete)
-    /// commit together in one `commit_batch` = one engine WAL write
-    /// (ADR-0010 §2); query ops (get/scan) run after them and fill the
-    /// response.
+    /// accumulate; reaching a query commits what has accumulated and then
+    /// answers from the engine, so a frame reads its own earlier writes. A
+    /// frame of writes alone makes exactly one engine `commit_batch` — one
+    /// WAL write, ADR-0010 §2 — and each query in a mixed frame makes one
+    /// more, which is what answering from the store costs instead of
+    /// answering from a view over the batch.
     ///
     /// Every well-formed frame answers EXACTLY once — a read with its
     /// value/absence/page, a write with the empty ack, either with a
@@ -457,8 +460,8 @@ impl<S: VirtualStorage> ExecCore<S> {
                     // Flush pending mutations first: reads see prior ops in the
                     // same frame. A flush that cannot land makes every later
                     // answer a guess, so the frame stops here with a fault.
-                    if let Err(e) = engine.commit_batch(Batch::default()) {
-                        resp.fault = Some(e.to_string());
+                    if let Some(fault) = flush_pending(&*engine, &mut batch) {
+                        resp.fault = Some(fault);
                         return Some(resp);
                     }
                     // A read the engine could not answer is a FAULT in the
@@ -470,8 +473,8 @@ impl<S: VirtualStorage> ExecCore<S> {
                     }
                 }
                 OP_SCAN => {
-                    if let Err(e) = engine.commit_batch(Batch::default()) {
-                        resp.fault = Some(e.to_string());
+                    if let Some(fault) = flush_pending(&*engine, &mut batch) {
+                        resp.fault = Some(fault);
                         return Some(resp);
                     }
                     let hk = hosted_key(&self.prefix, &key);
@@ -518,8 +521,8 @@ impl<S: VirtualStorage> ExecCore<S> {
                     // flag moves inclusivity, not the bytes). page:
                     // 0 = engine default (256), 0xFF = one giant page
                     // (the legacy buffered shape).
-                    if let Err(e) = engine.commit_batch(Batch::default()) {
-                        resp.fault = Some(e.to_string());
+                    if let Some(fault) = flush_pending(&*engine, &mut batch) {
+                        resp.fault = Some(fault);
                         return Some(resp);
                     }
                     // Grammar: [flag][end bytes?][page u8] — page is
@@ -599,6 +602,19 @@ impl<S: VirtualStorage> ExecCore<S> {
         }
         Some(resp)
     }
+}
+
+/// Commit what a frame has accumulated so far, if anything: a query answers from the
+/// engine, so the frame's own earlier writes land first. `None` = nothing pending, or the
+/// commit landed; `Some(fault)` = the engine refused it and the frame stops here.
+fn flush_pending<S: VirtualStorage>(engine: &S, batch: &mut Batch) -> Option<String> {
+    if batch.ops.is_empty() {
+        return None;
+    }
+    engine
+        .commit_batch(std::mem::take(batch))
+        .err()
+        .map(|e| e.to_string())
 }
 
 /// Sender key bytes → receiver-side physical key. Hosted (Some): pure
@@ -710,6 +726,45 @@ mod tests {
         let get = OpFrame::one(OP_GET, b"k".to_vec(), Vec::new());
         let r = host.apply(&get.encode());
         assert_eq!(r.unwrap().value.as_deref(), Some(b"v".as_slice()));
+    }
+
+    #[test]
+    fn a_mixed_frame_reads_its_own_writes() {
+        // The frame carried two contradictions: writes accumulated in a local
+        // batch committed AFTER the op loop, while the read "flushed" an EMPTY
+        // batch — so the query answered from the store as it stood before the
+        // frame, and the write landed afterwards. A frame that cannot read its
+        // own writes is two round trips wearing one frame.
+        let (host, _handle) = NestStorage::new(TestEngine::default(), &[0, 9]);
+        let frame = OpFrame::new(vec![
+            (OP_PUT, b"k".to_vec(), b"v".to_vec()),
+            (OP_GET, b"k".to_vec(), Vec::new()),
+        ]);
+        let resp = host.apply(&frame.encode()).expect("a frame answers");
+        assert!(resp.fault.is_none(), "{:?}", resp.fault);
+        assert_eq!(
+            resp.value.as_deref(),
+            Some(b"v".as_slice()),
+            "the read sees the frame's own put"
+        );
+    }
+
+    #[test]
+    fn a_mixed_frame_scans_what_it_wrote_and_deleted() {
+        let (host, _handle) = NestStorage::new(TestEngine::default(), &[0, 9]);
+        let frame = OpFrame::new(vec![
+            (OP_PUT, b"a".to_vec(), b"1".to_vec()),
+            (OP_PUT, b"b".to_vec(), b"2".to_vec()),
+            (OP_DELETE, b"a".to_vec(), Vec::new()),
+            (OP_SCAN, Vec::new(), Vec::new()),
+        ]);
+        let resp = host.apply(&frame.encode()).expect("a frame answers");
+        assert!(resp.fault.is_none(), "{:?}", resp.fault);
+        assert_eq!(
+            resp.suffixes,
+            vec![b"b".to_vec()],
+            "the scan sees this frame's puts and its delete"
+        );
     }
 
     /// The engine refuses every batch — what a full disk or a broken WAL looks

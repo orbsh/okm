@@ -166,9 +166,11 @@ pub type Op = (u8, Vec<u8>, Vec<u8>);
 /// A request frame: `[op_count len-enc] per op: [tag u8][key LK][value LV][key][value]`.
 /// All four ops in one shape — a frame is a batch of ops, each op either
 /// mutates (put/delete) or queries (get/scan). One frame = one receiver
-/// execution pass; mutating ops commit together (one WAL write, the
-/// sender's batch atomicity, ADR-0010 §2); query ops run after them in
-/// frame order.
+/// execution pass; mutating ops accumulate and commit together (one WAL
+/// write, the sender's batch atomicity, ADR-0010 §2). A query commits what
+/// the frame has written so far and then answers from the engine, so a
+/// frame reads its own earlier writes, and a frame of writes alone is
+/// still one engine write.
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct OpFrame(pub Vec<Op>);
 

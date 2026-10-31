@@ -1653,13 +1653,20 @@ Tasks:
       layers and which one is single-writer, five mechanisms that assume one
       writer, the four shapes (mutex / wrapper+RwLock / writer thread / channel as
       store), what a frame buys, and the four debts a real multi-writer design owes.
-- [ ] The remote frame's mid-frame flush is dead code (2026-10-23, found while
-      writing CONCURRENCY §4): `ExecCore::apply` accumulates a frame's writes in a
-      local batch committed AFTER the op loop, while the `commit_batch(Batch::default())`
-      before an `OP_GET` / `OP_SCAN` commits an EMPTY batch — so a query never sees
-      the same frame's pending writes, contrary to the comment there. No production
-      caller builds a mixed frame, so nothing is broken today; a mixed frame's
-      read-your-own-writes needs the query routed through a `BatchStore` view.
+- [x] Fixed 2026-10-31: **the remote frame's mid-frame flush was not dead code, it was
+      pointing the wrong way.** `ExecCore::apply` accumulated a frame's writes in a local batch
+      and committed them after the op loop, while the "flush pending mutations first" before an
+      `OP_GET` / `OP_SCAN` committed `Batch::default()` — an empty batch — so a query answered from
+      the store as it stood before the frame and the write landed afterwards. The comment promised
+      read-your-own-writes and the code delivered read-your-nothing. The flush now commits what has
+      accumulated (`flush_pending`), which makes the promise true; a write-only frame still makes
+      exactly one engine `commit_batch` (ADR-0010 §2's one WAL write), and a mixed frame pays one
+      more per query — that is what answering from the store costs instead of answering from a view
+      over the batch. No production caller builds a mixed frame, so this changes no shipped
+      behaviour; it removes a lie from the surface that would have made the first mixed frame
+      subtly wrong. Locked by `nest::tests::a_mixed_frame_reads_its_own_writes` and
+      `::a_mixed_frame_scans_what_it_wrote_and_deleted`; the frame's contract in `okm-wire` says the
+      same thing now.
 - [x] includes gain their read half (2026-10-24) — both holes closed.
       (a) dynamic side: `scan_access_method_covered` / `decode_includes` (over
       `okm_core::scan_suffix_kv`) read the entry VALUE and decode the segment by
