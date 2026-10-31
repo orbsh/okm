@@ -491,6 +491,15 @@ call); omitting it falls back to `<T as Default>::default()`.
 the bytes. Newly written payloads always carry every field (the writer stamps its own version), so this is what the DECODER does when an older payload turns up, not a "field default" for absent values.
 - Append-at-the-tail is what the DECODER can absorb — a field the reader knows but
 finds missing has to be at the tail of its segment (header `hot_len` marks the boundary for hot fields; absent cold TLV frames simply aren't there). It is not a reason to append anything: a table that claims no compatibility (ADR-0042) places fields where they belong, and moving an existing field is a layout change whose number changes with it.
+- **A change of FORM is a shape change, and the bytes cannot tell you.** The rules above rescue a
+payload that LACKS a field; they cannot rescue one that POSSIBLY MEANS something else. A categorical
+field is the case that bites: an `Enum` tag and a `Vocab` id are both a small integer, so an old
+payload read under the new declaration decodes without error into a DIFFERENT category — and every
+default above is irrelevant to it. The guard is the table's stamp, not the payload's: the
+`#[ok_layout(version = N)]` number goes up with the form, and `ensure_layout` at attach/boot then
+refuses the whole store with `LayoutMismatch { stored, current }` instead of letting its bytes be
+read as something they never said. Rows cross by export → import, which is also the only path that
+re-interns their labels into the destination's vocabulary (ADR-0032 §7).
 - There is NO upgrade-on-read path: an old payload that happens to decode is a lucky
 landing, not a migration. Carrying a corpus across a shape change is export (by the build that wrote it) → import (by the build that reads it).
 - A production upgrade is a BLUE/GREEN move, not a reader: the new build runs as a

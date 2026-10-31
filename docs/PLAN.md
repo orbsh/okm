@@ -1419,9 +1419,16 @@ bytes; doing them after P3 means hex locks change once, not twice.
 - [x] Docs: MODELING (both languages) gains "Payload field types and wrappers" —
       the full wire table plus the three rules (categorical values are `Vocab`,
       `Option` is not a field type, interning is a write-path step).
-- [ ] Migration note for existing data: old one-byte `Enum` tags decode without
-      error into a DIFFERENT category; one layout change, version bump, no
-      silent path. Same window as the vocabulary-face move (no production data).
+- [x] Written 2026-10-31: **the migration note for existing data**, in MODELING's payload-version
+      section (both languages), where a reader deciding whether to bump `#[ok_layout]` already is.
+      The note states the case the decoder cannot catch: an `Enum` tag and a `Vocab` id are both a
+      small integer, so an old payload read under the new declaration decodes without error into a
+      different category, and the field defaults in that section are irrelevant to it. The guard is
+      the table's stamp — the number goes up with the form, and `ensure_layout` at attach/boot then
+      refuses the store with `LayoutMismatch { stored, current }` — and rows cross by export →
+      import, the only path that re-interns their labels into the destination's vocabulary
+      (ADR-0032 §7). No production data exists in the window; what was missing was the sentence,
+      not the machinery.
 
 ## ADR-0034 — table names and the export shape (2026-10-21)
 
