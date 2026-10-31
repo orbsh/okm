@@ -1,0 +1,116 @@
+# Four workspaces live in this repository:
+#
+#   .                              okm-core/-derive/-wire/-dynamic/-graph/-query/...
+#   bindings/okm-python            the PyO3 extension        (own `[workspace]`)
+#   bindings/okm-steel             the Steel VM binding      (own `[workspace]`)
+#   bindings/okm-series-python     the series extension      (own `[workspace]`)
+#
+# `cargo fmt --all` and `cargo test --workspace` from the root reach the FIRST one only.
+# That is not a detail: it is why `okm-dynamic` and `okm-steel` sat unformatted for
+# months while every local run was green. Each workspace is therefore checked by name
+# here, and the release posture (no optional engines) is checked beside `--all-features`
+# because `--all-features` alone had hidden a suite that could not compile by default.
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  workspace:
+    name: root workspace
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - name: formatting
+        run: cargo fmt --all -- --check
+      - name: clippy (all targets, all features)
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - name: tests, default features (the release posture)
+        run: cargo test --workspace
+      - name: tests, every engine and exporter
+        run: cargo test --workspace --all-features
+
+  binding:
+    name: binding - ${{ matrix.dir }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        dir: [bindings/okm-steel, bindings/okm-series-python]
+    defaults:
+      run:
+        working-directory: ${{ matrix.dir }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ${{ matrix.dir }}
+      # okm-series-python builds a PyO3 extension: pyo3's build script wants an
+      # interpreter present even for a plain `cargo test`.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: formatting
+        run: cargo fmt --all -- --check
+      - name: clippy
+        run: cargo clippy --all-targets -- -D warnings
+      - name: tests
+        run: cargo test
+
+  python-wheel:
+    name: python wheel round trip
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: bindings/okm-python
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: build the wheel
+        working-directory: bindings/okm-python
+        run: pip install "maturin>=1.0,<2.0" && maturin build --release --out dist
+      - name: install the wheel into a clean venv
+        run: python -m venv $RUNNER_TEMP/okm-venv && $RUNNER_TEMP/okm-venv/bin/pip install --no-index --find-links bindings/okm-python/dist okm
+      # A fresh checkout has no `bindings/okm-python/okm/*.so` (gitignored), and `-P`
+      # keeps the script's own directory off sys.path anyway — so the only `okm` that can
+      # answer is the installed wheel. The acceptance prints the module path it loaded
+      # for exactly this reason: a stale `.so` shadows a wheel without a word.
+      - name: acceptance against the installed wheel
+        run: $RUNNER_TEMP/okm-venv/bin/python -P bindings/okm-python/accept_embedded.py
+
+  series-wheel:
+    name: okm-series wheel round trip
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: bindings/okm-series-python
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: build the wheel
+        working-directory: bindings/okm-series-python
+        run: pip install "maturin>=1.0,<2.0" && maturin build --release --out dist
+      # There is no Python-side acceptance script for this crate yet (its meaning lives in
+      # the Rust tests), so the round trip proves what the repo had never proved: the
+      # wheel builds, installs into a clean venv, and the extension imports by name.
+      - name: install and import it
+        run: python -m venv $RUNNER_TEMP/series-venv && $RUNNER_TEMP/series-venv/bin/pip install --no-index --find-links bindings/okm-series-python/dist okm-series && $RUNNER_TEMP/series-venv/bin/python -P -c "import okm_series; print(okm_series.Log, okm_series.Record)"

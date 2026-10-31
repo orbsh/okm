@@ -2,4 +2,6 @@ target/
 /.worktrees/
 # built extension artifact inside the mixed python package
 bindings/okm-python/okm/*.so
+# maturin wheel output — CI builds into `dist/` (both python bindings do)
+bindings/*/dist/
 __pycache__
