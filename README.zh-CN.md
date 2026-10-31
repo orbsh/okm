@@ -237,8 +237,9 @@ g.link_into(&mut batch, &head, &attrs, 7)?;
 store.commit_batch(batch)?;                    // 行、面与账本一起落地
 ```
 
-`save_with_prev_into` 是 `save_into`（只管编码）的语义兄弟：reduce 的
-折/回折与旧面清理都经 `BatchStore`（batch 的读穿透视图）完成，所以同一批
+`save_with_prev_into` 是这条路唯一的文档动词——曾经有一个只管编码的前身，它已
+移除，因为它把下面每一条规则都推给了调用方。reduce 的折/回折与旧面清理都经
+`BatchStore`（batch 的读穿透视图）完成，所以同一批
 里对同一组的两次 fold 看见的是本批已产出的值，不会重复计数
 （[ADR-0031](docs/adr/0031-batch-write-semantics.md)）。subscribe 事件按裁
 决留在 batch 路径之外：批量写者的事件归它自己，在未提交的批里发事件等于

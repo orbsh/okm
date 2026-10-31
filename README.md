@@ -285,8 +285,9 @@ g.link_into(&mut batch, &head, &attrs, 7)?;
 store.commit_batch(batch)?;                    // rows, faces and ledgers land together
 ```
 
-`save_with_prev_into` is the SEMANTIC sibling of `save_into` (encoding only):
-the reduce fold/unfold and the stale-face cleanup run through a `BatchStore`
+`save_with_prev_into` is the ONE document verb for this path — an encoding-only
+predecessor existed and is gone, because it left every rule below to the caller.
+The reduce fold/unfold and the stale-face cleanup run through a `BatchStore`
 — a read-through view of the batch, so a same-group fold sees the value the
 same batch already produced instead of double-counting
 ([ADR-0031](docs/adr/0031-batch-write-semantics.md)). Subscribe emission stays

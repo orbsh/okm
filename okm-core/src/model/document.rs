@@ -88,7 +88,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     }
 
     /// Mutable store handle for a caller-owned write path that must reach the
-    /// engine outside `put`/`save_into` — the Parquet import is the one: it
+    /// engine outside the write verbs — the Parquet import is the one: it
     /// re-interns labels into the destination vocabulary BEFORE the rows land.
     /// Feature-gated with that caller, so a build without `parquet` carries no
     /// unused verb.
@@ -210,7 +210,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         // the releases of children the old document no longer points at, and
         // the reduce RMWs — accumulates in one `Batch` and reaches the
         // engine as a single `commit_batch` (ADR-0003's "internal buffer" half:
-        // the same batch `save_into` exposes to callers, owned here by the
+        // the same batch the `*_into` verbs expose to callers, owned here by the
         // routine path). `BatchStore` is the read-through view that lets a
         // reduce fold see the writes this same batch already produced
         // (ADR-0031), so the op order below is exactly the old call order.
@@ -302,31 +302,15 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         Ok(new)
     }
 
-    /// Encode this document's full write set (primary entry + one entry per
-    /// access method) into an externally owned batch — no write happens
-    /// until the batch commits. The cross-collection atomic path
-    /// (ADR-0003): a document table and an edge table (or two documents tables)
-    /// each `save_into` the same batch, then one `commit_batch` makes
-    /// them live or die together.
-    ///
-    /// Note: save_into bypasses put's higher write-path hooks (reduce
-    /// folds, subscribe emission, overwrite unfold, stale-face cleanup) —
-    /// it is the encoding surface, not the semantic one. A table that
-    /// declares `#[ok_reduce]`, or an overwrite that must not leave a
-    /// dangling face, goes through [`Self::save_with_prev_into`] (the
-    /// semantic sibling, ADR-0031) or the point path `put`/`upsert_with`;
-    /// save_into stays for batch-aligned bulk loads where the consumer
-    /// settles those folds itself.
-    pub fn save_into(&self, batch: &mut crate::engine::storage::Batch, key: &K, document: &R) {
-        batch.put(self.primary_key(key), document.encode_payload());
-        for (ek, ev) in R::index_entries(key, document, &self.header()) {
-            batch.put(ek, ev);
-        }
-    }
-
-    /// The semantic sibling of [`save_into`](Self::save_into) (ADR-0031):
-    /// same primary + face encoding into the caller's batch, plus the write
-    /// path's semantics that `save_into` leaves to the caller —
+    /// Encode this document's full write set into an externally owned batch —
+    /// no write happens until the batch commits, so a document table and an edge
+    /// table (or two document tables) sharing one `commit_batch` live or die
+    /// together (ADR-0003). This is the ONE document verb for that path
+    /// (ADR-0031): the encoding-only predecessor is gone, because it left every
+    /// write-path rule below to the caller, and a table declaring `#[ok_reduce]`
+    /// or an overwrite that must not leave a dangling face could not join a batch
+    /// correctly without re-implementing them. `prev = None` reads the old row
+    /// through the batch, so the caller does not have to hold it —
     ///
     /// - **reduce fold/unfold**, applied through a
     ///   [`BatchStore`](crate::engine::storage::BatchStore) (a batch
@@ -1156,7 +1140,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     /// Commit a caller-built batch through THIS collection, so its changelog
     /// captures the writes (ADR-0045).
     ///
-    /// `save_into` hands the caller a batch and the caller used to reach the
+    /// `save_with_prev_into` hands the caller a batch and the caller used to reach the
     /// store directly, which no collection-level hook can see. That path is the
     /// cross-collection atomic one (ADR-0003), and ADR-0031 §5 already says a
     /// batch writer's events are its own concern — this verb is how it discharges

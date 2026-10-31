@@ -346,7 +346,8 @@ fn the_batch_writer_verb_captures_save_into() {
         title: "batched".into(),
     };
     let mut batch = Batch::default();
-    app.save_into(&mut batch, &key, &row);
+    app.save_with_prev_into(&mut batch, &key, &row, None)
+        .unwrap();
     app.commit_batch(batch).expect("publish");
 
     assert_eq!(app.get(&key).expect("get"), Some(row));
@@ -440,22 +441,26 @@ fn a_cross_table_batch_captures_each_tables_own_share() {
     let mut batch = Batch::default();
     let ka = LogKey { id: 1 };
     let kb = LogKey { id: 2 };
-    a.save_into(
+    a.save_with_prev_into(
         &mut batch,
         &ka,
         &LogRow {
             author: 7,
             title: "a".into(),
         },
-    );
-    b.save_into(
+        None,
+    )
+    .unwrap();
+    b.save_with_prev_into(
         &mut batch,
         &kb,
         &OtherRow {
             author: 8,
             title: "b".into(),
         },
-    );
+        None,
+    )
+    .unwrap();
     let pa = a.primary_key(&ka);
     let pb = b.primary_key(&kb);
 
