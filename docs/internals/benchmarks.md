@@ -221,7 +221,7 @@ The test prints a baseline first — 195 ns/record to generate the record, 302 n
 
 | reader | full scan | one record |
 |---|---|---|
-| okm-series | 2.64 M records/s | 68 µs (`read(offset, 1)`) |
+| okm-series | 2.64 M records/s | 62 µs (`read(offset, 1)`) |
 | parquet, 65,536-row groups | 9.84 M records/s | 6,618 µs |
 | parquet, 4,096-row groups | 8.39 M records/s | 887 µs |
 
@@ -229,12 +229,21 @@ How to read it:
 
 - **Parquet is 20% smaller and ~3x faster to write.** Columnar encoding plus dictionary
 encoding per column is simply a better answer for bytes than interleaved records, and the writer batches a row group at a time instead of compressing every 64 KiB.
-- **The log is the only one of the two that can fetch one record by address.** 68 µs
+- **The log is the only one of the two that can fetch one record by address.** 62 µs
 against 887 µs is not a tuning difference: Parquet has no way to reach row *n* without decoding the columns of its row group, so a 4,096-row group is the *cheapest* shape for this and a 65,536-row group costs 6.3 ms. The log seeks by offset, decompresses one block and stops.
 - **The full-scan numbers are not like for like.** The Parquet scan hands back Arrow
 arrays; the log materialises every record as a `Body` with eight values and five owned strings. A caller that only wants one column should be reading Parquet.
-- **Block size is the knob between the two.** 64 KiB blocks make a point read decompress
-64 KiB (~45 of the 68 µs); 256 KiB blocks would cut the write cost and multiply the point-read cost. The 23 µs that is not decompression is the part index being re-parsed on every call (twice: once to order the parts, once to read them).
+- **A point read is one decompression with an open around it.** The example measures the
+pieces separately, and they add up to the number above:
+
+| piece, per call | µs |
+|---|---|
+| `read_from(one offset)` — one 64 KiB block decompressed and scanned | 42.3 |
+| `PartReader::open` — header, footer, dictionary, 70 KB index | 11.3 |
+| `parts_by_offset` — directory scan, one header read per part, sort | ~8 |
+| `File::open` | 0.6 |
+
+  So block size is the knob: 64 KiB blocks mean a point read decompresses 64 KiB, and 256 KiB blocks would cut the write cost and multiply this one. The index is *not* re-parsed twice any more: ordering the parts used to open each one and read its index, which cost 5 µs of the 68 (the header answers the same question for 0.6 µs) — small, because the index is read once and sliced rather than row by row. Caching the open reader would remove the 11.3 µs and the directory scan after it, and would need an invalidation story for append, seal and retention; the decompression stays.
 - **The dictionary barely pays at this shape, and after the fix below it no longer
 costs.** 7% of the bytes for 8% of the write time: two of eight fields are unique per record, so the tiers keep them inline and the dictionary only removes 29 distinct strings. It is the closed-set shape that pays, as the table in the section above shows.
 
@@ -243,7 +252,7 @@ costs.** 7% of the bytes for 8% of the write time: two of eight fields are uniqu
 Both were invisible at 50,000 records and both were fixed in the run that produced the numbers above.
 
 1. **The part index was read one row per `read` syscall.** An unbuffered `File` costs
-~200 ns per call whatever the size, and a million-record part has 2,214 blocks, so every point read paid 429 µs of syscalls before touching a record. Reading the whole index once and slicing it took `read(offset, 1)` from 472 µs to 67 µs (and `parts()` from 429 µs to 23 µs).
+~200 ns per call whatever the size, and a million-record part has 2,214 blocks, so every point read paid 429 µs of syscalls before touching a record. Reading the whole index once and slicing it took `read(offset, 1)` from 472 µs to 67 µs (and `parts()` from 429 µs to 23 µs). Ordering the parts no longer opens them at all — the header carries the first offset — which put the same call at 62 µs in the 2026-10-31 run.
 2. **The dictionary's frequency table was keyed by an owned `String`.** Every string that
 was not already interned allocated a copy just to count it, so a field that is unique per record — a trace id — filled the table with strings that could never reach the second occurrence the tiers demand. On this shape that was two million live `String`s and 1,077 ns per record (2,859 → 1,862 after keying the table by the string's 64-bit hash, with the table capped at 2^20 tracked strings). A hash collision can only promote a string that occurred once; it cannot resolve to the wrong text, because the block and the `promoted` map are keyed by the string.
 

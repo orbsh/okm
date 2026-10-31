@@ -2295,7 +2295,7 @@ that can be dropped in one syscall. Design in ADR-0046. Nothing below is built.
 
 - [x] A million records, against Parquet (`examples/log_vs_parquet.rs`): 56.1 B/record
       against 44.8, 1,881 ns/record to write against 650, and the one place the log wins
-      outright is fetching a single record — 68 µs against 887 µs at Parquet's cheapest
+      outright is fetching a single record — 62 µs against 887 µs at Parquet's cheapest
       row-group shape (4,096 rows) and 6.6 ms at 65,536. Numbers and how to read them are
       in `docs/internals/benchmarks.md`（中文版 `benchmarks.zh-CN.md`，同节同表）.
 - [x] Fixed by that test: the part index was read one row per `read` syscall, so a
@@ -2346,11 +2346,20 @@ the next decision can find it.
       part per partition, a seal footer, a `read_by_time` window, retention removing a
       bucket, and `meta` identity — including that reopening with another bucket size is
       refused by name. Still owed: a publish story (nothing reaches an index).
-- [ ] Owed: **a point read re-opens and re-parses the part on every call.** 23 of the
-      68 µs above is the index parsed twice (`parts_by_offset` and then `read`), and
-      the rest is the 64 KiB block decompression. Caching the reader inside `Log`
-      would take the first part out; it needs an invalidation story for append,
-      seal and `retain_before`.
+- [x] Half fixed 2026-10-31: **ordering the parts opened them.** The item said "23 of the
+      68 µs is the index parsed twice", and the measurement says otherwise. Ordering
+      `parts_by_offset` opened every part (`PartReader::open`) only to read
+      `first_offset`, which is in the 48-byte header: the duplicate index parse was worth
+      5 µs, not 23 (68.6 → 63.3 µs, then 61.5 on a second run; `parts()` 24.1 → 18.9). The
+      header answers the same question in 0.6 µs. Measured again, a point read is
+      `read_from(one offset)` 42.3 µs + `PartReader::open` 11.3 + directory scan and
+      header reads ~8 + `File::open` 0.6 — i.e. two thirds of it is decompressing and
+      scanning the one 64 KiB block, which is the block-size knob, not an index defect.
+- [ ] Owed: **the rest of it: the reader is not cached.** Caching the open `PartReader`
+      inside `Log` would remove the 11.3 µs open and the ~8 µs directory scan on every
+      point read. It needs an invalidation story for `append`, `seal` and `retain_before`
+      (and for a second process sealing the part underneath us), which is why it is still
+      open: the surviving cost is the block decode, and that one is a format question.
 - [ ] Owed: **the binding reads everything at once.** `read(from, max)` returns a list;
       there is no iterator/streaming form, no partition filter, and no async surface.
 

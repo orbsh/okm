@@ -416,6 +416,32 @@ fn main() {
     }
     let breakdown_open = started.elapsed().as_nanos() as u64 / POINT_READS as u64;
 
+    // The two halves a point read is made of: opening the part (header, footer, the
+    // dictionary, the index) and turning an offset into a record once it is open. Sum the
+    // three lines below and compare with the number above — the point of the breakdown is
+    // that a reader can be cached and a block decode cannot.
+    let dict = DictConfig::default();
+    let started = Instant::now();
+    for _ in 0..POINT_READS {
+        let reader =
+            okm_series::part::PartReader::open(&log_parts[0].path, Some(&dict)).expect("open part");
+        black_box(reader.sealed());
+    }
+    let breakdown_part_open = started.elapsed().as_nanos() as u64 / POINT_READS as u64;
+
+    let reader =
+        okm_series::part::PartReader::open(&log_parts[0].path, Some(&dict)).expect("open part");
+    let mut one = Vec::with_capacity(1);
+    let started = Instant::now();
+    for offset in &offsets {
+        one.clear();
+        reader
+            .read_from(*offset, 1, &mut one)
+            .expect("read one record");
+        black_box(one.len());
+    }
+    let breakdown_block = started.elapsed().as_nanos() as u64 / POINT_READS as u64;
+
     let mut points = Vec::new();
     for (row_group, path, _) in &variants {
         let groups = RECORDS.div_ceil(*row_group as u64);
@@ -509,13 +535,17 @@ fn main() {
     }
 
     println!(
-        "\n{:<28} {:>14}\n{:<28} {:>14.1}\n{:<28} {:>14.1}",
+        "\n{:<28} {:>14}\n{:<28} {:>14.1}\n{:<28} {:>14.1}\n{:<28} {:>14.1}\n{:<28} {:>14.1}",
         "breakdown, per call",
         "µs",
         "log.parts()",
         breakdown_parts as f64 / 1e3,
         "File::open(part)",
-        breakdown_open as f64 / 1e3
+        breakdown_open as f64 / 1e3,
+        "PartReader::open(part)",
+        breakdown_part_open as f64 / 1e3,
+        "read_from(one offset)",
+        breakdown_block as f64 / 1e3
     );
 
     let _ = std::fs::remove_dir_all(&log_root);
