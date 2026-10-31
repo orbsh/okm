@@ -84,6 +84,17 @@ def a_partitioned_log_needs_the_field(root: str) -> None:
     assert {part["partition"] for part in parts} == {"eu", "us"}
     assert all(part["records"] == 1 for part in parts)
 
+    # One stream at a time: the union applies the offset to every stream, a stream read
+    # applies it to its own counter — both start at 0.
+    eu = log.read_stream("eu")
+    us = log.read_stream("us")
+    assert [record.body[9] for record in eu] == ["eu"]
+    assert [record.offset for record in eu] == [0]
+    assert [record.body[9] for record in us] == ["us"]
+    assert [record.offset for record in us] == [0]
+    assert len(log.read(0, 100)) == 2, "read is still the union"
+    assert log.read_stream("nowhere") == [], "an unknown stream answers nothing"
+
 
 def seal_writes_a_footer_the_parts_report(root: str) -> None:
     log = okm_series.Log(root, precision="ms")

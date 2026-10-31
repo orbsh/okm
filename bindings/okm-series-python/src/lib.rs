@@ -207,6 +207,27 @@ impl PyLog {
             .collect()
     }
 
+    /// Read one stream: the records under `partition`, or — with `None` — the single stream
+    /// of an unpartitioned log. Use the value `parts()` reports (`"eu"`, `"7"`, hex bytes);
+    /// `read` is the union of every stream.
+    #[pyo3(signature = (partition, from_offset = 0, max = 100))]
+    fn read_stream(
+        &self,
+        py: Python<'_>,
+        partition: Option<&str>,
+        from_offset: u64,
+        max: usize,
+    ) -> PyResult<Vec<Py<Record>>> {
+        let rows = py.detach(|| {
+            let log = self.lock()?;
+            log.read_stream(partition, from_offset, max)
+                .map_err(map_error)
+        })?;
+        rows.into_iter()
+            .map(|(ts, offset, body)| self.record_from(ts, offset, &body))
+            .collect()
+    }
+
     /// Read every record whose timestamp is in `[from_ts, to_ts]`, up to `max`.
     #[pyo3(signature = (from_ts, to_ts, max = 100))]
     fn read_by_time(
@@ -219,6 +240,26 @@ impl PyLog {
         let rows = py.detach(|| {
             let log = self.lock()?;
             log.read_by_time(from_ts, to_ts, max).map_err(map_error)
+        })?;
+        rows.into_iter()
+            .map(|(ts, offset, body)| self.record_from(ts, offset, &body))
+            .collect()
+    }
+
+    /// Read one stream's records whose timestamp is in `[from_ts, to_ts]`, up to `max`.
+    #[pyo3(signature = (partition, from_ts, to_ts, max = 100))]
+    fn read_stream_by_time(
+        &self,
+        py: Python<'_>,
+        partition: Option<&str>,
+        from_ts: u64,
+        to_ts: u64,
+        max: usize,
+    ) -> PyResult<Vec<Py<Record>>> {
+        let rows = py.detach(|| {
+            let log = self.lock()?;
+            log.read_stream_by_time(partition, from_ts, to_ts, max)
+                .map_err(map_error)
         })?;
         rows.into_iter()
             .map(|(ts, offset, body)| self.record_from(ts, offset, &body))

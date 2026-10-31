@@ -2345,8 +2345,24 @@ the next decision can find it.
       in the SAME bucket does not seal, and the next append reuses that part. What is still
       owed: a log that stays open and idle forever still keeps its part open until some call
       arrives — the honest limit of "no timer", and the reason `seal()` exists.
-- [ ] Owed: **reading one stream.** `read(from)` applies `from` to every partition. A
-      caller that wants one partition filters `parts()` by hand and reads the files itself.
+- [x] Paid 2026-10-31: **reading one stream.** `read(from)` applied `from` to every partition,
+      so a caller wanting one tenant or shard had to assemble it from `parts()` and read the
+      files itself. `read_stream(partition, from, max)` and `read_stream_by_time(partition,
+      from_ts, to_ts, max)` are the primitive the union was built on — offsets are a stream's
+      own counter (ADR-0046 §9), so both `read` and `read_stream` walk the same parts with a
+      filter, and only the union sorts (one stream is already in offset order). `None` names
+      the single stream of an unpartitioned log. Locked by
+      `okm-series/tests/stream_read_test.rs` — interleaved eu/us records read back one stream
+      at a time, both streams' offsets starting at 0, an unknown value answering nothing, and
+      the union still returning six — and by the same walk through the wheel
+      (`accept_embedded.py`) and the binding's own host test.
+- [ ] Owed: **`bindings/okm-python/tests/injection.rs` does not compile.** It sits behind
+      `required-features = ["host-tests"]`, which no CI job enabled, so nobody has run it:
+      `cargo test --no-default-features --features host-tests` in `bindings/okm-python` stops
+      with 15 errors (E0053 method signatures, E0277 `TryInto`, E0599 missing methods) —
+      pyo3 or crate API drift since it was written. The series twin compiles and runs (5
+      tests) and has a CI job; this one gets a job when it builds. Until then, the only
+      Python-facing coverage of `okm-python` is `accept_embedded.py` against the wheel.
 - [ ] Owed: **`Error::TimeBackwards` is unreachable from the API** — it survives as the
       writer's internal assertion (`part.rs`), and the log clamps instead. Either delete
       the public variant or document it as an internal invariant that no caller can hit.
