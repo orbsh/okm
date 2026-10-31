@@ -83,8 +83,15 @@ Design decisions live in `docs/adr/`. This plan tracks implementation status.
       row-group/columnar tier, which already exists: the Parquet snapshot
       path (Phase 4) provides delta/RLE/dictionary encodings natively —
       a second in-house column-block regime has no increment.
-- [ ] Hot/cold promotion procedure (extension field → hot section tail,
-      version bump, hex-test guarded).
+- [x] Declined (2026-10-31): a hot/cold promotion procedure. Promoting a field across the payload's
+      hot/cold boundary — a `String` that becomes `Vocab<u16>` stops being a cold TLV item and
+      becomes hot bytes, shifting every field declared after it — is a shape change like any other,
+      and a shape change has exactly one path: export with the build that reads the old shape, import
+      with the build that writes the new one (ADR-0042 §5). A separate procedure would restate that
+      path and the rules already in MODELING beside it (hot offsets come from the declaration, so an
+      old row is simply a different shape; the decoder absorbs a known-but-missing field only at the
+      segment tail, which is why appending survives and moving does not; the stability tests' hex
+      locks move with the shape).
 
 ## Phase 3 — Secondary indexes / access methods (ADR-0005 + 0006) ✅ shipped
 
@@ -464,7 +471,7 @@ key bare in the tail) recorded in ADR-0005.
       re-allocated each entry's key suffix so it could drop the prefix. Dropping it with
       `Vec::drain` instead — 151 -> 125 ns per row over the same 10,000 entries — takes okm's
       covered scan from ~530 to ~490 ns per row at fanout 100. No API change.
-- [ ] The rest of the gap (`ScanIter` handing back an owned `(Vec, Vec)` per row, plus the
+- [x] Declined: the rest of the gap (`ScanIter` handing back an owned `(Vec, Vec)` per row, plus the
       typed decode) needs a borrowed-iterator door on `VirtualStorage` — a trait change
       touching three engines. **Not worth it**: this is analytic work whose home is Parquet.
       Same verdict for the missing streaming door for index values (`scan_range_iter` covers
@@ -504,8 +511,8 @@ key bare in the tail) recorded in ADR-0005.
       integers (ByteVector field is crate-private); VM round trip locked by
       vm_roundtrip (Rust writes → steel reads → steel re-encodes byte-
       identical).
-- [~] Schema reverse-import (Python/Steel-declared key/row/table → Rust
-      runtime execution) — REJECTED (2026-09-22). The Rust runtime cannot
+- [x] Declined (2026-09-22): schema reverse-import (Python/Steel-declared key/row/table → Rust
+      runtime execution). The Rust runtime cannot
       predict dynamically-added Python/Steel schemas, so a reverse import
       would force the Rust side into the same dynamic mode, which is what
       okm-dynamic already provides on the bindings side (no increment).
@@ -654,7 +661,7 @@ key bare in the tail) recorded in ADR-0005.
       pumps remain the reference transport. bare_shard_test locks
       byte-identical execution, shard-table ns segments, and
       bare+hosted coexistence.
-- [~] Key-segment composition primitive — REJECTED (2026-09-12, evaluated
+- [x] Declined (2026-09-12): key-segment composition primitive (evaluated
       and dropped). The scenario was hypothetical: it existed to justify
       moving `#[ok_ns]` off `KeyEncode` (a key type may legitimately serve
       several tables). With ns now on the row, that justification is
