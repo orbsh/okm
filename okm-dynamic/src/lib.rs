@@ -51,6 +51,7 @@ mod plan;
 mod plan_fields;
 mod reduce;
 
+pub use okm_core::TableMeta;
 pub use okm_core::field::FieldType;
 pub use okm_core::schema::{CollectionSchema, FieldSchema};
 

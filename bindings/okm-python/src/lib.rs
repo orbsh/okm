@@ -237,6 +237,16 @@ pub mod pyo3_impl {
                 .scan(slot, encoded_prefix)
                 .map_err(|e| e.to_string())
         }
+
+        /// Table meta (ADR-0043): stamp the store with this schema's layout
+        /// version, or answer the stamp it already carries. Same row the typed
+        /// path writes — one format, two modes.
+        pub fn ensure_layout_doc(&self) -> Result<okm_core::TableMeta, String> {
+            self.inner
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .ensure_layout()
+        }
     }
 
     #[pymethods]
@@ -381,6 +391,26 @@ pub mod pyo3_impl {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .purge(&pkey)
                 .map_err(PyValueError::new_err)
+        }
+
+        /// Stamp this table on the store, or answer the stamp it already carries
+        /// (ADR-0043): `{name: bytes}`. Raises `ValueError` naming both numbers
+        /// when the store was written in another layout version — the shape check
+        /// belongs where the host attaches, not on the write path.
+        fn ensure_layout(&self) -> PyResult<Py<PyAny>> {
+            let meta = self
+                .inner
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .ensure_layout()
+                .map_err(PyValueError::new_err)?;
+            Python::attach(|py| {
+                let dict = pyo3::types::PyDict::new(py);
+                for (name, value) in meta.iter() {
+                    dict.set_item(name, value)?;
+                }
+                Ok(dict.unbind().into_any())
+            })
         }
 
         /// Access-method scan: return the matching documents' primary keys,
