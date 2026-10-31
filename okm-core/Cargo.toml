@@ -157,6 +157,13 @@ required-features = ["test-engines"]
 name = "upsert_test"
 required-features = ["test-engines"]
 
+# The uuid suite opens a temp-dir engine (`TestStore::fjall_tmp`), and that
+# constructor is `#[cfg(feature = "fjall")]` — `test-engines` alone brings
+# slatedb only, so the suite must name the engine it opens.
+[[test]]
+name = "uuid_key"
+required-features = ["test-engines", "fjall"]
+
 [[test]]
 name = "wrappers_test"
 required-features = ["test-engines"]

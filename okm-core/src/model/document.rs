@@ -90,6 +90,9 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     /// Mutable store handle for a caller-owned write path that must reach the
     /// engine outside `put`/`save_into` — the Parquet import is the one: it
     /// re-interns labels into the destination vocabulary BEFORE the rows land.
+    /// Feature-gated with that caller, so a build without `parquet` carries no
+    /// unused verb.
+    #[cfg(feature = "parquet")]
     pub(crate) fn store_mut(&mut self) -> &mut S {
         &mut self.store
     }
