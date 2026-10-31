@@ -101,6 +101,54 @@ fn named_tags_work_when_the_log_is_opened_with_them() {
 }
 
 #[test]
+fn a_reader_can_ask_for_one_stream() {
+    Python::attach(|py| -> PyResult<()> {
+        let dir = tempfile::tempdir().unwrap();
+        let module = module(py)?;
+        let log = open_log(
+            py,
+            &module,
+            dir.path(),
+            &[("partition_tag", 9u16.into_pyobject(py)?.into_any())],
+        )?;
+
+        for (tenant, index) in [("eu", 0u64), ("us", 0), ("eu", 1), ("us", 1)] {
+            let body = PyDict::new(py);
+            body.set_item(1u16, index)?;
+            body.set_item(9u16, tenant)?;
+            log.call_method1("append", (body,))?;
+        }
+        log.call_method0("flush")?;
+
+        let eu = log.call_method1("read_stream", ("eu", 0u64, 100usize))?;
+        let eu = eu.cast::<PyList>()?;
+        assert_eq!(eu.len(), 2, "the eu stream only");
+        let offsets: Vec<u64> = (0..eu.len())
+            .map(|index| {
+                eu.get_item(index)
+                    .unwrap()
+                    .getattr("offset")
+                    .unwrap()
+                    .extract()
+                    .unwrap()
+            })
+            .collect();
+        assert_eq!(offsets, vec![0, 1], "offsets count per stream");
+        let body: Bound<'_, PyDict> = eu.get_item(0)?.getattr("body")?.cast_into()?;
+        assert_eq!(
+            body.get_item(9)?.unwrap().extract::<String>()?,
+            "eu",
+            "no other stream leaks into the answer"
+        );
+
+        let all = log.call_method1("read", (0u64, 100usize))?;
+        assert_eq!(all.cast::<PyList>()?.len(), 4, "read is still the union");
+        Ok(())
+    })
+    .unwrap();
+}
+
+#[test]
 fn a_partitioned_log_needs_the_field() {
     Python::attach(|py| -> PyResult<()> {
         let dir = tempfile::tempdir().unwrap();

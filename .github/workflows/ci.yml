@@ -115,3 +115,24 @@ jobs:
       # crate, and the wheel has to be what answers.
       - name: acceptance against the installed wheel
         run: $RUNNER_TEMP/series-venv/bin/python -P bindings/okm-series-python/accept_embedded.py
+
+  binding-host-tests:
+    name: okm-series-python host tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: bindings/okm-series-python
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      # Plain `cargo test` never runs this file: it is `required-features = ["host-tests"]`,
+      # and BOTH flags are needed — `--features host-tests` alone leaves `extension-module`
+      # on (it is a default feature), pyo3 then declines to link libpython, and the test
+      # binary dies at link time on `PyDict_New`. The okm-python twin (`tests/injection.rs`)
+      # does not compile at all yet, which is why it has no job; see docs/PLAN.md.
+      - name: drive the binding through Python objects
+        working-directory: bindings/okm-series-python
+        run: cargo test --no-default-features --features host-tests

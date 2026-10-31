@@ -130,6 +130,28 @@ pub struct Config {
 /// `Config::clock` empty.
 pub type Clock = std::sync::Arc<dyn Fn() -> u64 + Send + Sync>;
 
+/// Which streams a read covers: every one, or a single one. Private, because the public
+/// surface says this with two methods (`read` / `read_stream`) instead of one argument whose
+/// `None` would have to mean two different things.
+#[derive(Clone, Copy)]
+enum Which<'a> {
+    EveryStream,
+    Stream(Option<&'a str>),
+}
+
+impl Which<'_> {
+    fn covers(self, partition: Option<&str>) -> bool {
+        match self {
+            Which::EveryStream => true,
+            Which::Stream(want) => partition == want,
+        }
+    }
+
+    fn is_every_stream(self) -> bool {
+        matches!(self, Which::EveryStream)
+    }
+}
+
 impl std::fmt::Debug for Config {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Config")
@@ -369,12 +391,40 @@ impl Log {
     /// Read up to `max` records from a logical offset, across parts and partitions.
     ///
     /// With partitions the offset applies to EVERY stream (offsets are per stream, see
-    /// ADR-0046 9) and rows come back in time order.
+    /// ADR-0046 9) and rows come back in time order. For one stream, use `read_stream`.
     pub fn read(&self, from: u64, max: usize) -> Result<Vec<(u64, u64, Body)>, Error> {
+        self.read_streams(Which::EveryStream, from, max)
+    }
+
+    /// Read one stream: the records filed under one partition value, or — with `None` — the
+    /// single stream of an unpartitioned log.
+    ///
+    /// The value is the one `parts()` reports: a `Str` as itself, an integer in decimal, bytes
+    /// as hex (identical renderings, because both are the directory name). `read` is the union
+    /// of every stream; this is the primitive underneath it, since an offset is a stream's own
+    /// counter (ADR-0046 §9).
+    pub fn read_stream(
+        &self,
+        partition: Option<&str>,
+        from: u64,
+        max: usize,
+    ) -> Result<Vec<(u64, u64, Body)>, Error> {
+        self.read_streams(Which::Stream(partition), from, max)
+    }
+
+    fn read_streams(
+        &self,
+        which: Which<'_>,
+        from: u64,
+        max: usize,
+    ) -> Result<Vec<(u64, u64, Body)>, Error> {
         let mut rows = Vec::new();
-        for (_, _, path) in self.parts_by_offset()? {
+        for (_, partition, path) in self.parts_by_offset()? {
             if rows.len() >= max {
                 break;
+            }
+            if !which.covers(partition.as_deref()) {
+                continue;
             }
             let reader = PartReader::open(&path, self.config.dict.as_ref())?;
             let (start, end) = reader.offset_span();
@@ -385,23 +435,51 @@ impl Log {
             // record the log still has: the caller sees the gap in the offsets.
             reader.read_from(from.max(start), max, &mut rows)?;
         }
-        // Across partitions the parts arrive in directory order, so the caller gets a
-        // time order it can act on rather than a directory order it did not ask for.
-        rows.sort_by_key(|(ts, offset, _)| (*ts, *offset));
+        if which.is_every_stream() {
+            // Across partitions the parts arrive in directory order, so the caller gets a
+            // time order it can act on rather than a directory order it did not ask for. One
+            // stream is already in that order — its parts are sorted by offset.
+            rows.sort_by_key(|(ts, offset, _)| (*ts, *offset));
+        }
         Ok(rows)
     }
 
-    /// Read every record whose timestamp is in `[from_ts, to_ts]`, up to `max`.
+    /// Read every record whose timestamp is in `[from_ts, to_ts]`, up to `max`, across
+    /// partitions. Rows come back in time order; `read_stream_by_time` reads one stream.
     pub fn read_by_time(
         &self,
         from_ts: u64,
         to_ts: u64,
         max: usize,
     ) -> Result<Vec<(u64, u64, Body)>, Error> {
+        self.read_by_time_streams(Which::EveryStream, from_ts, to_ts, max)
+    }
+
+    /// Read one stream's records whose timestamp is in `[from_ts, to_ts]`, up to `max`.
+    pub fn read_stream_by_time(
+        &self,
+        partition: Option<&str>,
+        from_ts: u64,
+        to_ts: u64,
+        max: usize,
+    ) -> Result<Vec<(u64, u64, Body)>, Error> {
+        self.read_by_time_streams(Which::Stream(partition), from_ts, to_ts, max)
+    }
+
+    fn read_by_time_streams(
+        &self,
+        which: Which<'_>,
+        from_ts: u64,
+        to_ts: u64,
+        max: usize,
+    ) -> Result<Vec<(u64, u64, Body)>, Error> {
         let mut rows = Vec::new();
-        for (_, _, path) in self.parts_by_offset()? {
+        for (_, partition, path) in self.parts_by_offset()? {
             if rows.len() >= max {
                 break;
+            }
+            if !which.covers(partition.as_deref()) {
+                continue;
             }
             let reader = PartReader::open(&path, self.config.dict.as_ref())?;
             match reader.ts_span() {
@@ -411,7 +489,9 @@ impl Log {
             }
             reader.read_by_time(from_ts, to_ts, max, &mut rows)?;
         }
-        rows.sort_by_key(|(ts, offset, _)| (*ts, *offset));
+        if which.is_every_stream() {
+            rows.sort_by_key(|(ts, offset, _)| (*ts, *offset));
+        }
         Ok(rows)
     }
 
