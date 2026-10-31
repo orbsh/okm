@@ -1,0 +1,63 @@
+name: release
+
+# Distribution is GitHub (2026-10-31, owner): a tag and a release carry the
+# wheels, and nothing is published to an index. The build commands are CI's
+# round-trip commands verbatim — so what ships is what the acceptance scripts
+# already ran against — and this workflow runs them once more against the very
+# wheel it uploads, because a release is the one place a stale artifact would go
+# unnoticed.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write # create the release and upload its assets
+
+jobs:
+  wheel:
+    name: wheel - ${{ matrix.package }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - package: okm
+            dir: bindings/okm-python
+          - package: okm-series
+            dir: bindings/okm-series-python
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ${{ matrix.dir }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: build the wheel
+        working-directory: ${{ matrix.dir }}
+        run: pip install "maturin>=1.0,<2.0" && maturin build --release --out dist
+      - name: install it into a clean venv
+        run: |
+          python -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --no-index \
+            --find-links "${{ matrix.dir }}/dist" "${{ matrix.package }}"
+      # `-P` keeps the script's own directory off sys.path, so only the installed
+      # wheel can answer: the `.so` beside the sources is gitignored and absent on
+      # a fresh checkout.
+      - name: acceptance against the wheel being released
+        run: '"$RUNNER_TEMP/venv/bin/python" -P "${{ matrix.dir }}/accept_embedded.py"'
+      - name: attach it to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          tag="${GITHUB_REF_NAME}"
+          # The first matrix job creates the release; the second finds it. A race
+          # that loses the create is reported as "already exists", which is the
+          # state we wanted anyway.
+          gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 ||
+            gh release create "$tag" --repo "$GITHUB_REPOSITORY" \
+              --title "$tag" --generate-notes || true
+          gh release upload "$tag" "${{ matrix.dir }}"/dist/*.whl \
+            --repo "$GITHUB_REPOSITORY" --clobber
