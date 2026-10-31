@@ -51,6 +51,10 @@ impl VirtualStorage for BatchStore<'_, S> { /* get / put / del，读穿透 */ }
    兄弟：主表 + 面（同今天）、把 `prev` 不再产出的面删掉、把 `prev` 持有的嵌入子文档
    中新文档不再引用的那些释放掉（与 `put` 一致）、并通过 `BatchStore` 折/回折
    reduce。`prev` 由调用方给（常见情形：它刚读过旧行），为 `None` 时经适配器读。
+
+   删除的兄弟是 `Collection::purge_into(batch, key) -> bool`：`purge` 的那些写——主表、面、
+   动态段——进调用方的 batch，读同样经适配器，所以本批自己写下的行就是要删掉的状态。不发出
+   subscribe 事件，理由同上：未提交的 batch 不能宣告一个可能永远不会落地的写。
 4. **一次提交，一次账变。** 经适配器写出的 reduce 条目就是普通 batch 操作，所以一个
    不提交的 batch 不留任何累加器变化——账本的原子性从此与行一致。
 5. **subscribe 事件留在 batch 路径之外**——明说缺席，而不是悄悄丢。批量写者的事件归

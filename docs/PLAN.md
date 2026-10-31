@@ -1771,12 +1771,22 @@ pair is already one commit through ADR-0003's batch, and `R` stays complete.
 
 Tasks:
 
-- [ ] Publish the batchable removal: `Collection::purge_into(&mut Batch,
-      &K) -> bool` over the existing private `delete_into` (reading the stored row
-      and segment through a `BatchStore`, so a pending write in the same batch
-      counts as the old state), so a parent row and its side table leave in one
-      commit. A surface addition, not a mechanism — the builder exists; only the
-      door is missing, and the pair's WRITE is already one commit.
+- [x] Paid 2026-10-31: **the batchable removal.** `Collection::purge_into(&mut Batch, &K) -> bool`
+      over the private `delete_into`, so a row and the other tables that hang off it leave in one
+      engine write. A surface addition, not a mechanism, exactly as the item said — and the shared
+      read came out of it: `purge` and `purge_into` now read the row and the segment through one
+      private `removal_reads(store: &dyn VirtualStorage, key)`, which is what makes the point path
+      and the batch path decode identically (`decode_payload` + embed deref + vocab deref) instead
+      of the batch path growing a second copy of `get`. The reads go through a `BatchStore` view,
+      so a `put` this batch staged for the key IS the state being removed: reading the store
+      instead would find no row, delete no faces, answer `false`, and let the pending put reland a
+      row whose index entries are gone. `false` also means the batch was left untouched. No
+      subscribe emission — an uncommitted batch must not announce a write that may never land
+      (ADR-0031 §5), and `commit_batch` carries the changelog half. Locked by
+      `save_into_test::purge_into_defers_until_the_commit`,
+      `::purge_into_reads_the_batch_it_is_building`, `::purge_into_of_a_missing_key_writes_nothing`
+      and `::two_tables_leave_in_one_commit`. Surface recorded in README, ADR-0031 §3 (both
+      languages).
 
 ### Vocabulary allocation: one rule, two implementations, only one checked
 
