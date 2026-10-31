@@ -10,5 +10,7 @@ requires-python = ">=3.8"
 
 [tool.maturin]
 features = ["pyo3/extension-module"]
+# A pure extension module: there are no Python sources beside the crate, so the wheel
+# is `okm_series.*.so` alone. `python-source = "."` used to sit here and made every
+# `maturin build` fail — it claims a package directory that does not exist.
 module-name = "okm_series"
-python-source = "."

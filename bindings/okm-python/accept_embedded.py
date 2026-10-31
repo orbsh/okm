@@ -7,10 +7,17 @@ accumulator) plus func/partial index entry lifecycle. Run after
     maturin develop && python3 accept_embedded.py
 """
 import json
+import os
 import subprocess
 import sys
 
 import okm
+
+# The acceptance runs from anywhere — including a venv holding the WHEEL rather than
+# this checkout. The schema exporter below builds a throwaway crate against this repo,
+# so those paths come from this file's location, never from the cwd (`../../okm-core`
+# resolved against a venv's cwd is a missing directory, not a schema).
+HERE = os.path.dirname(os.path.abspath(__file__))
 
 SCHEMA_RS = r'''
 use okm_core::{KeyEncode, DocumentEncode};
@@ -52,7 +59,7 @@ def schema_json() -> str:
                 "okm-core={path='%s', features=['schema-serde']}\n"
                 "okm-derive={path='%s'}\n"
                 "serde_json='1'\n"
-                % (os.path.abspath("../../okm-core"), os.path.abspath("../../okm-derive"))
+                % (os.path.join(HERE, "../../okm-core"), os.path.join(HERE, "../../okm-derive"))
             )
         out = subprocess.run(
             ["cargo", "run", "--quiet", "--manifest-path", toml],
@@ -101,6 +108,11 @@ def key(org, user) -> bytes:
 
 
 def main() -> int:
+    # Provenance first: a `okm/*.so` left in this directory by a hand-copied build
+    # shadows an installed wheel silently — which is how a wheel check can "pass"
+    # against yesterday's code. Run with `python -P` to test the wheel, and read this
+    # line in the log to know which module answered.
+    print(f"okm: {okm.__file__}")
     schema = okm.Schema(schema_json())
     t = okm.Collection(schema, 42)
 

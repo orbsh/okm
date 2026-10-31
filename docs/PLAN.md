@@ -2335,8 +2335,13 @@ the next decision can find it.
 - [ ] Owed: **no concurrency test.** One writer is enforced by the `LOCK` pid file, and the
       stale-pid takeover is a heuristic: a reused pid makes a legitimate open fail. No test
       covers two openers, two readers during a flush, or a `kill -9` mid-block.
-- [ ] Owed: **packaging.** No `maturin build` / `pip install` round trip, so the wheel is
-      untested (only a hand-copied `.so` on `PYTHONPATH`), and no CI for either crate.
+- [ ] Owed: **packaging, half paid (2026-10-31).** `maturin build` never worked for this
+      crate: `pyproject.toml` declared `python-source = "."` with no `okm_series/` package
+      beside the crate, so every build failed on a directory that was never there. Removed
+      — the wheel is the bare extension — and CI now builds it, installs it into a clean
+      venv and imports it by name (`.github/workflows/ci.yml`, job `series-wheel`). Still
+      owed: a Python-side acceptance script (the crate's meaning is only locked Rust-side),
+      and a publish story (nothing reaches an index).
 - [ ] Owed: **a point read re-opens and re-parses the part on every call.** 23 of the
       68 µs above is the index parsed twice (`parts_by_offset` and then `read`), and
       the rest is the 64 KiB block decompression. Caching the reader inside `Log`
@@ -2363,3 +2368,35 @@ the next decision can find it.
   hyphenated text stays a display form at the edge.
 - `scan_keys()` returns v7 keys in clock order because the encoding is the clock: no index, no
   re-sort. Locked by `okm-core/tests/uuid_key.rs`.
+
+## 2026-10-31 — packaging and CI: four workspaces, one gate
+
+The repository holds four workspaces and every local command reached only the first:
+`cargo fmt --all` and `cargo test --workspace` from the root skip `bindings/okm-python`,
+`bindings/okm-steel` and `bindings/okm-series-python`, each of which declares an empty
+`[workspace]` of its own. Two consequences were already visible before CI existed:
+`okm-dynamic` and `okm-steel` had never been formatted, and `okm-core/tests/uuid_key.rs` had
+been failing to compile by default features for a day while every green run used
+`--all-features` — the flag that hides exactly that.
+
+`.github/workflows/ci.yml` now names each workspace:
+
+- **root workspace** — `cargo fmt --all --check`, `clippy --workspace --all-targets
+  --all-features -D warnings`, then `cargo test --workspace` (the release posture: no
+  optional engine) beside `cargo test --workspace --all-features`. Both feature sets are
+  checked because `--all-features` alone had been the only green run.
+- **binding** (matrix over steel and series-python) — the same three verbs scoped to each
+  workspace.
+- **python-wheel** — `maturin build` → install into a clean venv → run `accept_embedded.py`
+  with `-P`. `-P` matters: the script lives beside `okm/`, so without it the checkout's
+  hand-copied `.so` shadows the installed wheel and the check passes against yesterday's
+  code. The script now prints the module path it loaded, and its schema exporter resolves
+  `../../okm-core` from `__file__` instead of the cwd, so it runs from anywhere.
+- **series-wheel** — the same round trip for `okm-series`, cut down to "the extension
+  imports": that crate has no Python-side acceptance script yet (see its Owed list, which
+  also records why `maturin build` had never worked there at all).
+
+Wheel round trips were verified locally against a real install before the workflow was
+written: `okm-0.1.0-cp314-cp314-manylinux_2_38_x86_64.whl` in a fresh venv, with the
+in-tree `.so` deleted, prints
+`okm: /…/site-packages/okm/__init__.py` and then ALL PASS.
