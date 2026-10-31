@@ -801,7 +801,8 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
     /// anything outside the edge namespace.
     ///
     /// Wiping the vector snapshot's slot is the vector layer's business, not
-    /// this one's: a stale blob there decodes as garbage and is a cache miss.
+    /// this one's: a stale blob there decodes as garbage and is a cache miss, and
+    /// `okm_vector::VectorIndex::wipe` is the verb that reclaims it.
     pub fn reindex(&mut self) -> crate::error::Result<usize> {
         let slots = [
             EDGE_OUT_SLOT,

@@ -58,7 +58,7 @@ pub mod index;
 pub use codec::{Code, Codec, Prepared};
 pub use exact::ExactIndex;
 pub use hnsw::{Hnsw, HnswParams};
-pub use index::{VECTOR_INDEX_SLOT, VectorIndex};
+pub use index::{RETIRED_SNAPSHOT_SLOT, VECTOR_INDEX_SLOT, VectorIndex};
 
 use okm_core::Vector;
 

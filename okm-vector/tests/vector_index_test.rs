@@ -173,3 +173,67 @@ fn pq_codes_are_compact_and_rank_well() {
     let recall = hits as f64 / (queries * 10) as f64;
     assert!(recall >= 0.6, "PQ recall@10 = {recall:.3}");
 }
+
+#[test]
+fn wipe_reclaims_every_blob_of_a_namespace() {
+    let ns = [7u8, 4u8];
+    let rows = rng_rows(64, 16, 5);
+    let mut idx = VectorIndex::new(ns, Codec::i8(16), HnswParams::default(), 4);
+    for (key, v) in &rows {
+        idx.add(key.clone(), v);
+    }
+    let mut store = MemStore::new();
+    idx.save(&mut store).expect("save");
+    // The move: a blob an older build left at the slot the snapshot used to live in.
+    let retired = okm_vector::RETIRED_SNAPSHOT_SLOT;
+    let mut old_key = ns.to_vec();
+    old_key.push(retired);
+    old_key.extend_from_slice(&0u16.to_be_bytes());
+    store
+        .put(old_key.clone(), b"a snapshot from before the move".to_vec())
+        .unwrap();
+
+    assert_eq!(
+        VectorIndex::wipe(&mut store, ns).expect("wipe"),
+        5,
+        "four live shards plus the one the old build left behind"
+    );
+    assert!(
+        store.get(&old_key).unwrap().is_none(),
+        "the retired slot goes with it, or nothing ever reclaims it"
+    );
+    assert!(
+        VectorIndex::load(&store, ns)
+            .expect("a store read")
+            .is_none(),
+        "no blob, no snapshot"
+    );
+    assert_eq!(
+        VectorIndex::wipe(&mut store, ns).expect("wipe again"),
+        0,
+        "a second sweep finds nothing and writes nothing"
+    );
+}
+
+#[test]
+fn wipe_leaves_another_namespace_alone() {
+    let mut store = MemStore::new();
+    for ns in [[1u8, 1u8], [2u8, 2u8]] {
+        let mut idx = VectorIndex::new(ns, Codec::i8(8), HnswParams::default(), 2);
+        idx.add(b"row/one".to_vec(), &[0.1f32; 8]);
+        idx.save(&mut store).expect("save");
+    }
+    let mine = [1u8, 1u8];
+    assert_eq!(VectorIndex::wipe(&mut store, mine).expect("wipe"), 2);
+    assert!(
+        VectorIndex::load(&store, mine)
+            .expect("a store read")
+            .is_none()
+    );
+    assert!(
+        VectorIndex::load(&store, [2u8, 2u8])
+            .expect("a store read")
+            .is_some(),
+        "the snapshot key is namespace-scoped, and so is the sweep"
+    );
+}
