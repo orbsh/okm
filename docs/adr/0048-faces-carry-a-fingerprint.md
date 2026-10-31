@@ -2,7 +2,7 @@
 
 > **Languages:** [English](0048-faces-carry-a-fingerprint.md) (primary) · [中文](0048-faces-carry-a-fingerprint.zh-CN.md)
 
-**Status:** Accepted (2026-10-31) — the stamp is built; the rebuild it names is still owed. **Date:** 2026-10-31
+**Status:** Accepted (2026-10-31) — stamp and rebuild both implemented the same day. **Date:** 2026-10-31
 
 ## Context
 
@@ -37,5 +37,7 @@ Two halves of the problem were already answered and are worth naming, because th
 - **The stamp cannot rot.** It is a function of the declaration, so a declaration change moves it in the same commit that changes the slots.
 - **Opening a store is unchanged.** `ensure_layout` still answers `version` alone; only a caller that asks gets a verdict about faces. Existing stores keep opening; they answer `Unknown` instead of pretending.
 - **On disk, one name appeared.** Older builds ignore unknown meta names and keep them across `set_meta`; a store stamped by this build is still readable by a build that predates it.
-- **Root cause, not a symptom, and only half the cure.** The status names the drift; nothing repairs it yet. `Graph::reindex` remains the only rebuild verb in the model layer, and a store too large for one batch still has no chunked rebuild — that item stands on its own in PLAN. When it lands, it stamps `faces` on completion, which is why no "rebuilding" state is needed: an interrupted rebuild is simply a stamp that was never written.
+- **The repair is the other half, and it runs in chunks.** `Collection::rebuild_faces(chunk)` and `Graph::reindex(chunk)` sweep the faces the declaration names and re-derive them from the primary rows, committing every `chunk` ops — so memory is one chunk, not one table, and `usize::MAX` restores the old single-commit shape. The sweep comes first and cannot be skipped: an entry's key encodes the value it indexes, so an entry whose row changed hands answers at a key no row produces any more, and re-deriving writes the new key without ever naming the old one.
+- **Interruption needs no state, because the stamp is the state.** Both verbs write `faces` last, so a run that dies between commits leaves a store that still answers `Stale` and a next run that starts over. The price is a window: a reader during the rebuild sees a half-built face. That is the operator contract (do not read while it runs), and it is the whole reason chunking is an explicit verb rather than something `put` does.
+- **Two faces are outside the verb.** Reduce accumulators are data, not derived structure — recomputing one is a full-table fold with its own mechanism, which is why they were never in the fingerprint either. The vector snapshot cannot be re-derived at all: it needs an embedding model, so its owner wipes and re-adds (`okm_vector::VectorIndex::wipe`).
 - **The dynamic mode inherits the rule rather than being exempt.** A schema exported from a Rust declaration carries the number, so a dynamic writer stamps it; a hand-written schema does not, so its faces read as unknown. That asymmetry is the honest one — one of them knows what it built.

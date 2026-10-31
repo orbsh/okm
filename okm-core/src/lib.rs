@@ -126,7 +126,7 @@ pub use engine::storage;
 pub use engine::test_engine;
 pub use model::collection;
 pub use model::document;
-pub use model::faces::{FINGERPRINT_LEN, IndexDecl};
+pub use model::faces::{FINGERPRINT_LEN, IndexDecl, RebuildReport};
 pub use model::field;
 pub use model::index;
 pub use model::junction;

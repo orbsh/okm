@@ -781,3 +781,59 @@ fn the_edge_set_exports_as_a_table_with_named_endpoints() {
     let unnamed = g.to_record_batch_table(|_| None).unwrap();
     assert_eq!(unnamed.column(0).null_count(), 1);
 }
+
+#[test]
+fn reindex_rebuilds_the_faces_one_chunk_at_a_time() {
+    // ADR-0048's chunked rebuild reaches the graph through `reindex`: the same
+    // two phases as a collection's faces — sweep, then re-derive from the primary
+    // — with the ops split across commits, so a large edge set costs one chunk of
+    // memory instead of one batch of every entry.
+    let store = okm_core::TestStore::slatedb_mem();
+    let mut g: Graph<_, Employment> = Graph::new(store.clone());
+    for id in 1..=5u64 {
+        g.link(
+            &head(user(id), org(9), "employs"),
+            &Employment {
+                since_year: 2020,
+                weight: id as u32,
+            },
+            id,
+        )
+        .unwrap();
+    }
+    assert_eq!(g.out_edges(&user(3)).unwrap().len(), 1);
+
+    // Empty one face without touching a single primary row: the state `reindex`
+    // exists to repair.
+    let mut prefix = <Employment as okm_core::Document>::NS_PREFIX.to_vec();
+    okm_core::index::write_slot(&mut prefix, okm_core::model::graph::EDGE_OUT_SLOT);
+    let end = okm_core::engine::storage::prefix_end(&prefix);
+    let stale = store.scan_range(&prefix, end.as_deref()).unwrap();
+    assert_eq!(stale.len(), 5);
+    for key in &stale {
+        store.del(key).unwrap();
+    }
+    assert_eq!(
+        g.out_edges(&user(3)).unwrap().len(),
+        0,
+        "the out face is empty now"
+    );
+    assert_eq!(
+        g.in_edges(&org(9)).unwrap().len(),
+        5,
+        "the in face is intact"
+    );
+
+    let rebuilt = g.reindex(2).unwrap();
+    assert_eq!(rebuilt, 5, "one edge per primary row, all re-derived");
+    for id in 1..=5u64 {
+        assert_eq!(g.out_edges(&user(id)).unwrap().len(), 1, "edge {id} out");
+    }
+    assert_eq!(g.in_edges(&org(9)).unwrap().len(), 5);
+
+    // One commit instead of many answers the same question about the same rows.
+    let mut g2: Graph<_, Employment> = Graph::new(store.clone());
+    assert_eq!(g2.reindex(usize::MAX).unwrap(), 5);
+    assert_eq!(g2.out_edges(&user(3)).unwrap().len(), 1);
+    assert_eq!(g2.in_edges(&org(9)).unwrap().len(), 5);
+}
