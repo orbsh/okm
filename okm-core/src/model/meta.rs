@@ -32,6 +32,45 @@ use crate::model::wrappers::wire::{put_len, take_len};
 /// header (`Document::LAYOUT_VERSION`).
 pub const VERSION: &str = "version";
 
+/// The fingerprint of the declaration's structural faces (ADR-0048) — the
+/// derived state that lives outside the primary table and that `version` cannot
+/// describe: adding an index changes no payload byte, so the layout number does
+/// not move while the faces do.
+///
+/// Absent means "not described" (every store written before this existed), which
+/// reads as untrusted — never as "this table has no faces".
+pub const FACES: &str = "faces";
+
+/// What a store's face stamp says about this build's declaration (ADR-0048).
+///
+/// Three answers, not two, because they mean different things to a caller: a
+/// stale face is repairable drift, while a store that never recorded one is
+/// simply older than the mechanism.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FaceStatus {
+    /// The store's faces were built from this declaration.
+    Match,
+    /// The store carries a stamp from another declaration: its derived faces
+    /// answer for a key layout this build does not use.
+    Stale {
+        stored: [u8; crate::model::faces::FINGERPRINT_LEN],
+        current: [u8; crate::model::faces::FINGERPRINT_LEN],
+    },
+    /// No stamp — the store predates the mechanism (or was never stamped at
+    /// attach). Treat its faces as untrusted; nothing here says they are wrong,
+    /// only that nothing says they are right.
+    Unknown {
+        current: [u8; crate::model::faces::FINGERPRINT_LEN],
+    },
+}
+
+impl FaceStatus {
+    /// Whether a caller may trust the derived faces without a rebuild.
+    pub fn is_current(&self) -> bool {
+        matches!(self, FaceStatus::Match)
+    }
+}
+
 /// The meta entry of one table: a name → value map with deterministic order
 /// (`BTreeMap`, so the encoded bytes are stable and hex-lockable).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -78,6 +117,23 @@ impl TableMeta {
     /// The stamped shape, if this row names one.
     pub fn version(&self) -> Option<u8> {
         self.get(VERSION).and_then(|v| v.first().copied())
+    }
+
+    /// The stamped face fingerprint, if this row names one. A value of the wrong
+    /// width is `None`: this row is written by this crate, so a short one is a
+    /// foreign write, not a fingerprint to compare half of.
+    pub fn faces(&self) -> Option<[u8; crate::model::faces::FINGERPRINT_LEN]> {
+        let bytes = self.get(FACES)?;
+        <[u8; crate::model::faces::FINGERPRINT_LEN]>::try_from(bytes).ok()
+    }
+
+    /// This store's faces against a declaration's, as three answers.
+    pub fn face_status(&self, current: [u8; crate::model::faces::FINGERPRINT_LEN]) -> FaceStatus {
+        match self.faces() {
+            Some(stored) if stored == current => FaceStatus::Match,
+            Some(stored) => FaceStatus::Stale { stored, current },
+            None => FaceStatus::Unknown { current },
+        }
     }
 
     /// `[count u16 BE]` then once per entry `[name_len varint][name bytes]
@@ -177,6 +233,7 @@ pub fn ensure<S: VirtualStorage + ?Sized>(
     store: &S,
     header: &[u8],
     current: u8,
+    faces: Option<[u8; crate::model::faces::FINGERPRINT_LEN]>,
 ) -> Result<TableMeta> {
     let key = meta_key(header);
     if let Some(bytes) = store.get(&key)? {
@@ -186,7 +243,18 @@ pub fn ensure<S: VirtualStorage + ?Sized>(
             stored => Err(crate::error::Error::LayoutMismatch { stored, current }),
         };
     }
-    let meta = TableMeta::stamped(current);
+    // A fresh store's faces are trivially the faces of the declaration that is
+    // about to write it, so both stamps land together and no store exists that
+    // has one and not the other. A declaration that cannot name its faces — the
+    // dynamic mode with a hand-written schema — passes `None`, and its store
+    // reads back as `FaceStatus::Unknown`, which is the truth. The comparison is deliberately NOT here: an
+    // existing store must keep opening on `version` alone, or every store
+    // written before faces existed would start failing at attach — the caller
+    // asks with [`TableMeta::face_status`] when it cares.
+    let mut meta = TableMeta::stamped(current);
+    if let Some(faces) = faces {
+        meta.set(FACES, faces.to_vec());
+    }
     store.put(key, meta.encode())?;
     Ok(meta)
 }

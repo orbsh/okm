@@ -513,7 +513,9 @@ A table can describe itself. Fixed face **0x0F** holds ONE entry per table — `
 [count u16 BE] ( [name_len varint][name UTF-8][value_len varint][bytes] )*
 ```
 
-`Collection::ensure_layout()` is the first-touch verb: absent → seed this build's version; matching → answer the row; another version, or a row with no version → `Error::LayoutMismatch { stored, current }` naming both numbers. `set_meta(name, value)` records a caller-owned name (the runtime re-stamps `version` afterwards). Call it at attach: one point read per table, never a per-row cost — and `Collection::new` stays I/O-free because of that.
+Two names are the runtime's. `version` is the payload's shape. `faces` is the fingerprint of the declaration's derived faces — the `#[ok_index]` slots, which live in their own ns and change without changing a single payload byte (ADR-0048) — and it is computed from the declaration, never typed. `Collection::faces_status()` compares it and answers `Match` / `Stale` / `Unknown`; `ensure_layout` never refuses on it, because a store written before faces existed would fail a check it can never satisfy, and a stale face is repairable drift rather than an unreadable row.
+
+`Collection::ensure_layout()` is the first-touch verb: absent → seed this build's version and its faces; matching → answer the row; another version, or a row with no version → `Error::LayoutMismatch { stored, current }` naming both numbers. `set_meta(name, value)` records a caller-owned name (the runtime re-stamps `version` afterwards). Call it at attach: one point read per table, never a per-row cost — and `Collection::new` stays I/O-free because of that.
 
 Three boundaries. The entry is **not a row**: row scans and the export path filter by slot, so 0x0F is skipped like 0x01/0x02. It does **not** travel in export/snapshot: it describes the WRITER's shape, and the importing build stamps its own. And it is a **detection** device, not a compatibility promise (ADR-0042): it turns a wrong-shape store into a refusal at attach instead of a decode failure on the first row, and it never makes an old shape readable.
 

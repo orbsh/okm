@@ -587,6 +587,36 @@ fn emit_index_entries(schema: &DocumentSchema) -> syn::Result<TS2> {
         /// cleared by `Collection::prune_deprecated_slots`.
         const DEPRECATED_SLOTS: &'static [::okm_core::index::Slot] = &[#(#dep_slots),*];
     };
+    // The declaration table behind `FACES` (ADR-0048): the same list that
+    // allocated the slots, carried as data so a store can be told apart from one
+    // written under another declaration.
+    let mut decl_items: Vec<TS2> = Vec::new();
+    for (n, idx) in schema.indexes.iter().enumerate() {
+        let slot = declared_slot(DECLARED_SLOT_BASE, n, "index", idx.ident.span())?;
+        let slot_lit = proc_macro2::Literal::u16_unsuffixed(slot);
+        let name = idx.ident.to_string();
+        let fields = &idx.fields;
+        let includes = &idx.includes;
+        let func = &idx.func;
+        let deprecated = idx.deprecated;
+        decl_items.push(quote! {
+            ::okm_core::model::faces::IndexDecl {
+                name: #name,
+                slot: #slot_lit,
+                fields: &[#(#fields),*],
+                includes: &[#(#includes),*],
+                func: #func,
+                deprecated: #deprecated,
+            }
+        });
+    }
+    let decls_const = quote! {
+        /// The structural faces this declaration owns (ADR-0048): every
+        /// declared index in declaration order. `FACES` is its compile-time
+        /// fingerprint; the store carries that number, so a face built under
+        /// another declaration can be told apart from a current one.
+        const INDEX_DECLS: &'static [::okm_core::model::faces::IndexDecl] = &[#(#decl_items),*];
+    };
     Ok(quote! {
         fn index_entries(key: &Self::Key, document: &Self, ns: &[u8]) -> Vec<(Vec<u8>, Vec<u8>)> {
             let mut out = Vec::new();
@@ -594,6 +624,7 @@ fn emit_index_entries(schema: &DocumentSchema) -> syn::Result<TS2> {
             out
         }
         #dep_const
+        #decls_const
     })
 }
 

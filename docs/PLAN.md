@@ -1988,8 +1988,35 @@ panic lints allowed only in the places it names. So the runtime half of
       the old build left behind → 5, and a second sweep finds nothing) and
       `::wipe_leaves_another_namespace_alone` (the key is namespace-scoped, so is the sweep).
       `Graph::reindex` still does not touch the vector slot — it names the verb that does.
-- [ ] Deferred (2026-10-31): a schema version + background reindex for stores too large to rebuild
-      in one batch. Nobody needs it yet.
+- [x] Paid 2026-10-31: **the stamp that says which declaration built a store's faces** (ADR-0048).
+      A derived face lives in its own ns and records nothing about its origin, and the payload's
+      `LAYOUT_VERSION` cannot cover it — adding an index changes no payload byte, so the number does
+      not move while the face does. Now: `Document::INDEX_DECLS` (emitted by the derive from the same
+      list that allocates the slots), `Document::FACES` computed from it at compile time, the number
+      written into the table meta row under `faces` beside `version` by the same first-touch verb
+      (`ensure` writes both, compares `version` only, so every store older than the mechanism keeps
+      opening), and `Collection::faces_status()` answering Match / Stale / Unknown. Three answers
+      rather than two, because stale is repairable drift and unknown is merely older — folding
+      either into `LayoutMismatch` would turn a maintenance action into an outage. The export carries
+      `indexes` and `faces`, both `serde(default)`, so an old schema JSON reads as *undescribed*
+      rather than as "declares no index"; the dynamic mode stamps the number only when its schema
+      came from a Rust declaration, and reads as Unknown otherwise. Locked by
+      `faces_test` (6: fresh store stamped, an older store opening while answering Unknown, another
+      declaration in the same ns answering Stale, the export carrying the store's number, an old
+      schema JSON still reading) plus 3 unit tests on the fingerprint itself (every kind of change
+      moves it; a split string is not the joined one), plus one on the dynamic side
+      (`dynamic_table_test::a_dynamic_store_stamps_the_number_its_schema_came_with` — an exported
+      schema stamps the typed path's number and the typed path recognises its own store, while a
+      hand-written one leaves it Unknown).
+- [ ] Deferred (2026-10-31): **a rebuild that runs in chunks**, for stores too large to rebuild in one
+      batch. The status above names the drift; nothing repairs it yet, and `Graph::reindex` is still
+      the only rebuild verb in the model layer (it reads every edge id into memory and commits one
+      batch). Whenever it is built it belongs on `Collection` and the vector layer, it deletes and
+      re-derives the faces the declaration names, and it writes `faces` ON COMPLETION — which is why
+      no "rebuilding" state is needed: an interrupted rebuild is simply a stamp that was never
+      written, so the next open answers Stale again and the work restarts. Chunked commits give up
+      the atomicity today's `reindex` has (a reader mid-rebuild sees faces missing entries), so the
+      contract is an operator window: don't read while it runs.
 
 ## 2026-10-27 — layout versions are stamps (ADR-0042)
 

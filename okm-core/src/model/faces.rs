@@ -1,0 +1,204 @@
+//! The structural faces a declaration owns, and the fingerprint that says so.
+//!
+//! A derived face (an `#[ok_index]` slot, a graph face, a path index) lives
+//! outside the primary table, in its own part of the key space. Nothing in a
+//! stored entry records WHICH declaration wrote it, so a store whose declaration
+//! gained or moved a face cannot be told apart from one whose faces are current —
+//! adding an index silently leaves it empty, and a renumbered slot silently
+//! answers as its neighbour.
+//!
+//! The payload's `LAYOUT_VERSION` does not cover this: adding an index changes no
+//! payload byte, so the layout number does not move and `ensure_layout` passes.
+//!
+//! So a collection declares its faces here (`INDEX_DECLS`, emitted by the derive)
+//! and carries a fingerprint of them (`FACES`, computed at compile time). The
+//! store is stamped with that fingerprint once (ADR-0043's meta row carries it
+//! beside `version`), and [`crate::model::meta::FaceStatus`] answers whether the
+//! faces on disk were built for this declaration.
+//!
+//! The fingerprint is COMPUTED, never written by hand: a hand-kept number is a
+//! silent-error machine, because forgetting to bump it makes a stale face look
+//! current. A computed one moves whenever the declaration moves.
+
+/// One declared structural face: what `#[ok_index]` put in the key space.
+///
+/// `deprecated` is part of the declaration, not a comment on it: a deprecated
+/// index keeps its slot (declaration order is a persistent contract) and writes
+/// nothing, so its presence and its state both belong in the fingerprint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IndexDecl {
+    pub name: &'static str,
+    pub slot: u16,
+    pub fields: &'static [&'static str],
+    pub includes: &'static [&'static str],
+    pub func: &'static str,
+    pub deprecated: bool,
+}
+
+/// Bytes in a fingerprint (two independent 64-bit lanes).
+pub const FINGERPRINT_LEN: usize = 16;
+
+/// The two lanes' bases differ, so the second half is not a function of the
+/// first — a collision has to hit both.
+const LANE_A: u64 = 0xcbf2_9ce4_8422_2325;
+const LANE_B: u64 = 0x9e37_79b9_7f4a_7c15;
+const PRIME: u64 = 0x0000_0100_0000_01b3;
+
+const fn mix(h: u64, byte: u8) -> u64 {
+    (h ^ byte as u64).wrapping_mul(PRIME)
+}
+
+/// Length-prefixed, so `"ab" + "c"` and `"a" + "bc"` cannot collide.
+const fn mix_str(mut h: u64, s: &str) -> u64 {
+    let b = s.as_bytes();
+    let n = b.len() as u32;
+    h = mix(h, (n >> 24) as u8);
+    h = mix(h, (n >> 16) as u8);
+    h = mix(h, (n >> 8) as u8);
+    h = mix(h, n as u8);
+    let mut i = 0;
+    while i < b.len() {
+        h = mix(h, b[i]);
+        i += 1;
+    }
+    h
+}
+
+const fn mix_names(mut h: u64, names: &[&str]) -> u64 {
+    h = mix(h, (names.len() >> 8) as u8);
+    h = mix(h, names.len() as u8);
+    let mut i = 0;
+    while i < names.len() {
+        h = mix_str(h, names[i]);
+        i += 1;
+    }
+    h
+}
+
+/// The fingerprint of a declaration's faces: canonical bytes over the
+/// declarations in declaration order (order is a persistent contract — slot
+/// numbering follows it, so a reordering is a different set of faces).
+///
+/// `const` so the number costs nothing at runtime and cannot be forgotten: it is
+/// a function of the declaration, which is where it belongs.
+pub const fn fingerprint(decls: &'static [IndexDecl]) -> [u8; FINGERPRINT_LEN] {
+    let mut a = mix_str(LANE_A, "okm.faces.v1");
+    let mut b = mix_str(LANE_B, "okm.faces.v1");
+    a = mix(a, (decls.len() >> 8) as u8);
+    a = mix(a, decls.len() as u8);
+    b = mix(b, (decls.len() >> 8) as u8);
+    b = mix(b, decls.len() as u8);
+    let mut i = 0;
+    while i < decls.len() {
+        let d = decls[i];
+        a = mix(a, (d.slot >> 8) as u8);
+        a = mix(a, d.slot as u8);
+        b = mix(b, (d.slot >> 8) as u8);
+        b = mix(b, d.slot as u8);
+        a = mix(a, d.deprecated as u8);
+        b = mix(b, d.deprecated as u8);
+        a = mix_str(a, d.name);
+        b = mix_str(b, d.name);
+        a = mix_names(a, d.fields);
+        b = mix_names(b, d.fields);
+        a = mix_names(a, d.includes);
+        b = mix_names(b, d.includes);
+        a = mix_str(a, d.func);
+        b = mix_str(b, d.func);
+        i += 1;
+    }
+    let mut out = [0u8; FINGERPRINT_LEN];
+    let mut k = 0;
+    while k < 8 {
+        out[k] = (a >> (56 - 8 * k)) as u8;
+        out[8 + k] = (b >> (56 - 8 * k)) as u8;
+        k += 1;
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const A: IndexDecl = IndexDecl {
+        name: "by_name",
+        slot: 0x3001,
+        fields: &["name"],
+        includes: &[],
+        func: "",
+        deprecated: false,
+    };
+    const B: IndexDecl = IndexDecl {
+        name: "by_org",
+        slot: 0x3002,
+        fields: &["org_id", "created_at"],
+        includes: &["bio_len"],
+        func: "",
+        deprecated: false,
+    };
+
+    #[test]
+    fn a_declaration_has_one_fingerprint() {
+        static ONE: &[IndexDecl] = &[A, B];
+        static AGAIN: &[IndexDecl] = &[A, B];
+        assert_eq!(fingerprint(ONE), fingerprint(AGAIN));
+    }
+
+    #[test]
+    fn every_kind_of_change_moves_it() {
+        static ONE: &[IndexDecl] = &[A, B];
+        static REMOVED: &[IndexDecl] = &[A];
+        static ADDED: &[IndexDecl] = &[
+            A,
+            B,
+            IndexDecl {
+                name: "by_hour",
+                ..B
+            },
+        ];
+        static RENAMED_FIELD: &[IndexDecl] = &[
+            A,
+            IndexDecl {
+                fields: &["org_id", "updated_at"],
+                ..B
+            },
+        ];
+        static WIDENED: &[IndexDecl] = &[A, IndexDecl { includes: &[], ..B }];
+        static DEPRECATED: &[IndexDecl] = &[
+            A,
+            IndexDecl {
+                deprecated: true,
+                ..B
+            },
+        ];
+        static REFUNNED: &[IndexDecl] = &[
+            A,
+            IndexDecl {
+                func: "lower_name",
+                ..B
+            },
+        ];
+        static REORDERED: &[IndexDecl] = &[B, A];
+        let base = fingerprint(ONE);
+        for other in [
+            fingerprint(REMOVED),
+            fingerprint(ADDED),
+            fingerprint(RENAMED_FIELD),
+            fingerprint(WIDENED),
+            fingerprint(DEPRECATED),
+            fingerprint(REFUNNED),
+            fingerprint(REORDERED),
+        ] {
+            assert_ne!(base, other);
+        }
+    }
+
+    #[test]
+    fn a_split_string_is_not_the_joined_one() {
+        // Length prefixes are why this is not a real hazard; the test is the lock.
+        static SPLIT: &[IndexDecl] = &[A, IndexDecl { name: "b", ..A }];
+        static JOINED: &[IndexDecl] = &[IndexDecl { name: "ab", ..A }, IndexDecl { name: "", ..A }];
+        assert_ne!(fingerprint(SPLIT), fingerprint(JOINED));
+    }
+}

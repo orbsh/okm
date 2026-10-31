@@ -124,7 +124,32 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     /// (ADR-0042). `new` stays I/O-free on purpose, which is why this is a verb
     /// rather than constructor work.
     pub fn ensure_layout(&self) -> crate::error::Result<crate::model::meta::TableMeta> {
-        crate::model::meta::ensure(&self.store, &self.header(), R::LAYOUT_VERSION)
+        crate::model::meta::ensure(
+            &self.store,
+            &self.header(),
+            R::LAYOUT_VERSION,
+            Some(R::FACES),
+        )
+    }
+
+    /// Whether this store's derived faces were built from THIS declaration
+    /// (ADR-0048) — a point read, for attach/boot, never the write path.
+    ///
+    /// `Match` may be trusted; `Stale` is repairable drift (the faces answer for
+    /// a key layout this build does not use); `Unknown` means the store never
+    /// recorded a fingerprint, so its faces are untrusted rather than wrong.
+    ///
+    /// Deliberately NOT folded into [`Self::ensure_layout`]: that verb promises
+    /// "this build can read these bytes", and every store written before faces
+    /// existed would fail a comparison it can never satisfy. The caller that must
+    /// not serve stale faces is the one that asks.
+    pub fn faces_status(&self) -> crate::error::Result<crate::model::meta::FaceStatus> {
+        Ok(
+            match crate::model::meta::read(&self.store, &self.header())? {
+                Some(meta) => meta.face_status(R::FACES),
+                None => crate::model::meta::FaceStatus::Unknown { current: R::FACES },
+            },
+        )
     }
 
     /// Record one caller-owned name in the meta entry (ADR-0043), stamping the
@@ -138,7 +163,12 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         name: &str,
         value: Vec<u8>,
     ) -> crate::error::Result<crate::model::meta::TableMeta> {
-        let mut meta = crate::model::meta::ensure(&self.store, &self.header(), R::LAYOUT_VERSION)?;
+        let mut meta = crate::model::meta::ensure(
+            &self.store,
+            &self.header(),
+            R::LAYOUT_VERSION,
+            Some(R::FACES),
+        )?;
         meta.set(name, value);
         meta.set(crate::model::meta::VERSION, vec![R::LAYOUT_VERSION]);
         crate::model::meta::write(&self.store, &self.header(), &meta)?;

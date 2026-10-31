@@ -133,7 +133,12 @@ impl<S: VirtualStorage> DynamicCollection<S> {
     /// A store stamped with another shape (or a meta row naming no version) is
     /// refused with `Error::LayoutMismatch`'s message, which names both numbers.
     pub fn ensure_layout(&self) -> Result<okm_core::TableMeta, String> {
-        okm_core::meta::ensure(&self.store, &self.ns, self.schema.layout_version).map_err(codec)
+        // The dynamic schema names faces only when it was exported from a Rust
+        // declaration; a hand-written one says nothing, and its store reads back
+        // as `FaceStatus::Unknown` (ADR-0048).
+        let faces = <[u8; okm_core::FINGERPRINT_LEN]>::try_from(self.schema.faces.as_slice()).ok();
+        okm_core::meta::ensure(&self.store, &self.ns, self.schema.layout_version, faces)
+            .map_err(codec)
     }
 
     /// Record one caller-owned name beside the stamp, re-stamping `version`

@@ -21,6 +21,7 @@
 
 pub mod collection;
 pub mod document;
+pub mod faces;
 pub mod field;
 pub mod graph;
 pub mod index;
