@@ -1,7 +1,13 @@
 //! End-to-end checks over a real `VirtualStorage` implementation: the snapshot
 //! blob set, shard routing/merge, and the two codecs.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unwrap_in_result,
+    clippy::panic_in_result_fn
+)]
 
 use std::collections::BTreeMap;
 use std::ops::Bound;
@@ -112,7 +118,11 @@ fn snapshot_roundtrip_over_storage() {
     let mut store2 = MemStore::new();
     idx.save(&mut store2).expect("save");
     store2.del(&idx.slot_key(3)).unwrap();
-    assert!(VectorIndex::load(&store2, ns).expect("a store read").is_none());
+    assert!(
+        VectorIndex::load(&store2, ns)
+            .expect("a store read")
+            .is_none()
+    );
 }
 
 #[test]

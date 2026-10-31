@@ -3,11 +3,17 @@
 //! vocabulary (0x04/0x05), the five graph faces (0x06–0x0A), declared-index
 //! faces, exact unlink, membership checks, and the cross-collection batch.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unwrap_in_result,
+    clippy::panic_in_result_fn
+)]
 
 use okm_core::{
-    DocumentEncode, EdgeHead, Graph, GraphEncode, KeyEncode, Batch, NodeRef, NodeSet,
-    VirtualStorage, PRIMARY_SLOT,
+    Batch, DocumentEncode, EdgeHead, Graph, GraphEncode, KeyEncode, NodeRef, NodeSet, PRIMARY_SLOT,
+    VirtualStorage,
 };
 
 // ---- node collections (standard documents, standard layout) ----
@@ -82,7 +88,11 @@ fn org(id: u64) -> NodeRef {
 }
 
 fn head(src: NodeRef, dst: NodeRef, predicate: &str) -> EdgeHead {
-    EdgeHead { src, dst, predicate: predicate.into() }
+    EdgeHead {
+        src,
+        dst,
+        predicate: predicate.into(),
+    }
 }
 
 #[test]
@@ -90,8 +100,12 @@ fn link_traverse_and_fetch_back_with_attributes() {
     let store = okm_core::TestStore::slatedb_mem();
     let mut g: Graph<_, Employment> = Graph::new(store.clone());
 
-    let attrs = Employment { since_year: 2020, weight: 7 };
-    g.link(&head(user(1), org(9), "employs"), &attrs, 1).unwrap();
+    let attrs = Employment {
+        since_year: 2020,
+        weight: 7,
+    };
+    g.link(&head(user(1), org(9), "employs"), &attrs, 1)
+        .unwrap();
 
     // Traversal faces answer.
     assert_eq!(g.out_edges(&user(1)).unwrap(), vec![1]);
@@ -109,7 +123,12 @@ fn link_traverse_and_fetch_back_with_attributes() {
     let body = g.get_edge(1).unwrap().unwrap();
     assert_eq!(body.src, user(1));
     assert_eq!(body.dst, org(9));
-    assert_eq!(g.predicate_vocab_name(body.predicate_vocab_id).unwrap().unwrap(), "employs");
+    assert_eq!(
+        g.predicate_vocab_name(body.predicate_vocab_id)
+            .unwrap()
+            .unwrap(),
+        "employs"
+    );
     let back = g.edge(1).unwrap().unwrap();
     assert_eq!((back.since_year, back.weight), (2020, 7));
 
@@ -118,7 +137,11 @@ fn link_traverse_and_fetch_back_with_attributes() {
     let ids = g.by_attr_face(slot, &2020u16.to_be_bytes()).unwrap();
     assert_eq!(ids, vec![1]);
     // A value no edge carries scans empty.
-    assert!(g.by_attr_face(slot, &1999u16.to_be_bytes()).unwrap().is_empty());
+    assert!(
+        g.by_attr_face(slot, &1999u16.to_be_bytes())
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[test]
@@ -126,15 +149,25 @@ fn predicates_are_listed_from_the_predicate_vocabulary() {
     let store = okm_core::TestStore::slatedb_mem();
     let mut g: Graph<_, Employment> = Graph::new(store.clone());
 
-    g.link(&head(user(1), org(9), "employs"), &Employment::default(), 1).unwrap();
-    g.link(&head(user(1), org(9), "contracts"), &Employment::default(), 2).unwrap();
-    g.link(&head(user(2), org(9), "employs"), &Employment::default(), 3).unwrap();
+    g.link(&head(user(1), org(9), "employs"), &Employment::default(), 1)
+        .unwrap();
+    g.link(
+        &head(user(1), org(9), "contracts"),
+        &Employment::default(),
+        2,
+    )
+    .unwrap();
+    g.link(&head(user(2), org(9), "employs"), &Employment::default(), 3)
+        .unwrap();
 
     // One 0x04 prefix scan — an exact list, id-ordered, never inferred
     // from the index faces.
     assert_eq!(
         g.predicates().unwrap(),
-        vec![(0u16, "employs".to_string()), (1u16, "contracts".to_string())]
+        vec![
+            (0u16, "employs".to_string()),
+            (1u16, "contracts".to_string())
+        ]
     );
     // Repeating an existing name allocates nothing new.
     assert_eq!(g.predicates().unwrap().len(), 2);
@@ -160,13 +193,16 @@ fn the_predicate_cursor_is_the_id_faces_bare_prefix() {
         .unwrap();
 
     assert_eq!(
-        store.get(&bare(okm_core::index::PREDICATE_VOCAB_ID_SLOT)).unwrap(),
+        store
+            .get(&bare(okm_core::index::PREDICATE_VOCAB_ID_SLOT))
+            .unwrap(),
         Some(1u16.to_be_bytes().to_vec()),
         "next predicate id: one entry, no suffix"
     );
     assert!(
         store
-            .get(&bare(okm_core::index::FIELD_VOCAB_ID_SLOT)).unwrap()
+            .get(&bare(okm_core::index::FIELD_VOCAB_ID_SLOT))
+            .unwrap()
             .is_none(),
         "a predicate allocation writes no field-name cursor"
     );
@@ -175,15 +211,27 @@ fn the_predicate_cursor_is_the_id_faces_bare_prefix() {
     // exists for. Numbering resumes past the allocated predicate instead of
     // restarting at zero.
     let mut g2: Graph<_, Employment> = Graph::new(store.clone());
-    assert_eq!(g2.predicate_vocab_name(0).unwrap().as_deref(), Some("employs"));
-    g2.link(&head(user(2), org(9), "contracts"), &Employment::default(), 2)
-        .unwrap();
+    assert_eq!(
+        g2.predicate_vocab_name(0).unwrap().as_deref(),
+        Some("employs")
+    );
+    g2.link(
+        &head(user(2), org(9), "contracts"),
+        &Employment::default(),
+        2,
+    )
+    .unwrap();
     assert_eq!(
         g2.predicates().unwrap(),
-        vec![(0u16, "employs".to_string()), (1u16, "contracts".to_string())]
+        vec![
+            (0u16, "employs".to_string()),
+            (1u16, "contracts".to_string())
+        ]
     );
     assert_eq!(
-        store.get(&bare(okm_core::index::PREDICATE_VOCAB_ID_SLOT)).unwrap(),
+        store
+            .get(&bare(okm_core::index::PREDICATE_VOCAB_ID_SLOT))
+            .unwrap(),
         Some(2u16.to_be_bytes().to_vec()),
         "the cursor advanced with the second allocation"
     );
@@ -194,8 +242,14 @@ fn unlink_and_relabeled_parallel_edges() {
     let store = okm_core::TestStore::slatedb_mem();
     let mut g: Graph<_, Employment> = Graph::new(store.clone());
 
-    g.link(&head(user(1), org(9), "employs"), &Employment::default(), 1).unwrap();
-    g.link(&head(user(1), org(9), "contracts"), &Employment::default(), 2).unwrap();
+    g.link(&head(user(1), org(9), "employs"), &Employment::default(), 1)
+        .unwrap();
+    g.link(
+        &head(user(1), org(9), "contracts"),
+        &Employment::default(),
+        2,
+    )
+    .unwrap();
 
     // Parallel edges (same endpoints, different predicates) are
     // independent edges on every face.
@@ -206,26 +260,45 @@ fn unlink_and_relabeled_parallel_edges() {
     g.unlink(1).unwrap();
     assert_eq!(g.typed_out("employs", &user(1)).unwrap(), Vec::<u64>::new());
     assert_eq!(g.edges_of_predicate("employs").unwrap(), Vec::<u64>::new());
-    assert_eq!(g.out_edges(&user(1)).unwrap(), vec![2], "the other edge survives");
+    assert_eq!(
+        g.out_edges(&user(1)).unwrap(),
+        vec![2],
+        "the other edge survives"
+    );
 }
 
 #[test]
 fn unlink_deletes_the_declared_face_entry_exactly() {
     let store = okm_core::TestStore::slatedb_mem();
     let mut g: Graph<_, Employment> = Graph::new(store.clone());
-    let a = Employment { since_year: 2020, weight: 1 };
-    let b = Employment { since_year: 2020, weight: 2 }; // same declared value
+    let a = Employment {
+        since_year: 2020,
+        weight: 1,
+    };
+    let b = Employment {
+        since_year: 2020,
+        weight: 2,
+    }; // same declared value
     g.link(&head(user(1), org(9), "employs"), &a, 1).unwrap();
     g.link(&head(user(2), org(9), "employs"), &b, 2).unwrap();
 
     let slot = <__OkmIndex_Employment_by_since as okm_core::KvIndex>::SLOT;
-    assert_eq!(g.by_attr_face(slot, &2020u16.to_be_bytes()).unwrap(), vec![1, 2]);
+    assert_eq!(
+        g.by_attr_face(slot, &2020u16.to_be_bytes()).unwrap(),
+        vec![1, 2]
+    );
 
     g.unlink(1).unwrap();
     // Exact deletion: the payload was decoded, the same declared value was
     // re-derived, and only edge 1's entry went away.
-    assert_eq!(g.by_attr_face(slot, &2020u16.to_be_bytes()).unwrap(), vec![2]);
-    assert!(g.unlink(1).is_err(), "double unlink errors, not silently re-deletes");
+    assert_eq!(
+        g.by_attr_face(slot, &2020u16.to_be_bytes()).unwrap(),
+        vec![2]
+    );
+    assert!(
+        g.unlink(1).is_err(),
+        "double unlink errors, not silently re-deletes"
+    );
 }
 
 #[test]
@@ -235,8 +308,14 @@ fn rewrite_is_one_batch() {
     // face goes with the old row — no window between two commits.
     let store = okm_core::TestStore::slatedb_mem();
     let mut g: Graph<_, Employment> = Graph::new(store.clone());
-    let a = Employment { since_year: 2020, weight: 1 };
-    let b = Employment { since_year: 2021, weight: 2 };
+    let a = Employment {
+        since_year: 2020,
+        weight: 1,
+    };
+    let b = Employment {
+        since_year: 2021,
+        weight: 2,
+    };
     g.link(&head(user(1), org(9), "employs"), &a, 1).unwrap();
 
     let mut batch = Batch::default();
@@ -248,7 +327,12 @@ fn rewrite_is_one_batch() {
     // The row is the new fact, under the same identity.
     let body = g.get_edge(1).unwrap().unwrap();
     assert_eq!(body.dst, org(10));
-    assert_eq!(g.predicate_vocab_name(body.predicate_vocab_id).unwrap().unwrap(), "contracts");
+    assert_eq!(
+        g.predicate_vocab_name(body.predicate_vocab_id)
+            .unwrap()
+            .unwrap(),
+        "contracts"
+    );
     // Faces: the old destination and the old predicate are gone, the new ones
     // answer, and the declared face moved with the payload.
     assert!(g.in_edges(&org(9)).unwrap().is_empty());
@@ -256,8 +340,15 @@ fn rewrite_is_one_batch() {
     assert!(g.edges_of_predicate("employs").unwrap().is_empty());
     assert_eq!(g.edges_of_predicate("contracts").unwrap(), vec![1]);
     let slot = <__OkmIndex_Employment_by_since as okm_core::KvIndex>::SLOT;
-    assert!(g.by_attr_face(slot, &2020u16.to_be_bytes()).unwrap().is_empty());
-    assert_eq!(g.by_attr_face(slot, &2021u16.to_be_bytes()).unwrap(), vec![1]);
+    assert!(
+        g.by_attr_face(slot, &2020u16.to_be_bytes())
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        g.by_attr_face(slot, &2021u16.to_be_bytes()).unwrap(),
+        vec![1]
+    );
 }
 
 #[test]
@@ -267,7 +358,11 @@ fn member_set_is_checked_at_write() {
     // ns 12 is nobody's collection in this graph.
     let stranger = NodeRef::new(&12u16.to_be_bytes(), &1u64.to_be_bytes());
     let err = g
-        .link(&head(user(1), stranger, "employs"), &Employment::default(), 1)
+        .link(
+            &head(user(1), stranger, "employs"),
+            &Employment::default(),
+            1,
+        )
         .unwrap_err();
     assert!(
         err.to_string().contains("not a member"),
@@ -275,7 +370,8 @@ fn member_set_is_checked_at_write() {
     );
     assert!(g.get_edge(1).unwrap().is_none(), "nothing was written");
     // A member pair still lands.
-    g.link(&head(user(1), org(9), "employs"), &Employment::default(), 1).unwrap();
+    g.link(&head(user(1), org(9), "employs"), &Employment::default(), 1)
+        .unwrap();
 }
 
 #[test]
@@ -287,12 +383,24 @@ fn link_into_shares_one_batch_with_documents() {
     let mut batch = Batch::default();
     // A document write and an edge write into ONE batch.
     nodes.save_into(&mut batch, &UserId { id: 1 }, &User { active: 1 });
-    g.link_into(&mut batch, &head(user(1), org(9), "employs"), &Employment::default(), 1)
-        .unwrap();
+    g.link_into(
+        &mut batch,
+        &head(user(1), org(9), "employs"),
+        &Employment::default(),
+        1,
+    )
+    .unwrap();
     store.commit_batch(batch).unwrap();
 
-    assert!(nodes.get(&UserId { id: 1 }).unwrap().is_some(), "document landed");
-    assert_eq!(g.out_edges(&user(1)).unwrap(), vec![1], "edge landed in the same commit");
+    assert!(
+        nodes.get(&UserId { id: 1 }).unwrap().is_some(),
+        "document landed"
+    );
+    assert_eq!(
+        g.out_edges(&user(1)).unwrap(),
+        vec![1],
+        "edge landed in the same commit"
+    );
 }
 
 #[test]
@@ -305,23 +413,39 @@ fn node_kind_filter_intersects_typed_traversal() {
     let mut g: Graph<_, Employment> = Graph::new(store.clone());
 
     // Org 9 kind=2, Org 10 kind=3.
-    orgs.put(&OrgId { id: 9 }, &Org { kind: 2, active: 1 }).unwrap();
-    orgs.put(&OrgId { id: 10 }, &Org { kind: 3, active: 1 }).unwrap();
-    g.link(&head(user(1), org(9), "employs"), &Employment::default(), 1).unwrap();
-    g.link(&head(user(1), org(10), "employs"), &Employment::default(), 2).unwrap();
+    orgs.put(&OrgId { id: 9 }, &Org { kind: 2, active: 1 })
+        .unwrap();
+    orgs.put(&OrgId { id: 10 }, &Org { kind: 3, active: 1 })
+        .unwrap();
+    g.link(&head(user(1), org(9), "employs"), &Employment::default(), 1)
+        .unwrap();
+    g.link(
+        &head(user(1), org(10), "employs"),
+        &Employment::default(),
+        2,
+    )
+    .unwrap();
 
     // Node kind face = Org's own declared index (standard document layout).
     let kind2: Vec<u64> = orgs
-        .scan::<__OkmIndex_Org_by_kind>(&2u8.to_be_bytes()).unwrap()
+        .scan::<__OkmIndex_Org_by_kind>(&2u8.to_be_bytes())
+        .unwrap()
         .into_iter()
-        .filter_map(|(pk, _)| if pk.taken == 8 { Some(pk.decoded.id) } else { None })
+        .filter_map(|(pk, _)| {
+            if pk.taken == 8 {
+                Some(pk.decoded.id)
+            } else {
+                None
+            }
+        })
         .collect();
     assert_eq!(kind2, vec![9]);
 
     // Predicate-filtered traversal from user(1), keep only edges whose dst
     // is in the kind-2 node set.
     let kept: Vec<u64> = g
-        .typed_out("employs", &user(1)).unwrap()
+        .typed_out("employs", &user(1))
+        .unwrap()
         .into_iter()
         .filter(|id| {
             let b = g.get_edge(*id).unwrap().unwrap();
@@ -351,8 +475,12 @@ fn hex_lock_one_link() {
     // → id 0, user(1)→org(9), payload {since_year: 2020, weight: 0}).
     let store = okm_core::TestStore::slatedb_mem();
     let mut g: Graph<_, Employment> = Graph::new(store.clone());
-    let attrs = Employment { since_year: 2020, weight: 0 };
-    g.link(&head(user(1), org(9), "employs"), &attrs, 1).unwrap();
+    let attrs = Employment {
+        since_year: 2020,
+        weight: 0,
+    };
+    g.link(&head(user(1), org(9), "employs"), &attrs, 1)
+        .unwrap();
 
     let ns = 100u16.to_be_bytes();
     let slot = |s: u16| {
@@ -369,7 +497,11 @@ fn hex_lock_one_link() {
 
     let mut primary = ns.to_vec();
     okm_core::write_slot(&mut primary, PRIMARY_SLOT);
-    assert_eq!(primary.len(), 3, "primary head = ns 2B + fixed face 0x00, one byte");
+    assert_eq!(
+        primary.len(),
+        3,
+        "primary head = ns 2B + fixed face 0x00, one byte"
+    );
     primary.extend_from_slice(&id);
     let body = store.get(&primary).unwrap().unwrap();
     // Body = [src][dst][predicate_vocab_id][obj payload]; the payload is the same
@@ -383,7 +515,10 @@ fn hex_lock_one_link() {
         v.extend_from_slice(&0u32.to_be_bytes());
         v
     };
-    assert_eq!(body, [src.clone(), dst.clone(), pid.clone(), payload].concat());
+    assert_eq!(
+        body,
+        [src.clone(), dst.clone(), pid.clone(), payload].concat()
+    );
 
     // The graph's faces are fixed faces — one byte each (ADR-0030), and the
     // vocabulary precedes the faces that read its ids. The vocabulary class
@@ -396,7 +531,8 @@ fn hex_lock_one_link() {
                 ns.to_vec(),
                 vocab(okm_core::index::PREDICATE_VOCAB_ID_SLOT),
                 pid.clone()
-            ])).unwrap()
+            ]))
+            .unwrap()
             .is_some(),
         "predicate id → name"
     );
@@ -406,7 +542,8 @@ fn hex_lock_one_link() {
                 ns.to_vec(),
                 vocab(okm_core::index::PREDICATE_VOCAB_NAME_SLOT),
                 b"employs".to_vec()
-            ])).unwrap()
+            ]))
+            .unwrap()
             .is_some(),
         "predicate name → id"
     );
@@ -414,14 +551,26 @@ fn hex_lock_one_link() {
     // the last segment of a single-node entry and the whole suffix of a pair one.
     assert!(
         store
-            .get(&key(&[ns.to_vec(), slot(0x06), src.clone(), dst.clone(), id.clone()]))
+            .get(&key(&[
+                ns.to_vec(),
+                slot(0x06),
+                src.clone(),
+                dst.clone(),
+                id.clone()
+            ]))
             .unwrap()
             .is_some(),
         "out (pair-qualified)"
     );
     assert!(
         store
-            .get(&key(&[ns.to_vec(), slot(0x07), dst.clone(), src.clone(), id.clone()]))
+            .get(&key(&[
+                ns.to_vec(),
+                slot(0x07),
+                dst.clone(),
+                src.clone(),
+                id.clone()
+            ]))
             .unwrap()
             .is_some(),
         "in (pair-qualified)"
@@ -467,18 +616,29 @@ fn hex_lock_one_link() {
     // now free (the field vocabulary moved to family 4, ADR-0032).
     assert!(
         store
-            .get(&key(&[ns.to_vec(), slot(0x02), 0u16.to_be_bytes().to_vec()])).unwrap()
+            .get(&key(&[
+                ns.to_vec(),
+                slot(0x02),
+                0u16.to_be_bytes().to_vec()
+            ]))
+            .unwrap()
             .is_none()
     );
 
     // Declared face (counting family 0x1, declaration order):
     // since_year=2020 — two bytes, unlike the fixed faces above.
     let mut face = ns.to_vec();
-    okm_core::write_slot(&mut face, <__OkmIndex_Employment_by_since as okm_core::KvIndex>::SLOT);
+    okm_core::write_slot(
+        &mut face,
+        <__OkmIndex_Employment_by_since as okm_core::KvIndex>::SLOT,
+    );
     face.extend_from_slice(&2020u16.to_be_bytes());
     face.extend_from_slice(&id);
     assert_eq!(face.len(), 2 + 2 + 2 + 8);
-    assert!(store.get(&face).unwrap().is_some(), "declared-attribute face");
+    assert!(
+        store.get(&face).unwrap().is_some(),
+        "declared-attribute face"
+    );
 }
 
 #[test]
@@ -486,8 +646,14 @@ fn neighbor_nodes_resolve_to_node_refs() {
     let store = okm_core::TestStore::slatedb_mem();
     let mut g: Graph<_, Employment> = Graph::new(store.clone());
 
-    let a1 = Employment { since_year: 2020, weight: 1 };
-    let a2 = Employment { since_year: 2021, weight: 2 };
+    let a1 = Employment {
+        since_year: 2020,
+        weight: 1,
+    };
+    let a2 = Employment {
+        since_year: 2021,
+        weight: 2,
+    };
     g.link(&head(user(1), org(9), "employs"), &a1, 1).unwrap();
     g.link(&head(user(1), org(10), "employs"), &a2, 2).unwrap();
 
@@ -498,14 +664,26 @@ fn neighbor_nodes_resolve_to_node_refs() {
     assert_eq!(g.in_nodes(&org(9)).unwrap(), vec![user(1)]);
 
     // Predicate-qualified neighbors share the resolve step.
-    assert_eq!(g.typed_out_nodes("employs", &user(1)).unwrap(), vec![org(9), org(10)]);
-    assert_eq!(g.typed_out_nodes("contracts", &user(1)).unwrap(), Vec::<NodeRef>::new());
-    assert_eq!(g.typed_in_nodes("employs", &org(10)).unwrap(), vec![user(1)]);
+    assert_eq!(
+        g.typed_out_nodes("employs", &user(1)).unwrap(),
+        vec![org(9), org(10)]
+    );
+    assert_eq!(
+        g.typed_out_nodes("contracts", &user(1)).unwrap(),
+        Vec::<NodeRef>::new()
+    );
+    assert_eq!(
+        g.typed_in_nodes("employs", &org(10)).unwrap(),
+        vec![user(1)]
+    );
 
     // Parallel-edge collapse: two heads between the same pair produce
     // the same neighbor twice — multiplicity preserved, dedupe is the
     // caller's set semantics (NodeRef is Hash + Ord).
-    let a3 = Employment { since_year: 2022, weight: 3 };
+    let a3 = Employment {
+        since_year: 2022,
+        weight: 3,
+    };
     g.link(&head(user(2), org(9), "employs"), &a3, 3).unwrap();
     g.link(&head(user(2), org(9), "employs"), &a3, 4).unwrap();
     assert_eq!(g.out_nodes(&user(2)).unwrap(), vec![org(9), org(9)]);

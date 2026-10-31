@@ -15,9 +15,9 @@
 //! older reader cannot see. Frames are written in insertion order;
 //! readers address fields by id, not position.
 
-use std::collections::BTreeMap;
 use crate::model::wrappers::obj_value::ObjValueType;
 use crate::model::wrappers::wire::{put_len, take_len};
+use std::collections::BTreeMap;
 
 /// Dynamic-segment value: the run-time counterpart of a decoded frame.
 /// Typed (fixed-width, schema-checked) fields never use this — declared
@@ -83,11 +83,7 @@ pub fn vocab_id_from_u64<N: crate::model::vocab::VocabId>(v: u64) -> Option<N> {
 /// escapes through `0xFF`. Nested `DynamicValue::Obj` values are NOT
 /// supported here (their ids must be resolved first) — use
 /// [`put_frame_named`] with a name resolver.
-pub fn put_frame(
-    buf: &mut Vec<u8>,
-    id: u16,
-    value: &DynamicValue,
-) -> crate::error::Result<()> {
+pub fn put_frame(buf: &mut Vec<u8>, id: u16, value: &DynamicValue) -> crate::error::Result<()> {
     if id < 0xFF {
         buf.push(id as u8);
     } else {
@@ -188,7 +184,11 @@ fn encode_value<R: NameResolver>(
             let fill = if *v < 0 { 0xFF } else { 0x00 };
             let first = be.iter().position(|&b| b != fill).unwrap_or(7);
             // Keep one sign byte so the sign is recoverable.
-            let start = if *v < 0 && first > 0 { first - 1 } else { first };
+            let start = if *v < 0 && first > 0 {
+                first - 1
+            } else {
+                first
+            };
             (ObjValueType::Int, be[start..].to_vec())
         }
         DynamicValue::UInt(v) => {
@@ -264,7 +264,7 @@ pub fn decode_named(
     while off < bytes.len() {
         match decode_frame_named(bytes, &mut off, name_of) {
             Ok(Some(f)) => out.push(f),
-            Ok(None) => {}         // unknown type — skipped, off advanced
+            Ok(None) => {}                     // unknown type — skipped, off advanced
             Err(FrameErr::Malformed) => break, // torn tail: stop
             Err(FrameErr::UnknownType) => {}   // defensive
         }
@@ -326,7 +326,7 @@ fn decode_frame_named(
             while inner < body.len() {
                 let nf = match decode_frame_named(body, &mut inner, name_of) {
                     Ok(Some(nf)) => Some(nf),
-                    Ok(None) => None,               // unknown nested type
+                    Ok(None) => None, // unknown nested type
                     Err(_) => return Err(FrameErr::Malformed),
                 };
                 let Some(nf) = nf else { continue };
@@ -344,7 +344,11 @@ fn decode_frame_named(
 /// ids to names — an Obj inside an Array decodes through HERE, so the
 /// resolver must be threaded down (composites are fully name-keyed
 /// wherever they appear).
-fn decode_value_named(ty: ObjValueType, body: &[u8], name_of: &mut dyn FnMut(u16) -> Option<String>) -> Option<DynamicValue> {
+fn decode_value_named(
+    ty: ObjValueType,
+    body: &[u8],
+    name_of: &mut dyn FnMut(u16) -> Option<String>,
+) -> Option<DynamicValue> {
     Some(match ty {
         ObjValueType::UInt => {
             // Zero-padded back to 8 bytes, big-endian.
@@ -369,7 +373,9 @@ fn decode_value_named(ty: ObjValueType, body: &[u8], name_of: &mut dyn FnMut(u16
             if body.len() != 8 {
                 return None;
             }
-            DynamicValue::F64(f64::from_be_bytes([body[0], body[1], body[2], body[3], body[4], body[5], body[6], body[7]]))
+            DynamicValue::F64(f64::from_be_bytes([
+                body[0], body[1], body[2], body[3], body[4], body[5], body[6], body[7],
+            ]))
         }
         ObjValueType::Str => DynamicValue::Str(std::str::from_utf8(body).ok()?.to_owned()),
         ObjValueType::Bytes => DynamicValue::Bytes(body.to_vec()),
@@ -408,8 +414,8 @@ fn decode_value_named(ty: ObjValueType, body: &[u8], name_of: &mut dyn FnMut(u16
             while inner < body.len() {
                 let nf = match decode_frame_named(body, &mut inner, name_of) {
                     Ok(Some(nf)) => nf,
-                    Ok(None) => continue,            // unknown nested type
-                    Err(_) => return None,           // malformed
+                    Ok(None) => continue,  // unknown nested type
+                    Err(_) => return None, // malformed
                 };
                 let key = name_of(nf.id).unwrap_or_else(|| nf.id.to_string());
                 m.insert(key, nf.value);
@@ -683,7 +689,13 @@ mod tests {
                 _ => 99,
             })
         };
-        put_frame_named(&mut body, "a", &DynamicValue::Array(vec![val]), &mut resolver).unwrap();
+        put_frame_named(
+            &mut body,
+            "a",
+            &DynamicValue::Array(vec![val]),
+            &mut resolver,
+        )
+        .unwrap();
         let frames = decode_named(&body, &mut |id| match id {
             1 => Some("a".into()),
             2 => Some("item".into()),
@@ -702,7 +714,6 @@ mod tests {
     }
 
     #[test]
-
 
     fn frames_round_trip() {
         let cases: Vec<(u16, DynamicValue)> = vec![
@@ -790,7 +801,10 @@ mod nested_tests {
     }
     impl StubVocab {
         fn new() -> Self {
-            StubVocab { next: 0, names: std::collections::HashMap::new() }
+            StubVocab {
+                next: 0,
+                names: std::collections::HashMap::new(),
+            }
         }
     }
     impl NameResolver for StubVocab {
@@ -822,7 +836,8 @@ mod nested_tests {
 
         // Decode with name resolution.
         let name_of_id = |id: u16| -> Option<String> {
-            vocab.names
+            vocab
+                .names
                 .iter()
                 .find(|ent| *ent.1 == id)
                 .map(|(k, _)| k.clone())
@@ -868,7 +883,8 @@ mod nested_tests {
         assert_eq!(vocab.names.len(), 3);
 
         let name_of_id = |id: u16| -> Option<String> {
-            vocab.names
+            vocab
+                .names
                 .iter()
                 .find(|ent| *ent.1 == id)
                 .map(|(k, _)| k.clone())

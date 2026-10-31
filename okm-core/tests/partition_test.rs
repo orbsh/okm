@@ -2,9 +2,15 @@
 //! （Some(N) → `[part 1B]` 前缀，None → 无段零成本）、表内 put/scan
 //! 正常工作、跨表字节空间独立（part 段在 ns 段之前）。
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unwrap_in_result,
+    clippy::panic_in_result_fn
+)]
 
-use okm_core::{KeyEncode, Document, DocumentEncode, TestStore};
+use okm_core::{Document, DocumentEncode, KeyEncode, TestStore};
 
 /// 普通 key：无 partition（默认布局，无 part 段）。
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
@@ -33,7 +39,10 @@ pub struct Plain {
 fn partition_segment_precedes_ns_header() {
     // 派生常量：声明表 Some(1) + `[0x01]` 前缀；默认表 None + 空前缀。
     assert_eq!(<Partitioned as Document>::PARTITION_ID, Some(1u8));
-    assert_eq!(<Partitioned as Document>::PARTITION_PREFIX, &[0xFFu8, 0x01u8][..]);
+    assert_eq!(
+        <Partitioned as Document>::PARTITION_PREFIX,
+        &[0xFFu8, 0x01u8][..]
+    );
     assert!(<Plain as Document>::PARTITION_ID.is_none());
     assert_eq!(<Plain as Document>::PARTITION_PREFIX.len(), 0);
 
@@ -41,16 +50,29 @@ fn partition_segment_precedes_ns_header() {
     // （0xFF 逃逸字节：合法 ns 头首字节永不取 0xFF → 结构性无碰撞）；
     // 无 partition 表的主键 = [ns 7 BE][slot 0][key]（无 part 段）。
     let store = TestStore::default();
-    let pt: okm_core::Collection<_, PlainKey, Partitioned> = okm_core::Collection::new(store.clone());
+    let pt: okm_core::Collection<_, PlainKey, Partitioned> =
+        okm_core::Collection::new(store.clone());
     let pl: okm_core::Collection<_, PlainKey, Plain> = okm_core::Collection::new(store.clone());
 
     let k = PlainKey { id: 1 };
     let pk = pt.primary_key(&k);
     let lk = pl.primary_key(&k);
-    assert_eq!(&pk[..2], &[0xFF, 0x01], "partitioned key starts with [0xFF][part 1B] escape segment");
+    assert_eq!(
+        &pk[..2],
+        &[0xFF, 0x01],
+        "partitioned key starts with [0xFF][part 1B] escape segment"
+    );
     assert_eq!(&pk[2..4], &[0x00, 0x07], "ns 7 big-endian follows");
-    assert_eq!(&lk[..2], &[0x00, 0x07], "plain key starts with ns header directly (never 0xFF)");
-    assert_eq!(&pk[4..], &lk[2..], "slot byte + key payload identical after headers");
+    assert_eq!(
+        &lk[..2],
+        &[0x00, 0x07],
+        "plain key starts with ns header directly (never 0xFF)"
+    );
+    assert_eq!(
+        &pk[4..],
+        &lk[2..],
+        "slot byte + key payload identical after headers"
+    );
     // 结构性无碰撞：plain 键首字节属于 0x00-0xFE（ns 字典纪律），part 表
     // 键首字节恒为 0xFF——前缀空间天然不相交，无需编号对齐。
 

@@ -11,10 +11,10 @@
 //! function) runs in the host language at registration time and returns
 //! ENCODED bytes; this module only manages the entry lifecycle.
 
-use okm_core::schema::CollectionSchema;
-use okm_core::storage::VirtualStorage;
 use crate::path::Path;
 use crate::{Value, ValueMap};
+use okm_core::schema::CollectionSchema;
+use okm_core::storage::VirtualStorage;
 
 /// Host-language callables for the semantic access methods (ADR-0022).
 /// Every callable receives the decoded document and returns encoded bytes
@@ -53,7 +53,10 @@ pub enum AccessMethodKind {
     /// what `Plain` already indexes. `fields` stays empty (the path is
     /// the source); the entry key does NOT carry the path — the slot is
     /// the path's identity.
-    Path { path: Path, value_ty: okm_core::field::FieldType },
+    Path {
+        path: Path,
+        value_ty: okm_core::field::FieldType,
+    },
 }
 
 /// One declared access method over a dynamic table.
@@ -95,7 +98,12 @@ impl std::fmt::Debug for AccessMethod {
 impl AccessMethod {
     /// A plain field index.
     pub fn plain(slot: u16, fields: Vec<String>, includes: Vec<String>) -> Self {
-        Self { slot, fields, includes, kind: AccessMethodKind::Plain }
+        Self {
+            slot,
+            fields,
+            includes,
+            kind: AccessMethodKind::Plain,
+        }
     }
 
     /// A path index over the schema-free zone (ADR-0029): `path` resolves
@@ -208,7 +216,8 @@ impl AccessMethod {
                     "access method field `{name}` is a key field; indexes take payload fields only"
                 ));
             }
-            let v = document.get(name)
+            let v = document
+                .get(name)
                 .ok_or_else(|| format!("index field `{name}` missing from document"))?;
             let f = find_field(schema, name)
                 .ok_or_else(|| format!("access method field `{name}` not in schema"))?;
@@ -300,7 +309,8 @@ pub fn index_entries(
         // before any entry is built, the single entry-production site, so
         // the filter is complete by construction.
         if let AccessMethodKind::Partial(admits) = &idx.kind
-            && !admits(document)? {
+            && !admits(document)?
+        {
             continue;
         }
         // Path indexes are maintained by the DYNAMIC-SEGMENT write path
@@ -331,7 +341,8 @@ pub fn index_entries(
                     "includes field `{inc}` is a key field; includes take payload fields only"
                 ));
             }
-            let v = document.get(inc)
+            let v = document
+                .get(inc)
                 .ok_or_else(|| format!("includes field `{inc}` missing from document"))?;
             let f = find_field(schema, inc)
                 .ok_or_else(|| format!("includes field `{inc}` not in schema"))?;
@@ -494,13 +505,18 @@ fn scan_access_method_filtered<S: VirtualStorage>(
         // (the stored value is SHORTER than the probe — not a match, and such
         // data is legal: values mix letters and digits), while exact
         // additionally wants nothing left after the probe.
-        let matched = if exact { suffix.len() == kl } else { suffix.len() >= kl };
+        let matched = if exact {
+            suffix.len() == kl
+        } else {
+            suffix.len() >= kl
+        };
         if !matched {
             continue;
         }
         let start = suffix.len() - kl;
         out.push(
-            crate::decode_key(schema, &suffix[start..]).map_err(|e: crate::CodecError| e.to_string())?,
+            crate::decode_key(schema, &suffix[start..])
+                .map_err(|e: crate::CodecError| e.to_string())?,
         );
     }
     Ok(out)
@@ -647,4 +663,3 @@ pub fn decode_includes(
     }
     Ok(out)
 }
-

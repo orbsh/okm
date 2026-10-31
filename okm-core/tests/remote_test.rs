@@ -9,10 +9,16 @@
 //! trips), never through a kept TestStore clone — TestStore::clone is a
 //! deep copy, a kept clone would observe a different engine.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unwrap_in_result,
+    clippy::panic_in_result_fn
+)]
 
 use okm_core::{
-    KeyEncode, NestStorage, RemoteStore, DocumentEncode, Collection, ReduceCodec, TestStore,
+    Collection, DocumentEncode, KeyEncode, NestStorage, ReduceCodec, RemoteStore, TestStore,
     VirtualHandle, VirtualStorage,
 };
 
@@ -60,7 +66,10 @@ fn table_semantics_over_remote() {
     // Writes are fire-and-forget (channel order = write order, but the
     // pump applies them asynchronously) — wait for the round trip to
     // catch up before asserting.
-    wait_for(|| t.get(&UserKey { id: 42 }).unwrap().is_some(), "first put to land");
+    wait_for(
+        || t.get(&UserKey { id: 42 }).unwrap().is_some(),
+        "first put to land",
+    );
 
     // Index scan over the remote: same API, bytes travel twice.
     let hits = t.scan::<ByLevel>(&3u32.to_be_bytes()).unwrap();
@@ -68,7 +77,10 @@ fn table_semantics_over_remote() {
     assert_eq!(hits[0].1.as_ref().unwrap().level, 3);
 
     // Point get via the table (full round trip: frame → host → engine → back).
-    let document = t.get(&UserKey { id: 42 }).unwrap().expect("document round-tripped");
+    let document = t
+        .get(&UserKey { id: 42 })
+        .unwrap()
+        .expect("document round-tripped");
     assert_eq!(document.level, 3);
 
     // Both rows' primary + index entries landed (read-side observation).
@@ -107,9 +119,18 @@ fn prefix_isolation_between_two_hosts() {
     ra.put(b"user:1".to_vec(), b"hello".to_vec()).unwrap();
     rb.put(b"user:1".to_vec(), b"world".to_vec()).unwrap();
 
-    wait_for(|| ra.get(b"user:1").unwrap().is_some(), "host A write to land");
-    assert_eq!(ra.get(b"user:1").unwrap().as_deref(), Some(b"hello".as_slice()));
-    assert_eq!(rb.get(b"user:1").unwrap().as_deref(), Some(b"world".as_slice()));
+    wait_for(
+        || ra.get(b"user:1").unwrap().is_some(),
+        "host A write to land",
+    );
+    assert_eq!(
+        ra.get(b"user:1").unwrap().as_deref(),
+        Some(b"hello".as_slice())
+    );
+    assert_eq!(
+        rb.get(b"user:1").unwrap().as_deref(),
+        Some(b"world".as_slice())
+    );
 
     // Scans stay inside the host's own prefix: neither sender sees the
     // other's bytes even though the stored sender-key bytes are identical.
@@ -131,9 +152,18 @@ fn commit_batch_is_one_frame_one_commit() {
     batch.del(b"k0");
     remote.commit_batch(batch).expect("frame ships");
 
-    wait_for(|| remote.get(b"k1").unwrap().is_some(), "batched writes to land");
-    assert_eq!(remote.get(b"k1").unwrap().as_deref(), Some(b"v1".as_slice()));
-    assert_eq!(remote.get(b"k2").unwrap().as_deref(), Some(b"v2".as_slice()));
+    wait_for(
+        || remote.get(b"k1").unwrap().is_some(),
+        "batched writes to land",
+    );
+    assert_eq!(
+        remote.get(b"k1").unwrap().as_deref(),
+        Some(b"v1".as_slice())
+    );
+    assert_eq!(
+        remote.get(b"k2").unwrap().as_deref(),
+        Some(b"v2".as_slice())
+    );
     // Delete op in the frame also executed (no-op on absent key = fine).
     assert_eq!(remote.get(b"k0").unwrap(), None);
 }
@@ -148,9 +178,18 @@ fn remote_scan_range_iter_is_lazy_paged() {
     let t: Collection<RemoteStore, UserKey, User> = Collection::new(handle.open());
     let remote = handle.open();
     for i in 0..40u64 {
-        t.put(&UserKey { id: i }, &User { level: (i % 4) as u32 }).unwrap();
+        t.put(
+            &UserKey { id: i },
+            &User {
+                level: (i % 4) as u32,
+            },
+        )
+        .unwrap();
     }
-    wait_for(|| t.get(&UserKey { id: 39 }).unwrap().is_some(), "writes to land");
+    wait_for(
+        || t.get(&UserKey { id: 39 }).unwrap().is_some(),
+        "writes to land",
+    );
 
     // Sender-side bounds: `[ns 2B][fixed face 0x00][pkey 8B]` (User
     // declares no partition, so no 0xFF escape). The hosted prefix
@@ -168,9 +207,15 @@ fn remote_scan_range_iter_is_lazy_paged() {
         e
     };
     let buffered: Vec<(Vec<u8>, Vec<u8>)> = remote
-        .scan_range(&begin, Some(&end)).unwrap()
+        .scan_range(&begin, Some(&end))
+        .unwrap()
         .into_iter()
-        .map(|k| (k.clone(), remote.get(&k).unwrap().expect("a read after a scan")))
+        .map(|k| {
+            (
+                k.clone(),
+                remote.get(&k).unwrap().expect("a read after a scan"),
+            )
+        })
         .collect();
     let lazy: Vec<(Vec<u8>, Vec<u8>)> = remote
         .scan_range_iter(&begin, Some(&end))
@@ -186,10 +231,7 @@ fn remote_scan_range_iter_is_lazy_paged() {
     // Early abandonment stops after the first page (page default 256 >
     // 40 rows here, so one round trip covers all; the take() locks the
     // lazy-by-construction semantics through the remote arm).
-    let first_two: Vec<_> = remote
-        .scan_range_iter(&begin, None)
-        .take(2)
-        .collect();
+    let first_two: Vec<_> = remote.scan_range_iter(&begin, None).take(2).collect();
     assert_eq!(first_two.len(), 2);
 
     // Backwards walk degrades to buffered (the slatedb rule): rev() gives
@@ -229,7 +271,11 @@ fn remote_unbounded_stream_crosses_pages() {
         .scan_range_iter(b"k", None)
         .map(|item| item.expect("a page item"))
         .collect();
-    assert_eq!(items.len(), 600, "unbounded walk must not truncate at a page edge");
+    assert_eq!(
+        items.len(),
+        600,
+        "unbounded walk must not truncate at a page edge"
+    );
     // byte order holds across the page seams
     assert_eq!(items.first().unwrap().0, b"k/0000");
     assert_eq!(items.get(255).unwrap().0, b"k/0255");
@@ -281,15 +327,34 @@ fn routine_put_carries_face_and_ledger_in_one_frame() {
     let t: Collection<RemoteStore, EntryKey, Entry> = Collection::new(handle.open());
     let k = EntryKey { id: 1 };
 
-    t.put(&k, &Entry { account: 7, amount: 10 }).unwrap();
+    t.put(
+        &k,
+        &Entry {
+            account: 7,
+            amount: 10,
+        },
+    )
+    .unwrap();
     wait_for(|| t.get(&k).unwrap().is_some(), "row to land");
     // Face: an index scan round trip (entry key + fetch-back).
-    assert_eq!(t.scan::<Entry_ByAccount>(&7u64.to_be_bytes()).unwrap().len(), 1);
+    assert_eq!(
+        t.scan::<Entry_ByAccount>(&7u64.to_be_bytes())
+            .unwrap()
+            .len(),
+        1
+    );
     // Ledger: the accumulator the fold wrote in the same frame.
     assert_eq!(entry_ledger(&t, 7), Some(1), "the fold landed with the row");
 
     // Overwrite: unfold + refold travel in one frame as well.
-    t.put(&k, &Entry { account: 8, amount: 20 }).unwrap();
+    t.put(
+        &k,
+        &Entry {
+            account: 8,
+            amount: 20,
+        },
+    )
+    .unwrap();
     wait_for(|| entry_ledger(&t, 8) == Some(1), "refold to land");
     assert_eq!(entry_ledger(&t, 7), Some(0), "the old group was unfolded");
 
@@ -297,5 +362,9 @@ fn routine_put_carries_face_and_ledger_in_one_frame() {
     t.purge(&k).unwrap();
     wait_for(|| t.get(&k).unwrap().is_none(), "delete to propagate");
     assert_eq!(entry_ledger(&t, 8), Some(0));
-    assert!(t.scan::<Entry_ByAccount>(&8u64.to_be_bytes()).unwrap().is_empty());
+    assert!(
+        t.scan::<Entry_ByAccount>(&8u64.to_be_bytes())
+            .unwrap()
+            .is_empty()
+    );
 }

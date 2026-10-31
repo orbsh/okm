@@ -9,9 +9,17 @@
 //! (`__OkmReduce_<Doc>_<n>`); tests name those types via
 //! `okm_core::reduce::scan_reduces` / `Reduce::entry_key` generics.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unwrap_in_result,
+    clippy::panic_in_result_fn
+)]
 
-use okm_core::{Document, DocumentEncode, KeyEncode, Quant, Reduce, ReduceCodec, ReduceLogic, TestStore};
+use okm_core::{
+    Document, DocumentEncode, KeyEncode, Quant, Reduce, ReduceCodec, ReduceLogic, TestStore,
+};
 
 /// 分组模式：按 forum 分组，四种 preset 各占一个 slot。
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
@@ -49,8 +57,14 @@ pub struct Vote {
 #[test]
 fn grouped_presets_fold_unfold_scan() {
     let t = <Post as Document>::collection(TestStore::slatedb_mem());
-    let r1 = Post { forum: 7, views: 100 };
-    let r2 = Post { forum: 7, views: 40 };
+    let r1 = Post {
+        forum: 7,
+        views: 100,
+    };
+    let r2 = Post {
+        forum: 7,
+        views: 40,
+    };
     let r3 = Post { forum: 8, views: 9 };
     let k = |id: u64| PostKey { id };
     t.put(&k(1), &r1).unwrap();
@@ -58,7 +72,14 @@ fn grouped_presets_fold_unfold_scan() {
     t.put(&k(3), &r3).unwrap();
 
     let ns = <Post as Document>::NS_PREFIX;
-    let probe = |store: &TestStore, forum: u64| -> (Option<u64>, Option<u64>, Option<u64>, Option<okm_core::LowAcc>) {
+    let probe = |store: &TestStore,
+                 forum: u64|
+     -> (
+        Option<u64>,
+        Option<u64>,
+        Option<u64>,
+        Option<okm_core::LowAcc>,
+    ) {
         let gb = forum.to_be_bytes().to_vec();
         let find = |v: Vec<(Vec<u8>, u64)>| {
             v.into_iter()
@@ -182,21 +203,31 @@ pub struct Entry {
 fn sum_acc_type_follows_field() {
     let t = <Entry as Document>::collection(TestStore::slatedb_mem());
     let k = |id: u64| LedgerKey { id };
-    let r_pos = Entry { account: 7, delta: 100, amount: Quant::<2>::new(12.5) };
-    let r_neg = Entry { account: 7, delta: -30, amount: Quant::<2>::new(-2.0) };
+    let r_pos = Entry {
+        account: 7,
+        delta: 100,
+        amount: Quant::<2>::new(12.5),
+    };
+    let r_neg = Entry {
+        account: 7,
+        delta: -30,
+        amount: Quant::<2>::new(-2.0),
+    };
     t.put(&k(1), &r_pos).unwrap();
     t.put(&k(2), &r_neg).unwrap();
 
     let ns = <Entry as Document>::NS_PREFIX;
     let gb = 7u64.to_be_bytes().to_vec();
     // i64 acc：100 + (−30) = 70，负数参与求和精确。
-    let sum_i = okm_core::reduce::scan_reduces::<_, __OkmReduce_Entry_0>(t.store(), ns).unwrap()
+    let sum_i = okm_core::reduce::scan_reduces::<_, __OkmReduce_Entry_0>(t.store(), ns)
+        .unwrap()
         .into_iter()
         .find(|(sfx, _)| sfx.as_slice() == gb.as_slice())
         .map(|(_, a)| a);
     assert_eq!(sum_i, Some(70i64));
     // Quant<2> 定点 wire 累加：1250 + (−200) = 1050（= 10.50）。
-    let sum_q = okm_core::reduce::scan_reduces::<_, __OkmReduce_Entry_1>(t.store(), ns).unwrap()
+    let sum_q = okm_core::reduce::scan_reduces::<_, __OkmReduce_Entry_1>(t.store(), ns)
+        .unwrap()
         .into_iter()
         .find(|(sfx, _)| sfx.as_slice() == gb.as_slice())
         .map(|(_, a)| a);
@@ -204,11 +235,13 @@ fn sum_acc_type_follows_field() {
 
     // 可逆：删 r_neg 后两者回到 100 / 1250。
     t.purge(&k(2)).unwrap();
-    let sum_i = okm_core::reduce::scan_reduces::<_, __OkmReduce_Entry_0>(t.store(), ns).unwrap()
+    let sum_i = okm_core::reduce::scan_reduces::<_, __OkmReduce_Entry_0>(t.store(), ns)
+        .unwrap()
         .into_iter()
         .find(|(sfx, _)| sfx.as_slice() == gb.as_slice())
         .map(|(_, a)| a);
-    let sum_q = okm_core::reduce::scan_reduces::<_, __OkmReduce_Entry_1>(t.store(), ns).unwrap()
+    let sum_q = okm_core::reduce::scan_reduces::<_, __OkmReduce_Entry_1>(t.store(), ns)
+        .unwrap()
         .into_iter()
         .find(|(sfx, _)| sfx.as_slice() == gb.as_slice())
         .map(|(_, a)| a);
@@ -229,7 +262,13 @@ fn the_reduce_table_exports_as_its_own_file() {
     let t: okm_core::Collection<TestStore, PostKey, Post> =
         okm_core::Collection::new(TestStore::slatedb_mem());
     for (forum, views) in [(1u64, 10u32), (1, 40), (2, 7)] {
-        t.put(&PostKey { id: forum * 100 + views as u64 }, &Post { forum, views }).unwrap();
+        t.put(
+            &PostKey {
+                id: forum * 100 + views as u64,
+            },
+            &Post { forum, views },
+        )
+        .unwrap();
     }
 
     let path = dir.path().join("post_reduces.parquet");
@@ -270,8 +309,16 @@ fn the_reduce_table_exports_as_its_own_file() {
 
     // Two groups (forum 1 and 2): the watermark of forum 1 is 40, of 2 it is 7.
     let mut rows = Vec::new();
-    let groups = batch.column(2).as_any().downcast_ref::<BinaryArray>().unwrap();
-    let values = batch.column(3).as_any().downcast_ref::<BinaryArray>().unwrap();
+    let groups = batch
+        .column(2)
+        .as_any()
+        .downcast_ref::<BinaryArray>()
+        .unwrap();
+    let values = batch
+        .column(3)
+        .as_any()
+        .downcast_ref::<BinaryArray>()
+        .unwrap();
     for i in 0..batch.num_rows() {
         rows.push((
             u64::from_be_bytes(groups.value(i).try_into().unwrap()),
@@ -293,7 +340,14 @@ fn a_merge_folds_the_ledger_once_and_only_through_the_row_arm() {
 
     let t = <Post as Document>::collection(TestStore::slatedb_mem());
     let k = PostKey { id: 1 };
-    t.put(&k, &Post { forum: 7, views: 100 }).unwrap();
+    t.put(
+        &k,
+        &Post {
+            forum: 7,
+            views: 100,
+        },
+    )
+    .unwrap();
     let ns = <Post as Document>::NS_PREFIX;
     let group = 7u64.to_be_bytes();
     let acc = |v: Vec<(Vec<u8>, u64)>| {
@@ -314,8 +368,15 @@ fn a_merge_folds_the_ledger_once_and_only_through_the_row_arm() {
     let mut open = BTreeMap::new();
     open.insert("note".to_string(), DynamicValue::Str("x".into()));
     t.merge(&k, &open).unwrap();
-    assert_eq!(count(t.store()), Some(1), "a segment-only patch folds nothing");
-    assert_eq!(t.fetch(&k).unwrap().unwrap().get("note"), Some(&DynamicValue::Str("x".into())));
+    assert_eq!(
+        count(t.store()),
+        Some(1),
+        "a segment-only patch folds nothing"
+    );
+    assert_eq!(
+        t.fetch(&k).unwrap().unwrap().get("note"),
+        Some(&DynamicValue::Str("x".into()))
+    );
 
     // Both halves in ONE call: the row arm folds (the usual unfold-then-fold
     // pair), the segment arm does not — one fold, not one per arm.
@@ -323,7 +384,18 @@ fn a_merge_folds_the_ledger_once_and_only_through_the_row_arm() {
     both.insert("views".to_string(), DynamicValue::UInt(7));
     both.insert("tag".to_string(), DynamicValue::Str("y".into()));
     t.merge(&k, &both).unwrap();
-    assert_eq!(count(t.store()), Some(1), "one merge folds once, not once per arm");
-    assert_eq!(sum(t.store()), Some(7), "the Sum followed the row's new value");
-    assert_eq!(t.fetch(&k).unwrap().unwrap().get("tag"), Some(&DynamicValue::Str("y".into())));
+    assert_eq!(
+        count(t.store()),
+        Some(1),
+        "one merge folds once, not once per arm"
+    );
+    assert_eq!(
+        sum(t.store()),
+        Some(7),
+        "the Sum followed the row's new value"
+    );
+    assert_eq!(
+        t.fetch(&k).unwrap().unwrap().get("tag"),
+        Some(&DynamicValue::Str("y".into()))
+    );
 }

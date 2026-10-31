@@ -16,7 +16,12 @@
 // The export side reads bytes this SDK wrote and assembles batches from arrays it
 // built itself: a failure here is the codec/construction being wrong, not input
 // (ADR-0040 — the import side, where the file is foreign, answers `Err` instead).
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::unwrap_in_result,
+    clippy::panic_in_result_fn
+)]
 
 use std::sync::Arc;
 
@@ -29,12 +34,12 @@ use crate::model::index::Document;
 use crate::model::key::KeyEncode;
 // The graph's edge table (and the variant column it appends) is a PARQUET
 // shape, so these two are too: `--features arrow` alone must stay buildable.
-#[cfg(feature = "parquet")]
-use crate::model::obj_dynamic::DynamicValue;
 use crate::model::document::Collection;
 #[cfg(feature = "parquet")]
 use crate::model::graph::EdgeKey;
 use crate::model::graph::{Graph, GraphEncode};
+#[cfg(feature = "parquet")]
+use crate::model::obj_dynamic::DynamicValue;
 
 /// Arrow column type for a declared field kind.
 ///
@@ -77,9 +82,8 @@ pub fn arrow_type(ty: FieldType) -> DataType {
 /// `VarIntEnc`, shared shape) for `VarInt` columns. `raw` is the frame
 /// value region only.
 fn varint_decode(b: &[u8]) -> (u64, usize) {
-    let w = crate::model::wrappers::wire::prefix_width(
-        *b.first().expect("VarInt: truncated frame"),
-    );
+    let w =
+        crate::model::wrappers::wire::prefix_width(*b.first().expect("VarInt: truncated frame"));
     assert!(b.len() >= w, "VarInt: truncated frame");
     if w == 9 {
         return (u64::from_be_bytes(b[1..9].try_into().unwrap()), 9);
@@ -163,7 +167,9 @@ fn vocab_labels<S: VirtualStorage + ?Sized>(
     store: &S,
     header: &[u8],
     row_fields: &'static [FieldDesc],
-) -> crate::error::Result<std::collections::HashMap<usize, std::collections::HashMap<Vec<u8>, String>>> {
+) -> crate::error::Result<
+    std::collections::HashMap<usize, std::collections::HashMap<Vec<u8>, String>>,
+> {
     let mut out = std::collections::HashMap::new();
     for (fi, f) in row_fields.iter().enumerate() {
         let FieldType::Vocab(id_slot) = f.ty else {
@@ -194,7 +200,9 @@ fn vocab_labels<S: VirtualStorage + ?Sized>(
 fn labels_for<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>>(
     collection: &Collection<S, K, R>,
     proj: &Projection<K, R>,
-) -> crate::error::Result<std::collections::HashMap<usize, std::collections::HashMap<Vec<u8>, String>>> {
+) -> crate::error::Result<
+    std::collections::HashMap<usize, std::collections::HashMap<Vec<u8>, String>>,
+> {
     if !R::HAS_VOCAB {
         return Ok(std::collections::HashMap::new());
     }
@@ -286,7 +294,11 @@ fn build_batch<K: KeyEncode, R: Document<Key = K>>(
     // Field descs in column order (key half, then payload half): assembly
     // dispatches on the DECLARED type, not the Arrow type — a `Str` column and
     // a `Vocab` column are both Utf8, and only the latter holds ids to resolve.
-    let descs: Vec<&FieldDesc> = proj.key_fields.iter().chain(proj.row_fields.iter()).collect();
+    let descs: Vec<&FieldDesc> = proj
+        .key_fields
+        .iter()
+        .chain(proj.row_fields.iter())
+        .collect();
     let nkey = proj.key_fields.len();
     // A `None` cell is an Arrow NULL: no row (segment-only document) or a Vocab
     // id the vocabulary does not name. Key cells are never NULL.
@@ -322,46 +334,62 @@ fn build_batch<K: KeyEncode, R: Document<Key = K>>(
                 })));
             }
             match field.data_type() {
-            DataType::UInt8 => {
-                let vals: Vec<Option<u8>> = col.iter().map(|c| c.as_ref().map(|b| b[0])).collect();
-                Arc::new(arrow::array::UInt8Array::from_iter(vals))
-            }
-            DataType::UInt16 => {
-                let vals: Vec<Option<u16>> = col
-                    .iter()
-                    .map(|c| c.as_ref().map(|b| u16::from_le_bytes(b.as_chunks::<2>().0[0])))
-                    .collect();
-                Arc::new(arrow::array::UInt16Array::from_iter(vals))
-            }
-            DataType::UInt32 => {
-                let vals: Vec<Option<u32>> = col
-                    .iter()
-                    .map(|c| c.as_ref().map(|b| u32::from_le_bytes(b.as_chunks::<4>().0[0])))
-                    .collect();
-                Arc::new(arrow::array::UInt32Array::from_iter(vals))
-            }
-            DataType::UInt64 => {
-                let vals: Vec<Option<u64>> = col
-                    .iter()
-                    .map(|c| c.as_ref().map(|b| u64::from_le_bytes(b.as_chunks::<8>().0[0])))
-                    .collect();
-                Arc::new(arrow::array::UInt64Array::from_iter(vals))
-            }
-            DataType::Float64 => {
-                let vals: Vec<Option<f64>> = col
-                    .iter()
-                    .map(|c| c.as_ref().map(|b| f64::from_le_bytes(b.as_chunks::<8>().0[0])))
-                    .collect();
-                Arc::new(arrow::array::Float64Array::from_iter(vals))
-            }
-            DataType::Int64 => {
-                let vals: Vec<Option<i64>> = col
-                    .iter()
-                    .map(|c| c.as_ref().map(|b| i64::from_le_bytes(b.as_chunks::<8>().0[0])))
-                    .collect();
-                Arc::new(arrow::array::Int64Array::from_iter(vals))
-            }
-            other => unreachable!("no bridge mapping for {other:?}"),
+                DataType::UInt8 => {
+                    let vals: Vec<Option<u8>> =
+                        col.iter().map(|c| c.as_ref().map(|b| b[0])).collect();
+                    Arc::new(arrow::array::UInt8Array::from_iter(vals))
+                }
+                DataType::UInt16 => {
+                    let vals: Vec<Option<u16>> = col
+                        .iter()
+                        .map(|c| {
+                            c.as_ref()
+                                .map(|b| u16::from_le_bytes(b.as_chunks::<2>().0[0]))
+                        })
+                        .collect();
+                    Arc::new(arrow::array::UInt16Array::from_iter(vals))
+                }
+                DataType::UInt32 => {
+                    let vals: Vec<Option<u32>> = col
+                        .iter()
+                        .map(|c| {
+                            c.as_ref()
+                                .map(|b| u32::from_le_bytes(b.as_chunks::<4>().0[0]))
+                        })
+                        .collect();
+                    Arc::new(arrow::array::UInt32Array::from_iter(vals))
+                }
+                DataType::UInt64 => {
+                    let vals: Vec<Option<u64>> = col
+                        .iter()
+                        .map(|c| {
+                            c.as_ref()
+                                .map(|b| u64::from_le_bytes(b.as_chunks::<8>().0[0]))
+                        })
+                        .collect();
+                    Arc::new(arrow::array::UInt64Array::from_iter(vals))
+                }
+                DataType::Float64 => {
+                    let vals: Vec<Option<f64>> = col
+                        .iter()
+                        .map(|c| {
+                            c.as_ref()
+                                .map(|b| f64::from_le_bytes(b.as_chunks::<8>().0[0]))
+                        })
+                        .collect();
+                    Arc::new(arrow::array::Float64Array::from_iter(vals))
+                }
+                DataType::Int64 => {
+                    let vals: Vec<Option<i64>> = col
+                        .iter()
+                        .map(|c| {
+                            c.as_ref()
+                                .map(|b| i64::from_le_bytes(b.as_chunks::<8>().0[0]))
+                        })
+                        .collect();
+                    Arc::new(arrow::array::Int64Array::from_iter(vals))
+                }
+                other => unreachable!("no bridge mapping for {other:?}"),
             }
         })
         .collect();
@@ -385,7 +413,9 @@ fn push_variant<B: parquet_variant::VariantBuilderExt>(b: &mut B, v: &DynamicVal
         DynamicValue::Bytes(bv) => b.append_value(bv.as_slice()),
         DynamicValue::Array(items) => {
             let mut lb = b.new_list();
-            for it in items { push_variant(&mut lb, it); }
+            for it in items {
+                push_variant(&mut lb, it);
+            }
             lb.finish();
         }
         DynamicValue::Obj(map) => {
@@ -412,7 +442,9 @@ fn push_variant_obj<S: parquet_variant::BuilderSpecificState>(
             }
             DynamicValue::Array(items) => {
                 let mut sub = ob.new_list(k);
-                for it in items { push_variant(&mut sub, it); }
+                for it in items {
+                    push_variant(&mut sub, it);
+                }
                 sub.finish();
             }
             other => {
@@ -444,17 +476,13 @@ fn variant_field(name: &str, nullable: bool) -> arrow::datatypes::Field {
 /// region, walked frame-by-frame. `cold_fields` lists the declaration
 /// indices of the width-0 fields in order; a frame's tag IS that
 /// declaration index. Returns the value region only (tag + len skipped).
-fn tlv_value<'a>(
-    cold: &'a [u8],
-    cold_fields: &[(usize, &FieldDesc)],
-    fi: usize,
-) -> &'a [u8] {
+fn tlv_value<'a>(cold: &'a [u8], cold_fields: &[(usize, &FieldDesc)], fi: usize) -> &'a [u8] {
     let mut off = 0usize;
     for (decl, f) in cold_fields {
         // P2 wire: frame = [tag u8][len varint][value] — take_len reads
         // the prefix-monotonic length and reports its byte width.
-        let (len, len_n) = crate::take_len(&cold[off + 1..])
-            .expect("cold frame: truncated length prefix");
+        let (len, len_n) =
+            crate::take_len(&cold[off + 1..]).expect("cold frame: truncated length prefix");
         let val = off + 1 + len_n;
         if *decl == fi {
             // A cold frame carries its own length; a FIXED-width field never
@@ -589,8 +617,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         fields.push(variant_field("variant", true));
         let schema = Arc::new(ArrowSchema::new(fields));
 
-        let mut arrays: Vec<Arc<dyn arrow::array::Array>> =
-            base.columns().to_vec();
+        let mut arrays: Vec<Arc<dyn arrow::array::Array>> = base.columns().to_vec();
         arrays.push(variant_col);
 
         // Assembly invariants (column count vs schema) are this function's
@@ -630,10 +657,7 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
     /// table's declaration. `name_of` maps an ns to its table name; an ns it does
     /// not know yields a null cell, never an invented name.
     #[cfg(feature = "parquet")]
-    pub fn to_record_batch_table<F>(
-        &mut self,
-        name_of: F,
-    ) -> crate::error::Result<RecordBatch>
+    pub fn to_record_batch_table<F>(&mut self, name_of: F) -> crate::error::Result<RecordBatch>
     where
         F: Fn(u16) -> Option<String>,
     {
@@ -650,7 +674,9 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
         let mut variants: Vec<Option<Vec<u8>>> = Vec::with_capacity(ids.len());
 
         for id in ids {
-            let Some(body) = self.get_edge(id)? else { continue };
+            let Some(body) = self.get_edge(id)? else {
+                continue;
+            };
             let predicate = self
                 .predicate_vocab_name(body.predicate_vocab_id)?
                 .unwrap_or_default();

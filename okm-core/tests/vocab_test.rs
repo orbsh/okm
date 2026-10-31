@@ -1,11 +1,17 @@
 //! `Vocab<N>` end to end (ADR-0032): labels in memory, an N-byte id on the
 //! wire, one data vocabulary per declared field.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unwrap_in_result,
+    clippy::panic_in_result_fn
+)]
 
 use okm_core::{
-    Collection, Document, DocumentEncode, FieldType, KeyEncode, Batch, TestStore,
-    VirtualStorage, Vocab,
+    Batch, Collection, Document, DocumentEncode, FieldType, KeyEncode, TestStore, VirtualStorage,
+    Vocab,
 };
 
 #[derive(KeyEncode, Clone, PartialEq, Debug)]
@@ -38,8 +44,10 @@ fn labels_round_trip_through_per_field_vocabularies() {
     let store = TestStore::slatedb_mem();
     let c = Collection::<_, VKey, VRow>::new(store);
 
-    c.put(&VKey { org: 1, id: 1 }, &row("active", "red", 7)).unwrap();
-    c.put(&VKey { org: 1, id: 2 }, &row("closed", "red", 8)).unwrap();
+    c.put(&VKey { org: 1, id: 1 }, &row("active", "red", 7))
+        .unwrap();
+    c.put(&VKey { org: 1, id: 2 }, &row("closed", "red", 8))
+        .unwrap();
 
     let a = c.get(&VKey { org: 1, id: 1 }).unwrap().unwrap();
     assert_eq!(a.status.as_str(), Some("active"));
@@ -137,12 +145,19 @@ fn a_put_on_a_categorical_table_never_scans() {
 
     // First write allocates two labels; the second reuses them (label-face
     // probe); the third allocates two more through the cursor.
-    c.put(&VKey { org: 1, id: 1 }, &row("active", "red", 1)).unwrap();
-    c.put(&VKey { org: 1, id: 1 }, &row("active", "red", 2)).unwrap();
-    c.put(&VKey { org: 1, id: 2 }, &row("closed", "blue", 3)).unwrap();
+    c.put(&VKey { org: 1, id: 1 }, &row("active", "red", 1))
+        .unwrap();
+    c.put(&VKey { org: 1, id: 1 }, &row("active", "red", 2))
+        .unwrap();
+    c.put(&VKey { org: 1, id: 2 }, &row("closed", "blue", 3))
+        .unwrap();
 
     let two = c.get(&VKey { org: 1, id: 2 }).unwrap().expect("row");
     assert_eq!(two.status.as_str(), Some("closed"));
     assert_eq!(two.color.as_str(), Some("blue"));
-    assert_eq!(two.status.id(), Some(1u8), "second label of the status field");
+    assert_eq!(
+        two.status.id(),
+        Some(1u8),
+        "second label of the status field"
+    );
 }

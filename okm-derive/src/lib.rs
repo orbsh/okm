@@ -56,8 +56,8 @@ fn dump(macro_name: &str, input: TokenStream, tokens: &TS2) {
                     .map(|t| t.to_string())
                     .unwrap_or_else(|| "unknown".into());
                 let _ = std::fs::create_dir_all(&dir);
-                let path = std::path::Path::new(&dir)
-                    .join(format!("{name_raw}_{macro_name}.raw.rs"));
+                let path =
+                    std::path::Path::new(&dir).join(format!("{name_raw}_{macro_name}.raw.rs"));
                 let _ = std::fs::write(path, tokens.to_string());
                 panic!("derive expansion must parse as a file: {e}");
             }
@@ -86,7 +86,23 @@ pub fn derive_key_encode(input: TokenStream) -> TokenStream {
     }
 }
 
-#[proc_macro_derive(DocumentEncode, attributes(ok_ref, ok_ns, ok_name, ok_partition, ok_index, ok_reduce, ok_offset, ok_layout, ok_default, ok_subscribe, ok_event_enum, ok_len))]
+#[proc_macro_derive(
+    DocumentEncode,
+    attributes(
+        ok_ref,
+        ok_ns,
+        ok_name,
+        ok_partition,
+        ok_index,
+        ok_reduce,
+        ok_offset,
+        ok_layout,
+        ok_default,
+        ok_subscribe,
+        ok_event_enum,
+        ok_len
+    )
+)]
 pub fn derive_document_encode(input: TokenStream) -> TokenStream {
     let parsed = input.clone();
     let di = parse_macro_input!(parsed as DeriveInput);
@@ -123,7 +139,24 @@ pub fn derive_junction(input: TokenStream) -> TokenStream {
 /// the member-set enum and its `NodeSet` impl are generated with each table's
 /// own ns). Endpoints need no declaration — refs are self-describing; they
 /// travel as runtime `NodeRef`s, never as declared struct fields.
-#[proc_macro_derive(GraphEncode, attributes(ok_ns, ok_nodes, ok_name, ok_ref, ok_partition, ok_index, ok_reduce, ok_offset, ok_layout, ok_default, ok_subscribe, ok_event_enum, ok_len))]
+#[proc_macro_derive(
+    GraphEncode,
+    attributes(
+        ok_ns,
+        ok_nodes,
+        ok_name,
+        ok_ref,
+        ok_partition,
+        ok_index,
+        ok_reduce,
+        ok_offset,
+        ok_layout,
+        ok_default,
+        ok_subscribe,
+        ok_event_enum,
+        ok_len
+    )
+)]
 pub fn derive_graph_encode(input: TokenStream) -> TokenStream {
     let parsed = input.clone();
     let di = parse_macro_input!(parsed as DeriveInput);

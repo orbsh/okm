@@ -10,10 +10,16 @@
 //!   callable contract (`unfold(fold(a, x)) = a`) is the implementor's
 //!   obligation, same as the Rust-side `ReduceLogic`.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unwrap_in_result,
+    clippy::panic_in_result_fn
+)]
 
-use okm_core::{DocumentEncode, KeyEncode, TestStore, VirtualStorage};
 use okm_core::schema::CollectionSchema;
+use okm_core::{DocumentEncode, KeyEncode, TestStore, VirtualStorage};
 use okm_dynamic::{
     AccessMethod, AccessMethodKind, BoundReduce, DynamicCollection, ReduceSpec, Value, ValueMap,
 };
@@ -55,7 +61,7 @@ fn user_active(document: &User) -> bool {
 // level group (u64 BE accumulator).
 mod rust_reduce {
     use super::{User, UserKey};
-    use okm_core::model::reduce::{ReduceCodec, ReduceLogic, Reduce};
+    use okm_core::model::reduce::{Reduce, ReduceCodec, ReduceLogic};
 
     #[derive(Default)]
     pub struct GroupCount(pub u64);
@@ -140,7 +146,12 @@ impl okm_dynamic::ReduceLogic for GroupCount {
         *acc = n.to_be_bytes().to_vec();
         Ok(())
     }
-    fn unfold(&self, acc: &mut Vec<u8>, _key: &ValueMap, _document: &ValueMap) -> Result<(), String> {
+    fn unfold(
+        &self,
+        acc: &mut Vec<u8>,
+        _key: &ValueMap,
+        _document: &ValueMap,
+    ) -> Result<(), String> {
         let n = be_u64(acc)
             .checked_sub(1)
             .ok_or("accumulator underflow: unfold without fold")?;
@@ -150,7 +161,10 @@ impl okm_dynamic::ReduceLogic for GroupCount {
 }
 
 fn be_u64(b: &[u8]) -> u64 {
-    assert!(b.len() == 8, "u64 acc must be 8B BE (host-side layout rule)");
+    assert!(
+        b.len() == 8,
+        "u64 acc must be 8B BE (host-side layout rule)"
+    );
     u64::from_be_bytes(b.try_into().unwrap())
 }
 
@@ -196,11 +210,16 @@ fn reduce_entry_key(t: &DynamicCollection<TestStore>, level: u32) -> Vec<u8> {
     });
     let mut m = BTreeMap::new();
     m.insert("level".into(), Value::U32(level));
-    reduce.entry_key(t.schema(), &42u16.to_be_bytes(), &m, &m).unwrap()
+    reduce
+        .entry_key(t.schema(), &42u16.to_be_bytes(), &m, &m)
+        .unwrap()
 }
 
 fn acc_of(t: &DynamicCollection<TestStore>, level: u32) -> Option<u64> {
-    t.store().get(&reduce_entry_key(t, level)).expect("a store read").map(|b| be_u64(&b))
+    t.store()
+        .get(&reduce_entry_key(t, level))
+        .expect("a store read")
+        .map(|b| be_u64(&b))
 }
 
 #[test]
@@ -270,7 +289,11 @@ fn reduce_calling_discipline() {
 
     // overwrite across groups: old group unfolds, new group folds.
     t.merge(&key_bytes(1, 12), &values(4, 50, "c")).unwrap();
-    assert_eq!(acc_of(&t, 9), Some(0), "group 9 emptied: zero acc, entry kept (no GC)");
+    assert_eq!(
+        acc_of(&t, 9),
+        Some(0),
+        "group 9 emptied: zero acc, entry kept (no GC)"
+    );
     assert_eq!(acc_of(&t, 4), Some(3));
 
     // delete: unfold the stored document.
@@ -307,36 +330,62 @@ fn reduce_entry_layout_matches_rust_side() {
     // equivalent document (level=4), assembled through the trait's
     // default entry_key. Without this arm the parity test only checks
     // the dynamic side against itself.
-    let key = UserKey { org_id: 1, user_id: 10 };
-    let doc = User { level: 4, score: 100, name: "a".into() };
+    let key = UserKey {
+        org_id: 1,
+        user_id: 10,
+    };
+    let doc = User {
+        level: 4,
+        score: 100,
+        name: "a".into(),
+    };
     let typed = <rust_reduce::GroupCount as okm_core::model::reduce::Reduce>::entry_key(
         &42u16.to_be_bytes(),
         &key,
         &doc,
     );
-    assert_eq!(typed, expected, "typed and dynamic reduce keys byte-identical");
+    assert_eq!(
+        typed, expected,
+        "typed and dynamic reduce keys byte-identical"
+    );
     // A folded acc on the typed side encodes identically (u64 BE of 1).
     let mut acc = <rust_reduce::GroupCount as okm_core::model::reduce::ReduceLogic>::Acc::default();
     <rust_reduce::GroupCount as okm_core::model::reduce::ReduceLogic>::fold(&mut acc, &key, &doc);
     assert_eq!(
         okm_core::model::reduce::ReduceCodec::encode_acc(&acc),
-        t.store().get(&typed).expect("a store read").expect("the accumulator")
+        t.store()
+            .get(&typed)
+            .expect("a store read")
+            .expect("the accumulator")
     );
 }
 
 #[test]
 fn func_index_exact_scan() {
     let t = dynamic_table(TestStore::slatedb_mem());
-    t.merge(&key_bytes(1, 10), &values(4, 100, "zig"))
-        .unwrap();
+    t.merge(&key_bytes(1, 10), &values(4, 100, "zig")).unwrap();
     let z = (b'z' as u32).to_be_bytes();
-    assert_eq!(t.scan(0x3002, &z).unwrap().len(), 1, "the value is a prefix hit");
-    assert_eq!(t.scan_exact(0x3002, &z).unwrap().len(), 1, "…and an exact hit");
+    assert_eq!(
+        t.scan(0x3002, &z).unwrap().len(),
+        1,
+        "the value is a prefix hit"
+    );
+    assert_eq!(
+        t.scan_exact(0x3002, &z).unwrap().len(),
+        1,
+        "…and an exact hit"
+    );
     // The key tail follows the 4-byte value with no boundary byte, so the
     // 5-byte probe (value + the key's first byte, 0x00 for org 1) is
     // satisfied by this entry's BYTES. It is not a match on the value for
     // either variant: the stored value is shorter than the probe.
     let spill = [z.as_slice(), b"\x00"].concat();
-    assert!(t.scan(0x3002, &spill).unwrap().is_empty(), "spill is no prefix hit");
-    assert!(t.scan_exact(0x3002, &spill).unwrap().is_empty(), "spill is no exact hit");
+    assert!(
+        t.scan(0x3002, &spill).unwrap().is_empty(),
+        "spill is no prefix hit"
+    );
+    assert!(
+        t.scan_exact(0x3002, &spill).unwrap().is_empty(),
+        "spill is no exact hit"
+    );
 }

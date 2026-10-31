@@ -20,7 +20,10 @@ use syn::{Data, DeriveInput, Fields};
 pub fn expand(input: DeriveInput) -> syn::Result<TS2> {
     let edge_name = &input.ident;
 
-    let junction_attr = input.attrs.iter().find(|a| a.path().is_ident("ok_junction"));
+    let junction_attr = input
+        .attrs
+        .iter()
+        .find(|a| a.path().is_ident("ok_junction"));
     let junction_id: u16 = match junction_attr {
         Some(a) => a
             .parse_args::<syn::LitInt>()

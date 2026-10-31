@@ -226,15 +226,15 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> syn::Result<Vec<Field>
                     quote! { ::okm_core::FieldType::Uuid7 }
                 };
                 (
-                quote! { buf.extend_from_slice(self.#id.as_bytes()); },
-                quote! {
-                    let mut #id = [0u8; 16];
-                    #id.copy_from_slice(&b[offset..offset + 16]);
-                    offset += 16;
-                    let #id = <#ty as ::core::convert::From<[u8; 16]>>::from(#id);
-                },
-                quote! { 16usize },
-                Some(quote! { #kind_ty }),
+                    quote! { buf.extend_from_slice(self.#id.as_bytes()); },
+                    quote! {
+                        let mut #id = [0u8; 16];
+                        #id.copy_from_slice(&b[offset..offset + 16]);
+                        offset += 16;
+                        let #id = <#ty as ::core::convert::From<[u8; 16]>>::from(#id);
+                    },
+                    quote! { 16usize },
+                    Some(quote! { #kind_ty }),
                 )
             }
             _ if ty_str.starts_with("[u8;") => {

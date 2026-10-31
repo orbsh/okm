@@ -59,9 +59,7 @@ pub(crate) fn parse_index_attr(attr: &syn::Attribute) -> syn::Result<Vec<IdxDecl
             TokenTree::Group(g) if g.delimiter() == Delimiter::Parenthesis => Some(g.stream()),
             _ => None,
         })
-        .ok_or_else(|| {
-            syn::Error::new_spanned(attr, "ok_index: missing argument parentheses")
-        })?;
+        .ok_or_else(|| syn::Error::new_spanned(attr, "ok_index: missing argument parentheses"))?;
     let ts: Vec<TokenTree> = body.into_iter().collect();
 
     let mut i = 0usize;
@@ -244,9 +242,7 @@ pub(crate) fn parse_reduce_attr(attr: &syn::Attribute) -> syn::Result<ReduceDecl
             TokenTree::Group(g) if g.delimiter() == Delimiter::Parenthesis => Some(g.stream()),
             _ => None,
         })
-        .ok_or_else(|| {
-            syn::Error::new_spanned(attr, "ok_reduce: missing argument parentheses")
-        })?;
+        .ok_or_else(|| syn::Error::new_spanned(attr, "ok_reduce: missing argument parentheses"))?;
     let toks: Vec<TokenTree> = body.into_iter().collect();
 
     let ident = match toks.first() {
@@ -455,10 +451,7 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> syn::Result<Vec<FieldS
         // #[ok_default(expr)] or #[ok_default = expr] — value used when an
         // older-layout payload lacks this field (append-only schema
         // evolution). Optional; fallback is `<T as Default>::default()`.
-        let ok_default: Option<TS2> = match f
-            .attrs
-            .iter()
-            .find(|a| a.path().is_ident("ok_default"))
+        let ok_default: Option<TS2> = match f.attrs.iter().find(|a| a.path().is_ident("ok_default"))
         {
             Some(a) => {
                 let mut e = None;
@@ -487,9 +480,7 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> syn::Result<Vec<FieldS
                 a.parse_args::<syn::LitInt>()
                     .map_err(|_| syn::Error::new_spanned(a, "ok_len: expected `#[ok_len(N)]`"))?
                     .base10_parse::<usize>()
-                    .map_err(|_| {
-                        syn::Error::new_spanned(a, "ok_len: N must be a usize literal")
-                    })?,
+                    .map_err(|_| syn::Error::new_spanned(a, "ok_len: N must be a usize literal"))?,
             ),
             None => None,
         };
@@ -533,7 +524,8 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> syn::Result<Vec<FieldS
         });
         // #[ok_offset(base = <i64 literal>)] — the Offset wrapper's static
         // base, required exactly when the type is Offset-shaped.
-        let offset_base: Option<i64> = match f.attrs.iter().find(|a| a.path().is_ident("ok_offset")) {
+        let offset_base: Option<i64> = match f.attrs.iter().find(|a| a.path().is_ident("ok_offset"))
+        {
             Some(a) => {
                 let mut b = None;
                 let _ = a.parse_nested_meta(|meta| {
@@ -557,9 +549,7 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> syn::Result<Vec<FieldS
                 a.parse_args::<syn::LitInt>()
                     .map_err(|_| syn::Error::new_spanned(a, "ok_len: expected `#[ok_len(N)]`"))?
                     .base10_parse::<usize>()
-                    .map_err(|_| {
-                        syn::Error::new_spanned(a, "ok_len: N must be a usize literal")
-                    })?,
+                    .map_err(|_| syn::Error::new_spanned(a, "ok_len: N must be a usize literal"))?,
             ),
             None => None,
         };
@@ -634,17 +624,17 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> syn::Result<Vec<FieldS
                     quote! { ::okm_core::FieldType::Uuid7 }
                 };
                 (
-                // 16 raw bytes; the text form (hyphenated / base64) belongs to the edge.
-                quote! { buf.extend_from_slice(self.#id.as_bytes()); },
-                quote! {{
-                    let mut v = [0u8; 16];
-                    v.copy_from_slice(&b[offset..offset + 16]);
-                    offset += 16;
-                    <#ty as ::core::convert::From<[u8; 16]>>::from(v)
-                }},
-                quote! { 16 },
-                quote! { 16 },
-                Some(quote! { #kind_ty }),
+                    // 16 raw bytes; the text form (hyphenated / base64) belongs to the edge.
+                    quote! { buf.extend_from_slice(self.#id.as_bytes()); },
+                    quote! {{
+                        let mut v = [0u8; 16];
+                        v.copy_from_slice(&b[offset..offset + 16]);
+                        offset += 16;
+                        <#ty as ::core::convert::From<[u8; 16]>>::from(v)
+                    }},
+                    quote! { 16 },
+                    quote! { 16 },
+                    Some(quote! { #kind_ty }),
                 )
             }
             _ if ty_str.starts_with("[u8;") => {
@@ -907,10 +897,7 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> syn::Result<Vec<FieldS
                     }
                 };
                 let k_ty_parsed: syn::Type = syn::parse_str(&k_ty).map_err(|e| {
-                    syn::Error::new_spanned(
-                        ty,
-                        format!("{ctx}: bad Ref key type `{k_ty}`: {e}"),
-                    )
+                    syn::Error::new_spanned(ty, format!("{ctx}: bad Ref key type `{k_ty}`: {e}"))
                 })?;
                 (
                     // enc: the child key bytes only
@@ -946,10 +933,7 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> syn::Result<Vec<FieldS
                     }
                 };
                 let k_parsed: syn::Type = syn::parse_str(&k_ty).map_err(|e| {
-                    syn::Error::new_spanned(
-                        ty,
-                        format!("{ctx}: bad Refs key type `{k_ty}`: {e}"),
-                    )
+                    syn::Error::new_spanned(ty, format!("{ctx}: bad Refs key type `{k_ty}`: {e}"))
                 })?;
                 (
                     // enc: [count u32 BE][key bytes × n] — child keys share
@@ -1015,10 +999,7 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> syn::Result<Vec<FieldS
                 let off_lit = proc_macro2::Literal::u16_unsuffixed(16 - width);
                 // Declaration-order index among the Vocab fields: `fs` holds
                 // only the fields already pushed, so this IS the counter.
-                let vi = fs
-                    .iter()
-                    .filter(|f| f.ty_str.starts_with("Vocab"))
-                    .count() as u16;
+                let vi = fs.iter().filter(|f| f.ty_str.starts_with("Vocab")).count() as u16;
                 let vi_lit = proc_macro2::Literal::u16_unsuffixed(vi);
                 (
                     quote! {{
@@ -1197,7 +1178,9 @@ pub(crate) fn parse_subscribe_attr(attr: &syn::Attribute) -> syn::Result<SubDecl
             ),
         ));
     }
-    Ok(SubDecl { enum_name: DEFAULT_EVENT_ENUM.to_string() })
+    Ok(SubDecl {
+        enum_name: DEFAULT_EVENT_ENUM.to_string(),
+    })
 }
 
 pub(crate) const DEFAULT_EVENT_ENUM: &str = "RowEvent";
@@ -1371,10 +1354,7 @@ pub(crate) fn parse_schema_with_key(
                 if meta.path.is_ident("version") {
                     let lit: syn::LitInt = meta.value()?.parse()?;
                     v = Some(lit.base10_parse::<u8>().map_err(|_| {
-                        syn::Error::new_spanned(
-                            &lit,
-                            "ok_layout: version must be a u8 literal",
-                        )
+                        syn::Error::new_spanned(&lit, "ok_layout: version must be a u8 literal")
                     })?);
                 }
                 Ok(())
@@ -1400,7 +1380,10 @@ pub(crate) fn parse_schema_with_key(
             if !name_strs.contains(n) {
                 return Err(syn::Error::new(
                     idx.ident.span(),
-                    format!("ok_index[{}]: field `{n}` is not a document payload field", idx.ident),
+                    format!(
+                        "ok_index[{}]: field `{n}` is not a document payload field",
+                        idx.ident
+                    ),
                 ));
             }
         }
@@ -1427,7 +1410,10 @@ pub(crate) fn parse_schema_with_key(
                         ),
                     ));
                 }
-                if fslice[..vi].iter().any(|n| variable_width(&fs, &name_strs, n)) {
+                if fslice[..vi]
+                    .iter()
+                    .any(|n| variable_width(&fs, &name_strs, n))
+                {
                     return Err(syn::Error::new(
                         idx.ident.span(),
                         format!(
@@ -1443,7 +1429,11 @@ pub(crate) fn parse_schema_with_key(
     // #[ok_reduce(name { group(a, b) })]: slots CONTINUE the index
     // counter (append-only, never reused) — slot = last index slot + 1 + n.
     let mut agg_decls: Vec<ReduceDecl> = Vec::new();
-    for attr in input.attrs.iter().filter(|a| a.path().is_ident("ok_reduce")) {
+    for attr in input
+        .attrs
+        .iter()
+        .filter(|a| a.path().is_ident("ok_reduce"))
+    {
         agg_decls.push(parse_reduce_attr(attr)?);
     }
     // Group-field validation note (ADR-0024): no payload-only check here —
@@ -1454,7 +1444,10 @@ pub(crate) fn parse_schema_with_key(
     // #[ok_subscribe] (bare) + optional #[ok_event_enum(Alias)] — at most
     // one subscribe per document type (two declarations = one subscription send per
     // write, ambiguous shape; reject rather than multiply sends).
-    let mut sub_iter = input.attrs.iter().filter(|a| a.path().is_ident("ok_subscribe"));
+    let mut sub_iter = input
+        .attrs
+        .iter()
+        .filter(|a| a.path().is_ident("ok_subscribe"));
     let sub_attr = sub_iter.next();
     if let Some(dup) = sub_iter.next() {
         return Err(syn::Error::new_spanned(
@@ -1465,7 +1458,11 @@ pub(crate) fn parse_schema_with_key(
     let sub_decl = match sub_attr {
         Some(a) => {
             let mut decl = parse_subscribe_attr(a)?;
-            for attr in input.attrs.iter().filter(|a| a.path().is_ident("ok_event_enum")) {
+            for attr in input
+                .attrs
+                .iter()
+                .filter(|a| a.path().is_ident("ok_event_enum"))
+            {
                 decl.enum_name = parse_event_enum_attr(attr)?;
             }
             Some(decl)

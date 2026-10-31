@@ -3,15 +3,21 @@
 //! the accumulator entry), so a restored store is indistinguishable from one
 //! that was never exported — ids included.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unwrap_in_result,
+    clippy::panic_in_result_fn
+)]
 
 use std::collections::BTreeMap;
 
 use okm_core::bridge::tooling::parquet_io;
 use okm_core::obj_dynamic::DynamicValue;
 use okm_core::{
-    Document, DocumentEncode, EdgeHead, Graph, GraphEncode, KeyEncode, Batch, NodeRef,
-    ReduceCodec, TestStore, VirtualStorage,
+    Batch, Document, DocumentEncode, EdgeHead, Graph, GraphEncode, KeyEncode, NodeRef, ReduceCodec,
+    TestStore, VirtualStorage,
 };
 
 // ---- two node collections and one graph ----
@@ -144,7 +150,9 @@ fn an_edge_table_restores_into_a_fresh_graph() {
     let one = r.get_edge(1).unwrap().unwrap();
     assert_eq!((one.src.clone(), one.dst.clone()), (user(1), org(9)));
     assert_eq!(
-        r.predicate_vocab_name(one.predicate_vocab_id).unwrap().unwrap(),
+        r.predicate_vocab_name(one.predicate_vocab_id)
+            .unwrap()
+            .unwrap(),
         "employs"
     );
     let payload = r.edge(1).unwrap().unwrap();
@@ -233,7 +241,8 @@ fn a_watermark_restores_and_is_never_lowered() {
     let restored = okm_core::reduce::scan_reduces::<_, __OkmReduce_LogRow_0>(
         &dst,
         <LogRow as Document>::NS_PREFIX,
-    ).unwrap();
+    )
+    .unwrap();
     assert_eq!(restored.len(), 1);
     assert_eq!(restored[0].1, 5);
 

@@ -15,7 +15,7 @@
 //! the same declaration-order counter as indexes (append-only, never
 //! reused), allocated by the derive after the last index.
 
-use crate::engine::storage::{scan_suffix_kv, VirtualStorage};
+use crate::engine::storage::{VirtualStorage, scan_suffix_kv};
 use crate::model::index::Document;
 
 /// Wire codec for a user accumulator. Deliberately not `serde`-shaped:
@@ -112,9 +112,15 @@ pub trait Reduce: ReduceLogic {
     fn group_bytes(key: &<Self::Document as Document>::Key, document: &Self::Document) -> Vec<u8>;
 
     /// Full entry key `[ns 2B][slot 2B][group segment]`.
-    fn entry_key(ns_prefix: &[u8], key: &<Self::Document as Document>::Key, document: &Self::Document) -> Vec<u8> {
+    fn entry_key(
+        ns_prefix: &[u8],
+        key: &<Self::Document as Document>::Key,
+        document: &Self::Document,
+    ) -> Vec<u8> {
         let g = Self::group_bytes(key, document);
-        let mut buf = Vec::with_capacity(ns_prefix.len() + crate::model::index::slot_len(Self::SLOT) + g.len());
+        let mut buf = Vec::with_capacity(
+            ns_prefix.len() + crate::model::index::slot_len(Self::SLOT) + g.len(),
+        );
         buf.extend_from_slice(ns_prefix);
         crate::model::index::write_slot(&mut buf, Self::SLOT);
         buf.extend_from_slice(&g);

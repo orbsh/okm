@@ -3,8 +3,14 @@
 //! declared fields stay typed columns, dynamic fields ride the Variant
 //! column, and documents without dynamic entries read as null.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
-use okm_core::{DocumentEncode, KeyEncode, obj_dynamic::DynamicValue, TestStore};
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unwrap_in_result,
+    clippy::panic_in_result_fn
+)]
+use okm_core::{DocumentEncode, KeyEncode, TestStore, obj_dynamic::DynamicValue};
 use std::collections::BTreeMap;
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
@@ -36,23 +42,39 @@ fn variant_column_export() {
             ("flag".into(), DynamicValue::Bool(true)),
         ])),
     );
-    let k1 = UserKey { org_id: 1, user_id: 10 };
-    t.put(&k1, &User { level: 4, name: "alice".into() }).unwrap();
+    let k1 = UserKey {
+        org_id: 1,
+        user_id: 10,
+    };
+    t.put(
+        &k1,
+        &User {
+            level: 4,
+            name: "alice".into(),
+        },
+    )
+    .unwrap();
     t.merge(&k1, &dyn1).unwrap();
 
     // Document 2: declared fields only -> variant column null.
-    let k2 = UserKey { org_id: 1, user_id: 11 };
-    t.put(&k2, &User { level: 9, name: "bob".into() }).unwrap();
+    let k2 = UserKey {
+        org_id: 1,
+        user_id: 11,
+    };
+    t.put(
+        &k2,
+        &User {
+            level: 9,
+            name: "bob".into(),
+        },
+    )
+    .unwrap();
 
     let batch = t.to_record_batch_with_variant().unwrap();
 
     // Schema: typed columns + variant.
     let schema = batch.schema().clone();
-    let names: Vec<String> = schema
-        .fields()
-        .iter()
-        .map(|f| f.name().clone())
-        .collect();
+    let names: Vec<String> = schema.fields().iter().map(|f| f.name().clone()).collect();
     assert_eq!(
         names,
         vec![
@@ -65,7 +87,10 @@ fn variant_column_export() {
     );
     let vfield = schema.field(4);
     assert_eq!(
-        vfield.metadata().get("ARROW:extension:name").map(|s| s.as_str()),
+        vfield
+            .metadata()
+            .get("ARROW:extension:name")
+            .map(|s| s.as_str()),
         Some("parquet.variant"),
         "variant extension type must be marked"
     );

@@ -1,11 +1,16 @@
 //! fjall 真实引擎评估：同一条边在磁盘引擎上跑 link/forward/reverse/unlink。
 //! 运行：cargo test --features fjall
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
-
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unwrap_in_result,
+    clippy::panic_in_result_fn
+)]
 #![cfg(feature = "fjall")]
 
-use okm_core::{Junction, FjallStore};
+use okm_core::{FjallStore, Junction};
 mod common;
 use common::*;
 

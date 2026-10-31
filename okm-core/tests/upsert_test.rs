@@ -7,34 +7,47 @@
 //! subscribe_test — the generated enum's `super::` references must
 //! resolve in every binary that includes it).
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unwrap_in_result,
+    clippy::panic_in_result_fn
+)]
 
-use okm_core::{TestStore, Document, Collection};
+use okm_core::{Collection, Document, TestStore};
 
 #[path = "subscribe_common.rs"]
 mod subscribe_common;
-use subscribe_common::*;
-use subscribe_common::okm_subscribe;
 use __OkmIndex_Counter_by_bucket as Counter_ByBucket;
+use subscribe_common::okm_subscribe;
+use subscribe_common::*;
 
 #[test]
 fn upsert_with_full_paths() {
     let t: Collection<TestStore, CounterKey, Counter> = Collection::new(TestStore::slatedb_mem());
 
     // ---------- insert path: old = None ----------
-    let written = t.upsert_with(&CounterKey { id: 1 }, |old| {
-        assert!(old.is_none(), "missing key must arrive as None");
-        Counter { bucket: 7, hits: 10 }
-    }).unwrap();
+    let written = t
+        .upsert_with(&CounterKey { id: 1 }, |old| {
+            assert!(old.is_none(), "missing key must arrive as None");
+            Counter {
+                bucket: 7,
+                hits: 10,
+            }
+        })
+        .unwrap();
     assert_eq!(written.hits, 10);
     assert_eq!(t.get(&CounterKey { id: 1 }).unwrap().unwrap().hits, 10);
 
     // ---------- RMW path: old in hand ----------
-    let written = t.upsert_with(&CounterKey { id: 1 }, |old| {
-        let mut c = old.expect("existing key must arrive as Some");
-        c.hits += 5;
-        c
-    }).unwrap();
+    let written = t
+        .upsert_with(&CounterKey { id: 1 }, |old| {
+            let mut c = old.expect("existing key must arrive as Some");
+            c.hits += 5;
+            c
+        })
+        .unwrap();
     assert_eq!(written.hits, 15);
     assert_eq!(t.get(&CounterKey { id: 1 }).unwrap().unwrap().hits, 15);
 
@@ -49,16 +62,23 @@ fn upsert_with_full_paths() {
     // The reduce group for bucket 7 must total 15 (folds went through
     // __okm_apply_reduces inside put).
     let probe = Counter { bucket: 7, hits: 0 };
-    let acc = okm_core::reduce_get::<_, CounterTotals>(t.store(), <Counter as Document>::NS_PREFIX, &CounterKey { id: 1 }, &probe)
-        .expect("store")
-        .expect("group exists");
+    let acc = okm_core::reduce_get::<_, CounterTotals>(
+        t.store(),
+        <Counter as Document>::NS_PREFIX,
+        &CounterKey { id: 1 },
+        &probe,
+    )
+    .expect("store")
+    .expect("group exists");
     assert_eq!(acc, CountSum { count: 1, sum: 15 });
 
     // ---------- write path fired: subscribe emission ----------
     let seen: std::sync::Arc<std::sync::Mutex<Vec<u64>>> = Default::default();
     let sink = seen.clone();
     okm_subscribe::SINK_ROWEVENT.register(move |ev: okm_subscribe::RowEvent| {
-        let okm_subscribe::RowEvent::Counter(ev) = ev else { return false };
+        let okm_subscribe::RowEvent::Counter(ev) = ev else {
+            return false;
+        };
         sink.lock().unwrap().push(ev.document.hits);
         true
     });
@@ -66,6 +86,7 @@ fn upsert_with_full_paths() {
         let mut c = old.expect("rmw");
         c.hits += 1;
         c
-    }).unwrap();
+    })
+    .unwrap();
     assert_eq!(*seen.lock().unwrap(), vec![16]);
 }

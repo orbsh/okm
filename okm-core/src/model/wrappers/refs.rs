@@ -50,14 +50,24 @@ impl<D, K: KeyEncode> Refs<D, K> {
     /// Method named `new` — the type name already says "references".
     pub fn new(keys: Vec<K>) -> Self {
         let n = keys.len();
-        Refs { keys, values: (0..n).map(|_| None).collect() }
+        Refs {
+            keys,
+            values: (0..n).map(|_| None).collect(),
+        }
     }
 
     /// Own all children: write each value under its key on the parent's
     /// put. Panics if `keys.len() != values.len()` — construction bug.
     pub fn own_all(keys: Vec<K>, values: Vec<D>) -> Self {
-        assert_eq!(keys.len(), values.len(), "Refs::own_all: keys/values length mismatch");
-        Refs { keys, values: values.into_iter().map(Some).collect() }
+        assert_eq!(
+            keys.len(),
+            values.len(),
+            "Refs::own_all: keys/values length mismatch"
+        );
+        Refs {
+            keys,
+            values: values.into_iter().map(Some).collect(),
+        }
     }
 
     /// Mixed form: caller decides per item.

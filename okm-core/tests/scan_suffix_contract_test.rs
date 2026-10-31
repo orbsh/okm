@@ -6,7 +6,13 @@
 //! into a no-op: the probe/tail test read a suffix one prefix too long, so a
 //! spill was never dropped and exact matching could never fire.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unwrap_in_result,
+    clippy::panic_in_result_fn
+)]
 
 use okm_core::storage::VirtualStorage;
 use std::collections::BTreeMap;
@@ -60,7 +66,11 @@ fn default_scan_suffix_strips_the_prefix() {
     s.put([NS, b"ad\x31\x00"].concat(), b"1".to_vec()).unwrap();
     s.put([NS, b"ad1to"].concat(), b"2".to_vec()).unwrap();
     s.put([NS, b"a"].concat(), b"3".to_vec()).unwrap();
-    s.put([&[0x00, 0x2A, 0x10, 0x02][..], b"ad"].concat(), b"4".to_vec()).unwrap();
+    s.put(
+        [&[0x00, 0x2A, 0x10, 0x02][..], b"ad"].concat(),
+        b"4".to_vec(),
+    )
+    .unwrap();
 
     let got = s.scan_suffix(NS).unwrap();
     // Suffixes, never full keys: the length a probe/tail judgement reads is the

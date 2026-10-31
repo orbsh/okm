@@ -43,7 +43,10 @@ impl<D, K: KeyEncode> Ref<D, K> {
 
     /// Own a child document: write it under this key on the parent's put.
     pub fn own(key: K, value: D) -> Self {
-        Ref { key, value: Some(value) }
+        Ref {
+            key,
+            value: Some(value),
+        }
     }
 
     /// Wire bytes = the child key's encoding.

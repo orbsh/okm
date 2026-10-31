@@ -73,8 +73,8 @@ impl RemoteStore {
     ) -> crate::error::Result<OpResponse> {
         let mut value = vec![match (exclusive, end.is_some()) {
             (true, true) => 0x02,
-            (true, false) => 0x03, // unbounded + exclusive (ADR-0021
-            (false, true) => 0x01, // closure: the cursor resume of an
+            (true, false) => 0x03,  // unbounded + exclusive (ADR-0021
+            (false, true) => 0x01,  // closure: the cursor resume of an
             (false, false) => 0x00, // unbounded stream needs this corner
         }];
         if let Some(end) = end {
@@ -124,7 +124,8 @@ impl VirtualStorage for RemoteStore {
     /// committed it, a fault means it could not (`round_trip` turns that into
     /// `Err`). Fire-and-forget made a lost write look like a successful one.
     fn put(&self, key: Vec<u8>, value: Vec<u8>) -> crate::error::Result<()> {
-        self.round_trip(&OpFrame::one(OP_PUT, key, value)).map(|_ack| ())
+        self.round_trip(&OpFrame::one(OP_PUT, key, value))
+            .map(|_ack| ())
     }
 
     fn get(&self, key: &[u8]) -> crate::error::Result<Option<Vec<u8>>> {
@@ -148,11 +149,7 @@ impl VirtualStorage for RemoteStore {
     /// finite end exists, `[0x00]` for unbounded. No wire change: the
     /// frame already has a value field; prefix is just the special case
     /// with an empty value.
-    fn scan_range(
-        &self,
-        begin: &[u8],
-        end: Option<&[u8]>,
-    ) -> crate::error::Result<Vec<Vec<u8>>> {
+    fn scan_range(&self, begin: &[u8], end: Option<&[u8]>) -> crate::error::Result<Vec<Vec<u8>>> {
         let mut value = vec![0u8];
         if let Some(end) = end {
             value[0] = 1;
@@ -365,7 +362,11 @@ impl<S: SharedVirtualStorage + Send + 'static> NestStorage<S> {
     /// task-spawn the same loop.
     // `serve` twice is a caller bug (the pump owns its receiver exactly once);
     // aborting is the point.
-    #[allow(clippy::expect_used, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+    #[allow(
+        clippy::expect_used,
+        clippy::unwrap_in_result,
+        clippy::panic_in_result_fn
+    )]
     pub fn serve(self) -> Arc<Self> {
         // The receiver end moves into the pump thread (it owns its end
         // exclusively, the correct shape anyway). Pump and returned
@@ -382,7 +383,9 @@ impl<S: SharedVirtualStorage + Send + 'static> NestStorage<S> {
         let pump_core = Arc::clone(&self.core);
         std::thread::spawn(move || {
             for (reply_tx, bytes) in pump_rx {
-                let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| pump_core.apply(&bytes)));
+                let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    pump_core.apply(&bytes)
+                }));
                 let answer = match r {
                     Ok(Some(resp)) => Some(resp),
                     // Does not decode: no id, nothing stored, nothing to say.
@@ -433,7 +436,11 @@ impl<S: VirtualStorage> ExecCore<S> {
     /// shift every later answer by one.
     // A scan frame always carries its begin: the encoder writes it, so a
     // missing one is our own wire bug (ADR-0040's abort class).
-    #[allow(clippy::expect_used, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+    #[allow(
+        clippy::expect_used,
+        clippy::unwrap_in_result,
+        clippy::panic_in_result_fn
+    )]
     fn apply(&self, bytes: &[u8]) -> Option<OpResponse> {
         let frame = OpFrame::decode(bytes)?;
         let engine = self
@@ -480,9 +487,9 @@ impl<S: VirtualStorage> ExecCore<S> {
                         // begin-only range (unbounded end); EMPTY value =
                         // the legacy prefix scan. (A begin-only range and
                         // a prefix scan are different predicates.)
-                        Some(&0x00) if value.len() == 1 => {
-                            engine.scan_range(&hk, None).map(|ks| ks.into_iter().map(&strip).collect())
-                        }
+                        Some(&0x00) if value.len() == 1 => engine
+                            .scan_range(&hk, None)
+                            .map(|ks| ks.into_iter().map(&strip).collect()),
                         Some(&0x01) => {
                             let end = hosted_key(&self.prefix, &value[1..]);
                             engine
@@ -542,11 +549,7 @@ impl<S: VirtualStorage> ExecCore<S> {
                     // Exclusive begin: bump past the cursor with the same
                     // carry increment `prefix_end` uses (an all-0xFF begin
                     // cannot occur here — the cursor key just existed).
-                    let begin: Option<Vec<u8>> = if exclusive {
-                        prefix_end(&hk)
-                    } else {
-                        Some(hk)
-                    };
+                    let begin: Option<Vec<u8>> = if exclusive { prefix_end(&hk) } else { Some(hk) };
                     let want = match page {
                         0xFF => usize::MAX,
                         0 => 256,
@@ -556,10 +559,9 @@ impl<S: VirtualStorage> ExecCore<S> {
                     // the sender owns cursor bytes it can re-send verbatim.
                     let plen = self.prefix.as_ref().map_or(0, Vec::len);
                     let mut pairs: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
-                    for item in engine.scan_range_iter(
-                        begin.as_deref().expect("begin present"),
-                        end.as_deref(),
-                    ) {
+                    for item in engine
+                        .scan_range_iter(begin.as_deref().expect("begin present"), end.as_deref())
+                    {
                         match item {
                             Ok((k, v)) => pairs.push((k[plen..].to_vec(), v)),
                             // A page that cannot be read is a fault; the
@@ -634,7 +636,12 @@ mod tests {
             Ok(())
         }
         fn get(&self, key: &[u8]) -> crate::error::Result<Option<Vec<u8>>> {
-            Ok(self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(key).cloned())
+            Ok(self
+                .0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get(key)
+                .cloned())
         }
         fn del(&self, key: &[u8]) -> crate::error::Result<()> {
             self.0
@@ -658,7 +665,10 @@ mod tests {
             begin: &[u8],
             end: Option<&[u8]>,
         ) -> crate::error::Result<Vec<Vec<u8>>> {
-            let map = self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let map = self
+                .0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let iter = map.range(begin.to_vec()..);
             Ok(iter
                 .take_while(|(k, _)| match end {
@@ -746,9 +756,7 @@ mod tests {
         let resp = host
             .apply(&put.encode())
             .expect("a write frame answers even when it failed");
-        let fault = resp
-            .fault
-            .expect("the refusal IS the answer to the frame");
+        let fault = resp.fault.expect("the refusal IS the answer to the frame");
         assert!(
             fault.contains("refused"),
             "the fault carries the engine's reason: {fault}"

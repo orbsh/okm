@@ -39,7 +39,7 @@ impl TestStore {
     // shape ("create then push immediately") is exactly what the
     // gated build legitimately is
     #[allow(unused_mut, clippy::vec_init_then_push)]
-    pub fn matrix() -> Vec<( &'static str, Self )> {
+    pub fn matrix() -> Vec<(&'static str, Self)> {
         let mut out: Vec<(&'static str, Self)> = Vec::new();
         #[cfg(feature = "slatedb")]
         out.push(("slatedb-mem", Self::slatedb_mem()));
@@ -53,7 +53,11 @@ impl TestStore {
     #[cfg(feature = "slatedb")]
     // Test-double construction: a machine that cannot open an in-memory slatedb
     // has nothing to test against.
-    #[allow(clippy::expect_used, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+    #[allow(
+        clippy::expect_used,
+        clippy::unwrap_in_result,
+        clippy::panic_in_result_fn
+    )]
     pub fn slatedb_mem() -> Self {
         Self::Slatedb(std::sync::Arc::new(
             crate::engine::slatedb_backend::SlatedbSync::open_mem("okm-test")
@@ -64,23 +68,37 @@ impl TestStore {
     #[cfg(feature = "fjall")]
     // Test-double construction: a machine that cannot open a temp-dir engine
     // has nothing to test against.
-    #[allow(clippy::expect_used, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+    #[allow(
+        clippy::expect_used,
+        clippy::unwrap_in_result,
+        clippy::panic_in_result_fn
+    )]
     pub fn fjall_tmp() -> Self {
         let dir = tempfile::TempDir::new().expect("tempdir");
         let store = crate::engine::fjall_backend::FjallStore::open(dir.path(), "okm-test")
             .expect("fjall open");
-        Self::Fjall { store, _dir: std::sync::Arc::new(dir) }
+        Self::Fjall {
+            store,
+            _dir: std::sync::Arc::new(dir),
+        }
     }
 
     #[cfg(feature = "redb")]
     // Test-double construction: a machine that cannot open a temp-file engine
     // has nothing to test against.
-    #[allow(clippy::expect_used, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+    #[allow(
+        clippy::expect_used,
+        clippy::unwrap_in_result,
+        clippy::panic_in_result_fn
+    )]
     pub fn redb_tmp() -> Self {
         let dir = tempfile::TempDir::new().expect("tempdir");
         let store = crate::engine::redb_backend::RedbStore::open(&dir.path().join("okm.redb"))
             .expect("redb open");
-        Self::Redb { store, _dir: std::sync::Arc::new(dir) }
+        Self::Redb {
+            store,
+            _dir: std::sync::Arc::new(dir),
+        }
     }
 
     /// Both variants are Arc-kernel handles: clone shares the keyspace.
@@ -118,7 +136,11 @@ impl Default for TestStore {
     }
 }
 
-#[cfg(all(not(feature = "test-engines"), not(feature = "fjall"), feature = "redb"))]
+#[cfg(all(
+    not(feature = "test-engines"),
+    not(feature = "fjall"),
+    feature = "redb"
+))]
 impl Default for TestStore {
     /// Only redb in this build.
     fn default() -> Self {
@@ -189,11 +211,7 @@ impl VirtualStorage for TestStore {
             _ => unreachable!("TestStore: no engine features enabled"),
         }
     }
-    fn scan_range(
-        &self,
-        begin: &[u8],
-        end: Option<&[u8]>,
-    ) -> crate::error::Result<Vec<Vec<u8>>> {
+    fn scan_range(&self, begin: &[u8], end: Option<&[u8]>) -> crate::error::Result<Vec<Vec<u8>>> {
         match self {
             #[cfg(feature = "slatedb")]
             Self::Slatedb(s) => s.scan_range_sync(begin, end),
@@ -205,11 +223,7 @@ impl VirtualStorage for TestStore {
             _ => unreachable!("TestStore: no engine features enabled"),
         }
     }
-    fn scan_range_iter(
-        &self,
-        begin: &[u8],
-        end: Option<&[u8]>,
-    ) -> super::storage::ScanIter {
+    fn scan_range_iter(&self, begin: &[u8], end: Option<&[u8]>) -> super::storage::ScanIter {
         match self {
             #[cfg(feature = "slatedb")]
             Self::Slatedb(s) => s.scan_range_iter_sync(begin, end),

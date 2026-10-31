@@ -1,8 +1,14 @@
 // Tests keep the vocabulary (a panicking test is a failing test with a stack
 // trace); this file is its own crate, so `cfg(test)` does not reach it.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unwrap_in_result,
+    clippy::panic_in_result_fn
+)]
 
-use okm_core::{DocumentEncode, Ref, KeyEncode, TestStore};
+use okm_core::{DocumentEncode, KeyEncode, Ref, TestStore};
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
 pub struct OrgKey {
@@ -66,8 +72,15 @@ fn two_level_embed_roundtrip() {
         okm_core::Collection::new(orgs.store().clone());
 
     let org_key = OrgKey { org_id: 7 };
-    let dept_key = DeptKey { org_id: 7, dept_id: 3 };
-    let floor_key = FloorKey { org_id: 7, dept_id: 3, floor: 2 };
+    let dept_key = DeptKey {
+        org_id: 7,
+        dept_id: 3,
+    };
+    let floor_key = FloorKey {
+        org_id: 7,
+        dept_id: 3,
+        floor: 2,
+    };
     let floor = Floor { room_count: 12 };
 
     // Write the leaf first, then reference it up the chain.
@@ -98,7 +111,10 @@ fn two_level_embed_roundtrip() {
         ..dept.clone()
     };
     depts.put(&dept_key, &dept2).unwrap();
-    assert_eq!(floors.get(&floor_key).unwrap(), Some(Floor { room_count: 20 }));
+    assert_eq!(
+        floors.get(&floor_key).unwrap(),
+        Some(Floor { room_count: 20 })
+    );
     // And the org still dereferences to the updated dept.
     let got2 = orgs.get(&org_key).expect("store").expect("org2");
     let hq2 = got2.hq.value.expect("dept2");

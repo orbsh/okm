@@ -173,14 +173,18 @@ impl fmt::Debug for Uuid7 {
 impl FromStr for Uuid4 {
     type Err = String;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        from_text(s).map(Self).ok_or_else(|| format!("not a uuid: {s}"))
+        from_text(s)
+            .map(Self)
+            .ok_or_else(|| format!("not a uuid: {s}"))
     }
 }
 
 impl FromStr for Uuid7 {
     type Err = String;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        from_text(s).map(Self).ok_or_else(|| format!("not a uuid: {s}"))
+        from_text(s)
+            .map(Self)
+            .ok_or_else(|| format!("not a uuid: {s}"))
     }
 }
 
@@ -225,11 +229,7 @@ impl KeyEncode for Uuid4 {
         16
     }
     fn prefix_width(names: &[&str]) -> usize {
-        if names.is_empty() {
-            0
-        } else {
-            16
-        }
+        if names.is_empty() { 0 } else { 16 }
     }
 }
 
@@ -254,11 +254,7 @@ impl KeyEncode for Uuid7 {
         16
     }
     fn prefix_width(names: &[&str]) -> usize {
-        if names.is_empty() {
-            0
-        } else {
-            16
-        }
+        if names.is_empty() { 0 } else { 16 }
     }
 }
 

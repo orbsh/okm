@@ -17,9 +17,8 @@
 
 use crate::{CodecError, Value, ValueMap, decode_key};
 use arrow::array::{
-    FixedSizeBinaryArray,
-    ArrayRef, BinaryArray, Float64Array, Int64Array, StringArray, UInt8Array, UInt16Array,
-    UInt32Array, UInt64Array,
+    ArrayRef, BinaryArray, FixedSizeBinaryArray, Float64Array, Int64Array, StringArray, UInt8Array,
+    UInt16Array, UInt32Array, UInt64Array,
 };
 use arrow::datatypes::{Field as ArrowField, Schema};
 use arrow::record_batch::RecordBatch;

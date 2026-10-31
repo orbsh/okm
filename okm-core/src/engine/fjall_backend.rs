@@ -5,7 +5,7 @@
 //! key encoding itself, so different edge types sharing a keyspace do not
 //! conflict.
 
-use crate::engine::storage::{VirtualStorage, Batch};
+use crate::engine::storage::{Batch, VirtualStorage};
 use fjall::{Database, Keyspace, KeyspaceCreateOptions};
 
 /// Clone is a handle clone: Arc-inner in fjall, clones share the keyspace.
@@ -86,11 +86,7 @@ impl VirtualStorage for FjallStore {
         Ok(out)
     }
 
-    fn scan_range(
-        &self,
-        begin: &[u8],
-        end: Option<&[u8]>,
-    ) -> crate::error::Result<Vec<Vec<u8>>> {
+    fn scan_range(&self, begin: &[u8], end: Option<&[u8]>) -> crate::error::Result<Vec<Vec<u8>>> {
         let mut out = Vec::new();
         match end {
             Some(end) => {
@@ -118,11 +114,7 @@ impl VirtualStorage for FjallStore {
     /// fjall's `Iter` is an owned, 'static lazy iterator (snapshot
     /// nonce held inside) — native streaming, no buffering, both
     /// directions.
-    fn scan_range_iter(
-        &self,
-        begin: &[u8],
-        end: Option<&[u8]>,
-    ) -> super::storage::ScanIter {
+    fn scan_range_iter(&self, begin: &[u8], end: Option<&[u8]>) -> super::storage::ScanIter {
         let it = match end {
             Some(end) => self.ks.range(begin..end),
             None => self.ks.range(begin..),

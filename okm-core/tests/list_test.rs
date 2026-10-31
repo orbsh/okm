@@ -1,6 +1,12 @@
 // Tests keep the vocabulary (a panicking test is a failing test with a stack
 // trace); this file is its own crate, so `cfg(test)` does not reach it.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unwrap_in_result,
+    clippy::panic_in_result_fn
+)]
 
 use okm_core::{DocumentEncode, KeyEncode, Refs, TestStore};
 
@@ -43,17 +49,28 @@ fn list_roundtrip_and_stale_release() {
     let k3 = RoomKey { dept_id: 1, seq: 3 };
 
     // Own-write: three rooms in one put.
-    depts.put(&dept_key, &Dept {
-        name: "platform".into(),
-        rooms: Refs::own_all(
-            vec![k1.clone(), k2.clone(), k3.clone()],
-            vec![
-                Room { label: "alpha".into() },
-                Room { label: "beta".into() },
-                Room { label: "gamma".into() },
-            ],
-        ),
-    }).unwrap();
+    depts
+        .put(
+            &dept_key,
+            &Dept {
+                name: "platform".into(),
+                rooms: Refs::own_all(
+                    vec![k1.clone(), k2.clone(), k3.clone()],
+                    vec![
+                        Room {
+                            label: "alpha".into(),
+                        },
+                        Room {
+                            label: "beta".into(),
+                        },
+                        Room {
+                            label: "gamma".into(),
+                        },
+                    ],
+                ),
+            },
+        )
+        .unwrap();
     for k in [&k1, &k2, &k3] {
         assert!(rooms.get(k).unwrap().is_some(), "child written");
     }
@@ -63,24 +80,38 @@ fn list_roundtrip_and_stale_release() {
     assert_eq!(d.rooms.values[2].as_ref().unwrap().label, "gamma");
 
     // Shorten the list: k3 drops out -> stale release deletes it.
-    depts.put(&dept_key, &Dept {
-        name: "platform".into(),
-        rooms: Refs::own_all(
-            vec![k1.clone(), k2.clone()],
-            vec![
-                Room { label: "alpha".into() },
-                Room { label: "beta2".into() },
-            ],
-        ),
-    }).unwrap();
+    depts
+        .put(
+            &dept_key,
+            &Dept {
+                name: "platform".into(),
+                rooms: Refs::own_all(
+                    vec![k1.clone(), k2.clone()],
+                    vec![
+                        Room {
+                            label: "alpha".into(),
+                        },
+                        Room {
+                            label: "beta2".into(),
+                        },
+                    ],
+                ),
+            },
+        )
+        .unwrap();
     assert!(rooms.get(&k3).unwrap().is_none(), "stale child released");
     assert_eq!(rooms.get(&k2).unwrap().unwrap().label, "beta2");
 
     // Reference-only: list of keys, children untouched.
-    depts.put(&dept_key, &Dept {
-        name: "platform".into(),
-        rooms: Refs::new(vec![k1.clone(), k2.clone()]),
-    }).unwrap();
+    depts
+        .put(
+            &dept_key,
+            &Dept {
+                name: "platform".into(),
+                rooms: Refs::new(vec![k1.clone(), k2.clone()]),
+            },
+        )
+        .unwrap();
     assert_eq!(rooms.get(&k1).unwrap().unwrap().label, "alpha");
     assert!(rooms.get(&k2).unwrap().is_some());
 

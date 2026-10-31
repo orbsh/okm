@@ -241,7 +241,10 @@ impl Path {
     /// can only be decoded against the table it was written for — the
     /// vocabulary is per table, so a path is table-scoped by
     /// construction).
-    pub fn decode(bytes: &[u8], mut name_of: impl FnMut(u16) -> Option<String>) -> Result<Self, String> {
+    pub fn decode(
+        bytes: &[u8],
+        mut name_of: impl FnMut(u16) -> Option<String>,
+    ) -> Result<Self, String> {
         let mut components = Vec::new();
         let mut i = 0usize;
         while i < bytes.len() {
@@ -258,7 +261,8 @@ impl Path {
                     if bytes.len() - i < 4 {
                         return Err(truncated());
                     }
-                    let idx = u32::from_be_bytes([bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3]]);
+                    let idx =
+                        u32::from_be_bytes([bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3]]);
                     i += 4;
                     components.push(Component::Index(idx));
                 }
@@ -403,10 +407,7 @@ mod tests {
     #[test]
     fn resolve_nested_wildcard_and_pinned() {
         let d = doc(&[
-            (
-                "author",
-                obj(&[("name", Value::Str("bob".into()))]),
-            ),
+            ("author", obj(&[("name", Value::Str("bob".into()))])),
             (
                 "tags",
                 Value::Array(vec![Value::Str("x".into()), Value::Str("y".into())]),
@@ -430,7 +431,10 @@ mod tests {
 
         // Array without an Index component: wildcard fan-out.
         let hrefs = Path::parse("refs.href").unwrap().resolve(&d);
-        assert_eq!(hrefs, vec![&Value::Str("first".into()), &Value::Str("second".into())]);
+        assert_eq!(
+            hrefs,
+            vec![&Value::Str("first".into()), &Value::Str("second".into())]
+        );
 
         // Pinned element: exactly one.
         let pinned = Path::parse("refs[1].href").unwrap().resolve(&d);
@@ -463,7 +467,10 @@ mod tests {
         // of `a[0].b` because the index component is just appended.
         let indexed = Path::parse("a[0].b").unwrap().encode(vocab);
         assert_eq!(&indexed[..short.len()], &short[..]);
-        assert_eq!(indexed, vec![TAG_FIELD, 5, TAG_INDEX, 0, 0, 0, 0, TAG_FIELD, 9]);
+        assert_eq!(
+            indexed,
+            vec![TAG_FIELD, 5, TAG_INDEX, 0, 0, 0, 0, TAG_FIELD, 9]
+        );
 
         // Compact lane boundary: 0xFE stays one byte, 0xFF escapes.
         let lane = Path::parse("a").unwrap().encode(|_| 0xFE);

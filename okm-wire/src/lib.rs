@@ -41,7 +41,16 @@
 // (and the oracle for every failable path is "assert on the error VALUE"). This line
 // is per-crate because `[lints]` is per-package and covers every target, with no way
 // to scope a lint to lib/bins — the manifest cannot express `cfg(test)`.
-#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn))]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::unwrap_in_result,
+        clippy::panic_in_result_fn
+    )
+)]
 
 /// Op tags: 3 used, 1 reserved (high nibble of the op header byte).
 pub const OP_PUT: u8 = 0;
@@ -401,7 +410,6 @@ impl OpResponse {
         })
     }
 }
-
 
 #[cfg(test)]
 mod tests {

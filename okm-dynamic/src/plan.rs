@@ -15,10 +15,10 @@
 //! single-writer-per-group ownership rule; steady state costs zero
 //! extra round trips, only restart recovery reads accs once).
 
-use okm_core::storage::VirtualStorage;
 use crate::index::index_entries;
-use crate::{decode_payload, encode_payload, DynamicCollection, ValueMap};
+use crate::{DynamicCollection, ValueMap, decode_payload, encode_payload};
 use okm_core::schema::CollectionSchema;
+use okm_core::storage::VirtualStorage;
 
 /// One planned write: the engine-shaped op list (Batch's
 /// `(key, Option<value>)` — None = delete) plus the new accumulator
@@ -80,7 +80,10 @@ pub struct Stored<'a> {
 
 impl<'a> AccOverlay<'a> {
     fn new(base: &'a AccOf<'a>) -> Self {
-        Self { base, written: std::collections::HashMap::new() }
+        Self {
+            base,
+            written: std::collections::HashMap::new(),
+        }
     }
     fn get(&self, ek: &[u8]) -> Result<Option<Vec<u8>>, String> {
         match self.written.get(ek) {
@@ -107,21 +110,22 @@ impl<S: VirtualStorage> DynamicCollection<S> {
     ) -> Result<PlannedPut, String> {
         self.check_key(pkey)?;
         self.check_declared(document)?;
-        let mut plan = PlannedPut { ops: Vec::new(), new_accs: Vec::new() };
+        let mut plan = PlannedPut {
+            ops: Vec::new(),
+            new_accs: Vec::new(),
+        };
         let mut overlay = AccOverlay::new(acc_of);
         // Overwrite: sweep the old document's index entries + unfold it
         // from every group (the embedded put's overwrite arm, verbatim).
         if let Some(old_row) = old {
-            let old_entries =
-                index_entries(self.schema(), &self.ns, &self.indexes, pkey, old_row)?;
+            let old_entries = index_entries(self.schema(), &self.ns, &self.indexes, pkey, old_row)?;
             for (ek, _) in old_entries {
                 plan.ops.push((ek, None));
             }
             self.plan_reduces(pkey, old_row, false, &mut plan, &mut overlay)?;
         }
         // New entries + primary write.
-        let entries =
-            index_entries(self.schema(), &self.ns, &self.indexes, pkey, document)?;
+        let entries = index_entries(self.schema(), &self.ns, &self.indexes, pkey, document)?;
         let payload = encode_payload(self.schema(), document).map_err(|e| e.to_string())?;
         self.plan_reduces(pkey, document, true, &mut plan, &mut overlay)?;
         plan.ops.push((self.primary_key(pkey), Some(payload)));
@@ -141,10 +145,12 @@ impl<S: VirtualStorage> DynamicCollection<S> {
         acc_of: &AccOf,
     ) -> Result<PlannedDelete, String> {
         self.check_key(pkey)?;
-        let mut plan = PlannedDelete { ops: Vec::new(), new_accs: Vec::new() };
+        let mut plan = PlannedDelete {
+            ops: Vec::new(),
+            new_accs: Vec::new(),
+        };
         let mut overlay = AccOverlay::new(acc_of);
-        let entries =
-            index_entries(self.schema(), &self.ns, &self.indexes, pkey, old)?;
+        let entries = index_entries(self.schema(), &self.ns, &self.indexes, pkey, old)?;
         for (ek, _) in entries {
             plan.ops.push((ek, None));
         }
@@ -248,7 +254,8 @@ impl<S: VirtualStorage> DynamicCollection<S> {
         }
         if let Some(old) = old_dynamic {
             plan.ops.extend(self.path_entry_ops(pkey, old, false)?);
-            plan.ops.push((crate::plan_fields::fields_key(&self.ns, pkey), None));
+            plan.ops
+                .push((crate::plan_fields::fields_key(&self.ns, pkey), None));
         }
         Ok(plan)
     }

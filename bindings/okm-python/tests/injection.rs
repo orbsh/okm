@@ -25,7 +25,9 @@ struct MemEngine {
 
 impl MemEngine {
     fn new() -> Self {
-        Self { rows: Mutex::new(BTreeMap::new()) }
+        Self {
+            rows: Mutex::new(BTreeMap::new()),
+        }
     }
     fn len(&self) -> usize {
         self.rows.lock().unwrap().len()
@@ -93,7 +95,10 @@ fn injected_collection_writes_to_the_host_engine() {
     // collection wrote NOTHING to a private store, it wrote HERE.
     assert_eq!(engine.len(), 0, "fresh host engine holds no rows");
     coll.put_doc(&key_bytes(1), &doc(10)).unwrap();
-    assert!(engine.len() > 0, "the put landed in the HOST engine, not an orphan store");
+    assert!(
+        engine.len() > 0,
+        "the put landed in the HOST engine, not an orphan store"
+    );
 
     // Read-back through the injected engine.
     let back = coll.get_doc(&key_bytes(1)).unwrap().unwrap();
@@ -109,13 +114,19 @@ fn injected_collection_writes_to_the_host_engine() {
     // Overwrite sweeps the stale index entry (10 → 11): the old prefix
     // finds nothing, the new one finds the key.
     coll.put_doc(&key_bytes(1), &doc(11)).unwrap();
-    assert!(coll.scan_doc(4097, &10u64.to_be_bytes()).unwrap().is_empty());
+    assert!(coll
+        .scan_doc(4097, &10u64.to_be_bytes())
+        .unwrap()
+        .is_empty());
     assert_eq!(coll.scan_doc(4097, &11u64.to_be_bytes()).unwrap().len(), 1);
 
     // Delete removes primary + index.
     coll.delete_doc(&key_bytes(1)).unwrap();
     assert!(coll.get_doc(&key_bytes(1)).unwrap().is_none());
-    assert!(coll.scan_doc(4097, &11u64.to_be_bytes()).unwrap().is_empty());
+    assert!(coll
+        .scan_doc(4097, &11u64.to_be_bytes())
+        .unwrap()
+        .is_empty());
 }
 
 #[test]
@@ -129,7 +140,9 @@ fn injected_reduce_preset_accums_in_the_host_engine() {
     // The count group entry key: [ns][slot BE][group segment=empty].
     let mut ek = vec![0u8, 7];
     ek.extend_from_slice(&8193u16.to_be_bytes());
-    let acc = engine.get(&ek).expect("the preset reduce wrote its accumulator to the host engine");
+    let acc = engine
+        .get(&ek)
+        .expect("the preset reduce wrote its accumulator to the host engine");
     assert_eq!(u64::from_be_bytes(acc.as_slice().try_into().unwrap()), 2);
     // Unfold on delete brings it back to 1 (Count is reversible).
     coll.delete_doc(&key_bytes(1)).unwrap();

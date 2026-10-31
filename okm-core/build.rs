@@ -9,7 +9,13 @@
 // continue and nobody to tell: the crate does not build either way, and the panic
 // is the report (ADR-0040's one-shot class).
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unwrap_in_result,
+    clippy::panic_in_result_fn
+)]
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -92,7 +98,10 @@ fn scan_file(path: &Path, acc: &mut Vec<(String, String, String, String)>) {
                         )
                     });
                 if body.split("::").count() != 1 {
-                    panic!("ok_event_enum[{}]: expected a bare enum name, got `{body}`", s.ident);
+                    panic!(
+                        "ok_event_enum[{}]: expected a bare enum name, got `{body}`",
+                        s.ident
+                    );
                 }
                 enum_name = Some(body);
             }
@@ -189,9 +198,7 @@ fn main() {
             "\n/// Event enum `{en}` — one variant per subscribed row type.\n#[allow(dead_code)] // variants a test declares but never destructures\npub enum {en} {{\n"
         );
         for (var, row, key) in variants {
-            decl.push_str(&format!(
-                "    {var}(Event<super::{key}, super::{row}>),\n"
-            ));
+            decl.push_str(&format!("    {var}(Event<super::{key}, super::{row}>),\n"));
         }
         decl.push_str("}\n");
         code.push_str(&decl);

@@ -126,12 +126,7 @@ impl<T: WireTransport> WireClient<T> {
     /// the client's own methods (post is `&self` and cannot retry).
     pub fn fail(&self, reason: impl Into<String>) {
         let reason = reason.into();
-        let waiters: Vec<_> = self
-            .inner
-            .borrow_mut()
-            .waiters
-            .drain(..)
-            .collect();
+        let waiters: Vec<_> = self.inner.borrow_mut().waiters.drain(..).collect();
         for (slot, _) in waiters {
             slot.borrow_mut().resolve(Err(reason.clone()));
         }
@@ -217,15 +212,18 @@ impl<T: WireTransport> WireClient<T> {
     /// `Err` — "absent" and "connection died" stopped being the same
     /// answer — so this is for callers sending frames the trait has no
     /// verb for. Same FIFO discipline.
-    pub fn query(&self, frame: &OpFrame) -> impl Future<Output = Result<OpResponse, String>> + Unpin {
+    pub fn query(
+        &self,
+        frame: &OpFrame,
+    ) -> impl Future<Output = Result<OpResponse, String>> + Unpin {
         self.round_trip(frame)
     }
 
     fn page_request(begin: &[u8], end: Option<&[u8]>, exclusive: bool, page: u8) -> OpFrame {
         let mut value = vec![match (exclusive, end.is_some()) {
             (true, true) => 0x02,
-            (true, false) => 0x03, // unbounded + exclusive (ADR-0021
-            (false, true) => 0x01, // closure: cursor resume of an
+            (true, false) => 0x03,  // unbounded + exclusive (ADR-0021
+            (false, true) => 0x01,  // closure: cursor resume of an
             (false, false) => 0x00, // unbounded stream
         }];
         if let Some(end) = end {
@@ -329,11 +327,7 @@ impl<T: WireTransport> VirtualStorageAsync for WireClient<T> {
     /// N+1), drained until the tail byte says final. Early abandonment
     /// across the await boundary is the future wire-surface question;
     /// eager materialization is the documented today-shape.
-    async fn scan_range_iter(
-        &self,
-        begin: &[u8],
-        end: Option<&[u8]>,
-    ) -> ScanIter {
+    async fn scan_range_iter(&self, begin: &[u8], end: Option<&[u8]>) -> ScanIter {
         let mut st = PageState {
             begin: begin.to_vec(),
             end: end.map(|e| e.to_vec()),

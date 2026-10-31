@@ -59,9 +59,7 @@ fn records_come_back_in_time_order() {
     config.clock = Some(clock_step(BASE, 250));
     let mut log = Log::open(dir.path(), config).unwrap();
     for step in 0..3 {
-        let offset = log
-            .append(&body("info", &format!("row {step}")))
-            .unwrap();
+        let offset = log.append(&body("info", &format!("row {step}"))).unwrap();
         assert_eq!(offset, step);
     }
     log.seal().unwrap();
@@ -100,9 +98,8 @@ fn blocks_rotate_and_the_index_still_finds_the_offset() {
     config.block_bytes = 96; // a few records per block
     let mut log = Log::open(dir.path(), config).unwrap();
     for step in 0..40u64 {
-        log.append(&body("info", &format!("message number {step}")),
-        )
-        .unwrap();
+        log.append(&body("info", &format!("message number {step}")))
+            .unwrap();
     }
     log.seal().unwrap();
 
@@ -125,12 +122,10 @@ fn a_torn_tail_is_cut_and_the_log_keeps_appending() {
     {
         let mut log = Log::open(dir.path(), config()).unwrap();
         for step in 0..5u64 {
-            log.append(&body("info", &format!("row {step}")))
-                .unwrap();
+            log.append(&body("info", &format!("row {step}"))).unwrap();
         }
         // Durability boundary, then a crash: half a block of garbage lands at the end.
-        log.append_durable(&body("info", "row 5"))
-            .unwrap();
+        log.append_durable(&body("info", "row 5")).unwrap();
         let part = find_open_part(dir.path()).expect("an open part");
         let mut file = std::fs::OpenOptions::new()
             .append(true)
@@ -144,9 +139,7 @@ fn a_torn_tail_is_cut_and_the_log_keeps_appending() {
     let rows = log.read(0, 100).unwrap();
     assert_eq!(rows.len(), 6, "the garbage is not a record");
     // Offsets continue from the recovered tail, not from the last sealed part.
-    let next = log
-        .append_durable(&body("info", "row 6"))
-        .unwrap();
+    let next = log.append_durable(&body("info", "row 6")).unwrap();
     assert_eq!(next, 6);
     let rows = log.read(0, 100).unwrap();
     assert_eq!(rows.len(), 7);
@@ -199,8 +192,7 @@ fn moving_into_a_later_bucket_finishes_the_previous_part() {
     // 1970-01-01T00:00 then 02:00: the first bucket's part must be sealed, or retention
     // could never drop that bucket (it refuses to touch a bucket that still has a writer).
     log.append(&body("info", "first hour")).unwrap();
-    log.append(&body("info", "third hour"))
-        .unwrap();
+    log.append(&body("info", "third hour")).unwrap();
 
     let parts = log.parts().unwrap();
     assert_eq!(parts.len(), 2);
@@ -222,8 +214,7 @@ fn retention_drops_a_bucket_directory() {
     let mut log = Log::open(dir.path(), config).unwrap();
     // 1970-01-01T00:00 and 02:00, two buckets.
     log.append(&body("info", "first hour")).unwrap();
-    log.append(&body("info", "third hour"))
-        .unwrap();
+    log.append(&body("info", "third hour")).unwrap();
     log.seal().unwrap();
 
     let before = log.parts().unwrap();
@@ -245,8 +236,7 @@ fn a_time_range_reads_only_what_it_covers() {
     config.clock = Some(clock_step(BASE, 1_000));
     let mut log = Log::open(dir.path(), config).unwrap();
     for step in 0..10u64 {
-        log.append(&body("info", &format!("row {step}")))
-            .unwrap();
+        log.append(&body("info", &format!("row {step}"))).unwrap();
     }
     log.seal().unwrap();
 
@@ -265,8 +255,7 @@ fn a_time_range_reads_an_unsealed_part_correctly() {
     // Everything in one block, nothing sealed: the part's time span has to come from its
     // last block, not from its last index row (which is the block's FIRST record).
     for step in 0..6u64 {
-        log.append(&body("info", &format!("row {step}")))
-            .unwrap();
+        log.append(&body("info", &format!("row {step}"))).unwrap();
     }
     log.flush().unwrap();
 

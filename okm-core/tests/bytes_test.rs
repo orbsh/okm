@@ -3,9 +3,15 @@
 //! suite carries the diagnostic); the wire bytes are IDENTICAL to the
 //! old `Vec<u8>` encoding (cold TLV frame), so no storage migration.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unwrap_in_result,
+    clippy::panic_in_result_fn
+)]
 
-use okm_core::{DocumentEncode, Document, KeyEncode, TestStore, Collection, Bytes};
+use okm_core::{Bytes, Collection, Document, DocumentEncode, KeyEncode, TestStore};
 
 #[derive(KeyEncode, Clone, Debug, PartialEq)]
 pub struct BlobId {
@@ -33,10 +39,7 @@ fn bytes_wire_hex_lock() {
     // [version u8][hot_len u16 BE] + cold TLV frames [tag][len varint][bytes].
     // Fields: payload (tag 0, 2 bytes), tag (tag 1, 1 byte). No hot fields.
     let wire = doc.encode_payload();
-    assert_eq!(
-        wire,
-        vec![1, 0, 0, 0, 0x02, 0xDE, 0xAD, 1, 0x01, 0xAA]
-    );
+    assert_eq!(wire, vec![1, 0, 0, 0, 0x02, 0xDE, 0xAD, 1, 0x01, 0xAA]);
 
     let back = Blob::decode_payload(&wire);
     assert_eq!(back, doc);

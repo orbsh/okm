@@ -8,24 +8,24 @@
 //! document-group regime, not here.
 
 mod bytes;
-mod refs;
-mod ref_mod;
 pub mod obj_value;
 mod offset;
 mod optional;
 mod quant;
-pub mod varint;
+mod ref_mod;
+mod refs;
 pub mod uuid;
+pub mod varint;
 pub use uuid::{Uuid4, Uuid7};
-pub mod wire;
 pub mod vector;
+pub mod wire;
 
 pub use bytes::Bytes;
-pub use refs::Refs;
-pub use ref_mod::Ref;
 pub use obj_value::ObjValueType;
-pub use optional::{Option, OptionalEnc, WireWidth};
 pub use offset::{Offset, offset_decode, offset_encode};
+pub use optional::{Option, OptionalEnc, WireWidth};
 pub use quant::{Quant, dequantize, quantize, wire_to_be_bytes};
+pub use ref_mod::Ref;
+pub use refs::Refs;
 pub use varint::{VarInt, VarIntEnc};
 pub use vector::{Vector, VectorElem};

@@ -11,7 +11,13 @@
 // ids) is silently wrong. So the codec aborts instead of answering a half-true
 // value, and this module — plus what the derive emits for it — is the one place
 // the panic lints are allowed to fire.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unwrap_in_result,
+    clippy::panic_in_result_fn
+)]
 
 pub mod collection;
 pub mod document;
@@ -20,11 +26,11 @@ pub mod graph;
 pub mod index;
 pub mod junction;
 pub mod key;
-pub mod obj_vocab;
-pub mod obj_dynamic;
 pub mod meta;
-pub mod reduce;
+pub mod obj_dynamic;
+pub mod obj_vocab;
 pub mod presets;
+pub mod reduce;
 pub mod reverse;
 pub mod schema;
 pub mod vocab;

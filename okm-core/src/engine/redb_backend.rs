@@ -68,7 +68,9 @@ impl VirtualStorage for RedbStore {
         let txn = self.db.begin_write().map_err(eng)?;
         {
             let mut table = txn.open_table(TABLE).map_err(eng)?;
-            table.insert(key.as_slice(), value.as_slice()).map_err(eng)?;
+            table
+                .insert(key.as_slice(), value.as_slice())
+                .map_err(eng)?;
         }
         txn.commit().map_err(eng)?;
         Ok(())
@@ -111,11 +113,7 @@ impl VirtualStorage for RedbStore {
         Ok(out)
     }
 
-    fn scan_range(
-        &self,
-        begin: &[u8],
-        end: Option<&[u8]>,
-    ) -> crate::error::Result<Vec<Vec<u8>>> {
+    fn scan_range(&self, begin: &[u8], end: Option<&[u8]>) -> crate::error::Result<Vec<Vec<u8>>> {
         let txn = self.db.begin_read().map_err(eng)?;
         let Ok(table) = txn.open_table(TABLE) else {
             return Ok(Vec::new()); // missing table = empty keyspace
@@ -143,11 +141,7 @@ impl VirtualStorage for RedbStore {
     /// redb's `OwnedRange` is 'static (Arc'd transaction guard inside) —
     /// native streaming without holding the read txn borrow, both
     /// directions.
-    fn scan_range_iter(
-        &self,
-        begin: &[u8],
-        end: Option<&[u8]>,
-    ) -> super::storage::ScanIter {
+    fn scan_range_iter(&self, begin: &[u8], end: Option<&[u8]>) -> super::storage::ScanIter {
         // A failure to even OPEN the range rides the ITEM (ADR-0038): the
         // constructor cannot answer for it, and swallowing it is how "failed"
         // used to read as "empty".
@@ -175,22 +169,13 @@ impl VirtualStorage for RedbStore {
     /// own atomicity carries the mapping (the carrier stays
     /// engine-agnostic, Batch, same as fjall).
     fn commit_batch(&self, batch: Batch) -> crate::error::Result<()> {
-        let txn = self
-            .db
-            .begin_write()
-            .map_err(eng)?;
+        let txn = self.db.begin_write().map_err(eng)?;
         {
-            let mut table = txn
-                .open_table(TABLE)
-                .map_err(eng)?;
+            let mut table = txn.open_table(TABLE).map_err(eng)?;
             for (key, value) in batch.ops {
                 match value {
-                    Some(v) => table
-                        .insert(key.as_slice(), v.as_slice())
-                        .map_err(eng)?,
-                    None => table
-                        .remove(key.as_slice())
-                        .map_err(eng)?,
+                    Some(v) => table.insert(key.as_slice(), v.as_slice()).map_err(eng)?,
+                    None => table.remove(key.as_slice()).map_err(eng)?,
                 };
             }
         }

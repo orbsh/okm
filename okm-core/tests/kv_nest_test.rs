@@ -3,9 +3,15 @@
 //! the sender endpoint plugs into a `Collection` whose write path runs
 //! entirely over the wire.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unwrap_in_result,
+    clippy::panic_in_result_fn
+)]
 
-use okm_core::{KeyEncode, TestStore, RemoteStore, DocumentEncode, Collection, VirtualStorage};
+use okm_core::{Collection, DocumentEncode, KeyEncode, RemoteStore, TestStore, VirtualStorage};
 
 // Receiver declaration: no data methods, one execution surface.
 #[derive(okm_core::NestStorage)]
@@ -47,7 +53,10 @@ fn nest_derive_end_to_end() {
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
 
-    let document = t.get(&ItemKey { id: 1 }).unwrap().expect("document round-tripped");
+    let document = t
+        .get(&ItemKey { id: 1 })
+        .unwrap()
+        .expect("document round-tripped");
     assert_eq!(document.kind, 7);
 
     let hits = t.scan::<ByKind>(&7u32.to_be_bytes()).unwrap();

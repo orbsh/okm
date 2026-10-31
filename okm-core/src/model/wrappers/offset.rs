@@ -23,9 +23,7 @@ pub fn offset_encode(value: i64, base: i64) -> Vec<u8> {
     let off = value
         .checked_sub(base)
         .filter(|d| (0..=u32::MAX as i64).contains(d))
-        .unwrap_or_else(|| {
-            panic!("Offset: value {value} − base {base} outside u32 range")
-        });
+        .unwrap_or_else(|| panic!("Offset: value {value} − base {base} outside u32 range"));
     (off as u32).to_be_bytes().to_vec()
 }
 

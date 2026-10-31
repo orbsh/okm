@@ -1,14 +1,26 @@
 // Tests keep the vocabulary (a panicking test is a failing test with a stack
 // trace); this file is its own crate, so `cfg(test)` does not reach it.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unwrap_in_result,
+    clippy::panic_in_result_fn
+)]
 
-use okm_core::{KeyEncode, DocumentEncode, Document, Ref, TestStore};
+use okm_core::{Document, DocumentEncode, KeyEncode, Ref, TestStore};
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
-pub struct OwnerKey { pub org_id: u32, pub user_id: u64 }
+pub struct OwnerKey {
+    pub org_id: u32,
+    pub user_id: u64,
+}
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
-pub struct AddressKey { pub owner_id: u64, pub kind: u8 }
+pub struct AddressKey {
+    pub owner_id: u64,
+    pub kind: u8,
+}
 
 #[derive(DocumentEncode, Clone, PartialEq, Debug)]
 #[ok_ref(AddressKey)]
@@ -31,21 +43,46 @@ fn embed_roundtrip() {
     let users = <User as Document>::collection(TestStore::slatedb_mem());
     let addrs: okm_core::Collection<TestStore, AddressKey, Address> =
         okm_core::Collection::new(users.store().clone());
-    let akey = AddressKey { owner_id: 2, kind: 1 };
-    let ukey = OwnerKey { org_id: 1, user_id: 2 };
-    let addr = Address { city: "delhi".into(), zip: 110001 };
-    users.put(&ukey, &User {
-        level: 4,
-        address: Ref::own(akey.clone(), addr.clone()),
-    }).unwrap();
+    let akey = AddressKey {
+        owner_id: 2,
+        kind: 1,
+    };
+    let ukey = OwnerKey {
+        org_id: 1,
+        user_id: 2,
+    };
+    let addr = Address {
+        city: "delhi".into(),
+        zip: 110001,
+    };
+    users
+        .put(
+            &ukey,
+            &User {
+                level: 4,
+                address: Ref::own(akey.clone(), addr.clone()),
+            },
+        )
+        .unwrap();
     // child written at its own key
     assert_eq!(addrs.get(&akey).unwrap(), Some(addr.clone()));
     // deref on read
     let u = users.get(&ukey).expect("store").expect("user");
     assert_eq!(u.address.value, Some(addr.clone()));
     // reference-only write: new user pointing at the same address
-    let ukey2 = OwnerKey { org_id: 1, user_id: 3 };
-    users.put(&ukey2, &User { level: 9, address: Ref::ref_key(akey.clone()) }).unwrap();
+    let ukey2 = OwnerKey {
+        org_id: 1,
+        user_id: 3,
+    };
+    users
+        .put(
+            &ukey2,
+            &User {
+                level: 9,
+                address: Ref::ref_key(akey.clone()),
+            },
+        )
+        .unwrap();
     assert_eq!(addrs.get(&akey).unwrap(), Some(addr.clone()));
     let u2 = users.get(&ukey2).expect("store").expect("user2");
     assert_eq!(u2.address.value, Some(addr.clone()));

@@ -11,7 +11,16 @@
 // (and the oracle for every failable path is "assert on the error VALUE"). This line
 // is per-crate because `[lints]` is per-package and covers every target, with no way
 // to scope a lint to lib/bins — the manifest cannot express `cfg(test)`.
-#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn))]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::unwrap_in_result,
+        clippy::panic_in_result_fn
+    )
+)]
 
 /// One label-propagation iteration: every node adopts the most common
 /// label among its neighbors (ties → keep current). `labels` maps node
@@ -63,8 +72,10 @@ where
     N: Clone + Eq + std::hash::Hash,
 {
     let n = nodes.len() as f64;
-    let mut rank: std::collections::HashMap<N, f64> =
-        nodes.iter().map(|n| (n.clone(), 1.0 / nodes.len() as f64)).collect();
+    let mut rank: std::collections::HashMap<N, f64> = nodes
+        .iter()
+        .map(|n| (n.clone(), 1.0 / nodes.len() as f64))
+        .collect();
     for _ in 0..iterations {
         let mut mass: std::collections::HashMap<N, f64> = Default::default();
         for node in nodes {
@@ -84,8 +95,7 @@ where
         rank = nodes
             .iter()
             .map(|node| {
-                let r = (1.0 - damping) / n
-                    + damping * mass.get(node).copied().unwrap_or(0.0);
+                let r = (1.0 - damping) / n + damping * mass.get(node).copied().unwrap_or(0.0);
                 (node.clone(), r)
             })
             .collect();
@@ -112,8 +122,7 @@ mod tests {
     #[test]
     fn label_propagation_groups_the_triangle() {
         let nodes = vec![1u32, 2, 3, 4];
-        let mut labels: HashMap<u32, u32> =
-            nodes.iter().map(|n| (*n, *n)).collect();
+        let mut labels: HashMap<u32, u32> = nodes.iter().map(|n| (*n, *n)).collect();
         // Three steps: triangle collapses, then 4's adopted label from
         // the transient step drains back to the community label.
         for _ in 0..3 {
@@ -130,8 +139,7 @@ mod tests {
         let nodes = vec![1u32, 2, 3, 4];
         let rank = pagerank(&nodes, edges, 20, 0.85);
         // Node 1 receives from 2, 3, and 4 — highest rank.
-        let mut vals: Vec<(u32, f64)> =
-            rank.into_iter().collect();
+        let mut vals: Vec<(u32, f64)> = rank.into_iter().collect();
         vals.sort_by(|a, b| b.1.total_cmp(&a.1));
         assert_eq!(vals[0].0, 1);
         // Total mass conserved (with dangling spread folded in).

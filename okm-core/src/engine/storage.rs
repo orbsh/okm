@@ -4,8 +4,6 @@
 //! slatedb / redb / localStorage / wire client) implements one of them.
 //! Tests run against real engines via [`crate::engine::test_engine::TestStore`].
 
-
-
 /// Minimal KV engine interface: one ordered-read primitive (`scan_range`)
 /// plus point reads and batches. The `fjall` / `slatedb` features each
 /// provide an implementation; tests run the real engines through
@@ -83,11 +81,7 @@ pub trait VirtualStorage {
     /// consumer collects. `scan_range`'s default derives from here.
     /// Remote engines degrade to a buffered round trip (the wire frame
     /// already batches the answer).
-    fn scan_range_iter(
-        &self,
-        begin: &[u8],
-        end: Option<&[u8]>,
-    ) -> ScanIter {
+    fn scan_range_iter(&self, begin: &[u8], end: Option<&[u8]>) -> ScanIter {
         // Sound-but-buffered default: engines with owned native
         // iterators (fjall / redb / slatedb) override this method; the
         // default materializes the whole range first (a borrow cannot
@@ -331,11 +325,7 @@ impl<S: VirtualStorage> VirtualStorage for BatchStore<'_, S> {
         Ok(())
     }
 
-    fn scan_range(
-        &self,
-        _begin: &[u8],
-        _end: Option<&[u8]>,
-    ) -> crate::error::Result<Vec<Vec<u8>>> {
+    fn scan_range(&self, _begin: &[u8], _end: Option<&[u8]>) -> crate::error::Result<Vec<Vec<u8>>> {
         // Funnels every scan shape here: `scan_suffix` and
         // `scan_range_iter` both default through this method.
         Err(crate::error::Error::ScanThroughBatch)
@@ -373,11 +363,7 @@ pub trait VirtualStorageAsync {
     /// `block_on`, and the async call site lives INSIDE a runtime —
     /// re-entrant `block_on` panics (module header). ADR-0020 already
     /// ruled the async surface small enough that buffering is harmless.
-    async fn scan_range_iter(
-        &self,
-        begin: &[u8],
-        end: Option<&[u8]>,
-    ) -> ScanIter {
+    async fn scan_range_iter(&self, begin: &[u8], end: Option<&[u8]>) -> ScanIter {
         let mut pairs: Vec<crate::error::Result<(Vec<u8>, Vec<u8>)>> = Vec::new();
         match self.scan_range(begin, end).await {
             Ok(keys) => {
@@ -426,5 +412,3 @@ pub async fn scan_suffix_kv_async<S: VirtualStorageAsync + ?Sized>(
     }
     Ok(out)
 }
-
-
