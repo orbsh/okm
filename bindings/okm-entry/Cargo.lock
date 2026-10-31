@@ -1447,11 +1447,13 @@ dependencies = [
 name = "okm-core"
 version = "0.1.0"
 dependencies = [
+ "getrandom 0.3.4",
  "okm-derive",
  "okm-wire",
  "proc-macro2",
  "quote",
  "serde",
+ "serde_json",
  "slatedb",
  "syn 2.0.119",
  "thiserror 2.0.21",
