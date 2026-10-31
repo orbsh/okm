@@ -2332,12 +2332,19 @@ the next decision can find it.
       `precision`, `bucket_seconds` and `partition_tag` decide where a record lands, stay
       identity, and stay refused by name (`the_pinned_trio_is_refused_by_name`). Written up in
       ADR-0046, both languages.
-- [ ] Owed: **an idle log's part is never sealed.** Sealing happens on a bucket crossing,
-      on `part_bytes`, or on an explicit `seal()`. A log that stops writing keeps its last
-      part `.open` forever — no footer, no whole-part digest — and `retain_before` refuses
-      to drop that bucket because retention never touches a bucket with a live writer. The
-      fix is a seal policy (`seal_after_seconds`, driven by the next append or by a
-      caller's tick) and it must not be a background thread (ADR-0046 §3 has no timer).
+- [x] Paid 2026-10-31: **an idle log's part is never sealed.** Sealing happened on a bucket
+      crossing, on `part_bytes`, or on an explicit `seal()`, and ADR-0046 §3 rules out a timer
+      — so a log that stopped writing kept its last part `.open` forever: no footer, no digest,
+      and `retain_before` refusing to drop that bucket because retention never touches a bucket
+      with a live writer. Two lazy triggers, both on calls a caller already makes: `retain_before`
+      now seals the parts it is about to drop (the call asking for the bucket's removal is the
+      tick), and `Log::open` seals any part it finds in a bucket the clock has left — no record
+      can land there, and the rule is just the bucket crossing it would have had. No new config,
+      no thread. Locked by `okm-series/tests/idle_seal_test.rs`: retention drops the idle bucket;
+      a reopen an hour later finds a sealed part (and can then retain it); a reopen 400 ms later
+      in the SAME bucket does not seal, and the next append reuses that part. What is still
+      owed: a log that stays open and idle forever still keeps its part open until some call
+      arrives — the honest limit of "no timer", and the reason `seal()` exists.
 - [ ] Owed: **reading one stream.** `read(from)` applies `from` to every partition. A
       caller that wants one partition filters `parts()` by hand and reads the files itself.
 - [ ] Owed: **`Error::TimeBackwards` is unreachable from the API** — it survives as the
