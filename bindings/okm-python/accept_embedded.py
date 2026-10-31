@@ -240,6 +240,13 @@ def main() -> int:
     assert before["state"] == "stale", before
     assert before["stored"] is not None
 
+    # A closure cannot be hashed, so a swapped derive is invisible to the
+    # fingerprint unless the caller says it changed: the version rides the number.
+    t.add_func_index(0x1007, lambda d: [b"v2"], version=2)
+    after = t.faces_status()
+    assert after["state"] == "stale", after
+    assert after["current"] != before["current"], "the version rode the fingerprint"
+
     # The rebuild is the repair: sweep every declared face, re-derive from the
     # documents, stamp last. After it the table agrees with its own declaration.
     report = t.rebuild_faces()

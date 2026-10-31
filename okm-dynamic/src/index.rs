@@ -74,6 +74,20 @@ pub struct AccessMethod {
     pub includes: Vec<String>,
     /// Entry production rule (plain / partial / func, ADR-0022).
     pub kind: AccessMethodKind,
+    /// The declaration's own version — bump it when what this face produces changes
+    /// in a way the structure cannot show.
+    ///
+    /// The fingerprint covers slot, fields, includes, kind and (for a path) the
+    /// components and value type. It CANNOT cover a `Func` / `Partial` callable: a
+    /// boxed closure has no hashable identity, so swapping the derive at an
+    /// unchanged slot is invisible and the store keeps answering `Match` while its
+    /// entries are the old function's. This number is how the caller says "I
+    /// changed it": it rides the fingerprint, so a bump turns the table `Stale` and
+    /// the rebuild re-derives every entry.
+    ///
+    /// `0` means "no version claim" and is what every constructor starts at — the
+    /// field is opt-in because the alternative is a lock nobody remembers to turn.
+    pub version: u32,
 }
 
 impl std::fmt::Debug for AccessMethod {
@@ -107,6 +121,16 @@ impl AccessMethod {
     /// slot produce the same number; declaring one is a compile-time-free act here,
     /// and no fingerprint can hash a function body.
     pub fn face_spec(&self) -> (&'static str, String) {
+        let (name, mut text) = self.face_spec_kind();
+        if self.version != 0 {
+            text.push_str(&format!(" |v{}", self.version));
+        }
+        (name, text)
+    }
+
+    /// The kind half of [`AccessMethod::face_spec`] — the version is appended by the
+    /// caller so every kind reports it the same way.
+    fn face_spec_kind(&self) -> (&'static str, String) {
         match &self.kind {
             AccessMethodKind::Plain => ("plain", String::new()),
             AccessMethodKind::Partial(_) => ("partial", String::new()),
@@ -146,6 +170,7 @@ impl AccessMethod {
             fields,
             includes,
             kind: AccessMethodKind::Plain,
+            version: 0,
         }
     }
 
@@ -182,6 +207,7 @@ impl AccessMethod {
             fields: Vec::new(),
             includes: Vec::new(),
             kind: AccessMethodKind::Path { path, value_ty },
+            version: 0,
         })
     }
 

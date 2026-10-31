@@ -622,8 +622,8 @@ key bare in the tail) recorded in ADR-0005.
       mismatch = no entry, entry layout lock, overwrite sweep, delete
       sweep) and path.rs unit tests (parse forms, resolution, no-count
       prefix property, compact-lane boundary, encode/decode roundtrip).
-- [ ] Deferred (2026-10-31, owner): **path indexes over data that already exists, and the two
-      things that keep them a Rust-side habit.** Three parts, each small, none of them a design
+- [x] Paid 2026-10-31: **path indexes over data that already exists, and the two
+      things that kept them a Rust-side habit.** Three parts, each small, none of them a design
       question: (a) backfill for a path declared over rows that were written before the
       declaration — ADR-0020's range scan plus one batch is the shape, and it is the same sweep +
       derive pair `Collection::rebuild_faces` now runs for declared slots; (b) a durable path→slot
@@ -639,8 +639,9 @@ key bare in the tail) recorded in ADR-0005.
       `path_registry()` reads it back for a process that never saw the declaration. The binding is
       `add_path_index(slot, path, value_ty="str")` in `okm-python`, with the half it needed to be
       useful: `merge` routes an undeclared name into the dynamic segment, typed by the Python value.
-      The one gap that remains is a change the structure cannot see: a swapped `Func` / `Partial`
-      callable is a closure, and no fingerprint can hash a function body.
+      The one gap that remains is a change the structure cannot see — a swapped `Func` / `Partial`
+      callable — and `AccessMethod.version` is the lever: the caller's claim rides the fingerprint, so
+      a bump turns the table `Stale` and the rebuild re-derives every entry.
 - [x] Multi-tenancy: receiver-side prefix only — a remote OKM instance is
       one application = one domain model = one ns; to the receiver it is
       just another prefix. No app_id layer inside OKM, no multi-level ns
