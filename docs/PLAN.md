@@ -2356,13 +2356,19 @@ the next decision can find it.
       at a time, both streams' offsets starting at 0, an unknown value answering nothing, and
       the union still returning six — and by the same walk through the wheel
       (`accept_embedded.py`) and the binding's own host test.
-- [ ] Owed: **`bindings/okm-python/tests/injection.rs` does not compile.** It sits behind
-      `required-features = ["host-tests"]`, which no CI job enabled, so nobody has run it:
-      `cargo test --no-default-features --features host-tests` in `bindings/okm-python` stops
-      with 15 errors (E0053 method signatures, E0277 `TryInto`, E0599 missing methods) —
-      pyo3 or crate API drift since it was written. The series twin compiles and runs (5
-      tests) and has a CI job; this one gets a job when it builds. Until then, the only
-      Python-facing coverage of `okm-python` is `accept_embedded.py` against the wheel.
+- [x] Fixed 2026-10-31: **`bindings/okm-python/tests/injection.rs` did not compile.** It sits
+      behind `required-features = ["host-tests"]`, which no CI job enabled, so nobody had run
+      it: 15 errors, all drift in a file that could not be compiled by anyone. Two causes —
+      the host `Engine` trait had grown `Result<_, String>` returns and the test's `MemEngine`
+      still returned bare values, and the collection verbs had been renamed (the binding's
+      `put_doc` / `get_doc` / `delete_doc` are now `merge_doc` / `fetch_doc` / `purge_doc`,
+      matching the dynamic face). Both fixed, and the file now runs: 3 tests, green. The CI
+      `binding-host-tests` job is a matrix over BOTH python bindings with
+      `cargo test --no-default-features --features host-tests` — both flags, because
+      `--features host-tests` alone leaves `extension-module` on and the link dies on
+      `PyDict_New`; on a nix host it also needs `RUSTFLAGS=-L native=<python3-env>/lib`.
+      What this taught: a `required-features` gate with no job is the same as no test at all,
+      and it stays green precisely because nothing tries to build it.
 - [ ] Owed: **`Error::TimeBackwards` is unreachable from the API** — it survives as the
       writer's internal assertion (`part.rs`), and the log clamps instead. Either delete
       the public variant or document it as an internal invariant that no caller can hit.

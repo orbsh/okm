@@ -1,7 +1,10 @@
-// Gate: `cargo test --features host-tests` (the default wheel-posture
-// test run skips this file — extension-module forbids linking
-// libpython; reading a PyErr or calling the collection face needs the
-// interpreter linked, the embedding case).
+// Gate: `cargo test --no-default-features --features host-tests` (the
+// default wheel-posture test run skips this file — extension-module
+// forbids linking libpython; reading a PyErr or calling the collection
+// face needs the interpreter linked, the embedding case). Both flags are
+// required: `--features host-tests` alone keeps extension-module on and
+// the link fails. On a nix host the interpreter also has to be on the
+// linker's path: `RUSTFLAGS=-L native=<python3-env>/lib`.
 
 //! The host-injected face (ADR-0037 §1, Phase 4.16a) end to end: a
 //! Collection built over an ENGINE THE HOST OWNS must (a) drive its
@@ -35,23 +38,28 @@ impl MemEngine {
 }
 
 impl Engine for MemEngine {
-    fn put(&self, key: Vec<u8>, value: Vec<u8>) {
+    // The face answers `Result<_, String>`: an engine that can fail says so, and the
+    // binding's enum maps the string onto its own error. An in-memory map cannot fail, but
+    // a fake that cannot fail is still obliged to speak the trait's language.
+    fn put(&self, key: Vec<u8>, value: Vec<u8>) -> Result<(), String> {
         self.rows.lock().unwrap().insert(key, value);
+        Ok(())
     }
-    fn get(&self, key: &[u8]) -> Option<Vec<u8>> {
-        self.rows.lock().unwrap().get(key).cloned()
+    fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, String> {
+        Ok(self.rows.lock().unwrap().get(key).cloned())
     }
-    fn del(&self, key: &[u8]) {
+    fn del(&self, key: &[u8]) -> Result<(), String> {
         self.rows.lock().unwrap().remove(key);
+        Ok(())
     }
-    fn scan_range(&self, begin: &[u8], end: Option<&[u8]>) -> Vec<Vec<u8>> {
+    fn scan_range(&self, begin: &[u8], end: Option<&[u8]>) -> Result<Vec<Vec<u8>>, String> {
         let rows = self.rows.lock().unwrap();
         let start = begin.to_vec();
         let iter: Box<dyn Iterator<Item = (&Vec<u8>, &Vec<u8>)>> = match end {
             Some(e) => Box::new(rows.range(start..e.to_vec())),
             None => Box::new(rows.range(start..)),
         };
-        iter.map(|(k, _)| k.clone()).collect()
+        Ok(iter.map(|(k, _)| k.clone()).collect())
     }
 }
 
@@ -94,16 +102,16 @@ fn injected_collection_writes_to_the_host_engine() {
     // The host owns the engine — before any write it is empty; the
     // collection wrote NOTHING to a private store, it wrote HERE.
     assert_eq!(engine.len(), 0, "fresh host engine holds no rows");
-    coll.put_doc(&key_bytes(1), &doc(10)).unwrap();
+    coll.merge_doc(&key_bytes(1), &doc(10)).unwrap();
     assert!(
         engine.len() > 0,
         "the put landed in the HOST engine, not an orphan store"
     );
 
     // Read-back through the injected engine.
-    let back = coll.get_doc(&key_bytes(1)).unwrap().unwrap();
+    let back = coll.fetch_doc(&key_bytes(1)).unwrap().unwrap();
     assert_eq!(back.get("count"), Some(&Value::U64(10)));
-    assert!(coll.get_doc(&key_bytes(999)).unwrap().is_none());
+    assert!(coll.fetch_doc(&key_bytes(999)).unwrap().is_none());
 
     // Declared index routes through the same engine (plan wrote the
     // index entry, scan reads it): by_count prefix = 10u64 BE.
@@ -113,7 +121,7 @@ fn injected_collection_writes_to_the_host_engine() {
 
     // Overwrite sweeps the stale index entry (10 → 11): the old prefix
     // finds nothing, the new one finds the key.
-    coll.put_doc(&key_bytes(1), &doc(11)).unwrap();
+    coll.merge_doc(&key_bytes(1), &doc(11)).unwrap();
     assert!(coll
         .scan_doc(4097, &10u64.to_be_bytes())
         .unwrap()
@@ -121,8 +129,8 @@ fn injected_collection_writes_to_the_host_engine() {
     assert_eq!(coll.scan_doc(4097, &11u64.to_be_bytes()).unwrap().len(), 1);
 
     // Delete removes primary + index.
-    coll.delete_doc(&key_bytes(1)).unwrap();
-    assert!(coll.get_doc(&key_bytes(1)).unwrap().is_none());
+    coll.purge_doc(&key_bytes(1)).unwrap();
+    assert!(coll.fetch_doc(&key_bytes(1)).unwrap().is_none());
     assert!(coll
         .scan_doc(4097, &11u64.to_be_bytes())
         .unwrap()
@@ -135,18 +143,19 @@ fn injected_reduce_preset_accums_in_the_host_engine() {
     let coll = Collection::with_store(engine.clone(), &counters_entry(), 7).unwrap();
     // Two puts fold the count preset once each — the accumulator is an
     // engine row (group bytes = u64 BE count == 2).
-    coll.put_doc(&key_bytes(1), &doc(5)).unwrap();
-    coll.put_doc(&key_bytes(2), &doc(7)).unwrap();
+    coll.merge_doc(&key_bytes(1), &doc(5)).unwrap();
+    coll.merge_doc(&key_bytes(2), &doc(7)).unwrap();
     // The count group entry key: [ns][slot BE][group segment=empty].
     let mut ek = vec![0u8, 7];
     ek.extend_from_slice(&8193u16.to_be_bytes());
     let acc = engine
         .get(&ek)
+        .unwrap()
         .expect("the preset reduce wrote its accumulator to the host engine");
     assert_eq!(u64::from_be_bytes(acc.as_slice().try_into().unwrap()), 2);
     // Unfold on delete brings it back to 1 (Count is reversible).
-    coll.delete_doc(&key_bytes(1)).unwrap();
-    let acc = engine.get(&ek).unwrap();
+    coll.purge_doc(&key_bytes(1)).unwrap();
+    let acc = engine.get(&ek).unwrap().unwrap();
     assert_eq!(u64::from_be_bytes(acc.as_slice().try_into().unwrap()), 1);
 }
 
