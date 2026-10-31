@@ -1401,10 +1401,9 @@ bytes; doing them after P3 means hex locks change once, not twice.
       the JSON-schema view) and
       `::an_unnamed_id_exports_as_null_and_import_refuses_it`.
       Recorded: ADR-0032 §7 and ADR-0007's type mapping, both languages.
-- [ ] Owed: the vocabulary as Parquet file key-value metadata — a warehouse can
-      read the labels already, but a consumer that wants the full id↔label table
-      (including labels no row used) has nothing to read. Additive: one footer
-      entry per categorical field.
+- [x] Declined (2026-10-31): an `okm.vocab.<column>` footer table — the ids are store-local
+      and each column chunk's dictionary page already holds that chunk's labels, so an exported
+      id table invites a join the destination answers wrongly (ADR-0032 §7).
 - [x] okm-dynamic: a `Vocab` field decodes to its LABEL. The pure decoder hands
       out the id as raw `Bytes` (it has no store) and the collection's read paths
       run `resolve_vocab_labels` — one point probe per categorical field against

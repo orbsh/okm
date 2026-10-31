@@ -130,9 +130,14 @@ use it today (field names 0x02/0x03, predicate/kind tokens 0x04/0x05).
    then gives each chunk a local vocabulary: every distinct label is stored once
    per chunk and the rows carry indices, so the wider value form is not paid per
    row (beyond the 1 MiB dictionary limit a chunk falls back to plain values).
-   Import reverses it through the destination's vocabulary — it
-   interns each label, so the restored rows carry the destination's numbering,
-   and every restored row is named by construction: the old id-carrying round
+   Nothing of the id space travels beside the rows — not a payload, not a footer
+   table: the ids are store-local (the destination assigns its own on import), so
+   an exported table of them would invite a join the destination answers
+   differently, and it says nothing the file does not already say, since each
+   column chunk's dictionary page holds every distinct label that chunk uses.
+   Import reverses it through the destination's vocabulary — it interns each
+   label, so the restored rows carry the destination's numbering, and every
+   restored row is named by construction: the old id-carrying round
    trip was the one path that could produce an unnameable value. No compatibility
    path exists for files written by that earlier form; the import refuses them by
    column type.
@@ -160,7 +165,4 @@ use it today (field names 0x02/0x03, predicate/kind tokens 0x04/0x05).
   rewrite happens under a layout version bump — one layout change, no
   compatibility shim.
 - Owed: `okm-python` / `okm-steel` exposure of `Vocab` (the bindings currently
-  see the storage form). The old owed item — "a snapshot/export path for the
-  vocabulary faces" — closed differently: a snapshot exports LABELS and the
-  import re-interns them, so the faces rebuild from the rows instead of
-  travelling beside them.
+  see the storage form).
