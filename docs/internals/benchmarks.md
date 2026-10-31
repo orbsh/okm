@@ -221,7 +221,7 @@ The test prints a baseline first — 195 ns/record to generate the record, 302 n
 
 | reader | full scan | one record |
 |---|---|---|
-| okm-series | 2.64 M records/s | 62 µs (`read(offset, 1)`) |
+| okm-series | 2.64 M records/s | 52 µs (`read(offset, 1)`) |
 | parquet, 65,536-row groups | 9.84 M records/s | 6,618 µs |
 | parquet, 4,096-row groups | 8.39 M records/s | 887 µs |
 
@@ -229,7 +229,7 @@ How to read it:
 
 - **Parquet is 20% smaller and ~3x faster to write.** Columnar encoding plus dictionary
 encoding per column is simply a better answer for bytes than interleaved records, and the writer batches a row group at a time instead of compressing every 64 KiB.
-- **The log is the only one of the two that can fetch one record by address.** 62 µs
+- **The log is the only one of the two that can fetch one record by address.** 52 µs
 against 887 µs is not a tuning difference: Parquet has no way to reach row *n* without decoding the columns of its row group, so a 4,096-row group is the *cheapest* shape for this and a 65,536-row group costs 6.3 ms. The log seeks by offset, decompresses one block and stops.
 - **The full-scan numbers are not like for like.** The Parquet scan hands back Arrow
 arrays; the log materialises every record as a `Body` with eight values and five owned strings. A caller that only wants one column should be reading Parquet.
@@ -238,12 +238,12 @@ pieces separately, and they add up to the number above:
 
 | piece, per call | µs |
 |---|---|
-| `read_from(one offset)` — one 64 KiB block decompressed and scanned | 42.3 |
-| `PartReader::open` — header, footer, dictionary, 70 KB index | 11.3 |
-| `parts_by_offset` — directory scan, one header read per part, sort | ~8 |
+| `read_from(one offset)` — one 64 KiB block decompressed and scanned | 43.2 |
+| directory scan, one header read per part, sort (`parts_by_offset`) | ~8 |
+| `PartReader::open` — header, footer, dictionary, 70 KB index | 11.3, **paid once per part now** |
 | `File::open` | 0.6 |
 
-  So block size is the knob: 64 KiB blocks mean a point read decompresses 64 KiB, and 256 KiB blocks would cut the write cost and multiply this one. The index is *not* re-parsed twice any more: ordering the parts used to open each one and read its index, which cost 5 µs of the 68 (the header answers the same question for 0.6 µs) — small, because the index is read once and sliced rather than row by row. Caching the open reader would remove the 11.3 µs and the directory scan after it, and would need an invalidation story for append, seal and retention; the decompression stays.
+  So block size is the knob: 64 KiB blocks mean a point read decompresses 64 KiB, and 256 KiB blocks would cut the write cost and multiply this one. The index is *not* re-parsed twice any more: ordering the parts used to open each one and read its index, which cost 5 µs of the 68 (the header answers the same question for 0.6 µs) — small, because the index is read once and sliced rather than row by row. `Log` now caches the parsed reader per part, keyed by the file's length, which is sound because a part is append-only and can only grow (a rename at seal is a new path, so the sealed part arrives as a fresh key). That took the same call from 62 µs to **51.5 µs** and `parts()` from 18.4 to 8.0; the decompression is what is left, and that one is a format question.
 - **The dictionary barely pays at this shape, and after the fix below it no longer
 costs.** 7% of the bytes for 8% of the write time: two of eight fields are unique per record, so the tiers keep them inline and the dictionary only removes 29 distinct strings. It is the closed-set shape that pays, as the table in the section above shows.
 
