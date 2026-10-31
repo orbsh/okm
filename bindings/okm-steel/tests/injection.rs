@@ -274,3 +274,53 @@ fn bad_declaration_names_the_error() {
         .unwrap_err();
     assert!(err.contains("host callable"), "{err}");
 }
+
+#[test]
+fn script_stamps_the_table_and_records_its_own_name() {
+    // ADR-0043 at the script face: the record the typed and dynamic paths
+    // write, reached through the collection's declared name. `void?` before the
+    // stamp is the honest answer (nothing describes this store yet), and the
+    // second registry proves the row lives in the HOST engine rather than in
+    // the first registry's memory.
+    let engine = Arc::new(MemEngine(Mutex::new(Default::default())));
+    let reg = StorageRegistry::default();
+    reg.inject(engine.clone(), "Counters", &entry_json(), 41)
+        .unwrap();
+    let mut vm = build_vm(&reg);
+
+    let out = vm
+        .run(
+            r#"
+(assert! (void? (collection-meta! "Counters")))
+(define rec (collection-ensure-layout! "Counters"))
+(define v (hash-ref rec "version"))
+(assert! (vector? v))
+(assert! (= (vector-length v) 1))
+(assert! (= (vector-ref v 0) 3))
+(assert! (equal? (collection-meta! "Counters") rec))
+(define rec2 (collection-set-meta! "Counters" "build" (list->vector (list 1 2))))
+(assert! (equal? (hash-ref rec2 "build") (list->vector (list 1 2))))
+(assert! (= (vector-ref (hash-ref rec2 "version") 0) 3))
+(define rec3 (collection-set-meta! "Counters" "version" (list->vector (list 9))))
+(assert! (= (vector-ref (hash-ref rec3 "version") 0) 3))
+'done
+"#,
+        )
+        .expect("meta verbs failed");
+    assert_eq!(last_sym(out), "done");
+
+    let reg2 = StorageRegistry::default();
+    reg2.inject(engine, "Counters", &entry_json(), 41).unwrap();
+    let mut vm2 = build_vm(&reg2);
+    let out2 = vm2
+        .run(
+            r#"
+(define rec (collection-meta! "Counters"))
+(assert! (equal? (hash-ref rec "build") (list->vector (list 1 2))))
+(assert! (= (vector-ref (hash-ref rec "version") 0) 3))
+'done
+"#,
+        )
+        .expect("cross-check read failed");
+    assert_eq!(last_sym(out2), "done");
+}

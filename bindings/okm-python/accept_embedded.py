@@ -107,9 +107,20 @@ def main() -> int:
     # --- table meta (ADR-0043): one stamp, whichever mode declared it ---
     # The dynamic table stamps the same `[ns][0x0F]` row the typed path does,
     # with `schema.layout_version`; a second call answers the stored row.
+    assert t.meta() is None, "a fresh store carries no record — the read verb says so"
     meta = t.ensure_layout()
     assert meta == {"version": bytes([schema.layout_version])}, f"meta: {meta!r}"
+    assert t.meta() == meta, "the read verb answers the row the stamp wrote"
     assert t.ensure_layout() == meta, "a stamped store answers the same row"
+
+    # A caller's own name rides beside the runtime's, and cannot edit the stamp
+    # away: `set_meta` re-stamps `version` after the caller's write.
+    after = t.set_meta("build", b"20261031")
+    assert after == dict(meta, build=b"20261031"), f"set_meta: {after!r}"
+    assert t.meta() == after, "the name landed in the store, not in a cache"
+    assert t.set_meta("version", bytes([9]))["version"] == meta["version"], (
+        "the runtime re-stamps version — a caller cannot edit the shape away"
+    )
 
     # --- registration (binding-time, ADR-0022) ------------------------
     t.add_func_index(

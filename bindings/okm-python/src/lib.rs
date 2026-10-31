@@ -147,6 +147,17 @@ pub mod pyo3_impl {
     /// new acc)]) — named once for the two plan methods' signatures.
     type PlanReceipt = (Vec<u8>, Vec<(Vec<u8>, Vec<u8>)>);
 
+    /// A table's meta record (ADR-0043) → `{name: bytes}`: the one shape all
+    /// three verbs answer with, so `ensure_layout`, `meta` and `set_meta`
+    /// cannot drift apart.
+    fn meta_to_py(py: Python<'_>, meta: &okm_core::TableMeta) -> PyResult<Py<PyAny>> {
+        let dict = pyo3::types::PyDict::new(py);
+        for (name, value) in meta.iter() {
+            dict.set_item(name, value)?;
+        }
+        Ok(dict.unbind().into_any())
+    }
+
     /// A Python-owned dynamic collection: the embedded-mode facade (ADR-0022).
     /// Python holds the engine (in-process TestStore), registers host
     /// callables at binding time, and drives put/get/delete/scan — the
@@ -246,6 +257,30 @@ pub mod pyo3_impl {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .ensure_layout()
+        }
+
+        /// The store's table record as it stands (ADR-0043), `None` when the
+        /// store was never stamped. A READ — stamping is `ensure_layout`.
+        pub fn meta_doc(&self) -> Result<Option<okm_core::TableMeta>, String> {
+            self.inner
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .meta()
+        }
+
+        /// Record one caller-owned name beside the runtime's stamp (ADR-0043
+        /// §5), answering the whole record. The executor re-stamps `version`
+        /// after the caller's name lands, so this verb cannot edit the shape
+        /// away.
+        pub fn set_meta_doc(
+            &self,
+            name: &str,
+            value: &[u8],
+        ) -> Result<okm_core::TableMeta, String> {
+            self.inner
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .set_meta(name, value.to_vec())
         }
     }
 
@@ -404,13 +439,38 @@ pub mod pyo3_impl {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .ensure_layout()
                 .map_err(PyValueError::new_err)?;
-            Python::attach(|py| {
-                let dict = pyo3::types::PyDict::new(py);
-                for (name, value) in meta.iter() {
-                    dict.set_item(name, value)?;
-                }
-                Ok(dict.unbind().into_any())
-            })
+            Python::attach(|py| meta_to_py(py, &meta))
+        }
+
+        /// This table's record on the store as it stands (ADR-0043):
+        /// `{name: bytes}`, or `None` when nothing has stamped it. A read —
+        /// stamping belongs to `ensure_layout`, and a `None` here is a fresh
+        /// (or foreign) store, not an error.
+        fn meta(&self) -> PyResult<Option<Py<PyAny>>> {
+            let meta = self
+                .inner
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .meta()
+                .map_err(PyValueError::new_err)?;
+            match meta {
+                Some(meta) => Python::attach(|py| meta_to_py(py, &meta)).map(Some),
+                None => Ok(None),
+            }
+        }
+
+        /// Record one caller-owned name beside the runtime's stamp (ADR-0043
+        /// §5) and answer the whole record. `version` is re-stamped afterwards,
+        /// so this verb cannot edit the shape away; a store stamped in another
+        /// version still raises `ValueError` naming both numbers.
+        fn set_meta(&self, name: String, value: Vec<u8>) -> PyResult<Py<PyAny>> {
+            let meta = self
+                .inner
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .set_meta(&name, value)
+                .map_err(PyValueError::new_err)?;
+            Python::attach(|py| meta_to_py(py, &meta))
         }
 
         /// Access-method scan: return the matching documents' primary keys,
@@ -473,7 +533,7 @@ pub mod pyo3_impl {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             okm_dynamic::scan_reduces(t.store(), &self.ns.to_be_bytes(), slot)
-                .map_err(|e| PyValueError::new_err(e))
+                .map_err(PyValueError::new_err)
         }
 
         // ---- remote mode (ADR-0022): plan surfaces, Python wraps only ----

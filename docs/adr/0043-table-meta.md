@@ -5,8 +5,10 @@
 **Status:** Accepted (2026-10-28). Landed with `okm-core/src/model/meta.rs`,
 `Collection::{meta, ensure_layout, set_meta}`, and `okm-core/tests/meta_test.rs`.
 The dynamic side followed through the same helpers (2026-10-30:
-`DynamicCollection::{meta, ensure_layout, set_meta}`, plus the Python binding's
-`Collection.ensure_layout`), so a table stamps no matter which mode declared it.
+`DynamicCollection::{meta, ensure_layout, set_meta}`), and both bindings carry the
+whole verb set (2026-10-31: Python `Collection.{ensure_layout, meta, set_meta}`,
+Steel `(collection-{ensure-layout,meta,set-meta}! name …)`), so a table stamps,
+reads and records its own names no matter which mode declared it.
 **Date:** 2026-10-28
 
 ## Context

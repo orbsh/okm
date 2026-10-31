@@ -105,7 +105,7 @@ impl StorageRegistry {
         f(&bound)
     }
 
-    /// Install the six script-facing functions over THIS registry into
+    /// Install the nine script-facing functions over THIS registry into
     /// a VM. All address the collection by its declared name:
     /// - `(collection-merge! name pkey doc)` → void (declared names rewrite
     ///   that field of the row, other names ride the dynamic segment)
@@ -114,6 +114,14 @@ impl StorageRegistry {
     /// - `(collection-scan! name slot prefix)` → vector of hashes
     /// - `(collection-reduce-get! name group-hash)` → acc bytes or void
     /// - `(collection-scan-reduces! name slot)` → vector of `[group acc]`
+    /// - `(collection-ensure-layout! name)` → hash of the table's record
+    ///   stamping it on first touch (ADR-0043; called at attach, never on the
+    ///   write path)
+    /// - `(collection-meta! name)` → hash of the record, or void when the store
+    ///   was never stamped
+    /// - `(collection-set-meta! name meta-name bytes)` → hash of the record
+    ///   after the caller's name lands (`version` is re-stamped by the executor,
+    ///   so the shape cannot be edited away)
     pub fn register_into(&self, vm: &mut Engine) {
         let reg = self.clone();
         vm.register_fn("collection-merge!", {
@@ -220,6 +228,49 @@ impl StorageRegistry {
                 })
             }
         });
+        vm.register_fn("collection-ensure-layout!", {
+            let reg = reg.clone();
+            move |name: String| -> Result<SteelVal, String> {
+                reg.with_bound(&name, |b| {
+                    let meta = b
+                        .table
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .ensure_layout()?;
+                    Ok(crate::meta_to_steel(&meta))
+                })
+            }
+        });
+        vm.register_fn("collection-meta!", {
+            let reg = reg.clone();
+            move |name: String| -> Result<SteelVal, String> {
+                reg.with_bound(&name, |b| {
+                    let meta = b
+                        .table
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .meta()?;
+                    Ok(match meta {
+                        Some(meta) => crate::meta_to_steel(&meta),
+                        None => SteelVal::Void,
+                    })
+                })
+            }
+        });
+        vm.register_fn("collection-set-meta!", {
+            let reg = reg.clone();
+            move |name: String, meta_name: String, value: SteelVal| -> Result<SteelVal, String> {
+                let bytes = steel_bytes_to_vec(&value)?;
+                reg.with_bound(&name, |b| {
+                    let meta = b
+                        .table
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .set_meta(&meta_name, bytes)?;
+                    Ok(crate::meta_to_steel(&meta))
+                })
+            }
+        });
     }
 
     /// Stub arms for the introspection throwaway engine ONLY (never the
@@ -282,6 +333,33 @@ impl StorageRegistry {
             |_: String, _: i64| -> Result<SteelVal, String> {
                 Err(
                     "okm: collection-scan-reduces! called outside a session — introspection only"
+                        .to_string(),
+                )
+            },
+        );
+        vm.register_fn(
+            "collection-ensure-layout!",
+            |_: String| -> Result<SteelVal, String> {
+                Err(
+                    "okm: collection-ensure-layout! called outside a session — introspection only"
+                        .to_string(),
+                )
+            },
+        );
+        vm.register_fn(
+            "collection-meta!",
+            |_: String| -> Result<SteelVal, String> {
+                Err(
+                    "okm: collection-meta! called outside a session — introspection only"
+                        .to_string(),
+                )
+            },
+        );
+        vm.register_fn(
+            "collection-set-meta!",
+            |_: String, _: String, _: SteelVal| -> Result<SteelVal, String> {
+                Err(
+                    "okm: collection-set-meta! called outside a session — introspection only"
                         .to_string(),
                 )
             },
