@@ -103,6 +103,10 @@ required-features = ["test-engines"]
 name = "faces_test"
 required-features = ["test-engines", "schema-serde"]
 
+[[test]]
+name = "subscribe_batch_test"
+required-features = ["test-engines"]
+
 # The change log (ADR-0045) runs on a real engine like every other write-path
 # suite, so it needs `test-engines`; nothing else.
 [[test]]
