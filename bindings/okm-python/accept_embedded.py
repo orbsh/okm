@@ -104,6 +104,13 @@ def main() -> int:
     schema = okm.Schema(schema_json())
     t = okm.Collection(schema, 42)
 
+    # --- table meta (ADR-0043): one stamp, whichever mode declared it ---
+    # The dynamic table stamps the same `[ns][0x0F]` row the typed path does,
+    # with `schema.layout_version`; a second call answers the stored row.
+    meta = t.ensure_layout()
+    assert meta == {"version": bytes([schema.layout_version])}, f"meta: {meta!r}"
+    assert t.ensure_layout() == meta, "a stamped store answers the same row"
+
     # --- registration (binding-time, ADR-0022) ------------------------
     t.add_func_index(
         0x1002,

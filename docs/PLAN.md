@@ -1970,10 +1970,16 @@ panic lints allowed only in the places it names. So the runtime half of
 - [x] `okm-core/tests/meta_test.rs` — 7 locks: address hex, seeded payload hex, the
       write-once stamp, a second name beside it, both refusal shapes, and row scans
       never surfacing the entry.
-- [ ] `okm-dynamic`: a `DynamicCollection::ensure_layout` through the same helper
-      (`okm_core::meta::ensure`, its own `schema.layout_version`). The FORMAT is
-      shared already; the verb lands with the first dynamic consumer that attaches
-      to a store — the typed assembly point is what stamps today.
+- [x] `okm-dynamic`: `DynamicCollection::{meta, ensure_layout, set_meta}` through the
+      same helper (`okm_core::meta::{read, ensure, write}`, the table's own ns and
+      `schema.layout_version`), answering with the crate's string errors like every
+      other dynamic verb. The Python binding carries it twice: `Collection.ensure_layout()`
+      (a `{name: bytes}` dict, `ValueError` on a mismatch) and the plain Rust
+      `ensure_layout_doc()` the carrier's load path can call — the injected engine face
+      is the dynamic caller that actually attaches to a realm's store.
+      `okm-dynamic/tests/meta_test.rs` (6 locks): the stamp is byte-identical to the
+      typed path's, either mode answers the other's stamp, both refusal shapes, a caller
+      name beside the runtime's, and the entry never surfacing in a dynamic scan.
 
 ## 2026-10-28 — a table is a key type plus a row type (ADR-0044)
 

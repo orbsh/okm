@@ -113,6 +113,40 @@ impl<S: VirtualStorage> DynamicCollection<S> {
         &self.indexes
     }
 
+    /// The table's meta entry (fixed face 0x0F, ADR-0043) — the SAME row the
+    /// typed `Collection` stamps, addressed by this table's ns. `None` = the
+    /// store was never stamped; an engine failure surfaces as its message (this
+    /// crate answers dynamic callers, which carry no typed error hierarchy).
+    pub fn meta(&self) -> Result<Option<okm_core::TableMeta>, String> {
+        okm_core::meta::read(&self.store, &self.ns).map_err(codec)
+    }
+
+    /// First-touch verb (ADR-0043) on the dynamic side: stamp a fresh store
+    /// with `schema.layout_version`, or answer the stamp it already carries.
+    ///
+    /// The typed counterpart is `Collection::ensure_layout`, and both call
+    /// `okm_core::meta::ensure` — `CollectionSchema::layout_version` IS
+    /// `Document::LAYOUT_VERSION`, so a store stamped by either mode satisfies
+    /// the other. One point read when stamped, one point write when not: call
+    /// it where the host attaches to a store, never on the write path.
+    ///
+    /// A store stamped with another shape (or a meta row naming no version) is
+    /// refused with `Error::LayoutMismatch`'s message, which names both numbers.
+    pub fn ensure_layout(&self) -> Result<okm_core::TableMeta, String> {
+        okm_core::meta::ensure(&self.store, &self.ns, self.schema.layout_version).map_err(codec)
+    }
+
+    /// Record one caller-owned name beside the stamp, re-stamping `version`
+    /// afterwards (ADR-0043: the shape stamp belongs to the runtime, so a
+    /// caller cannot edit it away through this verb).
+    pub fn set_meta(&self, name: &str, value: Vec<u8>) -> Result<okm_core::TableMeta, String> {
+        let mut meta = self.ensure_layout()?;
+        meta.set(name, value);
+        meta.set(okm_core::meta::VERSION, vec![self.schema.layout_version]);
+        okm_core::meta::write(&self.store, &self.ns, &meta).map_err(codec)?;
+        Ok(meta)
+    }
+
     /// Declare an access method at runtime (binding-time registration,
     /// ADR-0022: the host language registers its callables after the
     /// table exists). The slot must be unique and non-zero — a collision
