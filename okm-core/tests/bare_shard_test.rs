@@ -76,7 +76,10 @@ fn shard_table_via_bare_host_lands_on_its_ns_segment() {
     // local Collection on this engine would have written them. (The engine's
     // map itself is unreachable by design: hosts own the only handles,
     // and the sender-side view is the contract.)
-    let keys = t.scan_keys().unwrap();
+    let keys: Vec<_> = t
+        .scan_keys(&okm_core::PrefixProbe::empty())
+        .map(|r| r.unwrap())
+        .collect();
     assert_eq!(keys, vec![ShardDocKey { id: 5 }]);
 }
 

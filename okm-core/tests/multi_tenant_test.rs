@@ -143,5 +143,5 @@ fn table_write_path_inside_tenant_segment() {
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
     assert_eq!(t.get(&DocKey { id: 9 }).unwrap().unwrap().title, 5);
-    assert_eq!(t.scan_keys().unwrap().len(), 1);
+    assert_eq!(t.scan_keys(&okm_core::PrefixProbe::empty()).count(), 1);
 }

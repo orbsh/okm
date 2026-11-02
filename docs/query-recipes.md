@@ -124,6 +124,18 @@ only added structure is the frontier and the visited set.
   decides what leads `fields`. Pushing a key-qualifying predicate into
   `.filter()` abandons the storage layer's selectivity: every query
   pays decode cost for rows it throws away.
+- **primary-key prefix = the same WHERE with no access method.** A
+  composite key's leading segments group rows by construction, so
+  `scan_keys` takes a prefix probe and answers "every child of this
+  parent" with one prefix scan over the primary table —
+  `scan_keys(&DeviceKey::prefix().org(7).finish())`, the probe naming
+  fields in declaration order. A full scan is the EMPTY probe
+  (`PrefixProbe::empty()`), not a second door. It is lazy: `.take(n)` is
+  a LIMIT that pays only the reads performed, `.rev()` walks the window
+  backwards, and the answers are ROW keys (`fetch` is the materializing
+  door; `scan_document_keys` is the eager two-slot mode). Reach for it
+  when the grouping is already the key; if the dimension is not a
+  leading segment, it is an access-method question, not a probe.
 - **range = the interval form of physical WHERE (ADR-0020).** A
   predicate on the LEADING index field with byte order == value order
   is a key interval — `1 < a < 100` reads only the rows inside

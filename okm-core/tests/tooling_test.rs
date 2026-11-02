@@ -346,9 +346,15 @@ fn parquet_with_variant_restores_both_halves_and_segment_only_documents() {
         "a segment-only document restores as a segment-only document"
     );
     // ...and the two enumeration modes agree with what came back.
-    assert_eq!(t2.scan_keys().unwrap(), vec![with_row.clone()]);
     assert_eq!(
-        t2.scan_document_keys().unwrap(),
+        t2.scan_keys(&okm_core::PrefixProbe::empty())
+            .map(|r| r.unwrap())
+            .collect::<Vec<_>>(),
+        vec![with_row.clone()]
+    );
+    assert_eq!(
+        t2.scan_document_keys(&okm_core::PrefixProbe::empty())
+            .unwrap(),
         vec![with_row, segment_only]
     );
 }
