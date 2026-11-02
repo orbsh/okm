@@ -1125,6 +1125,16 @@ That is the precise sense in which access methods are mandatory: they are mandat
 
 The index side mirrors the key side exactly (ADR-0049): `ByOrg::prefix().org_id(7).finish()` builds an `IndexProbe<ByOrg>` over that access method's declared `fields(...)` order, and `finish()` at any depth is a legal probe — depth is the prefix depth. The marker type pins which access method the bytes belong to, so an `org` probe cannot be spent on `by_label`. Raw encoded bytes are still accepted (`ProbeBytes`), for a probe assembled from data rather than from a declaration.
 
+### What the model gives up
+
+Prefix reads are less abstract than SQL predicates and less flexible than them, and this section exists so the reader does not discover that in a migration.
+
+SQL's abstraction is that a predicate names a result and a planner finds a path. Many engines do not keep that promise, and they break it in the least useful way — not with an error, but by making physical layout part of the query. Wherever the index depends on key order (composite indexes in MySQL being the canonical case) the left-prefix rule means that whether `INDEX(a, b, c)` can serve `WHERE b = 1` depends on the field order chosen at create-table time. The developer ends up maintaining a mental picture of a B+ tree inside a declarative language, with field order decided by query usability rather than by meaning. That is an abstraction leak, not abstraction, and it costs intuition as well as flexibility.
+
+This model takes the other fork: no planner, so no promise to break. The key layout IS the read path, a prefix probe IS the WHERE clause, and the cost is exact — a predicate the declaration cannot serve is not optimized, it does not exist; adding a dimension means changing a declaration, rebuilding a face, and migrating data; and access patterns are settled at modeling time rather than per query.
+
+What is bought is the other half of the same ledger: the read path is predictable (no optimizer, no stale statistics), the cost is reasoned about rather than hoped for (a prefix hit is a range hit; a scan costs the range size times the per-entry cost), and the semantics are honest (no query reads like a filter and runs like a table scan).
+
 The remaining raw door, `scan_documents_raw`, is a maintenance surface for the snapshot exporter and the Arrow bridge — not an application query path.
 
 Enumeration has two modes, because a document is the PAIR of slots (ADR-0035): `scan_keys` enumerates ROWS (one prefix scan — a segment with no row is not there), `scan_document_keys` enumerates DOCUMENTS (the row slot merged in memory with the segment slot, so a `merge` that carried no declared name still shows up). Materializing is neither mode's job — `fetch` is the door, so a key becomes a document with a plain `map` over the keys; a union cannot be an adapter, because an adapter cannot surface an item that was never scanned.
