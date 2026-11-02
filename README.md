@@ -176,6 +176,8 @@ users.purge(&key)?;
 
 The three read doors are the modeling decision SQL hides: a predicate on a leading key segment is a prefix scan on the primary table (no index, no declaration), every other dimension is a declared face, and one row is a point read. An index here is not a second copy the planner may or may not choose — the ordering a prefix read needs is already the storage order, so the key that addresses a row also groups it.
 
+A prefix read is less abstract than a SQL predicate, and less flexible. That is the trade, stated plainly. A SQL predicate is a promise that a planner will find an access path; many engines do not keep it, and the way they break it is worse than an error — wherever the index depends on key order (MySQL's composite indexes being the canonical case), the left-prefix rule makes physical layout part of the query: whether `INDEX(a, b, c)` serves `WHERE b = 1` depends on the field order chosen at create-table time. That is an abstraction leak, not abstraction, and it costs intuition as well as flexibility. OKM takes the other fork: no planner, and therefore no promise to break — the key layout IS the read path, a prefix is a range in storage order, and the price is that access patterns are settled at modeling time rather than per query.
+
 Overwrite semantics differ by design: `put` unfolds the stored document from
 every declared reduce group before folding the new one in, while faces are
 per-document derivations — an overwrite whose indexed value changed lands at
