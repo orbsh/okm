@@ -86,11 +86,112 @@ impl<K> Clone for PrefixProbe<K> {
     }
 }
 
-impl<K> core::fmt::Debug for PrefixProbe<K> {
+/// A typed prefix probe for access method `I`: the encoded leading fields of
+/// an index's declared `fields(...)`, in declaration order.
+///
+/// The mirror of [`PrefixProbe`] on the other side of the model. The index
+/// marker type pins WHICH access method the bytes belong to, so a probe built
+/// for `by_org` cannot be spent on `by_label`; the bytes stay opaque because the
+/// fields are payload fields (any payload encoding may appear in them, including
+/// variable width) rather than a fixed-width key.
+pub struct IndexProbe<I> {
+    bytes: Vec<u8>,
+    _index: PhantomData<fn() -> I>,
+}
+
+impl<I> IndexProbe<I> {
+    /// Wrap encoded leading-field bytes.
+    ///
+    /// The intended constructor is the derive-emitted builder
+    /// (`__OkmIndex_User_by_org::prefix().org_id(7).finish()`); this door takes
+    /// the bytes as given, for probes assembled from data.
+    #[doc(hidden)]
+    pub fn new(bytes: Vec<u8>) -> Self {
+        Self {
+            bytes,
+            _index: PhantomData,
+        }
+    }
+
+    /// The empty probe: constrains no field, so the whole access method
+    /// matches (every entry, in entry order).
+    pub fn empty() -> Self {
+        Self {
+            bytes: Vec::new(),
+            _index: PhantomData,
+        }
+    }
+
+    /// The encoded prefix bytes.
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    /// True for the empty probe.
+    pub fn is_empty(&self) -> bool {
+        self.bytes.is_empty()
+    }
+}
+
+impl<I> Clone for IndexProbe<I> {
+    fn clone(&self) -> Self {
+        Self {
+            bytes: self.bytes.clone(),
+            _index: PhantomData,
+        }
+    }
+}
+
+impl<I> core::fmt::Debug for IndexProbe<I> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("PrefixProbe")
-            .field("taken", &self.bytes.len())
+        f.debug_struct("IndexProbe")
             .field("bytes", &self.bytes)
             .finish()
+    }
+}
+
+/// What a scan door accepts as a probe: a typed [`IndexProbe`] for the index it
+/// names, or raw encoded bytes for callers that assemble them from data.
+///
+/// The raw arms are the escape hatch `PrefixProbe::new` is on the key side; the
+/// typed arm is what the derive-emitted builder produces, and it is the one that
+/// cannot be spent on the wrong access method.
+pub trait ProbeBytes<I> {
+    fn probe_bytes(&self) -> &[u8];
+}
+
+impl<I> ProbeBytes<I> for IndexProbe<I> {
+    fn probe_bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+}
+
+impl<I> ProbeBytes<I> for &IndexProbe<I> {
+    fn probe_bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+}
+
+impl<I> ProbeBytes<I> for &[u8] {
+    fn probe_bytes(&self) -> &[u8] {
+        self
+    }
+}
+
+impl<I> ProbeBytes<I> for Vec<u8> {
+    fn probe_bytes(&self) -> &[u8] {
+        self
+    }
+}
+
+impl<I> ProbeBytes<I> for &Vec<u8> {
+    fn probe_bytes(&self) -> &[u8] {
+        self
+    }
+}
+
+impl<I, const N: usize> ProbeBytes<I> for &[u8; N] {
+    fn probe_bytes(&self) -> &[u8] {
+        *self
     }
 }

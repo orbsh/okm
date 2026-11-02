@@ -6,7 +6,7 @@
 
 OKM 是对标 ORM 的范式——逻辑定义是 ORM 式的，代码生成产出底层 KV 操作。ORM 将对象映射到关系表，OKM 将对象映射到 KV 键空间。通过派生宏（`KeyEncode` / `DocumentEncode` / `JunctionEncode` / `GraphEncode`）+ 数字命名空间 ID，构建零成本抽象语义数据层：开发侧如同 ORM 般声明式，编译后退化为纯指针偏移计算。
 
-关联阅读：[KV 存储引擎](https://github.com/orbsh/wiki/blob/main/kv-storage-engine.md) — 底层架构与设计模式（编码原理、索引策略、引擎层取舍）；[架构总览](docs/ARCHITECTURE.zh-CN.md)——双层声明机器（derive 展开 + 常量表）；[建模指南](docs/MODELING.zh-CN.md) — 规范性 schema 建模方法（四层建模法、访问方法强制、覆盖索引克制、主键复合边界）；[查询配方](docs/query-recipes.zh-CN.md)——把 merge_join / group_by / walk 组合成 SQL 形状，WHERE 边界记录；[图查询配方](docs/graph-queries.zh-CN.md)——图的面组合成 Cypher 形状的遍历；[并发与写者](docs/CONCURRENCY.zh-CN.md)——单写者的确切含义、哪些机制依赖它、以及四种能承载更多写者的形态。
+关联阅读：[KV 存储引擎](https://github.com/orbsh/wiki/blob/main/kv-storage-engine.md) — 底层架构与设计模式（编码原理、索引策略、引擎层取舍）；[架构总览](docs/ARCHITECTURE.zh-CN.md)——双层声明机器（derive 展开 + 常量表）；[建模指南](docs/MODELING.zh-CN.md) — 规范性 schema 建模方法（四层建模法、三道读路径、覆盖索引克制、主键复合边界）；[查询配方](docs/query-recipes.zh-CN.md)——把 merge_join / group_by / walk 组合成 SQL 形状，WHERE 边界记录；[图查询配方](docs/graph-queries.zh-CN.md)——图的面组合成 Cypher 形状的遍历；[并发与写者](docs/CONCURRENCY.zh-CN.md)——单写者的确切含义、哪些机制依赖它、以及四种能承载更多写者的形态。
 
 ## 这笔交易：缩小能力面，换非对称收益
 
@@ -127,8 +127,16 @@ let key = UserKey { org_id: 7, user_id: 101 };
 users.put(&key, &User { org_id: 7, bio_len: 240 });
 let row: Option<User> = users.get(&key);
 
-// 按访问方法读：最左前缀扫描 + 回表。
-for (pk, row) in users.scan::<ByOrg>(&7u32.to_be_bytes()) {
+// 按主键前缀读：键本身就是访问路径。合成键天生分组，"这个 org 的全部用户"
+// 不需要索引、不需要声明查询——探针按声明序命名前导字段。
+let org_users = users.scan_keys(&UserKey::prefix().org_id(7).finish());
+// 惰性：`.take(n)` 是 LIMIT，`.skip(n)` 翻页，`.rev()` 反向；每条是 `Result<UserKey>`
+// （只给行——物化走 `fetch`）。
+
+// 按访问方法读：维度不在键里，所以它是一条声明出来的面——最左前缀扫描 + 回表。
+// 探针与主键那套对称：`ByOrg::prefix()` 按该索引声明的 `fields(...)` 顺序给字段，
+// `finish()` 得到的就是手拼字节会得到的那串。
+for (pk, row) in users.scan::<ByOrg>(&ByOrg::prefix().org_id(7).finish()) {
     // pk.decoded: UserKey，row: Option<User>
 }
 
@@ -139,6 +147,8 @@ users.scan_range::<ByOrg>(&1u32.to_be_bytes(), Some(&100u32.to_be_bytes()));
 // 删：主表 + 恰是这份文档产出的那些面。
 users.purge(&key);   // 主条目 + 面 + 动态段，一次提交；删除集合派生自存储行
 ```
+
+三道读门就是 SQL 藏起来的那个建模决策：谓词落在前导键段上，就是对主表的一次前缀扫描（不建索引、不做声明）；其余维度都是声明出来的面；单行就是点查。这里的索引不是"优化器也许会用"的第二份副本——前缀读需要的顺序已经是存储顺序，所以标识一行的键同时也在给它分组。
 
 覆盖语义按设计分成两半：`put` 先把已存文档从每个声明的 reduce 组里回折，
 再折入新文档；而面是逐文档派生——被索引的值一改，条目就落到新键上，旧面

@@ -14,10 +14,12 @@ Design decisions live in `docs/adr/`. This plan tracks implementation status.
       LIMIT, `.skip(m).take(n)` a page, `.rev()` the same window backwards) and
       `scan_document_keys(probe)` takes the same probe for the eager two-slot
       merge — a full scan is `PrefixProbe::empty()`, so the zero-argument
-      enumeration is replaced, not duplicated. `scan_prefix_iter::<I>(encoded)`
-      is the streaming twin of `scan`; range and prefix iterators share one
-      private `entry_iter` (bounds owned; an edition-2024 opaque return type
-      would otherwise capture the borrow).
+      enumeration is replaced, not duplicated. `scan_prefix_iter::<I>` is the
+      streaming twin of `scan`; both take a probe — the derive-emitted
+      `IndexProbe<I>` (`ByOrg::prefix().org_id(7).finish()`) or raw bytes —
+      via `ProbeBytes<I>`, and range/prefix iterators share one private
+      `entry_iter` (bounds owned; an edition-2024 opaque return type would
+      otherwise capture the borrow).
 - [x] `EdgeEncode` derive: `#[ok_head(field, …)]` per-endpoint identity width,
       2-byte direction-bit header (niche, ADR-0001), query methods on endpoint
       types.

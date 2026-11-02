@@ -61,7 +61,7 @@ fn declared_slot(base: u16, n: usize, what: &str, span: proc_macro2::Span) -> sy
 use quote::{format_ident, quote};
 use syn::DeriveInput;
 
-use crate::schema::{parse_schema, DocumentSchema, IdxDecl};
+use crate::schema::{parse_schema, value_encoder, DocumentSchema, IdxDecl};
 
 /// One match arm per payload field name — each arm appends that field's
 /// raw encoding (no TLV frame; the index segment is a plain
@@ -397,6 +397,7 @@ fn emit_index_structs(schema: &DocumentSchema) -> syn::Result<TS2> {
             iname.span(),
         )?);
         let struct_ident = format_ident!("__OkmIndex_{}_{}", row_name, iname);
+        let probe_emit = emit_index_prefix_probe(schema, idx, &struct_ident)?;
         let fields: Vec<&String> = idx.fields.iter().collect();
         let includes: Vec<&String> = idx.includes.iter().collect();
         let key_names: Vec<&String> = idx.key.iter().collect();
@@ -544,9 +545,108 @@ fn emit_index_structs(schema: &DocumentSchema) -> syn::Result<TS2> {
                 #pairs_impl
                 #admits_impl
             }
+
+            #probe_emit
         });
     }
     Ok(index_out)
+}
+
+/// Typed prefix-probe builder for one access method: the mirror of the key-side
+/// builder (`K::prefix()`), over this index's declared `fields(..)` order.
+///
+/// Emitted only for plain field indexes: a `func(...)` index has no field
+/// segment to name (its key bytes are the function's output), so a typed probe
+/// there would have nothing to take values for.
+fn emit_index_prefix_probe(
+    schema: &DocumentSchema,
+    idx: &IdxDecl,
+    marker: &syn::Ident,
+) -> syn::Result<TS2> {
+    if idx.fields.is_empty() {
+        return Ok(quote! {});
+    }
+    let suffix = format!("{}_{}", schema.row_name, idx.ident);
+    let builder = format_ident!("__OkmIndexPrefixBuilder_{}", suffix);
+    let state_ids: Vec<syn::Ident> = (0..=idx.fields.len())
+        .map(|i| format_ident!("__OkmIndexPrefix_{}_{}", suffix, i))
+        .collect();
+    let state_defs = state_ids.iter().map(|s| {
+        quote! {
+            #[doc(hidden)]
+            #[derive(Debug)]
+            pub struct #s;
+        }
+    });
+    let start = &state_ids[0];
+    let mut steps = Vec::new();
+    for (i, name) in idx.fields.iter().enumerate() {
+        let field = schema
+            .fields
+            .iter()
+            .find(|f| f.ident == name.as_str())
+            .ok_or_else(|| {
+                syn::Error::new(
+                    idx.ident.span(),
+                    format!(
+                        "ok_index {}: `fields({name})` names a field the payload does not declare",
+                        idx.ident
+                    ),
+                )
+            })?;
+        let fname = &field.ident;
+        let ty: syn::Type = syn::parse_str(&field.ty_str).map_err(|_| {
+            syn::Error::new(
+                fname.span(),
+                format!("ok_index prefix builder: cannot name type `{}`", field.ty_str),
+            )
+        })?;
+        let enc_val = value_encoder(&field.enc, fname);
+        let cur = &state_ids[i];
+        let next = &state_ids[i + 1];
+        let doc = format!("Constrain `{name}` — declared index field {}.", i + 1);
+        steps.push(quote! {
+            impl #builder<#cur> {
+                #[doc = #doc]
+                pub fn #fname(self, v: #ty) -> #builder<#next> {
+                    let mut buf = self.bytes;
+                    #enc_val
+                    #builder {
+                        bytes: buf,
+                        _state: ::core::marker::PhantomData,
+                    }
+                }
+            }
+        });
+    }
+    Ok(quote! {
+        #(#state_defs)*
+        /// Typed prefix probe for this access method: `finish()` at any depth is
+        /// a legal probe, and the empty one scans the whole index.
+        #[doc(hidden)]
+        pub struct #builder<S> {
+            bytes: Vec<u8>,
+            _state: ::core::marker::PhantomData<S>,
+        }
+        impl<S> #builder<S> {
+            /// Close the probe at the current depth.
+            pub fn finish(self) -> ::okm_core::IndexProbe<#marker> {
+                ::okm_core::IndexProbe::new(self.bytes)
+            }
+        }
+        impl #marker {
+            /// Begin a typed prefix probe over this access method's declared
+            /// `fields(..)`, in declaration order — the index-side mirror of
+            /// `K::prefix()` (ADR-0049).
+            pub fn prefix() -> #builder<#start> {
+                #builder {
+                    bytes: Vec::new(),
+                    _state: ::core::marker::PhantomData,
+                }
+            }
+        }
+        #(#steps)*
+    })
 }
 
 /// index_entries: statically expands every (entry_key, entry_value) pair

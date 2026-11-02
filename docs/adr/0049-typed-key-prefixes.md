@@ -36,11 +36,19 @@ bounds — a prefix had to be translated into `[begin, prefix_end)` by the calle
    interface on the row mode: `.take(n)` is a LIMIT that pays only the reads
    performed, `.skip(m).take(n)` is an offset page, `.rev()` walks the same
    window backwards.
-4. **The index side gets the same shape**: `scan_prefix_iter::<I>(encoded)` is
-   the streaming twin of `scan`, same entries and same fetch-back. Both it and
-   `scan_range_iter` now delegate to one private `entry_iter`, which owns its
-   bounds — an opaque return type in edition 2024 captures every lifetime in
-   scope, so borrowed bound bytes would have been captured too.
+4. **The index side gets the same shape, typed the same way.**
+   `scan_prefix_iter::<I>` is the streaming twin of `scan`, and both (plus
+   `scan_exact`) take a probe: either the derive-emitted `IndexProbe<I>`
+   (`ByOrg::prefix().org_id(7).finish()`, one builder method per declared
+   `fields(...)` entry, in declaration order) or raw encoded bytes for a probe
+   assembled from data. The index marker type is the guard — an `org` probe
+   cannot be spent on `by_label`. `ProbeBytes<I>` is the small trait that lets
+   both pass through one door without a second generic parameter (a second
+   parameter would break every `scan::<I>` turbofish). Prefix and range
+   iterators share one private `entry_iter`, which owns its bounds — an opaque
+   return type in edition 2024 captures every lifetime in scope, so borrowed
+   bound bytes would have been captured too. `func(...)` indexes get no builder:
+   their key bytes are the function's output, not fields.
 5. **A length that does not match the declaration under a probe is reported**
    (`Error::Corrupt`), never skipped — the same stance `scan_keys` takes on a
    short primary entry.
