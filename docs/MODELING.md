@@ -531,7 +531,7 @@ Every declared field is one of these wire shapes. This is the map from the Rust 
 | `[u8; N]` | raw N bytes | N | digests, fixed blobs |
 | `String` | UTF-8, TLV frame | 0 (cold) | text, free-form labels |
 | `Bytes` | raw bytes, TLV frame | 0 (cold) | opaque payloads |
-| `Vocab<N>` | an N-byte id into that field's data vocabulary (`N` = `u8`…`u128`, default `u8`) | 1/2/4/8/16 | categorical values (status, kind, colour) |
+| `Vocab<N>` | an N-byte id into that field's data vocabulary (`N` = `u8`…`u128`, default `u8`) | 1/2/4/8/16 | categorical values whose LABELS the data grows (an imported status column, a tag, an event name) |
 | `VarInt<T>` | prefix-monotonic variable-length integer | 0 (cold), byte order = value order | integers that must sort in an index but often stay small |
 | `Quant<P>` (bare `Quant` = P3) | fixed-point `i64` | 8 | decimals stored exactly |
 | `Offset` + `#[ok_offset(base = N)]` | `u32` displacement from `base` | 4 | timestamps or monotonic values in a known window |
@@ -541,7 +541,7 @@ Every declared field is one of these wire shapes. This is the map from the Rust 
 
 Three rules follow from the shapes:
 
-- **A categorical value is `Vocab<N>`, never a Rust enum.** The label↔id mapping
+- **A categorical value that arrives as a LABEL is `Vocab<N>`, never a Rust enum.** The label↔id mapping
 lives in the collection's data vocabulary, so a dynamic writer can introduce a category and a dynamic reader can name it. `N` is the id width and the only knob: `Vocab<u8>` (the default) buys 256 labels per field at one byte per row, `Vocab<u16>` 65536 at two, and so on. Each field owns its own table, so the budget is per field. There is no ordering — a field that must sort semantically declares a separate rank column. Consumer-side enum semantics (match arms, exhaustiveness) belong to the consumer: wrap the field in your own enum and convert at the edge.
 - **`Option<T>` is not a field type.** Absence is a sentinel value chosen per
 field; the derive has no `Option` arm (see the next section).
@@ -562,6 +562,17 @@ High-volume append-only logs want the widest fields to pay for themselves. This 
 | everything else | the dynamic segment | shape varies per event type; the declared fields are the ones every query filters or groups on |
 
 The rules behind it: put a field in the payload when you filter, sort or group on it AND its type is stable; make it categorical when the value is a label from a set that keeps growing; leave it dynamic when the shape varies per record. The vocabulary must be shared by the table, so it cannot live in the dynamic segment (those values are per row).
+
+#### Case: a protocol enum is a code, not a vocabulary — k10r's `role`
+
+k10r's channel log stores `role: u8` (0 user / 1 assistant / 2 tool / 3 system) and `kind: u8` beside `content: String`. Four stable values is the strongest temptation in the table above — it looks exactly like what a `Vocab<u8>` is for — and it is the case where the wrapper is wrong.
+
+- **There is nothing to intern.** A vocabulary exists to turn a repeated STRING into a fixed-width id. `role` is already that id, and the wire width is one byte either way (`Vocab::WIDTH` = `N::WIDTH`), so the row saves nothing by wrapping it.
+- **Both paths get more expensive.** A `Vocab` field is interned before encoding (a `VocabCache::id_for` lookup, an allocation on first sight, and a document that cannot be encoded until it has been interned) and dereferenced after decoding (`name_for`) — with one cache built per row per field. Every projection read would pay a lookup for a value the schema already owns.
+- **The byte stops being semantic.** Today `role == 3` means system in every database, at a fixed hot offset, so anything reading rows outside the Rust API — an iceberg reader, a viz client, a `grep` over an export — decodes it with no side table. A vocabulary id is allocated in first-write order: the same logical role can be a different byte in two stores.
+- **Allocating labels is policy.** An unknown code today surfaces as the caller's bug (k10r's projection answers `null` rather than guessing at it). A vocabulary would mint an id for `role: "assistent"` and absorb the typo into the table's domain.
+
+So the boundary is not "is it categorical" — it is **where the value comes from**. A label from a set the DATA grows (an imported status column, a tag, an event name) needs `Vocab<N>`: the store must learn the label and hand it back. A code the CONTRACT fixes (a protocol enum, a level 0–5, a kind byte) is a number the schema already owns; wrapping it buys a lookup and a second source of truth. The giveaway is this question: could any writer legally send a label the schema does not know? If it cannot, there is nothing to intern.
 
 #### Case: a queue as generations
 
