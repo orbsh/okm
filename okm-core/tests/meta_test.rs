@@ -166,7 +166,13 @@ fn row_scans_never_surface_the_meta_entry() {
         )
         .unwrap();
 
-    assert_eq!(table.scan_keys().unwrap(), vec![MetaKey { id: 7 }]);
+    assert_eq!(
+        table
+            .scan_keys(&okm_core::PrefixProbe::empty())
+            .map(|r| r.unwrap())
+            .collect::<Vec<_>>(),
+        vec![MetaKey { id: 7 }]
+    );
     assert_eq!(table.scan_documents_raw().unwrap().len(), 1);
 }
 

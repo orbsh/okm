@@ -6,6 +6,18 @@ Design decisions live in `docs/adr/`. This plan tracks implementation status.
 
 - [x] `KeyEncode` derive: fixed-width fields (`u32` / `u64` / `[u8; N]`), BE,
       compile-time `KEY_LEN` / `FIELD_WIDTHS`, `encode_prefix_named`.
+- [x] Typed key prefix (ADR-0049, landed 2026-11-02): the derive emits a
+      type-state builder (`K::prefix().field(..).finish()`, declaration order
+      enforced by the state type, `finish()` legal at every depth) producing a
+      `PrefixProbe<K>`; `scan_keys(probe)` is now a LAZY
+      `DoubleEndedIterator<Item = Result<K>>` over slot-0 rows (`.take` is a
+      LIMIT, `.skip(m).take(n)` a page, `.rev()` the same window backwards) and
+      `scan_document_keys(probe)` takes the same probe for the eager two-slot
+      merge — a full scan is `PrefixProbe::empty()`, so the zero-argument
+      enumeration is replaced, not duplicated. `scan_prefix_iter::<I>(encoded)`
+      is the streaming twin of `scan`; range and prefix iterators share one
+      private `entry_iter` (bounds owned; an edition-2024 opaque return type
+      would otherwise capture the borrow).
 - [x] `EdgeEncode` derive: `#[ok_head(field, …)]` per-endpoint identity width,
       2-byte direction-bit header (niche, ADR-0001), query methods on endpoint
       types.

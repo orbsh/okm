@@ -374,18 +374,23 @@ fn the_two_enumeration_modes_see_the_two_kinds_of_document() {
     typed.merge(&segment_only, &dynamic_only).unwrap();
 
     assert_eq!(
-        typed.scan_keys().unwrap(),
+        typed
+            .scan_keys(&okm_core::PrefixProbe::empty())
+            .map(|r| r.unwrap())
+            .collect::<Vec<_>>(),
         vec![with_row.clone()],
         "row mode: rows only"
     );
     assert_eq!(
-        typed.scan_document_keys().unwrap(),
+        typed
+            .scan_document_keys(&okm_core::PrefixProbe::empty())
+            .unwrap(),
         vec![with_row.clone(), segment_only.clone()],
         "document mode: the union, key order, one entry per document"
     );
 
     let docs: Vec<_> = typed
-        .scan_document_keys()
+        .scan_document_keys(&okm_core::PrefixProbe::empty())
         .unwrap()
         .iter()
         .map(|k| typed.fetch(k).unwrap().expect("a document"))

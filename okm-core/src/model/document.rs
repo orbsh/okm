@@ -656,6 +656,47 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
             e.extend_from_slice(end);
             e
         });
+        self.entry_iter::<I>(header, b, e)
+    }
+
+    /// Lazy leftmost-prefix scan over access method `I`: the streaming form of
+    /// [`scan`](Self::scan) — same entries, same fetch-back, pulled on demand
+    /// instead of collected. `.take(n)` is a LIMIT that pays only the entries
+    /// read, `.skip(m).take(n)` is an offset page, `.rev()` walks the window
+    /// backwards.
+    ///
+    /// The exclusive end of a prefix is its terminator (`prefix_end`), so the
+    /// caller passes the same encoded leading fields it would pass to
+    /// [`scan`](Self::scan), and the same field-segment / key-tail boundary
+    /// tests apply.
+    pub fn scan_prefix_iter<I: KvIndex<Key = K, Document = R>>(
+        &self,
+        encoded: &[u8],
+    ) -> impl DoubleEndedIterator<Item = crate::error::Result<(PrefixKey<K>, Option<R>)>>
+    where
+        S: SharedVirtualStorage,
+    {
+        let header = self.header();
+        let mut b = I::entry_prefix(&header, &[]);
+        b.extend_from_slice(encoded);
+        let e = crate::engine::storage::prefix_end(&b);
+        self.entry_iter::<I>(header, b, e)
+    }
+
+    /// The one lazy walk behind the range and prefix forms. Bounds arrive
+    /// already spliced into entry-key space and OWNED: the returned iterator
+    /// must not borrow the caller's bound bytes (an opaque return type in
+    /// edition 2024 captures every lifetime in scope), and the engine handle
+    /// it needs for fetch-back belongs to the iterator itself.
+    fn entry_iter<I: KvIndex<Key = K, Document = R>>(
+        &self,
+        header: Vec<u8>,
+        b: Vec<u8>,
+        e: Option<Vec<u8>>,
+    ) -> impl DoubleEndedIterator<Item = crate::error::Result<(PrefixKey<K>, Option<R>)>>
+    where
+        S: SharedVirtualStorage,
+    {
         let taken = I::key_prefix_width();
         let kl = K::KEY_LEN;
         // Fetch-back needs an engine handle that outlives the iterator
@@ -797,10 +838,6 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         Ok(out)
     }
 
-    /// Full-ns scan of primary keys (slot-0 entries only — the same
-    /// slot-0 discipline as `scan_documents_raw`; index entries are slots 1+).
-    /// This is the ROW mode: a segment with no row is not here. For the document
-    /// mode see [`scan_document_keys`](Self::scan_document_keys).
     /// Clear stale entries under deprecated index slots (ADR-0005):
     /// a `#[ok_index(..., deprecated)]` declaration keeps its slot
     /// reserved but writes nothing; entries written before the
@@ -829,52 +866,114 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         Ok(removed)
     }
 
-    /// Full-ns scan of primary keys (slot-0 entries only — the same
-    /// slot-0 discipline as `scan_documents_raw`; index entries are slots 1+).
-    /// This is the ROW mode: a segment with no row is not here. For the document
-    /// mode see [`scan_document_keys`](Self::scan_document_keys).
-    pub fn scan_keys(&self) -> crate::error::Result<Vec<K>> {
-        let mut p = self.header();
-        crate::model::index::write_slot(&mut p, crate::model::index::PRIMARY_SLOT);
-        let mut out = Vec::new();
-        for suffix in self.store.scan_suffix(&p)? {
-            // A primary entry is `[header][slot][key]`: shorter than its own
-            // key means the stored bytes are not what the declaration says,
-            // so this is a CORRUPT store — reported, not asserted away.
-            if suffix.len() < K::KEY_LEN {
-                return Err(crate::error::Error::Corrupt {
-                    what: format!(
-                        "a primary entry is {} byte(s), shorter than the {}-byte key ",
-                        suffix.len(),
-                        K::KEY_LEN
-                    ),
-                });
-            }
-            out.push(K::decode(&suffix[suffix.len() - K::KEY_LEN..]));
-        }
-        Ok(out)
+    /// Every ROW key under a primary-key prefix, in key order — lazily.
+    ///
+    /// Rows only (slot 0; index entries are other slots). A document that
+    /// exists only as its dynamic segment (ADR-0035) is not here — the
+    /// document mode is [`scan_document_keys`](Self::scan_document_keys).
+    ///
+    /// A full scan is an EMPTY prefix, not a second door:
+    /// `PrefixProbe::empty()` walks the whole table, and a typed probe
+    /// (`DeviceKey::prefix().org(7).user(11).finish()`) narrows it by leading
+    /// key fields in declaration order — so a composite key answers "every
+    /// child of this parent" with one prefix scan and no access method
+    /// (ADR-0049).
+    ///
+    /// Laziness is the interface: `.take(n)` is a LIMIT that pays only the
+    /// reads performed, `.skip(m).take(n)` an offset page, `.rev()` the same
+    /// window backwards. Materializing is not this method's job — `fetch` is
+    /// the door, so a key becomes a document with `.map(|k| col.fetch(&k))`.
+    pub fn scan_keys(
+        &self,
+        probe: &crate::model::prefix::PrefixProbe<K>,
+    ) -> impl DoubleEndedIterator<Item = crate::error::Result<K>> + '_ {
+        let mut begin = self.header();
+        crate::model::index::write_slot(&mut begin, crate::model::index::PRIMARY_SLOT);
+        begin.extend_from_slice(probe.as_bytes());
+        let taken = probe.taken();
+        let end = crate::engine::storage::prefix_end(&begin);
+        let head_len = begin.len();
+        let key_len = K::KEY_LEN;
+        self.store
+            .scan_range_iter(&begin, end.as_deref())
+            .map(move |item| {
+                let (full, _value) = item?;
+                // A primary entry is `[header][slot][key]`. Past the probe the
+                // entry must complete the declared key EXACTLY; any other
+                // length means the store was written by a different
+                // declaration, which is reported rather than skipped.
+                if full.len() != head_len + (key_len - taken) {
+                    return Err(crate::error::Error::Corrupt {
+                        what: format!(
+                            "a primary entry under a {taken}-byte key prefix is {} byte(s) \
+                             long, but the declaration makes it {}",
+                            full.len(),
+                            head_len + (key_len - taken)
+                        ),
+                    });
+                }
+                // The entry holds the WHOLE key: `[header][slot][key]`.
+                // Decoding starts at the key, not at the probe boundary — the
+                // probe only bounded the range.
+                Ok(K::decode(&full[full.len() - key_len..]))
+            })
     }
 
-    /// Every document's KEY, in key order: the rows (slot 0) merged with the
-    /// segments that have NO row (slot 1). [`scan_keys`](Self::scan_keys) is the
-    /// other mode — rows only, one prefix scan, no join.
+    /// Every document's KEY under a primary-key prefix, in key order: the rows
+    /// (slot 0) merged with the segments that have NO row (slot 1).
+    /// [`scan_keys`](Self::scan_keys) is the other mode — rows only, lazy, no
+    /// join.
     ///
     /// Two modes, because a document is the PAIR of slots (ADR-0035): a `merge` /
     /// `replace` carrying no declared name leaves a segment with no row, and that
     /// document is invisible to a slot-0 scan. This one costs a second prefix
     /// scan and an in-memory merge, and no point read at all.
     ///
-    /// Materializing is deliberately NOT this method's job — `fetch` is the door,
-    /// so a key becomes a document with `.map(|k| collection.fetch(&k))`.
-    pub fn scan_document_keys(&self) -> crate::error::Result<Vec<K>> {
+    /// The prefix reaches BOTH slots — a document's key is the same bytes in
+    /// either — so `DeviceKey::prefix().org(7).finish()` answers "every device
+    /// document of this org" including the segment-only ones. The empty probe is
+    /// the whole table, the same rule as [`scan_keys`](Self::scan_keys).
+    ///
+    /// Eager on purpose, unlike `scan_keys`: the merge needs both sides in hand,
+    /// and nothing streams whole-table document enumeration today. Materializing
+    /// the documents is still not this method's job — `fetch` is the door, so a
+    /// key becomes a document with a plain `map` over the keys.
+    pub fn scan_document_keys(
+        &self,
+        probe: &crate::model::prefix::PrefixProbe<K>,
+    ) -> crate::error::Result<Vec<K>> {
+        let taken = probe.taken();
+        let key_len = K::KEY_LEN;
         let mut rows = self.header();
         crate::model::index::write_slot(&mut rows, crate::model::index::PRIMARY_SLOT);
+        rows.extend_from_slice(probe.as_bytes());
         let mut segs = self.header();
         crate::model::index::write_slot(&mut segs, crate::model::index::DYNAMIC_SLOT);
+        segs.extend_from_slice(probe.as_bytes());
         let rows = self.store.scan_suffix(&rows)?;
         let segs = self.store.scan_suffix(&segs)?;
-        // The suffix IS the key encoding in both slots, and a scan hands back key
-        // order — so the union is a two-pointer merge: no set, no sort, no read.
+        // Both scans return the bytes AFTER the prefix, and the prefix has the
+        // same length in both slots, so the two lists compare directly and the
+        // union is a two-pointer merge: no set, no sort, no read.
+        let mut buf = Vec::with_capacity(key_len);
+        let mut decode = |suffix: &[u8]| -> crate::error::Result<K> {
+            // The suffix must complete the declared key EXACTLY; anything else
+            // is a store written by a different declaration, reported rather
+            // than decoded into a plausible-looking key.
+            if taken + suffix.len() != key_len {
+                return Err(crate::error::Error::Corrupt {
+                    what: format!(
+                        "a document entry under a {taken}-byte key prefix is {} byte(s) long, \
+                         but the declaration makes it {key_len}",
+                        taken + suffix.len()
+                    ),
+                });
+            }
+            buf.clear();
+            buf.extend_from_slice(probe.as_bytes());
+            buf.extend_from_slice(suffix);
+            Ok(K::decode(&buf))
+        };
         let mut out = Vec::with_capacity(rows.len() + segs.len());
         let (mut i, mut j) = (0usize, 0usize);
         while i < rows.len() || j < segs.len() {
@@ -888,10 +987,10 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
                 if segs.get(j) == rows.get(i) {
                     j += 1; // a row and its segment are ONE document
                 }
-                out.push(K::decode(&rows[i]));
+                out.push(decode(&rows[i])?);
                 i += 1;
             } else {
-                out.push(K::decode(&segs[j]));
+                out.push(decode(&segs[j])?);
                 j += 1;
             }
         }

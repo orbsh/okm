@@ -100,7 +100,10 @@ fn engine_matrix_table_round_trip() {
             .expect("a store read")
             .expect("{name}: document round trip");
         assert_eq!(back.score, 55, "{name}");
-        let keys = t.scan_keys().unwrap();
+        let keys: Vec<MKey> = t
+            .scan_keys(&okm_core::PrefixProbe::empty())
+            .map(|r| r.unwrap())
+            .collect();
         assert_eq!(keys, vec![MKey { id: 7 }], "{name}: scan_keys");
     }
 }

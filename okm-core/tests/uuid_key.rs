@@ -127,7 +127,10 @@ fn rows_round_trip_by_uuid_key_and_scans_return_the_key() {
     assert_eq!(got.alias, "laptop");
 
     // The keyspace is already in clock order: no re-sorting, no index needed to read it that way.
-    let keys = devices.scan_keys().unwrap();
+    let keys: Vec<_> = devices
+        .scan_keys(&okm_core::PrefixProbe::empty())
+        .map(|r| r.unwrap())
+        .collect();
     assert_eq!(keys, vec![a, b], "v7 keys sort by their millisecond prefix");
 
     let tokens: Collection<_, Uuid4, Token> = Collection::new(store);

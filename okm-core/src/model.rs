@@ -30,6 +30,7 @@ pub mod key;
 pub mod meta;
 pub mod obj_dynamic;
 pub mod obj_vocab;
+pub mod prefix;
 pub mod presets;
 pub mod reduce;
 pub mod reverse;
