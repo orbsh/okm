@@ -87,7 +87,7 @@ pub use model::index::{
 };
 pub use model::junction::KvJunction;
 pub use model::key::{KeyEncode, PrefixKey};
-pub use model::prefix::PrefixProbe;
+pub use model::prefix::{IndexProbe, PrefixProbe, ProbeBytes};
 pub use model::presets::{Count, HighWater, LowAcc, LowWater, ReduceFieldSource, Sum};
 pub use model::reduce::{Reduce, ReduceCodec, ReduceLogic, reduce_get, scan_reduces};
 pub use model::vocab::{Vocab, VocabId};

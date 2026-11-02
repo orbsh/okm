@@ -439,6 +439,45 @@ fn inner_kind(ty: &str, span: &syn::Type) -> syn::Result<TS2> {
     }
 }
 
+/// Rewrite a `self.<field>` encoder into a value encoder over a binding named
+/// `v`, by token substitution.
+///
+/// The index-prefix builder holds a VALUE, not a document, and every field kind
+/// already has exactly one encoding definition (the payload's, reused by
+/// `__okm_encode_named` for index segments). Duplicating that match per kind
+/// would let the two drift, so the snippet is rewritten instead — groups are
+/// rewritten recursively, since the arms wrap their bodies in blocks.
+pub(crate) fn value_encoder(enc: &TS2, field: &syn::Ident) -> TS2 {
+    let toks: Vec<TokenTree> = enc.clone().into_iter().collect();
+    let mut out = TS2::new();
+    let mut i = 0usize;
+    while i < toks.len() {
+        let hit = i + 2 < toks.len()
+            && matches!(&toks[i], TokenTree::Ident(id) if id == "self")
+            && matches!(&toks[i + 1], TokenTree::Punct(p) if p.as_char() == '.')
+            && matches!(&toks[i + 2], TokenTree::Ident(id) if id == field);
+        if hit {
+            out.extend(std::iter::once(TokenTree::Ident(proc_macro2::Ident::new(
+                "v",
+                field.span(),
+            ))));
+            i += 3;
+            continue;
+        }
+        match &toks[i] {
+            TokenTree::Group(g) => {
+                let mut ng =
+                    proc_macro2::Group::new(g.delimiter(), value_encoder(&g.stream(), field));
+                ng.set_span(g.span());
+                out.extend(std::iter::once(TokenTree::Group(ng)));
+            }
+            other => out.extend(std::iter::once(other.clone())),
+        }
+        i += 1;
+    }
+    out
+}
+
 fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> syn::Result<Vec<FieldSchema>> {
     let mut fs: Vec<FieldSchema> = Vec::new();
     for f in named.named.iter() {

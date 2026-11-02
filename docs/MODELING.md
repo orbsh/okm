@@ -337,8 +337,8 @@ All three tables (`Account` ns 50, `Device` ns 51, `Token` ns 53) now carry no i
 
 The key is not the cheap substitute for a column. It is stronger in four ways, and none of them is available to a field inside the row:
 
+- **It is a read path, not only an address.** "Every device of this user" is key composition, not an index: with `[org][user][device]`, `scan_keys(&DeviceKey::prefix().org(7).user(11).finish())` is the whole query — one prefix scan over the primary table, nothing declared, and lazy (`.take(n)` a LIMIT, `.rev()` a newest-first page). This is where the model departs from SQL: there an index is a COPY of the data that the planner may or may not use, here the ordering the read needs IS the storage order, so the bytes that identify a row also group it. A face is declared only for the dimensions the key does not order (ADR-0049).
 - **It is ordered.** Key bytes ARE the sort order of every scan (BE fixed width, prefix-monotonic VarInt). `Uuid7` in the key makes creation order readable to the millisecond with no timestamp field and no index — ties inside one millisecond sort by their random tail, and that is enough for insert locality, which is why a btree's hot page stays hot. `Uuid4` for the token says, by choice of type, that a credential has no order worth keeping.
-- **It is prefix-scannable.** "Every device of this user" is key composition, not an index: put the user at the front and the prefix scan is the answer.
 - **It cannot drift.** One writer builds the address once. There is no second copy to update and no read path that could compare two ids and disagree.
 - **It is already in hand on every read.** `fetch` takes the key the caller passed; `scan` and `scan_covered` return `PrefixKey<K>` beside every hit. A mirrored id hands a caller something it already had.
 
@@ -1117,11 +1117,15 @@ event as-is; deriving extra context at consume time re-reads storage the event n
 
 The transport is an assembly-site decision (`SinkCell::register` accepts any sink — tokio mpsc, crossbeam queue, no-op); the core stays synchronous and knows no executor. Combinators over the receivers (map/filter/merge/fold to an epoch boundary) are the stream layer's business, not the model's.
 
-## Access methods are mandatory
+## Read paths: the key, the declared face, or a point
 
-Queries go through `get` (primary key) or `scan::<I>` (a named access method). There is no general-purpose full-scan query surface.
+A query goes through one of three doors, and which one is a modeling decision, not a planner's: `get` (one key), `scan_keys(probe)` (a primary-key prefix), or `scan::<I>` (a declared access method). SQL gives you one door — the query — and the planner picks an access path underneath it. Here the access path IS the declaration: the ordering a prefix read needs is already the storage order, so a grouping that lives in the key costs nothing to read, and a grouping that does not is a face you declare.
 
-The only raw scans are `scan_rows_raw` / `scan_keys` / `scan_document_keys` — maintenance surfaces for the snapshot exporter and the Arrow bridge, not application query paths. If application code reaches for them, that is a missing access-method declaration, not a shortcut.
+That is the precise sense in which access methods are mandatory: they are mandatory for the dimensions NOT in the key. A predicate that is a leading key segment is answered by `scan_keys(&DeviceKey::prefix().org(7).finish())` — one prefix scan, no declaration, and the probe names fields in declaration order, so an inserted field breaks at the call site instead of silently re-binding. Every other dimension needs `#[ok_index]`, because there is no general-purpose full-scan query surface: a predicate no door serves is a missing declaration, not a `.filter()`.
+
+The index side mirrors the key side exactly (ADR-0049): `ByOrg::prefix().org_id(7).finish()` builds an `IndexProbe<ByOrg>` over that access method's declared `fields(...)` order, and `finish()` at any depth is a legal probe — depth is the prefix depth. The marker type pins which access method the bytes belong to, so an `org` probe cannot be spent on `by_label`. Raw encoded bytes are still accepted (`ProbeBytes`), for a probe assembled from data rather than from a declaration.
+
+The remaining raw door, `scan_documents_raw`, is a maintenance surface for the snapshot exporter and the Arrow bridge — not an application query path.
 
 Enumeration has two modes, because a document is the PAIR of slots (ADR-0035): `scan_keys` enumerates ROWS (one prefix scan — a segment with no row is not there), `scan_document_keys` enumerates DOCUMENTS (the row slot merged in memory with the segment slot, so a `merge` that carried no declared name still shows up). Materializing is neither mode's job — `fetch` is the door, so a key becomes a document with a plain `map` over the keys; a union cannot be an adapter, because an adapter cannot surface an item that was never scanned.
 

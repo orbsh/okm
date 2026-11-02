@@ -4,7 +4,7 @@
 
 OKM is the KV counterpart of ORM: the logic is defined ORM-style, code generation produces the underlying KV operations. ORM maps objects onto relational tables, OKM maps objects onto KV keyspaces. Declarative derive macros (`KeyEncode` / `DocumentEncode` / `JunctionEncode` / `GraphEncode`) plus numeric namespace IDs build a zero-cost semantic data layer — as declarative as an ORM at development time, compiled down to pure pointer-offset arithmetic.
 
-Related reading: [KV Storage Engine](https://github.com/orbsh/wiki/blob/main/kv-storage-engine-en.md) — underlying architecture and design patterns (encoding principles, index strategies, engine-level trade-offs); [Architecture](docs/ARCHITECTURE.md) — the two-layer declaration machine (derive expansion + constant tables); [Modeling Guide](docs/MODELING.md) — the normative schema-modeling method (four layers, mandatory access methods, covering-index restraint, composite-key boundary); [Query Recipes](docs/query-recipes.md) — composing merge_join / group_by / walk into SQL shapes, the WHERE boundary record; [Graph Query Recipes](docs/graph-queries.md) — the graph's faces composed into Cypher-shaped traversals; [Concurrency and Writers](docs/CONCURRENCY.md) — what single-writer means, which mechanisms assume it, and the four shapes that carry more.
+Related reading: [KV Storage Engine](https://github.com/orbsh/wiki/blob/main/kv-storage-engine-en.md) — underlying architecture and design patterns (encoding principles, index strategies, engine-level trade-offs); [Architecture](docs/ARCHITECTURE.md) — the two-layer declaration machine (derive expansion + constant tables); [Modeling Guide](docs/MODELING.md) — the normative schema-modeling method (four layers, three read paths, covering-index restraint, composite-key boundary); [Query Recipes](docs/query-recipes.md) — composing merge_join / group_by / walk into SQL shapes, the WHERE boundary record; [Graph Query Recipes](docs/graph-queries.md) — the graph's faces composed into Cypher-shaped traversals; [Concurrency and Writers](docs/CONCURRENCY.md) — what single-writer means, which mechanisms assume it, and the four shapes that carry more.
 
 ## The bet: a smaller surface, an asymmetric payoff
 
@@ -150,8 +150,18 @@ users.put(&key, &User { org_id: 7, bio_len: 240 })?;
 // the caller would mistake for an absent row (ADR-0038).
 let row: Option<User> = users.get(&key)?;
 
-// Read by access method: leftmost-prefix scan, then fetch-back.
-for (pk, row) in users.scan::<ByOrg>(&7u32.to_be_bytes())? {
+// Read by primary-key prefix: the key IS the access path. A composite key
+// groups by construction, so "every user of this org" needs no index and no
+// declared query — the probe names leading fields, in declaration order.
+let org_users = users.scan_keys(&UserKey::prefix().org_id(7).finish());
+// Lazy: `.take(n)` is a LIMIT, `.skip(n)` a page, `.rev()` walks backwards;
+// each item is a `Result<UserKey>` (rows only — `fetch` materializes).
+
+// Read by access method: the dimension is NOT in the key, so it is a declared
+// face — leftmost-prefix scan, then fetch-back. The probe mirrors the key's:
+// `ByOrg::prefix()` names the index's declared `fields(...)` in order, and
+// `finish()` yields exactly the bytes a caller would hand-encode.
+for (pk, row) in users.scan::<ByOrg>(&ByOrg::prefix().org_id(7).finish())? {
     // pk.decoded: UserKey, row: Option<User>
 }
 
@@ -163,6 +173,8 @@ users.scan_range::<ByOrg>(&1u32.to_be_bytes(), Some(&100u32.to_be_bytes()))?;
 // derive from the STORED row, so the caller cannot hand it the wrong one.
 users.purge(&key)?;
 ```
+
+The three read doors are the modeling decision SQL hides: a predicate on a leading key segment is a prefix scan on the primary table (no index, no declaration), every other dimension is a declared face, and one row is a point read. An index here is not a second copy the planner may or may not choose — the ordering a prefix read needs is already the storage order, so the key that addresses a row also groups it.
 
 Overwrite semantics differ by design: `put` unfolds the stored document from
 every declared reduce group before folding the new one in, while faces are

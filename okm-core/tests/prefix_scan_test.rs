@@ -28,7 +28,9 @@ pub struct DeviceKey {
 #[ok_ref(DeviceKey)]
 #[ok_ns(24)]
 #[ok_index(by_label { fields(label) })]
+#[ok_index(by_tag_label { fields(tag, label) })]
 pub struct Device {
+    pub tag: u16,
     pub label: u32,
 }
 
@@ -40,7 +42,10 @@ fn seeded() -> Collection<TestStore, DeviceKey, Device> {
         for device in 0..count {
             col.put(
                 &DeviceKey { org, user, device },
-                &Device { label },
+                &Device {
+                    tag: (label % 3) as u16,
+                    label,
+                },
             )
             .unwrap();
             label += 1;
@@ -187,13 +192,75 @@ fn index_prefix_iter_matches_the_eager_scan() {
     assert_eq!(rev, group);
 }
 
+#[test]
+fn index_prefix_probe_is_typed_and_byte_identical() {
+    let col = seeded(); // tags = label % 3 over labels 0..6
+
+    // Depth 1: the builder emits exactly the bytes a caller would hand-encode,
+    // so the typed door and the byte door are one window.
+    let probe = __OkmIndex_Device_by_tag_label::prefix().tag(1u16).finish();
+    assert_eq!(probe.as_bytes(), 1u16.to_be_bytes());
+
+    let typed: Vec<DeviceKey> = col
+        .scan::<__OkmIndex_Device_by_tag_label>(&probe)
+        .unwrap()
+        .into_iter()
+        .map(|(pk, _)| pk.decoded)
+        .collect();
+    let raw: Vec<DeviceKey> = col
+        .scan::<__OkmIndex_Device_by_tag_label>(&1u16.to_be_bytes()[..])
+        .unwrap()
+        .into_iter()
+        .map(|(pk, _)| pk.decoded)
+        .collect();
+    assert_eq!(typed, raw);
+    assert_eq!(typed.len(), 2, "labels 1 and 4 carry tag 1");
+
+    // Depth 2 closes the segment: one device, decoded from the entry.
+    let probe = __OkmIndex_Device_by_tag_label::prefix()
+        .tag(1u16)
+        .label(1u32)
+        .finish();
+    let one = col
+        .scan::<__OkmIndex_Device_by_tag_label>(&probe)
+        .unwrap();
+    assert_eq!(one.len(), 1);
+    assert_eq!(one[0].0.decoded, DeviceKey { org: 1, user: 10, device: 1 });
+
+    // The empty probe is the whole access method.
+    let all = col
+        .scan::<__OkmIndex_Device_by_tag_label>(&__OkmIndex_Device_by_tag_label::prefix().finish())
+        .unwrap();
+    assert_eq!(all.len(), 7);
+
+    // The lazy twin takes the same probe, and reverses.
+    let lazy: Vec<DeviceKey> = col
+        .scan_prefix_iter::<__OkmIndex_Device_by_tag_label>(
+            &__OkmIndex_Device_by_tag_label::prefix().tag(1u16).finish(),
+        )
+        .map(|r| r.unwrap())
+        .map(|(pk, _)| pk.decoded)
+        .collect();
+    assert_eq!(lazy, typed);
+}
+
 #[cfg(feature = "fjall")]
 #[test]
 fn prefix_scan_reverses_on_a_native_backend() {
     let col: Collection<_, DeviceKey, Device> = Collection::new(TestStore::fjall_tmp());
     for device in 0..20u16 {
-        col.put(&DeviceKey { org: 1, user: 7, device }, &Device { label: device as u32 })
-            .unwrap();
+        col.put(
+            &DeviceKey {
+                org: 1,
+                user: 7,
+                device,
+            },
+            &Device {
+                tag: 0,
+                label: device as u32,
+            },
+        )
+        .unwrap();
     }
     let probe = DeviceKey::prefix().org(1).user(7).finish();
     let fwd: Vec<DeviceKey> = col.scan_keys(&probe).map(|r| r.unwrap()).collect();

@@ -549,8 +549,9 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     /// matching on the value is [`scan_exact`](Self::scan_exact).
     pub fn scan<I: KvIndex<Key = K, Document = R>>(
         &self,
-        encoded: &[u8],
+        probe: impl crate::model::prefix::ProbeBytes<I>,
     ) -> crate::error::Result<Vec<(PrefixKey<K>, Option<R>)>> {
+        let encoded = probe.probe_bytes();
         let mut out = Vec::new();
         for pk in crate::scan_index::<S, I>(&self.store, &self.header(), encoded)? {
             let document = if pk.taken == K::KEY_LEN {
@@ -572,8 +573,9 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     /// probe is a group query — use [`scan`](Self::scan).
     pub fn scan_exact<I: KvIndex<Key = K, Document = R>>(
         &self,
-        encoded: &[u8],
+        probe: impl crate::model::prefix::ProbeBytes<I>,
     ) -> crate::error::Result<Vec<(PrefixKey<K>, Option<R>)>> {
+        let encoded = probe.probe_bytes();
         let mut out = Vec::new();
         for pk in crate::scan_index_exact::<S, I>(&self.store, &self.header(), encoded)? {
             let document = if pk.taken == K::KEY_LEN {
@@ -671,14 +673,14 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     /// tests apply.
     pub fn scan_prefix_iter<I: KvIndex<Key = K, Document = R>>(
         &self,
-        encoded: &[u8],
+        probe: impl crate::model::prefix::ProbeBytes<I>,
     ) -> impl DoubleEndedIterator<Item = crate::error::Result<(PrefixKey<K>, Option<R>)>>
     where
         S: SharedVirtualStorage,
     {
         let header = self.header();
         let mut b = I::entry_prefix(&header, &[]);
-        b.extend_from_slice(encoded);
+        b.extend_from_slice(probe.probe_bytes());
         let e = crate::engine::storage::prefix_end(&b);
         self.entry_iter::<I>(header, b, e)
     }
