@@ -170,8 +170,13 @@ pub fn expand(input: DeriveInput) -> syn::Result<TS2> {
 
             fn encode(&self) -> Vec<u8> {
                 let mut buf = Vec::with_capacity(Self::KEY_LEN);
-                #(#encs)*
+                self.encode_into(&mut buf);
                 buf
+            }
+            /// The key's bytes written straight into `buf` — the same writers
+            /// `encode` uses, with the caller's buffer instead of a fresh one.
+            fn encode_into(&self, buf: &mut Vec<u8>) {
+                #(#encs)*
             }
             fn decode(b: &[u8]) -> Self {
                 let mut offset = 0usize;

@@ -473,12 +473,18 @@ fn emit_index_structs(schema: &DocumentSchema) -> syn::Result<TS2> {
                     let __okm_value = Self::entry_value(key, document);
                     for __okm_seg in __okm_vals {
                         let mut __okm_k = Vec::with_capacity(
-                            ns_prefix.len() + 1 + __okm_seg.len() + Self::key_prefix_width(),
+                            ns_prefix.len()
+                                + ::okm_core::slot_len(Self::SLOT)
+                                + __okm_seg.len()
+                                + Self::key_prefix_width(),
                         );
                         __okm_k.extend_from_slice(ns_prefix);
                         ::okm_core::write_slot(&mut __okm_k, Self::SLOT);
                         __okm_k.extend_from_slice(&__okm_seg);
-                        __okm_k.extend_from_slice(&Self::key_prefix_bytes(key));
+                        // Straight into the entry: the key-prefix tail is the
+                        // same bytes for every produced value, and a Vec per
+                        // entry would be an allocation serving a copy.
+                        Self::write_key_prefix(key, &mut __okm_k);
                         __okm_out.push((__okm_k, __okm_value.clone()));
                     }
                     __okm_out

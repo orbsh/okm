@@ -18,6 +18,17 @@ pub trait KeyEncode: Sized + Clone {
     /// prefix.
     const FIELD_WIDTHS: &'static [(&'static str, usize)];
     fn encode(&self) -> Vec<u8>;
+    /// Append the bytes [`encode`](Self::encode) would return to `buf`, without
+    /// materialising them.
+    ///
+    /// The default is correct for any impl (it copies the encoded Vec in), and
+    /// the derive overrides it with the field writers themselves. It exists
+    /// because every caller that wants a key's bytes is about to copy them into
+    /// a buffer it already owns — an index entry, a scan prefix — and a
+    /// key-sized Vec per entry is an allocation serving nothing.
+    fn encode_into(&self, buf: &mut Vec<u8>) {
+        buf.extend_from_slice(&self.encode());
+    }
     fn decode(bytes: &[u8]) -> Self;
     /// Field descriptors, declaration order — the key's single field list
     /// with primitive kinds (Arrow schema / column builders, ADR-0007).

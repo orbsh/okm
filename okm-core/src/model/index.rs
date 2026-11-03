@@ -155,11 +155,25 @@ pub const JUNCTION_SLOT_BASE: Slot = slot(segment::JUNCTION, 0);
 pub trait IndexFuncResult {
     /// Append the index-segment encoding of this value.
     fn encode_index(&self, buf: &mut Vec<u8>);
+
+    /// Byte width of that encoding, when this type can state it exactly.
+    ///
+    /// The multi-entry fan-out builds one segment buffer per produced value, so
+    /// a stated width is the difference between one allocation and a growth
+    /// ladder. `0` means "not stated" — the buffer simply grows, which is the
+    /// right answer for a hand impl that would have to encode to find out.
+    fn index_encoded_width(&self) -> usize {
+        0
+    }
 }
 
 impl IndexFuncResult for String {
     fn encode_index(&self, buf: &mut Vec<u8>) {
         buf.extend_from_slice(self.as_bytes());
+    }
+
+    fn index_encoded_width(&self) -> usize {
+        self.len()
     }
 }
 
@@ -168,6 +182,10 @@ macro_rules! index_func_uint {
         impl IndexFuncResult for $t {
             fn encode_index(&self, buf: &mut Vec<u8>) {
                 buf.extend_from_slice(&self.to_be_bytes());
+            }
+
+            fn index_encoded_width(&self) -> usize {
+                std::mem::size_of::<$t>()
             }
         }
     )*};
@@ -189,23 +207,28 @@ pub trait IndexFuncValues {
 macro_rules! index_func_values_single {
     ($($t:ty),*) => {$(impl IndexFuncValues for $t {
         fn func_values(self) -> Vec<Vec<u8>> {
-            let mut buf = Vec::new();
+            let mut buf = Vec::with_capacity(IndexFuncResult::index_encoded_width(&self));
             IndexFuncResult::encode_index(&self, &mut buf);
             vec![buf]
         }
     })*};
 }
+
 index_func_values_single!(String, u8, u16, u32, u64);
 
 impl<V: IndexFuncResult> IndexFuncValues for Vec<V> {
     fn func_values(self) -> Vec<Vec<u8>> {
-        self.into_iter()
-            .map(|v| {
-                let mut buf = Vec::new();
-                v.encode_index(&mut buf);
-                buf
-            })
-            .collect()
+        // Sized up front on both levels: the element count is `len()`, and each
+        // segment states its own width. This is the multi-entry fan-out's whole
+        // input — one entry per produced value — so a growth ladder here costs
+        // one ladder per entry.
+        let mut out = Vec::with_capacity(self.len());
+        for v in self {
+            let mut buf = Vec::with_capacity(v.index_encoded_width());
+            v.encode_index(&mut buf);
+            out.push(buf);
+        }
+        out
     }
 }
 
@@ -497,12 +520,24 @@ pub trait KvIndex {
     /// Encoded key-prefix tail segment (full key encoding when
     /// `KEY_PREFIX` is empty).
     fn key_prefix_bytes(key: &Self::Key) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(Self::key_prefix_width());
+        Self::write_key_prefix(key, &mut buf);
+        buf
+    }
+
+    /// Append the key-prefix tail segment to `buf`.
+    ///
+    /// The writing form is the primitive; [`key_prefix_bytes`] is the
+    /// convenience over it. Every real caller already owns a buffer sized for
+    /// this segment — an entry key is `[ns][slot][fields][key prefix]`, and the
+    /// fan-out appends the same tail to one entry per produced value — so
+    /// returning a Vec cost an allocation and a copy per entry for bytes that
+    /// land in the next buffer verbatim.
+    fn write_key_prefix(key: &Self::Key, buf: &mut Vec<u8>) {
         if Self::KEY_PREFIX.is_empty() {
-            key.encode()
+            key.encode_into(buf);
         } else {
-            let mut buf = Vec::with_capacity(Self::key_prefix_width());
-            key.encode_prefix_named(&mut buf, Self::KEY_PREFIX);
-            buf
+            key.encode_prefix_named(buf, Self::KEY_PREFIX);
         }
     }
 
@@ -510,15 +545,21 @@ pub trait KvIndex {
     /// method's slot names a counting family, so it is two bytes here
     /// (ADR-0030); the collection's ns allocation is untouched by how many
     /// indexes exist (ADR-0005).
+    ///
+    /// Written straight into one buffer: the field segment and the key prefix
+    /// are appended where they end up, so nothing is encoded into a temporary
+    /// Vec and copied.
     fn entry_key(ns_prefix: &[u8], key: &Self::Key, document: &Self::Document) -> Vec<u8> {
-        let fb = Self::fields_bytes(key, document);
-        let kp = Self::key_prefix_bytes(key);
-        let mut buf =
-            Vec::with_capacity(ns_prefix.len() + slot_len(Self::SLOT) + fb.len() + kp.len());
+        let mut buf = Vec::with_capacity(
+            ns_prefix.len()
+                + slot_len(Self::SLOT)
+                + Self::encoded_width(key, document, Self::FIELDS).unwrap_or(0)
+                + Self::key_prefix_width(),
+        );
         buf.extend_from_slice(ns_prefix);
         write_slot(&mut buf, Self::SLOT);
-        buf.extend_from_slice(&fb);
-        buf.extend_from_slice(&kp);
+        Self::encode_named(key, document, Self::FIELDS, &mut buf);
+        Self::write_key_prefix(key, &mut buf);
         buf
     }
 
