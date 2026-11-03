@@ -3,9 +3,10 @@
 //! engine upgrades. No CI gates — variance in shared-CI runners makes
 //! gates noisy; baselines are for relative comparisons across changes.
 //!
-//! Run: cargo bench -p okm-core
-//! (feature-gated engines get their own benches: fjall via
-//! `cargo bench -p okm-core --features fjall --bench engine_fjall` when added).
+//! Run: `cargo bench -p okm-core --features test-engines` (the engine feature is
+//! what brings `TestStore` in; without it the bench does not compile), or name a
+//! group to run it alone — `cargo bench -p okm-core --features test-engines --
+//! --bench core_paths "index/entry_key"`.
 
 #![allow(
     clippy::unwrap_used,
@@ -19,8 +20,8 @@ use criterion::{BatchSize, Criterion, Throughput, criterion_group, criterion_mai
 use std::hint::black_box;
 
 use okm_core::{
-    Collection, Document, DocumentEncode, KeyEncode, ReduceCodec, ReduceLogic, Reverse, Reversible,
-    TestStore, VarInt, VirtualStorage,
+    Collection, Document, DocumentEncode, KeyEncode, KvIndex, ReduceCodec, ReduceLogic, Reverse,
+    Reversible, TestStore, VarInt, VirtualStorage,
 };
 
 // ---------- declarations under test ----------
@@ -36,6 +37,7 @@ pub struct BenchKey {
 #[ok_ref(BenchKey)]
 #[ok_ns(9)]
 #[ok_index(by_level { fields(level), includes(score) })]
+#[ok_index(by_name { fields(level, name), includes(visits) })]
 #[ok_reduce(TagTotals { group(level) })]
 pub struct BenchRow {
     pub level: u32,          // hot 4B
@@ -151,6 +153,24 @@ fn bench_payload(c: &mut Criterion) {
     g.throughput(Throughput::Bytes(8));
     g.bench_function("reverse/u64_bitflip", |b| {
         b.iter(|| black_box(Reverse(0x0123_4567_89AB_CDEFu64).encode()))
+    });
+    g.finish()
+}
+
+// ---------- index entry encoding ----------
+
+fn bench_entry_encode(c: &mut Criterion) {
+    use __OkmIndex_BenchRow_by_name as ByName;
+
+    let mut g = c.benchmark_group("index");
+    let row = make_row(42);
+    let key = make_key(42);
+    let ns = <BenchRow as Document>::NS_PREFIX;
+    // `fields(level, name)` — one fixed-width field and one variable-width one,
+    // i.e. the segment whose width is computable (4 + name.len()) but only from
+    // the document. `includes(visits)` gives the value segment the same shape.
+    g.bench_function("entry_key/fixed+variable", |b| {
+        b.iter(|| black_box(ByName::entry_key(ns, &key, &row)))
     });
     g.finish()
 }
@@ -315,6 +335,7 @@ criterion_group!(
     benches,
     bench_key_encode,
     bench_payload,
+    bench_entry_encode,
     bench_scan,
     bench_write_mock,
     bench_write_changelog,

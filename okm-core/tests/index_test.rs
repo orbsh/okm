@@ -955,3 +955,72 @@ fn covered_includes_walk_fixed_widths_then_the_variable_tail() {
     assert_eq!(covered[1].1.rank, 9);
     assert_eq!(covered[1].1.title, "更长的标题文本");
 }
+
+/// 宽度行走的测试行：定宽字段 + 变长字段同处一段——段宽只能从文档读出来
+/// （`4 + name.len()`），但读出来之后是精确值，不是上界。
+#[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
+pub struct NamedKey {
+    pub id: u64,
+}
+
+#[derive(DocumentEncode, Clone, PartialEq, Debug)]
+#[ok_ref(NamedKey)]
+#[ok_index(by_named_city { fields(city, name), includes(name) })]
+#[ok_ns(22)]
+pub struct NamedRow {
+    pub city: u32,
+    pub name: String,
+}
+
+use __OkmIndex_NamedRow_by_named_city as ByNamedCity;
+
+/// `KvIndex::encoded_width` 必须**精确**：它存在的唯一目的是让 `fields_bytes` /
+/// `entry_value` 一次分配到位，答小了会多一次 realloc（正是要消掉的东西），答大了
+/// 会白白占内存。精确性不是约定而是构造出来的——它求和的就是 payload 编码器用的
+/// 那些 per-field 宽度表达式（`len_expr`：定宽字段是声明宽度，变长字段是**值**的
+/// 长度）。函数索引答 `None`：它的段是函数输出，命名行走不到。
+#[test]
+fn the_width_walk_is_exact_and_a_func_index_declines() {
+    let k = NamedKey { id: 7 };
+    let row = NamedRow {
+        city: 3,
+        name: "Apple".to_string(),
+    };
+    let seg = <ByNamedCity as KvIndex>::fields_bytes(&k, &row);
+    assert_eq!(
+        <ByNamedCity as KvIndex>::encoded_width(&k, &row, <ByNamedCity as KvIndex>::FIELDS),
+        Some(seg.len())
+    );
+    assert_eq!(seg.len(), 4 + "Apple".len()); // 定宽 4B + 变长段
+
+    // 变长段的宽度随值变化：宽度行走读的是值，不是常量。
+    let longer = NamedRow {
+        city: 3,
+        name: "a-longer-name".to_string(),
+    };
+    assert_eq!(
+        <ByNamedCity as KvIndex>::encoded_width(&k, &longer, <ByNamedCity as KvIndex>::FIELDS),
+        Some(4 + "a-longer-name".len())
+    );
+
+    // includes 段走同一条行走。
+    let covered = <ByNamedCity as KvIndex>::entry_value(&k, &row);
+    assert_eq!(covered.len(), "Apple".len());
+    assert_eq!(
+        <ByNamedCity as KvIndex>::encoded_width(&k, &row, <ByNamedCity as KvIndex>::INCLUDES),
+        Some(covered.len())
+    );
+
+    // 函数索引：段是 func(&document) 的输出，命名行走看不到 → None。
+    assert_eq!(
+        <ByLower as KvIndex>::encoded_width(
+            &DocKey { id: 7 },
+            &DocFunc {
+                city: 3,
+                name: "Apple".to_string()
+            },
+            <ByLower as KvIndex>::FIELDS
+        ),
+        None
+    );
+}

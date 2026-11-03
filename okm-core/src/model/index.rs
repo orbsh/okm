@@ -459,9 +459,28 @@ pub trait KvIndex {
     /// fields off `key` instead (the hook receives both).
     fn encode_named(key: &Self::Key, document: &Self::Document, names: &[&str], buf: &mut Vec<u8>);
 
+    /// Encoded byte width of the named fields, without encoding them.
+    ///
+    /// The generated impls sum their fields' own width expressions, so the
+    /// answer is EXACT, not a bound — but it is only reachable from inside the
+    /// walk that owns the fields, which is why the trait takes a name list and
+    /// not a document. `None` = this declaration cannot answer (a `func`
+    /// index's segment is the function's output, and a hand impl says nothing),
+    /// and the caller lets the buffer grow instead.
+    fn encoded_width(
+        _key: &Self::Key,
+        _document: &Self::Document,
+        _names: &[&str],
+    ) -> Option<usize> {
+        None
+    }
+
     /// Encoded index-field segment (the sort key, after the header).
     fn fields_bytes(key: &Self::Key, document: &Self::Document) -> Vec<u8> {
-        let mut buf = Vec::new();
+        let mut buf = match Self::encoded_width(key, document, Self::FIELDS) {
+            Some(w) => Vec::with_capacity(w),
+            None => Vec::new(),
+        };
         Self::encode_named(key, document, Self::FIELDS, &mut buf);
         buf
     }
@@ -506,10 +525,14 @@ pub trait KvIndex {
     /// Entry value: the includes segment (raw payload-field encodings,
     /// concatenation in `INCLUDES` order; empty when no includes).
     fn entry_value(key: &Self::Key, document: &Self::Document) -> Vec<u8> {
-        let mut buf = Vec::new();
-        if !Self::INCLUDES.is_empty() {
-            Self::encode_named(key, document, Self::INCLUDES, &mut buf);
+        if Self::INCLUDES.is_empty() {
+            return Vec::new();
         }
+        let mut buf = match Self::encoded_width(key, document, Self::INCLUDES) {
+            Some(w) => Vec::with_capacity(w),
+            None => Vec::new(),
+        };
+        Self::encode_named(key, document, Self::INCLUDES, &mut buf);
         buf
     }
 

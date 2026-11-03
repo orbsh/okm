@@ -69,13 +69,23 @@ use crate::schema::{parse_schema, value_encoder, DocumentSchema, IdxDecl};
 /// index declarations and the inherent `__okm_encode_named` walk.
 fn emit_named_walk(schema: &DocumentSchema) -> TS2 {
     let mut enc_arms = quote! {};
+    let mut width_arms = quote! {};
     let mut enc_names = Vec::new();
     for f in &schema.fields {
         let fname = f.ident.to_string();
         let enc = &f.enc;
+        // `len_expr`, not `width`: the IR's `width` is the HOT-SEGMENT width
+        // (0 means "cold, variable"), while `len_expr` is the field's encoded
+        // byte length — the declared width for fixed kinds, the value's actual
+        // length for variable ones. Summing `width` would make every cold
+        // field contribute nothing.
+        let len = &f.len_expr;
         enc_names.push(fname.clone());
         enc_arms.extend(quote! {
             #fname => { #enc }
+        });
+        width_arms.extend(quote! {
+            #fname => { #len }
         });
     }
     quote! {
@@ -91,6 +101,34 @@ fn emit_named_walk(schema: &DocumentSchema) -> TS2 {
                     other => panic!("unknown field name: {other}"),
                 }
             }
+        }
+
+        /// Named-field WIDTH walk — the same name list as
+        /// [`__okm_encode_named`], answering each field's encoded byte width
+        /// instead of writing it. This is what lets an access method size its
+        /// segment buffer in one allocation: the width is exact (each field's
+        /// own width expression, so a variable-width field reads its VALUE's
+        /// length), it is just not knowable from outside this walk.
+        #[allow(unused_variables, unused_mut, dead_code)]
+        // The empty-row expansion is a match whose only arm diverges, so the
+        // accumulation after it is unreachable — a shape artifact of generated
+        // code, not a defect (no name reaches the panic: names come from the
+        // declaration's own fields/includes lists).
+        #[allow(unreachable_code)]
+        pub fn __okm_encoded_width(&self, names: &[&str]) -> usize {
+            let mut total = 0usize;
+            for n in names {
+                // Annotated, not inlined: a declaration with no payload fields
+                // (the empty-struct row) expands to a match whose only arm
+                // diverges, and `usize += !` does not type-check while
+                // `let w: usize = !` does.
+                let w: usize = match *n {
+                    #width_arms
+                    other => panic!("unknown field name: {other}"),
+                };
+                total += w;
+            }
+            total
         }
 
         /// Two-source named walk for reduce GROUP segments (ADR-0024):
@@ -508,6 +546,13 @@ fn emit_index_structs(schema: &DocumentSchema) -> syn::Result<TS2> {
         // For Reverse<T> payload fields the payload encoder reads
         // `self.field`; __okm_encode_named is an inherent method with a
         // real `self`, so the arm bodies work verbatim.
+        let encoded_width_body = if idx.func.is_empty() {
+            quote! { Some(<Self::Document>::__okm_encoded_width(document, names)) }
+        } else {
+            // A function index's segment is `func(&document)`'s encoding: the
+            // named-field walk cannot see it, so the segment sizes itself.
+            quote! { None }
+        };
         let (covered_decl, covered_ty, covered_body) = emit_covered(schema, idx)?;
         index_out.extend(quote! {
             #[doc = concat!("Access method `", stringify!(#iname), "` over `", stringify!(#row_name), "` (slot ", #slot_doc, ", ADR-0005/0006).")]
@@ -541,6 +586,15 @@ fn emit_index_structs(schema: &DocumentSchema) -> syn::Result<TS2> {
                     buf: &mut Vec<u8>,
                 ) {
                     #encode_named_body
+                }
+
+                #[allow(unused_variables)] // `_key` stays unused for field indexes
+                fn encoded_width(
+                    _key: &Self::Key,
+                    document: &Self::Document,
+                    names: &[&str],
+                ) -> Option<usize> {
+                    #encoded_width_body
                 }
                 #pairs_impl
                 #admits_impl
