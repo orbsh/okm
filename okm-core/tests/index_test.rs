@@ -1024,3 +1024,36 @@ fn the_width_walk_is_exact_and_a_func_index_declines() {
         None
     );
 }
+
+/// 单缓冲重写不能改动字节：`entry_key` 现在是 "ns + slot + 字段段 + key 前缀" 一路
+/// 写进同一个缓冲，之前是先编到两个临时 Vec 再拼。这条锁住重组等式，顺带锁住
+/// `encode_into` 与 `encode`、`write_key_prefix` 与 `key_prefix_bytes` 产出同一
+/// 字节序列——同一张字段表养两套写法，正是最容易漂的地方。
+#[test]
+fn the_single_buffer_entry_matches_the_recomposed_segments() {
+    let k = SessionKey {
+        user_id: 4,
+        session_id: 9,
+    };
+    let r = Session { kind: 3 };
+    let ns = <Session as Document>::NS_PREFIX;
+
+    let mut recomposed = Vec::new();
+    recomposed.extend_from_slice(ns);
+    okm_core::write_slot(&mut recomposed, <ByKind as KvIndex>::SLOT);
+    recomposed.extend_from_slice(&<ByKind as KvIndex>::fields_bytes(&k, &r));
+    recomposed.extend_from_slice(&<ByKind as KvIndex>::key_prefix_bytes(&k));
+    assert_eq!(<ByKind as KvIndex>::entry_key(ns, &k, &r), recomposed);
+
+    let mut written = Vec::new();
+    <ByKind as KvIndex>::write_key_prefix(&k, &mut written);
+    assert_eq!(written, <ByKind as KvIndex>::key_prefix_bytes(&k));
+
+    let mut into = Vec::new();
+    k.encode_into(&mut into);
+    assert_eq!(into, k.encode());
+
+    // 截断的 key 前缀（key(session_id)）：尾段只有 8B，不是 KEY_LEN = 16。
+    assert_eq!(<ByKind as KvIndex>::key_prefix_width(), 8);
+    assert_eq!(written.len(), 8);
+}

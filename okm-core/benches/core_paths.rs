@@ -48,6 +48,32 @@ pub struct BenchRow {
 
 use __OkmIndex_BenchRow_by_level as ByLevel;
 
+// ---------- multi-entry (function index over a list) ----------
+
+#[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
+pub struct TokKey {
+    pub id: u64,
+}
+
+/// The token list is what a multi-entry fan-out produces one entry per element
+/// from — the inverted-index shape. The tokens below are longer than one
+/// allocator size class on purpose: a segment buffer that starts empty grows
+/// (8 → 16 → 32) where a sized one allocates once, and only tokens that cross
+/// the class boundary show that.
+fn token_ids(row: &TokRow) -> Vec<String> {
+    row.tags.split(',').map(|s| s.to_string()).collect()
+}
+
+#[derive(DocumentEncode, Clone, PartialEq, Debug)]
+#[ok_ref(TokKey)]
+#[ok_ns(10)]
+#[ok_index(by_token { func(token_ids) })]
+pub struct TokRow {
+    pub tags: String,
+}
+
+use __OkmIndex_TokRow_by_token as ByToken;
+
 // Reduce accumulator (count + sum) — the ADR-0008 example shape.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct TagTotals {
@@ -171,6 +197,29 @@ fn bench_entry_encode(c: &mut Criterion) {
     // the document. `includes(visits)` gives the value segment the same shape.
     g.bench_function("entry_key/fixed+variable", |b| {
         b.iter(|| black_box(ByName::entry_key(ns, &key, &row)))
+    });
+    g.finish()
+}
+
+// ---------- multi-entry fan-out ----------
+
+fn bench_multi_entry(c: &mut Criterion) {
+    let mut g = c.benchmark_group("index");
+    let key = TokKey { id: 42 };
+    // 24-byte tokens: past the allocator's first size class, so a buffer that
+    // starts empty grows a ladder (8 → 16 → 32) where a sized one allocates once.
+    let row = TokRow {
+        tags: (0..8)
+            .map(|i| format!("token-{i:02}-abcdefghijklm"))
+            .collect::<Vec<_>>()
+            .join(","),
+    };
+    let ns = <TokRow as Document>::NS_PREFIX;
+    // Eight produced values = eight entries per document, each a key whose
+    // segment is that token's bytes. This is the path where one buffer per
+    // value is the normal case, not the exception.
+    g.bench_function("entry_pairs/multi_entry_8", |b| {
+        b.iter(|| black_box(ByToken::entry_pairs(ns, &key, &row).len()))
     });
     g.finish()
 }
@@ -336,6 +385,7 @@ criterion_group!(
     bench_key_encode,
     bench_payload,
     bench_entry_encode,
+    bench_multi_entry,
     bench_scan,
     bench_write_mock,
     bench_write_changelog,
