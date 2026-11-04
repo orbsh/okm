@@ -68,7 +68,7 @@ use okm_core::{JunctionEncode, Ref};
 /// The two directions use different endpoint identity widths —
 /// this is how "the primary key changes with direction" is expressed.
 #[derive(JunctionEncode, Clone)]
-#[ok_junction(1)]
+#[ok_ns(110)]
 pub struct UserToSession {
     #[ok_head(org_id, user_id)]
     pub user: Ref<User, UserKey>,
@@ -76,7 +76,7 @@ pub struct UserToSession {
 }
 ```
 
-`#[ok_junction(n)]` sets the segment-0x3 discriminator, separating multiple junctions over one endpoint pair. `#[ok_head(field, ...)]` declares which fields of the endpoint count as its identity **in this junction**; omitting it means the full key is the identity. Names must be a declaration-order prefix of the endpoint's fields (compile-time generated check). One declaration produces the one-way entry in each endpoint's ns automatically (direction is carried by which ns the entry lives in — see "Many-to-many relationships" below).
+`#[ok_ns(N)]` sets the segment-0x3 discriminator, separating multiple junctions over one endpoint pair. `#[ok_head(field, ...)]` declares which fields of the endpoint count as its identity **in this junction**; omitting it means the full key is the identity. Names must be a declaration-order prefix of the endpoint's fields (compile-time generated check). One declaration produces the one-way entry in each endpoint's ns automatically (direction is carried by which ns the entry lives in — see "Many-to-many relationships" below).
 
 ### Rows and indexes: `DocumentEncode`
 
@@ -217,7 +217,7 @@ Physical key layout (two-ns residency, ADR-0015/0016):
 
 The local identity leads (the scan prefix `[ns][slot][local identity]` must match); the peer identity is the suffix. The discriminator's low bit carries the direction — needed only for self-reflexive junctions, where both endpoints share one ns.
 
-Each entry is one-way: the entry in `ns_org` answers "all members of this organization", the one in `ns_user` answers "all organizations this user belongs to". Direction is carried by which ns the entry lives in — no direction slots (the old 14/15 pair is gone). `nnn` is the junction discriminator (`#[ok_junction(n)]`) for multiple junctions over one endpoint pair. The junction's fields reference **document types**; the derive resolves their `Key` and `NS_PREFIX` — ns is declared once, on the document. See ADR-0015/ADR-0016 and the slot table in [key-layout](docs/internals/key-layout.md).
+Each entry is one-way: the entry in `ns_org` answers "all members of this organization", the one in `ns_user` answers "all organizations this user belongs to". Direction is carried by which ns the entry lives in — no direction slots (the old 14/15 pair is gone). `nnn` is the junction discriminator (`#[ok_ns(N)]`) for multiple junctions over one endpoint pair. The junction's fields reference **document types**; the derive resolves their `Key` and `NS_PREFIX` — ns is declared once, on the document. See ADR-0015/ADR-0016 and the slot table in [key-layout](docs/internals/key-layout.md).
 
 ### Reverse queries and truncated identities
 
@@ -629,10 +629,10 @@ let e = UserToSession {
     session: Ref::ref_key(SessionKey { org_id: 7, session_id: 1001 }),
 };
 let fk = e.a_side_key(); // A-side (forward) entry: lives in User's ns
-assert_eq!(&fk[..4], &[0, 1, 0x30, 2]); // ns=1 (User), slot 0x3002 (junction seg, n=1, dir=0)
+assert_eq!(&fk[..4], &[0, 110, 0x00, 0x00]); // the junction's own ns, primary face
 assert_eq!(&fk[4..8], &7u32.to_be_bytes()); // local identity leads
 let rk = e.b_side_key(); // B-side (reverse) entry: lives in Session's ns
-assert_eq!(&rk[..4], &[0, 2, 0x30, 3]); // ns=2 (Session), slot 0x3003 (n=1, dir=1)
+assert_eq!(&rk[..4], &[0, 110, 0x06, 0x00]); // same ns, reverse face (a graph's 0x06)
 // ... full layout assertions in okm-core/tests/integration.rs
 ```
 
@@ -650,7 +650,7 @@ The access methods defined by `#[ok_index]` are **table-local** — their data s
 
 ```text
 #[derive(JunctionEncode)]
-#[ok_junction(1)]
+#[ok_ns(110)]
 struct OrgUser {
     #[ok_head(tenant_id, org_id)]   // A-side identity truncated to (tenant_id, org_id)
     pub org: Ref<Org, OrgKey>,
@@ -658,16 +658,16 @@ struct OrgUser {
 }
 ```
 
-A junction materializes as one one-way key per endpoint ns (segment 0x3, direction carried by which ns the entry lives in, ADR-0015/0016): the A-side prefix `[ns_org][0x3nnn][org]` fetches all members of an org in one scan (the list side); the prefix in `ns_user` fetches all orgs a user belongs to. A job change = adding/removing one junction entry; identity never moves. `#[ok_head(...)]` declares which identity fields the endpoint is truncated to on that direction (absent = full identity), letting each endpoint use a shorter prefix — entry key length and grouping granularity are trimmed per direction, which is how "the primary key varies by direction" is expressed. `ok_head` selects a subset of *declared identity fields*, not free bytes; its decidability follows the same principle as the index tail.
+A junction is a table with its own ns (ADR-0050): the primary face `0x00` holds `[ns][0x00][A·identity][B·identity]`, so `[ns][0x00][org]` lists an org's members in one scan, and the reverse face `0x06` — the number a graph leaves free, since an ns is a graph OR a junction — holds the same pair the other way round, so `[ns][0x06][user]` lists every org a user belongs to. The reverse face is an index: it is rebuilt from the primary face and is never the only copy of anything. `link` writes both faces in one batch; `unlink_all(a)` retires one endpoint's rows on both. A job change = adding/removing one junction entry; identity never moves. `#[ok_head(...)]` declares which identity fields the endpoint is truncated to on that direction (absent = full identity), letting each endpoint use a shorter prefix — entry key length and grouping granularity are trimmed per direction, which is how "the primary key varies by direction" is expressed. `ok_head` selects a subset of *declared identity fields*, not free bytes; its decidability follows the same principle as the index tail.
 
 Junctions and indexes are isomorphic at the mechanism level (both are "secondary key layouts pointing at identity") but their roles cannot be swapped:
 
 - **Data source**: an index's data source is the row's own payload —
 the user never writes entries by hand. A junction's data source is the relationship between two entities — a business fact in its own right, requiring explicit double-write and double-delete.
 - **Endpoints**: an index's tail points at its own table's primary key;
-a junction points at another collection's entity (two endpoints, one one-way entry per endpoint ns).
+a junction points at another collection's entity (two endpoints, a primary row and, in the same ns, an index row for the other direction).
 
-**Bidirectionality is an obligation, not an option.** A REV entry costs one extra key of storage (LSM sequential append — the cheapest write there is); skipping it buys: reverse lookups degenerate into full scans of the FWD segment (violating access-method discipline), or a later backfill migration (orders of magnitude more expensive). The contrast with indexes makes this sharper: an index has only one direction, because the reverse lookup goes through the primary-key `get`; both endpoints of a junction are secondary vantage points — neither holds the primary key — so both directions need an entry. Bidirectionality also makes unbinding O(1): both keys' identities are in hand, so it is an exact `delete`, not scan-then-delete. The real restraint is not "do we need the REV direction" (no choice there) but **whether this junction should exist at all**: a relationship with no reverse-lookup need and a small cardinality (a config-style one-to-one) can live in a payload field, with no junction declared; add one later when needed — junction double-writes sync automatically, no backfill.
+**The reverse face is written at link time, not derived on demand.** One extra key (LSM sequential append — the cheapest write there is) buys a prefix scan where the alternative is a full scan of the primary face; skipping it buys: reverse lookups degenerate into full scans of the FWD segment (violating access-method discipline), or a later backfill migration (orders of magnitude more expensive). The contrast with indexes makes this sharper: an index has only one direction, because the reverse lookup goes through the primary-key `get`; a junction's row does hold both identities, but answering "what belongs to B" by scanning it is a full table scan, so the index face exists to keep that a prefix scan. Being an index, a damaged reverse face is a repair (`reindex`-shaped), not a lost fact. Bidirectionality also makes unbinding O(1): both keys' identities are in hand, so it is an exact `delete`, not scan-then-delete. The real restraint is not "do we need the REV direction" (no choice there) but **whether this junction should exist at all**: a relationship with no reverse-lookup need and a small cardinality (a config-style one-to-one) can live in a payload field, with no junction declared; add one later when needed — junction double-writes sync automatically, no backfill.
 
 One sentence: **an index is a derived view of one row; a junction is first-class relationship data**. The convenience of `#[ok_index]` (declare-to-register, no manual ns numbering — ADR-0005's motivation was precisely eliminating per-index manual numbering and hole bookkeeping) is a secondary bonus, not the dividing line; the dividing line is the data source.
 
@@ -682,7 +682,7 @@ The relation is an attribute of the user row: `Refs` in field position, the user
 - **"AND: which users follow this session?"** — both directions are
 now first-class set queries. The relation has outgrown any single row: a user-side field cannot answer the session-side question without a full scan, so the fact must be materialized in both endpoints' ns — a `Junction`, linked/unlinked as explicit events.
 
-The second question arriving later is a **schema migration, not a retrofit**: promoting a `Refs` field to a `Junction` means (a) declare the junction type with the same endpoint pair and a fresh `#[ok_junction(n)]` discriminator; (b) backfill by walking the parent collection and `link`ing each row's current key set (junction entries have no backfill mechanism — the same discipline as index append-only: a new access method only sees writes made after it exists); (c) drop the field from the document in the same layout-version bump, since the field and the junction would otherwise be two truth sources fighting over the same fact (the exact dual-entry-point conflict that killed `#[ok_relation]`). Reverse migration (junction back to `Refs`) applies when one endpoint's lookup need disappears — the reverse-scan demand was the only reason the fact left the row.
+The second question arriving later is a **schema migration, not a retrofit**: promoting a `Refs` field to a `Junction` means (a) declare the junction type with the same endpoint pair and a fresh `#[ok_ns(N)]` discriminator; (b) backfill by walking the parent collection and `link`ing each row's current key set (junction entries have no backfill mechanism — the same discipline as index append-only: a new access method only sees writes made after it exists); (c) drop the field from the document in the same layout-version bump, since the field and the junction would otherwise be two truth sources fighting over the same fact (the exact dual-entry-point conflict that killed `#[ok_relation]`). Reverse migration (junction back to `Refs`) applies when one endpoint's lookup need disappears — the reverse-scan demand was the only reason the fact left the row.
 
 The rejected `#[ok_relation]` proposal effectively assumed the first shape while storing the second; that mismatch — a set-shaped truth source living in one endpoint's field while the relation is defined by both — is precisely why it could not stand.
 
@@ -812,7 +812,7 @@ mudra's tag forest is the shape people reach for a graph on: many roots, no sing
 struct Tag { parent_id: i32, name: String, rank: i32, deleted: u8, /* … */ }
 
 #[derive(JunctionEncode, Clone, Debug)]
-#[ok_junction(1)]
+#[ok_ns(110)]
 struct PageTag { page: Ref<Page, PageKey>, tag: Ref<Tag, TagKey> }
 ```
 

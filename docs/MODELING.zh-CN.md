@@ -63,7 +63,7 @@ use okm_core::{JunctionEncode, Ref};
 /// 同一条 junction 的两个方向使用不同宽度的端点身份——
 /// 这就是"主键随方向变化"的表达。
 #[derive(JunctionEncode, Clone)]
-#[ok_junction(1)]
+#[ok_ns(110)]
 pub struct UserToSession {
     #[ok_head(org_id, user_id)]
     pub user: Ref<User, UserKey>,
@@ -71,7 +71,7 @@ pub struct UserToSession {
 }
 ```
 
-`#[ok_junction(n)]` 设置段 0x3 区分号，区分同一端点对上的多条 junction。`#[ok_head(field, ...)]` 声明该端点**在这条 junction 里**哪些字段算身份；不标注 = 全量 key 即身份。字段名必须是端点声明序的前缀（宏生成的编译期检查）。一次声明自动生成每个端点 ns 里的一条单向条目（方向由条目所在的 ns 承载——见下文「多对多关系」）。
+`#[ok_ns(N)]` 声明 junction 自己的命名空间（ADR-0050）：一种关系一个 ns，就是一张表，同名文档集合用的是同一个属性。`#[ok_head(field, ...)]` 声明该端点**在这条 junction 里**哪些字段算身份；不标注 = 全量 key 即身份。字段名必须是端点声明序的前缀（宏生成的编译期检查）。一次声明生成主键面的一条关系行，以及同一个 ns 里反向面的一条索引行（见下文「多对多关系」）。
 
 ### 行与索引：`DocumentEncode`
 
@@ -189,13 +189,13 @@ edges.unlink(&user, &s1); // 双向同时删除
 物理 key 布局（正向）：
 
 ```
-[ ns_a u16 BE ][ slot u16 BE: 0x3 段 ][ A·身份 ][ B·身份 ]   在 A 的集合里
-[ ns_b u16 BE ][ slot u16 BE: 0x3 段 ][ B·身份 ][ A·身份 ]   在 B 的集合里
+[ ns_junction u16 BE ][ slot u16 BE: 0x00 ][ A·身份 ][ B·身份 ]   主键面：关系行
+[ ns_junction u16 BE ][ slot u16 BE: 0x06 ][ B·身份 ][ A·身份 ]   反向面：索引行
 ```
 
-本端身份在前（扫描前缀 `[ns][slot][本端身份]` 必须能命中），对端身份是后缀。区分号低位承载方向——只有自反 junction（两端同 ns）需要它。
+两个面在**同一个 ns** 里，面号不同：`0x00` 和文档集合的主键面同一约定，`0x06` 是图让出的固定面（一个 ns 要么是图、要么是 junction）。本端身份在前，所以 `[ns][0x00][A·身份]` 与 `[ns][0x06][B·身份]` 都是一次可命中的前缀扫描。数据只存在于主键面；反向面是索引，可从主键面重建。
 
-每条 entry 单向：ns_org 里的回答“这个组织的全部成员”，ns_user 里的回答“这个用户所属的全部组织”。方向由条目所在的 ns 承载——不再有方向 slot（旧的 14/15 已取消）。`nnn` 是 junction 区分号（`#[ok_junction(n)]`），区分同一端点对上的多条 junction。junction 的字段引用**文档类型**，derive 反查其 `Key` 与 `NS_PREFIX`——ns 只在文档上声明一次。见 ADR-0015/ADR-0016 与 [key-layout](docs/internals/key-layout.zh-CN.md) 的 slot 表。
+junction 的字段引用**文档类型**，derive 反查其 `Key` 用于身份编码；ns 不再是两个端点 ns 的寄宿，而是 junction 自己的（`#[ok_ns(N)]`）。见 ADR-0050 与 [key-layout](docs/internals/key-layout.zh-CN.md) 的 slot 表。
 
 ### 反向查询与截断身份
 
@@ -569,10 +569,10 @@ let e = UserToSession {
     session: Ref::ref_key(SessionKey { org_id: 7, session_id: 1001 }),
 };
 let fk = e.a_side_key(); // A 端（正向）entry：住在 User 的 ns
-assert_eq!(&fk[..4], &[0, 1, 0x30, 2]); // ns=1（User）、slot 0x3002（junction 段、n=1、dir=0）
+assert_eq!(&fk[..4], &[0, 110, 0x00, 0x00]); // junction 自己的 ns、主键面
 assert_eq!(&fk[4..8], &7u32.to_be_bytes()); // 本端身份在前
 let rk = e.b_side_key(); // B 端（反向）entry：住在 Session 的 ns
-assert_eq!(&rk[..4], &[0, 2, 0x30, 3]); // ns=2（Session）、slot 0x3003（n=1、dir=1）
+assert_eq!(&rk[..4], &[0, 110, 0x06, 0x00]); // 同一个 ns、反向面（图让出的 0x06）
 // ... 完整布局断言见 okm-core/tests/integration.rs
 ```
 
@@ -590,7 +590,7 @@ OKM 里它以二级索引的形态出现：索引条目的布局是 `[ns 2B][slo
 
 ```text
 #[derive(JunctionEncode)]
-#[ok_junction(1)]
+#[ok_ns(110)]
 struct OrgUser {
     #[ok_head(tenant_id, org_id)]   // A 端身份截断到 (tenant_id, org_id)
     pub org: Ref<Org, OrgKey>,
@@ -598,7 +598,7 @@ struct OrgUser {
 }
 ```
 
-junction 物化为每个端点 ns 各一条单向 key（段 0x3，方向由条目所在的 ns 承载，ADR-0015/0016）：`ns_org` 里的前缀 `[ns_org][0x3nnn][org]` 一次扫描取整组织的成员（列表侧），`ns_user` 里的前缀取某用户所属的全部组织；跳槽 = 增删一条 junction 条目，身份不动。`#[ok_head(...)]` 声明该方向把端点身份截断到哪几个字段（不写 = 完整身份），让端点用更短的前缀、条目 key 长度和分组粒度按方向各自裁剪——端点身份宽度的选取是"主键随方向变化"的表达。`ok_head` 选的是身份字段的子集（结构体声明过的字段），不是自由字节，可解性与索引尾段同理。
+junction 是一张有自己的 ns 的表（ADR-0050）：主键面 `0x00` 装 `[ns][0x00][A·身份][B·身份]`，所以 `[ns][0x00][org]` 一次扫描取整组织的成员；反向面 `0x06`（图让出的面号——一个 ns 要么是图、要么是 junction）把同一对反过来装，`[ns][0x06][user]` 取某用户所属的全部组织。反向面是索引：可从主键面重建，任何时候都不是唯一副本；`link` 一个批写两个面，`unlink_all(a)` 一次清掉某端点在这一类关系里的全部行；跳槽 = 增删一条 junction 条目，身份不动。`#[ok_head(...)]` 声明该方向把端点身份截断到哪几个字段（不写 = 完整身份），让端点用更短的前缀、条目 key 长度和分组粒度按方向各自裁剪——端点身份宽度的选取是"主键随方向变化"的表达。`ok_head` 选的是身份字段的子集（结构体声明过的字段），不是自由字节，可解性与索引尾段同理。
 
 junction 与索引机制上同构（都是"指向身份的次级 key 布局"），但角色不能互换：
 
@@ -618,7 +618,7 @@ junction 与索引机制上同构（都是"指向身份的次级 key 布局"）�
 - **"这个 user 挂了哪些 session？"**——单向需求。关系是 user 行的属性：字段位 `Refs`，user 行是唯一真相源，session 在自己的 ns 内范式化、不回指。同步形态的变更（导入推送整份列表、表单提交新集合）天然由 put diff 承接——字段即状态，覆盖写 + diff 就是既有机制。
 - **"并且：这个 session 被哪些 user 挂了？"**——两个方向都是一等集合查询。关系已超出任何单行的承载范围：user 侧字段无法不经全扫地回答 session 侧的问题，所以事实必须物化到两端 ns——即 `Junction`，以显式事件 link/unlink。
 
-第二个问题后到，是**一次 schema 迁移，不是原地改造**。把 `Refs` 字段提升为 `Junction`： (a) 声明 junction 类型（同一端点对、新的 `#[ok_junction(n)]` 区分号）； (b) 回填——遍历父 collection，对每行的现行 key 集合逐条 `link`（junction 条目没有回填机制，与索引 append-only 同一纪律：新访问方法只看到它存在之后的写入）； (c) 同一次 layout-version 递增中把字段从文档删掉——否则字段和 junction 是争夺同一事实的两个真相源，正是扼杀 `#[ok_relation]` 的那个双写入口冲突。反向迁移（junction 退回 `Refs`）适用于某一端的查询需求消失时——反查需求是事实当初离开行的唯一理由。
+第二个问题后到，是**一次 schema 迁移，不是原地改造**。把 `Refs` 字段提升为 `Junction`： (a) 声明 junction 类型（同一端点对、一个新的 `#[ok_ns(N)]` 命名空间）； (b) 回填——遍历父 collection，对每行的现行 key 集合逐条 `link`（junction 条目没有回填机制，与索引 append-only 同一纪律：新访问方法只看到它存在之后的写入）； (c) 同一次 layout-version 递增中把字段从文档删掉——否则字段和 junction 是争夺同一事实的两个真相源，正是扼杀 `#[ok_relation]` 的那个双写入口冲突。反向迁移（junction 退回 `Refs`）适用于某一端的查询需求消失时——反查需求是事实当初离开行的唯一理由。
 
 被否决的 `#[ok_relation]` 提案实质上是：用第一种形态的真相源（单端字段）承载第二种形态的关系（两端定义）——这个错位正是它站不住的原因。
 
@@ -727,7 +727,7 @@ mudra 的标签森林正是让人想上图的形状：多根、没有单一根�
 struct Tag { parent_id: i32, name: String, rank: i32, deleted: u8, /* … */ }
 
 #[derive(JunctionEncode, Clone, Debug)]
-#[ok_junction(1)]
+#[ok_ns(110)]
 struct PageTag { page: Ref<Page, PageKey>, tag: Ref<Tag, TagKey> }
 ```
 
