@@ -188,7 +188,7 @@ fn a_schema_json_written_before_faces_existed_still_reads() {
             "field_vocab_name": 3,
             "declared_index_base": 12289,
             "declared_reduce_base": 16385,
-            "junction_base": 20481
+            "junction_base": 20481 /* retired in ADR-0051; an old schema must still read */
         }
     });
     let schema: CollectionSchema = serde_json::from_value(old).expect("an old schema still reads");

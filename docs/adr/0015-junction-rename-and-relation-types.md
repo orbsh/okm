@@ -2,6 +2,11 @@
 
 ## Status
 
+**Superseded by ADR-0051 (2026-11-04): there is no junction carrier any more** — a
+many-to-many relation is a collection whose key is the pair, and its reverse direction is a
+declared index. This record is kept for the naming decision and for why the two relation
+types exist at all; every junction layout statement below is history.
+
 Accepted (2026-09-17). Rename and two-ns residency stand; the 2-byte slot
 **segment table was superseded by ADR-0016** (4-bit segment + 12-bit counter,
 junction = segment 0x5, superseded by ADR-0050) — see there for the current allocation

@@ -4,7 +4,7 @@
 //!
 //! Division line vs the other two carriers (ADR-0015 §3, amended):
 //! `Refs` = one-to-many (fixed child type, field position, one
-//! direction); `Junction` = many-to-many with compile-time typed
+//! direction); a relation table = many-to-many with compile-time typed
 //! endpoints; **Graph Edge** = independent identity, attributes,
 //! parallel edges, open endpoints, and a declaration that IS the graph.
 //!
@@ -287,7 +287,7 @@ fn decode_body(bytes: &[u8]) -> EdgeBody {
 }
 
 /// Engine + graph type = the operation surface of one graph's edge set
-/// (symmetric with [`crate::Junction`]). One ns hosts every entry kind,
+/// (symmetric with a relation collection (ADR-0051)). One ns hosts every entry kind,
 /// dispatched by segment. The `VocabCache` is per-handle state over the
 /// graph's PREDICATE VOCABULARY (0x04/0x05) — allocation is single-writer, and a
 /// read-only handle still answers typed scans (the cache loads on probe).

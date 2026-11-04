@@ -46,32 +46,29 @@ pub struct SessionKey {
 
 主键定宽：字段按声明序大端编码，`KEY_LEN` 编译期锁死。变长字段见下方「行与索引」——key 保持定宽，变长是索引条目的属性。
 
-### Junction：`JunctionEncode`
+### 关系：键就是那对身份
+
+多对多就是一张表（ADR-0051）。键是两个身份，行上是关系自己拥有的东西：
 
 ```rust
-use okm_core::{JunctionEncode, Ref};
+use okm_core::{DocumentEncode, KeyEncode, Uuid7};
 
-/// user → sessions junction（SQL 多对多连接表）。
-///
-/// 字段引用文档类型：derive 反查 `<User as Document>::Key` 与 `NS_PREFIX`——
-/// ns 只在文档上声明一次（User 挂 `#[ok_ns(1)]`，Session 挂 `#[ok_ns(2)]`），
-/// junction 自身不声明 ns。
-///
-/// 正向：user 的身份是 (org_id, user_id) 两个字段 → ok_head(org_id, user_id)
-/// 反向：session 的身份是完整 SessionKey（无 ok_head）
-///
-/// 同一条 junction 的两个方向使用不同宽度的端点身份——
-/// 这就是"主键随方向变化"的表达。
-#[derive(JunctionEncode, Clone)]
+/// channel ↔ member：一次配对一行，键就是身份。
+#[derive(KeyEncode)]
+struct MembershipKey { channel_id: u64, member_id: Uuid7 }
+
+#[derive(DocumentEncode)]
+#[ok_ref(MembershipKey)]
 #[ok_ns(110)]
-pub struct UserToSession {
-    #[ok_head(org_id, user_id)]
-    pub user: Ref<User, UserKey>,
-    pub session: Ref<Session, SessionKey>,
+#[ok_index(by_member { fields(member_id) })]
+struct Membership {
+    member_id: Uuid7,   // 反向方向扫描的那一列
+    nickname: String,   // 关系自己知道的事
+    since_ms: u64,
 }
 ```
 
-`#[ok_ns(N)]` 声明 junction 自己的命名空间（ADR-0050）：一种关系一个 ns，就是一张表，同名文档集合用的是同一个属性。`#[ok_head(field, ...)]` 声明该端点**在这条 junction 里**哪些字段算身份；不标注 = 全量 key 即身份。字段名必须是端点声明序的前缀（宏生成的编译期检查）。一次声明生成主键面的一条关系行，以及同一个 ns 里反向面的一条索引行（见下文「多对多关系」）。
+主键第一列是正向，声明索引是反向。`#[ok_head]` 不再存在：它把端点身份截断成更短的扫描前缀，而今这件事由键本身指名了哪些字段直接表达。
 
 ### 行与索引：`DocumentEncode`
 
@@ -96,7 +93,7 @@ pub struct User {
 
 - `#[ok_ref(UserKey)]`——行挂到哪个主键上；身份归 key，业务维度归行。
 - `#[ok_ns(1)]`——表的命名空间段，声明在**行上**（行是表的声明点：`#[ok_ref]`
-已把 key 类型钉死，行完全决定 `Collection<S, K, R>`）。key 类型不带 ns——同一个key 形状可以合法服务多个行/表，各挂各的 ns 号。`Collection::new(store)` 不收 ns参数，拼装点只选 engine。junction 不声明 ns——端点文档各自携带（JunctionEncode）。
+已把 key 类型钉死，行完全决定 `Collection<S, K, R>`）。key 类型不带 ns——同一个key 形状可以合法服务多个行/表，各挂各的 ns 号。`Collection::new(store)` 不收 ns参数，拼装点只选 engine。关系表自己声明 ns，和任何文档集合一样。
 - `fields(...)`——排序/分组的 payload 字段，按声明序，首位 = 分组维度。
 - `includes(...)`——覆盖索引，复制 payload 字段进 entry value（上文「覆盖索引克制」）。
 - `key(...)`——把 entry 尾部携带的主键截断到命名子集（默认取满）。截断改变的是行级唯一性，不是分组：`fields` 前缀驱动排序，key 尾段区分行；`key(user_id)` 仅在命名子集对每行唯一时才安全，否则行会互相覆盖 entry。
@@ -146,7 +143,7 @@ fn is_open(row: &Ticket) -> bool { row.status == 0 }
 [ ns 2B BE ][ slot 2B BE ][ 数据段（fields）BE ][ 主键前缀（默认取满） ]   value = includes 字段 TLV（无 includes 则为空）
 ```
 
-判别符 = ns + slot：ns 段划整张表，slot 的段号区分条目类别（主表/索引/reduce/junction，ADR-0016）；声明即注册，无运行时索引簿记。slot 按声明序机械分配（SLOT = `#[ok_index]` 出现的序位），因此**索引声明是 append-only 的**：只能在尾部追加，不能在中途插入或重排——插入会让其后所有索引的 slot 漂移，已落库条目留在旧 slot 位，`scan` 换了前缀后读到空结果（静默错误，不是变慢）。删除声明只是留下无害的 slot 洞（与 ns 编号永不复用是同一纪律，ADR-0002）。另注意：没有索引回填机制，尾部追加的新索引只对之后写入的行生效，存量行不补条目；需要覆盖存量时走迁移双写。
+判别符 = ns + slot：ns 段划整张表，slot 的段号区分条目类别（主表/索引/reduce，ADR-0016）；声明即注册，无运行时索引簿记。slot 按声明序机械分配（SLOT = `#[ok_index]` 出现的序位），因此**索引声明是 append-only 的**：只能在尾部追加，不能在中途插入或重排——插入会让其后所有索引的 slot 漂移，已落库条目留在旧 slot 位，`scan` 换了前缀后读到空结果（静默错误，不是变慢）。删除声明只是留下无害的 slot 洞（与 ns 编号永不复用是同一纪律，ADR-0002）。另注意：没有索引回填机制，尾部追加的新索引只对之后写入的行生效，存量行不补条目；需要覆盖存量时走迁移双写。
 
 数据段（fields 段）的语义结构是**有序的维度序列**：首位是分组/等值维度，其后是排序维度，它受两重约束——
 - **解码约束**：数据段中至多一个变长字段，且必须紧贴主键前缀之前。主键定宽（`KEY_LEN`），从尾部反推切出；其后若还有定宽字段也依次从右往左切；剩下整块就是那个唯一的变长段——它的长度不需要存储，边界由右侧定宽段反推。两个变长段（如 `fields(token, name)`）之间没有边界字节，解码不可能，derive 在编译期拒绝。
@@ -165,56 +162,45 @@ fn is_open(row: &Ticket) -> bool { row.status == 0 }
 
 代价结算在写侧：每多一条面，每次 put 就多维护一组条目。
 
-### 连接、断开、查询（`Junction`）
+### 写入、删除、查询
+
+动词对是 `put` / `purge`，作用在那对键上——没有 `link` / `unlink`，因为行与索引条目由同一个 batch 写出：
 
 ```rust
-use okm_core::Junction;
+let members: Collection<_, MembershipKey, Membership> = Collection::new(store);
 
-let store = okm_core::TestStore::default(); // slatedb-mem；另有 FjallStore / SlatedbStore / RedbStore
-let edges: Junction<_, UserToSession> = Junction::new(store);
+// 写一条成员关系：行与 by_member 条目一起落地
+members.put(
+    &MembershipKey { channel_id: 7, member_id: u },
+    &Membership { member_id: u, nickname: "zhang".into(), since_ms: now },
+)?;
 
-let user = UserKey { org_id: 7, user_id: 101 };
-let s1 = SessionKey { org_id: 7, session_id: 1001 };
-let s2 = SessionKey { org_id: 7, session_id: 1002 };
+// 正向：这个频道的成员，主键上的一次前缀扫描
+let probe = PrefixProbe::<MembershipKey>::new(7u64.to_be_bytes().to_vec());
+let rows = members.scan_keys(&probe);
 
-edges.link(&user, &s1);   // 原子双写：正向 + 反向 key
-edges.link(&user, &s2);
+// 反向：这个人在哪些频道，一次索引扫描 + 回表
+let channels = members.scan::<__OkmIndex_Membership_by_member>(u.as_bytes())?;
 
-let sessions = user.get_session(&edges);   // 正向：user → [SessionKey]
-assert_eq!(sessions, vec![s1.clone(), s2.clone()]);
-
-edges.unlink(&user, &s1); // 双向同时删除
+// 删除：两个条目在同一个 batch 里离开
+members.purge(&MembershipKey { channel_id: 7, member_id: u })?;
 ```
 
-物理 key 布局（正向）：
+关系的身份就是这对端点：两个端点之间至多一行，由键本身保证，不需要别的东西。加一条是调用一次，删一条也是；身份永远不动。
 
-```
-[ ns_junction u16 BE ][ slot u16 BE: 0x00 ][ A·身份 ][ B·身份 ]   主键面：关系行
-[ ns_junction u16 BE ][ slot u16 BE: 0x06 ][ B·身份 ][ A·身份 ]   反向面：索引行
-```
+### 反向查询：声明索引
 
-两个面在**同一个 ns** 里，面号不同：`0x00` 和文档集合的主键面同一约定，`0x06` 是图让出的固定面（一个 ns 要么是图、要么是 junction）。本端身份在前，所以 `[ns][0x00][A·身份]` 与 `[ns][0x06][B·身份]` 都是一次可命中的前缀扫描。数据只存在于主键面；反向面是索引，可从主键面重建。
-
-junction 的字段引用**文档类型**，derive 反查其 `Key` 用于身份编码；ns 不再是两个端点 ns 的寄宿，而是 junction 自己的（`#[ok_ns(N)]`）。见 ADR-0050 与 [key-layout](docs/internals/key-layout.zh-CN.md) 的 slot 表。
-
-### 反向查询与截断身份
+不再有「截断身份」要解码（ADR-0051）。反向方向是一次索引扫描，每条命中都带回它的键，`scan` 还带回行本身：
 
 ```rust
-// 反向：session → users。此方向 A 的身份是截断的（ok_head），
-// 返回原始字节，供调用方拿去主表做前缀扫描。
-let raws = edges.reverse_raw(&s1);
-
-// 若 A 是全量身份，reverse() 直接 decode 回类型：
-// let users: Vec<UserKey> = edges.reverse(&s1);
-
-// PrefixKey 标记前多少字节可信。
-for pk in edges.reverse_prefix(&s1) {
-    // pk.decoded：解码出的结构体（前缀字段有效）
-    // pk.taken：  身份前缀消耗的字节数
+// 这个成员在哪些频道？一次索引扫描，每条命中指向它的行。
+for (key, row) in members.scan::<__OkmIndex_Membership_by_member>(member_id.as_bytes())? {
+    let channel_id = key.decoded.channel_id;   // 那对身份，从条目尾段解出来
+    let since = row.map(|r| r.since_ms);        // 回表；行已不在了就是 None
 }
 ```
 
-派生宏还会在端点类型上生成查询方法（`user.get_session(&edges)`），方法名取对方字段（`session_id` → `get_session`）。
+`KeyEncode` 同时派生前缀编码器，所以复合键的正向扫描不用手拼探针：`K::prefix().field(..).finish()` 造出的 `PrefixProbe` 只匹配你指名的前几个字段。
 
 ### 行的运行时用法（`Collection`）
 
@@ -569,10 +555,10 @@ let e = UserToSession {
     session: Ref::ref_key(SessionKey { org_id: 7, session_id: 1001 }),
 };
 let fk = e.a_side_key(); // A 端（正向）entry：住在 User 的 ns
-assert_eq!(&fk[..4], &[0, 110, 0x00, 0x00]); // junction 自己的 ns、主键面
+assert_eq!(&fk[..4], &[0, 110, 0x00, 0x00]); // 关系表自己的 ns、主键面
 assert_eq!(&fk[4..8], &7u32.to_be_bytes()); // 本端身份在前
 let rk = e.b_side_key(); // B 端（反向）entry：住在 Session 的 ns
-assert_eq!(&rk[..4], &[0, 110, 0x06, 0x00]); // 同一个 ns、反向面（图让出的 0x06）
+// 反向方向由声明索引承担，条目落在 0x3 段：{/* see by_member */}
 // ... 完整布局断言见 okm-core/tests/integration.rs
 ```
 
@@ -584,64 +570,66 @@ OKM 里它以二级索引的形态出现：索引条目的布局是 `[ns 2B][slo
 
 对应 SQL 的范式化：独立 ns 是范式化的——parent_id、org_name 之类的组织属性只存组织行一份，用户行不带；存一起（反范式化）效率高但耦合，分开（范式化）多一次间接但身份单一。
 
-## 多对多关系：junction
+## 多对多关系：一张表
 
-`#[ok_index]` 定义的访问方法是**表内**的——数据源是本行 payload，随 `put`/`delete` 自动同步。跨表关系（一对多、多对多）是两个独立实体之间的事实，payload 索引够不着：一对多由 `Refs` 承载（见「嵌入文档」一节），多对多由 **junction** 承载：
+`#[ok_index]` 声明的访问方法是**表内**的——数据源是行自己的载荷，`put` / `purge` 自动维护。跨表关系是两个独立实体之间的事实，载荷索引够不到。一对多由 `Refs` 承载（见「嵌入文档」）；多对多由**键为这对身份的表**承载——SQL 就是这个形状，因为 SQL 只有表，而这个模型也只有表：
 
 ```text
-#[derive(JunctionEncode)]
+#[derive(KeyEncode)]
+struct MembershipKey { channel_id: u64, member_id: Uuid7 }
+
+#[derive(DocumentEncode)]
 #[ok_ns(110)]
-struct OrgUser {
-    #[ok_head(tenant_id, org_id)]   // A 端身份截断到 (tenant_id, org_id)
-    pub org: Ref<Org, OrgKey>,
-    pub user: Ref<User, UserKey>,   // B 端无注解 = 完整 UserKey
+#[ok_index(by_member { fields(member_id) })]
+struct Membership {
+    member_id: Uuid7,      // 反向扫描的那一列
+    nickname: String,      // 关系自己知道的事（ADR-0051）
+    since_ms: u64,
 }
 ```
 
-junction 是一张有自己的 ns 的表（ADR-0050）：主键面 `0x00` 装 `[ns][0x00][A·身份][B·身份]`，所以 `[ns][0x00][org]` 一次扫描取整组织的成员；反向面 `0x06`（图让出的面号——一个 ns 要么是图、要么是 junction）把同一对反过来装，`[ns][0x06][user]` 取某用户所属的全部组织。反向面是索引：可从主键面重建，任何时候都不是唯一副本；`link` 一个批写两个面，`unlink_all(a)` 一次清掉某端点在这一类关系里的全部行；跳槽 = 增删一条 junction 条目，身份不动。`#[ok_head(...)]` 声明该方向把端点身份截断到哪几个字段（不写 = 完整身份），让端点用更短的前缀、条目 key 长度和分组粒度按方向各自裁剪——端点身份宽度的选取是"主键随方向变化"的表达。`ok_head` 选的是身份字段的子集（结构体声明过的字段），不是自由字节，可解性与索引尾段同理。
+主键第一列是正向：`[ns][0x00][channel_id]` 一次前缀扫描列出某频道的成员。反向是声明索引：`by_member` 把「这个人在哪些频道」变成一次索引扫描，每条命中回表取行。`put` 在一个 batch 里写行与索引条目；`purge` 一起带走；`rebuild_faces` 从行重建索引。没有任何手工维护的部分。
 
-junction 与索引机制上同构（都是"指向身份的次级 key 布局"），但角色不能互换：
+这里没有 junction 载体（ADR-0051）。关系是数据，而这个模型已经有装数据的载体——集合。junction 当初要手造的东西，正是 `put` 与 `#[ok_index]` 自动做的事：
 
-- **数据源**：索引的数据源是本行 payload，用户永不手写条目；junction 的数据源是两个实体的关系，是业务事实本身，必须显式双写双删。
-- **端点**：索引尾段指向自己表的主键；junction 指向另一张集合的实体（双端点、每端 ns 一条单向条目）。
+- **关系上的属性**（`since_ms`、每频道的 `nickname`）就是普通字段，可以建索引、照常导出；
+- **反向方向是声明的**，不是手写的，而且可重建（junction 的第二条条目没有重建路径）；
+- **只有一对写动词**（`put` / `purge`），不需要 `link` / `unlink` 记得写两次；
+- **行随湖走**：进变更流与湖，而 junction 条目是被排除在外的。
 
-**双向是义务不是选项。** REV 条目只多付一份 key 的存储（LSM 顺序 append，最廉价的写），省掉它换来的却是：反查需求出现时全扫 FWD 段过滤（违反访问方法强制），或事后补边加回填迁移（贵几个量级）。与索引对照更清楚：索引只有一个方向，因为反查走主键 `get` 就行；junction 的两个端点都是次级视角，谁也不持有主键，所以两个方向都要一条。双向还让解绑变 O(1)——FWD/REV 两条 key 的身份都在手上，精确 `delete`，无需先扫后删。真正的克制点不在"要不要 REV"（不二选），在**要不要这条 junction**：没有反查需求且基数小的关系（如配置类一对一），直接放 payload 字段就够，连 junction 都不建；需要时再加，junction 的双写自动同步，无回填。
+关系的身份就是这对端点——两个端点之间至多一行——因为这对就是主键。加一条成员关系是 `put`，删一条是 `purge`，身份永远不动。
 
-一句话：**索引 = 一行的派生视图，junction = 一等的关系数据**。`#[ok_index]` 定义时方便（声明即注册，无需手工编号 ns——ADR-0005 的动机正是消灭 per-index 手工编号与洞簿记）是次要红利，不是两者的分界；分界在数据源。
+### Refs 还是关系表：怎么选，以及答案变了怎么迁
 
-**接口是动词对，不是字段**（ADR-0015 §B，2026-09-20 定案）。`Refs` 字段上的 `#[ok_relation(JunctionType)]`——put 时 diff 字段自动 link/unlink、推广 Refs 的 stale-release——经分析后否决：Refs 成立是因为父行是唯一所有者（结构上单向）；junction 的两端是对等的，单侧字段声明会让对端的 delete 无法清理（残留字段 key 在下次 put 时复活已删的边），且两个写入口（字段 diff + 显式 `link`/`unlink`）会互相打架。命令式成对操作保住调用点即因果记录——代码说发生了什么，永不重建旧状态，写域也从不隐式越过对端的 ns。不要把 junction 建模成文档字段；若单端集合形态的整体重写成为真实需求，出口是显式命令，绝不是 put 路径魔法。
+两个载体回答的是不同的归属问题——先问哪一端需要集合形状的查询：
 
-### Refs 还是 Junction：判定，以及答案变化时的迁移
+- **「这个用户持有哪些会话？」**——单向需求。
+关系是用户行的属性：`Refs` 放在字段位置，用户行是唯一真相源，会话在自己的 ns 里、从不指回来。同步式变更（一次导入推整个列表、一次表单提交新集合）天然由 put diff 承担——字段就是状态，覆写再比对本来就是机制。
+- **「而且：谁关注了这个会话？」**——两个方向都成了头等集合查询。
+关系已经超出任何单独一行：用户侧字段无法不做全扫就回答会话侧的问题，所以这个事实需要自己的一张表、从两端都能读——一张关系集合，用 `put`/`purge` 当显式事件写。
 
-两种载体回答的是不同的所有权问题——用"哪一侧需要集合形态的查询"来选：
+第二个问题后到，是**一次 schema 迁移，不是原地改造**。把 `Refs` 字段提升为关系表：(a) 声明以这对身份为键的集合，并在新方向要扫的那一列上声明索引；(b) 回填——遍历父 collection，对每行的现行 key 集合逐条 `put`（新表只看到它存在之后的写入）；(c) 同一次 layout-version 递增中把字段从文档删掉——否则字段和表是争夺同一事实的两个真相源。反向迁移（关系表退回 `Refs`）适用于某一端的查询需求消失时——反查需求是事实当初离开行的唯一理由。
 
-- **"这个 user 挂了哪些 session？"**——单向需求。关系是 user 行的属性：字段位 `Refs`，user 行是唯一真相源，session 在自己的 ns 内范式化、不回指。同步形态的变更（导入推送整份列表、表单提交新集合）天然由 put diff 承接——字段即状态，覆盖写 + diff 就是既有机制。
-- **"并且：这个 session 被哪些 user 挂了？"**——两个方向都是一等集合查询。关系已超出任何单行的承载范围：user 侧字段无法不经全扫地回答 session 侧的问题，所以事实必须物化到两端 ns——即 `Junction`，以显式事件 link/unlink。
+### 关系表还是图边：第二个问题
 
-第二个问题后到，是**一次 schema 迁移，不是原地改造**。把 `Refs` 字段提升为 `Junction`： (a) 声明 junction 类型（同一端点对、一个新的 `#[ok_ns(N)]` 命名空间）； (b) 回填——遍历父 collection，对每行的现行 key 集合逐条 `link`（junction 条目没有回填机制，与索引 append-only 同一纪律：新访问方法只看到它存在之后的写入）； (c) 同一次 layout-version 递增中把字段从文档删掉——否则字段和 junction 是争夺同一事实的两个真相源，正是扼杀 `#[ok_relation]` 的那个双写入口冲突。反向迁移（junction 退回 `Refs`）适用于某一端的查询需求消失时——反查需求是事实当初离开行的唯一理由。
+两者都承载关系，也都能从两端读。它们回答不同的问题，判据是关系**知道什么**。
 
-被否决的 `#[ok_relation]` 提案实质上是：用第一种形态的真相源（单端字段）承载第二种形态的关系（两端定义）——这个错位正是它站不住的原因。
-
-### junction 还是图边：第二个问题
-
-两者都承载关系，都能从两侧读。它们回答的是不同的问题，决定性的那一问是：这条关系**知道什么**。
-
-| | `Junction` | 图边 |
+| | 关系表 | 图边 |
 |---|---|---|
-| 端点 | 两种文档类型，编译期固定 | `NodeRef`——任何集合、任意混合、运行时解析 |
-| 关系的名字 | junction 的**类型**就是名字；一种关系一个类型 | 每条边必带 `predicate`，进图的谓词词表 |
-| 身份 | 端点对——两点之间该类型至多一条 | `(src, dst, predicate, edge_id)`——平行边是不同的事实 |
-| 载荷 | 自己的文档（ADR-0050）：字段类型、默认值、编码位置 | 动态值，没有声明的 schema |
-| 反向读 | 反向面，一个可从主键面重建的索引 | 图的 `0x06`/`0x07` 面，两个方向都物化 |
-| 成本 | 一张表：一个 ns、两个面 | 一张图：四个面、一套谓词词表、ref 解码 |
+| 端点 | 两个文档类型，编译期固定 | `NodeRef`——任意集合、任意混合，运行时解析 |
+| 关系的名字 | 集合本身就是名字：一种关系一张表 | 每条边带 `predicate`，走图的词表解析 |
+| 身份 | 端点对——两个节点之间该表至多一行 | `(src, dst, predicate, edge_id)`——平行边是不同的边 |
+| 载荷 | 普通字段：默认值、codec 落位、可建索引 | 动态值，没有声明式 schema |
+| 反向读 | 在被扫的那一列上声明的索引 | 图的 `0x06`/`0x07` 两个面，双向物化 |
+| 成本 | 一张表：一个 ns、一个声明索引 | 一张图：四个面、谓词词表、引用解码 |
 
-一句话：**junction 是关于「一种关系」的一张表，边是图里的一条事实。** 端点类型闭合、关系本身就是事实（成员、归属、带加入日期的关注）时用 junction；端点类型开放、关系名是数据、同一对节点之间连了多种关系、或者这些事实要被遍历（出入、链、时间线）时用边。一条开始时闭合、后来长出谓词或平行事实的关系，是迁移成边，不是一个开关。
+所以：**关系表是一种关系的表；边是图里的一条事实。** 端点类型封闭、关系本身就是事实（成员、归属、带起始时间的关注）时用表；节点类型开放、关系的名字是数据、同一对节点之间有多条不同关系、或者这些事实需要被遍历（出/入、链、时间线）时用边。一开始封闭、后来长出谓词或平行事实的关系，是迁移到边，不是加个开关。
 
-两者不争同一块存储：一个 ns 要么是图、要么是 junction，所以 junction 的反向面可以用图保留的面号（ADR-0050 §3）。
+两者不争同一块存储：一个是集合、一个是图，落在不同的命名空间里。
 
 ## 图边：第三种关系载体
 
-Junction 覆盖的多对多绑定在**编译期端点类型**上。知识图谱打破这个绑定：一个图连接多种类型的节点，边**谓词**是运行期数据，平行边是不同的事实，边还携带属性。图边是第三种关系载体（ADR-0017）——独立身份、属性、平行边、开放端点，且声明**就是**这张图。
+关系表覆盖的多对多绑定在**编译期端点类型**上。知识图谱打破这个绑定：一个图连接多种类型的节点，边**谓词**是运行期数据，平行边是不同的事实，边还携带属性。图边是第三种关系载体（ADR-0017）——独立身份、属性、平行边、开放端点，且声明**就是**这张图。
 
 节点就是普通 document collection。类型集在编译期封闭时，节点的"类型"是它的 collection（ns 即类型标记）；kind 在运行期才到达时，kind 是一个 collection 内部带索引的字段（k10r 案例见下）。两种形态下，节点 kind / 属性过滤都走 collection 自己的声明索引和词汇表——与任何文档 collection 布局零差异。新增的东西都在边这一侧：
 
@@ -688,11 +676,11 @@ g.by_attr_face(<BySince as KvIndex>::SLOT, &2020u16.to_be_bytes());
 - **平行边**是各自独立的边：每次 link 携带调用方选定的 `edge_id`；`link` 拒绝 live id。一条边的**就地改写**是唯一例外，入口也只有一对：`unlink_into` + `link_into` 把同一个 id 的删与写编进同一批，提交点上那条边从未缺席、第二个 id 也不会诞生——k10r 的 functional 裁决和计数器回写都走这条路（ADR-0010 的 owed item）。已删的 id 不复用。
 - **过滤**：先走选择度最高的面，id 在内存收敛——默认不建复合面（`(*)-[谓词]->(:节点 kind)` = 0x08 扫描与节点 kind 面的 pkey 集合求交）。
 
-分界线：`Refs` = 一对多；`Junction` = 多对多、固定端点、无属性；**图边** = 独立身份、属性、平行边、开放端点。
+分界线：`Refs` = 一对多；关系表 = 多对多、固定端点、关系自有属性；**图边** = 独立身份、属性、平行边、开放端点。
 
 ### 谓词：边的类型
 
-关系的名字住在边的**头部**、与端点并列——`EdgeHead { src, dst, predicate }`——而它是这三段里唯一没有编译期声明的东西。这正是 junction 比不上的一环：junction 的类型是它的 Rust struct（`PageTag`），写代码时就定了；边的类型是**数据**。
+关系的名字住在边的**头部**、与端点并列——`EdgeHead { src, dst, predicate }`——而它是这三段里唯一没有编译期声明的东西。这正是关系表比不上的一环：关系表的类型是它的 Rust struct（`PageTag`），写代码时就定了；边的类型是**数据**。
 
 - **在图自己的词汇表里 intern**：名字 → `u16` id，只追加、先见者得号、永不重排。谓词面与遍历面都以这个 id 为键，所以每一次"按关系过滤"的读都是对 id 的前缀扫，而不是载荷比较。
 - **两个方向、一本词表**（`名字 → id` 与 `id → 名字`）："这张图到底有哪些关系"是一次前缀扫，于是谓词集合是可枚举的元数据，而不是从边反推出来的猜测。
@@ -714,7 +702,7 @@ g.by_attr_face(<BySince as KvIndex>::SLOT, &2020u16.to_be_bytes());
 - **跨图：经 NodeRef 组合，不走图语法。** NodeRef 自描述，同一
 document collection 可以同时参与多张图（PGQ "一张表属于多个图"的性质——这里表现为多条 Edge collection 引用同一批节点）。真正分离的域互相到达：从一张图收集 NodeRef 集合去探另一张的面，或退回普通文档读取——没有跨图 match 语法，也不需要。
 
-#### 案例：标签森林是行 + junction，不是图
+#### 案例：标签森林是行 + 关系表，不是图
 
 mudra 的标签森林正是让人想上图的形状：多根、没有单一根、一个节点同时活在多棵树里。它由两个载体构成，两个都不是 Edge collection。
 
@@ -726,18 +714,25 @@ mudra 的标签森林正是让人想上图的形状：多根、没有单一根�
 #[ok_index(by_name { func(tag_name) })]        // 裸名寻址
 struct Tag { parent_id: i32, name: String, rank: i32, deleted: u8, /* … */ }
 
-#[derive(JunctionEncode, Clone, Debug)]
+/// 关系表（ADR-0051）：键是这对身份，行上是关系自有的列。
+#[derive(KeyEncode, Clone, Debug)]
 #[ok_ns(110)]
-struct PageTag { page: Ref<Page, PageKey>, tag: Ref<Tag, TagKey> }
+struct PageTagKey { page_id: Uuid7, tag_id: i32 }
+
+#[derive(DocumentEncode, Clone, Debug)]
+#[ok_ref(PageTagKey)]
+#[ok_ns(110)]
+#[ok_index(by_tag { fields(tag_id) })]
+struct PageTag { tag_id: i32 }
 ```
 
-**树是自引用行。** 一个 tag 带 `parent_id: i32`，`-1` 作根哨兵——"多根"不需要虚拟 super-root；一次 `by_parent` 上的 scan 就取出某节点的子节点。反向（"谁是我的子节点"）不需要任何边行，因为它**就是**那条索引。这也是树与多对多的分界线：父指针的反向是一次 scan，junction 的反向没有单独一行可以落脚。
+**树是自引用行。** 一个 tag 带 `parent_id: i32`，`-1` 作根哨兵——"多根"不需要虚拟 super-root；一次 `by_parent` 上的 scan 就取出某节点的子节点。反向（"谁是我的子节点"）不需要任何边行，因为它**就是**那条索引。这也是树与多对多的分界线：父指针的反向就是那条索引本身，而多对多的反向需要另一张表上的索引。
 
 两个值得照抄的后果：键保持代理形态（`TagKey { id }`），所以兄弟次序搭不上键序——它是 `rank` payload 字段，scan 之后在内存里排；也没有 path / closure表，路径靠向上走 parent 推出来。
 
-**成员关系是 junction。** page↔tag 是端点编译期定型的多对多，于是 `link`就是原子双写（每个端点的 ns 各落一条），两个方向都是一等 scan（derive生成的 `get_tag` / `get_page`）。junction 自己不声明 ns：方向由 entry 落在哪个端点的 ns 表达。
+**成员关系是一张关系表。** page↔tag 是端点编译期定型的多对多，于是它就是一张键为这对身份的集合：`put` 一个批写下行与索引，两个方向都是一等扫描（主键前缀 + `by_tag` 索引），行上还能挂关系自己的列。
 
-**为什么不是图边。** 这里的边没有属性、没有自己的身份、不允许平行边、端点在编译期封闭——ADR-0017 里让 Edge 成为第三种载体的四个性质一个都没用上。一个都用不上的森林就是"行指针 + junction"；硬上第三种载体，正是上一节划线拦的"什么都是图"那种失效。
+**为什么不是图边。** 这里的边没有属性、没有自己的身份、不允许平行边、端点在编译期封闭——ADR-0017 里让 Edge 成为第三种载体的四个性质一个都没用上。一个都用不上的森林就是"行指针 + 关系表"；硬上第三种载体，正是上一节划线拦的"什么都是图"那种失效。
 
 顺带一个值得写明的收益：粗粒度的成员位（"收藏"/"星标"）因此没有新地方要安放——它就是对一条既有轴某个 rank 子节点的一条边，所以不需要自己的collection。
 
@@ -800,7 +795,7 @@ struct Facts { /* scope、since、confidence、weight、三个计数、两个时
 
 **关系就是边的谓词，所以加一条关系就是加一个名字。** 摄入时元组给出关系的名字（`PREFERS`、`RUNS`、`BLOCKED_BY`），图把它 intern 成谓词 id——没有字段、没有枚举、没有声明、没有迁移。于是一条边 collection 装着这段记忆能表达的全部关系，而"这份语料用了哪些关系"是对图的谓词词汇表扫一次，不是把边过一遍。节点那一侧的孪生是 `kind`：同样是标签、同样 intern，但它是节点载荷里的 `Vocab` 字段——它给**节点**定型，谓词给**断言**定型。
 
-**属性是边存在的理由。** 一条事实带着它自己的断言语境：`since`（调用方的时钟）、`confidence`、以及权重系统折成 `weight` 的三个计数与两个访问时钟；关系的开放 props（cause、condition、strength、逐断言的 `functional` 标记）落在边的动态段。junction 没有自己的身份，这些全都没有落脚处。
+**属性是边存在的理由。** 一条事实带着它自己的断言语境：`since`（调用方的时钟）、`confidence`、以及权重系统折成 `weight` 的三个计数与两个访问时钟；关系的开放 props（cause、condition、strength、逐断言的 `functional` 标记）落在边的动态段。关系表没有自己的身份，这些全都没有落脚处。
 
 **近期访问住在一个定长环里，不在计数里。** 计数回答"多少次"、两个时钟回答"多近"，都答不了"这个分布长什么样"——而衰减的账单正是这个分布决定的。行尾因此多了一个 `recent: Vector<u32>`：8 槽、从 2026-01-01 起的秒偏移、升序、`0` 表示未用、写入时右移一格，旧版本行缺这一帧时按声明的默认补满 8 槽。为什么不是 `Offset`、不是 `Bytes`、不设游标、也不做成 wrapper，见「同质列表」一节的案例。
 
@@ -846,7 +841,7 @@ pub struct Doc {
 
 长度是数据不是 schema：换嵌入模型（384 -> 768 维）只是不同的帧，无需 wire 迁移。应用确实知道预期长度时（合同约定的嵌入维度），`#[ok_len(384)]` 加一个编码期检查——写入边界即承诺执行处；解码不检查（绕过解码器是读取者自己的问题——原始帧字节与未渲染的图片同样不透明）。同一合同导出给动态 reader（`FieldSchema::expect_len`），Python 侧被一致地强制。它是应用合同，绝不是格式约束。
 
-元素是**纯值**——身份分界线（上文多对多一节）把 Vector 挡在关系载体之外：标量没有 key，对它做 key 引用是范畴错误。一对多 → `Refs`；多对多 → `Junction`；表达顺序的值列表 → `Vector`；异质动态列表 → `DynamicValue::Array`（固定面 0x01）。`fetch` 时 Vector 提升为 `DynVal::Array`——动态层没有 Vector 类型，Vector 是存储层格式。多维形状是应用层解释（扁平序列按行优先），wire 上什么都不存。
+元素是**纯值**——身份分界线（上文多对多一节）把 Vector 挡在关系载体之外：标量没有 key，对它做 key 引用是范畴错误。一对多 → `Refs`；多对多 → 关系表；表达顺序的值列表 → `Vector`；异质动态列表 → `DynamicValue::Array`（固定面 0x01）。`fetch` 时 Vector 提升为 `DynVal::Array`——动态层没有 Vector 类型，Vector 是存储层格式。多维形状是应用层解释（扁平序列按行优先），wire 上什么都不存。
 
 消费侧（okm-vector）在其上分层构建搜索：精确连续扫描（小规模路径，也是召回的参照系）、量化码上的内存 HNSW（int8 余弦或乘积量化码），以及按分片组织的句柄——每分片一份快照存在固定面 0x0A 下，是缓存、随时可丢。图给出的是码级距离，回存量的 f32 重打分由调用方做。存储保持字节不透明：语料仍然只是那些帧字节。
 
@@ -905,7 +900,7 @@ pub struct PostPayload { pub mime: String, pub body: Bytes }
 | 整文档 | 两次读，按需——拆分换来的就是这个 |
 | 「有没有 payload」 | 副表的这一行是否在场；不需要 `Option` 字段，也不需要哨兵 |
 
-删除归调用方：这个模型里没有级联（junction 条目是同一个形状），所以这一对由调用方一起删。写的那一对是一次提交；删的那一对在可进批的 `purge_into` 落地之前是两次（见 PLAN）。
+删除归调用方：这个模型里没有级联（关系表也是同一个形状），所以这一对由调用方一起删。写的那一对是一次提交；删的那一对在可进批的 `purge_into` 落地之前是两次（见 PLAN）。
 
 ### 什么时候拆
 
@@ -1182,7 +1177,7 @@ org 维度的读取走索引：`#[ok_index(by_org { fields(org_id, ...) })]` 用
 - **运行期没有解释器。** okm 没有查询规划器：一次读取就是一次前缀扫描，一个问题能否被回答由声明期的数据段顺序决定（见上文最左前缀约束），不在查询时选路。说不出访问方法的维度，就是全表扫描。
 - **一份声明展开成两份同步产物。** derive 一层产直接操作字节的代码——运行期跑的就是它，一层产常量表（`PAYLOAD_FIELDS`、`FIELDS`、`HOT_WIDTH`、`NS_PREFIX`、每个访问方法的 `SLOT`）。所有非热路径的消费者（schema 导出、动态读取器、Arrow/Parquet 桥、快照工具）读这些常量表，而不是重新推导声明：声明即注册，没有运行时注册表（见[架构总览](ARCHITECTURE.zh-CN.md)）。
 - **位置即身份。** 访问方法的 slot 就是它在声明里的序位，字段的词汇表编号就是它首次出现的序次。两者都只增不复用（见上文）：布局里没有"只是个编号"、可以随手重排的东西。
-- **非法形态在编译期不可表示。** 索引段里两个变长字段之间没有边界字节，derive 直接拒绝该声明；junction 的端点身份必须是声明序前缀（宏生成的编译期检查）；变长字段不在末位就破坏前缀语义。三条都是编译期拒绝，不是运行期校验：非法模型编译不过，不会在以后某个时刻才失败。
+- **非法形态在编译期不可表示。** 索引段里两个变长字段之间没有边界字节，derive 直接拒绝该声明；变长字段不在末位就破坏前缀语义。三条都是编译期拒绝，不是运行期校验：非法模型编译不过，不会在以后某个时刻才失败。
 - **地址空间是预算。** ns 是 2 字节身份——一类实体一个 ns，永不复用；slot 空间是 4 位段（条目类别）加 12 位计数，段位按类别预留（ADR-0016）；词汇表编号只增不减。分配它们是声明期的职责——多实例共用一个引擎时，ns 分配是部署期决策。
 - **布局变更 = 全量重建，不是迁移。** 索引条目是派生状态：不进导出与快照，导入时由 `put` 从行确定性重建。改 key 布局或段序，就是重新声明加一次清库重建，从来不是原地迁移。payload 能变的是**形状**——而且整形状一起变：新形状带自己的号，旧形状的行重生成或走导出导入（ADR-0042）。key 布局、段位与 slot 永不移动。
 - **声明有两个时机档，运行期那一档只覆盖数据形状。** 类型路径（编译期 derive）与 schema 路径（运行期 `CollectionSchema`，Python 与 Steel 绑定据此建集合，全程不出现 Rust 类型）按契约产出同一份字节。两者之差只在 payload 形状；key 布局、段位与 slot 仍由声明决定。

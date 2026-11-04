@@ -36,7 +36,7 @@ impl<D, K: KeyEncode> Ref<D, K> {
     }
 
     /// Alias of `ref_key` — construct from the key alone (used by the
-    /// junction derive's `from_parts`).
+    /// a relation key's `encode_prefix_named`, ADR-0051).
     pub fn from_key(key: K) -> Self {
         Ref { key, value: None }
     }

@@ -9,7 +9,7 @@
 //! # Module layout
 //!
 //! ```text
-//! model/    data model + codecs: keys, documents, indexes, junctions,
+//! model/    data model + codecs: keys, documents, indexes, graphs,
 //!           reduces, schema, dynamic values, wrapper types
 //! engine/   KV engine boundary: the VirtualStorage abstraction and its
 //!           adapters (Fjall / redb / slatedb / TestStore) + remote nesting
@@ -21,7 +21,7 @@
 //! # Features
 //!
 //! - `fjall` — sync [`FjallStore`] engine adapter.
-//! - `slatedb` — async [`SlatedbStore`] engine adapter (+ [`AsyncJunction`]).
+//! - `slatedb` — async [`SlatedbStore`] engine adapter.
 //!
 //! See `docs/adr/` for the design decisions (namespace vocabulary,
 //! secondary index slots, assembly point, frame codec) and the project
@@ -42,7 +42,7 @@
     )
 )]
 
-pub use okm_derive::{DocumentEncode, GraphEncode, JunctionEncode, KeyEncode, NestStorage};
+pub use okm_derive::{DocumentEncode, GraphEncode, KeyEncode, NestStorage};
 
 pub mod engine;
 pub mod error;
@@ -77,7 +77,6 @@ pub use engine::storage::{
 #[cfg(any(feature = "test-engines", feature = "fjall", feature = "redb"))]
 pub use engine::test_engine::TestStore;
 pub use engine::wire_client::{WireClient, WireTransport};
-pub use model::collection::Junction;
 pub use model::document::Collection;
 pub use model::field::{FieldDesc, FieldType};
 pub use model::graph::{EdgeBody, EdgeHead, EdgeKey, Graph, GraphEncode, NodeRef, NodeSet};
@@ -85,7 +84,6 @@ pub use model::index::{
     Document, IndexFuncResult, IndexFuncValues, KvIndex, META_SLOT, PRIMARY_SLOT, scan_index,
     scan_index_exact, slot_len, write_slot,
 };
-pub use model::junction::KvJunction;
 pub use model::key::{KeyEncode, PrefixKey};
 pub use model::prefix::{IndexProbe, PrefixProbe, ProbeBytes};
 pub use model::presets::{Count, HighWater, LowAcc, LowWater, ReduceFieldSource, Sum};
@@ -104,7 +102,7 @@ pub use engine::fjall_backend::FjallStore;
 #[cfg(feature = "localstorage")]
 pub use engine::localstorage_backend::{LocalStorageStore, b64_decode, b64_encode};
 #[cfg(feature = "slatedb")]
-pub use engine::slatedb_backend::{AsyncJunction, SlatedbStore};
+pub use engine::slatedb_backend::SlatedbStore;
 
 // ================= path-compat re-exports =================
 // Downstream crates (okm-dynamic, okm-query, bindings) and tests import
@@ -125,12 +123,10 @@ pub use engine::slatedb_backend;
 pub use engine::storage;
 #[cfg(any(feature = "test-engines", feature = "fjall", feature = "redb"))]
 pub use engine::test_engine;
-pub use model::collection;
 pub use model::document;
 pub use model::faces::{FINGERPRINT_LEN, FaceSpec, IndexDecl, RebuildReport, fingerprint_specs};
 pub use model::field;
 pub use model::index;
-pub use model::junction;
 pub use model::key;
 pub use model::meta;
 pub use model::meta::{FaceStatus, TableMeta};

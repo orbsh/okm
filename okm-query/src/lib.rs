@@ -181,9 +181,9 @@ pub fn walk<S: VirtualStorage + Clone>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use okm_core::{DocumentEncode, JunctionEncode, KeyEncode, Ref, TestStore};
+    use okm_core::{DocumentEncode, KeyEncode, TestStore};
 
-    /// 端点文档：user（ns=1，自反 junction：follows 的两端都是它）
+    /// 端点文档：user（ns=1）
     #[derive(DocumentEncode, Clone, PartialEq, Debug)]
     #[ok_ref(UserKey)]
     #[ok_ns(1)]
@@ -195,37 +195,78 @@ mod tests {
         id: u32,
     }
 
-    /// Two junction types over one node type — the multi-relation graph a
-    /// real model has (follows + mentions over User). 自反：两端同一文档。
-    #[derive(JunctionEncode, Clone, PartialEq, Debug)]
-    #[ok_ns(114)]
-    struct FollowsEdge {
-        user_id: Ref<User, UserKey>,
-        followee_id: Ref<User, UserKey>,
+    /// 关系表（ADR-0051）：键是两个身份，行上带关系自有的列，反向方向是声明索引。
+    /// 不再有 junction 载体——「谁关注了谁」就是一张普通的表。
+    #[derive(KeyEncode, Clone, PartialEq, Debug)]
+    pub struct FollowsKey {
+        user_id: u32,
+        followee_id: u32,
     }
-    #[derive(JunctionEncode, Clone, PartialEq, Debug)]
+
+    #[derive(DocumentEncode, Clone, PartialEq, Debug)]
+    #[ok_ref(FollowsKey)]
+    #[ok_ns(114)]
+    #[ok_index(by_followee { fields(followee_id) })]
+    pub struct FollowsRow {
+        followee_id: u32,
+    }
+
+    #[derive(KeyEncode, Clone, PartialEq, Debug)]
+    pub struct MentionsKey {
+        user_id: u32,
+        mentioned_id: u32,
+    }
+
+    #[derive(DocumentEncode, Clone, PartialEq, Debug)]
+    #[ok_ref(MentionsKey)]
     #[ok_ns(115)]
-    struct MentionsEdge {
-        user_id: Ref<User, UserKey>,
-        mentioned_id: Ref<User, UserKey>,
+    #[ok_index(by_mentioned { fields(mentioned_id) })]
+    pub struct MentionsRow {
+        mentioned_id: u32,
     }
 
     fn mk(id: u32) -> UserKey {
         UserKey { id }
     }
 
+    fn follows(
+        store: &TestStore,
+        user_id: u32,
+        followee_id: u32,
+    ) {
+        let table: okm_core::Collection<TestStore, FollowsKey, FollowsRow> =
+            okm_core::Collection::new(store.clone());
+        table
+            .put(
+                &FollowsKey {
+                    user_id,
+                    followee_id,
+                },
+                &FollowsRow { followee_id },
+            )
+            .unwrap();
+    }
+
+    fn mentions(store: &TestStore, user_id: u32, mentioned_id: u32) {
+        let table: okm_core::Collection<TestStore, MentionsKey, MentionsRow> =
+            okm_core::Collection::new(store.clone());
+        table
+            .put(
+                &MentionsKey {
+                    user_id,
+                    mentioned_id,
+                },
+                &MentionsRow { mentioned_id },
+            )
+            .unwrap();
+    }
+
     #[test]
     fn peers_spans_both_directions_and_both_edge_types() {
-        // Edge owns its engine; link phase returns the store.
-        let follows: okm_core::Junction<TestStore, FollowsEdge> =
-            okm_core::Junction::new(TestStore::slatedb_mem());
-        follows.link(&mk(1), &mk(2)).unwrap();
-        follows.link(&mk(3), &mk(1)).unwrap(); // incoming for node 1
-        let mut store = follows.store;
-        let mentions: okm_core::Junction<TestStore, MentionsEdge> =
-            okm_core::Junction::new(std::mem::take(&mut store));
-        mentions.link(&mk(1), &mk(4)).unwrap();
-        let store = mentions.store;
+        let store = TestStore::slatedb_mem();
+        follows(&store, 1, 2);
+        follows(&store, 3, 1); // incoming for node 1
+        mentions(&store, 1, 4);
 
         let f = FollowsNeighbors;
         let m = MentionsNeighbors;
@@ -238,55 +279,53 @@ mod tests {
     struct FollowsNeighbors;
     impl GraphEdge<TestStore> for FollowsNeighbors {
         fn peers(&self, store: TestStore, node: &[u8]) -> Vec<Vec<u8>> {
-            // Typed adapter over Edge — the call site owns the
-            // edge type and the node encoding.
-            let t = okm_core::Junction::<TestStore, FollowsEdge>::new(store);
-            // Raw byte hop: decode the node, run both directions.
             let n = UserKey::decode(node);
-            let mut out = t
-                .forward(&n)
-                .expect("a junction read")
-                .into_iter()
-                .map(|p| p.encode())
-                .collect::<Vec<_>>();
-            out.extend(
-                t.reverse(&n)
-                    .expect("a junction read")
-                    .into_iter()
-                    .map(|p| p.encode()),
-            );
+            let table: okm_core::Collection<TestStore, FollowsKey, FollowsRow> =
+                okm_core::Collection::new(store);
+            let mut out = Vec::new();
+            // 正向：主键第一列是 user_id，前缀扫描拿到他关注的人
+            let probe = okm_core::PrefixProbe::<FollowsKey>::new(n.encode());
+            for key in table.scan_keys(&probe).flatten() {
+                out.push(mk(key.followee_id).encode());
+            }
+            // 反向：by_followee 索引，回表拿关系行
+            for (key, _) in table
+                .scan::<__OkmIndex_FollowsRow_by_followee>(n.encode().as_slice())
+                .expect("an index read")
+            {
+                out.push(mk(key.decoded.user_id).encode());
+            }
             out
         }
     }
+
     struct MentionsNeighbors;
     impl GraphEdge<TestStore> for MentionsNeighbors {
         fn peers(&self, store: TestStore, node: &[u8]) -> Vec<Vec<u8>> {
-            let t = okm_core::Junction::<TestStore, MentionsEdge>::new(store);
             let n = UserKey::decode(node);
-            let mut out = t
-                .forward(&n)
-                .expect("a junction read")
-                .into_iter()
-                .map(|p| p.encode())
-                .collect::<Vec<_>>();
-            out.extend(
-                t.reverse(&n)
-                    .expect("a junction read")
-                    .into_iter()
-                    .map(|p| p.encode()),
-            );
+            let table: okm_core::Collection<TestStore, MentionsKey, MentionsRow> =
+                okm_core::Collection::new(store);
+            let mut out = Vec::new();
+            let probe = okm_core::PrefixProbe::<MentionsKey>::new(n.encode());
+            for key in table.scan_keys(&probe).flatten() {
+                out.push(mk(key.mentioned_id).encode());
+            }
+            for (key, _) in table
+                .scan::<__OkmIndex_MentionsRow_by_mentioned>(n.encode().as_slice())
+                .expect("an index read")
+            {
+                out.push(mk(key.decoded.user_id).encode());
+            }
             out
         }
     }
 
     #[test]
     fn walk_two_hops_reaches_friends_of_friends() {
-        let follows: okm_core::Junction<TestStore, FollowsEdge> =
-            okm_core::Junction::new(TestStore::slatedb_mem());
+        let store = TestStore::slatedb_mem();
         // 1 → 2 → 3: two hops from 1 reach 3.
-        follows.link(&mk(1), &mk(2)).unwrap();
-        follows.link(&mk(2), &mk(3)).unwrap();
-        let store = follows.store;
+        follows(&store, 1, 2);
+        follows(&store, 2, 3);
 
         let f = FollowsNeighbors;
         let got = walk(&[&f], store, &mk(1).encode(), 2);

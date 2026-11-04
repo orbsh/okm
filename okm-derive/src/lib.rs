@@ -5,7 +5,6 @@
 //! - `KeyEncode`: fixed-width key encoding (`key_encode.rs`).
 //! - `DocumentEncode`: value/payload encoding + index declarations
 //!   (`document_encode.rs`).
-//! - `JunctionEncode`: junctions (`junction_encode.rs`).
 //!
 //! Schema stability is locked by hex assertions in the test suite
 //! (docs/adr/0002, docs/adr/0005, docs/adr/0006).
@@ -21,7 +20,6 @@
 
 mod document_encode;
 mod graph_encode;
-mod junction_encode;
 mod key_encode;
 mod schema;
 mod storage_encode;
@@ -111,21 +109,6 @@ pub fn derive_document_encode(input: TokenStream) -> TokenStream {
         // none, and its `compile_error!` stays untouched on the bad token.
         Ok(out) => {
             dump("DocumentEncode", input, &out);
-            out.into()
-        }
-        Err(e) => e.to_compile_error().into(),
-    }
-}
-
-#[proc_macro_derive(JunctionEncode, attributes(ok_ns, ok_head))]
-pub fn derive_junction(input: TokenStream) -> TokenStream {
-    let parsed = input.clone();
-    let di = parse_macro_input!(parsed as DeriveInput);
-    match junction_encode::expand(di) {
-        // Only a real expansion is worth auditing — a rejected declaration has
-        // none, and its `compile_error!` stays untouched on the bad token.
-        Ok(out) => {
-            dump("JunctionEncode", input, &out);
             out.into()
         }
         Err(e) => e.to_compile_error().into(),

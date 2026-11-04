@@ -10,7 +10,7 @@
 )]
 #![cfg(feature = "fjall")]
 
-use okm_core::{FjallStore, Junction};
+use okm_core::FjallStore;
 mod common;
 use common::*;
 
@@ -18,39 +18,44 @@ use common::*;
 fn fjall_roundtrip() {
     let dir = tempfile::tempdir().unwrap();
     let store = FjallStore::open(dir.path(), "edges").unwrap();
-    let edges: Junction<FjallStore, UserToSessionEdge> = Junction::new(store);
+    let rows: okm_core::Collection<FjallStore, UserSessionKey, UserSessionRow> =
+        okm_core::Collection::new(store);
 
-    let u = UserKey {
-        org_id: 7,
-        user_id: 101,
+    let k = |user_id: u64, session_id: u64| UserSessionKey {
+        user_id,
+        session_id,
     };
-    let s1 = SessionKey {
-        org_id: 7,
-        session_id: 1001,
-    };
-    let s2 = SessionKey {
-        org_id: 7,
-        session_id: 1002,
-    };
+    rows.put(&k(101, 1001), &UserSessionRow { session_id: 1001 })
+        .unwrap();
+    rows.put(&k(101, 1002), &UserSessionRow { session_id: 1002 })
+        .unwrap();
 
-    edges.link(&u, &s1).unwrap();
-    edges.link(&u, &s2).unwrap();
+    // 正向：主键第一列是 user_id
+    let probe = okm_core::PrefixProbe::<UserSessionKey>::new(101u64.to_be_bytes().to_vec());
+    assert_eq!(rows.scan_keys(&probe).count(), 2);
 
-    let sessions = u.get_session(&edges).unwrap();
-    assert_eq!(sessions.len(), 2);
+    // 反向：by_session 索引，一次前缀扫描
+    let hits = rows
+        .scan::<__OkmIndex_UserSessionRow_by_session>(&1001u64.to_be_bytes())
+        .unwrap();
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].0.decoded.user_id, 101);
 
-    let users = s1.get_user(&edges).unwrap();
-    assert_eq!(users.len(), 1);
-    assert_eq!(users[0].decoded.user_id, 101);
+    rows.purge(&k(101, 1001)).unwrap();
+    assert_eq!(
+        rows.scan::<__OkmIndex_UserSessionRow_by_session>(&1001u64.to_be_bytes())
+            .unwrap()
+            .len(),
+        0,
+        "the index entry left with the row"
+    );
+    rows.store().persist().unwrap();
 
-    edges.unlink(&u, &s1).unwrap();
-    assert_eq!(u.get_session(&edges).unwrap().len(), 1);
-    edges.store.persist().unwrap();
-
-    // 重新打开验证持久化（unlink 已生效，剩 1 条）
-    drop(edges);
+    // 重新打开：只有提交过的状态还在
+    drop(rows);
     let store2 = FjallStore::open(dir.path(), "edges").unwrap();
-    let edges2: Junction<FjallStore, UserToSessionEdge> = Junction::new(store2);
-    let sessions2 = u.get_session(&edges2).unwrap();
-    assert_eq!(sessions2, vec![s2]);
+    let rows2: okm_core::Collection<FjallStore, UserSessionKey, UserSessionRow> =
+        okm_core::Collection::new(store2);
+    let probe = okm_core::PrefixProbe::<UserSessionKey>::new(101u64.to_be_bytes().to_vec());
+    assert_eq!(rows2.scan_keys(&probe).count(), 1);
 }

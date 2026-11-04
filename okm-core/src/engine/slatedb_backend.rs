@@ -1,5 +1,4 @@
-//! slatedb engine adapter: `SlatedbStore` (async engine over object storage)
-//! and `AsyncJunction` (its junction assembly point).
+//! slatedb engine adapter: `SlatedbStore` (async engine over object storage).
 //!
 //! slatedb is an async API with immutable borrows (WAL/flush managed
 //! internally), so this module wraps it for the async world; the async
@@ -13,8 +12,6 @@ use crate::engine::storage::VirtualStorage;
 // The trait + the pair-scan twin live in engine::storage (ADR-0028);
 // re-exported here so the slatedb-era import path keeps resolving.
 pub use crate::engine::storage::{VirtualStorageAsync, scan_suffix_kv_async};
-use crate::model::junction::KvJunction;
-use crate::model::key::KeyEncode;
 use slatedb::Db;
 use slatedb::object_store::ObjectStore;
 use std::ops::RangeFull;
@@ -519,61 +516,6 @@ impl VirtualStorageAsync for SlatedbStore {
     }
 }
 
-/// 异步 junction 装配点：引擎 + junction 类型 = 一条关系的操作面（平行于同步 Junction）
-pub struct AsyncJunction<S, E> {
-    pub store: S,
-    _pd: std::marker::PhantomData<E>,
-}
-
-type AKey<E> = <<E as KvJunction>::A as crate::model::index::Document>::Key;
-type BKey<E> = <<E as KvJunction>::B as crate::model::index::Document>::Key;
-
-impl<S: VirtualStorageAsync, E: KvJunction> AsyncJunction<S, E> {
-    pub fn new(store: S) -> Self {
-        Self {
-            store,
-            _pd: std::marker::PhantomData,
-        }
-    }
-
-    /// 原子双写：两端各一条单向 entry（slatedb 单 put 原子；崩溃窗口由上层 reconcile）
-    pub async fn link(&self, a: &AKey<E>, b: &BKey<E>) -> crate::error::Result<()> {
-        let e = E::from_parts(a.clone(), b.clone());
-        self.store.put(e.a_side_key(), Vec::new()).await?;
-        self.store.put(e.b_side_key(), Vec::new()).await
-    }
-
-    pub async fn unlink(&self, a: &AKey<E>, b: &BKey<E>) -> crate::error::Result<()> {
-        let e = E::from_parts(a.clone(), b.clone());
-        self.store.del(&e.a_side_key()).await?;
-        self.store.del(&e.b_side_key()).await
-    }
-
-    /// A 端扫描：与 a 相连的全部 B 身份（要求 B 全量身份，可 decode）。
-    pub async fn forward(&self, a: &AKey<E>) -> crate::error::Result<Vec<BKey<E>>> {
-        if !E::B_HEAD.is_empty() {
-            return Err(crate::error::Error::Corrupt {
-                what: "forward needs B's full identity to decode back into the key type".into(),
-            });
-        }
-        let p = E::a_side_prefix(a);
-        Ok(self
-            .store
-            .scan_suffix(&p)
-            .await?
-            .iter()
-            .map(|sfx| BKey::<E>::decode(sfx))
-            .collect())
-    }
-
-    /// B 端扫描的原始前缀字节（A 为截断身份时无法 decode）
-    pub async fn reverse_raw(&self, b: &BKey<E>) -> crate::error::Result<Vec<Vec<u8>>> {
-        let p = E::b_side_prefix(b);
-        self.store.scan_suffix(&p).await
-    }
-}
-
-// object_store 便捷 re-export：调用方构造 InMemory/S3 store 用 slatedb 的版本，避免版本分裂
 pub use slatedb::object_store;
 
 impl SlatedbSync {

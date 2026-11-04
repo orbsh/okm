@@ -189,7 +189,6 @@ pub struct SlotMap {
     pub predicate_vocab_name: u16,
     pub declared_index_base: u16,
     pub declared_reduce_base: u16,
-    pub junction_base: u16,
 }
 
 impl CollectionSchema {
@@ -260,7 +259,6 @@ impl CollectionSchema {
                 predicate_vocab_name: crate::model::index::PREDICATE_VOCAB_NAME_SLOT,
                 declared_index_base: crate::model::index::DECLARED_SLOT_BASE,
                 declared_reduce_base: crate::model::index::REDUCE_SLOT_BASE,
-                junction_base: crate::model::index::JUNCTION_SLOT_BASE,
             },
             indexes: <R as Document>::INDEX_DECLS
                 .iter()
@@ -418,7 +416,6 @@ mod serde_impls {
             st.serialize_field("predicate_vocab_name", &self.predicate_vocab_name)?;
             st.serialize_field("declared_index_base", &self.declared_index_base)?;
             st.serialize_field("declared_reduce_base", &self.declared_reduce_base)?;
-            st.serialize_field("junction_base", &self.junction_base)?;
             st.end()
         }
     }
@@ -444,7 +441,6 @@ mod serde_impls {
                 predicate_vocab_name: u16,
                 declared_index_base: u16,
                 declared_reduce_base: u16,
-                junction_base: u16,
             }
             fn default_predicate_vocab_id() -> u16 {
                 crate::model::index::PREDICATE_VOCAB_ID_SLOT
@@ -462,7 +458,6 @@ mod serde_impls {
                 predicate_vocab_name: r.predicate_vocab_name,
                 declared_index_base: r.declared_index_base,
                 declared_reduce_base: r.declared_reduce_base,
-                junction_base: r.junction_base,
             })
         }
     }

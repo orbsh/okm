@@ -1,5 +1,5 @@
 //! Data model: the declaration-facing core — keys, documents, indexes,
-//! junctions, reduces, schema, dynamic values, and the wrapper types.
+//! relations, reduces, schema, dynamic values, and the wrapper types.
 
 // Decode assumes the encoder (ADR-0040): the two are one artifact, so a payload
 // this SDK cannot decode was not produced by this SDK — a version or build
@@ -19,13 +19,11 @@
     clippy::panic_in_result_fn
 )]
 
-pub mod collection;
 pub mod document;
 pub mod faces;
 pub mod field;
 pub mod graph;
 pub mod index;
-pub mod junction;
 pub mod key;
 pub mod meta;
 pub mod obj_dynamic;
