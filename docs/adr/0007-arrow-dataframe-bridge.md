@@ -106,3 +106,20 @@ freshness; snapshot = pay conversion once, buy throughput.
 - Wiki documentation (query-language-design.md, KV + DF section) gains one
   sentence: the contact surface is Arrow RecordBatch; Parquet snapshot is the
   scale-out exit. No design exposition there — this ADR owns it.
+
+## Update (2026-11-04, export fix)
+
+**A fixed-size binary column had a schema but no builder.** `arrow_type` has
+mapped `Uuid4`/`Uuid7` to `FixedSizeBinary(16)` since the uuid types landed, and
+`build_batch`'s column builder had no arm for that type: the first export of a
+table carrying a uuid PAYLOAD field reached `unreachable!` ("no bridge mapping
+for FixedSizeBinary(16)"), so no such table could reach Parquet at all. The
+builder now matches `DataType::FixedSizeBinary(n)` and takes the width FROM THE
+SCHEMA — the same field `arrow_type` produced — instead of restating 16, so a
+column and its declaration cannot drift and a wider fixed kind needs no new
+arm; a NULL cell (a segment-only document) stays NULL. Values are copied
+verbatim (a uuid's byte order IS its order) and `import_parquet` reads them
+back through `FixedSizeBinaryArray`, so export → Parquet → import returns the
+same 16 bytes. Locked by `uuid_field_exports_as_fixed_size_binary` and
+`uuid_field_survives_a_parquet_round_trip`
+(`okm-core/tests/arrow_bridge_test.rs`).

@@ -44,3 +44,7 @@ Polars 是 DataFrame 侧选定的消费方（纯 Rust、Arrow 原生、惰性优
 - `ObjEncode` 多产出一个编译期产物：Arrow `Schema` + 每字段列 builder，与 `PAYLOAD_FIELDS` 同源派生。宏复杂度有界：一个 item、一份字段表、多一个输出。
 - 变长 payload 字段（String，PLAN Phase 2 待做）天然映射 Arrow `Utf8`——桥不被它阻塞，字段落地时映射就位。
 - Wiki 文档（query-language-design.md 的 KV + DF 段）加一句：接触面是 Arrow RecordBatch，规模化出口是 Parquet 快照。不展开设计论述——本 ADR 管设计。
+
+## Update（2026-11-04，导出修正）
+
+**定长二进制列有 schema，却没有 builder。** 自 uuid 类型落地起，`arrow_type` 就把 `Uuid4`/`Uuid7` 映射为 `FixedSizeBinary(16)`，而 `build_batch` 的列构造没有这个分支：一张带 uuid **payload 字段**的表第一次导出就撞上 `unreachable!`（「no bridge mapping for FixedSizeBinary(16)」），整张表根本到不了 Parquet。现在构造按 `DataType::FixedSizeBinary(n)` 匹配，宽度取自 **schema**（即 `arrow_type` 产出的同一个字段），不再重写 16——列与其声明不可能漂移，更宽/更窄的定长类型也不需要新分支；NULL 单元格（只有段的文档）仍是 NULL。值原样拷贝（uuid 的字节序就是它的序），`import_parquet` 经 `FixedSizeBinaryArray` 读回，所以导出 → Parquet → 导入拿回同样的 16 字节。由 `uuid_field_exports_as_fixed_size_binary` 与 `uuid_field_survives_a_parquet_round_trip` 锁定（`okm-core/tests/arrow_bridge_test.rs`）。

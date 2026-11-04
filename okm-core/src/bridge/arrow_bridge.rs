@@ -389,6 +389,23 @@ fn build_batch<K: KeyEncode, R: Document<Key = K>>(
                         .collect();
                     Arc::new(arrow::array::Int64Array::from_iter(vals))
                 }
+                // A fixed-size binary column takes its width from the SCHEMA,
+                // which is where a uuid's 16 bytes are declared — the builder
+                // asks the same field the schema was generated from, so the two
+                // cannot disagree. Written for any `n`: a narrower or wider
+                // fixed kind is the same arm, and a value of the wrong width is
+                // a construction bug (ADR-0040: the export panics on its own
+                // codec, the import answers `Err` on a foreign file).
+                DataType::FixedSizeBinary(width) => {
+                    let width = *width;
+                    Arc::new(
+                        arrow::array::FixedSizeBinaryArray::try_from_sparse_iter_with_size(
+                            col.iter().map(|c| c.as_deref()),
+                            width,
+                        )
+                        .expect("FixedSizeBinary: every value is the width the schema declares"),
+                    )
+                }
                 other => unreachable!("no bridge mapping for {other:?}"),
             }
         })
