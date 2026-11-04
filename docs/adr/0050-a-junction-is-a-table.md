@@ -2,7 +2,9 @@
 
 ## Status
 
-Accepted (2026-11-04). Supersedes ADR-0015's two-ns residency and ADR-0016's junction segment
+Superseded by ADR-0051 (2026-11-04): a junction is a collection, so the table this ADR
+shapes by hand is a table the model already has. Kept for the analysis and the history.
+Supersedes ADR-0015's two-ns residency and ADR-0016's junction segment
 (0x5nnn) for junction storage. Implementation lands as one change: the derive, `Junction`,
 the storage layout, the export exclusion list, and the modeling guide.
 
