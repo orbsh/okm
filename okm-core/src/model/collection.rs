@@ -51,8 +51,13 @@ impl<S: VirtualStorage, E: KvJunction> Junction<S, E> {
         b: &<E::B as crate::model::index::Document>::Key,
     ) {
         let e = E::from_parts(a.clone(), b.clone());
-        batch.put(e.a_side_key(), Vec::new());
-        batch.put(e.b_side_key(), Vec::new());
+        // The primary face carries the relation; the reverse face carries a POINTER to it
+        // (ADR-0050 §3) — the primary key's bytes, not a second copy of the row. A reader
+        // coming from B therefore knows exactly which row to fetch, and the index can be
+        // rebuilt by walking the primary face alone.
+        let primary = e.a_side_key();
+        batch.put(e.b_side_key(), primary.clone());
+        batch.put(primary, Vec::new());
     }
 
     /// Removes both entries.

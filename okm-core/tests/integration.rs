@@ -210,3 +210,35 @@ fn unlink_all_clears_both_faces_of_one_endpoint() {
     // 幂等：再清一次是零条，不是错误。
     assert_eq!(edges.unlink_all(&u7).unwrap(), 0);
 }
+
+/// 反向面装的是主键行的指针（ADR-0050 §3），不是行的第二份：从 B 侧读到值就是那条主键，
+/// 所以「这个 session 属于谁」不必再扫一遍，也不会出现两份会漂移的副本。
+#[test]
+fn the_reverse_face_points_at_the_primary_row() {
+    let store = TestStore::slatedb_mem();
+    let edges: okm_core::Junction<TestStore, UserToSession> = okm_core::Junction::new(store.clone());
+    let u = UserKey {
+        org_id: 7,
+        user_id: 101,
+    };
+    let s = SessionKey {
+        org_id: 7,
+        session_id: 1001,
+    };
+    edges.link(&u, &s).unwrap();
+
+    let e = UserToSession {
+        user: okm_core::Ref::ref_key(u.clone()),
+        session: okm_core::Ref::ref_key(s.clone()),
+    };
+    let primary = e.a_side_key();
+    let reverse = e.b_side_key();
+
+    let v = okm_core::VirtualStorage::get(&store, &reverse)
+        .unwrap()
+        .expect("the reverse entry exists");
+    assert_eq!(v, primary, "the index value IS the primary key");
+    assert!(okm_core::VirtualStorage::get(&store, &primary)
+        .unwrap()
+        .is_some_and(|v| v.is_empty()), "the row itself is still empty: payload comes next");
+}
