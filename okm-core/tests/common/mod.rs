@@ -35,7 +35,7 @@ pub struct Session {
 }
 
 #[derive(JunctionEncode, Clone)]
-#[ok_junction(1)]
+#[ok_ns(112)]
 pub struct UserToSessionEdge {
     #[ok_head(org_id, user_id)]
     pub user_id: Ref<User, UserKey>,

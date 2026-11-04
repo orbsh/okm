@@ -15,16 +15,18 @@
 //! anchor any number of junctions — including both endpoints of one
 //! (self-reflexive follows/mentions graphs).
 //!
-//! Layout (each entry one-way, direction = which ns hosts it; both
-//! identities in the entry — the LOCAL endpoint's identity leads so the
-//! scan prefix can match, the PEER's identity is the suffix):
-//! `[ns_a 2B BE][slot 2B BE: 0x5nnn][A·identity][B·identity]` in A's
-//! collection, and `[ns_b 2B BE][slot 2B BE: 0x5nnn][B·identity][A·identity]`
-//! in B's collection. The discriminator `nnn` comes from
-//! `#[ok_junction(n)]` and separates multiple junctions over one endpoint
-//! pair.
+//! Layout (ADR-0050 — a junction is a table, not two parasitized queues):
+//! the junction OWNS one ns. Its primary face `0x00` holds
+//! `[ns 2B BE][slot 0x00][A·identity][B·identity]` — the relation row, and the only place
+//! its data lives. Its reverse face reuses fixed face `0x06` (free: an ns is a graph OR a
+//! junction) as `[ns][0x06][B·identity][A·identity]`, an index rebuildable from the primary
+//! face. `#[ok_ns(N)]` declares the ns; the 0x5nnn segment, its 11-bit discriminator and the
+//! direction bit are gone.
 
-use crate::model::index::{JUNCTION_SLOT_BASE, Slot, write_slot};
+use crate::model::index::{write_slot, Slot};
+
+/// A junction's primary face: the relation row, at the same 0x00 a document collection uses.
+const TABLE_PRIMARY_SLOT: Slot = 0x00;
 use crate::model::key::KeyEncode;
 
 pub(crate) fn encode_head<K: KeyEncode>(buf: &mut Vec<u8>, key: &K, head: &[&str]) -> usize {
@@ -52,10 +54,9 @@ pub(crate) fn head_width<K: KeyEncode>(head: &[&str]) -> usize {
 pub trait KvJunction: Sized {
     type A: crate::model::index::Document;
     type B: crate::model::index::Document;
-    /// Junction discriminator filling the segment-0x3 counter
-    /// (`#[ok_junction(n)]`): separates multiple junctions over one
-    /// endpoint pair.
-    const JUNCTION_ID: u16;
+    /// The junction's own namespace, declared with `#[ok_ns(N)]` (ADR-0050): one relation
+    /// type = one ns = one table.
+    const NS: u16;
     /// Identity fields of A for this junction.
     const A_HEAD: &'static [&'static str];
     /// Identity fields of B for this junction.
@@ -67,24 +68,6 @@ pub trait KvJunction: Sized {
         b: <Self::B as crate::model::index::Document>::Key,
     ) -> Self;
 
-    /// Slot for one direction: `0x3` segment, counter = discriminator
-    /// shifted left one bit with the direction in the LSB. The bit is
-    /// structurally necessary for self-reflexive junctions (both endpoints
-    /// in one ns): without it the two directions' scan prefixes are
-    /// identical and every scan cross-matches. Endpoint-distinct junctions
-    /// simply never observe the bit — each ns only ever hosts one
-    /// direction.
-    fn dir_slot(dir: u16) -> Slot {
-        // The discriminator is NOT masked: a `#[ok_junction(n)]` past the 11-bit
-        // space would land on another junction's slot, and the derive refuses
-        // that declaration at expansion time — this assert is the runtime half
-        // of the same rule (and folds away: both operands are constants).
-        assert!(
-            Self::JUNCTION_ID <= 0x07FF,
-            "junction discriminator out of range: `id << 1 | dir` must fit the 12-bit slot counter (0x0000-0x07FF)",
-        );
-        JUNCTION_SLOT_BASE + (Self::JUNCTION_ID << 1) + dir
-    }
 
     /// `[ns_a 2B BE][slot 2B BE][A·identity][B·identity]` — the fact seen
     /// from A's collection. The local identity (A) leads so the scan
@@ -94,8 +77,8 @@ pub trait KvJunction: Sized {
             4 + head_width::<<Self::A as crate::model::index::Document>::Key>(Self::A_HEAD)
                 + head_width::<<Self::B as crate::model::index::Document>::Key>(Self::B_HEAD),
         );
-        k.extend_from_slice(<Self::A as crate::model::index::Document>::NS_PREFIX);
-        write_slot(&mut k, Self::dir_slot(0));
+        k.extend_from_slice(&Self::NS.to_be_bytes());
+        write_slot(&mut k, TABLE_PRIMARY_SLOT);
         encode_head(&mut k, self.a(), Self::A_HEAD);
         encode_head(&mut k, self.b(), Self::B_HEAD);
         k
@@ -108,8 +91,8 @@ pub trait KvJunction: Sized {
             4 + head_width::<<Self::B as crate::model::index::Document>::Key>(Self::B_HEAD)
                 + head_width::<<Self::A as crate::model::index::Document>::Key>(Self::A_HEAD),
         );
-        k.extend_from_slice(<Self::B as crate::model::index::Document>::NS_PREFIX);
-        write_slot(&mut k, Self::dir_slot(1));
+        k.extend_from_slice(&Self::NS.to_be_bytes());
+        write_slot(&mut k, crate::model::graph::EDGE_OUT_SLOT);
         encode_head(&mut k, self.b(), Self::B_HEAD);
         encode_head(&mut k, self.a(), Self::A_HEAD);
         k
@@ -123,8 +106,8 @@ pub trait KvJunction: Sized {
         let mut p = Vec::with_capacity(
             4 + head_width::<<Self::A as crate::model::index::Document>::Key>(Self::A_HEAD),
         );
-        p.extend_from_slice(<Self::A as crate::model::index::Document>::NS_PREFIX);
-        write_slot(&mut p, Self::dir_slot(0));
+        p.extend_from_slice(&Self::NS.to_be_bytes());
+        write_slot(&mut p, TABLE_PRIMARY_SLOT);
         encode_head(&mut p, a, Self::A_HEAD);
         p
     }
@@ -134,8 +117,8 @@ pub trait KvJunction: Sized {
         let mut p = Vec::with_capacity(
             4 + head_width::<<Self::B as crate::model::index::Document>::Key>(Self::B_HEAD),
         );
-        p.extend_from_slice(<Self::B as crate::model::index::Document>::NS_PREFIX);
-        write_slot(&mut p, Self::dir_slot(1));
+        p.extend_from_slice(&Self::NS.to_be_bytes());
+        write_slot(&mut p, crate::model::graph::EDGE_OUT_SLOT);
         encode_head(&mut p, b, Self::B_HEAD);
         p
     }

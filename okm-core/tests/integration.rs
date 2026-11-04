@@ -53,7 +53,7 @@ pub struct Session {
 // 字段用 Ref<Doc, Key> 承载端点——derive 反查文档的 NS_PREFIX（ADR-0015/0016），
 // ns 只在文档上声明一次。
 #[derive(JunctionEncode, Clone)]
-#[ok_junction(1)]
+#[ok_ns(110)]
 pub struct UserToSession {
     #[ok_head(org_id, user_id)]
     pub user: Ref<User, UserKey>,
@@ -90,8 +90,9 @@ fn byte_layout_and_queries() {
     edges.link(&u_org1, &s2).unwrap();
     edges.link(&u_org2, &s3).unwrap();
 
-    // ---------- 字节布局 ----------
-    // A 端 entry 头 = [ns_user 2B BE][slot 2B BE]：ns=1、junction 段 n=1 → [0,1,0x30,1]
+    // ---------- 字节布局（ADR-0050：junction 有自己的 ns） ----------
+    // 主键面 = [ns 2B BE][0x00 2B][A·身份][B·身份]：ns 是 junction 自己的（110），面号 0x00
+    // 与文档集合同一约定；本端身份在前，`[ns][0x00][A·身份]` 才是一次可命中的前缀。
     let e = UserToSession {
         user: Ref::ref_key(UserKey {
             org_id: 7,
@@ -103,25 +104,18 @@ fn byte_layout_and_queries() {
         }),
     };
     let fk = e.a_side_key();
-    // A 端 entry = [ns_user][slot][A·身份][B·全量身份]：头 4B + 12B + 12B。
-    // 本端身份在前（扫描前缀 `[ns][slot][A·身份]` 必须能命中）；对端身份是后缀。
-    assert_eq!(fk.len(), 4 + 12 + 12);
-    assert_eq!(&fk[..4], &[0, 1, 0x50, 2]); // ns=1 原值 + slot 0x5002（A 侧，dir=0）
-    assert_eq!(&fk[4..8], &7u32.to_be_bytes()); // user.org_id（本端）
-    assert_eq!(&fk[8..16], &101u64.to_be_bytes()); // user.user_id（本端）
-    assert_eq!(&fk[16..20], &7u32.to_be_bytes()); // session.org_id（对端）
-    assert_eq!(&fk[20..], &1001u64.to_be_bytes()); // session.session_id（对端）
+    // A face: same ns, face 0x00, then A's identity (truncated by `ok_head`) and B's.
+    assert_eq!(&fk[..4], &[0, 110, 0x00, 0x00]);
+    assert_eq!(&fk[4..7], &[0, 0, 7]); // user.org_id leads (this side's identity)
+    assert!(fk.ends_with(&1001u64.to_be_bytes())); // the peer's identity closes the key
 
-    // B 端 entry 头 = [ns_session 2B][0x30,1]，session 完整在前
+    // The reverse face: the same pair in the other order, at face 0x06 (a graph's freed
+    // face). Equal length is the property that matters — an index that could not hold the
+    // pair would be a different relation.
     let rk = e.b_side_key();
-    // B 端 entry = [ns_session][slot][A·身份（ok_head 截断到 org_id+user_id，全量 12B）]
-    // B 端 entry = [ns_session][slot][B·全量身份][A·身份]：session 本端在前
-    assert_eq!(rk.len(), 4 + 12 + 12);
-    assert_eq!(&rk[..4], &[0, 2, 0x50, 3]); // ns=2 + slot 0x5003（B 侧，dir=1）
-    assert_eq!(&rk[4..8], &7u32.to_be_bytes()); // session.org_id（本端）
-    assert_eq!(&rk[8..16], &1001u64.to_be_bytes()); // session.session_id（本端）
-    assert_eq!(&rk[16..20], &7u32.to_be_bytes()); // user.org_id（对端）
-    assert_eq!(&rk[20..], &101u64.to_be_bytes()); // user.user_id（对端）
+    assert_eq!(&rk[..4], &[0, 110, 0x06, 0x00]);
+    assert_eq!(rk.len(), fk.len(), "one relation, two orders of the same pair");
+    assert!(rk.ends_with(&101u64.to_be_bytes())); // this face ends where the other began
 
     // ---------- A 端：user → sessions（decode 回 SessionKey） ----------
     let sessions = u_org1.get_session(&edges).unwrap();
@@ -147,26 +141,12 @@ fn byte_layout_and_queries() {
 /// 靠区分号分开；同 ns 内 junction（段 0x3）与索引（段 0x1）条目结构性隔离。
 #[test]
 fn head_disjointness() {
-    // 自反 junction（两端同 ns）时方向位区分两个方向的扫描前缀：
-    // n=1 → A 侧 slot 0x5002、B 侧 slot 0x5003（低 bit = dir）。
-    // 端点不同的 junction 两端 ns 不同，方向位只是多余的确定性。
-    let a_side = [0u8, 1, 0x50, 2];
-    let b_side = [0u8, 2, 0x50, 3];
-    assert_ne!(
-        a_side[2..4],
-        b_side[2..4],
-        "direction bit separates the two scan prefixes"
-    );
-    assert_eq!(a_side[..2], [0, 1]);
-    // 段号分派：junction(0x3) ≠ index(0x1) ≠ reduce(0x2)——同一 ns 内不串扰。
-    assert_ne!(
-        okm_core::index::JUNCTION_SLOT_BASE >> 12,
-        okm_core::index::DECLARED_SLOT_BASE >> 12
-    );
-    assert_ne!(
-        okm_core::index::REDUCE_SLOT_BASE >> 12,
-        okm_core::index::DECLARED_SLOT_BASE >> 12
-    );
+    // 两个面共用一个 ns、面号不同：主键面 0x00、反向面 0x06（图让出的固定面）。
+    // 方向不再是「哪个端点 ns」，也不是 dir bit——它是同一张表里的两个面。
+    let a_side = [0u8, 110, 0x00, 0x00];
+    let b_side = [0u8, 110, 0x06, 0x00];
+    assert_ne!(a_side[2..4], b_side[2..4], "the faces separate the two scans");
+    assert_eq!(a_side[..2], b_side[..2], "one junction, one ns");
 }
 
 /// 槽位是位置语义：高半字节是族，低 12 位是计数器。越界值不再被掩码——

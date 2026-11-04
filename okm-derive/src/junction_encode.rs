@@ -5,7 +5,8 @@
 //! `<D as Document>::Key` for identity encoding and
 //! `<D as Document>::NS_PREFIX` for the endpoint ns (ADR-0015/0016). ns is
 //! declared once, on the document; the junction re-states nothing.
-//! `#[ok_junction(n)]` sets the segment-0x3 discriminator.
+//! `#[ok_ns(N)]` declares the junction's OWN namespace (ADR-0050): one relation type =
+//! one ns = one table, with the primary face holding the relation row.
 //! `#[ok_head(field, ...)]` on each endpoint field declares that
 //! endpoint's identity width (empty = full identity); generates the
 //! `KvJunction` impl plus query traits hanging off the endpoint key types.
@@ -20,11 +21,8 @@ use syn::{Data, DeriveInput, Fields};
 pub fn expand(input: DeriveInput) -> syn::Result<TS2> {
     let edge_name = &input.ident;
 
-    let junction_attr = input
-        .attrs
-        .iter()
-        .find(|a| a.path().is_ident("ok_junction"));
-    let junction_id: u16 = match junction_attr {
+    let ns_attr = input.attrs.iter().find(|a| a.path().is_ident("ok_ns"));
+    let ns: u16 = match ns_attr {
         Some(a) => a
             .parse_args::<syn::LitInt>()
             .map_err(|e| syn::Error::new_spanned(a, e))?
@@ -33,23 +31,10 @@ pub fn expand(input: DeriveInput) -> syn::Result<TS2> {
         None => {
             return Err(syn::Error::new(
                 edge_name.span(),
-                "missing #[ok_junction(n)]",
+                "missing #[ok_ns(N)] — a junction owns its namespace (ADR-0050)",
             ))
         }
     };
-    // The discriminator rides the 12-bit slot counter as `id << 1 | dir`, so
-    // 0x0000-0x07FF is the whole space. Masking it downstream would send an
-    // out-of-range declaration onto another junction's slot — refuse the
-    // declaration instead, where the mistake is visible.
-    if junction_id > 0x07FF {
-        return Err(syn::Error::new_spanned(
-            junction_attr,
-            format!(
-                "#[ok_junction(0x{junction_id:04X})] is out of range: the discriminator is the 12-bit slot \
-         counter's high bits (`id << 1 | dir`), so 0x0000-0x07FF is the whole space"
-            ),
-        ));
-    }
 
     let named = match &input.data {
         Data::Struct(s) => match &s.fields {
@@ -142,7 +127,7 @@ pub fn expand(input: DeriveInput) -> syn::Result<TS2> {
         impl ::okm_core::KvJunction for #edge_name {
             type A = #doc_a;
             type B = #doc_b;
-            const JUNCTION_ID: u16 = #junction_id;
+            const NS: u16 = #ns;
             const A_HEAD: &'static [&'static str] = &[#(#head_a),*];
             const B_HEAD: &'static [&'static str] = &[#(#head_b),*];
             fn a(&self) -> &<Self::A as ::okm_core::Document>::Key { &self.#ia.key }

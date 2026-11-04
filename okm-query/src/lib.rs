@@ -198,13 +198,13 @@ mod tests {
     /// Two junction types over one node type — the multi-relation graph a
     /// real model has (follows + mentions over User). 自反：两端同一文档。
     #[derive(JunctionEncode, Clone, PartialEq, Debug)]
-    #[ok_junction(1)]
+    #[ok_ns(114)]
     struct FollowsEdge {
         user_id: Ref<User, UserKey>,
         followee_id: Ref<User, UserKey>,
     }
     #[derive(JunctionEncode, Clone, PartialEq, Debug)]
-    #[ok_junction(2)]
+    #[ok_ns(115)]
     struct MentionsEdge {
         user_id: Ref<User, UserKey>,
         mentioned_id: Ref<User, UserKey>,
