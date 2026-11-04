@@ -163,3 +163,50 @@ fn slot_counter_is_checked_not_masked() {
 fn slot_family_is_checked_not_wrapped() {
     let _ = okm_core::index::slot(0x10, 1);
 }
+
+/// 级联原语（ADR-0050 §5）：删掉一个端点在这一种关系里的全部行，两个面一起走，
+/// 一次提交；返回条数。策略不在这里——调用方决定什么时候调用。
+#[test]
+fn unlink_all_clears_both_faces_of_one_endpoint() {
+    let store = TestStore::slatedb_mem();
+    let edges: okm_core::Junction<TestStore, UserToSession> = okm_core::Junction::new(store);
+
+    let u7 = UserKey {
+        org_id: 7,
+        user_id: 101,
+    };
+    let u8 = UserKey {
+        org_id: 8,
+        user_id: 202,
+    };
+    let s1 = SessionKey {
+        org_id: 7,
+        session_id: 1001,
+    };
+    let s2 = SessionKey {
+        org_id: 7,
+        session_id: 1002,
+    };
+    let s3 = SessionKey {
+        org_id: 8,
+        session_id: 2001,
+    };
+
+    edges.link(&u7, &s1).unwrap();
+    edges.link(&u7, &s2).unwrap();
+    edges.link(&u8, &s3).unwrap();
+    assert_eq!(edges.forward(&u7).unwrap().len(), 2);
+
+    // 只清 u7 的两条：u8 的行必须原样留着。
+    assert_eq!(edges.unlink_all(&u7).unwrap(), 2);
+
+    assert!(edges.forward(&u7).unwrap().is_empty(), "primary face cleared");
+    assert!(edges.reverse_raw(&s1).unwrap().is_empty(), "reverse face cleared");
+    assert!(edges.reverse_raw(&s2).unwrap().is_empty(), "reverse face cleared");
+    assert_eq!(edges.forward(&u8).unwrap(), vec![s3.clone()], "the neighbour survives");
+    // A is a truncated head here, so the reverse read is raw (the caller gets the bytes).
+    assert_eq!(edges.reverse_raw(&s3).unwrap().len(), 1);
+
+    // 幂等：再清一次是零条，不是错误。
+    assert_eq!(edges.unlink_all(&u7).unwrap(), 0);
+}
