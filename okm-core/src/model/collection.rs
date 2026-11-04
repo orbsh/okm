@@ -68,6 +68,35 @@ impl<S: VirtualStorage, E: KvJunction> Junction<S, E> {
         self.store.commit_batch(batch)
     }
 
+    /// Delete every relation of this type whose `a` side is `a` — both faces, one commit.
+    ///
+    /// The cascade primitive (ADR-0050 §5): the policy of WHEN to call it stays with the
+    /// caller, because okm declares relation types at compile time and has no runtime
+    /// registry of "who points at this collection". The work is one prefix scan of the
+    /// primary face plus one batch, and the reverse entry is derived from the same bytes
+    /// (the suffix is B's identity, the prefix tail is A's), so nothing is decoded.
+    pub fn unlink_all(
+        &self,
+        a: &<E::A as crate::model::index::Document>::Key,
+    ) -> crate::error::Result<usize> {
+        let p = E::a_side_prefix(a);
+        let mut batch = crate::engine::storage::Batch::default();
+        let mut deleted = 0usize;
+        for suffix in self.store.scan_suffix(&p)? {
+            // Rebuild the pair through the same encoders `link` used, so the deleted keys are
+            // byte-identical to the written ones no matter how either face lays out identity.
+            let b = <E::B as crate::model::index::Document>::Key::decode(&suffix);
+            let e = E::from_parts(a.clone(), b);
+            batch.del(&e.a_side_key());
+            batch.del(&e.b_side_key());
+            deleted += 1;
+        }
+        if deleted > 0 {
+            self.store.commit_batch(batch)?;
+        }
+        Ok(deleted)
+    }
+
     /// A-side scan: Bs linked to `a` (reads A's collection). Requires B to
     /// have full identity (decodable).
     pub fn forward(
