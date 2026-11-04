@@ -50,7 +50,7 @@ pub struct Author {
 }
 
 #[derive(JunctionEncode, Clone)]
-#[ok_junction(1)]
+#[ok_ns(111)]
 pub struct AuthorPost {
     #[ok_head(id)]
     pub author: Ref<Author, AuthorKey>,

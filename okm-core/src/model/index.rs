@@ -136,8 +136,9 @@ pub const DECLARED_SLOT_BASE: Slot = slot(segment::INDEX, 1);
 /// Slot base for `#[ok_reduce]` declarations — its own counter, 4095 per
 /// collection.
 pub const REDUCE_SLOT_BASE: Slot = slot(segment::REDUCE, 1);
-/// Slot base for junction discriminators (`#[ok_junction(n)]`, ADR-0015: one
-/// one-way entry per endpoint ns; counter = discriminator << 1 | direction).
+/// Retired (ADR-0050): a junction owns a namespace now, so it no longer borrows a slot
+/// segment from its endpoints' collections. Nothing allocates from this base; it stays
+/// declared only until the segment table's next revision drops it.
 pub const JUNCTION_SLOT_BASE: Slot = slot(segment::JUNCTION, 0);
 
 /// Encoded form of a function-index result (ADR-0005, function-index

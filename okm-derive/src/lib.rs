@@ -117,7 +117,7 @@ pub fn derive_document_encode(input: TokenStream) -> TokenStream {
     }
 }
 
-#[proc_macro_derive(JunctionEncode, attributes(ok_junction, ok_head))]
+#[proc_macro_derive(JunctionEncode, attributes(ok_ns, ok_head))]
 pub fn derive_junction(input: TokenStream) -> TokenStream {
     let parsed = input.clone();
     let di = parse_macro_input!(parsed as DeriveInput);
