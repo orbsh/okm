@@ -12,8 +12,8 @@
 
 use arrow::datatypes::DataType;
 use okm_core::{
-    Collection, Document, DocumentEncode, FieldDesc, FieldType, KeyEncode, TestStore, Vector,
-    VectorElem,
+    Collection, Document, DocumentEncode, FieldDesc, FieldType, KeyEncode, TestStore, Uuid4, Uuid7,
+    Vector, VectorElem,
 };
 
 /// UserKey：org 内的用户身份（主键）。字段类型覆盖四种 kind。
@@ -305,4 +305,118 @@ fn the_table_name_is_declared_beside_the_ns() {
     assert_eq!(ExportRow::TABLE_NAME, "export_rows");
     assert_eq!(<ExportRow as Document>::TABLE_NAME, "export_rows");
     assert_eq!(<UnnamedRow as Document>::TABLE_NAME, "");
+}
+
+// ---- a uuid payload field: a fixed 16-byte column, byte for byte ----------
+
+/// A device row: a `Uuid7` identity VALUE in the payload (not the key) beside a
+/// `Uuid4` credential. Both are declared fields, so both become columns.
+#[derive(KeyEncode, Clone, PartialEq, Debug)]
+#[ok_ns(15)]
+pub struct DeviceKey {
+    pub id: u64,
+}
+
+#[derive(DocumentEncode, Clone, PartialEq, Debug)]
+#[ok_ref(DeviceKey)]
+pub struct DeviceRow {
+    pub device: Uuid7,
+    pub token: Uuid4,
+    pub seen: u32,
+}
+
+fn device_row(device: Uuid7, token: Uuid4) -> DeviceRow {
+    DeviceRow {
+        device,
+        token,
+        seen: 7,
+    }
+}
+
+/// A uuid column is `FixedSizeBinary(16)` and its value IS the id's 16 bytes —
+/// no hyphenated rendering, no byte swap (the byte order is the id). The column
+/// builder had no arm for a fixed-size binary, so this export reached
+/// `unreachable!` and panicked before a row left the store.
+#[test]
+fn uuid_field_exports_as_fixed_size_binary() {
+    let t: Collection<TestStore, DeviceKey, DeviceRow> = Collection::new(TestStore::slatedb_mem());
+    let device = Uuid7::with_millis(1_700_000_000_000);
+    let token = Uuid4::from_bytes([
+        0xAB, 0xCD, 0xEF, 0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF, 0x01, 0x23, 0x45, 0x67,
+        0x89,
+    ]);
+    t.put(&DeviceKey { id: 1 }, &device_row(device, token))
+        .unwrap();
+
+    let batch = t.to_record_batch().unwrap();
+    assert_eq!(
+        batch.schema().field(1).data_type(),
+        &DataType::FixedSizeBinary(16),
+        "the declared kind decides the width, not the row"
+    );
+    assert_eq!(
+        batch.schema().field(2).data_type(),
+        &DataType::FixedSizeBinary(16)
+    );
+
+    let dev = batch
+        .column(1)
+        .as_any()
+        .downcast_ref::<arrow::array::FixedSizeBinaryArray>()
+        .expect("device column is a fixed-size binary array");
+    assert_eq!(dev.value(0), device.as_bytes());
+    assert_eq!(dev.value_length(), 16);
+    let tok = batch
+        .column(2)
+        .as_any()
+        .downcast_ref::<arrow::array::FixedSizeBinaryArray>()
+        .unwrap();
+    assert_eq!(tok.value(0), token.as_bytes());
+
+    // The rest of the row is untouched by the new arm.
+    let seen = batch
+        .column(3)
+        .as_any()
+        .downcast_ref::<arrow::array::UInt32Array>()
+        .unwrap();
+    assert_eq!(seen.value(0), 7);
+
+    // Zero rows still build the column at the declared width, not an error.
+    let empty: Collection<TestStore, DeviceKey, DeviceRow> =
+        Collection::new(TestStore::slatedb_mem());
+    let empty_batch = empty.to_record_batch().unwrap();
+    assert_eq!(empty_batch.num_rows(), 0);
+    assert_eq!(empty_batch.column(1).len(), 0);
+}
+
+/// The whole path a backup takes: uuid columns go out to Parquet, come back
+/// through `import_parquet`, and the ids are the same 16 bytes — v7's clock
+/// prefix included, because a byte-order-preserving copy is the only thing that
+/// keeps a uuid an id rather than a rendered string.
+#[cfg(feature = "parquet")]
+#[test]
+fn uuid_field_survives_a_parquet_round_trip() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("devices.parquet");
+
+    let t1: Collection<TestStore, DeviceKey, DeviceRow> = Collection::new(TestStore::slatedb_mem());
+    let rows = [
+        (1u64, Uuid7::with_millis(1_700_000_000_000)),
+        (2u64, Uuid7::with_millis(1_700_000_000_001)),
+    ];
+    for (id, device) in rows {
+        t1.put(&DeviceKey { id }, &device_row(device, Uuid4::new()))
+            .unwrap();
+    }
+    okm_core::parquet_io::export_parquet(&t1, &path).unwrap();
+
+    let mut t2: Collection<TestStore, DeviceKey, DeviceRow> =
+        Collection::new(TestStore::slatedb_mem());
+    let n = okm_core::parquet_io::import_parquet(&mut t2, &path).unwrap();
+    assert_eq!(n, 2);
+    for (id, device) in rows {
+        let got = t2.get(&DeviceKey { id }).unwrap().expect("restored row");
+        assert_eq!(got.device, device);
+        assert_eq!(got, t1.get(&DeviceKey { id }).unwrap().unwrap());
+    }
 }
