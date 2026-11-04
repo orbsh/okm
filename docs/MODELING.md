@@ -686,6 +686,30 @@ The second question arriving later is a **schema migration, not a retrofit**: pr
 
 The rejected `#[ok_relation]` proposal effectively assumed the first shape while storing the second; that mismatch — a set-shaped truth source living in one endpoint's field while the relation is defined by both — is precisely why it could not stand.
 
+### Junction or edge: the second question
+
+Both carry a relationship, and both let you read it from either side. They answer different
+questions, and the deciding one is what the relation KNOWS.
+
+| | `Junction` | graph edge |
+|---|---|---|
+| Endpoints | two document types, fixed at compile time | `NodeRef`s — any collection, any mix, resolved at runtime |
+| The relation's name | the junction TYPE is the name; one type per relation | every edge carries a `predicate`, resolved through the graph's vocabulary |
+| Identity | the endpoint pair — at most one relation of that type between two nodes | `(src, dst, predicate, edge_id)` — parallel edges are distinct facts |
+| Payload | its own document (ADR-0050): fields, defaults, codec placement | a dynamic value with no declared schema |
+| Reverse read | the reverse face, an index rebuilt from the primary face | the graph's `0x06`/`0x07` faces, both materialised |
+| Cost | a table: one ns, two faces | a graph: four faces, a predicate vocabulary, ref decoding |
+
+So: **a junction is a table about one kind of relation; an edge is a fact inside a graph.**
+Use a junction when the pair of types is closed and the relation is a fact in its own right
+(membership, ownership, follow with a since-date). Use an edge when the node types are open,
+the relation's name is data, several different relations connect the same two nodes, or the
+facts need to be traversed (out/in, chains, timelines). A relation that starts closed and
+later grows predicates or parallel facts is a migration to an edge, not a flag.
+
+The two do not compete for the same storage: an ns is either a graph or a junction, which is
+why the junction's reverse face may use a face number the graph reserves (ADR-0050 §3).
+
 ## Graph edges: the third relation carrier
 
 Junctions cover many-to-many with **compile-time typed endpoints**. A knowledge graph breaks that binding: one graph connects nodes of many types, edge predicates are runtime data, parallel edges are distinct facts, and edges carry attributes. The graph edge is the third relation carrier (ADR-0017) — independent identity, attributes, parallel edges, open endpoints, and a declaration that IS the graph.
