@@ -4,7 +4,7 @@
 
 Accepted (2026-09-17). Rename and two-ns residency stand; the 2-byte slot
 **segment table was superseded by ADR-0016** (4-bit segment + 12-bit counter,
-junction = segment 0x3) — see there for the current allocation
+junction = segment 0x5, superseded by ADR-0050) — see there for the current allocation
 segments decided; the ns-derivation scheme was rejected; graph Edge landed
 as ADR-0017; the field-position auto-sync (`#[ok_relation]`) was REJECTED
 after analysis on 2026-09-20 — the imperative link/unlink pairing stands

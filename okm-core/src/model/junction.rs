@@ -18,8 +18,8 @@
 //! Layout (each entry one-way, direction = which ns hosts it; both
 //! identities in the entry — the LOCAL endpoint's identity leads so the
 //! scan prefix can match, the PEER's identity is the suffix):
-//! `[ns_a 2B BE][slot 2B BE: 0x3nnn][A·identity][B·identity]` in A's
-//! collection, and `[ns_b 2B BE][slot 2B BE: 0x3nnn][B·identity][A·identity]`
+//! `[ns_a 2B BE][slot 2B BE: 0x5nnn][A·identity][B·identity]` in A's
+//! collection, and `[ns_b 2B BE][slot 2B BE: 0x5nnn][B·identity][A·identity]`
 //! in B's collection. The discriminator `nnn` comes from
 //! `#[ok_junction(n)]` and separates multiple junctions over one endpoint
 //! pair.
