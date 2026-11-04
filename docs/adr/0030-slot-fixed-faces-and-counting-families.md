@@ -2,7 +2,10 @@
 
 **Status**: Accepted (2026-10-17) — implemented. The slot is self-delimiting in
 `index::slot` / `write_slot` (a family nibble means two bytes, zero means one), the caps are
-asserts rather than masks, and the families in use are 0x3/0x4/0x5 after ADR-0032's renumbering.
+asserts rather than masks, and the families in use are 0x3/0x4 after ADR-0032's renumbering.
+**Update 2026-11-04**: 0x5 is retired (ADR-0051 — a many-to-many relation is a collection, so
+it has no family of its own). Every junction row below is history; the two-family layout and
+its caps stand.
 **Date**: 2026-10-17
 **Chinese**: [0030-slot-fixed-faces-and-counting-families.zh-CN.md](0030-slot-fixed-faces-and-counting-families.zh-CN.md)
 **Supersedes**: the segment table of ADR-0016 (the 4-byte head survives for
