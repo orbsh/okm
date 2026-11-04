@@ -11,43 +11,7 @@
 #![cfg(feature = "slatedb")]
 
 use okm_core::VirtualStorageAsync;
-use okm_core::slatedb_backend::{AsyncJunction, SlatedbStore}; // ADR-0027: commit_batch / scan_range_iter on the async trait
-mod common;
-use common::*;
-
-#[tokio::test]
-async fn slatedb_roundtrip() {
-    let store = slatedb::object_store::memory::InMemory::new();
-    let db = SlatedbStore::open("okm-test", std::sync::Arc::new(store))
-        .await
-        .unwrap();
-    let edges: AsyncJunction<SlatedbStore, UserToSessionEdge> = AsyncJunction::new(db);
-
-    let u = UserKey {
-        org_id: 7,
-        user_id: 101,
-    };
-    let s1 = SessionKey {
-        org_id: 7,
-        session_id: 1001,
-    };
-    let s2 = SessionKey {
-        org_id: 7,
-        session_id: 1002,
-    };
-
-    edges.link(&u, &s1).await.unwrap();
-    edges.link(&u, &s2).await.unwrap();
-
-    let sessions = edges.forward(&u).await.unwrap();
-    assert_eq!(sessions.len(), 2);
-
-    let raw = edges.reverse_raw(&s1).await.unwrap();
-    assert_eq!(raw.len(), 1);
-
-    edges.unlink(&u, &s1).await.unwrap();
-    assert_eq!(edges.forward(&u).await.unwrap().len(), 1);
-}
+use okm_core::slatedb_backend::SlatedbStore; // ADR-0027: commit_batch / scan_range_iter on the async trait
 
 /// ADR-0027 async-surface alignment: commit_batch takes the native
 /// WriteBatch path (ONE db.write), scan_range_iter yields pairs in one

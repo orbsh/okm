@@ -2699,3 +2699,29 @@ Decided 2026-11-04. The storage reshape, in the order that keeps the tree compil
 Gate: `cargo test -p okm-core --all-features` and
 `cargo clippy --workspace --all-targets --all-features -- -D warnings`
 (default features do not compile: `TestStore` is behind `test-engines` — pre-existing).
+
+## Phase 4.14 — The junction retires (ADR-0051) ✅ shipped
+
+`Junction`, `JunctionEncode`, `KvJunction`, `AsyncJunction`, the `0x5nnn` segment and the
+"junction owns an ns" carve-out are gone. A many-to-many relation is a collection whose key is
+the pair; its reverse direction is a declared index in that collection's own ns.
+
+Evidence: `okm-core/tests/relation_table_test.rs` (forward by prefix, reverse by index with
+fetch-back, `purge` taking the index entry, `rebuild_faces` reproducing it), plus the migrated
+fixtures in `save_into_test.rs`, `fjall_eval.rs` and `okm-query`.
+
+- [x] `Junction<S, E>` / `KvJunction` / `JunctionEncode` / `AsyncJunction` deleted; the
+      `collection` and `junction` modules are gone.
+- [x] `segment::JUNCTION` → `RETIRED_0X5` (unassigned, never reused) and
+      `JUNCTION_SLOT_BASE` deleted; the schema export loses `junction_base`.
+- [x] Test fixtures that used a junction now declare the relation table instead.
+- [x] `MODELING` (both languages) rewritten: "Many-to-many relationships: a table",
+      "Put, purge, query", the Refs/relation-table and relation-table/edge decision tables.
+- [x] `key-layout` (both languages): the 0x5 segment is retired, the layout block shows a
+      relation row and its index entry, and the counting-family list is corrected to
+      0x1 vocabularies / 0x3 indexes / 0x4 reduces.
+- [x] ADR-0050 superseded by ADR-0051; ADR-0015/0016 carry the retirement note; ADR-0045's
+      exclusion list drops its junction entry.
+
+Gate: `cargo test --workspace --all-features` (460 passed), clippy `--all-targets`
+`--all-features` clean.

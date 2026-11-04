@@ -32,15 +32,15 @@ undeclared — a codec-only document that never materializes a collection).
 the engine, it never restates the ns (the ns vocabulary is code, ADR-0002;
 engine choice is per-assembly-point freedom, ADR-0010).
 
-A junction declares no ns: its fields reference **document types**
-(`user: User`), and the derive resolves `<User as Document>::NS_PREFIX` for
-the endpoint ns (ADR-0015, ADR-0016). ns is declared once, on the document.
+A relation table declares its own ns, exactly like any other collection (ADR-0051): the pair of
+identities is the key, and the reverse direction is a declared index inside that same ns. There
+is no junction segment and no two-ns residency to reason about.
 
 ## Level 1: the 2-byte ns prefix, shared by all entries
 
 Every entry key starts with the same uniform 2-byte big-endian header — the
-ns raw value, written big-endian. Documents, indexes, reduces, and junctions
-share the full 16-bit number space: no transform, no reserved half:
+ns raw value, written big-endian. Documents, indexes and reduces share the full
+16-bit number space: no transform, no reserved half:
 
 ```text
 [ ns 2B BE ] ...
@@ -93,8 +93,8 @@ whose instances are enumerated by declaration order or by a discriminator:
 0x3nnn  declared index          [ns][0x3nnn][index fields][pkey prefix]  nnn = declaration order
 0x4nnn  reduce                  [ns][0x4nnn][group seg]         nnn = declaration order,
                                                                 independent counter
-0x5nnn  junction                [ns][0x5nnn][local id][peer id] nnn = discriminator << 1
-                                                                | direction
+0x5nnn  (retired, ADR-0051)     unassigned — an old database's keys must never be readable
+                                as something else; nothing allocates from it
 segments 0x6–0x0F  free
 ```
 
@@ -143,12 +143,9 @@ cannot walk into a sibling face — the one-byte/two-byte seam included
 (ADR-0033).
 
 Counting capacity is 4096 per family: declared indexes and reduces occupy
-1–4095 (0 reserved), junction uses the whole range for
-`discriminator << 1 | direction` (2048 discriminators per endpoint pair). A
-junction writes one one-way entry in each endpoint's ns (two-ns residency,
-ADR-0015); direction rides in the counter's low bit — structurally needed
-only for self-reflexive junctions, where both directions would otherwise
-share one scan prefix.
+1–4095 (0 reserved). A many-to-many relation needs no counter of its own: it is
+a collection, so the forward direction is the primary key's prefix and the reverse
+is one declared index among that collection's 0x3nnn entries.
 
 The slot keeps "adding derived data inside a collection" from ever
 encroaching on a neighboring collection's ns segment (ADR-0005), and its
@@ -179,8 +176,8 @@ level.
 ```text
 document  [ (0xFF part 1B) ][ ns 2B ][ slot 1B (fixed face)     ][ ... ]
 document  [ (0xFF part 1B) ][ ns 2B ][ slot 2B (counting family)][ ... ]
-junction  [ ns_a 2B         ][ 0x3nnn ][ local id ][ peer id ]   in A's collection
-junction  [ ns_b 2B         ][ 0x3nnn ][ local id ][ peer id ]   in B's collection
+relation  [ ns 2B           ][ 0x00   ][ A id ][ B id ]           the pair IS the key
+relation  [ ns 2B           ][ 0x3nnn ][ B id ][ A id ]           its reverse, a declared index
             ↑ one number space, one header discipline; the first slot byte
               delimits the slot and names the family — no transforms
 ```
@@ -197,8 +194,8 @@ reduce entry  [ ns 2B ][ 0x2nnn ][ group seg ]   value = acc encoding
 
 For scans, the prefixes inside one ns segment enumerate everything derived
 for this document: fixed faces 0x00–0x03 (primary, dynamic segment, both
-field-name vocabulary directions), then counting families 0x1 indexes, 0x2
-reduces, 0x3 junctions. A graph (edge collection) adds its own fixed faces:
+field-name vocabulary directions), then the counting families 0x1 vocabularies, 0x3 indexes, 0x4
+reduces. A graph (edge collection) adds its own fixed faces:
 the predicate vocabulary 0x04/0x05 (its predicates) and 0x06–0x09 (out/in edges and
 the two predicate-qualified faces, each carrying BOTH endpoints — the predicate index
 is the bare-prefix scan of 0x08, not a face of its own). A document collection that carries kind

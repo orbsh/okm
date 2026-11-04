@@ -45,8 +45,10 @@ pub mod segment {
     pub const INDEX: u16 = 0x3;
     /// Declared reduces (independent declaration-order counter).
     pub const REDUCE: u16 = 0x4;
-    /// Junctions (one one-way entry per endpoint ns, ADR-0015).
-    pub const JUNCTION: u16 = 0x5;
+    /// Retired (ADR-0051): a relationship is a collection, so it needs no segment of its own.
+    /// The number stays unassigned rather than reused — an old database's `0x5nnn` keys must
+    /// never be readable as something else.
+    pub const RETIRED_0X5: u16 = 0x5;
 }
 
 /// Assemble a counting family's slot from its family number and counter.
@@ -136,11 +138,6 @@ pub const DECLARED_SLOT_BASE: Slot = slot(segment::INDEX, 1);
 /// Slot base for `#[ok_reduce]` declarations — its own counter, 4095 per
 /// collection.
 pub const REDUCE_SLOT_BASE: Slot = slot(segment::REDUCE, 1);
-/// Retired (ADR-0050): a junction owns a namespace now, so it no longer borrows a slot
-/// segment from its endpoints' collections. Nothing allocates from this base; it stays
-/// declared only until the segment table's next revision drops it.
-pub const JUNCTION_SLOT_BASE: Slot = slot(segment::JUNCTION, 0);
-
 /// Encoded form of a function-index result (ADR-0005, function-index
 /// regime): what the declared function returns must land in the index
 /// entry's computed-field segment in a well-defined sort order.

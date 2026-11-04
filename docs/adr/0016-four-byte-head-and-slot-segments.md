@@ -1,7 +1,7 @@
 # ADR-0016: 4-Byte Entry Head and Segment-Numbered Slots
 
 Date: 2026-09-18
-Status: Accepted (2026-09-18). **Update 2026-10-17**: the segment table below is superseded by ADR-0030 — a single-face family is one byte with no counter, and only the counting families (declared index / reduce / junction) keep the 2-byte slot and its 12-bit counter, at the same numbers. The head-width decision survives for those families; the junction placement section stands as written.
+Status: Accepted (2026-09-18). **Update 2026-10-17**: the segment table below is superseded by ADR-0030 — a single-face family is one byte with no counter, and only the counting families (declared index / reduce / junction) keep the 2-byte slot and its 12-bit counter, at the same numbers. The head-width decision survives for those families. **Update 2026-11-04**: the junction family is retired (ADR-0051) — a relation is a collection — so segment 0x5 is unassigned and its layout sections are history.
 Supersedes: the slot allocation sections of ADR-0005 (1-byte slot), ADR-0011 (edge slots 14/15), and ADR-0012 (flat fixed-role slot table). See ADR-0015 for the junction residency decision this builds on.
 
 ## Context

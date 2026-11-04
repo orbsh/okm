@@ -22,8 +22,9 @@ about this codebase decide what the record can be and where it may live.
   at that boundary sees physical ops, not rows.
 - **One semantic write is one `Batch`, and the batch is more than rows**: the
   primary entry, one entry per declared face, embedded children, the reduce
-  fold/unfold, vocabulary growth. Index, reduce and junction entries are derived
-  state, and the export contract already excludes them (PLAN Phase 4).
+  fold/unfold, vocabulary growth. Index and reduce entries are derived state, and the
+  export contract already excludes them (PLAN Phase 4). A relation table's rows need no
+  exclusion: since ADR-0051 a relation is an ordinary collection, so its row is a row.
 - **The subscribe sink cannot carry it.** Emission is best-effort by contract,
   and `save_with_prev_into` deliberately emits nothing (ADR-0031 §5) — so
   `merge`, `replace`, `purge` and every cross-collection batch write would be
@@ -71,7 +72,7 @@ lake.** Carried — the set an export carries: primary `0x00`, dynamic segment
 `0x01`, field-name vocabulary `0x02`/`0x03`, predicate vocabulary `0x04`/`0x05`,
 and BOTH directions of every declared categorical vocabulary (`0x1nnn`/`0x2nnn`,
 ADR-0032 — the payload stores ids, so the labels are truth, not decoration).
-Dropped: declared index `0x3nnn`, reduce `0x4nnn`, junction `0x5nnn`, graph faces
+Dropped: declared index `0x3nnn`, reduce `0x4nnn`, graph faces
 `0x06`–`0x09` (`Graph::reindex` empties and rebuilds them from the primary rows,
 so an edge rides as a row like anything else), vector snapshot `0x0A`, table meta
 `0x0F`, and **bare-face keys** — a key whose length is
@@ -213,7 +214,7 @@ wrong: `save_with_prev_into` emits nothing by design (ADR-0031 §5), so
 `merge`/`replace`/`purge` and every cross-collection batch would never appear in
 the log.
 
-**Capturing index, reduce and junction entries.** They are derived state; the
+**Capturing index and reduce entries.** They are derived state; the
 export contract already leaves them out, and a replay would double-write work the
 store rebuilds deterministically.
 

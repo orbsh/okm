@@ -18,7 +18,7 @@
 )]
 
 use okm_core::{
-    Collection, Document, DocumentEncode, JunctionEncode, KeyEncode, ReduceCodec, Ref, TestStore,
+    Collection, Document, DocumentEncode, KeyEncode, ReduceCodec, Ref, TestStore,
     VirtualStorage, Vocab,
 };
 
@@ -41,7 +41,7 @@ pub struct AuthorKey {
     pub id: u64,
 }
 
-/// 端点文档：author（ns=43，仅作 junction 端点，不需要自己的主表）
+/// 端点文档：author（ns=43）
 #[derive(DocumentEncode, Clone, PartialEq, Debug)]
 #[ok_ref(AuthorKey)]
 #[ok_ns(43)]
@@ -49,12 +49,19 @@ pub struct Author {
     pub id: u64,
 }
 
-#[derive(JunctionEncode, Clone)]
+/// 关系表（ADR-0051）：作者与文章之间的关系是一张普通的集合，
+/// 键是这对身份，行上放关系自有的列——它和任何文档集合一样进同一个 batch。
+#[derive(KeyEncode, Clone, PartialEq, Debug)]
+pub struct AuthorPostKey {
+    pub author_id: u64,
+    pub post_id: u64,
+}
+
+#[derive(DocumentEncode, Clone, PartialEq, Debug)]
+#[ok_ref(AuthorPostKey)]
 #[ok_ns(111)]
-pub struct AuthorPost {
-    #[ok_head(id)]
-    pub author: Ref<Author, AuthorKey>,
-    pub post: Ref<Post, PostKey>,
+pub struct AuthorPostRow {
+    pub post_id: u64,
 }
 
 #[test]
@@ -106,9 +113,19 @@ fn cross_collection_one_batch() {
             None,
         )
         .unwrap();
-        let edges: okm_core::Junction<TestStore, AuthorPost> =
-            okm_core::Junction::new(store.clone());
-        edges.save_into(&mut batch, &AuthorKey { id: 7 }, &PostKey { id: 1 });
+        let edges: Collection<TestStore, AuthorPostKey, AuthorPostRow> =
+            Collection::new(store.clone());
+        edges
+            .save_with_prev_into(
+                &mut batch,
+                &AuthorPostKey {
+                    author_id: 7,
+                    post_id: 1,
+                },
+                &AuthorPostRow { post_id: 1 },
+                None,
+            )
+            .unwrap();
     }
 
     store.commit_batch(batch).expect("commit");
@@ -117,10 +134,11 @@ fn cross_collection_one_batch() {
     let t: Collection<TestStore, PostKey, Post> = Collection::new(store.clone());
     let scanned = t.scan::<Post_ByAuthor>(&7u64.to_be_bytes()).unwrap();
     assert_eq!(scanned.len(), 1);
-    let edges: okm_core::Junction<TestStore, AuthorPost> = okm_core::Junction::new(store);
-    let fwd = edges.forward(&AuthorKey { id: 7 }).unwrap();
-    assert_eq!(fwd.len(), 1);
-    assert_eq!(fwd[0], PostKey { id: 1 });
+    let edges: Collection<TestStore, AuthorPostKey, AuthorPostRow> = Collection::new(store);
+    let probe = okm_core::PrefixProbe::<AuthorPostKey>::new(7u64.to_be_bytes().to_vec());
+    let keys: Vec<AuthorPostKey> = edges.scan_keys(&probe).map(|k| k.unwrap()).collect();
+    assert_eq!(keys.len(), 1);
+    assert_eq!(keys[0].post_id, 1);
 }
 
 use __OkmIndex_Post_by_author as Post_ByAuthor;
@@ -281,18 +299,26 @@ fn atomic_write_and_reduce_in_one_commit() {
     let store = TestStore::slatedb_mem();
     let mut batch = okm_core::Batch::default();
     let t = <Entry as Document>::collection(store.clone());
-    let edges: okm_core::Junction<TestStore, AuthorPost> = okm_core::Junction::new(store.clone());
+    let edges: Collection<TestStore, AuthorPostKey, AuthorPostRow> = Collection::new(store.clone());
 
     let (k, r) = entry(1, 7, 3);
     t.save_with_prev_into(&mut batch, &k, &r, None).unwrap();
-    edges.save_into(&mut batch, &AuthorKey { id: 7 }, &PostKey { id: 1 });
+    edges
+        .save_with_prev_into(
+            &mut batch,
+            &AuthorPostKey {
+                author_id: 7,
+                post_id: 1,
+            },
+            &AuthorPostRow { post_id: 1 },
+            None,
+        )
+        .unwrap();
     store.commit_batch(batch).expect("commit");
 
     assert_eq!(ledger(&t, 7), Some(1));
-    assert_eq!(
-        edges.forward(&AuthorKey { id: 7 }).unwrap(),
-        vec![PostKey { id: 1 }]
-    );
+    let probe = okm_core::PrefixProbe::<AuthorPostKey>::new(7u64.to_be_bytes().to_vec());
+    assert_eq!(edges.scan_keys(&probe).count(), 1);
 }
 
 #[test]

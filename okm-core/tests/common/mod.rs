@@ -2,7 +2,7 @@
 #![allow(dead_code)]
 #![cfg(any(feature = "fjall", feature = "slatedb"))]
 
-use okm_core::{DocumentEncode, JunctionEncode, KeyEncode, Ref};
+use okm_core::{DocumentEncode, KeyEncode};
 
 #[derive(KeyEncode, Clone, PartialEq, Debug)]
 pub struct UserKey {
@@ -34,10 +34,18 @@ pub struct Session {
     pub session_id: u64,
 }
 
-#[derive(JunctionEncode, Clone)]
+/// 关系表（ADR-0051）：键是两个身份，行上带关系自有的列，反向方向是声明索引。
+/// 它取代了原来的 junction 声明——一张普通的集合。
+#[derive(KeyEncode, Clone, PartialEq, Debug)]
+pub struct UserSessionKey {
+    pub user_id: u64,
+    pub session_id: u64,
+}
+
+#[derive(DocumentEncode, Clone, PartialEq, Debug)]
+#[ok_ref(UserSessionKey)]
 #[ok_ns(112)]
-pub struct UserToSessionEdge {
-    #[ok_head(org_id, user_id)]
-    pub user_id: Ref<User, UserKey>,
-    pub session_id: Ref<Session, SessionKey>,
+#[ok_index(by_session { fields(session_id) })]
+pub struct UserSessionRow {
+    pub session_id: u64,
 }

@@ -21,7 +21,7 @@
 //! flat element sequence (row-major by convention); nothing on the wire.
 //!
 //! Elements are pure values — the identity dividing line (ADR-0015 §3)
-//! keeps this out of Ref/Junction: a scalar has no key, a key reference
+//! keeps this out of Ref/Refs: a scalar has no key, a key reference
 //! to it is a category error.
 
 /// A typed variable-length homogeneous list. `T` is the element type;
