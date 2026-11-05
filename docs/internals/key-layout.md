@@ -185,11 +185,10 @@ relation  [ ns 2B           ][ 0x3nnn ][ B id ][ A id ]           its reverse, a
 ## Where reduce lives
 
 A reduce entry has no ns of its own — it parasitizes its host document's ns
-segment, segment 0x2, with a counter independent of the index counter
-(ADR-0016 removed the old chained coupling):
+segment, segment 0x4, with a counter independent of the index counter:
 
 ```text
-reduce entry  [ ns 2B ][ 0x2nnn ][ group seg ]   value = acc encoding
+reduce entry  [ ns 2B ][ 0x4nnn ][ group seg ]   value = acc encoding
 ```
 
 For scans, the prefixes inside one ns segment enumerate everything derived

@@ -49,7 +49,7 @@
 //! one fewer slot per edge.
 //!
 //! A vocabulary precedes the faces that read its ids. Declared attribute
-//! faces are ordinary `#[ok_index]` declarations — counting family 0x1,
+//! faces are ordinary `#[ok_index]` declarations — counting family 0x3nnn,
 //! exactly the document machinery (`Document::index_entries`), because the
 //! edge's payload IS an obj (ADR-0012). The node collection is a STANDARD
 //! document collection: zero layout difference from any document
@@ -923,7 +923,7 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
         Ok(rebuilt)
     }
 
-    /// Filter by declared attribute (a counting-family 0x1 face): scan the
+    /// Filter by declared attribute (a counting-family 0x3nnn face): scan the
     /// face with the caller-encoded probe and return edge ids. The derive
     /// emits the per-field marker structs; this is the shared byte-level
     /// walk.
