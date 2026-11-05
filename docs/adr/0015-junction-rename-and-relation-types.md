@@ -7,7 +7,7 @@ direction is a declared index. This record is kept for the naming decision and
 for why the two relation types exist at all; every junction layout statement
 below is history.
 
-Accepted (2026-09-17). Rename and two-ns residency stand; the 2-byte slot
+Rename and two-ns residency stand; the 2-byte slot
 segment table is ADR-0016's (4-bit segment + 12-bit counter, junction =
 segment 0x5) and ADR-0030 owns the allocation table; the ns-derivation scheme is not
 part of the design; graph Edge is ADR-0017; the junction's interface is the imperative

@@ -111,10 +111,10 @@ document  [ (0xFF part 1B) ][ ns 2B ][ slot 2B（计数族）   ][ ... ]
 
 ## reduce 的位置
 
-reduce 条目没有独立 ns——它寄生在宿主文档的 ns 段里，段 0x2，计数器独立于索引（ADR-0016 取消了旧的续接耦合）：
+reduce 条目没有独立 ns——它寄生在宿主文档的 ns 段里，段 0x4，计数器独立于索引：
 
 ```text
-reduce 条目  [ ns 2B ][ 0x2nnn ][ group 段 ]   value = acc 编码
+reduce 条目  [ ns 2B ][ 0x4nnn ][ group 段 ]   value = acc 编码
 ```
 
 对扫描而言，一个 ns 段内的前缀完整枚举了这张文档的所有派生状态：固定面 0x00–0x03（主表、动态段、字段名词汇表两个方向），然后是计数族 0x1 词汇表、0x3 索引、0x4 reduce。图（边集合）另加它自己的固定面：谓词词汇表 0x04/0x05（它的谓词）与 0x06–0x09（出入边与两面向谓词的面，每面都带着**两端**——谓词索引是 0x08 的裸前缀扫描，不再独占一面）。带 kind token 的文档集合声明同一对词汇表——同一条规则，谁需要谁用。机制见[reduce 机制](reduce-mechanism.zh-CN.md)。
