@@ -1,13 +1,12 @@
 # ADR-0010: VirtualStorage — the storage trait as the boundary, remote bytes over existing channels
 
 Date: 2026-09-13
-Status: Accepted. **Update 2026-09-12, rename shipped**: the trait is now
-literally named `VirtualStorage` (module `storage`; async twin
-`VirtualStorageAsync` on the slatedb path) — no alias layer left to
-conceptualize through. Backend struct names (`FjallStore`, `SlatedbStore`) are unchanged; the test `MockStore` was later replaced by the `TestStore` engine matrix ( slatedb-mem / fjall / redb). **Update 2026-09-20, receiver placement**:
-the receiver is an engine-bearing host of the deployment — the Aura node itself.
-A second placement, the receiver inside a remote *execution* node (the probe),
-was implemented and withdrawn the same day; §7 records the reasons.
+Status: Accepted. The trait is `VirtualStorage` (module `storage`; async twin
+`VirtualStorageAsync` on the slatedb path) — no alias layer to conceptualize
+through. Backend struct names (`FjallStore`, `SlatedbStore`) are unchanged; the
+test backend is the `TestStore` engine matrix (slatedb-mem / fjall / redb). The
+receiver is an engine-bearing host of the deployment — the Aura node itself,
+never a remote *execution* node (the probe); §7 records why.
 
 ## Context
 
@@ -32,7 +31,7 @@ protocol where the data is already encoded bytes.
 
 ### 1. The trait IS the boundary — VirtualStorage
 
-The storage trait (`VirtualStorage`; shipped 2026-09-12 under this name —
+The storage trait (`VirtualStorage` —
 put/get/del/scan_suffix/batch/commit_batch) speaks only in encoded bytes.
 It IS the storage boundary point. Four backend shapes behind one trait:
 
@@ -69,9 +68,8 @@ No semantic parsing anywhere:
   in-process concern (hard-coded hex stability tests + `#[ok_layout(version)]`
   decode rejection). Aura does not run the sender's OKM and holds no layout
   knowledge; the only contract between the ends is the op byte + byte
-  streams. (This supersedes an earlier draft that put a layout version in
-  the frame header — wrong because it semantically coupled ends that are
-  deliberately unrelated.)
+  streams. (A layout version in the frame header would be wrong here: it
+  semantically couples ends that are deliberately unrelated.)
 - **No generic serialization library on the wire.** The frame is counted
   fields, not a protocol: the ops are already encoded at the trait
   boundary, so a frame only needs to mark op boundaries — tag + lengths +
@@ -222,17 +220,17 @@ the reference example; it is an example, not part of the contract.
 Transport diversity exists only on the two outsides of the executor and
 never leaks into it.
 
-### 7. Receiver placement: an engine-bearing host, never an execution node (2026-09-20)
+### 7. Receiver placement: an engine-bearing host, never an execution node
 
 The receiver owns an engine, so the host it runs on must be one meant to hold
 data. That is the Aura node itself — application data, Krystallizer's graph and
 any other remote sender's bytes land in an engine Aura operates, and §6's
 transport is simply what carries frames to it.
 
-A second placement was implemented and then removed: the receiver as a
-`#[kv_storage]` executor inside the **probe**, i.e. on a remote execution node,
-with each instance's prefix declared in the probe's config and op frames riding
-the probe's outbound WS connection. Two structural reasons ended it:
+The receiver never sits inside the **probe** — a `#[kv_storage]` executor on a
+remote execution node, each instance's prefix declared in the probe's config and
+op frames riding the probe's outbound WS connection. Two structural reasons rule
+it out:
 
 - **An execution node holds nothing between calls.** Every operation is
   delivered per call and carries its code with it; hosting an engine there adds

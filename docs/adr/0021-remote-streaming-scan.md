@@ -1,11 +1,11 @@
 # ADR-0021: Streaming scan over the wire — the remote path joins the lazy contract
 
 Date: 2026-09-22
-Status: Landed (2026-09-22) — wire codec, hex tests, `RemoteStore::scan_range_iter` lazy `ScanIter::Remote` arm all green. Update 2026-09-29 (found while landing ADR-0028's async sender): the flag space gains `0x03` — the grammar lacked the exclusive + unbounded combination, so an unbounded stream silently truncated at the first page edge (see below; sync and async senders share the fix). The deferred `[0x03]` descending-page proposal below was never shipped, so the value is free — filling it follows this ADR's own discipline: "flags are added when a use case exists."
+Status: Landed (2026-09-22) — wire codec, hex tests, `RemoteStore::scan_range_iter` lazy `ScanIter::Remote` arm all green.
 
 ## Context
 
-ADR-0020 made lazy iteration the streaming contract of `VirtualStorage::scan_range_iter`: every local engine wraps its native owned iterator, and consumers that stop early (LIMIT, first match) pay only the reads performed. One backend was exempted: the remote path. `RemoteStore::scan_range_iter` buffers — it rides the same `OP_SCAN` frame, whose `OpResponse` carries the whole answer in one message. ADR-0020 recorded this as future work, not an obligation. It is now scheduled: the buffering is not a hypothetical cost, it is the exact degradation ADR-0020 removed everywhere else — a remote consumer asking for "the first 10 of a million" pays all million over the wire before seeing one.
+ADR-0020 made lazy iteration the streaming contract of `VirtualStorage::scan_range_iter`: every local engine wraps its native owned iterator, and consumers that stop early (LIMIT, first match) pay only the reads performed. One backend was exempted: the remote path. `RemoteStore::scan_range_iter` buffers — it rides the same `OP_SCAN` frame, whose `OpResponse` carries the whole answer in one message. ADR-0020 recorded that as future work rather than an obligation, and the buffering is not a hypothetical cost: it is the exact degradation ADR-0020 removed everywhere else — a remote consumer asking for "the first 10 of a million" pays all million over the wire before seeing one.
 
 ### The constraint set (what any solution must preserve)
 
@@ -17,9 +17,9 @@ These are the properties the wire contract already locks (ADR-0010); a streaming
 4. **Zero OKM semantics in the wire**: keys/values are opaque bytes; the codec knows op tags and length buckets, nothing else.
 5. **Write batching and order are already solved**: mutating ops in one frame commit together; scan runs after them (reads see prior same-frame writes). A streaming redesign must not reorder or split that guarantee.
 
-### What exactly must change today
+### The buffered answer's cost
 
-`OpResponse` had two fields when this was written — `value: Option<Vec<u8>>` (get) and `suffixes: Vec<Vec<u8>>` (scan). Both are whole-answer shapes; `hits` and `tail` (this ADR's chunk) and `fault` (ADR-0038's failure answer) arrived later, each of them whole-answer shaped in the same way. The scan answer also loses the values: `scan_range` on the wire returns key suffixes only, and the sender's `scan_range_iter` re-fetches each value with a per-key `OP_GET` round trip (`nest.rs`'s buffered path does `scan_range` + N × `get`). So the remote lazy path today is not just un-streamed, it is N+1 round trips on top.
+`OpResponse`'s fields are all whole-answer shapes: `value: Option<Vec<u8>>` (get), `suffixes: Vec<Vec<u8>>` (scan), `hits` and `tail` (this ADR's chunk), `fault` (ADR-0038's failure answer). And the scan answer drops the values — `scan_range` on the wire returns key suffixes only, so a sender that wants values re-fetches each one with a per-key `OP_GET` round trip (`nest.rs`'s buffered path is `scan_range` + N × `get`). The buffered remote path is therefore N+1 round trips on top of being un-streamed.
 
 ## Decision
 
@@ -33,13 +33,14 @@ Same op shape as `OP_SCAN`: key segment = full-key begin bound (hosted-prefix ap
 value segment: [flag u8][end bytes?][page u8]
 flag: 0x00 = unbounded begin           0x01 = bounded, inclusive begin
       0x02 = bounded, exclusive begin  0x03 = unbounded, exclusive begin
-                                        (added 2026-09-29: the resume of
-                                        an unbounded stream — begin IS the
-                                        cursor, no end span sits between
-                                        flag and page byte)
+                                        (the resume of an unbounded stream:
+                                        begin IS the cursor, so no end span
+                                        sits between flag and page byte)
 page: requested batch size in ENTRIES (not bytes) —
       0 = engine default (256), 0xFF = "one giant page" (the old buffered shape)
 ```
+
+`0x00` with no end bytes is a range begin..∞, distinct from the EMPTY value segment, which is the legacy prefix scan: two different predicates that the receiver must not conflate.
 
 Entries, not bytes, because the receiver must not parse keys (constraint 4) — a byte-budget page would require size-guessing anyway, and entries map 1:1 to what the sender's iterator yields. The page size is a hint, not a contract: the receiver may return fewer entries (it does when the range ends) and never more.
 
@@ -55,10 +56,11 @@ tail: 0x00 = more chunks follow (this chunk's count == page size)
 
 The trailer sits at the END, not the front, for two reasons — neither of which is forward compatibility: an unimplemented `OP_SCAN_STREAM` is rejected whole (unknown tag → `apply` → `None`), so the sender never parses far enough to care where the byte lives. First, the chunk keeps its defined shape — "today's `OpResponse` plus one appended byte" — and `OpResponse`'s fields are already ordered, so the only extension point that preserves that encoding is the tail; a leading byte would rewrite field positions and make this a second response format, exactly what the decision avoids. Second, the semantics are trailing-shaped: `0x01` certifies the entries just read as complete, not the next chunk as promised. Placing it in front would assert a property before any entry exists to back it, and force the receiver to carry one more piece of forward state while consuming.
 
-Three properties fall out of reusing the response grammar:
+Four properties fall out of the decision:
 
 - **Chunks are self-contained `OpResponse`s plus one byte.** A receiver that does not implement `OP_SCAN_STREAM` rejects the op (unknown tag = malformed frame, `apply` → `None`) and the sender falls back to the buffered path — backward compatibility without version negotiation.
 - **The chunk carries values**, fixing the N+1 problem without a separate decision: each hit is `[len][key][len][value]`, mirroring the engine's `(key, value)` iterator item. The old `suffixes`-only answer stays for `OP_SCAN`; `OP_SCAN_STREAM` never strips values because its contract is the iterator's contract.
+- **Answers are prefix-relative.** Scan and stream answers carry keys in the SENDER's key space: the receiver strips its hosted prefix from every returned key, and hosts the end bound the same way it hosts the begin. Receiver-side full keys would leak the hosted prefix into sender bytes and break cursor resumption, which must be able to re-send a hit key verbatim as the next begin.
 - **No cursor state on the receiver.** The sender owns resumption: each chunk's last key IS the cursor, and the next request is an ordinary `OP_SCAN_STREAM` with `begin = last_key + prefix_end-style increment` (exclusive begin via flag `0x02` with an end bound, or `0x03` when the stream is unbounded — exclusive-begin range). The receiver answers from whatever engine state exists now — no snapshot promise. This is the honest contract for a stateless executor (constraint 2): the remote stream is a sequence of consistent-at-chunk-time reads, not a frozen snapshot like fjall's local `Iter`. ADR-0020's semantics degrade exactly where the architecture already says they must.
 
 ### Sender shape: `RemoteStore::scan_range_iter` becomes genuinely lazy
@@ -94,7 +96,7 @@ The trait's return type does not change (`ScanIter` gains a `Remote` arm behind 
 
 - **A frame-level stream protocol (SEQ/ACK frames, receiver-side cursor id).** Violates constraint 2 (stateful receiver) and constraint 3 (correlation in frame bytes). The transport already orders and correlates; restating it in the wire is the same fact stored twice, and it would couple the codec to session-oriented transports — the UDS-datagram / fire-and-forget shapes stop working.
 - **One response type, streamed as raw byte spans with offsets.** Makes chunks non-self-contained: a chunk could only be parsed with its predecessors' context, so a dropped chunk poisons the rest. Self-contained chunks cost one repeated field and buy resumability for free.
-- **Descending-page request for `next_back` (a reverse flag).** Technically symmetric, but no current consumer walks a remote range backwards without first having read forward; deferring keeps the flag byte space honest (flags are added when a use case exists, not for symmetry — same reasoning as ADR-0016's slot table). Note (2026-09-29): this line originally pre-named `[0x03]`; that value was taken by the unbounded-exclusive resume flag (Status). If the descending request returns, it claims the next free flag value.
+- **Descending-page request for `next_back` (a reverse flag).** Technically symmetric, but no current consumer walks a remote range backwards without first having read forward; deferring keeps the flag byte space honest (flags are added when a use case exists, not for symmetry — same reasoning as ADR-0016's slot table). `0x03` belongs to the unbounded-exclusive resume, so a descending request would claim the next free flag value.
 
 ## Consequences
 
@@ -103,10 +105,3 @@ The trait's return type does not change (`ScanIter` gains a `Remote` arm behind 
 - **okm-wire gains one op tag and one trailer byte — its zero-dependency, zero-semantics charter holds.** The hex tests extend to cover: chunk round trip, exclusive-begin flag, empty final chunk, unknown-tag fallback.
 - **The buffered `OP_SCAN` path remains the compatibility floor** — a peer that predates tag 4 interoperates forever; the sender discovers the capability per-call (the fallback is invisible above the trait boundary).
 - **`0xFF = one giant page` preserves the old behavior exactly** for consumers that want the buffered shape (the `scan_covered`-style internal callers), so nothing regresses while nothing is forced.
-
-## Update (2026-09-22, landing)
-
-Two implementation-level refinements surfaced while landing, both consistent with the frame shape:
-
-- **Answers are prefix-relative.** Scan and stream answers carry keys in the SENDER's key space — the receiver strips its hosted prefix from every returned key (and hosts the end bound the same way it hosts the begin). The draft's chunk sketch implied receiver-side full keys; that would leak the hosted prefix into sender bytes and break cursor resumption (the sender must be able to re-send a hit key verbatim as the next begin). Existing `OP_SCAN` answers already followed this rule via `scan_suffix`'s prefix-stripping; the landing extends it to range and stream answers, where the draft had left it implicit.
-- **A begin-only range is expressible.** `OP_SCAN`'s value segment `[0x00]` (unbounded end) is a range begin..∞, distinct from the EMPTY value segment (the legacy prefix scan). The pre-landing receiver conflated the two; the grammar always said they were different.

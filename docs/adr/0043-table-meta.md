@@ -22,7 +22,7 @@ Two things were already true around it.
 
 - Aura had to invent the same check on its own layer: a raw marker row in a
   reserved ns, seeded at first boot and verified at every boot, so a renumbering
-  became a boot error instead of a silent decode (ADR-0040 Update there). That is
+  became a boot error instead of a silent decode (ADR-0040). That is
   a per-product reimplementation of a fact okm itself knows — the shape its bytes
   were written in.
 - The fixed-face band had one address left at its top: 0x0F, with 0x0B–0x0E free

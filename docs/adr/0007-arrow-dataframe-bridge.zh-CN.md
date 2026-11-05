@@ -18,7 +18,8 @@ Polars 是 DataFrame 侧选定的消费方（纯 Rust、Arrow 原生、惰性优
 ### 第一期 — eager 导出：`Table::to_record_batches()` / `to_polars()`
 
 - 经现有 `KvEngine` 扫描面扫描主段（slot 0），解码每条记录（键字段 + TLV payload），按批次产出列（目标约每 `RecordBatch` 8192 行）。
-- **Schema 由 `ObjEncode` 生成，不做运行时推断**：字段名来自行声明，类型映射固定（`u32`→`UInt32`、`u64`→`UInt64`、`[u8; N]`→`Binary`，wrapper 按各自读路径——`Vocab<N>` 导出**标签**（`Utf8`），且该列可为空（ADR-0032：id 是 store 自己的编号，词表叫不出名字的 id 导出为 NULL），`Offset<T>`/`Quant<T>` 以还原后的逻辑值出现，`Reverse<T>` 在产出前反转）。这延续 "code as DDL"：一个 struct 是键编码、payload 编码、索引槽、快照列、Arrow schema 的单一来源——五个目的地，零漂移面。
+- **Schema 由 `DocumentEncode` 生成，不做运行时推断**：字段名来自行声明，类型映射固定（`u32`→`UInt32`、`u64`→`UInt64`、`[u8; N]`→`Binary`，wrapper 按各自读路径——`Vocab<N>` 导出**标签**（`Utf8`），且该列可为空（ADR-0032：id 是 store 自己的编号，词表叫不出名字的 id 导出为 NULL），`Offset<T>`/`Quant<T>` 以还原后的逻辑值出现，`Reverse<T>` 在产出前反转）。这延续 "code as DDL"：一个 struct 是键编码、payload 编码、索引槽、快照列、Arrow schema 的单一来源——五个目的地，零漂移面。
+- **定长二进制列按 schema 的宽度构造**：`Uuid4`/`Uuid7` 映射为 `FixedSizeBinary(16)`，`build_batch` 按 `DataType::FixedSizeBinary(n)` 匹配，宽度取自 `arrow_type` 产出的同一个字段，不再重写 16——列与其声明不可能漂移，更宽或更窄的定长类型也不需要新分支。值原样拷贝（uuid 的字节序就是它的序），NULL 单元格（只有段的文档）仍是 NULL，`import_parquet` 经 `FixedSizeBinaryArray` 读回，所以导出 → Parquet → 导入拿回同样的字节。由 `uuid_field_exports_as_fixed_size_binary` 与 `uuid_field_survives_a_parquet_round_trip` 锁定（`okm-core/tests/arrow_bridge_test.rs`）。
 - 行→列转换是 O(N) 且不可避免的一次布局转换（行存→列存）；eager 档按每次查询付这笔代价，换的是最高新鲜度。
 - `polars` 是可选 Cargo feature（默认关闭）；核心只带 `arrow-*` 依赖返回 `RecordBatch`，不需要桥的构建不为此付出任何代价。
 
@@ -41,10 +42,6 @@ Polars 是 DataFrame 侧选定的消费方（纯 Rust、Arrow 原生、惰性优
 - 新模块 `okm-core/src/arrow_bridge.rs`（或 `arrow_backend.rs`，对齐引擎后端命名），挂在 `arrow` feature 下；`to_polars()` 在其上的 `polars` feature 下。
 - **导出由 feature 门控**：桥及其依赖（`arrow-*`、`polars`）全部是可选 feature，默认关闭——不需要分析路径的构建（嵌入式 OLTP、CI、嵌入式设备）不为此付出编译时间和二进制体积；`Table` 上的导出方法只在 feature 激活时生成，核心 API 面零增量。
 - **ns ID 还原为表名**：RecordBatch 的列不含 ns 字节，但批次需要知道来源表——导出方负责把键里的 `[ns 2B]` 头经 ns 词汇表（ADR-0002，词汇表活在代码里）反查回描述性表名，作为批次元数据（表名/列归属）。与 ADR-0006 快照的自描述输出是同一条纪律：二进制 ns 头不得泄漏进消费侧，逆映射由导出方独占。
-- `ObjEncode` 多产出一个编译期产物：Arrow `Schema` + 每字段列 builder，与 `PAYLOAD_FIELDS` 同源派生。宏复杂度有界：一个 item、一份字段表、多一个输出。
+- `DocumentEncode` 多产出一个编译期产物：Arrow `Schema` + 每字段列 builder，与 `PAYLOAD_FIELDS` 同源派生。宏复杂度有界：一个 item、一份字段表、多一个输出。
 - 变长 payload 字段（String，PLAN Phase 2 待做）天然映射 Arrow `Utf8`——桥不被它阻塞，字段落地时映射就位。
 - Wiki 文档（query-language-design.md 的 KV + DF 段）加一句：接触面是 Arrow RecordBatch，规模化出口是 Parquet 快照。不展开设计论述——本 ADR 管设计。
-
-## Update（2026-11-04，导出修正）
-
-**定长二进制列有 schema，却没有 builder。** 自 uuid 类型落地起，`arrow_type` 就把 `Uuid4`/`Uuid7` 映射为 `FixedSizeBinary(16)`，而 `build_batch` 的列构造没有这个分支：一张带 uuid **payload 字段**的表第一次导出就撞上 `unreachable!`（「no bridge mapping for FixedSizeBinary(16)」），整张表根本到不了 Parquet。现在构造按 `DataType::FixedSizeBinary(n)` 匹配，宽度取自 **schema**（即 `arrow_type` 产出的同一个字段），不再重写 16——列与其声明不可能漂移，更宽/更窄的定长类型也不需要新分支；NULL 单元格（只有段的文档）仍是 NULL。值原样拷贝（uuid 的字节序就是它的序），`import_parquet` 经 `FixedSizeBinaryArray` 读回，所以导出 → Parquet → 导入拿回同样的 16 字节。由 `uuid_field_exports_as_fixed_size_binary` 与 `uuid_field_survives_a_parquet_round_trip` 锁定（`okm-core/tests/arrow_bridge_test.rs`）。

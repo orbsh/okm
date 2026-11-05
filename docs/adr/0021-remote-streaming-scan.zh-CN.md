@@ -1,11 +1,11 @@
 # ADR-0021: wire 层的流式扫描——远端路径加入惰性契约
 
 日期：2026-09-22
-状态：已落地（2026-09-22）——wire codec、hex 测试、`RemoteStore::scan_range_iter` 惰性 `ScanIter::Remote` 臂全部通过。更新 2026-09-29（落地 ADR-0028 异步发送者时发现）：标志空间新增 `0x03`——原语法缺「排他 + 无上界」组合，无界流在第一页边界处静默截断（见下）；同步与异步两个发送者共享此修复。下文推迟的 `[0x03]` 降序分页提案从未落地，该值空闲——填入它遵循本 ADR 自己的纪律：「标志在使用场景出现时加入」。
+状态：已落地（2026-09-22）——wire codec、hex 测试、`RemoteStore::scan_range_iter` 惰性 `ScanIter::Remote` 臂全部通过。
 
 ## 背景
 
-ADR-0020 把惰性迭代定为 `VirtualStorage::scan_range_iter` 的流式契约：每个本地引擎包装自己的原生 owned 迭代器，提前放弃的消费者（LIMIT、首个命中）只为实际执行的读买单。只有一个后端被豁免：远端路径。`RemoteStore::scan_range_iter` 是缓冲的——它走同一条 `OP_SCAN` 帧，`OpResponse` 把整个答案装在一条消息里。ADR-0020 将此记为 future work、非义务。现在排期：缓冲不是假设性成本，它正是 ADR-0020 在其他所有地方消灭的那种退化——远端消费者要「一百万条里的前 10 条」，得先为一百万条付完 wire 上的成本，才看得见第一条。
+ADR-0020 把惰性迭代定为 `VirtualStorage::scan_range_iter` 的流式契约：每个本地引擎包装自己的原生 owned 迭代器，提前放弃的消费者（LIMIT、首个命中）只为实际执行的读买单。只有一个后端被豁免：远端路径。`RemoteStore::scan_range_iter` 是缓冲的——它走同一条 `OP_SCAN` 帧，`OpResponse` 把整个答案装在一条消息里。ADR-0020 把那记为 future work 而非义务；而缓冲不是假设性成本，它正是 ADR-0020 在其他所有地方消灭的那种退化——远端消费者要「一百万条里的前 10 条」，得先为一百万条付完 wire 上的成本，才看得见第一条。
 
 ### 约束集（任何方案必须保住的东西）
 
@@ -17,9 +17,9 @@ ADR-0020 把惰性迭代定为 `VirtualStorage::scan_range_iter` 的流式契约
 4. **wire 零 OKM 语义**：key/value 是不透明字节；codec 只认识 op tag 和长度分桶，别的什么都不知道。
 5. **写批与写序已经解决**：同一帧内的变更 op 一起提交；scan 排在其后执行（读可见同帧先行的写）。流式重构不得重排或拆散这条保证。
 
-### 今天到底要改什么
+### 缓冲答案的代价
 
-`OpResponse` 写作时只有两个字段——`value: Option<Vec<u8>>`（get）与 `suffixes: Vec<Vec<u8>>`（scan），都是整答案形状；`hits` 与 `tail`（本 ADR 的分片）以及 `fault`（ADR-0038 的失败应答）是后来才有的，各自同样是一个整答案。scan 答案还丢掉了 value：wire 上的 `scan_range` 只返回 key 后缀，发送端的 `scan_range_iter` 要对每条 key 补一次 `OP_GET` 往返（`nest.rs` 的缓冲路径就是 `scan_range` + N 次 `get`）。所以远端惰性路径今天不只是没流式化，而是在缓冲之上还有 N+1 往返。
+`OpResponse` 的字段全是整答案形状：`value: Option<Vec<u8>>`（get）、`suffixes: Vec<Vec<u8>>`（scan）、`hits` 与 `tail`（本 ADR 的分片）、`fault`（ADR-0038 的失败应答）。而且 scan 答案丢掉了 value——wire 上的 `scan_range` 只返回 key 后缀，想要值的发送端要对每条 key 补一次 `OP_GET` 往返（`nest.rs` 的缓冲路径就是 `scan_range` + N 次 `get`）。所以缓冲的远端路径在「没流式化」之上还叠着 N+1 往返。
 
 ## 决策
 
@@ -33,12 +33,13 @@ ADR-0020 把惰性迭代定为 `VirtualStorage::scan_range_iter` 的流式契约
 value 段: [flag u8][end 字节?][page u8]
 flag: 0x00 = 无上界 begin          0x01 = 有界、含 begin
       0x02 = 有界、排他 begin      0x03 = 无上界、排他 begin
-                                    （2026-09-29 新增：无界流的游标续传
-                                    ——begin 即游标，flag 与 page 字节
-                                    之间不存在 end 段）
+                                    （无界流的游标续传：begin 即游标，
+                                    所以 flag 与 page 字节之间不存在 end 段）
 page: 请求的批量大小，按条数计（非字节）——
       0 = 引擎默认值（256），0xFF = 「一整页」（旧的缓冲形态）
 ```
+
+`0x00` 且不带 end 字节是 begin..∞ 的区间扫描，与 EMPTY value 段（旧式前缀扫描）是两种不同的谓词，接收方不能把它们混同。
 
 按条数不按字节，因为接收方不得解析 key（约束 4）——字节预算的分页反正要靠尺寸猜测，而条数与发送端迭代器产出的项 1:1 对应。page size 是提示不是契约：接收方可以返回更少的条数（区间结束时就是如此），绝不更多。
 
@@ -54,10 +55,11 @@ tail: 0x00 = 后续还有 chunk（本 chunk 的 count == page size）
 
 尾字节放在尾部而非头部，理由有二——都不是向前兼容：未实现 `OP_SCAN_STREAM` 的对端整体拒绝该 op（未知 tag → `apply` → `None`），发送端根本解析不到这个字节，它的位置不承担兼容职责。第一，chunk 必须保持既定形状——「今天的 `OpResponse` 加一个追加字节」——`OpResponse` 的字段顺序既定，唯一不破坏该编码的扩展点是末尾；放头部意味着改写字段位置，等于第二种应答格式，正是决策刻意回避的东西。第二，语义本身就是 trailing 形状：`0x01` 认证的是「刚读出的这批条目即全部」，不是对下一批的承诺。放头部则是在没有任何条目作证之前先断言一个性质，且接收方消费时要多带一份前向状态。
 
-复用应答语法带来三个性质：
+复用应答语法带来四个性质：
 
 - **chunk 是自足的 `OpResponse` 加一个字节。** 未实现 `OP_SCAN_STREAM` 的接收方拒绝该 op（未知 tag = 畸形帧，`apply` → `None`），发送端退回缓冲路径——不需要版本协商的向后兼容。
 - **chunk 携带 value**，顺带修掉 N+1 问题：每条命中是 `[len][key][len][value]`，与引擎的 `(key, value)` 迭代项同构。旧的 `suffixes`-only 应答留给 `OP_SCAN`；`OP_SCAN_STREAM` 永不剥离 value，因为它的契约就是迭代器的契约。
+- **应答是前缀相对键。** scan 与 stream 应答携带的 key 处于发送方的键空间：接收方从每个返回 key 中剥掉自己的 hosted prefix，end 边界与 begin 一样做 hosted 拼接。接收方侧的全键会把 hosted prefix 泄漏进发送方字节，并破坏游标续传——续传必须能把一条 hit key 原样重发作为下一次的 begin。
 - **接收方零游标状态。** 续传由发送端持有：每个 chunk 的最后一条 key 就是游标，下一次请求是普通的 `OP_SCAN_STREAM`、`begin = last_key + prefix_end 式进位`（排他 begin：有界走标志 `0x02`，无上界走 `0x03`）。接收方从「当下」的引擎状态作答——不承诺快照。这对无状态执行器是诚实的契约（约束 2）：远端流是一串「chunk 时刻一致」的读，不是 fjall 本地 `Iter` 那种冻结快照。ADR-0020 的语义恰好在架构本来就要求退化的地方退化。
 
 ### 发送端形态：`RemoteStore::scan_range_iter` 成为真惰性
@@ -92,7 +94,7 @@ trait 返回类型不变（`ScanIter` 在既有枚举后增加 `Remote` 臂—�
 
 - **帧级流协议（SEQ/ACK 帧、接收方游标 id）。** 违反约束 2（有状态接收方）与约束 3（关联进帧字节）。传输已经保序并关联；在 wire 里重述一遍是同一事实存两次，还会把 codec 耦合到面向会话的传输上——UDS 数据报 / fire-and-forget 形态立即失效。
 - **单一应答类型按原始字节片段加偏移流式化。** chunk 不再自足：解析一个 chunk 需要前序 chunk 的上下文，丢一个 chunk 毒化其余。自足 chunk 的代价是一个重复字段，换来免费的续传能力。
-- **`next_back` 的降序分页请求（一个反向标志）。** 技术上对称，但当前没有消费者在没正向读过之前反向遍历远端区间；推迟让标志字节空间保持诚实（标志在使用场景出现时加入，不为对称性预支——与 ADR-0016 slot 表的取舍同理由）。注（2026-09-29）：本条原稿预占了 `[0x03]`；该值已被「无上界 + 排他」游标续传标志取用（见状态行）。降序请求若回来，认领下一个空闲标志值。
+- **`next_back` 的降序分页请求（一个反向标志）。** 技术上对称，但当前没有消费者在没正向读过之前反向遍历远端区间；推迟让标志字节空间保持诚实（标志在使用场景出现时加入，不为对称性预支——与 ADR-0016 slot 表的取舍同理由）。`0x03` 已归「无上界 + 排他」游标续传，降序请求若回来会认领下一个空闲标志值。
 
 ## 后果
 
@@ -101,10 +103,3 @@ trait 返回类型不变（`ScanIter` 在既有枚举后增加 `Remote` 臂—�
 - **okm-wire 增加一个 op tag 和一个尾字节——零依赖、零语义的宪章保持成立。** hex 测试扩展覆盖：chunk 往返、排他 begin 标志、空尾 chunk、未知 tag 回退。
 - **缓冲的 `OP_SCAN` 路径保持为兼容性地板**——早于 tag 4 的对端永远可互操作；发送端按调用发现能力（回退发生在 trait 边界之下，上层无感）。
 - **`0xFF = 一整页` 精确保留旧行为**，想要缓冲形态的消费者（`scan_covered` 一类的内部调用方）无感、不被迫。
-
-## Update（2026-09-22，落地）
-
-落地时浮现两处实现级修正，均不改变帧形态：
-
-- **应答是前缀相对键。** scan 与 stream 应答携带的 key 处于发送方的键空间——接收方从每个返回 key 中剥掉自己的 hosted prefix（end 边界与 begin 一样做 hosted 拼接）。草案的 chunk 示意隐含了接收方侧全键；那样会把 hosted prefix 泄漏进发送方字节，并破坏游标续传（发送方必须能原样重发一条 hit key 作为下一次的 begin）。既有 `OP_SCAN` 应答经 `scan_suffix` 的剥前缀早已遵守此规则；落地把它扩展到 range 与 stream 应答——草案在此处留了隐式。
-- **begin-only 区间可表达。** `OP_SCAN` 的 value 段 `[0x00]`（无上界）是 begin..∞ 的区间扫描，与 EMPTY value 段（旧式前缀扫描）是两种谓词。落地前的接收方把二者混同；语法本身一直是分开的。

@@ -1,6 +1,6 @@
 # ADR-0035: One whole-document surface — `fetch` / `merge` / `replace` / `purge`
 
-**Status**: Accepted (2026-10-22) — landed with this decision. **Updates 2026-10-23**: the `okm-dynamic` half landed (`fetch` / `merge` / `replace` / `purge`, the slot-1 trio retired, and a whole-document plan surface); **the removal verbs collapsed to `purge`** — `delete` / `delete_by_pkey` are retired, since a row cannot outlive its segment and a row-only delete was a way to leave one dangling; **`view` became `fetch`** — the read door of the document surface (a *view* is a projection of a row, and the map is not a projection any more, it is the document); **and the dynamic side lost `get` / `put`** — with no struct to speak, its `put` could only mean "the static segment", a semantic invisible in the signature, and `merge` produces the identical op list. The consumer sweep is what remains.
+**Status**: Accepted. The `okm-dynamic` half carries `fetch` / `merge` / `replace` / `purge` and a whole-document plan surface; slot 1 carries no verbs of its own. The removal verb is `purge` — `delete` / `delete_by_pkey` do not exist, since a row cannot outlive its segment and a row-only delete would leave one dangling. The read door of the document surface is `fetch` (a *view* is a projection of a row; the map is the document itself, not a projection of it). The dynamic side has no `get` / `put` — with no struct to speak, a `put` there could only mean "the static segment", a semantic invisible in the signature, and `merge` produces the identical op list. The consumer sweep is what remains.
 **Date**: 2026-10-22
 **Chinese**: [0035-whole-document-api.zh-CN.md](0035-whole-document-api.zh-CN.md)
 
@@ -75,9 +75,9 @@ The surface splits by VALUE SHAPE rather than by slot.
 6. **Every write is one engine commit.** Row ops and the slot-1 entry accumulate
    in one `Batch` and reach the engine once, so a crash lands all of them or
    none.
-7. **The six old names are retired with no aliases** (pre-1.0; consumers ride
-   the git dependency and are swept in the same session), and so are `delete`
-   and `delete_by_pkey`.
+7. **The six old names have no aliases** (pre-1.0; consumers ride
+   the git dependency and are swept in the same session), and `delete`
+   and `delete_by_pkey` do not exist either.
 8. **`Graph`'s edge-attribute face drops the slot carve-out vocabulary too**:
    `get_fields` → `attrs`, `put_fields_into` → `replace_into`. The function
    replaces the segment outright, so naming it `merge_into` would describe
@@ -127,8 +127,8 @@ The surface splits by VALUE SHAPE rather than by slot.
   what it is (the struct door, the fresh-row fast path) and carries no
   whole-document claim.
 - **Reject a value whose kind mismatches the declaration here.** `from_map`
-  used to fall back to the default (`_ => #dflt`). **Landed 2026-10-24 as its
-  own change** — the blast radius was the reason to queue it, not to skip it.
+  never falls back to the default (`_ => #dflt`) — the blast radius was the
+  reason it is its own change, not a reason to skip it.
   The rule is presence, not the value: an ABSENT name takes its declared default
   (the append-only evolution rule), while a name the map CARRIES with another
   kind, or a value that does not fit the declared width, comes back as
@@ -137,7 +137,7 @@ The surface splits by VALUE SHAPE rather than by slot.
 
 ## Consequences
 
-- One commit per semantic write: a crash can no longer leave the primary entry
+- One commit per semantic write: a crash cannot leave the primary entry
   landed while its faces and ledgers are missing. `write_commit_test` locks the
   op counts — 3 for an insert, 4 for an overwrite, +1 when a previous face must
   be deleted, +1 per slot-1 entry.

@@ -1,19 +1,17 @@
 # ADR-0015: Junction rename and the two relation types
 
-## Status
-
-**Superseded by ADR-0051 (2026-11-04): there is no junction carrier any more** — a
-many-to-many relation is a collection whose key is the pair, and its reverse direction is a
-declared index. This record is kept for the naming decision and for why the two relation
-types exist at all; every junction layout statement below is history.
+Date: 2026-09-17
+Status: **Superseded by ADR-0051: there is no junction carrier any more** — a
+many-to-many relation is a collection whose key is the pair, and its reverse
+direction is a declared index. This record is kept for the naming decision and
+for why the two relation types exist at all; every junction layout statement
+below is history.
 
 Accepted (2026-09-17). Rename and two-ns residency stand; the 2-byte slot
-**segment table was superseded by ADR-0016** (4-bit segment + 12-bit counter,
-junction = segment 0x5, superseded by ADR-0050) — see there for the current allocation
-segments decided; the ns-derivation scheme was rejected; graph Edge landed
-as ADR-0017; the field-position auto-sync (`#[ok_relation]`) was REJECTED
-after analysis on 2026-09-20 — the imperative link/unlink pairing stands
-as the junction's interface (see Future work §B).
+segment table is ADR-0016's (4-bit segment + 12-bit counter, junction =
+segment 0x5) and ADR-0030 owns the allocation table; the ns-derivation scheme is not
+part of the design; graph Edge is ADR-0017; the junction's interface is the imperative
+link/unlink pairing, not a field-position auto-sync (`#[ok_relation]`, §B).
 
 ## Context
 
@@ -77,8 +75,8 @@ written twice — the double materialization that makes both directions
 O(1). No derived ns, no hash, no third namespace: the relation lives
 with its endpoints, one slot in each.
 
-Why not a derived independent ns (the earlier draft): a compile-time
-hash of the two endpoint ns values was rejected — not for collision
+Why not a derived independent ns: a compile-time
+hash of the two endpoint ns values is rejected — not for collision
 risk but for **indeterminacy**. A hashed ns is an opaque number whose
 relation to the endpoints is invisible, and the project's identity
 discipline (keys declared, namespaces declared, nothing manufactured)
@@ -91,11 +89,9 @@ live.
 segment alone (`0x1` vs `0x3`), a structural distinction rather than a
 convention. The full segment table, the document-self layout, and the
 consequences (head growth, counter independence, hex-lock rewrite) live
-in ADR-0016 — the allocation proposed here (byte-wide segments,
-junction at `0x80`/`0x81`) was superseded during review: direction
-moved out of the slot entirely (one entry per endpoint ns, above), so
-the junction needs a single segment, and segments being a 16-entry
-enumeration freed the remaining bits for the counter.
+in ADR-0016. Direction lives outside the slot entirely (one entry per
+endpoint ns, above), so the junction takes a single segment, and segments
+being a 16-entry enumeration leaves the remaining bits to the counter.
 
 ### 3. Taxonomy: two relation types, two carriers
 
@@ -161,20 +157,10 @@ vector/array**.
 
 - `EdgeEncode` / `Edge` rename touches the derive, core, tests, and
   all four documents (en/zh).
-- Junction declarations drop `#[ok_ns(N)]` — a breaking change to
-  downstream users (aura mq.rs has no junction declarations; k10r has
-  none; the migration cost is currently zero, which is why the rename
-  happens now, pre-crates.io).
-- The manual-ns removal is also the hook for a future
-  `#[ok_relation(...)]` field-position declaration: a `Refs` field in
-  a document could name its junction, and `put` would diff the field
-  against stored junction entries (auto link/unlink). Recorded as
-  future work — it trades RMW for auto-sync and needs a consistency
-  story before it lands. (Update 2026-09-20: rejected — see Future
-  work §B.)
-- The junction is unidirectional per entry: the "two slots per
-  junction" of the old design (14/15 in one ns) becomes "one slot in
-  each endpoint's ns" — the relation fact is written once per
+- Junction declarations carry no manual `#[ok_ns(N)]` (aura mq.rs has no
+  junction declarations; k10r has none).
+- The junction is unidirectional per entry: one slot in
+  each endpoint's ns — the relation fact is written once per
   endpoint ns, each hosting the direction that ns answers.
 
 ## Future work (explicitly out of scope here)
@@ -195,19 +181,10 @@ junction's two-ns residency, a graph edge typically exists
 independently of any endpoint document, so residency may not apply.
 Not designed further here; no consumer exists.
 
-### C. Vector types — materialization
+### B. Field-position relation declaration + auto-sync — not adopted
 
-Scheduled (PLAN P3.5, following the 4-byte head): declared form
-`Vector<T, N>` — element type and dimension in the type, fixed-width
-elements BE-serialized directly; dynamic elements as LV frames;
-multi-dimensional shape headers. okm-vector's `encode_f32s` migrates
-onto it. This ADR locks the taxonomy position: homogeneous, whole-
-value read/write, slot 0 dynamic part, same class as strings.
-
-### B. Field-position relation declaration + auto-sync — REJECTED (2026-09-20)
-
-Update: the `#[ok_relation(JunctionType)]` idea was analyzed and
-**rejected without implementation**. The deciding argument chain:
+The `#[ok_relation(JunctionType)]` idea was analyzed and
+**not implemented**. The deciding argument chain:
 
 - The mechanism would be a direct generalization of Refs' put-time diff
   (stale-release), so the mechanics are cheap. The cost is semantic:
@@ -234,6 +211,15 @@ consumer surfaces with set-shaped mutation over one endpoint, the
 lighter escape is an explicit `Junction::sync_from(row)` command — same
 diff, but an explicit verb, not put-path magic. Do not re-propose the
 field-position form without a named consumer.
+
+### C. Vector types — materialization
+
+Scheduled (PLAN P3.5, following the 4-byte head): declared form
+`Vector<T, N>` — element type and dimension in the type, fixed-width
+elements BE-serialized directly; dynamic elements as LV frames;
+multi-dimensional shape headers. okm-vector's `encode_f32s` migrates
+onto it. This ADR locks the taxonomy position: homogeneous, whole-
+value read/write, slot 0 dynamic part, same class as strings.
 
 ## References
 

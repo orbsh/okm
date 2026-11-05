@@ -1,108 +1,62 @@
 # ADR-0016: 4-Byte Entry Head and Segment-Numbered Slots
 
 Date: 2026-09-18
-Status: Accepted (2026-09-18). **Update 2026-10-17**: the segment table below is superseded by ADR-0030 — a single-face family is one byte with no counter, and only the counting families (declared index / reduce / junction) keep the 2-byte slot and its 12-bit counter, at the same numbers. The head-width decision survives for those families. **Update 2026-11-04**: the junction family is retired (ADR-0051) — a relation is a collection — so segment 0x5 is unassigned and its layout sections are history.
-Supersedes: the slot allocation sections of ADR-0005 (1-byte slot), ADR-0011 (edge slots 14/15), and ADR-0012 (flat fixed-role slot table). See ADR-0015 for the junction residency decision this builds on.
+Status: Accepted (2026-09-18). The entry head is `[ns 2B][slot]`, and the slot's width follows the family (ADR-0030): a fixed face is one byte with no counter, the counting families keep the 2-byte slot — a 4-bit segment number plus a 12-bit counter. The head-width decision below holds for the counting families; ADR-0030 owns the fixed-face table and the numbering.
+Supersedes: the slot allocation sections of ADR-0005 (1-byte slot), ADR-0011 (edge slots 14/15), and ADR-0012 (flat fixed-role slot table).
 
 ## Context
 
-Every derived entry (index, reduce, junction) hangs off a key headed by
-`[ns 2B][slot 1B]`. The 1-byte slot grew by accretion: fixed roles own 0–15,
-declared indexes/reduces continue from 16 upward, edges were pinned to 14/15
-(ADR-0011), and nothing separates the entry *kinds* structurally. Segment
-membership is a convention enforced by discipline, not by the key layout —
-a slot byte says nothing about what kind of entry it addresses.
+Every derived entry (index, reduce) hangs off a key headed by
+`[ns 2B][slot]`. The 1-byte slot had grown by accretion: fixed roles owned 0–15,
+declared indexes/reduces continued from 16 upward, edges were pinned to 14/15
+(ADR-0011), and nothing separated the entry *kinds* structurally. Segment
+membership was a convention enforced by discipline, not by the key layout —
+a slot byte said nothing about what kind of entry it addressed.
 
-Capacity is also mismatched to its consumers: the u8 slot gives every role
+Capacity was also mismatched to its consumers: the u8 slot gave every role
 the same 256-entry budget, while real consumption is wildly asymmetric
-(fixed roles are a handful; declared indexes can grow with declarations;
-junctions pair per relationship).
+(fixed roles are a handful; declared indexes grow with declarations).
 
 ## Decision
 
-The entry head widens to 4 bytes — **ns u16 + slot u16, both big-endian** —
-and the slot's internals are split structurally:
+For a counting family the entry head is 4 bytes — **ns u16 + slot u16, both
+big-endian** — and the slot's internals are split structurally:
 
 ```text
-slot u16 = [segment 4 bit][counter 12 bit]
+slot u16 = [segment 4 bit][counter 12 bit]      (counting families)
 
-Segment (high nibble):
-0x0  document-self  (counter: 0 primary, 1 dynamic, 2/3 vocabulary,
-                     4–4095 buffer)
-0x1  declared index  (counter = declaration order)
-0x2  reduce          (counter = declaration order, independent —
-                     no longer continues the index counter)
-0x3  junction        (counter = junction discriminator, declared)
-0x4–0xB  reserved (derived / relation extensions)
-0xC–0xF  reserved (system)
+0x3nnn  declared index   counter = declaration order
+0x4nnn  reduce           counter = declaration order, independent quota
+0x5nnn  unassigned       never reissued
 ```
 
-*(Update 2026-10-17: this table is superseded by ADR-0030. Fixed faces —
-primary, dynamic segment, both vocabulary directions, the predicate vocabulary,
-the graph's five — are one byte with no counter and their own numbers
-0x00–0x0A; the three counting families keep the bytes below unchanged.)*
+ADR-0030 owns the full assignment and the fixed-face table. A fixed face is not
+a slot with a counter: it is one byte, `0x00–0x0F`, its own number and no
+segment — primary `0x00`, the dynamic segment `0x01`, both vocabularies
+`0x02–0x05`, the graph's faces `0x06–0x09`, the vector snapshot `0x0A`, the
+table meta `0x0F`.
 
-- **Segment extraction is structural**: `slot >> 12`. What was a numeric
-  range convention is now a typed dispatch — misuse of one segment's slot
-  for another's entry is a layout error, not a discipline failure.
-- **Counter width grows**: each segment holds 4096 entries, wider than the
-  old flat 256. Declared-index capacity per collection goes from 240 to
-  4096; junctions get 4096 discriminators per endpoint pair.
+- **Segment extraction is structural**: `slot >> 12` on a counting family. A
+  numeric range convention becomes a typed dispatch — misuse of one segment's
+  slot for another's entry is a layout error, not a discipline failure.
+- **Counter width**: each counting family's counter holds 4096 entries. A
+  collection carries 4095 declared indexes and 4095 reduces, each an
+  independent quota.
 - **16 segments are enough as an enumeration**: segments are entry *kinds*,
   not space allocations. Exhausting 16 kinds would be a semantic revolution
   warranting a version migration regardless.
 - The full head is one u32 in implementations: `((ns as u32) << 16) | slot`.
   Scan-prefix construction and segment dispatch are both shifts, no
   lookup tables.
-- Non-primary entries grow by one key byte. Against multi-byte identity
-  payloads this is invisible; the primary slot (segment 0x0, counter 0)
-  keeps the document's own key unchanged in shape.
-
-## Junction placement (with ADR-0015)
-
-A junction writes **one one-way entry in each endpoint's collection ns** —
-two entries total, no third ns:
-
-```text
-[ns_a 2B][slot 0x3nnn?][A·identity][B·identity]   in A's collection
-[ns_b 2B][slot 0x3nnn?][B·identity][A·identity]   in B's collection
-```
-
-`nnn` is the junction discriminator (`#[ok_junction(n)]`), separating
-multiple junctions over the same endpoint pair. Both identities are in
-the entry: the LOCAL endpoint's identity leads so the scan prefix
-`[ns][slot][local identity]` can match, the PEER's identity is the
-suffix. The discriminator's lowest bit carries the direction
-(`slot = 0x3000 | (n << 1) | dir`) — structurally necessary only for
-self-reflexive junctions (both endpoints in one ns), where without it
-the two directions' scan prefixes would be identical and every scan
-would cross-match; endpoint-distinct junctions never observe it, each
-ns hosting exactly one direction. This supersedes ADR-0011's
-forward/reverse slot pair (14/15) without resurrecting it: direction is
-one bit inside the junction counter, not a slot pair.
-
-The junction declaration references **document types, not key types**:
-
-```rust
-#[derive(JunctionEncode)]
-#[ok_junction(1)]
-struct Membership {
-    user: User,
-    org: Org,
-}
-```
-
-The derive resolves `<User as Document>::Key` for identity encoding and
-`<User as Document>::NS_PREFIX` for the endpoint ns. ns is declared once,
-on the document; the junction re-states nothing.
+- A counting-family entry pays one more key byte than a fixed face. Against
+  multi-byte identity payloads this is invisible; the primary (fixed face
+  0x00, one byte) keeps the document's own key unchanged in shape.
 
 ## Consequences
 
-- **Breaking key-format change**: every non-primary entry key grows by one
-  byte; all hex-locked tests update. Zero-cost window: pre-release, no
-  external data.
-- Reduce no longer continues the index counter — the two declarations are
-  independent quotas.
-- `SlotMap` (schema export) becomes u16 fields with a single `junction`
-  slot; `edge_fwd`/`edge_rev` disappear.
-- The `KvIndex::SLOT` / `KvJunction` slot types widen to u16.
+- Counting-family entries carry a 2-byte slot, fixed faces one byte;
+  hex-locked tests pin both widths.
+- Reduce and index counters are independent quotas.
+- `SlotMap` (schema export) carries u16 numbers: the fixed faces plus
+  `declared_index_base` and `declared_reduce_base`.
+- `KvIndex::SLOT` is a `u16` (`type Slot = u16`).
