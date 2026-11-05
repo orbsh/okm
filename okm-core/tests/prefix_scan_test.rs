@@ -87,7 +87,14 @@ fn prefix_scan_narrows_by_leading_fields() {
     let probe = DeviceKey::prefix().org(1).user(10).device(2).finish();
     assert_eq!(probe.taken(), DeviceKey::KEY_LEN);
     let full: Vec<DeviceKey> = col.scan_keys(&probe).map(|r| r.unwrap()).collect();
-    assert_eq!(full, vec![DeviceKey { org: 1, user: 10, device: 2 }]);
+    assert_eq!(
+        full,
+        vec![DeviceKey {
+            org: 1,
+            user: 10,
+            device: 2
+        }]
+    );
 
     // A prefix nothing carries is empty, not an error.
     let probe = DeviceKey::prefix().org(9).finish();
@@ -123,7 +130,12 @@ fn prefix_scan_is_lazy_reversible_and_pageable() {
         .scan_keys(&okm_core::PrefixProbe::empty())
         .map(|r| r.unwrap())
         .collect();
-    assert_eq!(lazy, col.scan_keys(&okm_core::PrefixProbe::empty()).map(|r| r.unwrap()).collect::<Vec<_>>());
+    assert_eq!(
+        lazy,
+        col.scan_keys(&okm_core::PrefixProbe::empty())
+            .map(|r| r.unwrap())
+            .collect::<Vec<_>>()
+    );
 }
 
 #[test]
@@ -133,14 +145,22 @@ fn document_mode_reaches_both_slots_under_a_prefix() {
     let col = seeded();
     // A document that exists ONLY as its dynamic segment (ADR-0035), inside
     // org 1: invisible to the row mode, present in the document mode.
-    let seg_only = DeviceKey { org: 1, user: 10, device: 9 };
+    let seg_only = DeviceKey {
+        org: 1,
+        user: 10,
+        device: 9,
+    };
     let mut patch = std::collections::BTreeMap::new();
     patch.insert("note".to_string(), DynamicValue::Str("no row".into()));
     col.merge(&seg_only, &patch).unwrap();
 
     let probe = DeviceKey::prefix().org(1).finish();
     let rows: Vec<DeviceKey> = col.scan_keys(&probe).map(|r| r.unwrap()).collect();
-    assert_eq!(rows.len(), 5, "row mode: the segment-only document is not here");
+    assert_eq!(
+        rows.len(),
+        5,
+        "row mode: the segment-only document is not here"
+    );
 
     let docs = col.scan_document_keys(&probe).unwrap();
     assert_eq!(docs.len(), 6, "document mode: the union under the prefix");
@@ -221,11 +241,16 @@ fn index_prefix_probe_is_typed_and_byte_identical() {
         .tag(1u16)
         .label(1u32)
         .finish();
-    let one = col
-        .scan::<__OkmIndex_Device_by_tag_label>(&probe)
-        .unwrap();
+    let one = col.scan::<__OkmIndex_Device_by_tag_label>(&probe).unwrap();
     assert_eq!(one.len(), 1);
-    assert_eq!(one[0].0.decoded, DeviceKey { org: 1, user: 10, device: 1 });
+    assert_eq!(
+        one[0].0.decoded,
+        DeviceKey {
+            org: 1,
+            user: 10,
+            device: 1
+        }
+    );
 
     // The empty probe is the whole access method.
     let all = col

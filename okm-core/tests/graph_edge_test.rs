@@ -101,7 +101,11 @@ fn head(src: NodeRef, dst: NodeRef, predicate: &str) -> EdgeHead {
 fn max_edge_id_is_the_last_primary_key() {
     let store = okm_core::TestStore::slatedb_mem();
     let mut g: Graph<_, Employment> = Graph::new(store);
-    assert_eq!(g.max_edge_id().unwrap(), None, "an empty graph has no maximum");
+    assert_eq!(
+        g.max_edge_id().unwrap(),
+        None,
+        "an empty graph has no maximum"
+    );
 
     // Linked OUT OF ORDER (3, 11, 7): the answer is the id space's maximum, not
     // the most recent write.
