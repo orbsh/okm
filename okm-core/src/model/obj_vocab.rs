@@ -353,7 +353,10 @@ impl<I: VocabId> VocabCache<I> {
     }
 }
 
-#[cfg(test)]
+// The engine-backed half of this module's tests needs a real store, and `test_engine` only
+// exists when a backend feature is on — so the module rides the same gate instead of failing
+// the whole crate's unit-test build with no backend compiled in.
+#[cfg(all(test, any(feature = "test-engines", feature = "fjall", feature = "redb")))]
 mod tests {
     use super::*;
     use crate::engine::test_engine::TestStore;
