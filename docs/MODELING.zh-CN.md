@@ -48,7 +48,7 @@ pub struct SessionKey {
 
 ### 关系：键就是那对身份
 
-多对多就是一张表（ADR-0051）。键是两个身份，行上是关系自己拥有的东西：
+多对多就是一张表（ADR-0051）。键是两个身份，行上是关系自己拥有的东西——包括反向读要扫的那一列；但那个字段若已经在键里，就不要复制成列（见「多对多关系」一节末）：
 
 ```rust
 use okm_core::{DocumentEncode, KeyEncode, Uuid7};
@@ -588,7 +588,13 @@ struct Membership {
 }
 ```
 
-主键第一列是正向：`[ns][0x00][channel_id]` 一次前缀扫描列出某频道的成员。反向是声明索引：`by_member` 把「这个人在哪些频道」变成一次索引扫描，每条命中回表取行。`put` 在一个 batch 里写行与索引条目；`purge` 一起带走；`rebuild_faces` 从行重建索引。没有任何手工维护的部分。
+主键第一列是正向：一次前缀扫描列出某频道的成员，探针由键自己的 builder 造，拿到的是**解码后的键**而不是字节：
+
+```rust
+for key in memberships.scan_keys(&MembershipKey::prefix().channel_id(id).finish()) { … }
+```
+
+反向是声明索引：`by_member` 把「这个人在哪些频道」变成一次索引扫描，`scan::<ByMember>(&probe)` 每次命中返回 `PrefixKey<MembershipKey>` 加上行——条目尾巴就是主键，`decoded.channel_id` 与 `decoded.member_id` 直接可读，回表由 `scan` 自己完成（`None` 表示扫到读之间那一行消失了）。`put` 在一个 batch 里写行与索引条目；`purge` 一起带走；`rebuild_faces` 从行重建索引。没有任何手工维护的部分。
 
 这里没有 junction 载体（ADR-0051）。关系是数据，而这个模型已经有装数据的载体——集合。junction 当初要手造的东西，正是 `put` 与 `#[ok_index]` 自动做的事：
 
@@ -598,6 +604,19 @@ struct Membership {
 - **行随湖走**：进变更流与湖，而 junction 条目是被排除在外的。
 
 关系的身份就是这对端点——两个端点之间至多一行——因为这对就是主键。加一条成员关系是 `put`，删一条是 `purge`，身份永远不动。
+
+### 键里已有的字段不要复制成列
+
+上面那份声明是**复制列**形态：`by_member` 的数据段取自行 payload 的那一列，条目尾巴取自键，两份在存储上是独立位置——没有任何东西检查它们相等，写入方可以写出不一致的一份。面条目因此是 40 字节：
+
+```text
+[ns 2B][slot 2B][member_id 16B]   [channel_id 8B][member_id 16B]
+                 ↑ 行上的那一列     ↑ 主键（尾巴）
+```
+
+要这份反查又不想复制，就手写一个访问方法：`KvIndex::encode_named` 同时收到 key 与 document，数据段可以直接从 `key` 取；再用 `key(channel_id)` 把尾巴截短，条目变成 24 字节（`[member_id][channel_id]`），`taken` 语义保证前缀字段可信、其后为零填。
+
+判据是：这个字段**是否已经在键里**。在，就不要复制——复制不省字节（两份都还在条目里），还多出一类没人检查的错误；不在（`nickname`、`since_ms` 这类关系自己知道的事），它本来就该是列，普通 `fields(...)` 就是正解。指南保留复制列形态，因为它是能讲清楚的最短形状；纪律本身是「不复制」。
 
 ### Refs 还是关系表：怎么选，以及答案变了怎么迁
 

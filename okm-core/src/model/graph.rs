@@ -414,8 +414,6 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
         self.write_into(batch, head, payload, edge_id)
     }
 
-    /// The edge's DYNAMIC segment (face 0x01) — its open attributes, one entry
-    /// per edge, keyed `[ns][0x01][edge_id]`.
     /// Every edge id in this graph, in key order — the scan an export needs.
     /// Slot 0 only: the ns also holds faces, and an unfiltered scan would read
     /// them as rows (the same trap a document export hit).
@@ -432,6 +430,40 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
             .collect())
     }
 
+    /// The highest edge id this graph holds — `None` when it holds no edges.
+    ///
+    /// Primary entries are `[ns][0x00][edge_id 8B]` in big-endian order, so the
+    /// maximum IS the last key of that range: one reverse step, against
+    /// [`edge_ids`](Self::edge_ids) materializing every id. The reader is issuer
+    /// recovery ("which id is free now"), which runs on open — the difference is
+    /// a whole-table walk against one read.
+    pub fn max_edge_id(&self) -> crate::error::Result<Option<u64>> {
+        let mut begin = E::NS_PREFIX.to_vec();
+        write_slot(&mut begin, PRIMARY_SLOT);
+        let end = crate::engine::storage::prefix_end(&begin);
+        let head = begin.len();
+        let mut it = self.store.scan_range_iter(&begin, end.as_deref());
+        let Some(item) = it.next_back() else {
+            return Ok(None);
+        };
+        let (key, _) = item?;
+        // The suffix of a primary entry IS the id — a key of another width means
+        // the store was written by a different declaration, which is reported
+        // rather than truncated into a wrong number.
+        if key.len() != head + <EdgeKey as KeyEncode>::KEY_LEN {
+            return Err(crate::error::Error::Corrupt {
+                what: format!(
+                    "an edge primary entry is {} byte(s) long, but the declaration makes it {}",
+                    key.len(),
+                    head + <EdgeKey as KeyEncode>::KEY_LEN
+                ),
+            });
+        }
+        Ok(Some(EdgeKey::decode(&key[head..]).0))
+    }
+
+    /// The edge's DYNAMIC segment (face 0x01) — its open attributes, one entry
+    /// per edge, keyed `[ns][0x01][edge_id]`.
     fn dynamic_key(&self, edge_id: u64) -> Vec<u8> {
         let mut key = E::NS_PREFIX.to_vec();
         write_slot(&mut key, DYNAMIC_SLOT);
