@@ -192,5 +192,61 @@ required-features = ["test-engines"]
 name = "wire_client_test"
 required-features = ["test-engines"]
 
+# Engine-backed targets whose matrix is empty without a backend: `TestStore::matrix()`
+# yields nothing, so a plain `cargo test` would pass zeros. The skip is Cargo's and visible.
+
+[[test]]
+name = "bytes_test"
+required-features = ["test-engines"]
+
+[[test]]
+name = "embed_test"
+required-features = ["test-engines"]
+
+[[test]]
+name = "embed_two_level_test"
+required-features = ["test-engines"]
+
+[[test]]
+name = "graph_edge_test"
+required-features = ["test-engines"]
+
+[[test]]
+name = "list_test"
+required-features = ["test-engines"]
+
+[[test]]
+name = "obj_variants_test"
+required-features = ["test-engines"]
+
+[[test]]
+name = "partition_test"
+required-features = ["test-engines"]
+
+[[test]]
+name = "prefix_scan_test"
+required-features = ["test-engines"]
+
+[[test]]
+name = "preset_reduce_test"
+required-features = ["test-engines"]
+
+[[test]]
+name = "relation_table_test"
+required-features = ["test-engines"]
+
+[[test]]
+name = "scan_range_test"
+required-features = ["test-engines"]
+
+[[test]]
+name = "vector_test"
+required-features = ["test-engines"]
+
+[[test]]
+name = "vocab_test"
+required-features = ["test-engines"]
+
+
 [lints]
 workspace = true
