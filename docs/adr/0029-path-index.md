@@ -68,6 +68,9 @@ declares a path plus the value type its entries are ordered by.**
      `Index`, and `[a]` stays a byte prefix of `[a][0][b]`;
    - depth is derivable by walking; a count would only buy O(1) depth.
 
+   Handles are u16 and ride the vocabulary's own compact lane (one byte below
+   `0xFF`), so `Key` is the only variable-width component.
+
 3. **One slot per declared path, and the path does NOT ride the entry key**
    (the slot is the path's identity). The entry key stays
    `[ns][slot][value][pkey]`, so the value's width is the declaration's and
@@ -92,7 +95,9 @@ declares a path plus the value type its entries are ordered by.**
    primary document holds schema-declared fields only, where a depth-1 path is
    exactly what `Plain` already indexes; nested content exists only in the
    schema-free zone. Exactly ONE maintainer per entry set: the primary path's
-   `index_entries` skips `Path` declarations on purpose.
+   `index_entries` skips `Path` declarations on purpose. The old dynamic map is
+   read there only when a path index is declared, so the plan surface and every
+   binding call site are untouched.
 
 ## Consequences
 
@@ -103,6 +108,9 @@ declares a path plus the value type its entries are ordered by.**
   dangling entry — the rule the primary path already follows.
 - A path index costs the same bytes as any index (no path in the key); the
   write amplification is one entry per resolved value per declared path.
+- Path entries carry an EMPTY value segment: `includes` is not supported for
+  the `Path` kind in v1 (an includes request would need the same "one
+  maintainer" analysis).
 - `Path::encode`/`decode` cover the form paths take where they are DATA
   (declaration carriers, exported schemas). They are **table-scoped by
   construction**: handles come from that table's vocabulary, so a path
@@ -116,36 +124,22 @@ declares a path plus the value type its entries are ordered by.**
   a walk-then-slice key regime; declaration is registration, so per-path slots
   stay the shape.
 
-## Update (2026-10-14, landing)
+## Backfill, registry, and bindings
 
-Recorded because the draft and the code differ, so a later session reads the
-difference as a refinement rather than a bug:
+**Backfill** is `DynamicCollection::rebuild_faces(chunk)`: it sweeps every
+declared method's slot and re-derives, path entries included, then stamps — the
+same sweep → derive → stamp order the typed verb uses, and the same reason for
+it (an entry's key encodes the value it indexes).
 
-- The draft's component sketch wrote `Field(u32)`; the vocabulary's handle is
-  **u16**, and the encoding reuses the vocabulary's own compact lane
-  (`< 0xFF` one byte, `0xFF` + u16 BE) instead of inventing a width. With
-  fixed-width handles the only variable-width component is `Key`.
-- The draft left the attachment point open (an interface question: the plan
-  surface's whole-document write signature would have had to grow an `old fields`
-  argument). The landing attaches path indexes to the dynamic-segment write
-  path and reads the old map there only when a path index is declared, so the
-  plan surface and every binding call site are untouched.
-- Path entries carry an EMPTY value segment: `includes` is not supported for
-  the `Path` kind in v1 (an includes request would need the same "one
-  maintainer" analysis).
-- All three halves landed 2026-10-31. **Backfill** is
-  `DynamicCollection::rebuild_faces(chunk)`: it sweeps every declared method's
-  slot and re-derives, path entries included, then stamps — the same sweep →
-  derive → stamp order the typed verb uses, and the same reason for it (an entry's
-  key encodes the value it indexes). **The registry** is the meta row:
-  `ensure_layout` records one name per path face (`path:0x3001` → the canonical
-  text), and `path_registry()` reads it back for a process that never saw the
-  declaration — the slot is the face's identity, so without the record a reader
-  sees a number and nothing else. Drift detection is not the registry's job: the
-  fingerprint (ADR-0048) covers the components and the value type, so a changed
-  path answers `Stale` on its own. **The binding** is
-  `Collection.add_path_index(slot, path, value_ty="str")` in `okm-python` — a pure
-  declaration needs no callable bridge — together with the write path it needs:
-  `merge` now routes an undeclared name into the dynamic segment (typed by the
-  Python value), because a path index over declared fields would be what `Plain`
-  already covers.
+**The registry** is the meta row: `ensure_layout` records one name per path face
+(`path:0x3001` → the canonical text), and `path_registry()` reads it back for a
+process that never saw the declaration — the slot is the face's identity, so
+without the record a reader sees a number and nothing else. Drift detection is
+not the registry's job: the fingerprint (ADR-0048) covers the components and the
+value type, so a changed path answers `Stale` on its own.
+
+**The binding** is `Collection.add_path_index(slot, path, value_ty="str")` in
+`okm-python` — a pure declaration needs no callable bridge — together with the
+write path it needs: `merge` routes an undeclared name into the dynamic segment
+(typed by the Python value), because a path index over declared fields would be
+what `Plain` already covers.

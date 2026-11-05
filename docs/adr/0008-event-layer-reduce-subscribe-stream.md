@@ -2,11 +2,11 @@
 
 > **Languages:** [English](0008-event-layer-reduce-subscribe-stream.md) (primary) · [中文](0008-event-layer-reduce-subscribe-stream.zh-CN.md)
 
-**Status:** Implemented (2026-09-11: bare `#[ok_subscribe]` with build.rs-derived event enum, monotonic batch epoch, okm-stream combinators; per-row fallback subscription rejected — see PLAN subscription-payload decision). **2026-10-22 vocabulary unification:** channel → subscribe/subscription, `ChannelCell` → `SinkCell`, `CHANNEL_<ENUM>` → `SINK_<ENUM>`; "trigger" retires — it was never a mechanism, and that class is now "a side effect at the write path's edge". Semantics and decisions unchanged.
+**Status:** Implemented — bare `#[ok_subscribe]` with a build.rs-derived event enum, monotonic batch epoch, okm-stream combinators; a per-row fallback subscription is not the design (see PLAN's subscription-payload decision). The vocabulary is subscribe/subscription (`ChannelCell` → `SinkCell`, `CHANNEL_<ENUM>` → `SINK_<ENUM>`); "trigger" is not a mechanism — that class is "a side effect at the write path's edge".
 
 ## Context
 
-Cross-row pre-aggregation (ADR-0005 slot space, shipped 2026-09-10) introduced the
+Cross-row pre-aggregation (ADR-0005 slot space) introduced the
 `#[ok_reduce]` helper: a user-implemented `ReduceLogic` (Acc + fold/unfold) driven by
 a read-modify-write hook on the write path. In reviewing what that hook actually is, a
 generalization surfaced: fold/unfold is **inline consumption of a row-event stream**. The
@@ -53,7 +53,7 @@ nothing for it and declares nothing about it.
 
 ### 3. Subscribe lives in core (derive-generated), not in an extension crate
 
-- `#[ok_subscribe]` is a new attribute on `ObjEncode` structs; it only declares that the
+- `#[ok_subscribe]` is a new attribute on `DocumentEncode` structs; it only declares that the
   row's events enter the subscription — each annotated row type gets a uniform-format send
   (no handler at the annotation site; consumers decide the processing, combinators are
   the adapter).
@@ -84,8 +84,8 @@ the bytes come from; the bus lives in core.
 
 The runtime crate renames to `okm-core` (workspace member, directory, crate name, all
 `okm_core::` references). Derive crate stays `okm-derive`. **All references are updated,
-including ADRs** (user decision 2026-09-10: 全部改) — ADRs remain decision archives, but
-their code references are corrected so greps stay truthful. Ordering: the rename lands
+including ADRs** — ADRs remain decision archives, but their code references are corrected
+so greps stay truthful. Ordering: the rename lands
 first; every later phase builds on the new name.
 
 ## Alternatives considered

@@ -18,7 +18,7 @@ field list is redundant and a worse developer experience.
 
 ## Decision
 
-**One macro per row.** `ObjEncode` declares identity, payload, and access
+**One macro per row.** `DocumentEncode` declares identity, payload, and access
 methods in a single item; the three concerns share one field list:
 
 ```rust
@@ -29,7 +29,7 @@ pub struct UserKey {              // pure identity, fixed-width, unchanged
     pub user_id: u64,
 }
 
-#[derive(ObjEncode)]
+#[derive(DocumentEncode)]
 #[kv_row(key = UserKey)]
 pub struct UserRow {
     #[ok_ref]
@@ -153,8 +153,8 @@ alone discriminates entries; each index derives its own ns from the table's):
 - `includes(age)` copies payload fields into the index **value**, making the
   scan self-sufficient (no point-lookup back to the row): the value is a bare
   concatenation located by declared width, and `Collection::scan_covered` decodes
-  it into a typed `Covered` struct — the read half of the feature, per ADR-0005's
-  2026-10-24 update. **Positioning: this
+  it into a typed `Covered` struct — the read half of the feature, per ADR-0005.
+  **Positioning: this
   is a materialized view for high-fanout queries, not a default optimization**
   — in KV, "回表" is one bloom-filtered point lookup, cheap; widening every
   index entry and enlarging the update surface to save a couple of point
@@ -165,7 +165,7 @@ alone discriminates entries; each index derives its own ns from the table's):
 
 ## Consequences
 
-- `ObjEncode` expand-time work: identity codec via the referenced `KeyEncode`
+- `DocumentEncode` expand-time work: identity codec via the referenced `KeyEncode`
   type; payload codec per ADR-0004 rules; per-index `AccessMethod` impls with
   a per-index ns derived from the table's (slot mechanism removed at
   implementation — see ADR-0005 update note).

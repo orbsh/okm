@@ -93,7 +93,7 @@ trait KvBatch {
 B, ..)`）；要长期持有 builder 的结构体才写 `S::Batch`；常见形态（就地构建、
 就地提交）根本不用写出它。
 
-诚实的代价清单（2026-09-26，经 dyn 质询后修正）：
+诚实的代价清单：
 - dyn 兼容性：损失**接近零**。`&dyn VirtualStorage` 全树只有两处——
   `variant_column`（parquet 私有助手，泛型化是一行改动）和 derive 生成的
   **空钩子** `__okm_embed_deref`（函数体 `{}`，参数未用）。okm/aura 的多
@@ -106,8 +106,7 @@ B, ..)`）；要长期持有 builder 的结构体才写 `S::Batch`；常见形�
 - 当下收益：未观测到（最大批次 ≈ 100 op，engine-matrix 测试）。触发条件
   出现前不做。
 
-Update（2026-09-26，经 NoopBatch 质询后）：关联类型形态被排除为普适契约
-——不是"暂不支持"，是对 redb 结构性不可能。`WriteTransaction<'db>` 借
+关联类型形态被排除为普适契约——不是"暂不支持"，是对 redb 结构性不可能。`WriteTransaction<'db>` 借
 `&self`，redb 4.2.0 没有 owned 事务类型；而关联 `type Batch` 必须是 owned
 的（`fn batch(&self)` 按值返回，返回时借不了 self）。所以 redb 只能拿两样
 东西填它：op 列表 carrier（等于 Batch 换名），或 NoopBatch 占位。占位

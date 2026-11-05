@@ -105,7 +105,7 @@ Model layer composes by generality over the builder
 builder name it `S::Batch`; the common shape (build locally, commit inline)
 never spells it.
 
-Honest cost list (corrected 2026-09-26 after the dyn question):
+Honest cost list:
 - dyn compatibility: NEARLY ZERO loss. `&dyn VirtualStorage` exists at two
   sites only — `variant_column` (a private parquet helper; generics are a
   one-line change) and the derive-generated EMPTY hook
@@ -120,9 +120,8 @@ Honest cost list (corrected 2026-09-26 after the dyn question):
 - Benefit today: none observed (largest batch ≈ 100 ops, engine-matrix
   test). Defer until the trigger fires.
 
-Update (2026-09-26, after the NoopBatch question): the associated-type form
-is ruled out as a universal contract — not "unsupported yet", structurally
-impossible for redb. `WriteTransaction<'db>` borrows `&self` and redb 4.2.0
+The associated-type form is ruled out as a universal contract — not
+"unsupported yet", structurally impossible for redb. `WriteTransaction<'db>` borrows `&self` and redb 4.2.0
 has no owned transaction type; an associated `type Batch` must be owned
 (returned by value from `fn batch(&self)`), so redb can only fill it with an
 op-list carrier (Batch renamed) or a NoopBatch placeholder. A placeholder

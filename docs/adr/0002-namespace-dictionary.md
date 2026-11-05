@@ -1,12 +1,12 @@
 # ADR-0002: Namespace vocabulary lives in code, never in KV
 
 Date: 2026-09-06
-Status: Accepted. **Update 2026-09-12**: `#[ok_ns]` now declares on the
-row struct (emitted as `Row::NS_PREFIX`, `&'static [u8]` big-endian), not
-the key struct — the row is the table's declaration point, and a key type
-carries no ns so one key shape can serve several tables, each with its own
-ns number. The vocabulary discipline below (compile-time, append-only,
-one number per table, no multi-level declaration) is untouched.
+Status: Accepted. `#[ok_ns]` declares on the document struct (emitted as
+`Document::NS_PREFIX`, `&'static [u8]` big-endian), not the key struct —
+the document is the table's declaration point, and a key type carries no
+ns so one key shape can serve several tables, each with its own ns number.
+The vocabulary discipline below (compile-time, append-only, one number per
+table, no multi-level declaration) holds.
 
 ## Context
 

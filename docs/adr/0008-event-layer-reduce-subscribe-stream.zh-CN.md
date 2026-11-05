@@ -2,15 +2,14 @@
 
 > **Languages:** [English](0008-event-layer-reduce-subscribe-stream.md) (primary) · [中文](0008-event-layer-reduce-subscribe-stream.zh-CN.md)
 
-**Status:** Implemented（2026-09-11：裸 `#[ok_subscribe]` 配 build.rs 派生的 event enum、单调
-批次 epoch、`okm-stream` 组合子；逐行的兜底订阅被否决——见 PLAN 的订阅负载裁决）。
-**2026-10-22 词汇统一：** channel/通道 → subscribe/订阅，`ChannelCell` → `SinkCell`，
-`CHANNEL_<ENUM>` → `SINK_<ENUM>`；「触发器」退役——它从来不是机制，那一类改称「写路径边缘的
-旁路副作用」。语义与决定未变。
+**Status:** Implemented——裸 `#[ok_subscribe]` 配 build.rs 派生的 event enum、单调
+批次 epoch、`okm-stream` 组合子；逐行的兜底订阅不是设计（见 PLAN 的订阅负载裁决）。
+词汇是 subscribe/订阅（`ChannelCell` → `SinkCell`，`CHANNEL_<ENUM>` → `SINK_<ENUM>`）；
+「触发器」不是机制——那一类叫「写路径边缘的旁路副作用」。
 
 ## 背景
 
-跨行预聚合（ADR-0005 的 slot 空间，2026-09-10 落地）引入了 `#[ok_reduce]` 辅助设施：
+跨行预聚合（ADR-0005 的 slot 空间）引入了 `#[ok_reduce]` 辅助设施：
 用户实现 `ReduceLogic`（Acc + fold/unfold），由写路径上的读-改-写 hook 驱动。审视这个
 hook 的本质时浮现出一个泛化：fold/unfold 就是**对行事件流的内联消费**。同一事件源还能
 支撑别的消费者——写路径边缘的旁路副作用（无状态）、外部通知（观察者）、FRP 风格的流组合。本 ADR
@@ -48,7 +47,7 @@ coherence 所迫）不变。
 
 ### 3. 订阅在核心（derive 生成），不在扩展 crate
 
-- `#[ok_subscribe]` 是 `ObjEncode` 结构体的新属性；它只声明"该行的事件进入订阅"——每个
+- `#[ok_subscribe]` 是 `DocumentEncode` 结构体的新属性；它只声明"该行的事件进入订阅"——每个
   注解的行类型得到一个统一格式的发送（注解点不挂 handler；处理归消费者，组合子是
   适配层）。
 - 某行类型存在 ≥1 个 subscribe 声明时，derive 生成**全局 sink 声明与消费端访问器**
@@ -72,8 +71,7 @@ map/filter/merge/scan——以及推模式的多表 fan-in（多表流 merge 进
 ### 5. okm → okm-core 改名
 
 运行时 crate 更名 `okm-core`（workspace 成员、目录、crate 名、所有 `okm_core::` 引用）。
-derive crate 保持 `okm-derive`。**引用全部更新，包括 ADR**（用户 2026-09-10 决定：
-全部改）——ADR 仍是决策档案，但其代码引用予以修正，保证 grep 的真实性。顺序：改名
+derive crate 保持 `okm-derive`。**引用全部更新，包括 ADR**——ADR 仍是决策档案，但其代码引用予以修正，保证 grep 的真实性。顺序：改名
 先落地，后续每个阶段都建在新名字上。
 
 ## 落选方案

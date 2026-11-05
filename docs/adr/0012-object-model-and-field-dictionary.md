@@ -1,7 +1,7 @@
 # ADR-0012: Object model — one encoding, declared fields plus a dynamic segment
 
 Date: 2026-09-14
-Status: Accepted (2026-09-14; landed — the obj payload's two slots, the field-name vocabulary, `DocumentEncode` in both directions, `Ref`/`Refs` embedding). **Update 2026-10-17**: the slot table below is the flat pre-ADR-0016 numbering, kept as this decision's record — today's allocation is ADR-0030's, where the dynamic segment is fixed face 0x01 and the vocabulary 0x02/0x03. The "only declared fields are indexed" paragraph is superseded by ADR-0029 (a dynamic field is indexable through a declared path).
+Status: Accepted (2026-09-14; landed — the obj payload's two slots, the field-name vocabulary, `DocumentEncode` in both directions, `Ref`/`Refs` embedding).
 
 ## Context
 
@@ -18,9 +18,8 @@ spectrum, with the declared end keeping every capability it has today.
 
 ## Decision
 
-**One model, named obj.** The public concept is the object; `ObjEncode` is
-renamed `ObjEncode` in the full rename (see below), and a declared row
-becomes simply "an obj with only declared fields".
+**One model, named obj.** The public concept is the object; the derive is
+`DocumentEncode`, and a declared row is "an obj with only declared fields".
 
 Why not call it document: the concept is kin to document-oriented storage
 (CouchDB, MongoDB), and that kinship is worth acknowledging — but the name
@@ -52,7 +51,7 @@ Byte layout per obj payload (slot 0, primary):
 
 — unchanged from today's row. Declared fields keep the current encoding:
 fixed-width fields contiguous in the hot segment, variable-width fields as
-`[tag][len u32][bytes]` frames in the cold segment, tag = declaration
+`[tag][len varint][bytes]` frames in the cold segment, tag = declaration
 index. Types come from the compile-time `FieldDesc` table (`Row::FIELDS`),
 never from the bytes.
 
@@ -66,10 +65,14 @@ also makes the whole segment prefix-scannable (prune, rebuilds). Its
 value is a list of frames:
 
 ```text
-[dynamic-face value] = ([field-id][value-type][len u32][value bytes])*
+[dynamic-face value] = ([field-id][value-type][len varint][value bytes])*
 ```
 
 - `field-id`: the field NAME's vocabulary number (see below).
+- `len` is the prefix-monotonic varint codec (`wrappers/wire.rs`) that
+  `VarInt` uses, shared with the cold segment's frames and the
+  Array/nested-Obj element frames: a small frame costs 2–3 header bytes
+  instead of 5.
 - `value-type`: a small run-time value vocabulary — this is the one
   genuinely new element. Declared fields carry types in the compile-time
   FieldDesc table; dynamic fields must be self-describing, so their
@@ -156,50 +159,35 @@ model's target; they are served by nested declared objects, which
 restore hot-segment O(1) offsets and indexing for the repeated
 structure, while the outer object stays purely dynamic.)
 
-## Slot allocation (revised)
+## Slot allocation
 
 ```text
-slot 0      primary table          [ns][0][key payload]
-slot 1      obj dynamic segment    [ns][1][key payload]
-slot 2      field-name vocabulary  [ns][2][field-id]        → name
-slot 3      field-name vocabulary  [ns][3][name bytes]      → field-id
-slot 4–13   reserved (two-ended growth buffer)
-slot 14     edge forward           [ns][14][A·id][B·id]
-slot 15     edge reverse           [ns][15][B·id][A·id]
-slot 16+    indexes and reduces (declaration order), [ns][slot][...]
+0x00       primary table          [ns][0x00][key payload]
+0x01       obj dynamic segment    [ns][0x01][key payload]
+0x02       field-name vocabulary  [ns][0x02][field-id]        → name
+0x03       field-name vocabulary  [ns][0x03][name bytes]      → field-id
+0x04/0x05  predicate vocabulary   [ns][0x04][predicate_id]    (ADR-0017)
+0x06–0x09  graph faces            (ADR-0017, ADR-0041)
+0x0A       vector index snapshot  (okm-vector cache)
+0x0F       table meta             (ADR-0043)
+0x3nnn     declared indexes       [ns][0x3nnn][...]
+0x4nnn     reduces                [ns][0x4nnn][...]
 ```
 
-*(Update 2026-10-17: this table is the flat pre-ADR-0016 allocation, kept
-as the decision's record. Current numbering: ADR-0030 — primary 0x00,
-dynamic segment 0x01, field-name vocabulary 0x02/0x03, predicate vocabulary
-0x04/0x05, graph faces 0x06–0x0A,
-declared indexes 0x1nnn, reduces 0x2nnn, junctions 0x3nnn.)*
-
-Fixed roles grow upward from 0; edges sit at the top (14/15) and grow
-downward; 4–13 is an unpartitioned free buffer between the two fronts —
-the heap/stack memory-layout shape. No internal zoning: a future fixed
-role claims the next number from whichever front needs it; exhaustion =
-the fronts meet. The fixed/declared boundary sits on a nibble edge
-(`0x0?` fixed, `0x1?` declared) for hex-test legibility.
-Edge slots 14/15 belong to the edge-via-slots decision, PLAN Phase 10 —
-listed here so the table shows the complete final allocation; the
-direction-bit niche of ADR-0001 is retired by it.)
-
-Existing declared rows are byte-compatible: they simply use none of the
-new slots. The reserved band (4–13) is cheap insurance (ten numbers);
-indexes/reduces start at 16, leaving 240 per table — ample for any
-single table.
+Every face the obj itself owns is a one-byte **fixed face**; declared
+indexes and reduces are **counting families** (family nibble plus a 12-bit
+counter, two bytes). The slot is self-delimiting — its first byte says
+whether a counter follows — so a fixed face and a counting family can never
+be confused. ADR-0030 owns the full assignment and the fixed-face table.
 
 ## Renaming: kv_ → ok_
 
-The attribute family renames `kv_` → `ok_` (`ok_ns`, `ok_index`, `ok_ref`,
-`ok_subscribe`, `ok_default`, `ok_event_enum`), and the row concept
-renames to obj (`ObjEncode`). The `o` is doubly loaded: object in the
-programming sense, and the storage-format sense (object/doc/variant, orthogonal terms). The
-rename lands with the doc work, before crates.io publishing — after
-publishing it would be a breaking change. The derive macro names follow
-the same root (`KeyEncode`, `ObjEncode`); `ObjEncode` disappears into the
-obj concept.
+The attribute family is `ok_` (`ok_ns`, `ok_index`, `ok_ref`,
+`ok_subscribe`, `ok_default`, `ok_event_enum`) in place of the `kv_`
+prefix, and the row concept is named obj. The `o` is doubly loaded:
+object in the programming sense, and the storage-format sense
+(object/doc/variant, orthogonal terms). The derive macro names follow
+the same root (`KeyEncode`, `DocumentEncode`).
 
 ## Consequences
 
@@ -209,20 +197,11 @@ obj concept.
   discipline: append-only, escaped growth, single-writer allocation.
 - Value types for dynamic fields become part of the wire contract (a
   small closed enum in okm-core, mirrored in schema exports).
-- Dynamic fields are readable everywhere but indexable only after being
-  declared — schema evolution is the escape hatch, deliberately manual.
-- Implementation is PLAN-gated: ObjEncode rename, slot-1 writer/reader,
-  vocabulary maintenance, value-type enum, schema export extension.
-
-
-## Update 2026-09-19: frame length is a varint (P2)
-
-The dynamic-segment frame `[field-id][value-type][len u32][bytes]`
-became `[field-id][value-type][len varint][bytes]` — the length
-prefix uses the prefix-monotonic wire codec introduced for `VarInt`
-(P1), implemented once in `wrappers/wire.rs` and shared by the field
-wrapper, the dynamic-segment frames, and Array/nested-Obj element
-frames. Small frames cost 2-3 header bytes instead of 5. The
-element-type vocabulary, vocabulary, and ordering rules are
-unchanged. Declared cold-segment frames (`[tag][len u32]`, ADR-0004)
-keep the fixed length for now.
+- Dynamic fields are readable everywhere; indexing one goes through a
+  declared path (ADR-0029), which materialises one entry per resolved value
+  on the schema-driven write path. A name is runtime data, so it is never
+  KEY material — a dynamic field that needs key-shaped access still gets
+  declared.
+- The implementation covers the `DocumentEncode` derive, the slot-1
+  writer/reader, vocabulary maintenance, the value-type enum, and the
+  schema-export extension.

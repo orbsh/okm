@@ -1,7 +1,7 @@
 # ADR-0005: Secondary indexes — item-local slot allocation, no manual ns per index
 
 Date: 2026-09-06
-Status: Implemented. **Update 2026-10-17**: the carried key tail can no longer satisfy a probe — every read path applies one length judgement, and `scan_exact` joins the scan surface (see the update at the bottom). **Update 2026-09-21, [ADR-0019](0019-partial-index-where-predicate.md)**: the declaration vocabulary gains `where(path)` — a row-level predicate, so a rejected row produces no entries (partial index). Legal on plain and function indexes alike; expanded as a `KvIndex::admits` override and consulted at the head of `entry_pairs`. Entry layout, slot numbering and scan paths are untouched. **Update 2026-09-14**: index entries carry the address header exactly once — the primary key rides bare in the entry tail (see the update at the bottom). **Update 2026-09-12, [ADR-0006](0006-row-node-model.md) refinement**: `#[ok_ns]` itself also mounts on the **row struct** now (`Row::NS_PREFIX`, a `&'static [u8]` big-endian `[ns 2B]` emitted by the derive) — the row is the table's declaration point (`#[ok_ref]` pins the key type), and a key type carries no ns so the same key shape can serve several rows/tables, each with its own declared ns. `Table::new` loses the ns parameter. One number per table: unchanged. **Update 2026-09-07, [ADR-0006](0006-row-node-model.md)**: `#[ok_index]` mounts on the **row struct** (`ObjEncode`), not the key struct — the index's data source is row attributes, and key structs stay pure identity. Slot numbering, ns derivation, and the 1-byte discriminator below are unchanged; covering indexes (`includes`) are positioned as materialized views for high-fanout queries. **Update 2026-09-10, implementation**: the 1-byte slot byte ships as designed below — entry header is `[table_ns 2B][slot 1B]`, primary = 0, indexes numbered by declaration order. *(A 2026-09-07 implementation briefly replaced this with additive ns derivation — `index_ns = table_ns + SLOT`, no slot byte — before the flaw surfaced; see the second update at the bottom.)* `fields(...)` names **payload** fields (the index's data source is the row); the carried key tail defaults to the full primary key and may be truncated to any named subset via `key(…)` — `encode_prefix_named` now accepts arbitrary named subsets, not just declaration-order prefixes. Entry layout: `[ns 2B][slot 1B][indexed fields][key prefix]`, value = `includes` fields TLV (empty when absent).
+Status: Implemented.
 
 ## Context
 
@@ -12,16 +12,17 @@ Secondary indexes (including composite ones) need their own keyspaces. Two obvio
 
 ## Decision
 
-Indexes are declared on the **table struct itself** and numbered **inside the item** — this stays within the macro discipline (a macro cannot collect cross-item state, but the attribute list of the item it is expanding is item-local and fully visible):
+Indexes are declared on the **row struct** — an index's data source is row attributes, and key structs stay pure identity — and numbered **inside the item**, which stays within the macro discipline (a macro cannot collect cross-item state, but the attribute list of the item it is expanding is item-local and fully visible):
 
 ```rust
-#[derive(KeyEncode)]
+#[derive(DocumentEncode)]
 #[ok_ns(9)]                              // one manual ID per TABLE, not per index
+#[ok_ref(UserKey)]                       // the key type: identity only, ns-free
 #[ok_index(
     by_name    { fields(name) },          // single-field index
     by_age_org { fields(org_id, age) },   // composite index = field list
 )]
-pub struct UserKey {
+pub struct User {
     pub org_id: u32,
     pub user_id: u64,
     pub name: [u8; 16],
@@ -29,210 +30,71 @@ pub struct UserKey {
 }
 ```
 
+`#[ok_ns]` mounts on the row struct too, and the derive emits it as `Row::NS_PREFIX` (a `&'static [u8]` big-endian `[ns 2B]`); `Table::new(store)` takes no ns parameter. The row is the table's declaration point (`#[ok_ref]` pins the key type, so the row fully determines `Table<S, K, R>`), and a key type carries no ns so the same key shape can serve several rows/tables, each with its own declared ns. Edge structs keep declaring `#[ok_ns]` on the edge (unchanged `EdgeEncode` path).
+
 The derive macro, at expansion time:
 
-1. **Assigns the index slot** by attribute order (0, 1, 2, …) — an item-local counter, not cross-item collection. Index ns is derived mechanically: `table_ns` + slot (or bit-packed `table_ns << k | slot`).
-2. **Encodes the composite index as a `encode_prefix_named` field prefix** — the existing primitive, no new machinery. Index key = `[header][indexed fields BE][primary key ID]`, value empty.
-3. **Generates one `IndexEncode` struct per index** (invisible to the user), carrying its derived ns and field codec.
+1. **Assigns the index slot** by attribute order (1, 2, 3, …) — an item-local counter, not cross-item collection. The slot is ADR-0030's counting family `0x3nnn`: two bytes, family nibble plus declaration order (counter from 1, 0 reserved), 4095 declared indexes per table. The primary table sits at fixed face `0x00`, one byte.
+2. **Encodes the composite index as an `encode_prefix_named` field prefix** — the existing primitive, no new machinery. The indexed-field segment is the declared field list (or the `func` result, below); the carried key tail defaults to the full primary key and may be truncated to any named subset via `key(…)`, because `encode_prefix_named` accepts arbitrary named subsets, not just declaration-order prefixes. The entry value is the `includes` fields' payload encodings concatenated bare — no tag byte, no length prefix, laid down in `INCLUDES` order by `entry_value` — and empty when the declaration has no `includes`. Locating a field by its declared width is what makes the value decodable without a frame, the same trick the indexed segment uses.
+3. **Generates one `IndexEncode` struct per index** (invisible to the user), carrying its slot and field codec.
+4. **Variable-length fields** (`String`, `VarInt<T>`) in `fields()`/`includes()` are allowed at most once, and only in the **last** position. The wire is the raw encoding — UTF-8 bytes, no length prefix: a `len` prefix would sort by length before bytes and destroy vocabulary order, which is the entire value of the text-first regime. Sort order is byte-wise lexicographic; fields *before* the variable-length one stay fixed-width and locatable, so `(city, name)` composite prefixes work (`WHERE city = ? AND name LIKE 'ab%'` falls out of prefix scanning). The exact-match cost: `"ab"` scans into `"abc"` — disambiguation is the trailing primary key plus fetch-back, the regime's accepted price. A variable-length field followed by anything else is a compile-time panic (fields after it cannot be located — no static width).
+5. **Function indexes** (`func(path)`): the entry's sort segment is `path(&row)`'s result instead of payload fields — `fields`/`includes` stay empty and mixing them is a compile-time panic. The same declared function is what the query side calls on its probe value: one declaration drives both encode and scan, so normalization like `to_lowercase` cannot drift between sides. The result type must implement `IndexFuncResult` (okm-core): `String` → raw UTF-8 bytes (vocabulary order), unsigned integers → BE bytes (numeric order); anything else fails to compile at the generated impl.
+6. **Partial indexes** (`where(path)`): a row-level predicate, so a rejected row produces no entries. Legal on plain and function indexes alike; expanded as a `KvIndex::admits` override consulted at the head of `entry_pairs`. Entry layout, slot numbering and scan paths are untouched.
 
 ## Physical layout
 
 ```
-table key:   [header = table_ns·0][all fields BE]
-index key:   [header = table_ns·slot][indexed fields BE][primary key ID]   ← value empty
+table key:   [ns 2B][0x00][all fields BE]
+index key:   [ns 2B][0x3nnn][indexed fields][key prefix]   ← value = includes, bare
 ```
 
 - **Scan one index (leftmost-prefix match)**: header + slot + indexed-field prefix — composite leftmost-prefix matching falls out of prefix scanning for free.
 - **Scan everything of one table (table + all its indexes)**: prefix = the `table_ns` segment — contiguous, because slots share the table's segment.
 
-## Consequences and boundaries
+**The entry key carries the address header exactly once, and the primary key rides bare in the tail.** Stripping-and-rejoining at the engine level was considered and rejected (ADR-0011); repeating `[ns][0x00]` inside each index entry would be pure duplication — the header is a property of the table the entry belongs to, and the entry key already carries it. Lookup flow: a scan hits the entry key, decodes the primary key from the tail segment, and hands it to `Table::get`, whose `primary_key` is the **single** place that composes `[NS_PREFIX][0x00][payload]` for the primary table. One composition point per direction: entry construction composes once, primary lookup composes once, nothing repeats.
 
-- **Slot width is a global decision**: bit-packing with 4 bits caps 15 indexes per table. Preferred alternative: a 1-byte discriminator after the header (header becomes 3 bytes: `[table_ns 2B][slot 1B]`) — ns space untouched, 256 indexes per table, header stays fixed-width; cost is 1 byte on every key. Chosen: 1-byte slot.
-- **Deleted indexes leave holes**: slots are never reused (same discipline as ns IDs, ADR-0002). Holes are harmless.
-- **Fixed-width fields only** for this regime: variable-length indexed fields (e.g. `String`) belong to the secondary-index layout regime (discriminating text first, primary key ID carried at the tail, value empty — see kv-storage-engine.md). The slot mechanism is identical across both regimes. *(Shipped 2026-09-09 — see the update below; the rule sharpened to a positional constraint.)*
-- **`#[ok_ns]` semantics return to its cleanest form**: one number per table; indexes, composites and slots are mechanical macro expansion. Humans only allocate table IDs.
+**The tail does three jobs at once, which is why the identity must not move into the entry VALUE.** (1) Entry uniqueness: one row = one entry, so `put` replaces the whole entry and `delete` regenerates the entry set from the row — no read-modify-write, no tombstone. Move the primary key into the value and two rows with equal indexed fields collide on one entry key; the escapes are declaring those fields unique (no runtime check, silent row loss) or turning the value into an id set — a cross-row read-modify-write on a shared entry, exactly what per-row derived entries exist to avoid, and already owned by another primitive (`#[ok_reduce]`: group in the key, accumulator in the value, fixed-width `Acc`, exactly-once fold/unfold). (2) Identity without reading the value: the tail decodes to a `PrefixKey` — that zero-copy slice is also why the probe/tail judgement below costs nothing — and a truncated `key(...)` tail stays a trustworthy prefix, which is what a relation table's reverse index hands back to continue on the main table. (3) Order: inside an equality prefix the tails ARE the main-key bytes in order, the fetch-back locality property.
 
-## Update 2026-09-09: variable-length fields and function indexes shipped
+Graph edges are the instructive counterexample rather than a refutation: an edge keeps its endpoints in the BODY because the edge's own identity is its surrogate `edge_id`, and the addressed direction carries the ref in the face key — identity sits in the key on the side being addressed.
 
-The text-first regime is implemented; the constraint sharpens from "fixed-width fields only" to a positional rule.
+**Two encodings for mid-segment variable-length data are examined and NOT adopted.** (1) A length prefix inside an index segment fails structurally: the segment IS a sort segment, so a leading length sorts by length before bytes and destroys the vocabulary order the text-first regime exists for (see the positional rule in decision 4). (2) A C-style terminator with order-preserving escaping (`0x00`-terminated, `0x00` → `0x00 0xFF`) does keep byte order and would allow more than one variable segment — a self-delimiting form already ships inside okm, where the graph faces put `NodeRef = [ns 2B][len varint][pkey]` mid-key and pay ~1 byte per ref for the boundary living in the wire. It is a trade, not an upgrade: encoding stops being compile-time-locked zero-copy slicing and becomes a runtime codec with escaping, range bounds must become terminator-aware, and what it buys is decodability alone — never selectivity, because leftmost-prefix is a query-semantics rule and extra variable dimensions still mean extra declared access methods. A separator IS legal one layer down, where nothing has to be decoded: a `func` index may build a single composite text segment with the separator inside the VALUE (`last\x00first`), the application owning that contract — the KEY still carries no terminator. The rule: NAKED bytes cannot sit mid-segment; a SELF-DELIMITING frame can.
 
-**Variable-length fields (`String`, `VarInt<T>`) in `fields()`/`includes()`**: allowed at most once, and only in the **last** position. The wire is the raw encoding — UTF-8 bytes, no length prefix: a `len` prefix would sort by length before bytes and destroy vocabulary order, which is the entire value of the text-first regime. Sort order = byte-wise lexicographic; fields *before* the variable-length one stay fixed-width and locatable, so `(city, name)` composite prefixes work (`WHERE city = ? AND name LIKE 'ab%'` falls out of prefix scanning). The exact-match cost: `"ab"` scans into `"abc"` — disambiguation is the trailing primary key + fetch-back, which is the regime's accepted price. A variable-length field followed by anything else is a compile-time panic (fields after it cannot be located — no static width).
+## Read path
 
-**Function indexes** (`func(path)`): the entry's sort segment is `path(&row)`'s result instead of payload fields — `fields`/`includes` stay empty and mixing them is a compile-time panic. The same declared function is what the query side calls on its probe value: one declaration drives both encode and scan (normalization like `to_lowercase` cannot drift between sides). The result type must implement `IndexFuncResult` ((`okm-core` crate)): `String` → raw UTF-8 bytes (vocabulary order), unsigned integers → BE bytes (numeric order); anything else fails to compile at the generated impl.
+**Prefix and exact matching share one length judgement.** The entry's indexed-field segment and the carried key tail have no boundary byte between them, so without a judgement a probe could be completed by TAIL bytes: a stored value `ad` whose key begins with `0x31` matched the probe `ad1`. Values mix letters and digits, so that data is legal — the defect is in the read path, never in the input.
 
-## Update 2026-09-10: slot byte restored
+The judgement is ONE length compare against the tail's width (`key_prefix_width()`), and it yields the exact-match form as well:
 
-The 2026-09-07 implementation replaced the slot byte with additive ns derivation (`index_ns = table_ns + SLOT`, `wrapping_add`) — one byte shorter, one less layer. The flaw that surfaced: **table ns allocation stopped being self-contained**. Allocating ns=256 meant reserving headroom for "how many indexes this table might ever have"; adding an index could overflow into the next table's segment, and the error was silent (overlapping segments still scan fine — entries just cross-read). `#[ok_ns]` regressed from "one number per table" to "one number plus an unbounded reservation".
+- `remain <  tail width` → the stored value is SHORTER than the probe: not a match, dropped.
+- `remain == tail width` → the probe consumed the whole segment: full-field equality, i.e. `scan_index_exact` / `Collection::scan_exact`.
+- `remain >  tail width` → the stored value EXTENDS the probe: prefix semantics — a hit for `scan`, not for `scan_exact`.
 
-The byte saved was a local, negligible gain; the guarantee given up was global. Implementation-time simplifications must be checked against this ADR's consequences list — the additive variant was considered and rejected here for exactly this class of reason. Restored: entry header `[table_ns 2B][slot 1B]` on every entry (primary slot 0), +1 byte per key, ns vocabulary back to one number per table, 255 indexes per table.
+Prefix and exact share ONE code path, and every entrance applies it: the prefix scan, the covered scan, the lazy range iterator, the range scan and the dynamic counterpart (`okm_dynamic::scan_access_method_exact`, `DynamicCollection::scan_exact`, the Python binding's `scan_exact`). Because the test runs before any fetch-back, exact matching needs neither row validation nor `includes`.
 
-## Update 2026-09-12b: deprecating an index declaration
+`VirtualStorage::scan_suffix`'s default forwards `scan_range`'s keys with the prefix stripped, per ADR-0020's statement of the default's obligation; a default forwarding full keys would leave `remain` carrying a whole address header and make the judgement silently inert. `scan_suffix_contract_test.rs` locks the contract.
 
-An earlier "holes are harmless" claim was wrong for the positional slot
-allocation: deleting a MIDDLE declaration shifts every later slot down one,
-so those slots' new writes land on the previous declarations' stale entries
-— silent corruption, the same class as the rejected additive derivation.
-Removing a declaration is therefore NOT a supported operation (same
-discipline as reordering: layout change = clean rebuild or migration
-double-write). The supported retirement path is a deprecation marker:
+## Covering reads
+
+- `KvIndex` gains `type Covered` and `fn decode_covered(b: &[u8]) -> Self::Covered`. Per covering declaration the derive generates a struct `__OkmCovered_{Row}_{index}` whose fields are the `INCLUDES` names in order, typed exactly as in the document, and the decode walks the segment by width: fixed-width fields cut at their declared width, the trailing variable-width field (at most one, last only — decision 4) takes the remainder. A declaration without `includes` gets `Covered = ()`: nothing was copied, so there is nothing to decode.
+- `Collection::scan_covered` returns `(PrefixKey<K>, I::Covered)` instead of `(PrefixKey<K>, Vec<u8>)`. The raw-bytes form is gone on purpose: bytes are what `scan_suffix_kv` hands out, and a covered scan that stops at bytes has not answered anything.
+- Dynamic side: `DynamicCollection::scan_covered` (over `okm_dynamic::scan_access_method_covered` / `decode_includes`) returns `(key fields, covered fields)` as two name-keyed maps. Two maps, not one, because a key field name and a payload field name may collide and the key is the identity rather than payload data.
+
+The covered segment is derived state, regenerated wholesale on every write: `entry_pairs` is the single entry producer, `put` lands the row and every entry in ONE batch/commit, and `merge` / `replace` / `purge` reach the same producer through the stored row. No second writer, no incremental bookkeeping, no extra commit — the cost is bytes in the entry, worth paying only for a measured high-fanout read path, which is what the covered door is for.
+
+## Retiring a declaration
+
+Slots are positional: deleting a MIDDLE declaration shifts every later slot down one, so those slots' new writes land on the previous declarations' stale entries — silent corruption, the same class as an additive ns derivation that overflows into the next table's segment. Removing a declaration is therefore NOT a supported operation (same discipline as reordering: a layout change = clean rebuild or migration double-write). The supported retirement path is a deprecation marker:
 
 ```rust
 #[ok_index(by_old { fields(legacy) }, deprecated)]   // slot stays reserved
 ```
 
-The derive keeps the slot (later declarations keep their slots), but
-generates no marker struct, no write path, and no scan surface for it.
-Stale entries from before the deprecation are cleared explicitly:
-`Table::prune_deprecated_slots()` prefix-scans `[ns][deprecated slot]` and
-deletes (idempotent; returns the count). `Row::DEPRECATED_SLOTS` carries
-the derive-emitted slot list.
+The derive keeps the slot (later declarations keep their slots), but generates no marker struct, no write path, and no scan surface for it. Stale entries from before the deprecation are cleared explicitly: `Table::prune_deprecated_slots()` prefix-scans `[ns][deprecated slot]` and deletes (idempotent; returns the count). `Row::DEPRECATED_SLOTS` carries the derive-emitted slot list.
 
-## Update 2026-09-12: ns declaration moves from key struct to row struct
+## Consequences and boundaries
 
-`#[ok_ns]` originally lived on the key struct (this ADR's example shows it
-there). It now lives on the **row struct** and the derive emits it as
-`Row::NS_PREFIX: &'static [u8]` (big-endian `[ns 2B]`); `Table::new(store)`
-no longer takes an ns parameter, and all hooks take the prefix slice. Two
-reasons: the row is the table's declaration point (`#[ok_ref]` already pins
-the key type, so the row fully determines `Table<S, K, R>`), and a key type
-must stay ns-free — the same key shape legitimately serves several rows /
-tables, each with its own declared ns, which mounting ns on the key would
-have forbidden. Edge structs keep declaring `#[ok_ns]` on the edge (unchanged
-EdgeEncode path). "One number per table" is untouched: the number is now
-declared where the table is declared.
-
-## Update 2026-09-14: index entries never duplicate the address header — the primary key rides bare in the entry tail
-
-An index entry stores the address header (`[ns 2B][slot 1B]`) exactly once,
-in the entry **key**; the primary key payload rides **bare** as the tail
-segment (`[ns 2B][slot 1B][indexed fields][key payload]`, value = includes
-TLV). Stripping-and-rejoining at the engine level was considered and
-rejected (ADR-0011); likewise, repeating `[ns][slot 0]` inside each index
-entry would be pure duplication — the header is a property of the table the
-entry belongs to, and the entry key already carries it. Lookup flow: a scan
-hits the entry key, decodes the primary key from the tail segment, and
-hands it to `Table::get`, whose `primary_key` is the **single** place that
-composes `[NS_PREFIX][slot 0][payload]` for the primary table. One
-composition point per direction: entry construction composes once, primary
-lookup composes once, nothing repeats.
-
-## Update 2026-10-17: the carried tail can no longer satisfy a probe — and `scan_exact` joins the read surface
-
-The entry's indexed-field segment and the carried key tail have no boundary
-byte between them, so a probe could be completed by TAIL bytes: a stored value
-`ad` whose key begins with `0x31` matched the probe `ad1`. Values mix letters
-and digits, so that data is legal — the defect was in the read path, never in
-the input.
-
-The judgement is ONE length compare against the tail's width
-(`key_prefix_width()`), and it yields the exact-match form as well:
-
-- `remain <  tail width` → the stored value is SHORTER than the probe: not a
-  match, dropped (this family used to `assert!` and panic on legal data).
-- `remain == tail width` → the probe consumed the whole segment: full-field
-  equality, i.e. `scan_index_exact` / `Collection::scan_exact`.
-- `remain >  tail width` → the stored value EXTENDS the probe: prefix
-  semantics — a hit for `scan`, not for `scan_exact`.
-
-Prefix and exact share ONE code path, and every entrance applies it: the
-prefix scan, the covered scan, the lazy range iterator (both of which asserted,
-and the iterator had no guard at all), the range scan (which already filtered)
-and the dynamic counterpart (`okm_dynamic::scan_access_method_exact`,
-`DynamicCollection::scan_exact`, the Python binding's `scan_exact`). Because
-the test runs before any fetch-back, exact matching needs neither row
-validation nor `includes`.
-
-The same investigation settled why the judgement was silently INERT on a
-host-injected engine: `VirtualStorage::scan_suffix`'s default forwarded
-`scan_range`'s full keys instead of the documented prefix-stripped suffix, so
-`remain` carried a whole address header. [ADR-0020](0020-range-scan-lazy-iterator.md)
-now states the default's obligation, and `scan_suffix_contract_test.rs` locks it.
-
-## Update 2026-10-17 (continued): what the carried tail does, and the encodings that stay rejected
-
-**The tail is not decoration — it does three jobs at once, which is why the
-identity must not move into the entry VALUE.** (1) Entry uniqueness: one row =
-one entry, so `put` replaces the whole entry and `delete` regenerates the entry
-set from the row — no read-modify-write, no tombstone. Move the primary key into
-the value and two rows with equal indexed fields collide on one entry key; the
-escapes are declaring those fields unique (no runtime check, silent row loss) or
-turning the value into an id set — a cross-row read-modify-write on a shared
-entry, exactly what per-row derived entries exist to avoid, and already owned by
-another primitive (`#[ok_reduce]`: group in the key, accumulator in the value,
-fixed-width `Acc`, exactly-once fold/unfold). (2) Identity without reading the
-value: the tail decodes to a `PrefixKey` — that zero-copy slice is also why the
-probe/tail judgement above costs nothing — and a truncated `key(...)` tail stays
-a trustworthy prefix, which is what junction reverse lookups hand back to
-continue on the main table. (3) Order: inside an equality prefix the tails ARE
-the main-key bytes in order, the fetch-back locality property. The entry VALUE
-carries `includes` only. Graph edges are the instructive counterexample rather
-than a refutation: an edge keeps its endpoints in the BODY because the edge's
-own identity is its surrogate `edge_id`, and the addressed direction carries the
-ref in the face key — identity sits in the key on the side being addressed.
-
-**Two encodings for mid-segment variable-length data were examined and are NOT
-adopted.** (1) A length prefix inside an index segment fails structurally: the
-segment IS a sort segment, so a leading length sorts by length before bytes and
-destroys the vocabulary order the text-first regime exists for (see the
-2026-09-09 update). (2) A C-style terminator with order-preserving escaping
-(`0x00`-terminated, `0x00` → `0x00 0xFF`) does keep byte order and would allow
-more than one variable segment — a self-delimiting form already ships inside okm,
-where the graph faces put `NodeRef = [ns 2B][len varint][pkey]` mid-key and pay
-~1 byte per ref for the boundary living in the wire. It is a trade, not an
-upgrade: encoding stops being compile-time-locked zero-copy slicing and becomes a
-runtime codec with escaping, range bounds must become terminator-aware, and what
-it buys is decodability alone — never selectivity, because leftmost-prefix is a
-query-semantics rule and extra variable dimensions still mean extra declared
-access methods. A separator IS legal one layer down, where nothing has to be
-decoded: a `func` index may build a single composite text segment with the
-separator inside the VALUE (`last\x00first`), the application owning that
-contract — the KEY still carries no terminator, so the rule below stands. The
-rule to carry away: NAKED bytes cannot sit mid-segment; a SELF-DELIMITING frame
-can.
-
-## Update 2026-10-24: `includes` gains its read half — and the value segment was never TLV
-
-Two defects and one correction.
-
-**The correction.** This ADR and ADR-0006 wrote "value = includes fields TLV".
-The value has always been a BARE concatenation of the covered fields' payload
-encodings — no tag byte, no length prefix, laid down in `INCLUDES` order by
-`entry_value`. That is not a wart to be fixed: locating a field by its declared
-width is exactly what makes the segment decodable without a frame, the same
-trick the indexed segment uses, and it costs nothing beyond the field bytes.
-Both documents say so now.
-
-**The defect.** The write side had copied the covered fields into every entry
-since the feature landed; no read path read them. `Collection::scan_covered`
-existed but returned the raw value bytes — a door with the lock still on — and
-the dynamic side (`scan_access_method`) was a KEY-ONLY scan, so the copy was paid
-on every write and consumed by nobody. A feature that only has its cost is worse
-than no feature.
-
-**The read side, as landed.**
-
-- `KvIndex` gains `type Covered` and `fn decode_covered(b: &[u8]) -> Self::Covered`.
-  Per covering declaration the derive generates a struct
-  `__OkmCovered_{Row}_{index}` whose fields are the `INCLUDES` names in order,
-  typed exactly as in the document, and the decode walks the segment by width:
-  fixed-width fields cut at their declared width, the trailing variable-width
-  field (at most one, last only — the existing declaration-order rule) takes the
-  remainder. A declaration without `includes` gets `Covered = ()`: nothing was
-  copied, so there is nothing to decode.
-- `Collection::scan_covered` returns `(PrefixKey<K>, I::Covered)` instead of
-  `(PrefixKey<K>, Vec<u8>)`. The raw-bytes door is gone on purpose: bytes are
-  what `scan_suffix_kv` hands out, and a covered scan that stops at bytes has not
-  answered anything.
-- Dynamic side: `DynamicCollection::scan_covered` (over
-  `okm_dynamic::scan_access_method_covered` / `decode_includes`) returns
-  `(key fields, covered fields)` as two name-keyed maps. Two maps, not one,
-  because a key field name and a payload field name may collide and the key is
-  the identity rather than payload data.
-
-**Why this is not a second source of truth.** The segment is derived state,
-regenerated wholesale on every write: `entry_pairs` is the single entry producer,
-`put` lands the row and every entry in ONE batch/commit, and
-`merge` / `replace` / `purge` reach the same producer through the stored row. No
-second writer, no incremental bookkeeping, no extra commit — the cost is bytes in
-the entry. Per the ADR-0006 positioning, that cost is worth paying only for a
-measured high-fanout read path, which is what the covered door is for.
+- **Slot width is a global decision**: a declared index spends a counting-family slot (two bytes, 4095 per table) and the ns segment is untouched, so ns allocation stays one number per table — it never has to reserve headroom for how many indexes the table might ever declare. Packing the slot into the ns byte instead (bit-packed, or additive `table_ns + slot`) caps the indexes at 15 and lets an extra index overflow into the next table's segment, where overlapping segments still scan fine and the corruption is silent.
+- **Slot numbers are permanent**: a retired declaration keeps its slot (see Retiring a declaration), so slots are never reused and never renumbered — the same discipline as ns IDs (ADR-0002).
+- **Sort order over a variable-length indexed field is byte-wise lexicographic**, and exact matching there is resolved by the trailing primary key plus fetch-back (decision 4).
+- **Covering indexes are materialized views for high-fanout queries**: the write side copies the covered fields into every entry, so the cost is paid only where a measured read path consumes it (`scan_covered`).
+- **`#[ok_ns]` semantics return to its cleanest form**: one number per table; indexes, composites and slots are mechanical macro expansion. Humans only allocate table IDs.

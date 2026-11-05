@@ -1,7 +1,7 @@
 # ADR-0012: Object 模式——单一编码，声明字段加动态段
 
 日期：2026-09-14
-状态：已接受（2026-09-14；机制已落地——obj 载荷的两个 slot、字段名词汇表、双向 `DocumentEncode`、`Ref`/`Refs` 嵌入）。**2026-10-17 更新**：下文的 slot 表是 ADR-0016 之前的扁平编号，作为本决策的记录保留——今天的分配见 ADR-0030：动态段是固定面 0x01、词汇表 0x02/0x03。「只有声明字段可索引」那段由 ADR-0029 取代（动态字段可经声明的 path 索引）。
+状态：已接受（2026-09-14；机制已落地——obj 载荷的两个 slot、字段名词汇表、双向 `DocumentEncode`、`Ref`/`Refs` 嵌入）。
 
 ## 背景
 
@@ -11,7 +11,7 @@
 
 ## 决策
 
-**一个模型，名为 obj。** 公开概念是 object；全量改名时 `ObjEncode` 更名 `ObjEncode`，声明式 row 就是"只有声明字段的 obj"。
+**一个模型，名为 obj。** 公开概念是 object；derive 是 `DocumentEncode`，声明式 row 就是"只有声明字段的 obj"。
 
 为什么不用 document：这个概念确实与 document-oriented 存储（CouchDB、MongoDB）同宗，这层亲缘值得承认——但 `obj` 这个名字靠双关挣得位置：编程语言中的对象，也是存储格式意义上的 object。object/doc/variant 三个词各自标记静态/动态光谱上的三个不同位置，obj 刻意与 document 区分开：
 
@@ -27,15 +27,16 @@
 [version u8][hot_len u16 BE][hot 段][cold TLV]
 ```
 
-——与今天的 row 完全一致。声明字段保持现有编码：定宽字段在 hot 段连续排列，变长字段为 `[tag][len u32][bytes]` 帧排在 cold 段，tag = 声明序号。类型来自编译期 `FieldDesc` 表（`Row::FIELDS`），永不在字节里。
+——与今天的 row 完全一致。声明字段保持现有编码：定宽字段在 hot 段连续排列，变长字段为 `[tag][len varint][bytes]` 帧排在 cold 段，tag = 声明序号。类型来自编译期 `FieldDesc` 表（`Row::FIELDS`），永不在字节里。
 
 **动态段（固定面 0x01）。** obj 可以额外携带未声明字段，每行一条记录存在 `[ns][0x01][key payload]`——与索引条目同一骨架（`[ns][slot][...]`，slot 紧跟 ns），中间没有字段段，主键落在尾段。每行的数据挂在行键下：不带 pkey 的话所有行的动态段会叠在同一个物理键上互相覆盖。共享的 `[ns][0x01]` 前缀也让整个段可前缀扫描（prune、重建）。其值为帧列表：
 
 ```text
-[动态面的值] = ([field-id][value-type][len u32][value bytes])*
+[动态面的值] = ([field-id][value-type][len varint][value bytes])*
 ```
 
 - `field-id`：字段名词汇表编号（见下）。
+- `len` 是 `VarInt` 用的那条前缀单调 varint 编码（`wrappers/wire.rs`），与 cold 段帧、Array/嵌套 Obj 的元素帧共用：小帧的头部从 5 字节降到 2–3 字节。
 - `value-type`：小型运行期值词汇表——这是唯一真正的新元素。声明字段的类型在编译期 FieldDesc 表里；动态字段必须自描述，其帧以一个值类型字节开头（int / float / str / bytes / bool / null / array / obj 保留变体）。嵌套可递归复用 obj 帧；词汇表先留保留变体，嵌套支持可后置。取帧方式是 **CBOR 衍生，不是 CBOR**：只取 major type 模式——每帧以类型 nibble 开头——结构编码也在同一方案里。CBOR 的 major type 含列表和映射；有了字段名词汇表，OKM 只需要列表——映射就是 nTLV 列表（编号、类型、长度、值），结构信息活在值里，不进 per-document schema。
 - 顺序：帧按写入序排列；读取方按 id 寻址动态字段，不依赖位置。
 
@@ -64,43 +65,31 @@
 
 相比之下 type byte 保留在每帧：同一条流在相同帧位置交错不同的值类型，类型重复率不可假设，类型词汇表化一无所得。（完全同构的集合——数值列存形态——不是 object 模型的目标；它们由嵌套的声明式 obj 承接：重复结构在嵌套层恢复 hot 段 O(1) 偏移和索引，外层 obj 保持纯动态。）
 
-## Slot 分配（修订）
+## Slot 分配
 
 ```text
-slot 0      主表                  [ns][0][key payload]
-slot 1      obj 动态段            [ns][1][key payload]
-slot 2      字段名词汇表            [ns][2][field-id]        → 名字
-slot 3      字段名词汇表            [ns][3][名字字节]        → field-id
-slot 4–13   保留（两端向中间增长的缓冲带）
-slot 14     edge 正向             [ns][14][A·id][B·id]
-slot 15     edge 反向             [ns][15][B·id][A·id]
-slot 16+    索引与 reduce（声明序），[ns][slot][...]
+0x00       主表                  [ns][0x00][key payload]
+0x01       obj 动态段            [ns][0x01][key payload]
+0x02       字段名词汇表            [ns][0x02][field-id]        → 名字
+0x03       字段名词汇表            [ns][0x03][名字字节]        → field-id
+0x04/0x05  谓词词汇表            [ns][0x04][predicate_id]    （ADR-0017）
+0x06–0x09  图面                  （ADR-0017、ADR-0041）
+0x0A       向量索引快照          （okm-vector 缓存）
+0x0F       表元信息              （ADR-0043）
+0x3nnn     声明索引              [ns][0x3nnn][...]
+0x4nnn     reduce                [ns][0x4nnn][...]
 ```
 
-*（2026-10-17 更新：本表是 ADR-0016 之前的扁平分配，作为本决策的记录保留。现行编号见 ADR-0030：主表 0x00、动态段 0x01、字段名词汇表 0x02/0x03、谓词词汇表 0x04/0x05、图面 0x06–0x0A、声明索引 0x1nnn、reduce 0x2nnn、junction 0x3nnn。）*
-
-固定角色自 0 向上增长；edge 居顶端（14/15）向下增长；4–13 是两侧增长之间未划分的自由缓冲——类堆栈内存布局。内部不做区域划分：未来的固定角色从需要的那一侧领下一个号，两侧相遇即耗尽。固定角色区与声明分配区的分界在 nibble 边界（`0x0?` 固定，`0x1?` 起声明），hex 测试一眼可辨。edge 的 14/15 两个 slot 属于"edge 走 slot"决策（PLAN Phase 10）——列在这里使表格呈现完整的终态分配；ADR-0001 的方向位 niche 被它取代。）
-
-现有声明式 row 字节兼容：它们只是不用新 slot。保留段（4–13）是廉价保险（十个编号）；索引/reduce 从 16 起，单表可用 240 个编号，充裕。
+obj 自己拥有的每一面都是单字节的**固定面**；声明索引与 reduce 是**计数族**（family nibble 加 12 位计数，两字节）。slot 自定界——首字节自己说明后面还跟不跟计数字节——所以固定面与计数族不可能混淆。完整分配由 ADR-0030 拥有，它取代了 ADR-0016 统一的 4 字节头。
 
 ## 改名：kv_ → ok_
 
-属性家族 `kv_` → `ok_`（`ok_ns`、`ok_index`、`ok_ref`、`ok_subscribe`、`ok_default`、`ok_event_enum`），row 概念更名为 obj（`ObjEncode`）。`o` 是双关：编程语言中的对象，也是存储格式意义上的 object/doc/variant。改名随 obj 工作落地，赶在 crates.io 发布之前——发布后再改就是 breaking change。derive 宏名跟随同一词根（`KeyEncode`、`ObjEncode`）；`ObjEncode` 消失并入 obj 概念。
+属性家族是 `ok_`（`ok_ns`、`ok_index`、`ok_ref`、`ok_subscribe`、`ok_default`、`ok_event_enum`），取代 `kv_` 前缀；row 概念名为 obj。`o` 是双关：编程语言中的对象，也是存储格式意义上的 object/doc/variant。derive 宏名跟随同一词根（`KeyEncode`、`DocumentEncode`）。
 
 ## 后果
 
 - 单一编码、单一 derive 家族、单一解码路径；声明式 row 是动态段为零的特例，无需迁移。
 - OKM 迎来第一个运行期词汇表（字段名），带 ns 词汇表纪律：append-only、逃逸式扩展、单写者分配。
 - 动态字段的值类型成为线格式契约的一部分（okm-core 里一个小封闭枚举，schema 导出同步镜像）。
-- 动态字段处处可读，但声明之后才可索引——schema 演化是刻意手动的逃生口。
-- 实现由 PLAN 排期：ObjEncode 改名、slot 1 读写路径、词汇表维护、值类型枚举、schema 导出扩展。
-
-
-## 更新 2026-09-19：帧长改为 varint（P2）
-
-动态段帧 `[field-id][value-type][len u32][bytes]` 变为
-`[field-id][value-type][len varint][bytes]`——长度前缀使用 `VarInt`
-（P1）引入的前缀单调 wire 编码，在 `wrappers/wire.rs` 中实现一次，
-字段包装器、动态段帧、Array 与嵌套 Obj 的元素帧共用。小帧的头部
-从 5 字节降到 2-3 字节。元素类型词汇表、词汇表与排序规则不变。声明
-字段的冷段帧（`[tag][len u32]`，ADR-0004）暂保持定长。
+- 动态字段处处可读；索引它们要走一条声明的 path（ADR-0029），在 schema 驱动的写路径上为每个解析值物化一条条目。名字是运行期数据，永远不是 key 材料——某个动态字段若需要 key 形态的访问，仍然要声明出来。
+- 实现覆盖：`DocumentEncode` derive、slot 1 读写路径、词汇表维护、值类型枚举、schema 导出扩展。
