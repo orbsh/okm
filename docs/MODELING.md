@@ -53,8 +53,7 @@ Primary keys are fixed-width: fields are big-endian encoded in declaration order
 
 ### A relationship: the pair is the key
 
-A many-to-many relationship is a table (ADR-0051). Its key is the pair of identities, and its
-row carries whatever the relationship owns:
+A many-to-many relationship is a table (ADR-0051). Its key is the pair of identities, and its row carries whatever the relationship owns — including the column a reverse read scans; a field that is already in the key, though, is not copied into a column (see the end of "Many-to-many relationships").
 
 ```rust
 use okm_core::{DocumentEncode, KeyEncode, Uuid7};
@@ -656,7 +655,13 @@ struct Membership {
 }
 ```
 
-The first key column is the forward direction: `[ns][0x00][channel_id]` lists a channel's members in one prefix scan. The reverse direction is the declared index: `by_member` turns "which channels is this person in" into an index scan with one fetch-back per hit. `put` writes the row and the index entry in one batch; `purge` takes both away; `rebuild_faces` reproduces the index from the rows. Nothing here is hand-kept.
+The first key column is the forward direction: one prefix scan lists a channel's members, and the probe comes from the key's own builder — what comes back is the **decoded key**, not bytes:
+
+```rust
+for key in memberships.scan_keys(&MembershipKey::prefix().channel_id(id).finish()) { … }
+```
+
+The reverse direction is the declared index: `by_member` turns "which channels is this person in" into an index scan, and `scan::<ByMember>(&probe)` hands back a `PrefixKey<MembershipKey>` per hit, plus the row. The entry's tail IS the primary key, so `decoded.channel_id` and `decoded.member_id` read directly, and the fetch-back is `scan`'s own work (`None` = the row went away between the scan and the read). `put` writes the row and the index entry in one batch; `purge` takes both away; `rebuild_faces` reproduces the index from the rows. Nothing here is hand-kept.
 
 There is no junction carrier (ADR-0051). A relationship is data, and this model already has a carrier for data — a collection. What a junction would have had to build by hand is exactly what `put` and `#[ok_index]` do automatically:
 
@@ -666,6 +671,19 @@ There is no junction carrier (ADR-0051). A relationship is data, and this model 
 - **the row travels**: it is in the changelog and the lake, which junction entries were excluded from.
 
 The relationship's identity is the pair — at most one row per two endpoints — because the pair is the primary key. Adding or removing a membership is `put` / `purge` on that key; identity never moves.
+
+### A field already in the key is not copied into a column
+
+The declaration above is the **copied-column** shape: `by_member`'s data segment comes from a column on the row's payload, the entry's tail comes from the key, and the two are independent storage locations — nothing checks that they agree, so a writer can put a disagreeing pair on disk. The entry is therefore 40 bytes:
+
+```text
+[ns 2B][slot 2B][member_id 16B]   [channel_id 8B][member_id 16B]
+                 ↑ the row's column     ↑ the primary key (tail)
+```
+
+To have that reverse read without the copy, hand-write the access method: `KvIndex::encode_named` receives both key and document, so the data segment can come off `key`; shorten the tail with `key(channel_id)` and the entry drops to 24 bytes (`[member_id][channel_id]`), with `taken` semantics promising the prefix fields and zero-filling the rest.
+
+The test is whether the field is **already in the key**. If it is, do not copy it — the copy saves no bytes (both live in the entry anyway) and adds an error class nothing checks. If it is not (`nickname`, `since_ms`: what the relation itself knows), it belongs on the row and a plain `fields(...)` is right. This guide keeps the copied-column form because it is the shortest shape that explains the mechanism; the rule itself is "do not copy".
 
 ### Refs or a relation table: deciding, and migrating when the answer changes
 

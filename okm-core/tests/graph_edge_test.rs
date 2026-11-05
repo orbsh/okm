@@ -95,6 +95,42 @@ fn head(src: NodeRef, dst: NodeRef, predicate: &str) -> EdgeHead {
     }
 }
 
+/// Issuer recovery reads the MAXIMUM edge id, and it reads it without walking
+/// the table: the primary slot orders by `edge_id`, so the max is the last key.
+#[test]
+fn max_edge_id_is_the_last_primary_key() {
+    let store = okm_core::TestStore::slatedb_mem();
+    let mut g: Graph<_, Employment> = Graph::new(store);
+    assert_eq!(g.max_edge_id().unwrap(), None, "an empty graph has no maximum");
+
+    // Linked OUT OF ORDER (3, 11, 7): the answer is the id space's maximum, not
+    // the most recent write.
+    let mut highest = 0;
+    for (id, year) in [(3u64, 2019u16), (11, 2020), (7, 2021)] {
+        g.link(
+            &head(user(1), org(9), "employs"),
+            &Employment {
+                since_year: year,
+                weight: id as u32,
+            },
+            id,
+        )
+        .unwrap();
+        highest = highest.max(id);
+        assert_eq!(g.max_edge_id().unwrap(), Some(highest));
+    }
+    // It agrees with the exhaustive read an export uses.
+    assert_eq!(
+        g.max_edge_id().unwrap(),
+        g.edge_ids().unwrap().into_iter().max()
+    );
+
+    // Unlinking the maximum moves it down: it is a read of the table, not a
+    // counter anyone has to keep in sync.
+    g.unlink(11).unwrap();
+    assert_eq!(g.max_edge_id().unwrap(), Some(7));
+}
+
 #[test]
 fn link_traverse_and_fetch_back_with_attributes() {
     let store = okm_core::TestStore::slatedb_mem();
