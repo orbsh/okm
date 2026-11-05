@@ -229,11 +229,7 @@ mod tests {
         UserKey { id }
     }
 
-    fn follows(
-        store: &TestStore,
-        user_id: u32,
-        followee_id: u32,
-    ) {
+    fn follows(store: &TestStore, user_id: u32, followee_id: u32) {
         let table: okm_core::Collection<TestStore, FollowsKey, FollowsRow> =
             okm_core::Collection::new(store.clone());
         table

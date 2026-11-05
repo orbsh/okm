@@ -18,8 +18,8 @@
 )]
 
 use okm_core::{
-    Collection, Document, DocumentEncode, KeyEncode, ReduceCodec, Ref, TestStore,
-    VirtualStorage, Vocab,
+    Collection, Document, DocumentEncode, KeyEncode, ReduceCodec, Ref, TestStore, VirtualStorage,
+    Vocab,
 };
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]

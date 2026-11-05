@@ -658,7 +658,10 @@ fn emit_index_prefix_probe(
         let ty: syn::Type = syn::parse_str(&field.ty_str).map_err(|_| {
             syn::Error::new(
                 fname.span(),
-                format!("ok_index prefix builder: cannot name type `{}`", field.ty_str),
+                format!(
+                    "ok_index prefix builder: cannot name type `{}`",
+                    field.ty_str
+                ),
             )
         })?;
         let enc_val = value_encoder(&field.enc, fname);
