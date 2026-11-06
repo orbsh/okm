@@ -9,8 +9,11 @@
 
 #![allow(clippy::unwrap_used, clippy::panic)]
 
-use okm_core::engine::storage::{VirtualStorage, prefix_end};
-use okm_core::{Collection, Document, DocumentEncode, KeyEncode, KvIndex, TestStore};
+use okm_core::engine::storage::{Batch, VirtualStorage, prefix_end};
+use okm_core::schema::CollectionSchema;
+use okm_core::{
+    Collection, Document, DocumentEncode, KeyEncode, KvIndex, TestStore, model::faces::FaceKind,
+};
 
 #[derive(KeyEncode, Clone, PartialEq, Eq, Debug)]
 pub struct MembershipKey {
@@ -161,4 +164,64 @@ fn purge_and_rebuild_maintain_the_face() {
         .finish();
     let hits = col.scan::<__OkmLead_Membership_by_member>(&probe).unwrap();
     assert_eq!(hits.len(), 2, "member 11 is still in both channels");
+}
+
+/// Primary-table keys, the same way the collection finds them.
+fn primary_keys(col: &Collection<TestStore, MembershipKey, Membership>) -> Vec<Vec<u8>> {
+    let prefix = [0u8, 210u8, 0x00, 0x00];
+    let end = prefix_end(&prefix);
+    col.store()
+        .scan_range_iter(&prefix, end.as_deref())
+        .map(|item| item.unwrap().0)
+        .collect()
+}
+
+#[test]
+fn the_export_says_which_kind_a_face_is() {
+    let schema = CollectionSchema::of::<MembershipKey, Membership>();
+    assert_eq!(schema.indexes.len(), 2);
+    assert_eq!(schema.indexes[0].kind(), Some(FaceKind::Lead));
+    assert_eq!(schema.indexes[1].kind(), Some(FaceKind::Lead));
+    assert_eq!(
+        schema.slots.declared_lead_base, 0x5001,
+        "the export names the family base, so a host never hardcodes it"
+    );
+    assert_eq!(
+        schema.indexes[0].fields,
+        vec!["member".to_string()],
+        "a lead face's `fields` are KEY fields — the kind is what says so"
+    );
+}
+
+#[test]
+fn the_key_only_half_is_the_same_half_the_write_path_uses() {
+    let ns = [0u8, 210u8];
+    let k = key(1, 10);
+    let key_only = Membership::key_entries(&k, &ns);
+    assert_eq!(key_only.len(), 2, "both declared faces are payload-free");
+
+    let full = Membership::index_entries(&k, &row("a"), &ns);
+    assert_eq!(
+        full, key_only,
+        "with no payload face declared, index_entries IS key_entries — one source"
+    );
+}
+
+#[test]
+fn a_lead_only_collection_rebuilds_without_decoding_a_row() {
+    let col = seeded();
+    // Overwrite every stored row with bytes that are not a payload: a decoder
+    // reading `[version][hot_len u16]` would take hot_len = 0xffff and slice out
+    // of bounds. A lead face never looks, so the rebuild must still work.
+    let mut batch = Batch::default();
+    for k in primary_keys(&col) {
+        batch.put(k, vec![0xffu8; 5]);
+    }
+    col.store().commit_batch(batch).unwrap();
+
+    let report = col.rebuild_faces(64).unwrap();
+    assert_eq!(report.documents, 4, "the rows are found by key alone");
+    assert_eq!(report.entries_written, 8, "two lead faces per row");
+    assert_eq!(entries(&col, 0x5001).len(), 4);
+    assert_eq!(entries(&col, 0x5002).len(), 4);
 }

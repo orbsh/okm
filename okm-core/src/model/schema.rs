@@ -127,8 +127,13 @@ pub struct CollectionSchema {
     pub faces: Vec<u8>,
 }
 
-/// One declared index face, as the export carries it (ADR-0048): the same six
-/// facts the compile-time fingerprint is taken over.
+/// One declared face, as the export carries it (ADR-0048): the same six facts
+/// the compile-time fingerprint is taken over.
+///
+/// Indexes and lead faces share this shape deliberately — they are both "a
+/// declared face over this collection", and the difference (payload segment vs
+/// identity segment, ADR-0054) is already in `slot`. [`IndexSchema::kind`] reads
+/// it back out instead of a seventh field repeating it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IndexSchema {
     pub name: String,
@@ -137,6 +142,17 @@ pub struct IndexSchema {
     pub includes: Vec<String>,
     pub func: String,
     pub deprecated: bool,
+}
+
+impl IndexSchema {
+    /// Which declaration kind owns this face — read off the slot family, never
+    /// stored beside it (ADR-0054).
+    ///
+    /// Matters to a reader because `fields` means different things per kind: a
+    /// payload field to encode for an `Index`, a key field to slice for a `Lead`.
+    pub fn kind(&self) -> Option<crate::model::faces::FaceKind> {
+        crate::model::faces::FaceKind::of(self.slot)
+    }
 }
 
 /// `#[ok_len(N)]` lookup over a document's FIELD_CONTRACTS table.
@@ -189,6 +205,9 @@ pub struct SlotMap {
     pub predicate_vocab_name: u16,
     pub declared_index_base: u16,
     pub declared_reduce_base: u16,
+    /// `0x5nnn` base: lead faces count from here (ADR-0054), in their own family
+    /// so a declaration cannot take a number an index would have used.
+    pub declared_lead_base: u16,
 }
 
 impl CollectionSchema {
@@ -259,6 +278,7 @@ impl CollectionSchema {
                 predicate_vocab_name: crate::model::index::PREDICATE_VOCAB_NAME_SLOT,
                 declared_index_base: crate::model::index::DECLARED_SLOT_BASE,
                 declared_reduce_base: crate::model::index::REDUCE_SLOT_BASE,
+                declared_lead_base: crate::model::index::LEAD_SLOT_BASE,
             },
             indexes: <R as Document>::INDEX_DECLS
                 .iter()
@@ -407,7 +427,7 @@ mod serde_impls {
     impl Serialize for SlotMap {
         fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
             use serde::ser::SerializeStruct;
-            let mut st = s.serialize_struct("SlotMap", 9)?;
+            let mut st = s.serialize_struct("SlotMap", 10)?;
             st.serialize_field("primary", &self.primary)?;
             st.serialize_field("dynamic", &self.dynamic)?;
             st.serialize_field("field_vocab_id", &self.field_vocab_id)?;
@@ -416,6 +436,7 @@ mod serde_impls {
             st.serialize_field("predicate_vocab_name", &self.predicate_vocab_name)?;
             st.serialize_field("declared_index_base", &self.declared_index_base)?;
             st.serialize_field("declared_reduce_base", &self.declared_reduce_base)?;
+            st.serialize_field("declared_lead_base", &self.declared_lead_base)?;
             st.end()
         }
     }
@@ -441,6 +462,13 @@ mod serde_impls {
                 predicate_vocab_name: u16,
                 declared_index_base: u16,
                 declared_reduce_base: u16,
+                /// Exported before lead faces existed: the family base is fixed
+                /// by ADR-0030, so defaulting it is exact, not a guess.
+                #[serde(default = "default_lead_base")]
+                declared_lead_base: u16,
+            }
+            fn default_lead_base() -> u16 {
+                crate::model::index::LEAD_SLOT_BASE
             }
             fn default_predicate_vocab_id() -> u16 {
                 crate::model::index::PREDICATE_VOCAB_ID_SLOT
@@ -458,6 +486,7 @@ mod serde_impls {
                 predicate_vocab_name: r.predicate_vocab_name,
                 declared_index_base: r.declared_index_base,
                 declared_reduce_base: r.declared_reduce_base,
+                declared_lead_base: r.declared_lead_base,
             })
         }
     }

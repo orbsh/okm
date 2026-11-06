@@ -217,6 +217,19 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         // Phase 2 — derive from the rows. `scan_range_iter` is the lazy face of
         // the engine's own iterator, so this holds one chunk of ops, not one
         // table of keys.
+        //
+        // Whether a row has to be DECODED is a property of the declaration, not
+        // of the run (ADR-0054): a payload face reads fields out of the value, a
+        // lead face reads identity out of the key. A collection that declares no
+        // payload face therefore repairs its faces without touching a single
+        // payload byte — the whole point of an identity-sourced segment.
+        let needs_payload = <R as Document>::INDEX_DECLS.iter().any(|decl| {
+            !decl.deprecated
+                && matches!(
+                    crate::model::faces::FaceKind::of(decl.slot),
+                    Some(crate::model::faces::FaceKind::Index)
+                )
+        });
         let mut prefix = header.clone();
         crate::model::index::write_slot(&mut prefix, crate::model::index::PRIMARY_SLOT);
         let end = prefix_end(&prefix);
@@ -233,8 +246,13 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
                 });
             }
             let decoded = K::decode(&suffix[suffix.len() - K::KEY_LEN..]);
-            let document = R::decode_payload(&value);
-            for (ek, ev) in R::index_entries(&decoded, &document, &header) {
+            let entries = if needs_payload {
+                let document = R::decode_payload(&value);
+                R::index_entries(&decoded, &document, &header)
+            } else {
+                R::key_entries(&decoded, &header)
+            };
+            for (ek, ev) in entries {
                 batch.put(ek, ev);
                 report.entries_written += 1;
             }

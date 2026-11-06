@@ -1,7 +1,7 @@
 # ADR-0054: A lead face orders by identity, not by a copy
 
 Date: 2026-11-06
-Status: Accepted (implemented: declaration parsing, slot family, delegating `KvIndex` impl, typed probe builder with the const check, `rebuild_faces` / `prune_deprecated_slots` coverage, tests)
+Status: Accepted (implemented: declaration parsing, slot family, delegating `KvIndex` impl, typed probe builder with the const check, payload-free rebuild, `prune_deprecated_slots` coverage, export surface, tests)
 
 ## Context
 
@@ -25,7 +25,7 @@ struct MembershipKey { channel: u64, member: Uuid7 }
 struct Membership { nickname: String, since_ms: u64 }
 ```
 
-**2. The entry is the key, re-slotted.** Segment = `KeyEncode::encode_prefix_named(buf, FIELDS)`, width = `KeyEncode::prefix_width(FIELDS)`, tail = the full primary key (or `key(…)`'s truncation, exactly as in `ok_index`). The generated `KvIndex` impl is therefore three lines of delegation and never touches `Document`:
+**2. The entry is the key, re-slotted.** Segment = `KeyEncode::encode_field_named(key, buf, FIELDS)` — the names in the DECLARATION's order, which need not be the key's, because a lead face orders by a *permutation* of identity (`fields(member, channel)` is legal and leads with member). Width = `KeyEncode::field_width_named(FIELDS)`, tail = the full primary key (or `key(…)`'s truncation, exactly as in `ok_index`). The generated `KvIndex` impl is pure delegation to the key's own encoder and never touches `Document`:
 
 ```text
 [ns 2B][slot 2B][member 16B][channel 8B][member 16B]      44 B, tail = whole key
@@ -42,6 +42,10 @@ struct Membership { nickname: String, since_ms: u64 }
 `ok_index` keeps its expansion-time `syn::Error` on the `fields(...)` token; the two families validate on different clocks, and that is the price of the split, accepted deliberately. `okm-core/tests/compilefail/lead_not_a_key_field.rs` locks the declaration-side failure.
 
 **5. Faces stay fingerprints.** Lead declarations enter `INDEX_DECLS` / `FACES` in the same `IndexDecl` shape (`fields` = key fields, `includes`/`func` empty); the slot family is the discriminator. A store written under an older declaration is therefore `Stale`, not silently empty (ADR-0048). The changelog needs no edit: its filter is a positive allow-list of truth-bearing faces, so a new derived family is excluded by construction.
+
+**6. A lead face is derivable from the key alone, and says so in two places.** `KvIndex::entry_pairs_key_only(ns, key)` is the payload-free half: empty by default (a payload index cannot answer without its document, and its `admits` predicate may read it too), overridden by the lead impl, which shares `entry_key_with` with the document-shaped path so the two byte layouts cannot drift. On top of it the derive splits `Document::key_entries` (lead calls) out of `index_entries` (which now starts from `key_entries`), and `rebuild_faces` asks the DECLARATION whether any current face reads the payload: a collection whose faces are all lead faces repairs them without decoding a single row. That is the operational payoff of an identity-sourced segment — the repair path never becomes a function of payload shape.
+
+**7. The export says what a face is, without repeating itself.** `IndexSchema` keeps its six facts; `IndexSchema::kind()` reads the family off the slot (`FaceKind::of`), so a host knows whether `fields` names payload fields or key fields and no seventh column can disagree with the number. `SlotMap` gains `declared_lead_base` (`0x5001`), the one number a host cannot derive from the face list.
 
 ## Rejected
 

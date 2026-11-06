@@ -35,6 +35,36 @@ pub struct IndexDecl {
     pub deprecated: bool,
 }
 
+/// Which declaration kind owns a face slot (ADR-0054).
+///
+/// The slot family IS the discriminator: a face's number answers what it is, so
+/// neither the export nor a host has to carry a second copy of that fact and the
+/// two can never disagree. What the kinds differ in is where the data segment
+/// comes from — the PAYLOAD for an index (ADR-0052), the KEY's own encoding for a
+/// lead face — which is also why the same string in `fields` means "a payload
+/// field" in one and "a key field" in the other.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FaceKind {
+    /// `0x3nnn`: a declared index, payload segment.
+    Index,
+    /// `0x5nnn`: a lead face, identity segment.
+    Lead,
+}
+
+impl FaceKind {
+    /// The kind a slot belongs to. Slots outside the declared families (the
+    /// primary table, the dynamic segment, a graph face, a reduce) are not
+    /// declarations and answer `None` — guessing `Index` there would hide a
+    /// caller's arithmetic bug.
+    pub const fn of(slot: u16) -> Option<FaceKind> {
+        match slot & 0xf000 {
+            x if x == crate::model::index::DECLARED_SLOT_BASE & 0xf000 => Some(FaceKind::Index),
+            x if x == crate::model::index::LEAD_SLOT_BASE & 0xf000 => Some(FaceKind::Lead),
+            _ => None,
+        }
+    }
+}
+
 /// Bytes in a fingerprint (two independent 64-bit lanes).
 /// What one [`Collection::rebuild_faces`](crate::Collection::rebuild_faces) run
 /// did, in the units an operator watching a large table cares about: how many
