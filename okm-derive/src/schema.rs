@@ -1136,6 +1136,12 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> syn::Result<Vec<FieldS
                 ))
             }
         };
+        // Hygiene (ADR-0053): this block runs inside a decoder that binds one
+        // local per declared field, so every name in it must be a
+        // definition-site name — otherwise a payload field called `b` or
+        // `offset` shadows the cursor it reads. One re-span here instead of
+        // wrapping each declaration below in `quote_spanned!`.
+        let dec = crate::hyg::mix(dec);
         fs.push(FieldSchema {
             ty_str: ty_str.clone(),
             ident: id,

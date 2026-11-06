@@ -58,7 +58,7 @@ fn declared_slot(base: u16, n: usize, what: &str, span: proc_macro2::Span) -> sy
     }
     Ok(base + n as u16)
 }
-use quote::{format_ident, quote};
+use quote::{format_ident, quote, quote_spanned};
 use syn::DeriveInput;
 
 use crate::schema::{parse_schema, value_encoder, DocumentSchema, IdxDecl};
@@ -272,7 +272,11 @@ fn emit_payload_decode(schema: &DocumentSchema) -> TS2 {
         let dec = &f.dec;
         let dflt = &f.default_expr;
         let w = &f.width;
-        hot_dec.extend(quote! {
+        // Hygiene (ADR-0053): these arms live in the same scope as the
+        // `let <field> = …` bindings, so the template's own names are
+        // definition-site; `#id` / `#dflt` are interpolated and keep their
+        // call-site spans.
+        hot_dec.extend(quote_spanned! { crate::hyg::mixed()=>
             let #id = if offset + #w < hot_end + 1 {
                 #dec
             } else {
@@ -294,7 +298,7 @@ fn emit_payload_decode(schema: &DocumentSchema) -> TS2 {
         let id = &f.ident;
         let dec = &f.dec;
         let dflt = &f.default_expr;
-        cold_dec.extend(quote! {
+        cold_dec.extend(quote_spanned! { crate::hyg::mixed()=>
             let #id = if cold_pos < cold_end && b[cold_pos] == #tag {
                 cold_pos += 1;
                 let (len, len_n) = ::okm_core::take_len(&b[cold_pos..])
@@ -312,7 +316,7 @@ fn emit_payload_decode(schema: &DocumentSchema) -> TS2 {
             };
         });
     }
-    quote! {
+    quote_spanned! { crate::hyg::mixed()=>
         let mut offset = 0usize;
         let ver = b[0];
         assert!(
@@ -379,9 +383,11 @@ fn emit_covered(schema: &DocumentSchema, idx: &IdxDecl) -> syn::Result<(TS2, TS2
         })?;
         decls.push(quote! { pub #id: #ty });
         if f.hot {
-            stmts.push(quote! { let #id = { #dec }; });
+            stmts.push(quote_spanned! { crate::hyg::mixed()=> let #id = { #dec }; });
         } else {
-            stmts.push(quote! { let len = b.len() - offset; let #id = { #dec }; });
+            stmts.push(quote_spanned! { crate::hyg::mixed()=>
+                let len = b.len() - offset; let #id = { #dec };
+            });
         }
         names.push(id.clone());
     }
@@ -394,7 +400,7 @@ fn emit_covered(schema: &DocumentSchema, idx: &IdxDecl) -> syn::Result<(TS2, TS2
             #(#decls),*
         }
     };
-    let body = quote! {
+    let body = quote_spanned! { crate::hyg::mixed()=>
         let mut offset = 0usize;
         #(#stmts)*
         assert!(
@@ -417,6 +423,9 @@ fn emit_covered(schema: &DocumentSchema, idx: &IdxDecl) -> syn::Result<(TS2, TS2
 fn emit_index_structs(schema: &DocumentSchema) -> syn::Result<TS2> {
     let row_name = &schema.row_name;
     let key_ty = &schema.key_ty;
+    // Hygiene (ADR-0053): the covered decoder binds one local per `includes`
+    // field, so its byte-slice parameter is a definition-site name too.
+    let covered_b = crate::hyg::ident("b");
 
     let mut index_out = quote! {};
     for (n, idx) in schema.indexes.iter().enumerate() {
@@ -580,7 +589,7 @@ fn emit_index_structs(schema: &DocumentSchema) -> syn::Result<TS2> {
                 type Covered = #covered_ty;
 
                 #[allow(clippy::ptr_arg, unused_variables)] // &mut Vec is the encoder-API shape; `len` is unused by some cold decoders
-                fn decode_covered(b: &[u8]) -> Self::Covered {
+                fn decode_covered(#covered_b: &[u8]) -> Self::Covered {
                     #covered_body
                 }
 
@@ -1121,6 +1130,10 @@ fn emit_subscribe(schema: &DocumentSchema) -> syn::Result<(TS2, TS2)> {
 pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> syn::Result<TS2> {
     let row_name = &schema.row_name;
     let key_ty = &schema.key_ty;
+    // Hygiene (ADR-0053): the decoder's byte-slice parameter is a generated
+    // local like every other name in that body, so a payload field called `b`
+    // cannot shadow it.
+    let decode_b = crate::hyg::ident("b");
     // #[ok_ns(N)] → the document's table ns prefix bytes (big-endian u16,
     // matching the raw `[ns 2B]` header). Absent = default empty.
     // #[ok_name("...")] → the table's NAME: what a table is called outside the
@@ -1861,7 +1874,7 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> syn::Result<TS2> {
             // read was not written by this SDK, and a half-decoded document would
             // corrupt the derived state written back from it.
             #[allow(clippy::expect_used, clippy::unwrap_used)]
-            fn decode_payload(b: &[u8]) -> Self {
+            fn decode_payload(#decode_b: &[u8]) -> Self {
                 #decode_body
                 Self { #(#names),* }
             }

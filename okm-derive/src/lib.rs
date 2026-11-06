@@ -20,6 +20,7 @@
 
 mod document_encode;
 mod graph_encode;
+mod hyg;
 mod key_encode;
 mod schema;
 mod storage_encode;

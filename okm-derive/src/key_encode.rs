@@ -8,7 +8,7 @@
 //! compile-time constant sum.
 
 use proc_macro2::TokenStream as TS2;
-use quote::{format_ident, quote};
+use quote::{format_ident, quote, quote_spanned};
 use syn::{Data, DeriveInput, Fields};
 
 /// Identity-side field encoder: same shape as the payload-side triple in
@@ -72,7 +72,23 @@ pub fn expand(input: DeriveInput) -> syn::Result<TS2> {
     let names: Vec<_> = fs.iter().map(|f| &f.ident).collect();
     let name_strs: Vec<_> = fs.iter().map(|f| f.ident.to_string()).collect();
     let encs: Vec<_> = fs.iter().map(|f| &f.enc).collect();
-    let decs: Vec<_> = fs.iter().map(|f| &f.dec).collect();
+    // Hygiene (ADR-0053): `decode` binds one local per field, so the body's
+    // own names (the byte-slice parameter, the cursor) are definition-site
+    // while the field idents stay call-site — a field called `b` can neither
+    // shadow nor be shadowed by them.
+    let decode_b = crate::hyg::ident("b");
+    let decs: Vec<TS2> = fs
+        .iter()
+        .map(|f| {
+            let id = &f.ident;
+            let dec = &f.dec;
+            quote_spanned! { crate::hyg::mixed()=> let #id = { #dec }; }
+        })
+        .collect();
+    let decode_body = quote_spanned! { crate::hyg::mixed()=>
+        let mut offset = 0usize;
+        #(#decs)*
+    };
     let widths: Vec<_> = fs.iter().map(|f| &f.width).collect();
 
     // encode_prefix_named / prefix_width: per-name lookup instead of
@@ -178,9 +194,8 @@ pub fn expand(input: DeriveInput) -> syn::Result<TS2> {
             fn encode_into(&self, buf: &mut Vec<u8>) {
                 #(#encs)*
             }
-            fn decode(b: &[u8]) -> Self {
-                let mut offset = 0usize;
-                #(#decs)*
+            fn decode(#decode_b: &[u8]) -> Self {
+                #decode_body
                 Self { #(#names),* }
             }
             const FIELDS: &'static [::okm_core::FieldDesc] = #desc;
@@ -241,28 +256,28 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> syn::Result<Vec<Field>
         let (enc, dec, width, enc_val, kind) = match ty_str.as_str() {
             "u64" => (
                 quote! { buf.extend_from_slice(&self.#id.to_be_bytes()); },
-                quote! { let #id = u64::from_be_bytes(b[offset..offset+8].try_into().unwrap()); offset += 8; },
+                quote! {{ let v = u64::from_be_bytes(b[offset..offset+8].try_into().unwrap()); offset += 8; v }},
                 quote! { 8 },
                 quote! { v.to_be_bytes().to_vec() },
                 Some(quote! { ::okm_core::FieldType::U64 }),
             ),
             "u32" => (
                 quote! { buf.extend_from_slice(&self.#id.to_be_bytes()); },
-                quote! { let #id = u32::from_be_bytes(b[offset..offset+4].try_into().unwrap()); offset += 4; },
+                quote! {{ let v = u32::from_be_bytes(b[offset..offset+4].try_into().unwrap()); offset += 4; v }},
                 quote! { 4 },
                 quote! { v.to_be_bytes().to_vec() },
                 Some(quote! { ::okm_core::FieldType::U32 }),
             ),
             "u16" => (
                 quote! { buf.extend_from_slice(&self.#id.to_be_bytes()); },
-                quote! { let #id = u16::from_be_bytes(b[offset..offset+2].try_into().unwrap()); offset += 2; },
+                quote! {{ let v = u16::from_be_bytes(b[offset..offset+2].try_into().unwrap()); offset += 2; v }},
                 quote! { 2 },
                 quote! { v.to_be_bytes().to_vec() },
                 Some(quote! { ::okm_core::FieldType::U16 }),
             ),
             "u8" => (
                 quote! { buf.push(self.#id); },
-                quote! { let #id = b[offset]; offset += 1; },
+                quote! {{ let v = b[offset]; offset += 1; v }},
                 quote! { 1 },
                 quote! { vec![v] },
                 Some(quote! { ::okm_core::FieldType::U8 }),
@@ -301,7 +316,7 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> syn::Result<Vec<Field>
                         let img = self.#id.wire16();
                         buf.extend_from_slice(&img[#off_lit..]);
                     }},
-                    quote! { let #id = <::okm_core::Vocab<#id_ty>>::from_wire(&b[offset..offset+#w_lit]); offset += #w_lit; },
+                    quote! {{ let v = <::okm_core::Vocab<#id_ty>>::from_wire(&b[offset..offset+#w_lit]); offset += #w_lit; v }},
                     quote! { #w_lit },
                     quote! {{ let img = v.wire16(); img[#off_lit..].to_vec() }},
                     Some(quote! { ::okm_core::FieldType::Vocab(0) }),
@@ -317,12 +332,12 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> syn::Result<Vec<Field>
                 };
                 (
                     quote! { buf.extend_from_slice(self.#id.as_bytes()); },
-                    quote! {
-                        let mut #id = [0u8; 16];
-                        #id.copy_from_slice(&b[offset..offset + 16]);
+                    quote! {{
+                        let mut v = [0u8; 16];
+                        v.copy_from_slice(&b[offset..offset + 16]);
                         offset += 16;
-                        let #id = <#ty as ::core::convert::From<[u8; 16]>>::from(#id);
-                    },
+                        <#ty as ::core::convert::From<[u8; 16]>>::from(v)
+                    }},
                     quote! { 16usize },
                     quote! { v.as_bytes().to_vec() },
                     Some(quote! { #kind_ty }),
@@ -339,11 +354,12 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> syn::Result<Vec<Field>
                 let nlit = proc_macro2::Literal::usize_unsuffixed(n);
                 (
                     quote! { buf.extend_from_slice(&self.#id); },
-                    quote! {
-                        let mut #id = [0u8; #nlit];
-                        #id.copy_from_slice(&b[offset..offset+#nlit]);
+                    quote! {{
+                        let mut v = [0u8; #nlit];
+                        v.copy_from_slice(&b[offset..offset+#nlit]);
                         offset += #nlit;
-                    },
+                        v
+                    }},
                     quote! { #nlit },
                     quote! { v.to_vec() },
                     Some(quote! { ::okm_core::FieldType::FixedBytes }),
@@ -387,6 +403,9 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> syn::Result<Vec<Field>
                 ))
             }
         };
+        // Hygiene (ADR-0053): the dec block runs in the decoder that binds a
+        // local per field, so every name in it is definition-site.
+        let dec = crate::hyg::mix(dec);
         fs.push(Field {
             ident: id,
             ty: ty.clone(),
