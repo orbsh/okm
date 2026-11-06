@@ -476,12 +476,17 @@ fn emit_index_structs(schema: &DocumentSchema) -> syn::Result<TS2> {
                     if !Self::admits(document) {
                         return Vec::new();
                     }
-                    // One (key, value) pair per produced value; every
-                    // entry shares the same includes value. Key =
-                    // [ns 2B][slot][value][key prefix].
-                    let __okm_fv = #fpath(document);
-                    let __okm_vals = ::okm_core::IndexFuncValues::func_values(__okm_fv);
-                    let mut __okm_out = Vec::with_capacity(__okm_vals.len());
+                    // One (key, value) pair per produced value, and the
+                    // contract is `IntoIterator` (ADR-0055): a single value
+                    // arrives as a one-element array, a multi-value result as
+                    // a Vec/slice/iterator — the writer does not distinguish
+                    // them. The value is computed once and cloned, but it is
+                    // always empty: `func` and `includes` are mutually
+                    // exclusive, so a function index has no covered segment
+                    // (Covered = ()). Key = [ns 2B][slot][value][key prefix].
+                    let __okm_vals = ::okm_core::result_segments(#fpath(document));
+                    let mut __okm_out =
+                        Vec::with_capacity(::std::iter::Iterator::size_hint(&__okm_vals).0);
                     let __okm_value = Self::entry_value(key, document);
                     for __okm_seg in __okm_vals {
                         let mut __okm_k = Vec::with_capacity(
@@ -548,14 +553,13 @@ fn emit_index_structs(schema: &DocumentSchema) -> syn::Result<TS2> {
                 )
             })?;
             quote! {{
-                // Function index: result(s) → index-segment encoding. A
-                // single value encodes once; a Vec encodes its first value
-                // here (encode_named only feeds scan_covered's sort
-                // segment) — the multi-entry fan-out lives in
-                // entry_pairs. The same path is what the query side calls
-                // on its probe value.
-                let __okm_fv = #fpath(document);
-                match ::okm_core::IndexFuncValues::func_values(__okm_fv).pop() {
+                // Function index: result(s) → index-segment encoding. One
+                // segment is written here — the FIRST the function yields
+                // (encode_named only feeds scan_covered's sort segment; the
+                // per-value fan-out lives in entry_pairs, which writes every
+                // value). The same path is what the query side calls on its
+                // probe value.
+                match ::okm_core::result_segments(#fpath(document)).next() {
                     Some(__okm_seg) => buf.extend_from_slice(&__okm_seg),
                     None => {}
                 }

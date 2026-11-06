@@ -14,8 +14,8 @@ struct BadFuncFields {
     name: String,
 }
 
-fn lower(_r: &BadFuncFields) -> String {
-    String::new()
+fn lower(_r: &BadFuncFields) -> [String; 1] {
+    [String::new()]
 }
 
 fn main() {}

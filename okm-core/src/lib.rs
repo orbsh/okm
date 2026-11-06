@@ -81,7 +81,7 @@ pub use model::document::Collection;
 pub use model::field::{FieldDesc, FieldType};
 pub use model::graph::{EdgeBody, EdgeHead, EdgeKey, Graph, GraphEncode, NodeRef, NodeSet};
 pub use model::index::{
-    Document, IndexFuncResult, IndexFuncValues, KvIndex, LEAD_SLOT_BASE, META_SLOT, PRIMARY_SLOT,
+    Document, IndexFuncResult, KvIndex, LEAD_SLOT_BASE, META_SLOT, PRIMARY_SLOT, result_segments,
     scan_index, scan_index_exact, slot_len, write_slot,
 };
 pub use model::key::{
