@@ -13,7 +13,7 @@ lives in [MODELING](MODELING.md); design decisions live in
 Every feature in OKM crosses two layers, and the split is deliberate:
 
 **Layer 1 — derive expansion (hot path).** The derive macros
-(`KeyEncode`, `DocumentEncode`, `JunctionEncode`) expand a struct
+(`KeyEncode`, `DocumentEncode`, `GraphEncode`) expand a struct
 declaration into *direct byte-manipulation code* —
 `extend_from_slice(&self.field.to_be_bytes())` sequences with no
 intermediate representation, no runtime schema walk, no reflection.
@@ -97,17 +97,20 @@ Every key shares one header discipline:
   vocabulary directions 0x02/0x03, the predicate vocabulary 0x04/0x05, the
   graph's four faces 0x06–0x09, the vector index snapshot 0x0A).
   Anything else → two bytes: a family number in the high nibble plus a
-  12-bit counter (declared indexes 0x1nnn, reduces 0x2nnn, junctions
-  0x3nnn). Delimiting on the byte's own bit, not on a table, is what
+  12-bit counter (declared indexes 0x3nnn, reduces 0x4nnn, lead faces
+  0x5nnn). Delimiting on the byte's own bit, not on a table, is what
   keeps a family-prefix scan exact (ADR-0030; it supersedes ADR-0016's
   segment table).
 - **identity tail**: always the primary-key encoding (full or a
   declared truncation), so every derived entry is reversible to its
   source document.
 
-Junctions are the one cross-collection entry kind: one one-way entry
-per endpoint ns (two-ns residency, ADR-0015), direction carried by
-which ns hosts the entry, a discriminator in the slot's low bits.
+Lead faces are the one entry kind whose segment is not the payload:
+`0x5nnn`, sliced out of the KEY's own encoding (ADR-0054), so an
+identity ordering cannot drift from the key it orders and is rebuilt
+without a decode. A many-to-many relation needs no separate carrier —
+it is a row keyed by the pair, with one face per reading direction
+(ADR-0051).
 
 ## The wire discipline
 
