@@ -98,9 +98,7 @@ edge collection's own ns.
                            (plus the allocation cursor at the bare prefix)
 0x3nnn  declared indexes   counter = declaration order (from 1 → 4095 per collection)
 0x4nnn  reduces            counter = declaration order, independent quota (4095)
-0x5nnn  retired            unassigned, never reissued (ADR-0051 retired the junction family:
-                           a many-to-many relation is a collection). An old database's 0x5nnn
-                           keys must never be readable as something else.
+0x5nnn  lead faces         counter = declaration order (from 1 → 4095 per collection, ADR-0054)
 segments 0x6–0x0F          free (10 segments)
 ```
 

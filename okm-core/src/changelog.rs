@@ -19,8 +19,8 @@
 //! (`0x02`/`0x03`), the two predicate faces (`0x04`/`0x05`), and both directions
 //! of every declared categorical vocabulary (families `0x1`/`0x2`, ADR-0032:
 //! the payload stores ids, so the labels are truth, not decoration). The DERIVED
-//! half is dropped — declared indexes (`0x3nnn`), reduces (`0x4nnn`)
-//! (`0x5nnn`), the graph's traversal faces (`0x06`–`0x09`, rebuilt from the
+//! half is dropped — declared indexes (`0x3nnn`), reduces (`0x4nnn`), lead
+//! faces (`0x5nnn`, ADR-0054), the graph's traversal faces (`0x06`–`0x09`, rebuilt from the
 //! primary rows by `Graph::reindex`), the vector snapshot (`0x0A`) and the table
 //! meta row (`0x0F`) — as is any bare-face key (a face's singleton, e.g. a
 //! vocabulary's allocation cursor).

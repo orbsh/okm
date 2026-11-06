@@ -1,0 +1,5 @@
+error[E0080]: evaluation panicked: ok_lead: a declared field is not a field of this key (ADR-0054)
+  --> tests/compilefail/lead_not_a_key_field.rs:11:10
+   |
+11 | #[derive(DocumentEncode, Clone, PartialEq, Debug)]
+   |          ^^^^^^^^^^^^^^ evaluation of `_` failed here

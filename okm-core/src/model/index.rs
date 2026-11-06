@@ -45,10 +45,9 @@ pub mod segment {
     pub const INDEX: u16 = 0x3;
     /// Declared reduces (independent declaration-order counter).
     pub const REDUCE: u16 = 0x4;
-    /// Retired (ADR-0051): a relationship is a collection, so it needs no segment of its own.
-    /// The number stays unassigned rather than reused — an old database's `0x5nnn` keys must
-    /// never be readable as something else.
-    pub const RETIRED_0X5: u16 = 0x5;
+    /// Lead faces (ADR-0054): the entry's sort segment comes from the KEY's own encoding,
+    /// so the face orders a collection by identity rather than by a payload copy of it.
+    pub const LEAD: u16 = 0x5;
 }
 
 /// Assemble a counting family's slot from its family number and counter.
@@ -138,6 +137,9 @@ pub const DECLARED_SLOT_BASE: Slot = slot(segment::INDEX, 1);
 /// Slot base for `#[ok_reduce]` declarations — its own counter, 4095 per
 /// collection.
 pub const REDUCE_SLOT_BASE: Slot = slot(segment::REDUCE, 1);
+
+/// First slot of the lead-face family (ADR-0054): declaration order, append-only.
+pub const LEAD_SLOT_BASE: Slot = slot(segment::LEAD, 1);
 /// Encoded form of a function-index result (ADR-0005, function-index
 /// regime): what the declared function returns must land in the index
 /// entry's computed-field segment in a well-defined sort order.

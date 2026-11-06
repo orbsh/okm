@@ -1279,6 +1279,10 @@ pub(crate) struct DocumentSchema {
     pub fields: Vec<FieldSchema>,
     /// Index declarations, attribute order (slot = position + 1).
     pub indexes: Vec<IdxDecl>,
+    /// Lead-face declarations, attribute order, own family and own counter
+    /// (ADR-0054). Same declaration body as an index; the segment comes from
+    /// the KEY's own encoding, so there is no payload half.
+    pub leads: Vec<IdxDecl>,
     /// Reduce declarations, attribute order (slots continue after
     /// the last index — same append-only counter, never reused).
     pub reduces: Vec<ReduceDecl>,
@@ -1471,6 +1475,44 @@ pub(crate) fn parse_schema_with_key(
         }
     }
 
+    // #[ok_lead(...)]: key-order faces (ADR-0054), own family (`0x5nnn`) and
+    // own counter. The body is an index declaration's minus the payload half:
+    // `fields` names KEY fields and the entry's segment is sliced out of the
+    // key's own encoding, so nothing here covers, computes or predicates.
+    let mut lead_decls: Vec<IdxDecl> = Vec::new();
+    for attr in input.attrs.iter().filter(|a| a.path().is_ident("ok_lead")) {
+        for d in parse_index_attr(attr)? {
+            if !d.includes.is_empty() {
+                return Err(syn::Error::new(
+                    d.ident.span(),
+                    format!(
+                        "ok_lead[{}]: `includes` is a payload dimension — a lead face's entry IS the key's own bytes, there is nothing to cover",
+                        d.ident
+                    ),
+                ));
+            }
+            if !d.func.is_empty() {
+                return Err(syn::Error::new(
+                    d.ident.span(),
+                    format!(
+                        "ok_lead[{}]: `func` is a payload dimension — a lead face orders by identity and computes nothing",
+                        d.ident
+                    ),
+                ));
+            }
+            if !d.filter.is_empty() {
+                return Err(syn::Error::new(
+                    d.ident.span(),
+                    format!(
+                        "ok_lead[{}]: `where` is a payload dimension — a lead face is a function of the KEY, so a predicate would have no document to judge",
+                        d.ident
+                    ),
+                ));
+            }
+            lead_decls.push(d);
+        }
+    }
+
     // #[ok_reduce(name { group(a, b) })]: slots CONTINUE the index
     // counter (append-only, never reused) — slot = last index slot + 1 + n.
     let mut agg_decls: Vec<ReduceDecl> = Vec::new();
@@ -1524,6 +1566,7 @@ pub(crate) fn parse_schema_with_key(
         layout_version,
         fields: fs,
         indexes: idx_decls,
+        leads: lead_decls,
         reduces: agg_decls,
         subscribe: sub_decl,
     })

@@ -93,6 +93,7 @@ pub fn derive_key_encode(input: TokenStream) -> TokenStream {
         ok_name,
         ok_partition,
         ok_index,
+        ok_lead,
         ok_reduce,
         ok_offset,
         ok_layout,

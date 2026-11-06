@@ -93,8 +93,8 @@ whose instances are enumerated by declaration order or by a discriminator:
 0x3nnn  declared index          [ns][0x3nnn][index fields][pkey prefix]  nnn = declaration order
 0x4nnn  reduce                  [ns][0x4nnn][group seg]         nnn = declaration order,
                                                                 independent counter
-0x5nnn  (retired, ADR-0051)     unassigned — an old database's keys must never be readable
-                                as something else; nothing allocates from it
+0x5nnn  lead face               [ns][0x5nnn][key-field segment][pkey prefix]  nnn = declaration order
+                                (ADR-0054: the segment is sliced out of the KEY's own encoding)
 segments 0x6–0x0F  free
 ```
 
