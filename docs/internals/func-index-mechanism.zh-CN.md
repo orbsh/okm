@@ -1,4 +1,4 @@
-# 函数索引机制：func、IndexFuncValues 与多值展开
+# 函数索引机制：func、返回形态与多值展开
 
 本文是函数索引（`func(path)`）的机制与实现细节文档：声明的展开方式、值的编码契约、多值展开（fan-out）怎么发生、读写两侧如何被同一条声明驱动。条目布局、扫描与回表的通用机制见[索引机制](index-mechanism.zh-CN.md)；建模纪律见[建模指南](../MODELING.zh-CN.md)。
 
@@ -26,24 +26,25 @@ const FUNC: &'static str = "tokens"    // 普通索引为空串
 
 FUNC 目前是**文档性常量**（记录路径名，测试断言它锁定声明）；真正驱动写入的不是这个常量，而是下文的 `entry_pairs` 覆盖——func 索引与普通索引的机制分岔点在写侧，不在常量里。
 
-## 值的编码契约：IndexFuncResult 与 IndexFuncValues
+## 值的编码契约：IndexFuncResult + IntoIterator
 
-函数返回值经过两层 trait 编码为数据段（`okm-core/src/model/index.rs`）：
+函数返回值先由 `IndexFuncResult` 编成段字节，再由返回形态决定产出几条——后者是语言 trait `IntoIterator`，不是本库的 trait（`okm-core/src/model/index.rs`）：
 
 ```text
 IndexFuncResult      单个值的字节编码（数据段格式）
   impl: String       → 裸 UTF-8 字节（变长）
   impl: u8..u64      → BE 定宽
 
-IndexFuncValues      一次 func 调用产生的 entry 集合（单值/多值两臂）
-  impl: 单值类型     → vec![该值编码]（经典函数索引，一条 entry）
-  impl: Vec<V>       → 每个 V 一条（多值 regime，N 条 entry）
-                       空 Vec → 0 条：该行不产生任何 entry
+返回形态             IntoIterator<Item = V>，V: IndexFuncResult（ADR-0055）
+  单值             → 单元素数组 [v]（栈上，零分配）
+  多值             → Vec<V> / 切片 / 任意迭代器，每个元素一条 entry
+  空迭代器         → 0 条：该行不产生任何 entry
+  引用             → `&T` 与 `T` 同编码，可迭代行里已有的集合而不 clone
 ```
 
-单值臂与多值臂不 overlap：`Vec<V>` 自身不实现 `IndexFuncResult`。不采用 `IntoIterator` blanket 的原因正是 coherence——它与单值臂必然冲突（`Vec<V>` 也是 IntoIterator）。func 返回 `Vec` 是契约而非偷懒：put 收到返回值后立即逐条写入，惰性迭代器没有收益，一次 `collect` 换 trait 面最小。
+返回形态只有一个契约：可迭代。没有 `IndexFuncValues` 这类 adapter trait，因此没有 `impl<T: IndexFuncResult> IndexFuncValues for T` 与 `Vec<V>` 臂的 overlap，也没有"单值臂必须逐个列出类型"的宏——同一个 `IntoIterator` 同时承接单值与多值（ADR-0055）。单值写成 `[v]` 走栈数组，零分配；多值的 `Vec`/切片/迭代器原样迭代。惰性来源不吃亏：写入端拿到迭代器后立即逐条写，不会先 `collect`。
 
-**空 Vec 是行级过滤的一种写法**（另一种是声明上的 `where(path)` 谓词，见[索引机制](index-mechanism.zh-CN.md)）。两者的分工：`where` 是行级条件（声明可见，常规索引也能用），函数体内过滤是逐值丢弃（同一行的某个 token 不要、其余保留）。行级条件混进值函数会让"一条声明驱动两侧"退化成"调用方得知道函数内部哪一半该镜像到探针"——这是选择 `where` 的理由。
+**空迭代器是行级过滤的一种写法**（另一种是声明上的 `where(path)` 谓词，见[索引机制](index-mechanism.zh-CN.md)）。两者的分工：`where` 是行级条件（声明可见，常规索引也能用），函数体内过滤是逐值丢弃（同一行的某个 token 不要、其余保留）。行级条件混进值函数会让"一条声明驱动两侧"退化成"调用方得知道函数内部哪一半该镜像到探针"——这是选择 `where` 的理由。
 
 编码方式沿用了字段编码的既定约定：`String` 裸 UTF-8（变长、字典序 = 字节序），整数 BE（定宽、数值序 = 字节序）。函数索引因此自动继承数据段的全部约束——至多一个变长段且必须紧贴主键前缀（func 值就是那个唯一的变长段，主键前缀从尾部反推）；func 值之后再拼定宽字段在当前 derive 下不出现（func 与 fields 互斥，一条声明二选一）。
 
@@ -54,17 +55,16 @@ IndexFuncValues      一次 func 调用产生的 entry 集合（单值/多值两
 ```rust
 fn entry_pairs(table_ns, key, row) -> Vec<(Vec<u8>, Vec<u8>)> {
     if !admits(row) { return Vec::new(); }      // where(path) 谓词（无声明则恒 true）
-    let fv = tokens(row);                       // 调用用户函数
-    let vals = IndexFuncValues::func_values(fv); // 单值 → 1 条；Vec → N 条
-    for seg in vals {                            // 每条 entry 共享同一 includes value
-        [ns 2B][slot 2B][seg][主键前缀]          // key；value = entry_value(key, row)
+    let vals = result_segments(tokens(row));     // 值 → 段字节，逐个产出
+    for seg in vals {                            // 每元素一条 entry
+        [ns 2B][slot 2B][seg][主键前缀]          // key；value 恒为空（func 与 includes 互斥）
     }
 }
 ```
 
 要点：
 
-- **每条 entry 共享同一 includes value**——倒排场景下 value 是整行 payload 的覆盖段，N 个 token 指向同一行的同一份物化。
+- **entry value 恒为空**：`func(...)` 与 `includes(...)` 互斥（声明期拒绝，`schema.rs` 的字段校验），所以函数索引没有覆盖段——`Covered = ()`，`scan_covered` 与它无缘；倒排的每个 token 只携带主键，不携带 payload 的物化副本。
 - `index_entries`（put/delete 的实际入口）对每个声明索引调用 `entry_pairs` 并展平，对 fan-out 无感知：写循环只看见"N 对"，普通索引是 N=1 的特例。
 - `purge` 用同一函数生成待删集合（逐条 `del`）——只要 func 是纯函数，写入多少条就删除多少条，**纯度是契约**：func 内读外部状态（时钟、随机数）会让 delete 生成与写入不同的集合，留下悬挂 entry。
 
@@ -89,11 +89,11 @@ t.scan::<ByTag>(b"rust")
 ```text
 声明式（无扩展点）   fields / includes / key      宏直接生成，用户代码不进入编码
 业务派生逻辑         func(path) — 一个普通 fn      唯一让用户代码进入条目编码的口子
-值编码接缝           IndexFuncResult              新值类型 → 数据段的字节编码（用户自己的类型，orphan rule 无碍）
-                     IndexFuncValues              新展开形态 → 单值/N 条 entry
+值编码接缝           IndexFuncResult              新值类型的段编码（encode/width）
+返回形态             无扩展点                     IntoIterator 是语言 trait：数组/Vec/切片/迭代器都算
 ```
 
-扩展的正确分工：新值类型实现 `IndexFuncResult`；新展开形态给 `IndexFuncValues` 加臂；业务派生逻辑写一个 fn。func 不是 trait，理由有四：
+扩展的正确分工：新值类型只需实现 `IndexFuncResult`（一个 trait，没有第二个 adapter 要对齐）；返回形态没有扩展点——`IntoIterator` 是语言 trait，想要新的扇出形状就返回一个新的可迭代类型；业务派生逻辑写一个 fn。func 不是 trait，理由有四：
 
 1. **能力零增益**——trait 能做的事 fn path 全能做。需要"同一概念 func 的多个实现"，写两个 fn 就是两个实现；索引声明是编译期的，`func(lower_v1)` / `func(lower_v2)` 直接可选。
 2. **trait 破坏"一条声明驱动两侧"**——探针归一化现在就是"调用同一个 path"；换 trait 后探针侧要指定同一个 impl，调用方语法更重，机制没变。
@@ -105,11 +105,11 @@ t.scan::<ByTag>(b"rust")
 ```text
              fields(...)              func(path)
 数据段来源    payload 字段直接编码      函数返回值编码
-写侧 entry    trait 默认（1 对）        entry_pairs 覆盖（1 或 N 对）
-行级过滤      where(path)              where(path)，或函数体返回空 Vec
-编译期约束    多字段组合、变长位置检查   单值；变长约束由值类型继承
+写侧 entry    trait 默认（1 对）        entry_pairs 覆盖（每个产出值一对）
+行级过滤      where(path)              where(path)，或函数体返回空迭代器
+编译期约束    多字段组合、变长位置检查   可迭代，且元素类型实现 IndexFuncResult
 探针          调用方编码 probe 值       调用方调同一 path 归一化 probe
-成本          零额外                    每次写入一次函数调用 + collect
+成本          零额外                    每次写入一次函数调用 + 每值一次段缓冲
 ```
 
 函数索引不引入新的条目布局、扫描路径或运行时簿记——它只是把"数据段从哪来"从字段读取换成函数调用，其余全部复用索引机制的既有设施。

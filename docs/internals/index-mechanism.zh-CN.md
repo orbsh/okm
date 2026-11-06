@@ -34,7 +34,7 @@ entry value [ includes 字段 TLV ]                （无 includes = 空）
 
 - **索引字段段**：`FIELDS` 按声明序逐个编码，首位 = 分组维度（最左前缀匹配的物理基础）。**至多一个变长字段且必须紧贴主键前缀之前**：定宽段从右往左依次切分（主键 `KEY_LEN` 提供右手锚点），剩下整块是唯一变长段，长度由右侧定宽边界反推、不需存储；两个变长段之间无边界字节，derive 编译期拒绝（MODELING「数据段」节）。变长段不在末位则前缀语义破坏（裸字节无终结符，`"beijing"` 命中 `"beijing2"`）。
 - **主键前缀**：默认全长主键编码（`KEY_LEN` 编译期锁死）；`key(...)` 声明截断到命名子集。尾段永远可解——它就是主键编码，布局在声明系统内。
-- **函数索引**（`func(path)`）：`path` 的返回值经 `IndexFuncValues` 编码为数据段——单值（`String`/整数）一条 entry（经典函数索引，如归一化）；`Vec<V>` 一行展开为 N 条 entry（多值 regime：tokenize 倒排、多值字段、时间分桶）；空 `Vec` = 该行不产生任何 entry。查询侧探针调用同一路径，一条声明驱动两侧。展开细节见[函数索引机制](func-index-mechanism.zh-CN.md)。
+- **函数索引**（`func(path)`）：`path` 返回值的每个元素经 `IndexFuncResult` 编码为一条 entry 的数据段——返回形态是 `IntoIterator`（ADR-0055），单值写成单元素数组（一条 entry，经典函数索引如归一化），`Vec<V>`/切片/迭代器一行展开为 N 条（多值 regime：tokenize 倒排、多值字段、时间分桶），空迭代器 = 该行不产生任何 entry。查询侧探针调用同一路径，一条声明驱动两侧。展开细节见[函数索引机制](func-index-mechanism.zh-CN.md)。
 - **部分索引**（`where(path)`）：行级谓词，`path(&document)` 为 false 的行在本索引里不存在（Postgres 式 partial index）。两种索引形态都可用——`fields(...)` 与 `func(...)` 各自叠加谓词，谓词读哪些列不受限制（不必是索引字段）。
 
 ## 部分索引：谓词唯一的作用点是 entry_pairs
