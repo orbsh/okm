@@ -10,10 +10,11 @@ Every entity is modeled in four layers: **namespace → primary key → primary 
 
 1. **Namespace (`ns`)** — which keyspace the entity lives in. One entity
 class = one ns. The 2-byte ns already discriminates every entry; do not encode entity type into keys.
-2. **Primary key** — identity, and nothing else. Proxy keys (auto-increm
-id, UUID) are the default: attributes are payload, not identity.
+2. **Primary key** — identity, and nothing else that can CHANGE. Proxy keys
+(auto-increment id, UUID) are the default: attributes are payload, not identity;
+the immutable dimensions a scan orders by belong to layer 3.
 3. **Primary sort field** — the third segment of the key
-(`[ns][pkey...][order]`). Placed at the key tail, it keeps entries under the same pkey physically adjacent and ordered: a prefix scan *is* the timeline / range read. Other sort dimensions stay out of the key and surface through `#[ok_index]`. How physical decisions trade against indirect costs: see "Design constraints on performance".
+(`[ns][pkey...][order]`). Placed at the key tail, it keeps entries under the same pkey physically adjacent and ordered: a prefix scan *is* the timeline / range read. Other sort dimensions stay out of the key and surface through a declared face — `#[ok_index]` over a payload column, or `#[ok_lead]` when the dimension is identity the key already holds. How physical decisions trade against indirect costs: see "Design constraints on performance".
 4. **Access methods** — declared `#[ok_index]` entries. Each one is a
 standing answer to "how is this entity queried?".
 
@@ -53,7 +54,7 @@ Primary keys are fixed-width: fields are big-endian encoded in declaration order
 
 ### A relationship: the pair is the key
 
-A many-to-many relationship is a table (ADR-0051). Its key is the pair of identities, and its row carries whatever the relationship owns — including the column a reverse read scans, which a key field also gets as a copy because index fields come from the payload (see the end of "Many-to-many relationships").
+A many-to-many relationship is a table (ADR-0051). Its key is the pair of identities, and its row carries only what the relationship owns: a reverse read orders by identity through a lead face (ADR-0054), not by a copy of it. And because a key here is an ADDRESS rather than a uniqueness constraint, it may carry more than the two identities — see "The key carries more than a primary key".
 
 ```rust
 use okm_core::{DocumentEncode, KeyEncode, Uuid7};
@@ -662,7 +663,9 @@ for key in memberships.scan_keys(&MembershipKey::prefix().channel_id(id).finish(
 
 The reverse direction is a declared **lead face** (ADR-0054): `by_member` orders the same rows by an identity the key already holds, so `by_member::prefix().member_id(id).finish()` scans "which channels is this person in" and `scan::<ByMember>(&probe)` hands back a `PrefixKey<MembershipKey>` per hit, plus the row. Its entry is `[ns][slot][member_id][channel_id][member_id]` — the segment is sliced out of the key's own bytes, so the row needs no column for it and the two can never disagree. The tail IS the **whole primary key** (`taken == 24`), so `decoded.channel_id` and `decoded.member_id` both read directly and the fetch-back is `scan`'s own work (`None` = the row went away between the scan and the read). `put` writes the row and every face in one batch; `purge` takes them away; `rebuild_faces` reproduces them from the rows. Nothing here is hand-kept.
 
-There is no junction carrier (ADR-0051). A relationship is data, and this model already has a carrier for data — a collection. What a junction would have had to build by hand is exactly what `put` and `#[ok_index]` do automatically:
+For a relation table this is the DEFAULT shape of a reverse read, not one option among two: the identities are already in the key, so a face over them is free of payload and cannot drift. A copied column is the exception, for the shapes a lead face refuses — the next subsection lists them.
+
+There is no junction carrier (ADR-0051). A relationship is data, and this model already has a carrier for data — a collection. What a junction would have had to build by hand is exactly what `put` and the declared faces do automatically:
 
 - **attributes on the relationship** (`since_ms`, a per-channel `nickname`) are ordinary fields, indexable and exported like any others;
 - **the reverse direction** is declared, not hand-written, and is rebuildable (a junction's second entry had no rebuild path);
@@ -670,6 +673,24 @@ There is no junction carrier (ADR-0051). A relationship is data, and this model 
 - **the row travels**: it is in the changelog and the lake, which junction entries were excluded from.
 
 The relationship's identity is the pair — at most one row per two endpoints — because the pair is the primary key. Adding or removing a membership is `put` / `purge` on that key; identity never moves.
+
+#### The key carries more than a primary key
+
+In SQL a column in the primary key is a **uniqueness decision**: adding one changes what "duplicate" means, so the key stays as narrow as the constraint allows and every other sorting dimension becomes a column plus an index. Here the key is an **address**. All it must guarantee is one row per address; uniqueness over the identities is a modeling choice (put them at the front), and every further dimension carries no constraint semantics at all.
+
+A lead face turns that difference into a design allowance: any **immutable, identity-shaped** sorting dimension — a join time, a sequence number, the second endpoint, a tenant id — can live in the key, and a face re-reads the same bytes in any order without copying one field into the payload.
+
+```text
+[channel_id][joined_ms][member_id]      members of a channel, in join order
+  forward:  prefix (channel_id) into joined_ms — a range read, no index at all
+  by_member: fields(member_id)       → the reverse read, no member_id column
+```
+
+Both reads hit one stored fact — nothing copied, nothing to keep in sync. The boundary is immutability, and it is the same boundary identity has always had: a key segment cannot change, so a dimension that a writer will update (`status`, a counter, a score) cannot go in the key at all — changing it would move the row's address. Those stay payload columns with an `#[ok_index]`, which is the honest cost of mutability.
+
+What a wider key costs is bytes and write locality, not correctness: the key appears in the primary entry and again as each face's tail, so when a face does not need the whole key the tail is truncated with `key(…)`. That makes the trade worth making deliberately — put in the key the immutable dimensions your scans ORDER by, not every field you happen to have.
+
+The rule: immutable identity goes in the key and is ordered by lead faces; what the payload computes, derives, mutates or covers stays a column; a copied column survives only for the shapes a lead face refuses.
 
 ### When the reverse order has to come from a column
 
