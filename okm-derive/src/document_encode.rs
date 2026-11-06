@@ -770,6 +770,33 @@ fn emit_lead_structs(schema: &DocumentSchema) -> syn::Result<TS2> {
                 ) -> Option<usize> {
                     Some(<Self::Key as ::okm_core::KeyEncode>::field_width_named(names))
                 }
+
+                /// The point of a lead face: no document is involved, so the
+                /// entry follows from the key alone (ADR-0054) — which is what
+                /// lets `rebuild_faces` repair it without decoding a row.
+                fn entry_pairs_key_only(
+                    ns_prefix: &[u8],
+                    key: &Self::Key,
+                ) -> Vec<(Vec<u8>, Vec<u8>)> {
+                    let width = <Self::Key as ::okm_core::KeyEncode>::field_width_named(
+                        <Self as ::okm_core::KvIndex>::FIELDS,
+                    );
+                    let entry = <Self as ::okm_core::KvIndex>::entry_key_with(
+                        ns_prefix,
+                        key,
+                        Some(width),
+                        |buf| {
+                            ::okm_core::KeyEncode::encode_field_named(
+                                key,
+                                buf,
+                                <Self as ::okm_core::KvIndex>::FIELDS,
+                            );
+                        },
+                    );
+                    // A lead face covers nothing: the value is empty by
+                    // declaration, not by accident.
+                    vec![(entry, Vec::new())]
+                }
             }
 
             #(#state_defs)*
@@ -915,8 +942,8 @@ fn emit_index_entries(schema: &DocumentSchema) -> syn::Result<TS2> {
                 out.extend(<#struct_ident as ::okm_core::KvIndex>::entry_pairs(ns, key, document));
             }
         });
-    // Lead faces derive from the KEY alone (ADR-0054); `document` is handed to
-    // `entry_pairs` for signature symmetry and never read.
+    // Lead faces derive from the KEY alone (ADR-0054): the payload-free path is
+    // the face's own, not a signature-shaped call with an unused argument.
     let lead_entry_calls = schema
         .leads
         .iter()
@@ -924,7 +951,7 @@ fn emit_index_entries(schema: &DocumentSchema) -> syn::Result<TS2> {
         .map(|lead| {
             let struct_ident = format_ident!("__OkmLead_{}_{}", row_name, lead.ident);
             quote! {
-                out.extend(<#struct_ident as ::okm_core::KvIndex>::entry_pairs(ns, key, document));
+                out.extend(<#struct_ident as ::okm_core::KvIndex>::entry_pairs_key_only(ns, key));
             }
         });
     // Deprecated slots: declaration positions (1-based) whose entries are
@@ -1010,10 +1037,21 @@ fn emit_index_entries(schema: &DocumentSchema) -> syn::Result<TS2> {
         const INDEX_DECLS: &'static [::okm_core::model::faces::IndexDecl] = &[#(#decl_items),*];
     };
     Ok(quote! {
-        fn index_entries(key: &Self::Key, document: &Self, ns: &[u8]) -> Vec<(Vec<u8>, Vec<u8>)> {
+        /// The payload-free half (ADR-0054): lead entries are a function of the
+        /// key, so `rebuild_faces` can repair them without decoding a row.
+        fn key_entries(key: &Self::Key, ns: &[u8]) -> Vec<(Vec<u8>, Vec<u8>)> {
             let mut out = Vec::new();
-            #(#entry_calls)*
             #(#lead_entry_calls)*
+            let _ = key;
+            let _ = ns;
+            out
+        }
+
+        fn index_entries(key: &Self::Key, document: &Self, ns: &[u8]) -> Vec<(Vec<u8>, Vec<u8>)> {
+            // One source of truth for the key-only half: a lead face is written
+            // here and there through the same call.
+            let mut out = Self::key_entries(key, ns);
+            #(#entry_calls)*
             out
         }
         #dep_const

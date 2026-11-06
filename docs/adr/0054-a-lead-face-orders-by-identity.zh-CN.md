@@ -1,7 +1,7 @@
 # ADR-0054：前导面按身份排序，不按副本排序
 
 Date: 2026-11-06
-Status: Accepted（已落地：声明解析、槽族、委托式 `KvIndex` 实现、带 const 检查的类型化探针 builder、`rebuild_faces` / `prune_deprecated_slots` 覆盖、测试）
+Status: Accepted（已落地：声明解析、槽族、委托式 `KvIndex` 实现、带 const 检查的类型化探针 builder、免负载重建、`prune_deprecated_slots` 覆盖、导出面、测试）
 
 ## Context
 
@@ -25,7 +25,7 @@ struct MembershipKey { channel: u64, member: Uuid7 }
 struct Membership { nickname: String, since_ms: u64 }
 ```
 
-**2. 条目就是键，换个槽位。** 段 = `KeyEncode::encode_prefix_named(buf, FIELDS)`，宽度 = `KeyEncode::prefix_width(FIELDS)`，尾巴 = 完整主键（或 `key(…)` 的截断，规则与 `ok_index` 完全一致）。因此生成的 `KvIndex` 实现是三行委托，一次都不碰 `Document`：
+**2. 条目就是键，换个槽位。** 段 = `KeyEncode::encode_field_named(key, buf, FIELDS)`——按**声明**的顺序取，不必等于键的声明顺序，因为前导面是按身份的*排列*排序（`fields(member, channel)` 合法，先按 member 排）。宽度 = `KeyEncode::field_width_named(FIELDS)`，尾巴 = 完整主键（或 `key(…)` 的截断，规则与 `ok_index` 完全一致）。因此生成的 `KvIndex` 实现是纯委托，一次都不碰 `Document`：
 
 ```text
 [ns 2B][slot 2B][member 16B][channel 8B][member 16B]      44 B，尾巴 = 完整键
@@ -42,6 +42,10 @@ struct Membership { nickname: String, since_ms: u64 }
 `ok_index` 保留它在 `fields(...)` token 上的展开期 `syn::Error`；两个族在不同的时钟上校验，这就是分开的代价，是主动接受的。声明侧失败由 `okm-core/tests/compilefail/lead_not_a_key_field.rs` 锁定。
 
 **5. 面仍然要进指纹。** 前导声明以同一个 `IndexDecl` 形状进入 `INDEX_DECLS` / `FACES`（`fields` 放键字段，`includes` / `func` 留空），槽族就是种类判别。于是老声明写过的库打开时是 `Stale`，而不是静默空着（ADR-0048）。变更日志不用改：它的过滤是"真值面"的正向白名单，新开的派生族天然被排除。
+
+**6. 前导面只靠键就能导出，而且有两处说清这件事。** `KvIndex::entry_pairs_key_only(ns, key)` 是免负载的那一半：默认返回空（负载索引没有文档答不出来，它的 `admits` 谓词也可能读负载），前导面的实现覆盖它，并与文档形那条路共用 `entry_key_with`，所以两种构造不可能给出不同的字节布局。派生宏在此之上把 `Document::key_entries`（前导面调用）从 `index_entries` 里分出来（后者现在从前者开始），`rebuild_faces` 则向**声明**发问「有没有需要负载的面」：全部是前导面的集合修面时不解码任何一行。这就是身份来源段的运维回报——修复路径不会变成负载形状的函数。
+
+**7. 导出面直接说明一张面是什么，而不重复它。** `IndexSchema` 仍是那六个事实；`IndexSchema::kind()` 从槽位族号读出种类（`FaceKind::of`），于是宿主知道 `fields` 里装的是负载字段还是键字段，也不会多出第七列与号位打架。`SlotMap` 增加 `declared_lead_base`（`0x5001`）——宿主唯一无法从面列表里推出的那个数。
 
 ## Rejected
 

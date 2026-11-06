@@ -350,12 +350,27 @@ pub trait Document: Sized + Clone {
     fn encode_payload(&self) -> Vec<u8>;
     /// Decode payload; `b` holds only the two-segment region (no key bytes).
     fn decode_payload(b: &[u8]) -> Self;
+    /// `(entry key, entry value)` pairs for the faces whose data comes from the
+    /// KEY alone — lead faces (ADR-0054) — in slot order.
+    ///
+    /// Split out from [`Self::index_entries`] because it is the only way to
+    /// rebuild those faces without a payload: a lead segment is already in the
+    /// key, so a collection that declares no payload-derived face never has to
+    /// decode a row to repair its faces. Empty for a document with no lead
+    /// declaration (the default).
+    fn key_entries(_key: &Self::Key, _ns: &[u8]) -> Vec<(Vec<u8>, Vec<u8>)> {
+        Vec::new()
+    }
+
     /// All declared access methods' `(entry key, entry value)` pairs for
     /// `key` + `document`, in slot order. Index entries depend on the payload
     /// (indexed and includes fields live there), so the document is required —
     /// put and delete are both document-shaped. Generated; lets Collection cover
     /// every declared index without a runtime registry (the declaration IS
     /// the registry).
+    ///
+    /// An implementation that also has lead faces starts from
+    /// [`Self::key_entries`], so the payload-free half is written once.
     fn index_entries(key: &Self::Key, document: &Self, ns: &[u8]) -> Vec<(Vec<u8>, Vec<u8>)>;
 
     /// Cross-document reduce hook (see [`crate::model::reduce`]): apply this
@@ -550,15 +565,36 @@ pub trait KvIndex {
     /// are appended where they end up, so nothing is encoded into a temporary
     /// Vec and copied.
     fn entry_key(ns_prefix: &[u8], key: &Self::Key, document: &Self::Document) -> Vec<u8> {
+        let width = Self::encoded_width(key, document, Self::FIELDS);
+        Self::entry_key_with(ns_prefix, key, width, |buf| {
+            Self::encode_named(key, document, Self::FIELDS, buf)
+        })
+    }
+
+    /// Entry-key ASSEMBLY: header, then a segment the caller writes, then the
+    /// key-prefix tail. The one place the byte order lives — [`Self::entry_key`]
+    /// and the document-free path both come through here, so a face cannot
+    /// produce two different entry shapes depending on how it was built.
+    ///
+    /// `segment_width` is the caller's `encoded_width` when it has one (exact
+    /// capacity, no regrowth); `write_segment` fills the segment. Splitting it
+    /// this way keeps the payload path free of an intermediate buffer: the
+    /// segment is encoded straight into the entry.
+    fn entry_key_with(
+        ns_prefix: &[u8],
+        key: &Self::Key,
+        segment_width: Option<usize>,
+        write_segment: impl FnOnce(&mut Vec<u8>),
+    ) -> Vec<u8> {
         let mut buf = Vec::with_capacity(
             ns_prefix.len()
                 + slot_len(Self::SLOT)
-                + Self::encoded_width(key, document, Self::FIELDS).unwrap_or(0)
+                + segment_width.unwrap_or(0)
                 + Self::key_prefix_width(),
         );
         buf.extend_from_slice(ns_prefix);
         write_slot(&mut buf, Self::SLOT);
-        Self::encode_named(key, document, Self::FIELDS, &mut buf);
+        write_segment(&mut buf);
         Self::write_key_prefix(key, &mut buf);
         buf
     }
@@ -618,6 +654,17 @@ pub trait KvIndex {
             Self::entry_key(ns_prefix, key, document),
             Self::entry_value(key, document),
         )]
+    }
+
+    /// `(entry key, entry value)` pairs for a face whose segment is a function
+    /// of the KEY alone — a lead face (ADR-0054).
+    ///
+    /// Empty by default, and that is the honest answer: a payload index has no
+    /// entry without its document, and its `admits` predicate may read the
+    /// payload too. Overriding this is a claim that the face is derivable from
+    /// identity, which is exactly what makes it rebuildable without a decode.
+    fn entry_pairs_key_only(_ns_prefix: &[u8], _key: &Self::Key) -> Vec<(Vec<u8>, Vec<u8>)> {
+        Vec::new()
     }
 
     /// Partial-index predicate — the `where(path)` clause of an
