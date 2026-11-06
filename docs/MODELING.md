@@ -233,7 +233,7 @@ matches only the leading fields you named.
 
 ### Rows at runtime (`Collection`)
 
-Declaring rows and indexes (`DocumentEncode` + `#[ok_index]`) is covered in the [Modeling Guide](docs/MODELING.md), "Declaration basics". The index declaration's derivative is generated at the expansion point (this file): `ok_index(by_org ...)` generates the index type `__OkmIndex_User_by_org` (mechanical concatenation, no case conversion); alias it with `use` and it serves as the generic parameter. `Document::collection` builds the assembly point without repeating the key type at the call site:
+Declaring rows and indexes (`DocumentEncode` + `#[ok_index]`) is covered in the [Modeling Guide](docs/MODELING.md), "Declaration basics". The index declaration's derivative is generated at the expansion point (this file): `ok_index(by_org ...)` generates the index type `__OkmIndex_User_by_org` (mechanical concatenation, no case conversion); alias it with `use` and it serves as the generic parameter. The name is spelled out rather than hidden because the caller has to write it — a generated item is guessable, not hygienic (ADR-0053); hygiene is what the generated function bodies use for their own locals, so a field named `b` cannot break the decoder. `Document::collection` builds the assembly point without repeating the key type at the call site:
 
 ```rust
 use okm_core::TestStore;
@@ -686,6 +686,42 @@ The tail IS the whole primary key, so one scan hands back the key and the row, a
 The alternative is recorded and not taken (ADR-0052): let `fields(...)` name a field in the key and truncate the tail to the container segment with `key(channel_id)`. The entry drops to 28 bytes and the column disappears, at three costs: a typo in `fields(...)` degrades from a compile error to a panic at the first write (for **every** index declaration); a key-sourced index has no typed probe builder (its steps are generated from payload field types); and a truncated tail has no fetch-back (`taken < KEY_LEN` cannot rebuild the primary key), so the caller assembles it by hand. Sixteen bytes per entry and per row do not buy that.
 
 The rule, then: a field **not** in the key (`nickname`, `since_ms` — what the relation itself knows) belongs in a column; a field **in** the key is copied into one too — the writer takes both from the same value, so they do not diverge in practice. The one fact to accept is that both copies are real and nothing checks that they agree.
+
+### The other key: an allocated id and two permutation indexes
+
+The same table can be keyed by an allocated `id` instead of the pair, with each direction declared as its own index over both columns:
+
+```text
+#[derive(KeyEncode)]
+struct MembershipKey { id: u64 }          // allocated by the caller
+
+#[derive(DocumentEncode)]
+#[ok_ns(110)]
+#[ok_index(by_channel { fields(channel_id, member_id) })]
+#[ok_index(by_member  { fields(member_id, channel_id) })]
+struct Membership {
+    channel_id: u64,      // endpoint, ordinary column
+    member_id: Uuid7,     // endpoint, ordinary column
+    nickname: String,     // what the relation KNOWS
+    since_ms: u64,
+}
+```
+
+Two orders of one field set are two declarations, not one declaration used twice. Each takes its own slot in declaration order (`0x3001`, `0x3002` here), its own keyspace, and its own typed probe builder — `by_channel::prefix().channel_id(id).finish()` and `by_member::prefix().member_id(id).finish()` cannot be confused, and neither direction reads the other's bytes. What the second declaration buys is exactly what a shared index could not give: the same rows under a different physical order, so "members of channel X ordered by member" and "channels of member X ordered by channel" are both one scan.
+
+The trade, one property at a time:
+
+**Uniqueness: free, or the caller's rule.** With the pair as the key, "at most one membership per pair" is the key's own guarantee and `put` is idempotent on it — no read before write, no race between two writers. With a surrogate key the pair is payload: two rows may carry the same `(channel_id, member_id)` and nothing objects. OKM has no unique index and no runtime uniqueness check (ADR-0005 names "declare those fields unique" as an escape whose cost is silent row loss), so deduplication becomes a read and then a write in the caller, with the window between them owned by the application.
+
+**Entries: one per row, or two, and where the forward direction physically lives.** The pair-key row derives one entry (the reverse one); its forward direction is a prefix scan over the primary slot, so a channel's members sit contiguously in the table's own key order and enumerating them costs no index at all. The surrogate row derives two entries and its forward direction is a separate keyspace, so a `put` writes three entries instead of two, and the two directions of one relation no longer sit in one key range. In the example above the derived bytes go from 44 B per row (`[ns 2][slot 2][member_id 16][tail 24]`) to 72 B (two entries of `[ns 2][slot 2][24][tail 8]`).
+
+**Payload: the surrogate stores each endpoint once.** In the pair-key shape the indexed endpoint must also be a column (ADR-0052: index fields come from the payload), so `member_id` exists twice per row and the two copies are trusted to agree. In the surrogate shape both endpoints are payload-only and the key is eight bytes of id — nothing is duplicated. This is the surrogate's one structural gain beyond the stable handle, and it is small next to the uniqueness loss.
+
+**The handle is the actual reason to take it.** An `id` is an address for the *relation row itself*: another table can point at one membership (a `Refs` field holding `MembershipKey { id }`), a log can key by it, and editing `channel_id` does not move it. With the pair as the key, an external reference holds the pair, so re-pointing an endpoint is a delete plus an insert and every reference to the old address is stale. That is the right semantics when the relation's identity IS the pair ("the same membership, moved" is a different fact) and the wrong one when the relation row is an entity the rest of the model names.
+
+**Choosing.** Take the pair as the key (ADR-0051) unless something outside the relation must name a single row of it; that requirement is what the surrogate buys, and it is paid for in dedup discipline plus one extra entry per row. Wanting both uniqueness and a stable handle does not make the surrogate right: the pair key plus a `Refs` field holding the pair keeps uniqueness, and a surrogate cannot carry it at all.
+
+**Two rules the second declaration inherits.** Slots are positional, so declaration order is a persistent contract and the permutations are append-only — adding one later is fine, removing or reordering either is a rebuild (ADR-0005). And the variable-length rule is stricter here than on a single-field index: an endpoint stored as `String`/`VarInt` must be the **last** field of every declaration that names it, so one text endpoint admits only the permutation that puts it last, and two text endpoints admit no permutation pair at all. Identity endpoints are fixed-width by construction (`u64`, `Uuid7`, `[u8; 16]`), which is why this shape is safe for a junction and not a general replacement for the pair key.
 
 ### Refs or a relation table: deciding, and migrating when the answer changes
 
