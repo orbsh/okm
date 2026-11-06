@@ -81,10 +81,12 @@ pub use model::document::Collection;
 pub use model::field::{FieldDesc, FieldType};
 pub use model::graph::{EdgeBody, EdgeHead, EdgeKey, Graph, GraphEncode, NodeRef, NodeSet};
 pub use model::index::{
-    Document, IndexFuncResult, IndexFuncValues, KvIndex, META_SLOT, PRIMARY_SLOT, scan_index,
-    scan_index_exact, slot_len, write_slot,
+    Document, IndexFuncResult, IndexFuncValues, KvIndex, LEAD_SLOT_BASE, META_SLOT, PRIMARY_SLOT,
+    scan_index, scan_index_exact, slot_len, write_slot,
 };
-pub use model::key::{KeyEncode, PrefixKey};
+pub use model::key::{
+    KeyEncode, KeyFieldValue, PrefixKey, key_field_exists, key_field_matches, kind_matches,
+};
 pub use model::prefix::{IndexProbe, PrefixProbe, ProbeBytes};
 pub use model::presets::{Count, HighWater, LowAcc, LowWater, ReduceFieldSource, Sum};
 pub use model::reduce::{Reduce, ReduceCodec, ReduceLogic, reduce_get, scan_reduces};

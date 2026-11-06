@@ -2712,9 +2712,14 @@ fixtures in `save_into_test.rs`, `fjall_eval.rs` and `okm-query`.
 
 - [x] `Junction<S, E>` / `KvJunction` / `JunctionEncode` / `AsyncJunction` deleted; the
       `collection` and `junction` modules are gone.
-- [x] `segment::JUNCTION` → `RETIRED_0X5` (unassigned, never reused) and
+- [x] `segment::JUNCTION` → `RETIRED_0X5` (unassigned at the time; `segment::LEAD`
+      since ADR-0054) and
       `JUNCTION_SLOT_BASE` deleted; the schema export loses `junction_base`.
 - [x] Test fixtures that used a junction now declare the relation table instead.
+- [x] `#[ok_lead(name { fields(key_fields), key(..), deprecated })]` — a face whose
+      sort segment is sliced out of the KEY's own encoding (ADR-0054, family `0x5nnn`):
+      delegating `KvIndex` impl, typed probe builder with the const field check,
+      `rebuild_faces` / `prune_deprecated_slots` coverage.
 - [x] `MODELING` (both languages) rewritten: "Many-to-many relationships: a table",
       "Put, purge, query", the Refs/relation-table and relation-table/edge decision tables.
 - [x] `key-layout` (both languages): the 0x5 segment is retired, the layout block shows a

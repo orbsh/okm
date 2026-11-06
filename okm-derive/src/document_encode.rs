@@ -37,6 +37,9 @@ use proc_macro2::TokenStream as TS2;
 /// sync with `okm_core::index::DECLARED_SLOT_BASE` / `REDUCE_SLOT_BASE`.
 const DECLARED_SLOT_BASE: u16 = 0x3001;
 const REDUCE_SLOT_BASE: u16 = 0x4001;
+/// Lead-face family base (ADR-0054): its own counter and its own segment.
+/// Keep in sync with `okm_core::index::LEAD_SLOT_BASE`.
+const LEAD_SLOT_BASE: u16 = 0x5001;
 
 /// Declaration-order slot from a family base, CHECKED at expansion time.
 ///
@@ -621,6 +624,181 @@ fn emit_index_structs(schema: &DocumentSchema) -> syn::Result<TS2> {
     Ok(index_out)
 }
 
+/// One marker struct + `KvIndex` impl + typed probe builder per declared
+/// `#[ok_lead]` (ADR-0054).
+///
+/// The impl is DELEGATION to the key's own encoding: the segment is a
+/// permutation of identity fields, so `encode_named` forwards to
+/// `KeyEncode::encode_field_named` and nothing in this impl reads the document.
+/// That is also why a lead face can never be covering — `INCLUDES` is empty by
+/// declaration, and the parser refuses the keyword.
+///
+/// The probe builder cannot take concrete parameter types (the key is another
+/// item, invisible at expansion), so each step is generic over `KeyFieldValue`
+/// and carries a const assertion against the key's own field table — the check
+/// the compiler can still make, one clock later than `ok_index`'s.
+fn emit_lead_structs(schema: &DocumentSchema) -> syn::Result<TS2> {
+    let row_name = &schema.row_name;
+    let key_ty = &schema.key_ty;
+    // Hygiene (ADR-0053): the covered decoder binds no field locals, but its
+    // byte-slice parameter is still a generated name.
+    let lead_b = crate::hyg::ident("b");
+    let mut out = quote! {};
+    for (n, lead) in schema.leads.iter().enumerate() {
+        // Deprecated: the slot stays reserved (declaration order is a
+        // persistent contract), nothing is generated.
+        if lead.deprecated {
+            continue;
+        }
+        let slot_lit = proc_macro2::Literal::u16_unsuffixed(declared_slot(
+            LEAD_SLOT_BASE,
+            n,
+            "lead",
+            lead.ident.span(),
+        )?);
+        let iname = &lead.ident;
+        let slot_doc = format!("{}", n + 1);
+        let fields: Vec<&String> = lead.fields.iter().collect();
+        let key_names: Vec<&String> = lead.key.iter().collect();
+        let struct_ident = format_ident!("__OkmLead_{}_{}", row_name, iname);
+
+        let suffix = format!("{}_{}", row_name, iname);
+        let builder = format_ident!("__OkmLeadPrefixBuilder_{}", suffix);
+        let state_ids: Vec<syn::Ident> = (0..=lead.fields.len())
+            .map(|i| format_ident!("__OkmLeadPrefix_{}_{}", suffix, i))
+            .collect();
+        let state_defs = state_ids.iter().map(|st| {
+            quote! {
+                #[doc(hidden)]
+                #[derive(Debug)]
+                pub struct #st;
+            }
+        });
+        let start = &state_ids[0];
+        // Declaration-level check (ADR-0054): every declared name must BE a key
+        // field. Without it a typo writes an empty segment — the entry still
+        // exists (the tail distinguishes rows) but the face sorts by nothing,
+        // and only a typed probe would ever complain.
+        let mut name_checks = Vec::new();
+        for name in &lead.fields {
+            let lit = proc_macro2::Literal::string(name);
+            name_checks.push(quote! {
+                const _: () = assert!(
+                    ::okm_core::key_field_exists(
+                        <#key_ty as ::okm_core::KeyEncode>::FIELDS,
+                        #lit,
+                    ),
+                    "ok_lead: a declared field is not a field of this key (ADR-0054)"
+                );
+            });
+        }
+        let mut steps = Vec::new();
+        for (i, name) in lead.fields.iter().enumerate() {
+            let fname = format_ident!("{}", name);
+            let cur = &state_ids[i];
+            let next = &state_ids[i + 1];
+            let doc = format!(
+                "Constrain `{name}` — declared lead field {} of the key.",
+                i + 1
+            );
+            steps.push(quote! {
+                impl #builder<#cur> {
+                    #[doc = #doc]
+                    pub fn #fname<T: ::okm_core::KeyFieldValue>(self, v: T) -> #builder<#next> {
+                        // ADR-0054: the declaration is checked where both sides
+                        // are visible — a const assertion against the key's own
+                        // field table, not an expansion-time parse.
+                        const {
+                            assert!(
+                                ::okm_core::key_field_matches(
+                                    <#key_ty as ::okm_core::KeyEncode>::FIELDS,
+                                    #name,
+                                    <T as ::okm_core::KeyFieldValue>::KIND,
+                                    <T as ::okm_core::KeyFieldValue>::WIDTH,
+                                ),
+                                "ok_lead: this name is not a key field of this key, or the value's kind/width does not match it (ADR-0054)"
+                            )
+                        };
+                        let mut buf = self.bytes;
+                        ::okm_core::KeyFieldValue::write_be(&v, &mut buf);
+                        #builder {
+                            bytes: buf,
+                            _state: ::core::marker::PhantomData,
+                        }
+                    }
+                }
+            });
+        }
+        out.extend(quote! {
+            #[doc = concat!("Lead face `", stringify!(#iname), "` over `", stringify!(#row_name), "` (slot ", #slot_doc, ", ADR-0054).")]
+            #[allow(non_camel_case_types, non_snake_case)] // generated identities (ADR-0027)
+            #[derive(Clone, Copy, Debug)]
+            pub struct #struct_ident;
+
+            #(#name_checks)*
+
+            impl ::okm_core::KvIndex for #struct_ident {
+                type Key = #key_ty;
+                type Document = #row_name;
+                const SLOT: ::okm_core::index::Slot = #slot_lit;
+                const FIELDS: &'static [&'static str] = &[#(#fields),*];
+                const INCLUDES: &'static [&'static str] = &[];
+                const KEY_PREFIX: &'static [&'static str] = &[#(#key_names),*];
+                const FUNC: &'static str = "";
+                /// A lead face covers nothing: its entry IS identity.
+                type Covered = ();
+
+                fn decode_covered(#lead_b: &[u8]) -> Self::Covered {
+                    let _ = #lead_b;
+                }
+
+                fn encode_named(
+                    key: &Self::Key,
+                    _document: &Self::Document,
+                    names: &[&str],
+                    buf: &mut Vec<u8>,
+                ) {
+                    // Same bytes the key already encodes, asked for in the
+                    // declaration's order (a permutation of the declaration).
+                    ::okm_core::KeyEncode::encode_field_named(key, buf, names);
+                }
+
+                fn encoded_width(
+                    _key: &Self::Key,
+                    _document: &Self::Document,
+                    names: &[&str],
+                ) -> Option<usize> {
+                    Some(<Self::Key as ::okm_core::KeyEncode>::field_width_named(names))
+                }
+            }
+
+            #(#state_defs)*
+            /// Typed prefix probe for this lead face: `finish()` at any depth is
+            /// a legal probe, and the empty one scans the whole face.
+            #[doc(hidden)]
+            pub struct #builder<S> {
+                bytes: Vec<u8>,
+                _state: ::core::marker::PhantomData<S>,
+            }
+            impl<S> #builder<S> {
+                pub fn finish(self) -> ::okm_core::IndexProbe<#struct_ident> {
+                    ::okm_core::IndexProbe::new(self.bytes)
+                }
+            }
+            impl #struct_ident {
+                pub fn prefix() -> #builder<#start> {
+                    #builder {
+                        bytes: Vec::new(),
+                        _state: ::core::marker::PhantomData,
+                    }
+                }
+            }
+            #(#steps)*
+        });
+    }
+    Ok(out)
+}
+
 /// Typed prefix-probe builder for one access method: the mirror of the key-side
 /// builder (`K::prefix()`), over this index's declared `fields(..)` order.
 ///
@@ -737,6 +915,18 @@ fn emit_index_entries(schema: &DocumentSchema) -> syn::Result<TS2> {
                 out.extend(<#struct_ident as ::okm_core::KvIndex>::entry_pairs(ns, key, document));
             }
         });
+    // Lead faces derive from the KEY alone (ADR-0054); `document` is handed to
+    // `entry_pairs` for signature symmetry and never read.
+    let lead_entry_calls = schema
+        .leads
+        .iter()
+        .filter(|lead| !lead.deprecated)
+        .map(|lead| {
+            let struct_ident = format_ident!("__OkmLead_{}_{}", row_name, lead.ident);
+            quote! {
+                out.extend(<#struct_ident as ::okm_core::KvIndex>::entry_pairs(ns, key, document));
+            }
+        });
     // Deprecated slots: declaration positions (1-based) whose entries are
     // stale after the declaration was marked `deprecated` — consumed by
     // `Collection::prune_deprecated_slots` (prefix-scan + delete).
@@ -753,9 +943,21 @@ fn emit_index_entries(schema: &DocumentSchema) -> syn::Result<TS2> {
         )?);
         dep_slots.push(quote! { #lit });
     }
+    for (n, lead) in schema.leads.iter().enumerate() {
+        if !lead.deprecated {
+            continue;
+        }
+        let lit = proc_macro2::Literal::u16_unsuffixed(declared_slot(
+            LEAD_SLOT_BASE,
+            n,
+            "lead",
+            lead.ident.span(),
+        )?);
+        dep_slots.push(quote! { #lit });
+    }
     let dep_const = quote! {
-        /// Slots reserved by `deprecated` index declarations — entries
-        /// here are stale (written before the deprecation) and are
+        /// Slots reserved by `deprecated` index or lead declarations —
+        /// entries here are stale (written before the deprecation) and are
         /// cleared by `Collection::prune_deprecated_slots`.
         const DEPRECATED_SLOTS: &'static [::okm_core::index::Slot] = &[#(#dep_slots),*];
     };
@@ -782,17 +984,36 @@ fn emit_index_entries(schema: &DocumentSchema) -> syn::Result<TS2> {
             }
         });
     }
+    for (n, lead) in schema.leads.iter().enumerate() {
+        let slot = declared_slot(LEAD_SLOT_BASE, n, "lead", lead.ident.span())?;
+        let slot_lit = proc_macro2::Literal::u16_unsuffixed(slot);
+        let name = lead.ident.to_string();
+        let fields = &lead.fields;
+        let deprecated = lead.deprecated;
+        decl_items.push(quote! {
+            ::okm_core::model::faces::IndexDecl {
+                name: #name,
+                slot: #slot_lit,
+                fields: &[#(#fields),*],
+                includes: &[],
+                func: "",
+                deprecated: #deprecated,
+            }
+        });
+    }
     let decls_const = quote! {
         /// The structural faces this declaration owns (ADR-0048): every
-        /// declared index in declaration order. `FACES` is its compile-time
-        /// fingerprint; the store carries that number, so a face built under
-        /// another declaration can be told apart from a current one.
+        /// declared index, then every lead face (ADR-0054), in declaration
+        /// order. `FACES` is its compile-time fingerprint; the store carries
+        /// that number, so a face built under another declaration can be told
+        /// apart from a current one. The slot family is the discriminator.
         const INDEX_DECLS: &'static [::okm_core::model::faces::IndexDecl] = &[#(#decl_items),*];
     };
     Ok(quote! {
         fn index_entries(key: &Self::Key, document: &Self, ns: &[u8]) -> Vec<(Vec<u8>, Vec<u8>)> {
             let mut out = Vec::new();
             #(#entry_calls)*
+            #(#lead_entry_calls)*
             out
         }
         #dep_const
@@ -1218,6 +1439,7 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> syn::Result<TS2> {
     let hot_width_lit = proc_macro2::Literal::usize_unsuffixed(hot_width_total);
     let named_walk = emit_named_walk(schema);
     let index_structs = emit_index_structs(schema)?;
+    let lead_structs = emit_lead_structs(schema)?;
     let index_entries = emit_index_entries(schema)?;
     let (agg_impls, agg_hook) = emit_reduces(schema)?;
     let (sub_statics, sub_hook) = emit_subscribe(schema)?;
@@ -1847,6 +2069,7 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> syn::Result<TS2> {
 
     Ok(quote! {
         #index_structs
+        #lead_structs
         #agg_impls
         #sub_statics
         impl #row_name {
