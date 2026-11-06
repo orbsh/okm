@@ -201,7 +201,7 @@ of its own, which is what this ADR's "no bands" rule exists to prevent.
   it: derived entries rebuild from documents, the dynamic segment and the
   dictionaries ride the same rebuild.
 - `SlotMap` (schema export) keeps its `u16` fields — the values are now
-  0x00–0x0F for the fixed faces and 0x1nnn–0x4nnn for the
+  0x00–0x0F for the fixed faces and 0x1nnn–0x5nnn for the
   counting families, with the width implied by the value. The bindings'
   slot arguments are unchanged.
 - ADR-0016's segment table is superseded; its head-width decision survives

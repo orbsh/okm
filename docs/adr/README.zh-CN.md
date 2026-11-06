@@ -31,7 +31,7 @@
 - [0029 — 路径索引：在无 schema 区上声明的路径](0029-path-index.md)（已接受并实现——Path 组件词汇 + 自定界无计数编码 + 一路径一 slot；挂在动态段写路径上）— [中文](0029-path-index.zh-CN.md)
 - [0030 — slot：固定面一字节，计数族两字节](0030-slot-fixed-faces-and-counting-families.md)（已接受并落地——单张面的族各占一个 1 字节号 0x00–0x0A（含图的一对谓词词汇表 0x04/0x05）；计数族保留 2 字节 slot 与 12 位计数，号码与上限不变）— [中文](0030-slot-fixed-faces-and-counting-families.zh-CN.md)
 - [0031 — 批量写路径承载语义：BatchStore 适配器](0031-batch-write-semantics.md)（已接受并落地——点读穿透 batch、scan 大声拒绝；`save_with_prev_into` 让跨表原子提交与 reduce 并存，旧面在同一批内删除）— [中文](0031-batch-write-semantics.zh-CN.md)
-- [0032 — 分类值是数据：自带两个族的 `Vocab<N>`](0032-vocab-categorical-values.md)（已接受并落地——`Enum<T>`/`EnumTag` 退役；每个 `Vocab<N>` 字段占 0x1nnn/0x2nnn 两方向，分配游标是 id 面的面级单值（裸前缀，不占面）；索引 0x3nnn、reduce 0x4nnn、junction 0x5nnn；`N` = u8…u128 定 id 宽度，超限大声报错，intern 走写路径且可在批内完成）— [中文](0032-vocab-categorical-values.zh-CN.md)
+- [0032 — 分类值是数据：自带两个族的 `Vocab<N>`](0032-vocab-categorical-values.md)（已接受并落地——`Enum<T>`/`EnumTag` 退役；每个 `Vocab<N>` 字段占 0x1nnn/0x2nnn 两方向，分配游标是 id 面的面级单值（裸前缀，不占面）；索引 0x3nnn、reduce 0x4nnn、前导面 0x5nnn（ADR-0054）；`N` = u8…u128 定 id 宽度，超限大声报错，intern 走写路径且可在批内完成）— [中文](0032-vocab-categorical-values.zh-CN.md)
 - [0033 — slot 留在 ns 之后，面的元数据留在面上](0033-slot-order-and-face-metadata.md)（已接受——迭代由前缀端点界定、无需逐键边界校验；数据与元数据按后缀长度分离，代价每条一次比较；游标不单开族也不搬 keyspace；slot 前置会让 ns 偏移浮动、挤走 0xFF 转义、把 collection 的连续区间按面切碎）— [中文](0033-slot-order-and-face-metadata.zh-CN.md)
 - [0034 — 表名与导出的形状](0034-table-names-and-export-shape.md)（已接受并落地——`#[ok_name]` → `TABLE_NAME`、边集合导出成一张表、reduce 表单独导出、图边属性面归 `Graph` 自己）— [中文](0034-table-names-and-export-shape.zh-CN.md)
 - [0035 — 整文档只有一个接口面：view / merge / replace / purge](0035-whole-document-api.md)（已接受并落地——静态段说结构体、整文档说一个名字键 map；每次写一个引擎提交；六个按槽切分的旧名退役，无别名）— [中文](0035-whole-document-api.zh-CN.md)
