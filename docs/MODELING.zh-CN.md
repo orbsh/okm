@@ -580,9 +580,8 @@ struct MembershipKey { channel_id: u64, member_id: Uuid7 }
 
 #[derive(DocumentEncode)]
 #[ok_ns(110)]
-#[ok_index(by_member { fields(member_id) })]
+#[ok_lead(by_member { fields(member_id) })]
 struct Membership {
-    member_id: Uuid7,      // 反向扫描的那一列
     nickname: String,      // 关系自己知道的事（ADR-0051）
     since_ms: u64,
 }
@@ -594,7 +593,7 @@ struct Membership {
 for key in memberships.scan_keys(&MembershipKey::prefix().channel_id(id).finish()) { … }
 ```
 
-反向是声明索引：`by_member` 把「这个人在哪些频道」变成一次索引扫描，`scan::<ByMember>(&probe)` 每次命中返回 `PrefixKey<MembershipKey>` 加上行。条目尾巴就是**完整主键**（`taken == 24`），所以 `decoded.channel_id` 与 `decoded.member_id` 都是真的，回表由 `scan` 自己完成（`None` 表示扫到读之间那一行消失了）。`put` 在一个 batch 里写行与索引条目；`purge` 一起带走；`rebuild_faces` 从行重建索引。没有手工维护的部分。
+反向是一条声明的**前导面**（ADR-0054）：`by_member` 让同一批行按键里已有的那一段身份排序，于是 `by_member::prefix().member_id(id).finish()` 扫出「这个人在哪些频道」，`scan::<ByMember>(&probe)` 每次命中返回 `PrefixKey<MembershipKey>` 加上行。它的条目是 `[ns][slot][member_id][channel_id][member_id]`——段直接从键自己的字节里切，行上不需要那一列，两者也不可能不一致。尾巴是**完整主键**（`taken == 24`），所以 `decoded.channel_id` 与 `decoded.member_id` 都是真的，回表由 `scan` 自己完成（`None` 表示扫到读之间那一行消失了）。`put` 在一个 batch 里写行与每一张面；`purge` 一起带走；`rebuild_faces` 从行重建。没有手工维护的部分。
 
 这里没有 junction 载体（ADR-0051）。关系是数据，而这个模型已经有装数据的载体——集合。junction 当初要手造的东西，正是 `put` 与 `#[ok_index]` 自动做的事：
 
@@ -605,20 +604,22 @@ for key in memberships.scan_keys(&MembershipKey::prefix().channel_id(id).finish(
 
 关系的身份就是这对端点——两个端点之间至多一行——因为这对就是主键。加一条成员关系是 `put`，删一条是 `purge`，身份永远不动。
 
-### 键里已有的字段：复制成列，接受这份重复
+### 什么时候反向顺序必须来自一列
 
-上面那份声明里 `member_id` 既是键的一段，也是行上的一列。这是有意的重复：索引的数据段来自**负载**，所以要让反查是一次索引扫描，就得有一列可索引。条目因此长这样：
+前导面只能按身份排序，而身份是定宽、升序的：`KeyEncode` 拒绝 `Reverse`（降序）、`String`/`VarInt`（变长）以及各类包装编解码，前导面也没有 `includes` 和 `func`。反查一旦需要其中任何一样，端点就必须是普通的**负载列**，那张面就必须是普通的 `#[ok_index]`（ADR-0052）：
 
 ```text
-[ns 2B][slot 2B][member_id 16B]   [channel_id 8B][member_id 16B]   44 B
-                 ↑ 行上的那一列     ↑ 完整主键（尾巴）
+#[ok_index(by_member { fields(member_id), includes(nickname) })]
+struct Membership {
+    member_id: Uuid7,      // 反向扫描的那一列
+    nickname: String,
+    since_ms: u64,
+}
 ```
 
-尾巴是完整主键，扫描一次就给回键和行，两段 `member_id` 与 `channel_id` 都是真的——不用截短，也不用调用方自己拼主键。
+条目于是装那一列的字节（有 `includes` 时再带上覆盖字段）——`[ns][slot][member_id][nickname] [channel_id][member_id]`——而 `key(channel_id)` 把尾巴截到另一端（28 字节、只出键、用主键前缀续扫）。
 
-考虑过的替代（ADR-0052 记着这笔账，未采用）：让 `fields(...)` 命名键里的字段，再用 `key(channel_id)` 把尾巴截到容器那一段。条目降到 28 字节、行上那一列消失，代价是三样东西：`fields(...)` 打错字从编译错误退化成第一次写入时的 panic（这条对**所有**索引声明生效）；从键取字段的索引没有类型化探针 builder（builder 每一步由负载字段的类型生成）；截短尾巴的索引不回表（`taken < KEY_LEN` 拼不出主键），调用方得自己拼。为 16 B/条 + 16 B/行换这三样，不划算。
-
-判据：字段**不在**键里（`nickname`、`since_ms` 这类关系自己知道的事），它本来就该是列；**在**键里，也复制一列——写入方从同一个值取两份，实际不会分叉。要认下的事实只有一条：两份都是真值，没有东西检查它们相等。
+代价就是这份副本。那一列是第二个事实源，模型里没有任何东西要求它等于它重复的那段键：走 map 的写入（`merge` / `replace`）可以在键不动的情况下把它改成别的值，反查从此回答的是「列匹配的那些行」，而不是「身份匹配的那些行」。查询需要身份表达不了的东西（降序、文本、派生值、覆盖字段）时取那一列；问的是「同一段关系，从另一端读」时取前导面。
 
 ### 另一种键：一个分配的 id 加两条排列索引
 

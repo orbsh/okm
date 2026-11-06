@@ -647,9 +647,8 @@ struct MembershipKey { channel_id: u64, member_id: Uuid7 }
 
 #[derive(DocumentEncode)]
 #[ok_ns(110)]
-#[ok_index(by_member { fields(member_id) })]
+#[ok_lead(by_member { fields(member_id) })]
 struct Membership {
-    member_id: Uuid7,      // the column the reverse lookup scans
     nickname: String,      // what the relation KNOWS (ADR-0051)
     since_ms: u64,
 }
@@ -661,7 +660,7 @@ The first key column is the forward direction: one prefix scan lists a channel's
 for key in memberships.scan_keys(&MembershipKey::prefix().channel_id(id).finish()) { … }
 ```
 
-The reverse direction is the declared index: `by_member` turns "which channels is this person in" into an index scan, and `scan::<ByMember>(&probe)` hands back a `PrefixKey<MembershipKey>` per hit, plus the row. The entry's tail IS the **whole primary key** (`taken == 24`), so `decoded.channel_id` and `decoded.member_id` both read directly and the fetch-back is `scan`'s own work (`None` = the row went away between the scan and the read). `put` writes the row and the index entry in one batch; `purge` takes both away; `rebuild_faces` reproduces the index from the rows. Nothing here is hand-kept.
+The reverse direction is a declared **lead face** (ADR-0054): `by_member` orders the same rows by an identity the key already holds, so `by_member::prefix().member_id(id).finish()` scans "which channels is this person in" and `scan::<ByMember>(&probe)` hands back a `PrefixKey<MembershipKey>` per hit, plus the row. Its entry is `[ns][slot][member_id][channel_id][member_id]` — the segment is sliced out of the key's own bytes, so the row needs no column for it and the two can never disagree. The tail IS the **whole primary key** (`taken == 24`), so `decoded.channel_id` and `decoded.member_id` both read directly and the fetch-back is `scan`'s own work (`None` = the row went away between the scan and the read). `put` writes the row and every face in one batch; `purge` takes them away; `rebuild_faces` reproduces them from the rows. Nothing here is hand-kept.
 
 There is no junction carrier (ADR-0051). A relationship is data, and this model already has a carrier for data — a collection. What a junction would have had to build by hand is exactly what `put` and `#[ok_index]` do automatically:
 
@@ -672,20 +671,22 @@ There is no junction carrier (ADR-0051). A relationship is data, and this model 
 
 The relationship's identity is the pair — at most one row per two endpoints — because the pair is the primary key. Adding or removing a membership is `put` / `purge` on that key; identity never moves.
 
-### A field already in the key: copy it into a column, and accept the duplication
+### When the reverse order has to come from a column
 
-In the declaration above `member_id` is both a key segment and a column on the row. The duplication is deliberate: an index's data segment comes from the **payload**, so a reverse read can be one index scan only if there is a column to index. The entry therefore looks like this:
+A lead face can only order by identity, and identity is fixed-width and ascending: `KeyEncode` refuses `Reverse` (descending), `String`/`VarInt` (variable width) and the wrapper codecs, and a lead face has neither `includes` nor `func`. When the reverse scan needs any of those, the endpoint is an ordinary **payload column** and the face is an ordinary `#[ok_index]` (ADR-0052):
 
 ```text
-[ns 2B][slot 2B][member_id 16B]   [channel_id 8B][member_id 16B]   44 B
-                 ↑ the row's column     ↑ the whole primary key (tail)
+#[ok_index(by_member { fields(member_id), includes(nickname) })]
+struct Membership {
+    member_id: Uuid7,      // the column the reverse lookup scans
+    nickname: String,
+    since_ms: u64,
+}
 ```
 
-The tail IS the whole primary key, so one scan hands back the key and the row, and both `member_id` and `channel_id` read true — no truncation, and no caller rebuilding a key.
+The entry then holds the column's bytes and, with `includes`, the covered fields — `[ns][slot][member_id][nickname] [channel_id][member_id]` — while `key(channel_id)` narrows the tail to the other endpoint (28 bytes, keys only, continue with a primary prefix read).
 
-The alternative is recorded and not taken (ADR-0052): let `fields(...)` name a field in the key and truncate the tail to the container segment with `key(channel_id)`. The entry drops to 28 bytes and the column disappears, at three costs: a typo in `fields(...)` degrades from a compile error to a panic at the first write (for **every** index declaration); a key-sourced index has no typed probe builder (its steps are generated from payload field types); and a truncated tail has no fetch-back (`taken < KEY_LEN` cannot rebuild the primary key), so the caller assembles it by hand. Sixteen bytes per entry and per row do not buy that.
-
-The rule, then: a field **not** in the key (`nickname`, `since_ms` — what the relation itself knows) belongs in a column; a field **in** the key is copied into one too — the writer takes both from the same value, so they do not diverge in practice. The one fact to accept is that both copies are real and nothing checks that they agree.
+The price is the copy. That column is a second fact, and nothing in the model makes it equal to the key segment it repeats: a map write (`merge` / `replace`) can set it to something else while the key stays put, and the reverse scan then answers "rows whose column matched", not "rows whose identity matched". Take the column when the query needs what identity cannot express (a descending order, text, a computed value, covered fields); take the lead face when the question is "the same relation, read from the other end".
 
 ### The other key: an allocated id and two permutation indexes
 
