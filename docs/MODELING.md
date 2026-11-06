@@ -110,21 +110,21 @@ value (see "Covering indexes, with restraint").
 - `key(...)` — truncates the primary-key tail carried at the entry end to
 the named subset (default: full). Truncation changes row-uniqueness, not grouping: the `fields` prefix drives ordering, the key tail distinguishes rows; `key(user_id)` is safe only when the named subset is unique per row — otherwise rows overwrite each other's entries.
 - `func(path)` — function index: the data segment is the encoding of
-`path(&row)`'s return value, replacing fields. The function is a plain Rust fn (implemented in business code), and the query side calls the **same declared path** on its probe value — encoding and scanning share one definition, so normalization (lowercase, encoding transforms) cannot drift between the two sides. One declaration drives both sides; declaration is registration.
+`path(&row)`'s return value, replacing fields. The function is a plain Rust fn (implemented in business code), and the query side calls the **same declared path** on its probe value — encoding and scanning share one definition, so normalization (lowercase, encoding transforms) cannot drift between the two sides. One declaration drives both sides; declaration is registration. The return value must be iterable of the segment type — `[v]` for a single value, a `Vec`/slice/iterator for many (ADR-0055).
 - `where(path)` — partial index: a row for which `path(&row) -> bool` is
 false does not exist in this index (a partial index). The predicate receives the whole row and may read any column (not necessarily an indexed one); it composes with plain field indexes and function indexes alike.
 - Raw-byte fields: `Bytes` (`okm_core::Bytes`) — a variable-length cold
 TLV frame, the same encoding as `String` minus the UTF-8 constraint (hashes, ciphertext, serialized blobs). The retired `Vec<u8>` spelling is rejected at compile time with a pointer here: a list-shaped name misdescribed byte-string semantics.
 
-**Basic use 1: single-value function index (write-side precomputation).** The data segment is the encoding of the function's return value, one entry per row, entries still live and die with the row:
+**Basic use 1: single-value function index (write-side precomputation).** The data segment is the encoding of the function's return value — one element, one entry per row, entries still live and die with the row. The return form is `IntoIterator` (ADR-0055), so a single value is written as a one-element array rather than a bare value:
 
 ```text
-fn lower_name(row: &Doc) -> String { row.name.to_lowercase() }
+fn lower_name(row: &Doc) -> [String; 1] { [row.name.to_lowercase()] }
 
 #[ok_index(by_name { func(lower_name) })]   // "Apple"/"APPLE" co-located
 ```
 
-**Basic use 2: multi-value function index (one row fans out into N entries).** A `Vec<V>` return fans one row into N entries; the token is the data segment (variable-length, hugging the primary-key prefix), and the read path is identical to a plain index (`scan::<I>`):
+**Basic use 2: multi-value function index (one row fans out into N entries).** Same declaration, one element per entry: return a `Vec`, a slice or any iterator of `V`. One form covers both uses — the writer asks for an iterator and does not care whether it yields one value or fifty (ADR-0055). What `V` may be is narrow, and identical in both uses: `String` (raw UTF-8) or `u8`/`u16`/`u32`/`u64` (big-endian, fixed width), nothing else — `&str`, `Option<T>`, `Uuid`, `[u8; N]` and `f32` are not function-index result types (a payload field may be a `Uuid` or an `f32`, but the entry segment has no order-preserving encoding for them). An empty iterator is zero entries. A `Vec<V>` return fans one row into N entries; the token is the data segment (variable-length, hugging the primary-key prefix), and the read path is identical to a plain index (`scan::<I>`):
 
 ```text
 fn hour_bucket(row: &Post) -> Vec<u64> {
@@ -274,6 +274,8 @@ use __OkmIndex_Doc_by_token as ByToken;
 // Query: prefix scan by token → fetch-back, exactly like a plain index
 let hits = t.scan::<ByToken>(b"rust")?;
 ```
+
+A multi-value face is also the primitive under full-text search, and that use carries one discipline worth knowing before declaring one — what recall gives, and where frequency comes from: see *Inverted index: recall from the index, frequency from the row*. The entry it produces is the size of one token plus a key tail, not the size of a document — which is why the write cost tracks the token count rather than the row size.
 
 Beyond the equality prefix, a comparison on the leading index field is a physical key interval (ADR-0020): `scan_range::<I>(begin, end)` / `scan_range_iter::<I>(..)` — byte order == value order for every OKM encoding, so `1 < a < 100` reads only the rows inside `[1, 100)`. Recipes live in the [query guide](query-recipes.md), "the forms of WHERE".
 
@@ -967,12 +969,34 @@ Every property the tag forest had no use for is load-bearing here: per-assertion
 
 There is no dedicated `Set` type — membership is carried by two application-level paths, chosen by the set's cardinality:
 
-**Low cardinality — a multi-value function index IS an inverted index.** `#[ok_index(by_tag { func(tags) })]` fans one row into one entry per element (`element -> pkey`), so "which rows contain X" is one prefix scan and "does row R contain X" is one point read — exact, no false positives, and the inverted face collapses duplicates through put semantics alone (same element + same pkey = same entry key). The truth source stays on the row (the func re-derives the entry set from it), and the purity contract keeps delete correct. Write cost is linear in set size — affordable at tens of elements, worth weighing at thousands.
+**Low cardinality — a multi-value function index IS an inverted index.** `#[ok_index(by_tag { func(tags) })]` fans one row into one entry per element (`element -> pkey`), so "which rows contain X" is one prefix scan and "does row R contain X" is one point read — exact, no false positives, and the inverted face collapses duplicates through put semantics alone (same element + same pkey = same entry key). The truth source stays on the row (the func re-derives the entry set from it), and the purity contract keeps delete correct. Write cost is linear in set size — affordable at tens of elements, worth weighing at thousands. What that face answers and what it cannot is its own case below: *Inverted index: recall from the index, frequency from the row*.
 
 **High cardinality — an application-level bloom filter, stored as a `Bytes` field.** When per-put fan-out is unacceptable (a 100k-element set would write 100k entries on every put), switch to a membership bitmap: k hashes set m bits, O(1) per put, at the price of false positives. The storage layer sees only opaque bytes — the hash family, the m/n ratio and the false-positive budget are all application parameters; carrying them into the codec would put a data-quality policy in the wrong layer. Two disciplines keep it in bounds:
 
 - **Truth-source discipline**: a bloom is a lossy derivative — delete cannot unfold membership from it. It must travel beside a complete membership representation (a `Vector<T>` on the row, or the set stored off-row), and must never be the only record of membership.
 - **Query semantics**: "possibly in the set" (verified through the complete representation when it matters) versus the inverted path's "definitely in the set". The two paths are complements, not substitutes.
+
+## Inverted index: recall from the index, frequency from the row
+
+The low-cardinality path above is the raw material of full-text search, and the entry layout decides the one thing that is easy to get wrong: **what recall gives you, and what it cannot**.
+
+What the entries give — all of it structural, none of it a feature:
+
+- the posting list for a token `t` is the prefix `[ns][slot][t]`, so one range scan returns every row that contains `t`, ordered by primary key;
+- two posting lists intersect without materialising either side — both are ordered, so `merge_join` streams them;
+- `df(t)` is the length of that range, for free;
+- "does row R contain t" is one point read.
+
+What it cannot give is `tf`. Two occurrences of a token in one row produce the same entry key — same token, same tail — so `put` overwrites and the second is invisible. The mechanism that makes the entry idempotent and the delete pure is the same one that discards the count; set semantics are not an omission.
+
+So the discipline is: **recall from the index, frequency from the row.** Posting lists decide the candidate set; ranking fetches each candidate's row (needed for the document length anyway) and counts occurrences in the text. The index answers "who might match", the row answers "how much". The cost sits in the ranking step, once per query, and never on the write path. The only quantity that needs a bound is the candidate set — a top-k by `df`, or a bounded range scan.
+
+Storing `tf` anyway is possible, and it costs what "one fact, one place" costs everywhere else in this document:
+
+- **A second table**, `(token, pkey) -> { tf }`, written in the same `Batch` as the row: `tf` in O(1), plus a second representation to delete, rebuild and keep in step — exactly the bookkeeping the declared index performs for free.
+- **A count inside the segment**, `[token][tf u16][key tail]`. Mechanically legal (a variable-width field followed by a fixed-width one still leaves the segment boundary recoverable from the tail width), but it kills `scan_exact` — a probe can no longer name a whole segment, because it does not know the count — and the segment is not readable through `scan`, which returns `(decoded key, taken)` and drops the entry value. That is a new read surface in the core, not an extension of a declaration.
+
+The text side stops at tokens too. `okm-ngram` supplies what is library work rather than store work: `ngrams(text, n)` — character n-grams, so CJK is one gram per two characters rather than byte noise — and `bm25_score`. Normalisation is the caller's, and it is not optional: `"are you ok"` at `n = 2` yields `"ar" "re" "e " " y" "yo" "ou" "u " " o" "ok"`, and the grams that straddle a word boundary are why real tokenizers exist — and why a whitespace tokenizer is the better default for words where n-grams are the better one for CJK. No positions are stored, so there are no phrase queries; n-grams buy substring recall, not phrase matching. Write cost is linear in the row's token count: tens is nothing, a thousand is a modeling decision.
 
 ## Homogeneous lists: `Vector<T>`
 
