@@ -12,7 +12,8 @@
 )]
 
 use okm_core::{
-    Document, DocumentEncode, KeyEncode, KvIndex, PrefixKey, TestStore, VirtualStorage,
+    Document, DocumentEncode, KeyEncode, KvIndex, PrefixKey, TestStore, Vector, VectorElem,
+    VirtualStorage,
 };
 
 // marker struct 生成在 derive 展开点（本文件），直接引用
@@ -483,9 +484,10 @@ fn probe_never_spills_into_the_key_tail() {
 }
 
 /// 函数索引（function-index regime）：归一化函数同时驱动写入端编码与
-/// 查询端探针——一条声明，两侧共用。
-fn lower_name(document: &DocFunc) -> String {
-    document.name.to_lowercase()
+/// 查询端探针——一条声明，两侧共用。返回形态是 `IntoIterator`（ADR-0055）：
+/// 单值写成单元素数组，多值写 `Vec`/切片/迭代器，同一个契约。
+fn lower_name(document: &DocFunc) -> [String; 1] {
+    [document.name.to_lowercase()]
 }
 
 #[derive(DocumentEncode, Clone, PartialEq, Debug)]
@@ -538,9 +540,8 @@ fn function_index_normalizes_both_sides() {
         city: 0,
         name: "APPLE".to_string(),
     };
-    let listed = t
-        .scan::<ByLower>(probe.name.to_lowercase().as_bytes())
-        .unwrap();
+    let probe_seg = &lower_name(&probe)[0];
+    let listed = t.scan::<ByLower>(probe_seg.as_bytes()).unwrap();
     assert_eq!(listed.len(), 2); // Apple + APPLE 归一化到同一区间
     let ids: Vec<u64> = listed.iter().map(|(pk, _)| pk.decoded.id).collect();
     assert_eq!(ids, [1, 2]); // 字典序（同结果 → 主键序）
@@ -608,6 +609,111 @@ fn multi_entry_function_index_fans_out() {
     t.purge(&rows[0].0).unwrap();
     let remaining = t.scan::<ByTag>(b"rust").unwrap().len();
     assert_eq!(remaining, 1); // 只剩 id 2
+}
+
+// ---------------------------------------------------------------------------
+// 函数索引的返回形态：IntoIterator（ADR-0055）
+// ---------------------------------------------------------------------------
+
+/// 任意迭代器都算数——写入端不为它先 collect。这里返回惰性 iterator，
+/// 一行展开成 span+1 条 entry（分桶场景的常见形状）。
+#[test]
+fn function_index_accepts_any_iterator() {
+    fn buckets(row: &HourRow) -> impl Iterator<Item = u64> {
+        (0..=row.span).map(move |i| row.base + u64::from(i))
+    }
+
+    #[derive(DocumentEncode, Clone, PartialEq, Debug)]
+    #[ok_ref(DocKey)]
+    #[ok_index(by_bucket { func(buckets) })]
+    #[ok_ns(23)]
+    pub struct HourRow {
+        pub base: u64,
+        pub span: u8,
+    }
+
+    use __OkmIndex_HourRow_by_bucket as ByBucket;
+
+    let t = <HourRow as Document>::collection(TestStore::slatedb_mem());
+    let k = DocKey { id: 7 };
+    t.put(&k, &HourRow { base: 100, span: 2 }).unwrap();
+
+    for b in [100u64, 101, 102] {
+        let hits = t.scan::<ByBucket>(&b.to_be_bytes()).unwrap();
+        assert_eq!(hits.len(), 1, "bucket {b} 应有该行");
+        assert_eq!(hits[0].0.decoded.id, 7);
+    }
+    assert!(
+        t.scan::<ByBucket>(&103u64.to_be_bytes())
+            .unwrap()
+            .is_empty()
+    );
+
+    // 删除沿同一迭代重建集合：三条一起走
+    t.purge(&k).unwrap();
+    for b in [100u64, 101, 102] {
+        assert!(t.scan::<ByBucket>(&b.to_be_bytes()).unwrap().is_empty());
+    }
+}
+
+/// 借用也能迭代：`&T` 与 `T` 的段编码相同，所以对集合字段直接 `.iter()`
+/// 就能产出条目，不必先 clone 成临时集合。
+#[test]
+fn function_index_iterates_borrowed_values() {
+    fn bucket_ids(row: &Borrowed) -> std::slice::Iter<'_, u32> {
+        row.ids.elems.iter()
+    }
+
+    #[derive(DocumentEncode, Clone, PartialEq, Debug)]
+    #[ok_ref(DocKey)]
+    #[ok_index(by_bucket { func(bucket_ids) })]
+    #[ok_ns(25)]
+    pub struct Borrowed {
+        pub ids: Vector<u32>,
+    }
+
+    use __OkmIndex_Borrowed_by_bucket as ByBucket;
+
+    let t = <Borrowed as Document>::collection(TestStore::slatedb_mem());
+    let k = DocKey { id: 11 };
+    let row = Borrowed {
+        ids: Vector::new(vec![7u32, 9]),
+    };
+    t.put(&k, &row).unwrap();
+
+    let pairs = ByBucket::entry_pairs(<Borrowed as Document>::NS_PREFIX, &k, &row);
+    assert_eq!(pairs.len(), 2);
+    assert_eq!(t.scan::<ByBucket>(&7u32.to_be_bytes()).unwrap().len(), 1);
+    assert!(t.scan::<ByBucket>(&8u32.to_be_bytes()).unwrap().is_empty());
+}
+
+/// 空迭代器 = 这行不产生任何 entry（行级过滤的一种写法；声明上的 where 更清楚）。
+/// 这条同时锁住 encode_named 的 `next()` 分支：空集合不能 panic。
+#[test]
+fn function_index_with_no_values_writes_no_entries() {
+    fn nothing(_row: &Quiet) -> std::iter::Empty<u64> {
+        std::iter::empty()
+    }
+
+    #[derive(DocumentEncode, Clone, PartialEq, Debug)]
+    #[ok_ref(DocKey)]
+    #[ok_index(by_none { func(nothing) })]
+    #[ok_ns(24)]
+    pub struct Quiet {
+        pub x: u64,
+    }
+
+    use __OkmIndex_Quiet_by_none as ByNone;
+
+    let t = <Quiet as Document>::collection(TestStore::slatedb_mem());
+    let k = DocKey { id: 9 };
+    let row = Quiet { x: 1 };
+    t.put(&k, &row).unwrap();
+
+    let pairs = ByNone::entry_pairs(<Quiet as Document>::NS_PREFIX, &k, &row);
+    assert!(pairs.is_empty());
+    // 主表仍有行：函数索引是派生面，不是写入的门
+    assert!(t.get(&k).unwrap().is_some());
 }
 
 // ---------------------------------------------------------------------------

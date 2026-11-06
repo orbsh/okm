@@ -151,7 +151,10 @@ pub const LEAD_SLOT_BASE: Slot = slot(segment::LEAD, 1);
 /// - Unsigned integers → big-endian bytes: sort order IS numeric order.
 ///
 /// A function returning anything else fails to compile at the generated
-/// `KvIndex` impl (the trait bound names this trait explicitly).
+/// `KvIndex` impl (the trait bound names this trait explicitly), and so does a
+/// function that returns a single value rather than something iterable of it
+/// (ADR-0055: `String` → `[String; 1]`, declared by the same contract that
+/// carries a token stream).
 pub trait IndexFuncResult {
     /// Append the index-segment encoding of this value.
     fn encode_index(&self, buf: &mut Vec<u8>);
@@ -193,43 +196,43 @@ macro_rules! index_func_uint {
 
 index_func_uint!(u8, u16, u32, u64);
 
-/// The set of index entries one function-index invocation produces.
-/// Single values yield one entry (the classic function index); iterators
-/// of values (`Vec<String>`, token streams) yield one entry each — the
-/// multi-entry regime (inverted index, multi-valued fields). A type
-/// cannot implement both arms: `Vec<V>` never implements
-/// `IndexFuncResult`, so the two impls do not overlap.
-pub trait IndexFuncValues {
-    /// Each element is one entry's index-segment encoding.
-    fn func_values(self) -> Vec<Vec<u8>>;
-}
-
-macro_rules! index_func_values_single {
-    ($($t:ty),*) => {$(impl IndexFuncValues for $t {
-        fn func_values(self) -> Vec<Vec<u8>> {
-            let mut buf = Vec::with_capacity(IndexFuncResult::index_encoded_width(&self));
-            IndexFuncResult::encode_index(&self, &mut buf);
-            vec![buf]
-        }
-    })*};
-}
-
-index_func_values_single!(String, u8, u16, u32, u64);
-
-impl<V: IndexFuncResult> IndexFuncValues for Vec<V> {
-    fn func_values(self) -> Vec<Vec<u8>> {
-        // Sized up front on both levels: the element count is `len()`, and each
-        // segment states its own width. This is the multi-entry fan-out's whole
-        // input — one entry per produced value — so a growth ladder here costs
-        // one ladder per entry.
-        let mut out = Vec::with_capacity(self.len());
-        for v in self {
-            let mut buf = Vec::with_capacity(v.index_encoded_width());
-            v.encode_index(&mut buf);
-            out.push(buf);
-        }
-        out
+/// A reference encodes exactly as the value does, so a function index can
+/// iterate borrowed results — `row.tags.iter()` over a `Vec<String>` field —
+/// instead of cloning into a temporary collection for the writer to walk.
+impl<T: IndexFuncResult + ?Sized> IndexFuncResult for &T {
+    fn encode_index(&self, buf: &mut Vec<u8>) {
+        (**self).encode_index(buf);
     }
+
+    fn index_encoded_width(&self) -> usize {
+        (**self).index_encoded_width()
+    }
+}
+
+/// The index segments one function-index invocation produces (ADR-0055).
+///
+/// The contract is `IntoIterator`, and it is the only contract: a single value
+/// is declared as a one-element array (`[v]`), a multi-value result as a
+/// `Vec`, a slice or any iterator of them — one form for the whole mechanism.
+/// There is no adapter trait between the two shapes, so there is no second
+/// impl arm to keep coherent with the first, and a caller-side result type
+/// only has to iterate.
+///
+/// One buffer per produced value, sized from
+/// [`index_encoded_width`](IndexFuncResult::index_encoded_width) when the value
+/// type states it: a stated width is the difference between one allocation and
+/// a growth ladder, once per entry. The iterator is consumed by the writer as
+/// it goes, so a lazy source costs nothing beyond the entries it yields.
+pub fn result_segments<V, I>(values: I) -> impl Iterator<Item = Vec<u8>>
+where
+    V: IndexFuncResult,
+    I: IntoIterator<Item = V>,
+{
+    values.into_iter().map(|value| {
+        let mut buf = Vec::with_capacity(value.index_encoded_width());
+        value.encode_index(&mut buf);
+        buf
+    })
 }
 
 /// Value-side payload contract (ADR-0004/0006): a document = identity (its key)
