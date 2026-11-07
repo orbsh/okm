@@ -176,7 +176,7 @@ district is `fields(province_id, city_id, district_id)`: three fixed-width segme
 - **One face per text dimension** (`by_name`, `by_city`, …): each face holds that
 single variable segment, legal — at the price of one more entry per row, i.e. a permanent write cost per face.
 - **A fixed-width sort dimension AFTER a text one rides the key tail.**
-`fields(name)` with the tail carrying time/identity gives the entry `[name][tail]`, i.e. a `(name, time)` composite order: the carried tail is the only thing allowed to follow a variable segment — its third job.
+`fields(name)` with the tail carrying time/identity gives the entry `[name][tail]`, i.e. a `(name, time)` composite order: the carried tail is the only thing allowed to follow a variable segment — its third job, per ADR-0005.
 - **Two text dimensions that must BOTH order the bytes → one computed segment.**
 A `func` index makes the data segment a single string with the separator inside the VALUE (`last\x00first`): still one naked variable segment, still no terminator in the key, and the prefix `last\x00` means "everyone with that surname". Choosing the separator is that declaration's contract (the same one-declaration-drives-both-sides rule as probe normalization); it must stay outside the value domain or the classic escaping problem returns — owned by the value-layer function rather than the key layout. The other lookup direction is a second face (a func fan-out).
 - **Fixed width before VarInt.** Two `VarInt` fields hit the same bound; spelling
