@@ -12,8 +12,9 @@
 //! frame; growth is append-only — no renumbering, ever). Unknown value
 //! types on decode are normal input for a dynamic reader: the frame is
 //! skipped by its length, not fatal — a newer writer may store types an
-//! older reader cannot see. Frames are written in insertion order;
-//! readers address fields by id, not position.
+//! older reader cannot see. Frames carry no ordering guarantee: writers
+//! walk a name-keyed map, so the bytes are in NAME order — not id order;
+//! readers address fields by id, never by position.
 
 use crate::model::wrappers::obj_value::ObjValueType;
 use crate::model::wrappers::wire::{put_len, take_len};
@@ -84,12 +85,6 @@ pub fn vocab_id_from_u64<N: crate::model::vocab::VocabId>(v: u64) -> Option<N> {
 /// supported here (their ids must be resolved first) — use
 /// [`put_frame_named`] with a name resolver.
 pub fn put_frame(buf: &mut Vec<u8>, id: u16, value: &DynamicValue) -> crate::error::Result<()> {
-    if id < 0xFF {
-        buf.push(id as u8);
-    } else {
-        buf.push(0xFF);
-        buf.extend_from_slice(&id.to_be_bytes());
-    }
     // No vocabulary here (the id is caller-resolved): a nested Obj value
     // cannot allocate names, so the resolver reports it instead of guessing.
     // Arrays of scalars are fine.
@@ -98,11 +93,9 @@ pub fn put_frame(buf: &mut Vec<u8>, id: u16, value: &DynamicValue) -> crate::err
             name: name.to_owned(),
         })
     };
-    let (ty, mut body) = encode_value(value, &mut no_vocab)?;
-    buf.push(ty.to_byte());
-    put_len(buf, body.len());
-    buf.append(&mut body);
-    Ok(())
+    let mut scratch = FrameScratch::new();
+    write_id(buf, id);
+    write_value(buf, value, &mut no_vocab, &mut scratch, 0)
 }
 
 /// Name resolver: returns the vocabulary id for `name`, allocating
@@ -127,57 +120,96 @@ pub fn put_frame_named<R: NameResolver>(
     value: &DynamicValue,
     vocab: &mut R,
 ) -> crate::error::Result<()> {
-    put_frame_named_inner(buf, name, value, vocab)
+    let mut scratch = FrameScratch::new();
+    put_frame_named_scratch(buf, name, value, vocab, &mut scratch)
 }
 
-fn put_frame_named_inner<R: NameResolver>(
+/// [`put_frame_named`] with the caller's [`FrameScratch`] — the form a writer
+/// emitting MANY frames uses: the scratch recycles one body buffer per nesting
+/// depth instead of allocating one per frame.
+pub fn put_frame_named_scratch<R: NameResolver>(
     buf: &mut Vec<u8>,
     name: &str,
     value: &DynamicValue,
     vocab: &mut R,
+    scratch: &mut FrameScratch,
+) -> crate::error::Result<()> {
+    write_named_frame(buf, name, value, vocab, scratch, 0)
+}
+
+fn write_named_frame<R: NameResolver>(
+    buf: &mut Vec<u8>,
+    name: &str,
+    value: &DynamicValue,
+    vocab: &mut R,
+    scratch: &mut FrameScratch,
+    depth: usize,
 ) -> crate::error::Result<()> {
     let id = vocab.resolve(name)?;
+    write_id(buf, id);
+    write_value(buf, value, vocab, scratch, depth)
+}
+
+/// One frame id: `u8` for `< 0xFF`, else the `0xFF` escape plus a `u16` BE.
+fn write_id(buf: &mut Vec<u8>, id: u16) {
     if id < 0xFF {
         buf.push(id as u8);
     } else {
         buf.push(0xFF);
         buf.extend_from_slice(&id.to_be_bytes());
     }
-    match value {
-        DynamicValue::Obj(map) => {
-            // Nested obj: one outer frame (type 7) whose body is the
-            // nested nTLV list — same shape, same vocabulary.
-            let mut body = Vec::new();
-            for (k, v) in map {
-                put_frame_named_inner(&mut body, k, v, vocab)?;
-            }
-            buf.push(ObjValueType::Obj.to_byte());
-            put_len(buf, body.len());
-            buf.append(&mut body);
-        }
-        other => {
-            let (ty, mut body) = encode_value(other, vocab)?;
-            buf.push(ty.to_byte());
-            put_len(buf, body.len());
-            buf.append(&mut body);
-        }
-    }
-    Ok(())
 }
 
-/// Value → (type tag, body bytes). Nested objects need the vocabulary
-/// to resolve names → ids, so the resolver is a parameter (top-level
-/// frames go through [`put_frame`], which owns the vocab).
-/// Value → (type tag, body bytes). Nested objects need the vocabulary
-/// to resolve names → ids, so the resolver is a parameter: a top-level
-/// Obj is encoded by `put_frame_named`'s own arm, but an Obj nested
-/// inside an Array reaches THIS arm — composites must encode fully
-/// wherever they appear.
-fn encode_value<R: NameResolver>(
+/// Reusable frame-encode scratch: one body buffer per nesting depth.
+///
+/// A composite's body must be built before its length can be written (the
+/// length is a varint whose own width depends on the value — it cannot be
+/// patched in place), so the encoder needs somewhere to put the body. Handing
+/// back a fresh `Vec` per frame cost one heap allocation per dynamic field of
+/// every document; a scratch recycles one buffer per depth across all the
+/// frames of a write. Scalars never touch it — they know their length and write
+/// straight into the destination.
+#[derive(Debug, Default)]
+pub struct FrameScratch {
+    bufs: Vec<Vec<u8>>,
+}
+
+impl FrameScratch {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Buffers allocated so far — the deepest nesting this scratch has served.
+    pub fn depth(&self) -> usize {
+        self.bufs.len()
+    }
+
+    fn take(&mut self, depth: usize) -> Vec<u8> {
+        while self.bufs.len() <= depth {
+            self.bufs.push(Vec::new());
+        }
+        std::mem::take(&mut self.bufs[depth])
+    }
+
+    fn put_back(&mut self, depth: usize, mut buf: Vec<u8>) {
+        buf.clear();
+        self.bufs[depth] = buf;
+    }
+}
+
+/// Write ONE value frame — `[type][len][body]` — straight into `buf`.
+/// Nested objects need the vocabulary to resolve names → ids, so the resolver
+/// is a parameter; a top-level Obj is written by [`write_named_frame`], and an
+/// Obj nested inside an Array reaches THIS match arm — composites are written
+/// fully wherever they appear.
+fn write_value<R: NameResolver>(
+    buf: &mut Vec<u8>,
     value: &DynamicValue,
     vocab: &mut R,
-) -> crate::error::Result<(ObjValueType, Vec<u8>)> {
-    Ok(match value {
+    scratch: &mut FrameScratch,
+    depth: usize,
+) -> crate::error::Result<()> {
+    match value {
         DynamicValue::Int(v) => {
             // Minimal big-endian two's-complement width.
             let be = v.to_be_bytes();
@@ -189,41 +221,70 @@ fn encode_value<R: NameResolver>(
             } else {
                 first
             };
-            (ObjValueType::Int, be[start..].to_vec())
+            buf.push(ObjValueType::Int.to_byte());
+            put_len(buf, 8 - start);
+            buf.extend_from_slice(&be[start..]);
         }
         DynamicValue::UInt(v) => {
             // Minimal big-endian width: strip leading zero bytes.
             let be = v.to_be_bytes();
             let first = be.iter().position(|&b| b != 0).unwrap_or(7);
-            (ObjValueType::UInt, be[first..].to_vec())
+            buf.push(ObjValueType::UInt.to_byte());
+            put_len(buf, 8 - first);
+            buf.extend_from_slice(&be[first..]);
         }
-        DynamicValue::F64(v) => (ObjValueType::F64, v.to_be_bytes().to_vec()),
-        DynamicValue::Str(s) => (ObjValueType::Str, s.as_bytes().to_vec()),
-        DynamicValue::Bytes(b) => (ObjValueType::Bytes, b.clone()),
-        DynamicValue::Bool(b) => (ObjValueType::Bool, vec![*b as u8]),
-        DynamicValue::Null => (ObjValueType::Null, Vec::new()),
+        DynamicValue::F64(v) => {
+            buf.push(ObjValueType::F64.to_byte());
+            put_len(buf, 8);
+            buf.extend_from_slice(&v.to_be_bytes());
+        }
+        DynamicValue::Str(s) => {
+            let bytes = s.as_bytes();
+            buf.push(ObjValueType::Str.to_byte());
+            put_len(buf, bytes.len());
+            buf.extend_from_slice(bytes);
+        }
+        DynamicValue::Bytes(b) => {
+            buf.push(ObjValueType::Bytes.to_byte());
+            put_len(buf, b.len());
+            buf.extend_from_slice(b);
+        }
+        DynamicValue::Bool(b) => {
+            buf.push(ObjValueType::Bool.to_byte());
+            put_len(buf, 1);
+            buf.push(*b as u8);
+        }
+        DynamicValue::Null => {
+            buf.push(ObjValueType::Null.to_byte());
+            put_len(buf, 0);
+        }
         DynamicValue::Array(items) => {
-            // [element count u32 BE][element frames...]
-            let mut body = Vec::new();
+            // Body: [element count][element frames...], built in the scratch
+            // because the count is not the body's length.
+            let mut body = scratch.take(depth);
             put_len(&mut body, items.len());
             for item in items {
-                let (ty, mut b) = encode_value(item, vocab)?;
-                body.push(ty.to_byte());
-                put_len(&mut body, b.len());
-                body.append(&mut b);
+                write_value(&mut body, item, vocab, scratch, depth + 1)?;
             }
-            (ObjValueType::Array, body)
+            buf.push(ObjValueType::Array.to_byte());
+            put_len(buf, body.len());
+            buf.extend_from_slice(&body);
+            scratch.put_back(depth, body);
         }
         DynamicValue::Obj(map) => {
-            // Obj inside an Array: the same nested-nTLV body the
-            // frame-level Obj arm produces — same vocabulary recursion.
-            let mut body = Vec::new();
+            // The same nested-nTLV body the frame level produces — same
+            // vocabulary recursion, wherever the Obj sits.
+            let mut body = scratch.take(depth);
             for (k, v) in map {
-                put_frame_named_inner(&mut body, k, v, vocab)?;
+                write_named_frame(&mut body, k, v, vocab, scratch, depth + 1)?;
             }
-            (ObjValueType::Obj, body)
+            buf.push(ObjValueType::Obj.to_byte());
+            put_len(buf, body.len());
+            buf.extend_from_slice(&body);
+            scratch.put_back(depth, body);
         }
-    })
+    }
+    Ok(())
 }
 
 /// Decode one frame starting at `*off`; advances past it. `None` on
@@ -897,5 +958,38 @@ mod nested_tests {
             panic!("mid must contain Obj leaf");
         };
         assert_eq!(leaf_m["v"], DynamicValue::Int(-3));
+    }
+
+    /// The encode scratch recycles one body buffer per nesting depth; the bytes
+    /// it produces are identical to the one-scratch-per-frame form. Both halves
+    /// are the contract of the refactor that removed the per-frame allocation.
+    #[test]
+    fn the_scratch_reuses_buffers_and_writes_the_same_bytes() {
+        let value = DynamicValue::Obj(BTreeMap::from([
+            ("a".to_string(), DynamicValue::UInt(7)),
+            (
+                "nested".to_string(),
+                DynamicValue::Array(vec![
+                    DynamicValue::Str("x".into()),
+                    DynamicValue::Obj(BTreeMap::from([(
+                        "deep".to_string(),
+                        DynamicValue::Int(-3),
+                    )])),
+                ]),
+            ),
+        ]));
+
+        let mut vocab = StubVocab::new();
+        let mut scratch = FrameScratch::new();
+        let mut reused = Vec::new();
+        put_frame_named_scratch(&mut reused, "top", &value, &mut vocab, &mut scratch).unwrap();
+        // Outer obj body (0), array body (1), deeper obj body (2) — and the
+        // count follows NESTING, not the number of frames.
+        assert_eq!(scratch.depth(), 3, "one buffer per nesting depth");
+
+        let mut fresh_vocab = StubVocab::new();
+        let mut fresh = Vec::new();
+        put_frame_named(&mut fresh, "top", &value, &mut fresh_vocab).unwrap();
+        assert_eq!(reused, fresh, "the scratch must not change the bytes");
     }
 }

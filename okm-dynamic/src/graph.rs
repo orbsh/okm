@@ -27,7 +27,7 @@ use okm_core::index::PRIMARY_SLOT;
 use okm_core::model::graph::{
     EDGE_IN_SLOT, EDGE_OUT_SLOT, EDGE_PREDICATE_IN_SLOT, EDGE_PREDICATE_OUT_SLOT, NodeRef,
 };
-use okm_core::obj_dynamic::{DynamicValue, decode_named, put_frame_named};
+use okm_core::obj_dynamic::{DynamicValue, decode_named, put_frame_named_scratch};
 use okm_core::obj_vocab::{FIELD_VOCAB, PREDICATE_VOCAB, VocabCache};
 use okm_core::schema::CollectionSchema;
 use okm_core::storage::{Batch, VirtualStorage, scan_suffix_kv};
@@ -134,9 +134,11 @@ impl<S: VirtualStorage> Graph<S> {
         attrs: &std::collections::BTreeMap<String, DynamicValue>,
     ) -> Result<Vec<u8>, String> {
         let mut body = Vec::new();
+        let mut scratch = okm_core::obj_dynamic::FrameScratch::new();
         let mut resolver = |name: &str| self.fields.id_for(&mut self.store, &self.ns, name);
         for (name, value) in attrs {
-            put_frame_named(&mut body, name, value, &mut resolver).map_err(|e| e.to_string())?;
+            put_frame_named_scratch(&mut body, name, value, &mut resolver, &mut scratch)
+                .map_err(|e| e.to_string())?;
         }
         Ok(body)
     }
