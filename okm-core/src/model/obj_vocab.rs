@@ -360,6 +360,17 @@ impl<I: VocabId> VocabCache<I> {
         self.pending.retain(|_, (id, _)| !ids.contains(id));
     }
 
+    /// Trust EVERY pending id at once. Valid only on a store that commits each
+    /// allocation IMMEDIATELY (no batch staging): there a successful `id_for`
+    /// has already made every entry durable, so nothing is waiting on a commit
+    /// to observe. The graph's write path is that shape (its `id_for` calls take
+    /// the real store, not the caller's batch); `Collection` and
+    /// `DynamicCollection` stage vocabulary growth into a caller's batch and
+    /// promote with [`Self::pending_in`] + [`Self::promote`] instead.
+    pub fn promote_all(&mut self) {
+        self.pending.clear();
+    }
+
     fn remember(&mut self, id: I, label: &str) {
         self.by_id.insert(id, label.to_owned());
         self.by_name.insert(label.to_owned(), id);

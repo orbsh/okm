@@ -269,3 +269,25 @@ fn byte_equality_with_fixed_ontology_form() {
         assert_eq!(a, b, "face {f:02X} must be byte-identical across forms");
     }
 }
+
+/// The graph holds its two vocabularies per handle. Its allocations commit
+/// immediately (through the real store, not an edge batch), so a successful
+/// `link` promotes them — otherwise every later write would probe the engine
+/// once per name, for the life of the handle.
+#[test]
+fn link_promotes_its_vocabulary_allocations() {
+    let store = okm_core::TestStore::slatedb_mem();
+    let mut g: Graph<_> = Graph::new(store, NS, works_at_schema());
+
+    g.link(&dyn_edge(person(1), org(9), "works_at", 2020), 1)
+        .unwrap();
+    assert_eq!(g.vocab_pending(), 0, "an immediate commit is evidence");
+
+    // The same names on a new edge allocate nothing, and leave nothing pending.
+    g.link(&dyn_edge(person(1), org(9), "works_at", 2021), 2)
+        .unwrap();
+    assert_eq!(g.vocab_pending(), 0);
+    let back = g.get_edge(2).unwrap().unwrap();
+    assert_eq!(back.predicate, "works_at");
+    assert_eq!(back.attrs.get("since"), Some(&DynamicValue::UInt(2021)));
+}

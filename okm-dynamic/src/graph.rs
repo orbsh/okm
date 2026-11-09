@@ -83,6 +83,14 @@ impl<S: VirtualStorage> Graph<S> {
         &self.schema
     }
 
+    /// Diagnostic: vocabulary allocations written but not yet promoted. Zero
+    /// after a successful `link` — its allocations commit immediately, and
+    /// `write_into` promotes them; a non-zero value would mean the next write
+    /// pays one engine probe per name.
+    pub fn vocab_pending(&self) -> usize {
+        self.predicates.pending_len() + self.fields.pending_len()
+    }
+
     /// Membership (ADR-0017 §4): the declaration's member set rides the
     /// schema as data, and a dynamic writer enforces it against the refs' ns —
     /// the same check the static form makes through `E::Nodes`. An EMPTY set
@@ -272,6 +280,12 @@ impl<S: VirtualStorage> Graph<S> {
             ),
             Vec::new(),
         );
+        // Vocabulary growth on THIS path commits immediately (`id_for` writes
+        // through the real store, not the caller's batch), so every pending id
+        // became durable the moment it returned Ok — promote, or the next write
+        // pays a probe per name for the rest of the handle's life.
+        self.predicates.promote_all();
+        self.fields.promote_all();
         Ok(())
     }
 
