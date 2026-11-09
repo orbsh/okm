@@ -72,7 +72,8 @@ pub use index::{
 pub use path::{Component, Path};
 pub use plan::{PlannedDelete, PlannedPut, PlannedWrite, Stored, decode_stored};
 pub use plan_fields::{
-    PlannedFields, VocabMirror, fields_from_frames, fields_key, plan_delete_fields, plan_put_fields,
+    PlannedFields, VocabMirror, fields_from_frames, fields_from_frames_probing, fields_key,
+    plan_delete_fields, plan_put_fields,
 };
 pub use reduce::{
     BoundReduce, PresetKind, PresetLogic, ReduceLogic, ReduceLogicObj, ReduceSpec, reduce_get,

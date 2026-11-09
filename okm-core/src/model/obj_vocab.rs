@@ -31,10 +31,22 @@
 //! the engine mutex — the same boundary a local caller's `&mut self` provides).
 //! Exhausting the declared width is a loud error, never a wrap.
 //!
-//! The cache mirrors both directions in memory. Consistency rests on the
-//! single-writer discipline; if several processes share one engine, the cache
-//! degrades to connection lifetime (reload on reconnect) — acceptable for a
-//! vocabulary that only grows.
+//! The cache mirrors both directions in memory, and a `Collection` keeps ONE
+//! for its own lifetime: a fresh cache per operation paid one engine probe per
+//! dynamic field per write AND per read, which is the dynamic segment's
+//! dominant cost (the frame walk itself is a few hundred bytes). Two
+//! consequences are part of the contract:
+//!
+//! - The mirror's quick path (label → id without a probe) assumes one writer
+//!   per table: ids are append-only, so two writers can only disagree about a
+//!   label each of them allocated. Sequential handles on one engine interleave
+//!   safely (the allocation cursor is read from the store every time —
+//!   `take_next`); two writers allocating CONCURRENTLY race on
+//!   that cursor, which no amount of in-memory caching can fix.
+//! - An allocated id is not evidence until the commit carrying its name key
+//!   lands (`pending`): a refused commit would otherwise leave the mirror
+//!   naming an id no reader can resolve, and a later write would emit that id
+//!   without rewriting the vocabulary entry.
 
 use crate::engine::storage::{Batch, VirtualStorage, scan_suffix_kv};
 use crate::model::index::{
@@ -170,9 +182,13 @@ pub struct VocabCache<I: VocabId = u16> {
     faces: VocabFaces,
     by_id: HashMap<I, String>,
     by_name: HashMap<String, I>,
-    /// The next id this cache knows about: `None` until the first allocation in
-    /// this cache asks the store.
-    next_id: Option<I>,
+    /// Labels whose allocation this cache has not WATCHED land: the id was
+    /// written into a caller's batch, and a refused commit leaves no vocabulary
+    /// entry behind. `id_for` probes for these instead of trusting the mirror —
+    /// one extra probe, never a frame naming an id no reader can resolve. The
+    /// entry keeps the label's NAME KEY so a commit can promote exactly the ids
+    /// whose write it carried ([`Self::pending_in`]).
+    pending: HashMap<String, (I, Vec<u8>)>,
 }
 
 impl<I: VocabId> VocabCache<I> {
@@ -181,7 +197,7 @@ impl<I: VocabId> VocabCache<I> {
             faces,
             by_id: HashMap::new(),
             by_name: HashMap::new(),
-            next_id: None,
+            pending: HashMap::new(),
         }
     }
 
@@ -218,8 +234,19 @@ impl<I: VocabId> VocabCache<I> {
         header: &[u8],
         label: &str,
     ) -> crate::error::Result<I> {
+        // Known AND durable? No probe at all. A label in `pending` falls
+        // through on purpose: its write may have been refused, so the mirror is
+        // not evidence yet.
+        if !self.pending.contains_key(label)
+            && let Some(id) = self.by_name.get(label)
+        {
+            return Ok(*id);
+        }
+
         // Already interned? ONE point probe — no scan, and through a BatchStore
-        // it sees a label this same batch allocated earlier.
+        // it sees a label this same batch allocated earlier. A hit does NOT
+        // clear `pending`: through a batch view it may be this batch's own
+        // uncommitted write.
         let name_key = self.name_key(header, label);
         if let Some(id) = store.get(&name_key)?.and_then(|raw| I::from_be(&raw)) {
             self.remember(id, label);
@@ -242,13 +269,15 @@ impl<I: VocabId> VocabCache<I> {
         // batch writer gets vocabulary growth, its row and its faces atomically.
         let mut batch = Batch::default();
         let id_key = self.id_key(header, id);
-        batch.put(name_key, id.to_be());
+        batch.put(name_key.clone(), id.to_be());
         batch.put(id_key, label.as_bytes().to_vec());
         batch.put(self.cursor_key(header), next.to_be());
         store.commit_batch(batch)?;
 
-        self.next_id = Some(next);
         self.remember(id, label);
+        // Not evidence yet: a BatchStore commit above only STAGED the write.
+        // The commit that carries `name_key` promotes it ([`Self::pending_in`]).
+        self.pending.insert(label.to_owned(), (id, name_key));
         Ok(id)
     }
 
@@ -298,6 +327,39 @@ impl<I: VocabId> VocabCache<I> {
         Ok(Some(id))
     }
 
+    /// How many allocations this cache has not watched land (see `pending`).
+    pub fn pending_len(&self) -> usize {
+        self.pending.len()
+    }
+
+    /// The pending ids whose vocabulary write IS in `ops` — the promotion
+    /// candidates for a commit that is ABOUT to land. Call it before the commit
+    /// (the batch is consumed by it) and [`promote`](Self::promote) with the
+    /// answer only after it returned `Ok`: a refused commit promotes nothing,
+    /// and its labels keep probing (correct, one probe slower).
+    pub fn pending_in(&self, ops: &[(Vec<u8>, Option<Vec<u8>>)]) -> Vec<I> {
+        if self.pending.is_empty() {
+            return Vec::new();
+        }
+        self.pending
+            .values()
+            .filter(|(_, name_key)| {
+                ops.iter()
+                    .any(|(k, v)| v.is_some() && k.as_slice() == name_key.as_slice())
+            })
+            .map(|(id, _)| *id)
+            .collect()
+    }
+
+    /// Trust these ids: the commit that carried their vocabulary entries
+    /// returned `Ok`, so the mirror is now evidence for them.
+    pub fn promote(&mut self, ids: &[I]) {
+        if ids.is_empty() {
+            return;
+        }
+        self.pending.retain(|_, (id, _)| !ids.contains(id));
+    }
+
     fn remember(&mut self, id: I, label: &str) {
         self.by_id.insert(id, label.to_owned());
         self.by_name.insert(label.to_owned(), id);
@@ -309,14 +371,17 @@ impl<I: VocabId> VocabCache<I> {
     /// when the vocabulary is empty (ids are never deleted), so a populated
     /// legacy vocabulary falls through to the one-time max + 1 scan, and the
     /// allocation writes the cursor that retires that path forever.
+    ///
+    /// The cursor is read EVERY time, never cached on the mirror: a second
+    /// handle on the same table (two `Collection`s, or the dynamic facade beside
+    /// a typed one) allocates from the same counter, and a cached watermark
+    /// would hand out an id the other handle just took. One probe per NEW label
+    /// is the whole cost — labels are allocated once, ever.
     fn take_next<S: VirtualStorage + ?Sized>(
-        &mut self,
+        &self,
         store: &S,
         header: &[u8],
     ) -> crate::error::Result<I> {
-        if let Some(next) = self.next_id {
-            return Ok(next);
-        }
         let next = match store
             .get(&self.cursor_key(header))?
             .and_then(|raw| I::from_be(&raw))
@@ -330,7 +395,6 @@ impl<I: VocabId> VocabCache<I> {
                 }
             }
         };
-        self.next_id = Some(next);
         Ok(next)
     }
 
@@ -520,5 +584,62 @@ mod tests {
             ),
             "unexpected error: {err:?}"
         );
+    }
+
+    #[test]
+    fn an_allocated_id_is_only_evidence_after_the_commit_carrying_it() {
+        let mut store = TestStore::slatedb_mem();
+        let mut d = VocabCache::<u16>::new(FIELD_VOCAB);
+        assert_eq!(d.id_for(&mut store, HEADER, "alpha").unwrap(), 0);
+        assert_eq!(d.pending_len(), 1, "an allocation is not evidence yet");
+
+        // A commit that does NOT carry the name key promotes nothing — which is
+        // exactly what a caller's batch that never landed looks like.
+        let mut other = Batch::default();
+        other.put(b"elsewhere".to_vec(), vec![1]);
+        assert!(d.pending_in(&other.ops).is_empty());
+        assert_eq!(d.pending_len(), 1);
+
+        // The commit that carries it does.
+        let mut commit = Batch::default();
+        commit.put(
+            key(HEADER, FIELD_VOCAB_NAME_SLOT, b"alpha"),
+            0u16.to_be_bytes().to_vec(),
+        );
+        let promoted = d.pending_in(&commit.ops);
+        assert_eq!(promoted, vec![0]);
+        d.promote(&promoted);
+        assert_eq!(d.pending_len(), 0);
+    }
+
+    #[test]
+    fn a_pending_id_is_probed_and_a_promoted_one_is_not() {
+        // The observable difference between "the mirror says so" and "the store
+        // says so": delete the engine's entry behind the cache's back. A probe
+        // re-allocates; the fast path answers the mirror.
+        let mut store = TestStore::slatedb_mem();
+        let mut d = VocabCache::<u16>::new(FIELD_VOCAB);
+        assert_eq!(d.id_for(&mut store, HEADER, "alpha").unwrap(), 0);
+        store
+            .del(&key(HEADER, FIELD_VOCAB_NAME_SLOT, b"alpha"))
+            .unwrap();
+        // Still pending: the cache asks the store, the store has nothing, so a
+        // NEW id comes back — the first answer was never trusted.
+        assert_eq!(d.id_for(&mut store, HEADER, "alpha").unwrap(), 1);
+
+        // Promoted: no probe, so the id survives the removal (a probe would
+        // have handed out the next free id instead).
+        let id = d.id_for(&mut store, HEADER, "gamma").unwrap();
+        let mut commit = Batch::default();
+        commit.put(
+            key(HEADER, FIELD_VOCAB_NAME_SLOT, b"gamma"),
+            id.to_be_bytes().to_vec(),
+        );
+        let promoted = d.pending_in(&commit.ops);
+        d.promote(&promoted);
+        store
+            .del(&key(HEADER, FIELD_VOCAB_NAME_SLOT, b"gamma"))
+            .unwrap();
+        assert_eq!(d.id_for(&mut store, HEADER, "gamma").unwrap(), id);
     }
 }

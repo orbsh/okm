@@ -38,6 +38,16 @@ pub struct Collection<S, K: KeyEncode, R: Document<Key = K>> {
     /// `&self`, and the writer is per-collection state. `!Sync` either way, so
     /// two threads cannot interleave writes through one `&Collection`.
     changelog: Option<std::cell::RefCell<crate::changelog::Changelog>>,
+    /// The table's field-name vocabulary mirror (ADR-0012), alive for the
+    /// COLLECTION's lifetime. The dynamic segment resolves one name per frame;
+    /// a cache built per operation turned every dynamic field into an engine
+    /// point probe — on both doors (read and write) and per document in a scan.
+    ///
+    /// A `RefCell` for the same reason the other two are: the verbs take
+    /// `&self`. `!Sync` either way, which is the single-writer discipline the
+    /// vocabulary already assumes; a second process on the same table is
+    /// outside it (see `model::obj_vocab`).
+    fields_vocab: std::cell::RefCell<VocabCache<u16>>,
     _marker: std::marker::PhantomData<(K, R)>,
 }
 
@@ -52,6 +62,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
             store,
             epoch: std::cell::Cell::new(0),
             changelog: None,
+            fields_vocab: std::cell::RefCell::new(VocabCache::new(FIELD_VOCAB)),
             _marker: std::marker::PhantomData,
         }
     }
@@ -1234,7 +1245,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
             Some(raw) => raw,
             None => return Ok(None),
         };
-        let mut d = VocabCache::new(FIELD_VOCAB);
+        let mut d = self.fields_vocab.borrow_mut();
         let header = self.header();
         // decode_named resolves nested obj field ids through the same
         // vocabulary — nested maps come back fully name-keyed. The resolver
@@ -1280,15 +1291,24 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     ) -> crate::error::Result<()> {
         let header = self.header();
         let k = self.fields_key(key);
-        let mut d = VocabCache::new(FIELD_VOCAB);
+        let mut d = self.fields_vocab.borrow_mut();
         let mut store = crate::engine::storage::BatchStore::new(&self.store, batch);
         let mut body = Vec::new();
+        let mut scratch = crate::model::obj_dynamic::FrameScratch::new();
         {
             let mut resolver = |name: &str| d.id_for(&mut store, &header, name);
             for (name, value) in variants {
-                // put_frame_named recurses into nested Obj values, sharing the
-                // vocabulary (id_for allocates on first sight).
-                crate::model::obj_dynamic::put_frame_named(&mut body, name, value, &mut resolver)?;
+                // Recurses into nested Obj values, sharing the vocabulary
+                // (id_for allocates on first sight) AND one body buffer per
+                // nesting depth — a document with N fields pays no per-frame
+                // allocation.
+                crate::model::obj_dynamic::put_frame_named_scratch(
+                    &mut body,
+                    name,
+                    value,
+                    &mut resolver,
+                    &mut scratch,
+                )?;
             }
         }
         if body.is_empty() {
@@ -1350,7 +1370,13 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         if let Some(log) = &self.changelog {
             let _ = log.borrow_mut().stage(&batch.ops);
         }
+        // Vocabulary ids this batch allocated are not evidence until it lands:
+        // take the promotion candidates BEFORE the commit consumes the batch,
+        // and trust them only after it returned Ok (a refused commit leaves the
+        // names probing — one probe slower, never a frame naming a dead id).
+        let promoted = self.fields_vocab.borrow().pending_in(&batch.ops);
         self.store.commit_batch(batch)?;
+        self.fields_vocab.borrow_mut().promote(&promoted);
         self.epoch.set(self.epoch.get() + 1);
         if let Some(log) = &self.changelog {
             let _ = log.borrow_mut().commit_staged();

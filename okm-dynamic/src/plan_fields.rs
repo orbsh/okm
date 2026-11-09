@@ -14,7 +14,7 @@
 //! slot constants — every byte rule stays here, one source.
 
 use okm_core::model::index::{DYNAMIC_SLOT, FIELD_VOCAB_ID_SLOT, FIELD_VOCAB_NAME_SLOT};
-use okm_core::model::obj_dynamic::{decode_named, put_frame_named};
+use okm_core::model::obj_dynamic::{decode_named, put_frame_named_scratch};
 use okm_core::model::obj_vocab::FIELD_VOCAB;
 use okm_core::storage::{VirtualStorage, scan_suffix_kv};
 
@@ -57,48 +57,123 @@ impl VocabMirror {
     /// Both directions of one table's vocabulary from the engine, plus the
     /// allocation cursor when the store has one (ADR-0032). Without a cursor —
     /// a vocabulary written before it existed — the watermark falls back to
-    /// max + 1, which is what the scans below compute anyway.
+    /// max + 1, which is what the scan below computes anyway.
+    ///
+    /// ONE scan. The ID face (`0x02`) is the complete mapping because every
+    /// writer emits both directions in the same batch (`VocabCache::id_for` and
+    /// `plan_put_fields` each write name → id, id → name and the cursor
+    /// together), so inverting it yields name → id. The name face (`0x03`)
+    /// exists for point lookups, not for rebuilding the mirror — scanning it
+    /// too read the whole vocabulary a second time on EVERY merge. A store
+    /// carrying an id → name entry without its name → id partner still loads
+    /// (the inversion is the definition here); the reverse hole is invisible to
+    /// this function by construction, and such a state cannot be produced by any
+    /// writer in this tree.
     pub fn load<S: VirtualStorage>(store: &S, ns: &[u8]) -> Result<Self, String> {
         let mut d = Self::default();
         let mut p2 = ns.to_vec();
         okm_core::write_slot(&mut p2, FIELD_VOCAB_ID_SLOT);
         for (suffix, name) in scan_suffix_kv(store, &p2).map_err(|e| e.to_string())? {
+            // The cursor is this prefix with NO suffix (`[ns][0x02]`); it is in
+            // range and drops out here by length, exactly as an id entry cannot
+            // be zero-length.
             if suffix.len() != 2 {
                 continue;
             }
             let id = u16::from_be_bytes([suffix[0], suffix[1]]);
-            if let Ok(n) = String::from_utf8(name) {
-                d.by_id.insert(id, n);
-            }
-        }
-        let mut p3 = ns.to_vec();
-        okm_core::write_slot(&mut p3, FIELD_VOCAB_NAME_SLOT);
-        for (suffix, idv) in scan_suffix_kv(store, &p3).map_err(|e| e.to_string())? {
-            if let Ok(n) = String::from_utf8(suffix)
-                && idv.len() == 2
-            {
-                let id = u16::from_be_bytes([idv[0], idv[1]]);
-                d.by_name.insert(n, id);
-                if id >= d.next_id {
-                    // Saturating on LOAD: a table may already hold the last
-                    // id, and reading it is not an allocation. Exhaustion is
-                    // the ALLOCATOR's error (`claim_id`), not the reader's.
-                    d.next_id = id.saturating_add(1);
-                }
+            let Ok(name) = String::from_utf8(name) else {
+                continue;
+            };
+            d.by_name.insert(name.clone(), id);
+            d.by_id.insert(id, name);
+            if id >= d.next_id {
+                // Saturating on LOAD: a table may already hold the last
+                // id, and reading it is not an allocation. Exhaustion is
+                // the ALLOCATOR's error (`claim_id`), not the reader's.
+                d.next_id = id.saturating_add(1);
             }
         }
         // The cursor is the id face's bare-prefix singleton: `[ns][0x02]` with
         // no id bytes (ADR-0032) — unrepresentable as an id entry, so the two
         // cannot collide. One definition, shared with the typed cache.
+        d.refresh_cursor(store, ns)?;
+        Ok(d)
+    }
+
+    /// Re-read the allocation watermark from the store: ONE point get on the
+    /// cursor, never a scan.
+    ///
+    /// A CACHED mirror calls this before planning. Two handles on one engine
+    /// allocate from the same counter, so a watermark carried over from an
+    /// earlier verb would hand out an id the other handle just took — the typed
+    /// side's `take_next` re-reads its cursor for exactly this reason, and a
+    /// cached mirror must not be the odd one out.
+    pub fn refresh_cursor<S: VirtualStorage>(
+        &mut self,
+        store: &S,
+        ns: &[u8],
+    ) -> Result<(), String> {
         if let Some(raw) = store
             .get(&okm_core::obj_vocab::cursor_key(ns, FIELD_VOCAB))
             .map_err(|e| e.to_string())?
             && raw.len() == 2
         {
             let cursor = u16::from_be_bytes([raw[0], raw[1]]);
-            d.next_id = d.next_id.max(cursor);
+            self.next_id = self.next_id.max(cursor);
         }
-        Ok(d)
+        Ok(())
+    }
+
+    /// Resolve the names a patch carries against the STORE, adopting what it
+    /// already knows: one point probe per name the mirror has never seen, never
+    /// a scan.
+    ///
+    /// A cached mirror calls this before planning, so a name another handle
+    /// allocated is ADOPTED instead of being given a second id — the name face
+    /// would otherwise be repointed at the new id while older documents still
+    /// carry the old one (two ids for one label).
+    pub fn resolve_names<S: VirtualStorage>(
+        &mut self,
+        store: &S,
+        ns: &[u8],
+        map: &ValueMap,
+    ) -> Result<(), String> {
+        for (name, value) in map {
+            if !self.by_name.contains_key(name) {
+                let mut k = ns.to_vec();
+                okm_core::write_slot(&mut k, FIELD_VOCAB_NAME_SLOT);
+                k.extend_from_slice(name.as_bytes());
+                if let Some(raw) = store.get(&k).map_err(|e| e.to_string())?
+                    && raw.len() == 2
+                {
+                    let id = u16::from_be_bytes([raw[0], raw[1]]);
+                    self.adopt_entries(std::iter::once((name.clone(), id)));
+                }
+            }
+            self.resolve_value(store, ns, value)?;
+        }
+        Ok(())
+    }
+
+    /// Names inside composites: an `Obj` may be nested at any depth (an array
+    /// of objects, an object under an array), and every level allocates names
+    /// on the write path — so the walk goes all the way down.
+    fn resolve_value<S: VirtualStorage>(
+        &mut self,
+        store: &S,
+        ns: &[u8],
+        value: &Value,
+    ) -> Result<(), String> {
+        match value {
+            Value::Obj(m) => self.resolve_names(store, ns, m),
+            Value::Array(items) => {
+                for v in items {
+                    self.resolve_value(store, ns, v)?;
+                }
+                Ok(())
+            }
+            _ => Ok(()),
+        }
     }
 
     /// Build from caller-held pairs (the remote binding's receipt
@@ -176,6 +251,7 @@ pub fn plan_put_fields(
     // the plan.
     let mut vocab_ops: Vec<(Vec<u8>, Option<Vec<u8>>)> = Vec::new();
     let mut body = Vec::new();
+    let mut scratch = okm_core::obj_dynamic::FrameScratch::new();
     {
         let by_name = &mut vocab.by_name;
         let by_id = &mut vocab.by_id;
@@ -201,7 +277,8 @@ pub fn plan_put_fields(
         };
         for (name, value) in fields {
             let dv = value_to_dyn_value(value)?;
-            put_frame_named(&mut body, name, &dv, &mut resolver).map_err(|e| e.to_string())?;
+            put_frame_named_scratch(&mut body, name, &dv, &mut resolver, &mut scratch)
+                .map_err(|e| e.to_string())?;
         }
     }
     // The allocation cursor, exactly as `VocabCache::id_for` writes it: without
@@ -236,20 +313,63 @@ pub fn plan_delete_fields(ns: &[u8], pkey: &[u8]) -> PlannedFields {
 }
 
 /// Resolve stored dynamic frames to a name-keyed map with a caller-held
-/// mirror (the remote read surface; the embedded `fetch` loads a mirror from
-/// its engine and calls this). Unknown ids drop the field — the
-/// vocabulary-absent rule the dynamic reader records (single-writer cannot
-/// hit it; the embedded path reloads the mirror per call, so even
-/// shared-engine catch-up lands in the fresh load).
+/// mirror. The remote read surface calls this with a complete mirror it was
+/// handed; unknown ids drop the field — the vocabulary-absent rule the dynamic
+/// reader records. A CACHED mirror uses
+/// [`fields_from_frames_probing`] instead, which resolves an unknown id from
+/// the id face before dropping it.
 pub fn fields_from_frames(raw: &[u8], vocab: &VocabMirror) -> Result<ValueMap, String> {
-    let frames = decode_named(raw, &mut |id| vocab.name_for(id).map(str::to_string));
+    collect_fields(raw, &mut |id| Ok(vocab.name_for(id).map(str::to_string)))
+}
+
+/// [`fields_from_frames`] for a CACHED mirror: an id the mirror does not name
+/// is looked up on the id face — one point probe, then adopted — so a name
+/// ANOTHER handle wrote is dropped only when the store has no entry for it
+/// either. The non-probing form is for hosts that own a complete mirror (the
+/// plan surface, the bindings' receipts).
+pub fn fields_from_frames_probing<S: VirtualStorage>(
+    raw: &[u8],
+    vocab: &mut VocabMirror,
+    store: &S,
+    ns: &[u8],
+) -> Result<ValueMap, String> {
+    let mut resolve = |id: u16| -> Result<Option<String>, String> {
+        if let Some(name) = vocab.name_for(id) {
+            return Ok(Some(name.to_string()));
+        }
+        let mut k = ns.to_vec();
+        okm_core::write_slot(&mut k, FIELD_VOCAB_ID_SLOT);
+        k.extend_from_slice(&id.to_be_bytes());
+        let Some(raw) = store.get(&k).map_err(|e| e.to_string())? else {
+            return Ok(None);
+        };
+        let Ok(name) = String::from_utf8(raw) else {
+            return Ok(None);
+        };
+        vocab.adopt(&[(name.clone(), id)]);
+        Ok(Some(name))
+    };
+    collect_fields(raw, &mut resolve)
+}
+
+/// The shared walk: frames → name-keyed map through the caller's resolver.
+/// `None` = the vocabulary has no entry for that id, and the field is DROPPED —
+/// a reader never invents a name.
+fn collect_fields(
+    raw: &[u8],
+    resolve: &mut dyn FnMut(u16) -> Result<Option<String>, String>,
+) -> Result<ValueMap, String> {
+    // Nested Obj keys resolve through the same closure; there it can only
+    // answer `Option`, so a probe failure drops that key rather than failing the
+    // whole read (the id-without-entry rule, applied one level down).
+    let frames = decode_named(raw, &mut |id| resolve(id).ok().flatten());
     let mut out = ValueMap::new();
     for f in frames {
-        let Some(name) = vocab.name_for(f.id) else {
+        let Some(name) = resolve(f.id)? else {
             continue; // vocabulary entry absent: drop
         };
         let v = dyn_value_to_value(&f.value)?;
-        out.insert(name.to_string(), v);
+        out.insert(name, v);
     }
     Ok(out)
 }
@@ -404,5 +524,27 @@ mod tests {
         let body = plan.ops.last().unwrap().1.clone().unwrap();
         let back = fields_from_frames(&body, &vocab).unwrap();
         assert_eq!(back, two_fields());
+    }
+
+    /// ONE scan: the id face is the complete mapping (every writer emits both
+    /// directions in the same batch), so `by_name` is built by inversion. The
+    /// name face is left EMPTY here on purpose — the load must not need it.
+    #[test]
+    fn load_inverts_the_id_face_and_needs_no_name_scan() {
+        use okm_core::TestStore;
+        let store = TestStore::slatedb_mem();
+        let mut batch = okm_core::storage::Batch::default();
+        for (id, name) in [(0u16, "note"), (1u16, "weight")] {
+            let mut k = ns();
+            okm_core::write_slot(&mut k, FIELD_VOCAB_ID_SLOT);
+            k.extend_from_slice(&id.to_be_bytes());
+            batch.put(k, name.as_bytes().to_vec());
+        }
+        store.commit_batch(batch).unwrap();
+
+        let m = VocabMirror::load(&store, &ns()).unwrap();
+        assert_eq!(m.by_id.get(&0), Some(&"note".to_string()));
+        assert_eq!(m.by_name.get("weight"), Some(&1));
+        assert_eq!(m.next_id, 2, "max + 1 from the same scan");
     }
 }

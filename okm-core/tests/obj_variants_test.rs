@@ -263,3 +263,63 @@ fn a_refused_merge_returns_the_error_and_writes_nothing() {
         .unwrap();
     assert_eq!(t.get(&key(1)).unwrap().unwrap(), user(3, 9));
 }
+
+/// Two handles on one engine allocate from the SAME cursor: the mirror must not
+/// hand out an id another handle just took, so the watermark is read from the
+/// store per allocation rather than cached on the mirror.
+#[test]
+fn two_handles_on_one_engine_do_not_share_an_id() {
+    let store = TestStore::slatedb_mem();
+    let a: Collection<TestStore, UserKey, User> = Collection::new(store.shared_handle());
+    let b: Collection<TestStore, UserKey, User> = Collection::new(store.shared_handle());
+    a.merge(&key(1), &dmap(&[("alpha", DynamicValue::Str("x".into()))]))
+        .unwrap();
+    b.merge(&key(2), &dmap(&[("beta", DynamicValue::Str("y".into()))]))
+        .unwrap();
+    // `a` allocates again AFTER `b` took the next id: a cached watermark would
+    // reuse it and repoint `beta`'s label.
+    a.merge(&key(3), &dmap(&[("gamma", DynamicValue::Str("z".into()))]))
+        .unwrap();
+
+    assert_eq!(
+        a.fetch(&key(2)).unwrap().unwrap()["beta"],
+        DynamicValue::Str("y".into())
+    );
+    assert_eq!(
+        b.fetch(&key(3)).unwrap().unwrap()["gamma"],
+        DynamicValue::Str("z".into())
+    );
+}
+
+/// One name written under two keys resolves once, and a collection with an EMPTY
+/// mirror (a fresh handle, as after a restart) still reads both documents back
+/// by name — the vocabulary entry is durable, the mirror is only a shortcut.
+#[test]
+fn one_dynamic_name_across_documents_survives_a_fresh_mirror() {
+    let store = TestStore::slatedb_mem();
+    let t: Collection<TestStore, UserKey, User> = Collection::new(store.clone());
+    t.put(&key(1), &user(1, 2)).unwrap();
+    t.put(&key(2), &user(1, 3)).unwrap();
+    t.merge(
+        &key(1),
+        &dmap(&[("tag", DynamicValue::Str("alpha".into()))]),
+    )
+    .unwrap();
+    t.merge(&key(2), &dmap(&[("tag", DynamicValue::Str("beta".into()))]))
+        .unwrap();
+
+    assert_eq!(
+        t.fetch(&key(2)).unwrap().unwrap()["tag"],
+        DynamicValue::Str("beta".into())
+    );
+
+    let fresh: Collection<TestStore, UserKey, User> = Collection::new(store.shared_handle());
+    assert_eq!(
+        fresh.fetch(&key(1)).unwrap().unwrap()["tag"],
+        DynamicValue::Str("alpha".into())
+    );
+    assert_eq!(
+        fresh.fetch(&key(2)).unwrap().unwrap()["tag"],
+        DynamicValue::Str("beta".into())
+    );
+}

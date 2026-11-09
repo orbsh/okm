@@ -43,6 +43,21 @@ pub struct DynamicCollection<S: VirtualStorage> {
     pub(crate) ns: Vec<u8>,
     pub(crate) indexes: Vec<AccessMethod>,
     pub(crate) reduces: Vec<BoundReduce>,
+    /// The table's field-name vocabulary, loaded once per handle and kept
+    /// current by PROBES rather than reloads.
+    ///
+    /// It used to be rebuilt per verb from the engine — twice inside one `merge`
+    /// (`dynamic_map` plus the plan) — i.e. a full-vocabulary scan per document
+    /// write. The cached form is safe because both doors resolve a miss against
+    /// the store: `resolve_names` adopts a name before the planner can allocate
+    /// a second id for it, and the decode door probes the id face for an id the
+    /// mirror does not name. The allocation WATERMARK is still read per write
+    /// (`refresh_cursor`), since a second handle on the same engine allocates
+    /// from the same counter.
+    ///
+    /// A `RefCell` for the same reason the typed `Collection`'s mirror is one:
+    /// the verbs take `&self`, and the mirror is per-collection state.
+    fields_vocab: std::cell::RefCell<Option<crate::plan_fields::VocabMirror>>,
     /// Single-writer by construction, not by convention: `!Sync`, so a
     /// `&DynamicCollection` cannot be handed to a second thread while a
     /// read-modify-write is in flight (the typed `Collection` gets the same
@@ -96,6 +111,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
             ns: ns.to_be_bytes().to_vec(),
             indexes,
             reduces: reduces.into_iter().map(BoundReduce::new).collect(),
+            fields_vocab: std::cell::RefCell::new(None),
             _owned: std::marker::PhantomData,
         }
     }
@@ -657,11 +673,33 @@ impl<S: VirtualStorage> DynamicCollection<S> {
             Some(r) => r,
             None => return Ok(None),
         };
-        // Fresh load per call — the embedded mirror of the old per-call
-        // VocabCache (single writer: a reload always sees the truth it wrote).
-        let vocab = crate::plan_fields::VocabMirror::load(&self.store, &self.ns)
-            .map_err(|e| e.to_string())?;
-        Ok(Some(crate::plan_fields::fields_from_frames(&raw, &vocab)?))
+        // The handle's mirror, kept current by PROBES: an id it cannot name is
+        // resolved from the id face inside the decode (one point get), so a name
+        // another handle wrote is dropped only when the engine has no entry for
+        // it either.
+        let mut vocab = self.vocab()?;
+        Ok(Some(crate::plan_fields::fields_from_frames_probing(
+            &raw,
+            &mut vocab,
+            &self.store,
+            &self.ns,
+        )?))
+    }
+
+    /// The table's vocabulary mirror, loaded on first use. The field's doc
+    /// carries why a cached mirror is safe; the short version is that both doors
+    /// probe the store on a miss, so freshness is a performance question here,
+    /// not a correctness one.
+    fn vocab(&self) -> Result<std::cell::RefMut<'_, crate::plan_fields::VocabMirror>, String> {
+        let mut slot = self.fields_vocab.borrow_mut();
+        if slot.is_none() {
+            *slot = Some(crate::plan_fields::VocabMirror::load(
+                &self.store,
+                &self.ns,
+            )?);
+        }
+        std::cell::RefMut::filter_map(slot, Option::as_mut)
+            .map_err(|_| "vocabulary mirror: unloaded right after loading".to_string())
     }
 
     /// The document as ONE name-keyed map — the read door of the whole-document
@@ -715,12 +753,23 @@ impl<S: VirtualStorage> DynamicCollection<S> {
         let plan = {
             let store = &self.store;
             // The vocabulary is the segment arm's business: a patch with no
-            // non-declared name allocates nothing, so the mirror (two prefix
-            // scans + a cursor read) is not loaded at all.
-            let mut vocab = if dynamic.is_empty() {
-                crate::plan_fields::VocabMirror::default()
+            // non-declared name allocates nothing, so the mirror is not touched.
+            let mut cached = if dynamic.is_empty() {
+                None
             } else {
-                crate::plan_fields::VocabMirror::load(store, &self.ns).map_err(|e| e.to_string())?
+                let mut m = self.vocab()?;
+                // Two cheap reads that also carry correctness: the watermark
+                // comes from the store (a second handle allocates from the same
+                // counter), and a name the store already knows is ADOPTED before
+                // the planner can allocate a second id for it.
+                m.refresh_cursor(store, &self.ns)?;
+                m.resolve_names(store, &self.ns, &dynamic)?;
+                Some(m)
+            };
+            let mut fresh = crate::plan_fields::VocabMirror::default();
+            let vocab = match cached.as_mut() {
+                Some(m) => &mut **m,
+                None => &mut fresh,
             };
             self.plan_merge(
                 pkey,
@@ -731,7 +780,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
                     dynamic: old_dynamic.as_ref(),
                 },
                 &|ek| store.get(ek).map_err(|e| e.to_string()),
-                &mut vocab,
+                vocab,
             )?
         };
         self.replay(&plan.ops)?;
@@ -765,10 +814,18 @@ impl<S: VirtualStorage> DynamicCollection<S> {
             let store = &self.store;
             // Same rule as `merge`: with no dynamic name to write and no stored
             // segment to name, nothing needs the vocabulary.
-            let mut vocab = if dynamic.is_empty() && old_dynamic.is_none() {
-                crate::plan_fields::VocabMirror::default()
+            let mut cached = if dynamic.is_empty() && old_dynamic.is_none() {
+                None
             } else {
-                crate::plan_fields::VocabMirror::load(store, &self.ns).map_err(|e| e.to_string())?
+                let mut m = self.vocab()?;
+                m.refresh_cursor(store, &self.ns)?;
+                m.resolve_names(store, &self.ns, &dynamic)?;
+                Some(m)
+            };
+            let mut fresh = crate::plan_fields::VocabMirror::default();
+            let vocab = match cached.as_mut() {
+                Some(m) => &mut **m,
+                None => &mut fresh,
             };
             self.plan_replace(
                 pkey,
@@ -779,7 +836,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
                     dynamic: old_dynamic.as_ref(),
                 },
                 &|ek| store.get(ek).map_err(|e| e.to_string()),
-                &mut vocab,
+                vocab,
             )?
         };
         self.replay(&plan.ops)?;
