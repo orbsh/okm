@@ -86,8 +86,11 @@ value is a list of frames:
   only the list — a map IS an n-TLV list (id, type, len, value),
   structure information living in the values, not in a per-document
   schema.
-- Ordering: frames are written in insertion order; readers address
-  dynamic fields by id, not position.
+- Ordering: frames carry NO ordering guarantee. Every writer in the tree
+  takes a name-keyed map (`BTreeMap`), so the bytes come out in NAME order
+  — not id order, and not the order a caller inserted its names. Readers
+  address dynamic fields by id, never by position, so nothing may assume
+  ids ascend inside the blob (a binary search over ids is not available).
 
 **Declared fields are indexed through their own faces; a dynamic field is
 indexed through a declared path.** Indexes need stable wire order and
@@ -128,6 +131,25 @@ Discipline, copied from the ns vocabulary:
   evaluated and rejected: ordinary business names share few prefixes, the
   trie's multi-hop traversal and UTF-8 radix cost buy nothing, and the
   bidirectional flat mapping keeps number→name as cheap as name→number.
+- **The mirror is per handle, and an allocation is durable only when its
+  commit lands.** One in-memory mirror lives for the whole `Collection`
+  (rebuilt per operation it turned every dynamic field into a point probe,
+  on the read door and the write door alike). Its name→number direction is
+  trusted without a probe only after the commit that carried that
+  vocabulary write returned `Ok`; a refused commit otherwise leaves the
+  reader naming an id no entry defines. The allocation CURSOR is never
+  cached: two handles on one engine allocate from the same counter, so a
+  cached watermark would hand out an id the other just took. Two writers
+  allocating concurrently still race on the cursor — the single-writer
+  assumption, unchanged.
+- **One write, both directions, so one face is the whole mapping.** An
+  allocation writes name → id, id → name and the cursor in ONE batch, so
+  the id face ALONE rebuilds the map in either direction: the
+  schema-driven side loads a handle's vocabulary with a single scan and
+  inverts it, then KEEPS it and resolves a miss with a point probe — a
+  name another handle allocated is adopted before it can be given a second
+  id, and an unknown id is looked up on the id face. The name face earns
+  its bytes on point lookups, never on rebuilds.
 - Raw names in frames were considered (no vocabulary at all) and
   rejected for the target shape: same-table objects reuse the same
   names heavily (MQ topics), so paying the full name per frame per
