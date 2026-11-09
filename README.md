@@ -39,6 +39,33 @@ only place where paying once is possible. A restriction that is not statically
 checkable breaks the bet: it returns to run time, and the cost becomes
 per-operation again.
 
+### Scaling: nothing in the middle to grow
+
+There is no catalog to register a table in, no planner to feed statistics to, no
+query service to replicate — a table is a namespace number plus a declaration,
+and a query is the call site's code. A capability is added the same way: a new
+table, a new face, a path index over the schema-free zone. Nothing is registered
+with the library or the store, so the ceiling is per table and never per system:
+tables are the unit of scale, each with its one writer
+([Concurrency and Writers](docs/CONCURRENCY.md) prices a second one), and reads,
+filters and joins run at the call site instead of in a service of their own. The
+domain never enters the library — which is why business logic is an extension of
+this mechanism rather than a plugin into a runtime.
+
+### The language is the runtime
+
+A client/server database charges a round trip per statement and answers in its
+own dialect, so whatever must be fast ends up inside a stored procedure: a
+second language, a second debugger, a dialect-only type system, and a copy of
+the logic that exists nowhere else. OKM has no such boundary to push across.
+The declaration, the query and the engine handle live in ONE process (with an
+in-process engine — fjall, redb, slatedb; a remote store is the deliberate
+exception and pays its hop and nothing more), so the code that would have been
+a stored procedure is ordinary Rust: `cargo test`, the type checker,
+breakpoints, crates, the same review as the rest of the service. The statement
+it replaces has no wire to cross — the round trip is not made fast, it is
+absent.
+
 ## Why: code as DDL
 
 SQL's core value is not execution performance — it is the readability, modeling discipline, and team-coordination determinism delivered by the relational model. Raw binary keys degrade into spaghetti: nobody on the team can reason about key layout rules. The solution is to replace SQL DDL with the Rust type system, moving schema correctness from a runtime database engine to the compile-time compiler.
