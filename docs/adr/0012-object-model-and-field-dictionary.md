@@ -149,7 +149,10 @@ Discipline, copied from the ns vocabulary:
   inverts it, then KEEPS it and resolves a miss with a point probe — a
   name another handle allocated is adopted before it can be given a second
   id, and an unknown id is looked up on the id face. The name face earns
-  its bytes on point lookups, never on rebuilds.
+  its bytes on point lookups, never on rebuilds. A writer that commits each
+  allocation immediately (the graph's edge path takes the real store, not the
+  edge batch) promotes them as soon as the write returns; one that stages
+  growth into a caller's batch promotes only the ids that commit carried.
 - Raw names in frames were considered (no vocabulary at all) and
   rejected for the target shape: same-table objects reuse the same
   names heavily (MQ topics), so paying the full name per frame per
