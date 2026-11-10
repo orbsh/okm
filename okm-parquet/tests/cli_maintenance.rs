@@ -15,7 +15,7 @@
 use std::process::Command;
 
 use okm_core::changelog::{ChangelogConfig, ChangelogStore, apply_log, table_dir};
-use okm_core::{Collection, Document, DocumentEncode, FjallStore, KeyEncode, TestStore};
+use okm_core::{Collection, Document, DocumentEncode, FjallStore, KeyEncode};
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
 pub struct RowKey {
@@ -91,7 +91,8 @@ fn status_reports_the_log_and_compact_checkpoints_it() {
     assert!(text.contains("segments 1"), "{text}");
 
     // …and a replay off it still holds every row.
-    let target = TestStore::slatedb_mem();
+    let restored_dir = tempfile::tempdir().unwrap();
+    let target = FjallStore::open(restored_dir.path(), "okm").unwrap();
     apply_log(log.path(), &header, &target, None).unwrap();
     let restored = Collection::<_, RowKey, Row>::new(target);
     for id in 0..6 {
@@ -137,4 +138,25 @@ fn a_live_claim_is_refused_without_force() {
 
     // Nothing was touched.
     assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+}
+#[test]
+fn the_log_and_the_store_cannot_be_the_same_directory() {
+    let dir = tempfile::tempdir().unwrap();
+    // The store path does not exist yet: the refusal must arrive before anything is
+    // created, so a mistaken invocation leaves no trace.
+    let nested = dir.path().join("data");
+
+    for store in [dir.path().to_path_buf(), nested.clone()] {
+        let out = bin()
+            .args(["compact", "--root"])
+            .arg(dir.path())
+            .args(["--store"])
+            .arg(&store)
+            .output()
+            .unwrap();
+        assert!(!out.status.success(), "{} must be refused", store.display());
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(err.contains("must be separate directories"), "{err}");
+    }
+    assert!(!nested.exists(), "the refusal created nothing");
 }

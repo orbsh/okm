@@ -228,6 +228,9 @@ fn compact(args: &[String]) -> Result<i32, String> {
     let root = root.ok_or("--root is required (the capturing store's log directory)")?;
     let store_dir =
         store_dir.ok_or("--store is required (the data directory the log's store lives in)")?;
+    if overlapping(&root, &store_dir)? {
+        return Err(separate_dir_error(&root, &store_dir));
+    }
     let store = open_store(&store_dir)?;
     let cfg = okm_core::changelog::ChangelogConfig::new(&root);
 
@@ -323,6 +326,59 @@ fn newest_segment(
     Ok(Some(info.meta))
 }
 
+/// Are these two directories the same tree, or one inside the other?
+///
+/// The log and the store are two lifecycles, and mixing them in one directory is a
+/// deployment mistake nothing else catches: the names cannot collide (segments are
+/// `NNNNNNNN.`-prefixed, the claim is `owner`, engine files are the engine's), so the
+/// mistake stays silent until someone counts segments in a directory full of engine
+/// tables. Checked BEFORE anything is created, so a refusal leaves no trace.
+fn overlapping(a: &std::path::Path, b: &std::path::Path) -> Result<bool, String> {
+    let a = resolved(a)?;
+    let b = resolved(b)?;
+    Ok(a == b || a.starts_with(&b) || b.starts_with(&a))
+}
+
+fn separate_dir_error(root: &std::path::Path, store: &std::path::Path) -> String {
+    format!(
+        "`{}` and `{}` are the same tree (or one inside the other): the log and the store \
+         must be separate directories",
+        root.display(),
+        store.display()
+    )
+}
+
+/// The path as the file system would name it: canonical when it exists, otherwise the
+/// absolute form with the nearest existing ancestor resolved (so a directory that is
+/// about to be created still compares against one that is already there).
+fn resolved(path: &std::path::Path) -> Result<PathBuf, String> {
+    if let Ok(real) = std::fs::canonicalize(path) {
+        return Ok(real);
+    }
+    let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
+    let mut rest: Vec<std::ffi::OsString> = Vec::new();
+    let mut cursor = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        cwd.join(path)
+    };
+    while let Some(name) = cursor.file_name().map(|n| n.to_os_string()) {
+        rest.push(name);
+        let Some(parent) = cursor.parent() else {
+            break;
+        };
+        if let Ok(real) = std::fs::canonicalize(parent) {
+            let mut out = real;
+            for part in rest.iter().rev() {
+                out.push(part);
+            }
+            return Ok(out);
+        }
+        cursor = parent.to_path_buf();
+    }
+    Ok(cwd.join(path))
+}
+
 fn hex_of(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
@@ -394,6 +450,9 @@ fn replay(args: &[String]) -> Result<i32, String> {
     let root = root.ok_or("--root is required (the capturing store's log directory)")?;
     let store_dir = store_dir.ok_or("--store is required (the target store's directory)")?;
     std::fs::create_dir_all(&store_dir).map_err(|e| e.to_string())?;
+    if overlapping(&root, &store_dir)? {
+        return Err(separate_dir_error(&root, &store_dir));
+    }
     let store = okm_core::FjallStore::open(&store_dir, "okm").map_err(|e| e.to_string())?;
 
     let new_collection = |ns: u16, schema: &okm_core::schema::CollectionSchema| {
