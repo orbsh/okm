@@ -49,6 +49,17 @@ pub enum Error {
         want: &'static str,
         got: String,
     },
+    /// The store changed hands and the deployment was not told: the handover hook exited
+    /// non-zero, could not be started, or ran out of budget (ADR-0056 §6).
+    ///
+    /// This is NOT a rolled-back cutover. The claim was taken before the hook ran, on
+    /// purpose: an announcement that points traffic at an instance which cannot write is
+    /// worse than a cutover nobody announced. The store belongs to this instance; what is
+    /// missing is the routing.
+    #[error(
+        "handover hook `{program}` {what} — the store is already this instance's, nothing is undone"
+    )]
+    HandoverHook { program: String, what: String },
     /// A categorical label that cannot be interned: the vocabulary's id width
     /// is full. A wrapped id would name another label forever (ADR-0032).
     #[error(

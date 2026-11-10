@@ -3110,3 +3110,33 @@ the other one moves to `okm-async`.
       to `okm-core` makes cargo build the package twice, and `okm_async::TestStore`
       implements the OTHER copy's `VirtualStorage`. Integration tests still run the real
       matrix; `obj_vocab`'s unit tests moved to `MemStore`.
+
+## 2026-11-10 — the cutover announces itself (ADR-0056 §6)
+
+Reaching the handed position makes a successor the writer; it does not move traffic, and
+it cannot — where requests come from is a deployment fact (a gateway's upstream port, a
+load balancer, a DNS weight) and okm has no control plane to publish it with. So the last
+step of a cutover became a program the deployment names.
+
+- [x] `ChangelogConfig.handover: Option<HandoverHook>` (`okm_core::changelog::hook`): a
+      program plus arguments, started without a shell, stdout/stderr inherited. `None` is
+      a deployment that routes traffic some other way; the hook is the only step okm
+      cannot perform, so it is also the only one it will not invent.
+- [x] `take_over` runs it ONCE, after every table reached the handed position AND was
+      claimed. Claim first, announce second: the reverse would point traffic at an
+      instance that can still fail to claim, and that failure would be silent.
+- [x] The environment is the contract — `OKM_CHANGELOG_ROOT`, `OKM_ROLE`
+      (`successor`/`resume`), `OKM_HOLDER`, `OKM_DATA`, `OKM_TABLES` — and nothing about
+      the deployment is added: the shared-mount case reads the owner files itself, the
+      two-ports case already has its own port and writes one upstream change.
+- [x] `Error::HandoverHook { program, what }`: a non-zero exit, a program that cannot be
+      started, and a timeout (the child is killed) are one answer with three messages. The
+      claim is NOT undone — the store belongs to the instance that failed to announce, and
+      a restart lands in `Resume`, which announces again.
+- [x] `First` announces nothing (no predecessor, no traffic to move); `Resume` announces,
+      because that is the retry path for a hook that failed after the claim.
+- [x] `handover_hook_test`: the hook runs once and is told the truth; a fresh log
+      announces nothing; a refusing hook leaves the claim intact and writing works; a hook
+      that hangs is killed at the caller's budget.
+- [x] Docs: ADR-0056 §6 (both languages) rewritten around the successor as the announcer —
+      the coordinator is gone from the flow — plus the README's upgrade paragraph.

@@ -109,7 +109,10 @@ pub fn side_of(slots: &SlotMap, slot: u16) -> Side {
 /// be torn (ADR-0045 §5).
 pub const PARTIAL_EXT: &str = "partial";
 /// Who may write a table's log, and where the last writer stopped (ADR-0056 §6).
+pub mod hook;
 pub mod owner;
+
+pub use hook::HandoverHook;
 
 /// The window join: the drain's reading half, beside the segments it reads.
 ///
@@ -268,6 +271,13 @@ pub struct ChangelogConfig {
     /// `true` narrows the crash window to one flush and changes nothing else —
     /// it never creates a phantom row either way.
     pub sync_data: bool,
+    /// The program a SUCCESSOR runs once it is the writer, for whatever the log cannot
+    /// know: switching a gateway, a load balancer, a DNS weight (ADR-0056 §6).
+    ///
+    /// `None` (default) is a deployment that routes traffic some other way — the hook is
+    /// the only step of a cutover okm cannot perform, so it is also the only one it will
+    /// not invent.
+    pub handover: Option<HandoverHook>,
 }
 
 impl ChangelogConfig {
@@ -284,7 +294,14 @@ impl ChangelogConfig {
             segment_seconds: Self::DEFAULT_SEGMENT_SECONDS,
             buffer_bytes: Self::DEFAULT_BUFFER_BYTES,
             sync_data: false,
+            handover: None,
         }
+    }
+
+    /// Attach the handover hook (ADR-0056 §6).
+    pub fn with_handover(mut self, hook: HandoverHook) -> Self {
+        self.handover = Some(hook);
+        self
     }
 
     /// Capture off: the same assembly, no log. The branch is the whole cost.
@@ -1580,6 +1597,43 @@ impl<S> ChangelogStore<S> {
             self.leases.borrow_mut().push(lease);
             *self.holder.borrow_mut() = Some(holder.to_string());
             out.push((header, role));
+        }
+        // The last step of the cutover, and the only one okm cannot perform: this instance
+        // is the writer for every table, so the deployment can be told (ADR-0056 §6).
+        // Claim first, announce second — see `hook`'s module notes for why the order is
+        // not negotiable.
+        if let Some(hook) = self.cfg.handover.as_ref() {
+            let took_over = out.iter().any(|(_, role)| {
+                matches!(
+                    role,
+                    owner::Role::Successor { .. } | owner::Role::HandedOver { .. }
+                )
+            });
+            let resumed = out
+                .iter()
+                .any(|(_, role)| matches!(role, owner::Role::Resume));
+            // `First` announces nothing: there is no predecessor, no traffic to move, and
+            // the deployment that just created this log is the one that points at it.
+            if took_over || resumed {
+                let env = vec![
+                    ("OKM_CHANGELOG_ROOT", root.as_os_str().to_os_string()),
+                    (
+                        "OKM_ROLE",
+                        std::ffi::OsString::from(if took_over { "successor" } else { "resume" }),
+                    ),
+                    ("OKM_HOLDER", std::ffi::OsString::from(holder)),
+                    ("OKM_DATA", std::ffi::OsString::from(data)),
+                    (
+                        "OKM_TABLES",
+                        std::ffi::OsString::from(out.len().to_string()),
+                    ),
+                ];
+                hook.run(&env, timeout)
+                    .map_err(|what| Error::HandoverHook {
+                        program: hook.program().display().to_string(),
+                        what: what.to_string(),
+                    })?;
+            }
         }
         Ok(out)
     }
