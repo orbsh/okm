@@ -9,11 +9,18 @@ interface that follows from it.
 
 ## The artifact
 
-One **window** is one Parquet file:
+One **window** is one Parquet file inside the table's exported directory:
 
-    <table hex>-<first segment>-<last segment>.parquet
+    <out>/<table hex>/data/<table hex>-<first segment>-<last segment>.parquet
 
-written beside the consumer's watermark. Columns are:
+The directory per table is the exported TABLE (ADR-0056 §8): `data/` holds the
+windows, `metadata/` holds the Iceberg view over them, and the consumer's watermark
+sits at the root (`watermark-<consumer>-<table hex>.txt`). Two tables in one sink
+are two tables, not one table with `0047-` and `0048-` files in it.
+
+The file is written under a scratch name at the root and moved into `data/` only
+after the projection succeeded, so a refused window (a delete has no column) leaves
+no directory, no file and an unmoved watermark. Columns are:
 
 1. the key fields, in declaration order, **non-nullable** — every row has an
    identity;
@@ -87,3 +94,26 @@ Partitioning, target file size, catalog registration, snapshot management and
 retention all belong to the adapter. `okm-parquet`'s only knob is
 `DrainConfig::max_segments` — how much history one window carries — because that is
 also how much history a query must merge with the hot store.
+
+## The Iceberg view
+
+After the watermark moves, `metadata/` holds what a catalog needs: the manifest, the
+manifest list, `v1.metadata.json` and `version-hint.text` (DuckDB finds the current
+metadata through the hint; pyiceberg and a catalog take the metadata path). Columns
+and row counts are read FROM the written files, never restated by the caller, and
+field ids are stamped in the Parquet in column order, so nothing needs a name
+mapping.
+
+Every recorded path is an absolute `file://` URI, including the table's `location`.
+That is deliberate and it was measured: relative paths were the first design (a
+bundle that travels when moved), but a real reader does not resolve them against
+`location` — DuckDB's `iceberg_scan` resolves the snapshot's `manifest-list` against
+the process's working directory, so a table recorded as `location: "."` opened only
+when the reader happened to sit in the table directory. An absolute URI needs no
+base. The price: relocating the directory means rewriting the metadata, which is the
+deal every Iceberg writer makes.
+
+The metadata is rebuilt over the whole `data/` directory on every window, because
+the writer side — snapshot append (one snapshot per file), delete files,
+partitioning, file-size targets — is not this crate's yet. Until it is, a reader sees
+one snapshot listing every file written so far, not a history of appends.

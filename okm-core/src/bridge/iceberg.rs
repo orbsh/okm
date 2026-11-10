@@ -431,31 +431,31 @@ fn uuid_like() -> String {
     )
 }
 
-/// A path as the METADATA records it: RELATIVE to the table directory whenever
-/// the file lives inside it, `/`-separated.
+/// A path as the METADATA records it: an ABSOLUTE `file://` URI.
 ///
-/// This is what makes a bundle relocatable: the export is written in a temp
-/// directory and read after being moved (or on another machine), so an absolute
-/// URI recorded here would point at a directory that no longer exists. Iceberg
-/// resolves a relative path against the table's location, which for a directory
-/// warehouse is the directory the reader was pointed at — so the file travels.
-/// A file OUTSIDE the table directory has no relative form and keeps its
-/// absolute URI (the caller placed it somewhere this writer cannot describe).
+/// This used to record `/`-separated paths RELATIVE to the table directory, on the
+/// theory that Iceberg resolves them against the table's `location` and a moved
+/// bundle would therefore still open. Measured against a real reader, it does not:
+/// DuckDB's `iceberg_scan(<table dir>)` resolves the snapshot's `manifest-list`
+/// against the READER'S WORKING DIRECTORY, not against `location` — with `location`
+/// written as `"."` the table opens only when the process happens to sit in the table
+/// directory, and fails everywhere else (including from the absolute path a catalog
+/// stores). An absolute URI needs no base, so it is what survives contact.
+///
+/// The cost is stated rather than hidden: such a table is not relocatable by moving
+/// the directory — relocate it by rewriting `location` and the recorded paths, which
+/// is what every Iceberg writer makes you do anyway.
 fn recorded_path(table_dir: &Path, path: &Path) -> String {
-    let relative = path
-        .strip_prefix(table_dir)
-        .or_else(|_| path.strip_prefix(table_dir.canonicalize().unwrap_or_default()));
-    match relative {
-        Ok(inside) => inside
-            .components()
-            .map(|c| c.as_os_str().to_string_lossy().into_owned())
-            .collect::<Vec<_>>()
-            .join("/"),
-        Err(_) => {
-            let abs = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-            format!("file://{}", abs.display())
-        }
-    }
+    let _ = table_dir;
+    let abs = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    format!("file://{}", abs.display())
+}
+
+/// A path's absolute form, canonicalized when the filesystem agrees (both are
+/// absolute; canonicalizing only resolves symlinks, and a temp directory on a symlinked
+/// mount is a real case).
+fn canonical(path: &Path) -> PathBuf {
+    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
 }
 
 fn now_ms() -> u64 {
@@ -573,6 +573,7 @@ fn write_with_columns(
         })
         .collect::<std::io::Result<Vec<String>>>()?;
 
+    let location = format!("file://{}", canonical(table_dir).display());
     let metadata = format!(
         concat!(
             "{{\n",
@@ -600,7 +601,7 @@ fn write_with_columns(
             "}}\n"
         ),
         uuid = uuid,
-        location = ".",
+        location = location,
         sequence = sequence,
         now = now,
         last_column = columns.len(),
@@ -649,21 +650,25 @@ mod tests {
     }
 
     #[test]
-    fn the_metadata_records_paths_a_moved_table_can_still_resolve() {
-        // The bundle is written in a temp directory and opened after being
-        // moved, so a recorded absolute URI would point at nothing. Everything
-        // inside the table directory is relative to it, and the table's own
-        // location is the reader's directory.
+    fn every_recorded_path_is_an_absolute_uri() {
+        // Relative paths were the old design (a bundle that travels when moved). A
+        // real reader does not resolve them against `location`: DuckDB's
+        // `iceberg_scan` resolves the snapshot's `manifest-list` against the process's
+        // working directory, so a table recorded with `location: "."` opened only when
+        // the reader happened to sit in the table directory. Absolute URIs need no
+        // base — the price is that moving the directory means rewriting the metadata,
+        // which is the deal every Iceberg writer makes.
         let dir = tempfile::tempdir().unwrap();
         let table = dir.path().join("t1");
         std::fs::create_dir_all(table.join("data")).unwrap();
         let data = table.join("data/t1.parquet");
         std::fs::write(&data, b"not really parquet").unwrap();
-        assert_eq!(recorded_path(&table, &data), "data/t1.parquet");
+        let recorded = recorded_path(&table, &data);
+        assert!(recorded.starts_with("file://"), "{recorded}");
+        assert!(recorded.ends_with("/data/t1.parquet"), "{recorded}");
         let inner = table.join("metadata/x-m0.avro");
-        assert_eq!(recorded_path(&table, &inner), "metadata/x-m0.avro");
-        // A file outside the table keeps an absolute URI: it has no relative
-        // form this writer could describe.
+        assert!(recorded_path(&table, &inner).starts_with("file://"));
+        // A file OUTSIDE the table directory records the same way: it always did.
         let outside = dir.path().join("elsewhere.parquet");
         std::fs::write(&outside, b"x").unwrap();
         assert!(recorded_path(&table, &outside).starts_with("file://"));

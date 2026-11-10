@@ -2739,8 +2739,8 @@ Gate: `cargo test --workspace --all-features` (460 passed), clippy `--all-target
 ## 2026-11-10 — the segment is the migration path (ADR-0056)
 
 The three defects named first are what make the current log unsafe as a migration
-source; all three are fixed. Everything below landed except the three items still
-open at the end (Iceberg metadata, the store-scan export, the S3 sink).
+source; all three are fixed. Everything below landed except the two items still
+open at the end (retiring the store-scan export, and the S3 sink).
 
 - [x] **Watermark is per `(consumer, table)`.** `okm-drain/src/lib.rs` wrote
       `watermark-<consumer>.txt` in `out_dir`, while segment numbering restarts per
@@ -2829,8 +2829,25 @@ open at the end (Iceberg metadata, the store-scan export, the S3 sink).
 - [x] **`okm-parquet`** — the format half as a standalone binary: table directory in
       (segments + sidecars), Parquet + manifest out, watermark advanced only after
       both exist. `--root`, `--out`, `--consumer`, `--max-segments`, `--table <hex>`,
-      no link to the application. Iceberg metadata is the one piece still missing from
-      this bullet; `replay` landed (next item).
+      no link to the application.
+- [x] **The Iceberg view over the exported table.** The sink now writes
+      `<out>/<table hex>/data/*.parquet` — a directory per table, because two tables in
+      one sink are two tables — and, after the watermark moves,
+      `okm_core::bridge::iceberg::write_table_metadata` over everything in `data/`:
+      manifest, manifest list, `v1.metadata.json`, `version-hint.text`. Columns and row
+      counts are read from the written files; field ids are stamped in the Parquet in
+      column order. Verified end to end against a real reader rather than by
+      construction: DuckDB's `iceberg_scan` opens the table by directory and by
+      metadata path, from a working directory outside it.
+      That verification also found the path design wrong: metadata used to record
+      `/`-relative paths with `location: "."` on the theory that a reader resolves them
+      against `location` — DuckDB resolves the snapshot's `manifest-list` against the
+      reader's working directory instead, so the table opened only from inside its own
+      directory. Every recorded path is an absolute `file://` URI now (the price:
+      relocating means rewriting the metadata, as with every Iceberg writer).
+      Still missing, and now the only writer-side gap: snapshot APPEND (one snapshot
+      per file, instead of one snapshot re-listing `data/`), delete files, partitioning,
+      file-size targets. `examples/lake_demo.rs` is the two-command demonstration.
       `replay` takes one extra file (the target `CollectionSchema` JSON the new build
       exports) and writes through the new build's write path; everything else is on
       disk. `Table::to_record_batch` (ADR-0007) stays in core — it is the in-process

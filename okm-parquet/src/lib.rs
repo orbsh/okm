@@ -146,6 +146,8 @@ pub struct Report {
     /// dropped in silence — the twin of the typed bridge's NULL payload half.
     pub segment_only: usize,
     pub files: Vec<PathBuf>,
+    /// Iceberg metadata files written (one per table that produced a window).
+    pub metadata: usize,
 }
 
 /// What one window file holds, written beside it (`<same stem>.manifest.json`).
@@ -195,10 +197,23 @@ pub fn drain_table(dir: &Path, cfg: &DrainConfig, report: &mut Report) -> Result
 
     let first = window::stem_of(&win.segments[0]);
     let last = window::stem_of(&win.segments[win.segments.len() - 1]);
-    let out = cfg
+    // One directory per table, `data/` inside it: that directory IS the exported
+    // table (ADR-0056 §8), and a catalog or pyiceberg is pointed at it rather than
+    // at a pile of files that also serves other tables.
+    let table_dir = cfg.out_dir.join(&win.table);
+    let data_dir = table_dir.join("data");
+    let out = data_dir.join(format!("{}-{first}-{last}.parquet", win.table));
+
+    // Written into a scratch name beside the watermark and moved into place only
+    // once the projection succeeded: a refused window (a delete has no column) must
+    // leave no directory tree, no file and no moved position behind, which is the
+    // half-commit rule the tests hold this to.
+    let scratch = cfg
         .out_dir
-        .join(format!("{}-{first}-{last}.parquet", win.table));
-    let columns = write_parquet(&win, &out)?;
+        .join(format!(".{}-{first}-{last}.parquet.partial", win.table));
+    let columns = write_parquet(&win, &scratch)?;
+    std::fs::create_dir_all(&data_dir)?;
+    std::fs::rename(&scratch, &out)?;
 
     // The manifest lands with the file: a sink records provenance from it without
     // opening the Parquet, and an operator answers "did window N land".
@@ -222,6 +237,18 @@ pub fn drain_table(dir: &Path, cfg: &DrainConfig, report: &mut Report) -> Result
         &win.table,
         &format!("{last}.segment"),
     )?;
+
+    // The Iceberg view over everything this table has exported so far. Written
+    // after the position moves, because it describes files that exist — and rebuilt
+    // on every window, since snapshot APPEND (one snapshot per file, delete files,
+    // partitioning) is the writer side this crate does not have yet.
+    let files: Vec<PathBuf> = std::fs::read_dir(&data_dir)?
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|x| x == "parquet"))
+        .collect();
+    okm_core::bridge::iceberg::write_table_metadata(&table_dir, &files)
+        .map_err(|e| DrainError::new(format!("iceberg: {e}")))?;
+    report.metadata += 1;
 
     report.segments += win.segments.len();
     report.rows += win.rows.len();

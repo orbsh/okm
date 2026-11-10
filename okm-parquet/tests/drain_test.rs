@@ -136,6 +136,52 @@ fn one_window_becomes_one_parquet_file_and_the_watermark_moves() {
     );
     assert!(manifest.columns[3].2, "a payload column is nullable");
 
+    // The exported table is a TABLE, not a pile of files: Iceberg metadata over the
+    // data directory, with the column ids stamped in the Parquet and the file listed
+    // in a snapshot, so a catalog (or pyiceberg) reads it with no name mapping
+    // (ADR-0056 §8).
+    assert_eq!(report.metadata, 1, "one table, one metadata file");
+    let table_dir = report.files[0].parent().unwrap().parent().unwrap().to_path_buf();
+    let metadata = table_dir.join("metadata").join("v1.metadata.json");
+    let text = std::fs::read_to_string(&metadata).expect("iceberg metadata");
+    assert!(
+        text.contains("\"format-version\": 2"),
+        "an Iceberg v2 table: {text}"
+    );
+    assert!(
+        text.contains("manifest-list"),
+        "the snapshot points at a manifest list (Iceberg v2 keeps file names in the \
+         manifest, not in metadata.json): {text}"
+    );
+    // The data file is named in the MANIFEST — the avro the snapshot points at. An
+    // exported table that lists no file is an empty table with extra steps.
+    let file_name = report.files[0].file_name().unwrap().to_string_lossy().to_string();
+    let manifest_bytes: Vec<u8> = std::fs::read_dir(metadata.parent().unwrap())
+        .expect("metadata dir")
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|x| x == "avro"))
+        .filter_map(|p| std::fs::read(p).ok())
+        .flatten()
+        .collect();
+    assert!(
+        manifest_bytes
+            .windows(file_name.len())
+            .any(|w| w == file_name.as_bytes()),
+        "the manifest lists the file that was just written ({file_name})"
+    );
+    assert!(
+        text.contains("\"name\":\"level\""),
+        "the columns are read from the Parquet, not restated by the caller: {text}"
+    );
+    // The table's NAME is the catalog's business — Iceberg metadata carries none —
+    // so the directory is what names it, and that is what a reader is pointed at.
+    assert_eq!(
+        std::fs::read_to_string(table_dir.join("metadata").join("version-hint.text"))
+            .expect("version hint"),
+        "1",
+        "a directory reader (DuckDB) finds the current metadata through it"
+    );
+
     // Second run: the watermark holds, so the same window is not drained twice.
     let again = drain(root.path(), &cfg).expect("second drain");
     assert_eq!(again.rows, 0);
