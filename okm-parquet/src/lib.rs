@@ -44,11 +44,6 @@ use okm_dynamic::arrow::record_batch;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-/// The other consumer of a segment: replay into a store built by this build
-/// (ADR-0056 §5–§6). Separate module, separate promise — a window is a projection,
-/// replay is a write.
-pub mod replay;
-
 /// What a failed projection says. One shape for every layer below (io, JSON,
 /// codec, Parquet) because the caller's decision is the same for all of them:
 /// stop, fix the environment, run again — the watermark did not move.

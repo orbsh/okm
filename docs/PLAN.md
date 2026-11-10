@@ -2853,7 +2853,8 @@ open at the end (retiring the store-scan export, and the S3 sink).
       exports) and writes through the new build's write path; everything else is on
       disk. `Table::to_record_batch` (ADR-0007) stays in core — it is the in-process
       DataFrame path, not a file format.
-- [x] **Replay rules** — landed as `okm_parquet::replay` + `okm-parquet replay
+- [x] **Replay rules** — landed as `okm_core::changelog::replay` (the mechanism;
+      `okm-dynamic` implements its `ReplayTarget` for `DynamicCollection`) + `okm-parquet replay
       --root <log> --store <dir>`: the newest baseline first and then every segment
       numbered above it (a delta below the snapshot is inside it, and replaying it
       would resurrect a row the snapshot no longer has); rows decoded from the log and
@@ -2870,7 +2871,7 @@ open at the end (retiring the store-scan export, and the S3 sink).
       (and the field-vocabulary label faces a segment field needs);
       `a_dynamic_only_document_survives_replay_and_reconciliation` the segment-only
       document.
-- [x] **The reconciliation scan** — `okm_parquet::replay::reconcile(old, target,
+- [x] **The reconciliation scan** — `okm_core::changelog::replay::reconcile(old, target,
       header, schema)` and `okm-parquet replay --reconcile <old store>`: one range scan
       of the old store's primary face after the old instance stops writing, which is
       the only thing that can repair a change the log never carried (ADR-0056 §4). A

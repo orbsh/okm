@@ -5,8 +5,10 @@
 //! The bytes, the ordering and the half of the schema the log cannot carry are all
 //! decided here, so the join lives beside the readers instead of re-deriving them
 //! one directory up. What leaves the crate is only the FORMAT — Arrow columns,
-//! Parquet, the table log, the replay driver — and each of those is a projection
-//! of a window, not part of producing one.
+//! Parquet, the table log — and each of those is a projection of a window, not part
+//! of producing one. Replay does NOT leave: applying a segment through a target's
+//! write path is mechanism, so it lives beside this join (`super::replay`), behind a
+//! trait the crate above implements.
 //!
 //! What a window IS: an append of changes. The same key may appear twice, because a
 //! window is history, not a table — collapsing it is a compaction the sink does.

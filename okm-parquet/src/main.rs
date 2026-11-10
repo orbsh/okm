@@ -10,7 +10,7 @@
 //! names the reader so two readers keep two positions (ADR-0056 §8).
 
 use okm_core::SharedVirtualStorage;
-use okm_parquet::replay::{replay_and_reconcile, replay_table, TableRun};
+use okm_core::changelog::replay::{TableRun, replay_and_reconcile, replay_table};
 use okm_parquet::{Report, DrainConfig, drain, drain_table};
 use std::path::PathBuf;
 
@@ -168,7 +168,7 @@ fn replay(args: &[String]) -> Result<i32, String> {
             let reconcile = match &old_dir {
                 Some(path) => {
                     let old = open_store(path)?;
-                    Some(okm_parquet::replay::reconcile(
+                    Some(okm_core::changelog::replay::reconcile(
                         &old,
                         &collection,
                         &decode_hex(&header)?,
@@ -188,7 +188,7 @@ fn replay(args: &[String]) -> Result<i32, String> {
                 let old = open_store(path)?;
                 replay_and_reconcile(&root, new_collection, &old)?
             }
-            None => okm_parquet::replay::replay_all(&root, new_collection)?,
+            None => okm_core::changelog::replay::replay_all(&root, new_collection)?,
         },
     };
 

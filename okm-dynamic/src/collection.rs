@@ -65,6 +65,37 @@ pub struct DynamicCollection<S: VirtualStorage> {
     _owned: std::marker::PhantomData<std::cell::Cell<()>>,
 }
 
+/// The replay seam (ADR-0056 §5): core owns the mechanism, this type is the target it
+/// cannot name. Every method is a delegation — the trait exists for the dependency
+/// direction, not for behaviour.
+impl<S: VirtualStorage> okm_core::changelog::replay::ReplayTarget for DynamicCollection<S> {
+    type Store = S;
+
+    fn store(&self) -> &S {
+        DynamicCollection::store(self)
+    }
+
+    fn name(&self) -> &str {
+        &self.schema().name
+    }
+
+    fn merge(&self, pkey: &[u8], row: &ValueMap) -> Result<(), String> {
+        DynamicCollection::merge(self, pkey, row)
+    }
+
+    fn purge(&self, pkey: &[u8]) -> Result<bool, String> {
+        DynamicCollection::purge(self, pkey)
+    }
+
+    fn fetch(&self, pkey: &[u8]) -> Result<Option<ValueMap>, String> {
+        DynamicCollection::fetch(self, pkey)
+    }
+
+    fn document_keys(&self) -> Result<Vec<Vec<u8>>, String> {
+        DynamicCollection::scan_document_keys(self)
+    }
+}
+
 impl<S: VirtualStorage> DynamicCollection<S> {
     /// Declare a dynamic table. `ns` is the 2-byte BE namespace segment
     /// (the table's own allocation; access methods share it, slot bytes

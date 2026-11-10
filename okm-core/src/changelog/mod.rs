@@ -115,6 +115,7 @@ pub const PARTIAL_EXT: &str = "partial";
 /// segments themselves are readable without it: `read_sealed` answers ops and
 /// bytes, which is all a raw consumer needs.
 #[cfg(feature = "schema-serde")]
+pub mod replay;
 pub mod window;
 
 /// Extension of a sealed segment: immutable, ordered by name, drainable.
