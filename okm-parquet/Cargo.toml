@@ -15,7 +15,7 @@ path = "src/main.rs"
 [dependencies]
 okm-core = { path = "../okm-core", features = ["schema-serde", "parquet", "fjall"] }
 okm-wire = { path = "../okm-wire" }
-okm-dynamic = { path = "../okm-dynamic", features = ["arrow"] }
+okm-dynamic = { path = "../okm-dynamic", features = ["arrow", "replay"] }
 arrow = "60"
 parquet = { version = "60", default-features = false, features = ["arrow"] }
 serde = { version = "1", features = ["derive"] }

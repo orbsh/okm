@@ -68,6 +68,7 @@ pub struct DynamicCollection<S: VirtualStorage> {
 /// The replay seam (ADR-0056 §5): core owns the mechanism, this type is the target it
 /// cannot name. Every method is a delegation — the trait exists for the dependency
 /// direction, not for behaviour.
+#[cfg(feature = "replay")]
 impl<S: VirtualStorage> okm_core::changelog::replay::ReplayTarget for DynamicCollection<S> {
     type Store = S;
 

@@ -18,6 +18,10 @@ serde = ["dep:serde"]
 # The schema-driven column builder: a drainer has no row type, so the export it
 # needs is the one built from the declaration (ADR-0045 §9).
 arrow = ["dep:arrow", "okm-core/arrow"]
+# The replay seam (ADR-0056 §5): replaying a segment is core's mechanism, and this
+# crate supplies the target core cannot name. Turns on core's `schema-serde` because
+# the log's sidecar is JSON — off by default, so a plain build stays free of it.
+replay = ["okm-core/schema-serde"]
 
 [[test]]
 name = "arrow_columns_test"
