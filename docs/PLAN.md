@@ -2732,3 +2732,69 @@ fixtures in `save_into_test.rs`, `fjall_eval.rs` and `okm-query`.
 
 Gate: `cargo test --workspace --all-features` (460 passed), clippy `--all-targets`
 `--all-features` clean.
+
+## 2026-11-10 — the segment is the migration path (ADR-0056)
+
+Nothing below is landed. The three defects named here are the ones that make the
+current log unsafe as a migration source, and they come first.
+
+- [ ] **Watermark is per `(consumer, table)`.** `okm-drain/src/lib.rs:182` writes
+      `watermark-<consumer>.txt` in `out_dir`, while segment numbering restarts per
+      table: the table with the highest name advances the file and every lagging
+      table is filtered out by `> watermark` — silently, forever. One file per pair;
+      a test with two tables at different positions (the current suite is
+      single-table only).
+- [ ] **The truth-half filter is derived, not remembered.** `carried()`
+      (`okm-core/src/changelog.rs:476`) hard-codes the carried slots and says in a
+      comment that nothing checks the list. `SlotMap` already carries every boundary
+      (`declared_index_base`, `declared_reduce_base`, `declared_lead_base`, the
+      vocabulary pairs) — derive the split from it and add a test that fails when a
+      face is added on the wrong side.
+- [ ] **Delete semantics split by consumer.** Replay applies a removal in order;
+      the Parquet sink refuses a window that contains one
+      (`okm-drain/src/lib.rs:227`). Keep the refusal for the lake and let replay
+      consume it — the refusal must become a property of the sink, not of the
+      window reader.
+- [ ] **`CollectionSchema.name`** — carried from `#[ok_name]` (`Document::TABLE_NAME`,
+      ADR-0034), so the table's name can travel in a segment. Touches schema-serde's
+      shape; the export path already refuses an unnamed table, so nothing new is
+      required of it.
+- [ ] **Segment format v2**: header (`OKMS`, fmt, kind delta/baseline,
+      layout_version, ns, name, schema fingerprint) and footer (ordinal, records,
+      body_len, crc32), written at open and at seal. `read_sealed` accepts a bare
+      stream as v1, so shipped logs stay readable.
+- [ ] **`ChangelogStore`** — capture as a store decorator above `commit_batch`,
+      split per table by the key's 2-byte header, enabled globally by config with an
+      ns exclusion list. The sidecar moves to unconditional assembly
+      (`CollectionSchema::of`), since a globally captured table without one has
+      segments no reader can decode.
+- [ ] **Baseline generation** — `Collection::reconcile` extended from slot 0 to the
+      whole truth set (dynamic `0x01`, `0x02`–`0x05`, both `0x1nnn`/`0x2nnn`
+      directions), written as a `kind = baseline` segment; produced at startup when
+      a captured table has none. It runs in the process that owns the store (single
+      writer) — a bounded boot scan, once.
+- [ ] **The drain becomes core; the formats leave.** `okm_dynamic::decode_payload` is a
+      pure function over `CollectionSchema` and returns core `DynamicValue`s — move
+      `decode.rs` into `okm-core` (`okm-dynamic` re-exports it) and move the window
+      join out of `okm-drain` into core beside the segment readers. `okm-drain` ceases
+      to be a crate. Arrow (`okm_dynamic::arrow`), Parquet, Iceberg metadata and the
+      replay driver are projections, not mechanism, and stay outside a crate that
+      cannot depend upward.
+- [ ] **`okm-parquet`** — a CLI with no link to the application: table directory in
+      (segments + sidecars), Parquet + manifest out, Iceberg metadata after that.
+      `replay` takes one extra file (the target `CollectionSchema` JSON the new build
+      exports) and writes through the new build's write path; everything else is on
+      disk. `Table::to_record_batch` (ADR-0007) stays in core — it is the in-process
+      DataFrame path, not a file format.
+- [ ] **Replay rules** — derived state rebuilt by the write path, never copied;
+      vocabulary ids re-resolved `id → label → new id`; baseline then segments in
+      ordinal order; one reconciliation range scan against the old store after the
+      old instance stops writing (the only thing that can repair a delete the log
+      lost).
+- [ ] **Retire or demote `parquet_io`'s store-scan export** once baseline generation
+      exists: it is the export for a store that never logged, and the ADR makes the
+      segment the single interchange.
+- [ ] **S3 sink, planned**: a feature in core (`object_store` + `tokio` are already
+      optional dependencies, so no crate enters the tree), off by default, feeding on
+      sealed segments handed to a worker after the rename — never inside a commit.
+      `okm-series` keeps its own container and magic (`.log` parts, ADR-0046).

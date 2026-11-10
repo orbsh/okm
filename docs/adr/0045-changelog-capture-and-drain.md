@@ -8,6 +8,7 @@ after the engine returned `Ok` (`stage_capture` / `flush_capture` cover the mult
 segments seal by rename with a layout sidecar beside them; and the readers a drainer needs are
 here (`read_sealed`, `read_open_tail`, `sealed_segments`). The drain itself is out of process by
 decision and belongs to its consumer, not to this crate. **Date:** 2026-10-28
+**Revised by:** [ADR-0056](0056-the-segment-is-the-migration-path.md) in three places — capture moves from the collection instance to the store boundary (enabled globally), a `baseline` segment kind is added, and replay becomes the migration consumer with a self-describing segment container (v2). What does NOT change: commit first, append after, at most once, the log is a hint.
 
 ## Context
 

@@ -7,6 +7,7 @@
 （`stage_capture` / `flush_capture` 覆盖跨表的那一批）；段靠改名封存，旁边落一个布局 sidecar；
 抽干方需要的读端都在（`read_sealed`、`read_open_tail`、`sealed_segments`）。抽干本身按裁决在
 进程外，属于它的消费者，不属于这个 crate。**日期：** 2026-10-28
+**修订：** [ADR-0056](0056-the-segment-is-the-migration-path.zh-CN.md) 改了三处——捕获从 collection 实例挪到 store 边界（全局开关）、新增 kind 为 baseline 的段、replay 成为迁移消费者，段格式 v2 自带头尾元数据。本 ADR 的“先提交后追加、至多一次、日志是 hint”不变。
 
 ## 背景
 
