@@ -2,7 +2,7 @@
 
 > **Languages:** [English](0008-event-layer-reduce-subscribe-stream.md) (primary) · [中文](0008-event-layer-reduce-subscribe-stream.zh-CN.md)
 
-**Status:** Implemented — bare `#[ok_subscribe]` with a build.rs-derived event enum, monotonic batch epoch, okm-stream combinators; a per-row fallback subscription is not the design (see PLAN's subscription-payload decision). The vocabulary is subscribe/subscription (`ChannelCell` → `SinkCell`, `CHANNEL_<ENUM>` → `SINK_<ENUM>`); "trigger" is not a mechanism — that class is "a side effect at the write path's edge".
+**Status:** Implemented — bare `#[ok_subscribe]` with a build.rs-derived event enum, monotonic batch epoch, okm-stream combinators; a per-row fallback subscription is not the design (see PLAN's subscription-payload decision). The vocabulary is subscribe/subscription (`ChannelCell` → `SinkCell`, `CHANNEL_<ENUM>` → `SINK_<ENUM>`); "trigger" is not a mechanism — that class is "a side effect at the write path's edge". **Updates 2026-11-10:** §2 states what this face is for — the observer interface, where a consumer's reaction stays one piece of code — with best-effort recorded as the price of that placement rather than its purpose.
 
 ## Context
 
@@ -42,8 +42,9 @@ Two consumer classes attach to it, with deliberately different failure semantics
   attached at the annotation site: processing logic belongs entirely to the subscriber;
   the stream crate's combinators are the adapter layer between raw events and
   that logic. Delivery is **best-effort with no guarantees** — bounded/unbounded and
-  drop/block policy are the subscriber's declaration, not core's promise. This is the
-  observer pattern's honest shape: notify tolerates loss.
+  drop/block policy are the subscriber's declaration, not core's promise. The interface is what this face is for: the
+  consumer owns one registration point and the producer never names it. Best-effort
+  is the price of that placement, not its purpose.
 
 The asymmetry is deliberate (documented, not unified): reduce is reversible (unfold); a
 side effect at the write path's edge is at-most-once, with no transaction boundary — there
