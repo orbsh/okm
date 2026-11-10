@@ -171,6 +171,7 @@ pub fn drain(root: &Path, cfg: &DrainConfig) -> Result<Report> {
 fn drain_table(dir: &Path, cfg: &DrainConfig, report: &mut Report) -> Result<()> {
     report.tables += 1;
     let header = header_of(dir)?;
+    let table = file_name(dir);
     let schema = load_sidecar(dir)?;
 
     let mut segments: Vec<PathBuf> = std::fs::read_dir(dir)?
@@ -179,7 +180,13 @@ fn drain_table(dir: &Path, cfg: &DrainConfig, report: &mut Report) -> Result<()>
         .collect();
     segments.sort();
 
-    let watermark_path = cfg.out_dir.join(format!("watermark-{}.txt", cfg.consumer));
+    // Segment numbers restart per table, so the position must too: one file per
+    // (consumer, table). A consumer-only name lets whichever table is furthest
+    // ahead move the mark past every lagging table's window, silently and for
+    // good (ADR-0056 §8).
+    let watermark_path = cfg
+        .out_dir
+        .join(format!("watermark-{}-{table}.txt", cfg.consumer));
     let watermark = std::fs::read_to_string(&watermark_path)
         .map(|s| s.trim().to_string())
         .unwrap_or_default();
@@ -253,7 +260,6 @@ fn drain_table(dir: &Path, cfg: &DrainConfig, report: &mut Report) -> Result<()>
 
     let first = stem(&window[0]);
     let last = stem(&window[window.len() - 1]);
-    let table = file_name(dir);
     let out = cfg.out_dir.join(format!("{table}-{first}-{last}.parquet"));
     okm_core::bridge::tooling::parquet_io::write_batch(&batch, &out)?;
 

@@ -210,6 +210,26 @@ pub struct SlotMap {
     pub declared_lead_base: u16,
 }
 
+impl SlotMap {
+    /// The slot numbers every document declaration resolves to (ADR-0030): the
+    /// assembly point does not choose them, the numbering does. Named once so a
+    /// reader of the map (the capture filter, ADR-0056 §2) takes them from the
+    /// declaration instead of re-typing the constants.
+    pub fn standard() -> Self {
+        Self {
+            primary: crate::model::index::PRIMARY_SLOT,
+            dynamic: crate::model::index::DYNAMIC_SLOT,
+            field_vocab_id: crate::model::index::FIELD_VOCAB_ID_SLOT,
+            field_vocab_name: crate::model::index::FIELD_VOCAB_NAME_SLOT,
+            predicate_vocab_id: crate::model::index::PREDICATE_VOCAB_ID_SLOT,
+            predicate_vocab_name: crate::model::index::PREDICATE_VOCAB_NAME_SLOT,
+            declared_index_base: crate::model::index::DECLARED_SLOT_BASE,
+            declared_reduce_base: crate::model::index::REDUCE_SLOT_BASE,
+            declared_lead_base: crate::model::index::LEAD_SLOT_BASE,
+        }
+    }
+}
+
 impl CollectionSchema {
     /// Export the declaration of `<K, R>` as structured data.
     pub fn of<K: KeyEncode, R: Document<Key = K>>() -> Self {
@@ -269,17 +289,7 @@ impl CollectionSchema {
             hot_fields,
             cold_fields,
             members: Vec::new(),
-            slots: SlotMap {
-                primary: crate::model::index::PRIMARY_SLOT,
-                dynamic: crate::model::index::DYNAMIC_SLOT,
-                field_vocab_id: crate::model::index::FIELD_VOCAB_ID_SLOT,
-                field_vocab_name: crate::model::index::FIELD_VOCAB_NAME_SLOT,
-                predicate_vocab_id: crate::model::index::PREDICATE_VOCAB_ID_SLOT,
-                predicate_vocab_name: crate::model::index::PREDICATE_VOCAB_NAME_SLOT,
-                declared_index_base: crate::model::index::DECLARED_SLOT_BASE,
-                declared_reduce_base: crate::model::index::REDUCE_SLOT_BASE,
-                declared_lead_base: crate::model::index::LEAD_SLOT_BASE,
-            },
+            slots: SlotMap::standard(),
             indexes: <R as Document>::INDEX_DECLS
                 .iter()
                 .map(|d| IndexSchema {

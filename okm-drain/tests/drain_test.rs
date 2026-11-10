@@ -38,6 +38,22 @@ fn collection(root: &std::path::Path) -> Collection<TestStore, K, R> {
 const K1: K = K { org: 1, id: 10 };
 const K2: K = K { org: 1, id: 11 };
 
+/// The second table of the two-depth test: same key, DIFFERENT ns, so it has its
+/// own directory and its own segment numbering — which is what the watermark
+/// must not confuse with the first table's.
+#[derive(DocumentEncode, Clone, PartialEq, Debug)]
+#[ok_ref(K)]
+#[ok_ns(72)]
+#[ok_name("lagging_rows")]
+pub struct LaggingRow {
+    pub level: u32,
+}
+
+fn lagging_collection(root: &std::path::Path) -> Collection<TestStore, K, LaggingRow> {
+    Collection::with_changelog(TestStore::slatedb_mem(), ChangelogConfig::new(root))
+        .expect("the log opens")
+}
+
 #[test]
 fn one_window_becomes_one_parquet_file_and_the_watermark_moves() {
     let root = tempfile::tempdir().expect("root");
@@ -192,4 +208,56 @@ fn a_table_without_a_sidecar_stops_the_drain() {
     let err = drain(root.path(), &DrainConfig::new(out.path(), "test"))
         .expect_err("no sidecar means no columns");
     assert!(err.to_string().contains("sidecar"), "got: {err}");
+}
+
+/// Two tables at different depths: the one that is further ahead must not move
+/// the lagging table's position. Segment numbers restart per table, so a
+/// consumer-named watermark file would skip the lagging table silently and for
+/// good — the reason the position is per `(consumer, table)` (ADR-0056 §8).
+#[test]
+fn a_lagging_table_is_not_skipped_by_the_one_ahead() {
+    let root = tempfile::tempdir().expect("root");
+    let out = tempfile::tempdir().expect("out");
+
+    // Table 0x0047 (ns 71) gets TWO sealed segments — one per clean drop.
+    for level in [1u32, 2] {
+        let c = collection(root.path());
+        c.put(
+            &K1,
+            &R {
+                level,
+                name: "alpha".into(),
+            },
+        )
+        .expect("put");
+    }
+
+    // Table 0x0048 (ns 72) gets one, so it sits at ordinal 1 while the first
+    // table has reached ordinal 2.
+    {
+        let c = lagging_collection(root.path());
+        c.put(&K1, &LaggingRow { level: 9 }).expect("put");
+    }
+
+    let report = drain(root.path(), &DrainConfig::new(out.path(), "test")).expect("drain");
+    assert_eq!(report.tables, 2);
+    assert_eq!(
+        report.segments, 3,
+        "two segments for the table ahead, one for the lagging one"
+    );
+    let files: Vec<String> = report
+        .files
+        .iter()
+        .map(|p| p.file_name().unwrap_or_default().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(files.len(), 2, "one window file per table: {files:?}");
+    assert!(
+        files.iter().any(|f| f.starts_with("0048-")),
+        "the lagging table still drains: {files:?}"
+    );
+
+    // And both positions are their own file, so a second run is a no-op for both.
+    let again = drain(root.path(), &DrainConfig::new(out.path(), "test")).expect("second drain");
+    assert_eq!(again.segments, 0, "nothing left for either table");
+    assert!(again.files.is_empty());
 }

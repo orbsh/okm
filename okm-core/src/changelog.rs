@@ -51,10 +51,47 @@ use std::time::Instant;
 
 use crate::OpFrame;
 use crate::error::{Error, Result};
-use crate::model::index::{
-    DYNAMIC_SLOT, FIELD_VOCAB_ID_SLOT, FIELD_VOCAB_NAME_SLOT, FIXED_FACE_MAX,
-    PREDICATE_VOCAB_ID_SLOT, PREDICATE_VOCAB_NAME_SLOT, PRIMARY_SLOT, Slot, segment,
-};
+use crate::model::index::{FIXED_FACE_MAX, Slot, segment};
+use crate::model::schema::SlotMap;
+
+/// Which side of the capture rule a slot falls on (ADR-0056 §2).
+///
+/// `Truth` is what the log keeps: the primary row, the dynamic segment, the four
+/// vocabulary directions and both categorical families. `Derived` is everything a
+/// reader can rebuild by replaying the truth through a write path — declared
+/// indexes, reduce accumulators, lead faces, the graph's traversal faces, the
+/// vector snapshot, the table meta row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Side {
+    Truth,
+    Derived,
+}
+
+/// Classify ONE slot. The six fixed truth numbers come from the declaration's
+/// [`SlotMap`] (they are not constants a capture filter should re-type), and the
+/// remaining numbering space is classified by family, so every value is answered
+/// instead of falling through a whitelist.
+///
+/// This is the single place the split is written: [`Changelog::stage`] drops what
+/// this calls derived, and the drainer reads the same answer instead of matching
+/// on the same numbers again.
+pub fn side_of(slots: &SlotMap, slot: u16) -> Side {
+    if slot == slots.primary
+        || slot == slots.dynamic
+        || slot == slots.field_vocab_id
+        || slot == slots.field_vocab_name
+        || slot == slots.predicate_vocab_id
+        || slot == slots.predicate_vocab_name
+    {
+        return Side::Truth;
+    }
+    // Counting families: the two categorical-vocabulary directions are truth (the
+    // payload holds ids, ADR-0032); index, reduce and lead are derived.
+    match slot >> 12 {
+        segment::VOCAB_LABEL | segment::VOCAB_ID => Side::Truth,
+        _ => Side::Derived,
+    }
+}
 
 /// Extension of a segment still being written. Readers ignore it: its tail may
 /// be torn (ADR-0045 §5).
@@ -118,6 +155,9 @@ pub struct ChangelogStatus {
 pub struct Changelog {
     dir: PathBuf,
     header: Vec<u8>,
+    /// The declaration's slot numbers, so the capture rule reads them instead of
+    /// re-typing the constants (ADR-0056 §2).
+    slots: SlotMap,
     cfg: ChangelogConfig,
     /// `None` while sealed: the rename happens with the handle closed, and a
     /// failed flush leaves this `Some` so the next attempt retries.
@@ -149,6 +189,7 @@ impl Changelog {
         Ok(Self {
             dir,
             header: header.to_vec(),
+            slots: SlotMap::standard(),
             cfg,
             file: Some(file),
             segment,
@@ -173,7 +214,7 @@ impl Changelog {
         self.staged.clear();
         let count = ops
             .iter()
-            .filter(|(key, _)| carried(&self.header, key))
+            .filter(|(key, _)| carried(&self.slots, &self.header, key))
             .count();
         if count == 0 {
             return 0;
@@ -185,7 +226,7 @@ impl Changelog {
         self.staged.extend_from_slice(&[0, 0, 0, 0]);
         okm_wire::put_len(&mut self.staged, count);
         for (key, value) in ops {
-            if !carried(&self.header, key) {
+            if !carried(&self.slots, &self.header, key) {
                 continue;
             }
             match value {
@@ -473,7 +514,7 @@ fn frames_of(path: &Path, strict: bool) -> Result<Vec<OpFrame>> {
 
 /// Which entries of a batch this log carries (ADR-0045 §3): the truth half, by
 /// slot, failing closed on anything unrecognised.
-fn carried(header: &[u8], key: &[u8]) -> bool {
+fn carried(slots: &SlotMap, header: &[u8], key: &[u8]) -> bool {
     let Some(rest) = key.strip_prefix(header) else {
         // Another table's key in a cross-collection batch: this directory is
         // this header's, so it is not ours to write.
@@ -495,20 +536,7 @@ fn carried(header: &[u8], key: &[u8]) -> bool {
         // cursor, the table's meta row): no row has that shape.
         return false;
     }
-    if slot <= FIXED_FACE_MAX {
-        return matches!(
-            slot,
-            PRIMARY_SLOT
-                | DYNAMIC_SLOT
-                | FIELD_VOCAB_ID_SLOT
-                | FIELD_VOCAB_NAME_SLOT
-                | PREDICATE_VOCAB_ID_SLOT
-                | PREDICATE_VOCAB_NAME_SLOT
-        );
-    }
-    // Counting families: the two categorical-vocabulary directions are truth
-    // (the payload holds ids, ADR-0032); index/reduce are derived.
-    matches!(slot >> 12, segment::VOCAB_LABEL | segment::VOCAB_ID)
+    side_of(slots, slot) == Side::Truth
 }
 
 /// The end of the first length-prefixed record in `bytes`, if one is complete.

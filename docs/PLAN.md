@@ -2735,21 +2735,24 @@ Gate: `cargo test --workspace --all-features` (460 passed), clippy `--all-target
 
 ## 2026-11-10 — the segment is the migration path (ADR-0056)
 
-Nothing below is landed. The three defects named here are the ones that make the
-current log unsafe as a migration source, and they come first.
+The three defects named first are what make the current log unsafe as a migration
+source; the first two are fixed, the rest is not landed.
 
-- [ ] **Watermark is per `(consumer, table)`.** `okm-drain/src/lib.rs:182` writes
+- [x] **Watermark is per `(consumer, table)`.** `okm-drain/src/lib.rs` wrote
       `watermark-<consumer>.txt` in `out_dir`, while segment numbering restarts per
-      table: the table with the highest name advances the file and every lagging
-      table is filtered out by `> watermark` — silently, forever. One file per pair;
-      a test with two tables at different positions (the current suite is
-      single-table only).
-- [ ] **The truth-half filter is derived, not remembered.** `carried()`
-      (`okm-core/src/changelog.rs:476`) hard-codes the carried slots and says in a
-      comment that nothing checks the list. `SlotMap` already carries every boundary
-      (`declared_index_base`, `declared_reduce_base`, `declared_lead_base`, the
-      vocabulary pairs) — derive the split from it and add a test that fails when a
-      face is added on the wrong side.
+      table: the table with the highest name advanced the file and every lagging
+      table was filtered out by `> watermark` — silently, forever. Now one file per
+      pair, and `a_lagging_table_is_not_skipped_by_the_one_ahead` locks it (two
+      tables, one of them two segments deep) — the suite had been single-table only.
+      A pre-existing shared watermark file is ignored, so the first run after this
+      re-exports what had landed; nothing is published yet, and no window is lost.
+- [x] **The truth-half filter is derived, not remembered.** `carried()` hard-coded
+      the carried slots and said in a comment that nothing checks the list. Now
+      `changelog::side_of(&SlotMap, slot)` classifies the WHOLE numbering space
+      (six fixed truth numbers read off the declaration's slot map, labels by
+      `0x1nnn`/`0x2nnn`, everything else derived) and `every_slot_is_classified_and_only_the_truth_half_is_carried`
+      pins it with an expectation table plus a totality pass over 0..=u16::MAX.
+      `SlotMap::standard()` is the one place those numbers are written now.
 - [ ] **Delete semantics split by consumer.** Replay applies a removal in order;
       the Parquet sink refuses a window that contains one
       (`okm-drain/src/lib.rs:227`). Keep the refusal for the lake and let replay

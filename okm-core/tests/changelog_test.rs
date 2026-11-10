@@ -537,3 +537,62 @@ fn reconcile_re_emits_the_rows_that_still_exist() {
         assert!(keys.contains(want), "the row came back");
     }
 }
+
+/// The capture rule covers the WHOLE numbering space instead of a whitelist
+/// (ADR-0056 §2): every slot value is classified, so a new face cannot be
+/// silently dropped — adding one means adding it to this expectation table.
+#[test]
+fn every_slot_is_classified_and_only_the_truth_half_is_carried() {
+    use okm_core::changelog::{Side, side_of};
+    use okm_core::schema::SlotMap;
+
+    let slots = SlotMap::standard();
+
+    // The fixed faces an export carries, by number: primary row, dynamic
+    // segment, field-name vocabulary both ways, predicate vocabulary both ways.
+    // Everything else in 0x00–0x0F is derived — the graph's traversal faces
+    // (0x06–0x09), the vector snapshot (0x0A), the table meta row (0x0F).
+    let fixed_truth = [0x00u16, 0x01, 0x02, 0x03, 0x04, 0x05];
+    for slot in 0u16..=0x0F {
+        let want = if fixed_truth.contains(&slot) {
+            Side::Truth
+        } else {
+            Side::Derived
+        };
+        assert_eq!(side_of(&slots, slot), want, "fixed face 0x{slot:04X}");
+    }
+
+    // Counting families: labels ride (0x1nnn / 0x2nnn) because the payload holds
+    // ids; indexes, reduces and lead faces are derived state.
+    // Counting families (0x1nnn upward — a two-byte slot always starts above
+    // 0x0F, so family 0 is the fixed faces and is not part of this loop).
+    for family in 0x1u16..=0xF {
+        for count in [0u16, 1, 0xFFF] {
+            let slot = (family << 12) | count;
+            let want = if matches!(family, 0x1 | 0x2) {
+                Side::Truth
+            } else {
+                Side::Derived
+            };
+            assert_eq!(side_of(&slots, slot), want, "slot 0x{slot:04X}");
+        }
+    }
+
+    // The six numbers the declaration exports ARE the fixed truth set — the
+    // filter reads them from the map, so the two can never drift apart.
+    for named in [
+        slots.primary,
+        slots.dynamic,
+        slots.field_vocab_id,
+        slots.field_vocab_name,
+        slots.predicate_vocab_id,
+        slots.predicate_vocab_name,
+    ] {
+        assert_eq!(side_of(&slots, named), Side::Truth, "0x{named:04X}");
+    }
+
+    // Total function: no panics, no gaps, over the whole space.
+    for slot in 0u16..=u16::MAX {
+        let _ = side_of(&slots, slot);
+    }
+}
