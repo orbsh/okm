@@ -129,7 +129,7 @@ pub mod parquet_io {
         path: &std::path::Path,
     ) -> parquet::errors::Result<()> {
         // Columns are identified by NAME: the metadata is a Delta log
-        // (`crate::bridge::delta`), which records a schema by name, and a Parquet
+        // (`okm_parquet::delta`), which records a schema by name, and a Parquet
         // field id would be a second identity nothing reads.
         let file = std::fs::File::create(path)?;
         let mut w = parquet::arrow::ArrowWriter::try_new(file, batch.schema(), None)?;

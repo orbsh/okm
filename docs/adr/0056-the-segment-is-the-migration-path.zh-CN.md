@@ -81,17 +81,17 @@ replay 按序读 baseline + 各段，并**通过新构建的写路径**应用它
 今天的 segment 是裸记录流（`[u32 BE len][OpFrame]`），读它需要的一切都在目录名（header hex）和旁边的 sidecar 里。这正是它离开生产者之后不可用的原因，而离开生产者可用恰恰是文件迁移通路的全部意义。格式版本 2 增加：
 
 ```text
-header  "OKMS" | fmt u8 | kind u8 (delta=1, baseline=2) | layout_version u8
-        ns u16 BE | name_len u16 BE | name | schema 指纹 [16]
+header  fmt u8 | kind u8 (delta=1, baseline=2) | layout_version u8 | hdr_len u8
+        header | name_len u16 BE | name | schema 指纹 [16]
 body    既有记录流：[u32 BE len][OpFrame] …
-footer  ordinal u64 BE | records u64 BE | body_len u64 BE | crc32 u32 BE | "OKME"
+footer  body_len u64 BE | records u64 BE | ordinal u64 BE | crc32 u32 BE
 ```
 
 - **头在打开时写，尾在封存时写。** 改名就是提交，所以紧挨着它写下的尾与文件一起原子。
 - **`name` 与 `ns` 让表的身份跟着走。** 名字来自 `#[ok_name]` 的 `Document::TABLE_NAME`（ADR-0034），并成为 `CollectionSchema` 的一个字段——因为目录名是 header 的十六进制，而湖里的表需要一个名字。
 - **指纹把字节钉到它的声明上**：读者核对找到的 sidecar 就是这份文件写下时用的那份，而不是相信目录。
 - **序号（今天只在文件名里）与校验和让副本可信**：缺号变得可发现，而不是被 `> watermark` 静默跳过；短传被拒绝，而不是回放一半。
-- **格式 1 仍可读。** 读者接受裸流（无 magic）作为版本 1——已发出的日志不需要迁移才能被新工具读。
+- **没有标记，也不留兼容。** 头尾都没有 ASCII magic：文件以格式字节开头、以 28 字节 footer 收尾，格式 1 的段不再读。标记原本有两个职责——区分 v1/v2，以及确认尾部那一块确实是 footer；第一个按决定取消，第二个由 `body_len` 对文件长度加校验和完成，标记改不动它。
 - **段里不嵌 schema 体。** sidecar 按布局版本各一份，是声明的载体；每段嵌一份是同一份声明的第二个真相源，还会让文件的原子单位错位。原子单位是**表目录**：段 + sidecar，这既是复制要搬的东西，也是 `drain` 现在就拿的东西。
 
 ### 8. 工作区里的这一刀

@@ -1,7 +1,7 @@
 # ADR-0058: The exported table is a Delta table, and the variant column has one shape
 
-**Status**: Accepted (2026-11-10) — implemented in the same round: `bridge::delta`
-replaces `bridge::iceberg`, the open-fields column becomes the canonical
+**Status**: Accepted (2026-11-10) — implemented in the same round: `okm_parquet::delta`
+(a module of the drain crate) replaces core's `bridge::iceberg`, the open-fields column becomes the canonical
 `struct<metadata, value>`, and the Iceberg metadata encoder (including a hand-written
 Avro writer) is deleted rather than kept.
 **Date**: 2026-11-10
@@ -45,6 +45,14 @@ and every later version is a commit of `add` actions, one per file the window wr
 table is the directory; no catalog, no registration, and no absolute paths (`add.path`
 is relative to the table directory by specification).
 
+**It lives in `okm-parquet`, not in core.** The log is a projection of the change log,
+one step further out than the window: core produces segments and joins them into a
+window, and what a table FORMAT does with that window — Parquet file, log commit, replay
+— is the drain crate's work. An encoder in core would make core the owner of a lake's
+layout decisions, which is what ADR-0045 §7 and ADR-0056's "only the formats move out"
+forbid. (The typed export path of ADR-0034, `export_parquet_with_variant` and the edge
+table, stays in core because it is the API's own projection, not the drain's.)
+
 **A variant column is declared `variant`,** with `minReaderVersion 3` /
 `minWriterVersion 7` and `readerFeatures/writerFeatures = ["variantType"]`, and is
 written physically as `struct<metadata: binary, value: binary>` with the
@@ -81,7 +89,7 @@ does not know it must refuse the table rather than guess what the column means.
 ## Consequences
 
 - `bridge::iceberg` is deleted, including `stamp_batch`: Delta identifies columns by
-  NAME, so a Parquet field id is a second identity nothing reads. `bridge::delta` is
+  NAME, so a Parquet field id is a second identity nothing reads. `okm_parquet::delta` is
   ~350 lines with no Avro encoder, and `parquet_io` writes the batch unchanged.
 - `Report::metadata` counts Delta commits, one per table per window.
 - **Unsigned columns widen, visibly.** Delta has no unsigned integer type, so `u8/u16`

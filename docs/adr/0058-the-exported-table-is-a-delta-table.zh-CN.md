@@ -1,6 +1,6 @@
 # ADR-0058：导出的表是一张 Delta 表，variant 列只有一种形态
 
-**状态**：已接受（2026-11-10）——同轮落地：`bridge::delta` 取代 `bridge::iceberg`，开放字段列改成规范的 `struct<metadata, value>`，Iceberg 元数据编码器（含手写的 Avro 容器）被删除而不是保留。
+**状态**：已接受（2026-11-10）——同轮落地：`okm_parquet::delta`（抽干 crate 的一个模块）取代 core 的 `bridge::iceberg`，开放字段列改成规范的 `struct<metadata, value>`，Iceberg 元数据编码器（含手写的 Avro 容器）被删除而不是保留。
 **日期**：2026-11-10
 **中文**：[0058-the-exported-table-is-a-delta-table.zh-CN.md](0058-the-exported-table-is-a-delta-table.zh-CN.md)
 **依赖**：ADR-0034（表有名字，导出有表的形状）、ADR-0045（日志：捕获、段、抽干）、ADR-0056（段就是迁移通路）
@@ -19,6 +19,8 @@ ADR-0056 §8 定下「每表一个目录」，sink 在其上写 Iceberg v2 元�
 
 **导出目录就是一张 Delta 表。** `_delta_log/NNNNNNNNNNNNNNNNNNNN.json` 每行一个 JSON action：第一个版本声明 `protocol` 与 `metaData`，之后每个版本就是一次提交，只含窗口写出的文件对应的 `add`。表就是目录：没有 catalog、不需要注册、没有绝对路径（规范规定 `add.path` 相对表目录）。
 
+**它住在 `okm-parquet`，不在核心。** 日志是变更日志的一次投影，比窗口再往外一层：核心产出段、合成窗口，而表**格式**拿这个窗口做什么——Parquet 文件、日志提交、回放——是抽干 crate 的活。把编码器放进核心，等于让核心拥有一张湖的布局决定权，这正是 ADR-0045 §7 与 ADR-0056「搬出去的只有格式」所禁止的。（ADR-0034 的 typed 导出路径——`export_parquet_with_variant` 与边表——仍留核心，因为那是 API 自己的投影，不是抽干的。）
+
 **variant 列声明为 `variant`**，配 `minReaderVersion 3` / `minWriterVersion 7` 与 `readerFeatures/writerFeatures = ["variantType"]`，物理形态是 `struct<metadata: binary, value: binary>` 并带 `arrow.parquet.variant` 扩展名。这个特性是表级的：不认它的读方必须拒绝整张表，而不是猜这一列是什么意思。
 
 ## 为什么是 Delta 而不是 Iceberg
@@ -35,7 +37,7 @@ ADR-0056 §8 定下「每表一个目录」，sink 在其上写 Iceberg v2 元�
 
 ## 后果
 
-- `bridge::iceberg` 删除，连带 `stamp_batch`：Delta 按**名字**认列，Parquet 的 field id 会变成没人读的第二重身份。`bridge::delta` 约 350 行，没有 Avro 编码器，`parquet_io` 原样写批次。
+- `bridge::iceberg` 删除，连带 `stamp_batch`：Delta 按**名字**认列，Parquet 的 field id 会变成没人读的第二重身份。`okm_parquet::delta` 约 350 行，没有 Avro 编码器，`parquet_io` 原样写批次。
 - `Report::metadata` 数的是 Delta 提交，每表每窗口一条。
 - **无符号列会显式变宽。** Delta 没有无符号整数类型，所以 `u8/u16` 变成 `short/integer`、`u32` 变成 `long`、`u64` 变成 `decimal(20,0)`。读方在 okm 的 `u64` 处看到的是 `decimal(20,0)`；替代方案要么是根本写不出的列，要么是会丢数据的窄化转换。
 - **日志携带逐文件统计**：`numRecords`，以及对「Parquet 统计能表述声明类型边界」的列给出 `minValues` / `maxValues` / `nullCount`（有符号整数、浮点、截到 32 字符的字符串、布尔）。无符号列不给边界：它们的物理统计是按有符号类型算的，据此推出的边界恰好在溢出的那些行上是错的——编造边界比不做跳过更糟。

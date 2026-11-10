@@ -35,6 +35,8 @@
     )
 )]
 
+pub mod delta;
+
 use okm_core::changelog::window::{
     self, Window, WindowConfig, read_watermark, table_dirs, write_watermark,
 };
@@ -246,7 +248,7 @@ pub fn drain_table(dir: &Path, cfg: &DrainConfig, report: &mut Report) -> Result
         .filter_map(|e| e.ok().map(|e| e.path()))
         .filter(|p| p.extension().is_some_and(|x| x == "parquet"))
         .collect();
-    okm_core::bridge::delta::commit_files(&table_dir, &files)
+    delta::commit_files(&table_dir, &files)
         .map_err(|e| DrainError::new(format!("delta: {e}")))?;
     report.metadata += 1;
 

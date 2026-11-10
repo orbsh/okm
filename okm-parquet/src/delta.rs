@@ -17,7 +17,12 @@
 //! `readerFeatures/writerFeatures: ["variantType"]` — a reader that does not know the
 //! feature refuses the whole table. That is the price of a column engines actually
 //! DECODE: as a plain binary it is readable everywhere and understood nowhere
-//! (measured — see [`crate::bridge::arrow_bridge::variant_parts`]).
+//! (measured: the flat form decoded to NULL in every row, the struct form to the value).
+//!
+//! This lives HERE and not in `okm-core`: the log is derived from the change log, one
+//! projection further out than the window. Core produces segments and joins windows;
+//! a table format — Parquet, the log, replay — is what this crate does with them
+//! (ADR-0056, the "only the formats move out" bullet).
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};

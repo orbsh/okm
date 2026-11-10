@@ -81,17 +81,17 @@ A layout change rotates the segment and starts a new sidecar version (`schema-v<
 A segment today is a bare record stream (`[u32 BE len][OpFrame]`); everything needed to read it lives in the directory name (header hex) and the sibling sidecar. That is exactly what stops a segment from being usable away from its producer, which is the point of a file-based migration path. Format version 2 adds:
 
 ```text
-header  "OKMS" | fmt u8 | kind u8 (delta=1, baseline=2) | layout_version u8
-        ns u16 BE | name_len u16 BE | name | schema fingerprint [16]
+header  fmt u8 | kind u8 (delta=1, baseline=2) | layout_version u8 | hdr_len u8
+        header | name_len u16 BE | name | schema fingerprint [16]
 body    the existing record stream: [u32 BE len][OpFrame] …
-footer  ordinal u64 BE | records u64 BE | body_len u64 BE | crc32 u32 BE | "OKME"
+footer  body_len u64 BE | records u64 BE | ordinal u64 BE | crc32 u32 BE
 ```
 
 - **Header at open, footer at seal.** The rename is the commit, so a footer written just before it is atomic with the file.
 - **`name` and `ns` make the table identity travel.** The name comes from `#[ok_name]` via `Document::TABLE_NAME` (ADR-0034) and becomes a field of `CollectionSchema`, because the directory name is the header in hex and a lake table has to be named.
 - **The fingerprint ties bytes to their declaration**: the reader verifies the sidecar it found is the one this file was written under, instead of trusting the directory.
 - **The ordinal (currently only in the file name) and the checksum make a copy trustworthy**: a gap becomes detectable instead of being silently skipped by `> watermark`, and a short transfer is refused instead of half-replayed.
-- **Format 1 stays readable.** A reader accepts the bare stream (no magic) as version 1 — the shipped logs do not need a migration to be read by the new tool.
+- **No mark, no compatibility.** Neither end carries an ASCII magic: the file opens with its format byte and closes with a 28-byte footer, and a format-1 segment is not read. A marker had two jobs — telling v1 from v2, and confirming that what sits at the tail is a footer. The first is gone by decision; the second is `body_len` against the file's own length plus the checksum, which a marker cannot improve.
 - **No schema body in the segment.** The sidecar carries the declaration, one file per layout version; embedding it per segment would duplicate the same declaration and make the file's atom the wrong one. The atomic unit is the **table directory**: segments + sidecars, which is what a copy ships and what `drain` already takes.
 
 ### 8. The cut inside the workspace

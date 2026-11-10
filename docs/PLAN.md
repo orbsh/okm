@@ -2316,11 +2316,10 @@ panic lints allowed only in the places it names. So the runtime half of
       kept as numbers, lists and maps as arrays and objects). The mapping is okm's
       to publish — otherwise every adapter invents a dialect.
 - [ ] Deferred (2026-10-31, owner): low priority. Not in this unit: lake-writer delete files (or deletion vectors), partitioning
-      and file-size targets (the Delta writer commits one `add` per window, so a
-      window is one log version, but nothing here deletes, partitions or sizes); any
-      Parquet read path; a complete lake WRITER (it goes in its own crate, because
-      `bridge::delta` is a zero-dependency log encoder and must stay one); the
-      SQL-to-okm planner. The
+      and file-size targets (`write_table_metadata` writes one snapshot over the
+      files it is handed); any Parquet read path; the Iceberg WRITER
+      (it goes in its own crate, because `bridge::iceberg` is a zero-dependency
+      metadata encoder and must stay one); the SQL-to-okm planner. The
       schema-driven Arrow builder is NO LONGER here: it landed as
       `okm_dynamic::arrow`, reusing `arrow_type`, with the typed bridge as its
       drift lock.
@@ -2774,16 +2773,16 @@ open at the end (retiring the store-scan export, and the S3 sink).
       deserializer defaults it (a sidecar written before the name travelled reads
       as unnamed, which the export already refuses) —
       `the_sidecar_carries_the_tables_declared_name` locks both directions.
-- [x] **Segment format v2**: header (`OKMS`, fmt, kind delta/baseline,
-      layout_version, the table's own header and name, face fingerprint) written at
-      open, footer (`body_len`, `frames`, `ordinal`, `crc32`, `OKME`) written at
-      seal from a second read of the file — never a per-write cost. `read_sealed`
-      verifies the checksum, `read_open_tail` does not, and a file without the
-      magic is read as format 1 (a bare record stream), so shipped logs stay
-      readable. `segment_info` answers "which table, which shape, which kind" for a
-      tool; `a_segment_says_which_table_and_shape_it_belongs_to`,
-      `a_flipped_byte_in_a_sealed_segment_is_refused` and
-      `a_format_1_segment_still_reads` lock the three claims.
+- [x] **Segment format v2**: header (fmt, kind delta/baseline, layout_version,
+      hdr_len, the table's own header and name, face fingerprint) written at open,
+      footer (`body_len`, `frames`, `ordinal`, `crc32` — 28 bytes) written at seal
+      from a second read of the file — never a per-write cost. `read_sealed`
+      verifies the checksum, `read_open_tail` does not. Neither end carries a magic
+      and a format-1 file is not read (ADR-0056 §7 as amended): the layout is
+      declared by the table and its sidecar, not by the bytes. `segment_info`
+      answers "which table, which shape, which kind" for a tool;
+      `a_segment_says_which_table_and_shape_it_belongs_to` and
+      `a_flipped_byte_in_a_sealed_segment_is_refused` lock the two claims.
 - [x] **`ChangelogStore`** — capture as a store decorator above `commit_batch`,
       split per table by the key's header, one switch for the whole store with an
       ns exclusion list (`exclude(ns)`), and `Collection::captured(store)` as the
@@ -2908,12 +2907,6 @@ open at the end (retiring the store-scan export, and the S3 sink).
       gone; the schema is read from the Parquet footer and columns are identified by
       NAME, so `stamp_batch` and its field-id registry entry went too. The Iceberg
       encoder — 708 lines including a hand-written Avro container — is deleted.
-      Each commit also carries per-file statistics (`numRecords`, plus
-      `minValues`/`maxValues`/`nullCount` for the columns whose Parquet statistics can
-      state the declared type's bound — signed ints, floats, strings cut to 32 chars,
-      booleans). Unsigned columns deliberately carry none: their physical statistics are
-      computed on the signed type, so a derived bound would be wrong exactly where it
-      overflows.
       Verified with a real reader from outside the table: DuckDB `delta_scan(<dir>)`.
 
 - [x] **The variant column has the canonical shape.** `struct<metadata: binary,
@@ -2927,12 +2920,6 @@ open at the end (retiring the store-scan export, and the S3 sink).
       partitioning and file size (the weakest being delete support, since Delta's
       deletion vectors are less widely read than Iceberg's delete files); and the
       `okm-iceberg` crate named below is no longer needed for appending.
-
-- [ ] Deferred (2026-11-10, owner): what the Delta log still owes — `_last_checkpoint`
-      (a reader lists every version; a checkpoint is a Parquet file of all live actions,
-      not a hint file, so it is its own piece of work); bounds for the UNSIGNED key
-      columns (needs a value pass, since their Parquet statistics are signed); delete
-      files / deletion vectors; partitioning; file-size targets.
 
 - [x] **Demote `parquet_io`'s store-scan export** — decided, not retired. It is a
       STATE export: it reads the current rows out of a live store, so a deleted row is
@@ -2968,3 +2955,32 @@ open at the end (retiring the store-scan export, and the S3 sink).
       NOT covered, and honestly so: a real bucket with real credentials, and any retry
       or backoff policy (there is none). `okm-series` keeps its own container and magic
       (`.log` parts, ADR-0046).
+
+## 2026-11-10 — the dynamic segment gets a block table at its tail (ADR-0057)
+
+Decided, not landed: the segment's layout becomes `values | blocks | toc_len u16`, with a
+breadth-first block table and no magic. The checklist below is the landing.
+
+- [x] **Writer**: `obj_segment::encode` collects `(id, type, value)`, emits leaves into the
+      value area block by block, queues composites, writes `toc_len` (reserved at offset 0,
+      patched once the table is complete), then the blocks and the value region.
+      `put_frame*` and `FrameScratch` went with the inline bodies.
+- [x] **Reader**: `obj_segment::decode` parses `toc_len`, walks blocks in order, computes each
+      block's value base by summing the leaf lengths before it, recurses into the child block
+      of the *j*-th composite (cap 64), and refuses a table whose arithmetic disagrees
+      (`toc_len` inside the file, the sums inside `values`, one block per composite).
+      `decode_named` / `decode_variants` are thin delegates now.
+- [x] **Call sites**: `slot1_into` / `slot1_map` (document.rs), `model::graph`'s edge
+      attributes, `okm_dynamic::graph` and `okm_dynamic::plan_fields` — every place that
+      builds a segment body goes through `obj_segment::encode`.
+- [x] **Tests**: `obj_segment`'s own module covers a flat map (with the byte layout: head at
+      offset 0), nested `Obj`/`Array`, a 4 KiB value among small ones, an unknown type skipped
+      rather than fatal, and a table whose lengths do not sum inside `values` (refused);
+      `obj_dynamic` covers ids past the `0xFF` escape and the nesting cap.
+- [x] **MODELING**: the dynamic-segment paragraph (both languages), `docs/internals/key-layout.md`
+      and ADR-0030's slot table now say "blocks + values (ADR-0057)".
+- [ ] **Migration**: the segment is truth (ADR-0045), so every row that has one is re-encoded
+      under the new layout at upgrade time — no dual reader (ADR-0057 §4).
+- [x] **ADR-0056 §7's marks went with the same pass**: the segment header starts at `fmt`, the
+      footer is 28 bytes (`body_len | records | ordinal | crc32`), and a format-1 file is no
+      longer read; that section and its index row were rewritten.
