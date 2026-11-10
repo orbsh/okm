@@ -2883,9 +2883,32 @@ open at the end (retiring the store-scan export, and the S3 sink).
       scan across shapes is refused rather than half-decoded.
       `reconciliation_repairs_what_the_log_never_carried` locks both halves plus
       idempotence (a second pass adopts and removes nothing).
-- [ ] **Retire or demote `parquet_io`'s store-scan export** once baseline generation
-      exists: it is the export for a store that never logged, and the ADR makes the
-      segment the single interchange.
+- [x] **A window carries the open half.** `Window::dynamic` holds every dynamic-segment
+      put, decoded against the window's own field-vocabulary labels
+      (`changelog::window::decode_dynamic_segment`, shared with `replay`), and
+      `okm-parquet` writes it as one `open` column: Parquet Variant wire bytes with the
+      `parquet.variant` extension, null where a row has no segment. Before this the
+      window counted those ops (`segment_only`) and wrote nothing, so a window file was
+      a row minus part of itself — the same defect replay had, in the other carrier.
+      `decode_dynamic_segment` also forced the field-name vocabulary (0x02/0x03) into
+      `is_id_face`, which had listed only per-field `Vocab` slots: without those labels
+      a segment's frames have no names at all.
+      Verified against a real reader: DuckDB reads the column as `blob`, null for rows
+      without a segment, `note`/`first` visible in the payload.
+- [x] **Demote `parquet_io`'s store-scan export** — decided, not retired. It is a
+      STATE export: it reads the current rows out of a live store, so a deleted row is
+      absent and the file is one snapshot of what the store holds now. The window path
+      is a CHANGE export: history, ordered, replayable, and it refuses removals rather
+      than encoding them. Both are legitimate and neither replaces the other, so the
+      claim that settles the item is the narrow one: **the segment is the single
+      MIGRATION path**, not the single export. `export_parquet`/`import_parquet` stay
+      as the dump/restore pair (import restores through the write path, so index faces
+      are rebuilt rather than carried), and the README says which is which.
+      Prerequisite that made this answerable: the window used to carry only the count
+      of dynamic ops, so a window file was NOT complete and the store-scan export was
+      the only export that held a document's open half. It carries them now, as a
+      `variant` column (below), which is what let the store-scan export step down
+      instead of being kept for a completeness it alone had.
 - [ ] **S3 sink, planned**: a feature in core (`object_store` + `tokio` are already
       optional dependencies, so no crate enters the tree), off by default, feeding on
       sealed segments handed to a worker after the rename — never inside a commit.

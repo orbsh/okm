@@ -494,6 +494,41 @@ fn variant_field(name: &str, nullable: bool) -> arrow::datatypes::Field {
     f
 }
 
+/// One open-field map as a `variant` VALUE in its wire form:
+/// `[metadata length u32 BE][metadata][value]` — the fallback encoding the spec
+/// names for a reader that cannot shred, which every Variant-aware engine accepts.
+///
+/// This is the analytics twin of a dynamic segment (ADR-0007, ADR-0056 §8): the
+/// declared fields have columns, the open fields have this.
+#[cfg(feature = "parquet")]
+pub fn variant_wire(map: &crate::model::obj_dynamic::ValueMap) -> Vec<u8> {
+    let mut b = parquet_variant::VariantBuilder::new();
+    push_variant(&mut b, &DynamicValue::Obj(map.clone()));
+    let (md, val) = b.finish();
+    let mut wire = (md.len() as u32).to_be_bytes().to_vec();
+    wire.extend_from_slice(&md);
+    wire.extend_from_slice(&val);
+    wire
+}
+
+/// A `variant` column over a run of open-field maps, with the `parquet.variant`
+/// extension name on its field. `None` is a null cell — a row with no open fields
+/// has nothing to say, and a null says it without inventing an empty object.
+#[cfg(feature = "parquet")]
+pub fn variant_column(
+    name: &str,
+    maps: &[Option<&crate::model::obj_dynamic::ValueMap>],
+) -> (arrow::datatypes::Field, std::sync::Arc<dyn arrow::array::Array>) {
+    let mut buf = arrow::array::BinaryBuilder::new();
+    for m in maps {
+        match m {
+            Some(map) => buf.append_value(variant_wire(map)),
+            None => buf.append_null(),
+        }
+    }
+    (variant_field(name, true), std::sync::Arc::new(buf.finish()))
+}
+
 /// Value slice of cold field `fi` (declaration index) inside the cold TLV
 /// region, walked frame-by-frame. `cold_fields` lists the declaration
 /// indices of the width-0 fields in order; a frame's tag IS that

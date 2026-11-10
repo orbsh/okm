@@ -90,7 +90,7 @@ fn run() -> Result<i32, String> {
     }
     println!(
         "tables {}, segments {}, rows {}, segment-only {}",
-        report.tables, report.segments, report.rows, report.segment_only
+        report.tables, report.segments, report.rows, report.open_fields
     );
     Ok(0)
 }

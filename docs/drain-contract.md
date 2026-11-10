@@ -70,12 +70,16 @@ and a window is never half-described.
   `DELETE` op: the declaration has no column for a removal, and a tombstone column
   nobody else reads would change every other reader's view. Until compaction lands,
   a sink that cannot express deletes is safe by construction.
-* **The dynamic segment is not in a window yet.** Ops on the dynamic face are
-  counted in the report (`segment_only`) rather than dropped in silence. When it
-  lands, it travels as okm's published mapping — `Binary` as base64, `Int`/`UInt`
-  as numbers, lists and maps as arrays and objects — or natively as a variant type.
-  A sink that invents its own mapping splits the ecosystem; this paragraph is the
-  reason it must not.
+* **The dynamic segment is the window's `variant` column.** The open half of a
+  document — the names the declaration does not have — has no column of its own, so
+  it travels as one **`open`** column, `Binary` carrying the Parquet Variant wire
+  form (`[metadata len u32][metadata][value]`) with the `ARROW:extension:name =
+  parquet.variant` extension, nullable where a row has no segment. That is the
+  published encoding, not okm's own: a sink that invented a mapping would split the
+  ecosystem. It is one column rather than N, because the set of open names is not
+  known at export time and a schema that grows per window is a schema no warehouse
+  can hold. A key whose row is gone carries no row here either — a window is a row
+  view, and the segment alone is not a row.
 * **Dense vocabulary.** `Vocab` columns carry labels inline. That is byte-wasteful
   for a few distinct labels repeated across millions of rows, and it is deliberate:
   labels are what a warehouse can join and read without okm.

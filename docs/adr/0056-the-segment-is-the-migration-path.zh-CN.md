@@ -2,7 +2,7 @@
 
 > **语言：** [English](0056-the-segment-is-the-migration-path.md)（正本）· [中文](0056-the-segment-is-the-migration-path.zh-CN.md)
 
-**状态：** 已接受（2026-11-10）——仅裁决；回放路径一行代码都还没有。此后已落地：store 边界的捕获（`ChangelogStore`，§2）、自描述段容器（§7）、`ensure_baseline`（§3）、解码器与窗口合并进核心，以及取代 `okm-drain` 的独立程序 `okm-parquet`（segment → Parquet 窗口，§8）。回放已落地（`okm-parquet replay`：行经目标库的写路径重写、词表 id 重新 intern），并接上迁移后的对账扫描（`--reconcile`：扫一遍旧库的主面，旧库才是记录）；sink 还会在导出目录上写出 Iceberg 视图（用 DuckDB 的 `iceberg_scan` 验过）；仍缺：snapshot append、delete file、分区——见同日 PLAN 小节。
+**状态：** 已接受（2026-11-10）——仅裁决；回放路径一行代码都还没有。此后已落地：store 边界的捕获（`ChangelogStore`，§2）、自描述段容器（§7）、`ensure_baseline`（§3）、解码器与窗口合并进核心，以及取代 `okm-drain` 的独立程序 `okm-parquet`（segment → Parquet 窗口，§8）。回放已落地（`okm-parquet replay`：行经目标库的写路径重写、词表 id 重新 intern），并接上迁移后的对账扫描（`--reconcile`：扫一遍旧库的主面，旧库才是记录）；sink 还会在导出目录上写出 Iceberg 视图（用 DuckDB 的 `iceberg_scan` 验过）；窗口把文档的开放字段作为 `variant` 列携带，所以对只追加的表段路径是完整的；store 扫描导出降级为状态转储而非退役；仍缺：snapshot append、delete file、分区——见同日 PLAN 小节。
 **日期：** 2026-11-10
 **依赖：** ADR-0010（线字节）、ADR-0034（表有名字）、ADR-0042（布局变更是版本，升级是部署形态）、ADR-0045（日志：捕获、段、抽干）、ADR-0046（`okm-series`，另一种只追加容器）
 

@@ -103,7 +103,8 @@ pub fn replay_table<S: okm_core::VirtualStorage>(
                     // fields — so replay has to carry it, or every document with a
                     // dynamic field would arrive without one.
                     (OP_PUT, DYNAMIC_SLOT) => {
-                        let dynamic = dynamic_row(&value, &labels)?;
+                        let dynamic = okm_core::changelog::window::decode_dynamic_segment(&value, &labels)
+                            .map_err(|e| e.to_string())?;
                         if !dynamic.is_empty() {
                             target
                                 .merge(suffix, &dynamic)
@@ -111,7 +112,7 @@ pub fn replay_table<S: okm_core::VirtualStorage>(
                             report.dynamic += 1;
                         }
                     }
-                    (OP_PUT, slot) if is_id_face(&schema, slot) => {
+                    (OP_PUT, slot) if okm_core::changelog::window::is_id_face(&schema, slot) => {
                         if let Ok(name) = String::from_utf8(value) {
                             labels.insert((slot, suffix.to_vec()), name);
                         }
@@ -272,39 +273,6 @@ fn row_of<S: okm_core::VirtualStorage>(
     Ok(row)
 }
 
-/// Decode a dynamic-segment body into `name → value`, names coming from the log's
-/// field-vocabulary frames (top-level frames carry ids; nested `Obj`s are already
-/// name-keyed by `decode_named`).
-fn dynamic_row(
-    body: &[u8],
-    labels: &HashMap<(u16, Vec<u8>), String>,
-) -> Result<ValueMap, String> {
-    let faces = okm_core::obj_vocab::FIELD_VOCAB;
-    let mut row = ValueMap::new();
-    let frames = okm_core::model::obj_dynamic::decode_named(body, &mut |id| {
-        labels
-            .get(&(faces.id_slot, id.to_be_bytes().to_vec()))
-            .cloned()
-    });
-    for field in frames {
-        // A frame whose id the log never carried a label for has no name, and an
-        // unnamed field cannot be written: the segment is the name's whole point.
-        let Some(name) = labels
-            .get(&(faces.id_slot, field.id.to_be_bytes().to_vec()))
-            .cloned()
-        else {
-            return Err(format!(
-                "a dynamic field id {} has no label in the log (its \
-                 field-vocabulary frame is missing) — an unnamed segment field \
-                 cannot be written",
-                field.id
-            ));
-        };
-        row.insert(name, field.value);
-    }
-    Ok(row)
-}
-
 /// `label → the target's own id`, written back as bytes. The target allocates in
 /// its own order, so an id copied from elsewhere would point at the wrong label.
 fn intern<S: okm_core::VirtualStorage>(
@@ -339,19 +307,6 @@ fn intern<S: okm_core::VirtualStorage>(
 }
 
 
-/// A vocabulary's ID face in this table: the field-name vocabulary, the predicate
-/// vocabulary, and one per `Vocab` field. Their PUTs carry labels, and the labels are
-/// what a replay needs — an id alone names nothing on the other side. Missing the
-/// shared faces was enough to make every dynamic field unreplayable.
-fn is_id_face(schema: &okm_core::schema::CollectionSchema, slot: u16) -> bool {
-    slot == schema.slots.field_vocab_id
-        || slot == schema.slots.predicate_vocab_id
-        || schema
-            .hot_fields
-            .iter()
-            .chain(schema.cold_fields.iter())
-            .any(|f| matches!(f.ty, okm_core::FieldType::Vocab(id) if id == slot))
-}
 
 /// What the reconciliation pass changed.
 #[derive(Clone, Debug, Default, PartialEq)]

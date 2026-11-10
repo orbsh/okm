@@ -13,6 +13,7 @@
 use okm_core::changelog::{ChangelogConfig, ChangelogStore};
 use okm_core::{Collection, DocumentEncode, KeyEncode, TestStore};
 use okm_parquet::{DrainConfig, drain};
+use arrow::array::Array;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 
 #[derive(KeyEncode, Clone, PartialEq, Debug)]
@@ -359,4 +360,66 @@ fn a_lagging_table_is_not_skipped_by_the_one_ahead() {
     let again = drain(root.path(), &DrainConfig::new(out.path(), "test")).expect("second drain");
     assert_eq!(again.segments, 0, "nothing left for either table");
     assert!(again.files.is_empty());
+}
+
+/// The open half of a document — the names the declaration does not have — has no
+/// column, and a window that wrote only declared fields would hand a reader every row
+/// minus part of itself (ADR-0045 §4). It travels as ONE `variant` column beside the
+/// rows, null where a row has no segment.
+#[test]
+fn a_documents_open_fields_travel_as_a_variant_column() {
+    let root = tempfile::tempdir().expect("log");
+    let out = tempfile::tempdir().expect("lake");
+    {
+        let c = collection(root.path());
+        c.put(
+            &K1,
+            &R {
+                level: 3,
+                name: "alpha".into(),
+            },
+        )
+        .expect("put");
+        c.put(
+            &K2,
+            &R {
+                level: 4,
+                name: "beta".into(),
+            },
+        )
+        .expect("put");
+        let mut open = std::collections::BTreeMap::new();
+        open.insert(
+            "note".to_string(),
+            okm_core::model::obj_dynamic::DynamicValue::Str("first".to_string()),
+        );
+        c.merge(&K1, &open).expect("a field the declaration does not have");
+    }
+
+    let report = drain(root.path(), &DrainConfig::new(out.path(), "test")).expect("drain");
+    assert_eq!(report.open_fields, 1, "one segment carried, not counted and dropped");
+
+    let file = std::fs::File::open(&report.files[0]).expect("open");
+    let mut reader = ParquetRecordBatchReaderBuilder::try_new(file)
+        .expect("reader")
+        .build()
+        .expect("build");
+    let batch = reader.next().expect("one batch").expect("batch");
+    let schema = batch.schema();
+    let last = schema.field(schema.fields().len() - 1);
+    assert_eq!(last.name(), "open", "the variant column comes after the fields");
+    assert_eq!(
+        last.metadata().get("ARROW:extension:name").map(String::as_str),
+        Some("parquet.variant"),
+        "a reader that knows variants is told what this column is"
+    );
+    assert!(last.is_nullable(), "a row with no segment has nothing here");
+
+    let column = batch
+        .column(schema.fields().len() - 1)
+        .as_any()
+        .downcast_ref::<arrow::array::BinaryArray>()
+        .expect("binary");
+    assert_eq!(column.len(), 2);
+    assert_eq!(column.null_count(), 1, "one row has a segment, one does not");
 }

@@ -11,8 +11,8 @@
 //! What a window IS: an append of changes. The same key may appear twice, because a
 //! window is history, not a table — collapsing it is a compaction the sink does.
 //! What it refuses to do is pretend: an op it cannot express as a change stops the
-//! window instead of being skipped, and a dynamic-segment-only document is counted
-//! in [`Window::segment_only`] rather than dropped in silence.
+//! window instead of being skipped, and a dynamic segment travels in
+//! [`Window::dynamic`] rather than being dropped in silence.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -20,6 +20,7 @@ use std::path::{Path, PathBuf};
 use crate::error::{Error, Result};
 use crate::model::obj_dynamic::ValueMap;
 use crate::schema::CollectionSchema;
+use crate::model::index::DYNAMIC_SLOT;
 use crate::{OP_DELETE, OP_PUT, PRIMARY_SLOT};
 
 use super::{read_sealed, table_dir};
@@ -44,8 +45,15 @@ pub struct Window {
     /// `(slot, key suffix)` per removal, in order. Slot `0x00` means the ROW is
     /// gone; other slots are the document's own parts (purge takes both).
     pub deletes: Vec<(u16, Vec<u8>)>,
-    /// Dynamic-segment ops the declaration has no columns for.
-    pub segment_only: usize,
+    /// `(key suffix, open fields)` per dynamic-segment put: the names the
+    /// declaration does NOT have, and their values. A window is a row view, so these
+    /// are not columns — they travel as one `variant` column beside them (the
+    /// analytics twin of a segment), and a key with no primary row carries no row
+    /// here at all (a document with no row is not a row).
+    pub dynamic: Vec<(Vec<u8>, ValueMap)>,
+    /// Ops that carry no column and no segment of their own (an index entry, a
+    /// reduce ledger line): the write path rebuilds them from the row.
+    pub open_fields: usize,
     /// `(slot, id) → label` for every vocabulary entry the window carried, so a
     /// reader never has to invent a name for an id.
     pub labels: HashMap<(u16, Vec<u8>), String>,
@@ -108,9 +116,14 @@ pub fn read_window(dir: &Path, cfg: &WindowConfig) -> Result<Option<Window>> {
         segments: window.iter().map(|p| file_name(p)).collect(),
         rows: Vec::new(),
         deletes: Vec::new(),
-        segment_only: 0,
+        dynamic: Vec::new(),
+        open_fields: 0,
         labels: HashMap::new(),
     };
+    // Dynamic bodies are decoded AFTER the window is scanned: their field ids need
+    // the field-name vocabulary's labels, and nothing promises that entry was
+    // written before the segment (frames are in write order, not dependency order).
+    let mut dynamic_raw: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
 
     for segment in &window {
         for frame in read_sealed(segment)? {
@@ -134,7 +147,12 @@ pub fn read_window(dir: &Path, cfg: &WindowConfig) -> Result<Option<Window>> {
                             out.labels.insert((slot, suffix.to_vec()), name);
                         }
                     }
-                    (OP_PUT, _) => out.segment_only += 1,
+                    // A document's open fields: truth (ADR-0045 §4), carried
+                    // beside the row, never re-derived from it.
+                    (OP_PUT, DYNAMIC_SLOT) if suffix.len() == schema.key_len => {
+                        dynamic_raw.push((suffix.to_vec(), value.to_vec()));
+                    }
+                    (OP_PUT, _) => out.open_fields += 1,
                     // A removal is a fact this log carries and a column file
                     // cannot: recorded here, answered by whichever sink is reading
                     // (ADR-0056 §5).
@@ -144,7 +162,43 @@ pub fn read_window(dir: &Path, cfg: &WindowConfig) -> Result<Option<Window>> {
             }
         }
     }
+    for (key, body) in dynamic_raw {
+        out.dynamic
+            .push((key, decode_dynamic_segment(&body, &out.labels)?));
+    }
     Ok(Some(out))
+}
+
+/// Decode a dynamic-segment body into `name → value`, taking the names from the
+/// window's own field-vocabulary labels (top-level frames carry ids; nested `Obj`s
+/// are already name-keyed).
+///
+/// A frame whose id has no label is an error rather than a skipped field: an unnamed
+/// field cannot be written anywhere, and a reader that silently drops it produces a
+/// document that looks complete and is not.
+pub fn decode_dynamic_segment(
+    body: &[u8],
+    labels: &HashMap<(u16, Vec<u8>), String>,
+) -> Result<ValueMap> {
+    let faces = crate::obj_vocab::FIELD_VOCAB;
+    let mut row = ValueMap::new();
+    for field in crate::model::obj_dynamic::decode_named(body, &mut |id| {
+        labels.get(&(faces.id_slot, id.to_be_bytes().to_vec())).cloned()
+    }) {
+        let Some(name) = labels
+            .get(&(faces.id_slot, field.id.to_be_bytes().to_vec()))
+            .cloned()
+        else {
+            return Err(crate::Error::Codec(
+                crate::model::obj_dynamic::CodecError::UnknownField(format!(
+                    "dynamic field id {} (no label in this window's field vocabulary)",
+                    field.id
+                )),
+            ));
+        };
+        row.insert(name, field.value);
+    }
+    Ok(row)
 }
 
 /// The position file for one `(consumer, table)` pair.
@@ -231,11 +285,17 @@ pub fn split_slot<'a>(header: &[u8], key: &'a [u8]) -> Option<(u16, &'a [u8])> {
 
 /// Is this slot a vocabulary's id face, per the declaration?
 pub fn is_id_face(schema: &CollectionSchema, slot: u16) -> bool {
-    schema
-        .hot_fields
-        .iter()
-        .chain(schema.cold_fields.iter())
-        .any(|f| matches!(f.ty, crate::field::FieldType::Vocab(id) if id == slot))
+    // The shared vocabularies too: the field-name face (0x02) is what names a
+    // dynamic segment's frames, and leaving it out made every open field unnamed —
+    // the same gap replay had, in the same place (a per-field list mistaken for the
+    // whole set of vocabulary faces).
+    slot == schema.slots.field_vocab_id
+        || slot == schema.slots.predicate_vocab_id
+        || schema
+            .hot_fields
+            .iter()
+            .chain(schema.cold_fields.iter())
+            .any(|f| matches!(f.ty, crate::field::FieldType::Vocab(id) if id == slot))
 }
 
 /// The stem of a segment file name: `00000007.segment` → `00000007`.

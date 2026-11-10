@@ -142,9 +142,9 @@ pub struct Report {
     /// Rows written, i.e. one per captured put on the primary face. A window is
     /// history, so this counts changes, not distinct keys.
     pub rows: usize,
-    /// Dynamic-segment ops the declaration has no columns for. Counted, never
-    /// dropped in silence — the twin of the typed bridge's NULL payload half.
-    pub segment_only: usize,
+    /// Dynamic-segment puts carried as the window's `variant` column. Counted so a
+    /// sink can tell "no open fields anywhere" from "open fields written".
+    pub open_fields: usize,
     pub files: Vec<PathBuf>,
     /// Iceberg metadata files written (one per table that produced a window).
     pub metadata: usize,
@@ -252,7 +252,7 @@ pub fn drain_table(dir: &Path, cfg: &DrainConfig, report: &mut Report) -> Result
 
     report.segments += win.segments.len();
     report.rows += win.rows.len();
-    report.segment_only += win.segment_only;
+    report.open_fields += win.dynamic.len();
     report.files.push(out);
     Ok(())
 }
@@ -272,12 +272,45 @@ pub fn write_parquet(win: &Window, out: &Path) -> Result<Vec<(String, String, bo
     let keys: Vec<Vec<u8>> = win.rows.iter().map(|(k, _)| k.clone()).collect();
     let rows: Vec<Option<okm_dynamic::ValueMap>> =
         win.rows.iter().map(|(_, d)| Some(d.clone())).collect();
-    let batch = record_batch(
+    let mut batch = record_batch(
         &win.schema,
         &keys,
         &rows,
         Some(&|slot, id| win.labels.get(&(slot, id.to_vec())).cloned()),
     )?;
+
+    // The open half: every document's dynamic segment as ONE `variant` column. The
+    // declared fields have columns; the names the declaration does not have carry
+    // none, and a window that wrote only them would hand a reader every row minus
+    // part of itself (ADR-0045 §4 — the segment is truth).
+    if !win.dynamic.is_empty() {
+        let mut by_key: std::collections::HashMap<&[u8], &okm_dynamic::ValueMap> =
+            std::collections::HashMap::with_capacity(win.dynamic.len());
+        for (key, map) in &win.dynamic {
+            by_key.insert(key.as_slice(), map);
+        }
+        let maps: Vec<Option<&okm_dynamic::ValueMap>> = keys
+            .iter()
+            .map(|k| by_key.get(k.as_slice()).copied())
+            .collect();
+        // A dynamic-only document (a key with no row) has no row here: this file is a
+        // row view, and the key is only in the segment because the row was deleted.
+        let (field, column) = okm_core::bridge::arrow_bridge::variant_column("open", &maps);
+        let mut fields: Vec<arrow::datatypes::Field> = batch
+            .schema()
+            .fields()
+            .iter()
+            .map(|f| f.as_ref().clone())
+            .collect();
+        fields.push(field);
+        let mut arrays: Vec<std::sync::Arc<dyn arrow::array::Array>> = batch.columns().to_vec();
+        arrays.push(column);
+        batch = arrow::array::RecordBatch::try_new(std::sync::Arc::new(
+            arrow::datatypes::Schema::new(fields),
+        ), arrays)
+        .map_err(|e| DrainError::new(format!("{}: open column: {e}", win.table)))?;
+    }
+
     okm_core::bridge::tooling::parquet_io::write_batch(&batch, out)?;
     Ok(batch
         .schema()
