@@ -2,7 +2,7 @@
 
 > **Languages:** [English](0047-two-faces-of-a-write.md) (primary) · [中文](0047-two-faces-of-a-write.zh-CN.md)
 
-**Status:** Accepted (2026-10-31) — both halves decided, and both held down by a test. **Updates 2026-11-10:** the criterion is the interface, not the delivery contract — subscribe is the observer interface and the change log is a file; the five axes stay as description, and the delivery/latency difference is recorded as a property that does not decide the question. **Date:** 2026-10-31
+**Status:** Accepted (2026-10-31) — both halves decided, and both held down by a test. **Updates 2026-11-10:** the criterion is the interface, not the delivery contract — subscribe is the observer interface and the change log is a file; the five axes stay as description, and the delivery/latency difference is recorded as a property that does not decide the question. Same date: the point verbs now announce what they leave or take — `merge` and `replace` included — which the axes line states as the code's behaviour. **Date:** 2026-10-31
 
 ## Context
 
@@ -14,7 +14,7 @@ They are not the same thing, on five axes.
 - **What it carries.** subscribe: `op`, `epoch`, the key, and the DECODED document `R` — the event knows the schema, because the type is its parameter. The change log: `OpFrame` op bytes, key and value, no schema at all, which is exactly why a reader that has none can still drain it.
 - **Who consumes it.** subscribe: a sink in the same process — `okm-stream`'s combinators on top of it. The change log: another process, `okm-drain` or anything that speaks `okm-wire`.
 - **How it is delivered.** subscribe: synchronous `try_send` in the write path's own call stack, best-effort, dropped when nothing is listening, and no way to tell a consumer what it missed. The change log: staged before the commit and appended only after it returned `Ok` — never a phantom write — at most once, with a lost tail repaired by the reconciliation scan.
-- **What it says, and what that costs.** subscribe: the key, the op and the decoded document, emitted once per semantic write on the point verbs — `put`, `upsert_with`, `purge`; a `merge`, a `replace` and every batch write announce nothing, and derived entries never produce an event; zero cost when no sink is registered. The change log: the truth half of a batch only — primary rows, the dynamic segment, the name and predicate faces, both directions of every vocabulary — with the derived half dropped and rebuilt, at one memcpy per write plus segment files and their retention.
+- **What it says, and what that costs.** subscribe: the key, the op and the decoded document, emitted once per semantic write on the point verbs — `put`, `upsert_with`, `merge`, `replace`, `purge`; a batch write announces nothing, a write that only touches the dynamic segment has no row to carry, and derived entries never produce an event; zero cost when no sink is registered. The change log: the truth half of a batch only — primary rows, the dynamic segment, the name and predicate faces, both directions of every vocabulary — with the derived half dropped and rebuilt, at one memcpy per write plus segment files and their retention.
 
 ## Decision
 
@@ -36,6 +36,6 @@ No third face is added, and no "unified event bus" is invented. A bus would be t
 
 ## Consequences
 
-It is now a decision rather than an open question: a batch is the bulk path, its consumers are other processes, and the change log is the face another process reads — one frame per batch, staged before the commit and appended after it returned `Ok` (`stage_capture` / `flush_capture`).
+It is now a decision rather than an open question: a batch is the bulk path, its consumers are other processes, and the change log is the face another process reads — one frame per batch per table, staged before the commit and appended after it returned `Ok` (a capturing store, ADR-0056 §2).
 - If an in-process consumer of batch writes ever appears, the shape it needs is the one the change log already uses: stage the events beside the writes, flush them after the commit returned `Ok`. That is a change to that caller's collection, not a new mechanism, and nothing builds it today because nothing asks for it.
 - The typed face stays per-table and best-effort. A consumer that needs precision belongs inline — in the reduce fold, which runs inside the write — and not on a subscription; that distinction is ADR-0008's, and this one does not weaken it.

@@ -242,6 +242,42 @@ pub trait SharedVirtualStorage: VirtualStorage {
     fn shared_handle(&self) -> Self;
 }
 
+/// A BORROWED store is a store: `&S` forwards every method, so several
+/// collections (and a caller's batch) can sit over ONE engine handle without
+/// cloning it. Writes already take `&self` (ADR-0026); this is the type-level
+/// half of the same claim, and it is what lets one capturing store
+/// ([`crate::changelog::ChangelogStore`]) serve every collection in a process —
+/// two decorators over one directory would be two writers on one segment number.
+impl<S: VirtualStorage + ?Sized> VirtualStorage for &S {
+    fn put(&self, key: Vec<u8>, value: Vec<u8>) -> crate::error::Result<()> {
+        (**self).put(key, value)
+    }
+
+    fn get(&self, key: &[u8]) -> crate::error::Result<Option<Vec<u8>>> {
+        (**self).get(key)
+    }
+
+    fn del(&self, key: &[u8]) -> crate::error::Result<()> {
+        (**self).del(key)
+    }
+
+    fn scan_suffix(&self, prefix: &[u8]) -> crate::error::Result<Vec<Vec<u8>>> {
+        (**self).scan_suffix(prefix)
+    }
+
+    fn scan_range(&self, begin: &[u8], end: Option<&[u8]>) -> crate::error::Result<Vec<Vec<u8>>> {
+        (**self).scan_range(begin, end)
+    }
+
+    fn scan_range_iter(&self, begin: &[u8], end: Option<&[u8]>) -> ScanIter {
+        (**self).scan_range_iter(begin, end)
+    }
+
+    fn commit_batch(&self, batch: Batch) -> crate::error::Result<()> {
+        (**self).commit_batch(batch)
+    }
+}
+
 /// The batch carrier: an ordered op list, accumulated by callers and
 /// consumed by one engine-level `commit_batch` (ADR-0027 retired the
 /// `KvBatch` trait — `batch()` returned this concrete type, so no engine

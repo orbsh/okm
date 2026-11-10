@@ -52,12 +52,15 @@
 //!   segment number is the highest name in the directory plus one, so there is
 //!   no sequence to reserve and no hole to reason about.
 
+use std::cell::RefCell;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use crate::OpFrame;
+use crate::engine::storage::{Batch, VirtualStorage};
 use crate::error::{Error, Result};
 use crate::model::faces::FINGERPRINT_LEN;
 use crate::model::index::{FIXED_FACE_MAX, Slot, segment};
@@ -107,6 +110,16 @@ pub fn side_of(slots: &SlotMap, slot: u16) -> Side {
 pub const PARTIAL_EXT: &str = "partial";
 /// Extension of a sealed segment: immutable, ordered by name, drainable.
 pub const SEALED_EXT: &str = "segment";
+
+/// File-name suffix of a snapshot segment (`00000007.baseline.segment`): the kind
+/// is in the name so a reader finds a table's baseline without opening a segment,
+/// and the header carries it as well (ADR-0056 §7).
+pub const BASELINE_SUFFIX: &str = ".baseline.segment";
+
+/// How many truth-half ops one baseline frame carries. A frame is one length
+/// prefix, so the chunk bounds the record and keeps a big table from building a
+/// single 4 GiB-sized buffer in memory.
+const BASELINE_CHUNK: usize = 1024;
 
 /// Magic at the head of a self-describing segment (format 2). A file without it
 /// is format 1 — a bare record stream — which this reader still accepts.
@@ -360,6 +373,21 @@ impl Changelog {
     /// Seal the current segment now — the caller's rotation, for a host that
     /// wants a window boundary at a moment of its choosing.
     pub fn seal(&mut self) -> Result<()> {
+        self.seal_last()?;
+        self.segment += 1;
+        self.opened = Instant::now();
+        let mut file = create_segment(&self.dir, self.segment)?;
+        let stamp = header_bytes(&self.header, &self.meta);
+        file.write_all(&stamp)
+            .map_err(|e| io_err(&self.dir, e))?;
+        self.file = Some(file);
+        Ok(())
+    }
+
+    /// Seal the segment and STOP: no fresh segment is opened, so a one-shot writer
+    /// (a baseline, ADR-0056 §3) leaves exactly one file behind and the next
+    /// `open` takes the same number again — no hole in the numbering.
+    pub fn seal_last(&mut self) -> Result<()> {
         self.write_pending()?;
         self.file = None;
         // Stamp the file before it gets its name: the checksum is one extra READ
@@ -367,15 +395,8 @@ impl Changelog {
         self.stamp_footer()?;
         std::fs::rename(self.partial_path(), self.sealed_path())
             .map_err(|e| io_err(&self.partial_path(), e))?;
-        self.segment += 1;
         self.written = 0;
         self.frames = 0;
-        self.opened = Instant::now();
-        let mut file = create_segment(&self.dir, self.segment)?;
-        let stamp = header_bytes(&self.header, &self.meta);
-        file.write_all(&stamp)
-            .map_err(|e| io_err(&self.dir, e))?;
-        self.file = Some(file);
         Ok(())
     }
 
@@ -424,7 +445,14 @@ impl Changelog {
     }
 
     fn sealed_path(&self) -> PathBuf {
-        self.dir.join(format!("{:08}.{}", self.segment, SEALED_EXT))
+        // The kind is in the FILE NAME so a reader finds a table's snapshot
+        // without opening every segment; the header carries it too (ADR-0056 §7).
+        let name = if self.meta.kind == KIND_BASELINE {
+            format!("{:08}.baseline.{}", self.segment, SEALED_EXT)
+        } else {
+            format!("{:08}.{}", self.segment, SEALED_EXT)
+        };
+        self.dir.join(name)
     }
 
     fn write_pending(&mut self) -> Result<()> {
@@ -562,7 +590,53 @@ pub fn write_sidecar(
     Ok(path)
 }
 
-/// Sealed segments of one table, in name (= write) order.
+/// The baseline segments of one table, in name order (empty when it has none).
+///
+/// A baseline is `kind = baseline`: the table's whole truth half at one moment.
+/// Its order matters to a replay — apply the newest one, then every segment
+/// numbered above it (ADR-0056 §3).
+pub fn baseline_segments(root: &Path, header: &[u8]) -> Result<Vec<PathBuf>> {
+    let dir = table_dir(root, header);
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(io_err(&dir, e)),
+    };
+    let mut out = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|e| io_err(&dir, e))?;
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        if name.ends_with(BASELINE_SUFFIX) {
+            out.push(entry.path());
+        }
+    }
+    out.sort();
+    Ok(out)
+}
+
+/// Does this table already have a snapshot segment?
+fn has_baseline(dir: &Path) -> Result<bool> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(io_err(dir, e)),
+    };
+    for entry in entries {
+        let entry = entry.map_err(|e| io_err(dir, e))?;
+        let name = entry.file_name();
+        if let Some(name) = name.to_str()
+            && name.ends_with(BASELINE_SUFFIX)
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Sealed DELTA segments of one table, in name (= write) order. A baseline is not
+/// here: it is a snapshot rather than a window of changes, and
+/// [`baseline_segments`] is where a replay looks for it.
 pub fn sealed_segments(root: &Path, header: &[u8]) -> Result<Vec<PathBuf>> {
     let dir = table_dir(root, header);
     let mut out = Vec::new();
@@ -574,7 +648,12 @@ pub fn sealed_segments(root: &Path, header: &[u8]) -> Result<Vec<PathBuf>> {
     for entry in entries {
         let entry = entry.map_err(|e| io_err(&dir, e))?;
         let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) == Some(SEALED_EXT) {
+        let is_segment = path.extension().and_then(|e| e.to_str()) == Some(SEALED_EXT);
+        let is_baseline = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.ends_with(BASELINE_SUFFIX));
+        if is_segment && !is_baseline {
             out.push(path);
         }
     }
@@ -900,5 +979,268 @@ fn io_err(path: &Path, e: std::io::Error) -> Error {
 fn corrupt(path: &Path, what: &str) -> Error {
     Error::Changelog {
         what: format!("{}: {what}", path.display()),
+    }
+}
+
+/// Capture at the STORE boundary (ADR-0056 §2): one switch for the whole store,
+/// a per-table directory whichever collection wrote the batch.
+///
+/// Why here and not on the collection: the collection-level hook is wired per
+/// assembly site, so an instance assembled without it writes rows no log will ever
+/// mention, and a caller-owned batch has to remember `commit_batch` or the
+/// staged/flush pair to be captured at all. Every write passes `commit_batch`
+/// here, so both holes close at once and stage/flush stop being API a caller must
+/// know about.
+///
+/// What it needs from assembly is the DECLARATION ([`ChangelogStore::register`]):
+/// the sidecar is the half of the schema the log cannot carry, and a segment is
+/// stamped with the name, layout version and face fingerprint. An unregistered
+/// table is not captured — a log with no declaration beside it is bytes no reader
+/// can turn into columns.
+pub struct ChangelogStore<S> {
+    inner: S,
+    cfg: ChangelogConfig,
+    /// ns values whose tables are never captured: an application's own
+    /// append-only log, a cache, anything nobody will replay.
+    exclude: Vec<u16>,
+    /// header → the declaration it was registered with.
+    metas: RefCell<BTreeMap<Vec<u8>, SegmentMeta>>,
+    /// header → its writer, opened by the first commit that touches the table.
+    tables: RefCell<BTreeMap<Vec<u8>, RefCell<Changelog>>>,
+}
+
+impl<S> ChangelogStore<S> {
+    /// Wrap a store: from here on every commit that touches a registered table is
+    /// captured.
+    pub fn new(inner: S, cfg: ChangelogConfig) -> Self {
+        Self {
+            inner,
+            cfg,
+            exclude: Vec::new(),
+            metas: RefCell::new(BTreeMap::new()),
+            tables: RefCell::new(BTreeMap::new()),
+        }
+    }
+
+    /// Leave this ns out of the capture. Opt-OUT, not opt-in: the switch is on for
+    /// the whole store, and the exception list is the operator's (ADR-0056 §2).
+    pub fn exclude(mut self, ns: u16) -> Self {
+        self.exclude.push(ns);
+        self
+    }
+
+    /// The log root, so a host can ship it (S3, a backup, a migration).
+    pub fn dir(&self) -> &Path {
+        &self.cfg.dir
+    }
+
+    /// The wrapped store.
+    pub fn inner(&self) -> &S {
+        &self.inner
+    }
+
+    /// Unwrap: capture stops here.
+    pub fn into_inner(self) -> S {
+        self.inner
+    }
+
+    /// Register a declaration with the switch: write the sidecar (the half of the
+    /// schema the log cannot carry) and remember what a segment is stamped with.
+    ///
+    /// Idempotent per table; two collections over one store register two headers.
+    /// A registration for an excluded ns is accepted and ignored.
+    pub fn register<K: crate::model::key::KeyEncode, R: crate::model::index::Document<Key = K>>(
+        &self,
+    ) -> Result<()> {
+        let header = R::NS_PREFIX.to_vec();
+        if self.excluded(&header) {
+            return Ok(());
+        }
+        let dir = table_dir(&self.cfg.dir, &header);
+        std::fs::create_dir_all(&dir).map_err(|e| io_err(&dir, e))?;
+        #[cfg(feature = "schema-serde")]
+        write_sidecar(&dir, &crate::model::schema::CollectionSchema::of::<K, R>())?;
+        self.metas
+            .borrow_mut()
+            .insert(header, SegmentMeta::of::<R>(KIND_DELTA));
+        Ok(())
+    }
+
+    /// Write this table's baseline if it has none (ADR-0056 §3); `true` when one
+    /// was written.
+    ///
+    /// A baseline is the table's whole TRUTH half as one `kind = baseline`
+    /// segment. It is what makes a log enabled mid-life complete: without one,
+    /// everything written before capture is invisible to every consumer, forever.
+    ///
+    /// Ordering is the whole trick. The table's open writer is sealed and closed
+    /// FIRST, so the baseline is numbered after every delta written so far: a
+    /// replay applies the newest baseline and then the segments numbered above it,
+    /// and everything below is covered by the snapshot. A writer left open would
+    /// keep appending to a segment numbered below the baseline, which a replay
+    /// would skip — so closing it is the correctness argument, not a tidy-up.
+    ///
+    /// Costs one bounded pass over the table, once.
+    pub fn ensure_baseline<K, R>(&self) -> Result<bool>
+    where
+        S: VirtualStorage,
+        K: crate::model::key::KeyEncode,
+        R: crate::model::index::Document<Key = K>,
+    {
+        let header = R::NS_PREFIX.to_vec();
+        if self.excluded(&header) {
+            return Ok(false);
+        }
+        self.register::<K, R>()?;
+        let dir = table_dir(&self.cfg.dir, &header);
+        if has_baseline(&dir)? {
+            return Ok(false);
+        }
+
+        // Close this table's writer before the scan: the baseline must outrank
+        // every segment already written for the table.
+        let open = self.tables.borrow_mut().remove(&header);
+        if let Some(cell) = open {
+            let mut log = cell.into_inner();
+            log.seal_last()?;
+        }
+
+        // The truth half as ops, through the very filter the capture applies —
+        // derived faces are left out because a replay rebuilds them.
+        let slots = SlotMap::standard();
+        let mut ops: Vec<(Vec<u8>, Option<Vec<u8>>)> = Vec::new();
+        for (suffix, value) in crate::engine::storage::scan_suffix_kv(&self.inner, &header)? {
+            let mut key = header.clone();
+            key.extend_from_slice(&suffix);
+            if carried(&slots, &header, &key) {
+                ops.push((key, Some(value)));
+            }
+        }
+
+        let mut log =
+            Changelog::open(self.cfg.clone(), &header, SegmentMeta::of::<R>(KIND_BASELINE))?;
+        for chunk in ops.chunks(BASELINE_CHUNK) {
+            if log.stage(chunk) > 0 {
+                log.commit_staged()?;
+            }
+        }
+        // `seal_last` and not `seal`: a one-shot writer leaves exactly one file,
+        // and the next `open` takes the same number again — no hole.
+        log.seal_last()?;
+        Ok(true)
+    }
+
+    /// What this table's log owes right now: the open segment, the bytes still
+    /// buffered, the records dropped while the sink was broken and the last write
+    /// failure. `None` before the first captured write — no writer is open yet.
+    pub fn status<R: crate::model::index::Document>(&self) -> Option<ChangelogStatus> {
+        let header = R::NS_PREFIX;
+        self.tables
+            .borrow()
+            .get(header)
+            .map(|cell| cell.borrow().status())
+    }
+
+    /// Is this table outside the switch?
+    fn excluded(&self, header: &[u8]) -> bool {
+        let ns = header
+            .get(..2)
+            .and_then(|b| <[u8; 2]>::try_from(b).ok())
+            .map(u16::from_be_bytes);
+        ns.is_some_and(|ns| self.exclude.contains(&ns))
+    }
+
+    /// The headers this commit writes into: registered, and actually present.
+    fn touched(&self, ops: &[(Vec<u8>, Option<Vec<u8>>)]) -> Vec<Vec<u8>> {
+        let metas = self.metas.borrow();
+        let mut out: BTreeSet<Vec<u8>> = BTreeSet::new();
+        for (key, _) in ops {
+            if let Some(header) = metas.keys().find(|h| key.starts_with(h)) {
+                out.insert(header.clone());
+            }
+        }
+        out.into_iter().collect()
+    }
+
+    /// Stage this commit's share in every touched table's log. Nothing is written
+    /// yet — the frame is memory until the engine says `Ok`.
+    fn stage(&self, ops: &[(Vec<u8>, Option<Vec<u8>>)]) -> Vec<Vec<u8>> {
+        let touched = self.touched(ops);
+        for header in &touched {
+            self.with_log(header, |log| {
+                log.stage(ops);
+            });
+        }
+        touched
+    }
+
+    /// Append what [`Self::stage`] staged — after the commit returned `Ok`.
+    fn flush(&self, touched: &[Vec<u8>]) {
+        for header in touched {
+            self.with_log(header, |log| {
+                let _ = log.commit_staged();
+            });
+        }
+    }
+
+    /// Run `f` on the table's writer, opening it on first use. A log that cannot
+    /// be opened is skipped, never fatal: the write it describes belongs to the
+    /// store, and the log is a hint (ADR-0045 §6).
+    fn with_log(&self, header: &[u8], f: impl FnOnce(&mut Changelog)) {
+        if !self.tables.borrow().contains_key(header) {
+            let meta = self.metas.borrow().get(header).cloned();
+            if let Some(meta) = meta
+                && let Ok(log) = Changelog::open(self.cfg.clone(), header, meta)
+            {
+                self.tables
+                    .borrow_mut()
+                    .insert(header.to_vec(), RefCell::new(log));
+            }
+        }
+        if let Some(cell) = self.tables.borrow().get(header) {
+            f(&mut cell.borrow_mut());
+        }
+    }
+}
+
+impl<S: VirtualStorage> VirtualStorage for ChangelogStore<S> {
+    fn put(&self, key: Vec<u8>, value: Vec<u8>) -> Result<()> {
+        // A point write is a one-op commit: captured like any other, so a host
+        // that reaches the engine directly is not invisible either. The clone is
+        // the price of the frame's own copy of the bytes.
+        let ops = [(key.clone(), Some(value.clone()))];
+        let touched = self.stage(&ops);
+        self.inner.put(key, value)?;
+        self.flush(&touched);
+        Ok(())
+    }
+
+    fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
+        self.inner.get(key)
+    }
+
+    fn del(&self, key: &[u8]) -> Result<()> {
+        let ops = [(key.to_vec(), None)];
+        let touched = self.stage(&ops);
+        self.inner.del(key)?;
+        self.flush(&touched);
+        Ok(())
+    }
+
+    fn scan_range(&self, begin: &[u8], end: Option<&[u8]>) -> Result<Vec<Vec<u8>>> {
+        self.inner.scan_range(begin, end)
+    }
+
+    fn scan_range_iter(&self, begin: &[u8], end: Option<&[u8]>) -> crate::engine::storage::ScanIter {
+        self.inner.scan_range_iter(begin, end)
+    }
+
+    fn commit_batch(&self, batch: Batch) -> Result<()> {
+        let touched = self.stage(&batch.ops);
+        // Only a commit that returned Ok may append: a frame naming a refused
+        // write would be a phantom row (ADR-0045 §7).
+        self.inner.commit_batch(batch)?;
+        self.flush(&touched);
+        Ok(())
     }
 }

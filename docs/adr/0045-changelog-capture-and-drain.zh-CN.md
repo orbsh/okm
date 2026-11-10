@@ -4,7 +4,7 @@
 
 **状态：** 已接受（2026-10-28）——捕获侧已实现（2026-10-31），在
 `okm-core::changelog` 里。提交入口把每次语义写的帧暂存起来，只在引擎返回 `Ok` 之后追加
-（`stage_capture` / `flush_capture` 覆盖跨表的那一批）；段靠改名封存，旁边落一个布局 sidecar；
+（捕获的 store 按 keys 的 header 把跨表的一批拆开，各表各自成帧，ADR-0056 §2）；段靠改名封存，旁边落一个布局 sidecar；
 抽干方需要的读端都在（`read_sealed`、`read_open_tail`、`sealed_segments`）。抽干本身按裁决在
 进程外，属于它的消费者，不属于这个 crate。**日期：** 2026-10-28
 **修订：** [ADR-0056](0056-the-segment-is-the-migration-path.zh-CN.md) 改了三处——捕获从 collection 实例挪到 store 边界（全局开关）、新增 kind 为 baseline 的段、replay 成为迁移消费者，段格式 v2 自带头尾元数据。本 ADR 的“先提交后追加、至多一次、日志是 hint”不变。
@@ -24,7 +24,7 @@
 
 **1. 捕获点是 `Collection::commit`**——每一个语义写都经过的私有漏斗：`put`、`delete`、`merge`、`replace`、`purge`。`save_into` 的调用方直接对 store 提交，集合层任何钩子都看不见，所以装配点另开一个入口 **`Collection::commit_batch`**：暂存、提交、追加，走同一条路。ADR-0031 §5 本来就写了「批写入的事件是它自己的事」，这就是它履行该条的方式。过滤在提交之前于内存里完成；追加只在引擎提交返回 `Ok` 之后发生。不是存储边界（它分不清行和索引条目），也不是 subscribe 的 sink（ADR-0031 §5）。
 
-一个批可能带着别的表的键；日志目录属于一个 header，所以一次发布只捕获本集合 header 下的键，其余丢掉。跨表批由「暂存 / 冲刷」拆分覆盖：参与的每个集合在唯一那次提交**前**把自己那份暂存好（`stage_capture`），提交返回 `Ok` 之后各自追加（`flush_capture`）——于是没有哪张表的写会丢，也没有哪条记录描述了一次被引擎拒绝的写。
+一个批可能带着别的表的键；日志目录属于一个 header，所以 store 把一次提交按 header 拆开，每张表从同一次提交里各取自己那一帧——于是没有哪张表的写会丢，也没有哪条记录描述了一次被引擎拒绝的写。
 
 **2. 一次提交的一批就是一帧，用 `okm_wire::OpFrame` 编码。** 这正是远端路径已经在用的编码（对 `(key, Option<value>)` 的 `write_batch`，键值全不透明）。文件是字节流，所以写者补上编解码器刻意不带的那一样东西：一层外层长度前缀。没有第二套格式；词表增长也不需要自己的记录——它本来就是 batch 里的一个 op。
 
@@ -47,7 +47,7 @@
 
 **10. 这不是第三种事件机制。** 事件层是 `reduce` 和 `subscribe`（ADR-0008）。这里是写集里的一个条目加一个文件：没有回调、没有声明面、除了 §6 的排序之外没有任何投递承诺。
 
-**11. 开关在装配点，不在声明面。** `Collection::with_changelog(store, config)` 是可失败的构造；`Collection::new` 保持无 I/O（ADR-0043）。derive 属性会把一个 per-instance 的策略变成破坏性的声明变更，而这个开关和引擎选择是同一类决定。不加 cargo feature：写者不需要依赖，关掉时每提交一次只多一个 `Option` 判断。
+**11. 开关是 store，不在声明面。** `ChangelogStore::new(inner, config)` 让捕获对它上面的一切生效，`Collection::captured(store)` 是登记声明的可失败装配点（ADR-0056 §2）；`Collection::new` 保持无 I/O（ADR-0043）。derive 属性会把一个 per-instance 的策略变成破坏性的声明变更，而这个开关和引擎选择是同一类决定。不加 cargo feature：写者不需要依赖，关掉时每提交一次只多一个 `Option` 判断。
 
 **12. 默认只记键，不记行。** 记录带 `(op, key)`；需要行的读者去读主键条目，键没了就是行没了。连 payload 一起存换来的是历史（每一版，而不只是最后一次写），代价是每次写多付一份行字节；那是另一个决定，不是一个开关。
 

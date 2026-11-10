@@ -2154,7 +2154,8 @@ panic lints allowed only in the places it names. So the runtime half of
       buffer_bytes: 1 MiB, sync_data: false }` plus
       `Collection::with_changelog(store, config) -> Result<Self>` — the fallible
       constructor is where the table's directory is opened; `new` stays I/O-free
-      (ADR-0043). No cargo feature: the writer needs no dependency, and the cost
+      (ADR-0043). **Superseded 2026-11-10:** capture moved to the store decorator
+      and this constructor is gone (see the 2026-11-10 section). No cargo feature: the writer needs no dependency, and the cost
       when off is one `Option` check per commit.
 - [x] Capture in `Collection::commit`, after `commit_batch` returns `Ok`,
       filtered in memory before it — the only funnel that sees every semantic
@@ -2280,7 +2281,9 @@ panic lints allowed only in the places it names. So the runtime half of
       after the window's Parquet file exists (`okm-drain`). The repair path landed
       too, on the side that owns the store: `Collection::reconcile()` (whole table)
       and `reconcile_range(begin, end)` re-emit the rows that still exist as the
-      log's own PUT frames, so a sink folds them like any other write. What no scan
+      log's own PUT frames, so a sink folds them like any other write. **Superseded
+      2026-11-10:** a baseline segment answers the same need completely, removals
+      included (see the 2026-11-10 section). What no scan
       can repair is a REMOVAL — a key that is gone looks exactly like a key that was
       never written — and that limitation is written into the method's doc.
 - [x] Order is commit-then-append, so the guarantee is at-most-once and never a
@@ -2779,16 +2782,36 @@ source; all three are fixed. The rest is not landed.
       tool; `a_segment_says_which_table_and_shape_it_belongs_to`,
       `a_flipped_byte_in_a_sealed_segment_is_refused` and
       `a_format_1_segment_still_reads` lock the three claims.
-- [ ] **`ChangelogStore`** — capture as a store decorator above `commit_batch`,
-      split per table by the key's 2-byte header, enabled globally by config with an
-      ns exclusion list. The sidecar moves to unconditional assembly
-      (`CollectionSchema::of`), since a globally captured table without one has
-      segments no reader can decode.
-- [ ] **Baseline generation** — `Collection::reconcile` extended from slot 0 to the
-      whole truth set (dynamic `0x01`, `0x02`–`0x05`, both `0x1nnn`/`0x2nnn`
-      directions), written as a `kind = baseline` segment; produced at startup when
-      a captured table has none. It runs in the process that owns the store (single
-      writer) — a bounded boot scan, once.
+- [x] **`ChangelogStore`** — capture as a store decorator above `commit_batch`,
+      split per table by the key's header, one switch for the whole store with an
+      ns exclusion list (`exclude(ns)`), and `Collection::captured(store)` as the
+      assembly point that registers the declaration (sidecar + what a segment is
+      stamped with). Three tests: capture with no `with_changelog` at all, a
+      caller-owned batch committed straight to the engine still captured (the hole
+      that needed `commit_batch`/stage/flush discipline before), and an excluded ns
+      writing nothing.
+- [x] **Retired the collection-level hook**: `with_changelog`, `stage_capture`,
+      `flush_capture`, `changelog_status`, `reconcile` and `reconcile_range` are gone,
+      and with them the `changelog` field on `Collection` — one capture path, owned by
+      the store. `status::<R>()` moved to `ChangelogStore` (it reports the writer the
+      store opens on the first captured commit, so it is `None` before then), and the
+      cross-table test now proves the split is automatic: one batch, one commit, one
+      frame per table. `&S` became a `VirtualStorage` (the type-level half of
+      ADR-0026's `&self` writes), so several collections can sit over ONE decorator —
+      two decorators over one directory would be two writers on one segment number.
+      `reconcile`'s repair semantics is gone with it: a baseline is a complete answer
+      where a row re-scan was a partial one (it could not restore a removal).
+- [x] **Baseline generation** — `ChangelogStore::ensure_baseline::<K, R>()`: the
+      whole truth half (through the same `carried`/`side_of` filter the capture
+      uses, so the two can never disagree) written as `kind = baseline` segments of
+      1024 ops, `seal_last()` so a one-shot writer leaves exactly one file and no
+      gap in the numbering. Ordering is the argument: the table's open writer is
+      sealed and CLOSED first, so the baseline is numbered above every delta already
+      written and a replay can say "newest baseline, then everything above it"
+      without ambiguity. The name carries `.baseline.segment` and the header carries
+      the same kind; `sealed_segments` now returns deltas only, `baseline_segments`
+      the snapshots. `a_baseline_makes_a_mid_life_log_complete` locks the order
+      (delta 0, baseline 1, delta 2) and the idempotence.
 - [ ] **The drain becomes core; the formats leave.** `okm_dynamic::decode_payload` is a
       pure function over `CollectionSchema` and returns core `DynamicValue`s — move
       `decode.rs` into `okm-core` (`okm-dynamic` re-exports it) and move the window

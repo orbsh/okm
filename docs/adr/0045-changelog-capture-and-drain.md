@@ -3,8 +3,8 @@
 > **Languages:** [English](0045-changelog-capture-and-drain.md) (primary) · [中文](0045-changelog-capture-and-drain.zh-CN.md)
 
 **Status:** Accepted (2026-10-28) — capture implemented (2026-10-31) in
-`okm-core::changelog`. The commit funnel stages each semantic write's frame and appends only
-after the engine returned `Ok` (`stage_capture` / `flush_capture` cover the multi-table batch);
+`okm-core::changelog`. A capturing store (`ChangelogStore`, ADR-0056 §2) stages each commit's frame and appends only
+after the engine returned `Ok`, splitting a multi-table batch by key header;
 segments seal by rename with a layout sidecar beside them; and the readers a drainer needs are
 here (`read_sealed`, `read_open_tail`, `sealed_segments`). The drain itself is out of process by
 decision and belongs to its consumer, not to this crate. **Date:** 2026-10-28
@@ -55,11 +55,9 @@ returned `Ok`. Not the storage boundary (it cannot tell a row from an index
 entry), not the subscribe sink (ADR-0031 §5).
 
 A batch may carry another table's keys; a log directory belongs to one header, so
-a publication captures the keys under THIS collection's header and drops the rest.
-A multi-table batch is covered by the staged/flush split: each participating
-collection stages its own share before the single commit (`stage_capture`) and
-appends after it returned `Ok` (`flush_capture`), so no table's writes are lost and
-none of them describe a write the engine refused.
+the store splits one commit per header and each table's log gets its own frame from
+the same commit — no table's writes are lost, and none of them describe a write the
+engine refused.
 
 **2. One committed batch is one frame, encoded by `okm_wire::OpFrame`.** That is
 the encoding the remote path already uses (`write_batch` over
@@ -147,12 +145,13 @@ be built on the decode rather than beside it.
 `subscribe` (ADR-0008). This is an entry in the write set plus a file: no
 callback, no declaration surface, no delivery promise beyond the ordering in §6.
 
-**11. Opt-in at the assembly point, not in the declaration.**
-`Collection::with_changelog(store, config)` is the fallible constructor;
+**11. The switch is the store, not the declaration.** `ChangelogStore::new(inner,
+config)` turns capture on for everything above it, and `Collection::captured(store)`
+is the fallible assembly point that registers a declaration (ADR-0056 §2);
 `Collection::new` stays I/O-free (ADR-0043). A derive attribute would make a
-per-instance policy a breaking declaration change, and the switch is the same
-kind of decision as engine choice. No cargo feature: the writer needs no
-dependency, and the cost when off is one `Option` check per commit.
+store-wide policy a breaking declaration change, and the switch is the same kind of
+decision as engine choice. No cargo feature: the writer needs no dependency, and the
+cost when off is one `Option` check per commit.
 
 **12. Default is key-only. A payload copy is a different feature.** The record
 carries `(op, key)`; a reader that needs the row reads the primary entry, and a

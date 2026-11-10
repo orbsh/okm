@@ -13,6 +13,7 @@
 use std::hint::black_box;
 use std::time::{Duration, Instant};
 
+use okm_core::changelog::ChangelogStore;
 use okm_core::{Collection, DocumentEncode, KeyEncode, Reverse, Reversible, TestStore, VarInt};
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
@@ -75,10 +76,10 @@ fn main() {
     let root = std::env::temp_dir().join("okm-changelog-tax");
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).expect("log dir");
-    let captured: Collection<TestStore, TaxKey, TaxRow> = Collection::with_changelog(
+    let captured: Collection<_, TaxKey, TaxRow> = Collection::captured(ChangelogStore::new(
         TestStore::fjall_tmp(),
         okm_core::changelog::ChangelogConfig::new(&root),
-    )
+    ))
     .expect("capture");
 
     // Warm the store and the encoder so the first run is not the slow one.
@@ -135,7 +136,7 @@ fn main() {
     let captured_med = median(captured_ns);
     let ratio = median(ratios);
     let delta = median(deltas);
-    let status = captured.changelog_status().expect("status");
+    let status = captured.store().status::<TaxRow>().expect("status");
     println!(
         "key {} B, {} rounds x {OPS} writes",
         TaxKey::KEY_LEN,

@@ -10,7 +10,7 @@
     clippy::panic_in_result_fn
 )]
 
-use okm_core::changelog::ChangelogConfig;
+use okm_core::changelog::{ChangelogConfig, ChangelogStore};
 use okm_core::{Collection, DocumentEncode, KeyEncode, TestStore};
 use okm_drain::{DrainConfig, drain};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
@@ -30,9 +30,12 @@ pub struct R {
     pub name: String,
 }
 
-fn collection(root: &std::path::Path) -> Collection<TestStore, K, R> {
-    Collection::with_changelog(TestStore::slatedb_mem(), ChangelogConfig::new(root))
-        .expect("the log opens")
+fn collection(root: &std::path::Path) -> Collection<ChangelogStore<TestStore>, K, R> {
+    Collection::captured(ChangelogStore::new(
+        TestStore::slatedb_mem(),
+        ChangelogConfig::new(root),
+    ))
+    .expect("the log opens")
 }
 
 const K1: K = K { org: 1, id: 10 };
@@ -49,9 +52,12 @@ pub struct LaggingRow {
     pub level: u32,
 }
 
-fn lagging_collection(root: &std::path::Path) -> Collection<TestStore, K, LaggingRow> {
-    Collection::with_changelog(TestStore::slatedb_mem(), ChangelogConfig::new(root))
-        .expect("the log opens")
+fn lagging_collection(root: &std::path::Path) -> Collection<ChangelogStore<TestStore>, K, LaggingRow> {
+    Collection::captured(ChangelogStore::new(
+        TestStore::slatedb_mem(),
+        ChangelogConfig::new(root),
+    ))
+    .expect("the log opens")
 }
 
 #[test]

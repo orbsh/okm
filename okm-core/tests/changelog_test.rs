@@ -22,11 +22,21 @@
 )]
 
 use okm_core::changelog::{
-    ChangelogConfig, PARTIAL_EXT, read_open_tail, read_sealed, sealed_segments,
+    ChangelogConfig, ChangelogStore, PARTIAL_EXT, read_open_tail, read_sealed, sealed_segments,
 };
 use okm_core::{
     Batch, Collection, Document, DocumentEncode, KeyEncode, OP_DELETE, OP_PUT, TestStore, Vocab,
 };
+
+/// Assemble a collection over a CAPTURING store (ADR-0056 §2) — the one form of
+/// capture the crate has: the store owns the switch, so there is no second way to
+/// record a write and no assembly site that can forget to.
+fn captured<S: okm_core::VirtualStorage, K: KeyEncode, R: Document<Key = K>>(
+    store: S,
+    config: ChangelogConfig,
+) -> okm_core::error::Result<Collection<ChangelogStore<S>, K, R>> {
+    Collection::captured(ChangelogStore::new(store, config))
+}
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
 pub struct LogKey {
@@ -104,7 +114,12 @@ where
     S: okm_core::VirtualStorage,
 {
     drop(collection);
-    let segments = sealed_segments(root, LOG_NS).expect("list segments");
+    frames_in(root, LOG_NS)
+}
+
+/// The frames of one table, read after everything that wrote it was dropped.
+fn frames_in(root: &std::path::Path, header: &[u8]) -> Vec<CapturedFrame> {
+    let segments = sealed_segments(root, header).expect("list segments");
     assert!(!segments.is_empty(), "a clean drop seals what it wrote");
     segments
         .iter()
@@ -117,7 +132,7 @@ where
 fn a_put_leaves_the_row_and_drops_the_derived_faces() {
     let dir = tempfile::tempdir().expect("tempdir");
     let app =
-        Collection::with_changelog(TestStore::slatedb_mem(), ChangelogConfig::new(dir.path()))
+        captured(TestStore::slatedb_mem(), ChangelogConfig::new(dir.path()))
             .expect("changelog opens");
 
     let key = LogKey { id: 7 };
@@ -152,7 +167,7 @@ fn the_whole_document_verbs_are_captured() {
     // subscribe event. A capture hung on that sink would lose all four.
     let dir = tempfile::tempdir().expect("tempdir");
     let app =
-        Collection::with_changelog(TestStore::slatedb_mem(), ChangelogConfig::new(dir.path()))
+        captured(TestStore::slatedb_mem(), ChangelogConfig::new(dir.path()))
             .expect("changelog opens");
 
     let key = LogKey { id: 1 };
@@ -205,7 +220,7 @@ fn the_whole_document_verbs_are_captured() {
 fn categorical_labels_ride_and_their_cursor_does_not() {
     let dir = tempfile::tempdir().expect("tempdir");
     let app =
-        Collection::with_changelog(TestStore::slatedb_mem(), ChangelogConfig::new(dir.path()))
+        captured(TestStore::slatedb_mem(), ChangelogConfig::new(dir.path()))
             .expect("changelog opens");
 
     app.put(
@@ -216,8 +231,8 @@ fn categorical_labels_ride_and_their_cursor_does_not() {
         },
     )
     .expect("row put");
-    let tag_app: Collection<TestStore, TagKey, TagRow> =
-        Collection::with_changelog(TestStore::slatedb_mem(), ChangelogConfig::new(dir.path()))
+    let tag_app: Collection<ChangelogStore<TestStore>, TagKey, TagRow> =
+        captured(TestStore::slatedb_mem(), ChangelogConfig::new(dir.path()))
             .expect("tag changelog opens");
     tag_app
         .put(
@@ -263,7 +278,7 @@ fn categorical_labels_ride_and_their_cursor_does_not() {
 fn a_torn_tail_ends_a_partial_and_corrupts_a_sealed_segment() {
     let dir = tempfile::tempdir().expect("tempdir");
     let app =
-        Collection::with_changelog(TestStore::slatedb_mem(), ChangelogConfig::new(dir.path()))
+        captured(TestStore::slatedb_mem(), ChangelogConfig::new(dir.path()))
             .expect("changelog opens");
     app.put(
         &LogKey { id: 1 },
@@ -310,7 +325,7 @@ fn rotation_seals_both_by_bytes_and_by_age() {
     let mut config = ChangelogConfig::new(dir.path());
     config.segment_bytes = 1; // seal on the next commit, whatever the payload
     config.segment_seconds = 0; // and let age do it too, to exercise the branch
-    let app = Collection::with_changelog(TestStore::slatedb_mem(), config).expect("open");
+    let app = captured(TestStore::slatedb_mem(), config).expect("open");
 
     for id in 0..3 {
         app.put(
@@ -342,8 +357,8 @@ fn the_batch_writer_verb_captures_save_into() {
     // `save_into` hands the caller a batch; before this verb the caller reached
     // the store directly and no collection-level hook could see the write.
     let dir = tempfile::tempdir().expect("tempdir");
-    let app: Collection<TestStore, LogKey, LogRow> =
-        Collection::with_changelog(TestStore::slatedb_mem(), ChangelogConfig::new(dir.path()))
+    let app: Collection<ChangelogStore<TestStore>, LogKey, LogRow> =
+        captured(TestStore::slatedb_mem(), ChangelogConfig::new(dir.path()))
             .expect("open");
 
     let key = LogKey { id: 42 };
@@ -367,21 +382,34 @@ fn the_batch_writer_verb_captures_save_into() {
     assert_truth_only(LOG_NS, &frames[0]);
 }
 
+/// The writer opens on the first CAPTURED commit, so before that there is nothing
+/// to owe. A collection over a plain store has no log at all — a type fact now,
+/// not a runtime `None`.
 #[test]
 fn status_reports_a_log_that_never_took_a_write() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let app: Collection<TestStore, LogKey, LogRow> =
-        Collection::with_changelog(TestStore::slatedb_mem(), ChangelogConfig::new(dir.path()))
-            .expect("open");
-    let status = app.changelog_status().expect("a changelog is attached");
+    let store = ChangelogStore::new(TestStore::slatedb_mem(), ChangelogConfig::new(dir.path()));
+    store.register::<LogKey, LogRow>().expect("register");
+    assert!(
+        store.status::<LogRow>().is_none(),
+        "no writer is open before the first write"
+    );
+
+    let app: Collection<_, LogKey, LogRow> = Collection::new(&store);
+    app.put(
+        &LogKey { id: 1 },
+        &LogRow {
+            author: 1,
+            title: "x".into(),
+        },
+    )
+    .expect("put");
+
+    let status = store.status::<LogRow>().expect("the writer is open");
     assert_eq!(status.segment, 0);
-    assert_eq!(status.segment_written, 0);
+    assert_eq!(status.segment_written, 0, "the frame is still buffered");
     assert_eq!(status.records_dropped, 0);
     assert!(status.last_error.is_none());
-
-    // And a plain collection has no log at all.
-    let plain: Collection<TestStore, LogKey, LogRow> = Collection::new(TestStore::slatedb_mem());
-    assert!(plain.changelog_status().is_none());
 }
 
 /// The sidecar is the half of the declaration the log cannot carry. It is
@@ -396,8 +424,8 @@ fn the_sidecar_is_written_once_per_layout_version() {
     use okm_core::schema::CollectionSchema;
 
     let dir = tempfile::tempdir().expect("tempdir");
-    let app: Collection<TestStore, LogKey, LogRow> =
-        Collection::with_changelog(TestStore::slatedb_mem(), ChangelogConfig::new(dir.path()))
+    let app: Collection<ChangelogStore<TestStore>, LogKey, LogRow> =
+        captured(TestStore::slatedb_mem(), ChangelogConfig::new(dir.path()))
             .expect("open");
 
     let table = table_dir(dir.path(), LOG_NS);
@@ -424,124 +452,62 @@ fn the_sidecar_is_written_once_per_layout_version() {
     drop(app);
 }
 
-/// A batch that spans two tables: each collection stages its OWN share before the
-/// one commit and appends after it (the staged/flush split). Without it the
-/// committer's log records only its own keys and the other table's writes never
-/// reach a lake — the hole this verb pair closes.
+/// A batch that spans two tables, committed ONCE: the store splits it by key
+/// header, so each table's log takes its own frame out of the same commit. This
+/// used to need a stage/flush pair per collection, and a caller who forgot them
+/// silently lost the other table's writes.
 #[test]
 fn a_cross_table_batch_captures_each_tables_own_share() {
-    let root_a = tempfile::tempdir().expect("a");
-    let root_b = tempfile::tempdir().expect("b");
-    let a: Collection<TestStore, LogKey, LogRow> = Collection::with_changelog(
-        TestStore::slatedb_mem(),
-        ChangelogConfig::new(root_a.path()),
-    )
-    .expect("open a");
-    let b: Collection<TestStore, LogKey, OtherRow> = Collection::with_changelog(
-        TestStore::slatedb_mem(),
-        ChangelogConfig::new(root_b.path()),
-    )
-    .expect("open b");
+    let root = tempfile::tempdir().expect("root");
+    let (pa, pb);
+    {
+        // ONE decorator for both tables: a second one over the same directory
+        // would be a second writer on one segment number.
+        let store =
+            ChangelogStore::new(TestStore::slatedb_mem(), ChangelogConfig::new(root.path()));
+        store.register::<LogKey, LogRow>().expect("register a");
+        store.register::<LogKey, OtherRow>().expect("register b");
+        let a: Collection<_, LogKey, LogRow> = Collection::new(&store);
+        let b: Collection<_, LogKey, OtherRow> = Collection::new(&store);
 
-    // One batch carrying both tables' keys.
-    let mut batch = Batch::default();
-    let ka = LogKey { id: 1 };
-    let kb = LogKey { id: 2 };
-    a.save_with_prev_into(
-        &mut batch,
-        &ka,
-        &LogRow {
-            author: 7,
-            title: "a".into(),
-        },
-        None,
-    )
-    .unwrap();
-    b.save_with_prev_into(
-        &mut batch,
-        &kb,
-        &OtherRow {
-            author: 8,
-            title: "b".into(),
-        },
-        None,
-    )
-    .unwrap();
-    let pa = a.primary_key(&ka);
-    let pb = b.primary_key(&kb);
+        // One batch carrying both tables' keys.
+        let mut batch = Batch::default();
+        let ka = LogKey { id: 1 };
+        let kb = LogKey { id: 2 };
+        a.save_with_prev_into(
+            &mut batch,
+            &ka,
+            &LogRow {
+                author: 7,
+                title: "a".into(),
+            },
+            None,
+        )
+        .unwrap();
+        b.save_with_prev_into(
+            &mut batch,
+            &kb,
+            &OtherRow {
+                author: 8,
+                title: "b".into(),
+            },
+            None,
+        )
+        .unwrap();
+        pa = a.primary_key(&ka);
+        pb = b.primary_key(&kb);
 
-    // Stage before the commit: each collection takes its own ops and no one
-    // else's (a directory belongs to one header).
-    assert_eq!(a.stage_capture(&batch.ops), 1, "a takes its own op");
-    assert_eq!(b.stage_capture(&batch.ops), 1, "b takes its own op");
+        a.commit_batch(batch).expect("one commit");
+    }
 
-    a.commit_batch(batch).expect("one commit");
-    a.flush_capture().expect("a appends after the commit");
-    b.flush_capture().expect("b appends after the commit");
-
-    let frames_a = drain(a, root_a.path());
-    drop(b);
-    let frames_b: Vec<CapturedFrame> = sealed_segments(root_b.path(), OTHER_NS)
-        .expect("b's segments")
-        .iter()
-        .flat_map(|path| read_sealed(path).expect("b's frames"))
-        .map(|frame| frame.0)
-        .collect();
+    let frames_a = frames_in(root.path(), LOG_NS);
+    let frames_b = frames_in(root.path(), OTHER_NS);
     assert_eq!(frames_a.len(), 1, "a: one committed batch, one frame");
     assert_eq!(frames_a[0].len(), 1, "a: only its own row");
     assert_eq!(frames_a[0][0].1, pa, "a's key, in a's log");
-    assert_eq!(frames_b.len(), 1, "b: one frame, from its own stage");
+    assert_eq!(frames_b.len(), 1, "b: one frame out of the same commit");
     assert_eq!(frames_b[0].len(), 1, "b: only its own row");
     assert_eq!(frames_b[0][0].1, pb, "b's key, in b's log");
-}
-
-/// The repair path: a crash between the commit and the append leaves a log that is
-/// visibly incomplete, and the rows that still exist are what can be re-emitted.
-#[test]
-fn reconcile_re_emits_the_rows_that_still_exist() {
-    let root = tempfile::tempdir().expect("root");
-    let c: Collection<TestStore, LogKey, LogRow> =
-        Collection::with_changelog(TestStore::slatedb_mem(), ChangelogConfig::new(root.path()))
-            .expect("open");
-    for id in 1..=3u64 {
-        c.put(
-            &LogKey { id },
-            &LogRow {
-                author: id,
-                title: format!("row-{id}"),
-            },
-        )
-        .expect("put");
-    }
-
-    // The whole table: three rows, three frames staged, nothing else picked up.
-    assert_eq!(c.reconcile().expect("scan"), 3, "every row is re-emitted");
-    c.flush_capture().expect("flush");
-
-    // A slice of it: the bounds are KEY suffixes, so [1, 3) is the first two rows —
-    // the header and the primary slot are the collection's to add.
-    assert_eq!(
-        c.reconcile_range(&1u64.to_be_bytes(), &3u64.to_be_bytes())
-            .expect("range scan"),
-        2,
-        "a range re-emits only what is inside it"
-    );
-    c.flush_capture().expect("flush");
-    assert_eq!(c.reconcile().expect("scan"), 3, "idempotent re-read");
-
-    let pkeys: Vec<Vec<u8>> = (1..=3u64).map(|id| c.primary_key(&LogKey { id })).collect();
-    let frames = drain(c, root.path());
-    // A window may carry a row more than once, so the frames are three separate
-    // batches: the three puts, the table reconcile, the range reconcile.
-    assert_eq!(frames.len(), 5, "three puts, then one frame per reconcile");
-    let keys: Vec<Vec<u8>> = frames
-        .iter()
-        .flat_map(|f| f.iter().map(|(_, key, _)| key.clone()))
-        .collect();
-    assert_eq!(keys.len(), 8, "3 puts + 3 whole-table + 2 in range");
-    for want in &pkeys {
-        assert!(keys.contains(want), "the row came back");
-    }
 }
 
 /// The capture rule covers the WHOLE numbering space instead of a whitelist
@@ -612,8 +578,8 @@ fn the_sidecar_carries_the_tables_declared_name() {
 
     let root = tempfile::tempdir().expect("root");
     {
-        let c: Collection<TestStore, LogKey, LogRow> =
-            Collection::with_changelog(TestStore::slatedb_mem(), ChangelogConfig::new(root.path()))
+        let c: Collection<ChangelogStore<TestStore>, LogKey, LogRow> =
+            captured(TestStore::slatedb_mem(), ChangelogConfig::new(root.path()))
                 .expect("the log opens");
         c.put(
             &LogKey { id: 1 },
@@ -654,8 +620,8 @@ fn the_sidecar_carries_the_tables_declared_name() {
 /// Seal one row into a table's log and hand back the sealed file's path.
 fn sealed_one(root: &std::path::Path) -> std::path::PathBuf {
     {
-        let app: Collection<TestStore, LogKey, LogRow> =
-            Collection::with_changelog(TestStore::slatedb_mem(), ChangelogConfig::new(root))
+        let app: Collection<ChangelogStore<TestStore>, LogKey, LogRow> =
+            captured(TestStore::slatedb_mem(), ChangelogConfig::new(root))
                 .expect("the log opens");
         app.put(
             &LogKey { id: 7 },

@@ -33,11 +33,6 @@ pub struct Collection<S, K: KeyEncode, R: Document<Key = K>> {
     /// `Cell` is what keeps that sound — `Cell` is `!Sync`, so a set of writes
     /// cannot be interleaved by another thread holding the same `&Collection`.
     epoch: std::cell::Cell<u64>,
-    /// The table's change log (ADR-0045), when the assembly point attached one.
-    /// A `RefCell` for the same reason `epoch` is a `Cell`: the write verbs take
-    /// `&self`, and the writer is per-collection state. `!Sync` either way, so
-    /// two threads cannot interleave writes through one `&Collection`.
-    changelog: Option<std::cell::RefCell<crate::changelog::Changelog>>,
     /// The table's field-name vocabulary mirror (ADR-0012), alive for the
     /// COLLECTION's lifetime. The dynamic segment resolves one name per frame;
     /// a cache built per operation turned every dynamic field into an engine
@@ -61,41 +56,9 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         Self {
             store,
             epoch: std::cell::Cell::new(0),
-            changelog: None,
             fields_vocab: std::cell::RefCell::new(VocabCache::new(FIELD_VOCAB)),
             _marker: std::marker::PhantomData,
         }
-    }
-
-    /// The same assembly point with a change log attached (ADR-0045): the
-    /// FALLIBLE constructor, because it is the one that touches the filesystem —
-    /// `new` stays I/O-free on purpose (ADR-0043), exactly as it does for the
-    /// meta stamp.
-    ///
-    /// The switch lives here rather than in a derive attribute because it is a
-    /// per-instance policy, the same kind of decision as engine choice.
-    pub fn with_changelog(
-        store: S,
-        config: crate::changelog::ChangelogConfig,
-    ) -> crate::error::Result<Self> {
-        let mut this = Self::new(store);
-        let header = this.header();
-        let log = crate::changelog::Changelog::open(
-            config,
-            &header,
-            crate::changelog::SegmentMeta::of::<R>(crate::changelog::KIND_DELTA),
-        )?;
-        // The sidecar is the half of the declaration the log cannot carry (types
-        // and key layout — the payload is positional and the key has no field
-        // boundaries), and this is the one place that knows both the schema and
-        // the directory. Absent the `schema-serde` feature the caller writes it.
-        #[cfg(feature = "schema-serde")]
-        crate::changelog::write_sidecar(
-            log.dir(),
-            &crate::model::schema::CollectionSchema::of::<K, R>(),
-        )?;
-        this.changelog = Some(std::cell::RefCell::new(log));
-        Ok(this)
     }
 
     pub fn store(&self) -> &S {
@@ -1099,19 +1062,30 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     ) -> crate::error::Result<()> {
         let (typed, dynamic) = self.split_names(object);
         let mut batch = crate::engine::storage::Batch::default();
+        // The event a point verb owes its subscribers (ADR-0047): the row this
+        // write leaves behind, taken before the commit and announced after it
+        // returned `Ok`, exactly as `put` does. A merge that only touches the
+        // dynamic segment leaves no row for the event to carry, so it announces
+        // nothing — this interface speaks about typed rows.
+        let mut announced: Option<R> = None;
         if !typed.is_empty() {
             let prev = self.get(key)?;
             let mut merged = prev.as_ref().map(|r| r.to_map()).unwrap_or_default();
             merged.extend(typed);
             let document = R::try_from_map(&merged)?;
             self.save_with_prev_into(&mut batch, key, &document, prev.as_ref())?;
+            announced = Some(document);
         }
         if !dynamic.is_empty() {
             let mut stored = self.slot1_map(key)?.unwrap_or_default();
             stored.extend(dynamic);
             self.slot1_into(&mut batch, key, &stored)?;
         }
-        self.commit(batch)
+        self.commit(batch)?;
+        if let Some(document) = &announced {
+            R::__okm_emit_event(crate::subscribe::Op::Put, self.epoch.get(), key, document);
+        }
+        Ok(())
     }
 
     /// Whole-document replacement, ONE engine commit: the map IS the document.
@@ -1134,9 +1108,14 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     ) -> crate::error::Result<()> {
         let (typed, dynamic) = self.split_names(object);
         let mut batch = crate::engine::storage::Batch::default();
+        // `replace` carries the same event rule as `merge`: whatever row it
+        // leaves behind (`Put`) or removes (`Delete`). A map with no declared
+        // name is `purge`'s write, so it announces what `purge` announces.
+        let mut announced: Option<(crate::subscribe::Op, R)> = None;
         if typed.is_empty() {
             if let Some(prev) = self.get(key)? {
                 self.delete_into(&mut batch, key, &prev)?;
+                announced = Some((crate::subscribe::Op::Delete, prev));
             }
         } else {
             // The stored row is the face-sweep source: without it the previous
@@ -1145,9 +1124,14 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
             let prev = self.get(key)?;
             let document = R::try_from_map(&typed)?;
             self.save_with_prev_into(&mut batch, key, &document, prev.as_ref())?;
+            announced = Some((crate::subscribe::Op::Put, document));
         }
         self.slot1_into(&mut batch, key, &dynamic)?;
-        self.commit(batch)
+        self.commit(batch)?;
+        if let Some((op, document)) = &announced {
+            R::__okm_emit_event(*op, self.epoch.get(), key, document);
+        }
+        Ok(())
     }
 
     /// The reads a removal needs: the stored document, decoded exactly as
@@ -1213,7 +1197,8 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     ///
     /// Subscribe emission stays OUT, for the reason [`Self::save_with_prev_into`]
     /// gives: an uncommitted batch must not announce a write that may never land.
-    /// Landing it through [`Self::commit_batch`] carries the changelog half.
+    /// Landing it through [`Self::commit_batch`] (or straight to a capturing
+    /// store) is what gets it recorded.
     ///
     /// [`BatchStore`]: crate::engine::storage::BatchStore
     pub fn purge_into(
@@ -1366,14 +1351,6 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     /// that promises a `Result` can hand the engine's refusal up. The error
     /// carries the engine's OWN text, never a generic message that hides it.
     fn commit(&self, batch: crate::engine::storage::Batch) -> crate::error::Result<()> {
-        // Capture BEFORE the commit, append AFTER it (ADR-0045 §6): a record must
-        // never describe a write the engine refused. `stage` only fills memory,
-        // so it cannot fail a write; the append can, and when it does the write
-        // is already durable — the failure lands in `changelog_status` instead
-        // of turning a committed write into an error.
-        if let Some(log) = &self.changelog {
-            let _ = log.borrow_mut().stage(&batch.ops);
-        }
         // Vocabulary ids this batch allocated are not evidence until it lands:
         // take the promotion candidates BEFORE the commit consumes the batch,
         // and trust them only after it returned Ok (a refused commit leaves the
@@ -1382,125 +1359,38 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         self.store.commit_batch(batch)?;
         self.fields_vocab.borrow_mut().promote(&promoted);
         self.epoch.set(self.epoch.get() + 1);
-        if let Some(log) = &self.changelog {
-            let _ = log.borrow_mut().commit_staged();
-        }
         Ok(())
     }
 
-    /// Commit a caller-built batch through THIS collection, so its changelog
-    /// captures the writes (ADR-0045).
+    /// Commit a caller-built batch through THIS collection: the assembly point's
+    /// own write funnel, so the epoch advances and a capturing store (ADR-0056 §2)
+    /// sees the batch exactly like any other write.
     ///
-    /// `save_with_prev_into` hands the caller a batch and the caller used to reach the
-    /// store directly, which no collection-level hook can see. That path is the
-    /// cross-collection atomic one (ADR-0003), and ADR-0031 §5 already says a
-    /// batch writer's events are its own concern — this verb is how it discharges
-    /// that.
-    ///
-    /// A batch may carry another table's keys; a log directory belongs to ONE
-    /// header, so this captures the keys under THIS collection's header and drops
-    /// the rest. For a batch that writes several tables, use the staged/flush
-    /// split instead of this shorthand: every participating collection stages its
-    /// own share before the ONE commit ([`Self::stage_capture`]) and appends after
-    /// the commit returned Ok ([`Self::flush_capture`]) — the capture follows the
-    /// keys to their own logs, and none of it describes a write the engine
-    /// refused.
+    /// `save_with_prev_into` hands the caller a batch; committing it here and
+    /// committing it straight to the store are now the same thing as far as
+    /// capture goes — the store is the boundary — but this verb also advances this
+    /// collection's own state.
     pub fn commit_batch(&self, batch: crate::engine::storage::Batch) -> crate::error::Result<()> {
         self.commit(batch)
     }
+}
 
-    /// Stage this collection's share of `ops` for capture, WITHOUT appending:
-    /// the first half of the staged/flush split for a batch that spans tables.
+impl<S, K, R> Collection<crate::changelog::ChangelogStore<S>, K, R>
+where
+    S: VirtualStorage,
+    K: KeyEncode,
+    R: Document<Key = K>,
+{
+    /// Assemble over a CAPTURING store (ADR-0056 §2): register the declaration —
+    /// the sidecar it needs and what a segment of this table is stamped with —
+    /// then hand back the ordinary collection.
     ///
-    /// Returns how many ops were carried (0 when the batch holds nothing under
-    /// this header, and when no log is attached). Staging is memory only, so it
-    /// cannot fail a write; a staged frame whose commit never happens is dropped
-    /// by the next `stage` call — at-most-once, never a phantom row.
-    pub fn stage_capture(&self, ops: &[(Vec<u8>, Option<Vec<u8>>)]) -> usize {
-        match &self.changelog {
-            Some(log) => log.borrow_mut().stage(ops),
-            None => 0,
-        }
-    }
-
-    /// Append what [`Self::stage_capture`] staged. Call it AFTER the one commit
-    /// returned Ok, for every collection that staged.
-    pub fn flush_capture(&self) -> crate::error::Result<()> {
-        match &self.changelog {
-            Some(log) => log.borrow_mut().commit_staged(),
-            None => Ok(()),
-        }
-    }
-
-    /// Re-capture the rows that still exist — the repair for a log that is visibly
-    /// incomplete (a crash between the commit and the append, ADR-0045 §7).
-    ///
-    /// The rows are emitted as the log's own PUT frames, so a sink folds them like
-    /// any other write: an upsert-capable sink converges, and a window that already
-    /// carried a row carries it twice — which is what a window is allowed to be.
-    /// What this CANNOT repair is a removal: a key that is gone looks exactly like
-    /// a key that was never written, so a delete lost between commit and append
-    /// stays lost. The honest repair for that is the operator's: drop the key range
-    /// in the sink and replay the window.
-    ///
-    /// Whole table. Use [`Self::reconcile_range`] for a slice — staging is memory.
-    pub fn reconcile(&self) -> crate::error::Result<usize> {
-        if self.changelog.is_none() {
-            return Ok(0);
-        }
-        let mut prefix = self.header();
-        crate::model::index::write_slot(&mut prefix, crate::model::index::PRIMARY_SLOT);
-        // `scan_suffix_kv` hands back SUFFIXES (the prefix is the caller's); a
-        // frame records the whole key, so the header goes back on.
-        let rows = crate::engine::storage::scan_suffix_kv(&self.store, &prefix)?
-            .into_iter()
-            .map(|(suffix, value)| {
-                let mut key = prefix.clone();
-                key.extend_from_slice(&suffix);
-                (key, value)
-            })
-            .collect();
-        Ok(self.stage_rows(rows))
-    }
-
-    /// Re-capture the rows in `[begin, end)`, both bounds being KEY suffixes: the
-    /// header and the primary slot are the collection's to add, not the caller's.
-    pub fn reconcile_range(&self, begin: &[u8], end: &[u8]) -> crate::error::Result<usize> {
-        if self.changelog.is_none() {
-            return Ok(0);
-        }
-        let mut from = self.header();
-        crate::model::index::write_slot(&mut from, crate::model::index::PRIMARY_SLOT);
-        let row_len = from.len() + K::KEY_LEN;
-        from.extend_from_slice(begin);
-        let mut to = self.header();
-        crate::model::index::write_slot(&mut to, crate::model::index::PRIMARY_SLOT);
-        to.extend_from_slice(end);
-        let mut rows = Vec::new();
-        for pair in self.store.scan_range_iter(&from, Some(&to)) {
-            let (key, value) = pair?;
-            // A row is the primary face with a suffix of exactly one key; a
-            // face-level single value has no key to attribute and no row to repair.
-            if key.len() == row_len {
-                rows.push((key, value));
-            }
-        }
-        Ok(self.stage_rows(rows))
-    }
-
-    /// Turn stored rows into the log's PUT frames and stage them.
-    fn stage_rows(&self, rows: Vec<(Vec<u8>, Vec<u8>)>) -> usize {
-        let ops: Vec<(Vec<u8>, Option<Vec<u8>>)> = rows
-            .into_iter()
-            .map(|(key, value)| (key, Some(value)))
-            .collect();
-        self.stage_capture(&ops)
-    }
-
-    /// What the change log owes: the open segment, bytes still buffered, records
-    /// dropped while the sink was broken, and the last write failure. `None` when
-    /// no changelog is attached.
-    pub fn changelog_status(&self) -> Option<crate::changelog::ChangelogStatus> {
-        self.changelog.as_ref().map(|log| log.borrow().status())
+    /// The collection carries no log of its own: capture belongs to the store, so
+    /// every write path is covered without a per-assembly-site switch. Fallible
+    /// because registration touches the filesystem (`new` stays I/O-free,
+    /// ADR-0043).
+    pub fn captured(store: crate::changelog::ChangelogStore<S>) -> crate::error::Result<Self> {
+        store.register::<K, R>()?;
+        Ok(Self::new(store))
     }
 }

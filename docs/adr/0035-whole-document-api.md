@@ -1,6 +1,6 @@
 # ADR-0035: One whole-document surface — `fetch` / `merge` / `replace` / `purge`
 
-**Status**: Accepted. The `okm-dynamic` half carries `fetch` / `merge` / `replace` / `purge` and a whole-document plan surface; slot 1 carries no verbs of its own. The removal verb is `purge` — `delete` / `delete_by_pkey` do not exist, since a row cannot outlive its segment and a row-only delete would leave one dangling. The read door of the document surface is `fetch` (a *view* is a projection of a row; the map is the document itself, not a projection of it). The dynamic side has no `get` / `put` — with no struct to speak, a `put` there could only mean "the static segment", a semantic invisible in the signature, and `merge` produces the identical op list. The consumer sweep is what remains.
+**Status**: Accepted. **Updates 2026-11-10:** §5 states the event rule for all three verbs — `merge` / `replace` announce the row they leave, a declared-name-free `replace` announces the delete. The `okm-dynamic` half carries `fetch` / `merge` / `replace` / `purge` and a whole-document plan surface; slot 1 carries no verbs of its own. The removal verb is `purge` — `delete` / `delete_by_pkey` do not exist, since a row cannot outlive its segment and a row-only delete would leave one dangling. The read door of the document surface is `fetch` (a *view* is a projection of a row; the map is the document itself, not a projection of it). The dynamic side has no `get` / `put` — with no struct to speak, a `put` there could only mean "the static segment", a semantic invisible in the signature, and `merge` produces the identical op list. The consumer sweep is what remains.
 **Date**: 2026-10-22
 **Chinese**: [0035-whole-document-api.zh-CN.md](0035-whole-document-api.zh-CN.md)
 
@@ -69,9 +69,12 @@ The surface splits by VALUE SHAPE rather than by slot.
    rebuilt means its faces must be swept, absent means it must be deleted, and
    only the stored row says which.
 5. **`purge` removes both slots** in one commit, answers whether there was
-   anything to remove, and carries the Delete event for subscribers (the signal
-   moved with the verb). It is the ONE removal verb: a document is the pair of
-   slots, so "delete the row, keep the segment" has no sound use.
+    anything to remove, and carries the Delete event for subscribers (the signal
+    moved with the verb). The same rule covers the other document verbs: `merge`
+    and `replace` announce the row they leave (`Put`), and a `replace` whose map
+    names no declared field announces the Delete, since that write IS `purge`'s.
+    It is the ONE removal verb: a document is the pair of slots, so "delete the
+    row, keep the segment" has no sound use.
 6. **Every write is one engine commit.** Row ops and the slot-1 entry accumulate
    in one `Batch` and reach the engine once, so a crash lands all of them or
    none.

@@ -326,11 +326,12 @@ fn bench_write_changelog(c: &mut Criterion) {
         let root = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("changelog-bench");
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
-        let t: Collection<TestStore, BenchKey, BenchRow> = Collection::with_changelog(
-            TestStore::slatedb_mem(),
-            okm_core::changelog::ChangelogConfig::new(&root),
-        )
-        .unwrap();
+        let t: Collection<_, BenchKey, BenchRow> =
+            Collection::captured(okm_core::changelog::ChangelogStore::new(
+                TestStore::slatedb_mem(),
+                okm_core::changelog::ChangelogConfig::new(&root),
+            ))
+            .unwrap();
         let key = make_key(7);
         let row = make_row(7);
         b.iter(|| {
