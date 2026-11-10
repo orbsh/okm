@@ -15,7 +15,6 @@ redb = { version = "4.2", optional = true }
 slatedb = { version = "0.16.0", optional = true }
 tempfile = { version = "3", optional = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"], optional = true }
-object_store = { version = "0.13", optional = true, default-features = false }
 web-sys = { version = "0.3", optional = true, features = ["Window", "Storage"] }
 
 [build-dependencies]
@@ -31,11 +30,6 @@ slatedb = ["dep:slatedb", "dep:tokio"]
 fjall = ["dep:fjall", "dep:tempfile"]
 redb = ["dep:redb", "dep:tempfile"]
 localstorage = ["dep:web-sys"]
-# A second copy of every sealed segment, made from the finished file (ADR-0045 §18).
-# `s3` alone takes any `ObjectStore` the caller builds (an in-memory one in tests);
-# `s3-aws` adds the S3 client, which is what pulls the HTTP stack in.
-s3 = ["dep:object_store", "dep:tokio"]
-s3-aws = ["s3", "object_store/aws"]
 
 [dev-dependencies]
 tempfile = "3"
@@ -63,10 +57,6 @@ required-features = ["test-engines", "fjall"]
 [[example]]
 name = "engine_paths"
 required-features = ["test-engines", "fjall"]
-
-[[test]]
-name = "s3_sink_test"
-required-features = ["s3", "test-engines"]
 
 # test-engines for the store the integration tests run on:
 # the file calls `TestStore::slatedb_mem()` and `Graph::to_record_batch_table`,

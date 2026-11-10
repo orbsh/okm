@@ -56,9 +56,6 @@ pub mod changelog;
 /// here because the tree is core's (`model::obj_dynamic`), and because the drain —
 /// a core mechanism — reads payloads with it.
 pub mod decode;
-#[cfg(feature = "s3")]
-pub mod s3;
-pub mod sink;
 pub mod subscribe;
 
 // ================= re-exports (stable public surface) =================

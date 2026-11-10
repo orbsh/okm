@@ -15,7 +15,6 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
 
 use okm_core::changelog::{ChangelogConfig, ChangelogStore, sealed_segments};
 use okm_core::{Collection, Document, DocumentEncode, KeyEncode, TestStore};
@@ -62,11 +61,10 @@ fn a_drained_writer_seals_its_tail_and_names_what_a_reader_can_see() {
 
     let drained = collection
         .store()
-        .drain(Duration::from_secs(5))
+        .drain()
         .unwrap();
     assert_eq!(drained.len(), 1, "one registered table, one writer");
     let (header, report) = &drained[0];
-    assert!(report.uploaded, "no sink, so there is nothing to wait for");
 
     let sealed = report.sealed.clone().expect("the tail was sealed");
     // The position is READ off the directory, so a reader will find exactly this file.
@@ -90,14 +88,14 @@ fn a_writer_that_never_committed_drains_to_nothing_and_leaves_no_partial() {
 
     let drained = collection
         .store()
-        .drain(Duration::from_secs(5))
+        .drain()
         .unwrap();
     let report = &drained[0].1;
     assert!(report.sealed.is_some(), "the committed row was sealed");
 
     // Draining twice is not a second seal: the second call finds nothing to write and
     // answers the same position.
-    let again = collection.store().drain(Duration::from_secs(5)).unwrap();
+    let again = collection.store().drain().unwrap();
     assert_eq!(again[0].1.sealed, report.sealed);
 }
 

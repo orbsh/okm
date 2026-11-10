@@ -76,9 +76,8 @@ fn the_successor_asks_applies_and_then_claims() {
     // --- A notices (an instance without a watcher thread polls) and hands over. ---
     let drained = holder
         .store()
-        .drain_and_hand_over("A", "/data/a", timeout)
+        .drain_and_hand_over("A", "/data/a")
         .unwrap();
-    assert!(drained[0].1.uploaded, "no sink, nothing to wait for");
     let position = drained[0].1.sealed.clone().expect("the tail was sealed");
     let claim = owner::read(&dir).unwrap().unwrap();
     assert_eq!(claim.state, State::HandedOver);

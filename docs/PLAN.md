@@ -2740,8 +2740,9 @@ Gate: `cargo test --workspace --all-features` (460 passed), clippy `--all-target
 ## 2026-11-10 — the segment is the migration path (ADR-0056)
 
 The three defects named first are what make the current log unsafe as a migration
-source; all three are fixed. Everything below landed except the two items still
-open at the end (retiring the store-scan export, and the S3 sink).
+source; all three are fixed. Everything below landed except the two items at the end
+(the store-scan export was demoted rather than retired, and the S3 sink was removed
+outright — its entry says why).
 
 - [x] **Watermark is per `(consumer, table)`.** `okm-drain/src/lib.rs` wrote
       `watermark-<consumer>.txt` in `out_dir`, while segment numbering restarts per
@@ -2943,26 +2944,16 @@ open at the end (retiring the store-scan export, and the S3 sink).
       the only export that held a document's open half. It carries them now, as a
       `variant` column (below), which is what let the store-scan export step down
       instead of being kept for a completeness it alone had.
-- [x] **S3 sink**: `okm_core::sink::SealedSegmentSink` (one hook, always compiled) and
-      `okm_core::s3::SegmentUploader` behind the `s3` feature — `object_store` +
-      `tokio`, both already optional, so no crate enters the tree at default features;
-      `s3-aws` is what adds the S3 client (and the HTTP stack), so an in-memory or
-      filesystem store can be used to test a copy path with no credentials.
-      The writer's whole story is one call: `seal_last` and `Drop` announce the sealed
-      file AFTER the rename and return as soon as the path is queued. So an upload
-      never sits in a commit, a slow bucket cannot slow a write, and a bucket outage
-      cannot fail one. The queue holds a `PathBuf` per segment, never the bytes: the
-      file is read at upload time, so a thousand queued segments are a thousand paths.
-      The local segment stays the record — a lost upload is a lost COPY, and
-      `failures()` exists so a host can tell that from success instead of reading
-      silence as agreement. One attempt per job by design: a retry loop here turns a
-      bucket outage into unbounded memory.
-      `a_sealed_segment_reaches_the_object_store` locks the seam end to end against an
-      in-memory store (byte-for-byte equality with the local file), and
-      `the_key_carries_the_table` that the object key is `{prefix}/{table hex}/{name}`.
-      NOT covered, and honestly so: a real bucket with real credentials, and any retry
-      or backoff policy (there is none). `okm-series` keeps its own container and magic
-      (`.log` parts, ADR-0046).
+- [x] **S3 sink — built, then removed.** `okm_core::sink::SealedSegmentSink` and
+      `okm_core::s3::SegmentUploader` shipped as one hook plus a worker queue (paths, never
+      bytes; one attempt per job; the local segment stayed the record). They are gone,
+      because the premise stopped being true: the log is not shippable to an object store
+      — no atomic rename, no fsync — so S3 is not a location for it, and the handover
+      never waits on a copy. What the sink offered was a tail copy of a format nothing
+      else can read, with no restore verb beside it. Data leaves the machine as a Delta
+      table instead (ADR-0058), which is backup, restore and analytics in one format, and
+      the changelog on disk is already the record of change. Deleting `s3.rs`, `sink.rs`
+      and the `s3`/`s3-aws` features also removed `object_store` from the tree.
 - [x] **The cutover handshake is a file, not a control plane** (ADR-0056 §6). The ADR
       said the old instance "drains and stops" and nothing said who proves it:
       `Changelog::drop` is best-effort (a failed flush cannot be reported) and a killed

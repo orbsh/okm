@@ -285,10 +285,6 @@ pub struct Drained {
     /// The last sealed segment in the directory — the position a READER can see, which
     /// is what the next writer has to reach before it may serve.
     pub sealed: Option<String>,
-    /// `false` when the sink did not confirm its copies in time. A handover that names
-    /// a position the reader cannot see is a cutover that hangs, so the caller must not
-    /// proceed on this.
-    pub uploaded: bool,
 }
 
 /// The writer. One per collection, driven only by committed writes: there is no
@@ -317,9 +313,6 @@ pub struct Changelog {
     frames: u64,
     dropped: u64,
     last_error: Option<String>,
-    /// Who hears about a seal, if anyone (ADR-0045 §18). Never called inside a
-    /// commit: the hook runs after the rename, when the file is complete.
-    sink: crate::sink::SharedSink,
     /// The cutover switch (ADR-0056 §6): `false` means this writer lost the log and
     /// must not append to it. `None` (the default) is a single-writer process, which
     /// pays one `Option` check and nothing else.
@@ -356,7 +349,6 @@ impl Changelog {
             frames: 0,
             dropped: 0,
             last_error: None,
-            sink: None,
             gate: None,
         })
     }
@@ -452,12 +444,6 @@ impl Changelog {
         self.maybe_rotate()
     }
 
-    /// Tell this writer where sealed segments go — a second copy made from the
-    /// finished file, never from a commit (ADR-0045 §18).
-    pub fn attach_sink(&mut self, sink: crate::sink::SharedSink) {
-        self.sink = sink;
-    }
-
     /// Give this writer the cutover switch (ADR-0056 §6). The caller holds the lease and
     /// reads it with `Lease::gate`; the writer reads the gate at every commit and stops
     /// appending the moment it closes.
@@ -472,7 +458,7 @@ impl Changelog {
     /// failure, so a cutover built on it would be built on an assumption. Here a failed
     /// flush or an unconfirmable upload is visible to the caller, which is what makes
     /// "the old writer is fenced" a fact rather than a hope.
-    pub fn drain(&mut self, timeout: std::time::Duration) -> Result<Drained> {
+    pub fn drain(&mut self) -> Result<Drained> {
         if self.written > 0 || !self.pending.is_empty() {
             self.seal_last()?;
         } else if self.frame_count_is_empty() {
@@ -481,31 +467,15 @@ impl Changelog {
             self.file = None;
             let _ = std::fs::remove_file(self.partial_path());
         }
-        let sealed = last_sealed(&self.dir);
-        let uploaded = match &self.sink {
-            Some(sink) => sink.barrier(timeout).is_ok(),
-            None => true,
-        };
-        Ok(Drained { sealed, uploaded })
+        Ok(Drained {
+            sealed: last_sealed(&self.dir),
+        })
     }
 
     /// Whether the open segment carries no frames at all (an `open` that never
     /// committed). Split out so `drain` reads like the decision it is.
     fn frame_count_is_empty(&self) -> bool {
         self.frames == 0 && self.written == 0
-    }
-
-    /// Announce a seal. Called after the rename, so an implementation copies a file
-    /// nothing is writing to; a panic in the sink is not the writer's business, and
-    /// neither is its latency — the hook must not be able to fail a commit.
-    fn notify_sealed(&self, path: &Path) {
-        if let Some(sink) = &self.sink {
-            let name = path
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_default();
-            sink.sealed(&self.header, &name, path);
-        }
     }
 
     /// Seal the current segment now — the caller's rotation, for a host that
@@ -535,7 +505,6 @@ impl Changelog {
             .map_err(|e| io_err(&self.partial_path(), e))?;
         self.written = 0;
         self.frames = 0;
-        self.notify_sealed(&sealed);
         Ok(())
     }
 
@@ -668,9 +637,7 @@ impl Drop for Changelog {
             // would be a sealed segment every reader refuses.
             let _ = self.stamp_footer();
             let sealed = self.sealed_path();
-            if std::fs::rename(self.partial_path(), &sealed).is_ok() {
-                self.notify_sealed(&sealed);
-            }
+            let _ = std::fs::rename(self.partial_path(), &sealed);
         }
     }
 }
@@ -1214,8 +1181,6 @@ pub struct ChangelogStore<S> {
     metas: RefCell<BTreeMap<Vec<u8>, SegmentMeta>>,
     /// header → its writer, opened by the first commit that touches the table.
     tables: RefCell<BTreeMap<Vec<u8>, RefCell<Changelog>>>,
-    /// Where sealed segments go, if the host asked for a copy (ADR-0045 §18).
-    sink: crate::sink::SharedSink,
     /// The cutover switch (ADR-0056 §6), handed to every writer this store opens —
     /// including one opened after a takeover request, which is exactly when it matters.
     gate: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
@@ -1234,20 +1199,9 @@ impl<S> ChangelogStore<S> {
             exclude: Vec::new(),
             metas: RefCell::new(BTreeMap::new()),
             tables: RefCell::new(BTreeMap::new()),
-            sink: None,
             gate: None,
             leases: RefCell::new(Vec::new()),
         }
-    }
-
-    /// Hand every sealed segment to `sink` — after the rename, outside the commit.
-    ///
-    /// This is the whole of the writer's S3 story: it does not know what a sink is,
-    /// so a copy to object storage, a local `rsync`, and a no-op are the same thing
-    /// to it.
-    pub fn with_sink(mut self, sink: std::sync::Arc<dyn crate::sink::SealedSegmentSink>) -> Self {
-        self.sink = Some(sink);
-        self
     }
 
     /// Give every writer the cutover switch (ADR-0056 §6): closed means this process
@@ -1265,10 +1219,10 @@ impl<S> ChangelogStore<S> {
     ///
     /// A table that was never written has no writer — there is nothing to drain and no
     /// entry to report, which is the same reason `status` answers `None` for it.
-    pub fn drain(&self, timeout: std::time::Duration) -> Result<Vec<(Vec<u8>, Drained)>> {
+    pub fn drain(&self) -> Result<Vec<(Vec<u8>, Drained)>> {
         let mut out = Vec::new();
         for (header, cell) in self.tables.borrow().iter() {
-            let drained = cell.borrow_mut().drain(timeout)?;
+            let drained = cell.borrow_mut().drain()?;
             out.push((header.clone(), drained));
         }
         Ok(out)
@@ -1284,20 +1238,17 @@ impl<S> ChangelogStore<S> {
         &self,
         holder: &str,
         data: &str,
-        timeout: std::time::Duration,
     ) -> Result<Vec<(Vec<u8>, Drained)>> {
         let mut out = Vec::new();
         for (header, cell) in self.tables.borrow().iter() {
-            let drained = cell.borrow_mut().drain(timeout)?;
+            let drained = cell.borrow_mut().drain()?;
             let dir = table_dir(self.cfg.root_or_err()?, header);
             if let Some(current) = owner::read(&dir).map_err(owner_err)?
                 && current.state == owner::State::Draining
                 && let Some(position) = drained.sealed.clone()
             {
                 // The position is the sealed segment and nothing else: the successor reads
-                // this same directory, so the handover does not wait on a copy. `uploaded`
-                // is reported for the host to judge, not required here — a bucket outage
-                // must not be able to stall a cutover (ADR-0056 §6).
+                // this same directory, so a handover waits on no copy (ADR-0056 §6).
                 owner::hand_over(&dir, current.epoch, holder, data, &position)
                     .map_err(owner_err)?;
             }
@@ -1500,7 +1451,6 @@ impl<S> ChangelogStore<S> {
             &header,
             SegmentMeta::of::<R>(KIND_BASELINE),
         )?;
-        log.attach_sink(self.sink.clone());
         if let Some(gate) = &self.gate {
             log.attach_gate(std::sync::Arc::clone(gate));
         }
@@ -1580,7 +1530,6 @@ impl<S> ChangelogStore<S> {
             if let Some(meta) = meta
                 && let Ok(mut log) = Changelog::open(self.cfg.clone(), header, meta)
             {
-                log.attach_sink(self.sink.clone());
                 if let Some(gate) = &self.gate {
                     log.attach_gate(std::sync::Arc::clone(gate));
                 }
