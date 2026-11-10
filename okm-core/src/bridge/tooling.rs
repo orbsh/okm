@@ -40,7 +40,7 @@ pub fn json_schema<K: KeyEncode, R: Document<Key = K>>() -> String {
             FieldType::Quant(_) => "number",                 // logical: dequantized f64
             FieldType::Vocab(_) => "string",                 // the label (ADR-0032 export)
             FieldType::Offset(_) => "integer",               // logical: base + offset
-            FieldType::Vector { .. } => "array",             // element sequence (dynamic-length)
+            FieldType::Vector(_) => "array",             // element sequence (dynamic-length)
         }
     }
 
@@ -332,7 +332,7 @@ pub mod parquet_io {
             // A `Vector` exports as the OPAQUE frame bytes (the bridge keeps the
             // element type in the schema and the column byte-opaque), so the
             // import is the same read: the bytes go back verbatim.
-            FieldType::Vector { .. } => {
+            FieldType::Vector(_) => {
                 let col = column_as::<BinaryArray>(col, field.name)?;
                 col.value(document).to_vec()
             }
@@ -362,7 +362,7 @@ pub mod parquet_io {
                     | FieldType::Quant(_)
                     | FieldType::Vocab(_)
                     | FieldType::Offset(_)
-                    | FieldType::Vector { .. } => unreachable!("handled above"),
+                    | FieldType::Vector(_) => unreachable!("handled above"),
                 };
                 debug_assert_eq!(raw.len(), width, "width mismatch on import");
                 raw

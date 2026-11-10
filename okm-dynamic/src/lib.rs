@@ -85,10 +85,11 @@ pub use reduce::{
 /// both sides of every encode walk this gate, so byte layout and error
 /// reporting stay in one place.
 pub(crate) fn field_pair<'a>(
-    name: &str,
-    schema_ty: okm_core::field::FieldType,
+    field: &okm_core::schema::FieldSchema,
     map: &'a ValueMap,
 ) -> Result<&'a Value, CodecError> {
+    let name = field.name.as_str();
+    let schema_ty = field.ty;
     let v = map
         .get(name)
         .ok_or_else(|| CodecError::MissingField(name.to_string()))?;
@@ -106,8 +107,13 @@ pub(crate) fn field_pair<'a>(
         | (okm_core::field::FieldType::Quant(_), Value::F64(_))
         | (okm_core::field::FieldType::Offset(_), Value::I64(_))
         | (okm_core::field::FieldType::VarInt, Value::U64(_))
-        // ADR-0032: the id, not the label.
+        // ADR-0032: the id, not the label. An id is BYTES of the field's declared
+        // width (`Vocab<N>`: one byte to sixteen), so `Bytes` of exactly that width
+        // is the general form and `U8` the one-byte convenience. Demanding `U8`
+        // alone made every `Vocab<u16>`-and-wider field unwritable through this
+        // path while the encoder below already accepted its id bytes.
         | (okm_core::field::FieldType::Vocab(_), Value::U8(_)) => true,
+        (okm_core::field::FieldType::Vocab(_), Value::Bytes(b)) if b.len() == field.width => true,
         _ => false,
     };
     if ok {
@@ -132,9 +138,9 @@ fn schema_predicate_vocab_name(ty: okm_core::field::FieldType) -> &'static str {
         okm_core::field::FieldType::Bytes => "bytes",
         okm_core::field::FieldType::VarInt => "U64 (VarInt storage form)",
         okm_core::field::FieldType::Quant(_) => "U64 (fixed-point storage form)",
-        okm_core::field::FieldType::Vocab(_) => "U8 (vocab id)",
+        okm_core::field::FieldType::Vocab(_) => "the vocab id (U8, or id bytes of the declared width)",
         okm_core::field::FieldType::Offset(_) => "U64 (biased storage form)",
-        okm_core::field::FieldType::Vector { .. } => "bytes (flat LE vector)",
+        okm_core::field::FieldType::Vector(_) => "bytes (flat LE vector)",
     }
 }
 
@@ -146,14 +152,45 @@ mod tests {
     fn field_pair_rejects_mismatches() {
         let mut m = ValueMap::new();
         m.insert("a".into(), Value::U32(1));
-        assert!(field_pair("a", okm_core::field::FieldType::U32, &m).is_ok());
+        assert!(field_pair(&field("a", okm_core::field::FieldType::U32, 4), &m).is_ok());
         assert!(matches!(
-            field_pair("a", okm_core::field::FieldType::U64, &m),
+            field_pair(&field("a", okm_core::field::FieldType::U64, 8), &m),
             Err(CodecError::TypeMismatch { .. })
         ));
         assert!(matches!(
-            field_pair("b", okm_core::field::FieldType::U32, &m),
+            field_pair(&field("b", okm_core::field::FieldType::U32, 4), &m),
             Err(CodecError::MissingField(_))
+        ));
+    }
+
+    fn field(
+        name: &str,
+        ty: okm_core::field::FieldType,
+        width: usize,
+    ) -> okm_core::schema::FieldSchema {
+        okm_core::schema::FieldSchema {
+            name: name.to_string(),
+            ty,
+            offset: 0,
+            width,
+            tag: None,
+            default: None,
+            expect_len: None,
+        }
+    }
+
+    /// A `Vocab<u16>` id is two bytes: the pair rule had to admit them, or a
+    /// categorical field wider than a byte could not be written at all.
+    #[test]
+    fn a_wide_vocab_id_is_admitted_by_its_width() {
+        let mut m = ValueMap::new();
+        m.insert("v".into(), Value::Bytes(vec![0, 7]));
+        let vocab = field("v", okm_core::field::FieldType::Vocab(0x21), 2);
+        assert!(field_pair(&vocab, &m).is_ok());
+        m.insert("v".into(), Value::Bytes(vec![0, 7, 0]));
+        assert!(matches!(
+            field_pair(&vocab, &m),
+            Err(CodecError::TypeMismatch { .. })
         ));
     }
 }

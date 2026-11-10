@@ -36,7 +36,7 @@ pub fn encode_payload(schema: &CollectionSchema, values: &ValueMap) -> Result<Ve
     buf.extend_from_slice(&(hot.len() as u16).to_be_bytes());
     buf.extend_from_slice(&hot);
     for f in &schema.cold_fields {
-        let v = field_pair(&f.name, f.ty, values)?;
+        let v = field_pair(f, values)?;
         let Some(tag) = f.tag else {
             return Err(CodecError::ColdFieldWithoutTag(f.name.clone()));
         };
@@ -78,7 +78,7 @@ pub fn encode_fields(
         // probe/index segment (the trailing-tail regime — raw UTF-8 for
         // Str, no frame); hot/key fields keep their fixed-width walk.
         if f.width == 0 {
-            let v = field_pair(&f.name, f.ty, values)?;
+            let v = field_pair(f, values)?;
             match v {
                 Value::Str(s) => buf.extend_from_slice(s.as_bytes()),
                 _ => {
@@ -102,7 +102,7 @@ fn encode_field(
     values: &ValueMap,
     buf: &mut Vec<u8>,
 ) -> Result<(), CodecError> {
-    let v = field_pair(&f.name, f.ty, values)?;
+    let v = field_pair(f, values)?;
     debug_assert_eq!(buf.len(), f.offset, "static placement must be contiguous");
     // Wrapper kinds carry their parameters in the SCHEMA — `Quant<P>` its
     // precision, `Offset<B>` its base — so the codec does the arithmetic. The
@@ -241,7 +241,7 @@ fn cold_frame_bytes(f: &okm_core::schema::FieldSchema, v: &Value) -> Result<Vec<
         // Str is framed by `encode_payload` (no length prefix inside the frame
         // beyond the TLV's own) and Vector frames are not built here yet.
         okm_core::FieldType::Str => return Err(type_err(&f.name, "Str (framed as UTF-8)")),
-        okm_core::FieldType::Vector { .. } => {
+        okm_core::FieldType::Vector(_) => {
             return Err(type_err(
                 &f.name,
                 "a Vector frame — the dynamic codec does not build element frames yet",

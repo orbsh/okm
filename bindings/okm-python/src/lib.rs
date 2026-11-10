@@ -938,7 +938,7 @@ pub mod pyo3_impl {
             FieldType::Vocab(_) => {
                 Value::U8(v.extract::<u64>().map_err(|_| bad("vocab id (u8)"))? as u8)
             }
-            FieldType::Vector { .. } => Value::Bytes(
+            FieldType::Vector(_) => Value::Bytes(
                 v.extract::<Vec<u8>>()
                     .map_err(|_| bad("flat LE vector bytes"))?,
             ),

@@ -12,6 +12,10 @@
 /// payload (TLV) positions — the frame's `len varint` IS the length prefix —
 /// and is rejected on the fixed-width key side.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "schema-serde",
+    derive(serde::Serialize, serde::Deserialize)
+)]
 pub enum FieldType {
     U8,
     U16,
@@ -46,13 +50,17 @@ pub enum FieldType {
     Uuid7,
     /// `Vector<T>` — typed homogeneous list (ADR-0015 §4): a variable-
     /// length frame `[count u32 BE][elements per T]`; `elem` names the
-    /// element type ("f32", "String", …). Logical type is the element
-    /// sequence. No length in the schema — the frame carries its own
-    /// count; application-level count contracts are `#[ok_len]` /
-    /// `FieldSchema::expect_len` (decode-time checks).
-    Vector {
-        elem: &'static str,
-    },
+    /// element type. Logical type is the element sequence. No length in the
+    /// schema — the frame carries its own count; application-level count
+    /// contracts are `#[ok_len]` / `FieldSchema::expect_len` (decode-time
+    /// checks).
+    ///
+    /// A newtype, not `{ elem: &'static str }`: the element kind is a CLOSED
+    /// set, and a closed set is an enum. That is what lets this enum derive its
+    /// own serde impls (below) instead of being mirrored by hand — the mirror
+    /// had drifted twice, once by missing variants and once by disagreeing about
+    /// a shape, and each time a written sidecar became unreadable.
+    Vector(Elem),
 }
 
 /// One declared field: name, primitive kind, byte width.
@@ -73,4 +81,46 @@ pub enum DefaultValueConst {
     F64(f64),
     Bool(bool),
     Str(&'static str),
+}
+
+/// A `Vector`'s element kind — the closed set the codewalk supports
+/// (`okm-derive`'s `Vector<T>` arm is the one place the declaration meets it).
+///
+/// Closed on purpose: a sidecar is read with no Rust types present, so the name
+/// has to be a vocabulary this crate owns. The lowercase aliases are the spelling
+/// earlier sidecars wrote (the type's own name, `"f32"`, `"String"`), so a log
+/// written before this enum existed still reads.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "schema-serde",
+    derive(serde::Serialize, serde::Deserialize)
+)]
+pub enum Elem {
+    #[cfg_attr(feature = "schema-serde", serde(alias = "f32"))]
+    F32,
+    #[cfg_attr(feature = "schema-serde", serde(alias = "u32"))]
+    U32,
+    #[cfg_attr(feature = "schema-serde", serde(alias = "i32"))]
+    I32,
+    #[cfg_attr(feature = "schema-serde", serde(alias = "u64"))]
+    U64,
+    #[cfg_attr(feature = "schema-serde", serde(alias = "i64"))]
+    I64,
+    #[cfg_attr(feature = "schema-serde", serde(alias = "String", alias = "str"))]
+    Str,
+}
+
+impl Elem {
+    /// The Rust type name this element is written from — what a message or a
+    /// column description says.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Elem::F32 => "f32",
+            Elem::U32 => "u32",
+            Elem::I32 => "i32",
+            Elem::U64 => "u64",
+            Elem::I64 => "i64",
+            Elem::Str => "String",
+        }
+    }
 }

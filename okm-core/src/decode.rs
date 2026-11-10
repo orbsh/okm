@@ -150,7 +150,7 @@ pub fn decode_payload(schema: &CollectionSchema, bytes: &[u8]) -> Result<ValueMa
                             .map_err(|_| CodecError::InvalidUtf8(f.name.clone()))?
                             .to_string(),
                     ),
-                    FieldType::Vector { .. } => {
+                    FieldType::Vector(_) => {
                         // Frame = [count u32 BE][elements per T]. The
                         // element decoding is consumer-side (the value
                         // stays an opaque Bytes frame); the schema-side
@@ -286,7 +286,7 @@ pub fn fill_schema_defaults(schema: &CollectionSchema, out: &mut ValueMap) {
                 FieldType::Vocab(_) => Value::Bytes(vec![0; f.width]),
                 // Vector default = empty frame (count 0) — the natural
                 // default for a variable-length list.
-                FieldType::Vector { .. } => Value::Bytes(vec![0, 0, 0, 0]),
+                FieldType::Vector(_) => Value::Bytes(vec![0, 0, 0, 0]),
             },
         };
         out.insert(f.name.clone(), v);
@@ -340,7 +340,7 @@ pub fn decode_fixed(
         // Str/Bytes are cold-only; hot segment never carries them (width 0).
         // Vector is hot-capable but decoded via its own arm below — the
         // generic fixed walk treats it as raw bytes.
-        FieldType::Vector { .. } => Value::Bytes(raw.to_vec()), // frame payload as-is
+        FieldType::Vector(_) => Value::Bytes(raw.to_vec()), // frame payload as-is
         FieldType::Str | FieldType::Bytes | FieldType::VarInt => {
             return Err(CodecError::TypeMismatch {
                 field: name,

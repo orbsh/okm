@@ -109,6 +109,12 @@ pub fn side_of(slots: &SlotMap, slot: u16) -> Side {
 /// be torn (ADR-0045 §5).
 pub const PARTIAL_EXT: &str = "partial";
 /// The window join: the drain's reading half, beside the segments it reads.
+///
+/// Gated on `schema-serde`, because a window cannot be read without a
+/// declaration and a declaration on disk IS the JSON sidecar (ADR-0056 §7). The
+/// segments themselves are readable without it: `read_sealed` answers ops and
+/// bytes, which is all a raw consumer needs.
+#[cfg(feature = "schema-serde")]
 pub mod window;
 
 /// Extension of a sealed segment: immutable, ordered by name, drainable.

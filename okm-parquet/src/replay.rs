@@ -198,23 +198,13 @@ fn row_of<S: okm_core::VirtualStorage>(
                 field.name, field.width
             ));
         };
-        row.insert(field.name.clone(), id_value(fresh));
+        // The id as BYTES: `Vocab<N>` is a width-typed byte id, which is what the
+        // encoder takes and what a decode hands back (ADR-0032).
+        row.insert(field.name.clone(), Value::Bytes(fresh));
     }
     Ok(row)
 }
 
-/// The id bytes a vocabulary handed out, as the tree variant the write path wants.
-fn id_value(id: Vec<u8>) -> Value {
-    match id.len() {
-        1 => Value::U8(id[0]),
-        2 => Value::U16(u16::from_be_bytes([id[0], id[1]])),
-        4 => Value::U32(u32::from_be_bytes([id[0], id[1], id[2], id[3]])),
-        8 => Value::U64(u64::from_be_bytes(
-            id.as_slice().try_into().unwrap_or_default(),
-        )),
-        _ => Value::Bytes(id),
-    }
-}
 
 fn is_id_face(schema: &okm_core::schema::CollectionSchema, slot: u16) -> bool {
     schema

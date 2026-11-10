@@ -804,7 +804,25 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> syn::Result<Vec<FieldS
                     .trim_start_matches("Vector<")
                     .trim_end_matches('>')
                     .to_string();
-                let t_lit = &t_str;
+                // The closed element vocabulary (a sidecar reader has no Rust
+                // types to interpret an open string with, so `Elem` is an enum).
+                let elem_kind = match t_str.as_str() {
+                    "f32" => quote! { ::okm_core::field::Elem::F32 },
+                    "u32" => quote! { ::okm_core::field::Elem::U32 },
+                    "i32" => quote! { ::okm_core::field::Elem::I32 },
+                    "u64" => quote! { ::okm_core::field::Elem::U64 },
+                    "i64" => quote! { ::okm_core::field::Elem::I64 },
+                    "String" => quote! { ::okm_core::field::Elem::Str },
+                    other => {
+                        return Err(syn::Error::new_spanned(
+                            ty,
+                            format!(
+                                "{ctx}: unsupported Vector element type `{other}` (scalars: \
+                                 f32/u32/i32/u64/i64; dynamic-width: String)"
+                            ),
+                        ));
+                    }
+                };
                 let t_ty: syn::Type = syn::parse_str(&t_str).map_err(|e| {
                     syn::Error::new_spanned(
                         ty,
@@ -911,7 +929,7 @@ fn field_encoders(named: &syn::FieldsNamed, ctx: &str) -> syn::Result<Vec<FieldS
                     // width 0 = cold (variable length)
                     quote! { 0 },
                     len_expr,
-                    Some(quote! { ::okm_core::FieldType::Vector { elem: #t_lit } }),
+                    Some(quote! { ::okm_core::FieldType::Vector(#elem_kind) }),
                 )
             }
             _ if ty_str.starts_with("Ref<") => {

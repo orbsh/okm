@@ -232,7 +232,7 @@ fn column(
                     })?,
             )
         }
-        FieldType::FixedBytes | FieldType::Bytes | FieldType::Vector { .. } => {
+        FieldType::FixedBytes | FieldType::Bytes | FieldType::Vector(_) => {
             Arc::new(BinaryArray::from_iter(gather(f, vals, |v| match v {
                 Value::Bytes(b) => Some(b.as_slice()),
                 _ => None,

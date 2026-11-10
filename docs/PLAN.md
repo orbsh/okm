@@ -2739,7 +2739,9 @@ Gate: `cargo test --workspace --all-features` (460 passed), clippy `--all-target
 ## 2026-11-10 — the segment is the migration path (ADR-0056)
 
 The three defects named first are what make the current log unsafe as a migration
-source; all three are fixed. The rest is not landed.
+source; all three are fixed. Everything below landed except the four items still
+open at the end (reconciliation scan, Iceberg metadata, the store-scan export, the
+S3 sink).
 
 - [x] **Watermark is per `(consumer, table)`.** `okm-drain/src/lib.rs` wrote
       `watermark-<consumer>.txt` in `out_dir`, while segment numbering restarts per
@@ -2828,8 +2830,8 @@ source; all three are fixed. The rest is not landed.
 - [x] **`okm-parquet`** — the format half as a standalone binary: table directory in
       (segments + sidecars), Parquet + manifest out, watermark advanced only after
       both exist. `--root`, `--out`, `--consumer`, `--max-segments`, `--table <hex>`,
-      no link to the application. Iceberg metadata and the `replay` subcommand are the
-      two pieces still missing from this bullet.
+      no link to the application. Iceberg metadata is the one piece still missing from
+      this bullet; `replay` landed (next item).
       `replay` takes one extra file (the target `CollectionSchema` JSON the new build
       exports) and writes through the new build's write path; everything else is on
       disk. `Table::to_record_batch` (ADR-0007) stays in core — it is the in-process
