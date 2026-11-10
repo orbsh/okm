@@ -1,19 +1,23 @@
-//! The store this crate's own unit tests run on: a `BTreeMap` behind a mutex.
+//! The in-memory engine: a `BTreeMap` behind a mutex. One implementation,
+//! two callers — a host's memory mode (aura's `Engine::Memory` binds it
+//! directly, so no host grows its own stand-in) and this crate's own unit
+//! tests.
 //!
-//! It exists because of a cargo fact, not a design preference. `okm-core`'s
-//! unit tests would otherwise want `okm_async::TestStore` (the matrix over real
-//! engines), but a dev-dependency that leads back to this package makes cargo
-//! build `okm-core` TWICE — once for the tests, once for the dependency edge —
-//! and the two copies' traits are distinct types, so `TestStore` can never
-//! satisfy `impl VirtualStorage` here. Integration tests (which link the lib as
-//! a dependency) do not have that problem and use the real matrix.
+//! The test side exists because of a cargo fact, not a design preference.
+//! `okm-core`'s unit tests would otherwise want `okm_async::TestStore` (the
+//! matrix over real engines), but a dev-dependency that leads back to this
+//! package makes cargo build `okm-core` TWICE — once for the tests, once for
+//! the dependency edge — and the two copies' traits are distinct types, so
+//! `TestStore` can never satisfy `impl VirtualStorage` here. Integration tests
+//! (which link the lib as a dependency) do not have that problem and use the
+//! real matrix.
 //!
-//! What this buys: unit tests of pure logic (vocab allocation, key shapes) stay
-//! in-crate and stay fast. What it does not buy: engine behaviour — ordered
-//! iteration quirks, the async adapter's threads and channels, `fjall`'s
-//! snapshot semantics.
-//! Those are covered where the engines live (`okm-async`'s tests for the async
-//! adapter, the integration matrix for the sync ones).
+//! What this buys: ordered keys and the full `VirtualStorage`/`SharedVirtual`
+//! semantics in memory, with no third-party engine. What it does not buy:
+//! engine behaviour — ordered iteration quirks, the async adapter's threads and
+//! channels, `fjall`'s snapshot semantics. Those are covered where the engines
+//! live (`okm-async`'s tests for the async adapter, the integration matrix for
+//! the sync ones).
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};

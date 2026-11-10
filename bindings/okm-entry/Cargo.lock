@@ -1444,6 +1444,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "okm-async"
+version = "0.1.0"
+dependencies = [
+ "okm-core",
+ "okm-wire",
+ "slatedb",
+ "tokio",
+]
+
+[[package]]
 name = "okm-core"
 version = "0.1.0"
 dependencies = [
@@ -1454,10 +1464,8 @@ dependencies = [
  "quote",
  "serde",
  "serde_json",
- "slatedb",
  "syn 2.0.119",
  "thiserror 2.0.21",
- "tokio",
 ]
 
 [[package]]
@@ -1481,6 +1489,7 @@ dependencies = [
 name = "okm-entry"
 version = "0.1.0"
 dependencies = [
+ "okm-async",
  "okm-core",
  "okm-dynamic",
  "serde_json",

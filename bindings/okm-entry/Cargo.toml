@@ -5,9 +5,17 @@ edition = "2021"
 
 [dependencies]
 okm-core = { path = "../../okm-core", features = ["schema-serde"] }
-okm-async = { path = "../../okm-async", features = ["slatedb"] }
+okm-async = { path = "../../okm-async", features = ["slatedb"], optional = true }
 okm-dynamic = { path = "../../okm-dynamic" }
 serde_json = "1"
+
+[features]
+default = []
+# The embedded engine arm (`EngineBox::Test`). The real engine matrix lives in
+# okm-async, so this crate must not make every binding inherit slatedb: a binding
+# that only injects a host engine (okm-steel) builds with `default = []`, and the
+# binding that opens an in-process store (okm-python's `Collection()`) opts in.
+test-engines = ["dep:okm-async", "okm-async/slatedb"]
 
 # standalone crate — keep out of the okm root workspace (the sibling
 # bindings' posture; probe pulls it by git like okm-python/okm-steel)

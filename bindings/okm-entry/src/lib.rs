@@ -42,6 +42,10 @@ pub trait Engine: Send + Sync {
 /// rule): same `DynamicCollection` code path, the enum only dispatches
 /// bytes.
 pub enum EngineBox {
+    /// The embedded in-process store. Feature-gated: the matrix lives in
+    /// okm-async (slatedb + fjall), so a host-injecting binding must not
+    /// inherit it (`test-engines`).
+    #[cfg(feature = "test-engines")]
     Test(okm_async::TestStore),
     Injected(Arc<dyn Engine>),
 }
@@ -49,18 +53,21 @@ pub enum EngineBox {
 impl okm_core::storage::VirtualStorage for EngineBox {
     fn put(&self, key: Vec<u8>, value: Vec<u8>) -> okm_core::error::Result<()> {
         match self {
+            #[cfg(feature = "test-engines")]
             Self::Test(s) => s.put(key, value),
             Self::Injected(e) => e.put(key, value).map_err(okm_core::error::Error::Engine),
         }
     }
     fn get(&self, key: &[u8]) -> okm_core::error::Result<Option<Vec<u8>>> {
         match self {
+            #[cfg(feature = "test-engines")]
             Self::Test(s) => s.get(key),
             Self::Injected(e) => e.get(key).map_err(okm_core::error::Error::Engine),
         }
     }
     fn del(&self, key: &[u8]) -> okm_core::error::Result<()> {
         match self {
+            #[cfg(feature = "test-engines")]
             Self::Test(s) => s.del(key),
             Self::Injected(e) => e.del(key).map_err(okm_core::error::Error::Engine),
         }
@@ -71,6 +78,7 @@ impl okm_core::storage::VirtualStorage for EngineBox {
         end: Option<&[u8]>,
     ) -> okm_core::error::Result<Vec<Vec<u8>>> {
         match self {
+            #[cfg(feature = "test-engines")]
             Self::Test(s) => s.scan_range(begin, end),
             Self::Injected(e) => e
                 .scan_range(begin, end)

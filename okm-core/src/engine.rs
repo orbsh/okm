@@ -12,8 +12,9 @@ pub mod nest;
 pub mod redb_backend;
 pub mod storage;
 
-/// The store this crate's UNIT tests run on (see the module docs for why it is
-/// not the real-engine matrix: a dev-dependency that leads back here makes
-/// cargo build this package twice, and the two copies' traits differ).
-#[cfg(test)]
+/// The in-memory engine: a `BTreeMap` behind a mutex. Published because it is
+/// the store a host's memory mode binds to (aura's `Engine::Memory`) — a host
+/// must not grow its own stand-in — and, separately, the store this crate's
+/// unit tests run on (see the module docs for why the test side cannot use the
+/// real-engine matrix).
 pub mod mem_store;
