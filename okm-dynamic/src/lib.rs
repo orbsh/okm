@@ -62,13 +62,13 @@ pub use okm_core::schema::{CollectionSchema, FieldSchema};
 // FieldType variant slot for them.
 
 pub use collection::DynamicCollection;
-pub use okm_core::decode::{decode_key, decode_payload, resolve_vocab_labels};
 pub use encode::{encode_fields, encode_key, encode_payload};
 pub use graph::{DynEdge, Graph};
 pub use index::{
     AccessMethod, AccessMethodKind, Admits, FuncDerive, decode_includes, index_entries,
     path_index_entries, scan_access_method, scan_access_method_covered, scan_access_method_exact,
 };
+pub use okm_core::decode::{decode_key, decode_payload, resolve_vocab_labels};
 pub use path::{Component, Path};
 pub use plan::{PlannedDelete, PlannedPut, PlannedWrite, Stored, decode_stored};
 pub use plan_fields::{
@@ -79,7 +79,6 @@ pub use reduce::{
     BoundReduce, PresetKind, PresetLogic, ReduceLogic, ReduceLogicObj, ReduceSpec, reduce_get,
     scan_reduces,
 };
-
 
 /// Look up a field's value, rejecting unknown/missing names up front —
 /// both sides of every encode walk this gate, so byte layout and error
@@ -138,7 +137,9 @@ fn schema_predicate_vocab_name(ty: okm_core::field::FieldType) -> &'static str {
         okm_core::field::FieldType::Bytes => "bytes",
         okm_core::field::FieldType::VarInt => "U64 (VarInt storage form)",
         okm_core::field::FieldType::Quant(_) => "U64 (fixed-point storage form)",
-        okm_core::field::FieldType::Vocab(_) => "the vocab id (U8, or id bytes of the declared width)",
+        okm_core::field::FieldType::Vocab(_) => {
+            "the vocab id (U8, or id bytes of the declared width)"
+        }
         okm_core::field::FieldType::Offset(_) => "U64 (biased storage form)",
         okm_core::field::FieldType::Vector(_) => "bytes (flat LE vector)",
     }

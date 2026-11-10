@@ -53,10 +53,7 @@ fn a_sealed_segment_reaches_the_object_store() {
         c.put(&K { org: 1, id: 2 }, &R { level: 4 }).expect("put");
     } // Drop seals: the rename happens here, and the hook runs after it.
 
-    assert!(
-        uploader.flush(Duration::from_secs(10)),
-        "the queue drained"
-    );
+    assert!(uploader.flush(Duration::from_secs(10)), "the queue drained");
     assert_eq!(uploader.failures(), 0, "nothing was dropped");
     assert_eq!(uploader.uploaded(), 1, "one sealed segment, one copy");
 

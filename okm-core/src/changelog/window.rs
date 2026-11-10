@@ -20,9 +20,9 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::error::{Error, Result};
+use crate::model::index::DYNAMIC_SLOT;
 use crate::model::obj_dynamic::ValueMap;
 use crate::schema::CollectionSchema;
-use crate::model::index::DYNAMIC_SLOT;
 use crate::{OP_DELETE, OP_PUT, PRIMARY_SLOT};
 
 use super::{read_sealed, table_dir};
@@ -137,9 +137,10 @@ pub fn read_window(dir: &Path, cfg: &WindowConfig) -> Result<Option<Window>> {
                     // A row: the primary face, and a suffix that is exactly one
                     // key (shorter would be a bare face, longer cannot happen).
                     (OP_PUT, PRIMARY_SLOT) if suffix.len() == schema.key_len => {
-                        out.rows.push((suffix.to_vec(), crate::decode::decode_payload(
-                            &schema, &value,
-                        )?));
+                        out.rows.push((
+                            suffix.to_vec(),
+                            crate::decode::decode_payload(&schema, &value)?,
+                        ));
                     }
                     // A vocabulary entry: the id face the declaration names, with
                     // the label as its value. Carried because a column holds labels
@@ -185,7 +186,9 @@ pub fn decode_dynamic_segment(
     let faces = crate::obj_vocab::FIELD_VOCAB;
     let mut row = ValueMap::new();
     for field in crate::model::obj_dynamic::decode_named(body, &mut |id| {
-        labels.get(&(faces.id_slot, id.to_be_bytes().to_vec())).cloned()
+        labels
+            .get(&(faces.id_slot, id.to_be_bytes().to_vec()))
+            .cloned()
     }) {
         let Some(name) = labels
             .get(&(faces.id_slot, field.id.to_be_bytes().to_vec()))
@@ -262,9 +265,12 @@ pub fn load_sidecar(dir: &Path) -> Result<CollectionSchema> {
         })
         .collect();
     found.sort();
-    let path = found
-        .first()
-        .ok_or_else(|| corrupt(dir, "no schema sidecar — nothing can turn these bytes into columns"))?;
+    let path = found.first().ok_or_else(|| {
+        corrupt(
+            dir,
+            "no schema sidecar — nothing can turn these bytes into columns",
+        )
+    })?;
     let text = std::fs::read_to_string(path).map_err(|e| io_err(path, e))?;
     serde_json::from_str(&text).map_err(|e| Error::Changelog {
         what: format!("{}: sidecar: {e}", path.display()),

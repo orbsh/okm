@@ -140,6 +140,9 @@ fn schema_export_field_desc() {
     // FieldDesc: Vector(Elem::F32)，宽度 0（冷段，变长）
     let fields = <Doc as okm_core::Document>::FIELDS;
     let fd = fields.iter().find(|f| f.name == "embed").unwrap();
-    assert_eq!(fd.ty, okm_core::field::FieldType::Vector(okm_core::field::Elem::F32));
+    assert_eq!(
+        fd.ty,
+        okm_core::field::FieldType::Vector(okm_core::field::Elem::F32)
+    );
     assert_eq!(fd.width, 0);
 }

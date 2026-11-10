@@ -51,8 +51,8 @@ pub fn resolve_vocab_labels<S: crate::VirtualStorage + ?Sized>(
             continue;
         };
         let faces = crate::obj_vocab::VocabFaces::from_id_slot(id_slot);
-        if let Some(label) = crate::obj_vocab::vocab_label(store, header, faces, raw)
-            .map_err(|e| e.to_string())?
+        if let Some(label) =
+            crate::obj_vocab::vocab_label(store, header, faces, raw).map_err(|e| e.to_string())?
         {
             values.insert(f.name.clone(), Value::Str(label));
         }

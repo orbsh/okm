@@ -12,10 +12,7 @@
 /// payload (TLV) positions — the frame's `len varint` IS the length prefix —
 /// and is rejected on the fixed-width key side.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[cfg_attr(
-    feature = "schema-serde",
-    derive(serde::Serialize, serde::Deserialize)
-)]
+#[cfg_attr(feature = "schema-serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum FieldType {
     U8,
     U16,
@@ -91,10 +88,7 @@ pub enum DefaultValueConst {
 /// earlier sidecars wrote (the type's own name, `"f32"`, `"String"`), so a log
 /// written before this enum existed still reads.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[cfg_attr(
-    feature = "schema-serde",
-    derive(serde::Serialize, serde::Deserialize)
-)]
+#[cfg_attr(feature = "schema-serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Elem {
     #[cfg_attr(feature = "schema-serde", serde(alias = "f32"))]
     F32,
