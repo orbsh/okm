@@ -2993,6 +2993,16 @@ outright — its entry says why).
       in the Delta export. Tests: prune-and-replay across the seam (12 deltas below a
       baseline plus 4 above, then a replay into an empty store that rebuilds all 16),
       `keep = 3`, and `Off` (nothing to compact).
+- [x] **The compaction policy is a parameter, and the trigger is a rotation**:
+      `ChangelogConfig.compact: Option<CompactPolicy> { after_bytes, after_secs, keep }`,
+      default on (1 GiB / 24 h / keep 0) — "never compacts" was the bug this fixed, so the
+      default is not off. `ChangelogStore` marks a rotation and checks the policy after it
+      (one directory read, no stat per commit); sizes come from the files, so the answer
+      survives a restart with no bookkeeping in the writer. `after_secs` reads the newest
+      baseline's mtime (or the oldest segment's, when there is none yet) and is checked
+      lazily, because core has no clock and no scheduler. Not a separate process: a scanner
+      beside a live writer can miss a row that landed below the new baseline, and nothing
+      would notice — a second process may only compact what nothing writes to.
 - [x] **The log's location is a POSIX filesystem, and the option list says so**: `Local |
       Off`. S3 is not a location — no rename, no fsync — so S3 leaves the machine as a
       Delta table (ADR-0058), which serves backup, restore and analytics at once; the

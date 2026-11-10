@@ -13,7 +13,9 @@
     clippy::panic_in_result_fn
 )]
 
-use okm_core::changelog::{ChangelogConfig, ChangelogStore, apply_log, table_dir};
+use okm_core::changelog::{
+    ChangelogConfig, ChangelogStore, CompactPolicy, apply_log, table_dir,
+};
 use okm_core::{Collection, Document, DocumentEncode, KeyEncode, TestStore};
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
@@ -190,4 +192,100 @@ fn capture_off_has_nothing_to_compact() {
     );
     off.register::<RowKey, Row>().unwrap();
     assert!(off.compact(0).unwrap().is_empty());
+}
+
+fn deltas(dir: &std::path::Path) -> usize {
+    std::fs::read_dir(dir)
+        .unwrap()
+        .filter(|e| {
+            let name = e.as_ref().unwrap().file_name().to_string_lossy().into_owned();
+            name.ends_with(".segment") && !name.contains(".baseline.")
+        })
+        .count()
+}
+
+fn baselines(dir: &std::path::Path) -> usize {
+    std::fs::read_dir(dir)
+        .unwrap()
+        .filter(|e| {
+            let name = e.as_ref().unwrap().file_name().to_string_lossy().into_owned();
+            name.ends_with(".segment") && name.contains(".baseline.")
+        })
+        .count()
+}
+
+#[test]
+fn the_policy_compacts_at_a_rotation_without_being_asked() {
+    let log = tempfile::tempdir().unwrap();
+    let header = <Row as Document>::NS_PREFIX.to_vec();
+    let dir = table_dir(log.path(), &header);
+
+    let writer = ChangelogStore::new(
+        TestStore::slatedb_mem(),
+        ChangelogConfig {
+            segment_bytes: 1,
+            // No baseline at first, so the age of the oldest segment answers; make that
+            // unreachable and leave the size trigger to do the work.
+            compact: Some(CompactPolicy {
+                after_bytes: 200,
+                after_secs: u64::MAX,
+                keep: 0,
+            }),
+            ..ChangelogConfig::new(log.path())
+        },
+    );
+    writer.register::<RowKey, Row>().unwrap();
+    let app = Collection::<_, RowKey, Row>::captured(writer).unwrap();
+
+    for id in 0..8 {
+        app.put(&RowKey { id }, &Row { title: format!("row {id}") }).unwrap();
+    }
+    // A baseline is written in chunks, so it can be more than one file.
+    assert!(baselines(&dir) >= 1, "the size trigger fired on its own");
+    assert!(deltas(&dir) < 8, "and the covered deltas are gone: {}", deltas(&dir));
+
+    // Whatever it pruned, a replay still holds every row.
+    for id in 8..10 {
+        app.put(&RowKey { id }, &Row { title: format!("row {id}") }).unwrap();
+    }
+    let target = TestStore::slatedb_mem();
+    apply_log(log.path(), &header, &target, None).unwrap();
+    let restored = Collection::<_, RowKey, Row>::new(target);
+    for id in 0..10 {
+        assert_eq!(
+            restored.get(&RowKey { id }).unwrap().unwrap().title,
+            format!("row {id}")
+        );
+    }
+}
+
+#[test]
+fn a_policy_of_none_never_compacts_on_its_own() {
+    let log = tempfile::tempdir().unwrap();
+    let header = <Row as Document>::NS_PREFIX.to_vec();
+    let dir = table_dir(log.path(), &header);
+
+    let writer_store = ChangelogStore::new(
+        TestStore::slatedb_mem(),
+        ChangelogConfig {
+            segment_bytes: 1,
+            compact: None,
+            ..ChangelogConfig::new(log.path())
+        },
+    );
+    writer_store.register::<RowKey, Row>().unwrap();
+    let app = Collection::<_, RowKey, Row>::captured(writer_store).unwrap();
+    for id in 0..8 {
+        app.put(&RowKey { id }, &Row { title: "x".into() }).unwrap();
+    }
+    assert_eq!(baselines(&dir), 0, "no policy, no baseline");
+    assert!(deltas(&dir) >= 8, "every delta is still there: {}", deltas(&dir));
+    // The verb is still there for a host that wants to run it itself.
+    let before = deltas(&dir);
+    // Closing the writer can seal a footer-only delta, so at least `before` go.
+    assert!(
+        app.store().compact(0).unwrap()[0].1.removed >= before,
+        "the manual verb still takes everything"
+    );
+    assert_eq!(deltas(&dir), 0, "and leaves nothing below the baseline");
 }

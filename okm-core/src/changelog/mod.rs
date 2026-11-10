@@ -219,11 +219,44 @@ pub enum Location {
     Off,
 }
 
+/// When the store compacts its own log (ADR-0056 §6).
+///
+/// Checked at a rotation and nowhere else: that is where the writer is already at a
+/// boundary, already paying for an fsync, and already the one that may write. The work it
+/// can trigger is one scan of the table's truth half, so the thresholds are meant to be
+/// generous — this bounds the log's size and its replay time, it is not a maintenance
+/// daemon. `after_secs` is read from the newest baseline's mtime, and it is checked
+/// lazily: core has no clock and no scheduler (ADR-0045 §7), so a quiet table compacts at
+/// its next write, or when the host calls [`ChangelogStore::compact`] itself.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompactPolicy {
+    /// Uncovered bytes — everything above the newest baseline — that trigger a compaction.
+    pub after_bytes: u64,
+    /// Age of the newest baseline that triggers one. With no baseline yet, the age of the
+    /// oldest segment answers, so a table that has been writing for a day gets its first.
+    pub after_secs: u64,
+    /// Segments below the new baseline to keep, as a window for a human. 0 keeps none.
+    pub keep: usize,
+}
+
+impl Default for CompactPolicy {
+    fn default() -> Self {
+        Self {
+            after_bytes: 1 << 30,
+            after_secs: 24 * 60 * 60,
+            keep: 0,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ChangelogConfig {
     /// The log's root, or `Off`. Each table header gets its own subdirectory, so
     /// streams cannot collide.
     pub location: Location,
+    /// When the log compacts itself, if ever. `None` = never automatically; the verb
+    /// stays available.
+    pub compact: Option<CompactPolicy>,
     /// Seal the current segment once it reaches this many bytes.
     pub segment_bytes: u64,
     /// Seal the current segment once it is this old (bytes first, then age).
@@ -246,6 +279,7 @@ impl ChangelogConfig {
     pub fn new(dir: impl Into<PathBuf>) -> Self {
         Self {
             location: Location::Local(dir.into()),
+            compact: Some(CompactPolicy::default()),
             segment_bytes: Self::DEFAULT_SEGMENT_BYTES,
             segment_seconds: Self::DEFAULT_SEGMENT_SECONDS,
             buffer_bytes: Self::DEFAULT_BUFFER_BYTES,
@@ -257,6 +291,7 @@ impl ChangelogConfig {
     pub fn off() -> Self {
         Self {
             location: Location::Off,
+            compact: None,
             ..Self::new(PathBuf::new())
         }
     }
@@ -322,6 +357,9 @@ pub struct Changelog {
     frames: u64,
     dropped: u64,
     last_error: Option<String>,
+    /// Set when a seal actually renamed a file. Read and cleared by the store, which is
+    /// the only place that can act on it: compaction needs the store, not one writer.
+    rotated: bool,
     /// The cutover switch (ADR-0056 §6): `false` means this writer lost the log and
     /// must not append to it. `None` (the default) is a single-writer process, which
     /// pays one `Option` check and nothing else.
@@ -358,6 +396,7 @@ impl Changelog {
             frames: 0,
             dropped: 0,
             last_error: None,
+            rotated: false,
             gate: None,
         })
     }
@@ -514,7 +553,13 @@ impl Changelog {
             .map_err(|e| io_err(&self.partial_path(), e))?;
         self.written = 0;
         self.frames = 0;
+        self.rotated = true;
         Ok(())
+    }
+
+    /// Did this writer seal a segment since the last time the store asked?
+    fn took_rotation(&mut self) -> bool {
+        std::mem::take(&mut self.rotated)
     }
 
     /// Append the footer to the open segment: body length, frame count, ordinal
@@ -758,6 +803,67 @@ fn has_baseline(dir: &Path) -> Result<bool> {
 /// every call site turns it into the one error a log can return.
 fn owner_err(what: String) -> Error {
     Error::Changelog { what }
+}
+
+/// A table's log as the policy sees it: how many bytes are not yet covered by a baseline,
+/// and how old the covering point is.
+struct LogShape {
+    uncovered: u64,
+    /// Age of the newest baseline; with none, the age of the oldest segment — a table that
+    /// has been writing for a day without ever being compacted is exactly the case the
+    /// policy exists for.
+    age_secs: Option<u64>,
+}
+
+/// Read a table's directory. Sizes come from the files, so the answer survives restarts
+/// and needs no bookkeeping in the writer.
+fn log_shape(dir: &Path) -> Result<LogShape> {
+    let mut newest_baseline: Option<String> = None;
+    let mut newest_baseline_at: Option<std::time::SystemTime> = None;
+    let mut oldest_at: Option<std::time::SystemTime> = None;
+    let mut files: Vec<(String, u64, std::time::SystemTime)> = Vec::new();
+    for entry in std::fs::read_dir(dir).map_err(|e| io_err(dir, e))? {
+        let entry = entry.map_err(|e| io_err(dir, e))?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !name.ends_with(".segment") {
+            continue;
+        }
+        let Ok(meta) = entry.metadata() else {
+            continue;
+        };
+        let at = meta.modified().unwrap_or(std::time::UNIX_EPOCH);
+        oldest_at = Some(match oldest_at {
+            Some(prev) if prev <= at => prev,
+            _ => at,
+        });
+        if name.contains(".baseline.")
+            && newest_baseline
+                .as_ref()
+                .is_none_or(|prev| name.as_str() > prev.as_str())
+        {
+            newest_baseline = Some(name.clone());
+            newest_baseline_at = Some(at);
+        }
+        files.push((name, meta.len(), at));
+    }
+    let uncovered = match &newest_baseline {
+        Some(baseline) => files
+            .iter()
+            .filter(|(name, _, _)| name.as_str() > baseline.as_str())
+            .map(|(_, len, _)| *len)
+            .sum(),
+        None => files.iter().map(|(_, len, _)| *len).sum(),
+    };
+    let age_secs = newest_baseline_at.or(oldest_at).map(|at| {
+        std::time::SystemTime::now()
+            .duration_since(at)
+            .map(|d| d.as_secs())
+            .unwrap_or(0)
+    });
+    Ok(LogShape {
+        uncovered,
+        age_secs,
+    })
 }
 
 /// What one table's compaction did.
@@ -1527,7 +1633,7 @@ impl<S> ChangelogStore<S> {
     /// the holder named must still exist when the successor arrives.
     pub fn compact(&self, keep: usize) -> Result<Vec<(Vec<u8>, Compacted)>>
     where
-        S: VirtualStorage,
+        S: crate::VirtualStorage,
     {
         let Some(root) = self.cfg.root() else {
             return Ok(Vec::new());
@@ -1552,40 +1658,61 @@ impl<S> ChangelogStore<S> {
                     ),
                 });
             }
-            let meta = self.metas.borrow().get(&header).cloned();
-            let Some(meta) = meta else {
-                continue;
-            };
-            let Some((first, last)) =
-                self.write_baseline(&header, meta.with_kind(KIND_BASELINE))?
-            else {
-                continue;
-            };
-            let mut covered = all_segments(root, &header)?;
-            covered.retain(|path| {
-                path.file_name()
-                    .map(|n| n.to_string_lossy().as_ref() < first.as_str())
-                    .unwrap_or(false)
-            });
-            // The newest `keep` below the baseline survive; everything older is covered.
-            let cut = covered.len().saturating_sub(keep);
-            let mut compacted = Compacted {
-                baseline: Some(last),
-                removed: 0,
-                freed: 0,
-            };
-            for path in covered.into_iter().take(cut) {
-                if let Ok(stat) = std::fs::metadata(&path) {
-                    compacted.freed += stat.len();
-                }
-                std::fs::remove_file(&path).map_err(|e| Error::Changelog {
-                    what: format!("{}: {e}", path.display()),
-                })?;
-                compacted.removed += 1;
-            }
-            out.push((header, compacted));
+            out.push((header.clone(), self.compact_one(&header, keep)?));
         }
         Ok(out)
+    }
+
+    /// Compact ONE table. The caller has already settled the claim question.
+    fn compact_one(&self, header: &[u8], keep: usize) -> Result<Compacted>
+    where
+        S: VirtualStorage,
+    {
+        let Some(root) = self.cfg.root() else {
+            return Ok(Compacted {
+                baseline: None,
+                removed: 0,
+                freed: 0,
+            });
+        };
+        let Some(meta) = self.metas.borrow().get(header).cloned() else {
+            return Ok(Compacted {
+                baseline: None,
+                removed: 0,
+                freed: 0,
+            });
+        };
+        let Some((first, last)) = self.write_baseline(header, meta.with_kind(KIND_BASELINE))?
+        else {
+            return Ok(Compacted {
+                baseline: None,
+                removed: 0,
+                freed: 0,
+            });
+        };
+        let mut covered = all_segments(root, header)?;
+        covered.retain(|path| {
+            path.file_name()
+                .map(|n| n.to_string_lossy().as_ref() < first.as_str())
+                .unwrap_or(false)
+        });
+        // The newest `keep` below the baseline survive; everything older is covered.
+        let cut = covered.len().saturating_sub(keep);
+        let mut compacted = Compacted {
+            baseline: Some(last),
+            removed: 0,
+            freed: 0,
+        };
+        for path in covered.into_iter().take(cut) {
+            if let Ok(stat) = std::fs::metadata(&path) {
+                compacted.freed += stat.len();
+            }
+            std::fs::remove_file(&path).map_err(|e| Error::Changelog {
+                what: format!("{}: {e}", path.display()),
+            })?;
+            compacted.removed += 1;
+        }
+        Ok(compacted)
     }
 
     /// Does this instance hold the claim in `current`?
@@ -1641,11 +1768,56 @@ impl<S> ChangelogStore<S> {
     }
 
     /// Append what [`Self::stage`] staged — after the commit returned `Ok`.
-    fn flush(&self, touched: &[Vec<u8>]) {
+    ///
+    /// A rotation is the only maintenance trigger there is: it is the one moment the writer
+    /// is already at a boundary, and the check after it costs a directory read on a rare
+    /// event, not a stat per commit.
+    fn flush(&self, touched: &[Vec<u8>])
+    where
+        S: VirtualStorage,
+    {
+        let mut rotated: Vec<Vec<u8>> = Vec::new();
         for header in touched {
             self.with_log(header, |log| {
                 let _ = log.commit_staged();
+                if log.took_rotation() {
+                    rotated.push(header.clone());
+                }
             });
+        }
+        for header in rotated {
+            self.maintain(&header);
+        }
+    }
+
+    /// Compact this table if its policy says so.
+    ///
+    /// Best-effort by construction: it runs after a commit already returned `Ok`, so it may
+    /// not fail the write it follows. A refusal (someone else holds the claim) is silent —
+    /// the successor's own `take_over` is the path that matters, not this one.
+    fn maintain(&self, header: &[u8])
+    where
+        S: VirtualStorage,
+    {
+        let Some(policy) = self.cfg.compact.clone() else {
+            return;
+        };
+        let Some(root) = self.cfg.root() else {
+            return;
+        };
+        let dir = table_dir(root, header);
+        if let Ok(Some(current)) = owner::read(&dir)
+            && !self.holds(&current, &dir)
+        {
+            return;
+        }
+        let Ok(shape) = log_shape(&dir) else {
+            return;
+        };
+        if shape.uncovered > policy.after_bytes
+            || shape.age_secs.is_some_and(|age| age >= policy.after_secs)
+        {
+            let _ = self.compact_one(header, policy.keep);
         }
     }
 
