@@ -93,6 +93,11 @@ impl ObjValueTypeSchema {
 /// The complete machine-readable declaration of one table.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CollectionSchema {
+    /// The table's declared name (`#[ok_name]`, ADR-0034): what a lake table is
+    /// called, and what a segment header carries so the name outlives the
+    /// directory it was written in (ADR-0056 §7). Empty means the declaration
+    /// names none, and an export refuses that.
+    pub name: String,
     pub key_len: usize,
     pub key_fields: Vec<FieldSchema>,
     /// The collection's `[ns 2B]` header as the declaration carries it
@@ -280,6 +285,7 @@ impl CollectionSchema {
             }
         }
         Self {
+            name: R::TABLE_NAME.to_string(),
             key_len,
             key_fields,
             ns_prefix: R::NS_PREFIX.to_vec(),
@@ -627,6 +633,7 @@ mod serde_impls {
         fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
             #[derive(Serialize)]
             struct Repr<'a> {
+                name: &'a str,
                 key_len: usize,
                 key_fields: &'a [FieldSchema],
                 ns_prefix: &'a [u8],
@@ -641,6 +648,7 @@ mod serde_impls {
                 faces: &'a [u8],
             }
             Repr {
+                name: &self.name,
                 key_len: self.key_len,
                 key_fields: &self.key_fields,
                 ns_prefix: &self.ns_prefix,
@@ -662,6 +670,10 @@ mod serde_impls {
         fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
             #[derive(Deserialize)]
             struct Repr {
+                /// Sidecars written before the name travelled carry none; an
+                /// empty name reads as "unnamed", which the export refuses.
+                #[serde(default)]
+                name: String,
                 key_len: usize,
                 key_fields: Vec<FieldSchema>,
                 /// Writers that predate the pair carry no ns; assembly then
@@ -687,6 +699,7 @@ mod serde_impls {
             }
             let r = Repr::deserialize(d)?;
             Ok(Self {
+                name: r.name,
                 key_len: r.key_len,
                 key_fields: r.key_fields,
                 ns_prefix: r.ns_prefix,

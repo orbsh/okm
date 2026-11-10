@@ -2763,10 +2763,12 @@ source; all three are fixed. The rest is not landed.
       `a_removal_is_read_and_only_the_parquet_sink_refuses_it` locks the split
       and `a_window_with_a_delete_is_refused_rather_than_misrepresented` still
       locks the sink's refusal.
-- [ ] **`CollectionSchema.name`** — carried from `#[ok_name]` (`Document::TABLE_NAME`,
-      ADR-0034), so the table's name can travel in a segment. Touches schema-serde's
-      shape; the export path already refuses an unnamed table, so nothing new is
-      required of it.
+- [x] **`CollectionSchema.name`** — carried from `#[ok_name]`
+      (`Document::TABLE_NAME`, ADR-0034), so the table's name can travel in a
+      segment. `CollectionSchema::of` fills it, the sidecar serializes it, and the
+      deserializer defaults it (a sidecar written before the name travelled reads
+      as unnamed, which the export already refuses) —
+      `the_sidecar_carries_the_tables_declared_name` locks both directions.
 - [ ] **Segment format v2**: header (`OKMS`, fmt, kind delta/baseline,
       layout_version, ns, name, schema fingerprint) and footer (ordinal, records,
       body_len, crc32), written at open and at seal. `read_sealed` accepts a bare

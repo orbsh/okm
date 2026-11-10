@@ -36,6 +36,7 @@ pub struct LogKey {
 #[derive(DocumentEncode, Clone, PartialEq, Debug)]
 #[ok_ref(LogKey)]
 #[ok_ns(57)]
+#[ok_name("log_rows")]
 #[ok_index(by_author { fields(author) })]
 pub struct LogRow {
     pub author: u64,
@@ -595,4 +596,52 @@ fn every_slot_is_classified_and_only_the_truth_half_is_carried() {
     for slot in 0u16..=u16::MAX {
         let _ = side_of(&slots, slot);
     }
+}
+
+/// The table's declared name travels in the sidecar (ADR-0056 §7) — it is the
+/// only thing that can name a lake table, and the only thing a segment header
+/// can carry once the directory it was written in is gone.
+#[test]
+fn the_sidecar_carries_the_tables_declared_name() {
+    use okm_core::schema::CollectionSchema;
+
+    let root = tempfile::tempdir().expect("root");
+    {
+        let c: Collection<TestStore, LogKey, LogRow> =
+            Collection::with_changelog(TestStore::slatedb_mem(), ChangelogConfig::new(root.path()))
+                .expect("the log opens");
+        c.put(
+            &LogKey { id: 1 },
+            &LogRow {
+                author: 7,
+                title: "t".into(),
+            },
+        )
+        .expect("put");
+    }
+    let dir = std::fs::read_dir(root.path())
+        .expect("root dirs")
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .find(|p| p.is_dir())
+        .expect("one table directory");
+    let path = dir.join(format!("schema-v{}.json", <LogRow as Document>::LAYOUT_VERSION));
+    let json = std::fs::read_to_string(&path).expect("the assembly wrote a sidecar");
+
+    assert!(
+        json.contains("\"name\": \"log_rows\""),
+        "the declaration's name is in the file: {json}"
+    );
+    let parsed: CollectionSchema = serde_json::from_str(&json).expect("parses");
+    assert_eq!(parsed.name, <LogRow as Document>::TABLE_NAME);
+    assert_eq!(parsed.name, "log_rows");
+
+    // A sidecar written before the name travelled still loads, and reads as
+    // unnamed rather than failing — the export is what refuses an empty name.
+    let mut value: serde_json::Value = serde_json::from_str(&json).expect("value");
+    let object = value.as_object_mut().expect("an object");
+    object.remove("name");
+    let older: CollectionSchema =
+        serde_json::from_str(&value.to_string()).expect("an older sidecar loads");
+    assert_eq!(older.name, "");
+    assert_eq!(older.ns_prefix, parsed.ns_prefix, "nothing else moved");
 }
