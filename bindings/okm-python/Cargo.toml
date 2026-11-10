@@ -28,7 +28,8 @@ name = "injection"
 required-features = ["host-tests"]
 
 [dependencies]
-okm-core = { path = "../../okm-core", features = ["schema-serde", "test-engines"] }
+okm-core = { path = "../../okm-core", features = ["schema-serde"] }
+okm-async = { path = "../../okm-async", features = ["slatedb"] }
 okm-dynamic = { path = "../../okm-dynamic" }
 okm-entry = { path = "../okm-entry" }
 okm-wire = { path = "../../okm-wire" }

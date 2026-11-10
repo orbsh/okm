@@ -16,7 +16,8 @@
     clippy::panic_in_result_fn
 )]
 
-use okm_core::{Collection, TestStore};
+use okm_async::TestStore;
+use okm_core::Collection;
 
 #[path = "subscribe_common.rs"]
 mod subscribe_common;

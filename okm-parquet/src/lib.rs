@@ -245,8 +245,7 @@ pub fn drain_table(dir: &Path, cfg: &DrainConfig, report: &mut Report) -> Result
         .filter_map(|e| e.ok().map(|e| e.path()))
         .filter(|p| p.extension().is_some_and(|x| x == "parquet"))
         .collect();
-    delta::commit_files(&table_dir, &files)
-        .map_err(|e| DrainError::new(format!("delta: {e}")))?;
+    delta::commit_files(&table_dir, &files).map_err(|e| DrainError::new(format!("delta: {e}")))?;
     report.metadata += 1;
 
     report.segments += win.segments.len();

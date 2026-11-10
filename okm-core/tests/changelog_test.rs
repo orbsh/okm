@@ -21,12 +21,11 @@
     clippy::panic_in_result_fn
 )]
 
+use okm_async::TestStore;
 use okm_core::changelog::{
     ChangelogConfig, ChangelogStore, PARTIAL_EXT, read_open_tail, read_sealed, sealed_segments,
 };
-use okm_core::{
-    Batch, Collection, Document, DocumentEncode, KeyEncode, OP_DELETE, OP_PUT, TestStore, Vocab,
-};
+use okm_core::{Batch, Collection, Document, DocumentEncode, KeyEncode, OP_DELETE, OP_PUT, Vocab};
 
 /// Assemble a collection over a CAPTURING store (ADR-0056 §2) — the one form of
 /// capture the crate has: the store owns the switch, so there is no second way to

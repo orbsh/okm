@@ -3003,6 +3003,15 @@ outright — its entry says why).
       lazily, because core has no clock and no scheduler. Not a separate process: a scanner
       beside a live writer can miss a row that landed below the new baseline, and nothing
       would notice — a second process may only compact what nothing writes to.
+- [x] **The opt-out is an attribute on the type** (ADR-0056 §2, amended): `#[ok_uncaptured]`
+      → `const CAPTURED: bool = false` beside `NS_PREFIX`/`TABLE_NAME`; `register` is the
+      only reader (no sidecar, no meta, no directory, no writer). The assembly-time
+      exclusion list by ns is gone: capture is whole-store by default — one table missing
+      from the log is a restore that will not start — so the exception belongs where the
+      table is defined, where a rename or a deletion cannot leave it behind. A hand-written
+      `Document` impl sets the constant directly. `an_uncaptured_table_writes_no_log`:
+      the write still lands in the store, the table directory is never created, no segment
+      exists.
 - [x] **The maintenance verbs, in `okm-parquet`**: `status` (read-only: segments, bytes,
       baseline and the age of the covering point, the claim, and whether the policy is
       due) and `compact --store <data dir> [--keep N] [--force]` — a baseline is a snapshot
@@ -3044,3 +3053,30 @@ breadth-first block table and no magic. The checklist below is the landing.
 - [x] **ADR-0056 §7's marks went with the same pass**: the segment header starts at `fmt`, the
       footer is 28 bytes (`body_len | records | ordinal | crc32`), and a format-1 file is no
       longer read; that section and its index row were rewritten.
+
+## 2026-11-10 — the async face becomes a crate (ADR-0059)
+
+The decision is ADR-0059; the ledger keeps only the tasks. Core keeps the synchronous contract
+(`VirtualStorage`, `Batch`, `ScanIter`, `NestStorage`, `RemoteStore`), and everything that speaks
+the other one moves to `okm-async`.
+
+- [x] **New crate** `okm-async` (workspace member): `slatedb_backend.rs`, `wire_client.rs`,
+      `test_engine.rs` and the `VirtualStorageAsync` trait; dependencies `okm-core` + `okm-wire`;
+      an internal `slatedb` feature (default off) so the mirror and the sender never drag tokio in.
+- [x] **Core loses the async surface**: the `slatedb` and `test-engines` features, the `slatedb`
+      and optional `tokio` dependencies, the `required-features` entries that name them, and the
+      re-exports (`SlatedbStore`, `slatedb_backend`, `WireClient`, `WireTransport`, `test_engine`).
+- [x] **`ScanIter::External(Box<dyn DoubleEndedIterator<…> + Send>)`** plus its two match arms —
+      the engine-agnostic door, so ADR-0020's laziness survives an engine that lives outside core.
+- [x] **`test-engines` becomes a dev-dependency** on `okm-async` in `okm-core`, `okm-dynamic`,
+      `okm-parquet`, `okm-query` and the two bindings; imports move from `okm_core::TestStore` to
+      `okm_async::TestStore`.
+- [x] **CI gate**: `cargo tree -p okm-core` carries neither `tokio` nor `slatedb`, and `slatedb`
+      appears nowhere under `okm-core/src`.
+- [x] **Docs that name the layout**: the crate list in the READMEs, the storage notes under
+      `docs/internals/`, and every sentence in ADR-0010 / ADR-0028 that says the sender lives in core.
+- [x] **A unit-test store core can reach**: `engine::mem_store::MemStore` (a `BTreeMap`
+      behind a mutex, `#[cfg(test)]`). Not a preference — a dev-dependency that leads back
+      to `okm-core` makes cargo build the package twice, and `okm_async::TestStore`
+      implements the OTHER copy's `VirtualStorage`. Integration tests still run the real
+      matrix; `obj_vocab`'s unit tests moved to `MemStore`.

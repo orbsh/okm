@@ -7,7 +7,8 @@ edition = "2024"
 okm-core = { path = "../okm-core" }
 
 [dev-dependencies]
-okm-core = { path = "../okm-core", features = ["slatedb"] }
+okm-core = { path = "../okm-core" }
+okm-async = { path = "../okm-async", features = ["slatedb"] }
 
 [lints]
 workspace = true

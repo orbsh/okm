@@ -45,7 +45,7 @@ different traits: sync engine (localStorage) + async wire sender.
    - `commit_batch` → the trait default replay (no engine-level atomicity —
      documented boundary: UI state tolerates partial writes; anything that
      must not drift goes through the node that owns it).
-2. **`WireClient<T: WireTransport>`, okm-core, implements `VirtualStorageAsync`**
+2. **`WireClient<T: WireTransport>`, okm-async, implements `VirtualStorageAsync`** (ADR-0059 moved the async face out of core; the trait and the sender ship together)
    — the generic form of the panel's RemoteStore:
    - transport INJECTED (`fn post(bytes) -> Result`), no platform import: the
      client never learns whether it rides a WS message, a UDS datagram, or an

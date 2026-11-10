@@ -34,7 +34,8 @@ use okm_wire::{
     OP_DELETE, OP_GET, OP_PUT, OP_SCAN, OP_SCAN_STREAM, OpFrame, OpResponse, TAIL_MORE,
 };
 
-use crate::engine::storage::{Batch, ScanIter, VirtualStorageAsync};
+use crate::storage::VirtualStorageAsync;
+use okm_core::engine::storage::{Batch, ScanIter};
 
 /// The injected transport: hand it one request frame, it carries it to
 /// the receiver. Returning `Err` means the connection is gone — the
@@ -272,34 +273,34 @@ impl<T: WireTransport> VirtualStorageAsync for WireClient<T> {
     /// POST — while the case that matters stayed invisible: the host took the
     /// frame and could not commit it. A commit answers an empty ack; a refusal
     /// answers a fault, which `ask` turns into `Err`.
-    async fn put(&self, key: Vec<u8>, value: Vec<u8>) -> crate::error::Result<()> {
+    async fn put(&self, key: Vec<u8>, value: Vec<u8>) -> okm_core::error::Result<()> {
         self.ask(&OpFrame::one(OP_PUT, key, value))
             .await
             .map(|_ack| ())
-            .map_err(crate::error::Error::Engine)
+            .map_err(okm_core::error::Error::Engine)
     }
 
-    async fn del(&self, key: &[u8]) -> crate::error::Result<()> {
+    async fn del(&self, key: &[u8]) -> okm_core::error::Result<()> {
         self.ask(&OpFrame::one(OP_DELETE, key.to_vec(), Vec::new()))
             .await
             .map(|_ack| ())
-            .map_err(crate::error::Error::Engine)
+            .map_err(okm_core::error::Error::Engine)
     }
 
-    async fn get(&self, key: &[u8]) -> crate::error::Result<Option<Vec<u8>>> {
+    async fn get(&self, key: &[u8]) -> okm_core::error::Result<Option<Vec<u8>>> {
         Ok(self
             .ask(&OpFrame::one(OP_GET, key.to_vec(), Vec::new()))
             .await
-            .map_err(crate::error::Error::Engine)?
+            .map_err(okm_core::error::Error::Engine)?
             .value)
     }
 
-    async fn scan_suffix(&self, prefix: &[u8]) -> crate::error::Result<Vec<Vec<u8>>> {
+    async fn scan_suffix(&self, prefix: &[u8]) -> okm_core::error::Result<Vec<Vec<u8>>> {
         // legacy prefix-scan shape: empty value segment
         Ok(self
             .ask(&OpFrame::one(OP_SCAN, prefix.to_vec(), Vec::new()))
             .await
-            .map_err(crate::error::Error::Engine)?
+            .map_err(okm_core::error::Error::Engine)?
             .suffixes)
     }
 
@@ -307,7 +308,7 @@ impl<T: WireTransport> VirtualStorageAsync for WireClient<T> {
         &self,
         begin: &[u8],
         end: Option<&[u8]>,
-    ) -> crate::error::Result<Vec<Vec<u8>>> {
+    ) -> okm_core::error::Result<Vec<Vec<u8>>> {
         let mut value = vec![0u8];
         if let Some(end) = end {
             value[0] = 1;
@@ -316,7 +317,7 @@ impl<T: WireTransport> VirtualStorageAsync for WireClient<T> {
         Ok(self
             .ask(&OpFrame::one(OP_SCAN, begin.to_vec(), value))
             .await
-            .map_err(crate::error::Error::Engine)?
+            .map_err(okm_core::error::Error::Engine)?
             .suffixes)
     }
 
@@ -340,10 +341,10 @@ impl<T: WireTransport> VirtualStorageAsync for WireClient<T> {
         // error item: the stream is truncated where it stands, but "truncated
         // because the transport died" is no longer indistinguishable from
         // "the range ended".
-        let mut items: Vec<crate::error::Result<(Vec<u8>, Vec<u8>)>> = Vec::new();
+        let mut items: Vec<okm_core::error::Result<(Vec<u8>, Vec<u8>)>> = Vec::new();
         while !st.done {
             if let Err(e) = self.refill(&mut st).await {
-                items.push(Err(crate::error::Error::Engine(e)));
+                items.push(Err(okm_core::error::Error::Engine(e)));
                 break;
             }
         }
@@ -357,10 +358,10 @@ impl<T: WireTransport> VirtualStorageAsync for WireClient<T> {
     /// One frame = one receiver execution pass (ADR-0003), and the answer is
     /// the commit outcome: waiting for it is what makes a refused batch an
     /// `Err` here instead of a lost write that looked like a successful one.
-    async fn commit_batch(&self, batch: Batch) -> crate::error::Result<()> {
+    async fn commit_batch(&self, batch: Batch) -> okm_core::error::Result<()> {
         self.ask(&OpFrame::write_batch(&batch.ops))
             .await
             .map(|_ack| ())
-            .map_err(crate::error::Error::Engine)
+            .map_err(okm_core::error::Error::Engine)
     }
 }

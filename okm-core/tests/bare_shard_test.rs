@@ -16,10 +16,9 @@
     clippy::panic_in_result_fn
 )]
 
-use okm_core::{
-    Collection, DocumentEncode, KeyEncode, NestStorage, RemoteStore, TestStore, VirtualStorage,
-};
+use okm_core::{Collection, DocumentEncode, KeyEncode, NestStorage, RemoteStore, VirtualStorage};
 
+use okm_async::TestStore;
 #[test]
 fn bare_host_executes_frames_byte_identical() {
     let handle = NestStorage::bare(TestStore::default());

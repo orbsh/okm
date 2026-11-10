@@ -15,7 +15,8 @@
     clippy::panic_in_result_fn
 )]
 
-use okm_core::{Collection, DocumentEncode, KeyEncode, RemoteStore, TestStore, VirtualStorage};
+use okm_async::TestStore;
+use okm_core::{Collection, DocumentEncode, KeyEncode, RemoteStore, VirtualStorage};
 
 // TestStore now has handle-clone semantics (Arc kernel) and implements
 // SharedVirtualStorage — the test-local SharedEngine workaround is gone.

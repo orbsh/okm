@@ -951,10 +951,7 @@ pub type LoggedOp = (Vec<u8>, Option<Vec<u8>>);
 /// Public because compaction needs the STORE, not the log: a log directory alone holds no
 /// state to snapshot, which is why a maintenance tool takes the data directory as its
 /// second argument.
-pub fn baseline_ops<S: VirtualStorage>(
-    store: &S,
-    header: &[u8],
-) -> Result<Vec<LoggedOp>> {
+pub fn baseline_ops<S: VirtualStorage>(store: &S, header: &[u8]) -> Result<Vec<LoggedOp>> {
     let slots = SlotMap::standard();
     let mut ops = Vec::new();
     for (suffix, value) in crate::engine::storage::scan_suffix_kv(store, header)? {
@@ -1005,7 +1002,12 @@ pub fn write_baseline(
 
 /// Delete every segment numbered below `baseline`, keeping the newest `keep` of them.
 /// Returns how many went and how many bytes they were.
-pub fn prune_below(root: &Path, header: &[u8], baseline: &str, keep: usize) -> Result<(usize, u64)> {
+pub fn prune_below(
+    root: &Path,
+    header: &[u8],
+    baseline: &str,
+    keep: usize,
+) -> Result<(usize, u64)> {
     let mut covered = all_segments(root, header)?;
     covered.retain(|path| {
         path.file_name()

@@ -18,9 +18,10 @@
 
 use std::time::Duration;
 
+use okm_async::TestStore;
 use okm_core::changelog::owner::{self, Role, State};
 use okm_core::changelog::{ChangelogConfig, ChangelogStore, Location, table_dir};
-use okm_core::{Collection, Document, DocumentEncode, KeyEncode, TestStore};
+use okm_core::{Collection, Document, DocumentEncode, KeyEncode};
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
 pub struct RowKey {

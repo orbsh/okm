@@ -11,8 +11,9 @@
     clippy::panic_in_result_fn
 )]
 
-use okm_core::{Bytes, Collection, Document, DocumentEncode, KeyEncode, TestStore};
+use okm_core::{Bytes, Collection, Document, DocumentEncode, KeyEncode};
 
+use okm_async::TestStore;
 #[derive(KeyEncode, Clone, Debug, PartialEq)]
 pub struct BlobId {
     pub id: u64,

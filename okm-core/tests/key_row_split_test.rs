@@ -15,8 +15,9 @@
 use std::collections::BTreeMap;
 
 use okm_core::obj_dynamic::DynamicValue;
-use okm_core::{Document, DocumentEncode, KeyEncode, TestStore};
+use okm_core::{Document, DocumentEncode, KeyEncode};
 
+use okm_async::TestStore;
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
 pub struct ProfileKey {
     pub org_id: u32,

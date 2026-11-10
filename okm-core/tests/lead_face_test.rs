@@ -9,11 +9,10 @@
 
 #![allow(clippy::unwrap_used, clippy::panic)]
 
+use okm_async::TestStore;
 use okm_core::engine::storage::{Batch, VirtualStorage, prefix_end};
 use okm_core::schema::CollectionSchema;
-use okm_core::{
-    Collection, Document, DocumentEncode, KeyEncode, KvIndex, TestStore, model::faces::FaceKind,
-};
+use okm_core::{Collection, Document, DocumentEncode, KeyEncode, KvIndex, model::faces::FaceKind};
 
 #[derive(KeyEncode, Clone, PartialEq, Eq, Debug)]
 pub struct MembershipKey {

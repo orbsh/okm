@@ -23,10 +23,9 @@
 use std::cell::Cell;
 
 use okm_core::engine::storage::ScanIter;
-use okm_core::{
-    Batch, Document, DocumentEncode, KeyEncode, ReduceCodec, TestStore, VirtualStorage,
-};
+use okm_core::{Batch, Document, DocumentEncode, KeyEncode, ReduceCodec, VirtualStorage};
 
+use okm_async::TestStore;
 /// An engine handle that counts how writes arrive: bare single-op writes
 /// versus commits (each carrying N ops).
 struct Counting<S> {

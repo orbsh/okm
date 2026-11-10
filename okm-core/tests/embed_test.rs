@@ -8,7 +8,8 @@
     clippy::panic_in_result_fn
 )]
 
-use okm_core::{Document, DocumentEncode, KeyEncode, Ref, TestStore};
+use okm_async::TestStore;
+use okm_core::{Document, DocumentEncode, KeyEncode, Ref};
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
 pub struct OwnerKey {

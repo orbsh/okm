@@ -11,7 +11,8 @@
     clippy::panic_in_result_fn
 )]
 
-use okm_core::{DocumentEncode, KeyEncode, TestStore, VirtualStorage};
+use okm_async::TestStore;
+use okm_core::{DocumentEncode, KeyEncode, VirtualStorage};
 
 fn verify_engine(store: TestStore) {
     let name = store.name();

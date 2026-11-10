@@ -19,9 +19,10 @@
 use criterion::{BatchSize, Criterion, Throughput, criterion_group, criterion_main};
 use std::hint::black_box;
 
+use okm_async::TestStore;
 use okm_core::{
     Collection, Document, DocumentEncode, KeyEncode, KvIndex, ReduceCodec, ReduceLogic, Reverse,
-    Reversible, TestStore, VarInt, VirtualStorage,
+    Reversible, VarInt, VirtualStorage,
 };
 
 // ---------- declarations under test ----------

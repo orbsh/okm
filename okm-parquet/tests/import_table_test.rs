@@ -10,9 +10,9 @@
     clippy::unwrap_in_result,
     clippy::panic_in_result_fn
 )]
-use okm_parquet::snapshot::parquet_io;
-use okm_parquet::bridge::ToRecordBatch;
 use okm_parquet::bridge::EdgeTable;
+use okm_parquet::bridge::ToRecordBatch;
+use okm_parquet::snapshot::parquet_io;
 use okm_parquet::snapshot::parquet_io::EdgeRestore;
 
 use std::collections::BTreeMap;
@@ -20,9 +20,10 @@ use std::collections::BTreeMap;
 use okm_core::obj_dynamic::DynamicValue;
 use okm_core::{
     Batch, Document, DocumentEncode, EdgeHead, Graph, GraphEncode, KeyEncode, NodeRef, ReduceCodec,
-    TestStore, VirtualStorage,
+    VirtualStorage,
 };
 
+use okm_async::TestStore;
 // ---- two node collections and one graph ----
 
 #[derive(Clone, Default, KeyEncode)]

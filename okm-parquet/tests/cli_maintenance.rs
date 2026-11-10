@@ -48,11 +48,15 @@ fn status_reports_the_log_and_compact_checkpoints_it() {
             compact: None,
             ..ChangelogConfig::new(log.path())
         };
-        let app =
-            Collection::<_, RowKey, Row>::captured(ChangelogStore::new(store, cfg)).unwrap();
+        let app = Collection::<_, RowKey, Row>::captured(ChangelogStore::new(store, cfg)).unwrap();
         for id in 0..6 {
-            app.put(&RowKey { id }, &Row { title: format!("row {id}") })
-                .unwrap();
+            app.put(
+                &RowKey { id },
+                &Row {
+                    title: format!("row {id}"),
+                },
+            )
+            .unwrap();
         }
     }
 
@@ -61,7 +65,11 @@ fn status_reports_the_log_and_compact_checkpoints_it() {
         .arg(log.path())
         .output()
         .unwrap();
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let text = String::from_utf8_lossy(&out.stdout).into_owned();
     assert!(text.contains("segments 6"), "{text}");
     assert!(text.contains("baseline none"), "{text}");
@@ -75,7 +83,11 @@ fn status_reports_the_log_and_compact_checkpoints_it() {
         .arg(data.path())
         .output()
         .unwrap();
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let text = String::from_utf8_lossy(&out.stdout).into_owned();
     assert!(text.contains("baseline"), "{text}");
     assert!(text.contains("removed"), "{text}");
@@ -101,7 +113,12 @@ fn status_reports_the_log_and_compact_checkpoints_it() {
             format!("row {id}")
         );
     }
-    assert!(std::fs::read_dir(table_dir(log.path(), &header)).unwrap().count() > 0);
+    assert!(
+        std::fs::read_dir(table_dir(log.path(), &header))
+            .unwrap()
+            .count()
+            > 0
+    );
 }
 
 #[test]

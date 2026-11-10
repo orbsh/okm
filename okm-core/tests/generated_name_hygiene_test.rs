@@ -14,8 +14,9 @@
 #![allow(clippy::unwrap_used, clippy::panic)]
 
 use okm_core::model::obj_dynamic::DynamicValue;
-use okm_core::{Collection, Document, DocumentEncode, KeyEncode, TestStore};
+use okm_core::{Collection, Document, DocumentEncode, KeyEncode};
 
+use okm_async::TestStore;
 /// A key whose fields collide with `KeyEncode::decode`'s own names.
 #[derive(KeyEncode, Clone, PartialEq, Eq, Debug)]
 pub struct ShadowKey {

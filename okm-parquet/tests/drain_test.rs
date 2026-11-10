@@ -11,8 +11,9 @@
 )]
 
 use arrow::array::Array;
+use okm_async::TestStore;
 use okm_core::changelog::{ChangelogConfig, ChangelogStore};
-use okm_core::{Collection, DocumentEncode, KeyEncode, TestStore};
+use okm_core::{Collection, DocumentEncode, KeyEncode};
 use okm_parquet::{DrainConfig, drain};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 
@@ -676,9 +677,15 @@ fn a_commit_carries_statistics_a_reader_can_skip_with() {
         .expect("put");
     }
     let report = drain(root.path(), &DrainConfig::new(out.path(), "test")).expect("drain");
-    let table_dir = report.files[0].parent().unwrap().parent().unwrap().to_path_buf();
-    let text = std::fs::read_to_string(table_dir.join("_delta_log").join(format!("{:020}.json", 0)))
-        .expect("v0");
+    let table_dir = report.files[0]
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    let text =
+        std::fs::read_to_string(table_dir.join("_delta_log").join(format!("{:020}.json", 0)))
+            .expect("v0");
     let stats: serde_json::Value = text
         .lines()
         .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())

@@ -12,10 +12,10 @@
 )]
 
 use okm_core::{
-    Document, DocumentEncode, KeyEncode, KvIndex, PrefixKey, TestStore, Vector, VectorElem,
-    VirtualStorage,
+    Document, DocumentEncode, KeyEncode, KvIndex, PrefixKey, Vector, VectorElem, VirtualStorage,
 };
 
+use okm_async::TestStore;
 // marker struct 生成在 derive 展开点（本文件），直接引用
 use __OkmIndex_Post_by_timeline as ByTimeline;
 use __OkmIndex_Session_by_kind as ByKind;

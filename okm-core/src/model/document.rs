@@ -386,8 +386,9 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     /// collection while a write is in flight.
     /// Cross-process exclusion is the engine's job, not OKM's: fjall
     /// takes a file lock on open (a second process fails to open the
-    /// same directory), slatedb fences with a writer epoch in the
-    /// manifest (a stale writer's commits are rejected). With the engine
+    /// same directory); an engine shared by several writers (a remote
+    /// store) fences with a writer epoch (a stale writer's commits are
+    /// rejected). With the engine
     /// arbitrating, any moment has at most one live writer — the
     /// single-writer model holds end to end, and an OKM-level lock would
     /// only double-guard what the engine already enforces. The

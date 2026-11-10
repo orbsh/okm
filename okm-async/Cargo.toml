@@ -1,0 +1,30 @@
+[package]
+name = "okm-async"
+version = "0.1.0"
+edition = "2024"
+
+# The async face of the storage contract (ADR-0059): the mirror trait, the wire
+# sender, and the engines whose own API is asynchronous. Core depends on nothing
+# here; a build that does not name this crate has no async surface and no runtime.
+[dependencies]
+okm-core = { path = "../okm-core", default-features = false }
+okm-wire = { path = "../okm-wire" }
+slatedb = { version = "0.16.0", optional = true }
+tempfile = { version = "3", optional = true }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"], optional = true }
+
+[features]
+# Default off on purpose: the mirror and `WireClient` need no runtime, and a
+# consumer that only wants the trait must not be handed tokio (ADR-0059).
+default = []
+slatedb = ["dep:slatedb", "dep:tokio"]
+fjall = ["okm-core/fjall", "dep:tempfile"]
+redb = ["okm-core/redb", "dep:tempfile"]
+
+[dev-dependencies]
+serde_json = "1"
+tempfile = "3"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+
+[lints]
+workspace = true

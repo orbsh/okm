@@ -12,9 +12,7 @@ thiserror = "2"
 getrandom = "0.3"
 fjall = { version = "3.1.10", optional = true }
 redb = { version = "4.2", optional = true }
-slatedb = { version = "0.16.0", optional = true }
 tempfile = { version = "3", optional = true }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"], optional = true }
 web-sys = { version = "0.3", optional = true, features = ["Window", "Storage"] }
 
 [build-dependencies]
@@ -25,8 +23,6 @@ syn = { version = "2", features = ["full", "parsing"] }
 [features]
 default = []
 schema-serde = ["dep:serde", "dep:serde_json"]
-test-engines = ["slatedb"]
-slatedb = ["dep:slatedb", "dep:tokio"]
 fjall = ["dep:fjall", "dep:tempfile"]
 redb = ["dep:redb", "dep:tempfile"]
 localstorage = ["dep:web-sys"]
@@ -36,6 +32,7 @@ tempfile = "3"
 serde_json = "1"
 okm-dynamic = { path = "../okm-dynamic" }
 okm-wire = { path = "../okm-wire" }
+okm-async = { path = "../okm-async", features = ["slatedb", "fjall", "redb"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 arrow = { version = "60" }
 parquet = { version = "60", default-features = false, features = ["arrow", "zstd"] }
@@ -52,164 +49,128 @@ required-features = ["schema-serde"]
 
 [[example]]
 name = "changelog_tax"
-required-features = ["test-engines", "fjall"]
+required-features = ["fjall"]
 
 [[example]]
 name = "engine_paths"
-required-features = ["test-engines", "fjall"]
+required-features = ["fjall"]
 
-# test-engines for the store the integration tests run on:
-# the file calls `TestStore::slatedb_mem()` and `Graph::to_record_batch_table`,
-# so neither feature alone compiles it.
+# The store comes from the `okm-async` dev-dependency (ADR-0059): this file calls
+# `TestStore::slatedb_mem()` and `Graph::to_record_batch_table`.
 [[test]]
 name = "deprecated_index_test"
-required-features = ["test-engines"]
 
 [[test]]
 name = "meta_test"
-required-features = ["test-engines"]
 
 [[test]]
 name = "faces_test"
-required-features = ["test-engines", "schema-serde"]
+required-features = ["schema-serde"]
 
 [[test]]
 name = "rebuild_test"
-required-features = ["test-engines"]
 
 [[test]]
 name = "subscribe_batch_test"
-required-features = ["test-engines"]
 
 # The point verbs and their events (ADR-0047): put/merge/replace announce the
 # row they leave, the removal verbs announce the row they take.
 [[test]]
 name = "subscribe_verbs_test"
-required-features = ["test-engines"]
 
 # The change log (ADR-0045) runs on a real engine like every other write-path
-# suite, so it needs `test-engines`; nothing else.
+# suite; the engine arrives through the `okm-async` dev-dependency.
 [[test]]
 name = "changelog_test"
-required-features = ["test-engines"]
 
 [[test]]
 name = "key_row_split_test"
-required-features = ["test-engines"]
 
 [[test]]
 name = "write_refusal_test"
-required-features = ["test-engines"]
 
 [[test]]
 name = "dynamic_cross_test"
-required-features = ["test-engines"]
 
 [[test]]
 name = "engine_matrix_test"
-required-features = ["test-engines", "fjall", "redb"]
+required-features = ["fjall", "redb"]
 
 [[test]]
 name = "index_test"
-required-features = ["test-engines"]
 
 [[test]]
 name = "integration"
-required-features = ["test-engines"]
 
 [[test]]
 name = "kv_nest_test"
-required-features = ["test-engines"]
 
 [[test]]
 name = "multi_tenant_test"
-required-features = ["test-engines"]
 
 [[test]]
 name = "reduce_test"
-required-features = ["test-engines"]
 
 [[test]]
 name = "remote_test"
-required-features = ["test-engines"]
 
 [[test]]
 name = "save_into_test"
-required-features = ["test-engines"]
 
 [[test]]
 name = "subscribe_test"
-required-features = ["test-engines"]
 
 [[test]]
 name = "upsert_test"
-required-features = ["test-engines"]
 
-# The uuid suite opens a temp-dir engine (`TestStore::fjall_tmp`), and that
-# constructor is `#[cfg(feature = "fjall")]` — `test-engines` alone brings
-# slatedb only, so the suite must name the engine it opens.
+# The uuid suite opens a temp-dir engine (`TestStore::fjall_tmp`), which is
+# `#[cfg(feature = "fjall")]` inside `okm-async`, so the suite must enable
+# core's `fjall` as well.
 [[test]]
 name = "uuid_key"
-required-features = ["test-engines", "fjall"]
+required-features = ["fjall"]
 
 [[test]]
 name = "write_commit_test"
-required-features = ["test-engines"]
 
 [[test]]
 name = "bare_shard_test"
-required-features = ["test-engines"]
-
-[[test]]
-name = "wire_client_test"
-required-features = ["test-engines"]
 
 # Engine-backed targets whose matrix is empty without a backend: `TestStore::matrix()`
 # yields nothing, so a plain `cargo test` would pass zeros. The skip is Cargo's and visible.
 
 [[test]]
 name = "bytes_test"
-required-features = ["test-engines"]
 
 [[test]]
 name = "embed_test"
-required-features = ["test-engines"]
 
 [[test]]
 name = "embed_two_level_test"
-required-features = ["test-engines"]
 
 [[test]]
 name = "list_test"
-required-features = ["test-engines"]
 
 [[test]]
 name = "obj_variants_test"
-required-features = ["test-engines"]
 
 [[test]]
 name = "partition_test"
-required-features = ["test-engines"]
 
 [[test]]
 name = "prefix_scan_test"
-required-features = ["test-engines"]
 
 [[test]]
 name = "relation_table_test"
-required-features = ["test-engines"]
 
 [[test]]
 name = "scan_range_test"
-required-features = ["test-engines"]
 
 [[test]]
 name = "vector_test"
-required-features = ["test-engines"]
 
 [[test]]
 name = "vocab_test"
-required-features = ["test-engines"]
 
 
 [lints]

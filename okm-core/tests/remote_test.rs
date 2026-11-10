@@ -17,9 +17,10 @@
     clippy::panic_in_result_fn
 )]
 
+use okm_async::TestStore;
 use okm_core::{
-    Collection, DocumentEncode, KeyEncode, NestStorage, ReduceCodec, RemoteStore, TestStore,
-    VirtualHandle, VirtualStorage,
+    Collection, DocumentEncode, KeyEncode, NestStorage, ReduceCodec, RemoteStore, VirtualHandle,
+    VirtualStorage,
 };
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]

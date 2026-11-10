@@ -18,8 +18,9 @@
     clippy::panic_in_result_fn
 )]
 
+use okm_async::TestStore;
 use okm_core::schema::CollectionSchema;
-use okm_core::{DocumentEncode, KeyEncode, TestStore, VirtualStorage};
+use okm_core::{DocumentEncode, KeyEncode, VirtualStorage};
 use okm_dynamic::{
     AccessMethod, AccessMethodKind, BoundReduce, DynamicCollection, ReduceSpec, Value, ValueMap,
 };

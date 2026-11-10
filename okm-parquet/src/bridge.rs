@@ -51,7 +51,6 @@ use okm_core::model::graph::{Graph, GraphEncode};
 use okm_core::model::obj_dynamic::DynamicValue;
 use okm_dynamic::arrow::arrow_type;
 
-
 /// Decode a prefix-monotonic varint (P1 wire — the same codec as
 /// `VarIntEnc`, shared shape) for `VarInt` columns. `raw` is the frame
 /// value region only.

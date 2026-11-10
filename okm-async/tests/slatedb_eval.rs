@@ -10,8 +10,8 @@
 )]
 #![cfg(feature = "slatedb")]
 
-use okm_core::VirtualStorageAsync;
-use okm_core::slatedb_backend::SlatedbStore; // ADR-0027: commit_batch / scan_range_iter on the async trait
+use okm_async::SlatedbStore;
+use okm_async::VirtualStorageAsync; // ADR-0027: commit_batch / scan_range_iter on the async trait
 
 /// ADR-0027 async-surface alignment: commit_batch takes the native
 /// WriteBatch path (ONE db.write), scan_range_iter yields pairs in one
@@ -36,7 +36,7 @@ async fn slatedb_async_surface_alignment() {
     );
 
     // pair scan over the prefix: single surviving entry, suffix-relative.
-    let pairs = okm_core::scan_suffix_kv_async(&db, b"a/")
+    let pairs = okm_async::scan_suffix_kv_async(&db, b"a/")
         .await
         .expect("suffix scan");
     assert_eq!(

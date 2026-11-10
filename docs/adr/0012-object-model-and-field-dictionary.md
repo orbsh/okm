@@ -1,7 +1,7 @@
 # ADR-0012: Object model — one encoding, declared fields plus a dynamic segment
 
 Date: 2026-09-14
-Status: Accepted (2026-09-14; landed — the obj payload's two slots, the field-name vocabulary, `DocumentEncode` in both directions, `Ref`/`Refs` embedding).
+Status: Accepted (2026-09-14; landed — the obj payload's two slots, the field-name vocabulary, `DocumentEncode` in both directions, `Ref`/`Refs` embedding). The dynamic segment's value layout is now ADR-0057's: a block table at the head of the value area, and the frame list below is no longer written or read.
 
 ## Context
 
@@ -62,22 +62,32 @@ with no field segment in between; the primary key rides in the tail.
 Per-row data hangs off the row key: without it, every row's dynamic
 segment would pile onto one physical key. The shared `[ns][0x01]` prefix
 also makes the whole segment prefix-scannable (prune, rebuilds). Its
-value is a list of frames:
+value is a **block table over a value area** (ADR-0057 — the flat frame list
+this ADR first specified is retired):
 
 ```text
-[dynamic-face value] = ([field-id][value-type][len varint][value bytes])*
+[dynamic-face value] = [toc_len u16 BE][blocks][values]
+[block]              = [count varint]([field-id][type][len varint][value])*
 ```
 
 - `field-id`: the field NAME's vocabulary number (see below).
-- `len` is the prefix-monotonic varint codec (`wrappers/wire.rs`) that
-  `VarInt` uses, shared with the cold segment's frames and the
-  Array/nested-Obj element frames: a small frame costs 2–3 header bytes
-  instead of 5.
-- `value-type`: a small run-time value vocabulary — this is the one
-  genuinely new element. Declared fields carry types in the compile-time
-  FieldDesc table; dynamic fields must be self-describing, so their
-  frames open with a value-type byte (integer / float / str / bytes /
-  bool / null / array / obj-reserved). Nesting may reuse the obj frame
+- Block 0 holds the top-level entries; a composite entry owns the **next**
+  block, so nesting is breadth-first: the *j*-th composite met while walking
+  owns block *j+1*. The table stores no offsets — a block's value base is the
+  sum of the lengths of the leaves before it, and a block's own entries the
+  same, arithmetic over bytes already in hand.
+- `len` is present on **leaf** entries only, and is the prefix-monotonic varint
+  codec (`wrappers/wire.rs`) that `VarInt` uses, shared with the cold segment's
+  frames and the Array/nested-Obj element frames: a small entry costs 2–3
+  header bytes instead of 5. A composite carries no length — its block's
+  `count` delimits it.
+- `type`: a small run-time value vocabulary — this is the one genuinely new
+  element. Declared fields carry types in the compile-time FieldDesc table;
+  dynamic fields must be self-describing, so their entries open with a
+  value-type byte (integer / float / str / bytes / bool / null / array /
+  obj-reserved), and **bit 7 of that byte marks an entry that owns the next
+  block** — so every entry self-delimits without understanding the type, and
+  an unknown type can still be skipped. Nesting may reuse the obj frame
   recursively; the vocabulary ships with a reserved variant even if
   nesting support lands later. The framing is **CBOR-derived, not
   CBOR**: only the major-type pattern is taken — a type nibble opens
@@ -86,7 +96,7 @@ value is a list of frames:
   only the list — a map IS an n-TLV list (id, type, len, value),
   structure information living in the values, not in a per-document
   schema.
-- Ordering: frames carry NO ordering guarantee. Every writer in the tree
+- Ordering: entries carry NO ordering guarantee. Every writer in the tree
   takes a name-keyed map (`BTreeMap`), so the bytes come out in NAME order
   — not id order, and not the order a caller inserted its names. Readers
   address dynamic fields by id, never by position, so nothing may assume

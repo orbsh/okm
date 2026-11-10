@@ -12,9 +12,10 @@
 use okm_parquet::bridge::ToRecordBatch;
 
 use arrow::datatypes::DataType;
+use okm_async::TestStore;
 use okm_core::{
-    Collection, Document, DocumentEncode, FieldDesc, FieldType, KeyEncode, TestStore, Uuid4, Uuid7,
-    Vector, VectorElem,
+    Collection, Document, DocumentEncode, FieldDesc, FieldType, KeyEncode, Uuid4, Uuid7, Vector,
+    VectorElem,
 };
 
 /// UserKey：org 内的用户身份（主键）。字段类型覆盖四种 kind。

@@ -11,8 +11,9 @@
     clippy::panic_in_result_fn
 )]
 
-use okm_core::{Collection, DocumentEncode, KeyEncode, RemoteStore, TestStore, VirtualStorage};
+use okm_core::{Collection, DocumentEncode, KeyEncode, RemoteStore, VirtualStorage};
 
+use okm_async::TestStore;
 // Receiver declaration: no data methods, one execution surface.
 #[derive(okm_core::NestStorage)]
 #[ok_ns(21)]

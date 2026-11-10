@@ -42,12 +42,12 @@
 //! applies that tail, and [`reconcile`] runs before cutover. So no step here needs the
 //! old instance stopped FIRST — only the last two do.
 
+use super::{baseline_segments, read_sealed, sealed_segments};
 use crate::VirtualStorage;
 use crate::decode::{decode_key, decode_payload};
 use crate::model::index::DYNAMIC_SLOT;
 use crate::model::obj_dynamic::{DynamicValue, ValueMap};
 use crate::{OP_DELETE, OP_PUT, PRIMARY_SLOT};
-use super::{baseline_segments, read_sealed, sealed_segments};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -108,8 +108,7 @@ pub fn replay_table<T: ReplayTarget>(dir: &Path, target: &T) -> Result<ReplayRep
         report.segments += 1;
         for frame in read_sealed(&segment).map_err(|e| e.to_string())? {
             for (tag, key, value) in frame.0 {
-                let Some((slot, suffix)) = super::window::split_slot(&header, &key)
-                else {
+                let Some((slot, suffix)) = super::window::split_slot(&header, &key) else {
                     continue;
                 };
                 match (tag, slot) {
@@ -127,9 +126,8 @@ pub fn replay_table<T: ReplayTarget>(dir: &Path, target: &T) -> Result<ReplayRep
                     // fields — so replay has to carry it, or every document with a
                     // dynamic field would arrive without one.
                     (OP_PUT, DYNAMIC_SLOT) => {
-                        let dynamic =
-                            super::window::decode_dynamic_segment(&value, &labels)
-                                .map_err(|e| e.to_string())?;
+                        let dynamic = super::window::decode_dynamic_segment(&value, &labels)
+                            .map_err(|e| e.to_string())?;
                         if !dynamic.is_empty() {
                             target
                                 .merge(suffix, &dynamic)

@@ -21,9 +21,10 @@
     clippy::panic_in_result_fn
 )]
 
+use okm_async::TestStore;
 use okm_core::engine::storage::ScanIter;
 use okm_core::schema::CollectionSchema;
-use okm_core::{Batch, Collection, Document, DocumentEncode, KeyEncode, TestStore, VirtualStorage};
+use okm_core::{Batch, Collection, Document, DocumentEncode, KeyEncode, VirtualStorage};
 use okm_dynamic::{AccessMethod, DynamicCollection, Value, ValueMap};
 use std::collections::BTreeMap;
 

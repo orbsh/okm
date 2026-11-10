@@ -9,7 +9,8 @@
     clippy::panic_in_result_fn
 )]
 
-use okm_core::{Collection, DocumentEncode, KeyEncode, TestStore, Vector, VectorElem};
+use okm_async::TestStore;
+use okm_core::{Collection, DocumentEncode, KeyEncode, Vector, VectorElem};
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
 pub struct DocKey {

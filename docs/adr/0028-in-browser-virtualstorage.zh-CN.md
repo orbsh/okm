@@ -41,7 +41,7 @@ mudra R3（mudra `PLAN.md` §11）在浏览器里放了两个存储角色：
      的 key 排错。O(n) 枚举扫描在 UI 态规模（千级行、数 MB 配额内）可接受。
    - `commit_batch` → trait 默认逐条重放（无引擎级原子性——诚实标注的
      边界：UI 态容忍部分写；不能漂移的数据走拥有它的节点）。
-2. **`WireClient<T: WireTransport>`，okm-core，实现 `VirtualStorageAsync`**
+2. **`WireClient<T: WireTransport>`，okm-async，实现 `VirtualStorageAsync`**（ADR-0059 把异步面整体搬出 core；trait 与发送端同住一个 crate）
    ——面板 RemoteStore 的通用形态：
    - 传输**注入**（`fn post(bytes) -> Result`），不 import 平台：客户端
      永远不知道自己骑 WS 消息、UDS 数据报还是进程内 pump。接收侧 intake

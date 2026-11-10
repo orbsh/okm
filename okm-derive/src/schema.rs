@@ -1355,7 +1355,10 @@ pub(crate) fn parse_schema_with_key(
     };
 
     // #[ok_uncaptured] — a path-only marker: the table stays out of the changelog.
-    let uncaptured = input.attrs.iter().any(|a| a.path().is_ident("ok_uncaptured"));
+    let uncaptured = input
+        .attrs
+        .iter()
+        .any(|a| a.path().is_ident("ok_uncaptured"));
 
     // #[ok_name("...")] — the table's name, beside the ns it belongs to.
     let name: Option<String> = match input.attrs.iter().find(|a| a.path().is_ident("ok_name")) {

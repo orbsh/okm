@@ -8,7 +8,8 @@
 //! 3. `purge` 一行，反向索引条目跟着消失（同一个 batch，靠 `put`/`purge` 而不是靠人记）；
 //! 4. `rebuild_faces` 从行重建索引面后，结果不变（派生状态可重建）。
 
-use okm_core::{DocumentEncode, KeyEncode, TestStore};
+use okm_async::TestStore;
+use okm_core::{DocumentEncode, KeyEncode};
 
 /// 复合主键：一张普通的表，两列就是关系表的两端。
 #[derive(KeyEncode, Clone, PartialEq, Debug)]

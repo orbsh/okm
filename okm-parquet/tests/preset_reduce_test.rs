@@ -17,9 +17,8 @@
     clippy::panic_in_result_fn
 )]
 
-use okm_core::{
-    Document, DocumentEncode, KeyEncode, Quant, Reduce, ReduceCodec, ReduceLogic, TestStore,
-};
+use okm_async::TestStore;
+use okm_core::{Document, DocumentEncode, KeyEncode, Quant, Reduce, ReduceCodec, ReduceLogic};
 
 /// 分组模式：按 forum 分组，四种 preset 各占一个 slot。
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]

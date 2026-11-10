@@ -14,10 +14,9 @@
     clippy::panic_in_result_fn
 )]
 
+use okm_async::TestStore;
+use okm_core::{Collection, Document, DocumentEncode, KeyEncode, Reverse, Reversible};
 use okm_parquet::snapshot::parquet_io;
-use okm_core::{
-    Collection, Document, DocumentEncode, KeyEncode, Reverse, Reversible, TestStore,
-};
 
 // ================= String (variable length) =================
 

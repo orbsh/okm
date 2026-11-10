@@ -40,6 +40,7 @@ pub mod pyo3_impl {
                 Value::Obj(fields) => value_to_py(py, &Value::Obj(fields.clone()))?,
                 Value::Array(items) => value_to_py(py, &Value::Array(items.clone()))?,
             };
+use okm_async::TestStore;
             d.set_item(k, value)?;
         }
         Ok(d)
@@ -312,7 +313,7 @@ pub mod pyo3_impl {
         fn new(schema: &Schema, ns: u16) -> PyResult<Self> {
             Ok(Collection {
                 inner: Arc::new(Mutex::new(okm_dynamic::DynamicCollection::new(
-                    EngineBox::Test(okm_core::TestStore::slatedb_mem()),
+                    EngineBox::Test(okm_async::TestStore::slatedb_mem()),
                     ns,
                     schema.inner.as_ref().clone(),
                     Vec::new(),

@@ -8,12 +8,11 @@
     clippy::unwrap_in_result,
     clippy::panic_in_result_fn
 )]
-use okm_parquet::snapshot::parquet_io;
 use okm_parquet::bridge::ToRecordBatch;
+use okm_parquet::snapshot::parquet_io;
 
-use okm_core::{
-    Collection, Document, DocumentEncode, FieldDesc, FieldType, KeyEncode, TestStore,
-};
+use okm_async::TestStore;
+use okm_core::{Collection, Document, DocumentEncode, FieldDesc, FieldType, KeyEncode};
 
 #[derive(KeyEncode, Clone, PartialEq, Debug)]
 pub struct TKey {

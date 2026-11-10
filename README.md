@@ -85,7 +85,7 @@ OKM carries ONE storage engine contract and ONE key layout, reached by two schem
 
 The two modes produce IDENTICAL bytes for the same declaration: same header discipline, same key encoding, same payload frames, same vocabulary behavior. Data written by a compiled collection reads back through the dynamic one and vice versa — mode is a property of the WRITER, not the data. The write verbs are aligned on purpose (`merge` / `replace` / `purge` / `scan` + the document map), so application code shapes do not fork; the typed side adds `get` / `put`, which speak the struct.
 
-Division of labor across crates: okm-core = the shared runtime (engine contract, `Collection`, document/dynamic-segment machinery, reduce, subscribe); okm-derive = static codegen; okm-dynamic = the schema-driven codec and `DynamicCollection`; okm-wire = the wire format for remote engines; okm-query/stream/graph/vector/ngram = consumer-side operators above the core.
+Division of labor across crates: okm-core = the shared runtime (engine contract, `Collection`, document/dynamic-segment machinery, reduce, subscribe); okm-derive = static codegen; okm-dynamic = the schema-driven codec and `DynamicCollection`; okm-wire = the wire format for remote engines; okm-async = the async face (the mirror trait, the wire sender, and the engines whose API is async — not depending on it means it is not in the build); okm-query/stream/graph/vector/ngram = consumer-side operators above the core.
 
 ## Physical gains
 
@@ -345,7 +345,7 @@ internal seam the engines, the wire frames and the dynamic plan consume.
 
 ```toml
 [dependencies]
-okm-core = { version = "0.1", features = ["fjall"] }    # or "slatedb" / "redb"
+okm-core = { version = "0.1", features = ["fjall"] }    # or "redb"; the async engines live in okm-async
 ```
 
 - **fjall** (sync): `FjallStore::open(path)` — local LSM engine, single `Database` handle, `persist` on demand.
@@ -362,7 +362,7 @@ points call the engine contract, engines see nothing but bytes.
 |---|---|---|
 | Declaration | `KeyEncode` / `DocumentEncode` / `GraphEncode` (okm-derive) | pure `Vec<u8>` in/out — no storage, no I/O, no engine type; that is what keeps each derive a single-item pure function |
 | Assembly | `Collection<S, K, R>` / `Graph<S, E>`, plus the reduce and subscribe hooks | binds ONE engine instance; `&self` for both (writes hold no `&mut`: the collection is `!Sync`, so one owner is checked at compile time); `Graph` keeps `&mut self` because its predicate vocabulary is a mutable cache field; the declaration IS the registry, so there is no runtime schema object to keep in sync |
-| Engine contract | `VirtualStorage` / `VirtualStorageAsync` / `SharedVirtualStorage` (`okm-core/src/engine/storage.rs`) | the seven methods over encoded bytes — the only thing a backend must speak |
+| Engine contract | `VirtualStorage` / `SharedVirtualStorage` (`okm-core/src/engine/storage.rs`); `VirtualStorageAsync` is its mirror in `okm-async` (ADR-0059) | the seven methods over encoded bytes — the only thing a backend must speak; the async mirror exists for engines and transports whose own API is async |
 | Consumers | okm-query / okm-stream / okm-graph / okm-vector / okm-ngram / bindings | sit above the assembly tier and consume its outputs (ordered scan streams, subscribe events, documents) with zero core changes |
 
 Both schema carriers — compiled declarations (okm-derive) and schema data

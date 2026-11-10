@@ -9,9 +9,9 @@
     clippy::panic_in_result_fn
 )]
 
+use okm_async::TestStore;
 use okm_core::{
-    Batch, Collection, Document, DocumentEncode, FieldType, KeyEncode, TestStore, VirtualStorage,
-    Vocab,
+    Batch, Collection, Document, DocumentEncode, FieldType, KeyEncode, VirtualStorage, Vocab,
 };
 
 #[derive(KeyEncode, Clone, PartialEq, Debug)]

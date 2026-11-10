@@ -49,7 +49,7 @@ OKM 只有一个存储引擎契约、一套键布局，但有两个 schema 载�
 
 两种模式对同一声明产生**完全相同的字节**：同一 header 纪律、同一键编码、同一 payload 帧、同一词汇表行为。编译期 collection 写的数据，动态侧读得回来，反之亦然——模式是**写入方**的属性，不是数据的属性。写动词刻意对齐（`merge` / `replace` / `purge` / `scan` + document map），应用代码形状不分叉；typed 侧的 `get` / `put` 是说结构体的那一道门。
 
-crate 分工：okm-core = 共享运行时（引擎契约、`Collection`、document/动态段机制、reduce、subscribe）；okm-derive = 静态代码生成；okm-dynamic = schema 驱动编解码与 `DynamicCollection`；okm-wire = 远程引擎 wire 格式；okm-query/stream/graph/vector/ngram = core 之上的消费侧算子。
+crate 分工：okm-core = 共享运行时（引擎契约、`Collection`、document/动态段机制、reduce、subscribe）；okm-derive = 静态代码生成；okm-dynamic = schema 驱动编解码与 `DynamicCollection`；okm-wire = 远程引擎 wire 格式；okm-async = 异步面（镜像 trait、wire 发送端、异步引擎——不依赖它，它就不在构建里）；okm-query/stream/graph/vector/ngram = core 之上的消费侧算子。
 
 ## 物理收益
 
@@ -272,7 +272,7 @@ store.commit_batch(batch)?;                    // 行、面与账本一起落地
 
 ```toml
 [dependencies]
-okm-core = { version = "0.1", features = ["fjall"] }    # 或 "slatedb" / "redb"
+okm-core = { version = "0.1", features = ["fjall"] }    # 或 "redb"；异步引擎在 okm-async
 ```
 
 - **fjall**（同步）：`FjallStore::open(path)` — 本地 LSM 引擎，单 `Database` 句柄，按需 `persist`。
@@ -288,7 +288,7 @@ okm-core = { version = "0.1", features = ["fjall"] }    # 或 "slatedb" / "redb"
 |---|---|---|
 | 声明层 | `KeyEncode` / `DocumentEncode` / `JunctionEncode` / `GraphEncode`（okm-derive） | 纯 `Vec<u8>` 进出——没有存储、没有 I/O、没有引擎类型；这正是每个 derive 保持单 item 纯函数的前提 |
 | 装配层 | `Collection<S, K, R>` / `Junction<S, E>` / `Graph<S, E>`，加 reduce 与 subscribe 钩子 | 绑定**一个**引擎实例；读写都取 `&self`（写不需要 `&mut`：集合是 `!Sync`，单持有者在编译期就定死）；`Graph` 仍是 `&mut self`，它的谓词词表是可变的缓存字段；声明本身就是注册表，没有需要在运行期同步的 schema 对象 |
-| 引擎契约 | `VirtualStorage` / `VirtualStorageAsync` / `SharedVirtualStorage`（`okm-core/src/engine/storage.rs`） | 编码字节上的七个方法——后端唯一必须说的一种语言 |
+| 引擎契约 | `VirtualStorage` / `SharedVirtualStorage`（`okm-core/src/engine/storage.rs`）；`VirtualStorageAsync` 是它在 `okm-async` 里的镜像（ADR-0059） | 编码字节上的七个方法——后端唯一必须说的一种语言；异步镜像只服务于「自身 API 就是异步」的引擎与传输 |
 | 消费层 | okm-query / okm-stream / okm-graph / okm-vector / okm-ngram / bindings | 位于装配层之上，消费它的产物（有序扫描流、subscribe 事件、document），对 core 零改动 |
 
 两种 schema 载体——编译期声明（okm-derive）与 schema 数据（okm-dynamic）——落到的都是下面

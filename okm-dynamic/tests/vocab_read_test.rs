@@ -11,9 +11,10 @@
 )]
 
 use okm_core::schema::CollectionSchema;
-use okm_core::{Collection, DocumentEncode, KeyEncode, TestStore, Vocab};
+use okm_core::{Collection, DocumentEncode, KeyEncode, Vocab};
 use okm_dynamic::{DynamicCollection, Value};
 
+use okm_async::TestStore;
 #[derive(KeyEncode, Clone, PartialEq, Debug)]
 pub struct VKey {
     pub org: u32,

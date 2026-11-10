@@ -17,10 +17,10 @@
     clippy::panic_in_result_fn
 )]
 
+use okm_async::TestStore;
 use okm_core::schema::CollectionSchema;
 use okm_core::{
-    Collection, Document, DocumentEncode, KeyEncode, Offset, Quant, TestStore, VarInt,
-    VirtualStorage,
+    Collection, Document, DocumentEncode, KeyEncode, Offset, Quant, VarInt, VirtualStorage,
 };
 use okm_dynamic::{
     CodecError, Value, ValueMap, decode_key, decode_payload, encode_key, encode_payload,

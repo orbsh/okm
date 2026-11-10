@@ -8,7 +8,8 @@
     clippy::panic_in_result_fn
 )]
 
-use okm_core::{DocumentEncode, KeyEncode, Refs, TestStore};
+use okm_async::TestStore;
+use okm_core::{DocumentEncode, KeyEncode, Refs};
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
 pub struct RoomKey {

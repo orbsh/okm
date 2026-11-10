@@ -8,10 +8,11 @@
 //! the `slatedb::object_store` re-export so versions always match
 //! slatedb's internals.
 
-use crate::engine::storage::VirtualStorage;
-// The trait + the pair-scan twin live in engine::storage (ADR-0028);
+use okm_core::engine::storage::VirtualStorage;
+// The trait + the pair-scan twin live in this crate's `storage` (ADR-0028
+// moved them beside the engines, ADR-0059 moved the whole face out of core);
 // re-exported here so the slatedb-era import path keeps resolving.
-pub use crate::engine::storage::{VirtualStorageAsync, scan_suffix_kv_async};
+pub use crate::storage::{VirtualStorageAsync, scan_suffix_kv_async};
 use slatedb::Db;
 use slatedb::object_store::ObjectStore;
 use std::ops::RangeFull;
@@ -31,7 +32,7 @@ pub struct SlatedbIter {
 }
 
 impl Iterator for SlatedbIter {
-    type Item = crate::error::Result<(Vec<u8>, Vec<u8>)>;
+    type Item = okm_core::error::Result<(Vec<u8>, Vec<u8>)>;
     fn next(&mut self) -> Option<Self::Item> {
         if self.done {
             return None;
@@ -41,7 +42,7 @@ impl Iterator for SlatedbIter {
             // The driver reported a fault: the item says so and the stream ends.
             Ok(Some(Err(text))) => {
                 self.done = true;
-                Some(Err(crate::error::Error::Engine(text)))
+                Some(Err(okm_core::error::Error::Engine(text)))
             }
             Ok(None) => {
                 self.done = true;
@@ -51,7 +52,7 @@ impl Iterator for SlatedbIter {
             // range — say it once, then stop.
             Err(e) => {
                 self.done = true;
-                Some(Err(crate::error::Error::Engine(format!(
+                Some(Err(okm_core::error::Error::Engine(format!(
                     "slatedb driver gone mid-scan: {e}"
                 ))))
             }
@@ -67,11 +68,11 @@ impl DoubleEndedIterator for SlatedbIter {
             // BLOCKING drain to the stream's end sentinel (a try_iter
             // would race the driver and silently drop items it has
             // not sent yet).
-            let mut tail: Vec<crate::error::Result<(Vec<u8>, Vec<u8>)>> = self
+            let mut tail: Vec<okm_core::error::Result<(Vec<u8>, Vec<u8>)>> = self
                 .rx
                 .iter()
                 .flatten()
-                .map(|item| item.map_err(crate::error::Error::Engine))
+                .map(|item| item.map_err(okm_core::error::Error::Engine))
                 .collect();
             tail.reverse();
             self.back_buf = Some(tail.into_iter());
@@ -90,7 +91,7 @@ impl DoubleEndedIterator for SlatedbIter {
 type ItemStream = std::sync::mpsc::Receiver<Option<Result<(Vec<u8>, Vec<u8>), String>>>;
 
 /// The reverse buffer `next_back` drains into (pairs, or the one fault item).
-type BackBuf = std::vec::IntoIter<crate::error::Result<(Vec<u8>, Vec<u8>)>>;
+type BackBuf = std::vec::IntoIter<okm_core::error::Result<(Vec<u8>, Vec<u8>)>>;
 
 /// Commands the driver thread executes against the async Db. Every
 /// arm is flat (no re-entrant nesting — okm's call shapes are engine
@@ -329,15 +330,15 @@ impl SlatedbSync {
     fn request<R>(
         &self,
         make: impl FnOnce(std::sync::mpsc::Sender<Result<R, String>>) -> Cmd,
-    ) -> crate::error::Result<R> {
+    ) -> okm_core::error::Result<R> {
         let (tx, rx) = std::sync::mpsc::channel();
         self.tx
             .send(make(tx))
-            .map_err(|e| crate::error::Error::Engine(format!("slatedb driver gone: {e}")))?;
+            .map_err(|e| okm_core::error::Error::Engine(format!("slatedb driver gone: {e}")))?;
         match rx.recv() {
             Ok(Ok(v)) => Ok(v),
-            Ok(Err(text)) => Err(crate::error::Error::Engine(text)),
-            Err(e) => Err(crate::error::Error::Engine(format!(
+            Ok(Err(text)) => Err(okm_core::error::Error::Engine(text)),
+            Err(e) => Err(okm_core::error::Error::Engine(format!(
                 "slatedb driver reply missing: {e}"
             ))),
         }
@@ -347,13 +348,14 @@ impl SlatedbSync {
     fn request_stream(
         &self,
         make: impl FnOnce(std::sync::mpsc::Sender<ItemStream>) -> Cmd,
-    ) -> crate::error::Result<ItemStream> {
+    ) -> okm_core::error::Result<ItemStream> {
         let (tx, rx) = std::sync::mpsc::channel();
         self.tx
             .send(make(tx))
-            .map_err(|e| crate::error::Error::Engine(format!("slatedb driver gone: {e}")))?;
-        rx.recv()
-            .map_err(|e| crate::error::Error::Engine(format!("slatedb driver reply missing: {e}")))
+            .map_err(|e| okm_core::error::Error::Engine(format!("slatedb driver gone: {e}")))?;
+        rx.recv().map_err(|e| {
+            okm_core::error::Error::Engine(format!("slatedb driver reply missing: {e}"))
+        })
     }
 }
 
@@ -375,47 +377,47 @@ impl SlatedbStore {
 }
 
 impl VirtualStorageAsync for SlatedbStore {
-    async fn put(&self, key: Vec<u8>, value: Vec<u8>) -> crate::error::Result<()> {
+    async fn put(&self, key: Vec<u8>, value: Vec<u8>) -> okm_core::error::Result<()> {
         let h = self
             .db
             .put(key, value)
             .await
-            .map_err(|e| crate::error::Error::Engine(e.to_string()))?;
+            .map_err(|e| okm_core::error::Error::Engine(e.to_string()))?;
         // The durable wait mirrors the sync engines' WAL boundary: `Ok` here
         // means the store HAS the bytes, not just that it accepted the call.
         h.await_durable()
             .await
-            .map_err(|e| crate::error::Error::Engine(e.to_string()))
+            .map_err(|e| okm_core::error::Error::Engine(e.to_string()))
     }
-    async fn get(&self, key: &[u8]) -> crate::error::Result<Option<Vec<u8>>> {
+    async fn get(&self, key: &[u8]) -> okm_core::error::Result<Option<Vec<u8>>> {
         self.db
             .get(key)
             .await
             .map(|v| v.map(|v| v.to_vec()))
-            .map_err(|e| crate::error::Error::Engine(e.to_string()))
+            .map_err(|e| okm_core::error::Error::Engine(e.to_string()))
     }
-    async fn del(&self, key: &[u8]) -> crate::error::Result<()> {
+    async fn del(&self, key: &[u8]) -> okm_core::error::Result<()> {
         let h = self
             .db
             .delete(key)
             .await
-            .map_err(|e| crate::error::Error::Engine(e.to_string()))?;
+            .map_err(|e| okm_core::error::Error::Engine(e.to_string()))?;
         h.await_durable()
             .await
-            .map_err(|e| crate::error::Error::Engine(e.to_string()))
+            .map_err(|e| okm_core::error::Error::Engine(e.to_string()))
     }
-    async fn scan_suffix(&self, prefix: &[u8]) -> crate::error::Result<Vec<Vec<u8>>> {
+    async fn scan_suffix(&self, prefix: &[u8]) -> okm_core::error::Result<Vec<Vec<u8>>> {
         let mut it = self
             .db
             .scan_prefix(prefix, RangeFull)
             .await
-            .map_err(|e| crate::error::Error::Engine(e.to_string()))?;
+            .map_err(|e| okm_core::error::Error::Engine(e.to_string()))?;
         let mut out = Vec::new();
         loop {
             let kv = it
                 .next()
                 .await
-                .map_err(|e| crate::error::Error::Engine(e.to_string()))?;
+                .map_err(|e| okm_core::error::Error::Engine(e.to_string()))?;
             match kv {
                 Some(kv) => out.push(kv.key[prefix.len()..].to_vec()),
                 None => break,
@@ -427,7 +429,7 @@ impl VirtualStorageAsync for SlatedbStore {
         &self,
         begin: &[u8],
         end: Option<&[u8]>,
-    ) -> crate::error::Result<Vec<Vec<u8>>> {
+    ) -> okm_core::error::Result<Vec<Vec<u8>>> {
         if let Some(end) = end
             && end <= begin
         {
@@ -439,13 +441,13 @@ impl VirtualStorageAsync for SlatedbStore {
             Some(end) => self.db.scan_prefix(b"", begin..end).await,
             None => self.db.scan_prefix(b"", begin..).await,
         }
-        .map_err(|e| crate::error::Error::Engine(e.to_string()))?;
+        .map_err(|e| okm_core::error::Error::Engine(e.to_string()))?;
         let mut out = Vec::new();
         loop {
             let kv = it
                 .next()
                 .await
-                .map_err(|e| crate::error::Error::Engine(e.to_string()))?;
+                .map_err(|e| okm_core::error::Error::Engine(e.to_string()))?;
             match kv {
                 Some(kv) => out.push(kv.key.to_vec()),
                 None => break,
@@ -464,13 +466,13 @@ impl VirtualStorageAsync for SlatedbStore {
         &self,
         begin: &[u8],
         end: Option<&[u8]>,
-    ) -> crate::engine::storage::ScanIter {
+    ) -> okm_core::engine::storage::ScanIter {
         if let Some(end) = end
             && end <= begin
         {
-            return crate::engine::storage::ScanIter::Buffered(Vec::new().into_iter());
+            return okm_core::engine::storage::ScanIter::Buffered(Vec::new().into_iter());
         }
-        let mut pairs: Vec<crate::error::Result<(Vec<u8>, Vec<u8>)>> = Vec::new();
+        let mut pairs: Vec<okm_core::error::Result<(Vec<u8>, Vec<u8>)>> = Vec::new();
         let opened = match end {
             Some(end) => self.db.scan_prefix(b"", begin..end).await,
             None => self.db.scan_prefix(b"", begin..).await,
@@ -478,8 +480,8 @@ impl VirtualStorageAsync for SlatedbStore {
         let mut it = match opened {
             Ok(it) => it,
             Err(e) => {
-                pairs.push(Err(crate::error::Error::Engine(e.to_string())));
-                return crate::engine::storage::ScanIter::Buffered(pairs.into_iter());
+                pairs.push(Err(okm_core::error::Error::Engine(e.to_string())));
+                return okm_core::engine::storage::ScanIter::Buffered(pairs.into_iter());
             }
         };
         loop {
@@ -487,17 +489,20 @@ impl VirtualStorageAsync for SlatedbStore {
                 Ok(Some(kv)) => pairs.push(Ok((kv.key.to_vec(), kv.value.to_vec()))),
                 Ok(None) => break,
                 Err(e) => {
-                    pairs.push(Err(crate::error::Error::Engine(e.to_string())));
+                    pairs.push(Err(okm_core::error::Error::Engine(e.to_string())));
                     break;
                 }
             }
         }
-        crate::engine::storage::ScanIter::Buffered(pairs.into_iter())
+        okm_core::engine::storage::ScanIter::Buffered(pairs.into_iter())
     }
     /// Native batch (ADR-0027): slatedb's `WriteBatch` ships as ONE
     /// `db.write` — a real single-write atomic form, not a replay; the
     /// durable wait mirrors the sync engines' WAL boundary.
-    async fn commit_batch(&self, batch: crate::engine::storage::Batch) -> crate::error::Result<()> {
+    async fn commit_batch(
+        &self,
+        batch: okm_core::engine::storage::Batch,
+    ) -> okm_core::error::Result<()> {
         let mut wb = slatedb::WriteBatch::new();
         for (k, v) in &batch.ops {
             match v {
@@ -509,10 +514,10 @@ impl VirtualStorageAsync for SlatedbStore {
             .db
             .write(wb)
             .await
-            .map_err(|e| crate::error::Error::Engine(e.to_string()))?;
+            .map_err(|e| okm_core::error::Error::Engine(e.to_string()))?;
         h.await_durable()
             .await
-            .map_err(|e| crate::error::Error::Engine(e.to_string()))
+            .map_err(|e| okm_core::error::Error::Engine(e.to_string()))
     }
 }
 
@@ -529,14 +534,14 @@ impl SlatedbSync {
     /// refusal reaches the caller instead of dying on the driver thread. The
     /// durable wait inside the driver mirrors `commit_batch` (the WAL boundary),
     /// and channel ORDER still guarantees a later read observes this write.
-    pub fn put_sync(&self, key: Vec<u8>, value: Vec<u8>) -> crate::error::Result<()> {
+    pub fn put_sync(&self, key: Vec<u8>, value: Vec<u8>) -> okm_core::error::Result<()> {
         self.request(|reply| Cmd::Put { key, value, reply })
     }
-    pub fn get_sync(&self, key: &[u8]) -> crate::error::Result<Option<Vec<u8>>> {
+    pub fn get_sync(&self, key: &[u8]) -> okm_core::error::Result<Option<Vec<u8>>> {
         let key = key.to_vec();
         self.request(|reply| Cmd::Get { key, reply })
     }
-    pub fn del_sync(&self, key: &[u8]) -> crate::error::Result<()> {
+    pub fn del_sync(&self, key: &[u8]) -> okm_core::error::Result<()> {
         self.request(|reply| Cmd::Del {
             key: key.to_vec(),
             reply,
@@ -546,7 +551,7 @@ impl SlatedbSync {
         &self,
         begin: &[u8],
         end: Option<&[u8]>,
-    ) -> crate::error::Result<Vec<Vec<u8>>> {
+    ) -> okm_core::error::Result<Vec<Vec<u8>>> {
         if let Some(end) = end
             && end <= begin
         {
@@ -563,57 +568,68 @@ impl SlatedbSync {
         &self,
         begin: &[u8],
         end: Option<&[u8]>,
-    ) -> super::storage::ScanIter {
+    ) -> okm_core::engine::storage::ScanIter {
         if let Some(end) = end
             && end <= begin
         {
-            let empty: Vec<crate::error::Result<(Vec<u8>, Vec<u8>)>> = Vec::new();
-            return super::storage::ScanIter::Buffered(empty.into_iter());
+            let empty: Vec<okm_core::error::Result<(Vec<u8>, Vec<u8>)>> = Vec::new();
+            return okm_core::engine::storage::ScanIter::Buffered(empty.into_iter());
         }
         let begin = begin.to_vec();
         let end = end.map(|e| e.to_vec());
         match self.request_stream(|reply| Cmd::ScanStream { begin, end, reply }) {
-            Ok(rx) => super::storage::ScanIter::Slatedb(SlatedbIter {
+            // Lazy across the crate boundary: the sync contract's `ScanIter`
+            // opens one type-erased arm for engines that live out here
+            // (ADR-0059), so the consumer still pays only for what it reads.
+            Ok(rx) => okm_core::engine::storage::ScanIter::External(Box::new(SlatedbIter {
                 rx,
                 done: false,
                 back_buf: None,
-            }),
+            })),
             // The stream could not even be opened: hand back an iterator whose
             // one item is the failure, so the consumer still learns about it.
             Err(e) => {
                 let one = vec![Err(e)];
-                super::storage::ScanIter::Buffered(one.into_iter())
+                okm_core::engine::storage::ScanIter::Buffered(one.into_iter())
             }
         }
     }
 
-    pub fn scan_suffix_sync(&self, prefix: &[u8]) -> crate::error::Result<Vec<Vec<u8>>> {
+    pub fn scan_suffix_sync(&self, prefix: &[u8]) -> okm_core::error::Result<Vec<Vec<u8>>> {
         let prefix = prefix.to_vec();
         self.request(|reply| Cmd::ScanSuffix { prefix, reply })
     }
 }
 
 impl VirtualStorage for SlatedbSync {
-    fn put(&self, key: Vec<u8>, value: Vec<u8>) -> crate::error::Result<()> {
+    fn put(&self, key: Vec<u8>, value: Vec<u8>) -> okm_core::error::Result<()> {
         self.put_sync(key, value)
     }
-    fn get(&self, key: &[u8]) -> crate::error::Result<Option<Vec<u8>>> {
+    fn get(&self, key: &[u8]) -> okm_core::error::Result<Option<Vec<u8>>> {
         self.get_sync(key)
     }
-    fn del(&self, key: &[u8]) -> crate::error::Result<()> {
+    fn del(&self, key: &[u8]) -> okm_core::error::Result<()> {
         self.del_sync(key)
     }
-    fn scan_suffix(&self, prefix: &[u8]) -> crate::error::Result<Vec<Vec<u8>>> {
+    fn scan_suffix(&self, prefix: &[u8]) -> okm_core::error::Result<Vec<Vec<u8>>> {
         Ok(self
             .scan_range_sync(prefix, None)?
             .into_iter()
             .filter_map(|k| k.strip_prefix(prefix).map(|s| s.to_vec()))
             .collect())
     }
-    fn scan_range(&self, begin: &[u8], end: Option<&[u8]>) -> crate::error::Result<Vec<Vec<u8>>> {
+    fn scan_range(
+        &self,
+        begin: &[u8],
+        end: Option<&[u8]>,
+    ) -> okm_core::error::Result<Vec<Vec<u8>>> {
         self.scan_range_sync(begin, end)
     }
-    fn scan_range_iter(&self, begin: &[u8], end: Option<&[u8]>) -> super::storage::ScanIter {
+    fn scan_range_iter(
+        &self,
+        begin: &[u8],
+        end: Option<&[u8]>,
+    ) -> okm_core::engine::storage::ScanIter {
         self.scan_range_iter_sync(begin, end)
     }
 }

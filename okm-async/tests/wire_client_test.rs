@@ -20,7 +20,7 @@
     clippy::unwrap_in_result,
     clippy::panic_in_result_fn
 )]
-#![cfg(feature = "test-engines")]
+#![cfg(feature = "slatedb")]
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -28,10 +28,8 @@ use std::future::Future;
 use std::rc::Rc;
 use std::task::{Context, Poll, Waker};
 
-use okm_core::{
-    Batch, Error, NestStorage, OpFrame, OpResponse, TestStore, VirtualStorageAsync, WireClient,
-    WireTransport,
-};
+use okm_async::{TestStore, VirtualStorageAsync, WireClient, WireTransport};
+use okm_core::{Batch, Error, NestStorage, OpFrame, OpResponse};
 
 /// Loopback transport: `post` queues outbound frames; the harness pumps
 /// them through the receiver and calls `deliver` with the answers.

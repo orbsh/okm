@@ -1,13 +1,15 @@
 //! Storage abstraction: the sync [`VirtualStorage`] and async
-//! [`VirtualStorageAsync`] engine contracts (aligned surfaces,
-//! ADR-0027/0028) plus the shared batch carrier. Every backend (fjall /
-//! slatedb / redb / localStorage / wire client) implements one of them.
-//! Tests run against real engines via [`crate::engine::test_engine::TestStore`].
+//! The synchronous engine contract plus the shared batch carrier. Every backend
+//! (fjall / redb / localStorage / the remote sender) implements it; the async
+//! mirror and the engines that speak it live in `okm-async` (ADR-0059).
+//! Unit tests run on [`crate::engine::mem_store::MemStore`]; the real-engine
+//! matrix is `okm_async::TestStore`, used by integration tests.
 
 /// Minimal KV engine interface: one ordered-read primitive (`scan_range`)
-/// plus point reads and batches. The `fjall` / `slatedb` features each
-/// provide an implementation; tests run the real engines through
-/// [`crate::engine::test_engine::TestStore`].
+/// plus point reads and batches. The `fjall` / `redb` / `localstorage` features
+/// each provide an implementation; unit tests run on
+/// [`crate::engine::mem_store::MemStore`], and the real-engine matrix is
+/// `okm_async::TestStore` (ADR-0059).
 /// The exclusive upper bound of a prefix as a FULL key: increment the
 /// last byte with carry (`[0x01, 0x7F]` -> `[0x01, 0x80]`). `None` when
 /// the prefix is all `0xFF` (no finite terminator — the range is
@@ -45,8 +47,8 @@ pub trait VirtualStorage {
     /// A convenience bound over [`scan_range`](Self::scan_range): the
     /// physical operation is the same ordered iteration, the prefix is
     /// the range whose end is the prefix's terminator (see
-    /// [`prefix_end`]). Engines override when their native prefix scan
-    /// beats a range (`slatedb`'s `scan_prefix(prefix, subrange)`).
+    /// [`prefix_end`]). Engines override when they have a native prefix
+    /// scan (`scan_prefix(prefix, subrange)`) that beats a range.
     fn scan_suffix(&self, prefix: &[u8]) -> crate::error::Result<Vec<Vec<u8>>> {
         Ok(self
             .scan_range(prefix, prefix_end(prefix).as_deref())?
@@ -76,14 +78,15 @@ pub trait VirtualStorage {
     /// on demand — half-way abandonment (LIMIT, first-match) costs only
     /// the reads actually performed. The opaque [`ScanIter`] is the
     /// trait's streaming contract: every native backend iterator (fjall
-    /// `Iter`, redb `OwnedRange`, slatedb `DbIterator`) is 'static and
-    /// owned, so wrapping is free; buffers never materialize unless the
-    /// consumer collects. `scan_range`'s default derives from here.
+    /// `Iter`, redb `OwnedRange`, an async engine's iterator, the remote
+    /// page) is 'static and owned, so wrapping is free; buffers never
+    /// materialize unless the consumer collects. `scan_range`'s default
+    /// derives from here.
     /// Remote engines degrade to a buffered round trip (the wire frame
     /// already batches the answer).
     fn scan_range_iter(&self, begin: &[u8], end: Option<&[u8]>) -> ScanIter {
         // Sound-but-buffered default: engines with owned native
-        // iterators (fjall / redb / slatedb) override this method; the
+        // iterators (fjall / redb) override this method; the
         // default materializes the whole range first (a borrow cannot
         // span the trait boundary) and hands back an owned iterator.
         // Errors ride the ITEMS: the constructor cannot fail on behalf of
@@ -155,8 +158,8 @@ pub fn scan_suffix_kv<S: VirtualStorage + ?Sized>(
 }
 
 /// An engine that can be genuinely shared across hosts and handles:
-/// the `shared_handle()` view IS the same physical keyspace (fjall /
-/// slatedb store handles are Arc-kernel and already behave this way).
+/// the `shared_handle()` view IS the same physical keyspace (fjall's and
+/// redb's handles are Arc-kernel and already behave this way).
 /// `NestStorage` requires it — a nest wraps the engine in an
 /// `Arc<Mutex<S>>`, and "wrapped" must mean shared, not copied.
 /// Deep-copy-Clone engines (test maps) deliberately do not implement
@@ -167,10 +170,15 @@ pub fn scan_suffix_kv<S: VirtualStorage + ?Sized>(
 /// backends' native owned iterators rather than a `dyn` box: the enum
 /// keeps `DoubleEndedIterator` — a consumer may walk the range
 /// backwards (e.g. "last N entries") without a second buffer pass.
-/// Variants without a native backwards walk (slatedb's async-forward
-/// `DbIterator`, the remote buffered round trip) degrade to buffered
+/// Variants without a native backwards walk (an async-forward engine's
+/// iterator, the remote buffered round trip) degrade to buffered
 /// `next_back` over a materialized tail — semantics identical, laziness
 /// lost only where the engine cannot give it back.
+/// What an engine outside this crate hands a scan back as (ADR-0059): the
+/// iterator type belongs to that crate, so the arm is type-erased.
+pub type ExternalScan =
+    Box<dyn DoubleEndedIterator<Item = crate::error::Result<(Vec<u8>, Vec<u8>)>> + Send>;
+
 pub enum ScanIter {
     /// fjall `Iter` — native snapshot, both directions.
     #[cfg(feature = "fjall")]
@@ -178,15 +186,16 @@ pub enum ScanIter {
     /// redb `OwnedRange` — 'static via Arc'd txn guard, both directions.
     #[cfg(feature = "redb")]
     Redb(redb::OwnedRange<&'static [u8], &'static [u8]>),
-    /// slatedb `DbIterator` — forward-only (async adapter); backwards
-    /// walk buffers a materialized copy of the remaining range.
-    #[cfg(feature = "slatedb")]
-    Slatedb(super::slatedb_backend::SlatedbIter),
     /// Remote paged stream (ADR-0021): lazy over the wire, one
     /// OP_SCAN_STREAM page per refill; `next_back` degrades to buffered.
     Remote(super::nest::RemoteScanIter),
-    /// Owned buffer: the trait default, and any test map.
+    /// Owning buffer: the trait default, and any test map.
     Buffered(std::vec::IntoIter<crate::error::Result<(Vec<u8>, Vec<u8>)>>),
+    /// An engine that lives OUTSIDE this crate (ADR-0059): type-erased because
+    /// the iterator's type belongs to a crate core must not name. It is what
+    /// keeps a scan lazy for engines that left — buffering would delete the
+    /// guarantee ADR-0020 ruled, on the `LIMIT 10` over a million rows case.
+    External(ExternalScan),
 }
 
 impl Iterator for ScanIter {
@@ -208,10 +217,9 @@ impl Iterator for ScanIter {
                 Ok((k, v)) => Ok((k.value().to_vec(), v.value().to_vec())),
                 Err(e) => Err(crate::error::Error::Engine(e.to_string())),
             }),
-            #[cfg(feature = "slatedb")]
-            ScanIter::Slatedb(it) => it.next(),
             ScanIter::Remote(it) => it.next(),
             ScanIter::Buffered(it) => it.next(),
+            ScanIter::External(it) => it.next(),
         }
     }
 }
@@ -229,10 +237,9 @@ impl DoubleEndedIterator for ScanIter {
                 Ok((k, v)) => Ok((k.value().to_vec(), v.value().to_vec())),
                 Err(e) => Err(crate::error::Error::Engine(e.to_string())),
             }),
-            #[cfg(feature = "slatedb")]
-            ScanIter::Slatedb(it) => it.next_back(),
             ScanIter::Remote(it) => it.next_back(),
             ScanIter::Buffered(it) => it.next_back(),
+            ScanIter::External(it) => it.next_back(),
         }
     }
 }
@@ -366,85 +373,4 @@ impl<S: VirtualStorage> VirtualStorage for BatchStore<'_, S> {
         // `scan_range_iter` both default through this method.
         Err(crate::error::Error::ScanThroughBatch)
     }
-}
-
-/// 异步引擎最小接口（与同步 VirtualStorage 对齐，ADR-0027：
-/// 对齐的是审计后的同步面——scan_suffix_kv/batch 不在 trait 上）。
-/// ADR-0028 relocated it from slatedb_backend: the aligned surface is
-/// the engine contract, not a slatedb property — async senders over
-/// the wire (`WireClient`) need it with no slatedb in sight.
-#[allow(async_fn_in_trait)] // engine contract: impls are in-crate backends and wasm senders; ADR-0010 keeps the surface byte-only
-pub trait VirtualStorageAsync {
-    /// The async mirror of the sync `put`: `Err` is the engine (or the
-    /// transport) refusing the bytes.
-    async fn put(&self, key: Vec<u8>, value: Vec<u8>) -> crate::error::Result<()>;
-    /// The async mirror of the sync `get`: `Ok(None)` is absence, `Err` is the
-    /// engine (or the transport) failing to answer.
-    async fn get(&self, key: &[u8]) -> crate::error::Result<Option<Vec<u8>>>;
-    /// The async mirror of the sync `del`: `Ok(())` covers "nothing there".
-    async fn del(&self, key: &[u8]) -> crate::error::Result<()>;
-    /// 前缀扫描，返回每个 key 的"剩余段"（去掉 prefix）
-    async fn scan_suffix(&self, prefix: &[u8]) -> crate::error::Result<Vec<Vec<u8>>>;
-    /// Range scan over FULL keys: `[begin, end)` byte order; None end =
-    /// unbounded. The async mirror of the sync trait's `scan_range`.
-    async fn scan_range(
-        &self,
-        begin: &[u8],
-        end: Option<&[u8]>,
-    ) -> crate::error::Result<Vec<Vec<u8>>>;
-    /// Async mirror of the sync `scan_range_iter` (ADR-0027). The default
-    /// BUFFERS via `scan_range` + per-key `get` (N+1); SlatedbStore
-    /// overrides with a ONE-PASS materialization (see impl). Laziness is
-    /// deliberately NOT attempted: the sync `ScanIter::next` would need
-    /// `block_on`, and the async call site lives INSIDE a runtime —
-    /// re-entrant `block_on` panics (module header). ADR-0020 already
-    /// ruled the async surface small enough that buffering is harmless.
-    async fn scan_range_iter(&self, begin: &[u8], end: Option<&[u8]>) -> ScanIter {
-        let mut pairs: Vec<crate::error::Result<(Vec<u8>, Vec<u8>)>> = Vec::new();
-        match self.scan_range(begin, end).await {
-            Ok(keys) => {
-                for k in keys {
-                    match self.get(&k).await {
-                        Ok(Some(v)) => pairs.push(Ok((k, v))),
-                        Ok(None) => {}
-                        Err(e) => {
-                            pairs.push(Err(e));
-                            break;
-                        }
-                    }
-                }
-            }
-            Err(e) => pairs.push(Err(e)),
-        }
-        ScanIter::Buffered(pairs.into_iter())
-    }
-    /// Async mirror of the sync `commit_batch` (ADR-0027): one engine-level
-    /// write over all accumulated ops. Default replays through put/del;
-    /// engines with a native batch override (SlatedbStore ships slatedb's
-    /// `WriteBatch` as ONE `db.write` + durable wait).
-    async fn commit_batch(&self, batch: Batch) -> crate::error::Result<()> {
-        for (k, v) in batch.ops {
-            match v {
-                Some(v) => self.put(k, v).await?,
-                None => self.del(&k).await?,
-            }
-        }
-        Ok(())
-    }
-}
-
-/// Prefix scan returning `(key suffix, value)` pairs — the async twin of
-/// the free `scan_suffix_kv` (ADR-0027; one pair-scan shape in both
-/// worlds). Relocated with the trait (ADR-0028).
-pub async fn scan_suffix_kv_async<S: VirtualStorageAsync + ?Sized>(
-    store: &S,
-    prefix: &[u8],
-) -> crate::error::Result<Vec<(Vec<u8>, Vec<u8>)>> {
-    let end = prefix_end(prefix);
-    let mut out = Vec::new();
-    for item in store.scan_range_iter(prefix, end.as_deref()).await {
-        let (full, v) = item?;
-        out.push((full.get(prefix.len()..).unwrap_or(&[]).to_vec(), v));
-    }
-    Ok(out)
 }

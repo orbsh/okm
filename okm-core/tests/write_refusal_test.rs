@@ -20,11 +20,11 @@
     clippy::unwrap_in_result,
     clippy::panic_in_result_fn
 )]
-#![cfg(feature = "test-engines")]
 
 use std::cell::Cell;
 
-use okm_core::{Collection, DocumentEncode, Error, KeyEncode, TestStore, VirtualStorage};
+use okm_async::TestStore;
+use okm_core::{Collection, DocumentEncode, Error, KeyEncode, VirtualStorage};
 
 /// The text the refusing engine answers with; asserted verbatim so a test cannot
 /// pass on "some error" when the engine's own words are what a caller needs.

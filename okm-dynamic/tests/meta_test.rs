@@ -21,9 +21,10 @@
 )]
 
 use okm_core::schema::CollectionSchema;
-use okm_core::{Document, DocumentEncode, KeyEncode, TableMeta, TestStore, VirtualStorage, meta};
+use okm_core::{Document, DocumentEncode, KeyEncode, TableMeta, VirtualStorage, meta};
 use okm_dynamic::{DynamicCollection, Value, ValueMap};
 
+use okm_async::TestStore;
 /// ns 92 = `[0x00, 0x5C]` — the hex locks below spell it out.
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
 pub struct MetaKey {

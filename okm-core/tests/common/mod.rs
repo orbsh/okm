@@ -1,6 +1,5 @@
 //! 共享测试类型（跨测试文件复用）
 #![allow(dead_code)]
-#![cfg(any(feature = "fjall", feature = "slatedb"))]
 
 use okm_core::{DocumentEncode, KeyEncode};
 

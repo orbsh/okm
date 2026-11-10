@@ -100,7 +100,7 @@ fn head(src: NodeRef, dst: NodeRef, predicate: &str) -> EdgeHead {
 /// the table: the primary slot orders by `edge_id`, so the max is the last key.
 #[test]
 fn max_edge_id_is_the_last_primary_key() {
-    let store = okm_core::TestStore::slatedb_mem();
+    let store = okm_async::TestStore::slatedb_mem();
     let mut g: Graph<_, Employment> = Graph::new(store);
     assert_eq!(
         g.max_edge_id().unwrap(),
@@ -138,7 +138,7 @@ fn max_edge_id_is_the_last_primary_key() {
 
 #[test]
 fn link_traverse_and_fetch_back_with_attributes() {
-    let store = okm_core::TestStore::slatedb_mem();
+    let store = okm_async::TestStore::slatedb_mem();
     let mut g: Graph<_, Employment> = Graph::new(store.clone());
 
     let attrs = Employment {
@@ -187,7 +187,7 @@ fn link_traverse_and_fetch_back_with_attributes() {
 
 #[test]
 fn predicates_are_listed_from_the_predicate_vocabulary() {
-    let store = okm_core::TestStore::slatedb_mem();
+    let store = okm_async::TestStore::slatedb_mem();
     let mut g: Graph<_, Employment> = Graph::new(store.clone());
 
     g.link(&head(user(1), org(9), "employs"), &Employment::default(), 1)
@@ -222,7 +222,7 @@ fn the_predicate_cursor_is_the_id_faces_bare_prefix() {
     // the field-name face (0x02) breaks nothing here and now, it resurfaces as
     // ids restarting after a process boundary and colliding with names already
     // allocated.
-    let store = okm_core::TestStore::slatedb_mem();
+    let store = okm_async::TestStore::slatedb_mem();
     let ns: &[u8] = &100u16.to_be_bytes();
     let bare = |s: u16| {
         let mut k = ns.to_vec();
@@ -280,7 +280,7 @@ fn the_predicate_cursor_is_the_id_faces_bare_prefix() {
 
 #[test]
 fn unlink_and_relabeled_parallel_edges() {
-    let store = okm_core::TestStore::slatedb_mem();
+    let store = okm_async::TestStore::slatedb_mem();
     let mut g: Graph<_, Employment> = Graph::new(store.clone());
 
     g.link(&head(user(1), org(9), "employs"), &Employment::default(), 1)
@@ -310,7 +310,7 @@ fn unlink_and_relabeled_parallel_edges() {
 
 #[test]
 fn unlink_deletes_the_declared_face_entry_exactly() {
-    let store = okm_core::TestStore::slatedb_mem();
+    let store = okm_async::TestStore::slatedb_mem();
     let mut g: Graph<_, Employment> = Graph::new(store.clone());
     let a = Employment {
         since_year: 2020,
@@ -347,7 +347,7 @@ fn rewrite_is_one_batch() {
     // A functional rewrite is unlink + link in ONE batch (ADR-0010's owed
     // item): same edge_id, new endpoints/predicate/payload, and every stale
     // face goes with the old row — no window between two commits.
-    let store = okm_core::TestStore::slatedb_mem();
+    let store = okm_async::TestStore::slatedb_mem();
     let mut g: Graph<_, Employment> = Graph::new(store.clone());
     let a = Employment {
         since_year: 2020,
@@ -394,7 +394,7 @@ fn rewrite_is_one_batch() {
 
 #[test]
 fn member_set_is_checked_at_write() {
-    let store = okm_core::TestStore::slatedb_mem();
+    let store = okm_async::TestStore::slatedb_mem();
     let mut g: Graph<_, Employment> = Graph::new(store.clone());
     // ns 12 is nobody's collection in this graph.
     let stranger = NodeRef::new(&12u16.to_be_bytes(), &1u64.to_be_bytes());
@@ -417,7 +417,7 @@ fn member_set_is_checked_at_write() {
 
 #[test]
 fn link_into_shares_one_batch_with_documents() {
-    let store = okm_core::TestStore::slatedb_mem();
+    let store = okm_async::TestStore::slatedb_mem();
     let mut g: Graph<_, Employment> = Graph::new(store.clone());
     let nodes = okm_core::Collection::new(store.clone());
 
@@ -451,7 +451,7 @@ fn node_kind_filter_intersects_typed_traversal() {
     // ADR-0017 §3 node-side note: composite filtering
     // `(:User)-[employs]->(:Org kind=2)` = predicate face ∪ node kind
     // face, intersected in memory — two cheap faces, one convergence.
-    let store = okm_core::TestStore::slatedb_mem();
+    let store = okm_async::TestStore::slatedb_mem();
     let orgs = okm_core::Collection::new(store.clone());
     let mut g: Graph<_, Employment> = Graph::new(store.clone());
 
@@ -516,7 +516,7 @@ fn noderef_varint_len_self_describing() {
 fn hex_lock_one_link() {
     // Byte-level lock of one link (ns 100, edge_id 1, predicate "employs"
     // → id 0, user(1)→org(9), payload {since_year: 2020, weight: 0}).
-    let store = okm_core::TestStore::slatedb_mem();
+    let store = okm_async::TestStore::slatedb_mem();
     let mut g: Graph<_, Employment> = Graph::new(store.clone());
     let attrs = Employment {
         since_year: 2020,
@@ -686,7 +686,7 @@ fn hex_lock_one_link() {
 
 #[test]
 fn neighbor_nodes_resolve_to_node_refs() {
-    let store = okm_core::TestStore::slatedb_mem();
+    let store = okm_async::TestStore::slatedb_mem();
     let mut g: Graph<_, Employment> = Graph::new(store.clone());
 
     let a1 = Employment {
@@ -744,7 +744,7 @@ fn the_edge_set_exports_as_a_table_with_named_endpoints() {
     use arrow::array::{Array, BinaryArray};
     use std::collections::BTreeMap;
 
-    let store = okm_core::TestStore::slatedb_mem();
+    let store = okm_async::TestStore::slatedb_mem();
     let mut g: Graph<_, Employment> = Graph::new(store.clone());
     g.link(
         &head(user(1), org(9), "employs"),
@@ -828,7 +828,7 @@ fn reindex_rebuilds_the_faces_one_chunk_at_a_time() {
     // two phases as a collection's faces — sweep, then re-derive from the primary
     // — with the ops split across commits, so a large edge set costs one chunk of
     // memory instead of one batch of every entry.
-    let store = okm_core::TestStore::slatedb_mem();
+    let store = okm_async::TestStore::slatedb_mem();
     let mut g: Graph<_, Employment> = Graph::new(store.clone());
     for id in 1..=5u64 {
         g.link(

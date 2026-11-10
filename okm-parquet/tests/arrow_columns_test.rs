@@ -15,10 +15,9 @@
 )]
 use okm_parquet::bridge::ToRecordBatch;
 
+use okm_async::TestStore;
 use okm_core::schema::CollectionSchema;
-use okm_core::{
-    Collection, DocumentEncode, KeyEncode, Offset, Quant, TestStore, VarInt, VirtualStorage,
-};
+use okm_core::{Collection, DocumentEncode, KeyEncode, Offset, Quant, VarInt, VirtualStorage};
 use okm_dynamic::arrow::{ordered_fields, record_batch};
 use okm_dynamic::{Value, decode_payload};
 

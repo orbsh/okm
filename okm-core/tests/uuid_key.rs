@@ -12,8 +12,9 @@
     clippy::panic_in_result_fn
 )]
 
-use okm_core::{Collection, DocumentEncode, KeyEncode, Ref, TestStore, Uuid4, Uuid7};
+use okm_core::{Collection, DocumentEncode, KeyEncode, Ref, Uuid4, Uuid7};
 
+use okm_async::TestStore;
 #[derive(DocumentEncode, Clone, PartialEq, Debug)]
 #[ok_ref(Uuid7)]
 #[ok_ns(70)]
@@ -71,7 +72,6 @@ fn a_uuid_payload_field_keeps_its_kind_and_round_trips() {
     assert_eq!(got.device, device);
     assert_eq!(got.note, "kept");
 }
-
 
 #[test]
 fn a_uuid7_key_is_sixteen_bytes_and_its_order_is_time_order() {

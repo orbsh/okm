@@ -12,7 +12,8 @@
 //! model/    data model + codecs: keys, documents, indexes, graphs,
 //!           reduces, schema, dynamic values, wrapper types
 //! engine/   KV engine boundary: the VirtualStorage abstraction and its
-//!           adapters (Fjall / redb / slatedb / TestStore) + remote nesting
+//!           adapters (Fjall / redb / localStorage) + remote nesting; engines that
+//!           speak an async API live in `okm-async` (ADR-0059)
 //! bridge/   exports to the outside world (Arrow/Parquet, JSON schema,
 //!           snapshots)
 //! subscribe event emission (cross-cutting, stays top-level)
@@ -21,7 +22,11 @@
 //! # Features
 //!
 //! - `fjall` — sync [`FjallStore`] engine adapter.
-//! - `slatedb` — async [`SlatedbStore`] engine adapter.
+//! - `redb` — sync [`RedbStore`] engine adapter.
+//! - `localstorage` — the in-browser adapter.
+//!
+//! The engine whose own API is asynchronous lives in `okm-async` (ADR-0059),
+//! together with the async mirror of the storage contract.
 //!
 //! See `docs/adr/` for the design decisions (namespace vocabulary,
 //! secondary index slots, assembly point, frame codec) and the project
@@ -69,12 +74,8 @@ pub use model::wrappers::{
 
 pub use engine::nest::{NestStorage, RemoteStore, VirtualHandle};
 pub use engine::storage::{
-    Batch, BatchStore, SharedVirtualStorage, VirtualStorage, VirtualStorageAsync, scan_suffix_kv,
-    scan_suffix_kv_async,
+    Batch, BatchStore, SharedVirtualStorage, VirtualStorage, scan_suffix_kv,
 };
-#[cfg(any(feature = "test-engines", feature = "fjall", feature = "redb"))]
-pub use engine::test_engine::TestStore;
-pub use engine::wire_client::{WireClient, WireTransport};
 pub use model::document::Collection;
 pub use model::field::{FieldDesc, FieldType};
 pub use model::graph::{EdgeBody, EdgeHead, EdgeKey, Graph, GraphEncode, NodeRef, NodeSet};
@@ -96,8 +97,6 @@ pub use subscribe::{Event, Op, SinkCell};
 pub use engine::fjall_backend::FjallStore;
 #[cfg(feature = "localstorage")]
 pub use engine::localstorage_backend::{LocalStorageStore, b64_decode, b64_encode};
-#[cfg(feature = "slatedb")]
-pub use engine::slatedb_backend::SlatedbStore;
 
 // ================= path-compat re-exports =================
 // Downstream crates (okm-dynamic, okm-query, bindings) and tests import
@@ -110,11 +109,7 @@ pub use engine::localstorage_backend;
 pub use engine::nest;
 #[cfg(feature = "redb")]
 pub use engine::redb_backend;
-#[cfg(feature = "slatedb")]
-pub use engine::slatedb_backend;
 pub use engine::storage;
-#[cfg(any(feature = "test-engines", feature = "fjall", feature = "redb"))]
-pub use engine::test_engine;
 pub use model::document;
 pub use model::faces::{FINGERPRINT_LEN, FaceSpec, IndexDecl, RebuildReport, fingerprint_specs};
 pub use model::field;

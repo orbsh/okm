@@ -12,9 +12,9 @@
     clippy::panic_in_result_fn
 )]
 
+use okm_async::TestStore;
 use okm_core::changelog::{ChangelogConfig, ChangelogStore, read_sealed, sealed_segments};
 use okm_core::{Batch, Collection, Document, DocumentEncode, KeyEncode, VirtualStorage};
-use okm_async::TestStore;
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
 pub struct K {
@@ -125,11 +125,22 @@ fn an_uncaptured_table_writes_no_log() {
     }
 
     assert!(kept, "the write still landed in the store");
-    assert!(!<Quiet as Document>::CAPTURED, "the attribute reached the const");
-    assert!(
-        <Row as Document>::CAPTURED,
-        "the trait default keeps every other table in"
-    );
+    // The subject IS a const: that is the claim — the attribute reached the
+    // derive's `CAPTURED`, so the value is known at compile time by design.
+    #[allow(clippy::assertions_on_constants)]
+    {
+        assert!(
+            !<Quiet as Document>::CAPTURED,
+            "the attribute reached the const"
+        );
+    }
+    #[allow(clippy::assertions_on_constants)] // same const claim, other side
+    {
+        assert!(
+            <Row as Document>::CAPTURED,
+            "the trait default keeps every other table in"
+        );
+    }
     assert!(
         !okm_core::changelog::table_dir(root.path(), QUIET_NS).exists(),
         "nothing was registered for it, so no directory was made"

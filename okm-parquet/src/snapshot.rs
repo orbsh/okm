@@ -88,9 +88,9 @@ pub fn json_schema<K: KeyEncode, R: Document<Key = K>>() -> String {
 /// Parquet snapshot tier (ADR-0007 Phase 3): batch → file, file → store.
 pub mod parquet_io {
     use super::*;
+    use arrow::array::{Array, BinaryArray, RecordBatch};
     use okm_core::engine::storage::VirtualStorage;
     use okm_core::model::document::Collection;
-    use arrow::array::{Array, BinaryArray, RecordBatch};
     use std::sync::Arc;
 
     /// Export all documents to a Parquet file (overwrite). Typed columns, schema
@@ -644,8 +644,8 @@ pub mod parquet_io {
         where
             F: Fn(&str) -> Option<u16>,
         {
-            use okm_core::model::graph::{EdgeHead, EdgeKey, NodeRef};
             use arrow::array::{Array, BinaryArray, StringArray};
+            use okm_core::model::graph::{EdgeHead, EdgeKey, NodeRef};
 
             let key_fields = <EdgeKey as KeyEncode>::FIELDS;
             let row_fields = <E as Document>::FIELDS;
@@ -784,8 +784,10 @@ pub mod parquet_io {
     fn variant_map(
         col: &dyn arrow::array::Array,
         row: usize,
-    ) -> Result<std::collections::BTreeMap<String, okm_core::model::obj_dynamic::DynamicValue>, String>
-    {
+    ) -> Result<
+        std::collections::BTreeMap<String, okm_core::model::obj_dynamic::DynamicValue>,
+        String,
+    > {
         use arrow::array::{Array, BinaryArray, StructArray};
 
         // The canonical storage type of a variant: `struct<metadata: binary,
@@ -815,7 +817,9 @@ pub mod parquet_io {
         }
         Ok(out)
     }
-    fn to_dynamic(v: &parquet_variant::Variant<'_, '_>) -> okm_core::model::obj_dynamic::DynamicValue {
+    fn to_dynamic(
+        v: &parquet_variant::Variant<'_, '_>,
+    ) -> okm_core::model::obj_dynamic::DynamicValue {
         use okm_core::model::obj_dynamic::DynamicValue;
         if v.as_null().is_some() {
             return DynamicValue::Null;
@@ -873,8 +877,8 @@ pub mod parquet_io {
     where
         A::Acc: PartialOrd,
     {
-        use okm_core::model::reduce::ReduceCodec;
         use arrow::array::{Array, BinaryArray, StringArray, UInt16Array};
+        use okm_core::model::reduce::ReduceCodec;
 
         let file = std::fs::File::open(path)?;
         let reader = parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(file)?

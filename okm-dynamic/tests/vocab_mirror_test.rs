@@ -17,8 +17,9 @@
     clippy::panic_in_result_fn
 )]
 
+use okm_async::TestStore;
 use okm_core::schema::CollectionSchema;
-use okm_core::{DocumentEncode, KeyEncode, TestStore, write_slot};
+use okm_core::{DocumentEncode, KeyEncode, write_slot};
 use okm_dynamic::{DynamicCollection, Value, ValueMap};
 
 const NS: u16 = 47;

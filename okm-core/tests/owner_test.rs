@@ -76,7 +76,11 @@ fn a_claim_without_a_state_is_refused_rather_than_defaulted() {
 
     // An unknown word is refused too: a reader that cannot name the state cannot
     // decide whether the writer is still there.
-    std::fs::write(owner::path(dir.path()), "state halfway\nepoch 3\nholder abc\n").unwrap();
+    std::fs::write(
+        owner::path(dir.path()),
+        "state halfway\nepoch 3\nholder abc\n",
+    )
+    .unwrap();
     assert!(owner::read(dir.path()).is_err());
 }
 
@@ -107,7 +111,10 @@ fn the_gate_closes_when_another_holder_takes_the_file_and_stays_closed() {
     while lease.may_write() && std::time::Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(5));
     }
-    assert!(!lease.may_write(), "the old holder kept writing after a takeover");
+    assert!(
+        !lease.may_write(),
+        "the old holder kept writing after a takeover"
+    );
 
     // A claim that went back to `writing` under its own name does not reopen it: the
     // gate is one way on purpose.
@@ -134,8 +141,18 @@ fn a_claim_that_cannot_be_read_closes_the_gate() {
 #[test]
 fn a_takeover_request_bumps_the_epoch_each_time_it_is_asked() {
     let dir = tempfile::tempdir().unwrap();
-    assert_eq!(owner::announce_drain(dir.path(), "new", "/srv/store-b").unwrap().epoch, 1);
-    assert_eq!(owner::announce_drain(dir.path(), "new", "/srv/store-b").unwrap().epoch, 2);
+    assert_eq!(
+        owner::announce_drain(dir.path(), "new", "/srv/store-b")
+            .unwrap()
+            .epoch,
+        1
+    );
+    assert_eq!(
+        owner::announce_drain(dir.path(), "new", "/srv/store-b")
+            .unwrap()
+            .epoch,
+        2
+    );
 }
 
 #[test]
@@ -150,7 +167,14 @@ fn a_handover_names_the_position_the_request_was_made_under() {
     );
 
     // The old holder's last write, under the epoch it was asked for.
-    owner::hand_over(dir.path(), request.epoch, "old", "/srv/store-a", "00000007.segment").unwrap();
+    owner::hand_over(
+        dir.path(),
+        request.epoch,
+        "old",
+        "/srv/store-a",
+        "00000007.segment",
+    )
+    .unwrap();
     assert_eq!(
         owner::wait_for_handover(dir.path(), request.epoch, Duration::from_secs(1)).unwrap(),
         Some("00000007.segment".to_string())

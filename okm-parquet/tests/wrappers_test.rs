@@ -10,9 +10,10 @@
 )]
 use okm_parquet::bridge::ToRecordBatch;
 
+use okm_async::TestStore;
 use okm_core::{
-    Collection, Document, DocumentEncode, FieldType, KeyEncode, Offset, Quant, Reverse, TestStore,
-    VarInt, offset_decode, offset_encode,
+    Collection, Document, DocumentEncode, FieldType, KeyEncode, Offset, Quant, Reverse, VarInt,
+    offset_decode, offset_encode,
 };
 
 #[derive(KeyEncode, Clone, PartialEq, Debug)]
@@ -111,7 +112,7 @@ fn table_round_trip_with_wrappers() {
 // ================= Arrow / Parquet =================
 mod parquet {
     use super::*;
-    use okm_parquet::snapshot::parquet_io as parquet_io;
+    use okm_parquet::snapshot::parquet_io;
 
     #[test]
     fn parquet_roundtrip_with_wrappers() {

@@ -510,7 +510,7 @@ mod tests {
     /// name face is left EMPTY here on purpose — the load must not need it.
     #[test]
     fn load_inverts_the_id_face_and_needs_no_name_scan() {
-        use okm_core::TestStore;
+        use okm_async::TestStore;
         let store = TestStore::slatedb_mem();
         let mut batch = okm_core::storage::Batch::default();
         for (id, name) in [(0u16, "note"), (1u16, "weight")] {

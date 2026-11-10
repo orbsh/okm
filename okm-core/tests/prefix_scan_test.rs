@@ -15,7 +15,8 @@
     clippy::panic_in_result_fn
 )]
 
-use okm_core::{Collection, DocumentEncode, KeyEncode, TestStore};
+use okm_async::TestStore;
+use okm_core::{Collection, DocumentEncode, KeyEncode};
 
 #[derive(KeyEncode, Clone, PartialEq, Eq, Debug)]
 pub struct DeviceKey {

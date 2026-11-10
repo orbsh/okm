@@ -9,7 +9,7 @@
 //! Not gated behind a feature: tests compile against whatever engines the
 //! build has; the matrix is simply the engines available.
 
-use crate::engine::storage::VirtualStorage;
+use okm_core::engine::storage::VirtualStorage;
 
 /// A concrete engine handle. Clones share the underlying keyspace (same
 /// semantics as real engine handles).
@@ -17,17 +17,17 @@ use crate::engine::storage::VirtualStorage;
 pub enum TestStore {
     /// slatedb over the in-memory object store. Zero fs.
     #[cfg(feature = "slatedb")]
-    Slatedb(std::sync::Arc<crate::engine::slatedb_backend::SlatedbSync>),
+    Slatedb(std::sync::Arc<crate::slatedb_backend::SlatedbSync>),
     /// fjall over a temp dir. The dir lives as long as the handle.
     #[cfg(feature = "fjall")]
     Fjall {
-        store: crate::engine::fjall_backend::FjallStore,
+        store: okm_core::engine::fjall_backend::FjallStore,
         _dir: std::sync::Arc<tempfile::TempDir>,
     },
     /// redb over a temp file. The file lives as long as the handle.
     #[cfg(feature = "redb")]
     Redb {
-        store: crate::engine::redb_backend::RedbStore,
+        store: okm_core::engine::redb_backend::RedbStore,
         _dir: std::sync::Arc<tempfile::TempDir>,
     },
 }
@@ -60,8 +60,7 @@ impl TestStore {
     )]
     pub fn slatedb_mem() -> Self {
         Self::Slatedb(std::sync::Arc::new(
-            crate::engine::slatedb_backend::SlatedbSync::open_mem("okm-test")
-                .expect("slatedb mem open"),
+            crate::slatedb_backend::SlatedbSync::open_mem("okm-test").expect("slatedb mem open"),
         ))
     }
 
@@ -75,7 +74,7 @@ impl TestStore {
     )]
     pub fn fjall_tmp() -> Self {
         let dir = tempfile::TempDir::new().expect("tempdir");
-        let store = crate::engine::fjall_backend::FjallStore::open(dir.path(), "okm-test")
+        let store = okm_core::engine::fjall_backend::FjallStore::open(dir.path(), "okm-test")
             .expect("fjall open");
         Self::Fjall {
             store,
@@ -93,7 +92,7 @@ impl TestStore {
     )]
     pub fn redb_tmp() -> Self {
         let dir = tempfile::TempDir::new().expect("tempdir");
-        let store = crate::engine::redb_backend::RedbStore::open(&dir.path().join("okm.redb"))
+        let store = okm_core::engine::redb_backend::RedbStore::open(&dir.path().join("okm.redb"))
             .expect("redb open");
         Self::Redb {
             store,
@@ -120,7 +119,7 @@ impl TestStore {
     }
 }
 
-#[cfg(feature = "test-engines")]
+#[cfg(feature = "slatedb")]
 impl Default for TestStore {
     /// Default test engine: slatedb in-memory (zero fs, fastest to spin).
     fn default() -> Self {
@@ -128,7 +127,7 @@ impl Default for TestStore {
     }
 }
 
-#[cfg(all(not(feature = "test-engines"), feature = "fjall"))]
+#[cfg(all(not(feature = "slatedb"), feature = "fjall"))]
 impl Default for TestStore {
     /// No slatedb in this build: fjall temp-dir is the fallback.
     fn default() -> Self {
@@ -136,11 +135,7 @@ impl Default for TestStore {
     }
 }
 
-#[cfg(all(
-    not(feature = "test-engines"),
-    not(feature = "fjall"),
-    feature = "redb"
-))]
+#[cfg(all(not(feature = "slatedb"), not(feature = "fjall"), feature = "redb"))]
 impl Default for TestStore {
     /// Only redb in this build.
     fn default() -> Self {
@@ -148,7 +143,7 @@ impl Default for TestStore {
     }
 }
 
-impl crate::engine::storage::SharedVirtualStorage for TestStore {
+impl okm_core::engine::storage::SharedVirtualStorage for TestStore {
     fn shared_handle(&self) -> Self {
         self.shared_handle()
     }
@@ -159,7 +154,7 @@ impl crate::engine::storage::SharedVirtualStorage for TestStore {
     allow(unused_variables)
 )]
 impl VirtualStorage for TestStore {
-    fn put(&self, key: Vec<u8>, value: Vec<u8>) -> crate::error::Result<()> {
+    fn put(&self, key: Vec<u8>, value: Vec<u8>) -> okm_core::error::Result<()> {
         match self {
             #[cfg(feature = "slatedb")]
             Self::Slatedb(s) => s.put_sync(key, value),
@@ -168,12 +163,12 @@ impl VirtualStorage for TestStore {
             #[cfg(feature = "redb")]
             Self::Redb { store, .. } => store.clone().put(key, value),
             #[cfg(not(any(feature = "slatedb", feature = "fjall", feature = "redb")))]
-            _ => Err(crate::error::Error::Engine(
+            _ => Err(okm_core::error::Error::Engine(
                 "TestStore: no engine features enabled".into(),
             )),
         }
     }
-    fn get(&self, key: &[u8]) -> crate::error::Result<Option<Vec<u8>>> {
+    fn get(&self, key: &[u8]) -> okm_core::error::Result<Option<Vec<u8>>> {
         match self {
             #[cfg(feature = "slatedb")]
             Self::Slatedb(s) => s.get_sync(key),
@@ -185,7 +180,7 @@ impl VirtualStorage for TestStore {
             _ => unreachable!("TestStore: no engine features enabled"),
         }
     }
-    fn del(&self, key: &[u8]) -> crate::error::Result<()> {
+    fn del(&self, key: &[u8]) -> okm_core::error::Result<()> {
         match self {
             #[cfg(feature = "slatedb")]
             Self::Slatedb(s) => s.del_sync(key),
@@ -194,12 +189,12 @@ impl VirtualStorage for TestStore {
             #[cfg(feature = "redb")]
             Self::Redb { store, .. } => store.clone().del(key),
             #[cfg(not(any(feature = "slatedb", feature = "fjall", feature = "redb")))]
-            _ => Err(crate::error::Error::Engine(
+            _ => Err(okm_core::error::Error::Engine(
                 "TestStore: no engine features enabled".into(),
             )),
         }
     }
-    fn scan_suffix(&self, prefix: &[u8]) -> crate::error::Result<Vec<Vec<u8>>> {
+    fn scan_suffix(&self, prefix: &[u8]) -> okm_core::error::Result<Vec<Vec<u8>>> {
         match self {
             #[cfg(feature = "slatedb")]
             Self::Slatedb(s) => s.scan_suffix_sync(prefix),
@@ -211,7 +206,11 @@ impl VirtualStorage for TestStore {
             _ => unreachable!("TestStore: no engine features enabled"),
         }
     }
-    fn scan_range(&self, begin: &[u8], end: Option<&[u8]>) -> crate::error::Result<Vec<Vec<u8>>> {
+    fn scan_range(
+        &self,
+        begin: &[u8],
+        end: Option<&[u8]>,
+    ) -> okm_core::error::Result<Vec<Vec<u8>>> {
         match self {
             #[cfg(feature = "slatedb")]
             Self::Slatedb(s) => s.scan_range_sync(begin, end),
@@ -223,7 +222,11 @@ impl VirtualStorage for TestStore {
             _ => unreachable!("TestStore: no engine features enabled"),
         }
     }
-    fn scan_range_iter(&self, begin: &[u8], end: Option<&[u8]>) -> super::storage::ScanIter {
+    fn scan_range_iter(
+        &self,
+        begin: &[u8],
+        end: Option<&[u8]>,
+    ) -> okm_core::engine::storage::ScanIter {
         match self {
             #[cfg(feature = "slatedb")]
             Self::Slatedb(s) => s.scan_range_iter_sync(begin, end),

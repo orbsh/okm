@@ -12,8 +12,9 @@
     clippy::panic_in_result_fn
 )]
 
-use okm_core::{Document, DocumentEncode, Reduce, ReduceCodec, ReduceLogic, TestStore};
+use okm_core::{Document, DocumentEncode, Reduce, ReduceCodec, ReduceLogic};
 
+use okm_async::TestStore;
 /// PostKey：代理主键。
 #[derive(okm_core::KeyEncode, Clone, PartialEq, Debug, Default)]
 pub struct PostKey {

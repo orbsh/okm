@@ -264,7 +264,7 @@ impl DoubleEndedIterator for RemoteScanIter {
     /// need a descending-page request shape — deferred): first call
     /// materializes the remaining range through ordinary forward pages,
     /// then drains from the back — semantics identical, laziness lost
-    /// where the wire shape cannot give it back (the slatedb rule).
+    /// where the wire shape cannot give it back (the async-forward rule).
     fn next_back(&mut self) -> Option<Self::Item> {
         while self.buf.is_empty() && !self.done {
             if let Err(e) = self.refill() {
@@ -634,7 +634,7 @@ fn hosted_key(prefix: &Option<Vec<u8>>, sender_key: &[u8]) -> Vec<u8> {
     }
 }
 
-#[cfg(all(test, feature = "test-engines"))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::engine::storage::VirtualStorage;

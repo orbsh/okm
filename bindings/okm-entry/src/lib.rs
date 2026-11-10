@@ -42,7 +42,7 @@ pub trait Engine: Send + Sync {
 /// rule): same `DynamicCollection` code path, the enum only dispatches
 /// bytes.
 pub enum EngineBox {
-    Test(okm_core::TestStore),
+    Test(okm_async::TestStore),
     Injected(Arc<dyn Engine>),
 }
 

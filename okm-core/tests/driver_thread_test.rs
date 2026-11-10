@@ -13,9 +13,8 @@
     clippy::unwrap_in_result,
     clippy::panic_in_result_fn
 )]
-#![cfg(feature = "test-engines")]
 
-use okm_core::TestStore;
+use okm_async::TestStore;
 use okm_core::storage::VirtualStorage;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]

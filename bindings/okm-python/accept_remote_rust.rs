@@ -11,11 +11,12 @@
 //! Cross-language byte equality, extended from codec bytes to semantic
 //! entries (ADR-0022 acceptance).
 
-use okm_core::{KeyEncode, DocumentEncode, TestStore};
+use okm_core::{KeyEncode, DocumentEncode};
 use okm_core::schema::CollectionSchema;
 use okm_dynamic::{
     AccessMethod, AccessMethodKind, DynamicCollection, ReduceLogic, ReduceSpec, Value, ValueMap,
 };
+use okm_async::TestStore;
 use std::collections::BTreeMap;
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]

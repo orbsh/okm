@@ -15,10 +15,9 @@
     clippy::panic_in_result_fn
 )]
 
-use okm_core::{
-    Collection, Document, DocumentEncode, FaceStatus, KeyEncode, TableMeta, TestStore, meta,
-};
+use okm_core::{Collection, Document, DocumentEncode, FaceStatus, KeyEncode, TableMeta, meta};
 
+use okm_async::TestStore;
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
 pub struct NoteKey {
     pub id: u64,

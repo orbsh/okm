@@ -435,13 +435,10 @@ impl<I: VocabId> VocabCache<I> {
 // The engine-backed half of this module's tests needs a real store, and `test_engine` only
 // exists when a backend feature is on — so the module rides the same gate instead of failing
 // the whole crate's unit-test build with no backend compiled in.
-#[cfg(all(
-    test,
-    any(feature = "test-engines", feature = "fjall", feature = "redb")
-))]
+#[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::test_engine::TestStore;
+    use crate::engine::mem_store::MemStore;
 
     const HEADER: &[u8] = &[0x00, 0x21]; // ns 33, no partition
 
@@ -454,7 +451,7 @@ mod tests {
 
     #[test]
     fn allocates_sequentially_and_is_cached() {
-        let store = TestStore::slatedb_mem();
+        let store = MemStore::new();
         let mut d = VocabCache::<u16>::new(FIELD_VOCAB);
         let a = d.id_for(&store, HEADER, "alpha").unwrap();
         let b = d.id_for(&store, HEADER, "beta").unwrap();
@@ -484,7 +481,7 @@ mod tests {
 
     #[test]
     fn the_two_vocabularies_never_share_an_id_space() {
-        let store = TestStore::slatedb_mem();
+        let store = MemStore::new();
         let mut fields = VocabCache::<u16>::new(FIELD_VOCAB);
         let mut kinds = VocabCache::<u16>::new(PREDICATE_VOCAB);
         // The same label allocates in both; the same number names two
@@ -515,7 +512,7 @@ mod tests {
 
     #[test]
     fn fresh_cache_loads_from_engine_and_resumes_numbering() {
-        let store = TestStore::slatedb_mem();
+        let store = MemStore::new();
         {
             let mut d = VocabCache::<u16>::new(PREDICATE_VOCAB);
             d.id_for(&store, HEADER, "one").unwrap();
@@ -534,7 +531,7 @@ mod tests {
 
     #[test]
     fn a_sparse_seeded_id_still_reads_back() {
-        let store = TestStore::slatedb_mem();
+        let store = MemStore::new();
         let mut d = VocabCache::<u16>::new(FIELD_VOCAB);
         // Seed a high id directly, then read it through the cache.
         let mut batch = Batch::default();
@@ -565,7 +562,7 @@ mod tests {
 
         // Two fields no longer share an id space: the same number in two
         // fields names two different labels.
-        let store = TestStore::slatedb_mem();
+        let store = MemStore::new();
         let mut status = VocabCache::<u8>::new(data_vocab(0));
         let mut color = VocabCache::<u8>::new(data_vocab(1));
         assert_eq!(status.id_for(&store, HEADER, "active").unwrap(), 0);
@@ -579,7 +576,7 @@ mod tests {
 
     #[test]
     fn a_u8_vocabulary_stops_after_256_labels() {
-        let store = TestStore::slatedb_mem();
+        let store = MemStore::new();
         let mut d = VocabCache::<u8>::new(data_vocab(0));
         // Ids 0..=254 fit: allocation needs `succ()` to exist so the cursor can
         // be bumped, so the last usable id is one short of the width. The 256th
@@ -603,7 +600,7 @@ mod tests {
 
     #[test]
     fn an_allocated_id_is_only_evidence_after_the_commit_carrying_it() {
-        let store = TestStore::slatedb_mem();
+        let store = MemStore::new();
         let mut d = VocabCache::<u16>::new(FIELD_VOCAB);
         assert_eq!(d.id_for(&store, HEADER, "alpha").unwrap(), 0);
         assert_eq!(d.pending_len(), 1, "an allocation is not evidence yet");
@@ -632,7 +629,7 @@ mod tests {
         // The observable difference between "the mirror says so" and "the store
         // says so": delete the engine's entry behind the cache's back. A probe
         // re-allocates; the fast path answers the mirror.
-        let store = TestStore::slatedb_mem();
+        let store = MemStore::new();
         let mut d = VocabCache::<u16>::new(FIELD_VOCAB);
         assert_eq!(d.id_for(&store, HEADER, "alpha").unwrap(), 0);
         store

@@ -14,9 +14,10 @@
 
 use okm_core::changelog::{ChangelogConfig, ChangelogStore};
 use okm_core::model::obj_dynamic::DynamicValue;
-use okm_core::{Collection, DocumentEncode, KeyEncode, TestStore, Vocab};
+use okm_core::{Collection, DocumentEncode, KeyEncode, Vocab};
 use okm_parquet::{DrainConfig, drain};
 
+use okm_async::TestStore;
 #[derive(KeyEncode, Clone, PartialEq, Debug)]
 pub struct K {
     pub org: u32,

@@ -13,10 +13,9 @@
     clippy::panic_in_result_fn
 )]
 
-use okm_core::changelog::{
-    ChangelogConfig, ChangelogStore, CompactPolicy, apply_log, table_dir,
-};
-use okm_core::{Collection, Document, DocumentEncode, KeyEncode, TestStore};
+use okm_async::TestStore;
+use okm_core::changelog::{ChangelogConfig, ChangelogStore, CompactPolicy, apply_log, table_dir};
+use okm_core::{Collection, Document, DocumentEncode, KeyEncode};
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
 pub struct RowKey {
@@ -198,7 +197,12 @@ fn deltas(dir: &std::path::Path) -> usize {
     std::fs::read_dir(dir)
         .unwrap()
         .filter(|e| {
-            let name = e.as_ref().unwrap().file_name().to_string_lossy().into_owned();
+            let name = e
+                .as_ref()
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .into_owned();
             name.ends_with(".segment") && !name.contains(".baseline.")
         })
         .count()
@@ -208,7 +212,12 @@ fn baselines(dir: &std::path::Path) -> usize {
     std::fs::read_dir(dir)
         .unwrap()
         .filter(|e| {
-            let name = e.as_ref().unwrap().file_name().to_string_lossy().into_owned();
+            let name = e
+                .as_ref()
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .into_owned();
             name.ends_with(".segment") && name.contains(".baseline.")
         })
         .count()
@@ -238,15 +247,31 @@ fn the_policy_compacts_at_a_rotation_without_being_asked() {
     let app = Collection::<_, RowKey, Row>::captured(writer).unwrap();
 
     for id in 0..8 {
-        app.put(&RowKey { id }, &Row { title: format!("row {id}") }).unwrap();
+        app.put(
+            &RowKey { id },
+            &Row {
+                title: format!("row {id}"),
+            },
+        )
+        .unwrap();
     }
     // A baseline is written in chunks, so it can be more than one file.
     assert!(baselines(&dir) >= 1, "the size trigger fired on its own");
-    assert!(deltas(&dir) < 8, "and the covered deltas are gone: {}", deltas(&dir));
+    assert!(
+        deltas(&dir) < 8,
+        "and the covered deltas are gone: {}",
+        deltas(&dir)
+    );
 
     // Whatever it pruned, a replay still holds every row.
     for id in 8..10 {
-        app.put(&RowKey { id }, &Row { title: format!("row {id}") }).unwrap();
+        app.put(
+            &RowKey { id },
+            &Row {
+                title: format!("row {id}"),
+            },
+        )
+        .unwrap();
     }
     let target = TestStore::slatedb_mem();
     apply_log(log.path(), &header, &target, None).unwrap();
@@ -279,7 +304,11 @@ fn a_policy_of_none_never_compacts_on_its_own() {
         app.put(&RowKey { id }, &Row { title: "x".into() }).unwrap();
     }
     assert_eq!(baselines(&dir), 0, "no policy, no baseline");
-    assert!(deltas(&dir) >= 8, "every delta is still there: {}", deltas(&dir));
+    assert!(
+        deltas(&dir) >= 8,
+        "every delta is still there: {}",
+        deltas(&dir)
+    );
     // The verb is still there for a host that wants to run it itself.
     let before = deltas(&dir);
     // Closing the writer can seal a footer-only delta, so at least `before` go.

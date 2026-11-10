@@ -23,8 +23,9 @@
 
 use std::collections::BTreeMap;
 
+use okm_async::TestStore;
 use okm_core::schema::CollectionSchema;
-use okm_core::{DocumentEncode, KeyEncode, TestStore, VirtualStorage};
+use okm_core::{DocumentEncode, KeyEncode, VirtualStorage};
 use okm_dynamic::{AccessMethod, DynamicCollection, FieldType, Path, Value, ValueMap};
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]

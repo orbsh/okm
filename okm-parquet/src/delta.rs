@@ -79,7 +79,11 @@ pub fn file_summary(path: &Path) -> Result<FileSummary, String> {
     }
     let metadata = reader.metadata();
     // The row count is the sum over row groups.
-    let rows: u64 = metadata.row_groups().iter().map(|g| g.num_rows() as u64).sum();
+    let rows: u64 = metadata
+        .row_groups()
+        .iter()
+        .map(|g| g.num_rows() as u64)
+        .sum();
 
     // Bounds come from the Parquet statistics the writer already computed, folded per
     // column across row groups. A column with no statistics simply gets none here —
@@ -190,9 +194,7 @@ fn bounds(
         (Statistics::Int32(s), DataType::Int8 | DataType::Int16 | DataType::Int32) => {
             Some((num(*s.min_opt()? as i64), num(*s.max_opt()? as i64)))
         }
-        (Statistics::Int64(s), DataType::Int64) => {
-            Some((num(*s.min_opt()?), num(*s.max_opt()?)))
-        }
+        (Statistics::Int64(s), DataType::Int64) => Some((num(*s.min_opt()?), num(*s.max_opt()?))),
         (Statistics::Float(s), DataType::Float32) => {
             Some((float(*s.min_opt()? as f64)?, float(*s.max_opt()? as f64)?))
         }
@@ -493,11 +495,20 @@ fn stats_json(file: &FileSummary) -> String {
     let mut stats = serde_json::Map::new();
     stats.insert("numRecords".into(), serde_json::Value::from(file.rows));
     if !file.min.is_empty() {
-        stats.insert("minValues".into(), serde_json::Value::Object(file.min.clone()));
-        stats.insert("maxValues".into(), serde_json::Value::Object(file.max.clone()));
+        stats.insert(
+            "minValues".into(),
+            serde_json::Value::Object(file.min.clone()),
+        );
+        stats.insert(
+            "maxValues".into(),
+            serde_json::Value::Object(file.max.clone()),
+        );
     }
     if !file.nulls.is_empty() {
-        stats.insert("nullCount".into(), serde_json::Value::Object(file.nulls.clone()));
+        stats.insert(
+            "nullCount".into(),
+            serde_json::Value::Object(file.nulls.clone()),
+        );
     }
     serde_json::Value::Object(stats).to_string()
 }

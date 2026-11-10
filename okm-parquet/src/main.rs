@@ -17,7 +17,7 @@
 
 use okm_core::SharedVirtualStorage;
 use okm_core::changelog::replay::{TableRun, replay_and_reconcile, replay_table};
-use okm_parquet::{Report, DrainConfig, drain, drain_table};
+use okm_parquet::{DrainConfig, Report, drain, drain_table};
 use std::path::PathBuf;
 
 fn main() {
@@ -55,10 +55,7 @@ fn run() -> Result<i32, String> {
 
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
-        let mut value = || {
-            args.next()
-                .ok_or_else(|| format!("{arg} needs a value"))
-        };
+        let mut value = || args.next().ok_or_else(|| format!("{arg} needs a value"));
         match arg.as_str() {
             "--root" | "--log" => root = Some(PathBuf::from(value()?)),
             "--out" | "--lake" => out = Some(PathBuf::from(value()?)),
@@ -122,7 +119,11 @@ fn status(args: &[String]) -> Result<i32, String> {
 
     let mut it = args.iter();
     while let Some(arg) = it.next() {
-        let mut value = || it.next().cloned().ok_or_else(|| format!("{arg} needs a value"));
+        let mut value = || {
+            it.next()
+                .cloned()
+                .ok_or_else(|| format!("{arg} needs a value"))
+        };
         match arg.as_str() {
             "--root" | "--log" => root = Some(PathBuf::from(value()?)),
             "--table" => table = Some(value()?),
@@ -137,7 +138,9 @@ fn status(args: &[String]) -> Result<i32, String> {
                     .map_err(|_| "--after-secs takes a number".to_string())?
             }
             "-h" | "--help" => {
-                println!("okm-parquet status --root <log dir> [--table <hex header>] [--after-bytes N] [--after-secs N]");
+                println!(
+                    "okm-parquet status --root <log dir> [--table <hex header>] [--after-bytes N] [--after-secs N]"
+                );
                 return Ok(0);
             }
             other => return Err(format!("unknown argument `{other}` (try --help)")),
@@ -176,9 +179,7 @@ fn status(args: &[String]) -> Result<i32, String> {
             None => println!("  claim: none (nobody has claimed this log)"),
         }
         let due = shape.uncovered > after_bytes
-            || shape
-                .baseline_age_secs
-                .is_some_and(|age| age >= after_secs);
+            || shape.baseline_age_secs.is_some_and(|age| age >= after_secs);
         println!(
             "  policy {}/{} s: {}\n",
             human(after_bytes),
@@ -203,7 +204,11 @@ fn compact(args: &[String]) -> Result<i32, String> {
 
     let mut it = args.iter();
     while let Some(arg) = it.next() {
-        let mut value = || it.next().cloned().ok_or_else(|| format!("{arg} needs a value"));
+        let mut value = || {
+            it.next()
+                .cloned()
+                .ok_or_else(|| format!("{arg} needs a value"))
+        };
         match arg.as_str() {
             "--root" | "--log" => root = Some(PathBuf::from(value()?)),
             "--store" | "--data" => store_dir = Some(PathBuf::from(value()?)),
@@ -242,7 +247,8 @@ fn compact(args: &[String]) -> Result<i32, String> {
                 .ok()
                 .and_then(|at| at.elapsed().ok())
                 .is_some_and(|age| age.as_secs() < 30);
-            if let Some(claim) = okm_core::changelog::owner::read(&dir).map_err(|e| e.to_string())?
+            if let Some(claim) =
+                okm_core::changelog::owner::read(&dir).map_err(|e| e.to_string())?
                 && claim.state == okm_core::changelog::owner::State::Writing
                 && fresh
             {
@@ -272,9 +278,8 @@ fn compact(args: &[String]) -> Result<i32, String> {
             println!("{}: no baseline was written", dir.display());
             continue;
         };
-        let (removed, freed) =
-            okm_core::changelog::prune_below(&root, &header, &first, keep)
-                .map_err(|e| e.to_string())?;
+        let (removed, freed) = okm_core::changelog::prune_below(&root, &header, &first, keep)
+            .map_err(|e| e.to_string())?;
         println!(
             "{} {:?}: baseline {last}, removed {removed} segments, freed {}",
             hex_of(&header),
@@ -286,17 +291,15 @@ fn compact(args: &[String]) -> Result<i32, String> {
 }
 
 /// The table directories a verb works on, in name order.
-fn selected_dirs(
-    root: &std::path::Path,
-    table: Option<&str>,
-) -> Result<Vec<PathBuf>, String> {
+fn selected_dirs(root: &std::path::Path, table: Option<&str>) -> Result<Vec<PathBuf>, String> {
     match table {
         Some(header) => Ok(vec![okm_core::changelog::window::dir_of(
             root,
             &decode_hex(header)?,
         )]),
         None => {
-            let mut dirs = okm_core::changelog::window::table_dirs(root).map_err(|e| e.to_string())?;
+            let mut dirs =
+                okm_core::changelog::window::table_dirs(root).map_err(|e| e.to_string())?;
             dirs.sort();
             Ok(dirs)
         }
@@ -315,7 +318,10 @@ fn newest_segment(
         if !name.ends_with(".segment") {
             continue;
         }
-        if best.as_ref().is_none_or(|(prev, _)| name.as_str() > prev.as_str()) {
+        if best
+            .as_ref()
+            .is_none_or(|(prev, _)| name.as_str() > prev.as_str())
+        {
             best = Some((name, entry.path()));
         }
     }
@@ -405,8 +411,7 @@ fn decode_hex(hex: &str) -> Result<Vec<u8>, String> {
     (0..hex.len())
         .step_by(2)
         .map(|i| {
-            u8::from_str_radix(&hex[i..i + 2], 16)
-                .map_err(|_| format!("`{hex}`: not a hex header"))
+            u8::from_str_radix(&hex[i..i + 2], 16).map_err(|_| format!("`{hex}`: not a hex header"))
         })
         .collect()
 }
@@ -462,7 +467,8 @@ fn replay(args: &[String]) -> Result<i32, String> {
     let runs: Vec<TableRun> = match table {
         Some(header) => {
             let dir = okm_core::changelog::window::dir_of(&root, &decode_hex(&header)?);
-            let schema = okm_core::changelog::window::load_sidecar(&dir).map_err(|e| e.to_string())?;
+            let schema =
+                okm_core::changelog::window::load_sidecar(&dir).map_err(|e| e.to_string())?;
             let ns = u16::from_be_bytes(
                 decode_hex(&header)?
                     .as_slice()

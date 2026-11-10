@@ -10,8 +10,9 @@
     clippy::unwrap_in_result,
     clippy::panic_in_result_fn
 )]
+use okm_async::TestStore;
+use okm_core::{DocumentEncode, KeyEncode, obj_dynamic::DynamicValue};
 use okm_parquet::bridge::ToRecordBatch;
-use okm_core::{DocumentEncode, KeyEncode, TestStore, obj_dynamic::DynamicValue};
 use std::collections::BTreeMap;
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]

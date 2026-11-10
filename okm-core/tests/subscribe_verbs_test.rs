@@ -17,8 +17,9 @@
 
 use std::collections::BTreeMap;
 
+use okm_async::TestStore;
+use okm_core::Collection;
 use okm_core::obj_dynamic::DynamicValue;
-use okm_core::{Collection, TestStore};
 
 #[path = "subscribe_common.rs"]
 mod subscribe_common;

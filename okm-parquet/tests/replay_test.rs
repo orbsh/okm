@@ -12,11 +12,12 @@
     clippy::panic_in_result_fn
 )]
 
+use okm_async::TestStore;
+use okm_core::changelog::replay::{reconcile, replay_table};
 use okm_core::changelog::{ChangelogConfig, ChangelogStore};
 use okm_core::model::obj_dynamic::DynamicValue;
-use okm_core::{Collection, DocumentEncode, KeyEncode, TestStore, Vocab};
+use okm_core::{Collection, DocumentEncode, KeyEncode, Vocab};
 use okm_dynamic::DynamicCollection;
-use okm_core::changelog::replay::{reconcile, replay_table};
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
 pub struct K {
@@ -137,8 +138,14 @@ fn reconciliation_repairs_what_the_log_never_carried() {
         .expect("put the row the log will never mention");
 
     let report = reconcile(&old, &target, &header, &schema).expect("reconcile");
-    assert_eq!(report.adopted, 1, "row 9: in the store, missing from the log");
-    assert_eq!(report.removed, 1, "row 3: gone from the store, still replayed");
+    assert_eq!(
+        report.adopted, 1,
+        "row 9: in the store, missing from the log"
+    );
+    assert_eq!(
+        report.removed, 1,
+        "row 3: gone from the store, still replayed"
+    );
     assert_eq!(report.unchanged, 1, "row 1 needed no write at all");
 
     let mut bodies: Vec<String> = target
@@ -221,7 +228,10 @@ fn a_dynamic_field_survives_the_replay() {
         Some(&okm_dynamic::Value::Str("red".to_string())),
         "the segment's field arrived with the row: {row:?}"
     );
-    assert_eq!(row.get("body"), Some(&okm_dynamic::Value::Str("a".to_string())));
+    assert_eq!(
+        row.get("body"),
+        Some(&okm_dynamic::Value::Str("a".to_string()))
+    );
 }
 
 /// A document can exist with NO primary row: `merge` of nothing but non-declared
@@ -239,7 +249,8 @@ fn a_dynamic_only_document_survives_replay_and_reconciliation() {
     .expect("assemble");
     let mut extra = std::collections::BTreeMap::new();
     extra.insert("colour".to_string(), DynamicValue::Str("blue".to_string()));
-    c.merge(&K { id: 7 }, &extra).expect("a segment with no row");
+    c.merge(&K { id: 7 }, &extra)
+        .expect("a segment with no row");
     drop(c);
 
     let dir = std::fs::read_dir(log.path())

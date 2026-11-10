@@ -10,9 +10,10 @@ pub mod localstorage_backend;
 pub mod nest;
 #[cfg(feature = "redb")]
 pub mod redb_backend;
-#[cfg(feature = "slatedb")]
-pub mod slatedb_backend;
 pub mod storage;
-#[cfg(any(feature = "test-engines", feature = "fjall", feature = "redb"))]
-pub mod test_engine;
-pub mod wire_client;
+
+/// The store this crate's UNIT tests run on (see the module docs for why it is
+/// not the real-engine matrix: a dev-dependency that leads back here makes
+/// cargo build this package twice, and the two copies' traits differ).
+#[cfg(test)]
+pub mod mem_store;

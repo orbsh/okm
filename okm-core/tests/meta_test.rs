@@ -15,8 +15,9 @@
 )]
 
 use okm_core::storage::VirtualStorage;
-use okm_core::{Document, DocumentEncode, Error, KeyEncode, TableMeta, TestStore, meta};
+use okm_core::{Document, DocumentEncode, Error, KeyEncode, TableMeta, meta};
 
+use okm_async::TestStore;
 /// ns 90 = `[0x00, 0x5A]` — the hex locks below spell it out.
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
 pub struct MetaKey {

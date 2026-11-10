@@ -2129,6 +2129,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "okm-async"
+version = "0.1.0"
+dependencies = [
+ "okm-core",
+ "okm-wire",
+ "serde_json",
+ "slatedb",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "okm-core"
 version = "0.1.0"
 dependencies = [
@@ -2136,6 +2148,7 @@ dependencies = [
  "criterion",
  "fjall",
  "getrandom 0.3.4",
+ "okm-async",
  "okm-derive",
  "okm-dynamic",
  "okm-wire",
@@ -2145,7 +2158,6 @@ dependencies = [
  "redb",
  "serde",
  "serde_json",
- "slatedb",
  "syn 2.0.119",
  "tempfile",
  "thiserror 2.0.20",
@@ -2169,6 +2181,7 @@ name = "okm-dynamic"
 version = "0.1.0"
 dependencies = [
  "arrow",
+ "okm-async",
  "okm-core",
  "okm-derive",
  "serde",
@@ -2194,6 +2207,7 @@ name = "okm-parquet"
 version = "0.1.0"
 dependencies = [
  "arrow",
+ "okm-async",
  "okm-core",
  "okm-derive",
  "okm-dynamic",
@@ -2209,6 +2223,7 @@ dependencies = [
 name = "okm-query"
 version = "0.1.0"
 dependencies = [
+ "okm-async",
  "okm-core",
 ]
 

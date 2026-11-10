@@ -17,12 +17,13 @@
 use std::rc::Rc;
 
 use okm_core::{
-    Batch, Collection, Document, DocumentEncode, FaceStatus, KeyEncode, TestStore, VirtualStorage,
+    Batch, Collection, Document, DocumentEncode, FaceStatus, KeyEncode, VirtualStorage,
 };
 
 use __OkmIndex_Note_by_author as Note_ByAuthor;
 use __OkmIndex_NotePlus_by_author as NotePlus_ByAuthor;
 use __OkmIndex_NotePlus_by_body as NotePlus_ByBody;
+use okm_async::TestStore;
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
 pub struct NoteKey {

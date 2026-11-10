@@ -4,7 +4,8 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-okm-core = { path = "../../okm-core", features = ["schema-serde", "test-engines"] }
+okm-core = { path = "../../okm-core", features = ["schema-serde"] }
+okm-async = { path = "../../okm-async", features = ["slatedb"] }
 okm-dynamic = { path = "../../okm-dynamic" }
 serde_json = "1"
 

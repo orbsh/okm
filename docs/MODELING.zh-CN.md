@@ -347,7 +347,7 @@ t.purge(&key);                                // -> bool（原来有东西）
 - `Bytes` 是词汇表中的**不透明成员**：存储层不解释任何东西——只有  tag 与总长度；内容及其含义属于应用。不透明说的是**内容**：帧的  `[len]` 前缀是 payload 定界（编码层的职责——多字段载荷靠它切分），  不是对内容的解释；`String` 带同样的头。它是扩展类型的标准逃生舱：  新编码先以 Bytes 形态落地，未来提升为一等类型是纯增量变更。  字段名承担 tag 刻意不承担的语义（`embed_v1`、`attrs_cbor`）。
 - 未知名字在这里是**正常输入**（外部数据、MQ payload）；「未知字段拒绝」  纪律只适用于声明路径的 typed 解码器。
 - 声明字段走自己的 0x1 面可索引。动态字段可索引，方式是声明一条 path 索引（ADR-0029：每个解析出的值一条条目，值类型限有存储形态编码的那些——  U8/U16/U32/U64/FixedBytes/Str）——已在 schema 驱动的（`DynamicCollection`）写路径上落地；typed collection 自己的动态段还没有这套维护。动态**名字**永远不能当 key 材料：名字是运行期数据，动态路径只能靠它的声明被寻址，不能靠 key。
-- 值形态过边界时用它自己，而不是调用方每个方向手写一遍 `match`：`DynamicValue` 的 `Serialize`/`Deserialize` 挂在同一个 `schema-serde` feature 后面。反序列化走 `deserialize_any`，因此格式必须自描述（JSON、CBOR——不是 bincode）；JSON 下有两处避免不了的塌缩，已写进文档：`Bytes` 呈数字数组（CBOR 保留字节串），非负 `Int` 读回来成 `UInt`。存储编码不变：帧 + 词汇表 id 仍是落盘表示。
+- 值形态过边界时用它自己，而不是调用方每个方向手写一遍 `match`：`DynamicValue` 的 `Serialize`/`Deserialize` 挂在同一个 `schema-serde` feature 后面。反序列化走 `deserialize_any`，因此格式必须自描述（JSON、CBOR——不是 bincode）；JSON 下有两处避免不了的塌缩，已写进文档：`Bytes` 呈数字数组（CBOR 保留字节串），非负 `Int` 读回来成 `UInt`。存储编码不变：块表的条目 + 词汇表 id 仍是落盘表示（ADR-0057）。
 - schema 导出（`CollectionSchema`，serde 在 `schema-serde` feature 后）驱动嵌入式语言读取器的动态 codec——Python（PyO3）与 Steel binding 在`bindings/`，与 Rust derive 字节一致（交叉测试锁定）。版本默认值迁移在动态读路径同样生效：字面量 `#[ok_default]` 随 schema 走。
 
 ### 动态段上的路径索引（ADR-0029）

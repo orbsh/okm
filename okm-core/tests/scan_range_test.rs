@@ -12,8 +12,9 @@
     clippy::panic_in_result_fn
 )]
 
-use okm_core::{Collection, DocumentEncode, KeyEncode, TestStore};
+use okm_core::{Collection, DocumentEncode, KeyEncode};
 
+use okm_async::TestStore;
 #[derive(KeyEncode, Clone, PartialEq, Debug)]
 pub struct RowId {
     pub id: u64,

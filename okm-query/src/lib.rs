@@ -181,7 +181,8 @@ pub fn walk<S: VirtualStorage + Clone>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use okm_core::{DocumentEncode, KeyEncode, TestStore};
+    use okm_async::TestStore;
+    use okm_core::{DocumentEncode, KeyEncode};
 
     /// 端点文档：user（ns=1）
     #[derive(DocumentEncode, Clone, PartialEq, Debug)]
