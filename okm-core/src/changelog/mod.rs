@@ -1,8 +1,8 @@
 //! The change log (ADR-0045): capture at the commit boundary, drain out of
 //! process.
 //!
-//! A collection built with [`crate::Collection::with_changelog`] appends ONE
-//! frame per committed batch to a segment file:
+//! A collection over a capturing store ([`ChangelogStore`]) appends ONE frame per
+//! committed batch to a segment file:
 //!
 //! ```text
 //! <root>/<header hex>/<nnnnnnnn>.partial   ← being written
@@ -15,12 +15,12 @@
 //! format: the same codec the remote backend ships (ADR-0010).
 //!
 //! Format 2 wraps that record stream so a segment knows what it is (ADR-0056 §7):
-//! a header at open (`OKMS`, format, kind, layout version, the table's header and
-//! name, the declaration's face fingerprint) and a footer at seal (`body length |
-//! frames | ordinal | crc32 | OKME`). Both are optional to a reader: a file
-//! without the magic is format 1, a bare record stream, and stays readable. The
-//! checksum is computed when the file is sealed — one extra read at rotation, not
-//! a per-write cost.
+//! a header at open (format, kind, layout version, the table's header and name,
+//! the declaration's face fingerprint) and a footer at seal (`body length |
+//! frames | ordinal | crc32`). The footer is the one thing a sealed file has and
+//! a `.partial` does not — the extension is the seal, so a `strict` reader
+//! requires it and verifies the checksum, which is computed at rotation, not per
+//! write.
 //!
 //! **What is captured is the TRUTH half of the batch** — primary rows (slot
 //! `0x00`), the dynamic segment (`0x01`), the two dynamic field-name faces
@@ -133,13 +133,10 @@ pub const BASELINE_SUFFIX: &str = ".baseline.segment";
 /// single 4 GiB-sized buffer in memory.
 const BASELINE_CHUNK: usize = 1024;
 
-/// Magic at the head of a self-describing segment (format 2). A file without it
-/// is format 1 — a bare record stream — which this reader still accepts.
-pub const MAGIC: &[u8; 4] = b"OKMS";
-/// Magic at the tail, written after the footer fields: "this file ends HERE".
-pub const TRAILER: &[u8; 4] = b"OKME";
-/// The container format this writer emits.
+/// The container format this writer emits, and the first byte of a segment.
 pub const FORMAT: u8 = 2;
+/// How many bytes the footer occupies at the end of a sealed file.
+const FOOTER_LEN: usize = 28;
 /// A segment of committed writes (ADR-0045).
 pub const KIND_DELTA: u8 = 1;
 /// A segment that IS the table's state at one moment (ADR-0056 §3).
@@ -147,9 +144,9 @@ pub const KIND_BASELINE: u8 = 2;
 
 /// What a segment says about itself before its first record (ADR-0056 §7).
 ///
-/// A format-1 segment is only readable inside its directory: the table is the
-/// directory's name in hex, the shape is the sibling `schema-vN.json`, and
-/// neither travels with the file. This header is the file's own answer to "which
+/// Without this header a segment is only readable inside its directory: the
+/// table is the directory's name in hex, the shape is the sibling
+/// `schema-vN.json`, and neither travels with the file. This header is the file's own answer to "which
 /// table, which shape, which kind of stream" — the three facts a reader needs
 /// before it can refuse the wrong file instead of misparsing it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -180,14 +177,14 @@ impl SegmentMeta {
 /// What one segment file declares, without decoding a record.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SegmentInfo {
-    /// `None` for a format-1 file (a bare record stream).
-    pub meta: Option<SegmentMeta>,
+    /// What the header declares: kind, layout version, name, fingerprint.
+    pub meta: SegmentMeta,
     /// The table header the file was stamped with, so a reader can check it
-    /// against the directory instead of trusting the path (empty for format 1).
+    /// against the directory instead of trusting the path.
     pub header: Vec<u8>,
-    /// The segment's number as written in its footer (0 for format 1).
+    /// The segment's number as written in its footer (0 while unsealed).
     pub ordinal: u64,
-    /// Frames the footer counts (0 for format 1).
+    /// Frames the footer counts (0 while unsealed).
     pub frames: u64,
 }
 
@@ -413,8 +410,7 @@ impl Changelog {
         self.opened = Instant::now();
         let mut file = create_segment(&self.dir, self.segment)?;
         let stamp = header_bytes(&self.header, &self.meta);
-        file.write_all(&stamp)
-            .map_err(|e| io_err(&self.dir, e))?;
+        file.write_all(&stamp).map_err(|e| io_err(&self.dir, e))?;
         self.file = Some(file);
         Ok(())
     }
@@ -437,21 +433,20 @@ impl Changelog {
         Ok(())
     }
 
-    /// Append the footer to the open segment: body length, frame count, ordinal,
-    /// checksum and the tail magic. A footer written just before the rename is
-    /// as atomic as the rename itself, which is why the file never carries a
-    /// half-stamped body under a `.segment` name.
+    /// Append the footer to the open segment: body length, frame count, ordinal
+    /// and checksum. A footer written just before the rename is as atomic as the
+    /// rename itself, which is why the file never carries a half-stamped body
+    /// under a `.segment` name.
     fn stamp_footer(&mut self) -> Result<()> {
         let path = self.partial_path();
         let bytes = std::fs::read(&path).map_err(|e| io_err(&path, e))?;
         let start = header_bytes(&self.header, &self.meta).len();
         let body = bytes.get(start..).unwrap_or(&[]);
-        let mut out = Vec::with_capacity(32);
+        let mut out = Vec::with_capacity(FOOTER_LEN);
         out.extend_from_slice(&(body.len() as u64).to_be_bytes());
         out.extend_from_slice(&self.frames.to_be_bytes());
         out.extend_from_slice(&self.segment.to_be_bytes());
         out.extend_from_slice(&crc32(body).to_be_bytes());
-        out.extend_from_slice(TRAILER);
         let mut file = OpenOptions::new()
             .append(true)
             .open(&path)
@@ -713,8 +708,8 @@ pub fn read_open_tail(path: &Path) -> Result<Vec<OpFrame>> {
     frames_of(path, false)
 }
 
-/// The bytes a format-2 segment starts with (ADR-0056 §7):
-/// `magic | fmt | kind | layout_version | hdr_len | header | name_len | name | fingerprint`.
+/// The bytes a segment starts with (ADR-0056 §7):
+/// `fmt | kind | layout_version | hdr_len | header | name_len | name | fingerprint`.
 ///
 /// The table header rides inside the file because the directory name is the only
 /// other copy, and a copied segment carries no directory. Lengths are clamped
@@ -725,8 +720,7 @@ fn header_bytes(header: &[u8], meta: &SegmentMeta) -> Vec<u8> {
     let header = &header[..header.len().min(u8::MAX as usize)];
     let name = meta.name.as_bytes();
     let name = &name[..name.len().min(u16::MAX as usize)];
-    let mut out = Vec::with_capacity(8 + header.len() + 2 + name.len() + FINGERPRINT_LEN);
-    out.extend_from_slice(MAGIC);
+    let mut out = Vec::with_capacity(4 + header.len() + 2 + name.len() + FINGERPRINT_LEN);
     out.push(FORMAT);
     out.push(meta.kind);
     out.push(meta.layout_version);
@@ -738,71 +732,60 @@ fn header_bytes(header: &[u8], meta: &SegmentMeta) -> Vec<u8> {
     out
 }
 
-/// A parsed segment: where its body is, and what it says about itself. `meta` is
-/// `None` for a format-1 file, which carries no header at all.
+/// A parsed segment: where its body is, and what it says about itself.
 struct Parsed<'a> {
     body: &'a [u8],
-    meta: Option<SegmentMeta>,
+    meta: SegmentMeta,
     header: Vec<u8>,
     ordinal: u64,
     frames: u64,
 }
 
 fn parse<'a>(path: &Path, bytes: &'a [u8], strict: bool) -> Result<Parsed<'a>> {
-    let Some(after_magic) = bytes.strip_prefix(MAGIC.as_slice()) else {
-        // Format 1: a bare record stream. Shipped logs stay readable.
-        return Ok(Parsed {
-            body: bytes,
-            meta: None,
-            header: Vec::new(),
-            ordinal: 0,
-            frames: 0,
-        });
-    };
     let mut at = 0usize;
-    let fmt = field(path, after_magic, &mut at, 1)?[0];
+    let fmt = field(path, bytes, &mut at, 1)?[0];
     if fmt != FORMAT {
         return Err(corrupt(
             path,
             &format!("segment format {fmt} is not {FORMAT}"),
         ));
     }
-    let kind = field(path, after_magic, &mut at, 1)?[0];
-    let layout_version = field(path, after_magic, &mut at, 1)?[0];
-    let hdr_len = field(path, after_magic, &mut at, 1)?[0] as usize;
-    let header = field(path, after_magic, &mut at, hdr_len)?.to_vec();
-    let name_len = be_u16(path, field(path, after_magic, &mut at, 2)?)? as usize;
-    let name = String::from_utf8_lossy(field(path, after_magic, &mut at, name_len)?).into_owned();
+    let kind = field(path, bytes, &mut at, 1)?[0];
+    let layout_version = field(path, bytes, &mut at, 1)?[0];
+    let hdr_len = field(path, bytes, &mut at, 1)?[0] as usize;
+    let header = field(path, bytes, &mut at, hdr_len)?.to_vec();
+    let name_len = be_u16(path, field(path, bytes, &mut at, 2)?)? as usize;
+    let name = String::from_utf8_lossy(field(path, bytes, &mut at, name_len)?).into_owned();
     let mut fingerprint = [0u8; FINGERPRINT_LEN];
-    fingerprint.copy_from_slice(field(path, after_magic, &mut at, FINGERPRINT_LEN)?);
+    fingerprint.copy_from_slice(field(path, bytes, &mut at, FINGERPRINT_LEN)?);
     let meta = SegmentMeta {
         kind,
         layout_version,
         name,
         fingerprint,
     };
-    // `at` counts from the end of the magic; every slice into the file is `+4`.
-    let body_at = MAGIC.len() + at;
+    // `at` is the body's offset now, and every slice into the file is absolute.
+    let body_at = at;
 
-    // The footer is the last 32 bytes, present only on a sealed file.
-    if !bytes.ends_with(TRAILER.as_slice()) || bytes.len() < body_at + 32 {
-        if strict {
-            return Err(corrupt(path, "a sealed segment has no footer"));
-        }
+    // Only a sealed file carries a footer; a `.partial` is body-so-far.
+    if !strict {
         return Ok(Parsed {
             body: bytes.get(body_at..).unwrap_or(&[]),
-            meta: Some(meta),
+            meta,
             header,
             ordinal: 0,
             frames: 0,
         });
     }
-    let foot = bytes.get(bytes.len() - 32..).unwrap_or(&[]);
+    if bytes.len() < body_at + FOOTER_LEN {
+        return Err(corrupt(path, "a sealed segment has no footer"));
+    }
+    let foot = bytes.get(bytes.len() - FOOTER_LEN..).unwrap_or(&[]);
     let body_len = be_u64(path, foot.get(..8).unwrap_or(&[]))? as usize;
     let frames = be_u64(path, foot.get(8..16).unwrap_or(&[]))?;
     let ordinal = be_u64(path, foot.get(16..24).unwrap_or(&[]))?;
     let crc = be_u32(path, foot.get(24..28).unwrap_or(&[]))?;
-    let body = bytes.get(body_at..bytes.len() - 32).unwrap_or(&[]);
+    let body = bytes.get(body_at..bytes.len() - FOOTER_LEN).unwrap_or(&[]);
     if body.len() != body_len {
         return Err(corrupt(
             path,
@@ -817,7 +800,7 @@ fn parse<'a>(path: &Path, bytes: &'a [u8], strict: bool) -> Result<Parsed<'a>> {
     }
     Ok(Parsed {
         body,
-        meta: Some(meta),
+        meta,
         header,
         ordinal,
         frames,
@@ -1170,8 +1153,11 @@ impl<S> ChangelogStore<S> {
             }
         }
 
-        let mut log =
-            Changelog::open(self.cfg.clone(), &header, SegmentMeta::of::<R>(KIND_BASELINE))?;
+        let mut log = Changelog::open(
+            self.cfg.clone(),
+            &header,
+            SegmentMeta::of::<R>(KIND_BASELINE),
+        )?;
         log.attach_sink(self.sink.clone());
         for chunk in ops.chunks(BASELINE_CHUNK) {
             if log.stage(chunk) > 0 {
@@ -1286,7 +1272,11 @@ impl<S: VirtualStorage> VirtualStorage for ChangelogStore<S> {
         self.inner.scan_range(begin, end)
     }
 
-    fn scan_range_iter(&self, begin: &[u8], end: Option<&[u8]>) -> crate::engine::storage::ScanIter {
+    fn scan_range_iter(
+        &self,
+        begin: &[u8],
+        end: Option<&[u8]>,
+    ) -> crate::engine::storage::ScanIter {
         self.inner.scan_range_iter(begin, end)
     }
 

@@ -131,9 +131,8 @@ fn frames_in(root: &std::path::Path, header: &[u8]) -> Vec<CapturedFrame> {
 #[test]
 fn a_put_leaves_the_row_and_drops_the_derived_faces() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let app =
-        captured(TestStore::slatedb_mem(), ChangelogConfig::new(dir.path()))
-            .expect("changelog opens");
+    let app = captured(TestStore::slatedb_mem(), ChangelogConfig::new(dir.path()))
+        .expect("changelog opens");
 
     let key = LogKey { id: 7 };
     app.put(
@@ -166,9 +165,8 @@ fn the_whole_document_verbs_are_captured() {
     // ADR-0031 §5: these go through `save_with_prev_into`, which emits no
     // subscribe event. A capture hung on that sink would lose all four.
     let dir = tempfile::tempdir().expect("tempdir");
-    let app =
-        captured(TestStore::slatedb_mem(), ChangelogConfig::new(dir.path()))
-            .expect("changelog opens");
+    let app = captured(TestStore::slatedb_mem(), ChangelogConfig::new(dir.path()))
+        .expect("changelog opens");
 
     let key = LogKey { id: 1 };
     app.put(
@@ -219,9 +217,8 @@ fn the_whole_document_verbs_are_captured() {
 #[test]
 fn categorical_labels_ride_and_their_cursor_does_not() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let app =
-        captured(TestStore::slatedb_mem(), ChangelogConfig::new(dir.path()))
-            .expect("changelog opens");
+    let app = captured(TestStore::slatedb_mem(), ChangelogConfig::new(dir.path()))
+        .expect("changelog opens");
 
     app.put(
         &LogKey { id: 1 },
@@ -277,9 +274,8 @@ fn categorical_labels_ride_and_their_cursor_does_not() {
 #[test]
 fn a_torn_tail_ends_a_partial_and_corrupts_a_sealed_segment() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let app =
-        captured(TestStore::slatedb_mem(), ChangelogConfig::new(dir.path()))
-            .expect("changelog opens");
+    let app = captured(TestStore::slatedb_mem(), ChangelogConfig::new(dir.path()))
+        .expect("changelog opens");
     app.put(
         &LogKey { id: 1 },
         &LogRow {
@@ -297,12 +293,12 @@ fn a_torn_tail_ends_a_partial_and_corrupts_a_sealed_segment() {
     // A copy still named `.partial`, with three bytes of a torn prefix. A real
     // partial has no footer — take the header and the body, then tear the body.
     let info = okm_core::changelog::segment_info(sealed).expect("info");
-    let name_len = info.meta.as_ref().map(|m| m.name.len()).unwrap_or(0);
-    let header_len = 4 + 1 + 1 + 1 + 1 + info.header.len() + 2 + name_len + 16;
+    let name_len = info.meta.name.len();
+    let header_len = 1 + 1 + 1 + 1 + info.header.len() + 2 + name_len + 16;
     let torn = dir.path().join("torn").join("00000000.x");
     std::fs::create_dir_all(torn.parent().expect("parent")).expect("mkdir");
     let mut partial = good[..header_len].to_vec();
-    partial.extend_from_slice(&good[header_len..good.len() - 32]);
+    partial.extend_from_slice(&good[header_len..good.len() - 28]);
     partial.extend_from_slice(&[0, 0, 0]);
     let partial_path = torn.with_extension(PARTIAL_EXT);
     std::fs::write(&partial_path, &partial).expect("write partial");
@@ -358,8 +354,7 @@ fn the_batch_writer_verb_captures_save_into() {
     // the store directly and no collection-level hook could see the write.
     let dir = tempfile::tempdir().expect("tempdir");
     let app: Collection<ChangelogStore<TestStore>, LogKey, LogRow> =
-        captured(TestStore::slatedb_mem(), ChangelogConfig::new(dir.path()))
-            .expect("open");
+        captured(TestStore::slatedb_mem(), ChangelogConfig::new(dir.path())).expect("open");
 
     let key = LogKey { id: 42 };
     let row = LogRow {
@@ -425,8 +420,7 @@ fn the_sidecar_is_written_once_per_layout_version() {
 
     let dir = tempfile::tempdir().expect("tempdir");
     let app: Collection<ChangelogStore<TestStore>, LogKey, LogRow> =
-        captured(TestStore::slatedb_mem(), ChangelogConfig::new(dir.path()))
-            .expect("open");
+        captured(TestStore::slatedb_mem(), ChangelogConfig::new(dir.path())).expect("open");
 
     let table = table_dir(dir.path(), LOG_NS);
     let path = table.join(sidecar_name(<LogRow as Document>::LAYOUT_VERSION));
@@ -595,7 +589,10 @@ fn the_sidecar_carries_the_tables_declared_name() {
         .filter_map(|e| e.ok().map(|e| e.path()))
         .find(|p| p.is_dir())
         .expect("one table directory");
-    let path = dir.join(format!("schema-v{}.json", <LogRow as Document>::LAYOUT_VERSION));
+    let path = dir.join(format!(
+        "schema-v{}.json",
+        <LogRow as Document>::LAYOUT_VERSION
+    ));
     let json = std::fs::read_to_string(&path).expect("the assembly wrote a sidecar");
 
     assert!(
@@ -621,8 +618,7 @@ fn the_sidecar_carries_the_tables_declared_name() {
 fn sealed_one(root: &std::path::Path) -> std::path::PathBuf {
     {
         let app: Collection<ChangelogStore<TestStore>, LogKey, LogRow> =
-            captured(TestStore::slatedb_mem(), ChangelogConfig::new(root))
-                .expect("the log opens");
+            captured(TestStore::slatedb_mem(), ChangelogConfig::new(root)).expect("the log opens");
         app.put(
             &LogKey { id: 7 },
             &LogRow {
@@ -646,7 +642,7 @@ fn a_segment_says_which_table_and_shape_it_belongs_to() {
     let path = sealed_one(dir.path());
 
     let info = okm_core::changelog::segment_info(&path).expect("info");
-    let meta = info.meta.clone().expect("format 2 carries a header");
+    let meta = info.meta.clone();
     assert_eq!(meta.kind, okm_core::changelog::KIND_DELTA);
     assert_eq!(
         meta.layout_version,
@@ -672,38 +668,10 @@ fn a_flipped_byte_in_a_sealed_segment_is_refused() {
     let path = sealed_one(dir.path());
 
     let mut bytes = std::fs::read(&path).expect("read");
-    let at = bytes.len() - 33; // the last body byte, just before the footer
+    let at = bytes.len() - 29; // the last body byte, just before the 28-byte footer
     bytes[at] ^= 0xFF;
     std::fs::write(&path, &bytes).expect("write");
 
     let err = read_sealed(&path).expect_err("the checksum catches it");
     assert!(err.to_string().contains("checksum"), "got: {err}");
-}
-
-/// Format 1 was a bare record stream with no header and no footer. Logs written
-/// by the previous build must stay readable, so a file without the magic is read
-/// as that older format instead of being refused.
-#[test]
-fn a_format_1_segment_still_reads() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let path = sealed_one(dir.path());
-    let bytes = std::fs::read(&path).expect("read");
-    let info = okm_core::changelog::segment_info(&path).expect("info");
-    let name_len = info.meta.as_ref().map(|m| m.name.len()).unwrap_or(0);
-    let header_len = 4 + 1 + 1 + 1 + 1 + info.header.len() + 2 + name_len + 16;
-    let body = bytes[header_len..bytes.len() - 32].to_vec();
-    assert!(!body.is_empty(), "the body is not empty");
-
-    let bare_dir = tempfile::tempdir().expect("bare");
-    let bare = bare_dir.path().join("00000000.segment");
-    std::fs::write(&bare, &body).expect("write a format-1 file");
-    let frames = read_sealed(&bare).expect("a bare record stream still reads");
-    assert_eq!(frames.len(), 1, "the same single frame the v2 file holds");
-    assert!(
-        okm_core::changelog::segment_info(&bare)
-            .expect("info")
-            .meta
-            .is_none(),
-        "no header, so no meta"
-    );
 }

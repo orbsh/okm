@@ -51,18 +51,15 @@ fn the_store_captures_without_the_collection_asking() {
     let root = tempfile::tempdir().expect("root");
     {
         // No `with_changelog`: the store has the switch, the collection does not.
-        let c: Collection<_, K, Row> =
-            Collection::captured(store(root.path())).expect("assemble");
+        let c: Collection<_, K, Row> = Collection::captured(store(root.path())).expect("assemble");
         c.put(&K { id: 1 }, &Row { level: 3 }).expect("put");
         c.put(&K { id: 2 }, &Row { level: 4 }).expect("put");
     }
 
-    let dir = root
-        .path()
-        .join(NS.iter().fold(String::new(), |mut s, b| {
-            s.push_str(&format!("{b:02x}"));
-            s
-        }));
+    let dir = root.path().join(NS.iter().fold(String::new(), |mut s, b| {
+        s.push_str(&format!("{b:02x}"));
+        s
+    }));
     let sidecar = dir.join(format!(
         "schema-v{}.json",
         <Row as Document>::LAYOUT_VERSION
@@ -72,12 +69,15 @@ fn the_store_captures_without_the_collection_asking() {
     let segments = sealed_segments(root.path(), NS).expect("list segments");
     assert_eq!(segments.len(), 1, "a clean shutdown seals the segment");
     let frames = read_sealed(&segments[0]).expect("sealed segment reads");
-    assert_eq!(frames.len(), 2, "one frame per commit, with no hook on the collection");
+    assert_eq!(
+        frames.len(),
+        2,
+        "one frame per commit, with no hook on the collection"
+    );
 
     let info = okm_core::changelog::segment_info(&segments[0]).expect("info");
     assert_eq!(
-        info.meta.expect("stamped").name,
-        "captured_rows",
+        info.meta.name, "captured_rows",
         "the registered name reached the segment"
     );
 }
@@ -89,8 +89,7 @@ fn the_store_captures_without_the_collection_asking() {
 fn a_caller_owned_batch_is_captured_at_the_store() {
     let root = tempfile::tempdir().expect("root");
     {
-        let c: Collection<_, K, Row> =
-            Collection::captured(store(root.path())).expect("assemble");
+        let c: Collection<_, K, Row> = Collection::captured(store(root.path())).expect("assemble");
         let mut batch = Batch::default();
         c.save_with_prev_into(&mut batch, &K { id: 9 }, &Row { level: 7 }, None)
             .expect("into the caller's batch");
@@ -101,7 +100,11 @@ fn a_caller_owned_batch_is_captured_at_the_store() {
     let segments = sealed_segments(root.path(), NS).expect("list segments");
     assert_eq!(segments.len(), 1, "the shutdown sealed it");
     let frames = read_sealed(&segments[0]).expect("reads");
-    assert_eq!(frames.len(), 1, "the store saw the write the collection did not");
+    assert_eq!(
+        frames.len(),
+        1,
+        "the store saw the write the collection did not"
+    );
 }
 
 /// An excluded ns is the operator's exception: it registers no declaration and
@@ -151,12 +154,15 @@ fn a_baseline_makes_a_mid_life_log_complete() {
     assert_eq!(baselines.len(), 1, "exactly one snapshot");
     let info = okm_core::changelog::segment_info(&baselines[0]).expect("info");
     assert_eq!(
-        info.meta.expect("stamped").kind,
+        info.meta.kind,
         okm_core::changelog::KIND_BASELINE,
         "the header says what the name says"
     );
     assert_eq!(info.frames, 1, "one frame per 1024 rows, so one here");
-    assert_eq!(info.ordinal, 1, "written after the delta that came before it");
+    assert_eq!(
+        info.ordinal, 1,
+        "written after the delta that came before it"
+    );
 
     let frames = read_sealed(&baselines[0]).expect("the snapshot reads");
     let ops: usize = frames.iter().map(|f| f.0.len()).sum();
@@ -166,9 +172,17 @@ fn a_baseline_makes_a_mid_life_log_complete() {
     assert_eq!(deltas.len(), 2, "one delta before the snapshot, one after");
     let names: Vec<String> = deltas
         .iter()
-        .map(|p| p.file_name().unwrap_or_default().to_string_lossy().into_owned())
+        .map(|p| {
+            p.file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned()
+        })
         .collect();
-    assert!(names[0].starts_with("00000000"), "the pre-snapshot delta: {names:?}");
+    assert!(
+        names[0].starts_with("00000000"),
+        "the pre-snapshot delta: {names:?}"
+    );
     assert!(
         names[1].starts_with("00000002"),
         "the write after the snapshot is numbered above it: {names:?}"
