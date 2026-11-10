@@ -2316,10 +2316,11 @@ panic lints allowed only in the places it names. So the runtime half of
       kept as numbers, lists and maps as arrays and objects). The mapping is okm's
       to publish — otherwise every adapter invents a dialect.
 - [ ] Deferred (2026-10-31, owner): low priority. Not in this unit: lake-writer delete files (or deletion vectors), partitioning
-      and file-size targets (`write_table_metadata` writes one snapshot over the
-      files it is handed); any Parquet read path; the Iceberg WRITER
-      (it goes in its own crate, because `bridge::iceberg` is a zero-dependency
-      metadata encoder and must stay one); the SQL-to-okm planner. The
+      and file-size targets (the Delta writer commits one `add` per window, so a
+      window is one log version, but nothing here deletes, partitions or sizes); any
+      Parquet read path; a complete lake WRITER (it goes in its own crate, because
+      `okm_parquet::delta` is a zero-dependency log encoder and must stay one); the
+      SQL-to-okm planner. The
       schema-driven Arrow builder is NO LONGER here: it landed as
       `okm_dynamic::arrow`, reusing `arrow_type`, with the typed bridge as its
       drift lock.
@@ -2898,7 +2899,7 @@ open at the end (retiring the store-scan export, and the S3 sink).
       key has no row in the window is REFUSED (a removal seen from the segment's side),
       because the alternative was writing the rows and dropping that segment in silence
       — `an_open_segment_with_no_row_is_refused_rather_than_dropped`.
-- [x] **The launched table is a Delta table** (ADR-0058). `bridge::delta` replaces
+- [x] **The launched table is a Delta table** (ADR-0058). `okm_parquet::delta` replaces
       `bridge::iceberg`: `_delta_log/<version>.json`, one JSON action per line, protocol
       and schema in the first version, one `add` per window after that. Appending is
       O(change) instead of O(table), which closes the deferred "snapshot append" item by
@@ -2907,6 +2908,12 @@ open at the end (retiring the store-scan export, and the S3 sink).
       gone; the schema is read from the Parquet footer and columns are identified by
       NAME, so `stamp_batch` and its field-id registry entry went too. The Iceberg
       encoder — 708 lines including a hand-written Avro container — is deleted.
+      Each commit also carries per-file statistics (`numRecords`, plus
+      `minValues`/`maxValues`/`nullCount` for the columns whose Parquet statistics can
+      state the declared type's bound — signed ints, floats, strings cut to 32 chars,
+      booleans). Unsigned columns deliberately carry none: their physical statistics
+      are computed on the signed type, so a derived bound would be wrong exactly where
+      it overflows.
       Verified with a real reader from outside the table: DuckDB `delta_scan(<dir>)`.
 
 - [x] **The variant column has the canonical shape.** `struct<metadata: binary,

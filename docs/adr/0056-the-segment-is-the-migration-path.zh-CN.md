@@ -2,7 +2,7 @@
 
 > **语言：** [English](0056-the-segment-is-the-migration-path.md)（正本）· [中文](0056-the-segment-is-the-migration-path.zh-CN.md)
 
-**状态：** 已接受（2026-11-10）——仅裁决；回放路径一行代码都还没有。此后已落地：store 边界的捕获（`ChangelogStore`，§2）、自描述段容器（§7）、`ensure_baseline`（§3）、解码器与窗口合并进核心，以及取代 `okm-drain` 的独立程序 `okm-parquet`（segment → Parquet 窗口，§8）。回放已落地（`okm-parquet replay`：行经目标库的写路径重写、词表 id 重新 intern），并接上迁移后的对账扫描（`--reconcile`：扫一遍旧库的主面，旧库才是记录）；sink 把导出目录变成一张 Delta 表（`bridge::delta`：每个窗口一条 JSON 提交，所以追加是一行而不是重建 snapshot；用 DuckDB 的 `delta_scan` 验过）；窗口把文档的开放字段作为 `variant` 列携带，物理形态是规范的 `struct<metadata, value>`，所以对只追加的表段路径是完整的；store 扫描导出降级为状态转储而非退役；仍缺：delete file（或 deletion vector）、分区、文件大小目标——见同日 PLAN 小节。本 ADR 最初指名的 Iceberg 元数据写入器是被替换而非扩展的，见 ADR-0058。
+**状态：** 已接受（2026-11-10）——仅裁决；回放路径一行代码都还没有。此后已落地：store 边界的捕获（`ChangelogStore`，§2）、自描述段容器（§7）、`ensure_baseline`（§3）、解码器与窗口合并进核心，以及取代 `okm-drain` 的独立程序 `okm-parquet`（segment → Parquet 窗口，§8）。回放已落地（`okm-parquet replay`：行经目标库的写路径重写、词表 id 重新 intern），并接上迁移后的对账扫描（`--reconcile`：扫一遍旧库的主面，旧库才是记录）；sink 把导出目录变成一张 Delta 表（`okm_parquet::delta`，在抽干 crate 里：每个窗口一条 JSON 提交，所以追加是一行而不是重建 snapshot；用 DuckDB 的 `delta_scan` 验过）；窗口把文档的开放字段作为 `variant` 列携带，物理形态是规范的 `struct<metadata, value>`，所以对只追加的表段路径是完整的；store 扫描导出降级为状态转储而非退役；仍缺：delete file（或 deletion vector）、分区、文件大小目标——见同日 PLAN 小节。本 ADR 最初指名的 Iceberg 元数据写入器是被替换而非扩展的，见 ADR-0058。
 **日期：** 2026-11-10
 **依赖：** ADR-0010（线字节）、ADR-0034（表有名字）、ADR-0042（布局变更是版本，升级是部署形态）、ADR-0045（日志：捕获、段、抽干）、ADR-0046（`okm-series`，另一种只追加容器）
 
