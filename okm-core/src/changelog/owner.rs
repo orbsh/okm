@@ -74,18 +74,67 @@ pub struct Owner {
     /// Who holds it. A random token per process, not a pid: a pid is reused, and the
     /// claim outlives the process that made it (that is the whole point).
     pub holder: String,
+    /// The STORE this holder writes — the data directory or its URL. Two builds must
+    /// never share one (ADR-0042), so this field is what makes "a second instance on
+    /// one log, with the same store" a refusal instead of a race.
+    pub data: String,
     /// The last segment a reader can see. Set on `handed-over`.
     pub position: Option<String>,
+}
+
+/// What opening a log means for THIS instance, read off the claim that is already
+/// there (ADR-0056 §6).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Role {
+    /// Nobody has claimed the log: the ordinary first start.
+    First,
+    /// The claim is ours (a restart after a clean stop): carry on, no replay.
+    Resume,
+    /// Another holder writes a DIFFERENT store: this instance is the successor, and the
+    /// handover starts here rather than being something a deploy has to remember.
+    Successor { holder: String, epoch: u64 },
+    /// Another holder writes the SAME store: two writers over one data directory is the
+    /// invariant everything rests on, so this is an error, not a role.
+    Shared { holder: String, epoch: u64 },
+}
+
+/// Read the claim and answer what this instance is.
+///
+/// `data` is this instance's own store location. The comparison is a string one on
+/// purpose: the claim has to be readable by another build, and a normalised path is the
+/// one thing two processes on two hosts never agree on — so the caller passes the
+/// location exactly as it was configured, and a deployment that uses a URL on one side
+/// and a mount point on the other gets [`Role::Successor`], which is the safe answer.
+pub fn decide(dir: &Path, holder: &str, data: &str) -> Result<Role, String> {
+    let Some(current) = read(dir)? else {
+        return Ok(Role::First);
+    };
+    Ok(if current.holder == holder {
+        Role::Resume
+    } else if current.data == data {
+        // The same store, a different token: a second process, or a stale claim from a
+        // process that died. Either way this instance must not write.
+        Role::Shared {
+            holder: current.holder,
+            epoch: current.epoch,
+        }
+    } else {
+        Role::Successor {
+            holder: current.holder,
+            epoch: current.epoch,
+        }
+    })
 }
 
 impl Owner {
     /// The order the fields are written in. Readers accept any order.
     pub fn render(&self) -> String {
         let mut out = format!(
-            "state {}\nepoch {}\nholder {}\n",
+            "state {}\nepoch {}\nholder {}\ndata {}\n",
             self.state.word(),
             self.epoch,
-            self.holder
+            self.holder,
+            self.data
         );
         if let Some(position) = &self.position {
             out.push_str(&format!("position {position}\n"));
@@ -100,6 +149,7 @@ impl Owner {
         let mut state = None;
         let mut epoch = None;
         let mut holder = None;
+        let mut data = None;
         let mut position = None;
         for line in text.lines() {
             let line = line.trim();
@@ -124,6 +174,7 @@ impl Owner {
                     )
                 }
                 "holder" => holder = Some(value.to_string()),
+                "data" => data = Some(value.to_string()),
                 "position" => position = Some(value.to_string()),
                 // Forward compatibility is the reason this file is text: a build that
                 // writes a field this one does not know must still be readable here.
@@ -134,6 +185,10 @@ impl Owner {
             state: state.ok_or("owner: no `state` line")?,
             epoch: epoch.ok_or("owner: no `epoch` line")?,
             holder: holder.ok_or("owner: no `holder` line")?,
+            // A claim without a store predates this field, or was hand-written. Absent
+            // means "a store this build cannot compare", which `decide` reads as a
+            // successor — the safe side of the two.
+            data: data.unwrap_or_default(),
             position,
         })
     }
@@ -185,12 +240,13 @@ pub fn write(dir: &Path, owner: &Owner) -> Result<(), String> {
 ///
 /// The epoch is bumped so the answer is unambiguous: a `handed-over` carrying this
 /// epoch is the reply to THIS request, not to one an earlier attempt made.
-pub fn announce_drain(dir: &Path, holder: &str) -> Result<Owner, String> {
+pub fn announce_drain(dir: &Path, holder: &str, data: &str) -> Result<Owner, String> {
     let epoch = read(dir)?.map(|owner| owner.epoch).unwrap_or(0) + 1;
     let owner = Owner {
         state: State::Draining,
         epoch,
         holder: holder.to_string(),
+        data: data.to_string(),
         position: None,
     };
     write(dir, &owner)?;
@@ -198,13 +254,20 @@ pub fn announce_drain(dir: &Path, holder: &str) -> Result<Owner, String> {
 }
 
 /// The old holder's last write: sealed, and the position a reader can see.
-pub fn hand_over(dir: &Path, epoch: u64, holder: &str, position: &str) -> Result<(), String> {
+pub fn hand_over(
+    dir: &Path,
+    epoch: u64,
+    holder: &str,
+    data: &str,
+    position: &str,
+) -> Result<(), String> {
     write(
         dir,
         &Owner {
             state: State::HandedOver,
             epoch,
             holder: holder.to_string(),
+            data: data.to_string(),
             position: Some(position.to_string()),
         },
     )
@@ -285,8 +348,8 @@ impl Lease {
     /// explicit act ([`announce_drain`] then [`hand_over`]), never a side effect of
     /// opening a log. A stale claim is indistinguishable from a live one from here, and
     /// guessing is what the file exists to prevent.
-    pub fn claim(dir: impl Into<PathBuf>, holder: &str) -> Result<Arc<Self>, String> {
-        Self::claim_with(dir, holder, Timings::default())
+    pub fn claim(dir: impl Into<PathBuf>, holder: &str, data: &str) -> Result<Arc<Self>, String> {
+        Self::claim_with(dir, holder, data, Timings::default())
     }
 
     /// [`Lease::claim`] with explicit timings, for tests and for a host that wants a
@@ -294,25 +357,35 @@ impl Lease {
     pub fn claim_with(
         dir: impl Into<PathBuf>,
         holder: &str,
+        data: &str,
         timings: Timings,
     ) -> Result<Arc<Self>, String> {
         let dir = dir.into();
-        let previous = read(&dir)?;
-        if let Some(owner) = &previous
-            && owner.state == State::Writing
-            && owner.holder != holder
-        {
-            return Err(format!(
-                "{}: held by `{}` at epoch {} — take over, do not claim",
-                path(&dir).display(),
-                owner.holder,
-                owner.epoch
-            ));
+        match decide(&dir, holder, data)? {
+            // Two writers over one store: refuse, whatever state the file is in.
+            Role::Shared { holder, epoch } => {
+                return Err(format!(
+                    "{}: store `{data}` is already claimed by `{holder}` at epoch {epoch} \
+                     — two instances must not share one store",
+                    path(&dir).display()
+                ));
+            }
+            // Another store: this instance is the successor, and claiming here would
+            // skip the replay the handover exists to force.
+            Role::Successor { holder, epoch } => {
+                return Err(format!(
+                    "{}: held by `{holder}` at epoch {epoch} — take over, do not claim",
+                    path(&dir).display()
+                ));
+            }
+            Role::First | Role::Resume => {}
         }
+        let previous = read(&dir)?;
         let owner = Owner {
             state: State::Writing,
             epoch: previous.map(|owner| owner.epoch).unwrap_or(0) + 1,
             holder: holder.to_string(),
+            data: data.to_string(),
             position: None,
         };
         write(&dir, &owner)?;
