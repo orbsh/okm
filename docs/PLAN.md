@@ -2739,9 +2739,8 @@ Gate: `cargo test --workspace --all-features` (460 passed), clippy `--all-target
 ## 2026-11-10 — the segment is the migration path (ADR-0056)
 
 The three defects named first are what make the current log unsafe as a migration
-source; all three are fixed. Everything below landed except the four items still
-open at the end (reconciliation scan, Iceberg metadata, the store-scan export, the
-S3 sink).
+source; all three are fixed. Everything below landed except the three items still
+open at the end (Iceberg metadata, the store-scan export, the S3 sink).
 
 - [x] **Watermark is per `(consumer, table)`.** `okm-drain/src/lib.rs` wrote
       `watermark-<consumer>.txt` in `out_dir`, while segment numbering restarts per
@@ -2841,14 +2840,32 @@ S3 sink).
       numbered above it (a delta below the snapshot is inside it, and replaying it
       would resurrect a row the snapshot no longer has); rows decoded from the log and
       written through the TARGET's write path (`DynamicCollection::merge`/`purge`), so
-      index faces, dynamic segments and ledgers are rebuilt rather than copied; every
+      index faces and ledgers are rebuilt rather than copied — while the dynamic
+      segment is CARRIED, not rebuilt (a row write only touches declared fields; it
+      used to be counted as "re-derived", which would have delivered every document
+      without its non-declared fields). Every
       vocabulary id re-resolved `id → label → the target's own id` (the label the log
       carried is interned in the target's vocabulary, which allocates in its own
       order); a primary-face delete applied as a removal.
       `replay_rewrites_the_rows_through_the_targets_write_path` locks puts, the purge
-      and the label path. **Still missing:** the reconciliation range scan against the
-      old store after the old instance stops writing — the only thing that can repair
-      a delete the log never carried (ADR-0056 §4).
+      and the label path; `a_dynamic_field_survives_the_replay` the carried segment
+      (and the field-vocabulary label faces a segment field needs);
+      `a_dynamic_only_document_survives_replay_and_reconciliation` the segment-only
+      document.
+- [x] **The reconciliation scan** — `okm_parquet::replay::reconcile(old, target,
+      header, schema)` and `okm-parquet replay --reconcile <old store>`: one range scan
+      of the old store's primary face after the old instance stops writing, which is
+      the only thing that can repair a change the log never carried (ADR-0056 §4). A
+      row the store has and the target does not is adopted; a row the target has and
+      the store does not is purged (that is a lost DELETE, invisible to every segment);
+      a row both hold is only counted, because a reconciliation that rewrites the
+      whole table is not one. Presence is read from BOTH faces, because a dynamic-only
+      document has no primary row and the subtraction half would otherwise purge it as
+      a lost delete. Labels are resolved from the old store's own vocabulary and
+      re-interned in the target's, and the two stores' layout versions must agree — a
+      scan across shapes is refused rather than half-decoded.
+      `reconciliation_repairs_what_the_log_never_carried` locks both halves plus
+      idempotence (a second pass adopts and removes nothing).
 - [ ] **Retire or demote `parquet_io`'s store-scan export** once baseline generation
       exists: it is the export for a store that never logged, and the ADR makes the
       segment the single interchange.

@@ -23,10 +23,21 @@
 //!   answered by the write path's purge, not replayed one by one.
 //!
 //! What replay cannot repair is a change the log never carried (a crash between the
-//! commit and the append). That is what the post-migration reconciliation scan is
-//! for (ADR-0056 §4), and it is the operator's step, not this module's.
+//! commit and the append). That is what [`reconcile`] is for (ADR-0056 §4): once the
+//! old instance has stopped writing, the OLD STORE — not the log — is the record, so
+//! one range scan of its faces makes the target agree with it. It is the last step of
+//! a migration and the only one that can repair a delete the log lost.
+//!
+//! The sequence, because the order is what makes it safe (ADR-0056 §6): the new build
+//! runs as a second process and replays what is already sealed WHILE the old instance
+//! keeps serving; the old instance is then stopped gracefully, and that stop is itself
+//! a write — `Drop for Changelog` flushes the pending frames and seals the tail into
+//! one last segment (a crash leaves a `.partial` that readers ignore); the new build
+//! applies that tail, and [`reconcile`] runs before cutover. So no step here needs the
+//! old instance stopped FIRST — only the last two do.
 
 use okm_core::changelog::{baseline_segments, read_sealed, sealed_segments};
+use okm_core::model::index::DYNAMIC_SLOT;
 use okm_core::{OP_DELETE, OP_PUT, PRIMARY_SLOT};
 use okm_dynamic::{DynamicCollection, Value, ValueMap, decode_key, decode_payload};
 use std::collections::HashMap;
@@ -39,9 +50,11 @@ pub struct ReplayReport {
     pub segments: usize,
     pub puts: usize,
     pub deletes: usize,
-    /// Dynamic-segment ops with no column in the declaration; the write path
-    /// rebuilds the dynamic segment from the document, so these are re-derived
-    /// rather than copied.
+    /// Dynamic segments carried over (a document's non-declared fields). Counted
+    /// apart from `puts` because a put is a row and this is a segment beside it.
+    pub dynamic: usize,
+    /// Ops with no column and no segment of their own (a face the write path
+    /// rebuilds from the row: an index entry, a reduce ledger line).
     pub rederived: usize,
 }
 
@@ -77,12 +90,26 @@ pub fn replay_table<S: okm_core::VirtualStorage>(
                             target.store(),
                             suffix,
                             &value,
-                            &mut labels,
+                            &labels,
                         )?;
                         target
                             .merge(suffix, &row)
                             .map_err(|e| format!("{}: {e}", dir.display()))?;
                         report.puts += 1;
+                    }
+                    // The dynamic segment is truth too (ADR-0045 §4): names the
+                    // declaration does not have, in the same nTLV frames. It is NOT
+                    // re-derived from the row — a row write only rebuilds declared
+                    // fields — so replay has to carry it, or every document with a
+                    // dynamic field would arrive without one.
+                    (OP_PUT, DYNAMIC_SLOT) => {
+                        let dynamic = dynamic_row(&value, &labels)?;
+                        if !dynamic.is_empty() {
+                            target
+                                .merge(suffix, &dynamic)
+                                .map_err(|e| format!("{}: {e}", dir.display()))?;
+                            report.dynamic += 1;
+                        }
                     }
                     (OP_PUT, slot) if is_id_face(&schema, slot) => {
                         if let Ok(name) = String::from_utf8(value) {
@@ -109,26 +136,81 @@ pub fn replay_table<S: okm_core::VirtualStorage>(
     Ok(report)
 }
 
+/// One table's outcome: what the replay applied, and — when an old store was
+/// given — what the reconciliation had to repair afterwards.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct TableRun {
+    /// The table's header (its ns) in hex — the name it has on disk.
+    pub table: String,
+    pub replay: ReplayReport,
+    pub reconcile: Option<ReconcileReport>,
+}
+
 /// Replay every table directory under a log root.
-pub fn replay_all<S, F>(root: &Path, mut target: F) -> Result<Vec<ReplayReport>, String>
+pub fn replay_all<S, F>(root: &Path, mut target: F) -> Result<Vec<TableRun>, String>
 where
     S: okm_core::VirtualStorage,
     F: FnMut(u16, &okm_core::schema::CollectionSchema) -> DynamicCollection<S>,
 {
+    per_table(root, |dir, header, schema| {
+        let collection = target(ns_of(header, dir)?, schema);
+        Ok(TableRun {
+            table: okm_core::changelog::window::file_name(dir),
+            replay: replay_table(dir, &collection)?,
+            reconcile: None,
+        })
+    })
+}
+
+/// Replay every table, and — when `old` is the store the log came from — make the
+/// target agree with it afterwards (ADR-0056 §4).
+///
+/// The two halves belong behind one call because their ORDER is the whole point:
+/// replay is fast and incomplete (write-after loses appends), the scan is slow and
+/// complete (the store IS the record), and a migration that skips the second calls
+/// the first one the answer.
+pub fn replay_and_reconcile<S, F, O>(
+    root: &Path,
+    mut target: F,
+    old: &O,
+) -> Result<Vec<TableRun>, String>
+where
+    S: okm_core::VirtualStorage,
+    F: FnMut(u16, &okm_core::schema::CollectionSchema) -> DynamicCollection<S>,
+    O: okm_core::VirtualStorage + ?Sized,
+{
+    per_table(root, |dir, header, schema| {
+        let collection = target(ns_of(header, dir)?, schema);
+        Ok(TableRun {
+            table: okm_core::changelog::window::file_name(dir),
+            replay: replay_table(dir, &collection)?,
+            reconcile: Some(reconcile(old, &collection, header, schema)?),
+        })
+    })
+}
+
+/// The one directory walk both entry points share: a table directory, its header,
+/// its declaration.
+fn per_table<F>(root: &Path, mut run: F) -> Result<Vec<TableRun>, String>
+where
+    F: FnMut(&Path, &[u8], &okm_core::schema::CollectionSchema) -> Result<TableRun, String>,
+{
     let mut out = Vec::new();
     for dir in okm_core::changelog::window::table_dirs(root).map_err(|e| e.to_string())? {
         let schema = okm_core::changelog::window::load_sidecar(&dir).map_err(|e| e.to_string())?;
-        let ns = u16::from_be_bytes(
-            okm_core::changelog::window::header_of(&dir)
-                .map_err(|e| e.to_string())?
-                .as_slice()
-                .try_into()
-                .map_err(|_| format!("{}: header is not one ns", dir.display()))?,
-        );
-        let collection = target(ns, &schema);
-        out.push(replay_table(&dir, &collection)?);
+        let header = okm_core::changelog::window::header_of(&dir).map_err(|e| e.to_string())?;
+        out.push(run(&dir, &header, &schema)?);
     }
     Ok(out)
+}
+
+/// A table directory's header IS one ns (two bytes); anything else is not a table.
+fn ns_of(header: &[u8], dir: &Path) -> Result<u16, String> {
+    Ok(u16::from_be_bytes(
+        header
+            .try_into()
+            .map_err(|_| format!("{}: header is not one ns", dir.display()))?,
+    ))
 }
 
 /// The segments to apply, in the one order that is correct: the newest baseline
@@ -159,15 +241,19 @@ fn ordered_segments(dir: &Path) -> Result<Vec<PathBuf>, String> {
     Ok(ordered)
 }
 
-/// Decode one captured row into the document the target's write path expects, with
-/// every vocabulary id replaced by its label.
+/// Decode one captured row into the document the target's write path expects.
+///
+/// Two id translations, in this order: the log's label frames name the ids the
+/// capture wrote (`id → label`), then the target's vocabulary names them again in
+/// its own numbering (`label → new id`). An id the log carried no label for stays
+/// bytes — a reader never invents a name (ADR-0032).
 fn row_of<S: okm_core::VirtualStorage>(
     schema: &okm_core::schema::CollectionSchema,
     header: &[u8],
-    store: &S,
+    target_store: &S,
     suffix: &[u8],
     payload: &[u8],
-    labels: &mut HashMap<(u16, Vec<u8>), String>,
+    labels: &HashMap<(u16, Vec<u8>), String>,
 ) -> Result<ValueMap, String> {
     let mut row = decode_payload(schema, payload).map_err(|e| e.to_string())?;
     let _key = decode_key(schema, suffix).map_err(|e| e.to_string())?;
@@ -178,18 +264,65 @@ fn row_of<S: okm_core::VirtualStorage>(
         let Some(Value::Bytes(id)) = row.get(&field.name).cloned() else {
             continue;
         };
-        // `id → label → new id`, made explicit: the label the log carried is
-        // interned in the TARGET's vocabulary — which allocates there, in the
-        // target's own order — and the row carries that number. An id whose label
-        // the log never carried stays bytes: a reader never invents a name
-        // (ADR-0032).
-        let Some(label) = labels.get(&(face, id)) else {
+        if let Some(label) = labels.get(&(face, id)) {
+            row.insert(field.name.clone(), Value::Str(label.clone()));
+        }
+    }
+    intern(schema, header, target_store, &mut row)?;
+    Ok(row)
+}
+
+/// Decode a dynamic-segment body into `name → value`, names coming from the log's
+/// field-vocabulary frames (top-level frames carry ids; nested `Obj`s are already
+/// name-keyed by `decode_named`).
+fn dynamic_row(
+    body: &[u8],
+    labels: &HashMap<(u16, Vec<u8>), String>,
+) -> Result<ValueMap, String> {
+    let faces = okm_core::obj_vocab::FIELD_VOCAB;
+    let mut row = ValueMap::new();
+    let frames = okm_core::model::obj_dynamic::decode_named(body, &mut |id| {
+        labels
+            .get(&(faces.id_slot, id.to_be_bytes().to_vec()))
+            .cloned()
+    });
+    for field in frames {
+        // A frame whose id the log never carried a label for has no name, and an
+        // unnamed field cannot be written: the segment is the name's whole point.
+        let Some(name) = labels
+            .get(&(faces.id_slot, field.id.to_be_bytes().to_vec()))
+            .cloned()
+        else {
+            return Err(format!(
+                "a dynamic field id {} has no label in the log (its \
+                 field-vocabulary frame is missing) — an unnamed segment field \
+                 cannot be written",
+                field.id
+            ));
+        };
+        row.insert(name, field.value);
+    }
+    Ok(row)
+}
+
+/// `label → the target's own id`, written back as bytes. The target allocates in
+/// its own order, so an id copied from elsewhere would point at the wrong label.
+fn intern<S: okm_core::VirtualStorage>(
+    schema: &okm_core::schema::CollectionSchema,
+    header: &[u8],
+    store: &S,
+    row: &mut ValueMap,
+) -> Result<(), String> {
+    for field in schema.hot_fields.iter().chain(schema.cold_fields.iter()) {
+        let okm_core::FieldType::Vocab(face) = field.ty else {
+            continue;
+        };
+        let Some(Value::Str(label)) = row.get(&field.name).cloned() else {
             continue;
         };
         let faces = okm_core::obj_vocab::VocabFaces::from_id_slot(face);
-        let Some(fresh) =
-            okm_core::obj_vocab::vocab_id(store, header, faces, field.width, label)
-                .map_err(|e| e.to_string())?
+        let Some(id) = okm_core::obj_vocab::vocab_id(store, header, faces, field.width, &label)
+            .map_err(|e| e.to_string())?
         else {
             // The declared width is not one a vocabulary uses: the schema and the
             // store disagree, which is a stop rather than a guess.
@@ -200,16 +333,139 @@ fn row_of<S: okm_core::VirtualStorage>(
         };
         // The id as BYTES: `Vocab<N>` is a width-typed byte id, which is what the
         // encoder takes and what a decode hands back (ADR-0032).
-        row.insert(field.name.clone(), Value::Bytes(fresh));
+        row.insert(field.name.clone(), Value::Bytes(id));
     }
-    Ok(row)
+    Ok(())
 }
 
 
+/// A vocabulary's ID face in this table: the field-name vocabulary, the predicate
+/// vocabulary, and one per `Vocab` field. Their PUTs carry labels, and the labels are
+/// what a replay needs — an id alone names nothing on the other side. Missing the
+/// shared faces was enough to make every dynamic field unreplayable.
 fn is_id_face(schema: &okm_core::schema::CollectionSchema, slot: u16) -> bool {
-    schema
-        .hot_fields
-        .iter()
-        .chain(schema.cold_fields.iter())
-        .any(|f| matches!(f.ty, okm_core::FieldType::Vocab(id) if id == slot))
+    slot == schema.slots.field_vocab_id
+        || slot == schema.slots.predicate_vocab_id
+        || schema
+            .hot_fields
+            .iter()
+            .chain(schema.cold_fields.iter())
+            .any(|f| matches!(f.ty, okm_core::FieldType::Vocab(id) if id == slot))
+}
+
+/// What the reconciliation pass changed.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ReconcileReport {
+    /// Rows the old store had and the target did not: writes the log never carried.
+    pub adopted: usize,
+    /// Rows the target had and the old store did not: removals the log never carried.
+    pub removed: usize,
+    /// Rows both held with the same values.
+    pub unchanged: usize,
+}
+
+/// Make `target` agree with `old` for one table (ADR-0056 §4).
+///
+/// The whole point is that this pass trusts the STORE, not the log: the log is
+/// write-after, so a crash between a commit and its append loses that change, and a
+/// lost append of a delete is the one thing a replay can never notice on its own (no
+/// segment mentions the row at all). One scan of the old store's primary face is the
+/// complete answer for the truth half — every row that exists now, and by subtraction
+/// every row that does not.
+///
+/// Run it AFTER the old instance has stopped writing: between the scan and the last
+/// write there is no way to tell a migration in progress from a divergence.
+///
+/// The two stores must hold the same shape. A layout mismatch is refused rather than
+/// half-decoded: reconciling across shapes needs the declared translation, and that
+/// is a deliberate act, not a flag.
+pub fn reconcile<O, T>(
+    old: &O,
+    target: &DynamicCollection<T>,
+    header: &[u8],
+    schema: &okm_core::schema::CollectionSchema,
+) -> Result<ReconcileReport, String>
+where
+    O: okm_core::VirtualStorage + ?Sized,
+    T: okm_core::VirtualStorage,
+{
+    use okm_core::engine::storage::scan_suffix_kv;
+
+    // Same shape, or stop: every reference below decodes with THIS declaration.
+    let old_meta = okm_core::meta::read(old, header).map_err(|e| e.to_string())?;
+    if let Some(meta) = &old_meta
+        && let Some(version) = meta.version()
+        && version != schema.layout_version
+    {
+        return Err(format!(
+            "the old store is layout {version}, this declaration is {} — a reconciliation \
+             across shapes needs an explicit translation, not a scan",
+            schema.layout_version
+        ));
+    }
+
+    let mut prefix = header.to_vec();
+    okm_core::write_slot(&mut prefix, PRIMARY_SLOT);
+    let face = scan_suffix_kv(old, &prefix).map_err(|e| e.to_string())?;
+
+    // A document can exist with NO primary row — a dynamic-only document is a
+    // segment beside a key (`merge` of nothing but non-declared names). The
+    // subtraction half below would purge it as a lost delete unless the dynamic
+    // face counts as presence too.
+    let mut dynamic_prefix = header.to_vec();
+    okm_core::write_slot(&mut dynamic_prefix, DYNAMIC_SLOT);
+    let dynamic_face = scan_suffix_kv(old, &dynamic_prefix).map_err(|e| e.to_string())?;
+
+    let mut report = ReconcileReport::default();
+    let mut present: HashMap<Vec<u8>, ()> =
+        HashMap::with_capacity(face.len() + dynamic_face.len());
+    present.extend(dynamic_face.into_iter().map(|(pkey, _)| (pkey, ())));
+    for (pkey, payload) in face {
+        present.insert(pkey.clone(), ());
+        let mut row = decode_payload(schema, &payload).map_err(|e| e.to_string())?;
+        // The old store's own vocabulary names the ids in its own rows — the one
+        // place they are still resolvable after the log's label frames are gone.
+        for field in schema.hot_fields.iter().chain(schema.cold_fields.iter()) {
+            let okm_core::FieldType::Vocab(id_slot) = field.ty else {
+                continue;
+            };
+            let Some(Value::Bytes(raw)) = row.get(&field.name).cloned() else {
+                continue;
+            };
+            let faces = okm_core::obj_vocab::VocabFaces::from_id_slot(id_slot);
+            if let Some(label) =
+                okm_core::obj_vocab::vocab_label(old, header, faces, &raw).map_err(|e| e.to_string())?
+            {
+                row.insert(field.name.clone(), Value::Str(label));
+            }
+        }
+
+        // Compared in LABELS, because that is what a read hands back (a fetch
+        // resolves ids); the id form is only what the write path wants. Comparing
+        // the raw id bytes against a resolved row would call every row changed and
+        // rewrite the whole table to reach the state it was already in.
+        match target.fetch(&pkey).map_err(|e| e.to_string())? {
+            Some(have) if have == row => report.unchanged += 1,
+            _ => {
+                intern(schema, header, target.store(), &mut row)?;
+                target
+                    .merge(&pkey, &row)
+                    .map_err(|e| format!("{}: {e}", target.schema().name))?;
+                report.adopted += 1;
+            }
+        }
+    }
+
+    // The subtraction half: the target holds rows the store no longer has. That is a
+    // delete whose append was lost, and it is invisible to the log.
+    for pkey in target.scan_document_keys().map_err(|e| e.to_string())? {
+        if present.contains_key(&pkey) {
+            continue;
+        }
+        target
+            .purge(&pkey)
+            .map_err(|e| format!("{}: {e}", target.schema().name))?;
+        report.removed += 1;
+    }
+    Ok(report)
 }

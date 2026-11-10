@@ -10,7 +10,7 @@
 //! names the reader so two readers keep two positions (ADR-0056 §8).
 
 use okm_core::SharedVirtualStorage;
-use okm_parquet::replay::{replay_all, replay_table};
+use okm_parquet::replay::{replay_and_reconcile, replay_table, TableRun};
 use okm_parquet::{Report, DrainConfig, drain, drain_table};
 use std::path::PathBuf;
 
@@ -116,6 +116,7 @@ fn decode_hex(hex: &str) -> Result<Vec<u8>, String> {
 fn replay(args: &[String]) -> Result<i32, String> {
     let mut root: Option<PathBuf> = None;
     let mut store_dir: Option<PathBuf> = None;
+    let mut old_dir: Option<PathBuf> = None;
     let mut table: Option<String> = None;
 
     let mut it = args.iter();
@@ -128,9 +129,15 @@ fn replay(args: &[String]) -> Result<i32, String> {
         match arg.as_str() {
             "--root" | "--log" => root = Some(PathBuf::from(value()?)),
             "--store" | "--target" => store_dir = Some(PathBuf::from(value()?)),
+            // The store the log came from: with it, replay is followed by the
+            // reconciliation scan that repairs appends the log never got.
+            "--reconcile" | "--old" => old_dir = Some(PathBuf::from(value()?)),
             "--table" => table = Some(value()?),
             "-h" | "--help" => {
-                println!("okm-parquet replay --root <log dir> --store <dir> [--table <hex header>]");
+                println!(
+                    "okm-parquet replay --root <log dir> --store <dir> \
+                     [--reconcile <old store dir>] [--table <hex header>]"
+                );
                 return Ok(0);
             }
             other => return Err(format!("unknown argument `{other}` (try --help)")),
@@ -146,32 +153,71 @@ fn replay(args: &[String]) -> Result<i32, String> {
         okm_dynamic::DynamicCollection::new(store.shared_handle(), ns, schema.clone(), Vec::new())
     };
 
-    let reports = match table {
+    let runs: Vec<TableRun> = match table {
         Some(header) => {
             let dir = okm_core::changelog::window::dir_of(&root, &decode_hex(&header)?);
             let schema = okm_core::changelog::window::load_sidecar(&dir).map_err(|e| e.to_string())?;
-            let ns = u16::from_be_bytes(decode_hex(&header)?.as_slice().try_into().map_err(
-                |_| format!("`{header}`: a header is one ns (two bytes)"),
-            )?);
+            let ns = u16::from_be_bytes(
+                decode_hex(&header)?
+                    .as_slice()
+                    .try_into()
+                    .map_err(|_| format!("`{header}`: a header is one ns (two bytes)"))?,
+            );
             let collection = new_collection(ns, &schema);
-            vec![replay_table(&dir, &collection)?]
+            let replay = replay_table(&dir, &collection)?;
+            let reconcile = match &old_dir {
+                Some(path) => {
+                    let old = open_store(path)?;
+                    Some(okm_parquet::replay::reconcile(
+                        &old,
+                        &collection,
+                        &decode_hex(&header)?,
+                        &schema,
+                    )?)
+                }
+                None => None,
+            };
+            vec![TableRun {
+                table: okm_core::changelog::window::file_name(&dir),
+                replay,
+                reconcile,
+            }]
         }
-        None => replay_all(&root, new_collection)?,
+        None => match &old_dir {
+            Some(path) => {
+                let old = open_store(path)?;
+                replay_and_reconcile(&root, new_collection, &old)?
+            }
+            None => okm_parquet::replay::replay_all(&root, new_collection)?,
+        },
     };
 
     let mut puts = 0;
     let mut deletes = 0;
-    for r in &reports {
-        puts += r.puts;
-        deletes += r.deletes;
+    for run in &runs {
+        puts += run.replay.puts;
+        deletes += run.replay.deletes;
     }
     println!(
         "tables {}, segments {}, puts {}, deletes {}, re-derived {}",
-        reports.len(),
-        reports.iter().map(|r| r.segments).sum::<usize>(),
+        runs.len(),
+        runs.iter().map(|r| r.replay.segments).sum::<usize>(),
         puts,
         deletes,
-        reports.iter().map(|r| r.rederived).sum::<usize>(),
+        runs.iter().map(|r| r.replay.rederived).sum::<usize>(),
     );
+    for run in &runs {
+        if let Some(rec) = &run.reconcile {
+            println!(
+                "{}: reconciled — adopted {}, removed {}, unchanged {}",
+                run.table, rec.adopted, rec.removed, rec.unchanged
+            );
+        }
+    }
     Ok(0)
+}
+
+/// Open a store directory this build can read (the old store, for reconciliation).
+fn open_store(path: &std::path::Path) -> Result<okm_core::FjallStore, String> {
+    okm_core::FjallStore::open(path, "okm").map_err(|e| format!("{}: {e}", path.display()))
 }
