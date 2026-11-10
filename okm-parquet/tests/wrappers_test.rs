@@ -65,7 +65,11 @@ fn varint_frame_is_variable_length() {
     // No header: [ratio 8][flag 1][created 4][hits TLV] — hot = 13 bytes.
     // hits=1000 → 2 bytes; cold frame = 1 tag + 1 len + 2 val at 13.
     let p = document.encode_payload();
-    assert_eq!(<WRow as Document>::HOT_WIDTH, 13, "ratio(8)+flag(1)+created(4)");
+    assert_eq!(
+        <WRow as Document>::HOT_WIDTH,
+        13,
+        "ratio(8)+flag(1)+created(4)"
+    );
     assert_eq!(p[13], 0); // tag 0 = first declared field
     assert_eq!(p[14], 2); // len varint = 2
     assert_eq!(&p[15..17], &[0x83, 0xE8]); // varint(1000): w=2, byte order = value order

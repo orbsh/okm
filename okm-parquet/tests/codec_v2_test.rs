@@ -59,7 +59,11 @@ fn string_tlv_round_trip_through_payload() {
     // Wire shape: [hot segment][cold TLV]. Hot = score (u32 @0..4) then flag
     // (u8 @4..5) in declaration order, so the cold frames start at 5. Frame length
     // uses the P2 varint ("alice" = 5 bytes → single byte [0x05], < 64).
-    assert_eq!(&p[0..4], &[0, 0, 0, 7], "score BE, first bytes of the payload");
+    assert_eq!(
+        &p[0..4],
+        &[0, 0, 0, 7],
+        "score BE, first bytes of the payload"
+    );
     assert_eq!(p[4], 0xA5, "flag hot byte");
     assert_eq!(p[5], 1, "field tag 1 (name)");
     assert_eq!(p[6], 5, "varint len: 5 fits the 1-byte lane (< 64)");
@@ -193,8 +197,8 @@ fn payload_wire_hex_snapshot() {
     // P2 varint frame lengths: the len prefix is a prefix-monotonic
     // varint — values < 64 are ONE byte (len 2 → [0x02], len 0 → [0x00]).
     let expect = [
-        1, 2, 3, 4, // score BE (hot)
-        0xFF,  // flag (hot)
+        1, 2, 3, 4,    // score BE (hot)
+        0xFF, // flag (hot)
         1, 2, b'a', b'b', // name frame: tag 1, len 2 (1-byte varint), value
         2, 0, // note frame: tag 2, len 0
     ]
@@ -265,10 +269,7 @@ fn a_payload_shorter_than_the_hot_segment_is_truncation() {
     let schema = CollectionSchema::of::<SKey, SRow>();
     let short = &p[..3];
     let err = okm_core::decode::decode_payload(&schema, short);
-    assert!(
-        matches!(err, Err(CodecError::Truncated { .. })),
-        "{err:?}"
-    );
+    assert!(matches!(err, Err(CodecError::Truncated { .. })), "{err:?}");
 }
 
 #[test]

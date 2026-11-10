@@ -430,8 +430,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
 
         // Phase 3 — the stamp, the last write, exactly as the typed verb does it.
         let faces = self.computed_faces();
-        okm_core::meta::stamp_faces(&self.store, &ns, faces)
-            .map_err(codec)?;
+        okm_core::meta::stamp_faces(&self.store, &ns, faces).map_err(codec)?;
         Ok(report)
     }
 

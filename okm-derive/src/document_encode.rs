@@ -206,7 +206,6 @@ fn defaults_entries(schema: &DocumentSchema) -> TS2 {
 // the tag is its declaration index.
 #[allow(clippy::unwrap_used)]
 fn emit_payload_encode(schema: &DocumentSchema) -> TS2 {
-
     // Segment split. Hot = fixed-width fields (contiguous, O(1) offsets);
     // cold = variable-width fields (TLV frames, tag = declaration index
     // over ALL fields so tags stay stable across the hot/cold split).
@@ -252,7 +251,6 @@ fn emit_payload_encode(schema: &DocumentSchema) -> TS2 {
 // `schema.fields`, which the iterator just yielded it from.
 #[allow(clippy::unwrap_used)]
 fn emit_payload_decode(schema: &DocumentSchema) -> TS2 {
-
     let hot_fields: Vec<_> = schema.fields.iter().filter(|f| f.hot).collect();
     let cold_fields: Vec<_> = schema.fields.iter().filter(|f| !f.hot).collect();
 
