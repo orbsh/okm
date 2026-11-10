@@ -108,13 +108,15 @@ pub fn side_of(slots: &SlotMap, slot: u16) -> Side {
 /// Extension of a segment still being written. Readers ignore it: its tail may
 /// be torn (ADR-0045 §5).
 pub const PARTIAL_EXT: &str = "partial";
+/// Who may write a table's log, and where the last writer stopped (ADR-0056 §6).
+pub mod owner;
+
 /// The window join: the drain's reading half, beside the segments it reads.
 ///
 /// Gated on `schema-serde`, because a window cannot be read without a
 /// declaration and a declaration on disk IS the JSON sidecar (ADR-0056 §7). The
 /// segments themselves are readable without it: `read_sealed` answers ops and
 /// bytes, which is all a raw consumer needs.
-#[cfg(feature = "schema-serde")]
 #[cfg(feature = "schema-serde")]
 pub mod replay;
 #[cfg(feature = "schema-serde")]
@@ -239,6 +241,18 @@ pub struct ChangelogStatus {
     pub last_error: Option<String>,
 }
 
+/// What a writer hands over when it stops (ADR-0056 §6).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Drained {
+    /// The last sealed segment in the directory — the position a READER can see, which
+    /// is what the next writer has to reach before it may serve.
+    pub sealed: Option<String>,
+    /// `false` when the sink did not confirm its copies in time. A handover that names
+    /// a position the reader cannot see is a cutover that hangs, so the caller must not
+    /// proceed on this.
+    pub uploaded: bool,
+}
+
 /// The writer. One per collection, driven only by committed writes: there is no
 /// timer and no background thread (ADR-0045 §7).
 pub struct Changelog {
@@ -268,6 +282,10 @@ pub struct Changelog {
     /// Who hears about a seal, if anyone (ADR-0045 §18). Never called inside a
     /// commit: the hook runs after the rename, when the file is complete.
     sink: crate::sink::SharedSink,
+    /// The cutover switch (ADR-0056 §6): `false` means this writer lost the log and
+    /// must not append to it. `None` (the default) is a single-writer process, which
+    /// pays one `Option` check and nothing else.
+    gate: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 }
 
 impl Changelog {
@@ -300,6 +318,7 @@ impl Changelog {
             dropped: 0,
             last_error: None,
             sink: None,
+            gate: None,
         })
     }
 
@@ -371,6 +390,17 @@ impl Changelog {
         if self.staged.is_empty() {
             return Ok(());
         }
+        // A closed gate means another process holds the log now. The commit that got
+        // here is already in the store, so the log simply does not hear about it: the
+        // log is a hint (ADR-0045 §6), and the reconciliation scan at cutover is what
+        // covers the gap (ADR-0056 §4).
+        if let Some(gate) = &self.gate
+            && !gate.load(std::sync::atomic::Ordering::SeqCst)
+        {
+            self.staged.clear();
+            self.dropped += 1;
+            return Ok(());
+        }
         self.pending.append(&mut self.staged);
         self.frames += 1;
         // The buffer is a syscall-batching knob; the segment size is not. A
@@ -387,6 +417,43 @@ impl Changelog {
     /// finished file, never from a commit (ADR-0045 §18).
     pub fn attach_sink(&mut self, sink: crate::sink::SharedSink) {
         self.sink = sink;
+    }
+
+    /// Give this writer the cutover switch (ADR-0056 §6). The caller holds the lease and
+    /// reads it with `Lease::gate`; the writer reads the gate at every commit and stops
+    /// appending the moment it closes.
+    pub fn attach_gate(&mut self, gate: std::sync::Arc<std::sync::atomic::AtomicBool>) {
+        self.gate = Some(gate);
+    }
+
+    /// Stop and hand over: seal what is pending, wait for the sink's copies, and answer
+    /// the position a reader can see (ADR-0056 §6).
+    ///
+    /// This is the verb `Drop` is not: `Drop`'s drain is best-effort and cannot report a
+    /// failure, so a cutover built on it would be built on an assumption. Here a failed
+    /// flush or an unconfirmable upload is visible to the caller, which is what makes
+    /// "the old writer is fenced" a fact rather than a hope.
+    pub fn drain(&mut self, timeout: std::time::Duration) -> Result<Drained> {
+        if self.written > 0 || !self.pending.is_empty() {
+            self.seal_last()?;
+        } else if self.frame_count_is_empty() {
+            // Nothing was written: close the handle and take the empty `.partial` with
+            // it, so a handover does not leave a file a reader has to ignore.
+            self.file = None;
+            let _ = std::fs::remove_file(self.partial_path());
+        }
+        let sealed = last_sealed(&self.dir);
+        let uploaded = match &self.sink {
+            Some(sink) => sink.barrier(timeout).is_ok(),
+            None => true,
+        };
+        Ok(Drained { sealed, uploaded })
+    }
+
+    /// Whether the open segment carries no frames at all (an `open` that never
+    /// committed). Split out so `drain` reads like the decision it is.
+    fn frame_count_is_empty(&self) -> bool {
+        self.frames == 0 && self.written == 0
     }
 
     /// Announce a seal. Called after the rename, so an implementation copies a file
@@ -672,6 +739,18 @@ fn has_baseline(dir: &Path) -> Result<bool> {
 /// Sealed DELTA segments of one table, in name (= write) order. A baseline is not
 /// here: it is a snapshot rather than a window of changes, and
 /// [`baseline_segments`] is where a replay looks for it.
+/// The last sealed segment in ONE table directory, by name — the ordinal is the name's
+/// prefix, so name order is seal order. `None` for a directory that has none yet.
+pub fn last_sealed(dir: &Path) -> Option<String> {
+    let suffix = format!(".{SEALED_EXT}");
+    std::fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .filter(|name| name.ends_with(&suffix))
+        .max()
+}
+
 pub fn sealed_segments(root: &Path, header: &[u8]) -> Result<Vec<PathBuf>> {
     let dir = table_dir(root, header);
     let mut out = Vec::new();
@@ -1032,6 +1111,9 @@ pub struct ChangelogStore<S> {
     tables: RefCell<BTreeMap<Vec<u8>, RefCell<Changelog>>>,
     /// Where sealed segments go, if the host asked for a copy (ADR-0045 §18).
     sink: crate::sink::SharedSink,
+    /// The cutover switch (ADR-0056 §6), handed to every writer this store opens —
+    /// including one opened after a takeover request, which is exactly when it matters.
+    gate: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 }
 
 impl<S> ChangelogStore<S> {
@@ -1045,6 +1127,7 @@ impl<S> ChangelogStore<S> {
             metas: RefCell::new(BTreeMap::new()),
             tables: RefCell::new(BTreeMap::new()),
             sink: None,
+            gate: None,
         }
     }
 
@@ -1056,6 +1139,30 @@ impl<S> ChangelogStore<S> {
     pub fn with_sink(mut self, sink: std::sync::Arc<dyn crate::sink::SealedSegmentSink>) -> Self {
         self.sink = Some(sink);
         self
+    }
+
+    /// Give every writer the cutover switch (ADR-0056 §6): closed means this process
+    /// lost the log and must stop appending. Applied to the writers already open and to
+    /// any opened later.
+    pub fn attach_gate(&mut self, gate: std::sync::Arc<std::sync::atomic::AtomicBool>) {
+        for cell in self.tables.borrow().values() {
+            cell.borrow_mut().attach_gate(std::sync::Arc::clone(&gate));
+        }
+        self.gate = Some(gate);
+    }
+
+    /// Seal every table this store had open and wait for the copies, answering what
+    /// each table can offer a reader (ADR-0056 §6).
+    ///
+    /// A table that was never written has no writer — there is nothing to drain and no
+    /// entry to report, which is the same reason `status` answers `None` for it.
+    pub fn drain(&self, timeout: std::time::Duration) -> Result<Vec<(Vec<u8>, Drained)>> {
+        let mut out = Vec::new();
+        for (header, cell) in self.tables.borrow().iter() {
+            let drained = cell.borrow_mut().drain(timeout)?;
+            out.push((header.clone(), drained));
+        }
+        Ok(out)
     }
 
     /// Leave this ns out of the capture. Opt-OUT, not opt-in: the switch is on for
@@ -1159,6 +1266,9 @@ impl<S> ChangelogStore<S> {
             SegmentMeta::of::<R>(KIND_BASELINE),
         )?;
         log.attach_sink(self.sink.clone());
+        if let Some(gate) = &self.gate {
+            log.attach_gate(std::sync::Arc::clone(gate));
+        }
         for chunk in ops.chunks(BASELINE_CHUNK) {
             if log.stage(chunk) > 0 {
                 log.commit_staged()?;
@@ -1233,6 +1343,9 @@ impl<S> ChangelogStore<S> {
                 && let Ok(mut log) = Changelog::open(self.cfg.clone(), header, meta)
             {
                 log.attach_sink(self.sink.clone());
+                if let Some(gate) = &self.gate {
+                    log.attach_gate(std::sync::Arc::clone(gate));
+                }
                 self.tables
                     .borrow_mut()
                     .insert(header.to_vec(), RefCell::new(log));

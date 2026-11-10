@@ -2963,26 +2963,27 @@ open at the end (retiring the store-scan export, and the S3 sink).
       NOT covered, and honestly so: a real bucket with real credentials, and any retry
       or backoff policy (there is none). `okm-series` keeps its own container and magic
       (`.log` parts, ADR-0046).
-- [ ] **The cutover handshake is a file, not a control plane** (ADR-0056 §6). Today the
-      ADR says the old instance "drains and stops" and nothing says who proves it:
+- [x] **The cutover handshake is a file, not a control plane** (ADR-0056 §6). The ADR
+      said the old instance "drains and stops" and nothing said who proves it:
       `Changelog::drop` is best-effort (a failed flush cannot be reported) and a killed
       process leaves a `.partial` that readers ignore, so process exit is not evidence
-      that the tail reached the log. The decision is one file per table, `<dir>/owner`,
-      written the way a segment is sealed (temp, fsync, rename) and carrying
-      `holder | epoch | state | position`, with `state` in `writing | draining |
-      handed-over`. Not built yet, in this order: (1) `Changelog::drain()` →
-      `Drained { sealed, uploaded, watermark, frames }`, idempotent and fallible — the
-      position must mean "what a reader can see", which is `uploaded` wherever the sink
-      is engaged, so it waits for the queue instead of naming a `.segment` file the
-      bucket has not received; (2) the owner file with its lease (refresh on a timer,
-      self-fence on a missed renewal — the backend gives no lock, so refusing to write
-      is the only enforcement available), the gate read from memory at commit time and
-      the file polled off the write path; (3) the takeover predicate on the reading
-      side — replay, then claim `writing` only when the position equals the handover
-      position, and stay read-only otherwise. A deployment may trigger the cutover with
-      a signal, `kubectl delete`, or an HTTP route of its own; okm's only contract is
-      that a non-zero exit aborts the switch and a zero exit is honest only once the old
-      writer is fenced.
+      that the tail reached the log. Landed in `okm_core::changelog::owner` + the writer:
+      file per table, `<dir>/owner`, text `key value`, written temp → fsync → rename (the
+      same primitive as a seal), carrying `holder | epoch | state | position` with the
+      state in `writing | draining | handed-over`; `Lease` with a poll loop whose switch is
+      one `AtomicBool` the commit path reads, closed by another holder's write, by an
+      unreadable file, or by a renewal that cannot land — and never reopened; `Changelog::drain`
+      (and `ChangelogStore::drain`) seal the tail, wait on the sink's new `barrier` (the
+      uploader answers it by flushing its queue), and report `Drained { sealed, uploaded }`
+      where `sealed` is re-read from the directory, i.e. what a reader can see.
+      `the_gate_closes_when_another_holder_takes_the_file_and_stays_closed`,
+      `a_claim_that_cannot_be_read_closes_the_gate`, `a_handover_names_the_position_the_request_was_made_under`
+      and the two drain tests lock it.
+- [ ] **The new build's side of the handshake**: `announce_drain` → `wait_for_handover` →
+      replay to the reported position → `Lease::claim`, wired where a host actually
+      upgrades (the CLI's replay arm or the application itself), plus the equality
+      assertion refusing to serve when the replay cannot reach the handed position. The
+      vocabulary exists and is tested; the composition is not written.
 
 ## 2026-11-10 — the dynamic segment gets a block table at its tail (ADR-0057)
 

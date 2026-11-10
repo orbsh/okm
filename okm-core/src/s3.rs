@@ -183,8 +183,20 @@ impl SealedSegmentSink for SegmentUploader {
             self.failures.fetch_add(1, Ordering::Relaxed);
         }
     }
-}
 
+    /// A barrier on the queue: every segment sealed before this point has been
+    /// attempted. `false` (timeout, or a closed queue) means the copy is behind the
+    /// local log — the truth a cutover must not paper over.
+    fn barrier(&self, timeout: std::time::Duration) -> Result<(), String> {
+        if self.flush(timeout) {
+            Ok(())
+        } else {
+            Err(format!(
+                "segment uploader: queue did not drain within {timeout:?}"
+            ))
+        }
+    }
+}
 impl Drop for SegmentUploader {
     /// Close the queue and join the worker: a host that drops the uploader does not
     /// leave a thread behind, and the last queued segments are attempted first.
