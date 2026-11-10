@@ -37,5 +37,7 @@ ADR-0056 §8 定下「每表一个目录」，sink 在其上写 Iceberg v2 元�
 
 - `bridge::iceberg` 删除，连带 `stamp_batch`：Delta 按**名字**认列，Parquet 的 field id 会变成没人读的第二重身份。`bridge::delta` 约 350 行，没有 Avro 编码器，`parquet_io` 原样写批次。
 - `Report::metadata` 数的是 Delta 提交，每表每窗口一条。
+- **无符号列会显式变宽。** Delta 没有无符号整数类型，所以 `u8/u16` 变成 `short/integer`、`u32` 变成 `long`、`u64` 变成 `decimal(20,0)`。读方在 okm 的 `u64` 处看到的是 `decimal(20,0)`；替代方案要么是根本写不出的列，要么是会丢数据的窄化转换。
+- **日志携带逐文件统计**：`numRecords`，以及对「Parquet 统计能表述声明类型边界」的列给出 `minValues` / `maxValues` / `nullCount`（有符号整数、浮点、截到 32 字符的字符串、布尔）。无符号列不给边界：它们的物理统计是按有符号类型算的，据此推出的边界恰好在溢出的那些行上是错的——编造边界比不做跳过更糟。
 - ADR-0045 与 PLAN 里点名的 `okm-iceberg` crate 对「追加」不再需要；如果将来要做带分区、delete file/vector、文件大小目标的写入器，它仍是独立 crate——那条理由从来不是针对格式的。
 - 用真读方验过，工作目录在表目录之外：DuckDB 1.5.5 `delta_scan(<dir>)` 列出各列，其中 `variant variant`；`variant_extract(variant, 'note')` 对有开放字段的那行返回 `first`，对没有的行返回 NULL。

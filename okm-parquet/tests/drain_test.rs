@@ -647,3 +647,55 @@ fn a_variant_column_declares_its_table_feature() {
         .expect("a variant column");
     assert_eq!(variant["type"], "variant");
 }
+
+/// A commit records what a reader can skip on: row count, per-column bounds and null
+/// counts, taken from the statistics the Parquet writer already computed. Columns whose
+/// physical statistics cannot state the declared type's bound (okm's unsigned keys widen
+/// into a signed Delta type) carry none — an invented bound is worse than no skipping.
+#[test]
+fn a_commit_carries_statistics_a_reader_can_skip_with() {
+    let root = tempfile::tempdir().expect("root");
+    let out = tempfile::tempdir().expect("out");
+    {
+        let c = collection(root.path());
+        c.put(
+            &K1,
+            &R {
+                level: 3,
+                name: "alpha".into(),
+            },
+        )
+        .expect("put");
+        c.put(
+            &K2,
+            &R {
+                level: 4,
+                name: "zulu".into(),
+            },
+        )
+        .expect("put");
+    }
+    let report = drain(root.path(), &DrainConfig::new(out.path(), "test")).expect("drain");
+    let table_dir = report.files[0].parent().unwrap().parent().unwrap().to_path_buf();
+    let text = std::fs::read_to_string(table_dir.join("_delta_log").join(format!("{:020}.json", 0)))
+        .expect("v0");
+    let stats: serde_json::Value = text
+        .lines()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .find_map(|a| a["add"]["stats"].as_str().map(|s| s.to_string()))
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .expect("an add with stats");
+
+    assert_eq!(stats["numRecords"], 2);
+    assert_eq!(stats["minValues"]["name"], "alpha");
+    assert_eq!(stats["maxValues"]["name"], "zulu");
+    assert_eq!(stats["nullCount"]["name"], 0);
+    // The unsigned columns (`org`, `id`, `level`) have no exact Delta type, so no bound
+    // is claimed for them — the file's own Parquet statistics still serve a direct reader.
+    for skipped in ["org", "id", "level"] {
+        assert!(
+            stats["minValues"].get(skipped).is_none(),
+            "no bound is invented for `{skipped}`"
+        );
+    }
+}

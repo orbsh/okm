@@ -40,7 +40,23 @@ pub struct Commit {
 /// The columns of one data file, in file order, with their Delta type names, plus its
 /// row count. One file describes the table: every file a window writes carries the
 /// declared schema.
-pub fn file_summary(path: &Path) -> Result<(Vec<(String, String)>, u64), String> {
+/// What a commit records about one data file: the columns (name + Delta type), the row
+/// count, and the per-column bounds a reader can skip on.
+#[derive(Debug, Clone, Default)]
+pub struct FileSummary {
+    pub columns: Vec<(String, String)>,
+    pub rows: u64,
+    /// `column → min` / `column → max` / `column → nulls`, for the columns whose type
+    /// has a JSON form Delta's stats schema accepts (signed integers, floats, strings,
+    /// booleans). Binary, variant, struct and UNSIGNED columns are left out: the first
+    /// three have no scalar bound, and an unsigned value has no exact Delta type to
+    /// state it in.
+    pub min: serde_json::Map<String, serde_json::Value>,
+    pub max: serde_json::Map<String, serde_json::Value>,
+    pub nulls: serde_json::Map<String, serde_json::Value>,
+}
+
+pub fn file_summary(path: &Path) -> Result<FileSummary, String> {
     let file = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let reader = parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(file)
         .map_err(|e| format!("{}: {e}", path.display()))?;
@@ -56,15 +72,139 @@ pub fn file_summary(path: &Path) -> Result<(Vec<(String, String)>, u64), String>
         })?;
         columns.push((f.name().clone(), ty));
     }
-    // The row count is the sum over row groups: cheap, and it is all a reader's stats
-    // need (`numRecords`).
-    let rows = reader
-        .metadata()
-        .row_groups()
-        .iter()
-        .map(|g| g.num_rows() as u64)
-        .sum();
-    Ok((columns, rows))
+    let metadata = reader.metadata();
+    // The row count is the sum over row groups.
+    let rows: u64 = metadata.row_groups().iter().map(|g| g.num_rows() as u64).sum();
+
+    // Bounds come from the Parquet statistics the writer already computed, folded per
+    // column across row groups. A column with no statistics simply gets none here —
+    // claiming a bound that was not measured is worse than not skipping.
+    let mut summary = FileSummary {
+        columns,
+        rows,
+        ..FileSummary::default()
+    };
+    let skip_unsigned = |ty: &DataType| {
+        matches!(
+            ty,
+            DataType::UInt8
+                | DataType::UInt16
+                | DataType::UInt32
+                | DataType::UInt64
+                | DataType::Decimal128(_, _)
+                | DataType::Binary
+                | DataType::LargeBinary
+                | DataType::Struct(_)
+                | DataType::List(_)
+        )
+    };
+    for (idx, field) in arrow.fields().iter().enumerate() {
+        if skip_unsigned(field.data_type()) {
+            continue;
+        }
+        let mut min: Option<serde_json::Value> = None;
+        let mut max: Option<serde_json::Value> = None;
+        let mut nulls: u64 = 0;
+        let mut counted = true;
+        for group in metadata.row_groups() {
+            let Some(column) = group.columns().get(idx) else {
+                counted = false;
+                break;
+            };
+            let Some(stats) = column.statistics() else {
+                counted = false;
+                break;
+            };
+            match stats.null_count_opt() {
+                Some(n) => nulls += n,
+                None => {
+                    counted = false;
+                    break;
+                }
+            }
+            match bounds(stats, field.data_type()) {
+                Some((lo, hi)) => {
+                    min = Some(match min {
+                        None => lo,
+                        Some(prev) => pick(prev, lo, true),
+                    });
+                    max = Some(match max {
+                        None => hi,
+                        Some(prev) => pick(prev, hi, false),
+                    });
+                }
+                None => {
+                    counted = false;
+                    break;
+                }
+            }
+        }
+        if !counted {
+            continue;
+        }
+        if let Some(lo) = min {
+            summary.min.insert(field.name().clone(), lo);
+        }
+        if let Some(hi) = max {
+            summary.max.insert(field.name().clone(), hi);
+        }
+        summary
+            .nulls
+            .insert(field.name().clone(), serde_json::Value::from(nulls));
+    }
+    Ok(summary)
+}
+
+/// The smaller (or larger) of two bounds of the same column. Numbers compare numerically,
+/// strings lexicographically — which is what the Parquet statistics were built from.
+fn pick(a: serde_json::Value, b: serde_json::Value, want_min: bool) -> serde_json::Value {
+    let less = match (&a, &b) {
+        (serde_json::Value::Number(x), serde_json::Value::Number(y)) => x.as_f64() <= y.as_f64(),
+        (serde_json::Value::String(x), serde_json::Value::String(y)) => x <= y,
+        (serde_json::Value::Bool(x), serde_json::Value::Bool(y)) => x <= y,
+        _ => true,
+    };
+    if less == want_min { a } else { b }
+}
+
+/// One row group's `(min, max)` for a column, as JSON, or `None` when the type has no
+/// scalar form here. Strings are cut to the 32 characters Delta's stats schema promises:
+/// a longer bound is reported as a prefix, never as a different value.
+fn bounds(
+    stats: &parquet::file::statistics::Statistics,
+    ty: &DataType,
+) -> Option<(serde_json::Value, serde_json::Value)> {
+    use parquet::file::statistics::Statistics;
+    let num = |n: i64| serde_json::Value::from(n);
+    let float = |f: f64| serde_json::Number::from_f64(f).map(serde_json::Value::Number);
+    match (stats, ty) {
+        (Statistics::Boolean(s), DataType::Boolean) => Some((
+            serde_json::Value::Bool(*s.min_opt()?),
+            serde_json::Value::Bool(*s.max_opt()?),
+        )),
+        (Statistics::Int32(s), DataType::Int8 | DataType::Int16 | DataType::Int32) => {
+            Some((num(*s.min_opt()? as i64), num(*s.max_opt()? as i64)))
+        }
+        (Statistics::Int64(s), DataType::Int64) => {
+            Some((num(*s.min_opt()?), num(*s.max_opt()?)))
+        }
+        (Statistics::Float(s), DataType::Float32) => {
+            Some((float(*s.min_opt()? as f64)?, float(*s.max_opt()? as f64)?))
+        }
+        (Statistics::Double(s), DataType::Float64) => {
+            Some((float(*s.min_opt()?)?, float(*s.max_opt()?)?))
+        }
+        (Statistics::ByteArray(s), DataType::Utf8) => {
+            let lo = std::str::from_utf8(s.min_bytes_opt()?).ok()?;
+            let hi = std::str::from_utf8(s.max_bytes_opt()?).ok()?;
+            let cut = |v: &str| -> serde_json::Value {
+                let head: String = v.chars().take(32).collect();
+                serde_json::Value::String(head)
+            };
+            Some((cut(lo), cut(hi)))
+        }
+        _ => None,
+    }
 }
 
 /// Arrow → Delta type name. Unsigned integers have no Delta type of their own, so they
@@ -235,29 +375,37 @@ pub fn commit_files(table_dir: &Path, files: &[PathBuf]) -> Result<Commit, Strin
     // Which files are new, and what each one holds. A path is recorded relative to the
     // table directory, which is what the specification wants and what makes the table
     // relocatable.
-    let mut adds: Vec<(String, u64, u64)> = Vec::new();
-    let mut summary: Option<(Vec<(String, String)>, u64)> = None;
+    struct Add {
+        path: String,
+        size: u64,
+        stats: String,
+    }
+    let mut adds: Vec<Add> = Vec::new();
+    let mut summary: Option<FileSummary> = None;
     for file in files {
         let name = file
             .file_name()
             .and_then(|n| n.to_str())
             .ok_or_else(|| format!("{}: not a file name this table can record", file.display()))?;
         let rel = format!("data/{name}");
-        let (columns, rows) = file_summary(file)?;
-        if state.files.contains(&rel) {
-            summary.get_or_insert((columns, rows));
-            continue;
-        }
         let size = std::fs::metadata(file)
             .map_err(|e| format!("{}: {e}", file.display()))?
             .len();
-        adds.push((rel, size, rows));
-        summary.get_or_insert((columns, rows));
+        let file = file_summary(file)?;
+        if !state.files.contains(&rel) {
+            adds.push(Add {
+                path: rel,
+                size,
+                stats: stats_json(&file),
+            });
+        }
+        summary.get_or_insert(file);
     }
 
     // Every file a window writes carries the declared schema, so any of them describes
     // the table; the first one we looked at is the one the metadata quotes.
-    let (columns, _) = summary.ok_or_else(|| "no data files to commit".to_string())?;
+    let summary = summary.ok_or_else(|| "no data files to commit".to_string())?;
+    let columns = summary.columns.clone();
     let schema = schema_json(&columns);
     let has_variant = columns.iter().any(|(_, ty)| ty == "variant");
 
@@ -296,17 +444,15 @@ pub fn commit_files(table_dir: &Path, files: &[PathBuf]) -> Result<Commit, Strin
     }
 
     let modification = now_ms();
-    for (rel, size, rows) in &adds {
-        // `numRecords` is per file, so a reader can count without opening it.
-        let stats = serde_json::json!({ "numRecords": rows }).to_string();
+    for add in &adds {
         actions.push(serde_json::json!({
             "add": {
-                "path": rel,
+                "path": add.path,
                 "partitionValues": {},
-                "size": size,
+                "size": add.size,
                 "modificationTime": modification,
                 "dataChange": true,
-                "stats": stats,
+                "stats": add.stats,
             }
         }));
     }
@@ -329,6 +475,22 @@ pub fn commit_files(table_dir: &Path, files: &[PathBuf]) -> Result<Commit, Strin
         path,
         added: adds.len(),
     })
+}
+
+/// The `stats` string a commit carries for one file: `numRecords` plus, where they were
+/// measured, `minValues` / `maxValues` / `nullCount`. A reader uses these to skip a file
+/// without opening it; a file whose statistics were not computed gets the row count only.
+fn stats_json(file: &FileSummary) -> String {
+    let mut stats = serde_json::Map::new();
+    stats.insert("numRecords".into(), serde_json::Value::from(file.rows));
+    if !file.min.is_empty() {
+        stats.insert("minValues".into(), serde_json::Value::Object(file.min.clone()));
+        stats.insert("maxValues".into(), serde_json::Value::Object(file.max.clone()));
+    }
+    if !file.nulls.is_empty() {
+        stats.insert("nullCount".into(), serde_json::Value::Object(file.nulls.clone()));
+    }
+    serde_json::Value::Object(stats).to_string()
 }
 
 fn now_ms() -> u64 {

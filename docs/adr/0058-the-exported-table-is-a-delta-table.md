@@ -84,6 +84,16 @@ does not know it must refuse the table rather than guess what the column means.
   NAME, so a Parquet field id is a second identity nothing reads. `bridge::delta` is
   ~350 lines with no Avro encoder, and `parquet_io` writes the batch unchanged.
 - `Report::metadata` counts Delta commits, one per table per window.
+- **Unsigned columns widen, visibly.** Delta has no unsigned integer type, so `u8/u16`
+  become `short/integer`, `u32` becomes `long`, and `u64` becomes `decimal(20,0)`. A
+  reader sees `decimal(20,0)` where okm had a `u64`; the alternative was a column that
+  cannot be written at all, or a narrowing cast that loses data.
+- **The log carries per-file statistics**: `numRecords`, and `minValues` / `maxValues` /
+  `nullCount` for the columns whose Parquet statistics can state the declared type's
+  bound (signed integers, floats, strings cut to 32 characters, booleans). Unsigned
+  columns carry no bound: their physical statistics are computed on the signed type, and
+  a bound derived from them would be wrong for exactly the rows that overflow — an
+  invented bound is worse than no skipping.
 - The `okm-iceberg` crate named by ADR-0045 and the PLAN is not needed for appending;
   if a writer with partitioning, delete files/vectors and file-size targets is ever
   built, it is still its own crate — that reasoning was never about the format.

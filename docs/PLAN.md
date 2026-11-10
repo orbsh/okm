@@ -2908,6 +2908,12 @@ open at the end (retiring the store-scan export, and the S3 sink).
       gone; the schema is read from the Parquet footer and columns are identified by
       NAME, so `stamp_batch` and its field-id registry entry went too. The Iceberg
       encoder — 708 lines including a hand-written Avro container — is deleted.
+      Each commit also carries per-file statistics (`numRecords`, plus
+      `minValues`/`maxValues`/`nullCount` for the columns whose Parquet statistics can
+      state the declared type's bound — signed ints, floats, strings cut to 32 chars,
+      booleans). Unsigned columns deliberately carry none: their physical statistics are
+      computed on the signed type, so a derived bound would be wrong exactly where it
+      overflows.
       Verified with a real reader from outside the table: DuckDB `delta_scan(<dir>)`.
 
 - [x] **The variant column has the canonical shape.** `struct<metadata: binary,
@@ -2921,6 +2927,12 @@ open at the end (retiring the store-scan export, and the S3 sink).
       partitioning and file size (the weakest being delete support, since Delta's
       deletion vectors are less widely read than Iceberg's delete files); and the
       `okm-iceberg` crate named below is no longer needed for appending.
+
+- [ ] Deferred (2026-11-10, owner): what the Delta log still owes — `_last_checkpoint`
+      (a reader lists every version; a checkpoint is a Parquet file of all live actions,
+      not a hint file, so it is its own piece of work); bounds for the UNSIGNED key
+      columns (needs a value pass, since their Parquet statistics are signed); delete
+      files / deletion vectors; partitioning; file-size targets.
 
 - [x] **Demote `parquet_io`'s store-scan export** — decided, not retired. It is a
       STATE export: it reads the current rows out of a live store, so a deleted row is
