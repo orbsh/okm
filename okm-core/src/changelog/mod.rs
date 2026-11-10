@@ -165,6 +165,15 @@ pub struct SegmentMeta {
 }
 
 impl SegmentMeta {
+    /// The same table's meta for another `kind` — a baseline beside the deltas that
+    /// declared it.
+    pub fn with_kind(&self, kind: u8) -> Self {
+        Self {
+            kind,
+            ..self.clone()
+        }
+    }
+
     /// The meta a writer of `<R>` stamps on a segment of `kind`.
     pub fn of<R: crate::Document>(kind: u8) -> Self {
         Self {
@@ -751,6 +760,17 @@ fn owner_err(what: String) -> Error {
     Error::Changelog { what }
 }
 
+/// What one table's compaction did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Compacted {
+    /// The baseline that now covers everything below it.
+    pub baseline: Option<String>,
+    /// Segments deleted because the baseline covered them.
+    pub removed: usize,
+    /// Their size on disk, so a host can log what it got back.
+    pub freed: u64,
+}
+
 /// What a byte-level replay did: how many ops it applied, and the last segment it read
 /// (the position a reader reaches, which is what a handover has to be compared against).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -776,13 +796,8 @@ pub fn apply_log<S: crate::VirtualStorage>(
     target: &S,
     after: Option<&str>,
 ) -> Result<Applied> {
-    let mut segments = baseline_segments(root, header)?;
-    segments.extend(sealed_segments(root, header)?);
-    segments.sort();
-    let mut applied = Applied {
-        ops: 0,
-        last: None,
-    };
+    let segments = all_segments(root, header)?;
+    let mut applied = Applied { ops: 0, last: None };
     for path in segments {
         let Some(name) = path.file_name().map(|n| n.to_string_lossy().into_owned()) else {
             continue;
@@ -809,6 +824,17 @@ pub fn apply_log<S: crate::VirtualStorage>(
         applied.last = Some(name);
     }
     Ok(applied)
+}
+
+/// Every segment of one table — baselines included — in name order.
+///
+/// Name order is log order: a baseline's number is the number of the segment it outranks,
+/// so sorting the two kinds together is what makes a replay correct after a compaction.
+fn all_segments(root: &Path, header: &[u8]) -> Result<Vec<PathBuf>> {
+    let mut out = baseline_segments(root, header)?;
+    out.extend(sealed_segments(root, header)?);
+    out.sort();
+    Ok(out)
 }
 
 /// The last sealed segment in ONE table directory, by name — the ordinal is the name's
@@ -1184,6 +1210,9 @@ pub struct ChangelogStore<S> {
     /// The cutover switch (ADR-0056 §6), handed to every writer this store opens —
     /// including one opened after a takeover request, which is exactly when it matters.
     gate: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    /// The token this store claimed the log under, if it took one over. `compact` needs it
+    /// to answer "is this claim mine?" without guessing from a path.
+    pub holder: RefCell<Option<String>>,
     /// The claims this store holds. Kept here for the store's lifetime because a dropped
     /// lease stops polling, and a gate nobody polls is a gate that never closes.
     leases: RefCell<Vec<std::sync::Arc<owner::Lease>>>,
@@ -1200,6 +1229,7 @@ impl<S> ChangelogStore<S> {
             metas: RefCell::new(BTreeMap::new()),
             tables: RefCell::new(BTreeMap::new()),
             gate: None,
+            holder: RefCell::new(None),
             leases: RefCell::new(Vec::new()),
         }
     }
@@ -1234,11 +1264,7 @@ impl<S> ChangelogStore<S> {
     /// `holder` and `data` are this instance's, and are written back only for a table
     /// whose claim is `draining` — the state the successor set. A drain with no request
     /// against it seals and reports but claims nothing.
-    pub fn drain_and_hand_over(
-        &self,
-        holder: &str,
-        data: &str,
-    ) -> Result<Vec<(Vec<u8>, Drained)>> {
+    pub fn drain_and_hand_over(&self, holder: &str, data: &str) -> Result<Vec<(Vec<u8>, Drained)>> {
         let mut out = Vec::new();
         for (header, cell) in self.tables.borrow().iter() {
             let drained = cell.borrow_mut().drain()?;
@@ -1310,14 +1336,14 @@ impl<S> ChangelogStore<S> {
                         })?;
                     Some(position)
                 }
-                owner::Role::HandedOver { position, .. } => Some(position.clone().ok_or_else(
-                    || Error::Changelog {
+                owner::Role::HandedOver { position, .. } => {
+                    Some(position.clone().ok_or_else(|| Error::Changelog {
                         what: format!(
                             "{}: a handover with no position — nothing to reach",
                             owner::path(&dir).display()
                         ),
-                    },
-                )?),
+                    })?)
+                }
                 _ => None,
             };
             if let Some(handed) = handed {
@@ -1339,6 +1365,7 @@ impl<S> ChangelogStore<S> {
                 .map_err(owner_err)?;
             self.attach_gate(lease.gate());
             self.leases.borrow_mut().push(lease);
+            *self.holder.borrow_mut() = Some(holder.to_string());
             out.push((header, role));
         }
         Ok(out)
@@ -1421,36 +1448,50 @@ impl<S> ChangelogStore<S> {
         let Some(root) = self.cfg.root() else {
             return Ok(false);
         };
-        let dir = table_dir(root, &header);
-        if has_baseline(&dir)? {
+        if has_baseline(&table_dir(root, &header))? {
             return Ok(false);
         }
+        let meta = SegmentMeta::of::<R>(KIND_BASELINE);
+        Ok(self.write_baseline(&header, meta)?.is_some())
+    }
 
-        // Close this table's writer before the scan: the baseline must outrank
-        // every segment already written for the table.
-        let open = self.tables.borrow_mut().remove(&header);
-        if let Some(cell) = open {
+    /// Write one baseline for `header`: close the writer, scan the truth half, seal.
+    ///
+    /// The filter is the same one capture applies, so the baseline says exactly what a
+    /// replay would have rebuilt — derived faces are left out because replaying above it
+    /// recreates them.
+    fn write_baseline(&self, header: &[u8], meta: SegmentMeta) -> Result<Option<(String, String)>>
+    where
+        S: VirtualStorage,
+    {
+        let Some(root) = self.cfg.root() else {
+            return Ok(None);
+        };
+        // A baseline is written in chunks, so it can be several files. What matters is
+        // where it STARTS: every segment numbered below the first of them is covered.
+        let existed: std::collections::BTreeSet<String> = baseline_segments(root, header)?
+            .into_iter()
+            .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+            .collect();
+        // Close this table's writer before the scan: the baseline must outrank every
+        // segment already written for the table (a writer left open would keep appending
+        // below the baseline, which a replay skips).
+        if let Some(cell) = self.tables.borrow_mut().remove(header) {
             let mut log = cell.into_inner();
             log.seal_last()?;
         }
 
-        // The truth half as ops, through the very filter the capture applies —
-        // derived faces are left out because a replay rebuilds them.
         let slots = SlotMap::standard();
         let mut ops: Vec<(Vec<u8>, Option<Vec<u8>>)> = Vec::new();
-        for (suffix, value) in crate::engine::storage::scan_suffix_kv(&self.inner, &header)? {
-            let mut key = header.clone();
+        for (suffix, value) in crate::engine::storage::scan_suffix_kv(&self.inner, header)? {
+            let mut key = header.to_vec();
             key.extend_from_slice(&suffix);
-            if carried(&slots, &header, &key) {
+            if carried(&slots, header, &key) {
                 ops.push((key, Some(value)));
             }
         }
 
-        let mut log = Changelog::open(
-            self.cfg.clone(),
-            &header,
-            SegmentMeta::of::<R>(KIND_BASELINE),
-        )?;
+        let mut log = Changelog::open(self.cfg.clone(), header, meta)?;
         if let Some(gate) = &self.gate {
             log.attach_gate(std::sync::Arc::clone(gate));
         }
@@ -1462,7 +1503,97 @@ impl<S> ChangelogStore<S> {
         // `seal_last` and not `seal`: a one-shot writer leaves exactly one file,
         // and the next `open` takes the same number again — no hole.
         log.seal_last()?;
-        Ok(true)
+        let fresh: Vec<String> = baseline_segments(root, header)?
+            .into_iter()
+            .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+            .filter(|name| !existed.contains(name))
+            .collect();
+        Ok(match (fresh.first(), fresh.last()) {
+            (Some(first), Some(last)) => Some((first.clone(), last.clone())),
+            _ => None,
+        })
+    }
+
+    /// Compact the log: one new baseline per table, then delete what it covers.
+    ///
+    /// A baseline is a checkpoint — the whole truth half at a segment number — so every
+    /// segment below it is covered by the snapshot and a replay never needs it. `keep`
+    /// decides how many of the newest of those to leave behind (0 keeps none: history
+    /// lives in the Delta export, whose versions nothing here can prune).
+    ///
+    /// Two guards, both about the claim. Compaction is only safe for the holder that may
+    /// write: a segment pruned under a successor's feet is a handover that can never
+    /// reach its position. And it is refused while a handover is in flight — the position
+    /// the holder named must still exist when the successor arrives.
+    pub fn compact(&self, keep: usize) -> Result<Vec<(Vec<u8>, Compacted)>>
+    where
+        S: VirtualStorage,
+    {
+        let Some(root) = self.cfg.root() else {
+            return Ok(Vec::new());
+        };
+        let headers: Vec<Vec<u8>> = self.metas.borrow().keys().cloned().collect();
+        let mut out = Vec::new();
+        for header in headers {
+            if self.excluded(&header) {
+                continue;
+            }
+            let dir = table_dir(root, &header);
+            if let Some(current) = owner::read(&dir).map_err(owner_err)?
+                && !self.holds(&current, &dir)
+            {
+                return Err(Error::Changelog {
+                    what: format!(
+                        "{}: compaction needs the claim (state {:?}, holder {}); this instance \
+                         holds neither",
+                        owner::path(&dir).display(),
+                        current.state,
+                        current.holder
+                    ),
+                });
+            }
+            let meta = self.metas.borrow().get(&header).cloned();
+            let Some(meta) = meta else {
+                continue;
+            };
+            let Some((first, last)) =
+                self.write_baseline(&header, meta.with_kind(KIND_BASELINE))?
+            else {
+                continue;
+            };
+            let mut covered = all_segments(root, &header)?;
+            covered.retain(|path| {
+                path.file_name()
+                    .map(|n| n.to_string_lossy().as_ref() < first.as_str())
+                    .unwrap_or(false)
+            });
+            // The newest `keep` below the baseline survive; everything older is covered.
+            let cut = covered.len().saturating_sub(keep);
+            let mut compacted = Compacted {
+                baseline: Some(last),
+                removed: 0,
+                freed: 0,
+            };
+            for path in covered.into_iter().take(cut) {
+                if let Ok(stat) = std::fs::metadata(&path) {
+                    compacted.freed += stat.len();
+                }
+                std::fs::remove_file(&path).map_err(|e| Error::Changelog {
+                    what: format!("{}: {e}", path.display()),
+                })?;
+                compacted.removed += 1;
+            }
+            out.push((header, compacted));
+        }
+        Ok(out)
+    }
+
+    /// Does this instance hold the claim in `current`?
+    fn holds(&self, current: &owner::Owner, dir: &Path) -> bool {
+        let mine = self.holder.borrow();
+        mine.as_deref() == Some(current.holder.as_str())
+            && current.state == owner::State::Writing
+            && self.leases.borrow().iter().any(|l| l.dir() == dir)
     }
 
     /// What this table's log owes right now: the open segment, the bytes still

@@ -74,10 +74,7 @@ fn the_successor_asks_applies_and_then_claims() {
     assert_eq!(request.state, State::Draining);
 
     // --- A notices (an instance without a watcher thread polls) and hands over. ---
-    let drained = holder
-        .store()
-        .drain_and_hand_over("A", "/data/a")
-        .unwrap();
+    let drained = holder.store().drain_and_hand_over("A", "/data/a").unwrap();
     let position = drained[0].1.sealed.clone().expect("the tail was sealed");
     let claim = owner::read(&dir).unwrap().unwrap();
     assert_eq!(claim.state, State::HandedOver);
@@ -123,7 +120,10 @@ fn a_second_instance_over_the_same_store_is_refused() {
     let mut first = store(log.path());
     first.register::<RowKey, Row>().unwrap();
     assert_eq!(
-        first.take_over("A", "/data/a", Duration::from_secs(1)).unwrap()[0].1,
+        first
+            .take_over("A", "/data/a", Duration::from_secs(1))
+            .unwrap()[0]
+            .1,
         Role::First
     );
 

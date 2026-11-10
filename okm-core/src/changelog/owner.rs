@@ -96,7 +96,10 @@ pub enum Role {
     /// The handover it asked for is already recorded — a successor that crashed between
     /// the handover and the claim, or a deploy that ran the steps separately. The
     /// position is the one to reach; nothing more has to be asked of anyone.
-    HandedOver { holder: String, position: Option<String> },
+    HandedOver {
+        holder: String,
+        position: Option<String>,
+    },
     /// Another holder writes the SAME store: two writers over one data directory is the
     /// invariant everything rests on, so this is an error, not a role.
     Shared { holder: String, epoch: u64 },
@@ -351,6 +354,11 @@ pub struct Lease {
 }
 
 impl Lease {
+    /// The directory this claim is for.
+    pub fn dir(&self) -> &Path {
+        &self.dir
+    }
+
     /// Claim a table's log and start the poll loop.
     ///
     /// Refuses when the file already says someone else is `writing`: taking over is an

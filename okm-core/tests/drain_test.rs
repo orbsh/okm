@@ -13,8 +13,8 @@
     clippy::panic_in_result_fn
 )]
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use okm_core::changelog::{ChangelogConfig, ChangelogStore, sealed_segments};
 use okm_core::{Collection, Document, DocumentEncode, KeyEncode, TestStore};
@@ -32,9 +32,7 @@ pub struct Row {
     pub title: String,
 }
 
-fn captured(
-    root: &std::path::Path,
-) -> Collection<ChangelogStore<TestStore>, RowKey, Row> {
+fn captured(root: &std::path::Path) -> Collection<ChangelogStore<TestStore>, RowKey, Row> {
     Collection::captured(ChangelogStore::new(
         TestStore::slatedb_mem(),
         ChangelogConfig::new(root),
@@ -59,10 +57,7 @@ fn a_drained_writer_seals_its_tail_and_names_what_a_reader_can_see() {
     let collection = captured(log.path());
     save(&collection, 1);
 
-    let drained = collection
-        .store()
-        .drain()
-        .unwrap();
+    let drained = collection.store().drain().unwrap();
     assert_eq!(drained.len(), 1, "one registered table, one writer");
     let (header, report) = &drained[0];
 
@@ -86,10 +81,7 @@ fn a_writer_that_never_committed_drains_to_nothing_and_leaves_no_partial() {
     let dir = collection.store().dir().unwrap().join(hex_of());
     assert!(dir.exists(), "{}", dir.display());
 
-    let drained = collection
-        .store()
-        .drain()
-        .unwrap();
+    let drained = collection.store().drain().unwrap();
     let report = &drained[0].1;
     assert!(report.sealed.is_some(), "the committed row was sealed");
 

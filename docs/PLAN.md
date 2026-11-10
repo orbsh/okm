@@ -2984,6 +2984,15 @@ outright — its entry says why).
       (`Role::Resume`). `capture_off_opens_nothing_and_writes_nothing` locks the `Off`
       location: no root, no writer, the directory untouched, and the write still lands in
       the store.
+- [x] **Compaction**: `ChangelogStore::compact(keep)` — one baseline per table (close,
+      scan the truth half through capture's own filter, seal; a baseline may be several
+      files, so the pruning bound is the FIRST of them) and delete what it covers,
+      keeping the newest `keep`. Only the claim holder may compact, and never during a
+      handover — the handed position must still exist when the successor arrives.
+      `keep = 0` is the intended shape: the log's job is to be applied, and history lives
+      in the Delta export. Tests: prune-and-replay across the seam (12 deltas below a
+      baseline plus 4 above, then a replay into an empty store that rebuilds all 16),
+      `keep = 3`, and `Off` (nothing to compact).
 - [x] **The log's location is a POSIX filesystem, and the option list says so**: `Local |
       Off`. S3 is not a location — no rename, no fsync — so S3 leaves the machine as a
       Delta table (ADR-0058), which serves backup, restore and analytics at once; the
