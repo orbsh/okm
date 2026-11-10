@@ -1282,25 +1282,13 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         let k = self.fields_key(key);
         let mut d = self.fields_vocab.borrow_mut();
         let store = crate::engine::storage::BatchStore::new(&self.store, batch);
-        let mut body = Vec::new();
-        let mut scratch = crate::model::obj_dynamic::FrameScratch::new();
-        {
+        // One value per obj: a block table and a value area, joined before the
+        // put (ADR-0057). Nested objects resolve through the same vocabulary.
+        let body = {
             let mut resolver = |name: &str| d.id_for(&store, &header, name);
-            for (name, value) in variants {
-                // Recurses into nested Obj values, sharing the vocabulary
-                // (id_for allocates on first sight) AND one body buffer per
-                // nesting depth — a document with N fields pays no per-frame
-                // allocation.
-                crate::model::obj_dynamic::put_frame_named_scratch(
-                    &mut body,
-                    name,
-                    value,
-                    &mut resolver,
-                    &mut scratch,
-                )?;
-            }
-        }
-        if body.is_empty() {
+            crate::model::obj_segment::encode(variants, &mut resolver)?
+        };
+        if variants.is_empty() {
             store.del(&k)?;
         } else {
             store.put(k, body)?;

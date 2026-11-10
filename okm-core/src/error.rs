@@ -57,9 +57,9 @@ pub enum Error {
     )]
     VocabularyExhausted { width: usize, next: u128 },
     /// A nested object reached an encoder that owns no name vocabulary. The
-    /// caller must use the named path (`put_frame_named`), which can allocate.
+    /// caller must encode through `obj_segment::encode`, which can allocate.
     #[error(
-        "nested object requires the vocabulary (name `{name}` unresolved) — use put_frame_named"
+        "nested object requires the vocabulary (name `{name}` unresolved) — use obj_segment::encode"
     )]
     VocabularyRequired { name: String },
     /// The store's meta entry is stamped with another payload shape (ADR-0043),

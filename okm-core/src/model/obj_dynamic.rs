@@ -1,23 +1,16 @@
-//! Dynamic-segment frame codec (ADR-0012). Slot 1 holds ONE entry per
-//! obj — the value is a list of self-describing frames:
+//! The dynamic segment's vocabulary and value types (ADR-0012, ADR-0057).
 //!
-//! ```text
-//! ([field-id][value-type u8][len varint][bytes])* — len uses the
-//! prefix-monotonic wire codec (P1), shared with `VarInt<T>`; small
-//! frames cost 1-2 header bytes instead of a fixed 4-byte length.
-//! ```
+//! Slot 1 holds ONE entry per obj. Its value is a block table followed by the
+//! leaf bodies; the layout lives in [`crate::model::obj_segment`], which owns
+//! both directions. What stays here is the currency the codec spends: the value
+//! vocabulary ([`DynamicValue`]), the field id + value pair readers get back
+//! ([`DynamicField`]), and the name resolver a writer hands in.
 //!
-//! `field-id` is the field NAME's vocabulary number (slots 2/3); u8 ids
-//! with `0xFF` escaping to `[0xFF][u16 id]` (255 names pay one byte per
-//! frame; growth is append-only — no renumbering, ever). Unknown value
-//! types on decode are normal input for a dynamic reader: the frame is
-//! skipped by its length, not fatal — a newer writer may store types an
-//! older reader cannot see. Frames carry no ordering guarantee: writers
-//! walk a name-keyed map, so the bytes are in NAME order — not id order;
-//! readers address fields by id, never by position.
+//! Ids are the field NAME's vocabulary number (slots 2/3); u8 ids with `0xFF`
+//! escaping to `[0xFF][u16 id]`. Unknown value types on decode are normal input
+//! for a dynamic reader: the field is skipped, not fatal — a newer writer may
+//! store types an older reader cannot see.
 
-use crate::model::wrappers::obj_value::ObjValueType;
-use crate::model::wrappers::wire::{put_len, take_len};
 use std::collections::BTreeMap;
 
 /// The value vocabulary: ONE tree for both halves of the crate (ADR-0056 §8).
@@ -169,27 +162,9 @@ pub fn vocab_id_from_u64<N: crate::model::vocab::VocabId>(v: u64) -> Option<N> {
     <N as crate::model::vocab::VocabId>::from_be(&img[16 - w..])
 }
 
-/// Append one frame. `id < 0xFF` takes the short form; anything larger
-/// escapes through `0xFF`. Nested `DynamicValue::Obj` values are NOT
-/// supported here (their ids must be resolved first) — use
-/// [`put_frame_named`] with a name resolver.
-pub fn put_frame(buf: &mut Vec<u8>, id: u16, value: &DynamicValue) -> crate::error::Result<()> {
-    // No vocabulary here (the id is caller-resolved): a nested Obj value
-    // cannot allocate names, so the resolver reports it instead of guessing.
-    // Arrays of scalars are fine.
-    let mut no_vocab = |name: &str| -> crate::error::Result<u16> {
-        Err(crate::error::Error::VocabularyRequired {
-            name: name.to_owned(),
-        })
-    };
-    let mut scratch = FrameScratch::new();
-    write_id(buf, id);
-    write_value(buf, value, &mut no_vocab, &mut scratch, 0)
-}
-
-/// Name resolver: returns the vocabulary id for `name`, allocating
-/// through the closure on first sight (the caller's vocabulary owns
-/// allocation discipline — single writer, engine mutex).
+/// Name resolver: returns the vocabulary id for `name`, allocating through the
+/// closure on first sight (the caller's vocabulary owns allocation discipline —
+/// single writer, engine mutex).
 pub trait NameResolver {
     fn resolve(&mut self, name: &str) -> crate::error::Result<u16>;
 }
@@ -200,387 +175,18 @@ impl<F: FnMut(&str) -> crate::error::Result<u16>> NameResolver for F {
     }
 }
 
-/// Append one frame for a NAMED field: nested `Obj` values recurse,
-/// each nested name resolved through the same resolver (nested objects
-/// share the obj's vocabulary — one vocabulary per table).
-pub fn put_frame_named<R: NameResolver>(
-    buf: &mut Vec<u8>,
-    name: &str,
-    value: &DynamicValue,
-    vocab: &mut R,
-) -> crate::error::Result<()> {
-    let mut scratch = FrameScratch::new();
-    put_frame_named_scratch(buf, name, value, vocab, &mut scratch)
-}
-
-/// [`put_frame_named`] with the caller's [`FrameScratch`] — the form a writer
-/// emitting MANY frames uses: the scratch recycles one body buffer per nesting
-/// depth instead of allocating one per frame.
-pub fn put_frame_named_scratch<R: NameResolver>(
-    buf: &mut Vec<u8>,
-    name: &str,
-    value: &DynamicValue,
-    vocab: &mut R,
-    scratch: &mut FrameScratch,
-) -> crate::error::Result<()> {
-    write_named_frame(buf, name, value, vocab, scratch, 0)
-}
-
-fn write_named_frame<R: NameResolver>(
-    buf: &mut Vec<u8>,
-    name: &str,
-    value: &DynamicValue,
-    vocab: &mut R,
-    scratch: &mut FrameScratch,
-    depth: usize,
-) -> crate::error::Result<()> {
-    let id = vocab.resolve(name)?;
-    write_id(buf, id);
-    write_value(buf, value, vocab, scratch, depth)
-}
-
-/// One frame id: `u8` for `< 0xFF`, else the `0xFF` escape plus a `u16` BE.
-fn write_id(buf: &mut Vec<u8>, id: u16) {
-    if id < 0xFF {
-        buf.push(id as u8);
-    } else {
-        buf.push(0xFF);
-        buf.extend_from_slice(&id.to_be_bytes());
-    }
-}
-
-/// Reusable frame-encode scratch: one body buffer per nesting depth.
-///
-/// A composite's body must be built before its length can be written (the
-/// length is a varint whose own width depends on the value — it cannot be
-/// patched in place), so the encoder needs somewhere to put the body. Handing
-/// back a fresh `Vec` per frame cost one heap allocation per dynamic field of
-/// every document; a scratch recycles one buffer per depth across all the
-/// frames of a write. Scalars never touch it — they know their length and write
-/// straight into the destination.
-#[derive(Debug, Default)]
-pub struct FrameScratch {
-    bufs: Vec<Vec<u8>>,
-}
-
-impl FrameScratch {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Buffers allocated so far — the deepest nesting this scratch has served.
-    pub fn depth(&self) -> usize {
-        self.bufs.len()
-    }
-
-    fn take(&mut self, depth: usize) -> Vec<u8> {
-        while self.bufs.len() <= depth {
-            self.bufs.push(Vec::new());
-        }
-        std::mem::take(&mut self.bufs[depth])
-    }
-
-    fn put_back(&mut self, depth: usize, mut buf: Vec<u8>) {
-        buf.clear();
-        self.bufs[depth] = buf;
-    }
-}
-
-/// Write ONE value frame — `[type][len][body]` — straight into `buf`.
-/// Nested objects need the vocabulary to resolve names → ids, so the resolver
-/// is a parameter; a top-level Obj is written by [`write_named_frame`], and an
-/// Obj nested inside an Array reaches THIS match arm — composites are written
-/// fully wherever they appear.
-/// One unsigned frame, minimal big-endian width (leading zero bytes stripped).
-fn write_unsigned(buf: &mut Vec<u8>, v: u64) {
-    let be = v.to_be_bytes();
-    let first = be.iter().position(|&b| b != 0).unwrap_or(7);
-    buf.push(ObjValueType::UInt.to_byte());
-    put_len(buf, 8 - first);
-    buf.extend_from_slice(&be[first..]);
-}
-
-fn write_value<R: NameResolver>(
-    buf: &mut Vec<u8>,
-    value: &DynamicValue,
-    vocab: &mut R,
-    scratch: &mut FrameScratch,
-    depth: usize,
-) -> crate::error::Result<()> {
-    match value {
-        DynamicValue::I64(v) => {
-            // Minimal big-endian two's-complement width.
-            let be = v.to_be_bytes();
-            let fill = if *v < 0 { 0xFF } else { 0x00 };
-            let first = be.iter().position(|&b| b != fill).unwrap_or(7);
-            // Keep one sign byte so the sign is recoverable.
-            let start = if *v < 0 && first > 0 {
-                first - 1
-            } else {
-                first
-            };
-            buf.push(ObjValueType::Int.to_byte());
-            put_len(buf, 8 - start);
-            buf.extend_from_slice(&be[start..]);
-        }
-        // The wire has no width: a typed field's width is its declaration's, so
-        // every unsigned variant writes the same minimal-width frame and reads
-        // back as `U64` (ADR-0056 §8).
-        DynamicValue::U8(v) => write_unsigned(buf, u64::from(*v)),
-        DynamicValue::U16(v) => write_unsigned(buf, u64::from(*v)),
-        DynamicValue::U32(v) => write_unsigned(buf, u64::from(*v)),
-        DynamicValue::U64(v) => write_unsigned(buf, *v),
-        DynamicValue::F64(v) => {
-            buf.push(ObjValueType::F64.to_byte());
-            put_len(buf, 8);
-            buf.extend_from_slice(&v.to_be_bytes());
-        }
-        DynamicValue::Str(s) => {
-            let bytes = s.as_bytes();
-            buf.push(ObjValueType::Str.to_byte());
-            put_len(buf, bytes.len());
-            buf.extend_from_slice(bytes);
-        }
-        DynamicValue::Bytes(b) => {
-            buf.push(ObjValueType::Bytes.to_byte());
-            put_len(buf, b.len());
-            buf.extend_from_slice(b);
-        }
-        DynamicValue::Bool(b) => {
-            buf.push(ObjValueType::Bool.to_byte());
-            put_len(buf, 1);
-            buf.push(*b as u8);
-        }
-        DynamicValue::Null => {
-            buf.push(ObjValueType::Null.to_byte());
-            put_len(buf, 0);
-        }
-        DynamicValue::Array(items) => {
-            // Body: [element count][element frames...], built in the scratch
-            // because the count is not the body's length.
-            let mut body = scratch.take(depth);
-            put_len(&mut body, items.len());
-            for item in items {
-                write_value(&mut body, item, vocab, scratch, depth + 1)?;
-            }
-            buf.push(ObjValueType::Array.to_byte());
-            put_len(buf, body.len());
-            buf.extend_from_slice(&body);
-            scratch.put_back(depth, body);
-        }
-        DynamicValue::Obj(map) => {
-            // The same nested-nTLV body the frame level produces — same
-            // vocabulary recursion, wherever the Obj sits.
-            let mut body = scratch.take(depth);
-            for (k, v) in map {
-                write_named_frame(&mut body, k, v, vocab, scratch, depth + 1)?;
-            }
-            buf.push(ObjValueType::Obj.to_byte());
-            put_len(buf, body.len());
-            buf.extend_from_slice(&body);
-            scratch.put_back(depth, body);
-        }
-    }
-    Ok(())
-}
-
-/// Decode one frame starting at `*off`; advances past it. `None` on
-/// malformed input (truncated header/body) or an unknown type tag —
-/// callers treat both as normal dynamic-reader conditions. An unknown
-/// type is reported separately so the skip-by-length path stays
-/// available to the list decoder.
-#[derive(Debug)]
-enum FrameErr {
-    Malformed,
-    UnknownType,
-}
-
-fn take<'a>(b: &'a [u8], off: &mut usize, n: usize) -> Option<&'a [u8]> {
-    if *off + n > b.len() {
-        return None;
-    }
-    let s = &b[*off..*off + n];
-    *off += n;
-    Some(s)
-}
-
-/// Decode the whole dynamic-segment value: frames until bytes run out.
-/// Unknown value types are skipped by length (forward compatibility);
-/// malformed frames abort the list — everything before the abort point
-/// is still returned (partial results beat nothing for a dynamic
-/// reader).
-/// Decode all frames, resolving nested object field ids to names via
-/// `name_of` (the vocabulary's id → name direction). Top-level frames
-/// keep their numeric ids in [`DynamicField`] (the Collection layer maps
-/// them); nested `Obj` values come back fully name-keyed.
+/// Decode one dynamic segment (ADR-0057) into its fields. `name_of` resolves
+/// vocabulary ids to names; an id it cannot resolve keeps its number.
 pub fn decode_named(
     bytes: &[u8],
     name_of: &mut dyn FnMut(u16) -> Option<String>,
 ) -> Vec<DynamicField> {
-    let mut out = Vec::new();
-    let mut off = 0usize;
-    while off < bytes.len() {
-        match decode_frame_named(bytes, &mut off, name_of) {
-            Ok(Some(f)) => out.push(f),
-            Ok(None) => {}                     // unknown type — skipped, off advanced
-            Err(FrameErr::Malformed) => break, // torn tail: stop
-            Err(FrameErr::UnknownType) => {}   // defensive
-        }
-    }
-    out
+    crate::model::obj_segment::decode(bytes, name_of)
 }
 
-fn decode_frame(bytes: &[u8], off: &mut usize) -> Result<Option<DynamicField>, FrameErr> {
-    let mut no_names = |_id: u16| -> Option<String> { None };
-    decode_frame_named(bytes, off, &mut no_names)
-}
-
+/// [`decode_named`] without a vocabulary: names come back as id strings.
 pub fn decode_variants(bytes: &[u8]) -> Vec<DynamicField> {
-    let mut out = Vec::new();
-    let mut off = 0usize;
-    while off < bytes.len() {
-        match decode_frame(bytes, &mut off) {
-            Ok(Some(f)) => out.push(f),
-            // Unknown type: frame skipped (off already past its body);
-            // the list continues with what follows.
-            Err(FrameErr::UnknownType) | Ok(None) => {}
-            // Malformed: stop; keep what we have.
-            Err(FrameErr::Malformed) => break,
-        }
-    }
-    out
-}
-
-fn decode_id(bytes: &[u8], off: &mut usize) -> Option<u16> {
-    let first = *take(bytes, off, 1)?.first()?;
-    if first == 0xFF {
-        let b = take(bytes, off, 2)?;
-        Some(u16::from_be_bytes([b[0], b[1]]))
-    } else {
-        Some(first as u16)
-    }
-}
-
-fn decode_frame_named(
-    bytes: &[u8],
-    off: &mut usize,
-    name_of: &mut dyn FnMut(u16) -> Option<String>,
-) -> Result<Option<DynamicField>, FrameErr> {
-    let id = decode_id(bytes, off).ok_or(FrameErr::Malformed)?;
-    let ty_byte = take(bytes, off, 1)
-        .and_then(|b| b.first().copied())
-        .ok_or(FrameErr::Malformed)?;
-    let (len, len_n) = take_len(&bytes[*off..]).ok_or(FrameErr::Malformed)?;
-    *off += len_n;
-    let body = take(bytes, off, len).ok_or(FrameErr::Malformed)?;
-    let ty = match ObjValueType::from_byte(ty_byte) {
-        Some(t) => t,
-        None => return Err(FrameErr::UnknownType), // caller may skip; off already advanced
-    };
-    let value = match ty {
-        ObjValueType::Obj => {
-            let mut m = BTreeMap::new();
-            let mut inner = 0usize;
-            while inner < body.len() {
-                let nf = match decode_frame_named(body, &mut inner, name_of) {
-                    Ok(Some(nf)) => Some(nf),
-                    Ok(None) => None, // unknown nested type
-                    Err(_) => return Err(FrameErr::Malformed),
-                };
-                let Some(nf) = nf else { continue };
-                let key = name_of(nf.id).unwrap_or_else(|| nf.id.to_string());
-                m.insert(key, nf.value);
-            }
-            DynamicValue::Obj(m)
-        }
-        other => decode_value_named(other, body, name_of).ok_or(FrameErr::Malformed)?,
-    };
-    Ok(Some(DynamicField { id, value }))
-}
-
-/// Scalar/composite value decode. `name_of` resolves nested Obj frame
-/// ids to names — an Obj inside an Array decodes through HERE, so the
-/// resolver must be threaded down (composites are fully name-keyed
-/// wherever they appear).
-fn decode_value_named(
-    ty: ObjValueType,
-    body: &[u8],
-    name_of: &mut dyn FnMut(u16) -> Option<String>,
-) -> Option<DynamicValue> {
-    Some(match ty {
-        ObjValueType::UInt => {
-            // Zero-padded back to 8 bytes, big-endian.
-            if body.len() > 8 {
-                return None;
-            }
-            let mut be = [0u8; 8];
-            be[8 - body.len()..].copy_from_slice(body);
-            DynamicValue::U64(u64::from_be_bytes(be))
-        }
-        ObjValueType::Int => {
-            // Sign-extend back to 8 bytes, big-endian two's complement.
-            if body.is_empty() || body.len() > 8 {
-                return None;
-            }
-            let fill = if body[0] & 0x80 != 0 { 0xFF } else { 0x00 };
-            let mut be = [fill; 8];
-            be[8 - body.len()..].copy_from_slice(body);
-            DynamicValue::I64(i64::from_be_bytes(be))
-        }
-        ObjValueType::F64 => {
-            if body.len() != 8 {
-                return None;
-            }
-            DynamicValue::F64(f64::from_be_bytes([
-                body[0], body[1], body[2], body[3], body[4], body[5], body[6], body[7],
-            ]))
-        }
-        ObjValueType::Str => DynamicValue::Str(std::str::from_utf8(body).ok()?.to_owned()),
-        ObjValueType::Bytes => DynamicValue::Bytes(body.to_vec()),
-        ObjValueType::Bool => {
-            if body.len() != 1 {
-                return None;
-            }
-            DynamicValue::Bool(body[0] != 0)
-        }
-        ObjValueType::Null => {
-            if !body.is_empty() {
-                return None;
-            }
-            DynamicValue::Null
-        }
-        ObjValueType::Array => {
-            let (count, mut off) = take_len(body)?;
-            let mut items = Vec::with_capacity(count);
-            for _ in 0..count {
-                let ty_byte = *body.get(off)?;
-                off += 1;
-                let (len, ln) = take_len(body.get(off..)?)?;
-                off += ln;
-                let item_body = body.get(off..off + len)?;
-                off += len;
-                let ty = ObjValueType::from_byte(ty_byte)?;
-                items.push(decode_value_named(ty, item_body, name_of)?);
-            }
-            DynamicValue::Array(items)
-        }
-        // Obj inside an Array: same nested-frame decode as
-        // decode_frame_named's Obj arm (same resolver).
-        ObjValueType::Obj => {
-            let mut m = BTreeMap::new();
-            let mut inner = 0usize;
-            while inner < body.len() {
-                let nf = match decode_frame_named(body, &mut inner, name_of) {
-                    Ok(Some(nf)) => nf,
-                    Ok(None) => continue,  // unknown nested type
-                    Err(_) => return None, // malformed
-                };
-                let key = name_of(nf.id).unwrap_or_else(|| nf.id.to_string());
-                m.insert(key, nf.value);
-            }
-            DynamicValue::Obj(m)
-        }
-    })
+    crate::model::obj_segment::decode(bytes, &mut |_| None)
 }
 
 #[cfg(feature = "schema-serde")]
@@ -591,9 +197,9 @@ mod serde_impls {
     //!
     //! This is `Serialize`/`Deserialize`, NOT `to_json`: the format is the
     //! caller's choice (JSON, CBOR, …), and the storage encoding is
-    //! untouched — the dynamic segment still reads and writes nTLV frames,
-    //! with names in the vocabulary and fixed widths where the declaration
-    //! says so. The impl is the adapter at the edge, so a consumer stops
+    //! untouched — the dynamic segment still stores its block table and value
+    //! area (ADR-0057), with names in the vocabulary and fixed widths where the
+    //! declaration says so. The impl is the adapter at the edge, so a consumer stops
     //! hand-writing a `match` per direction.
     //!
     //! `Deserialize` uses `deserialize_any`, so it needs a SELF-DESCRIBING
@@ -829,267 +435,90 @@ mod serde_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::obj_segment::encode;
 
-    #[test]
-    fn obj_in_array_roundtrip() {
-        // An Obj nested inside an Array: the value must encode with real
-        // nested frames and decode fully name-keyed (composites wherever
-        // they appear — this shape carried aura's persisted interface_schema).
-        let mut nested = std::collections::BTreeMap::new();
-        nested.insert("c".to_string(), DynamicValue::I64(0));
-        let val = DynamicValue::Obj(std::collections::BTreeMap::from([(
-            "item".to_string(),
-            DynamicValue::Obj(nested),
-        )]));
-        let mut body = Vec::new();
-        let mut resolver = |name: &str| -> crate::error::Result<u16> {
-            Ok(match name {
-                "a" => 1,
-                "item" => 2,
-                "c" => 3,
-                _ => 99,
-            })
-        };
-        put_frame_named(
-            &mut body,
-            "a",
-            &DynamicValue::Array(vec![val]),
-            &mut resolver,
-        )
-        .unwrap();
-        let frames = decode_named(&body, &mut |id| match id {
-            1 => Some("a".into()),
-            2 => Some("item".into()),
-            3 => Some("c".into()),
-            _ => None,
-        });
-        assert_eq!(frames.len(), 1);
-        let DynamicValue::Array(items) = &frames[0].value else {
-            panic!("expected array, got {:?}", frames[0].value);
-        };
-        assert_eq!(items.len(), 1);
-        let DynamicValue::Obj(m) = &items[0] else {
-            panic!("nested obj inside array must decode, got {:?}", items[0]);
-        };
-        assert!(m.contains_key("item"), "nested obj keys resolve: {m:?}");
+    /// Names in declaration order: first sight claims the next id, the way a
+    /// real vocabulary allocates.
+    fn stub(names: &'static [&'static str]) -> impl FnMut(&str) -> crate::error::Result<u16> {
+        move |name: &str| {
+            let at = names.iter().position(|n| *n == name).unwrap_or(names.len());
+            Ok((at + 1) as u16)
+        }
+    }
+
+    fn names_of(names: &'static [&'static str]) -> impl FnMut(u16) -> Option<String> {
+        move |id| {
+            names
+                .get((id as usize).checked_sub(1)?)
+                .map(|s| (*s).to_string())
+        }
     }
 
     #[test]
-
-    fn frames_round_trip() {
-        let cases: Vec<(u16, DynamicValue)> = vec![
-            (1, DynamicValue::U64(0)),
-            (2, DynamicValue::U64(42)),
-            (3, DynamicValue::U64(u64::MAX)),
-            (1, DynamicValue::F64(3.25)),
-            (4, DynamicValue::Str("hello".into())),
-            (5, DynamicValue::Str("你好".into())),
-            (6, DynamicValue::Bytes(vec![0, 1, 0xFF])),
-            (7, DynamicValue::Bool(true)),
-            (8, DynamicValue::Bool(false)),
-            (9, DynamicValue::Null),
-            (
-                10,
-                DynamicValue::Array(vec![
-                    DynamicValue::U64(1),
-                    DynamicValue::Str("x".into()),
-                    DynamicValue::Null,
-                ]),
-            ),
-        ];
-        for (id, v) in &cases {
-            let mut buf = Vec::new();
-            put_frame(&mut buf, *id, v).unwrap();
-            let mut off = 0usize;
-            let f = decode_frame(&buf, &mut off);
-            if f.is_err() {
-                panic!("case id={} v={:?} buf={:02x?} err={:?}", id, v, buf, f);
-            }
-            let f = f.unwrap().unwrap();
-            assert_eq!(f.id, *id);
-            assert_eq!(f.value, *v);
-            assert_eq!(off, buf.len(), "frame consumed exactly");
+    fn obj_in_array_roundtrip() {
+        // An Obj nested inside an Array: the shape aura's interface_schema
+        // carried in production.
+        let nested = BTreeMap::from([("c".to_string(), DynamicValue::I64(0))]);
+        let val = DynamicValue::Obj(BTreeMap::from([(
+            "item".to_string(),
+            DynamicValue::Obj(nested),
+        )]));
+        let fields = ValueMap::from([("a".to_string(), DynamicValue::Array(vec![val]))]);
+        let bytes = encode(&fields, &mut stub(&["a", "item", "c"])).unwrap();
+        let got = decode_named(&bytes, &mut names_of(&["a", "item", "c"]));
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].id, 1);
+        match &got[0].value {
+            DynamicValue::Array(items) => match &items[0] {
+                DynamicValue::Obj(m) => match m.get("item") {
+                    Some(DynamicValue::Obj(inner)) => {
+                        assert_eq!(inner.get("c"), Some(&DynamicValue::I64(0)));
+                    }
+                    other => panic!("expected nested Obj, got {other:?}"),
+                },
+                other => panic!("expected Obj in the array, got {other:?}"),
+            },
+            other => panic!("expected Array, got {other:?}"),
         }
     }
 
     #[test]
     fn short_ids_take_one_byte_and_large_escape() {
-        let mut buf = Vec::new();
-        put_frame(&mut buf, 0xFE, &DynamicValue::U64(1)).unwrap();
-        assert_eq!(buf[0], 0xFE, "id 254 stays in the u8 lane");
-        let mut buf = Vec::new();
-        put_frame(&mut buf, 0xFF, &DynamicValue::U64(1)).unwrap();
-        assert_eq!(&buf[..3], &[0xFF, 0x00, 0xFF], "id 255 escapes");
-        let mut buf = Vec::new();
-        put_frame(&mut buf, 0x1234, &DynamicValue::U64(1)).unwrap();
-        assert_eq!(&buf[..3], &[0xFF, 0x12, 0x34]);
-        let fields = decode_variants(&buf);
-        assert_eq!(fields[0].id, 0x1234);
-    }
-
-    #[test]
-    fn list_decode_is_partial_on_malformed_tail() {
-        let mut buf = Vec::new();
-        put_frame(&mut buf, 1, &DynamicValue::U64(7)).unwrap();
-        buf.extend_from_slice(&[0x05, 0x00, 0x09, 0xAA]); // torn tail: len 9, only 1 byte follows
-        let fields = decode_variants(&buf);
-        assert_eq!(fields.len(), 1);
-        assert_eq!(fields[0].value, DynamicValue::U64(7));
-    }
-
-    #[test]
-    fn unknown_value_type_skips_by_length() {
-        let mut buf = Vec::new();
-        put_frame(&mut buf, 1, &DynamicValue::U64(7)).unwrap();
-        // Hand-rolled frame with a not-yet-defined type (0xFE).
-        buf.extend_from_slice(&[0x02, 0xFE, 0x03, 0xAA, 0xBB, 0xCC]);
-        put_frame(&mut buf, 3, &DynamicValue::Str("after".into())).unwrap();
-        let fields = decode_variants(&buf);
-        assert_eq!(fields.len(), 2, "unknown frame skipped by length");
-        assert_eq!(fields[0].id, 1);
-        assert_eq!(fields[1].id, 3);
-    }
-}
-
-#[cfg(test)]
-mod nested_tests {
-    use super::*;
-
-    // Minimal vocabulary stub for tests: name -> id by order of first sight.
-    struct StubVocab {
-        next: u16,
-        names: std::collections::HashMap<String, u16>,
-    }
-    impl StubVocab {
-        fn new() -> Self {
-            StubVocab {
-                next: 0,
-                names: std::collections::HashMap::new(),
-            }
+        // The id lane is unchanged by the block table: 254 is one byte, 255 and
+        // above escape through 0xFF + u16.
+        fn ids_of(id: u16) -> Vec<u8> {
+            let fields = ValueMap::from([("x".to_string(), DynamicValue::U64(1))]);
+            let mut vocab = move |_: &str| Ok(id);
+            encode(&fields, &mut vocab).unwrap()
         }
+        let short = ids_of(0xFE);
+        assert!(short[2..].contains(&0xFE), "id 254 stays in the u8 lane");
+        let escaped = ids_of(0x1234);
+        let at = escaped.windows(3).position(|w| w == [0xFF, 0x12, 0x34]);
+        assert!(at.is_some(), "id 0x1234 escapes through 0xFF");
+        let got = decode_variants(&ids_of(0x1234));
+        assert_eq!(got[0].id, 0x1234);
     }
-    impl NameResolver for StubVocab {
-        fn resolve(&mut self, name: &str) -> crate::error::Result<u16> {
-            if let Some(&id) = self.names.get(name) {
-                return Ok(id);
-            }
-            let id = self.next;
-            self.next += 1;
-            self.names.insert(name.to_string(), id);
+
+    #[test]
+    fn nested_deep_recursion_is_capped() {
+        // A reader refuses nesting deeper than the cap instead of walking a
+        // hostile value down the stack.
+        let mut value = DynamicValue::U64(1);
+        for _ in 0..80 {
+            value = DynamicValue::Obj(BTreeMap::from([("k".to_string(), value)]));
+        }
+        let fields = ValueMap::from([("root".to_string(), value)]);
+        let mut next = 1u16;
+        let bytes = encode(&fields, &mut |_: &str| {
+            let id = next;
+            next += 1;
             Ok(id)
-        }
-    }
-
-    #[test]
-    fn nested_obj_roundtrip() {
-        let mut inner = BTreeMap::new();
-        inner.insert("lat".to_string(), DynamicValue::F64(52.3));
-        inner.insert("lon".to_string(), DynamicValue::F64(4.9));
-        let mut outer = BTreeMap::new();
-        outer.insert("loc".to_string(), DynamicValue::Obj(inner));
-        outer.insert("n".to_string(), DynamicValue::U64(7));
-
-        let mut vocab = StubVocab::new();
-        let mut buf = Vec::new();
-        for (k, v) in &outer {
-            put_frame_named(&mut buf, k, v, &mut vocab).unwrap();
-        }
-
-        // Decode with name resolution.
-        let name_of_id = |id: u16| -> Option<String> {
-            vocab
-                .names
-                .iter()
-                .find(|ent| *ent.1 == id)
-                .map(|(k, _)| k.clone())
-        };
-        let fields = decode_named(&buf, &mut |id| name_of_id(id));
-        assert_eq!(fields.len(), 2);
-
-        let by_name: BTreeMap<&str, &DynamicValue> = fields
-            .iter()
-            .filter_map(|f| {
-                let name = vocab
-                    .names
-                    .iter()
-                    .find(|ent| *ent.1 == f.id)
-                    .map(|(k, _)| k.as_str())?;
-                Some((name, &f.value))
-            })
-            .collect();
-        assert_eq!(by_name["n"], &DynamicValue::U64(7));
-        match by_name["loc"] {
-            DynamicValue::Obj(m) => {
-                assert_eq!(m.len(), 2);
-                assert_eq!(m["lat"], DynamicValue::F64(52.3));
-                assert_eq!(m["lon"], DynamicValue::F64(4.9));
-            }
-            other => panic!("expected nested Obj, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn nested_deep_recursion() {
-        // obj → obj → obj: three levels, all through the same vocabulary.
-        let leaf = BTreeMap::from([("v".to_string(), DynamicValue::I64(-3))]);
-        let mid = BTreeMap::from([("leaf".to_string(), DynamicValue::Obj(leaf))]);
-        let top = BTreeMap::from([("mid".to_string(), DynamicValue::Obj(mid))]);
-
-        let mut vocab = StubVocab::new();
-        let mut buf = Vec::new();
-        for (k, v) in &top {
-            put_frame_named(&mut buf, k, v, &mut vocab).unwrap();
-        }
-        // Vocabulary saw: mid, leaf, v — shared vocabulary across levels.
-        assert_eq!(vocab.names.len(), 3);
-
-        let name_of_id = |id: u16| -> Option<String> {
-            vocab
-                .names
-                .iter()
-                .find(|ent| *ent.1 == id)
-                .map(|(k, _)| k.clone())
-        };
-        let fields = decode_named(&buf, &mut |id| name_of_id(id));
-        let DynamicValue::Obj(mid_m) = &fields[0].value else {
-            panic!("top must be Obj");
-        };
-        let DynamicValue::Obj(leaf_m) = &mid_m["leaf"] else {
-            panic!("mid must contain Obj leaf");
-        };
-        assert_eq!(leaf_m["v"], DynamicValue::I64(-3));
-    }
-
-    /// The encode scratch recycles one body buffer per nesting depth; the bytes
-    /// it produces are identical to the one-scratch-per-frame form. Both halves
-    /// are the contract of the refactor that removed the per-frame allocation.
-    #[test]
-    fn the_scratch_reuses_buffers_and_writes_the_same_bytes() {
-        let value = DynamicValue::Obj(BTreeMap::from([
-            ("a".to_string(), DynamicValue::U64(7)),
-            (
-                "nested".to_string(),
-                DynamicValue::Array(vec![
-                    DynamicValue::Str("x".into()),
-                    DynamicValue::Obj(BTreeMap::from([(
-                        "deep".to_string(),
-                        DynamicValue::I64(-3),
-                    )])),
-                ]),
-            ),
-        ]));
-
-        let mut vocab = StubVocab::new();
-        let mut scratch = FrameScratch::new();
-        let mut reused = Vec::new();
-        put_frame_named_scratch(&mut reused, "top", &value, &mut vocab, &mut scratch).unwrap();
-        // Outer obj body (0), array body (1), deeper obj body (2) — and the
-        // count follows NESTING, not the number of frames.
-        assert_eq!(scratch.depth(), 3, "one buffer per nesting depth");
-
-        let mut fresh_vocab = StubVocab::new();
-        let mut fresh = Vec::new();
-        put_frame_named(&mut fresh, "top", &value, &mut fresh_vocab).unwrap();
-        assert_eq!(reused, fresh, "the scratch must not change the bytes");
+        })
+        .unwrap();
+        assert!(
+            decode_variants(&bytes).is_empty(),
+            "over-deep value is refused"
+        );
     }
 }

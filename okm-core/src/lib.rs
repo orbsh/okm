@@ -53,14 +53,14 @@ pub mod bridge;
 /// The change log (ADR-0045): append-only segment files written at the commit
 /// boundary, drained out of process.
 pub mod changelog;
-#[cfg(feature = "s3")]
-pub mod s3;
-pub mod sink;
-pub mod subscribe;
 /// The decoder: bytes + a declaration → the value tree (ADR-0056 §8). It lives
 /// here because the tree is core's (`model::obj_dynamic`), and because the drain —
 /// a core mechanism — reads payloads with it.
 pub mod decode;
+#[cfg(feature = "s3")]
+pub mod s3;
+pub mod sink;
+pub mod subscribe;
 
 // ================= re-exports (stable public surface) =================
 
@@ -141,6 +141,7 @@ pub use model::key;
 pub use model::meta;
 pub use model::meta::{FaceStatus, TableMeta};
 pub use model::obj_dynamic;
+pub use model::obj_segment;
 pub use model::obj_vocab;
 pub use model::reduce;
 pub use model::reverse;

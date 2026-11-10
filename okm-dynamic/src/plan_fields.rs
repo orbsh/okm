@@ -14,7 +14,7 @@
 //! slot constants — every byte rule stays here, one source.
 
 use okm_core::model::index::{DYNAMIC_SLOT, FIELD_VOCAB_ID_SLOT, FIELD_VOCAB_NAME_SLOT};
-use okm_core::model::obj_dynamic::{decode_named, put_frame_named_scratch};
+use okm_core::model::obj_dynamic::decode_named;
 use okm_core::model::obj_vocab::FIELD_VOCAB;
 use okm_core::storage::{VirtualStorage, scan_suffix_kv};
 
@@ -250,9 +250,13 @@ pub fn plan_put_fields(
     // mutably for the whole encode; the ops it collects ride out with
     // the plan.
     let mut vocab_ops: Vec<(Vec<u8>, Option<Vec<u8>>)> = Vec::new();
-    let mut body = Vec::new();
-    let mut scratch = okm_core::obj_dynamic::FrameScratch::new();
-    {
+    // The schema-driven values become the segment's currency first: the
+    // encoder walks one name-keyed map (ADR-0057).
+    let mut dyn_fields = okm_core::obj_dynamic::ValueMap::new();
+    for (name, value) in fields {
+        dyn_fields.insert(name.clone(), value_to_dyn_value(value)?);
+    }
+    let body = {
         let by_name = &mut vocab.by_name;
         let by_id = &mut vocab.by_id;
         let next_id = &mut vocab.next_id;
@@ -275,12 +279,8 @@ pub fn plan_put_fields(
             vocab_ops.push((name_key, Some(id.to_be_bytes().to_vec())));
             Ok(id)
         };
-        for (name, value) in fields {
-            let dv = value_to_dyn_value(value)?;
-            put_frame_named_scratch(&mut body, name, &dv, &mut resolver, &mut scratch)
-                .map_err(|e| e.to_string())?;
-        }
-    }
+        okm_core::obj_segment::encode(&dyn_fields, &mut resolver).map_err(|e| e.to_string())?
+    };
     // The allocation cursor, exactly as `VocabCache::id_for` writes it: without
     // this op the plan's vocabulary and the typed path's vocabulary diverge, and
     // the next allocation (on either side) would hand out a duplicate id. The
@@ -291,7 +291,7 @@ pub fn plan_put_fields(
         vocab_ops.push((key, Some(vocab.next_id.to_be_bytes().to_vec())));
     }
     let k = fields_key(ns, pkey);
-    if body.is_empty() {
+    if dyn_fields.is_empty() {
         vocab_ops.push((k, None));
     } else {
         vocab_ops.push((k, Some(body)));

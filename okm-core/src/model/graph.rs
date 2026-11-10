@@ -63,7 +63,7 @@
 use crate::engine::storage::{Batch, VirtualStorage, scan_suffix_kv};
 use crate::model::index::{DYNAMIC_SLOT, Document, PRIMARY_SLOT, Slot, write_slot};
 use crate::model::key::KeyEncode;
-use crate::model::obj_dynamic::{DynamicValue, decode_named, put_frame_named_scratch};
+use crate::model::obj_dynamic::{DynamicValue, decode_named};
 use crate::model::obj_vocab::{PREDICATE_VOCAB, VocabCache};
 
 /// Fixed face 0x06: out-edge traversal, pair-qualified
@@ -491,16 +491,12 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
         if fields.is_empty() {
             return Ok(());
         }
-        let mut body = Vec::new();
-        let mut scratch = crate::model::obj_dynamic::FrameScratch::new();
-        {
+        let body = {
             let mut dict = VocabCache::new(crate::model::obj_vocab::FIELD_VOCAB);
             let store = &mut self.store;
             let mut resolver = |name: &str| dict.id_for(store, E::NS_PREFIX, name);
-            for (name, value) in fields {
-                put_frame_named_scratch(&mut body, name, value, &mut resolver, &mut scratch)?;
-            }
-        }
+            crate::model::obj_segment::encode(fields, &mut resolver)?
+        };
         batch.put(key, body);
         Ok(())
     }
