@@ -80,7 +80,11 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     ) -> crate::error::Result<Self> {
         let mut this = Self::new(store);
         let header = this.header();
-        let log = crate::changelog::Changelog::open(config, &header)?;
+        let log = crate::changelog::Changelog::open(
+            config,
+            &header,
+            crate::changelog::SegmentMeta::of::<R>(crate::changelog::KIND_DELTA),
+        )?;
         // The sidecar is the half of the declaration the log cannot carry (types
         // and key layout — the payload is positional and the key has no field
         // boundaries), and this is the one place that knows both the schema and

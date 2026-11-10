@@ -279,10 +279,15 @@ fn a_torn_tail_ends_a_partial_and_corrupts_a_sealed_segment() {
     let sealed = sealed.first().expect("one sealed segment");
     let good = std::fs::read(sealed).expect("read segment");
 
-    // A copy still named `.partial`, with three bytes of a torn prefix.
+    // A copy still named `.partial`, with three bytes of a torn prefix. A real
+    // partial has no footer — take the header and the body, then tear the body.
+    let info = okm_core::changelog::segment_info(sealed).expect("info");
+    let name_len = info.meta.as_ref().map(|m| m.name.len()).unwrap_or(0);
+    let header_len = 4 + 1 + 1 + 1 + 1 + info.header.len() + 2 + name_len + 16;
     let torn = dir.path().join("torn").join("00000000.x");
     std::fs::create_dir_all(torn.parent().expect("parent")).expect("mkdir");
-    let mut partial = good.clone();
+    let mut partial = good[..header_len].to_vec();
+    partial.extend_from_slice(&good[header_len..good.len() - 32]);
     partial.extend_from_slice(&[0, 0, 0]);
     let partial_path = torn.with_extension(PARTIAL_EXT);
     std::fs::write(&partial_path, &partial).expect("write partial");
@@ -644,4 +649,95 @@ fn the_sidecar_carries_the_tables_declared_name() {
         serde_json::from_str(&value.to_string()).expect("an older sidecar loads");
     assert_eq!(older.name, "");
     assert_eq!(older.ns_prefix, parsed.ns_prefix, "nothing else moved");
+}
+
+/// Seal one row into a table's log and hand back the sealed file's path.
+fn sealed_one(root: &std::path::Path) -> std::path::PathBuf {
+    {
+        let app: Collection<TestStore, LogKey, LogRow> =
+            Collection::with_changelog(TestStore::slatedb_mem(), ChangelogConfig::new(root))
+                .expect("the log opens");
+        app.put(
+            &LogKey { id: 7 },
+            &LogRow {
+                author: 1,
+                title: "x".into(),
+            },
+        )
+        .expect("put");
+    }
+    let segments = sealed_segments(root, LOG_NS).expect("list segments");
+    assert_eq!(segments.len(), 1, "a clean drop seals what it wrote");
+    segments[0].clone()
+}
+
+/// A format-2 segment says which table, which shape and which kind of stream it
+/// is — the three facts that let a reader refuse it (ADR-0056 §7) instead of
+/// trusting the directory name it happens to sit in.
+#[test]
+fn a_segment_says_which_table_and_shape_it_belongs_to() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = sealed_one(dir.path());
+
+    let info = okm_core::changelog::segment_info(&path).expect("info");
+    let meta = info.meta.clone().expect("format 2 carries a header");
+    assert_eq!(meta.kind, okm_core::changelog::KIND_DELTA);
+    assert_eq!(
+        meta.layout_version,
+        <LogRow as Document>::LAYOUT_VERSION,
+        "the shape the bytes were written under"
+    );
+    assert_eq!(meta.name, "log_rows", "the declared name travels");
+    assert_eq!(
+        meta.fingerprint,
+        <LogRow as Document>::FACES,
+        "the face fingerprint ties the file to its sidecar"
+    );
+    assert_eq!(info.header, LOG_NS, "the file carries its own table header");
+    assert_eq!(info.frames, 1, "one commit, one frame");
+    assert_eq!(info.ordinal, 0, "the first segment of this table");
+}
+
+/// A sealed segment is immutable and checksummed: a flipped byte is corruption,
+/// refused outright rather than replayed as a slightly different row.
+#[test]
+fn a_flipped_byte_in_a_sealed_segment_is_refused() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = sealed_one(dir.path());
+
+    let mut bytes = std::fs::read(&path).expect("read");
+    let at = bytes.len() - 33; // the last body byte, just before the footer
+    bytes[at] ^= 0xFF;
+    std::fs::write(&path, &bytes).expect("write");
+
+    let err = read_sealed(&path).expect_err("the checksum catches it");
+    assert!(err.to_string().contains("checksum"), "got: {err}");
+}
+
+/// Format 1 was a bare record stream with no header and no footer. Logs written
+/// by the previous build must stay readable, so a file without the magic is read
+/// as that older format instead of being refused.
+#[test]
+fn a_format_1_segment_still_reads() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = sealed_one(dir.path());
+    let bytes = std::fs::read(&path).expect("read");
+    let info = okm_core::changelog::segment_info(&path).expect("info");
+    let name_len = info.meta.as_ref().map(|m| m.name.len()).unwrap_or(0);
+    let header_len = 4 + 1 + 1 + 1 + 1 + info.header.len() + 2 + name_len + 16;
+    let body = bytes[header_len..bytes.len() - 32].to_vec();
+    assert!(!body.is_empty(), "the body is not empty");
+
+    let bare_dir = tempfile::tempdir().expect("bare");
+    let bare = bare_dir.path().join("00000000.segment");
+    std::fs::write(&bare, &body).expect("write a format-1 file");
+    let frames = read_sealed(&bare).expect("a bare record stream still reads");
+    assert_eq!(frames.len(), 1, "the same single frame the v2 file holds");
+    assert!(
+        okm_core::changelog::segment_info(&bare)
+            .expect("info")
+            .meta
+            .is_none(),
+        "no header, so no meta"
+    );
 }

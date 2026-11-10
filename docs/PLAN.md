@@ -2769,10 +2769,16 @@ source; all three are fixed. The rest is not landed.
       deserializer defaults it (a sidecar written before the name travelled reads
       as unnamed, which the export already refuses) —
       `the_sidecar_carries_the_tables_declared_name` locks both directions.
-- [ ] **Segment format v2**: header (`OKMS`, fmt, kind delta/baseline,
-      layout_version, ns, name, schema fingerprint) and footer (ordinal, records,
-      body_len, crc32), written at open and at seal. `read_sealed` accepts a bare
-      stream as v1, so shipped logs stay readable.
+- [x] **Segment format v2**: header (`OKMS`, fmt, kind delta/baseline,
+      layout_version, the table's own header and name, face fingerprint) written at
+      open, footer (`body_len`, `frames`, `ordinal`, `crc32`, `OKME`) written at
+      seal from a second read of the file — never a per-write cost. `read_sealed`
+      verifies the checksum, `read_open_tail` does not, and a file without the
+      magic is read as format 1 (a bare record stream), so shipped logs stay
+      readable. `segment_info` answers "which table, which shape, which kind" for a
+      tool; `a_segment_says_which_table_and_shape_it_belongs_to`,
+      `a_flipped_byte_in_a_sealed_segment_is_refused` and
+      `a_format_1_segment_still_reads` lock the three claims.
 - [ ] **`ChangelogStore`** — capture as a store decorator above `commit_batch`,
       split per table by the key's 2-byte header, enabled globally by config with an
       ns exclusion list. The sidecar moves to unconditional assembly
