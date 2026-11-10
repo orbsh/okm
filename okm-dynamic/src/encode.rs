@@ -1,6 +1,8 @@
 //! Encoding walks: schema fields in declaration order, values from the
 //! map. Key encoding is the flat concatenation of BE fields; payload is
-//! `[version u8][hot_len u16 BE][hot][cold TLV]`.
+//! `[hot][cold TLV]` — no header at all: the hot width is the declaration's
+//! (`HOT_WIDTH`), and the payload's generation is the SEGMENT header's statement
+//! (ADR-0042 as amended), so a row carries neither a length nor a version.
 
 use crate::{CodecError, CollectionSchema, Value, ValueMap, field_pair};
 
@@ -15,7 +17,7 @@ pub fn encode_key(schema: &CollectionSchema, values: &ValueMap) -> Result<Vec<u8
     Ok(buf)
 }
 
-/// Encode the payload: `[version u8][hot_len u16 BE][hot][cold TLV]`.
+/// Encode the payload: `[hot][cold TLV]`.
 /// Cold frames are written in schema declaration order (the map order is
 /// irrelevant); every declared cold field MUST be present — dynamic
 /// payloads are fully materialized (no partial documents).
@@ -31,9 +33,8 @@ pub fn encode_payload(schema: &CollectionSchema, values: &ValueMap) -> Result<Ve
             got: hot.len(),
         });
     }
-    let mut buf = Vec::with_capacity(schema.payload_header_len + schema.hot_width + 16);
-    buf.push(schema.layout_version);
-    buf.extend_from_slice(&(hot.len() as u16).to_be_bytes());
+    // No header: hot width is the declaration's, so the payload starts at field 0.
+    let mut buf = Vec::with_capacity(schema.hot_width + 16);
     buf.extend_from_slice(&hot);
     for f in &schema.cold_fields {
         let v = field_pair(f, values)?;

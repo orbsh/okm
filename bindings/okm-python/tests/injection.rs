@@ -71,7 +71,7 @@ fn counters_entry() -> serde_json::Value {
         "schema": {
             "key_len": 8,
             "key_fields": [{"name": "id", "ty": "U64", "width": 8, "offset": 0, "tag": 0}],
-            "layout_version": 1, "hot_width": 8, "payload_header_len": 3,
+            "layout_version": 1, "hot_width": 8,
             "hot_fields": [{"name": "count", "ty": "U64", "width": 8, "offset": 0, "tag": 0}],
             "cold_fields": [],
             "slots": {"primary": 0, "dynamic": 1, "field_vocab_id": 2, "field_vocab_name": 3,

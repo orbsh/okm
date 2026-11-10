@@ -463,43 +463,26 @@ independent updates) belong in `Ref`/`Refs`; pure-value elements (`Vec<String>` 
 
 Embedded is one of three ways fields relate across documents — `includes` copies values into an index entry (skip the fetch), dynamic frames nest values inside one payload, and embedding references a separate document (shared identity, independent indexes, independent lifecycle).
 
-### Payload versions and field defaults
+### Layout generations: the segment says which bytes these are
 
-The version byte is a STAMP of the shape, never a compatibility promise (ADR-0042): a field is placed where its reader looks for it, the number changes when the shape does (incrementing is the ordinary style, resetting is equally legitimate — its only duty is to tell two incompatible shapes apart), and no build owes a reader for the shape it replaced. A store written by another shape is regenerated, or carried across by export (the build that wrote it) → import (the build that reads it). The rules below describe what the DECODER does; they do not oblige any table to keep an old shape readable.
+A payload has no header. The bytes are the two segments back to back — `[hot segment][cold TLV]` — and the boundary between them is a compile-time fact of the declaration (`HOT_WIDTH`), so a row repeats nothing its reader already knows, and an empty document is zero bytes.
 
-The payload carries a version byte (`#[ok_layout(version = N)]`, default 1). Decode rule: a payload whose header version is **newer** than the reading schema's is rejected; **older** payloads are accepted, and fields the old payload lacks (added after that version was written) take their defaults:
+The generation lives one level out, in the **segment** header (`layout_version`), and `#[ok_layout(version = N)]` (default 1) is the declaration's half of that number: an identity, never a compatibility promise (ADR-0042). Nothing is compared per row, because nothing may read a row without the log it came from — the bytes never have to vouch for themselves:
 
-```rust
-#[derive(DocumentEncode, Clone, PartialEq, Debug)]
-#[ok_ref(UserKey)]
-#[ok_layout(version = 2)]            // the shape changed: the number changes with it
-pub struct User {
-    pub org_id: u32,                 // existed since v1
-    #[ok_default(100)]               // what the decoder supplies for a v1 payload
-    pub reputation: u32,             // the field this shape added
-    pub bio_len: u16,                // no #[ok_default] → T::default() (0)
-}
-```
+- **A log of another generation is refused where it is opened** — `ChangelogStore::register`, and replay/export before the first row is decoded — with `LayoutMismatch { stored, current }`. There is no second reader and no "read it as best you can".
+- **The identity is per table.** One build, one store, one process; each table's log states its own shape, so generations can be cut over table by table.
+- **What survives without a new generation is the COLD half only.** An absent cold TLV frame is a field that was never written, and it takes its declared default:
 
-- `#[ok_default(expr)]` is any expression (literal, constant, function
-call); omitting it falls back to `<T as Default>::default()`.
-- Defaults apply ONLY to decoding older payloads — a field missing from
-the bytes. Newly written payloads always carry every field (the writer stamps its own version), so this is what the DECODER does when an older payload turns up, not a "field default" for absent values.
-- Append-at-the-tail is what the DECODER can absorb — a field the reader knows but
-finds missing has to be at the tail of its segment (header `hot_len` marks the boundary for hot fields; absent cold TLV frames simply aren't there). It is not a reason to append anything: a table that claims no compatibility (ADR-0042) places fields where they belong, and moving an existing field is a layout change whose number changes with it.
-- **A change of FORM is a shape change, and the bytes cannot tell you.** The rules above rescue a
-payload that LACKS a field; they cannot rescue one that POSSIBLY MEANS something else. A categorical
-field is the case that bites: an `Enum` tag and a `Vocab` id are both a small integer, so an old
-payload read under the new declaration decodes without error into a DIFFERENT category — and every
-default above is irrelevant to it. The guard is the table's stamp, not the payload's: the
-`#[ok_layout(version = N)]` number goes up with the form, and `ensure_layout` at attach/boot then
-refuses the whole store with `LayoutMismatch { stored, current }` instead of letting its bytes be
-read as something they never said. Rows cross by export → import, which is also the only path that
-re-interns their labels into the destination's vocabulary (ADR-0032 §7).
-- There is NO upgrade-on-read path: an old payload that happens to decode is a lucky
-landing, not a migration. Carrying a corpus across a shape change is export (by the build that wrote it) → import (by the build that reads it).
-- A production upgrade is a BLUE/GREEN move, not a reader: the new build runs as a
-second process on its own store, the old instance exports while both stay live, the new one imports the bulk, then a short stop covers the incremental catch-up and traffic switches over. Two builds never write one store (a KV store is single-writer), so even a format-compatible upgrade costs a stop-and-swap. SQL can change a schema online (DDL), which is a real edge for DEVELOPMENT; in production the edge shrinks, because the complexity sits in the application — multi-environment testing, a snapshot before the release, a rollback plan. The stop-and-swap itself is paid in seconds: inside the latency users already blame on the network, hidden by a gateway retry, and schedulable in a predicted idle window. Bulk volume belongs on the cold side (a lakehouse export, or an engine that owns its own format), not in a tolerant decoder here.
+  ```rust
+  #[ok_default(100)]  pub reputation: u32,   // any expression; absent → T::default()
+  pub bio_len: u16,                          // no attribute → T::default() (0)
+  ```
+
+  A **hot** append moves the boundary and shifts every cold frame after it, so it is a shape change — a new generation, not an append a decoder may absorb. `#[ok_default]` is about a field being absent, not about a reader tolerating a shape it does not have.
+- **A change of FORM is a shape change, and the bytes cannot tell you.** A categorical field is the case that bites: an `Enum` tag and a `Vocab` id are both a small integer, so old bytes read under a new declaration decode without error into a DIFFERENT category. Neither a default nor the boundary helps; the guard is the segment's number.
+- **No in-place migration, and no upgrade-on-read.** A payload that happens to decode is a lucky landing, not a migration. Rows cross by export (the build that wrote them) → import (the build that reads them), which is also the only path that re-interns their labels into the destination's vocabulary (ADR-0032 §7).
+- **An in-place binary swap is free exactly when the layout did not change**: the numbers match, there is nothing to move, and the downtime is a restart. When the layout DID change, in-place is not cheaper — the store must be read and rewritten with the service down, or rebuilt beside the old one while it serves. Blue-green costs a second copy of the data for the length of the cutover; a table-by-table cutover keeps the peak at "everything + the largest table" instead of double.
+- `ensure_layout` at attach records the declaration's face fingerprint (ADR-0048) and answers the row it finds; it compares no version.
 
 ### The table's own record (fixed face 0x0F)
 

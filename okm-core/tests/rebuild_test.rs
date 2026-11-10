@@ -232,12 +232,14 @@ impl VirtualStorage for Flaky {
 fn an_interrupted_rebuild_writes_no_stamp_and_a_rerun_finishes_the_job() {
     let inner = TestStore::default();
     seed(&inner, &[(1, 7), (2, 8), (3, 9)]);
-    // A row written by another build: `version` only, no face stamp. That is the
-    // state a rebuild candidate is in.
+    // A meta row that records no face fingerprint — the state a rebuild candidate is
+    // in (an app's own name, nothing else).
+    let mut unstamped = okm_core::TableMeta::new();
+    unstamped.set("build", b"20260801".to_vec());
     okm_core::meta::write(
         &inner,
         &okm_core::meta::document_header::<NotePlus>(),
-        &okm_core::TableMeta::stamped(NotePlus::LAYOUT_VERSION),
+        &unstamped,
     )
     .unwrap();
 

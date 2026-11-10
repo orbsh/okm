@@ -184,8 +184,8 @@ impl<S: VirtualStorage> Graph<S> {
 
     /// Build the primary value: `[src ref][dst ref][predicate_vocab_id][obj
     /// payload]`. The dynamic declaration has no payload fields, so the
-    /// payload is the bare obj header (`[version 1][hot_len 0]`) — the same
-    /// bytes the static form's empty declaration writes. Open attributes are
+    /// payload is ZERO bytes — the same thing the static form's empty
+    /// declaration writes (no header: ADR-0042 as amended). Open attributes are
     /// NOT part of it: they live in the dynamic segment (fixed face 0x01),
     /// one entry per edge (ADR-0017 §3).
     fn body_of(&mut self, edge: &DynEdge, predicate_vocab_id: u16) -> Vec<u8> {

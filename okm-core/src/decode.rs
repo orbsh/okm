@@ -60,35 +60,21 @@ pub fn resolve_vocab_labels<S: crate::VirtualStorage + ?Sized>(
     Ok(())
 }
 
-/// Decode the payload bytes (the two-segment region, no key bytes):
-/// header version checked against the schema, hot fields sliced at
-/// static offsets, cold TLV frames matched by tag. Unknown tags are
-/// skipped — forward-compatible reading of fields the schema does not
-/// know is the TLV contract (ADR-0004).
+/// Decode the payload bytes (the two-segment region, no key bytes): the hot segment
+/// takes the declaration's `hot_width` bytes, cold TLV frames follow and are matched
+/// by tag. Unknown tags are skipped — forward-compatible reading of fields the schema
+/// does not know is the TLV contract (ADR-0004).
+///
+/// There is no header: the split between the two segments is a compile-time fact of
+/// the declaration, so a payload shorter than `hot_width` is a truncation, not an
+/// older row (ADR-0042 as amended — a generation's declaration is frozen).
 pub fn decode_payload(schema: &CollectionSchema, bytes: &[u8]) -> Result<ValueMap, CodecError> {
-    let hdr = schema.payload_header_len;
-    if bytes.len() < hdr {
-        return Err(CodecError::Truncated {
-            field: "<payload header>".into(),
-            needed: hdr,
-            got: bytes.len(),
-        });
-    }
-    let version = bytes[0];
-    if version > schema.layout_version {
-        return Err(CodecError::VersionMismatch {
-            schema: schema.layout_version,
-            found: version,
-        });
-    }
-    let hot_len = u16::from_be_bytes([bytes[1], bytes[2]]) as usize;
-    let hot = bytes
-        .get(hdr..hdr + hot_len)
-        .ok_or_else(|| CodecError::Truncated {
-            field: "<hot segment>".into(),
-            needed: hot_len,
-            got: bytes.len().saturating_sub(hdr),
-        })?;
+    let hot_len = schema.hot_width;
+    let hot = bytes.get(..hot_len).ok_or_else(|| CodecError::Truncated {
+        field: "<hot segment>".into(),
+        needed: hot_len,
+        got: bytes.len(),
+    })?;
 
     let mut out = BTreeMap::new();
     for f in &schema.hot_fields {
@@ -99,9 +85,9 @@ pub fn decode_payload(schema: &CollectionSchema, bytes: &[u8]) -> Result<ValueMa
                     decode_fixed(f.name.clone(), f.ty, f.width, raw)?,
                 );
             }
-            // Truncated tail: field appended after this payload's hot
-            // segment was written → version-default fill (below), not an
-            // error. Mirrors the Rust decoder's truncation rule.
+            // Unreachable by construction (the slice above is exactly `hot_width`),
+            // kept so a schema whose `hot_fields` do not tile `hot_width` degrades to
+            // a missing value instead of panicking.
             None => continue,
         }
     }
@@ -112,7 +98,7 @@ pub fn decode_payload(schema: &CollectionSchema, bytes: &[u8]) -> Result<ValueMa
         .iter()
         .filter_map(|f| f.tag.map(|t| (t, f)))
         .collect();
-    let mut pos = hdr + hot_len;
+    let mut pos = hot_len;
     while pos < bytes.len() {
         let tag = *bytes.get(pos).ok_or_else(|| CodecError::Truncated {
             field: "<cold tag>".into(),

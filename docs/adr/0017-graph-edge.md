@@ -172,7 +172,7 @@ explicitly, though not identical-by-construction:
   (the edge's type) carried as a key dimension: 2 bytes from the graph's
   own predicate vocabulary (0x04/0x05), read back by name through it. The
   trailing region is an ordinary obj
-  payload (ADR-0012): `[version u8][hot_len u16 BE][hot segment][cold
+  payload (ADR-0012): `[hot segment][cold
   TLV]`, the encoding every document row uses. `src` / `dst` /
   `predicate_id` are the graph's own head, and the payload starts at a
   computable offset because refs are self-describing and `predicate_id`

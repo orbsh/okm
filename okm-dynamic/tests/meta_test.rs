@@ -1,16 +1,17 @@
-//! Table meta on the dynamic side (ADR-0043): a runtime-declared table stamps
-//! the SAME `[ns][0x0F]` row the typed path stamps.
+//! Table meta on the dynamic side (ADR-0043): a runtime-declared table writes the
+//! SAME `[ns][0x0F]` row the typed path writes.
 //!
-//! The point of the lock is the shared format, not a second implementation:
-//! `CollectionSchema::layout_version` IS `Document::LAYOUT_VERSION`, so a store
-//! stamped by the derive satisfies `DynamicCollection::ensure_layout` and the
-//! reverse. Before this, only the typed assembly point stamped anything — a
-//! dynamic table's store carried no self-description, and a shape mismatch
-//! surfaced as a decode failure on the first row instead of a refusal at attach.
+//! The point of the lock is the shared format, not a second implementation: the row
+//! carries the caller's names and the declaration's face fingerprint, computed the
+//! same way on both sides, so a store stamped by the derive satisfies
+//! `DynamicCollection::ensure_layout` and the reverse.
 //!
-//! Locks: byte equality of the stamp across both modes (and both read
-//! directions), the two refusal shapes, a caller-owned name beside the
-//! runtime's, and the entry's exclusion from dynamic scans.
+//! The payload's GENERATION is deliberately not in this row (ADR-0042 as amended):
+//! it is the segment header's statement, checked where a log is opened, because a
+//! row that must be decoded before it can be trusted cannot vouch for its own bytes.
+//!
+//! Locks: byte equality across both modes, a caller name beside the fingerprint, and
+//! the entry's exclusion from dynamic scans.
 
 #![allow(
     clippy::unwrap_used,
@@ -21,7 +22,7 @@
 )]
 
 use okm_core::schema::CollectionSchema;
-use okm_core::{Document, DocumentEncode, KeyEncode, TableMeta, VirtualStorage, meta};
+use okm_core::{Document, DocumentEncode, KeyEncode, VirtualStorage, meta};
 use okm_dynamic::{DynamicCollection, Value, ValueMap};
 
 use okm_async::TestStore;
@@ -64,10 +65,9 @@ fn the_dynamic_stamp_is_the_row_the_typed_path_writes() {
     let typed_store = TestStore::default();
     let typed = <MetaRow as Document>::collection(typed_store.clone());
     let typed_meta = typed.ensure_layout().unwrap();
-    assert_eq!(
-        typed_meta.version(),
-        Some(3),
-        "schema.layout_version is the stamp"
+    assert!(
+        typed_meta.faces().is_some(),
+        "one name, written by the declaration itself"
     );
 
     let dynamic_store = TestStore::default();
@@ -89,55 +89,36 @@ fn either_mode_answers_the_other_modes_stamp() {
     let store = TestStore::default();
     dynamic(store.clone()).ensure_layout().unwrap();
     let typed = <MetaRow as Document>::collection(store.clone());
-    assert_eq!(typed.ensure_layout().unwrap().version(), Some(3));
+    assert_eq!(
+        typed.ensure_layout().unwrap().faces(),
+        Some(MetaRow::FACES),
+        "the fingerprint the dynamic side computed is the declaration's own"
+    );
 
     let store = TestStore::default();
     let typed = <MetaRow as Document>::collection(store.clone());
     typed.ensure_layout().unwrap();
     assert_eq!(
-        dynamic(store.clone()).ensure_layout().unwrap().version(),
-        Some(3)
+        dynamic(store.clone()).ensure_layout().unwrap().faces(),
+        Some(MetaRow::FACES)
     );
 }
 
 #[test]
-fn a_store_stamped_with_another_shape_is_refused() {
-    let store = TestStore::default();
-    let table = dynamic(store.clone());
-    meta::write(&store, &header(), &TableMeta::stamped(9)).unwrap();
-
-    let err = table.ensure_layout().unwrap_err();
-    assert!(err.contains("stamped Some(9)"), "{err}");
-    assert!(err.contains("writes 3"), "{err}");
-    assert!(err.contains("delete it"), "{err}");
-}
-
-#[test]
-fn a_meta_row_that_names_no_version_is_refused() {
-    let store = TestStore::default();
-    let table = dynamic(store.clone());
-    let mut foreign = TableMeta::new();
-    foreign.set("whoever", b"not okm".to_vec());
-    meta::write(&store, &header(), &foreign).unwrap();
-
-    let err = table.ensure_layout().unwrap_err();
-    assert!(err.contains("stamped None"), "{err}");
-}
-
-#[test]
-fn a_caller_name_rides_beside_the_stamp() {
+fn a_caller_name_rides_beside_the_fingerprint() {
     let store = TestStore::default();
     let table = dynamic(store.clone());
 
+    // The first-touch verb writes the fingerprint on a store that has no row.
+    let stamped = table.ensure_layout().unwrap();
+    assert_eq!(stamped.faces(), Some(MetaRow::FACES));
+
+    // `set_meta` then adds the caller's name BESIDE it — the runtime keeps no name of
+    // its own in here any more.
     let after = table.set_meta("build", b"20261030".to_vec()).unwrap();
-    assert_eq!(after.version(), Some(3), "the runtime re-stamps version");
     assert_eq!(after.get("build"), Some(&b"20261030"[..]));
+    assert_eq!(after.faces(), Some(MetaRow::FACES));
     assert_eq!(table.meta().unwrap(), Some(after.clone()));
-
-    // The stamp cannot be edited away through the caller's verb.
-    let after = table.set_meta(meta::VERSION, vec![9]).unwrap();
-    assert_eq!(after.version(), Some(3));
-    assert!(table.ensure_layout().is_ok());
 }
 
 #[test]

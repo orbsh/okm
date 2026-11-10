@@ -225,21 +225,18 @@ fn dynamic_rejects_schema_violations() {
         Err(CodecError::Truncated { .. })
     ));
 
-    // Version mismatch: payload claims version 3, schema is 2.
+    // No header at all (ADR-0042 as amended): the hot half is exactly the
+    // declaration's `hot_width`, so a payload shorter than that is truncation — the
+    // only per-row guard left, and it is a loud one.
     let good = encode_payload(&schema, &sample_values()).expect("encode");
-    let mut newer = good.clone();
-    newer[0] = 3;
     assert!(matches!(
-        decode_payload(&schema, &newer),
-        Err(CodecError::VersionMismatch {
-            schema: 2,
-            found: 3
-        })
+        decode_payload(&schema, &good[..1]),
+        Err(CodecError::Truncated { .. })
     ));
 }
 
 #[test]
-fn version_default_migration_on_dynamic_read() {
+fn defaults_are_data_and_a_hot_append_is_a_generation_break() {
     // The v3 schema export carries literal defaults as data.
     let v3 = CollectionSchema::of::<UserKey, UserV3>();
     let tier = v3
@@ -262,24 +259,46 @@ fn version_default_migration_on_dynamic_read() {
         Some(okm_core::schema::DefaultValue::Str("eu".into()))
     );
 
-    // A payload written by the v2 layout (two fields fewer, older version
-    // byte) read through the v3 schema: appended fields arrive as their
-    // defaults, pre-existing fields decode normally.
+    // A payload written by the v2 declaration read through the v3 one: v3 appends
+    // `tier` to the HOT half, which moves the cold boundary, so the reader must
+    // refuse rather than slide a byte and invent fields (ADR-0042 as amended — a
+    // generation's declaration is frozen; a hot append is a new generation).
     let v2_payload = User {
         level: 9,
         score: 500,
         name: "alice".into(),
     }
     .encode_payload();
-    let values = decode_payload(&v3, &v2_payload).expect("v2 bytes through v3 schema");
+    assert!(
+        decode_payload(&v3, &v2_payload).is_err(),
+        "a hot append across declarations is not readable — export and import"
+    );
+
+    // What IS freely attachable is the COLD half: a payload whose tail frame is
+    // absent decodes with the field's declared default, which the schema export
+    // carries as data. Encode a v3 row with an empty `region` (frame `[tag][0]`,
+    // two bytes) and drop that frame: what a declaration without `region` writes.
+    let v3_payload = UserV3 {
+        level: 9,
+        score: 500,
+        name: "alice".into(),
+        tier: 4,
+        region: String::new(),
+    }
+    .encode_payload();
+    let without_region = &v3_payload[..v3_payload.len() - 2];
+    let values = decode_payload(&v3, without_region).expect("v3 bytes minus the cold tail");
     assert_eq!(values.get("level"), Some(&Value::U32(9)));
-    assert_eq!(values.get("tier"), Some(&Value::I64(3)));
-    assert_eq!(values.get("region"), Some(&Value::Str("eu".into())));
+    assert_eq!(values.get("tier"), Some(&Value::U8(4)));
+    assert_eq!(
+        values.get("region"),
+        Some(&Value::Str("eu".into())),
+        "the cold field's declared default fills the absent frame"
+    );
 
     // Non-literal / absent defaults fall back to zero for the kind.
     let v2 = CollectionSchema::of::<UserKey, User>();
     assert!(v2.hot_fields.iter().all(|f| f.default.is_none()));
-    // (zero fallback covered by encode: a truncated tail decodes as zero)
 }
 
 /// ADR-0035's classifier is the PAYLOAD declaration (hot + cold). A key field's

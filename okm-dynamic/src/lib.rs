@@ -21,7 +21,7 @@
 //!
 //! Encoding rules (mirroring the derive, byte-for-byte):
 //! - key fields: BE fixed-width at their static offsets, concatenated;
-//! - payload: `[version u8][hot_len u16 BE][hot fields][cold TLV]`,
+//! - payload: `[hot fields][cold TLV]` (no header: the hot width is the declaration's),
 //!   cold frames `[tag u8][len u32 BE][value]` in declaration order;
 
 // Tests keep the vocabulary: a panicking test is a failing test with a stack trace

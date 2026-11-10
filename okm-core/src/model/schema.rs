@@ -109,8 +109,6 @@ pub struct CollectionSchema {
     pub layout_version: u8,
     /// Byte width of the hot payload segment (header excluded).
     pub hot_width: usize,
-    /// Payload header is `[version u8][hot_len u16 BE]`.
-    pub payload_header_len: usize,
     pub hot_fields: Vec<FieldSchema>,
     pub cold_fields: Vec<FieldSchema>,
     /// The member collections of a GRAPH's edge set (ADR-0017 §4): the ns of
@@ -291,7 +289,6 @@ impl CollectionSchema {
             ns_prefix: R::NS_PREFIX.to_vec(),
             layout_version: R::LAYOUT_VERSION,
             hot_width: R::HOT_WIDTH,
-            payload_header_len: 3, // [version u8][hot_len u16 BE]
             hot_fields,
             cold_fields,
             members: Vec::new(),
@@ -577,7 +574,6 @@ mod serde_impls {
                 ns_prefix: &'a [u8],
                 layout_version: u8,
                 hot_width: usize,
-                payload_header_len: usize,
                 hot_fields: &'a [FieldSchema],
                 cold_fields: &'a [FieldSchema],
                 members: &'a [u16],
@@ -592,7 +588,6 @@ mod serde_impls {
                 ns_prefix: &self.ns_prefix,
                 layout_version: self.layout_version,
                 hot_width: self.hot_width,
-                payload_header_len: self.payload_header_len,
                 hot_fields: &self.hot_fields,
                 cold_fields: &self.cold_fields,
                 members: &self.members,
@@ -620,7 +615,6 @@ mod serde_impls {
                 ns_prefix: Vec<u8>,
                 layout_version: u8,
                 hot_width: usize,
-                payload_header_len: usize,
                 hot_fields: Vec<FieldSchema>,
                 cold_fields: Vec<FieldSchema>,
                 /// Schemas written before the member set existed carry none.
@@ -643,7 +637,6 @@ mod serde_impls {
                 ns_prefix: r.ns_prefix,
                 layout_version: r.layout_version,
                 hot_width: r.hot_width,
-                payload_header_len: r.payload_header_len,
                 hot_fields: r.hot_fields,
                 cold_fields: r.cold_fields,
                 members: r.members,

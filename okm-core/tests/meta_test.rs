@@ -1,10 +1,14 @@
 //! Table meta (ADR-0043): fixed face 0x0F — ONE name → bytes entry per table,
 //! describing the store instead of holding its data.
 //!
-//! Locks: the address (highest fixed face, no suffix), the shape stamp a fresh
-//! store gets, the payload bytes of a version-only row, the kv form once a
-//! second name exists, the two refusal shapes, and the entry's exclusion from
-//! row/document scans.
+//! The row carries what the CALLER names plus the declaration's face fingerprint
+//! (ADR-0048). It carries no layout number: the payload's generation is the segment
+//! header's statement (ADR-0042 as amended), because a reader that must decode a row
+//! before trusting it cannot ask that row which format wrote it.
+//!
+//! Locks: the address (highest fixed face, no suffix), the fingerprint a fresh store
+//! gets, the locked bytes of a caller-named row, the form once two names exist, and
+//! the entry's exclusion from row/document scans.
 
 #![allow(
     clippy::unwrap_used,
@@ -15,7 +19,7 @@
 )]
 
 use okm_core::storage::VirtualStorage;
-use okm_core::{Document, DocumentEncode, Error, KeyEncode, TableMeta, meta};
+use okm_core::{Document, DocumentEncode, KeyEncode, TableMeta, meta};
 
 use okm_async::TestStore;
 /// ns 90 = `[0x00, 0x5A]` — the hex locks below spell it out.
@@ -42,41 +46,34 @@ fn the_stamp_lives_at_the_highest_fixed_face_with_no_suffix() {
     let table = <MetaRow as Document>::collection(store.clone());
 
     let stamped = table.ensure_layout().unwrap();
-    assert_eq!(stamped.version(), Some(1), "no #[ok_layout] = version 1");
+    assert_eq!(
+        stamped.faces(),
+        Some(MetaRow::FACES),
+        "the fingerprint is the declaration's own, computed, never typed"
+    );
 
     let key = meta::meta_key(&header());
     assert_eq!(key, vec![0x00, 0x5A, 0x0F], "`[ns 2B][0x0F]`, no suffix");
 
     // [count u16 BE] [name_len varint] [name] [value_len varint] [value]
-    // A fresh store is stamped with BOTH names (ADR-0048): the payload shape and
-    // the fingerprint of the faces the declaration owns.
     let payload = store.get(&key).unwrap().unwrap();
     let stamped_row = TableMeta::decode(&payload);
-    assert_eq!(stamped_row.version(), Some(1));
-    assert_eq!(
-        stamped_row.faces(),
-        Some(MetaRow::FACES),
-        "the stamp is the declaration's own fingerprint, computed, never typed"
-    );
+    assert_eq!(stamped_row.faces(), Some(MetaRow::FACES));
     assert_eq!(
         stamped_row.iter().map(|(n, _)| n).collect::<Vec<_>>(),
-        vec!["faces", "version"],
+        vec!["faces"],
+        "one name, the runtime's own, and nothing else"
     );
 
-    // The row an older build wrote — `version` and nothing else — still parses,
-    // and its bytes are locked so nothing grows into that shape silently.
-    let older = TestStore::default();
-    meta::write(&older, &header(), &TableMeta::stamped(1)).unwrap();
+    // A row an app wrote itself — one caller name, no fingerprint — parses, and its
+    // bytes are locked so nothing grows into that shape silently.
+    let app_row = TestStore::default();
+    let mut meta_row = TableMeta::new();
+    meta_row.set("build", b"1".to_vec());
+    meta::write(&app_row, &header(), &meta_row).unwrap();
     assert_eq!(
-        older.get(&key).unwrap().unwrap(),
-        vec![
-            0x00, 0x01, 0x07, b'v', b'e', b'r', b's', b'i', b'o', b'n', 0x01, 0x01
-        ],
-    );
-    assert_eq!(
-        older.get(&key).unwrap().unwrap().len(),
-        12,
-        "one name, one byte — the shape older builds still read"
+        app_row.get(&key).unwrap().unwrap(),
+        vec![0x00, 0x01, 0x05, b'b', b'u', b'i', b'l', b'd', 0x01, b'1'],
     );
 }
 
@@ -95,60 +92,44 @@ fn a_second_name_rides_beside_the_stamp() {
     let store = TestStore::default();
     let table = <MetaRow as Document>::collection(store.clone());
 
-    let after = table.set_meta("build", b"20261028".to_vec()).unwrap();
-    assert_eq!(after.version(), Some(1), "the runtime re-stamps version");
-    assert_eq!(after.get("build"), Some(&b"20261028"[..]));
-    assert_eq!(after.len(), 3, "build, faces, version");
+    // The fingerprint is the first-touch verb's write, on a store that has no row yet.
+    let stamped = table.ensure_layout().unwrap();
+    assert_eq!(stamped.faces(), Some(MetaRow::FACES));
 
-    // Deterministic order: `build` sorts before `version`, and the row decodes
-    // into the same map (round trip through the stored bytes).
+    // The caller's name rides beside it, in name order, and the row decodes into the
+    // same map (round trip through the stored bytes).
+    let after = table.set_meta("build", b"20261028".to_vec()).unwrap();
+    assert_eq!(after.get("build"), Some(&b"20261028"[..]));
+    assert_eq!(
+        after.iter().map(|(n, _)| n).collect::<Vec<_>>(),
+        vec!["build", "faces"],
+        "the caller's map plus the runtime's one name"
+    );
     let stored = table.meta().unwrap().unwrap();
     assert_eq!(stored, after);
-    assert_eq!(
-        stored.iter().map(|(n, _)| n).collect::<Vec<_>>(),
-        vec!["build", "faces", "version"],
-    );
 
-    // Writing a caller value under the runtime's name does not replace the
-    // stamp: `set_meta` re-stamps after applying it.
-    let after = table.set_meta(meta::VERSION, vec![9]).unwrap();
-    assert_eq!(after.version(), Some(1));
-    assert!(table.ensure_layout().is_ok(), "the stamp still matches");
+    // Rewriting a caller name re-reads the row it finds, so the fingerprint survives.
+    let after = table.set_meta("build", b"20261030".to_vec()).unwrap();
+    assert_eq!(after.faces(), Some(MetaRow::FACES));
 }
 
 #[test]
-fn a_store_stamped_with_another_shape_is_refused() {
-    let store = TestStore::default();
-    let table = <MetaRow as Document>::collection(store.clone());
-    meta::write(&store, &header(), &TableMeta::stamped(2)).unwrap();
-
-    let err = table.ensure_layout().unwrap_err();
-    assert_eq!(
-        err,
-        Error::LayoutMismatch {
-            stored: Some(2),
-            current: 1
-        }
-    );
-    let text = err.to_string();
-    assert!(text.contains("stamped Some(2)"), "{text}");
-    assert!(text.contains("delete it"), "{text}");
-}
-
-#[test]
-fn a_meta_row_that_names_no_version_is_refused() {
+fn a_row_with_no_fingerprint_is_untrusted_not_refused() {
     let store = TestStore::default();
     let table = <MetaRow as Document>::collection(store.clone());
     let mut foreign = TableMeta::new();
     foreign.set("whoever", b"not okm".to_vec());
     meta::write(&store, &header(), &foreign).unwrap();
 
-    let err = table.ensure_layout().unwrap_err();
+    // Opening is fine: this row does not say which generation wrote the bytes, and it
+    // is not the place to ask (ADR-0042 — the segment header is). What it does say is
+    // that no fingerprint was ever recorded, so the derived faces are untrusted
+    // rather than wrong.
+    assert!(table.ensure_layout().is_ok());
     assert_eq!(
-        err,
-        Error::LayoutMismatch {
-            stored: None,
-            current: 1
+        table.faces_status().unwrap(),
+        okm_core::FaceStatus::Unknown {
+            current: MetaRow::FACES
         }
     );
 }
@@ -189,5 +170,5 @@ fn the_meta_payload_survives_a_hand_written_row() {
     });
     assert_eq!(meta.get("alpha"), Some(&[1u8, 2][..]));
     assert_eq!(meta.get("beta"), Some(&[][..]), "an empty value is a value");
-    assert_eq!(meta.version(), None, "no version name in this row");
+    assert_eq!(meta.faces(), None, "no fingerprint name in this row");
 }

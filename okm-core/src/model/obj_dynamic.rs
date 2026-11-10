@@ -75,8 +75,6 @@ pub enum CodecError {
         needed: usize,
         got: usize,
     },
-    /// Payload header version newer than the schema's.
-    VersionMismatch { schema: u8, found: u8 },
     /// Cold TLV frame with a tag outside the schema's cold field set.
     UnknownTag(u8),
     /// Invalid UTF-8 in a Str field.
@@ -103,9 +101,6 @@ impl std::fmt::Display for CodecError {
                     f,
                     "field `{field}` truncated: need {needed} bytes, got {got}"
                 )
-            }
-            CodecError::VersionMismatch { schema, found } => {
-                write!(f, "payload version {found} newer than schema {schema}")
             }
             CodecError::UnknownTag(t) => write!(f, "unknown cold TLV tag {t}"),
             CodecError::InvalidUtf8(n) => write!(f, "field `{n}`: invalid UTF-8"),

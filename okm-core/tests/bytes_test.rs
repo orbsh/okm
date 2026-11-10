@@ -36,11 +36,11 @@ fn bytes_wire_hex_lock() {
         payload: Bytes::new(vec![0xDE, 0xAD]),
         tag: Bytes::new(vec![0xAA]),
     };
-    // Same frame layout the Vec<u8> spelling produced: payload header
-    // [version u8][hot_len u16 BE] + cold TLV frames [tag][len varint][bytes].
+    // No payload header at all (ADR-0042 as amended): both fields are cold, so the
+    // payload is just the TLV frames [tag][len varint][bytes].
     // Fields: payload (tag 0, 2 bytes), tag (tag 1, 1 byte). No hot fields.
     let wire = doc.encode_payload();
-    assert_eq!(wire, vec![1, 0, 0, 0, 0x02, 0xDE, 0xAD, 1, 0x01, 0xAA]);
+    assert_eq!(wire, vec![0, 0x02, 0xDE, 0xAD, 1, 0x01, 0xAA]);
 
     let back = Blob::decode_payload(&wire);
     assert_eq!(back, doc);
@@ -77,11 +77,11 @@ fn bytes_map_bridge() {
 
 #[test]
 fn bytes_absent_field_version_default() {
-    // A v1 payload with header only and NO field frames: payload (absent
-    // cold field, no ok_default) falls to Default = empty Bytes; tag
-    // falls to its #[ok_default].
-    let header_only: &[u8] = &[1, 0, 0]; // version 1, hot_len 0, cold empty
-    let doc = Blob::decode_payload(header_only);
+    // An EMPTY payload carries no field at all (no header to skip): the cold field
+    // without `#[ok_default]` falls to Default = empty Bytes, and `tag` falls to its
+    // declaration's default.
+    let empty: &[u8] = &[];
+    let doc = Blob::decode_payload(empty);
     assert_eq!(doc.payload, Bytes(vec![]));
     assert_eq!(doc.tag, Bytes(vec![1, 2]));
 }

@@ -696,6 +696,20 @@ impl Drop for Changelog {
     }
 }
 
+/// The payload layout the NEWEST sealed segment of a table was written under.
+///
+/// This is the one place a log states its generation (ADR-0042 as amended): a segment
+/// header carries it, so a reader can tell "these bytes are mine" without opening a
+/// store, without decoding a row, and without a second reader for the older generation.
+/// `None` = nothing sealed yet (a fresh table, or one that never wrote).
+pub fn segment_layout(dir: &Path) -> Result<Option<u8>> {
+    let Some(newest) = last_sealed(dir) else {
+        return Ok(None);
+    };
+    let info = segment_info(&dir.join(newest))?;
+    Ok(Some(info.meta.layout_version))
+}
+
 /// The directory a table header owns under the changelog root.
 pub fn table_dir(root: &Path, header: &[u8]) -> PathBuf {
     root.join(hex(header))
@@ -1604,6 +1618,17 @@ impl<S> ChangelogStore<S> {
         };
         let dir = table_dir(root, &header);
         std::fs::create_dir_all(&dir).map_err(|e| io_err(&dir, e))?;
+        // The log states its generation; this build reads exactly one. A different
+        // number is not a flag to read anyway — the door is a Delta export made by the
+        // build that wrote these bytes (ADR-0042).
+        if let Some(stored) = segment_layout(&dir)?
+            && stored != R::LAYOUT_VERSION
+        {
+            return Err(Error::LayoutMismatch {
+                stored: Some(stored),
+                current: R::LAYOUT_VERSION,
+            });
+        }
         #[cfg(feature = "schema-serde")]
         write_sidecar(&dir, &crate::model::schema::CollectionSchema::of::<K, R>())?;
         self.metas

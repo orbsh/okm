@@ -169,17 +169,15 @@ impl<S: VirtualStorage> DynamicCollection<S> {
         okm_core::meta::read(&self.store, &self.ns).map_err(codec)
     }
 
-    /// First-touch verb (ADR-0043) on the dynamic side: stamp a fresh store
-    /// with `schema.layout_version`, or answer the stamp it already carries.
+    /// First-touch verb (ADR-0043) on the dynamic side: record this declaration's
+    /// faces on a fresh store, or answer the row the store already carries.
     ///
-    /// The typed counterpart is `Collection::ensure_layout`, and both call
-    /// `okm_core::meta::ensure` — `CollectionSchema::layout_version` IS
-    /// `Document::LAYOUT_VERSION`, so a store stamped by either mode satisfies
-    /// the other. One point read when stamped, one point write when not: call
-    /// it where the host attaches to a store, never on the write path.
+    /// No layout number is compared here any more: which generation wrote the bytes
+    /// is the SEGMENT header's statement, checked where a log is opened (ADR-0042 as
+    /// amended), and a store with no log has nothing to compare against.
     ///
-    /// A store stamped with another shape (or a meta row naming no version) is
-    /// refused with `Error::LayoutMismatch`'s message, which names both numbers.
+    /// One point read when stamped, one point write when not: call it where the host
+    /// attaches to a store, never on the write path.
     pub fn ensure_layout(&self) -> Result<okm_core::TableMeta, String> {
         // An exported schema carries the compile-time fingerprint, and that value is
         // authoritative — it is the number a Rust build will compare against.
@@ -190,13 +188,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
         // no compiler answers for them. The methods ARE the declaration here, so
         // they are what gets hashed (ADR-0048).
         let faces = self.computed_faces();
-        let mut meta = okm_core::meta::ensure(
-            &self.store,
-            &self.ns,
-            self.schema.layout_version,
-            Some(faces),
-        )
-        .map_err(codec)?;
+        let mut meta = okm_core::meta::ensure_faces(&self.store, &self.ns, faces).map_err(codec)?;
 
         // ADR-0029: a path index's SLOT is its identity — the entry key carries no
         // path — so a reader who is not the declarer sees `0x3001` and nothing else.
@@ -438,18 +430,20 @@ impl<S: VirtualStorage> DynamicCollection<S> {
 
         // Phase 3 — the stamp, the last write, exactly as the typed verb does it.
         let faces = self.computed_faces();
-        okm_core::meta::stamp_faces(&self.store, &ns, self.schema.layout_version, faces)
+        okm_core::meta::stamp_faces(&self.store, &ns, faces)
             .map_err(codec)?;
         Ok(report)
     }
 
-    /// Record one caller-owned name beside the stamp, re-stamping `version`
-    /// afterwards (ADR-0043: the shape stamp belongs to the runtime, so a
-    /// caller cannot edit it away through this verb).
+    /// Record one caller-owned name in the meta row, creating it when the store has
+    /// none. The runtime keeps no name of its own there: the payload's generation
+    /// lives in the segment header, and `faces` belongs to the stamp verb.
     pub fn set_meta(&self, name: &str, value: Vec<u8>) -> Result<okm_core::TableMeta, String> {
-        let mut meta = self.ensure_layout()?;
+        let mut meta = match self.meta()? {
+            Some(meta) => meta,
+            None => okm_core::TableMeta::new(),
+        };
         meta.set(name, value);
-        meta.set(okm_core::meta::VERSION, vec![self.schema.layout_version]);
         okm_core::meta::write(&self.store, &self.ns, &meta).map_err(codec)?;
         Ok(meta)
     }

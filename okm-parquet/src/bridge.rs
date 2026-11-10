@@ -223,11 +223,11 @@ fn build_batch<K: KeyEncode, R: Document<Key = K>>(
         }
         columns.push(col);
     }
-    // Payload half: two-segment layout behind the 3-byte header — hot
+    // Payload half: two segments back to back — hot
     // segment is fixed-width at static offsets; cold segment is TLV walked
     // frame-by-frame (each preceding variable-length frame shifts it).
     let hot_width = <R as Document>::HOT_WIDTH;
-    let header = 3usize; // version u8 + hot_len u16
+    let header = 0usize; // no payload header: hot width is the declaration's (ADR-0042)
     let cold_fields: Vec<(usize, &FieldDesc)> = proj
         .row_fields
         .iter()

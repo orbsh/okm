@@ -406,7 +406,7 @@ pub mod parquet_io {
 
             // Phase 1 — reassemble per-document bytes: key encoding
             // (declaration-order BE fields) then the two-segment payload —
-            // [ver u8][hot_len u16 BE][hot segment][cold TLV] — matching the
+            // [hot segment][cold TLV] — matching the
             // export-side layout. Labels intern here, so this phase borrows the
             // store mutably; it ends before the rows land.
             let (keys, payloads) = {
@@ -420,14 +420,9 @@ pub mod parquet_io {
                         krow.extend_from_slice(&wb);
                     }
                 }
-                let hot_width: usize = row_fields
-                    .iter()
-                    .filter(|f| f.width > 0)
-                    .map(|f| f.width)
-                    .sum();
-                let ver = <R as Document>::LAYOUT_VERSION;
-                let pay_header = vec![ver, (hot_width >> 8) as u8, hot_width as u8];
-                let mut payloads: Vec<Vec<u8>> = vec![pay_header; n];
+                // No payload header: the hot width is the declaration's, so an
+                // imported row starts straight at its first field (ADR-0042).
+                let mut payloads: Vec<Vec<u8>> = vec![Vec::new(); n];
                 // Hot segment: contiguous fixed-width runs (no frame headers).
                 for (fi, f) in row_fields.iter().enumerate() {
                     if f.width == 0 {
@@ -695,11 +690,6 @@ pub mod parquet_io {
                 let store = self.store_mut();
                 let mut ns_header = <E as Document>::PARTITION_PREFIX.to_vec();
                 ns_header.extend_from_slice(<E as Document>::NS_PREFIX);
-                let hot_width: usize = row_fields
-                    .iter()
-                    .filter(|f| f.width > 0)
-                    .map(|f| f.width)
-                    .sum();
                 for row in 0..n {
                     let src = endpoint(0, 1, row)?;
                     let dst = endpoint(2, 3, row)?;
@@ -720,13 +710,10 @@ pub mod parquet_io {
                             key_bytes.len()
                         )
                     })?;
-                    // The payload: `[ver][hot_len][hot][cold TLV]`, the export's
-                    // layout, reassembled from the typed columns.
-                    let mut payload = vec![
-                        <E as Document>::LAYOUT_VERSION,
-                        (hot_width >> 8) as u8,
-                        hot_width as u8,
-                    ];
+                    // The payload: `[hot segment][cold TLV]` — no header, the hot
+                    // width is the declaration's (ADR-0042 as amended) — reassembled
+                    // from the typed columns.
+                    let mut payload: Vec<u8> = Vec::new();
                     for (fi, f) in row_fields.iter().enumerate() {
                         if f.width == 0 {
                             continue;

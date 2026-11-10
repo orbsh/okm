@@ -6,14 +6,17 @@
 back to `version = 1` with its usage counters at the FRONT, where a reader looks
 for them. Refined 2026-10-28: the number may simply increment (resetting was never
 the point), and the record now says what would actually earn compatibility.
-**Date:** 2026-10-27, refined 2026-10-28
+**Date:** 2026-10-27, refined 2026-10-28; amended 2026-11-10 — the stamp moved out
+of the payload into the SEGMENT header, and with it went the per-row decode rule
 
 ## Context
 
-The payload carries a version byte and the decoder has a compatibility rule: a
-payload newer than the reader is refused, an older one is accepted with the fields
-it lacks defaulted. That mechanism is right, and it is also a magnet: once a codec
-can absorb a shape change, shape changes start to be designed AROUND it.
+The payload used to carry a version byte, with a decoder rule beside it: a payload
+newer than the reader refused, an older one accepted with the fields it lacks
+defaulted. That mechanism is also a magnet: once a codec can absorb a shape change,
+shape changes start to be designed AROUND it. The amendment below removes the byte and
+keeps the thesis — the number is an identity, and it now lives where the identity can be
+checked without decoding anything.
 
 Two things were written that way before this record.
 
@@ -28,8 +31,15 @@ Two things were written that way before this record.
 
 ## Decision
 
-**1. The version byte is a STAMP.** It records which shape a payload was written
-in. It is not a promise that another build can read it.
+**1. The layout number is a STAMP, and it is the SEGMENT's.** It records which shape
+the bytes were written in. It is not a promise that another build can read them. The
+payload carries no header at all — `[hot segment][cold TLV]`, the boundary being the
+declaration's `HOT_WIDTH` — so a row repeats nothing its reader already knows, and an
+empty document is zero bytes. The number is stated twice: in the segment header
+(`layout_version`) and in the declaration (`#[ok_layout(version = N)]`, default 1). A log
+whose number differs is refused where it is opened — `ChangelogStore::register`, and
+replay/export before the first row is decoded — with `LayoutMismatch { stored, current }`.
+There is no per-row comparison, because a row is never read without the log it came from.
 
 **2. The number may simply go up, and that is the ordinary style.** A shape change
 gives the table a new number — incrementing is the default, and resetting to 1 is
@@ -53,10 +63,12 @@ own layout. The bundle and the per-table Parquet export already exist, carry the
 caller's own rows, and have an owner. An in-place upgrade-on-read path (old
 records staying in the old format) is not the design.
 
-**6. The decode rule stays as it is — a failure mode, not a migration strategy.** A
-newer payload is refused and an older one defaults what it lacks, which is what
-makes a stale store fail loudly or land sane when it is opened at all. Defaults are
-not "fields may be absent".
+**6. What a decoder still absorbs is absence, and only in the cold half.** A cold TLV
+frame that is not there is a field that was never written, and it takes its declared
+default (`#[ok_default]`, else `T::default()`) — that is a property of the frame format,
+not of a generation. A **hot** append moves the boundary and shifts every cold frame
+after it, so it is a shape change: a new number, a new generation. Defaults are not
+"fields may be absent anywhere", and they are not a migration strategy.
 
 **7. What would actually earn compatibility — and how a production upgrade really
 happens.** The scenario that pays for it: production data that cannot be lost and is
@@ -87,10 +99,14 @@ advantage is much smaller than it reads. Looking seamless is the bar.
   the tail because it arrived late.
 - **No ADR per rebuild.** A memory core before real use regenerates its corpus;
   that is a one-line note in a commit, not a migration design.
-- **A stale store is never silently reinterpreted.** The number differs, so an old
-  payload is either refused by the version check or lands on whatever the decoder
-  defaults and its owner notices — the honest instruction stays "export it with the
+- **A stale store is never silently reinterpreted.** The number differs, so the log is
+  refused at open rather than decoded — the honest instruction stays "export it with the
   build that wrote it, or delete it".
+- **An in-place binary swap is free exactly when the number did not change**, which is
+  the common upgrade: nothing moves, the downtime is a restart. A changed number makes
+  the swap a rebuild instead — beside the serving store (blue-green, second copy of the
+  data for the length of the cutover, cut over table by table so the peak is "everything
+  + the largest table") or in place with the service down.
 - **The cost lands on whoever needs compatibility**, and it lands as a written
   requirement paid in export/import tooling or in an engine's own format, never as
   an accident of the codec.

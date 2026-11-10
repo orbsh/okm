@@ -548,12 +548,11 @@ fn hex_lock_one_link() {
     primary.extend_from_slice(&id);
     let body = store.get(&primary).unwrap().unwrap();
     // Body = [src][dst][predicate_vocab_id][obj payload]; the payload is the same
-    // two-segment obj a document row carries: [version u8][hot_len u16 BE]
-    // [hot segment] — since_year u16 then weight u32, both fixed-width.
+    // two-segment obj a document row carries, and it has no header (ADR-0042 as
+    // amended): [hot segment][cold TLV] — since_year u16 then weight u32, both
+    // fixed-width, so the whole payload is hot.
     let payload = {
         let mut v = Vec::new();
-        v.push(1u8);
-        v.extend_from_slice(&6u16.to_be_bytes());
         v.extend_from_slice(&2020u16.to_be_bytes());
         v.extend_from_slice(&0u32.to_be_bytes());
         v

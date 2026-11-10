@@ -92,3 +92,4 @@ fn embed_roundtrip() {
     let u3 = users.get(&ukey2).expect("store").expect("user3");
     assert_eq!(u3.address.value, None);
 }
+

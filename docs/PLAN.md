@@ -2977,8 +2977,8 @@ outright — its entry says why).
       → wait on the sink (advisory only now) → write `handed-over` with the position for
       each table whose claim is `draining`. `apply_log` is the same-build replay: segments
       already carry the final key and payload, so `put`/`del` in log order reproduces the
-      table (a LAYOUT change still goes through the decoder and the target's write path,
-      ADR-0057 §4). Roles are derived from the claim, so a successor that died between the
+      table — same build, same generation, byte for byte; a LAYOUT change is not a replay at
+      all but a new generation (export → import, ADR-0042 as amended). Roles are derived from the claim, so a successor that died between the
       handover and the claim finds `handed-over` waiting and simply finishes
       (`Role::HandedOver`), and a restart on the same store resumes without a replay
       (`Role::Resume`). `capture_off_opens_nothing_and_writes_nothing` locks the `Off`
@@ -3053,6 +3053,36 @@ breadth-first block table and no magic. The checklist below is the landing.
 - [x] **ADR-0056 §7's marks went with the same pass**: the segment header starts at `fmt`, the
       footer is 28 bytes (`body_len | records | ordinal | crc32`), and a format-1 file is no
       longer read; that section and its index row were rewritten.
+
+## 2026-11-10 — the payload loses its header (ADR-0042 amended)
+
+- [x] **No payload header at all**: `[hot segment][cold TLV]`, the boundary being the
+      declaration's `HOT_WIDTH`. Removed with it: the version byte (per-row identity) and
+      `hot_len u16 BE` (a length the reader can compute). An empty document is zero bytes.
+      Touches both writers — the derive (`emit_payload_encode`/`emit_payload_decode`) and
+      the schema-driven `okm-dynamic::encode` — plus `decode_payload`, the Arrow bridge
+      (`header = 0`) and both Parquet import paths (rows are rebuilt from their columns).
+- [x] **`HOT_WIDTH` became an expression, not a parsed literal.** Summing
+      `f.width.to_string().parse::<usize>()` read an embedded field's width (a const
+      expression such as `<K as KeyEncode>::KEY_LEN`) as 0, which put the cold boundary
+      in the wrong place for every table carrying a `Ref` — invisible while the payload
+      still had `hot_len`, fatal the moment the reader had to derive it. `embed_test`
+      caught it (`left: None` on a deref whose key had decoded as zeros).
+- [x] **The generation moved to where it can be checked**: `changelog::segment_layout(dir)`
+      reads the newest sealed segment's `layout_version`; `ChangelogStore::register` and
+      `replay::per_table` refuse a log of another number *before* decoding a row
+      (`LayoutMismatch`). `TableMeta` no longer carries a version: `ensure_faces` stamps a
+      fresh row's fingerprint and answers an existing one untouched (a first-touch verb
+      that repaired the row would erase `Stale`), and `ensure_layout` on both the typed and
+      the dynamic side now only records/answers the declaration.
+- [x] **One tolerance survives, and it is the cold half's**: an absent cold TLV frame takes
+      its declared default (`ok_default` fixture moved to a cold `memo`), while a hot append
+      is a generation break (`defaults_are_data_and_a_hot_append_is_a_generation_break`).
+      The tests that locked the old header were rewritten rather than deleted where they
+      carried a rule: `codec_v2_test` (hex snapshot, truncation, cold-append default),
+      `bytes_test` (wire lock, empty payload), `graph_edge_test` (edge payload), and
+      `wrappers_test` (varint frame offset).
+- [x] Workspace gate: 527 tests, 0 failed.
 
 ## 2026-11-10 — the async face becomes a crate (ADR-0059)
 

@@ -27,15 +27,10 @@ use crate::error::Result;
 use crate::model::index::{Document, META_SLOT, write_slot};
 use crate::model::wrappers::wire::{put_len, take_len};
 
-/// The one name the runtime writes: the payload shape the store was stamped
-/// with — the same number `#[ok_layout(version = N)]` puts in every payload
-/// header (`Document::LAYOUT_VERSION`).
-pub const VERSION: &str = "version";
-
 /// The fingerprint of the declaration's structural faces (ADR-0048) — the
-/// derived state that lives outside the primary table and that `version` cannot
-/// describe: adding an index changes no payload byte, so the layout number does
-/// not move while the faces do.
+/// derived state that lives outside the primary table and that the payload's
+/// layout number cannot describe: adding an index changes no payload byte, so
+/// the layout does not move while the faces do.
 ///
 /// Absent means "not described" (every store written before this existed), which
 /// reads as untrusted — never as "this table has no faces".
@@ -83,13 +78,6 @@ impl TableMeta {
         Self::default()
     }
 
-    /// A fresh stamp for the shape this build writes.
-    pub fn stamped(version: u8) -> Self {
-        let mut meta = Self::new();
-        meta.set(VERSION, vec![version]);
-        meta
-    }
-
     pub fn get(&self, name: &str) -> Option<&[u8]> {
         self.entries.get(name).map(|v| v.as_slice())
     }
@@ -112,11 +100,6 @@ impl TableMeta {
 
     pub fn iter(&self) -> impl Iterator<Item = (&str, &[u8])> {
         self.entries.iter().map(|(k, v)| (k.as_str(), v.as_slice()))
-    }
-
-    /// The stamped shape, if this row names one.
-    pub fn version(&self) -> Option<u8> {
-        self.get(VERSION).and_then(|v| v.first().copied())
     }
 
     /// The stamped face fingerprint, if this row names one. A value of the wrong
@@ -219,46 +202,6 @@ pub fn read<S: VirtualStorage + ?Sized>(store: &S, header: &[u8]) -> Result<Opti
     Ok(store.get(&key)?.map(|bytes| TableMeta::decode(&bytes)))
 }
 
-/// The first-touch verb: stamp a fresh store with the shape THIS build writes,
-/// or answer the row the store already carries.
-///
-/// - absent → write `version = current`, return the fresh row;
-/// - present with the same version → return it (with whatever other names the
-///   caller left there);
-/// - present with another version, or with no `version` name → [`Error::LayoutMismatch`].
-///
-/// One point read when the store is stamped, one point write when it is not.
-/// Callers put this at attach/boot, once per table — not on the write path.
-pub fn ensure<S: VirtualStorage + ?Sized>(
-    store: &S,
-    header: &[u8],
-    current: u8,
-    faces: Option<[u8; crate::model::faces::FINGERPRINT_LEN]>,
-) -> Result<TableMeta> {
-    let key = meta_key(header);
-    if let Some(bytes) = store.get(&key)? {
-        let meta = TableMeta::decode(&bytes);
-        return match meta.version() {
-            Some(stored) if stored == current => Ok(meta),
-            stored => Err(crate::error::Error::LayoutMismatch { stored, current }),
-        };
-    }
-    // A fresh store's faces are trivially the faces of the declaration that is
-    // about to write it, so both stamps land together and no store exists that
-    // has one and not the other. A declaration that cannot name its faces — the
-    // dynamic mode with a hand-written schema — passes `None`, and its store
-    // reads back as `FaceStatus::Unknown`, which is the truth. The comparison is deliberately NOT here: an
-    // existing store must keep opening on `version` alone, or every store
-    // written before faces existed would start failing at attach — the caller
-    // asks with [`TableMeta::face_status`] when it cares.
-    let mut meta = TableMeta::stamped(current);
-    if let Some(faces) = faces {
-        meta.set(FACES, faces.to_vec());
-    }
-    store.put(key, meta.encode())?;
-    Ok(meta)
-}
-
 /// Write the meta row as given, replacing whatever it carried.
 ///
 /// `version` belongs to the runtime: `Collection::set_meta` re-stamps it after
@@ -267,24 +210,46 @@ pub fn write<S: VirtualStorage + ?Sized>(store: &S, header: &[u8], meta: &TableM
     store.put(meta_key(header), meta.encode())
 }
 
+/// First-touch: stamp a FRESH table's meta row with the declaration's fingerprint,
+/// and answer any existing row exactly as it stands.
+///
+/// "Exactly as it stands" is the point. A row that exists without a fingerprint is a
+/// store written before faces existed, or one whose rebuild never finished — both
+/// answer `Stale`/`Unknown` by design (ADR-0048), and a first-touch verb that
+/// repaired the row would erase that signal. Only [`stamp_faces`] moves a fingerprint
+/// on a store that already has a row, and only the rebuild calls it.
+pub fn ensure_faces<S: VirtualStorage + ?Sized>(
+    store: &S,
+    header: &[u8],
+    faces: [u8; crate::model::faces::FINGERPRINT_LEN],
+) -> Result<TableMeta> {
+    let key = meta_key(header);
+    let Some(bytes) = store.get(&key)? else {
+        let mut meta = TableMeta::new();
+        meta.set(FACES, faces.to_vec());
+        store.put(key, meta.encode())?;
+        return Ok(meta);
+    };
+    Ok(TableMeta::decode(&bytes))
+}
+
 /// Write the face stamp, creating the meta row if the store has none.
 ///
 /// This is the ONE verb that moves `faces` after a store already exists — the
 /// rebuild calls it on completion, which is why an interrupted rebuild needs no
 /// state of its own: the stamp simply was never written, so the next open still
-/// answers `Stale` (ADR-0048). `version` is only seeded on a fresh row and never
-/// rewritten here: a store whose payload shape does not match is a layout
-/// question for `ensure_layout`, not something a stamp write may quietly settle.
+/// answers `Stale` (ADR-0048). Whether these bytes are of this build's generation
+/// is not a question this row answers — the payload's layout lives in the SEGMENT
+/// header, where a reader that never opens a store can see it too (ADR-0042).
 pub fn stamp_faces<S: VirtualStorage + ?Sized>(
     store: &S,
     header: &[u8],
-    version: u8,
     faces: [u8; crate::model::faces::FINGERPRINT_LEN],
 ) -> Result<TableMeta> {
     let key = meta_key(header);
     let mut meta = match store.get(&key)? {
         Some(bytes) => TableMeta::decode(&bytes),
-        None => TableMeta::stamped(version),
+        None => TableMeta::new(),
     };
     meta.set(FACES, faces.to_vec());
     store.put(key, meta.encode())?;

@@ -67,17 +67,14 @@ fn a_fresh_store_is_stamped_with_its_declarations_faces() {
 fn a_store_written_before_faces_existed_opens_but_answers_unknown() {
     let store = TestStore::default();
     let table = Note::collection(store.clone());
-    // Exactly what an older build wrote: the shape stamp and nothing else.
-    meta::write(
-        &store,
-        &meta::document_header::<Note>(),
-        &TableMeta::stamped(Note::LAYOUT_VERSION),
-    )
-    .unwrap();
+    // A meta row that names no fingerprint: an app's own name, nothing else.
+    let mut older = TableMeta::new();
+    older.set("build", b"20260801".to_vec());
+    meta::write(&store, &meta::document_header::<Note>(), &older).unwrap();
 
     assert!(
         table.ensure_layout().is_ok(),
-        "version still matches, so the store opens — faces are not a refusal"
+        "a store with no fingerprint still opens — faces are not a refusal"
     );
     assert_eq!(
         table.faces_status().unwrap(),
@@ -173,7 +170,6 @@ fn a_schema_json_written_before_faces_existed_still_reads() {
         ],
         "layout_version": 1,
         "hot_width": 8,
-        "payload_header_len": 3,
         "hot_fields": [
             { "name": "author", "ty": "U64", "width": 8, "offset": 0, "tag": null }
         ],

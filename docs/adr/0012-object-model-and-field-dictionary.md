@@ -46,7 +46,7 @@ document comparison.
 Byte layout per obj payload (slot 0, primary):
 
 ```text
-[version u8][hot_len u16 BE][hot segment][cold TLV]
+[hot segment][cold TLV]
 ```
 
 — unchanged from today's row. Declared fields keep the current encoding:

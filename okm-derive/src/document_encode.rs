@@ -201,12 +201,11 @@ fn defaults_entries(schema: &DocumentSchema) -> TS2 {
     quote! { &[ #(#documents),* ] }
 }
 
-/// ---- encode: [version u8][hot_len u16 BE][hot segment][cold TLV] ----
+/// ---- encode: [hot segment][cold TLV] ----
 // reason: the field comes out of `schema.fields`, so `position` is Some —
 // the tag is its declaration index.
 #[allow(clippy::unwrap_used)]
 fn emit_payload_encode(schema: &DocumentSchema) -> TS2 {
-    let ver_lit = proc_macro2::Literal::u8_unsuffixed(schema.layout_version);
 
     // Segment split. Hot = fixed-width fields (contiguous, O(1) offsets);
     // cold = variable-width fields (TLV frames, tag = declaration index
@@ -236,26 +235,16 @@ fn emit_payload_encode(schema: &DocumentSchema) -> TS2 {
             #enc
         });
     }
-    if hot_fields.is_empty() && cold_fields.is_empty() {
-        // Degenerate: header still present, hot_len 0, cold empty.
-        quote! {
-            buf.push(#ver_lit);
-            buf.extend_from_slice(&0u16.to_be_bytes());
-        }
-    } else {
-        quote! {
-            buf.push(#ver_lit);
-            buf.extend_from_slice(&0u16.to_be_bytes()); // hot_len placeholder
-            let hot_start = buf.len();
-            #hot_enc
-            let hot_len = (buf.len() - hot_start) as u16;
-            buf[1..3].copy_from_slice(&hot_len.to_be_bytes());
-            #cold_enc
-        }
+    // No header at all: the hot segment's width is a compile-time fact of the
+    // declaration (`HOT_WIDTH`), so the payload is the two segments back to back and
+    // an empty document is zero bytes (ADR-0042 as amended).
+    quote! {
+        #hot_enc
+        #cold_enc
     }
 }
 
-/// ---- decode: version check, hot walk, cold TLV walk, defaults ----
+/// ---- decode: hot walk, cold TLV walk, defaults ----
 /// Each field becomes `let <name> = if <present> { <dec_val> } else {
 /// <default> };` — dec blocks read from b[offset..], advance offset, and
 /// yield the value.
@@ -263,8 +252,6 @@ fn emit_payload_encode(schema: &DocumentSchema) -> TS2 {
 // `schema.fields`, which the iterator just yielded it from.
 #[allow(clippy::unwrap_used)]
 fn emit_payload_decode(schema: &DocumentSchema) -> TS2 {
-    let ver_lit = proc_macro2::Literal::u8_unsuffixed(schema.layout_version);
-    let ver_str = schema.layout_version.to_string();
 
     let hot_fields: Vec<_> = schema.fields.iter().filter(|f| f.hot).collect();
     let cold_fields: Vec<_> = schema.fields.iter().filter(|f| !f.hot).collect();
@@ -319,17 +306,20 @@ fn emit_payload_decode(schema: &DocumentSchema) -> TS2 {
             };
         });
     }
+    // The hot half's width, as an EXPRESSION over the same width tokens the field
+    // encoders use. Parsing the tokens as an integer would silently read an embedded
+    // field's width (a const expression such as `<K as KeyEncode>::KEY_LEN`) as 0 and
+    // put the cold boundary in the wrong place.
+    let hot_widths: Vec<_> = schema
+        .fields
+        .iter()
+        .filter(|f| f.hot)
+        .map(|f| &f.width)
+        .collect();
+    let hot_width_expr = quote! { 0usize #( + (#hot_widths))* };
     quote_spanned! { crate::hyg::mixed()=>
         let mut offset = 0usize;
-        let ver = b[0];
-        assert!(
-            ver <= #ver_lit,
-            concat!("payload layout version ", "{:03}", " is newer than this schema's ", #ver_str),
-            ver
-        );
-        let hot_len = u16::from_be_bytes(b[1..3].try_into().unwrap()) as usize;
-        offset = 3;
-        let hot_end = offset + hot_len;
+        let hot_end = #hot_width_expr;
         #hot_dec
         offset = hot_end;
         let cold_end = b.len();
@@ -1480,13 +1470,13 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> syn::Result<TS2> {
     let decode_body = emit_payload_decode(schema);
     // Hot width as a numeric literal — widths are fixed `quote!{ N }`
     // tokens, so parsing the token text is exact for every supported kind.
-    let hot_width_total: usize = schema
+    let hot_widths: Vec<_> = schema
         .fields
         .iter()
         .filter(|f| f.hot)
-        .map(|f| f.width.to_string().parse::<usize>().unwrap_or(0))
-        .sum();
-    let hot_width_lit = proc_macro2::Literal::usize_unsuffixed(hot_width_total);
+        .map(|f| &f.width)
+        .collect();
+    let hot_width_lit = quote! { 0usize #( + (#hot_widths))* };
     let named_walk = emit_named_walk(schema);
     let index_structs = emit_index_structs(schema)?;
     let lead_structs = emit_lead_structs(schema)?;

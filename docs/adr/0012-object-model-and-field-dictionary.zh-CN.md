@@ -24,7 +24,7 @@
 每个 obj payload（slot 0，主表）的字节布局：
 
 ```text
-[version u8][hot_len u16 BE][hot 段][cold TLV]
+[hot 段][cold TLV]
 ```
 
 ——与今天的 row 完全一致。声明字段保持现有编码：定宽字段在 hot 段连续排列，变长字段为 `[tag][len varint][bytes]` 帧排在 cold 段，tag = 声明序号。类型来自编译期 `FieldDesc` 表（`Row::FIELDS`），永不在字节里。

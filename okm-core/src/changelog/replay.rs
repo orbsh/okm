@@ -222,6 +222,18 @@ where
     let mut out = Vec::new();
     for dir in super::window::table_dirs(root).map_err(|e| e.to_string())? {
         let schema = super::window::load_sidecar(&dir).map_err(|e| e.to_string())?;
+        // The generation comes from the log itself (its newest segment's header), so
+        // this refuses before a single row is decoded: no second reader, no guessing.
+        if let Some(stored) = super::segment_layout(&dir).map_err(|e| e.to_string())?
+            && stored != schema.layout_version
+        {
+            return Err(format!(
+                "{}: the log is layout {stored}, this declaration is {} — export it with the \
+                 build that wrote it and import (ADR-0042)",
+                dir.display(),
+                schema.layout_version
+            ));
+        }
         let header = super::window::header_of(&dir).map_err(|e| e.to_string())?;
         out.push(run(&dir, &header, &schema)?);
     }
@@ -363,19 +375,6 @@ where
     O: VirtualStorage + ?Sized,
 {
     use crate::engine::storage::scan_suffix_kv;
-
-    // Same shape, or stop: every reference below decodes with THIS declaration.
-    let old_meta = crate::meta::read(old, header).map_err(|e| e.to_string())?;
-    if let Some(meta) = &old_meta
-        && let Some(version) = meta.version()
-        && version != schema.layout_version
-    {
-        return Err(format!(
-            "the old store is layout {version}, this declaration is {} — a reconciliation \
-             across shapes needs an explicit translation, not a scan",
-            schema.layout_version
-        ));
-    }
 
     let mut prefix = header.to_vec();
     crate::write_slot(&mut prefix, PRIMARY_SLOT);
