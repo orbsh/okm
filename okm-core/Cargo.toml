@@ -172,6 +172,18 @@ name = "vector_test"
 [[test]]
 name = "vocab_test"
 
+# The layout identity, checked where a log is opened (ADR-0042 as amended): the
+# store's `register` and the replay driver both refuse a log of another generation,
+# and the sidecar it reads is JSON, hence the feature.
+[[test]]
+name = "layout_generation_test"
+required-features = ["schema-serde"]
+
+# A cutover cannot announce itself (ADR-0056 §6): the successor runs the hook after it
+# is the writer, and a hook that fails does not undo the claim.
+[[test]]
+name = "handover_hook_test"
+
 
 [lints]
 workspace = true

@@ -254,6 +254,12 @@ pub fn header_of(dir: &Path) -> Result<Vec<u8>> {
 
 /// The one declaration this directory's bytes are read through. Absent means the
 /// log is readable as bytes and useless as columns, which is a stop, not a guess.
+///
+/// A directory can hold SEVERAL stamps — a build that wrote `schema-v2.json` beside an
+/// older `schema-v1.json` is exactly what an upgrade leaves behind — so the choice is
+/// not alphabetical: the log says which generation it was written under, and that
+/// number picks the file. Sorting by name would answer `schema-v10.json` for a version
+/// 2 log and refuse a table that is perfectly readable.
 pub fn load_sidecar(dir: &Path) -> Result<CollectionSchema> {
     let mut found: Vec<PathBuf> = std::fs::read_dir(dir)
         .map_err(|e| io_err(dir, e))?
@@ -265,12 +271,46 @@ pub fn load_sidecar(dir: &Path) -> Result<CollectionSchema> {
         })
         .collect();
     found.sort();
-    let path = found.first().ok_or_else(|| {
-        corrupt(
+    if found.is_empty() {
+        return Err(corrupt(
             dir,
             "no schema sidecar — nothing can turn these bytes into columns",
-        )
-    })?;
+        ));
+    }
+    if found.len() > 1 {
+        let names: Vec<String> = found
+            .iter()
+            .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+            .collect();
+        let Some(generation) = super::segment_layout(dir)? else {
+            return Err(corrupt(
+                dir,
+                &format!(
+                    "no sealed segment to say which of {names:?} wrote this log — the \
+                     declarations disagree and nothing can pick between them"
+                ),
+            ));
+        };
+        let want = super::sidecar_name(generation);
+        let Some(hit) = found
+            .iter()
+            .find(|p| p.file_name().and_then(|n| n.to_str()) == Some(want.as_str()))
+        else {
+            return Err(corrupt(
+                dir,
+                &format!(
+                    "the log is layout {generation} and no {want} sits beside it (found {names:?})"
+                ),
+            ));
+        };
+        return read_sidecar(hit);
+    }
+    read_sidecar(&found[0])
+}
+
+/// Parse one sidecar. A sidecar that does not parse is a stop: the bytes are readable
+/// and the columns would be invented.
+fn read_sidecar(path: &Path) -> Result<CollectionSchema> {
     let text = std::fs::read_to_string(path).map_err(|e| io_err(path, e))?;
     serde_json::from_str(&text).map_err(|e| Error::Changelog {
         what: format!("{}: sidecar: {e}", path.display()),
