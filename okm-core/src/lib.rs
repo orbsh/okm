@@ -119,6 +119,7 @@ pub use engine::slatedb_backend::SlatedbStore;
 
 #[cfg(feature = "arrow")]
 pub use bridge::arrow_bridge;
+#[cfg(feature = "parquet")]
 pub use bridge::tooling;
 #[cfg(feature = "fjall")]
 pub use engine::fjall_backend;
