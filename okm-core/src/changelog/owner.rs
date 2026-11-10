@@ -93,6 +93,10 @@ pub enum Role {
     /// Another holder writes a DIFFERENT store: this instance is the successor, and the
     /// handover starts here rather than being something a deploy has to remember.
     Successor { holder: String, epoch: u64 },
+    /// The handover it asked for is already recorded — a successor that crashed between
+    /// the handover and the claim, or a deploy that ran the steps separately. The
+    /// position is the one to reach; nothing more has to be asked of anyone.
+    HandedOver { holder: String, position: Option<String> },
     /// Another holder writes the SAME store: two writers over one data directory is the
     /// invariant everything rests on, so this is an error, not a role.
     Shared { holder: String, epoch: u64 },
@@ -111,6 +115,11 @@ pub fn decide(dir: &Path, holder: &str, data: &str) -> Result<Role, String> {
     };
     Ok(if current.holder == holder {
         Role::Resume
+    } else if current.state == State::HandedOver && current.data != data {
+        Role::HandedOver {
+            holder: current.holder,
+            position: current.position,
+        }
     } else if current.data == data {
         // The same store, a different token: a second process, or a stale claim from a
         // process that died. Either way this instance must not write.
@@ -378,8 +387,31 @@ impl Lease {
                     path(&dir).display()
                 ));
             }
+            // A completed handover is a claim nobody has taken: `take_over` applies the
+            // log and then claims, so claiming here would skip the replay.
+            Role::HandedOver { holder, .. } => {
+                return Err(format!(
+                    "{}: handed over by `{holder}` and not yet applied — take over, do not claim",
+                    path(&dir).display()
+                ));
+            }
             Role::First | Role::Resume => {}
         }
+        Self::assume(dir, holder, data, timings)
+    }
+
+    /// Write the claim and start the poll loop, without asking whether that is allowed.
+    ///
+    /// For the caller that has just done the work the guard exists to force — a
+    /// successor that applied the log up to the handed position. Everything else uses
+    /// [`Lease::claim`], which asks [`decide`] first.
+    pub fn assume(
+        dir: impl Into<PathBuf>,
+        holder: &str,
+        data: &str,
+        timings: Timings,
+    ) -> Result<Arc<Self>, String> {
+        let dir = dir.into();
         let previous = read(&dir)?;
         let owner = Owner {
             state: State::Writing,

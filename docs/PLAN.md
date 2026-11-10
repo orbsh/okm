@@ -2979,11 +2979,26 @@ open at the end (retiring the store-scan export, and the S3 sink).
       `the_gate_closes_when_another_holder_takes_the_file_and_stays_closed`,
       `a_claim_that_cannot_be_read_closes_the_gate`, `a_handover_names_the_position_the_request_was_made_under`
       and the two drain tests lock it.
-- [ ] **The new build's side of the handshake**: `announce_drain` → `wait_for_handover` →
-      replay to the reported position → `Lease::claim`, wired where a host actually
-      upgrades (the CLI's replay arm or the application itself), plus the equality
-      assertion refusing to serve when the replay cannot reach the handed position. The
-      vocabulary exists and is tested; the composition is not written.
+- [x] **Both sides of the handshake, in one call each** (ADR-0056 §6).
+      `ChangelogStore::take_over` = decide the role per table → announce → wait → apply the
+      log byte for byte → compare against the handed position → claim; a mismatch is an
+      error, never a warning. `ChangelogStore::drain_and_hand_over` = seal every open table
+      → wait on the sink (advisory only now) → write `handed-over` with the position for
+      each table whose claim is `draining`. `apply_log` is the same-build replay: segments
+      already carry the final key and payload, so `put`/`del` in log order reproduces the
+      table (a LAYOUT change still goes through the decoder and the target's write path,
+      ADR-0057 §4). Roles are derived from the claim, so a successor that died between the
+      handover and the claim finds `handed-over` waiting and simply finishes
+      (`Role::HandedOver`), and a restart on the same store resumes without a replay
+      (`Role::Resume`). `capture_off_opens_nothing_and_writes_nothing` locks the `Off`
+      location: no root, no writer, the directory untouched, and the write still lands in
+      the store.
+- [x] **The log's location is a POSIX filesystem, and the option list says so**: `Local |
+      Off`. S3 is not a location — no rename, no fsync — so S3 leaves the machine as a
+      Delta table (ADR-0058), which serves backup, restore and analytics at once; the
+      existing sink stays an optional tail copy and no longer gates a handover. FTP/WebDAV
+      are refused for the same reason: atomicity left to the implementation means the fence
+      has to be re-argued per server. A shared log is a MOUNT.
 
 ## 2026-11-10 — the dynamic segment gets a block table at its tail (ADR-0057)
 

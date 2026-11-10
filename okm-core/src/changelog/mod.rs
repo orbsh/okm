@@ -195,11 +195,26 @@ pub struct SegmentInfo {
 /// The first three knobs are the writer's rotation policy. The export window is
 /// the DRAINER's policy and is deliberately not configurable here: one segment
 /// is a rotation unit, not a file the sink has to accept.
+/// Where a table's log lives — or that there is none (ADR-0056 §6).
+///
+/// `Local` means a POSIX directory: a disk, a bind mount, or an NFS mount. Not "a place
+/// with a path": the protocol needs atomic rename (a seal IS a rename), fsync (a tail
+/// that reached the log before a handover was announced), and a file that two processes
+/// can both read. Anywhere those are missing is a COPY target, not a log — which is what
+/// the Delta export is for, and why the sink stays a backup.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Location {
+    Local(PathBuf),
+    /// No capture at all. The store keeps the wrapper (assembly does not fork), nothing
+    /// is opened, nothing is written, and the cost is one branch per commit.
+    Off,
+}
+
 #[derive(Debug, Clone)]
 pub struct ChangelogConfig {
-    /// Root directory. Each table header gets its own subdirectory, so streams
-    /// cannot collide.
-    pub dir: PathBuf,
+    /// The log's root, or `Off`. Each table header gets its own subdirectory, so
+    /// streams cannot collide.
+    pub location: Location,
     /// Seal the current segment once it reaches this many bytes.
     pub segment_bytes: u64,
     /// Seal the current segment once it is this old (bytes first, then age).
@@ -221,12 +236,35 @@ impl ChangelogConfig {
     /// The defaults the ADR records; only the directory is required.
     pub fn new(dir: impl Into<PathBuf>) -> Self {
         Self {
-            dir: dir.into(),
+            location: Location::Local(dir.into()),
             segment_bytes: Self::DEFAULT_SEGMENT_BYTES,
             segment_seconds: Self::DEFAULT_SEGMENT_SECONDS,
             buffer_bytes: Self::DEFAULT_BUFFER_BYTES,
             sync_data: false,
         }
+    }
+
+    /// Capture off: the same assembly, no log. The branch is the whole cost.
+    pub fn off() -> Self {
+        Self {
+            location: Location::Off,
+            ..Self::new(PathBuf::new())
+        }
+    }
+
+    /// The root directory, or `None` when capture is off.
+    pub fn root(&self) -> Option<&Path> {
+        match &self.location {
+            Location::Local(dir) => Some(dir),
+            Location::Off => None,
+        }
+    }
+
+    /// The root, or the one error every writer path shares.
+    fn root_or_err(&self) -> Result<&Path> {
+        self.root().ok_or_else(|| Error::Changelog {
+            what: "capture is Off; there is no log to write".into(),
+        })
     }
 }
 
@@ -296,7 +334,8 @@ impl Changelog {
     /// reading it (which the drainer does). Starting a fresh segment number is
     /// what keeps a crash from corrupting a stream that already has readers.
     pub fn open(cfg: ChangelogConfig, header: &[u8], meta: SegmentMeta) -> Result<Self> {
-        let dir = table_dir(&cfg.dir, header);
+        let root = cfg.root_or_err()?;
+        let dir = table_dir(root, header);
         std::fs::create_dir_all(&dir).map_err(|e| io_err(&dir, e))?;
         let segment = next_segment(&dir)?;
         let mut file = create_segment(&dir, segment)?;
@@ -739,6 +778,72 @@ fn has_baseline(dir: &Path) -> Result<bool> {
 /// Sealed DELTA segments of one table, in name (= write) order. A baseline is not
 /// here: it is a snapshot rather than a window of changes, and
 /// [`baseline_segments`] is where a replay looks for it.
+/// The owner module answers `String` (it has no dependency on the crate's error type);
+/// every call site turns it into the one error a log can return.
+fn owner_err(what: String) -> Error {
+    Error::Changelog { what }
+}
+
+/// What a byte-level replay did: how many ops it applied, and the last segment it read
+/// (the position a reader reaches, which is what a handover has to be compared against).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Applied {
+    pub ops: usize,
+    pub last: Option<String>,
+}
+
+/// Apply a table's log to a store, BYTE FOR BYTE — the same-build half of a migration
+/// (ADR-0056 §6).
+///
+/// No decode and no re-encode: a segment already carries the final key and payload, so
+/// `put`/`del` in log order reproduces the table. That is exactly what makes it the
+/// wrong tool for a LAYOUT change — those go through the decoder and the target's write
+/// path (ADR-0057 §4) — and the right one for a blue/green restart of one build.
+///
+/// `after` names the last segment already applied; `None` applies the whole log,
+/// baseline included, in name order (a baseline's number puts it where it happens, so an
+/// old snapshot can never resurrect rows a later segment deleted).
+pub fn apply_log<S: crate::VirtualStorage>(
+    root: &Path,
+    header: &[u8],
+    target: &S,
+    after: Option<&str>,
+) -> Result<Applied> {
+    let mut segments = baseline_segments(root, header)?;
+    segments.extend(sealed_segments(root, header)?);
+    segments.sort();
+    let mut applied = Applied {
+        ops: 0,
+        last: None,
+    };
+    for path in segments {
+        let Some(name) = path.file_name().map(|n| n.to_string_lossy().into_owned()) else {
+            continue;
+        };
+        if let Some(after) = after
+            && name.as_str() <= after
+        {
+            continue;
+        }
+        for frame in read_sealed(&path)? {
+            for (tag, key, value) in frame.0 {
+                match tag {
+                    crate::OP_PUT => target.put(key, value)?,
+                    crate::OP_DELETE => target.del(&key)?,
+                    other => {
+                        return Err(Error::Changelog {
+                            what: format!("{}: unknown op tag {other}", path.display()),
+                        });
+                    }
+                }
+                applied.ops += 1;
+            }
+        }
+        applied.last = Some(name);
+    }
+    Ok(applied)
+}
+
 /// The last sealed segment in ONE table directory, by name — the ordinal is the name's
 /// prefix, so name order is seal order. `None` for a directory that has none yet.
 pub fn last_sealed(dir: &Path) -> Option<String> {
@@ -1114,6 +1219,9 @@ pub struct ChangelogStore<S> {
     /// The cutover switch (ADR-0056 §6), handed to every writer this store opens —
     /// including one opened after a takeover request, which is exactly when it matters.
     gate: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    /// The claims this store holds. Kept here for the store's lifetime because a dropped
+    /// lease stops polling, and a gate nobody polls is a gate that never closes.
+    leases: RefCell<Vec<std::sync::Arc<owner::Lease>>>,
 }
 
 impl<S> ChangelogStore<S> {
@@ -1128,6 +1236,7 @@ impl<S> ChangelogStore<S> {
             tables: RefCell::new(BTreeMap::new()),
             sink: None,
             gate: None,
+            leases: RefCell::new(Vec::new()),
         }
     }
 
@@ -1165,6 +1274,125 @@ impl<S> ChangelogStore<S> {
         Ok(out)
     }
 
+    /// The holder's last act, in one call (ADR-0056 §6): seal every open table, wait for
+    /// the copies, and record the position a reader can see.
+    ///
+    /// `holder` and `data` are this instance's, and are written back only for a table
+    /// whose claim is `draining` — the state the successor set. A drain with no request
+    /// against it seals and reports but claims nothing.
+    pub fn drain_and_hand_over(
+        &self,
+        holder: &str,
+        data: &str,
+        timeout: std::time::Duration,
+    ) -> Result<Vec<(Vec<u8>, Drained)>> {
+        let mut out = Vec::new();
+        for (header, cell) in self.tables.borrow().iter() {
+            let drained = cell.borrow_mut().drain(timeout)?;
+            let dir = table_dir(self.cfg.root_or_err()?, header);
+            if let Some(current) = owner::read(&dir).map_err(owner_err)?
+                && current.state == owner::State::Draining
+                && let Some(position) = drained.sealed.clone()
+            {
+                // The position is the sealed segment and nothing else: the successor reads
+                // this same directory, so the handover does not wait on a copy. `uploaded`
+                // is reported for the host to judge, not required here — a bucket outage
+                // must not be able to stall a cutover (ADR-0056 §6).
+                owner::hand_over(&dir, current.epoch, holder, data, &position)
+                    .map_err(owner_err)?;
+            }
+            out.push((header.clone(), drained));
+        }
+        Ok(out)
+    }
+
+    /// The successor's side, in one call (ADR-0056 §6): ask the holder to stop, wait for
+    /// the position it stopped at, apply the log to this store, and only then take the
+    /// claim.
+    ///
+    /// The order matters and is the whole safety argument: the log is not growing while
+    /// it is being read, the replay is compared against exactly what was handed over, and
+    /// the write switch closes for everyone but the caller when it claims. A mismatch is
+    /// an error, never a warning: a successor that cannot reach the handed position has
+    /// not caught up, and serving would be the split brain the claim file exists to stop.
+    pub fn take_over(
+        &mut self,
+        holder: &str,
+        data: &str,
+        timeout: std::time::Duration,
+    ) -> Result<Vec<(Vec<u8>, owner::Role)>>
+    where
+        S: crate::VirtualStorage,
+    {
+        let root = self.cfg.root_or_err()?.to_path_buf();
+        let headers: Vec<Vec<u8>> = self.metas.borrow().keys().cloned().collect();
+        let mut out = Vec::new();
+        for header in headers {
+            let dir = table_dir(&root, &header);
+            let role = owner::decide(&dir, holder, data).map_err(owner_err)?;
+            if let owner::Role::Shared {
+                holder: other,
+                epoch,
+            } = &role
+            {
+                return Err(Error::Changelog {
+                    what: format!(
+                        "{}: store `{data}` is already claimed by `{other}` at epoch {epoch} \
+                         — two instances must not share one store",
+                        owner::path(&dir).display()
+                    ),
+                });
+            }
+            // A handover already recorded answers this: a successor that died between
+            // the handover and the claim finds the position waiting for it.
+            let handed = match &role {
+                owner::Role::Successor { epoch, .. } => {
+                    let request = owner::announce_drain(&dir, holder, data).map_err(owner_err)?;
+                    debug_assert_eq!(request.epoch, epoch + 1);
+                    let position = owner::wait_for_handover(&dir, request.epoch, timeout)
+                        .map_err(owner_err)?
+                        .ok_or_else(|| Error::Changelog {
+                            what: format!(
+                                "{}: the holder did not hand over within {timeout:?}",
+                                owner::path(&dir).display()
+                            ),
+                        })?;
+                    Some(position)
+                }
+                owner::Role::HandedOver { position, .. } => Some(position.clone().ok_or_else(
+                    || Error::Changelog {
+                        what: format!(
+                            "{}: a handover with no position — nothing to reach",
+                            owner::path(&dir).display()
+                        ),
+                    },
+                )?),
+                _ => None,
+            };
+            if let Some(handed) = handed {
+                let applied = apply_log(&root, &header, &self.inner, None)?;
+                if applied.last.as_deref() != Some(handed.as_str()) {
+                    return Err(Error::Changelog {
+                        what: format!(
+                            "{}: the log ends at {:?}, but the handover named `{handed}` — \
+                             replay again before taking the claim",
+                            dir.display(),
+                            applied.last
+                        ),
+                    });
+                }
+            }
+            // The guard `claim` applies ("take over, do not claim") is exactly what this
+            // call has just satisfied: the log was applied to the handed position.
+            let lease = owner::Lease::assume(dir.clone(), holder, data, Default::default())
+                .map_err(owner_err)?;
+            self.attach_gate(lease.gate());
+            self.leases.borrow_mut().push(lease);
+            out.push((header, role));
+        }
+        Ok(out)
+    }
+
     /// Leave this ns out of the capture. Opt-OUT, not opt-in: the switch is on for
     /// the whole store, and the exception list is the operator's (ADR-0056 §2).
     pub fn exclude(mut self, ns: u16) -> Self {
@@ -1172,9 +1400,10 @@ impl<S> ChangelogStore<S> {
         self
     }
 
-    /// The log root, so a host can ship it (S3, a backup, a migration).
-    pub fn dir(&self) -> &Path {
-        &self.cfg.dir
+    /// The log root, so a host can ship it (a backup, a migration). `None` when capture
+    /// is [`Location::Off`].
+    pub fn dir(&self) -> Option<&Path> {
+        self.cfg.root()
     }
 
     /// The wrapped store.
@@ -1199,7 +1428,10 @@ impl<S> ChangelogStore<S> {
         if self.excluded(&header) {
             return Ok(());
         }
-        let dir = table_dir(&self.cfg.dir, &header);
+        let Some(root) = self.cfg.root() else {
+            return Ok(());
+        };
+        let dir = table_dir(root, &header);
         std::fs::create_dir_all(&dir).map_err(|e| io_err(&dir, e))?;
         #[cfg(feature = "schema-serde")]
         write_sidecar(&dir, &crate::model::schema::CollectionSchema::of::<K, R>())?;
@@ -1235,7 +1467,10 @@ impl<S> ChangelogStore<S> {
             return Ok(false);
         }
         self.register::<K, R>()?;
-        let dir = table_dir(&self.cfg.dir, &header);
+        let Some(root) = self.cfg.root() else {
+            return Ok(false);
+        };
+        let dir = table_dir(root, &header);
         if has_baseline(&dir)? {
             return Ok(false);
         }
@@ -1337,6 +1572,9 @@ impl<S> ChangelogStore<S> {
     /// be opened is skipped, never fatal: the write it describes belongs to the
     /// store, and the log is a hint (ADR-0045 §6).
     fn with_log(&self, header: &[u8], f: impl FnOnce(&mut Changelog)) {
+        if self.cfg.root().is_none() {
+            return;
+        }
         if !self.tables.borrow().contains_key(header) {
             let meta = self.metas.borrow().get(header).cloned();
             if let Some(meta) = meta

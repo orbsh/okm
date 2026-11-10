@@ -85,7 +85,7 @@ fn a_writer_that_never_committed_drains_to_nothing_and_leaves_no_partial() {
     // Force the writer open (a registration alone does not open one) and seal it again
     // with nothing in it: the table's directory exists, the log has no tail.
     save(&collection, 1);
-    let dir = collection.store().dir().join(hex_of());
+    let dir = collection.store().dir().unwrap().join(hex_of());
     assert!(dir.exists(), "{}", dir.display());
 
     let drained = collection
