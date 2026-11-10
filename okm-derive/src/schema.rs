@@ -1277,6 +1277,12 @@ pub(crate) struct DocumentSchema {
     /// `#[ok_ns(N)]` — the document's table namespace. None = not declared
     /// (layout-only document; table-less usage keeps an empty prefix).
     pub ns: Option<u16>,
+    /// `#[ok_uncaptured]` — this table is never written to the changelog, even when
+    /// capture is on. For tables outside the state a restore needs: an application's
+    /// own audit trail, an activity log, a cache. Declared on the type rather than
+    /// configured, so the exception sits next to the table it applies to and cannot
+    /// drift away from it (ADR-0056 §2).
+    pub uncaptured: bool,
     /// `#[ok_name("...")]` — the table's NAME. The namespace is the store's
     /// address; the name is the identity a table carries OUT of the store
     /// (export columns, the catalog row, the import-side name lookup). None
@@ -1347,6 +1353,9 @@ pub(crate) fn parse_schema_with_key(
         ),
         None => None,
     };
+
+    // #[ok_uncaptured] — a path-only marker: the table stays out of the changelog.
+    let uncaptured = input.attrs.iter().any(|a| a.path().is_ident("ok_uncaptured"));
 
     // #[ok_name("...")] — the table's name, beside the ns it belongs to.
     let name: Option<String> = match input.attrs.iter().find(|a| a.path().is_ident("ok_name")) {
@@ -1579,6 +1588,7 @@ pub(crate) fn parse_schema_with_key(
         row_name,
         key_ty,
         ns,
+        uncaptured,
         name,
         partition,
         layout_version,

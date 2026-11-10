@@ -13,7 +13,8 @@
 )]
 
 use okm_core::changelog::{ChangelogConfig, ChangelogStore, read_sealed, sealed_segments};
-use okm_core::{Batch, Collection, Document, DocumentEncode, KeyEncode, TestStore, VirtualStorage};
+use okm_core::{Batch, Collection, Document, DocumentEncode, KeyEncode, VirtualStorage};
+use okm_async::TestStore;
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
 pub struct K {
@@ -28,11 +29,12 @@ pub struct Row {
     pub level: u32,
 }
 
-/// The table the operator takes OUT of the switch.
+/// The table that declares itself OUT of the switch (ADR-0056 §2).
 #[derive(DocumentEncode, Clone, PartialEq, Debug)]
 #[ok_ref(K)]
 #[ok_ns(74)]
-#[ok_name("excluded_rows")]
+#[ok_name("uncaptured_rows")]
+#[ok_uncaptured]
 pub struct Quiet {
     pub level: u32,
 }
@@ -107,22 +109,36 @@ fn a_caller_owned_batch_is_captured_at_the_store() {
     );
 }
 
-/// An excluded ns is the operator's exception: it registers no declaration and
-/// writes no segment, so a chatty table nobody will ever replay costs nothing.
+/// `#[ok_uncaptured]` is the exception, and it is declared on the TYPE: the table
+/// registers nothing — no sidecar, no meta, no directory — and writes no segment, so a
+/// chatty table nobody will ever replay costs nothing. The write itself still lands in
+/// the store; only the log skips it.
 #[test]
-fn a_table_outside_the_switch_writes_no_log() {
+fn an_uncaptured_table_writes_no_log() {
     let root = tempfile::tempdir().expect("root");
+    let kept;
     {
-        let s = store(root.path()).exclude(74);
-        let q: Collection<_, K, Quiet> = Collection::captured(s).expect("assemble");
+        let q: Collection<_, K, Quiet> =
+            Collection::captured(store(root.path())).expect("assemble");
         q.put(&K { id: 1 }, &Quiet { level: 1 }).expect("put");
+        kept = q.get(&K { id: 1 }).expect("get").is_some();
     }
 
+    assert!(kept, "the write still landed in the store");
+    assert!(!<Quiet as Document>::CAPTURED, "the attribute reached the const");
+    assert!(
+        <Row as Document>::CAPTURED,
+        "the trait default keeps every other table in"
+    );
+    assert!(
+        !okm_core::changelog::table_dir(root.path(), QUIET_NS).exists(),
+        "nothing was registered for it, so no directory was made"
+    );
     assert!(
         sealed_segments(root.path(), QUIET_NS)
             .expect("list segments")
             .is_empty(),
-        "the excluded table captured nothing"
+        "the uncaptured table captured nothing"
     );
 }
 

@@ -1401,9 +1401,6 @@ fn corrupt(path: &Path, what: &str) -> Error {
 pub struct ChangelogStore<S> {
     inner: S,
     cfg: ChangelogConfig,
-    /// ns values whose tables are never captured: an application's own
-    /// append-only log, a cache, anything nobody will replay.
-    exclude: Vec<u16>,
     /// header → the declaration it was registered with.
     metas: RefCell<BTreeMap<Vec<u8>, SegmentMeta>>,
     /// header → its writer, opened by the first commit that touches the table.
@@ -1426,7 +1423,6 @@ impl<S> ChangelogStore<S> {
         Self {
             inner,
             cfg,
-            exclude: Vec::new(),
             metas: RefCell::new(BTreeMap::new()),
             tables: RefCell::new(BTreeMap::new()),
             gate: None,
@@ -1572,13 +1568,6 @@ impl<S> ChangelogStore<S> {
         Ok(out)
     }
 
-    /// Leave this ns out of the capture. Opt-OUT, not opt-in: the switch is on for
-    /// the whole store, and the exception list is the operator's (ADR-0056 §2).
-    pub fn exclude(mut self, ns: u16) -> Self {
-        self.exclude.push(ns);
-        self
-    }
-
     /// The log root, so a host can ship it (a backup, a migration). `None` when capture
     /// is [`Location::Off`].
     pub fn dir(&self) -> Option<&Path> {
@@ -1599,14 +1588,15 @@ impl<S> ChangelogStore<S> {
     /// schema the log cannot carry) and remember what a segment is stamped with.
     ///
     /// Idempotent per table; two collections over one store register two headers.
-    /// A registration for an excluded ns is accepted and ignored.
+    /// A table declared `#[ok_uncaptured]` is accepted and ignored: no sidecar, no
+    /// meta, so no writer is ever opened for it and nothing reaches the log.
     pub fn register<K: crate::model::key::KeyEncode, R: crate::model::index::Document<Key = K>>(
         &self,
     ) -> Result<()> {
-        let header = R::NS_PREFIX.to_vec();
-        if self.excluded(&header) {
+        if !R::CAPTURED {
             return Ok(());
         }
+        let header = R::NS_PREFIX.to_vec();
         let Some(root) = self.cfg.root() else {
             return Ok(());
         };
@@ -1641,10 +1631,10 @@ impl<S> ChangelogStore<S> {
         K: crate::model::key::KeyEncode,
         R: crate::model::index::Document<Key = K>,
     {
-        let header = R::NS_PREFIX.to_vec();
-        if self.excluded(&header) {
+        if !R::CAPTURED {
             return Ok(false);
         }
+        let header = R::NS_PREFIX.to_vec();
         self.register::<K, R>()?;
         let Some(root) = self.cfg.root() else {
             return Ok(false);
@@ -1695,9 +1685,6 @@ impl<S> ChangelogStore<S> {
         let headers: Vec<Vec<u8>> = self.metas.borrow().keys().cloned().collect();
         let mut out = Vec::new();
         for header in headers {
-            if self.excluded(&header) {
-                continue;
-            }
             let dir = table_dir(root, &header);
             if let Some(current) = owner::read(&dir).map_err(owner_err)?
                 && !self.holds(&current, &dir)
@@ -1770,15 +1757,6 @@ impl<S> ChangelogStore<S> {
             .borrow()
             .get(header)
             .map(|cell| cell.borrow().status())
-    }
-
-    /// Is this table outside the switch?
-    fn excluded(&self, header: &[u8]) -> bool {
-        let ns = header
-            .get(..2)
-            .and_then(|b| <[u8; 2]>::try_from(b).ok())
-            .map(u16::from_be_bytes);
-        ns.is_some_and(|ns| self.exclude.contains(&ns))
     }
 
     /// The headers this commit writes into: registered, and actually present.

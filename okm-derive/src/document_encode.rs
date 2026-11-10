@@ -1399,6 +1399,14 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> syn::Result<TS2> {
     let decode_b = crate::hyg::ident("b");
     // #[ok_ns(N)] → the document's table ns prefix bytes (big-endian u16,
     // matching the raw `[ns 2B]` header). Absent = default empty.
+    // #[ok_uncaptured] → the table never enters the changelog. Emitted as the negative of
+    // the trait's default, so the constant is the primitive and the attribute is only its
+    // spelling (a hand-written `Document` impl sets the constant directly).
+    let captured_const = if schema.uncaptured {
+        quote! { const CAPTURED: bool = false; }
+    } else {
+        quote! {}
+    };
     // #[ok_name("...")] → the table's NAME: what a table is called outside the
     // store (export columns, the catalog, import). Absent = the trait's "" —
     // unnamed, and an export refuses it instead of spelling the struct name.
@@ -2124,6 +2132,7 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> syn::Result<TS2> {
             #part_const
             #ns_const
             #name_const
+            #captured_const
             const LAYOUT_VERSION: u8 = #ver_lit;
             const PAYLOAD_FIELDS: &'static [(&'static str, usize)] = &[ #((#name_strs, #widths)),* ];
             const FIELDS: &'static [::okm_core::FieldDesc] = #row_desc;

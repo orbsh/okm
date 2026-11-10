@@ -272,6 +272,14 @@ pub trait Document: Sized + Clone {
     fn __okm_embed_keys(&self) -> Vec<Vec<u8>> {
         Vec::new()
     }
+    /// Whether this table enters the changelog (`#[ok_uncaptured]` turns it off).
+    ///
+    /// Capture is whole-store by default, and it has to be: a restore missing one table is a
+    /// service that will not start. The opt-out is therefore a declaration on the
+    /// type — an audit trail, an activity log, a cache, something outside the state a
+    /// restore needs — not an assembly-time list that can drift away from the tables
+    /// it describes (ADR-0056 §2).
+    const CAPTURED: bool = true;
     /// The table's NAME (`#[ok_name("...")]`), beside the ns it belongs to.
     /// The ns is the store's address; the name is the identity a table carries
     /// OUT of it — the export's catalog column and the import-side lookup.

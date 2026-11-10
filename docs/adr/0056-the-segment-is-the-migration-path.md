@@ -36,7 +36,7 @@ Meanwhile three structural facts about the current capture decide what is possib
 
 ### 2. Capture moves to the store boundary, enabled globally
 
-Capture becomes a store decorator (`ChangelogStore`) above `commit_batch`, split per table by the key's 2-byte header, enabled once at startup by configuration, with an exclusion list by ns for tables nobody wants history for (an application's own append-only log tables, caches). Reasons:
+Capture becomes a store decorator (`ChangelogStore`) above `commit_batch`, split per table by the key's 2-byte header, enabled once at startup by configuration, with a per-type opt-out (`#[ok_uncaptured]`) for tables nobody wants history for (an application's own audit trail, an activity log, a cache). Reasons:
 
 - Every write path passes a `Batch` through `commit_batch`, including caller-owned cross-table batches — so the two documented ways to be invisible (an instance assembled without a log; a batch committed directly on the store) disappear, instead of being documented as discipline.
 - `carried` needs no declaration, so a boundary with no schema knowledge can enforce the truth-half rule.
@@ -45,7 +45,7 @@ Capture becomes a store decorator (`ChangelogStore`) above `commit_batch`, split
 Two consequences are part of the decision, not side effects:
 
 - **The sidecar moves out of `with_changelog` and is written unconditionally at assembly** from `CollectionSchema::of::<K, R>()`. A globally captured table whose declaration never registered would have segments no reader can decode.
-- **The exclusion list is by ns**, because a name is not knowable at the boundary. Excluding by table name would require a runtime name↔ns registry, and the store contract deliberately has none.
+- **The opt-out is declared on the type, not in the assembly.** Capture is whole-store by default and has to be: one table missing from the log is a restore that will not start, so the exception must be rare, explicit and visible where the table is defined. A list passed at startup is a second declaration site that nothing checks — it drifts from the code silently until someone restores a backup and finds a table absent. `#[ok_uncaptured]` becomes `const CAPTURED: bool = false` next to `NS_PREFIX` and `TABLE_NAME`, and `register` is the only place that reads it: no sidecar, no meta, so no writer is ever opened for that table. A hand-written `Document` impl sets the constant directly; the attribute is only its spelling. The boundary still splits tables by ns, because bytes are all it has — but that is a different question from where the exception is written down.
 
 ### 3. A baseline exists before the first delta is trusted
 
@@ -144,7 +144,7 @@ Recorded because they were asked and they constrain what lands next:
 ## Consequences
 
 - The log becomes the thing that survives: stores are replaceable, the directory is the history. Export, migration and lake loading all read one format.
-- The hot path is unchanged: one Option check, one memcpy, no fsync. Capture is either on or off for the whole store, and the exclusion list is a config line.
+- The hot path is unchanged: one Option check, one memcpy, no fsync. Capture is either on or off for the whole store, and an exception is an attribute on the table's own type.
 - Boot gains one bounded scan the first time a table is captured, and nothing after that.
 - Two failure windows are now explicit and priced: a crash between commit and append (closed by the reconciliation pass at cutover), and a delete that a row scan cannot repair (closed by shipping the sealed segment that carried it).
 - `okm-core` keeps the bytes, takes the drain (window join and the document decoder) and parts with the file formats; a standalone binary owns Parquet and replay.

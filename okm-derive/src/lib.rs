@@ -97,6 +97,7 @@ pub fn derive_key_encode(input: TokenStream) -> TokenStream {
         ok_reduce,
         ok_offset,
         ok_layout,
+        ok_uncaptured,
         ok_default,
         ok_subscribe,
         ok_event_enum,
