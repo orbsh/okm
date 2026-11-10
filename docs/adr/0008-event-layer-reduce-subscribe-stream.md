@@ -43,8 +43,8 @@ Two consumer classes attach to it, with deliberately different failure semantics
   the stream crate's combinators are the adapter layer between raw events and
   that logic. Delivery is **best-effort with no guarantees** — bounded/unbounded and
   drop/block policy are the subscriber's declaration, not core's promise. The interface is what this face is for: the
-  consumer owns one registration point and the producer never names it. Best-effort
-  is the price of that placement, not its purpose.
+  consumer registers in one place and the producer does not know who is listening.
+  Best-effort is the price of that placement, not its purpose.
 
 The asymmetry is deliberate (documented, not unified): reduce is reversible (unfold); a
 side effect at the write path's edge is at-most-once, with no transaction boundary — there
