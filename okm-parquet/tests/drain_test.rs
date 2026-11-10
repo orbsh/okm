@@ -407,7 +407,11 @@ fn a_documents_open_fields_travel_as_a_variant_column() {
     let batch = reader.next().expect("one batch").expect("batch");
     let schema = batch.schema();
     let last = schema.field(schema.fields().len() - 1);
-    assert_eq!(last.name(), "open", "the variant column comes after the fields");
+    assert_eq!(
+        last.name(),
+        "variant",
+        "the open fields column, named as ADR-0034 names it"
+    );
     assert_eq!(
         last.metadata().get("ARROW:extension:name").map(String::as_str),
         Some("parquet.variant"),
@@ -422,4 +426,46 @@ fn a_documents_open_fields_travel_as_a_variant_column() {
         .expect("binary");
     assert_eq!(column.len(), 2);
     assert_eq!(column.null_count(), 1, "one row has a segment, one does not");
+}
+
+/// An open-fields segment with no row in the window is a removal by another route, and
+/// the sink refuses it for the same reason it refuses a delete: writing the rows and
+/// skipping the segment would drop truth SILENTLY, and there is no row to attach it to.
+#[test]
+fn an_open_segment_with_no_row_is_refused_rather_than_dropped() {
+    let root = tempfile::tempdir().expect("log");
+    let out = tempfile::tempdir().expect("lake");
+    {
+        let c = collection(root.path());
+        c.put(
+            &K1,
+            &R {
+                level: 3,
+                name: "alpha".into(),
+            },
+        )
+        .expect("put");
+        // A key with a segment and no row: `merge` of nothing but open names on a key
+        // that was never put (a row purged in an earlier window looks the same here).
+        let mut open = std::collections::BTreeMap::new();
+        open.insert(
+            "note".to_string(),
+            okm_core::model::obj_dynamic::DynamicValue::Str("orphan".to_string()),
+        );
+        c.merge(&K2, &open).expect("a segment with no row");
+    }
+
+    let err = drain(root.path(), &DrainConfig::new(out.path(), "test"))
+        .expect_err("an orphan segment cannot become a row");
+    let text = err.to_string();
+    assert!(
+        text.contains("open-fields segment") && text.contains("removal"),
+        "the refusal must name what it found and why: {text}"
+    );
+    // Nothing half-committed, as with a delete.
+    let artefacts: Vec<_> = std::fs::read_dir(out.path())
+        .expect("out dir")
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .collect();
+    assert!(artefacts.is_empty(), "nothing written: {artefacts:?}");
 }

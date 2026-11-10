@@ -2886,15 +2886,18 @@ open at the end (retiring the store-scan export, and the S3 sink).
 - [x] **A window carries the open half.** `Window::dynamic` holds every dynamic-segment
       put, decoded against the window's own field-vocabulary labels
       (`changelog::window::decode_dynamic_segment`, shared with `replay`), and
-      `okm-parquet` writes it as one `open` column: Parquet Variant wire bytes with the
+      `okm-parquet` writes it as one `variant` column: Parquet Variant wire bytes with the
       `parquet.variant` extension, null where a row has no segment. Before this the
       window counted those ops (`segment_only`) and wrote nothing, so a window file was
       a row minus part of itself — the same defect replay had, in the other carrier.
       `decode_dynamic_segment` also forced the field-name vocabulary (0x02/0x03) into
       `is_id_face`, which had listed only per-field `Vocab` slots: without those labels
       a segment's frames have no names at all.
-      Verified against a real reader: DuckDB reads the column as `blob`, null for rows
-      without a segment, `note`/`first` visible in the payload.
+      Verified against a real reader: DuckDB reads the column (`variant`, as ADR-0034 names it) as `blob`, null for rows
+      without a segment, `note`/`first` visible in the payload. An `open` segment whose
+      key has no row in the window is REFUSED (a removal seen from the segment's side),
+      because the alternative was writing the rows and dropping that segment in silence
+      — `an_open_segment_with_no_row_is_refused_rather_than_dropped`.
 - [x] **Demote `parquet_io`'s store-scan export** — decided, not retired. It is a
       STATE export: it reads the current rows out of a live store, so a deleted row is
       absent and the file is one snapshot of what the store holds now. The window path

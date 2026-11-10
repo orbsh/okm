@@ -279,15 +279,34 @@ pub fn write_parquet(win: &Window, out: &Path) -> Result<Vec<(String, String, bo
         Some(&|slot, id| win.labels.get(&(slot, id.to_vec())).cloned()),
     )?;
 
-    // The open half: every document's dynamic segment as ONE `variant` column. The
-    // declared fields have columns; the names the declaration does not have carry
-    // none, and a window that wrote only them would hand a reader every row minus
-    // part of itself (ADR-0045 §4 — the segment is truth).
+    // The open half: every document's dynamic segment as ONE `variant` column — the
+    // same name and the same encoding ADR-0034 gives the typed export, because it is
+    // the same column and a reader should not meet two names for it. The declared
+    // fields have columns; the names the declaration does not have carry none, and a
+    // window that wrote only them would hand a reader every row minus part of itself
+    // (ADR-0045 §4 — the segment is truth).
     if !win.dynamic.is_empty() {
         let mut by_key: std::collections::HashMap<&[u8], &okm_dynamic::ValueMap> =
             std::collections::HashMap::with_capacity(win.dynamic.len());
         for (key, map) in &win.dynamic {
             by_key.insert(key.as_slice(), map);
+        }
+        // An open-fields segment whose row is NOT in this window: the row was removed
+        // (or never existed here) and the segment outlived it. Writing the rows and
+        // skipping the segment drops truth silently; attaching it to nothing is not an
+        // option either, so this is the same stop as a delete — a window is a row view
+        // and cannot express a removal (ADR-0056 §5).
+        if let Some((key, _)) = win
+            .dynamic
+            .iter()
+            .find(|(key, _)| !keys.iter().any(|k| k == key))
+        {
+            return Err(DrainError::new(format!(
+                "{}: an open-fields segment for key {key:02X?} with no row in this window \
+                 — the row is gone (a removal) and a window cannot express that; replay it \
+                 into a store, or compact the log first",
+                win.table
+            )));
         }
         let maps: Vec<Option<&okm_dynamic::ValueMap>> = keys
             .iter()
@@ -295,7 +314,7 @@ pub fn write_parquet(win: &Window, out: &Path) -> Result<Vec<(String, String, bo
             .collect();
         // A dynamic-only document (a key with no row) has no row here: this file is a
         // row view, and the key is only in the segment because the row was deleted.
-        let (field, column) = okm_core::bridge::arrow_bridge::variant_column("open", &maps);
+        let (field, column) = okm_core::bridge::arrow_bridge::variant_column("variant", &maps);
         let mut fields: Vec<arrow::datatypes::Field> = batch
             .schema()
             .fields()

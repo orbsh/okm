@@ -69,17 +69,22 @@ and a window is never half-described.
 * **Deletes are refused, not encoded.** The drainer stops on a window holding a
   `DELETE` op: the declaration has no column for a removal, and a tombstone column
   nobody else reads would change every other reader's view. Until compaction lands,
-  a sink that cannot express deletes is safe by construction.
+  a sink that cannot express deletes is safe by construction. The same stop covers a
+  window that holds an `open` segment whose row is absent — a removal seen from the
+  segment's side.
 * **The dynamic segment is the window's `variant` column.** The open half of a
   document — the names the declaration does not have — has no column of its own, so
-  it travels as one **`open`** column, `Binary` carrying the Parquet Variant wire
+  it travels as one **`variant`** column (the name ADR-0034 gives the typed export's
+  column, because it is the same column), `Binary` carrying the Parquet Variant wire
   form (`[metadata len u32][metadata][value]`) with the `ARROW:extension:name =
   parquet.variant` extension, nullable where a row has no segment. That is the
   published encoding, not okm's own: a sink that invented a mapping would split the
   ecosystem. It is one column rather than N, because the set of open names is not
   known at export time and a schema that grows per window is a schema no warehouse
-  can hold. A key whose row is gone carries no row here either — a window is a row
-  view, and the segment alone is not a row.
+  can hold. A key whose row is gone carries no row here — and a window that holds
+  such a segment is REFUSED, not written: the row is a removal by another route, the
+  segment has nothing to attach to, and dropping it in silence is exactly what this
+  contract exists to prevent.
 * **Dense vocabulary.** `Vocab` columns carry labels inline. That is byte-wasteful
   for a few distinct labels repeated across millions of rows, and it is deliberate:
   labels are what a warehouse can join and read without okm.
