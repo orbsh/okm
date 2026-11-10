@@ -265,6 +265,9 @@ pub struct Changelog {
     frames: u64,
     dropped: u64,
     last_error: Option<String>,
+    /// Who hears about a seal, if anyone (ADR-0045 §18). Never called inside a
+    /// commit: the hook runs after the rename, when the file is complete.
+    sink: crate::sink::SharedSink,
 }
 
 impl Changelog {
@@ -296,6 +299,7 @@ impl Changelog {
             frames: 0,
             dropped: 0,
             last_error: None,
+            sink: None,
         })
     }
 
@@ -379,6 +383,25 @@ impl Changelog {
         self.maybe_rotate()
     }
 
+    /// Tell this writer where sealed segments go — a second copy made from the
+    /// finished file, never from a commit (ADR-0045 §18).
+    pub fn attach_sink(&mut self, sink: crate::sink::SharedSink) {
+        self.sink = sink;
+    }
+
+    /// Announce a seal. Called after the rename, so an implementation copies a file
+    /// nothing is writing to; a panic in the sink is not the writer's business, and
+    /// neither is its latency — the hook must not be able to fail a commit.
+    fn notify_sealed(&self, path: &Path) {
+        if let Some(sink) = &self.sink {
+            let name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            sink.sealed(&self.header, &name, path);
+        }
+    }
+
     /// Seal the current segment now — the caller's rotation, for a host that
     /// wants a window boundary at a moment of its choosing.
     pub fn seal(&mut self) -> Result<()> {
@@ -402,10 +425,12 @@ impl Changelog {
         // Stamp the file before it gets its name: the checksum is one extra READ
         // of the segment, at seal, and never on the write path (ADR-0056 §7).
         self.stamp_footer()?;
-        std::fs::rename(self.partial_path(), self.sealed_path())
+        let sealed = self.sealed_path();
+        std::fs::rename(self.partial_path(), &sealed)
             .map_err(|e| io_err(&self.partial_path(), e))?;
         self.written = 0;
         self.frames = 0;
+        self.notify_sealed(&sealed);
         Ok(())
     }
 
@@ -538,7 +563,10 @@ impl Drop for Changelog {
             // Stamp before the rename: an unstamped file under a `.segment` name
             // would be a sealed segment every reader refuses.
             let _ = self.stamp_footer();
-            let _ = std::fs::rename(self.partial_path(), self.sealed_path());
+            let sealed = self.sealed_path();
+            if std::fs::rename(self.partial_path(), &sealed).is_ok() {
+                self.notify_sealed(&sealed);
+            }
         }
     }
 }
@@ -1016,6 +1044,8 @@ pub struct ChangelogStore<S> {
     metas: RefCell<BTreeMap<Vec<u8>, SegmentMeta>>,
     /// header → its writer, opened by the first commit that touches the table.
     tables: RefCell<BTreeMap<Vec<u8>, RefCell<Changelog>>>,
+    /// Where sealed segments go, if the host asked for a copy (ADR-0045 §18).
+    sink: crate::sink::SharedSink,
 }
 
 impl<S> ChangelogStore<S> {
@@ -1028,7 +1058,18 @@ impl<S> ChangelogStore<S> {
             exclude: Vec::new(),
             metas: RefCell::new(BTreeMap::new()),
             tables: RefCell::new(BTreeMap::new()),
+            sink: None,
         }
+    }
+
+    /// Hand every sealed segment to `sink` — after the rename, outside the commit.
+    ///
+    /// This is the whole of the writer's S3 story: it does not know what a sink is,
+    /// so a copy to object storage, a local `rsync`, and a no-op are the same thing
+    /// to it.
+    pub fn with_sink(mut self, sink: std::sync::Arc<dyn crate::sink::SealedSegmentSink>) -> Self {
+        self.sink = Some(sink);
+        self
     }
 
     /// Leave this ns out of the capture. Opt-OUT, not opt-in: the switch is on for
@@ -1128,6 +1169,7 @@ impl<S> ChangelogStore<S> {
 
         let mut log =
             Changelog::open(self.cfg.clone(), &header, SegmentMeta::of::<R>(KIND_BASELINE))?;
+        log.attach_sink(self.sink.clone());
         for chunk in ops.chunks(BASELINE_CHUNK) {
             if log.stage(chunk) > 0 {
                 log.commit_staged()?;
@@ -1199,8 +1241,9 @@ impl<S> ChangelogStore<S> {
         if !self.tables.borrow().contains_key(header) {
             let meta = self.metas.borrow().get(header).cloned();
             if let Some(meta) = meta
-                && let Ok(log) = Changelog::open(self.cfg.clone(), header, meta)
+                && let Ok(mut log) = Changelog::open(self.cfg.clone(), header, meta)
             {
+                log.attach_sink(self.sink.clone());
                 self.tables
                     .borrow_mut()
                     .insert(header.to_vec(), RefCell::new(log));
