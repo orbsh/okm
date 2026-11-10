@@ -1149,32 +1149,23 @@ Beside reduce, the write path has an imperative half — `Collection::upsert_wit
 
 Both share one write path (put), so index maintenance, reduce folding and event emission all fire as usual, with no special case. They also share one correctness boundary: **single writer**. OKM is an in-process library with one holder per collection and verbs taking `&self`, so the type carries the boundary: the epoch counter is the only mutable state a write touches, it is a `Cell`, and the collection is therefore `!Sync`, so a second holder cannot step in between get → f → put. No CAS is needed, which is the same property that makes reduce exactly-once. A multi-writer future (optimistic CAS) is a different mechanism, outside this model. The unfold compensation on an overwrite happens inside put; `upsert_with` keeps no separate books (see the internals' reduce mechanism).
 
-## Write-path events: two mechanisms (reduce, subscribe)
+## Write-path events: reduce, subscribe, and the change log
 
-A reduce answers "what does the accumulated state look like"; another class of consumer wants the write itself as an event — side effects, search-index sync, downstream notification. The line between the two mechanisms is not "who runs first" but **where the consumer's code lives**: a reduce puts the consumer inside the write, where fold is part of the write; subscribe puts the consumer outside it, with no handler at the annotation and only a send. The test is still failure semantics: what happens if this consumer misses one event? A wrong ledger = reduce (inside the write, exactly-once by construction); reconcilable afterwards = subscribe (after the write, best-effort); does not matter = your own code (a side effect at the write path's edge — okm offers no mechanism and no declaration surface). **There are only two mechanisms**; the third kind does not get a name, because there is nothing to declare or assemble.
+A committed write can be consumed in three ways, and the choice is not "who runs first" — it is **where the consumer's code lives**.
 
-**subscribe is about decoupling, not delivery.** Without it, "when this data changes, do something" has to be written at every place that changes the data — copied once per call site, silently missing wherever someone forgets — or the reaction has to read the files and watch for changes itself. With it, the reaction is registered once, and the code that writes the data does not know who is listening. Delivery and latency do differ (best-effort vs at-most-once, microseconds vs milliseconds), but that is rarely the point: nobody notices in normal use, and a lost event can be reconciled. That is the observer pattern: an interface to register at. The change log has no such thing — files on disk and a reading convention (ADR-0047).
+| | `reduce` | `subscribe` | change log |
+|---|---|---|---|
+| the consumer's code | inside the write; `fold` is part of it | same process, registered at one point | another process; a reader loop |
+| what arrives | one event per row, the typed document | `op`, `epoch`, the key, the decoded document | bytes: `op`, key, value |
+| why it exists | cross-row aggregation | decoupling — the reaction is written once | replay, migration, another format |
+| a lost event costs | a wrong ledger (corruption) | one resync | one reconciliation scan |
+| cost on the write | one read-modify-write | one atomic load, zero with no sink | one memcpy, plus files and retention |
 
-- **reduce** (`#[ok_reduce]`): runs inside the write path, exactly-once by construction — fold IS part of the write. A reduce never consumes a subscription.
-- **A side effect at the write path's edge** (not a mechanism): ordinary application code, with no okm mechanism and no declaration surface. It runs synchronously in the write sequence, but **at most once**, with no transaction boundary and no undo — "already notified" and "already wrote the other table" cannot be taken back, and a failure neither rolls back the write nor earns a retry; nothing that must happen exactly once should hang off it. Its asymmetry with reduce (reversible versus at-most-once, over the same event source) is deliberate (ADR-0008 records it), and it should not be turned into a second declaration surface.
+The first two are the mechanisms (ADR-0008); the log is a directory of files plus a reading convention, not a third mechanism (ADR-0045 §10). The line an application writes itself right after `put` is the fourth option and needs no surface at all — it is covered at the end of this section.
 
-This is not a declaration but ordinary code at the write path's edge — it runs once the row and its derived entries have landed:
+**`reduce`** (`#[ok_reduce]`) runs inside the write path: `fold` IS the write's own bookkeeping, so the accumulator answers "what does the accumulated state look like", grouped. Its reversibility contract (`unfold(fold(a,x)) = a`) only means anything under exactly-once, which is why a reduce never consumes a subscription.
 
-```rust
-// The caller's own put wrapper: the row write stays exactly-once, the
-// notification goes out beside it, best-effort, never retried.
-fn save_config(store: &mut impl VirtualStorage, cfg: &Config) -> Result<()> {
-    let t = Collection::new(store.shared_handle());
-    t.put(&cfg.key(), cfg)?;                                // the write: exactly once
-    let _ = METRICS_GAUGE.set(cfg.name(), cfg.ttl_secs());  // side effect: at most once
-    let _ = notifier.send(cfg.name());                      // side effect: fire and forget
-    Ok(())
-}
-```
-
-The line between a side effect and a subscriber: the former runs **inside the caller's write sequence** (its latency counts against the write, its panic propagates); the latter runs **after the write returns**. If a side effect must observe every write under any load, it has to be a sink consumer with a durable supply, not a few lines beside put.
-
-- **subscribe** (`#[ok_subscribe]`): an observer interface, best-effort by its placement. The annotation declares "writes of this row type enter the subscription"; there is no handler at the annotation — the derive only emits one send, and the subscriber registers a sink at assembly time:
+**`subscribe`** (`#[ok_subscribe]`) is about decoupling, not delivery. Without this interface, "when this data changes, do something" is copied into every place that changes the data — one copy per call site, silently missing wherever someone forgets — or the reaction becomes a reader of the change log: open the segments, decode them against a sidecar, keep a watermark, and only then react. The declaration names the topic, the consumer registers one sink, and the reaction is written once; the code that writes the data does not know who is listening. That is the observer pattern, and the name records it: the mechanism was renamed from a channel to a subscription because it is an interface to register at, not a transport. Delivery and latency do differ from the log (best-effort vs at-most-once, microseconds vs milliseconds), but that is rarely the point: nobody notices in normal use, and a lost event can be reconciled.
 
 ```rust
 // Declaration: bare — this row type's write events enter the subscription;
@@ -1201,11 +1192,30 @@ What the consumer receives: `op` (Put/Delete), the row's `epoch` (the emitting c
 
 Which writes announce: `put`, `upsert_with`, `merge` and `replace` announce the row they leave (`Put`), and `purge` — or a `replace` whose map names no declared field — announces the row it takes (`Delete`). Silent by construction: a `merge` / `replace` that only touches the dynamic segment (there is no row for the event to carry), and every batch writer (`save_with_prev_into` / `commit_batch`) — a batch owns its own events (ADR-0031 §5), and its durable face is the change log (ADR-0047).
 
-The event stream has two more properties independent of the consumer class: events carry a monotonically increasing **write-batch epoch** (the emitting table's write counter — same-table events therefore carry an exact batch boundary, and a consumer combinator can fold exactly to the boundary, glitch-free rather than by a debounce heuristic); and the stream only means anything in-process — it is not persisted, it resets on restart, and it offers no cross-table order (independent puts have no atomic "both updated" instant, so a multi-table fan-in is eventually consistent by construction).
+The stream has two properties independent of the consumer: events carry a monotonically increasing **write-batch epoch** (same-table events therefore carry an exact batch boundary, and a combinator can fold exactly to it, glitch-free rather than by a debounce heuristic), and it only means anything in-process — it is not persisted, it resets on restart, and it offers no cross-table order (independent puts have no atomic "both updated" instant, so a multi-table fan-in is eventually consistent by construction).
 
-Three disciplines of use:
+**The change log** (ADR-0045) is the opposite shape: files under one directory, appended only after the commit returned `Ok`, read by another process — `okm-drain` for a lake, a replay tool for a migration. It has no registration point: a consumer there owns a reader loop, and what it gets is bytes (`op`, key, value), decoded against the schema sidecar beside the segments. Choose it when the consumer lives in another process, or when the record must survive a restart and be replayed; it is also where a batch's writes are visible, since a batch announces nothing in-process (ADR-0047).
 
-- **A side effect's failure does not roll back the write.** It is an at-most-once effect — a failure is neither retried nor undone, and the write path does not pay for it; conversely, logic whose failure needs compensation should not be written as a side effect beside the write.
+**The fourth option** is the code an application writes itself, right after the write returns — no mechanism, no declaration surface. It runs inside the caller's write sequence, at most once, with no transaction boundary and no undo: "already notified" and "already wrote the other table" cannot be taken back, and a failure neither rolls back the write nor earns a retry. Nothing that must happen exactly once should hang off it.
+
+```rust
+// The caller's own put wrapper: the row write stays exactly-once, the
+// notification goes out beside it, best-effort, never retried.
+fn save_config(store: &mut impl VirtualStorage, cfg: &Config) -> Result<()> {
+    let t = Collection::new(store.shared_handle());
+    t.put(&cfg.key(), cfg)?;                                // the write: exactly once
+    let _ = METRICS_GAUGE.set(cfg.name(), cfg.ttl_secs());  // side effect: at most once
+    let _ = notifier.send(cfg.name());                      // side effect: fire and forget
+    Ok(())
+}
+```
+
+The line between this and a subscriber: the former runs **inside the caller's write sequence** (its latency counts against the write, its panic propagates); the latter runs **after the write returns**. If it must observe every write under any load, it has to be a sink consumer with a durable supply, not a few lines beside `put`.
+
+**Choosing** is two questions: does the consumer live in the same process, and does it need the decoded document? Yes to both — subscribe. Otherwise — the change log. If the reaction must be exact, neither is right: it belongs inside the write (reduce).
+
+Two rules of use apply, and both are about subscribe:
+
 - **Correctness never rides subscribe.** A full queue drops, and a missing sink drops silently; anything that must happen exactly once (a reduce, say) belongs inside the write. Subscribe's place is the consumer that tolerates loss and can reconcile afterwards.
 - **The purity constraint applies to the event payload too**: the row snapshot travels as it is; deriving extra context at consumption time is re-reading a store the event no longer promises to describe.
 
