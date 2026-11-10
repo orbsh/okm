@@ -14,6 +14,15 @@
 //! The Redis arm reads `REDIS_URL` (default `redis://127.0.0.1:6379`) and skips itself
 //! when nothing answers. The Parquet arm is a file, not a store: it has no point get and
 //! no secondary index, and the table says so where the cells would be.
+//!
+//! **Why this lives in `okm-core` while the format code does not.** Arrow and Parquet
+//! are dev-dependencies here — for this comparison only — because the subject of the
+//! measurement is the STORE and Parquet is the yardstick it is held against. The
+//! invariant is core's library tree: `cargo tree -p okm-core --no-dev` has no Arrow and
+//! no Parquet in it, and a crate that depends on `okm-core` never compiles either. What
+//! does move out is every writer (ADR-0007/0034's typed bridge, `parquet_io`, the
+//! Parquet and Delta files themselves): a store does not need a columnar writer to be a
+//! store.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
