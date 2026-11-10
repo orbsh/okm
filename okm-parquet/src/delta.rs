@@ -237,7 +237,11 @@ fn delta_type(field: &ArrowField) -> Option<String> {
         DataType::Float32 => "float".to_string(),
         DataType::Float64 => "double".to_string(),
         DataType::Utf8 | DataType::LargeUtf8 => "string".to_string(),
-        DataType::Binary | DataType::LargeBinary => "binary".to_string(),
+        // A UUID key is `FixedSizeBinary(16)`: one Delta type, `binary`,
+        // covers every byte string — the width is the writer's business.
+        DataType::Binary | DataType::LargeBinary | DataType::FixedSizeBinary(_) => {
+            "binary".to_string()
+        }
         DataType::Date32 => "date".to_string(),
         DataType::Timestamp(arrow::datatypes::TimeUnit::Microsecond, Some(tz))
             if tz.as_ref() == "UTC" =>
