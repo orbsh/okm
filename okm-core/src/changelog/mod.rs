@@ -805,19 +805,25 @@ fn owner_err(what: String) -> Error {
     Error::Changelog { what }
 }
 
-/// A table's log as the policy sees it: how many bytes are not yet covered by a baseline,
-/// and how old the covering point is.
-struct LogShape {
-    uncovered: u64,
-    /// Age of the newest baseline; with none, the age of the oldest segment — a table that
-    /// has been writing for a day without ever being compacted is exactly the case the
-    /// policy exists for.
-    age_secs: Option<u64>,
+/// A table's log as a policy (or an operator) sees it. Sizes come from the files, so the
+/// answer survives a restart and needs no bookkeeping in the writer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LogShape {
+    pub segments: usize,
+    /// Every segment, baselines included.
+    pub bytes: u64,
+    /// The newest baseline, if the table has ever been compacted (or captured from a store
+    /// that had one).
+    pub baseline: Option<String>,
+    /// How old that baseline is. With none, how old the OLDEST segment is — a table that has
+    /// been writing for a day without a checkpoint is exactly the case the policy is for.
+    pub baseline_age_secs: Option<u64>,
+    /// Bytes the newest baseline does not cover: what a replay since the baseline would read.
+    pub uncovered: u64,
 }
 
-/// Read a table's directory. Sizes come from the files, so the answer survives restarts
-/// and needs no bookkeeping in the writer.
-fn log_shape(dir: &Path) -> Result<LogShape> {
+/// Read a table's directory.
+pub fn log_shape(dir: &Path) -> Result<LogShape> {
     let mut newest_baseline: Option<String> = None;
     let mut newest_baseline_at: Option<std::time::SystemTime> = None;
     let mut oldest_at: Option<std::time::SystemTime> = None;
@@ -861,8 +867,11 @@ fn log_shape(dir: &Path) -> Result<LogShape> {
             .unwrap_or(0)
     });
     Ok(LogShape {
+        segments: files.len(),
+        bytes: files.iter().map(|(_, len, _)| *len).sum(),
+        baseline: newest_baseline,
+        baseline_age_secs: age_secs,
         uncovered,
-        age_secs,
     })
 }
 
@@ -930,6 +939,92 @@ pub fn apply_log<S: crate::VirtualStorage>(
         applied.last = Some(name);
     }
     Ok(applied)
+}
+
+/// One captured operation: the key, and the payload — `None` is a delete.
+pub type LoggedOp = (Vec<u8>, Option<Vec<u8>>);
+
+/// The ops a baseline for `header` must contain: that table's truth half, through the very
+/// filter capture applies (derived faces are left out — a replay above the baseline
+/// rebuilds them).
+///
+/// Public because compaction needs the STORE, not the log: a log directory alone holds no
+/// state to snapshot, which is why a maintenance tool takes the data directory as its
+/// second argument.
+pub fn baseline_ops<S: VirtualStorage>(
+    store: &S,
+    header: &[u8],
+) -> Result<Vec<LoggedOp>> {
+    let slots = SlotMap::standard();
+    let mut ops = Vec::new();
+    for (suffix, value) in crate::engine::storage::scan_suffix_kv(store, header)? {
+        let mut key = header.to_vec();
+        key.extend_from_slice(&suffix);
+        if carried(&slots, header, &key) {
+            ops.push((key, Some(value)));
+        }
+    }
+    Ok(ops)
+}
+
+/// Write one baseline segment for `header` from ops already in hand, and say which files it
+/// became — `(first, last)` by name. A baseline is written in chunks, so it can be several
+/// files, and "covered" means everything numbered below the FIRST of them.
+pub fn write_baseline(
+    cfg: &ChangelogConfig,
+    header: &[u8],
+    meta: SegmentMeta,
+    ops: &[LoggedOp],
+) -> Result<Option<(String, String)>> {
+    let Some(root) = cfg.root() else {
+        return Ok(None);
+    };
+    let existed: std::collections::BTreeSet<String> = baseline_segments(root, header)?
+        .into_iter()
+        .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+        .collect();
+    let mut log = Changelog::open(cfg.clone(), header, meta)?;
+    for chunk in ops.chunks(BASELINE_CHUNK) {
+        if log.stage(chunk) > 0 {
+            log.commit_staged()?;
+        }
+    }
+    // `seal_last` and not `seal`: a one-shot writer leaves exactly one file, and the next
+    // `open` takes the same number again — no hole.
+    log.seal_last()?;
+    let fresh: Vec<String> = baseline_segments(root, header)?
+        .into_iter()
+        .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+        .filter(|name| !existed.contains(name))
+        .collect();
+    Ok(match (fresh.first(), fresh.last()) {
+        (Some(first), Some(last)) => Some((first.clone(), last.clone())),
+        _ => None,
+    })
+}
+
+/// Delete every segment numbered below `baseline`, keeping the newest `keep` of them.
+/// Returns how many went and how many bytes they were.
+pub fn prune_below(root: &Path, header: &[u8], baseline: &str, keep: usize) -> Result<(usize, u64)> {
+    let mut covered = all_segments(root, header)?;
+    covered.retain(|path| {
+        path.file_name()
+            .map(|n| n.to_string_lossy().as_ref() < baseline)
+            .unwrap_or(false)
+    });
+    let cut = covered.len().saturating_sub(keep);
+    let mut removed = 0;
+    let mut freed = 0;
+    for path in covered.into_iter().take(cut) {
+        if let Ok(stat) = std::fs::metadata(&path) {
+            freed += stat.len();
+        }
+        std::fs::remove_file(&path).map_err(|e| Error::Changelog {
+            what: format!("{}: {e}", path.display()),
+        })?;
+        removed += 1;
+    }
+    Ok((removed, freed))
 }
 
 /// Every segment of one table — baselines included — in name order.
@@ -1561,63 +1656,22 @@ impl<S> ChangelogStore<S> {
         Ok(self.write_baseline(&header, meta)?.is_some())
     }
 
-    /// Write one baseline for `header`: close the writer, scan the truth half, seal.
+    /// Write one baseline for `header`: close the writer first, then snapshot.
     ///
-    /// The filter is the same one capture applies, so the baseline says exactly what a
-    /// replay would have rebuilt — derived faces are left out because replaying above it
-    /// recreates them.
+    /// Closing is the correctness argument, not a tidy-up: the baseline must outrank every
+    /// segment already written for the table, and a writer left open would keep appending
+    /// to a segment numbered below it, which a replay skips.
     fn write_baseline(&self, header: &[u8], meta: SegmentMeta) -> Result<Option<(String, String)>>
     where
         S: VirtualStorage,
     {
-        let Some(root) = self.cfg.root() else {
-            return Ok(None);
-        };
-        // A baseline is written in chunks, so it can be several files. What matters is
-        // where it STARTS: every segment numbered below the first of them is covered.
-        let existed: std::collections::BTreeSet<String> = baseline_segments(root, header)?
-            .into_iter()
-            .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
-            .collect();
-        // Close this table's writer before the scan: the baseline must outrank every
-        // segment already written for the table (a writer left open would keep appending
-        // below the baseline, which a replay skips).
         if let Some(cell) = self.tables.borrow_mut().remove(header) {
             let mut log = cell.into_inner();
             log.seal_last()?;
         }
-
-        let slots = SlotMap::standard();
-        let mut ops: Vec<(Vec<u8>, Option<Vec<u8>>)> = Vec::new();
-        for (suffix, value) in crate::engine::storage::scan_suffix_kv(&self.inner, header)? {
-            let mut key = header.to_vec();
-            key.extend_from_slice(&suffix);
-            if carried(&slots, header, &key) {
-                ops.push((key, Some(value)));
-            }
-        }
-
-        let mut log = Changelog::open(self.cfg.clone(), header, meta)?;
-        if let Some(gate) = &self.gate {
-            log.attach_gate(std::sync::Arc::clone(gate));
-        }
-        for chunk in ops.chunks(BASELINE_CHUNK) {
-            if log.stage(chunk) > 0 {
-                log.commit_staged()?;
-            }
-        }
-        // `seal_last` and not `seal`: a one-shot writer leaves exactly one file,
-        // and the next `open` takes the same number again — no hole.
-        log.seal_last()?;
-        let fresh: Vec<String> = baseline_segments(root, header)?
-            .into_iter()
-            .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
-            .filter(|name| !existed.contains(name))
-            .collect();
-        Ok(match (fresh.first(), fresh.last()) {
-            (Some(first), Some(last)) => Some((first.clone(), last.clone())),
-            _ => None,
-        })
+        let ops = baseline_ops(&self.inner, header)?;
+        let cfg = self.cfg.clone();
+        write_baseline(&cfg, header, meta, &ops)
     }
 
     /// Compact the log: one new baseline per table, then delete what it covers.
@@ -1690,28 +1744,12 @@ impl<S> ChangelogStore<S> {
                 freed: 0,
             });
         };
-        let mut covered = all_segments(root, header)?;
-        covered.retain(|path| {
-            path.file_name()
-                .map(|n| n.to_string_lossy().as_ref() < first.as_str())
-                .unwrap_or(false)
-        });
-        // The newest `keep` below the baseline survive; everything older is covered.
-        let cut = covered.len().saturating_sub(keep);
-        let mut compacted = Compacted {
+        let (removed, freed) = prune_below(root, header, &first, keep)?;
+        let compacted = Compacted {
             baseline: Some(last),
-            removed: 0,
-            freed: 0,
+            removed,
+            freed,
         };
-        for path in covered.into_iter().take(cut) {
-            if let Ok(stat) = std::fs::metadata(&path) {
-                compacted.freed += stat.len();
-            }
-            std::fs::remove_file(&path).map_err(|e| Error::Changelog {
-                what: format!("{}: {e}", path.display()),
-            })?;
-            compacted.removed += 1;
-        }
         Ok(compacted)
     }
 
@@ -1815,7 +1853,9 @@ impl<S> ChangelogStore<S> {
             return;
         };
         if shape.uncovered > policy.after_bytes
-            || shape.age_secs.is_some_and(|age| age >= policy.after_secs)
+            || shape
+                .baseline_age_secs
+                .is_some_and(|age| age >= policy.after_secs)
         {
             let _ = self.compact_one(header, policy.keep);
         }

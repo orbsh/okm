@@ -8,6 +8,12 @@
 //! Nothing here knows the application: `--root` is the directory a capturing store
 //! wrote (`ChangelogStore::dir`), `--out` is where windows land, and `--consumer`
 //! names the reader so two readers keep two positions (ADR-0056 §8).
+//!
+//! Three maintenance verbs read the same directory and need no types either: `status`
+//! reports what the log holds and who holds it, `compact` checkpoints it, and `replay`
+//! writes it into a store built by this build. `compact` is the one verb that needs a
+//! second argument — the STORE — because a baseline is a snapshot of state, and state
+//! lives in the store, not in the log.
 
 use okm_core::SharedVirtualStorage;
 use okm_core::changelog::replay::{TableRun, replay_and_reconcile, replay_table};
@@ -32,6 +38,14 @@ fn run() -> Result<i32, String> {
     if args.first().is_some_and(|a| a == "replay") {
         args.remove(0);
         return replay(&args);
+    }
+    if args.first().is_some_and(|a| a == "status") {
+        args.remove(0);
+        return status(&args);
+    }
+    if args.first().is_some_and(|a| a == "compact") {
+        args.remove(0);
+        return compact(&args);
     }
     let mut root: Option<PathBuf> = None;
     let mut out: Option<PathBuf> = None;
@@ -93,6 +107,239 @@ fn run() -> Result<i32, String> {
         report.tables, report.segments, report.rows, report.open_fields
     );
     Ok(0)
+}
+
+/// `status --root <log dir> [--table <hex header>]`
+///
+/// What a log holds and who holds it, in the terms that decide anything: the segments,
+/// the bytes the newest baseline does not cover, how old that covering point is, and the
+/// claim (ADR-0056 §6). Read-only; it opens nothing and writes nothing.
+fn status(args: &[String]) -> Result<i32, String> {
+    let mut root: Option<PathBuf> = None;
+    let mut table: Option<String> = None;
+    let mut after_bytes = okm_core::changelog::CompactPolicy::default().after_bytes;
+    let mut after_secs = okm_core::changelog::CompactPolicy::default().after_secs;
+
+    let mut it = args.iter();
+    while let Some(arg) = it.next() {
+        let mut value = || it.next().cloned().ok_or_else(|| format!("{arg} needs a value"));
+        match arg.as_str() {
+            "--root" | "--log" => root = Some(PathBuf::from(value()?)),
+            "--table" => table = Some(value()?),
+            "--after-bytes" => {
+                after_bytes = value()?
+                    .parse()
+                    .map_err(|_| "--after-bytes takes a number".to_string())?
+            }
+            "--after-secs" => {
+                after_secs = value()?
+                    .parse()
+                    .map_err(|_| "--after-secs takes a number".to_string())?
+            }
+            "-h" | "--help" => {
+                println!("okm-parquet status --root <log dir> [--table <hex header>] [--after-bytes N] [--after-secs N]");
+                return Ok(0);
+            }
+            other => return Err(format!("unknown argument `{other}` (try --help)")),
+        }
+    }
+
+    let root = root.ok_or("--root is required (the capturing store's log directory)")?;
+    for dir in selected_dirs(&root, table.as_deref())? {
+        let header = okm_core::changelog::window::header_of(&dir).map_err(|e| e.to_string())?;
+        print!("{} {}", hex_of(&header), dir.display());
+        let shape = okm_core::changelog::log_shape(&dir).map_err(|e| e.to_string())?;
+        println!();
+        println!(
+            "  segments {}, {}, baseline {}, uncovered {}, covering point {}",
+            shape.segments,
+            human(shape.bytes),
+            shape.baseline.as_deref().unwrap_or("none"),
+            human(shape.uncovered),
+            shape
+                .baseline_age_secs
+                .map(|age| format!("{age} s old"))
+                .unwrap_or_else(|| "nothing to cover yet".to_string()),
+        );
+        match okm_core::changelog::owner::read(&dir).map_err(|e| e.to_string())? {
+            Some(claim) => println!(
+                "  claim: {:?} by {} at epoch {} (store {}){}",
+                claim.state,
+                claim.holder,
+                claim.epoch,
+                claim.data,
+                claim
+                    .position
+                    .map(|p| format!(", handed over at {p}"))
+                    .unwrap_or_default()
+            ),
+            None => println!("  claim: none (nobody has claimed this log)"),
+        }
+        let due = shape.uncovered > after_bytes
+            || shape
+                .baseline_age_secs
+                .is_some_and(|age| age >= after_secs);
+        println!(
+            "  policy {}/{} s: {}\n",
+            human(after_bytes),
+            after_secs,
+            if due { "DUE" } else { "idle" }
+        );
+    }
+    Ok(0)
+}
+
+/// `compact --root <log dir> --store <data dir> [--keep N] [--table <hex>] [--force]`
+///
+/// Write one baseline per table from the STORE's state and delete what it covers. Refuses
+/// while a fresh claim says someone is writing: two builders must never compact the same
+/// log, and a baseline taken from a store that keeps changing would miss rows.
+fn compact(args: &[String]) -> Result<i32, String> {
+    let mut root: Option<PathBuf> = None;
+    let mut store_dir: Option<PathBuf> = None;
+    let mut table: Option<String> = None;
+    let mut keep = 0usize;
+    let mut force = false;
+
+    let mut it = args.iter();
+    while let Some(arg) = it.next() {
+        let mut value = || it.next().cloned().ok_or_else(|| format!("{arg} needs a value"));
+        match arg.as_str() {
+            "--root" | "--log" => root = Some(PathBuf::from(value()?)),
+            "--store" | "--data" => store_dir = Some(PathBuf::from(value()?)),
+            "--table" => table = Some(value()?),
+            "--keep" => {
+                keep = value()?
+                    .parse()
+                    .map_err(|_| "--keep takes a number".to_string())?
+            }
+            "--force" => force = true,
+            "-h" | "--help" => {
+                println!(
+                    "okm-parquet compact --root <log dir> --store <data dir> [--keep N] \
+                     [--table <hex header>] [--force]"
+                );
+                return Ok(0);
+            }
+            other => return Err(format!("unknown argument `{other}` (try --help)")),
+        }
+    }
+
+    let root = root.ok_or("--root is required (the capturing store's log directory)")?;
+    let store_dir =
+        store_dir.ok_or("--store is required (the data directory the log's store lives in)")?;
+    let store = open_store(&store_dir)?;
+    let cfg = okm_core::changelog::ChangelogConfig::new(&root);
+
+    for dir in selected_dirs(&root, table.as_deref())? {
+        let header = okm_core::changelog::window::header_of(&dir).map_err(|e| e.to_string())?;
+        if !force {
+            let fresh = std::fs::metadata(okm_core::changelog::owner::path(&dir))
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|at| at.elapsed().ok())
+                .is_some_and(|age| age.as_secs() < 30);
+            if let Some(claim) = okm_core::changelog::owner::read(&dir).map_err(|e| e.to_string())?
+                && claim.state == okm_core::changelog::owner::State::Writing
+                && fresh
+            {
+                return Err(format!(
+                    "{}: `{}` is writing this log right now — stop the application, or \
+                     pass --force if you know it is gone",
+                    dir.display(),
+                    claim.holder
+                ));
+            }
+        }
+        // The baseline's own declaration comes from a segment already there: same table,
+        // same layout, same fingerprint, other kind.
+        let Some(meta) = newest_segment(&dir)? else {
+            println!("{}: no segments, nothing to compact", dir.display());
+            continue;
+        };
+        let ops = okm_core::changelog::baseline_ops(&store, &header).map_err(|e| e.to_string())?;
+        let Some((first, last)) = okm_core::changelog::write_baseline(
+            &cfg,
+            &header,
+            meta.with_kind(okm_core::changelog::KIND_BASELINE),
+            &ops,
+        )
+        .map_err(|e| e.to_string())?
+        else {
+            println!("{}: no baseline was written", dir.display());
+            continue;
+        };
+        let (removed, freed) =
+            okm_core::changelog::prune_below(&root, &header, &first, keep)
+                .map_err(|e| e.to_string())?;
+        println!(
+            "{} {:?}: baseline {last}, removed {removed} segments, freed {}",
+            hex_of(&header),
+            dir.file_name().unwrap_or_default(),
+            human(freed)
+        );
+    }
+    Ok(0)
+}
+
+/// The table directories a verb works on, in name order.
+fn selected_dirs(
+    root: &std::path::Path,
+    table: Option<&str>,
+) -> Result<Vec<PathBuf>, String> {
+    match table {
+        Some(header) => Ok(vec![okm_core::changelog::window::dir_of(
+            root,
+            &decode_hex(header)?,
+        )]),
+        None => {
+            let mut dirs = okm_core::changelog::window::table_dirs(root).map_err(|e| e.to_string())?;
+            dirs.sort();
+            Ok(dirs)
+        }
+    }
+}
+
+/// The newest sealed segment in a table directory — the one whose declaration a baseline
+/// inherits.
+fn newest_segment(
+    dir: &std::path::Path,
+) -> Result<Option<okm_core::changelog::SegmentMeta>, String> {
+    let mut best: Option<(String, PathBuf)> = None;
+    for entry in std::fs::read_dir(dir).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !name.ends_with(".segment") {
+            continue;
+        }
+        if best.as_ref().is_none_or(|(prev, _)| name.as_str() > prev.as_str()) {
+            best = Some((name, entry.path()));
+        }
+    }
+    let Some((_, path)) = best else {
+        return Ok(None);
+    };
+    let info = okm_core::changelog::segment_info(&path).map_err(|e| e.to_string())?;
+    Ok(Some(info.meta))
+}
+
+fn hex_of(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn human(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit + 1 < UNITS.len() {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} B")
+    } else {
+        format!("{value:.1} {}", UNITS[unit])
+    }
 }
 
 fn decode_hex(hex: &str) -> Result<Vec<u8>, String> {

@@ -3003,6 +3003,12 @@ outright — its entry says why).
       lazily, because core has no clock and no scheduler. Not a separate process: a scanner
       beside a live writer can miss a row that landed below the new baseline, and nothing
       would notice — a second process may only compact what nothing writes to.
+- [x] **The maintenance verbs, in `okm-parquet`**: `status` (read-only: segments, bytes,
+      baseline and the age of the covering point, the claim, and whether the policy is
+      due) and `compact --store <data dir> [--keep N] [--force]` — a baseline is a snapshot
+      of STATE, so the tool takes the data directory as a second argument; it refuses
+      while a fresh claim says the log is being written. Both work on a directory with no
+      application and no Rust types, which is what running them as processes proves.
 - [x] **The log's location is a POSIX filesystem, and the option list says so**: `Local |
       Off`. S3 is not a location — no rename, no fsync — so S3 leaves the machine as a
       Delta table (ADR-0058), which serves backup, restore and analytics at once; the
