@@ -1,14 +1,14 @@
 //! The smallest end-to-end lake export: a collection with the change log on writes
 //! three rows plus a dynamic field, the log seals on clean shutdown, and the drainer
-//! turns it into a Parquet table with Iceberg metadata beside it.
+//! turns it into a Delta table.
 //!
 //!     cargo run -p okm-parquet --example lake_demo -- /tmp/okm-log /tmp/okm-lake
 //!
-//! then, with no okm in the path:
+//! then, with no okm in the path — the DIRECTORY is the table, nothing is registered:
 //!
-//!     duckdb -c "select * from read_parquet('/tmp/okm-lake/<table>/data/*.parquet')"
-//!     python -c "from pyiceberg.table import StaticTable; \
-//!                print(StaticTable.from_metadata('/tmp/okm-lake/<table>/metadata/v1.metadata.json').scan().to_arrow())"
+//!     duckdb -c "LOAD delta; select * from delta_scan('/tmp/okm-lake/<table>')"
+//!     duckdb -c "LOAD delta; select variant_extract(variant, 'note') \
+//!                from delta_scan('/tmp/okm-lake/<table>')"
 
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
@@ -63,9 +63,6 @@ fn main() {
     let report = drain(&log, &DrainConfig::new(&lake, "demo")).expect("drain");
     println!(
         "tables {} rows {} files {:?} metadata {}",
-        report.tables,
-        report.rows,
-        report.files,
-        report.metadata
+        report.tables, report.rows, report.files, report.metadata
     );
 }

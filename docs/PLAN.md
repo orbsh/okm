@@ -2315,11 +2315,12 @@ panic lints allowed only in the places it names. So the runtime half of
       degraded to a JSON string under okm's mapping (Binary as base64, `Int`/`UInt`
       kept as numbers, lists and maps as arrays and objects). The mapping is okm's
       to publish — otherwise every adapter invents a dialect.
-- [ ] Deferred (2026-10-31, owner): low priority. Not in this unit: Iceberg snapshot append with delete files, partitioning
-      and file-size targets (`write_table_metadata` writes one snapshot over the
-      files it is handed); any Parquet read path; the Iceberg WRITER
-      (it goes in its own crate, because `bridge::iceberg` is a zero-dependency
-      metadata encoder and must stay one); the SQL-to-okm planner. The
+- [ ] Deferred (2026-10-31, owner): low priority. Not in this unit: lake-writer delete files (or deletion vectors), partitioning
+      and file-size targets (the Delta writer commits one `add` per window, so a
+      window is one log version, but nothing here deletes, partitions or sizes); any
+      Parquet read path; a complete lake WRITER (it goes in its own crate, because
+      `bridge::delta` is a zero-dependency log encoder and must stay one); the
+      SQL-to-okm planner. The
       schema-driven Arrow builder is NO LONGER here: it landed as
       `okm_dynamic::arrow`, reusing `arrow_type`, with the typed bridge as its
       drift lock.
@@ -2898,6 +2899,29 @@ open at the end (retiring the store-scan export, and the S3 sink).
       key has no row in the window is REFUSED (a removal seen from the segment's side),
       because the alternative was writing the rows and dropping that segment in silence
       — `an_open_segment_with_no_row_is_refused_rather_than_dropped`.
+- [x] **The launched table is a Delta table** (ADR-0058). `bridge::delta` replaces
+      `bridge::iceberg`: `_delta_log/<version>.json`, one JSON action per line, protocol
+      and schema in the first version, one `add` per window after that. Appending is
+      O(change) instead of O(table), which closes the deferred "snapshot append" item by
+      deleting the problem rather than building it. Paths are relative to the table
+      directory, so the absolute-`file://` decision of §8 and its relocation cost are
+      gone; the schema is read from the Parquet footer and columns are identified by
+      NAME, so `stamp_batch` and its field-id registry entry went too. The Iceberg
+      encoder — 708 lines including a hand-written Avro container — is deleted.
+      Verified with a real reader from outside the table: DuckDB `delta_scan(<dir>)`.
+
+- [x] **The variant column has the canonical shape.** `struct<metadata: binary,
+      value: binary>` with `arrow.parquet.variant`, and the Delta log declares
+      `variantType` (reader 3 / writer 7) when the column is present — a table-wide
+      promise, so a reader that does not know the feature refuses the table instead of
+      guessing. The flat `[metadata][value]` binary was measured and was wrong in the
+      way that matters: `variant_extract` answered NULL for every row, and the same
+      bytes in the struct form answered `first`. Two consequences of the switch worth
+      naming: the deferred Iceberg writer-side list is now only delete files/vectors,
+      partitioning and file size (the weakest being delete support, since Delta's
+      deletion vectors are less widely read than Iceberg's delete files); and the
+      `okm-iceberg` crate named below is no longer needed for appending.
+
 - [x] **Demote `parquet_io`'s store-scan export** — decided, not retired. It is a
       STATE export: it reads the current rows out of a live store, so a deleted row is
       absent and the file is one snapshot of what the store holds now. The window path

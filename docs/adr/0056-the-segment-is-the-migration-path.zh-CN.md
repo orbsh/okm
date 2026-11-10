@@ -2,7 +2,7 @@
 
 > **语言：** [English](0056-the-segment-is-the-migration-path.md)（正本）· [中文](0056-the-segment-is-the-migration-path.zh-CN.md)
 
-**状态：** 已接受（2026-11-10）——仅裁决；回放路径一行代码都还没有。此后已落地：store 边界的捕获（`ChangelogStore`，§2）、自描述段容器（§7）、`ensure_baseline`（§3）、解码器与窗口合并进核心，以及取代 `okm-drain` 的独立程序 `okm-parquet`（segment → Parquet 窗口，§8）。回放已落地（`okm-parquet replay`：行经目标库的写路径重写、词表 id 重新 intern），并接上迁移后的对账扫描（`--reconcile`：扫一遍旧库的主面，旧库才是记录）；sink 还会在导出目录上写出 Iceberg 视图（用 DuckDB 的 `iceberg_scan` 验过）；窗口把文档的开放字段作为 `variant` 列携带，所以对只追加的表段路径是完整的；store 扫描导出降级为状态转储而非退役；仍缺：snapshot append、delete file、分区——见同日 PLAN 小节。
+**状态：** 已接受（2026-11-10）——仅裁决；回放路径一行代码都还没有。此后已落地：store 边界的捕获（`ChangelogStore`，§2）、自描述段容器（§7）、`ensure_baseline`（§3）、解码器与窗口合并进核心，以及取代 `okm-drain` 的独立程序 `okm-parquet`（segment → Parquet 窗口，§8）。回放已落地（`okm-parquet replay`：行经目标库的写路径重写、词表 id 重新 intern），并接上迁移后的对账扫描（`--reconcile`：扫一遍旧库的主面，旧库才是记录）；sink 把导出目录变成一张 Delta 表（`bridge::delta`：每个窗口一条 JSON 提交，所以追加是一行而不是重建 snapshot；用 DuckDB 的 `delta_scan` 验过）；窗口把文档的开放字段作为 `variant` 列携带，物理形态是规范的 `struct<metadata, value>`，所以对只追加的表段路径是完整的；store 扫描导出降级为状态转储而非退役；仍缺：delete file（或 deletion vector）、分区、文件大小目标——见同日 PLAN 小节。本 ADR 最初指名的 Iceberg 元数据写入器是被替换而非扩展的，见 ADR-0058。
 **日期：** 2026-11-10
 **依赖：** ADR-0010（线字节）、ADR-0034（表有名字）、ADR-0042（布局变更是版本，升级是部署形态）、ADR-0045（日志：捕获、段、抽干）、ADR-0046（`okm-series`，另一种只追加容器）
 
@@ -98,7 +98,7 @@ footer  ordinal u64 BE | records u64 BE | body_len u64 BE | crc32 u32 BE | "OKME
 
 - **核心留字节，并且收下抽干。** 段帧迭代、真相半边过滤（改为从 `SlotMap` 的边界推导，而不是手维护的清单——`declared_index_base` / `declared_reduce_base` / `declared_lead_base` 与两组词表已经说明了某个 slot 属于哪边）、窗口合并、水位，以及把一个窗口就地交出去的这一步，都属于产出这些文件的机制。`okm-drain` 不再是一个独立 crate：窗口合并下沉进核心，格式那半边搬出去。
 - **文档解码器跟着一起下沉。** `okm_dynamic::decode_payload` 是对 `CollectionSchema`（本来就是 core 的类型）的纯函数，返回 core `DynamicValue` 的 map。它待在 core 之上是历史原因（它写在 planner 旁边），不是结构原因。把 `decode.rs` 移进 core，才让「抽干是核心功能」从名义变成事实，也去掉抽干唯一的向上依赖；`okm-dynamic` 继续 re-export 这个名字，现有调用点一个都不改。
-- **搬出去的只有格式**：schema 驱动的 Arrow 列构建器（`okm_dynamic::arrow`）、Parquet、Iceberg 元数据、以及回放驱动。不能向上依赖的 core 装不下它们（ADR-0045 对 Arrow 批次构建器说过同一件事），而它们没有一个是机制——每一个都是段的一个投影。
+- **搬出去的只有格式**：schema 驱动的 Arrow 列构建器（`okm_dynamic::arrow`）、Parquet、表格式日志、以及回放驱动。不能向上依赖的 core 装不下它们（ADR-0045 对 Arrow 批次构建器说过同一件事），而它们没有一个是机制——每一个都是段的一个投影。
 - **`okm-parquet` 是独立命令行工具，与应用没有链接。** 它读表目录（段 + sidecar），写 Parquet + manifest，再接 Iceberg 元数据。「应用必须给导出器提供一个接口」这个要求，随着需要它的 store 扫描导出一起消失：湖里的表名取自段头，列取自 sidecar。Iceberg 走同一条路，只是再往外一层投影。
 - **replay 需要的是一个文件，不是一个接口。** 目标声明以新构建导出的 `CollectionSchema` JSON 的形式旅行，一次性；baseline、段、序号、sidecar 都在盘上。所以这个工具对 `parquet` 是全独立，对 `replay` 是「加一个文件」的独立。
 - **水位变成 per `(consumer, table)`。** 每 consumer 一个文件、而段编号是每表独立的，会让多表抽干静默跳过所有落后于最高位的表（`okm-drain/src/lib.rs:182`）。

@@ -9,5 +9,6 @@ pub mod arrow_bridge;
 /// feature: `arrow` alone must build without the writer crate (a consumer that
 /// only builds columns should not pay for the format).
 #[cfg(feature = "parquet")]
-pub mod iceberg;
+#[cfg(feature = "parquet")]
+pub mod delta;
 pub mod tooling;

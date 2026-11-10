@@ -249,10 +249,11 @@ guarantee the writer cannot provide.
   sealed and taken; after a crash the reconciliation scan runs before any
   deletion resumes. This is part of the offload procedure, not the caller's
   discretion — otherwise the at-most-once hole becomes permanent data loss.
-- The Iceberg side still lacks what this ADR does not provide: snapshot append
-  with delete files, partitioning, and file-size targets. `write_table_metadata`
-  writes one snapshot over the files it is handed, so a naive "one flush, one
-  table" turns the lake into a set of small unpartitioned tables.
+- The lake side still lacks what this ADR does not provide: delete files (or
+  deletion vectors), partitioning, and file-size targets. The log's own append is
+  no longer part of that list — the exported directory became a Delta table
+  (ADR-0058), where a window is one commit. Deleting, partitioning and file sizing
+  remain the writer-side work of a separate crate.
 - The drainer needs less than the application and more than the file: `okm-wire`
   reads the frames, and the sidecar supplies the types — but a drainer that does
   not link the application's rows needs columns from a DECLARATION, and the typed
@@ -261,10 +262,10 @@ guarantee the writer cannot provide.
   ABOVE okm-core, so the builder could not have been in core without the codec
   being duplicated. What is shared instead is the mapping — `arrow_type` is public
   for exactly that reason — so the same `FieldType → DataType` still exists once.
-  The Iceberg writer
-  (snapshot append, delete files, catalog) belongs in its own crate: that is the
-  piece with real dependencies, and `bridge::iceberg` today is a metadata encoder
-  with none.
+  A full lake writer
+  (delete files or vectors, partitioning, file-size targets) belongs in its own
+  crate: that is the piece with real policy, and `bridge::delta` today is a log
+  encoder with none.
 - The log does not make every table's delta cheap: it is the answer for tables
   with no usable time-ordered dimension. Where one exists, an interval scan over
   the key or an index is the cheaper delta, and this feature earns nothing.

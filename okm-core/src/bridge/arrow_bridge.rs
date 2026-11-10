@@ -477,56 +477,103 @@ fn push_variant_obj<S: parquet_variant::BuilderSpecificState>(
     }
 }
 
-/// A Variant-typed Arrow extension field ("parquet.variant" extension
-/// metadata), the analytics-layer twin of the dynamic segment.
+/// The Variant value of one open-field map, split into the two parts the canonical
+/// Arrow storage type requires: `(metadata, value)`.
+///
+/// The Variant binary form is `[metadata][value]` with the metadata's length known
+/// from its own header; the ANALYTICS container is not that concatenation, it is a
+/// struct of the two binaries. Writing the flat form and calling it a variant was a
+/// real defect: DuckDB read the column as `blob` and `variant_extract` answered NULL
+/// for every row, while the same bytes in the struct form decoded correctly.
+#[cfg(feature = "parquet")]
+pub fn variant_parts(map: &crate::model::obj_dynamic::ValueMap) -> (Vec<u8>, Vec<u8>) {
+    let mut b = parquet_variant::VariantBuilder::new();
+    push_variant(&mut b, &DynamicValue::Obj(map.clone()));
+    b.finish()
+}
+
+/// The Arrow storage type of a Variant column: `struct<metadata: binary, value: binary>`
+/// (`arrow.parquet.variant` in the canonical extension list). Both children are declared
+/// nullable so a null row is a null struct rather than a validation error; a present row
+/// always carries both halves.
+#[cfg(feature = "parquet")]
+fn variant_type() -> DataType {
+    use arrow::datatypes::Field as ArrowField;
+    DataType::Struct(
+        vec![
+            ArrowField::new("metadata", DataType::Binary, true),
+            ArrowField::new("value", DataType::Binary, true),
+        ]
+        .into(),
+    )
+}
+
+/// A Variant-typed Arrow extension field, the analytics-layer twin of the dynamic
+/// segment. The extension name is the canonical one, `arrow.parquet.variant`.
 #[cfg(feature = "parquet")]
 fn variant_field(name: &str, nullable: bool) -> arrow::datatypes::Field {
     use arrow::datatypes::Field as ArrowField;
-    let mut f = ArrowField::new(name, DataType::Binary, nullable);
-    // Variant's Arrow representation: binary metadata+value; the extension
-    // type marks it. Full StructArray representation is a later refinement;
-    // Binary + extension metadata is what the spec calls the "shredding
-    // absent" fallback and every Variant-aware engine accepts it.
+    let mut f = ArrowField::new(name, variant_type(), nullable);
     f.set_metadata(std::collections::HashMap::from([(
         "ARROW:extension:name".to_string(),
-        "parquet.variant".to_string(),
+        "arrow.parquet.variant".to_string(),
     )]));
     f
 }
 
-/// One open-field map as a `variant` VALUE in its wire form:
-/// `[metadata length u32 BE][metadata][value]` — the fallback encoding the spec
-/// names for a reader that cannot shred, which every Variant-aware engine accepts.
-///
-/// This is the analytics twin of a dynamic segment (ADR-0007, ADR-0056 §8): the
-/// declared fields have columns, the open fields have this.
+/// A `variant` column over a run of open-field maps. `None` is a null cell — a row with
+/// no open fields has nothing to say, and a null says it without inventing an empty
+/// object.
 #[cfg(feature = "parquet")]
-pub fn variant_wire(map: &crate::model::obj_dynamic::ValueMap) -> Vec<u8> {
-    let mut b = parquet_variant::VariantBuilder::new();
-    push_variant(&mut b, &DynamicValue::Obj(map.clone()));
-    let (md, val) = b.finish();
-    let mut wire = (md.len() as u32).to_be_bytes().to_vec();
-    wire.extend_from_slice(&md);
-    wire.extend_from_slice(&val);
-    wire
+pub fn variant_array(
+    maps: &[Option<&crate::model::obj_dynamic::ValueMap>],
+) -> arrow::array::StructArray {
+    use arrow::array::{Array, BinaryBuilder, StructArray};
+    use arrow::buffer::NullBuffer;
+    use arrow::datatypes::Field as ArrowField;
+
+    let mut metadata = BinaryBuilder::new();
+    let mut value = BinaryBuilder::new();
+    let mut present = Vec::with_capacity(maps.len());
+    for m in maps {
+        match m {
+            Some(map) => {
+                let (md, val) = variant_parts(map);
+                metadata.append_value(md);
+                value.append_value(val);
+                present.push(true);
+            }
+            None => {
+                metadata.append_null();
+                value.append_null();
+                present.push(false);
+            }
+        }
+    }
+    let fields = vec![
+        ArrowField::new("metadata", DataType::Binary, true),
+        ArrowField::new("value", DataType::Binary, true),
+    ];
+    StructArray::new(
+        fields.into(),
+        vec![
+            Arc::new(metadata.finish()) as Arc<dyn Array>,
+            Arc::new(value.finish()) as Arc<dyn Array>,
+        ],
+        Some(NullBuffer::from(present)),
+    )
 }
 
-/// A `variant` column over a run of open-field maps, with the `parquet.variant`
-/// extension name on its field. `None` is a null cell — a row with no open fields
-/// has nothing to say, and a null says it without inventing an empty object.
+/// A `variant` column with its field: what a caller appends to a batch.
 #[cfg(feature = "parquet")]
 pub fn variant_column(
     name: &str,
     maps: &[Option<&crate::model::obj_dynamic::ValueMap>],
-) -> (arrow::datatypes::Field, std::sync::Arc<dyn arrow::array::Array>) {
-    let mut buf = arrow::array::BinaryBuilder::new();
-    for m in maps {
-        match m {
-            Some(map) => buf.append_value(variant_wire(map)),
-            None => buf.append_null(),
-        }
-    }
-    (variant_field(name, true), std::sync::Arc::new(buf.finish()))
+) -> (
+    arrow::datatypes::Field,
+    std::sync::Arc<dyn arrow::array::Array>,
+) {
+    (variant_field(name, true), Arc::new(variant_array(maps)))
 }
 
 /// Value slice of cold field `fi` (declaration index) inside the cold TLV
@@ -605,8 +652,6 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     /// dynamic path, not a replacement for it (ADR-0007).
     #[cfg(feature = "parquet")]
     pub fn to_record_batch_with_variant(&mut self) -> crate::error::Result<RecordBatch> {
-        use arrow::array::BinaryArray;
-        use arrow::buffer::{Buffer, OffsetBuffer, ScalarBuffer};
         use arrow::datatypes::{Field as ArrowField, Schema as ArrowSchema};
 
         let proj = Projection::<K, R>::new();
@@ -616,53 +661,20 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         let labels = labels_for(self, &proj)?;
         let base = build_batch(&proj, &documents, &labels);
 
-        // One Variant per document from its dynamic segment: metadata and
-        // value buffers CONCATENATED per row (the Variant spec's wire form
-        // is [metadata][value] — a single binary per row).
-        let mut per_row: Vec<Option<Vec<u8>>> = Vec::with_capacity(documents.len());
+        // One Variant per document from its dynamic segment, as the two halves the
+        // canonical storage type wants.
+        let mut per_row: Vec<Option<crate::model::obj_dynamic::ValueMap>> =
+            Vec::with_capacity(documents.len());
         for (kenc, _) in &documents {
             let key = K::decode(kenc);
-            match self.slot1_map(&key)? {
-                Some(fields) => {
-                    let mut b = parquet_variant::VariantBuilder::new();
-                    let map: std::collections::BTreeMap<String, DynamicValue> =
-                        fields.into_iter().collect();
-                    push_variant(&mut b, &DynamicValue::Obj(map));
-                    let (md, val) = b.finish();
-                    // Wire per row: [md_len u32 BE][metadata][value] — the
-                    // metadata vocab is self-contained per variant value, so
-                    // the reader splits deterministically.
-                    let mut wire = (md.len() as u32).to_be_bytes().to_vec();
-                    wire.extend_from_slice(&md);
-                    wire.extend_from_slice(&val);
-                    per_row.push(Some(wire));
-                }
-                None => per_row.push(None),
-            }
+            let map: Option<crate::model::obj_dynamic::ValueMap> = self
+                .slot1_map(&key)?
+                .map(|fields| fields.into_iter().collect());
+            per_row.push(map);
         }
-
-        let mut offsets: Vec<i32> = Vec::with_capacity(documents.len() + 1);
-        offsets.push(0);
-        let mut data = Vec::new();
-        let mut nulls = Vec::with_capacity(documents.len());
-        for wire in &per_row {
-            match wire {
-                Some(bytes) => {
-                    data.extend_from_slice(bytes);
-                    offsets.push(data.len() as i32);
-                    nulls.push(true);
-                }
-                None => {
-                    offsets.push(data.len() as i32);
-                    nulls.push(false);
-                }
-            }
-        }
-        let variant_col = Arc::new(BinaryArray::new(
-            OffsetBuffer::new(ScalarBuffer::from(offsets)),
-            Buffer::from(data),
-            Some(arrow::buffer::NullBuffer::from(nulls)),
-        ));
+        let refs: Vec<Option<&crate::model::obj_dynamic::ValueMap>> =
+            per_row.iter().map(|m| m.as_ref()).collect();
+        let variant_col = Arc::new(variant_array(&refs)) as Arc<dyn arrow::array::Array>;
 
         // Schema: base fields + variant field (extension-typed).
         let mut fields: Vec<ArrowField> = base
@@ -719,7 +731,7 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
         F: Fn(u16) -> Option<String>,
     {
         use arrow::array::{Array, BinaryArray};
-        use arrow::buffer::{Buffer, NullBuffer, OffsetBuffer, ScalarBuffer};
+        use arrow::buffer::{Buffer, OffsetBuffer, ScalarBuffer};
         use arrow::datatypes::{Field as ArrowField, Schema as ArrowSchema};
 
         let ids = self.edge_ids()?;
@@ -728,7 +740,8 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
         // (src name, src pkey, dst name, dst pkey, predicate) per row
         type EdgeRow = (Option<String>, Vec<u8>, Option<String>, Vec<u8>, String);
         let mut rows: Vec<EdgeRow> = Vec::with_capacity(ids.len());
-        let mut variants: Vec<Option<Vec<u8>>> = Vec::with_capacity(ids.len());
+        let mut variants: Vec<Option<crate::model::obj_dynamic::ValueMap>> =
+            Vec::with_capacity(ids.len());
 
         for id in ids {
             let Some(body) = self.get_edge(id)? else {
@@ -745,15 +758,9 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
                 predicate,
             ));
             variants.push(self.attrs(id)?.map(|fields| {
-                let mut b = parquet_variant::VariantBuilder::new();
-                let map: std::collections::BTreeMap<String, DynamicValue> =
-                    fields.into_iter().collect();
-                push_variant(&mut b, &DynamicValue::Obj(map));
-                let (md, val) = b.finish();
-                let mut wire = (md.len() as u32).to_be_bytes().to_vec();
-                wire.extend_from_slice(&md);
-                wire.extend_from_slice(&val);
-                wire
+                fields
+                    .into_iter()
+                    .collect::<crate::model::obj_dynamic::ValueMap>()
             }));
             documents.push((id.to_be_bytes().to_vec(), Some(body.payload)));
         }
@@ -824,29 +831,11 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
         ];
         arrays.extend(base.columns().iter().cloned());
 
-        // The variant column, same wire rule as the document path.
-        let mut offsets: Vec<i32> = Vec::with_capacity(variants.len() + 1);
-        offsets.push(0);
-        let mut data = Vec::new();
-        let mut nulls = Vec::with_capacity(variants.len());
-        for wire in &variants {
-            match wire {
-                Some(bytes) => {
-                    data.extend_from_slice(bytes);
-                    offsets.push(data.len() as i32);
-                    nulls.push(true);
-                }
-                None => {
-                    offsets.push(data.len() as i32);
-                    nulls.push(false);
-                }
-            }
-        }
-        arrays.push(Arc::new(BinaryArray::new(
-            OffsetBuffer::new(ScalarBuffer::from(offsets)),
-            Buffer::from(data),
-            Some(NullBuffer::from(nulls)),
-        )));
+        // The variant column, the same struct<metadata, value> shape as the document
+        // path — one encoding, or a reader meets two.
+        let refs: Vec<Option<&crate::model::obj_dynamic::ValueMap>> =
+            variants.iter().map(|m| m.as_ref()).collect();
+        arrays.push(Arc::new(variant_array(&refs)));
 
         // Same split as the document export: the read above is fallible, the
         // column-vs-schema shape is this function's own invariant.

@@ -91,8 +91,8 @@ fn variant_column_export() {
             .metadata()
             .get("ARROW:extension:name")
             .map(|s| s.as_str()),
-        Some("parquet.variant"),
-        "variant extension type must be marked"
+        Some("arrow.parquet.variant"),
+        "variant extension type must be marked (the canonical name)"
     );
 
     // Typed columns unchanged.
@@ -108,16 +108,29 @@ fn variant_column_export() {
     let vcol_raw = batch.column(4);
     assert!(!vcol_raw.is_null(0), "row 0 has dynamic fields");
     assert!(vcol_raw.is_null(1), "row 1 has no dynamic fields");
+    // The canonical storage type: a struct of two binaries, NOT one flat blob. A flat
+    // blob is readable as bytes by everything and decodable by nothing.
     let vcol = vcol_raw
         .as_any()
-        .downcast_ref::<arrow::array::BinaryArray>()
-        .unwrap();
+        .downcast_ref::<arrow::array::StructArray>()
+        .expect("the variant column is a struct");
+    assert_eq!(
+        vcol.fields()
+            .iter()
+            .map(|f| f.name().as_str())
+            .collect::<Vec<_>>(),
+        vec!["metadata", "value"]
+    );
 
-    // Decode row 0's variant. Wire = [md_len u32 BE][metadata][value].
-    let wire = vcol.value(0);
-    let md_len = u32::from_be_bytes(wire[0..4].try_into().unwrap()) as usize;
+    // Decode row 0's variant.
+    let half = |name: &str| -> &arrow::array::BinaryArray {
+        vcol.column_by_name(name)
+            .and_then(|c| c.as_any().downcast_ref::<arrow::array::BinaryArray>())
+            .expect("binary half")
+    };
     let variant =
-        parquet_variant::Variant::try_new(&wire[4..4 + md_len], &wire[4 + md_len..]).unwrap();
+        parquet_variant::Variant::try_new(half("metadata").value(0), half("value").value(0))
+            .unwrap();
     let obj = variant.as_object().unwrap();
     let score = obj.get("score").unwrap();
     assert_eq!(score, parquet_variant::Variant::Int64(99));

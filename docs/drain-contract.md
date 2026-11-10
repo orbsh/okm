@@ -14,8 +14,8 @@ One **window** is one Parquet file inside the table's exported directory:
     <out>/<table hex>/data/<table hex>-<first segment>-<last segment>.parquet
 
 The directory per table is the exported TABLE (ADR-0056 §8): `data/` holds the
-windows, `metadata/` holds the Iceberg view over them, and the consumer's watermark
-sits at the root (`watermark-<consumer>-<table hex>.txt`). Two tables in one sink
+windows, `_delta_log/` is the Delta log over them, and the consumer's watermark sits
+at the root (`watermark-<consumer>-<table hex>.txt`). Two tables in one sink
 are two tables, not one table with `0047-` and `0048-` files in it.
 
 The file is written under a scratch name at the root and moved into `data/` only
@@ -39,8 +39,9 @@ Arrow types come from `okm_core::arrow_backend::arrow_type` and nowhere else:
 | `[u8; N]` / `Vec<u8>` / `Vector<T>` | `Binary` (a Vector as its frame) |
 | `Vocab<N>` | `Utf8` — the **label**, never the id |
 
-Field ids `1..N` are stamped in column order, so a reader that identifies columns
-by id needs no name mapping.
+Columns are identified by NAME, in the log and in the files: the metadata records a
+Delta schema, which has no field ids, so a Parquet field id would be a second identity
+nothing reads.
 
 ## The manifest
 
@@ -96,6 +97,36 @@ and a window is never half-described.
   the watermark IS the lake's commit, and the file it names is the evidence.
 * Never reorder. A sink that needs a different physical layout may rewrite rows
   inside a file it owns; it may not reorder across windows.
+
+## Not part of the contract
+
+Partitioning, target file size, catalog registration, snapshot management and
+retention all belong to the adapter. `okm-parquet`'s only knob is
+`DrainConfig::max_segments` — how much history one window carries — because that is
+also how much history a query must merge with the hot store.
+
+## The table
+
+After the watermark moves, the directory is a Delta table: `_delta_log/00000000…json`
+holds the first commit (protocol + schema + one `add`), and every later window is one
+more version holding one `add`. Appending is one line, so the log grows by the change
+and not by the table — this is the "snapshot append" a manifest-based writer has to
+build, and Delta gets from the format.
+
+Columns and row counts are read FROM the written files (the Parquet footer), never
+restated by the caller. A path in a commit is relative to the table directory, so the
+directory travels intact: no absolute URIs, no relocation cost, no version hint to
+keep in step.
+
+The open-fields column is declared `variant`, which is a table-wide promise: the
+protocol becomes `minReaderVersion 3` / `minWriterVersion 7` with
+`readerFeatures/writerFeatures = ["variantType"]`, and a reader that does not know the
+feature must refuse the table rather than guess. That is the price of a column engines
+actually DECODE — the same values as a plain binary are readable everywhere and
+understood nowhere (measured: `variant_extract` answered NULL for every row of the
+flat form, and decoded correctly from the canonical one). The physical shape is
+`struct<metadata: binary, value: binary>` with the `arrow.parquet.variant` extension,
+which is what both Delta and Iceberg v3 specify.
 
 ## Not part of the contract
 

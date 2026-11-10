@@ -42,6 +42,12 @@ ADR-0007 Phase 1 导出的是**一个 collection**：列由行声明生成，写
 `Vocab` 字段仍是标签。variant 列是动态路径在分析侧的孪生：嵌套对象与数组递归，名字走字段名
 词汇表解析，没有动态段的行在该列是 `null`。
 
+它的物理形态取规范那一种：Arrow 的 `arrow.parquet.variant` 扩展挂在
+`struct<metadata: binary, value: binary>` 上——两个 binary，不是一个扁平 blob。扁平形态
+（单个 `Binary` 里 `[metadata][value]`）是第一版尝试，错在最要紧的那一点上：每个读方都接受这一列，
+**没有一个能解出来**（`variant_extract` 对每行都答 NULL，同样的字节换成 struct 形态就解得对）。
+实测记录见 ADR-0058。
+
 **索引不导出。** 它们是派生状态，导入时由 `put` 重建——文件里再放一份，就是又多一个要维护一致
 的东西。
 

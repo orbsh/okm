@@ -10,10 +10,10 @@
     clippy::panic_in_result_fn
 )]
 
+use arrow::array::Array;
 use okm_core::changelog::{ChangelogConfig, ChangelogStore};
 use okm_core::{Collection, DocumentEncode, KeyEncode, TestStore};
 use okm_parquet::{DrainConfig, drain};
-use arrow::array::Array;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 
 #[derive(KeyEncode, Clone, PartialEq, Debug)]
@@ -53,7 +53,9 @@ pub struct LaggingRow {
     pub level: u32,
 }
 
-fn lagging_collection(root: &std::path::Path) -> Collection<ChangelogStore<TestStore>, K, LaggingRow> {
+fn lagging_collection(
+    root: &std::path::Path,
+) -> Collection<ChangelogStore<TestStore>, K, LaggingRow> {
     Collection::captured(ChangelogStore::new(
         TestStore::slatedb_mem(),
         ChangelogConfig::new(root),
@@ -137,50 +139,62 @@ fn one_window_becomes_one_parquet_file_and_the_watermark_moves() {
     );
     assert!(manifest.columns[3].2, "a payload column is nullable");
 
-    // The exported table is a TABLE, not a pile of files: Iceberg metadata over the
-    // data directory, with the column ids stamped in the Parquet and the file listed
-    // in a snapshot, so a catalog (or pyiceberg) reads it with no name mapping
-    // (ADR-0056 §8).
-    assert_eq!(report.metadata, 1, "one table, one metadata file");
-    let table_dir = report.files[0].parent().unwrap().parent().unwrap().to_path_buf();
-    let metadata = table_dir.join("metadata").join("v1.metadata.json");
-    let text = std::fs::read_to_string(&metadata).expect("iceberg metadata");
-    assert!(
-        text.contains("\"format-version\": 2"),
-        "an Iceberg v2 table: {text}"
-    );
-    assert!(
-        text.contains("manifest-list"),
-        "the snapshot points at a manifest list (Iceberg v2 keeps file names in the \
-         manifest, not in metadata.json): {text}"
-    );
-    // The data file is named in the MANIFEST — the avro the snapshot points at. An
-    // exported table that lists no file is an empty table with extra steps.
-    let file_name = report.files[0].file_name().unwrap().to_string_lossy().to_string();
-    let manifest_bytes: Vec<u8> = std::fs::read_dir(metadata.parent().unwrap())
-        .expect("metadata dir")
-        .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| p.extension().is_some_and(|x| x == "avro"))
-        .filter_map(|p| std::fs::read(p).ok())
-        .flatten()
+    // The exported table is a TABLE, not a pile of files: a Delta log over the data
+    // directory, so a reader pointed at the DIRECTORY finds the schema and the files
+    // with nothing registered anywhere (ADR-0056 §8).
+    assert_eq!(report.metadata, 1, "one table, one commit");
+    let table_dir = report.files[0]
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    let log = table_dir.join("_delta_log");
+    let version = log.join(format!("{:020}.json", 0));
+    let text = std::fs::read_to_string(&version).expect("the first Delta commit");
+    let actions: Vec<serde_json::Value> = text
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| serde_json::from_str(l).expect("an action is JSON"))
         .collect();
-    assert!(
-        manifest_bytes
-            .windows(file_name.len())
-            .any(|w| w == file_name.as_bytes()),
-        "the manifest lists the file that was just written ({file_name})"
-    );
-    assert!(
-        text.contains("\"name\":\"level\""),
-        "the columns are read from the Parquet, not restated by the caller: {text}"
-    );
-    // The table's NAME is the catalog's business — Iceberg metadata carries none —
-    // so the directory is what names it, and that is what a reader is pointed at.
     assert_eq!(
-        std::fs::read_to_string(table_dir.join("metadata").join("version-hint.text"))
-            .expect("version hint"),
-        "1",
-        "a directory reader (DuckDB) finds the current metadata through it"
+        actions[0]["protocol"]["minReaderVersion"], 1,
+        "plain parquet with no feature a reader has to know: {text}"
+    );
+    // The schema is read from the Parquet footer, not restated by the caller, and it
+    // is by NAME: Delta has no field ids, so a column's identity is its name.
+    let schema: serde_json::Value = serde_json::from_str(
+        actions[1]["metaData"]["schemaString"]
+            .as_str()
+            .expect("schema"),
+    )
+    .expect("the schema string is JSON");
+    let names: Vec<&str> = schema["fields"]
+        .as_array()
+        .expect("fields")
+        .iter()
+        .filter_map(|f| f["name"].as_str())
+        .collect();
+    assert_eq!(
+        names,
+        ["org", "id", "level", "name"],
+        "columns from the file"
+    );
+    let file_name = report.files[0]
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
+    assert!(
+        actions
+            .iter()
+            .any(|a| a["add"]["path"].as_str() == Some(&format!("data/{file_name}"))),
+        "the commit adds the file that was just written, by a path RELATIVE to the \
+         table: {text}"
+    );
+    assert!(
+        !text.contains(&table_dir.to_string_lossy().to_string()),
+        "no absolute path anywhere in the log, so the table can be moved: {text}"
     );
 
     // Second run: the watermark holds, so the same window is not drained twice.
@@ -348,7 +362,12 @@ fn a_lagging_table_is_not_skipped_by_the_one_ahead() {
     let files: Vec<String> = report
         .files
         .iter()
-        .map(|p| p.file_name().unwrap_or_default().to_string_lossy().into_owned())
+        .map(|p| {
+            p.file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned()
+        })
         .collect();
     assert_eq!(files.len(), 2, "one window file per table: {files:?}");
     assert!(
@@ -393,11 +412,15 @@ fn a_documents_open_fields_travel_as_a_variant_column() {
             "note".to_string(),
             okm_core::model::obj_dynamic::DynamicValue::Str("first".to_string()),
         );
-        c.merge(&K1, &open).expect("a field the declaration does not have");
+        c.merge(&K1, &open)
+            .expect("a field the declaration does not have");
     }
 
     let report = drain(root.path(), &DrainConfig::new(out.path(), "test")).expect("drain");
-    assert_eq!(report.open_fields, 1, "one segment carried, not counted and dropped");
+    assert_eq!(
+        report.open_fields, 1,
+        "one segment carried, not counted and dropped"
+    );
 
     let file = std::fs::File::open(&report.files[0]).expect("open");
     let mut reader = ParquetRecordBatchReaderBuilder::try_new(file)
@@ -413,8 +436,10 @@ fn a_documents_open_fields_travel_as_a_variant_column() {
         "the open fields column, named as ADR-0034 names it"
     );
     assert_eq!(
-        last.metadata().get("ARROW:extension:name").map(String::as_str),
-        Some("parquet.variant"),
+        last.metadata()
+            .get("ARROW:extension:name")
+            .map(String::as_str),
+        Some("arrow.parquet.variant"),
         "a reader that knows variants is told what this column is"
     );
     assert!(last.is_nullable(), "a row with no segment has nothing here");
@@ -422,10 +447,22 @@ fn a_documents_open_fields_travel_as_a_variant_column() {
     let column = batch
         .column(schema.fields().len() - 1)
         .as_any()
-        .downcast_ref::<arrow::array::BinaryArray>()
-        .expect("binary");
+        .downcast_ref::<arrow::array::StructArray>()
+        .expect("the canonical variant storage type is a struct of two binaries");
     assert_eq!(column.len(), 2);
-    assert_eq!(column.null_count(), 1, "one row has a segment, one does not");
+    assert_eq!(
+        column.null_count(),
+        1,
+        "one row has a segment, one does not"
+    );
+    // The halves exist and the present row carries bytes in both.
+    let half = |name: &str| -> &arrow::array::BinaryArray {
+        column
+            .column_by_name(name)
+            .and_then(|c| c.as_any().downcast_ref::<arrow::array::BinaryArray>())
+            .expect("binary half")
+    };
+    assert!(!half("metadata").is_empty() && !half("value").is_empty());
 }
 
 /// An open-fields segment with no row in the window is a removal by another route, and
@@ -468,4 +505,145 @@ fn an_open_segment_with_no_row_is_refused_rather_than_dropped() {
         .filter_map(|e| e.ok().map(|e| e.path()))
         .collect();
     assert!(artefacts.is_empty(), "nothing written: {artefacts:?}");
+}
+
+/// The log is a LOG, not a rebuilt snapshot: a second window is a second version
+/// holding one `add`. This is the capability the Iceberg writer had to defer
+/// (snapshot append) and the Delta writer gets from the format.
+#[test]
+fn a_second_window_appends_one_version_with_one_add() {
+    let root = tempfile::tempdir().expect("root");
+    let out = tempfile::tempdir().expect("out");
+    let cfg = DrainConfig::new(out.path(), "test");
+
+    {
+        let c = collection(root.path());
+        c.put(
+            &K1,
+            &R {
+                level: 3,
+                name: "alpha".into(),
+            },
+        )
+        .expect("put");
+    }
+    let first = drain(root.path(), &cfg).expect("first window");
+
+    {
+        let c = collection(root.path());
+        c.put(
+            &K2,
+            &R {
+                level: 4,
+                name: "beta".into(),
+            },
+        )
+        .expect("put");
+    }
+    let second = drain(root.path(), &cfg).expect("second window");
+    assert_ne!(first.files[0], second.files[0], "two windows, two files");
+
+    let table_dir = second.files[0]
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    let log = table_dir.join("_delta_log");
+    let v0 = std::fs::read_to_string(log.join(format!("{:020}.json", 0))).expect("v0");
+    let v1 = std::fs::read_to_string(log.join(format!("{:020}.json", 1))).expect("v1");
+
+    // The commit is additive: no protocol, no schema, no restatement of the first file.
+    assert!(
+        !v1.contains("protocol") && !v1.contains("metaData"),
+        "a version carries only what changed: {v1}"
+    );
+    let adds: Vec<serde_json::Value> = v1
+        .lines()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .filter_map(|a| a.get("add").cloned())
+        .collect();
+    assert_eq!(adds.len(), 1, "one file, one add: {v1}");
+    let first_name = first.files[0]
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
+    assert!(
+        !v1.contains(&first_name),
+        "the file already in the log is not added again: {v1}"
+    );
+    assert!(
+        v0.contains(&first_name),
+        "and it is in the version that made it"
+    );
+
+    // Re-draining the same directory (no new window) writes nothing new.
+    let third = drain(root.path(), &cfg).expect("third drain");
+    assert_eq!(third.rows, 0);
+    assert!(
+        !log.join(format!("{:020}.json", 2)).exists(),
+        "an empty window commits no version"
+    );
+}
+
+/// A variant column is a table-wide promise: the log must say `variantType`, because a
+/// reader that does not know the feature has to refuse the table rather than guess.
+#[test]
+fn a_variant_column_declares_its_table_feature() {
+    let root = tempfile::tempdir().expect("root");
+    let out = tempfile::tempdir().expect("out");
+    {
+        let c = collection(root.path());
+        c.put(
+            &K1,
+            &R {
+                level: 3,
+                name: "alpha".into(),
+            },
+        )
+        .expect("put");
+        let mut open = std::collections::BTreeMap::new();
+        open.insert(
+            "note".to_string(),
+            okm_core::model::obj_dynamic::DynamicValue::Str("first".to_string()),
+        );
+        c.merge(&K1, &open).expect("an open field");
+    }
+    let report = drain(root.path(), &DrainConfig::new(out.path(), "test")).expect("drain");
+    let table_dir = report.files[0]
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    let v0 = std::fs::read_to_string(table_dir.join("_delta_log").join(format!("{:020}.json", 0)))
+        .expect("v0");
+    let protocol: serde_json::Value = v0
+        .lines()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .find_map(|a| a.get("protocol").cloned())
+        .expect("a protocol action");
+    assert_eq!(protocol["minReaderVersion"], 3, "{v0}");
+    assert_eq!(protocol["minWriterVersion"], 7, "{v0}");
+    assert_eq!(protocol["readerFeatures"][0], "variantType", "{v0}");
+    // And the schema says `variant`, not the struct a reader would have to guess at.
+    let schema: serde_json::Value = v0
+        .lines()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .find_map(|a| {
+            a["metaData"]["schemaString"]
+                .as_str()
+                .map(|s| s.to_string())
+        })
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .expect("a schema action");
+    let variant = schema["fields"]
+        .as_array()
+        .expect("fields")
+        .iter()
+        .find(|f| f["name"] == "variant")
+        .cloned()
+        .expect("a variant column");
+    assert_eq!(variant["type"], "variant");
 }

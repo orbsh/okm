@@ -40,7 +40,7 @@ pub fn json_schema<K: KeyEncode, R: Document<Key = K>>() -> String {
             FieldType::Quant(_) => "number",                 // logical: dequantized f64
             FieldType::Vocab(_) => "string",                 // the label (ADR-0032 export)
             FieldType::Offset(_) => "integer",               // logical: base + offset
-            FieldType::Vector(_) => "array",             // element sequence (dynamic-length)
+            FieldType::Vector(_) => "array",                 // element sequence (dynamic-length)
         }
     }
 
@@ -128,15 +128,12 @@ pub mod parquet_io {
         batch: &arrow::array::RecordBatch,
         path: &std::path::Path,
     ) -> parquet::errors::Result<()> {
-        // Every file a backup holds carries column field ids 1..N in column
-        // order — the numbering the Iceberg metadata declares
-        // (`crate::bridge::iceberg`). A reader that identifies columns by id
-        // (which is every Iceberg reader) then needs no name mapping, and the
-        // two sides cannot drift because both count positions.
-        let batch = crate::bridge::iceberg::stamp_batch(batch);
+        // Columns are identified by NAME: the metadata is a Delta log
+        // (`crate::bridge::delta`), which records a schema by name, and a Parquet
+        // field id would be a second identity nothing reads.
         let file = std::fs::File::create(path)?;
         let mut w = parquet::arrow::ArrowWriter::try_new(file, batch.schema(), None)?;
-        w.write(&batch)?;
+        w.write(batch)?;
         w.close()?;
         Ok(())
     }
@@ -510,9 +507,9 @@ pub mod parquet_io {
     }
 
     /// One document's dynamic segment out of its `variant` cell:
-    /// `[md_len u32 BE][metadata][value]` → the name-keyed map the segment stores.
-    /// The export's `push_variant` written backwards; names come back resolved
-    /// because the Variant's own metadata carries them.
+    /// `struct<metadata, value>` → the name-keyed map the segment stores. The
+    /// export's `push_variant` written backwards; names come back resolved because
+    /// the Variant's own metadata carries them.
     fn segment_from_variant(
         col: &dyn arrow::array::Array,
         row: usize,
@@ -523,21 +520,21 @@ pub mod parquet_io {
         if col.is_null(row) {
             return Ok(None);
         }
+        use arrow::array::BinaryArray;
         let arr = col
             .as_any()
-            .downcast_ref::<arrow::array::BinaryArray>()
-            .ok_or_else(|| "the variant column is not a binary array".to_string())?;
-        let wire = arr.value(row);
-        let Some(head) = wire.first_chunk::<4>() else {
-            return Err("variant cell is shorter than its metadata length".into());
+            .downcast_ref::<arrow::array::StructArray>()
+            .ok_or_else(|| "the variant column is not a struct".to_string())?;
+        let half = |name: &str| -> Result<&BinaryArray, String> {
+            arr.column_by_name(name)
+                .and_then(|c| c.as_any().downcast_ref::<BinaryArray>())
+                .ok_or_else(|| format!("a variant cell has no `{name}` half"))
         };
-        let md_len = u32::from_be_bytes(*head) as usize;
-        let rest = &wire[4..];
-        if rest.len() < md_len {
-            return Err("variant metadata is truncated".into());
-        }
-        let (md, val) = rest.split_at(md_len);
-        let variant = parquet_variant::Variant::try_new(md, val).map_err(|e| e.to_string())?;
+        let variant = parquet_variant::Variant::try_new(
+            half("metadata")?.value(row),
+            half("value")?.value(row),
+        )
+        .map_err(|e| e.to_string())?;
         match dynamic_from_variant(variant) {
             crate::model::obj_dynamic::DynamicValue::Obj(map) => Ok(Some(map)),
             _ => Err("a document's variant cell holds an object, not a scalar".into()),
@@ -773,29 +770,26 @@ pub mod parquet_io {
         row: usize,
     ) -> Result<std::collections::BTreeMap<String, crate::model::obj_dynamic::DynamicValue>, String>
     {
-        use arrow::array::{Array, BinaryArray};
+        use arrow::array::{Array, BinaryArray, StructArray};
 
+        // The canonical storage type of a variant: `struct<metadata: binary,
+        // value: binary>`. A flat binary was okm's own invention and no reader decoded
+        // it, which is why this reads the two halves and not a length header.
         let col = col
             .as_any()
-            .downcast_ref::<BinaryArray>()
-            .ok_or_else(|| format!("row {row}: the attribute column is not binary"))?;
+            .downcast_ref::<StructArray>()
+            .ok_or_else(|| format!("row {row}: the attribute column is not a variant struct"))?;
         if col.is_null(row) {
             return Ok(std::collections::BTreeMap::new());
         }
-        let raw = col.value(row);
-        if raw.len() < 4 {
-            return Err(format!(
-                "row {row}: the attribute wire is shorter than its header"
-            ));
-        }
-        let md_len = u32::from_be_bytes([raw[0], raw[1], raw[2], raw[3]]) as usize;
-        if raw.len() < 4 + md_len {
-            return Err(format!(
-                "row {row}: metadata length {md_len} exceeds the {} remaining bytes",
-                raw.len() - 4
-            ));
-        }
-        let variant = parquet_variant::Variant::new(&raw[4..4 + md_len], &raw[4 + md_len..]);
+        let half = |name: &str| -> Result<&BinaryArray, String> {
+            col.column_by_name(name)
+                .and_then(|c| c.as_any().downcast_ref::<BinaryArray>())
+                .ok_or_else(|| format!("row {row}: the variant has no `{name}` half"))
+        };
+        let (metadata, value) = (half("metadata")?, half("value")?);
+        let (metadata, value) = (metadata.value(row), value.value(row));
+        let variant = parquet_variant::Variant::new(metadata, value);
         let obj = variant
             .as_object()
             .ok_or_else(|| format!("row {row}: the attribute wire is not an object"))?;

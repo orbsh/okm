@@ -146,7 +146,7 @@ pub struct Report {
     /// sink can tell "no open fields anywhere" from "open fields written".
     pub open_fields: usize,
     pub files: Vec<PathBuf>,
-    /// Iceberg metadata files written (one per table that produced a window).
+    /// Delta commits written (one per table that produced a window).
     pub metadata: usize,
 }
 
@@ -198,8 +198,8 @@ pub fn drain_table(dir: &Path, cfg: &DrainConfig, report: &mut Report) -> Result
     let first = window::stem_of(&win.segments[0]);
     let last = window::stem_of(&win.segments[win.segments.len() - 1]);
     // One directory per table, `data/` inside it: that directory IS the exported
-    // table (ADR-0056 §8), and a catalog or pyiceberg is pointed at it rather than
-    // at a pile of files that also serves other tables.
+    // table (ADR-0056 §8), and a reader is pointed at it rather than at a pile of
+    // files that also serves other tables.
     let table_dir = cfg.out_dir.join(&win.table);
     let data_dir = table_dir.join("data");
     let out = data_dir.join(format!("{}-{first}-{last}.parquet", win.table));
@@ -238,16 +238,16 @@ pub fn drain_table(dir: &Path, cfg: &DrainConfig, report: &mut Report) -> Result
         &format!("{last}.segment"),
     )?;
 
-    // The Iceberg view over everything this table has exported so far. Written
-    // after the position moves, because it describes files that exist — and rebuilt
-    // on every window, since snapshot APPEND (one snapshot per file, delete files,
-    // partitioning) is the writer side this crate does not have yet.
+    // The Delta view: this window is one more `add` in the log, not a rebuild of
+    // everything before it. Committed after the position moves, because a log entry
+    // describes a file that exists. Every file in `data/` is offered so a deleted or
+    // never-written log heals itself; the ones already recorded are skipped.
     let files: Vec<PathBuf> = std::fs::read_dir(&data_dir)?
         .filter_map(|e| e.ok().map(|e| e.path()))
         .filter(|p| p.extension().is_some_and(|x| x == "parquet"))
         .collect();
-    okm_core::bridge::iceberg::write_table_metadata(&table_dir, &files)
-        .map_err(|e| DrainError::new(format!("iceberg: {e}")))?;
+    okm_core::bridge::delta::commit_files(&table_dir, &files)
+        .map_err(|e| DrainError::new(format!("delta: {e}")))?;
     report.metadata += 1;
 
     report.segments += win.segments.len();
@@ -324,9 +324,10 @@ pub fn write_parquet(win: &Window, out: &Path) -> Result<Vec<(String, String, bo
         fields.push(field);
         let mut arrays: Vec<std::sync::Arc<dyn arrow::array::Array>> = batch.columns().to_vec();
         arrays.push(column);
-        batch = arrow::array::RecordBatch::try_new(std::sync::Arc::new(
-            arrow::datatypes::Schema::new(fields),
-        ), arrays)
+        batch = arrow::array::RecordBatch::try_new(
+            std::sync::Arc::new(arrow::datatypes::Schema::new(fields)),
+            arrays,
+        )
         .map_err(|e| DrainError::new(format!("{}: open column: {e}", win.table)))?;
     }
 

@@ -54,6 +54,13 @@ holding the dynamic segment**. Columns keep the declaration's order and types;
 path: nested objects and arrays recurse, names resolve through the field-name
 vocabulary, and a row without a dynamic segment is `null` in that column.
 
+Its physical shape is the canonical one: Arrow's `arrow.parquet.variant` extension
+over `struct<metadata: binary, value: binary>` — two binaries, not one flat blob. The
+flat form (`[metadata][value]` in a single `Binary`) was the first attempt and it was
+wrong in the only way that matters: every reader accepted the column and NONE could
+decode it (`variant_extract` answered NULL for every row; the same bytes in the struct
+form decoded correctly). ADR-0058 records the measurement.
+
 Indexes are NOT exported. They are derived state, rebuilt by `put` on import — a
 second copy in a file would be a second thing to keep consistent.
 

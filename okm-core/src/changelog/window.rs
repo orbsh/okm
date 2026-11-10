@@ -5,7 +5,7 @@
 //! The bytes, the ordering and the half of the schema the log cannot carry are all
 //! decided here, so the join lives beside the readers instead of re-deriving them
 //! one directory up. What leaves the crate is only the FORMAT — Arrow columns,
-//! Parquet, Iceberg metadata, the replay driver — and each of those is a projection
+//! Parquet, the table log, the replay driver — and each of those is a projection
 //! of a window, not part of producing one.
 //!
 //! What a window IS: an append of changes. The same key may appear twice, because a

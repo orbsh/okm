@@ -40,7 +40,7 @@ arrow = ["dep:arrow"]
 # `s3-aws` adds the S3 client, which is what pulls the HTTP stack in.
 s3 = ["dep:object_store", "dep:tokio"]
 s3-aws = ["s3", "object_store/aws"]
-parquet = ["dep:parquet", "dep:parquet-variant", "arrow"]
+parquet = ["dep:parquet", "dep:parquet-variant", "arrow", "dep:serde_json"]
 
 [dev-dependencies]
 tempfile = "3"
