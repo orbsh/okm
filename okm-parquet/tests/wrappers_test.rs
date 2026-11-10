@@ -8,6 +8,7 @@
     clippy::unwrap_in_result,
     clippy::panic_in_result_fn
 )]
+use okm_parquet::bridge::ToRecordBatch;
 
 use okm_core::{
     Collection, Document, DocumentEncode, FieldType, KeyEncode, Offset, Quant, Reverse, TestStore,
@@ -108,11 +109,9 @@ fn table_round_trip_with_wrappers() {
 }
 
 // ================= Arrow / Parquet =================
-
-#[cfg(feature = "parquet")]
 mod parquet {
     use super::*;
-    use okm_core::parquet_io;
+    use okm_parquet::snapshot::parquet_io as parquet_io;
 
     #[test]
     fn parquet_roundtrip_with_wrappers() {

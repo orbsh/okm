@@ -8,9 +8,11 @@
     clippy::unwrap_in_result,
     clippy::panic_in_result_fn
 )]
+use okm_parquet::snapshot::parquet_io;
+use okm_parquet::bridge::ToRecordBatch;
 
 use okm_core::{
-    Collection, Document, DocumentEncode, FieldDesc, FieldType, KeyEncode, TestStore, parquet_io,
+    Collection, Document, DocumentEncode, FieldDesc, FieldType, KeyEncode, TestStore,
 };
 
 #[derive(KeyEncode, Clone, PartialEq, Debug)]
@@ -94,7 +96,7 @@ fn parquet_export_import_roundtrip_restores_rows_and_indexes() {
 
 #[test]
 fn json_schema_is_valid_and_matches_parquet_columns() {
-    let schema = okm_core::tooling::json_schema::<TKey, TRow>();
+    let schema = okm_parquet::snapshot::json_schema::<TKey, TRow>();
 
     // Must parse as JSON.
     let v: serde_json::Value =
@@ -126,7 +128,7 @@ fn json_schema_is_valid_and_matches_parquet_columns() {
     assert_eq!(props["tag"]["type"], "string"); // [u8;4] → base64
 
     // Free function form agrees.
-    assert_eq!(okm_core::tooling::json_schema::<TKey, TRow>(), schema);
+    assert_eq!(okm_parquet::snapshot::json_schema::<TKey, TRow>(), schema);
 }
 
 #[test]
@@ -230,7 +232,7 @@ fn parquet_roundtrip_carries_labels_not_ids() {
     // The declaration's JSON view agrees with the column: a categorical field is
     // a string, not a code.
     let schema: serde_json::Value =
-        serde_json::from_str(&okm_core::tooling::json_schema::<VKey, VRow>()).unwrap();
+        serde_json::from_str(&okm_parquet::snapshot::json_schema::<VKey, VRow>()).unwrap();
     assert_eq!(schema["properties"]["status"]["type"], "string");
 }
 

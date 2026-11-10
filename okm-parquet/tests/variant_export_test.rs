@@ -10,6 +10,7 @@
     clippy::unwrap_in_result,
     clippy::panic_in_result_fn
 )]
+use okm_parquet::bridge::ToRecordBatch;
 use okm_core::{DocumentEncode, KeyEncode, TestStore, obj_dynamic::DynamicValue};
 use std::collections::BTreeMap;
 

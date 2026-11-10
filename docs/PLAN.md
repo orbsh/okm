@@ -2629,7 +2629,7 @@ the next decision can find it.
   the schema (`DataType::FixedSizeBinary(n)`, never a 16 literal), so a `Uuid7`/`Uuid4`
   payload field exports byte for byte and `import_parquet` reads the same 16 bytes back —
   locked by `uuid_field_exports_as_fixed_size_binary` and
-  `uuid_field_survives_a_parquet_round_trip` (`okm-core/tests/arrow_bridge_test.rs`).
+  `uuid_field_survives_a_parquet_round_trip` (`okm-parquet/tests/arrow_bridge_test.rs`).
 - `scan_keys()` returns v7 keys in clock order because the encoding is the clock: no index, no
   re-sort. Locked by `okm-core/tests/uuid_key.rs`.
 

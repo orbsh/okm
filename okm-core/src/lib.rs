@@ -49,7 +49,6 @@ pub mod error;
 pub mod model;
 
 pub use error::{Error, Result};
-pub mod bridge;
 /// The change log (ADR-0045): append-only segment files written at the commit
 /// boundary, drained out of process.
 pub mod changelog;
@@ -71,11 +70,6 @@ pub use model::wrappers::{
     dequantize, offset_decode, offset_encode, quantize, wire_to_be_bytes,
 };
 
-/// One exported batch — re-exported so a consumer can pass the graph's edge
-/// table to `parquet_io::write_batch` without taking an Arrow dependency of its
-/// own (ADR-0034).
-#[cfg(feature = "parquet")]
-pub use arrow::array::RecordBatch;
 pub use engine::nest::{NestStorage, RemoteStore, VirtualHandle};
 pub use engine::storage::{
     Batch, BatchStore, SharedVirtualStorage, VirtualStorage, VirtualStorageAsync, scan_suffix_kv,
@@ -101,11 +95,6 @@ pub use model::vocab::{Vocab, VocabId};
 pub use okm_wire::{OP_DELETE, OP_PUT, OpFrame, OpResponse};
 pub use subscribe::{Event, Op, SinkCell};
 
-#[cfg(feature = "arrow")]
-pub use bridge::arrow_bridge as arrow_backend;
-#[cfg(feature = "parquet")]
-pub use bridge::tooling::parquet_io;
-
 #[cfg(feature = "fjall")]
 pub use engine::fjall_backend::FjallStore;
 #[cfg(feature = "localstorage")]
@@ -117,10 +106,6 @@ pub use engine::slatedb_backend::SlatedbStore;
 // Downstream crates (okm-dynamic, okm-query, bindings) and tests import
 // these module paths; keep them valid while callers migrate.
 
-#[cfg(feature = "arrow")]
-pub use bridge::arrow_bridge;
-#[cfg(feature = "parquet")]
-pub use bridge::tooling;
 #[cfg(feature = "fjall")]
 pub use engine::fjall_backend;
 #[cfg(feature = "localstorage")]

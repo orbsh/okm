@@ -35,7 +35,9 @@
     )
 )]
 
+pub mod bridge;
 pub mod delta;
+pub mod snapshot;
 
 use okm_core::changelog::window::{
     self, Window, WindowConfig, read_watermark, table_dirs, write_watermark,
@@ -311,7 +313,7 @@ pub fn write_parquet(win: &Window, out: &Path) -> Result<Vec<(String, String, bo
             .collect();
         // A dynamic-only document (a key with no row) has no row here: this file is a
         // row view, and the key is only in the segment because the row was deleted.
-        let (field, column) = okm_core::bridge::arrow_bridge::variant_column("variant", &maps);
+        let (field, column) = crate::bridge::variant_column("variant", &maps);
         let mut fields: Vec<arrow::datatypes::Field> = batch
             .schema()
             .fields()
@@ -328,7 +330,7 @@ pub fn write_parquet(win: &Window, out: &Path) -> Result<Vec<(String, String, bo
         .map_err(|e| DrainError::new(format!("{}: open column: {e}", win.table)))?;
     }
 
-    okm_core::bridge::tooling::parquet_io::write_batch(&batch, out)?;
+    crate::snapshot::parquet_io::write_batch(&batch, out)?;
     Ok(batch
         .schema()
         .fields()

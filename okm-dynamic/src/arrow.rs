@@ -1,6 +1,6 @@
 //! Schema-driven columns: `(key bytes, decoded payload)` → `RecordBatch`.
 //!
-//! The typed bridge (`okm_core::bridge::arrow_bridge`) reads a `Collection`, so it
+//! The typed bridge (`okm_parquet::bridge`) reads a `Collection`, so it
 //! is bound to the declaration at compile time. A drainer has no `Collection` and
 //! no row type — it has a segment file and a `CollectionSchema` sidecar — so this
 //! is the other half of ADR-0045 §9: the same columns built from the SAME
@@ -20,10 +20,9 @@ use arrow::array::{
     ArrayRef, BinaryArray, FixedSizeBinaryArray, Float64Array, Int64Array, StringArray, UInt8Array,
     UInt16Array, UInt32Array, UInt64Array,
 };
-use arrow::datatypes::{Field as ArrowField, Schema};
+use arrow::datatypes::{DataType, Field as ArrowField, Schema};
 use arrow::record_batch::RecordBatch;
 use okm_core::FieldType;
-use okm_core::arrow_backend::arrow_type;
 use okm_core::schema::{CollectionSchema, FieldSchema};
 use std::sync::Arc;
 
@@ -239,4 +238,41 @@ fn column(
             })?))
         }
     })
+}
+
+/// Arrow column type for a declared field kind.
+///
+/// THE mapping: a schema-driven column builder (the drain path, a third-party
+/// adapter) must call this rather than restate `FieldType → DataType`, or the
+/// same table exports as two different Arrow schemas depending on who wrote the
+/// file. Logical kinds are resolved here once — `VarInt` is its integer, `Quant`
+/// its dequantized f64, `Offset` its rebased i64, `Vocab` its LABEL (the id is
+/// the store's numbering, not something a warehouse can name, and the column is
+/// nullable because a row may name an id the vocabulary does not know).
+pub fn arrow_type(ty: FieldType) -> DataType {
+    match ty {
+        FieldType::U8 => DataType::UInt8,
+        FieldType::U16 => DataType::UInt16,
+        FieldType::U32 => DataType::UInt32,
+        FieldType::U64 => DataType::UInt64,
+        FieldType::FixedBytes => DataType::Binary,
+        // A uuid is a 16-byte id: fixed-size binary, not a variable one. It exports as bytes —
+        // the hyphenated text is a display form, and a warehouse column should keep the value.
+        FieldType::Uuid4 | FieldType::Uuid7 => DataType::FixedSizeBinary(16),
+        FieldType::Str => DataType::Utf8,
+        FieldType::Bytes => DataType::Binary,
+        // Logical types: VarInt decodes to its integer, Quant dequantizes
+        // to f64, Offset re-adds the base.
+        FieldType::VarInt => DataType::UInt64,
+        FieldType::Quant(_) => DataType::Float64,
+        // A categorical value exports its LABEL (ADR-0032): the id is the
+        // store's internal numbering, not something a warehouse can name. The
+        // column is nullable because a row may name an id the vocabulary does
+        // not know — the export records that hole instead of inventing a label.
+        FieldType::Vocab(_) => DataType::Utf8,
+        FieldType::Offset(_) => DataType::Int64,
+        // Variable-length frame → opaque binary column (like Bytes); the
+        // element type lives in the schema, Arrow stays byte-opaque.
+        FieldType::Vector(_) => DataType::Binary,
+    }
 }

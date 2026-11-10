@@ -55,7 +55,7 @@ allow carries its reason in place:
 | --- | --- | --- |
 | `okm-core/src/model.rs` | module (`model` + children) | the codec itself — encode/decode pairs of one build |
 | derive-emitted `decode_payload` | the generated fn | the codec, materialized in the consumer's crate |
-| `bridge/arrow_bridge.rs` | file | the export side: our bytes, our column assembly |
+| `okm-parquet/src/bridge.rs` | file | the export side: our bytes, our column assembly |
 | `okm-parquet/src/delta.rs` | fn | the log encoder rebuilds a batch's schema from the file it read, so a shape mismatch is its own bug, not the store's |
 | `SlatedbSync::open_mem` | fn | construction, once: no runtime/thread ⇒ no store |
 | `TestStore::slatedb_mem` | fn | test-double construction |

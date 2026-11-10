@@ -50,8 +50,10 @@ one step further out than the window: core produces segments and joins them into
 window, and what a table FORMAT does with that window — Parquet file, log commit, replay
 — is the drain crate's work. An encoder in core would make core the owner of a lake's
 layout decisions, which is what ADR-0045 §7 and ADR-0056's "only the formats move out"
-forbid. (The typed export path of ADR-0034, `export_parquet_with_variant` and the edge
-table, stays in core because it is the API's own projection, not the drain's.)
+forbid. (The typed export path of ADR-0034 — `to_record_batch`, the graph's edge table,
+`parquet_io` — moved there too: core carries no Arrow or Parquet dependency at all, so
+the projection and the type it reads are on opposite sides of the crates, joined by the
+`ToRecordBatch` / `EdgeTable` / `EdgeRestore` traits.)
 
 **A variant column is declared `variant`,** with `minReaderVersion 3` /
 `minWriterVersion 7` and `readerFeatures/writerFeatures = ["variantType"]`, and is

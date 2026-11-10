@@ -72,20 +72,6 @@ fn a_uuid_payload_field_keeps_its_kind_and_round_trips() {
     assert_eq!(got.note, "kept");
 }
 
-#[cfg(feature = "arrow")]
-#[test]
-fn a_uuid_exports_as_a_fixed_sixteen_byte_column() {
-    use okm_core::{FieldType, arrow_backend::arrow_type};
-    assert_eq!(
-        arrow_type(FieldType::Uuid7),
-        arrow::datatypes::DataType::FixedSizeBinary(16),
-        "a uuid is fixed width in the warehouse column too, not a variable binary blob"
-    );
-    assert_eq!(
-        arrow_type(FieldType::Uuid4),
-        arrow::datatypes::DataType::FixedSizeBinary(16)
-    );
-}
 
 #[test]
 fn a_uuid7_key_is_sixteen_bytes_and_its_order_is_time_order() {

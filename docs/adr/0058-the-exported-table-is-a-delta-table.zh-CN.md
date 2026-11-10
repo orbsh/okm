@@ -19,7 +19,7 @@ ADR-0056 §8 定下「每表一个目录」，sink 在其上写 Iceberg v2 元�
 
 **导出目录就是一张 Delta 表。** `_delta_log/NNNNNNNNNNNNNNNNNNNN.json` 每行一个 JSON action：第一个版本声明 `protocol` 与 `metaData`，之后每个版本就是一次提交，只含窗口写出的文件对应的 `add`。表就是目录：没有 catalog、不需要注册、没有绝对路径（规范规定 `add.path` 相对表目录）。
 
-**它住在 `okm-parquet`，不在核心。** 日志是变更日志的一次投影，比窗口再往外一层：核心产出段、合成窗口，而表**格式**拿这个窗口做什么——Parquet 文件、日志提交、回放——是抽干 crate 的活。把编码器放进核心，等于让核心拥有一张湖的布局决定权，这正是 ADR-0045 §7 与 ADR-0056「搬出去的只有格式」所禁止的。（ADR-0034 的 typed 导出路径——`export_parquet_with_variant` 与边表——仍留核心，因为那是 API 自己的投影，不是抽干的。）
+**它住在 `okm-parquet`，不在核心。** 日志是变更日志的一次投影，比窗口再往外一层：核心产出段、合成窗口，而表**格式**拿这个窗口做什么——Parquet 文件、日志提交、回放——是抽干 crate 的活。把编码器放进核心，等于让核心拥有一张湖的布局决定权，这正是 ADR-0045 §7 与 ADR-0056「搬出去的只有格式」所禁止的。（ADR-0034 的 typed 导出路径——`to_record_batch`、图的边表、`parquet_io`——也搬了过去：core 现在完全不依赖 Arrow 与 Parquet，于是投影和被投影的类型分处两侧，由 `ToRecordBatch` / `EdgeTable` / `EdgeRestore` 三个 trait 接上。）
 
 **variant 列声明为 `variant`**，配 `minReaderVersion 3` / `minWriterVersion 7` 与 `readerFeatures/writerFeatures = ["variantType"]`，物理形态是 `struct<metadata: binary, value: binary>` 并带 `arrow.parquet.variant` 扩展名。这个特性是表级的：不认它的读方必须拒绝整张表，而不是猜这一列是什么意思。
 

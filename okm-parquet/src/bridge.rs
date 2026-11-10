@@ -1,3 +1,21 @@
+//! The typed export: a `Collection` or a `Graph` as Arrow `RecordBatch`es (ADR-0007,
+//! ADR-0034). It lives in the drain crate, not in `okm-core`, because a batch IS the
+//! format — and because core would otherwise carry Arrow and Parquet as dependencies
+//! to write a store that has neither in it.
+//!
+//! The methods keep their names; the types they extend cannot be extended from here
+//! (Rust forbids inherent impls across crates), so they are traits: `ToRecordBatch`
+//! for a collection, `EdgeTable` for a graph. A caller adds one import and nothing
+//! else changes.
+
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unwrap_in_result,
+    clippy::panic_in_result_fn
+)]
+
 //! Arrow RecordBatch bridge (ADR-0007 Phase 1 — eager export).
 //!
 //! Streams a collection's documents as Arrow `RecordBatch`es: the key fields and the
@@ -16,74 +34,30 @@
 // The export side reads bytes this SDK wrote and assembles batches from arrays it
 // built itself: a failure here is the codec/construction being wrong, not input
 // (ADR-0040 — the import side, where the file is foreign, answers `Err` instead).
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::unwrap_in_result,
-    clippy::panic_in_result_fn
-)]
-
 use std::sync::Arc;
 
 use arrow::array::RecordBatch;
 use arrow::datatypes::{DataType, Field as ArrowField, Schema};
 
-use crate::engine::storage::VirtualStorage;
-use crate::model::field::{FieldDesc, FieldType};
-use crate::model::index::Document;
-use crate::model::key::KeyEncode;
+use okm_core::engine::storage::VirtualStorage;
+use okm_core::model::field::{FieldDesc, FieldType};
+use okm_core::model::index::Document;
+use okm_core::model::key::KeyEncode;
 // The graph's edge table (and the variant column it appends) is a PARQUET
 // shape, so these two are too: `--features arrow` alone must stay buildable.
-use crate::model::document::Collection;
-#[cfg(feature = "parquet")]
-use crate::model::graph::EdgeKey;
-use crate::model::graph::{Graph, GraphEncode};
-#[cfg(feature = "parquet")]
-use crate::model::obj_dynamic::DynamicValue;
+use okm_core::model::document::Collection;
+use okm_core::model::graph::EdgeKey;
+use okm_core::model::graph::{Graph, GraphEncode};
+use okm_core::model::obj_dynamic::DynamicValue;
+use okm_dynamic::arrow::arrow_type;
 
-/// Arrow column type for a declared field kind.
-///
-/// THE mapping: a schema-driven column builder (the drain path, a third-party
-/// adapter) must call this rather than restate `FieldType → DataType`, or the
-/// same table exports as two different Arrow schemas depending on who wrote the
-/// file. Logical kinds are resolved here once — `VarInt` is its integer, `Quant`
-/// its dequantized f64, `Offset` its rebased i64, `Vocab` its LABEL (the id is
-/// the store's numbering, not something a warehouse can name, and the column is
-/// nullable because a row may name an id the vocabulary does not know).
-pub fn arrow_type(ty: FieldType) -> DataType {
-    match ty {
-        FieldType::U8 => DataType::UInt8,
-        FieldType::U16 => DataType::UInt16,
-        FieldType::U32 => DataType::UInt32,
-        FieldType::U64 => DataType::UInt64,
-        FieldType::FixedBytes => DataType::Binary,
-        // A uuid is a 16-byte id: fixed-size binary, not a variable one. It exports as bytes —
-        // the hyphenated text is a display form, and a warehouse column should keep the value.
-        FieldType::Uuid4 | FieldType::Uuid7 => DataType::FixedSizeBinary(16),
-        FieldType::Str => DataType::Utf8,
-        FieldType::Bytes => DataType::Binary,
-        // Logical types: VarInt decodes to its integer, Quant dequantizes
-        // to f64, Offset re-adds the base.
-        FieldType::VarInt => DataType::UInt64,
-        FieldType::Quant(_) => DataType::Float64,
-        // A categorical value exports its LABEL (ADR-0032): the id is the
-        // store's internal numbering, not something a warehouse can name. The
-        // column is nullable because a row may name an id the vocabulary does
-        // not know — the export records that hole instead of inventing a label.
-        FieldType::Vocab(_) => DataType::Utf8,
-        FieldType::Offset(_) => DataType::Int64,
-        // Variable-length frame → opaque binary column (like Bytes); the
-        // element type lives in the schema, Arrow stays byte-opaque.
-        FieldType::Vector(_) => DataType::Binary,
-    }
-}
 
 /// Decode a prefix-monotonic varint (P1 wire — the same codec as
 /// `VarIntEnc`, shared shape) for `VarInt` columns. `raw` is the frame
 /// value region only.
 fn varint_decode(b: &[u8]) -> (u64, usize) {
     let w =
-        crate::model::wrappers::wire::prefix_width(*b.first().expect("VarInt: truncated frame"));
+        okm_core::model::wrappers::wire::prefix_width(*b.first().expect("VarInt: truncated frame"));
     assert!(b.len() >= w, "VarInt: truncated frame");
     if w == 9 {
         return (u64::from_be_bytes(b[1..9].try_into().unwrap()), 9);
@@ -167,7 +141,7 @@ fn vocab_labels<S: VirtualStorage + ?Sized>(
     store: &S,
     header: &[u8],
     row_fields: &'static [FieldDesc],
-) -> crate::error::Result<
+) -> okm_core::error::Result<
     std::collections::HashMap<usize, std::collections::HashMap<Vec<u8>, String>>,
 > {
     let mut out = std::collections::HashMap::new();
@@ -176,9 +150,9 @@ fn vocab_labels<S: VirtualStorage + ?Sized>(
             continue;
         };
         let mut prefix = header.to_vec();
-        crate::model::index::write_slot(&mut prefix, id_slot);
+        okm_core::model::index::write_slot(&mut prefix, id_slot);
         let mut by_id = std::collections::HashMap::new();
-        for (suffix, label) in crate::engine::storage::scan_suffix_kv(store, &prefix)? {
+        for (suffix, label) in okm_core::engine::storage::scan_suffix_kv(store, &prefix)? {
             // A real entry of the id face is exactly the id width; the
             // bare-prefix singleton (the allocation cursor) is zero bytes and
             // falls out here by length.
@@ -200,7 +174,7 @@ fn vocab_labels<S: VirtualStorage + ?Sized>(
 fn labels_for<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>>(
     collection: &Collection<S, K, R>,
     proj: &Projection<K, R>,
-) -> crate::error::Result<
+) -> okm_core::error::Result<
     std::collections::HashMap<usize, std::collections::HashMap<Vec<u8>, String>>,
 > {
     if !R::HAS_VOCAB {
@@ -418,7 +392,6 @@ fn build_batch<K: KeyEncode, R: Document<Key = K>>(
 /// recurse; scalars map 1:1). UInt widens to i64 — Variant integers are
 /// signed, and OKM UInt fields are u64: values above i64::MAX wrap. This
 /// is a documented export limitation, not a storage change.
-#[cfg(feature = "parquet")]
 fn push_variant<B: parquet_variant::VariantBuilderExt>(b: &mut B, v: &DynamicValue) {
     match v {
         DynamicValue::Null => b.append_null(),
@@ -449,8 +422,6 @@ fn push_variant<B: parquet_variant::VariantBuilderExt>(b: &mut B, v: &DynamicVal
         }
     }
 }
-
-#[cfg(feature = "parquet")]
 fn push_variant_obj<S: parquet_variant::BuilderSpecificState>(
     ob: &mut parquet_variant::ObjectBuilder<'_, S>,
     map: &std::collections::BTreeMap<String, DynamicValue>,
@@ -485,8 +456,7 @@ fn push_variant_obj<S: parquet_variant::BuilderSpecificState>(
 /// struct of the two binaries. Writing the flat form and calling it a variant was a
 /// real defect: DuckDB read the column as `blob` and `variant_extract` answered NULL
 /// for every row, while the same bytes in the struct form decoded correctly.
-#[cfg(feature = "parquet")]
-pub fn variant_parts(map: &crate::model::obj_dynamic::ValueMap) -> (Vec<u8>, Vec<u8>) {
+pub fn variant_parts(map: &okm_core::model::obj_dynamic::ValueMap) -> (Vec<u8>, Vec<u8>) {
     let mut b = parquet_variant::VariantBuilder::new();
     push_variant(&mut b, &DynamicValue::Obj(map.clone()));
     b.finish()
@@ -496,7 +466,6 @@ pub fn variant_parts(map: &crate::model::obj_dynamic::ValueMap) -> (Vec<u8>, Vec
 /// (`arrow.parquet.variant` in the canonical extension list). Both children are declared
 /// nullable so a null row is a null struct rather than a validation error; a present row
 /// always carries both halves.
-#[cfg(feature = "parquet")]
 fn variant_type() -> DataType {
     use arrow::datatypes::Field as ArrowField;
     DataType::Struct(
@@ -510,7 +479,6 @@ fn variant_type() -> DataType {
 
 /// A Variant-typed Arrow extension field, the analytics-layer twin of the dynamic
 /// segment. The extension name is the canonical one, `arrow.parquet.variant`.
-#[cfg(feature = "parquet")]
 fn variant_field(name: &str, nullable: bool) -> arrow::datatypes::Field {
     use arrow::datatypes::Field as ArrowField;
     let mut f = ArrowField::new(name, variant_type(), nullable);
@@ -524,9 +492,8 @@ fn variant_field(name: &str, nullable: bool) -> arrow::datatypes::Field {
 /// A `variant` column over a run of open-field maps. `None` is a null cell — a row with
 /// no open fields has nothing to say, and a null says it without inventing an empty
 /// object.
-#[cfg(feature = "parquet")]
 pub fn variant_array(
-    maps: &[Option<&crate::model::obj_dynamic::ValueMap>],
+    maps: &[Option<&okm_core::model::obj_dynamic::ValueMap>],
 ) -> arrow::array::StructArray {
     use arrow::array::{Array, BinaryBuilder, StructArray};
     use arrow::buffer::NullBuffer;
@@ -565,10 +532,9 @@ pub fn variant_array(
 }
 
 /// A `variant` column with its field: what a caller appends to a batch.
-#[cfg(feature = "parquet")]
 pub fn variant_column(
     name: &str,
-    maps: &[Option<&crate::model::obj_dynamic::ValueMap>],
+    maps: &[Option<&okm_core::model::obj_dynamic::ValueMap>],
 ) -> (
     arrow::datatypes::Field,
     std::sync::Arc<dyn arrow::array::Array>,
@@ -586,7 +552,7 @@ fn tlv_value<'a>(cold: &'a [u8], cold_fields: &[(usize, &FieldDesc)], fi: usize)
         // P2 wire: frame = [tag u8][len varint][value] — take_len reads
         // the prefix-monotonic length and reports its byte width.
         let (len, len_n) =
-            crate::take_len(&cold[off + 1..]).expect("cold frame: truncated length prefix");
+            okm_core::take_len(&cold[off + 1..]).expect("cold frame: truncated length prefix");
         let val = off + 1 + len_n;
         if *decl == fi {
             // A cold frame carries its own length; a FIXED-width field never
@@ -626,7 +592,17 @@ fn swap_be(src: &[u8], off: usize, width: usize, ty: FieldType) -> Vec<u8> {
     }
 }
 
-impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> {
+/// The typed export: a `Collection` as one Arrow `RecordBatch` (ADR-0007).
+pub trait ToRecordBatch {
+    fn to_record_batch(&self) -> okm_core::error::Result<RecordBatch>;
+    fn to_record_batch_with_variant(&mut self) -> okm_core::error::Result<RecordBatch>;
+    /// The columns this export produces: `(name, Arrow type)`.
+    fn export_columns(&self) -> Vec<(&'static str, DataType)>;
+    /// Key bytes plus payload bytes: what a row occupies on the wire.
+    fn row_width(&self) -> usize;
+}
+
+impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> ToRecordBatch for Collection<S, K, R> {
     /// Export all documents as one Arrow `RecordBatch` (ADR-0007 Phase 1).
     ///
     /// Columns: key fields (declaration order) then payload fields. Key and
@@ -637,7 +613,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     /// Reads through the engine's scan surface — engine-independent, same
     /// batch shape for fjall / slatedb-backed tables. Categorical fields cost
     /// one prefix scan of their id face, not a probe per row.
-    pub fn to_record_batch(&self) -> crate::error::Result<RecordBatch> {
+    fn to_record_batch(&self) -> okm_core::error::Result<RecordBatch> {
         let proj = Projection::<K, R>::new();
         let documents = self.scan_documents_raw()?;
         let labels = labels_for(self, &proj)?;
@@ -650,8 +626,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     /// without a dynamic segment get `null`. The declared fields stay
     /// typed columns — Variant is the analytics-layer twin of the
     /// dynamic path, not a replacement for it (ADR-0007).
-    #[cfg(feature = "parquet")]
-    pub fn to_record_batch_with_variant(&mut self) -> crate::error::Result<RecordBatch> {
+    fn to_record_batch_with_variant(&mut self) -> okm_core::error::Result<RecordBatch> {
         use arrow::datatypes::{Field as ArrowField, Schema as ArrowSchema};
 
         let proj = Projection::<K, R>::new();
@@ -663,16 +638,16 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
 
         // One Variant per document from its dynamic segment, as the two halves the
         // canonical storage type wants.
-        let mut per_row: Vec<Option<crate::model::obj_dynamic::ValueMap>> =
+        let mut per_row: Vec<Option<okm_core::model::obj_dynamic::ValueMap>> =
             Vec::with_capacity(documents.len());
         for (kenc, _) in &documents {
             let key = K::decode(kenc);
-            let map: Option<crate::model::obj_dynamic::ValueMap> = self
+            let map: Option<okm_core::model::obj_dynamic::ValueMap> = self
                 .slot1_map(&key)?
                 .map(|fields| fields.into_iter().collect());
             per_row.push(map);
         }
-        let refs: Vec<Option<&crate::model::obj_dynamic::ValueMap>> =
+        let refs: Vec<Option<&okm_core::model::obj_dynamic::ValueMap>> =
             per_row.iter().map(|m| m.as_ref()).collect();
         let variant_col = Arc::new(variant_array(&refs)) as Arc<dyn arrow::array::Array>;
 
@@ -697,7 +672,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     /// Exported column names (key fields then payload fields) with their
     /// Arrow types — the schema as declared, handy for callers assembling
     /// downstream tables.
-    pub fn export_columns(&self) -> Vec<(&'static str, DataType)> {
+    fn export_columns(&self) -> Vec<(&'static str, DataType)> {
         let proj = Projection::<K, R>::new();
         proj.key_fields
             .iter()
@@ -707,14 +682,21 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     }
 
     /// Approximate per-batch memory: one document's full field width.
-    pub fn row_width(&self) -> usize {
+    fn row_width(&self) -> usize {
         Projection::<K, R>::new().total_width()
     }
 }
 
 // ---- the graph's edge set as ONE table (ADR-0034) -------------------------
 
-impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
+/// The graph's edge set as ONE table (ADR-0034).
+pub trait EdgeTable {
+    fn to_record_batch_table<F>(&mut self, name_of: F) -> okm_core::error::Result<RecordBatch>
+    where
+        F: Fn(u16) -> Option<String>;
+}
+
+impl<S: VirtualStorage, E: GraphEncode> EdgeTable for Graph<S, E> {
     /// The graph's edges as one `RecordBatch`, in the shape a table has:
     /// `[src_table, src_pkey, dst_table, dst_pkey, predicate]`, then the edge
     /// declaration's own fields, then the edge's OPEN ATTRIBUTES as a `variant`
@@ -725,8 +707,7 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
     /// cannot decode another table's key into that table's fields without that
     /// table's declaration. `name_of` maps an ns to its table name; an ns it does
     /// not know yields a null cell, never an invented name.
-    #[cfg(feature = "parquet")]
-    pub fn to_record_batch_table<F>(&mut self, name_of: F) -> crate::error::Result<RecordBatch>
+    fn to_record_batch_table<F>(&mut self, name_of: F) -> okm_core::error::Result<RecordBatch>
     where
         F: Fn(u16) -> Option<String>,
     {
@@ -740,7 +721,7 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
         // (src name, src pkey, dst name, dst pkey, predicate) per row
         type EdgeRow = (Option<String>, Vec<u8>, Option<String>, Vec<u8>, String);
         let mut rows: Vec<EdgeRow> = Vec::with_capacity(ids.len());
-        let mut variants: Vec<Option<crate::model::obj_dynamic::ValueMap>> =
+        let mut variants: Vec<Option<okm_core::model::obj_dynamic::ValueMap>> =
             Vec::with_capacity(ids.len());
 
         for id in ids {
@@ -760,7 +741,7 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
             variants.push(self.attrs(id)?.map(|fields| {
                 fields
                     .into_iter()
-                    .collect::<crate::model::obj_dynamic::ValueMap>()
+                    .collect::<okm_core::model::obj_dynamic::ValueMap>()
             }));
             documents.push((id.to_be_bytes().to_vec(), Some(body.payload)));
         }
@@ -833,7 +814,7 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
 
         // The variant column, the same struct<metadata, value> shape as the document
         // path — one encoding, or a reader meets two.
-        let refs: Vec<Option<&crate::model::obj_dynamic::ValueMap>> =
+        let refs: Vec<Option<&okm_core::model::obj_dynamic::ValueMap>> =
             variants.iter().map(|m| m.as_ref()).collect();
         arrays.push(Arc::new(variant_array(&refs)));
 

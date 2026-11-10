@@ -70,8 +70,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     /// re-interns labels into the destination vocabulary BEFORE the rows land.
     /// Feature-gated with that caller, so a build without `parquet` carries no
     /// unused verb.
-    #[cfg(feature = "parquet")]
-    pub(crate) fn store_mut(&mut self) -> &mut S {
+    pub fn store_mut(&mut self) -> &mut S {
         &mut self.store
     }
 
@@ -1226,7 +1225,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     /// zero-frame list is never written, so empty and absent are one state.
     /// Crate-visible for the export bridge, which needs the segment WITHOUT the
     /// declared half (the variant column) — the public read is [`fetch`].
-    pub(crate) fn slot1_map(
+    pub fn slot1_map(
         &self,
         key: &K,
     ) -> crate::error::Result<Option<BTreeMap<String, DynamicValue>>> {

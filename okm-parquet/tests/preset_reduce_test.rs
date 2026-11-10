@@ -252,7 +252,6 @@ fn sum_acc_type_follows_field() {
 /// ADR-0034: reduces travel as their own derived table — `(table, reduce,
 /// group, value)` — because a restored table whose watermark is missing hands
 /// out ids it already used.
-#[cfg(feature = "parquet")]
 #[test]
 fn the_reduce_table_exports_as_its_own_file() {
     use arrow::array::{Array, BinaryArray, UInt16Array};
@@ -272,7 +271,7 @@ fn the_reduce_table_exports_as_its_own_file() {
     }
 
     let path = dir.path().join("post_reduces.parquet");
-    okm_core::bridge::tooling::parquet_io::export_reduces::<_, __OkmReduce_Post_2>(
+    okm_parquet::snapshot::parquet_io::export_reduces::<_, __OkmReduce_Post_2>(
         t.store(),
         Post::NS_PREFIX,
         "posts",

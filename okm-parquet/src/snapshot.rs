@@ -1,24 +1,27 @@
-//! Tooling interfaces (PLAN Phase 4): layout audit tables, Parquet snapshot
-//! export/import.
+//! The snapshot half of the format work: a table's CURRENT STATE as Parquet
+//! (`export_parquet`, `export_parquet_with_variant`, `export_reduces`) and back
+//! (`import_parquet`), plus the JSON-schema view of a declaration.
 //!
-//! These are library functions, not a standalone binary: `Collection<S, K, R>`
-//! binds user types at compile time, so the type context must live in the
-//! caller's application. A "CLI experience" is a thin bin wrapping these
-//! calls.
+//! State, not history: a deleted row is simply absent, because this reads the store.
+//! Change export is the log's job (ADR-0045 §8) — a window carries removals and a
+//! columnar append cannot.
 //!
-//! - `json_schema` renders the declaration-order byte layout as
-//!   machine-readable JSON (from the same `FieldDesc` tables the derive
-//!   macros emit — the declaration is still the single source; nothing
-//!   re-parses source code).
-//! - `export_parquet` / `import_parquet` (feature `parquet`) sit on the
-//!   Arrow bridge: RecordBatch → Parquet file, and back. Import writes
-//!   through [`Collection::put`] — the normal one-batch write contract (primary
-//!   key + index entries) is never bypassed; this is a backup/restore path,
-//!   not a second write channel.
+//! It lives in the drain crate for the same reason `bridge` does: Parquet is a
+//! format, and the store does not need it to be a store. The graph's restore half is
+//! the `EdgeRestore` trait, for the same cross-crate reason.
 
-use crate::model::field::FieldType;
-use crate::model::index::Document;
-use crate::model::key::KeyEncode;
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unwrap_in_result,
+    clippy::panic_in_result_fn
+)]
+
+use crate::bridge::ToRecordBatch;
+use okm_core::model::field::FieldType;
+use okm_core::model::index::Document;
+use okm_core::model::key::KeyEncode;
 
 /// Declaration-order offset table for a fixed-width region (the key
 /// encoding, or the value half of TLV frames — widths are declared, so the
@@ -83,11 +86,10 @@ pub fn json_schema<K: KeyEncode, R: Document<Key = K>>() -> String {
 }
 
 /// Parquet snapshot tier (ADR-0007 Phase 3): batch → file, file → store.
-#[cfg(feature = "parquet")]
 pub mod parquet_io {
     use super::*;
-    use crate::engine::storage::VirtualStorage;
-    use crate::model::document::Collection;
+    use okm_core::engine::storage::VirtualStorage;
+    use okm_core::model::document::Collection;
     use arrow::array::{Array, BinaryArray, RecordBatch};
     use std::sync::Arc;
 
@@ -175,7 +177,7 @@ pub mod parquet_io {
     /// because a restored table whose watermark is missing hands out ids it
     /// already used. One row per entry keeps the shape ordinary: a table name, the
     /// reduce's slot, the group bytes (empty = the whole table), and the value.
-    pub fn export_reduces<S: VirtualStorage, A: crate::model::reduce::Reduce>(
+    pub fn export_reduces<S: VirtualStorage, A: okm_core::model::reduce::Reduce>(
         store: &S,
         ns_prefix: &[u8],
         table: &str,
@@ -186,8 +188,8 @@ pub mod parquet_io {
         use arrow::datatypes::{DataType, Field as ArrowField, Schema as ArrowSchema};
 
         let mut prefix = ns_prefix.to_vec();
-        crate::model::index::write_slot(&mut prefix, A::SLOT);
-        let entries = crate::engine::storage::scan_suffix_kv(store, &prefix)
+        okm_core::model::index::write_slot(&mut prefix, A::SLOT);
+        let entries = okm_core::engine::storage::scan_suffix_kv(store, &prefix)
             .map_err(|e| parquet::errors::ParquetError::General(e.to_string()))?;
 
         let binary = |vals: &[Vec<u8>]| -> BinaryArray {
@@ -254,11 +256,11 @@ pub mod parquet_io {
     pub(crate) fn wire_bytes<S: VirtualStorage>(
         col: &dyn Array,
         document: usize,
-        field: &crate::model::field::FieldDesc,
+        field: &okm_core::model::field::FieldDesc,
         store: &mut S,
         ns_header: &[u8],
     ) -> Result<Vec<u8>, String> {
-        use crate::model::wrappers::{VarIntEnc as _, quantize, wire_to_be_bytes};
+        use okm_core::model::wrappers::{VarIntEnc as _, quantize, wire_to_be_bytes};
         let ty = field.ty;
         let width = field.width;
         if let FieldType::Vocab(id_slot) = ty {
@@ -280,8 +282,8 @@ pub mod parquet_io {
                     field.name, document
                 ));
             }
-            let faces = crate::model::obj_vocab::VocabFaces::from_id_slot(id_slot);
-            return crate::model::obj_vocab::vocab_id(
+            let faces = okm_core::model::obj_vocab::VocabFaces::from_id_slot(id_slot);
+            return okm_core::model::obj_vocab::vocab_id(
                 store,
                 ns_header,
                 faces,
@@ -324,7 +326,7 @@ pub mod parquet_io {
             }
             FieldType::Offset(base) => {
                 let c = column_as::<arrow::array::Int64Array>(col, field.name)?;
-                crate::offset_encode(c.value(document), base)
+                okm_core::offset_encode(c.value(document), base)
             }
             // A `Vector` exports as the OPAQUE frame bytes (the bridge keeps the
             // element type in the schema and the column byte-opaque), so the
@@ -451,7 +453,7 @@ pub mod parquet_io {
                         prow.push(fi as u8);
                         // P2 wire: frame length is the prefix-monotonic varint
                         // (shared codec — one length discipline everywhere).
-                        crate::put_len(prow, wb.len());
+                        okm_core::put_len(prow, wb.len());
                         prow.extend_from_slice(&wb);
                     }
                 }
@@ -514,7 +516,7 @@ pub mod parquet_io {
         col: &dyn arrow::array::Array,
         row: usize,
     ) -> Result<
-        Option<std::collections::BTreeMap<String, crate::model::obj_dynamic::DynamicValue>>,
+        Option<std::collections::BTreeMap<String, okm_core::model::obj_dynamic::DynamicValue>>,
         String,
     > {
         if col.is_null(row) {
@@ -536,7 +538,7 @@ pub mod parquet_io {
         )
         .map_err(|e| e.to_string())?;
         match dynamic_from_variant(variant) {
-            crate::model::obj_dynamic::DynamicValue::Obj(map) => Ok(Some(map)),
+            okm_core::model::obj_dynamic::DynamicValue::Obj(map) => Ok(Some(map)),
             _ => Err("a document's variant cell holds an object, not a scalar".into()),
         }
     }
@@ -546,8 +548,8 @@ pub mod parquet_io {
     /// and a negative one as `Int` — the export cannot tell them apart.
     fn dynamic_from_variant(
         v: parquet_variant::Variant<'_, '_>,
-    ) -> crate::model::obj_dynamic::DynamicValue {
-        use crate::model::obj_dynamic::DynamicValue as DV;
+    ) -> okm_core::model::obj_dynamic::DynamicValue {
+        use okm_core::model::obj_dynamic::DynamicValue as DV;
         if v.as_null().is_some() {
             return DV::Null;
         }
@@ -594,14 +596,29 @@ pub mod parquet_io {
     /// guessed ns. The edge id rides the first key column, so a restore keeps the
     /// ids the backup carries instead of renumbering (§5's rule for watermarks,
     /// applied to the edge sequence).
-    #[cfg(feature = "parquet")]
-    impl<S: crate::engine::storage::VirtualStorage, E: crate::model::graph::GraphEncode>
-        crate::model::graph::Graph<S, E>
+    /// The restore half of the edge table: write it back through the graph's own
+    /// write path, so every derived face follows. A trait because the graph is
+    /// `okm-core`'s and this crate is not.
+    pub trait EdgeRestore {
+        fn import_file<F>(&mut self, path: &std::path::Path, ns_of: F) -> Result<usize, String>
+        where
+            F: Fn(&str) -> Option<u16>;
+        fn import_table<F>(
+            &mut self,
+            batch: &arrow::array::RecordBatch,
+            ns_of: F,
+        ) -> Result<usize, String>
+        where
+            F: Fn(&str) -> Option<u16>;
+    }
+
+    impl<S: okm_core::engine::storage::VirtualStorage, E: okm_core::model::graph::GraphEncode>
+        EdgeRestore for okm_core::model::graph::Graph<S, E>
     {
         /// The file form of [`Self::import_table`]: read every batch and land it,
         /// so a caller never assembles a batch the export did not hand it. An empty
         /// file restores nothing (0), which is the export of an empty table.
-        pub fn import_file<F>(&mut self, path: &std::path::Path, ns_of: F) -> Result<usize, String>
+        fn import_file<F>(&mut self, path: &std::path::Path, ns_of: F) -> Result<usize, String>
         where
             F: Fn(&str) -> Option<u16>,
         {
@@ -619,7 +636,7 @@ pub mod parquet_io {
             Ok(rows)
         }
 
-        pub fn import_table<F>(
+        fn import_table<F>(
             &mut self,
             batch: &arrow::array::RecordBatch,
             ns_of: F,
@@ -627,7 +644,7 @@ pub mod parquet_io {
         where
             F: Fn(&str) -> Option<u16>,
         {
-            use crate::model::graph::{EdgeHead, EdgeKey, NodeRef};
+            use okm_core::model::graph::{EdgeHead, EdgeKey, NodeRef};
             use arrow::array::{Array, BinaryArray, StringArray};
 
             let key_fields = <EdgeKey as KeyEncode>::FIELDS;
@@ -672,7 +689,7 @@ pub mod parquet_io {
             let mut ids: Vec<u64> = Vec::with_capacity(n);
             let mut payloads: Vec<E> = Vec::with_capacity(n);
             let mut props: Vec<
-                std::collections::BTreeMap<String, crate::model::obj_dynamic::DynamicValue>,
+                std::collections::BTreeMap<String, okm_core::model::obj_dynamic::DynamicValue>,
             > = Vec::with_capacity(n);
             {
                 let store = self.store_mut();
@@ -729,7 +746,7 @@ pub mod parquet_io {
                         let wb =
                             wire_bytes(batch.column(5 + nkey + fi), row, f, store, &ns_header)?;
                         payload.push(fi as u8);
-                        crate::put_len(&mut payload, wb.len());
+                        okm_core::put_len(&mut payload, wb.len());
                         payload.extend_from_slice(&wb);
                     }
                     heads.push(EdgeHead {
@@ -748,7 +765,7 @@ pub mod parquet_io {
                 .zip(ids.iter().zip(payloads.iter()))
                 .zip(props.iter())
             {
-                let mut batch = crate::engine::storage::Batch::default();
+                let mut batch = okm_core::engine::storage::Batch::default();
                 self.link_into(&mut batch, head, payload, *id)
                     .map_err(|e| e.to_string())?;
                 self.replace_into(&mut batch, *id, fields)
@@ -764,11 +781,10 @@ pub mod parquet_io {
     /// The open-attributes column (a Variant holding one object) back to the map a
     /// write takes. A null cell is "no attributes", which is not an error; a cell
     /// that is not an object is one.
-    #[cfg(feature = "parquet")]
     fn variant_map(
         col: &dyn arrow::array::Array,
         row: usize,
-    ) -> Result<std::collections::BTreeMap<String, crate::model::obj_dynamic::DynamicValue>, String>
+    ) -> Result<std::collections::BTreeMap<String, okm_core::model::obj_dynamic::DynamicValue>, String>
     {
         use arrow::array::{Array, BinaryArray, StructArray};
 
@@ -799,10 +815,8 @@ pub mod parquet_io {
         }
         Ok(out)
     }
-
-    #[cfg(feature = "parquet")]
-    fn to_dynamic(v: &parquet_variant::Variant<'_, '_>) -> crate::model::obj_dynamic::DynamicValue {
-        use crate::model::obj_dynamic::DynamicValue;
+    fn to_dynamic(v: &parquet_variant::Variant<'_, '_>) -> okm_core::model::obj_dynamic::DynamicValue {
+        use okm_core::model::obj_dynamic::DynamicValue;
         if v.as_null().is_some() {
             return DynamicValue::Null;
         }
@@ -847,10 +861,9 @@ pub mod parquet_io {
     /// carry. `A::Acc: PartialOrd` is the price of that rule: the reduces that
     /// travel are watermarks (a running maximum), and a reduce whose accumulator
     /// has no order must not be pushed through this door.
-    #[cfg(feature = "parquet")]
     pub fn import_reduces<
-        S: crate::engine::storage::VirtualStorage,
-        A: crate::model::reduce::Reduce,
+        S: okm_core::engine::storage::VirtualStorage,
+        A: okm_core::model::reduce::Reduce,
     >(
         store: &S,
         ns_prefix: &[u8],
@@ -860,14 +873,14 @@ pub mod parquet_io {
     where
         A::Acc: PartialOrd,
     {
-        use crate::model::reduce::ReduceCodec;
+        use okm_core::model::reduce::ReduceCodec;
         use arrow::array::{Array, BinaryArray, StringArray, UInt16Array};
 
         let file = std::fs::File::open(path)?;
         let reader = parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(file)?
             .build()?;
         let mut prefix = ns_prefix.to_vec();
-        crate::model::index::write_slot(&mut prefix, A::SLOT);
+        okm_core::model::index::write_slot(&mut prefix, A::SLOT);
 
         let mut count = 0usize;
         for batch in reader {

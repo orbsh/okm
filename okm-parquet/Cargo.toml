@@ -13,17 +13,18 @@ name = "okm-parquet"
 path = "src/main.rs"
 
 [dependencies]
-okm-core = { path = "../okm-core", features = ["schema-serde", "parquet", "fjall"] }
+okm-core = { path = "../okm-core", features = ["schema-serde", "fjall"] }
 okm-wire = { path = "../okm-wire" }
 okm-dynamic = { path = "../okm-dynamic", features = ["arrow", "replay"] }
 arrow = "60"
 parquet = { version = "60", default-features = false, features = ["arrow"] }
+parquet-variant = "60"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 [dev-dependencies]
 okm-derive = { path = "../okm-derive" }
-okm-core = { path = "../okm-core", features = ["test-engines", "schema-serde", "parquet"] }
+okm-core = { path = "../okm-core", features = ["test-engines", "schema-serde"] }
 parquet = { version = "60", default-features = false, features = ["arrow"] }
 tempfile = "3"
 

@@ -17,9 +17,6 @@ tempfile = { version = "3", optional = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"], optional = true }
 object_store = { version = "0.13", optional = true, default-features = false }
 web-sys = { version = "0.3", optional = true, features = ["Window", "Storage"] }
-arrow = { version = "60", optional = true }
-parquet = { version = "60", optional = true, default-features = false, features = ["arrow"] }
-parquet-variant = { version = "60", optional = true }
 
 [build-dependencies]
 proc-macro2 = "1"
@@ -34,13 +31,11 @@ slatedb = ["dep:slatedb", "dep:tokio"]
 fjall = ["dep:fjall", "dep:tempfile"]
 redb = ["dep:redb", "dep:tempfile"]
 localstorage = ["dep:web-sys"]
-arrow = ["dep:arrow"]
 # A second copy of every sealed segment, made from the finished file (ADR-0045 §18).
 # `s3` alone takes any `ObjectStore` the caller builds (an in-memory one in tests);
 # `s3-aws` adds the S3 client, which is what pulls the HTTP stack in.
 s3 = ["dep:object_store", "dep:tokio"]
 s3-aws = ["s3", "object_store/aws"]
-parquet = ["dep:parquet", "dep:parquet-variant", "arrow"]
 
 [dev-dependencies]
 tempfile = "3"
@@ -70,36 +65,12 @@ name = "engine_paths"
 required-features = ["test-engines", "fjall"]
 
 [[test]]
-name = "arrow_bridge_test"
-required-features = ["arrow"]
-
-[[test]]
-name = "codec_v2_test"
-required-features = ["parquet"]
-
-[[test]]
 name = "s3_sink_test"
 required-features = ["s3", "test-engines"]
 
-[[test]]
-name = "variant_smoke"
-required-features = ["parquet"]
-
-[[test]]
-name = "variant_export_test"
-required-features = ["parquet", "test-engines"]
-
-[[test]]
-name = "tooling_test"
-required-features = ["parquet"]
-
-# parquet for the export/import mirrors, test-engines for the store they run on:
+# test-engines for the store the integration tests run on:
 # the file calls `TestStore::slatedb_mem()` and `Graph::to_record_batch_table`,
 # so neither feature alone compiles it.
-[[test]]
-name = "import_table_test"
-required-features = ["parquet", "test-engines"]
-
 [[test]]
 name = "deprecated_index_test"
 required-features = ["test-engines"]
@@ -192,10 +163,6 @@ name = "uuid_key"
 required-features = ["test-engines", "fjall"]
 
 [[test]]
-name = "wrappers_test"
-required-features = ["test-engines"]
-
-[[test]]
 name = "write_commit_test"
 required-features = ["test-engines"]
 
@@ -223,10 +190,6 @@ name = "embed_two_level_test"
 required-features = ["test-engines"]
 
 [[test]]
-name = "graph_edge_test"
-required-features = ["test-engines"]
-
-[[test]]
 name = "list_test"
 required-features = ["test-engines"]
 
@@ -240,10 +203,6 @@ required-features = ["test-engines"]
 
 [[test]]
 name = "prefix_scan_test"
-required-features = ["test-engines"]
-
-[[test]]
-name = "preset_reduce_test"
 required-features = ["test-engines"]
 
 [[test]]

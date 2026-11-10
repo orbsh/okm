@@ -10,6 +10,7 @@
     clippy::unwrap_in_result,
     clippy::panic_in_result_fn
 )]
+use okm_parquet::bridge::EdgeTable;
 
 use okm_core::{
     Batch, DocumentEncode, EdgeHead, Graph, GraphEncode, KeyEncode, NodeRef, NodeSet, PRIMARY_SLOT,
@@ -738,7 +739,6 @@ fn neighbor_nodes_resolve_to_node_refs() {
 /// pairs — with the pkey as raw bytes, because one edge table spans node
 /// collections and cannot decode another table's key — the declaration's fields
 /// are typed columns, and the edge's open attributes ride a `variant` column.
-#[cfg(feature = "parquet")]
 #[test]
 fn the_edge_set_exports_as_a_table_with_named_endpoints() {
     use arrow::array::{Array, BinaryArray};

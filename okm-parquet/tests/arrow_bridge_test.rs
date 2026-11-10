@@ -9,6 +9,7 @@
     clippy::unwrap_in_result,
     clippy::panic_in_result_fn
 )]
+use okm_parquet::bridge::ToRecordBatch;
 
 use arrow::datatypes::DataType;
 use okm_core::{
@@ -393,7 +394,6 @@ fn uuid_field_exports_as_fixed_size_binary() {
 /// through `import_parquet`, and the ids are the same 16 bytes — v7's clock
 /// prefix included, because a byte-order-preserving copy is the only thing that
 /// keeps a uuid an id rather than a rendered string.
-#[cfg(feature = "parquet")]
 #[test]
 fn uuid_field_survives_a_parquet_round_trip() {
     let dir = tempfile::tempdir().unwrap();
@@ -408,11 +408,11 @@ fn uuid_field_survives_a_parquet_round_trip() {
         t1.put(&DeviceKey { id }, &device_row(device, Uuid4::new()))
             .unwrap();
     }
-    okm_core::parquet_io::export_parquet(&t1, &path).unwrap();
+    okm_parquet::snapshot::parquet_io::export_parquet(&t1, &path).unwrap();
 
     let mut t2: Collection<TestStore, DeviceKey, DeviceRow> =
         Collection::new(TestStore::slatedb_mem());
-    let n = okm_core::parquet_io::import_parquet(&mut t2, &path).unwrap();
+    let n = okm_parquet::snapshot::parquet_io::import_parquet(&mut t2, &path).unwrap();
     assert_eq!(n, 2);
     for (id, device) in rows {
         let got = t2.get(&DeviceKey { id }).unwrap().expect("restored row");
