@@ -131,7 +131,7 @@ impl<S: VirtualStorage> Graph<S> {
     /// VOCABULARY (0x04/0x05) — first-seen-claims-next, append-only.
     fn predicate_vocab_id(&mut self, predicate: &str) -> Result<u16, String> {
         self.predicates
-            .id_for(&mut self.store, &self.ns, predicate)
+            .id_for(&self.store, &self.ns, predicate)
             .map_err(|e| e.to_string())
     }
 
@@ -143,7 +143,7 @@ impl<S: VirtualStorage> Graph<S> {
     ) -> Result<Vec<u8>, String> {
         let mut body = Vec::new();
         let mut scratch = okm_core::obj_dynamic::FrameScratch::new();
-        let mut resolver = |name: &str| self.fields.id_for(&mut self.store, &self.ns, name);
+        let mut resolver = |name: &str| self.fields.id_for(&self.store, &self.ns, name);
         for (name, value) in attrs {
             put_frame_named_scratch(&mut body, name, value, &mut resolver, &mut scratch)
                 .map_err(|e| e.to_string())?;

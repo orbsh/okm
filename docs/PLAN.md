@@ -2834,11 +2834,19 @@ source; all three are fixed. The rest is not landed.
       exports) and writes through the new build's write path; everything else is on
       disk. `Table::to_record_batch` (ADR-0007) stays in core — it is the in-process
       DataFrame path, not a file format.
-- [ ] **Replay rules** — derived state rebuilt by the write path, never copied;
-      vocabulary ids re-resolved `id → label → new id`; baseline then segments in
-      ordinal order; one reconciliation range scan against the old store after the
-      old instance stops writing (the only thing that can repair a delete the log
-      lost).
+- [x] **Replay rules** — landed as `okm_parquet::replay` + `okm-parquet replay
+      --root <log> --store <dir>`: the newest baseline first and then every segment
+      numbered above it (a delta below the snapshot is inside it, and replaying it
+      would resurrect a row the snapshot no longer has); rows decoded from the log and
+      written through the TARGET's write path (`DynamicCollection::merge`/`purge`), so
+      index faces, dynamic segments and ledgers are rebuilt rather than copied; every
+      vocabulary id re-resolved `id → label → the target's own id` (the label the log
+      carried is interned in the target's vocabulary, which allocates in its own
+      order); a primary-face delete applied as a removal.
+      `replay_rewrites_the_rows_through_the_targets_write_path` locks puts, the purge
+      and the label path. **Still missing:** the reconciliation range scan against the
+      old store after the old instance stops writing — the only thing that can repair
+      a delete the log never carried (ADR-0056 §4).
 - [ ] **Retire or demote `parquet_io`'s store-scan export** once baseline generation
       exists: it is the export for a store that never logged, and the ADR makes the
       segment the single interchange.

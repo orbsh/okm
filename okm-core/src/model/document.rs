@@ -1281,11 +1281,11 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         let header = self.header();
         let k = self.fields_key(key);
         let mut d = self.fields_vocab.borrow_mut();
-        let mut store = crate::engine::storage::BatchStore::new(&self.store, batch);
+        let store = crate::engine::storage::BatchStore::new(&self.store, batch);
         let mut body = Vec::new();
         let mut scratch = crate::model::obj_dynamic::FrameScratch::new();
         {
-            let mut resolver = |name: &str| d.id_for(&mut store, &header, name);
+            let mut resolver = |name: &str| d.id_for(&store, &header, name);
             for (name, value) in variants {
                 // Recurses into nested Obj values, sharing the vocabulary
                 // (id_for allocates on first sight) AND one body buffer per

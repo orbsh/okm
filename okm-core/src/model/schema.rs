@@ -517,10 +517,18 @@ mod serde_impls {
                 U64,
                 FixedBytes,
                 Str,
+                Bytes,
                 VarInt,
                 Quant(u32),
+                /// The field's own id face — the half a reader needs to resolve
+                /// labels without the declaration's Rust types.
+                Vocab(u16),
                 Offset(i64),
-                Vector { elem: String },
+                Uuid4,
+                Uuid7,
+                /// The derived `Serialize` writes the element name as a bare
+                /// string (`{"Vector":"f32"}`), so the reader takes it as one.
+                Vector(String),
             }
             Ok(match Repr::deserialize(d)? {
                 Repr::U8 => FieldType::U8,
@@ -529,13 +537,16 @@ mod serde_impls {
                 Repr::U64 => FieldType::U64,
                 Repr::FixedBytes => FieldType::FixedBytes,
                 Repr::Str => FieldType::Str,
+                Repr::Bytes => FieldType::Bytes,
                 Repr::VarInt => FieldType::VarInt,
                 Repr::Quant(p) => FieldType::Quant(p),
-
+                Repr::Vocab(face) => FieldType::Vocab(face),
+                Repr::Uuid4 => FieldType::Uuid4,
+                Repr::Uuid7 => FieldType::Uuid7,
                 Repr::Offset(b) => FieldType::Offset(b),
                 // Leak is bounded: the element-type vocabulary is a tiny
                 // closed set written by the serializer, never attacker data.
-                Repr::Vector { elem } => FieldType::Vector {
+                Repr::Vector(elem) => FieldType::Vector {
                     elem: Box::leak(elem.into_boxed_str()),
                 },
             })

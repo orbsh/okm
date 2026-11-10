@@ -356,7 +356,7 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
     /// payload's field-name vocabulary (0x02/0x03): two allocators in one
     /// id space would hand the same id to two names.
     fn predicate_vocab_id(&mut self, predicate: &str) -> crate::error::Result<u16> {
-        self.vocab.id_for(&mut self.store, E::NS_PREFIX, predicate)
+        self.vocab.id_for(&self.store, E::NS_PREFIX, predicate)
     }
 
     /// Resolve predicate id → name for display/diagnostics.

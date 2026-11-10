@@ -2068,7 +2068,7 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> syn::Result<TS2> {
                     // A full width (or a refused commit) comes back as an
                     // error, never a wrapped id.
                     self.#fid
-                        .set_id(cache.id_for(&mut *store, header, &label)?);
+                        .set_id(cache.id_for(&*store, header, &label)?);
                 }
             }
         });

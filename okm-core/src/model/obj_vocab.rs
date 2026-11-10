@@ -137,8 +137,12 @@ pub fn vocab_label<S: VirtualStorage + ?Sized>(
 ///
 /// `width` is the field's declared id width in bytes. `None` when no vocabulary
 /// width matches — a schema/bridge disagreement, not a data condition.
+///
+/// Takes `&S`, not `&mut S`: writes already take `&self` (ADR-0026), and a caller
+/// holding a shared handle — a replayer beside its target collection, an importer
+/// beside its store — is exactly who needs to intern a label.
 pub fn vocab_id<S: VirtualStorage + ?Sized>(
-    store: &mut S,
+    store: &S,
     header: &[u8],
     faces: VocabFaces,
     width: usize,
@@ -230,7 +234,7 @@ impl<I: VocabId> VocabCache<I> {
     /// names another label forever.
     pub fn id_for<S: VirtualStorage + ?Sized>(
         &mut self,
-        store: &mut S,
+        store: &S,
         header: &[u8],
         label: &str,
     ) -> crate::error::Result<I> {
@@ -450,11 +454,11 @@ mod tests {
 
     #[test]
     fn allocates_sequentially_and_is_cached() {
-        let mut store = TestStore::slatedb_mem();
+        let store = TestStore::slatedb_mem();
         let mut d = VocabCache::<u16>::new(FIELD_VOCAB);
-        let a = d.id_for(&mut store, HEADER, "alpha").unwrap();
-        let b = d.id_for(&mut store, HEADER, "beta").unwrap();
-        let a2 = d.id_for(&mut store, HEADER, "alpha").unwrap();
+        let a = d.id_for(&store, HEADER, "alpha").unwrap();
+        let b = d.id_for(&store, HEADER, "beta").unwrap();
+        let a2 = d.id_for(&store, HEADER, "alpha").unwrap();
         assert_eq!(
             (a, b, a2),
             (0, 1, 0),
@@ -480,13 +484,13 @@ mod tests {
 
     #[test]
     fn the_two_vocabularies_never_share_an_id_space() {
-        let mut store = TestStore::slatedb_mem();
+        let store = TestStore::slatedb_mem();
         let mut fields = VocabCache::<u16>::new(FIELD_VOCAB);
         let mut kinds = VocabCache::<u16>::new(PREDICATE_VOCAB);
         // The same label allocates in both; the same number names two
         // different things — that is precisely what the split permits.
-        assert_eq!(fields.id_for(&mut store, HEADER, "since").unwrap(), 0);
-        assert_eq!(kinds.id_for(&mut store, HEADER, "has").unwrap(), 0);
+        assert_eq!(fields.id_for(&store, HEADER, "since").unwrap(), 0);
+        assert_eq!(kinds.id_for(&store, HEADER, "has").unwrap(), 0);
         assert_eq!(
             fields.name_for(&store, HEADER, 0).unwrap().unwrap(),
             "since"
@@ -511,17 +515,17 @@ mod tests {
 
     #[test]
     fn fresh_cache_loads_from_engine_and_resumes_numbering() {
-        let mut store = TestStore::slatedb_mem();
+        let store = TestStore::slatedb_mem();
         {
             let mut d = VocabCache::<u16>::new(PREDICATE_VOCAB);
-            d.id_for(&mut store, HEADER, "one").unwrap();
-            d.id_for(&mut store, HEADER, "two").unwrap();
+            d.id_for(&store, HEADER, "one").unwrap();
+            d.id_for(&store, HEADER, "two").unwrap();
         }
         // A brand-new cache (process restart) resumes after the max.
         let mut d2 = VocabCache::<u16>::new(PREDICATE_VOCAB);
         assert_eq!(d2.name_for(&store, HEADER, 0).unwrap().unwrap(), "one");
         assert_eq!(d2.name_for(&store, HEADER, 1).unwrap().unwrap(), "two");
-        let fresh = d2.id_for(&mut store, HEADER, "three").unwrap();
+        let fresh = d2.id_for(&store, HEADER, "three").unwrap();
         assert_eq!(fresh, 2, "numbering resumes after the loaded max");
         // A read-only handle answers without the caller priming anything.
         let mut d3 = VocabCache::<u16>::new(PREDICATE_VOCAB);
@@ -561,11 +565,11 @@ mod tests {
 
         // Two fields no longer share an id space: the same number in two
         // fields names two different labels.
-        let mut store = TestStore::slatedb_mem();
+        let store = TestStore::slatedb_mem();
         let mut status = VocabCache::<u8>::new(data_vocab(0));
         let mut color = VocabCache::<u8>::new(data_vocab(1));
-        assert_eq!(status.id_for(&mut store, HEADER, "active").unwrap(), 0);
-        assert_eq!(color.id_for(&mut store, HEADER, "red").unwrap(), 0);
+        assert_eq!(status.id_for(&store, HEADER, "active").unwrap(), 0);
+        assert_eq!(color.id_for(&store, HEADER, "red").unwrap(), 0);
         assert_eq!(
             status.name_for(&store, HEADER, 0).unwrap().unwrap(),
             "active"
@@ -575,18 +579,18 @@ mod tests {
 
     #[test]
     fn a_u8_vocabulary_stops_after_256_labels() {
-        let mut store = TestStore::slatedb_mem();
+        let store = TestStore::slatedb_mem();
         let mut d = VocabCache::<u8>::new(data_vocab(0));
         // Ids 0..=254 fit: allocation needs `succ()` to exist so the cursor can
         // be bumped, so the last usable id is one short of the width. The 256th
         // label is refused — an error, not a wrap and not a panic (ADR-0037: a
         // write verb reports, it does not abort the process).
         for i in 0..=254u16 {
-            d.id_for(&mut store, HEADER, &format!("label-{i}"))
+            d.id_for(&store, HEADER, &format!("label-{i}"))
                 .expect("ids 0..=254 all fit");
         }
         let err = d
-            .id_for(&mut store, HEADER, "label-255")
+            .id_for(&store, HEADER, "label-255")
             .expect_err("a u8 vocabulary is full");
         assert!(
             matches!(
@@ -599,9 +603,9 @@ mod tests {
 
     #[test]
     fn an_allocated_id_is_only_evidence_after_the_commit_carrying_it() {
-        let mut store = TestStore::slatedb_mem();
+        let store = TestStore::slatedb_mem();
         let mut d = VocabCache::<u16>::new(FIELD_VOCAB);
-        assert_eq!(d.id_for(&mut store, HEADER, "alpha").unwrap(), 0);
+        assert_eq!(d.id_for(&store, HEADER, "alpha").unwrap(), 0);
         assert_eq!(d.pending_len(), 1, "an allocation is not evidence yet");
 
         // A commit that does NOT carry the name key promotes nothing — which is
@@ -628,19 +632,19 @@ mod tests {
         // The observable difference between "the mirror says so" and "the store
         // says so": delete the engine's entry behind the cache's back. A probe
         // re-allocates; the fast path answers the mirror.
-        let mut store = TestStore::slatedb_mem();
+        let store = TestStore::slatedb_mem();
         let mut d = VocabCache::<u16>::new(FIELD_VOCAB);
-        assert_eq!(d.id_for(&mut store, HEADER, "alpha").unwrap(), 0);
+        assert_eq!(d.id_for(&store, HEADER, "alpha").unwrap(), 0);
         store
             .del(&key(HEADER, FIELD_VOCAB_NAME_SLOT, b"alpha"))
             .unwrap();
         // Still pending: the cache asks the store, the store has nothing, so a
         // NEW id comes back — the first answer was never trusted.
-        assert_eq!(d.id_for(&mut store, HEADER, "alpha").unwrap(), 1);
+        assert_eq!(d.id_for(&store, HEADER, "alpha").unwrap(), 1);
 
         // Promoted: no probe, so the id survives the removal (a probe would
         // have handed out the next free id instead).
-        let id = d.id_for(&mut store, HEADER, "gamma").unwrap();
+        let id = d.id_for(&store, HEADER, "gamma").unwrap();
         let mut commit = Batch::default();
         commit.put(
             key(HEADER, FIELD_VOCAB_NAME_SLOT, b"gamma"),
@@ -651,6 +655,6 @@ mod tests {
         store
             .del(&key(HEADER, FIELD_VOCAB_NAME_SLOT, b"gamma"))
             .unwrap();
-        assert_eq!(d.id_for(&mut store, HEADER, "gamma").unwrap(), id);
+        assert_eq!(d.id_for(&store, HEADER, "gamma").unwrap(), id);
     }
 }

@@ -13,7 +13,7 @@ name = "okm-parquet"
 path = "src/main.rs"
 
 [dependencies]
-okm-core = { path = "../okm-core", features = ["schema-serde", "parquet"] }
+okm-core = { path = "../okm-core", features = ["schema-serde", "parquet", "fjall"] }
 okm-wire = { path = "../okm-wire" }
 okm-dynamic = { path = "../okm-dynamic", features = ["arrow"] }
 arrow = "60"

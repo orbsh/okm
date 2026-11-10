@@ -2,7 +2,7 @@
 
 > **Languages:** [English](0056-the-segment-is-the-migration-path.md) (primary) · [中文](0056-the-segment-is-the-migration-path.zh-CN.md)
 
-**Status:** Accepted (2026-11-10) — decision only; no part of the replay path exists yet. Landed since: capture at the STORE boundary (`ChangelogStore`, §2), the self-describing segment container (§7), `ensure_baseline` (§3), the decoder and the window join in core, and `okm-parquet` (segments → Parquet windows) as the standalone binary that replaced `okm-drain` (§8). Still missing: replay, the `replay` subcommand and Iceberg metadata — see the PLAN section of the same date.
+**Status:** Accepted (2026-11-10) — decision only; no part of the replay path exists yet. Landed since: capture at the STORE boundary (`ChangelogStore`, §2), the self-describing segment container (§7), `ensure_baseline` (§3), the decoder and the window join in core, and `okm-parquet` (segments → Parquet windows) as the standalone binary that replaced `okm-drain` (§8). Replay exists as `okm-parquet replay` (rows re-written through the target's write path, vocabulary ids re-interned); still missing: the post-migration reconciliation scan and Iceberg metadata — see the PLAN section of the same date.
 **Date:** 2026-11-10
 **Depends on:** ADR-0010 (wire bytes), ADR-0034 (a table has a name), ADR-0042 (a layout change is a version, and an upgrade is a deployment shape), ADR-0045 (the log: capture, segments, drain), ADR-0046 (`okm-series`, the other append-only container)
 
