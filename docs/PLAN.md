@@ -2736,7 +2736,7 @@ Gate: `cargo test --workspace --all-features` (460 passed), clippy `--all-target
 ## 2026-11-10 — the segment is the migration path (ADR-0056)
 
 The three defects named first are what make the current log unsafe as a migration
-source; the first two are fixed, the rest is not landed.
+source; all three are fixed. The rest is not landed.
 
 - [x] **Watermark is per `(consumer, table)`.** `okm-drain/src/lib.rs` wrote
       `watermark-<consumer>.txt` in `out_dir`, while segment numbering restarts per
@@ -2753,11 +2753,16 @@ source; the first two are fixed, the rest is not landed.
       `0x1nnn`/`0x2nnn`, everything else derived) and `every_slot_is_classified_and_only_the_truth_half_is_carried`
       pins it with an expectation table plus a totality pass over 0..=u16::MAX.
       `SlotMap::standard()` is the one place those numbers are written now.
-- [ ] **Delete semantics split by consumer.** Replay applies a removal in order;
-      the Parquet sink refuses a window that contains one
-      (`okm-drain/src/lib.rs:227`). Keep the refusal for the lake and let replay
-      consume it — the refusal must become a property of the sink, not of the
-      window reader.
+- [x] **Delete semantics split by consumer.** The window reader used to stop on
+      any `OP_DELETE`, which made a removal unreadable by everyone. It now reads
+      `Window { schema, table, layout_version, segments, rows, deletes,
+      segment_only, labels }` and the refusal lives in `write_parquet` — replay
+      applies a removal in order, the lake sink refuses it. `read_window` /
+      `write_parquet` are public and take no app types (the window carries its
+      sidecar), which is the shape `okm-parquet` will call;
+      `a_removal_is_read_and_only_the_parquet_sink_refuses_it` locks the split
+      and `a_window_with_a_delete_is_refused_rather_than_misrepresented` still
+      locks the sink's refusal.
 - [ ] **`CollectionSchema.name`** — carried from `#[ok_name]` (`Document::TABLE_NAME`,
       ADR-0034), so the table's name can travel in a segment. Touches schema-serde's
       shape; the export path already refuses an unnamed table, so nothing new is

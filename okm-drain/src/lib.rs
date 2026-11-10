@@ -168,8 +168,38 @@ pub fn drain(root: &Path, cfg: &DrainConfig) -> Result<Report> {
     Ok(report)
 }
 
-fn drain_table(dir: &Path, cfg: &DrainConfig, report: &mut Report) -> Result<()> {
-    report.tables += 1;
+/// One window of captured changes, decoded as far as a declaration can take it.
+///
+/// This is the seam ADR-0056 §8 asks for: what the segments SAY is one thing, what
+/// a sink can EXPRESS is another. A window carries rows AND removals; a Parquet
+/// file can hold only the first, while a replay applies both in order. The
+/// refusal therefore belongs to the sink, not to the reader — before this, one
+/// delete anywhere in a window stopped the read itself.
+pub struct Window {
+    /// The declaration these bytes were written under, carried so a sink needs
+    /// nothing but the window (and so a standalone tool needs no app types).
+    pub schema: CollectionSchema,
+    /// The table directory's name — its header in hex. The segment header will
+    /// carry the declared name (ADR-0056 §7); until then this is the only one.
+    pub table: String,
+    pub layout_version: u8,
+    /// The segments this window covers, in order, as file names.
+    pub segments: Vec<String>,
+    /// `(key suffix, document)` per put on the primary face, in order.
+    pub rows: Vec<(Vec<u8>, okm_dynamic::ValueMap)>,
+    /// `(slot, key suffix)` per removal, in order. Slot `0x00` means the ROW is
+    /// gone; other slots are the document's own parts (purge takes both).
+    pub deletes: Vec<(u16, Vec<u8>)>,
+    /// Dynamic-segment ops the declaration has no columns for.
+    pub segment_only: usize,
+    /// `(slot, id) → label` for every vocabulary entry the window carried, so a
+    /// reader never has to invent a name for an id.
+    pub labels: HashMap<(u16, Vec<u8>), String>,
+}
+
+/// Read the next window for this consumer: every sealed segment after its
+/// position, joined and decoded. `None` means there is nothing new.
+pub fn read_window(dir: &Path, cfg: &DrainConfig) -> Result<Option<Window>> {
     let header = header_of(dir)?;
     let table = file_name(dir);
     let schema = load_sidecar(dir)?;
@@ -180,14 +210,7 @@ fn drain_table(dir: &Path, cfg: &DrainConfig, report: &mut Report) -> Result<()>
         .collect();
     segments.sort();
 
-    // Segment numbers restart per table, so the position must too: one file per
-    // (consumer, table). A consumer-only name lets whichever table is furthest
-    // ahead move the mark past every lagging table's window, silently and for
-    // good (ADR-0056 §8).
-    let watermark_path = cfg
-        .out_dir
-        .join(format!("watermark-{}-{table}.txt", cfg.consumer));
-    let watermark = std::fs::read_to_string(&watermark_path)
+    let watermark = std::fs::read_to_string(watermark_path(cfg, &table))
         .map(|s| s.trim().to_string())
         .unwrap_or_default();
 
@@ -199,12 +222,19 @@ fn drain_table(dir: &Path, cfg: &DrainConfig, report: &mut Report) -> Result<()>
         .take(cfg.max_segments.max(1))
         .collect();
     if window.is_empty() {
-        return Ok(());
+        return Ok(None);
     }
 
-    let mut keys: Vec<Vec<u8>> = Vec::new();
-    let mut rows: Vec<Option<okm_dynamic::ValueMap>> = Vec::new();
-    let mut labels: HashMap<(u16, Vec<u8>), String> = HashMap::new();
+    let mut out = Window {
+        schema: schema.clone(),
+        table,
+        layout_version: schema.layout_version,
+        segments: window.iter().map(|p| file_name(p)).collect(),
+        rows: Vec::new(),
+        deletes: Vec::new(),
+        segment_only: 0,
+        labels: HashMap::new(),
+    };
 
     for segment in &window {
         for frame in read_sealed(segment)? {
@@ -216,82 +246,120 @@ fn drain_table(dir: &Path, cfg: &DrainConfig, report: &mut Report) -> Result<()>
                     // A row: the primary face, and a suffix that is exactly one
                     // key (shorter would be a bare face, longer cannot happen).
                     (OP_PUT, PRIMARY_SLOT) if suffix.len() == schema.key_len => {
-                        keys.push(suffix.to_vec());
-                        rows.push(Some(okm_dynamic::decode_payload(&schema, &value)?));
+                        out.rows.push((
+                            suffix.to_vec(),
+                            okm_dynamic::decode_payload(&schema, &value)?,
+                        ));
                     }
                     // A vocabulary entry: the id face the declaration names, with
-                    // the label as its value. Replayed here because a column
-                    // holds labels and the payload holds ids.
+                    // the label as its value. Carried because a column holds
+                    // labels and the payload holds ids.
                     (OP_PUT, slot) if is_id_face(&schema, slot) => {
                         if let Ok(name) = String::from_utf8(value) {
-                            labels.insert((slot, suffix.to_vec()), name);
+                            out.labels.insert((slot, suffix.to_vec()), name);
                         }
                     }
-                    (OP_PUT, _) => report.segment_only += 1,
-                    // The declaration has no column for a delete, and inventing
-                    // one (a tombstone column) would change what every other
-                    // reader sees. A window containing one stops here.
-                    (OP_DELETE, _) => {
-                        return Err(DrainError::new(format!(
-                            "{}: a delete op at slot 0x{slot:02X} — a window is an append and \
-                             this sink cannot express a removal; compact the log first",
-                            file_name(segment)
-                        )));
-                    }
+                    (OP_PUT, _) => out.segment_only += 1,
+                    // A removal is a fact this log carries and a column file
+                    // cannot: recorded here, answered by whichever sink is
+                    // reading (ADR-0056 §5).
+                    (OP_DELETE, slot) => out.deletes.push((slot, suffix.to_vec())),
                     _ => {}
                 }
             }
         }
     }
+    Ok(Some(out))
+}
 
-    if rows.is_empty() {
-        // Nothing a column can hold in this window: leave the watermark alone so
+/// The position file for one `(consumer, table)` pair.
+///
+/// Segment numbers restart per table, so the position must too: a consumer-only
+/// name lets whichever table is furthest ahead move the mark past every lagging
+/// table's window, silently and for good (ADR-0056 §8).
+fn watermark_path(cfg: &DrainConfig, table: &str) -> PathBuf {
+    cfg.out_dir
+        .join(format!("watermark-{}-{table}.txt", cfg.consumer))
+}
+
+/// Render one window as a Parquet file plus its column list. The sink's rule
+/// lives here: a removal has no column, and inventing a tombstone column would
+/// change what every other reader of this file sees, so a window holding one is
+/// refused instead of misrepresented.
+pub fn write_parquet(window: &Window, out: &Path) -> Result<Vec<(String, String, bool)>> {
+    if let Some((slot, key)) = window.deletes.first() {
+        return Err(DrainError::new(format!(
+            "{}: a delete op at slot 0x{slot:02X} ({key:02X?}) — a window is an append and \
+             this sink cannot express a removal; replay it into a store, or compact the log first",
+            window.table
+        )));
+    }
+    let keys: Vec<Vec<u8>> = window.rows.iter().map(|(k, _)| k.clone()).collect();
+    let rows: Vec<Option<okm_dynamic::ValueMap>> =
+        window.rows.iter().map(|(_, d)| Some(d.clone())).collect();
+    let batch = record_batch(
+        &window.schema,
+        &keys,
+        &rows,
+        Some(&|slot, id| window.labels.get(&(slot, id.to_vec())).cloned()),
+    )?;
+    okm_core::bridge::tooling::parquet_io::write_batch(&batch, out)?;
+    Ok(batch
+        .schema()
+        .fields()
+        .iter()
+        .map(|f| {
+            (
+                f.name().clone(),
+                format!("{:?}", f.data_type()),
+                f.is_nullable(),
+            )
+        })
+        .collect())
+}
+
+fn drain_table(dir: &Path, cfg: &DrainConfig, report: &mut Report) -> Result<()> {
+    report.tables += 1;
+    let Some(window) = read_window(dir, cfg)? else {
+        return Ok(());
+    };
+
+    if window.rows.is_empty() {
+        // Nothing a column can hold in this window: leave the position alone so
         // a later window that does carry rows still starts from here.
-        report.segments += window.len();
+        report.segments += window.segments.len();
         return Ok(());
     }
 
-    let batch = record_batch(
-        &schema,
-        &keys,
-        &rows,
-        Some(&|slot, id| labels.get(&(slot, id.to_vec())).cloned()),
-    )?;
-
-    let first = stem(&window[0]);
-    let last = stem(&window[window.len() - 1]);
-    let out = cfg.out_dir.join(format!("{table}-{first}-{last}.parquet"));
-    okm_core::bridge::tooling::parquet_io::write_batch(&batch, &out)?;
+    let first = stem_of(&window.segments[0]);
+    let last = stem_of(&window.segments[window.segments.len() - 1]);
+    let out = cfg
+        .out_dir
+        .join(format!("{}-{first}-{last}.parquet", window.table));
+    let columns = write_parquet(&window, &out)?;
 
     // The manifest lands with the file: a sink records provenance from it without
     // opening the Parquet, and an operator answers "did window N land".
     let manifest = WindowManifest {
-        table: table.clone(),
-        layout_version: schema.layout_version,
-        segments: window.iter().map(|p| file_name(p)).collect(),
-        rows: rows.len(),
-        columns: batch
-            .schema()
-            .fields()
-            .iter()
-            .map(|f| {
-                (
-                    f.name().clone(),
-                    format!("{:?}", f.data_type()),
-                    f.is_nullable(),
-                )
-            })
-            .collect(),
+        table: window.table.clone(),
+        layout_version: window.layout_version,
+        segments: window.segments.clone(),
+        rows: window.rows.len(),
+        columns,
         file: file_name(&out),
     };
     let manifest_path = out.with_extension("manifest.json");
     write_atomic(&manifest_path, &serde_json::to_string_pretty(&manifest)?)?;
 
     // Only now: the file that covers the window exists, and so does its manifest.
-    write_atomic(&watermark_path, &format!("{last}.segment"))?;
+    write_atomic(
+        &watermark_path(cfg, &window.table),
+        &format!("{last}.segment"),
+    )?;
 
-    report.segments += window.len();
-    report.rows += rows.len();
+    report.segments += window.segments.len();
+    report.rows += window.rows.len();
+    report.segment_only += window.segment_only;
     report.files.push(out);
     Ok(())
 }
@@ -365,9 +433,11 @@ fn file_name(path: &Path) -> String {
         .to_string()
 }
 
-fn stem(path: &Path) -> String {
-    path.file_stem()
-        .and_then(|n| n.to_str())
+/// The stem of a segment file name: `00000007.segment` → `00000007`.
+fn stem_of(name: &str) -> String {
+    Path::new(name)
+        .file_stem()
+        .and_then(|s| s.to_str())
         .unwrap_or_default()
         .to_string()
 }

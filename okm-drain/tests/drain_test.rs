@@ -210,6 +210,51 @@ fn a_table_without_a_sidecar_stops_the_drain() {
     assert!(err.to_string().contains("sidecar"), "got: {err}");
 }
 
+/// The reader reports what the log says; only the sink refuses. A removal is a
+/// fact — a replay applies it in order — while a column file is what cannot hold
+/// it, so the refusal belongs to the sink and not to the window (ADR-0056 §5).
+#[test]
+fn a_removal_is_read_and_only_the_parquet_sink_refuses_it() {
+    let root = tempfile::tempdir().expect("root");
+    let out = tempfile::tempdir().expect("out");
+    {
+        let c = collection(root.path());
+        c.put(
+            &K1,
+            &R {
+                level: 3,
+                name: "alpha".into(),
+            },
+        )
+        .expect("put");
+        assert!(c.purge(&K1).expect("purge"), "the row existed");
+    }
+    let dir = std::fs::read_dir(root.path())
+        .expect("root dirs")
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .find(|p| p.is_dir())
+        .expect("one table directory");
+
+    let cfg = DrainConfig::new(out.path(), "test");
+    let window = okm_drain::read_window(&dir, &cfg)
+        .expect("read")
+        .expect("a window");
+    assert_eq!(window.rows.len(), 1, "the put is still a row in history");
+    assert!(
+        window
+            .deletes
+            .iter()
+            .any(|(slot, key)| *slot == 0 && key.len() == window.schema.key_len),
+        "the removal is on the primary face: {:?}",
+        window.deletes
+    );
+
+    let target = out.path().join("x.parquet");
+    let err = okm_drain::write_parquet(&window, &target).expect_err("a column cannot hold it");
+    assert!(err.to_string().contains("delete"), "got: {err}");
+    assert!(!target.exists(), "nothing half-written");
+}
+
 /// Two tables at different depths: the one that is further ahead must not move
 /// the lagging table's position. Segment numbers restart per table, so a
 /// consumer-named watermark file would skip the lagging table silently and for
