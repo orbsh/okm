@@ -486,7 +486,7 @@ pub fn path_index_entries(
 ///
 /// The unsigned kinds are coerced, not matched strictly: the dynamic READ
 /// side collapses every unsigned kind to `U64` (`dyn_value_to_value`:
-/// `DynamicValue::UInt` → `Value::U64`), so a value written as `U32(1)`
+/// `DynamicValue::U64` → `Value::U64`), so a value written as `U32(1)`
 /// comes back as `U64(1)`. An entry's bytes must be a function of the
 /// stored value alone — a strict variant match would make the written map
 /// and the read-back map produce DIFFERENT entry keys, and the overwrite
@@ -716,7 +716,7 @@ pub fn decode_includes(
                     raw.len()
                 ));
             }
-            let v = crate::decode::decode_fixed(name.clone(), f.ty, f.width, &raw[off..end])
+            let v = okm_core::decode::decode_fixed(name.clone(), f.ty, f.width, &raw[off..end])
                 .map_err(|e| format!("includes field `{name}`: {e:?}"))?;
             off = end;
             v

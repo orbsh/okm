@@ -75,7 +75,7 @@ crate 分工：okm-core = 共享运行时（引擎契约、`Collection`、docume
 - 字段级编码 wrapper（`Vocab<N>`、`Offset<T>`、`VarInt<T>`、`Quant<P>`、`Reverse<T>`、`Vector<T>`、`Bytes`）与变长载荷/索引字段（`String`），key 保持定宽。
 - 多引擎混用——同一进程内不同 ns 段可绑不同引擎（交易走 fjall、日志走 slatedb）；原子性止于单引擎内，ns 编号全库唯一。
 - 快照导出——行 → Parquet，与引擎无关（备份 / 数据交换 / lakehouse 分析）；ns 还原为描述性文本，列名即字段名。
-- Lakehouse 路径——Iceberg 表元数据在导出目录上就地写出（`okm_core::bridge::iceberg`：schema、manifest list、snapshot；field id 压进 Parquet，读方无需名字映射）；写入侧（在 delete file 之上的 snapshot append、分区、文件大小目标）是 `okm-iceberg`，独立 crate。增量：变更日志在提交边界捕获（[ADR-0045](docs/adr/0045-changelog-capture-and-drain.md)），`okm-drain` 把已封存 segment 合成 Parquet 窗口，水位在文件落盘后才推进。
+- Lakehouse 路径——Iceberg 表元数据在导出目录上就地写出（`okm_core::bridge::iceberg`：schema、manifest list、snapshot；field id 压进 Parquet，读方无需名字映射）；写入侧（在 delete file 之上的 snapshot append、分区、文件大小目标）是 `okm-iceberg`，独立 crate。增量：变更日志在提交边界捕获（[ADR-0045](docs/adr/0045-changelog-capture-and-drain.md)）；窗口合并属于核心（`okm_core::changelog::window`），`okm-parquet` 这个与应用无链接的独立程序把窗口投影成文件，水位在文件落盘后才推进。
 - **Document API**——两道读门、三个写动词。结构体门：`get` / `put` 说 `R`（只有 typed 侧有）。文档门：`fetch` 读整份文档（两槽合并的名字键 map）、`merge` 只动点名的名字、`replace` 让 map 就是文档、`purge` 清掉两槽；每次写一个引擎提交。动态侧只有文档门——那边没有结构体可说。未知字段名在每表字段名词汇表里分配编号，落进动态段（n-TLV 帧、嵌套对象递归、无 CBOR）；行-映射桥把声明字段 lift 到逻辑类型（`Quant`→`F64`、`Vocab`→标签、`Offset`→`i64`）。
 - **动态 codec binding**——schema 导出驱动嵌入式语言读取器：`bindings/okm-python`（PyO3）与 `bindings/okm-steel`，与 Rust derive 字节一致。
 - **动态段上的路径索引**（[ADR-0029](docs/adr/0029-path-index.zh-CN.md)）——`AccessMethod::path(slot, Path::parse("author.name")?, FieldType::Str)?`：把嵌套路径与数组路径声明成访问方法，每个解析出的值一条条目（通配 = 没有 `Index` 组件），维护挂在动态段写路径上；值类型随声明，条目键携带 slot、从不携带路径。
@@ -353,6 +353,6 @@ OKM 对准的负载并不稀有。大多数应用进行的数据操作是固定�
 
 即席查询则不需要搬进存储来回答。它真正要的是列，不是访问路径：分析型提问做扫描、过滤和聚合，根本不用存储的索引——key 布局、声明出来的 face、前缀扫描都与它无关。承载这件事的格式是 Parquet，所以 OKM 对即席面的回答是一条导出路径，而不是第二套查询运行时：行 → Parquet（与引擎无关，每表一套文件），接下来回答问题的那个东西——DuckDB、Spark、仓库——就是查询引擎。事务路径保持字节形态，分析型提问拿到列式形态。
 
-这条路的骨架已经在了。变更日志（ADR-0045）在提交边界捕获，`okm-drain` 把已封存的 segment 合成 Parquet 窗口，水位只在文件落盘之后才推进——窗口是历史而不是当前状态，压实归 sink 负责。Iceberg 元数据在导出目录上就地写出（field id 压进 Parquet，读方不需要名字映射），所以一张导出表已经能被 pyiceberg 和 catalog 读取。缺的是写入侧——在 delete file 之上的 snapshot append、分区、文件大小目标——那属于独立 crate，不属于存储。
+这条路的骨架已经在了。变更日志（ADR-0045）在提交边界捕获，核心把已封存的 segment 合成 Parquet 窗口（`okm_core::changelog::window`），由 `okm-parquet` 程序投影成文件，水位只在文件落盘之后才推进——窗口是历史而不是当前状态，压实归 sink 负责。Iceberg 元数据在导出目录上就地写出（field id 压进 Parquet，读方不需要名字映射），所以一张导出表已经能被 pyiceberg 和 catalog 读取。缺的是写入侧——在 delete file 之上的 snapshot append、分区、文件大小目标——那属于独立 crate，不属于存储。
 
 形状真正会变的只有一处：应用升级，而这里必须说实话——SQL 能让 schema 在线改，OKM 不能。形状变更是迁移，路径只有一条：把变更日志回放进新代码建的那个库（[ADR-0056](docs/adr/0056-the-segment-is-the-migration-path.zh-CN.md)）；而 KV 存储只有一个写者，所以哪怕字节格式没变，升级也要停一次再换。形态是蓝绿（[ADR-0042](docs/adr/0042-layout-versions-are-stamps.zh-CN.md)）：新构建作为第二个进程、配自己的 store 起来，回放 baseline 加各段直到追平；旧实例继续服务，然后把自己的尾巴抽进日志；一次短切换停机应用这段尾巴，流量切走。今天这一步的载体是内置的导入导出——`parquet_io::export_parquet` / `import_parquet`（feature `parquet`），导入走正常写路径，索引条目由行重建而不是被搬运。基于日志的 replay 是把 Parquet 从这条路上拿掉的形态，因为列式追加表达不了删除。代价是一次排期的窗口，不是每一次请求的税——而每一次请求都付税，正是运行时 schema 收的那种账。

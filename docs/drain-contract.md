@@ -1,6 +1,8 @@
 # The drain contract
 
-What `okm-drain` promises a sink, and what a sink promises back. Written once so
+What `okm-parquet` promises a sink, and what a sink promises back. The window it
+hands over is core's (`okm_core::changelog::window`); this document is the contract
+of the projection on top. Written once so
 that every adapter (this repo's, and a third party's) speaks the same dialect
 instead of inventing one per warehouse. ADR-0045 is the decision; this file is the
 interface that follows from it.
@@ -11,7 +13,7 @@ One **window** is one Parquet file:
 
     <table hex>-<first segment>-<last segment>.parquet
 
-written beside `okm-drain`'s watermark for that consumer. Columns are:
+written beside the consumer's watermark. Columns are:
 
 1. the key fields, in declaration order, **non-nullable** — every row has an
    identity;
@@ -82,6 +84,6 @@ and a window is never half-described.
 ## Not part of the contract
 
 Partitioning, target file size, catalog registration, snapshot management and
-retention all belong to the adapter. `okm-drain`'s only knob is
+retention all belong to the adapter. `okm-parquet`'s only knob is
 `DrainConfig::max_segments` — how much history one window carries — because that is
 also how much history a query must merge with the hot store.

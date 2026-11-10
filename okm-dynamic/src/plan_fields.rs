@@ -382,11 +382,11 @@ pub(crate) fn value_to_dyn_value(
 ) -> Result<okm_core::model::obj_dynamic::DynamicValue, String> {
     use okm_core::model::obj_dynamic::DynamicValue;
     Ok(match v {
-        Value::U8(x) => DynamicValue::UInt(*x as u64),
-        Value::U16(x) => DynamicValue::UInt(*x as u64),
-        Value::U32(x) => DynamicValue::UInt(*x as u64),
-        Value::U64(x) => DynamicValue::UInt(*x),
-        Value::I64(x) => DynamicValue::Int(*x),
+        Value::U8(x) => DynamicValue::U64(*x as u64),
+        Value::U16(x) => DynamicValue::U64(*x as u64),
+        Value::U32(x) => DynamicValue::U64(*x as u64),
+        Value::U64(x) => DynamicValue::U64(*x),
+        Value::I64(x) => DynamicValue::I64(*x),
         Value::F64(x) => DynamicValue::F64(*x),
         Value::Bool(x) => DynamicValue::Bool(*x),
         Value::Str(s) => DynamicValue::Str(s.clone()),
@@ -409,33 +409,12 @@ pub(crate) fn value_to_dyn_value(
     })
 }
 
-/// okm-core `DynamicValue` -> okm-dynamic `Value`.
+/// The dynamic segment's value IS the codec's value now (ADR-0056 §8): one tree,
+/// so this is a clone, and it stays only because the frame walk hands out `&`s.
 pub(crate) fn dyn_value_to_value(
     v: &okm_core::model::obj_dynamic::DynamicValue,
 ) -> Result<Value, String> {
-    Ok(match v {
-        okm_core::model::obj_dynamic::DynamicValue::UInt(x) => Value::U64(*x),
-        okm_core::model::obj_dynamic::DynamicValue::Int(x) => Value::I64(*x),
-        okm_core::model::obj_dynamic::DynamicValue::F64(x) => Value::F64(*x),
-        okm_core::model::obj_dynamic::DynamicValue::Str(s) => Value::Str(s.clone()),
-        okm_core::model::obj_dynamic::DynamicValue::Bytes(b) => Value::Bytes(b.clone()),
-        okm_core::model::obj_dynamic::DynamicValue::Bool(x) => Value::Bool(*x),
-        okm_core::model::obj_dynamic::DynamicValue::Null => Value::Null,
-        okm_core::model::obj_dynamic::DynamicValue::Obj(m) => {
-            let mut out = std::collections::BTreeMap::new();
-            for (k, v) in m {
-                out.insert(k.clone(), dyn_value_to_value(v)?);
-            }
-            Value::Obj(out)
-        }
-        okm_core::model::obj_dynamic::DynamicValue::Array(items) => {
-            let mut out = Vec::with_capacity(items.len());
-            for v in items {
-                out.push(dyn_value_to_value(v)?);
-            }
-            Value::Array(out)
-        }
-    })
+    Ok(v.clone())
 }
 
 #[cfg(test)]

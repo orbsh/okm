@@ -2202,21 +2202,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "okm-drain"
-version = "0.1.0"
-dependencies = [
- "arrow",
- "okm-core",
- "okm-derive",
- "okm-dynamic",
- "okm-wire",
- "parquet",
- "serde",
- "serde_json",
- "tempfile",
-]
-
-[[package]]
 name = "okm-dynamic"
 version = "0.1.0"
 dependencies = [
@@ -2239,6 +2224,21 @@ name = "okm-ngram"
 version = "0.1.0"
 dependencies = [
  "okm-core",
+]
+
+[[package]]
+name = "okm-parquet"
+version = "0.1.0"
+dependencies = [
+ "arrow",
+ "okm-core",
+ "okm-derive",
+ "okm-dynamic",
+ "okm-wire",
+ "parquet",
+ "serde",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]

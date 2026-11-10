@@ -54,6 +54,10 @@ pub mod bridge;
 /// boundary, drained out of process.
 pub mod changelog;
 pub mod subscribe;
+/// The decoder: bytes + a declaration → the value tree (ADR-0056 §8). It lives
+/// here because the tree is core's (`model::obj_dynamic`), and because the drain —
+/// a core mechanism — reads payloads with it.
+pub mod decode;
 
 // ================= re-exports (stable public surface) =================
 

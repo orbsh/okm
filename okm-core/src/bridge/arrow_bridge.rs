@@ -423,8 +423,13 @@ fn push_variant<B: parquet_variant::VariantBuilderExt>(b: &mut B, v: &DynamicVal
     match v {
         DynamicValue::Null => b.append_null(),
         DynamicValue::Bool(x) => b.append_value(*x),
-        DynamicValue::UInt(x) => b.append_value(*x as i64),
-        DynamicValue::Int(x) => b.append_value(*x),
+        // Every unsigned width is one number to the Variant API (which is signed):
+        // the declaration, not the variant, says how wide the column is.
+        DynamicValue::U8(x) => b.append_value(i64::from(*x)),
+        DynamicValue::U16(x) => b.append_value(i64::from(*x)),
+        DynamicValue::U32(x) => b.append_value(i64::from(*x)),
+        DynamicValue::U64(x) => b.append_value(*x as i64),
+        DynamicValue::I64(x) => b.append_value(*x),
         DynamicValue::F64(x) => b.append_value(*x),
         DynamicValue::Str(sv) => b.append_value(sv.as_str()),
         DynamicValue::Bytes(bv) => b.append_value(bv.as_slice()),

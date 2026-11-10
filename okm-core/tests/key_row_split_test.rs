@@ -79,7 +79,7 @@ fn a_name_may_live_in_the_key_and_in_the_payload() {
     let doc = table.fetch(&key(101)).unwrap().unwrap();
     assert_eq!(
         doc.get("user_id"),
-        Some(&DynamicValue::UInt(999)),
+        Some(&DynamicValue::U64(999)),
         "the map carries the payload copy, never the key's"
     );
 }
@@ -134,7 +134,7 @@ fn a_map_name_that_matches_a_payload_field_writes_the_row() {
     // The classifier is the payload declaration, not the key: `user_id` is a
     // declared field, so this is a row update (the segment never sees it).
     table
-        .merge(&k, &map_of(&[("user_id", DynamicValue::UInt(50))]))
+        .merge(&k, &map_of(&[("user_id", DynamicValue::U64(50))]))
         .unwrap();
 
     let row = table.get(&k).unwrap().unwrap();
@@ -147,5 +147,5 @@ fn a_map_name_that_matches_a_payload_field_writes_the_row() {
         .unwrap();
     let doc = table.fetch(&k).unwrap().unwrap();
     assert_eq!(doc.get("nickname"), Some(&DynamicValue::Str("z".into())));
-    assert_eq!(doc.get("user_id"), Some(&DynamicValue::UInt(50)));
+    assert_eq!(doc.get("user_id"), Some(&DynamicValue::U64(50)));
 }

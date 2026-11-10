@@ -510,7 +510,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
             return Ok(None);
         };
         let mut values = decode_payload(&self.schema, &payload).map_err(codec)?;
-        crate::decode::resolve_vocab_labels(&self.schema, &self.store, &self.ns, &mut values)?;
+        okm_core::decode::resolve_vocab_labels(&self.schema, &self.store, &self.ns, &mut values)?;
         Ok(Some(values))
     }
 

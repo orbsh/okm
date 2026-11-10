@@ -190,7 +190,7 @@ fn the_whole_document_verbs_are_captured() {
     let mut whole = std::collections::BTreeMap::new();
     whole.insert(
         "author".to_string(),
-        okm_core::model::obj_dynamic::DynamicValue::UInt(9),
+        okm_core::model::obj_dynamic::DynamicValue::U64(9),
     );
     whole.insert(
         "title".to_string(),

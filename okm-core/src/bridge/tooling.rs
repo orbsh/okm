@@ -561,10 +561,10 @@ pub mod parquet_io {
             return DV::Str(s.to_string());
         }
         if let Some(u) = v.as_u64() {
-            return DV::UInt(u);
+            return DV::U64(u);
         }
         if let Some(i) = v.as_int64() {
-            return DV::Int(i);
+            return DV::I64(i);
         }
         if let Some(f) = v.as_f64() {
             return DV::F64(f);
@@ -822,10 +822,10 @@ pub mod parquet_io {
             return DynamicValue::Bytes(b.to_vec());
         }
         if let Some(u) = v.as_u64() {
-            return DynamicValue::UInt(u);
+            return DynamicValue::U64(u);
         }
         if let Some(i) = v.as_int64() {
-            return DynamicValue::Int(i);
+            return DynamicValue::I64(i);
         }
         if let Some(f) = v.as_f64() {
             return DynamicValue::F64(f);

@@ -248,7 +248,7 @@ fn merge_of_a_declared_field_is_one_engine_commit() {
 
     t.merge(
         &k,
-        &map_of(&[("amount", okm_core::obj_dynamic::DynamicValue::UInt(9))]),
+        &map_of(&[("amount", okm_core::obj_dynamic::DynamicValue::U64(9))]),
     )
     .unwrap();
 
@@ -284,7 +284,7 @@ fn replace_is_one_engine_commit_across_both_slots() {
     t.replace(
         &k,
         &map_of(&[
-            ("account", okm_core::obj_dynamic::DynamicValue::UInt(8)),
+            ("account", okm_core::obj_dynamic::DynamicValue::U64(8)),
             (
                 "colour",
                 okm_core::obj_dynamic::DynamicValue::Str("slate".into()),
@@ -363,12 +363,12 @@ fn the_verbs_take_a_shared_handle_and_still_commit_once_each() {
         t.put(&k, &row(7)).unwrap();
         t.merge(
             &k,
-            &map_of(&[("amount", okm_core::obj_dynamic::DynamicValue::UInt(2))]),
+            &map_of(&[("amount", okm_core::obj_dynamic::DynamicValue::U64(2))]),
         )
         .unwrap();
         t.replace(
             &k,
-            &map_of(&[("amount", okm_core::obj_dynamic::DynamicValue::UInt(3))]),
+            &map_of(&[("amount", okm_core::obj_dynamic::DynamicValue::U64(3))]),
         )
         .unwrap();
         assert!(

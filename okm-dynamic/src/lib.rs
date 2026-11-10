@@ -42,7 +42,6 @@
 #[cfg(feature = "arrow")]
 pub mod arrow;
 mod collection;
-mod decode;
 mod encode;
 mod graph;
 mod index;
@@ -53,6 +52,7 @@ mod reduce;
 
 pub use okm_core::TableMeta;
 pub use okm_core::field::FieldType;
+pub use okm_core::model::obj_dynamic::{CodecError, DynamicValue as Value, ValueMap};
 pub use okm_core::schema::{CollectionSchema, FieldSchema};
 
 // NOTE (v1 scope): nested key segments are NOT supported by the dynamic
@@ -62,7 +62,7 @@ pub use okm_core::schema::{CollectionSchema, FieldSchema};
 // FieldType variant slot for them.
 
 pub use collection::DynamicCollection;
-pub use decode::{decode_key, decode_payload};
+pub use okm_core::decode::{decode_key, decode_payload, resolve_vocab_labels};
 pub use encode::{encode_fields, encode_key, encode_payload};
 pub use graph::{DynEdge, Graph};
 pub use index::{
@@ -80,109 +80,6 @@ pub use reduce::{
     scan_reduces,
 };
 
-use std::collections::BTreeMap;
-
-/// A schema-driven value: the dynamic side's currency. Field order is
-/// irrelevant (placement comes from the schema); unknown fields are
-/// rejected — a value tree that does not match the schema is a caller
-/// bug, not silently dropped bytes.
-#[derive(Clone, Debug, PartialEq)]
-pub enum Value {
-    U8(u8),
-    U16(u16),
-    U32(u32),
-    U64(u64),
-    /// Signed integer (dynamic-segment parity; typed fields may declare
-    /// signed kinds when schema support lands).
-    I64(i64),
-    /// IEEE-754 double (dynamic-segment parity).
-    F64(f64),
-    /// Boolean (dynamic-segment parity).
-    Bool(bool),
-    /// Absence (dynamic-segment parity; encodes as a zero-length frame).
-    Null,
-    /// Fixed-width byte string (`[u8; N]` key fields, `FixedBytes`).
-    Bytes(Vec<u8>),
-    /// UTF-8 string (cold TLV payload fields).
-    Str(String),
-    /// Nested object (dynamic-segment composite; nTLV list sharing the
-    /// table's field-name vocabulary). Schema-declared fixed-width fields
-    /// reject it — composites live in the dynamic segment.
-    Obj(BTreeMap<String, Value>),
-    /// Heterogeneous array (dynamic-segment composite; `[count u32 BE]
-    /// [element frames...]`). Schema-declared fixed-width fields reject it.
-    Array(Vec<Value>),
-}
-
-/// Field name → value. BTreeMap for deterministic iteration (cold TLV
-/// frames are written in schema declaration order, not map order).
-pub type ValueMap = BTreeMap<String, Value>;
-
-/// Codec errors: schema/value mismatches, out-of-range values, truncated
-/// bytes. Dynamic-side mistakes are normal input — errors, never panics.
-#[derive(Clone, Debug, PartialEq)]
-#[non_exhaustive]
-pub enum CodecError {
-    /// Field present in the value tree but absent from the schema.
-    UnknownField(String),
-    /// Schema field missing from the value tree.
-    MissingField(String),
-    /// Value variant does not match the field's declared kind.
-    TypeMismatch {
-        field: String,
-        expected: &'static str,
-    },
-    /// Encoded bytes shorter than the schema requires.
-    Truncated {
-        field: String,
-        needed: usize,
-        got: usize,
-    },
-    /// Payload header version newer than the schema's.
-    VersionMismatch { schema: u8, found: u8 },
-    /// Cold TLV frame with a tag outside the schema's cold field set.
-    UnknownTag(u8),
-    /// Invalid UTF-8 in a Str field.
-    InvalidUtf8(String),
-    /// A cold payload field carries no TLV tag. The schema is caller-supplied
-    /// (it round-trips through JSON), so this is input, not an invariant of
-    /// this crate — and an untagged cold frame would encode to a payload the
-    /// reader cannot walk back.
-    ColdFieldWithoutTag(String),
-    /// A column could not be built (the arrow-level assembly, not the codec):
-    /// carries its own text because there is no single field to point at.
-    Column { what: String },
-}
-
-impl std::fmt::Display for CodecError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            CodecError::UnknownField(n) => write!(f, "unknown field `{n}` (not in schema)"),
-            CodecError::MissingField(n) => write!(f, "missing field `{n}`"),
-            CodecError::TypeMismatch { field, expected } => {
-                write!(f, "field `{field}`: expected {expected}")
-            }
-            CodecError::Truncated { field, needed, got } => {
-                write!(
-                    f,
-                    "field `{field}` truncated: need {needed} bytes, got {got}"
-                )
-            }
-            CodecError::VersionMismatch { schema, found } => {
-                write!(f, "payload version {found} newer than schema {schema}")
-            }
-            CodecError::UnknownTag(t) => write!(f, "unknown cold TLV tag {t}"),
-            CodecError::InvalidUtf8(n) => write!(f, "field `{n}`: invalid UTF-8"),
-            CodecError::ColdFieldWithoutTag(n) => write!(
-                f,
-                "cold field `{n}` carries no tag (the schema's cold fields are ordered TLV frames)"
-            ),
-            CodecError::Column { what } => write!(f, "column: {what}"),
-        }
-    }
-}
-
-impl std::error::Error for CodecError {}
 
 /// Look up a field's value, rejecting unknown/missing names up front —
 /// both sides of every encode walk this gate, so byte layout and error

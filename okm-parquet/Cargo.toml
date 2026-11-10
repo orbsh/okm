@@ -1,8 +1,16 @@
 [package]
-name = "okm-drain"
+name = "okm-parquet"
 version = "0.1.0"
 edition = "2024"
-description = "Drain the change log into windows: sealed segments + schema sidecar → Parquet."
+description = "Project the change log into Parquet: a standalone CLI with no link to the application."
+
+[lib]
+name = "okm_parquet"
+path = "src/lib.rs"
+
+[[bin]]
+name = "okm-parquet"
+path = "src/main.rs"
 
 [dependencies]
 okm-core = { path = "../okm-core", features = ["schema-serde", "parquet"] }

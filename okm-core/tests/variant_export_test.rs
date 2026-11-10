@@ -34,11 +34,11 @@ fn variant_column_export() {
 
     // Document 1: declared fields + dynamic segment.
     let mut dyn1: BTreeMap<String, DynamicValue> = BTreeMap::new();
-    dyn1.insert("score".into(), DynamicValue::UInt(99));
+    dyn1.insert("score".into(), DynamicValue::U64(99));
     dyn1.insert(
         "nested".into(),
         DynamicValue::Obj(BTreeMap::from([
-            ("x".into(), DynamicValue::Int(-3)),
+            ("x".into(), DynamicValue::I64(-3)),
             ("flag".into(), DynamicValue::Bool(true)),
         ])),
     );

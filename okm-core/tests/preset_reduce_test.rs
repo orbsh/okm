@@ -381,7 +381,7 @@ fn a_merge_folds_the_ledger_once_and_only_through_the_row_arm() {
     // Both halves in ONE call: the row arm folds (the usual unfold-then-fold
     // pair), the segment arm does not — one fold, not one per arm.
     let mut both = BTreeMap::new();
-    both.insert("views".to_string(), DynamicValue::UInt(7));
+    both.insert("views".to_string(), DynamicValue::U64(7));
     both.insert("tag".to_string(), DynamicValue::Str("y".into()));
     t.merge(&k, &both).unwrap();
     assert_eq!(

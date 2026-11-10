@@ -478,7 +478,7 @@ fn dynamic_fields_equal_typed_fields() {
     // write slot 1 only and the row is untouched.
     let mut fields = BTreeMap::new();
     fields.insert("note".to_string(), DynamicValue::Str("hello".into()));
-    fields.insert("weight".to_string(), DynamicValue::UInt(9));
+    fields.insert("weight".to_string(), DynamicValue::U64(9));
     typed
         .merge(
             &UserKey {

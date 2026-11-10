@@ -12,7 +12,7 @@
 
 use okm_core::changelog::{ChangelogConfig, ChangelogStore};
 use okm_core::{Collection, DocumentEncode, KeyEncode, TestStore};
-use okm_drain::{DrainConfig, drain};
+use okm_parquet::{DrainConfig, drain};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 
 #[derive(KeyEncode, Clone, PartialEq, Debug)]
@@ -115,7 +115,7 @@ fn one_window_becomes_one_parquet_file_and_the_watermark_moves() {
     // The manifest beside it says where the file came from — the answer a sink's
     // provenance entry and an operator's "did window N land" both need.
     let manifest_path = report.files[0].with_extension("manifest.json");
-    let manifest: okm_drain::WindowManifest =
+    let manifest: okm_parquet::WindowManifest =
         serde_json::from_str(&std::fs::read_to_string(&manifest_path).expect("manifest"))
             .expect("manifest parses");
     assert_eq!(manifest.rows, 2);
@@ -241,8 +241,10 @@ fn a_removal_is_read_and_only_the_parquet_sink_refuses_it() {
         .find(|p| p.is_dir())
         .expect("one table directory");
 
-    let cfg = DrainConfig::new(out.path(), "test");
-    let window = okm_drain::read_window(&dir, &cfg)
+    // The reading half is core's now: the window join lives beside the segments it
+    // reads (ADR-0056 §8), so this test calls it where it lives.
+    let window_cfg = okm_core::changelog::window::WindowConfig::default();
+    let window = okm_core::changelog::window::read_window(&dir, &window_cfg)
         .expect("read")
         .expect("a window");
     assert_eq!(window.rows.len(), 1, "the put is still a row in history");
@@ -256,7 +258,7 @@ fn a_removal_is_read_and_only_the_parquet_sink_refuses_it() {
     );
 
     let target = out.path().join("x.parquet");
-    let err = okm_drain::write_parquet(&window, &target).expect_err("a column cannot hold it");
+    let err = okm_parquet::write_parquet(&window, &target).expect_err("a column cannot hold it");
     assert!(err.to_string().contains("delete"), "got: {err}");
     assert!(!target.exists(), "nothing half-written");
 }

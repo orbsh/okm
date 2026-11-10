@@ -31,7 +31,7 @@ fn variant_build_smoke() {
     // Build one Variant object from a DynamicValue tree (the shape the
     // dynamic segment's frames decode to).
     let mut obj: BTreeMap<String, DynamicValue> = BTreeMap::new();
-    obj.insert("score".into(), DynamicValue::UInt(99));
+    obj.insert("score".into(), DynamicValue::U64(99));
     obj.insert(
         "tags".into(),
         DynamicValue::Array(vec![
@@ -42,7 +42,7 @@ fn variant_build_smoke() {
     obj.insert(
         "nested".into(),
         DynamicValue::Obj(BTreeMap::from([
-            ("x".into(), DynamicValue::Int(-3)),
+            ("x".into(), DynamicValue::I64(-3)),
             ("flag".into(), DynamicValue::Bool(true)),
         ])),
     );
@@ -51,8 +51,11 @@ fn variant_build_smoke() {
         match v {
             DynamicValue::Null => b.append_null(),
             DynamicValue::Bool(x) => b.append_value(*x),
-            DynamicValue::UInt(x) => b.append_value(*x as i64),
-            DynamicValue::Int(x) => b.append_value(*x),
+            DynamicValue::U8(x) => b.append_value(i64::from(*x)),
+            DynamicValue::U16(x) => b.append_value(i64::from(*x)),
+            DynamicValue::U32(x) => b.append_value(i64::from(*x)),
+            DynamicValue::U64(x) => b.append_value(*x as i64),
+            DynamicValue::I64(x) => b.append_value(*x),
             DynamicValue::F64(x) => b.append_value(*x),
             DynamicValue::Str(sv) => b.append_value(sv.as_str()),
             DynamicValue::Bytes(bv) => b.append_value(bv.as_slice()),

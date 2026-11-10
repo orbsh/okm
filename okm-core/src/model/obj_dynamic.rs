@@ -20,14 +20,29 @@ use crate::model::wrappers::obj_value::ObjValueType;
 use crate::model::wrappers::wire::{put_len, take_len};
 use std::collections::BTreeMap;
 
-/// Dynamic-segment value: the run-time counterpart of a decoded frame.
-/// Typed (fixed-width, schema-checked) fields never use this — declared
-/// fields decode through the compile-time `FieldDesc` path.
+/// The value vocabulary: ONE tree for both halves of the crate (ADR-0056 §8).
+///
+/// It used to exist twice — `DynamicValue` here (dynamic-segment frames, widthless
+/// integers) and `okm_dynamic::Value` (the schema-driven codec's currency,
+/// width-typed integers). The shapes had drifted apart for a historical reason, not
+/// a structural one, and the decoder had to live above core to reach the second.
+/// Now there is one:
+///
+/// - the WIDTH variants are what a typed value carries (`u8`..`u64`, `i64`); the
+///   dynamic segment's frame coding is widthless by design (minimal big-endian), so
+///   a frame reads back as `U64`/`I64` and a typed field's width comes from its
+///   declaration, never from the wire.
+/// - `Obj` is the nested map: the in-memory counterpart of a nested nTLV list
+///   (ADR-0012 — a map IS an nTLV list; the field NAME → id mapping reuses the same
+///   field-name vocabulary).
 #[derive(Clone, Debug, PartialEq)]
 pub enum DynamicValue {
-    UInt(u64),
+    U8(u8),
+    U16(u16),
+    U32(u32),
+    U64(u64),
     /// Signed integer (typed path: `i8`..`i64` fields, `Offset` lifts).
-    Int(i64),
+    I64(i64),
     F64(f64),
     Str(String),
     Bytes(Vec<u8>),
@@ -35,11 +50,82 @@ pub enum DynamicValue {
     /// Nothing stored; presence itself is the information.
     Null,
     Array(Vec<DynamicValue>),
-    /// Nested object: name-keyed map, the in-memory counterpart of a
-    /// nested nTLV list (ADR-0012 — a map IS an nTLV list; the field
-    /// NAME → id mapping reuses the same field-name vocabulary).
+    /// Nested object: name-keyed map (see the type's doc comment).
     Obj(BTreeMap<String, DynamicValue>),
 }
+
+/// Field name → value. `BTreeMap` for deterministic iteration (cold TLV frames are
+/// written in schema declaration order, not map order).
+pub type ValueMap = BTreeMap<String, DynamicValue>;
+
+/// Codec errors: schema/value mismatches, out-of-range values, truncated bytes.
+/// Codec mistakes are normal input — errors, never panics (ADR-0037).
+///
+/// It lives here, beside the value vocabulary, because every producer of it is a
+/// walk over [`DynamicValue`]: the decoder, the encoder, the payload planner and
+/// the column builder.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum CodecError {
+    /// Field present in the value tree but absent from the schema.
+    UnknownField(String),
+    /// Schema field missing from the value tree.
+    MissingField(String),
+    /// Value variant does not match the field's declared kind.
+    TypeMismatch {
+        field: String,
+        expected: &'static str,
+    },
+    /// Encoded bytes shorter than the schema requires.
+    Truncated {
+        field: String,
+        needed: usize,
+        got: usize,
+    },
+    /// Payload header version newer than the schema's.
+    VersionMismatch { schema: u8, found: u8 },
+    /// Cold TLV frame with a tag outside the schema's cold field set.
+    UnknownTag(u8),
+    /// Invalid UTF-8 in a Str field.
+    InvalidUtf8(String),
+    /// A cold payload field carries no TLV tag. The schema is caller-supplied
+    /// (it round-trips through JSON), so this is input, not an invariant — and an
+    /// untagged cold frame would encode to a payload the reader cannot walk back.
+    ColdFieldWithoutTag(String),
+    /// A column could not be built (the arrow-level assembly, not the codec):
+    /// carries its own text because there is no single field to point at.
+    Column { what: String },
+}
+
+impl std::fmt::Display for CodecError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CodecError::UnknownField(n) => write!(f, "unknown field `{n}` (not in schema)"),
+            CodecError::MissingField(n) => write!(f, "missing field `{n}`"),
+            CodecError::TypeMismatch { field, expected } => {
+                write!(f, "field `{field}`: expected {expected}")
+            }
+            CodecError::Truncated { field, needed, got } => {
+                write!(
+                    f,
+                    "field `{field}` truncated: need {needed} bytes, got {got}"
+                )
+            }
+            CodecError::VersionMismatch { schema, found } => {
+                write!(f, "payload version {found} newer than schema {schema}")
+            }
+            CodecError::UnknownTag(t) => write!(f, "unknown cold TLV tag {t}"),
+            CodecError::InvalidUtf8(n) => write!(f, "field `{n}`: invalid UTF-8"),
+            CodecError::ColdFieldWithoutTag(n) => write!(
+                f,
+                "cold field `{n}` carries no tag (the schema's cold fields are ordered TLV frames)"
+            ),
+            CodecError::Column { what } => write!(f, "column: {what}"),
+        }
+    }
+}
+
+impl std::error::Error for CodecError {}
 
 /// One dynamic field: vocabulary id + decoded value.
 #[derive(Clone, Debug, PartialEq)]
@@ -52,8 +138,11 @@ pub struct DynamicField {
 /// (`from_map` says what it got, not what it wanted).
 pub fn dyn_kind(v: &DynamicValue) -> &'static str {
     match v {
-        DynamicValue::UInt(_) => "UInt",
-        DynamicValue::Int(_) => "Int",
+        DynamicValue::U8(_) => "U8",
+        DynamicValue::U16(_) => "U16",
+        DynamicValue::U32(_) => "U32",
+        DynamicValue::U64(_) => "U64",
+        DynamicValue::I64(_) => "I64",
         DynamicValue::F64(_) => "F64",
         DynamicValue::Str(_) => "Str",
         DynamicValue::Bytes(_) => "Bytes",
@@ -202,6 +291,15 @@ impl FrameScratch {
 /// is a parameter; a top-level Obj is written by [`write_named_frame`], and an
 /// Obj nested inside an Array reaches THIS match arm — composites are written
 /// fully wherever they appear.
+/// One unsigned frame, minimal big-endian width (leading zero bytes stripped).
+fn write_unsigned(buf: &mut Vec<u8>, v: u64) {
+    let be = v.to_be_bytes();
+    let first = be.iter().position(|&b| b != 0).unwrap_or(7);
+    buf.push(ObjValueType::UInt.to_byte());
+    put_len(buf, 8 - first);
+    buf.extend_from_slice(&be[first..]);
+}
+
 fn write_value<R: NameResolver>(
     buf: &mut Vec<u8>,
     value: &DynamicValue,
@@ -210,7 +308,7 @@ fn write_value<R: NameResolver>(
     depth: usize,
 ) -> crate::error::Result<()> {
     match value {
-        DynamicValue::Int(v) => {
+        DynamicValue::I64(v) => {
             // Minimal big-endian two's-complement width.
             let be = v.to_be_bytes();
             let fill = if *v < 0 { 0xFF } else { 0x00 };
@@ -225,14 +323,13 @@ fn write_value<R: NameResolver>(
             put_len(buf, 8 - start);
             buf.extend_from_slice(&be[start..]);
         }
-        DynamicValue::UInt(v) => {
-            // Minimal big-endian width: strip leading zero bytes.
-            let be = v.to_be_bytes();
-            let first = be.iter().position(|&b| b != 0).unwrap_or(7);
-            buf.push(ObjValueType::UInt.to_byte());
-            put_len(buf, 8 - first);
-            buf.extend_from_slice(&be[first..]);
-        }
+        // The wire has no width: a typed field's width is its declaration's, so
+        // every unsigned variant writes the same minimal-width frame and reads
+        // back as `U64` (ADR-0056 §8).
+        DynamicValue::U8(v) => write_unsigned(buf, u64::from(*v)),
+        DynamicValue::U16(v) => write_unsigned(buf, u64::from(*v)),
+        DynamicValue::U32(v) => write_unsigned(buf, u64::from(*v)),
+        DynamicValue::U64(v) => write_unsigned(buf, *v),
         DynamicValue::F64(v) => {
             buf.push(ObjValueType::F64.to_byte());
             put_len(buf, 8);
@@ -418,7 +515,7 @@ fn decode_value_named(
             }
             let mut be = [0u8; 8];
             be[8 - body.len()..].copy_from_slice(body);
-            DynamicValue::UInt(u64::from_be_bytes(be))
+            DynamicValue::U64(u64::from_be_bytes(be))
         }
         ObjValueType::Int => {
             // Sign-extend back to 8 bytes, big-endian two's complement.
@@ -428,7 +525,7 @@ fn decode_value_named(
             let fill = if body[0] & 0x80 != 0 { 0xFF } else { 0x00 };
             let mut be = [fill; 8];
             be[8 - body.len()..].copy_from_slice(body);
-            DynamicValue::Int(i64::from_be_bytes(be))
+            DynamicValue::I64(i64::from_be_bytes(be))
         }
         ObjValueType::F64 => {
             if body.len() != 8 {
@@ -521,8 +618,11 @@ mod serde_impls {
     impl Serialize for DynamicValue {
         fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
             match self {
-                DynamicValue::UInt(v) => s.serialize_u64(*v),
-                DynamicValue::Int(v) => s.serialize_i64(*v),
+                DynamicValue::U8(v) => s.serialize_u64(u64::from(*v)),
+                DynamicValue::U16(v) => s.serialize_u64(u64::from(*v)),
+                DynamicValue::U32(v) => s.serialize_u64(u64::from(*v)),
+                DynamicValue::U64(v) => s.serialize_u64(*v),
+                DynamicValue::I64(v) => s.serialize_i64(*v),
                 DynamicValue::F64(v) => s.serialize_f64(*v),
                 DynamicValue::Str(v) => s.serialize_str(v),
                 DynamicValue::Bytes(v) => s.serialize_bytes(v),
@@ -564,11 +664,11 @@ mod serde_impls {
                 }
 
                 fn visit_i64<E>(self, v: i64) -> Result<Self::Value, E> {
-                    Ok(DynamicValue::Int(v))
+                    Ok(DynamicValue::I64(v))
                 }
 
                 fn visit_u64<E>(self, v: u64) -> Result<Self::Value, E> {
-                    Ok(DynamicValue::UInt(v))
+                    Ok(DynamicValue::U64(v))
                 }
 
                 fn visit_f64<E>(self, v: f64) -> Result<Self::Value, E> {
@@ -638,9 +738,9 @@ mod serde_tests {
     #[test]
     fn every_scalar_round_trips_through_json() {
         let cases = [
-            DynamicValue::UInt(0),
-            DynamicValue::UInt(u64::MAX),
-            DynamicValue::Int(-7),
+            DynamicValue::U64(0),
+            DynamicValue::U64(u64::MAX),
+            DynamicValue::I64(-7),
             DynamicValue::F64(3.25),
             DynamicValue::Str("你好".into()),
             DynamicValue::Bool(true),
@@ -661,13 +761,13 @@ mod serde_tests {
                 "props".to_string(),
                 DynamicValue::Obj(BTreeMap::from([
                     ("vcs".to_string(), DynamicValue::Str("gitea".into())),
-                    ("stars".to_string(), DynamicValue::UInt(7)),
+                    ("stars".to_string(), DynamicValue::U64(7)),
                 ])),
             ),
             (
                 "mixed".to_string(),
                 DynamicValue::Array(vec![
-                    DynamicValue::UInt(1),
+                    DynamicValue::U64(1),
                     DynamicValue::Str("x".into()),
                     DynamicValue::Null,
                     DynamicValue::Array(vec![DynamicValue::Bool(false)]),
@@ -679,7 +779,7 @@ mod serde_tests {
         assert_eq!(
             serde_json::to_string(&DynamicValue::Obj(BTreeMap::from([(
                 "a".into(),
-                DynamicValue::UInt(1)
+                DynamicValue::U64(1)
             )])))
             .unwrap(),
             r#"{"a":1}"#
@@ -697,9 +797,9 @@ mod serde_tests {
         assert_eq!(
             serde_json::from_str::<DynamicValue>(&text).unwrap(),
             DynamicValue::Array(vec![
-                DynamicValue::UInt(0),
-                DynamicValue::UInt(1),
-                DynamicValue::UInt(255)
+                DynamicValue::U64(0),
+                DynamicValue::U64(1),
+                DynamicValue::U64(255)
             ])
         );
     }
@@ -708,14 +808,14 @@ mod serde_tests {
     /// collapse (JSON has one number type).
     #[test]
     fn a_non_negative_int_reads_back_as_uint() {
-        let text = serde_json::to_string(&DynamicValue::Int(5)).unwrap();
+        let text = serde_json::to_string(&DynamicValue::I64(5)).unwrap();
         assert_eq!(text, "5");
         assert_eq!(
             serde_json::from_str::<DynamicValue>(&text).unwrap(),
-            DynamicValue::UInt(5)
+            DynamicValue::U64(5)
         );
         // Negative stays `Int`.
-        assert_eq!(round_trip(&DynamicValue::Int(-5)), DynamicValue::Int(-5));
+        assert_eq!(round_trip(&DynamicValue::I64(-5)), DynamicValue::I64(-5));
     }
 
     /// A non-string key cannot become an `Obj` name: the deserializer refuses
@@ -736,7 +836,7 @@ mod tests {
         // nested frames and decode fully name-keyed (composites wherever
         // they appear — this shape carried aura's persisted interface_schema).
         let mut nested = std::collections::BTreeMap::new();
-        nested.insert("c".to_string(), DynamicValue::Int(0));
+        nested.insert("c".to_string(), DynamicValue::I64(0));
         let val = DynamicValue::Obj(std::collections::BTreeMap::from([(
             "item".to_string(),
             DynamicValue::Obj(nested),
@@ -778,9 +878,9 @@ mod tests {
 
     fn frames_round_trip() {
         let cases: Vec<(u16, DynamicValue)> = vec![
-            (1, DynamicValue::UInt(0)),
-            (2, DynamicValue::UInt(42)),
-            (3, DynamicValue::UInt(u64::MAX)),
+            (1, DynamicValue::U64(0)),
+            (2, DynamicValue::U64(42)),
+            (3, DynamicValue::U64(u64::MAX)),
             (1, DynamicValue::F64(3.25)),
             (4, DynamicValue::Str("hello".into())),
             (5, DynamicValue::Str("你好".into())),
@@ -791,7 +891,7 @@ mod tests {
             (
                 10,
                 DynamicValue::Array(vec![
-                    DynamicValue::UInt(1),
+                    DynamicValue::U64(1),
                     DynamicValue::Str("x".into()),
                     DynamicValue::Null,
                 ]),
@@ -815,13 +915,13 @@ mod tests {
     #[test]
     fn short_ids_take_one_byte_and_large_escape() {
         let mut buf = Vec::new();
-        put_frame(&mut buf, 0xFE, &DynamicValue::UInt(1)).unwrap();
+        put_frame(&mut buf, 0xFE, &DynamicValue::U64(1)).unwrap();
         assert_eq!(buf[0], 0xFE, "id 254 stays in the u8 lane");
         let mut buf = Vec::new();
-        put_frame(&mut buf, 0xFF, &DynamicValue::UInt(1)).unwrap();
+        put_frame(&mut buf, 0xFF, &DynamicValue::U64(1)).unwrap();
         assert_eq!(&buf[..3], &[0xFF, 0x00, 0xFF], "id 255 escapes");
         let mut buf = Vec::new();
-        put_frame(&mut buf, 0x1234, &DynamicValue::UInt(1)).unwrap();
+        put_frame(&mut buf, 0x1234, &DynamicValue::U64(1)).unwrap();
         assert_eq!(&buf[..3], &[0xFF, 0x12, 0x34]);
         let fields = decode_variants(&buf);
         assert_eq!(fields[0].id, 0x1234);
@@ -830,17 +930,17 @@ mod tests {
     #[test]
     fn list_decode_is_partial_on_malformed_tail() {
         let mut buf = Vec::new();
-        put_frame(&mut buf, 1, &DynamicValue::UInt(7)).unwrap();
+        put_frame(&mut buf, 1, &DynamicValue::U64(7)).unwrap();
         buf.extend_from_slice(&[0x05, 0x00, 0x09, 0xAA]); // torn tail: len 9, only 1 byte follows
         let fields = decode_variants(&buf);
         assert_eq!(fields.len(), 1);
-        assert_eq!(fields[0].value, DynamicValue::UInt(7));
+        assert_eq!(fields[0].value, DynamicValue::U64(7));
     }
 
     #[test]
     fn unknown_value_type_skips_by_length() {
         let mut buf = Vec::new();
-        put_frame(&mut buf, 1, &DynamicValue::UInt(7)).unwrap();
+        put_frame(&mut buf, 1, &DynamicValue::U64(7)).unwrap();
         // Hand-rolled frame with a not-yet-defined type (0xFE).
         buf.extend_from_slice(&[0x02, 0xFE, 0x03, 0xAA, 0xBB, 0xCC]);
         put_frame(&mut buf, 3, &DynamicValue::Str("after".into())).unwrap();
@@ -887,7 +987,7 @@ mod nested_tests {
         inner.insert("lon".to_string(), DynamicValue::F64(4.9));
         let mut outer = BTreeMap::new();
         outer.insert("loc".to_string(), DynamicValue::Obj(inner));
-        outer.insert("n".to_string(), DynamicValue::UInt(7));
+        outer.insert("n".to_string(), DynamicValue::U64(7));
 
         let mut vocab = StubVocab::new();
         let mut buf = Vec::new();
@@ -917,7 +1017,7 @@ mod nested_tests {
                 Some((name, &f.value))
             })
             .collect();
-        assert_eq!(by_name["n"], &DynamicValue::UInt(7));
+        assert_eq!(by_name["n"], &DynamicValue::U64(7));
         match by_name["loc"] {
             DynamicValue::Obj(m) => {
                 assert_eq!(m.len(), 2);
@@ -931,7 +1031,7 @@ mod nested_tests {
     #[test]
     fn nested_deep_recursion() {
         // obj → obj → obj: three levels, all through the same vocabulary.
-        let leaf = BTreeMap::from([("v".to_string(), DynamicValue::Int(-3))]);
+        let leaf = BTreeMap::from([("v".to_string(), DynamicValue::I64(-3))]);
         let mid = BTreeMap::from([("leaf".to_string(), DynamicValue::Obj(leaf))]);
         let top = BTreeMap::from([("mid".to_string(), DynamicValue::Obj(mid))]);
 
@@ -957,7 +1057,7 @@ mod nested_tests {
         let DynamicValue::Obj(leaf_m) = &mid_m["leaf"] else {
             panic!("mid must contain Obj leaf");
         };
-        assert_eq!(leaf_m["v"], DynamicValue::Int(-3));
+        assert_eq!(leaf_m["v"], DynamicValue::I64(-3));
     }
 
     /// The encode scratch recycles one body buffer per nesting depth; the bytes
@@ -966,14 +1066,14 @@ mod nested_tests {
     #[test]
     fn the_scratch_reuses_buffers_and_writes_the_same_bytes() {
         let value = DynamicValue::Obj(BTreeMap::from([
-            ("a".to_string(), DynamicValue::UInt(7)),
+            ("a".to_string(), DynamicValue::U64(7)),
             (
                 "nested".to_string(),
                 DynamicValue::Array(vec![
                     DynamicValue::Str("x".into()),
                     DynamicValue::Obj(BTreeMap::from([(
                         "deep".to_string(),
-                        DynamicValue::Int(-3),
+                        DynamicValue::I64(-3),
                     )])),
                 ]),
             ),

@@ -1583,11 +1583,11 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> syn::Result<TS2> {
         if is_signed {
             // Signed integers lift as Int (two's complement preserved).
             to_map_arms.extend(quote! {
-                out.insert(#name.to_string(), ::okm_core::obj_dynamic::DynamicValue::Int(self.#id as i64));
+                out.insert(#name.to_string(), ::okm_core::obj_dynamic::DynamicValue::I64(self.#id as i64));
             });
             from_map_arms.extend(quote! {
                 #id: match map.get(#name) {
-                    Some(::okm_core::obj_dynamic::DynamicValue::Int(v)) => {
+                    Some(::okm_core::obj_dynamic::DynamicValue::I64(v)) => {
                         <#t as ::core::convert::TryFrom<i64>>::try_from(*v).map_err(|_| {
                             ::okm_core::error::Error::bad_value(#name, stringify!(#t), *v)
                         })?
@@ -1691,11 +1691,11 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> syn::Result<TS2> {
         } else if is_varint {
             // VarInt<T>(pub T): lift the inner integer.
             to_map_arms.extend(quote! {
-                out.insert(#name.to_string(), ::okm_core::obj_dynamic::DynamicValue::UInt(self.#id.0 as u64));
+                out.insert(#name.to_string(), ::okm_core::obj_dynamic::DynamicValue::U64(self.#id.0 as u64));
             });
             from_map_arms.extend(quote! {
                 #id: match map.get(#name) {
-                    Some(::okm_core::obj_dynamic::DynamicValue::UInt(v)) => {
+                    Some(::okm_core::obj_dynamic::DynamicValue::U64(v)) => {
                         ::okm_core::VarInt::from_dyn(*v)
                     }
                     None => #dflt,
@@ -1726,7 +1726,7 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> syn::Result<TS2> {
             to_map_arms.extend(quote! {
                 out.insert(#name.to_string(), match self.#id.as_str() {
                     Some(s) => ::okm_core::obj_dynamic::DynamicValue::Str(s.to_string()),
-                    None => ::okm_core::obj_dynamic::DynamicValue::UInt(
+                    None => ::okm_core::obj_dynamic::DynamicValue::U64(
                         self.#id.id()
                             .map(|i| ::okm_core::VocabId::as_u128(i) as u64)
                             .unwrap_or(0)
@@ -1738,7 +1738,7 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> syn::Result<TS2> {
                     Some(::okm_core::obj_dynamic::DynamicValue::Str(v)) => {
                         ::okm_core::Vocab::<#id_ty>::of(v.clone())
                     }
-                    Some(::okm_core::obj_dynamic::DynamicValue::UInt(v)) => {
+                    Some(::okm_core::obj_dynamic::DynamicValue::U64(v)) => {
                         // The unresolved form `to_map` emits (an id without its
                         // label): narrowing checks the width, because a wrapped
                         // id would name another label.
@@ -1782,11 +1782,11 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> syn::Result<TS2> {
         } else if is_offset {
             // Offset(pub i64): the absolute value IS the semantics.
             to_map_arms.extend(quote! {
-                out.insert(#name.to_string(), ::okm_core::obj_dynamic::DynamicValue::Int(self.#id.0));
+                out.insert(#name.to_string(), ::okm_core::obj_dynamic::DynamicValue::I64(self.#id.0));
             });
             from_map_arms.extend(quote! {
                 #id: match map.get(#name) {
-                    Some(::okm_core::obj_dynamic::DynamicValue::Int(v)) => #t(*v),
+                    Some(::okm_core::obj_dynamic::DynamicValue::I64(v)) => #t(*v),
                     None => #dflt,
                     Some(__okm_got) => {
                         return ::core::result::Result::Err(::okm_core::error::Error::kind_mismatch(#name, "Int", __okm_got))
@@ -1823,7 +1823,7 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> syn::Result<TS2> {
                 )
             })?;
             to_map_arms.extend(quote! {
-                out.insert(#name.to_string(), ::okm_core::obj_dynamic::DynamicValue::UInt(
+                out.insert(#name.to_string(), ::okm_core::obj_dynamic::DynamicValue::U64(
                     (!self.#id.0) as u64
                 ));
             });
@@ -1831,7 +1831,7 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> syn::Result<TS2> {
                 #id: match map.get(#name) {
                     // The map carries the LOGICAL value; Reverse's wire flips
                     // bits — construct the wrapper by flipping back.
-                    Some(::okm_core::obj_dynamic::DynamicValue::UInt(v)) => {
+                    Some(::okm_core::obj_dynamic::DynamicValue::U64(v)) => {
                         let logical = <#inner_ty as ::core::convert::TryFrom<u64>>::try_from(*v)
                             .map_err(|_| ::okm_core::error::Error::bad_value(
                                 #name,
@@ -1919,11 +1919,11 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> syn::Result<TS2> {
         } else {
             // Unsigned integers (u8/u16/u32/u64): the common hot path.
             to_map_arms.extend(quote! {
-                out.insert(#name.to_string(), ::okm_core::obj_dynamic::DynamicValue::UInt(self.#id as u64));
+                out.insert(#name.to_string(), ::okm_core::obj_dynamic::DynamicValue::U64(self.#id as u64));
             });
             from_map_arms.extend(quote! {
                 #id: match map.get(#name) {
-                    Some(::okm_core::obj_dynamic::DynamicValue::UInt(v)) => {
+                    Some(::okm_core::obj_dynamic::DynamicValue::U64(v)) => {
                         <#t as ::core::convert::TryFrom<u64>>::try_from(*v).map_err(|_| {
                             ::okm_core::error::Error::bad_value(#name, stringify!(#t), *v)
                         })?

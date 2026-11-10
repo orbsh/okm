@@ -108,6 +108,9 @@ pub fn side_of(slots: &SlotMap, slot: u16) -> Side {
 /// Extension of a segment still being written. Readers ignore it: its tail may
 /// be torn (ADR-0045 §5).
 pub const PARTIAL_EXT: &str = "partial";
+/// The window join: the drain's reading half, beside the segments it reads.
+pub mod window;
+
 /// Extension of a sealed segment: immutable, ordered by name, drainable.
 pub const SEALED_EXT: &str = "segment";
 

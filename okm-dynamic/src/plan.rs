@@ -338,14 +338,14 @@ impl<S: VirtualStorage> DynamicCollection<S> {
     /// field is writing a DYNAMIC field of that name (see `split_names`), not the
     /// identity — the pkey stays authoritative. `encode_payload` requires every declared
     /// field, and "absent" means the default on the decode side too
-    /// ([`crate::decode::fill_schema_defaults`], one definition).
+    /// ([`okm_core::decode::fill_schema_defaults`], one definition).
     fn row_base(&self, pkey: &[u8], carried: &[&ValueMap]) -> Result<ValueMap, String> {
         let mut out = ValueMap::new();
         for map in carried {
             out.extend((*map).clone());
         }
         out.extend(crate::decode_key(self.schema(), pkey).map_err(|e| e.to_string())?);
-        crate::decode::fill_schema_defaults(self.schema(), &mut out);
+        okm_core::decode::fill_schema_defaults(self.schema(), &mut out);
         Ok(out)
     }
 

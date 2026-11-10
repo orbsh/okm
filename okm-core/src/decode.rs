@@ -2,9 +2,14 @@
 //! the key; payload walks the header, the hot segment by static offsets,
 //! then cold TLV frames by tag.
 
-use crate::{CodecError, CollectionSchema, Value, ValueMap};
-use okm_core::field::FieldType;
+use crate::field::FieldType;
+use crate::model::obj_dynamic::{CodecError, DynamicValue, ValueMap};
+use crate::schema::CollectionSchema;
 use std::collections::BTreeMap;
+
+/// Inside a decode walk the tree reads better under its short name; it is the
+/// one value vocabulary the crate has (ADR-0056 §8).
+use DynamicValue as Value;
 
 /// Decode the key bytes into the value map (fields at their static
 /// offsets; nested segments would recurse — v1 keys are flat).
@@ -32,7 +37,7 @@ pub fn decode_key(schema: &CollectionSchema, bytes: &[u8]) -> Result<ValueMap, C
 /// cannot do this (no store), so the collection runs this right after decoding:
 /// a `Value::Bytes` for a Vocab field means "id bytes", and an id the vocabulary
 /// does not know STAYS bytes — the reader never invents a label.
-pub fn resolve_vocab_labels<S: okm_core::VirtualStorage + ?Sized>(
+pub fn resolve_vocab_labels<S: crate::VirtualStorage + ?Sized>(
     schema: &CollectionSchema,
     store: &S,
     header: &[u8],
@@ -45,8 +50,8 @@ pub fn resolve_vocab_labels<S: okm_core::VirtualStorage + ?Sized>(
         let Some(Value::Bytes(raw)) = values.get(&f.name) else {
             continue;
         };
-        let faces = okm_core::obj_vocab::VocabFaces::from_id_slot(id_slot);
-        if let Some(label) = okm_core::obj_vocab::vocab_label(store, header, faces, raw)
+        let faces = crate::obj_vocab::VocabFaces::from_id_slot(id_slot);
+        if let Some(label) = crate::obj_vocab::vocab_label(store, header, faces, raw)
             .map_err(|e| e.to_string())?
         {
             values.insert(f.name.clone(), Value::Str(label));
@@ -102,7 +107,7 @@ pub fn decode_payload(schema: &CollectionSchema, bytes: &[u8]) -> Result<ValueMa
     }
 
     // Cold TLV frames: tag u8 + len varint + value, until the tail.
-    let by_tag: BTreeMap<u8, &okm_core::schema::FieldSchema> = schema
+    let by_tag: BTreeMap<u8, &crate::schema::FieldSchema> = schema
         .cold_fields
         .iter()
         .filter_map(|f| f.tag.map(|t| (t, f)))
@@ -120,7 +125,7 @@ pub fn decode_payload(schema: &CollectionSchema, bytes: &[u8]) -> Result<ValueMa
             needed: 1,
             got: 0,
         })?;
-        let Some((len, len_n)) = okm_core::take_len(rest) else {
+        let Some((len, len_n)) = crate::take_len(rest) else {
             return Err(CodecError::Truncated {
                 field: "<cold len>".into(),
                 needed: 4,
@@ -180,7 +185,7 @@ pub fn decode_payload(schema: &CollectionSchema, bytes: &[u8]) -> Result<ValueMa
                                 got: 0,
                             });
                         };
-                        let w = okm_core::prefix_width(first);
+                        let w = crate::prefix_width(first);
                         if value.len() != w {
                             return Err(CodecError::Truncated {
                                 field: f.name.clone(),
@@ -188,7 +193,7 @@ pub fn decode_payload(schema: &CollectionSchema, bytes: &[u8]) -> Result<ValueMa
                                 got: value.len(),
                             });
                         }
-                        Value::U64(okm_core::VarInt::<u64>::decode(value).0)
+                        Value::U64(crate::VarInt::<u64>::decode(value).0)
                     }
                     // Fixed point: the wire is the quantised integer.
                     FieldType::Quant(p) => {
@@ -199,7 +204,7 @@ pub fn decode_payload(schema: &CollectionSchema, bytes: &[u8]) -> Result<ValueMa
                                 got: value.len(),
                             });
                         };
-                        Value::F64(okm_core::dequantize(i64::from_be_bytes(*bytes), p))
+                        Value::F64(crate::dequantize(i64::from_be_bytes(*bytes), p))
                     }
                     // Biased u32: the base is the schema's, so the logical
                     // value comes back here rather than in every reader.
@@ -245,18 +250,18 @@ pub fn decode_payload(schema: &CollectionSchema, bytes: &[u8]) -> Result<ValueMa
 /// name-keyed map that may name only some declared fields. A map that skips a
 /// field is not an error — the payload is positional and a half row cannot be
 /// encoded — so the default is what "absent" means on both paths.
-pub(crate) fn fill_schema_defaults(schema: &CollectionSchema, out: &mut ValueMap) {
+pub fn fill_schema_defaults(schema: &CollectionSchema, out: &mut ValueMap) {
     for f in schema.hot_fields.iter().chain(schema.cold_fields.iter()) {
         if out.contains_key(&f.name) {
             continue;
         }
         let v = match &f.default {
-            Some(okm_core::schema::DefaultValue::U64(x)) => Value::U64(*x),
-            Some(okm_core::schema::DefaultValue::I64(x)) => Value::I64(*x),
-            Some(okm_core::schema::DefaultValue::F64(x)) => Value::F64(*x),
-            Some(okm_core::schema::DefaultValue::Bool(x)) => Value::Bool(*x),
-            Some(okm_core::schema::DefaultValue::Str(x)) => Value::Str(x.clone()),
-            Some(okm_core::schema::DefaultValue::ZeroBytes(n)) => Value::Bytes(vec![0; *n]),
+            Some(crate::schema::DefaultValue::U64(x)) => Value::U64(*x),
+            Some(crate::schema::DefaultValue::I64(x)) => Value::I64(*x),
+            Some(crate::schema::DefaultValue::F64(x)) => Value::F64(*x),
+            Some(crate::schema::DefaultValue::Bool(x)) => Value::Bool(*x),
+            Some(crate::schema::DefaultValue::Str(x)) => Value::Str(x.clone()),
+            Some(crate::schema::DefaultValue::ZeroBytes(n)) => Value::Bytes(vec![0; *n]),
             None => match f.ty {
                 FieldType::U8 => Value::U8(0),
                 FieldType::U16 => Value::U16(0),
@@ -288,7 +293,7 @@ pub(crate) fn fill_schema_defaults(schema: &CollectionSchema, out: &mut ValueMap
     }
 }
 
-pub(crate) fn decode_fixed(
+pub fn decode_fixed(
     name: String,
     ty: FieldType,
     width: usize,
@@ -320,7 +325,7 @@ pub(crate) fn decode_fixed(
         // /10^P gives the f64 the column type promises; `Offset` is biased by
         // the schema's base. Both are 8/4 bytes wide, so both can be hot, and
         // before this arm existed the whole ROW failed to decode.
-        FieldType::Quant(p) => Value::F64(okm_core::dequantize(
+        FieldType::Quant(p) => Value::F64(crate::dequantize(
             i64::from_be_bytes(raw.try_into().map_err(|_| need(raw.len()))?),
             p,
         )),

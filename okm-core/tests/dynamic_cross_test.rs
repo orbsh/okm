@@ -303,7 +303,7 @@ fn a_key_name_in_a_map_is_a_value_field_in_both_modes() {
     };
 
     let mut typed_map = BTreeMap::new();
-    typed_map.insert("org_id".to_string(), DynamicValue::UInt(999));
+    typed_map.insert("org_id".to_string(), DynamicValue::U64(999));
     typed_map.insert("note".to_string(), DynamicValue::Str("hi".into()));
     typed.merge(&key, &typed_map).unwrap();
 

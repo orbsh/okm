@@ -110,6 +110,11 @@ pub enum Error {
     /// the store did not have.
     #[error("changelog: {what}")]
     Changelog { what: String },
+    /// A codec walk refused the bytes or the value tree (`CodecError`). The
+    /// decoder and the window reader are core's now (ADR-0056 §8), so the leaf
+    /// error has a home here instead of being stringified at the boundary.
+    #[error("codec: {0}")]
+    Codec(#[from] crate::model::obj_dynamic::CodecError),
 }
 
 impl Error {

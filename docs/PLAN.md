@@ -2812,15 +2812,24 @@ source; all three are fixed. The rest is not landed.
       the same kind; `sealed_segments` now returns deltas only, `baseline_segments`
       the snapshots. `a_baseline_makes_a_mid_life_log_complete` locks the order
       (delta 0, baseline 1, delta 2) and the idempotence.
-- [ ] **The drain becomes core; the formats leave.** `okm_dynamic::decode_payload` is a
-      pure function over `CollectionSchema` and returns core `DynamicValue`s — move
-      `decode.rs` into `okm-core` (`okm-dynamic` re-exports it) and move the window
-      join out of `okm-drain` into core beside the segment readers. `okm-drain` ceases
-      to be a crate. Arrow (`okm_dynamic::arrow`), Parquet, Iceberg metadata and the
-      replay driver are projections, not mechanism, and stay outside a crate that
-      cannot depend upward.
-- [ ] **`okm-parquet`** — a CLI with no link to the application: table directory in
-      (segments + sidecars), Parquet + manifest out, Iceberg metadata after that.
+- [x] **The drain became core; the formats left.** One value vocabulary first: core's
+      `DynamicValue` absorbed `okm_dynamic::Value`'s width-typed integers
+      (`U8/U16/U32/U64/I64`; the dynamic frame coding stays widthless, so a frame
+      reads back as `U64` and a typed field's width is its declaration's), and
+      `Value`/`ValueMap`/`CodecError` are now core's with `okm-dynamic` re-exporting
+      the names — the merge, not a conversion layer, because two near-identical enums
+      one crate apart is a duplicate concept, not a boundary. `decode.rs` moved into
+      `okm-core::decode` (the two walk helpers are public for the planner), and the
+      window join became `okm_core::changelog::window`: `Window`, `read_window`,
+      `WindowConfig { max_segments, after }`, the per-`(consumer, table)` watermark
+      (read + atomic write), the hex-header/sidecar loaders, `split_slot`,
+      `is_id_face`, `table_dirs`. `okm-drain` is gone. `okm-core::error::Error` gained
+      `Codec(CodecError)` so the leaf error crosses the boundary typed.
+- [x] **`okm-parquet`** — the format half as a standalone binary: table directory in
+      (segments + sidecars), Parquet + manifest out, watermark advanced only after
+      both exist. `--root`, `--out`, `--consumer`, `--max-segments`, `--table <hex>`,
+      no link to the application. Iceberg metadata and the `replay` subcommand are the
+      two pieces still missing from this bullet.
       `replay` takes one extra file (the target `CollectionSchema` JSON the new build
       exports) and writes through the new build's write path; everything else is on
       disk. `Table::to_record_batch` (ADR-0007) stays in core — it is the in-process
