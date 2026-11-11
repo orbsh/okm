@@ -474,7 +474,7 @@ fn node_kind_filter_intersects_typed_traversal() {
         .scan::<__OkmIndex_Org_by_kind>(&2u8.to_be_bytes())
         .unwrap()
         .into_iter()
-        .filter_map(|(pk, _)| {
+        .filter_map(|(_, pk, _)| {
             if pk.taken == 8 {
                 Some(pk.decoded.id)
             } else {

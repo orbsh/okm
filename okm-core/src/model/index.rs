@@ -495,10 +495,70 @@ pub trait Document: Sized + Clone {
 /// One access method over a collection. Implemented by generated marker
 /// structs (`#[derive(DocumentEncode)]` + `#[ok_index(...)]`); slots derive
 /// from the collection's ns — indexes never take manual namespace IDs.
+/// The decoded index-field segment of one entry — the sort segment, read back.
+///
+/// A `fields(...)` declaration gets a generated struct with one field per
+/// declared name, typed exactly as in the row and decoded from the same raw
+/// bytes the encoder wrote (fixed-width fields cut at their declared width, the
+/// single variable-width field — always last — taking the remainder). A
+/// `func(...)` declaration cannot describe its segment, because the segment is
+/// the function's output and that type belongs to the function, so its decoded
+/// form is [`RawFields`].
+///
+/// This exists because a scan hands back the primary key (the entry's tail), and
+/// a caller joining on the column it scanned BY used to have to fetch the row or
+/// declare `includes` just to read that column.
+pub trait DecodeIndexFields: Sized {
+    /// Decode one entry's field segment. The slice is exactly the segment: no
+    /// header, no primary-key tail.
+    fn decode_index_fields(segment: &[u8]) -> Self;
+}
+
+/// A segment its declaration does not describe (`func` index): the bytes as
+/// written, for the caller to read as its own function's type.
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct RawFields(pub Vec<u8>);
+
+impl RawFields {
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.0
+    }
+
+    /// The segment as UTF-8, `None` when it is not (an integer function's
+    /// big-endian bytes, for example).
+    pub fn as_str(&self) -> Option<&str> {
+        std::str::from_utf8(&self.0).ok()
+    }
+}
+
+impl DecodeIndexFields for RawFields {
+    fn decode_index_fields(segment: &[u8]) -> Self {
+        RawFields(segment.to_vec())
+    }
+}
+
+/// No field segment to speak of — the opt-out for a declaration that has
+/// nothing to say about its segment.
+impl DecodeIndexFields for () {
+    fn decode_index_fields(_segment: &[u8]) -> Self {}
+}
+
+/// One index entry, read back without a fetch: the sort segment decoded
+/// ([`KvIndex::Fields`]) and the key the entry's tail carries.
+pub type IndexHit<I> = (
+    <I as KvIndex>::Fields,
+    PrefixKey<<I as KvIndex>::Key>,
+);
+
 pub trait KvIndex {
     type Key: KeyEncode;
     /// The document type this access method reads its index fields from.
     type Document: Document<Key = Self::Key>;
+    /// The field segment, decoded (see [`DecodeIndexFields`]). Every scan
+    /// returns it beside the primary key: an entry is `[fields][key tail]`, and
+    /// a caller that scanned by a column can read that column without a second
+    /// read. A `func` index answers [`RawFields`].
+    type Fields: DecodeIndexFields;
     /// Item-local slot, allocated by attribute order (index segment,
     /// 0x3001, 0x3002, …; primary = 0x0000). 2 bytes in the entry header,
     /// big-endian (ADR-0016).
@@ -519,6 +579,13 @@ pub trait KvIndex {
     /// the result encoding's order). The query side calls the same path on
     /// its probe value — one declaration drives both encode and scan.
     const FUNC: &'static str = "";
+
+    /// Decode an entry's field segment into `Fields`. Spelled as a method on the
+    /// access method so call sites read `I::decode_fields(..)`; the work is
+    /// [`DecodeIndexFields`]'s.
+    fn decode_fields(segment: &[u8]) -> Self::Fields {
+        <Self::Fields as DecodeIndexFields>::decode_index_fields(segment)
+    }
 
     /// Encode the named fields in `names` order. Generated impls source
     /// every name from the document payload; hand impls may read identity
@@ -747,7 +814,7 @@ pub fn scan_index<S: VirtualStorage, I: KvIndex>(
     store: &S,
     ns_prefix: &[u8],
     encoded: &[u8],
-) -> crate::error::Result<Vec<PrefixKey<I::Key>>> {
+) -> crate::error::Result<Vec<IndexHit<I>>> {
     scan_index_filtered::<S, I>(store, ns_prefix, encoded, false)
 }
 
@@ -762,7 +829,7 @@ pub fn scan_index_exact<S: VirtualStorage, I: KvIndex>(
     store: &S,
     ns_prefix: &[u8],
     encoded: &[u8],
-) -> crate::error::Result<Vec<PrefixKey<I::Key>>> {
+) -> crate::error::Result<Vec<IndexHit<I>>> {
     scan_index_filtered::<S, I>(store, ns_prefix, encoded, true)
 }
 
@@ -771,7 +838,7 @@ fn scan_index_filtered<S: VirtualStorage, I: KvIndex>(
     ns_prefix: &[u8],
     encoded: &[u8],
     exact: bool,
-) -> crate::error::Result<Vec<PrefixKey<I::Key>>> {
+) -> crate::error::Result<Vec<IndexHit<I>>> {
     let p = I::entry_prefix(ns_prefix, encoded);
     let taken = I::key_prefix_width();
     let kl = I::Key::KEY_LEN;
@@ -792,6 +859,15 @@ fn scan_index_filtered<S: VirtualStorage, I: KvIndex>(
                 return None;
             }
             let start = suffix.len() - taken;
+            // The field segment is the probe plus whatever the suffix carries
+            // before the tail: for an equality probe that is the whole segment,
+            // for a group probe the probe is its leading part. Decoding from
+            // `probe ++ suffix[..start]` therefore works for every probe width —
+            // the same bytes the writer produced, in the same order.
+            let mut segment = Vec::with_capacity(encoded.len() + start);
+            segment.extend_from_slice(encoded);
+            segment.extend_from_slice(&suffix[..start]);
+            let fields = I::decode_fields(&segment);
             let decoded = if taken == kl {
                 I::Key::decode(&suffix[start..])
             } else {
@@ -801,7 +877,7 @@ fn scan_index_filtered<S: VirtualStorage, I: KvIndex>(
                 buf[..taken].copy_from_slice(&suffix[start..]);
                 I::Key::decode(&buf)
             };
-            Some(PrefixKey { decoded, taken })
+            Some((fields, PrefixKey { decoded, taken }))
         })
         .collect())
 }

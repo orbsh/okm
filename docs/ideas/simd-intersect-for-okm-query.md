@@ -70,7 +70,7 @@ Measured gaps, in the order they hurt, all inside the current sync contract:
 1. **Eager to the end.** `merge_join` returns `Vec<(L, R)>`; a chain materializes at every step, so `LIMIT 10` over a million-row join still builds the whole Vec. okm-core already solved this below (`scan_range_iter` is lazy, ADR-0020); the query layer has not followed.
 2. **Clone per result pair.** The duplicate-run branch does `out.push((l.clone(), r.clone()))` — for two runs of length *k*, that is k² clones. A run handle (or owned side) removes it.
 3. **No lazy adapters.** `group_by` folds into a `Vec`, so a filtered, grouped, limited pipeline allocates intermediates nobody reads.
-4. **No `intersect`/`union`.** `V = ()` through `merge_join` is the shape, but it clones and sorts nothing — a named specialization would document intent and allow the skew shortcut of §4.
+4. **No `intersect`/`union`.** `V = ()` through `merge_join` is the shape, but it clones per result pair and (since the operator took over ordering) sorts its inputs — a named specialization would document intent, skip the sort for the already-ordered case, and allow the skew shortcut of §4.
 
 Fix 4 with galloping when sizes are lopsided; fix 1–3 before thinking about lanes.
 

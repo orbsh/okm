@@ -54,7 +54,7 @@ fn a_relation_table_answers_both_directions_with_its_payload() {
     assert_eq!(hits.len(), 2, "member 101 is in two channels");
     let mut sines: Vec<i64> = hits
         .iter()
-        .map(|(_, doc)| doc.as_ref().expect("fetch-back returns the row").since_ms)
+        .map(|(_, _, doc)| doc.as_ref().expect("fetch-back returns the row").since_ms)
         .collect();
     sines.sort();
     assert_eq!(

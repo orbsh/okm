@@ -103,7 +103,7 @@ fn index_scans_reach_the_hostile_named_fields() {
         .scan::<__OkmIndex_Shadow_by_b>(&probe)
         .unwrap()
         .into_iter()
-        .map(|(pk, _)| pk.decoded)
+        .map(|(_, pk, _)| pk.decoded)
         .collect();
     assert_eq!(hits, vec![key()]);
 
@@ -113,7 +113,7 @@ fn index_scans_reach_the_hostile_named_fields() {
         .scan_covered::<__OkmIndex_Shadow_by_cov>(probe.as_bytes())
         .unwrap();
     assert_eq!(covered.len(), 1);
-    assert_eq!(covered[0].1.len, 19);
+    assert_eq!(covered[0].2.len, 19);
 }
 
 #[test]

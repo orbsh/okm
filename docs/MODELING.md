@@ -284,10 +284,12 @@ let t = <User as Document>::collection(TestStore::default());
 
 t.put(&user, &User { org_id: 7, created_at: 30, reputation: 100, bio_len: 2 })?;
 
-// Leftmost-prefix scan on any access method, with fetch-back:
+// Leftmost-prefix scan on any access method: the field segment, the key, the row.
 let rows = t.scan::<ByOrg>(&7u32.to_be_bytes())?;
-for (key, row) in rows {
-    // key: decoded UserKey, row: Some(decoded User) when the payload exists
+for (fields, key, row) in rows {
+    // fields: the index fields, decoded (org_id here) — the column you scanned BY
+    // key:    decoded UserKey (PrefixKey: full when the entry carries it)
+    // row:    Some(decoded User) when the payload exists
 }
 
 t.purge(&user)?; // removes the primary key + all declared index entries (+ the dynamic segment)
@@ -1005,6 +1007,8 @@ There is no dedicated `Set` type — membership is carried by two application-le
 - **Truth-source discipline**: a bloom is a lossy derivative — delete cannot unfold membership from it. It must travel beside a complete membership representation (a `Vector<T>` on the row, or the set stored off-row), and must never be the only record of membership.
 - **Query semantics**: "possibly in the set" (verified through the complete representation when it matters) versus the inverted path's "definitely in the set". The two paths are complements, not substitutes.
 
+**Why not a bitmap index.** The tempting third form is one entry per value holding a bitmap of the rows that carry it, so membership intersections become machine-word ANDs — exact, and with no ordering to establish. It is not available here, for the reason the same shape is rejected inside the index mechanism: an entry that many rows write is a cross-row read-modify-write. Every put and every purge would re-encode a value shared by all members of that value's group, which breaks the invariant that an entry's key and value are pure functions of the row that produced it (the deleted set is re-derived from the row, never from bookkeeping). It also needs row ordinals to address bits: a dense id space plus a translation back to keys — the surrogate id this document spends a section deleting. And its one unique win, order-free intersection, stopped being a reason the day `merge_join` began sorting its inputs: an unordered stream now costs a sort, not a wrong answer. Bloom filters stay because they are per-row — one opaque value written by that row's own writer — so they pay recall instead of write amplification.
+
 ## Inverted index: recall from the index, frequency from the row
 
 The low-cardinality path above is the raw material of full-text search, and the entry layout decides the one thing that is easy to get wrong: **what recall gives you, and what it cannot**.
@@ -1012,7 +1016,7 @@ The low-cardinality path above is the raw material of full-text search, and the 
 What the entries give — all of it structural, none of it a feature:
 
 - the posting list for a token `t` is the prefix `[ns][slot][t]`, so one range scan returns every row that contains `t`, ordered by primary key;
-- two posting lists intersect without materialising either side — both are ordered, so `merge_join` streams them;
+- two posting lists for one token both run in primary-key order (the token is fixed, so the tail IS the key), so intersecting them is a single pass with no hash table and no per-row lookups — `merge_join` collects its two sides to sort them, so the memory is `O(n)` either way, and an unordered stream still works there for the price of a sort;
 - `df(t)` is the length of that range, for free;
 - "does row R contain t" is one point read.
 
@@ -1351,7 +1355,7 @@ These constraints are not free, but their cost is bounded and the structural gai
 
 **The per-hit cost is small, and amortized.** That indirection is a routine LSM point lookup or one TLV parse, not on the scale of the hot path; what it buys is a key layout that need not deform for every "also queried by X" dimension, and a business that adds an `#[ok_index]` instead of redesigning its key as it grows.
 
-**Batch reads come out better (given the leading fields are fixed by an equality prefix).** The fetch-back looks like a random point read per hit, but both streams are already ordered: index entries cluster by `[index fields][primary-key prefix]` and the primary table clusters by `[primary key]` — with the leading fields fixed, the tail IS the primary-key bytes, so fetch-back degenerates into a two-pointer merge (a merge join): sequential I/O, far below the cost of per-hit random reads. **A range across leading fields breaks this**: the tail is then ordered by the ranged dimension, every hit is an independent point read, and locality ≈ the number of distinct leading values in the range — a dimension that needs range reads belongs in the primary key's `[order]` segment (a range read is then a sequential scan of the primary table itself), or goes through `scan_range_iter`, stopping early and fetching back only for survivors. Hand-optimizing the key layout has no extra card to play in the batch case.
+**Batch reads come out better when an equality prefix fixes the leading fields.** The fetch-back is one point read per hit; what helps is that those hits ARRIVE in primary-key order. Entries cluster by `[index fields][primary-key prefix]`, so inside one equality group the tail IS the primary-key bytes, and the group's hits walk the primary table monotonically instead of scattering — the reads land in ascending block order, which is why a batch is far cheaper than per-hit random reads. Read the claim narrowly, because this is where it is easy to overreach: **an index scan is ordered by the index fields first, and by the primary key only INSIDE one fixed field tuple.** A range across the leading fields breaks it (hits then sort by the varied dimension and every hit is an independent point read, locality ≈ the number of distinct leading values in the range), a probe that pins only some leading fields has one such order per group, a `func` index repeats one row's key across several values, and a truncated `key(...)` makes tails tie. None of that makes a join WRONG — `merge_join` sorts its own inputs — it makes the sort unavoidable there and this locality argument inapplicable. A dimension that needs range reads belongs in the primary key's `[order]` segment (a range read is then a sequential scan of the primary table itself), or goes through `scan_range_iter`, stopping early and fetching back only for survivors. Hand-optimizing the key layout has no extra card to play in the batch case.
 
 Conclusion: an access method's indirect cost is one amortizable parse plus one mergeable ordered read — bounded, controlled runtime overhead traded for unbounded key-layout complexity, and the trade only improves as the business grows.
 

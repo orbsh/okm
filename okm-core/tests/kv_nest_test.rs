@@ -62,7 +62,7 @@ fn nest_derive_end_to_end() {
 
     let hits = t.scan::<ByKind>(&7u32.to_be_bytes()).unwrap();
     assert_eq!(hits.len(), 1);
-    assert_eq!(hits[0].1.as_ref().unwrap().kind, 7);
+    assert_eq!(hits[0].2.as_ref().unwrap().kind, 7);
 }
 
 #[test]

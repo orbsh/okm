@@ -12,7 +12,7 @@ SQL 概念        okm 落地
 WHERE (物理)    索引声明 + 前缀/区间扫描（免费，见边界记录）
 WHERE (内存)    .filter()（stdlib，无需包装）
 GROUP BY        group_by（索引排序承担分组）或 reduce（编译期）
-JOIN            merge_join（双方都是键序流）
+JOIN            merge_join（自己排序两侧）
 多级 rollup     前缀扫描逐级收窄 group 段
 图遍历          walk（一跳 = 一次前缀扫描）
 ```
@@ -65,19 +65,47 @@ scan(&[org, dept, day])         → org × dept × day（明细）
 
 判据：分组维度固定且读密集 → reduce（写时付税，读免费）；分组维度多变 → 索引排序 + group_by（读时付税，布局一次覆盖多维度）。两者不互斥：同一索引既服务 group_by 又提供时间线扫描。
 
-## JOIN 配方：merge_join
+## JOIN 配方：merge_join 与 difference
+
+两侧都在同一列上声明索引，就以那一列 join。扫描会把**它按之排序的字段段**一并交回，
+所以 join key 直接在手，既不用回表，也不用 `includes`：
 
 ```rust
-// 两张表各自按 join key 声明索引（键序流），merge_join 单趟合并
-let left = orders.scan::<Order_ByUser>(&[]);    // 键序
-let right = users.scan::<User_ById>(&[]);       // 键序
-let pairs = okm_query::merge_join(
-    left.into_iter().map(|(k, _)| (user_bytes(&k), ())),
-    right.into_iter().map(|(k, _)| (k, ())),
-);
+let left = orders.scan::<Order_ByUser>(&[])?          // 按 user 有序，值内再按主键
+    .into_iter()
+    .map(|(f, k, _)| (f.user_id, k.decoded));
+let right = users.scan::<User_ById>(&[])?             // 按 id 有序
+    .into_iter()
+    .map(|(f, k, _)| (f.id, k.decoded));
+
+let pairs = okm_query::merge_join(left, right);        // (OrderKey, UserKey)
 ```
 
-刻意没有 hash join：join key 不是某一侧的排序维度 = 建模缺口——声明 `ok_index(fields(join_key))`，流重新有序。排序是存储的属性，不是查询算子的负担（merge join 流式、内存有界；hash join 必须物化 build 侧）。
+同一张表的两张面（比如两条 posting list）则按主键 join：token 的前缀把数据段钉成常量，
+其下的条目本身就按主键走。
+
+**什么有序，什么要付一次排序。** 索引扫描的序是条目元组 `(字段…, 主键)` 的字典序，
+这个元组的**任何前缀**仍然有序。所以按索引首位 join 不需要排序；join 列不是前缀时
+（主键前面还隔着一个字段、区间探针、多值索引的主键）需要排一次，`merge_join` 会替你排。
+哪种形状出来有序是性能问题，不是正确性问题：算子是任何顺序都收。
+
+刻意没有 hash join：sort-merge join 不需要对键做哈希，内存是 `O(n)`，不必物化 build 侧。
+
+**外连接是一次差集，不是第三个算子。** `difference(a, b)` 回答"左侧有、右侧没有"的条目，
+于是外连接的两半从同样两条流里就出来了：
+
+```rust
+let left_only  = okm_query::difference(left.clone(), right.clone());
+let right_only = okm_query::difference(right, left);
+```
+
+**多于两条流：折叠。** N 路 join 就是两两 `merge_join`——纯求交时先把每侧映射成 `(key, ())`，
+因为 join 的 join 要把键带在值里。要各侧的独有部分，就先求一次交集，再逐侧减：
+`difference(a, common)`、`difference(b, common)`、`difference(c, common)`，各得该侧
+"比交集多出来的那些"。
+
+两个算子都自己排序并且返回 `Vec`，所以链式调用每一步都会物化，`LIMIT` 停不下任何一步——
+把手选择性最强、最便宜的扫描放在链首。
 
 ## 图配方：walk
 

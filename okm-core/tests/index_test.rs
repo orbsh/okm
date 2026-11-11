@@ -178,15 +178,15 @@ fn scan_via_index_returns_rows() {
     // 最左前缀 reputation=10 → 1 行回表（key 前缀取满，可完整解码）
     let rows = t.scan::<ByReputation>(&10u32.to_be_bytes()).unwrap();
     assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].0.taken, <UserKey as KeyEncode>::KEY_LEN);
-    assert_eq!(rows[0].0.decoded, rows_in[0].0);
-    assert_eq!(rows[0].1.as_ref().unwrap(), &rows_in[0].1);
+    assert_eq!(rows[0].1.taken, <UserKey as KeyEncode>::KEY_LEN);
+    assert_eq!(rows[0].1.decoded, rows_in[0].0);
+    assert_eq!(rows[0].2.as_ref().unwrap(), &rows_in[0].1);
 
     // 空前缀 = 全索引扫描，按索引字段序（10..40）排列
     let all = t.scan::<ByReputation>(&[]).unwrap();
     assert_eq!(all.len(), 4);
-    assert_eq!(all[0].1.as_ref().unwrap(), &rows_in[0].1);
-    assert_eq!(all[3].0.decoded.id, 104);
+    assert_eq!(all[0].2.as_ref().unwrap(), &rows_in[0].1);
+    assert_eq!(all[3].1.decoded.id, 104);
 }
 
 #[test]
@@ -256,17 +256,17 @@ fn timeline_is_a_list_encoding() {
     // scan API：taken = 8（PostKey 宽度），可完整解码 → 回表
     let listed = t.scan::<ByTimeline>(&7u64.to_be_bytes()).unwrap();
     assert_eq!(listed.len(), 3);
-    assert_eq!(listed[0].0.taken, <PostKey as KeyEncode>::KEY_LEN);
-    assert_eq!(listed[0].0.decoded.id, 502); // created_at=10 最先
-    assert!(listed[0].1.is_some());
+    assert_eq!(listed[0].1.taken, <PostKey as KeyEncode>::KEY_LEN);
+    assert_eq!(listed[0].1.decoded.id, 502); // created_at=10 最先
+    assert!(listed[0].2.is_some());
 
     // scan_covered：includes(title_len) 在 value 里，无需回表即可读——
     // 解出来的是生成的覆盖结构体，不是字节
     // 按 (author, created_at) 升序：10, 20, 30 → title_len 12, 11, 10
     let covered = t.scan_covered::<ByTimeline>(&7u64.to_be_bytes()).unwrap();
     assert_eq!(covered.len(), 3);
-    assert_eq!(covered[0].1.title_len, 12);
-    assert_eq!(covered[2].1.title_len, 10);
+    assert_eq!(covered[0].2.title_len, 12);
+    assert_eq!(covered[2].2.title_len, 10);
 }
 
 #[test]
@@ -296,8 +296,8 @@ fn truncated_key_prefix_drops_redundant_tail() {
     // scan API：taken = 8（session_id 宽度），decoded.user_id 不可信
     let listed = t.scan::<ByKind>(&[3]).unwrap();
     assert_eq!(listed.len(), 3);
-    assert_eq!(listed[0].0.taken, 8);
-    assert!(listed[0].1.is_none()); // 截断身份 → 不回表
+    assert_eq!(listed[0].1.taken, 8);
+    assert!(listed[0].2.is_none()); // 截断身份 → 不回表
 
     // 覆盖扫描本例无 includes → `Covered = ()`：仅验证条数与顺序
     let covered = t.scan_covered::<ByKind>(&[3]).unwrap();
@@ -413,19 +413,70 @@ fn variable_length_index_text_first() {
         .scan::<ByCityName>(&[&10u32.to_be_bytes()[..], b"beta"].concat())
         .unwrap();
     assert_eq!(listed.len(), 1);
-    assert_eq!(listed[0].0.decoded.id, 3);
-    assert_eq!(listed[0].1.as_ref().unwrap(), &rows[2].1);
+    assert_eq!(listed[0].1.decoded.id, 3);
+    assert_eq!(listed[0].2.as_ref().unwrap(), &rows[2].1);
 
     // by_name：单字段文本索引，空前缀 = 全表按 name 字典序
     let all = t.scan::<ByName>(&[]).unwrap();
     let names: Vec<&str> = all
         .iter()
-        .map(|(_, r)| r.as_ref().unwrap().name.as_str())
+        .map(|(_, _, r)| r.as_ref().unwrap().name.as_str())
         .collect();
     assert_eq!(names, ["alpha", "alpha", "alphabet", "beta"]);
     // 精确匹配："alpha" 扫出 2 行（含 alphabet），去重靠主键
     let alphas = t.scan::<ByName>(b"alpha").unwrap();
     assert_eq!(alphas.len(), 3);
+}
+
+/// 扫描按哪一列排序，就把那一列还回来。它本来就在条目里
+/// （`[slot][字段段][主键尾段]`），旧 API 只交回尾段——于是按 name 做 join 的
+/// 调用方必须回表或声明 `includes` 才能读出自己刚扫描的那一列。
+#[test]
+fn the_sort_segment_comes_back_with_each_hit() {
+    let t = <Doc as Document>::collection(TestStore::slatedb_mem());
+    let rows = [
+        mk_doc(1, 10, "alpha"),
+        mk_doc(2, 10, "beta"),
+        mk_doc(3, 20, "alpha"),
+    ];
+    for (k, r) in &rows {
+        t.put(k, r).unwrap();
+    }
+
+    // 全表按 name：字段段解出 name 本身，命中序就是 name 序。
+    let all = t.scan::<ByName>(&[]).unwrap();
+    assert_eq!(
+        all.iter().map(|(f, _, _)| f.name.as_str()).collect::<Vec<_>>(),
+        ["alpha", "alpha", "beta"],
+    );
+
+    // 组探针（只钉住复合索引的首位 city）解出的是**整段**：探针那部分也要算进去，
+    // 否则 city 解不出来、断言会先崩在解码上。
+    let group = t.scan::<ByCityName>(&10u32.to_be_bytes()).unwrap();
+    assert_eq!(group.len(), 2);
+    assert_eq!(group[0].0.city, 10);
+    assert_eq!(group[0].0.name, "alpha");
+    assert_eq!(group[1].0.name, "beta");
+
+    // 覆盖扫描同样带字段段：covered 值的解码与字段段解码互不影响。
+    let covered = t.scan_covered::<ByCityName>(&[&10u32.to_be_bytes()[..], b"beta"].concat()).unwrap();
+    assert_eq!(covered[0].1.decoded.id, 2);
+}
+
+/// `func` 索引的字段段是函数的输出，类型属于那个函数，声明无法命名它——
+/// 于是它交回裸字节。
+#[test]
+fn a_function_index_hands_back_the_raw_segment() {
+    let t = <DocFunc as Document>::collection(TestStore::slatedb_mem());
+    let rows = [mk_docf(1, 10, "RUST KV"), mk_docf(2, 10, "Rust")];
+    for (k, r) in &rows {
+        t.put(k, r).unwrap();
+    }
+
+    // by_lower 的段是函数的输出（小写后的 name）；声明里没有类型可以命名它。
+    let hits = t.scan::<ByLower>(b"rust").unwrap();
+    assert_eq!(hits.len(), 2);
+    assert_eq!(hits[0].0.as_str(), Some("rust"), "the function's own bytes");
 }
 
 #[test]
@@ -457,26 +508,26 @@ fn probe_never_spills_into_the_key_tail() {
     let hits = t.scan::<ByName>(b"ad1").unwrap();
     let names: Vec<&str> = hits
         .iter()
-        .map(|(_, r)| r.as_ref().unwrap().name.as_str())
+        .map(|(_, _, r)| r.as_ref().unwrap().name.as_str())
         .collect();
     assert_eq!(names, ["ad1", "ad1_to_cart"]);
 
     // 等值扫描：只返回 name 恰好等于探针的行——不回表核验、不需要 includes
     let exact = t.scan_exact::<ByName>(b"ad1").unwrap();
     assert_eq!(exact.len(), 1);
-    assert_eq!(exact[0].0.decoded.id, 2);
+    assert_eq!(exact[0].1.decoded.id, 2);
 
     // 真正的短值不受影响：等值扫描仍能找到 "ad" 那一行
     let ad = t.scan_exact::<ByName>(b"ad").unwrap();
     assert_eq!(ad.len(), 1);
-    assert_eq!(ad[0].0.decoded.id, id_trap);
+    assert_eq!(ad[0].1.decoded.id, id_trap);
     // 而 "ad" 的前缀扫描返回三行（共享前缀 = 同一字典序区间）
     assert_eq!(t.scan::<ByName>(b"ad").unwrap().len(), 3);
 
     // 惰性区间迭代器走同一条判据（过去在剩余字节短于尾段时减法下溢）
     let mut it = t.scan_range_iter::<ByName>(b"ad1", None);
     let first = it.next().unwrap();
-    assert_eq!(first.as_ref().unwrap().1.as_ref().unwrap().name, "ad1");
+    assert_eq!(first.as_ref().unwrap().2.as_ref().unwrap().name, "ad1");
     assert_eq!(it.count(), 1); // 剩下 "ad1_to_cart"
 
     // 覆盖扫描看的是同一条范围，同样丢掉假命中
@@ -544,7 +595,7 @@ fn function_index_normalizes_both_sides() {
     let probe_seg = &lower_name(&probe)[0];
     let listed = t.scan::<ByLower>(probe_seg.as_bytes()).unwrap();
     assert_eq!(listed.len(), 2); // Apple + APPLE 归一化到同一区间
-    let ids: Vec<u64> = listed.iter().map(|(pk, _)| pk.decoded.id).collect();
+    let ids: Vec<u64> = listed.iter().map(|(_, pk, _)| pk.decoded.id).collect();
     assert_eq!(ids, [1, 2]); // 字典序（同结果 → 主键序）
 
     // delete：函数索引 entry 一并移除
@@ -605,7 +656,7 @@ fn multi_entry_function_index_fans_out() {
 
     let kv_rows = t.scan::<ByTag>(b"kv").unwrap();
     assert_eq!(kv_rows.len(), 1);
-    assert_eq!(kv_rows[0].0.decoded.id, 1);
+    assert_eq!(kv_rows[0].1.decoded.id, 1);
 
     // 删除：delete 沿 entry_pairs 逐条清除，无悬挂条目
     t.purge(&rows[0].0).unwrap();
@@ -643,7 +694,7 @@ fn function_index_accepts_any_iterator() {
     for b in [100u64, 101, 102] {
         let hits = t.scan::<ByBucket>(&b.to_be_bytes()).unwrap();
         assert_eq!(hits.len(), 1, "bucket {b} 应有该行");
-        assert_eq!(hits[0].0.decoded.id, 7);
+        assert_eq!(hits[0].1.decoded.id, 7);
     }
     assert!(
         t.scan::<ByBucket>(&103u64.to_be_bytes())
@@ -815,7 +866,7 @@ fn partial_index_admits_only_matching_rows() {
 
     // 扫描只返回被接纳的行，组内按 created_at（10, 30）
     let rows = t.scan::<ByOpenAssignee>(&7u64.to_be_bytes()).unwrap();
-    let ids: Vec<u64> = rows.iter().map(|(pk, _)| pk.decoded.id).collect();
+    let ids: Vec<u64> = rows.iter().map(|(_, pk, _)| pk.decoded.id).collect();
     assert_eq!(ids, [1, 3]);
     // 整索引扫描（空前缀）同样只有 2 条——稀疏性对读侧透明
     assert_eq!(t.scan::<ByOpenAssignee>(&[]).unwrap().len(), 2);
@@ -825,8 +876,8 @@ fn partial_index_admits_only_matching_rows() {
         .scan_covered::<ByOpenAssignee>(&7u64.to_be_bytes())
         .unwrap();
     assert_eq!(covered.len(), 2);
-    assert_eq!(covered[0].1.title_len, 3);
-    assert_eq!(covered[1].1.title_len, 2);
+    assert_eq!(covered[0].2.title_len, 3);
+    assert_eq!(covered[1].2.title_len, 2);
 
     // delete 走同一个 entry_pairs：被接纳的行清干净
     t.purge(&open_a.0).unwrap();
@@ -866,7 +917,7 @@ fn partial_index_flip_needs_delete_then_put() {
     let hit = t.scan::<ByOpenAssignee>(&7u64.to_be_bytes()).unwrap();
     assert_eq!(hit.len(), 1);
     assert_eq!(
-        hit[0].1.as_ref().unwrap().status,
+        hit[0].2.as_ref().unwrap().status,
         1,
         "扫描返回了谓词拒绝的行"
     );
@@ -946,7 +997,7 @@ fn function_index_empty_vec_skips_row() {
     // 扫描只见被接纳的行
     let rust = t.scan::<ByLiveToken>(b"rust").unwrap();
     assert_eq!(rust.len(), 1);
-    assert_eq!(rust[0].0.decoded.id, 1);
+    assert_eq!(rust[0].1.decoded.id, 1);
 
     // delete 对称：写入集合与删除集合同源（空 Vec 的行删除是 no-op）
     t.purge(&open.0).unwrap();
@@ -1015,13 +1066,13 @@ fn covered_scan_answers_without_the_primary_table() {
 
     // 生成的覆盖结构体：名字与字段即契约（一个 include 字段 = 一个字段）
     let covered = t.scan_covered::<ByTimeline>(&7u64.to_be_bytes()).unwrap();
-    assert_eq!(covered[0].1, PostCovered { title_len: 77 });
+    assert_eq!(covered[0].2, PostCovered { title_len: 77 });
 
     t.store().del(&t.primary_key(&k)).unwrap();
     assert!(t.get(&k).unwrap().is_none(), "主表行已不在");
     let covered = t.scan_covered::<ByTimeline>(&7u64.to_be_bytes()).unwrap();
     assert_eq!(covered.len(), 1);
-    assert_eq!(covered[0].1.title_len, 77);
+    assert_eq!(covered[0].2.title_len, 77);
 }
 
 #[test]
@@ -1059,10 +1110,10 @@ fn covered_includes_walk_fixed_widths_then_the_variable_tail() {
 
     let covered = t.scan_covered::<ByNoteAuthor>(&7u64.to_be_bytes()).unwrap();
     assert_eq!(covered.len(), 2);
-    assert_eq!(covered[0].1.rank, 5);
-    assert_eq!(covered[0].1.title, "短");
-    assert_eq!(covered[1].1.rank, 9);
-    assert_eq!(covered[1].1.title, "更长的标题文本");
+    assert_eq!(covered[0].2.rank, 5);
+    assert_eq!(covered[0].2.title, "短");
+    assert_eq!(covered[1].2.rank, 9);
+    assert_eq!(covered[1].2.title, "更长的标题文本");
 }
 
 /// 宽度行走的测试行：定宽字段 + 变长字段同处一段——段宽只能从文档读出来

@@ -57,7 +57,7 @@ fn upsert_with_full_paths() {
     // inside upsert_with, not bypassed).
     let scanned = t.scan::<Counter_ByBucket>(&7u32.to_be_bytes()).unwrap();
     assert_eq!(scanned.len(), 1);
-    assert_eq!(scanned[0].1.as_ref().unwrap().hits, 15);
+    assert_eq!(scanned[0].2.as_ref().unwrap().hits, 15);
 
     // ---------- write path fired: reduce fold ----------
     // The reduce group for bucket 7 must total 15 (folds went through

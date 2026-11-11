@@ -75,7 +75,7 @@ fn table_semantics_over_remote() {
     // Index scan over the remote: same API, bytes travel twice.
     let hits = t.scan::<ByLevel>(&3u32.to_be_bytes()).unwrap();
     assert_eq!(hits.len(), 1);
-    assert_eq!(hits[0].1.as_ref().unwrap().level, 3);
+    assert_eq!(hits[0].2.as_ref().unwrap().level, 3);
 
     // Point get via the table (full round trip: frame → host → engine → back).
     let document = t
@@ -103,7 +103,7 @@ fn table_semantics_over_remote() {
     );
     let hits = t.scan::<ByLevel>(&8u32.to_be_bytes()).unwrap();
     assert_eq!(hits.len(), 1);
-    assert_eq!(hits[0].0.decoded.id, 42);
+    assert_eq!(hits[0].1.decoded.id, 42);
 }
 
 #[test]

@@ -22,7 +22,7 @@ SQL concept      okm landing
 WHERE (physical) index declaration + prefix/range scan (free — see the record)
 WHERE (memory)   .filter() (stdlib, no wrapper)
 GROUP BY         group_by (index sort does the grouping) or reduce (compile time)
-JOIN             merge_join (both sides key-ordered streams)
+JOIN             merge_join (sorts its own inputs)
 Multi-rollup     prefix scans narrowing the group segment level by level
 Graph walk       walk (one hop = one prefix scan)
 ```
@@ -83,24 +83,53 @@ write, read free); varying dimensions → index sort + group_by (pay at
 read, one layout covers many dimensions). Not exclusive: one index can
 serve group_by and the timeline scan at once.
 
-## The JOIN recipe: merge_join
+## The JOIN recipe: merge_join and difference
+
+Join on a column both sides index. A scan hands back the field segment it sorted
+by, so the join key is in hand with no fetch-back and no `includes`:
 
 ```rust
-// Both tables declare an index over the join key (key-ordered
-// streams); merge_join merges in one pass.
-let left = orders.scan::<Order_ByUser>(&[]);    // key-ordered
-let right = users.scan::<User_ById>(&[]);       // key-ordered
-let pairs = okm_query::merge_join(
-    left.into_iter().map(|(k, _)| (user_bytes(&k), ())),
-    right.into_iter().map(|(k, _)| (k, ())),
-);
+let left = orders.scan::<Order_ByUser>(&[])?          // ordered by user, then by key
+    .into_iter()
+    .map(|(f, k, _)| (f.user_id, k.decoded));
+let right = users.scan::<User_ById>(&[])?             // ordered by id
+    .into_iter()
+    .map(|(f, k, _)| (f.id, k.decoded));
+
+let pairs = okm_query::merge_join(left, right);        // (OrderKey, UserKey)
 ```
 
-No hash join, deliberately: a join key that is not either side's sort
-dimension is a modeling gap — declare `ok_index(fields(join_key))` and
-the stream is ordered again. Sorting is a property of the store, not a
-burden on the query operator (merge join stays streaming and
-memory-bounded; hash join must materialize the build side).
+Two faces of the SAME table join on the primary key instead (two posting lists,
+say): there the merge key is the key, because a token's prefix fixes the data
+segment and the entries under it run in key order.
+
+**What is ordered, and what costs a sort.** An index scan is ordered by the entry
+tuple `(fields…, key)`, and any PREFIX of that tuple is still ordered. So a join
+on the leading index field needs no sort; a join on a column that is not a prefix
+— the primary key with a field in front of it, a range probe, a multi-value
+index's keys — needs one, and `merge_join` takes it. Which shapes come out ordered
+is a performance question, never a correctness one: the operator sorts anything.
+
+No hash join, deliberately: a sort-merge join needs no hashing of the key type
+and holds `O(n)` rather than materializing a build side.
+
+**Outer joins are a difference, not a third operator.** `difference(a, b)` answers
+the left entries whose key has no match on the right, so both sides of an outer
+join fall out of the same two streams:
+
+```rust
+let left_only  = okm_query::difference(left.clone(), right.clone());
+let right_only = okm_query::difference(right, left);
+```
+
+**More than two streams: fold.** An N-way join is `merge_join` applied pairwise —
+for a pure intersection map each side to `(key, ())` first, since a join of joins
+needs the key carried in the value. For exclusives, intersect once and subtract per
+side: `difference(a, common)`, `difference(b, common)`, `difference(c, common)` —
+each answer is that side's "more than the intersection".
+
+Both operators sort their own inputs and return `Vec`, so a chain materializes at
+every step: `LIMIT` stops nothing early. Feed a cheap, highly selective scan first.
 
 ## The graph recipe: walk
 

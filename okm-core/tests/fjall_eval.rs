@@ -39,7 +39,7 @@ fn fjall_roundtrip() {
         .scan::<__OkmIndex_UserSessionRow_by_session>(&1001u64.to_be_bytes())
         .unwrap();
     assert_eq!(hits.len(), 1);
-    assert_eq!(hits[0].0.decoded.user_id, 101);
+    assert_eq!(hits[0].1.decoded.user_id, 101);
 
     rows.purge(&k(101, 1001)).unwrap();
     assert_eq!(

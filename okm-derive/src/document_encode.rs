@@ -406,6 +406,94 @@ fn emit_covered(schema: &DocumentSchema, idx: &IdxDecl) -> syn::Result<(TS2, TS2
     Ok((decl, quote! { #covered_ident }, body))
 }
 
+/// The read half of the sort segment: one generated struct holding a
+/// declaration's index fields in `FIELDS` order, typed exactly as in the row,
+/// plus the body of `DecodeIndexFields::decode_index_fields`.
+///
+/// Returns `(struct declaration, Fields type, decode body)`. The segment is the
+/// same raw bytes the payload encoders write (no frame header), so the decode
+/// walks the same order as the covered decoder: fixed-width fields cut at their
+/// declared width, the single variable-width field — always last — taking the
+/// remainder. That is why a scan can hand back the column it sorted by without a
+/// second read.
+///
+/// Two declarations cannot describe their segment and answer `RawFields`: a
+/// `func` index (the segment is the function's output, and its type belongs to
+/// the function) and a lead face (the segment is key bytes, which the key type
+/// already decodes).
+fn emit_fields(schema: &DocumentSchema, idx: &IdxDecl) -> syn::Result<(TS2, TS2)> {
+    let row_name = &schema.row_name;
+    let iname = &idx.ident;
+    let covered_b = crate::hyg::ident("b");
+    if !idx.func.is_empty() || idx.fields.is_empty() {
+        // Nothing in the declaration names the segment's type: hand back the
+        // bytes (`RawFields` implements the trait already).
+        return Ok((quote! {}, quote! { ::okm_core::RawFields }));
+    }
+    let fields_ident = format_ident!("__OkmFields_{}_{}", row_name, iname);
+    let mut decls = Vec::new();
+    let mut stmts = Vec::new();
+    let mut names = Vec::new();
+    for name in &idx.fields {
+        let f = schema
+            .fields
+            .iter()
+            .find(|f| f.ident == *name)
+            .ok_or_else(|| {
+                syn::Error::new(
+                    iname.span(),
+                    format!("ok_index[{iname}]: field `{name}` is not a payload field"),
+                )
+            })?;
+        let id = &f.ident;
+        let dec = &f.dec;
+        let ty: syn::Type = syn::parse_str(&f.ty_str).map_err(|e| {
+            syn::Error::new(
+                id.span(),
+                format!("ok_index[{iname}]: field `{name}` type `{}`: {e}", f.ty_str),
+            )
+        })?;
+        decls.push(quote! { pub #id: #ty });
+        if f.hot {
+            stmts.push(quote_spanned! { crate::hyg::mixed()=> let #id = { #dec }; });
+        } else {
+            stmts.push(quote_spanned! { crate::hyg::mixed()=>
+                let len = b.len() - offset; let #id = { #dec };
+            });
+        }
+        names.push(id.clone());
+    }
+    let fields_lit: Vec<&String> = idx.fields.iter().collect();
+    let decl = quote! {
+        #[doc = concat!("Sort segment of access method `", stringify!(#iname), "` over `", stringify!(#row_name), "`, decoded — the fields a scan orders by and, with this, returns.")]
+        #[allow(non_camel_case_types)] // generated identity (ADR-0027)
+        #[derive(Clone, Debug, PartialEq)]
+        pub struct #fields_ident {
+            #(#decls),*
+        }
+    };
+    let body = quote_spanned! { crate::hyg::mixed()=>
+        let mut offset = 0usize;
+        #(#stmts)*
+        assert!(
+            offset == b.len(),
+            "field segment of `{}`: {} bytes left over (FIELDS {:?})",
+            stringify!(#iname),
+            b.len() - offset,
+            &[#(#fields_lit),*]
+        );
+        #fields_ident { #(#names),* }
+    };
+    let impl_block = quote! {
+        impl ::okm_core::DecodeIndexFields for #fields_ident {
+            fn decode_index_fields(#covered_b: &[u8]) -> Self {
+                #body
+            }
+        }
+    };
+    Ok((quote! { #decl #impl_block }, quote! { #fields_ident }))
+}
+
 /// One marker struct + `KvIndex` impl per declared `#[ok_index]` (slot
 /// order). A `where(path)` clause contributes an `admits` override
 /// (partial index); a `func(path)` clause contributes an `entry_pairs`
@@ -564,6 +652,7 @@ fn emit_index_structs(schema: &DocumentSchema) -> syn::Result<TS2> {
             quote! { None }
         };
         let (covered_decl, covered_ty, covered_body) = emit_covered(schema, idx)?;
+        let (fields_decl, fields_ty) = emit_fields(schema, idx)?;
         index_out.extend(quote! {
             #[doc = concat!("Access method `", stringify!(#iname), "` over `", stringify!(#row_name), "` (slot ", #slot_doc, ", ADR-0005/0006).")]
             #[allow(non_camel_case_types, non_snake_case)] // generated identities (ADR-0027)
@@ -571,10 +660,12 @@ fn emit_index_structs(schema: &DocumentSchema) -> syn::Result<TS2> {
             pub struct #struct_ident;
 
             #covered_decl
+            #fields_decl
 
             impl ::okm_core::KvIndex for #struct_ident {
                 type Key = #key_ty;
                 type Document = #row_name;
+                type Fields = #fields_ty;
                 const SLOT: ::okm_core::index::Slot = #slot_lit;
                 const FIELDS: &'static [&'static str] = &[#(#fields),*];
                 const INCLUDES: &'static [&'static str] = &[#(#includes),*];
@@ -732,6 +823,9 @@ fn emit_lead_structs(schema: &DocumentSchema) -> syn::Result<TS2> {
             impl ::okm_core::KvIndex for #struct_ident {
                 type Key = #key_ty;
                 type Document = #row_name;
+                /// A lead face's segment IS the key's own bytes: the key type
+                /// already decodes them, so nothing is re-typed here.
+                type Fields = ::okm_core::RawFields;
                 const SLOT: ::okm_core::index::Slot = #slot_lit;
                 const FIELDS: &'static [&'static str] = &[#(#fields),*];
                 const INCLUDES: &'static [&'static str] = &[];

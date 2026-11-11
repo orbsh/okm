@@ -180,13 +180,13 @@ fn index_prefix_iter_matches_the_eager_scan() {
         .scan::<__OkmIndex_Device_by_label>(&3u32.to_be_bytes())
         .unwrap()
         .into_iter()
-        .map(|(pk, _doc)| pk.decoded)
+        .map(|(_, pk, _doc)| pk.decoded)
         .collect();
 
     let lazy: Vec<DeviceKey> = col
         .scan_prefix_iter::<__OkmIndex_Device_by_label>(&3u32.to_be_bytes())
         .map(|r| r.unwrap())
-        .map(|(pk, _doc)| pk.decoded)
+        .map(|(_, pk, _doc)| pk.decoded)
         .collect();
 
     assert_eq!(eager, lazy);
@@ -196,7 +196,7 @@ fn index_prefix_iter_matches_the_eager_scan() {
     let mut group: Vec<DeviceKey> = col
         .scan_prefix_iter::<__OkmIndex_Device_by_label>(&[])
         .map(|r| r.unwrap())
-        .map(|(pk, _doc)| pk.decoded)
+        .map(|(_, pk, _doc)| pk.decoded)
         .collect();
     assert_eq!(group.len(), 7);
     group.dedup();
@@ -207,7 +207,7 @@ fn index_prefix_iter_matches_the_eager_scan() {
         .scan_prefix_iter::<__OkmIndex_Device_by_label>(&[])
         .rev()
         .map(|r| r.unwrap())
-        .map(|(pk, _doc)| pk.decoded)
+        .map(|(_, pk, _doc)| pk.decoded)
         .collect();
     rev.reverse();
     assert_eq!(rev, group);
@@ -226,13 +226,13 @@ fn index_prefix_probe_is_typed_and_byte_identical() {
         .scan::<__OkmIndex_Device_by_tag_label>(&probe)
         .unwrap()
         .into_iter()
-        .map(|(pk, _)| pk.decoded)
+        .map(|(_, pk, _)| pk.decoded)
         .collect();
     let raw: Vec<DeviceKey> = col
         .scan::<__OkmIndex_Device_by_tag_label>(&1u16.to_be_bytes()[..])
         .unwrap()
         .into_iter()
-        .map(|(pk, _)| pk.decoded)
+        .map(|(_, pk, _)| pk.decoded)
         .collect();
     assert_eq!(typed, raw);
     assert_eq!(typed.len(), 2, "labels 1 and 4 carry tag 1");
@@ -245,7 +245,7 @@ fn index_prefix_probe_is_typed_and_byte_identical() {
     let one = col.scan::<__OkmIndex_Device_by_tag_label>(&probe).unwrap();
     assert_eq!(one.len(), 1);
     assert_eq!(
-        one[0].0.decoded,
+        one[0].1.decoded,
         DeviceKey {
             org: 1,
             user: 10,
@@ -265,7 +265,7 @@ fn index_prefix_probe_is_typed_and_byte_identical() {
             &__OkmIndex_Device_by_tag_label::prefix().tag(1u16).finish(),
         )
         .map(|r| r.unwrap())
-        .map(|(pk, _)| pk.decoded)
+        .map(|(_, pk, _)| pk.decoded)
         .collect();
     assert_eq!(lazy, typed);
 }

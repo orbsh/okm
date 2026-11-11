@@ -63,6 +63,24 @@ pub struct Collection<S, K: KeyEncode, R: Document<Key = K>> {
     _marker: std::marker::PhantomData<(K, R)>,
 }
 
+/// One scan hit: the sort segment decoded, the key, and the row when the entry
+/// carries a full key (a truncated `key(...)` cannot fetch back, so `None`).
+///
+/// The first element is why a caller can read the column it scanned BY: it used
+/// to cost a fetch-back or an `includes` declaration.
+pub type ScanHit<I> = (
+    <I as KvIndex>::Fields,
+    PrefixKey<<I as KvIndex>::Key>,
+    Option<<I as KvIndex>::Document>,
+);
+
+/// One covered scan hit: the two above plus the `includes` segment decoded.
+pub type CoveredHit<I> = (
+    <I as KvIndex>::Fields,
+    PrefixKey<<I as KvIndex>::Key>,
+    <I as KvIndex>::Covered,
+);
+
 impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> {
     /// The ns prefix is NOT a constructor argument: it is declared once
     /// on the key struct (`#[ok_ns]`) and read at compile time via
@@ -629,16 +647,16 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     pub fn scan<I: KvIndex<Key = K, Document = R>>(
         &self,
         probe: impl crate::model::prefix::ProbeBytes<I>,
-    ) -> crate::error::Result<Vec<(PrefixKey<K>, Option<R>)>> {
+    ) -> crate::error::Result<Vec<ScanHit<I>>> {
         let encoded = probe.probe_bytes();
         let mut out = Vec::new();
-        for pk in crate::scan_index::<S, I>(&self.store, &self.header(), encoded)? {
+        for (fields, pk) in crate::scan_index::<S, I>(&self.store, &self.header(), encoded)? {
             let document = if pk.taken == K::KEY_LEN {
                 self.get(&pk.decoded)?
             } else {
                 None
             };
-            out.push((pk, document));
+            out.push((fields, pk, document));
         }
         Ok(out)
     }
@@ -653,16 +671,16 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     pub fn scan_exact<I: KvIndex<Key = K, Document = R>>(
         &self,
         probe: impl crate::model::prefix::ProbeBytes<I>,
-    ) -> crate::error::Result<Vec<(PrefixKey<K>, Option<R>)>> {
+    ) -> crate::error::Result<Vec<ScanHit<I>>> {
         let encoded = probe.probe_bytes();
         let mut out = Vec::new();
-        for pk in crate::scan_index_exact::<S, I>(&self.store, &self.header(), encoded)? {
+        for (fields, pk) in crate::scan_index_exact::<S, I>(&self.store, &self.header(), encoded)? {
             let document = if pk.taken == K::KEY_LEN {
                 self.get(&pk.decoded)?
             } else {
                 None
             };
-            out.push((pk, document));
+            out.push((fields, pk, document));
         }
         Ok(out)
     }
@@ -681,7 +699,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         &self,
         begin: &[u8],
         end: Option<&[u8]>,
-    ) -> crate::error::Result<Vec<(PrefixKey<K>, Option<R>)>> {
+    ) -> crate::error::Result<Vec<ScanHit<I>>> {
         let header = self.header();
         let mut b = I::entry_prefix(&header, &[]);
         b.extend_from_slice(begin);
@@ -692,6 +710,11 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         });
         let taken = I::key_prefix_width();
         let kl = K::KEY_LEN;
+        // Where the field segment starts in a full entry key: after the ns
+        // header and the 2-byte slot.
+        let mut head = header.clone();
+        crate::model::index::write_slot(&mut head, I::SLOT);
+        let seg_start = head.len();
         let mut out = Vec::new();
         for full in self.store.scan_range(&b, e.as_deref())? {
             let suffix = &full[b.len()..];
@@ -711,7 +734,8 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
             } else {
                 None
             };
-            out.push((PrefixKey { decoded, taken }, document));
+            let fields = I::decode_fields(&full[seg_start..full.len() - taken]);
+            out.push((fields, PrefixKey { decoded, taken }, document));
         }
         Ok(out)
     }
@@ -725,7 +749,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         &self,
         begin: &[u8],
         end: Option<&[u8]>,
-    ) -> impl DoubleEndedIterator<Item = crate::error::Result<(PrefixKey<K>, Option<R>)>>
+    ) -> impl DoubleEndedIterator<Item = crate::error::Result<(I::Fields, PrefixKey<K>, Option<R>)>>
     where
         S: SharedVirtualStorage,
     {
@@ -753,7 +777,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     pub fn scan_prefix_iter<I: KvIndex<Key = K, Document = R>>(
         &self,
         probe: impl crate::model::prefix::ProbeBytes<I>,
-    ) -> impl DoubleEndedIterator<Item = crate::error::Result<(PrefixKey<K>, Option<R>)>>
+    ) -> impl DoubleEndedIterator<Item = crate::error::Result<(I::Fields, PrefixKey<K>, Option<R>)>>
     where
         S: SharedVirtualStorage,
     {
@@ -774,12 +798,21 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         header: Vec<u8>,
         b: Vec<u8>,
         e: Option<Vec<u8>>,
-    ) -> impl DoubleEndedIterator<Item = crate::error::Result<(PrefixKey<K>, Option<R>)>>
+    ) -> impl DoubleEndedIterator<Item = crate::error::Result<(I::Fields, PrefixKey<K>, Option<R>)>>
     where
         S: SharedVirtualStorage,
     {
         let taken = I::key_prefix_width();
         let kl = K::KEY_LEN;
+        // Where the field segment starts: after the ns header and the slot
+        // (the slot is 1 byte for a fixed face and 2 for a counting family, so
+        // it is measured, not assumed).
+        let seg_start = {
+            let mut head = header.clone();
+            crate::model::index::write_slot(&mut head, I::SLOT);
+            head.len()
+        };
+
         // Fetch-back needs an engine handle that outlives the iterator
         // borrow: `shared_handle` hands out a view of the SAME physical
         // engine (never a deep copy — forking the keyspace behind two
@@ -835,7 +868,8 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
                 } else {
                     None
                 };
-                Some(Ok((PrefixKey { decoded, taken }, document)))
+                let fields = I::decode_fields(&full[seg_start..full.len() - taken]);
+                Some(Ok((fields, PrefixKey { decoded, taken }, document)))
             })
     }
 
@@ -853,7 +887,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     pub fn scan_covered<I: KvIndex<Key = K, Document = R>>(
         &self,
         encoded: &[u8],
-    ) -> crate::error::Result<Vec<(PrefixKey<K>, I::Covered)>> {
+    ) -> crate::error::Result<Vec<CoveredHit<I>>> {
         let p = I::entry_prefix(&self.header(), encoded);
         let taken = I::key_prefix_width();
         let kl = K::KEY_LEN;
@@ -873,7 +907,14 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
                     buf[..taken].copy_from_slice(&suffix[start..]);
                     K::decode(&buf)
                 };
-                Some((PrefixKey { decoded, taken }, I::decode_covered(&v)))
+                let mut segment = Vec::with_capacity(encoded.len() + start);
+                segment.extend_from_slice(encoded);
+                segment.extend_from_slice(&suffix[..start]);
+                Some((
+                    I::decode_fields(&segment),
+                    PrefixKey { decoded, taken },
+                    I::decode_covered(&v),
+                ))
             })
             .collect())
     }
