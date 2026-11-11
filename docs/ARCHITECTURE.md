@@ -134,9 +134,8 @@ make the fast path fast.
 
 ## Where things go next
 
-The PLAN tracks open work (Set type via inverted index, KDL schema
-serialization as a low-priority alternative to JSON). The ADR series
-records why each decision above is the way it is — ADR-0002 (ns
+The PLAN tracks open work — every deferred item carries the condition that would reopen it.
+The ADR series records why each decision above is the way it is — ADR-0002 (ns
 vocabulary), ADR-0005 (index slots), ADR-0012 (object model +
 vocabulary), ADR-0015/0016 (relations + the entry head), ADR-0030 (the
 slot's two shapes: fixed face / counting family).

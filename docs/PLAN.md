@@ -198,8 +198,11 @@ to full 16 bits). The trigger is "edge needs a new discriminator", never
       (`x-okm-column-order` carries the authoritative column order);
       macro expansion dump to disk via
       `OKM_DERIVE_DUMP=<dir>` (formatted impl source per derive).
-- [ ] Deferred (2026-10-31, owner): **distribution is GitHub**, not crates.io — repo plus releases;
-      nothing is published to an index.
+- [x] Decided (2026-11-11, owner): **distribution is GitHub**, not crates.io — repo plus releases;
+      nothing is published to an index. This was a signature pending, not a capability owed: the
+      crates here are versioned together and consumed by path or by git branch (`--locked` pins
+      the rev), so an index would add a publish order and a second version authority without
+      adding a consumer.
 - [x] Push to github.com/orbsh/okm (repo referenced by wiki cross-links).
 
 ## Phase 5 — Event layer (ADR-0008): reduce, subscribe, okm-stream
@@ -1261,14 +1264,12 @@ offsets).
       Breaking wire change (LEB128 payloads re-encoded); downstream (aura,
       k10r) declared zero VarInt fields. Acceptance: byte-order test over
       width boundaries passed, hex lock updated.
-- [ ] Deferred (2026-10-31, owner): low priority — P2.5, KDL as the CollectionSchema serialization. Not declined: it is a format taste with no capability behind it, so it stays available for the day someone wants it. The
-      dynamic mode's schema serialization is JSON today (serde, bindings
-      consume it). KDL would replace it for hand-written declaration
-      consistency with the KDL config family; ~150-200 lines of manual
-      converter (vs serde's auto-derive) for no new capability. Defer until
-      hand-maintained schemas actually exist. Note: `json_schema` (the JSON
-      Schema standard output for external systems) is a different thing and
-      stays regardless.
+- [x] Declined (2026-11-11, owner): **KDL as the `CollectionSchema` serialization** — not doing it.
+      The dynamic mode's schema is JSON today (serde derive; the bindings consume it), and KDL
+      would only align hand-written declarations with the KDL config family: ~150-200 lines of
+      manual converter in place of the derive, for no new capability. Reopening this needs an
+      actual body of hand-maintained schemas, not a format taste. `json_schema` (the JSON Schema
+      standard output for external systems) is a different thing and stays regardless.
 - [x] P2 — dynamic-segment frame-length varint. DONE (2026-09-19).
       Scope narrowed during review: UInt already carries minimal-width
       payload (leading zeros stripped, width implied by the frame length —
