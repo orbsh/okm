@@ -168,15 +168,6 @@ impl<S: VirtualStorage> Graph<S> {
         predicates.name_of(&mut door, id).map_err(|e| e.to_string())
     }
 
-    /// The field name's id, allocating on first sight.
-    fn field_id(&mut self, name: &str) -> Result<u16, String> {
-        let Self {
-            store, ns, fields, ..
-        } = self;
-        let mut door = Faces::<_, u16>::new(&*store, ns, FIELD_VOCAB);
-        fields.ensure(&mut door, name).map_err(|e| e.to_string())
-    }
-
     /// The field id's name, or `None` when the vocabulary has no such id.
     fn field_label(&mut self, id: u16) -> Result<Option<String>, String> {
         let Self {

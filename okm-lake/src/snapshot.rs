@@ -716,7 +716,9 @@ pub mod parquet_io {
             // which a property-graph declaration needs and a restore ignores.
             let col = |name: &str| -> Result<usize, String> {
                 batch.schema().index_of(name).map_err(|_| {
-                    format!("the edge table has no `{name}` column; this graph's declaration needs it")
+                    format!(
+                        "the edge table has no `{name}` column; this graph's declaration needs it"
+                    )
                 })
             };
             let (c_src_t, c_src_k) = (col("src_table")?, col("src_pkey")?);

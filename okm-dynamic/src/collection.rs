@@ -219,10 +219,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
                 }
                 Some(_) => {}
                 None => {
-                    meta.set(
-                        okm_core::meta::TABLE,
-                        self.schema.name.as_bytes().to_vec(),
-                    );
+                    meta.set(okm_core::meta::TABLE, self.schema.name.as_bytes().to_vec());
                     changed = true;
                 }
             }

@@ -157,9 +157,9 @@ pub fn vocab_id_from_u64<N: crate::Id>(v: u64) -> Option<N> {
     <N as crate::Id>::from_be(&img[16 - w..])
 }
 
-/// Name resolver: returns the vocabulary id for `name`, allocating through the
-/// closure on first sight (the caller's vocabulary owns allocation discipline —
-/// single writer, engine mutex).
+// Name resolver: returns the vocabulary id for `name`, allocating through the
+// closure on first sight (the caller's vocabulary owns allocation discipline —
+// single writer, engine mutex).
 // A writer hands the encoder a closure, not a trait object: the closure's error
 // type is the caller's own, and the encoder carries it out unchanged
 // ([`crate::Error::Names`]).
@@ -320,7 +320,7 @@ mod serde_impls {
     }
 }
 
-#[cfg(all(test, feature = "schema-serde"))]
+#[cfg(all(test, feature = "serde"))]
 mod serde_tests {
     use super::DynamicValue;
     use std::collections::BTreeMap;

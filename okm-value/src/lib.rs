@@ -13,6 +13,21 @@
 //! names  = the caller's vocabulary, ids crossing both ways (ADR-0012)
 //! ```
 
+// Tests keep the vocabulary: a panicking test is a failing test with a stack
+// trace. This line is per-crate because `[lints]` is per-package and covers every
+// target, with no way to scope a lint to lib/bins — the manifest cannot express
+// `cfg(test)`.
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::unwrap_in_result,
+        clippy::panic_in_result_fn
+    )
+)]
+
 pub mod segment;
 pub mod value;
 pub mod varint;

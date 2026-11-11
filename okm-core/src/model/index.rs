@@ -326,8 +326,7 @@ pub trait Document: Sized + Clone {
     type Vocabs: crate::model::obj_vocab::VocabSet + ::core::default::Default;
     /// document -> map: every declared field lifted into a run-time
     /// DynamicValue (ADR-0012 document-map bridge; derive-generated).
-    fn to_map(&self)
-    -> std::collections::BTreeMap<String, okm_value::DynamicValue>;
+    fn to_map(&self) -> std::collections::BTreeMap<String, okm_value::DynamicValue>;
     /// map -> document, fallibly: matched fields assigned from `DynamicValue`.
     ///
     /// Two rules, and the difference is PRESENCE. An absent name takes its
@@ -545,10 +544,7 @@ impl DecodeIndexFields for () {
 
 /// One index entry, read back without a fetch: the sort segment decoded
 /// ([`KvIndex::Fields`]) and the key the entry's tail carries.
-pub type IndexHit<I> = (
-    <I as KvIndex>::Fields,
-    PrefixKey<<I as KvIndex>::Key>,
-);
+pub type IndexHit<I> = (<I as KvIndex>::Fields, PrefixKey<<I as KvIndex>::Key>);
 
 pub trait KvIndex {
     type Key: KeyEncode;

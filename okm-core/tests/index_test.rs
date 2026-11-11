@@ -446,7 +446,9 @@ fn the_sort_segment_comes_back_with_each_hit() {
     // 全表按 name：字段段解出 name 本身，命中序就是 name 序。
     let all = t.scan::<ByName>(&[]).unwrap();
     assert_eq!(
-        all.iter().map(|(f, _, _)| f.name.as_str()).collect::<Vec<_>>(),
+        all.iter()
+            .map(|(f, _, _)| f.name.as_str())
+            .collect::<Vec<_>>(),
         ["alpha", "alpha", "beta"],
     );
 
@@ -459,7 +461,9 @@ fn the_sort_segment_comes_back_with_each_hit() {
     assert_eq!(group[1].0.name, "beta");
 
     // 覆盖扫描同样带字段段：covered 值的解码与字段段解码互不影响。
-    let covered = t.scan_covered::<ByCityName>(&[&10u32.to_be_bytes()[..], b"beta"].concat()).unwrap();
+    let covered = t
+        .scan_covered::<ByCityName>(&[&10u32.to_be_bytes()[..], b"beta"].concat())
+        .unwrap();
     assert_eq!(covered[0].1.decoded.id, 2);
 }
 

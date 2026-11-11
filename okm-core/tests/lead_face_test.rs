@@ -115,7 +115,10 @@ fn a_full_tail_scan_hands_back_rows_in_identity_order() {
         vec![1, 2],
         "inside the equality prefix the tails ARE the key bytes, in order"
     );
-    assert!(hits.iter().all(|(_, pk, doc)| pk.taken == 16 && doc.is_some()));
+    assert!(
+        hits.iter()
+            .all(|(_, pk, doc)| pk.taken == 16 && doc.is_some())
+    );
     assert_eq!(hits[0].2.as_ref().unwrap().nickname, "a");
 }
 
@@ -130,7 +133,8 @@ fn a_truncated_tail_hands_back_keys_to_continue_with() {
         .unwrap();
     assert_eq!(hits.len(), 2);
     assert!(
-        hits.iter().all(|(_, pk, doc)| pk.taken == 8 && doc.is_none()),
+        hits.iter()
+            .all(|(_, pk, doc)| pk.taken == 8 && doc.is_none()),
         "key(channel): the tail is one identity, so there is no row to fetch back"
     );
     // The prefix fields past the boundary are garbage by contract (ADR-0005);

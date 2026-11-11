@@ -118,7 +118,8 @@ impl TableMeta {
 
     /// The table name this store records, if any (`#[ok_name]`).
     pub fn table_name(&self) -> Option<&str> {
-        self.get(TABLE).and_then(|bytes| std::str::from_utf8(bytes).ok())
+        self.get(TABLE)
+            .and_then(|bytes| std::str::from_utf8(bytes).ok())
     }
 
     /// The stamped face fingerprint, if this row names one. A value of the wrong

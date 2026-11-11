@@ -478,9 +478,27 @@ mod tests {
             users.put(&k, &r).unwrap();
         }
         for (k, r) in [
-            (OrderKey { id: 10 }, Order { name: "ada".into(), total: 5 }),
-            (OrderKey { id: 11 }, Order { name: "bob".into(), total: 7 }),
-            (OrderKey { id: 12 }, Order { name: "ada".into(), total: 9 }),
+            (
+                OrderKey { id: 10 },
+                Order {
+                    name: "ada".into(),
+                    total: 5,
+                },
+            ),
+            (
+                OrderKey { id: 11 },
+                Order {
+                    name: "bob".into(),
+                    total: 7,
+                },
+            ),
+            (
+                OrderKey { id: 12 },
+                Order {
+                    name: "ada".into(),
+                    total: 9,
+                },
+            ),
         ] {
             orders.put(&k, &r).unwrap();
         }

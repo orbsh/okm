@@ -210,7 +210,8 @@ impl VirtualStorage for VocabProbes {
     }
     fn get(&self, key: &[u8]) -> okm_core::error::Result<Option<Vec<u8>>> {
         if Self::is_vocab_key(key) {
-            self.reads.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.reads
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
         self.inner.get(key)
     }
@@ -232,14 +233,16 @@ fn a_label_is_probed_once_per_handle_not_once_per_document() {
     let c = Collection::<_, VKey, VRow>::new(store.clone());
 
     // First sighting costs the probes: the cursor, the label, the id.
-    c.put(&VKey { org: 1, id: 1 }, &row("admin", "red", 1)).unwrap();
+    c.put(&VKey { org: 1, id: 1 }, &row("admin", "red", 1))
+        .unwrap();
     let first = store.count();
     assert!(first > 0, "the first label must reach the store");
 
     // Second document, same handle: the id is in the handle's vocabulary, and
     // the commit that carried it landed it, so the write probes nothing.
     store.reset();
-    c.put(&VKey { org: 1, id: 2 }, &row("admin", "red", 2)).unwrap();
+    c.put(&VKey { org: 1, id: 2 }, &row("admin", "red", 2))
+        .unwrap();
     assert_eq!(
         store.count(),
         0,
@@ -250,6 +253,8 @@ fn a_label_is_probed_once_per_handle_not_once_per_document() {
     // collection's, and there is nothing global to inherit from.
     let fresh = Collection::<_, VKey, VRow>::new(store.clone());
     store.reset();
-    fresh.put(&VKey { org: 1, id: 3 }, &row("admin", "red", 3)).unwrap();
+    fresh
+        .put(&VKey { org: 1, id: 3 }, &row("admin", "red", 3))
+        .unwrap();
     assert!(store.count() > 0, "a fresh handle probes again");
 }

@@ -399,14 +399,12 @@ impl Hasher for Fast {
     fn write(&mut self, bytes: &[u8]) {
         const K: u64 = 0x517c_c1b7_2722_0a95;
         let mut hash = self.0;
-        let mut words = bytes.chunks_exact(8);
-        for word in &mut words {
-            let mut buf = [0u8; 8];
-            buf.copy_from_slice(word);
-            hash = (hash.rotate_left(5) ^ u64::from_le_bytes(buf)).wrapping_mul(K);
+        let (words, remainder) = bytes.as_chunks::<8>();
+        for word in words {
+            hash = (hash.rotate_left(5) ^ u64::from_le_bytes(*word)).wrapping_mul(K);
         }
         let mut tail = 0u64;
-        for (shift, byte) in words.remainder().iter().enumerate() {
+        for (shift, byte) in remainder.iter().enumerate() {
             tail |= u64::from(*byte) << (8 * shift as u32);
         }
         self.0 = (hash.rotate_left(5) ^ tail ^ bytes.len() as u64).wrapping_mul(K);

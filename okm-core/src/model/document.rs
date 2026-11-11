@@ -10,8 +10,8 @@
 
 use crate::engine::storage::{SharedVirtualStorage, VirtualStorage, scan_suffix_kv};
 use crate::model::index::{Document, KvIndex};
-use crate::model::obj_vocab::VocabSet;
 use crate::model::key::{KeyEncode, PrefixKey};
+use crate::model::obj_vocab::VocabSet;
 
 /// One document as the byte-level scans hand it over: `(key encoding suffix,
 /// Some(payload))` for a row, `(key encoding suffix, None)` for a document that
@@ -857,7 +857,11 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
                             if let Err(e) = R::__okm_embed_deref(&mut document, &store) {
                                 return Some(Err(e));
                             }
-                            if let Err(e) = R::__okm_deref_vocab(&mut document, &mut self.vocabs.borrow_mut(), &store) {
+                            if let Err(e) = R::__okm_deref_vocab(
+                                &mut document,
+                                &mut self.vocabs.borrow_mut(),
+                                &store,
+                            ) {
                                 return Some(Err(e));
                             }
                             Some(document)
