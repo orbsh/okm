@@ -152,6 +152,11 @@ pub struct DrainConfig {
     /// at different positions are two positions, not a disagreement.
     pub consumer: String,
     pub max_segments: usize,
+    /// The largest number of rows one file may hold. `0` (the default) is "however many the
+    /// window holds": a window becomes one file per partition value. A limit splits it into
+    /// several, which is what keeps a big window readable — and what makes the key range in
+    /// each manifest narrower than the window.
+    pub max_rows_per_file: usize,
     /// Partition the exported table by this KEY column: one directory per value
     /// (`data/<column>=<value>/`) and one file per value per window. `None` (the default)
     /// writes one file per window into `data/`.
@@ -168,6 +173,7 @@ impl DrainConfig {
             out_dir: out_dir.into(),
             consumer: consumer.into(),
             max_segments: 16,
+            max_rows_per_file: 0,
             partition: None,
             fold: None,
         }
@@ -305,7 +311,7 @@ fn maybe_fold(cfg: &DrainConfig, table: &str, report: &mut Report) -> Result<()>
     if !policy.met(files.len(), bytes) {
         return Ok(());
     }
-    match crate::read::condense(&table_dir) {
+    match crate::read::condense_at(&table_dir, cfg.max_rows_per_file) {
         Ok(_) => {
             report.folds += 1;
             Ok(())
@@ -375,33 +381,43 @@ fn drain_one(cfg: &DrainConfig, report: &mut Report, win: &Window) -> Result<()>
             None => data_dir.clone(),
         };
         std::fs::create_dir_all(&dir)?;
-        let name = format!("{}-{first}-{last}.parquet", win.table);
-        let out = dir.join(&name);
-        let scratch = cfg.out_dir.join(format!(
-            ".{}-{first}-{last}-{at}.parquet.partial",
-            win.table
-        ));
-        crate::snapshot::parquet_io::write_batch(chunk, &scratch)?;
-        std::fs::rename(&scratch, &out)?;
+        // A window larger than the limit becomes several files. Their names carry the part
+        // number; a window that fits keeps the plain name it always had.
+        let parts = split_rows(chunk, cfg.max_rows_per_file)?;
+        for (part, rows) in parts.iter().enumerate() {
+            let suffix = if parts.len() == 1 {
+                String::new()
+            } else {
+                format!("-p{part}")
+            };
+            let name = format!("{}-{first}-{last}{suffix}.parquet", win.table);
+            let out = dir.join(&name);
+            let scratch = cfg.out_dir.join(format!(
+                ".{}-{first}-{last}-{at}-{part}.parquet.partial",
+                win.table
+            ));
+            crate::snapshot::parquet_io::write_batch(rows, &scratch)?;
+            std::fs::rename(&scratch, &out)?;
 
-        // The manifest lands with the file: a sink records provenance from it without
-        // opening the Parquet, and an operator answers "did window N land".
-        let described = describe(chunk, &key_names)?;
-        let manifest = WindowManifest {
-            table: win.table.clone(),
-            layout_version: win.layout_version,
-            segments: win.segments.clone(),
-            rows: described.rows,
-            deletes: described.deletes,
-            columns: described.columns,
-            file: window::file_name(&out),
-            key_bounds: described.key_bounds,
-        };
-        write_atomic(
-            &out.with_extension("manifest.json"),
-            &serde_json::to_string_pretty(&manifest)?,
-        )?;
-        written.push(out);
+            // The manifest lands with the file: a sink records provenance from it without
+            // opening the Parquet, and an operator answers "did window N land".
+            let described = describe(rows, &key_names)?;
+            let manifest = WindowManifest {
+                table: win.table.clone(),
+                layout_version: win.layout_version,
+                segments: win.segments.clone(),
+                rows: described.rows,
+                deletes: described.deletes,
+                columns: described.columns,
+                file: window::file_name(&out),
+                key_bounds: described.key_bounds,
+            };
+            write_atomic(
+                &out.with_extension("manifest.json"),
+                &serde_json::to_string_pretty(&manifest)?,
+            )?;
+            written.push(out);
+        }
     }
 
     // Only now: the files that cover the window exist, and so do their manifests.
@@ -731,6 +747,36 @@ fn split_by_partition(
         let chunk = arrow::array::RecordBatch::try_new(batch.schema(), columns)
             .map_err(|e| DrainError::new(format!("partition split: {e}")))?;
         out.push((vec![(column.to_string(), text)], chunk));
+    }
+    Ok(out)
+}
+
+/// Cut a batch into runs of at most `max` rows. A `max` of 0 means "keep it whole": the
+/// limit is a reader's convenience, not a promise about the data.
+pub(crate) fn split_rows(
+    batch: &arrow::array::RecordBatch,
+    max: usize,
+) -> Result<Vec<arrow::array::RecordBatch>> {
+    if max == 0 || batch.num_rows() <= max {
+        return Ok(vec![batch.clone()]);
+    }
+    let mut out = Vec::with_capacity(batch.num_rows().div_ceil(max));
+    let mut at = 0;
+    while at < batch.num_rows() {
+        let rows = (at + max).min(batch.num_rows()) - at;
+        let indices =
+            arrow::array::UInt32Array::from((at as u32..(at + rows) as u32).collect::<Vec<_>>());
+        let columns = batch
+            .columns()
+            .iter()
+            .map(|c| arrow::compute::take(c.as_ref(), &indices, None))
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|e| DrainError::new(format!("row split: {e}")))?;
+        out.push(
+            arrow::array::RecordBatch::try_new(batch.schema(), columns)
+                .map_err(|e| DrainError::new(format!("row split: {e}")))?,
+        );
+        at += rows;
     }
     Ok(out)
 }

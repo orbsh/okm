@@ -2355,13 +2355,15 @@ panic lints allowed only in the places it names. So the runtime half of
       dependency for the write side, so the fold decodes each `variant` cell, unions the objects
       field by field (later window wins, nested objects merge) and RE-ENCODES the half via
       `bridge::variant_column`. `read::open_fields` exposes the decoder.
-      (c) **partitioning** — landed as `DrainConfig.partition` (CLI `--partition <column>`):
+      (c) **file-size target** — landed as `max_rows_per_file` (CLI `--max-rows-per-file`): parts
+      named `-p<k>`, each with its own manifest and a narrower `key_bounds`. Rows, not bytes: a
+      byte target is a write-measure-rewrite loop, and rows are what a window knows up front.
+      **partitioning** — landed as `DrainConfig.partition` (CLI `--partition <column>`):
       one file per partition value per window under `data/<column>=<value>/`, the value in Delta
       `partitionValues` and the columns once in `metaData`, a fold that stays inside its
       partition by construction, and the directory name percent-encoded while the action keeps
       the raw text. The column must be a KEY column, because a partition that does not refine
-      the key space lets one key live in two files. What is still owed from this item is the
-      FILE-SIZE target: a window is one file per partition today, however large the window.
+      the key space lets one key live in two files.
       `okm_parquet::delta` stays a zero-dependency log encoder, so anything that outgrows it
       splits off by measurement rather than by default. `okm_dynamic::arrow` covers the
       schema-driven Arrow builder, with the typed bridge as its drift lock; a SQL-to-okm planner

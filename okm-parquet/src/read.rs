@@ -667,6 +667,11 @@ pub struct FoldReport {
 /// A table with nothing to resolve is refused rather than rewritten: folding it would churn
 /// the log without changing what a reader sees.
 pub fn condense(table_dir: &Path) -> Result<FoldReport> {
+    condense_at(table_dir, 0)
+}
+
+/// Fold the table, with at most `max_rows` rows per file (`0` = one file per partition).
+pub fn condense_at(table_dir: &Path, max_rows: usize) -> Result<FoldReport> {
     let files = delta::files_in_order(table_dir)?;
     let keys = key_columns(table_dir)?;
     let (touched, pruned) = files_to_fold(table_dir, &files, &keys)?;
@@ -704,7 +709,7 @@ pub fn condense(table_dir: &Path) -> Result<FoldReport> {
         }
     }
 
-    let name = format!("{hex}-fold-{version:020}.parquet");
+    let stem = format!("{hex}-fold-{version:020}");
     let mut additions: Vec<delta::Addition> = Vec::new();
     let mut rows = 0usize;
     for (at, (values, files)) in groups.iter().enumerate() {
@@ -721,59 +726,71 @@ pub fn condense(table_dir: &Path) -> Result<FoldReport> {
             None => data_dir.clone(),
         };
         std::fs::create_dir_all(&dir)?;
-        let out = dir.join(&name);
-        let scratch = table_dir.join(format!(".{at}-{name}.partial"));
-        crate::snapshot::parquet_io::write_batch(&batch, &scratch)?;
-        std::fs::rename(&scratch, &out)?;
+        // A folded partition larger than the limit becomes several files, the same way a
+        // window does — and each part's manifest states a narrower key range than the whole.
+        let parts = crate::split_rows(&batch, max_rows).map_err(|e| ReadError::new(e.what))?;
+        for (part, chunk) in parts.iter().enumerate() {
+            let suffix = if parts.len() == 1 {
+                String::new()
+            } else {
+                format!("-p{part}")
+            };
+            let name = format!("{stem}{suffix}.parquet");
+            let out = dir.join(&name);
+            let scratch = table_dir.join(format!(".{at}-{part}-{name}.partial"));
+            crate::snapshot::parquet_io::write_batch(chunk, &scratch)?;
+            std::fs::rename(&scratch, &out)?;
 
-        // A folded file gets a manifest too: it carries the segments the files it replaced
-        // described, so provenance survives a fold and `status` can still count rows.
-        let mut segments: Vec<String> = Vec::new();
-        let mut layout_version = 0u8;
-        for rel in files {
-            if let Some(manifest) = crate::status::manifest_of(&table_dir.join(rel)) {
-                layout_version = layout_version.max(manifest.layout_version);
-                for segment in manifest.segments {
-                    if !segments.contains(&segment) {
-                        segments.push(segment);
+            // A folded file gets a manifest too: it carries the segments the files it
+            // replaced described, so provenance survives a fold and `status` can still
+            // count rows.
+            let mut segments: Vec<String> = Vec::new();
+            let mut layout_version = 0u8;
+            for rel in files {
+                if let Some(manifest) = crate::status::manifest_of(&table_dir.join(rel)) {
+                    layout_version = layout_version.max(manifest.layout_version);
+                    for segment in manifest.segments {
+                        if !segments.contains(&segment) {
+                            segments.push(segment);
+                        }
                     }
                 }
             }
-        }
-        let manifest = crate::WindowManifest {
-            table: hex.clone(),
-            layout_version,
-            segments,
-            rows: batch.num_rows(),
-            deletes: 0,
-            columns: batch
-                .schema()
-                .fields()
-                .iter()
-                .map(|f| {
-                    (
-                        f.name().clone(),
-                        format!("{:?}", f.data_type()),
-                        f.is_nullable(),
-                    )
-                })
-                .collect(),
-            file: name.clone(),
-            key_bounds: crate::bounds::to_manifest(
-                &crate::bounds::of_batch(&batch, &keys).map_err(ReadError::new)?,
-            ),
-        };
-        std::fs::write(
-            out.with_extension("manifest.json"),
-            serde_json::to_string_pretty(&manifest)
-                .map_err(|e| ReadError::new(format!("manifest: {e}")))?,
-        )?;
+            let manifest = crate::WindowManifest {
+                table: hex.clone(),
+                layout_version,
+                segments,
+                rows: chunk.num_rows(),
+                deletes: 0,
+                columns: chunk
+                    .schema()
+                    .fields()
+                    .iter()
+                    .map(|f| {
+                        (
+                            f.name().clone(),
+                            format!("{:?}", f.data_type()),
+                            f.is_nullable(),
+                        )
+                    })
+                    .collect(),
+                file: name.clone(),
+                key_bounds: crate::bounds::to_manifest(
+                    &crate::bounds::of_batch(chunk, &keys).map_err(ReadError::new)?,
+                ),
+            };
+            std::fs::write(
+                out.with_extension("manifest.json"),
+                serde_json::to_string_pretty(&manifest)
+                    .map_err(|e| ReadError::new(format!("manifest: {e}")))?,
+            )?;
 
-        rows += batch.num_rows();
-        additions.push(delta::Addition {
-            path: out,
-            partition: values.clone(),
-        });
+            rows += chunk.num_rows();
+            additions.push(delta::Addition {
+                path: out,
+                partition: values.clone(),
+            });
+        }
     }
 
     let commit = delta::commit_compaction(table_dir, &touched, &additions, &keys)?;

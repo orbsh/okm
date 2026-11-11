@@ -204,6 +204,22 @@ The log still names the deleted files, so a second vacuum finds them absent and 
 — the sweep is idempotent, and it never edits the log: what the table SAID stays true, only the
 bytes behind the old versions stop existing.
 
+## File size
+
+`DrainConfig.max_rows_per_file` (CLI `--max-rows-per-file N`) cuts a window — or a fold — into
+files of at most N rows, named `<table>-<first>-<last>-p<k>.parquet`. `0` is the default and
+means "as many rows as the window holds". A window that fits in one file keeps the plain name it
+always had.
+
+The limit counts ROWS, not bytes. A byte target is a feedback loop — write, measure, rewrite —
+and a writer that can measure before writing would have to know how the Parquet writer will
+compress; rows are what a window knows up front, and a reader's cost is bounded by rows times a
+bounded row size. Row-group size inside a file is the Parquet writer's own lever, not this one.
+
+Parts are files like any other: each carries its own manifest and therefore its own `key_bounds`,
+which makes the range index finer the smaller the parts — a limit set for file size also
+sharpens what a fold has to open.
+
 ## Partitioning
 
 `DrainConfig.partition` (CLI `--partition <column>`) writes one file per partition VALUE per

@@ -1146,6 +1146,98 @@ fn a_fold_leaves_files_whose_keys_are_exclusive_to_them() {
     assert!(levels.contains(&4), "K2 survived: {levels:?}");
 }
 
+/// A window that holds more rows than the limit becomes several files, each with its own
+/// manifest — and therefore its own, narrower key range: the limit is also what makes the
+/// range index fine-grained.
+#[test]
+fn a_window_is_cut_into_files_by_the_row_limit() {
+    let root = tempfile::tempdir().expect("root");
+    let out = tempfile::tempdir().expect("lake");
+    {
+        let c = collection(root.path());
+        for id in 10u64..15 {
+            c.put(
+                &K { org: 1, id },
+                &R {
+                    level: id as u32,
+                    name: "row".into(),
+                },
+            )
+            .expect("put");
+        }
+    }
+    let mut cfg = DrainConfig::new(out.path(), "test");
+    cfg.max_rows_per_file = 2;
+    let report = drain(root.path(), &cfg).expect("drain");
+    assert_eq!(report.files.len(), 3, "5 rows, two per file");
+
+    let table_dir = table_of(&report.files[0]);
+    let live = okm_parquet::delta::files_in_order(&table_dir).expect("files");
+    assert_eq!(live.len(), 3);
+    let mut names: Vec<String> = live.to_vec();
+    names.sort();
+    assert!(
+        names.iter().all(|rel| rel.contains("-p")),
+        "the parts say they are parts: {names:?}"
+    );
+
+    // Each part bounds its own rows: the ranges differ, and none spans the whole window.
+    let first = okm_parquet::status::manifest_of(&table_dir.join(&names[0])).expect("a manifest");
+    let last = okm_parquet::status::manifest_of(&table_dir.join(&names[2])).expect("a manifest");
+    assert_eq!(first.rows, 2);
+    assert_eq!(last.rows, 1);
+    assert_ne!(first.key_bounds, last.key_bounds, "{first:?} {last:?}");
+
+    // The table still reads as one table.
+    let state = okm_parquet::read::current_state(&table_dir).expect("state");
+    assert_eq!(state.num_rows(), 5);
+}
+
+/// A fold honours the same limit: current state does not have to land in one file either.
+#[test]
+fn a_fold_honours_the_row_limit() {
+    let root = tempfile::tempdir().expect("root");
+    let out = tempfile::tempdir().expect("lake");
+    let mut cfg = DrainConfig::new(out.path(), "test");
+    cfg.max_rows_per_file = 2;
+
+    // Two windows, each rewriting the same three keys: every file shares a key, so the fold
+    // has three rows to land and the limit says two at a time.
+    let mut first_files = Vec::new();
+    for level in [1u32, 2] {
+        let c = collection(root.path());
+        for id in 10u64..13 {
+            c.put(
+                &K { org: 1, id },
+                &R {
+                    level: level * 10 + id as u32,
+                    name: "row".into(),
+                },
+            )
+            .expect("put");
+        }
+        drop(c);
+        let report = drain(root.path(), &cfg).expect("a window");
+        if first_files.is_empty() {
+            first_files = report.files.clone();
+        }
+    }
+    let table_dir = table_of(&first_files[0]);
+
+    let fold = okm_parquet::read::condense_at(&table_dir, 2).expect("fold");
+    assert_eq!(fold.rows, 3, "three live keys");
+    assert_eq!(fold.files.len(), 2, "three rows, two per file");
+    assert!(
+        fold.files
+            .iter()
+            .all(|f| f.to_string_lossy().contains("-fold-")),
+        "{:?}",
+        fold.files
+    );
+    let state = okm_parquet::read::current_state(&table_dir).expect("state");
+    assert_eq!(state.num_rows(), 3);
+}
+
 /// A partitioned table writes one file per partition VALUE, and the value travels into the
 /// Delta action as a string — a reader is told the partition, not left to parse a path.
 #[test]

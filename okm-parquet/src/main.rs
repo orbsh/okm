@@ -69,6 +69,7 @@ fn run() -> Result<i32, String> {
     let mut fold_after_files: usize = 0;
     let mut fold_after_bytes: u64 = 0;
     let mut partition: Option<String> = None;
+    let mut max_rows_per_file: usize = 0;
 
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
@@ -89,6 +90,11 @@ fn run() -> Result<i32, String> {
                     .map_err(|_| "--fold-after-files takes a number".to_string())?
             }
             "--partition" => partition = Some(value()?),
+            "--max-rows-per-file" => {
+                max_rows_per_file = value()?
+                    .parse()
+                    .map_err(|e| format!("--max-rows-per-file: {e}"))?
+            }
             "--fold-after-bytes" => {
                 fold_after_bytes = value()?
                     .parse()
@@ -98,7 +104,8 @@ fn run() -> Result<i32, String> {
                 println!(
                     "okm-parquet --root <log dir> --out <lake dir> [--consumer NAME] \
                      [--max-segments N] [--table <hex header>] \
-                     [--partition COLUMN] [--fold-after-files N] [--fold-after-bytes B]"
+                     [--partition COLUMN] [--max-rows-per-file N] [--fold-after-files N]
+                     [--fold-after-bytes B]"
                 );
                 return Ok(0);
             }
@@ -113,6 +120,7 @@ fn run() -> Result<i32, String> {
     );
     cfg.max_segments = max_segments;
     cfg.partition = partition;
+    cfg.max_rows_per_file = max_rows_per_file;
     if fold_after_files > 0 || fold_after_bytes > 0 {
         cfg.fold = Some(okm_parquet::FoldPolicy {
             after_files: fold_after_files,
