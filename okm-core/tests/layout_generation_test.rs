@@ -62,6 +62,68 @@ fn write_generation_one(root: &std::path::Path) {
     c.put(&K { id: 1 }, &Gen1 { level: 7 }).expect("put");
 }
 
+/// A window is one VOCABULARY as well as one generation. Two segments whose field ids mean
+/// different names cannot be described by one schema — a column holds a label, and the same
+/// id would have to answer two of them — so the later segment starts the next window. The
+/// labels come from a store's intern table, and a store that starts fresh (a test, a rebuild,
+/// a restored snapshot) numbers from the beginning again.
+#[test]
+fn a_window_stops_at_a_vocabulary_change() {
+    let log = tempfile::tempdir().expect("root");
+
+    // Window one: field id 1 is `note`, written under one store.
+    {
+        let c: Collection<_, K, Gen1> = Collection::captured(store(log.path())).expect("assemble");
+        c.put(&K { id: 1 }, &Gen1 { level: 7 }).expect("put");
+        let mut open = std::collections::BTreeMap::new();
+        open.insert(
+            "note".to_string(),
+            okm_core::model::obj_dynamic::DynamicValue::Str("first".to_string()),
+        );
+        c.merge(&K { id: 1 }, &open).expect("an open field");
+    }
+
+    // Window two: a fresh store numbers from 1 again, and 1 is now `tag`.
+    {
+        let c: Collection<_, K, Gen1> = Collection::captured(store(log.path())).expect("assemble");
+        c.put(&K { id: 1 }, &Gen1 { level: 8 }).expect("put");
+        let mut open = std::collections::BTreeMap::new();
+        open.insert(
+            "tag".to_string(),
+            okm_core::model::obj_dynamic::DynamicValue::Str("second".to_string()),
+        );
+        c.merge(&K { id: 1 }, &open).expect("an open field");
+    }
+
+    let d = dir(log.path());
+    let first = read_window(&d, &WindowConfig::default())
+        .expect("read")
+        .expect("a window");
+    assert_eq!(first.segments.len(), 1, "the second segment is not in it");
+    assert_eq!(first.dynamic.len(), 1);
+    assert_eq!(
+        first.dynamic[0].1.keys().cloned().collect::<Vec<_>>(),
+        vec!["note".to_string()],
+        "the first window's own vocabulary"
+    );
+
+    let next = read_window(
+        &d,
+        &WindowConfig {
+            after: Some(first.segments[0].clone()),
+            ..WindowConfig::default()
+        },
+    )
+    .expect("read")
+    .expect("a second window");
+    assert_eq!(next.dynamic.len(), 1);
+    assert_eq!(
+        next.dynamic[0].1.keys().cloned().collect::<Vec<_>>(),
+        vec!["tag".to_string()],
+        "and the next window names its own field instead of borrowing the first one's"
+    );
+}
+
 /// The same directory, the next build: nothing refuses, and the row lands above the last
 /// generation 1 segment.
 #[test]

@@ -73,6 +73,12 @@ and a window is never half-described.
 
 ## What a window means
 
+* **One generation, one vocabulary.** A window carries a single declaration and a single
+  field vocabulary: the labels a column exports come from the store's intern table, and a
+  store that starts fresh numbers from the beginning again, so two segments can give one id
+  two names. A segment that disagrees with the window's vocabulary starts the NEXT window
+  instead of joining it — one column cannot be named two things. Nothing is lost: the two
+  segments become two files, each described by its own labels.
 * **Append-only.** A window is history, not a table: the same key may appear twice
   with different values, and rows are in log order (commit order). A window does
   not repeat the order promise ACROSS windows — that is the store's, and no sink

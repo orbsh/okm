@@ -133,18 +133,38 @@ pub fn read_window(dir: &Path, cfg: &WindowConfig) -> Result<Option<Window>> {
     // window and starts the next one. The changelog directory never changes, so this is
     // the normal case after an upgrade, not a corruption (ADR-0056 §5/§6).
     let generation = super::segment_info(first)?.meta.layout_version;
+    let schema = sidecar_of(dir, generation)?;
+    let header = &header;
     let mut window: Vec<PathBuf> = Vec::new();
+    let mut labels: HashMap<(u16, Vec<u8>), String> = HashMap::new();
+    let mut frames: Vec<Vec<super::OpFrame>> = Vec::new();
     for path in candidates {
         if super::segment_info(&path)?.meta.layout_version != generation {
             break;
         }
+        let segment_frames = read_sealed(&path)?;
+        let segment_labels = segment_labels(&segment_frames, header, &schema);
+        // A window is ONE vocabulary: a column holds a label, so two segments that number
+        // the same field id differently cannot be described by one schema. The later
+        // segment starts the next window instead of being merged into this one — the same
+        // rule as one generation per window, for the same reason.
+        if !window.is_empty()
+            && segment_labels
+                .iter()
+                .any(|(id, name)| labels.get(id).is_some_and(|kept| kept != name))
+        {
+            break;
+        }
+        for (id, name) in segment_labels {
+            labels.insert(id, name);
+        }
+        frames.push(segment_frames);
         window.push(path);
         if window.len() >= cfg.max_segments.max(1) {
             break;
         }
     }
 
-    let schema = sidecar_of(dir, generation)?;
     let mut out = Window {
         schema: schema.clone(),
         table,
@@ -155,37 +175,34 @@ pub fn read_window(dir: &Path, cfg: &WindowConfig) -> Result<Option<Window>> {
         ops: Vec::new(),
         dynamic: Vec::new(),
         open_fields: 0,
-        labels: HashMap::new(),
+        labels,
     };
     // Dynamic bodies are decoded AFTER the window is scanned: their field ids need
     // the field-name vocabulary's labels, and nothing promises that entry was
     // written before the segment (frames are in write order, not dependency order).
     let mut dynamic_raw: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
 
-    for segment in &window {
-        for frame in read_sealed(segment)? {
-            for (tag, key, value) in frame.0 {
-                let Some((slot, suffix)) = split_slot(&header, &key) else {
+    for segment_frames in &frames {
+        for frame in segment_frames {
+            for (tag, key, value) in &frame.0 {
+                let Some((slot, suffix)) = split_slot(header, key) else {
                     continue;
                 };
-                match (tag, slot) {
+                match (*tag, slot) {
                     // A row: the primary face, and a suffix that is exactly one
                     // key (shorter would be a bare face, longer cannot happen).
                     (OP_PUT, PRIMARY_SLOT) if suffix.len() == schema.key_len => {
                         out.rows.push((
                             suffix.to_vec(),
-                            crate::decode::decode_payload(&schema, &value)?,
+                            crate::decode::decode_payload(&schema, value)?,
                         ));
                         out.ops.push(WindowOp::Put(out.rows.len() - 1));
                     }
                     // A vocabulary entry: the id face the declaration names, with
                     // the label as its value. Carried because a column holds labels
-                    // and the payload holds ids.
-                    (OP_PUT, slot) if is_id_face(&schema, slot) => {
-                        if let Ok(name) = String::from_utf8(value) {
-                            out.labels.insert((slot, suffix.to_vec()), name);
-                        }
-                    }
+                    // and the payload holds ids. Already collected by the window
+                    // scan above (`out.labels`), so nothing to do per frame.
+                    (OP_PUT, slot) if is_id_face(&schema, slot) => {}
                     // A document's open fields: truth (ADR-0045 §4), carried
                     // beside the row, never re-derived from it.
                     (OP_PUT, DYNAMIC_SLOT) if suffix.len() == schema.key_len => {
@@ -211,6 +228,31 @@ pub fn read_window(dir: &Path, cfg: &WindowConfig) -> Result<Option<Window>> {
             .push((key, decode_dynamic_segment(&body, &out.labels)?));
     }
     Ok(Some(out))
+}
+
+/// One segment's vocabulary: `(slot, id) → label`, read from the frames that carry it.
+fn segment_labels(
+    frames: &[super::OpFrame],
+    header: &[u8],
+    schema: &CollectionSchema,
+) -> HashMap<(u16, Vec<u8>), String> {
+    let mut out = HashMap::new();
+    for frame in frames {
+        for (tag, key, value) in &frame.0 {
+            if *tag != OP_PUT {
+                continue;
+            }
+            let Some((slot, suffix)) = split_slot(header, key) else {
+                continue;
+            };
+            if is_id_face(schema, slot)
+                && let Ok(name) = String::from_utf8(value.clone())
+            {
+                out.insert((slot, suffix.to_vec()), name);
+            }
+        }
+    }
+    out
 }
 
 /// Decode a dynamic-segment body into `name → value`, taking the names from the
