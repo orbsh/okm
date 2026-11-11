@@ -294,16 +294,50 @@ fn delta_type(field: &ArrowField) -> Option<String> {
     })
 }
 
+/// The fields an existing schema declares, in order, with any NEW ones appended.
+///
+/// A commit describes a table, not the file that happened to trigger it: dropping a field
+/// because this window did not carry it would hand a reader a table that quietly lost a
+/// column (and the Delta metadata would disagree with the files already in `data/`).
+fn union_columns(existing_schema: &str, file: &[(String, String)]) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(existing_schema)
+        && let Some(fields) = parsed["fields"].as_array()
+    {
+        for field in fields {
+            if let (Some(name), Some(ty)) = (field["name"].as_str(), field["type"].as_str()) {
+                out.push((name.to_string(), ty.to_string()));
+            }
+        }
+    }
+    for (name, ty) in file {
+        if !out.iter().any(|(kept, _)| kept == name) {
+            out.push((name.clone(), ty.clone()));
+        }
+    }
+    out
+}
+
 /// The Delta schema JSON: a struct of the columns, by NAME. Delta identifies columns by
 /// name, so the Parquet field ids okm stamps for its own readers are not needed here.
-fn schema_json(columns: &[(String, String)]) -> String {
+///
+/// Key columns carry `{"okm.key": "true"}` in their metadata. That is the one thing a
+/// reader cannot derive from the file: which columns are a document's IDENTITY, and
+/// therefore what "the same row" means when history is folded into current state.
+fn schema_json(columns: &[(String, String)], keys: &[String]) -> String {
     let fields: Vec<String> = columns
         .iter()
         .map(|(name, ty)| {
+            let metadata = if keys.iter().any(|k| k == name) {
+                "{\"okm.key\":\"true\"}".to_string()
+            } else {
+                "{}".to_string()
+            };
             format!(
-                "{{\"name\":{},\"type\":{},\"nullable\":true,\"metadata\":{{}}}}",
+                "{{\"name\":{},\"type\":{},\"nullable\":true,\"metadata\":{}}}",
                 serde_json::Value::String(name.clone()),
-                serde_json::Value::String(ty.clone())
+                serde_json::Value::String(ty.clone()),
+                metadata
             )
         })
         .collect();
@@ -316,7 +350,11 @@ struct LogState {
     max_version: Option<u64>,
     table_id: Option<String>,
     schema: Option<String>,
+    /// Membership: what a reader would see now.
     files: BTreeSet<String>,
+    /// The same files in the order the log added them — a window's order IS the version
+    /// that added it, and folding history needs that order, not a name sort.
+    order: Vec<String>,
 }
 
 fn read_log(table_dir: &Path) -> Result<LogState, String> {
@@ -356,13 +394,15 @@ fn read_log(table_dir: &Path) -> Result<LogState, String> {
             }
             if let Some(add) = action.get("add")
                 && let Some(p) = add.get("path").and_then(|v| v.as_str())
+                && state.files.insert(p.to_string())
             {
-                state.files.insert(p.to_string());
+                state.order.push(p.to_string());
             }
             if let Some(remove) = action.get("remove")
                 && let Some(p) = remove.get("path").and_then(|v| v.as_str())
             {
                 state.files.remove(p);
+                state.order.retain(|kept| kept != p);
             }
         }
         state.max_version = Some(v);
@@ -396,7 +436,11 @@ fn table_id(table_dir: &Path) -> String {
 /// A file already named in the log is skipped, so draining twice over the same window
 /// cannot double-count it. The version file is written under a `.tmp` name and renamed
 /// into place: a reader that lists `NNN.json` never sees a half-written commit.
-pub fn commit_files(table_dir: &Path, files: &[PathBuf]) -> Result<Commit, String> {
+pub fn commit_files(
+    table_dir: &Path,
+    files: &[PathBuf],
+    keys: &[String],
+) -> Result<Commit, String> {
     let log = table_dir.join("_delta_log");
     std::fs::create_dir_all(&log).map_err(|e| format!("{}: {e}", log.display()))?;
     let state = read_log(table_dir)?;
@@ -438,8 +482,15 @@ pub fn commit_files(table_dir: &Path, files: &[PathBuf]) -> Result<Commit, Strin
     // Every file a window writes carries the declared schema, so any of them describes
     // the table; the first one we looked at is the one the metadata quotes.
     let summary = summary.ok_or_else(|| "no data files to commit".to_string())?;
-    let columns = summary.columns.clone();
-    let schema = schema_json(&columns);
+    // The table's schema is the UNION of what its files carry, never narrowed by the last
+    // one: the `variant` column shows up only in windows that wrote open fields, and a
+    // window without them must not retract the column from a table that already declared
+    // it — a reader would lose the file's other half (ADR-0058 § Amendment).
+    let columns = match state.schema.as_deref() {
+        Some(existing) => union_columns(existing, &summary.columns),
+        None => summary.columns.clone(),
+    };
+    let schema = schema_json(&columns, keys);
     let has_variant = columns.iter().any(|(_, ty)| ty == "variant");
 
     let version = state.max_version.map(|v| v + 1).unwrap_or(0);
@@ -507,6 +558,101 @@ pub fn commit_files(table_dir: &Path, files: &[PathBuf]) -> Result<Commit, Strin
         version,
         path,
         added: adds.len(),
+    })
+}
+
+/// What a reader needs from the log: the data files in the order the log added them, and
+/// the table's schema string (which is where the key columns are marked).
+pub fn files_in_order(table_dir: &Path) -> Result<Vec<String>, String> {
+    Ok(read_log(table_dir)?.order)
+}
+
+/// The version a commit would take next.
+pub fn next_version(table_dir: &Path) -> Result<u64, String> {
+    Ok(read_log(table_dir)?.max_version.map(|v| v + 1).unwrap_or(0))
+}
+
+/// The table's current schema string, if it has one yet.
+pub fn schema_string(table_dir: &Path) -> Result<Option<String>, String> {
+    Ok(read_log(table_dir)?.schema)
+}
+
+/// One commit that REPLACES files: every `removes` entry leaves the table, `add` joins it.
+///
+/// This is the shape a fold needs — dropping history for a file that holds current state of
+/// the same table. Protocol and schema are not rewritten: the replacing files carry the same
+/// columns as the ones they replace, and a commit that restated the schema would only give a
+/// reader a second chance to disagree with it.
+pub fn commit_compaction(
+    table_dir: &Path,
+    removes: &[String],
+    add: &Path,
+    keys: &[String],
+) -> Result<Commit, String> {
+    if removes.is_empty() {
+        return Err("no files to remove: a fold that replaces nothing is a drain".to_string());
+    }
+    let log = table_dir.join("_delta_log");
+    std::fs::create_dir_all(&log).map_err(|e| format!("{}: {e}", log.display()))?;
+    let state = read_log(table_dir)?;
+    for path in removes {
+        if !state.files.contains(path) {
+            return Err(format!("{path} is not in this table's log"));
+        }
+    }
+
+    let name = add
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| format!("{}: not a file name this table can record", add.display()))?;
+    let rel = format!("data/{name}");
+    let size = std::fs::metadata(add)
+        .map_err(|e| format!("{}: {e}", add.display()))?
+        .len();
+    let summary = file_summary(add)?;
+    let schema = schema_json(&summary.columns, keys);
+
+    let version = state.max_version.map(|v| v + 1).unwrap_or(0);
+    let mut actions: Vec<serde_json::Value> = Vec::new();
+    if version == 0 || state.schema.as_deref() != Some(schema.as_str()) {
+        return Err("the folded file does not carry the table's schema".to_string());
+    }
+    let stamp = now_ms();
+    for path in removes {
+        actions.push(serde_json::json!({
+            "remove": {
+                "path": path,
+                "deletionTimestamp": stamp,
+                "dataChange": true,
+            }
+        }));
+    }
+    actions.push(serde_json::json!({
+        "add": {
+            "path": rel,
+            "partitionValues": {},
+            "size": size,
+            "modificationTime": stamp,
+            "dataChange": true,
+            "stats": stats_json(&summary),
+        }
+    }));
+
+    let path = log.join(format!("{version:020}.json"));
+    let mut body = String::new();
+    for action in &actions {
+        let line = serde_json::to_string(action).map_err(|e| format!("action: {e}"))?;
+        body.push_str(&line);
+        body.push('\n');
+    }
+    let scratch = log.join(format!("{version:020}.json.tmp"));
+    std::fs::write(&scratch, body).map_err(|e| format!("{}: {e}", scratch.display()))?;
+    std::fs::rename(&scratch, &path).map_err(|e| format!("{}: {e}", path.display()))?;
+
+    Ok(Commit {
+        version,
+        path,
+        added: 1,
     })
 }
 

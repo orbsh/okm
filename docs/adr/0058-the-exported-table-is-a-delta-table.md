@@ -138,11 +138,14 @@ Three consequences, all deliberate:
 1. **Every window is expressible.** A delete no longer blocks the rows beside it, and the
    reader decides what a removal means: filter `okm_op`, keep the last `okm_seq` per key,
    or compact.
-2. **Delta's other half is still not used.** A `remove` action or a deletion vector would
-   express a removal as table state, but both need to know which FILE and which ROW hold
-   the key — a Parquet read path plus either a key→file index or one row per file. A change
-   row needs neither, and it is what a CDC consumer asks for anyway. Deletion vectors and
-   compaction remain owed (PLAN, "the sink half of the lake output").
+2. **Delta's other half is used by REPLACEMENT, not by patching.** `okm-parquet condense`
+   folds a table's change files into one current-state file and commits a `remove` per file
+   it replaced plus one `add` (copy-on-write). That needs a read path — which landed with it
+   (`read::current_state`, identity from the `okm.key` metadata) — but no key→file index,
+   because a fold replaces whole files. A ROW-level removal (a deletion vector over an
+   untouched file) would need exactly that index, or one row per file; it stays owed, and so
+   does partitioning. A change row still needs neither, and it is what a CDC consumer asks
+   for anyway.
 3. **The schema is constant per table.** These columns appear on every window of every
    table, carrying `put` / null / 0 where nothing else applies: a schema that shows up only
    on windows that happen to hold a removal is a schema no reader can rely on. Exports

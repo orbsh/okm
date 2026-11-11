@@ -37,6 +37,7 @@
 
 pub mod bridge;
 pub mod delta;
+pub mod read;
 pub mod snapshot;
 
 use okm_core::changelog::window::{
@@ -276,7 +277,17 @@ fn drain_one(cfg: &DrainConfig, report: &mut Report, win: &Window) -> Result<()>
         .filter_map(|e| e.ok().map(|e| e.path()))
         .filter(|p| p.extension().is_some_and(|x| x == "parquet"))
         .collect();
-    delta::commit_files(&table_dir, &files).map_err(|e| DrainError::new(format!("delta: {e}")))?;
+    // The key columns travel into the log's schema metadata (`okm.key`): a reader that
+    // folds history needs the table's identity, and a file cannot say which of its columns
+    // that is (ADR-0058 § Amendment).
+    let keys: Vec<String> = win
+        .schema
+        .key_fields
+        .iter()
+        .map(|f| f.name.clone())
+        .collect();
+    delta::commit_files(&table_dir, &files, &keys)
+        .map_err(|e| DrainError::new(format!("delta: {e}")))?;
     report.metadata += 1;
 
     report.segments += win.segments.len();

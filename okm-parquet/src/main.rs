@@ -9,16 +9,21 @@
 //! wrote (`ChangelogStore::dir`), `--out` is where windows land, and `--consumer`
 //! names the reader so two readers keep two positions (ADR-0056 §8).
 //!
-//! Three maintenance verbs read the same directory and need no types either: `status`
-//! reports what the log holds and who holds it, `compact` checkpoints it, and `replay`
-//! writes it into a store built by this build. `compact` is the one verb that needs a
-//! second argument — the STORE — because a baseline is a snapshot of state, and state
-//! lives in the store, not in the log.
+//! Three maintenance verbs read the log and need no types either: `status` reports what it
+//! holds and who holds it, `compact` checkpoints it, and `replay` writes it into a store
+//! built by this build. `compact` is the one of those that needs a second argument — the
+//! STORE — because a baseline is a snapshot of state, and state lives in the store, not in
+//! the log.
+//!
+//! `condense` is the LAKE-side verb and reads the exported directory instead: it folds a
+//! table's change files into one current-state file and commits the `remove` of the ones it
+//! replaced (ADR-0058 § Amendment). Two different directories, two different questions —
+//! `compact` is about the log's own size, `condense` is about what a reader is handed.
 
 use okm_core::SharedVirtualStorage;
 use okm_core::changelog::replay::{TableRun, replay_and_reconcile, replay_table};
 use okm_parquet::{DrainConfig, Report, drain, drain_table};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 fn main() {
     match run() {
@@ -46,6 +51,10 @@ fn run() -> Result<i32, String> {
     if args.first().is_some_and(|a| a == "compact") {
         args.remove(0);
         return compact(&args);
+    }
+    if args.first().is_some_and(|a| a == "condense") {
+        args.remove(0);
+        return condense(&args);
     }
     let mut root: Option<PathBuf> = None;
     let mut out: Option<PathBuf> = None;
@@ -109,6 +118,75 @@ fn run() -> Result<i32, String> {
         report.derived_deletes
     );
     Ok(0)
+}
+
+/// `condense --out <lake dir> [--table <hex header>]`
+///
+/// Fold each exported table into one current-state file. Idempotent in meaning, not in
+/// commits: a table with one file is already its own current state and is left alone.
+fn condense(args: &[String]) -> Result<i32, String> {
+    let mut out: Option<PathBuf> = None;
+    let mut table: Option<String> = None;
+
+    let mut it = args.iter();
+    while let Some(arg) = it.next() {
+        let mut value = || {
+            it.next()
+                .cloned()
+                .ok_or_else(|| format!("{arg} needs a value"))
+        };
+        match arg.as_str() {
+            "--out" | "--lake" => out = Some(PathBuf::from(value()?)),
+            "--table" => table = Some(value()?),
+            "-h" | "--help" => {
+                println!("okm-parquet condense --out <lake dir> [--table <hex header>]");
+                return Ok(0);
+            }
+            other => return Err(format!("unknown argument `{other}` (try --help)")),
+        }
+    }
+
+    let out = out.ok_or("--out is required (the directory windows were drained into)")?;
+    let mut folded = 0usize;
+    let mut skipped = 0usize;
+    for dir in lake_tables(&out, table.as_deref())? {
+        match okm_parquet::read::condense(&dir) {
+            Ok(report) => {
+                println!(
+                    "{}: v{} holds {} row(s); replaced {} file(s)",
+                    dir.display(),
+                    report.version,
+                    report.rows,
+                    report.replaced
+                );
+                folded += 1;
+            }
+            // A table with one file has nothing to fold — that is a state, not a failure.
+            Err(e) if e.what.contains("nothing to fold") => skipped += 1,
+            Err(e) => eprintln!("{}: {e}", dir.display()),
+        }
+    }
+    println!("folded {folded}, already current {skipped}");
+    Ok(0)
+}
+
+/// The exported tables under a lake directory: a subdirectory that has a Delta log.
+fn lake_tables(out: &Path, only: Option<&str>) -> Result<Vec<PathBuf>, String> {
+    let mut dirs = Vec::new();
+    for entry in std::fs::read_dir(out).map_err(|e| format!("{}: {e}", out.display()))? {
+        let path = entry.map_err(|e| e.to_string())?.path();
+        if !path.join("_delta_log").is_dir() {
+            continue;
+        }
+        if let Some(name) = only
+            && path.file_name().and_then(|n| n.to_str()) != Some(name)
+        {
+            continue;
+        }
+        dirs.push(path);
+    }
+    dirs.sort();
+    Ok(dirs)
 }
 
 /// `status --root <log dir> [--table <hex header>]`

@@ -109,6 +109,30 @@ and a window is never half-described.
 * Never reorder. A sink that needs a different physical layout may rewrite rows
   inside a file it owns; it may not reorder across windows.
 
+## Folding
+
+`okm-parquet condense --out <lake dir>` turns a table's change files into ONE file of current
+state and commits the removal of the ones it replaced (ADR-0058 § Amendment):
+
+    _delta_log/<n>.json    {"remove": ...} per replaced file, {"add": ...} for the new one
+
+What a reader sees afterwards is the same rows, one per live key: the change rows are gone,
+`okm_op` is `put` (or `put_open`), and `okm_seq` is renumbered `0..n-1` — the sequence means
+"position in this file", and there is one file now. History is not lost: it is the earlier
+versions of the log, which is where a reader asks for it.
+
+Two things it is NOT:
+
+* **not a deletion vector.** A fold replaces whole files (copy-on-write). A row-level delete
+  would have to know which file and which row hold the key, so the incremental form is owed
+  rather than pretended.
+* **not the log's `compact`.** That verb checkpoints the CHANGELOG's segments into a baseline
+  and needs the store; this one reads the exported directory and needs nothing from the
+  application.
+
+A table with one file is already its own current state and is left alone — folding again
+would only churn the log without changing what a reader sees.
+
 ## Not part of the contract
 
 Partitioning, target file size, catalog registration, snapshot management and

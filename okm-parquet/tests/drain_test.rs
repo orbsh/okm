@@ -851,6 +851,106 @@ fn statistics_name_the_right_column_when_a_struct_sits_before_it() {
     assert_eq!(stats["minValues"]["okm_op"], "put");
 }
 
+/// Folding history into current state: two windows (a put, then a put and the purge of the
+/// first row) become ONE file holding the live row, and the files it replaced leave the
+/// table through Delta `remove` actions rather than through change rows nobody folds
+/// (ADR-0058 § Amendment — the sink half, stated as table state).
+#[test]
+fn a_fold_replaces_the_change_files_with_current_state() {
+    let root = tempfile::tempdir().expect("root");
+    let out = tempfile::tempdir().expect("lake");
+    let cfg = DrainConfig::new(out.path(), "test");
+
+    {
+        let c = collection(root.path());
+        c.put(
+            &K1,
+            &R {
+                level: 3,
+                name: "alpha".into(),
+            },
+        )
+        .expect("put");
+    }
+    drain(root.path(), &cfg).expect("first window");
+
+    {
+        let c = collection(root.path());
+        c.put(
+            &K2,
+            &R {
+                level: 4,
+                name: "beta".into(),
+            },
+        )
+        .expect("put");
+        // The store is transient, so the second window re-writes K1 before removing it —
+        // which is also the sharper case: a put and the purge that follows it in one window,
+        // after an earlier put of the same key in the window before.
+        c.put(
+            &K1,
+            &R {
+                level: 3,
+                name: "alpha".into(),
+            },
+        )
+        .expect("put");
+        assert!(c.purge(&K1).expect("purge"), "the row existed");
+    }
+    let second = drain(root.path(), &cfg).expect("second window");
+    let table_dir = second.files[0]
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .to_path_buf();
+
+    // Before the fold: two files, three change rows, one live key.
+    let before = okm_parquet::read::current_state(&table_dir).expect("current state");
+    assert_eq!(before.num_rows(), 1, "K2 is the only live key");
+
+    let fold = okm_parquet::read::condense(&table_dir).expect("fold");
+    assert_eq!(fold.replaced, 2, "both change files");
+    assert_eq!(fold.rows, 1);
+
+    // After: one file, and the row that is left is the one that was never removed.
+    let after = okm_parquet::read::current_state(&table_dir).expect("current state");
+    assert_eq!(after.num_rows(), 1);
+    let id = after
+        .column_by_name("id")
+        .and_then(|c| c.as_any().downcast_ref::<arrow::array::UInt64Array>())
+        .expect("id column");
+    assert_eq!(id.value(0), 11, "K2");
+    let ops = after
+        .column_by_name("okm_op")
+        .and_then(|c| c.as_any().downcast_ref::<arrow::array::StringArray>())
+        .expect("okm_op");
+    assert_eq!(ops.value(0), "put", "current state has no `del` rows left");
+
+    // The log states the replacement: two removes, one add, in one version.
+    let log = table_dir.join("_delta_log");
+    let newest = std::fs::read_to_string(log.join(format!("{:020}.json", fold.version)))
+        .expect("the fold's version");
+    assert_eq!(
+        newest.matches("\"remove\"").count(),
+        2,
+        "both replaced files are removed: {newest}"
+    );
+    assert_eq!(
+        newest.matches("\"add\"").count(),
+        1,
+        "one file now holds the table: {newest}"
+    );
+    assert!(
+        newest.contains("dataChange"),
+        "a fold changes what a reader sees: {newest}"
+    );
+
+    // And folding again is refused rather than churning the log: one file IS current state.
+    let again = okm_parquet::read::condense(&table_dir).expect_err("nothing to fold");
+    assert!(again.what.contains("nothing to fold"), "got: {again}");
+}
+
 /// A second generation of the SAME table (same ns, new number): the directory outlives the
 /// build, so a drain that stops at one generation would advance the position and report
 /// success while leaving the newer rows unexported.
