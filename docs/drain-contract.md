@@ -130,8 +130,27 @@ Two things it is NOT:
   and needs the store; this one reads the exported directory and needs nothing from the
   application.
 
-A table with one file is already its own current state and is left alone — folding again
-would only churn the log without changing what a reader sees.
+A table is folded when the fold would CHANGE it: several files, or one file that still holds
+`del` rows or a key written twice. One file with one op per key already is its own current
+state and is left alone.
+
+The drain can do this on its own: `DrainConfig.fold` (CLI `--fold-after-files N` /
+`--fold-after-bytes B`) folds a table after its windows are committed, once its change files
+pass the threshold. The fold runs AFTER the commit, never inside a window, so the half-commit
+rule that guards a window does not cover it — and a fold that fails fails the run rather than
+leaving a table that looks folded and is not.
+
+A folded row is the document's two halves from wherever they were last written: the declared
+columns from the last `put`, the open fields from the last row that carried any. A later `put`
+does not erase the open half of the row before it, and `okm_op` becomes `put` (or `put_open`
+when the key never had a full row). One limit is stated rather than papered over: if two
+windows each wrote open fields for one key, folding would have to merge two `variant` blobs,
+which this reader does not decode — it refuses, and a drain with a fold policy counts that as
+`fold-skipped` instead of failing, because the table is fine and only the fold is not.
+
+A `remove` action drops a file from the TABLE; it does not delete bytes. Replaced files stay
+in `data/` for anyone reading an older version, and reclaiming them is a vacuum — a separate
+question (how long history is kept) this writer does not answer yet.
 
 ## Not part of the contract
 

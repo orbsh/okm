@@ -61,6 +61,8 @@ fn run() -> Result<i32, String> {
     let mut consumer = String::from("default");
     let mut max_segments = 16usize;
     let mut table: Option<String> = None;
+    let mut fold_after_files: usize = 0;
+    let mut fold_after_bytes: u64 = 0;
 
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
@@ -75,10 +77,21 @@ fn run() -> Result<i32, String> {
                     .parse()
                     .map_err(|_| "--max-segments takes a number".to_string())?
             }
+            "--fold-after-files" => {
+                fold_after_files = value()?
+                    .parse()
+                    .map_err(|_| "--fold-after-files takes a number".to_string())?
+            }
+            "--fold-after-bytes" => {
+                fold_after_bytes = value()?
+                    .parse()
+                    .map_err(|_| "--fold-after-bytes takes a number".to_string())?
+            }
             "-h" | "--help" => {
                 println!(
                     "okm-parquet --root <log dir> --out <lake dir> [--consumer NAME] \
-                     [--max-segments N] [--table <hex header>]"
+                     [--max-segments N] [--table <hex header>] \
+                     [--fold-after-files N] [--fold-after-bytes B]"
                 );
                 return Ok(0);
             }
@@ -92,6 +105,12 @@ fn run() -> Result<i32, String> {
         consumer,
     );
     cfg.max_segments = max_segments;
+    if fold_after_files > 0 || fold_after_bytes > 0 {
+        cfg.fold = Some(okm_parquet::FoldPolicy {
+            after_files: fold_after_files,
+            after_bytes: fold_after_bytes,
+        });
+    }
 
     let report = match table {
         // One table, named by the header in hex — the directory name, which IS the
@@ -109,13 +128,16 @@ fn run() -> Result<i32, String> {
         println!("{}", file.display());
     }
     println!(
-        "tables {}, segments {}, rows {}, deletes {}, segment-only {}, derived-deletes {}",
+        "tables {}, segments {}, rows {}, deletes {}, segment-only {}, derived-deletes {}, \
+         folds {}, fold-skipped {}",
         report.tables,
         report.segments,
         report.rows,
         report.deletes,
         report.open_fields,
-        report.derived_deletes
+        report.derived_deletes,
+        report.folds,
+        report.fold_skipped
     );
     Ok(0)
 }

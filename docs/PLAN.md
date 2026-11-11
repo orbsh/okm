@@ -2333,8 +2333,17 @@ panic lints allowed only in the places it names. So the runtime half of
       (a) **a ROW-level removal** — a deletion vector over an untouched file, which needs to
       know which file and which row hold a key: a key→file index (or one row per file). Until
       then a removal is expressed either as a change row or as a whole-file replacement.
-      (b) **incremental convergence** — folding today rewrites the whole table; folding only the
-      files a window touched is the same mechanism with an index and a threshold, not a new one.
+      (b) **incremental convergence** — the trigger side is landed (`DrainConfig.fold`: fold once
+      the change files pass a count or a byte threshold), the work side is not: a fold still
+      rewrites the whole table. Folding only the files a window touched needs a key→file index
+      (per-file key bounds) and is the same mechanism with a smaller candidate set.
+      (b2) **vacuum** — a `remove` drops a file from the table, not from disk; reclaiming the
+      bytes means answering "how much history does a reader keep", which is a retention
+      decision before it is a verb.
+      (b3) **merging two windows of open fields** — a fold takes the declared half from the last
+      `put` and the open half from the last row that carried any, so a document whose open
+      fields were written by two windows cannot be folded (refused, `fold-skipped`). Stating
+      the union means decoding and re-encoding the `variant` blob, which is a codec of its own.
       (c) partitioning and file-size targets (one window = one file = one log version).
       `okm_parquet::delta` stays a zero-dependency log encoder, so anything that outgrows it
       splits off by measurement rather than by default. `okm_dynamic::arrow` covers the

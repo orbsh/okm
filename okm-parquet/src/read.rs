@@ -14,7 +14,7 @@
 //! batches. Folding is the sink-side half of the pair ADR-0058 names — expressing a removal
 //! as table STATE (a Delta `remove` action over whole files) rather than as a change row.
 
-use arrow::array::{Array, ArrayRef, RecordBatch, StringArray, UInt32Array};
+use arrow::array::{Array, ArrayRef, RecordBatch, StringArray, StructArray, UInt32Array};
 use arrow::compute::{concat_batches, take};
 use arrow::row::{RowConverter, SortField};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
@@ -29,11 +29,24 @@ use crate::delta;
 #[derive(Debug)]
 pub struct ReadError {
     pub what: String,
+    /// True when the TABLE is fine and this FOLD is not — the answer a caller that folds on
+    /// a policy needs, because a table that cannot be folded must not stop the drain.
+    pub refused: bool,
 }
 
 impl ReadError {
     fn new(what: impl Into<String>) -> Self {
-        Self { what: what.into() }
+        Self {
+            what: what.into(),
+            refused: false,
+        }
+    }
+
+    fn refused(what: impl Into<String>) -> Self {
+        Self {
+            what: what.into(),
+            refused: true,
+        }
     }
 }
 
@@ -73,7 +86,10 @@ pub type Result<T> = std::result::Result<T, ReadError>;
 
 /// The op names a change row carries (ADR-0058 § Amendment). Re-exported from the writer's
 /// constants so a reader and a writer cannot drift apart.
-pub use crate::OKM_DEL;
+pub use crate::{OKM_DEL, OKM_PUT, OKM_PUT_OPEN};
+
+/// The export's open-fields column: one `variant` cell per row (ADR-0045 §4).
+const OPEN_FIELDS_COLUMN: &str = "variant";
 
 /// Which columns are the table's key, in the order the log's schema states them.
 ///
@@ -169,6 +185,12 @@ fn batches_in_order(table_dir: &Path) -> Result<Vec<RecordBatch>> {
 /// that is what current state means, and the change history is still in the log for anyone
 /// who asks the question the other way round.
 pub fn current_state(table_dir: &Path) -> Result<RecordBatch> {
+    Ok(state_and_total(table_dir)?.0)
+}
+
+/// The same answer, plus how many change rows the files hold — the number a fold compares
+/// itself against to decide whether there is anything to fold.
+fn state_and_total(table_dir: &Path) -> Result<(RecordBatch, usize)> {
     let raw = batches_in_order(table_dir)?;
     // Files of one table do not have to be column-for-column identical: a window with no
     // open fields has no `variant` column. The table's schema is the union, and a file that
@@ -203,9 +225,20 @@ pub fn current_state(table_dir: &Path) -> Result<RecordBatch> {
         .collect();
     let converter = RowConverter::new(key_fields)?;
 
-    // Last op wins: walking files in log order and rows in file order means the map holds
-    // the newest op for every key when the walk ends.
-    let mut newest: HashMap<Vec<u8>, (usize, bool)> = HashMap::new();
+    // Per key, which row states what. Walking files in log order and rows in file order
+    // means the last row for a key is the newest op: that is what decides whether the key
+    // is still there. What it CARRIES is not so simple — a `put_open` row states the open
+    // fields and nothing else, so the declared columns come from the last `put` and the open
+    // half from the last row that carried any.
+    struct Winner {
+        last_op: String,
+        order: usize,
+        put: Option<usize>,
+        open: Option<usize>,
+        opens: usize,
+    }
+    let mut newest: HashMap<Vec<u8>, Winner> = HashMap::new();
+    let open_at = schema.index_of(OPEN_FIELDS_COLUMN).ok();
     let mut base = 0usize;
     for batch in &batches {
         let columns: Vec<ArrayRef> = key_names
@@ -222,35 +255,112 @@ pub fn current_state(table_dir: &Path) -> Result<RecordBatch> {
             .column_by_name("okm_op")
             .and_then(|c| c.as_any().downcast_ref::<StringArray>())
             .ok_or_else(|| ReadError::new("a file has no `okm_op` column"))?;
+        let opens = open_at.map(|at| batch.column(at).clone());
         for row in 0..batch.num_rows() {
-            let removed = ops.value(row) == OKM_DEL;
-            newest.insert(rows.row(row).as_ref().to_vec(), (base + row, removed));
+            let at = base + row;
+            let op = ops.value(row);
+            let entry = newest
+                .entry(rows.row(row).as_ref().to_vec())
+                .or_insert(Winner {
+                    last_op: String::new(),
+                    order: at,
+                    put: None,
+                    open: None,
+                    opens: 0,
+                });
+            entry.last_op = op.to_string();
+            if op == crate::OKM_PUT {
+                entry.put = Some(at);
+                entry.order = at;
+            }
+            let carries = opens
+                .as_ref()
+                .and_then(|c| c.as_any().downcast_ref::<StructArray>())
+                .is_some_and(|s| !s.is_null(row));
+            if carries {
+                entry.open = Some(at);
+                entry.opens += 1;
+                if entry.put.is_none() {
+                    entry.order = at;
+                }
+            }
         }
         base += batch.num_rows();
     }
 
-    // Keep the live ones, in the order they were written.
-    let mut live: Vec<usize> = newest
+    // Live rows, in the order their state was last written.
+    let mut live: Vec<(usize, Winner)> = newest
         .into_values()
-        .filter(|(_, removed)| !removed)
-        .map(|(at, _)| at)
+        .filter(|w| w.last_op != OKM_DEL)
+        .map(|w| (w.order, w))
         .collect();
-    live.sort_unstable();
+    live.sort_by_key(|(order, _)| *order);
+
+    // A row of open fields is one window's share of a document's open half. Two windows
+    // would have to be merged INSIDE the variant blob to state the document's whole open
+    // half, and this reader does not decode that blob — so it refuses rather than writing a
+    // fold that quietly drops the older window's fields.
+    let doubled = live.iter().filter(|(_, w)| w.opens > 1).count();
+    let rows = live.len();
 
     let joined = concat_batches(&schema, &batches)?;
-    let indices = UInt32Array::from(live.iter().map(|i| *i as u32).collect::<Vec<_>>());
-    let mut arrays: Vec<ArrayRef> = joined
-        .columns()
+    // Two index vectors: what the declared side says, and what the open side says.
+    let declared: Vec<u32> = live
         .iter()
-        .map(|c| take(c.as_ref(), &indices, None))
-        .collect::<std::result::Result<_, _>>()?;
-    if let Ok(at) = schema.index_of("okm_seq") {
-        // The sequence was a position in ITS file; the folded file has its own.
-        arrays[at] = std::sync::Arc::new(UInt32Array::from(
-            (0..live.len() as u32).collect::<Vec<_>>(),
-        ));
+        .map(|(_, w)| (w.put.unwrap_or(w.order)) as u32)
+        .collect();
+    let opens: Vec<u32> = live
+        .iter()
+        .map(|(_, w)| (w.open.unwrap_or(w.put.unwrap_or(w.order))) as u32)
+        .collect();
+    let declared = UInt32Array::from(declared);
+    let opens = UInt32Array::from(opens);
+    let (variant_at, okm_op_at, okm_slot_at, okm_seq_at) = (
+        schema.index_of(OPEN_FIELDS_COLUMN).ok(),
+        schema.index_of("okm_op").ok(),
+        schema.index_of("okm_slot").ok(),
+        schema.index_of("okm_seq").ok(),
+    );
+    let mut arrays: Vec<ArrayRef> = Vec::with_capacity(schema.fields().len());
+    for (at, column) in joined.columns().iter().enumerate() {
+        let picks = if Some(at) == variant_at {
+            &opens
+        } else {
+            &declared
+        };
+        arrays.push(take(column.as_ref(), picks, None)?);
     }
-    Ok(RecordBatch::try_new(schema, arrays)?)
+    if let Some(at) = okm_op_at {
+        // A row that outlived the fold is either a full row or open fields only.
+        let ops: Vec<&str> = live
+            .iter()
+            .map(|(_, w)| {
+                if w.put.is_some() {
+                    crate::OKM_PUT
+                } else {
+                    crate::OKM_PUT_OPEN
+                }
+            })
+            .collect();
+        arrays[at] = std::sync::Arc::new(StringArray::from(ops));
+    }
+    if let Some(at) = okm_slot_at {
+        // No removal survives a fold, so nothing names a face any more.
+        arrays[at] = arrow::array::new_null_array(schema.field(at).data_type(), rows);
+    }
+    if let Some(at) = okm_seq_at {
+        // The sequence was a position in ITS file; the folded file has its own.
+        arrays[at] = std::sync::Arc::new(UInt32Array::from((0..rows as u32).collect::<Vec<_>>()));
+    }
+    let batch = RecordBatch::try_new(schema, arrays)?;
+    if doubled > 0 {
+        return Err(ReadError::refused(format!(
+            "{}: {doubled} key(s) carry open fields written by more than one window, and a              fold cannot merge two variant blobs — it would drop the older window's fields",
+            table_dir.display()
+        )));
+    }
+    let total = raw.iter().map(RecordBatch::num_rows).sum();
+    Ok((batch, total))
 }
 
 /// What one fold did.
@@ -269,18 +379,20 @@ pub struct FoldReport {
 /// Replace a table's change files with ONE file of its current state (ADR-0058 § Amendment:
 /// the sink half, stated as a `remove` action over whole files).
 ///
-/// Two files have to exist for a table to be worth folding — one file already IS the current
-/// state of what it holds, duplicates included, and rewriting it would only churn the log.
+/// A fold is worth doing when it CHANGES the table: several files, or one file that still
+/// holds removals or a key written twice. One file with one op per key already IS its own
+/// current state, and rewriting it would only churn the log — so that is refused, with which
+/// of the two cases it is.
 pub fn condense(table_dir: &Path) -> Result<FoldReport> {
     let files = delta::files_in_order(table_dir)?;
-    if files.len() < 2 {
-        return Err(ReadError::new(format!(
-            "{}: one file, nothing to fold",
+    let keys = key_columns(table_dir)?;
+    let (batch, changes) = state_and_total(table_dir)?;
+    if files.len() < 2 && changes == batch.num_rows() {
+        return Err(ReadError::refused(format!(
+            "{}: one file holding one op per key, nothing to fold",
             table_dir.display()
         )));
     }
-    let keys = key_columns(table_dir)?;
-    let batch = current_state(table_dir)?;
 
     let hex = table_dir
         .file_name()

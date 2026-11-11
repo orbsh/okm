@@ -101,6 +101,42 @@ impl From<parquet::errors::ParquetError> for DrainError {
 
 pub type Result<T> = std::result::Result<T, DrainError>;
 
+/// When a drained table is worth folding into one current-state file (ADR-0058 § Amendment).
+///
+/// A fold is O(table), so a service should not do it per window: it fires when the change
+/// files have piled up — by count, by bytes, or both (`0` disables one of them). What it
+/// buys is a reader that does not have to replay every change row of every window.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FoldPolicy {
+    /// Fold when the table holds at least this many change files (`0`: never by count).
+    pub after_files: usize,
+    /// …or when those files add up to at least this many bytes (`0`: never by size).
+    pub after_bytes: u64,
+}
+
+impl FoldPolicy {
+    /// Fold every `n` change files.
+    pub fn files(n: usize) -> Self {
+        Self {
+            after_files: n,
+            after_bytes: 0,
+        }
+    }
+
+    /// Fold once the change files pass `n` bytes.
+    pub fn bytes(n: u64) -> Self {
+        Self {
+            after_files: 0,
+            after_bytes: n,
+        }
+    }
+
+    fn met(&self, files: usize, bytes: u64) -> bool {
+        (self.after_files > 0 && files >= self.after_files)
+            || (self.after_bytes > 0 && bytes >= self.after_bytes)
+    }
+}
+
 /// Where windows go, who is reading, and how many segments one window may hold.
 ///
 /// `max_segments` is the ONE knob ADR-0045 §17 leaves to the drainer: a window is
@@ -113,6 +149,10 @@ pub struct DrainConfig {
     /// at different positions are two positions, not a disagreement.
     pub consumer: String,
     pub max_segments: usize,
+    /// Fold a table into one current-state file when its change files pile up. `None` (the
+    /// default) leaves the table alone: a caller that wants current state on demand runs
+    /// `okm-parquet condense` instead.
+    pub fold: Option<FoldPolicy>,
 }
 
 impl DrainConfig {
@@ -121,6 +161,7 @@ impl DrainConfig {
             out_dir: out_dir.into(),
             consumer: consumer.into(),
             max_segments: 16,
+            fold: None,
         }
     }
 
@@ -154,6 +195,12 @@ pub struct Report {
     pub files: Vec<PathBuf>,
     /// Delta commits written (one per table that produced a window).
     pub metadata: usize,
+    /// Tables folded into one current-state file by the drain's fold policy.
+    pub folds: usize,
+    /// Tables the policy found nothing to do for — already current, or a fold this reader
+    /// refuses (open fields written by more than one window). The table is untouched and
+    /// the drain is not in error.
+    pub fold_skipped: usize,
 }
 
 /// What one window file holds, written beside it (`<same stem>.manifest.json`).
@@ -200,10 +247,7 @@ pub fn drain(root: &Path, cfg: &DrainConfig) -> Result<Report> {
 pub fn drain_table(dir: &Path, cfg: &DrainConfig, report: &mut Report) -> Result<()> {
     report.tables += 1;
     let table = window::file_name(dir);
-    loop {
-        let Some(win) = window::read_window(dir, &cfg.window_for(&table)?)? else {
-            return Ok(());
-        };
+    while let Some(win) = window::read_window(dir, &cfg.window_for(&table)?)? {
         if win.rows.is_empty()
             && win.dynamic.is_empty()
             && !win
@@ -217,9 +261,49 @@ pub fn drain_table(dir: &Path, cfg: &DrainConfig, report: &mut Report) -> Result
             // run for ever. A window holding only a REMOVAL is not this case: a change
             // table states it (ADR-0058), and the loop must take it.
             report.segments += win.segments.len();
-            return Ok(());
+            break;
         }
         drain_one(cfg, report, &win)?;
+    }
+    maybe_fold(cfg, &table, report)
+}
+
+/// Fold the table if the policy says its change files have piled up.
+///
+/// Runs after the windows are committed, never inside one: a fold is a replacement of files a
+/// reader can already see, so it must not be part of the half-commit rule that guards a
+/// window. A table below the threshold (or already folded) is left exactly as it is.
+fn maybe_fold(cfg: &DrainConfig, table: &str, report: &mut Report) -> Result<()> {
+    let Some(policy) = cfg.fold else {
+        return Ok(());
+    };
+    let table_dir = cfg.out_dir.join(table);
+    if !table_dir.join("_delta_log").is_dir() {
+        return Ok(());
+    }
+    let files =
+        delta::files_in_order(&table_dir).map_err(|e| DrainError::new(format!("delta: {e}")))?;
+    let bytes: u64 = files
+        .iter()
+        .filter_map(|rel| std::fs::metadata(table_dir.join(rel)).ok())
+        .map(|m| m.len())
+        .sum();
+    if !policy.met(files.len(), bytes) {
+        return Ok(());
+    }
+    match crate::read::condense(&table_dir) {
+        Ok(_) => {
+            report.folds += 1;
+            Ok(())
+        }
+        // The table is fine and this fold is not: already current, or state this reader
+        // cannot compress without dropping something (two windows of open fields). A policy
+        // skips it and keeps draining; only a broken table stops the run.
+        Err(e) if e.refused => {
+            report.fold_skipped += 1;
+            Ok(())
+        }
+        Err(e) => Err(DrainError::new(e.what)),
     }
 }
 

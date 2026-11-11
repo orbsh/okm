@@ -144,7 +144,10 @@ Three consequences, all deliberate:
    (`read::current_state`, identity from the `okm.key` metadata) — but no key→file index,
    because a fold replaces whole files. A ROW-level removal (a deletion vector over an
    untouched file) would need exactly that index, or one row per file; it stays owed, and so
-   does partitioning. A change row still needs neither, and it is what a CDC consumer asks
+   does partitioning. Folding a document whose halves were written by different windows works
+   because a row is assembled column-group by column-group (declared from the last `put`, open
+   fields from the last row that carried them); two separate `variant` blobs for one key are
+   refused, since merging them is a codec this reader does not have. A change row still needs neither, and it is what a CDC consumer asks
    for anyway.
 3. **The schema is constant per table.** These columns appear on every window of every
    table, carrying `put` / null / 0 where nothing else applies: a schema that shows up only

@@ -951,6 +951,235 @@ fn a_fold_replaces_the_change_files_with_current_state() {
     assert!(again.what.contains("nothing to fold"), "got: {again}");
 }
 
+/// One window can hold a removal, and then ONE file is worth folding: a single file with one
+/// op per key already is current state, but one that carries `del` rows or a key written
+/// twice is not.
+#[test]
+fn a_single_file_with_removals_is_foldable() {
+    let root = tempfile::tempdir().expect("root");
+    let out = tempfile::tempdir().expect("lake");
+    {
+        let c = collection(root.path());
+        c.put(
+            &K1,
+            &R {
+                level: 3,
+                name: "alpha".into(),
+            },
+        )
+        .expect("put");
+        c.put(
+            &K2,
+            &R {
+                level: 4,
+                name: "beta".into(),
+            },
+        )
+        .expect("put");
+        assert!(c.purge(&K1).expect("purge"), "the row existed");
+    }
+    let report = drain(root.path(), &DrainConfig::new(out.path(), "test")).expect("drain");
+    assert_eq!(report.files.len(), 1, "one window, one file");
+    let table_dir = report.files[0]
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .to_path_buf();
+
+    let fold =
+        okm_parquet::read::condense(&table_dir).expect("three change rows are worth folding");
+    assert_eq!(fold.replaced, 1);
+    assert_eq!(fold.rows, 1, "K2 is the only live key");
+
+    let after = okm_parquet::read::current_state(&table_dir).expect("current state");
+    assert_eq!(after.num_rows(), 1);
+    // And with one op per key, the same file is left alone next time.
+    let again = okm_parquet::read::condense(&table_dir).expect_err("nothing left to fold");
+    assert!(again.what.contains("nothing to fold"), "got: {again}");
+}
+
+/// A drain can keep the lake current on its own: the policy fires once the change files pile
+/// up, and a table below the threshold is left exactly as it was.
+#[test]
+fn a_drain_folds_the_table_when_the_policy_says_so() {
+    let root = tempfile::tempdir().expect("root");
+    let out = tempfile::tempdir().expect("lake");
+
+    {
+        let c = collection(root.path());
+        c.put(
+            &K1,
+            &R {
+                level: 3,
+                name: "alpha".into(),
+            },
+        )
+        .expect("put");
+    }
+    let first = drain(root.path(), &DrainConfig::new(out.path(), "test")).expect("first window");
+    assert_eq!(first.folds, 0, "no policy, no fold");
+
+    {
+        let c = collection(root.path());
+        c.put(
+            &K2,
+            &R {
+                level: 4,
+                name: "beta".into(),
+            },
+        )
+        .expect("put");
+    }
+    // Two files is the threshold: this drain writes the second and folds both.
+    let mut cfg = DrainConfig::new(out.path(), "test");
+    cfg.fold = Some(okm_parquet::FoldPolicy::files(2));
+    let second = drain(root.path(), &cfg).expect("second window");
+    assert_eq!(second.folds, 1, "the policy fired");
+
+    let table_dir = second.files[0]
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    // The LOG is the truth: a replaced file leaves the table through a `remove` action, and
+    // the bytes stay on disk for time travel (dropping those is a vacuum, which this writer
+    // does not have yet).
+    let live = okm_parquet::delta::files_in_order(&table_dir).expect("the log's files");
+    assert_eq!(live.len(), 1, "one current-state file: {live:?}");
+    assert!(
+        live[0].contains("-fold-"),
+        "and it is the folded one: {live:?}"
+    );
+    let state = okm_parquet::read::current_state(&table_dir).expect("current state");
+    assert_eq!(state.num_rows(), 2, "both keys are live");
+
+    // A threshold above the current size does nothing.
+    let mut high = DrainConfig::new(out.path(), "test");
+    high.fold = Some(okm_parquet::FoldPolicy::files(9));
+    let third = drain(root.path(), &high).expect("nothing new to drain");
+    assert_eq!(third.folds, 0);
+}
+
+/// A fold keeps BOTH halves of a document: the declared columns from the window that last
+/// wrote a row, and the open fields from the window that last wrote those — a `put` in a
+/// later window does not erase the open half of the row before it.
+#[test]
+fn a_fold_keeps_open_fields_written_by_an_earlier_window() {
+    let root = tempfile::tempdir().expect("root");
+    let out = tempfile::tempdir().expect("lake");
+    {
+        let c = collection(root.path());
+        c.put(
+            &K1,
+            &R {
+                level: 3,
+                name: "alpha".into(),
+            },
+        )
+        .expect("put");
+        let mut open = std::collections::BTreeMap::new();
+        open.insert(
+            "note".to_string(),
+            okm_core::model::obj_dynamic::DynamicValue::Str("first".to_string()),
+        );
+        c.merge(&K1, &open).expect("an open field");
+    }
+    drain(root.path(), &DrainConfig::new(out.path(), "test")).expect("first window");
+
+    {
+        let c = collection(root.path());
+        c.put(
+            &K1,
+            &R {
+                level: 7,
+                name: "alpha2".into(),
+            },
+        )
+        .expect("put");
+    }
+    let second = drain(root.path(), &DrainConfig::new(out.path(), "test")).expect("second window");
+    let table_dir = second.files[0]
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .to_path_buf();
+
+    let fold = okm_parquet::read::condense(&table_dir).expect("fold");
+    assert_eq!(fold.replaced, 2);
+    assert_eq!(fold.rows, 1);
+
+    let state = okm_parquet::read::current_state(&table_dir).expect("current state");
+    assert_eq!(state.num_rows(), 1);
+    let level = state
+        .column_by_name("level")
+        .and_then(|c| c.as_any().downcast_ref::<arrow::array::UInt32Array>())
+        .expect("level");
+    assert_eq!(level.value(0), 7, "the declared half is the newest row");
+    let variant = state
+        .column_by_name("variant")
+        .and_then(|c| c.as_any().downcast_ref::<arrow::array::StructArray>())
+        .expect("variant");
+    assert!(
+        !variant.is_null(0),
+        "the open half came from the earlier window instead of being dropped"
+    );
+    let ops = state
+        .column_by_name("okm_op")
+        .and_then(|c| c.as_any().downcast_ref::<arrow::array::StringArray>())
+        .expect("okm_op");
+    assert_eq!(
+        ops.value(0),
+        "put",
+        "a folded row states a row, not a change"
+    );
+}
+
+/// Two windows writing open fields for one key cannot be folded: stating the document's open
+/// half would mean merging two variant blobs, and a fold that silently kept the newer one
+/// would drop the older window's fields. Refused, and the refusal is a kind a fold POLICY can
+/// skip instead of failing the drain.
+#[test]
+fn a_fold_refuses_open_fields_from_two_windows() {
+    let root = tempfile::tempdir().expect("root");
+    let out = tempfile::tempdir().expect("lake");
+    for (field, value) in [("note", "first"), ("tag", "second")] {
+        let c = collection(root.path());
+        c.put(
+            &K1,
+            &R {
+                level: 3,
+                name: "alpha".into(),
+            },
+        )
+        .expect("put");
+        let mut open = std::collections::BTreeMap::new();
+        open.insert(
+            field.to_string(),
+            okm_core::model::obj_dynamic::DynamicValue::Str(value.to_string()),
+        );
+        c.merge(&K1, &open).expect("an open field");
+        drop(c);
+        drain(root.path(), &DrainConfig::new(out.path(), "test")).expect("a window");
+    }
+
+    let mut dirs: Vec<_> = std::fs::read_dir(out.path())
+        .expect("lake")
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.join("_delta_log").is_dir())
+        .collect();
+    let table_dir = dirs.pop().expect("one table");
+
+    let refused = okm_parquet::read::condense(&table_dir).expect_err("refused");
+    assert!(refused.refused, "a policy may skip this: {refused}");
+    assert!(
+        refused.what.contains("more than one window"),
+        "and it says why: {refused}"
+    );
+}
+
 /// A second generation of the SAME table (same ns, new number): the directory outlives the
 /// build, so a drain that stops at one generation would advance the position and report
 /// success while leaving the newer rows unexported.
