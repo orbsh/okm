@@ -104,6 +104,24 @@ pub enum Error {
     /// a commit-shaped event only.
     #[error("{0}")]
     Engine(String),
+    /// One ns holds one table, and the store already carries a different name at
+    /// this ns. Two declarations sharing an ns share every face, every vocabulary
+    /// cursor and the meta row itself, so the second claim is refused at attach
+    /// instead of being half-served.
+    ///
+    /// The compile-time check (a name per ns, `E0428`) covers one module; this one
+    /// covers the store, which is where declarations from different modules and
+    /// different crates actually meet.
+    #[error(
+        "ns {ns} is already claimed by table `{existing}`; this declaration is `{declared}`. \
+         One namespace is one table: give the second table its own ns, or mark the \
+         second declaration #[ok_shared_ns] if the two are generations of one table"
+    )]
+    TableNameTaken {
+        ns: u16,
+        declared: String,
+        existing: String,
+    },
     /// The change log could not be opened or read (ADR-0045). Deliberately NOT
     /// on the write path: a log that cannot be appended records itself in
     /// `Collection::changelog_status` instead, because the write it describes is

@@ -61,8 +61,13 @@ fn the_stamp_lives_at_the_highest_fixed_face_with_no_suffix() {
     assert_eq!(stamped_row.faces(), Some(MetaRow::FACES));
     assert_eq!(
         stamped_row.iter().map(|(n, _)| n).collect::<Vec<_>>(),
-        vec!["faces"],
-        "one name, the runtime's own, and nothing else"
+        vec!["faces", "table"],
+        "the runtime's fingerprint and the table's own name, nothing else"
+    );
+    assert_eq!(
+        stamped_row.table_name(),
+        Some("meta_probe"),
+        "the name is what makes one ns answerable to one table"
     );
 
     // A row an app wrote itself — one caller name, no fingerprint — parses, and its
@@ -102,8 +107,8 @@ fn a_second_name_rides_beside_the_stamp() {
     assert_eq!(after.get("build"), Some(&b"20261028"[..]));
     assert_eq!(
         after.iter().map(|(n, _)| n).collect::<Vec<_>>(),
-        vec!["build", "faces"],
-        "the caller's map plus the runtime's one name"
+        vec!["build", "faces", "table"],
+        "the caller's map plus the two names the runtime owns"
     );
     let stored = table.meta().unwrap().unwrap();
     assert_eq!(stored, after);
@@ -171,4 +176,82 @@ fn the_meta_payload_survives_a_hand_written_row() {
     assert_eq!(meta.get("alpha"), Some(&[1u8, 2][..]));
     assert_eq!(meta.get("beta"), Some(&[][..]), "an empty value is a value");
     assert_eq!(meta.faces(), None, "no fingerprint name in this row");
+}
+
+/// ns 92: two tables that share a namespace. The compile-time claim stops at one
+/// module and `#[ok_shared_ns]` silences it on purpose, so this is exactly the
+/// case only the STORE can refuse — the two declarations would otherwise share
+/// every face, cursor and this meta row.
+#[derive(DocumentEncode, Clone, PartialEq, Debug)]
+#[ok_ref(MetaKey)]
+#[ok_ns(92)]
+#[ok_name("alpha")]
+pub struct Alpha {
+    pub label: String,
+}
+
+#[derive(DocumentEncode, Clone, PartialEq, Debug)]
+#[ok_ref(MetaKey)]
+#[ok_ns(92)]
+#[ok_shared_ns]
+#[ok_name("beta")]
+pub struct Beta {
+    pub label: String,
+}
+
+/// ns 93, unnamed: `#[ok_name]` absent means nothing to claim and nothing to check.
+#[derive(DocumentEncode, Clone, PartialEq, Debug)]
+#[ok_ref(MetaKey)]
+#[ok_ns(93)]
+pub struct Nameless {
+    pub label: String,
+}
+
+#[test]
+fn two_tables_in_one_ns_cannot_both_attach() {
+    let store = TestStore::default();
+    let alpha = <Alpha as Document>::collection(store.clone());
+    let beta = <Beta as Document>::collection(store.clone());
+
+    alpha.ensure_layout().unwrap();
+    match beta.ensure_layout() {
+        Err(okm_core::Error::TableNameTaken {
+            ns,
+            declared,
+            existing,
+        }) => {
+            assert_eq!(ns, 92);
+            assert_eq!(declared, "beta");
+            assert_eq!(existing, "alpha");
+        }
+        other => panic!("expected TableNameTaken, got {other:?}"),
+    }
+
+    // The refused declaration left the row alone: the first table still owns the ns.
+    let stored = alpha.meta().unwrap().unwrap();
+    assert_eq!(stored.table_name(), Some("alpha"));
+    assert_eq!(stored.faces(), Some(Alpha::FACES));
+}
+
+#[test]
+fn the_same_table_attaches_twice() {
+    let store = TestStore::default();
+    <Alpha as Document>::collection(store.clone())
+        .ensure_layout()
+        .unwrap();
+    let second = <Alpha as Document>::collection(store.clone())
+        .ensure_layout()
+        .unwrap();
+    assert_eq!(second.table_name(), Some("alpha"));
+    assert_eq!(second.faces(), Some(Alpha::FACES));
+}
+
+#[test]
+fn an_unnamed_table_records_no_name() {
+    let store = TestStore::default();
+    let meta = <Nameless as Document>::collection(store.clone())
+        .ensure_layout()
+        .unwrap();
+    assert_eq!(meta.table_name(), None, "no name, no claim");
+    assert_eq!(meta.faces(), Some(Nameless::FACES));
 }

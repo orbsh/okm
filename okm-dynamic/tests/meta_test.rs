@@ -113,12 +113,45 @@ fn a_caller_name_rides_beside_the_fingerprint() {
     let stamped = table.ensure_layout().unwrap();
     assert_eq!(stamped.faces(), Some(MetaRow::FACES));
 
-    // `set_meta` then adds the caller's name BESIDE it — the runtime keeps no name of
-    // its own in here any more.
+    // `set_meta` then adds the caller's name BESIDE it, next to the two names the
+    // runtime owns (the fingerprint and the table's own name).
     let after = table.set_meta("build", b"20261030".to_vec()).unwrap();
     assert_eq!(after.get("build"), Some(&b"20261030"[..]));
     assert_eq!(after.faces(), Some(MetaRow::FACES));
     assert_eq!(table.meta().unwrap(), Some(after.clone()));
+}
+
+#[test]
+fn a_second_name_at_one_ns_is_refused() {
+    // Two runtime declarations of ns 92 with DIFFERENT names: the store, not the
+    // compiler, is where they meet (a derive sees one module; a host declares these
+    // at runtime, so nothing sees them together at all).
+    let store = TestStore::default();
+    let first = DynamicCollection::new(
+        store.clone(),
+        92,
+        CollectionSchema::of::<MetaKey, MetaRow>(),
+        Vec::new(),
+    );
+    first.ensure_layout().unwrap();
+
+    let mut renamed = CollectionSchema::of::<MetaKey, MetaRow>();
+    renamed.name = "another_table".into();
+    let second = DynamicCollection::new(store.clone(), 92, renamed, Vec::new());
+
+    let err = second.ensure_layout().unwrap_err();
+    assert!(
+        err.contains("already claimed by table `dynamic_meta_probe`")
+            && err.contains("another_table")
+            && err.contains("ns 92"),
+        "the message names the ns and both tables: {err}"
+    );
+
+    // The refused declaration left the row as the first one stamped it.
+    assert_eq!(
+        first.meta().unwrap().unwrap().table_name(),
+        Some("dynamic_meta_probe")
+    );
 }
 
 #[test]

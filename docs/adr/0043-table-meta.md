@@ -72,6 +72,16 @@ that names both numbers, instead of a decode failure on the first row. Nothing i
 read through the meta row, nothing is migrated, and no old shape becomes readable
 because of it.
 
+**7. The table's own name is recorded here, and one ns is one table.** The row
+gains `table` → the declaration's `#[ok_name]`, written by the same first-touch
+verb, and a row that already names a DIFFERENT table at this ns is a refusal
+(`TableNameTaken`) rather than a second tenant: two tables in one ns would share
+every face, the vocabulary cursors and this row itself. This is the store-side
+half of the ns claim, and it exists because the compile-time half cannot leave a
+module — the derive emits a name per ns (`E0428` on a duplicate), but it
+sees one item, so tables declared in other modules or other crates meet nowhere
+except here. Unnamed declarations write nothing and check nothing.
+
 ## Consequences
 
 - **One point read per table at attach; nothing on the write path, nothing per

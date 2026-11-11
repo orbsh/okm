@@ -134,7 +134,7 @@ pub struct User {
 
 - `#[ok_ref(UserKey)]`——行挂到哪个主键上；身份归 key，业务维度归行。
 - `#[ok_ns(1)]`——表的命名空间段，声明在**行上**（行是表的声明点：`#[ok_ref]`
-已把 key 类型钉死，行完全决定 `Collection<S, K, R>`）。key 类型不带 ns——同一个key 形状可以合法服务多个行/表，各挂各的 ns 号。`Collection::new(store)` 不收 ns参数，拼装点只选 engine。关系表自己声明 ns，和任何文档集合一样。它是**必需的**：不写就不编译，因为没有 ns 的表在键空间里没有自己的位置，它的键会落到别人写过的地方。而且**一个 ns 只对应一个行**：derive 会发出一个名字里带 ns 的标记类型，同模块里第二个行声明同一个 ns 就是编译错误（`the name okm_ns_7_is_unique is defined multiple times`）。例外要写出来而不是默认——在第二处声明上加 `#[ok_shared_ns]`，用于代次对（同一张表在布局变更前后的两个声明，ADR-0056）。
+已把 key 类型钉死，行完全决定 `Collection<S, K, R>`）。key 类型不带 ns——同一个key 形状可以合法服务多个行/表，各挂各的 ns 号。`Collection::new(store)` 不收 ns参数，拼装点只选 engine。关系表自己声明 ns，和任何文档集合一样。它是**必需的**：不写就不编译，因为没有 ns 的表在键空间里没有自己的位置，它的键会落到别人写过的地方。而且**一个 ns 只对应一个行**：derive 会发出一个名字里带 ns 的标记常量，同模块里第二个行声明同一个 ns 就是编译错误（`the name __OKM_NS_7_IS_UNIQUE is defined multiple times`）。例外要写出来而不是默认——在第二处声明上加 `#[ok_shared_ns]`，用于代次对（同一张表在布局变更前后的两个声明，ADR-0056）。这项检查出不了模块，而表可以声明在另一个模块里，所以 store 也会查：首次触碰时在这个 ns 上记下表的 `#[ok_name]`，那里已经坐着另一个名字就点名拒绝（ADR-0043）。
 - `fields(...)`——排序/分组的 payload 字段，按声明序，首位 = 分组维度。
 - `includes(...)`——覆盖索引，复制 payload 字段进 entry value（上文「覆盖索引克制」）。
 - `key(...)`——把 entry 尾部携带的主键截断到命名子集（默认取满）。截断改变的是行级唯一性，不是分组：`fields` 前缀驱动排序，key 尾段区分行；`key(user_id)` 仅在命名子集对每行唯一时才安全，否则行会互相覆盖 entry。

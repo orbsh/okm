@@ -36,6 +36,20 @@ use crate::model::wrappers::wire::{put_len, take_len};
 /// reads as untrusted — never as "this table has no faces".
 pub const FACES: &str = "faces";
 
+/// The table's own name (`#[ok_name("...")]`), recorded at first touch so the
+/// store can answer "is this ns already somebody's" without seeing another
+/// module's declarations.
+///
+/// This is the cross-module half of the ns claim. The derive catches a duplicate
+/// ns inside one module at compile time (`E0428`, a name per ns); a table declared
+/// in another module or another crate is invisible to it, but not to the store:
+/// two tables in one ns share this row, so the second name to arrive is a
+/// conflict rather than a silent second tenant.
+///
+/// Absent means "the store predates or never recorded a name", which is not a
+/// conflict — an unnamed declaration writes nothing and checks nothing.
+pub const TABLE: &str = "table";
+
 /// What a store's face stamp says about this build's declaration (ADR-0048).
 ///
 /// Three answers, not two, because they mean different things to a caller: a
@@ -100,6 +114,11 @@ impl TableMeta {
 
     pub fn iter(&self) -> impl Iterator<Item = (&str, &[u8])> {
         self.entries.iter().map(|(k, v)| (k.as_str(), v.as_slice()))
+    }
+
+    /// The table name this store records, if any (`#[ok_name]`).
+    pub fn table_name(&self) -> Option<&str> {
+        self.get(TABLE).and_then(|bytes| std::str::from_utf8(bytes).ok())
     }
 
     /// The stamped face fingerprint, if this row names one. A value of the wrong

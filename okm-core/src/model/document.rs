@@ -167,8 +167,32 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     /// call). It no longer compares a layout number: which generation wrote these
     /// bytes is the SEGMENT header's statement, checked where a log is opened
     /// (ADR-0042 as amended), and a store with no log has nothing to compare against.
+    ///
+    /// The table's NAME is recorded here too, and that is the store-side half of the
+    /// ns claim: a module cannot see another module's declarations, so the compile-time
+    /// check stops at the file, while two tables in one ns share this row and the
+    /// second name to arrive is refused. An unnamed table (`#[ok_name]` absent) writes
+    /// nothing and checks nothing.
     pub fn ensure_layout(&self) -> crate::error::Result<crate::model::meta::TableMeta> {
-        crate::model::meta::ensure_faces(&self.store, &self.header(), R::FACES)
+        let header = self.header();
+        let mut meta = crate::model::meta::ensure_faces(&self.store, &header, R::FACES)?;
+        if !R::TABLE_NAME.is_empty() {
+            match meta.table_name() {
+                Some(existing) if existing != R::TABLE_NAME => {
+                    return Err(crate::error::Error::TableNameTaken {
+                        ns: R::NS,
+                        declared: R::TABLE_NAME.to_string(),
+                        existing: existing.to_string(),
+                    });
+                }
+                Some(_) => {}
+                None => {
+                    meta.set(crate::model::meta::TABLE, R::TABLE_NAME.as_bytes().to_vec());
+                    crate::model::meta::write(&self.store, &header, &meta)?;
+                }
+            }
+        }
+        Ok(meta)
     }
 
     /// Whether this store's derived faces were built from THIS declaration

@@ -197,6 +197,37 @@ impl<S: VirtualStorage> DynamicCollection<S> {
         // answerable once the declaring process is gone. Drift detection stays the
         // fingerprint's job; this record is for the reader.
         let mut changed = false;
+
+        // The store-side half of the ns claim (the compile-time half is a name per ns,
+        // and only inside one module -- a derive cannot see the next module over). Two
+        // tables in one ns share this row, so the second name to arrive is a conflict
+        // rather than a second tenant that silently writes over the same faces.
+        if !self.schema.name.is_empty() {
+            match meta.table_name() {
+                Some(existing) if existing != self.schema.name => {
+                    // Decimal, because that is what the declaration writes
+                    // (`#[ok_ns(92)]`); the typed side's error says the same number.
+                    let ns = match self.ns.as_slice() {
+                        [hi, lo] => u16::from_be_bytes([*hi, *lo]) as u64,
+                        _ => 0,
+                    };
+                    return Err(format!(
+                        "ns {ns} is already claimed by table `{existing}`; this declaration is `{}`. \
+                         One namespace is one table: give the second table its own ns",
+                        self.schema.name
+                    ));
+                }
+                Some(_) => {}
+                None => {
+                    meta.set(
+                        okm_core::meta::TABLE,
+                        self.schema.name.as_bytes().to_vec(),
+                    );
+                    changed = true;
+                }
+            }
+        }
+
         for method in &self.indexes {
             if !matches!(method.kind, crate::AccessMethodKind::Path { .. }) {
                 continue;
