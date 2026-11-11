@@ -491,6 +491,7 @@ fn lower_name(document: &DocFunc) -> [String; 1] {
 }
 
 #[derive(DocumentEncode, Clone, PartialEq, Debug)]
+#[ok_shared_ns]
 #[ok_ref(DocKey)]
 #[ok_index(by_lower { func(lower_name) })]
 #[ok_ns(21)]
@@ -561,6 +562,7 @@ fn multi_entry_function_index_fans_out() {
     }
 
     #[derive(DocumentEncode, Clone, PartialEq, Debug)]
+    #[ok_shared_ns]
     #[ok_ref(DocKey)]
     #[ok_ns(21)]
     #[ok_index(by_tag { func(tokens) })]
@@ -988,6 +990,7 @@ pub struct NoteKey {
 }
 
 #[derive(DocumentEncode, Clone, PartialEq, Debug)]
+#[ok_shared_ns]
 #[ok_ref(NoteKey)]
 #[ok_index(by_note_author { fields(author_id), includes(rank, title) })]
 #[ok_ns(24)]
@@ -1070,6 +1073,7 @@ pub struct NamedKey {
 }
 
 #[derive(DocumentEncode, Clone, PartialEq, Debug)]
+#[ok_shared_ns]
 #[ok_ref(NamedKey)]
 #[ok_index(by_named_city { fields(city, name), includes(name) })]
 #[ok_ns(22)]

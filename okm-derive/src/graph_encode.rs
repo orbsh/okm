@@ -134,20 +134,11 @@ pub fn expand(input: syn::DeriveInput) -> syn::Result<TS2> {
     }
     let set_ident = quote::format_ident!("{}Node", name);
 
-    // One ns per listed table, read off that table's own declaration. `NS` is
-    // `None` only for a layout-only document: a member must be a collection, so
-    // that is a declaration error surfaced at compile time.
+    // One ns per listed table, read off that table's own declaration. The
+    // constant is not optional: a document without `#[ok_ns]` does not compile,
+    // so a member always names a collection and this cannot fail.
     let ns_items = tables.iter().map(|ty| {
-        quote! {
-            match <#ty as ::okm_core::Document>::NS {
-                ::core::option::Option::Some(ns) => ns,
-                ::core::option::Option::None => panic!(concat!(
-                    "ok_nodes: ",
-                    stringify!(#ty),
-                    " declares no #[ok_ns] — a member must be a collection"
-                )),
-            }
-        }
+        quote! { <#ty as ::okm_core::Document>::NS }
     });
 
     let key_ty: syn::Type = syn::parse_quote!(::okm_core::EdgeKey);

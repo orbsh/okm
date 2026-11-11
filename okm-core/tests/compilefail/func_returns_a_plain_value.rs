@@ -11,6 +11,7 @@ struct K {
 // 写第一条时才发现段里没有东西。
 #[derive(DocumentEncode, Clone, PartialEq, Debug)]
 #[ok_ref(K)]
+#[ok_ns(401)]
 #[ok_index(by_name { func(lower) })]
 struct Doc {
     name: String,

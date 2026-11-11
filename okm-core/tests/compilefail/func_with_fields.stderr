@@ -1,5 +1,5 @@
 error: ok_index[bad]: func(...) and fields/includes are exclusive — the function result IS the sort segment
-  --> tests/compilefail/func_with_fields.rs:12:12
+  --> tests/compilefail/func_with_fields.rs:13:12
    |
-12 | #[ok_index(bad { fields(name), func(lower) })]
+13 | #[ok_index(bad { fields(name), func(lower) })]
    |            ^^^

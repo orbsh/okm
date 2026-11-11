@@ -9,6 +9,7 @@ struct K2 {
 // 变长字段（String）之后的定宽字段无法定位（无静态宽度），编译期拒绝。
 #[derive(DocumentEncode, Clone, PartialEq, Debug)]
 #[ok_ref(K2)]
+#[ok_ns(404)]
 #[ok_index(bad_order { fields(name, city) })]
 struct BadVarPos {
     name: String,

@@ -1790,6 +1790,7 @@ fn a_fold_merges_open_fields_written_by_two_windows() {
 /// build, so a drain that stops at one generation would advance the position and report
 /// success while leaving the newer rows unexported.
 #[derive(DocumentEncode, Clone, PartialEq, Debug)]
+#[ok_shared_ns]
 #[ok_ref(K)]
 #[ok_ns(71)]
 #[ok_layout(version = 2)]

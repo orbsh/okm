@@ -61,6 +61,26 @@ pub struct VocabFaces {
 /// Per field, not per collection: two categorical fields are two independent
 /// domains — independent id space, independent capacity, and each field's
 /// labels are enumerable on their own (one prefix scan of its id face).
+/// The per-field `Vocab<N>` caches a declaration needs, as one value the
+/// collection's handle can hold (ADR-0032).
+///
+/// The derive generates the concrete type — one [`Vocabulary`] per `Vocab<N>`
+/// field — and names it as `Document::Vocabs`. It is `pub` because an associated
+/// type of a public trait cannot be private (E0446), but nothing hands it to a
+/// caller: the collection keeps it in a private field and no verb returns it. Its
+/// only operation is the one the commit funnel needs.
+pub trait VocabSet {
+    /// Trust every pending allocation: called after the commit that carried them
+    /// succeeded. A pending id is re-probed on the next use, so a failed commit
+    /// needs no undo.
+    fn landed_all(&mut self);
+}
+
+/// A table with no categorical field carries no vocabulary state.
+impl VocabSet for () {
+    fn landed_all(&mut self) {}
+}
+
 pub const fn data_vocab(field_index: u16) -> VocabFaces {
     let counter = 1 + field_index; // counter 0 is reserved (the "unset" look)
     VocabFaces {
@@ -224,7 +244,11 @@ impl<'a, S: VirtualStorage + ?Sized, I: Id> Faces<'a, S, I> {
         {
             Some(cursor) => cursor,
             None => {
-                if self.store.get(&id_key(self.header, self.faces, I::ZERO))?.is_none() {
+                if self
+                    .store
+                    .get(&id_key(self.header, self.faces, I::ZERO))?
+                    .is_none()
+                {
                     I::ZERO
                 } else {
                     self.scan_max_plus_one()?
@@ -302,7 +326,10 @@ impl<S: VirtualStorage + ?Sized, I: Id> Names<I> for Faces<'_, S, I> {
         // batch writer gets vocabulary growth, its row and its faces atomically.
         let mut batch = Batch::default();
         batch.put(name_key(self.header, self.faces, label), id.be_bytes());
-        batch.put(id_key(self.header, self.faces, id), label.as_bytes().to_vec());
+        batch.put(
+            id_key(self.header, self.faces, id),
+            label.as_bytes().to_vec(),
+        );
         batch.put(cursor_key(self.header, self.faces), next.be_bytes());
         self.store.commit_batch(batch)?;
         Ok(id)

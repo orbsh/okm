@@ -48,6 +48,7 @@ pub struct User {
 /// `region` (cold, literal default "eu"). Older payloads lack both —
 /// the dynamic reader fills them from the schema export.
 #[derive(DocumentEncode, Clone, PartialEq, Debug)]
+#[ok_shared_ns]
 #[ok_ref(UserKey)]
 #[ok_ns(41)]
 #[ok_layout(version = 3)]

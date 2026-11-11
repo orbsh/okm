@@ -36,6 +36,7 @@ pub struct Note {
 /// side this is exactly what an added `#[ok_index]` looks like: nothing in any
 /// payload moves, and the new face has no entries.
 #[derive(DocumentEncode, Clone, PartialEq, Debug)]
+#[ok_shared_ns]
 #[ok_ref(NoteKey)]
 #[ok_ns(91)]
 #[ok_index(by_author { fields(author) })]

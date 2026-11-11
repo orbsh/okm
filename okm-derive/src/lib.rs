@@ -90,6 +90,7 @@ pub fn derive_key_encode(input: TokenStream) -> TokenStream {
     attributes(
         ok_ref,
         ok_ns,
+        ok_shared_ns,
         ok_name,
         ok_partition,
         ok_index,

@@ -1,5 +1,5 @@
 error: ok_index[bad_order]: variable-length field `name` in fields must be the last field — fields after it cannot be located (no static width)
-  --> tests/compilefail/varlen_not_last.rs:12:12
+  --> tests/compilefail/varlen_not_last.rs:13:12
    |
-12 | #[ok_index(bad_order { fields(name, city) })]
+13 | #[ok_index(bad_order { fields(name, city) })]
    |            ^^^^^^^^^

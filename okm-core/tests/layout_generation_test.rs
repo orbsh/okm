@@ -39,6 +39,7 @@ pub struct Gen1 {
 /// Generation 2 — the same table declared afresh. Its bytes are not generation 1's, and
 /// that is a fact about segments, not about the directory they sit in.
 #[derive(DocumentEncode, Clone, PartialEq, Debug)]
+#[ok_shared_ns]
 #[ok_ref(K)]
 #[ok_ns(97)]
 #[ok_layout(version = 2)]

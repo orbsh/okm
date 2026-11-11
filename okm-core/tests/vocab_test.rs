@@ -161,3 +161,95 @@ fn a_put_on_a_categorical_table_never_scans() {
         "second label of the status field"
     );
 }
+
+// ---- the cache belongs to the handle (ADR-0032) ---------------------------
+
+/// A store that counts point reads on the data-vocabulary faces: the two
+/// counting families, `0x1nnn` (label → id) and `0x2nnn` (id → label). The
+/// header is `[ns 2B]` with no partition, so the slot's first byte is
+/// `key[2]`.
+struct VocabProbes {
+    inner: TestStore,
+    reads: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl Default for VocabProbes {
+    fn default() -> Self {
+        Self {
+            inner: TestStore::slatedb_mem(),
+            reads: std::sync::Arc::default(),
+        }
+    }
+}
+
+/// The same engine and the same counter behind a second handle.
+impl Clone for VocabProbes {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            reads: std::sync::Arc::clone(&self.reads),
+        }
+    }
+}
+
+impl VocabProbes {
+    fn reset(&self) {
+        self.reads.store(0, std::sync::atomic::Ordering::Relaxed);
+    }
+    fn count(&self) -> usize {
+        self.reads.load(std::sync::atomic::Ordering::Relaxed)
+    }
+    fn is_vocab_key(key: &[u8]) -> bool {
+        matches!(key.get(2).map(|b| b >> 4), Some(1 | 2))
+    }
+}
+
+impl VirtualStorage for VocabProbes {
+    fn put(&self, key: Vec<u8>, value: Vec<u8>) -> okm_core::error::Result<()> {
+        self.inner.put(key, value)
+    }
+    fn get(&self, key: &[u8]) -> okm_core::error::Result<Option<Vec<u8>>> {
+        if Self::is_vocab_key(key) {
+            self.reads.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+        self.inner.get(key)
+    }
+    fn del(&self, key: &[u8]) -> okm_core::error::Result<()> {
+        self.inner.del(key)
+    }
+    fn scan_range(
+        &self,
+        begin: &[u8],
+        end: Option<&[u8]>,
+    ) -> okm_core::error::Result<Vec<Vec<u8>>> {
+        self.inner.scan_range(begin, end)
+    }
+}
+
+#[test]
+fn a_label_is_probed_once_per_handle_not_once_per_document() {
+    let store = VocabProbes::default();
+    let c = Collection::<_, VKey, VRow>::new(store.clone());
+
+    // First sighting costs the probes: the cursor, the label, the id.
+    c.put(&VKey { org: 1, id: 1 }, &row("admin", "red", 1)).unwrap();
+    let first = store.count();
+    assert!(first > 0, "the first label must reach the store");
+
+    // Second document, same handle: the id is in the handle's vocabulary, and
+    // the commit that carried it landed it, so the write probes nothing.
+    store.reset();
+    c.put(&VKey { org: 1, id: 2 }, &row("admin", "red", 2)).unwrap();
+    assert_eq!(
+        store.count(),
+        0,
+        "a known label must not touch the vocabulary faces again"
+    );
+
+    // A second HANDLE over the same store starts empty: the cache is the
+    // collection's, and there is nothing global to inherit from.
+    let fresh = Collection::<_, VKey, VRow>::new(store.clone());
+    store.reset();
+    fresh.put(&VKey { org: 1, id: 3 }, &row("admin", "red", 3)).unwrap();
+    assert!(store.count() > 0, "a fresh handle probes again");
+}

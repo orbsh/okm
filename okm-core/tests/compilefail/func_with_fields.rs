@@ -9,6 +9,7 @@ struct K {
 // func(...) 与 fields 混用：排序段只能有一个来源。
 #[derive(DocumentEncode, Clone, PartialEq, Debug)]
 #[ok_ref(K)]
+#[ok_ns(402)]
 #[ok_index(bad { fields(name), func(lower) })]
 struct BadFuncFields {
     name: String,

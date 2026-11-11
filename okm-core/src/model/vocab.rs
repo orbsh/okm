@@ -10,6 +10,10 @@
 //! on up to 65536, and so on through `u128`. That is the whole trade — label
 //! count against payload width — so the declaration states it directly.
 //!
+//! The width trait is [`okm_value::Id`], and it lives in the value crate: the
+//! id vocabulary is the value's currency, so its width belongs there and not to
+//! the store. `Vocab<N>` remains the declared field type.
+//!
 //! There is no other categorical form: a numeric code is a number field, and
 //! enum semantics (match arms, exhaustiveness) belong to the consumer, which
 //! wraps the field in its own Rust enum and converts at the edge.
@@ -30,12 +34,6 @@
 use std::fmt;
 use std::marker::PhantomData;
 
-/// The id width a `Vocab` field spends: big-endian so byte order stays value
-/// order (an index over the id scans in allocation order).
-///
-/// The trait itself lives in `okm-value` ([`okm_value::Id`]): the vocabulary is
-/// the crate's, and its id width is part of that vocabulary rather than part of
-/// the store. `Vocab<N>` is still the declared field type.
 use okm_value::Id;
 
 /// An interned categorical label: string in memory, `N`-byte id on the wire.

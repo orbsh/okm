@@ -1405,16 +1405,27 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> syn::Result<TS2> {
         }
         None => quote! {},
     };
-    let ns_const = match schema.ns {
-        Some(n) => {
-            let hi = (n >> 8) as u8;
-            let lo = (n & 0xff) as u8;
-            quote! {
-                const NS_PREFIX: &'static [u8] = &[#hi, #lo];
-                const NS: ::core::option::Option<u16> = ::core::option::Option::Some(#n);
-            }
+    let ns = schema.ns;
+    let (ns_hi, ns_lo) = ((ns >> 8) as u8, (ns & 0xff) as u8);
+    let ns_const = quote! {
+        const NS_PREFIX: &'static [u8] = &[#ns_hi, #ns_lo];
+        const NS: u16 = #ns;
+    };
+    // The ns claim: a type whose NAME is the ns, emitted beside the declaration.
+    // Two documents claiming one ns in one module define it twice, and a type
+    // cannot be defined twice -- so an accidental reuse is a build error with the
+    // ns in the message, not a silent second table in someone else's keyspace.
+    // `#[ok_shared_ns]` is the opt-out, for a generation pair (one table, two
+    // declarations) where the second one is the point.
+    let ns_claim = if schema.shared_ns {
+        quote! {}
+    } else {
+        let claim = quote::format_ident!("okm_ns_{}_is_unique", ns);
+        quote! {
+            #[doc(hidden)]
+            #[allow(non_camel_case_types, dead_code)]
+            struct #claim;
         }
-        None => quote! {},
     };
     // #[ok_partition(N)] → PARTITION_ID: Option<u8>. None = no partition
     // segment in the key (default). Some(N) prepends a 2-byte ESCAPE
@@ -2051,6 +2062,40 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> syn::Result<TS2> {
     };
 
     // ---- Vocab hooks (ADR-0032): emitted only when a Vocab field exists ----
+    // ---- the handle-side vocabulary set (ADR-0032) -------------------------
+    // One `Vocabulary<N>` per declared `Vocab<N>` field, in declaration order,
+    // grouped into a type the collection holds. `pub` because a public trait
+    // cannot name a private associated type (E0446); `#[doc(hidden)]` because it
+    // is not part of the surface a caller writes against — no verb hands it out.
+    let vocabs_name = quote::format_ident!("__OkmVocabs_{}", schema.row_name);
+    let vocabs_decl = if vocab_fields.is_empty() {
+        quote! {}
+    } else {
+        let names: Vec<_> = vocab_fields.iter().map(|(fid, _)| fid).collect();
+        let field_names = names.iter();
+        let those = names.iter();
+        let types = vocab_fields.iter().map(|(_, d)| {
+            quote! { ::okm_core::obj_vocab::Vocabulary<#d> }
+        });
+        quote! {
+            #[doc(hidden)]
+            #[derive(::core::default::Default)]
+            pub struct #vocabs_name {
+                #(pub #field_names: #types,)*
+            }
+            impl ::okm_core::obj_vocab::VocabSet for #vocabs_name {
+                fn landed_all(&mut self) {
+                    #(self.#those.landed_all();)*
+                }
+            }
+        }
+    };
+    let vocabs_assoc = if vocab_fields.is_empty() {
+        quote! { type Vocabs = (); }
+    } else {
+        quote! { type Vocabs = #vocabs_name; }
+    };
+
     let vocab_hooks = if vocab_fields.is_empty() {
         quote! {}
     } else {
@@ -2063,12 +2108,12 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> syn::Result<TS2> {
                         header,
                         ::okm_core::obj_vocab::data_vocab(#vi_lit),
                     );
-                    let mut vocabulary =
-                        ::okm_core::obj_vocab::Vocabulary::<#d>::new();
                     // A full width (or a refused commit) comes back as an
-                    // error, never a wrapped id.
+                    // error, never a wrapped id. The cache is the handle's, so a
+                    // label is probed once per collection rather than once per
+                    // document.
                     self.#fid
-                        .set_id(vocabulary.ensure(&mut door, &label)?);
+                        .set_id(vocabs.#fid.ensure(&mut door, &label)?);
                 }
             }
         });
@@ -2082,9 +2127,7 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> syn::Result<TS2> {
                             &header,
                             ::okm_core::obj_vocab::data_vocab(#vi_lit),
                         );
-                        let mut vocabulary =
-                            ::okm_core::obj_vocab::Vocabulary::<#d>::new();
-                        if let Some(name) = vocabulary.name_of(&mut door, id)? {
+                        if let Some(name) = vocabs.#fid.name_of(&mut door, id)? {
                             self.#fid.set_name(name);
                         }
                     }
@@ -2095,6 +2138,7 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> syn::Result<TS2> {
             const HAS_VOCAB: bool = true;
             fn __okm_intern(
                 &mut self,
+                vocabs: &mut Self::Vocabs,
                 store: &mut dyn ::okm_core::VirtualStorage,
                 header: &[u8],
             ) -> ::okm_core::error::Result<()> {
@@ -2103,6 +2147,7 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> syn::Result<TS2> {
             }
             fn __okm_deref_vocab(
                 &mut self,
+                vocabs: &mut Self::Vocabs,
                 store: &dyn ::okm_core::VirtualStorage,
             ) -> ::okm_core::error::Result<()> {
                 let mut header = <Self as ::okm_core::Document>::PARTITION_PREFIX.to_vec();
@@ -2114,6 +2159,8 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> syn::Result<TS2> {
     };
 
     Ok(quote! {
+        #ns_claim
+        #vocabs_decl
         #index_structs
         #lead_structs
         #agg_impls
@@ -2124,6 +2171,7 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> syn::Result<TS2> {
         impl ::okm_core::Document for #row_name {
             #embed_hooks
             #vocab_hooks
+            #vocabs_assoc
             type Key = #key_ty;
             #part_const
             #ns_const

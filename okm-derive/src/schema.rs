@@ -1274,9 +1274,15 @@ pub(crate) fn parse_event_enum_attr(attr: &syn::Attribute) -> syn::Result<String
 pub(crate) struct DocumentSchema {
     pub row_name: syn::Ident,
     pub key_ty: syn::Type,
-    /// `#[ok_ns(N)]` — the document's table namespace. None = not declared
-    /// (layout-only document; table-less usage keeps an empty prefix).
-    pub ns: Option<u16>,
+    /// `#[ok_ns(N)]` — the document's table namespace. Required: a table with
+    /// no ns has no place of its own in the key space, so the derive refuses the
+    /// declaration rather than writing keys that land wherever the next segment
+    /// puts them. It is written once here and read back as `Document::NS`.
+    pub ns: u16,
+    /// `#[ok_shared_ns]` — this ns is deliberately declared by a second document
+    /// (a generation pair: the same table before and after a layout change).
+    /// Suppresses the ns-claim type that makes a plain duplicate a build error.
+    pub shared_ns: bool,
     /// `#[ok_uncaptured]` — this table is never written to the changelog, even when
     /// capture is on. For tables outside the state a restore needs: an application's
     /// own audit trail, an activity log, a cache. Declared on the type rather than
@@ -1343,16 +1349,32 @@ pub(crate) fn parse_schema_with_key(
 
     // #[ok_ns(N)] — the table's namespace segment, declared on the document
     // (the document is the table's declaration point: #[ok_ref] pins the key
-    // type, so the document determines Collection<S, K, R> entirely). Absent = None.
-    let ns: Option<u16> = match input.attrs.iter().find(|a| a.path().is_ident("ok_ns")) {
-        Some(a) => Some(
-            a.parse_args::<syn::LitInt>()
-                .map_err(|_| syn::Error::new_spanned(a, "ok_ns format: #[ok_ns(N)]"))?
-                .base10_parse::<u16>()
-                .map_err(|_| syn::Error::new_spanned(a, "ok_ns must be a u16 literal"))?,
-        ),
-        None => None,
+    // type, so the document determines Collection<S, K, R> entirely). REQUIRED:
+    // without it the table has no address of its own and its keys land next to
+    // whatever else was written there, silently, until two tables meet.
+    let ns: u16 = match input.attrs.iter().find(|a| a.path().is_ident("ok_ns")) {
+        Some(a) => a
+            .parse_args::<syn::LitInt>()
+            .map_err(|_| syn::Error::new_spanned(a, "ok_ns format: #[ok_ns(N)]"))?
+            .base10_parse::<u16>()
+            .map_err(|_| syn::Error::new_spanned(a, "ok_ns must be a u16 literal"))?,
+        None => {
+            return Err(syn::Error::new(
+                input.ident.span(),
+                "missing #[ok_ns(N)]: every table declares its namespace; \
+                 a table with no ns has no place of its own in the key space",
+            ))
+        }
     };
+
+    // #[ok_shared_ns] — a path-only marker: this ns is deliberately declared by
+    // more than one document (a generation pair, an old and a new declaration of
+    // one table). Without it, the generated ns-claim type clashes with the other
+    // declaration in the same module and the build fails.
+    let shared_ns = input
+        .attrs
+        .iter()
+        .any(|a| a.path().is_ident("ok_shared_ns"));
 
     // #[ok_uncaptured] — a path-only marker: the table stays out of the changelog.
     let uncaptured = input
@@ -1590,6 +1612,7 @@ pub(crate) fn parse_schema_with_key(
     Ok(DocumentSchema {
         row_name,
         key_ty,
+        shared_ns,
         ns,
         uncaptured,
         name,

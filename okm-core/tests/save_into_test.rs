@@ -475,6 +475,7 @@ pub struct LogKey {
 /// The log-table shape from the modeling guide: a code column, two categorical
 /// columns of different widths, free text.
 #[derive(DocumentEncode, Clone, PartialEq, Debug)]
+#[ok_shared_ns]
 #[ok_ref(LogKey)]
 #[ok_ns(44)]
 pub struct LogRow {

@@ -35,7 +35,15 @@ Every rule in this guide is one of the facts below applied to a shape, so they a
 | no optimizer | ordering and filtering are the key's job; aggregation is a ledger; analysis goes to Parquet/Arrow | [pre-aggregation](#cross-row-pre-aggregation) · [read paths](#read-paths-a-key-a-declared-face-or-a-point) |
 | a value is bytes | no serialized-text storage; bytes stay bytes end to end | [payload types](#payload-field-types-and-wrappers) |
 
-The rest of this guide is cases. The four layers are the first two rows in declaration form; the relation carriers are the second; the side table is the third and fourth.
+After one comparison — the two families that make the same trade — the rest of this guide is cases. The four layers are the first two rows in declaration form; the relation carriers are the second; the side table is the third and fourth.
+
+## Where this sits: SQL, wide-column, and here
+
+SQL hands the layout to the database. You declare normalized tables and a planner derives access paths; a secondary index is a database object, and denormalizing is an exception you justify. The wide-column family (Cassandra and its kin) makes the opposite trade and is the closer relative: a table is designed for one query, the partition key groups and the clustering key orders, and a second access path is a second table carrying a copy of the row — because there is no join and no free secondary index. OKM is in that family by construction: the key order *is* the read order, a face is a table you keep in step, and the four layers are the design instead of the plan.
+
+What differs is how much is still yours. A wide-column engine owns compaction, partitions, tombstones and a query surface; OKM gives keys and commits, and the declaration layer is the whole model. That is the trade, stated without a soft edge: **manual layout is more capable and less forgiving.** Nothing fails loudly when a shape is wrong — it surfaces as a scan you did not intend, an index nobody maintains correctly, or a value two readers pay for and one wanted. Knowing which shape costs what is experience rather than syntax, and it is why this guide exists at all.
+
+One piece of arithmetic removes a common worry. A key space repeats its prefix in every entry — the ns, the pkey, the sort field — and a second face repeats it again. That looks like storing the key many times, and in bytes it is; in cost it is not. The engines here are block-structured: entries live in compressed blocks behind a block index, most apply prefix compression inside a block, and a bloom filter usually fronts point lookups, so a shared prefix costs a few bytes per entry rather than a copy of the data. What is expensive to duplicate is a *value*, never a key — which is exactly the split [the side table](#a-field-too-large-the-side-table) makes.
 
 ## The four layers
 
@@ -134,8 +142,7 @@ pub struct User {
 
 - `#[ok_ref(UserKey)]` — which primary key the row hangs off; identity
 belongs to the key, business dimensions to the row.
-- `#[ok_ns(1)]` — the table's namespace segment, declared on the ROW (the
-row is the table's declaration point: `#[ok_ref]` pins the key type, so the row determines `Collection<S, K, R>` entirely). A key type carries no ns — the same key shape may serve several rows/tables, each with its own ns. `Collection::new(store)` takes no ns argument; the assembly site picks the engine only.
+- `#[ok_ns(1)]` — the table's namespace segment, declared on the ROW (the row is the table's declaration point: `#[ok_ref]` pins the key type, so the row determines `Collection<S, K, R>` entirely). A key type carries no ns — the same key shape may serve several rows/tables, each with its own ns. `Collection::new(store)` takes no ns argument; the assembly site picks the engine only. It is **required**: a row without it does not compile, because a table with no ns has no place of its own in the key space and its keys would land next to whatever else was written there. And **one ns, one row**: the derive emits a marker type whose name is the ns, so a second row claiming the same ns in the same module is a build error (`the name okm_ns_7_is_unique is defined multiple times`). The exception is spelled, not assumed — `#[ok_shared_ns]` on the second declaration, for a generation pair (one table before and after a layout change, ADR-0056).
 - `fields(...)` — payload fields to sort/group by, declaration order,
 first field = the grouping dimension.
 - `includes(...)` — covering index: copies payload fields into the entry
@@ -554,7 +561,7 @@ Every declared field is one of these wire shapes. This is the map from the Rust 
 Three rules follow from the shapes:
 
 - **A categorical value that arrives as a LABEL is `Vocab<N>`, never a Rust enum.** The label↔id mapping
-lives in the collection's data vocabulary, so a dynamic writer can introduce a category and a dynamic reader can name it. `N` is the id width and the only knob: `Vocab<u8>` (the default) buys 256 labels per field at one byte per row, `Vocab<u16>` 65536 at two, and so on. Each field owns its own table, so the budget is per field. There is no ordering — a field that must sort semantically declares a separate rank column. Consumer-side enum semantics (match arms, exhaustiveness) belong to the consumer: wrap the field in your own enum and convert at the edge.
+lives in the collection's data vocabulary, so a dynamic writer can introduce a category and a dynamic reader can name it. `N` is the id width and the only knob: `Vocab<u8>` (the default) buys 256 labels per field at one byte per row, `Vocab<u16>` 65536 at two, and so on. Each field owns its own table, so the budget is per field. The id→label direction is the field's own cache on the collection's handle, so a label seen once costs one probe for the life of that handle, not one per document. There is no ordering — a field that must sort semantically declares a separate rank column. Consumer-side enum semantics (match arms, exhaustiveness) belong to the consumer: wrap the field in your own enum and convert at the edge.
 - **`Option<T>` is not a field type.** Absence is a sentinel value chosen per
 field; the derive has no `Option` arm (see the next section).
 - **A `Vocab` field is interned on write.** `Collection::put` and
@@ -1108,6 +1115,12 @@ Do not split: every access reads the row anyway **and** nothing in it is written
 - **The key type is the parent's key type.** The key payload is therefore byte-identical and the pairing is pinned by the compiler; only the ns and the table name differ — the side table takes an ns of its own, and that is the whole cost.
 - **Existence is the side row's presence.** No `Option` field and no zero-length sentinel: "is there one" is a state, not an absence.
 - **Write the pair into one batch** (each collection's `save_with_prev_into`, one `commit_batch`) and delete the pair — there is no cascade in this model, so deletion is the caller's; `purge_into` puts the delete in one commit as well.
+
+### Each table picks its own engine
+
+The engine is an assembly-point decision, not a declaration: `Collection::new(store)` takes the store, and nothing on the type says which one it is (ADR-0010 — the assembly site picks the engine, the declaration owns the ns). So the tables of one application need not share one: the hot side table can sit on a small, fast engine while the payload table sits on an LSM tuned for volume, and a read-mostly export table on whatever dumps cheaply. In a relational engine the same wish is a foreign server or a linked table; here it falls out of the model, because a table already IS an independent key space with its own handle — nothing has to be bridged for it to live somewhere else.
+
+The freedom stops at exactly one line: **a commit is per store.** Two collections on one engine write one `Batch` and commit once (that is how the pair above stays atomic); two collections on different engines are two commits, so a pair that must be atomic lives on one engine. The split by access pattern is free; the split by engine is a durability and atomicity boundary, and the boundary follows the store rather than the ns — capture and restore are whole-store too, so a table that moved to another engine is captured by that store's log.
 - **The parent row stays complete.** `R` is still the document's full declared field set; the side table is its second table, not its patch — so `fetch` / `replace` / `put` semantics do not change by a word.
 - **The side table can have everything a table has**: its own declared faces, reduce groups, its own `#[ok_layout]` version, and export/import for free as a `(K, R)` pair — because it is an ordinary table, not a fifth position inside the row codec.
 

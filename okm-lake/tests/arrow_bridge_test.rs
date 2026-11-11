@@ -204,6 +204,8 @@ fn fixed_bytes_maps_to_binary() {
     }
     #[derive(DocumentEncode, Clone, PartialEq, Debug)]
     #[ok_ref(BinKey)]
+    #[ok_ns(12)]
+    #[ok_shared_ns]
     pub struct BinRow {
         pub n: u32,
     }
@@ -246,6 +248,7 @@ fn vector_field_maps_to_binary() {
     }
     #[derive(DocumentEncode, Clone, PartialEq, Debug)]
     #[ok_ref(RingKey)]
+    #[ok_ns(13)]
     pub struct RingRow {
         pub n: u32,
         pub ring: Vector<u32>,
@@ -321,6 +324,7 @@ pub struct DeviceKey {
 
 #[derive(DocumentEncode, Clone, PartialEq, Debug)]
 #[ok_ref(DeviceKey)]
+#[ok_ns(15)]
 pub struct DeviceRow {
     pub device: Uuid7,
     pub token: Uuid4,

@@ -19,10 +19,10 @@
 use okm_async::TestStore;
 use okm_core::changelog::replay::replay_table;
 use okm_core::changelog::{ChangelogConfig, ChangelogStore, table_dir};
-use okm_value::DynamicValue;
 use okm_core::schema::CollectionSchema;
 use okm_core::{Collection, Document, DocumentEncode, KeyEncode};
 use okm_dynamic::DynamicCollection;
+use okm_value::DynamicValue;
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
 pub struct K {
@@ -42,6 +42,7 @@ pub struct Gen1 {
 /// Generation 2: the same two fields, swapped. A payload read under this declaration when
 /// it was written under generation 1 gives back `level = 70`.
 #[derive(DocumentEncode, Clone, PartialEq, Debug)]
+#[ok_shared_ns]
 #[ok_ref(K)]
 #[ok_ns(98)]
 #[ok_layout(version = 2)]

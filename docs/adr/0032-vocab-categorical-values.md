@@ -84,10 +84,13 @@ use it today (field names 0x02/0x03, predicate/kind tokens 0x04/0x05).
    length, not by a reserved id. (It cannot live on the label face: the empty
    label is a legal label. ADR-0030 states the general rule.) It replaces the
    `max + 1` derived from a scan. Two consequences, both load-bearing: the hot path never
-   scans (an earlier cut loaded the whole vocabulary on every `put`, because the
-   derive builds one cache per field per call), and a batch writer can intern
-   inside its own batch, since a batch serves point reads and refuses ordered
-   ones (ADR-0031). A store written before cursors existed is recognised without
+   scans, and a batch writer can intern inside its own batch, since a batch
+   serves point reads and refuses ordered ones (ADR-0031). The scan is gone from
+   both sides now: the cache is the handle's (one `Vocabulary<N>` per declared
+   field, generated as `Document::Vocabs` and owned by `Collection`), so a label
+   is probed once per collection rather than once per document, and the cursor
+   turns the allocation itself into one point read plus the writes the batch was
+   making anyway. A store written before cursors existed is recognised without
    a scan — id zero is absent exactly when the vocabulary is empty — and the
    first allocation writes the cursor that retires the fallback.
 

@@ -1,7 +1,7 @@
 error: Reverse<f64>: inner type not on the Reversible whitelist
-  --> tests/compilefail/reverse_float.rs:12:8
+  --> tests/compilefail/reverse_float.rs:13:8
    |
-12 |     f: Reverse<f64>,
+13 |     f: Reverse<f64>,
    |        ^^^^^^^^^^^^
 
 error[E0277]: the trait bound `K: Clone` is not satisfied
@@ -22,9 +22,9 @@ help: consider annotating `K` with `#[derive(Clone)]`
   |
 
 error[E0277]: the trait bound `f64: Reversible` is not satisfied
-  --> tests/compilefail/reverse_float.rs:12:8
+  --> tests/compilefail/reverse_float.rs:13:8
    |
-12 |     f: Reverse<f64>,
+13 |     f: Reverse<f64>,
    |        ^^^^^^^^^^^^ the trait `Reversible` is not implemented for `f64`
    |
    = help: the following other types implement trait `Reversible`:

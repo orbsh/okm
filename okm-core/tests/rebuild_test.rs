@@ -42,6 +42,7 @@ pub struct Note {
 /// Same ns, same payload bytes, one more face: what an added `#[ok_index]` looks
 /// like to a store that was written before it.
 #[derive(DocumentEncode, Clone, PartialEq, Debug)]
+#[ok_shared_ns]
 #[ok_ref(NoteKey)]
 #[ok_ns(77)]
 #[ok_index(by_author { fields(author) })]

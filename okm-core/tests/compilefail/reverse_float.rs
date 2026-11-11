@@ -8,6 +8,7 @@ struct K {
 
 #[derive(DocumentEncode)]
 #[ok_ref(K)]
+#[ok_ns(403)]
 struct R {
     f: Reverse<f64>,
 }
