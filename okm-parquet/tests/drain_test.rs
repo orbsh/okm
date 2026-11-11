@@ -1015,13 +1015,12 @@ fn a_vacuum_deletes_only_files_no_kept_version_references() {
     let left = entries(&table_dir);
     assert_eq!(
         left.len(),
-        1,
-        "the folded file is all that is left: {left:?}"
+        2,
+        "the folded file and its manifest are all that is left: {left:?}"
     );
-    assert!(left[0].contains("-fold-"), "{left:?}");
-    // The manifests described files that are gone, so they went with them.
+    // Nothing of the replaced files survives, manifests included.
     assert!(
-        !left.iter().any(|f| f.ends_with(".manifest.json")),
+        left.iter().all(|f| f.contains("-fold-")),
         "no orphan manifests: {left:?}"
     );
 
@@ -1127,6 +1126,145 @@ fn a_fold_leaves_files_whose_keys_are_exclusive_to_them() {
     let levels: Vec<u32> = (0..state.num_rows()).map(|i| level.value(i)).collect();
     assert!(levels.contains(&9), "K1 kept the newest row: {levels:?}");
     assert!(levels.contains(&4), "K2 survived: {levels:?}");
+}
+
+/// The manifest records the range a file's keys cover, and a fold uses it to skip files that
+/// cannot share a key — so a key written twice is resolved against the file that holds it, not
+/// against the whole table.
+#[test]
+fn the_key_range_in_a_manifest_prunes_the_fold() {
+    let root = tempfile::tempdir().expect("root");
+    let out = tempfile::tempdir().expect("lake");
+
+    // Window 1 writes org 1, window 2 writes org 2: the ranges cannot overlap.
+    for (key, level) in [(K1, 3u32), (K2, 4)] {
+        let c = collection(root.path());
+        c.put(
+            &key,
+            &R {
+                level,
+                name: "row".into(),
+            },
+        )
+        .expect("put");
+        drop(c);
+        drain(root.path(), &DrainConfig::new(out.path(), "test")).expect("a window");
+    }
+    let mut dirs: Vec<_> = std::fs::read_dir(out.path())
+        .expect("lake")
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.join("_delta_log").is_dir())
+        .collect();
+    let table_dir = dirs.pop().expect("one table");
+
+    // Both windows recorded bounds, and the ranges do not overlap on `org`.
+    let live = okm_parquet::delta::files_in_order(&table_dir).expect("files");
+    assert_eq!(live.len(), 2);
+    let bounds: Vec<_> = live
+        .iter()
+        .map(|rel| {
+            let manifest =
+                okm_parquet::status::manifest_of(&table_dir.join(rel)).expect("a manifest");
+            assert!(
+                !manifest.key_bounds.is_empty(),
+                "a drained file records where its keys start and end: {manifest:?}"
+            );
+            okm_parquet::bounds::from_manifest(&manifest.key_bounds)
+        })
+        .collect();
+    assert!(
+        !bounds[0].overlaps(&bounds[1]),
+        "org 1 and org 2 cannot share a key: {bounds:?}"
+    );
+
+    // Window 3 rewrites org 1's key: only the file that could hold it is folded.
+    {
+        let c = collection(root.path());
+        c.put(
+            &K1,
+            &R {
+                level: 9,
+                name: "row2".into(),
+            },
+        )
+        .expect("put");
+    }
+    drain(root.path(), &DrainConfig::new(out.path(), "test")).expect("third window");
+
+    let fold = okm_parquet::read::condense(&table_dir).expect("fold");
+    assert_eq!(fold.replaced, 2, "org 1's two files");
+    assert_eq!(fold.untouched, 1, "org 2's file is out of range");
+    assert_eq!(fold.rows, 1);
+
+    let after = okm_parquet::delta::files_in_order(&table_dir).expect("files");
+    assert_eq!(after.len(), 2, "the untouched file plus the folded one");
+    let state = okm_parquet::read::current_state(&table_dir).expect("state");
+    assert_eq!(state.num_rows(), 2);
+    let levels: Vec<u32> = {
+        let column = state
+            .column_by_name("level")
+            .and_then(|c| c.as_any().downcast_ref::<arrow::array::UInt32Array>())
+            .expect("level");
+        (0..state.num_rows()).map(|i| column.value(i)).collect()
+    };
+    assert!(levels.contains(&9), "org 1's newest row: {levels:?}");
+    assert!(levels.contains(&4), "org 2 untouched: {levels:?}");
+}
+
+/// `status` answers an operator's questions from the log and the manifests: how many files,
+/// how many bytes, how many change rows, is it folded, and what would a vacuum reclaim.
+#[test]
+fn a_status_reads_the_lake_without_opening_a_payload() {
+    let root = tempfile::tempdir().expect("root");
+    let out = tempfile::tempdir().expect("lake");
+    for level in [3u32, 5] {
+        let c = collection(root.path());
+        c.put(
+            &K1,
+            &R {
+                level,
+                name: "alpha".into(),
+            },
+        )
+        .expect("put");
+        drop(c);
+        drain(root.path(), &DrainConfig::new(out.path(), "test")).expect("a window");
+    }
+    let mut dirs: Vec<_> = std::fs::read_dir(out.path())
+        .expect("lake")
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.join("_delta_log").is_dir())
+        .collect();
+    let table_dir = dirs.pop().expect("one table");
+
+    let before = okm_parquet::status::status(&table_dir, false).expect("status");
+    assert_eq!(before.live_files, 2);
+    assert_eq!(before.change_rows, Some(2), "one row per window");
+    assert_eq!(before.deletes, Some(0));
+    assert!(!before.folded);
+    assert_eq!(before.stale_files, 0);
+    assert_eq!(before.live_rows, None, "not asked, so not folded");
+
+    okm_parquet::read::condense(&table_dir).expect("fold");
+    let folded = okm_parquet::status::status(&table_dir, true).expect("status");
+    assert_eq!(folded.live_files, 1);
+    assert!(folded.folded, "the newest file is a fold");
+    assert_eq!(
+        folded.change_rows,
+        Some(1),
+        "and it has a manifest of its own"
+    );
+    assert_eq!(folded.live_rows, Some(1));
+    assert_eq!(
+        folded.stale_files, 2,
+        "the replaced files are still on disk"
+    );
+    assert!(folded.stale_bytes > 0);
+
+    okm_parquet::vacuum::vacuum(&table_dir, 0, false).expect("vacuum");
+    let swept = okm_parquet::status::status(&table_dir, false).expect("status");
+    assert_eq!(swept.stale_files, 0, "nothing left to reclaim");
+    assert_eq!(swept.live_files, 1);
 }
 
 /// One window can hold a removal, and then ONE file is worth folding: a single file with one

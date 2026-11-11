@@ -58,10 +58,16 @@ Beside every window file:
     { "table": "<header hex>", "layout_version": 3, "segments": ["00000001.segment", ...],
       "rows": 2, "deletes": 0,
       "columns": [["org", "UInt32", false], ["level", "UInt32", true], ...],
-      "file": "<table hex>-<first>-<last>.parquet" }
+      "file": "<table hex>-<first>-<last>.parquet",
+      "key_bounds": [["org", "00000001", "00000001"], ["id", "000000000000000a", "000000000000000b"]] }
 
 `columns` is in column order (keys first) with the Arrow type name and the
-nullability the file declares. The manifest is written BEFORE the watermark moves,
+nullability the file declares. `key_bounds` is one `(column, min, max)` per prunable key
+column, holding the range the file covers as hex of the values' SORTABLE bytes — big-endian
+integers, the sign bit flipped for `Int64`, raw UTF-8 for strings — so one byte ordering answers
+every key type. A type outside that set (a decimal, a nested shape) gets no bound, and a column
+with no bound prunes nothing: an over-wide candidate list is a slow fold, a wrong one loses
+rows. The manifest is written BEFORE the watermark moves,
 so a consumer that sees a watermark can read a description of what it points at —
 and a window is never half-described.
 
@@ -133,8 +139,15 @@ Two things it is NOT:
 A fold is INCREMENTAL: it rewrites only the files that share a key with another file, or that
 hold a removal. A file whose keys are exclusive to it already states final rows — nothing can
 arrive later that changes them, so it is neither rewritten nor removed, and remains in `data/`
-as the file it always was. The index this needs is the key columns, read with a projection, so
-deciding what to fold never reads a payload. A table with nothing to resolve is refused rather
+as the file it always was.
+
+Deciding that costs almost nothing. Each manifest records the range its keys cover, so two
+files can only share a key where those ranges overlap; a sorted pass over the first key column
+marks the overlapping files, and only those have their key columns read (with a projection, so
+still no payload). A file whose range is disjoint from every other file is never opened. That
+is what a row-level removal costs here: deleting one key rewrites the one file whose range
+holds it — copy-on-write with a range index, rather than a deletion vector pointing into files
+nobody rewrote. A table with nothing to resolve is refused rather
 than rewritten: folding it would churn the log without changing what a reader sees.
 
 The drain can do this on its own: `DrainConfig.fold` (CLI `--fold-after-files N` /
@@ -153,6 +166,20 @@ is the same decoder, exposed for anyone reading the export.
 A `remove` action drops a file from the TABLE; it does not delete bytes. Replaced files stay
 in `data/` for anyone reading an older version, and reclaiming them is a vacuum — a separate
 question (how long history is kept) this writer does not answer yet.
+
+## Status
+
+`okm-parquet status --out <lake dir> [--table <hex>] [--rows]` reports one table per block:
+version, live files and bytes, change rows and removals summed from the manifests, whether the
+newest file is a fold, and how many bytes a vacuum would reclaim. It reads the log, the file
+sizes and the manifests — no payload — so it is cheap on a table with a million rows.
+
+`--rows` is the exception: rows of CURRENT state means folding the table, so it is asked for
+rather than paid for. A file without a manifest makes the change-row sum an undercount, and the
+answer is "unknown" instead of a number that silently means "some of it".
+
+A folded file gets a manifest too, carrying the segments of the files it replaced: provenance
+survives a fold, and the status can still count what is in the lake.
 
 ## Vacuum
 

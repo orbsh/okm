@@ -147,6 +147,44 @@ fn run() -> Result<i32, String> {
     Ok(0)
 }
 
+/// The lake side of `status`: one line per table, from the log and the manifests alone.
+fn lake_status(out: &Path, only: Option<&str>, count_rows: bool) -> Result<i32, String> {
+    for dir in lake_tables(out, only)? {
+        let status = okm_parquet::status::status(&dir, count_rows)?;
+        let rows = status
+            .change_rows
+            .map(|n| match status.deletes {
+                Some(deletes) => format!("{n} change row(s), {deletes} removal(s)"),
+                None => format!("{n} change row(s)"),
+            })
+            .unwrap_or_else(|| "change rows unknown (a file has no manifest)".to_string());
+        println!("{}", dir.display());
+        println!(
+            "  v{}: {} live file(s), {}, {}, {}",
+            status.latest_version,
+            status.live_files,
+            human(status.live_bytes),
+            rows,
+            if status.folded {
+                "folded"
+            } else {
+                "change files as drained"
+            },
+        );
+        if let Some(live) = status.live_rows {
+            println!("  current state: {live} row(s)");
+        }
+        if status.stale_files > 0 {
+            println!(
+                "  reclaimable: {} file(s), {} — a vacuum with the right --keep-versions takes them",
+                status.stale_files,
+                human(status.stale_bytes)
+            );
+        }
+    }
+    Ok(0)
+}
+
 /// `vacuum --out <lake dir> --keep-versions N [--table <hex header>] [--dry-run]`
 ///
 /// Delete the files NO kept version references — the bytes a fold leaves behind. `N` counts
@@ -293,6 +331,8 @@ fn lake_tables(out: &Path, only: Option<&str>) -> Result<Vec<PathBuf>, String> {
 /// claim (ADR-0056 §6). Read-only; it opens nothing and writes nothing.
 fn status(args: &[String]) -> Result<i32, String> {
     let mut root: Option<PathBuf> = None;
+    let mut out: Option<PathBuf> = None;
+    let mut count_rows = false;
     let mut table: Option<String> = None;
     let mut after_bytes = okm_core::changelog::CompactPolicy::default().after_bytes;
     let mut after_secs = okm_core::changelog::CompactPolicy::default().after_secs;
@@ -306,6 +346,8 @@ fn status(args: &[String]) -> Result<i32, String> {
         };
         match arg.as_str() {
             "--root" | "--log" => root = Some(PathBuf::from(value()?)),
+            "--out" | "--lake" => out = Some(PathBuf::from(value()?)),
+            "--rows" => count_rows = true,
             "--table" => table = Some(value()?),
             "--after-bytes" => {
                 after_bytes = value()?
@@ -321,13 +363,19 @@ fn status(args: &[String]) -> Result<i32, String> {
                 println!(
                     "okm-parquet status --root <log dir> [--table <hex header>] [--after-bytes N] [--after-secs N]"
                 );
+                println!("okm-parquet status --out <lake dir> [--table <hex header>] [--rows]");
                 return Ok(0);
             }
             other => return Err(format!("unknown argument `{other}` (try --help)")),
         }
     }
 
-    let root = root.ok_or("--root is required (the capturing store's log directory)")?;
+    // Two roots, two questions: `--root` is the CHANGELOG (segments, claim, what a compaction
+    // would cover), `--out` is the exported LAKE (files, rows, what a vacuum would reclaim).
+    if let Some(out) = out {
+        return lake_status(&out, table.as_deref(), count_rows);
+    }
+    let root = root.ok_or("--root or --out is required (the log directory, or the lake)")?;
     for dir in selected_dirs(&root, table.as_deref())? {
         let header = okm_core::changelog::window::header_of(&dir).map_err(|e| e.to_string())?;
         print!("{} {}", hex_of(&header), dir.display());

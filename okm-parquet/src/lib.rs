@@ -35,10 +35,12 @@
     )
 )]
 
+pub mod bounds;
 pub mod bridge;
 pub mod delta;
 pub mod read;
 pub mod snapshot;
+pub mod status;
 pub mod vacuum;
 
 use okm_core::changelog::window::{
@@ -227,6 +229,12 @@ pub struct WindowManifest {
     pub columns: Vec<(String, String, bool)>,
     /// The Parquet file's name, beside this manifest.
     pub file: String,
+    /// One `(column, min hex, max hex)` per prunable key column: the range this file covers.
+    /// A fold uses it to skip files that cannot share a key with the ones it must resolve
+    /// (`#[serde(default)]`: manifests written before bounds existed prune nothing, which is
+    /// safe — they simply stay fold candidates).
+    #[serde(default)]
+    pub key_bounds: Vec<(String, String, String)>,
 }
 
 /// Project every table directory under `root`.
@@ -340,6 +348,7 @@ fn drain_one(cfg: &DrainConfig, report: &mut Report, win: &Window) -> Result<()>
         deletes: projection.deletes,
         columns: projection.columns,
         file: window::file_name(&out),
+        key_bounds: projection.key_bounds,
     };
     write_atomic(
         &out.with_extension("manifest.json"),
@@ -408,6 +417,9 @@ pub struct Projection {
     /// the table's shape and are rebuilt from the row, so they are counted rather than
     /// written — the same treatment the puts of those faces already get.
     pub derived_deletes: usize,
+    /// `(column, min hex, max hex)` per prunable key column: what the file covers, so a fold
+    /// can skip it (`bounds`).
+    pub key_bounds: Vec<(String, String, String)>,
 }
 
 /// Render one window as a Parquet file plus what it holds.
@@ -561,6 +573,19 @@ pub fn write_parquet(win: &Window, out: &Path) -> Result<Projection> {
         arrays,
     )
     .map_err(|e| DrainError::new(format!("{}: change columns: {e}", win.table)))?;
+
+    // Where the file's keys start and end, before the batch goes anywhere: the fold prunes
+    // with this, and a manifest that has to be re-read from disk to know it would be a
+    // manifest that arrived too late.
+    let key_names: Vec<String> = win
+        .schema
+        .key_fields
+        .iter()
+        .map(|f| f.name.clone())
+        .collect();
+    projection.key_bounds = crate::bounds::to_manifest(
+        &crate::bounds::of_batch(&batch, &key_names).map_err(DrainError::new)?,
+    );
 
     crate::snapshot::parquet_io::write_batch(&batch, out)?;
 

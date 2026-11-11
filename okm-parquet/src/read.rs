@@ -449,12 +449,69 @@ fn keys_of_file(path: &Path, keys: &[String]) -> Result<(Vec<Vec<u8>>, bool)> {
 /// The files a fold has to rewrite: those holding a removal, and every file whose key also
 /// appears in another file. A file whose keys are exclusive to it (and that removes nothing)
 /// already states final rows — rewriting it would be work with no answer behind it.
+///
+/// Deciding this costs a look at the manifests, not at the table: each one records the range
+/// its keys cover, so two files can only share a key when those ranges overlap. Files that
+/// cannot overlap anything are never opened; only the overlapping ones have their key columns
+/// read, and that read confirms what the ranges only guessed.
 fn files_to_fold(table_dir: &Path, files: &[String], keys: &[String]) -> Result<Vec<String>> {
+    use crate::bounds::Bounds;
+
+    // Ranges and removals from the manifests: no data file is opened here.
+    let mut bounds: Vec<Option<Bounds>> = Vec::with_capacity(files.len());
+    let mut removes = vec![false; files.len()];
+    for (at, rel) in files.iter().enumerate() {
+        let manifest = crate::status::manifest_of(&table_dir.join(rel));
+        removes[at] = manifest.as_ref().is_some_and(|m| m.deletes > 0);
+        bounds.push(
+            manifest
+                .map(|m| crate::bounds::from_manifest(&m.key_bounds))
+                .filter(|b| !b.is_empty()),
+        );
+    }
+
+    // A file is a candidate when it removes something, when nothing bounds it, or when its
+    // range overlaps another's. Overlap on ONE key column is a necessary condition for sharing
+    // a key, so sweeping that column finds every candidate pair in a sorted pass.
+    let mut candidate = removes.clone();
+    let first = keys.first().cloned().unwrap_or_default();
+    // One column's ranges, in sortable order: overlap there is a necessary condition for
+    // sharing a key, so this pass finds every pair a key read would confirm.
+    let mut ranged: Vec<(usize, Vec<u8>, Vec<u8>)> = Vec::new();
+    for at in 0..files.len() {
+        match bounds[at].as_ref().and_then(|b| b.on(&first)) {
+            Some(bound) => ranged.push((at, bound.min.clone(), bound.max.clone())),
+            None => candidate[at] = true,
+        }
+    }
+    ranged.sort_by(|left, right| left.1.cmp(&right.1));
+    let mut reach: Option<(usize, Vec<u8>)> = None;
+    for (at, min, max) in ranged {
+        match reach.take() {
+            None => reach = Some((at, max)),
+            Some((prev, widest)) => {
+                if min <= widest {
+                    candidate[at] = true;
+                    candidate[prev] = true;
+                }
+                reach = Some(if max > widest {
+                    (at, max)
+                } else {
+                    (prev, widest)
+                });
+            }
+        }
+    }
+
+    // Only the candidates have their keys read, and only they can share one.
     let mut seen: HashMap<Vec<u8>, usize> = HashMap::new();
     let mut touched = vec![false; files.len()];
     for (at, rel) in files.iter().enumerate() {
-        let (here, removes) = keys_of_file(&table_dir.join(rel), keys)?;
-        if removes {
+        if !candidate[at] {
+            continue;
+        }
+        let (here, removed) = keys_of_file(&table_dir.join(rel), keys)?;
+        if removed {
             touched[at] = true;
         }
         for key in here {
@@ -623,6 +680,50 @@ pub fn condense(table_dir: &Path) -> Result<FoldReport> {
     crate::snapshot::parquet_io::write_batch(&batch, &scratch)?;
     let out = data_dir.join(&name);
     std::fs::rename(&scratch, &out)?;
+
+    // A folded file gets a manifest too: it carries the segments the files it replaced
+    // described, so provenance survives a fold and `status` can still count rows.
+    let mut segments: Vec<String> = Vec::new();
+    let mut layout_version = 0u8;
+    for rel in &touched {
+        if let Some(manifest) = crate::status::manifest_of(&table_dir.join(rel)) {
+            layout_version = layout_version.max(manifest.layout_version);
+            for segment in manifest.segments {
+                if !segments.contains(&segment) {
+                    segments.push(segment);
+                }
+            }
+        }
+    }
+    let manifest = crate::WindowManifest {
+        table: hex.clone(),
+        layout_version,
+        segments,
+        rows: batch.num_rows(),
+        deletes: 0,
+        columns: batch
+            .schema()
+            .fields()
+            .iter()
+            .map(|f| {
+                (
+                    f.name().clone(),
+                    format!("{:?}", f.data_type()),
+                    f.is_nullable(),
+                )
+            })
+            .collect(),
+        file: name.clone(),
+        key_bounds: crate::bounds::to_manifest(
+            &crate::bounds::of_batch(&batch, &keys).map_err(ReadError::new)?,
+        ),
+    };
+    let manifest_path = out.with_extension("manifest.json");
+    std::fs::write(
+        &manifest_path,
+        serde_json::to_string_pretty(&manifest)
+            .map_err(|e| ReadError::new(format!("manifest: {e}")))?,
+    )?;
 
     let commit = delta::commit_compaction(table_dir, &touched, &out, &keys)?;
     Ok(FoldReport {

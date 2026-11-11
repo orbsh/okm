@@ -2330,9 +2330,12 @@ panic lints allowed only in the places it names. So the runtime half of
       table and commits a `remove` per replaced file plus one `add` (copy-on-write), on top of
       a read path whose identity comes from the `okm.key` metadata (`read::current_state`).
       What is still owed:
-      (a) **a ROW-level removal** — a deletion vector over an untouched file, which needs to
-      know which file and which row hold a key: a key→file index (or one row per file). Until
-      then a removal is expressed either as a change row or as a whole-file replacement.
+      (a) **a ROW-level removal** — landed as a RANGE INDEX rather than a deletion vector: every
+      manifest records the key range its file covers (`key_bounds`, sortable-byte hex), so a
+      fold knows which files can possibly hold a key and opens only those. Removing one key
+      rewrites the file whose range holds it and leaves the rest of the table alone, which is
+      what a deletion vector buys minus the reader work of applying one. A `remove` action is
+      still whole-file: the COW shape is the contract, not an approximation of one.
       (b) **incremental convergence** — landed, both sides. The trigger is `DrainConfig.fold`
       (fold once the change files pass a count or a byte threshold) and the work is incremental:
       a fold rewrites only the files that share a key with another file or that hold a removal,
@@ -2346,6 +2349,8 @@ panic lints allowed only in the places it names. So the runtime half of
       manifest goes with it, and the sweep is idempotent (the log keeps naming deleted files,
       the disk does not, and a second run reports nothing). The log is never edited: what the
       table said stays true; only the bytes behind the old versions stop existing.
+      (b1b) **a folded file carries a manifest**, listing the segments of the files it replaced:
+      a fold is now invisible to provenance and to `status`.
       (b3) **merging two windows of open fields** — landed: `parquet-variant` was already a
       dependency for the write side, so the fold decodes each `variant` cell, unions the objects
       field by field (later window wins, nested objects merge) and RE-ENCODES the half via
