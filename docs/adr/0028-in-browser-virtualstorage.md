@@ -2,8 +2,9 @@
 
 > **Languages:** [English](0028-in-browser-virtualstorage.md) (primary) · [中文](0028-in-browser-virtualstorage.zh-CN.md)
 
-**Status:** Implemented (8d00132 + 8a12f81; consumed by the mudra panel —
-remote.rs over `WireClient`, UI state over `LocalStorageStore`).
+**Status:** Implemented (8d00132 + 8a12f81). **Amended 2026-11-10: the
+`LocalStorageStore` half is WITHDRAWN** — the sync browser engine, its `localstorage`
+feature and `web-sys` left `okm-core`; the wire client half stands. See §Withdrawal.
 
 ## Context
 
@@ -104,3 +105,37 @@ in-memory-transport suite); panel local state (`filters`/`collapsed`/
 `sortNew` — today in-memory signals) gets `LocalStorageStore` behind the
 `localstorage` feature. Gated by the mudra offline criterion:
 `cargo check --target wasm32-unknown-unknown` with the feature on.
+
+## Withdrawal (2026-11-10): the sync browser engine
+
+`LocalStorageStore` is gone. The record above says what it was for, and it is kept that way;
+what follows is why it was removed rather than the other way round.
+
+**Its only consumer stored two keys of UI state.** The mudra panel persisted `filters` and
+`collapsed` — a few dozen bytes, best effort, defaults win when absent. An engine that
+implements a full `VirtualStorage` (scan over every key on the origin, batch, remote handle)
+is the wrong tool for a cache of two blobs, and the panel now holds `web_sys::Storage`
+directly in ~30 lines with the same byte shape.
+
+**Core's dependency closure is a checked boundary.** ADR-0059 removed tokio and slatedb from
+it and added a CI check, because a store library that carries an async runtime and an object
+store is a store library every consumer pays for. `web-sys` was the same impurity one layer
+over, and — unlike the local engines — this backend could not be exercised by a single test
+in this repository: its only target is `wasm32`, and the one testable piece was the base64
+crossing.
+
+**What the argument does not license.** A browser-local *engine* is still a reasonable thing
+to want — an app whose whole dataset lives in the page. That engine cannot be a `VirtualStorage`
+(core is sync, and no browser store with durability is), so it belongs in `okm-async`, beside
+`SlatedbStore`, as an implementation of `VirtualStorageAsync`. SurrealKV is the obvious
+candidate on paper (synchronous point reads and iteration, asynchronous commit pipeline,
+Apache-2.0, `wasm32` build in CI) and is what to evaluate when such a consumer appears, with
+the constraints its own README states: a `Tree` mounts in a **dedicated Web Worker** over OPFS,
+one worker owns a database at a time, and the wasm target is Tier 2 (built, not natively
+tested). Its link cost, its Tokio-runtime requirement and the rest of the measurement are in
+`docs/ideas/surrealkv-as-a-backend.md`. None of that changes this withdrawal: a UI-state cache is not a reason to put an LSM
+engine in a panel.
+
+**What stands.** The other half of this ADR is untouched: `WireClient` + `WireTransport` are
+the async surface a browser uses for everything that is not local, and the panel's remote path
+still goes through them.

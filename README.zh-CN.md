@@ -314,7 +314,6 @@ okm-core = { version = "0.1", features = ["fjall"] }    # 或 "redb"；异步引
 | `FjallStore` | `engine/fjall_backend.rs` | 本地 LSM（feature `fjall`） | 是 |
 | `RedbStore` | `engine/redb_backend.rs` | COW B-tree（feature `redb`） | 是 |
 | `SlatedbSync` | `engine/slatedb_backend.rs` | slatedb 的同步视图；异步面是 `SlatedbStore` | 否 |
-| `LocalStorageStore` | `engine/localstorage_backend.rs` | 浏览器 localStorage（feature `localstorage`） | 是 |
 | `RemoteStore` | `engine/nest.rs` | 线上客户端；它的服务端半边 `NestStorage` 是一个引擎互斥量上的泵，**不是** `VirtualStorage` | 否 |
 | `TestStore` | `engine/test_engine.rs` | 跑真实引擎的测试矩阵（slatedb 内存 / fjall / redb） | 是 |
 | `EngineBox` | `bindings/okm-entry` | **适配器**：分派到进程内 `TestStore` 或宿主注入的 `Engine`（四个字节方法）——让宿主可以持有另一份 okm 构建 | 否 |

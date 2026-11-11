@@ -13,7 +13,6 @@ getrandom = "0.3"
 fjall = { version = "3.1.10", optional = true }
 redb = { version = "4.2", optional = true }
 tempfile = { version = "3", optional = true }
-web-sys = { version = "0.3", optional = true, features = ["Window", "Storage"] }
 
 [build-dependencies]
 proc-macro2 = "1"
@@ -25,7 +24,6 @@ default = []
 schema-serde = ["dep:serde", "dep:serde_json"]
 fjall = ["dep:fjall", "dep:tempfile"]
 redb = ["dep:redb", "dep:tempfile"]
-localstorage = ["dep:web-sys"]
 
 [dev-dependencies]
 tempfile = "3"

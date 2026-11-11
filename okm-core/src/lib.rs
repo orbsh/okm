@@ -23,7 +23,6 @@
 //!
 //! - `fjall` — sync [`FjallStore`] engine adapter.
 //! - `redb` — sync [`RedbStore`] engine adapter.
-//! - `localstorage` — the in-browser adapter.
 //!
 //! The engine whose own API is asynchronous lives in `okm-async` (ADR-0059),
 //! together with the async mirror of the storage contract.
@@ -95,8 +94,6 @@ pub use subscribe::{Event, Op, SinkCell};
 
 #[cfg(feature = "fjall")]
 pub use engine::fjall_backend::FjallStore;
-#[cfg(feature = "localstorage")]
-pub use engine::localstorage_backend::{LocalStorageStore, b64_decode, b64_encode};
 
 // ================= path-compat re-exports =================
 // Downstream crates (okm-dynamic, okm-query, bindings) and tests import
@@ -104,8 +101,6 @@ pub use engine::localstorage_backend::{LocalStorageStore, b64_decode, b64_encode
 
 #[cfg(feature = "fjall")]
 pub use engine::fjall_backend;
-#[cfg(feature = "localstorage")]
-pub use engine::localstorage_backend;
 pub use engine::nest;
 #[cfg(feature = "redb")]
 pub use engine::redb_backend;

@@ -6,7 +6,7 @@
 //! matrix is `okm_async::TestStore`, used by integration tests.
 
 /// Minimal KV engine interface: one ordered-read primitive (`scan_range`)
-/// plus point reads and batches. The `fjall` / `redb` / `localstorage` features
+/// plus point reads and batches. The `fjall` / `redb` features
 /// each provide an implementation; unit tests run on
 /// [`crate::engine::mem_store::MemStore`], and the real-engine matrix is
 /// `okm_async::TestStore` (ADR-0059).

@@ -389,7 +389,6 @@ Eight types implement the sync contract — six backends and two adapters:
 | `FjallStore` | `engine/fjall_backend.rs` | local LSM (feature `fjall`) | yes |
 | `RedbStore` | `engine/redb_backend.rs` | COW B-tree (feature `redb`) | yes |
 | `SlatedbSync` | `engine/slatedb_backend.rs` | sync view over slatedb; the async face is `SlatedbStore` | no |
-| `LocalStorageStore` | `engine/localstorage_backend.rs` | browser localStorage (feature `localstorage`) | yes |
 | `RemoteStore` | `engine/nest.rs` | wire client; its server half `NestStorage` is a pump over one engine mutex, NOT a `VirtualStorage` | no |
 | `TestStore` | `engine/test_engine.rs` | test matrix over the real engines (slatedb-mem / fjall / redb) | yes |
 | `EngineBox` | `bindings/okm-entry` | **adapter**: dispatches to an in-process `TestStore` or a host-injected `Engine` (four byte methods) — what lets a host hold a different okm build | no |

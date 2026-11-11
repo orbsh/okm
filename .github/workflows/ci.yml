@@ -42,10 +42,10 @@ jobs:
       # ADR-0059's boundary, checked by the build rather than by memory. `-e normal`
       # is the point: dev-dependencies may carry the engines (tests want the real
       # matrix), the library's own edges may not.
-      - name: core carries no async face
+      - name: core carries no async face and no browser API
         run: |
           cargo tree -p okm-core -e normal > "$RUNNER_TEMP/core-tree.txt"
-          ! grep -Eq 'tokio|slatedb' "$RUNNER_TEMP/core-tree.txt"
+          ! grep -Eq 'tokio|slatedb|web-sys|wasm-bindgen' "$RUNNER_TEMP/core-tree.txt"
           ! grep -rq slatedb okm-core/src
 
   binding:

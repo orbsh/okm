@@ -5,8 +5,6 @@
 
 #[cfg(feature = "fjall")]
 pub mod fjall_backend;
-#[cfg(feature = "localstorage")]
-pub mod localstorage_backend;
 pub mod nest;
 #[cfg(feature = "redb")]
 pub mod redb_backend;

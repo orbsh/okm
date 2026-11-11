@@ -2,8 +2,9 @@
 
 > **Languages:** [English](0028-in-browser-virtualstorage.md)（主文档） · [中文](0028-in-browser-virtualstorage.zh-CN.md)
 
-**状态：** Implemented（8d00132 + 8a12f81；mudra 面板已消费——remote.rs 跑 `WireClient`，
-UI 态跑 `LocalStorageStore`）。
+**状态：** Implemented（8d00132 + 8a12f81）。**2026-11-10 修订：`LocalStorageStore` 一半已
+撤除**——那个同步浏览器引擎、它的 `localstorage` feature 与 `web-sys` 一起离开了 `okm-core`；
+线协议客户端那一半保留。见「撤除」一节。
 
 ## 背景
 
@@ -91,3 +92,28 @@ crate 的测试基线——以 native 内存传输套件移植进 okm）；面�
 （`filters`/`collapsed`/`sortNew`，现为内存 signal）在 `localstorage`
 feature 后接 `LocalStorageStore`。受 mudra 离线判据门控：该 feature 开启
 状态下 `cargo check --target wasm32-unknown-unknown` 绿。
+
+## 撤除（2026-11-10）：同步浏览器引擎
+
+`LocalStorageStore` 已经删掉了。上面记的是它当年要做什么，保留原样；下面是为什么是删它、
+而不是别的做法。
+
+**它唯一的消费者只存两个键的 UI 态。** mudra 面板持久化的是 `filters` 与 `collapsed`——几十
+字节、尽力而为、缺席时用默认值。为一个两个 blob 的缓存去实现完整的 `VirtualStorage`（扫遍该源
+下所有键、批量、远端句柄）是用错了工具；面板现在直接拿 `web_sys::Storage`，三十行左右，字节
+形状不变。
+
+**core 的依赖闭包是一条被检查的边界。** ADR-0059 把 tokio 与 slatedb 从里面拿走并加了 CI 检查，
+理由是：一个把异步运行时和对象存储带在身上的存储库，是每个消费者都要付账的存储库。`web-sys`
+是同一类杂质，只是换了一层——而且与本地的那些引擎不同，这个后端在本仓里一个测试也跑不了：它
+唯一的目标是 `wasm32`，而唯一可测的部分是 base64 那道跨界。
+
+**这套论证不授权的东西。** 一个浏览器内的**引擎**仍然是合理的需求——整个数据集就活在页面里
+的应用。那个引擎不可能是 `VirtualStorage`（core 是同步的，而有持久性的浏览器存储都不是），
+所以它归 `okm-async`，与 `SlatedbStore` 并列，实现 `VirtualStorageAsync`。纸上最合适的候选是
+SurrealKV（点读与迭代同步、提交流水线异步、Apache-2.0、CI 里给 `wasm32` 建过），等真有这样的
+消费者出现时再评估，并带着它自己 README 写明的约束：`Tree` 必须挂在**专属 Web Worker** 上、文件放 OPFS，同一时刻只有一个 worker 持有某个数据库，wasm 只是 Tier 2（建过、没在本机跑过测试）。它的链接体积、Tokio 运行时的硬要求与其余实测记在 `docs/ideas/surrealkv-as-a-backend.md`。
+这些都不改变本次撤除：UI 态缓存不是把一个 LSM 引擎塞进面板的理由。
+
+**保留的东西。** 这份 ADR 的另一半没有动：`WireClient` + `WireTransport` 仍是浏览器用来处理
+一切「非本地」的异步面，面板的远端路径仍然走它们。
