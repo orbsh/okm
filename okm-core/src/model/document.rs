@@ -48,7 +48,7 @@ pub struct Collection<S, K: KeyEncode, R: Document<Key = K>> {
     /// (ADR-0062), and the ns is part of the KEY HEADER, so the whole handle has
     /// to move — every verb here already funnels through [`Self::header`], which
     /// is why this is one field and not a second write path.
-    ns_override: Option<[u8; 2]>,
+    ns_override: Option<u16>,
     _marker: std::marker::PhantomData<(K, R)>,
 }
 
@@ -80,17 +80,33 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
             store,
             epoch: std::cell::Cell::new(0),
             fields_vocab: std::cell::RefCell::new(Vocabulary::new()),
-            ns_override: Some(ns.to_be_bytes()),
+            ns_override: Some(ns),
             _marker: std::marker::PhantomData,
         }
     }
 
-    /// The ns this handle is rooted at.
-    pub fn ns(&self) -> u16 {
-        u16::from_be_bytes(
-            self.ns_override
-                .unwrap_or([R::NS_PREFIX[0], R::NS_PREFIX[1]]),
-        )
+    /// The same handle rooted at another ns, over the same engine — the
+    /// restore's mapping (ADR-0062) without naming the key and row types again.
+    pub fn rebased(&self, ns: u16) -> Self
+    where
+        S: Clone,
+    {
+        Self {
+            store: self.store.clone(),
+            epoch: std::cell::Cell::new(0),
+            fields_vocab: std::cell::RefCell::new(Vocabulary::new()),
+            ns_override: Some(ns),
+            _marker: std::marker::PhantomData,
+        }
+    }
+
+    /// The ns this handle is rooted at — `None` when the declaration carries no
+    /// `[ns 2B]` header at all (a test document may not).
+    pub fn ns(&self) -> Option<u16> {
+        self.ns_override.or_else(|| {
+            (R::NS_PREFIX.len() == 2)
+                .then(|| u16::from_be_bytes([R::NS_PREFIX[0], R::NS_PREFIX[1]]))
+        })
     }
 
     pub fn store(&self) -> &S {
@@ -114,7 +130,13 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     pub fn header(&self) -> Vec<u8> {
         let mut buf = Vec::with_capacity(3);
         buf.extend_from_slice(R::PARTITION_PREFIX);
-        buf.extend_from_slice(&self.ns_override.unwrap_or([R::NS_PREFIX[0], R::NS_PREFIX[1]]));
+        // The declaration's own header is used VERBATIM when no override is set: a
+        // document without an `[ns 2B]` (an `okm-core` test fixture) must keep
+        // writing exactly the bytes it always did.
+        match self.ns_override {
+            Some(ns) => buf.extend_from_slice(&ns.to_be_bytes()),
+            None => buf.extend_from_slice(R::NS_PREFIX),
+        }
         buf
     }
 
@@ -1021,8 +1043,8 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
 
 use std::collections::BTreeMap;
 
-use okm_value::DynamicValue;
 use crate::model::obj_vocab::{FIELD_VOCAB, Faces, Vocabulary, pending_in};
+use okm_value::DynamicValue;
 
 impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> {
     /// Dynamic-segment key: `[header][0x01][key payload]` — the per-document
@@ -1265,9 +1287,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         // answers ids, so an engine failure is parked and re-raised after the
         // walk (a nested decode has nowhere else to put it).
         let mut failed: Option<crate::error::Error> = None;
-        let frames = okm_value::decode_named(&raw, &mut |id| match d.name_of(
-            &mut door, id,
-        ) {
+        let frames = okm_value::decode_named(&raw, &mut |id| match d.name_of(&mut door, id) {
             Ok(name) => name,
             Err(e) => {
                 failed = Some(e);

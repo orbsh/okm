@@ -88,7 +88,7 @@ pub fn json_schema<K: KeyEncode, R: Document<Key = K>>() -> String {
 /// Parquet snapshot tier (ADR-0007 Phase 3): batch → file, file → store.
 pub mod parquet_io {
     use super::*;
-    use arrow::array::{Array, BinaryArray, RecordBatch};
+    use arrow::array::{Array, BinaryArray};
     use okm_core::engine::storage::VirtualStorage;
     use okm_core::model::document::Collection;
     use std::sync::Arc;
@@ -434,118 +434,142 @@ pub mod parquet_io {
         collection: &mut Collection<S, K, R>,
         path: &std::path::Path,
     ) -> parquet::errors::Result<usize> {
-        let key_fields = <K as KeyEncode>::FIELDS;
-        let row_fields = <R as Document>::FIELDS;
-        let nkey = key_fields.len();
-
         let file = std::fs::File::open(path)?;
         let reader = parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(file)?
             .build()?;
-
         let mut count = 0usize;
         for batch in reader {
-            let batch: RecordBatch = batch?;
-            let n = batch.num_rows();
+            count += import_parquet_batch(collection, &batch?)?;
+        }
+        Ok(count)
+    }
 
-            // Vocabulary keys live under the same `[part][ns]` header the
-            // intern hook writes through.
-            let mut ns_header = <R as Document>::PARTITION_PREFIX.to_vec();
-            ns_header.extend_from_slice(<R as Document>::NS_PREFIX);
+    /// A Parquet file's batches, in memory — what a lake hands over: a producer
+    /// publishes bytes, so a restore must be able to read bytes (ADR-0062).
+    pub fn read_batches(
+        bytes: bytes::Bytes,
+    ) -> parquet::errors::Result<Vec<arrow::array::RecordBatch>> {
+        let reader = parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(bytes)?
+            .build()?;
+        let mut batches = Vec::new();
+        for batch in reader {
+            batches.push(batch?);
+        }
+        Ok(batches)
+    }
 
-            // Phase 1 — reassemble per-document bytes: key encoding
-            // (declaration-order BE fields) then the two-segment payload —
-            // [hot segment][cold TLV] — matching the
-            // export-side layout. Labels intern here, so this phase borrows the
-            // store mutably; it ends before the rows land.
-            let (keys, payloads) = {
-                let store = collection.store_mut();
-                let mut keys: Vec<Vec<u8>> = vec![Vec::with_capacity(K::KEY_LEN); n];
-                for (fi, f) in key_fields.iter().enumerate() {
-                    let col = batch.column(fi);
-                    for (document, krow) in keys.iter_mut().enumerate() {
-                        let wb = wire_bytes(col, document, f, store, &ns_header)
-                            .map_err(parquet::errors::ParquetError::General)?;
-                        krow.extend_from_slice(&wb);
-                    }
+    /// ONE batch into a collection — the body of [`Self::import_parquet`], so a
+    /// caller holding bytes (a lake) never routes them through a file.
+    ///
+    /// The collection decides the ns: `Collection::with_ns` roots the same
+    /// declaration at another namespace, and the vocabulary header this rebuilds
+    /// follows it, so a restore can map a table into a namespace the application
+    /// just created (ADR-0062).
+    pub fn import_parquet_batch<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>>(
+        collection: &mut Collection<S, K, R>,
+        batch: &arrow::array::RecordBatch,
+    ) -> parquet::errors::Result<usize> {
+        let key_fields = <K as KeyEncode>::FIELDS;
+        let row_fields = <R as Document>::FIELDS;
+        let nkey = key_fields.len();
+        let n = batch.num_rows();
+        // Vocabulary keys live under the same `[part][ns]` header the intern hook
+        // writes through — the COLLECTION's, not the declaration's.
+        let ns_header = collection.header();
+        let mut count = 0usize;
+        // Phase 1 — reassemble per-document bytes: key encoding
+        // (declaration-order BE fields) then the two-segment payload —
+        // [hot segment][cold TLV] — matching the
+        // export-side layout. Labels intern here, so this phase borrows the
+        // store mutably; it ends before the rows land.
+        let (keys, payloads) = {
+            let store = collection.store_mut();
+            let mut keys: Vec<Vec<u8>> = vec![Vec::with_capacity(K::KEY_LEN); n];
+            for (fi, f) in key_fields.iter().enumerate() {
+                let col = batch.column(fi);
+                for (document, krow) in keys.iter_mut().enumerate() {
+                    let wb = wire_bytes(col, document, f, store, &ns_header)
+                        .map_err(parquet::errors::ParquetError::General)?;
+                    krow.extend_from_slice(&wb);
                 }
-                // No payload header: the hot width is the declaration's, so an
-                // imported row starts straight at its first field (ADR-0042).
-                let mut payloads: Vec<Vec<u8>> = vec![Vec::new(); n];
-                // Hot segment: contiguous fixed-width runs (no frame headers).
-                for (fi, f) in row_fields.iter().enumerate() {
-                    if f.width == 0 {
-                        continue;
-                    }
-                    let col = batch.column(nkey + fi);
-                    for (document, prow) in payloads.iter_mut().enumerate() {
-                        let wb = wire_bytes(col, document, f, store, &ns_header)
-                            .map_err(parquet::errors::ParquetError::General)?;
-                        prow.extend_from_slice(&wb);
-                    }
+            }
+            // No payload header: the hot width is the declaration's, so an
+            // imported row starts straight at its first field (ADR-0042).
+            let mut payloads: Vec<Vec<u8>> = vec![Vec::new(); n];
+            // Hot segment: contiguous fixed-width runs (no frame headers).
+            for (fi, f) in row_fields.iter().enumerate() {
+                if f.width == 0 {
+                    continue;
                 }
-                // Cold segment: one TLV frame per variable-length field, tag =
-                // the field's declaration index.
-                for (fi, f) in row_fields.iter().enumerate() {
-                    if f.width > 0 {
-                        continue;
-                    }
-                    let col = batch.column(nkey + fi);
-                    for (document, prow) in payloads.iter_mut().enumerate() {
-                        let wb = wire_bytes(col, document, f, store, &ns_header)
-                            .map_err(parquet::errors::ParquetError::General)?;
-                        prow.push(fi as u8);
-                        // P2 wire: frame length is the prefix-monotonic varint
-                        // (shared codec — one length discipline everywhere).
-                        okm_core::put_len(prow, wb.len());
-                        prow.extend_from_slice(&wb);
-                    }
+                let col = batch.column(nkey + fi);
+                for (document, prow) in payloads.iter_mut().enumerate() {
+                    let wb = wire_bytes(col, document, f, store, &ns_header)
+                        .map_err(parquet::errors::ParquetError::General)?;
+                    prow.extend_from_slice(&wb);
                 }
-                (keys, payloads)
+            }
+            // Cold segment: one TLV frame per variable-length field, tag =
+            // the field's declaration index.
+            for (fi, f) in row_fields.iter().enumerate() {
+                if f.width > 0 {
+                    continue;
+                }
+                let col = batch.column(nkey + fi);
+                for (document, prow) in payloads.iter_mut().enumerate() {
+                    let wb = wire_bytes(col, document, f, store, &ns_header)
+                        .map_err(parquet::errors::ParquetError::General)?;
+                    prow.push(fi as u8);
+                    // P2 wire: frame length is the prefix-monotonic varint
+                    // (shared codec — one length discipline everywhere).
+                    okm_core::put_len(prow, wb.len());
+                    prow.extend_from_slice(&wb);
+                }
+            }
+            (keys, payloads)
+        };
+
+        // Phase 2 — the normal write contract (primary + indexes + faces),
+        // plus the dynamic segment the `variant` column carries. A row whose
+        // payload columns are ALL null is a segment-only document (ADR-0035's
+        // pair of slots): it imports as a segment and NO row, instead of an
+        // invented default payload the export never had.
+        let variant_idx = batch
+            .schema()
+            .fields()
+            .iter()
+            .position(|f| f.name() == "variant");
+        let payload_cols: Vec<usize> = (nkey..batch.num_columns())
+            .filter(|i| Some(*i) != variant_idx)
+            .collect();
+        for document in 0..n {
+            let key = K::decode(&keys[document]);
+            // No payload columns at all (a fieldless row) cannot be told
+            // apart from a segment-only document here, so the row is written:
+            // an empty payload is the only thing a fieldless table exports.
+            let has_row = payload_cols.is_empty()
+                || payload_cols
+                    .iter()
+                    .any(|i| !batch.column(*i).is_null(document));
+            if has_row {
+                let rv = R::decode_payload(&payloads[document]);
+                collection
+                    .put(&key, &rv)
+                    .map_err(|e| parquet::errors::ParquetError::General(e.to_string()))?;
+                count += 1;
+            }
+            let segment = match variant_idx {
+                Some(vi) => segment_from_variant(batch.column(vi), document)
+                    .map_err(parquet::errors::ParquetError::General)?,
+                None => None,
             };
-
-            // Phase 2 — the normal write contract (primary + indexes + faces),
-            // plus the dynamic segment the `variant` column carries. A row whose
-            // payload columns are ALL null is a segment-only document (ADR-0035's
-            // pair of slots): it imports as a segment and NO row, instead of an
-            // invented default payload the export never had.
-            let variant_idx = batch
-                .schema()
-                .fields()
-                .iter()
-                .position(|f| f.name() == "variant");
-            let payload_cols: Vec<usize> = (nkey..batch.num_columns())
-                .filter(|i| Some(*i) != variant_idx)
-                .collect();
-            for document in 0..n {
-                let key = K::decode(&keys[document]);
-                // No payload columns at all (a fieldless row) cannot be told
-                // apart from a segment-only document here, so the row is written:
-                // an empty payload is the only thing a fieldless table exports.
-                let has_row = payload_cols.is_empty()
-                    || payload_cols
-                        .iter()
-                        .any(|i| !batch.column(*i).is_null(document));
-                if has_row {
-                    let rv = R::decode_payload(&payloads[document]);
-                    collection
-                        .put(&key, &rv)
-                        .map_err(|e| parquet::errors::ParquetError::General(e.to_string()))?;
-                    count += 1;
-                }
-                let segment = match variant_idx {
-                    Some(vi) => segment_from_variant(batch.column(vi), document)
-                        .map_err(parquet::errors::ParquetError::General)?,
-                    None => None,
-                };
-                if let Some(map) = segment {
-                    // Segment names are by construction non-declared, so this
-                    // merge writes the segment and leaves the row alone. A
-                    // declared name would come back as an error rather than a
-                    // silent default — the import path propagates it.
-                    collection
-                        .merge(&key, &map)
-                        .map_err(|e| parquet::errors::ParquetError::General(e.to_string()))?;
-                }
+            if let Some(map) = segment {
+                // Segment names are by construction non-declared, so this
+                // merge writes the segment and leaves the row alone. A
+                // declared name would come back as an error rather than a
+                // silent default — the import path propagates it.
+                collection
+                    .merge(&key, &map)
+                    .map_err(|e| parquet::errors::ParquetError::General(e.to_string()))?;
             }
         }
         Ok(count)
@@ -558,10 +582,7 @@ pub mod parquet_io {
     fn segment_from_variant(
         col: &dyn arrow::array::Array,
         row: usize,
-    ) -> Result<
-        Option<std::collections::BTreeMap<String, okm_value::DynamicValue>>,
-        String,
-    > {
+    ) -> Result<Option<std::collections::BTreeMap<String, okm_value::DynamicValue>>, String> {
         if col.is_null(row) {
             return Ok(None);
         }
@@ -589,9 +610,7 @@ pub mod parquet_io {
     /// Variant → DynamicValue. Integers come back SIGNED (the export widens UInt to
     /// i64, a documented limitation), so a non-negative value is restored as `UInt`
     /// and a negative one as `Int` — the export cannot tell them apart.
-    fn dynamic_from_variant(
-        v: parquet_variant::Variant<'_, '_>,
-    ) -> okm_value::DynamicValue {
+    fn dynamic_from_variant(v: parquet_variant::Variant<'_, '_>) -> okm_value::DynamicValue {
         use okm_value::DynamicValue as DV;
         if v.as_null().is_some() {
             return DV::Null;
@@ -731,9 +750,8 @@ pub mod parquet_io {
             let mut heads: Vec<EdgeHead> = Vec::with_capacity(n);
             let mut ids: Vec<u64> = Vec::with_capacity(n);
             let mut payloads: Vec<E> = Vec::with_capacity(n);
-            let mut props: Vec<
-                std::collections::BTreeMap<String, okm_value::DynamicValue>,
-            > = Vec::with_capacity(n);
+            let mut props: Vec<std::collections::BTreeMap<String, okm_value::DynamicValue>> =
+                Vec::with_capacity(n);
             {
                 let store = self.store_mut();
                 let mut ns_header = <E as Document>::PARTITION_PREFIX.to_vec();
@@ -819,10 +837,7 @@ pub mod parquet_io {
     fn variant_map(
         col: &dyn arrow::array::Array,
         row: usize,
-    ) -> Result<
-        std::collections::BTreeMap<String, okm_value::DynamicValue>,
-        String,
-    > {
+    ) -> Result<std::collections::BTreeMap<String, okm_value::DynamicValue>, String> {
         use arrow::array::{Array, BinaryArray, StructArray};
 
         // The canonical storage type of a variant: `struct<metadata: binary,
@@ -852,9 +867,7 @@ pub mod parquet_io {
         }
         Ok(out)
     }
-    fn to_dynamic(
-        v: &parquet_variant::Variant<'_, '_>,
-    ) -> okm_value::DynamicValue {
+    fn to_dynamic(v: &parquet_variant::Variant<'_, '_>) -> okm_value::DynamicValue {
         use okm_value::DynamicValue;
         if v.as_null().is_some() {
             return DynamicValue::Null;

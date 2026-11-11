@@ -63,8 +63,8 @@
 use crate::engine::storage::{Batch, VirtualStorage, scan_suffix_kv};
 use crate::model::index::{DYNAMIC_SLOT, Document, PRIMARY_SLOT, Slot, write_slot};
 use crate::model::key::KeyEncode;
-use okm_value::{DynamicValue, decode_named};
 use crate::model::obj_vocab::{Faces, PREDICATE_VOCAB, Vocabulary};
+use okm_value::{DynamicValue, decode_named};
 
 /// Fixed face 0x06: out-edge traversal, pair-qualified
 /// (`[src][dst][edge_id]`): prefix on `src` deliberately keeps the "all of a
@@ -328,6 +328,33 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
         }
     }
 
+    /// Whether the edge table holds no edge at all — the restore's emptiness
+    /// check for a graph (ADR-0062): nodes and edges share one ns, so "the
+    /// namespace is empty" has to ask about both.
+    pub fn has_edges(&self) -> crate::error::Result<bool> {
+        let mut prefix = self.ns.to_vec();
+        write_slot(&mut prefix, PRIMARY_SLOT);
+        let end = crate::engine::storage::prefix_end(&prefix);
+        Ok(self
+            .store
+            .scan_range_iter(&prefix, end.as_deref())
+            .next()
+            .is_some())
+    }
+
+    /// The same graph rooted at another ns, over the same engine (ADR-0062).
+    pub fn rebased(&self, ns: u16) -> Self
+    where
+        S: Clone,
+    {
+        Self {
+            store: self.store.clone(),
+            vocab: Vocabulary::new(),
+            ns: ns.to_be_bytes(),
+            _pd: std::marker::PhantomData,
+        }
+    }
+
     /// The ns this graph is rooted at.
     pub fn ns(&self) -> u16 {
         u16::from_be_bytes(self.ns)
@@ -530,11 +557,8 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
         }
         let body = {
             let mut dict = Vocabulary::<u16>::new();
-            let mut door = Faces::<_, u16>::new(
-                &self.store,
-                &self.ns,
-                crate::model::obj_vocab::FIELD_VOCAB,
-            );
+            let mut door =
+                Faces::<_, u16>::new(&self.store, &self.ns, crate::model::obj_vocab::FIELD_VOCAB);
             let mut resolver = |name: &str| dict.ensure(&mut door, name);
             okm_value::encode(fields, &mut resolver)?
         };
@@ -556,22 +580,16 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
             None => return Ok(None),
         };
         let mut dict = Vocabulary::<u16>::new();
-        let mut door = Faces::<_, u16>::new(
-            &self.store,
-            &self.ns,
-            crate::model::obj_vocab::FIELD_VOCAB,
-        );
+        let mut door =
+            Faces::<_, u16>::new(&self.store, &self.ns, crate::model::obj_vocab::FIELD_VOCAB);
         let mut failed: Option<crate::error::Error> = None;
-        let frames = decode_named(
-            &raw,
-            &mut |id| match dict.name_of(&mut door, id) {
-                Ok(name) => name,
-                Err(e) => {
-                    failed = Some(e);
-                    None
-                }
-            },
-        );
+        let frames = decode_named(&raw, &mut |id| match dict.name_of(&mut door, id) {
+            Ok(name) => name,
+            Err(e) => {
+                failed = Some(e);
+                None
+            }
+        });
         if let Some(e) = failed {
             return Err(e);
         }
