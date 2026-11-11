@@ -27,7 +27,7 @@
 - [0025 — 双模式载体共用一个键空间：静态 codegen 与动态 schema 数据](0025-runtime-ns-dynamic-collection.md)（已接受——字节恒等的两种写入模式；模式是写入方的属性，不是数据的）— [中文](0025-runtime-ns-dynamic-collection.zh-CN.md)
 - [0026 — VirtualStorage 写操作取 &self：共享句柄契约一次说清](0026-virtualstorage-shared-handle-writes.md)（已接受，已实现——写操作取 `&self`，`BatchStore` 用 `RefCell<&mut Batch>` 持有可变 op 列表）— [中文](0026-virtualstorage-shared-handle-writes.zh-CN.md)
 - [0027 — VirtualStorage 接口审计：派生便利方法退出 trait](0027-virtualstorage-surface-audit.md)（已接受并实施——scan_suffix_kv 与 batch() 出 trait、KvBatch 删除、异步面按审计后形态对齐）— [中文](0027-virtualstorage-surface-audit.zh-CN.md)
-- [0028 — 浏览器内的 VirtualStorage 家族：localStorage 引擎 + 异步线协议客户端](0028-in-browser-virtualstorage.md)（已接受并实现）— [中文](0028-in-browser-virtualstorage.zh-CN.md)
+- [0028 — 浏览器内的 VirtualStorage 家族：异步线协议客户端（localStorage 引擎已于 2026-11-10 撤除）](0028-in-browser-virtualstorage.md)（已接受并实现，同步引擎部分撤除——它唯一的消费者只存两个 UI 键，面板现在直接用 `web_sys::Storage`；浏览器内的**引擎**若有真实需求，归 `okm-async` 的 `VirtualStorageAsync`，core 依赖闭包保持无 `web-sys`）— [中文](0028-in-browser-virtualstorage.zh-CN.md)
 - [0029 — 路径索引：在无 schema 区上声明的路径](0029-path-index.md)（已接受并实现——Path 组件词汇 + 自定界无计数编码 + 一路径一 slot；挂在动态段写路径上）— [中文](0029-path-index.zh-CN.md)
 - [0030 — slot：固定面一字节，计数族两字节](0030-slot-fixed-faces-and-counting-families.md)（已接受并落地——单张面的族各占一个 1 字节号 0x00–0x0A（含图的一对谓词词汇表 0x04/0x05）；计数族保留 2 字节 slot 与 12 位计数，号码与上限不变）— [中文](0030-slot-fixed-faces-and-counting-families.zh-CN.md)
 - [0031 — 批量写路径承载语义：BatchStore 适配器](0031-batch-write-semantics.md)（已接受并落地——点读穿透 batch、scan 大声拒绝；`save_with_prev_into` 让跨表原子提交与 reduce 并存，旧面在同一批内删除）— [中文](0031-batch-write-semantics.zh-CN.md)

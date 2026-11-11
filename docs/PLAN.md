@@ -1306,7 +1306,10 @@ bytes; doing them after P3 means hex locks change once, not twice.
 ## In-browser VirtualStorage family (ADR-0028, 2026-09-29)
 
 - [x] Design record shipped; code shipped (8d00132 + 8a12f81) and consumed
-      by the mudra panel (wire side + UI-state `LocalStorageStore`). Two
+      by the mudra panel (wire side + UI-state `LocalStorageStore`). **The sync
+      engine half was withdrawn 2026-11-10** (see the entry at the end of this file):
+      `localstorage` / `LocalStorageStore` / `web-sys` left `okm-core`, and the panel
+      holds `web_sys::Storage` itself. Two
       browser roles, two traits —
       localStorage as a SYNC `VirtualStorage` engine (feature
       `localstorage`; the only sync browser storage, ADR-0018's
@@ -3218,3 +3221,38 @@ wrong pick answers with the other field's value). `Error::LayoutMismatch` had no
 and is gone; every doc that named it (MODELING both languages, ADR-0042 §1/§5, ADR-0043 §4,
 ADR-0048 §4/§5, the ADR index) now states the rule that replaced it. Gate: 538 tests, 0 failed;
 clippy clean; `cargo fmt --check` clean.
+
+## 2026-11-10 — the sync browser engine leaves core (ADR-0028 amended)
+
+An AI-written evaluation argued for replacing the localStorage backend with SurrealKV, on the
+grounds that SurrealKV has synchronous point reads and asynchronous commits and runs in the
+browser over OPFS. Checked against the crate's own documentation: that much is true —
+synchronous reads and iteration, an async commit pipeline, Apache-2.0, and a `wasm32` build in
+CI. What the argument got wrong is the target: it proposes a better ENGINE for a consumer that
+never wanted an engine.
+
+- [x] `LocalStorageStore`, its `localstorage` feature, the module re-exports and the `web-sys`
+      dependency are gone from `okm-core`; the base64 boundary went with it. Its only consumer
+      persisted two keys of panel UI state (`ui/filters`, `ui/collapsed`) — dozens of bytes,
+      best effort, defaults when absent.
+- [x] The mudra panel holds `web_sys::Storage` directly instead (~30 lines in `uistate.rs`),
+      keeping the fixed-width big-endian byte shapes and the defaults-on-absence rule.
+- [x] `okm-core`'s dependency closure now has no browser API either: the CI step that refuses
+      `tokio` / `slatedb` in `cargo tree -p okm-core -e normal` also refuses `web-sys` /
+      `wasm-bindgen`.
+- [x] ADR-0028 (both languages) keeps its record and gains a §Withdrawal: why the engine half
+      went, and what would legitimately replace it if a real consumer ever appears — an
+      `okm-async` implementation of `VirtualStorageAsync` (SurrealKV being the paper candidate,
+      with its own constraints: dedicated Web Worker over OPFS, one worker per database, wasm
+      Tier 2), never a `VirtualStorage` in core, which is synchronous by contract.
+
+## Deferred (2026-11-10, owner) — SurrealKV as a backend
+
+- [ ] **SurrealKV as an `okm-async` backend.** Measured and recorded, not started: `docs/ideas/surrealkv-as-a-backend.md`. Cost on this machine: +2.86 MB stripped over a 0.31 MB baseline (2.3× fjall, 3.2× redb), 150 transitive crates (fjall 74), and the constraint that decides placement — `commit()` panics without a Tokio runtime (`surrealkv-1.3.0/src/task.rs:165`), so no synchronous `VirtualStorage` implementation and no presence in `okm-core`'s dependency tree (ADR-0059's check). It buys engine-level MVCC snapshots and in-engine encryption, neither of which okm's model asks for today — and the read-heavy slot it would otherwise claim is already held by redb, which §9 measures ahead of it on scans (18 vs 44 ms full, 41 vs 113 ms short) and on post-restart point reads (1.05M vs 174k ops/s). Reopens on: a multi-process reader that needs a snapshot while another writes; encryption that must live in the engine rather than the volume; a measured fjall write ceiling; or a browser dataset big enough to want a real engine on both sides.
+
+## Recorded (2026-11-10) — a SIMD intersection proposal, evaluated
+
+- [x] An outside proposal to add a `simd_intersect_u64` operator to `okm-query` was built, checked against a brute-force oracle (400 random shapes, 0 mismatches) and measured against the two-pointer it would replace: it is 15–70 % slower at every size, and `portable_simd` does not compile on this toolchain at all. Recorded with numbers, the three broken premises (bytes not `&[u64]`, non-contiguous tails, `ScanIter` already copies per key) and the one shape that did win — galloping on skewed sizes, 12.7× over the merge — in `docs/ideas/simd-intersect-for-okm-query.md`.
+- [ ] **okm-query is eager to the end.** `merge_join` / `group_by` return `Vec`, so a chain materializes at every step and `LIMIT` cannot stop it early; okm-core already streams (`scan_range_iter`, ADR-0020) and the query layer has not followed.
+- [ ] **Clone per result pair.** The duplicate-run branch pushes `(l.clone(), r.clone())` per pair — k² clones for two runs of length k.
+- [ ] **No skew shortcut.** Lopsided intersections (1M against 1K) are 12.7× faster with a gallop over the small side than with the merge; it belongs in the operator, not in someone's caller.
