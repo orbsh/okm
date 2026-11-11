@@ -15,9 +15,9 @@
 use okm_async::TestStore;
 use okm_core::changelog::replay::{reconcile, replay_table};
 use okm_core::changelog::{ChangelogConfig, ChangelogStore};
-use okm_value::DynamicValue;
 use okm_core::{Collection, DocumentEncode, KeyEncode, Vocab};
 use okm_dynamic::DynamicCollection;
+use okm_value::DynamicValue;
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
 pub struct K {

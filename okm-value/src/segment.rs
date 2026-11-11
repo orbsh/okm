@@ -30,10 +30,10 @@
 //! skippable ("a newer writer stored something I cannot see") instead of
 //! refusing the segment.
 
-use crate::value::{DynamicField, DynamicValue, ValueMap};
-use crate::value::ObjValueType;
-use crate::varint::{put_len, take_len};
 use crate::Error;
+use crate::value::ObjValueType;
+use crate::value::{DynamicField, DynamicValue, ValueMap};
+use crate::varint::{put_len, take_len};
 use std::collections::BTreeMap;
 
 /// Bit 7 of an entry's head: this entry owns the next block.

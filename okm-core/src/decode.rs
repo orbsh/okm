@@ -3,8 +3,8 @@
 //! then cold TLV frames by tag.
 
 use crate::field::FieldType;
-use okm_value::{CodecError, DynamicValue, ValueMap};
 use crate::schema::CollectionSchema;
+use okm_value::{CodecError, DynamicValue, ValueMap};
 use std::collections::BTreeMap;
 
 /// Inside a decode walk the tree reads better under its short name; it is the

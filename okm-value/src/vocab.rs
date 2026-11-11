@@ -239,7 +239,11 @@ impl<I: Id> Vocabulary<I> {
 
     /// The label for `id`. `None` is an answer — this vocabulary has no such id,
     /// so the caller leaves the value unresolved rather than inventing a name.
-    pub fn name_of<D: Names<I>>(&mut self, door: &mut D, id: I) -> Result<Option<String>, D::Error> {
+    pub fn name_of<D: Names<I>>(
+        &mut self,
+        door: &mut D,
+        id: I,
+    ) -> Result<Option<String>, D::Error> {
         if let Some(name) = self.by_id.get(id) {
             return Ok(Some(name.to_owned()));
         }
@@ -479,7 +483,10 @@ mod tests {
         let probes = door.0;
         assert_eq!(vocab.ensure(&mut door, "addr").unwrap(), id);
         assert_eq!(door.0, probes, "a landed hit must not probe");
-        assert_eq!(vocab.name_of(&mut door, id).unwrap().as_deref(), Some("addr"));
+        assert_eq!(
+            vocab.name_of(&mut door, id).unwrap().as_deref(),
+            Some("addr")
+        );
         assert_eq!(door.0, probes, "the id direction is an index, not a probe");
     }
 
@@ -493,7 +500,10 @@ mod tests {
         };
         let mut vocab = Vocabulary::<u16>::new();
         assert_eq!(vocab.ensure(&mut door, "addr").unwrap(), 7);
-        assert_eq!(vocab.name_of(&mut door, 7).unwrap().as_deref(), Some("addr"));
+        assert_eq!(
+            vocab.name_of(&mut door, 7).unwrap().as_deref(),
+            Some("addr")
+        );
         assert_eq!(door.written, Vec::<u16>::new(), "nothing was allocated");
     }
 
@@ -543,7 +553,10 @@ mod tests {
         }
         vocab.landed(&ids);
         for (i, id) in ids.iter().enumerate() {
-            assert_eq!(vocab.name_of(&mut door, *id).unwrap(), Some(format!("f{i:04}")));
+            assert_eq!(
+                vocab.name_of(&mut door, *id).unwrap(),
+                Some(format!("f{i:04}"))
+            );
         }
         assert_eq!(vocab.len(), 1000);
     }

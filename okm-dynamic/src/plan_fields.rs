@@ -14,9 +14,9 @@
 //! slot constants — every byte rule stays here, one source.
 
 use okm_core::model::index::{DYNAMIC_SLOT, FIELD_VOCAB_ID_SLOT, FIELD_VOCAB_NAME_SLOT};
-use okm_value::decode_named;
 use okm_core::model::obj_vocab::FIELD_VOCAB;
 use okm_core::storage::{VirtualStorage, scan_suffix_kv};
+use okm_value::decode_named;
 
 use crate::{Value, ValueMap};
 
@@ -377,9 +377,7 @@ fn collect_fields(
 /// okm-dynamic `Value` -> okm-core `DynamicValue` (the dynamic
 /// segment's currency). Composites map natively (the dynamic segment is
 /// the schema-free zone).
-pub(crate) fn value_to_dyn_value(
-    v: &Value,
-) -> Result<okm_value::DynamicValue, String> {
+pub(crate) fn value_to_dyn_value(v: &Value) -> Result<okm_value::DynamicValue, String> {
     use okm_value::DynamicValue;
     Ok(match v {
         Value::U8(x) => DynamicValue::U64(*x as u64),
@@ -411,9 +409,7 @@ pub(crate) fn value_to_dyn_value(
 
 /// The dynamic segment's value IS the codec's value now (ADR-0056 §8): one tree,
 /// so this is a clone, and it stays only because the frame walk hands out `&`s.
-pub(crate) fn dyn_value_to_value(
-    v: &okm_value::DynamicValue,
-) -> Result<Value, String> {
+pub(crate) fn dyn_value_to_value(v: &okm_value::DynamicValue) -> Result<Value, String> {
     Ok(v.clone())
 }
 

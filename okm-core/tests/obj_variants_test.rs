@@ -13,8 +13,8 @@
 use std::collections::BTreeMap;
 
 use okm_async::TestStore;
-use okm_value::DynamicValue;
 use okm_core::{Collection, DocumentEncode, KeyEncode, VirtualStorage};
+use okm_value::DynamicValue;
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
 pub struct UserKey {

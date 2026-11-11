@@ -512,7 +512,6 @@ mod tests {
     }
 }
 
-
 /// Value types of the dynamic segment. One byte per frame header.
 ///
 /// Integers: signless framing — the caller's Rust type decides width;

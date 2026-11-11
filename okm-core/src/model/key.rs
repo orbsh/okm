@@ -145,10 +145,7 @@ impl KeyFieldValue for crate::model::wrappers::uuid::Uuid7 {
     }
 }
 
-impl<N: okm_value::Id> key_field_value_sealed::Sealed
-    for crate::model::vocab::Vocab<N>
-{
-}
+impl<N: okm_value::Id> key_field_value_sealed::Sealed for crate::model::vocab::Vocab<N> {}
 impl<N: okm_value::Id> KeyFieldValue for crate::model::vocab::Vocab<N> {
     /// The family, not the field: a `Vocab`'s `FieldType` payload is the
     /// declaration's id face, which the document side does not know.

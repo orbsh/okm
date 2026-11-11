@@ -21,9 +21,9 @@ use std::path::{Path, PathBuf};
 
 use crate::error::{Error, Result};
 use crate::model::index::DYNAMIC_SLOT;
-use okm_value::ValueMap;
 use crate::schema::CollectionSchema;
 use crate::{OP_DELETE, OP_PUT, PRIMARY_SLOT};
+use okm_value::ValueMap;
 
 use super::{read_sealed, table_dir};
 
@@ -277,12 +277,12 @@ pub fn decode_dynamic_segment(
             .get(&(faces.id_slot, field.id.to_be_bytes().to_vec()))
             .cloned()
         else {
-            return Err(crate::Error::Codec(
-                okm_value::CodecError::UnknownField(format!(
+            return Err(crate::Error::Codec(okm_value::CodecError::UnknownField(
+                format!(
                     "dynamic field id {} (no label in this window's field vocabulary)",
                     field.id
-                )),
-            ));
+                ),
+            )));
         };
         row.insert(name, field.value);
     }

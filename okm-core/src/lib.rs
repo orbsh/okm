@@ -117,9 +117,9 @@ pub use model::meta::{FaceStatus, TableMeta};
 // `::okm_core::okm_value::DynamicValue` and a user of THIS crate never has to
 // add `okm-value` to their own manifest. Not an alias of an old path: it is the
 // crate, re-exported.
-pub use okm_value;
 pub use model::obj_vocab;
 pub use model::reduce;
 pub use model::reverse;
 pub use model::schema;
 pub use model::wrappers;
+pub use okm_value;

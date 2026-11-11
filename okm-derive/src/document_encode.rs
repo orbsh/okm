@@ -1411,20 +1411,27 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> syn::Result<TS2> {
         const NS_PREFIX: &'static [u8] = &[#ns_hi, #ns_lo];
         const NS: u16 = #ns;
     };
-    // The ns claim: a type whose NAME is the ns, emitted beside the declaration.
-    // Two documents claiming one ns in one module define it twice, and a type
+    // The ns claim: an item whose NAME is the ns, emitted beside the declaration.
+    // Two documents claiming one ns in one module define it twice, and a name
     // cannot be defined twice -- so an accidental reuse is a build error with the
     // ns in the message, not a silent second table in someone else's keyspace.
     // `#[ok_shared_ns]` is the opt-out, for a generation pair (one table, two
     // declarations) where the second one is the point.
+    //
+    // A `const` rather than a struct: the name is all that carries meaning, the
+    // value namespace needs only the `dead_code` allow (ALL_CAPS is the natural
+    // spelling there, so no `non_camel_case_types`), and a const cannot be
+    // constructed or named by a caller looking for a type. The check is the
+    // compiler's: duplicate names are an error in one module, whatever the
+    // visibility, and visibility cannot widen it -- two modules never share a
+    // name space.
     let ns_claim = if schema.shared_ns {
         quote! {}
     } else {
-        let claim = quote::format_ident!("okm_ns_{}_is_unique", ns);
+        let claim = quote::format_ident!("__OKM_NS_{}_IS_UNIQUE", ns);
         quote! {
-            #[doc(hidden)]
-            #[allow(non_camel_case_types, dead_code)]
-            struct #claim;
+            #[allow(dead_code)]
+            const #claim: () = ();
         }
     };
     // #[ok_partition(N)] → PARTITION_ID: Option<u8>. None = no partition

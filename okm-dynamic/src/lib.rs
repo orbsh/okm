@@ -52,8 +52,8 @@ mod reduce;
 
 pub use okm_core::TableMeta;
 pub use okm_core::field::FieldType;
-pub use okm_value::{CodecError, DynamicValue as Value, ValueMap};
 pub use okm_core::schema::{CollectionSchema, FieldSchema};
+pub use okm_value::{CodecError, DynamicValue as Value, ValueMap};
 
 // NOTE (v1 scope): nested key segments are NOT supported by the dynamic
 // codec — `FieldType::Segment` does not exist (the key-composition

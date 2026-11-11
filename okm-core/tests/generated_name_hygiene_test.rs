@@ -13,8 +13,8 @@
 
 #![allow(clippy::unwrap_used, clippy::panic)]
 
-use okm_value::DynamicValue;
 use okm_core::{Collection, Document, DocumentEncode, KeyEncode};
+use okm_value::DynamicValue;
 
 use okm_async::TestStore;
 /// A key whose fields collide with `KeyEncode::decode`'s own names.

@@ -11,13 +11,13 @@
     clippy::panic_in_result_fn
 )]
 
-use okm_value::DynamicValue;
 use okm_core::schema::CollectionSchema;
 use okm_core::storage::VirtualStorage;
 use okm_core::{
     DocumentEncode, EdgeHead, EdgeKey, Graph as StaticGraph, GraphEncode, KeyEncode, NodeRef,
 };
 use okm_dynamic::{DynEdge, Graph};
+use okm_value::DynamicValue;
 use std::collections::BTreeMap;
 
 const NS: u16 = 0x0190; // 400

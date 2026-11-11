@@ -13,9 +13,9 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use okm_core::changelog::{ChangelogConfig, ChangelogStore};
-use okm_value::DynamicValue;
 use okm_core::{Collection, DocumentEncode, KeyEncode, Vocab};
 use okm_lake::{DrainConfig, drain};
+use okm_value::DynamicValue;
 
 use okm_async::TestStore;
 #[derive(KeyEncode, Clone, PartialEq, Debug)]

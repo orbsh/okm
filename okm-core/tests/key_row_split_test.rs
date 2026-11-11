@@ -14,8 +14,8 @@
 
 use std::collections::BTreeMap;
 
-use okm_value::DynamicValue;
 use okm_core::{Document, DocumentEncode, KeyEncode};
+use okm_value::DynamicValue;
 
 use okm_async::TestStore;
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]

@@ -27,10 +27,10 @@ use okm_core::index::PRIMARY_SLOT;
 use okm_core::model::graph::{
     EDGE_IN_SLOT, EDGE_OUT_SLOT, EDGE_PREDICATE_IN_SLOT, EDGE_PREDICATE_OUT_SLOT, NodeRef,
 };
-use okm_value::{DynamicValue, decode_named};
-use okm_core::obj_vocab::{Faces, FIELD_VOCAB, PREDICATE_VOCAB, Vocabulary};
+use okm_core::obj_vocab::{FIELD_VOCAB, Faces, PREDICATE_VOCAB, Vocabulary};
 use okm_core::schema::CollectionSchema;
 use okm_core::storage::{Batch, VirtualStorage, scan_suffix_kv};
+use okm_value::{DynamicValue, decode_named};
 
 /// One dynamic edge: endpoints by reference, predicate by name,
 /// attributes as a name-keyed map (nTLV frames on the wire, ids allocated
@@ -165,21 +165,23 @@ impl<S: VirtualStorage> Graph<S> {
             ..
         } = self;
         let mut door = Faces::<_, u16>::new(&*store, ns, PREDICATE_VOCAB);
-        predicates
-            .name_of(&mut door, id)
-            .map_err(|e| e.to_string())
+        predicates.name_of(&mut door, id).map_err(|e| e.to_string())
     }
 
     /// The field name's id, allocating on first sight.
     fn field_id(&mut self, name: &str) -> Result<u16, String> {
-        let Self { store, ns, fields, .. } = self;
+        let Self {
+            store, ns, fields, ..
+        } = self;
         let mut door = Faces::<_, u16>::new(&*store, ns, FIELD_VOCAB);
         fields.ensure(&mut door, name).map_err(|e| e.to_string())
     }
 
     /// The field id's name, or `None` when the vocabulary has no such id.
     fn field_label(&mut self, id: u16) -> Result<Option<String>, String> {
-        let Self { store, ns, fields, .. } = self;
+        let Self {
+            store, ns, fields, ..
+        } = self;
         let mut door = Faces::<_, u16>::new(&*store, ns, FIELD_VOCAB);
         fields.name_of(&mut door, id).map_err(|e| e.to_string())
     }
@@ -192,7 +194,9 @@ impl<S: VirtualStorage> Graph<S> {
     ) -> Result<Vec<u8>, String> {
         // The segment codec speaks core's error type, so the closure hands it
         // the vocabulary's own result rather than this facade's string form.
-        let Self { store, ns, fields, .. } = self;
+        let Self {
+            store, ns, fields, ..
+        } = self;
         let mut door = Faces::<_, u16>::new(&*store, ns, FIELD_VOCAB);
         let mut resolver = |name: &str| fields.ensure(&mut door, name);
         okm_value::encode(attrs, &mut resolver).map_err(|e| e.to_string())
@@ -446,8 +450,7 @@ impl<S: VirtualStorage> Graph<S> {
         predicate: &str,
         node: &NodeRef,
     ) -> Result<Vec<u64>, String> {
-        let predicate_vocab_id = match self.predicate_vocab_lookup(predicate)?
-        {
+        let predicate_vocab_id = match self.predicate_vocab_lookup(predicate)? {
             Some(id) => id,
             None => return Ok(Vec::new()),
         };
@@ -492,8 +495,7 @@ impl<S: VirtualStorage> Graph<S> {
         src: &NodeRef,
         dst: &NodeRef,
     ) -> Result<Vec<u64>, String> {
-        let predicate_vocab_id = match self.predicate_vocab_lookup(predicate)?
-        {
+        let predicate_vocab_id = match self.predicate_vocab_lookup(predicate)? {
             Some(id) => id,
             None => return Ok(Vec::new()),
         };
@@ -512,8 +514,7 @@ impl<S: VirtualStorage> Graph<S> {
 
     /// All edges of one predicate (0x06) — the `MATCH ()-[r:has]->()` entry.
     pub fn edges_of_predicate(&mut self, predicate: &str) -> Result<Vec<u64>, String> {
-        let predicate_vocab_id = match self.predicate_vocab_lookup(predicate)?
-        {
+        let predicate_vocab_id = match self.predicate_vocab_lookup(predicate)? {
             Some(id) => id,
             None => return Ok(Vec::new()),
         };

@@ -46,8 +46,8 @@ use super::{baseline_segments, read_sealed, sealed_segments};
 use crate::VirtualStorage;
 use crate::decode::{decode_key, decode_payload};
 use crate::model::index::DYNAMIC_SLOT;
-use okm_value::{DynamicValue, ValueMap};
 use crate::{OP_DELETE, OP_PUT, PRIMARY_SLOT};
+use okm_value::{DynamicValue, ValueMap};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
