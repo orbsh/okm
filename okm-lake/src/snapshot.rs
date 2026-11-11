@@ -559,7 +559,7 @@ pub mod parquet_io {
         col: &dyn arrow::array::Array,
         row: usize,
     ) -> Result<
-        Option<std::collections::BTreeMap<String, okm_core::model::obj_dynamic::DynamicValue>>,
+        Option<std::collections::BTreeMap<String, okm_value::DynamicValue>>,
         String,
     > {
         if col.is_null(row) {
@@ -581,7 +581,7 @@ pub mod parquet_io {
         )
         .map_err(|e| e.to_string())?;
         match dynamic_from_variant(variant) {
-            okm_core::model::obj_dynamic::DynamicValue::Obj(map) => Ok(Some(map)),
+            okm_value::DynamicValue::Obj(map) => Ok(Some(map)),
             _ => Err("a document's variant cell holds an object, not a scalar".into()),
         }
     }
@@ -591,8 +591,8 @@ pub mod parquet_io {
     /// and a negative one as `Int` — the export cannot tell them apart.
     fn dynamic_from_variant(
         v: parquet_variant::Variant<'_, '_>,
-    ) -> okm_core::model::obj_dynamic::DynamicValue {
-        use okm_core::model::obj_dynamic::DynamicValue as DV;
+    ) -> okm_value::DynamicValue {
+        use okm_value::DynamicValue as DV;
         if v.as_null().is_some() {
             return DV::Null;
         }
@@ -732,7 +732,7 @@ pub mod parquet_io {
             let mut ids: Vec<u64> = Vec::with_capacity(n);
             let mut payloads: Vec<E> = Vec::with_capacity(n);
             let mut props: Vec<
-                std::collections::BTreeMap<String, okm_core::model::obj_dynamic::DynamicValue>,
+                std::collections::BTreeMap<String, okm_value::DynamicValue>,
             > = Vec::with_capacity(n);
             {
                 let store = self.store_mut();
@@ -820,7 +820,7 @@ pub mod parquet_io {
         col: &dyn arrow::array::Array,
         row: usize,
     ) -> Result<
-        std::collections::BTreeMap<String, okm_core::model::obj_dynamic::DynamicValue>,
+        std::collections::BTreeMap<String, okm_value::DynamicValue>,
         String,
     > {
         use arrow::array::{Array, BinaryArray, StructArray};
@@ -854,8 +854,8 @@ pub mod parquet_io {
     }
     fn to_dynamic(
         v: &parquet_variant::Variant<'_, '_>,
-    ) -> okm_core::model::obj_dynamic::DynamicValue {
-        use okm_core::model::obj_dynamic::DynamicValue;
+    ) -> okm_value::DynamicValue {
+        use okm_value::DynamicValue;
         if v.as_null().is_some() {
             return DynamicValue::Null;
         }

@@ -13,7 +13,7 @@
 use std::collections::BTreeMap;
 
 use okm_async::TestStore;
-use okm_core::obj_dynamic::DynamicValue;
+use okm_value::DynamicValue;
 use okm_core::{Collection, DocumentEncode, KeyEncode, VirtualStorage};
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]

@@ -454,7 +454,7 @@ fn dynamic_rejects_key_field_indexes() {
 
 #[test]
 fn dynamic_fields_equal_typed_fields() {
-    use okm_core::model::obj_dynamic::DynamicValue;
+    use okm_value::DynamicValue;
 
     let typed: Collection<TestStore, UserKey, User> = Collection::new(TestStore::slatedb_mem());
     let dynamic = dynamic_table(TestStore::slatedb_mem());

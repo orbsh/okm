@@ -19,7 +19,7 @@
 use okm_async::TestStore;
 use okm_core::changelog::replay::replay_table;
 use okm_core::changelog::{ChangelogConfig, ChangelogStore, table_dir};
-use okm_core::obj_dynamic::DynamicValue;
+use okm_value::DynamicValue;
 use okm_core::schema::CollectionSchema;
 use okm_core::{Collection, Document, DocumentEncode, KeyEncode};
 use okm_dynamic::DynamicCollection;

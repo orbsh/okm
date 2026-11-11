@@ -24,7 +24,7 @@
 
 use thiserror::Error;
 
-use crate::model::obj_dynamic::{DynamicValue, dyn_kind};
+use okm_value::{DynamicValue, dyn_kind};
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 #[non_exhaustive]
@@ -68,9 +68,9 @@ pub enum Error {
     )]
     VocabularyExhausted { width: usize, next: u128 },
     /// A nested object reached an encoder that owns no name vocabulary. The
-    /// caller must encode through `obj_segment::encode`, which can allocate.
+    /// caller must encode through `okm_value::encode`, which can allocate.
     #[error(
-        "nested object requires the vocabulary (name `{name}` unresolved) — use obj_segment::encode"
+        "nested object requires the vocabulary (name `{name}` unresolved) — use okm_value::encode"
     )]
     VocabularyRequired { name: String },
     /// `Graph::link` on an id that is already live — identity stays with the
@@ -115,7 +115,7 @@ pub enum Error {
     /// decoder and the window reader are core's now (ADR-0056 §8), so the leaf
     /// error has a home here instead of being stringified at the boundary.
     #[error("codec: {0}")]
-    Codec(#[from] crate::model::obj_dynamic::CodecError),
+    Codec(#[from] okm_value::CodecError),
 }
 
 impl Error {
@@ -138,6 +138,18 @@ impl Error {
             field: field.into(),
             want,
             got: got.to_string(),
+        }
+    }
+}
+
+/// The segment codec's failure, in this crate's vocabulary: a value too wide for
+/// the table stays `Corrupt`, and a name-resolution failure is handed back as
+/// the error it already was — never flattened into a string (ADR-0060 §6).
+impl From<okm_value::Error<Error>> for Error {
+    fn from(error: okm_value::Error<Error>) -> Self {
+        match error {
+            okm_value::Error::Corrupt { what } => Error::Corrupt { what },
+            okm_value::Error::Names(inner) => inner,
         }
     }
 }

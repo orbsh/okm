@@ -2,7 +2,7 @@
 
 > **Languages:** [English](0060-the-entry-header-is-one-byte.md)（主）· [中文](0060-the-entry-header-is-one-byte.zh-CN.md)
 
-**状态：** 已接受（2026-11-11）——头部当日落地于 `okm-core/src/model/obj_segment.rs`，两个方向都是，并有十六进制锁；裁决 5 里词表那一半同时落地（`okm-value`：`Id`、`Names`、`Vocabulary`），值与段类型仍欠着搬家（同日那条 PLAN 段）。
+**状态：** 已接受（2026-11-11）——头部当日落地于 `okm-core/src/model/obj_segment.rs`，两个方向都是，并有十六进制锁；裁决 5 的 crate 也随它落地——`okm-value` 持有词表（`Id`、`Names`、`Vocabulary`）、值词汇表和段编解码器，`okm-core` 留着 key 与那道门（同日那条 PLAN 段）。
 **日期：** 2026-11-11
 **依赖：** ADR-0012（值词汇表）、ADR-0042（布局版本是戳）、ADR-0043（不留别名）、ADR-0056 §5/§6（replay 即迁移）、ADR-0057（块表）、ADR-0059（按轴切 crate）
 

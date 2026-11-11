@@ -43,6 +43,12 @@ pub struct Collection<S, K: KeyEncode, R: Document<Key = K>> {
     /// vocabulary already assumes; a second process on the same table is
     /// outside it (see `model::obj_vocab`).
     fields_vocab: std::cell::RefCell<Vocabulary<u16>>,
+    /// The ns this handle writes under, when it is NOT the declaration's. A
+    /// restore maps a table into a namespace the application just created
+    /// (ADR-0062), and the ns is part of the KEY HEADER, so the whole handle has
+    /// to move — every verb here already funnels through [`Self::header`], which
+    /// is why this is one field and not a second write path.
+    ns_override: Option<[u8; 2]>,
     _marker: std::marker::PhantomData<(K, R)>,
 }
 
@@ -57,8 +63,34 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
             store,
             epoch: std::cell::Cell::new(0),
             fields_vocab: std::cell::RefCell::new(Vocabulary::new()),
+            ns_override: None,
             _marker: std::marker::PhantomData,
         }
+    }
+
+    /// The same table, rooted at ANOTHER ns: the same declaration, the same
+    /// columns, the same faces — only the key header's ns bytes differ.
+    ///
+    /// This is the restore's mapping (ADR-0062): a table lands in a namespace the
+    /// application created for it, so a partial import becomes possible without a
+    /// second declaration per destination. The tables are otherwise identical, so
+    /// a reader that opens `ns` sees exactly the rows the source table held.
+    pub fn with_ns(store: S, ns: u16) -> Self {
+        Self {
+            store,
+            epoch: std::cell::Cell::new(0),
+            fields_vocab: std::cell::RefCell::new(Vocabulary::new()),
+            ns_override: Some(ns.to_be_bytes()),
+            _marker: std::marker::PhantomData,
+        }
+    }
+
+    /// The ns this handle is rooted at.
+    pub fn ns(&self) -> u16 {
+        u16::from_be_bytes(
+            self.ns_override
+                .unwrap_or([R::NS_PREFIX[0], R::NS_PREFIX[1]]),
+        )
     }
 
     pub fn store(&self) -> &S {
@@ -79,10 +111,10 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     /// the partition segment precedes the ns header (workload isolation
     /// lives outside ownership scope); absent when the document declares no
     /// `#[ok_partition]`.
-    fn header(&self) -> Vec<u8> {
+    pub fn header(&self) -> Vec<u8> {
         let mut buf = Vec::with_capacity(3);
         buf.extend_from_slice(R::PARTITION_PREFIX);
-        buf.extend_from_slice(R::NS_PREFIX);
+        buf.extend_from_slice(&self.ns_override.unwrap_or([R::NS_PREFIX[0], R::NS_PREFIX[1]]));
         buf
     }
 
@@ -989,7 +1021,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
 
 use std::collections::BTreeMap;
 
-use crate::model::obj_dynamic::DynamicValue;
+use okm_value::DynamicValue;
 use crate::model::obj_vocab::{FIELD_VOCAB, Faces, Vocabulary, pending_in};
 
 impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> {
@@ -1233,7 +1265,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         // answers ids, so an engine failure is parked and re-raised after the
         // walk (a nested decode has nowhere else to put it).
         let mut failed: Option<crate::error::Error> = None;
-        let frames = crate::model::obj_dynamic::decode_named(&raw, &mut |id| match d.name_of(
+        let frames = okm_value::decode_named(&raw, &mut |id| match d.name_of(
             &mut door, id,
         ) {
             Ok(name) => name,
@@ -1277,7 +1309,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         let body = {
             let mut door = Faces::<_, u16>::new(&store, &header, FIELD_VOCAB);
             let mut resolver = |name: &str| d.ensure(&mut door, name);
-            crate::model::obj_segment::encode(variants, &mut resolver)?
+            okm_value::encode(variants, &mut resolver)?
         };
         if variants.is_empty() {
             store.del(&k)?;

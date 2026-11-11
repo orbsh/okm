@@ -30,10 +30,10 @@
 //! skippable ("a newer writer stored something I cannot see") instead of
 //! refusing the segment.
 
-use crate::error::Result;
-use crate::model::obj_dynamic::{DynamicField, DynamicValue, NameResolver, ValueMap};
-use crate::model::wrappers::obj_value::ObjValueType;
-use crate::model::wrappers::wire::{put_len, take_len};
+use crate::value::{DynamicField, DynamicValue, ValueMap};
+use crate::value::ObjValueType;
+use crate::varint::{put_len, take_len};
+use crate::Error;
 use std::collections::BTreeMap;
 
 /// Bit 7 of an entry's head: this entry owns the next block.
@@ -85,7 +85,10 @@ struct Entry {
 /// Names resolve (and allocate) through `vocab`; a nested object's names go
 /// through the same vocabulary — one vocabulary per table, so nesting needs no
 /// second one.
-pub fn encode(fields: &ValueMap, vocab: &mut dyn NameResolver) -> Result<Vec<u8>> {
+pub fn encode<E>(
+    fields: &ValueMap,
+    vocab: &mut dyn FnMut(&str) -> Result<u16, E>,
+) -> Result<Vec<u8>, Error<E>> {
     let mut values: Vec<u8> = Vec::new();
     let mut blocks: Vec<Vec<Entry>> = vec![Vec::new()];
     // Composite values in emit order. The j-th one owns block j+1, which is the
@@ -93,7 +96,7 @@ pub fn encode(fields: &ValueMap, vocab: &mut dyn NameResolver) -> Result<Vec<u8>
     let mut pending: Vec<&DynamicValue> = Vec::new();
 
     for (name, value) in fields {
-        let id = vocab.resolve(name)?;
+        let id = vocab(name)?;
         push(&mut values, &mut blocks[0], &mut pending, id, value);
     }
     let mut qi = 0;
@@ -104,7 +107,7 @@ pub fn encode(fields: &ValueMap, vocab: &mut dyn NameResolver) -> Result<Vec<u8>
         match value {
             DynamicValue::Obj(map) => {
                 for (name, child) in map {
-                    let id = vocab.resolve(name)?;
+                    let id = vocab(name)?;
                     push(&mut values, &mut block, &mut pending, id, child);
                 }
             }
@@ -141,7 +144,7 @@ pub fn encode(fields: &ValueMap, vocab: &mut dyn NameResolver) -> Result<Vec<u8>
         }
     }
     let toc_len = out.len() - HEAD;
-    let toc_len = u16::try_from(toc_len).map_err(|_| crate::error::Error::Corrupt {
+    let toc_len = u16::try_from(toc_len).map_err(|_| Error::Corrupt {
         what: format!("dynamic segment table is {toc_len} bytes; the head holds 16 bits"),
     })?;
     out[..HEAD].copy_from_slice(&toc_len.to_be_bytes());
@@ -482,7 +485,7 @@ mod tests {
             .collect()
     }
 
-    fn vocab() -> impl FnMut(&str) -> Result<u16> {
+    fn vocab() -> impl FnMut(&str) -> Result<u16, ()> {
         let mut next = 1u16;
         move |_name: &str| {
             let id = next;
@@ -535,7 +538,7 @@ mod tests {
         // Names allocate on first sight, including nested ones, so the table
         // is built while encoding and read back while decoding.
         let mut table: Vec<String> = Vec::new();
-        let mut resolver = |name: &str| -> Result<u16> {
+        let mut resolver = |name: &str| -> Result<u16, ()> {
             if let Some(at) = table.iter().position(|n| n == name) {
                 return Ok((at + 1) as u16);
             }

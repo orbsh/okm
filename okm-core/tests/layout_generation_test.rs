@@ -78,7 +78,7 @@ fn a_window_stops_at_a_vocabulary_change() {
         let mut open = std::collections::BTreeMap::new();
         open.insert(
             "note".to_string(),
-            okm_core::model::obj_dynamic::DynamicValue::Str("first".to_string()),
+            okm_value::DynamicValue::Str("first".to_string()),
         );
         c.merge(&K { id: 1 }, &open).expect("an open field");
     }
@@ -90,7 +90,7 @@ fn a_window_stops_at_a_vocabulary_change() {
         let mut open = std::collections::BTreeMap::new();
         open.insert(
             "tag".to_string(),
-            okm_core::model::obj_dynamic::DynamicValue::Str("second".to_string()),
+            okm_value::DynamicValue::Str("second".to_string()),
         );
         c.merge(&K { id: 1 }, &open).expect("an open field");
     }

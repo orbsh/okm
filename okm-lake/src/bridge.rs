@@ -48,7 +48,7 @@ use okm_core::model::key::KeyEncode;
 use okm_core::model::document::Collection;
 use okm_core::model::graph::EdgeKey;
 use okm_core::model::graph::{Graph, GraphEncode};
-use okm_core::model::obj_dynamic::DynamicValue;
+use okm_value::DynamicValue;
 use okm_dynamic::arrow::arrow_type;
 
 /// Decode a prefix-monotonic varint (P1 wire — the same codec as
@@ -455,7 +455,7 @@ fn push_variant_obj<S: parquet_variant::BuilderSpecificState>(
 /// struct of the two binaries. Writing the flat form and calling it a variant was a
 /// real defect: DuckDB read the column as `blob` and `variant_extract` answered NULL
 /// for every row, while the same bytes in the struct form decoded correctly.
-pub fn variant_parts(map: &okm_core::model::obj_dynamic::ValueMap) -> (Vec<u8>, Vec<u8>) {
+pub fn variant_parts(map: &okm_value::ValueMap) -> (Vec<u8>, Vec<u8>) {
     let mut b = parquet_variant::VariantBuilder::new();
     push_variant(&mut b, &DynamicValue::Obj(map.clone()));
     b.finish()
@@ -492,7 +492,7 @@ fn variant_field(name: &str, nullable: bool) -> arrow::datatypes::Field {
 /// no open fields has nothing to say, and a null says it without inventing an empty
 /// object.
 pub fn variant_array(
-    maps: &[Option<&okm_core::model::obj_dynamic::ValueMap>],
+    maps: &[Option<&okm_value::ValueMap>],
 ) -> arrow::array::StructArray {
     use arrow::array::{Array, BinaryBuilder, StructArray};
     use arrow::buffer::NullBuffer;
@@ -533,7 +533,7 @@ pub fn variant_array(
 /// A `variant` column with its field: what a caller appends to a batch.
 pub fn variant_column(
     name: &str,
-    maps: &[Option<&okm_core::model::obj_dynamic::ValueMap>],
+    maps: &[Option<&okm_value::ValueMap>],
 ) -> (
     arrow::datatypes::Field,
     std::sync::Arc<dyn arrow::array::Array>,
@@ -637,16 +637,16 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> ToRecordBatch for Co
 
         // One Variant per document from its dynamic segment, as the two halves the
         // canonical storage type wants.
-        let mut per_row: Vec<Option<okm_core::model::obj_dynamic::ValueMap>> =
+        let mut per_row: Vec<Option<okm_value::ValueMap>> =
             Vec::with_capacity(documents.len());
         for (kenc, _) in &documents {
             let key = K::decode(kenc);
-            let map: Option<okm_core::model::obj_dynamic::ValueMap> = self
+            let map: Option<okm_value::ValueMap> = self
                 .slot1_map(&key)?
                 .map(|fields| fields.into_iter().collect());
             per_row.push(map);
         }
-        let refs: Vec<Option<&okm_core::model::obj_dynamic::ValueMap>> =
+        let refs: Vec<Option<&okm_value::ValueMap>> =
             per_row.iter().map(|m| m.as_ref()).collect();
         let variant_col = Arc::new(variant_array(&refs)) as Arc<dyn arrow::array::Array>;
 
@@ -720,7 +720,7 @@ impl<S: VirtualStorage, E: GraphEncode> EdgeTable for Graph<S, E> {
         // (src name, src pkey, dst name, dst pkey, predicate) per row
         type EdgeRow = (Option<String>, Vec<u8>, Option<String>, Vec<u8>, String);
         let mut rows: Vec<EdgeRow> = Vec::with_capacity(ids.len());
-        let mut variants: Vec<Option<okm_core::model::obj_dynamic::ValueMap>> =
+        let mut variants: Vec<Option<okm_value::ValueMap>> =
             Vec::with_capacity(ids.len());
 
         for id in ids {
@@ -740,7 +740,7 @@ impl<S: VirtualStorage, E: GraphEncode> EdgeTable for Graph<S, E> {
             variants.push(self.attrs(id)?.map(|fields| {
                 fields
                     .into_iter()
-                    .collect::<okm_core::model::obj_dynamic::ValueMap>()
+                    .collect::<okm_value::ValueMap>()
             }));
             documents.push((id.to_be_bytes().to_vec(), Some(body.payload)));
         }
@@ -813,7 +813,7 @@ impl<S: VirtualStorage, E: GraphEncode> EdgeTable for Graph<S, E> {
 
         // The variant column, the same struct<metadata, value> shape as the document
         // path — one encoding, or a reader meets two.
-        let refs: Vec<Option<&okm_core::model::obj_dynamic::ValueMap>> =
+        let refs: Vec<Option<&okm_value::ValueMap>> =
             variants.iter().map(|m| m.as_ref()).collect();
         arrays.push(Arc::new(variant_array(&refs)));
 

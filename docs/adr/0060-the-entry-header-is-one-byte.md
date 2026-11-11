@@ -2,7 +2,7 @@
 
 > **Languages:** [English](0060-the-entry-header-is-one-byte.md) (primary) · [中文](0060-the-entry-header-is-one-byte.zh-CN.md)
 
-**Status:** Accepted (2026-11-11) — the header landed the same day in `okm-core/src/model/obj_segment.rs`, both directions, locked by hex tests; the vocabulary half of decision 5 landed with it (`okm-value`: `Id`, `Names`, `Vocabulary`), and the value and segment types still owe their move (PLAN, same date).
+**Status:** Accepted (2026-11-11) — the header landed the same day in `okm-core/src/model/obj_segment.rs`, both directions, locked by hex tests; decision 5's crate is in place with it — `okm-value` holds the vocabulary (`Id`, `Names`, `Vocabulary`), the value vocabulary, and the segment codec, while `okm-core` keeps the keys and the door (PLAN, same date).
 **Date:** 2026-11-11
 **Depends on:** ADR-0012 (the value vocabulary), ADR-0042 (layout versions are stamps), ADR-0043 (no aliases), ADR-0056 §5/§6 (replay is the migration), ADR-0057 (the block table), ADR-0059 (crate boundaries follow the axis)
 

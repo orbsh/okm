@@ -15,6 +15,7 @@ path = "src/main.rs"
 
 [dependencies]
 okm-core = { path = "../okm-core", features = ["schema-serde", "fjall"] }
+okm-value = { path = "../okm-value" }
 okm-wire = { path = "../okm-wire" }
 okm-dynamic = { path = "../okm-dynamic", features = ["arrow", "replay"] }
 arrow = "60"
@@ -31,6 +32,7 @@ bytes = "1"
 [dev-dependencies]
 okm-derive = { path = "../okm-derive" }
 okm-core = { path = "../okm-core", features = ["schema-serde"] }
+okm-value = { path = "../okm-value" }
 okm-async = { path = "../okm-async", features = ["slatedb"] }
 parquet = { version = "60", default-features = false, features = ["arrow"] }
 tempfile = "3"

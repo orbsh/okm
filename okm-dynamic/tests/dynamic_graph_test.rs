@@ -11,7 +11,7 @@
     clippy::panic_in_result_fn
 )]
 
-use okm_core::obj_dynamic::DynamicValue;
+use okm_value::DynamicValue;
 use okm_core::schema::CollectionSchema;
 use okm_core::storage::VirtualStorage;
 use okm_core::{

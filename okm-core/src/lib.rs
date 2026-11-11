@@ -57,7 +57,7 @@ pub use error::{Error, Result};
 /// boundary, drained out of process.
 pub mod changelog;
 /// The decoder: bytes + a declaration → the value tree (ADR-0056 §8). It lives
-/// here because the tree is core's (`model::obj_dynamic`), and because the drain —
+/// here because the tree is the value crate's (`okm_value`), and because the drain —
 /// a core mechanism — reads payloads with it.
 pub mod decode;
 pub mod subscribe;
@@ -113,8 +113,11 @@ pub use model::index;
 pub use model::key;
 pub use model::meta;
 pub use model::meta::{FaceStatus, TableMeta};
-pub use model::obj_dynamic;
-pub use model::obj_segment;
+// The value crate's own name, so generated code can write
+// `::okm_core::okm_value::DynamicValue` and a user of THIS crate never has to
+// add `okm-value` to their own manifest. Not an alias of an old path: it is the
+// crate, re-exported.
+pub use okm_value;
 pub use model::obj_vocab;
 pub use model::reduce;
 pub use model::reverse;

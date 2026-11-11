@@ -307,7 +307,7 @@ fn defaults_are_data_and_a_hot_append_is_a_generation_break() {
 /// dynamic segment — in both modes (MODELING: "the key is independent of the value").
 #[test]
 fn a_key_name_in_a_map_is_a_value_field_in_both_modes() {
-    use okm_core::model::obj_dynamic::DynamicValue;
+    use okm_value::DynamicValue;
 
     let typed: Collection<TestStore, UserKey, User> = Collection::new(TestStore::slatedb_mem());
     let dynamic = okm_dynamic::DynamicCollection::new(
@@ -367,7 +367,7 @@ fn a_key_name_in_a_map_is_a_value_field_in_both_modes() {
 /// either is `fetch`'s job, so the adapter is a plain `map` over the keys.
 #[test]
 fn the_two_enumeration_modes_see_the_two_kinds_of_document() {
-    use okm_core::model::obj_dynamic::DynamicValue;
+    use okm_value::DynamicValue;
 
     let typed: Collection<TestStore, UserKey, User> = Collection::new(TestStore::slatedb_mem());
     let with_row = UserKey {

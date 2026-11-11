@@ -214,7 +214,7 @@ fn dynamic_write_including_vocabulary_growth_is_one_engine_commit() {
     let mut fields = std::collections::BTreeMap::new();
     fields.insert(
         "colour".to_string(),
-        okm_core::obj_dynamic::DynamicValue::Str("amber".into()),
+        okm_value::DynamicValue::Str("amber".into()),
     );
     t.merge(&LedgerKey { id: 1 }, &fields).unwrap();
 
@@ -234,7 +234,7 @@ fn dynamic_write_including_vocabulary_growth_is_one_engine_commit() {
         t.fetch(&LedgerKey { id: 1 })
             .unwrap()
             .and_then(|m| m.get("colour").cloned()),
-        Some(okm_core::obj_dynamic::DynamicValue::Str("amber".into()))
+        Some(okm_value::DynamicValue::Str("amber".into()))
     );
 }
 
@@ -247,7 +247,7 @@ fn merge_of_a_declared_field_is_one_engine_commit() {
 
     t.merge(
         &k,
-        &map_of(&[("amount", okm_core::obj_dynamic::DynamicValue::U64(9))]),
+        &map_of(&[("amount", okm_value::DynamicValue::U64(9))]),
     )
     .unwrap();
 
@@ -274,7 +274,7 @@ fn replace_is_one_engine_commit_across_both_slots() {
         &k,
         &map_of(&[(
             "colour",
-            okm_core::obj_dynamic::DynamicValue::Str("amber".into()),
+            okm_value::DynamicValue::Str("amber".into()),
         )]),
     )
     .unwrap();
@@ -283,10 +283,10 @@ fn replace_is_one_engine_commit_across_both_slots() {
     t.replace(
         &k,
         &map_of(&[
-            ("account", okm_core::obj_dynamic::DynamicValue::U64(8)),
+            ("account", okm_value::DynamicValue::U64(8)),
             (
                 "colour",
-                okm_core::obj_dynamic::DynamicValue::Str("slate".into()),
+                okm_value::DynamicValue::Str("slate".into()),
             ),
         ]),
     )
@@ -308,7 +308,7 @@ fn replace_is_one_engine_commit_across_both_slots() {
     );
     assert_eq!(
         t.fetch(&k).unwrap().and_then(|m| m.get("colour").cloned()),
-        Some(okm_core::obj_dynamic::DynamicValue::Str("slate".into()))
+        Some(okm_value::DynamicValue::Str("slate".into()))
     );
 }
 
@@ -321,7 +321,7 @@ fn purge_is_one_engine_commit() {
         &k,
         &map_of(&[(
             "colour",
-            okm_core::obj_dynamic::DynamicValue::Str("amber".into()),
+            okm_value::DynamicValue::Str("amber".into()),
         )]),
     )
     .unwrap();
@@ -341,8 +341,8 @@ fn purge_is_one_engine_commit() {
 }
 
 fn map_of(
-    pairs: &[(&str, okm_core::obj_dynamic::DynamicValue)],
-) -> std::collections::BTreeMap<String, okm_core::obj_dynamic::DynamicValue> {
+    pairs: &[(&str, okm_value::DynamicValue)],
+) -> std::collections::BTreeMap<String, okm_value::DynamicValue> {
     pairs
         .iter()
         .map(|(name, value)| ((*name).to_string(), value.clone()))
@@ -362,12 +362,12 @@ fn the_verbs_take_a_shared_handle_and_still_commit_once_each() {
         t.put(&k, &row(7)).unwrap();
         t.merge(
             &k,
-            &map_of(&[("amount", okm_core::obj_dynamic::DynamicValue::U64(2))]),
+            &map_of(&[("amount", okm_value::DynamicValue::U64(2))]),
         )
         .unwrap();
         t.replace(
             &k,
-            &map_of(&[("amount", okm_core::obj_dynamic::DynamicValue::U64(3))]),
+            &map_of(&[("amount", okm_value::DynamicValue::U64(3))]),
         )
         .unwrap();
         assert!(

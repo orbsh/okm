@@ -26,8 +26,6 @@ pub mod graph;
 pub mod index;
 pub mod key;
 pub mod meta;
-pub mod obj_dynamic;
-pub mod obj_segment;
 pub mod obj_vocab;
 pub mod prefix;
 pub mod presets;

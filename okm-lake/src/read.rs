@@ -19,7 +19,7 @@ use arrow::array::{
 };
 use arrow::compute::{concat_batches, take};
 use arrow::row::{RowConverter, SortField};
-use okm_core::model::obj_dynamic::{DynamicValue, ValueMap};
+use okm_value::{DynamicValue, ValueMap};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use std::collections::HashMap;
 use std::fmt;

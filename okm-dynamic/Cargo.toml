@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 okm-core = { path = "../okm-core" }
+okm-value = { path = "../okm-value" }
 serde = { version = "1", features = ["derive"], optional = true }
 arrow = { version = "60", optional = true }
 

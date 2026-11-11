@@ -13,7 +13,7 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use okm_core::changelog::{ChangelogConfig, ChangelogStore};
-use okm_core::model::obj_dynamic::DynamicValue;
+use okm_value::DynamicValue;
 use okm_core::{Collection, DocumentEncode, KeyEncode, Vocab};
 use okm_lake::{DrainConfig, drain};
 

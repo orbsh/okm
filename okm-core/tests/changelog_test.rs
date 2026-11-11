@@ -180,18 +180,18 @@ fn the_whole_document_verbs_are_captured() {
     let mut named = std::collections::BTreeMap::new();
     named.insert(
         "title".to_string(),
-        okm_core::model::obj_dynamic::DynamicValue::Str("second".into()),
+        okm_value::DynamicValue::Str("second".into()),
     );
     app.merge(&key, &named).expect("merge");
 
     let mut whole = std::collections::BTreeMap::new();
     whole.insert(
         "author".to_string(),
-        okm_core::model::obj_dynamic::DynamicValue::U64(9),
+        okm_value::DynamicValue::U64(9),
     );
     whole.insert(
         "title".to_string(),
-        okm_core::model::obj_dynamic::DynamicValue::Str("third".into()),
+        okm_value::DynamicValue::Str("third".into()),
     );
     app.replace(&key, &whole).expect("replace");
 

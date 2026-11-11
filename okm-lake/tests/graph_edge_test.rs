@@ -755,10 +755,10 @@ fn the_edge_set_exports_as_a_table_with_named_endpoints() {
     )
     .unwrap();
 
-    let mut attrs: BTreeMap<String, okm_core::obj_dynamic::DynamicValue> = BTreeMap::new();
+    let mut attrs: BTreeMap<String, okm_value::DynamicValue> = BTreeMap::new();
     attrs.insert(
         "role".to_string(),
-        okm_core::obj_dynamic::DynamicValue::Str("lead".to_string()),
+        okm_value::DynamicValue::Str("lead".to_string()),
     );
     let mut batch = okm_core::Batch::default();
     g.replace_into(&mut batch, 1, &attrs).unwrap();

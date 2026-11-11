@@ -8,7 +8,7 @@
     clippy::panic_in_result_fn
 )]
 
-use okm_core::{DocumentEncode, KeyEncode, obj_dynamic::DynamicValue};
+use okm_core::{DocumentEncode, KeyEncode, okm_value::DynamicValue};
 use parquet_variant::VariantBuilder;
 use std::collections::BTreeMap;
 

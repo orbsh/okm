@@ -5,6 +5,13 @@ edition = "2024"
 description = "Name vocabularies: the label-to-number mapping dynamic segments are written in"
 
 [dependencies]
+serde = { version = "1", optional = true }
+
+[features]
+default = []
+# The value form's serde bridge (a packet, an MQ payload, a binding argument).
+# Off by default: the segment's bytes are the format this crate is for.
+serde = ["dep:serde"]
 
 [lints]
 workspace = true

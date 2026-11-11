@@ -1,10 +1,10 @@
-//! The dynamic segment's vocabulary and value types (ADR-0012, ADR-0057).
+//! The dynamic segment's value vocabulary (ADR-0012, ADR-0057).
 //!
 //! Slot 1 holds ONE entry per obj. Its value is a block table followed by the
-//! leaf bodies; the layout lives in [`crate::model::obj_segment`], which owns
-//! both directions. What stays here is the currency the codec spends: the value
-//! vocabulary ([`DynamicValue`]), the field id + value pair readers get back
-//! ([`DynamicField`]), and the name resolver a writer hands in.
+//! leaf bodies; the layout lives in [`crate::segment`], which owns both
+//! directions. What stays here is the currency the codec spends: the value
+//! vocabulary ([`DynamicValue`]), the value-type tags, and the field id + value
+//! pair readers get back ([`DynamicField`]).
 //!
 //! Ids are the field NAME's vocabulary number (slots 2/3); u8 ids with `0xFF`
 //! escaping to `[0xFF][u16 id]`. Unknown value types on decode are normal input
@@ -145,8 +145,8 @@ pub fn dyn_kind(v: &DynamicValue) -> &'static str {
 /// does not fit. Used by `from_map` for the unresolved form `to_map` emits (an
 /// id without its label): a silent truncation would point at another label's
 /// id, which is the one thing an id must never do.
-pub fn vocab_id_from_u64<N: okm_value::Id>(v: u64) -> Option<N> {
-    let w = <N as okm_value::Id>::WIDTH;
+pub fn vocab_id_from_u64<N: crate::Id>(v: u64) -> Option<N> {
+    let w = <N as crate::Id>::WIDTH;
     let mut img = [0u8; 16];
     img[16 - 8..].copy_from_slice(&v.to_be_bytes());
     // Everything left of the width must be zero, otherwise the value does not
@@ -154,21 +154,15 @@ pub fn vocab_id_from_u64<N: okm_value::Id>(v: u64) -> Option<N> {
     if img[..16 - w].iter().any(|b| *b != 0) {
         return None;
     }
-    <N as okm_value::Id>::from_be(&img[16 - w..])
+    <N as crate::Id>::from_be(&img[16 - w..])
 }
 
 /// Name resolver: returns the vocabulary id for `name`, allocating through the
 /// closure on first sight (the caller's vocabulary owns allocation discipline —
 /// single writer, engine mutex).
-pub trait NameResolver {
-    fn resolve(&mut self, name: &str) -> crate::error::Result<u16>;
-}
-
-impl<F: FnMut(&str) -> crate::error::Result<u16>> NameResolver for F {
-    fn resolve(&mut self, name: &str) -> crate::error::Result<u16> {
-        self(name)
-    }
-}
+// A writer hands the encoder a closure, not a trait object: the closure's error
+// type is the caller's own, and the encoder carries it out unchanged
+// ([`crate::Error::Names`]).
 
 /// Decode one dynamic segment (ADR-0057) into its fields. `name_of` resolves
 /// vocabulary ids to names; an id it cannot resolve keeps its number.
@@ -176,15 +170,15 @@ pub fn decode_named(
     bytes: &[u8],
     name_of: &mut dyn FnMut(u16) -> Option<String>,
 ) -> Vec<DynamicField> {
-    crate::model::obj_segment::decode(bytes, name_of)
+    crate::segment::decode(bytes, name_of)
 }
 
 /// [`decode_named`] without a vocabulary: names come back as id strings.
 pub fn decode_variants(bytes: &[u8]) -> Vec<DynamicField> {
-    crate::model::obj_segment::decode(bytes, &mut |_| None)
+    crate::segment::decode(bytes, &mut |_| None)
 }
 
-#[cfg(feature = "schema-serde")]
+#[cfg(feature = "serde")]
 mod serde_impls {
     //! The value form's serde bridge (feature `schema-serde`), for consumers
     //! that cross a boundary in another representation — the packet a memory
@@ -430,11 +424,11 @@ mod serde_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::obj_segment::encode;
+    use crate::segment::encode;
 
     /// Names in declaration order: first sight claims the next id, the way a
     /// real vocabulary allocates.
-    fn stub(names: &'static [&'static str]) -> impl FnMut(&str) -> crate::error::Result<u16> {
+    fn stub(names: &'static [&'static str]) -> impl FnMut(&str) -> Result<u16, ()> {
         move |name: &str| {
             let at = names.iter().position(|n| *n == name).unwrap_or(names.len());
             Ok((at + 1) as u16)
@@ -483,7 +477,7 @@ mod tests {
         // above escape through 0xFF + u16.
         fn ids_of(id: u16) -> Vec<u8> {
             let fields = ValueMap::from([("x".to_string(), DynamicValue::U64(1))]);
-            let mut vocab = move |_: &str| Ok(id);
+            let mut vocab = move |_: &str| Ok::<u16, ()>(id);
             encode(&fields, &mut vocab).unwrap()
         }
         let short = ids_of(0xFE);
@@ -505,7 +499,7 @@ mod tests {
         }
         let fields = ValueMap::from([("root".to_string(), value)]);
         let mut next = 1u16;
-        let bytes = encode(&fields, &mut |_: &str| {
+        let bytes = encode(&fields, &mut |_: &str| -> Result<u16, ()> {
             let id = next;
             next += 1;
             Ok(id)
@@ -515,5 +509,94 @@ mod tests {
             decode_variants(&bytes).is_empty(),
             "over-deep value is refused"
         );
+    }
+}
+
+
+/// Value types of the dynamic segment. One byte per frame header.
+///
+/// Integers: signless framing — the caller's Rust type decides width;
+/// the wire stores the value big-endian and the reader casts. `Array`
+/// is a count-prefixed list of self-describing frames (each element
+/// re-carries its type); nested objects use `Obj` with the same
+/// reserved contract (added when nesting ships — the variant exists so
+/// stored data can already carry the tag).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum ObjValueType {
+    /// Unsigned integer, big-endian, width implied by the frame length.
+    UInt = 0,
+    /// IEEE 754 f64, 8 bytes.
+    F64 = 1,
+    /// UTF-8 string, `len` bytes.
+    Str = 2,
+    /// Raw bytes, `len` bytes.
+    Bytes = 3,
+    /// One byte: 0 = false, non-zero = true.
+    Bool = 4,
+    /// Zero-length frame (len must be 0).
+    Null = 5,
+    /// Array: `len` counts the ELEMENT count prefix (u32 BE) plus the
+    /// concatenated self-describing element frames.
+    Array = 6,
+    /// Nested object (reserved for the nesting milestone — frames carry
+    /// the same shape as the top-level dynamic segment).
+    Obj = 7,
+    /// Signed integer, big-endian two's complement, width implied by the
+    /// frame length (sign-extended on read).
+    Int = 8,
+}
+
+impl ObjValueType {
+    /// Wire byte → type. Unknown tags are normal input for a dynamic
+    /// reader (a newer writer stored something it cannot see) — return
+    /// `None`, never panic.
+    pub fn from_byte(b: u8) -> Option<Self> {
+        match b {
+            0 => Some(Self::UInt),
+            1 => Some(Self::F64),
+            2 => Some(Self::Str),
+            3 => Some(Self::Bytes),
+            4 => Some(Self::Bool),
+            5 => Some(Self::Null),
+            6 => Some(Self::Array),
+            7 => Some(Self::Obj),
+            8 => Some(Self::Int),
+            _ => None,
+        }
+    }
+
+    pub fn to_byte(self) -> u8 {
+        self as u8
+    }
+}
+
+#[cfg(test)]
+mod tag_tests {
+    use super::*;
+
+    #[test]
+    fn tags_round_trip_and_unknown_is_none() {
+        for b in 0u8..=8 {
+            let t = ObjValueType::from_byte(b).expect("0-8 are defined");
+            assert_eq!(t.to_byte(), b);
+        }
+        assert_eq!(ObjValueType::from_byte(9), None);
+        assert_eq!(ObjValueType::from_byte(0xFF), None);
+    }
+
+    #[test]
+    fn tags_are_stable_contract() {
+        // Explicit byte values, hex-locked: stored frames reference these
+        // forever (append-only, never renumber).
+        assert_eq!(ObjValueType::UInt.to_byte(), 0);
+        assert_eq!(ObjValueType::F64.to_byte(), 1);
+        assert_eq!(ObjValueType::Str.to_byte(), 2);
+        assert_eq!(ObjValueType::Bytes.to_byte(), 3);
+        assert_eq!(ObjValueType::Bool.to_byte(), 4);
+        assert_eq!(ObjValueType::Null.to_byte(), 5);
+        assert_eq!(ObjValueType::Array.to_byte(), 6);
+        assert_eq!(ObjValueType::Obj.to_byte(), 7);
+        assert_eq!(ObjValueType::Int.to_byte(), 8);
     }
 }

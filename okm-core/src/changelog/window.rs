@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 
 use crate::error::{Error, Result};
 use crate::model::index::DYNAMIC_SLOT;
-use crate::model::obj_dynamic::ValueMap;
+use okm_value::ValueMap;
 use crate::schema::CollectionSchema;
 use crate::{OP_DELETE, OP_PUT, PRIMARY_SLOT};
 
@@ -268,7 +268,7 @@ pub fn decode_dynamic_segment(
 ) -> Result<ValueMap> {
     let faces = crate::obj_vocab::FIELD_VOCAB;
     let mut row = ValueMap::new();
-    for field in crate::model::obj_dynamic::decode_named(body, &mut |id| {
+    for field in okm_value::decode_named(body, &mut |id| {
         labels
             .get(&(faces.id_slot, id.to_be_bytes().to_vec()))
             .cloned()
@@ -278,7 +278,7 @@ pub fn decode_dynamic_segment(
             .cloned()
         else {
             return Err(crate::Error::Codec(
-                crate::model::obj_dynamic::CodecError::UnknownField(format!(
+                okm_value::CodecError::UnknownField(format!(
                     "dynamic field id {} (no label in this window's field vocabulary)",
                     field.id
                 )),

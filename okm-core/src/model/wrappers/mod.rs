@@ -8,8 +8,7 @@
 //! document-group regime, not here.
 
 mod bytes;
-pub mod obj_value;
-mod offset;
+pub mod offset;
 mod optional;
 mod quant;
 mod ref_mod;
@@ -21,7 +20,6 @@ pub mod vector;
 pub mod wire;
 
 pub use bytes::Bytes;
-pub use obj_value::ObjValueType;
 pub use offset::{Offset, offset_decode, offset_encode};
 pub use optional::{Option, OptionalEnc, WireWidth};
 pub use quant::{Quant, dequantize, quantize, wire_to_be_bytes};

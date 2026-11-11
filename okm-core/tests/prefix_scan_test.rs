@@ -141,7 +141,7 @@ fn prefix_scan_is_lazy_reversible_and_pageable() {
 
 #[test]
 fn document_mode_reaches_both_slots_under_a_prefix() {
-    use okm_core::model::obj_dynamic::DynamicValue;
+    use okm_value::DynamicValue;
 
     let col = seeded();
     // A document that exists ONLY as its dynamic segment (ADR-0035), inside

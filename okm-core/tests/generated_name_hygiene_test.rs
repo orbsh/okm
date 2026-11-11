@@ -13,7 +13,7 @@
 
 #![allow(clippy::unwrap_used, clippy::panic)]
 
-use okm_core::model::obj_dynamic::DynamicValue;
+use okm_value::DynamicValue;
 use okm_core::{Collection, Document, DocumentEncode, KeyEncode};
 
 use okm_async::TestStore;

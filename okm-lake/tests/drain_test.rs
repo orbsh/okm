@@ -486,7 +486,7 @@ fn a_documents_open_fields_travel_as_a_variant_column() {
         let mut open = std::collections::BTreeMap::new();
         open.insert(
             "note".to_string(),
-            okm_core::model::obj_dynamic::DynamicValue::Str("first".to_string()),
+            okm_value::DynamicValue::Str("first".to_string()),
         );
         c.merge(&K1, &open)
             .expect("a field the declaration does not have");
@@ -566,7 +566,7 @@ fn an_open_segment_with_no_row_is_a_put_open_row() {
         let mut open = std::collections::BTreeMap::new();
         open.insert(
             "note".to_string(),
-            okm_core::model::obj_dynamic::DynamicValue::Str("orphan".to_string()),
+            okm_value::DynamicValue::Str("orphan".to_string()),
         );
         c.merge(&K2, &open).expect("a segment with no row");
     }
@@ -699,7 +699,7 @@ fn a_variant_column_declares_its_table_feature() {
         let mut open = std::collections::BTreeMap::new();
         open.insert(
             "note".to_string(),
-            okm_core::model::obj_dynamic::DynamicValue::Str("first".to_string()),
+            okm_value::DynamicValue::Str("first".to_string()),
         );
         c.merge(&K1, &open).expect("an open field");
     }
@@ -820,7 +820,7 @@ fn statistics_name_the_right_column_when_a_struct_sits_before_it() {
         let mut open = std::collections::BTreeMap::new();
         open.insert(
             "note".to_string(),
-            okm_core::model::obj_dynamic::DynamicValue::Str("first".to_string()),
+            okm_value::DynamicValue::Str("first".to_string()),
         );
         c.merge(&K1, &open).expect("a segment beside the row");
         c.put(
@@ -1672,7 +1672,7 @@ fn a_fold_keeps_open_fields_written_by_an_earlier_window() {
         let mut open = std::collections::BTreeMap::new();
         open.insert(
             "note".to_string(),
-            okm_core::model::obj_dynamic::DynamicValue::Str("first".to_string()),
+            okm_value::DynamicValue::Str("first".to_string()),
         );
         c.merge(&K1, &open).expect("an open field");
     }
@@ -1747,7 +1747,7 @@ fn a_fold_merges_open_fields_written_by_two_windows() {
         let mut open = std::collections::BTreeMap::new();
         open.insert(
             field.to_string(),
-            okm_core::model::obj_dynamic::DynamicValue::Str(value.to_string()),
+            okm_value::DynamicValue::Str(value.to_string()),
         );
         c.merge(&K1, &open).expect("an open field");
         drop(c);

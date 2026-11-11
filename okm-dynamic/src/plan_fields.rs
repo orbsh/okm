@@ -14,7 +14,7 @@
 //! slot constants — every byte rule stays here, one source.
 
 use okm_core::model::index::{DYNAMIC_SLOT, FIELD_VOCAB_ID_SLOT, FIELD_VOCAB_NAME_SLOT};
-use okm_core::model::obj_dynamic::decode_named;
+use okm_value::decode_named;
 use okm_core::model::obj_vocab::FIELD_VOCAB;
 use okm_core::storage::{VirtualStorage, scan_suffix_kv};
 
@@ -252,7 +252,7 @@ pub fn plan_put_fields(
     let mut vocab_ops: Vec<(Vec<u8>, Option<Vec<u8>>)> = Vec::new();
     // The schema-driven values become the segment's currency first: the
     // encoder walks one name-keyed map (ADR-0057).
-    let mut dyn_fields = okm_core::obj_dynamic::ValueMap::new();
+    let mut dyn_fields = okm_value::ValueMap::new();
     for (name, value) in fields {
         dyn_fields.insert(name.clone(), value_to_dyn_value(value)?);
     }
@@ -279,7 +279,7 @@ pub fn plan_put_fields(
             vocab_ops.push((name_key, Some(id.to_be_bytes().to_vec())));
             Ok(id)
         };
-        okm_core::obj_segment::encode(&dyn_fields, &mut resolver).map_err(|e| e.to_string())?
+        okm_value::encode(&dyn_fields, &mut resolver).map_err(|e| e.to_string())?
     };
     // The allocation cursor, exactly as `VocabCache::id_for` writes it: without
     // this op the plan's vocabulary and the typed path's vocabulary diverge, and
@@ -379,8 +379,8 @@ fn collect_fields(
 /// the schema-free zone).
 pub(crate) fn value_to_dyn_value(
     v: &Value,
-) -> Result<okm_core::model::obj_dynamic::DynamicValue, String> {
-    use okm_core::model::obj_dynamic::DynamicValue;
+) -> Result<okm_value::DynamicValue, String> {
+    use okm_value::DynamicValue;
     Ok(match v {
         Value::U8(x) => DynamicValue::U64(*x as u64),
         Value::U16(x) => DynamicValue::U64(*x as u64),
@@ -412,7 +412,7 @@ pub(crate) fn value_to_dyn_value(
 /// The dynamic segment's value IS the codec's value now (ADR-0056 §8): one tree,
 /// so this is a clone, and it stays only because the frame walk hands out `&`s.
 pub(crate) fn dyn_value_to_value(
-    v: &okm_core::model::obj_dynamic::DynamicValue,
+    v: &okm_value::DynamicValue,
 ) -> Result<Value, String> {
     Ok(v.clone())
 }

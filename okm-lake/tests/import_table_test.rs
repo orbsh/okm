@@ -17,7 +17,7 @@ use okm_lake::snapshot::parquet_io::EdgeRestore;
 
 use std::collections::BTreeMap;
 
-use okm_core::obj_dynamic::DynamicValue;
+use okm_value::DynamicValue;
 use okm_core::{
     Batch, Document, DocumentEncode, EdgeHead, Graph, GraphEncode, KeyEncode, NodeRef, ReduceCodec,
     VirtualStorage,

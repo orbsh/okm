@@ -3,7 +3,7 @@
 //! then cold TLV frames by tag.
 
 use crate::field::FieldType;
-use crate::model::obj_dynamic::{CodecError, DynamicValue, ValueMap};
+use okm_value::{CodecError, DynamicValue, ValueMap};
 use crate::schema::CollectionSchema;
 use std::collections::BTreeMap;
 

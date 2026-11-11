@@ -63,7 +63,7 @@
 use crate::engine::storage::{Batch, VirtualStorage, scan_suffix_kv};
 use crate::model::index::{DYNAMIC_SLOT, Document, PRIMARY_SLOT, Slot, write_slot};
 use crate::model::key::KeyEncode;
-use crate::model::obj_dynamic::{DynamicValue, decode_named};
+use okm_value::{DynamicValue, decode_named};
 use crate::model::obj_vocab::{Faces, PREDICATE_VOCAB, Vocabulary};
 
 /// Fixed face 0x06: out-edge traversal, pair-qualified
@@ -294,6 +294,10 @@ fn decode_body(bytes: &[u8]) -> EdgeBody {
 pub struct Graph<S, E: GraphEncode> {
     store: S,
     vocab: Vocabulary<u16>,
+    /// The ns the edge tables live under. `E::NS_PREFIX` unless a caller moved
+    /// the whole graph — the restore's mapping (ADR-0062): an edge's endpoints
+    /// carry the ns in their refs, so the graph moves as one.
+    ns: [u8; 2],
     _pd: std::marker::PhantomData<E>,
 }
 
@@ -304,8 +308,29 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
         Self {
             store,
             vocab: Vocabulary::new(),
+            ns: [E::NS_PREFIX[0], E::NS_PREFIX[1]],
             _pd: std::marker::PhantomData,
         }
+    }
+
+    /// The same graph rooted at ANOTHER ns — the restore's mapping (ADR-0062).
+    ///
+    /// One ns for the whole graph, not one per table: an edge's endpoints are
+    /// `[ns 2B]` refs, so an edge restored next to nodes that stayed behind would
+    /// point at nothing. What moves is the graph, and the node table moves with it
+    /// because the caller builds that collection under the same ns.
+    pub fn with_ns(store: S, ns: u16) -> Self {
+        Self {
+            store,
+            vocab: Vocabulary::new(),
+            ns: ns.to_be_bytes(),
+            _pd: std::marker::PhantomData,
+        }
+    }
+
+    /// The ns this graph is rooted at.
+    pub fn ns(&self) -> u16 {
+        u16::from_be_bytes(self.ns)
     }
 
     pub fn store(&self) -> &S {
@@ -320,14 +345,14 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
     }
 
     fn primary_key(&self, edge_id: u64) -> Vec<u8> {
-        let mut k = E::NS_PREFIX.to_vec();
+        let mut k = self.ns.to_vec();
         write_slot(&mut k, PRIMARY_SLOT);
         k.extend_from_slice(&edge_id.to_be_bytes());
         k
     }
 
     fn face_key(&self, slot: Slot, segments: &[&[u8]]) -> Vec<u8> {
-        let mut k = E::NS_PREFIX.to_vec();
+        let mut k = self.ns.to_vec();
         write_slot(&mut k, slot);
         for s in segments {
             k.extend_from_slice(s);
@@ -343,7 +368,7 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
                 return Err(crate::error::Error::EdgeNotMember {
                     side,
                     ns: node.ns_id(),
-                    graph_ns: u16::from_be_bytes([E::NS_PREFIX[0], E::NS_PREFIX[1]]),
+                    graph_ns: self.ns(),
                 });
             }
         }
@@ -357,7 +382,7 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
     /// id space would hand the same id to two names.
     fn predicate_vocab_id(&mut self, predicate: &str) -> crate::error::Result<u16> {
         let Self { store, vocab, .. } = self;
-        let mut door = Faces::<_, u16>::new(&*store, E::NS_PREFIX, PREDICATE_VOCAB);
+        let mut door = Faces::<_, u16>::new(&*store, &self.ns, PREDICATE_VOCAB);
         vocab.ensure(&mut door, predicate)
     }
 
@@ -365,21 +390,21 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
     /// nobody wrote this predicate, so no edge can carry it.
     fn vocab_lookup(&mut self, predicate: &str) -> crate::error::Result<Option<u16>> {
         let Self { store, vocab, .. } = self;
-        let mut door = Faces::<_, u16>::new(&*store, E::NS_PREFIX, PREDICATE_VOCAB);
+        let mut door = Faces::<_, u16>::new(&*store, &self.ns, PREDICATE_VOCAB);
         vocab.id_of(&mut door, predicate)
     }
 
     /// Resolve predicate id → name for display/diagnostics.
     pub fn predicate_vocab_name(&mut self, id: u16) -> crate::error::Result<Option<String>> {
         let Self { store, vocab, .. } = self;
-        let mut door = Faces::<_, u16>::new(&*store, E::NS_PREFIX, PREDICATE_VOCAB);
+        let mut door = Faces::<_, u16>::new(&*store, &self.ns, PREDICATE_VOCAB);
         vocab.name_of(&mut door, id)
     }
 
     /// Every predicate this graph has, id-ordered: ONE prefix scan of 0x04.
     /// A listing, never an inference walked back from the index faces.
     pub fn predicates(&mut self) -> crate::error::Result<Vec<(u16, String)>> {
-        let mut p = E::NS_PREFIX.to_vec();
+        let mut p = self.ns.to_vec();
         write_slot(&mut p, crate::model::index::PREDICATE_VOCAB_ID_SLOT);
         let mut out: Vec<(u16, String)> = scan_suffix_kv(&self.store, &p)?
             .into_iter()
@@ -430,7 +455,7 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
     /// Slot 0 only: the ns also holds faces, and an unfiltered scan would read
     /// them as rows (the same trap a document export hit).
     pub fn edge_ids(&self) -> crate::error::Result<Vec<u64>> {
-        let mut prefix = E::NS_PREFIX.to_vec();
+        let mut prefix = self.ns.to_vec();
         write_slot(&mut prefix, PRIMARY_SLOT);
         Ok(scan_suffix_kv(&self.store, &prefix)?
             .into_iter()
@@ -450,7 +475,7 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
     /// recovery ("which id is free now"), which runs on open — the difference is
     /// a whole-table walk against one read.
     pub fn max_edge_id(&self) -> crate::error::Result<Option<u64>> {
-        let mut begin = E::NS_PREFIX.to_vec();
+        let mut begin = self.ns.to_vec();
         write_slot(&mut begin, PRIMARY_SLOT);
         let end = crate::engine::storage::prefix_end(&begin);
         let head = begin.len();
@@ -477,7 +502,7 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
     /// The edge's DYNAMIC segment (face 0x01) — its open attributes, one entry
     /// per edge, keyed `[ns][0x01][edge_id]`.
     fn dynamic_key(&self, edge_id: u64) -> Vec<u8> {
-        let mut key = E::NS_PREFIX.to_vec();
+        let mut key = self.ns.to_vec();
         write_slot(&mut key, DYNAMIC_SLOT);
         key.extend_from_slice(&edge_id.to_be_bytes());
         key
@@ -507,11 +532,11 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
             let mut dict = Vocabulary::<u16>::new();
             let mut door = Faces::<_, u16>::new(
                 &self.store,
-                E::NS_PREFIX,
+                &self.ns,
                 crate::model::obj_vocab::FIELD_VOCAB,
             );
             let mut resolver = |name: &str| dict.ensure(&mut door, name);
-            crate::model::obj_segment::encode(fields, &mut resolver)?
+            okm_value::encode(fields, &mut resolver)?
         };
         batch.put(key, body);
         Ok(())
@@ -533,7 +558,7 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
         let mut dict = Vocabulary::<u16>::new();
         let mut door = Faces::<_, u16>::new(
             &self.store,
-            E::NS_PREFIX,
+            &self.ns,
             crate::model::obj_vocab::FIELD_VOCAB,
         );
         let mut failed: Option<crate::error::Error> = None;
@@ -610,7 +635,7 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
         );
         // Declared faces: the payload's own #[ok_index] declarations, the
         // same entries a document collection writes for the same row.
-        for (key, value) in E::index_entries(&EdgeKey(edge_id), payload, E::NS_PREFIX) {
+        for (key, value) in E::index_entries(&EdgeKey(edge_id), payload, &self.ns) {
             batch.put(key, value);
         }
         Ok(())
@@ -656,7 +681,7 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
             EDGE_PREDICATE_IN_SLOT,
             &[&predicate_be, &dst_wire, &src_wire, &id_be],
         ));
-        for (key, _) in E::index_entries(&EdgeKey(edge_id), &payload, E::NS_PREFIX) {
+        for (key, _) in E::index_entries(&EdgeKey(edge_id), &payload, &self.ns) {
             batch.del(&key);
         }
         Ok(())

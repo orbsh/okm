@@ -11,7 +11,7 @@
     clippy::panic_in_result_fn
 )]
 use okm_async::TestStore;
-use okm_core::{DocumentEncode, KeyEncode, obj_dynamic::DynamicValue};
+use okm_core::{DocumentEncode, KeyEncode, okm_value::DynamicValue};
 use okm_lake::bridge::ToRecordBatch;
 use std::collections::BTreeMap;
 

@@ -283,7 +283,7 @@ fn an_unnamed_id_exports_as_null_and_import_refuses_it() {
 /// row of default values.
 #[test]
 fn parquet_with_variant_restores_both_halves_and_segment_only_documents() {
-    use okm_core::model::obj_dynamic::DynamicValue;
+    use okm_value::DynamicValue;
     use std::collections::BTreeMap;
 
     let dir = tempfile::tempdir().unwrap();

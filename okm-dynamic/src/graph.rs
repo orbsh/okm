@@ -27,7 +27,7 @@ use okm_core::index::PRIMARY_SLOT;
 use okm_core::model::graph::{
     EDGE_IN_SLOT, EDGE_OUT_SLOT, EDGE_PREDICATE_IN_SLOT, EDGE_PREDICATE_OUT_SLOT, NodeRef,
 };
-use okm_core::obj_dynamic::{DynamicValue, decode_named};
+use okm_value::{DynamicValue, decode_named};
 use okm_core::obj_vocab::{Faces, FIELD_VOCAB, PREDICATE_VOCAB, Vocabulary};
 use okm_core::schema::CollectionSchema;
 use okm_core::storage::{Batch, VirtualStorage, scan_suffix_kv};
@@ -195,7 +195,7 @@ impl<S: VirtualStorage> Graph<S> {
         let Self { store, ns, fields, .. } = self;
         let mut door = Faces::<_, u16>::new(&*store, ns, FIELD_VOCAB);
         let mut resolver = |name: &str| fields.ensure(&mut door, name);
-        okm_core::obj_segment::encode(attrs, &mut resolver).map_err(|e| e.to_string())
+        okm_value::encode(attrs, &mut resolver).map_err(|e| e.to_string())
     }
 
     /// Attribute frames → name-keyed map (ids resolved via the field

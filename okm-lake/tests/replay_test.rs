@@ -15,7 +15,7 @@
 use okm_async::TestStore;
 use okm_core::changelog::replay::{reconcile, replay_table};
 use okm_core::changelog::{ChangelogConfig, ChangelogStore};
-use okm_core::model::obj_dynamic::DynamicValue;
+use okm_value::DynamicValue;
 use okm_core::{Collection, DocumentEncode, KeyEncode, Vocab};
 use okm_dynamic::DynamicCollection;
 

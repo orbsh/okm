@@ -21,7 +21,7 @@
 )]
 
 use okm_async::TestStore;
-use okm_core::model::obj_dynamic::CodecError;
+use okm_value::CodecError;
 use okm_core::schema::CollectionSchema;
 use okm_core::{Collection, Document, DocumentEncode, KeyEncode, Reverse, Reversible};
 use okm_lake::snapshot::parquet_io;

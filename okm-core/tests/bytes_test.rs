@@ -69,7 +69,7 @@ fn bytes_map_bridge() {
     let m = doc.to_map();
     assert_eq!(
         m.get("payload"),
-        Some(&okm_core::obj_dynamic::DynamicValue::Bytes(b"xyz".to_vec()))
+        Some(&okm_value::DynamicValue::Bytes(b"xyz".to_vec()))
     );
     let back = Blob::try_from_map(&m).unwrap();
     assert_eq!(back, doc);

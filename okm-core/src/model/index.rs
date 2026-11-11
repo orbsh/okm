@@ -315,7 +315,7 @@ pub trait Document: Sized + Clone {
     /// document -> map: every declared field lifted into a run-time
     /// DynamicValue (ADR-0012 document-map bridge; derive-generated).
     fn to_map(&self)
-    -> std::collections::BTreeMap<String, crate::model::obj_dynamic::DynamicValue>;
+    -> std::collections::BTreeMap<String, okm_value::DynamicValue>;
     /// map -> document, fallibly: matched fields assigned from `DynamicValue`.
     ///
     /// Two rules, and the difference is PRESENCE. An absent name takes its
@@ -328,7 +328,7 @@ pub trait Document: Sized + Clone {
     /// caller spelled a value, so defaulting or truncating it would write
     /// something they never asked for.
     fn try_from_map(
-        map: &std::collections::BTreeMap<String, crate::model::obj_dynamic::DynamicValue>,
+        map: &std::collections::BTreeMap<String, okm_value::DynamicValue>,
     ) -> crate::error::Result<Self>
     where
         Self: Sized;

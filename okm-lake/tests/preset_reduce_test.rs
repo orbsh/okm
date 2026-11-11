@@ -333,7 +333,7 @@ fn the_reduce_table_exports_as_its_own_file() {
 /// call folds ONCE — the fold hangs off the row arm, not off the map's size.
 #[test]
 fn a_merge_folds_the_ledger_once_and_only_through_the_row_arm() {
-    use okm_core::model::obj_dynamic::DynamicValue;
+    use okm_value::DynamicValue;
     use std::collections::BTreeMap;
 
     let t = <Post as Document>::collection(TestStore::slatedb_mem());
