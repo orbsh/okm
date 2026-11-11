@@ -64,7 +64,7 @@ byte (≥ 0x10).
 
 ```text
 0x00  primary                      [ns][0x00][pkey]                            value = TLV payload
-0x01  obj dynamic segment          [ns][0x01][pkey]                            value = blocks + values (ADR-0057)
+0x01  obj dynamic segment          [ns][0x01][pkey]                            value = toc_len | blocks | values ([dynamic segment](dynamic-segment.md))
 0x02  field-name vocabulary        [ns][0x02][field-id]                        → name
 0x03  field-name vocabulary        [ns][0x03][name]                            → field-id
 0x04  predicate vocabulary         [ns][0x04][predicate_id]                    → name

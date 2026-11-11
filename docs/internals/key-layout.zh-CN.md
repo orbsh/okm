@@ -35,7 +35,7 @@ ns 头之后是 slot。它的首字节自己说明后面还跟不跟计数字节
 
 ```text
 0x00  主表              [ns][0x00][主键]                             value = TLV payload
-0x01  obj 动态段        [ns][0x01][主键]                             value = nTLV 帧
+0x01  obj 动态段        [ns][0x01][主键]                             value = toc_len | blocks | values（[动态段](dynamic-segment.zh-CN.md)）
 0x02  字段名词汇表      [ns][0x02][field-id]                         → 名字
 0x03  字段名词汇表      [ns][0x03][名字]                             → field-id
 0x04  谓词词汇表        [ns][0x04][predicate_id]                     → 谓词名

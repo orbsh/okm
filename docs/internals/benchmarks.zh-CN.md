@@ -1,6 +1,6 @@
 # 基线基准
 
-核心路径的基线数字（PLAN Phase 7「Benchmarks」），2026-09-12 记录于最初的 criterion 基线（`--save-baseline initial`）。用途：跨引擎/codec 变更的相对比较——**不是**绝对真理。共享跑分的机器方差 ±5%；在专用跑分机出现之前不设 CI 回归门。
+核心路径的基线数字（PLAN Phase 7「Benchmarks」），2026-09-12 记录于最初的 criterion 基线（`--save-baseline initial`）。用途：跨引擎/codec 变更的相对比较——**不是**绝对真理。共享跑分的机器方差 ±5%；在专用跑分机出现之前不设 CI 回归门。按形状而变的尺寸（动态段在字段数与值体大小变化时的行为）不是基线，见[动态段](dynamic-segment.zh-CN.md)。
 
 重跑：`cargo bench -p okm-core --bench core_paths`（加 `-- --baseline initial`与本表对比）。引擎专属的 bench（fjall/slatedb/远程 round trip）在接线完成后作为独立的bench 文件落地。
 

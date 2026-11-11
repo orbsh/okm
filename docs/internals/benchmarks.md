@@ -1,6 +1,6 @@
 # Baseline Benchmarks
 
-Baseline numbers for the core paths (PLAN Phase 7 "Benchmarks"), recorded 2026-09-12 on the initial criterion baseline (`--save-baseline initial`). Purpose: relative comparison across engine/codec changes — **not** absolute truth. Shared-runner variance is ±5%; no CI regression gates until a dedicated runner exists.
+Baseline numbers for the core paths (PLAN Phase 7 "Benchmarks"), recorded 2026-09-12 on the initial criterion baseline (`--save-baseline initial`). Purpose: relative comparison across engine/codec changes — **not** absolute truth. Shared-runner variance is ±5%; no CI regression gates until a dedicated runner exists. Shape-dependent sizing (how the dynamic segment behaves as fields and bodies grow) is not a baseline and lives in [dynamic segment](dynamic-segment.md).
 
 Re-run: `cargo bench -p okm-core --bench core_paths` (add `-- --baseline initial` to compare against this table). Engine-specific benches (fjall/slatedb/remote round trip) land as separate bench files when wired.
 

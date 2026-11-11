@@ -63,7 +63,9 @@ Per-row data hangs off the row key: without it, every row's dynamic
 segment would pile onto one physical key. The shared `[ns][0x01]` prefix
 also makes the whole segment prefix-scannable (prune, rebuilds). Its
 value is a **block table over a value area** (ADR-0057 — the flat frame list
-this ADR first specified is retired):
+this ADR first specified is retired; the full entry grammar, the ordering
+contract and the size envelope are in
+[dynamic segment](../internals/dynamic-segment.md)):
 
 ```text
 [dynamic-face value] = [toc_len u16 BE][blocks][values]

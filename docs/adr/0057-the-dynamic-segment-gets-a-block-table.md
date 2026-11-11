@@ -1,4 +1,4 @@
-# 0057: The dynamic segment keeps its values, and gets a block table at the tail
+# 0057: The dynamic segment keeps its values, and gets a block table at its head
 
 > **Languages:** [English](0057-the-dynamic-segment-gets-a-block-table.md) (primary) · [中文](0057-the-dynamic-segment-gets-a-block-table.zh-CN.md)
 
@@ -17,7 +17,7 @@ Three facts decide what a replacement may be.
 
 ## Decision
 
-**1. Layout v2 — a value area, a block table, and a two-byte length at the end.**
+**1. Layout v2 — a two-byte length, a block table, and a value area.**
 
 ```text
 value  = toc_len u16 BE | blocks | values
@@ -41,7 +41,7 @@ entry  = id varint | type u8 | len varint     (leaf; len is the body's length)
 
 **5. The writer becomes a builder.** `put_frame*` appends frames to a byte stream, which this layout cannot do: the value area and the table are two regions, and the table is only known once the values are. The replacement collects `(id, type, value)`, emits leaves into the value area block by block, queues composites, and `finish()` appends the blocks and `toc_len`. `FrameScratch` goes away with the inline bodies: a composite has no length and no body to buffer.
 
-**6. What does not change, and what shrinks.** The vocabulary still resolves names to ids; entries inside a block are written in name order, so one map still encodes to one byte string; the entry still lives in slot `0x01` and is still one `put` of one blob. A leaf entry is byte-for-byte the old frame header (`id | type | len`), so a flat segment grows only by its block count and the two-byte tail. A composite entry loses its length (it has none), and an array loses the element count inside its body — the block's `count` is that number now.
+**6. What does not change, and what shrinks.** The vocabulary still resolves names to ids; entries inside a block are written in name order, so one map still encodes to one byte string; the entry still lives in slot `0x01` and is still one `put` of one blob. A leaf entry is byte-for-byte the old frame header (`id | type | len`), so a flat segment grows only by its block count and the two-byte head. A composite entry loses its length (it has none), and an array loses the element count inside its body — the block's `count` is that number now.
 
 ## Rejected
 
@@ -61,7 +61,7 @@ entry  = id varint | type u8 | len varint     (leaf; len is the body's length)
 
 ## Consequences
 
-- A reader parses the tail, walks blocks in order, and computes each block's base by summing leaf lengths — reaching a nested block means walking the blocks before it. The code is paid once, in the one place that owns the layout.
+- A reader parses the head (the two-byte length), walks blocks in order, and computes each block's base by summing leaf lengths — reaching a nested block means walking the blocks before it. The code is paid once, in the one place that owns the layout.
 - The write path builds two buffers — the table and the value region — and joins them once before `put`: one copy of the segment per write, bounded by its size. The buffers exist either way; only the join is ordered.
 - No in-place update: the store contract has no partial write (`put` replaces the whole value) and this layout reserves no holes for growth. Patching one field by position would be a new door, not a property of the format.
 - A segment written by the previous layout is not read. Existing stores have to be rewritten — the segment is truth (ADR-0045), so the migration is a re-encode of every row that has one.
@@ -69,4 +69,4 @@ entry  = id varint | type u8 | len varint     (leaf; len is the body's length)
 
 ## Related records
 
-ADR-0012 (the dynamic segment and the field-name vocabulary), ADR-0035 (`fetch` / `merge` / `replace` / `purge` over both slots), ADR-0042 (layout versions as stamps), ADR-0045 (what the change log carries, and why the segment is truth), ADR-0056 §7 (the other container in this repo, and why its markers went).
+ADR-0012 (the dynamic segment and the field-name vocabulary), ADR-0035 (`fetch` / `merge` / `replace` / `purge` over both slots), ADR-0042 (layout versions as stamps), ADR-0045 (what the change log carries, and why the segment is truth), ADR-0056 §7 (the other container in this repo, and why its markers went). The bytes themselves — table grammar, ordering contract, size envelope — are the mechanism page [dynamic-segment.md](../internals/dynamic-segment.md).
