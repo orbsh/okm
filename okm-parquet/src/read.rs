@@ -4,8 +4,8 @@
 //! `okm_slot` and `okm_seq`, and the Delta log says which file was added by which version.
 //! That is enough to answer the two questions a reader has without any of okm's types:
 //!
-//! * what does this table say NOW — [`current_state`], which applies the ops in order and
-//!   keeps the last one per key;
+//! * what does this table say NOW — [`current_state`], which applies the ops in order, keeps
+//!   the last one per key, and MERGES the open fields a key wrote across windows;
 //! * hand me that as files — [`condense`], which rewrites the table to one current-state
 //!   file and commits the removal of the ones it replaced.
 //!
@@ -14,9 +14,12 @@
 //! batches. Folding is the sink-side half of the pair ADR-0058 names — expressing a removal
 //! as table STATE (a Delta `remove` action over whole files) rather than as a change row.
 
-use arrow::array::{Array, ArrayRef, RecordBatch, StringArray, StructArray, UInt32Array};
+use arrow::array::{
+    Array, ArrayRef, BinaryArray, RecordBatch, StringArray, StructArray, UInt32Array,
+};
 use arrow::compute::{concat_batches, take};
 use arrow::row::{RowConverter, SortField};
+use okm_core::model::obj_dynamic::{DynamicValue, ValueMap};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use std::collections::HashMap;
 use std::fmt;
@@ -210,15 +213,14 @@ fn state_and_total(table_dir: &Path) -> Result<(RecordBatch, usize)> {
     let files = delta::files_in_order(table_dir)?;
     let (schema, batches) = aligned_files(table_dir, &files)?;
     let keys = key_columns(table_dir)?;
-    resolve(table_dir, &schema, &batches, &keys)
+    resolve(&schema, &batches, &keys)
 }
 
 /// Fold a run of batches (already aligned to one schema) into current state.
 ///
-/// `label` is only for the refusal's message: a fold of a few files names the table, and the
-/// caller that folded them knows which one it is.
+/// Works on whatever run of files the caller hands it: the whole table for
+/// [`current_state`], or only the files a fold has to rewrite.
 fn resolve(
-    table_dir: &Path,
     schema: &arrow::datatypes::SchemaRef,
     batches: &[RecordBatch],
     keys: &[String],
@@ -255,8 +257,8 @@ fn resolve(
         last_op: String,
         order: usize,
         put: Option<usize>,
-        open: Option<usize>,
-        opens: usize,
+        /// The document's open half, accumulated across every window that wrote one.
+        open: Option<ValueMap>,
     }
     let mut newest: HashMap<Vec<u8>, Winner> = HashMap::new();
     let open_at = schema.index_of(OPEN_FIELDS_COLUMN).ok();
@@ -287,20 +289,22 @@ fn resolve(
                     order: at,
                     put: None,
                     open: None,
-                    opens: 0,
                 });
             entry.last_op = op.to_string();
             if op == crate::OKM_PUT {
                 entry.put = Some(at);
                 entry.order = at;
             }
-            let carries = opens
+            if let Some(cell) = opens
                 .as_ref()
                 .and_then(|c| c.as_any().downcast_ref::<StructArray>())
-                .is_some_and(|s| !s.is_null(row));
-            if carries {
-                entry.open = Some(at);
-                entry.opens += 1;
+                && !cell.is_null(row)
+            {
+                let half = open_fields(cell, row)?;
+                match entry.open.as_mut() {
+                    Some(kept) => merge_open(kept, &half),
+                    None => entry.open = Some(half),
+                }
                 if entry.put.is_none() {
                     entry.order = at;
                 }
@@ -317,25 +321,16 @@ fn resolve(
         .collect();
     live.sort_by_key(|(order, _)| *order);
 
-    // A row of open fields is one window's share of a document's open half. Two windows
-    // would have to be merged INSIDE the variant blob to state the document's whole open
-    // half, and this reader does not decode that blob — so it refuses rather than writing a
-    // fold that quietly drops the older window's fields.
-    let doubled = live.iter().filter(|(_, w)| w.opens > 1).count();
     let rows = live.len();
 
     let joined = concat_batches(schema, batches)?;
-    // Two index vectors: what the declared side says, and what the open side says.
-    let declared: Vec<u32> = live
-        .iter()
-        .map(|(_, w)| (w.put.unwrap_or(w.order)) as u32)
-        .collect();
-    let opens: Vec<u32> = live
-        .iter()
-        .map(|(_, w)| (w.open.unwrap_or(w.put.unwrap_or(w.order))) as u32)
-        .collect();
-    let declared = UInt32Array::from(declared);
-    let opens = UInt32Array::from(opens);
+    // The declared side comes from the row that last wrote a full row; the open side is
+    // re-encoded from the map below, because it may be a half no single row holds.
+    let declared = UInt32Array::from(
+        live.iter()
+            .map(|(_, w)| w.put.unwrap_or(w.order) as u32)
+            .collect::<Vec<_>>(),
+    );
     let (variant_at, okm_op_at, okm_slot_at, okm_seq_at) = (
         schema.index_of(OPEN_FIELDS_COLUMN).ok(),
         schema.index_of("okm_op").ok(),
@@ -343,13 +338,13 @@ fn resolve(
         schema.index_of("okm_seq").ok(),
     );
     let mut arrays: Vec<ArrayRef> = Vec::with_capacity(schema.fields().len());
-    for (at, column) in joined.columns().iter().enumerate() {
-        let picks = if Some(at) == variant_at {
-            &opens
-        } else {
-            &declared
-        };
-        arrays.push(take(column.as_ref(), picks, None)?);
+    for column in joined.columns() {
+        arrays.push(take(column.as_ref(), &declared, None)?);
+    }
+    if let Some(at) = variant_at {
+        let maps: Vec<Option<&ValueMap>> = live.iter().map(|(_, w)| w.open.as_ref()).collect();
+        let (_, column) = crate::bridge::variant_column(OPEN_FIELDS_COLUMN, &maps);
+        arrays[at] = column;
     }
     if let Some(at) = okm_op_at {
         // A row that outlived the fold is either a full row or open fields only.
@@ -374,13 +369,6 @@ fn resolve(
         arrays[at] = std::sync::Arc::new(UInt32Array::from((0..rows as u32).collect::<Vec<_>>()));
     }
     let batch = RecordBatch::try_new(schema.clone(), arrays)?;
-    if doubled > 0 {
-        return Err(ReadError::refused(format!(
-            "{}: {doubled} key(s) carry open fields written by more than one window, and a \
-             fold cannot merge two variant blobs — it would drop the older window's fields",
-            table_dir.display()
-        )));
-    }
     let total = batches.iter().map(RecordBatch::num_rows).sum();
     Ok((batch, total))
 }
@@ -489,6 +477,100 @@ fn files_to_fold(table_dir: &Path, files: &[String], keys: &[String]) -> Result<
         .collect())
 }
 
+/// One row's open half, decoded from its `variant` cell: the object a document's open fields
+/// live in. Public because a reader of the export needs it as much as a fold does.
+///
+/// The cell is `struct(metadata, value)` in the Parquet variant encoding, and the cell's object
+/// is a document's open fields. Reading it is what lets a fold MERGE two windows' open halves
+/// instead of dropping the older one.
+pub fn open_fields(cell: &StructArray, row: usize) -> Result<ValueMap> {
+    let bytes = |at: usize| -> Result<&[u8]> {
+        let column = cell
+            .column(at)
+            .as_any()
+            .downcast_ref::<BinaryArray>()
+            .ok_or_else(|| ReadError::new("a variant cell is not (metadata, value) bytes"))?;
+        Ok(column.value(row))
+    };
+    let variant = parquet_variant::Variant::try_new(bytes(0)?, bytes(1)?)
+        .map_err(|e| ReadError::new(format!("variant cell: {e}")))?;
+    let object = variant
+        .as_object()
+        .ok_or_else(|| ReadError::new("a variant cell holds no object"))?;
+    let mut map = ValueMap::new();
+    for (name, value) in object.iter() {
+        map.insert(name.to_string(), as_dynamic(&value)?);
+    }
+    Ok(map)
+}
+
+/// A variant value as the dynamic vocabulary. The widths are the variant's, not the
+/// declaration's: a column's type is the declaration's business, and a fold only has to
+/// carry the value through.
+fn as_dynamic(value: &parquet_variant::Variant<'_, '_>) -> Result<DynamicValue> {
+    if value.as_null().is_some() {
+        return Ok(DynamicValue::Null);
+    }
+    if let Some(x) = value.as_boolean() {
+        return Ok(DynamicValue::Bool(x));
+    }
+    if let Some(x) = value.as_string() {
+        return Ok(DynamicValue::Str(x.to_string()));
+    }
+    if let Some(x) = value.as_u8_slice() {
+        return Ok(DynamicValue::Bytes(x.to_vec()));
+    }
+    if let Some(x) = value.as_int64() {
+        return Ok(DynamicValue::I64(x));
+    }
+    if let Some(x) = value.as_u64() {
+        return Ok(DynamicValue::U64(x));
+    }
+    if let Some(x) = value.as_f64() {
+        return Ok(DynamicValue::F64(x));
+    }
+    if let Some(list) = value.as_list() {
+        let mut items = Vec::with_capacity(list.len());
+        for item in list.iter() {
+            items.push(as_dynamic(&item)?);
+        }
+        return Ok(DynamicValue::Array(items));
+    }
+    if let Some(object) = value.as_object() {
+        let mut map = ValueMap::new();
+        for (name, value) in object.iter() {
+            map.insert(name.to_string(), as_dynamic(&value)?);
+        }
+        return Ok(DynamicValue::Obj(map));
+    }
+    Err(ReadError::new(
+        "a variant cell holds a value outside the dynamic vocabulary (date, decimal, uuid…)",
+    ))
+}
+
+/// `source` over `target`: a field the later window wrote wins, and two objects merge field by
+/// field so a document's open half accumulates instead of being replaced wholesale.
+fn merge_open(target: &mut ValueMap, source: &ValueMap) {
+    for (name, value) in source {
+        let nested = match (target.get(name), value) {
+            (Some(DynamicValue::Obj(kept)), DynamicValue::Obj(next)) => {
+                let mut merged = kept.clone();
+                merge_open(&mut merged, next);
+                Some(DynamicValue::Obj(merged))
+            }
+            _ => None,
+        };
+        match nested {
+            Some(merged) => {
+                target.insert(name.clone(), merged);
+            }
+            None => {
+                target.insert(name.clone(), value.clone());
+            }
+        }
+    }
+}
+
 /// What one fold did.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FoldReport {
@@ -525,7 +607,7 @@ pub fn condense(table_dir: &Path) -> Result<FoldReport> {
         )));
     }
     let (schema, batches) = aligned_files(table_dir, &touched)?;
-    let (batch, _) = resolve(table_dir, &schema, &batches, &keys)?;
+    let (batch, _) = resolve(&schema, &batches, &keys)?;
     let untouched = files.len() - touched.len();
 
     let hex = table_dir

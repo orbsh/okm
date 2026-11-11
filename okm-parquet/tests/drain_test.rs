@@ -1241,12 +1241,11 @@ fn a_fold_keeps_open_fields_written_by_an_earlier_window() {
     );
 }
 
-/// Two windows writing open fields for one key cannot be folded: stating the document's open
-/// half would mean merging two variant blobs, and a fold that silently kept the newer one
-/// would drop the older window's fields. Refused, and the refusal is a kind a fold POLICY can
-/// skip instead of failing the drain.
+/// Two windows of open fields for one key MERGE: the fold decodes both variant cells, unions
+/// them field by field (the later window winning where they overlap) and re-encodes — so a
+/// document's open half accumulates instead of the newer cell replacing the older.
 #[test]
-fn a_fold_refuses_open_fields_from_two_windows() {
+fn a_fold_merges_open_fields_written_by_two_windows() {
     let root = tempfile::tempdir().expect("root");
     let out = tempfile::tempdir().expect("lake");
     for (field, value) in [("note", "first"), ("tag", "second")] {
@@ -1276,11 +1275,28 @@ fn a_fold_refuses_open_fields_from_two_windows() {
         .collect();
     let table_dir = dirs.pop().expect("one table");
 
-    let refused = okm_parquet::read::condense(&table_dir).expect_err("refused");
-    assert!(refused.refused, "a policy may skip this: {refused}");
-    assert!(
-        refused.what.contains("more than one window"),
-        "and it says why: {refused}"
+    let fold = okm_parquet::read::condense(&table_dir).expect("both windows written open fields");
+    assert_eq!(fold.replaced, 2, "the two windows that touched K1");
+    assert_eq!(fold.rows, 1);
+
+    // One row, and its variant cell holds BOTH fields.
+    let state = okm_parquet::read::current_state(&table_dir).expect("current state");
+    assert_eq!(state.num_rows(), 1);
+    let variant = state
+        .column_by_name("variant")
+        .and_then(|c| c.as_any().downcast_ref::<arrow::array::StructArray>())
+        .expect("variant");
+    assert!(!variant.is_null(0), "the merged open half is there");
+    let cells = okm_parquet::read::open_fields(variant, 0).expect("decode");
+    assert_eq!(
+        cells.get("note").map(|v| format!("{v:?}")),
+        Some("Str(\"first\")".to_string()),
+        "the earlier window's field survived"
+    );
+    assert_eq!(
+        cells.get("tag").map(|v| format!("{v:?}")),
+        Some("Str(\"second\")".to_string()),
+        "and the later one is there too"
     );
 }
 

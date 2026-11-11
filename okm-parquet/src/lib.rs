@@ -197,8 +197,8 @@ pub struct Report {
     pub metadata: usize,
     /// Tables folded into one current-state file by the drain's fold policy.
     pub folds: usize,
-    /// Tables the policy found nothing to do for — already current, or a fold this reader
-    /// refuses (open fields written by more than one window). The table is untouched and
+    /// Tables the policy found nothing to do for: every key already lived in one file and
+    /// nothing was removed, so a fold would only churn the log. The table is untouched and
     /// the drain is not in error.
     pub fold_skipped: usize,
 }

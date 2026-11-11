@@ -143,13 +143,12 @@ pass the threshold. The fold runs AFTER the commit, never inside a window, so th
 rule that guards a window does not cover it — and a fold that fails fails the run rather than
 leaving a table that looks folded and is not.
 
-A folded row is the document's two halves from wherever they were last written: the declared
-columns from the last `put`, the open fields from the last row that carried any. A later `put`
-does not erase the open half of the row before it, and `okm_op` becomes `put` (or `put_open`
-when the key never had a full row). One limit is stated rather than papered over: if two
-windows each wrote open fields for one key, folding would have to merge two `variant` blobs,
-which this reader does not decode — it refuses, and a drain with a fold policy counts that as
-`fold-skipped` instead of failing, because the table is fine and only the fold is not.
+A folded row is the document's two halves from wherever they were written: the declared
+columns from the last `put`, and the open fields MERGED across every window that wrote any
+(the variant cells are decoded, unioned field by field with the later window winning, and
+re-encoded). A later `put` does not erase the open half of the row before it, and `okm_op`
+becomes `put` (or `put_open` when the key never had a full row). `okm_parquet::read::open_fields`
+is the same decoder, exposed for anyone reading the export.
 
 A `remove` action drops a file from the TABLE; it does not delete bytes. Replaced files stay
 in `data/` for anyone reading an older version, and reclaiming them is a vacuum — a separate

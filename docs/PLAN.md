@@ -2344,10 +2344,10 @@ panic lints allowed only in the places it names. So the runtime half of
       (b2) **vacuum** — a `remove` drops a file from the table, not from disk; reclaiming the
       bytes means answering "how much history does a reader keep", which is a retention
       decision before it is a verb.
-      (b3) **merging two windows of open fields** — a fold takes the declared half from the last
-      `put` and the open half from the last row that carried any, so a document whose open
-      fields were written by two windows cannot be folded (refused, `fold-skipped`). Stating
-      the union means decoding and re-encoding the `variant` blob, which is a codec of its own.
+      (b3) **merging two windows of open fields** — landed: `parquet-variant` was already a
+      dependency for the write side, so the fold decodes each `variant` cell, unions the objects
+      field by field (later window wins, nested objects merge) and RE-ENCODES the half via
+      `bridge::variant_column`. `read::open_fields` exposes the decoder.
       (c) partitioning and file-size targets (one window = one file = one log version).
       `okm_parquet::delta` stays a zero-dependency log encoder, so anything that outgrows it
       splits off by measurement rather than by default. `okm_dynamic::arrow` covers the
