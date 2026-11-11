@@ -15,10 +15,11 @@
 //! STORE — because a baseline is a snapshot of state, and state lives in the store, not in
 //! the log.
 //!
-//! `condense` is the LAKE-side verb and reads the exported directory instead: it folds a
-//! table's change files into one current-state file and commits the `remove` of the ones it
-//! replaced (ADR-0058 § Amendment). Two different directories, two different questions —
-//! `compact` is about the log's own size, `condense` is about what a reader is handed.
+//! `condense` and `vacuum` are the LAKE-side verbs and read the exported directory instead:
+//! `condense` folds a table's change files into one current-state file and commits the
+//! `remove` of the ones it replaced, and `vacuum` deletes the files no kept version can see
+//! (ADR-0058 § Amendment). Two different directories, two different questions — `compact` is
+//! about the log's own size, `condense` and `vacuum` are about what a reader is handed.
 
 use okm_core::SharedVirtualStorage;
 use okm_core::changelog::replay::{TableRun, replay_and_reconcile, replay_table};
@@ -55,6 +56,10 @@ fn run() -> Result<i32, String> {
     if args.first().is_some_and(|a| a == "condense") {
         args.remove(0);
         return condense(&args);
+    }
+    if args.first().is_some_and(|a| a == "vacuum") {
+        args.remove(0);
+        return vacuum(&args);
     }
     let mut root: Option<PathBuf> = None;
     let mut out: Option<PathBuf> = None;
@@ -138,6 +143,75 @@ fn run() -> Result<i32, String> {
         report.derived_deletes,
         report.folds,
         report.fold_skipped
+    );
+    Ok(0)
+}
+
+/// `vacuum --out <lake dir> --keep-versions N [--table <hex header>] [--dry-run]`
+///
+/// Delete the files NO kept version references — the bytes a fold leaves behind. `N` counts
+/// versions, not days, and `0` keeps only the current version.
+fn vacuum(args: &[String]) -> Result<i32, String> {
+    let mut out: Option<PathBuf> = None;
+    let mut table: Option<String> = None;
+    let mut keep: Option<u64> = None;
+    let mut dry_run = false;
+
+    let mut it = args.iter();
+    while let Some(arg) = it.next() {
+        let mut value = || {
+            it.next()
+                .cloned()
+                .ok_or_else(|| format!("{arg} needs a value"))
+        };
+        match arg.as_str() {
+            "--out" | "--lake" => out = Some(PathBuf::from(value()?)),
+            "--table" => table = Some(value()?),
+            "--keep-versions" => {
+                keep = Some(
+                    value()?
+                        .parse()
+                        .map_err(|_| "--keep-versions takes a number".to_string())?,
+                )
+            }
+            "--dry-run" => dry_run = true,
+            "-h" | "--help" => {
+                println!(
+                    "okm-parquet vacuum --out <lake dir> --keep-versions N \
+                     [--table <hex header>] [--dry-run]"
+                );
+                return Ok(0);
+            }
+            other => return Err(format!("unknown argument `{other}` (try --help)")),
+        }
+    }
+
+    let out = out.ok_or("--out is required (the directory windows were drained into)")?;
+    // Deleting files is the one verb that must be told how much history to keep: a default
+    // here would be a guess about someone else's readers.
+    let keep =
+        keep.ok_or("--keep-versions is required: the number of versions to keep readable")?;
+    let mut deleted = 0usize;
+    let mut bytes = 0u64;
+    let mut kept = 0usize;
+    for dir in lake_tables(&out, table.as_deref())? {
+        let report = okm_parquet::vacuum::vacuum(&dir, keep, dry_run)?;
+        println!(
+            "{}: {} file(s), {} byte(s) {}; {} kept from v{} on",
+            dir.display(),
+            report.deleted,
+            report.bytes,
+            if dry_run { "would go" } else { "deleted" },
+            report.kept,
+            report.floor
+        );
+        deleted += report.deleted;
+        bytes += report.bytes;
+        kept += report.kept;
+    }
+    println!(
+        "{} {deleted} file(s), {bytes} byte(s); {kept} kept",
+        if dry_run { "would delete" } else { "deleted" }
     );
     Ok(0)
 }

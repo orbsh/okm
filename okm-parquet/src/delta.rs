@@ -355,6 +355,9 @@ struct LogState {
     /// The same files in the order the log added them — a window's order IS the version
     /// that added it, and folding history needs that order, not a name sort.
     order: Vec<String>,
+    /// Every file a `remove` action took out of the table, and the version that did it —
+    /// what a vacuum needs to tell "history still covers this file" from "nothing does".
+    removed: Vec<(String, u64)>,
 }
 
 fn read_log(table_dir: &Path) -> Result<LogState, String> {
@@ -403,6 +406,7 @@ fn read_log(table_dir: &Path) -> Result<LogState, String> {
             {
                 state.files.remove(p);
                 state.order.retain(|kept| kept != p);
+                state.removed.push((p.to_string(), v));
             }
         }
         state.max_version = Some(v);
@@ -565,6 +569,33 @@ pub fn commit_files(
 /// the table's schema string (which is where the key columns are marked).
 pub fn files_in_order(table_dir: &Path) -> Result<Vec<String>, String> {
     Ok(read_log(table_dir)?.order)
+}
+
+/// Files that left the table, with the version that removed them, and the newest version.
+///
+/// A file that was removed and later re-added with the same path is not listed: it is in the
+/// table again, and deleting it would delete a live file. That cannot happen with this
+/// writer's names (a fold's name carries its version), but the check costs one set lookup.
+pub fn removed_files(table_dir: &Path) -> Result<(Vec<(String, u64)>, u64), String> {
+    let state = read_log(table_dir)?;
+    let latest = state.max_version.unwrap_or(0);
+    let gone = state
+        .removed
+        .into_iter()
+        .filter(|(path, _)| !state.files.contains(path))
+        .collect();
+    Ok((gone, latest))
+}
+
+/// Every file the table has ever added — the set a vacuum deletes from disk. A path here that
+/// is not in `files_in_order` is a file the table no longer reads.
+pub fn added_files(table_dir: &Path) -> Result<Vec<String>, String> {
+    let state = read_log(table_dir)?;
+    let mut all: Vec<String> = state.order;
+    all.extend(state.removed.into_iter().map(|(path, _)| path));
+    all.sort();
+    all.dedup();
+    Ok(all)
 }
 
 /// The version a commit would take next.

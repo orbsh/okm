@@ -149,7 +149,9 @@ Three consequences, all deliberate:
    `put`, and the open fields are decoded from every `variant` cell the key ever wrote, unioned
    field by field and re-encoded. The fold is incremental
    by key: only files that share a key with another file (or hold a removal) are replaced, so
-   a table's untouched history stays where it is. A change row still needs neither, and it is what a CDC consumer asks
+   a table's untouched history stays where it is. Reclaiming the bytes of replaced files is a
+   separate verb with a retention window counted in VERSIONS (`okm-parquet vacuum
+   --keep-versions`), because a `remove` action addresses the table, not the file system. A change row still needs neither, and it is what a CDC consumer asks
    for anyway.
 3. **The schema is constant per table.** These columns appear on every window of every
    table, carrying `put` / null / 0 where nothing else applies: a schema that shows up only

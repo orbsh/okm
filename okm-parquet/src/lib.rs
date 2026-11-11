@@ -39,6 +39,7 @@ pub mod bridge;
 pub mod delta;
 pub mod read;
 pub mod snapshot;
+pub mod vacuum;
 
 use okm_core::changelog::window::{
     self, Window, WindowConfig, WindowOp, read_watermark, table_dirs, write_watermark,

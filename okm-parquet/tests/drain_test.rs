@@ -951,6 +951,88 @@ fn a_fold_replaces_the_change_files_with_current_state() {
     assert!(again.what.contains("nothing to fold"), "got: {again}");
 }
 
+/// A fold takes files out of the TABLE and leaves the bytes in `data/`; vacuum is what
+/// reclaims them, and it deletes only what no kept version can still see.
+#[test]
+fn a_vacuum_deletes_only_files_no_kept_version_references() {
+    let root = tempfile::tempdir().expect("root");
+    let out = tempfile::tempdir().expect("lake");
+    for level in [3u32, 5] {
+        let c = collection(root.path());
+        c.put(
+            &K1,
+            &R {
+                level,
+                name: "alpha".into(),
+            },
+        )
+        .expect("put");
+        drop(c);
+        drain(root.path(), &DrainConfig::new(out.path(), "test")).expect("a window");
+    }
+    let mut dirs: Vec<_> = std::fs::read_dir(out.path())
+        .expect("lake")
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.join("_delta_log").is_dir())
+        .collect();
+    let table_dir = dirs.pop().expect("one table");
+    let fold = okm_parquet::read::condense(&table_dir).expect("fold");
+    assert_eq!(fold.replaced, 2);
+
+    let entries = |dir: &std::path::Path| -> Vec<String> {
+        std::fs::read_dir(dir.join("data"))
+            .expect("data")
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect()
+    };
+    let files = |dir: &std::path::Path| -> Vec<String> {
+        entries(dir)
+            .into_iter()
+            .filter(|f| f.ends_with(".parquet"))
+            .collect()
+    };
+    assert_eq!(
+        files(&table_dir).len(),
+        3,
+        "two replaced files and the folded one: {:?}",
+        entries(&table_dir)
+    );
+
+    // Keeping one version still covers the version the fold replaced: nothing goes.
+    let kept = okm_parquet::vacuum::vacuum(&table_dir, 1, false).expect("vacuum");
+    assert_eq!(kept.deleted, 0, "the previous version is still readable");
+    assert_eq!(files(&table_dir).len(), 3);
+
+    // Keeping only the current version reclaims them.
+    let dry = okm_parquet::vacuum::vacuum(&table_dir, 0, true).expect("dry run");
+    assert_eq!(dry.deleted, 2, "would delete both");
+    assert_eq!(files(&table_dir).len(), 3, "and deleted nothing");
+
+    let swept = okm_parquet::vacuum::vacuum(&table_dir, 0, false).expect("vacuum");
+    assert_eq!(swept.deleted, 2);
+    assert!(swept.bytes > 0, "bytes are counted: {swept:?}");
+    let left = entries(&table_dir);
+    assert_eq!(
+        left.len(),
+        1,
+        "the folded file is all that is left: {left:?}"
+    );
+    assert!(left[0].contains("-fold-"), "{left:?}");
+    // The manifests described files that are gone, so they went with them.
+    assert!(
+        !left.iter().any(|f| f.ends_with(".manifest.json")),
+        "no orphan manifests: {left:?}"
+    );
+
+    // The table still answers: vacuum removes bytes, not history the log still names.
+    let state = okm_parquet::read::current_state(&table_dir).expect("current state");
+    assert_eq!(state.num_rows(), 1);
+    // And a second sweep has nothing to do.
+    let again = okm_parquet::vacuum::vacuum(&table_dir, 0, false).expect("vacuum again");
+    assert_eq!(again.deleted, 0);
+}
+
 /// A fold is INCREMENTAL: a file whose keys are exclusive to it already states final rows,
 /// so it is neither rewritten nor removed. Only the files that share a key are replaced.
 #[test]

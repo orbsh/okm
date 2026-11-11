@@ -154,6 +154,23 @@ A `remove` action drops a file from the TABLE; it does not delete bytes. Replace
 in `data/` for anyone reading an older version, and reclaiming them is a vacuum — a separate
 question (how long history is kept) this writer does not answer yet.
 
+## Vacuum
+
+`okm-parquet vacuum --out <lake dir> --keep-versions N [--dry-run]` deletes the files no kept
+version can see. It is the other half of `condense`: a `remove` action takes a file out of the
+TABLE and leaves the bytes in `data/`, because a reader asking for an older version still needs
+them — so reclaiming them is a retention decision, and the only honest default is none.
+
+`N` counts VERSIONS, not days: the log is the clock, and a table that folds weekly has a
+different calendar from one that folds hourly. `N = 0` keeps only the current version and
+deletes every file it does not read — the aggressive setting, spelled out rather than guessed.
+A file's own `manifest.json` goes with it, since a manifest describes a window nobody can read
+afterwards.
+
+The log still names the deleted files, so a second vacuum finds them absent and reports nothing
+— the sweep is idempotent, and it never edits the log: what the table SAID stays true, only the
+bytes behind the old versions stop existing.
+
 ## Not part of the contract
 
 Partitioning, target file size, catalog registration, snapshot management and

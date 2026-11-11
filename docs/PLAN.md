@@ -2341,9 +2341,11 @@ panic lints allowed only in the places it names. So the runtime half of
       decide. What is still O(table) is the KEY scan itself; a per-file key-bound sidecar could
       prune files that cannot share a key, and that is worth doing only once a table's key
       column no longer fits in memory.
-      (b2) **vacuum** — a `remove` drops a file from the table, not from disk; reclaiming the
-      bytes means answering "how much history does a reader keep", which is a retention
-      decision before it is a verb.
+      (b2) **vacuum** — landed as `okm-parquet vacuum --keep-versions N` (plus `--dry-run`):
+      `N` counts versions rather than days, `0` keeps only the current version, a file's
+      manifest goes with it, and the sweep is idempotent (the log keeps naming deleted files,
+      the disk does not, and a second run reports nothing). The log is never edited: what the
+      table said stays true; only the bytes behind the old versions stop existing.
       (b3) **merging two windows of open fields** — landed: `parquet-variant` was already a
       dependency for the write side, so the fold decodes each `variant` cell, unions the objects
       field by field (later window wins, nested objects merge) and RE-ENCODES the half via
