@@ -159,15 +159,14 @@ fn aligned(batch: &RecordBatch, schema: &arrow::datatypes::SchemaRef) -> Result<
     Ok(RecordBatch::try_new(schema.clone(), arrays)?)
 }
 
-/// Every data file of the table, in the order the log added them.
-fn batches_in_order(table_dir: &Path) -> Result<Vec<RecordBatch>> {
-    let files = delta::files_in_order(table_dir)?;
+/// The given data files, in the order given, one batch list per file.
+fn read_files(table_dir: &Path, files: &[String]) -> Result<Vec<RecordBatch>> {
     if files.is_empty() {
         return Err(ReadError::new("this table has no data files"));
     }
     let mut batches = Vec::new();
     for rel in files {
-        let path = table_dir.join(&rel);
+        let path = table_dir.join(rel);
         let file = std::fs::File::open(&path)?;
         let reader = ParquetRecordBatchReaderBuilder::try_new(file)?;
         for batch in reader.build()? {
@@ -175,6 +174,23 @@ fn batches_in_order(table_dir: &Path) -> Result<Vec<RecordBatch>> {
         }
     }
     Ok(batches)
+}
+
+/// The files' batches against the schema the table agrees on.
+fn aligned_files(
+    table_dir: &Path,
+    files: &[String],
+) -> Result<(arrow::datatypes::SchemaRef, Vec<RecordBatch>)> {
+    let raw = read_files(table_dir, files)?;
+    // Files of one table do not have to be column-for-column identical: a window with no
+    // open fields has no `variant` column. The table's schema is the union, and a file that
+    // lacks a column reads as NULL in it.
+    let schema = union_schema(&raw)?;
+    let batches = raw
+        .iter()
+        .map(|b| aligned(b, &schema))
+        .collect::<Result<_>>()?;
+    Ok((schema, batches))
 }
 
 /// The table as of its newest version: one row per key that was put and not removed, with
@@ -191,17 +207,22 @@ pub fn current_state(table_dir: &Path) -> Result<RecordBatch> {
 /// The same answer, plus how many change rows the files hold — the number a fold compares
 /// itself against to decide whether there is anything to fold.
 fn state_and_total(table_dir: &Path) -> Result<(RecordBatch, usize)> {
-    let raw = batches_in_order(table_dir)?;
-    // Files of one table do not have to be column-for-column identical: a window with no
-    // open fields has no `variant` column. The table's schema is the union, and a file that
-    // lacks a column reads as NULL in it.
-    let schema = union_schema(&raw)?;
-    let batches: Vec<RecordBatch> = raw
-        .iter()
-        .map(|b| aligned(b, &schema))
-        .collect::<Result<_>>()?;
+    let files = delta::files_in_order(table_dir)?;
+    let (schema, batches) = aligned_files(table_dir, &files)?;
     let keys = key_columns(table_dir)?;
+    resolve(table_dir, &schema, &batches, &keys)
+}
 
+/// Fold a run of batches (already aligned to one schema) into current state.
+///
+/// `label` is only for the refusal's message: a fold of a few files names the table, and the
+/// caller that folded them knows which one it is.
+fn resolve(
+    table_dir: &Path,
+    schema: &arrow::datatypes::SchemaRef,
+    batches: &[RecordBatch],
+    keys: &[String],
+) -> Result<(RecordBatch, usize)> {
     // Key columns in FILE order, so two batches are compared the same way.
     let key_fields: Vec<_> = schema
         .fields()
@@ -240,7 +261,7 @@ fn state_and_total(table_dir: &Path) -> Result<(RecordBatch, usize)> {
     let mut newest: HashMap<Vec<u8>, Winner> = HashMap::new();
     let open_at = schema.index_of(OPEN_FIELDS_COLUMN).ok();
     let mut base = 0usize;
-    for batch in &batches {
+    for batch in batches {
         let columns: Vec<ArrayRef> = key_names
             .iter()
             .map(|n| {
@@ -303,7 +324,7 @@ fn state_and_total(table_dir: &Path) -> Result<(RecordBatch, usize)> {
     let doubled = live.iter().filter(|(_, w)| w.opens > 1).count();
     let rows = live.len();
 
-    let joined = concat_batches(&schema, &batches)?;
+    let joined = concat_batches(schema, batches)?;
     // Two index vectors: what the declared side says, and what the open side says.
     let declared: Vec<u32> = live
         .iter()
@@ -352,15 +373,120 @@ fn state_and_total(table_dir: &Path) -> Result<(RecordBatch, usize)> {
         // The sequence was a position in ITS file; the folded file has its own.
         arrays[at] = std::sync::Arc::new(UInt32Array::from((0..rows as u32).collect::<Vec<_>>()));
     }
-    let batch = RecordBatch::try_new(schema, arrays)?;
+    let batch = RecordBatch::try_new(schema.clone(), arrays)?;
     if doubled > 0 {
         return Err(ReadError::refused(format!(
-            "{}: {doubled} key(s) carry open fields written by more than one window, and a              fold cannot merge two variant blobs — it would drop the older window's fields",
+            "{}: {doubled} key(s) carry open fields written by more than one window, and a \
+             fold cannot merge two variant blobs — it would drop the older window's fields",
             table_dir.display()
         )));
     }
-    let total = raw.iter().map(RecordBatch::num_rows).sum();
+    let total = batches.iter().map(RecordBatch::num_rows).sum();
     Ok((batch, total))
+}
+
+/// The keys a file holds, and whether it holds a removal — read with a PROJECTION, so the
+/// payload is never touched. This is the index a fold needs: a key that appears in one file
+/// and was never removed there is already final.
+fn keys_of_file(path: &Path, keys: &[String]) -> Result<(Vec<Vec<u8>>, bool)> {
+    let file = std::fs::File::open(path)?;
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
+    let descriptor = builder.metadata().file_metadata().schema_descr().clone();
+    let schema = builder.schema().clone();
+    let mut roots = Vec::new();
+    for (at, field) in schema.fields().iter().enumerate() {
+        if field.name() == "okm_op" || keys.iter().any(|k| k == field.name()) {
+            roots.push(at);
+        }
+    }
+    if roots.len() != keys.len() + 1 {
+        return Err(ReadError::new(format!(
+            "{}: a file is missing a key column or `okm_op`",
+            path.display()
+        )));
+    }
+    let reader = builder
+        .with_projection(parquet::arrow::ProjectionMask::roots(&descriptor, roots))
+        .build()?;
+    let mut out = Vec::new();
+    let mut removed = false;
+    let mut converter: Option<(RowConverter, Vec<String>)> = None;
+    for batch in reader {
+        let batch = batch?;
+        let key_names: Vec<String> = batch
+            .schema()
+            .fields()
+            .iter()
+            .filter(|f| keys.iter().any(|k| k == f.name()))
+            .map(|f| f.name().clone())
+            .collect();
+        let (conv, names) = match converter.take() {
+            Some(ready) => ready,
+            None => {
+                let fields: Vec<SortField> = batch
+                    .schema()
+                    .fields()
+                    .iter()
+                    .filter(|f| keys.iter().any(|k| k == f.name()))
+                    .map(|f| SortField::new(f.data_type().clone()))
+                    .collect();
+                (RowConverter::new(fields)?, key_names.clone())
+            }
+        };
+        let columns: Vec<ArrayRef> = names
+            .iter()
+            .map(|n| {
+                batch
+                    .column_by_name(n)
+                    .cloned()
+                    .ok_or_else(|| ReadError::new(format!("a file has no key column `{n}`")))
+            })
+            .collect::<Result<_>>()?;
+        let rows = conv.convert_columns(&columns)?;
+        let ops = batch
+            .column_by_name("okm_op")
+            .and_then(|c| c.as_any().downcast_ref::<StringArray>())
+            .ok_or_else(|| ReadError::new("a file has no `okm_op` column"))?;
+        for row in 0..batch.num_rows() {
+            if ops.value(row) == OKM_DEL {
+                removed = true;
+            }
+            out.push(rows.row(row).as_ref().to_vec());
+        }
+        converter = Some((conv, key_names));
+    }
+    Ok((out, removed))
+}
+
+/// The files a fold has to rewrite: those holding a removal, and every file whose key also
+/// appears in another file. A file whose keys are exclusive to it (and that removes nothing)
+/// already states final rows — rewriting it would be work with no answer behind it.
+fn files_to_fold(table_dir: &Path, files: &[String], keys: &[String]) -> Result<Vec<String>> {
+    let mut seen: HashMap<Vec<u8>, usize> = HashMap::new();
+    let mut touched = vec![false; files.len()];
+    for (at, rel) in files.iter().enumerate() {
+        let (here, removes) = keys_of_file(&table_dir.join(rel), keys)?;
+        if removes {
+            touched[at] = true;
+        }
+        for key in here {
+            match seen.entry(key) {
+                std::collections::hash_map::Entry::Occupied(first) => {
+                    touched[at] = true;
+                    touched[*first.get()] = true;
+                }
+                std::collections::hash_map::Entry::Vacant(slot) => {
+                    slot.insert(at);
+                }
+            }
+        }
+    }
+    Ok(files
+        .iter()
+        .zip(touched)
+        .filter(|(_, touched)| *touched)
+        .map(|(rel, _)| rel.clone())
+        .collect())
 }
 
 /// What one fold did.
@@ -372,27 +498,35 @@ pub struct FoldReport {
     pub file: PathBuf,
     /// How many files it replaced.
     pub replaced: usize,
+    /// How many files it left alone because they already state final rows.
+    pub untouched: usize,
     /// Rows in that file.
     pub rows: usize,
 }
 
-/// Replace a table's change files with ONE file of its current state (ADR-0058 § Amendment:
-/// the sink half, stated as a `remove` action over whole files).
+/// Replace the change files that need it with ONE file of current state (ADR-0058 §
+/// Amendment: the sink half, stated as a `remove` action over whole files).
 ///
-/// A fold is worth doing when it CHANGES the table: several files, or one file that still
-/// holds removals or a key written twice. One file with one op per key already IS its own
-/// current state, and rewriting it would only churn the log — so that is refused, with which
-/// of the two cases it is.
+/// Only files that share a key with another file, or that hold a removal, are rewritten — a
+/// file whose keys are exclusive to it already states final rows. That is what makes a fold
+/// affordable on a table that keeps growing: the index it needs is the key columns, read with
+/// a projection, never the payload.
+///
+/// A table with nothing to resolve is refused rather than rewritten: folding it would churn
+/// the log without changing what a reader sees.
 pub fn condense(table_dir: &Path) -> Result<FoldReport> {
     let files = delta::files_in_order(table_dir)?;
     let keys = key_columns(table_dir)?;
-    let (batch, changes) = state_and_total(table_dir)?;
-    if files.len() < 2 && changes == batch.num_rows() {
+    let touched = files_to_fold(table_dir, &files, &keys)?;
+    if touched.is_empty() {
         return Err(ReadError::refused(format!(
-            "{}: one file holding one op per key, nothing to fold",
+            "{}: every key lives in one file and nothing is removed, nothing to fold",
             table_dir.display()
         )));
     }
+    let (schema, batches) = aligned_files(table_dir, &touched)?;
+    let (batch, _) = resolve(table_dir, &schema, &batches, &keys)?;
+    let untouched = files.len() - touched.len();
 
     let hex = table_dir
         .file_name()
@@ -408,11 +542,12 @@ pub fn condense(table_dir: &Path) -> Result<FoldReport> {
     let out = data_dir.join(&name);
     std::fs::rename(&scratch, &out)?;
 
-    let commit = delta::commit_compaction(table_dir, &files, &out, &keys)?;
+    let commit = delta::commit_compaction(table_dir, &touched, &out, &keys)?;
     Ok(FoldReport {
         version: commit.version,
         file: out,
-        replaced: files.len(),
+        replaced: touched.len(),
+        untouched,
         rows: batch.num_rows(),
     })
 }

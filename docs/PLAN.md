@@ -2333,10 +2333,14 @@ panic lints allowed only in the places it names. So the runtime half of
       (a) **a ROW-level removal** — a deletion vector over an untouched file, which needs to
       know which file and which row hold a key: a key→file index (or one row per file). Until
       then a removal is expressed either as a change row or as a whole-file replacement.
-      (b) **incremental convergence** — the trigger side is landed (`DrainConfig.fold`: fold once
-      the change files pass a count or a byte threshold), the work side is not: a fold still
-      rewrites the whole table. Folding only the files a window touched needs a key→file index
-      (per-file key bounds) and is the same mechanism with a smaller candidate set.
+      (b) **incremental convergence** — landed, both sides. The trigger is `DrainConfig.fold`
+      (fold once the change files pass a count or a byte threshold) and the work is incremental:
+      a fold rewrites only the files that share a key with another file or that hold a removal,
+      because a file whose keys are exclusive to it already states final rows. The index it
+      needs is the key columns read with a Parquet projection — the payload is never read to
+      decide. What is still O(table) is the KEY scan itself; a per-file key-bound sidecar could
+      prune files that cannot share a key, and that is worth doing only once a table's key
+      column no longer fits in memory.
       (b2) **vacuum** — a `remove` drops a file from the table, not from disk; reclaiming the
       bytes means answering "how much history does a reader keep", which is a retention
       decision before it is a verb.

@@ -130,9 +130,12 @@ Two things it is NOT:
   and needs the store; this one reads the exported directory and needs nothing from the
   application.
 
-A table is folded when the fold would CHANGE it: several files, or one file that still holds
-`del` rows or a key written twice. One file with one op per key already is its own current
-state and is left alone.
+A fold is INCREMENTAL: it rewrites only the files that share a key with another file, or that
+hold a removal. A file whose keys are exclusive to it already states final rows — nothing can
+arrive later that changes them, so it is neither rewritten nor removed, and remains in `data/`
+as the file it always was. The index this needs is the key columns, read with a projection, so
+deciding what to fold never reads a payload. A table with nothing to resolve is refused rather
+than rewritten: folding it would churn the log without changing what a reader sees.
 
 The drain can do this on its own: `DrainConfig.fold` (CLI `--fold-after-files N` /
 `--fold-after-bytes B`) folds a table after its windows are committed, once its change files

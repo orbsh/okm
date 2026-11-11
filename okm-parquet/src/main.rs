@@ -175,11 +175,12 @@ fn condense(args: &[String]) -> Result<i32, String> {
         match okm_parquet::read::condense(&dir) {
             Ok(report) => {
                 println!(
-                    "{}: v{} holds {} row(s); replaced {} file(s)",
+                    "{}: v{} holds {} row(s); replaced {} file(s), left {} alone",
                     dir.display(),
                     report.version,
                     report.rows,
-                    report.replaced
+                    report.replaced,
+                    report.untouched
                 );
                 folded += 1;
             }

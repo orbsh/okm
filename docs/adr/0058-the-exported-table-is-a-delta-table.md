@@ -147,7 +147,9 @@ Three consequences, all deliberate:
    does partitioning. Folding a document whose halves were written by different windows works
    because a row is assembled column-group by column-group (declared from the last `put`, open
    fields from the last row that carried them); two separate `variant` blobs for one key are
-   refused, since merging them is a codec this reader does not have. A change row still needs neither, and it is what a CDC consumer asks
+   refused, since merging them is a codec this reader does not have. The fold is incremental
+   by key: only files that share a key with another file (or hold a removal) are replaced, so
+   a table's untouched history stays where it is. A change row still needs neither, and it is what a CDC consumer asks
    for anyway.
 3. **The schema is constant per table.** These columns appear on every window of every
    table, carrying `put` / null / 0 where nothing else applies: a schema that shows up only

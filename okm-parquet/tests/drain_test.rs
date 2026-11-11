@@ -951,6 +951,102 @@ fn a_fold_replaces_the_change_files_with_current_state() {
     assert!(again.what.contains("nothing to fold"), "got: {again}");
 }
 
+/// A fold is INCREMENTAL: a file whose keys are exclusive to it already states final rows,
+/// so it is neither rewritten nor removed. Only the files that share a key are replaced.
+#[test]
+fn a_fold_leaves_files_whose_keys_are_exclusive_to_them() {
+    let root = tempfile::tempdir().expect("root");
+    let out = tempfile::tempdir().expect("lake");
+
+    // Window 1: K2 alone.
+    {
+        let c = collection(root.path());
+        c.put(
+            &K2,
+            &R {
+                level: 4,
+                name: "beta".into(),
+            },
+        )
+        .expect("put");
+    }
+    drain(root.path(), &DrainConfig::new(out.path(), "test")).expect("first window");
+
+    // Window 2: K1, which no other file has.
+    {
+        let c = collection(root.path());
+        c.put(
+            &K1,
+            &R {
+                level: 3,
+                name: "alpha".into(),
+            },
+        )
+        .expect("put");
+    }
+    let second = drain(root.path(), &DrainConfig::new(out.path(), "test")).expect("second window");
+    let table_dir = second.files[0]
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .to_path_buf();
+
+    // Two files, no shared key: nothing to resolve, so nothing is folded.
+    let refused = okm_parquet::read::condense(&table_dir).expect_err("nothing to fold");
+    assert!(refused.refused, "a policy may skip this: {refused}");
+    assert_eq!(
+        okm_parquet::read::current_state(&table_dir)
+            .expect("state")
+            .num_rows(),
+        2
+    );
+
+    // Window 3: K1 again — now the two K1 files share state and must be folded into one.
+    {
+        let c = collection(root.path());
+        c.put(
+            &K1,
+            &R {
+                level: 9,
+                name: "alpha2".into(),
+            },
+        )
+        .expect("put");
+    }
+    let third = drain(root.path(), &DrainConfig::new(out.path(), "test")).expect("third window");
+    assert_eq!(third.files.len(), 1);
+    let k2_file = {
+        let files = okm_parquet::delta::files_in_order(&table_dir).expect("files");
+        files
+            .iter()
+            .find(|f| f.contains("00000000-00000000"))
+            .cloned()
+            .expect("the K2 file")
+    };
+
+    let fold = okm_parquet::read::condense(&table_dir).expect("fold");
+    assert_eq!(fold.replaced, 2, "the two files that share K1");
+    assert_eq!(fold.untouched, 1, "the K2 file is already final");
+    assert_eq!(fold.rows, 1, "both files held K1, which is one row");
+
+    let live = okm_parquet::delta::files_in_order(&table_dir).expect("files");
+    assert_eq!(live.len(), 2, "the untouched file plus the folded one");
+    assert!(
+        live.contains(&k2_file),
+        "the exclusive file was not rewritten: {live:?}"
+    );
+    let state = okm_parquet::read::current_state(&table_dir).expect("state");
+    assert_eq!(state.num_rows(), 2, "K1 and K2");
+    let level = state
+        .column_by_name("level")
+        .and_then(|c| c.as_any().downcast_ref::<arrow::array::UInt32Array>())
+        .expect("level");
+    let levels: Vec<u32> = (0..state.num_rows()).map(|i| level.value(i)).collect();
+    assert!(levels.contains(&9), "K1 kept the newest row: {levels:?}");
+    assert!(levels.contains(&4), "K2 survived: {levels:?}");
+}
+
 /// One window can hold a removal, and then ONE file is worth folding: a single file with one
 /// op per key already is current state, but one that carries `del` rows or a key written
 /// twice is not.
@@ -1030,6 +1126,14 @@ fn a_drain_folds_the_table_when_the_policy_says_so() {
             },
         )
         .expect("put");
+        c.put(
+            &K1,
+            &R {
+                level: 5,
+                name: "alpha2".into(),
+            },
+        )
+        .expect("the key the first window wrote, so the two files share state");
     }
     // Two files is the threshold: this drain writes the second and folds both.
     let mut cfg = DrainConfig::new(out.path(), "test");
