@@ -454,7 +454,11 @@ fn keys_of_file(path: &Path, keys: &[String]) -> Result<(Vec<Vec<u8>>, bool)> {
 /// its keys cover, so two files can only share a key when those ranges overlap. Files that
 /// cannot overlap anything are never opened; only the overlapping ones have their key columns
 /// read, and that read confirms what the ranges only guessed.
-fn files_to_fold(table_dir: &Path, files: &[String], keys: &[String]) -> Result<Vec<String>> {
+fn files_to_fold(
+    table_dir: &Path,
+    files: &[String],
+    keys: &[String],
+) -> Result<(Vec<String>, usize)> {
     use crate::bounds::Bounds;
 
     // Ranges and removals from the manifests: no data file is opened here.
@@ -526,12 +530,18 @@ fn files_to_fold(table_dir: &Path, files: &[String], keys: &[String]) -> Result<
             }
         }
     }
-    Ok(files
-        .iter()
-        .zip(touched)
-        .filter(|(_, touched)| *touched)
-        .map(|(rel, _)| rel.clone())
-        .collect())
+    // Files the ranges excluded are not "untouched by luck": they were never opened, and
+    // saying so is what makes the pruning visible from outside.
+    let pruned = candidate.iter().filter(|c| !**c).count();
+    Ok((
+        files
+            .iter()
+            .zip(touched)
+            .filter(|(_, touched)| *touched)
+            .map(|(rel, _)| rel.clone())
+            .collect(),
+        pruned,
+    ))
 }
 
 /// One row's open half, decoded from its `variant` cell: the object a document's open fields
@@ -607,7 +617,7 @@ fn as_dynamic(value: &parquet_variant::Variant<'_, '_>) -> Result<DynamicValue> 
 
 /// `source` over `target`: a field the later window wrote wins, and two objects merge field by
 /// field so a document's open half accumulates instead of being replaced wholesale.
-fn merge_open(target: &mut ValueMap, source: &ValueMap) {
+pub(crate) fn merge_open(target: &mut ValueMap, source: &ValueMap) {
     for (name, value) in source {
         let nested = match (target.get(name), value) {
             (Some(DynamicValue::Obj(kept)), DynamicValue::Obj(next)) => {
@@ -633,12 +643,15 @@ fn merge_open(target: &mut ValueMap, source: &ValueMap) {
 pub struct FoldReport {
     /// The version the fold committed.
     pub version: u64,
-    /// The file that now holds the table's current state.
-    pub file: PathBuf,
+    /// The files that now hold the table's current state: one per partition, or one when the
+    /// table is not partitioned.
+    pub files: Vec<PathBuf>,
     /// How many files it replaced.
     pub replaced: usize,
     /// How many files it left alone because they already state final rows.
     pub untouched: usize,
+    /// How many files the key ranges excluded without opening them at all.
+    pub pruned: usize,
     /// Rows in that file.
     pub rows: usize,
 }
@@ -656,15 +669,13 @@ pub struct FoldReport {
 pub fn condense(table_dir: &Path) -> Result<FoldReport> {
     let files = delta::files_in_order(table_dir)?;
     let keys = key_columns(table_dir)?;
-    let touched = files_to_fold(table_dir, &files, &keys)?;
+    let (touched, pruned) = files_to_fold(table_dir, &files, &keys)?;
     if touched.is_empty() {
         return Err(ReadError::refused(format!(
             "{}: every key lives in one file and nothing is removed, nothing to fold",
             table_dir.display()
         )));
     }
-    let (schema, batches) = aligned_files(table_dir, &touched)?;
-    let (batch, _) = resolve(&schema, &batches, &keys)?;
     let untouched = files.len() - touched.len();
 
     let hex = table_dir
@@ -675,62 +686,104 @@ pub fn condense(table_dir: &Path) -> Result<FoldReport> {
     let version = delta::next_version(table_dir)?;
     let data_dir = table_dir.join("data");
     std::fs::create_dir_all(&data_dir)?;
-    let name = format!("{hex}-fold-{version:020}.parquet");
-    let scratch = table_dir.join(format!(".{name}.partial"));
-    crate::snapshot::parquet_io::write_batch(&batch, &scratch)?;
-    let out = data_dir.join(&name);
-    std::fs::rename(&scratch, &out)?;
 
-    // A folded file gets a manifest too: it carries the segments the files it replaced
-    // described, so provenance survives a fold and `status` can still count rows.
-    let mut segments: Vec<String> = Vec::new();
-    let mut layout_version = 0u8;
+    // A fold stays INSIDE the partition it resolves: a table is partitioned by a KEY column,
+    // so the same key cannot be in two partitions, and a fold that crossed them would write
+    // one file whose partitionValues describe two different values.
+    let live = delta::live_adds(table_dir)?;
+    let mut groups: Vec<(delta::Partition, Vec<String>)> = Vec::new();
     for rel in &touched {
-        if let Some(manifest) = crate::status::manifest_of(&table_dir.join(rel)) {
-            layout_version = layout_version.max(manifest.layout_version);
-            for segment in manifest.segments {
-                if !segments.contains(&segment) {
-                    segments.push(segment);
+        let values = live
+            .iter()
+            .find(|(path, _)| path == rel)
+            .map(|(_, values)| values.clone())
+            .unwrap_or_default();
+        match groups.iter_mut().find(|(kept, _)| *kept == values) {
+            Some((_, files)) => files.push(rel.clone()),
+            None => groups.push((values, vec![rel.clone()])),
+        }
+    }
+
+    let name = format!("{hex}-fold-{version:020}.parquet");
+    let mut additions: Vec<delta::Addition> = Vec::new();
+    let mut rows = 0usize;
+    for (at, (values, files)) in groups.iter().enumerate() {
+        let (schema, batches) = aligned_files(table_dir, files)?;
+        let (batch, _) = resolve(&schema, &batches, &keys)?;
+        // Nothing left to say in this partition: its files go, and no file replaces them.
+        if batch.num_rows() == 0 {
+            continue;
+        }
+        let dir = match values.first() {
+            Some((column, value)) => {
+                data_dir.join(format!("{column}={}", crate::partition_dir(value)))
+            }
+            None => data_dir.clone(),
+        };
+        std::fs::create_dir_all(&dir)?;
+        let out = dir.join(&name);
+        let scratch = table_dir.join(format!(".{at}-{name}.partial"));
+        crate::snapshot::parquet_io::write_batch(&batch, &scratch)?;
+        std::fs::rename(&scratch, &out)?;
+
+        // A folded file gets a manifest too: it carries the segments the files it replaced
+        // described, so provenance survives a fold and `status` can still count rows.
+        let mut segments: Vec<String> = Vec::new();
+        let mut layout_version = 0u8;
+        for rel in files {
+            if let Some(manifest) = crate::status::manifest_of(&table_dir.join(rel)) {
+                layout_version = layout_version.max(manifest.layout_version);
+                for segment in manifest.segments {
+                    if !segments.contains(&segment) {
+                        segments.push(segment);
+                    }
                 }
             }
         }
-    }
-    let manifest = crate::WindowManifest {
-        table: hex.clone(),
-        layout_version,
-        segments,
-        rows: batch.num_rows(),
-        deletes: 0,
-        columns: batch
-            .schema()
-            .fields()
-            .iter()
-            .map(|f| {
-                (
-                    f.name().clone(),
-                    format!("{:?}", f.data_type()),
-                    f.is_nullable(),
-                )
-            })
-            .collect(),
-        file: name.clone(),
-        key_bounds: crate::bounds::to_manifest(
-            &crate::bounds::of_batch(&batch, &keys).map_err(ReadError::new)?,
-        ),
-    };
-    let manifest_path = out.with_extension("manifest.json");
-    std::fs::write(
-        &manifest_path,
-        serde_json::to_string_pretty(&manifest)
-            .map_err(|e| ReadError::new(format!("manifest: {e}")))?,
-    )?;
+        let manifest = crate::WindowManifest {
+            table: hex.clone(),
+            layout_version,
+            segments,
+            rows: batch.num_rows(),
+            deletes: 0,
+            columns: batch
+                .schema()
+                .fields()
+                .iter()
+                .map(|f| {
+                    (
+                        f.name().clone(),
+                        format!("{:?}", f.data_type()),
+                        f.is_nullable(),
+                    )
+                })
+                .collect(),
+            file: name.clone(),
+            key_bounds: crate::bounds::to_manifest(
+                &crate::bounds::of_batch(&batch, &keys).map_err(ReadError::new)?,
+            ),
+        };
+        std::fs::write(
+            out.with_extension("manifest.json"),
+            serde_json::to_string_pretty(&manifest)
+                .map_err(|e| ReadError::new(format!("manifest: {e}")))?,
+        )?;
 
-    let commit = delta::commit_compaction(table_dir, &touched, &out, &keys)?;
+        rows += batch.num_rows();
+        additions.push(delta::Addition {
+            path: out,
+            partition: values.clone(),
+        });
+    }
+
+    let commit = delta::commit_compaction(table_dir, &touched, &additions, &keys)?;
+    let files = additions.into_iter().map(|add| add.path).collect();
     Ok(FoldReport {
         version: commit.version,
-        file: out,
+        files,
         replaced: touched.len(),
         untouched,
-        rows: batch.num_rows(),
+        pruned,
+        rows,
     })
 }

@@ -68,6 +68,7 @@ fn run() -> Result<i32, String> {
     let mut table: Option<String> = None;
     let mut fold_after_files: usize = 0;
     let mut fold_after_bytes: u64 = 0;
+    let mut partition: Option<String> = None;
 
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
@@ -87,6 +88,7 @@ fn run() -> Result<i32, String> {
                     .parse()
                     .map_err(|_| "--fold-after-files takes a number".to_string())?
             }
+            "--partition" => partition = Some(value()?),
             "--fold-after-bytes" => {
                 fold_after_bytes = value()?
                     .parse()
@@ -96,7 +98,7 @@ fn run() -> Result<i32, String> {
                 println!(
                     "okm-parquet --root <log dir> --out <lake dir> [--consumer NAME] \
                      [--max-segments N] [--table <hex header>] \
-                     [--fold-after-files N] [--fold-after-bytes B]"
+                     [--partition COLUMN] [--fold-after-files N] [--fold-after-bytes B]"
                 );
                 return Ok(0);
             }
@@ -110,6 +112,7 @@ fn run() -> Result<i32, String> {
         consumer,
     );
     cfg.max_segments = max_segments;
+    cfg.partition = partition;
     if fold_after_files > 0 || fold_after_bytes > 0 {
         cfg.fold = Some(okm_parquet::FoldPolicy {
             after_files: fold_after_files,

@@ -24,7 +24,7 @@
 //! a table format — Parquet, the log, replay — is what this crate does with them
 //! (ADR-0056, the "only the formats move out" bullet).
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
 use arrow::datatypes::DataType;
@@ -318,6 +318,31 @@ fn union_columns(existing_schema: &str, file: &[(String, String)]) -> Vec<(Strin
     out
 }
 
+/// The partition values that place a file in the table's key space, by column.
+pub type Partition = Vec<(String, String)>;
+
+/// One file an `add` action names, and the partition values that place it.
+///
+/// A partitioned table keeps one directory per value (`data/org=1/…`), and Delta carries the
+/// same value as a STRING in the action — the directory is a convention a reader may use, the
+/// action is what a reader is told.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Addition {
+    /// Where the file is on disk.
+    pub path: PathBuf,
+    /// `(column, value)` for each partition column; empty for an unpartitioned table.
+    pub partition: Partition,
+}
+
+impl Addition {
+    pub fn plain(path: impl Into<PathBuf>) -> Self {
+        Self {
+            path: path.into(),
+            partition: Vec::new(),
+        }
+    }
+}
+
 /// The Delta schema JSON: a struct of the columns, by NAME. Delta identifies columns by
 /// name, so the Parquet field ids okm stamps for its own readers are not needed here.
 ///
@@ -358,6 +383,10 @@ struct LogState {
     /// Every file a `remove` action took out of the table, and the version that did it —
     /// what a vacuum needs to tell "history still covers this file" from "nothing does".
     removed: Vec<(String, u64)>,
+    /// The columns the table is partitioned by, as `metaData` declares them.
+    partition: Vec<String>,
+    /// Where each live file sits in the key space, by path.
+    partitions: HashMap<String, Partition>,
 }
 
 fn read_log(table_dir: &Path) -> Result<LogState, String> {
@@ -394,12 +423,34 @@ fn read_log(table_dir: &Path) -> Result<LogState, String> {
                 if let Some(schema) = meta.get("schemaString").and_then(|v| v.as_str()) {
                     state.schema = Some(schema.to_string());
                 }
+                if let Some(columns) = meta.get("partitionColumns").and_then(|v| v.as_array()) {
+                    state.partition = columns
+                        .iter()
+                        .filter_map(|c| c.as_str().map(|c| c.to_string()))
+                        .collect();
+                }
             }
             if let Some(add) = action.get("add")
                 && let Some(p) = add.get("path").and_then(|v| v.as_str())
-                && state.files.insert(p.to_string())
             {
-                state.order.push(p.to_string());
+                let values = add
+                    .get("partitionValues")
+                    .and_then(|v| v.as_object())
+                    .map(|object| {
+                        object
+                            .iter()
+                            .filter_map(|(name, value)| {
+                                value
+                                    .as_str()
+                                    .map(|value| (name.clone(), value.to_string()))
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                state.partitions.insert(p.to_string(), values);
+                if state.files.insert(p.to_string()) {
+                    state.order.push(p.to_string());
+                }
             }
             if let Some(remove) = action.get("remove")
                 && let Some(p) = remove.get("path").and_then(|v| v.as_str())
@@ -442,7 +493,7 @@ fn table_id(table_dir: &Path) -> String {
 /// into place: a reader that lists `NNN.json` never sees a half-written commit.
 pub fn commit_files(
     table_dir: &Path,
-    files: &[PathBuf],
+    files: &[Addition],
     keys: &[String],
 ) -> Result<Commit, String> {
     let log = table_dir.join("_delta_log");
@@ -455,32 +506,67 @@ pub fn commit_files(
 
     // Which files are new, and what each one holds. A path is recorded relative to the
     // table directory, which is what the specification wants and what makes the table
-    // relocatable.
+    // relocatable — including the partition directory a file sits in.
     struct Add {
         path: String,
+        partition: Partition,
         size: u64,
         stats: String,
     }
     let mut adds: Vec<Add> = Vec::new();
     let mut summary: Option<FileSummary> = None;
+    let mut partition: Vec<String> = Vec::new();
     for file in files {
-        let name = file
-            .file_name()
-            .and_then(|n| n.to_str())
-            .ok_or_else(|| format!("{}: not a file name this table can record", file.display()))?;
-        let rel = format!("data/{name}");
-        let size = std::fs::metadata(file)
-            .map_err(|e| format!("{}: {e}", file.display()))?
+        let relative = file
+            .path
+            .strip_prefix(table_dir)
+            .map_err(|_| {
+                format!(
+                    "{}: not inside {}",
+                    file.path.display(),
+                    table_dir.display()
+                )
+            })?
+            .to_string_lossy()
+            .replace('\\', "/");
+        let size = std::fs::metadata(&file.path)
+            .map_err(|e| format!("{}: {e}", file.path.display()))?
             .len();
-        let file = file_summary(file)?;
-        if !state.files.contains(&rel) {
+        let summary_of_file = file_summary(&file.path)?;
+        // A table is partitioned by ONE set of columns for its whole life: a reader that was
+        // told `partitionColumns` reuses that answer, so a window may not change it.
+        let names: Vec<String> = file
+            .partition
+            .iter()
+            .map(|(name, _)| name.clone())
+            .collect();
+        if partition.is_empty() {
+            partition = names;
+        } else if partition != names {
+            return Err(format!(
+                "this table is partitioned by {partition:?}; this window would write {names:?}"
+            ));
+        }
+        if !state.files.contains(&relative) {
             adds.push(Add {
-                path: rel,
+                path: relative,
+                partition: file.partition.clone(),
                 size,
-                stats: stats_json(&file),
+                stats: stats_json(&summary_of_file),
             });
         }
-        summary.get_or_insert(file);
+        summary.get_or_insert(summary_of_file);
+    }
+    if !state.partition.is_empty() && partition != state.partition {
+        return Err(format!(
+            "this table is partitioned by {:?}; this window would write {partition:?}",
+            state.partition
+        ));
+    }
+    if state.partition.is_empty() && !partition.is_empty() && state.max_version.is_some() {
+        return Err(format!(
+            "this table was written unpartitioned; a window cannot start partitioning it by {partition:?}"
+        ));
     }
 
     // Every file a window writes carries the declared schema, so any of them describes
@@ -522,9 +608,7 @@ pub fn commit_files(
                 "id": state.table_id.clone().unwrap_or_else(|| table_id(table_dir)),
                 "format": { "provider": "parquet", "options": {} },
                 "schemaString": schema,
-                "partitionColumns": [],
-                // Nothing here is time-partitioned: the export is one directory per
-                // table and the reader's filter goes to Parquet statistics.
+                "partitionColumns": partition,
                 "configuration": {},
                 "createdTime": now_ms(),
             }
@@ -536,7 +620,7 @@ pub fn commit_files(
         actions.push(serde_json::json!({
             "add": {
                 "path": add.path,
-                "partitionValues": {},
+                "partitionValues": partition_object(&add.partition),
                 "size": add.size,
                 "modificationTime": modification,
                 "dataChange": true,
@@ -545,11 +629,31 @@ pub fn commit_files(
         }));
     }
 
+    let added = adds.len();
+    write_actions(&log, version, &actions, added)
+}
+
+/// A partition's values as Delta states them: strings, keyed by column.
+fn partition_object(partition: &Partition) -> serde_json::Value {
+    let mut object = serde_json::Map::new();
+    for (name, value) in partition {
+        object.insert(name.clone(), serde_json::Value::String(value.clone()));
+    }
+    serde_json::Value::Object(object)
+}
+
+/// One commit: the actions, written under a scratch name and renamed into place.
+fn write_actions(
+    log: &Path,
+    version: u64,
+    actions: &[serde_json::Value],
+    added: usize,
+) -> Result<Commit, String> {
     let path = log.join(format!("{version:020}.json"));
     // A `serde_json::Value` always serialises; the error would mean a bug in this
     // function's own construction, so it is reported rather than assumed away.
     let mut body = String::new();
-    for action in &actions {
+    for action in actions {
         let line = serde_json::to_string(action).map_err(|e| format!("action: {e}"))?;
         body.push_str(&line);
         body.push('\n');
@@ -557,18 +661,32 @@ pub fn commit_files(
     let scratch = log.join(format!("{version:020}.json.tmp"));
     std::fs::write(&scratch, body).map_err(|e| format!("{}: {e}", scratch.display()))?;
     std::fs::rename(&scratch, &path).map_err(|e| format!("{}: {e}", path.display()))?;
-
     Ok(Commit {
         version,
         path,
-        added: adds.len(),
+        added,
     })
 }
 
-/// What a reader needs from the log: the data files in the order the log added them, and
 /// the table's schema string (which is where the key columns are marked).
 pub fn files_in_order(table_dir: &Path) -> Result<Vec<String>, String> {
     Ok(read_log(table_dir)?.order)
+}
+
+/// The table's live files with the partition values each one carries, in log order.
+///
+/// A fold writes its output into the same partition directories as the files it replaces, so
+/// it has to know which value each file belongs to — the log says, the path only hints.
+pub fn live_adds(table_dir: &Path) -> Result<Vec<(String, Partition)>, String> {
+    let state = read_log(table_dir)?;
+    Ok(state
+        .order
+        .into_iter()
+        .map(|path| {
+            let values = state.partitions.get(&path).cloned().unwrap_or_default();
+            (path, values)
+        })
+        .collect())
 }
 
 /// Files that left the table, with the version that removed them, and the newest version.
@@ -617,12 +735,14 @@ pub fn schema_string(table_dir: &Path) -> Result<Option<String>, String> {
 pub fn commit_compaction(
     table_dir: &Path,
     removes: &[String],
-    add: &Path,
+    adds: &[Addition],
     keys: &[String],
 ) -> Result<Commit, String> {
     if removes.is_empty() {
         return Err("no files to remove: a fold that replaces nothing is a drain".to_string());
     }
+    // A fold may resolve every key away (the table is now empty); then it removes files
+    // and adds none, which is a state a reader has to be able to see.
     let log = table_dir.join("_delta_log");
     std::fs::create_dir_all(&log).map_err(|e| format!("{}: {e}", log.display()))?;
     let state = read_log(table_dir)?;
@@ -632,22 +752,55 @@ pub fn commit_compaction(
         }
     }
 
-    let name = add
-        .file_name()
-        .and_then(|n| n.to_str())
-        .ok_or_else(|| format!("{}: not a file name this table can record", add.display()))?;
-    let rel = format!("data/{name}");
-    let size = std::fs::metadata(add)
-        .map_err(|e| format!("{}: {e}", add.display()))?
-        .len();
-    let summary = file_summary(add)?;
-    let schema = schema_json(&summary.columns, keys);
-
     let version = state.max_version.map(|v| v + 1).unwrap_or(0);
     let mut actions: Vec<serde_json::Value> = Vec::new();
-    if version == 0 || state.schema.as_deref() != Some(schema.as_str()) {
+    if version == 0 || state.schema.is_none() {
         return Err("the folded file does not carry the table's schema".to_string());
     }
+
+    // Every add first, so the schema is checked against what the table already declares: a
+    // fold that changed a column would be a different table, not a fold of this one.
+    struct Add {
+        path: String,
+        partition: Vec<(String, String)>,
+        size: u64,
+        stats: String,
+    }
+    let mut kept: Vec<Add> = Vec::new();
+    for addition in adds {
+        let relative = addition
+            .path
+            .strip_prefix(table_dir)
+            .map_err(|_| {
+                format!(
+                    "{}: not inside {}",
+                    addition.path.display(),
+                    table_dir.display()
+                )
+            })?
+            .to_string_lossy()
+            .replace('\\', "/");
+        let summary = file_summary(&addition.path)?;
+        if schema_json(
+            &union_columns(&state.schema.clone().unwrap_or_default(), &summary.columns),
+            keys,
+        ) != state.schema.clone().unwrap_or_default()
+        {
+            return Err(format!(
+                "{}: the folded file does not carry the table's schema",
+                addition.path.display()
+            ));
+        }
+        kept.push(Add {
+            path: relative,
+            partition: addition.partition.clone(),
+            size: std::fs::metadata(&addition.path)
+                .map_err(|e| format!("{}: {e}", addition.path.display()))?
+                .len(),
+            stats: stats_json(&summary),
+        });
+    }
+
     let stamp = now_ms();
     for path in removes {
         actions.push(serde_json::json!({
@@ -658,37 +811,23 @@ pub fn commit_compaction(
             }
         }));
     }
-    actions.push(serde_json::json!({
-        "add": {
-            "path": rel,
-            "partitionValues": {},
-            "size": size,
-            "modificationTime": stamp,
-            "dataChange": true,
-            "stats": stats_json(&summary),
-        }
-    }));
-
-    let path = log.join(format!("{version:020}.json"));
-    let mut body = String::new();
-    for action in &actions {
-        let line = serde_json::to_string(action).map_err(|e| format!("action: {e}"))?;
-        body.push_str(&line);
-        body.push('\n');
+    for add in &kept {
+        actions.push(serde_json::json!({
+            "add": {
+                "path": add.path,
+                "partitionValues": partition_object(&add.partition),
+                "size": add.size,
+                "modificationTime": stamp,
+                "dataChange": true,
+                "stats": add.stats,
+            }
+        }));
     }
-    let scratch = log.join(format!("{version:020}.json.tmp"));
-    std::fs::write(&scratch, body).map_err(|e| format!("{}: {e}", scratch.display()))?;
-    std::fs::rename(&scratch, &path).map_err(|e| format!("{}: {e}", path.display()))?;
 
-    Ok(Commit {
-        version,
-        path,
-        added: 1,
-    })
+    let added = kept.len();
+    write_actions(&log, version, &actions, added)
 }
 
-/// The `stats` string a commit carries for one file: `numRecords` plus, where they were
-/// measured, `minValues` / `maxValues` / `nullCount`. A reader uses these to skip a file
 /// without opening it; a file whose statistics were not computed gets the row count only.
 fn stats_json(file: &FileSummary) -> String {
     let mut stats = serde_json::Map::new();

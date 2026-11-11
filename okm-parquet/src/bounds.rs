@@ -60,6 +60,11 @@ pub fn of_batch(batch: &arrow::array::RecordBatch, key_names: &[String]) -> Resu
         let column = batch
             .column_by_name(name)
             .ok_or_else(|| format!("no key column `{name}`"))?;
+        // An empty batch has no range: nothing to prune with, and indexing row 0 would be a
+        // panic dressed up as an optimisation.
+        if column.is_empty() {
+            continue;
+        }
         let Some(first) = sortable(column.as_ref(), 0) else {
             continue;
         };

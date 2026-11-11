@@ -152,6 +152,10 @@ pub struct DrainConfig {
     /// at different positions are two positions, not a disagreement.
     pub consumer: String,
     pub max_segments: usize,
+    /// Partition the exported table by this KEY column: one directory per value
+    /// (`data/<column>=<value>/`) and one file per value per window. `None` (the default)
+    /// writes one file per window into `data/`.
+    pub partition: Option<String>,
     /// Fold a table into one current-state file when its change files pile up. `None` (the
     /// default) leaves the table alone: a caller that wants current state on demand runs
     /// `okm-parquet condense` instead.
@@ -164,6 +168,7 @@ impl DrainConfig {
             out_dir: out_dir.into(),
             consumer: consumer.into(),
             max_segments: 16,
+            partition: None,
             fold: None,
         }
     }
@@ -316,7 +321,11 @@ fn maybe_fold(cfg: &DrainConfig, table: &str, report: &mut Report) -> Result<()>
     }
 }
 
-/// One window: the file, its manifest, the position, and the Delta commit.
+/// One window: its files, their manifests, the position, and the Delta commit.
+///
+/// A partitioned table writes one file per partition VALUE into `data/<column>=<value>/`, and
+/// the value travels into the Delta action as a string. Everything else — the watermark, the
+/// half-commit rule, the manifests — is per window and does not care how many files it took.
 fn drain_one(cfg: &DrainConfig, report: &mut Report, win: &Window) -> Result<()> {
     let first = window::stem_of(&win.segments[0]);
     let last = window::stem_of(&win.segments[win.segments.len() - 1]);
@@ -325,37 +334,77 @@ fn drain_one(cfg: &DrainConfig, report: &mut Report, win: &Window) -> Result<()>
     // files that also serves other tables.
     let table_dir = cfg.out_dir.join(&win.table);
     let data_dir = table_dir.join("data");
-    let out = data_dir.join(format!("{}-{first}-{last}.parquet", win.table));
 
-    // Written into a scratch name beside the watermark and moved into place only
-    // once the projection succeeded: a refused window (a delete has no column) must
-    // leave no directory tree, no file and no moved position behind, which is the
-    // half-commit rule the tests hold this to.
-    let scratch = cfg
-        .out_dir
-        .join(format!(".{}-{first}-{last}.parquet.partial", win.table));
-    let projection = write_parquet(win, &scratch)?;
-    std::fs::create_dir_all(&data_dir)?;
-    std::fs::rename(&scratch, &out)?;
-
-    // The manifest lands with the file: a sink records provenance from it without
-    // opening the Parquet, and an operator answers "did window N land".
-    let manifest = WindowManifest {
-        table: win.table.clone(),
-        layout_version: win.layout_version,
-        segments: win.segments.clone(),
-        rows: projection.rows,
-        deletes: projection.deletes,
-        columns: projection.columns,
-        file: window::file_name(&out),
-        key_bounds: projection.key_bounds,
+    let key_names: Vec<String> = win
+        .schema
+        .key_fields
+        .iter()
+        .map(|f| f.name.clone())
+        .collect();
+    // A partition must refine the key space: partition by anything else and one key could
+    // live in two partitions, where a fold can no longer see both halves of it.
+    let partition = match cfg.partition.as_deref() {
+        Some(column) => {
+            if !key_names.iter().any(|key| key == column) {
+                return Err(DrainError::new(format!(
+                    "`{column}` is not a key column of this table: a partition has to refine the \
+                     key space, and {key_names:?} is that space"
+                )));
+            }
+            Some(column)
+        }
+        None => None,
     };
-    write_atomic(
-        &out.with_extension("manifest.json"),
-        &serde_json::to_string_pretty(&manifest)?,
-    )?;
 
-    // Only now: the file that covers the window exists, and so does its manifest.
+    let (batch, whole) = project(win)?;
+    let groups = split_by_partition(&batch, partition)?;
+
+    // Written into a scratch name beside the watermark and moved into place only once the
+    // projection succeeded: a refused window must leave no directory tree, no file and no
+    // moved position behind, which is the half-commit rule the tests hold this to.
+    std::fs::create_dir_all(&data_dir)?;
+    let mut written: Vec<PathBuf> = Vec::new();
+    for (at, (values, chunk)) in groups.iter().enumerate() {
+        // A partition this window did not touch gets no file: an empty parquet would be a
+        // window that says nothing, and a reader would have to open it to find that out.
+        if chunk.num_rows() == 0 {
+            continue;
+        }
+        let dir = match values.first() {
+            Some((column, value)) => data_dir.join(format!("{column}={}", partition_dir(value))),
+            None => data_dir.clone(),
+        };
+        std::fs::create_dir_all(&dir)?;
+        let name = format!("{}-{first}-{last}.parquet", win.table);
+        let out = dir.join(&name);
+        let scratch = cfg.out_dir.join(format!(
+            ".{}-{first}-{last}-{at}.parquet.partial",
+            win.table
+        ));
+        crate::snapshot::parquet_io::write_batch(chunk, &scratch)?;
+        std::fs::rename(&scratch, &out)?;
+
+        // The manifest lands with the file: a sink records provenance from it without
+        // opening the Parquet, and an operator answers "did window N land".
+        let described = describe(chunk, &key_names)?;
+        let manifest = WindowManifest {
+            table: win.table.clone(),
+            layout_version: win.layout_version,
+            segments: win.segments.clone(),
+            rows: described.rows,
+            deletes: described.deletes,
+            columns: described.columns,
+            file: window::file_name(&out),
+            key_bounds: described.key_bounds,
+        };
+        write_atomic(
+            &out.with_extension("manifest.json"),
+            &serde_json::to_string_pretty(&manifest)?,
+        )?;
+        written.push(out);
+    }
+
+    // Only now: the files that cover the window exist, and so do their manifests.
     write_watermark(
         &cfg.out_dir,
         &cfg.consumer,
@@ -363,33 +412,24 @@ fn drain_one(cfg: &DrainConfig, report: &mut Report, win: &Window) -> Result<()>
         &format!("{last}.segment"),
     )?;
 
-    // The Delta view: this window is one more `add` in the log, not a rebuild of
+    // The Delta view: this window is one more `add` per file in the log, not a rebuild of
     // everything before it. Committed after the position moves, because a log entry
-    // describes a file that exists. Every file in `data/` is offered so a deleted or
+    // describes a file that exists. Every file under `data/` is offered so a deleted or
     // never-written log heals itself; the ones already recorded are skipped.
-    let files: Vec<PathBuf> = std::fs::read_dir(&data_dir)?
-        .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| p.extension().is_some_and(|x| x == "parquet"))
-        .collect();
+    let files = scan_data(&data_dir)?;
     // The key columns travel into the log's schema metadata (`okm.key`): a reader that
     // folds history needs the table's identity, and a file cannot say which of its columns
     // that is (ADR-0058 § Amendment).
-    let keys: Vec<String> = win
-        .schema
-        .key_fields
-        .iter()
-        .map(|f| f.name.clone())
-        .collect();
-    delta::commit_files(&table_dir, &files, &keys)
+    delta::commit_files(&table_dir, &files, &key_names)
         .map_err(|e| DrainError::new(format!("delta: {e}")))?;
     report.metadata += 1;
 
     report.segments += win.segments.len();
     report.rows += win.rows.len();
-    report.deletes += projection.deletes;
-    report.derived_deletes += projection.derived_deletes;
+    report.deletes += whole.deletes;
+    report.derived_deletes += whole.derived_deletes;
     report.open_fields += win.dynamic.len();
-    report.files.push(out);
+    report.files.extend(written);
     Ok(())
 }
 
@@ -434,7 +474,10 @@ pub struct Projection {
 /// Two things are deliberately NOT rows: a removal of derived state (no key of the
 /// table's shape — counted, not dropped in silence) and the puts of those same faces
 /// (already counted as `open_fields` by the window join). Both are rebuilt from the row.
-pub fn write_parquet(win: &Window, out: &Path) -> Result<Projection> {
+/// Build the window's batch — declared columns, the `variant` column, the change columns —
+/// without writing anything. The caller decides where its rows go: one file, or one file per
+/// partition value.
+pub fn project(win: &Window) -> Result<(arrow::array::RecordBatch, Projection)> {
     let key_len = win.schema.key_len;
     let mut keys: Vec<Vec<u8>> = Vec::with_capacity(win.ops.len());
     let mut rows: Vec<Option<okm_dynamic::ValueMap>> = Vec::with_capacity(win.ops.len());
@@ -447,11 +490,19 @@ pub fn write_parquet(win: &Window, out: &Path) -> Result<Projection> {
     // Open fields written under a key in this window are part of the same change as the
     // row, so a put carries them in its `variant` cell (ADR-0045 §4: truth, never
     // re-derived from the columns).
-    let by_key: std::collections::HashMap<&[u8], &okm_dynamic::ValueMap> = win
-        .dynamic
-        .iter()
-        .map(|(key, map)| (key.as_slice(), map))
-        .collect();
+    // Two dynamic segments can name the same key (two writes in one window). Their open
+    // halves MERGE in log order — the later field wins, and fields the earlier one wrote
+    // that the later one did not stay — instead of the last map replacing the first.
+    let mut by_key: std::collections::HashMap<&[u8], okm_dynamic::ValueMap> =
+        std::collections::HashMap::new();
+    for (key, map) in &win.dynamic {
+        match by_key.get_mut(key.as_slice()) {
+            Some(kept) => crate::read::merge_open(kept, map),
+            None => {
+                by_key.insert(key.as_slice(), map.clone());
+            }
+        }
+    }
 
     // Keys this window put as a row: their open fields ride on the row's `variant` cell,
     // so the same change is not written twice.
@@ -474,7 +525,7 @@ pub fn write_parquet(win: &Window, out: &Path) -> Result<Projection> {
         match *op {
             WindowOp::Put(i) => {
                 let (key, doc) = &win.rows[i];
-                variant_of.push(by_key.get(key.as_slice()).copied());
+                variant_of.push(by_key.get(key.as_slice()));
                 keys.push(key.clone());
                 rows.push(Some(doc.clone()));
                 op_names.push(OKM_PUT);
@@ -587,8 +638,6 @@ pub fn write_parquet(win: &Window, out: &Path) -> Result<Projection> {
         &crate::bounds::of_batch(&batch, &key_names).map_err(DrainError::new)?,
     );
 
-    crate::snapshot::parquet_io::write_batch(&batch, out)?;
-
     projection.rows = op_names.len();
     projection.deletes = op_names.iter().filter(|n| **n == OKM_DEL).count();
     projection.open_only = op_names.iter().filter(|n| **n == OKM_PUT_OPEN).count();
@@ -604,7 +653,189 @@ pub fn write_parquet(win: &Window, out: &Path) -> Result<Projection> {
             )
         })
         .collect();
+    Ok((batch, projection))
+}
+
+/// Describe a slice of a projected batch: what a file written from it holds.
+fn describe(batch: &arrow::array::RecordBatch, key_names: &[String]) -> Result<Projection> {
+    let ops = batch
+        .column_by_name("okm_op")
+        .and_then(|c| c.as_any().downcast_ref::<arrow::array::StringArray>());
+    let mut projection = Projection {
+        columns: batch
+            .schema()
+            .fields()
+            .iter()
+            .map(|f| {
+                (
+                    f.name().clone(),
+                    format!("{:?}", f.data_type()),
+                    f.is_nullable(),
+                )
+            })
+            .collect(),
+        rows: batch.num_rows(),
+        deletes: 0,
+        open_only: 0,
+        derived_deletes: 0,
+        key_bounds: crate::bounds::to_manifest(
+            &crate::bounds::of_batch(batch, key_names).map_err(DrainError::new)?,
+        ),
+    };
+    if let Some(ops) = ops {
+        for row in 0..batch.num_rows() {
+            match ops.value(row) {
+                OKM_DEL => projection.deletes += 1,
+                OKM_PUT_OPEN => projection.open_only += 1,
+                _ => {}
+            }
+        }
+    }
     Ok(projection)
+}
+
+/// Split a projected batch by one key column's value: one batch per value, in first-seen
+/// order, each with the partition values a Delta `add` has to carry.
+fn split_by_partition(
+    batch: &arrow::array::RecordBatch,
+    column: Option<&str>,
+) -> Result<Vec<(delta::Partition, arrow::array::RecordBatch)>> {
+    let Some(column) = column else {
+        return Ok(vec![(Vec::new(), batch.clone())]);
+    };
+    let values = batch
+        .column_by_name(column)
+        .ok_or_else(|| DrainError::new(format!("no column `{column}` to partition by")))?;
+    let mut groups: Vec<(String, Vec<u32>)> = Vec::new();
+    for row in 0..batch.num_rows() {
+        let text = partition_text(values.as_ref(), row).ok_or_else(|| {
+            DrainError::new(format!(
+                "`{column}` is null in row {row}: a key column cannot be, and a partition \
+                 value cannot be missing"
+            ))
+        })?;
+        match groups.iter_mut().find(|(kept, _)| *kept == text) {
+            Some((_, rows)) => rows.push(row as u32),
+            None => groups.push((text, vec![row as u32])),
+        }
+    }
+    let mut out = Vec::with_capacity(groups.len());
+    for (text, rows) in groups {
+        let indices = arrow::array::UInt32Array::from(rows);
+        let columns = batch
+            .columns()
+            .iter()
+            .map(|c| arrow::compute::take(c.as_ref(), &indices, None))
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|e| DrainError::new(format!("partition split: {e}")))?;
+        let chunk = arrow::array::RecordBatch::try_new(batch.schema(), columns)
+            .map_err(|e| DrainError::new(format!("partition split: {e}")))?;
+        out.push((vec![(column.to_string(), text)], chunk));
+    }
+    Ok(out)
+}
+
+/// A partition value as text — the form Delta stores, not the form a path uses.
+fn partition_text(column: &dyn arrow::array::Array, row: usize) -> Option<String> {
+    use arrow::array::*;
+    if column.is_null(row) {
+        return None;
+    }
+    macro_rules! number {
+        ($ty:ty) => {{
+            let values = column.as_any().downcast_ref::<$ty>()?;
+            Some(values.value(row).to_string())
+        }};
+    }
+    match column.data_type() {
+        arrow::datatypes::DataType::UInt8 => number!(UInt8Array),
+        arrow::datatypes::DataType::UInt16 => number!(UInt16Array),
+        arrow::datatypes::DataType::UInt32 => number!(UInt32Array),
+        arrow::datatypes::DataType::UInt64 => number!(UInt64Array),
+        arrow::datatypes::DataType::Int64 => number!(Int64Array),
+        arrow::datatypes::DataType::Utf8 => {
+            let values = column.as_any().downcast_ref::<StringArray>()?;
+            Some(values.value(row).to_string())
+        }
+        arrow::datatypes::DataType::Boolean => {
+            let values = column.as_any().downcast_ref::<BooleanArray>()?;
+            Some(values.value(row).to_string())
+        }
+        arrow::datatypes::DataType::Binary => {
+            let values = column.as_any().downcast_ref::<BinaryArray>()?;
+            Some(crate::bounds::to_hex(values.value(row)))
+        }
+        arrow::datatypes::DataType::FixedSizeBinary(_) => {
+            let values = column.as_any().downcast_ref::<FixedSizeBinaryArray>()?;
+            Some(crate::bounds::to_hex(values.value(row)))
+        }
+        _ => None,
+    }
+}
+
+/// The directory name a partition value takes: anything outside `[A-Za-z0-9._-]` is
+/// percent-encoded, because a value is data and a path is not a place for `/` or `=`.
+pub(crate) fn partition_dir(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-') {
+            out.push(byte as char);
+        } else {
+            out.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    out
+}
+
+/// The inverse, for reading a partition value back out of a directory name.
+pub(crate) fn partition_value(name: &str) -> String {
+    let bytes = name.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut at = 0;
+    while at < bytes.len() {
+        if bytes[at] == b'%' && at + 2 < bytes.len() {
+            let text = std::str::from_utf8(&bytes[at + 1..at + 3]).unwrap_or("");
+            if let Ok(byte) = u8::from_str_radix(text, 16) {
+                out.push(byte);
+                at += 3;
+                continue;
+            }
+        }
+        out.push(bytes[at]);
+        at += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Every partition directory under `data/`, so a commit can name the file and its value.
+fn scan_data(data_dir: &Path) -> Result<Vec<delta::Addition>> {
+    let mut out = Vec::new();
+    for entry in std::fs::read_dir(data_dir)? {
+        let path = entry?.path();
+        if path.is_dir() {
+            let name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_default();
+            let (column, value) = match name.split_once('=') {
+                Some((column, value)) => (column.to_string(), partition_value(value)),
+                None => continue,
+            };
+            for file in std::fs::read_dir(&path)? {
+                let file = file?.path();
+                if file.extension().is_some_and(|e| e == "parquet") {
+                    out.push(delta::Addition {
+                        path: file,
+                        partition: vec![(column.clone(), value.clone())],
+                    });
+                }
+            }
+        } else if path.extension().is_some_and(|e| e == "parquet") {
+            out.push(delta::Addition::plain(path));
+        }
+    }
+    out.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(out)
 }
 
 /// Replace by rename: a reader either sees the old file or the new one.

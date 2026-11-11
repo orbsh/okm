@@ -151,7 +151,11 @@ Three consequences, all deliberate:
    by key: only files that share a key with another file (or hold a removal) are replaced, so
    a table's untouched history stays where it is. Reclaiming the bytes of replaced files is a
    separate verb with a retention window counted in VERSIONS (`okm-parquet vacuum
-   --keep-versions`), because a `remove` action addresses the table, not the file system. A change row still needs neither, and it is what a CDC consumer asks
+   --keep-versions`), because a `remove` action addresses the table, not the file system.
+3. **Partitioning is the sink's choice, not the declaration's.** A sink names one KEY column
+   and the table lands under `data/<column>=<value>/`, with `partitionValues` in the actions.
+   The declaration does not change: partitioning is about how a lake is laid out for readers,
+   and a declaration that named it would be a layout version bump for a reader's convenience. A change row still needs neither, and it is what a CDC consumer asks
    for anyway.
 3. **The schema is constant per table.** These columns appear on every window of every
    table, carrying `put` / null / 0 where nothing else applies: a schema that shows up only

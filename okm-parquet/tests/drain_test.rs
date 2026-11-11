@@ -32,6 +32,19 @@ pub struct R {
     pub name: String,
 }
 
+/// The table directory a written file belongs to: walk up until the Delta log is there, so a
+/// partitioned path (`data/org=1/…`) and a plain one are answered the same way.
+fn table_of(file: &std::path::Path) -> std::path::PathBuf {
+    let mut dir = file.parent().expect("a file has a parent").to_path_buf();
+    while !dir.join("_delta_log").is_dir() {
+        dir = dir
+            .parent()
+            .expect("a table directory above the file")
+            .to_path_buf();
+    }
+    dir
+}
+
 fn collection(root: &std::path::Path) -> Collection<ChangelogStore<TestStore>, K, R> {
     Collection::captured(ChangelogStore::new(
         TestStore::slatedb_mem(),
@@ -41,6 +54,8 @@ fn collection(root: &std::path::Path) -> Collection<ChangelogStore<TestStore>, K
 }
 
 const K1: K = K { org: 1, id: 10 };
+/// A key in ANOTHER partition: `org` is the column the partition tests split on.
+const K3: K = K { org: 2, id: 20 };
 const K2: K = K { org: 1, id: 11 };
 
 /// The second table of the two-depth test: same key, DIFFERENT ns, so it has its
@@ -374,11 +389,14 @@ fn a_removal_is_read_and_written_as_a_change_row() {
         window.ops
     );
 
-    let target = out.path().join("x.parquet");
-    let projection = okm_parquet::write_parquet(&window, &target).expect("a change row states it");
+    let (batch, projection) = okm_parquet::project(&window).expect("a change row states it");
     assert_eq!(projection.rows, 2);
     assert_eq!(projection.deletes, 1);
     assert_eq!(projection.open_only, 0);
+    // The batch is the file's content; writing it is the drain's business.
+    assert_eq!(batch.num_rows(), 2);
+    let target = out.path().join("x.parquet");
+    okm_parquet::snapshot::parquet_io::write_batch(&batch, &target).expect("write");
     assert!(target.exists(), "the file a change table needs");
 }
 
@@ -1126,6 +1144,164 @@ fn a_fold_leaves_files_whose_keys_are_exclusive_to_them() {
     let levels: Vec<u32> = (0..state.num_rows()).map(|i| level.value(i)).collect();
     assert!(levels.contains(&9), "K1 kept the newest row: {levels:?}");
     assert!(levels.contains(&4), "K2 survived: {levels:?}");
+}
+
+/// A partitioned table writes one file per partition VALUE, and the value travels into the
+/// Delta action as a string — a reader is told the partition, not left to parse a path.
+#[test]
+fn a_partitioned_drain_writes_one_file_per_value() {
+    let root = tempfile::tempdir().expect("root");
+    let out = tempfile::tempdir().expect("lake");
+    {
+        let c = collection(root.path());
+        for (key, level) in [(K1, 3u32), (K3, 4)] {
+            c.put(
+                &key,
+                &R {
+                    level,
+                    name: "row".into(),
+                },
+            )
+            .expect("put");
+        }
+    }
+    let mut cfg = DrainConfig::new(out.path(), "test");
+    cfg.partition = Some("org".to_string());
+    let report = drain(root.path(), &cfg).expect("drain");
+    assert_eq!(report.files.len(), 2, "one file per org value");
+
+    let table_dir = table_of(&report.files[0]);
+    let mut dirs: Vec<String> = std::fs::read_dir(table_dir.join("data"))
+        .expect("data")
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    dirs.sort();
+    assert_eq!(
+        dirs,
+        vec!["org=1".to_string(), "org=2".to_string()],
+        "one directory per partition value"
+    );
+
+    // The log states the partition: `partitionColumns` once, `partitionValues` per file.
+    let adds = okm_parquet::delta::live_adds(&table_dir).expect("adds");
+    assert_eq!(adds.len(), 2);
+    let values: Vec<String> = adds
+        .iter()
+        .map(|(path, values)| {
+            assert!(
+                path.starts_with("data/org="),
+                "the path carries it too: {path}"
+            );
+            values
+                .iter()
+                .map(|(column, value)| format!("{column}={value}"))
+                .collect::<Vec<_>>()
+                .join(",")
+        })
+        .collect();
+    assert!(values.contains(&"org=1".to_string()), "{values:?}");
+    assert!(values.contains(&"org=2".to_string()), "{values:?}");
+
+    // And the table reads as one table: two rows, from two directories.
+    let state = okm_parquet::read::current_state(&table_dir).expect("state");
+    assert_eq!(state.num_rows(), 2);
+}
+
+/// A fold stays inside its partition: a key lives in one partition because the partition
+/// column is a key column, so replacing a key's file cannot involve another partition.
+#[test]
+fn a_fold_stays_inside_a_partition() {
+    let root = tempfile::tempdir().expect("root");
+    let out = tempfile::tempdir().expect("lake");
+    let mut cfg = DrainConfig::new(out.path(), "test");
+    cfg.partition = Some("org".to_string());
+
+    {
+        let c = collection(root.path());
+        for (key, level) in [(K1, 3u32), (K3, 4)] {
+            c.put(
+                &key,
+                &R {
+                    level,
+                    name: "row".into(),
+                },
+            )
+            .expect("put");
+        }
+    }
+    let first = drain(root.path(), &cfg).expect("first window");
+    let table_dir = table_of(&first.files[0]);
+
+    {
+        let c = collection(root.path());
+        c.put(
+            &K1,
+            &R {
+                level: 9,
+                name: "row2".into(),
+            },
+        )
+        .expect("put");
+    }
+    drain(root.path(), &cfg).expect("second window");
+
+    let fold = okm_parquet::read::condense(&table_dir).expect("fold");
+    assert_eq!(fold.replaced, 2, "org 1's two windows");
+    assert_eq!(fold.untouched, 1, "org 2 is another partition");
+    assert_eq!(
+        fold.pruned, 1,
+        "and the range excluded it: org 2 is outside org 1's range"
+    );
+    assert_eq!(fold.files.len(), 1, "one folded file, in org=1");
+    assert!(
+        fold.files[0].to_string_lossy().contains("/org=1/"),
+        "and it went back into its own partition dir: {:?}",
+        fold.files[0]
+    );
+
+    let state = okm_parquet::read::current_state(&table_dir).expect("state");
+    assert_eq!(state.num_rows(), 2, "org 1 and org 2");
+    let levels: Vec<u32> = {
+        let column = state
+            .column_by_name("level")
+            .and_then(|c| c.as_any().downcast_ref::<arrow::array::UInt32Array>())
+            .expect("level");
+        (0..state.num_rows()).map(|i| column.value(i)).collect()
+    };
+    assert!(levels.contains(&9), "org 1's newest row: {levels:?}");
+    assert!(levels.contains(&4), "org 2 untouched: {levels:?}");
+}
+
+/// A partition has to refine the key space: partitioning by a payload column would let one
+/// key appear in two partitions, where a fold cannot see both halves of it.
+#[test]
+fn a_partition_must_be_a_key_column() {
+    let root = tempfile::tempdir().expect("root");
+    let out = tempfile::tempdir().expect("lake");
+    {
+        let c = collection(root.path());
+        c.put(
+            &K1,
+            &R {
+                level: 3,
+                name: "row".into(),
+            },
+        )
+        .expect("put");
+    }
+    let mut cfg = DrainConfig::new(out.path(), "test");
+    cfg.partition = Some("level".to_string());
+    let err = drain(root.path(), &cfg).expect_err("level is not a key");
+    assert!(
+        err.what.contains("not a key column"),
+        "the refusal says why: {err}"
+    );
+    // Nothing landed: a refused window leaves no file and no moved position.
+    assert!(
+        !out.path().join("0047/data").exists(),
+        "no half-committed directory"
+    );
 }
 
 /// The manifest records the range a file's keys cover, and a fold uses it to skip files that

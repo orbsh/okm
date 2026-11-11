@@ -204,6 +204,33 @@ The log still names the deleted files, so a second vacuum finds them absent and 
 — the sweep is idempotent, and it never edits the log: what the table SAID stays true, only the
 bytes behind the old versions stop existing.
 
+## Partitioning
+
+`DrainConfig.partition` (CLI `--partition <column>`) writes one file per partition VALUE per
+window:
+
+    <out>/<table hex>/data/<column>=<value>/<table hex>-<first>-<last>.parquet
+
+The column has to be one of the table's KEY columns. A partition has to refine the key space:
+partition by a payload column and one key could live in two partitions, where a fold can no
+longer see both halves of it and no reader can be told which file holds "the" row. A window
+whose partition column names something else is refused, like any other window the contract
+cannot state.
+
+Delta carries the value twice, on purpose: the directory is a naming convention a reader may
+use, and `partitionValues` in the `add` action is what a reader is actually told. The directory
+name percent-encodes anything outside `[A-Za-z0-9._-]` (a value is data, a path is not a place
+for `/` or `=`), while the action holds the raw text. `partitionColumns` is written once in
+`metaData`; a window that would change it is refused, because a reader reuses that answer.
+
+What partitioning buys here is narrower than in a warehouse: no window is split by time, and
+filters still land on Parquet statistics. What it costs is a fold that must stay inside a
+partition — which it does by construction, since the partition column is a key column: keys are
+not shared across partitions, so neither is a fold. And what it composes with is the key-range
+index: a partition already bounds the range, and the manifest's `key_bounds` bounds it again.
+
+Vacuum is unchanged: a path carries its partition directory, and a `remove` names the path.
+
 ## Not part of the contract
 
 Partitioning, target file size, catalog registration, snapshot management and

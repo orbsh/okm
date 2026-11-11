@@ -2355,7 +2355,13 @@ panic lints allowed only in the places it names. So the runtime half of
       dependency for the write side, so the fold decodes each `variant` cell, unions the objects
       field by field (later window wins, nested objects merge) and RE-ENCODES the half via
       `bridge::variant_column`. `read::open_fields` exposes the decoder.
-      (c) partitioning and file-size targets (one window = one file = one log version).
+      (c) **partitioning** — landed as `DrainConfig.partition` (CLI `--partition <column>`):
+      one file per partition value per window under `data/<column>=<value>/`, the value in Delta
+      `partitionValues` and the columns once in `metaData`, a fold that stays inside its
+      partition by construction, and the directory name percent-encoded while the action keeps
+      the raw text. The column must be a KEY column, because a partition that does not refine
+      the key space lets one key live in two files. What is still owed from this item is the
+      FILE-SIZE target: a window is one file per partition today, however large the window.
       `okm_parquet::delta` stays a zero-dependency log encoder, so anything that outgrows it
       splits off by measurement rather than by default. `okm_dynamic::arrow` covers the
       schema-driven Arrow builder, with the typed bridge as its drift lock; a SQL-to-okm planner
@@ -3062,10 +3068,10 @@ outright — its entry says why).
       are refused for the same reason: atomicity left to the implementation means the fence
       has to be re-argued per server. A shared log is a MOUNT.
 
-## 2026-11-10 — the dynamic segment gets a block table at its tail (ADR-0057)
+## 2026-11-10 — the dynamic segment gets a block table at its head (ADR-0057)
 
-Decided, not landed: the segment's layout becomes `values | blocks | toc_len u16`, with a
-breadth-first block table and no magic. The checklist below is the landing.
+Decided and landed the same day: the segment's layout is `toc_len u16 | blocks | values`, with a
+breadth-first block table and no magic. Every item below is checked.
 
 - [x] **Writer**: `obj_segment::encode` collects `(id, type, value)`, emits leaves into the
       value area block by block, queues composites, writes `toc_len` (reserved at offset 0,
@@ -3083,8 +3089,10 @@ breadth-first block table and no magic. The checklist below is the landing.
       offset 0), nested `Obj`/`Array`, a 4 KiB value among small ones, an unknown type skipped
       rather than fatal, and a table whose lengths do not sum inside `values` (refused);
       `obj_dynamic` covers ids past the `0xFF` escape and the nesting cap.
-- [x] **MODELING**: the dynamic-segment paragraph (both languages), `docs/internals/key-layout.md`
-      and ADR-0030's slot table now say "blocks + values (ADR-0057)".
+- [x] **Docs**: the mechanism page `docs/internals/dynamic-segment.md` (both languages — grammar,
+      ordering contract, size envelope, serde boundary), the dynamic-segment paragraph in MODELING,
+      key-layout's slot row, ADR-0012's dynamic-face grammar and ADR-0030's slot table: each states
+      `toc_len | blocks | values` and points at the mechanism page.
 - [x] **Migration**: the segment is truth (ADR-0045), so every row that has one is re-encoded
       under the new layout at upgrade time, by REPLAY through the new build's write path —
       each segment decoded under the declaration that wrote it, out of the same changelog
