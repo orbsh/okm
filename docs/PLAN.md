@@ -3300,3 +3300,15 @@ never wanted an engine.
 - [ ] **okm-query is eager to the end.** `merge_join` / `group_by` return `Vec`, so a chain materializes at every step and `LIMIT` cannot stop it early; okm-core already streams (`scan_range_iter`, ADR-0020) and the query layer has not followed.
 - [ ] **Clone per result pair.** The duplicate-run branch pushes `(l.clone(), r.clone())` per pair — k² clones for two runs of length k.
 - [ ] **No skew shortcut.** Lopsided intersections (1M against 1K) are 12.7× faster with a gallop over the small side than with the merge; it belongs in the operator, not in someone's caller.
+
+## 2026-11-11 — the entry header is one byte (ADR-0060), and the codec moves out
+
+Decided, not landed: layout v3 folds the length into the type byte, and the segment codec leaves `okm-core` for `okm-value`. The checklist is the landing.
+
+- [ ] **Writer**: `obj_segment::encode` emits `[id][head][body]` — `head = composite bit | len (0..6 inline, 7 = escape) | type nibble`; the three fixed-width types write the len bits as 0; composites keep `0x86` / `0x87` byte for byte.
+- [ ] **Reader**: `decode` branches on the head only — bit 7 means no length, len code 7 means a `take_len` varint follows, otherwise the code is the length. The arithmetic is unchanged (leaf lengths sum to the value area, `blocks = composites + 1`, `toc_len` inside the file) and an unknown type stays skippable.
+- [ ] **Stamp**: a table whose rows carry a dynamic segment needs a new `#[ok_layout(version = …)]` — the declared payload shape does not move, but the table's stamp is the only place a reader learns which segment layout its bytes use. Which tables carry a segment is the census that decides the bump. Open until the landing: whether the segment's layout should get a stamp of its own instead of borrowing the payload's.
+- [ ] **Crate**: `okm-value` takes `DynamicValue`, `DynamicField`, `ValueMap`, `NameResolver`, `CodecError`, `encode` / `decode`; `okm-core` depends on it and re-exports nothing under the old paths; sweep `okm-core` (`document.rs`, `model/graph.rs`, `model/obj_dynamic.rs`), `okm-dynamic` (`graph.rs`, `plan_fields.rs`), `okm-lake` and the bindings.
+- [ ] **Tests**: hex locks for the new head (len 1..6, the 7-byte escape, `Bool` / `Null` / `F64`, a composite byte unchanged), round trip, unknown-type skip, torn and lying-table refusal, and ADR-0012's derive-vs-dynamic byte identity re-checked on the new head.
+- [ ] **Migration**: every store holding a segment is re-encoded by replay through the new build's write path (ADR-0056 §5).
+- [ ] **Docs**: the internals page's grammar and worked hex example, MODELING's dynamic-segment grammar line, and ADR-0057 §6's "byte-identical to the old frame header" sentence (that claim moves to ADR-0060; the table and ordering text stays).
