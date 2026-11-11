@@ -38,9 +38,11 @@
 pub mod bounds;
 pub mod bridge;
 pub mod delta;
+pub mod publish;
 pub mod read;
 pub mod snapshot;
 pub mod status;
+pub mod store;
 pub mod vacuum;
 
 use okm_core::changelog::window::{
@@ -302,7 +304,7 @@ fn maybe_fold(cfg: &DrainConfig, table: &str, report: &mut Report) -> Result<()>
         return Ok(());
     }
     let files =
-        delta::files_in_order(&table_dir).map_err(|e| DrainError::new(format!("delta: {e}")))?;
+        delta::files_in_order_at(&table_dir).map_err(|e| DrainError::new(format!("delta: {e}")))?;
     let bytes: u64 = files
         .iter()
         .filter_map(|rel| std::fs::metadata(table_dir.join(rel)).ok())
@@ -436,7 +438,7 @@ fn drain_one(cfg: &DrainConfig, report: &mut Report, win: &Window) -> Result<()>
     // The key columns travel into the log's schema metadata (`okm.key`): a reader that
     // folds history needs the table's identity, and a file cannot say which of its columns
     // that is (ADR-0058 § Amendment).
-    delta::commit_files(&table_dir, &files, &key_names)
+    delta::commit_files_at(&table_dir, &files, &key_names)
         .map_err(|e| DrainError::new(format!("delta: {e}")))?;
     report.metadata += 1;
 
@@ -867,17 +869,33 @@ fn scan_data(data_dir: &Path) -> Result<Vec<delta::Addition>> {
                 Some((column, value)) => (column.to_string(), partition_value(value)),
                 None => continue,
             };
+            let dir_name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
             for file in std::fs::read_dir(&path)? {
                 let file = file?.path();
                 if file.extension().is_some_and(|e| e == "parquet") {
+                    let size = std::fs::metadata(&file).map(|m| m.len()).unwrap_or(0);
                     out.push(delta::Addition {
-                        path: file,
+                        path: format!(
+                            "data/{dir_name}/{}",
+                            file.file_name().unwrap_or_default().to_string_lossy()
+                        ),
                         partition: vec![(column.clone(), value.clone())],
+                        size,
                     });
                 }
             }
         } else if path.extension().is_some_and(|e| e == "parquet") {
-            out.push(delta::Addition::plain(path));
+            let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+            out.push(delta::Addition::plain(
+                format!(
+                    "data/{}",
+                    path.file_name().unwrap_or_default().to_string_lossy()
+                ),
+                size,
+            ));
         }
     }
     out.sort_by(|a, b| a.path.cmp(&b.path));

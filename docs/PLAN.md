@@ -3312,3 +3312,19 @@ Decided and partly landed: layout v3 folds the length into the type byte (writer
 - [x] **Tests**: hex locks for the new head (len 1..6, the 7-byte escape, `Bool` / `Null` / `F64`, a composite byte unchanged), round trip, unknown-type skip, torn and lying-table refusal, and ADR-0012's derive-vs-dynamic byte identity re-checked on the new head.
 - [x] **Cutover**: existing stores and their changelog directories are deleted rather than replayed. Nothing in the bytes separates a v2 segment from a v3 one, so a mixed store is a silent misread; the deployment rule is that the two builds do not share a store.
 - [x] **Docs**: the internals page's grammar and worked hex example, MODELING's dynamic-segment grammar line, and ADR-0057 §6's "byte-identical to the old frame header" sentence (that claim moves to ADR-0060; the table and ordering text stays).
+
+## 2026-11-11 — the lake is a key space (ADR-0061)
+
+Landed: `okm_lake::store` (one trait, `LocalFs` and `S3`), the Delta core re-cut to speak
+`(store, table)`, the path-shaped verbs kept as `*_at` adapters, `publish::replace_table` for a
+producer that owns its state, and `*_bytes` emitters in `snapshot::parquet_io`. The S3 face is
+exercised against a real bucket by `okm-lake/tests/s3_test.rs` (skipped when `OKM_S3_URL` is
+unset) and was verified against a local rustfs.
+
+- [ ] **The binary's verbs take a url.** `--out` and `--store` accept `s3://bucket/prefix`:
+  drain, condense, vacuum and status are the fs call sites already replaced in `delta`, so the
+  work is the argument parsing and the tests, not the protocol. Until then a bucket is reachable
+  through the library only (ADR-0061 §4).
+- [ ] **A checkpoint for a long log.** Publishing a version per interval per table means a log
+  that a reader replays from 0. Delta's answer is a checkpoint every N versions; the writer here
+  still makes none, and `publish` was written to be the first caller that needs it.

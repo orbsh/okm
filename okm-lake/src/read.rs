@@ -100,7 +100,7 @@ const OPEN_FIELDS_COLUMN: &str = "variant";
 /// cannot say about itself, and an export written before the amendment has none — which is a
 /// refusal here rather than a fold on a made-up identity.
 pub fn key_columns(table_dir: &Path) -> Result<Vec<String>> {
-    let schema = delta::schema_string(table_dir)?
+    let schema = delta::schema_string_at(table_dir)?
         .ok_or_else(|| ReadError::new("this table has no schema in its log yet"))?;
     let parsed: serde_json::Value = serde_json::from_str(&schema)
         .map_err(|e| ReadError::new(format!("schema string is not JSON: {e}")))?;
@@ -210,7 +210,7 @@ pub fn current_state(table_dir: &Path) -> Result<RecordBatch> {
 /// The same answer, plus how many change rows the files hold — the number a fold compares
 /// itself against to decide whether there is anything to fold.
 fn state_and_total(table_dir: &Path) -> Result<(RecordBatch, usize)> {
-    let files = delta::files_in_order(table_dir)?;
+    let files = delta::files_in_order_at(table_dir)?;
     let (schema, batches) = aligned_files(table_dir, &files)?;
     let keys = key_columns(table_dir)?;
     resolve(&schema, &batches, &keys)
@@ -672,7 +672,7 @@ pub fn condense(table_dir: &Path) -> Result<FoldReport> {
 
 /// Fold the table, with at most `max_rows` rows per file (`0` = one file per partition).
 pub fn condense_at(table_dir: &Path, max_rows: usize) -> Result<FoldReport> {
-    let files = delta::files_in_order(table_dir)?;
+    let files = delta::files_in_order_at(table_dir)?;
     let keys = key_columns(table_dir)?;
     let (touched, pruned) = files_to_fold(table_dir, &files, &keys)?;
     if touched.is_empty() {
@@ -688,14 +688,14 @@ pub fn condense_at(table_dir: &Path, max_rows: usize) -> Result<FoldReport> {
         .and_then(|n| n.to_str())
         .ok_or_else(|| ReadError::new(format!("{}: not a table directory", table_dir.display())))?
         .to_string();
-    let version = delta::next_version(table_dir)?;
+    let version = delta::next_version_at(table_dir)?;
     let data_dir = table_dir.join("data");
     std::fs::create_dir_all(&data_dir)?;
 
     // A fold stays INSIDE the partition it resolves: a table is partitioned by a KEY column,
     // so the same key cannot be in two partitions, and a fold that crossed them would write
     // one file whose partitionValues describe two different values.
-    let live = delta::live_adds(table_dir)?;
+    let live = delta::live_adds_at(table_dir)?;
     let mut groups: Vec<(delta::Partition, Vec<String>)> = Vec::new();
     for rel in &touched {
         let values = live
@@ -711,6 +711,7 @@ pub fn condense_at(table_dir: &Path, max_rows: usize) -> Result<FoldReport> {
 
     let stem = format!("{hex}-fold-{version:020}");
     let mut additions: Vec<delta::Addition> = Vec::new();
+    let mut written: Vec<PathBuf> = Vec::new();
     let mut rows = 0usize;
     for (at, (values, files)) in groups.iter().enumerate() {
         let (schema, batches) = aligned_files(table_dir, files)?;
@@ -786,15 +787,28 @@ pub fn condense_at(table_dir: &Path, max_rows: usize) -> Result<FoldReport> {
             )?;
 
             rows += chunk.num_rows();
+            let relative = out
+                .strip_prefix(table_dir)
+                .map(|rel| rel.to_string_lossy().replace('\\', "/"))
+                .map_err(|_| {
+                    ReadError::new(format!(
+                        "{}: not inside {}",
+                        out.display(),
+                        table_dir.display()
+                    ))
+                })?;
+            let size = std::fs::metadata(&out).map(|m| m.len()).unwrap_or(0);
             additions.push(delta::Addition {
-                path: out,
+                path: relative,
                 partition: values.clone(),
+                size,
             });
+            written.push(out);
         }
     }
 
-    let commit = delta::commit_compaction(table_dir, &touched, &additions, &keys)?;
-    let files = additions.into_iter().map(|add| add.path).collect();
+    let commit = delta::commit_compaction_at(table_dir, &touched, &additions, &keys)?;
+    let files = written;
     Ok(FoldReport {
         version: commit.version,
         files,

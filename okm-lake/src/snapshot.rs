@@ -122,6 +122,31 @@ pub mod parquet_io {
         write_batch(&batch, path)
     }
 
+    /// The same table as Parquet bytes: a lake in a bucket has no path to write to.
+    pub fn export_parquet_with_variant_bytes<
+        S: VirtualStorage,
+        K: KeyEncode,
+        R: Document<Key = K>,
+    >(
+        collection: &mut Collection<S, K, R>,
+    ) -> parquet::errors::Result<Vec<u8>> {
+        let batch = collection
+            .to_record_batch_with_variant()
+            .map_err(|e| parquet::errors::ParquetError::General(e.to_string()))?;
+        batch_bytes(&batch)
+    }
+
+    /// A batch as Parquet BYTES — what a lake that is not a directory is handed. The same
+    /// writer as every other export, so a published file and a folded one cannot disagree
+    /// about the format.
+    pub fn batch_bytes(batch: &arrow::array::RecordBatch) -> parquet::errors::Result<Vec<u8>> {
+        let mut out: Vec<u8> = Vec::new();
+        let mut w = parquet::arrow::ArrowWriter::try_new(&mut out, batch.schema(), None)?;
+        w.write(batch)?;
+        w.close()?;
+        Ok(out)
+    }
+
     /// Write an already-built batch to a Parquet file — the seam for exports
     /// whose rows come from somewhere other than a collection (the graph's edge
     /// table, the catalog). One writer, so every file in a backup has the same
@@ -183,9 +208,33 @@ pub mod parquet_io {
         table: &str,
         path: &std::path::Path,
     ) -> parquet::errors::Result<()> {
+        let batch = reduces_batch::<S, A>(store, ns_prefix, table)?;
+        write_batch(&batch, path)
+    }
+
+    /// The same reduce table as bytes, for a lake that is a bucket.
+    pub fn export_reduces_bytes<S: VirtualStorage, A: okm_core::model::reduce::Reduce>(
+        store: &S,
+        ns_prefix: &[u8],
+        table: &str,
+    ) -> parquet::errors::Result<Vec<u8>> {
+        let batch = reduces_batch::<S, A>(store, ns_prefix, table)?;
+        batch_bytes(&batch)
+    }
+
+    /// A reduce declaration's entries as the derived table `(table, reduce, group, value)`.
+    fn reduces_batch<
+        S: okm_core::engine::storage::VirtualStorage,
+        A: okm_core::model::reduce::Reduce,
+    >(
+        store: &S,
+        ns_prefix: &[u8],
+        table: &str,
+    ) -> parquet::errors::Result<arrow::array::RecordBatch> {
         use arrow::array::{Array, BinaryArray, UInt16Array};
         use arrow::buffer::{Buffer, OffsetBuffer, ScalarBuffer};
         use arrow::datatypes::{DataType, Field as ArrowField, Schema as ArrowSchema};
+        use std::sync::Arc;
 
         let mut prefix = ns_prefix.to_vec();
         okm_core::model::index::write_slot(&mut prefix, A::SLOT);
@@ -228,8 +277,7 @@ pub mod parquet_io {
             Arc::new(binary(&groups)),
             Arc::new(binary(&values)),
         ];
-        let batch = arrow::array::RecordBatch::try_new(schema, arrays)?;
-        write_batch(&batch, path)
+        Ok(arrow::array::RecordBatch::try_new(schema, arrays)?)
     }
 
     /// Read one document's value from column `col` at `document` as the BE wire bytes

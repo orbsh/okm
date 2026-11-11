@@ -2200,6 +2200,9 @@ name = "okm-lake"
 version = "0.1.0"
 dependencies = [
  "arrow",
+ "bytes",
+ "futures",
+ "object_store",
  "okm-async",
  "okm-core",
  "okm-derive",
@@ -2210,6 +2213,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "tokio",
 ]
 
 [[package]]

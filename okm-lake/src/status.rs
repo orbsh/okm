@@ -37,8 +37,8 @@ pub struct TableStatus {
 /// Read one table's status. `count_rows` folds the table to answer "how many rows does it
 /// have now"; without it nothing but the key columns of nothing is read — no payload at all.
 pub fn status(table_dir: &Path, count_rows: bool) -> Result<TableStatus, String> {
-    let live = delta::files_in_order(table_dir)?;
-    let (gone, latest_version) = delta::removed_files(table_dir)?;
+    let live = delta::files_in_order_at(table_dir)?;
+    let (gone, latest_version) = delta::removed_files_at(table_dir)?;
 
     let mut status = TableStatus {
         latest_version,

@@ -1116,7 +1116,7 @@ fn a_fold_leaves_files_whose_keys_are_exclusive_to_them() {
     let third = drain(root.path(), &DrainConfig::new(out.path(), "test")).expect("third window");
     assert_eq!(third.files.len(), 1);
     let k2_file = {
-        let files = okm_lake::delta::files_in_order(&table_dir).expect("files");
+        let files = okm_lake::delta::files_in_order_at(&table_dir).expect("files");
         files
             .iter()
             .find(|f| f.contains("00000000-00000000"))
@@ -1129,7 +1129,7 @@ fn a_fold_leaves_files_whose_keys_are_exclusive_to_them() {
     assert_eq!(fold.untouched, 1, "the K2 file is already final");
     assert_eq!(fold.rows, 1, "both files held K1, which is one row");
 
-    let live = okm_lake::delta::files_in_order(&table_dir).expect("files");
+    let live = okm_lake::delta::files_in_order_at(&table_dir).expect("files");
     assert_eq!(live.len(), 2, "the untouched file plus the folded one");
     assert!(
         live.contains(&k2_file),
@@ -1172,7 +1172,7 @@ fn a_window_is_cut_into_files_by_the_row_limit() {
     assert_eq!(report.files.len(), 3, "5 rows, two per file");
 
     let table_dir = table_of(&report.files[0]);
-    let live = okm_lake::delta::files_in_order(&table_dir).expect("files");
+    let live = okm_lake::delta::files_in_order_at(&table_dir).expect("files");
     assert_eq!(live.len(), 3);
     let mut names: Vec<String> = live.to_vec();
     names.sort();
@@ -1276,7 +1276,7 @@ fn a_partitioned_drain_writes_one_file_per_value() {
     );
 
     // The log states the partition: `partitionColumns` once, `partitionValues` per file.
-    let adds = okm_lake::delta::live_adds(&table_dir).expect("adds");
+    let adds = okm_lake::delta::live_adds_at(&table_dir).expect("adds");
     assert_eq!(adds.len(), 2);
     let values: Vec<String> = adds
         .iter()
@@ -1426,7 +1426,7 @@ fn the_key_range_in_a_manifest_prunes_the_fold() {
     let table_dir = dirs.pop().expect("one table");
 
     // Both windows recorded bounds, and the ranges do not overlap on `org`.
-    let live = okm_lake::delta::files_in_order(&table_dir).expect("files");
+    let live = okm_lake::delta::files_in_order_at(&table_dir).expect("files");
     assert_eq!(live.len(), 2);
     let bounds: Vec<_> = live
         .iter()
@@ -1463,7 +1463,7 @@ fn the_key_range_in_a_manifest_prunes_the_fold() {
     assert_eq!(fold.untouched, 1, "org 2's file is out of range");
     assert_eq!(fold.rows, 1);
 
-    let after = okm_lake::delta::files_in_order(&table_dir).expect("files");
+    let after = okm_lake::delta::files_in_order_at(&table_dir).expect("files");
     assert_eq!(after.len(), 2, "the untouched file plus the folded one");
     let state = okm_lake::read::current_state(&table_dir).expect("state");
     assert_eq!(state.num_rows(), 2);
@@ -1636,7 +1636,7 @@ fn a_drain_folds_the_table_when_the_policy_says_so() {
     // The LOG is the truth: a replaced file leaves the table through a `remove` action, and
     // the bytes stay on disk for time travel (dropping those is a vacuum, which this writer
     // does not have yet).
-    let live = okm_lake::delta::files_in_order(&table_dir).expect("the log's files");
+    let live = okm_lake::delta::files_in_order_at(&table_dir).expect("the log's files");
     assert_eq!(live.len(), 1, "one current-state file: {live:?}");
     assert!(
         live[0].contains("-fold-"),

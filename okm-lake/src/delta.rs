@@ -25,8 +25,9 @@
 //! (ADR-0056, the "only the formats move out" bullet).
 
 use std::collections::{BTreeSet, HashMap};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
+use crate::store::{LakeStore, LocalFs};
 use arrow::datatypes::DataType;
 use arrow::datatypes::Field as ArrowField;
 
@@ -35,8 +36,8 @@ use arrow::datatypes::Field as ArrowField;
 pub struct Commit {
     /// The version number (the file stem), 0 for the first.
     pub version: u64,
-    /// The log file this commit wrote.
-    pub path: PathBuf,
+    /// The log key this commit wrote (relative to the lake root).
+    pub path: String,
     /// How many data files this commit added — files already in the log are skipped,
     /// so re-running a drain over the same directory is a no-op version.
     pub added: usize,
@@ -75,10 +76,13 @@ fn leaf_of(metadata: &parquet::file::metadata::ParquetMetaData, name: &str) -> O
     })
 }
 
-pub fn file_summary(path: &Path) -> Result<FileSummary, String> {
-    let file = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let reader = parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(file)
-        .map_err(|e| format!("{}: {e}", path.display()))?;
+/// What a Parquet file holds, from its bytes: a lake's files are read the same way whether
+/// they arrived from a directory or a bucket.
+pub fn file_summary(bytes: &[u8]) -> Result<FileSummary, String> {
+    let reader = parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(
+        bytes::Bytes::copy_from_slice(bytes),
+    )
+    .map_err(|e| format!("parquet summary: {e}"))?;
     let arrow = reader.schema().clone();
     let mut columns = Vec::with_capacity(arrow.fields().len());
     for f in arrow.fields() {
@@ -328,17 +332,21 @@ pub type Partition = Vec<(String, String)>;
 /// action is what a reader is told.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Addition {
-    /// Where the file is on disk.
-    pub path: PathBuf,
+    /// Where the file sits inside its table directory — a lake key, not a path on one
+    /// machine's disk, because a lake may be a bucket.
+    pub path: String,
     /// `(column, value)` for each partition column; empty for an unpartitioned table.
     pub partition: Partition,
+    /// The bytes the file holds. A store has no `stat`, and the writer just wrote them.
+    pub size: u64,
 }
 
 impl Addition {
-    pub fn plain(path: impl Into<PathBuf>) -> Self {
+    pub fn plain(path: impl Into<String>, size: u64) -> Self {
         Self {
             path: path.into(),
             partition: Vec::new(),
+            size,
         }
     }
 }
@@ -389,33 +397,30 @@ struct LogState {
     partitions: HashMap<String, Partition>,
 }
 
-fn read_log(table_dir: &Path) -> Result<LogState, String> {
-    let log = table_dir.join("_delta_log");
+fn read_log(store: &dyn LakeStore, table: &str) -> Result<LogState, String> {
+    let log = crate::store::table_key(table, "_delta_log/");
     let mut state = LogState::default();
-    if !log.is_dir() {
-        return Ok(state);
-    }
-    let mut versions: Vec<(u64, PathBuf)> = Vec::new();
-    for entry in std::fs::read_dir(&log).map_err(|e| format!("{}: {e}", log.display()))? {
-        let path = entry.map_err(|e| e.to_string())?.path();
+    let mut versions: Vec<(u64, String)> = Vec::new();
+    for entry in store.list(&log)? {
+        let name = entry.path.strip_prefix(log.as_str()).unwrap_or(&entry.path);
         // Only `NNN.json` counts: `.json.tmp` is a commit in flight and `.checkpoint.`
         // files are a reader's optimisation this writer never makes.
-        let is_json = path.extension().is_some_and(|e| e == "json");
-        let version = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .and_then(|s| s.parse::<u64>().ok());
-        if let (true, Some(v)) = (is_json, version) {
-            versions.push((v, path));
+        let Some(stem) = name.strip_suffix(".json") else {
+            continue;
+        };
+        if stem.contains('.') {
+            continue;
+        }
+        if let Ok(version) = stem.parse::<u64>() {
+            versions.push((version, entry.path));
         }
     }
     versions.sort();
-    for (v, path) in versions {
-        let text =
-            std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    for (v, key) in versions {
+        let text = String::from_utf8(store.get(&key)?).map_err(|e| format!("{key}: {e}"))?;
         for line in text.lines().filter(|l| !l.trim().is_empty()) {
             let action: serde_json::Value =
-                serde_json::from_str(line).map_err(|e| format!("{}: {e}", path.display()))?;
+                serde_json::from_str(line).map_err(|e| format!("{key}: {e}"))?;
             if let Some(meta) = action.get("metaData") {
                 if let Some(id) = meta.get("id").and_then(|v| v.as_str()) {
                     state.table_id = Some(id.to_string());
@@ -467,14 +472,10 @@ fn read_log(table_dir: &Path) -> Result<LogState, String> {
 
 /// A table id that is stable for a directory: Delta only requires uniqueness, and a
 /// drain re-run must not invent a new identity for the same table.
-fn table_id(table_dir: &Path) -> String {
+fn table_id(table: &str) -> String {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    table_dir
-        .file_name()
-        .unwrap_or_default()
-        .to_string_lossy()
-        .hash(&mut hasher);
+    table.hash(&mut hasher);
     let h = hasher.finish();
     format!(
         "{:08x}-{:04x}-4{:03x}-8{:03x}-{:012x}",
@@ -492,13 +493,12 @@ fn table_id(table_dir: &Path) -> String {
 /// cannot double-count it. The version file is written under a `.tmp` name and renamed
 /// into place: a reader that lists `NNN.json` never sees a half-written commit.
 pub fn commit_files(
-    table_dir: &Path,
+    store: &dyn LakeStore,
+    table: &str,
     files: &[Addition],
     keys: &[String],
 ) -> Result<Commit, String> {
-    let log = table_dir.join("_delta_log");
-    std::fs::create_dir_all(&log).map_err(|e| format!("{}: {e}", log.display()))?;
-    let state = read_log(table_dir)?;
+    let state = read_log(store, table)?;
 
     if files.is_empty() {
         return Err("no data files to commit".to_string());
@@ -517,22 +517,10 @@ pub fn commit_files(
     let mut summary: Option<FileSummary> = None;
     let mut partition: Vec<String> = Vec::new();
     for file in files {
-        let relative = file
-            .path
-            .strip_prefix(table_dir)
-            .map_err(|_| {
-                format!(
-                    "{}: not inside {}",
-                    file.path.display(),
-                    table_dir.display()
-                )
-            })?
-            .to_string_lossy()
-            .replace('\\', "/");
-        let size = std::fs::metadata(&file.path)
-            .map_err(|e| format!("{}: {e}", file.path.display()))?
-            .len();
-        let summary_of_file = file_summary(&file.path)?;
+        let relative = file.path.clone();
+        let size = file.size;
+        let summary_of_file =
+            file_summary(&store.get(&crate::store::table_key(table, &relative))?)?;
         // A table is partitioned by ONE set of columns for its whole life: a reader that was
         // told `partitionColumns` reuses that answer, so a window may not change it.
         let names: Vec<String> = file
@@ -605,7 +593,7 @@ pub fn commit_files(
     if state.schema.as_deref() != Some(schema.as_str()) {
         actions.push(serde_json::json!({
             "metaData": {
-                "id": state.table_id.clone().unwrap_or_else(|| table_id(table_dir)),
+                "id": state.table_id.clone().unwrap_or_else(|| table_id(table)),
                 "format": { "provider": "parquet", "options": {} },
                 "schemaString": schema,
                 "partitionColumns": partition,
@@ -630,7 +618,7 @@ pub fn commit_files(
     }
 
     let added = adds.len();
-    write_actions(&log, version, &actions, added)
+    write_actions(store, table, version, &actions, added)
 }
 
 /// A partition's values as Delta states them: strings, keyed by column.
@@ -642,14 +630,19 @@ fn partition_object(partition: &Partition) -> serde_json::Value {
     serde_json::Value::Object(object)
 }
 
-/// One commit: the actions, written under a scratch name and renamed into place.
+/// One commit: the actions, claimed under their final name with a create-only write.
+///
+/// Locally that is a `create_new`; on a bucket it is a conditional PUT. Both mean a reader
+/// listing `NNN.json` never sees a half-written commit, and a version that already exists
+/// is somebody else's — reported rather than overwritten.
 fn write_actions(
-    log: &Path,
+    store: &dyn LakeStore,
+    table: &str,
     version: u64,
     actions: &[serde_json::Value],
     added: usize,
 ) -> Result<Commit, String> {
-    let path = log.join(format!("{version:020}.json"));
+    let path = crate::store::table_key(table, &format!("_delta_log/{version:020}.json"));
     // A `serde_json::Value` always serialises; the error would mean a bug in this
     // function's own construction, so it is reported rather than assumed away.
     let mut body = String::new();
@@ -658,9 +651,11 @@ fn write_actions(
         body.push_str(&line);
         body.push('\n');
     }
-    let scratch = log.join(format!("{version:020}.json.tmp"));
-    std::fs::write(&scratch, body).map_err(|e| format!("{}: {e}", scratch.display()))?;
-    std::fs::rename(&scratch, &path).map_err(|e| format!("{}: {e}", path.display()))?;
+    if !store.put_new(&path, body.as_bytes())? {
+        return Err(format!(
+            "{path} already exists: another writer claimed version {version}"
+        ));
+    }
     Ok(Commit {
         version,
         path,
@@ -669,16 +664,16 @@ fn write_actions(
 }
 
 /// the table's schema string (which is where the key columns are marked).
-pub fn files_in_order(table_dir: &Path) -> Result<Vec<String>, String> {
-    Ok(read_log(table_dir)?.order)
+pub fn files_in_order(store: &dyn LakeStore, table: &str) -> Result<Vec<String>, String> {
+    Ok(read_log(store, table)?.order)
 }
 
 /// The table's live files with the partition values each one carries, in log order.
 ///
 /// A fold writes its output into the same partition directories as the files it replaces, so
 /// it has to know which value each file belongs to — the log says, the path only hints.
-pub fn live_adds(table_dir: &Path) -> Result<Vec<(String, Partition)>, String> {
-    let state = read_log(table_dir)?;
+pub fn live_adds(store: &dyn LakeStore, table: &str) -> Result<Vec<(String, Partition)>, String> {
+    let state = read_log(store, table)?;
     Ok(state
         .order
         .into_iter()
@@ -694,8 +689,11 @@ pub fn live_adds(table_dir: &Path) -> Result<Vec<(String, Partition)>, String> {
 /// A file that was removed and later re-added with the same path is not listed: it is in the
 /// table again, and deleting it would delete a live file. That cannot happen with this
 /// writer's names (a fold's name carries its version), but the check costs one set lookup.
-pub fn removed_files(table_dir: &Path) -> Result<(Vec<(String, u64)>, u64), String> {
-    let state = read_log(table_dir)?;
+pub fn removed_files(
+    store: &dyn LakeStore,
+    table: &str,
+) -> Result<(Vec<(String, u64)>, u64), String> {
+    let state = read_log(store, table)?;
     let latest = state.max_version.unwrap_or(0);
     let gone = state
         .removed
@@ -707,8 +705,8 @@ pub fn removed_files(table_dir: &Path) -> Result<(Vec<(String, u64)>, u64), Stri
 
 /// Every file the table has ever added — the set a vacuum deletes from disk. A path here that
 /// is not in `files_in_order` is a file the table no longer reads.
-pub fn added_files(table_dir: &Path) -> Result<Vec<String>, String> {
-    let state = read_log(table_dir)?;
+pub fn added_files(store: &dyn LakeStore, table: &str) -> Result<Vec<String>, String> {
+    let state = read_log(store, table)?;
     let mut all: Vec<String> = state.order;
     all.extend(state.removed.into_iter().map(|(path, _)| path));
     all.sort();
@@ -717,13 +715,16 @@ pub fn added_files(table_dir: &Path) -> Result<Vec<String>, String> {
 }
 
 /// The version a commit would take next.
-pub fn next_version(table_dir: &Path) -> Result<u64, String> {
-    Ok(read_log(table_dir)?.max_version.map(|v| v + 1).unwrap_or(0))
+pub fn next_version(store: &dyn LakeStore, table: &str) -> Result<u64, String> {
+    Ok(read_log(store, table)?
+        .max_version
+        .map(|v| v + 1)
+        .unwrap_or(0))
 }
 
 /// The table's current schema string, if it has one yet.
-pub fn schema_string(table_dir: &Path) -> Result<Option<String>, String> {
-    Ok(read_log(table_dir)?.schema)
+pub fn schema_string(store: &dyn LakeStore, table: &str) -> Result<Option<String>, String> {
+    Ok(read_log(store, table)?.schema)
 }
 
 /// One commit that REPLACES files: every `removes` entry leaves the table, `add` joins it.
@@ -733,7 +734,8 @@ pub fn schema_string(table_dir: &Path) -> Result<Option<String>, String> {
 /// columns as the ones they replace, and a commit that restated the schema would only give a
 /// reader a second chance to disagree with it.
 pub fn commit_compaction(
-    table_dir: &Path,
+    store: &dyn LakeStore,
+    table: &str,
     removes: &[String],
     adds: &[Addition],
     keys: &[String],
@@ -743,9 +745,7 @@ pub fn commit_compaction(
     }
     // A fold may resolve every key away (the table is now empty); then it removes files
     // and adds none, which is a state a reader has to be able to see.
-    let log = table_dir.join("_delta_log");
-    std::fs::create_dir_all(&log).map_err(|e| format!("{}: {e}", log.display()))?;
-    let state = read_log(table_dir)?;
+    let state = read_log(store, table)?;
     for path in removes {
         if !state.files.contains(path) {
             return Err(format!("{path} is not in this table's log"));
@@ -768,19 +768,8 @@ pub fn commit_compaction(
     }
     let mut kept: Vec<Add> = Vec::new();
     for addition in adds {
-        let relative = addition
-            .path
-            .strip_prefix(table_dir)
-            .map_err(|_| {
-                format!(
-                    "{}: not inside {}",
-                    addition.path.display(),
-                    table_dir.display()
-                )
-            })?
-            .to_string_lossy()
-            .replace('\\', "/");
-        let summary = file_summary(&addition.path)?;
+        let relative = addition.path.clone();
+        let summary = file_summary(&store.get(&crate::store::table_key(table, &relative))?)?;
         if schema_json(
             &union_columns(&state.schema.clone().unwrap_or_default(), &summary.columns),
             keys,
@@ -788,15 +777,13 @@ pub fn commit_compaction(
         {
             return Err(format!(
                 "{}: the folded file does not carry the table's schema",
-                addition.path.display()
+                addition.path
             ));
         }
         kept.push(Add {
             path: relative,
             partition: addition.partition.clone(),
-            size: std::fs::metadata(&addition.path)
-                .map_err(|e| format!("{}: {e}", addition.path.display()))?
-                .len(),
+            size: addition.size,
             stats: stats_json(&summary),
         });
     }
@@ -825,7 +812,7 @@ pub fn commit_compaction(
     }
 
     let added = kept.len();
-    write_actions(&log, version, &actions, added)
+    write_actions(store, table, version, &actions, added)
 }
 
 /// without opening it; a file whose statistics were not computed gets the row count only.
@@ -856,4 +843,76 @@ fn now_ms() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
+}
+
+/// The lake a table directory sits in, and the table's own name there. A verb given a
+/// directory means exactly this: a local lake one level up, and the directory's name as the
+/// table. The store form is what a bucket uses, and both end in the same code.
+fn lake_at(table_dir: &Path) -> Result<(LocalFs, String), String> {
+    let table = table_dir
+        .file_name()
+        .ok_or_else(|| format!("{}: no table name", table_dir.display()))?
+        .to_string_lossy()
+        .to_string();
+    let root = table_dir
+        .parent()
+        .ok_or_else(|| format!("{}: no lake root", table_dir.display()))?;
+    Ok((LocalFs::new(root), table))
+}
+
+/// [`commit_files`] for a lake that is a directory.
+pub fn commit_files_at(
+    table_dir: &Path,
+    files: &[Addition],
+    keys: &[String],
+) -> Result<Commit, String> {
+    let (store, table) = lake_at(table_dir)?;
+    commit_files(&store, &table, files, keys)
+}
+
+/// [`commit_compaction`] for a lake that is a directory.
+pub fn commit_compaction_at(
+    table_dir: &Path,
+    removes: &[String],
+    adds: &[Addition],
+    keys: &[String],
+) -> Result<Commit, String> {
+    let (store, table) = lake_at(table_dir)?;
+    commit_compaction(&store, &table, removes, adds, keys)
+}
+
+/// [`files_in_order`] for a lake that is a directory.
+pub fn files_in_order_at(table_dir: &Path) -> Result<Vec<String>, String> {
+    let (store, table) = lake_at(table_dir)?;
+    files_in_order(&store, &table)
+}
+
+/// [`live_adds`] for a lake that is a directory.
+pub fn live_adds_at(table_dir: &Path) -> Result<Vec<(String, Partition)>, String> {
+    let (store, table) = lake_at(table_dir)?;
+    live_adds(&store, &table)
+}
+
+/// [`removed_files`] for a lake that is a directory.
+pub fn removed_files_at(table_dir: &Path) -> Result<(Vec<(String, u64)>, u64), String> {
+    let (store, table) = lake_at(table_dir)?;
+    removed_files(&store, &table)
+}
+
+/// [`added_files`] for a lake that is a directory.
+pub fn added_files_at(table_dir: &Path) -> Result<Vec<String>, String> {
+    let (store, table) = lake_at(table_dir)?;
+    added_files(&store, &table)
+}
+
+/// [`next_version`] for a lake that is a directory.
+pub fn next_version_at(table_dir: &Path) -> Result<u64, String> {
+    let (store, table) = lake_at(table_dir)?;
+    next_version(&store, &table)
+}
+
+/// [`schema_string`] for a lake that is a directory.
+pub fn schema_string_at(table_dir: &Path) -> Result<Option<String>, String> {
+    let (store, table) = lake_at(table_dir)?;
+    schema_string(&store, &table)
 }

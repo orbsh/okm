@@ -32,9 +32,9 @@ pub struct VacuumReport {
 /// `keep_versions` counts VERSIONS, not days: the log is the clock here, and a table that
 /// folds once a week has a different calendar from one that folds hourly.
 pub fn vacuum(table_dir: &Path, keep_versions: u64, dry_run: bool) -> Result<VacuumReport, String> {
-    let (gone, latest) = delta::removed_files(table_dir)?;
+    let (gone, latest) = delta::removed_files_at(table_dir)?;
     let floor = latest.saturating_sub(keep_versions);
-    let live = delta::files_in_order(table_dir)?.len();
+    let live = delta::files_in_order_at(table_dir)?.len();
     let mut report = VacuumReport {
         kept: live,
         floor,
