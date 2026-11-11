@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 okm-derive = { path = "../okm-derive" }
 okm-wire = { path = "../okm-wire" }
+okm-value = { path = "../okm-value" }
 serde = { version = "1", features = ["derive"], optional = true }
 serde_json = { version = "1", optional = true }
 thiserror = "2"

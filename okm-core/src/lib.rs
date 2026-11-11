@@ -88,7 +88,8 @@ pub use model::key::{
 pub use model::prefix::{IndexProbe, PrefixProbe, ProbeBytes};
 pub use model::presets::{Count, HighWater, LowAcc, LowWater, ReduceFieldSource, Sum};
 pub use model::reduce::{Reduce, ReduceCodec, ReduceLogic, reduce_get, scan_reduces};
-pub use model::vocab::{Vocab, VocabId};
+pub use model::vocab::Vocab;
+pub use okm_value::Id;
 pub use okm_wire::{OP_DELETE, OP_PUT, OpFrame, OpResponse};
 pub use subscribe::{Event, Op, SinkCell};
 

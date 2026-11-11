@@ -25,7 +25,7 @@ panic 是错误的通道，因为本库只有两类失败，而它们的区别�
      `EdgeNotMember { side, ns, graph_ns }`——图自己的拒绝，原先用 `String`。
    - `Engine(String)`——引擎拒绝，内嵌它自己的原文。
 2. **`Document::from_map` 改为 `try_from_map -> Result<Self>`。** 判据是**有没有这个名字**：缺席的名字取声明默认（append-only 演进规则，与 payload decoder 同一条），出现的名字必须符合声明。
-3. **每个写动词都可失败**——`put`、`upsert_with`、`purge`、`prune_deprecated_slots`、`merge`、`replace`、`save_with_prev_into`、junction 的 `link` / `unlink`，以及 graph 的 `link` / `link_into` / `unlink` / `unlink_into` / `replace_into`。没有写动词会 panic：引擎拒绝是 `Error::Engine`，词表满 `VocabularyExhausted`，调用方的 map 不合声明 `KindMismatch` / `ValueOutOfRange`，边的错 `EdgeAlreadyLive` / `EdgeNotFound` / `EdgeNotMember`。intern 钩子整条链可失败（`Document::__okm_intern`、`VocabCache::id_for`、`put_frame*`）——intern 是一次写里唯一的分配动作，而它能失败。map 的校验发生在任何 op 进入 batch 之前，所以被拒绝的 `merge` / `replace` **什么都没写**——动态半边也一样。
+3. **每个写动词都可失败**——`put`、`upsert_with`、`purge`、`prune_deprecated_slots`、`merge`、`replace`、`save_with_prev_into`、junction 的 `link` / `unlink`，以及 graph 的 `link` / `link_into` / `unlink` / `unlink_into` / `replace_into`。没有写动词会 panic：引擎拒绝是 `Error::Engine`，词表满 `VocabularyExhausted`，调用方的 map 不合声明 `KindMismatch` / `ValueOutOfRange`，边的错 `EdgeAlreadyLive` / `EdgeNotFound` / `EdgeNotMember`。intern 钩子整条链可失败（`Document::__okm_intern`、词表的 `ensure` 与门的 `allocate`、`put_frame*`）——intern 是一次写里唯一的分配动作，而它能失败。map 的校验发生在任何 op 进入 batch 之前，所以被拒绝的 `merge` / `replace` **什么都没写**——动态半边也一样。
 
 ## 否决的备选
 

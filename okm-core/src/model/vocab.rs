@@ -32,60 +32,14 @@ use std::marker::PhantomData;
 
 /// The id width a `Vocab` field spends: big-endian so byte order stays value
 /// order (an index over the id scans in allocation order).
-pub trait VocabId: Copy + Ord + Eq + std::hash::Hash + fmt::Debug + 'static {
-    /// Bytes on the wire (1 for `u8` … 16 for `u128`).
-    const WIDTH: usize;
-    /// The lowest id — every vocabulary starts allocating here.
-    const ZERO: Self;
-    /// Checked increment: `None` when the vocabulary is full.
-    fn succ(self) -> Option<Self>;
-    /// Big-endian wire form, exactly [`VocabId::WIDTH`] bytes.
-    fn to_be(self) -> Vec<u8>;
-    /// The big-endian image, right-aligned in a fixed 16-byte array so the last
-    /// [`VocabId::WIDTH`] bytes ARE the wire form. No allocation, and the
-    /// generated encoders can slice it for any width (`&img[16 - W..]`).
-    fn be16(self) -> [u8; 16];
-    /// Inverse of [`VocabId::to_be`]; `None` on a length or range mismatch.
-    fn from_be(b: &[u8]) -> Option<Self>;
-    /// For messages and tests.
-    fn as_u128(self) -> u128;
-}
-
-macro_rules! vocab_id {
-    ($($t:ty => $w:literal),+ $(,)?) => {$(
-        impl VocabId for $t {
-            const WIDTH: usize = $w;
-            const ZERO: Self = 0;
-            fn succ(self) -> Option<Self> {
-                self.checked_add(1)
-            }
-            fn to_be(self) -> Vec<u8> {
-                self.to_be_bytes().to_vec()
-            }
-            fn be16(self) -> [u8; 16] {
-                let mut out = [0u8; 16];
-                out[16 - $w..].copy_from_slice(&self.to_be_bytes());
-                out
-            }
-            fn from_be(b: &[u8]) -> Option<Self> {
-                if b.len() != $w {
-                    return None;
-                }
-                let mut a = [0u8; $w];
-                a.copy_from_slice(b);
-                Some(<$t>::from_be_bytes(a))
-            }
-            fn as_u128(self) -> u128 {
-                self as u128
-            }
-        }
-    )+};
-}
-
-vocab_id!(u8 => 1, u16 => 2, u32 => 4, u64 => 8, u128 => 16);
+///
+/// The trait itself lives in `okm-value` ([`okm_value::Id`]): the vocabulary is
+/// the crate's, and its id width is part of that vocabulary rather than part of
+/// the store. `Vocab<N>` is still the declared field type.
+use okm_value::Id;
 
 /// An interned categorical label: string in memory, `N`-byte id on the wire.
-pub struct Vocab<N: VocabId = u8> {
+pub struct Vocab<N: Id = u8> {
     /// The label. `None` = decoded from an id and not yet resolved (the deref
     /// step fills it); `Some("")` is a legal, distinct label — not a sentinel.
     name: Option<String>,
@@ -94,7 +48,7 @@ pub struct Vocab<N: VocabId = u8> {
     _n: PhantomData<N>,
 }
 
-impl<N: VocabId> Vocab<N> {
+impl<N: Id> Vocab<N> {
     /// Bytes this field spends per row.
     pub const WIDTH: usize = N::WIDTH;
 
@@ -142,7 +96,7 @@ impl<N: VocabId> Vocab<N> {
     }
 
     /// The id's big-endian image, right-aligned in 16 bytes: the last
-    /// [`VocabId::WIDTH`] bytes are the wire form. Panics when the value was
+    /// [`Id::WIDTH`] bytes are the wire form. Panics when the value was
     /// never interned — a missing id is a write-path bug (the derive's intern
     /// step is what prevents it), never something to paper over with a default.
     pub fn wire16(&self) -> [u8; 16] {
@@ -164,7 +118,7 @@ impl<N: VocabId> Vocab<N> {
     }
 
     /// Inverse of [`to_wire`](Self::to_wire); `b` must be exactly
-    /// [`VocabId::WIDTH`] bytes.
+    /// [`Id::WIDTH`] bytes.
     pub fn from_wire(b: &[u8]) -> Self {
         assert!(
             b.len() == N::WIDTH,
@@ -176,7 +130,7 @@ impl<N: VocabId> Vocab<N> {
     }
 }
 
-impl<N: VocabId> Clone for Vocab<N> {
+impl<N: Id> Clone for Vocab<N> {
     fn clone(&self) -> Self {
         Self {
             name: self.name.clone(),
@@ -186,7 +140,7 @@ impl<N: VocabId> Clone for Vocab<N> {
     }
 }
 
-impl<N: VocabId> Default for Vocab<N> {
+impl<N: Id> Default for Vocab<N> {
     /// The empty label, uninterned. A default `Vocab` encodes only after the
     /// intern step resolves it, exactly like any other built value.
     fn default() -> Self {
@@ -198,7 +152,7 @@ impl<N: VocabId> Default for Vocab<N> {
 /// means by "the same category". Two decoded values without labels compare by
 /// id, and a named value never equals a nameless one (they are not the same
 /// fact: one is resolved, the other is not).
-impl<N: VocabId> PartialEq for Vocab<N> {
+impl<N: Id> PartialEq for Vocab<N> {
     fn eq(&self, other: &Self) -> bool {
         match (&self.name, &other.name) {
             (Some(a), Some(b)) => a == b,
@@ -208,9 +162,9 @@ impl<N: VocabId> PartialEq for Vocab<N> {
     }
 }
 
-impl<N: VocabId> Eq for Vocab<N> {}
+impl<N: Id> Eq for Vocab<N> {}
 
-impl<N: VocabId> fmt::Debug for Vocab<N> {
+impl<N: Id> fmt::Debug for Vocab<N> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match (&self.name, self.id) {
             (Some(n), Some(i)) => write!(f, "Vocab({n:?} = {i:?})"),
@@ -221,13 +175,13 @@ impl<N: VocabId> fmt::Debug for Vocab<N> {
     }
 }
 
-impl<N: VocabId> From<&str> for Vocab<N> {
+impl<N: Id> From<&str> for Vocab<N> {
     fn from(s: &str) -> Self {
         Self::of(s)
     }
 }
 
-impl<N: VocabId> From<String> for Vocab<N> {
+impl<N: Id> From<String> for Vocab<N> {
     fn from(s: String) -> Self {
         Self::of(s)
     }

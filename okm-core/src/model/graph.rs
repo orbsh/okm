@@ -64,7 +64,7 @@ use crate::engine::storage::{Batch, VirtualStorage, scan_suffix_kv};
 use crate::model::index::{DYNAMIC_SLOT, Document, PRIMARY_SLOT, Slot, write_slot};
 use crate::model::key::KeyEncode;
 use crate::model::obj_dynamic::{DynamicValue, decode_named};
-use crate::model::obj_vocab::{PREDICATE_VOCAB, VocabCache};
+use crate::model::obj_vocab::{Faces, PREDICATE_VOCAB, Vocabulary};
 
 /// Fixed face 0x06: out-edge traversal, pair-qualified
 /// (`[src][dst][edge_id]`): prefix on `src` deliberately keeps the "all of a
@@ -288,12 +288,12 @@ fn decode_body(bytes: &[u8]) -> EdgeBody {
 
 /// Engine + graph type = the operation surface of one graph's edge set
 /// (symmetric with a relation collection (ADR-0051)). One ns hosts every entry kind,
-/// dispatched by segment. The `VocabCache` is per-handle state over the
+/// dispatched by segment. The `Vocabulary` is per-handle state over the
 /// graph's PREDICATE VOCABULARY (0x04/0x05) — allocation is single-writer, and a
 /// read-only handle still answers typed scans (the cache loads on probe).
 pub struct Graph<S, E: GraphEncode> {
     store: S,
-    vocab: VocabCache,
+    vocab: Vocabulary<u16>,
     _pd: std::marker::PhantomData<E>,
 }
 
@@ -303,7 +303,7 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
     pub fn new(store: S) -> Self {
         Self {
             store,
-            vocab: VocabCache::new(PREDICATE_VOCAB),
+            vocab: Vocabulary::new(),
             _pd: std::marker::PhantomData,
         }
     }
@@ -356,12 +356,24 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
     /// payload's field-name vocabulary (0x02/0x03): two allocators in one
     /// id space would hand the same id to two names.
     fn predicate_vocab_id(&mut self, predicate: &str) -> crate::error::Result<u16> {
-        self.vocab.id_for(&self.store, E::NS_PREFIX, predicate)
+        let Self { store, vocab, .. } = self;
+        let mut door = Faces::<_, u16>::new(&*store, E::NS_PREFIX, PREDICATE_VOCAB);
+        vocab.ensure(&mut door, predicate)
+    }
+
+    /// The predicate's id if it was ever interned — no allocation. `None` means
+    /// nobody wrote this predicate, so no edge can carry it.
+    fn vocab_lookup(&mut self, predicate: &str) -> crate::error::Result<Option<u16>> {
+        let Self { store, vocab, .. } = self;
+        let mut door = Faces::<_, u16>::new(&*store, E::NS_PREFIX, PREDICATE_VOCAB);
+        vocab.id_of(&mut door, predicate)
     }
 
     /// Resolve predicate id → name for display/diagnostics.
     pub fn predicate_vocab_name(&mut self, id: u16) -> crate::error::Result<Option<String>> {
-        self.vocab.name_for(&self.store, E::NS_PREFIX, id)
+        let Self { store, vocab, .. } = self;
+        let mut door = Faces::<_, u16>::new(&*store, E::NS_PREFIX, PREDICATE_VOCAB);
+        vocab.name_of(&mut door, id)
     }
 
     /// Every predicate this graph has, id-ordered: ONE prefix scan of 0x04.
@@ -492,9 +504,13 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
             return Ok(());
         }
         let body = {
-            let mut dict = VocabCache::new(crate::model::obj_vocab::FIELD_VOCAB);
-            let store = &mut self.store;
-            let mut resolver = |name: &str| dict.id_for(store, E::NS_PREFIX, name);
+            let mut dict = Vocabulary::<u16>::new();
+            let mut door = Faces::<_, u16>::new(
+                &self.store,
+                E::NS_PREFIX,
+                crate::model::obj_vocab::FIELD_VOCAB,
+            );
+            let mut resolver = |name: &str| dict.ensure(&mut door, name);
             crate::model::obj_segment::encode(fields, &mut resolver)?
         };
         batch.put(key, body);
@@ -514,11 +530,16 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
             Some(raw) => raw,
             None => return Ok(None),
         };
-        let mut dict = VocabCache::new(crate::model::obj_vocab::FIELD_VOCAB);
+        let mut dict = Vocabulary::<u16>::new();
+        let mut door = Faces::<_, u16>::new(
+            &self.store,
+            E::NS_PREFIX,
+            crate::model::obj_vocab::FIELD_VOCAB,
+        );
         let mut failed: Option<crate::error::Error> = None;
         let frames = decode_named(
             &raw,
-            &mut |id| match dict.name_for(&self.store, E::NS_PREFIX, id) {
+            &mut |id| match dict.name_of(&mut door, id) {
                 Ok(name) => name,
                 Err(e) => {
                     failed = Some(e);
@@ -534,7 +555,7 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
         }
         let mut out = std::collections::BTreeMap::new();
         for frame in frames {
-            if let Some(name) = dict.name_for(&self.store, E::NS_PREFIX, frame.id)? {
+            if let Some(name) = dict.name_of(&mut door, frame.id)? {
                 out.insert(name, frame.value);
             }
         }
@@ -737,7 +758,7 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
         predicate: &str,
         node: &NodeRef,
     ) -> crate::error::Result<Vec<u64>> {
-        let predicate_vocab_id = match self.vocab.id_get(&self.store, E::NS_PREFIX, predicate)? {
+        let predicate_vocab_id = match self.vocab_lookup(predicate)? {
             Some(id) => id,
             None => return Ok(Vec::new()),
         };
@@ -764,7 +785,7 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
         src: &NodeRef,
         dst: &NodeRef,
     ) -> crate::error::Result<Vec<u64>> {
-        let predicate_vocab_id = match self.vocab.id_get(&self.store, E::NS_PREFIX, predicate)? {
+        let predicate_vocab_id = match self.vocab_lookup(predicate)? {
             Some(id) => id,
             None => return Ok(Vec::new()),
         };
@@ -786,7 +807,7 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
         dst: &NodeRef,
         src: &NodeRef,
     ) -> crate::error::Result<Vec<u64>> {
-        let predicate_vocab_id = match self.vocab.id_get(&self.store, E::NS_PREFIX, predicate)? {
+        let predicate_vocab_id = match self.vocab_lookup(predicate)? {
             Some(id) => id,
             None => return Ok(Vec::new()),
         };
@@ -809,7 +830,7 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
     /// The cost is bytes, not entries: each suffix here carries two endpoints
     /// before the id, where the old face carried the id alone.
     pub fn edges_of_predicate(&mut self, predicate: &str) -> crate::error::Result<Vec<u64>> {
-        let predicate_vocab_id = match self.vocab.id_get(&self.store, E::NS_PREFIX, predicate)? {
+        let predicate_vocab_id = match self.vocab_lookup(predicate)? {
             Some(id) => id,
             None => return Ok(Vec::new()),
         };

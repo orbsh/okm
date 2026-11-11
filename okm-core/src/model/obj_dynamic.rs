@@ -145,8 +145,8 @@ pub fn dyn_kind(v: &DynamicValue) -> &'static str {
 /// does not fit. Used by `from_map` for the unresolved form `to_map` emits (an
 /// id without its label): a silent truncation would point at another label's
 /// id, which is the one thing an id must never do.
-pub fn vocab_id_from_u64<N: crate::model::vocab::VocabId>(v: u64) -> Option<N> {
-    let w = <N as crate::model::vocab::VocabId>::WIDTH;
+pub fn vocab_id_from_u64<N: okm_value::Id>(v: u64) -> Option<N> {
+    let w = <N as okm_value::Id>::WIDTH;
     let mut img = [0u8; 16];
     img[16 - 8..].copy_from_slice(&v.to_be_bytes());
     // Everything left of the width must be zero, otherwise the value does not
@@ -154,7 +154,7 @@ pub fn vocab_id_from_u64<N: crate::model::vocab::VocabId>(v: u64) -> Option<N> {
     if img[..16 - w].iter().any(|b| *b != 0) {
         return None;
     }
-    <N as crate::model::vocab::VocabId>::from_be(&img[16 - w..])
+    <N as okm_value::Id>::from_be(&img[16 - w..])
 }
 
 /// Name resolver: returns the vocabulary id for `name`, allocating through the

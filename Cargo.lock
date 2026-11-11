@@ -2151,6 +2151,7 @@ dependencies = [
  "okm-async",
  "okm-derive",
  "okm-dynamic",
+ "okm-value",
  "okm-wire",
  "parquet",
  "proc-macro2",
@@ -2260,6 +2261,10 @@ dependencies = [
  "okm-core",
  "tokio",
 ]
+
+[[package]]
+name = "okm-value"
+version = "0.1.0"
 
 [[package]]
 name = "okm-vector"

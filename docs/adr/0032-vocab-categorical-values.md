@@ -34,7 +34,7 @@ collection's own vocabulary faces — and every reader resolves them from the
 store.
 
 The vocabulary machinery needed for categorical values already exists:
-`VocabFaces { id_slot, name_slot }` + `VocabCache` (`okm-core/src/model/obj_vocab.rs`),
+`VocabFaces { id_slot, name_slot }` + the vocabulary cache (`okm_value::Vocabulary`, driven through the `Faces` door in `okm-core/src/model/obj_vocab.rs`; ADR-0060 §6),
 allocating first-seen-claims-next, loading both directions lazily, and assuming
 the single-writer discipline the rest of the engine assumes. Two vocabularies
 use it today (field names 0x02/0x03, predicate/kind tokens 0x04/0x05).
@@ -102,7 +102,7 @@ use it today (field names 0x02/0x03, predicate/kind tokens 0x04/0x05).
    `put` interns before encoding (the document clone this costs is paid only by
    tables that declare a `Vocab` field); `save_with_prev_into` interns ahead of the batch, through the engine
    `BatchStore`, so vocabulary growth, the row and its faces land in ONE batch
-   (the discipline `VocabCache::id_for` already follows); `save_into` cannot
+   (the discipline the vocabulary's `ensure` already follows); `save_into` cannot
    intern — it is the encoding-only surface with no store by contract — so it
    requires documents whose `Vocab` fields were already interned through the
    collection. This is the concrete boundary the "encode is a pure function"

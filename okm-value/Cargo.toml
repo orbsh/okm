@@ -1,0 +1,10 @@
+[package]
+name = "okm-value"
+version = "0.1.0"
+edition = "2024"
+description = "Name vocabularies: the label-to-number mapping dynamic segments are written in"
+
+[dependencies]
+
+[lints]
+workspace = true

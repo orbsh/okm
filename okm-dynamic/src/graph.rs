@@ -28,7 +28,7 @@ use okm_core::model::graph::{
     EDGE_IN_SLOT, EDGE_OUT_SLOT, EDGE_PREDICATE_IN_SLOT, EDGE_PREDICATE_OUT_SLOT, NodeRef,
 };
 use okm_core::obj_dynamic::{DynamicValue, decode_named};
-use okm_core::obj_vocab::{FIELD_VOCAB, PREDICATE_VOCAB, VocabCache};
+use okm_core::obj_vocab::{Faces, FIELD_VOCAB, PREDICATE_VOCAB, Vocabulary};
 use okm_core::schema::CollectionSchema;
 use okm_core::storage::{Batch, VirtualStorage, scan_suffix_kv};
 
@@ -50,9 +50,9 @@ pub struct Graph<S> {
     store: S,
     /// Predicate vocabulary (0x04/0x05) — per-handle state, allocation is
     /// single-writer, reads load on probe.
-    predicates: VocabCache,
+    predicates: Vocabulary<u16>,
     /// Payload field-name vocabulary (0x02/0x03) for attribute frames.
-    fields: VocabCache,
+    fields: Vocabulary<u16>,
     ns: Vec<u8>,
     schema: CollectionSchema,
 }
@@ -71,8 +71,8 @@ impl<S: VirtualStorage> Graph<S> {
         );
         Self {
             store,
-            predicates: VocabCache::new(PREDICATE_VOCAB),
-            fields: VocabCache::new(FIELD_VOCAB),
+            predicates: Vocabulary::new(),
+            fields: Vocabulary::new(),
             ns: ns_bytes.to_vec(),
             schema,
         }
@@ -130,9 +130,58 @@ impl<S: VirtualStorage> Graph<S> {
     /// Resolve (or allocate) the predicate id through the graph's KIND
     /// VOCABULARY (0x04/0x05) — first-seen-claims-next, append-only.
     fn predicate_vocab_id(&mut self, predicate: &str) -> Result<u16, String> {
-        self.predicates
-            .id_for(&self.store, &self.ns, predicate)
+        let Self {
+            store,
+            ns,
+            predicates,
+            ..
+        } = self;
+        let mut door = Faces::<_, u16>::new(&*store, ns, PREDICATE_VOCAB);
+        predicates
+            .ensure(&mut door, predicate)
             .map_err(|e| e.to_string())
+    }
+
+    /// The predicate's id if some edge ever carried it — no allocation.
+    fn predicate_vocab_lookup(&mut self, predicate: &str) -> Result<Option<u16>, String> {
+        let Self {
+            store,
+            ns,
+            predicates,
+            ..
+        } = self;
+        let mut door = Faces::<_, u16>::new(&*store, ns, PREDICATE_VOCAB);
+        predicates
+            .id_of(&mut door, predicate)
+            .map_err(|e| e.to_string())
+    }
+
+    /// The predicate's label, or `None` when the vocabulary has no such id.
+    fn predicate_label(&mut self, id: u16) -> Result<Option<String>, String> {
+        let Self {
+            store,
+            ns,
+            predicates,
+            ..
+        } = self;
+        let mut door = Faces::<_, u16>::new(&*store, ns, PREDICATE_VOCAB);
+        predicates
+            .name_of(&mut door, id)
+            .map_err(|e| e.to_string())
+    }
+
+    /// The field name's id, allocating on first sight.
+    fn field_id(&mut self, name: &str) -> Result<u16, String> {
+        let Self { store, ns, fields, .. } = self;
+        let mut door = Faces::<_, u16>::new(&*store, ns, FIELD_VOCAB);
+        fields.ensure(&mut door, name).map_err(|e| e.to_string())
+    }
+
+    /// The field id's name, or `None` when the vocabulary has no such id.
+    fn field_label(&mut self, id: u16) -> Result<Option<String>, String> {
+        let Self { store, ns, fields, .. } = self;
+        let mut door = Faces::<_, u16>::new(&*store, ns, FIELD_VOCAB);
+        fields.name_of(&mut door, id).map_err(|e| e.to_string())
     }
 
     /// Attribute map → nTLV frames (ids via the field vocabulary; values are
@@ -141,7 +190,11 @@ impl<S: VirtualStorage> Graph<S> {
         &mut self,
         attrs: &std::collections::BTreeMap<String, DynamicValue>,
     ) -> Result<Vec<u8>, String> {
-        let mut resolver = |name: &str| self.fields.id_for(&self.store, &self.ns, name);
+        // The segment codec speaks core's error type, so the closure hands it
+        // the vocabulary's own result rather than this facade's string form.
+        let Self { store, ns, fields, .. } = self;
+        let mut door = Faces::<_, u16>::new(&*store, ns, FIELD_VOCAB);
+        let mut resolver = |name: &str| fields.ensure(&mut door, name);
         okm_core::obj_segment::encode(attrs, &mut resolver).map_err(|e| e.to_string())
     }
 
@@ -155,11 +208,7 @@ impl<S: VirtualStorage> Graph<S> {
         // Nested ids resolve through the same mirror; a store failure is parked
         // and raised after the walk (a nested decode has nowhere else to put it).
         let mut failed: Option<String> = None;
-        let frames = decode_named(wire, &mut |id| match self.fields.name_for(
-            &self.store,
-            &self.ns,
-            id,
-        ) {
+        let frames = decode_named(wire, &mut |id| match self.field_label(id) {
             Ok(name) => name,
             Err(e) => {
                 failed = Some(e.to_string());
@@ -171,11 +220,7 @@ impl<S: VirtualStorage> Graph<S> {
         }
         let mut out = std::collections::BTreeMap::new();
         for f in frames {
-            if let Some(name) = self
-                .fields
-                .name_for(&self.store, &self.ns, f.id)
-                .map_err(|e| e.to_string())?
-            {
+            if let Some(name) = self.field_label(f.id)? {
                 out.insert(name, f.value);
             }
         }
@@ -278,8 +323,8 @@ impl<S: VirtualStorage> Graph<S> {
         // through the real store, not the caller's batch), so every pending id
         // became durable the moment it returned Ok — promote, or the next write
         // pays a probe per name for the rest of the handle's life.
-        self.predicates.promote_all();
-        self.fields.promote_all();
+        self.predicates.landed_all();
+        self.fields.landed_all();
         Ok(())
     }
 
@@ -353,11 +398,7 @@ impl<S: VirtualStorage> Graph<S> {
         }
         let after_dst = n1 + n2;
         let predicate_vocab_id = u16::from_be_bytes([body[after_dst], body[after_dst + 1]]);
-        let Some(predicate) = self
-            .predicates
-            .name_for(&self.store, &self.ns, predicate_vocab_id)
-            .map_err(|e| e.to_string())?
-        else {
+        let Some(predicate) = self.predicate_label(predicate_vocab_id)? else {
             // An id whose label is gone: not this graph's edge to describe.
             return Ok(None);
         };
@@ -405,10 +446,7 @@ impl<S: VirtualStorage> Graph<S> {
         predicate: &str,
         node: &NodeRef,
     ) -> Result<Vec<u64>, String> {
-        let predicate_vocab_id = match self
-            .predicates
-            .id_get(&self.store, &self.ns, predicate)
-            .map_err(|e| e.to_string())?
+        let predicate_vocab_id = match self.predicate_vocab_lookup(predicate)?
         {
             Some(id) => id,
             None => return Ok(Vec::new()),
@@ -454,10 +492,7 @@ impl<S: VirtualStorage> Graph<S> {
         src: &NodeRef,
         dst: &NodeRef,
     ) -> Result<Vec<u64>, String> {
-        let predicate_vocab_id = match self
-            .predicates
-            .id_get(&self.store, &self.ns, predicate)
-            .map_err(|e| e.to_string())?
+        let predicate_vocab_id = match self.predicate_vocab_lookup(predicate)?
         {
             Some(id) => id,
             None => return Ok(Vec::new()),
@@ -477,10 +512,7 @@ impl<S: VirtualStorage> Graph<S> {
 
     /// All edges of one predicate (0x06) — the `MATCH ()-[r:has]->()` entry.
     pub fn edges_of_predicate(&mut self, predicate: &str) -> Result<Vec<u64>, String> {
-        let predicate_vocab_id = match self
-            .predicates
-            .id_get(&self.store, &self.ns, predicate)
-            .map_err(|e| e.to_string())?
+        let predicate_vocab_id = match self.predicate_vocab_lookup(predicate)?
         {
             Some(id) => id,
             None => return Ok(Vec::new()),
@@ -517,9 +549,7 @@ impl<S: VirtualStorage> Graph<S> {
 
     /// Predicate id → name (diagnostics surface).
     pub fn predicate_vocab_name(&mut self, id: u16) -> Result<Option<String>, String> {
-        self.predicates
-            .name_for(&self.store, &self.ns, id)
-            .map_err(|e| e.to_string())
+        self.predicate_label(id)
     }
 }
 

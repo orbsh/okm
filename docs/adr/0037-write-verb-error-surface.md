@@ -52,7 +52,7 @@ data enters: the map-facing verbs.
    `VocabularyExhausted`, a caller's map that does not fit the declaration as
    `KindMismatch` / `ValueOutOfRange`, an edge mistake as `EdgeAlreadyLive` /
    `EdgeNotFound` / `EdgeNotMember`. The intern hooks are fallible end to end
-   (`Document::__okm_intern`, `VocabCache::id_for`, `put_frame*`), because
+   (`Document::__okm_intern`, the vocabulary's `ensure` and the door's `allocate`, `put_frame*`), because
    interning is the one allocation a write performs and it can fail. The map is
    validated before any op enters the batch, so a refused `merge` / `replace`
    writes nothing — dynamic half included.

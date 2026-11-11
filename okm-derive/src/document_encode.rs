@@ -1724,7 +1724,7 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> syn::Result<TS2> {
                     Some(s) => ::okm_core::obj_dynamic::DynamicValue::Str(s.to_string()),
                     None => ::okm_core::obj_dynamic::DynamicValue::U64(
                         self.#id.id()
-                            .map(|i| ::okm_core::VocabId::as_u128(i) as u64)
+                            .map(|i| ::okm_core::Id::as_u128(i) as u64)
                             .unwrap_or(0)
                     ),
                 });
@@ -2058,13 +2058,17 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> syn::Result<TS2> {
             let vi_lit = proc_macro2::Literal::u16_suffixed(vi as u16);
             quote! {
                 if let Some(label) = self.#fid.as_str().map(|s| s.to_owned()) {
-                    let mut cache = ::okm_core::obj_vocab::VocabCache::<#d>::new(
+                    let mut door = ::okm_core::obj_vocab::Faces::<_, #d>::new(
+                        &*store,
+                        header,
                         ::okm_core::obj_vocab::data_vocab(#vi_lit),
                     );
+                    let mut vocabulary =
+                        ::okm_core::obj_vocab::Vocabulary::<#d>::new();
                     // A full width (or a refused commit) comes back as an
                     // error, never a wrapped id.
                     self.#fid
-                        .set_id(cache.id_for(&*store, header, &label)?);
+                        .set_id(vocabulary.ensure(&mut door, &label)?);
                 }
             }
         });
@@ -2073,10 +2077,14 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> syn::Result<TS2> {
             quote! {
                 if self.#fid.as_str().is_none() {
                     if let Some(id) = self.#fid.id() {
-                        let mut cache = ::okm_core::obj_vocab::VocabCache::<#d>::new(
+                        let mut door = ::okm_core::obj_vocab::Faces::<_, #d>::new(
+                            store,
+                            &header,
                             ::okm_core::obj_vocab::data_vocab(#vi_lit),
                         );
-                        if let Some(name) = cache.name_for(store, &header, id)? {
+                        let mut vocabulary =
+                            ::okm_core::obj_vocab::Vocabulary::<#d>::new();
+                        if let Some(name) = vocabulary.name_of(&mut door, id)? {
                             self.#fid.set_name(name);
                         }
                     }

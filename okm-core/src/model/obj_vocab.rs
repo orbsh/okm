@@ -1,6 +1,6 @@
-//! Name vocabularies (ADR-0012, ADR-0017 §3, ADR-0032): the run-time,
-//! per-collection bidirectional mapping between a label and its number. Each
-//! vocabulary is two point-lookup faces inside the collection's ns:
+//! Name vocabularies (ADR-0012, ADR-0017 §3, ADR-0032, ADR-0060 §6): the
+//! run-time, per-collection bidirectional mapping between a label and its
+//! number. Each vocabulary is two point-lookup faces inside the collection's ns:
 //!
 //! ```text
 //! label → id:   [ns][0x1/counter][label bytes]   → id (I bytes BE)
@@ -19,42 +19,26 @@
 //! - one data vocabulary per declared `Vocab<N>` field (`data_vocab`), in
 //!   counting families 0x1/0x2, counters continuing in declaration order.
 //!
-//! The face pair and the id width are construction parameters, not a second
-//! allocation algorithm: first-seen-claims-next append-only numbering, the
-//! in-memory mirror, and the load-once discipline are identical everywhere. A
-//! sibling type would duplicate that logic and let the copies drift apart — the
-//! one thing the split exists to prevent is two allocators in one id space.
+//! THE CACHE IS NOT HERE. `okm-value` owns it — both directions, the lazy
+//! probe-before-allocate rule, and the pending window — because it is the same
+//! cache for every vocabulary and because nothing about it is the store's
+//! business (ADR-0060 §6). What stays in this module is what the store's key
+//! layout makes this module's own: the faces, the keys built from them, the
+//! allocation cursor, and [`Faces`] — the four-method door the cache calls
+//! through. Swapping the cache's data structure changes no line here.
 //!
 //! Discipline copied from the ns vocabulary (ADR-0002): append-only — ids are
 //! never reused, never renumbered; a label seen for the first time on the write
 //! path claims the next free number (single-writer allocation, serialized by
 //! the engine mutex — the same boundary a local caller's `&mut self` provides).
 //! Exhausting the declared width is a loud error, never a wrap.
-//!
-//! The cache mirrors both directions in memory, and a `Collection` keeps ONE
-//! for its own lifetime: a fresh cache per operation paid one engine probe per
-//! dynamic field per write AND per read, which is the dynamic segment's
-//! dominant cost (the frame walk itself is a few hundred bytes). Two
-//! consequences are part of the contract:
-//!
-//! - The mirror's quick path (label → id without a probe) assumes one writer
-//!   per table: ids are append-only, so two writers can only disagree about a
-//!   label each of them allocated. Sequential handles on one engine interleave
-//!   safely (the allocation cursor is read from the store every time —
-//!   `take_next`); two writers allocating CONCURRENTLY race on
-//!   that cursor, which no amount of in-memory caching can fix.
-//! - An allocated id is not evidence until the commit carrying its name key
-//!   lands (`pending`): a refused commit would otherwise leave the mirror
-//!   naming an id no reader can resolve, and a later write would emit that id
-//!   without rewriting the vocabulary entry.
 
 use crate::engine::storage::{Batch, VirtualStorage, scan_suffix_kv};
 use crate::model::index::{
     FIELD_VOCAB_ID_SLOT, FIELD_VOCAB_NAME_SLOT, PREDICATE_VOCAB_ID_SLOT, PREDICATE_VOCAB_NAME_SLOT,
     Slot, segment, slot, write_slot,
 };
-use crate::model::vocab::VocabId;
-use std::collections::HashMap;
+pub use okm_value::{Id, Names, Vocabulary};
 
 /// The pair of faces one vocabulary occupies. Numbers are structural
 /// (ADR-0030): a vocabulary is a pair of counting-family faces, never a band
@@ -114,6 +98,22 @@ pub fn cursor_key(header: &[u8], faces: VocabFaces) -> Vec<u8> {
     key
 }
 
+/// The key naming `label` in a vocabulary's label→id face.
+pub fn name_key(header: &[u8], faces: VocabFaces, label: &str) -> Vec<u8> {
+    let mut key = header.to_vec();
+    write_slot(&mut key, faces.name_slot);
+    key.extend_from_slice(label.as_bytes());
+    key
+}
+
+/// The key naming `id` in a vocabulary's id→label face.
+pub fn id_key(header: &[u8], faces: VocabFaces, id: impl Id) -> Vec<u8> {
+    let mut key = header.to_vec();
+    write_slot(&mut key, faces.id_slot);
+    key.extend_from_slice(&id.be_bytes());
+    key
+}
+
 /// Point lookup of a label from raw id bytes, for readers that keep no cache
 /// (the dynamic path): one engine probe, and `None` when the vocabulary has no
 /// such id — a reader never invents a label.
@@ -151,11 +151,21 @@ pub fn vocab_id<S: VirtualStorage + ?Sized>(
     // Allocation can fail (a full width, a refused commit), so the answer is
     // `Result<Option<_>>`: `None` stays the schema/bridge disagreement.
     Ok(Some(match width {
-        1 => VocabId::to_be(VocabCache::<u8>::new(faces).id_for(store, header, label)?),
-        2 => VocabId::to_be(VocabCache::<u16>::new(faces).id_for(store, header, label)?),
-        4 => VocabId::to_be(VocabCache::<u32>::new(faces).id_for(store, header, label)?),
-        8 => VocabId::to_be(VocabCache::<u64>::new(faces).id_for(store, header, label)?),
-        16 => VocabId::to_be(VocabCache::<u128>::new(faces).id_for(store, header, label)?),
+        1 => Vocabulary::<u8>::new()
+            .ensure(&mut Faces::<_, u8>::new(store, header, faces), label)?
+            .be_bytes(),
+        2 => Vocabulary::<u16>::new()
+            .ensure(&mut Faces::<_, u16>::new(store, header, faces), label)?
+            .be_bytes(),
+        4 => Vocabulary::<u32>::new()
+            .ensure(&mut Faces::<_, u32>::new(store, header, faces), label)?
+            .be_bytes(),
+        8 => Vocabulary::<u64>::new()
+            .ensure(&mut Faces::<_, u64>::new(store, header, faces), label)?
+            .be_bytes(),
+        16 => Vocabulary::<u128>::new()
+            .ensure(&mut Faces::<_, u128>::new(store, header, faces), label)?
+            .be_bytes(),
         _ => return Ok(None),
     }))
 }
@@ -172,212 +182,27 @@ pub const PREDICATE_VOCAB: VocabFaces = VocabFaces {
     name_slot: PREDICATE_VOCAB_NAME_SLOT,
 };
 
-/// One vocabulary cache, bound to one ns segment, one face triple, and one id
-/// width `I`.
+/// The store door for one vocabulary: the ns header, the two faces, and a
+/// store to probe.
 ///
-/// The hot path never scans. A write probes the label face (a pending batch
-/// counts — `BatchStore::get` answers from its ops), reads the cursor, and
-/// commits three point writes; a read probes the id face. The in-memory maps are
-/// a per-call memo, NOT a loaded snapshot: loading the vocabulary on first touch
-/// cost a full two-face scan per `put`, because the derive builds one cache per
-/// field per call.
-#[derive(Debug)]
-pub struct VocabCache<I: VocabId = u16> {
+/// This is the only place that knows a vocabulary is made of keys. The cache in
+/// `okm-value` calls it on a miss and never learns what a slot is; a different
+/// key layout would mean a different door here and no change there.
+pub struct Faces<'a, S: ?Sized, I: Id> {
+    store: &'a S,
+    header: &'a [u8],
     faces: VocabFaces,
-    by_id: HashMap<I, String>,
-    by_name: HashMap<String, I>,
-    /// Labels whose allocation this cache has not WATCHED land: the id was
-    /// written into a caller's batch, and a refused commit leaves no vocabulary
-    /// entry behind. `id_for` probes for these instead of trusting the mirror —
-    /// one extra probe, never a frame naming an id no reader can resolve. The
-    /// entry keeps the label's NAME KEY so a commit can promote exactly the ids
-    /// whose write it carried ([`Self::pending_in`]).
-    pending: HashMap<String, (I, Vec<u8>)>,
+    id: core::marker::PhantomData<I>,
 }
 
-impl<I: VocabId> VocabCache<I> {
-    pub fn new(faces: VocabFaces) -> Self {
+impl<'a, S: VirtualStorage + ?Sized, I: Id> Faces<'a, S, I> {
+    pub fn new(store: &'a S, header: &'a [u8], faces: VocabFaces) -> Self {
         Self {
+            store,
+            header,
             faces,
-            by_id: HashMap::new(),
-            by_name: HashMap::new(),
-            pending: HashMap::new(),
+            id: core::marker::PhantomData,
         }
-    }
-
-    fn name_key(&self, header: &[u8], label: &str) -> Vec<u8> {
-        let mut key = header.to_vec();
-        write_slot(&mut key, self.faces.name_slot);
-        key.extend_from_slice(label.as_bytes());
-        key
-    }
-
-    fn id_key(&self, header: &[u8], id: I) -> Vec<u8> {
-        let mut key = header.to_vec();
-        write_slot(&mut key, self.faces.id_slot);
-        key.extend_from_slice(&id.to_be());
-        key
-    }
-
-    /// The face-level singleton: the id face's prefix with NO id suffix. Every
-    /// real entry of that face carries exactly `I::WIDTH` bytes after the slot,
-    /// so a zero-length key is not expressible as data. Delegates to
-    /// [`cursor_key`] — the same definition the dynamic mirror and any host
-    /// writer use.
-    fn cursor_key(&self, header: &[u8]) -> Vec<u8> {
-        cursor_key(header, self.faces)
-    }
-
-    /// Look up (or allocate) the id for `label`. `header` = the collection's key
-    /// header (`[ns]`) — vocabulary keys live in the same ns segment as the data
-    /// they name. Exhausting the width is an error, never a wrap: a wrapped id
-    /// names another label forever.
-    pub fn id_for<S: VirtualStorage + ?Sized>(
-        &mut self,
-        store: &S,
-        header: &[u8],
-        label: &str,
-    ) -> crate::error::Result<I> {
-        // Known AND durable? No probe at all. A label in `pending` falls
-        // through on purpose: its write may have been refused, so the mirror is
-        // not evidence yet.
-        if !self.pending.contains_key(label)
-            && let Some(id) = self.by_name.get(label)
-        {
-            return Ok(*id);
-        }
-
-        // Already interned? ONE point probe — no scan, and through a BatchStore
-        // it sees a label this same batch allocated earlier. A hit does NOT
-        // clear `pending`: through a batch view it may be this batch's own
-        // uncommitted write.
-        let name_key = self.name_key(header, label);
-        if let Some(id) = store.get(&name_key)?.and_then(|raw| I::from_be(&raw)) {
-            self.remember(id, label);
-            return Ok(id);
-        }
-
-        let id = self.take_next(store, header)?;
-        let next = match id.succ() {
-            Some(next) => next,
-            None => {
-                return Err(crate::error::Error::VocabularyExhausted {
-                    width: I::WIDTH,
-                    next: id.as_u128() + 1,
-                });
-            }
-        };
-
-        // ONE batch, three point writes: label → id, id → label, and the bumped
-        // cursor. Through `BatchStore` the batch is the CALLER's batch, so a
-        // batch writer gets vocabulary growth, its row and its faces atomically.
-        let mut batch = Batch::default();
-        let id_key = self.id_key(header, id);
-        batch.put(name_key.clone(), id.to_be());
-        batch.put(id_key, label.as_bytes().to_vec());
-        batch.put(self.cursor_key(header), next.to_be());
-        store.commit_batch(batch)?;
-
-        self.remember(id, label);
-        // Not evidence yet: a BatchStore commit above only STAGED the write.
-        // The commit that carries `name_key` promotes it ([`Self::pending_in`]).
-        self.pending.insert(label.to_owned(), (id, name_key));
-        Ok(id)
-    }
-
-    /// Resolve an id to its label. One point probe (memoized); an id the
-    /// vocabulary does not know yields `None` — the caller leaves the value
-    /// unresolved rather than inventing a name.
-    pub fn name_for<S: VirtualStorage + ?Sized>(
-        &mut self,
-        store: &S,
-        header: &[u8],
-        id: I,
-    ) -> crate::error::Result<Option<String>> {
-        if let Some(name) = self.by_id.get(&id) {
-            return Ok(Some(name.clone()));
-        }
-        let raw = match store.get(&self.id_key(header, id))? {
-            Some(raw) => raw,
-            None => return Ok(None),
-        };
-        // Bytes that are not a label: the entry is corrupt, and an unknown id
-        // is the answer the caller already handles (never an invented name).
-        let Ok(name) = String::from_utf8(raw) else {
-            return Ok(None);
-        };
-        self.remember(id, &name);
-        Ok(Some(name))
-    }
-
-    /// Non-allocating label → id probe. One point probe (memoized).
-    pub fn id_get<S: VirtualStorage + ?Sized>(
-        &mut self,
-        store: &S,
-        header: &[u8],
-        label: &str,
-    ) -> crate::error::Result<Option<I>> {
-        if let Some(id) = self.by_name.get(label) {
-            return Ok(Some(*id));
-        }
-        let raw = match store.get(&self.name_key(header, label))? {
-            Some(raw) => raw,
-            None => return Ok(None),
-        };
-        let Some(id) = I::from_be(&raw) else {
-            return Ok(None);
-        };
-        self.remember(id, label);
-        Ok(Some(id))
-    }
-
-    /// How many allocations this cache has not watched land (see `pending`).
-    pub fn pending_len(&self) -> usize {
-        self.pending.len()
-    }
-
-    /// The pending ids whose vocabulary write IS in `ops` — the promotion
-    /// candidates for a commit that is ABOUT to land. Call it before the commit
-    /// (the batch is consumed by it) and [`promote`](Self::promote) with the
-    /// answer only after it returned `Ok`: a refused commit promotes nothing,
-    /// and its labels keep probing (correct, one probe slower).
-    pub fn pending_in(&self, ops: &[(Vec<u8>, Option<Vec<u8>>)]) -> Vec<I> {
-        if self.pending.is_empty() {
-            return Vec::new();
-        }
-        self.pending
-            .values()
-            .filter(|(_, name_key)| {
-                ops.iter()
-                    .any(|(k, v)| v.is_some() && k.as_slice() == name_key.as_slice())
-            })
-            .map(|(id, _)| *id)
-            .collect()
-    }
-
-    /// Trust these ids: the commit that carried their vocabulary entries
-    /// returned `Ok`, so the mirror is now evidence for them.
-    pub fn promote(&mut self, ids: &[I]) {
-        if ids.is_empty() {
-            return;
-        }
-        self.pending.retain(|_, (id, _)| !ids.contains(id));
-    }
-
-    /// Trust EVERY pending id at once. Valid only on a store that commits each
-    /// allocation IMMEDIATELY (no batch staging): there a successful `id_for`
-    /// has already made every entry durable, so nothing is waiting on a commit
-    /// to observe. The graph's write path is that shape (its `id_for` calls take
-    /// the real store, not the caller's batch); `Collection` and
-    /// `DynamicCollection` stage vocabulary growth into a caller's batch and
-    /// promote with [`Self::pending_in`] + [`Self::promote`] instead.
-    pub fn promote_all(&mut self) {
-        self.pending.clear();
-    }
-
-    fn remember(&mut self, id: I, label: &str) {
-        self.by_id.insert(id, label.to_owned());
-        self.by_name.insert(label.to_owned(), id);
     }
 
     /// The next id to hand out: the cursor entry when the store has one, else —
@@ -387,41 +212,33 @@ impl<I: VocabId> VocabCache<I> {
     /// legacy vocabulary falls through to the one-time max + 1 scan, and the
     /// allocation writes the cursor that retires that path forever.
     ///
-    /// The cursor is read EVERY time, never cached on the mirror: a second
-    /// handle on the same table (two `Collection`s, or the dynamic facade beside
-    /// a typed one) allocates from the same counter, and a cached watermark
-    /// would hand out an id the other handle just took. One probe per NEW label
-    /// is the whole cost — labels are allocated once, ever.
-    fn take_next<S: VirtualStorage + ?Sized>(
-        &self,
-        store: &S,
-        header: &[u8],
-    ) -> crate::error::Result<I> {
-        let next = match store
-            .get(&self.cursor_key(header))?
+    /// The cursor is read EVERY time, never cached: a second handle on the same
+    /// table allocates from the same counter, and a cached watermark would hand
+    /// out an id the other handle just took. One probe per NEW label is the
+    /// whole cost — labels are allocated once, ever.
+    fn take_next(&self) -> crate::error::Result<I> {
+        let next = match self
+            .store
+            .get(&cursor_key(self.header, self.faces))?
             .and_then(|raw| I::from_be(&raw))
         {
             Some(cursor) => cursor,
             None => {
-                if store.get(&self.id_key(header, I::ZERO))?.is_none() {
+                if self.store.get(&id_key(self.header, self.faces, I::ZERO))?.is_none() {
                     I::ZERO
                 } else {
-                    self.scan_max_plus_one(store, header)?
+                    self.scan_max_plus_one()?
                 }
             }
         };
         Ok(next)
     }
 
-    fn scan_max_plus_one<S: VirtualStorage + ?Sized>(
-        &self,
-        store: &S,
-        header: &[u8],
-    ) -> crate::error::Result<I> {
-        let mut prefix = header.to_vec();
+    fn scan_max_plus_one(&self) -> crate::error::Result<I> {
+        let mut prefix = self.header.to_vec();
         write_slot(&mut prefix, self.faces.id_slot);
         let mut next = I::ZERO;
-        for (suffix, _) in scan_suffix_kv(store, &prefix)? {
+        for (suffix, _) in scan_suffix_kv(self.store, &prefix)? {
             if let Some(id) = I::from_be(&suffix)
                 && let Some(after) = id.succ()
             {
@@ -430,6 +247,94 @@ impl<I: VocabId> VocabCache<I> {
         }
         Ok(next)
     }
+}
+
+impl<S: VirtualStorage + ?Sized, I: Id> Names<I> for Faces<'_, S, I> {
+    type Error = crate::error::Error;
+
+    fn scan(&mut self) -> crate::error::Result<Vec<(String, I)>> {
+        let mut prefix = self.header.to_vec();
+        write_slot(&mut prefix, self.faces.id_slot);
+        let mut pairs = Vec::new();
+        for (suffix, label) in scan_suffix_kv(self.store, &prefix)? {
+            let (Some(id), Ok(label)) = (I::from_be(&suffix), String::from_utf8(label)) else {
+                // A torn or foreign entry: it names nothing a reader could use,
+                // so it contributes no pair rather than a wrong one.
+                continue;
+            };
+            pairs.push((label, id));
+        }
+        Ok(pairs)
+    }
+
+    fn name_id(&mut self, label: &str) -> crate::error::Result<Option<I>> {
+        // Through a `BatchStore` this sees a label the same batch allocated
+        // earlier, which is why a pending label's probe is not wasted.
+        Ok(self
+            .store
+            .get(&name_key(self.header, self.faces, label))?
+            .and_then(|raw| I::from_be(&raw)))
+    }
+
+    fn id_name(&mut self, id: I) -> crate::error::Result<Option<String>> {
+        let raw = match self.store.get(&id_key(self.header, self.faces, id))? {
+            Some(raw) => raw,
+            None => return Ok(None),
+        };
+        // Bytes that are not a label: the entry is corrupt, and an unknown id
+        // is the answer the caller already handles (never an invented name).
+        Ok(String::from_utf8(raw).ok())
+    }
+
+    fn allocate(&mut self, label: &str) -> crate::error::Result<I> {
+        let id = self.take_next()?;
+        let next = match id.succ() {
+            Some(next) => next,
+            None => {
+                return Err(crate::error::Error::VocabularyExhausted {
+                    width: I::WIDTH,
+                    next: id.as_u128() + 1,
+                });
+            }
+        };
+        // ONE batch, three point writes: label → id, id → label, and the bumped
+        // cursor. Through `BatchStore` the batch is the CALLER's batch, so a
+        // batch writer gets vocabulary growth, its row and its faces atomically.
+        let mut batch = Batch::default();
+        batch.put(name_key(self.header, self.faces, label), id.be_bytes());
+        batch.put(id_key(self.header, self.faces, id), label.as_bytes().to_vec());
+        batch.put(cursor_key(self.header, self.faces), next.be_bytes());
+        self.store.commit_batch(batch)?;
+        Ok(id)
+    }
+}
+
+/// The pending ids whose label key IS in `ops` — the promotion candidates for a
+/// commit that is about to land. Call it before the commit (the batch is
+/// consumed by it) and [`Vocabulary::landed`] with the answer only after it
+/// returned `Ok`: a refused commit promotes nothing, and its labels keep probing
+/// (correct, one probe slower).
+///
+/// The set of pending labels is the cache's; which key a label lands on is this
+/// module's. That is why the matching happens here and not in `okm-value`.
+pub fn pending_in<I: Id>(
+    vocabulary: &Vocabulary<I>,
+    header: &[u8],
+    faces: VocabFaces,
+    ops: &[(Vec<u8>, Option<Vec<u8>>)],
+) -> Vec<I> {
+    if vocabulary.pending_len() == 0 {
+        return Vec::new();
+    }
+    vocabulary
+        .pending()
+        .filter(|(label, _)| {
+            let key = name_key(header, faces, label);
+            ops.iter()
+                .any(|(written, value)| value.is_some() && written == &key)
+        })
+        .map(|(_, id)| id)
+        .collect()
 }
 
 // The engine-backed half of this module's tests needs a real store, and `test_engine` only
@@ -452,10 +357,11 @@ mod tests {
     #[test]
     fn allocates_sequentially_and_is_cached() {
         let store = MemStore::new();
-        let mut d = VocabCache::<u16>::new(FIELD_VOCAB);
-        let a = d.id_for(&store, HEADER, "alpha").unwrap();
-        let b = d.id_for(&store, HEADER, "beta").unwrap();
-        let a2 = d.id_for(&store, HEADER, "alpha").unwrap();
+        let mut door = Faces::<_, u16>::new(&store, HEADER, FIELD_VOCAB);
+        let mut d = Vocabulary::<u16>::new();
+        let a = d.ensure(&mut door, "alpha").unwrap();
+        let b = d.ensure(&mut door, "beta").unwrap();
+        let a2 = d.ensure(&mut door, "alpha").unwrap();
         assert_eq!(
             (a, b, a2),
             (0, 1, 0),
@@ -482,17 +388,16 @@ mod tests {
     #[test]
     fn the_two_vocabularies_never_share_an_id_space() {
         let store = MemStore::new();
-        let mut fields = VocabCache::<u16>::new(FIELD_VOCAB);
-        let mut kinds = VocabCache::<u16>::new(PREDICATE_VOCAB);
+        let mut fields = Vocabulary::<u16>::new();
+        let mut kinds = Vocabulary::<u16>::new();
         // The same label allocates in both; the same number names two
         // different things — that is precisely what the split permits.
-        assert_eq!(fields.id_for(&store, HEADER, "since").unwrap(), 0);
-        assert_eq!(kinds.id_for(&store, HEADER, "has").unwrap(), 0);
-        assert_eq!(
-            fields.name_for(&store, HEADER, 0).unwrap().unwrap(),
-            "since"
-        );
-        assert_eq!(kinds.name_for(&store, HEADER, 0).unwrap().unwrap(), "has");
+        let mut fd = Faces::<_, u16>::new(&store, HEADER, FIELD_VOCAB);
+        let mut kd = Faces::<_, u16>::new(&store, HEADER, PREDICATE_VOCAB);
+        assert_eq!(fields.ensure(&mut fd, "since").unwrap(), 0);
+        assert_eq!(kinds.ensure(&mut kd, "has").unwrap(), 0);
+        assert_eq!(fields.name_of(&mut fd, 0).unwrap().unwrap(), "since");
+        assert_eq!(kinds.name_of(&mut kd, 0).unwrap().unwrap(), "has");
         // …and they land on different faces.
         assert_eq!(
             store
@@ -514,25 +419,27 @@ mod tests {
     fn fresh_cache_loads_from_engine_and_resumes_numbering() {
         let store = MemStore::new();
         {
-            let mut d = VocabCache::<u16>::new(PREDICATE_VOCAB);
-            d.id_for(&store, HEADER, "one").unwrap();
-            d.id_for(&store, HEADER, "two").unwrap();
+            let mut d = Vocabulary::<u16>::new();
+            let mut door = Faces::<_, u16>::new(&store, HEADER, PREDICATE_VOCAB);
+            d.ensure(&mut door, "one").unwrap();
+            d.ensure(&mut door, "two").unwrap();
         }
         // A brand-new cache (process restart) resumes after the max.
-        let mut d2 = VocabCache::<u16>::new(PREDICATE_VOCAB);
-        assert_eq!(d2.name_for(&store, HEADER, 0).unwrap().unwrap(), "one");
-        assert_eq!(d2.name_for(&store, HEADER, 1).unwrap().unwrap(), "two");
-        let fresh = d2.id_for(&store, HEADER, "three").unwrap();
+        let mut d2 = Vocabulary::<u16>::new();
+        let mut door = Faces::<_, u16>::new(&store, HEADER, PREDICATE_VOCAB);
+        assert_eq!(d2.name_of(&mut door, 0).unwrap().unwrap(), "one");
+        assert_eq!(d2.name_of(&mut door, 1).unwrap().unwrap(), "two");
+        let fresh = d2.ensure(&mut door, "three").unwrap();
         assert_eq!(fresh, 2, "numbering resumes after the loaded max");
         // A read-only handle answers without the caller priming anything.
-        let mut d3 = VocabCache::<u16>::new(PREDICATE_VOCAB);
-        assert_eq!(d3.id_get(&store, HEADER, "two").unwrap(), Some(1));
+        let mut d3 = Vocabulary::<u16>::new();
+        assert_eq!(d3.id_of(&mut door, "two").unwrap(), Some(1));
     }
 
     #[test]
     fn a_sparse_seeded_id_still_reads_back() {
         let store = MemStore::new();
-        let mut d = VocabCache::<u16>::new(FIELD_VOCAB);
+        let mut d = Vocabulary::<u16>::new();
         // Seed a high id directly, then read it through the cache.
         let mut batch = Batch::default();
         batch.put(
@@ -544,7 +451,8 @@ mod tests {
             0x1234u16.to_be_bytes().to_vec(),
         );
         let _ = store.commit_batch(batch);
-        assert_eq!(d.name_for(&store, HEADER, 0x1234).unwrap().unwrap(), "big");
+        let mut door = Faces::<_, u16>::new(&store, HEADER, FIELD_VOCAB);
+        assert_eq!(d.name_of(&mut door, 0x1234).unwrap().unwrap(), "big");
     }
 
     #[test]
@@ -563,31 +471,31 @@ mod tests {
         // Two fields no longer share an id space: the same number in two
         // fields names two different labels.
         let store = MemStore::new();
-        let mut status = VocabCache::<u8>::new(data_vocab(0));
-        let mut color = VocabCache::<u8>::new(data_vocab(1));
-        assert_eq!(status.id_for(&store, HEADER, "active").unwrap(), 0);
-        assert_eq!(color.id_for(&store, HEADER, "red").unwrap(), 0);
-        assert_eq!(
-            status.name_for(&store, HEADER, 0).unwrap().unwrap(),
-            "active"
-        );
-        assert_eq!(color.name_for(&store, HEADER, 0).unwrap().unwrap(), "red");
+        let mut status = Vocabulary::<u8>::new();
+        let mut color = Vocabulary::<u8>::new();
+        let mut sd = Faces::<_, u8>::new(&store, HEADER, data_vocab(0));
+        let mut cd = Faces::<_, u8>::new(&store, HEADER, data_vocab(1));
+        assert_eq!(status.ensure(&mut sd, "active").unwrap(), 0);
+        assert_eq!(color.ensure(&mut cd, "red").unwrap(), 0);
+        assert_eq!(status.name_of(&mut sd, 0).unwrap().unwrap(), "active");
+        assert_eq!(color.name_of(&mut cd, 0).unwrap().unwrap(), "red");
     }
 
     #[test]
     fn a_u8_vocabulary_stops_after_256_labels() {
         let store = MemStore::new();
-        let mut d = VocabCache::<u8>::new(data_vocab(0));
+        let mut d = Vocabulary::<u8>::new();
+        let mut door = Faces::<_, u8>::new(&store, HEADER, data_vocab(0));
         // Ids 0..=254 fit: allocation needs `succ()` to exist so the cursor can
         // be bumped, so the last usable id is one short of the width. The 256th
         // label is refused — an error, not a wrap and not a panic (ADR-0037: a
         // write verb reports, it does not abort the process).
         for i in 0..=254u16 {
-            d.id_for(&store, HEADER, &format!("label-{i}"))
+            d.ensure(&mut door, &format!("label-{i}"))
                 .expect("ids 0..=254 all fit");
         }
         let err = d
-            .id_for(&store, HEADER, "label-255")
+            .ensure(&mut door, "label-255")
             .expect_err("a u8 vocabulary is full");
         assert!(
             matches!(
@@ -601,15 +509,16 @@ mod tests {
     #[test]
     fn an_allocated_id_is_only_evidence_after_the_commit_carrying_it() {
         let store = MemStore::new();
-        let mut d = VocabCache::<u16>::new(FIELD_VOCAB);
-        assert_eq!(d.id_for(&store, HEADER, "alpha").unwrap(), 0);
+        let mut d = Vocabulary::<u16>::new();
+        let mut door = Faces::<_, u16>::new(&store, HEADER, FIELD_VOCAB);
+        assert_eq!(d.ensure(&mut door, "alpha").unwrap(), 0);
         assert_eq!(d.pending_len(), 1, "an allocation is not evidence yet");
 
         // A commit that does NOT carry the name key promotes nothing — which is
         // exactly what a caller's batch that never landed looks like.
         let mut other = Batch::default();
         other.put(b"elsewhere".to_vec(), vec![1]);
-        assert!(d.pending_in(&other.ops).is_empty());
+        assert!(pending_in(&d, HEADER, FIELD_VOCAB, &other.ops).is_empty());
         assert_eq!(d.pending_len(), 1);
 
         // The commit that carries it does.
@@ -618,9 +527,9 @@ mod tests {
             key(HEADER, FIELD_VOCAB_NAME_SLOT, b"alpha"),
             0u16.to_be_bytes().to_vec(),
         );
-        let promoted = d.pending_in(&commit.ops);
+        let promoted = pending_in(&d, HEADER, FIELD_VOCAB, &commit.ops);
         assert_eq!(promoted, vec![0]);
-        d.promote(&promoted);
+        d.landed(&promoted);
         assert_eq!(d.pending_len(), 0);
     }
 
@@ -630,28 +539,29 @@ mod tests {
         // says so": delete the engine's entry behind the cache's back. A probe
         // re-allocates; the fast path answers the mirror.
         let store = MemStore::new();
-        let mut d = VocabCache::<u16>::new(FIELD_VOCAB);
-        assert_eq!(d.id_for(&store, HEADER, "alpha").unwrap(), 0);
+        let mut d = Vocabulary::<u16>::new();
+        let mut door = Faces::<_, u16>::new(&store, HEADER, FIELD_VOCAB);
+        assert_eq!(d.ensure(&mut door, "alpha").unwrap(), 0);
         store
             .del(&key(HEADER, FIELD_VOCAB_NAME_SLOT, b"alpha"))
             .unwrap();
         // Still pending: the cache asks the store, the store has nothing, so a
         // NEW id comes back — the first answer was never trusted.
-        assert_eq!(d.id_for(&store, HEADER, "alpha").unwrap(), 1);
+        assert_eq!(d.ensure(&mut door, "alpha").unwrap(), 1);
 
         // Promoted: no probe, so the id survives the removal (a probe would
         // have handed out the next free id instead).
-        let id = d.id_for(&store, HEADER, "gamma").unwrap();
+        let id = d.ensure(&mut door, "gamma").unwrap();
         let mut commit = Batch::default();
         commit.put(
             key(HEADER, FIELD_VOCAB_NAME_SLOT, b"gamma"),
             id.to_be_bytes().to_vec(),
         );
-        let promoted = d.pending_in(&commit.ops);
-        d.promote(&promoted);
+        let promoted = pending_in(&d, HEADER, FIELD_VOCAB, &commit.ops);
+        d.landed(&promoted);
         store
             .del(&key(HEADER, FIELD_VOCAB_NAME_SLOT, b"gamma"))
             .unwrap();
-        assert_eq!(d.id_for(&store, HEADER, "gamma").unwrap(), id);
+        assert_eq!(d.ensure(&mut door, "gamma").unwrap(), id);
     }
 }

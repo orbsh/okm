@@ -24,7 +24,7 @@ intern、读路径补名、每个声明字段一对词表），`Enum<T>` / `Enum
 `9`，而只有编译侧能说出 `9` 是什么。与之对照，字段名早就是数据——驻留在 collection
 自己的词汇表面里，任何读者都能从 store 里解出名字。
 
-承载分类值所需的机器已经存在：`VocabFaces { id_slot, name_slot }` + `VocabCache`
+承载分类值所需的机器已经存在：`VocabFaces { id_slot, name_slot }` + 那份词表缓存（`okm_value::Vocabulary`，经 `okm-core/src/model/obj_vocab.rs` 的 `Faces` 门驱动；ADR-0060 §6）
 （`okm-core/src/model/obj_vocab.rs`），先见者得号、双向懒加载、依赖单写者纪律。
 今天有两个词汇表在用它（字段名 0x02/0x03、谓词/节点种类 token 0x04/0x05）。
 
@@ -73,7 +73,7 @@ intern、读路径补名、每个声明字段一对词表），`Enum<T>` / `Enum
 
 4. **intern 是写路径的一步，由 batch 路径承载。** `put` 在编码前 intern（这次 clone 只由
    声明了 `Vocab` 字段的表支付）；`save_with_prev_into` 在批之前经引擎 intern，于是词汇表
-   增长、行与面落在**同一个批**里（`VocabCache::id_for` 本来就是这个纪律）；`save_into`
+   增长、行与面落在**同一个批**里（词表的 `ensure` 本来就是这个纪律）；`save_into`
    无法 intern——它是契约上的"只编码"面、手里没有 store——所以它要求调用方已经通过
    collection 把 `Vocab` 字段 intern 过。这就是"编码是纯函数"这条规则弯折的具体位置，
    弯法与动态段早已存在的那处相同。

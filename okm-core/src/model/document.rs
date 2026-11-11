@@ -42,7 +42,7 @@ pub struct Collection<S, K: KeyEncode, R: Document<Key = K>> {
     /// `&self`. `!Sync` either way, which is the single-writer discipline the
     /// vocabulary already assumes; a second process on the same table is
     /// outside it (see `model::obj_vocab`).
-    fields_vocab: std::cell::RefCell<VocabCache<u16>>,
+    fields_vocab: std::cell::RefCell<Vocabulary<u16>>,
     _marker: std::marker::PhantomData<(K, R)>,
 }
 
@@ -56,7 +56,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         Self {
             store,
             epoch: std::cell::Cell::new(0),
-            fields_vocab: std::cell::RefCell::new(VocabCache::new(FIELD_VOCAB)),
+            fields_vocab: std::cell::RefCell::new(Vocabulary::new()),
             _marker: std::marker::PhantomData,
         }
     }
@@ -990,7 +990,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
 use std::collections::BTreeMap;
 
 use crate::model::obj_dynamic::DynamicValue;
-use crate::model::obj_vocab::{FIELD_VOCAB, VocabCache};
+use crate::model::obj_vocab::{FIELD_VOCAB, Faces, Vocabulary, pending_in};
 
 impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> {
     /// Dynamic-segment key: `[header][0x01][key payload]` — the per-document
@@ -1227,15 +1227,14 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         };
         let mut d = self.fields_vocab.borrow_mut();
         let header = self.header();
+        let mut door = Faces::<_, u16>::new(&self.store, &header, FIELD_VOCAB);
         // decode_named resolves nested obj field ids through the same
         // vocabulary — nested maps come back fully name-keyed. The resolver
         // answers ids, so an engine failure is parked and re-raised after the
         // walk (a nested decode has nowhere else to put it).
         let mut failed: Option<crate::error::Error> = None;
-        let frames = crate::model::obj_dynamic::decode_named(&raw, &mut |id| match d.name_for(
-            &self.store,
-            &header,
-            id,
+        let frames = crate::model::obj_dynamic::decode_named(&raw, &mut |id| match d.name_of(
+            &mut door, id,
         ) {
             Ok(name) => name,
             Err(e) => {
@@ -1251,7 +1250,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         }
         let mut out = BTreeMap::new();
         for f in frames {
-            if let Some(name) = d.name_for(&self.store, &header, f.id)? {
+            if let Some(name) = d.name_of(&mut door, f.id)? {
                 out.insert(name, f.value);
             }
             // Unknown id (vocabulary entry absent): drop the field. Under
@@ -1276,7 +1275,8 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         // One value per obj: a block table and a value area, joined before the
         // put (ADR-0057). Nested objects resolve through the same vocabulary.
         let body = {
-            let mut resolver = |name: &str| d.id_for(&store, &header, name);
+            let mut door = Faces::<_, u16>::new(&store, &header, FIELD_VOCAB);
+            let mut resolver = |name: &str| d.ensure(&mut door, name);
             crate::model::obj_segment::encode(variants, &mut resolver)?
         };
         if variants.is_empty() {
@@ -1334,9 +1334,13 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         // take the promotion candidates BEFORE the commit consumes the batch,
         // and trust them only after it returned Ok (a refused commit leaves the
         // names probing — one probe slower, never a frame naming a dead id).
-        let promoted = self.fields_vocab.borrow().pending_in(&batch.ops);
+        let header = self.header();
+        let promoted = {
+            let vocab = self.fields_vocab.borrow();
+            pending_in(&vocab, &header, FIELD_VOCAB, &batch.ops)
+        };
         self.store.commit_batch(batch)?;
-        self.fields_vocab.borrow_mut().promote(&promoted);
+        self.fields_vocab.borrow_mut().landed(&promoted);
         self.epoch.set(self.epoch.get() + 1);
         Ok(())
     }
