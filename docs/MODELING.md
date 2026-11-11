@@ -319,6 +319,12 @@ A multi-value face is also the primitive under full-text search, and that use ca
 
 Beyond the equality prefix, a comparison on the leading index field is a physical key interval (ADR-0020): `scan_range::<I>(begin, end)` / `scan_range_iter::<I>(..)` — byte order == value order for every OKM encoding, so `1 < a < 100` reads only the rows inside `[1, 100)`. Recipes live in the [query guide](query-recipes.md), "the forms of WHERE".
 
+### The engine is an assembly-point choice
+
+`Collection::new(store)` takes a store, and nothing on any type says which engine it is (ADR-0010 — the assembly site picks the engine, the declaration owns the ns). Every table therefore has this freedom, not only a side table: one application's tables need not share an engine. The hot table can sit on a small, fast one, the payload table on an LSM tuned for volume, and a read-mostly export table on whatever dumps cheaply. In a relational engine the same wish is a foreign server or a linked table; here it falls out of the model, because a table already IS an independent key space with its own handle — nothing has to be bridged for it to live somewhere else.
+
+The freedom stops at exactly one line: **a commit is per store.** Two collections on one engine write one `Batch` and commit once — that is how a parent row and its side table stay atomic; two collections on different engines are two commits, so a pair that must be atomic lives on one engine. Splitting by access pattern is free; splitting by engine is a durability and atomicity boundary, and the boundary follows the store rather than the ns: capture and restore are whole-store too, so a table that moved to another engine is captured by that store's log.
+
 ### A table is a key type plus a row type
 
 Two declarations, not one (ADR-0044). The key is the address — `KeyEncode`, fixed width, ordered bytes. The row is the value — `DocumentEncode` — and `#[ok_ref(ProfileKey)]` BINDS it to the key without embedding it: no key bytes live in the row.
@@ -1115,14 +1121,8 @@ Do not split: every access reads the row anyway **and** nothing in it is written
 - **The key type is the parent's key type.** The key payload is therefore byte-identical and the pairing is pinned by the compiler; only the ns and the table name differ — the side table takes an ns of its own, and that is the whole cost.
 - **Existence is the side row's presence.** No `Option` field and no zero-length sentinel: "is there one" is a state, not an absence.
 - **Write the pair into one batch** (each collection's `save_with_prev_into`, one `commit_batch`) and delete the pair — there is no cascade in this model, so deletion is the caller's; `purge_into` puts the delete in one commit as well.
-
-### Each table picks its own engine
-
-The engine is an assembly-point decision, not a declaration: `Collection::new(store)` takes the store, and nothing on the type says which one it is (ADR-0010 — the assembly site picks the engine, the declaration owns the ns). So the tables of one application need not share one: the hot side table can sit on a small, fast engine while the payload table sits on an LSM tuned for volume, and a read-mostly export table on whatever dumps cheaply. In a relational engine the same wish is a foreign server or a linked table; here it falls out of the model, because a table already IS an independent key space with its own handle — nothing has to be bridged for it to live somewhere else.
-
-The freedom stops at exactly one line: **a commit is per store.** Two collections on one engine write one `Batch` and commit once (that is how the pair above stays atomic); two collections on different engines are two commits, so a pair that must be atomic lives on one engine. The split by access pattern is free; the split by engine is a durability and atomicity boundary, and the boundary follows the store rather than the ns — capture and restore are whole-store too, so a table that moved to another engine is captured by that store's log.
 - **The parent row stays complete.** `R` is still the document's full declared field set; the side table is its second table, not its patch — so `fetch` / `replace` / `put` semantics do not change by a word.
-- **The side table can have everything a table has**: its own declared faces, reduce groups, its own `#[ok_layout]` version, and export/import for free as a `(K, R)` pair — because it is an ordinary table, not a fifth position inside the row codec.
+- **The side table can have everything a table has**: its own declared faces, reduce groups, its own `#[ok_layout]` version, its own engine (any table may — see *The engine is an assembly-point choice*), and export/import for free as a `(K, R)` pair — because it is an ordinary table, not a position inside the row codec.
 
 ### The three shapes it is not
 
