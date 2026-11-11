@@ -40,7 +40,7 @@ pub mod delta;
 pub mod snapshot;
 
 use okm_core::changelog::window::{
-    self, Window, WindowConfig, read_watermark, table_dirs, write_watermark,
+    self, Window, WindowConfig, WindowOp, read_watermark, table_dirs, write_watermark,
 };
 use okm_dynamic::arrow::record_batch;
 use std::fmt;
@@ -141,6 +141,12 @@ pub struct Report {
     /// Rows written, i.e. one per captured put on the primary face. A window is
     /// history, so this counts changes, not distinct keys.
     pub rows: usize,
+    /// Removals written as change rows (`okm_op = del`) — the half a column file
+    /// could not state before ADR-0058 made the export a change table.
+    pub deletes: usize,
+    /// Removals of derived state (an index entry, a ledger line): counted, not written,
+    /// because they carry no key of the table's shape and the write path rebuilds them.
+    pub derived_deletes: usize,
     /// Dynamic-segment puts carried as the window's `variant` column. Counted so a
     /// sink can tell "no open fields anywhere" from "open fields written".
     pub open_fields: usize,
@@ -163,6 +169,11 @@ pub struct WindowManifest {
     /// The segments this window covers, in order, as file names.
     pub segments: Vec<String>,
     pub rows: usize,
+    /// Change rows carrying `okm_op = del`, so a sink records provenance without
+    /// opening the file (`#[serde(default)]`: manifests written before ADR-0058 have
+    /// no removals to count).
+    #[serde(default)]
+    pub deletes: usize,
     /// `(name, arrow type, nullable)` in column order, keys first.
     pub columns: Vec<(String, String, bool)>,
     /// The Parquet file's name, beside this manifest.
@@ -192,10 +203,18 @@ pub fn drain_table(dir: &Path, cfg: &DrainConfig, report: &mut Report) -> Result
         let Some(win) = window::read_window(dir, &cfg.window_for(&table)?)? else {
             return Ok(());
         };
-        if win.rows.is_empty() {
-            // Nothing a column can hold in this window: leave the position alone so a
-            // later window that does carry rows still starts from here — and stop, since
-            // an unmoved position would make this loop run for ever.
+        if win.rows.is_empty()
+            && win.dynamic.is_empty()
+            && !win
+                .deletes
+                .iter()
+                .any(|(_, key)| key.len() == win.schema.key_len)
+        {
+            // Nothing this file can state: no row, no open fields, no removal of a key.
+            // Leave the position alone so a later window that does carry changes still
+            // starts from here — and stop, since an unmoved position would make this loop
+            // run for ever. A window holding only a REMOVAL is not this case: a change
+            // table states it (ADR-0058), and the loop must take it.
             report.segments += win.segments.len();
             return Ok(());
         }
@@ -221,7 +240,7 @@ fn drain_one(cfg: &DrainConfig, report: &mut Report, win: &Window) -> Result<()>
     let scratch = cfg
         .out_dir
         .join(format!(".{}-{first}-{last}.parquet.partial", win.table));
-    let columns = write_parquet(win, &scratch)?;
+    let projection = write_parquet(win, &scratch)?;
     std::fs::create_dir_all(&data_dir)?;
     std::fs::rename(&scratch, &out)?;
 
@@ -231,8 +250,9 @@ fn drain_one(cfg: &DrainConfig, report: &mut Report, win: &Window) -> Result<()>
         table: win.table.clone(),
         layout_version: win.layout_version,
         segments: win.segments.clone(),
-        rows: win.rows.len(),
-        columns,
+        rows: projection.rows,
+        deletes: projection.deletes,
+        columns: projection.columns,
         file: window::file_name(&out),
     };
     write_atomic(
@@ -261,26 +281,128 @@ fn drain_one(cfg: &DrainConfig, report: &mut Report, win: &Window) -> Result<()>
 
     report.segments += win.segments.len();
     report.rows += win.rows.len();
+    report.deletes += projection.deletes;
+    report.derived_deletes += projection.derived_deletes;
     report.open_fields += win.dynamic.len();
     report.files.push(out);
     Ok(())
 }
 
-/// Render one window as a Parquet file plus its column list. The sink's rule lives
-/// here: a removal has no column, and inventing a tombstone column would change
-/// what every other reader of this file sees, so a window holding one is refused
-/// instead of misrepresented.
-pub fn write_parquet(win: &Window, out: &Path) -> Result<Vec<(String, String, bool)>> {
-    if let Some((slot, key)) = win.deletes.first() {
-        return Err(DrainError::new(format!(
-            "{}: a delete op at slot 0x{slot:02X} ({key:02X?}) — a window is an append and \
-             this sink cannot express a removal; replay it into a store, or compact the log first",
-            win.table
-        )));
+/// The op names a change row can carry in `okm_op`.
+pub const OKM_PUT: &str = "put";
+/// A change that touched only the document's open fields: the declared columns are NULL
+/// because the window did not carry them, and the `variant` cell holds what it did.
+pub const OKM_PUT_OPEN: &str = "put_open";
+/// A removal. `okm_slot` says which face it touched; `0` is the whole row.
+pub const OKM_DEL: &str = "del";
+
+/// What projecting one window produced, beyond the columns: how many rows landed and of
+/// which kind, so a sink reads it instead of counting the file again.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Projection {
+    /// `(name, arrow type, nullable)` in column order, keys first.
+    pub columns: Vec<(String, String, bool)>,
+    /// Rows in the file: puts, open-field-only puts and removals.
+    pub rows: usize,
+    /// `del` rows.
+    pub deletes: usize,
+    /// `put_open` rows.
+    pub open_only: usize,
+    /// Removals of DERIVED state (an index entry, a ledger line). They carry no key of
+    /// the table's shape and are rebuilt from the row, so they are counted rather than
+    /// written — the same treatment the puts of those faces already get.
+    pub derived_deletes: usize,
+}
+
+/// Render one window as a Parquet file plus what it holds.
+///
+/// The file is a CHANGE set, and it says so in three bookkeeping columns no declaration
+/// has a field for: `okm_op` (`put`, `put_open`, `del`), `okm_slot` (which face a removal
+/// touched; `0` is the whole row) and `okm_seq` (the op's position inside the window).
+/// Without them a removal had nowhere to go and the sink refused the whole window; with
+/// them every window is expressible, and a reader that wants current state filters on
+/// `okm_op` and keeps the last `okm_seq` per key (ADR-0058).
+///
+/// Two things are deliberately NOT rows: a removal of derived state (no key of the
+/// table's shape — counted, not dropped in silence) and the puts of those same faces
+/// (already counted as `open_fields` by the window join). Both are rebuilt from the row.
+pub fn write_parquet(win: &Window, out: &Path) -> Result<Projection> {
+    let key_len = win.schema.key_len;
+    let mut keys: Vec<Vec<u8>> = Vec::with_capacity(win.ops.len());
+    let mut rows: Vec<Option<okm_dynamic::ValueMap>> = Vec::with_capacity(win.ops.len());
+    let mut variant_of: Vec<Option<&okm_dynamic::ValueMap>> = Vec::with_capacity(win.ops.len());
+    let mut op_names: Vec<&str> = Vec::with_capacity(win.ops.len());
+    let mut slots: Vec<Option<u16>> = Vec::with_capacity(win.ops.len());
+    let mut seqs: Vec<u32> = Vec::with_capacity(win.ops.len());
+    let mut projection = Projection::default();
+
+    // Open fields written under a key in this window are part of the same change as the
+    // row, so a put carries them in its `variant` cell (ADR-0045 §4: truth, never
+    // re-derived from the columns).
+    let by_key: std::collections::HashMap<&[u8], &okm_dynamic::ValueMap> = win
+        .dynamic
+        .iter()
+        .map(|(key, map)| (key.as_slice(), map))
+        .collect();
+
+    // Keys this window put as a row: their open fields ride on the row's `variant` cell,
+    // so the same change is not written twice.
+    let put_keys: std::collections::HashSet<&[u8]> = win
+        .ops
+        .iter()
+        .filter_map(|op| match op {
+            WindowOp::Put(i) => Some(win.rows[*i].0.as_slice()),
+            _ => None,
+        })
+        .collect();
+
+    for (seq, op) in win.ops.iter().enumerate() {
+        let seq = u32::try_from(seq).map_err(|_| {
+            DrainError::new(format!(
+                "{}: a window cannot hold more than 2^32 operations",
+                win.table
+            ))
+        })?;
+        match *op {
+            WindowOp::Put(i) => {
+                let (key, doc) = &win.rows[i];
+                variant_of.push(by_key.get(key.as_slice()).copied());
+                keys.push(key.clone());
+                rows.push(Some(doc.clone()));
+                op_names.push(OKM_PUT);
+                slots.push(None);
+            }
+            WindowOp::Del(i) => {
+                let (slot, key) = &win.deletes[i];
+                if key.len() != key_len {
+                    // Derived state (an index entry, a ledger line): no key of the
+                    // table's shape, and the write path rebuilds it from the row.
+                    projection.derived_deletes += 1;
+                    continue;
+                }
+                variant_of.push(None);
+                keys.push(key.clone());
+                rows.push(None);
+                op_names.push(OKM_DEL);
+                slots.push(Some(*slot));
+            }
+            WindowOp::Dynamic(i) => {
+                let (key, map) = &win.dynamic[i];
+                if put_keys.contains(key.as_slice()) {
+                    // The row put in this same window already carries these open fields
+                    // in its `variant` cell; a second row would state one change twice.
+                    continue;
+                }
+                variant_of.push(Some(map));
+                keys.push(key.clone());
+                rows.push(None);
+                op_names.push(OKM_PUT_OPEN);
+                slots.push(None);
+            }
+        }
+        seqs.push(seq);
     }
-    let keys: Vec<Vec<u8>> = win.rows.iter().map(|(k, _)| k.clone()).collect();
-    let rows: Vec<Option<okm_dynamic::ValueMap>> =
-        win.rows.iter().map(|(_, d)| Some(d.clone())).collect();
+
     let mut batch = record_batch(
         &win.schema,
         &keys,
@@ -288,42 +410,11 @@ pub fn write_parquet(win: &Window, out: &Path) -> Result<Vec<(String, String, bo
         Some(&|slot, id| win.labels.get(&(slot, id.to_vec())).cloned()),
     )?;
 
-    // The open half: every document's dynamic segment as ONE `variant` column — the
-    // same name and the same encoding ADR-0034 gives the typed export, because it is
-    // the same column and a reader should not meet two names for it. The declared
-    // fields have columns; the names the declaration does not have carry none, and a
-    // window that wrote only them would hand a reader every row minus part of itself
-    // (ADR-0045 §4 — the segment is truth).
+    // The open half: every document's dynamic segment as ONE `variant` column — the same
+    // name and the same encoding ADR-0034 gives the typed export, because it is the same
+    // column and a reader should not meet two names for it.
     if !win.dynamic.is_empty() {
-        let mut by_key: std::collections::HashMap<&[u8], &okm_dynamic::ValueMap> =
-            std::collections::HashMap::with_capacity(win.dynamic.len());
-        for (key, map) in &win.dynamic {
-            by_key.insert(key.as_slice(), map);
-        }
-        // An open-fields segment whose row is NOT in this window: the row was removed
-        // (or never existed here) and the segment outlived it. Writing the rows and
-        // skipping the segment drops truth silently; attaching it to nothing is not an
-        // option either, so this is the same stop as a delete — a window is a row view
-        // and cannot express a removal (ADR-0056 §5).
-        if let Some((key, _)) = win
-            .dynamic
-            .iter()
-            .find(|(key, _)| !keys.iter().any(|k| k == key))
-        {
-            return Err(DrainError::new(format!(
-                "{}: an open-fields segment for key {key:02X?} with no row in this window \
-                 — the row is gone (a removal) and a window cannot express that; replay it \
-                 into a store, or compact the log first",
-                win.table
-            )));
-        }
-        let maps: Vec<Option<&okm_dynamic::ValueMap>> = keys
-            .iter()
-            .map(|k| by_key.get(k.as_slice()).copied())
-            .collect();
-        // A dynamic-only document (a key with no row) has no row here: this file is a
-        // row view, and the key is only in the segment because the row was deleted.
-        let (field, column) = crate::bridge::variant_column("variant", &maps);
+        let (field, column) = crate::bridge::variant_column("variant", &variant_of);
         let mut fields: Vec<arrow::datatypes::Field> = batch
             .schema()
             .fields()
@@ -340,8 +431,47 @@ pub fn write_parquet(win: &Window, out: &Path) -> Result<Vec<(String, String, bo
         .map_err(|e| DrainError::new(format!("{}: open column: {e}", win.table)))?;
     }
 
+    // The change columns, after every column the declaration has. The names carry a
+    // prefix because they are not the document's: they are what the log said about it.
+    let mut fields: Vec<arrow::datatypes::Field> = batch
+        .schema()
+        .fields()
+        .iter()
+        .map(|f| f.as_ref().clone())
+        .collect();
+    let mut arrays: Vec<std::sync::Arc<dyn arrow::array::Array>> = batch.columns().to_vec();
+    fields.push(arrow::datatypes::Field::new(
+        "okm_op",
+        arrow::datatypes::DataType::Utf8,
+        false,
+    ));
+    arrays.push(std::sync::Arc::new(arrow::array::StringArray::from(
+        op_names.clone(),
+    )));
+    fields.push(arrow::datatypes::Field::new(
+        "okm_slot",
+        arrow::datatypes::DataType::UInt16,
+        true,
+    ));
+    arrays.push(std::sync::Arc::new(arrow::array::UInt16Array::from(slots)));
+    fields.push(arrow::datatypes::Field::new(
+        "okm_seq",
+        arrow::datatypes::DataType::UInt32,
+        false,
+    ));
+    arrays.push(std::sync::Arc::new(arrow::array::UInt32Array::from(seqs)));
+    let batch = arrow::array::RecordBatch::try_new(
+        std::sync::Arc::new(arrow::datatypes::Schema::new(fields)),
+        arrays,
+    )
+    .map_err(|e| DrainError::new(format!("{}: change columns: {e}", win.table)))?;
+
     crate::snapshot::parquet_io::write_batch(&batch, out)?;
-    Ok(batch
+
+    projection.rows = op_names.len();
+    projection.deletes = op_names.iter().filter(|n| **n == OKM_DEL).count();
+    projection.open_only = op_names.iter().filter(|n| **n == OKM_PUT_OPEN).count();
+    projection.columns = batch
         .schema()
         .fields()
         .iter()
@@ -352,7 +482,8 @@ pub fn write_parquet(win: &Window, out: &Path) -> Result<Vec<(String, String, bo
                 f.is_nullable(),
             )
         })
-        .collect())
+        .collect();
+    Ok(projection)
 }
 
 /// Replace by rename: a reader either sees the old file or the new one.

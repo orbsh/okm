@@ -61,6 +61,20 @@ pub struct FileSummary {
     pub nulls: serde_json::Map<String, serde_json::Value>,
 }
 
+/// Which leaf column of the Parquet metadata carries `name`.
+///
+/// The metadata's column order is not the Arrow schema's: a struct field expands into one
+/// leaf per member, so a field after it sits at an offset the Arrow index does not have.
+/// A field with no single leaf of its own (struct, list) answers `None` — its type is
+/// skipped anyway, and a bound attributed to the wrong column is worse than none.
+fn leaf_of(metadata: &parquet::file::metadata::ParquetMetaData, name: &str) -> Option<usize> {
+    let first = metadata.row_groups().first()?;
+    (0..first.columns().len()).find(|&i| {
+        let parts = first.column(i).column_path().parts();
+        parts.len() == 1 && parts[0] == name
+    })
+}
+
 pub fn file_summary(path: &Path) -> Result<FileSummary, String> {
     let file = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let reader = parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(file)
@@ -107,16 +121,24 @@ pub fn file_summary(path: &Path) -> Result<FileSummary, String> {
                 | DataType::List(_)
         )
     };
-    for (idx, field) in arrow.fields().iter().enumerate() {
+    for field in arrow.fields().iter() {
         if skip_unsigned(field.data_type()) {
             continue;
         }
+        // The Parquet metadata's column order is NOT the Arrow schema's: a struct column
+        // (the `variant` half of a document) expands into one leaf column per member, so a
+        // field AFTER it would be read from the wrong leaf — a bound and a null count
+        // attributed to the wrong name, which a reader then uses to skip the file. Resolve
+        // each field to its leaf by PATH instead of trusting the index.
+        let Some(leaf) = leaf_of(metadata, field.name()) else {
+            continue;
+        };
         let mut min: Option<serde_json::Value> = None;
         let mut max: Option<serde_json::Value> = None;
         let mut nulls: u64 = 0;
         let mut counted = true;
         for group in metadata.row_groups() {
-            let Some(column) = group.columns().get(idx) else {
+            let Some(column) = group.columns().get(leaf) else {
                 counted = false;
                 break;
             };

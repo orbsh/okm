@@ -112,8 +112,10 @@ fn one_window_becomes_one_parquet_file_and_the_watermark_moves() {
         .collect();
     assert_eq!(
         names,
-        ["org", "id", "level", "name"],
-        "keys first, then the row"
+        [
+            "org", "id", "level", "name", "okm_op", "okm_slot", "okm_seq"
+        ],
+        "keys first, then the row, then what the log said about it"
     );
 
     // The manifest beside it says where the file came from — the answer a sink's
@@ -130,8 +132,13 @@ fn one_window_becomes_one_parquet_file_and_the_watermark_moves() {
     assert_eq!(manifest.segments.len(), 1);
     assert_eq!(
         manifest.columns.len(),
-        4,
-        "keys first, then the row, as the file has them"
+        7,
+        "keys first, then the row, then the three change columns"
+    );
+    assert_eq!(
+        manifest.columns[4],
+        ("okm_op".to_string(), "Utf8".to_string(), false),
+        "a change column rides beside the declaration, not inside it"
     );
     assert_eq!(
         manifest.columns[0],
@@ -178,7 +185,9 @@ fn one_window_becomes_one_parquet_file_and_the_watermark_moves() {
         .collect();
     assert_eq!(
         names,
-        ["org", "id", "level", "name"],
+        [
+            "org", "id", "level", "name", "okm_op", "okm_slot", "okm_seq"
+        ],
         "columns from the file"
     );
     let file_name = report.files[0]
@@ -206,12 +215,12 @@ fn one_window_becomes_one_parquet_file_and_the_watermark_moves() {
 }
 
 #[test]
-fn a_window_with_a_delete_is_refused_rather_than_misrepresented() {
+fn a_window_with_a_delete_writes_a_change_row() {
     let root = tempfile::tempdir().expect("root");
     let out = tempfile::tempdir().expect("out");
-    // One window holding both ops: the put and the purge that removes it. A
-    // window is history, and the declaration has no column for a removal — the
-    // right answer is to stop, not to hand a reader a row that no longer exists.
+    // One window holding both ops: the put and the purge that removes it. A window is
+    // history, and the file says so — two change rows in the order the log carried them,
+    // the removal holding the key with the declared columns NULL (ADR-0058).
     {
         let c = collection(root.path());
         c.put(
@@ -224,22 +233,63 @@ fn a_window_with_a_delete_is_refused_rather_than_misrepresented() {
         .expect("put");
         assert!(c.purge(&K1).expect("purge"), "the row existed");
     }
-    let cfg = DrainConfig::new(out.path(), "test");
-    let err = drain(root.path(), &cfg).expect_err("a delete cannot become a row");
-    // A refused window leaves nothing behind: no Parquet file, and the watermark
-    // still points where it did, so the next run sees the same window.
-    let artefacts: Vec<_> = std::fs::read_dir(out.path())
-        .expect("out dir")
-        .filter_map(|e| e.ok().map(|e| e.path()))
-        .collect();
-    assert!(
-        artefacts.is_empty(),
-        "nothing half-committed: {artefacts:?}"
+    let report = drain(root.path(), &DrainConfig::new(out.path(), "test")).expect("drain");
+    assert_eq!(report.rows, 1, "the put is still a row in history");
+    assert_eq!(
+        report.deletes, 1,
+        "the removal is a change row, not a refusal"
     );
-    let text = err.to_string();
+    assert_eq!(report.files.len(), 1);
+
+    let file = std::fs::File::open(&report.files[0]).expect("open");
+    let mut reader = ParquetRecordBatchReaderBuilder::try_new(file)
+        .expect("reader")
+        .build()
+        .expect("build");
+    let batch = reader.next().expect("one batch").expect("batch");
+    assert_eq!(batch.num_rows(), 2, "put then delete: two changes");
+
+    let array = |name: &str| batch.column_by_name(name).expect(name);
+    let ops = array("okm_op")
+        .as_any()
+        .downcast_ref::<arrow::array::StringArray>()
+        .expect("okm_op is text");
+    assert_eq!((ops.value(0), ops.value(1)), ("put", "del"));
+    let seqs = array("okm_seq")
+        .as_any()
+        .downcast_ref::<arrow::array::UInt32Array>()
+        .expect("okm_seq is a u32");
+    assert_eq!(
+        (seqs.value(0), seqs.value(1)),
+        (0, 1),
+        "the order the log carried, not a rule invented by the sink"
+    );
+    let slots = array("okm_slot")
+        .as_any()
+        .downcast_ref::<arrow::array::UInt16Array>()
+        .expect("okm_slot is a u16");
+    assert!(slots.is_null(0), "a put touches no face");
+    assert_eq!(slots.value(1), 0, "slot 0: the whole row is gone");
+    let level = array("level");
     assert!(
-        text.contains("delete") && text.contains("compact"),
-        "the refusal must name the op and the way out, got: {text}"
+        !level.is_null(0) && level.is_null(1),
+        "the removal has no declared value to state, so it states none"
+    );
+
+    // The Delta log covers the file that now holds a removal: one version, one `add`,
+    // no protocol feature for a reader to learn.
+    let table_dir = report.files[0]
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    let version = table_dir.join("_delta_log").join(format!("{:020}.json", 0));
+    let text = std::fs::read_to_string(&version).expect("the first Delta commit");
+    assert!(text.contains("\"add\""), "the change file is in the log");
+    assert!(
+        !text.contains("deletionVector") && !text.contains("remove"),
+        "a change row needs no protocol feature: {text}"
     );
 }
 
@@ -278,11 +328,10 @@ fn a_table_without_a_sidecar_stops_the_drain() {
     assert!(err.to_string().contains("sidecar"), "got: {err}");
 }
 
-/// The reader reports what the log says; only the sink refuses. A removal is a
-/// fact — a replay applies it in order — while a column file is what cannot hold
-/// it, so the refusal belongs to the sink and not to the window (ADR-0056 §5).
+/// The reader reports what the log says and the sink writes it: a removal is a fact —
+/// a replay applies it in order, a change table states it as a row (ADR-0058).
 #[test]
-fn a_removal_is_read_and_only_the_parquet_sink_refuses_it() {
+fn a_removal_is_read_and_written_as_a_change_row() {
     let root = tempfile::tempdir().expect("root");
     let out = tempfile::tempdir().expect("out");
     {
@@ -303,8 +352,8 @@ fn a_removal_is_read_and_only_the_parquet_sink_refuses_it() {
         .find(|p| p.is_dir())
         .expect("one table directory");
 
-    // The reading half is core's now: the window join lives beside the segments it
-    // reads (ADR-0056 §8), so this test calls it where it lives.
+    // The reading half is core's: the window join lives beside the segments it reads
+    // (ADR-0056 §8), so this test calls it where it lives.
     let window_cfg = okm_core::changelog::window::WindowConfig::default();
     let window = okm_core::changelog::window::read_window(&dir, &window_cfg)
         .expect("read")
@@ -318,11 +367,19 @@ fn a_removal_is_read_and_only_the_parquet_sink_refuses_it() {
         "the removal is on the primary face: {:?}",
         window.deletes
     );
+    assert_eq!(
+        window.ops.len(),
+        2,
+        "both ops, in the order the log carried them: {:?}",
+        window.ops
+    );
 
     let target = out.path().join("x.parquet");
-    let err = okm_parquet::write_parquet(&window, &target).expect_err("a column cannot hold it");
-    assert!(err.to_string().contains("delete"), "got: {err}");
-    assert!(!target.exists(), "nothing half-written");
+    let projection = okm_parquet::write_parquet(&window, &target).expect("a change row states it");
+    assert_eq!(projection.rows, 2);
+    assert_eq!(projection.deletes, 1);
+    assert_eq!(projection.open_only, 0);
+    assert!(target.exists(), "the file a change table needs");
 }
 
 /// Two tables at different depths: the one that is further ahead must not move
@@ -430,7 +487,9 @@ fn a_documents_open_fields_travel_as_a_variant_column() {
         .expect("build");
     let batch = reader.next().expect("one batch").expect("batch");
     let schema = batch.schema();
-    let last = schema.field(schema.fields().len() - 1);
+    // Three change columns follow the variant, so it is no longer the last field.
+    let variant_at = schema.fields().len() - 4;
+    let last = schema.field(variant_at);
     assert_eq!(
         last.name(),
         "variant",
@@ -446,7 +505,7 @@ fn a_documents_open_fields_travel_as_a_variant_column() {
     assert!(last.is_nullable(), "a row with no segment has nothing here");
 
     let column = batch
-        .column(schema.fields().len() - 1)
+        .column(variant_at)
         .as_any()
         .downcast_ref::<arrow::array::StructArray>()
         .expect("the canonical variant storage type is a struct of two binaries");
@@ -466,11 +525,12 @@ fn a_documents_open_fields_travel_as_a_variant_column() {
     assert!(!half("metadata").is_empty() && !half("value").is_empty());
 }
 
-/// An open-fields segment with no row in the window is a removal by another route, and
-/// the sink refuses it for the same reason it refuses a delete: writing the rows and
-/// skipping the segment would drop truth SILENTLY, and there is no row to attach it to.
+/// An open-fields segment with no row in the window is a change that touched only the
+/// names the declaration does not have: it becomes a `put_open` row — declared columns
+/// NULL, `variant` carrying what the log actually said. Writing the rows and skipping the
+/// segment would drop truth silently; refusing the window loses the rows beside it.
 #[test]
-fn an_open_segment_with_no_row_is_refused_rather_than_dropped() {
+fn an_open_segment_with_no_row_is_a_put_open_row() {
     let root = tempfile::tempdir().expect("log");
     let out = tempfile::tempdir().expect("lake");
     {
@@ -493,19 +553,33 @@ fn an_open_segment_with_no_row_is_refused_rather_than_dropped() {
         c.merge(&K2, &open).expect("a segment with no row");
     }
 
-    let err = drain(root.path(), &DrainConfig::new(out.path(), "test"))
-        .expect_err("an orphan segment cannot become a row");
-    let text = err.to_string();
+    let report = drain(root.path(), &DrainConfig::new(out.path(), "test")).expect("drain");
+    assert_eq!(report.rows, 1, "one put");
+    assert_eq!(report.open_fields, 1, "one segment, carried not dropped");
+
+    let file = std::fs::File::open(&report.files[0]).expect("open");
+    let mut reader = ParquetRecordBatchReaderBuilder::try_new(file)
+        .expect("reader")
+        .build()
+        .expect("build");
+    let batch = reader.next().expect("one batch").expect("batch");
+    assert_eq!(batch.num_rows(), 2, "the put and the open-fields change");
+    let ops = batch
+        .column_by_name("okm_op")
+        .and_then(|c| c.as_any().downcast_ref::<arrow::array::StringArray>())
+        .expect("okm_op");
+    assert_eq!((ops.value(0), ops.value(1)), ("put", "put_open"));
+    let level = batch.column_by_name("level").expect("level");
+    assert!(!level.is_null(0), "the put carries its declared value");
     assert!(
-        text.contains("open-fields segment") && text.contains("removal"),
-        "the refusal must name what it found and why: {text}"
+        level.is_null(1),
+        "an open-fields change says nothing about the declared columns"
     );
-    // Nothing half-committed, as with a delete.
-    let artefacts: Vec<_> = std::fs::read_dir(out.path())
-        .expect("out dir")
-        .filter_map(|e| e.ok().map(|e| e.path()))
-        .collect();
-    assert!(artefacts.is_empty(), "nothing written: {artefacts:?}");
+    let variant = batch.column_by_name("variant").expect("variant");
+    assert!(
+        variant.is_valid(1),
+        "and everything about the names the declaration does not have"
+    );
 }
 
 /// The log is a LOG, not a rebuilt snapshot: a second window is a second version
@@ -705,6 +779,76 @@ fn a_commit_carries_statistics_a_reader_can_skip_with() {
             "no bound is invented for `{skipped}`"
         );
     }
+}
+
+/// A struct column (the `variant` half of a document) is ONE Arrow field and SEVERAL
+/// Parquet leaves, so a field after it does not sit at its Arrow index. Reading the
+/// metadata by index attributed the variant's bytes to `okm_op` and a null count to the
+/// wrong name — and a reader then skips the file on a filter that should have matched it.
+#[test]
+fn statistics_name_the_right_column_when_a_struct_sits_before_it() {
+    let root = tempfile::tempdir().expect("root");
+    let out = tempfile::tempdir().expect("out");
+    {
+        let c = collection(root.path());
+        c.put(
+            &K1,
+            &R {
+                level: 3,
+                name: "alpha".into(),
+            },
+        )
+        .expect("put");
+        let mut open = std::collections::BTreeMap::new();
+        open.insert(
+            "note".to_string(),
+            okm_core::model::obj_dynamic::DynamicValue::Str("first".to_string()),
+        );
+        c.merge(&K1, &open).expect("a segment beside the row");
+        c.put(
+            &K2,
+            &R {
+                level: 4,
+                name: "zulu".into(),
+            },
+        )
+        .expect("put");
+    }
+    let report = drain(root.path(), &DrainConfig::new(out.path(), "test")).expect("drain");
+    let table_dir = report.files[0]
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    let text =
+        std::fs::read_to_string(table_dir.join("_delta_log").join(format!("{:020}.json", 0)))
+            .expect("v0");
+    let stats: serde_json::Value = text
+        .lines()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .find_map(|a| a["add"]["stats"].as_str().map(|s| s.to_string()))
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .expect("an add with stats");
+
+    // Exactly the scalar columns that HAVE a Delta-spellable bound: the two text ones.
+    let mut bounds: Vec<&str> = stats["minValues"]
+        .as_object()
+        .expect("bounds")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    bounds.sort_unstable();
+    assert_eq!(
+        bounds,
+        ["name", "okm_op"],
+        "a struct leaf must not be reported under a later column's name: {stats}"
+    );
+    assert_eq!(
+        stats["nullCount"]["okm_op"], 0,
+        "no put row is null: {stats}"
+    );
+    assert_eq!(stats["minValues"]["okm_op"], "put");
 }
 
 /// A second generation of the SAME table (same ns, new number): the directory outlives the

@@ -1,6 +1,6 @@
 # ADR-0058: The exported table is a Delta table, and the variant column has one shape
 
-**Status**: Accepted (2026-11-10) — implemented in the same round: `okm_parquet::delta`
+**Status**: Accepted (2026-11-10), amended 2026-11-11 (§ Amendment: the export is a change table and a removal is a row) — implemented in the same round: `okm_parquet::delta`
 (a module of the drain crate) replaces core's `bridge::iceberg`, the open-fields column becomes the canonical
 `struct<metadata, value>`, and the Iceberg metadata encoder (including a hand-written
 Avro writer) is deleted rather than kept.
@@ -111,3 +111,55 @@ does not know it must refuse the table rather than guess what the column means.
   `delta_scan(<dir>)` lists the columns including `variant variant`, and
   `variant_extract(variant, 'note')` returns `first` for the row that has an open field
   and NULL for the rows that do not.
+
+## Amendment (2026-11-11): the exported table is a change table, and a removal is a row
+
+The first cut of this export REFUSED any window that carried a removal: a column file has
+no place for "this row is gone", and inventing a tombstone column for *some* windows would
+give one table two schemas. That was right about the constraint and wrong about the
+conclusion — the table is not a current-state table and never was (a window is history,
+ADR-0056 §5), so the fix is to say what a row MEANS, table-wide, once:
+
+- `okm_op` (`Utf8`, non-null): `put`, `put_open` (a change that touched only the names the
+  declaration does not have — declared columns NULL, `variant` carrying the segment) or
+  `del`.
+- `okm_slot` (`UInt16`, nullable): for a `del`, the face it removed — `0` is the whole row.
+- `okm_seq` (`UInt32`, non-null): the op's position inside the window, so a put followed by
+  the purge that removed it stays ordered instead of needing a rule the sink invents.
+
+The order comes from core: `Window` gained `ops: Vec<WindowOp>` (`window.rs`), because the
+log's op order is part of what the log said and the join used to keep rows and removals in
+two unordered vectors. Two op kinds stay counted rather than written — a removal of derived
+state (an index entry, a ledger line) has no key of the table's shape and is rebuilt from
+the row, exactly like the put of the same faces.
+
+Three consequences, all deliberate:
+
+1. **Every window is expressible.** A delete no longer blocks the rows beside it, and the
+   reader decides what a removal means: filter `okm_op`, keep the last `okm_seq` per key,
+   or compact.
+2. **Delta's other half is still not used.** A `remove` action or a deletion vector would
+   express a removal as table state, but both need to know which FILE and which ROW hold
+   the key — a Parquet read path plus either a key→file index or one row per file. A change
+   row needs neither, and it is what a CDC consumer asks for anyway. Deletion vectors and
+   compaction remain owed (PLAN, "the sink half of the lake output").
+3. **The schema is constant per table.** These columns appear on every window of every
+   table, carrying `put` / null / 0 where nothing else applies: a schema that shows up only
+   on windows that happen to hold a removal is a schema no reader can rely on. Exports
+   written before this amendment lack the columns — re-drain from the beginning (a fresh
+   out directory, or a consumer name that has no position) instead of mixing two shapes in
+   one table.
+
+One latent defect surfaced while this landed, and it was in the statistics, not the
+columns: `file_summary` read each field's Parquet statistics BY ARROW INDEX, but a struct
+column is one Arrow field and several Parquet leaves, so a field after `variant` was read
+from the wrong leaf. With `variant` last nothing noticed; with three columns after it, the
+variant's bytes were attributed to `okm_op` and `nullCount` counted the wrong leaf — and a
+real reader (DuckDB 1.5.5) then answered ZERO rows for `where okm_op = 'put'` because the
+bounds it trusted were nonsense. Resolved by PATH (`leaf_of`), and pinned by
+`statistics_name_the_right_column_when_a_struct_sits_before_it`.
+
+Held by `okm-parquet/tests/drain_test.rs`: a window holding a put and the purge that follows
+writes two rows (`put` at `okm_seq` 0, `del` at 1 with the declared columns NULL and
+`okm_slot` 0), the Delta log gains one `add` and no `remove`/`deletionVector`, and an
+open-fields segment with no row becomes `put_open` instead of stopping the drain.

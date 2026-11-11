@@ -100,8 +100,13 @@ fn run() -> Result<i32, String> {
         println!("{}", file.display());
     }
     println!(
-        "tables {}, segments {}, rows {}, segment-only {}",
-        report.tables, report.segments, report.rows, report.open_fields
+        "tables {}, segments {}, rows {}, deletes {}, segment-only {}, derived-deletes {}",
+        report.tables,
+        report.segments,
+        report.rows,
+        report.deletes,
+        report.open_fields,
+        report.derived_deletes
     );
     Ok(0)
 }

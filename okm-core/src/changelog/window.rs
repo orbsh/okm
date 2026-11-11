@@ -27,12 +27,28 @@ use crate::{OP_DELETE, OP_PUT, PRIMARY_SLOT};
 
 use super::{read_sealed, table_dir};
 
+/// One operation in the order the log carried it.
+///
+/// A window keeps rows and removals in separate vectors (a sink asks for one or the
+/// other), but the ORDER between them is part of what the log said: a put and the purge
+/// that followed it are not the same as a purge and the put that recreated the row. The
+/// sequence is recorded here so a sink that writes both — a change table — can say which
+/// came first instead of inventing a rule.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WindowOp {
+    /// Index into `rows`.
+    Put(usize),
+    /// Index into `deletes`.
+    Del(usize),
+    /// Index into `dynamic`.
+    Dynamic(usize),
+}
+
 /// One window of captured changes, decoded as far as a declaration can take it.
 ///
 /// This is the seam ADR-0056 §5 asks for: what the segments SAY is one thing, what
 /// a sink can EXPRESS is another. A window carries rows AND removals; a column file
-/// can hold only the first, while a replay applies both in order. The refusal
-/// therefore belongs to the sink, not to the reader.
+/// can hold the first directly, and a change table can hold both by naming the op.
 pub struct Window {
     /// The declaration these bytes were written under, carried so a sink needs
     /// nothing but the window (and so a standalone tool needs no application types).
@@ -47,6 +63,9 @@ pub struct Window {
     /// `(slot, key suffix)` per removal, in order. Slot `0x00` means the ROW is
     /// gone; other slots are the document's own parts (purge takes both).
     pub deletes: Vec<(u16, Vec<u8>)>,
+    /// The ops in log order, so a sink that writes both halves can keep the sequence
+    /// (ADR-0058: the exported table is a change table, and `okm_seq` is this index).
+    pub ops: Vec<WindowOp>,
     /// `(key suffix, open fields)` per dynamic-segment put: the names the
     /// declaration does NOT have, and their values. A window is a row view, so these
     /// are not columns — they travel as one `variant` column beside them (the
@@ -133,6 +152,7 @@ pub fn read_window(dir: &Path, cfg: &WindowConfig) -> Result<Option<Window>> {
         segments: window.iter().map(|p| file_name(p)).collect(),
         rows: Vec::new(),
         deletes: Vec::new(),
+        ops: Vec::new(),
         dynamic: Vec::new(),
         open_fields: 0,
         labels: HashMap::new(),
@@ -156,6 +176,7 @@ pub fn read_window(dir: &Path, cfg: &WindowConfig) -> Result<Option<Window>> {
                             suffix.to_vec(),
                             crate::decode::decode_payload(&schema, &value)?,
                         ));
+                        out.ops.push(WindowOp::Put(out.rows.len() - 1));
                     }
                     // A vocabulary entry: the id face the declaration names, with
                     // the label as its value. Carried because a column holds labels
@@ -168,13 +189,18 @@ pub fn read_window(dir: &Path, cfg: &WindowConfig) -> Result<Option<Window>> {
                     // A document's open fields: truth (ADR-0045 §4), carried
                     // beside the row, never re-derived from it.
                     (OP_PUT, DYNAMIC_SLOT) if suffix.len() == schema.key_len => {
+                        out.ops.push(WindowOp::Dynamic(dynamic_raw.len()));
                         dynamic_raw.push((suffix.to_vec(), value.to_vec()));
                     }
                     (OP_PUT, _) => out.open_fields += 1,
-                    // A removal is a fact this log carries and a column file
-                    // cannot: recorded here, answered by whichever sink is reading
-                    // (ADR-0056 §5).
-                    (OP_DELETE, slot) => out.deletes.push((slot, suffix.to_vec())),
+                    // A removal is a fact this log carries and a column file cannot
+                    // state on its own: recorded here, written by a sink as a change
+                    // row (`okm_op = del`), applied in order by a replay
+                    // (ADR-0056 §5, ADR-0058).
+                    (OP_DELETE, slot) => {
+                        out.ops.push(WindowOp::Del(out.deletes.len()));
+                        out.deletes.push((slot, suffix.to_vec()));
+                    }
                     _ => {}
                 }
             }
