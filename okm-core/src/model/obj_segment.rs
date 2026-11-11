@@ -6,8 +6,10 @@
 //! values = leaf bodies, block by block: block 0's leaves, then block 1's, …
 //! blocks = block*            (block 0 = the top level; children breadth-first)
 //! block  = count varint | entry*
-//! entry  = id varint | type u8 | len varint   (leaf; len is the body's length)
-//!        | id varint | type u8                (Obj / Array; bit 7 of type set)
+//! entry  = id varint | head u8 | body
+//! head   = bit 7      composite: this entry owns the next block
+//!        | bits 6..4  len: 0..6 inline, 7 = escape (a `put_len` varint follows)
+//!        | bits 3..0  value type (0..8)
 //! ```
 //!
 //! Two properties earn the layout its keep. The table is contiguous, so a
@@ -34,8 +36,25 @@ use crate::model::wrappers::obj_value::ObjValueType;
 use crate::model::wrappers::wire::{put_len, take_len};
 use std::collections::BTreeMap;
 
-/// Bit 7 of an entry's type byte: this entry owns the next block.
+/// Bit 7 of an entry's head: this entry owns the next block.
 const COMPOSITE: u8 = 0x80;
+/// Bits 6..4 of the head: the body's length while it is 6 or less.
+const LEN_SHIFT: u8 = 4;
+/// The length code that means "a `put_len` varint follows".
+const LEN_ESCAPE: u8 = 0x07;
+/// The low nibble names the value type.
+const TYPE_MASK: u8 = 0x0F;
+
+/// The three types whose body length is decided by the type rather than by the
+/// head's length field — writing it down would repeat what the type already says.
+fn implied_len(ty: u8) -> Option<usize> {
+    match ObjValueType::from_byte(ty)? {
+        ObjValueType::F64 => Some(8),
+        ObjValueType::Bool => Some(1),
+        ObjValueType::Null => Some(0),
+        _ => None,
+    }
+}
 /// The head: `toc_len u16 BE`, reserved and patched before the value is stored.
 const HEAD: usize = 2;
 /// Deepest nesting a reader will follow. A nested value costs a frame on the
@@ -105,12 +124,18 @@ pub fn encode(fields: &ValueMap, vocab: &mut dyn NameResolver) -> Result<Vec<u8>
         put_len(&mut out, block.len());
         for entry in block {
             write_id(&mut out, entry.id);
-            out.push(if entry.composite {
-                entry.ty | COMPOSITE
+            // One head byte: composite flag, length code, type nibble.
+            let (head, escaped) = if entry.composite {
+                (COMPOSITE | entry.ty, false)
+            } else if implied_len(entry.ty).is_some() {
+                (entry.ty, false)
+            } else if entry.len <= 6 {
+                ((entry.len as u8) << LEN_SHIFT | entry.ty, false)
             } else {
-                entry.ty
-            });
-            if !entry.composite {
+                (LEN_ESCAPE << LEN_SHIFT | entry.ty, true)
+            };
+            out.push(head);
+            if escaped {
                 put_len(&mut out, entry.len);
             }
         }
@@ -288,12 +313,12 @@ pub fn decode(bytes: &[u8], name_of: &mut dyn FnMut(u16) -> Option<String>) -> V
             let Some(id) = read_id(bytes, &mut at) else {
                 return Vec::new();
             };
-            let Some(&ty_byte) = bytes.get(at) else {
+            let Some(&head) = bytes.get(at) else {
                 return Vec::new();
             };
             at += 1;
-            let composite = ty_byte & COMPOSITE != 0;
-            let ty = ty_byte & !COMPOSITE;
+            let composite = head & COMPOSITE != 0;
+            let ty = head & TYPE_MASK;
             if composite {
                 composites += 1;
                 items.push(Item {
@@ -305,10 +330,23 @@ pub fn decode(bytes: &[u8], name_of: &mut dyn FnMut(u16) -> Option<String>) -> V
                     child: composites,
                 });
             } else {
-                let Some((len, n)) = take_len(&bytes[at..]) else {
-                    return Vec::new();
+                // A fixed-width type answers its own length; otherwise the head
+                // carries it, or points at the shared varint.
+                let len = match implied_len(ty) {
+                    Some(len) => len,
+                    None => {
+                        let code = (head >> LEN_SHIFT) & LEN_ESCAPE;
+                        if code == LEN_ESCAPE {
+                            let Some((len, n)) = take_len(&bytes[at..]) else {
+                                return Vec::new();
+                            };
+                            at += n;
+                            len
+                        } else {
+                            code as usize
+                        }
+                    }
                 };
-                at += n;
                 let off = base;
                 let Some(next) = base.checked_add(len) else {
                     return Vec::new();
@@ -556,10 +594,10 @@ mod tests {
         let mut scan = at;
         let (_, n) = take_len(&bytes[scan..]).expect("count");
         scan += n;
-        // id
+        // id, then the head whose low nibble is the type
         scan += 1;
-        assert_eq!(bytes[scan], ObjValueType::UInt.to_byte());
-        bytes[scan] = 9;
+        assert_eq!(bytes[scan] & TYPE_MASK, ObjValueType::UInt.to_byte());
+        bytes[scan] = (bytes[scan] & !TYPE_MASK) | 9;
         let mut i = 0usize;
         let decoded = decode(&bytes, &mut |_id| {
             i += 1;
@@ -582,5 +620,115 @@ mod tests {
         let mut lying = bytes.clone();
         lying[0..2].copy_from_slice(&u16::MAX.to_be_bytes());
         assert!(decode(&lying, &mut |_id| None).is_empty());
+    }
+
+    // ---- layout v3: one head byte (ADR-0060) -------------------------------
+
+    /// id 1, len 1, UInt; id 2, Array; id 3, len 3, Str; id 4, Obj.
+    fn nested_example() -> ValueMap {
+        let inner = BTreeMap::from([("leaf".to_string(), DynamicValue::I64(-2))]);
+        map(&[
+            ("alpha", DynamicValue::U64(7)),
+            (
+                "arr",
+                DynamicValue::Array(vec![DynamicValue::Bool(true), DynamicValue::Null]),
+            ),
+            ("beta", DynamicValue::Str("two".into())),
+            ("nest", DynamicValue::Obj(inner)),
+        ])
+    }
+
+    #[test]
+    fn the_head_is_one_byte_and_the_nest_stays_two() {
+        let fields = nested_example();
+        let mut v = vocab();
+        let bytes = encode(&fields, &mut v).expect("encode");
+        //   head 00 11 (table = 17)  | block 0                          | block 1        | block 2
+        let want: &[u8] = &[
+            0x00, 0x11, // toc_len
+            0x04, // count 4
+            0x01, 0x10, // alpha: id 1, head = len 1 << 4 | UInt
+            0x02, 0x86, // arr: composite Array — byte-identical to v2
+            0x03, 0x32, // beta: id 3, head = len 3 << 4 | Str
+            0x04, 0x87, // nest: composite Obj
+            0x02, // count 2
+            0x00, 0x04, // element: id 0, Bool — length comes from the type
+            0x00, 0x05, // element: id 0, Null
+            0x01, // count 1
+            0x05, 0x18, // leaf: id 5, head = len 1 << 4 | Int
+            0x07, // alpha body
+            0x74, 0x77, 0x6f, // beta body "two"
+            0x01, // true
+            0xfe, // -2
+        ];
+        assert_eq!(bytes, want, "got {bytes:02x?}");
+        assert_eq!(bytes.len(), 25, "v2 was 30 for the same map");
+    }
+
+    #[test]
+    fn the_escape_starts_at_seven_bytes() {
+        for (body, head_bytes) in [(6usize, vec![0x01, 0x62]), (7, vec![0x01, 0x72, 0x07])] {
+            let fields = map(&[("s", DynamicValue::Str("x".repeat(body)))]);
+            let mut v = vocab();
+            let bytes = encode(&fields, &mut v).expect("encode");
+            // head, then block count, then the entry
+            let entry = HEAD + 1;
+            assert_eq!(
+                &bytes[entry..entry + head_bytes.len()],
+                &head_bytes[..],
+                "len {body}"
+            );
+            let toc = u16::from_be_bytes([bytes[0], bytes[1]]) as usize;
+            assert_eq!(toc, 1 + head_bytes.len(), "table for len {body}");
+            assert_eq!(bytes.len(), 2 + toc + body);
+        }
+    }
+
+    #[test]
+    fn a_long_body_escapes_to_the_shared_varint() {
+        let fields = map(&[("s", DynamicValue::Bytes(vec![0xAB; 128]))]);
+        let mut v = vocab();
+        let bytes = encode(&fields, &mut v).expect("encode");
+        // head, block count, then id, head (code 7 << 4 | Bytes), put_len(128) = 0x80 0x80.
+        assert_eq!(&bytes[3..7], &[0x01, 0x73, 0x80, 0x80]);
+        assert_eq!(u16::from_be_bytes([bytes[0], bytes[1]]) as usize, 1 + 4);
+    }
+
+    #[test]
+    fn the_fixed_width_types_carry_no_length() {
+        let fields = map(&[
+            ("b", DynamicValue::Bool(false)),
+            ("f", DynamicValue::F64(1.5)),
+            ("n", DynamicValue::Null),
+        ]);
+        let mut v = vocab();
+        let bytes = encode(&fields, &mut v).expect("encode");
+        let mut want = vec![0x00, 0x07, 0x03]; // toc_len 7 (1 + 3 entries of 2), count 3
+        want.extend_from_slice(&[0x01, 0x04]); // Bool: head = type only
+        want.extend_from_slice(&[0x02, 0x01]); // F64: head = type only
+        want.extend_from_slice(&[0x03, 0x05]); // Null: head = type only
+        want.push(0x00); // false
+        want.extend_from_slice(&1.5f64.to_be_bytes());
+        assert_eq!(bytes, want, "got {bytes:02x?}");
+    }
+
+    #[test]
+    fn an_unknown_type_is_skipped_with_and_without_the_escape() {
+        // Inline length: rewrite the type nibble of the first leaf to 9.
+        let fields = map(&[("a", DynamicValue::U64(1)), ("b", DynamicValue::U64(2))]);
+        let mut v = vocab();
+        let mut bytes = encode(&fields, &mut v).expect("encode");
+        bytes[4] = 0x19; // id 1, head = len 1 << 4 | unknown 9
+        let decoded = decode(&bytes, &mut |id| Some(format!("f{id}")));
+        assert_eq!(decoded.len(), 1, "the unknown field is skipped");
+        assert_eq!(decoded[0].value, DynamicValue::U64(2));
+
+        // Escaped length: the same nibble with code 7 still tells the reader
+        // that a varint follows, so the entry stays skippable.
+        let fields = map(&[("a", DynamicValue::Str("x".repeat(9)))]);
+        let mut v = vocab();
+        let mut bytes = encode(&fields, &mut v).expect("encode");
+        bytes[4] = 0x79; // id 1, head = code 7 << 4 | unknown 9
+        assert!(decode(&bytes, &mut |_| None).is_empty());
     }
 }

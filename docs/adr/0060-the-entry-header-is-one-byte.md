@@ -2,7 +2,7 @@
 
 > **Languages:** [English](0060-the-entry-header-is-one-byte.md) (primary) · [中文](0060-the-entry-header-is-one-byte.zh-CN.md)
 
-**Status:** Accepted (2026-11-11) — decided, not landed. Layout v2 ([ADR-0057](0057-the-dynamic-segment-gets-a-block-table.md)) is what the code writes and reads today; the landing checklist is the PLAN section of the same date.
+**Status:** Accepted (2026-11-11) — the header landed the same day in `okm-core/src/model/obj_segment.rs`, both directions, locked by hex tests; the crate extraction of decision 5 is still owed (PLAN, same date).
 **Date:** 2026-11-11
 **Depends on:** ADR-0012 (the value vocabulary), ADR-0042 (layout versions are stamps), ADR-0043 (no aliases), ADR-0056 §5/§6 (replay is the migration), ADR-0057 (the block table), ADR-0059 (crate boundaries follow the axis)
 
@@ -36,24 +36,44 @@ head   = bit 7      composite: this entry owns the next block
 
 **2. What that buys, measured on the same shapes as ADR-0057.**
 
-| shape | v2 | v3 | table share |
+| shape | v2 | v3 | why |
 |---|---|---|---|
-| 6 fields × 8 B | 69 B, table 21 B | 63 B, table 15 B | 30.4% → 23.8% |
-| 100 fields × 16 B | 1 903 B, table 303 B | 1 803 B, table 203 B | 15.9% → 11.3% |
-| body ≥ 7 bytes | `type` + `len varint` | `head` + `put_len` | unchanged |
-| `Bool` / `Null` / `F64` | `type` + `len` | `head` only | −1 byte |
+| body ≤ 6 bytes, 1-byte id | 3 bytes per entry | 2 bytes | the length fits in the head |
+| any body, `Bool` / `Null` / `F64` | 3 bytes per entry | 2 bytes | the type *is* the length |
+| body ≥ 7 bytes | 3 bytes per entry | 3 bytes | the escape costs exactly what the length field cost |
+| 1 000 `Null` fields | 4 496 B | 3 496 B | one byte per field |
+| 20 000 `Null` fields | 99 495 B, refused | 79 495 B, refused | both past the 16-bit table |
 
-A flat segment becomes `2 + 1 + 2n` bytes against the inline form's `3n`, so v3 is *smaller* than the layout v2 replaced as soon as a document has more than three fields — the one regression v2 carried is gone.
+So the gain is exactly one byte per field whose body is six bytes or shorter, and one byte per field whose type is fixed-width, and nothing at all for anything larger. That makes the change a Pareto improvement over v2 — never worse — but it does **not** close the gap to the pre-0057 inline form for large bodies: that form paid 3 bytes per field and no head, so `3 + 3n` still loses to `3n`. The flat-segment win is real only where the values are small: `3 + 2n` beats `3n` once a document has more than three fields.
 
 **3. Everything that made v2 safe is untouched.** Bit 7 stays structural, so a type a newer writer invented is still skippable without understanding it; the length is still stored rather than derived, so a truncated value is still detectable; the arithmetic that has to agree is the same (`toc_len` inside the file, leaf lengths summing to the value area, `blocks = composites + 1`, table ≤ 65 535 bytes).
 
-**4. It is layout v3, not v2 plus a tweak.** The stamp moves (ADR-0042) and a v2 segment is not read: the migration is the replay path ADR-0056 §5 already defines — every row that has a segment is decoded under the declaration that wrote it and re-encoded through the new build's write path.
+**4. It is layout v3, and the cutover is a wipe.** No new `#[ok_layout]` number and no stamp of the segment's own: the declared payload shape does not move, and a number no reader checks is ceremony. A store holding v2 segments is not migrated and not detected — it is deleted. One consequence needs saying because the bytes cannot enforce it: a changelog directory is built to outlive generations and picks each segment's declaration by its own `layout_version` (ADR-0056 §5/§6), while the segment layout does not ride that number — so a log carried across this change would hand v2 segment bytes to a v3 decoder. The wipe covers the log directories, and a log that must survive is exported by the build that wrote it.
 
 **5. The codec leaves `okm-core`, and the value vocabulary goes with it.** The segment codec (`encode` / `decode`) is used by more than one crate — `okm-core` itself (`document.rs`, `model/graph.rs`) and `okm-dynamic` (`graph.rs`, `plan_fields.rs`) — and its currency, `DynamicValue`, is consumed further out still (`okm-dynamic` re-exports it as `Value`; `okm-lake` and the bindings build on it). The rule this ADR adopts is the plain one: **a codec one crate uses is a module in that crate; a codec two or more crates use is a crate of its own.** It is also ADR-0059's axis test — the unit of change should equal the unit that changes, and value types plus layout versions move on their own schedule, not the store's.
 
-The crate cannot be the codec alone: its interface type is `DynamicValue`, so a codec crate that reached back into `okm-core` for its own argument type would be a cycle. The new crate is therefore the schema-free value vocabulary and its wire codec — `okm-value`: `DynamicValue`, `DynamicField`, `ValueMap`, `NameResolver`, `CodecError`, and `encode` / `decode`. `okm-core` depends on it; nothing is re-exported under the old paths (ADR-0043's posture: a rename leaves no alias behind).
+The crate cannot be the codec alone: its interface type is `DynamicValue`, so a codec crate that reached back into `okm-core` for its own argument type would be a cycle. The new crate is the schema-free value, its vocabulary view, and the codec over both — `okm-value`: `DynamicValue` / `DynamicField` / `ValueMap` / `CodecError`, `encode` / `decode`, and the vocabulary seam described in decision 6. `okm-core` depends on it; nothing is re-exported under the old paths (ADR-0043's posture).
 
-**6. What this is not.** `okm-value` is a code home, not a specification and not an interchange format. The segment's bytes remain a function of `(value, vocabulary)` — field ids come from the owning table's vocabulary, allocated on first sight — so the format is not canonical across stores and is not offered as one. A standalone format would need names inline (losing the economy) or a shared mutable vocabulary (becoming a stateful protocol); that question is settled elsewhere and this crate does not reopen it.
+**6. The vocabulary seam, and the cache that moves with it.** The segment carries ids, so both directions of the field-name vocabulary cross the codec's boundary — and neither is a read/write pair, which is why the traits are named after the direction, in the same family as `KeyEncode` and `DocumentEncode`.
+
+```rust
+/// name -> id. A HIT is a pure lookup; only a miss allocates, and allocation is
+/// the caller's (it spends the store's cursor and lands in the caller's batch).
+pub trait NameEncode { fn encode(&mut self, name: &str) -> Result<Id>; }
+
+/// id -> name. A map lookup: `None` is "this vocabulary has no such id", which is
+/// an answer, not an error.
+pub trait NameDecode { fn decode(&mut self, id: Id) -> Option<String>; }
+```
+
+- **Three doors, not two.** Restoring the cache is its own seam: `restore(pairs)` takes what one prefix scan of face `0x02` yields and fills both directions — the caller owns the scan, the crate owns the map. It runs once per handle, before the first `encode` (a miss on an unloaded cache would mint a second id for a name the store already has), and it merges rather than replaces, so a reload after another handle's write is harmless.
+- **The shape is chosen by measurement, and it is not a trie.** `id -> name` needs no structure: ids are dense from 1, so it is a `Vec` indexed by id — a bounds check, no hashing, on the direction every decode walks. `name -> id` is a hash map with a fast keyed hasher over names borrowed from that same `Vec` (one copy of each name, nothing allocated on a hit). Measured at 100 and 1 000 names, per lookup: fast hasher 5–12 ns, SipHash 10–19 ns, a byte-wise trie 20–63 ns, a sorted `Vec` with binary search 54–69 ns. The trie only pays when the question is a prefix *range*, which is path-index territory (ADR-0029), not this vocabulary's.
+- **The hook is adopt-or-allocate, not allocate.** Two handles on one engine share a cursor but not a cache, so a name the local map does not know may already have an id: the hook looks it up on the name face and adopts it, allocating only when that face is empty. This is the whole of "core stops managing a cache": hits never touch the store, one call site per miss, and no `RefCell` full of rules.
+- **What core still owns:** the scan behind `restore`, and the hook — probe the name face, allocate on a true miss (read the cursor, write name→id, id→name and the bumped cursor into the caller's batch), return the id. The cursor is read on every allocation, because two handles on one engine share it; that rule does not move.
+- **A miss's id is not evidence until the commit lands**, so the crate keeps the pending window: an id handed out for a label that has not committed yet is remembered as pending, and the owner calls `promote()` after a successful commit. The rule survives the move; only its home changes.
+- **The struct door stays vocabulary-free** (ADR-0035): `get` / `put` never load it, so a `Vocabulary` is built lazily on the first segment door and loaded with one scan. A handle that never touches the dynamic segment never pays for it.
+
+**7. What this is not.** `okm-value` is a code home, not a specification and not an interchange format. The segment's bytes remain a function of `(value, vocabulary)` — field ids come from the owning table's vocabulary, allocated on first sight — so the format is not canonical across stores and is not offered as one. A standalone format would need names inline (losing the economy) or a shared mutable vocabulary (becoming a stateful protocol); that question is settled elsewhere and this crate does not reopen it.
 
 ## Rejected
 
@@ -71,7 +91,7 @@ The crate cannot be the codec alone: its interface type is `DynamicValue`, so a 
 
 ## Consequences
 
-- Every store holding a dynamic segment is re-encoded through the replay path (ADR-0056 §5). Tables with only declared fields are unaffected.
+- Existing stores and their changelog directories are deleted, not replayed (decision 4). This leads because it is the only irreversible consequence: nothing in the bytes separates a v2 segment from a v3 one, so the two builds must not share a store.
 - `okm_core::model::obj_dynamic` and `okm_core::obj_segment` paths become `okm_value::…`: breaking for `okm-dynamic`, `okm-lake`, the bindings, and core's own call sites. `ValueMap` / `NameResolver` / `CodecError` travel with `DynamicValue`, so the trait implementations that take them move too.
 - "A leaf entry is byte-identical to the old inline frame header" (ADR-0057 §6) stops being true; the internals page, its worked hex example and MODELING's grammar line follow.
 - The decoder keeps one rule: bit 7 set means no length; otherwise len code 7 means a `put_len` varint follows; otherwise the code is the length. One escape branch is the whole new code path.
@@ -79,4 +99,4 @@ The crate cannot be the codec alone: its interface type is `DynamicValue`, so a 
 
 ## Related records
 
-ADR-0012 (the value vocabulary and its append-only type numbers), ADR-0042 (a layout change is a new stamp), ADR-0043 (no aliases under renamed paths), ADR-0056 §5/§6 (replay as the migration path), ADR-0057 (the table this header sits in), ADR-0059 (crate boundaries and the dependency-closure check). The bytes are documented in [the dynamic segment page](../internals/dynamic-segment.md); this record is the decision, that page is the mechanism.
+ADR-0012 (the value vocabulary and its append-only type numbers), ADR-0042 (a layout change is a new stamp), ADR-0043 (no aliases under renamed paths), ADR-0056 §5/§6 (a log outlives its stores, and each segment names its declaration), ADR-0057 (the table this header sits in), ADR-0059 (crate boundaries and the dependency-closure check). The bytes are documented in [the dynamic segment page](../internals/dynamic-segment.md); this record is the decision, that page is the mechanism.
