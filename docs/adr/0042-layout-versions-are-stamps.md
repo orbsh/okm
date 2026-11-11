@@ -36,10 +36,14 @@ the bytes were written in. It is not a promise that another build can read them.
 payload carries no header at all — `[hot segment][cold TLV]`, the boundary being the
 declaration's `HOT_WIDTH` — so a row repeats nothing its reader already knows, and an
 empty document is zero bytes. The number is stated twice: in the segment header
-(`layout_version`) and in the declaration (`#[ok_layout(version = N)]`, default 1). A log
-whose number differs is refused where it is opened — `ChangelogStore::register`, and
-replay/export before the first row is decoded — with `LayoutMismatch { stored, current }`.
-There is no per-row comparison, because a row is never read without the log it came from.
+(`layout_version`) and in the declaration (`#[ok_layout(version = N)]`, default 1). The
+header's number decides which declaration decodes that segment — the sidecar named
+`schema-v<N>.json` beside it — so a directory that carries several generations is the
+ordinary state of a log that has outlived a build, and a build opens it whatever its newest
+segment says. What is refused is a segment whose generation has no sidecar: the reader stops
+and names the number rather than borrowing a neighbour's declaration. There is no per-row
+comparison, because a row is never read without the log it came from, and no directory-level
+verdict, because a generation stamps BYTES and not a path.
 
 **2. The number may simply go up, and that is the ordinary style.** A shape change
 gives the table a new number — incrementing is the default, and resetting to 1 is
@@ -57,11 +61,13 @@ WRITTEN decision (a record that says these payloads must survive a shape change,
 and says why). Silence means the store is regenerated or carried across by
 migration — never that the new build keeps a decoder for the old shape.
 
-**5. Migration is export → import, not a dual reader.** The build that wrote the
-data exports the rows it can read; the build replacing it imports them under its
-own layout. The bundle and the per-table Parquet export already exist, carry the
-caller's own rows, and have an owner. An in-place upgrade-on-read path (old
-records staying in the old format) is not the design.
+**5. Migration is REPLAY, not a dual reader.** The build replacing the old one reads the
+change log and writes the rows through its own write path, decoding each segment under the
+declaration that produced it and re-encoding it under its own (ADR-0056 §5). Nothing keeps
+a decoder for another shape alive: the old declaration is a sidecar file, which is data, not
+a second reader in the binary. An in-place upgrade-on-read path (old records staying in the
+old format, a build absorbing a shape it does not declare) is not the design — and neither
+is routing an upgrade through Parquet, which cannot express a removal.
 
 **6. What a decoder still absorbs is absence, and only in the cold half.** A cold TLV
 frame that is not there is a field that was never written, and it takes its declared

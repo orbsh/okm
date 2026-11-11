@@ -54,12 +54,14 @@ codec.
 - A second name costs no layout decision — that is the whole point of the map.
   A value is opaque bytes here; the meaning belongs to whoever wrote the name.
 
-**4. One verb writes the runtime's name: `ensure_layout`.** Absent → seed
-`version = this build's`; matching → answer the row (other names included);
-different, or a row that names no version → `Error::LayoutMismatch { stored,
-current }`. It is called at attach/boot, once per table. `Collection::new` stays
-I/O-free and keeps returning `Self` — which is exactly why this is a verb and not
-constructor work.
+**4. One verb writes the runtime's name: `ensure_layout`.** Absent → seed the
+fingerprint of this declaration's derived faces; present → answer the row untouched
+(other names included), because rewriting it would erase the `Stale` signal
+`rebuild_faces` acts on. It is called at attach/boot, once per table.
+`Collection::new` stays I/O-free and keeps returning `Self` — which is exactly why this
+is a verb and not constructor work. A payload generation is not recorded here: it is the
+segment header's (ADR-0042, amended), so there is no version name to compare and no
+`LayoutMismatch` to raise.
 
 **5. Callers record their own names with `set_meta`,** and the runtime re-stamps
 `version` afterwards. A caller cannot edit the shape stamp away, on purpose.

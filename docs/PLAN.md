@@ -3048,8 +3048,11 @@ breadth-first block table and no magic. The checklist below is the landing.
       `obj_dynamic` covers ids past the `0xFF` escape and the nesting cap.
 - [x] **MODELING**: the dynamic-segment paragraph (both languages), `docs/internals/key-layout.md`
       and ADR-0030's slot table now say "blocks + values (ADR-0057)".
-- [ ] **Migration**: the segment is truth (ADR-0045), so every row that has one is re-encoded
-      under the new layout at upgrade time — no dual reader (ADR-0057 §4).
+- [x] **Migration**: the segment is truth (ADR-0045), so every row that has one is re-encoded
+      under the new layout at upgrade time, by REPLAY through the new build's write path —
+      each segment decoded under the declaration that wrote it, out of the same changelog
+      directory the old build used. No dual reader: the old declaration is a sidecar file
+      (data), not a second decoder in the binary (ADR-0057 §4, ADR-0056 §5).
 - [x] **ADR-0056 §7's marks went with the same pass**: the segment header starts at `fmt`, the
       footer is 28 bytes (`body_len | records | ordinal | crc32`), and a format-1 file is no
       longer read; that section and its index row were rewritten.
@@ -3140,3 +3143,78 @@ step of a cutover became a program the deployment names.
       that hangs is killed at the caller's budget.
 - [x] Docs: ADR-0056 §6 (both languages) rewritten around the successor as the announcer —
       the coordinator is gone from the flow — plus the README's upgrade paragraph.
+
+## 2026-11-10 — the changelog directory is permanent; a generation is a SEGMENT (owed)
+
+Correction to what the guard added earlier today assumed. **The changelog path never
+changes**: `ChangelogConfig.location` names one directory per table and every build appends
+to it, generation after generation (ADR-0056 §5/§6: the log belongs to the table, and the
+history is one stream across however many stores it feeds). There is no second log root, no
+"new generation gets a new directory", and no cutover that swaps the directory out. What a
+generation identifies is the BYTES of one segment — its header already carries
+`layout_version` — so the unit is the segment, never the directory and never the build.
+
+Today's code assumes one generation per directory, and the `LayoutMismatch` checks added in
+`01807f2` / `3ad359b` enforce that wrong assumption: they refuse exactly the continuous use
+the log exists for. Measured against the rule above:
+
+- [x] `ChangelogStore::register`: drop the newest-segment vs `R::LAYOUT_VERSION` refusal. A
+      build must be able to open and append to a directory whose newest segment was written
+      by another generation. `changelog::segment_layout` stays — as a per-segment reader,
+      not as a directory verdict.
+- [x] `replay::per_table`: drop the check against the directory's sidecar. A table directory
+      carrying `schema-v1.json` and `schema-v2.json` is the normal state after an upgrade.
+- [x] `window::load_sidecar` (rewritten today to pick the sidecar matching the newest
+      segment): the declaration is chosen PER SEGMENT — `schema-v<segment's layout_version>
+      .json` — because that is what "reads each op under the version it was written with"
+      requires. A segment whose generation has no sidecar beside it is an error naming the
+      generation; it is never satisfied by a neighbouring declaration.
+- [x] `read_window` / `replay::replay_table`: both decode every segment through one
+      directory-level schema today. Decode per segment; a mixed directory is the expected
+      input, not a corruption.
+- [x] `ChangelogStore::take_over`: the catch-up after the handed position was `apply_log`, a
+      byte copy, honest only for segments of this build's generation. It now takes
+      `after: Option<&str>` — the last segment the caller's store already holds — and applies
+      what is above it through `apply_log_in_generation`, which REFUSES a segment stamped with
+      another generation and names both numbers. A shape-changing cutover therefore replays
+      the tail through the target's write path (`changelog::replay`) and takes the claim with
+      that position; after which nothing is left to apply and the claim is the whole step.
+      The same-generation fast path is unchanged.
+- [x] Window boundary: a window does not cross a generation change. A window is a unit of
+      export and of the watermark, and its schema would be ambiguous across generations, so
+      a segment of another generation ends the current window and starts the next. The
+      consequence had to be paid immediately: `drain_table` took ONE window per call, so a
+      directory with two generations would have advanced the watermark through the first and
+      reported success with the newer rows unexported. It now loops (and stops on a window
+      that carries no rows, whose position is deliberately left alone — looping there would
+      spin). `drain_test::one_drain_covers_every_generation_in_the_directory` is the lock.
+- [x] Tests: `okm-core/tests/layout_generation_test.rs` currently locks the rule being
+      removed (`a_log_of_another_generation_is_refused_before_a_row_is_decoded`,
+      `replay_refuses_a_sidecar_that_claims_another_generation`). Rewrite it around the real
+      contract: a new generation registers and appends to an existing directory; a mixed
+      directory replays each segment under its own sidecar; a segment with no sidecar of its
+      generation is refused by generation number; a cross-generation `take_over` re-encodes
+      instead of copying.
+- [x] Docs: ADR-0056 §6's sentence "one log carries several epochs and a replay reads each
+      op under the version it was written with" is CORRECT and stays — it is the code that
+      drifted. Add what is missing there instead: the sidecar is selected per segment, a
+      window does not cross a generation, and the cutover's apply is generation-aware.
+      ADR-0042 (amended) gets the same clarification in one line: the stamp in the segment
+      header identifies bytes, not a directory.
+
+Bulk migration is unchanged by all of this and is already implemented: `okm-parquet replay
+--root <the same changelog directory> --store <new store>` reads every generation (each
+under its own sidecar) and writes through the new build's write path; `--reconcile` covers
+what the log never carried. Parquet and Delta stay out of the upgrade path entirely
+(ADR-0056 §5).
+
+Landed: `okm-core/tests/layout_generation_test.rs` (five tests: a new generation registers and
+appends into the same directory; every generation keeps its own sidecar and `load_sidecar` is
+the newest by NUMBER; a generation without a sidecar is refused by number; a window stops at a
+generation change; a byte copy refuses another generation) and
+`okm-dynamic/tests/generation_replay_test.rs` (a mixed directory replays each segment under its
+own declaration — the two declarations below it have the same fields in a different ORDER, so a
+wrong pick answers with the other field's value). `Error::LayoutMismatch` had no producer left
+and is gone; every doc that named it (MODELING both languages, ADR-0042 §1/§5, ADR-0043 §4,
+ADR-0048 §4/§5, the ADR index) now states the rule that replaced it. Gate: 538 tests, 0 failed;
+clippy clean; `cargo fmt --check` clean.
