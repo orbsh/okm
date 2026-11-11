@@ -11,6 +11,8 @@ arrow = { version = "60", optional = true }
 [dev-dependencies]
 okm-derive = { path = "../okm-derive" }
 okm-async = { path = "../okm-async", features = ["slatedb"] }
+# The generation-replay test writes and reads a real changelog directory.
+tempfile = "3"
 
 [features]
 default = []

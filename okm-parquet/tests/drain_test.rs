@@ -706,3 +706,57 @@ fn a_commit_carries_statistics_a_reader_can_skip_with() {
         );
     }
 }
+
+/// A second generation of the SAME table (same ns, new number): the directory outlives the
+/// build, so a drain that stops at one generation would advance the position and report
+/// success while leaving the newer rows unexported.
+#[derive(DocumentEncode, Clone, PartialEq, Debug)]
+#[ok_ref(K)]
+#[ok_ns(71)]
+#[ok_layout(version = 2)]
+#[ok_name("drained_rows")]
+pub struct R2 {
+    pub level: u32,
+    pub name: String,
+}
+
+#[test]
+fn one_drain_covers_every_generation_in_the_directory() {
+    let root = tempfile::tempdir().expect("root");
+    let out = tempfile::tempdir().expect("out");
+    {
+        let c = collection(root.path());
+        c.put(
+            &K1,
+            &R {
+                level: 3,
+                name: "alpha".into(),
+            },
+        )
+        .expect("put");
+    }
+    {
+        let c: Collection<_, K, R2> = Collection::captured(ChangelogStore::new(
+            TestStore::slatedb_mem(),
+            ChangelogConfig::new(root.path()),
+        ))
+        .expect("the next build opens the same directory");
+        c.put(
+            &K2,
+            &R2 {
+                level: 4,
+                name: "beta".into(),
+            },
+        )
+        .expect("put");
+    }
+
+    let report = drain(root.path(), &DrainConfig::new(out.path(), "test")).expect("drain");
+    assert_eq!(
+        report.files.len(),
+        2,
+        "one window per generation, both taken in one pass: {:?}",
+        report.files
+    );
+    assert_eq!(report.rows, 2, "a row from each generation");
+}

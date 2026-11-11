@@ -2185,6 +2185,7 @@ dependencies = [
  "okm-core",
  "okm-derive",
  "serde",
+ "tempfile",
 ]
 
 [[package]]

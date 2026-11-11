@@ -75,7 +75,8 @@ fn a_log_waiting_for_its_successor(
 
     let mut a = store(log, None);
     a.register::<RowKey, Row>().unwrap();
-    a.take_over("A", "/data/a", Duration::from_secs(5)).unwrap();
+    a.take_over("A", "/data/a", None, Duration::from_secs(5))
+        .unwrap();
     let a = Collection::<_, RowKey, Row>::captured(a).unwrap();
     write_a_row(&a, 1);
 
@@ -93,7 +94,8 @@ fn the_successor_runs_the_hook_once_it_is_the_writer() {
     let told = log.path().join("told.txt");
     let (header, mut b) = a_log_waiting_for_its_successor(log.path(), Some(recorder(&told)));
 
-    b.take_over("B", "/data/b", Duration::from_secs(5)).unwrap();
+    b.take_over("B", "/data/b", None, Duration::from_secs(5))
+        .unwrap();
 
     let seen = std::fs::read_to_string(&told).expect("the hook ran");
     let fields: Vec<&str> = seen.split('|').collect();
@@ -125,7 +127,7 @@ fn a_fresh_log_announces_nothing() {
     let mut first = store(log.path(), Some(recorder(&told)));
     first.register::<RowKey, Row>().unwrap();
     let roles = first
-        .take_over("A", "/data/a", Duration::from_secs(5))
+        .take_over("A", "/data/a", None, Duration::from_secs(5))
         .unwrap();
     assert_eq!(roles[0].1, owner::Role::First);
     assert!(
@@ -142,7 +144,7 @@ fn a_hook_that_says_no_does_not_undo_the_claim() {
     let (header, mut b) = a_log_waiting_for_its_successor(log.path(), Some(refusing));
 
     let err = b
-        .take_over("B", "/data/b", Duration::from_secs(5))
+        .take_over("B", "/data/b", None, Duration::from_secs(5))
         .unwrap_err();
     let text = err.to_string();
     assert!(
@@ -177,7 +179,7 @@ fn a_hook_that_hangs_is_killed_and_reported() {
 
     let started = std::time::Instant::now();
     let err = b
-        .take_over("B", "/data/b", Duration::from_millis(300))
+        .take_over("B", "/data/b", None, Duration::from_millis(300))
         .unwrap_err();
     assert!(
         started.elapsed() < Duration::from_secs(5),

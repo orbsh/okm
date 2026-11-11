@@ -98,14 +98,31 @@ pub struct ReplayReport {
 /// declaration changed shape are the caller's to translate before this point: a
 /// replay does not guess field renames.
 pub fn replay_table<T: ReplayTarget>(dir: &Path, target: &T) -> Result<ReplayReport, String> {
-    let schema = super::window::load_sidecar(dir).map_err(|e| e.to_string())?;
     let header = super::window::header_of(dir).map_err(|e| e.to_string())?;
 
     let mut report = ReplayReport::default();
     let mut labels: HashMap<(u16, Vec<u8>), String> = HashMap::new();
+    // One directory, several generations: each segment is decoded under the declaration
+    // the bytes were written with (ADR-0056 §5), picked by the number in its own header.
+    // The target still writes under its OWN declaration, which is the whole point of the
+    // upgrade — a name the new shape does not have lands in the dynamic segment.
+    let mut schemas: HashMap<u8, crate::schema::CollectionSchema> = HashMap::new();
 
     for segment in ordered_segments(dir)? {
         report.segments += 1;
+        let generation = super::segment_info(&segment)
+            .map_err(|e| e.to_string())?
+            .meta
+            .layout_version;
+        let schema = match schemas.get(&generation) {
+            Some(schema) => schema.clone(),
+            None => {
+                let schema = super::window::sidecar_of(dir, generation)
+                    .map_err(|e| format!("{}: layout {generation}: {e}", dir.display()))?;
+                schemas.insert(generation, schema.clone());
+                schema
+            }
+        };
         for frame in read_sealed(&segment).map_err(|e| e.to_string())? {
             for (tag, key, value) in frame.0 {
                 let Some((slot, suffix)) = super::window::split_slot(&header, &key) else {
@@ -221,19 +238,10 @@ where
 {
     let mut out = Vec::new();
     for dir in super::window::table_dirs(root).map_err(|e| e.to_string())? {
+        // The NEWEST declaration: it is what the store being built is declared with, even
+        // when the directory still carries older generations beside it. Reading the
+        // history is the per-segment job below (ADR-0056 §5).
         let schema = super::window::load_sidecar(&dir).map_err(|e| e.to_string())?;
-        // The generation comes from the log itself (its newest segment's header), so
-        // this refuses before a single row is decoded: no second reader, no guessing.
-        if let Some(stored) = super::segment_layout(&dir).map_err(|e| e.to_string())?
-            && stored != schema.layout_version
-        {
-            return Err(format!(
-                "{}: the log is layout {stored}, this declaration is {} — export it with the \
-                 build that wrote it and import (ADR-0042)",
-                dir.display(),
-                schema.layout_version
-            ));
-        }
         let header = super::window::header_of(&dir).map_err(|e| e.to_string())?;
         out.push(run(&dir, &header, &schema)?);
     }

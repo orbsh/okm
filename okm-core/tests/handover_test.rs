@@ -62,7 +62,10 @@ fn the_successor_asks_applies_and_then_claims() {
     let mut holder_store = store(log.path());
     holder_store.register::<RowKey, Row>().unwrap();
     assert_eq!(
-        holder_store.take_over("A", "/data/a", timeout).unwrap()[0].1,
+        holder_store
+            .take_over("A", "/data/a", None, timeout)
+            .unwrap()[0]
+            .1,
         Role::First,
         "nothing claimed the log yet"
     );
@@ -85,7 +88,9 @@ fn the_successor_asks_applies_and_then_claims() {
     // --- B finishes: apply the log, then claim. ---
     let mut successor_store = store(log.path());
     successor_store.register::<RowKey, Row>().unwrap();
-    let roles = successor_store.take_over("B", "/data/b", timeout).unwrap();
+    let roles = successor_store
+        .take_over("B", "/data/b", None, timeout)
+        .unwrap();
     assert!(
         matches!(roles[0].1, Role::HandedOver { .. }),
         "{:?}",
@@ -122,7 +127,7 @@ fn a_second_instance_over_the_same_store_is_refused() {
     first.register::<RowKey, Row>().unwrap();
     assert_eq!(
         first
-            .take_over("A", "/data/a", Duration::from_secs(1))
+            .take_over("A", "/data/a", None, Duration::from_secs(1))
             .unwrap()[0]
             .1,
         Role::First
@@ -131,7 +136,7 @@ fn a_second_instance_over_the_same_store_is_refused() {
     let mut intruder = store(log.path());
     intruder.register::<RowKey, Row>().unwrap();
     let err = intruder
-        .take_over("B", "/data/a", Duration::from_secs(1))
+        .take_over("B", "/data/a", None, Duration::from_secs(1))
         .unwrap_err();
     let text = err.to_string();
     assert!(text.contains("share one store"), "{text}");

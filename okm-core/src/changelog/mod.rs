@@ -713,11 +713,12 @@ impl Drop for Changelog {
     }
 }
 
-/// The payload layout the NEWEST sealed segment of a table was written under.
+/// The generation of the NEWEST sealed segment in a table directory.
 ///
-/// This is the one place a log states its generation (ADR-0042 as amended): a segment
-/// header carries it, so a reader can tell "these bytes are mine" without opening a
-/// store, without decoding a row, and without a second reader for the older generation.
+/// A generation is a property of BYTES (ADR-0042 as amended): every segment's header says
+/// which one wrote it, and a directory that outlives a build holds several. This answers
+/// "what does the head of this log say", which is what a maintenance view or a test wants;
+/// reading history asks per SEGMENT (`segment_info(path).meta.layout_version`).
 /// `None` = nothing sealed yet (a fresh table, or one that never wrote).
 pub fn segment_layout(dir: &Path) -> Result<Option<u8>> {
     let Some(newest) = last_sealed(dir) else {
@@ -942,6 +943,33 @@ pub fn apply_log<S: crate::VirtualStorage>(
     target: &S,
     after: Option<&str>,
 ) -> Result<Applied> {
+    apply_segments(root, header, target, after, None)
+}
+
+/// [`apply_log`] for a log that several generations have written to: a segment stamped
+/// with a generation other than `generation` is REFUSED, never copied.
+///
+/// The copy is only honest when the bytes were written under this build's own declaration
+/// — a key and a payload are the row only under the shape that produced them. Another
+/// generation's segment goes through the decoder and the target's write path
+/// (`changelog::replay`), which is a different job with a different owner (ADR-0056 §5).
+pub fn apply_log_in_generation<S: crate::VirtualStorage>(
+    root: &Path,
+    header: &[u8],
+    target: &S,
+    after: Option<&str>,
+    generation: u8,
+) -> Result<Applied> {
+    apply_segments(root, header, target, after, Some(generation))
+}
+
+fn apply_segments<S: crate::VirtualStorage>(
+    root: &Path,
+    header: &[u8],
+    target: &S,
+    after: Option<&str>,
+    generation: Option<u8>,
+) -> Result<Applied> {
     let segments = all_segments(root, header)?;
     let mut applied = Applied { ops: 0, last: None };
     for path in segments {
@@ -952,6 +980,19 @@ pub fn apply_log<S: crate::VirtualStorage>(
             && name.as_str() <= after
         {
             continue;
+        }
+        if let Some(generation) = generation {
+            let stamp = segment_info(&path)?.meta.layout_version;
+            if stamp != generation {
+                return Err(Error::Changelog {
+                    what: format!(
+                        "{}: the segment is layout {stamp} and this build writes {generation} \
+                         — its payloads are not rows this store can hold; replay it through \
+                         the target's write path first (ADR-0056 §5)",
+                        path.display()
+                    ),
+                });
+            }
         }
         for frame in read_sealed(&path)? {
             for (tag, key, value) in frame.0 {
@@ -1517,6 +1558,14 @@ impl<S> ChangelogStore<S> {
     /// the position it stopped at, apply the log to this store, and only then take the
     /// claim.
     ///
+    /// `after` names the last segment the caller's store already holds — the bulk a replay
+    /// put there before this call. Everything above it is applied on the spot, but ONLY
+    /// segments of this build's generation: a segment another generation wrote is refused,
+    /// because its payloads are rows under a shape this store does not read. A cutover that
+    /// changes shape therefore replays the tail through the target's write path
+    /// (`changelog::replay`) and calls this with that position, after which there is
+    /// nothing left to apply and the claim is the whole of the step.
+    ///
     /// The order matters and is the whole safety argument: the log is not growing while
     /// it is being read, the replay is compared against exactly what was handed over, and
     /// the write switch closes for everyone but the caller when it claims. A mismatch is
@@ -1526,15 +1575,23 @@ impl<S> ChangelogStore<S> {
         &mut self,
         holder: &str,
         data: &str,
+        after: Option<&str>,
         timeout: std::time::Duration,
     ) -> Result<Vec<(Vec<u8>, owner::Role)>>
     where
         S: crate::VirtualStorage,
     {
         let root = self.cfg.root_or_err()?.to_path_buf();
-        let headers: Vec<Vec<u8>> = self.metas.borrow().keys().cloned().collect();
+        // The generation is a property of the DECLARATION this store registered, one per
+        // table: it is what the segments this instance appends will say.
+        let tables: Vec<(Vec<u8>, u8)> = self
+            .metas
+            .borrow()
+            .iter()
+            .map(|(header, meta)| (header.clone(), meta.layout_version))
+            .collect();
         let mut out = Vec::new();
-        for header in headers {
+        for (header, generation) in tables {
             let dir = table_dir(&root, &header);
             let role = owner::decide(&dir, holder, data).map_err(owner_err)?;
             if let owner::Role::Shared {
@@ -1577,7 +1634,11 @@ impl<S> ChangelogStore<S> {
                 _ => None,
             };
             if let Some(handed) = handed {
-                let applied = apply_log(&root, &header, &self.inner, None)?;
+                // Only what the caller says its store does not have yet, and only segments
+                // of THIS build's generation: an older generation's bytes are decoded by
+                // the replay path, never copied (ADR-0056 §5).
+                let applied =
+                    apply_log_in_generation(&root, &header, &self.inner, after, generation)?;
                 if applied.last.as_deref() != Some(handed.as_str()) {
                     return Err(Error::Changelog {
                         what: format!(
@@ -1672,17 +1733,11 @@ impl<S> ChangelogStore<S> {
         };
         let dir = table_dir(root, &header);
         std::fs::create_dir_all(&dir).map_err(|e| io_err(&dir, e))?;
-        // The log states its generation; this build reads exactly one. A different
-        // number is not a flag to read anyway — the door is a Delta export made by the
-        // build that wrote these bytes (ADR-0042).
-        if let Some(stored) = segment_layout(&dir)?
-            && stored != R::LAYOUT_VERSION
-        {
-            return Err(Error::LayoutMismatch {
-                stored: Some(stored),
-                current: R::LAYOUT_VERSION,
-            });
-        }
+        // No generation check here, on purpose: the changelog path never changes
+        // (ADR-0056 §5/§6), so a directory whose newest segment was written by an older
+        // generation is the ordinary state after an upgrade, and this build appends to it
+        // under its own number. What a generation identifies is the bytes of ONE segment
+        // (its header says which), never the directory.
         #[cfg(feature = "schema-serde")]
         write_sidecar(&dir, &crate::model::schema::CollectionSchema::of::<K, R>())?;
         self.metas

@@ -87,7 +87,6 @@ impl Default for WindowConfig {
 pub fn read_window(dir: &Path, cfg: &WindowConfig) -> Result<Option<Window>> {
     let header = header_of(dir)?;
     let table = file_name(dir);
-    let schema = load_sidecar(dir)?;
 
     let mut segments: Vec<PathBuf> = std::fs::read_dir(dir)
         .map_err(|e| io_err(dir, e))?
@@ -102,19 +101,35 @@ pub fn read_window(dir: &Path, cfg: &WindowConfig) -> Result<Option<Window>> {
     segments.sort();
 
     let after = cfg.after.clone().unwrap_or_default();
-    let window: Vec<PathBuf> = segments
+    let candidates: Vec<PathBuf> = segments
         .into_iter()
         .filter(|p| file_name(p) > after)
-        .take(cfg.max_segments.max(1))
         .collect();
-    if window.is_empty() {
+    let Some(first) = candidates.first() else {
         return Ok(None);
+    };
+
+    // One window, ONE generation: a window carries a single declaration (its schema is
+    // what a sink or a replay decodes with), so a segment of another generation ends this
+    // window and starts the next one. The changelog directory never changes, so this is
+    // the normal case after an upgrade, not a corruption (ADR-0056 §5/§6).
+    let generation = super::segment_info(first)?.meta.layout_version;
+    let mut window: Vec<PathBuf> = Vec::new();
+    for path in candidates {
+        if super::segment_info(&path)?.meta.layout_version != generation {
+            break;
+        }
+        window.push(path);
+        if window.len() >= cfg.max_segments.max(1) {
+            break;
+        }
     }
 
+    let schema = sidecar_of(dir, generation)?;
     let mut out = Window {
         schema: schema.clone(),
         table,
-        layout_version: schema.layout_version,
+        layout_version: generation,
         segments: window.iter().map(|p| file_name(p)).collect(),
         rows: Vec::new(),
         deletes: Vec::new(),
@@ -252,60 +267,64 @@ pub fn header_of(dir: &Path) -> Result<Vec<u8>> {
         .collect()
 }
 
-/// The one declaration this directory's bytes are read through. Absent means the
-/// log is readable as bytes and useless as columns, which is a stop, not a guess.
+/// Every declaration this directory carries, by generation.
 ///
-/// A directory can hold SEVERAL stamps — a build that wrote `schema-v2.json` beside an
-/// older `schema-v1.json` is exactly what an upgrade leaves behind — so the choice is
-/// not alphabetical: the log says which generation it was written under, and that
-/// number picks the file. Sorting by name would answer `schema-v10.json` for a version
-/// 2 log and refuse a table that is perfectly readable.
-pub fn load_sidecar(dir: &Path) -> Result<CollectionSchema> {
-    let mut found: Vec<PathBuf> = std::fs::read_dir(dir)
+/// A directory accumulates one sidecar per generation and keeps all of them: the changelog
+/// path never changes (ADR-0056 §5/§6), so an upgrade leaves `schema-v2.json` beside
+/// `schema-v1.json` and every older segment keeps its own declaration beside it.
+fn sidecars(dir: &Path) -> Result<Vec<(u8, PathBuf)>> {
+    let mut found: Vec<(u8, PathBuf)> = std::fs::read_dir(dir)
         .map_err(|e| io_err(dir, e))?
         .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| {
-            p.file_name()
-                .and_then(|n| n.to_str())
-                .is_some_and(|n| n.starts_with("schema-v") && n.ends_with(".json"))
+        .filter_map(|p| {
+            let name = p.file_name()?.to_str()?.to_owned();
+            let digits = name.strip_prefix("schema-v")?.strip_suffix(".json")?;
+            Some((digits.parse::<u8>().ok()?, p))
         })
         .collect();
-    found.sort();
-    if found.is_empty() {
+    found.sort_by_key(|(generation, _)| *generation);
+    Ok(found)
+}
+
+/// The declaration for ONE generation: `schema-v<N>.json`, where `N` is the number the
+/// bytes say they were written under (the segment header's `layout_version`).
+///
+/// This is the per-segment half of ADR-0056 §5's "a replay reads each op under the version
+/// it was written with". A generation whose sidecar is not beside it is a stop: the bytes
+/// are readable and their columns would be invented, and no neighbouring declaration may
+/// stand in for the missing one — that is how a row gets read as the wrong shape.
+pub fn sidecar_of(dir: &Path, generation: u8) -> Result<CollectionSchema> {
+    let all = sidecars(dir)?;
+    let Some((_, path)) = all.iter().find(|(v, _)| *v == generation) else {
+        let names: Vec<String> = all
+            .iter()
+            .filter_map(|(_, p)| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+            .collect();
+        return Err(corrupt(
+            dir,
+            &format!(
+                "layout {generation}: no sidecar — expected {} beside the segments \
+                 (found {names:?})",
+                super::sidecar_name(generation)
+            ),
+        ));
+    };
+    read_sidecar(path)
+}
+
+/// The NEWEST declaration a directory carries: the one a store built today is written
+/// under, and therefore the one a replay's target is declared with. Not the same question
+/// as [`sidecar_of`] — reading history asks per segment, building a store asks for the
+/// latest.
+pub fn load_sidecar(dir: &Path) -> Result<CollectionSchema> {
+    let found = sidecars(dir)?;
+    let Some((_, path)) = found.last() else {
         return Err(corrupt(
             dir,
             "no schema sidecar — nothing can turn these bytes into columns",
         ));
-    }
-    if found.len() > 1 {
-        let names: Vec<String> = found
-            .iter()
-            .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
-            .collect();
-        let Some(generation) = super::segment_layout(dir)? else {
-            return Err(corrupt(
-                dir,
-                &format!(
-                    "no sealed segment to say which of {names:?} wrote this log — the \
-                     declarations disagree and nothing can pick between them"
-                ),
-            ));
-        };
-        let want = super::sidecar_name(generation);
-        let Some(hit) = found
-            .iter()
-            .find(|p| p.file_name().and_then(|n| n.to_str()) == Some(want.as_str()))
-        else {
-            return Err(corrupt(
-                dir,
-                &format!(
-                    "the log is layout {generation} and no {want} sits beside it (found {names:?})"
-                ),
-            ));
-        };
-        return read_sidecar(hit);
-    }
-    read_sidecar(&found[0])
+    };
+    read_sidecar(path)
 }
 
 /// Parse one sidecar. A sidecar that does not parse is a stop: the bytes are readable

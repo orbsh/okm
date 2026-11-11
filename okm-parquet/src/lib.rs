@@ -179,21 +179,32 @@ pub fn drain(root: &Path, cfg: &DrainConfig) -> Result<Report> {
     Ok(report)
 }
 
-/// Project one table directory: the next window this consumer has not taken.
+/// Project one table directory: every window this consumer has not taken.
+///
+/// A window is ONE generation (ADR-0056 §6), and a table's directory outlives every build
+/// that wrote to it, so one pass over a directory that has seen an upgrade is several
+/// windows. Looping here is what keeps a single invocation from advancing the position to
+/// the end of one generation and reporting success.
 pub fn drain_table(dir: &Path, cfg: &DrainConfig, report: &mut Report) -> Result<()> {
     report.tables += 1;
     let table = window::file_name(dir);
-    let Some(win) = window::read_window(dir, &cfg.window_for(&table)?)? else {
-        return Ok(());
-    };
-
-    if win.rows.is_empty() {
-        // Nothing a column can hold in this window: leave the position alone so a
-        // later window that does carry rows still starts from here.
-        report.segments += win.segments.len();
-        return Ok(());
+    loop {
+        let Some(win) = window::read_window(dir, &cfg.window_for(&table)?)? else {
+            return Ok(());
+        };
+        if win.rows.is_empty() {
+            // Nothing a column can hold in this window: leave the position alone so a
+            // later window that does carry rows still starts from here — and stop, since
+            // an unmoved position would make this loop run for ever.
+            report.segments += win.segments.len();
+            return Ok(());
+        }
+        drain_one(cfg, report, &win)?;
     }
+}
 
+/// One window: the file, its manifest, the position, and the Delta commit.
+fn drain_one(cfg: &DrainConfig, report: &mut Report, win: &Window) -> Result<()> {
     let first = window::stem_of(&win.segments[0]);
     let last = window::stem_of(&win.segments[win.segments.len() - 1]);
     // One directory per table, `data/` inside it: that directory IS the exported
@@ -210,7 +221,7 @@ pub fn drain_table(dir: &Path, cfg: &DrainConfig, report: &mut Report) -> Result
     let scratch = cfg
         .out_dir
         .join(format!(".{}-{first}-{last}.parquet.partial", win.table));
-    let columns = write_parquet(&win, &scratch)?;
+    let columns = write_parquet(win, &scratch)?;
     std::fs::create_dir_all(&data_dir)?;
     std::fs::rename(&scratch, &out)?;
 
