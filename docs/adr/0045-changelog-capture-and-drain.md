@@ -264,7 +264,7 @@ guarantee the writer cannot provide.
   for exactly that reason — so the same `FieldType → DataType` still exists once.
   A full lake writer
   (delete files or vectors, partitioning, file-size targets) belongs in its own
-  crate: that is the piece with real policy, and `okm_parquet::delta` today is a log
+  crate: that is the piece with real policy, and `okm_lake::delta` today is a log
   encoder with none.
 - The log does not make every table's delta cheap: it is the answer for tables
   with no usable time-ordered dimension. Where one exists, an interval scan over

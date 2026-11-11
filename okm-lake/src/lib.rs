@@ -1,4 +1,4 @@
-//! `okm-parquet` — project the change log into Parquet files (ADR-0056 §8).
+//! `okm-lake` — project the change log into Parquet files (ADR-0056 §8).
 //!
 //! This is the FORMAT half. The mechanism — segments, the window join, the
 //! watermark, the half of the declaration the log cannot carry — lives in
@@ -66,7 +66,7 @@ impl DrainError {
 
 impl fmt::Display for DrainError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "okm-parquet: {}", self.what)
+        write!(f, "okm-lake: {}", self.what)
     }
 }
 
@@ -163,7 +163,7 @@ pub struct DrainConfig {
     pub partition: Option<String>,
     /// Fold a table into one current-state file when its change files pile up. `None` (the
     /// default) leaves the table alone: a caller that wants current state on demand runs
-    /// `okm-parquet condense` instead.
+    /// `okm-lake condense` instead.
     pub fold: Option<FoldPolicy>,
 }
 

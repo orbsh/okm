@@ -12,7 +12,7 @@
 )]
 use okm_async::TestStore;
 use okm_core::{DocumentEncode, KeyEncode, obj_dynamic::DynamicValue};
-use okm_parquet::bridge::ToRecordBatch;
+use okm_lake::bridge::ToRecordBatch;
 use std::collections::BTreeMap;
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]

@@ -9,7 +9,7 @@
     clippy::unwrap_in_result,
     clippy::panic_in_result_fn
 )]
-use okm_parquet::bridge::ToRecordBatch;
+use okm_lake::bridge::ToRecordBatch;
 
 use arrow::datatypes::DataType;
 use okm_async::TestStore;
@@ -409,11 +409,11 @@ fn uuid_field_survives_a_parquet_round_trip() {
         t1.put(&DeviceKey { id }, &device_row(device, Uuid4::new()))
             .unwrap();
     }
-    okm_parquet::snapshot::parquet_io::export_parquet(&t1, &path).unwrap();
+    okm_lake::snapshot::parquet_io::export_parquet(&t1, &path).unwrap();
 
     let mut t2: Collection<TestStore, DeviceKey, DeviceRow> =
         Collection::new(TestStore::slatedb_mem());
-    let n = okm_parquet::snapshot::parquet_io::import_parquet(&mut t2, &path).unwrap();
+    let n = okm_lake::snapshot::parquet_io::import_parquet(&mut t2, &path).unwrap();
     assert_eq!(n, 2);
     for (id, device) in rows {
         let got = t2.get(&DeviceKey { id }).unwrap().expect("restored row");

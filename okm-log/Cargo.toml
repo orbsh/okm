@@ -1,0 +1,20 @@
+[package]
+name = "okm-log"
+version = "0.1.0"
+edition = "2024"
+description = "The change log's own tool: status, compaction and replay into a store."
+
+[[bin]]
+name = "okm-log"
+path = "src/main.rs"
+
+[dependencies]
+okm-core = { path = "../okm-core", features = ["schema-serde", "fjall"] }
+okm-dynamic = { path = "../okm-dynamic", features = ["replay"] }
+
+[dev-dependencies]
+okm-derive = { path = "../okm-derive" }
+tempfile = "3"
+
+[lints]
+workspace = true

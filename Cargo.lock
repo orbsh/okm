@@ -2196,14 +2196,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "okm-ngram"
-version = "0.1.0"
-dependencies = [
- "okm-core",
-]
-
-[[package]]
-name = "okm-parquet"
+name = "okm-lake"
 version = "0.1.0"
 dependencies = [
  "arrow",
@@ -2217,6 +2210,23 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+]
+
+[[package]]
+name = "okm-log"
+version = "0.1.0"
+dependencies = [
+ "okm-core",
+ "okm-derive",
+ "okm-dynamic",
+ "tempfile",
+]
+
+[[package]]
+name = "okm-ngram"
+version = "0.1.0"
+dependencies = [
+ "okm-core",
 ]
 
 [[package]]

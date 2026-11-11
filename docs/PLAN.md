@@ -2321,12 +2321,12 @@ panic lints allowed only in the places it names. So the runtime half of
       degraded to a JSON string under okm's mapping (Binary as base64, `Int`/`UInt`
       kept as numbers, lists and maps as arrays and objects). The mapping is okm's
       to publish — otherwise every adapter invents a dialect.
-- [ ] Owed *in* `okm-parquet` (restated 2026-11-11, owner): **the sink half of the lake output.**
+- [ ] Owed *in* `okm-lake` (restated 2026-11-11, owner): **the sink half of the lake output.**
       Landed the same day, in two steps. First, removals became EXPRESSIBLE: a window holding a
       `del` writes a change row instead of being refused — `okm_op` / `okm_slot` / `okm_seq` are
       table-wide columns on every window, core's `Window.ops` keeps the log's op order, and a
       `put_open` row states a change that touched only the open fields (ADR-0058 § Amendment).
-      Second, the table can be folded: `okm-parquet condense` writes one current-state file per
+      Second, the table can be folded: `okm-lake condense` writes one current-state file per
       table and commits a `remove` per replaced file plus one `add` (copy-on-write), on top of
       a read path whose identity comes from the `okm.key` metadata (`read::current_state`).
       What is still owed:
@@ -2344,7 +2344,7 @@ panic lints allowed only in the places it names. So the runtime half of
       decide. What is still O(table) is the KEY scan itself; a per-file key-bound sidecar could
       prune files that cannot share a key, and that is worth doing only once a table's key
       column no longer fits in memory.
-      (b2) **vacuum** — landed as `okm-parquet vacuum --keep-versions N` (plus `--dry-run`):
+      (b2) **vacuum** — landed as `okm-lake vacuum --keep-versions N` (plus `--dry-run`):
       `N` counts versions rather than days, `0` keeps only the current version, a file's
       manifest goes with it, and the sweep is idempotent (the log keeps naming deleted files,
       the disk does not, and a second run reports nothing). The log is never edited: what the
@@ -2364,7 +2364,7 @@ panic lints allowed only in the places it names. So the runtime half of
       partition by construction, and the directory name percent-encoded while the action keeps
       the raw text. The column must be a KEY column, because a partition that does not refine
       the key space lets one key live in two files.
-      `okm_parquet::delta` stays a zero-dependency log encoder, so anything that outgrows it
+      `okm_lake::delta` stays a zero-dependency log encoder, so anything that outgrows it
       splits off by measurement rather than by default. `okm_dynamic::arrow` covers the
       schema-driven Arrow builder, with the typed bridge as its drift lock; a SQL-to-okm planner
       stays a separate question. The earlier wording of this item predated the changelog and
@@ -2674,7 +2674,7 @@ the next decision can find it.
   the schema (`DataType::FixedSizeBinary(n)`, never a 16 literal), so a `Uuid7`/`Uuid4`
   payload field exports byte for byte and `import_parquet` reads the same 16 bytes back —
   locked by `uuid_field_exports_as_fixed_size_binary` and
-  `uuid_field_survives_a_parquet_round_trip` (`okm-parquet/tests/arrow_bridge_test.rs`).
+  `uuid_field_survives_a_parquet_round_trip` (`okm-lake/tests/arrow_bridge_test.rs`).
 - `scan_keys()` returns v7 keys in clock order because the encoding is the clock: no index, no
   re-sort. Locked by `okm-core/tests/uuid_key.rs`.
 
@@ -2810,7 +2810,7 @@ outright — its entry says why).
       segment_only, labels }` and the refusal lives in `write_parquet` — replay
       applies a removal in order, the lake sink refuses it. `read_window` /
       `write_parquet` are public and take no app types (the window carries its
-      sidecar), which is the shape `okm-parquet` will call;
+      sidecar), which is the shape `okm-lake` will call;
       `a_removal_is_read_and_only_the_parquet_sink_refuses_it` locks the split
       and `a_window_with_a_delete_is_refused_rather_than_misrepresented` still
       locks the sink's refusal.
@@ -2873,7 +2873,7 @@ outright — its entry says why).
       (read + atomic write), the hex-header/sidecar loaders, `split_slot`,
       `is_id_face`, `table_dirs`. `okm-drain` is gone. `okm-core::error::Error` gained
       `Codec(CodecError)` so the leaf error crosses the boundary typed.
-- [x] **`okm-parquet`** — the format half as a standalone binary: table directory in
+- [x] **`okm-lake`** — the format half as a standalone binary: table directory in
       (segments + sidecars), Parquet + manifest out, watermark advanced only after
       both exist. `--root`, `--out`, `--consumer`, `--max-segments`, `--table <hex>`,
       no link to the application.
@@ -2900,7 +2900,7 @@ outright — its entry says why).
       disk. `Table::to_record_batch` (ADR-0007) stays in core — it is the in-process
       DataFrame path, not a file format.
 - [x] **Replay rules** — landed as `okm_core::changelog::replay` (the mechanism;
-      `okm-dynamic` implements its `ReplayTarget` for `DynamicCollection`) + `okm-parquet replay
+      `okm-dynamic` implements its `ReplayTarget` for `DynamicCollection`) + `okm-log replay
       --root <log> --store <dir>`: the newest baseline first and then every segment
       numbered above it (a delta below the snapshot is inside it, and replaying it
       would resurrect a row the snapshot no longer has); rows decoded from the log and
@@ -2918,7 +2918,7 @@ outright — its entry says why).
       `a_dynamic_only_document_survives_replay_and_reconciliation` the segment-only
       document.
 - [x] **The reconciliation scan** — `okm_core::changelog::replay::reconcile(old, target,
-      header, schema)` and `okm-parquet replay --reconcile <old store>`: one range scan
+      header, schema)` and `okm-log replay --reconcile <old store>`: one range scan
       of the old store's primary face after the old instance stops writing, which is
       the only thing that can repair a change the log never carried (ADR-0056 §4). A
       row the store has and the target does not is adopted; a row the target has and
@@ -2934,7 +2934,7 @@ outright — its entry says why).
 - [x] **A window carries the open half.** `Window::dynamic` holds every dynamic-segment
       put, decoded against the window's own field-vocabulary labels
       (`changelog::window::decode_dynamic_segment`, shared with `replay`), and
-      `okm-parquet` writes it as one `variant` column: Parquet Variant wire bytes with the
+      `okm-lake` writes it as one `variant` column: Parquet Variant wire bytes with the
       `parquet.variant` extension, null where a row has no segment. Before this the
       window counted those ops (`segment_only`) and wrote nothing, so a window file was
       a row minus part of itself — the same defect replay had, in the other carrier.
@@ -2946,7 +2946,7 @@ outright — its entry says why).
       key has no row in the window is REFUSED (a removal seen from the segment's side),
       because the alternative was writing the rows and dropping that segment in silence
       — `an_open_segment_with_no_row_is_refused_rather_than_dropped`.
-- [x] **The launched table is a Delta table** (ADR-0058). `okm_parquet::delta` replaces
+- [x] **The launched table is a Delta table** (ADR-0058). `okm_lake::delta` replaces
       `bridge::iceberg`: `_delta_log/<version>.json`, one JSON action per line, protocol
       and schema in the first version, one `add` per window after that. Appending is
       O(change) instead of O(table), which closes the deferred "snapshot append" item by
@@ -3057,7 +3057,7 @@ outright — its entry says why).
       `Document` impl sets the constant directly. `an_uncaptured_table_writes_no_log`:
       the write still lands in the store, the table directory is never created, no segment
       exists.
-- [x] **The maintenance verbs, in `okm-parquet`**: `status` (read-only: segments, bytes,
+- [x] **The maintenance verbs, in `okm-log`**: `status` (read-only: segments, bytes,
       baseline and the age of the covering point, the claim, and whether the policy is
       due) and `compact --store <data dir> [--keep N] [--force]` — a baseline is a snapshot
       of STATE, so the tool takes the data directory as a second argument; it refuses
@@ -3149,7 +3149,7 @@ the other one moves to `okm-async`.
 - [x] **`ScanIter::External(Box<dyn DoubleEndedIterator<…> + Send>)`** plus its two match arms —
       the engine-agnostic door, so ADR-0020's laziness survives an engine that lives outside core.
 - [x] **`test-engines` becomes a dev-dependency** on `okm-async` in `okm-core`, `okm-dynamic`,
-      `okm-parquet`, `okm-query` and the two bindings; imports move from `okm_core::TestStore` to
+      `okm-lake`, `okm-query` and the two bindings; imports move from `okm_core::TestStore` to
       `okm_async::TestStore`.
 - [x] **CI gate**: `cargo tree -p okm-core` carries neither `tokio` nor `slatedb`, and `slatedb`
       appears nowhere under `okm-core/src`.
@@ -3249,7 +3249,7 @@ the log exists for. Measured against the rule above:
       ADR-0042 (amended) gets the same clarification in one line: the stamp in the segment
       header identifies bytes, not a directory.
 
-Bulk migration is unchanged by all of this and is already implemented: `okm-parquet replay
+Bulk migration is unchanged by all of this and is already implemented: `okm-log replay
 --root <the same changelog directory> --store <new store>` reads every generation (each
 under its own sidecar) and writes through the new build's write path; `--reconcile` covers
 what the log never carried. Parquet and Delta stay out of the upgrade path entirely

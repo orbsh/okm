@@ -1,4 +1,4 @@
-//! The maintenance verbs, driven as a real process (ADR-0056 §6).
+//! The log's maintenance verbs, driven as a real process (ADR-0056 §6).
 //!
 //! `status` and `compact` are the operator's side of the log, and they must work on a
 //! directory with no application and no Rust types — which is what a process boundary
@@ -31,7 +31,7 @@ pub struct Row {
 }
 
 fn bin() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_okm-parquet"))
+    Command::new(env!("CARGO_BIN_EXE_okm-log"))
 }
 
 #[test]

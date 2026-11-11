@@ -1,6 +1,6 @@
 //! Schema-driven columns: `(key bytes, decoded payload)` → `RecordBatch`.
 //!
-//! The typed bridge (`okm_parquet::bridge`) reads a `Collection`, so it
+//! The typed bridge (`okm_lake::bridge`) reads a `Collection`, so it
 //! is bound to the declaration at compile time. A drainer has no `Collection` and
 //! no row type — it has a segment file and a `CollectionSchema` sidecar — so this
 //! is the other half of ADR-0045 §9: the same columns built from the SAME

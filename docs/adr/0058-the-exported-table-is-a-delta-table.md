@@ -1,6 +1,6 @@
 # ADR-0058: The exported table is a Delta table, and the variant column has one shape
 
-**Status**: Accepted (2026-11-10), amended 2026-11-11 (§ Amendment: the export is a change table and a removal is a row) — implemented in the same round: `okm_parquet::delta`
+**Status**: Accepted (2026-11-10), amended 2026-11-11 (§ Amendment: the export is a change table and a removal is a row) — implemented in the same round: `okm_lake::delta`
 (a module of the drain crate) replaces core's `bridge::iceberg`, the open-fields column becomes the canonical
 `struct<metadata, value>`, and the Iceberg metadata encoder (including a hand-written
 Avro writer) is deleted rather than kept.
@@ -45,7 +45,7 @@ and every later version is a commit of `add` actions, one per file the window wr
 table is the directory; no catalog, no registration, and no absolute paths (`add.path`
 is relative to the table directory by specification).
 
-**It lives in `okm-parquet`, not in core.** The log is a projection of the change log,
+**It lives in `okm-lake`, not in core.** The log is a projection of the change log,
 one step further out than the window: core produces segments and joins them into a
 window, and what a table FORMAT does with that window — Parquet file, log commit, replay
 — is the drain crate's work. An encoder in core would make core the owner of a lake's
@@ -91,7 +91,7 @@ does not know it must refuse the table rather than guess what the column means.
 ## Consequences
 
 - `bridge::iceberg` is deleted, including `stamp_batch`: Delta identifies columns by
-  NAME, so a Parquet field id is a second identity nothing reads. `okm_parquet::delta` is
+  NAME, so a Parquet field id is a second identity nothing reads. `okm_lake::delta` is
   ~350 lines with no Avro encoder, and `parquet_io` writes the batch unchanged.
 - `Report::metadata` counts Delta commits, one per table per window.
 - **Unsigned columns widen, visibly.** Delta has no unsigned integer type, so `u8/u16`
@@ -138,7 +138,7 @@ Three consequences, all deliberate:
 1. **Every window is expressible.** A delete no longer blocks the rows beside it, and the
    reader decides what a removal means: filter `okm_op`, keep the last `okm_seq` per key,
    or compact.
-2. **Delta's other half is used by REPLACEMENT, not by patching.** `okm-parquet condense`
+2. **Delta's other half is used by REPLACEMENT, not by patching.** `okm-lake condense`
    folds a table's change files into one current-state file and commits a `remove` per file
    it replaced plus one `add` (copy-on-write). That needs a read path — which landed with it
    (`read::current_state`, identity from the `okm.key` metadata) — but no key→file index,
@@ -150,7 +150,7 @@ Three consequences, all deliberate:
    field by field and re-encoded. The fold is incremental
    by key: only files that share a key with another file (or hold a removal) are replaced, so
    a table's untouched history stays where it is. Reclaiming the bytes of replaced files is a
-   separate verb with a retention window counted in VERSIONS (`okm-parquet vacuum
+   separate verb with a retention window counted in VERSIONS (`okm-lake vacuum
    --keep-versions`), because a `remove` action addresses the table, not the file system.
 3. **Partitioning is the sink's choice, not the declaration's.** A sink names one KEY column
    and the table lands under `data/<column>=<value>/`, with `partitionValues` in the actions.
@@ -173,7 +173,7 @@ real reader (DuckDB 1.5.5) then answered ZERO rows for `where okm_op = 'put'` be
 bounds it trusted were nonsense. Resolved by PATH (`leaf_of`), and pinned by
 `statistics_name_the_right_column_when_a_struct_sits_before_it`.
 
-Held by `okm-parquet/tests/drain_test.rs`: a window holding a put and the purge that follows
+Held by `okm-lake/tests/drain_test.rs`: a window holding a put and the purge that follows
 writes two rows (`put` at `okm_seq` 0, `del` at 1 with the declared columns NULL and
 `okm_slot` 0), the Delta log gains one `add` and no `remove`/`deletionVector`, and an
 open-fields segment with no row becomes `put_open` instead of stopping the drain.

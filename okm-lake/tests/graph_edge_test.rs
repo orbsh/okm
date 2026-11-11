@@ -10,7 +10,7 @@
     clippy::unwrap_in_result,
     clippy::panic_in_result_fn
 )]
-use okm_parquet::bridge::EdgeTable;
+use okm_lake::bridge::EdgeTable;
 
 use okm_core::{
     Batch, DocumentEncode, EdgeHead, Graph, GraphEncode, KeyEncode, NodeRef, NodeSet, PRIMARY_SLOT,

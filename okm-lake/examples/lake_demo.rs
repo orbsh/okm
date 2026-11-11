@@ -2,7 +2,7 @@
 //! three rows plus a dynamic field, the log seals on clean shutdown, and the drainer
 //! turns it into a Delta table.
 //!
-//!     cargo run -p okm-parquet --example lake_demo -- /tmp/okm-log /tmp/okm-lake
+//!     cargo run -p okm-lake --example lake_demo -- /tmp/okm-log /tmp/okm-lake
 //!
 //! then, with no okm in the path — the DIRECTORY is the table, nothing is registered:
 //!
@@ -15,7 +15,7 @@
 use okm_core::changelog::{ChangelogConfig, ChangelogStore};
 use okm_core::model::obj_dynamic::DynamicValue;
 use okm_core::{Collection, DocumentEncode, KeyEncode, Vocab};
-use okm_parquet::{DrainConfig, drain};
+use okm_lake::{DrainConfig, drain};
 
 use okm_async::TestStore;
 #[derive(KeyEncode, Clone, PartialEq, Debug)]

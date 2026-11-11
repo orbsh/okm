@@ -51,7 +51,7 @@ decoded), write one with `payloads.put(&key, &payload)` (one row write, the hot
 row never re-encoded), write the pair with `save_with_prev_into` on both
 collections into one `Batch` and one `commit_batch` (ADR-0003, ADR-0031), so
 the pair is one commit. The modelling case is in
-[MODELING](../MODELING.md#a-value-too-big-for-the-row-its-own-ns-the-same-key).
+[MODELING](../MODELING.md#a-field-too-large-the-side-table).
 
 Three reasons, in the order they decided it:
 

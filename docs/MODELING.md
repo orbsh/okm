@@ -1,12 +1,45 @@
 # Modeling Guide
 
-How to map a domain onto OKM keyspaces: four layers per entity, access methods mandatory, covering indexes restrained, composite keys bounded. This guide is normative for application schema; for mechanism details see the ADRs and the [README](../README.md).
+How to map a domain onto OKM keyspaces. The order is the argument: the substrate's properties first, the constraints they force second, the shapes that satisfy them third — four layers per entity, access methods mandatory, covering indexes restrained, composite keys bounded. This guide is normative for application schema; for mechanism details see the ADRs and the [README](../README.md).
 
 > **Languages:** [English](MODELING.md) (primary) · [中文](MODELING.zh-CN.md)
 
+## The substrate: what a KV store gives you, and what it does not
+
+Every rule in this guide is one of the facts below applied to a shape, so they are stated once, here. A discipline whose reason is not at the front decays into a convention that the next reader argues with.
+
+**What it gives you.**
+
+- **Key order is scan order.** A prefix is a group and a range is a range read; `.rev()` is the reverse page. There is no ORDER BY to add later — the order you can read is the order you wrote into the bytes.
+- **One commit covers any set of keys.** Atomicity is per commit, not per row: a side row, a relation edge and a reduce ledger move together or not at all (ADR-0003, ADR-0031).
+- **A table is a key space.** No catalog to register in and no planner to feed: a table is a namespace plus two declarations (ADR-0044), so the ceiling is per table, never per system.
+- **A value is your bytes.** No text container, no base64, no escaping (ADR-0018).
+
+**What it does not give you.** Each of these is a constraint on the model, not a gap to route around.
+
+- **No partial read.** `get` answers the whole value as owned bytes, and there is no projection door for one field. So whatever shares a key is read together: a 2 KB embedding beside an 8-byte counter is paid by every reader of the counter, and the only way out is another key — the side table ([below](#a-field-too-large-the-side-table)). It is also why a `Ref` is not the escape: its auto-deref restores exactly that read.
+- **No partial write.** `put` replaces the whole value, so writing any field re-encodes all of them. Write frequency therefore decides what may share a key as much as size does: a small counter that changes on every call must not sit beside a large column that hardly ever moves.
+- **No secondary index of its own.** Nothing maintains one for you; every index is a key you write and keep in step with the row. An access method is thus a declaration you owe ([the fourth layer](#the-four-layers)) and a piece of derived state with a fingerprint and a rebuild story (ADR-0048 faces, ADR-0029 path indexes).
+- **No optimizer and no field-level knowledge.** The engine sees bytes: no predicate pushdown, no column pruning, no statistics. A query is a key range you chose, a filter you run, or a full scan; an aggregate is a maintained ledger ([pre-aggregation](#cross-row-pre-aggregation)) or a scan; and analysis leaves the store for a columnar form (ADR-0058).
+
+**What each property forces, and where this guide carries it.**
+
+| property | the constraint it forces | carried by |
+|---|---|---|
+| key order is scan order | every dimension you order or page by is encoded into a key, and a variable-width field goes last (it has no terminator) | [the four layers](#the-four-layers) · [design constraints](#design-constraints-on-performance) · [composite key bounds](#the-bounds-of-a-composite-primary-key) |
+| one commit, any keys | pairs and ledgers are written in one batch; the semantic layer is single-writer | [rows and indexes](#rows-and-indexes-documentencode) · [two read-modify-writes](#two-read-modify-writes-reduce-and-upsert_with) |
+| a table is a key space | a second table over the parent's key type, never an overflow position inside the row | [a field too large](#a-field-too-large-the-side-table) |
+| whole-value read | big-and-cold data gets its own key; a read that wants one column pays for all of them | [a field too large](#a-field-too-large-the-side-table) |
+| whole-value write | split by write frequency, not only by size; a patch verb exists because RMW must read first | [when to split](#when-to-split) |
+| no secondary index | access methods are mandatory; every face is derived state, fingerprinted and rebuildable | [reverse queries](#reverse-queries-the-declared-index) · [declaration basics](#declaration-basics) |
+| no optimizer | ordering and filtering are the key's job; aggregation is a ledger; analysis goes to Parquet/Arrow | [pre-aggregation](#cross-row-pre-aggregation) · [read paths](#read-paths-a-key-a-declared-face-or-a-point) |
+| a value is bytes | no serialized-text storage; bytes stay bytes end to end | [payload types](#payload-field-types-and-wrappers) |
+
+The rest of this guide is cases. The four layers are the first two rows in declaration form; the relation carriers are the second; the side table is the third and fourth.
+
 ## The four layers
 
-Every entity is modeled in four layers: **namespace → primary key → primary sort field → access methods**.
+Every entity is modeled in four layers — and the first thing to notice is that they are not conventions: each is a substrate property turned into a declaration, the order of the key for scanning and the absence of a maintained index. **namespace → primary key → primary sort field → access methods**.
 
 1. **Namespace (`ns`)** — which keyspace the entity lives in. One entity
 class = one ns. The 2-byte ns already discriminates every entry; do not encode entity type into keys.
@@ -301,8 +334,7 @@ pub struct Profile {
 
 `Collection<S, K, R>` carries both halves and `R::Key = K` pins them together at compile time; `Document::collection(store)` reads `K` off `R`, so the call site never restates the key type. Three consequences, all deliberate:
 
-- **One key type, many tables.** This is the side-table form (ADR-0036): a second
-row type over the parent's key type, in its own ns, with a byte-identical key payload — `ProfileStats { views: u32 }` over `ProfileKey` costs one more point read, not a second key space. Everything else about the two tables is separate, including their commits.
+- **One key type, many tables.** Because a read takes the whole value and a write replaces it, "one entity, two halves" becomes "one key type, two tables" (ADR-0036): a second row type over the parent's key type, in its own ns, key payload byte-identical — `ProfileStats { views: u32 }` over `ProfileKey` costs one more point read rather than a second key space, and its writes never re-encode the row. Everything else about the two tables is separate, including their commits.
 - **`user_id` above is two fields, not one stored twice.** The key's `user_id` is
 the address; the row's `user_id` is data that may legitimately differ — a denormalized copy for an index, or so a reader need not re-derive it from the key. Nothing dedupes, nothing errors, nothing compares them on a read.
 - **Names are classified by the declaration, not by the key.** In a whole-document
@@ -1033,7 +1065,7 @@ Nor is it a candidate for "let the library count for me": a reduce is a cross-ro
 
 ## A field too large: the side table
 
-One column's volume can exceed the rest of the row by orders of magnitude — a blob, a rendered document, an embedding. Left in the payload, its cost is: every read of the row pays it, and a write of **any** field of the row re-encodes it. The answer is not another storage position inside the row codec (ADR-0036) but a side table whose key type is the parent table's key type.
+One column's volume can exceed the rest of the row by orders of magnitude — a blob, a rendered document, an embedding. Left in the payload it pays both substrate constraints at once (whole-value read, whole-value write): every read of the row carries it, and a write of **any** field re-encodes it. The answer is not another storage position inside the row codec (ADR-0036) but a side table whose key type is the parent table's key type.
 
 ```rust
 #[derive(KeyEncode, Clone, PartialEq, Debug)]

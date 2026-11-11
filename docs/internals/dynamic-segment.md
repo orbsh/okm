@@ -1,6 +1,6 @@
 # Dynamic segment: the block table and the value area
 
-Mechanism/implementation document for the value stored under slot `0x01` — the bytes at rest, the ordering contract a reader depends on, the size envelope the shape is built for, and what the same value costs once it crosses a serde boundary. The decision and everything it refused are in [ADR-0057](../adr/0057-the-dynamic-segment-gets-a-block-table.md); the field-name vocabulary and the value types are in ADR-0012; where the key sits is [key layout](key-layout.md). 中文版：[dynamic-segment.zh-CN.md](dynamic-segment.zh-CN.md).
+Mechanism/implementation document for the value stored under slot `0x01` — the bytes at rest, the ordering contract a reader depends on, the size envelope the shape is built for, and what the same value costs once it crosses a serde boundary. The decision and everything it refused are in [ADR-0057](../adr/0057-the-dynamic-segment-gets-a-block-table.md); the field-name vocabulary and the value types are in ADR-0012; where the key sits is [key layout](key-layout.md). 中文版：[dynamic-segment.zh-CN.md](dynamic-segment.zh-CN.md). One change is decided and not landed: [ADR-0060](../adr/0060-the-entry-header-is-one-byte.md) folds each leaf's length into its type byte (layout v3). Everything below describes v2 — the bytes the code writes and reads today.
 
 ## Where it lives, and who writes it
 

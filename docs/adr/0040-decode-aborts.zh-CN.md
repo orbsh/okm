@@ -35,8 +35,8 @@ rev_decode / offset_decode / varint_decode / dec_wire  -> Self
 | --- | --- | --- |
 | `okm-core/src/model.rs` | 模块（`model` 及其子模块） | 编解码本体——同一构建的编码/解码配对 |
 | derive 生成的 `decode_payload` | 生成的函数 | 编解码本体，落到消费方的 crate 里 |
-| `okm-parquet/src/bridge.rs` | 整个文件 | 导出侧：我们自己的字节、我们自己拼的列 |
-| `okm-parquet/src/delta.rs` | 函数 | 日志编码器从它读到的文件重建批次 schema，形状不符是它自己的 bug，不是存储的条件 |
+| `okm-lake/src/bridge.rs` | 整个文件 | 导出侧：我们自己的字节、我们自己拼的列 |
+| `okm-lake/src/delta.rs` | 函数 | 日志编码器从它读到的文件重建批次 schema，形状不符是它自己的 bug，不是存储的条件 |
 | `SlatedbSync::open_mem` | 函数 | 构造，只跑一次：起不了 runtime/线程就没有存储 |
 | `TestStore::slatedb_mem` | 函数 | 测试替身的构造 |
 | `okm-vector/src/codec.rs` | 整个文件 | 存下来的 code 是本构建自己写的字节；`Codec`/`Prepared` 配不上、或 code 比它自己的 norm 前缀还短，说明这行来自别处，而编出来的距离会被直接折回图的边里 |

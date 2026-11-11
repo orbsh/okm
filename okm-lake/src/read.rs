@@ -55,7 +55,7 @@ impl ReadError {
 
 impl fmt::Display for ReadError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "okm-parquet: {}", self.what)
+        write!(f, "okm-lake: {}", self.what)
     }
 }
 

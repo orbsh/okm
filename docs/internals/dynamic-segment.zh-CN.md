@@ -1,6 +1,6 @@
 # 动态段：块表与值区
 
-本文是机制与实现细节文档，讲槽 `0x01` 下那个值——落盘的字节长什么样、读者依赖什么顺序契约、这个形状适用的尺寸区间在哪，以及同一个值跨 serde 边界时要付什么。决策以及它否决掉的每一项见 [ADR-0057](../adr/0057-the-dynamic-segment-gets-a-block-table.zh-CN.md)；字段名词汇表与值类型见 ADR-0012；key 落在哪一级见 [key 布局](key-layout.zh-CN.md)。English: [dynamic-segment.md](dynamic-segment.md)。
+本文是机制与实现细节文档，讲槽 `0x01` 下那个值——落盘的字节长什么样、读者依赖什么顺序契约、这个形状适用的尺寸区间在哪，以及同一个值跨 serde 边界时要付什么。决策以及它否决掉的每一项见 [ADR-0057](../adr/0057-the-dynamic-segment-gets-a-block-table.zh-CN.md)；字段名词汇表与值类型见 ADR-0012；key 落在哪一级见 [key 布局](key-layout.zh-CN.md)。English: [dynamic-segment.md](dynamic-segment.md)。另有一项已裁决、未落地：[ADR-0060](../adr/0060-the-entry-header-is-one-byte.zh-CN.md) 把每个叶子的长度折进它的 type 字节（布局 v3）。本页其余部分描述的仍是 v2——今天代码写和读的那一份。
 
 ## 落在哪，谁写它
 

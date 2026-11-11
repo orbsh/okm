@@ -13,7 +13,7 @@
     clippy::unwrap_in_result,
     clippy::panic_in_result_fn
 )]
-use okm_parquet::bridge::ToRecordBatch;
+use okm_lake::bridge::ToRecordBatch;
 
 use okm_async::TestStore;
 use okm_core::schema::CollectionSchema;

@@ -18,7 +18,7 @@ core 的存储契约一直是同步的：`VirtualStorage`（`okm-core/src/engine
 裁决当日的清点（2026-11-10）：
 
 - `WireClient` 在仓外没有消费者，只有 `okm-core/tests/wire_client_test.rs` 用它。线上的远程形态是 mudra 的 `NestStorage<FjallStore>` 收 WS 帧，以及 aura 把 `okm_wire::OpFrame` 应用到同步 store 上。
-- `TestStore`（`engine/test_engine.rs`）是真实后端上的矩阵枚举——slatedb 内存态（零文件系统，默认）、fjall 临时目录、redb 临时文件——其中 slatedb 那一臂就是 `SlatedbSync`。它的使用面：`okm-core` 48 处、`okm-parquet` 13 处、`okm-dynamic` 8 处、`okm-query` 1 处、两个 bindings 共 3 处。
+- `TestStore`（`engine/test_engine.rs`）是真实后端上的矩阵枚举——slatedb 内存态（零文件系统，默认）、fjall 临时目录、redb 临时文件——其中 slatedb 那一臂就是 `SlatedbSync`。它的使用面：`okm-core` 48 处、`okm-lake` 13 处、`okm-dynamic` 8 处、`okm-query` 1 处、两个 bindings 共 3 处。
 - `~/world` 下没有任何 crate 提到 `SlatedbStore`、`SlatedbSync` 或 `WireClient`。
 
 ## 裁决
@@ -73,7 +73,7 @@ crate 是**删除的单位**，不是契约的单位。slatedb 今天是受支�
 
 core 要改的地方：`Cargo.toml`（去掉 `slatedb` 与 `test-engines` 两个特性、`slatedb` 与可选 `tokio` 两个依赖，以及点名它们的 `required-features`；加 dev-dependency）、`engine.rs`（模块声明）、`lib.rs`（`SlatedbStore`、`slatedb_backend`、`WireClient`、`WireTransport`、`test_engine` 这几处再导出）、`storage.rs`（`External` 加两个 match 臂），以及删掉所有 `ScanIter::Slatedb` 的使用处。
 
-测试面的扩散：`okm-core`、`okm-dynamic`、`okm-parquet`、`okm-query`、`bindings/okm-entry`、`bindings/okm-python` 各加一条对 `okm-async` 的 dev-dependency，并把导入处的 `okm_core::TestStore` 改成 `okm_async::TestStore`——机械改动，约 70 处调用，行为不变。
+测试面的扩散：`okm-core`、`okm-dynamic`、`okm-lake`、`okm-query`、`bindings/okm-entry`、`bindings/okm-python` 各加一条对 `okm-async` 的 dev-dependency，并把导入处的 `okm_core::TestStore` 改成 `okm_async::TestStore`——机械改动，约 70 处调用，行为不变。
 
 下游不动：okm 之外没有任何 crate 用到这个 crate 带走的那几个类型。
 

@@ -18,7 +18,7 @@ So the async face exists for two reasons and costs two different things, only on
 Census at the time of the decision (2026-11-10):
 
 - `WireClient` has no consumer outside `okm-core/tests/wire_client_test.rs`. The live remote shape is mudra's `NestStorage<FjallStore>` receiving frames over WS, and aura applying `okm_wire::OpFrame`s to a sync store.
-- `TestStore` (`engine/test_engine.rs`) is the matrix over the real backends — slatedb in-memory (zero fs, the default), fjall temp-dir, redb temp-file — and its slatedb arm is `SlatedbSync`. It is used by `okm-core` (48 call sites), `okm-parquet` (13), `okm-dynamic` (8), `okm-query` (1) and both bindings (3).
+- `TestStore` (`engine/test_engine.rs`) is the matrix over the real backends — slatedb in-memory (zero fs, the default), fjall temp-dir, redb temp-file — and its slatedb arm is `SlatedbSync`. It is used by `okm-core` (48 call sites), `okm-lake` (13), `okm-dynamic` (8), `okm-query` (1) and both bindings (3).
 - No crate in `~/world` names `SlatedbStore`, `SlatedbSync` or `WireClient`.
 
 ## Decision
@@ -73,7 +73,7 @@ Files that move:
 
 Core edits: `Cargo.toml` (drop the `slatedb` and `test-engines` features, the `slatedb` and optional `tokio` dependencies, the `required-features` entries that name them; add the dev-dependency), `engine.rs` (module declarations), `lib.rs` (the `SlatedbStore`, `slatedb_backend`, `WireClient`, `WireTransport` and `test_engine` re-exports), `storage.rs` (`External` plus two match arms), and the `ScanIter::Slatedb` uses removed.
 
-Test fanout: `okm-core`, `okm-dynamic`, `okm-parquet`, `okm-query`, `bindings/okm-entry`, `bindings/okm-python` each take a dev-dependency on `okm-async` and change `okm_core::TestStore` to `okm_async::TestStore` at their import sites — mechanical, ~70 call sites, no behaviour change.
+Test fanout: `okm-core`, `okm-dynamic`, `okm-lake`, `okm-query`, `bindings/okm-entry`, `bindings/okm-python` each take a dev-dependency on `okm-async` and change `okm_core::TestStore` to `okm_async::TestStore` at their import sites — mechanical, ~70 call sites, no behaviour change.
 
 Nothing downstream moves: no crate outside okm uses any of the types this crate takes.
 

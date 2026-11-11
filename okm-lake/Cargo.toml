@@ -1,15 +1,16 @@
 [package]
-name = "okm-parquet"
+name = "okm-lake"
+autobins = false
 version = "0.1.0"
 edition = "2024"
-description = "Project the change log into Parquet: a standalone CLI with no link to the application."
+description = "The exported lake: project the change log into Parquet, fold it, partition it, and reclaim what no version reads."
 
 [lib]
-name = "okm_parquet"
+name = "okm_lake"
 path = "src/lib.rs"
 
 [[bin]]
-name = "okm-parquet"
+name = "okm-lake"
 path = "src/main.rs"
 
 [dependencies]

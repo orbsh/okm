@@ -270,7 +270,7 @@ fn the_reduce_table_exports_as_its_own_file() {
     }
 
     let path = dir.path().join("post_reduces.parquet");
-    okm_parquet::snapshot::parquet_io::export_reduces::<_, __OkmReduce_Post_2>(
+    okm_lake::snapshot::parquet_io::export_reduces::<_, __OkmReduce_Post_2>(
         t.store(),
         Post::NS_PREFIX,
         "posts",

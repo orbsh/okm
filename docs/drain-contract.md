@@ -1,6 +1,7 @@
 # The drain contract
 
-What `okm-parquet` promises a sink, and what a sink promises back. The window it
+What `okm-lake` promises a sink, and what a sink promises back (the binary that
+serves it is `okm-lake`; the log's own side — status, compaction, replay — is `okm-log`). The window it
 hands over is core's (`okm_core::changelog::window`); this document is the contract
 of the projection on top. Written once so
 that every adapter (this repo's, and a third party's) speaks the same dialect
@@ -11,15 +12,16 @@ interface that follows from it.
 
 One **window** is one Parquet file inside the table's exported directory:
 
-    <out>/<table hex>/data/<table hex>-<first segment>-<last segment>.parquet
+    <out>/<table hex>/data/[<column>=<value>/]<table hex>-<first segment>-<last segment>[-p<k>].parquet
 
 The directory per table is the exported TABLE (ADR-0056 §8): `data/` holds the
 windows, `_delta_log/` is the Delta log over them, and the consumer's watermark sits
 at the root (`watermark-<consumer>-<table hex>.txt`). Two tables in one sink
 are two tables, not one table with `0047-` and `0048-` files in it.
 
-The file is written under a scratch name at the root and moved into `data/` only
-after the projection succeeded, so a failed window leaves no directory, no file and an
+A partition directory appears when the sink is partitioned by a key column, and the `-p<k>`
+suffix when a window is cut by the row limit (both below). The file is written under a scratch
+name at the root and moved into place only after the projection succeeded, so a failed window leaves no directory, no file and an
 unmoved watermark. Columns are:
 
 1. the key fields, in declaration order, **non-nullable** — every row has an
@@ -123,7 +125,7 @@ and a window is never half-described.
 
 ## Folding
 
-`okm-parquet condense --out <lake dir>` turns a table's change files into ONE file of current
+`okm-lake condense --out <lake dir>` turns a table's change files into ONE file of current
 state and commits the removal of the ones it replaced (ADR-0058 § Amendment):
 
     _delta_log/<n>.json    {"remove": ...} per replaced file, {"add": ...} for the new one
@@ -166,7 +168,7 @@ A folded row is the document's two halves from wherever they were written: the d
 columns from the last `put`, and the open fields MERGED across every window that wrote any
 (the variant cells are decoded, unioned field by field with the later window winning, and
 re-encoded). A later `put` does not erase the open half of the row before it, and `okm_op`
-becomes `put` (or `put_open` when the key never had a full row). `okm_parquet::read::open_fields`
+becomes `put` (or `put_open` when the key never had a full row). `okm_lake::read::open_fields`
 is the same decoder, exposed for anyone reading the export.
 
 A `remove` action drops a file from the TABLE; it does not delete bytes. Replaced files stay
@@ -175,7 +177,7 @@ question (how long history is kept) this writer does not answer yet.
 
 ## Status
 
-`okm-parquet status --out <lake dir> [--table <hex>] [--rows]` reports one table per block:
+`okm-lake status --out <lake dir> [--table <hex>] [--rows]` reports one table per block:
 version, live files and bytes, change rows and removals summed from the manifests, whether the
 newest file is a fold, and how many bytes a vacuum would reclaim. It reads the log, the file
 sizes and the manifests — no payload — so it is cheap on a table with a million rows.
@@ -189,7 +191,7 @@ survives a fold, and the status can still count what is in the lake.
 
 ## Vacuum
 
-`okm-parquet vacuum --out <lake dir> --keep-versions N [--dry-run]` deletes the files no kept
+`okm-lake vacuum --out <lake dir> --keep-versions N [--dry-run]` deletes the files no kept
 version can see. It is the other half of `condense`: a `remove` action takes a file out of the
 TABLE and leaves the bytes in `data/`, because a reader asking for an older version still needs
 them — so reclaiming them is a retention decision, and the only honest default is none.
@@ -250,7 +252,7 @@ Vacuum is unchanged: a path carries its partition directory, and a `remove` name
 ## Not part of the contract
 
 Partitioning, target file size, catalog registration, snapshot management and
-retention all belong to the adapter. `okm-parquet`'s only knob is
+retention all belong to the adapter. `okm-lake`'s only knob is
 `DrainConfig::max_segments` — how much history one window carries — because that is
 also how much history a query must merge with the hot store.
 
