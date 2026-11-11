@@ -2086,6 +2086,9 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> syn::Result<TS2> {
         });
         quote! {
             #[doc(hidden)]
+            // The name is `__OkmVocabs_<Row>` on purpose (the `__Okm` prefix says
+            // "generated, not yours"), so the lint that wants CamelCase is wrong here.
+            #[allow(non_camel_case_types)]
             #[derive(::core::default::Default)]
             pub struct #vocabs_name {
                 #(pub #field_names: #types,)*

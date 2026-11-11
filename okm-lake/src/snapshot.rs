@@ -711,16 +711,23 @@ pub mod parquet_io {
 
             let key_fields = <EdgeKey as KeyEncode>::FIELDS;
             let row_fields = <E as Document>::FIELDS;
-            let (nkey, nrow) = (key_fields.len(), row_fields.len());
-            let columns = 5 + nkey + nrow + 1;
-            if batch.num_columns() != columns {
-                return Err(format!(
-                    "edge table has {} columns; this graph's declaration needs {columns} \
-                 (src_table, src_pkey, dst_table, dst_pkey, predicate, {nkey} key \
-                 field(s), {nrow} payload field(s), variant)",
-                    batch.num_columns()
-                ));
-            }
+            // Columns are found BY NAME, so a table may carry more than this
+            // declaration names: the endpoint pair's typed key columns, for one,
+            // which a property-graph declaration needs and a restore ignores.
+            let col = |name: &str| -> Result<usize, String> {
+                batch.schema().index_of(name).map_err(|_| {
+                    format!("the edge table has no `{name}` column; this graph's declaration needs it")
+                })
+            };
+            let (c_src_t, c_src_k) = (col("src_table")?, col("src_pkey")?);
+            let (c_dst_t, c_dst_k) = (col("dst_table")?, col("dst_pkey")?);
+            let c_pred = col("predicate")?;
+            let c_variant = col("variant")?;
+            let c_key = col(key_fields[0].name)?;
+            let c_payload: Vec<usize> = row_fields
+                .iter()
+                .map(|f| col(f.name))
+                .collect::<Result<_, _>>()?;
             let n = batch.num_rows();
             let endpoint =
                 |table_col: usize, key_col: usize, row: usize| -> Result<NodeRef, String> {
@@ -757,10 +764,10 @@ pub mod parquet_io {
                 let mut ns_header = <E as Document>::PARTITION_PREFIX.to_vec();
                 ns_header.extend_from_slice(<E as Document>::NS_PREFIX);
                 for row in 0..n {
-                    let src = endpoint(0, 1, row)?;
-                    let dst = endpoint(2, 3, row)?;
+                    let src = endpoint(c_src_t, c_src_k, row)?;
+                    let dst = endpoint(c_dst_t, c_dst_k, row)?;
                     let predicates = batch
-                        .column(4)
+                        .column(c_pred)
                         .as_any()
                         .downcast_ref::<StringArray>()
                         .ok_or("column 4 is not a predicate column")?;
@@ -769,7 +776,7 @@ pub mod parquet_io {
                     }
                     // The key half: the edge id, at the key column's own width.
                     let key_bytes =
-                        wire_bytes(batch.column(5), row, &key_fields[0], store, &ns_header)?;
+                        wire_bytes(batch.column(c_key), row, &key_fields[0], store, &ns_header)?;
                     let id_bytes: [u8; 8] = key_bytes.as_slice().try_into().map_err(|_| {
                         format!(
                             "row {row}: edge key is {} bytes, not a u64",
@@ -785,7 +792,7 @@ pub mod parquet_io {
                             continue;
                         }
                         payload.extend(wire_bytes(
-                            batch.column(5 + nkey + fi),
+                            batch.column(c_payload[fi]),
                             row,
                             f,
                             store,
@@ -797,7 +804,7 @@ pub mod parquet_io {
                             continue;
                         }
                         let wb =
-                            wire_bytes(batch.column(5 + nkey + fi), row, f, store, &ns_header)?;
+                            wire_bytes(batch.column(c_payload[fi]), row, f, store, &ns_header)?;
                         payload.push(fi as u8);
                         okm_core::put_len(&mut payload, wb.len());
                         payload.extend_from_slice(&wb);
@@ -809,7 +816,7 @@ pub mod parquet_io {
                     });
                     ids.push(u64::from_be_bytes(id_bytes));
                     payloads.push(E::decode_payload(&payload));
-                    props.push(variant_map(batch.column(columns - 1), row)?);
+                    props.push(variant_map(batch.column(c_variant), row)?);
                 }
             }
 

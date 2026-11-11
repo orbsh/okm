@@ -201,8 +201,9 @@ fn a_column_set_that_is_not_an_edge_table_is_refused() {
     let log = <LogRow as Document>::collection(store.clone());
     log.put(&LogKey { seq: 1 }, &LogRow { seq: 1 }).unwrap();
 
-    // A DOCUMENT table handed to the edge importer: the column count is the
-    // declaration's, and it does not match an edge table's shape.
+    // A DOCUMENT table handed to the edge importer: the importer looks its columns
+    // up by name, and a document table has no `src_table` — the refusal says which
+    // column it looked for, which is more useful than a count ever was.
     let log = <LogRow as Document>::collection(store.clone());
     let wrong = log.to_record_batch().unwrap();
     let file = dir.path().join("log.parquet");
@@ -213,7 +214,7 @@ fn a_column_set_that_is_not_an_edge_table_is_refused() {
     let err = r
         .import_table(&wrong, ns_of)
         .expect_err("a document table is not an edge table");
-    assert!(err.contains("columns"), "{err}");
+    assert!(err.contains("no `src_table` column"), "{err}");
 }
 
 #[test]
