@@ -2249,6 +2249,8 @@ panic lints allowed only in the places it names. So the runtime half of
       crate's promise. What it refuses: a window holding a DELETE (the declaration
       has no column for a removal) and a table with no sidecar (bytes, not
       columns) — both stop with the watermark untouched and no artefact written.
+      Superseded 2026-11-11 for the first half: the export is a change table and a
+      removal is a row (ADR-0058 § Amendment); a missing sidecar still stops it.
 
 - [x] `--features arrow` alone did not build: `bridge::iceberg` (a Parquet
       METADATA writer) and `Graph::to_record_batch_table` (the variant column) were
@@ -2319,15 +2321,27 @@ panic lints allowed only in the places it names. So the runtime half of
       degraded to a JSON string under okm's mapping (Binary as base64, `Int`/`UInt`
       kept as numbers, lists and maps as arrays and objects). The mapping is okm's
       to publish — otherwise every adapter invents a dialect.
-- [ ] Deferred (2026-10-31, owner): low priority. Not in this unit: lake-writer delete files (or deletion vectors), partitioning
-      and file-size targets (the Delta writer commits one `add` per window, so a
-      window is one log version, but nothing here deletes, partitions or sizes); any
-      Parquet read path; a complete lake WRITER (it goes in its own crate, because
-      `okm_parquet::delta` is a zero-dependency log encoder and must stay one); the
-      SQL-to-okm planner. The
-      schema-driven Arrow builder is NO LONGER here: it landed as
-      `okm_dynamic::arrow`, reusing `arrow_type`, with the typed bridge as its
-      drift lock.
+- [ ] Owed *in* `okm-parquet` (restated 2026-11-11, owner): **the sink half of the lake output.**
+      Landed the same day: removals are EXPRESSIBLE. A window holding a `del` writes a change
+      row instead of being refused — `okm_op` / `okm_slot` / `okm_seq` are table-wide columns on
+      every window, core's `Window.ops` keeps the log's op order, and a `put_open` row states a
+      change that touched only the open fields (ADR-0058 § Amendment). What is still owed is the
+      other half of that pair, and the two are NOT the same thing:
+      (a) **expressing a removal as table STATE** — Delta's `remove` action or a deletion vector.
+      Both need to know which FILE and which ROW hold the key, i.e. a Parquet read path plus
+      either a key→file index or one row per file. Until then a consumer filters `okm_op` and
+      keeps the last `okm_seq` per key.
+      (b) **converging a window to current state** — one row per key with removals applied, via
+      an upsert key, an anti-join on the change rows, or periodic compaction. Independent of (a)
+      while there are no removals; dependent on it once there are, because a compaction that
+      cannot see a removal keeps the row.
+      Also owed: partitioning and file-size targets (one window = one file = one log version),
+      and a Parquet read path. The earlier wording of this item predates the changelog and
+      leaned Iceberg; ADR-0058 superseded that view — the exported directory is a Delta table
+      and the Iceberg metadata encoder is deleted, not dormant. `okm_parquet::delta` stays a
+      zero-dependency log encoder, so anything that outgrows it splits off by measurement rather
+      than by default. `okm_dynamic::arrow` covers the schema-driven Arrow builder, with the
+      typed bridge as its drift lock; a SQL-to-okm planner stays a separate question.
 
 ## 2026-10-28 — the append-only log (ADR-0046)
 

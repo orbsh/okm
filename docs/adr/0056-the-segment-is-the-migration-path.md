@@ -11,7 +11,7 @@
 ADR-0045 left the log as an export feed: captured at the commit boundary, drained into Parquet, consumed by a lake. Two things it did not answer, and one it answered too narrowly.
 
 1. **There is no way back in.** `okm-drain` produces Parquet; `parquet_io::import_parquet` restores a *typed* store through `Table::put`. No consumer turns segments into a store. The log is a one-way valve.
-2. **The sink cannot express the truth it is fed.** A window containing a delete stops the drain (`okm-drain/src/lib.rs:227`), because an append-only Parquet file has no way to say "this row is gone". The log can carry removals; the sink deliberately refuses them.
+2. **The sink cannot express the truth it is fed.** A window containing a delete stops the drain (then `okm-drain/src/lib.rs:227`, now `okm-parquet/src/lib.rs`), because an append-only Parquet file has no way to say "this row is gone". The log can carry removals; the sink deliberately refuses them. *Answered 2026-11-11:* the export is a change table and a removal is a row (`okm_op`/`okm_slot`/`okm_seq`) — ADR-0058 § Amendment. The constraint below is what forced that design; it is no longer a live refusal.
 3. **ADR-0042 §7 named the deployment shape (blue/green, short cutover, incremental catch-up) but not its carrier.** The catch-up was left as "import", which in practice means Parquet — which loses the deletes and collapses history into an append.
 
 Meanwhile three structural facts about the current capture decide what is possible:
