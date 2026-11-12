@@ -1,58 +1,37 @@
-# Idea: a native hypergraph (n-ary relation) carrier
+# 想法：原生的超图（n 元关系）载体
 
-**Status**: idea, recorded 2026-10-24. Not a decision — no ADR, no PLAN item,
-nothing here is committed. The proposal in §1–§6 is an outside document
-(Chinese, 2026-10-24) reproduced in substance; §7 checks its premises against
-the code as it stands today, and §8 lists what a real design would have to
-settle first.
+**状态**：想法，记录于 2026-10-24。不是决定——没有 ADR，没有 PLAN 条目，这里没有任何东西被承诺。§1–§6 的提案是一份外部文档（中文，2026-10-24）的实质复述；§7 拿它的前提对照今天的代码检查，§8 列出真正的设计必须先定下的东西。
 
-**Re-checked 2026-11-12.** The carrier this proposal was written against has retired. `Junction` — and the `collection.rs` / `junction.rs` paths §1 cited — no longer exist (ADR-0051, 2026-11-04), and a many-to-many relation is now a collection whose key is the pair, with its reverse direction declared as a lead face over the key's own bytes (ADR-0054). §1's two-carrier premise and §8.7's comparison are superseded by §9, which states the comparison that decides anything now: a hyperedge against a **relation table**.
+**2026-11-12 复审。** 这份提案写作时所针对的载体已经退役。`Junction`——以及 §1 引用的 `collection.rs` / `junction.rs` 路径——都不在了（ADR-0051，2026-11-04）；多对多关系现在是「键即那对身份」的 collection，反方向声明为键自身字节上的 lead face（ADR-0054）。§1 的两载体前提和 §8.7 的比较都由 §9 取代，§9 陈述现在能决定一切的那个比较：超边对**关系表**。
 
-Companion: `~/world/krystallizer/docs/ideas/hypergraph-population.md` — the
-ingestion side (how hyperedges get proposed and written without an LLM in the
-write path). It moved to the service that owns the write side: okm offers no
-extraction, no learner and no thresholds, so that half is memory-layer policy, and
-only its constraints on this carrier are okm's business. The two are decidable
-separately except on arity — a bounded member list here forces the pipeline to
-merge before writing.
+姊妹文档：`~/world/krystallizer/docs/ideas/hypergraph-population.md` —— 摄取侧（超边如何被提出并写入，且写路径里没有 LLM）。它移到了拥有写侧的那个服务：okm 不提供抽取、不提供学习器、不提供阈值，所以那一半是记忆层策略，只有它对这个载体的约束属于 okm。两者可以分开裁决，只有基数一项不行——这里成员数有界，就逼着管道在写之前先合并。
 
-## 1. The claim
+## 1. 主张
 
-okm has one dedicated relation carrier, and it is binary:
+okm 只有一个专用的关系载体，而且它是二元的：
 
-- `Graph<S, E>` (ADR-0017) — open `NodeRef` endpoints, own identity (`edge_id`), attributes, parallel edges, runtime predicates (`okm-core/src/model/graph.rs`), faces `0x06`–`0x09`.
+- `Graph<S, E>`（ADR-0017）——开放的 `NodeRef` 端点、自有身份（`edge_id`）、属性、平行边、运行时谓词（`okm-core/src/model/graph.rs`），面 `0x06`–`0x09`。
 
-Many-to-many is not a carrier at all: it is a collection whose key is the pair (ADR-0051), with the reverse direction declared as a lead face over the key's own bytes (ADR-0054). The shared entry layout underneath is the same one `Graph` borrows — namespace, one-byte fixed face, index segment, primary-key tail. `Junction`, the carrier this section originally listed, retired in ADR-0051; the model kept the shape and dropped the machinery, because a collection already had every capability the junction needed to build by hand.
+多对多根本不是载体：它是键为那对身份的 collection（ADR-0051），反方向声明为键自身字节上的 lead face（ADR-0054）。底下共享的 entry 布局和 `Graph` 借用的那套相同——ns、一字节固定面、索引段、主键尾。本节原先列出的载体 `Junction` 在 ADR-0051 中退役；模型保住了形状、丢掉了机器，因为 collection 已经具备 junction 需要手搭的全部能力。
 
-A graph edge binds one source and one destination. The proposal's premise: high-order
-relations (agent memory, multi-party audit, risk) routinely bind 3+ participants
-at once — `{user A, org B, asset C}` all participating in `[audit event X]` —
-and modelling that as a reified node plus k binary edges costs k times the
-round trips and loses "these k facts are one relation".
+一条图边绑定一个源、一个终点。提案的前提是：高阶关系（agent 记忆、多方审计、风险）经常一次绑定 3 个以上参与方——`{用户 A, 组织 B, 资产 C}` 共同参与 `[审计事件 X]`——把它建模成一个重构节点加 k 条二元边，要付 k 倍的往返，并且丢掉「这 k 条事实是一条关系」。
 
-The proposed carrier: `#[derive(HyperGraphEncode)]` + a `HyperGraph<S, E>`
-handle. A hyperedge is **reified physically**: one payload row plus N membership
-faces. A member face makes "every edge containing member M" a leftmost-prefix
-scan; intersecting two member faces answers "edges containing both M and N" —
-which is the query the proposal treats as the whole point.
+提案的载体：`#[derive(HyperGraphEncode)]` 加一个 `HyperGraph<S, E>` 句柄。超边被**物理重构**：一行 payload 加 N 个成员面。成员面让「包含成员 M 的每条边」成为最左前缀扫描；两张成员面求交回答「同时包含 M 和 N 的边」——提案把这条查询当作全部意义所在。
 
-## 2. Layout as proposed
+## 2. 提案的布局
 
 ```text
 primary      [ns 2B][slot 0x00][edge_id BE]            → hyperedge payload
 member face  [ns 2B][face slot][member NodeRef][edge_id BE] → empty / covering includes
 ```
 
-Rules the proposal states:
+提案陈述的规则：
 
-1. Every participant is one `NodeRef` — the same self-describing form a graph
-   edge already uses, so pkey width stays wire data.
-2. The face key's tail is a fixed-width big-endian edge id, so two member scans
-   merge by pointer comparison with no deserialization.
-3. The hypergraph claims its own segment/slot range so its keys cannot collide
-   with document collections or junctions.
+1. 每个参与方是一个 `NodeRef`——与图边已经在用的那种自描述形态相同，主键宽度于是仍是线上数据。
+2. 面键的尾是定宽大端 edge id，于是两次成员扫描按指针比较归并，无需反序列化。
+3. 超图占据自己的段/槽范围，键不可能与文档 collection 或 junction 撞。
 
-## 3. Declaration as proposed
+## 3. 提案的声明
 
 ```rust
 #[derive(HyperGraphEncode, Clone, Default)]
@@ -66,82 +45,54 @@ pub struct AuditIncident {
 }
 ```
 
-The macro is said to also emit a head type (`edge_id` + `members: Vec<NodeRef>`)
-and an `HyperEdge` trait impl.
+宏据说还会生成一个 head 类型（`edge_id` + `members: Vec<NodeRef>`）和一个 `HyperEdge` trait 实现。
 
-## 4. API as proposed
+## 4. 提案的 API
 
-- `HyperGraph::link(edge_id, members, &payload)` — one internally built `Batch`
-  so the payload row and all N member faces appear atomically.
-- `iter_edge_ids_by_member(&NodeRef)` — prefix scan of one member face.
-- `scan_edge_ids_by_member(&NodeRef)` per member, composed by
-  `okm_query::intersect(stream_a, stream_b)` into the common edge set.
-- `_into` twins (`link_into`, `unlink_into`) for the cross-collection batch
-  path; `unlink_into` reads the payload row first, then deletes exactly the
-  payload and every face it implies.
+- `HyperGraph::link(edge_id, members, &payload)` —— 内部构造一个 `Batch`，于是 payload 行与全部 N 个成员面原子地出现。
+- `iter_edge_ids_by_member(&NodeRef)` —— 单个成员面的前缀扫描。
+- 每个成员的 `scan_edge_ids_by_member(&NodeRef)`，由 `okm_query::intersect(stream_a, stream_b)` 合成公共边集合。
+- 跨 collection 批路径的 `_into` 孪生（`link_into`、`unlink_into`）；`unlink_into` 先读 payload 行，然后精确删除 payload 及它蕴含的每个面。
 
-## 5. Cost claims
+## 5. 开销主张
 
-- Zero parsing: face-key offsets are fixed by the derive at compile time;
-  decoding is pointer slicing.
-- Memory-friendly: 2-byte ns instead of string prefixes; the layout is claimed
-  to suit LSM bloom filters.
+- 零解析：面键偏移由 derive 在编译期固定；解码是指针切片。
+- 内存友好：2 字节 ns 而非字符串前缀；布局据称适合 LSM bloom filter。
 
-## 6. What the proposal does not fix
+## 6. 提案没有解决的东西
 
-Arity bound, member multiplicity, per-member role/position, edge-id allocation,
-predicate-qualified member faces, and whether a hypergraph is a new declaration
-kind or an arity of the graph declaration. §8 treats these as the real design
-work.
+基数上界、成员重数、逐成员的角色/位置、edge_id 分配、带谓词限定的成员面，以及超图是一种新的声明种类还是图声明的一个基数。§8 把这些当作真正的设计工作。
 
-## 7. Checked against the code (2026-10-24)
+## 7. 对照代码检查（2026-10-24）
 
-Each row is a premise the proposal asserts and what the repository actually says.
+每一行是提案断言的一个前提，以及仓库实际怎么说。
 
-| proposal says | code says |
+| 提案说 | 代码说 |
 |---|---|
-| hypergraph takes face `0x0A` | `0x0A` is `okm-vector`'s per-shard graph (`okm-vector/src/index.rs:33`); the graph's own faces stop at `0x09` (`EDGE_PREDICATE_IN_SLOT`, `okm-core/src/model/graph.rs:81`). Fixed faces in use: `0x00`–`0x0A`, `0x0B` a retired snapshot slot, `0x0F` the table meta (ADR-0043) — so the free band is `0x0C`–`0x0E`, three faces |
-| face slot is 2 bytes | a fixed face is **1 byte**; only counting families (`0x1nnn`/`0x2nnn`) are 2 bytes — ADR-0030 lines 45-46 and 85-97, implemented by `write_slot` (`okm-core/src/model/index.rs:81-91`) |
-| `NodeRef` = `[ns 2B][len u16][pkey]` | `[ns 2B][len **varint**][pkey]`, `len < 64` in one byte (`okm-core/src/model/graph.rs:104-111`) |
-| edge id is 4B/8B | `u64` (8-byte BE) everywhere: `link`, `edge_ids`, faces |
-| `#[ok_entities(User, Org, Asset)]` | the existing declaration vocabulary is `#[ok_nodes(EntityRow, MemberRow)]`, taking document **tables** by type; the derive reads each table's own `#[ok_ns]` (`okm-core/src/model/graph.rs:196-216`, ADR-0017 status line, update 2026-10-21) |
-| `link(edge_id, members, payload)` | `Graph::link(&EdgeHead{src, dst, predicate}, &E, edge_id: u64)` (`okm-core/src/model/graph.rs:224-232, 373`); an N-member head is a new shape, and the body is fixed `[src ref][dst ref][predicate_vocab_id][payload]` (`graph.rs:236`, `decode_body` at `graph.rs:259`) — the payload offset is computable only because there are exactly two refs, so an open member list needs a count or length prefix |
-| payload indexes are a hypergraph feature | the payload is an ordinary obj (ADR-0012): one document declaration already yields both codec directions and its `#[ok_index]` faces, counting family `0x1` (`graph.rs:39-46`) |
-| `okm_query::intersect` | ships as a lazy adapter: `a.intersect(b)` / `a.merge(b)` over key-ordered streams (`okm-query/src/lib.rs:66,88`), set-semantic over keys with one tuple per distinct key — a pair-expanding join is the caller's fetch loop, not an operator. Today's graph face scans still materialize into `Vec` (`Graph::edge_ids`, `graph.rs:404`), so what is new API is a streaming k-way intersection over *faces*, though `VirtualStorage::scan_range` is available underneath |
-| `unlink_into` is read-before-write | confirmed: it reads the primary body, decodes it, deletes the exact faces plus the payload-declared index entries (`graph.rs:553-590`). For N members this works only if the body carries the member list |
-| link/unlink are one atomic commit | confirmed for the batch path: one `commit_batch` for documents and edges together (ADR-0031, `link_into` doc at `graph.rs:382-395`). One asymmetry carries over: vocabulary allocation commits on its own, so a failed outer commit can leave an orphan predicate/vocab entry — harmless and documented |
+| 超图占用面 `0x0A` | `0x0A` 是 `okm-vector` 的 per-shard 图（`okm-vector/src/index.rs:33`）；图自己的面停在 `0x09`（`EDGE_PREDICATE_IN_SLOT`，`okm-core/src/model/graph.rs:81`）。在用的固定面：`0x00`–`0x0A`，`0x0B` 是退役的快照槽，`0x0F` 是表元数据（ADR-0043）——所以空带是 `0x0C`–`0x0E`，三个面 |
+| 面槽 2 字节 | 固定面是 **1 字节**；只有计数族（`0x1nnn`/`0x2nnn`）是 2 字节——ADR-0030 第 45-46 与 85-97 行，由 `write_slot` 实现（`okm-core/src/model/index.rs:81-91`） |
+| `NodeRef` = `[ns 2B][len u16][pkey]` | `[ns 2B][len **varint**][pkey]`，`len < 64` 时一字节（`okm-core/src/model/graph.rs:104-111`） |
+| edge id 是 4B/8B | `u64`（8 字节大端）到处一致：`link`、`edge_ids`、面 |
+| `#[ok_entities(User, Org, Asset)]` | 现有声明词汇是 `#[ok_nodes(EntityRow, MemberRow)]`，按类型取文档**表**；derive 读每张表自己的 `#[ok_ns]`（`okm-core/src/model/graph.rs:196-216`，ADR-0017 状态行，2026-10-21 更新） |
+| `link(edge_id, members, payload)` | `Graph::link(&EdgeHead{src, dst, predicate}, &E, edge_id: u64)`（`okm-core/src/model/graph.rs:224-232, 373`）；N 成员的 head 是新形状，而 body 是固定的 `[src ref][dst ref][predicate_vocab_id][payload]`（`graph.rs:236`，`decode_body` 在 `graph.rs:259`）——payload 偏移可算，只因为有恰好两个 ref，所以开放的成员列表需要一个计数或长度前缀 |
+| payload 索引是超图特性 | payload 是普通 obj（ADR-0012）：一份文档声明已经同时给出两个 codec 方向和它的 `#[ok_index]` 面，计数族 `0x1`（`graph.rs:39-46`） |
+| `okm_query::intersect` | 作为惰性适配器发布：`a.intersect(b)` / `a.merge(b)`，作用于按键有序的流（`okm-query/src/lib.rs:66,88`），在键上是集合语义、每个不同键一个元组——扩张成对的 join 是调用方的取行循环，不是算子。今天的图面扫描仍物化成 `Vec`（`Graph::edge_ids`，`graph.rs:404`），所以新的 API 是流式的、**面**上的 k 路求交，尽管底下的 `VirtualStorage::scan_range` 已经可用 |
+| `unlink_into` 是写前读 | 确认：它读主 body、解码，然后删掉确切的面以及 payload 声明的索引条目（`graph.rs:553-590`）。N 成员时这只在 body 带成员列表时才成立 |
+| link/unlink 是一次原子提交 | 对批路径确认：文档与边共用一次 `commit_batch`（ADR-0031，`link_into` 的文档在 `graph.rs:382-395`）。有一处不对称沿用下来：词汇分配自己提交，所以外层提交失败可能留下孤儿的谓词/词汇条目——无害，且已记录 |
 
-## 8. Open questions (the design work, not the recording)
+## 8. 开放问题（设计工作，不是记录）
 
-1. **Third declaration or an arity of the graph?** `GraphEncode`'s faces
-   `0x06–0x0A` are src/dst-shaped: out, in, predicate+out, predicate+in. A
-   set-shaped graph collapses out/in into one member face and one
-   predicate+member face, and the direction distinction disappears from the edge
-   layer. Whether that is a second carrier or a widening of ADR-0017 decides
-   everything downstream (declaration, derive, unlink).
-2. **Arity bound.** Bounded N (say ≤ 16) lets the body keep computable offsets
-   and honors the zero-parsing claim; unbounded N needs a count/varint prefix in
-   the body, so the payload offset becomes a cursor.
-3. **Multiplicity.** A member-face key cannot distinguish two occurrences of the
-   same member, so a repeated participant collapses into one face entry. If
-   "the same asset twice with different roles" must be representable, member
-   identity needs position or role in the key.
-4. **Per-member role.** Hypergraph literature's usual next requirement
-   (`approver`, `receiver`). A role byte or role id in the face key widens every
-   face and fixes the scan order to role-first or member-first; keeping it in
-   the payload keeps keys narrow but makes role queries a full fetch.
-5. **Face numbers.** `0x0C–0x0F` are free; reusing `0x07` as "member" would
-   reinterpret live graph keys, so a hypergraph must live in its own ns
-   (ADR-0017 §1 already isolates one ns per graph), never sharing one with a
-   binary edge set.
-6. **Membership check.** `NodeSet`/`#[ok_nodes]` is the existing declared-set
-   mechanism (a declaration, no slot). Reuse it rather than inventing
-   `ok_entities`, or the vocabulary grows two names for one idea.
-7. **Does the existing pattern already answer the use case?** A relation table does (ADR-0051 + ADR-0054), and it is a stronger baseline than the binary-edge modelling this section used to compare against: N members are N rows, `put` writes the row and every face in one batch, attributes on the relation are ordinary indexable columns, the reverse direction is a lead face sliced from the key (so it cannot drift from the key), and the rows travel through the changelog and to the lake. Against that baseline a hyperedge trades N rows for 1 row + N faces. §9 states what it wins and what it loses.
+1. **第三种声明，还是图的一个基数？** `GraphEncode` 的面 `0x06–0x0A` 是 src/dst 形状的：out、in、predicate+out、predicate+in。集合形状的图把 out/in 塌成一个成员面加一个 predicate+member 面，方向区分从边层消失。这是第二个载体还是 ADR-0017 的一次加宽，决定了下游的一切（声明、derive、unlink）。
+2. **基数上界。** 有界 N（比如 ≤ 16）让 body 保住可算的偏移，也守住了零解析那条主张；无界 N 需要在 body 里放计数/varint 前缀，payload 偏移于是变成一个游标。
+3. **重数。** 成员面键无法区分同一个成员的两次出现，于是重复的参与方塌成一条面 entry。若「同一资产两次、角色不同」必须可表示，成员身份就需要把位置或角色放进键里。
+4. **逐成员角色。** 超图文献里常见的下一个要求（`approver`、`receiver`）。面键里放角色字节或角色 id 会加宽每个面，并把扫描顺序钉死成 role-first 或 member-first；留在 payload 里则键窄，但角色查询变成一次完整取行。
+5. **面编号。** `0x0C–0x0F` 是空的；把 `0x07` 复用成「成员」会重新解释现存的图键，所以超图必须住在自己的 ns 里（ADR-0017 §1 已经做到一图一 ns），永不与一组二元边共用一个。
+6. **成员校验。** `NodeSet` / `#[ok_nodes]` 是现成的声明集机制（一个声明，不占槽）。复用它，而不是发明 `ok_entities`，否则词汇会为同一个念头长出两个名字。
+7. **现有模式是否已经回答了这个用例？** 关系表回答了（ADR-0051 + ADR-0054），而且它比本节原先比较的二元边建模是更强的基线：N 个成员是 N 行，`put` 在同一个批里写行和每个面，关系上的属性是普通可索引列，反方向是从键上切出的 lead face（于是不可能与键漂移），行还会经过变更日志进入 lake。对着这条基线，超边是拿 N 行换 1 行 + N 个面。§9 陈述它赢在哪、输在哪。
 
-## 9. A hyperedge against a relation table (2026-11-12)
+## 9. 超边对关系表（2026-11-12）
 
-The baseline is not a junction and not "a row plus binary edges". It is one collection whose key is the pair, `#[ok_lead]` for the reverse direction, and ordinary columns for whatever the relation knows:
+基线不是 junction，也不是「一行加二元边」。它是这样一个 collection：键是那对身份，反方向用 `#[ok_lead]`，关系知道的东西都是普通列：
 
 ```text
 #[derive(KeyEncode)]  struct MembershipKey { channel_id: u64, member_id: Uuid7, joined_ms: u64 }
@@ -149,20 +100,20 @@ The baseline is not a junction and not "a row plus binary edges". It is one coll
 struct Membership { nickname: String, since_ms: u64, role: u8 }
 ```
 
-| need | relation table (today) | hyperedge (proposed) |
+| 需求 | 关系表（今天） | 超边（提案） |
 |---|---|---|
-| which relations touch M | lead face `by_member` → whole key decoded, row fetched | member face → edge id, then the payload row |
-| which members a relation has | prefix scan of the pair key | one body read (N refs inline) |
-| relations containing A and B | two lead-face streams intersected (`OrderedSets`) | two member-face streams intersected |
-| attributes of the relation | ordinary columns | payload |
-| attributes of a member *within* the relation | ordinary columns (`role`, `since_ms`) | **not expressible** without widening the face key with role/position, or storing per-member data in the body and fetching it |
-| members in a meaningful order (join order, sequence) | free: an extra key column, re-read by another lead face | **not expressible**: the member face collapses order |
-| "these N members are one relation" | convention only — a missing row is invisible | structural: body plus faces written once |
-| delete the whole relation | scan the prefix, then `purge` each row | read the body, delete every implied face |
-| export / changelog | the row is a row | the payload row is; the faces are derived state |
+| 哪些关系牵涉 M | lead face `by_member` → 整键解码，取行 | 成员面 → edge id，再取 payload 行 |
+| 一条关系有哪些成员 | 对成对键做前缀扫描 | 一次 body 读（N 个 ref 内联） |
+| 同时含 A 和 B 的关系 | 两条 lead face 流求交（`OrderedSets`） | 两条成员面流求交 |
+| 关系的属性 | 普通列 | payload |
+| 成员**在关系内**的属性 | 普通列（`role`、`since_ms`） | **无法表达**，除非用角色/位置加宽面键，或者把逐成员数据存进 body 再取 |
+| 成员有意义的顺序（join 顺序、序列） | 免费：多一个键列，换一条 lead face 重读 | **无法表达**：成员面把顺序塌掉了 |
+| 「这 N 个成员是一条关系」 | 只是约定——缺一行也看不出来 | 结构性：body 加面一次写入 |
+| 删除整条关系 | 扫前缀，再逐行 `purge` | 读 body，删掉每个蕴含的面 |
+| 导出 / 变更日志 | 行就是行 | payload 行是；面是派生态 |
 
-What it wins is the last two rows of that shape — one object per relation, so the members cannot be torn apart and the relation's own attributes exist once instead of N times — plus half the index entries, since direction is gone and `out`/`in` collapse into one member face.
+它赢的是那个形状的最后两行——每条关系一个对象，于是成员不可能被撕开，关系自身的属性只存在一次而不是 N 次——再加上索引条目少一半，因为方向没了，`out`/`in` 塌成一个成员面。
 
-What it loses is the row above them, and for agent memory that row is usually the point: a relation is rarely symmetric (a member's role, weight, valid-from, or confidence belongs to *that member in that relation*), and a set-shaped carrier has no place for it except widening the face key or paying a fetch. It also loses the key-as-address allowance — any immutable ordering dimension rides in a pair-keyed table's key and comes back through a face, while a hyperedge's member face has no place to put an ordering.
+它输的是那上面一行，而对 agent 记忆来说那一行通常正是重点：关系很少是对称的（成员的角色、权重、生效时间、置信度都属于**那个成员在那条关系里**），而集合形状的载体没有地方放它，除非加宽面键或者付一次取行。它还输掉了「键即地址」这条便利——任何不可变的排序维度都能搭在成对键表的键里，再通过一个面回来，而超边的成员面没有地方放排序。
 
-So the decision does not turn on arity as §5 assumed. It turns on **where the attributes live**: relation-level only → a hyperedge is genuinely cheaper and its invariant is real; per-member too → the relation table already models it and the hyperedge would have to rebuild that ability inside the face key. The prototype worth building, if any, is the set-shaped form of the graph (reusing the direction-only faces `0x07`/`0x09` and their predicate twins, ADR-0017 §1 keeping one ns per graph), not a third carrier — and only after a workload shows relations with no per-member attributes are the common case.
+所以裁决点不在 §5 假设的基数上，而在**属性住在哪**：只有关系级属性时，超边确实更便宜、它的不变量也是真的；逐成员属性也要时，关系表已经能建模，超边就得在面键里把这能力重建一遍。真要造原型，值得造的是图的集合形状（复用只带方向的 `0x07`/`0x09` 及其带谓词的孪生，ADR-0017 §1 保持一图一 ns），不是第三个载体——而且要等工作负载显示「无逐成员属性的关系是常态」之后。

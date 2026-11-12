@@ -1,50 +1,50 @@
-# Schema-aware index structures: a prefix tree, or a block index
+# schema-aware 索引结构：前缀树，还是块索引
 
-Two outside proposals (2026-11-12), same premise, different level: OKM locks the key layout at compile time, so an index need not pay the generic "I do not know what a key looks like" tax. The first proposal applies that to an in-process prefix tree; the second applies it to the block index of a disk SSTable. Both are recorded as ideas, neither is designed or scheduled.
+两份外部提案（2026-11-12），同一前提、不同层级：OKM 在编译期锁定键布局，索引就不必付「我不知道键长什么样」这笔通用税。第一份把这一点用在进程内前缀树上，第二份用在磁盘 SSTable 的块索引上。两份都只作为想法记录，既未设计，也未排期。
 
-## The shared premise, and where it is weaker than it sounds
+## 共同前提，以及它比听起来更弱的地方
 
-The premise holds where a key is fixed-width: the namespace is a constant, index-field widths are known per access method, and `segment_start` / `key_prefix_width` already measure the layout instead of assuming it.
+前提在键定宽时成立：ns 是常量，索引字段宽度按访问方法已知，`segment_start` / `key_prefix_width` 已经是在量布局，而不是在假设。
 
-It does not hold everywhere: a trailing `Str` field is variable-width (bare UTF-8, no frame), and a truncated `key(...)` prefix carries only part of the primary key — that is why `PrefixKey` has `taken < KEY_LEN`. For those entries the path no longer reproduces the key, and every claim below that depends on "the bytes are known from the address" weakens to "mostly known".
+它并非处处成立：尾部 `Str` 字段是变宽（裸 UTF-8，无帧），而截断的 `key(...)` 前缀只带主键的一部分——这就是 `PrefixKey` 有 `taken < KEY_LEN` 的原因。对这类 entry，路径不再复现键，「字节从地址即可知」这条前提之下的一切主张，都弱化成「大致可知」。
 
-## Proposal A — a schema-aware prefix tree
+## 提案 A —— schema-aware 前缀树
 
-A generic ART spends run time on split, merge, and optimistic path compression with a fallback re-read, all of which exist because it cannot see the key. A schema-aware variant would instead: route the namespace through a top-level array (compile-time constant, never splits, bytes never stored), step whole fixed-width segments at a time (`u32` = one comparison, not four levels), size inline prefixes exactly per segment (no blind jump, hence no fallback verification), and drop the key from leaves entirely where the path already reconstructs `KEY_LEN` bytes.
+通用 ART 的时间花在 split、merge 和带 fallback 重读的乐观路径压缩上，这些全都源于它看不见键。schema-aware 变体会改为：ns 走上层数组（编译期常量，永不分裂，字节不存），按定宽段整段跳（`u32` 一次比较，不是四层），按段精确决定内联前缀长度（不做盲目跳转，因此不需要 fallback 校验），并在路径已能复原 `KEY_LEN` 字节时把键从叶子里去掉。
 
-The honest objection is not the arithmetic, it is the ownership: ordering, durability, recovery, compaction, snapshots and the seek contract belong to the engine today (fjall / redb / slatedb). A prefix tree here is a *new engine*, not a feature of the document layer.
+诚实的反对意见不在算术，在所有权：排序、持久性、恢复、压缩、快照和 seek 契约今天都属于引擎（fjall / redb / slatedb）。在文档层放一棵前缀树就是**一个新引擎**，不是一个特性。
 
-## Proposal B — a schema-aware block index
+## 提案 B —— schema-aware 块索引
 
-Same premise, one level lower and far cheaper to build, because it keeps the ordinary SSTable shape and only changes encodings:
+同一前提，低一层，也便宜得多，因为它保留普通 SSTable 的形态，只改编码：
 
-- **Zero-parse binary search.** A generic index block stores `[key_len: varint]` before each key, so every probe decodes a length and then runs `memcmp`. With a fixed `KEY_LEN` the entries can be a packed array (key + offset) indexed by `base + mid * stride`, and the leading bytes can be compared as integers rather than byte loops.
-- **A segment directory in the footer.** Instead of one flat index block interleaving every namespace, keep a small per-namespace (or namespace + leading field) offset table, so a lookup narrows the search window before the first probe.
-- **A prefix Bloom filter.** The whole-key filter is useless for `scan_keys(prefix)`; a filter built over the leading bytes answers "does this namespace/tenant exist at all" without touching data blocks.
-- **Key/value separation inside a block.** Store the shared leading segment once, the differing fixed-width suffixes as one tight array, values after them — so an in-block probe streams integers instead of dragging payloads through the cache, and becomes SIMD-friendly.
-- **Shortest separators at block boundaries.** Truncate an index entry at the first byte where neighbours differ instead of copying the remaining fixed-width tail.
+- **零解析二分查找。** 通用索引块在每个键前存 `[key_len: varint]`，每次探测都要先解长度再 `memcmp`。键长固定时，entry 可以是打包数组（键 + 偏移），按 `base + mid * stride` 索引，前导字节可以按整数比较而不是逐字节循环。
+- **footer 里的段目录。** 不把每个 ns 交错进一个平坦索引块，而是留一张小的 per-ns（或 ns + 前导字段）偏移表，查找先收窄窗口，再探第一次。
+- **前缀 Bloom filter。** 整键过滤器对 `scan_keys(prefix)` 没用；建在前导字节上的过滤器能回答「这个 ns / 租户到底存不存在」，不碰数据块。
+- **块内键值分离。** 共享前导段存一次，不同的定宽后缀存成一个紧凑数组，值放在它们之后——块内探测于是流式读整数，而不是拖着 payload 过缓存，也变得 SIMD 友好。
+- **块边界的最短分隔符。** 索引条目在邻居第一次不同的地方截断，不再复制余下的定宽尾巴。
 
-## Where the second proposal's own claims are too generous
+## 第二份提案自己的主张过慷慨的地方
 
-- "Some of it is reachable by configuring fjall/RocksDB" is not true for the crates as used here: fjall's block layout, filters and separators are internal implementation, not knobs. Anything in this list is a fork or a new engine.
-- A prefix Bloom filter needs a bounded prefix length; the moment a scan's prefix includes a variable-width field, the filter either over-approximates (it answers "maybe" for every longer prefix) or does not exist.
-- The separation trick assumes the differing part is fixed-width and contiguous; a `Str` tail breaks both.
+- 「其中一部分靠配置 fjall/RocksDB 就能拿到」对这里实际使用的 crate 不成立：fjall 的块布局、过滤器和分隔符是实现内部，不是旋钮。这份清单里的任何一条都是 fork 或新引擎。
+- 前缀 Bloom filter 需要一个有界的前缀长度；一旦扫描前缀里含变宽字段，过滤器要么过度近似（对每个更长的前缀都答「可能」），要么不存在。
+- 分离技巧假设不同的那部分定宽且连续；`Str` 尾巴两条都破。
 
-## Comparing the two
+## 两者比较
 
-- Engineering cost: the block index reuses an SSTable's page discipline; the tree re-designs node encoding, splits and serialization.
-- Memory: the tree folds prefixes best; the block index needs the segment directory plus separators to approach it, which is enough in practice.
-- I/O shape: the tree risks cross-page pointer chasing; a block index reads one contiguous block, better locality by construction.
-- Compatibility: neither is a configuration change — both mean owning storage, so the tree's disadvantage here is smaller than the sketch claims, and the block index's advantage is "less new code", not "no new code".
+- 工程量：块索引复用 SSTable 的页纪律；树要重做节点编码、分裂与序列化。
+- 内存：树折叠前缀最好；块索引要靠段目录加分隔符才接近它，实践中够用。
+- I/O 形状：树有跨页指针追逐的风险；块索引读一个连续块，局部性天然更好。
+- 兼容性：两者都不是配置改动——都意味着自己拥有存储，所以树在这条上的劣势比草图声称的小，块索引的优势是「新代码更少」，不是「没有新代码」。
 
-## What would make either worth doing
+## 什么情况下值得做
 
-- Measure the corpus first: how many indexes have a variable-width trailing segment, how many entries share a namespace and leading segment, and how deep the current range scan actually goes. The operator layer's cost this session was in fetches and reopens, not in tree depth — that is the number to displace before rebuilding an index.
+- 先测语料：有多少索引带变宽的尾段、多少 entry 共享一个 ns 和前导段、当前范围扫描实际探多深。这一轮操作层的开销在取行和重开上，不在树深度——那才是重建索引之前要挪动的数字。
 
-## Status
+## 状态
 
-Same as the other outside proposals recorded here: not designed, not scheduled — and now measured against, which is more than the other recorded proposals can claim.
+与这里记录的其他外部提案相同：未设计、未排期——而且现在是被测量过的，这比别的记录在案的提案多了一点。
 
-**Measured 2026-11-12** (`docs/internals/query-cost-attribution.md`): on a 200 000-row corpus with the memtable sealed, a 1 000-entry indexed query with fetch-back costs 943.8 µs, of which the engine's index read is 16.7 % and the *search* portion — one descent through the block index — is 2.76 µs, 0.3 %. An index-layer rewrite therefore has a ceiling of **1.20× end to end**, not 3–100×, and the realistic figure is near 1.0× because search is 0.3 %. The point read is 622.8 ns of which the document layer is 32 ns: no tree shape improves a cost that is the row fetch. What the measurement does endorse is a different lever that already exists — the covered index, 193.6 µs against 943.8 µs, 4.87× — and the operator layer, where the gallop result (35× on skewed inputs) shows where algorithmic work actually pays.
+**2026-11-12 已测**（`docs/internals/query-cost-attribution.md`）：20 万行语料、memtable 已封，一次 1000 条 entry 的带取回索引查询花 943.8 µs，其中引擎的索引读取占 16.7 %，而**搜索**部分——块索引上的一次下降——是 2.76 µs，0.3 %。因此索引层重写端到端的天花板是 **1.20×**，现实数字接近 1.0×，因为搜索只占 0.3 %。点读 622.8 ns，其中文档层 32 ns：没有哪种树形状能改进一个就是取行的开销。测量真正支持的是另一个已经存在的杠杆——覆盖索引，193.6 µs 对 943.8 µs，4.87×——以及操作层，那里的 gallop 结果（偏斜输入上 35×）说明算法工作真正付钱的地方。
 
-The block-index route remains the lower-risk of the two if an engine of our own ever exists, but the binding constraint is now cost of ownership, not expected speedup: it would not pay for itself on query latency.
+两种里块索引仍是低风险的那条，如果哪天要有自己的引擎；但现在的约束是持有成本，不是预期加速：它在查询延迟上不划算。
