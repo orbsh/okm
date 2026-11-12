@@ -141,7 +141,7 @@ footer  body_len u64 BE | records u64 BE | ordinal u64 BE | crc32 u32 BE
 - **S3 进核心也可以，做成 feature。** 依赖上的顾虑不成立：`object_store` 与 `tokio` 本来就是 `okm-core` 的可选依赖（`Cargo.toml`，给 slatedb 后端用），所以一个 S3 sink 不会往依赖树里加 crate——它加的是一个 feature 和一条发运路径。必须守住的是：上传绝不在提交里面（封存段交给工作队列，写路径仍是一次 memcpy）、store 契约保持同步、feature 默认关闭。要发运的单位是表目录（封存段 + sidecar + baseline）；客户端是 `object_store`——S3 / GCS / Azure / 本地——不是 `aws-sdk-s3`。
 - **`slatedb` 仍是引擎选项之一。** 从日志重建一个库是启动成本；住在对象存储上的库是另一种能力（不要本地盘、启动后低延迟写入）。日志 + baseline 放进 S3 让**系统**可恢复，并不会让任何引擎多余。
 - **多写是被拒掉的，不是缺的。** 两个构建永不共用一个 store（ADR-0042 §7）；实现并发写者就要给契约加协调（租约、CAS、冲突解决），而契约的简单正是产品。需要多写的部署，是另一套系统。
-- **任何满足 store 契约的引擎都够格**——有序 `scan_range` 加原子批。`surrealkv` 在能力上是候选；rocksdb 因构建成本被拒，不是因能力。
+- **任何满足 store 契约的引擎都够格**——有序 `scan_range` 加原子批。`surrealkv` 在能力上是候选（已暂缓，见 ADR-0064）；rocksdb 因构建成本被拒，不是因能力。
 
 ## 备选
 

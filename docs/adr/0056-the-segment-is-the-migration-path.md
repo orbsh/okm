@@ -142,7 +142,7 @@ Recorded because they were asked and they constrain what lands next:
 - **S3 as a shipping path for the log.** Withdrawn: an object store has no atomic rename and no fsync, so it cannot be where a seal lands, and a copy of the internal format with no restore verb beside it is a backup nobody can use. Data leaves the machine as a Delta table (ADR-0058) — backup, restore and analytics in one format.
 - **`slatedb` stays an engine option.** Rebuilding a store from a log is a boot-time cost; a store that lives on object storage is a different capability (no local disk, low-latency writes after boot). Log + baseline in S3 makes the *system* recoverable; it does not make any engine redundant.
 - **Multi-writer is declined, not missing.** Two builds never share a store (ADR-0042 §7); implementing concurrent writers would add coordination (leases, CAS, conflict resolution) to a contract whose simplicity is the product. If a deployment needs many writers, that is a different system.
-- **Any engine that satisfies the store contract qualifies** — ordered `scan_range` plus atomic batch. `surrealkv` is a candidate on capability; rocksdb is declined on build cost, not capability.
+- **Any engine that satisfies the store contract qualifies** — ordered `scan_range` plus atomic batch. `surrealkv` is a candidate on capability (deferred, ADR-0064); rocksdb is declined on build cost, not capability.
 
 ## Alternatives
 

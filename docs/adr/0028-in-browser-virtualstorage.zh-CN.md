@@ -112,7 +112,7 @@ feature 后接 `LocalStorageStore`。受 mudra 离线判据门控：该 feature 
 的应用。那个引擎不可能是 `VirtualStorage`（core 是同步的，而有持久性的浏览器存储都不是），
 所以它归 `okm-async`，与 `SlatedbStore` 并列，实现 `VirtualStorageAsync`。纸上最合适的候选是
 SurrealKV（点读与迭代同步、提交流水线异步、Apache-2.0、CI 里给 `wasm32` 建过），等真有这样的
-消费者出现时再评估，并带着它自己 README 写明的约束：`Tree` 必须挂在**专属 Web Worker** 上、文件放 OPFS，同一时刻只有一个 worker 持有某个数据库，wasm 只是 Tier 2（建过、没在本机跑过测试）。它的链接体积、Tokio 运行时的硬要求与其余实测记在 `docs/ideas/surrealkv-as-a-backend.md`。
+消费者出现时再评估，并带着它自己 README 写明的约束：`Tree` 必须挂在**专属 Web Worker** 上、文件放 OPFS，同一时刻只有一个 worker 持有某个数据库，wasm 只是 Tier 2（建过、没在本机跑过测试）。它的链接体积、Tokio 运行时的硬要求与其余实测记在 ADR-0064（那里把它定为暂缓）。
 这些都不改变本次撤除：UI 态缓存不是把一个 LSM 引擎塞进面板的理由。
 
 **保留的东西。** 这份 ADR 的另一半没有动：`WireClient` + `WireTransport` 仍是浏览器用来处理

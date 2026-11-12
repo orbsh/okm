@@ -132,8 +132,7 @@ candidate on paper (synchronous point reads and iteration, asynchronous commit p
 Apache-2.0, `wasm32` build in CI) and is what to evaluate when such a consumer appears, with
 the constraints its own README states: a `Tree` mounts in a **dedicated Web Worker** over OPFS,
 one worker owns a database at a time, and the wasm target is Tier 2 (built, not natively
-tested). Its link cost, its Tokio-runtime requirement and the rest of the measurement are in
-`docs/ideas/surrealkv-as-a-backend.md`. None of that changes this withdrawal: a UI-state cache is not a reason to put an LSM
+tested). Its link cost, its Tokio-runtime requirement and the rest of the measurement are in ADR-0064, which defers it. None of that changes this withdrawal: a UI-state cache is not a reason to put an LSM
 engine in a panel.
 
 **What stands.** The other half of this ADR is untouched: `WireClient` + `WireTransport` are
