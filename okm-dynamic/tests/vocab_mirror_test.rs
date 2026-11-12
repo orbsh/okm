@@ -75,15 +75,15 @@ fn two_handles_allocate_one_id_per_label() {
     let b = table(store.shared_handle());
 
     // b loads its mirror here: it knows nothing yet.
-    b.merge(&key(2), &map(&[("beta", Value::Str("y".into()))]))
+    b.put(&key(2), &map(&[("beta", Value::Str("y".into()))]))
         .unwrap();
     // a allocates after b's id — a cached watermark would reuse it.
-    a.merge(&key(1), &map(&[("alpha", Value::Str("x".into()))]))
+    a.put(&key(1), &map(&[("alpha", Value::Str("x".into()))]))
         .unwrap();
-    a.merge(&key(3), &map(&[("gamma", Value::Str("z".into()))]))
+    a.put(&key(3), &map(&[("gamma", Value::Str("z".into()))]))
         .unwrap();
     // b's mirror never saw "alpha": it must adopt the stored id, not mint one.
-    b.merge(&key(4), &map(&[("alpha", Value::Str("w".into()))]))
+    b.put(&key(4), &map(&[("alpha", Value::Str("w".into()))]))
         .unwrap();
 
     // Ids follow allocation order (beta first here); what the lock is about is
@@ -115,7 +115,7 @@ fn a_stale_mirror_resolves_an_unknown_id_from_the_engine() {
     let reader = table(store.shared_handle());
 
     writer
-        .merge(&key(1), &map(&[("early", Value::U64(1))]))
+        .put(&key(1), &map(&[("early", Value::U64(1))]))
         .unwrap();
     // Loads the reader's mirror: "early" and nothing else.
     assert_eq!(
@@ -124,7 +124,7 @@ fn a_stale_mirror_resolves_an_unknown_id_from_the_engine() {
     );
 
     writer
-        .merge(&key(2), &map(&[("late", Value::U64(2))]))
+        .put(&key(2), &map(&[("late", Value::U64(2))]))
         .unwrap();
     assert_eq!(
         reader.fetch(&key(2)).unwrap().unwrap()["late"],

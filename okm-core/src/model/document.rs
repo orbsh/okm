@@ -848,9 +848,9 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     ///
     /// Laziness is the interface: `.take(n)` is a LIMIT that pays only the
     /// reads performed, `.skip(m).take(n)` an offset page, `.rev()` the same
-    /// window backwards. Materializing is not this method's job —
-    /// [`whole_document`] is the door, so a key becomes a document with
-    /// `.map(|k| whole_document(self, &k))`.
+    /// window backwards. Materializing is not this method's job — a key becomes
+    /// a document with [`Collection::get`] over `(parts::Row, parts::Value)`,
+    /// whose two halves merge as values ([`DynamicValue::merged`]).
     pub fn scan_keys(
         &self,
         probe: &crate::model::prefix::PrefixProbe<K>,
@@ -904,8 +904,8 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     ///
     /// Eager on purpose, unlike `scan_keys`: the merge needs both sides in hand,
     /// and nothing streams whole-table document enumeration today. Materializing
-    /// the documents is still not this method's job — [`whole_document`] is the
-    /// door, so a key becomes a document with a plain `map` over the keys.
+    /// the documents is still not this method's job — a key becomes a document
+    /// with [`Collection::get`] over `(parts::Row, parts::Value)`.
     pub fn scan_document_keys(
         &self,
         probe: &crate::model::prefix::PrefixProbe<K>,
@@ -1175,8 +1175,8 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     /// The stored dynamic segment as a name-keyed map. `None` = no entry; a
     /// zero-frame list is never written, so empty and absent are one state.
     /// Crate-visible for the export bridge, which needs the segment WITHOUT the
-    /// declared half (the variant column); the two halves assembled is
-    /// [`whole_document`], and a single half is [`Collection::get`].
+    /// declared half (the variant column); a single half is [`Collection::get`],
+    /// and the two halves are composed by the caller as values.
     pub fn slot1_map(
         &self,
         key: &K,
@@ -1318,29 +1318,6 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     pub fn commit_batch(&self, batch: crate::engine::storage::Batch) -> crate::error::Result<()> {
         self.commit(batch)
     }
-}
-
-/// The whole document as one name-keyed map — both slots, declared names first.
-///
-/// `None` only when BOTH slots are empty: a dynamic-only document (no primary
-/// entry) still answers, because "the document" is the PAIR of slots
-/// (ADR-0035). With point reads answering parts, this is the one assembly left
-/// — for callers that want the merged map (serialization, export, whole-document
-/// comparison) rather than a named half.
-pub fn whole_document<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>>(
-    col: &Collection<S, K, R>,
-    key: &K,
-) -> crate::error::Result<Option<BTreeMap<String, DynamicValue>>> {
-    let row = col.get_row(key)?;
-    let stored = col.slot1_map(key)?;
-    if row.is_none() && stored.is_none() {
-        return Ok(None);
-    }
-    let mut out = row.map(|r| r.to_map()).unwrap_or_default();
-    if let Some(fields) = stored {
-        out.extend(fields);
-    }
-    Ok(Some(out))
 }
 
 impl<S, K, R> Collection<crate::changelog::ChangelogStore<S>, K, R>

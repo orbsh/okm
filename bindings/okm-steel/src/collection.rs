@@ -12,7 +12,7 @@
 //!   no process-wide id accretion).
 //! - `register_storage_fns` for the script-side surface: SIX global fns
 //!   with fixed names, the collection addressed by a NAME STRING —
-//!   `(collection-merge! "Counters" pkey doc)`. Fixed names exist because
+//!   `(collection-put! "Counters" pkey doc)`. Fixed names exist because
 //!   steel resolves free identifiers at DEFINE-COMPILE time: the
 //!   introspection throwaway engine must carry the same names (the ctx-
 //!   stub precedent — a dotted per-collection shim like `Counters.put`
@@ -107,8 +107,9 @@ impl StorageRegistry {
 
     /// Install the nine script-facing functions over THIS registry into
     /// a VM. All address the collection by its declared name:
-    /// - `(collection-merge! name pkey doc)` → void (declared names rewrite
-    ///   that field of the row, other names ride the dynamic segment)
+    /// - `(collection-put! name pkey doc)` → void (declared names rewrite
+    ///   that field of the row, other names ride the dynamic segment; the one
+    ///   write verb, the payload picks the path — ADR-0035 as amended)
     /// - `(collection-fetch! name pkey)` → hash? or void (the whole document)
     /// - `(collection-purge! name pkey)` → void (both slots)
     /// - `(collection-scan! name slot prefix)` → vector of hashes
@@ -124,7 +125,7 @@ impl StorageRegistry {
     ///   so the shape cannot be edited away)
     pub fn register_into(&self, vm: &mut Engine) {
         let reg = self.clone();
-        vm.register_fn("collection-merge!", {
+        vm.register_fn("collection-put!", {
             let reg = reg.clone();
             move |name: String, pkey: SteelVal, doc: SteelVal| -> Result<SteelVal, String> {
                 let pkey = steel_bytes_to_vec(&pkey)?;
@@ -133,7 +134,7 @@ impl StorageRegistry {
                     b.table
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .merge(&pkey, &map)?;
+                        .put(&pkey, &map)?;
                     Ok(SteelVal::Void)
                 })
             }
@@ -284,10 +285,10 @@ impl StorageRegistry {
         // register_fn wants 'static closures, so each arm inlines its
         // own message (the shared `stub` helper would be a borrow).
         vm.register_fn(
-            "collection-merge!",
+            "collection-put!",
             |_: String, _: SteelVal, _: SteelVal| -> Result<SteelVal, String> {
                 Err(
-                    "okm: collection-merge! called outside a session — introspection only"
+                    "okm: collection-put! called outside a session — introspection only"
                         .to_string(),
                 )
             },

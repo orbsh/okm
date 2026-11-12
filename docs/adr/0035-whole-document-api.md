@@ -39,6 +39,21 @@ The surface splits by VALUE SHAPE rather than by slot.
 | `replace(&key, &map)` | row rebuilt from the map; slot 1 = exactly the map's non-declared names | 1 | — (stronger than `put_document`) |
 | `purge(&key) -> bool` | both slots removed | 1 | `delete_document` + `delete_fields` |
 
+**Amendment 2026-11-12 — the three write verbs became one `put`.** The table
+above and the ten decisions below stay as written: they are the record of the
+split-by-value-shape decision. The surface they describe has since collapsed.
+Both collections now carry ONE write verb, `put`, and the PAYLOAD selects the
+arm — `&R` is the row, `&map` / `&DynamicValue::Obj(map)` is `merge` (only the
+names carried), the one-element tuple `(&map,)` / `(&Obj(map),)` is `replace`
+(the map IS the document). The substance of the decision is unchanged: the
+split is still by value shape rather than by slot — the value's TYPE is now the
+declaration of that shape, so a caller never translates its data into a verb
+name, and `merge` / `replace` left the API (their bodies are `merge_map` /
+`replace_map`). Correction to decision 2's "the dynamic side has no `get` /
+`put`": the dynamic collection has `put` now, and there its payload can only be
+the document arm — with no struct to speak there is nothing a `put` could
+misread as "the static segment".
+
 1. **The static segment speaks the struct.** `get` / `put` keep their
    contracts. `put` in particular keeps "never cleans the previous values'
    faces" — `index_test.rs` locks it deliberately — and nothing can clean them

@@ -102,7 +102,7 @@ fn injected_collection_writes_to_the_host_engine() {
     // The host owns the engine — before any write it is empty; the
     // collection wrote NOTHING to a private store, it wrote HERE.
     assert_eq!(engine.len(), 0, "fresh host engine holds no rows");
-    coll.merge_doc(&key_bytes(1), &doc(10)).unwrap();
+    coll.put_doc(&key_bytes(1), &doc(10), false).unwrap();
     assert!(
         engine.len() > 0,
         "the put landed in the HOST engine, not an orphan store"
@@ -121,7 +121,7 @@ fn injected_collection_writes_to_the_host_engine() {
 
     // Overwrite sweeps the stale index entry (10 → 11): the old prefix
     // finds nothing, the new one finds the key.
-    coll.merge_doc(&key_bytes(1), &doc(11)).unwrap();
+    coll.put_doc(&key_bytes(1), &doc(11), false).unwrap();
     assert!(coll
         .scan_doc(4097, &10u64.to_be_bytes())
         .unwrap()
@@ -143,8 +143,8 @@ fn injected_reduce_preset_accums_in_the_host_engine() {
     let coll = Collection::with_store(engine.clone(), &counters_entry(), 7).unwrap();
     // Two puts fold the count preset once each — the accumulator is an
     // engine row (group bytes = u64 BE count == 2).
-    coll.merge_doc(&key_bytes(1), &doc(5)).unwrap();
-    coll.merge_doc(&key_bytes(2), &doc(7)).unwrap();
+    coll.put_doc(&key_bytes(1), &doc(5), false).unwrap();
+    coll.put_doc(&key_bytes(2), &doc(7), false).unwrap();
     // The count group entry key: [ns][slot BE][group segment=empty].
     let mut ek = vec![0u8, 7];
     ek.extend_from_slice(&8193u16.to_be_bytes());

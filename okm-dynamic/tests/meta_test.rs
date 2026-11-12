@@ -161,7 +161,7 @@ fn the_meta_entry_never_surfaces_in_a_dynamic_scan() {
     table.ensure_layout().unwrap();
 
     let pkey = MetaKey { id: 7 }.encode();
-    table.merge(&pkey, &document("row")).unwrap();
+    table.put(&pkey, &document("row")).unwrap();
 
     assert_eq!(table.scan_document_keys().unwrap(), vec![pkey.clone()]);
     assert_eq!(table.fetch(&pkey).unwrap().unwrap(), document("row"));

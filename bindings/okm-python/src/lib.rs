@@ -237,12 +237,25 @@ use okm_async::TestStore;
         /// injection checks, embedded harnesses). Same executor, same
         /// `DynamicCollection` calls the #[pymethods] shell makes — the
         /// python shell adds only dict <-> ValueMap coercion on top.
-        pub fn merge_doc(&self, pkey: &[u8], document: &ValueMap) -> Result<(), String> {
-            self.inner
+        /// `replace = false` merges the names the map carries; `true` makes the
+        /// map the whole document (a name it omits is gone). One verb either
+        /// way — the payload type is what selects the path.
+        pub fn put_doc(
+            &self,
+            pkey: &[u8],
+            document: &ValueMap,
+            replace: bool,
+        ) -> Result<(), String> {
+            let inner = self
+                .inner
                 .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .merge(pkey, document)
-                .map_err(|e| e.to_string())
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if replace {
+                inner.put(pkey, (document,))
+            } else {
+                inner.put(pkey, document)
+            }
+            .map_err(|e| e.to_string())
         }
 
         pub fn fetch_doc(&self, pkey: &[u8]) -> Result<Option<ValueMap>, String> {
@@ -506,12 +519,21 @@ use okm_async::TestStore;
             })
         }
 
-        /// Update one document: `{name: value}` — a declared name rewrites that
+        /// Write one document: `{name: value}` — a declared name rewrites that
         /// field of the row, any other name rides the dynamic segment. Runs the
-        /// index entry lifecycle and the reduce calling discipline. This is the
-        /// write door: there is no `put` here (ADR-0035 — the whole-document
-        /// verbs are the surface, and `merge` covers the same op list).
-        fn merge(&self, pkey: Vec<u8>, document: &Bound<'_, PyAny>) -> PyResult<()> {
+        /// index entry lifecycle and the reduce calling discipline.
+        ///
+        /// `replace=True` makes the map the WHOLE document: a declared field it
+        /// does not name takes the schema's default, and an unnamed dynamic
+        /// field is removed. `replace=False` (the default) touches only the
+        /// names it carries. One write verb here too (ADR-0035 as amended).
+        #[pyo3(signature = (pkey, document, replace=None))]
+        fn put(
+            &self,
+            pkey: Vec<u8>,
+            document: &Bound<'_, PyAny>,
+            replace: Option<bool>,
+        ) -> PyResult<()> {
             // Schema-coerced for a DECLARED name (Python ints carry no width; the
             // schema kind drives the coercion — same rule as the codec surface),
             // and typed by the Python value for any other name, which rides the
@@ -519,11 +541,16 @@ use okm_async::TestStore;
             // that segment, so refusing undeclared names here would make
             // `add_path_index` a face nothing can feed.
             let map = py_values_to_map_any(&self.schema, document)?;
-            self.inner
+            let inner = self
+                .inner
                 .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .merge(&pkey, &map)
-                .map_err(PyValueError::new_err)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if replace.unwrap_or(false) {
+                inner.put(&pkey, (&map,))
+            } else {
+                inner.put(&pkey, &map)
+            }
+            .map_err(PyValueError::new_err)
         }
 
         /// The whole document (both slots) → dict or None: the read door.

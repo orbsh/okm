@@ -28,7 +28,7 @@ use okm_value::DynamicValue;
 use std::collections::BTreeMap;
 
 use okm_async::TestStore;
-use okm_core::{Collection, Document, DocumentEncode, KeyEncode, whole_document};
+use okm_core::{Collection, Document, DocumentEncode, KeyEncode};
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
 pub struct DocKey {
@@ -66,9 +66,21 @@ fn faces(t: &Collection<TestStore, DocKey, Doc>, owner: u64) -> usize {
 }
 
 /// The whole document as a map, or the empty one for `None` — a missing
-/// document and an empty one answer the same question here.
+/// document and an empty one answer the same question here. The composition
+/// is the two primitives: a point read answers parts, the row converts to a
+/// value, values merge.
 fn doc_map(t: &Collection<TestStore, DocKey, Doc>, k: &DocKey) -> BTreeMap<String, DynamicValue> {
-    whole_document(t, k).unwrap().unwrap_or_default()
+    let (row, seg) = t
+        .get::<(okm_core::parts::Row, okm_core::parts::Value)>(k)
+        .unwrap();
+    let doc = row
+        .map(|r| r.to_value())
+        .unwrap_or_default()
+        .merged(seg.unwrap_or_default());
+    match doc {
+        DynamicValue::Obj(map) => map,
+        other => panic!("a document composes to an object, got {other:?}"),
+    }
 }
 
 #[test]
@@ -214,7 +226,13 @@ fn a_one_element_tuple_payload_replaces_the_whole_document() {
     // same verb.
     t.put(&k, (&DynamicValue::Obj(BTreeMap::new()),)).unwrap();
     assert!(t.get_row(&k).unwrap().is_none());
-    assert!(whole_document(&t, &k).unwrap().is_none());
+    let (row, seg) = t
+        .get::<(okm_core::parts::Row, okm_core::parts::Value)>(&k)
+        .unwrap();
+    assert!(
+        row.is_none() && seg.is_none(),
+        "an empty replace is a purge"
+    );
 }
 
 #[test]

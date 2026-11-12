@@ -192,9 +192,10 @@ pub struct Value;
 ///
 /// Each part is its OWN `Option`, because absence is per slot: a key holding
 /// only a dynamic segment answers `(None, Some(object))`, and a key holding
-/// nothing answers `(None, None)`. Merging them into one map is
-/// [`whole_document`](crate::model::document::whole_document)'s job, and a
-/// caller that names one half never materializes the other.
+/// nothing answers `(None, None)`. Merging them into one document is the
+/// caller's composition — the row's [`to_value`](crate::model::index::Document::to_value)
+/// merged with this object — so a caller that names one half never
+/// materializes the other.
 ///
 /// One-element tuples collapse to the part's own output — `(parts::Row,)` is
 /// `Option<R>`, not `(Option<R>,)` — so the sugar [`Collection::get_row`] and

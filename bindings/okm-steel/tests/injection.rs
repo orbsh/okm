@@ -121,7 +121,7 @@ fn script_writes_land_in_the_host_engine() {
             r#"
 (define schema (okm-schema-from-json! "{sj}"))
 (define pkey (okm-encode-key! schema (hash "org_id" 1 "user_id" 2)))
-(collection-merge! "Counters" pkey {doc})
+(collection-put! "Counters" pkey {doc})
 (define read (collection-fetch! "Counters" pkey))
 (assert! (string=? (hash-ref read "name") "alice"))
 (assert! (= (hash-ref read "level") 9))
@@ -259,7 +259,7 @@ fn introspection_stubs_keep_dotted_scripts_loading() {
     okm_steel::register(&mut vm);
     StorageRegistry::register_stubs(&mut vm);
     vm.run(
-        r#"(define (handler ev) (collection-merge! "Counters" (list->vector (list 0)) (hash)))"#,
+        r#"(define (handler ev) (collection-put! "Counters" (list->vector (list 0)) (hash)))"#,
     )
     .expect("handler referencing the stubbed fns must load under stubs");
     let err = vm

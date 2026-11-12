@@ -218,8 +218,8 @@ only added structure is the frontier and the visited set.
   fields in declaration order. A full scan is the EMPTY probe
   (`PrefixProbe::empty()`), not a second door. It is lazy: `.take(n)` is
   a LIMIT that pays only the reads performed, `.rev()` walks the window
-  backwards, and the answers are ROW keys (`whole_document` is the
-  materializing door; `scan_document_keys` is the eager two-slot mode). Reach for it
+  backwards, and the answers are ROW keys (a document is a point read
+  plus the caller's `to_value` + `merge`; `scan_document_keys` is the eager two-slot mode). Reach for it
   when the grouping is already the key; if the dimension is not a
   leading segment, it is an access-method question, not a probe.
 - **range = the interval form of physical WHERE (ADR-0020).** A

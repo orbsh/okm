@@ -31,7 +31,37 @@ pub struct User {
 }
 
 use __OkmIndex_User_by_level as ByLevel;
-use okm_core::whole_document;
+
+/// The document as one map: the row's value with the dynamic segment laid over
+/// it — a point read answers parts, a row converts to a value, and values
+/// merge. Test-local on purpose: the crate offers no assembly function.
+fn doc_of<S, K, R>(
+    col: &okm_core::Collection<S, K, R>,
+    key: &K,
+) -> okm_core::error::Result<Option<std::collections::BTreeMap<String, okm_value::DynamicValue>>>
+where
+    S: okm_core::VirtualStorage,
+    K: okm_core::KeyEncode,
+    R: okm_core::Document<Key = K>,
+{
+    let (row, seg) = col.get::<(okm_core::parts::Row, okm_core::parts::Value)>(key)?;
+    let doc = match (row, seg) {
+        (None, None) => return Ok(None),
+        (row, seg) => row
+            .map(|r| r.to_value())
+            .unwrap_or_default()
+            .merged(seg.unwrap_or_default()),
+    };
+    match doc {
+        okm_value::DynamicValue::Obj(map) => Ok(Some(map)),
+        other => Err(okm_core::error::Error::Corrupt {
+            what: format!(
+                "a document composes to an object, got {}",
+                okm_value::dyn_kind(&other)
+            ),
+        }),
+    }
+}
 
 fn key(id: u64) -> UserKey {
     UserKey { id }
@@ -54,7 +84,7 @@ fn view_projects_both_slots_and_leaves_the_typed_read_alone() {
     t.put(&key(1), &user(1, 2)).unwrap();
 
     // A static-only document: the view carries the declared names.
-    let row_only = whole_document(&t, &key(1)).unwrap().unwrap();
+    let row_only = doc_of(&t, &key(1)).unwrap().unwrap();
     assert_eq!(row_only.len(), 2);
     assert_eq!(row_only["level"], DynamicValue::U64(2));
 
@@ -67,7 +97,7 @@ fn view_projects_both_slots_and_leaves_the_typed_read_alone() {
         ])),
     )
     .unwrap();
-    let got = whole_document(&t, &key(1)).unwrap().unwrap();
+    let got = doc_of(&t, &key(1)).unwrap().unwrap();
     assert_eq!(got.len(), 4);
     assert_eq!(got["score"], DynamicValue::U64(99));
     assert_eq!(got["note"], DynamicValue::Str("hello".into()));
@@ -96,7 +126,7 @@ fn view_projects_both_slots_and_leaves_the_typed_read_alone() {
     )
     .unwrap();
     assert!(t.get_row(&key(9)).unwrap().is_none(), "no static segment");
-    assert_eq!(whole_document(&t, &key(9)).unwrap().unwrap().len(), 1);
+    assert_eq!(doc_of(&t, &key(9)).unwrap().unwrap().len(), 1);
 }
 
 #[test]
@@ -147,7 +177,7 @@ fn a_point_read_answers_parts_apart() {
     let (row, value) = t.get::<(parts::Row, parts::Value)>(&key(404)).unwrap();
     assert!(row.is_none());
     assert!(value.is_none());
-    assert!(whole_document(&t, &key(404)).unwrap().is_none());
+    assert!(doc_of(&t, &key(404)).unwrap().is_none());
 }
 
 #[test]
@@ -170,7 +200,7 @@ fn merge_touches_only_the_names_it_is_given() {
     )
     .unwrap();
 
-    let got = whole_document(&t, &key(1)).unwrap().unwrap();
+    let got = doc_of(&t, &key(1)).unwrap().unwrap();
     assert_eq!(got.len(), 5, "2 declared + 3 dynamic");
     for name in ["a", "b", "c"] {
         assert!(
@@ -221,7 +251,7 @@ fn merge_of_a_declared_field_is_an_rmw_and_cleans_the_old_face() {
 }
 
 #[test]
-fn replace_is_the_whole_document() {
+fn replace_is_the_doc_of() {
     let t: Collection<TestStore, UserKey, User> = Collection::new(TestStore::slatedb_mem());
     t.put(&key(1), &user(9, 9)).unwrap();
     t.put(
@@ -241,7 +271,7 @@ fn replace_is_the_whole_document() {
     )
     .unwrap();
     assert_eq!(t.get_row(&key(1)).unwrap().unwrap(), user(0, 4));
-    let got = whole_document(&t, &key(1)).unwrap().unwrap();
+    let got = doc_of(&t, &key(1)).unwrap().unwrap();
     assert!(
         !got.contains_key("gone"),
         "replace drops unnamed dynamic names"
@@ -269,7 +299,7 @@ fn replace_is_the_whole_document() {
     // An empty map IS the empty document.
     t.put(&key(1), (&DynamicValue::Obj(BTreeMap::new()),))
         .unwrap();
-    assert!(whole_document(&t, &key(1)).unwrap().is_none());
+    assert!(doc_of(&t, &key(1)).unwrap().is_none());
 }
 
 #[test]
@@ -281,13 +311,10 @@ fn purge_clears_both_slots_in_one_call() {
         &DynamicValue::Obj(dmap(&[("x", DynamicValue::U64(1))])),
     )
     .unwrap();
-    assert!(whole_document(&t, &key(2)).unwrap().is_some());
+    assert!(doc_of(&t, &key(2)).unwrap().is_some());
 
     assert!(t.purge(&key(2)).unwrap());
-    assert!(
-        whole_document(&t, &key(2)).unwrap().is_none(),
-        "both slots gone"
-    );
+    assert!(doc_of(&t, &key(2)).unwrap().is_none(), "both slots gone");
     assert!(!t.purge(&key(2)).unwrap(), "second purge is a no-op");
 
     // A dynamic-only document is purgeable too.
@@ -297,7 +324,7 @@ fn purge_clears_both_slots_in_one_call() {
     )
     .unwrap();
     assert!(t.purge(&key(4)).unwrap());
-    assert!(whole_document(&t, &key(4)).unwrap().is_none());
+    assert!(doc_of(&t, &key(4)).unwrap().is_none());
 }
 
 // ---- from_map 的两条规则：缺席填默认，出现但种类/范围不对则具名拒绝 ----------
@@ -399,11 +426,11 @@ fn two_handles_on_one_engine_do_not_share_an_id() {
     .unwrap();
 
     assert_eq!(
-        whole_document(&a, &key(2)).unwrap().unwrap()["beta"],
+        doc_of(&a, &key(2)).unwrap().unwrap()["beta"],
         DynamicValue::Str("y".into())
     );
     assert_eq!(
-        whole_document(&b, &key(3)).unwrap().unwrap()["gamma"],
+        doc_of(&b, &key(3)).unwrap().unwrap()["gamma"],
         DynamicValue::Str("z".into())
     );
 }
@@ -429,17 +456,17 @@ fn one_dynamic_name_across_documents_survives_a_fresh_mirror() {
     .unwrap();
 
     assert_eq!(
-        whole_document(&t, &key(2)).unwrap().unwrap()["tag"],
+        doc_of(&t, &key(2)).unwrap().unwrap()["tag"],
         DynamicValue::Str("beta".into())
     );
 
     let fresh: Collection<TestStore, UserKey, User> = Collection::new(store.shared_handle());
     assert_eq!(
-        whole_document(&fresh, &key(1)).unwrap().unwrap()["tag"],
+        doc_of(&fresh, &key(1)).unwrap().unwrap()["tag"],
         DynamicValue::Str("alpha".into())
     );
     assert_eq!(
-        whole_document(&fresh, &key(2)).unwrap().unwrap()["tag"],
+        doc_of(&fresh, &key(2)).unwrap().unwrap()["tag"],
         DynamicValue::Str("beta".into())
     );
 }

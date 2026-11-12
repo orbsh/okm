@@ -75,7 +75,7 @@ pub use engine::nest::{NestStorage, RemoteStore, VirtualHandle};
 pub use engine::storage::{
     Batch, BatchStore, SharedVirtualStorage, VirtualStorage, scan_suffix_kv,
 };
-pub use model::document::{Collection, whole_document};
+pub use model::document::Collection;
 pub use model::field::{FieldDesc, FieldType};
 pub use model::graph::{EdgeBody, EdgeHead, EdgeKey, Graph, GraphEncode, NodeRef, NodeSet};
 pub use model::index::{

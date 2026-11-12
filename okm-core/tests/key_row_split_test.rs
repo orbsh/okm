@@ -17,8 +17,38 @@ use std::collections::BTreeMap;
 use okm_core::{Document, DocumentEncode, KeyEncode};
 use okm_value::DynamicValue;
 
+/// The document as one map: the row's value with the dynamic segment laid over
+/// it — a point read answers parts, a row converts to a value, and values
+/// merge. Test-local on purpose: the crate offers no assembly function.
+fn doc_of<S, K, R>(
+    col: &okm_core::Collection<S, K, R>,
+    key: &K,
+) -> okm_core::error::Result<Option<std::collections::BTreeMap<String, okm_value::DynamicValue>>>
+where
+    S: okm_core::VirtualStorage,
+    K: okm_core::KeyEncode,
+    R: okm_core::Document<Key = K>,
+{
+    let (row, seg) = col.get::<(okm_core::parts::Row, okm_core::parts::Value)>(key)?;
+    let doc = match (row, seg) {
+        (None, None) => return Ok(None),
+        (row, seg) => row
+            .map(|r| r.to_value())
+            .unwrap_or_default()
+            .merged(seg.unwrap_or_default()),
+    };
+    match doc {
+        okm_value::DynamicValue::Obj(map) => Ok(Some(map)),
+        other => Err(okm_core::error::Error::Corrupt {
+            what: format!(
+                "a document composes to an object, got {}",
+                okm_value::dyn_kind(&other)
+            ),
+        }),
+    }
+}
+
 use okm_async::TestStore;
-use okm_core::whole_document;
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
 pub struct ProfileKey {
     pub org_id: u32,
@@ -78,7 +108,7 @@ fn a_name_may_live_in_the_key_and_in_the_payload() {
         "the key's value still addresses"
     );
 
-    let doc = whole_document(&table, &key(101)).unwrap().unwrap();
+    let doc = doc_of(&table, &key(101)).unwrap().unwrap();
     assert_eq!(
         doc.get("user_id"),
         Some(&DynamicValue::U64(999)),
@@ -153,7 +183,7 @@ fn a_map_name_that_matches_a_payload_field_writes_the_row() {
             &DynamicValue::Obj(map_of(&[("nickname", DynamicValue::Str("z".into()))])),
         )
         .unwrap();
-    let doc = whole_document(&table, &k).unwrap().unwrap();
+    let doc = doc_of(&table, &k).unwrap().unwrap();
     assert_eq!(doc.get("nickname"), Some(&DynamicValue::Str("z".into())));
     assert_eq!(doc.get("user_id"), Some(&DynamicValue::U64(50)));
 }

@@ -171,7 +171,7 @@ fn dynamic_entries_equal_typed_entries() {
         )
         .unwrap();
     dynamic
-        .merge(&key_bytes(1, 2), &values(4, 77, "bob"))
+        .put(&key_bytes(1, 2), &values(4, 77, "bob"))
         .expect("dynamic put");
 
     // The real lock: typed store's full entry set == dynamic store's.
@@ -204,9 +204,9 @@ fn dynamic_entries_equal_typed_entries() {
 #[test]
 fn dynamic_scan_finds_by_access_method() {
     let t = dynamic_table(TestStore::slatedb_mem());
-    t.merge(&key_bytes(1, 10), &values(4, 100, "a")).unwrap();
-    t.merge(&key_bytes(1, 11), &values(9, 100, "b")).unwrap();
-    t.merge(&key_bytes(1, 12), &values(4, 200, "c")).unwrap();
+    t.put(&key_bytes(1, 10), &values(4, 100, "a")).unwrap();
+    t.put(&key_bytes(1, 11), &values(9, 100, "b")).unwrap();
+    t.put(&key_bytes(1, 12), &values(4, 200, "c")).unwrap();
 
     // by_level (slot 16): level = 4 → users 10 and 12.
     let hits = t.scan(0x3001, &4u32.to_be_bytes()).unwrap();
@@ -234,9 +234,9 @@ fn dynamic_scan_finds_by_access_method() {
 #[test]
 fn dynamic_covered_scan_answers_without_fetching_documents() {
     let t = dynamic_table(TestStore::slatedb_mem());
-    t.merge(&key_bytes(1, 10), &values(4, 100, "a")).unwrap();
-    t.merge(&key_bytes(1, 11), &values(9, 100, "b")).unwrap();
-    t.merge(&key_bytes(1, 12), &values(4, 200, "c")).unwrap();
+    t.put(&key_bytes(1, 10), &values(4, 100, "a")).unwrap();
+    t.put(&key_bytes(1, 11), &values(9, 100, "b")).unwrap();
+    t.put(&key_bytes(1, 12), &values(4, 200, "c")).unwrap();
 
     // by_score (slot 0x3002) declares includes(level): the entry VALUE carries
     // it, so the covered scan answers `level` per hit without fetching a doc.
@@ -275,8 +275,8 @@ fn dynamic_covered_str_include_decodes_the_trailing_remainder() {
             vec!["name".into()],
         )],
     );
-    t.merge(&key_bytes(1, 10), &values(4, 100, "短")).unwrap();
-    t.merge(&key_bytes(1, 11), &values(4, 100, "更长的名字"))
+    t.put(&key_bytes(1, 10), &values(4, 100, "短")).unwrap();
+    t.put(&key_bytes(1, 11), &values(4, 100, "更长的名字"))
         .unwrap();
 
     let covered = t.scan_covered(0x3001, &4u32.to_be_bytes()).unwrap();
@@ -294,11 +294,11 @@ fn dynamic_covered_str_include_decodes_the_trailing_remainder() {
 #[test]
 fn dynamic_overwrite_sweeps_stale_entries() {
     let t = dynamic_table(TestStore::slatedb_mem());
-    t.merge(&key_bytes(1, 10), &values(4, 100, "a")).unwrap();
+    t.put(&key_bytes(1, 10), &values(4, 100, "a")).unwrap();
 
     // Overwrite changes `level` 4 → 9: the old by_level entry (slot 16,
     // level 4) must be gone, the new one present.
-    t.merge(&key_bytes(1, 10), &values(9, 100, "a")).unwrap();
+    t.put(&key_bytes(1, 10), &values(9, 100, "a")).unwrap();
 
     let level4 = t.scan(0x3001, &4u32.to_be_bytes()).unwrap();
     assert!(level4.is_empty(), "stale by_level entry must be swept");
@@ -309,7 +309,7 @@ fn dynamic_overwrite_sweeps_stale_entries() {
 #[test]
 fn dynamic_purge_removes_all_entries() {
     let t = dynamic_table(TestStore::slatedb_mem());
-    t.merge(&key_bytes(1, 10), &values(4, 100, "a")).unwrap();
+    t.put(&key_bytes(1, 10), &values(4, 100, "a")).unwrap();
     t.purge(&key_bytes(1, 10)).unwrap();
 
     assert!(t.scan(0x3001, &4u32.to_be_bytes()).unwrap().is_empty());
@@ -322,7 +322,7 @@ fn dynamic_purge_removes_all_entries() {
 #[test]
 fn dynamic_get_round_trips() {
     let t = dynamic_table(TestStore::slatedb_mem());
-    t.merge(&key_bytes(7, 8), &values(2, 300, "zoe")).unwrap();
+    t.put(&key_bytes(7, 8), &values(2, 300, "zoe")).unwrap();
     let document = t
         .fetch(&key_bytes(7, 8))
         .unwrap()
@@ -332,7 +332,7 @@ fn dynamic_get_round_trips() {
     assert_eq!(document.get("name"), Some(&Value::Str("zoe".into())));
 
     // Key-width discipline: a short key is a caller bug, not silent bytes.
-    assert!(t.merge(&[0u8; 4], &values(2, 300, "zoe")).is_err());
+    assert!(t.put(&[0u8; 4], &values(2, 300, "zoe")).is_err());
 }
 
 #[test]
@@ -346,14 +346,13 @@ fn a_verb_reads_only_the_state_its_arm_consumes() {
     let (row, seg) = (row_key(1, 2), segment_key(1, 2));
 
     // Dynamic names only → the segment, never the row.
-    t.merge(&key_bytes(1, 2), &dfields(&[("note", "x")]))
-        .unwrap();
+    t.put(&key_bytes(1, 2), &dfields(&[("note", "x")])).unwrap();
     assert!(!t.store().took(&row), "dynamic-only merge reads no row");
     assert!(t.store().took(&seg), "dynamic-only merge reads the segment");
 
     // Declared names only → the row, never the segment.
     t.store().reset();
-    t.merge(&key_bytes(1, 2), &values(4, 77, "bob")).unwrap();
+    t.put(&key_bytes(1, 2), &values(4, 77, "bob")).unwrap();
     assert!(t.store().took(&row), "declared-only merge reads the row");
     assert!(
         !t.store().took(&seg),
@@ -364,7 +363,7 @@ fn a_verb_reads_only_the_state_its_arm_consumes() {
     t.store().reset();
     let mut both = values(4, 77, "bob");
     both.insert("note".into(), Value::Str("y".into()));
-    t.merge(&key_bytes(1, 2), &both).unwrap();
+    t.put(&key_bytes(1, 2), &both).unwrap();
     assert!(
         t.store().took(&row) && t.store().took(&seg),
         "mixed merge reads both"
@@ -374,7 +373,7 @@ fn a_verb_reads_only_the_state_its_arm_consumes() {
     // says which), and the segment only for a path index's sweep: this table
     // declares none, so the segment is not read.
     t.store().reset();
-    t.replace(&key_bytes(1, 2), &values(4, 77, "bob")).unwrap();
+    t.put(&key_bytes(1, 2), (&values(4, 77, "bob"),)).unwrap();
     assert!(t.store().took(&row), "replace reads the row");
     assert!(
         !t.store().took(&seg),
@@ -403,8 +402,8 @@ fn an_undeclared_name_is_a_dynamic_name_on_this_side() {
     // population, not a caller bug. The typed side keeps the struct (`put(&R)`)
     // and therefore cannot express the mistake at all (ADR-0035).
     let t = dynamic_table(TestStore::slatedb_mem());
-    t.merge(&key_bytes(1, 2), &values(4, 77, "bob")).unwrap();
-    t.merge(&key_bytes(1, 2), &dfields(&[("extra", "x")]))
+    t.put(&key_bytes(1, 2), &values(4, 77, "bob")).unwrap();
+    t.put(&key_bytes(1, 2), &dfields(&[("extra", "x")]))
         .unwrap();
     let back = t.fetch(&key_bytes(1, 2)).unwrap().unwrap();
     assert_eq!(back.get("extra"), Some(&Value::Str("x".into())));
@@ -473,7 +472,7 @@ fn dynamic_fields_equal_typed_fields() {
             &document,
         )
         .unwrap();
-    dynamic.merge(&key_bytes(1, 2), &values(1, 5, "a")).unwrap();
+    dynamic.put(&key_bytes(1, 2), &values(1, 5, "a")).unwrap();
 
     // One map, both modes: no declared name is named here, so both sides
     // write slot 1 only and the row is untouched.
@@ -490,7 +489,7 @@ fn dynamic_fields_equal_typed_fields() {
         )
         .unwrap();
     dynamic
-        .merge(
+        .put(
             &key_bytes(1, 2),
             &dfields(&[("note", "hello"), ("weight", "9")]),
         )
@@ -535,14 +534,14 @@ fn dynamic_fields_equal_typed_fields() {
 #[test]
 fn merge_keeps_the_unnamed_dynamic_name_and_never_writes_the_row() {
     let t = dynamic_table(TestStore::slatedb_mem());
-    t.merge(&key_bytes(1, 3), &values(1, 5, "a")).unwrap();
-    t.merge(&key_bytes(1, 3), &dfields(&[("a", "x"), ("b", "1")]))
+    t.put(&key_bytes(1, 3), &values(1, 5, "a")).unwrap();
+    t.put(&key_bytes(1, 3), &dfields(&[("a", "x"), ("b", "1")]))
         .unwrap();
 
     // A second merge naming only `b` leaves `a` standing (ADR-0035 rule 3).
     let mut only_b = ValueMap::new();
     only_b.insert("b".into(), Value::U64(2));
-    t.merge(&key_bytes(1, 3), &only_b).unwrap();
+    t.put(&key_bytes(1, 3), &only_b).unwrap();
 
     let back = t.fetch(&key_bytes(1, 3)).unwrap().unwrap();
     assert_eq!(
@@ -561,14 +560,13 @@ fn merge_keeps_the_unnamed_dynamic_name_and_never_writes_the_row() {
 #[test]
 fn replace_is_the_whole_document_and_empty_is_purge() {
     let t = dynamic_table(TestStore::slatedb_mem());
-    t.merge(&key_bytes(1, 4), &values(1, 5, "a")).unwrap();
-    t.merge(&key_bytes(1, 4), &dfields(&[("a", "x"), ("b", "1")]))
+    t.put(&key_bytes(1, 4), &values(1, 5, "a")).unwrap();
+    t.put(&key_bytes(1, 4), &dfields(&[("a", "x"), ("b", "1")]))
         .unwrap();
 
     // A map with NO declared name leaves the static segment absent: the
     // segment is the whole document (ADR-0035 rule 4).
-    t.replace(&key_bytes(1, 4), &dfields(&[("b", "1")]))
-        .unwrap();
+    t.put(&key_bytes(1, 4), (&dfields(&[("b", "1")]),)).unwrap();
     let only_dynamic = t
         .fetch(&key_bytes(1, 4))
         .unwrap()
@@ -584,7 +582,7 @@ fn replace_is_the_whole_document_and_empty_is_purge() {
     );
 
     // The declared map rebuilds the row and empties the segment.
-    t.replace(&key_bytes(1, 4), &values(9, 6, "z")).unwrap();
+    t.put(&key_bytes(1, 4), (&values(9, 6, "z"),)).unwrap();
     let row = t.fetch(&key_bytes(1, 4)).unwrap().unwrap();
     assert_eq!(row.get("level"), Some(&Value::U32(9)));
     assert_eq!(row.get("name"), Some(&Value::Str("z".into())));
@@ -596,15 +594,15 @@ fn replace_is_the_whole_document_and_empty_is_purge() {
 
     // replace(&empty) == purge.
     let empty = ValueMap::new();
-    t.replace(&key_bytes(1, 4), &empty).unwrap();
+    t.put(&key_bytes(1, 4), (&empty,)).unwrap();
     assert!(t.fetch(&key_bytes(1, 4)).unwrap().is_none());
 }
 
 #[test]
 fn purge_is_the_one_deletion_verb_and_takes_both_slots() {
     let t = dynamic_table(TestStore::slatedb_mem());
-    t.merge(&key_bytes(1, 5), &values(1, 5, "a")).unwrap();
-    t.merge(&key_bytes(1, 5), &dfields(&[("note", "kept")]))
+    t.put(&key_bytes(1, 5), &values(1, 5, "a")).unwrap();
+    t.put(&key_bytes(1, 5), &dfields(&[("note", "kept")]))
         .unwrap();
 
     // The document is the PAIR of slots, so one verb removes it: row, faces,
@@ -616,7 +614,7 @@ fn purge_is_the_one_deletion_verb_and_takes_both_slots() {
 
     // A dynamic-only document (replace with no declared name) purges too —
     // that state is reachable through `replace`, and purge is what clears it.
-    t.replace(&key_bytes(1, 5), &dfields(&[("note", "orphan")]))
+    t.put(&key_bytes(1, 5), (&dfields(&[("note", "orphan")]),))
         .unwrap();
     assert!(t.fetch(&key_bytes(1, 5)).unwrap().is_some());
     assert!(t.purge(&key_bytes(1, 5)).unwrap());
@@ -627,7 +625,7 @@ fn purge_is_the_one_deletion_verb_and_takes_both_slots() {
 fn dynamic_fields_carry_composites() {
     use std::collections::BTreeMap as M;
     let t = dynamic_table(TestStore::slatedb_mem());
-    t.merge(&key_bytes(1, 6), &values(1, 5, "a")).unwrap();
+    t.put(&key_bytes(1, 6), &values(1, 5, "a")).unwrap();
 
     // Nested Obj + heterogeneous Array round-trip through the bridge.
     let mut nested: M<String, Value> = M::new();
@@ -638,7 +636,7 @@ fn dynamic_fields_carry_composites() {
         "tags".into(),
         Value::Array(vec![Value::Str("x".into()), Value::U64(3)]),
     );
-    t.merge(&key_bytes(1, 6), &f).unwrap();
+    t.put(&key_bytes(1, 6), &f).unwrap();
 
     let back = t.fetch(&key_bytes(1, 6)).unwrap().unwrap();
     assert_eq!(
@@ -696,7 +694,7 @@ fn plan_merge_equals_embedded_merge() {
     vocab.adopt(&p1.new_vocab_entries);
 
     let emb = dynamic_table(TestStore::slatedb_mem());
-    emb.merge(&k, &dfields(&[("note", "hello"), ("weight", "9")]))
+    emb.put(&k, &dfields(&[("note", "hello"), ("weight", "9")]))
         .unwrap();
 
     let mut planned: Vec<(Vec<u8>, Vec<u8>)> = store
@@ -797,7 +795,7 @@ fn dynamic_variable_width_index_matches_typed_bytes() {
         let mut m = BTreeMap::new();
         m.insert("email".to_string(), Value::Str(email.into()));
         dynamic
-            .merge(&EmailKey { id }.encode(), &m)
+            .put(&EmailKey { id }.encode(), &m)
             .expect("dynamic put");
     }
 
@@ -843,7 +841,7 @@ fn dynamic_variable_width_index_matches_typed_bytes() {
     // Overwrite sweeps the stale entry (the email changed).
     let mut m = BTreeMap::new();
     m.insert("email".to_string(), Value::Str("a@x".into()));
-    dynamic.merge(&EmailKey { id: 3 }.encode(), &m).unwrap();
+    dynamic.put(&EmailKey { id: 3 }.encode(), &m).unwrap();
     let hits = dynamic.scan(0x3001, b"a@x").unwrap();
     let mut ids: Vec<u64> = hits
         .iter()
@@ -997,8 +995,8 @@ fn a_hand_declared_table_stamps_its_faces_and_rebuilds_a_new_one() {
     let t = DynamicCollection::new(store.clone(), 41, schema(), one);
     t.ensure_layout().unwrap();
     assert_eq!(t.faces_status().unwrap(), okm_core::FaceStatus::Match);
-    t.merge(&key_bytes(1, 10), &values(4, 100, "a")).unwrap();
-    t.merge(&key_bytes(1, 11), &values(9, 100, "b")).unwrap();
+    t.put(&key_bytes(1, 10), &values(4, 100, "a")).unwrap();
+    t.put(&key_bytes(1, 11), &values(9, 100, "b")).unwrap();
     assert_eq!(t.scan(0x3001, &4u32.to_be_bytes()).unwrap().len(), 1);
 
     let two = vec![
@@ -1043,7 +1041,7 @@ fn a_reader_without_the_declaration_learns_what_each_path_slot_means() {
 
     let mut doc = ValueMap::new();
     doc.insert("note".into(), Value::Str("hot".into()));
-    writer.merge(&key_bytes(1, 30), &doc).unwrap();
+    writer.put(&key_bytes(1, 30), &doc).unwrap();
     assert_eq!(writer.scan(0x3005, b"hot").unwrap().len(), 1);
 
     // The reader knows nothing about the table's methods: an empty list.

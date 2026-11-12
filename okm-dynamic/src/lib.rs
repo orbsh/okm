@@ -49,6 +49,7 @@ mod path;
 mod plan;
 mod plan_fields;
 mod reduce;
+mod write;
 
 pub use okm_core::TableMeta;
 pub use okm_core::field::FieldType;
@@ -79,6 +80,7 @@ pub use reduce::{
     BoundReduce, PresetKind, PresetLogic, ReduceLogic, ReduceLogicObj, ReduceSpec, reduce_get,
     scan_reduces,
 };
+pub use write::WritePayload;
 
 /// Look up a field's value, rejecting unknown/missing names up front —
 /// both sides of every encode walk this gate, so byte layout and error

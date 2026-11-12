@@ -51,6 +51,56 @@ pub enum DynamicValue {
 /// written in schema declaration order, not map order).
 pub type ValueMap = BTreeMap<String, DynamicValue>;
 
+impl DynamicValue {
+    /// Object merge: the composition rule for a document assembled from two
+    /// halves (a decoded row and a dynamic segment).
+    ///
+    /// - two `Obj`s merge NAME BY NAME: a name both sides carry recurses, a
+    ///   name only the right side carries is added, a name only the left side
+    ///   carries keeps its value;
+    /// - anything else REPLACES the left side outright. An `Array` is a VALUE,
+    ///   not a list of names, so it is replaced rather than concatenated; a
+    ///   scalar cannot carry names at all, so the right side wins.
+    ///
+    /// `merge` is left-biased in the absence of a name: the left side is the
+    /// document, the right side is what is laid over it.
+    pub fn merge(&mut self, other: DynamicValue) {
+        match (self, other) {
+            (DynamicValue::Obj(left), DynamicValue::Obj(right)) => {
+                for (name, value) in right {
+                    match left.get_mut(&name) {
+                        Some(slot) => slot.merge(value),
+                        None => {
+                            left.insert(name, value);
+                        }
+                    }
+                }
+            }
+            (slot, other) => *slot = other,
+        }
+    }
+
+    /// [`merge`](Self::merge), owning the receiver: `a.merged(b)` is `b` laid
+    /// over `a`.
+    pub fn merged(mut self, other: DynamicValue) -> DynamicValue {
+        self.merge(other);
+        self
+    }
+}
+
+/// The empty document — an `Obj` with no names, not `Null`.
+///
+/// It exists so a half that is ABSENT contributes nothing when a document is
+/// composed (`row.map(to_value).unwrap_or_default().merged(segment
+/// .unwrap_or_default())`): the identity of [`DynamicValue::merge`] is "no
+/// names", which is an empty object. `Null` would not do — it replaces the left
+/// side, which is a documented value, not an absence marker.
+impl Default for DynamicValue {
+    fn default() -> Self {
+        DynamicValue::Obj(BTreeMap::new())
+    }
+}
+
 /// Codec errors: schema/value mismatches, out-of-range values, truncated bytes.
 /// Codec mistakes are normal input — errors, never panics (ADR-0037).
 ///
@@ -508,6 +558,82 @@ mod tests {
         assert!(
             decode_variants(&bytes).is_empty(),
             "over-deep value is refused"
+        );
+    }
+
+    #[test]
+    fn objects_merge_name_by_name_and_nested_objects_recurse() {
+        let left = DynamicValue::Obj(BTreeMap::from([
+            ("a".to_string(), DynamicValue::U32(1)),
+            (
+                "inner".to_string(),
+                DynamicValue::Obj(BTreeMap::from([
+                    ("x".to_string(), DynamicValue::Str("kept".into())),
+                    ("y".to_string(), DynamicValue::Null),
+                ])),
+            ),
+        ]));
+        let right = DynamicValue::Obj(BTreeMap::from([
+            ("b".to_string(), DynamicValue::Bool(true)),
+            (
+                "inner".to_string(),
+                DynamicValue::Obj(BTreeMap::from([("y".to_string(), DynamicValue::U8(9))])),
+            ),
+        ]));
+        let got = left.merged(right);
+        assert_eq!(
+            got,
+            DynamicValue::Obj(BTreeMap::from([
+                ("a".to_string(), DynamicValue::U32(1)),
+                ("b".to_string(), DynamicValue::Bool(true)),
+                (
+                    "inner".to_string(),
+                    DynamicValue::Obj(BTreeMap::from([
+                        ("x".to_string(), DynamicValue::Str("kept".into())),
+                        ("y".to_string(), DynamicValue::U8(9)),
+                    ]))
+                ),
+            ]))
+        );
+    }
+
+    #[test]
+    fn an_array_replaces_instead_of_appending() {
+        let left = DynamicValue::Obj(BTreeMap::from([(
+            "tags".to_string(),
+            DynamicValue::Array(vec![DynamicValue::Str("a".into())]),
+        )]));
+        let right = DynamicValue::Obj(BTreeMap::from([(
+            "tags".to_string(),
+            DynamicValue::Array(vec![DynamicValue::Str("b".into())]),
+        )]));
+        assert_eq!(left.merged(right.clone()), right);
+    }
+
+    #[test]
+    fn a_scalar_replaces_the_left_side() {
+        // The right side is what the caller spelled; a scalar cannot carry
+        // names, so there is nothing to merge into.
+        assert_eq!(
+            DynamicValue::U32(1).merged(DynamicValue::Str("x".into())),
+            DynamicValue::Str("x".into())
+        );
+        assert_eq!(
+            DynamicValue::Obj(BTreeMap::new()).merged(DynamicValue::Null),
+            DynamicValue::Null
+        );
+    }
+
+    #[test]
+    fn the_empty_object_is_the_merge_identity() {
+        // An absent half contributes nothing: `unwrap_or_default()` on either
+        // side of the composition leaves the other side untouched.
+        let doc = DynamicValue::Obj(BTreeMap::from([("a".to_string(), DynamicValue::U32(1))]));
+        assert_eq!(doc.clone().merged(DynamicValue::default()), doc);
+        assert_eq!(
+            DynamicValue::default().merged(doc.clone()),
+            doc,
+            "an absent row contributes no names"
         );
     }
 }

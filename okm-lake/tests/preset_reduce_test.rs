@@ -18,9 +18,38 @@
 )]
 
 use okm_async::TestStore;
-use okm_core::{
-    Document, DocumentEncode, KeyEncode, Quant, Reduce, ReduceCodec, ReduceLogic, whole_document,
-};
+use okm_core::{Document, DocumentEncode, KeyEncode, Quant, Reduce, ReduceCodec, ReduceLogic};
+
+/// The document as one map: the row's value with the dynamic segment laid over
+/// it — a point read answers parts, a row converts to a value, and values
+/// merge. Test-local on purpose: the crate offers no assembly function.
+fn doc_of<S, K, R>(
+    col: &okm_core::Collection<S, K, R>,
+    key: &K,
+) -> okm_core::error::Result<Option<std::collections::BTreeMap<String, okm_value::DynamicValue>>>
+where
+    S: okm_core::VirtualStorage,
+    K: okm_core::KeyEncode,
+    R: okm_core::Document<Key = K>,
+{
+    let (row, seg) = col.get::<(okm_core::parts::Row, okm_core::parts::Value)>(key)?;
+    let doc = match (row, seg) {
+        (None, None) => return Ok(None),
+        (row, seg) => row
+            .map(|r| r.to_value())
+            .unwrap_or_default()
+            .merged(seg.unwrap_or_default()),
+    };
+    match doc {
+        okm_value::DynamicValue::Obj(map) => Ok(Some(map)),
+        other => Err(okm_core::error::Error::Corrupt {
+            what: format!(
+                "a document composes to an object, got {}",
+                okm_value::dyn_kind(&other)
+            ),
+        }),
+    }
+}
 
 /// 分组模式：按 forum 分组，四种 preset 各占一个 slot。
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
@@ -374,7 +403,7 @@ fn a_merge_folds_the_ledger_once_and_only_through_the_row_arm() {
         "a segment-only patch folds nothing"
     );
     assert_eq!(
-        whole_document(&t, &k).unwrap().unwrap().get("note"),
+        doc_of(&t, &k).unwrap().unwrap().get("note"),
         Some(&DynamicValue::Str("x".into()))
     );
 
@@ -395,7 +424,7 @@ fn a_merge_folds_the_ledger_once_and_only_through_the_row_arm() {
         "the Sum followed the row's new value"
     );
     assert_eq!(
-        whole_document(&t, &k).unwrap().unwrap().get("tag"),
+        doc_of(&t, &k).unwrap().unwrap().get("tag"),
         Some(&DynamicValue::Str("y".into()))
     );
 }

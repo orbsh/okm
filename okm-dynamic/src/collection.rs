@@ -81,7 +81,7 @@ impl<S: VirtualStorage> okm_core::changelog::replay::ReplayTarget for DynamicCol
     }
 
     fn put(&self, pkey: &[u8], row: &ValueMap) -> Result<(), String> {
-        DynamicCollection::merge(self, pkey, row)
+        DynamicCollection::put(self, pkey, row)
     }
 
     fn purge(&self, pkey: &[u8]) -> Result<bool, String> {
@@ -777,7 +777,28 @@ impl<S: VirtualStorage> DynamicCollection<S> {
         Ok(Some(out))
     }
 
-    /// Partial whole-document update, ONE commit (ADR-0035 rule 3).
+    /// Write one document. The verb is one; the payload type selects the path
+    /// (ADR-0035 as amended):
+    ///
+    /// ```ignore
+    /// t.put(&pkey, &map)?;        // partial document: the names this map carries
+    /// t.put(&pkey, (&map,))?;     // whole document: the map IS the document
+    /// ```
+    ///
+    /// `&okm_value::DynamicValue` is accepted as the payload too — an object,
+    /// refused otherwise — so a caller holding a decoded value writes without
+    /// re-wrapping it. The two paths keep the contracts their verbs had; see
+    /// [`WritePayload`](crate::write::WritePayload).
+    pub fn put<W: crate::write::WritePayload<S>>(
+        &self,
+        pkey: &[u8],
+        payload: W,
+    ) -> Result<(), String> {
+        payload.write(self, pkey)
+    }
+
+    /// The `&ValueMap` arm of [`put`](Self::put): partial whole-document
+    /// update, ONE commit (ADR-0035 rule 3).
     ///
     /// - A name the schema declares is a read-modify-write of the row: the
     ///   stored document is decoded, the named fields overwrite it, and the row
@@ -791,7 +812,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
     ///   either: the schema answers which arm the plan takes, so the stored
     ///   state is read per arm, not per verb (a dynamic-only map pays one
     ///   segment read, a declared-only map one row read).
-    pub fn merge(&self, pkey: &[u8], object: &ValueMap) -> Result<(), String> {
+    pub(crate) fn merge_map(&self, pkey: &[u8], object: &ValueMap) -> Result<(), String> {
         let (declared, dynamic) = self.split_names(object);
         let old_row = if declared.is_empty() {
             None
@@ -840,8 +861,8 @@ impl<S: VirtualStorage> DynamicCollection<S> {
         Ok(())
     }
 
-    /// Whole-document replacement, ONE commit: the map IS the document
-    /// (ADR-0035 rule 4).
+    /// The `(&ValueMap,)` arm of [`put`](Self::put): whole-document
+    /// replacement, ONE commit — the map IS the document (ADR-0035 rule 4).
     ///
     /// - Declared names rebuild the row; a declared field the map does not name
     ///   takes the schema's default (the payload is positional — a half row
@@ -855,7 +876,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
     /// deleted, and only the stored row says which); the segment only when a
     /// path index has entries to sweep, because the entry is written wholesale
     /// from the map (an empty map deletes it).
-    pub fn replace(&self, pkey: &[u8], object: &ValueMap) -> Result<(), String> {
+    pub(crate) fn replace_map(&self, pkey: &[u8], object: &ValueMap) -> Result<(), String> {
         let old_row = self.stored_document(pkey)?;
         let old_dynamic = if self.has_path_index() {
             self.dynamic_map(pkey)?

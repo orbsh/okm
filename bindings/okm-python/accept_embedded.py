@@ -152,18 +152,18 @@ def main() -> int:
     t.add_reduce(0x2001, ["level"], make_logic())
 
     # --- put folds ----------------------------------------------------
-    t.merge(key(1, 10), doc(1, 10, 4, 100, "a"))
-    t.merge(key(1, 11), doc(1, 11, 4, 200, "b"))
+    t.put(key(1, 10), doc(1, 10, 4, 100, "a"))
+    t.put(key(1, 11), doc(1, 11, 4, 200, "b"))
     acc = t.reduce_get({"level": 4})
     assert acc == (2).to_bytes(8, "big"), f"acc after two puts: {acc!r}"
 
     # --- overwrite: unfold old + fold new, no drift --------------------
-    t.merge(key(1, 10), doc(1, 10, 4, 100, "a2"))
+    t.put(key(1, 10), doc(1, 10, 4, 100, "a2"))
     acc = t.reduce_get({"level": 4})
     assert acc == (2).to_bytes(8, "big"), f"overwrite drifted: {acc!r}"
 
     # --- overwrite across groups ---------------------------------------
-    t.merge(key(1, 11), doc(1, 11, 9, 200, "b"))
+    t.put(key(1, 11), doc(1, 11, 9, 200, "b"))
     assert t.reduce_get({"level": 4}) == (1).to_bytes(8, "big")
     assert t.reduce_get({"level": 9}) == (1).to_bytes(8, "big")
 
@@ -175,7 +175,7 @@ def main() -> int:
     hits = t.scan(0x1002, (ord("a") & 0xFF).to_bytes(4, "big"))
     assert len(hits) == 1 and hits[0]["user_id"] == 10, hits
     # overwrite to a name without 'a': the entry sweeps
-    t.merge(key(1, 10), doc(1, 10, 4, 100, "zig"))
+    t.put(key(1, 10), doc(1, 10, 4, 100, "zig"))
     assert t.scan(0x1002, (ord("a") & 0xFF).to_bytes(4, "big")) == []
     assert len(t.scan(0x1002, (ord("z") & 0xFF).to_bytes(4, "big"))) == 1
 
@@ -195,7 +195,7 @@ def main() -> int:
     # --- partial index: predicate gates entry existence ------------------
     # name "zig" is not admitted → no entry even though level=4 exists
     assert t.scan(0x1003, (4).to_bytes(4, "big")) == []
-    t.merge(key(1, 12), doc(1, 12, 4, 50, "a"))
+    t.put(key(1, 12), doc(1, 12, 4, 50, "a"))
     assert len(t.scan(0x1003, (4).to_bytes(4, "big"))) == 1
     t.purge(key(1, 12))
     assert t.scan(0x1003, (4).to_bytes(4, "big")) == []
@@ -207,18 +207,18 @@ def main() -> int:
     # starts empty and fills from the documents.
     t.add_path_index(0x1004, "note", "str")
     assert t.scan(0x1004, b"hot") == [], "a declared face starts empty"
-    t.merge(key(1, 20), {"note": "hot"})
+    t.put(key(1, 20), {"note": "hot"})
     hits = t.scan(0x1004, b"hot")
     assert len(hits) == 1 and hits[0]["user_id"] == 20, hits
     # overwrite with a different value sweeps the old entry (the entry key encodes
     # the value, so the sweep is the only thing that can reach it)
-    t.merge(key(1, 20), {"note": "cold"})
+    t.put(key(1, 20), {"note": "cold"})
     assert t.scan(0x1004, b"hot") == [], "the old entry is gone"
     assert len(t.scan(0x1004, b"cold")) == 1
 
     # Array fan-out: one entry per resolved value, positioned by the index.
     t.add_path_index(0x1005, "tags[1]", "str")
-    t.merge(key(1, 21), {"tags": ["x", "y"]})
+    t.put(key(1, 21), {"tags": ["x", "y"]})
     assert len(t.scan(0x1005, b"y")) == 1, "the pinned position resolved"
     assert t.scan(0x1005, b"x") == [], "position 1 is not position 0"
 

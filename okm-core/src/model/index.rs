@@ -327,6 +327,17 @@ pub trait Document: Sized + Clone {
     /// document -> map: every declared field lifted into a run-time
     /// DynamicValue (ADR-0012 document-map bridge; derive-generated).
     fn to_map(&self) -> std::collections::BTreeMap<String, okm_value::DynamicValue>;
+    /// The row as one open value: [`to_map`](Self::to_map) wrapped in
+    /// [`DynamicValue::Obj`](okm_value::DynamicValue::Obj).
+    ///
+    /// It is the row's own conversion, nothing more — a document assembled from
+    /// both slots is a composition of two values
+    /// ([`DynamicValue::merged`](okm_value::DynamicValue)), not a collection
+    /// door. Defaulted rather than derive-generated, because a row IS a name
+    /// map once it leaves its struct.
+    fn to_value(&self) -> okm_value::DynamicValue {
+        okm_value::DynamicValue::Obj(self.to_map())
+    }
     /// map -> document, fallibly: matched fields assigned from `DynamicValue`.
     ///
     /// Two rules, and the difference is PRESENCE. An absent name takes its

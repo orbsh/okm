@@ -19,7 +19,6 @@
 
 use okm_async::TestStore;
 use okm_core::schema::CollectionSchema;
-use okm_core::whole_document;
 use okm_core::{
     Collection, Document, DocumentEncode, KeyEncode, Offset, Quant, VarInt, VirtualStorage,
 };
@@ -27,6 +26,37 @@ use okm_dynamic::{
     CodecError, Value, ValueMap, decode_key, decode_payload, encode_key, encode_payload,
 };
 use std::collections::BTreeMap;
+
+/// The document as one map: the row's value with the dynamic segment laid over
+/// it — a point read answers parts, a row converts to a value, and values
+/// merge. Test-local on purpose: the crate offers no assembly function.
+fn doc_of<S, K, R>(
+    col: &okm_core::Collection<S, K, R>,
+    key: &K,
+) -> okm_core::error::Result<Option<std::collections::BTreeMap<String, okm_value::DynamicValue>>>
+where
+    S: okm_core::VirtualStorage,
+    K: okm_core::KeyEncode,
+    R: okm_core::Document<Key = K>,
+{
+    let (row, seg) = col.get::<(okm_core::parts::Row, okm_core::parts::Value)>(key)?;
+    let doc = match (row, seg) {
+        (None, None) => return Ok(None),
+        (row, seg) => row
+            .map(|r| r.to_value())
+            .unwrap_or_default()
+            .merged(seg.unwrap_or_default()),
+    };
+    match doc {
+        okm_value::DynamicValue::Obj(map) => Ok(Some(map)),
+        other => Err(okm_core::error::Error::Corrupt {
+            what: format!(
+                "a document composes to an object, got {}",
+                okm_value::dyn_kind(&other)
+            ),
+        }),
+    }
+}
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
 pub struct UserKey {
@@ -331,7 +361,7 @@ fn a_key_name_in_a_map_is_a_value_field_in_both_modes() {
     let mut dyn_map = BTreeMap::new();
     dyn_map.insert("org_id".to_string(), Value::U32(999));
     dyn_map.insert("note".to_string(), Value::Str("hi".into()));
-    dynamic.merge(&key.encode(), &dyn_map).unwrap();
+    dynamic.put(&key.encode(), &dyn_map).unwrap();
 
     // No payload name was given, so no row is written on either side: the value
     // stands alone, addressed by the pkey.
@@ -340,7 +370,7 @@ fn a_key_name_in_a_map_is_a_value_field_in_both_modes() {
         "no payload name = no row"
     );
     assert!(
-        whole_document(&typed, &key)
+        doc_of(&typed, &key)
             .unwrap()
             .unwrap()
             .contains_key("org_id"),
@@ -356,7 +386,7 @@ fn a_key_name_in_a_map_is_a_value_field_in_both_modes() {
     );
     // The identity is the pkey and a map cannot move it: this invented no row.
     assert!(
-        whole_document(
+        doc_of(
             &typed,
             &UserKey {
                 org_id: 999,
@@ -421,7 +451,7 @@ fn the_two_enumeration_modes_see_the_two_kinds_of_document() {
         .scan_document_keys(&okm_core::PrefixProbe::empty())
         .unwrap()
         .iter()
-        .map(|k| whole_document(&typed, k).unwrap().expect("a document"))
+        .map(|k| doc_of(&typed, k).unwrap().expect("a document"))
         .collect();
     assert_eq!(docs.len(), 2, "the adapter is a map over keys + fetch");
     assert!(
@@ -438,10 +468,10 @@ fn the_two_enumeration_modes_see_the_two_kinds_of_document() {
     );
     let mut row_map = BTreeMap::new();
     row_map.insert("level".to_string(), Value::U32(3));
-    dynamic.merge(&with_row.encode(), &row_map).unwrap();
+    dynamic.put(&with_row.encode(), &row_map).unwrap();
     let mut dyn_only = BTreeMap::new();
     dyn_only.insert("note".to_string(), Value::Str("no row".into()));
-    dynamic.merge(&segment_only.encode(), &dyn_only).unwrap();
+    dynamic.put(&segment_only.encode(), &dyn_only).unwrap();
     assert_eq!(
         dynamic.scan_document_keys().unwrap(),
         vec![with_row.encode(), segment_only.encode()],
