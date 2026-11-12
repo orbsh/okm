@@ -198,6 +198,20 @@ For N sides, intersect once and subtract per side: `a.difference(common)`,
 `b.difference(common)`, `c.difference(common)` — each answer is that side's "more
 than the intersection".
 
+**When one side is much smaller — and both sides can jump.** `intersect` can only
+advance a stream, so the trailing side walks every key in the gap. A scan can be
+MOVED instead of stepped: `Collection::seek_scan` returns a cursor that implements
+`Seekable` (its `seek` is `ScanIter::seek`), and `okm_query::intersect_seek`
+compares the two positions, steps over a short gap and repositions across a long one
+— `SEEK_BUDGET` = 8 steps before a seek, because a seek reopens the range on the
+snapshot/transaction the scan already holds (microseconds) while a step is
+nanoseconds. It pays on skewed input (one broad scan against a small key set, or a
+scan against a narrow one), where the merge's per-entry advance is the whole cost,
+and it does NOT pay when the two sides advance together: there `intersect` is one
+step per key and no reopen at all. Both cursors must walk the same key space — the
+seek bound is a raw entry key, so pair two scans of one access method, or a scan
+with a key set built by the index's own encoder.
+
 **What the ordering contract costs.** `intersect` and `difference` require their
 inputs to be ordered by key and do not check it: verifying would mean reading a
 stream to its end before answering, which is the materialization they exist to

@@ -719,6 +719,39 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         Scan::new(self, header, encoded.len(), false, b, e)
     }
 
+    /// [`scan`](Self::scan) as a REPOSITIONABLE cursor: the same entries, in the
+    /// same order, with [`Seekable`](crate::seek::Seekable)'s `seek` available on
+    /// top.
+    ///
+    /// The one difference from `scan` is what it answers and what it can do:
+    /// [`SeekScan`] yields the RAW entry key (`[header][slot][fields][key tail]`)
+    /// instead of the decoded hit, and it can be moved FORWARD to a lower bound
+    /// without pulling the entries in between. That bound is a raw entry key, so
+    /// the natural second half is another cursor over the SAME access method —
+    /// one scan's position is directly usable as the other's target. Both sides
+    /// of a skewed intersection are usually that shape: one broad scan, one
+    /// narrow one.
+    ///
+    /// No row is read: a cursor answers positions, so `Scan`'s hit (and its
+    /// `get`) is not built. A consumer fetches the row for the keys it keeps,
+    /// which is one `get` per answer instead of one per entry walked.
+    ///
+    /// Cost: a seek on this scan reopens the engine's range on the snapshot /
+    /// transaction the scan already holds (fjall, redb) or drains forward
+    /// (a buffered engine) — see [`ScanIter::seek`](crate::engine::storage::ScanIter::seek).
+    /// Steps stay cheaper than seeks on every arm, which is why the operator
+    /// over this cursor spends a small step budget before it repositions.
+    pub fn seek_scan<I>(
+        &self,
+        probe: impl crate::model::prefix::ProbeBytes<I>,
+    ) -> SeekScan<'_, S, K, R, I>
+    where
+        I: KvIndex<Key = K, Document = R>,
+        S: SharedVirtualStorage,
+    {
+        self.scan::<I>(probe).seekable()
+    }
+
     /// Equality scan over access method `I`: only entries whose field segment is
     /// exactly the probe. A stored value that merely EXTENDS the probe is not a
     /// hit, and neither is the tail-spill case (a probe satisfied by primary-key
@@ -1365,17 +1398,32 @@ where
         }
     }
 
-    /// One entry from the front, already matched against the bound.
-    fn pull(&mut self) -> Option<crate::error::Result<crate::model::index::RawHit>> {
+    /// One entry from the front, WITH its full entry key, already matched
+    /// against the bound.
+    ///
+    /// The key is the entry's own bytes — `[header][slot][fields][key tail]` —
+    /// which is what [`ScanIter::seek`](crate::engine::storage::ScanIter::seek)
+    /// speaks. [`pull`](Self::pull) throws it away: a caller reading a hit wants
+    /// the split segments, not the assembled key. A repositioning consumer wants
+    /// exactly the key, so both paths share this one pull.
+    fn pull_raw(&mut self) -> Option<crate::error::Result<(Vec<u8>, crate::model::index::RawHit)>> {
         loop {
             let (full, value) = match self.iter.next()? {
                 Ok(kv) => kv,
                 Err(e) => return Some(Err(e)),
             };
-            if let Some(raw) = self.matched(full, value) {
-                return Some(Ok(raw));
+            if let Some(hit) = self.matched(full, value) {
+                return Some(Ok(hit));
             }
         }
+    }
+
+    /// One entry from the front, already matched against the bound.
+    fn pull(&mut self) -> Option<crate::error::Result<crate::model::index::RawHit>> {
+        Some(match self.pull_raw()? {
+            Ok((_, raw)) => Ok(raw),
+            Err(e) => Err(e),
+        })
     }
 
     /// One entry from the back, same rules.
@@ -1385,7 +1433,7 @@ where
                 Ok(kv) => kv,
                 Err(e) => return Some(Err(e)),
             };
-            if let Some(raw) = self.matched(full, value) {
+            if let Some((_, raw)) = self.matched(full, value) {
                 return Some(Ok(raw));
             }
         }
@@ -1393,7 +1441,15 @@ where
 
     /// Split the entry at its own boundaries and apply the bound. `None` is a
     /// false hit: the entry's segment is shorter than the bytes the bound names.
-    fn matched(&self, full: Vec<u8>, value: Vec<u8>) -> Option<crate::model::index::RawHit> {
+    ///
+    /// Answers the entry KEY beside the split, because the same pull serves two
+    /// consumers: the hit (segments + value, for a scan's item) and a cursor
+    /// that has to name its position (the raw key, for a seek).
+    fn matched(
+        &self,
+        full: Vec<u8>,
+        value: Vec<u8>,
+    ) -> Option<(Vec<u8>, crate::model::index::RawHit)> {
         if full.len() < self.seg_start + self.taken {
             return None;
         }
@@ -1406,11 +1462,12 @@ where
         if !matched {
             return None;
         }
-        Some(crate::model::index::RawHit {
+        let raw = crate::model::index::RawHit {
             segment: full[self.seg_start..full.len() - self.taken].to_vec(),
             tail: full[full.len() - self.taken..].to_vec(),
             value,
-        })
+        };
+        Some((full, raw))
     }
 
     /// Take the caller's parts out of one entry.
@@ -1472,6 +1529,142 @@ where
             )>(&raw),
             Err(e) => Err(e),
         })
+    }
+}
+
+/// A scan as a REPOSITIONABLE cursor — what [`Scan::seekable`] and
+/// [`Collection::seek_scan`] return.
+///
+/// Built ON the scan, not beside it: it owns the same [`Scan`] (same bound, same
+/// access method, same engine cursor) and pulls entries through the same
+/// match rule. What is added is the position: the entry key of the item on top
+/// is held, so [`key`](crate::seek::Seekable::key) can answer it without giving
+/// it up, and [`ScanIter::seek`](crate::engine::storage::ScanIter::seek)
+/// repositions the cursor underneath.
+///
+/// The item is the RAW entry key — `[header][slot][fields][key tail]` — because
+/// that is what the cursor speaks: the byte string `seek` accepts, so one
+/// cursor's position is directly usable as another's target when both walk the
+/// same access method. Splitting it (the tail is the document key) is the
+/// caller's, and costs nothing when it is not asked for.
+///
+/// It is also an [`Iterator`] over those keys, so the same cursor can be handed
+/// to the plain stream operators (`a.intersect(b)`): the repositioning form is
+/// an ADDITION to a scan, never a different answer.
+pub struct SeekScan<'a, S: VirtualStorage, K: KeyEncode, R: Document<Key = K>, I> {
+    scan: Scan<'a, S, K, R, I>,
+    /// The entry key on top; `None` means spent.
+    cur: Option<Vec<u8>>,
+    /// The fault that ended the walk, if one did.
+    ///
+    /// [`Seekable`](crate::seek::Seekable)'s verbs answer positions, so a fault
+    /// has no channel there — it is parked here instead of being reported as a
+    /// clean end. An engine that fails mid-scan must not read as "no more keys".
+    err: Option<crate::error::Error>,
+}
+
+impl<'a, S, K, R, I> Scan<'a, S, K, R, I>
+where
+    S: SharedVirtualStorage,
+    K: KeyEncode,
+    R: Document<Key = K>,
+    I: KvIndex<Key = K, Document = R>,
+{
+    /// The same scan, with its cursor on top: a [`SeekScan`].
+    ///
+    /// Pulls one entry at birth so `key()` is a position from the start (an
+    /// empty bound answers `None` on the same first pull a `scan` would pay).
+    pub fn seekable(self) -> SeekScan<'a, S, K, R, I> {
+        let mut cursor = SeekScan {
+            scan: self,
+            cur: None,
+            err: None,
+        };
+        cursor.fill();
+        cursor
+    }
+}
+
+impl<S, K, R, I> SeekScan<'_, S, K, R, I>
+where
+    S: SharedVirtualStorage,
+    K: KeyEncode,
+    R: Document<Key = K>,
+    I: KvIndex<Key = K, Document = R>,
+{
+    /// Put the next entry's key on top (or clear it, when there is none).
+    fn fill(&mut self) {
+        self.cur = None;
+        match self.scan.pull_raw() {
+            Some(Ok((key, _))) => self.cur = Some(key),
+            Some(Err(e)) => self.err = Some(e),
+            None => {}
+        }
+    }
+
+    /// The fault that ended this cursor, if an engine failed mid-walk.
+    ///
+    /// `None` for a cursor that ran out of entries honestly — the distinction
+    /// [`Seekable`](crate::seek::Seekable) itself cannot draw, because its verbs
+    /// are positions.
+    pub fn error(&self) -> Option<&crate::error::Error> {
+        self.err.as_ref()
+    }
+}
+
+impl<S, K, R, I> Iterator for SeekScan<'_, S, K, R, I>
+where
+    S: SharedVirtualStorage,
+    K: KeyEncode,
+    R: Document<Key = K>,
+    I: KvIndex<Key = K, Document = R>,
+{
+    type Item = Vec<u8>;
+
+    fn next(&mut self) -> Option<Vec<u8>> {
+        let key = self.cur.take()?;
+        self.fill();
+        Some(key)
+    }
+}
+
+impl<S, K, R, I> crate::seek::Seekable for SeekScan<'_, S, K, R, I>
+where
+    S: SharedVirtualStorage,
+    K: KeyEncode,
+    R: Document<Key = K>,
+    I: KvIndex<Key = K, Document = R>,
+{
+    type Key = Vec<u8>;
+
+    fn key(&self) -> Option<&Vec<u8>> {
+        self.cur.as_ref()
+    }
+
+    fn step(&mut self) -> bool {
+        if self.cur.is_none() {
+            return false;
+        }
+        self.fill();
+        self.cur.is_some()
+    }
+
+    fn seek(&mut self, lower: &Vec<u8>) -> bool {
+        match &self.cur {
+            // At or past the bound: forward-only, so this keeps the position.
+            Some(cur) if cur >= lower => return true,
+            // Spent: nothing at or after any bound remains.
+            None => return false,
+            Some(_) => {}
+        }
+        // The cursor moves; the entry it lands on is NOT consumed (the engine
+        // holds it as the next item), so `fill` puts it on top.
+        if !self.scan.iter.seek(lower) {
+            self.cur = None;
+            return false;
+        }
+        self.fill();
+        self.cur.is_some()
     }
 }
 

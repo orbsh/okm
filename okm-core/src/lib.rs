@@ -60,6 +60,11 @@ pub mod changelog;
 /// here because the tree is the value crate's (`okm_value`), and because the drain —
 /// a core mechanism — reads payloads with it.
 pub mod decode;
+/// The repositioning contract [`Seekable`]: an ordered stream that can be moved
+/// forward to a bound instead of stepped through the keys in between. It lives
+/// here because the capability is the engine's (`ScanIter::seek`); the operator
+/// that uses it lives in `okm-query`.
+pub mod seek;
 pub mod subscribe;
 
 // ================= re-exports (stable public surface) =================
@@ -75,7 +80,7 @@ pub use engine::nest::{NestStorage, RemoteStore, VirtualHandle};
 pub use engine::storage::{
     Batch, BatchStore, SharedVirtualStorage, VirtualStorage, scan_suffix_kv,
 };
-pub use model::document::Collection;
+pub use model::document::{Collection, SeekScan};
 pub use model::field::{FieldDesc, FieldType};
 pub use model::graph::{EdgeBody, EdgeHead, EdgeKey, Graph, GraphEncode, NodeRef, NodeSet};
 pub use model::index::{
@@ -95,6 +100,7 @@ pub use model::vocab::Vocab;
 pub use model::write::WritePayload;
 pub use okm_value::Id;
 pub use okm_wire::{OP_DELETE, OP_PUT, OpFrame, OpResponse};
+pub use seek::Seekable;
 pub use subscribe::{Event, Op, SinkCell};
 
 #[cfg(feature = "fjall")]

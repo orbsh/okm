@@ -166,6 +166,15 @@ let right_only: Vec<_> = right.difference(left).collect();
 N 侧就先求一次交集，再逐侧减：`a.difference(common)`、`b.difference(common)`、
 `c.difference(common)`——各得该侧"比交集多出来的那些"。
 
+**一侧远小于另一侧时——而两侧都能跳。** `intersect` 只能推进流，落后的那侧要把空隙里的每个键都走
+一遍。扫描可以被“移动”而不是被“步进”：`Collection::seek_scan` 返回实现 `Seekable` 的游标（其
+`seek` 就是 `ScanIter::seek`），`okm_query::intersect_seek` 比较两侧位置，短空隙用走的、长空隙用
+跳的——先走 `SEEK_BUDGET` = 8 步再 seek，因为一次 seek 是在扫描已持有的 snapshot/事务上重开区间
+（微秒级），而一步是纳秒级。它在倾斜输入上划算（一次宽扫描对一个小键集，或对一次窄扫描），此时
+归并的逐条推进就是全部成本；两侧齐头并进时它**不**划算——那里 `intersect` 每个键一步，一次重开
+都没有。两侧必须走同一个键空间:seek 的边界是原始条目键，所以要么配同一访问方法的两次扫描，要么
+配一次扫描与一份用索引自身编码器拼出的键集。
+
 **有序契约的代价。** `intersect` 与 `difference` 要求输入按键有序，并且**不检查**：
 检查意味着先把一条流读到尽头再回答，那正是它们要避免的物化。无序输入不会大声出错——
 它会静默少键。join 列是索引首位时这个契约是免费的（扫描元组的任何前缀投影都有序）；

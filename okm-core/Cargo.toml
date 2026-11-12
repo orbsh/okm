@@ -31,6 +31,11 @@ tempfile = "3"
 serde_json = "1"
 okm-dynamic = { path = "../okm-dynamic" }
 okm-wire = { path = "../okm-wire" }
+# The operator over a repositionable scan lives one crate up (`okm-query`), and
+# the suite that proves this scan can be repositioned over a REAL store needs to
+# call it: the dependency direction is unchanged (a dev-dependency, and the
+# parallel of `okm-dynamic` above, which also depends on this crate).
+okm-query = { path = "../okm-query" }
 okm-async = { path = "../okm-async", features = ["slatedb", "fjall", "redb"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 arrow = { version = "60" }
@@ -164,6 +169,12 @@ name = "relation_table_test"
 
 [[test]]
 name = "scan_range_test"
+
+# The repositionable scan (`Collection::seek_scan`) driven by the operator that
+# exists for it (`okm-query`'s `intersect_seek`), on the real engine matrix: the
+# answer equals the stream `intersect`, and the skipped entries are never read.
+[[test]]
+name = "seek_scan_test"
 
 [[test]]
 name = "vector_test"

@@ -20,7 +20,7 @@
     )
 )]
 
-use okm_core::VirtualStorage;
+use okm_core::{Seekable, VirtualStorage};
 
 /// Set algebra over key streams that are already ordered by key, as methods:
 /// `a.merge(b)`, `a.intersect(b)`, `a.difference(b)`, `a.union(b)`.
@@ -242,6 +242,144 @@ fn past_run<T: Ord>(s: &[T], from: usize, key: &T) -> usize {
         i += 1;
     }
     i
+}
+
+/// How many steps a chase spends before it repositions: 8.
+///
+/// The trade is step against seek. A step is the cursor's next entry —
+/// nanoseconds, the bytes already in the engine's hands. A seek is a
+/// REPOSITION, and on fjall and redb that means reopening the range on the
+/// snapshot / read transaction the scan already holds: microseconds, tens of
+/// steps' worth. So a gap of a few entries is cheaper to walk, a gap of
+/// thousands is not, and the operator needs the point where walking stops.
+///
+/// Eight is that point on reasoning, not on a benchmark: a join's alignment
+/// drifts by one or two entries per answer, not by twenty, so a chase that has
+/// taken eight steps is chasing a real gap. The budget is a BOUND as well as a
+/// guess — a chase never steps more than this per answer, so a lopsided pair
+/// costs `small × (SEEK_BUDGET + 1)` steps and about `small` seeks instead of
+/// `large` steps, whatever the skew. Below the reopen's price the difference is
+/// noise; above it the budget would stop bounding anything. A measured arms race
+/// between the two costs is the only reason to move it.
+pub const SEEK_BUDGET: usize = 8;
+
+/// Set intersection over two REPOSITIONABLE streams — the third shape of
+/// [`intersect`](OrderedSets::intersect), for inputs that can be moved rather
+/// than only advanced.
+///
+/// Same answer as the stream operator, key for key and in the same order: one
+/// key per shared value, set semantics (a key carried by several entries is
+/// answered once). What changes is the catch-up. A stream can only be stepped,
+/// so the trailing side pays one entry per key it passes; a [`Seekable`] side
+/// can be moved, so it can JUMP to the other side's key. Stepping is still
+/// cheaper than a reposition (see [`SEEK_BUDGET`]), so a chase steps first and
+/// seeks only when the budget runs out — short gaps cost a few steps, long ones
+/// cost one reopen.
+///
+/// Lazy like every operator here: `.take(1)` costs one answer. The keys are
+/// CLONED out of the two cursors (`Key: Clone`) because a position is borrowed
+/// from its own side — a `Vec<u8>` entry key, so a cheap copy, and the same
+/// price the caller would pay to hold the key anyway.
+///
+/// Both sides must walk the SAME key space for the answer to mean anything: the
+/// cursor's `Key` is what the seek bound speaks, so a pairing that makes sense is
+/// two scans of one access method (one broad, one narrow) — the skewed case this
+/// exists for.
+///
+/// No entry point uses this yet; reach for [`intersect`](OrderedSets::intersect)
+/// unless both sides are repositionable and skewed. The operator is an ADDITION,
+/// not a replacement: `intersect` covers every `IntoIterator` source, and its
+/// walk is the right price when the two sides advance together.
+pub fn intersect_seek<L, R>(left: L, right: R) -> impl Iterator<Item = L::Key>
+where
+    L: Seekable,
+    R: Seekable<Key = L::Key>,
+    L::Key: Clone,
+{
+    IntersectSeek { left, right }
+}
+
+/// [`intersect_seek`]'s lazy cursor: two `Seekable` positions, aligned on demand.
+struct IntersectSeek<L, R> {
+    left: L,
+    right: R,
+}
+
+impl<L, R> Iterator for IntersectSeek<L, R>
+where
+    L: Seekable,
+    R: Seekable<Key = L::Key>,
+    L::Key: Clone,
+{
+    type Item = L::Key;
+
+    fn next(&mut self) -> Option<L::Key> {
+        loop {
+            // Either side spent ends the answer: nothing left can be shared.
+            let ord = self.left.key()?.cmp(self.right.key()?);
+            match ord {
+                std::cmp::Ordering::Equal => {
+                    // In both: emit one representative, then empty both runs so
+                    // a repeated key cannot come back (set semantics, same rule
+                    // `intersect` follows).
+                    let key = self.left.key()?.clone();
+                    drain_run(&mut self.left, &key);
+                    drain_run(&mut self.right, &key);
+                    return Some(key);
+                }
+                // The left is behind: chase the right's position, stepping
+                // through a short gap and seeking across a long one.
+                std::cmp::Ordering::Less => {
+                    let target = self.right.key()?.clone();
+                    if !chase(&mut self.left, &target) {
+                        return None;
+                    }
+                }
+                std::cmp::Ordering::Greater => {
+                    let target = self.left.key()?.clone();
+                    if !chase(&mut self.right, &target) {
+                        return None;
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Advance `side` to `target` (`side` is known to be behind it): up to
+/// [`SEEK_BUDGET`] steps, then one reposition.
+///
+/// `false` means the side ran out before reaching the target — the intersection
+/// is over. A step that lands at or past the target stops the walk early (the
+/// seek would be a no-op, and a no-op still costs a call).
+fn chase<S: Seekable>(side: &mut S, target: &S::Key) -> bool {
+    for _ in 0..SEEK_BUDGET {
+        match side.key() {
+            None => return false,
+            Some(key) if key >= target => return true,
+            Some(_) => {
+                if !side.step() {
+                    return false;
+                }
+            }
+        }
+    }
+    // Budget spent and still behind: one reopen is cheaper than the rest of the
+    // gap. (`step` checked the position after its last move, so this only fires
+    // for a genuine remainder.)
+    match side.key() {
+        Some(key) if key >= target => true,
+        _ => side.seek(target),
+    }
+}
+
+/// Advance `side` past every copy of `key` (the one on top included).
+fn drain_run<S: Seekable>(side: &mut S, key: &S::Key) {
+    while side.key() == Some(key) {
+        if !side.step() {
+            break;
+        }
+    }
 }
 
 /// The alignment behind every operator here: two ordered streams, one tuple per
@@ -1144,6 +1282,253 @@ mod tests {
         assert!(
             pulled < 6,
             "take(1) must stop at the first run, pulled {pulled} of 6"
+        );
+    }
+
+    // ================= intersect over repositionable streams =================
+
+    /// A `Seekable` over a `Vec`: the test stand-in for a scan cursor.
+    ///
+    /// `seek` here is a linear forward scan of the slice, which is exactly the
+    /// CONTRACT (forward only, keeps the position on a behind-or-equal bound,
+    /// does not consume the item it lands on) and not the point: what the
+    /// operator may assume is the contract, what a real engine does behind it is
+    /// the engine's business.
+    struct Cursor<T> {
+        keys: Vec<T>,
+        at: usize,
+    }
+
+    impl<T: Ord> Cursor<T> {
+        fn new(keys: Vec<T>) -> Self {
+            Self { keys, at: 0 }
+        }
+    }
+
+    impl<T: Ord + Clone> Seekable for Cursor<T> {
+        type Key = T;
+
+        fn key(&self) -> Option<&T> {
+            self.keys.get(self.at)
+        }
+
+        fn step(&mut self) -> bool {
+            if self.at < self.keys.len() {
+                self.at += 1;
+            }
+            self.key().is_some()
+        }
+
+        fn seek(&mut self, lower: &T) -> bool {
+            while let Some(k) = self.keys.get(self.at) {
+                if k >= lower {
+                    return true;
+                }
+                self.at += 1;
+            }
+            false
+        }
+    }
+
+    /// The operator answers what the stream operator answers: same keys, same
+    /// order, on every shape that has bitten an alignment before.
+    ///
+    /// Duplicates are the sharp one — set semantics means a key carried twice on
+    /// both sides answers ONCE, and a run drained on one side only would let the
+    /// other side's copy come back on the next turn.
+    #[test]
+    fn intersect_seek_answers_what_the_stream_intersect_answers() {
+        let shapes: Vec<(&str, Vec<u8>, Vec<u8>)> = vec![
+            ("both empty", vec![], vec![]),
+            ("left empty", vec![], vec![1, 2, 3]),
+            ("right empty", vec![1, 2, 3], vec![]),
+            ("disjoint", vec![1, 3, 5, 7], vec![2, 4, 6, 8]),
+            ("identical", vec![1, 2, 3], vec![1, 2, 3]),
+            ("left inside right", vec![3, 4], vec![1, 2, 3, 4, 5]),
+            ("right inside left", vec![1, 2, 3, 4, 5], vec![3, 4]),
+            (
+                "duplicates on both sides",
+                vec![1, 1, 1, 2, 2, 5, 5, 9],
+                vec![1, 1, 2, 3, 3, 5, 9, 9, 9],
+            ),
+            ("duplicates, one shared key", vec![7; 40], vec![7; 13]),
+            (
+                "no key shared but interleaved",
+                (0..100).collect(),
+                (0..100).map(|i| i * 2 + 1).collect(),
+            ),
+        ];
+
+        for (name, left, right) in shapes {
+            let stream: Vec<u8> = left.clone().intersect(right.clone()).collect();
+            let seeked: Vec<u8> =
+                intersect_seek(Cursor::new(left.clone()), Cursor::new(right.clone())).collect();
+            assert_eq!(
+                seeked, stream,
+                "{name}: the seek form must answer the stream answer"
+            );
+        }
+
+        // Lopsided both ways: the small side either far behind or far ahead of
+        // the big one, which is where the chase changes direction.
+        let big: Vec<u32> = (0..100_000).collect();
+        let small_ahead: Vec<u32> = (60_000..60_040).collect();
+        let small_behind: Vec<u32> = (10..50).collect();
+        for (name, a, b) in [
+            ("small ahead", big.clone(), small_ahead),
+            ("small behind", small_behind, big.clone()),
+        ] {
+            let stream: Vec<u32> = a.clone().intersect(b.clone()).collect();
+            let seeked: Vec<u32> = intersect_seek(Cursor::new(a), Cursor::new(b)).collect();
+            assert_eq!(seeked, stream, "{name}: lopsided seek form");
+        }
+    }
+
+    /// Counts the two costs the operator trades: `step` against `seek`.
+    ///
+    /// The counters are shared (`Rc<Cell>`) because the operator takes the
+    /// cursors BY VALUE; the meter survives the move, the cursor does not.
+    #[derive(Clone, Default)]
+    struct Meter {
+        steps: std::rc::Rc<std::cell::Cell<usize>>,
+        seeks: std::rc::Rc<std::cell::Cell<usize>>,
+    }
+
+    struct Counted<T> {
+        keys: Vec<T>,
+        at: usize,
+        meter: Meter,
+    }
+
+    impl<T: Ord + Clone> Counted<T> {
+        fn new(keys: Vec<T>, meter: &Meter) -> Self {
+            Self {
+                keys,
+                at: 0,
+                meter: meter.clone(),
+            }
+        }
+    }
+
+    impl<T: Ord + Clone> Seekable for Counted<T> {
+        type Key = T;
+
+        fn key(&self) -> Option<&T> {
+            self.keys.get(self.at)
+        }
+
+        fn step(&mut self) -> bool {
+            self.meter.steps.set(self.meter.steps.get() + 1);
+            if self.at < self.keys.len() {
+                self.at += 1;
+            }
+            self.key().is_some()
+        }
+
+        fn seek(&mut self, lower: &T) -> bool {
+            self.meter.seeks.set(self.meter.seeks.get() + 1);
+            // Forward-only: an index at or past the bound keeps its place.
+            let mut at = self.at;
+            while let Some(k) = self.keys.get(at) {
+                if k >= lower {
+                    self.at = at;
+                    return true;
+                }
+                at += 1;
+            }
+            self.at = self.keys.len();
+            false
+        }
+    }
+
+    /// The PATH proof: on skewed data the big side repositions about once per
+    /// SMALL key and steps only a budget per answer; on balanced data it seeks
+    /// not at all.
+    ///
+    /// The numbers are the claim — a walk would be 1 000 000 steps on the big
+    /// side, and the point of the operator is that it is not.
+    #[test]
+    fn intersect_seek_seeks_the_big_side_and_never_on_balanced_input() {
+        const N: usize = 1_000_000;
+        const STRIDE: usize = 997;
+
+        // Skewed: one key from the small side every STRIDE entries of the big.
+        let long: Vec<u64> = (0..N as u64).collect();
+        let short: Vec<u64> = (0..N as u64).step_by(STRIDE).collect();
+        let (long_meter, short_meter) = (Meter::default(), Meter::default());
+        let answers = intersect_seek(
+            Counted::new(long.clone(), &long_meter),
+            Counted::new(short.clone(), &short_meter),
+        )
+        .count();
+
+        let (long_steps, long_seeks) = (long_meter.steps.get(), long_meter.seeks.get());
+        let (short_steps, short_seeks) = (short_meter.steps.get(), short_meter.seeks.get());
+        assert_eq!(answers, short.len(), "every small key is shared");
+        // One reposition per answer (the first key needs none in principle, but
+        // the bound is the shape, not the exact count).
+        assert!(
+            long_seeks <= answers,
+            "skewed: at most one seek per answer, got {long_seeks} seeks for {answers} answers"
+        );
+        assert!(
+            long_seeks >= answers - 1,
+            "skewed: the big side must JUMP, not walk (only {long_seeks} seeks for {answers} answers)"
+        );
+        // The step budget is what bounds the walk: at most BUDGET + one drain
+        // step per answer, never one per skipped key.
+        assert!(
+            long_steps <= answers * (SEEK_BUDGET + 2),
+            "skewed: steps must be bounded by the budget, got {long_steps} steps for {answers} answers \
+             (a walk would be {N})"
+        );
+        assert!(
+            long_steps * 100 < N,
+            "skewed: the big side must not be walked entry by entry, got {long_steps} of {N} steps"
+        );
+        assert_eq!(
+            short_seeks, 0,
+            "the small side is always the leader: it never needs to reposition"
+        );
+        assert!(
+            short_steps <= answers + 1,
+            "the small side steps once per answer at most, got {short_steps}"
+        );
+
+        // Balanced and identical: every position meets, so no chase and no seal.
+        let balanced_a: Vec<u64> = (0..200_000u64).collect();
+        let balanced_b = balanced_a.clone();
+        let (a_meter, b_meter) = (Meter::default(), Meter::default());
+        let matched = intersect_seek(
+            Counted::new(balanced_a.clone(), &a_meter),
+            Counted::new(balanced_b, &b_meter),
+        )
+        .count();
+        assert_eq!(matched, balanced_a.len());
+        assert_eq!(
+            (a_meter.seeks.get(), b_meter.seeks.get()),
+            (0, 0),
+            "balanced input must not pay a single reopen"
+        );
+        assert!(
+            a_meter.steps.get() <= balanced_a.len() + 1
+                && b_meter.steps.get() <= balanced_a.len() + 1,
+            "balanced input is one step per answer per side, got {:?} / {:?}",
+            a_meter.steps.get(),
+            b_meter.steps.get()
+        );
+
+        // Balanced, offset by one: every chase is a single step, still no seek.
+        let evens: Vec<u64> = (0..200_000u64).map(|i| i * 2).collect();
+        let odds: Vec<u64> = (0..100_000u64).map(|i| i * 2 + 1).collect();
+        let (e_meter, o_meter) = (Meter::default(), Meter::default());
+        let interleaved =
+            intersect_seek(Counted::new(evens, &e_meter), Counted::new(odds, &o_meter)).count();
+        assert_eq!(interleaved, 0, "disjoint by parity");
+        assert_eq!(
+            (e_meter.seeks.get(), o_meter.seeks.get()),
+            (0, 0),
+            "adjacent keys are a step, never a reopen"
         );
     }
 }

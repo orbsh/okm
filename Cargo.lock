@@ -2151,6 +2151,7 @@ dependencies = [
  "okm-async",
  "okm-derive",
  "okm-dynamic",
+ "okm-query",
  "okm-value",
  "okm-wire",
  "parquet",
