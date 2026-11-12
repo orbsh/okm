@@ -35,6 +35,8 @@ unmoved watermark. Columns are:
    the window). `okm_seq` may skip numbers: an op folded into another row — the open fields
   of a key this window also put — takes no row of its own.
 
+The third group is optional per file. A file of FINAL rows — a publish, or any sink stating its own current state — has the first two groups and none of the third, and that absence is what tells a reader it is looking at current state rather than at history (see "A file without ops").
+
 Arrow types come from `okm_core::arrow_backend::arrow_type` and nowhere else:
 
 | declared kind | Arrow type |
@@ -114,6 +116,12 @@ and a window is never half-described.
 * **Dense vocabulary.** `Vocab` columns carry labels inline. That is byte-wasteful
   for a few distinct labels repeated across millions of rows, and it is deliberate:
   labels are what a warehouse can join and read without okm.
+
+## A file without ops
+
+A file of FINAL rows carries no `okm_op` column: that is a published table, and any sink that states its own current state instead of a history. It means the opposite of "no changes": its rows ARE the answer, so nothing is folded and no removal is applied. Reading one is a pass-through — no op filter, no last-`okm_seq`-per-key rule — and it is legal for a table to hold both shapes at once, because the column is optional per FILE: a change window written before the sink started publishing keeps its ops, and a union schema gives the final file a NULL `okm_op` on every row, which every reader here treats exactly like an absent column.
+
+A fold therefore refuses a table that is already all final rows ("nothing to fold") — but only when there is genuinely nothing to fold. A table whose live files are still change files DOES fold when every key resolves away: the removals are ops, they fold to nothing, and no file replaces the files they came in. The refusal is about the ABSENCE of ops, never about the absence of rows.
 
 ## Consumer obligations
 
@@ -278,3 +286,9 @@ understood nowhere (measured: `variant_extract` answered NULL for every row of t
 flat form, and decoded correctly from the canonical one). The physical shape is
 `struct<metadata: binary, value: binary>` with the `arrow.parquet.variant` extension,
 which is what both Delta and Iceberg v3 specify.
+
+## Where a reader starts
+
+A reader does not have to replay a log from version 0. A checkpoint states the log's OWN actions with the history already resolved — the `protocol`, the `metaData`, and one `add` per live file — so a reader starts at the NEWEST `_delta_log/<version, 20 digits>.checkpoint.json`, takes that state as of the version in its name, and replays only the versions AFTER it (ADR-0065). It is not a second format: the action loop is the same one, and a checkpoint only saves reading the versions it stands in for. `PublishOptions::checkpoint_every` is where this writer decides to lay one down.
+
+Two things a sink author has to keep. A checkpoint is an optimisation, never an authority: the version files are what the table SAID, so a log with no checkpoint (or one whose artifact is gone) still reads from version 0, and a rollback of the reader is a deleted file rather than a repair. And it is written AFTER the commit it describes: a checkpoint naming a file the store no longer has turns a cheap read into a failed one.
