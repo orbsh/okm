@@ -217,9 +217,11 @@ fn aligned_files(
 /// `okm_seq` renumbered (it means "position in this file", and after folding there is one).
 ///
 /// Order inside a file is `okm_seq`; order ACROSS files is the Delta version that added them,
-/// which is what `files_in_order` reads. A key whose last op is a `del` is simply absent —
-/// that is what current state means, and the change history is still in the log for anyone
-/// who asks the question the other way round.
+/// which is what `files_in_order` reads. A key whose row was removed is simply absent — that is
+/// what current state means, and the change history is still in the log for anyone who asks the
+/// question the other way round. A removal of the document's OPEN HALF (a `del` on
+/// `okm_slot = 1`) is not a removal of the row: the key stays, with its declared columns and no
+/// open fields.
 pub fn current_state(store: &dyn LakeStore, table: &str) -> Result<RecordBatch> {
     Ok(state_and_total(store, table)?.0)
 }
@@ -252,6 +254,32 @@ fn ops_of(batch: &RecordBatch) -> Option<&StringArray> {
         return None;
     }
     column.as_any().downcast_ref::<StringArray>()
+}
+
+/// The document's open half, as the engine numbers it (`okm_core::model::index::DYNAMIC_SLOT`).
+/// Re-stated here for the same reason the op names are: a reader of an export must be able to
+/// name the face without depending on okm's types, and the number is the format's, not an
+/// implementation detail of one writer.
+const OKM_SLOT_OPEN: u16 = 1;
+
+/// The faces a batch's `del` rows name, `None` when it has no `okm_slot` column (an export
+/// written before the amendment, whose removals can only be whole-row).
+fn slots_of(batch: &RecordBatch) -> Option<&arrow::array::UInt16Array> {
+    batch
+        .column_by_name("okm_slot")
+        .and_then(|c| c.as_any().downcast_ref::<arrow::array::UInt16Array>())
+}
+
+/// Does this removal name the document's OPEN HALF alone?
+///
+/// `okm_slot = 1` is the dynamic segment, and a write path DOES emit a removal of it by itself:
+/// a whole-document put whose map carries only declared names (`replace_map` →
+/// `slot1_into`, which deletes the entry rather than writing a zero-frame list). The row it
+/// belongs to is written by the same commit, so reading that `del` as "the key is gone" loses a
+/// row that still exists. Without an `okm_slot` column there is no face to read, and every
+/// removal is the whole row — the conservative answer.
+fn face_is_open(slots: Option<&arrow::array::UInt16Array>, row: usize) -> bool {
+    slots.is_some_and(|slots| !slots.is_null(row) && slots.value(row) == OKM_SLOT_OPEN)
 }
 
 /// Fold a run of batches (already aligned to one schema) into current state.
@@ -290,9 +318,13 @@ fn resolve(
     // means the last row for a key is the newest op: that is what decides whether the key
     // is still there. What it CARRIES is not so simple — a `put_open` row states the open
     // fields and nothing else, so the declared columns come from the last `put` and the open
-    // half from the last row that carried any.
+    // half from the last row that carried any. A removal can name ONE FACE, so the two halves
+    // are resolved separately: a `del` for the open half clears the open fields and leaves the
+    // row, while a `del` for the row takes the key with it (and the open half, since nothing
+    // reads it any more).
     struct Winner {
-        last_op: String,
+        /// The key still states something a reader sees.
+        live: bool,
         order: usize,
         put: Option<usize>,
         /// The document's open half, accumulated across every window that wrote one.
@@ -316,6 +348,8 @@ fn resolve(
         // it is what a `publish` writes, and treating its rows as anything else would either
         // drop them or need an op that file does not carry.
         let ops = ops_of(batch);
+        // Which face a removal names (`None`: an export that cannot tell, i.e. whole-row).
+        let slots = slots_of(batch);
         let opens = open_at.map(|at| batch.column(at).clone());
         for row in 0..batch.num_rows() {
             let at = base + row;
@@ -323,15 +357,33 @@ fn resolve(
             let entry = newest
                 .entry(rows.row(row).as_ref().to_vec())
                 .or_insert(Winner {
-                    last_op: String::new(),
+                    live: true,
                     order: at,
                     put: None,
                     open: None,
                 });
-            entry.last_op = op.to_string();
             if op == crate::OKM_PUT {
+                entry.live = true;
                 entry.put = Some(at);
                 entry.order = at;
+            } else if op == crate::OKM_PUT_OPEN {
+                entry.live = true;
+                if entry.put.is_none() {
+                    entry.order = at;
+                }
+            } else if op == OKM_DEL {
+                if face_is_open(slots, row) {
+                    // The document's open half is gone and the row lives: the change a
+                    // whole-document put makes when its map carries only declared names.
+                    entry.open = None;
+                } else {
+                    // The row is gone, so whatever open fields it had are unreadable state.
+                    entry.live = false;
+                    entry.put = None;
+                    entry.open = None;
+                }
+                // A removal states no values, so there is no cell to merge.
+                continue;
             }
             if let Some(cell) = opens
                 .as_ref()
@@ -351,10 +403,12 @@ fn resolve(
         base += batch.num_rows();
     }
 
-    // Live rows, in the order their state was last written.
+    // Live rows, in the order their state was last written. A key with neither a row nor an open
+    // half states nothing: an open-only document whose half a later write removed is as gone as
+    // one whose row was deleted.
     let mut live: Vec<(usize, Winner)> = newest
         .into_values()
-        .filter(|w| w.last_op != OKM_DEL)
+        .filter(|w| w.live && (w.put.is_some() || w.open.is_some()))
         .map(|w| (w.order, w))
         .collect();
     live.sort_by_key(|(order, _)| *order);

@@ -2390,14 +2390,7 @@ panic lints allowed only in the places it names. So the runtime half of
       `stats` already carries. Test: `okm-lake/tests/publish_test.rs` gets `change_rows ==
       Some(n)`, the manifest's `key_bounds` equal to the key's range, and the `add` action's
       `stats.numRecords` + `minValues`/`maxValues`.
-      (c) **slot-aware removals are not resolved.** `okm_slot = 1` (the document's open half) is
-      drainable — a full-length suffix makes it deletable — yet `read::resolve` drops the WHOLE
-      key on any `del`, and `delete_into` (`okm-core/src/model/document.rs`) deletes only the
-      primary row and its faces. So a slot-1 `del` means "the open half is gone, the row lives".
-      Confirm whether any writer emits one before calling this a bug; if one does, `resolve` has
-      to apply the removal to that face only. Test: a window with a slot-1 `del` folds to a row
-      that keeps its declared columns and has no open fields, while a primary `del` still drops
-      the row.
+      - [x] (c) **slot-aware removals are not resolved** (surveyed 2026-11-12; **fixed 2026-11-12**). `okm_slot = 1` is the document's open half and a write path DOES emit a removal of it alone, so it is a real bug: `read::resolve` now resolves the two halves separately (`live` / `put` / `open` per key) — a `del` on slot 1 clears the open fields and leaves the row with its declared columns, any other `del` drops the key together with its open half, and a file with no `okm_slot` column keeps the whole-row meaning (an export written before the amendment). The writer path the survey left open, now followed end to end: `put(&k, (&Variant::Map(empty),))` → `WritePayload for (&Variant,)` (`okm-core/src/model/write.rs:88-101`) → `replace_map` (`okm-core/src/model/document.rs:1080-1107`) → `slot1_into`'s `variants.is_empty()` branch (`okm-core/src/model/document.rs:1259-1260`), which issues `del` on slot 1 while the row is written in the SAME commit; `merge_map` cannot emit one (a merge never touches a face it did not name), and `purge` emits slot 0 then slot 1 (`:1132-1143`), which is why the reading is order-independent and the row's removal wins. Test: `okm-lake/tests/slot_removal_test.rs` drives the real engine, the real changelog and the real drain — a whole-document put folds to one row with the newest declared values and a NULL `variant`, a purge folds to no rows, and a table without an `okm_slot` column still drops the key. A fold after a purge SUCCEEDS and answers `rows: 0` — the deletes are ops to fold and they resolve to nothing, so no file replaces them — which is NOT piece (a)'s publish case, where the file carries no ops at all and the fold is refused with "nothing to fold".
       (d) **partitioned / multi-file publish.** `replace_table` takes ONE file name and no
       partition values, so a publisher holding partitioned state cannot state a version with more
       than one partition. Piece: a multi-`Addition` publish form (each file with its partition
