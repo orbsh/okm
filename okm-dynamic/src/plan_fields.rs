@@ -155,7 +155,7 @@ impl VocabMirror {
         Ok(())
     }
 
-    /// Names inside composites: an `Obj` may be nested at any depth (an array
+    /// Names inside composites: a `Map` may be nested at any depth (an array
     /// of objects, an object under an array), and every level allocates names
     /// on the write path — so the walk goes all the way down.
     fn resolve_value<S: VirtualStorage>(
@@ -165,7 +165,7 @@ impl VocabMirror {
         value: &Value,
     ) -> Result<(), String> {
         match value {
-            Value::Obj(m) => self.resolve_names(store, ns, m),
+            Value::Map(m) => self.resolve_names(store, ns, m),
             Value::Array(items) => {
                 for v in items {
                     self.resolve_value(store, ns, v)?;
@@ -237,7 +237,7 @@ pub fn fields_key(ns: &[u8], pkey: &[u8]) -> Vec<u8> {
 /// through it and grow the plan's vocabulary ops (both directions, the
 /// same batch-consistency shape `VocabCache::id_for` writes). An empty
 /// map deletes the entry (the segment's whole-entry rule, and what `replace`
-/// with no dynamic name plans). Nested `Obj` values share the vocabulary, recursed
+/// with no dynamic name plans). Nested `Map` values share the vocabulary, recursed
 /// by `put_frame_named`.
 pub fn plan_put_fields(
     ns: &[u8],
@@ -246,7 +246,7 @@ pub fn plan_put_fields(
     vocab: &mut VocabMirror,
 ) -> Result<PlannedFields, String> {
     // The vocabulary mutation and the frame body interleave (a nested
-    // Obj allocates mid-encode), so the resolver borrows the mirror
+    // Map allocates mid-encode), so the resolver borrows the mirror
     // mutably for the whole encode; the ops it collects ride out with
     // the plan.
     let mut vocab_ops: Vec<(Vec<u8>, Option<Vec<u8>>)> = Vec::new();
@@ -359,7 +359,7 @@ fn collect_fields(
     raw: &[u8],
     resolve: &mut dyn FnMut(u16) -> Result<Option<String>, String>,
 ) -> Result<ValueMap, String> {
-    // Nested Obj keys resolve through the same closure; there it can only
+    // Nested Map keys resolve through the same closure; there it can only
     // answer `Option`, so a probe failure drops that key rather than failing the
     // whole read (the id-without-entry rule, applied one level down).
     let frames = decode_named(raw, &mut |id| resolve(id).ok().flatten());
@@ -374,42 +374,42 @@ fn collect_fields(
     Ok(out)
 }
 
-/// okm-dynamic `Value` -> okm-core `DynamicValue` (the dynamic
+/// okm-dynamic `Value` -> okm-core `Variant` (the dynamic
 /// segment's currency). Composites map natively (the dynamic segment is
 /// the schema-free zone).
-pub(crate) fn value_to_dyn_value(v: &Value) -> Result<okm_value::DynamicValue, String> {
-    use okm_value::DynamicValue;
+pub(crate) fn value_to_dyn_value(v: &Value) -> Result<okm_value::Variant, String> {
+    use okm_value::Variant;
     Ok(match v {
-        Value::U8(x) => DynamicValue::U64(*x as u64),
-        Value::U16(x) => DynamicValue::U64(*x as u64),
-        Value::U32(x) => DynamicValue::U64(*x as u64),
-        Value::U64(x) => DynamicValue::U64(*x),
-        Value::I64(x) => DynamicValue::I64(*x),
-        Value::F64(x) => DynamicValue::F64(*x),
-        Value::Bool(x) => DynamicValue::Bool(*x),
-        Value::Str(s) => DynamicValue::Str(s.clone()),
-        Value::Bytes(b) => DynamicValue::Bytes(b.clone()),
-        Value::Null => DynamicValue::Null,
-        Value::Obj(m) => {
+        Value::U8(x) => Variant::U64(*x as u64),
+        Value::U16(x) => Variant::U64(*x as u64),
+        Value::U32(x) => Variant::U64(*x as u64),
+        Value::U64(x) => Variant::U64(*x),
+        Value::I64(x) => Variant::I64(*x),
+        Value::F64(x) => Variant::F64(*x),
+        Value::Bool(x) => Variant::Bool(*x),
+        Value::Str(s) => Variant::Str(s.clone()),
+        Value::Bytes(b) => Variant::Bytes(b.clone()),
+        Value::Null => Variant::Null,
+        Value::Map(m) => {
             let mut out = std::collections::BTreeMap::new();
             for (k, v) in m {
                 out.insert(k.clone(), value_to_dyn_value(v)?);
             }
-            DynamicValue::Obj(out)
+            Variant::Map(out)
         }
         Value::Array(items) => {
             let mut out = Vec::with_capacity(items.len());
             for v in items {
                 out.push(value_to_dyn_value(v)?);
             }
-            DynamicValue::Array(out)
+            Variant::Array(out)
         }
     })
 }
 
 /// The dynamic segment's value IS the codec's value now (ADR-0056 §8): one tree,
 /// so this is a clone, and it stays only because the frame walk hands out `&`s.
-pub(crate) fn dyn_value_to_value(v: &okm_value::DynamicValue) -> Result<Value, String> {
+pub(crate) fn dyn_value_to_value(v: &okm_value::Variant) -> Result<Value, String> {
     Ok(v.clone())
 }
 

@@ -387,18 +387,18 @@ pub struct Account { pub username: String, pub nickname: String, pub password_ha
 | 载荷 | 路径 |
 |---|---|
 | `&R` | 行与它的面。新行快速路径：**不**清理旧值的面（那是 `purge` / `save_with_prev_into` 的事） |
-| `&DynamicValue::Obj(map)`（动态侧是 `&ValueMap`） | 局部文档：声明名是一次行 RMW（旧面被扫掉、账本被补偿），其余名字各自覆盖动态段里的自己，map 没点到的名字保持库里的值 |
-| `(&DynamicValue::Obj(map),)`（动态侧是 `(&ValueMap,)`） | 整份文档：map 就是文档——缺席的声明字段取默认，未点名的动态名被移除 |
+| `&Variant::Map(map)`（动态侧是 `&ValueMap`） | 局部文档：声明名是一次行 RMW（旧面被扫掉、账本被补偿），其余名字各自覆盖动态段里的自己，map 没点到的名字保持库里的值 |
+| `(&Variant::Map(map),)`（动态侧是 `(&ValueMap,)`） | 整份文档：map 就是文档——缺席的声明字段取默认，未点名的动态名被移除 |
 | `purge` | 两槽、一次提交——唯一的删除动词 |
 
 标量或数组载荷被拒绝（`Error::NotADocument`）：标量是字段的**值**，不是文档。载荷是调用方的数据，所以被拒绝的写什么都不写。
 
-读是局部，拼装归调用方。这里**刻意不提供**拼装函数：行用 `Document::to_value` 转成一个值（它的名字 map 包成 `DynamicValue::Obj`），两个值用 `DynamicValue::merge` / `merged` 合成——对象按名字逐个合并、嵌套对象递归，其余情况右侧替换左侧（数组是一个值，不是一串名字）。
+读是局部，拼装归调用方。这里**刻意不提供**拼装函数：行用 `Document::to_value` 转成一个值（它的名字 map 包成 `Variant::Map`），两个值用 `Variant::merge` / `merged` 合成——对象按名字逐个合并、嵌套对象递归，其余情况右侧替换左侧（数组是一个值，不是一串名字）。
 
 ```rust
 // 点读按调用方的顺序点名局部，只解码被点到的那些：
-// Row 是槽 0，Value 是槽 1（以 DynamicValue::Obj 呈递）。
-let (row, dyn_) = t.get::<(parts::Row, parts::Value)>(&key)?;  // (Option<R>, Option<DynamicValue>)
+// Row 是槽 0，Value 是槽 1（以 Variant::Map 呈递）。
+let (row, dyn_) = t.get::<(parts::Row, parts::Value)>(&key)?;  // (Option<R>, Option<Variant>)
 t.get_row(&key)?;                              // get::<(parts::Row,)> 的糖 —— Option<R>
 t.get::<(parts::Value,)>(&key)?;               // 只要槽 1，行根本不解码
 
@@ -407,7 +407,7 @@ t.get::<(parts::Value,)>(&key)?;               // 只要槽 1，行根本不解�
 let doc = match (row, dyn_) {
     (None, None) => None,
     (row, dyn_) => Some(
-        row.map(|r| r.to_value())   // Option<DynamicValue::Obj>
+        row.map(|r| r.to_value())   // Option<Variant::Map>
             .unwrap_or_default()    // 缺席的那一半不贡献名字
             .merged(dyn_.unwrap_or_default()),
     ),
@@ -415,7 +415,7 @@ let doc = match (row, dyn_) {
 
 // 局部写：命中声明的名字是一次行 RMW（走 typed 路径，旧面一并清理），
 // 未知名字只覆盖动态段里对应的那些名字。
-t.put(&key, &patch)?;                         // ValueMap / DynamicValue::Obj
+t.put(&key, &patch)?;                         // ValueMap / Variant::Map
 
 // 整体替换：map 就是文档——缺席的声明字段取默认，未点名的动态名被移除。
 // 单元素元组就是「整份文档」那个臂。
@@ -425,11 +425,11 @@ t.put(&key, (&doc.unwrap_or_default(),))?;
 t.purge(&key)?;                               // -> bool（原来有东西）
 ```
 
-- `DynamicValue` 承载开放的值词汇表：`UInt`/`Int`/`F64`/`Str`/`Bytes`/  `Bool`/`Null`/`Array`/`Obj`——嵌套对象以原生帧递归（类型标签 7），  共享所在表的词汇表；不依赖 CBOR。
+- `Variant` 是一份文档能持有的值种类的 tagged union（带标签联合）：`U8`/`U16`/`U32`/`U64`/`I64`/`F64`/`Str`/`Bytes`/`Bool`/`Null`/`Array`/`Map`——`Map` 就是按名字键控的对象（文档本身就是它），嵌套 `Map` 以原生帧递归（类型标签 7），共享所在表的词汇表；不依赖 CBOR。
 - `Bytes` 是词汇表中的**不透明成员**：存储层不解释任何东西——只有  tag 与总长度；内容及其含义属于应用。不透明说的是**内容**：帧的  `[len]` 前缀是 payload 定界（编码层的职责——多字段载荷靠它切分），  不是对内容的解释；`String` 带同样的头。它是扩展类型的标准逃生舱：  新编码先以 Bytes 形态落地，未来提升为一等类型是纯增量变更。  字段名承担 tag 刻意不承担的语义（`embed_v1`、`attrs_cbor`）。
 - 未知名字在这里是**正常输入**（外部数据、MQ payload）；「未知字段拒绝」  纪律只适用于声明路径的 typed 解码器。
 - 声明字段走自己的 0x1 面可索引。动态字段可索引，方式是声明一条 path 索引（ADR-0029：每个解析出的值一条条目，值类型限有存储形态编码的那些——  U8/U16/U32/U64/FixedBytes/Str）——已在 schema 驱动的（`DynamicCollection`）写路径上落地；typed collection 自己的动态段还没有这套维护。动态**名字**永远不能当 key 材料：名字是运行期数据，动态路径只能靠它的声明被寻址，不能靠 key。
-- 值形态过边界时用它自己，而不是调用方每个方向手写一遍 `match`：`DynamicValue` 的 `Serialize`/`Deserialize` 挂在同一个 `schema-serde` feature 后面。反序列化走 `deserialize_any`，因此格式必须自描述（JSON、CBOR——不是 bincode）；JSON 下有两处避免不了的塌缩，已写进文档：`Bytes` 呈数字数组（CBOR 保留字节串），非负 `Int` 读回来成 `UInt`。存储编码不变：块表的条目 + 词汇表 id 仍是落盘表示（ADR-0057）。
+- 值形态过边界时用它自己，而不是调用方每个方向手写一遍 `match`：`Variant` 的 `Serialize`/`Deserialize` 挂在同一个 `schema-serde` feature 后面。反序列化走 `deserialize_any`，因此格式必须自描述（JSON、CBOR——不是 bincode）；JSON 下有两处避免不了的塌缩，已写进文档：`Bytes` 呈数字数组（CBOR 保留字节串），非负 `Int` 读回来成 `UInt`。存储编码不变：块表的条目 + 词汇表 id 仍是落盘表示（ADR-0057）。
 - schema 导出（`CollectionSchema`，serde 在 `schema-serde` feature 后）驱动嵌入式语言读取器的动态 codec——Python（PyO3）与 Steel binding 在`bindings/`，与 Rust derive 字节一致（交叉测试锁定）。版本默认值迁移在动态读路径同样生效：字面量 `#[ok_default]` 随 schema 走。
 
 ### 动态段上的路径索引（ADR-0029）
@@ -614,7 +614,7 @@ k10r 的 channel 日志存 `role: u8`（0 user / 1 assistant / 2 tool / 3 system
 - 「无父」id → `0`（真实 id 从 1 起）。
 - 标志位 → `u8` 0/1，不用 `bool`（wire 上没有 payload `Option`；2..=255 留给未来状态）。
 
-代价是语义过载：`""` 无法区分「显式清空」和「从未设置」。字段真的需要这个第三态时，答案**不是**可空包装而是显式 Enum（`Unset | Cleared | Set(v)`）——多一个 tag 字节，读取侧不再靠猜。动态段的 `DynamicValue::Null` 已经是这个形态：Null 是开放词汇表的一个 variant，不是 `Option` 包装。
+代价是语义过载：`""` 无法区分「显式清空」和「从未设置」。字段真的需要这个第三态时，答案**不是**可空包装而是显式 Enum（`Unset | Cleared | Set(v)`）——多一个 tag 字节，读取侧不再靠猜。动态段的 `Variant::Null` 已经是这个形态：Null 是开放词汇表的一个 variant，不是 `Option` 包装。
 
 经验法则：字段的空态与类型单位元重合 → 用哨兵；「清空」和「从未设置」必须区分 → 声明状态 Enum——不要把状态编码进哨兵里。
 
@@ -1000,7 +1000,7 @@ struct Facts { /* scope、since、confidence、weight、三个计数、两个时
 
 ## 同质列表：`Vector<T>`
 
-复数建模分类学（ADR-0015 §4）在两个关系载体与异质 `DynamicValue::Array` 之外有第四个成员：**类型化同质列表**。`Vector<f32>` 声明浮点列表，`Vector<String>` 声明字符串列表——元素类型是 schema，长度是数据。
+复数建模分类学（ADR-0015 §4）在两个关系载体与异质 `Variant::Array` 之外有第四个成员：**类型化同质列表**。`Vector<f32>` 声明浮点列表，`Vector<String>` 声明字符串列表——元素类型是 schema，长度是数据。
 
 存储是**冷段变长 TLV 帧**（与 String 同落位）：载荷 = `[count u32 BE]` + 元素。同质性是它的价值——定宽标量元素是**裸 V**（每元素零开销；384 维 f32 嵌入向量 1.5 KB，而异质 Array 每元素约 10 字节），动态宽度元素（`String`）逐元素 **LV**。
 
@@ -1017,7 +1017,7 @@ pub struct Doc {
 
 长度是数据不是 schema：换嵌入模型（384 -> 768 维）只是不同的帧，无需 wire 迁移。应用确实知道预期长度时（合同约定的嵌入维度），`#[ok_len(384)]` 加一个编码期检查——写入边界即承诺执行处；解码不检查（绕过解码器是读取者自己的问题——原始帧字节与未渲染的图片同样不透明）。同一合同导出给动态 reader（`FieldSchema::expect_len`），Python 侧被一致地强制。它是应用合同，绝不是格式约束。
 
-元素是**纯值**——身份分界线（上文多对多一节）把 Vector 挡在关系载体之外：标量没有 key，对它做 key 引用是范畴错误。一对多 → `Refs`；多对多 → 关系表；表达顺序的值列表 → `Vector`；异质动态列表 → `DynamicValue::Array`（固定面 0x01）。`to_value` 时 Vector 提升为 `DynVal::Array`——动态层没有 Vector 类型，Vector 是存储层格式。多维形状是应用层解释（扁平序列按行优先），wire 上什么都不存。
+元素是**纯值**——身份分界线（上文多对多一节）把 Vector 挡在关系载体之外：标量没有 key，对它做 key 引用是范畴错误。一对多 → `Refs`；多对多 → 关系表；表达顺序的值列表 → `Vector`；异质动态列表 → `Variant::Array`（固定面 0x01）。`to_value` 时 Vector 提升为 `DynVal::Array`——动态层没有 Vector 类型，Vector 是存储层格式。多维形状是应用层解释（扁平序列按行优先），wire 上什么都不存。
 
 消费侧（okm-vector）在其上分层构建搜索：精确连续扫描（小规模路径，也是召回的参照系）、量化码上的内存 HNSW（int8 余弦或乘积量化码），以及按分片组织的句柄——每分片一份快照存在固定面 0x0A 下，是缓存、随时可丢。图给出的是码级距离，回存量的 f32 重打分由调用方做。存储保持字节不透明：语料仍然只是那些帧字节。
 

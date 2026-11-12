@@ -321,7 +321,7 @@ no node list and no schema: the assembly point has zero declaration content.
   data — a `CollectionSchema` value (exported from the static side via
   `CollectionSchema::of`, ADR-0025) plus an okm-dynamic handle. An empty
   declaration means identity only, with the payload entirely in the
-  dynamic segment (declaring `props: DynamicValue` would put it in slot 0
+  dynamic segment (declaring `props: Variant` would put it in slot 0
   — the static regime, not what a dynamic graph wants). Predicates and
   free attributes are vocabulary data either way; endpoints are
   self-describing refs (§2); traversal faces are built through the dynamic

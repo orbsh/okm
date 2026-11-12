@@ -43,7 +43,7 @@ pub trait VarIntEnc: Copy + Sized {
     /// Decode from the front of `b`; returns the value and bytes consumed.
     /// Panics on truncated input or an overlong width for the type.
     fn varint_decode(b: &[u8]) -> (Self, usize);
-    /// Bridge cast: u64 (DynamicValue::U64) -> the concrete width.
+    /// Bridge cast: u64 (Variant::U64) -> the concrete width.
     fn varint_from_u64(v: u64) -> Self;
 }
 

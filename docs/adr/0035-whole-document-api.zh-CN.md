@@ -22,12 +22,12 @@ document API 是按**存储布局**切的，不是按调用方的意图切的：
 |---|---|---|---|
 | `get(&key) -> Option<R>` | 静态段（结构体） | — | 不变 |
 | `put(&key, &R)` | 静态段 + 面 + 账本 | 1 | 不变 |
-| `fetch(&key) -> Option<BTreeMap<String, DynamicValue>>` | 整份文档（两槽合并） | — | `get_document` + `get_fields` |
+| `fetch(&key) -> Option<BTreeMap<String, Variant>>` | 整份文档（两槽合并） | — | `get_document` + `get_fields` |
 | `merge(&key, &map)` | 声明名 → 行 RMW；其余名字 → 槽 1 里对应的那一个名字 | 1 | `put_document`（merge 那一半）+ `put_fields` |
 | `replace(&key, &map)` | 由 map 重建行；槽 1 = map 里非声明名的集合 | 1 | ——（比 `put_document` 语义强） |
 | `purge(&key) -> bool` | 两槽一起清除 | 1 | `delete_document` + `delete_fields` |
 
-**2026-11-12 修订——三个写动词并成一个 `put`。** 上面这张表与下面十条保留原样，是「按值的形状切」那次决策的记录；它描述的接口面随后收敛了：两侧都只有一个写动词 `put`，**载荷**选臂——`&R` 是行，`&map` / `&DynamicValue::Obj(map)` 是 `merge`（只动携带的那些名字），单元素元组 `(&map,)` / `(&Obj(map),)` 是 `replace`（map 就是文档）。实质结论没变：切分依据仍然是值的形状而不是槽——只不过现在**类型本身**就是这个形状的声明，调用方不必先把数据翻译成动词名，而 `merge` / `replace` 退出 API（函数体留下，改名为 `merge_map` / `replace_map`）。对 §2「动态侧没有 `get` / `put`」的更正：动态集合现在也有 `put`，且那边的载荷只能是文档那一臂——没有结构体可说，所以不存在被误读成「静态段」的余地。
+**2026-11-12 修订——三个写动词并成一个 `put`。** 上面这张表与下面十条保留原样，是「按值的形状切」那次决策的记录；它描述的接口面随后收敛了：两侧都只有一个写动词 `put`，**载荷**选臂——`&R` 是行，`&map` / `&Variant::Map(map)` 是 `merge`（只动携带的那些名字），单元素元组 `(&map,)` / `(&Map(map),)` 是 `replace`（map 就是文档）。实质结论没变：切分依据仍然是值的形状而不是槽——只不过现在**类型本身**就是这个形状的声明，调用方不必先把数据翻译成动词名，而 `merge` / `replace` 退出 API（函数体留下，改名为 `merge_map` / `replace_map`）。对 §2「动态侧没有 `get` / `put`」的更正：动态集合现在也有 `put`，且那边的载荷只能是文档那一臂——没有结构体可说，所以不存在被误读成「静态段」的余地。
 
 1. **静态段说结构体。** `get` / `put` 契约不变。尤其是 `put` 保持"不清旧面"——`index_test.rs` 有意锁着这条——而且现在没有任何动词能拿「手里的旧行」去清它：覆盖写走 `merge` / `replace`，它们扫的是**存储的**那一行。`put` 是「新行」快路径。
 2. **整文档说一个名字键 map。** `fetch` 把两槽读成一张 map；只有动态段的文档也能 fetch，因为文档是**两槽这一对**，不是主条目。它是 `merge` / `replace` / `purge` 的读半边——读写说同一种形状。**它也是动态侧唯一的读门**：`get` / `put` 是**结构体门**，而 schema 即数据的 collection 没有结构体，那边它们只能表示「静态段」，却挂着一个整文档的名字。

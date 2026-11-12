@@ -33,7 +33,7 @@ use std::collections::BTreeMap;
 fn doc_of<S, K, R>(
     col: &okm_core::Collection<S, K, R>,
     key: &K,
-) -> okm_core::error::Result<Option<std::collections::BTreeMap<String, okm_value::DynamicValue>>>
+) -> okm_core::error::Result<Option<std::collections::BTreeMap<String, okm_value::Variant>>>
 where
     S: okm_core::VirtualStorage,
     K: okm_core::KeyEncode,
@@ -48,7 +48,7 @@ where
             .merged(seg.unwrap_or_default()),
     };
     match doc {
-        okm_value::DynamicValue::Obj(map) => Ok(Some(map)),
+        okm_value::Variant::Map(map) => Ok(Some(map)),
         other => Err(okm_core::error::Error::Corrupt {
             what: format!(
                 "a document composes to an object, got {}",
@@ -339,7 +339,7 @@ fn defaults_are_data_and_a_hot_append_is_a_generation_break() {
 /// dynamic segment — in both modes (MODELING: "the key is independent of the value").
 #[test]
 fn a_key_name_in_a_map_is_a_value_field_in_both_modes() {
-    use okm_value::DynamicValue;
+    use okm_value::Variant;
 
     let typed: Collection<TestStore, UserKey, User> = Collection::new(TestStore::slatedb_mem());
     let dynamic = okm_dynamic::DynamicCollection::new(
@@ -354,9 +354,9 @@ fn a_key_name_in_a_map_is_a_value_field_in_both_modes() {
     };
 
     let mut typed_map = BTreeMap::new();
-    typed_map.insert("org_id".to_string(), DynamicValue::U64(999));
-    typed_map.insert("note".to_string(), DynamicValue::Str("hi".into()));
-    typed.put(&key, &DynamicValue::Obj(typed_map)).unwrap();
+    typed_map.insert("org_id".to_string(), Variant::U64(999));
+    typed_map.insert("note".to_string(), Variant::Str("hi".into()));
+    typed.put(&key, &Variant::Map(typed_map)).unwrap();
 
     let mut dyn_map = BTreeMap::new();
     dyn_map.insert("org_id".to_string(), Value::U32(999));
@@ -404,7 +404,7 @@ fn a_key_name_in_a_map_is_a_value_field_in_both_modes() {
 /// either is `fetch`'s job, so the adapter is a plain `map` over the keys.
 #[test]
 fn the_two_enumeration_modes_see_the_two_kinds_of_document() {
-    use okm_value::DynamicValue;
+    use okm_value::Variant;
 
     let typed: Collection<TestStore, UserKey, User> = Collection::new(TestStore::slatedb_mem());
     let with_row = UserKey {
@@ -426,9 +426,9 @@ fn the_two_enumeration_modes_see_the_two_kinds_of_document() {
         )
         .unwrap();
     let mut dynamic_only = BTreeMap::new();
-    dynamic_only.insert("note".to_string(), DynamicValue::Str("no row".into()));
+    dynamic_only.insert("note".to_string(), Variant::Str("no row".into()));
     typed
-        .put(&segment_only, &DynamicValue::Obj(dynamic_only))
+        .put(&segment_only, &Variant::Map(dynamic_only))
         .unwrap();
 
     assert_eq!(

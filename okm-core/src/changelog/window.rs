@@ -256,7 +256,7 @@ fn segment_labels(
 }
 
 /// Decode a dynamic-segment body into `name → value`, taking the names from the
-/// window's own field-vocabulary labels (top-level frames carry ids; nested `Obj`s
+/// window's own field-vocabulary labels (top-level frames carry ids; nested `Map`s
 /// are already name-keyed).
 ///
 /// A frame whose id has no label is an error rather than a skipped field: an unnamed

@@ -11,14 +11,14 @@
 //! the opposite rule for absent names. So the verb is one and the payload
 //! selects the path.
 //!
-//! The tuple is the "whole thing" marker: `(&DynamicValue,)` is a one-element
-//! tuple, deliberately, because a bare `&DynamicValue` already means "the names
+//! The tuple is the "whole thing" marker: `(&Variant,)` is a one-element
+//! tuple, deliberately, because a bare `&Variant` already means "the names
 //! here" and one wrapper is the smallest thing that cannot be confused with it.
 //!
-//! `&R` and `&DynamicValue` cannot both match one call: the impls are on
-//! distinct types, and a document type is not itself a `DynamicValue`.
+//! `&R` and `&Variant` cannot both match one call: the impls are on
+//! distinct types, and a document type is not itself a `Variant`.
 
-use okm_value::DynamicValue;
+use okm_value::Variant;
 
 use crate::engine::storage::VirtualStorage;
 use crate::model::document::Collection;
@@ -33,11 +33,11 @@ use crate::model::key::KeyEncode;
 ///   entry + declared faces + embedded children + reduce RMWs; the previous
 ///   row's faces are NOT swept — that is `purge`'s and `save_with_prev_into`'s
 ///   job).
-/// - `&DynamicValue` — a partial document, which must be
-///   [`DynamicValue::Obj`]: declared names read-modify-write the row and sweep
+/// - `&Variant` — a partial document, which must be
+///   [`Variant::Map`]: declared names read-modify-write the row and sweep
 ///   the faces they supersede, every other name overwrites itself in the
 ///   dynamic segment and leaves its siblings alone.
-/// - `(&DynamicValue,)` — the whole document: the map IS the document, so a
+/// - `(&Variant,)` — the whole document: the map IS the document, so a
 ///   declared name absent from it takes the declaration's default and an
 ///   unnamed dynamic field is removed.
 ///
@@ -68,7 +68,7 @@ where
 }
 
 /// Partial document: the merge path. Only an object is a document.
-impl<S, K, R> WritePayload<S, K, R> for &DynamicValue
+impl<S, K, R> WritePayload<S, K, R> for &Variant
 where
     S: VirtualStorage,
     K: KeyEncode,
@@ -76,7 +76,7 @@ where
 {
     fn write(self, col: &Collection<S, K, R>, key: &K) -> crate::error::Result<()> {
         match self {
-            DynamicValue::Obj(object) => col.merge_map(key, object),
+            Variant::Map(object) => col.merge_map(key, object),
             other => Err(crate::error::Error::NotADocument {
                 got: okm_value::dyn_kind(other),
             }),
@@ -85,7 +85,7 @@ where
 }
 
 /// Whole document: the replace path, marked by the one-element tuple.
-impl<S, K, R> WritePayload<S, K, R> for (&DynamicValue,)
+impl<S, K, R> WritePayload<S, K, R> for (&Variant,)
 where
     S: VirtualStorage,
     K: KeyEncode,
@@ -93,7 +93,7 @@ where
 {
     fn write(self, col: &Collection<S, K, R>, key: &K) -> crate::error::Result<()> {
         match self.0 {
-            DynamicValue::Obj(object) => col.replace_map(key, object),
+            Variant::Map(object) => col.replace_map(key, object),
             other => Err(crate::error::Error::NotADocument {
                 got: okm_value::dyn_kind(other),
             }),

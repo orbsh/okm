@@ -6,7 +6,7 @@ Mechanism/implementation document for the value stored under slot `0x01` — the
 
 `[partition?][ns 2B BE][0x01][pkey]` → one entry per obj; the value is the whole segment. An empty map writes no entry at all (a delete, never a zero-entry table), so "absent" and "empty" are one state (`document.rs::slot1_into` / `slot1_map`).
 
-`okm_core::model::obj_segment` owns both directions (`encode` / `decode`); `obj_dynamic` keeps the currency (`DynamicValue`, `DynamicField`, `NameResolver`) and its `decode_named` / `decode_variants` are thin delegates. Every writer goes through `encode`: `document.rs::slot1_into`, `model/graph.rs` (edge attributes), `okm_dynamic::graph`, `okm_dynamic::plan_fields`.
+`okm_core::model::obj_segment` owns both directions (`encode` / `decode`); `obj_dynamic` keeps the currency (`Variant`, `DynamicField`, `NameResolver`) and its `decode_named` / `decode_variants` are thin delegates. Every writer goes through `encode`: `document.rs::slot1_into`, `model/graph.rs` (edge attributes), `okm_dynamic::graph`, `okm_dynamic::plan_fields`.
 
 ## The value: three regions
 
@@ -110,7 +110,7 @@ Deep chains sit in between: a 20-level object decodes in 1.2 µs but is 94% tabl
 
 ## Crossing a serde boundary
 
-The block table never reaches serde: `DynamicValue`'s `Serialize`/`Deserialize` (feature `schema-serde`) see the owned tree that `decode` produced. What a caller pays is three things added together — decoding the segment into the tree, serde walking that tree, and the target format itself — and the layout's locality advantage ends at the decode, because serde walks map nodes and pointers, never the table.
+The block table never reaches serde: `Variant`'s `Serialize`/`Deserialize` (feature `schema-serde`) see the owned tree that `decode` produced. What a caller pays is three things added together — decoding the segment into the tree, serde walking that tree, and the target format itself — and the layout's locality advantage ends at the decode, because serde walks map nodes and pointers, never the table.
 
 Measured on the same shapes (release, JSON through `serde_json`; `decode` here includes building the caller's name-keyed map, which is the extra step a serde boundary needs):
 

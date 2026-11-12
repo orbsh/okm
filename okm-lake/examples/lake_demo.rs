@@ -15,7 +15,7 @@
 use okm_core::changelog::{ChangelogConfig, ChangelogStore};
 use okm_core::{Collection, DocumentEncode, KeyEncode, Vocab};
 use okm_lake::{DrainConfig, drain};
-use okm_value::DynamicValue;
+use okm_value::Variant;
 
 use okm_async::TestStore;
 #[derive(KeyEncode, Clone, PartialEq, Debug)]
@@ -57,8 +57,8 @@ fn main() {
         // A field the declaration does not have: the segment is truth, so the lake
         // carries it as a `variant` column.
         let mut extra = std::collections::BTreeMap::new();
-        extra.insert("note".to_string(), DynamicValue::Str("first".to_string()));
-        c.put(&K { org: 7, id: 1 }, &DynamicValue::Obj(extra))
+        extra.insert("note".to_string(), Variant::Str("first".to_string()));
+        c.put(&K { org: 7, id: 1 }, &Variant::Map(extra))
             .expect("merge");
     } // Drop seals the segment: a clean exit is what makes the window readable.
 

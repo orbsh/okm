@@ -76,7 +76,7 @@ crate 分工：okm-core = 共享运行时（引擎契约、`Collection`、docume
 - 多引擎混用——同一进程内不同 ns 段可绑不同引擎（交易走 fjall、日志走 slatedb）；原子性止于单引擎内，ns 编号全库唯一。
 - 快照导出——行 → Parquet，与引擎无关（备份 / 数据交换 / lakehouse 分析）；ns 还原为描述性文本，列名即字段名。
 - Lakehouse 路径——导出目录**就是**一张 Delta 表（`okm_lake::delta`：每个窗口一条 JSON 提交，schema 从 Parquet footer 读，路径相对表目录，不需要 catalog、不需要注册；开放字段作为一个 `variant` 列携带）。湖是一个键空间而不是一个目录：`okm_lake::store` 把同一张表写进本地目录或 S3 桶，`okm_lake::publish` 是「自己持有状态的服务按快照镜像自己」的入口（ADR-0061）。增量：变更日志在提交边界捕获（[ADR-0045](docs/adr/0045-changelog-capture-and-drain.md)）；窗口合并属于核心（`okm_core::changelog::window`），`okm-lake` 这个与应用无链接的独立程序把窗口投影成文件，水位在文件落盘后才推进。
-- **Document API**——读按局部点名，写只有一个 `put`：载荷类型决定走哪条路。结构体门：`get_row` 说 `R`。文档门：`get::<(parts::Row, parts::Value)>` 把两个槽各答各的（`Option<R>`、`Option<DynamicValue>`）；`put(&key, &R)` 写行，`put(&key, &map)` 只写 map 携带的那些名字，`put(&key, (&map,))` 让 map 就是整份文档，`purge` 清掉两槽；每次写一个引擎提交。**没有拼装函数**：行用 `Document::to_value()` 转成一个值，两个值用 `DynamicValue::merged` 合成（对象按名字合并、嵌套对象递归，其余情况右侧替换左侧）。动态侧只有文档门——那边没有结构体可说。未知字段名在每表字段名词汇表里分配编号，落进动态段（n-TLV 帧、嵌套对象递归、无 CBOR）；行-映射桥把声明字段 lift 到逻辑类型（`Quant`→`F64`、`Vocab`→标签、`Offset`→`i64`）。
+- **Document API**——读按局部点名，写只有一个 `put`：载荷类型决定走哪条路。结构体门：`get_row` 说 `R`。文档门：`get::<(parts::Row, parts::Value)>` 把两个槽各答各的（`Option<R>`、`Option<Variant>`）；`put(&key, &R)` 写行，`put(&key, &map)` 只写 map 携带的那些名字，`put(&key, (&map,))` 让 map 就是整份文档，`purge` 清掉两槽；每次写一个引擎提交。**没有拼装函数**：行用 `Document::to_value()` 转成一个值，两个值用 `Variant::merged` 合成（对象按名字合并、嵌套对象递归，其余情况右侧替换左侧）。动态侧只有文档门——那边没有结构体可说。未知字段名在每表字段名词汇表里分配编号，落进动态段（n-TLV 帧、嵌套对象递归、无 CBOR）；行-映射桥把声明字段 lift 到逻辑类型（`Quant`→`F64`、`Vocab`→标签、`Offset`→`i64`）。
 - **动态 codec binding**——schema 导出驱动嵌入式语言读取器：`bindings/okm-python`（PyO3）与 `bindings/okm-steel`，与 Rust derive 字节一致。
 - **动态段上的路径索引**（[ADR-0029](docs/adr/0029-path-index.zh-CN.md)）——`AccessMethod::path(slot, Path::parse("author.name")?, FieldType::Str)?`：把嵌套路径与数组路径声明成访问方法，每个解析出的值一条条目（通配 = 没有 `Index` 组件），维护挂在动态段写路径上；值类型随声明，条目键携带 slot、从不携带路径。
 - **Document 模型**——声明式 row 与外部数据共用单一编码（[ADR-0012](docs/adr/0012-object-model-and-field-dictionary.md)）。OKM 面向文档：document 逻辑上全动态（运行期可出现任意字段），且**声明的静态字段嵌入动态整体**——hot/cold 段、索引、schema 导出照常生效。声明 struct 是只有静态路径的退化 document；纯 document（MQ payload、JSON）是只有动态路径的退化 document；两者同一编码。嵌入光谱上的术语：
@@ -190,8 +190,8 @@ users.purge(&key);   // 主条目 + 面 + 动态段，一次提交；删除集�
 | 载荷 | 路径 |
 |---|---|
 | `&R`（只有 typed 侧） | 行与它的面；新行快速路径，所以**不**清理旧值的条目 |
-| `&ValueMap` / `&DynamicValue::Obj(map)` | 局部文档：声明名是一次行 RMW（旧面被扫掉、账本被补偿），其余名字覆盖动态段里对应的那个名字，map 没点到的名字保持库里的值 |
-| `(&ValueMap,)` / `(&DynamicValue::Obj(map),)` | 整份文档：map 就是文档——缺席的声明字段取默认，未点名的动态名被移除 |
+| `&ValueMap` / `&Variant::Map(map)` | 局部文档：声明名是一次行 RMW（旧面被扫掉、账本被补偿），其余名字覆盖动态段里对应的那个名字，map 没点到的名字保持库里的值 |
+| `(&ValueMap,)` / `(&Variant::Map(map),)` | 整份文档：map 就是文档——缺席的声明字段取默认，未点名的动态名被移除 |
 | `purge` | 两槽——两侧唯一的删除动词 |
 
 载荷是调用方的数据，所以写是可失败的（`okm_core::Error`）：声明名带着错误的 kind 是
@@ -199,7 +199,7 @@ users.purge(&key);   // 主条目 + 面 + 动态段，一次提交；删除集�
 schema 决定这次计划走哪个臂——没有声明名的 map 不读行，没有动态名的 map 不读段、也不载入词汇表。
 
 读是局部，拼装归调用方：点读把每个槽各答各的，行转成一个值（`Document::to_value`），
-两个值做合并（`DynamicValue::merge` / `merged`——对象按名字逐个合并、嵌套对象递归，
+两个值做合并（`Variant::merge` / `merged`——对象按名字逐个合并、嵌套对象递归，
 其余情况右侧替换左侧）。这里**刻意不提供**拼装函数：两个原语就是全部，组合是调用方的两行代码。
 
 一套编码服务声明行与外部数据。未知字段名是正常输入：在每表的字段名词汇表里分配编号，落进动态段（`[id][type][len][value]` 帧、嵌套对象递归）。声明字段保持 typed 且可索引。
@@ -230,7 +230,7 @@ users.put(&key, &patch)?;                       // ValueMap
 users.put(&key, (&doc.unwrap_or_default(),))?;
 
 // 已经拿在手上的值直接当载荷写；非对象载荷被拒绝——标量是字段的值，不是文档。
-users.put(&key, &DynamicValue::Obj(patch))?;
+users.put(&key, &Variant::Map(patch))?;
 
 // purge：两槽一起清，一次提交。
 users.purge(&key)?;

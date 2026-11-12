@@ -36,8 +36,8 @@ pub mod pyo3_impl {
                 Value::Null => py.None(),
                 Value::Str(s) => s.into_pyobject(py)?.unbind().into_any(),
                 Value::Bytes(b) => b.into_pyobject(py)?.unbind().into_any(),
-                // Nested composites (okm 0c2a354): Obj → dict, Array → list.
-                Value::Obj(fields) => value_to_py(py, &Value::Obj(fields.clone()))?,
+                // Nested composites (okm 0c2a354): Map → dict, Array → list.
+                Value::Map(fields) => value_to_py(py, &Value::Map(fields.clone()))?,
                 Value::Array(items) => value_to_py(py, &Value::Array(items.clone()))?,
             };
 use okm_async::TestStore;
@@ -46,11 +46,11 @@ use okm_async::TestStore;
         Ok(d)
     }
 
-    /// Value → python object (the composite arm map_to_dict needs: Obj
+    /// Value → python object (the composite arm map_to_dict needs: Map
     /// recurses through a dict, Array maps element-wise).
     fn value_to_py<'py>(py: Python<'py>, v: &Value) -> PyResult<Py<PyAny>> {
         Ok(match v {
-            Value::Obj(fields) => {
+            Value::Map(fields) => {
                 let inner: ValueMap = fields.clone();
                 map_to_dict(py, &inner)?.into_any().unbind()
             }
@@ -902,7 +902,7 @@ use okm_async::TestStore;
                 let key: String = k.extract()?;
                 obj.insert(key.clone(), py_dynamic_value(&key, &item)?);
             }
-            return Ok(Value::Obj(obj));
+            return Ok(Value::Map(obj));
         }
         Err(PyTypeError::new_err(format!(
             "field `{name}`: an undeclared name takes str / int / float / bool / bytes / list / dict / None"

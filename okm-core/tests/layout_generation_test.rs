@@ -21,7 +21,7 @@ use okm_async::TestStore;
 use okm_core::changelog::window::{WindowConfig, load_sidecar, read_window, sidecar_of};
 use okm_core::changelog::{ChangelogConfig, ChangelogStore, apply_log_in_generation, table_dir};
 use okm_core::{Collection, Document, DocumentEncode, KeyEncode};
-use okm_value::DynamicValue;
+use okm_value::Variant;
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
 pub struct K {
@@ -80,9 +80,9 @@ fn a_window_stops_at_a_vocabulary_change() {
         let mut open = std::collections::BTreeMap::new();
         open.insert(
             "note".to_string(),
-            okm_value::DynamicValue::Str("first".to_string()),
+            okm_value::Variant::Str("first".to_string()),
         );
-        c.put(&K { id: 1 }, &DynamicValue::Obj(open))
+        c.put(&K { id: 1 }, &Variant::Map(open))
             .expect("an open field");
     }
 
@@ -93,9 +93,9 @@ fn a_window_stops_at_a_vocabulary_change() {
         let mut open = std::collections::BTreeMap::new();
         open.insert(
             "tag".to_string(),
-            okm_value::DynamicValue::Str("second".to_string()),
+            okm_value::Variant::Str("second".to_string()),
         );
-        c.put(&K { id: 1 }, &DynamicValue::Obj(open))
+        c.put(&K { id: 1 }, &Variant::Map(open))
             .expect("an open field");
     }
 

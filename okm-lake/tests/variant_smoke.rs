@@ -8,7 +8,7 @@
     clippy::panic_in_result_fn
 )]
 
-use okm_core::{DocumentEncode, KeyEncode, okm_value::DynamicValue};
+use okm_core::{DocumentEncode, KeyEncode, okm_value::Variant};
 use parquet_variant::VariantBuilder;
 use std::collections::BTreeMap;
 
@@ -28,38 +28,35 @@ pub struct User {
 
 #[test]
 fn variant_build_smoke() {
-    // Build one Variant object from a DynamicValue tree (the shape the
+    // Build one Variant object from a Variant tree (the shape the
     // dynamic segment's frames decode to).
-    let mut obj: BTreeMap<String, DynamicValue> = BTreeMap::new();
-    obj.insert("score".into(), DynamicValue::U64(99));
+    let mut obj: BTreeMap<String, Variant> = BTreeMap::new();
+    obj.insert("score".into(), Variant::U64(99));
     obj.insert(
         "tags".into(),
-        DynamicValue::Array(vec![
-            DynamicValue::Str("a".into()),
-            DynamicValue::Str("b".into()),
-        ]),
+        Variant::Array(vec![Variant::Str("a".into()), Variant::Str("b".into())]),
     );
     obj.insert(
         "nested".into(),
-        DynamicValue::Obj(BTreeMap::from([
-            ("x".into(), DynamicValue::I64(-3)),
-            ("flag".into(), DynamicValue::Bool(true)),
+        Variant::Map(BTreeMap::from([
+            ("x".into(), Variant::I64(-3)),
+            ("flag".into(), Variant::Bool(true)),
         ])),
     );
 
-    fn push<B: parquet_variant::VariantBuilderExt>(b: &mut B, v: &DynamicValue) {
+    fn push<B: parquet_variant::VariantBuilderExt>(b: &mut B, v: &Variant) {
         match v {
-            DynamicValue::Null => b.append_null(),
-            DynamicValue::Bool(x) => b.append_value(*x),
-            DynamicValue::U8(x) => b.append_value(i64::from(*x)),
-            DynamicValue::U16(x) => b.append_value(i64::from(*x)),
-            DynamicValue::U32(x) => b.append_value(i64::from(*x)),
-            DynamicValue::U64(x) => b.append_value(*x as i64),
-            DynamicValue::I64(x) => b.append_value(*x),
-            DynamicValue::F64(x) => b.append_value(*x),
-            DynamicValue::Str(sv) => b.append_value(sv.as_str()),
-            DynamicValue::Bytes(bv) => b.append_value(bv.as_slice()),
-            DynamicValue::Array(items) => {
+            Variant::Null => b.append_null(),
+            Variant::Bool(x) => b.append_value(*x),
+            Variant::U8(x) => b.append_value(i64::from(*x)),
+            Variant::U16(x) => b.append_value(i64::from(*x)),
+            Variant::U32(x) => b.append_value(i64::from(*x)),
+            Variant::U64(x) => b.append_value(*x as i64),
+            Variant::I64(x) => b.append_value(*x),
+            Variant::F64(x) => b.append_value(*x),
+            Variant::Str(sv) => b.append_value(sv.as_str()),
+            Variant::Bytes(bv) => b.append_value(bv.as_slice()),
+            Variant::Array(items) => {
                 // ListBuilder impls VariantBuilderExt — recurse directly.
                 let mut lb = b.new_list();
                 for it in items {
@@ -67,7 +64,7 @@ fn variant_build_smoke() {
                 }
                 lb.finish();
             }
-            DynamicValue::Obj(map) => {
+            Variant::Map(map) => {
                 // ObjectBuilder does NOT impl VariantBuilderExt — object
                 // fields go through per-key sub-builders/field builders.
                 let mut ob = b.new_object();
@@ -79,16 +76,16 @@ fn variant_build_smoke() {
 
     fn push_obj<S: parquet_variant::BuilderSpecificState>(
         ob: &mut parquet_variant::ObjectBuilder<'_, S>,
-        map: &BTreeMap<String, DynamicValue>,
+        map: &BTreeMap<String, Variant>,
     ) {
         for (k, val) in map {
             match val {
-                DynamicValue::Obj(sub_map) => {
+                Variant::Map(sub_map) => {
                     let mut sub = ob.new_object(k);
                     push_obj(&mut sub, sub_map);
                     sub.finish();
                 }
-                DynamicValue::Array(items) => {
+                Variant::Array(items) => {
                     let mut sub = ob.new_list(k);
                     for it in items {
                         push(&mut sub, it);
@@ -103,7 +100,7 @@ fn variant_build_smoke() {
         }
     }
     let mut b = VariantBuilder::new();
-    push(&mut b, &DynamicValue::Obj(obj));
+    push(&mut b, &Variant::Map(obj));
     let (metadata, value) = b.finish();
     let variant = parquet_variant::Variant::try_new(&metadata, &value).unwrap();
     let o = variant.as_object().unwrap();

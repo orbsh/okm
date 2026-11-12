@@ -118,7 +118,7 @@ pub use model::key;
 pub use model::meta;
 pub use model::meta::{FaceStatus, TableMeta};
 // The value crate's own name, so generated code can write
-// `::okm_core::okm_value::DynamicValue` and a user of THIS crate never has to
+// `::okm_core::okm_value::Variant` and a user of THIS crate never has to
 // add `okm-value` to their own manifest. Not an alias of an old path: it is the
 // crate, re-exported.
 pub use model::obj_vocab;

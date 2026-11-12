@@ -17,13 +17,13 @@ The taxes, named so they are recognizable elsewhere:
 
 1. **Binary fidelity is lost at a boundary that had no business existing.** A round trip through text is exact only if every writer remembers to encode; one that forgets writes a silently corrupt value.
 2. **Size.** base64 inflates by a third; JSON text adds its own quoting and escaping; a `Vec<u8>` through `serde_json` becomes an array of numbers, roughly 3–4× its bytes.
-3. **The value model is destroyed.** A stored blob is opaque to the engine: no field-level index, no scan by field, no reduce, no comparison, no typed path, no schema evolution. okm's value model exists exactly to avoid this — `DynamicValue` carries `Bytes(Vec<u8>)` natively, and the document API (`merge` / `replace`) writes declared fields through the typed path and everything else into the dynamic segment in one call.
+3. **The value model is destroyed.** A stored blob is opaque to the engine: no field-level index, no scan by field, no reduce, no comparison, no typed path, no schema evolution. okm's value model exists exactly to avoid this — `Variant` carries `Bytes(Vec<u8>)` natively, and the document API (`merge` / `replace`) writes declared fields through the typed path and everything else into the dynamic segment in one call.
 
 ## Decision
 
 ### 1. The storage currency is okm's value model
 
-`DynamicValue` (declared fields via the typed path, the rest in the dynamic segment) for object-shaped data, raw bytes for hand-rolled layouts. Nothing else is stored.
+`Variant` (declared fields via the typed path, the rest in the dynamic segment) for object-shaped data, raw bytes for hand-rolled layouts. Nothing else is stored.
 
 ### 2. Serialized text is never a storage representation, unless the layer physically cannot hold anything else
 
@@ -35,16 +35,16 @@ It appears only where a text-only container must carry bytes. Its presence is a 
 
 ### 4. A consumer binds its tables to an okm engine, not to its own state store
 
-A consumer keeps whatever currency its API needs — aura keeps JSON, because its booths are polyglot scripts and an LLM is a party to the protocol — and converts **once, at the seam**, through a single `serde_json::Value ↔ DynamicValue` module. The tables themselves bind to an engine that speaks okm's currency.
+A consumer keeps whatever currency its API needs — aura keeps JSON, because its booths are polyglot scripts and an LLM is a party to the protocol — and converts **once, at the seam**, through a single `serde_json::Value ↔ Variant` module. The tables themselves bind to an engine that speaks okm's currency.
 
 Worked example, to be implemented in aura: `StoreAsVirtual` (the base64 adapter) is deleted; the mq tables bind to `FjallStore` over the same fjall database in their own keyspace; booth state becomes one document per instance, so state is binary-native and readable by okm's own machinery.
 
 ## Alternatives considered
 
 - **Keep the JSON-typed store as the storage currency** (the status quo). Rejected: the three taxes above, and every okm table forced through a container that cannot hold what it stores.
-- **Change the booth API's currency to `DynamicValue`** (no JSON anywhere in the system). Rejected for now: the API's consumers are polyglot scripts and an LLM, whose natural currency is JSON — that is precisely where JSON belongs. If the API later needs binary fidelity beyond JSON, that is a separate decision, and the storage layer no longer waits on it.
+- **Change the booth API's currency to `Variant`** (no JSON anywhere in the system). Rejected for now: the API's consumers are polyglot scripts and an LLM, whose natural currency is JSON — that is precisely where JSON belongs. If the API later needs binary fidelity beyond JSON, that is a separate decision, and the storage layer no longer waits on it.
 - **Swap the text encoding for a better one** (CBOR/postcard instead of JSON, or a denser base64 alphabet). Rejected: optimizing the wrong container.
-- **Per-field rows carrying hand-encoded `DynamicValue` frames.** Rejected: it reaches into okm's internal frame encoding instead of using the public document API.
+- **Per-field rows carrying hand-encoded `Variant` frames.** Rejected: it reaches into okm's internal frame encoding instead of using the public document API.
 - **Migrate the existing bytes.** Rejected in favour of a clean break (pre-production, no real data on disk). If that ever stops being true, migration is a read-only reader rebuilding everything through the normal write path — a restore path, never a second write channel.
 
 ## Consequences

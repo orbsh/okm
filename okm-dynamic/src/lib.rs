@@ -16,7 +16,8 @@
 //! deployment-shape contract (embedded: in-process calling discipline;
 //! remote: operation payloads carry semantic results, single-writer-per-group).
 //!
-//! Value tree representation is host-agnostic (`Value` enum); binding
+//! Value tree representation is host-agnostic (`okm_value::Variant`, re-exported
+//! here as `Value`); binding
 //! crates convert to/from their native types (vocab, hashmap, ...).
 //!
 //! Encoding rules (mirroring the derive, byte-for-byte):
@@ -54,7 +55,7 @@ mod write;
 pub use okm_core::TableMeta;
 pub use okm_core::field::FieldType;
 pub use okm_core::schema::{CollectionSchema, FieldSchema};
-pub use okm_value::{CodecError, DynamicValue as Value, ValueMap};
+pub use okm_value::{CodecError, ValueMap, Variant as Value};
 
 // NOTE (v1 scope): nested key segments are NOT supported by the dynamic
 // codec — `FieldType::Segment` does not exist (the key-composition

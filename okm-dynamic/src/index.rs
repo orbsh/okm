@@ -486,7 +486,7 @@ pub fn path_index_entries(
 ///
 /// The unsigned kinds are coerced, not matched strictly: the dynamic READ
 /// side collapses every unsigned kind to `U64` (`dyn_value_to_value`:
-/// `DynamicValue::U64` → `Value::U64`), so a value written as `U32(1)`
+/// `Variant::U64` → `Value::U64`), so a value written as `U32(1)`
 /// comes back as `U64(1)`. An entry's bytes must be a function of the
 /// stored value alone — a strict variant match would make the written map
 /// and the read-back map produce DIFFERENT entry keys, and the overwrite

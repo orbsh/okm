@@ -301,7 +301,7 @@ fn walk_map<'a>(map: &'a crate::ValueMap, comps: &[Component], out: &mut Vec<&'a
 
 fn walk_value<'a>(v: &'a Value, comps: &[Component], out: &mut Vec<&'a Value>) {
     match v {
-        Value::Obj(m) => walk_map(m, comps, out),
+        Value::Map(m) => walk_map(m, comps, out),
         Value::Array(items) => {
             if comps.is_empty() {
                 // A path ending at an array fans out over its scalar
@@ -344,7 +344,7 @@ fn flatten_scalars(v: &Value) -> Vec<&Value> {
                     go(x, out);
                 }
             }
-            Value::Obj(_) => {}
+            Value::Map(_) => {}
             other => out.push(other),
         }
     }
@@ -362,7 +362,7 @@ mod tests {
         for (k, v) in pairs {
             m.insert((*k).to_string(), v.clone());
         }
-        Value::Obj(m)
+        Value::Map(m)
     }
 
     fn doc(pairs: &[(&str, Value)]) -> crate::ValueMap {

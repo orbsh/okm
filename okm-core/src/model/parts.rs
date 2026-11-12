@@ -214,9 +214,9 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> PointParts<S, K, R> 
 }
 
 impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> PointParts<S, K, R> for Value {
-    type Output = Option<okm_value::DynamicValue>;
+    type Output = Option<okm_value::Variant>;
     fn take(col: &Collection<S, K, R>, key: &K) -> Result<Self::Output> {
-        Ok(col.slot1_map(key)?.map(okm_value::DynamicValue::Obj))
+        Ok(col.slot1_map(key)?.map(okm_value::Variant::Map))
     }
 }
 

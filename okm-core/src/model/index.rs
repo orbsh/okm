@@ -325,20 +325,20 @@ pub trait Document: Sized + Clone {
     /// `pub` only because a public trait cannot name a private associated type.
     type Vocabs: crate::model::obj_vocab::VocabSet + ::core::default::Default;
     /// document -> map: every declared field lifted into a run-time
-    /// DynamicValue (ADR-0012 document-map bridge; derive-generated).
-    fn to_map(&self) -> std::collections::BTreeMap<String, okm_value::DynamicValue>;
+    /// Variant (ADR-0012 document-map bridge; derive-generated).
+    fn to_map(&self) -> std::collections::BTreeMap<String, okm_value::Variant>;
     /// The row as one open value: [`to_map`](Self::to_map) wrapped in
-    /// [`DynamicValue::Obj`](okm_value::DynamicValue::Obj).
+    /// [`Variant::Map`](okm_value::Variant::Map).
     ///
     /// It is the row's own conversion, nothing more — a document assembled from
     /// both slots is a composition of two values
-    /// ([`DynamicValue::merged`](okm_value::DynamicValue)), not a collection
+    /// ([`Variant::merged`](okm_value::Variant)), not a collection
     /// door. Defaulted rather than derive-generated, because a row IS a name
     /// map once it leaves its struct.
-    fn to_value(&self) -> okm_value::DynamicValue {
-        okm_value::DynamicValue::Obj(self.to_map())
+    fn to_value(&self) -> okm_value::Variant {
+        okm_value::Variant::Map(self.to_map())
     }
-    /// map -> document, fallibly: matched fields assigned from `DynamicValue`.
+    /// map -> document, fallibly: matched fields assigned from `Variant`.
     ///
     /// Two rules, and the difference is PRESENCE. An absent name takes its
     /// declared default (`#[ok_default]` / `Default`) — the append-only
@@ -350,7 +350,7 @@ pub trait Document: Sized + Clone {
     /// caller spelled a value, so defaulting or truncating it would write
     /// something they never asked for.
     fn try_from_map(
-        map: &std::collections::BTreeMap<String, okm_value::DynamicValue>,
+        map: &std::collections::BTreeMap<String, okm_value::Variant>,
     ) -> crate::error::Result<Self>
     where
         Self: Sized;

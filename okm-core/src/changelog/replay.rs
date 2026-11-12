@@ -47,7 +47,7 @@ use crate::VirtualStorage;
 use crate::decode::{decode_key, decode_payload};
 use crate::model::index::DYNAMIC_SLOT;
 use crate::{OP_DELETE, OP_PUT, PRIMARY_SLOT};
-use okm_value::{DynamicValue, ValueMap};
+use okm_value::{ValueMap, Variant};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -304,11 +304,11 @@ fn row_of<S: crate::VirtualStorage>(
         let crate::FieldType::Vocab(face) = field.ty else {
             continue;
         };
-        let Some(DynamicValue::Bytes(id)) = row.get(&field.name).cloned() else {
+        let Some(Variant::Bytes(id)) = row.get(&field.name).cloned() else {
             continue;
         };
         if let Some(label) = labels.get(&(face, id)) {
-            row.insert(field.name.clone(), DynamicValue::Str(label.clone()));
+            row.insert(field.name.clone(), Variant::Str(label.clone()));
         }
     }
     intern(schema, header, target_store, &mut row)?;
@@ -327,7 +327,7 @@ fn intern<S: crate::VirtualStorage>(
         let crate::FieldType::Vocab(face) = field.ty else {
             continue;
         };
-        let Some(DynamicValue::Str(label)) = row.get(&field.name).cloned() else {
+        let Some(Variant::Str(label)) = row.get(&field.name).cloned() else {
             continue;
         };
         let faces = crate::obj_vocab::VocabFaces::from_id_slot(face);
@@ -343,7 +343,7 @@ fn intern<S: crate::VirtualStorage>(
         };
         // The id as BYTES: `Vocab<N>` is a width-typed byte id, which is what the
         // encoder takes and what a decode hands back (ADR-0032).
-        row.insert(field.name.clone(), DynamicValue::Bytes(id));
+        row.insert(field.name.clone(), Variant::Bytes(id));
     }
     Ok(())
 }
@@ -409,14 +409,14 @@ where
             let crate::FieldType::Vocab(id_slot) = field.ty else {
                 continue;
             };
-            let Some(DynamicValue::Bytes(raw)) = row.get(&field.name).cloned() else {
+            let Some(Variant::Bytes(raw)) = row.get(&field.name).cloned() else {
                 continue;
             };
             let faces = crate::obj_vocab::VocabFaces::from_id_slot(id_slot);
             if let Some(label) = crate::obj_vocab::vocab_label(old, header, faces, &raw)
                 .map_err(|e| e.to_string())?
             {
-                row.insert(field.name.clone(), DynamicValue::Str(label));
+                row.insert(field.name.clone(), Variant::Str(label));
             }
         }
 

@@ -20,7 +20,7 @@
     clippy::panic_in_result_fn
 )]
 
-use okm_value::DynamicValue;
+use okm_value::Variant;
 use std::cell::Cell;
 
 use okm_core::engine::storage::ScanIter;
@@ -34,7 +34,7 @@ use okm_async::TestStore;
 fn doc_of<S, K, R>(
     col: &okm_core::Collection<S, K, R>,
     key: &K,
-) -> okm_core::error::Result<Option<std::collections::BTreeMap<String, okm_value::DynamicValue>>>
+) -> okm_core::error::Result<Option<std::collections::BTreeMap<String, okm_value::Variant>>>
 where
     S: okm_core::VirtualStorage,
     K: okm_core::KeyEncode,
@@ -49,7 +49,7 @@ where
             .merged(seg.unwrap_or_default()),
     };
     match doc {
-        okm_value::DynamicValue::Obj(map) => Ok(Some(map)),
+        okm_value::Variant::Map(map) => Ok(Some(map)),
         other => Err(okm_core::error::Error::Corrupt {
             what: format!(
                 "a document composes to an object, got {}",
@@ -267,10 +267,9 @@ fn dynamic_write_including_vocabulary_growth_is_one_engine_commit() {
     let mut fields = std::collections::BTreeMap::new();
     fields.insert(
         "colour".to_string(),
-        okm_value::DynamicValue::Str("amber".into()),
+        okm_value::Variant::Str("amber".into()),
     );
-    t.put(&LedgerKey { id: 1 }, &DynamicValue::Obj(fields))
-        .unwrap();
+    t.put(&LedgerKey { id: 1 }, &Variant::Map(fields)).unwrap();
 
     let c = t.store();
     assert_eq!(
@@ -288,7 +287,7 @@ fn dynamic_write_including_vocabulary_growth_is_one_engine_commit() {
         doc_of(&t, &LedgerKey { id: 1 })
             .unwrap()
             .and_then(|m| m.get("colour").cloned()),
-        Some(okm_value::DynamicValue::Str("amber".into()))
+        Some(okm_value::Variant::Str("amber".into()))
     );
 }
 
@@ -301,7 +300,7 @@ fn merge_of_a_declared_field_is_one_engine_commit() {
 
     t.put(
         &k,
-        &DynamicValue::Obj(map_of(&[("amount", okm_value::DynamicValue::U64(9))])),
+        &Variant::Map(map_of(&[("amount", okm_value::Variant::U64(9))])),
     )
     .unwrap();
 
@@ -326,9 +325,9 @@ fn replace_is_one_engine_commit_across_both_slots() {
     // set only (a first-seen name adds its three vocabulary ops).
     t.put(
         &k,
-        &DynamicValue::Obj(map_of(&[(
+        &Variant::Map(map_of(&[(
             "colour",
-            okm_value::DynamicValue::Str("amber".into()),
+            okm_value::Variant::Str("amber".into()),
         )])),
     )
     .unwrap();
@@ -336,9 +335,9 @@ fn replace_is_one_engine_commit_across_both_slots() {
 
     t.put(
         &k,
-        (&DynamicValue::Obj(map_of(&[
-            ("account", okm_value::DynamicValue::U64(8)),
-            ("colour", okm_value::DynamicValue::Str("slate".into())),
+        (&Variant::Map(map_of(&[
+            ("account", okm_value::Variant::U64(8)),
+            ("colour", okm_value::Variant::Str("slate".into())),
         ])),),
     )
     .unwrap();
@@ -361,7 +360,7 @@ fn replace_is_one_engine_commit_across_both_slots() {
         doc_of(&t, &k)
             .unwrap()
             .and_then(|m| m.get("colour").cloned()),
-        Some(okm_value::DynamicValue::Str("slate".into()))
+        Some(okm_value::Variant::Str("slate".into()))
     );
 }
 
@@ -372,9 +371,9 @@ fn purge_is_one_engine_commit() {
     t.put(&k, &row(7)).unwrap();
     t.put(
         &k,
-        &DynamicValue::Obj(map_of(&[(
+        &Variant::Map(map_of(&[(
             "colour",
-            okm_value::DynamicValue::Str("amber".into()),
+            okm_value::Variant::Str("amber".into()),
         )])),
     )
     .unwrap();
@@ -394,8 +393,8 @@ fn purge_is_one_engine_commit() {
 }
 
 fn map_of(
-    pairs: &[(&str, okm_value::DynamicValue)],
-) -> std::collections::BTreeMap<String, okm_value::DynamicValue> {
+    pairs: &[(&str, okm_value::Variant)],
+) -> std::collections::BTreeMap<String, okm_value::Variant> {
     pairs
         .iter()
         .map(|(name, value)| ((*name).to_string(), value.clone()))
@@ -415,14 +414,14 @@ fn the_verbs_take_a_shared_handle_and_still_commit_once_each() {
         t.put(&k, &row(7)).unwrap();
         t.put(
             &k,
-            &DynamicValue::Obj(map_of(&[("amount", okm_value::DynamicValue::U64(2))])),
+            &Variant::Map(map_of(&[("amount", okm_value::Variant::U64(2))])),
         )
         .unwrap();
         t.put(
             &k,
-            (&DynamicValue::Obj(map_of(&[(
+            (&Variant::Map(map_of(&[(
                 "amount",
-                okm_value::DynamicValue::U64(3),
+                okm_value::Variant::U64(3),
             )])),),
         )
         .unwrap();

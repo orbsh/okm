@@ -22,7 +22,7 @@ use okm_core::changelog::{ChangelogConfig, ChangelogStore, table_dir};
 use okm_core::schema::CollectionSchema;
 use okm_core::{Collection, Document, DocumentEncode, KeyEncode};
 use okm_dynamic::DynamicCollection;
-use okm_value::DynamicValue;
+use okm_value::Variant;
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
 pub struct K {
@@ -104,15 +104,15 @@ fn a_mixed_directory_replays_each_segment_under_its_own_declaration() {
         .expect("the generation 1 row survived the change of shape");
     assert_eq!(
         one.get("level"),
-        Some(&DynamicValue::U32(7)),
+        Some(&Variant::U32(7)),
         "generation 1's offsets, not generation 2's: {one:?}"
     );
-    assert_eq!(one.get("score"), Some(&DynamicValue::U32(70)));
+    assert_eq!(one.get("score"), Some(&Variant::U32(70)));
 
     let two = target
         .fetch(&K { id: 2 }.encode())
         .expect("fetch")
         .expect("the generation 2 row");
-    assert_eq!(two.get("level"), Some(&DynamicValue::U32(8)));
-    assert_eq!(two.get("score"), Some(&DynamicValue::U32(80)));
+    assert_eq!(two.get("level"), Some(&Variant::U32(8)));
+    assert_eq!(two.get("score"), Some(&Variant::U32(80)));
 }

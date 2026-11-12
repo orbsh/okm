@@ -138,7 +138,7 @@ element have identity, and homogeneous vs heterogeneous.
   On `fetch` it lifts to `DynVal::Array` — the dynamic layer has
   no Vector type. Multi-dim shape is application-layer. Elements are
   pure values — NOT a relation carrier.
-- **Array (heterogeneous list)**: `DynamicValue::Array` — mixed
+- **Array (heterogeneous list)**: `Variant::Array` — mixed
   element types, recursive dynamic-segment frames.
 - **Set (deduplicated elements)**: no carrier yet. The candidate
   implementation is an inverted index (element value -> document
@@ -169,7 +169,7 @@ vector/array**.
 
 The graph edge — directed, attribute-carrying, traversable — is a
 different data structure and gets a different name (the freed-up
-`Edge`). Attributes are dynamic (`DynamicValue`-shaped, no schema pre-
+`Edge`). Attributes are dynamic (`Variant`-shaped, no schema pre-
 definition, no field-name compression — dynamic frames already carry
 names inline). The ns-of-an-edge-name problem (ns is a compile-time
 declared number; edge names like "has"/"belongs" are strings): the

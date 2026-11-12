@@ -30,7 +30,7 @@ use okm_core::model::graph::{
 use okm_core::obj_vocab::{FIELD_VOCAB, Faces, PREDICATE_VOCAB, Vocabulary};
 use okm_core::schema::CollectionSchema;
 use okm_core::storage::{Batch, VirtualStorage, scan_suffix_kv};
-use okm_value::{DynamicValue, decode_named};
+use okm_value::{Variant, decode_named};
 
 /// One dynamic edge: endpoints by reference, predicate by name,
 /// attributes as a name-keyed map (nTLV frames on the wire, ids allocated
@@ -40,7 +40,7 @@ pub struct DynEdge {
     pub src: NodeRef,
     pub dst: NodeRef,
     pub predicate: String,
-    pub attrs: std::collections::BTreeMap<String, DynamicValue>,
+    pub attrs: std::collections::BTreeMap<String, Variant>,
 }
 
 /// Engine = the dynamic form's operation surface. Symmetric with
@@ -181,7 +181,7 @@ impl<S: VirtualStorage> Graph<S> {
     /// self-describing typed frames — the dynamic segment's own wire).
     fn attrs_wire(
         &mut self,
-        attrs: &std::collections::BTreeMap<String, DynamicValue>,
+        attrs: &std::collections::BTreeMap<String, Variant>,
     ) -> Result<Vec<u8>, String> {
         // The segment codec speaks core's error type, so the closure hands it
         // the vocabulary's own result rather than this facade's string form.
@@ -199,7 +199,7 @@ impl<S: VirtualStorage> Graph<S> {
     fn attrs_from(
         &mut self,
         wire: &[u8],
-    ) -> Result<std::collections::BTreeMap<String, DynamicValue>, String> {
+    ) -> Result<std::collections::BTreeMap<String, Variant>, String> {
         // Nested ids resolve through the same mirror; a store failure is parked
         // and raised after the walk (a nested decode has nowhere else to put it).
         let mut failed: Option<String> = None;

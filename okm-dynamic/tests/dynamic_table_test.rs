@@ -453,7 +453,7 @@ fn dynamic_rejects_key_field_indexes() {
 
 #[test]
 fn dynamic_fields_equal_typed_fields() {
-    use okm_value::DynamicValue;
+    use okm_value::Variant;
 
     let typed: Collection<TestStore, UserKey, User> = Collection::new(TestStore::slatedb_mem());
     let dynamic = dynamic_table(TestStore::slatedb_mem());
@@ -477,15 +477,15 @@ fn dynamic_fields_equal_typed_fields() {
     // One map, both modes: no declared name is named here, so both sides
     // write slot 1 only and the row is untouched.
     let mut fields = BTreeMap::new();
-    fields.insert("note".to_string(), DynamicValue::Str("hello".into()));
-    fields.insert("weight".to_string(), DynamicValue::U64(9));
+    fields.insert("note".to_string(), Variant::Str("hello".into()));
+    fields.insert("weight".to_string(), Variant::U64(9));
     typed
         .put(
             &UserKey {
                 org_id: 1,
                 user_id: 2,
             },
-            &DynamicValue::Obj(fields),
+            &Variant::Map(fields),
         )
         .unwrap();
     dynamic
@@ -627,11 +627,11 @@ fn dynamic_fields_carry_composites() {
     let t = dynamic_table(TestStore::slatedb_mem());
     t.put(&key_bytes(1, 6), &values(1, 5, "a")).unwrap();
 
-    // Nested Obj + heterogeneous Array round-trip through the bridge.
+    // Nested Map + heterogeneous Array round-trip through the bridge.
     let mut nested: M<String, Value> = M::new();
     nested.insert("n".into(), Value::Str("v".into()));
     let mut f: M<String, Value> = M::new();
-    f.insert("obj".into(), Value::Obj(nested));
+    f.insert("obj".into(), Value::Map(nested));
     f.insert(
         "tags".into(),
         Value::Array(vec![Value::Str("x".into()), Value::U64(3)]),
@@ -641,7 +641,7 @@ fn dynamic_fields_carry_composites() {
     let back = t.fetch(&key_bytes(1, 6)).unwrap().unwrap();
     assert_eq!(
         back.get("obj"),
-        Some(&Value::Obj({
+        Some(&Value::Map({
             let mut m = M::new();
             m.insert("n".into(), Value::Str("v".into()));
             m

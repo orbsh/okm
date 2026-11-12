@@ -71,7 +71,7 @@ fn labels_round_trip_through_per_field_vocabularies() {
     assert!(
         matches!(
             m.get("status"),
-            Some(okm_value::DynamicValue::Str(s)) if s == "active"
+            Some(okm_value::Variant::Str(s)) if s == "active"
         ),
         "status lifted as a label: {:?}",
         m.get("status")

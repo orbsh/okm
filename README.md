@@ -105,7 +105,7 @@ Implemented:
 - Secondary indexes (access methods) — `#[ok_index(name { fields(…), includes(…), key(…), func(…), where(…) })]` on **row structs**: composite indexes over payload fields (declaration order), no per-index slot/ns — the 2-byte table namespace already discriminates every entry; leftmost-prefix scans with fetch-back; `key(…)` truncates the carried primary-key tail to the named subset (`encode_prefix_named`), full key by default; `includes` covering positioned as a materialized view for high-fanout queries; `func(path)` replaces the data segment with a plain fn's return value — the return form is an iterator of the segment type, so one value (`[v]`) and a fan-out (`Vec`/slice/iterator) are one contract (ADR-0055), probe side calls the same path; `where(path)` is a row-level predicate — a partial index, rows the predicate rejects contribute no entries.
 - Lead faces (identity orderings) — `#[ok_lead(name { fields(key_fields), key(…), deprecated })]` on **row structs** (ADR-0054): the entry's sorted segment is sliced out of the KEY's own encoding instead of a payload column, so a reverse read costs no copy and cannot disagree with the key. Own slot family (`0x5nnn`, its own counter), same `KvIndex` doors, typed probe builder (`.prefix().member_id(id).finish()`), `Covered = ()` always; `rebuild_faces` repairs these without decoding a row, because nothing about them depends on the payload.
 - `Collection<S, K, R>` node assembly point — `put`/`purge` write the primary key and every declared index entry in one store instance (the declaration IS the registry); `scan` returns `(Key, Option<Row>)` via leftmost-prefix on any access method.
-- **Document API** — reads name their parts, and ONE `put` writes: the payload type picks the path. The struct door: `get_row` speaks `R`. The document door: `get::<(parts::Row, parts::Value)>` hands back each slot on its own (`Option<R>`, `Option<DynamicValue>`); `put(&key, &R)` writes the row, `put(&key, &map)` writes the names the map carries, `put(&key, (&map,))` makes the map the whole document, `purge` removes both slots — one engine commit per write. No assembly function exists: a row converts with `Document::to_value()` and two values compose with `DynamicValue::merged` (objects merge by name, recursively; anything else replaces). **Every verb is fallible** (`okm_core::Result`): no write panics — the engine's refusal, a full vocabulary and a map that does not fit the declaration all come back as `okm_core::Error` (ADR-0037). Reads answer `Result<Option<R>>` / `Result<Vec<…>>` — absence is the `Option`, a store that could not answer is the `Err` (ADR-0038). The dynamic side has only the document door: there is no struct there to speak. Unknown field names allocate in the per-table field-name vocabulary and land in the dynamic segment (n-TLV frames, nested objects recursive, no CBOR); the row-map bridge lifts declared fields to logical types (`Quant`→`F64`, `Vocab`→label, `Offset`→`i64`).
+- **Document API** — reads name their parts, and ONE `put` writes: the payload type picks the path. The struct door: `get_row` speaks `R`. The document door: `get::<(parts::Row, parts::Value)>` hands back each slot on its own (`Option<R>`, `Option<Variant>`); `put(&key, &R)` writes the row, `put(&key, &map)` writes the names the map carries, `put(&key, (&map,))` makes the map the whole document, `purge` removes both slots — one engine commit per write. No assembly function exists: a row converts with `Document::to_value()` and two values compose with `Variant::merged` (objects merge by name, recursively; anything else replaces). **Every verb is fallible** (`okm_core::Result`): no write panics — the engine's refusal, a full vocabulary and a map that does not fit the declaration all come back as `okm_core::Error` (ADR-0037). Reads answer `Result<Option<R>>` / `Result<Vec<…>>` — absence is the `Option`, a store that could not answer is the `Err` (ADR-0038). The dynamic side has only the document door: there is no struct there to speak. Unknown field names allocate in the per-table field-name vocabulary and land in the dynamic segment (n-TLV frames, nested objects recursive, no CBOR); the row-map bridge lifts declared fields to logical types (`Quant`→`F64`, `Vocab`→label, `Offset`→`i64`).
 - **Dynamic codec bindings** — schema export drives embedded-language readers: `bindings/okm-python` (PyO3) and `bindings/okm-steel`, byte-identical with the Rust derive.
 - **Path indexes over the dynamic segment** ([ADR-0029](docs/adr/0029-path-index.md)) — `AccessMethod::path(slot, Path::parse("author.name")?, FieldType::Str)?`: nested and array paths declared as access methods, one entry per resolved value (a wildcard is the absence of an `Index` component), maintained on the dynamic-segment write path; the value type is declared, and the entry key carries the slot, never the path.
 - Engine backends behind Cargo features: `fjall` (sync `FjallStore`), `redb` (sync `RedbStore`), `slatedb` (async `SlatedbStore`); tests run the real engines through the `TestStore` matrix (slatedb-mem / fjall / redb), no mock to drift from them.
@@ -242,8 +242,8 @@ call site never translates its data into a verb name:
 | payload | path |
 |---|---|
 | `&R` (typed side only) | the row and its faces; the fresh-row fast path, so the previous values' entries are NOT swept |
-| `&ValueMap` / `&DynamicValue::Obj(map)` | partial document: a declared name is a row read-modify-write (its superseded face swept, the ledger compensated), every other name overwrites that name in the segment, and names the map omits keep their stored values |
-| `(&ValueMap,)` / `(&DynamicValue::Obj(map),)` | whole document: the map IS the document — an omitted declared field takes its default, an omitted dynamic name is removed |
+| `&ValueMap` / `&Variant::Map(map)` | partial document: a declared name is a row read-modify-write (its superseded face swept, the ledger compensated), every other name overwrites that name in the segment, and names the map omits keep their stored values |
+| `(&ValueMap,)` / `(&Variant::Map(map),)` | whole document: the map IS the document — an omitted declared field takes its default, an omitted dynamic name is removed |
 | `purge` | both slots — the only removal verb, on both sides |
 
 The payload is caller data, so a write is fallible (`okm_core::Error`): a
@@ -255,7 +255,7 @@ the vocabulary.
 
 Reading is parts, and composition belongs to the caller: a point read answers
 each slot on its own, a row converts to one value (`Document::to_value`), and
-two values merge (`DynamicValue::merge` / `merged` — objects merge name by
+two values merge (`Variant::merge` / `merged` — objects merge name by
 name, nested objects recursively, anything else replaces the left side). There
 is deliberately no assembly function: the two primitives are the whole story,
 and the composition is two lines at the call site.
@@ -292,7 +292,7 @@ users.put(&key, (&doc.unwrap_or_default(),))?;
 
 // A decoded value writes as itself; a non-object payload is refused, because a
 // scalar is a field VALUE and not a document.
-users.put(&key, &DynamicValue::Obj(patch))?;
+users.put(&key, &Variant::Map(patch))?;
 
 // Purge: both slots, one commit.
 users.purge(&key)?;

@@ -92,7 +92,7 @@ name-keyed map and one write is one commit. Off-row breaks that at five points:
 
 And the field-level accessor is a second selector for a value the name-keyed
 map already selects: a tag enum cannot carry the field's type, so the accessor
-returns one erased currency (`DynamicValue`, or bare frame bytes) and the static
+returns one erased currency (`Variant`, or bare frame bytes) and the static
 type of a declaration checked at compile time becomes a runtime check at the
 boundary. If the mechanism had been built, the tag enum was still the right
 selector — it gives exhaustiveness over the document's columns and pins the

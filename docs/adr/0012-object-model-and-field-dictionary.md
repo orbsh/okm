@@ -80,7 +80,7 @@ contract and the size envelope are in
   same, arithmetic over bytes already in hand.
 - `len` is present on **leaf** entries only, and is the prefix-monotonic varint
   codec (`wrappers/wire.rs`) that `VarInt` uses, shared with the cold segment's
-  frames and the Array/nested-Obj element frames: a small entry costs 2–3
+  frames and the Array/nested-Map element frames: a small entry costs 2–3
   header bytes instead of 5. A composite carries no length — its block's
   `count` delimits it.
 - `type`: a small run-time value vocabulary — this is the one genuinely new

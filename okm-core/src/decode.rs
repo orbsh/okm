@@ -4,12 +4,12 @@
 
 use crate::field::FieldType;
 use crate::schema::CollectionSchema;
-use okm_value::{CodecError, DynamicValue, ValueMap};
+use okm_value::{CodecError, ValueMap, Variant};
 use std::collections::BTreeMap;
 
 /// Inside a decode walk the tree reads better under its short name; it is the
 /// one value vocabulary the crate has (ADR-0056 §8).
-use DynamicValue as Value;
+use Variant as Value;
 
 /// Decode the key bytes into the value map (fields at their static
 /// offsets; nested segments would recurse — v1 keys are flat).

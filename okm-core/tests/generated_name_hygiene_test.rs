@@ -14,7 +14,7 @@
 #![allow(clippy::unwrap_used, clippy::panic)]
 
 use okm_core::{Collection, Document, DocumentEncode, KeyEncode};
-use okm_value::DynamicValue;
+use okm_value::Variant;
 
 use okm_async::TestStore;
 use okm_core::parts;
@@ -126,9 +126,9 @@ fn the_dynamic_segment_still_takes_unknown_names() {
     col.put(&key(), &row()).unwrap();
 
     let mut patch = std::collections::BTreeMap::new();
-    patch.insert("note".to_string(), DynamicValue::Str("open segment".into()));
-    patch.insert("b".to_string(), DynamicValue::U64(99));
-    col.put(&key(), &DynamicValue::Obj(patch)).unwrap();
+    patch.insert("note".to_string(), Variant::Str("open segment".into()));
+    patch.insert("b".to_string(), Variant::U64(99));
+    col.put(&key(), &Variant::Map(patch)).unwrap();
 
     let stored = col.get_row(&key()).unwrap().unwrap();
     assert_eq!(stored.b, 99, "a declared name routes to the row");

@@ -20,7 +20,7 @@ use okm_core::{Collection, Document, DocumentEncode, FieldDesc, FieldType, KeyEn
 fn doc_of<S, K, R>(
     col: &okm_core::Collection<S, K, R>,
     key: &K,
-) -> okm_core::error::Result<Option<std::collections::BTreeMap<String, okm_value::DynamicValue>>>
+) -> okm_core::error::Result<Option<std::collections::BTreeMap<String, okm_value::Variant>>>
 where
     S: okm_core::VirtualStorage,
     K: okm_core::KeyEncode,
@@ -35,7 +35,7 @@ where
             .merged(seg.unwrap_or_default()),
     };
     match doc {
-        okm_value::DynamicValue::Obj(map) => Ok(Some(map)),
+        okm_value::Variant::Map(map) => Ok(Some(map)),
         other => Err(okm_core::error::Error::Corrupt {
             what: format!(
                 "a document composes to an object, got {}",
@@ -317,7 +317,7 @@ fn an_unnamed_id_exports_as_null_and_import_refuses_it() {
 /// row of default values.
 #[test]
 fn parquet_with_variant_restores_both_halves_and_segment_only_documents() {
-    use okm_value::DynamicValue;
+    use okm_value::Variant;
     use std::collections::BTreeMap;
 
     let dir = tempfile::tempdir().unwrap();
@@ -338,13 +338,13 @@ fn parquet_with_variant_restores_both_halves_and_segment_only_documents() {
     )
     .unwrap();
     let mut open = BTreeMap::new();
-    open.insert("note".to_string(), DynamicValue::Str("hello".into()));
-    t1.put(&with_row, &DynamicValue::Obj(open.clone())).unwrap();
+    open.insert("note".to_string(), Variant::Str("hello".into()));
+    t1.put(&with_row, &Variant::Map(open.clone())).unwrap();
     let segment_only = TKey {
         org_id: 1,
         user_id: 2,
     };
-    t1.put(&segment_only, &DynamicValue::Obj(open)).unwrap();
+    t1.put(&segment_only, &Variant::Map(open)).unwrap();
 
     parquet_io::export_parquet_with_variant(&mut t1, &path).unwrap();
 
@@ -364,7 +364,7 @@ fn parquet_with_variant_restores_both_halves_and_segment_only_documents() {
             .unwrap()
             .expect("the document")
             .get("note"),
-        Some(&DynamicValue::Str("hello".into())),
+        Some(&Variant::Str("hello".into())),
         "the open half came back"
     );
 
@@ -377,7 +377,7 @@ fn parquet_with_variant_restores_both_halves_and_segment_only_documents() {
             .unwrap()
             .expect("the segment-only document")
             .get("note"),
-        Some(&DynamicValue::Str("hello".into())),
+        Some(&Variant::Str("hello".into())),
         "a segment-only document restores as a segment-only document"
     );
     // ...and the two enumeration modes agree with what came back.

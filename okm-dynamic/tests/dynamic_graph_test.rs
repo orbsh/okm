@@ -17,7 +17,7 @@ use okm_core::{
     DocumentEncode, EdgeHead, EdgeKey, Graph as StaticGraph, GraphEncode, KeyEncode, NodeRef,
 };
 use okm_dynamic::{DynEdge, Graph};
-use okm_value::DynamicValue;
+use okm_value::Variant;
 use std::collections::BTreeMap;
 
 const NS: u16 = 0x0190; // 400
@@ -34,9 +34,9 @@ fn org(id: u64) -> NodeRef {
     node(0x11, id)
 }
 
-fn attrs(since: u16) -> BTreeMap<String, DynamicValue> {
+fn attrs(since: u16) -> BTreeMap<String, Variant> {
     let mut m = BTreeMap::new();
-    m.insert("since".to_string(), DynamicValue::U64(since as u64));
+    m.insert("since".to_string(), Variant::U64(since as u64));
     m
 }
 
@@ -114,7 +114,7 @@ fn dynamic_link_traverse_and_fetch_back() {
     assert_eq!(back.src, person(1));
     assert_eq!(back.dst, org(9));
     assert_eq!(back.predicate, "works_at");
-    assert_eq!(back.attrs.get("since"), Some(&DynamicValue::U64(2020)));
+    assert_eq!(back.attrs.get("since"), Some(&Variant::U64(2020)));
 
     // The predicate is listed from the predicate vocabulary (0x04), never from
     // the index faces, and attribute names never share its id space.
@@ -289,5 +289,5 @@ fn link_promotes_its_vocabulary_allocations() {
     assert_eq!(g.vocab_pending(), 0);
     let back = g.get_edge(2).unwrap().unwrap();
     assert_eq!(back.predicate, "works_at");
-    assert_eq!(back.attrs.get("since"), Some(&DynamicValue::U64(2021)));
+    assert_eq!(back.attrs.get("since"), Some(&Variant::U64(2021)));
 }

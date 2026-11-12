@@ -126,7 +126,7 @@ footer  body_len u64 BE | records u64 BE | ordinal u64 BE | crc32 u32 BE
 ### 8. 工作区里的这一刀
 
 - **核心留字节，并且收下抽干。** 段帧迭代、真相半边过滤（改为从 `SlotMap` 的边界推导，而不是手维护的清单——`declared_index_base` / `declared_reduce_base` / `declared_lead_base` 与两组词表已经说明了某个 slot 属于哪边）、窗口合并、水位，以及把一个窗口就地交出去的这一步，都属于产出这些文件的机制。`okm-drain` 不再是一个独立 crate：窗口合并下沉进核心，格式那半边搬出去。
-- **文档解码器跟着一起下沉。** `okm_dynamic::decode_payload` 是对 `CollectionSchema`（本来就是 core 的类型）的纯函数，返回 core `DynamicValue` 的 map。它待在 core 之上是历史原因（它写在 planner 旁边），不是结构原因。把 `decode.rs` 移进 core，才让「抽干是核心功能」从名义变成事实，也去掉抽干唯一的向上依赖；`okm-dynamic` 继续 re-export 这个名字，现有调用点一个都不改。
+- **文档解码器跟着一起下沉。** `okm_dynamic::decode_payload` 是对 `CollectionSchema`（本来就是 core 的类型）的纯函数，返回 core `Variant` 的 map。它待在 core 之上是历史原因（它写在 planner 旁边），不是结构原因。把 `decode.rs` 移进 core，才让「抽干是核心功能」从名义变成事实，也去掉抽干唯一的向上依赖；`okm-dynamic` 继续 re-export 这个名字，现有调用点一个都不改。
 - **搬出去的只有格式**：schema 驱动的 Arrow 列构建器（`okm_dynamic::arrow`）、Parquet、表格式日志、**typed 桥**（`to_record_batch`、图的边表）与**快照导出**（`parquet_io`）。core 不能向上依赖，所以容不下它们（ADR-0045 对 Arrow 批次构建器说过同一件事），而它们每一个都是段的一种投影，不是生产段的一部分。**回放不搬出去**：应用一个段——顺序、行解码、词表重新 intern、删除意味着什么——是机制，所以它和窗口合并并排住在 core（`okm_core::changelog::replay`）；core 唯一点不出名字的那样东西（schema 驱动的目标）通过 `ReplayTarget` trait 进来，由 `okm-dynamic` 为 `DynamicCollection` 实现。驱动它的那个二进制（`okm-log replay`）是这个 API 的 CLI，不是它的主人。不能向上依赖的 core 装不下它们（ADR-0045 对 Arrow 批次构建器说过同一件事），而它们没有一个是机制——每一个都是段的一个投影。
 - **两个独立命令行工具，各自对着一样制品，与应用都没有链接。**（湖那个直到 2026-11-11 还叫
   `okm-parquet`：名字描述的是它写出的格式，而格式只是制品用到的一个实现细节；它还让 `replay`

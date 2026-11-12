@@ -393,8 +393,8 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     ///
     /// ```ignore
     /// t.put(&key, &row)?;                        // typed row: the struct door
-    /// t.put(&key, &DynamicValue::Obj(map))?;      // partial document: merge
-    /// t.put(&key, (&DynamicValue::Obj(map),))?;   // whole document: replace
+    /// t.put(&key, &Variant::Map(map))?;      // partial document: merge
+    /// t.put(&key, (&Variant::Map(map),))?;   // whole document: replace
     /// ```
     ///
     /// Each path keeps the contract its own verb had, because that contract
@@ -850,7 +850,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     /// reads performed, `.skip(m).take(n)` an offset page, `.rev()` the same
     /// window backwards. Materializing is not this method's job — a key becomes
     /// a document with [`Collection::get`] over `(parts::Row, parts::Value)`,
-    /// whose two halves merge as values ([`DynamicValue::merged`]).
+    /// whose two halves merge as values ([`Variant::merged`]).
     pub fn scan_keys(
         &self,
         probe: &crate::model::prefix::PrefixProbe<K>,
@@ -969,7 +969,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
 use std::collections::BTreeMap;
 
 use crate::model::obj_vocab::{FIELD_VOCAB, Faces, Vocabulary, pending_in};
-use okm_value::DynamicValue;
+use okm_value::Variant;
 
 impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> {
     /// Dynamic-segment key: `[header][0x01][key payload]` — the per-document
@@ -983,7 +983,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         buf
     }
 
-    /// The `&DynamicValue` arm of [`put`](Self::put): partial whole-document
+    /// The `&Variant` arm of [`put`](Self::put): partial whole-document
     /// update, ONE engine commit.
     ///
     /// - A name that matches a declared field is a read-modify-write of the row:
@@ -1007,7 +1007,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     pub(crate) fn merge_map(
         &self,
         key: &K,
-        object: &BTreeMap<String, DynamicValue>,
+        object: &BTreeMap<String, Variant>,
     ) -> crate::error::Result<()> {
         let (typed, dynamic) = self.split_names(object);
         let mut batch = crate::engine::storage::Batch::default();
@@ -1037,7 +1037,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         Ok(())
     }
 
-    /// The `(&DynamicValue,)` arm of [`put`](Self::put): whole-document
+    /// The `(&Variant,)` arm of [`put`](Self::put): whole-document
     /// replacement, ONE engine commit — the map IS the document.
     ///
     /// - Declared names rebuild the row; a declared field the map does not name
@@ -1054,7 +1054,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     pub(crate) fn replace_map(
         &self,
         key: &K,
-        object: &BTreeMap<String, DynamicValue>,
+        object: &BTreeMap<String, Variant>,
     ) -> crate::error::Result<()> {
         let (typed, dynamic) = self.split_names(object);
         let mut batch = crate::engine::storage::Batch::default();
@@ -1177,10 +1177,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     /// Crate-visible for the export bridge, which needs the segment WITHOUT the
     /// declared half (the variant column); a single half is [`Collection::get`],
     /// and the two halves are composed by the caller as values.
-    pub fn slot1_map(
-        &self,
-        key: &K,
-    ) -> crate::error::Result<Option<BTreeMap<String, DynamicValue>>> {
+    pub fn slot1_map(&self, key: &K) -> crate::error::Result<Option<BTreeMap<String, Variant>>> {
         let raw = match self.store.get(&self.fields_key(key))? {
             Some(raw) => raw,
             None => return Ok(None),
@@ -1224,7 +1221,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         &self,
         batch: &mut crate::engine::storage::Batch,
         key: &K,
-        variants: &BTreeMap<String, DynamicValue>,
+        variants: &BTreeMap<String, Variant>,
     ) -> crate::error::Result<()> {
         let header = self.header();
         let k = self.fields_key(key);
@@ -1266,11 +1263,8 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     /// static segment, the rest the dynamic one.
     fn split_names(
         &self,
-        object: &BTreeMap<String, DynamicValue>,
-    ) -> (
-        BTreeMap<String, DynamicValue>,
-        BTreeMap<String, DynamicValue>,
-    ) {
+        object: &BTreeMap<String, Variant>,
+    ) -> (BTreeMap<String, Variant>, BTreeMap<String, Variant>) {
         let declared: std::collections::HashSet<&str> = R::FIELDS.iter().map(|f| f.name).collect();
         let mut typed = BTreeMap::new();
         let mut dynamic = BTreeMap::new();

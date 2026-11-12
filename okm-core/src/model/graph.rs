@@ -64,7 +64,7 @@ use crate::engine::storage::{Batch, VirtualStorage, scan_suffix_kv};
 use crate::model::index::{DYNAMIC_SLOT, Document, PRIMARY_SLOT, Slot, write_slot};
 use crate::model::key::KeyEncode;
 use crate::model::obj_vocab::{Faces, PREDICATE_VOCAB, Vocabulary};
-use okm_value::{DynamicValue, decode_named};
+use okm_value::{Variant, decode_named};
 
 /// Fixed face 0x06: out-edge traversal, pair-qualified
 /// (`[src][dst][edge_id]`): prefix on `src` deliberately keeps the "all of a
@@ -548,7 +548,7 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
         &mut self,
         batch: &mut Batch,
         edge_id: u64,
-        fields: &std::collections::BTreeMap<String, DynamicValue>,
+        fields: &std::collections::BTreeMap<String, Variant>,
     ) -> crate::error::Result<()> {
         let key = self.dynamic_key(edge_id);
         batch.del(&key);
@@ -574,7 +574,7 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
     pub fn attrs(
         &self,
         edge_id: u64,
-    ) -> crate::error::Result<Option<std::collections::BTreeMap<String, DynamicValue>>> {
+    ) -> crate::error::Result<Option<std::collections::BTreeMap<String, Variant>>> {
         let raw = match self.store.get(&self.dynamic_key(edge_id))? {
             Some(raw) => raw,
             None => return Ok(None),

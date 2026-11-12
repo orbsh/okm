@@ -21,7 +21,7 @@ use okm_core::{
     Batch, Document, DocumentEncode, EdgeHead, Graph, GraphEncode, KeyEncode, NodeRef, ReduceCodec,
     VirtualStorage,
 };
-use okm_value::DynamicValue;
+use okm_value::Variant;
 
 use okm_async::TestStore;
 // ---- two node collections and one graph ----
@@ -135,7 +135,7 @@ fn an_edge_table_restores_into_a_fresh_graph() {
     .unwrap();
     // One edge carries open attributes (the 0x01 segment).
     let mut attrs = BTreeMap::new();
-    attrs.insert("note".to_string(), DynamicValue::Str("hi".into()));
+    attrs.insert("note".to_string(), Variant::Str("hi".into()));
     let mut batch = Batch::default();
     g.replace_into(&mut batch, 2, &attrs).unwrap();
     g.store_mut().commit_batch(batch).unwrap();
@@ -164,7 +164,7 @@ fn an_edge_table_restores_into_a_fresh_graph() {
     assert_eq!(r.edge(2).unwrap().unwrap().since_year, 2021);
     assert_eq!(
         r.attrs(2).unwrap().unwrap().get("note"),
-        Some(&DynamicValue::Str("hi".into()))
+        Some(&Variant::Str("hi".into()))
     );
     assert!(
         r.attrs(1).unwrap().is_none(),

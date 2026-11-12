@@ -22,7 +22,7 @@ use crate::bridge::ToRecordBatch;
 use okm_core::model::field::FieldType;
 use okm_core::model::index::Document;
 use okm_core::model::key::KeyEncode;
-use okm_value::DynamicValue;
+use okm_value::Variant;
 
 /// Declaration-order offset table for a fixed-width region (the key
 /// encoding, or the value half of TLV frames — widths are declared, so the
@@ -569,7 +569,7 @@ pub mod parquet_io {
                 // declared name would come back as an error rather than a
                 // silent default — the import path propagates it.
                 collection
-                    .put(&key, &DynamicValue::Obj(map))
+                    .put(&key, &Variant::Map(map))
                     .map_err(|e| parquet::errors::ParquetError::General(e.to_string()))?;
             }
         }
@@ -579,11 +579,11 @@ pub mod parquet_io {
     /// One document's dynamic segment out of its `variant` cell:
     /// `struct<metadata, value>` → the name-keyed map the segment stores. The
     /// export's `push_variant` written backwards; names come back resolved because
-    /// the Variant's own metadata carries them.
+    /// the Parquet Variant's own metadata carries them.
     fn segment_from_variant(
         col: &dyn arrow::array::Array,
         row: usize,
-    ) -> Result<Option<std::collections::BTreeMap<String, okm_value::DynamicValue>>, String> {
+    ) -> Result<Option<std::collections::BTreeMap<String, okm_value::Variant>>, String> {
         if col.is_null(row) {
             return Ok(None);
         }
@@ -603,16 +603,16 @@ pub mod parquet_io {
         )
         .map_err(|e| e.to_string())?;
         match dynamic_from_variant(variant) {
-            okm_value::DynamicValue::Obj(map) => Ok(Some(map)),
+            okm_value::Variant::Map(map) => Ok(Some(map)),
             _ => Err("a document's variant cell holds an object, not a scalar".into()),
         }
     }
 
-    /// Variant → DynamicValue. Integers come back SIGNED (the export widens UInt to
+    /// Parquet Variant → okm `Variant`. Integers come back SIGNED (the export widens UInt to
     /// i64, a documented limitation), so a non-negative value is restored as `UInt`
     /// and a negative one as `Int` — the export cannot tell them apart.
-    fn dynamic_from_variant(v: parquet_variant::Variant<'_, '_>) -> okm_value::DynamicValue {
-        use okm_value::DynamicValue as DV;
+    fn dynamic_from_variant(v: parquet_variant::Variant<'_, '_>) -> okm_value::Variant {
+        use okm_value::Variant as DV;
         if v.as_null().is_some() {
             return DV::Null;
         }
@@ -635,7 +635,7 @@ pub mod parquet_io {
             return DV::Bytes(bytes.to_vec());
         }
         if let Some(obj) = v.as_object() {
-            return DV::Obj(
+            return DV::Map(
                 obj.iter()
                     .map(|(name, field)| (name.to_string(), dynamic_from_variant(field)))
                     .collect(),
@@ -760,7 +760,7 @@ pub mod parquet_io {
             let mut heads: Vec<EdgeHead> = Vec::with_capacity(n);
             let mut ids: Vec<u64> = Vec::with_capacity(n);
             let mut payloads: Vec<E> = Vec::with_capacity(n);
-            let mut props: Vec<std::collections::BTreeMap<String, okm_value::DynamicValue>> =
+            let mut props: Vec<std::collections::BTreeMap<String, okm_value::Variant>> =
                 Vec::with_capacity(n);
             {
                 let store = self.store_mut();
@@ -841,13 +841,13 @@ pub mod parquet_io {
         }
     }
 
-    /// The open-attributes column (a Variant holding one object) back to the map a
+    /// The open-attributes column (a Parquet Variant holding one object) back to the map a
     /// write takes. A null cell is "no attributes", which is not an error; a cell
     /// that is not an object is one.
     fn variant_map(
         col: &dyn arrow::array::Array,
         row: usize,
-    ) -> Result<std::collections::BTreeMap<String, okm_value::DynamicValue>, String> {
+    ) -> Result<std::collections::BTreeMap<String, okm_value::Variant>, String> {
         use arrow::array::{Array, BinaryArray, StructArray};
 
         // The canonical storage type of a variant: `struct<metadata: binary,
@@ -877,40 +877,40 @@ pub mod parquet_io {
         }
         Ok(out)
     }
-    fn to_dynamic(v: &parquet_variant::Variant<'_, '_>) -> okm_value::DynamicValue {
-        use okm_value::DynamicValue;
+    fn to_dynamic(v: &parquet_variant::Variant<'_, '_>) -> okm_value::Variant {
+        use okm_value::Variant;
         if v.as_null().is_some() {
-            return DynamicValue::Null;
+            return Variant::Null;
         }
         if let Some(b) = v.as_boolean() {
-            return DynamicValue::Bool(b);
+            return Variant::Bool(b);
         }
         if let Some(s) = v.as_string() {
-            return DynamicValue::Str(s.to_string());
+            return Variant::Str(s.to_string());
         }
         if let Some(b) = v.as_u8_slice() {
-            return DynamicValue::Bytes(b.to_vec());
+            return Variant::Bytes(b.to_vec());
         }
         if let Some(u) = v.as_u64() {
-            return DynamicValue::U64(u);
+            return Variant::U64(u);
         }
         if let Some(i) = v.as_int64() {
-            return DynamicValue::I64(i);
+            return Variant::I64(i);
         }
         if let Some(f) = v.as_f64() {
-            return DynamicValue::F64(f);
+            return Variant::F64(f);
         }
         if let Some(list) = v.as_list() {
-            return DynamicValue::Array(list.iter().map(|it| to_dynamic(&it)).collect());
+            return Variant::Array(list.iter().map(|it| to_dynamic(&it)).collect());
         }
         if let Some(obj) = v.as_object() {
             let mut map = std::collections::BTreeMap::new();
             for (name, val) in obj.iter() {
                 map.insert(name.to_string(), to_dynamic(&val));
             }
-            return DynamicValue::Obj(map);
+            return Variant::Map(map);
         }
-        DynamicValue::Null
+        Variant::Null
     }
 
     /// The restore half of [`export_reduces`]: read the derived table

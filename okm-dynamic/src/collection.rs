@@ -702,8 +702,8 @@ impl<S: VirtualStorage> DynamicCollection<S> {
     // what a remote caller ships as one wire frame (the same
     // plan+replay discipline as put/delete).
     //
-    // The Value <-> DynamicValue bridge maps composites natively: the
-    // dynamic segment is the schema-free zone, so nested Obj/Array are
+    // The Value <-> Variant bridge maps composites natively: the
+    // dynamic segment is the schema-free zone, so nested Map/Array are
     // legitimate field values here (schema-declared fixed-width paths
     // reject them upstream).
 
@@ -785,7 +785,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
     /// t.put(&pkey, (&map,))?;     // whole document: the map IS the document
     /// ```
     ///
-    /// `&okm_value::DynamicValue` is accepted as the payload too — an object,
+    /// `&okm_value::Variant` is accepted as the payload too — an object,
     /// refused otherwise — so a caller holding a decoded value writes without
     /// re-wrapping it. The two paths keep the contracts their verbs had; see
     /// [`WritePayload`](crate::write::WritePayload).

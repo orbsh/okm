@@ -19,7 +19,7 @@ use arrow::array::{
 };
 use arrow::compute::{concat_batches, take};
 use arrow::row::{RowConverter, SortField};
-use okm_value::{DynamicValue, ValueMap};
+use okm_value::{ValueMap, Variant};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use std::collections::HashMap;
 use std::fmt;
@@ -574,41 +574,41 @@ pub fn open_fields(cell: &StructArray, row: usize) -> Result<ValueMap> {
 /// A variant value as the dynamic vocabulary. The widths are the variant's, not the
 /// declaration's: a column's type is the declaration's business, and a fold only has to
 /// carry the value through.
-fn as_dynamic(value: &parquet_variant::Variant<'_, '_>) -> Result<DynamicValue> {
+fn as_dynamic(value: &parquet_variant::Variant<'_, '_>) -> Result<Variant> {
     if value.as_null().is_some() {
-        return Ok(DynamicValue::Null);
+        return Ok(Variant::Null);
     }
     if let Some(x) = value.as_boolean() {
-        return Ok(DynamicValue::Bool(x));
+        return Ok(Variant::Bool(x));
     }
     if let Some(x) = value.as_string() {
-        return Ok(DynamicValue::Str(x.to_string()));
+        return Ok(Variant::Str(x.to_string()));
     }
     if let Some(x) = value.as_u8_slice() {
-        return Ok(DynamicValue::Bytes(x.to_vec()));
+        return Ok(Variant::Bytes(x.to_vec()));
     }
     if let Some(x) = value.as_int64() {
-        return Ok(DynamicValue::I64(x));
+        return Ok(Variant::I64(x));
     }
     if let Some(x) = value.as_u64() {
-        return Ok(DynamicValue::U64(x));
+        return Ok(Variant::U64(x));
     }
     if let Some(x) = value.as_f64() {
-        return Ok(DynamicValue::F64(x));
+        return Ok(Variant::F64(x));
     }
     if let Some(list) = value.as_list() {
         let mut items = Vec::with_capacity(list.len());
         for item in list.iter() {
             items.push(as_dynamic(&item)?);
         }
-        return Ok(DynamicValue::Array(items));
+        return Ok(Variant::Array(items));
     }
     if let Some(object) = value.as_object() {
         let mut map = ValueMap::new();
         for (name, value) in object.iter() {
             map.insert(name.to_string(), as_dynamic(&value)?);
         }
-        return Ok(DynamicValue::Obj(map));
+        return Ok(Variant::Map(map));
     }
     Err(ReadError::new(
         "a variant cell holds a value outside the dynamic vocabulary (date, decimal, uuid…)",
@@ -620,10 +620,10 @@ fn as_dynamic(value: &parquet_variant::Variant<'_, '_>) -> Result<DynamicValue> 
 pub(crate) fn merge_open(target: &mut ValueMap, source: &ValueMap) {
     for (name, value) in source {
         let nested = match (target.get(name), value) {
-            (Some(DynamicValue::Obj(kept)), DynamicValue::Obj(next)) => {
+            (Some(Variant::Map(kept)), Variant::Map(next)) => {
                 let mut merged = kept.clone();
                 merge_open(&mut merged, next);
-                Some(DynamicValue::Obj(merged))
+                Some(Variant::Map(merged))
             }
             _ => None,
         };

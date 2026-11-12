@@ -420,18 +420,18 @@ Writing is one verb, and the payload type chooses the path. The three face lifec
 | payload | path |
 |---|---|
 | `&R` | the row and its faces. The fresh-row fast path: it does NOT clean the previous values' faces (that is `purge` / `save_with_prev_into`'s job) |
-| `&DynamicValue::Obj(map)` (or `&ValueMap` on the dynamic side) | partial document: a declared name is a row read-modify-write (superseded face swept, ledger compensated), every other name overwrites itself in the segment, names the map omits keep their stored values |
-| `(&DynamicValue::Obj(map),)` (or `(&ValueMap,)`) | whole document: the map IS the document — an omitted declared field takes its default, an omitted dynamic name is removed |
+| `&Variant::Map(map)` (or `&ValueMap` on the dynamic side) | partial document: a declared name is a row read-modify-write (superseded face swept, ledger compensated), every other name overwrites itself in the segment, names the map omits keep their stored values |
+| `(&Variant::Map(map),)` (or `(&ValueMap,)`) | whole document: the map IS the document — an omitted declared field takes its default, an omitted dynamic name is removed |
 | `purge` | both slots, one commit — the ONE removal verb |
 
 A scalar or array payload is refused (`Error::NotADocument`): a scalar is a field VALUE, not a document. The payload is caller data, so a refused write writes nothing.
 
-Reading is parts, and the composition is the caller's. There is deliberately no assembly function: a row converts with `Document::to_value` (its name map as one `DynamicValue::Obj`) and two values compose with `DynamicValue::merge` / `merged` — objects merge name by name, nested objects recursively, and anything else replaces the left side (an array is a value, not a list of names).
+Reading is parts, and the composition is the caller's. There is deliberately no assembly function: a row converts with `Document::to_value` (its name map as one `Variant::Map`) and two values compose with `Variant::merge` / `merged` — objects merge name by name, nested objects recursively, and anything else replaces the left side (an array is a value, not a list of names).
 
 ```rust
 // A point read names its parts, in the caller's order, and only those are
-// decoded: Row is slot 0, Value is slot 1 as DynamicValue::Obj.
-let (row, dyn_) = t.get::<(parts::Row, parts::Value)>(&key)?;  // (Option<R>, Option<DynamicValue>)
+// decoded: Row is slot 0, Value is slot 1 as Variant::Map.
+let (row, dyn_) = t.get::<(parts::Row, parts::Value)>(&key)?;  // (Option<R>, Option<Variant>)
 t.get_row(&key)?;                              // sugar for get::<(parts::Row,)> — Option<R>
 t.get::<(parts::Value,)>(&key)?;               // slot 1 alone; the row is never decoded
 
@@ -440,7 +440,7 @@ t.get::<(parts::Value,)>(&key)?;               // slot 1 alone; the row is never
 let doc = match (row, dyn_) {
     (None, None) => None,
     (row, dyn_) => Some(
-        row.map(|r| r.to_value())   // Option<DynamicValue::Obj>
+        row.map(|r| r.to_value())   // Option<Variant::Map>
             .unwrap_or_default()    // an absent half contributes no names
             .merged(dyn_.unwrap_or_default()),
     ),
@@ -448,7 +448,7 @@ let doc = match (row, dyn_) {
 
 // Partial write: declared names are a row RMW (typed path, previous faces
 // cleaned), unknown names overwrite just those names in the dynamic segment.
-t.put(&key, &patch)?;                          // ValueMap / DynamicValue::Obj
+t.put(&key, &patch)?;                          // ValueMap / Variant::Map
 
 // Whole-document replacement: the map IS the document — absent declared
 // fields take defaults, unnamed dynamic names are removed. The one-element
@@ -460,10 +460,12 @@ t.put(&key, (&doc.unwrap_or_default(),))?;
 t.purge(&key)?;                               // -> bool (something was there)
 ```
 
-- `DynamicValue` carries the open value vocabulary: `UInt`/`Int`/`F64`/
-`Str`/`Bytes`/`Bool`/`Null`/`Array`/`Obj` — nested objects recurse as native frames (type tag 7) sharing the table's vocabulary; no CBOR.
+- `Variant` is the tagged union of the value kinds a document can hold: `U8`/`U16`/
+`U32`/`U64`/`I64`/`F64`/`Str`/`Bytes`/`Bool`/`Null`/`Array`/`Map` — `Map` is the
+name-keyed object (a document is one), and nested `Map`s recurse as native frames
+(type tag 7) sharing the table's vocabulary; no CBOR.
 - The value form crosses a boundary as itself, not as a hand-written
-`match` per direction: `Serialize`/`Deserialize` for `DynamicValue` ride the same `schema-serde` feature. `Deserialize` goes through `deserialize_any`, so the format must be self-describing (JSON, CBOR — not bincode); in JSON two collapses are unavoidable and documented — `Bytes` renders as a number array (CBOR keeps a byte string), and a non-negative `Int` reads back as `UInt`. The storage encoding is untouched: the block table's entries plus vocabulary ids remain the representation at rest (ADR-0057).
+`match` per direction: `Serialize`/`Deserialize` for `Variant` ride the same `schema-serde` feature. `Deserialize` goes through `deserialize_any`, so the format must be self-describing (JSON, CBOR — not bincode); in JSON two collapses are unavoidable and documented — `Bytes` renders as a number array (CBOR keeps a byte string), and a non-negative `Int` reads back as `UInt`. The storage encoding is untouched: the block table's entries plus vocabulary ids remain the representation at rest (ADR-0057).
 - `Bytes` is the **opaque member** of the vocabulary: the store
 interprets nothing — tag and total length only; content and its meaning belong to the application. Opaque means the CONTENT: the frame's `[len]` prefix is payload delimiting (the encoding layer's job — how multi-field payloads are sliced), not interpretation; `String` carries the same header. It is the standard escape hatch for extension types: a new encoding starts life as Bytes, and promoting it to a first-class type later is an additive change. The field name carries the semantics the tag deliberately does not (`embed_v1`, `attrs_cbor`).
 - Unknown names are **normal input** here (external data, MQ payloads);
@@ -677,7 +679,7 @@ mudra's lifecycle fields `opened_at`/`closed_at`/`deleted_at` all use it, and re
 - Flags → `u8` 0/1, not `bool` (no payload `Option` in the wire;
 2..=255 stays free for future states).
 
-The cost is semantic overload: `""` cannot distinguish "explicitly cleared" from "never set". When a field genuinely needs that third state, the answer is **not** a nullable wrapper but an explicit enum (`Unset | Cleared | Set(v)`) — one extra tag byte, and the reader stops guessing. `DynamicValue::Null` is already this shape on the dynamic segment: Null is a variant of the open vocabulary, not an `Option` wrapper.
+The cost is semantic overload: `""` cannot distinguish "explicitly cleared" from "never set". When a field genuinely needs that third state, the answer is **not** a nullable wrapper but an explicit enum (`Unset | Cleared | Set(v)`) — one extra tag byte, and the reader stops guessing. `Variant::Null` is already this shape on the dynamic segment: Null is a variant of the open vocabulary, not an `Option` wrapper.
 
 Rule of thumb: if the field's empty state coincides with the type's identity element, use the sentinel; if "cleared" and "never set" must differ, declare a state enum — do not encode state in sentinels.
 
@@ -1069,7 +1071,7 @@ The text side stops at tokens too. `okm-ngram` supplies what is library work rat
 
 ## Homogeneous lists: `Vector<T>`
 
-The plurality taxonomy (ADR-0015 §4) has a fourth member beside the two relation carriers and the heterogeneous `DynamicValue::Array`: the **typed homogeneous list**. `Vector<f32>` declares a list of floats, `Vector<String>` a list of strings — the element type is schema, the length is data.
+The plurality taxonomy (ADR-0015 §4) has a fourth member beside the two relation carriers and the heterogeneous `Variant::Array`: the **typed homogeneous list**. `Vector<f32>` declares a list of floats, `Vector<String>` a list of strings — the element type is schema, the length is data.
 
 Storage is a **variable-length cold TLV frame** (the same placement as `String`): payload = `[count u32 BE]` plus the elements. Homogeneity is the value — a fixed-width scalar element is **bare V** (zero per-element overhead; a 384-dimension f32 embedding is 1.5 KB, against roughly 10 bytes per element for a heterogeneous array), and a dynamic-width element (`String`) is **LV** per element.
 
@@ -1086,7 +1088,7 @@ pub struct Doc {
 
 The length is data, not schema: swapping embedding models (384 → 768 dimensions) is just a different frame, with no wire migration. When the application does know the expected length (a contract-fixed embedding dimension), `#[ok_len(384)]` adds an encode-time check — the write boundary is where the promise is enforced; decode does not check (bypassing the decoder is the reader's own problem — raw frame bytes are as opaque as an unrendered image). The same contract is exported to dynamic readers (`FieldSchema::expect_len`) and enforced consistently on the Python side. It is an application contract, never a format constraint.
 
-Elements are **pure values** — the identity line (in the many-to-many section above) keeps a `Vector` out of the relation carriers: a scalar has no key, and a key reference to it is a category error. One-to-many → `Refs`; many-to-many → a relation table; an ordered list of values → `Vector`; a heterogeneous dynamic list → `DynamicValue::Array` (fixed face 0x01). `to_value` lifts a vector to `DynamicValue::Array` — the dynamic layer has no vector type, a vector is a storage-layer format. A multi-dimensional shape is application interpretation (a flat sequence read row-major); nothing about it is stored on the wire.
+Elements are **pure values** — the identity line (in the many-to-many section above) keeps a `Vector` out of the relation carriers: a scalar has no key, and a key reference to it is a category error. One-to-many → `Refs`; many-to-many → a relation table; an ordered list of values → `Vector`; a heterogeneous dynamic list → `Variant::Array` (fixed face 0x01). `to_value` lifts a vector to `Variant::Array` — the dynamic layer has no vector type, a vector is a storage-layer format. A multi-dimensional shape is application interpretation (a flat sequence read row-major); nothing about it is stored on the wire.
 
 The consumer side (okm-vector) layers search on top: an exact contiguous scan (the small-scale path, and the recall reference), an in-memory HNSW over quantized codes (int8 cosine or product-quantization codes), and shard-organized handles — one snapshot per shard under fixed face 0x0A, a cache, droppable at any time. The graph yields code-level distances; re-scoring against the stored f32 values is the caller's job. Storage stays byte-opaque: the corpus is still just those frame bytes.
 

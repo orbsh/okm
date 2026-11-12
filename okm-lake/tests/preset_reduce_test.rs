@@ -26,7 +26,7 @@ use okm_core::{Document, DocumentEncode, KeyEncode, Quant, Reduce, ReduceCodec, 
 fn doc_of<S, K, R>(
     col: &okm_core::Collection<S, K, R>,
     key: &K,
-) -> okm_core::error::Result<Option<std::collections::BTreeMap<String, okm_value::DynamicValue>>>
+) -> okm_core::error::Result<Option<std::collections::BTreeMap<String, okm_value::Variant>>>
 where
     S: okm_core::VirtualStorage,
     K: okm_core::KeyEncode,
@@ -41,7 +41,7 @@ where
             .merged(seg.unwrap_or_default()),
     };
     match doc {
-        okm_value::DynamicValue::Obj(map) => Ok(Some(map)),
+        okm_value::Variant::Map(map) => Ok(Some(map)),
         other => Err(okm_core::error::Error::Corrupt {
             what: format!(
                 "a document composes to an object, got {}",
@@ -364,7 +364,7 @@ fn the_reduce_table_exports_as_its_own_file() {
 /// call folds ONCE — the fold hangs off the row arm, not off the map's size.
 #[test]
 fn a_merge_folds_the_ledger_once_and_only_through_the_row_arm() {
-    use okm_value::DynamicValue;
+    use okm_value::Variant;
     use std::collections::BTreeMap;
 
     let t = <Post as Document>::collection(TestStore::slatedb_mem());
@@ -395,8 +395,8 @@ fn a_merge_folds_the_ledger_once_and_only_through_the_row_arm() {
     // Segment-only patch: the open half gains a name, the row (and the ledger)
     // is not touched.
     let mut open = BTreeMap::new();
-    open.insert("note".to_string(), DynamicValue::Str("x".into()));
-    t.put(&k, &DynamicValue::Obj(open)).unwrap();
+    open.insert("note".to_string(), Variant::Str("x".into()));
+    t.put(&k, &Variant::Map(open)).unwrap();
     assert_eq!(
         count(t.store()),
         Some(1),
@@ -404,15 +404,15 @@ fn a_merge_folds_the_ledger_once_and_only_through_the_row_arm() {
     );
     assert_eq!(
         doc_of(&t, &k).unwrap().unwrap().get("note"),
-        Some(&DynamicValue::Str("x".into()))
+        Some(&Variant::Str("x".into()))
     );
 
     // Both halves in ONE call: the row arm folds (the usual unfold-then-fold
     // pair), the segment arm does not — one fold, not one per arm.
     let mut both = BTreeMap::new();
-    both.insert("views".to_string(), DynamicValue::U64(7));
-    both.insert("tag".to_string(), DynamicValue::Str("y".into()));
-    t.put(&k, &DynamicValue::Obj(both)).unwrap();
+    both.insert("views".to_string(), Variant::U64(7));
+    both.insert("tag".to_string(), Variant::Str("y".into()));
+    t.put(&k, &Variant::Map(both)).unwrap();
     assert_eq!(
         count(t.store()),
         Some(1),
@@ -425,6 +425,6 @@ fn a_merge_folds_the_ledger_once_and_only_through_the_row_arm() {
     );
     assert_eq!(
         doc_of(&t, &k).unwrap().unwrap().get("tag"),
-        Some(&DynamicValue::Str("y".into()))
+        Some(&Variant::Str("y".into()))
     );
 }

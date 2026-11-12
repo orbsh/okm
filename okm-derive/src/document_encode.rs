@@ -1594,7 +1594,7 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> syn::Result<TS2> {
     let (agg_impls, agg_hook) = emit_reduces(schema)?;
     let (sub_statics, sub_hook) = emit_subscribe(schema)?;
     // ---- document <-> map bridge (ADR-0012): per-field lift into
-    // DynamicValue and back. The derive owns the concrete Rust types, so
+    // Variant and back. The derive owns the concrete Rust types, so
     // each arm emits the exact cast. `from_map` has ONE defaulting rule and it
     // is about ABSENCE: a name the map does not carry takes `#[ok_default]` /
     // `Default` (the append-only evolution rule, same as the payload decoder).
@@ -1622,7 +1622,7 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> syn::Result<TS2> {
             syn::Error::new_spanned(id, format!("bridge: bad type `{}`: {e}", ty_str))
         })?;
         // Signed integers: widen to i64, store as UInt of the two's-
-        // complement bits? No — DynamicValue has no signed variant yet;
+        // complement bits? No — the map view has no signed kind yet;
         // negative values round-trip through the typed path, and the map
         // view lifts only unsigned/Str/Bytes/Bool for now. Documented.
         let is_signed = ty_str.starts_with('i');
@@ -1691,11 +1691,11 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> syn::Result<TS2> {
         if is_signed {
             // Signed integers lift as Int (two's complement preserved).
             to_map_arms.extend(quote! {
-                out.insert(#name.to_string(), ::okm_core::okm_value::DynamicValue::I64(self.#id as i64));
+                out.insert(#name.to_string(), ::okm_core::okm_value::Variant::I64(self.#id as i64));
             });
             from_map_arms.extend(quote! {
                 #id: match map.get(#name) {
-                    Some(::okm_core::okm_value::DynamicValue::I64(v)) => {
+                    Some(::okm_core::okm_value::Variant::I64(v)) => {
                         <#t as ::core::convert::TryFrom<i64>>::try_from(*v).map_err(|_| {
                             ::okm_core::error::Error::bad_value(#name, stringify!(#t), *v)
                         })?
@@ -1708,11 +1708,11 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> syn::Result<TS2> {
             });
         } else if is_bool {
             to_map_arms.extend(quote! {
-                out.insert(#name.to_string(), ::okm_core::okm_value::DynamicValue::Bool(self.#id));
+                out.insert(#name.to_string(), ::okm_core::okm_value::Variant::Bool(self.#id));
             });
             from_map_arms.extend(quote! {
                 #id: match map.get(#name) {
-                    Some(::okm_core::okm_value::DynamicValue::Bool(v)) => *v,
+                    Some(::okm_core::okm_value::Variant::Bool(v)) => *v,
                     None => #dflt,
                     Some(__okm_got) => {
                         return ::core::result::Result::Err(::okm_core::error::Error::kind_mismatch(#name, "Bool", __okm_got))
@@ -1721,11 +1721,11 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> syn::Result<TS2> {
             });
         } else if is_string {
             to_map_arms.extend(quote! {
-                out.insert(#name.to_string(), ::okm_core::okm_value::DynamicValue::Str(self.#id.clone()));
+                out.insert(#name.to_string(), ::okm_core::okm_value::Variant::Str(self.#id.clone()));
             });
             from_map_arms.extend(quote! {
                 #id: match map.get(#name) {
-                    Some(::okm_core::okm_value::DynamicValue::Str(v)) => v.clone(),
+                    Some(::okm_core::okm_value::Variant::Str(v)) => v.clone(),
                     None => #dflt,
                     Some(__okm_got) => {
                         return ::core::result::Result::Err(::okm_core::error::Error::kind_mismatch(#name, "Str", __okm_got))
@@ -1734,11 +1734,11 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> syn::Result<TS2> {
             });
         } else if is_bytes {
             to_map_arms.extend(quote! {
-                out.insert(#name.to_string(), ::okm_core::okm_value::DynamicValue::Bytes(self.#id.0.clone()));
+                out.insert(#name.to_string(), ::okm_core::okm_value::Variant::Bytes(self.#id.0.clone()));
             });
             from_map_arms.extend(quote! {
                 #id: match map.get(#name) {
-                    Some(::okm_core::okm_value::DynamicValue::Bytes(v)) => ::okm_core::Bytes(v.clone()),
+                    Some(::okm_core::okm_value::Variant::Bytes(v)) => ::okm_core::Bytes(v.clone()),
                     None => #dflt,
                     Some(__okm_got) => {
                         return ::core::result::Result::Err(::okm_core::error::Error::kind_mismatch(#name, "Bytes", __okm_got))
@@ -1747,11 +1747,11 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> syn::Result<TS2> {
             });
         } else if is_fixedbytes {
             to_map_arms.extend(quote! {
-                out.insert(#name.to_string(), ::okm_core::okm_value::DynamicValue::Bytes(self.#id.to_vec()));
+                out.insert(#name.to_string(), ::okm_core::okm_value::Variant::Bytes(self.#id.to_vec()));
             });
             from_map_arms.extend(quote! {
                 #id: match map.get(#name) {
-                    Some(::okm_core::okm_value::DynamicValue::Bytes(v)) => {
+                    Some(::okm_core::okm_value::Variant::Bytes(v)) => {
                         let __okm_len = v.len();
                         match <#t as ::core::convert::TryFrom<::std::vec::Vec<u8>>>::try_from(v.clone()) {
                             Ok(__okm_bytes) => __okm_bytes,
@@ -1776,11 +1776,11 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> syn::Result<TS2> {
             // The map view (and therefore an index over this field) sees the 16 raw bytes; the
             // text form belongs to the edge, not to the store.
             to_map_arms.extend(quote! {
-                out.insert(#name.to_string(), ::okm_core::okm_value::DynamicValue::Bytes(self.#id.as_bytes().to_vec()));
+                out.insert(#name.to_string(), ::okm_core::okm_value::Variant::Bytes(self.#id.as_bytes().to_vec()));
             });
             from_map_arms.extend(quote! {
                 #id: match map.get(#name) {
-                    Some(::okm_core::okm_value::DynamicValue::Bytes(v)) => match <[u8; 16]>::try_from(v.as_slice()) {
+                    Some(::okm_core::okm_value::Variant::Bytes(v)) => match <[u8; 16]>::try_from(v.as_slice()) {
                         Ok(__okm_raw) => <#t as ::core::convert::From<[u8; 16]>>::from(__okm_raw),
                         Err(_) => {
                             return ::core::result::Result::Err(::okm_core::error::Error::bad_value(
@@ -1799,11 +1799,11 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> syn::Result<TS2> {
         } else if is_varint {
             // VarInt<T>(pub T): lift the inner integer.
             to_map_arms.extend(quote! {
-                out.insert(#name.to_string(), ::okm_core::okm_value::DynamicValue::U64(self.#id.0 as u64));
+                out.insert(#name.to_string(), ::okm_core::okm_value::Variant::U64(self.#id.0 as u64));
             });
             from_map_arms.extend(quote! {
                 #id: match map.get(#name) {
-                    Some(::okm_core::okm_value::DynamicValue::U64(v)) => {
+                    Some(::okm_core::okm_value::Variant::U64(v)) => {
                         ::okm_core::VarInt::from_dyn(*v)
                     }
                     None => #dflt,
@@ -1833,8 +1833,8 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> syn::Result<TS2> {
             vocab_fields.push((id.clone(), id_ty.clone()));
             to_map_arms.extend(quote! {
                 out.insert(#name.to_string(), match self.#id.as_str() {
-                    Some(s) => ::okm_core::okm_value::DynamicValue::Str(s.to_string()),
-                    None => ::okm_core::okm_value::DynamicValue::U64(
+                    Some(s) => ::okm_core::okm_value::Variant::Str(s.to_string()),
+                    None => ::okm_core::okm_value::Variant::U64(
                         self.#id.id()
                             .map(|i| ::okm_core::Id::as_u128(i) as u64)
                             .unwrap_or(0)
@@ -1843,10 +1843,10 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> syn::Result<TS2> {
             });
             from_map_arms.extend(quote! {
                 #id: match map.get(#name) {
-                    Some(::okm_core::okm_value::DynamicValue::Str(v)) => {
+                    Some(::okm_core::okm_value::Variant::Str(v)) => {
                         ::okm_core::Vocab::<#id_ty>::of(v.clone())
                     }
-                    Some(::okm_core::okm_value::DynamicValue::U64(v)) => {
+                    Some(::okm_core::okm_value::Variant::U64(v)) => {
                         // The unresolved form `to_map` emits (an id without its
                         // label): narrowing checks the width, because a wrapped
                         // id would name another label.
@@ -1874,11 +1874,11 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> syn::Result<TS2> {
             // arithmetic is a consumer concern; the map bridge carries
             // the opaque fixed-width encoding.
             to_map_arms.extend(quote! {
-                out.insert(#name.to_string(), ::okm_core::okm_value::DynamicValue::Bytes(self.#id.encode_payload()));
+                out.insert(#name.to_string(), ::okm_core::okm_value::Variant::Bytes(self.#id.encode_payload()));
             });
             from_map_arms.extend(quote! {
                 #id: match map.get(#name) {
-                    Some(::okm_core::okm_value::DynamicValue::Bytes(b)) => {
+                    Some(::okm_core::okm_value::Variant::Bytes(b)) => {
                         ::okm_core::Vector::decode_payload(b)
                     }
                     None => #dflt,
@@ -1890,11 +1890,11 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> syn::Result<TS2> {
         } else if is_offset {
             // Offset(pub i64): the absolute value IS the semantics.
             to_map_arms.extend(quote! {
-                out.insert(#name.to_string(), ::okm_core::okm_value::DynamicValue::I64(self.#id.0));
+                out.insert(#name.to_string(), ::okm_core::okm_value::Variant::I64(self.#id.0));
             });
             from_map_arms.extend(quote! {
                 #id: match map.get(#name) {
-                    Some(::okm_core::okm_value::DynamicValue::I64(v)) => #t(*v),
+                    Some(::okm_core::okm_value::Variant::I64(v)) => #t(*v),
                     None => #dflt,
                     Some(__okm_got) => {
                         return ::core::result::Result::Err(::okm_core::error::Error::kind_mismatch(#name, "Int", __okm_got))
@@ -1904,11 +1904,11 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> syn::Result<TS2> {
         } else if is_f64 || ty_str.starts_with("Quant <") {
             // Quant<f64, P> stores an i64 wire but the Rust field is f64.
             to_map_arms.extend(quote! {
-                out.insert(#name.to_string(), ::okm_core::okm_value::DynamicValue::F64(self.#id.0));
+                out.insert(#name.to_string(), ::okm_core::okm_value::Variant::F64(self.#id.0));
             });
             from_map_arms.extend(quote! {
                 #id: match map.get(#name) {
-                    Some(::okm_core::okm_value::DynamicValue::F64(v)) => ::okm_core::Quant::from_dyn(*v),
+                    Some(::okm_core::okm_value::Variant::F64(v)) => ::okm_core::Quant::from_dyn(*v),
                     None => #dflt,
                     Some(__okm_got) => {
                         return ::core::result::Result::Err(::okm_core::error::Error::kind_mismatch(#name, "F64", __okm_got))
@@ -1931,7 +1931,7 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> syn::Result<TS2> {
                 )
             })?;
             to_map_arms.extend(quote! {
-                out.insert(#name.to_string(), ::okm_core::okm_value::DynamicValue::U64(
+                out.insert(#name.to_string(), ::okm_core::okm_value::Variant::U64(
                     (!self.#id.0) as u64
                 ));
             });
@@ -1939,7 +1939,7 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> syn::Result<TS2> {
                 #id: match map.get(#name) {
                     // The map carries the LOGICAL value; Reverse's wire flips
                     // bits — construct the wrapper by flipping back.
-                    Some(::okm_core::okm_value::DynamicValue::U64(v)) => {
+                    Some(::okm_core::okm_value::Variant::U64(v)) => {
                         let logical = <#inner_ty as ::core::convert::TryFrom<u64>>::try_from(*v)
                             .map_err(|_| ::okm_core::error::Error::bad_value(
                                 #name,
@@ -1960,11 +1960,11 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> syn::Result<TS2> {
             // this map — readers who want it call the child collection.
             let kt = embed_k.clone().expect("ref: key type");
             to_map_arms.extend(quote! {
-                out.insert(#name.to_string(), ::okm_core::okm_value::DynamicValue::Bytes(self.#id.key.encode()));
+                out.insert(#name.to_string(), ::okm_core::okm_value::Variant::Bytes(self.#id.key.encode()));
             });
             from_map_arms.extend(quote! {
                 #id: match map.get(#name) {
-                    Some(::okm_core::okm_value::DynamicValue::Bytes(b)) => {
+                    Some(::okm_core::okm_value::Variant::Bytes(b)) => {
                         ::okm_core::Ref {
                             key: <#kt as ::okm_core::KeyEncode>::decode(b),
                             value: None,
@@ -1986,19 +1986,19 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> syn::Result<TS2> {
             // Refs field: map view = Array of child key bytes.
             let kt = embed_k.clone().expect("list: key type");
             to_map_arms.extend(quote! {
-                out.insert(#name.to_string(), ::okm_core::okm_value::DynamicValue::Array(
-                    self.#id.keys.iter().map(|k| ::okm_core::okm_value::DynamicValue::Bytes(k.encode())).collect()
+                out.insert(#name.to_string(), ::okm_core::okm_value::Variant::Array(
+                    self.#id.keys.iter().map(|k| ::okm_core::okm_value::Variant::Bytes(k.encode())).collect()
                 ));
             });
             from_map_arms.extend(quote! {
                 #id: match map.get(#name) {
-                    Some(::okm_core::okm_value::DynamicValue::Array(items)) => {
+                    Some(::okm_core::okm_value::Variant::Array(items)) => {
                         ::okm_core::Refs {
                             keys: {
                                 let mut __okm_keys = ::std::vec::Vec::with_capacity(items.len());
                                 for __okm_item in items.iter() {
                                     match __okm_item {
-                                        ::okm_core::okm_value::DynamicValue::Bytes(b) =>
+                                        ::okm_core::okm_value::Variant::Bytes(b) =>
                                             __okm_keys.push(
                                                 <#kt as ::okm_core::KeyEncode>::decode(b)
                                             ),
@@ -2027,11 +2027,11 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> syn::Result<TS2> {
         } else {
             // Unsigned integers (u8/u16/u32/u64): the common hot path.
             to_map_arms.extend(quote! {
-                out.insert(#name.to_string(), ::okm_core::okm_value::DynamicValue::U64(self.#id as u64));
+                out.insert(#name.to_string(), ::okm_core::okm_value::Variant::U64(self.#id as u64));
             });
             from_map_arms.extend(quote! {
                 #id: match map.get(#name) {
-                    Some(::okm_core::okm_value::DynamicValue::U64(v)) => {
+                    Some(::okm_core::okm_value::Variant::U64(v)) => {
                         <#t as ::core::convert::TryFrom<u64>>::try_from(*v).map_err(|_| {
                             ::okm_core::error::Error::bad_value(#name, stringify!(#t), *v)
                         })?
@@ -2300,19 +2300,19 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> syn::Result<TS2> {
                 #decode_body
                 Self { #(#names),* }
             }
-            /// document -> map: every declared field lifted into DynamicValue
+            /// document -> map: every declared field lifted into Variant
             /// (ADR-0012 document-map bridge).
-            fn to_map(&self) -> ::std::collections::BTreeMap<String, ::okm_core::okm_value::DynamicValue> {
+            fn to_map(&self) -> ::std::collections::BTreeMap<String, ::okm_core::okm_value::Variant> {
                 let mut out = ::std::collections::BTreeMap::new();
                 #to_map_arms
                 out
             }
             /// map -> document, fallibly: matched fields assigned from
-            /// DynamicValue. An ABSENT name takes `#[ok_default]`/Default (the
+            /// Variant. An ABSENT name takes `#[ok_default]`/Default (the
             /// same evolution rule as the payload decoder); a name that IS
             /// present with the wrong kind — or a value that cannot be
             /// represented — comes back as an `okm_core::Error`.
-            fn try_from_map(map: &::std::collections::BTreeMap<String, ::okm_core::okm_value::DynamicValue>) -> ::okm_core::error::Result<Self> {
+            fn try_from_map(map: &::std::collections::BTreeMap<String, ::okm_core::okm_value::Variant>) -> ::okm_core::error::Result<Self> {
                 ::core::result::Result::Ok(Self {
                     #from_map_arms
                 })

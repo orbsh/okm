@@ -111,8 +111,8 @@ fn value_to_steel(v: &Value) -> SteelVal {
                 .collect::<im_rc::Vector<SteelVal>>(),
         ))),
         // Nested composites (okm 0c2a354, same mapping as okm-python's
-        // map_to_dict): Obj → hash?, Array → vector, recursing.
-        Value::Obj(fields) => value_map_to_steel(fields),
+        // map_to_dict): Map → hash?, Array → vector, recursing.
+        Value::Map(fields) => value_map_to_steel(fields),
         Value::Array(items) => {
             SteelVal::VectorV(steel::rvals::SteelVector::from(steel::gc::Gc::new(
                 items

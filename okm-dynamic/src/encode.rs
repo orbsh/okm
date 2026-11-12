@@ -161,7 +161,7 @@ fn encode_field(
         | Value::F64(_)
         | Value::Bool(_)
         | Value::Null
-        | Value::Obj(_)
+        | Value::Map(_)
         | Value::Array(_) => {
             return Err(CodecError::TypeMismatch {
                 field: f.name.clone(),

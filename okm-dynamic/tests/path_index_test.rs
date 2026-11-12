@@ -92,7 +92,7 @@ fn obj(pairs: &[(&str, Value)]) -> Value {
     for (k, v) in pairs {
         m.insert((*k).to_string(), v.clone());
     }
-    Value::Obj(m)
+    Value::Map(m)
 }
 
 fn fields(author: Option<&str>, tags: &[&str], rank: Option<Value>, refs: &[&str]) -> ValueMap {

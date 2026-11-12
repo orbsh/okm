@@ -6,7 +6,7 @@
 
 `[partition?][ns 2B BE][0x01][pkey]` → 一个 obj 一条 entry，值就是整段。空 map 不写 entry（是删除，不是写一张零条目的表），所以「没有」和「空」是同一种状态（`document.rs::slot1_into` / `slot1_map`）。
 
-`okm_core::model::obj_segment` 独占两个方向（`encode` / `decode`）；`obj_dynamic` 只保留货币类型（`DynamicValue`、`DynamicField`、`NameResolver`），它的 `decode_named` / `decode_variants` 是薄委托。所有写者都走 `encode`：`document.rs::slot1_into`、`model/graph.rs`（边属性）、`okm_dynamic::graph`、`okm_dynamic::plan_fields`。
+`okm_core::model::obj_segment` 独占两个方向（`encode` / `decode`）；`obj_dynamic` 只保留货币类型（`Variant`、`DynamicField`、`NameResolver`），它的 `decode_named` / `decode_variants` 是薄委托。所有写者都走 `encode`：`document.rs::slot1_into`、`model/graph.rs`（边属性）、`okm_dynamic::graph`、`okm_dynamic::plan_fields`。
 
 ## 值：三个区
 
@@ -110,7 +110,7 @@ id 车道在 `< 0xFF` 时是 `u8`，否则 `0xFF` + `u16 BE`。`0` 表示「没�
 
 ## 跨 serde 边界
 
-块表永远到不了 serde：`DynamicValue` 的 `Serialize`/`Deserialize`（`schema-serde` feature）看到的是 `decode` 产出的 owned 树。调用方付的是三笔相加——段解码成树、serde 遍历树、目标格式本身——而布局的局部性收益在解码那一步就结束了：serde 走的是 map 节点和指针，不是这张表。
+块表永远到不了 serde：`Variant` 的 `Serialize`/`Deserialize`（`schema-serde` feature）看到的是 `decode` 产出的 owned 树。调用方付的是三笔相加——段解码成树、serde 遍历树、目标格式本身——而布局的局部性收益在解码那一步就结束了：serde 走的是 map 节点和指针，不是这张表。
 
 同一批形状上的实测（release，JSON 走 `serde_json`；这里的 `decode` 含「把段变成调用方的 name-keyed map」，也就是 serde 边界需要的那一步）：
 

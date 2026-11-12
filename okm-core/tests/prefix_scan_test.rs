@@ -141,7 +141,7 @@ fn prefix_scan_is_lazy_reversible_and_pageable() {
 
 #[test]
 fn document_mode_reaches_both_slots_under_a_prefix() {
-    use okm_value::DynamicValue;
+    use okm_value::Variant;
 
     let col = seeded();
     // A document that exists ONLY as its dynamic segment (ADR-0035), inside
@@ -152,8 +152,8 @@ fn document_mode_reaches_both_slots_under_a_prefix() {
         device: 9,
     };
     let mut patch = std::collections::BTreeMap::new();
-    patch.insert("note".to_string(), DynamicValue::Str("no row".into()));
-    col.put(&seg_only, &DynamicValue::Obj(patch)).unwrap();
+    patch.insert("note".to_string(), Variant::Str("no row".into()));
+    col.put(&seg_only, &Variant::Map(patch)).unwrap();
 
     let probe = DeviceKey::prefix().org(1).finish();
     let rows: Vec<DeviceKey> = col.scan_keys(&probe).map(|r| r.unwrap()).collect();

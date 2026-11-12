@@ -24,12 +24,12 @@
 
 use thiserror::Error;
 
-use okm_value::{DynamicValue, dyn_kind};
+use okm_value::{Variant, dyn_kind};
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 #[non_exhaustive]
 pub enum Error {
-    /// A name that matches a DECLARED field carries a `DynamicValue` of another
+    /// A name that matches a DECLARED field carries a `Variant` of another
     /// kind. Absence is NOT this error: an absent name takes the declared
     /// default (the append-only evolution rule).
     #[error("from_map: field `{field}` declares {want}; the map carries {got}")]
@@ -143,7 +143,7 @@ pub enum Error {
 
 impl Error {
     /// A present name whose kind does not match the declaration.
-    pub fn kind_mismatch(field: impl Into<String>, want: &'static str, got: &DynamicValue) -> Self {
+    pub fn kind_mismatch(field: impl Into<String>, want: &'static str, got: &Variant) -> Self {
         Self::KindMismatch {
             field: field.into(),
             want,

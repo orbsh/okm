@@ -17,7 +17,7 @@ use okm_core::changelog::replay::{reconcile, replay_table};
 use okm_core::changelog::{ChangelogConfig, ChangelogStore};
 use okm_core::{Collection, DocumentEncode, KeyEncode, Vocab};
 use okm_dynamic::DynamicCollection;
-use okm_value::DynamicValue;
+use okm_value::Variant;
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
 pub struct K {
@@ -193,8 +193,8 @@ fn a_dynamic_field_survives_the_replay() {
     )
     .expect("put");
     let mut extra = std::collections::BTreeMap::new();
-    extra.insert("colour".to_string(), DynamicValue::Str("red".to_string()));
-    c.put(&K { id: 1 }, &DynamicValue::Obj(extra))
+    extra.insert("colour".to_string(), Variant::Str("red".to_string()));
+    c.put(&K { id: 1 }, &Variant::Map(extra))
         .expect("a field the declaration does not have");
     // A segment is readable once it is SEALED, and a clean shutdown is what seals it:
     // `Drop for Changelog` flushes the pending frames and renames the tail into a
@@ -248,8 +248,8 @@ fn a_dynamic_only_document_survives_replay_and_reconciliation() {
     ))
     .expect("assemble");
     let mut extra = std::collections::BTreeMap::new();
-    extra.insert("colour".to_string(), DynamicValue::Str("blue".to_string()));
-    c.put(&K { id: 7 }, &DynamicValue::Obj(extra))
+    extra.insert("colour".to_string(), Variant::Str("blue".to_string()));
+    c.put(&K { id: 7 }, &Variant::Map(extra))
         .expect("a segment with no row");
     drop(c);
 

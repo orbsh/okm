@@ -765,9 +765,9 @@ encoding, one derive family. No separate document storage mode.
       for the typed decoder, where a mismatched value tree is a caller
       bug).
 - [x] `okm-dynamic::Value` gains the dynamic-segment value types
-      (I64/F64/Bool/Null added; Array/Obj stay dynamic-segment-only —
+      (I64/F64/Bool/Null added; Array/Map stay dynamic-segment-only —
       the typed static region rejects them until schema kinds land).
-      Nested obj lives in okm-core's `DynamicValue` (wire tag 7), which
+      Nested obj lives in okm-core's `Variant` (wire tag 7), which
       is the only value tree the dynamic segment needs.
 - [x] Vocabulary cache is **bidirectional**: `VocabCache { by_id: HashMap<u16,
       String>, by_name: HashMap<String, u16>, next_id: u16 }` under one
@@ -973,7 +973,7 @@ Document-oriented naming, one sweep before crates.io:
   name retired — dynamic fields ARE the document's fields).
 - Public concept: **document** (OKM is document-oriented; declared static
   fields embed into the dynamic whole). "obj"/"object" retired from docs;
-  `DynamicValue` stays (value-type name, unambiguous).
+  `Variant` stays (value-type name, unambiguous).
 - Record considered and rejected: record-oriented storage is the fixed-
   schema lineage the model is moving away from.
 - Aura mq.rs migrated; bindings follow (they reference the codec only).
@@ -985,17 +985,17 @@ the open question and the assessment:
 
 - **What**: `Collection::to_record_batch` currently exports declared
   fields only (key + hot/cold payload columns from `FieldDesc`). The
-  dynamic segment (slot 1, name-keyed `DynamicValue` tree with nested
-  `Obj`/`Array`) would become one extra `Variant`-typed column —
+  dynamic segment (slot 1, name-keyed `Variant` tree with nested
+  `Map`/`Array`) would become one extra `Variant`-typed column —
   per-row, schema-free, queryable by Variant-aware engines (DuckDB
   1.4+, Spark 4, Snowflake natively).
 - **Feasibility**: parquet crate 60.0 ships `parquet-variant` /
   `parquet-variant-json` / `parquet-variant-compute`; OKM pins parquet
   54 — the Variant feature requires the 60 line, so this lands as a
   minor breaking bump of the optional `parquet` feature. Mapping is
-  mechanical: `DynamicValue` UInt/Int/F64/Bool/Str → Variant scalars,
+  mechanical: `Variant` UInt/Int/F64/Bool/Str → Variant scalars,
   Bytes → Variant binary, Null → Variant null, Array → Variant list,
-  Obj → Variant object (field names straight through — the vocabulary
+  `Map` → Parquet Variant object (field names straight through — the vocabulary
   has already resolved ids → names at read time).
 - **Why it is reasonable**: Variant is precisely the industry answer to
   "schema-on-read columns inside a schema-on-write table" — the same
@@ -1122,7 +1122,7 @@ The full plural taxonomy (identity axis x homogeneous/heterogeneous):
       Multi-dim shape is application-layer (row-major over the flat
       sequence); okm-vector migrated onto it. Elements are pure
       values — NOT a relation carrier.
-- [x] **DynamicValue::Array** — heterogeneous list (shipped with the
+- [x] **Variant::Array** — heterogeneous list (shipped with the
       dynamic segment); more general than Vector, per-element type
       tags, slightly higher overhead.
 - [x] **Set** — deduplicated element membership. CLOSED 2026-09-21
@@ -1278,10 +1278,10 @@ offsets).
       lens that are usually 1-2. Now `[tag][len varint]` via the shared
       wire codec (`wrappers/wire.rs` — put_len/take_len, the P1 encoding;
       one implementation, no second codec). Frame headers drop from 5 to
-      2-3 bytes on small values; Array element frames and nested Obj frames
+      2-3 bytes on small values; Array element frames and nested Map frames
       inherit the saving. Declared cold-segment frames
       (`[tag][len u32]`, ADR-0004) were converted the same way in the same
-      sweep — one wire discipline for every TLV length. `DynamicValue::UInt`
+      sweep — one wire discipline for every TLV length. `Variant::UInt`
       minimal-width kept as is.
 
 Execution order was P3 -> P3.5 -> P1 -> P2: P1/P2 produce new wire
@@ -1546,7 +1546,7 @@ every write is ONE engine commit.
 | `get(key) -> Option<R>` | static segment (typed) | — | unchanged |
 | `put(key, &R)` | static segment + faces + ledgers | 1 | unchanged |
 | `delete(key, &R)` | static segment + faces + ledgers | 1 | unchanged |
-| `view(key) -> Option<BTreeMap<String, DynamicValue>>` | merged projection of both slots | — | `get_document` + `get_fields` |
+| `view(key) -> Option<BTreeMap<String, Variant>>` | merged projection of both slots | — | `get_document` + `get_fields` |
 | `merge(key, &map)` | declared names → row RMW; dynamic names → per-name overwrite of slot 1 | 1 | `put_document` (merge half) + `put_fields` |
 | `replace(key, &map)` | row rebuilt from the map (absent declared fields take defaults); slot 1 = exactly the map's dynamic names | 1 | — (stronger than `put_document`) |
 | `purge(key) -> bool` | both slots removed | 1 | `delete_document` + `delete_fields` |
@@ -2861,7 +2861,7 @@ outright — its entry says why).
       the snapshots. `a_baseline_makes_a_mid_life_log_complete` locks the order
       (delta 0, baseline 1, delta 2) and the idempotence.
 - [x] **The drain became core; the formats left.** One value vocabulary first: core's
-      `DynamicValue` absorbed `okm_dynamic::Value`'s width-typed integers
+      `Variant` absorbed `okm_dynamic::Value`'s width-typed integers
       (`U8/U16/U32/U64/I64`; the dynamic frame coding stays widthless, so a frame
       reads back as `U64` and a typed field's width is its declaration's), and
       `Value`/`ValueMap`/`CodecError` are now core's with `okm-dynamic` re-exporting
@@ -3088,7 +3088,7 @@ breadth-first block table and no magic. Every item below is checked.
       attributes, `okm_dynamic::graph` and `okm_dynamic::plan_fields` — every place that
       builds a segment body goes through `obj_segment::encode`.
 - [x] **Tests**: `obj_segment`'s own module covers a flat map (with the byte layout: head at
-      offset 0), nested `Obj`/`Array`, a 4 KiB value among small ones, an unknown type skipped
+      offset 0), nested `Map`/`Array`, a 4 KiB value among small ones, an unknown type skipped
       rather than fatal, and a table whose lengths do not sum inside `values` (refused);
       `obj_dynamic` covers ids past the `0xFF` escape and the nesting cap.
 - [x] **Docs**: the mechanism page `docs/internals/dynamic-segment.md` (both languages — grammar,
@@ -3315,7 +3315,7 @@ Decided and partly landed: layout v3 folds the length into the type byte (writer
 - [x] **Reader**: `decode` branches on the head only — bit 7 means no length, len code 7 means a `take_len` varint follows, otherwise the code is the length. The arithmetic is unchanged (leaf lengths sum to the value area, `blocks = composites + 1`, `toc_len` inside the file) and an unknown type stays skippable.
 - [x] **Stamp: none, and no migration.** Ruled 2026-11-11: no `#[ok_layout]` bump and no stamp of the segment's own — the declared payload shape does not move. The cutover is a wipe, and it has to cover the changelog directories too: a log is built to outlive generations and picks each segment's declaration by its own `layout_version` (ADR-0056 §5/§6), while the segment layout does not ride that number — so a log carried across this change would hand v2 segment bytes to a v3 decoder.
 - [x] **Crate, first half**: `okm-value` exists and owns the vocabulary — `Id`, `Names` (the four-method store door: `scan` / `name_id` / `id_name` / `allocate`), `Vocabulary` (`Vec` for `id -> label`, keyed fast hasher for `label -> id`, the pending window), and the per-handle lifetime. `okm-core` keeps the key layout (`obj_vocab::Faces`), one field on `Collection`/`Graph`, and one `pending_in` + `landed` call per commit; `VocabId` moved here as `okm_value::Id`. Measured: SipHash 10–19 ns, this hasher 5–12 ns per lookup at 100–1 000 labels; a trie (20–63 ns) and a sorted `Vec` (54–69 ns) both lose.
-- [x] **Crate, second half**: `okm-value` holds `DynamicValue`, `ObjValueType`, `DynamicField`, `ValueMap`, `CodecError`, `encode` / `decode` and the segment's length codec, and the three core modules that carried them (`obj_dynamic`, `obj_segment`, `wrappers/obj_value`) are gone rather than aliased. Two seams needed a shape: the encoder's resolver is a closure whose error type rides out unchanged (`okm_value::Error<E>` = `Corrupt` | `Names(E)`), and generated code reaches the crate as `::okm_core::okm_value::…`, so a user of `okm-core` still depends on one crate, not two.
+- [x] **Crate, second half**: `okm-value` holds `Variant`, `ObjValueType`, `DynamicField`, `ValueMap`, `CodecError`, `encode` / `decode` and the segment's length codec, and the three core modules that carried them (`obj_dynamic`, `obj_segment`, `wrappers/obj_value`) are gone rather than aliased. Two seams needed a shape: the encoder's resolver is a closure whose error type rides out unchanged (`okm_value::Error<E>` = `Corrupt` | `Names(E)`), and generated code reaches the crate as `::okm_core::okm_value::…`, so a user of `okm-core` still depends on one crate, not two.
 - [x] **The `Vocab<N>` caches live on the handle.** The derive generates `Document::Vocabs` — one `Vocabulary<N>` per declared categorical field, `()` for a table with none — and `Collection` keeps it in a private field beside the field-name mirror. The intern and deref hooks take it as an argument instead of building an empty one per call, so a label costs one probe per collection rather than one per document, and `commit`'s funnel is where pending ids are trusted (`VocabSet::landed_all`). Proven by counting store reads on the vocabulary faces: the second write of a known label probes nothing, a fresh handle over the same store probes again.
 - [x] **One ns holds one table, checked on the store.** `ensure_layout` records `table` → `#[ok_name]` in the meta row (`[ns][0x0F]`, ADR-0043 decision 7) and refuses a different name already recorded there (`TableNameTaken`, naming both tables and the ns). This is the half the compile-time claim cannot be: the derive sees one module, so a table declared in another module or crate reaches the store and nothing else. Typed and dynamic sides both check; unnamed declarations write and check nothing. Tested in `meta_test` (two shared-ns declarations, one refused; the same table attaching twice; an unnamed table recording no name).
 - [x] **The ns is required, and one ns is one table.** `#[ok_ns(N)]` is no longer optional: a `DocumentEncode` without it does not compile, and `Document::NS` became `u16` (the `Option` and both constant defaults are gone, so "no ns" is unrepresentable). A duplicate is a build error too: the derive emits `struct okm_ns_<N>_is_unique;` beside the declaration, so a second table claiming the same ns in one module fails with E0428 naming the ns. The deliberate case is spelled `#[ok_shared_ns]` — 13 declarations use it today, all generation/compatibility pairs.
@@ -3341,13 +3341,13 @@ unset) and was verified against a local rustfs.
 
 ## 2026-11-12 — a point read answers parts, not one assembled map
 
-- [x] **Point reads take a `PointParts` tuple, like scans take `Parts`.** `Collection::get::<P>(&key)` answers `P::Output`, where the parts are `parts::Row` (slot 0, `Option<R>`) and `parts::Value` (slot 1 as `DynamicValue::Obj`, `Option<DynamicValue>`); a one-element tuple collapses to its part's own output, so `get::<(parts::Row,)>` IS `get_row`. Absence is per slot — a dynamic-only document answers `(None, Some(object))` and a missing key `(None, None)`, because a document is the PAIR of slots (ADR-0035). `Collection::fetch` is gone: it merged both slots into one `BTreeMap` behind a name that sounds like a single read. Every call site in the workspace was swept: `get` -> `get_row`, `fetch` -> `get::<(Row, Value)>`. `slot1_map` stays as the internal primitive the `Value` part builds on. **Revised the same day:** the assembly helper that briefly took `fetch`'s place is gone too — composition is the two primitives, see the entry at the end of this file.
+- [x] **Point reads take a `PointParts` tuple, like scans take `Parts`.** `Collection::get::<P>(&key)` answers `P::Output`, where the parts are `parts::Row` (slot 0, `Option<R>`) and `parts::Value` (slot 1 as `Variant::Map`, `Option<Variant>`); a one-element tuple collapses to its part's own output, so `get::<(parts::Row,)>` IS `get_row`. Absence is per slot — a dynamic-only document answers `(None, Some(object))` and a missing key `(None, None)`, because a document is the PAIR of slots (ADR-0035). `Collection::fetch` is gone: it merged both slots into one `BTreeMap` behind a name that sounds like a single read. Every call site in the workspace was swept: `get` -> `get_row`, `fetch` -> `get::<(Row, Value)>`. `slot1_map` stays as the internal primitive the `Value` part builds on. **Revised the same day:** the assembly helper that briefly took `fetch`'s place is gone too — composition is the two primitives, see the entry at the end of this file.
 
 ## 2026-11-12 — one write verb, and no assembly function
 
 `put` is the only write verb on both collections, and the payload type selects the path; on the read side the two halves are composed from two primitives rather than from an assembly function.
 
-- [x] **One write verb, payload picks the path.** `Collection::put<W: WritePayload<S, K, R>>` and `DynamicCollection::put<W: WritePayload<S>>` take `&R` (the row: fresh-row fast path, no stale-face sweep), `&ValueMap` / `&DynamicValue::Obj(map)` (partial document — only the names carried), and the one-element tuple `(&map,)` (whole document — the map IS the document). A non-object `DynamicValue` payload is refused (`Error::NotADocument`) instead of being coerced. `merge` / `replace` are gone from the public surface; their bodies survive as `pub(crate) merge_map` / `replace_map`, so the op lists and the per-arm read discipline are untouched. The reason is that the three verbs were the same op list with a different rule for absent names — a statement about the PAYLOAD, not about the verb — so the name was asking callers to translate their data before writing it (ADR-0035 as amended).
+- [x] **One write verb, payload picks the path.** `Collection::put<W: WritePayload<S, K, R>>` and `DynamicCollection::put<W: WritePayload<S>>` take `&R` (the row: fresh-row fast path, no stale-face sweep), `&ValueMap` / `&Variant::Map(map)` (partial document — only the names carried), and the one-element tuple `(&map,)` (whole document — the map IS the document). A non-object `Variant` payload is refused (`Error::NotADocument`) instead of being coerced. `merge` / `replace` are gone from the public surface; their bodies survive as `pub(crate) merge_map` / `replace_map`, so the op lists and the per-arm read discipline are untouched. The reason is that the three verbs were the same op list with a different rule for absent names — a statement about the PAYLOAD, not about the verb — so the name was asking callers to translate their data before writing it (ADR-0035 as amended).
 - [x] **The bindings follow the same shape.** Python: `merge_doc` -> `put_doc(pkey, document, replace: bool)` and the pyclass verb `merge` -> `put(pkey, document, replace=None)`. Steel: `collection-merge!` -> `collection-put!` (registration, introspection stub and error text together, so a dotted script still resolves under stubs). The injected-engine tests were swept with them.
-- [x] **Two primitives, and NO assembly function.** `okm_core::whole_document` is deleted — the name was not a verb, and the operation was never one primitive. What it composed is now spelled where it is used: `Document::to_value(&self) -> DynamicValue` (the row's name map as one `DynamicValue::Obj`; a defaulted trait method over `to_map`) and `DynamicValue::merge(&mut self, other)` / `merged(self, other)` (objects merge name by name, nested objects recursively, anything else replaces the left side — an array is a VALUE, not a list of names; the empty object is the identity, which is what `DynamicValue::default()` is). The documented composition is `let (row, seg) = col.get::<(parts::Row, parts::Value)>(&k)?` then `row.map(to_value).unwrap_or_default().merged(seg.unwrap_or_default())`, `None` only when both slots are empty. ~60 call sites were rewritten (tests, benches, the lake tests, the engine example); where one test file needed it more than twice it carries a private `doc_of` helper, and nothing of that shape is public API. `DynamicValue::merge`'s rule is locked in `okm-value` by tests for the nested-object case, the array case, the scalar case and the empty-object identity.
+- [x] **Two primitives, and NO assembly function.** `okm_core::whole_document` is deleted — the name was not a verb, and the operation was never one primitive. What it composed is now spelled where it is used: `Document::to_value(&self) -> Variant` (the row's name map as one `Variant::Map`; a defaulted trait method over `to_map`) and `Variant::merge(&mut self, other)` / `merged(self, other)` (objects merge name by name, nested objects recursively, anything else replaces the left side — an array is a VALUE, not a list of names; the empty object is the identity, which is what `Variant::default()` is). The documented composition is `let (row, seg) = col.get::<(parts::Row, parts::Value)>(&k)?` then `row.map(to_value).unwrap_or_default().merged(seg.unwrap_or_default())`, `None` only when both slots are empty. ~60 call sites were rewritten (tests, benches, the lake tests, the engine example); where one test file needed it more than twice it carries a private `doc_of` helper, and nothing of that shape is public API. `Variant::merge`'s rule is locked in `okm-value` by tests for the nested-object case, the array case, the scalar case and the empty-object identity.
 - [x] **Docs**: README ×2, MODELING ×2, the query recipes ×2 and ADR-0035's amendment sentence state the single write verb and the payload arm rule, and every `whole_document` mention is gone.

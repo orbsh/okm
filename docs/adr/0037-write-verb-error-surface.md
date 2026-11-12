@@ -9,7 +9,7 @@ at all.
 
 `merge` and `replace` take a caller-built map — an HTTP body, a decoded Parquet
 row, a host-language dict. Until now a name that matched a declared field but
-carried the wrong `DynamicValue` kind was silently replaced by the field's
+carried the wrong `Variant` kind was silently replaced by the field's
 declared default. ADR-0035 recorded that as a defect ("reject a value whose kind
 mismatches the declaration here") and queued it as its own change; the first fix
 made it a panic.

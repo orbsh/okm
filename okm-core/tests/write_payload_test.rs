@@ -9,10 +9,10 @@
 //! - `&R` writes the row and its faces and does NOT sweep the previous values'
 //!   entries (the fresh-row fast path; `purge` and `save_with_prev_into` are the
 //!   verbs that clean).
-//! - `&DynamicValue::Obj(map)` merges: a declared name is a row read-modify-write
+//! - `&Variant::Map(map)` merges: a declared name is a row read-modify-write
 //!   whose superseded face is removed, every other name overwrites just itself,
 //!   and names the map omits are untouched.
-//! - `(&DynamicValue::Obj(map),)` replaces: the map IS the document, so a name it
+//! - `(&Variant::Map(map),)` replaces: the map IS the document, so a name it
 //!   omits is gone.
 //! - A scalar or array payload is refused before anything reaches the store.
 
@@ -24,7 +24,7 @@
     clippy::panic_in_result_fn
 )]
 
-use okm_value::DynamicValue;
+use okm_value::Variant;
 use std::collections::BTreeMap;
 
 use okm_async::TestStore;
@@ -50,7 +50,7 @@ fn table() -> Collection<TestStore, DocKey, Doc> {
     <Doc as Document>::collection(TestStore::slatedb_mem())
 }
 
-fn map(pairs: &[(&str, DynamicValue)]) -> BTreeMap<String, DynamicValue> {
+fn map(pairs: &[(&str, Variant)]) -> BTreeMap<String, Variant> {
     pairs
         .iter()
         .map(|(name, value)| ((*name).to_string(), value.clone()))
@@ -69,7 +69,7 @@ fn faces(t: &Collection<TestStore, DocKey, Doc>, owner: u64) -> usize {
 /// document and an empty one answer the same question here. The composition
 /// is the two primitives: a point read answers parts, the row converts to a
 /// value, values merge.
-fn doc_map(t: &Collection<TestStore, DocKey, Doc>, k: &DocKey) -> BTreeMap<String, DynamicValue> {
+fn doc_map(t: &Collection<TestStore, DocKey, Doc>, k: &DocKey) -> BTreeMap<String, Variant> {
     let (row, seg) = t
         .get::<(okm_core::parts::Row, okm_core::parts::Value)>(k)
         .unwrap();
@@ -78,7 +78,7 @@ fn doc_map(t: &Collection<TestStore, DocKey, Doc>, k: &DocKey) -> BTreeMap<Strin
         .unwrap_or_default()
         .merged(seg.unwrap_or_default());
     match doc {
-        DynamicValue::Obj(map) => map,
+        Variant::Map(map) => map,
         other => panic!("a document composes to an object, got {other:?}"),
     }
 }
@@ -136,10 +136,10 @@ fn an_object_payload_merges_declared_names_and_sweeps_the_old_face() {
 
     t.put(
         &k,
-        &DynamicValue::Obj(map(&[
-            ("owner", DynamicValue::U64(2)),
-            ("note", DynamicValue::Str("first".into())),
-            ("alt", DynamicValue::Str("keep".into())),
+        &Variant::Map(map(&[
+            ("owner", Variant::U64(2)),
+            ("note", Variant::Str("first".into())),
+            ("alt", Variant::Str("keep".into())),
         ])),
     )
     .unwrap();
@@ -155,13 +155,13 @@ fn an_object_payload_merges_declared_names_and_sweeps_the_old_face() {
     assert_eq!(faces(&t, 2), 1);
     assert_eq!(
         doc_map(&t, &k).get("note").cloned(),
-        Some(DynamicValue::Str("first".into()))
+        Some(Variant::Str("first".into()))
     );
 
     // A second, smaller merge: only the names it carries move.
     t.put(
         &k,
-        &DynamicValue::Obj(map(&[("note", DynamicValue::Str("second".into()))])),
+        &Variant::Map(map(&[("note", Variant::Str("second".into()))])),
     )
     .unwrap();
 
@@ -169,12 +169,12 @@ fn an_object_payload_merges_declared_names_and_sweeps_the_old_face() {
     let doc = doc_map(&t, &k);
     assert_eq!(
         doc.get("note").cloned(),
-        Some(DynamicValue::Str("second".into())),
+        Some(Variant::Str("second".into())),
         "the named dynamic field moved"
     );
     assert_eq!(
         doc.get("alt").cloned(),
-        Some(DynamicValue::Str("keep".into())),
+        Some(Variant::Str("keep".into())),
         "an unnamed dynamic field was left alone"
     );
 }
@@ -193,18 +193,15 @@ fn a_one_element_tuple_payload_replaces_the_whole_document() {
     .unwrap();
     t.put(
         &k,
-        &DynamicValue::Obj(map(&[
-            ("note", DynamicValue::Str("first".into())),
-            ("alt", DynamicValue::Str("keep".into())),
+        &Variant::Map(map(&[
+            ("note", Variant::Str("first".into())),
+            ("alt", Variant::Str("keep".into())),
         ])),
     )
     .unwrap();
 
-    t.put(
-        &k,
-        (&DynamicValue::Obj(map(&[("owner", DynamicValue::U64(3))])),),
-    )
-    .unwrap();
+    t.put(&k, (&Variant::Map(map(&[("owner", Variant::U64(3))])),))
+        .unwrap();
 
     let row = t.get_row(&k).unwrap().unwrap();
     assert_eq!(row.owner, 3);
@@ -224,7 +221,7 @@ fn a_one_element_tuple_payload_replaces_the_whole_document() {
 
     // `replace` with no declared name at all is `purge`'s write, through the
     // same verb.
-    t.put(&k, (&DynamicValue::Obj(BTreeMap::new()),)).unwrap();
+    t.put(&k, (&Variant::Map(BTreeMap::new()),)).unwrap();
     assert!(t.get_row(&k).unwrap().is_none());
     let (row, seg) = t
         .get::<(okm_core::parts::Row, okm_core::parts::Value)>(&k)
@@ -247,19 +244,16 @@ fn a_payload_that_is_not_an_object_is_refused_and_writes_nothing() {
         },
     )
     .unwrap();
-    t.put(
-        &k,
-        &DynamicValue::Obj(map(&[("note", DynamicValue::U64(7))])),
-    )
-    .unwrap();
+    t.put(&k, &Variant::Map(map(&[("note", Variant::U64(7))])))
+        .unwrap();
     let before = doc_map(&t, &k);
     let faces_before = faces(&t, 1);
 
     for payload in [
-        DynamicValue::U64(9),
-        DynamicValue::Str("a document-shaped value is an Obj".into()),
-        DynamicValue::Array(vec![DynamicValue::U64(1)]),
-        DynamicValue::Null,
+        Variant::U64(9),
+        Variant::Str("a document-shaped value is a Map".into()),
+        Variant::Array(vec![Variant::U64(1)]),
+        Variant::Null,
     ] {
         let err = t.put(&k, &payload).unwrap_err();
         assert!(

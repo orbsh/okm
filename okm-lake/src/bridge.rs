@@ -49,7 +49,7 @@ use okm_core::model::document::Collection;
 use okm_core::model::graph::EdgeKey;
 use okm_core::model::graph::{Graph, GraphEncode};
 use okm_dynamic::arrow::arrow_type;
-use okm_value::DynamicValue;
+use okm_value::Variant;
 
 /// Decode a prefix-monotonic varint (P1 wire — the same codec as
 /// `VarIntEnc`, shared shape) for `VarInt` columns. `raw` is the frame
@@ -387,32 +387,32 @@ fn build_batch<K: KeyEncode, R: Document<Key = K>>(
     RecordBatch::try_new(Arc::new(proj.schema.clone()), arrays).expect("batch construction")
 }
 
-/// DynamicValue -> parquet Variant via the builder API (nested Obj/Array
-/// recurse; scalars map 1:1). UInt widens to i64 — Variant integers are
+/// `Variant` -> `parquet_variant::Variant` via the builder API (nested `Map`/`Array`
+/// recurse; scalars map 1:1). UInt widens to i64 — Parquet's Variant integers are
 /// signed, and OKM UInt fields are u64: values above i64::MAX wrap. This
 /// is a documented export limitation, not a storage change.
-fn push_variant<B: parquet_variant::VariantBuilderExt>(b: &mut B, v: &DynamicValue) {
+fn push_variant<B: parquet_variant::VariantBuilderExt>(b: &mut B, v: &Variant) {
     match v {
-        DynamicValue::Null => b.append_null(),
-        DynamicValue::Bool(x) => b.append_value(*x),
-        // Every unsigned width is one number to the Variant API (which is signed):
-        // the declaration, not the variant, says how wide the column is.
-        DynamicValue::U8(x) => b.append_value(i64::from(*x)),
-        DynamicValue::U16(x) => b.append_value(i64::from(*x)),
-        DynamicValue::U32(x) => b.append_value(i64::from(*x)),
-        DynamicValue::U64(x) => b.append_value(*x as i64),
-        DynamicValue::I64(x) => b.append_value(*x),
-        DynamicValue::F64(x) => b.append_value(*x),
-        DynamicValue::Str(sv) => b.append_value(sv.as_str()),
-        DynamicValue::Bytes(bv) => b.append_value(bv.as_slice()),
-        DynamicValue::Array(items) => {
+        Variant::Null => b.append_null(),
+        Variant::Bool(x) => b.append_value(*x),
+        // Every unsigned width is one number to the Parquet Variant API (which is
+        // signed): the declaration, not the variant, says how wide the field is.
+        Variant::U8(x) => b.append_value(i64::from(*x)),
+        Variant::U16(x) => b.append_value(i64::from(*x)),
+        Variant::U32(x) => b.append_value(i64::from(*x)),
+        Variant::U64(x) => b.append_value(*x as i64),
+        Variant::I64(x) => b.append_value(*x),
+        Variant::F64(x) => b.append_value(*x),
+        Variant::Str(sv) => b.append_value(sv.as_str()),
+        Variant::Bytes(bv) => b.append_value(bv.as_slice()),
+        Variant::Array(items) => {
             let mut lb = b.new_list();
             for it in items {
                 push_variant(&mut lb, it);
             }
             lb.finish();
         }
-        DynamicValue::Obj(map) => {
+        Variant::Map(map) => {
             // ObjectBuilder does not impl VariantBuilderExt — fields go
             // through keyed sub-builders / field builders.
             let mut ob = b.new_object();
@@ -423,16 +423,16 @@ fn push_variant<B: parquet_variant::VariantBuilderExt>(b: &mut B, v: &DynamicVal
 }
 fn push_variant_obj<S: parquet_variant::BuilderSpecificState>(
     ob: &mut parquet_variant::ObjectBuilder<'_, S>,
-    map: &std::collections::BTreeMap<String, DynamicValue>,
+    map: &std::collections::BTreeMap<String, Variant>,
 ) {
     for (k, val) in map {
         match val {
-            DynamicValue::Obj(sub_map) => {
+            Variant::Map(sub_map) => {
                 let mut sub = ob.new_object(k);
                 push_variant_obj(&mut sub, sub_map);
                 sub.finish();
             }
-            DynamicValue::Array(items) => {
+            Variant::Array(items) => {
                 let mut sub = ob.new_list(k);
                 for it in items {
                     push_variant(&mut sub, it);
@@ -447,21 +447,21 @@ fn push_variant_obj<S: parquet_variant::BuilderSpecificState>(
     }
 }
 
-/// The Variant value of one open-field map, split into the two parts the canonical
+/// The Parquet Variant value of one open-field map, split into the two parts the canonical
 /// Arrow storage type requires: `(metadata, value)`.
 ///
-/// The Variant binary form is `[metadata][value]` with the metadata's length known
+/// The Parquet Variant binary form is `[metadata][value]` with the metadata's length known
 /// from its own header; the ANALYTICS container is not that concatenation, it is a
 /// struct of the two binaries. Writing the flat form and calling it a variant was a
 /// real defect: DuckDB read the column as `blob` and `variant_extract` answered NULL
 /// for every row, while the same bytes in the struct form decoded correctly.
 pub fn variant_parts(map: &okm_value::ValueMap) -> (Vec<u8>, Vec<u8>) {
     let mut b = parquet_variant::VariantBuilder::new();
-    push_variant(&mut b, &DynamicValue::Obj(map.clone()));
+    push_variant(&mut b, &Variant::Map(map.clone()));
     b.finish()
 }
 
-/// The Arrow storage type of a Variant column: `struct<metadata: binary, value: binary>`
+/// The Arrow storage type of a Parquet Variant column: `struct<metadata: binary, value: binary>`
 /// (`arrow.parquet.variant` in the canonical extension list). Both children are declared
 /// nullable so a null row is a null struct rather than a validation error; a present row
 /// always carries both halves.
@@ -476,7 +476,7 @@ fn variant_type() -> DataType {
     )
 }
 
-/// A Variant-typed Arrow extension field, the analytics-layer twin of the dynamic
+/// A Parquet Variant-typed Arrow extension field, the analytics-layer twin of the dynamic
 /// segment. The extension name is the canonical one, `arrow.parquet.variant`.
 fn variant_field(name: &str, nullable: bool) -> arrow::datatypes::Field {
     use arrow::datatypes::Field as ArrowField;
@@ -618,10 +618,10 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> ToRecordBatch for Co
     }
 
     /// Export with a `variant` column appended: each row's dynamic segment
-    /// (slot 1) encoded as one Parquet Variant value (nested Obj/Array
+    /// (slot 1) encoded as one Parquet Variant value (nested Map/Array
     /// recurse; names resolved through the field-name vocabulary). Rows
     /// without a dynamic segment get `null`. The declared fields stay
-    /// typed columns — Variant is the analytics-layer twin of the
+    /// typed columns — the variant column is the analytics-layer twin of the
     /// dynamic path, not a replacement for it (ADR-0007).
     fn to_record_batch_with_variant(&mut self) -> okm_core::error::Result<RecordBatch> {
         use arrow::datatypes::{Field as ArrowField, Schema as ArrowSchema};
@@ -633,7 +633,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> ToRecordBatch for Co
         let labels = labels_for(self, &proj)?;
         let base = build_batch(&proj, &documents, &labels);
 
-        // One Variant per document from its dynamic segment, as the two halves the
+        // One Parquet Variant per document from its dynamic segment, as the two halves the
         // canonical storage type wants.
         let mut per_row: Vec<Option<okm_value::ValueMap>> = Vec::with_capacity(documents.len());
         for (kenc, _) in &documents {

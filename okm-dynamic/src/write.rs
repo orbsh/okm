@@ -2,11 +2,11 @@
 //! the runtime-typed mirror of `okm_core::WritePayload`.
 //!
 //! The typed assembly point binds a document type at compile time, so its
-//! payloads are `&R`, a `DynamicValue::Obj` and the one-element tuple that
+//! payloads are `&R`, a `Variant::Map` and the one-element tuple that
 //! marks "the whole thing". This facade has no `R` — a document IS a name-keyed
 //! map — so its payloads are the map itself for the partial document and the
 //! same one-tuple rule for the whole one. `&Value` is accepted too, so a caller
-//! that already holds an `okm_value::DynamicValue` spells the call exactly as
+//! that already holds an `okm_value::Variant` spells the call exactly as
 //! it does on the typed side; a non-object value is refused there, because a
 //! scalar or an array is a field VALUE and not a document.
 //!
@@ -18,7 +18,7 @@ use okm_core::storage::VirtualStorage;
 
 use crate::ValueMap;
 use crate::collection::DynamicCollection;
-use okm_value::DynamicValue;
+use okm_value::Variant;
 
 /// What a `put` writes, and therefore which path it takes.
 pub trait WritePayload<S: VirtualStorage> {
@@ -36,10 +36,10 @@ impl<S: VirtualStorage> WritePayload<S> for &ValueMap {
 
 /// Partial document, spelled as the typed side spells it. Only an object is a
 /// document.
-impl<S: VirtualStorage> WritePayload<S> for &DynamicValue {
+impl<S: VirtualStorage> WritePayload<S> for &Variant {
     fn write(self, col: &DynamicCollection<S>, pkey: &[u8]) -> Result<(), String> {
         match self {
-            DynamicValue::Obj(object) => col.merge_map(pkey, object),
+            Variant::Map(object) => col.merge_map(pkey, object),
             other => Err(not_a_document(other)),
         }
     }
@@ -53,16 +53,16 @@ impl<S: VirtualStorage> WritePayload<S> for (&ValueMap,) {
 }
 
 /// Whole document, spelled as the typed side spells it.
-impl<S: VirtualStorage> WritePayload<S> for (&DynamicValue,) {
+impl<S: VirtualStorage> WritePayload<S> for (&Variant,) {
     fn write(self, col: &DynamicCollection<S>, pkey: &[u8]) -> Result<(), String> {
         match self.0 {
-            DynamicValue::Obj(object) => col.replace_map(pkey, object),
+            Variant::Map(object) => col.replace_map(pkey, object),
             other => Err(not_a_document(other)),
         }
     }
 }
 
-fn not_a_document(value: &DynamicValue) -> String {
+fn not_a_document(value: &Variant) -> String {
     format!(
         "a whole-document write takes an object; the payload is {}",
         okm_value::dyn_kind(value)

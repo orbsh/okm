@@ -32,7 +32,7 @@
 
 use crate::Error;
 use crate::value::ObjValueType;
-use crate::value::{DynamicField, DynamicValue, ValueMap};
+use crate::value::{DynamicField, ValueMap, Variant};
 use crate::varint::{put_len, take_len};
 use std::collections::BTreeMap;
 
@@ -93,7 +93,7 @@ pub fn encode<E>(
     let mut blocks: Vec<Vec<Entry>> = vec![Vec::new()];
     // Composite values in emit order. The j-th one owns block j+1, which is the
     // whole of the nesting contract.
-    let mut pending: Vec<&DynamicValue> = Vec::new();
+    let mut pending: Vec<&Variant> = Vec::new();
 
     for (name, value) in fields {
         let id = vocab(name)?;
@@ -105,13 +105,13 @@ pub fn encode<E>(
         qi += 1;
         let mut block: Vec<Entry> = Vec::new();
         match value {
-            DynamicValue::Obj(map) => {
+            Variant::Map(map) => {
                 for (name, child) in map {
                     let id = vocab(name)?;
                     push(&mut values, &mut block, &mut pending, id, child);
                 }
             }
-            DynamicValue::Array(items) => {
+            Variant::Array(items) => {
                 for child in items {
                     push(&mut values, &mut block, &mut pending, 0, child);
                 }
@@ -157,12 +157,12 @@ pub fn encode<E>(
 fn push<'a>(
     values: &mut Vec<u8>,
     block: &mut Vec<Entry>,
-    pending: &mut Vec<&'a DynamicValue>,
+    pending: &mut Vec<&'a Variant>,
     id: u16,
-    value: &'a DynamicValue,
+    value: &'a Variant,
 ) {
     match value {
-        DynamicValue::Obj(_) => {
+        Variant::Map(_) => {
             block.push(Entry {
                 id,
                 ty: ObjValueType::Obj.to_byte(),
@@ -171,7 +171,7 @@ fn push<'a>(
             });
             pending.push(value);
         }
-        DynamicValue::Array(_) => {
+        Variant::Array(_) => {
             block.push(Entry {
                 id,
                 ty: ObjValueType::Array.to_byte(),
@@ -195,47 +195,47 @@ fn push<'a>(
 /// Write one leaf body and report `(type, length)`. Widths are minimal
 /// big-endian, exactly as the inline frames wrote them: zero-padded unsigned,
 /// sign-extended signed, so the reader casts without a width on the wire.
-fn write_body(values: &mut Vec<u8>, v: &DynamicValue) -> (u8, usize) {
+fn write_body(values: &mut Vec<u8>, v: &Variant) -> (u8, usize) {
     let start = values.len();
     let ty = match v {
-        DynamicValue::U8(n) => {
+        Variant::U8(n) => {
             push_uint(values, *n as u64);
             ObjValueType::UInt
         }
-        DynamicValue::U16(n) => {
+        Variant::U16(n) => {
             push_uint(values, *n as u64);
             ObjValueType::UInt
         }
-        DynamicValue::U32(n) => {
+        Variant::U32(n) => {
             push_uint(values, *n as u64);
             ObjValueType::UInt
         }
-        DynamicValue::U64(n) => {
+        Variant::U64(n) => {
             push_uint(values, *n);
             ObjValueType::UInt
         }
-        DynamicValue::I64(n) => {
+        Variant::I64(n) => {
             push_int(values, *n);
             ObjValueType::Int
         }
-        DynamicValue::F64(f) => {
+        Variant::F64(f) => {
             values.extend_from_slice(&f.to_be_bytes());
             ObjValueType::F64
         }
-        DynamicValue::Str(s) => {
+        Variant::Str(s) => {
             values.extend_from_slice(s.as_bytes());
             ObjValueType::Str
         }
-        DynamicValue::Bytes(b) => {
+        Variant::Bytes(b) => {
             values.extend_from_slice(b);
             ObjValueType::Bytes
         }
-        DynamicValue::Bool(b) => {
+        Variant::Bool(b) => {
             values.push(u8::from(*b));
             ObjValueType::Bool
         }
-        DynamicValue::Null => ObjValueType::Null,
-        DynamicValue::Array(_) | DynamicValue::Obj(_) => unreachable!("composites carry no body"),
+        Variant::Null => ObjValueType::Null,
+        Variant::Array(_) | Variant::Map(_) => unreachable!("composites carry no body"),
     };
     (ty.to_byte(), values.len() - start)
 }
@@ -379,18 +379,18 @@ pub fn decode(bytes: &[u8], name_of: &mut dyn FnMut(u16) -> Option<String>) -> V
         name_of: &mut dyn FnMut(u16) -> Option<String>,
         block: usize,
         depth: usize,
-    ) -> Option<Vec<(u16, DynamicValue)>> {
+    ) -> Option<Vec<(u16, Variant)>> {
         if depth > MAX_DEPTH {
             return None;
         }
         let items = blocks.get(block)?;
-        let mut out: Vec<(u16, DynamicValue)> = Vec::with_capacity(items.len());
+        let mut out: Vec<(u16, Variant)> = Vec::with_capacity(items.len());
         for item in items {
             let value = if item.composite {
                 let children = build(blocks, value_area, &mut *name_of, item.child, depth + 1)?;
                 match ObjValueType::from_byte(item.ty) {
                     Some(ObjValueType::Array) => {
-                        DynamicValue::Array(children.into_iter().map(|(_, v)| v).collect())
+                        Variant::Array(children.into_iter().map(|(_, v)| v).collect())
                     }
                     Some(ObjValueType::Obj) => {
                         let mut map = BTreeMap::new();
@@ -398,7 +398,7 @@ pub fn decode(bytes: &[u8], name_of: &mut dyn FnMut(u16) -> Option<String>) -> V
                             let key = name_of(id).unwrap_or_else(|| id.to_string());
                             map.insert(key, v);
                         }
-                        DynamicValue::Obj(map)
+                        Variant::Map(map)
                     }
                     // An unknown composite type: skip it, as an unknown leaf is
                     // skipped. Its block is still consumed by the counter.
@@ -428,7 +428,7 @@ pub fn decode(bytes: &[u8], name_of: &mut dyn FnMut(u16) -> Option<String>) -> V
 
 /// Scalar decode: widthless integers widen to `U64`/`I64` (the wire carries no
 /// width; a typed field's width comes from its declaration).
-fn decode_body(ty: u8, body: &[u8]) -> Option<DynamicValue> {
+fn decode_body(ty: u8, body: &[u8]) -> Option<Variant> {
     Some(match ObjValueType::from_byte(ty)? {
         ObjValueType::UInt => {
             if body.is_empty() || body.len() > 8 {
@@ -436,7 +436,7 @@ fn decode_body(ty: u8, body: &[u8]) -> Option<DynamicValue> {
             }
             let mut be = [0u8; 8];
             be[8 - body.len()..].copy_from_slice(body);
-            DynamicValue::U64(u64::from_be_bytes(be))
+            Variant::U64(u64::from_be_bytes(be))
         }
         ObjValueType::Int => {
             if body.is_empty() || body.len() > 8 {
@@ -445,7 +445,7 @@ fn decode_body(ty: u8, body: &[u8]) -> Option<DynamicValue> {
             let fill = if body[0] & 0x80 != 0 { 0xFF } else { 0x00 };
             let mut be = [fill; 8];
             be[8 - body.len()..].copy_from_slice(body);
-            DynamicValue::I64(i64::from_be_bytes(be))
+            Variant::I64(i64::from_be_bytes(be))
         }
         ObjValueType::F64 => {
             if body.len() != 8 {
@@ -453,21 +453,21 @@ fn decode_body(ty: u8, body: &[u8]) -> Option<DynamicValue> {
             }
             let mut be = [0u8; 8];
             be.copy_from_slice(body);
-            DynamicValue::F64(f64::from_be_bytes(be))
+            Variant::F64(f64::from_be_bytes(be))
         }
-        ObjValueType::Str => DynamicValue::Str(std::str::from_utf8(body).ok()?.to_owned()),
-        ObjValueType::Bytes => DynamicValue::Bytes(body.to_vec()),
+        ObjValueType::Str => Variant::Str(std::str::from_utf8(body).ok()?.to_owned()),
+        ObjValueType::Bytes => Variant::Bytes(body.to_vec()),
         ObjValueType::Bool => {
             if body.len() != 1 {
                 return None;
             }
-            DynamicValue::Bool(body[0] != 0)
+            Variant::Bool(body[0] != 0)
         }
         ObjValueType::Null => {
             if !body.is_empty() {
                 return None;
             }
-            DynamicValue::Null
+            Variant::Null
         }
         // Composites carry no body; a leaf entry claiming one is malformed.
         ObjValueType::Array | ObjValueType::Obj => return None,
@@ -478,7 +478,7 @@ fn decode_body(ty: u8, body: &[u8]) -> Option<DynamicValue> {
 mod tests {
     use super::*;
 
-    fn map(pairs: &[(&str, DynamicValue)]) -> ValueMap {
+    fn map(pairs: &[(&str, Variant)]) -> ValueMap {
         pairs
             .iter()
             .map(|(k, v)| ((*k).to_string(), v.clone()))
@@ -494,7 +494,7 @@ mod tests {
         }
     }
 
-    fn round_trip(fields: &ValueMap) -> Vec<(String, DynamicValue)> {
+    fn round_trip(fields: &ValueMap) -> Vec<(String, Variant)> {
         let mut v = vocab();
         let bytes = encode(fields, &mut v).expect("encode");
         // Flat maps only: names allocate in map order, so id k is names[k-1].
@@ -510,8 +510,8 @@ mod tests {
     #[test]
     fn a_flat_map_round_trips_and_the_table_sits_after_two_bytes() {
         let fields = map(&[
-            ("alpha", DynamicValue::U64(7)),
-            ("beta", DynamicValue::Str("two".into())),
+            ("alpha", Variant::U64(7)),
+            ("beta", Variant::Str("two".into())),
         ]);
         let mut v = vocab();
         let bytes = encode(&fields, &mut v).expect("encode");
@@ -520,19 +520,19 @@ mod tests {
         assert_eq!(bytes.len(), HEAD + toc_len + 1 + 3);
         let got = round_trip(&fields);
         assert_eq!(got.len(), 2);
-        assert_eq!(got[0].1, DynamicValue::U64(7));
-        assert_eq!(got[1].1, DynamicValue::Str("two".into()));
+        assert_eq!(got[0].1, Variant::U64(7));
+        assert_eq!(got[1].1, Variant::Str("two".into()));
     }
 
     #[test]
     fn a_nested_object_and_array_keep_their_shape() {
         let mut inner = BTreeMap::new();
-        inner.insert("leaf".to_string(), DynamicValue::U64(1));
+        inner.insert("leaf".to_string(), Variant::U64(1));
         let fields = map(&[
-            ("obj", DynamicValue::Obj(inner)),
+            ("obj", Variant::Map(inner)),
             (
                 "arr",
-                DynamicValue::Array(vec![DynamicValue::U64(1), DynamicValue::Str("x".into())]),
+                Variant::Array(vec![Variant::U64(1), Variant::Str("x".into())]),
             ),
         ]);
         // Names allocate on first sight, including nested ones, so the table
@@ -550,7 +550,7 @@ mod tests {
         let decoded = decode(&bytes, &mut |id| {
             snapshot.get((id as usize).checked_sub(1)?).cloned()
         });
-        let mut by_name: BTreeMap<String, DynamicValue> = BTreeMap::new();
+        let mut by_name: BTreeMap<String, Variant> = BTreeMap::new();
         for field in decoded {
             let name = snapshot
                 .get((field.id as usize) - 1)
@@ -559,16 +559,16 @@ mod tests {
             by_name.insert(name, field.value);
         }
         match by_name.get("obj") {
-            Some(DynamicValue::Obj(m)) => {
-                assert_eq!(m.get("leaf"), Some(&DynamicValue::U64(1)))
+            Some(Variant::Map(m)) => {
+                assert_eq!(m.get("leaf"), Some(&Variant::U64(1)))
             }
-            other => panic!("expected Obj, got {other:?}"),
+            other => panic!("expected Map, got {other:?}"),
         }
         assert_eq!(
             by_name.get("arr"),
-            Some(&DynamicValue::Array(vec![
-                DynamicValue::U64(1),
-                DynamicValue::Str("x".into())
+            Some(&Variant::Array(vec![
+                Variant::U64(1),
+                Variant::Str("x".into())
             ]))
         );
     }
@@ -577,18 +577,18 @@ mod tests {
     fn a_big_value_among_small_ones_round_trips() {
         let big = vec![0xABu8; 4096];
         let fields = map(&[
-            ("a", DynamicValue::U64(1)),
-            ("big", DynamicValue::Bytes(big.clone())),
-            ("z", DynamicValue::U64(2)),
+            ("a", Variant::U64(1)),
+            ("big", Variant::Bytes(big.clone())),
+            ("z", Variant::U64(2)),
         ]);
         let got = round_trip(&fields);
         let big_got = got.iter().find(|(n, _)| n == "big").map(|(_, v)| v.clone());
-        assert_eq!(big_got, Some(DynamicValue::Bytes(big)));
+        assert_eq!(big_got, Some(Variant::Bytes(big)));
     }
 
     #[test]
     fn an_unknown_type_is_skipped_not_fatal() {
-        let fields = map(&[("a", DynamicValue::U64(1)), ("b", DynamicValue::U64(2))]);
+        let fields = map(&[("a", Variant::U64(1)), ("b", Variant::U64(2))]);
         let mut v = vocab();
         let mut bytes = encode(&fields, &mut v).expect("encode");
         // Rewrite the first leaf's type byte to an unknown tag (9). The entry is
@@ -607,12 +607,12 @@ mod tests {
             Some(format!("f{i}"))
         });
         assert_eq!(decoded.len(), 1, "the unknown field is skipped");
-        assert_eq!(decoded[0].value, DynamicValue::U64(2));
+        assert_eq!(decoded[0].value, Variant::U64(2));
     }
 
     #[test]
     fn a_table_that_disagrees_with_its_value_area_is_refused() {
-        let fields = map(&[("a", DynamicValue::U64(1))]);
+        let fields = map(&[("a", Variant::U64(1))]);
         let mut v = vocab();
         let bytes = encode(&fields, &mut v).expect("encode");
         // One byte of junk after the value area: the lengths no longer add up.
@@ -629,15 +629,15 @@ mod tests {
 
     /// id 1, len 1, UInt; id 2, Array; id 3, len 3, Str; id 4, Obj.
     fn nested_example() -> ValueMap {
-        let inner = BTreeMap::from([("leaf".to_string(), DynamicValue::I64(-2))]);
+        let inner = BTreeMap::from([("leaf".to_string(), Variant::I64(-2))]);
         map(&[
-            ("alpha", DynamicValue::U64(7)),
+            ("alpha", Variant::U64(7)),
             (
                 "arr",
-                DynamicValue::Array(vec![DynamicValue::Bool(true), DynamicValue::Null]),
+                Variant::Array(vec![Variant::Bool(true), Variant::Null]),
             ),
-            ("beta", DynamicValue::Str("two".into())),
-            ("nest", DynamicValue::Obj(inner)),
+            ("beta", Variant::Str("two".into())),
+            ("nest", Variant::Map(inner)),
         ])
     }
 
@@ -671,7 +671,7 @@ mod tests {
     #[test]
     fn the_escape_starts_at_seven_bytes() {
         for (body, head_bytes) in [(6usize, vec![0x01, 0x62]), (7, vec![0x01, 0x72, 0x07])] {
-            let fields = map(&[("s", DynamicValue::Str("x".repeat(body)))]);
+            let fields = map(&[("s", Variant::Str("x".repeat(body)))]);
             let mut v = vocab();
             let bytes = encode(&fields, &mut v).expect("encode");
             // head, then block count, then the entry
@@ -689,7 +689,7 @@ mod tests {
 
     #[test]
     fn a_long_body_escapes_to_the_shared_varint() {
-        let fields = map(&[("s", DynamicValue::Bytes(vec![0xAB; 128]))]);
+        let fields = map(&[("s", Variant::Bytes(vec![0xAB; 128]))]);
         let mut v = vocab();
         let bytes = encode(&fields, &mut v).expect("encode");
         // head, block count, then id, head (code 7 << 4 | Bytes), put_len(128) = 0x80 0x80.
@@ -700,9 +700,9 @@ mod tests {
     #[test]
     fn the_fixed_width_types_carry_no_length() {
         let fields = map(&[
-            ("b", DynamicValue::Bool(false)),
-            ("f", DynamicValue::F64(1.5)),
-            ("n", DynamicValue::Null),
+            ("b", Variant::Bool(false)),
+            ("f", Variant::F64(1.5)),
+            ("n", Variant::Null),
         ]);
         let mut v = vocab();
         let bytes = encode(&fields, &mut v).expect("encode");
@@ -718,17 +718,17 @@ mod tests {
     #[test]
     fn an_unknown_type_is_skipped_with_and_without_the_escape() {
         // Inline length: rewrite the type nibble of the first leaf to 9.
-        let fields = map(&[("a", DynamicValue::U64(1)), ("b", DynamicValue::U64(2))]);
+        let fields = map(&[("a", Variant::U64(1)), ("b", Variant::U64(2))]);
         let mut v = vocab();
         let mut bytes = encode(&fields, &mut v).expect("encode");
         bytes[4] = 0x19; // id 1, head = len 1 << 4 | unknown 9
         let decoded = decode(&bytes, &mut |id| Some(format!("f{id}")));
         assert_eq!(decoded.len(), 1, "the unknown field is skipped");
-        assert_eq!(decoded[0].value, DynamicValue::U64(2));
+        assert_eq!(decoded[0].value, Variant::U64(2));
 
         // Escaped length: the same nibble with code 7 still tells the reader
         // that a varint follows, so the entry stays skippable.
-        let fields = map(&[("a", DynamicValue::Str("x".repeat(9)))]);
+        let fields = map(&[("a", Variant::Str("x".repeat(9)))]);
         let mut v = vocab();
         let mut bytes = encode(&fields, &mut v).expect("encode");
         bytes[4] = 0x79; // id 1, head = code 7 << 4 | unknown 9

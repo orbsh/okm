@@ -14,7 +14,7 @@ use std::collections::BTreeMap;
 
 use okm_async::TestStore;
 use okm_core::{Collection, DocumentEncode, KeyEncode, VirtualStorage};
-use okm_value::DynamicValue;
+use okm_value::Variant;
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
 pub struct UserKey {
@@ -38,7 +38,7 @@ use __OkmIndex_User_by_level as ByLevel;
 fn doc_of<S, K, R>(
     col: &okm_core::Collection<S, K, R>,
     key: &K,
-) -> okm_core::error::Result<Option<std::collections::BTreeMap<String, okm_value::DynamicValue>>>
+) -> okm_core::error::Result<Option<std::collections::BTreeMap<String, okm_value::Variant>>>
 where
     S: okm_core::VirtualStorage,
     K: okm_core::KeyEncode,
@@ -53,7 +53,7 @@ where
             .merged(seg.unwrap_or_default()),
     };
     match doc {
-        okm_value::DynamicValue::Obj(map) => Ok(Some(map)),
+        okm_value::Variant::Map(map) => Ok(Some(map)),
         other => Err(okm_core::error::Error::Corrupt {
             what: format!(
                 "a document composes to an object, got {}",
@@ -71,7 +71,7 @@ fn user(legacy: u32, level: u32) -> User {
     User { legacy, level }
 }
 
-fn dmap(pairs: &[(&str, DynamicValue)]) -> BTreeMap<String, DynamicValue> {
+fn dmap(pairs: &[(&str, Variant)]) -> BTreeMap<String, Variant> {
     pairs
         .iter()
         .map(|(name, value)| ((*name).to_string(), value.clone()))
@@ -86,21 +86,21 @@ fn view_projects_both_slots_and_leaves_the_typed_read_alone() {
     // A static-only document: the view carries the declared names.
     let row_only = doc_of(&t, &key(1)).unwrap().unwrap();
     assert_eq!(row_only.len(), 2);
-    assert_eq!(row_only["level"], DynamicValue::U64(2));
+    assert_eq!(row_only["level"], Variant::U64(2));
 
     // Dynamic names join the same view; the typed read stays slot 0.
     t.put(
         &key(1),
-        &DynamicValue::Obj(dmap(&[
-            ("score", DynamicValue::U64(99)),
-            ("note", DynamicValue::Str("hello".into())),
+        &Variant::Map(dmap(&[
+            ("score", Variant::U64(99)),
+            ("note", Variant::Str("hello".into())),
         ])),
     )
     .unwrap();
     let got = doc_of(&t, &key(1)).unwrap().unwrap();
     assert_eq!(got.len(), 4);
-    assert_eq!(got["score"], DynamicValue::U64(99));
-    assert_eq!(got["note"], DynamicValue::Str("hello".into()));
+    assert_eq!(got["score"], Variant::U64(99));
+    assert_eq!(got["note"], Variant::Str("hello".into()));
     assert_eq!(t.get_row(&key(1)).unwrap().unwrap(), user(1, 2));
 
     // Vocabulary landed in the id family under the same ns, cursor included
@@ -120,11 +120,8 @@ fn view_projects_both_slots_and_leaves_the_typed_read_alone() {
 
     // A dynamic-only document still views: the document is the PAIR of slots,
     // not the primary entry.
-    t.put(
-        &key(9),
-        &DynamicValue::Obj(dmap(&[("only", DynamicValue::U64(1))])),
-    )
-    .unwrap();
+    t.put(&key(9), &Variant::Map(dmap(&[("only", Variant::U64(1))])))
+        .unwrap();
     assert!(t.get_row(&key(9)).unwrap().is_none(), "no static segment");
     assert_eq!(doc_of(&t, &key(9)).unwrap().unwrap().len(), 1);
 }
@@ -136,7 +133,7 @@ fn a_point_read_answers_parts_apart() {
     t.put(&key(1), &user(1, 2)).unwrap();
     t.put(
         &key(1),
-        &DynamicValue::Obj(dmap(&[("note", DynamicValue::Str("hi".into()))])),
+        &Variant::Map(dmap(&[("note", Variant::Str("hi".into()))])),
     )
     .unwrap();
 
@@ -144,9 +141,9 @@ fn a_point_read_answers_parts_apart() {
     let (row, value) = t.get::<(parts::Row, parts::Value)>(&key(1)).unwrap();
     assert_eq!(row.unwrap(), user(1, 2));
     match value.unwrap() {
-        DynamicValue::Obj(map) => {
+        Variant::Map(map) => {
             assert_eq!(map.len(), 1);
-            assert_eq!(map["note"], DynamicValue::Str("hi".into()));
+            assert_eq!(map["note"], Variant::Str("hi".into()));
         }
         other => panic!("slot 1 is an object, got {other:?}"),
     }
@@ -163,11 +160,8 @@ fn a_point_read_answers_parts_apart() {
     assert!(only.is_some());
 
     // Absence is per slot: a dynamic-only document answers (None, Some).
-    t.put(
-        &key(9),
-        &DynamicValue::Obj(dmap(&[("only", DynamicValue::U64(1))])),
-    )
-    .unwrap();
+    t.put(&key(9), &Variant::Map(dmap(&[("only", Variant::U64(1))])))
+        .unwrap();
     let (row, value) = t.get::<(parts::Row, parts::Value)>(&key(9)).unwrap();
     assert!(row.is_none(), "no row in slot 0");
     assert!(value.is_some(), "slot 1 exists");
@@ -187,18 +181,12 @@ fn merge_touches_only_the_names_it_is_given() {
 
     t.put(
         &key(1),
-        &DynamicValue::Obj(dmap(&[
-            ("a", DynamicValue::U64(1)),
-            ("b", DynamicValue::U64(2)),
-        ])),
+        &Variant::Map(dmap(&[("a", Variant::U64(1)), ("b", Variant::U64(2))])),
     )
     .unwrap();
     // Per-name: `c` joins, `a` and `b` survive (a wholesale write would drop them).
-    t.put(
-        &key(1),
-        &DynamicValue::Obj(dmap(&[("c", DynamicValue::U64(3))])),
-    )
-    .unwrap();
+    t.put(&key(1), &Variant::Map(dmap(&[("c", Variant::U64(3))])))
+        .unwrap();
 
     let got = doc_of(&t, &key(1)).unwrap().unwrap();
     assert_eq!(got.len(), 5, "2 declared + 3 dynamic");
@@ -222,11 +210,8 @@ fn merge_of_a_declared_field_is_an_rmw_and_cleans_the_old_face() {
         1
     );
 
-    t.put(
-        &key(1),
-        &DynamicValue::Obj(dmap(&[("level", DynamicValue::U64(30))])),
-    )
-    .unwrap();
+    t.put(&key(1), &Variant::Map(dmap(&[("level", Variant::U64(30))])))
+        .unwrap();
 
     let row = t.get_row(&key(1)).unwrap().unwrap();
     assert_eq!(
@@ -254,19 +239,16 @@ fn merge_of_a_declared_field_is_an_rmw_and_cleans_the_old_face() {
 fn replace_is_the_doc_of() {
     let t: Collection<TestStore, UserKey, User> = Collection::new(TestStore::slatedb_mem());
     t.put(&key(1), &user(9, 9)).unwrap();
-    t.put(
-        &key(1),
-        &DynamicValue::Obj(dmap(&[("gone", DynamicValue::U64(1))])),
-    )
-    .unwrap();
+    t.put(&key(1), &Variant::Map(dmap(&[("gone", Variant::U64(1))])))
+        .unwrap();
 
     // `legacy` is not named → default; the dynamic segment is EXACTLY the map's
     // non-declared names, so `gone` disappears.
     t.put(
         &key(1),
-        (&DynamicValue::Obj(dmap(&[
-            ("level", DynamicValue::U64(4)),
-            ("kept", DynamicValue::Str("y".into())),
+        (&Variant::Map(dmap(&[
+            ("level", Variant::U64(4)),
+            ("kept", Variant::Str("y".into())),
         ])),),
     )
     .unwrap();
@@ -276,7 +258,7 @@ fn replace_is_the_doc_of() {
         !got.contains_key("gone"),
         "replace drops unnamed dynamic names"
     );
-    assert_eq!(got["kept"], DynamicValue::Str("y".into()));
+    assert_eq!(got["kept"], Variant::Str("y".into()));
     assert!(
         t.scan::<ByLevel>(&9u32.to_be_bytes())
             .collect::<okm_core::error::Result<Vec<_>>>()
@@ -288,17 +270,13 @@ fn replace_is_the_doc_of() {
     // A fresh key: the map alone builds the row (absent fields default).
     t.put(
         &key(3),
-        (&DynamicValue::Obj(dmap(&[(
-            "legacy",
-            DynamicValue::U64(7),
-        )])),),
+        (&Variant::Map(dmap(&[("legacy", Variant::U64(7))])),),
     )
     .unwrap();
     assert_eq!(t.get_row(&key(3)).unwrap().unwrap(), user(7, 0));
 
     // An empty map IS the empty document.
-    t.put(&key(1), (&DynamicValue::Obj(BTreeMap::new()),))
-        .unwrap();
+    t.put(&key(1), (&Variant::Map(BTreeMap::new()),)).unwrap();
     assert!(doc_of(&t, &key(1)).unwrap().is_none());
 }
 
@@ -306,11 +284,8 @@ fn replace_is_the_doc_of() {
 fn purge_clears_both_slots_in_one_call() {
     let t: Collection<TestStore, UserKey, User> = Collection::new(TestStore::slatedb_mem());
     t.put(&key(2), &user(1, 1)).unwrap();
-    t.put(
-        &key(2),
-        &DynamicValue::Obj(dmap(&[("x", DynamicValue::U64(1))])),
-    )
-    .unwrap();
+    t.put(&key(2), &Variant::Map(dmap(&[("x", Variant::U64(1))])))
+        .unwrap();
     assert!(doc_of(&t, &key(2)).unwrap().is_some());
 
     assert!(t.purge(&key(2)).unwrap());
@@ -318,11 +293,8 @@ fn purge_clears_both_slots_in_one_call() {
     assert!(!t.purge(&key(2)).unwrap(), "second purge is a no-op");
 
     // A dynamic-only document is purgeable too.
-    t.put(
-        &key(4),
-        &DynamicValue::Obj(dmap(&[("y", DynamicValue::U64(1))])),
-    )
-    .unwrap();
+    t.put(&key(4), &Variant::Map(dmap(&[("y", Variant::U64(1))])))
+        .unwrap();
     assert!(t.purge(&key(4)).unwrap());
     assert!(doc_of(&t, &key(4)).unwrap().is_none());
 }
@@ -333,7 +305,7 @@ fn purge_clears_both_slots_in_one_call() {
 fn from_map_defaults_an_absent_name() {
     use okm_core::Document;
     // 缺失的名字是版本演进的正常形态（旧 map 本来就没有这个字段）：取声明默认。
-    let doc = User::try_from_map(&dmap(&[("level", DynamicValue::U64(7))])).unwrap();
+    let doc = User::try_from_map(&dmap(&[("level", Variant::U64(7))])).unwrap();
     assert_eq!(
         doc,
         User {
@@ -347,8 +319,7 @@ fn from_map_defaults_an_absent_name() {
 fn from_map_refuses_a_present_name_of_the_wrong_kind() {
     use okm_core::Document;
     // 出现但种类不对是调用方错误：静默填默认等于写入调用方从没要过的值。
-    let err =
-        User::try_from_map(&dmap(&[("level", DynamicValue::Str("seven".into()))])).unwrap_err();
+    let err = User::try_from_map(&dmap(&[("level", Variant::Str("seven".into()))])).unwrap_err();
     assert_eq!(
         err.to_string(),
         "from_map: field `level` declares UInt; the map carries Str"
@@ -359,8 +330,8 @@ fn from_map_refuses_a_present_name_of_the_wrong_kind() {
 fn from_map_refuses_a_value_that_does_not_fit_the_declared_width() {
     use okm_core::Document;
     // 种类对、宽度不对：截断和填默认一样是凭空造数据。
-    let err = User::try_from_map(&dmap(&[("level", DynamicValue::U64(u32::MAX as u64 + 1))]))
-        .unwrap_err();
+    let err =
+        User::try_from_map(&dmap(&[("level", Variant::U64(u32::MAX as u64 + 1))])).unwrap_err();
     assert_eq!(
         err.to_string(),
         "from_map: field `level` declares u32; the map carries 4294967296, which cannot be represented"
@@ -377,7 +348,7 @@ fn a_refused_merge_returns_the_error_and_writes_nothing() {
     let err = t
         .put(
             &key(1),
-            &DynamicValue::Obj(dmap(&[("level", DynamicValue::Str("x".into()))])),
+            &Variant::Map(dmap(&[("level", Variant::Str("x".into()))])),
         )
         .unwrap_err();
     assert!(
@@ -391,11 +362,8 @@ fn a_refused_merge_returns_the_error_and_writes_nothing() {
     );
 
     // 同一个 API 上的成功路径不受影响。
-    t.put(
-        &key(1),
-        &DynamicValue::Obj(dmap(&[("level", DynamicValue::U64(9))])),
-    )
-    .unwrap();
+    t.put(&key(1), &Variant::Map(dmap(&[("level", Variant::U64(9))])))
+        .unwrap();
     assert_eq!(t.get_row(&key(1)).unwrap().unwrap(), user(3, 9));
 }
 
@@ -409,29 +377,29 @@ fn two_handles_on_one_engine_do_not_share_an_id() {
     let b: Collection<TestStore, UserKey, User> = Collection::new(store.shared_handle());
     a.put(
         &key(1),
-        &DynamicValue::Obj(dmap(&[("alpha", DynamicValue::Str("x".into()))])),
+        &Variant::Map(dmap(&[("alpha", Variant::Str("x".into()))])),
     )
     .unwrap();
     b.put(
         &key(2),
-        &DynamicValue::Obj(dmap(&[("beta", DynamicValue::Str("y".into()))])),
+        &Variant::Map(dmap(&[("beta", Variant::Str("y".into()))])),
     )
     .unwrap();
     // `a` allocates again AFTER `b` took the next id: a cached watermark would
     // reuse it and repoint `beta`'s label.
     a.put(
         &key(3),
-        &DynamicValue::Obj(dmap(&[("gamma", DynamicValue::Str("z".into()))])),
+        &Variant::Map(dmap(&[("gamma", Variant::Str("z".into()))])),
     )
     .unwrap();
 
     assert_eq!(
         doc_of(&a, &key(2)).unwrap().unwrap()["beta"],
-        DynamicValue::Str("y".into())
+        Variant::Str("y".into())
     );
     assert_eq!(
         doc_of(&b, &key(3)).unwrap().unwrap()["gamma"],
-        DynamicValue::Str("z".into())
+        Variant::Str("z".into())
     );
 }
 
@@ -446,27 +414,27 @@ fn one_dynamic_name_across_documents_survives_a_fresh_mirror() {
     t.put(&key(2), &user(1, 3)).unwrap();
     t.put(
         &key(1),
-        &DynamicValue::Obj(dmap(&[("tag", DynamicValue::Str("alpha".into()))])),
+        &Variant::Map(dmap(&[("tag", Variant::Str("alpha".into()))])),
     )
     .unwrap();
     t.put(
         &key(2),
-        &DynamicValue::Obj(dmap(&[("tag", DynamicValue::Str("beta".into()))])),
+        &Variant::Map(dmap(&[("tag", Variant::Str("beta".into()))])),
     )
     .unwrap();
 
     assert_eq!(
         doc_of(&t, &key(2)).unwrap().unwrap()["tag"],
-        DynamicValue::Str("beta".into())
+        Variant::Str("beta".into())
     );
 
     let fresh: Collection<TestStore, UserKey, User> = Collection::new(store.shared_handle());
     assert_eq!(
         doc_of(&fresh, &key(1)).unwrap().unwrap()["tag"],
-        DynamicValue::Str("alpha".into())
+        Variant::Str("alpha".into())
     );
     assert_eq!(
         doc_of(&fresh, &key(2)).unwrap().unwrap()["tag"],
-        DynamicValue::Str("beta".into())
+        Variant::Str("beta".into())
     );
 }

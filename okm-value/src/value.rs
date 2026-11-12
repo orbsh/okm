@@ -3,7 +3,7 @@
 //! Slot 1 holds ONE entry per obj. Its value is a block table followed by the
 //! leaf bodies; the layout lives in [`crate::segment`], which owns both
 //! directions. What stays here is the currency the codec spends: the value
-//! vocabulary ([`DynamicValue`]), the value-type tags, and the field id + value
+//! vocabulary ([`Variant`]), the value-type tags, and the field id + value
 //! pair readers get back ([`DynamicField`]).
 //!
 //! Ids are the field NAME's vocabulary number (slots 2/3); u8 ids with `0xFF`
@@ -13,23 +13,25 @@
 
 use std::collections::BTreeMap;
 
-/// The value vocabulary: ONE tree for both halves of the crate (ADR-0056 §8).
+/// The value a document holds: a tagged union of the kinds the document model
+/// admits — `U8`/`U16`/`U32`/`U64`/`I64`/`F64`/`Str`/`Bytes`/`Bool`/`Null`/`Array`
+/// and `Map` (ONE tree for both halves of the crate, ADR-0056 §8).
 ///
-/// It used to exist twice — `DynamicValue` here (dynamic-segment frames, widthless
-/// integers) and `okm_dynamic::Value` (the schema-driven codec's currency,
-/// width-typed integers). The shapes had drifted apart for a historical reason, not
-/// a structural one, and the decoder had to live above core to reach the second.
-/// Now there is one:
+/// It used to exist twice — one tree for dynamic-segment frames (widthless
+/// integers) and one as the schema-driven codec's currency (width-typed integers,
+/// re-exported by `okm_dynamic` as `Value`). The shapes had drifted apart for a
+/// historical reason, not a structural one, and the decoder had to live above core
+/// to reach the second. Now there is one:
 ///
 /// - the WIDTH variants are what a typed value carries (`u8`..`u64`, `i64`); the
 ///   dynamic segment's frame coding is widthless by design (minimal big-endian), so
 ///   a frame reads back as `U64`/`I64` and a typed field's width comes from its
 ///   declaration, never from the wire.
-/// - `Obj` is the nested map: the in-memory counterpart of a nested nTLV list
+/// - `Map` is the name-keyed object: the in-memory counterpart of a nested nTLV list
 ///   (ADR-0012 — a map IS an nTLV list; the field NAME → id mapping reuses the same
 ///   field-name vocabulary).
 #[derive(Clone, Debug, PartialEq)]
-pub enum DynamicValue {
+pub enum Variant {
     U8(u8),
     U16(u16),
     U32(u32),
@@ -42,20 +44,20 @@ pub enum DynamicValue {
     Bool(bool),
     /// Nothing stored; presence itself is the information.
     Null,
-    Array(Vec<DynamicValue>),
+    Array(Vec<Variant>),
     /// Nested object: name-keyed map (see the type's doc comment).
-    Obj(BTreeMap<String, DynamicValue>),
+    Map(BTreeMap<String, Variant>),
 }
 
 /// Field name → value. `BTreeMap` for deterministic iteration (cold TLV frames are
 /// written in schema declaration order, not map order).
-pub type ValueMap = BTreeMap<String, DynamicValue>;
+pub type ValueMap = BTreeMap<String, Variant>;
 
-impl DynamicValue {
+impl Variant {
     /// Object merge: the composition rule for a document assembled from two
     /// halves (a decoded row and a dynamic segment).
     ///
-    /// - two `Obj`s merge NAME BY NAME: a name both sides carry recurses, a
+    /// - two `Map`s merge NAME BY NAME: a name both sides carry recurses, a
     ///   name only the right side carries is added, a name only the left side
     ///   carries keeps its value;
     /// - anything else REPLACES the left side outright. An `Array` is a VALUE,
@@ -64,9 +66,9 @@ impl DynamicValue {
     ///
     /// `merge` is left-biased in the absence of a name: the left side is the
     /// document, the right side is what is laid over it.
-    pub fn merge(&mut self, other: DynamicValue) {
+    pub fn merge(&mut self, other: Variant) {
         match (self, other) {
-            (DynamicValue::Obj(left), DynamicValue::Obj(right)) => {
+            (Variant::Map(left), Variant::Map(right)) => {
                 for (name, value) in right {
                     match left.get_mut(&name) {
                         Some(slot) => slot.merge(value),
@@ -82,22 +84,22 @@ impl DynamicValue {
 
     /// [`merge`](Self::merge), owning the receiver: `a.merged(b)` is `b` laid
     /// over `a`.
-    pub fn merged(mut self, other: DynamicValue) -> DynamicValue {
+    pub fn merged(mut self, other: Variant) -> Variant {
         self.merge(other);
         self
     }
 }
 
-/// The empty document — an `Obj` with no names, not `Null`.
+/// The empty document — a `Map` with no names, not `Null`.
 ///
 /// It exists so a half that is ABSENT contributes nothing when a document is
 /// composed (`row.map(to_value).unwrap_or_default().merged(segment
-/// .unwrap_or_default())`): the identity of [`DynamicValue::merge`] is "no
+/// .unwrap_or_default())`): the identity of [`Variant::merge`] is "no
 /// names", which is an empty object. `Null` would not do — it replaces the left
 /// side, which is a documented value, not an absence marker.
-impl Default for DynamicValue {
+impl Default for Variant {
     fn default() -> Self {
-        DynamicValue::Obj(BTreeMap::new())
+        Variant::Map(BTreeMap::new())
     }
 }
 
@@ -105,7 +107,7 @@ impl Default for DynamicValue {
 /// Codec mistakes are normal input — errors, never panics (ADR-0037).
 ///
 /// It lives here, beside the value vocabulary, because every producer of it is a
-/// walk over [`DynamicValue`]: the decoder, the encoder, the payload planner and
+/// walk over [`Variant`]: the decoder, the encoder, the payload planner and
 /// the column builder.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
@@ -169,25 +171,25 @@ impl std::error::Error for CodecError {}
 #[derive(Clone, Debug, PartialEq)]
 pub struct DynamicField {
     pub id: u16,
-    pub value: DynamicValue,
+    pub value: Variant,
 }
 
 /// The kind's NAME — the bridge's vocabulary for its own refusals
 /// (`from_map` says what it got, not what it wanted).
-pub fn dyn_kind(v: &DynamicValue) -> &'static str {
+pub fn dyn_kind(v: &Variant) -> &'static str {
     match v {
-        DynamicValue::U8(_) => "U8",
-        DynamicValue::U16(_) => "U16",
-        DynamicValue::U32(_) => "U32",
-        DynamicValue::U64(_) => "U64",
-        DynamicValue::I64(_) => "I64",
-        DynamicValue::F64(_) => "F64",
-        DynamicValue::Str(_) => "Str",
-        DynamicValue::Bytes(_) => "Bytes",
-        DynamicValue::Bool(_) => "Bool",
-        DynamicValue::Null => "Null",
-        DynamicValue::Array(_) => "Array",
-        DynamicValue::Obj(_) => "Obj",
+        Variant::U8(_) => "U8",
+        Variant::U16(_) => "U16",
+        Variant::U32(_) => "U32",
+        Variant::U64(_) => "U64",
+        Variant::I64(_) => "I64",
+        Variant::F64(_) => "F64",
+        Variant::Str(_) => "Str",
+        Variant::Bytes(_) => "Bytes",
+        Variant::Bool(_) => "Bool",
+        Variant::Null => "Null",
+        Variant::Array(_) => "Array",
+        Variant::Map(_) => "Map",
     }
 }
 
@@ -251,36 +253,36 @@ mod serde_impls {
     //!   there (CBOR keeps a byte string), so it does not round-trip through
     //!   JSON as `Bytes`.
     //!
-    //! Object keys must be strings on the way in: an `Obj` is name-keyed.
+    //! Object keys must be strings on the way in: a `Map` is name-keyed.
 
-    use super::DynamicValue;
+    use super::Variant;
     use serde::de::{MapAccess, SeqAccess, Visitor};
     use serde::ser::{SerializeMap, SerializeSeq};
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
     use std::collections::BTreeMap;
     use std::fmt;
 
-    impl Serialize for DynamicValue {
+    impl Serialize for Variant {
         fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
             match self {
-                DynamicValue::U8(v) => s.serialize_u64(u64::from(*v)),
-                DynamicValue::U16(v) => s.serialize_u64(u64::from(*v)),
-                DynamicValue::U32(v) => s.serialize_u64(u64::from(*v)),
-                DynamicValue::U64(v) => s.serialize_u64(*v),
-                DynamicValue::I64(v) => s.serialize_i64(*v),
-                DynamicValue::F64(v) => s.serialize_f64(*v),
-                DynamicValue::Str(v) => s.serialize_str(v),
-                DynamicValue::Bytes(v) => s.serialize_bytes(v),
-                DynamicValue::Bool(v) => s.serialize_bool(*v),
-                DynamicValue::Null => s.serialize_unit(),
-                DynamicValue::Array(items) => {
+                Variant::U8(v) => s.serialize_u64(u64::from(*v)),
+                Variant::U16(v) => s.serialize_u64(u64::from(*v)),
+                Variant::U32(v) => s.serialize_u64(u64::from(*v)),
+                Variant::U64(v) => s.serialize_u64(*v),
+                Variant::I64(v) => s.serialize_i64(*v),
+                Variant::F64(v) => s.serialize_f64(*v),
+                Variant::Str(v) => s.serialize_str(v),
+                Variant::Bytes(v) => s.serialize_bytes(v),
+                Variant::Bool(v) => s.serialize_bool(*v),
+                Variant::Null => s.serialize_unit(),
+                Variant::Array(items) => {
                     let mut seq = s.serialize_seq(Some(items.len()))?;
                     for item in items {
                         seq.serialize_element(item)?;
                     }
                     seq.end()
                 }
-                DynamicValue::Obj(map) => {
+                Variant::Map(map) => {
                     let mut m = s.serialize_map(Some(map.len()))?;
                     for (name, value) in map {
                         m.serialize_entry(name, value)?;
@@ -291,12 +293,12 @@ mod serde_impls {
         }
     }
 
-    impl<'de> Deserialize<'de> for DynamicValue {
+    impl<'de> Deserialize<'de> for Variant {
         fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
             struct ValueVisitor;
 
             impl<'de> Visitor<'de> for ValueVisitor {
-                type Value = DynamicValue;
+                type Value = Variant;
 
                 fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
                     f.write_str(
@@ -305,63 +307,63 @@ mod serde_impls {
                 }
 
                 fn visit_bool<E>(self, v: bool) -> Result<Self::Value, E> {
-                    Ok(DynamicValue::Bool(v))
+                    Ok(Variant::Bool(v))
                 }
 
                 fn visit_i64<E>(self, v: i64) -> Result<Self::Value, E> {
-                    Ok(DynamicValue::I64(v))
+                    Ok(Variant::I64(v))
                 }
 
                 fn visit_u64<E>(self, v: u64) -> Result<Self::Value, E> {
-                    Ok(DynamicValue::U64(v))
+                    Ok(Variant::U64(v))
                 }
 
                 fn visit_f64<E>(self, v: f64) -> Result<Self::Value, E> {
-                    Ok(DynamicValue::F64(v))
+                    Ok(Variant::F64(v))
                 }
 
                 fn visit_str<E>(self, v: &str) -> Result<Self::Value, E> {
-                    Ok(DynamicValue::Str(v.to_owned()))
+                    Ok(Variant::Str(v.to_owned()))
                 }
 
                 fn visit_string<E>(self, v: String) -> Result<Self::Value, E> {
-                    Ok(DynamicValue::Str(v))
+                    Ok(Variant::Str(v))
                 }
 
                 fn visit_bytes<E>(self, v: &[u8]) -> Result<Self::Value, E> {
-                    Ok(DynamicValue::Bytes(v.to_vec()))
+                    Ok(Variant::Bytes(v.to_vec()))
                 }
 
                 fn visit_byte_buf<E>(self, v: Vec<u8>) -> Result<Self::Value, E> {
-                    Ok(DynamicValue::Bytes(v))
+                    Ok(Variant::Bytes(v))
                 }
 
                 fn visit_unit<E>(self) -> Result<Self::Value, E> {
-                    Ok(DynamicValue::Null)
+                    Ok(Variant::Null)
                 }
 
                 fn visit_none<E>(self) -> Result<Self::Value, E> {
-                    Ok(DynamicValue::Null)
+                    Ok(Variant::Null)
                 }
 
                 fn visit_some<D: Deserializer<'de>>(self, d: D) -> Result<Self::Value, D::Error> {
-                    DynamicValue::deserialize(d)
+                    Variant::deserialize(d)
                 }
 
                 fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
                     let mut items = Vec::new();
-                    while let Some(item) = seq.next_element::<DynamicValue>()? {
+                    while let Some(item) = seq.next_element::<Variant>()? {
                         items.push(item);
                     }
-                    Ok(DynamicValue::Array(items))
+                    Ok(Variant::Array(items))
                 }
 
                 fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
                     let mut out = BTreeMap::new();
-                    while let Some((name, value)) = map.next_entry::<String, DynamicValue>()? {
+                    while let Some((name, value)) = map.next_entry::<String, Variant>()? {
                         out.insert(name, value);
                     }
-                    Ok(DynamicValue::Obj(out))
+                    Ok(Variant::Map(out))
                 }
             }
 
@@ -372,10 +374,10 @@ mod serde_impls {
 
 #[cfg(all(test, feature = "serde"))]
 mod serde_tests {
-    use super::DynamicValue;
+    use super::Variant;
     use std::collections::BTreeMap;
 
-    fn round_trip(value: &DynamicValue) -> DynamicValue {
+    fn round_trip(value: &Variant) -> Variant {
         let text = serde_json::to_string(value).expect("serializes");
         serde_json::from_str(&text).expect("deserializes")
     }
@@ -383,13 +385,13 @@ mod serde_tests {
     #[test]
     fn every_scalar_round_trips_through_json() {
         let cases = [
-            DynamicValue::U64(0),
-            DynamicValue::U64(u64::MAX),
-            DynamicValue::I64(-7),
-            DynamicValue::F64(3.25),
-            DynamicValue::Str("你好".into()),
-            DynamicValue::Bool(true),
-            DynamicValue::Null,
+            Variant::U64(0),
+            Variant::U64(u64::MAX),
+            Variant::I64(-7),
+            Variant::F64(3.25),
+            Variant::Str("你好".into()),
+            Variant::Bool(true),
+            Variant::Null,
         ];
         for case in cases {
             assert_eq!(round_trip(&case), case, "case {case:?}");
@@ -400,31 +402,31 @@ mod serde_tests {
     fn composites_round_trip_and_names_survive() {
         // The shape k10r hands to a model: a record with a nested object,
         // an array of mixed values, and duplicate-free names.
-        let value = DynamicValue::Obj(BTreeMap::from([
-            ("name".to_string(), DynamicValue::Str("alpha".into())),
+        let value = Variant::Map(BTreeMap::from([
+            ("name".to_string(), Variant::Str("alpha".into())),
             (
                 "props".to_string(),
-                DynamicValue::Obj(BTreeMap::from([
-                    ("vcs".to_string(), DynamicValue::Str("gitea".into())),
-                    ("stars".to_string(), DynamicValue::U64(7)),
+                Variant::Map(BTreeMap::from([
+                    ("vcs".to_string(), Variant::Str("gitea".into())),
+                    ("stars".to_string(), Variant::U64(7)),
                 ])),
             ),
             (
                 "mixed".to_string(),
-                DynamicValue::Array(vec![
-                    DynamicValue::U64(1),
-                    DynamicValue::Str("x".into()),
-                    DynamicValue::Null,
-                    DynamicValue::Array(vec![DynamicValue::Bool(false)]),
+                Variant::Array(vec![
+                    Variant::U64(1),
+                    Variant::Str("x".into()),
+                    Variant::Null,
+                    Variant::Array(vec![Variant::Bool(false)]),
                 ]),
             ),
         ]));
         assert_eq!(round_trip(&value), value);
         // The JSON text is the obvious one — a consumer can read it as is.
         assert_eq!(
-            serde_json::to_string(&DynamicValue::Obj(BTreeMap::from([(
+            serde_json::to_string(&Variant::Map(BTreeMap::from([(
                 "a".into(),
-                DynamicValue::U64(1)
+                Variant::U64(1)
             )])))
             .unwrap(),
             r#"{"a":1}"#
@@ -436,16 +438,12 @@ mod serde_tests {
     /// (nTLV) is what keeps them `Bytes`.
     #[test]
     fn bytes_degrade_to_a_number_array_in_json_and_that_is_documented() {
-        let bytes = DynamicValue::Bytes(vec![0, 1, 255]);
+        let bytes = Variant::Bytes(vec![0, 1, 255]);
         let text = serde_json::to_string(&bytes).unwrap();
         assert_eq!(text, "[0,1,255]");
         assert_eq!(
-            serde_json::from_str::<DynamicValue>(&text).unwrap(),
-            DynamicValue::Array(vec![
-                DynamicValue::U64(0),
-                DynamicValue::U64(1),
-                DynamicValue::U64(255)
-            ])
+            serde_json::from_str::<Variant>(&text).unwrap(),
+            Variant::Array(vec![Variant::U64(0), Variant::U64(1), Variant::U64(255)])
         );
     }
 
@@ -453,21 +451,21 @@ mod serde_tests {
     /// collapse (JSON has one number type).
     #[test]
     fn a_non_negative_int_reads_back_as_uint() {
-        let text = serde_json::to_string(&DynamicValue::I64(5)).unwrap();
+        let text = serde_json::to_string(&Variant::I64(5)).unwrap();
         assert_eq!(text, "5");
         assert_eq!(
-            serde_json::from_str::<DynamicValue>(&text).unwrap(),
-            DynamicValue::U64(5)
+            serde_json::from_str::<Variant>(&text).unwrap(),
+            Variant::U64(5)
         );
         // Negative stays `Int`.
-        assert_eq!(round_trip(&DynamicValue::I64(-5)), DynamicValue::I64(-5));
+        assert_eq!(round_trip(&Variant::I64(-5)), Variant::I64(-5));
     }
 
-    /// A non-string key cannot become an `Obj` name: the deserializer refuses
+    /// A non-string key cannot become a `Map` name: the deserializer refuses
     /// rather than stringifying it.
     #[test]
     fn a_non_string_object_key_is_refused() {
-        assert!(serde_json::from_str::<DynamicValue>(r#"{1: "x"}"#).is_err());
+        assert!(serde_json::from_str::<Variant>(r#"{1: "x"}"#).is_err());
     }
 }
 
@@ -495,27 +493,24 @@ mod tests {
 
     #[test]
     fn obj_in_array_roundtrip() {
-        // An Obj nested inside an Array: the shape aura's interface_schema
+        // A `Map` nested inside an `Array`: the shape aura's interface_schema
         // carried in production.
-        let nested = BTreeMap::from([("c".to_string(), DynamicValue::I64(0))]);
-        let val = DynamicValue::Obj(BTreeMap::from([(
-            "item".to_string(),
-            DynamicValue::Obj(nested),
-        )]));
-        let fields = ValueMap::from([("a".to_string(), DynamicValue::Array(vec![val]))]);
+        let nested = BTreeMap::from([("c".to_string(), Variant::I64(0))]);
+        let val = Variant::Map(BTreeMap::from([("item".to_string(), Variant::Map(nested))]));
+        let fields = ValueMap::from([("a".to_string(), Variant::Array(vec![val]))]);
         let bytes = encode(&fields, &mut stub(&["a", "item", "c"])).unwrap();
         let got = decode_named(&bytes, &mut names_of(&["a", "item", "c"]));
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].id, 1);
         match &got[0].value {
-            DynamicValue::Array(items) => match &items[0] {
-                DynamicValue::Obj(m) => match m.get("item") {
-                    Some(DynamicValue::Obj(inner)) => {
-                        assert_eq!(inner.get("c"), Some(&DynamicValue::I64(0)));
+            Variant::Array(items) => match &items[0] {
+                Variant::Map(m) => match m.get("item") {
+                    Some(Variant::Map(inner)) => {
+                        assert_eq!(inner.get("c"), Some(&Variant::I64(0)));
                     }
-                    other => panic!("expected nested Obj, got {other:?}"),
+                    other => panic!("expected nested Map, got {other:?}"),
                 },
-                other => panic!("expected Obj in the array, got {other:?}"),
+                other => panic!("expected Map in the array, got {other:?}"),
             },
             other => panic!("expected Array, got {other:?}"),
         }
@@ -526,7 +521,7 @@ mod tests {
         // The id lane is unchanged by the block table: 254 is one byte, 255 and
         // above escape through 0xFF + u16.
         fn ids_of(id: u16) -> Vec<u8> {
-            let fields = ValueMap::from([("x".to_string(), DynamicValue::U64(1))]);
+            let fields = ValueMap::from([("x".to_string(), Variant::U64(1))]);
             let mut vocab = move |_: &str| Ok::<u16, ()>(id);
             encode(&fields, &mut vocab).unwrap()
         }
@@ -543,9 +538,9 @@ mod tests {
     fn nested_deep_recursion_is_capped() {
         // A reader refuses nesting deeper than the cap instead of walking a
         // hostile value down the stack.
-        let mut value = DynamicValue::U64(1);
+        let mut value = Variant::U64(1);
         for _ in 0..80 {
-            value = DynamicValue::Obj(BTreeMap::from([("k".to_string(), value)]));
+            value = Variant::Map(BTreeMap::from([("k".to_string(), value)]));
         }
         let fields = ValueMap::from([("root".to_string(), value)]);
         let mut next = 1u16;
@@ -563,34 +558,34 @@ mod tests {
 
     #[test]
     fn objects_merge_name_by_name_and_nested_objects_recurse() {
-        let left = DynamicValue::Obj(BTreeMap::from([
-            ("a".to_string(), DynamicValue::U32(1)),
+        let left = Variant::Map(BTreeMap::from([
+            ("a".to_string(), Variant::U32(1)),
             (
                 "inner".to_string(),
-                DynamicValue::Obj(BTreeMap::from([
-                    ("x".to_string(), DynamicValue::Str("kept".into())),
-                    ("y".to_string(), DynamicValue::Null),
+                Variant::Map(BTreeMap::from([
+                    ("x".to_string(), Variant::Str("kept".into())),
+                    ("y".to_string(), Variant::Null),
                 ])),
             ),
         ]));
-        let right = DynamicValue::Obj(BTreeMap::from([
-            ("b".to_string(), DynamicValue::Bool(true)),
+        let right = Variant::Map(BTreeMap::from([
+            ("b".to_string(), Variant::Bool(true)),
             (
                 "inner".to_string(),
-                DynamicValue::Obj(BTreeMap::from([("y".to_string(), DynamicValue::U8(9))])),
+                Variant::Map(BTreeMap::from([("y".to_string(), Variant::U8(9))])),
             ),
         ]));
         let got = left.merged(right);
         assert_eq!(
             got,
-            DynamicValue::Obj(BTreeMap::from([
-                ("a".to_string(), DynamicValue::U32(1)),
-                ("b".to_string(), DynamicValue::Bool(true)),
+            Variant::Map(BTreeMap::from([
+                ("a".to_string(), Variant::U32(1)),
+                ("b".to_string(), Variant::Bool(true)),
                 (
                     "inner".to_string(),
-                    DynamicValue::Obj(BTreeMap::from([
-                        ("x".to_string(), DynamicValue::Str("kept".into())),
-                        ("y".to_string(), DynamicValue::U8(9)),
+                    Variant::Map(BTreeMap::from([
+                        ("x".to_string(), Variant::Str("kept".into())),
+                        ("y".to_string(), Variant::U8(9)),
                     ]))
                 ),
             ]))
@@ -599,13 +594,13 @@ mod tests {
 
     #[test]
     fn an_array_replaces_instead_of_appending() {
-        let left = DynamicValue::Obj(BTreeMap::from([(
+        let left = Variant::Map(BTreeMap::from([(
             "tags".to_string(),
-            DynamicValue::Array(vec![DynamicValue::Str("a".into())]),
+            Variant::Array(vec![Variant::Str("a".into())]),
         )]));
-        let right = DynamicValue::Obj(BTreeMap::from([(
+        let right = Variant::Map(BTreeMap::from([(
             "tags".to_string(),
-            DynamicValue::Array(vec![DynamicValue::Str("b".into())]),
+            Variant::Array(vec![Variant::Str("b".into())]),
         )]));
         assert_eq!(left.merged(right.clone()), right);
     }
@@ -615,12 +610,12 @@ mod tests {
         // The right side is what the caller spelled; a scalar cannot carry
         // names, so there is nothing to merge into.
         assert_eq!(
-            DynamicValue::U32(1).merged(DynamicValue::Str("x".into())),
-            DynamicValue::Str("x".into())
+            Variant::U32(1).merged(Variant::Str("x".into())),
+            Variant::Str("x".into())
         );
         assert_eq!(
-            DynamicValue::Obj(BTreeMap::new()).merged(DynamicValue::Null),
-            DynamicValue::Null
+            Variant::Map(BTreeMap::new()).merged(Variant::Null),
+            Variant::Null
         );
     }
 
@@ -628,10 +623,10 @@ mod tests {
     fn the_empty_object_is_the_merge_identity() {
         // An absent half contributes nothing: `unwrap_or_default()` on either
         // side of the composition leaves the other side untouched.
-        let doc = DynamicValue::Obj(BTreeMap::from([("a".to_string(), DynamicValue::U32(1))]));
-        assert_eq!(doc.clone().merged(DynamicValue::default()), doc);
+        let doc = Variant::Map(BTreeMap::from([("a".to_string(), Variant::U32(1))]));
+        assert_eq!(doc.clone().merged(Variant::default()), doc);
         assert_eq!(
-            DynamicValue::default().merged(doc.clone()),
+            Variant::default().merged(doc.clone()),
             doc,
             "an absent row contributes no names"
         );

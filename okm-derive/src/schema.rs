@@ -380,7 +380,7 @@ fn variable_width(fs: &[FieldSchema], name_strs: &[String], n: &str) -> bool {
 pub(crate) struct FieldSchema {
     pub ident: syn::Ident,
     /// Rust type as written (normalized string), for the document-map bridge
-    /// to emit exact casts (`DynamicValue::U64` -> `u32 as u32` etc.).
+    /// to emit exact casts (`Variant::U64` -> `u32 as u32` etc.).
     pub ty_str: String,
     pub enc: TS2,
     pub dec: TS2,

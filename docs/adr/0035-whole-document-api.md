@@ -34,7 +34,7 @@ The surface splits by VALUE SHAPE rather than by slot.
 |---|---|---|---|
 | `get(&key) -> Option<R>` | static segment (typed) | — | unchanged |
 | `put(&key, &R)` | static segment + faces + ledgers | 1 | unchanged |
-| `fetch(&key) -> Option<BTreeMap<String, DynamicValue>>` | the whole document (both slots merged) | — | `get_document` + `get_fields` |
+| `fetch(&key) -> Option<BTreeMap<String, Variant>>` | the whole document (both slots merged) | — | `get_document` + `get_fields` |
 | `merge(&key, &map)` | declared names → row RMW; every other name → that name in slot 1 | 1 | `put_document` (merge half) + `put_fields` |
 | `replace(&key, &map)` | row rebuilt from the map; slot 1 = exactly the map's non-declared names | 1 | — (stronger than `put_document`) |
 | `purge(&key) -> bool` | both slots removed | 1 | `delete_document` + `delete_fields` |
@@ -43,8 +43,8 @@ The surface splits by VALUE SHAPE rather than by slot.
 above and the ten decisions below stay as written: they are the record of the
 split-by-value-shape decision. The surface they describe has since collapsed.
 Both collections now carry ONE write verb, `put`, and the PAYLOAD selects the
-arm — `&R` is the row, `&map` / `&DynamicValue::Obj(map)` is `merge` (only the
-names carried), the one-element tuple `(&map,)` / `(&Obj(map),)` is `replace`
+arm — `&R` is the row, `&map` / `&Variant::Map(map)` is `merge` (only the
+names carried), the one-element tuple `(&map,)` / `(&Map(map),)` is `replace`
 (the map IS the document). The substance of the decision is unchanged: the
 split is still by value shape rather than by slot — the value's TYPE is now the
 declaration of that shape, so a caller never translates its data into a verb
