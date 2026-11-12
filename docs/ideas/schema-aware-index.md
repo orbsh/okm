@@ -43,4 +43,8 @@ Same premise, one level lower and far cheaper to build, because it keeps the ord
 
 ## Status
 
-Same as the other outside proposals recorded here: not designed, not scheduled. The block-index route is the lower-risk one, and its first three items (fixed-stride search, segment directory, prefix filter) are each independent enough to land one at a time if an engine of our own ever exists.
+Same as the other outside proposals recorded here: not designed, not scheduled — and now measured against, which is more than the other recorded proposals can claim.
+
+**Measured 2026-11-12** (`docs/internals/query-cost-attribution.md`): on a 200 000-row corpus with the memtable sealed, a 1 000-entry indexed query with fetch-back costs 943.8 µs, of which the engine's index read is 16.7 % and the *search* portion — one descent through the block index — is 2.76 µs, 0.3 %. An index-layer rewrite therefore has a ceiling of **1.20× end to end**, not 3–100×, and the realistic figure is near 1.0× because search is 0.3 %. The point read is 622.8 ns of which the document layer is 32 ns: no tree shape improves a cost that is the row fetch. What the measurement does endorse is a different lever that already exists — the covered index, 193.6 µs against 943.8 µs, 4.87× — and the operator layer, where the gallop result (35× on skewed inputs) shows where algorithmic work actually pays.
+
+The block-index route remains the lower-risk of the two if an engine of our own ever exists, but the binding constraint is now cost of ownership, not expected speedup: it would not pay for itself on query latency.
