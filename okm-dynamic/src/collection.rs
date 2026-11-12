@@ -80,7 +80,7 @@ impl<S: VirtualStorage> okm_core::changelog::replay::ReplayTarget for DynamicCol
         &self.schema().name
     }
 
-    fn merge(&self, pkey: &[u8], row: &ValueMap) -> Result<(), String> {
+    fn put(&self, pkey: &[u8], row: &ValueMap) -> Result<(), String> {
         DynamicCollection::merge(self, pkey, row)
     }
 

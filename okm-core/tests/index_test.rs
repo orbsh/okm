@@ -14,6 +14,7 @@
 use okm_core::{
     Document, DocumentEncode, KeyEncode, KvIndex, PrefixKey, Vector, VectorElem, VirtualStorage,
 };
+use okm_value::DynamicValue;
 
 use okm_async::TestStore;
 // marker struct 生成在 derive 展开点（本文件），直接引用
@@ -1148,7 +1149,7 @@ fn partial_index_flip_needs_delete_then_put() {
     // 不产生悬挂条目。put 是「新行」快路径，不是更新路径。
     let t3 = <Ticket as Document>::collection(TestStore::slatedb_mem());
     t3.put(&k, &open).unwrap();
-    t3.merge(&k, &closed.to_map()).unwrap();
+    t3.put(&k, &DynamicValue::Obj(closed.to_map())).unwrap();
     assert!(
         t3.store().get(&e).unwrap().is_none(),
         "merge 扫掉存储行的面：没有悬挂条目"
@@ -1165,7 +1166,7 @@ fn partial_index_flip_needs_delete_then_put() {
     // removed」的可执行版本 —— prev 传 None 会留下悬挂条目。
     let t4 = <Ticket as Document>::collection(TestStore::slatedb_mem());
     t4.put(&k, &open).unwrap();
-    t4.replace(&k, &closed.to_map()).unwrap();
+    t4.put(&k, (&DynamicValue::Obj(closed.to_map()),)).unwrap();
     assert!(
         t4.store().get(&e).unwrap().is_none(),
         "replace 扫掉存储行的面"

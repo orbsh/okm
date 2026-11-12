@@ -15,6 +15,7 @@ use okm_async::TestStore;
 use okm_core::changelog::{ChangelogConfig, ChangelogStore};
 use okm_core::{Collection, DocumentEncode, KeyEncode};
 use okm_lake::{DrainConfig, drain};
+use okm_value::DynamicValue;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 
 #[derive(KeyEncode, Clone, PartialEq, Debug)]
@@ -488,7 +489,7 @@ fn a_documents_open_fields_travel_as_a_variant_column() {
             "note".to_string(),
             okm_value::DynamicValue::Str("first".to_string()),
         );
-        c.merge(&K1, &open)
+        c.put(&K1, &DynamicValue::Obj(open))
             .expect("a field the declaration does not have");
     }
 
@@ -568,7 +569,8 @@ fn an_open_segment_with_no_row_is_a_put_open_row() {
             "note".to_string(),
             okm_value::DynamicValue::Str("orphan".to_string()),
         );
-        c.merge(&K2, &open).expect("a segment with no row");
+        c.put(&K2, &DynamicValue::Obj(open))
+            .expect("a segment with no row");
     }
 
     let report = drain(root.path(), &DrainConfig::new(out.path(), "test")).expect("drain");
@@ -701,7 +703,7 @@ fn a_variant_column_declares_its_table_feature() {
             "note".to_string(),
             okm_value::DynamicValue::Str("first".to_string()),
         );
-        c.merge(&K1, &open).expect("an open field");
+        c.put(&K1, &DynamicValue::Obj(open)).expect("an open field");
     }
     let report = drain(root.path(), &DrainConfig::new(out.path(), "test")).expect("drain");
     let table_dir = report.files[0]
@@ -822,7 +824,8 @@ fn statistics_name_the_right_column_when_a_struct_sits_before_it() {
             "note".to_string(),
             okm_value::DynamicValue::Str("first".to_string()),
         );
-        c.merge(&K1, &open).expect("a segment beside the row");
+        c.put(&K1, &DynamicValue::Obj(open))
+            .expect("a segment beside the row");
         c.put(
             &K2,
             &R {
@@ -1674,7 +1677,7 @@ fn a_fold_keeps_open_fields_written_by_an_earlier_window() {
             "note".to_string(),
             okm_value::DynamicValue::Str("first".to_string()),
         );
-        c.merge(&K1, &open).expect("an open field");
+        c.put(&K1, &DynamicValue::Obj(open)).expect("an open field");
     }
     drain(root.path(), &DrainConfig::new(out.path(), "test")).expect("first window");
 
@@ -1749,7 +1752,7 @@ fn a_fold_merges_open_fields_written_by_two_windows() {
             field.to_string(),
             okm_value::DynamicValue::Str(value.to_string()),
         );
-        c.merge(&K1, &open).expect("an open field");
+        c.put(&K1, &DynamicValue::Obj(open)).expect("an open field");
         drop(c);
         drain(root.path(), &DrainConfig::new(out.path(), "test")).expect("a window");
     }

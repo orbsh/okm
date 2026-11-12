@@ -59,12 +59,12 @@ fn view_projects_both_slots_and_leaves_the_typed_read_alone() {
     assert_eq!(row_only["level"], DynamicValue::U64(2));
 
     // Dynamic names join the same view; the typed read stays slot 0.
-    t.merge(
+    t.put(
         &key(1),
-        &dmap(&[
+        &DynamicValue::Obj(dmap(&[
             ("score", DynamicValue::U64(99)),
             ("note", DynamicValue::Str("hello".into())),
-        ]),
+        ])),
     )
     .unwrap();
     let got = whole_document(&t, &key(1)).unwrap().unwrap();
@@ -90,8 +90,11 @@ fn view_projects_both_slots_and_leaves_the_typed_read_alone() {
 
     // A dynamic-only document still views: the document is the PAIR of slots,
     // not the primary entry.
-    t.merge(&key(9), &dmap(&[("only", DynamicValue::U64(1))]))
-        .unwrap();
+    t.put(
+        &key(9),
+        &DynamicValue::Obj(dmap(&[("only", DynamicValue::U64(1))])),
+    )
+    .unwrap();
     assert!(t.get_row(&key(9)).unwrap().is_none(), "no static segment");
     assert_eq!(whole_document(&t, &key(9)).unwrap().unwrap().len(), 1);
 }
@@ -101,8 +104,11 @@ fn a_point_read_answers_parts_apart() {
     use okm_core::parts;
     let t: Collection<TestStore, UserKey, User> = Collection::new(TestStore::slatedb_mem());
     t.put(&key(1), &user(1, 2)).unwrap();
-    t.merge(&key(1), &dmap(&[("note", DynamicValue::Str("hi".into()))]))
-        .unwrap();
+    t.put(
+        &key(1),
+        &DynamicValue::Obj(dmap(&[("note", DynamicValue::Str("hi".into()))])),
+    )
+    .unwrap();
 
     // Both halves, kept apart: each is its own Option.
     let (row, value) = t.get::<(parts::Row, parts::Value)>(&key(1)).unwrap();
@@ -127,8 +133,11 @@ fn a_point_read_answers_parts_apart() {
     assert!(only.is_some());
 
     // Absence is per slot: a dynamic-only document answers (None, Some).
-    t.merge(&key(9), &dmap(&[("only", DynamicValue::U64(1))]))
-        .unwrap();
+    t.put(
+        &key(9),
+        &DynamicValue::Obj(dmap(&[("only", DynamicValue::U64(1))])),
+    )
+    .unwrap();
     let (row, value) = t.get::<(parts::Row, parts::Value)>(&key(9)).unwrap();
     assert!(row.is_none(), "no row in slot 0");
     assert!(value.is_some(), "slot 1 exists");
@@ -146,14 +155,20 @@ fn merge_touches_only_the_names_it_is_given() {
     let t: Collection<TestStore, UserKey, User> = Collection::new(TestStore::slatedb_mem());
     t.put(&key(1), &user(1, 5)).unwrap();
 
-    t.merge(
+    t.put(
         &key(1),
-        &dmap(&[("a", DynamicValue::U64(1)), ("b", DynamicValue::U64(2))]),
+        &DynamicValue::Obj(dmap(&[
+            ("a", DynamicValue::U64(1)),
+            ("b", DynamicValue::U64(2)),
+        ])),
     )
     .unwrap();
     // Per-name: `c` joins, `a` and `b` survive (a wholesale write would drop them).
-    t.merge(&key(1), &dmap(&[("c", DynamicValue::U64(3))]))
-        .unwrap();
+    t.put(
+        &key(1),
+        &DynamicValue::Obj(dmap(&[("c", DynamicValue::U64(3))])),
+    )
+    .unwrap();
 
     let got = whole_document(&t, &key(1)).unwrap().unwrap();
     assert_eq!(got.len(), 5, "2 declared + 3 dynamic");
@@ -177,8 +192,11 @@ fn merge_of_a_declared_field_is_an_rmw_and_cleans_the_old_face() {
         1
     );
 
-    t.merge(&key(1), &dmap(&[("level", DynamicValue::U64(30))]))
-        .unwrap();
+    t.put(
+        &key(1),
+        &DynamicValue::Obj(dmap(&[("level", DynamicValue::U64(30))])),
+    )
+    .unwrap();
 
     let row = t.get_row(&key(1)).unwrap().unwrap();
     assert_eq!(
@@ -206,17 +224,20 @@ fn merge_of_a_declared_field_is_an_rmw_and_cleans_the_old_face() {
 fn replace_is_the_whole_document() {
     let t: Collection<TestStore, UserKey, User> = Collection::new(TestStore::slatedb_mem());
     t.put(&key(1), &user(9, 9)).unwrap();
-    t.merge(&key(1), &dmap(&[("gone", DynamicValue::U64(1))]))
-        .unwrap();
+    t.put(
+        &key(1),
+        &DynamicValue::Obj(dmap(&[("gone", DynamicValue::U64(1))])),
+    )
+    .unwrap();
 
     // `legacy` is not named → default; the dynamic segment is EXACTLY the map's
     // non-declared names, so `gone` disappears.
-    t.replace(
+    t.put(
         &key(1),
-        &dmap(&[
+        (&DynamicValue::Obj(dmap(&[
             ("level", DynamicValue::U64(4)),
             ("kept", DynamicValue::Str("y".into())),
-        ]),
+        ])),),
     )
     .unwrap();
     assert_eq!(t.get_row(&key(1)).unwrap().unwrap(), user(0, 4));
@@ -235,12 +256,19 @@ fn replace_is_the_whole_document() {
     );
 
     // A fresh key: the map alone builds the row (absent fields default).
-    t.replace(&key(3), &dmap(&[("legacy", DynamicValue::U64(7))]))
-        .unwrap();
+    t.put(
+        &key(3),
+        (&DynamicValue::Obj(dmap(&[(
+            "legacy",
+            DynamicValue::U64(7),
+        )])),),
+    )
+    .unwrap();
     assert_eq!(t.get_row(&key(3)).unwrap().unwrap(), user(7, 0));
 
     // An empty map IS the empty document.
-    t.replace(&key(1), &BTreeMap::new()).unwrap();
+    t.put(&key(1), (&DynamicValue::Obj(BTreeMap::new()),))
+        .unwrap();
     assert!(whole_document(&t, &key(1)).unwrap().is_none());
 }
 
@@ -248,8 +276,11 @@ fn replace_is_the_whole_document() {
 fn purge_clears_both_slots_in_one_call() {
     let t: Collection<TestStore, UserKey, User> = Collection::new(TestStore::slatedb_mem());
     t.put(&key(2), &user(1, 1)).unwrap();
-    t.merge(&key(2), &dmap(&[("x", DynamicValue::U64(1))]))
-        .unwrap();
+    t.put(
+        &key(2),
+        &DynamicValue::Obj(dmap(&[("x", DynamicValue::U64(1))])),
+    )
+    .unwrap();
     assert!(whole_document(&t, &key(2)).unwrap().is_some());
 
     assert!(t.purge(&key(2)).unwrap());
@@ -260,8 +291,11 @@ fn purge_clears_both_slots_in_one_call() {
     assert!(!t.purge(&key(2)).unwrap(), "second purge is a no-op");
 
     // A dynamic-only document is purgeable too.
-    t.merge(&key(4), &dmap(&[("y", DynamicValue::U64(1))]))
-        .unwrap();
+    t.put(
+        &key(4),
+        &DynamicValue::Obj(dmap(&[("y", DynamicValue::U64(1))])),
+    )
+    .unwrap();
     assert!(t.purge(&key(4)).unwrap());
     assert!(whole_document(&t, &key(4)).unwrap().is_none());
 }
@@ -314,7 +348,10 @@ fn a_refused_merge_returns_the_error_and_writes_nothing() {
     t.put(&key(1), &user(3, 4)).unwrap();
 
     let err = t
-        .merge(&key(1), &dmap(&[("level", DynamicValue::Str("x".into()))]))
+        .put(
+            &key(1),
+            &DynamicValue::Obj(dmap(&[("level", DynamicValue::Str("x".into()))])),
+        )
         .unwrap_err();
     assert!(
         matches!(err, okm_core::Error::KindMismatch { .. }),
@@ -327,8 +364,11 @@ fn a_refused_merge_returns_the_error_and_writes_nothing() {
     );
 
     // 同一个 API 上的成功路径不受影响。
-    t.merge(&key(1), &dmap(&[("level", DynamicValue::U64(9))]))
-        .unwrap();
+    t.put(
+        &key(1),
+        &DynamicValue::Obj(dmap(&[("level", DynamicValue::U64(9))])),
+    )
+    .unwrap();
     assert_eq!(t.get_row(&key(1)).unwrap().unwrap(), user(3, 9));
 }
 
@@ -340,14 +380,23 @@ fn two_handles_on_one_engine_do_not_share_an_id() {
     let store = TestStore::slatedb_mem();
     let a: Collection<TestStore, UserKey, User> = Collection::new(store.shared_handle());
     let b: Collection<TestStore, UserKey, User> = Collection::new(store.shared_handle());
-    a.merge(&key(1), &dmap(&[("alpha", DynamicValue::Str("x".into()))]))
-        .unwrap();
-    b.merge(&key(2), &dmap(&[("beta", DynamicValue::Str("y".into()))]))
-        .unwrap();
+    a.put(
+        &key(1),
+        &DynamicValue::Obj(dmap(&[("alpha", DynamicValue::Str("x".into()))])),
+    )
+    .unwrap();
+    b.put(
+        &key(2),
+        &DynamicValue::Obj(dmap(&[("beta", DynamicValue::Str("y".into()))])),
+    )
+    .unwrap();
     // `a` allocates again AFTER `b` took the next id: a cached watermark would
     // reuse it and repoint `beta`'s label.
-    a.merge(&key(3), &dmap(&[("gamma", DynamicValue::Str("z".into()))]))
-        .unwrap();
+    a.put(
+        &key(3),
+        &DynamicValue::Obj(dmap(&[("gamma", DynamicValue::Str("z".into()))])),
+    )
+    .unwrap();
 
     assert_eq!(
         whole_document(&a, &key(2)).unwrap().unwrap()["beta"],
@@ -368,13 +417,16 @@ fn one_dynamic_name_across_documents_survives_a_fresh_mirror() {
     let t: Collection<TestStore, UserKey, User> = Collection::new(store.clone());
     t.put(&key(1), &user(1, 2)).unwrap();
     t.put(&key(2), &user(1, 3)).unwrap();
-    t.merge(
+    t.put(
         &key(1),
-        &dmap(&[("tag", DynamicValue::Str("alpha".into()))]),
+        &DynamicValue::Obj(dmap(&[("tag", DynamicValue::Str("alpha".into()))])),
     )
     .unwrap();
-    t.merge(&key(2), &dmap(&[("tag", DynamicValue::Str("beta".into()))]))
-        .unwrap();
+    t.put(
+        &key(2),
+        &DynamicValue::Obj(dmap(&[("tag", DynamicValue::Str("beta".into()))])),
+    )
+    .unwrap();
 
     assert_eq!(
         whole_document(&t, &key(2)).unwrap().unwrap()["tag"],

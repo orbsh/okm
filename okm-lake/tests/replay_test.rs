@@ -194,7 +194,7 @@ fn a_dynamic_field_survives_the_replay() {
     .expect("put");
     let mut extra = std::collections::BTreeMap::new();
     extra.insert("colour".to_string(), DynamicValue::Str("red".to_string()));
-    c.merge(&K { id: 1 }, &extra)
+    c.put(&K { id: 1 }, &DynamicValue::Obj(extra))
         .expect("a field the declaration does not have");
     // A segment is readable once it is SEALED, and a clean shutdown is what seals it:
     // `Drop for Changelog` flushes the pending frames and renames the tail into a
@@ -249,7 +249,7 @@ fn a_dynamic_only_document_survives_replay_and_reconciliation() {
     .expect("assemble");
     let mut extra = std::collections::BTreeMap::new();
     extra.insert("colour".to_string(), DynamicValue::Str("blue".to_string()));
-    c.merge(&K { id: 7 }, &extra)
+    c.put(&K { id: 7 }, &DynamicValue::Obj(extra))
         .expect("a segment with no row");
     drop(c);
 

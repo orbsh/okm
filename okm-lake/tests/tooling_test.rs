@@ -310,12 +310,12 @@ fn parquet_with_variant_restores_both_halves_and_segment_only_documents() {
     .unwrap();
     let mut open = BTreeMap::new();
     open.insert("note".to_string(), DynamicValue::Str("hello".into()));
-    t1.merge(&with_row, &open).unwrap();
+    t1.put(&with_row, &DynamicValue::Obj(open.clone())).unwrap();
     let segment_only = TKey {
         org_id: 1,
         user_id: 2,
     };
-    t1.merge(&segment_only, &open).unwrap();
+    t1.put(&segment_only, &DynamicValue::Obj(open)).unwrap();
 
     parquet_io::export_parquet_with_variant(&mut t1, &path).unwrap();
 

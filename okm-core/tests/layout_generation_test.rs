@@ -21,6 +21,7 @@ use okm_async::TestStore;
 use okm_core::changelog::window::{WindowConfig, load_sidecar, read_window, sidecar_of};
 use okm_core::changelog::{ChangelogConfig, ChangelogStore, apply_log_in_generation, table_dir};
 use okm_core::{Collection, Document, DocumentEncode, KeyEncode};
+use okm_value::DynamicValue;
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
 pub struct K {
@@ -81,7 +82,8 @@ fn a_window_stops_at_a_vocabulary_change() {
             "note".to_string(),
             okm_value::DynamicValue::Str("first".to_string()),
         );
-        c.merge(&K { id: 1 }, &open).expect("an open field");
+        c.put(&K { id: 1 }, &DynamicValue::Obj(open))
+            .expect("an open field");
     }
 
     // Window two: a fresh store numbers from 1 again, and 1 is now `tag`.
@@ -93,7 +95,8 @@ fn a_window_stops_at_a_vocabulary_change() {
             "tag".to_string(),
             okm_value::DynamicValue::Str("second".to_string()),
         );
-        c.merge(&K { id: 1 }, &open).expect("an open field");
+        c.put(&K { id: 1 }, &DynamicValue::Obj(open))
+            .expect("an open field");
     }
 
     let d = dir(log.path());

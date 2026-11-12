@@ -58,7 +58,8 @@ fn main() {
         // carries it as a `variant` column.
         let mut extra = std::collections::BTreeMap::new();
         extra.insert("note".to_string(), DynamicValue::Str("first".to_string()));
-        c.merge(&K { org: 7, id: 1 }, &extra).expect("merge");
+        c.put(&K { org: 7, id: 1 }, &DynamicValue::Obj(extra))
+            .expect("merge");
     } // Drop seals the segment: a clean exit is what makes the window readable.
 
     let report = drain(&log, &DrainConfig::new(&lake, "demo")).expect("drain");

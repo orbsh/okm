@@ -367,7 +367,7 @@ fn a_merge_folds_the_ledger_once_and_only_through_the_row_arm() {
     // is not touched.
     let mut open = BTreeMap::new();
     open.insert("note".to_string(), DynamicValue::Str("x".into()));
-    t.merge(&k, &open).unwrap();
+    t.put(&k, &DynamicValue::Obj(open)).unwrap();
     assert_eq!(
         count(t.store()),
         Some(1),
@@ -383,7 +383,7 @@ fn a_merge_folds_the_ledger_once_and_only_through_the_row_arm() {
     let mut both = BTreeMap::new();
     both.insert("views".to_string(), DynamicValue::U64(7));
     both.insert("tag".to_string(), DynamicValue::Str("y".into()));
-    t.merge(&k, &both).unwrap();
+    t.put(&k, &DynamicValue::Obj(both)).unwrap();
     assert_eq!(
         count(t.store()),
         Some(1),

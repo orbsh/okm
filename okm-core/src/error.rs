@@ -38,6 +38,11 @@ pub enum Error {
         want: &'static str,
         got: &'static str,
     },
+    /// A whole-document write was handed a payload that is not an object: a
+    /// scalar or an array is a field VALUE, not a document, and there is no
+    /// document-shaped reading of it. Refused before anything is written.
+    #[error("a whole-document write takes an object; the payload is {got}")]
+    NotADocument { got: &'static str },
     /// Right kind, unrepresentable value — a number too wide for the declared
     /// field, a byte string of the wrong length. Truncating it would invent
     /// data just as surely as defaulting it.

@@ -66,7 +66,8 @@ pub trait ReplayTarget {
     fn name(&self) -> &str;
     /// Write a decoded row through the target's own write path (never a byte copy:
     /// index entries, dynamic segments and reduce ledgers are rebuilt from the row).
-    fn merge(&self, pkey: &[u8], row: &ValueMap) -> Result<(), String>;
+    /// The one write verb, as everywhere else: a payload is a document.
+    fn put(&self, pkey: &[u8], row: &ValueMap) -> Result<(), String>;
     /// Remove a row. A primary-face delete is a removal.
     fn purge(&self, pkey: &[u8]) -> Result<bool, String>;
     /// The row as the target would read it back — labels, not ids. Reconciliation
@@ -133,7 +134,7 @@ pub fn replay_table<T: ReplayTarget>(dir: &Path, target: &T) -> Result<ReplayRep
                         let row =
                             row_of(&schema, &header, target.store(), suffix, &value, &labels)?;
                         target
-                            .merge(suffix, &row)
+                            .put(suffix, &row)
                             .map_err(|e| format!("{}: {e}", dir.display()))?;
                         report.puts += 1;
                     }
@@ -147,7 +148,7 @@ pub fn replay_table<T: ReplayTarget>(dir: &Path, target: &T) -> Result<ReplayRep
                             .map_err(|e| e.to_string())?;
                         if !dynamic.is_empty() {
                             target
-                                .merge(suffix, &dynamic)
+                                .put(suffix, &dynamic)
                                 .map_err(|e| format!("{}: {e}", dir.display()))?;
                             report.dynamic += 1;
                         }
@@ -428,7 +429,7 @@ where
             _ => {
                 intern(schema, header, target.store(), &mut row)?;
                 target
-                    .merge(&pkey, &row)
+                    .put(&pkey, &row)
                     .map_err(|e| format!("{}: {e}", target.name()))?;
                 report.adopted += 1;
             }

@@ -153,7 +153,7 @@ fn document_mode_reaches_both_slots_under_a_prefix() {
     };
     let mut patch = std::collections::BTreeMap::new();
     patch.insert("note".to_string(), DynamicValue::Str("no row".into()));
-    col.merge(&seg_only, &patch).unwrap();
+    col.put(&seg_only, &DynamicValue::Obj(patch)).unwrap();
 
     let probe = DeviceKey::prefix().org(1).finish();
     let rows: Vec<DeviceKey> = col.scan_keys(&probe).map(|r| r.unwrap()).collect();

@@ -326,7 +326,7 @@ fn a_key_name_in_a_map_is_a_value_field_in_both_modes() {
     let mut typed_map = BTreeMap::new();
     typed_map.insert("org_id".to_string(), DynamicValue::U64(999));
     typed_map.insert("note".to_string(), DynamicValue::Str("hi".into()));
-    typed.merge(&key, &typed_map).unwrap();
+    typed.put(&key, &DynamicValue::Obj(typed_map)).unwrap();
 
     let mut dyn_map = BTreeMap::new();
     dyn_map.insert("org_id".to_string(), Value::U32(999));
@@ -397,7 +397,9 @@ fn the_two_enumeration_modes_see_the_two_kinds_of_document() {
         .unwrap();
     let mut dynamic_only = BTreeMap::new();
     dynamic_only.insert("note".to_string(), DynamicValue::Str("no row".into()));
-    typed.merge(&segment_only, &dynamic_only).unwrap();
+    typed
+        .put(&segment_only, &DynamicValue::Obj(dynamic_only))
+        .unwrap();
 
     assert_eq!(
         typed

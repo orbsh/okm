@@ -56,7 +56,7 @@ fn variant_column_export() {
         },
     )
     .unwrap();
-    t.merge(&k1, &dyn1).unwrap();
+    t.put(&k1, &DynamicValue::Obj(dyn1)).unwrap();
 
     // Document 2: declared fields only -> variant column null.
     let k2 = UserKey {

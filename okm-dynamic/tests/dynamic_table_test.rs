@@ -481,12 +481,12 @@ fn dynamic_fields_equal_typed_fields() {
     fields.insert("note".to_string(), DynamicValue::Str("hello".into()));
     fields.insert("weight".to_string(), DynamicValue::U64(9));
     typed
-        .merge(
+        .put(
             &UserKey {
                 org_id: 1,
                 user_id: 2,
             },
-            &fields,
+            &DynamicValue::Obj(fields),
         )
         .unwrap();
     dynamic

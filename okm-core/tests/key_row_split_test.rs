@@ -136,7 +136,10 @@ fn a_map_name_that_matches_a_payload_field_writes_the_row() {
     // The classifier is the payload declaration, not the key: `user_id` is a
     // declared field, so this is a row update (the segment never sees it).
     table
-        .merge(&k, &map_of(&[("user_id", DynamicValue::U64(50))]))
+        .put(
+            &k,
+            &DynamicValue::Obj(map_of(&[("user_id", DynamicValue::U64(50))])),
+        )
         .unwrap();
 
     let row = table.get_row(&k).unwrap().unwrap();
@@ -145,7 +148,10 @@ fn a_map_name_that_matches_a_payload_field_writes_the_row() {
 
     // A name the payload does NOT declare goes to the dynamic segment.
     table
-        .merge(&k, &map_of(&[("nickname", DynamicValue::Str("z".into()))]))
+        .put(
+            &k,
+            &DynamicValue::Obj(map_of(&[("nickname", DynamicValue::Str("z".into()))])),
+        )
         .unwrap();
     let doc = whole_document(&table, &k).unwrap().unwrap();
     assert_eq!(doc.get("nickname"), Some(&DynamicValue::Str("z".into())));

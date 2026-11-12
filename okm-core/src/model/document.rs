@@ -388,6 +388,31 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         buf
     }
 
+    /// Write one document. The WRITE VERB is one; the payload type selects the
+    /// path (ADR-0035 as amended):
+    ///
+    /// ```ignore
+    /// t.put(&key, &row)?;                        // typed row: the struct door
+    /// t.put(&key, &DynamicValue::Obj(map))?;      // partial document: merge
+    /// t.put(&key, (&DynamicValue::Obj(map),))?;   // whole document: replace
+    /// ```
+    ///
+    /// Each path keeps the contract its own verb had, because that contract
+    /// follows from the payload rather than from the spelling: a typed row is
+    /// the fresh-row fast path and does not read (so it does not sweep the
+    /// previous values' faces), while a map is a whole-document write and does.
+    /// A scalar or array payload is refused — see
+    /// [`WritePayload`](crate::model::write::WritePayload).
+    pub fn put<W: crate::model::write::WritePayload<S, K, R>>(
+        &self,
+        key: &K,
+        payload: W,
+    ) -> crate::error::Result<()> {
+        payload.write(self, key)
+    }
+
+    /// The typed-row arm of [`put`](Self::put): what `put(&key, &R)` always did.
+    ///
     /// Write a document: primary key + one (key, value) index entry per access
     /// method, all derived from this one document.
     ///
@@ -402,7 +427,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     /// — the stale entry dangles, which is why `purge` exists; the reduce,
     /// by contrast, is a mutable
     /// aggregate under one group key and MUST compensate.
-    pub fn put(&self, key: &K, document: &R) -> crate::error::Result<()> {
+    pub(crate) fn put_typed(&self, key: &K, document: &R) -> crate::error::Result<()> {
         // ONE engine commit per semantic write. The whole write set — primary
         // entry, every declared face, embedded children with their own faces,
         // the releases of children the old document no longer points at, and
@@ -958,7 +983,8 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         buf
     }
 
-    /// Partial whole-document update, ONE engine commit.
+    /// The `&DynamicValue` arm of [`put`](Self::put): partial whole-document
+    /// update, ONE engine commit.
     ///
     /// - A name that matches a declared field is a read-modify-write of the row:
     ///   the stored document is decoded, the named fields overwrite their slots
@@ -969,15 +995,16 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     /// - Any other name is a dynamic field: it overwrites that name in slot 1
     ///   and leaves the other dynamic names alone.
     ///
-    /// Declared fields the map does NOT name keep their stored values. Use
-    /// [`replace`](Self::replace) when the map is meant to be the whole document.
+    /// Declared fields the map does NOT name keep their stored values. The
+    /// one-element tuple payload of [`put`](Self::put) is the whole-document
+    /// form, where an absent name does not survive.
     ///
     /// Fallible because the map is CALLER data: a name that matches a declared
     /// field but carries the wrong kind (or a value that does not fit it) comes
     /// back as [`Error`](crate::error::Error) instead of silently defaulting.
     /// The check runs before any op enters the batch, so a refused merge leaves
     /// the store exactly as it was — the dynamic half included.
-    pub fn merge(
+    pub(crate) fn merge_map(
         &self,
         key: &K,
         object: &BTreeMap<String, DynamicValue>,
@@ -1010,20 +1037,21 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         Ok(())
     }
 
-    /// Whole-document replacement, ONE engine commit: the map IS the document.
+    /// The `(&DynamicValue,)` arm of [`put`](Self::put): whole-document
+    /// replacement, ONE engine commit — the map IS the document.
     ///
     /// - Declared names rebuild the row; a declared field the map does not name
     ///   takes the struct's default (the payload is positional — a half row
     ///   cannot be encoded). The row's previous faces are removed.
     /// - A map with NO declared name leaves the static segment absent, deleting
     ///   the row if it existed. The dynamic segment is exactly the map's
-    ///   non-declared names, so `replace(key, &empty_map)` is
+    ///   non-declared names, so a whole-document `put` of the empty object is
     ///   [`purge`](Self::purge).
     ///
-    /// Fallible for the same reason as [`merge`](Self::merge): the map is caller
+    /// Fallible for the same reason as the partial arm: the map is caller
     /// data, and a declared name that carries the wrong kind is refused before
     /// anything is written.
-    pub fn replace(
+    pub(crate) fn replace_map(
         &self,
         key: &K,
         object: &BTreeMap<String, DynamicValue>,

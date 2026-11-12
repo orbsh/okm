@@ -54,19 +54,31 @@ fn every_point_verb_announces_the_row_it_leaves() {
 
     t.put(&key, &Account { balance: 10 }).unwrap();
     // A declared name is a row RMW: Put, carrying the row the merge left.
-    t.merge(&key, &dmap(&[("balance", DynamicValue::U64(20))]))
-        .unwrap();
+    t.put(
+        &key,
+        &DynamicValue::Obj(dmap(&[("balance", DynamicValue::U64(20))])),
+    )
+    .unwrap();
     // Dynamic-only merge: slot 1 moves, no row is left for the event to carry.
-    t.merge(&key, &dmap(&[("note", DynamicValue::Str("x".into()))]))
-        .unwrap();
+    t.put(
+        &key,
+        &DynamicValue::Obj(dmap(&[("note", DynamicValue::Str("x".into()))])),
+    )
+    .unwrap();
     // Declared names rebuild the row: Put, carrying the rebuilt document.
-    t.replace(&key, &dmap(&[("balance", DynamicValue::U64(30))]))
-        .unwrap();
+    t.put(
+        &key,
+        (&DynamicValue::Obj(dmap(&[(
+            "balance",
+            DynamicValue::U64(30),
+        )])),),
+    )
+    .unwrap();
     // No declared name removes the row: Delete, carrying the removed row — the
     // same signal `purge` gives for the same write.
-    t.replace(&key, &dmap(&[])).unwrap();
+    t.put(&key, (&DynamicValue::Obj(dmap(&[])),)).unwrap();
     // Nothing left to remove, so nothing announced.
-    t.replace(&key, &dmap(&[])).unwrap();
+    t.put(&key, (&DynamicValue::Obj(dmap(&[])),)).unwrap();
     assert!(t.get_row(&key).unwrap().is_none());
 
     t.put(&key, &Account { balance: 40 }).unwrap();

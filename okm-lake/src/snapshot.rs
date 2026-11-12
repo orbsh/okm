@@ -22,6 +22,7 @@ use crate::bridge::ToRecordBatch;
 use okm_core::model::field::FieldType;
 use okm_core::model::index::Document;
 use okm_core::model::key::KeyEncode;
+use okm_value::DynamicValue;
 
 /// Declaration-order offset table for a fixed-width region (the key
 /// encoding, or the value half of TLV frames — widths are declared, so the
@@ -568,7 +569,7 @@ pub mod parquet_io {
                 // declared name would come back as an error rather than a
                 // silent default — the import path propagates it.
                 collection
-                    .merge(&key, &map)
+                    .put(&key, &DynamicValue::Obj(map))
                     .map_err(|e| parquet::errors::ParquetError::General(e.to_string()))?;
             }
         }

@@ -128,7 +128,7 @@ fn the_dynamic_segment_still_takes_unknown_names() {
     let mut patch = std::collections::BTreeMap::new();
     patch.insert("note".to_string(), DynamicValue::Str("open segment".into()));
     patch.insert("b".to_string(), DynamicValue::U64(99));
-    col.merge(&key(), &patch).unwrap();
+    col.put(&key(), &DynamicValue::Obj(patch)).unwrap();
 
     let stored = col.get_row(&key()).unwrap().unwrap();
     assert_eq!(stored.b, 99, "a declared name routes to the row");

@@ -20,6 +20,7 @@
     clippy::panic_in_result_fn
 )]
 
+use okm_value::DynamicValue;
 use std::cell::Cell;
 
 use okm_core::engine::storage::ScanIter;
@@ -237,7 +238,8 @@ fn dynamic_write_including_vocabulary_growth_is_one_engine_commit() {
         "colour".to_string(),
         okm_value::DynamicValue::Str("amber".into()),
     );
-    t.merge(&LedgerKey { id: 1 }, &fields).unwrap();
+    t.put(&LedgerKey { id: 1 }, &DynamicValue::Obj(fields))
+        .unwrap();
 
     let c = t.store();
     assert_eq!(
@@ -266,8 +268,11 @@ fn merge_of_a_declared_field_is_one_engine_commit() {
     t.put(&k, &row(7)).unwrap();
     t.store().reset();
 
-    t.merge(&k, &map_of(&[("amount", okm_value::DynamicValue::U64(9))]))
-        .unwrap();
+    t.put(
+        &k,
+        &DynamicValue::Obj(map_of(&[("amount", okm_value::DynamicValue::U64(9))])),
+    )
+    .unwrap();
 
     let c = t.store();
     assert_eq!(c.commits.get(), 1, "merge is one engine commit");
@@ -288,19 +293,22 @@ fn replace_is_one_engine_commit_across_both_slots() {
     t.put(&k, &row(7)).unwrap();
     // Intern the dynamic name first, so the replace below measures the write
     // set only (a first-seen name adds its three vocabulary ops).
-    t.merge(
+    t.put(
         &k,
-        &map_of(&[("colour", okm_value::DynamicValue::Str("amber".into()))]),
+        &DynamicValue::Obj(map_of(&[(
+            "colour",
+            okm_value::DynamicValue::Str("amber".into()),
+        )])),
     )
     .unwrap();
     t.store().reset();
 
-    t.replace(
+    t.put(
         &k,
-        &map_of(&[
+        (&DynamicValue::Obj(map_of(&[
             ("account", okm_value::DynamicValue::U64(8)),
             ("colour", okm_value::DynamicValue::Str("slate".into())),
-        ]),
+        ])),),
     )
     .unwrap();
 
@@ -331,9 +339,12 @@ fn purge_is_one_engine_commit() {
     let t = <LedgerRow as Document>::collection(Counting::new(TestStore::slatedb_mem()));
     let k = LedgerKey { id: 1 };
     t.put(&k, &row(7)).unwrap();
-    t.merge(
+    t.put(
         &k,
-        &map_of(&[("colour", okm_value::DynamicValue::Str("amber".into()))]),
+        &DynamicValue::Obj(map_of(&[(
+            "colour",
+            okm_value::DynamicValue::Str("amber".into()),
+        )])),
     )
     .unwrap();
     t.store().reset();
@@ -371,10 +382,19 @@ fn the_verbs_take_a_shared_handle_and_still_commit_once_each() {
     fn drive<S: VirtualStorage>(t: &okm_core::Collection<S, LedgerKey, LedgerRow>) {
         let k = LedgerKey { id: 1 };
         t.put(&k, &row(7)).unwrap();
-        t.merge(&k, &map_of(&[("amount", okm_value::DynamicValue::U64(2))]))
-            .unwrap();
-        t.replace(&k, &map_of(&[("amount", okm_value::DynamicValue::U64(3))]))
-            .unwrap();
+        t.put(
+            &k,
+            &DynamicValue::Obj(map_of(&[("amount", okm_value::DynamicValue::U64(2))])),
+        )
+        .unwrap();
+        t.put(
+            &k,
+            (&DynamicValue::Obj(map_of(&[(
+                "amount",
+                okm_value::DynamicValue::U64(3),
+            )])),),
+        )
+        .unwrap();
         assert!(
             t.purge(&k).unwrap(),
             "purge addresses the document it was given"
