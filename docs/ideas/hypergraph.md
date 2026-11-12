@@ -6,6 +6,8 @@ nothing here is committed. The proposal in §1–§6 is an outside document
 the code as it stands today, and §8 lists what a real design would have to
 settle first.
 
+**Re-checked 2026-11-12.** The carrier this proposal was written against has retired. `Junction` — and the `collection.rs` / `junction.rs` paths §1 cited — no longer exist (ADR-0051, 2026-11-04), and a many-to-many relation is now a collection whose key is the pair, with its reverse direction declared as a lead face over the key's own bytes (ADR-0054). §1's two-carrier premise and §8.7's comparison are superseded by §9, which states the comparison that decides anything now: a hyperedge against a **relation table**.
+
 Companion: `~/world/krystallizer/docs/ideas/hypergraph-population.md` — the
 ingestion side (how hyperedges get proposed and written without an LLM in the
 write path). It moved to the service that owns the write side: okm offers no
@@ -16,16 +18,13 @@ merge before writing.
 
 ## 1. The claim
 
-okm has two relation carriers, both binary:
+okm has one dedicated relation carrier, and it is binary:
 
-- `Junction<S, E>` (`okm-core/src/model/collection.rs:17`) — compile-time typed
-  endpoints, identity IS the endpoint pair, one entry per direction
-  (`okm-core/src/model/junction.rs:1-30`).
-- `Graph<S, E>` (ADR-0017) — open `NodeRef` endpoints, own identity
-  (`edge_id`), attributes, parallel edges, runtime predicates
-  (`okm-core/src/model/graph.rs:1-40`).
+- `Graph<S, E>` (ADR-0017) — open `NodeRef` endpoints, own identity (`edge_id`), attributes, parallel edges, runtime predicates (`okm-core/src/model/graph.rs`), faces `0x06`–`0x09`.
 
-Each binds one source and one destination. The proposal's premise: high-order
+Many-to-many is not a carrier at all: it is a collection whose key is the pair (ADR-0051), with the reverse direction declared as a lead face over the key's own bytes (ADR-0054). The shared entry layout underneath is the same one `Graph` borrows — namespace, one-byte fixed face, index segment, primary-key tail. `Junction`, the carrier this section originally listed, retired in ADR-0051; the model kept the shape and dropped the machinery, because a collection already had every capability the junction needed to build by hand.
+
+A graph edge binds one source and one destination. The proposal's premise: high-order
 relations (agent memory, multi-party audit, risk) routinely bind 3+ participants
 at once — `{user A, org B, asset C}` all participating in `[audit event X]` —
 and modelling that as a reified node plus k binary edges costs k times the
@@ -138,9 +137,32 @@ Each row is a premise the proposal asserts and what the repository actually says
 6. **Membership check.** `NodeSet`/`#[ok_nodes]` is the existing declared-set
    mechanism (a declaration, no slot). Reuse it rather than inventing
    `ok_entities`, or the vocabulary grows two names for one idea.
-7. **Does the existing pattern already answer the use case?** Reifying the
-   relation as a document row plus binary edges to participants is expressible
-   today, with no new carrier. The hypergraph trades 1 row + N edges for 1 row +
-   N faces: cheaper for "which relations touch this member" (no edge fetch),
-   identical for "what are this relation's participants" (one body read). The
-   decision hinges on which query dominates, not on the encoding.
+7. **Does the existing pattern already answer the use case?** A relation table does (ADR-0051 + ADR-0054), and it is a stronger baseline than the binary-edge modelling this section used to compare against: N members are N rows, `put` writes the row and every face in one batch, attributes on the relation are ordinary indexable columns, the reverse direction is a lead face sliced from the key (so it cannot drift from the key), and the rows travel through the changelog and to the lake. Against that baseline a hyperedge trades N rows for 1 row + N faces. §9 states what it wins and what it loses.
+
+## 9. A hyperedge against a relation table (2026-11-12)
+
+The baseline is not a junction and not "a row plus binary edges". It is one collection whose key is the pair, `#[ok_lead]` for the reverse direction, and ordinary columns for whatever the relation knows:
+
+```text
+#[derive(KeyEncode)]  struct MembershipKey { channel_id: u64, member_id: Uuid7, joined_ms: u64 }
+#[derive(DocumentEncode)] #[ok_ns(110)] #[ok_lead(by_member { fields(member_id) })]
+struct Membership { nickname: String, since_ms: u64, role: u8 }
+```
+
+| need | relation table (today) | hyperedge (proposed) |
+|---|---|---|
+| which relations touch M | lead face `by_member` → whole key decoded, row fetched | member face → edge id, then the payload row |
+| which members a relation has | prefix scan of the pair key | one body read (N refs inline) |
+| relations containing A and B | two lead-face streams intersected (`OrderedSets`) | two member-face streams intersected |
+| attributes of the relation | ordinary columns | payload |
+| attributes of a member *within* the relation | ordinary columns (`role`, `since_ms`) | **not expressible** without widening the face key with role/position, or storing per-member data in the body and fetching it |
+| members in a meaningful order (join order, sequence) | free: an extra key column, re-read by another lead face | **not expressible**: the member face collapses order |
+| "these N members are one relation" | convention only — a missing row is invisible | structural: body plus faces written once |
+| delete the whole relation | scan the prefix, then `purge` each row | read the body, delete every implied face |
+| export / changelog | the row is a row | the payload row is; the faces are derived state |
+
+What it wins is the last two rows of that shape — one object per relation, so the members cannot be torn apart and the relation's own attributes exist once instead of N times — plus half the index entries, since direction is gone and `out`/`in` collapse into one member face.
+
+What it loses is the row above them, and for agent memory that row is usually the point: a relation is rarely symmetric (a member's role, weight, valid-from, or confidence belongs to *that member in that relation*), and a set-shaped carrier has no place for it except widening the face key or paying a fetch. It also loses the key-as-address allowance — any immutable ordering dimension rides in a pair-keyed table's key and comes back through a face, while a hyperedge's member face has no place to put an ordering.
+
+So the decision does not turn on arity as §5 assumed. It turns on **where the attributes live**: relation-level only → a hyperedge is genuinely cheaper and its invariant is real; per-member too → the relation table already models it and the hyperedge would have to rebuild that ability inside the face key. The prototype worth building, if any, is the set-shaped form of the graph (reusing the direction-only faces `0x07`/`0x09` and their predicate twins, ADR-0017 §1 keeping one ns per graph), not a third carrier — and only after a workload shows relations with no per-member attributes are the common case.
