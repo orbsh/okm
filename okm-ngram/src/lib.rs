@@ -4,7 +4,7 @@
 //! The whole capability is one tokenizer: character n-grams of a
 //! configurable width `n`. Each n-gram is a posting entry via
 //! `func(ngrams)` returning `Vec<String>` — one row fans out to N
-//! entries, `scan::<I>(gram)` is the posting list. BM25 rides on top of
+//! entries, so `scan` over the index with `(Fields, Key)` is the posting list. BM25 rides on top of
 //! the recall (term frequency = how many entries share the token).
 //!
 //! That is deliberately the whole feature. anything beyond n-gram +

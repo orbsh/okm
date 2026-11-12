@@ -10,6 +10,7 @@
     clippy::unwrap_in_result,
     clippy::panic_in_result_fn
 )]
+use okm_core::parts;
 use okm_lake::bridge::EdgeTable;
 
 use okm_core::{
@@ -471,7 +472,8 @@ fn node_kind_filter_intersects_typed_traversal() {
 
     // Node kind face = Org's own declared index (standard document layout).
     let kind2: Vec<u64> = orgs
-        .scan::<__OkmIndex_Org_by_kind>(&2u8.to_be_bytes())
+        .scan::<__OkmIndex_Org_by_kind, (parts::Fields, parts::Key, parts::Row)>(&2u8.to_be_bytes())
+        .collect::<okm_core::error::Result<Vec<_>>>()
         .unwrap()
         .into_iter()
         .filter_map(|(_, pk, _)| {

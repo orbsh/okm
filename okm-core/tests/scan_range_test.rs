@@ -15,6 +15,7 @@
 use okm_core::{Collection, DocumentEncode, KeyEncode};
 
 use okm_async::TestStore;
+use okm_core::parts;
 #[derive(KeyEncode, Clone, PartialEq, Debug)]
 pub struct RowId {
     pub id: u64,
@@ -42,7 +43,11 @@ fn range_scan_reads_only_the_interval() {
 
     // 1 <= a < 100 (u32 BE; value order == byte order).
     let hits = col
-        .scan_range::<__OkmIndex_Row_by_a>(&1u32.to_be_bytes(), Some(&100u32.to_be_bytes()))
+        .scan_range::<__OkmIndex_Row_by_a, (parts::Fields, parts::Key, parts::Row)>(
+            &1u32.to_be_bytes(),
+            Some(&100u32.to_be_bytes()),
+        )
+        .collect::<okm_core::error::Result<Vec<_>>>()
         .unwrap();
     assert_eq!(hits.len(), 99); // a = 1..=99
     assert_eq!(hits.first().unwrap().1.decoded.id, 1);
@@ -56,13 +61,21 @@ fn range_scan_reads_only_the_interval() {
 
     // Unbounded end: a >= 50.
     let hits = col
-        .scan_range::<__OkmIndex_Row_by_a>(&50u32.to_be_bytes(), None)
+        .scan_range::<__OkmIndex_Row_by_a, (parts::Fields, parts::Key, parts::Row)>(
+            &50u32.to_be_bytes(),
+            None,
+        )
+        .collect::<okm_core::error::Result<Vec<_>>>()
         .unwrap();
     assert_eq!(hits.len(), 50);
 
     // Empty interval: end <= begin.
     let hits = col
-        .scan_range::<__OkmIndex_Row_by_a>(&100u32.to_be_bytes(), Some(&1u32.to_be_bytes()))
+        .scan_range::<__OkmIndex_Row_by_a, (parts::Fields, parts::Key, parts::Row)>(
+            &100u32.to_be_bytes(),
+            Some(&1u32.to_be_bytes()),
+        )
+        .collect::<okm_core::error::Result<Vec<_>>>()
         .unwrap();
     assert!(hits.is_empty());
 }
@@ -77,7 +90,11 @@ fn range_scan_fjall() {
             .unwrap();
     }
     let hits = col
-        .scan_range::<__OkmIndex_Row_by_a>(&10u32.to_be_bytes(), Some(&20u32.to_be_bytes()))
+        .scan_range::<__OkmIndex_Row_by_a, (parts::Fields, parts::Key, parts::Row)>(
+            &10u32.to_be_bytes(),
+            Some(&20u32.to_be_bytes()),
+        )
+        .collect::<okm_core::error::Result<Vec<_>>>()
         .unwrap();
     assert_eq!(hits.len(), 10);
 }
@@ -92,7 +109,11 @@ fn range_scan_redb() {
             .unwrap();
     }
     let hits = col
-        .scan_range::<__OkmIndex_Row_by_a>(&10u32.to_be_bytes(), Some(&20u32.to_be_bytes()))
+        .scan_range::<__OkmIndex_Row_by_a, (parts::Fields, parts::Key, parts::Row)>(
+            &10u32.to_be_bytes(),
+            Some(&20u32.to_be_bytes()),
+        )
+        .collect::<okm_core::error::Result<Vec<_>>>()
         .unwrap();
     assert_eq!(hits.len(), 10);
 }
@@ -111,19 +132,23 @@ fn lazy_range_scan_matches_buffered() {
     }
 
     let lazy: Vec<_> = col
-        .scan_range_iter::<__OkmIndex_Row_by_a>(&1u32.to_be_bytes(), Some(&100u32.to_be_bytes()))
+        .scan_range::<__OkmIndex_Row_by_a, (parts::Fields, parts::Key, parts::Row)>(
+            &1u32.to_be_bytes(),
+            Some(&100u32.to_be_bytes()),
+        )
+        .map(|item| item.expect("a range item"))
         .collect();
     assert_eq!(lazy.len(), 99);
-    assert_eq!(lazy[0].as_ref().unwrap().2.as_ref().unwrap().a, 1);
-    assert_eq!(
-        lazy.last().unwrap().as_ref().unwrap().2.as_ref().unwrap().a,
-        99
-    );
+    assert_eq!(lazy[0].2.as_ref().unwrap().a, 1);
+    assert_eq!(lazy.last().unwrap().2.as_ref().unwrap().a, 99);
 
     // Backwards walk (rev() requires DoubleEndedIterator) — "last N
     // entries" without buffering the forward pass.
     let last_three: Vec<_> = col
-        .scan_range_iter::<__OkmIndex_Row_by_a>(&1u32.to_be_bytes(), Some(&100u32.to_be_bytes()))
+        .scan_range::<__OkmIndex_Row_by_a, (parts::Fields, parts::Key, parts::Row)>(
+            &1u32.to_be_bytes(),
+            Some(&100u32.to_be_bytes()),
+        )
         .rev()
         .take(3)
         .collect();
@@ -134,7 +159,10 @@ fn lazy_range_scan_matches_buffered() {
     // Early abandon costs only the pulled entries — lazy by construction
     // (take before collect); just lock the semantics.
     let first_two: Vec<_> = col
-        .scan_range_iter::<__OkmIndex_Row_by_a>(&1u32.to_be_bytes(), None)
+        .scan_range::<__OkmIndex_Row_by_a, (parts::Fields, parts::Key, parts::Row)>(
+            &1u32.to_be_bytes(),
+            None,
+        )
         .take(2)
         .collect();
     assert_eq!(first_two.len(), 2);
@@ -151,12 +179,18 @@ fn lazy_range_scan_fjall_native_double_ended() {
             .unwrap();
     }
     let fwd: Vec<(u64, u32)> = col
-        .scan_range_iter::<__OkmIndex_Row_by_a>(&10u32.to_be_bytes(), Some(&20u32.to_be_bytes()))
+        .scan_range::<__OkmIndex_Row_by_a, (parts::Fields, parts::Key, parts::Row)>(
+            &10u32.to_be_bytes(),
+            Some(&20u32.to_be_bytes()),
+        )
         .map(|item| item.expect("a page item"))
         .map(|(_, k, d)| (k.decoded.id, d.expect("a row").a))
         .collect();
     let mut bwd: Vec<(u64, u32)> = col
-        .scan_range_iter::<__OkmIndex_Row_by_a>(&10u32.to_be_bytes(), Some(&20u32.to_be_bytes()))
+        .scan_range::<__OkmIndex_Row_by_a, (parts::Fields, parts::Key, parts::Row)>(
+            &10u32.to_be_bytes(),
+            Some(&20u32.to_be_bytes()),
+        )
         .rev()
         .map(|item| item.expect("a page item"))
         .map(|(_, k, d)| (k.decoded.id, d.expect("a row").a))

@@ -237,6 +237,7 @@ const fn str_eq(a: &str, b: &str) -> bool {
 /// Prefix fields are trustworthy; trailing fields are garbage read past the
 /// boundary into B's encoding region — callers must use only the prefix
 /// fields, or take `decoded`'s prefix portion to scan the main collection.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PrefixKey<A> {
     pub decoded: A,
     /// Bytes consumed by the identity prefix (= sum of `ok_head` field widths).

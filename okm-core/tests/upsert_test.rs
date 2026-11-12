@@ -21,6 +21,7 @@ use okm_core::{Collection, Document};
 #[path = "subscribe_common.rs"]
 mod subscribe_common;
 use __OkmIndex_Counter_by_bucket as Counter_ByBucket;
+use okm_core::parts;
 use subscribe_common::okm_subscribe;
 use subscribe_common::*;
 
@@ -55,7 +56,10 @@ fn upsert_with_full_paths() {
     // ---------- write path fired: index entries present ----------
     // by_bucket(7) scan must see the document (index entry written by the put
     // inside upsert_with, not bypassed).
-    let scanned = t.scan::<Counter_ByBucket>(&7u32.to_be_bytes()).unwrap();
+    let scanned = t
+        .scan::<Counter_ByBucket, (parts::Fields, parts::Key, parts::Row)>(&7u32.to_be_bytes())
+        .collect::<okm_core::error::Result<Vec<_>>>()
+        .unwrap();
     assert_eq!(scanned.len(), 1);
     assert_eq!(scanned[0].2.as_ref().unwrap().hits, 15);
 

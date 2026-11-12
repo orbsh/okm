@@ -10,7 +10,7 @@
 
 use crate::engine::storage::{SharedVirtualStorage, VirtualStorage, scan_suffix_kv};
 use crate::model::index::{Document, KvIndex};
-use crate::model::key::{KeyEncode, PrefixKey};
+use crate::model::key::KeyEncode;
 use crate::model::obj_vocab::VocabSet;
 
 /// One document as the byte-level scans hand it over: `(key encoding suffix,
@@ -63,23 +63,14 @@ pub struct Collection<S, K: KeyEncode, R: Document<Key = K>> {
     _marker: std::marker::PhantomData<(K, R)>,
 }
 
-/// One scan hit: the sort segment decoded, the key, and the row when the entry
-/// carries a full key (a truncated `key(...)` cannot fetch back, so `None`).
-///
-/// The first element is why a caller can read the column it scanned BY: it used
-/// to cost a fetch-back or an `includes` declaration.
-pub type ScanHit<I> = (
-    <I as KvIndex>::Fields,
-    PrefixKey<<I as KvIndex>::Key>,
-    Option<<I as KvIndex>::Document>,
-);
-
-/// One covered scan hit: the two above plus the `includes` segment decoded.
-pub type CoveredHit<I> = (
-    <I as KvIndex>::Fields,
-    PrefixKey<<I as KvIndex>::Key>,
-    <I as KvIndex>::Covered,
-);
+/// Where an index entry's field segment starts: after the ns header and the
+/// slot (one byte for a fixed face, two for a counting family — measured, not
+/// assumed).
+fn segment_start<I: KvIndex>(header: &[u8]) -> usize {
+    let mut head = header.to_vec();
+    crate::model::index::write_slot(&mut head, I::SLOT);
+    head.len()
+}
 
 impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> {
     /// The ns prefix is NOT a constructor argument: it is declared once
@@ -633,294 +624,148 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         Ok(Some(document))
     }
 
-    /// Leftmost-prefix scan over access method `I`, then fetch-back
-    /// (回表): decode each entry's key prefix and load its document payload.
-    /// With a truncated `key(...)` prefix the decoded keys are partial
-    /// (`PrefixKey.taken < KEY_LEN`) — use the trustworthy prefix fields
-    /// to continue scanning the main table.
+    /// Leftmost-prefix scan over access method `I`: every entry whose field
+    /// segment starts with `probe`, in entry order, pulled on demand.
+    ///
+    /// `P` is what to read out of each hit — a tuple of
+    /// [`parts`](crate::model::parts), in the caller's order:
+    ///
+    /// ```ignore
+    /// t.scan::<ByOrg, (parts::Fields, parts::Key, parts::Row)>(&probe)   // the plain answer
+    /// t.scan::<ByOrg, (parts::Key, parts::Fields)>(&probe)               // no fetch, caller's order
+    /// t.scan::<ByOrg, (parts::Key, parts::Include)>(&probe)              // the `includes` payload
+    /// ```
+    ///
+    /// A part the caller does not name costs nothing: it is a type that is not in
+    /// the tuple, so no code for it exists. `Row` is the only part that reads the
+    /// store, and it is read per entry pulled — a consumer that stops early pays
+    /// only for what it consumed. `collect::<Result<Vec<_>>>()` is the mirror when
+    /// the whole answer is wanted at once.
     ///
     /// Prefix semantics: a stored value that EXTENDS the probe matches
-    /// (`"alpha"` probes `"alpha"` and `"alphabet"`). Entries whose probe
-    /// bytes were satisfied by primary-key tail bytes are dropped, never
-    /// returned (`"ad"` + tail `0x31…` vs the probe `"ad1"`) — exact
-    /// matching on the value is [`scan_exact`](Self::scan_exact).
-    pub fn scan<I: KvIndex<Key = K, Document = R>>(
-        &self,
-        probe: impl crate::model::prefix::ProbeBytes<I>,
-    ) -> crate::error::Result<Vec<ScanHit<I>>> {
-        let encoded = probe.probe_bytes();
-        let mut out = Vec::new();
-        for (fields, pk) in crate::scan_index::<S, I>(&self.store, &self.header(), encoded)? {
-            let document = if pk.taken == K::KEY_LEN {
-                self.get(&pk.decoded)?
-            } else {
-                None
-            };
-            out.push((fields, pk, document));
-        }
-        Ok(out)
-    }
-
-    /// Equality scan over access method `I`: only entries whose field
-    /// segment is exactly `encoded` — exact matching without reading the
-    /// row (no fetch-back validation, no `includes` needed). A stored
-    /// value that merely EXTENDS the probe is not a hit, and neither is
-    /// the tail-spill case (a probe satisfied by primary-key bytes). The
-    /// probe must name every field of the index's data segment; a partial
-    /// probe is a group query — use [`scan`](Self::scan).
-    pub fn scan_exact<I: KvIndex<Key = K, Document = R>>(
-        &self,
-        probe: impl crate::model::prefix::ProbeBytes<I>,
-    ) -> crate::error::Result<Vec<ScanHit<I>>> {
-        let encoded = probe.probe_bytes();
-        let mut out = Vec::new();
-        for (fields, pk) in crate::scan_index_exact::<S, I>(&self.store, &self.header(), encoded)? {
-            let document = if pk.taken == K::KEY_LEN {
-                self.get(&pk.decoded)?
-            } else {
-                None
-            };
-            out.push((fields, pk, document));
-        }
-        Ok(out)
-    }
-
-    /// Range scan over access method `I`: `begin`/`end` are the ENCODED
-    /// forms of the leading index fields (byte order == value order for
-    /// every OKM encoding — BE fixed-width and prefix-monotonic VarInt).
-    /// `[begin, end)` on the entry keys, so the engine reads only rows
-    /// whose `a` falls inside the interval — the physical WHERE of a
-    /// `1 < a < 100` predicate. Semantics beyond the leading-field
-    /// interval (an end that cuts into the carried pkey, mixed bound
-    /// widths) are the caller's: the bound bytes are spliced between
-    /// the entry header and the identity tail, exactly the region
-    /// `entry_prefix` fills with an equality prefix.
-    pub fn scan_range<I: KvIndex<Key = K, Document = R>>(
-        &self,
-        begin: &[u8],
-        end: Option<&[u8]>,
-    ) -> crate::error::Result<Vec<ScanHit<I>>> {
-        let header = self.header();
-        let mut b = I::entry_prefix(&header, &[]);
-        b.extend_from_slice(begin);
-        let e = end.map(|end| {
-            let mut e = I::entry_prefix(&header, &[]);
-            e.extend_from_slice(end);
-            e
-        });
-        let taken = I::key_prefix_width();
-        let kl = K::KEY_LEN;
-        // Where the field segment starts in a full entry key: after the ns
-        // header and the 2-byte slot.
-        let mut head = header.clone();
-        crate::model::index::write_slot(&mut head, I::SLOT);
-        let seg_start = head.len();
-        let mut out = Vec::new();
-        for full in self.store.scan_range(&b, e.as_deref())? {
-            let suffix = &full[b.len()..];
-            if suffix.len() < taken {
-                continue;
-            }
-            let start = suffix.len() - taken;
-            let decoded = if taken == kl {
-                I::Key::decode(&suffix[start..])
-            } else {
-                let mut buf = vec![0u8; kl];
-                buf[..taken].copy_from_slice(&suffix[start..]);
-                I::Key::decode(&buf)
-            };
-            let document = if taken == kl {
-                self.get(&decoded)?
-            } else {
-                None
-            };
-            let fields = I::decode_fields(&full[seg_start..full.len() - taken]);
-            out.push((fields, PrefixKey { decoded, taken }, document));
-        }
-        Ok(out)
-    }
-
-    /// Lazy range scan over access method `I`: identical bounds to
-    /// [`scan_range`](Self::scan_range), but entries are pulled on
-    /// demand — a consumer that stops early (LIMIT, first match) pays
-    /// only the reads performed. Documents are fetched per pulled entry,
-    /// never for the untouched tail.
-    pub fn scan_range_iter<I: KvIndex<Key = K, Document = R>>(
-        &self,
-        begin: &[u8],
-        end: Option<&[u8]>,
-    ) -> impl DoubleEndedIterator<Item = crate::error::Result<(I::Fields, PrefixKey<K>, Option<R>)>>
-    where
-        S: SharedVirtualStorage,
-    {
-        let header = self.header();
-        let mut b = I::entry_prefix(&header, &[]);
-        b.extend_from_slice(begin);
-        let e = end.map(|end| {
-            let mut e = I::entry_prefix(&header, &[]);
-            e.extend_from_slice(end);
-            e
-        });
-        self.entry_iter::<I>(header, b, e)
-    }
-
-    /// Lazy leftmost-prefix scan over access method `I`: the streaming form of
-    /// [`scan`](Self::scan) — same entries, same fetch-back, pulled on demand
-    /// instead of collected. `.take(n)` is a LIMIT that pays only the entries
-    /// read, `.skip(m).take(n)` is an offset page, `.rev()` walks the window
-    /// backwards.
+    /// (`"alpha"` probes `"alpha"` and `"alphabet"`). Entries whose probe bytes
+    /// were satisfied by primary-key tail bytes are dropped, never returned
+    /// (`"ad"` + tail `0x31…` against the probe `"ad1"`) — exact matching on the
+    /// value is [`scan_exact`](Self::scan_exact).
     ///
-    /// The exclusive end of a prefix is its terminator (`prefix_end`), so the
-    /// caller passes the same encoded leading fields it would pass to
-    /// [`scan`](Self::scan), and the same field-segment / key-tail boundary
-    /// tests apply.
-    pub fn scan_prefix_iter<I: KvIndex<Key = K, Document = R>>(
+    /// With a truncated `key(...)` prefix the decoded key is partial
+    /// (`PrefixKey.taken < KEY_LEN`) and `Row` answers `None`: the trustworthy
+    /// prefix fields are what continues the scan on the main table.
+    pub fn scan<I, P>(
         &self,
         probe: impl crate::model::prefix::ProbeBytes<I>,
-    ) -> impl DoubleEndedIterator<Item = crate::error::Result<(I::Fields, PrefixKey<K>, Option<R>)>>
+    ) -> impl DoubleEndedIterator<Item = crate::error::Result<P::Output>> + '_
     where
+        I: KvIndex<Key = K, Document = R>,
+        P: crate::model::parts::Parts<I>,
+        S: SharedVirtualStorage,
+    {
+        let header = self.header();
+        let encoded = probe.probe_bytes();
+        let mut b = I::entry_prefix(&header, &[]);
+        b.extend_from_slice(encoded);
+        let e = crate::engine::storage::prefix_end(&b);
+        self.entry_iter::<I, P>(header, encoded.len(), false, b, e)
+    }
+
+    /// Equality scan over access method `I`: only entries whose field segment is
+    /// exactly the probe. A stored value that merely EXTENDS the probe is not a
+    /// hit, and neither is the tail-spill case (a probe satisfied by primary-key
+    /// bytes). The probe must name every field of the index's data segment; a
+    /// partial probe is a group query — use [`scan`](Self::scan).
+    pub fn scan_exact<I, P>(
+        &self,
+        probe: impl crate::model::prefix::ProbeBytes<I>,
+    ) -> impl DoubleEndedIterator<Item = crate::error::Result<P::Output>> + '_
+    where
+        I: KvIndex<Key = K, Document = R>,
+        P: crate::model::parts::Parts<I>,
+        S: SharedVirtualStorage,
+    {
+        let header = self.header();
+        let encoded = probe.probe_bytes();
+        let mut b = I::entry_prefix(&header, &[]);
+        b.extend_from_slice(encoded);
+        let e = crate::engine::storage::prefix_end(&b);
+        self.entry_iter::<I, P>(header, encoded.len(), true, b, e)
+    }
+
+    /// Range scan over access method `I`: `begin`/`end` are the ENCODED forms of
+    /// the leading index fields (byte order == value order for every OKM encoding —
+    /// BE fixed-width and prefix-monotonic VarInt), `[begin, end)` on the entry
+    /// keys. That is the physical WHERE of a `1 < a < 100` predicate: the engine
+    /// reads only the entries inside the interval, and rows only for the entries a
+    /// consumer pulls. Semantics beyond the leading-field interval (an end that
+    /// cuts into the carried pkey, mixed bound widths) are the caller's.
+    pub fn scan_range<I, P>(
+        &self,
+        begin: &[u8],
+        end: Option<&[u8]>,
+    ) -> impl DoubleEndedIterator<Item = crate::error::Result<P::Output>> + '_
+    where
+        I: KvIndex<Key = K, Document = R>,
+        P: crate::model::parts::Parts<I>,
         S: SharedVirtualStorage,
     {
         let header = self.header();
         let mut b = I::entry_prefix(&header, &[]);
-        b.extend_from_slice(probe.probe_bytes());
-        let e = crate::engine::storage::prefix_end(&b);
-        self.entry_iter::<I>(header, b, e)
+        b.extend_from_slice(begin);
+        let e = end.map(|end| {
+            let mut e = I::entry_prefix(&header, &[]);
+            e.extend_from_slice(end);
+            e
+        });
+        self.entry_iter::<I, P>(header, begin.len(), false, b, e)
     }
 
-    /// The one lazy walk behind the range and prefix forms. Bounds arrive
-    /// already spliced into entry-key space and OWNED: the returned iterator
-    /// must not borrow the caller's bound bytes (an opaque return type in
-    /// edition 2024 captures every lifetime in scope), and the engine handle
-    /// it needs for fetch-back belongs to the iterator itself.
-    fn entry_iter<I: KvIndex<Key = K, Document = R>>(
+    /// The one lazy walk behind all three verbs. Bounds arrive already spliced into
+    /// entry-key space and OWNED: the returned iterator must not borrow the caller's
+    /// bound bytes. `probe_len` is the number of segment bytes the bound names —
+    /// an entry whose own segment is shorter met the bound with carried key bytes,
+    /// which is a false hit; `exact` additionally wants nothing beyond it.
+    fn entry_iter<I, P>(
         &self,
         header: Vec<u8>,
+        probe_len: usize,
+        exact: bool,
         b: Vec<u8>,
         e: Option<Vec<u8>>,
-    ) -> impl DoubleEndedIterator<Item = crate::error::Result<(I::Fields, PrefixKey<K>, Option<R>)>>
+    ) -> impl DoubleEndedIterator<Item = crate::error::Result<P::Output>> + '_
     where
+        I: KvIndex<Key = K, Document = R>,
+        P: crate::model::parts::Parts<I>,
         S: SharedVirtualStorage,
     {
+        let seg_start = segment_start::<I>(&header);
         let taken = I::key_prefix_width();
-        let kl = K::KEY_LEN;
-        // Where the field segment starts: after the ns header and the slot
-        // (the slot is 1 byte for a fixed face and 2 for a counting family, so
-        // it is measured, not assumed).
-        let seg_start = {
-            let mut head = header.clone();
-            crate::model::index::write_slot(&mut head, I::SLOT);
-            head.len()
-        };
-
-        // Fetch-back needs an engine handle that outlives the iterator
-        // borrow: `shared_handle` hands out a view of the SAME physical
-        // engine (never a deep copy — forking the keyspace behind two
-        // cursors would be unsound), which is exactly the
-        // SharedVirtualStorage contract.
-        let store = self.store.shared_handle();
-        let b_len = b.len();
         self.store
             .scan_range_iter(&b, e.as_deref())
             .filter_map(move |item| {
-                let (full, _value) = match item {
+                let (full, value) = match item {
                     Ok(kv) => kv,
                     Err(e) => return Some(Err(e)),
                 };
-                let suffix = &full[b_len..];
-                // Same false-hit test as the prefix scan: a probe whose
-                // bytes were satisfied by the primary-key tail is not a
-                // match (`suffix` below the tail width means the field
-                // segment is SHORTER than the probe).
-                if suffix.len() < taken {
+                if full.len() < seg_start + taken {
                     return None;
                 }
-                let start = suffix.len() - taken;
-                let decoded = if taken == kl {
-                    K::decode(&suffix[start..])
+                let segment_len = full.len() - seg_start - taken;
+                let matched = if exact {
+                    segment_len == probe_len
                 } else {
-                    let mut buf = vec![0u8; kl];
-                    buf[..taken].copy_from_slice(&suffix[start..]);
-                    K::decode(&buf)
+                    segment_len >= probe_len
                 };
-                let document = if taken == kl {
-                    // Point fetch-back on the shared engine handle:
-                    // same key layout as `Collection::get` (header +
-                    // slot-0 primary entry), inlined because the
-                    // closure cannot re-enter `self`.
-                    let mut k = header.clone();
-                    crate::model::index::write_slot(&mut k, crate::model::index::PRIMARY_SLOT);
-                    k.extend_from_slice(&decoded.encode());
-                    match store.get(&k) {
-                        Ok(Some(v)) => {
-                            let mut document = R::decode_payload(&v);
-                            if let Err(e) = R::__okm_embed_deref(&mut document, &store) {
-                                return Some(Err(e));
-                            }
-                            if let Err(e) = R::__okm_deref_vocab(
-                                &mut document,
-                                &mut self.vocabs.borrow_mut(),
-                                &store,
-                            ) {
-                                return Some(Err(e));
-                            }
-                            Some(document)
-                        }
-                        Ok(None) => None,
-                        Err(e) => return Some(Err(e)),
-                    }
-                } else {
-                    None
-                };
-                let fields = I::decode_fields(&full[seg_start..full.len() - taken]);
-                Some(Ok((fields, PrefixKey { decoded, taken }, document)))
-            })
-    }
-
-    /// Covered scan over access method `I`: the includes segment lives in
-    /// the entry value, so a covering index answers without going back to
-    /// the primary table (materialized view, ADR-0006). Returns each hit's
-    /// decoded covered fields — `I::Covered`, `()` when the declaration
-    /// covers nothing.
-    ///
-    /// This is what a covered scan can do that [`scan`](Self::scan) cannot:
-    /// no point read and no full payload decode per hit. `scan` returns whole
-    /// documents and therefore fetch-backs by definition; a caller that wants
-    /// only the covered fields takes this door and pays one entry-value
-    /// decode per hit.
-    pub fn scan_covered<I: KvIndex<Key = K, Document = R>>(
-        &self,
-        encoded: &[u8],
-    ) -> crate::error::Result<Vec<CoveredHit<I>>> {
-        let p = I::entry_prefix(&self.header(), encoded);
-        let taken = I::key_prefix_width();
-        let kl = K::KEY_LEN;
-        Ok(scan_suffix_kv(&self.store, &p)?
-            .into_iter()
-            .filter_map(|(suffix, v)| {
-                // Entries whose probe bytes were satisfied by the tail are
-                // dropped here too — the covered path sees the same range.
-                if suffix.len() < taken {
+                if !matched {
                     return None;
                 }
-                let start = suffix.len() - taken;
-                let decoded = if taken == kl {
-                    K::decode(&suffix[start..])
-                } else {
-                    let mut buf = vec![0u8; kl];
-                    buf[..taken].copy_from_slice(&suffix[start..]);
-                    K::decode(&buf)
+                let raw = crate::model::index::RawHit {
+                    segment: full[seg_start..full.len() - taken].to_vec(),
+                    tail: full[full.len() - taken..].to_vec(),
+                    value,
                 };
-                let mut segment = Vec::with_capacity(encoded.len() + start);
-                segment.extend_from_slice(encoded);
-                segment.extend_from_slice(&suffix[..start]);
-                Some((
-                    I::decode_fields(&segment),
-                    PrefixKey { decoded, taken },
-                    I::decode_covered(&v),
-                ))
+                let mut fetch = |key: &I::Key| self.get(key);
+                let mut hit = crate::model::parts::Hit::new(&raw, &mut fetch);
+                Some(P::take(&mut hit))
             })
-            .collect())
     }
 
     /// Raw documents: `(key encoding suffix, payload)` per document, in key

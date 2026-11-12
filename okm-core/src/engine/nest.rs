@@ -119,6 +119,14 @@ impl RemoteStore {
     }
 }
 
+impl crate::engine::storage::SharedVirtualStorage for RemoteStore {
+    /// The same channel endpoints, the same physical store behind them — what a
+    /// lazy scan needs to keep fetching after it returns.
+    fn shared_handle(&self) -> Self {
+        self.clone_for_iter()
+    }
+}
+
 impl VirtualStorage for RemoteStore {
     /// The write waits for the frame's answer: an empty ack means the host
     /// committed it, a fault means it could not (`round_trip` turns that into

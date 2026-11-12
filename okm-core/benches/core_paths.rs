@@ -74,6 +74,7 @@ pub struct TokRow {
 }
 
 use __OkmIndex_TokRow_by_token as ByToken;
+use okm_core::parts;
 
 // Reduce accumulator (count + sum) — the ADR-0008 example shape.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -251,10 +252,24 @@ fn bench_scan(c: &mut Criterion) {
 
         g.throughput(Throughput::Elements(fanout as u64));
         g.bench_function(format!("scan_index+fetch_back/fanout_{fanout}"), |b| {
-            b.iter(|| black_box(t.scan::<ByLevel>(&probe).unwrap().len()))
+            b.iter(|| {
+                black_box(
+                    t.scan::<ByLevel, (parts::Fields, parts::Key, parts::Row)>(&probe)
+                        .collect::<okm_core::error::Result<Vec<_>>>()
+                        .unwrap()
+                        .len(),
+                )
+            })
         });
         g.bench_function(format!("scan_covered/fanout_{fanout}"), |b| {
-            b.iter(|| black_box(t.scan_covered::<ByLevel>(&probe).unwrap().len()))
+            b.iter(|| {
+                black_box(
+                    t.scan::<ByLevel, (parts::Fields, parts::Key, parts::Include)>(&probe)
+                        .collect::<okm_core::error::Result<Vec<_>>>()
+                        .unwrap()
+                        .len(),
+                )
+            })
         });
     }
     g.finish()

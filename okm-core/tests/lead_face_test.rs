@@ -11,6 +11,7 @@
 
 use okm_async::TestStore;
 use okm_core::engine::storage::{Batch, VirtualStorage, prefix_end};
+use okm_core::parts;
 use okm_core::schema::CollectionSchema;
 use okm_core::{Collection, Document, DocumentEncode, KeyEncode, KvIndex, model::faces::FaceKind};
 
@@ -106,7 +107,10 @@ fn a_full_tail_scan_hands_back_rows_in_identity_order() {
     let probe = __OkmLead_Membership_by_member::prefix()
         .member(10u64)
         .finish();
-    let hits = col.scan::<__OkmLead_Membership_by_member>(&probe).unwrap();
+    let hits = col
+        .scan::<__OkmLead_Membership_by_member, (parts::Fields, parts::Key, parts::Row)>(&probe)
+        .collect::<okm_core::error::Result<Vec<_>>>()
+        .unwrap();
     assert_eq!(hits.len(), 2, "members 10 in channels 1 and 2");
     assert_eq!(
         hits.iter()
@@ -129,7 +133,10 @@ fn a_truncated_tail_hands_back_keys_to_continue_with() {
         .member(10u64)
         .finish();
     let hits = col
-        .scan::<__OkmLead_Membership_by_member_channel>(&probe)
+        .scan::<__OkmLead_Membership_by_member_channel, (parts::Fields, parts::Key, parts::Row)>(
+            &probe,
+        )
+        .collect::<okm_core::error::Result<Vec<_>>>()
         .unwrap();
     assert_eq!(hits.len(), 2);
     assert!(
@@ -165,7 +172,10 @@ fn purge_and_rebuild_maintain_the_face() {
     let probe = __OkmLead_Membership_by_member::prefix()
         .member(11u64)
         .finish();
-    let hits = col.scan::<__OkmLead_Membership_by_member>(&probe).unwrap();
+    let hits = col
+        .scan::<__OkmLead_Membership_by_member, (parts::Fields, parts::Key, parts::Row)>(&probe)
+        .collect::<okm_core::error::Result<Vec<_>>>()
+        .unwrap();
     assert_eq!(hits.len(), 2, "member 11 is still in both channels");
 }
 

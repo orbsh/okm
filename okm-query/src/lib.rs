@@ -22,7 +22,14 @@
 
 use okm_core::VirtualStorage;
 
-/// Merge join over two streams of `(key, value)` pairs, in ANY order.
+/// The MULTIPLICITY step: a merge join over two streams of `(key, value)` pairs,
+/// in ANY order, answering m×n pairs for a key that both sides repeat.
+///
+/// The key-set half of a join is [`intersect`] — lazy, keys only, no pairs. Reach
+/// for that first: intersecting entries and fetching only the survivors is cheaper
+/// than fetching both sides fully and pairing them, unless nearly every key is
+/// shared. This shape is for "give me both sides' rows for the keys that meet",
+/// which materializes by nature, because the answer is a cross product.
 ///
 /// The operator sorts both sides itself, so a caller never has to prove that
 /// its stream is ordered. An already-ordered stream costs one linear pass (the
@@ -89,49 +96,126 @@ pub fn merge_join<K: Ord, L: Clone, R: Clone>(
     }
     out
 }
-/// Set difference over two `(key, value)` streams: the LEFT entries whose key has
-/// no match on the right.
+/// Set algebra over key streams that are already ordered by key, as methods:
+/// `a.merge(b)`, `a.intersect(b)`, `a.difference(b)`.
 ///
-/// The other half of an outer join. `merge_join` answers "which keys meet", this
-/// answers "which keys do not", and the pair covers both sides:
+/// One alignment rule, three projections. [`merge`](OrderedSets::merge) walks both
+/// streams by key and answers ONE tuple per distinct key — `(Some, None)` where
+/// only the left has it, `(Some, Some)` where both do, `(None, Some)` where only
+/// the right does. That is the general form: an outer join's three answers, a
+/// full outer join in one pass, and "what does each side have that the other does
+/// not" without a second operator. `intersect` and `difference` are filters over
+/// it, named because those two questions are asked far more often than the rest.
 ///
-/// ```ignore
-/// let common = merge_join(left.iter().cloned(), right.iter().cloned());
-/// let left_only  = difference(left, right);   // left-only rows, key included
-/// let right_only = difference(right, left);
-/// ```
+/// SET semantics, not multiset, at every level: a key carried by several entries
+/// is answered once, and one representative per side is handed back. Multiplicity
+/// — m×n for a key both sides repeat — is the `merge_join` step's business, one
+/// layer up.
 ///
-/// Sorts both sides, for the same reason `merge_join` does: which scan shapes come
-/// out ordered is subtle, and a difference computed on an unordered stream is
-/// silently wrong rather than slow. An already-ordered side costs one linear pass.
+/// The trait is on `IntoIterator`, so a `Vec`, an array, a scan iterator — anything
+/// that yields keys — is a source, and no `.into_iter()` noise appears in a
+/// chain. Chaining is the point: the item stays a key, so
+/// `a.intersect(b).intersect(c)` and `a.intersect(b).difference(c)` are just calls
+/// on the result. A source that must be read twice is cloned or held in an `Rc` —
+/// these streams are read-only.
 ///
-/// Yields `(key, value)` — the key on purpose, because "which one is exclusive" is
-/// the whole answer of a difference (a `()` value would be indistinguishable).
-/// A key present twice on the left is present twice on the right of `out`; this is
-/// a multiset difference, not a set one.
-pub fn difference<K: Ord, L, R>(
-    left: impl IntoIterator<Item = (K, L)>,
-    right: impl IntoIterator<Item = (K, R)>,
-) -> Vec<(K, L)> {
-    let mut left: Vec<(K, L)> = left.into_iter().collect();
-    left.sort_by(|a, b| a.0.cmp(&b.0));
-    let mut right: Vec<(K, R)> = right.into_iter().collect();
-    right.sort_by(|a, b| a.0.cmp(&b.0));
-
-    let mut right = right.into_iter().peekable();
-    let mut out = Vec::new();
-    for (key, value) in left {
-        // Right is sorted, so a single forward cursor skips everything below the
-        // current key — one pass over both sides in total.
-        while right.peek().is_some_and(|(k, _)| *k < key) {
-            right.next();
-        }
-        let matched = right.peek().is_some_and(|(k, _)| *k == key);
-        if !matched {
-            out.push((key, value));
+/// Ordered is a CONTRACT, not a runtime check. Verifying it would mean reading a
+/// stream to its end before answering, which is the materialization these adapters
+/// exist to avoid; so unordered input does not error, it silently misses keys. The
+/// contract is free to meet: an index scan's order is the entry tuple
+/// `(fields…, key)`, so a projection onto the leading fields is still ordered —
+/// join on the first declared field and nothing needs sorting.
+///
+/// Lazy and allocation-free: `take(1)` consumes only what one answer needs.
+pub trait OrderedSets: IntoIterator + Sized {
+    /// Align two ordered key streams: one tuple per distinct key, `None` on the
+    /// side that does not have it. The general form — an outer join reads it
+    /// directly, and the two projections below are spelled in terms of it.
+    fn merge<R>(self, right: R) -> impl Iterator<Item = (Option<Self::Item>, Option<Self::Item>)>
+    where
+        R: IntoIterator<Item = Self::Item>,
+        Self::Item: Ord,
+    {
+        Merge {
+            left: self.into_iter().peekable(),
+            right: right.into_iter().peekable(),
         }
     }
-    out
+
+    /// The keys on both sides, once each.
+    fn intersect<R>(self, right: R) -> impl Iterator<Item = Self::Item>
+    where
+        R: IntoIterator<Item = Self::Item>,
+        Self::Item: Ord,
+    {
+        self.merge(right)
+            .filter_map(|(left, right)| right.and(left))
+    }
+
+    /// The keys on the left with no match on the right (`a \ b`) — the same as
+    /// `a − (a ∩ b)`, without computing the intersection.
+    fn difference<R>(self, right: R) -> impl Iterator<Item = Self::Item>
+    where
+        R: IntoIterator<Item = Self::Item>,
+        Self::Item: Ord,
+    {
+        self.merge(right)
+            .filter_map(|(left, right)| if right.is_none() { left } else { None })
+    }
+}
+
+impl<I: IntoIterator> OrderedSets for I {}
+
+/// The alignment behind every operator here: two ordered streams, one tuple per
+/// distinct key.
+struct Merge<LI: Iterator, RI: Iterator> {
+    left: std::iter::Peekable<LI>,
+    right: std::iter::Peekable<RI>,
+}
+
+impl<LI, RI> Iterator for Merge<LI, RI>
+where
+    LI: Iterator,
+    RI: Iterator<Item = LI::Item>,
+    LI::Item: Ord,
+{
+    type Item = (Option<LI::Item>, Option<LI::Item>);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let (left, right) = match self.right.peek() {
+            // Nothing left to align against: the rest of the left is left-only.
+            None => return Some((Some(self.left.next()?), None)),
+            Some(right) => match self.left.peek()?.cmp(right) {
+                std::cmp::Ordering::Less => {
+                    let key = self.left.next()?;
+                    drain_this_key(&mut self.left, &key);
+                    return Some((Some(key), None));
+                }
+                std::cmp::Ordering::Greater => {
+                    let key = self.right.next()?;
+                    drain_this_key(&mut self.right, &key);
+                    return Some((None, Some(key)));
+                }
+                std::cmp::Ordering::Equal => (self.left.next()?, self.right.next()?),
+            },
+        };
+        // One representative from each side (the key is moved out, so no `Clone`
+        // is needed), then both runs are emptied so the key cannot come back a
+        // second time.
+        drain_this_key(&mut self.left, &left);
+        drain_this_key(&mut self.right, &right);
+        Some((Some(left), Some(right)))
+    }
+}
+
+/// Drop the remaining copies of `key` (the one on top, if it is `key`).
+fn drain_this_key<I: Iterator>(it: &mut std::iter::Peekable<I>, key: &I::Item)
+where
+    I::Item: Ord,
+{
+    while it.peek().is_some_and(|peeked| peeked == key) {
+        it.next();
+    }
 }
 
 /// Group-fold over an ordered entry stream: consecutive entries whose
@@ -224,6 +308,7 @@ pub fn walk<S: VirtualStorage + Clone>(
 mod tests {
     use super::*;
     use okm_async::TestStore;
+    use okm_core::parts;
     use okm_core::{Document, DocumentEncode, KeyEncode};
 
     /// 端点文档：user（ns=1）
@@ -329,7 +414,10 @@ mod tests {
             }
             // 反向：by_followee 索引，回表拿关系行
             for (_, key, _) in table
-                .scan::<__OkmIndex_FollowsRow_by_followee>(n.encode().as_slice())
+                .scan::<__OkmIndex_FollowsRow_by_followee, (parts::Fields, parts::Key, parts::Row)>(
+                    n.encode().as_slice(),
+                )
+                .collect::<okm_core::error::Result<Vec<_>>>()
                 .expect("an index read")
             {
                 out.push(mk(key.decoded.user_id).encode());
@@ -350,7 +438,7 @@ mod tests {
                 out.push(mk(key.mentioned_id).encode());
             }
             for (_, key, _) in table
-                .scan::<__OkmIndex_MentionsRow_by_mentioned>(n.encode().as_slice())
+                .scan::<__OkmIndex_MentionsRow_by_mentioned, (parts::Fields, parts::Key, parts::Row)>(n.encode().as_slice()).collect::<okm_core::error::Result<Vec<_>>>()
                 .expect("an index read")
             {
                 out.push(mk(key.decoded.user_id).encode());
@@ -444,22 +532,150 @@ mod tests {
         );
     }
 
+    /// Set semantics: a key carried by several entries on both sides comes out
+    /// once. Multiplicity is the row step's business, not the key step's.
     #[test]
-    fn difference_answers_which_keys_do_not_meet() {
-        let left = vec![(1u8, "a"), (2, "b"), (4, "d"), (4, "d2")];
-        let right = vec![(4u8, 'x'), (3, 'c')];
-        let mut only = difference(left.clone(), right);
-        only.sort();
+    fn intersect_yields_each_shared_key_once() {
+        let left = vec![1u8, 2, 4, 4, 7];
+        let right = vec![4u8, 4, 4, 5, 7];
         assert_eq!(
-            only,
-            vec![(1, "a"), (2, "b")],
-            "keys present on the right are dropped, and the key comes back with the value"
+            left.into_iter().intersect(right).collect::<Vec<_>>(),
+            vec![4, 7],
+            "duplicates on either side do not multiply the answer"
         );
+    }
 
-        // Neither 3 nor 9 is on the left, so both survive from this side.
-        let mut other_way = difference(vec![(3u8, 'c'), (9, 'z')], left);
-        other_way.sort();
-        assert_eq!(other_way, vec![(3, 'c'), (9, 'z')]);
+    /// The fold IS the multi-way form: the item type stays a key, so N sides need
+    /// no second operator.
+    #[test]
+    fn intersect_folds_across_three_sides() {
+        let a = vec![1u8, 2, 3, 5, 8];
+        let b = vec![2u8, 3, 4, 8];
+        let c = vec![3u8, 8, 9];
+        assert_eq!(
+            a.into_iter().intersect(b).intersect(c).collect::<Vec<_>>(),
+            vec![3, 8]
+        );
+    }
+
+    /// Lazy: taking one answer consumes only what that answer needs. A counting
+    /// iterator is the only way to see this from outside.
+    #[test]
+    fn intersect_takes_only_what_the_answer_needs() {
+        struct Counted<I> {
+            inner: I,
+            pulled: std::rc::Rc<std::cell::Cell<usize>>,
+        }
+        impl<I: Iterator> Iterator for Counted<I> {
+            type Item = I::Item;
+            fn next(&mut self) -> Option<I::Item> {
+                let item = self.inner.next();
+                self.pulled.set(self.pulled.get() + 1);
+                item
+            }
+        }
+        let pulled = std::rc::Rc::new(std::cell::Cell::new(0));
+        let left = Counted {
+            inner: (1u32..=1000).collect::<Vec<_>>().into_iter(),
+            pulled: pulled.clone(),
+        };
+        let right = Counted {
+            inner: vec![7u32, 9].into_iter(),
+            pulled: pulled.clone(),
+        };
+        assert_eq!(left.intersect(right).take(1).collect::<Vec<_>>(), vec![7]);
+        assert!(
+            pulled.get() < 20,
+            "a lazy merge walks to the first shared key; it does not drain 1000 items (pulled {})",
+            pulled.get()
+        );
+    }
+
+    #[test]
+    fn difference_yields_the_left_keys_the_right_does_not_have() {
+        let left = vec![1u8, 2, 4, 4, 7];
+        let right = vec![4u8, 5];
+        assert_eq!(
+            left.clone()
+                .into_iter()
+                .difference(right)
+                .collect::<Vec<_>>(),
+            vec![1, 2, 7],
+            "a key on the right is not a difference, and a key twice on the left answers once"
+        );
+        assert_eq!(
+            vec![9u8, 10]
+                .into_iter()
+                .difference(left)
+                .collect::<Vec<_>>(),
+            vec![9, 10],
+            "an exhausted right side leaves the rest of the left as left-only"
+        );
+        assert!(
+            Vec::<u8>::new()
+                .into_iter()
+                .difference(vec![1u8])
+                .next()
+                .is_none()
+        );
+    }
+
+    /// The general form: one tuple per distinct key, `None` on the absent side.
+    /// An outer join and both "what is extra" questions read from this one stream.
+    #[test]
+    fn merge_aligns_both_sides_key_by_key() {
+        let left = vec![1u8, 2, 4];
+        let right = vec![2u8, 3, 4];
+        assert_eq!(
+            left.into_iter().merge(right).collect::<Vec<_>>(),
+            vec![
+                (Some(1), None),
+                (Some(2), Some(2)),
+                (None, Some(3)),
+                (Some(4), Some(4)),
+            ]
+        );
+    }
+
+    /// Multiple sides, in the order the caller wants: intersect twice, then ask
+    /// what the result lacks against a third collection.
+    #[test]
+    fn operators_chain_across_more_than_two_sides() {
+        let a = vec![1u8, 2, 3, 5];
+        let b = vec![2u8, 3, 4, 5];
+        let c = vec![3u8, 5, 9];
+        // (a ∩ b) ∩ c
+        assert_eq!(
+            a.clone()
+                .intersect(b.clone())
+                .intersect(c.clone())
+                .collect::<Vec<_>>(),
+            vec![3, 5]
+        );
+        // a ∩ b, minus what c also has: the keys c does not carry.
+        assert_eq!(a.intersect(b).difference(c).collect::<Vec<_>>(), vec![2]);
+    }
+
+    /// The join's two halves against the same streams: the intersection plus both
+    /// differences reconstruct the two sides, with nothing double-counted.
+    #[test]
+    fn intersect_and_difference_partition_the_two_sides() {
+        let left = vec![1u8, 2, 3, 5];
+        let right = vec![2u8, 3, 4];
+        let mut common: Vec<u8> = left.clone().into_iter().intersect(right.clone()).collect();
+        let mut left_only: Vec<u8> = left.clone().into_iter().difference(right.clone()).collect();
+        let mut right_only: Vec<u8> = right.clone().into_iter().difference(left.clone()).collect();
+        common.sort();
+        left_only.sort();
+        right_only.sort();
+        assert_eq!(common, vec![2, 3]);
+        assert_eq!(left_only, vec![1, 5]);
+        assert_eq!(right_only, vec![4]);
+
+        let mut rebuilt = left_only.clone();
+        rebuilt.extend(common.clone());
+        rebuilt.sort();
+        assert_eq!(rebuilt, left, "left = left-only + common");
     }
 
     /// A join on a column the scan ORDERS BY needs no sort on either side: an index
@@ -505,13 +721,15 @@ mod tests {
 
         // Field segment as the merge key: no fetch-back, no includes, no sort.
         let left: Vec<(String, PersonKey)> = users
-            .scan::<__OkmIndex_Person_by_name>(&[])
+            .scan::<__OkmIndex_Person_by_name, (parts::Fields, parts::Key, parts::Row)>(&[])
+            .collect::<okm_core::error::Result<Vec<_>>>()
             .unwrap()
             .into_iter()
             .map(|(fields, key, _)| (fields.name, key.decoded))
             .collect();
         let right: Vec<(String, OrderKey)> = orders
-            .scan::<__OkmIndex_Order_by_name>(&[])
+            .scan::<__OkmIndex_Order_by_name, (parts::Fields, parts::Key, parts::Row)>(&[])
+            .collect::<okm_core::error::Result<Vec<_>>>()
             .unwrap()
             .into_iter()
             .map(|(fields, key, _)| (fields.name, key.decoded))

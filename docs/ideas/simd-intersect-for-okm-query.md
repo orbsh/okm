@@ -67,12 +67,12 @@ So the honest answer to "what would it take to make it `&[u64]`" is: either one 
 
 Measured gaps, in the order they hurt, all inside the current sync contract:
 
-1. **Eager to the end.** `merge_join` returns `Vec<(L, R)>`; a chain materializes at every step, so `LIMIT 10` over a million-row join still builds the whole Vec. okm-core already solved this below (`scan_range_iter` is lazy, ADR-0020); the query layer has not followed.
-2. **Clone per result pair.** The duplicate-run branch does `out.push((l.clone(), r.clone()))` — for two runs of length *k*, that is k² clones. A run handle (or owned side) removes it.
-3. **No lazy adapters.** `group_by` folds into a `Vec`, so a filtered, grouped, limited pipeline allocates intermediates nobody reads.
-4. **No `intersect`/`union`.** `V = ()` through `merge_join` is the shape, but it clones per result pair and (since the operator took over ordering) sorts its inputs — a named specialization would document intent, skip the sort for the already-ordered case, and allow the skew shortcut of §4.
+1. ~~**Eager to the end.**~~ Fixed for the join path: `intersect`/`difference` are lazy adapters, and `scan_entries` feeds them without reading payloads (`set-algebra-join.md`). `merge_join` is still eager — deliberately, it is the multiplicity step now. `group_by` still folds into a `Vec`.
+2. ~~**Clone per result pair.**~~ The key-level operators need no `Clone` at all (the key is moved out of the peeked stream). `merge_join` still clones, which is inherent to answering m×n pairs.
+3. **No lazy adapters.** Still true for `group_by`: it folds into a `Vec`, so a filtered, grouped, limited pipeline allocates intermediates nobody reads.
+4. ~~**No `intersect`/`union`.**~~ `intersect` and `difference` exist and are set-semantic, ordered, lazy (`set-algebra-join.md`). `union` still does not — `chain` plus a dedup pass is the shape, and nothing asks for it yet.
 
-Fix 4 with galloping when sizes are lopsided; fix 1–3 before thinking about lanes.
+Galloping (§4) is still unbuilt: it belongs to `intersect` now, behind the ordered contract rather than a sort.
 
 ## 7. If this is revisited
 

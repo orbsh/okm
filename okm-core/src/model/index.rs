@@ -829,51 +829,79 @@ pub fn scan_index_exact<S: VirtualStorage, I: KvIndex>(
     scan_index_filtered::<S, I>(store, ns_prefix, encoded, true)
 }
 
+/// One entry as bytes, split at its own boundaries: the field segment the entry
+/// is ordered by, the key tail it carries, and the value.
+///
+/// This is the undecoded form every scan verb reads through — which part of it a
+/// caller wants (`Fields`, `Key`, `Row`, `Include`) is [`Parts`](crate::model::parts::Parts),
+/// decided at the call site, not here.
+pub struct RawHit {
+    pub segment: Vec<u8>,
+    pub tail: Vec<u8>,
+    pub value: Vec<u8>,
+}
+
+/// The entries behind an index probe, undecoded and unfetched.
+///
+/// `exact` is the segment rule: a prefix probe matches a stored segment that
+/// EXTENDS it, an exact probe wants the segment to be the probe and nothing more.
+/// Both drop the tail-spill case the same way — an entry whose remaining bytes are
+/// shorter than the tail width had its probe satisfied by primary-key bytes.
+pub fn scan_raw<S: VirtualStorage + ?Sized, I: KvIndex>(
+    store: &S,
+    ns_prefix: &[u8],
+    encoded: &[u8],
+    exact: bool,
+) -> crate::error::Result<Vec<RawHit>> {
+    let prefix = I::entry_prefix(ns_prefix, encoded);
+    // Where the field segment starts: after the ns header and the slot (the slot
+    // is one byte for a fixed face and two for a counting family, so it is
+    // measured, not assumed).
+    let seg_start = prefix.len() - encoded.len();
+    let taken = I::key_prefix_width();
+    let end = crate::engine::storage::prefix_end(&prefix);
+    let mut out = Vec::new();
+    for item in store.scan_range_iter(&prefix, end.as_deref()) {
+        let (full, value) = item?;
+        if full.len() < seg_start + taken {
+            continue;
+        }
+        let segment_len = full.len() - seg_start - taken;
+        let matched = if exact {
+            segment_len == encoded.len()
+        } else {
+            segment_len >= encoded.len()
+        };
+        if !matched {
+            continue;
+        }
+        out.push(RawHit {
+            segment: full[seg_start..full.len() - taken].to_vec(),
+            tail: full[full.len() - taken..].to_vec(),
+            value,
+        });
+    }
+    Ok(out)
+}
+
 fn scan_index_filtered<S: VirtualStorage, I: KvIndex>(
     store: &S,
     ns_prefix: &[u8],
     encoded: &[u8],
     exact: bool,
 ) -> crate::error::Result<Vec<IndexHit<I>>> {
-    let p = I::entry_prefix(ns_prefix, encoded);
-    let taken = I::key_prefix_width();
-    let kl = I::Key::KEY_LEN;
-    Ok(store
-        .scan_suffix(&p)?
-        .iter()
-        .filter_map(|suffix| {
-            // The tail's width is known, so the field segment's length is
-            // `suffix.len() - taken` (plus the probe): below the tail width
-            // the probe was satisfied by tail bytes — not a match. Exact
-            // additionally wants nothing left after the probe.
-            let matched = if exact {
-                suffix.len() == taken
+    Ok(scan_raw::<S, I>(store, ns_prefix, encoded, exact)?
+        .into_iter()
+        .map(|raw| {
+            let taken = raw.tail.len();
+            let decoded = if taken == I::Key::KEY_LEN {
+                I::Key::decode(&raw.tail)
             } else {
-                suffix.len() >= taken
-            };
-            if !matched {
-                return None;
-            }
-            let start = suffix.len() - taken;
-            // The field segment is the probe plus whatever the suffix carries
-            // before the tail: for an equality probe that is the whole segment,
-            // for a group probe the probe is its leading part. Decoding from
-            // `probe ++ suffix[..start]` therefore works for every probe width —
-            // the same bytes the writer produced, in the same order.
-            let mut segment = Vec::with_capacity(encoded.len() + start);
-            segment.extend_from_slice(encoded);
-            segment.extend_from_slice(&suffix[..start]);
-            let fields = I::decode_fields(&segment);
-            let decoded = if taken == kl {
-                I::Key::decode(&suffix[start..])
-            } else {
-                // Truncated identity: zero-fill past the prefix boundary —
-                // trailing fields are garbage by contract (PrefixKey).
-                let mut buf = vec![0u8; kl];
-                buf[..taken].copy_from_slice(&suffix[start..]);
+                let mut buf = vec![0u8; I::Key::KEY_LEN];
+                buf[..taken].copy_from_slice(&raw.tail);
                 I::Key::decode(&buf)
             };
-            Some((fields, PrefixKey { decoded, taken }))
+            (I::decode_fields(&raw.segment), PrefixKey { decoded, taken })
         })
         .collect())
 }

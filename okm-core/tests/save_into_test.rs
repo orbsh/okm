@@ -132,7 +132,10 @@ fn cross_collection_one_batch() {
 
     // Both landed through the ONE committed store instance.
     let t: Collection<TestStore, PostKey, Post> = Collection::new(store.clone());
-    let scanned = t.scan::<Post_ByAuthor>(&7u64.to_be_bytes()).unwrap();
+    let scanned = t
+        .scan::<Post_ByAuthor, (parts::Fields, parts::Key, parts::Row)>(&7u64.to_be_bytes())
+        .collect::<okm_core::error::Result<Vec<_>>>()
+        .unwrap();
     assert_eq!(scanned.len(), 1);
     let edges: Collection<TestStore, AuthorPostKey, AuthorPostRow> = Collection::new(store);
     let probe = okm_core::PrefixProbe::<AuthorPostKey>::new(7u64.to_be_bytes().to_vec());
@@ -164,6 +167,7 @@ pub struct Entry {
 }
 
 use __OkmIndex_Entry_by_account as Entry_ByAccount;
+use okm_core::parts;
 
 /// Group accumulator as the STORE (not the batch) currently holds it.
 fn ledger(t: &Collection<TestStore, EntryKey, Entry>, account: u64) -> Option<u64> {
@@ -222,13 +226,15 @@ fn overwrite_in_one_batch_reads_the_pending_old_row() {
     assert_eq!(ledger(&t, 7), Some(0), "the stale fold was unfolded");
     assert_eq!(ledger(&t, 8), Some(1), "the new fold counted once");
     assert!(
-        t.scan::<Entry_ByAccount>(&7u64.to_be_bytes())
+        t.scan::<Entry_ByAccount, (parts::Fields, parts::Key, parts::Row)>(&7u64.to_be_bytes())
+            .collect::<okm_core::error::Result<Vec<_>>>()
             .unwrap()
             .is_empty(),
         "the old value's face is gone — no dangling index entry"
     );
     assert_eq!(
-        t.scan::<Entry_ByAccount>(&8u64.to_be_bytes())
+        t.scan::<Entry_ByAccount, (parts::Fields, parts::Key, parts::Row)>(&8u64.to_be_bytes())
+            .collect::<okm_core::error::Result<Vec<_>>>()
             .unwrap()
             .len(),
         1
@@ -259,7 +265,8 @@ fn caller_supplied_prev_drives_the_unfold_and_the_cleanup() {
     assert_eq!(ledger(&t, 7), Some(0));
     assert_eq!(ledger(&t, 8), Some(1));
     assert!(
-        t.scan::<Entry_ByAccount>(&7u64.to_be_bytes())
+        t.scan::<Entry_ByAccount, (parts::Fields, parts::Key, parts::Row)>(&7u64.to_be_bytes())
+            .collect::<okm_core::error::Result<Vec<_>>>()
             .unwrap()
             .is_empty()
     );
@@ -574,7 +581,8 @@ fn purge_into_defers_until_the_commit() {
     assert!(t.get(&k).unwrap().is_none(), "the commit removes the row");
     assert_eq!(ledger(&t, 7), Some(0), "the removal unfolds the ledger");
     assert!(
-        t.scan::<Entry_ByAccount>(&7u64.to_be_bytes())
+        t.scan::<Entry_ByAccount, (parts::Fields, parts::Key, parts::Row)>(&7u64.to_be_bytes())
+            .collect::<okm_core::error::Result<Vec<_>>>()
             .unwrap()
             .is_empty(),
         "and takes the face with it"
@@ -600,7 +608,8 @@ fn purge_into_reads_the_batch_it_is_building() {
     assert!(t.get(&k).unwrap().is_none());
     assert_eq!(ledger(&t, 7), Some(0), "the staged fold was unfolded");
     assert!(
-        t.scan::<Entry_ByAccount>(&7u64.to_be_bytes())
+        t.scan::<Entry_ByAccount, (parts::Fields, parts::Key, parts::Row)>(&7u64.to_be_bytes())
+            .collect::<okm_core::error::Result<Vec<_>>>()
             .unwrap()
             .is_empty(),
         "the staged face was removed"
@@ -651,7 +660,8 @@ fn two_tables_leave_in_one_commit() {
     assert!(entries.get(&ek).unwrap().is_none());
     assert!(
         posts
-            .scan::<Post_ByAuthor>(&7u64.to_be_bytes())
+            .scan::<Post_ByAuthor, (parts::Fields, parts::Key, parts::Row)>(&7u64.to_be_bytes())
+            .collect::<okm_core::error::Result<Vec<_>>>()
             .unwrap()
             .is_empty()
     );

@@ -91,7 +91,9 @@ t.scan::<I>(&encoded)
           taken <  KEY_LEN → row = None（截断前缀无法回表）
 ```
 
-返回 `Vec<(I::Fields, PrefixKey<K>, Option<R>)>`。第一个元素是**这一条按之排序的那一段**解出来的值：
+扫描只有三个词：前缀 `scan`、等值 `scan_exact`、区间 `scan_range`——都返回迭代器（逐条 `Result`），要整批就自己 `collect`。返回调用方点名的那几部分：扫描动词的类型参数是一个**载荷元组**（`parts::Fields` / `parts::Key` / `parts::Row` / `parts::Include`，`parts::__` 占位），顺序由调用方给。`(Fields, Key, Row)` 就是完整的一次回表扫描；`(Fields, Key)` 不读 payload——join 的第一步只需要这两样；`(Key, Include)` 是覆盖扫描。没点名的部分不进单态化后的函数体，所以"读出来再丢掉"这种次序不会发生，除非调用方自己要了 `Row`。
+
+第一个元素是**这一条按之排序的那一段**解出来的值：
 `fields(...)` 声明得到 derive 生成的字段结构（每个字段按行里的类型解码），`func(...)` 索引的段是
 函数输出、声明无从命名它的类型，于是交回 `RawFields`（裸字节），`ok_lead` 面同样是 `RawFields`
 （那是键自己的字节，键类型已经能解码）。它是为了不让调用方"按某列扫描、却还要回表或加

@@ -27,6 +27,7 @@ pub mod index;
 pub mod key;
 pub mod meta;
 pub mod obj_vocab;
+pub mod parts;
 pub mod prefix;
 pub mod presets;
 pub mod reduce;

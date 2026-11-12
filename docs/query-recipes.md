@@ -1,7 +1,7 @@
 # Query Recipes: okm-query Combinators and Their SQL Shapes
 
 A recipe collection for okm-query: how the three combinators
-(merge_join / group_by / walk) compose into shapes familiar from SQL,
+(intersect / difference / merge_join / group_by / walk) compose into shapes familiar from SQL,
 plus two boundary records — the physical/in-memory split of WHERE
 (prefix, range, filter), and
 the three landings of grouping. Mechanism details live in internals
@@ -22,7 +22,7 @@ SQL concept      okm landing
 WHERE (physical) index declaration + prefix/range scan (free — see the record)
 WHERE (memory)   .filter() (stdlib, no wrapper)
 GROUP BY         group_by (index sort does the grouping) or reduce (compile time)
-JOIN             merge_join (sorts its own inputs)
+JOIN             intersect (ordered key streams) + merge_join for m×n
 Multi-rollup     prefix scans narrowing the group segment level by level
 Graph walk       walk (one hop = one prefix scan)
 ```
@@ -83,53 +83,108 @@ write, read free); varying dimensions → index sort + group_by (pay at
 read, one layout covers many dimensions). Not exclusive: one index can
 serve group_by and the timeline scan at once.
 
-## The JOIN recipe: merge_join and difference
+## The JOIN recipe: intersect keys, then fetch
 
-Join on a column both sides index. A scan hands back the field segment it sorted
-by, so the join key is in hand with no fetch-back and no `includes`:
+A join is two steps, and only the first is a query operator.
 
-```rust
-let left = orders.scan::<Order_ByUser>(&[])?          // ordered by user, then by key
-    .into_iter()
-    .map(|(f, k, _)| (f.user_id, k.decoded));
-let right = users.scan::<User_ById>(&[])?             // ordered by id
-    .into_iter()
-    .map(|(f, k, _)| (f.id, k.decoded));
-
-let pairs = okm_query::merge_join(left, right);        // (OrderKey, UserKey)
-```
-
-Two faces of the SAME table join on the primary key instead (two posting lists,
-say): there the merge key is the key, because a token's prefix fixes the data
-segment and the entries under it run in key order.
-
-**What is ordered, and what costs a sort.** An index scan is ordered by the entry
-tuple `(fields…, key)`, and any PREFIX of that tuple is still ordered. So a join
-on the leading index field needs no sort; a join on a column that is not a prefix
-— the primary key with a field in front of it, a range probe, a multi-value
-index's keys — needs one, and `merge_join` takes it. Which shapes come out ordered
-is a performance question, never a correctness one: the operator sorts anything.
-
-No hash join, deliberately: a sort-merge join needs no hashing of the key type
-and holds `O(n)` rather than materializing a build side.
-
-**Outer joins are a difference, not a third operator.** `difference(a, b)` answers
-the left entries whose key has no match on the right, so both sides of an outer
-join fall out of the same two streams:
+**Step 1 — intersect the entries.** Both sides declare an index over the join
+column, so both streams arrive ordered by it (an index scan's order is the entry
+tuple `(fields…, key)`, and any prefix projection of that tuple is still ordered).
+Ask the scan for the parts the intersection needs and nothing more — the type
+parameter is the payload menu, so leaving `Row` out means no payload is read:
 
 ```rust
-let left_only  = okm_query::difference(left.clone(), right.clone());
-let right_only = okm_query::difference(right, left);
+// ordered by user, then by key; (fields, key) — no fetch
+let left = orders
+    .scan::<Order_ByUser, (parts::Fields, parts::Key)>(&[])
+    .map(|hit| hit.map(|(f, _)| f.user_id));
+let right = users
+    .scan::<User_ById, (parts::Fields, parts::Key)>(&[])
+    .map(|hit| hit.map(|(f, _)| f.id));
+
+let common: Vec<u32> = left.intersect(right).collect::<Result<Vec<_>>>()?;
 ```
 
-**More than two streams: fold.** An N-way join is `merge_join` applied pairwise —
-for a pure intersection map each side to `(key, ())` first, since a join of joins
-needs the key carried in the value. For exclusives, intersect once and subtract per
-side: `difference(a, common)`, `difference(b, common)`, `difference(c, common)` —
-each answer is that side's "more than the intersection".
+A scan yields entries one at a time (`Result` per entry), so nothing is materialized
+until you ask: `collect::<Result<Vec<_>>>()` is the eager mirror, `.take(n)` is a
+LIMIT, `.rev()` walks backwards. There are three verbs, not eight — prefix, exact,
+range — and the payload is the type parameter, so no verb exists per payload.
 
-Both operators sort their own inputs and return `Vec`, so a chain materializes at
-every step: `LIMIT` stops nothing early. Feed a cheap, highly selective scan first.
+`intersect` is a method on anything that yields keys (`Vec`, array, scan iterator)
+and a lazy merge over the two ordered streams: set semantics (a key that both sides
+repeat is answered once), zero allocation, `take(n)` stops early. More than two
+sides chains — `a.intersect(b).intersect(c)` — and so does the mixed question
+"keys a and b share that c lacks": `a.intersect(b).difference(c)`.
+
+The general form is `merge`, which answers one tuple per distinct key —
+`(Some, None)` left only, `(Some, Some)` both, `(None, Some)` right only:
+
+```rust
+for (left, right) in left_keys.merge(right_keys) {
+    match (left, right) {
+        (Some(a), Some(b)) => both.push((a, b)),
+        (Some(a), None) => left_only.push(a),
+        (None, Some(b)) => right_only.push(b),
+        (None, None) => unreachable!("merge never answers two absences"),
+    }
+}
+```
+
+`intersect` and `difference` are exactly the two filters over that stream, named
+because they are asked far more often than "both sides, all three cases".
+
+**Step 2 — fetch the survivors.** For each shared key, read the rows that carry it;
+the cross product of a repeated key happens here, in this loop, and nowhere else:
+
+```rust
+for key in common {
+    for order in orders.scan::<Order_ByUser, (parts::Fields, parts::Key, parts::Row)>(&key.to_be_bytes()) {
+        for user in users.scan::<User_ById, (parts::Fields, parts::Key, parts::Row)>(&key.to_be_bytes()) {
+            emit(order?, user?);   // m rows × n rows for this key
+        }
+    }
+}
+```
+
+One index probe per shared key. Because the key set is complete before the first
+row is read, it can be filtered, truncated, or counted first — selectivity applies
+before any payload is touched.
+
+**The other shape: lockstep, when nearly every key is shared.** If both sides
+intersect almost fully, the per-key probes are the cost, and pairing the two
+streams in one pass wins even though it materializes and reads both sides' payloads:
+
+```rust
+let pairs = okm_query::merge_join(left_pairs, right_pairs);   // Vec<(OrderKey, UserKey)>
+```
+
+That is the multiplicity step by definition (m×n pairs is its answer), so it returns
+a `Vec` and sorts its own inputs: an already-ordered side costs one linear pass, and
+an unordered one costs `O(n log n)` rather than a wrong answer. Choose it when the
+probe count would exceed the row count. No hash join, deliberately: a sort-merge
+needs no hashing of the key type and holds `O(n)` instead of a build side.
+
+**Outer joins are differences.** "Left has it, right does not" is `a.difference(b)` —
+the receiver is the left side, so `a − (a ∩ b)` needs no intersection computed
+first — and the three answers partition the two sides:
+
+```rust
+let left_only:  Vec<_> = left.clone().difference(right.clone()).collect();
+let right_only: Vec<_> = right.difference(left).collect();
+```
+
+For N sides, intersect once and subtract per side: `a.difference(common)`,
+`b.difference(common)`, `c.difference(common)` — each answer is that side's "more
+than the intersection".
+
+**What the ordering contract costs.** `intersect` and `difference` require their
+inputs to be ordered by key and do not check it: verifying would mean reading a
+stream to its end before answering, which is the materialization they exist to
+avoid. Unordered input does not misbehave loudly — it silently misses keys. The
+contract is free when the join column is the leading field of the index (any prefix
+projection of the scan tuple is ordered); when it is not, sort explicitly first and
+the sort is visible in the code instead of hidden in the operator.
+
 
 ## The graph recipe: walk
 

@@ -1,6 +1,6 @@
 # 查询配方：okm-query 组合子与 SQL 的对应
 
-本文是 okm-query 的使用配方集：三个组合子（merge_join / group_by / walk）怎么组合成 SQL 世界的熟悉形状，以及两条边界记录——where 的物理/内存分界（前缀、区间、filter）、三种分组的落地差异。机制细节见 internals（[索引机制](internals/index-mechanism.zh-CN.md)）；建模纪律见[建模指南](MODELING.zh-CN.md)。
+本文是 okm-query 的使用配方集：四个组合子（intersect / difference / merge_join / group_by，加图的 walk）怎么组合成 SQL 世界的熟悉形状，以及两条边界记录——where 的物理/内存分界（前缀、区间、filter）、三种分组的落地差异。机制细节见 internals（[索引机制](internals/index-mechanism.zh-CN.md)）；建模纪律见[建模指南](MODELING.zh-CN.md)。
 
 ## 核心立场
 
@@ -12,7 +12,7 @@ SQL 概念        okm 落地
 WHERE (物理)    索引声明 + 前缀/区间扫描（免费，见边界记录）
 WHERE (内存)    .filter()（stdlib，无需包装）
 GROUP BY        group_by（索引排序承担分组）或 reduce（编译期）
-JOIN            merge_join（自己排序两侧）
+JOIN            intersect（有序键流）+ merge_join 处理 m×n
 多级 rollup     前缀扫描逐级收窄 group 段
 图遍历          walk（一跳 = 一次前缀扫描）
 ```
@@ -65,47 +65,92 @@ scan(&[org, dept, day])         → org × dept × day（明细）
 
 判据：分组维度固定且读密集 → reduce（写时付税，读免费）；分组维度多变 → 索引排序 + group_by（读时付税，布局一次覆盖多维度）。两者不互斥：同一索引既服务 group_by 又提供时间线扫描。
 
-## JOIN 配方：merge_join 与 difference
+## JOIN 配方：求交键，再回表
 
-两侧都在同一列上声明索引，就以那一列 join。扫描会把**它按之排序的字段段**一并交回，
-所以 join key 直接在手，既不用回表，也不用 `includes`：
+join 是两步，只有第一步是查询算子。
 
-```rust
-let left = orders.scan::<Order_ByUser>(&[])?          // 按 user 有序，值内再按主键
-    .into_iter()
-    .map(|(f, k, _)| (f.user_id, k.decoded));
-let right = users.scan::<User_ById>(&[])?             // 按 id 有序
-    .into_iter()
-    .map(|(f, k, _)| (f.id, k.decoded));
-
-let pairs = okm_query::merge_join(left, right);        // (OrderKey, UserKey)
-```
-
-同一张表的两张面（比如两条 posting list）则按主键 join：token 的前缀把数据段钉成常量，
-其下的条目本身就按主键走。
-
-**什么有序，什么要付一次排序。** 索引扫描的序是条目元组 `(字段…, 主键)` 的字典序，
-这个元组的**任何前缀**仍然有序。所以按索引首位 join 不需要排序；join 列不是前缀时
-（主键前面还隔着一个字段、区间探针、多值索引的主键）需要排一次，`merge_join` 会替你排。
-哪种形状出来有序是性能问题，不是正确性问题：算子是任何顺序都收。
-
-刻意没有 hash join：sort-merge join 不需要对键做哈希，内存是 `O(n)`，不必物化 build 侧。
-
-**外连接是一次差集，不是第三个算子。** `difference(a, b)` 回答"左侧有、右侧没有"的条目，
-于是外连接的两半从同样两条流里就出来了：
+**第一步——对条目求交。** 两侧都在 join 列上声明了索引，于是两条流本来就按它有序
+（索引扫描的序是条目元组 `(字段…, 主键)`，这个元组的任何前缀投影仍然有序）。
+只向扫描要求交需要的那几部分——类型参数就是载荷菜单，不写 `Row` 就一次 payload 都不读：
 
 ```rust
-let left_only  = okm_query::difference(left.clone(), right.clone());
-let right_only = okm_query::difference(right, left);
+// 按 user 有序，值内再按主键；(字段段, 主键) —— 不回表
+let left = orders
+    .scan::<Order_ByUser, (parts::Fields, parts::Key)>(&[])
+    .map(|hit| hit.map(|(f, _)| f.user_id));
+let right = users
+    .scan::<User_ById, (parts::Fields, parts::Key)>(&[])
+    .map(|hit| hit.map(|(f, _)| f.id));
+
+let common: Vec<u32> = left.intersect(right).collect::<Result<Vec<_>>>()?;
 ```
 
-**多于两条流：折叠。** N 路 join 就是两两 `merge_join`——纯求交时先把每侧映射成 `(key, ())`，
-因为 join 的 join 要把键带在值里。要各侧的独有部分，就先求一次交集，再逐侧减：
-`difference(a, common)`、`difference(b, common)`、`difference(c, common)`，各得该侧
-"比交集多出来的那些"。
+扫描逐条给条目（每条一个 `Result`），所以在你要求之前什么都不物化：`collect::<Result<Vec<_>>>()` 是
+急切那面镜子，`.take(n)` 是 LIMIT，`.rev()` 倒着走。词只有三个——前缀、等值、区间——载荷是类型参数，
+所以不会"每种载荷一个词"。
 
-两个算子都自己排序并且返回 `Vec`，所以链式调用每一步都会物化，`LIMIT` 停不下任何一步——
-把手选择性最强、最便宜的扫描放在链首。
+`intersect` 是任何"能吐出键"的东西（`Vec`、数组、扫描迭代器）上的方法，也是两条有序流上的懒归并：
+集合语义（两侧重复的键只答一次）、零分配、`take(n)` 立即停。多于两侧就链下去——
+`a.intersect(b).intersect(c)`；混合问题同样能链："a 与 b 共有、而 c 没有的那些键" =
+`a.intersect(b).difference(c)`。
+
+通用形态是 `merge`：每个不同的键交一个元组——`(Some, None)` 只有左、`(Some, Some)` 两边都有、
+`(None, Some)` 只有右：
+
+```rust
+for (left, right) in left_keys.merge(right_keys) {
+    match (left, right) {
+        (Some(a), Some(b)) => both.push((a, b)),
+        (Some(a), None) => left_only.push(a),
+        (None, Some(b)) => right_only.push(b),
+        (None, None) => unreachable!("merge never answers two absences"),
+    }
+}
+```
+
+`intersect` 与 `difference` 就是这条流上的两个 filter，单独命名是因为它们被问得多得多。
+
+**第二步——回表取幸存者。** 每个公共键去读携带它的行；重复键的笛卡尔积只在这里发生：
+
+```rust
+for key in common {
+    for order in orders.scan::<Order_ByUser, (parts::Fields, parts::Key, parts::Row)>(&key.to_be_bytes()) {
+        for user in users.scan::<User_ById, (parts::Fields, parts::Key, parts::Row)>(&key.to_be_bytes()) {
+            emit(order?, user?);   // 这个键的 m 行 × n 行
+        }
+    }
+}
+```
+
+每个公共键一次索引探测。键集合在读到第一行之前就已经完整，所以可以先过滤、截断、计数——
+选择性在碰任何 payload 之前就生效。
+
+**另一种形状：几乎全集相交时用锁步。** 如果两侧几乎完全相交，代价变成逐键探测，那么
+一趟配对两条流更划算，哪怕它物化并且读了两侧的 payload：
+
+```rust
+let pairs = okm_query::merge_join(left_pairs, right_pairs);   // Vec<(OrderKey, UserKey)>
+```
+
+它就是多重性那一步（m×n 对就是它的答案），所以返回 `Vec`、自己排序：已排过的一侧只付一趟线性
+比较，没排过的一侧付 `O(n log n)` 而不是错误答案。判据是探测次数会不会超过行数。刻意没有
+hash join：sort-merge 不需要对键做哈希，内存 `O(n)`，不必物化 build 侧。
+
+**外连接就是差集。** "左边有、右边没有" = `a.difference(b)`——接收者就是左侧，
+所以 `a − (a ∩ b)` 不必先算交集——三个答案恰好划分两条流：
+
+```rust
+let left_only:  Vec<_> = left.clone().difference(right.clone()).collect();
+let right_only: Vec<_> = right.difference(left).collect();
+```
+
+N 侧就先求一次交集，再逐侧减：`a.difference(common)`、`b.difference(common)`、
+`c.difference(common)`——各得该侧"比交集多出来的那些"。
+
+**有序契约的代价。** `intersect` 与 `difference` 要求输入按键有序，并且**不检查**：
+检查意味着先把一条流读到尽头再回答，那正是它们要避免的物化。无序输入不会大声出错——
+它会静默少键。join 列是索引首位时这个契约是免费的（扫描元组的任何前缀投影都有序）；
+不是首位就先显式排序，让那次排序出现在代码里，而不是藏在算子里。
 
 ## 图配方：walk
 

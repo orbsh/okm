@@ -176,14 +176,20 @@ fn scan_via_index_returns_rows() {
     }
 
     // 最左前缀 reputation=10 → 1 行回表（key 前缀取满，可完整解码）
-    let rows = t.scan::<ByReputation>(&10u32.to_be_bytes()).unwrap();
+    let rows = t
+        .scan::<ByReputation, (parts::Fields, parts::Key, parts::Row)>(&10u32.to_be_bytes())
+        .collect::<okm_core::error::Result<Vec<_>>>()
+        .unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].1.taken, <UserKey as KeyEncode>::KEY_LEN);
     assert_eq!(rows[0].1.decoded, rows_in[0].0);
     assert_eq!(rows[0].2.as_ref().unwrap(), &rows_in[0].1);
 
     // 空前缀 = 全索引扫描，按索引字段序（10..40）排列
-    let all = t.scan::<ByReputation>(&[]).unwrap();
+    let all = t
+        .scan::<ByReputation, (parts::Fields, parts::Key, parts::Row)>(&[])
+        .collect::<okm_core::error::Result<Vec<_>>>()
+        .unwrap();
     assert_eq!(all.len(), 4);
     assert_eq!(all[0].2.as_ref().unwrap(), &rows_in[0].1);
     assert_eq!(all[3].1.decoded.id, 104);
@@ -254,7 +260,10 @@ fn timeline_is_a_list_encoding() {
     }
 
     // scan API：taken = 8（PostKey 宽度），可完整解码 → 回表
-    let listed = t.scan::<ByTimeline>(&7u64.to_be_bytes()).unwrap();
+    let listed = t
+        .scan::<ByTimeline, (parts::Fields, parts::Key, parts::Row)>(&7u64.to_be_bytes())
+        .collect::<okm_core::error::Result<Vec<_>>>()
+        .unwrap();
     assert_eq!(listed.len(), 3);
     assert_eq!(listed[0].1.taken, <PostKey as KeyEncode>::KEY_LEN);
     assert_eq!(listed[0].1.decoded.id, 502); // created_at=10 最先
@@ -263,7 +272,10 @@ fn timeline_is_a_list_encoding() {
     // scan_covered：includes(title_len) 在 value 里，无需回表即可读——
     // 解出来的是生成的覆盖结构体，不是字节
     // 按 (author, created_at) 升序：10, 20, 30 → title_len 12, 11, 10
-    let covered = t.scan_covered::<ByTimeline>(&7u64.to_be_bytes()).unwrap();
+    let covered = t
+        .scan::<ByTimeline, (parts::Fields, parts::Key, parts::Include)>(&7u64.to_be_bytes())
+        .collect::<okm_core::error::Result<Vec<_>>>()
+        .unwrap();
     assert_eq!(covered.len(), 3);
     assert_eq!(covered[0].2.title_len, 12);
     assert_eq!(covered[2].2.title_len, 10);
@@ -294,13 +306,19 @@ fn truncated_key_prefix_drops_redundant_tail() {
     }
 
     // scan API：taken = 8（session_id 宽度），decoded.user_id 不可信
-    let listed = t.scan::<ByKind>(&[3]).unwrap();
+    let listed = t
+        .scan::<ByKind, (parts::Fields, parts::Key, parts::Row)>(&[3])
+        .collect::<okm_core::error::Result<Vec<_>>>()
+        .unwrap();
     assert_eq!(listed.len(), 3);
     assert_eq!(listed[0].1.taken, 8);
     assert!(listed[0].2.is_none()); // 截断身份 → 不回表
 
     // 覆盖扫描本例无 includes → `Covered = ()`：仅验证条数与顺序
-    let covered = t.scan_covered::<ByKind>(&[3]).unwrap();
+    let covered = t
+        .scan::<ByKind, (parts::Fields, parts::Key, parts::Include)>(&[3])
+        .collect::<okm_core::error::Result<Vec<_>>>()
+        .unwrap();
     assert_eq!(covered.len(), 3);
 }
 
@@ -410,21 +428,30 @@ fn variable_length_index_text_first() {
 
     // scan API：name="beta"，回表核验后返回行
     let listed = t
-        .scan::<ByCityName>(&[&10u32.to_be_bytes()[..], b"beta"].concat())
+        .scan::<ByCityName, (parts::Fields, parts::Key, parts::Row)>(
+            &[&10u32.to_be_bytes()[..], b"beta"].concat(),
+        )
+        .collect::<okm_core::error::Result<Vec<_>>>()
         .unwrap();
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0].1.decoded.id, 3);
     assert_eq!(listed[0].2.as_ref().unwrap(), &rows[2].1);
 
     // by_name：单字段文本索引，空前缀 = 全表按 name 字典序
-    let all = t.scan::<ByName>(&[]).unwrap();
+    let all = t
+        .scan::<ByName, (parts::Fields, parts::Key, parts::Row)>(&[])
+        .collect::<okm_core::error::Result<Vec<_>>>()
+        .unwrap();
     let names: Vec<&str> = all
         .iter()
         .map(|(_, _, r)| r.as_ref().unwrap().name.as_str())
         .collect();
     assert_eq!(names, ["alpha", "alpha", "alphabet", "beta"]);
     // 精确匹配："alpha" 扫出 2 行（含 alphabet），去重靠主键
-    let alphas = t.scan::<ByName>(b"alpha").unwrap();
+    let alphas = t
+        .scan::<ByName, (parts::Fields, parts::Key, parts::Row)>(b"alpha")
+        .collect::<okm_core::error::Result<Vec<_>>>()
+        .unwrap();
     assert_eq!(alphas.len(), 3);
 }
 
@@ -444,7 +471,10 @@ fn the_sort_segment_comes_back_with_each_hit() {
     }
 
     // 全表按 name：字段段解出 name 本身，命中序就是 name 序。
-    let all = t.scan::<ByName>(&[]).unwrap();
+    let all = t
+        .scan::<ByName, (parts::Fields, parts::Key, parts::Row)>(&[])
+        .collect::<okm_core::error::Result<Vec<_>>>()
+        .unwrap();
     assert_eq!(
         all.iter()
             .map(|(f, _, _)| f.name.as_str())
@@ -454,7 +484,10 @@ fn the_sort_segment_comes_back_with_each_hit() {
 
     // 组探针（只钉住复合索引的首位 city）解出的是**整段**：探针那部分也要算进去，
     // 否则 city 解不出来、断言会先崩在解码上。
-    let group = t.scan::<ByCityName>(&10u32.to_be_bytes()).unwrap();
+    let group = t
+        .scan::<ByCityName, (parts::Fields, parts::Key, parts::Row)>(&10u32.to_be_bytes())
+        .collect::<okm_core::error::Result<Vec<_>>>()
+        .unwrap();
     assert_eq!(group.len(), 2);
     assert_eq!(group[0].0.city, 10);
     assert_eq!(group[0].0.name, "alpha");
@@ -462,12 +495,96 @@ fn the_sort_segment_comes_back_with_each_hit() {
 
     // 覆盖扫描同样带字段段：covered 值的解码与字段段解码互不影响。
     let covered = t
-        .scan_covered::<ByCityName>(&[&10u32.to_be_bytes()[..], b"beta"].concat())
+        .scan::<ByCityName, (parts::Fields, parts::Key, parts::Include)>(
+            &[&10u32.to_be_bytes()[..], b"beta"].concat(),
+        )
+        .collect::<okm_core::error::Result<Vec<_>>>()
         .unwrap();
     assert_eq!(covered[0].1.decoded.id, 2);
 }
 
-/// `func` 索引的字段段是函数的输出，类型属于那个函数，声明无法命名它——
+/// 载荷元组：顺序由调用方给，数目由调用方给。同一个扫描，(Key, Fields) 与
+/// (Fields, Key) 是两个问题，(Fields, Row) 是第三个——数量少了就是活儿少了。
+#[test]
+fn the_parts_tuple_order_and_count_are_the_callers() {
+    let t = <Doc as Document>::collection(TestStore::slatedb_mem());
+    for (k, r) in [mk_doc(1, 10, "a"), mk_doc(2, 10, "b")] {
+        t.put(&k, &r).unwrap();
+    }
+    let probe = &10u32.to_be_bytes();
+
+    // 顺序照写：主键在前、字段段在后。
+    let flipped = t
+        .scan::<ByCityName, (parts::Key, parts::Fields)>(probe)
+        .collect::<okm_core::error::Result<Vec<_>>>()
+        .unwrap();
+    assert_eq!(flipped[0].0.decoded.id, 1);
+    assert_eq!(flipped[0].1.name, "a");
+
+    // 少一个部分：只要行。
+    let rows = t
+        .scan::<ByCityName, (parts::Row,)>(probe)
+        .collect::<okm_core::error::Result<Vec<_>>>()
+        .unwrap();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[1].0.as_ref().unwrap().name, "b");
+
+    // 一个部分也不要：只问"有几条"，不解码、不回表。
+    assert_eq!(t.scan::<ByCityName, ()>(probe).count(), 2);
+}
+
+/// 条目级扫描：同一批命中、同一顺序、同样的探针语义，只是不读 payload。
+/// join 的第一步只需要 (字段, 主键)；先把行读出来再丢掉是白花。
+#[test]
+fn scan_entries_answers_the_same_hits_without_the_row() {
+    let t = <Doc as Document>::collection(TestStore::slatedb_mem());
+    for (k, r) in [
+        mk_doc(1, 10, "alpha"),
+        mk_doc(2, 10, "beta"),
+        mk_doc(3, 20, "alpha"),
+    ] {
+        t.put(&k, &r).unwrap();
+    }
+
+    // 与 scan 的 (字段段, 主键) 逐条相同——同一批命中，少的只是 Option<R>。
+    let full = t
+        .scan::<ByCityName, (parts::Fields, parts::Key, parts::Row)>(&10u32.to_be_bytes())
+        .collect::<okm_core::error::Result<Vec<_>>>()
+        .unwrap();
+    let entries = t
+        .scan::<ByCityName, (parts::Fields, parts::Key)>(&10u32.to_be_bytes())
+        .collect::<okm_core::error::Result<Vec<_>>>()
+        .unwrap();
+    assert_eq!(
+        entries,
+        full.into_iter().map(|(f, k, _)| (f, k)).collect::<Vec<_>>()
+    );
+    assert_eq!(entries.len(), 2);
+    assert_eq!(entries[0].0.name, "alpha", "字段段照样解出来");
+    assert_eq!(entries[0].1.decoded.id, 1, "主键照样切出来");
+
+    // exact 形态：段必须整段等于探针，比探针更长的值不算命中。
+    let exact = t
+        .scan_exact::<ByName, (parts::Fields, parts::Key)>(b"alpha")
+        .collect::<okm_core::error::Result<Vec<_>>>()
+        .unwrap();
+    assert_eq!(
+        exact.len(),
+        2,
+        "both alphas, and nothing that merely extends"
+    );
+
+    // 空探针 = 全表条目，与 scan 同长。
+    assert_eq!(
+        t.scan::<ByName, (parts::Fields, parts::Key)>(&[])
+            .collect::<okm_core::error::Result<Vec<_>>>()
+            .unwrap()
+            .len(),
+        3
+    );
+}
+
+/// `func` 索引的段是函数的输出，类型属于那个函数，声明无法命名它——
 /// 于是它交回裸字节。
 #[test]
 fn a_function_index_hands_back_the_raw_segment() {
@@ -478,7 +595,10 @@ fn a_function_index_hands_back_the_raw_segment() {
     }
 
     // by_lower 的段是函数的输出（小写后的 name）；声明里没有类型可以命名它。
-    let hits = t.scan::<ByLower>(b"rust").unwrap();
+    let hits = t
+        .scan::<ByLower, (parts::Fields, parts::Key, parts::Row)>(b"rust")
+        .collect::<okm_core::error::Result<Vec<_>>>()
+        .unwrap();
     assert_eq!(hits.len(), 2);
     assert_eq!(hits[0].0.as_str(), Some("rust"), "the function's own bytes");
 }
@@ -509,7 +629,10 @@ fn probe_never_spills_into_the_key_tail() {
     assert!(e.starts_with(&probe));
 
     // 前缀扫描：只返回以 "ad1" 开头的值，假命中被丢掉（过去这里 panic）
-    let hits = t.scan::<ByName>(b"ad1").unwrap();
+    let hits = t
+        .scan::<ByName, (parts::Fields, parts::Key, parts::Row)>(b"ad1")
+        .collect::<okm_core::error::Result<Vec<_>>>()
+        .unwrap();
     let names: Vec<&str> = hits
         .iter()
         .map(|(_, _, r)| r.as_ref().unwrap().name.as_str())
@@ -517,25 +640,43 @@ fn probe_never_spills_into_the_key_tail() {
     assert_eq!(names, ["ad1", "ad1_to_cart"]);
 
     // 等值扫描：只返回 name 恰好等于探针的行——不回表核验、不需要 includes
-    let exact = t.scan_exact::<ByName>(b"ad1").unwrap();
+    let exact = t
+        .scan_exact::<ByName, (parts::Fields, parts::Key, parts::Row)>(b"ad1")
+        .collect::<okm_core::error::Result<Vec<_>>>()
+        .unwrap();
     assert_eq!(exact.len(), 1);
     assert_eq!(exact[0].1.decoded.id, 2);
 
     // 真正的短值不受影响：等值扫描仍能找到 "ad" 那一行
-    let ad = t.scan_exact::<ByName>(b"ad").unwrap();
+    let ad = t
+        .scan_exact::<ByName, (parts::Fields, parts::Key, parts::Row)>(b"ad")
+        .collect::<okm_core::error::Result<Vec<_>>>()
+        .unwrap();
     assert_eq!(ad.len(), 1);
     assert_eq!(ad[0].1.decoded.id, id_trap);
     // 而 "ad" 的前缀扫描返回三行（共享前缀 = 同一字典序区间）
-    assert_eq!(t.scan::<ByName>(b"ad").unwrap().len(), 3);
+    assert_eq!(
+        t.scan::<ByName, (parts::Fields, parts::Key, parts::Row)>(b"ad")
+            .collect::<okm_core::error::Result<Vec<_>>>()
+            .unwrap()
+            .len(),
+        3
+    );
 
     // 惰性区间迭代器走同一条判据（过去在剩余字节短于尾段时减法下溢）
-    let mut it = t.scan_range_iter::<ByName>(b"ad1", None);
+    let mut it = t.scan_range::<ByName, (parts::Fields, parts::Key, parts::Row)>(b"ad1", None);
     let first = it.next().unwrap();
     assert_eq!(first.as_ref().unwrap().2.as_ref().unwrap().name, "ad1");
     assert_eq!(it.count(), 1); // 剩下 "ad1_to_cart"
 
     // 覆盖扫描看的是同一条范围，同样丢掉假命中
-    assert_eq!(t.scan_covered::<ByName>(b"ad1").unwrap().len(), 2);
+    assert_eq!(
+        t.scan::<ByName, (parts::Fields, parts::Key, parts::Include)>(b"ad1")
+            .collect::<okm_core::error::Result<Vec<_>>>()
+            .unwrap()
+            .len(),
+        2
+    );
 }
 
 /// 函数索引（function-index regime）：归一化函数同时驱动写入端编码与
@@ -597,7 +738,10 @@ fn function_index_normalizes_both_sides() {
         name: "APPLE".to_string(),
     };
     let probe_seg = &lower_name(&probe)[0];
-    let listed = t.scan::<ByLower>(probe_seg.as_bytes()).unwrap();
+    let listed = t
+        .scan::<ByLower, (parts::Fields, parts::Key, parts::Row)>(probe_seg.as_bytes())
+        .collect::<okm_core::error::Result<Vec<_>>>()
+        .unwrap();
     assert_eq!(listed.len(), 2); // Apple + APPLE 归一化到同一区间
     let ids: Vec<u64> = listed.iter().map(|(_, pk, _)| pk.decoded.id).collect();
     assert_eq!(ids, [1, 2]); // 字典序（同结果 → 主键序）
@@ -655,16 +799,26 @@ fn multi_entry_function_index_fans_out() {
     assert_eq!(toks, vec![b"kv".as_slice(), b"rust".as_slice()]);
 
     // scan 语义：按 token 前缀扫 → 回表（返回行）
-    let rust_rows = t.scan::<ByTag>(b"rust").unwrap();
+    let rust_rows = t
+        .scan::<ByTag, (parts::Fields, parts::Key, parts::Row)>(b"rust")
+        .collect::<okm_core::error::Result<Vec<_>>>()
+        .unwrap();
     assert_eq!(rust_rows.len(), 2); // 两行都打了 rust
 
-    let kv_rows = t.scan::<ByTag>(b"kv").unwrap();
+    let kv_rows = t
+        .scan::<ByTag, (parts::Fields, parts::Key, parts::Row)>(b"kv")
+        .collect::<okm_core::error::Result<Vec<_>>>()
+        .unwrap();
     assert_eq!(kv_rows.len(), 1);
     assert_eq!(kv_rows[0].1.decoded.id, 1);
 
     // 删除：delete 沿 entry_pairs 逐条清除，无悬挂条目
     t.purge(&rows[0].0).unwrap();
-    let remaining = t.scan::<ByTag>(b"rust").unwrap().len();
+    let remaining = t
+        .scan::<ByTag, (parts::Fields, parts::Key, parts::Row)>(b"rust")
+        .collect::<okm_core::error::Result<Vec<_>>>()
+        .unwrap()
+        .len();
     assert_eq!(remaining, 1); // 只剩 id 2
 }
 
@@ -696,12 +850,16 @@ fn function_index_accepts_any_iterator() {
     t.put(&k, &HourRow { base: 100, span: 2 }).unwrap();
 
     for b in [100u64, 101, 102] {
-        let hits = t.scan::<ByBucket>(&b.to_be_bytes()).unwrap();
+        let hits = t
+            .scan::<ByBucket, (parts::Fields, parts::Key, parts::Row)>(&b.to_be_bytes())
+            .collect::<okm_core::error::Result<Vec<_>>>()
+            .unwrap();
         assert_eq!(hits.len(), 1, "bucket {b} 应有该行");
         assert_eq!(hits[0].1.decoded.id, 7);
     }
     assert!(
-        t.scan::<ByBucket>(&103u64.to_be_bytes())
+        t.scan::<ByBucket, (parts::Fields, parts::Key, parts::Row)>(&103u64.to_be_bytes())
+            .collect::<okm_core::error::Result<Vec<_>>>()
             .unwrap()
             .is_empty()
     );
@@ -709,7 +867,12 @@ fn function_index_accepts_any_iterator() {
     // 删除沿同一迭代重建集合：三条一起走
     t.purge(&k).unwrap();
     for b in [100u64, 101, 102] {
-        assert!(t.scan::<ByBucket>(&b.to_be_bytes()).unwrap().is_empty());
+        assert!(
+            t.scan::<ByBucket, (parts::Fields, parts::Key, parts::Row)>(&b.to_be_bytes())
+                .collect::<okm_core::error::Result<Vec<_>>>()
+                .unwrap()
+                .is_empty()
+        );
     }
 }
 
@@ -740,8 +903,19 @@ fn function_index_iterates_borrowed_values() {
 
     let pairs = ByBucket::entry_pairs(<Borrowed as Document>::NS_PREFIX, &k, &row);
     assert_eq!(pairs.len(), 2);
-    assert_eq!(t.scan::<ByBucket>(&7u32.to_be_bytes()).unwrap().len(), 1);
-    assert!(t.scan::<ByBucket>(&8u32.to_be_bytes()).unwrap().is_empty());
+    assert_eq!(
+        t.scan::<ByBucket, (parts::Fields, parts::Key, parts::Row)>(&7u32.to_be_bytes())
+            .collect::<okm_core::error::Result<Vec<_>>>()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(
+        t.scan::<ByBucket, (parts::Fields, parts::Key, parts::Row)>(&8u32.to_be_bytes())
+            .collect::<okm_core::error::Result<Vec<_>>>()
+            .unwrap()
+            .is_empty()
+    );
 }
 
 /// 空迭代器 = 这行不产生任何 entry（行级过滤的一种写法；声明上的 where 更清楚）。
@@ -869,15 +1043,25 @@ fn partial_index_admits_only_matching_rows() {
     assert!(ByOpenAssignee::admits(&open_a.1));
 
     // 扫描只返回被接纳的行，组内按 created_at（10, 30）
-    let rows = t.scan::<ByOpenAssignee>(&7u64.to_be_bytes()).unwrap();
+    let rows = t
+        .scan::<ByOpenAssignee, (parts::Fields, parts::Key, parts::Row)>(&7u64.to_be_bytes())
+        .collect::<okm_core::error::Result<Vec<_>>>()
+        .unwrap();
     let ids: Vec<u64> = rows.iter().map(|(_, pk, _)| pk.decoded.id).collect();
     assert_eq!(ids, [1, 3]);
     // 整索引扫描（空前缀）同样只有 2 条——稀疏性对读侧透明
-    assert_eq!(t.scan::<ByOpenAssignee>(&[]).unwrap().len(), 2);
+    assert_eq!(
+        t.scan::<ByOpenAssignee, (parts::Fields, parts::Key, parts::Row)>(&[])
+            .collect::<okm_core::error::Result<Vec<_>>>()
+            .unwrap()
+            .len(),
+        2
+    );
 
     // 覆盖扫描不受谓词影响：includes(title_len) 仍在 value 里
     let covered = t
-        .scan_covered::<ByOpenAssignee>(&7u64.to_be_bytes())
+        .scan::<ByOpenAssignee, (parts::Fields, parts::Key, parts::Include)>(&7u64.to_be_bytes())
+        .collect::<okm_core::error::Result<Vec<_>>>()
         .unwrap();
     assert_eq!(covered.len(), 2);
     assert_eq!(covered[0].2.title_len, 3);
@@ -892,7 +1076,10 @@ fn partial_index_admits_only_matching_rows() {
             .is_none()
     );
     assert_eq!(
-        t.scan::<ByOpenAssignee>(&7u64.to_be_bytes()).unwrap().len(),
+        t.scan::<ByOpenAssignee, (parts::Fields, parts::Key, parts::Row)>(&7u64.to_be_bytes())
+            .collect::<okm_core::error::Result<Vec<_>>>()
+            .unwrap()
+            .len(),
         1
     );
 }
@@ -918,7 +1105,10 @@ fn partial_index_flip_needs_delete_then_put() {
         t.store().get(&e).unwrap().is_some(),
         "悬挂条目——既有覆盖写契约，非谓词引入"
     );
-    let hit = t.scan::<ByOpenAssignee>(&7u64.to_be_bytes()).unwrap();
+    let hit = t
+        .scan::<ByOpenAssignee, (parts::Fields, parts::Key, parts::Row)>(&7u64.to_be_bytes())
+        .collect::<okm_core::error::Result<Vec<_>>>()
+        .unwrap();
     assert_eq!(hit.len(), 1);
     assert_eq!(
         hit[0].2.as_ref().unwrap().status,
@@ -933,7 +1123,8 @@ fn partial_index_flip_needs_delete_then_put() {
     t2.put(&k, &closed).unwrap();
     assert!(t2.store().get(&e).unwrap().is_none());
     assert!(
-        t2.scan::<ByOpenAssignee>(&7u64.to_be_bytes())
+        t2.scan::<ByOpenAssignee, (parts::Fields, parts::Key, parts::Row)>(&7u64.to_be_bytes())
+            .collect::<okm_core::error::Result<Vec<_>>>()
             .unwrap()
             .is_empty()
     );
@@ -957,7 +1148,8 @@ fn partial_index_flip_needs_delete_then_put() {
         "merge 扫掉存储行的面：没有悬挂条目"
     );
     assert!(
-        t3.scan::<ByOpenAssignee>(&7u64.to_be_bytes())
+        t3.scan::<ByOpenAssignee, (parts::Fields, parts::Key, parts::Row)>(&7u64.to_be_bytes())
+            .collect::<okm_core::error::Result<Vec<_>>>()
             .unwrap()
             .is_empty()
     );
@@ -999,13 +1191,22 @@ fn function_index_empty_vec_skips_row() {
     );
 
     // 扫描只见被接纳的行
-    let rust = t.scan::<ByLiveToken>(b"rust").unwrap();
+    let rust = t
+        .scan::<ByLiveToken, (parts::Fields, parts::Key, parts::Row)>(b"rust")
+        .collect::<okm_core::error::Result<Vec<_>>>()
+        .unwrap();
     assert_eq!(rust.len(), 1);
     assert_eq!(rust[0].1.decoded.id, 1);
 
     // delete 对称：写入集合与删除集合同源（空 Vec 的行删除是 no-op）
     t.purge(&open.0).unwrap();
-    assert_eq!(t.scan::<ByLiveToken>(b"rust").unwrap().len(), 0);
+    assert_eq!(
+        t.scan::<ByLiveToken, (parts::Fields, parts::Key, parts::Row)>(b"rust")
+            .collect::<okm_core::error::Result<Vec<_>>>()
+            .unwrap()
+            .len(),
+        0
+    );
 }
 
 #[test]
@@ -1029,10 +1230,22 @@ fn function_index_with_where_filters_row() {
 
     // 与空 Vec 写法等价（by_live_token 的 live_tokens 内嵌同一条件）
     assert_eq!(
-        t.scan::<ByOpenToken>(b"rust").unwrap().len(),
-        t.scan::<ByLiveToken>(b"rust").unwrap().len()
+        t.scan::<ByOpenToken, (parts::Fields, parts::Key, parts::Row)>(b"rust")
+            .collect::<okm_core::error::Result<Vec<_>>>()
+            .unwrap()
+            .len(),
+        t.scan::<ByLiveToken, (parts::Fields, parts::Key, parts::Row)>(b"rust")
+            .collect::<okm_core::error::Result<Vec<_>>>()
+            .unwrap()
+            .len()
     );
-    assert_eq!(t.scan::<ByOpenToken>(b"rust").unwrap().len(), 1);
+    assert_eq!(
+        t.scan::<ByOpenToken, (parts::Fields, parts::Key, parts::Row)>(b"rust")
+            .collect::<okm_core::error::Result<Vec<_>>>()
+            .unwrap()
+            .len(),
+        1
+    );
 }
 
 // ---- 覆盖段（includes）的读侧：解出来是字段，不是字节 ----------------------
@@ -1069,12 +1282,18 @@ fn covered_scan_answers_without_the_primary_table() {
     t.put(&k, &r).unwrap();
 
     // 生成的覆盖结构体：名字与字段即契约（一个 include 字段 = 一个字段）
-    let covered = t.scan_covered::<ByTimeline>(&7u64.to_be_bytes()).unwrap();
+    let covered = t
+        .scan::<ByTimeline, (parts::Fields, parts::Key, parts::Include)>(&7u64.to_be_bytes())
+        .collect::<okm_core::error::Result<Vec<_>>>()
+        .unwrap();
     assert_eq!(covered[0].2, PostCovered { title_len: 77 });
 
     t.store().del(&t.primary_key(&k)).unwrap();
     assert!(t.get(&k).unwrap().is_none(), "主表行已不在");
-    let covered = t.scan_covered::<ByTimeline>(&7u64.to_be_bytes()).unwrap();
+    let covered = t
+        .scan::<ByTimeline, (parts::Fields, parts::Key, parts::Include)>(&7u64.to_be_bytes())
+        .collect::<okm_core::error::Result<Vec<_>>>()
+        .unwrap();
     assert_eq!(covered.len(), 1);
     assert_eq!(covered[0].2.title_len, 77);
 }
@@ -1112,7 +1331,10 @@ fn covered_includes_walk_fixed_widths_then_the_variable_tail() {
     )
     .unwrap();
 
-    let covered = t.scan_covered::<ByNoteAuthor>(&7u64.to_be_bytes()).unwrap();
+    let covered = t
+        .scan::<ByNoteAuthor, (parts::Fields, parts::Key, parts::Include)>(&7u64.to_be_bytes())
+        .collect::<okm_core::error::Result<Vec<_>>>()
+        .unwrap();
     assert_eq!(covered.len(), 2);
     assert_eq!(covered[0].2.rank, 5);
     assert_eq!(covered[0].2.title, "短");
@@ -1138,6 +1360,7 @@ pub struct NamedRow {
 }
 
 use __OkmIndex_NamedRow_by_named_city as ByNamedCity;
+use okm_core::parts;
 
 /// `KvIndex::encoded_width` 必须**精确**：它存在的唯一目的是让 `fields_bytes` /
 /// `entry_value` 一次分配到位，答小了会多一次 realloc（正是要消掉的东西），答大了

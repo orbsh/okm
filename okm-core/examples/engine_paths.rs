@@ -69,6 +69,7 @@ pub struct BenchRow {
 }
 
 use __OkmIndex_BenchRow_by_level as ByLevel;
+use okm_core::parts;
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct TagTotals {
@@ -221,12 +222,22 @@ fn measure_fjall(dir: &Path, rows: u64) -> Line {
     let probe = SCAN_LEVEL.to_be_bytes();
     let scan_fetch_ns = median_of(3, || {
         let started = Instant::now();
-        black_box(t.scan::<ByLevel>(&probe).expect("scan").len());
+        black_box(
+            t.scan::<ByLevel, (parts::Fields, parts::Key, parts::Row)>(&probe)
+                .collect::<okm_core::error::Result<Vec<_>>>()
+                .expect("scan")
+                .len(),
+        );
         started.elapsed().as_nanos() as f64
     });
     let scan_covered_ns = median_of(3, || {
         let started = Instant::now();
-        black_box(t.scan_covered::<ByLevel>(&probe).expect("covered").len());
+        black_box(
+            t.scan::<ByLevel, (parts::Fields, parts::Key, parts::Include)>(&probe)
+                .collect::<okm_core::error::Result<Vec<_>>>()
+                .expect("covered")
+                .len(),
+        );
         started.elapsed().as_nanos() as f64
     });
 
@@ -255,12 +266,22 @@ fn measure_fjall(dir: &Path, rows: u64) -> Line {
         let probe = level.to_be_bytes();
         let fetch_total = median_of(3, || {
             let started = Instant::now();
-            black_box(t.scan::<ByLevel>(&probe).expect("scan").len());
+            black_box(
+                t.scan::<ByLevel, (parts::Fields, parts::Key, parts::Row)>(&probe)
+                    .collect::<okm_core::error::Result<Vec<_>>>()
+                    .expect("scan")
+                    .len(),
+            );
             started.elapsed().as_nanos() as f64
         });
         let covered_total = median_of(3, || {
             let started = Instant::now();
-            black_box(t.scan_covered::<ByLevel>(&probe).expect("covered").len());
+            black_box(
+                t.scan::<ByLevel, (parts::Fields, parts::Key, parts::Include)>(&probe)
+                    .collect::<okm_core::error::Result<Vec<_>>>()
+                    .expect("covered")
+                    .len(),
+            );
             started.elapsed().as_nanos() as f64
         });
         sweep.push((fanout, fetch_total, covered_total));

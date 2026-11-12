@@ -33,6 +33,7 @@ pub struct Item {
 }
 
 use __OkmIndex_Item_by_kind as ByKind;
+use okm_core::parts;
 
 #[test]
 fn nest_derive_end_to_end() {
@@ -60,7 +61,10 @@ fn nest_derive_end_to_end() {
         .expect("document round-tripped");
     assert_eq!(document.kind, 7);
 
-    let hits = t.scan::<ByKind>(&7u32.to_be_bytes()).unwrap();
+    let hits = t
+        .scan::<ByKind, (parts::Fields, parts::Key, parts::Row)>(&7u32.to_be_bytes())
+        .collect::<okm_core::error::Result<Vec<_>>>()
+        .unwrap();
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].2.as_ref().unwrap().kind, 7);
 }

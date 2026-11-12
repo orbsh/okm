@@ -31,6 +31,7 @@ pub struct User {
 }
 
 use __OkmIndex_User_by_level as ByLevel;
+use okm_core::parts;
 
 fn key(id: u64) -> UserKey {
     UserKey { id }
@@ -123,7 +124,13 @@ fn merge_touches_only_the_names_it_is_given() {
 fn merge_of_a_declared_field_is_an_rmw_and_cleans_the_old_face() {
     let t: Collection<TestStore, UserKey, User> = Collection::new(TestStore::slatedb_mem());
     t.put(&key(1), &user(1, 5)).unwrap();
-    assert_eq!(t.scan::<ByLevel>(&5u32.to_be_bytes()).unwrap().len(), 1);
+    assert_eq!(
+        t.scan::<ByLevel, (parts::Fields, parts::Key, parts::Row)>(&5u32.to_be_bytes())
+            .collect::<okm_core::error::Result<Vec<_>>>()
+            .unwrap()
+            .len(),
+        1
+    );
 
     t.merge(&key(1), &dmap(&[("level", DynamicValue::U64(30))]))
         .unwrap();
@@ -135,10 +142,19 @@ fn merge_of_a_declared_field_is_an_rmw_and_cleans_the_old_face() {
         "unnamed declared field kept"
     );
     assert!(
-        t.scan::<ByLevel>(&5u32.to_be_bytes()).unwrap().is_empty(),
+        t.scan::<ByLevel, (parts::Fields, parts::Key, parts::Row)>(&5u32.to_be_bytes())
+            .collect::<okm_core::error::Result<Vec<_>>>()
+            .unwrap()
+            .is_empty(),
         "the previous value's face is gone — merge cleans, put does not"
     );
-    assert_eq!(t.scan::<ByLevel>(&30u32.to_be_bytes()).unwrap().len(), 1);
+    assert_eq!(
+        t.scan::<ByLevel, (parts::Fields, parts::Key, parts::Row)>(&30u32.to_be_bytes())
+            .collect::<okm_core::error::Result<Vec<_>>>()
+            .unwrap()
+            .len(),
+        1
+    );
 }
 
 #[test]
@@ -166,7 +182,10 @@ fn replace_is_the_whole_document() {
     );
     assert_eq!(got["kept"], DynamicValue::Str("y".into()));
     assert!(
-        t.scan::<ByLevel>(&9u32.to_be_bytes()).unwrap().is_empty(),
+        t.scan::<ByLevel, (parts::Fields, parts::Key, parts::Row)>(&9u32.to_be_bytes())
+            .collect::<okm_core::error::Result<Vec<_>>>()
+            .unwrap()
+            .is_empty(),
         "the old face is gone"
     );
 

@@ -17,6 +17,7 @@ use okm_core::{Collection, Document, DocumentEncode, KeyEncode};
 use okm_value::DynamicValue;
 
 use okm_async::TestStore;
+use okm_core::parts;
 /// A key whose fields collide with `KeyEncode::decode`'s own names.
 #[derive(KeyEncode, Clone, PartialEq, Eq, Debug)]
 pub struct ShadowKey {
@@ -100,7 +101,8 @@ fn index_scans_reach_the_hostile_named_fields() {
     // A typed probe over a field called `b` (the builder method takes that name).
     let probe = __OkmIndex_Shadow_by_b::prefix().b(11u64).finish();
     let hits: Vec<ShadowKey> = col
-        .scan::<__OkmIndex_Shadow_by_b>(&probe)
+        .scan::<__OkmIndex_Shadow_by_b, (parts::Fields, parts::Key, parts::Row)>(&probe)
+        .collect::<okm_core::error::Result<Vec<_>>>()
         .unwrap()
         .into_iter()
         .map(|(_, pk, _)| pk.decoded)
@@ -110,7 +112,10 @@ fn index_scans_reach_the_hostile_named_fields() {
     // Covered read: `decode_covered` binds `len` — the field it names.
     let probe = __OkmIndex_Shadow_by_cov::prefix().ver(13u64).finish();
     let covered = col
-        .scan_covered::<__OkmIndex_Shadow_by_cov>(probe.as_bytes())
+        .scan::<__OkmIndex_Shadow_by_cov, (parts::Fields, parts::Key, parts::Include)>(
+            probe.as_bytes(),
+        )
+        .collect::<okm_core::error::Result<Vec<_>>>()
         .unwrap();
     assert_eq!(covered.len(), 1);
     assert_eq!(covered[0].2.len, 19);

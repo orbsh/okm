@@ -36,6 +36,24 @@ struct Counting<S> {
     ops_committed: Cell<usize>,
 }
 
+/// A lazy scan owns its engine handle, so this wrapper has to be able to hand one
+/// out. The counters are per-handle and deliberately not shared: they count
+/// WRITES, a scan only reads, and the assertions here look at the handle that did
+/// the writing.
+impl<S: okm_core::engine::storage::SharedVirtualStorage>
+    okm_core::engine::storage::SharedVirtualStorage for Counting<S>
+{
+    fn shared_handle(&self) -> Self {
+        Self {
+            inner: self.inner.shared_handle(),
+            bare_puts: std::cell::Cell::new(0),
+            bare_dels: std::cell::Cell::new(0),
+            commits: std::cell::Cell::new(0),
+            ops_committed: std::cell::Cell::new(0),
+        }
+    }
+}
+
 impl<S> Counting<S> {
     fn new(inner: S) -> Self {
         Self {
@@ -113,6 +131,7 @@ pub struct LedgerRow {
 }
 
 use __OkmIndex_LedgerRow_by_account as Ledger_ByAccount;
+use okm_core::parts;
 
 fn ledger<S: VirtualStorage>(store: &S, account: u64) -> Option<u64> {
     okm_core::reduce_get::<_, __OkmReduce_LedgerRow_0>(
@@ -146,7 +165,8 @@ fn put_is_one_engine_commit() {
     // The commit really carried them: row, face and ledger are all visible.
     assert_eq!(t.get(&LedgerKey { id: 1 }).unwrap(), Some(row(7)));
     assert_eq!(
-        t.scan::<Ledger_ByAccount>(&7u64.to_be_bytes())
+        t.scan::<Ledger_ByAccount, (parts::Fields, parts::Key, parts::Row)>(&7u64.to_be_bytes())
+            .collect::<okm_core::error::Result<Vec<_>>>()
             .unwrap()
             .len(),
         1
@@ -199,7 +219,8 @@ fn delete_is_one_engine_commit() {
     assert_eq!((c.bare_puts.get(), c.bare_dels.get()), (0, 0));
     assert!(t.get(&k).unwrap().is_none());
     assert!(
-        t.scan::<Ledger_ByAccount>(&7u64.to_be_bytes())
+        t.scan::<Ledger_ByAccount, (parts::Fields, parts::Key, parts::Row)>(&7u64.to_be_bytes())
+            .collect::<okm_core::error::Result<Vec<_>>>()
             .unwrap()
             .is_empty()
     );
