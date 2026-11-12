@@ -262,3 +262,7 @@ was not already interned allocated a copy just to count it, so a field that is u
 - remote round trip (framed put through okm-wire + NestStorage pump)
 — blocked on the WS/transport integration landing
 - reduce fold at large group cardinality (current table: single group)
+
+## Where a query's time goes
+
+A 1 000-entry indexed query with fetch-back costs 943.8 µs on fjall with a sealed memtable: the engine's index read is 157.7 ns per entry (16.7 %), the fetch-back point read 758.7 ns per entry (80.4 %), materialisation 20 ns (2.1 %). The search itself — one descent through the block index — is 2.76 µs, 0.3 % of the query. Full table, corpus and attribution: `query-cost-attribution.md`; harness `okm-core/benches/query_cost.rs`.

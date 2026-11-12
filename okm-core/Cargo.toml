@@ -47,6 +47,14 @@ criterion = "0.5"
 name = "core_paths"
 harness = false
 
+# Where a query's time goes, on a real fjall store (PLAN: the schema-aware-index
+# proposal is judged by these numbers). The engine is feature-gated, so the target
+# declares it: `cargo bench -p okm-core --features fjall --bench query_cost`.
+[[bench]]
+name = "query_cost"
+harness = false
+required-features = ["fjall"]
+
 [[example]]
 name = "py_helper"
 required-features = ["schema-serde"]

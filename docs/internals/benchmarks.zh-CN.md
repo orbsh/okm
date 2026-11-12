@@ -265,3 +265,6 @@ codec 的成本落在运行间的噪声里；在两种压得动的形状上，�
 - fjall / slatedb 引擎路径（feature bench）
 - 远程 round trip（经 okm-wire + NestStorage 泵的带帧 put）——卡在 WS/传输集成落地
 - 大 group cardinality 下的 reduce fold（当前表：单 group）
+## 一条查询的时间去哪了
+
+在 memtable 已封存的 fjall 上，一次带回表的 1000 条索引查询耗时 943.8 µs：引擎读索引项 157.7 ns/条（16.7 %），回表点读 758.7 ns/条（80.4 %），物化 20 ns（2.1 %）。其中真正属于"查找"的部分——块索引里的一次下降——是 2.76 µs，占整条查询的 0.3 %。完整表格、语料与归因见 `query-cost-attribution.md`，harness 为 `okm-core/benches/query_cost.rs`。
