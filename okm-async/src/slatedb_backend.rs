@@ -35,7 +35,12 @@ impl Iterator for SlatedbIter {
     type Item = okm_core::error::Result<(Vec<u8>, Vec<u8>)>;
     fn next(&mut self) -> Option<Self::Item> {
         if self.done {
-            return None;
+            // A back pull materialized the rest of the range into `back_buf`,
+            // reversed: its FAR end is the next item in forward order. Feeding
+            // `next` from there keeps a mix of the two directions meeting in
+            // the middle instead of dropping the entries the forward walk had
+            // not reached.
+            return self.back_buf.as_mut().and_then(|b| b.next_back());
         }
         match self.rx.recv() {
             Ok(Some(Ok(kv))) => Some(Ok(kv)),
@@ -581,11 +586,13 @@ impl SlatedbSync {
             // Lazy across the crate boundary: the sync contract's `ScanIter`
             // opens one type-erased arm for engines that live out here
             // (ADR-0059), so the consumer still pays only for what it reads.
-            Ok(rx) => okm_core::engine::storage::ScanIter::External(Box::new(SlatedbIter {
-                rx,
-                done: false,
-                back_buf: None,
-            })),
+            Ok(rx) => okm_core::engine::storage::ScanIter::External(
+                okm_core::engine::storage::ExternalScan::new(Box::new(SlatedbIter {
+                    rx,
+                    done: false,
+                    back_buf: None,
+                })),
+            ),
             // The stream could not even be opened: hand back an iterator whose
             // one item is the failure, so the consumer still learns about it.
             Err(e) => {

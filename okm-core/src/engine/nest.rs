@@ -166,6 +166,8 @@ impl VirtualStorage for RemoteStore {
             buf: VecDeque::new(),
             cursor: None,
             done: false,
+            at: begin.to_vec(),
+            fault: None,
         })
     }
 
@@ -196,6 +198,12 @@ pub struct RemoteScanIter {
     /// exclusive begin (the receiver does the increment).
     cursor: Option<Vec<u8>>,
     done: bool,
+    /// The lower bound the stream was opened (or last seeked) at; the
+    /// `cursor` supersedes it once an entry has been consumed.
+    at: Vec<u8>,
+    /// A fault found while repositioning. `seek` has no error channel, so the
+    /// fault is held and handed out by the next pull (a fault is an item).
+    fault: Option<crate::error::Error>,
 }
 
 impl RemoteScanIter {
@@ -217,6 +225,36 @@ impl RemoteScanIter {
         Ok(())
     }
 
+    /// Reposition at `lower` (forward-only, like the trait's other arms).
+    /// One page is requested so the answer is real: `false` means the
+    /// repositioned range is empty. Chunk consistency is the stream's own
+    /// (ADR-0021: no snapshot across pages).
+    pub fn seek(&mut self, lower: &[u8]) -> bool {
+        let pos = self.cursor.as_deref().unwrap_or(self.at.as_slice());
+        if lower <= pos {
+            // Backwards (or same position): a no-op that keeps the stream.
+            return self.fault.is_some() || !(self.buf.is_empty() && self.done);
+        }
+        self.at.clear();
+        self.at.extend_from_slice(lower);
+        self.begin = lower.to_vec();
+        self.page = 0;
+        self.buf.clear();
+        self.cursor = None;
+        self.done = false;
+        self.fault = None;
+        // The repositioning request doubles as the probe: a page either fills
+        // the buffer or marks the walk done.
+        while self.buf.is_empty() && !self.done {
+            if let Err(e) = self.refill() {
+                self.done = true;
+                self.fault = Some(e);
+                return true;
+            }
+        }
+        self.fault.is_some() || !self.buf.is_empty()
+    }
+
     fn consume_front(&mut self) -> Option<(Vec<u8>, Vec<u8>)> {
         let item = self.buf.pop_front()?;
         self.cursor = Some(item.0.clone());
@@ -234,6 +272,9 @@ impl Iterator for RemoteScanIter {
     type Item = crate::error::Result<(Vec<u8>, Vec<u8>)>;
 
     fn next(&mut self) -> Option<Self::Item> {
+        if let Some(e) = self.fault.take() {
+            return Some(Err(e));
+        }
         // Same shape as `next_back`: refill until there is something to hand
         // out (a refill either fills the buffer or marks the walk done).
         while self.buf.is_empty() && !self.done {
@@ -253,6 +294,9 @@ impl DoubleEndedIterator for RemoteScanIter {
     /// then drains from the back — semantics identical, laziness lost
     /// where the wire shape cannot give it back (the async-forward rule).
     fn next_back(&mut self) -> Option<Self::Item> {
+        if let Some(e) = self.fault.take() {
+            return Some(Err(e));
+        }
         while self.buf.is_empty() && !self.done {
             if let Err(e) = self.refill() {
                 self.done = true;

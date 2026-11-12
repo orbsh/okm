@@ -91,10 +91,135 @@ impl VirtualStorage for FjallStore {
     /// directions. This is the trait's one ordered-read primitive, so the
     /// eager key list is the caller's `.collect()`.
     fn scan_range(&self, begin: &[u8], end: Option<&[u8]>) -> super::storage::ScanIter {
-        let it = match end {
-            Some(end) => self.ks.range(begin..end),
-            None => self.ks.range(begin..),
-        };
-        super::storage::ScanIter::Fjall(it)
+        super::storage::ScanIter::Fjall(FjallScan::new(
+            self.db.snapshot(),
+            self.ks.clone(),
+            begin,
+            end,
+        ))
+    }
+}
+
+/// One fjall range walk that can be REPOSITIONED.
+///
+/// fjall 3.1 exposes no cursor seek: `fjall::Iter` is a boxed
+/// `DoubleEndedIterator` (`iter.rs`, no `seek` anywhere in the crate). It does
+/// expose the next rung down — a `Snapshot` whose `range` opens a fresh cursor
+/// at the SAME nonce (`snapshot.rs`). Holding the snapshot beside the iterator
+/// is therefore what makes `seek` consistent with the entries already returned:
+/// a seek reopens the range on one snapshot, never on a newer view.
+pub struct FjallScan {
+    snapshot: fjall::Snapshot,
+    keyspace: Keyspace,
+    end: Option<Vec<u8>>,
+    iter: fjall::Iter,
+    /// One probed item, held so `seek` can answer "is anything left?" without
+    /// consuming it. Drained before the cursor by both directions.
+    pending: Option<Item>,
+    /// The last key handed out by `next` (or the lower bound a seek put in
+    /// force). This is the position a seek refuses to move behind; keeping it
+    /// costs one small copy per entry, and it is what makes "backwards is a
+    /// no-op" checkable without asking the engine.
+    pos: Vec<u8>,
+    /// Set once the forward walk has observed the end of the range.
+    exhausted: bool,
+}
+
+type Item = crate::error::Result<(Vec<u8>, Vec<u8>)>;
+
+impl FjallScan {
+    fn new(
+        snapshot: fjall::Snapshot,
+        keyspace: Keyspace,
+        begin: &[u8],
+        end: Option<&[u8]>,
+    ) -> Self {
+        let end = end.map(<[u8]>::to_vec);
+        let iter = open(&snapshot, &keyspace, begin, end.as_deref());
+        Self {
+            snapshot,
+            keyspace,
+            end,
+            iter,
+            pending: None,
+            pos: begin.to_vec(),
+            exhausted: false,
+        }
+    }
+
+    fn set_pos(&mut self, key: &[u8]) {
+        self.pos.clear();
+        self.pos.extend_from_slice(key);
+    }
+
+    /// Reopen the range at `lower` on the snapshot this scan was born with.
+    pub fn seek(&mut self, lower: &[u8]) -> bool {
+        if lower <= self.pos.as_slice() {
+            // Backwards (or same position): a no-op that keeps the cursor.
+            return self.pending.is_some() || !self.exhausted;
+        }
+        self.set_pos(lower);
+        self.iter = open(&self.snapshot, &self.keyspace, lower, self.end.as_deref());
+        self.exhausted = false;
+        // Probe so the answer is honest: `false` means nothing at or after
+        // `lower`, and the probe item is not lost (it is the next item).
+        match self.iter.next() {
+            Some(item) => {
+                self.pending = Some(guard_item(item));
+                true
+            }
+            None => {
+                self.exhausted = true;
+                false
+            }
+        }
+    }
+}
+
+fn open(
+    snapshot: &fjall::Snapshot,
+    keyspace: &Keyspace,
+    begin: &[u8],
+    end: Option<&[u8]>,
+) -> fjall::Iter {
+    use fjall::Readable;
+    match end {
+        Some(end) => snapshot.range(keyspace, begin..end),
+        None => snapshot.range(keyspace, begin..),
+    }
+}
+
+fn guard_item(g: fjall::Guard) -> Item {
+    match g.into_inner() {
+        Ok((k, v)) => Ok((k.to_vec(), v.to_vec())),
+        Err(e) => Err(crate::error::Error::Engine(e.to_string())),
+    }
+}
+
+impl Iterator for FjallScan {
+    type Item = Item;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if let Some(p) = self.pending.take() {
+            return Some(p);
+        }
+        let item = self.iter.next().map(guard_item);
+        if let Some(Ok((k, _))) = &item {
+            self.set_pos(k);
+        }
+        if item.is_none() {
+            self.exhausted = true;
+        }
+        item
+    }
+}
+
+impl DoubleEndedIterator for FjallScan {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        match self.iter.next_back() {
+            Some(g) => Some(guard_item(g)),
+            // The probe item is the only one left when the cursor is spent.
+            None => self.pending.take(),
+        }
     }
 }

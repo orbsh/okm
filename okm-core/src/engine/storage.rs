@@ -153,33 +153,169 @@ pub fn scan_suffix_kv<S: VirtualStorage + ?Sized>(
 /// [`VirtualStorage::scan_range`]. An opaque enum over the
 /// backends' native owned iterators rather than a `dyn` box: the enum
 /// keeps `DoubleEndedIterator` — a consumer may walk the range
-/// backwards (e.g. "last N entries") without a second buffer pass.
+/// backwards (e.g. "last N entries") without a second buffer pass —
+/// and [`ScanIter::seek`] repositions it.
 /// Variants without a native backwards walk (an async-forward engine's
 /// iterator, the remote buffered round trip) degrade to buffered
 /// `next_back` over a materialized tail — semantics identical, laziness
 /// lost only where the engine cannot give it back.
-/// What an engine outside this crate hands a scan back as (ADR-0059): the
-/// iterator type belongs to that crate, so the arm is type-erased.
-pub type ExternalScan =
-    Box<dyn DoubleEndedIterator<Item = crate::error::Result<(Vec<u8>, Vec<u8>)>> + Send>;
-
 pub enum ScanIter {
-    /// fjall `Iter` — native snapshot, both directions.
+    /// fjall: a `Snapshot` plus its cursor, so `seek` reopens the range on
+    /// the same snapshot (`fjall_backend::FjallScan`), both directions.
     #[cfg(feature = "fjall")]
-    Fjall(fjall::Iter),
-    /// redb `OwnedRange` — 'static via Arc'd txn guard, both directions.
+    Fjall(super::fjall_backend::FjallScan),
+    /// redb: the `ReadTransaction` plus its `OwnedRange`, so `seek` reopens
+    /// on the same snapshot (`redb_backend::RedbScan`), both directions.
+    /// Boxed because this is the largest arm (the transaction and its range);
+    /// the enum is created once per scan, so one allocation is cheaper than
+    /// moving the whole thing around.
     #[cfg(feature = "redb")]
-    Redb(redb::OwnedRange<&'static [u8], &'static [u8]>),
+    Redb(Box<super::redb_backend::RedbScan>),
     /// Remote paged stream (ADR-0021): lazy over the wire, one
     /// OP_SCAN_STREAM page per refill; `next_back` degrades to buffered.
     Remote(super::nest::RemoteScanIter),
-    /// Owning buffer: the trait default, and any test map.
+    /// Owning buffer: a non-streaming source, and any test map.
     Buffered(std::vec::IntoIter<crate::error::Result<(Vec<u8>, Vec<u8>)>>),
     /// An engine that lives OUTSIDE this crate (ADR-0059): type-erased because
     /// the iterator's type belongs to a crate core must not name. It is what
     /// keeps a scan lazy for engines that left — buffering would delete the
     /// guarantee ADR-0020 ruled, on the `LIMIT 10` over a million rows case.
     External(ExternalScan),
+}
+
+/// What an engine outside this crate hands a scan back as (ADR-0059): the
+/// iterator type belongs to that crate, so the source is type-erased. The
+/// wrapper adds the one thing a type-erased source cannot express — a place to
+/// hold an item while a forward-only `seek` decides whether to keep it — so an
+/// external engine still honors `ScanIter::seek`'s contract.
+pub struct ExternalScan {
+    inner: ExternalSource,
+    /// One item pulled while seeking; handed out before the source.
+    pending: Option<ExternalItem>,
+}
+
+/// One item a type-erased external scan yields.
+type ExternalItem = crate::error::Result<(Vec<u8>, Vec<u8>)>;
+
+/// The type-erased, forward-or-backward source behind an [`ExternalScan`].
+type ExternalSource = Box<dyn DoubleEndedIterator<Item = ExternalItem> + Send>;
+
+impl ExternalScan {
+    pub fn new(inner: ExternalSource) -> Self {
+        Self {
+            inner,
+            pending: None,
+        }
+    }
+
+    /// Fallback seek: a type-erased `DoubleEndedIterator` has no cursor to
+    /// move, so this drains forward, holding the first entry at or after
+    /// `lower` (and any fault it meets) in `pending` so nothing is lost.
+    fn seek(&mut self, lower: &[u8]) -> bool {
+        while let Some(item) = self.pending.take().or_else(|| self.inner.next()) {
+            match &item {
+                Ok((k, _)) if k.as_slice() < lower => continue,
+                // A fault is an answer, not an end: hand it out and say
+                // "not exhausted".
+                _ => {
+                    self.pending = Some(item);
+                    return true;
+                }
+            }
+        }
+        false
+    }
+}
+
+impl Iterator for ExternalScan {
+    type Item = crate::error::Result<(Vec<u8>, Vec<u8>)>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.pending.take().or_else(|| self.inner.next())
+    }
+}
+
+impl DoubleEndedIterator for ExternalScan {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        match self.inner.next_back() {
+            Some(item) => Some(item),
+            // The held item is the only one left once the back is spent.
+            None => self.pending.take(),
+        }
+    }
+}
+
+impl ScanIter {
+    /// Reposition the scan at the first entry whose key is `>= lower`.
+    ///
+    /// FORWARD-ONLY: a `lower` at or behind the current position is a no-op
+    /// that keeps the position. That is deliberate — a seek is a cursor move,
+    /// not a re-query, so a caller walking ascending targets never pays to go
+    /// back, and one walking descending targets keeps the position it has
+    /// rather than silently re-reading rows it already consumed.
+    ///
+    /// `false` means the source has nothing at or after `lower` — the scan is
+    /// exhausted. `true` means at least one item may still arrive; a fault
+    /// item counts as an answer (it will surface on the next pull), never as
+    /// an end. A seek that REOPENS the range (fjall, redb, remote) resets the
+    /// back cursor to the range's end, so `next_back` afterwards walks the
+    /// range from the top; a drain (buffered, external) has no cursor to
+    /// reset and keeps the back position it already had.
+    ///
+    /// What each backend actually gets:
+    ///
+    /// - **fjall** — no native cursor seek (`fjall::Iter` is a boxed
+    ///   `DoubleEndedIterator`; the crate has no `seek`), so the range is
+    ///   reopened on the SAME [`Snapshot`](fjall::Snapshot) the scan was born
+    ///   with. One snapshot per scan, shared by every seek.
+    /// - **redb** — `OwnedRange` has no seek and redb's `Cursor` is behind its
+    ///   `experimental-api-5` feature, so the range is reopened on the SAME
+    ///   [`ReadTransaction`](redb::ReadTransaction) the iterator holds. This
+    ///   is also why a scan opens one read transaction instead of one per
+    ///   scan.
+    /// - **remote** — the paged stream is repositioned and one page is
+    ///   requested, so the answer is a real request and not a guess. Chunk
+    ///   consistency is unchanged (ADR-0021: no snapshot across pages).
+    /// - **buffered** (`ScanIter::Buffered`: mem/test maps, the slatedb sync
+    ///   facade, a remote failure) — drain forward over the buffer. This is
+    ///   NOT a real seek: it costs one step per skipped entry, and it exists
+    ///   because a materialized `Vec` has no cursor to move. It inspects the
+    ///   buffer without consuming, so a fault inside the skipped prefix still
+    ///   surfaces on the next pull.
+    /// - **external engines** (ADR-0059) — the same forward drain over the
+    ///   type-erased source, holding the first hit so it is not lost.
+    pub fn seek(&mut self, lower: &[u8]) -> bool {
+        match self {
+            #[cfg(feature = "fjall")]
+            ScanIter::Fjall(it) => it.seek(lower),
+            #[cfg(feature = "redb")]
+            ScanIter::Redb(it) => it.seek(lower),
+            ScanIter::Remote(it) => it.seek(lower),
+            ScanIter::Buffered(it) => buffered_seek(it, lower),
+            ScanIter::External(it) => it.seek(lower),
+        }
+    }
+}
+
+/// The buffered fallback: skip the leading entries that sort before `lower`
+/// without consuming them (`as_slice` gives the lookahead), then report
+/// whether anything is left. A fault in the skipped prefix stops the walk so
+/// the next pull still reports it.
+fn buffered_seek(
+    it: &mut std::vec::IntoIter<crate::error::Result<(Vec<u8>, Vec<u8>)>>,
+    lower: &[u8],
+) -> bool {
+    let mut skip = 0usize;
+    for item in it.as_slice() {
+        match item {
+            Ok((k, _)) if k.as_slice() < lower => skip += 1,
+            _ => break,
+        }
+    }
+    if skip > 0 {
+        it.nth(skip - 1);
+    }
+    !it.as_slice().is_empty()
 }
 
 impl Iterator for ScanIter {
@@ -192,15 +328,9 @@ impl Iterator for ScanIter {
     fn next(&mut self) -> Option<Self::Item> {
         match self {
             #[cfg(feature = "fjall")]
-            ScanIter::Fjall(it) => it.next().map(|g| match g.into_inner() {
-                Ok((k, v)) => Ok((k.to_vec(), v.to_vec())),
-                Err(e) => Err(crate::error::Error::Engine(e.to_string())),
-            }),
+            ScanIter::Fjall(it) => it.next(),
             #[cfg(feature = "redb")]
-            ScanIter::Redb(it) => it.next().map(|r| match r {
-                Ok((k, v)) => Ok((k.value().to_vec(), v.value().to_vec())),
-                Err(e) => Err(crate::error::Error::Engine(e.to_string())),
-            }),
+            ScanIter::Redb(it) => it.next(),
             ScanIter::Remote(it) => it.next(),
             ScanIter::Buffered(it) => it.next(),
             ScanIter::External(it) => it.next(),
@@ -212,15 +342,9 @@ impl DoubleEndedIterator for ScanIter {
     fn next_back(&mut self) -> Option<Self::Item> {
         match self {
             #[cfg(feature = "fjall")]
-            ScanIter::Fjall(it) => it.next_back().map(|g| match g.into_inner() {
-                Ok((k, v)) => Ok((k.to_vec(), v.to_vec())),
-                Err(e) => Err(crate::error::Error::Engine(e.to_string())),
-            }),
+            ScanIter::Fjall(it) => it.next_back(),
             #[cfg(feature = "redb")]
-            ScanIter::Redb(it) => it.next_back().map(|r| match r {
-                Ok((k, v)) => Ok((k.value().to_vec(), v.value().to_vec())),
-                Err(e) => Err(crate::error::Error::Engine(e.to_string())),
-            }),
+            ScanIter::Redb(it) => it.next_back(),
             ScanIter::Remote(it) => it.next_back(),
             ScanIter::Buffered(it) => it.next_back(),
             ScanIter::External(it) => it.next_back(),
