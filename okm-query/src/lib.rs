@@ -22,80 +22,6 @@
 
 use okm_core::VirtualStorage;
 
-/// The MULTIPLICITY step: a merge join over two streams of `(key, value)` pairs,
-/// in ANY order, answering m×n pairs for a key that both sides repeat.
-///
-/// The key-set half of a join is [`intersect`] — lazy, keys only, no pairs. Reach
-/// for that first: intersecting entries and fetching only the survivors is cheaper
-/// than fetching both sides fully and pairing them, unless nearly every key is
-/// shared. This shape is for "give me both sides' rows for the keys that meet",
-/// which materializes by nature, because the answer is a cross product.
-///
-/// The operator sorts both sides itself, so a caller never has to prove that
-/// its stream is ordered. An already-ordered stream costs one linear pass (the
-/// sort detects the run); an unordered one costs `O(n log n)`. That price is
-/// taken deliberately: deciding which scan shapes come out ordered is subtle
-/// enough to be wrong — an index scan is ordered by the index fields first and
-/// by the primary key only INSIDE one equality group, a ranged probe is ordered
-/// by the varied dimension, a multi-value index repeats keys, and a truncated
-/// `key(...)` makes tails tie — and a join that works only on the shapes
-/// someone remembered is worse than one that costs a sort. "Every caller works"
-/// beats "the best case is one comparison cheaper".
-///
-/// A declared index still pays: it removes the sort, which is the difference
-/// between `O(n)` and `O(n log n)`. It just stops being a correctness
-/// precondition for this operator.
-///
-/// Yields matched `(left, right)` pairs; keys compare via the full encoded
-/// prefix the caller passes in. Equality-only: ranges belong to the caller's
-/// scan prefix, not here. The caller supplies the key extractor because only it
-/// knows the segment layout (`KEY_PREFIX` width).
-///
-/// Still no hash join: this is a sort-merge join, so it holds `O(n)` memory for
-/// the two sides (the join itself is a single pass over them) and needs no
-/// hashing of the key type.
-pub fn merge_join<K: Ord, L: Clone, R: Clone>(
-    left: impl IntoIterator<Item = (K, L)>,
-    right: impl IntoIterator<Item = (K, R)>,
-) -> Vec<(L, R)> {
-    let mut left: Vec<(K, L)> = left.into_iter().collect();
-    let mut right: Vec<(K, R)> = right.into_iter().collect();
-    // Stable, so equal keys keep the caller's order on either side — the pair
-    // order inside one key run is a caller-visible detail, and preserving it
-    // costs nothing here.
-    left.sort_by(|a, b| a.0.cmp(&b.0));
-    right.sort_by(|a, b| a.0.cmp(&b.0));
-
-    let mut out = Vec::new();
-    let (mut i, mut j) = (0, 0);
-    while i < left.len() && j < right.len() {
-        match left[i].0.cmp(&right[j].0) {
-            std::cmp::Ordering::Less => i += 1,
-            std::cmp::Ordering::Greater => j += 1,
-            std::cmp::Ordering::Equal => {
-                // Both runs of equal keys, then their cross product — SQL join
-                // semantics when keys duplicate. Runs are found by comparison,
-                // so `K` needs no `Clone`.
-                let mut ie = i + 1;
-                while ie < left.len() && left[ie].0 == left[i].0 {
-                    ie += 1;
-                }
-                let mut je = j + 1;
-                while je < right.len() && right[je].0 == right[j].0 {
-                    je += 1;
-                }
-                for (_, l) in &left[i..ie] {
-                    for (_, r) in &right[j..je] {
-                        out.push((l.clone(), r.clone()));
-                    }
-                }
-                i = ie;
-                j = je;
-            }
-        }
-    }
-    out
-}
 /// Set algebra over key streams that are already ordered by key, as methods:
 /// `a.merge(b)`, `a.intersect(b)`, `a.difference(b)`, `a.union(b)`.
 ///
@@ -110,8 +36,13 @@ pub fn merge_join<K: Ord, L: Clone, R: Clone>(
 ///
 /// SET semantics, not multiset, at every level: a key carried by several entries
 /// is answered once, and one representative per side is handed back. Multiplicity
-/// — m×n for a key both sides repeat — is the `merge_join` step's business, one
-/// layer up.
+/// — m×n for a key both sides repeat — is NOT a separate operator: `merge` is the
+/// one-pass form (its `(Some, Some)` tuple is the key that meets) and expanding
+/// that tuple into pairs is the caller's loop, which is also where rows get read.
+/// That is the whole join: set algebra over keys here, one fetch per surviving
+/// key there. A dedicated pair-expanding join would be a second semantics for
+/// the same thing — and it is the shape that carries k² clones for two runs of
+/// length k and a `Vec` that `LIMIT` cannot cut short.
 ///
 /// The trait is on `IntoIterator`, so a `Vec`, an array, a scan iterator — anything
 /// that yields keys — is a source, and no `.into_iter()` noise appears in a
@@ -651,48 +582,6 @@ mod tests {
         pub total: u32,
     }
 
-    #[test]
-    fn merge_join_does_not_care_what_order_the_inputs_are_in() {
-        // The shape a ranged index scan actually produces: ordered by the index
-        // field, so the joined key jumps back and forth — and, with a multi-value
-        // index, repeats at unrelated positions. Sorting is the operator's job.
-        let left = vec![(3u32, "c"), (1, "a"), (3, "c2"), (2, "b")];
-        let right = vec![(2u32, 20), (3, 30), (3, 31), (9, 90)];
-
-        let mut got = merge_join(left.clone(), right.clone());
-        got.sort();
-        assert_eq!(
-            got,
-            vec![("b", 20), ("c", 30), ("c", 31), ("c2", 30), ("c2", 31)],
-            "equal keys on both sides join as a cross product of their runs"
-        );
-
-        // Same answer when both sides happen to arrive ordered: the sort is a
-        // linear pass, never a precondition the caller has to establish.
-        let mut sorted_left = left.clone();
-        sorted_left.sort_by_key(|(k, _)| *k);
-        let mut sorted_right = right.clone();
-        sorted_right.sort_by_key(|(k, _)| *k);
-        let mut got_sorted = merge_join(sorted_left, sorted_right);
-        got_sorted.sort();
-        assert_eq!(got_sorted, got);
-    }
-
-    #[test]
-    fn merge_join_pairs_duplicate_runs_and_skips_unmatched_keys() {
-        let got = merge_join(
-            vec![(1u8, 'a'), (1, 'b'), (5, 'z')],
-            vec![(1u8, 'x'), (1, 'y'), (4, 'w')],
-        );
-        let mut sorted = got.clone();
-        sorted.sort();
-        assert_eq!(sorted, vec![('a', 'x'), ('a', 'y'), ('b', 'x'), ('b', 'y')]);
-        assert!(
-            !got.iter().any(|(_, r)| *r == 'w') && !got.iter().any(|(l, _)| *l == 'z'),
-            "keys present on one side only produce no pair"
-        );
-    }
-
     /// Set semantics: a key carried by several entries on both sides comes out
     /// once. Multiplicity is the row step's business, not the key step's.
     #[test]
@@ -1116,9 +1005,14 @@ mod tests {
     /// A join on a column the scan ORDERS BY needs no sort on either side: an index
     /// scan is ordered by its fields first, so projecting onto the leading field is
     /// still ordered — the primary keys underneath are not in key order, and that is
-    /// exactly why the merge key is the field and not the key.
+    /// exactly why the join key is the field and not the key.
+    ///
+    /// The shape is the two stages: `intersect` over the ordered key streams, then
+    /// one fetch (here: a filter over the already-held streams, which is what an
+    /// index probe per surviving key does against the store) per surviving key. The
+    /// m×n cross product belongs to that second loop.
     #[test]
-    fn join_on_the_scanned_field_pairs_rows_by_that_field() {
+    fn join_on_the_scanned_field_needs_no_sort_and_pairs_in_the_caller() {
         let store = TestStore::default();
         let users = <Person as Document>::collection(store.clone());
         let orders = <Order as Document>::collection(store.clone());
@@ -1170,7 +1064,37 @@ mod tests {
             .map(|(fields, key, _)| (fields.name, key.decoded))
             .collect();
 
-        let mut pairs = merge_join(left, right);
+        // Stage 1: set algebra over the field the scans are ordered by. Nothing to
+        // sort — the field segment comes off the entry, and the projection keeps the
+        // scan's order.
+        let names: Vec<String> = left
+            .iter()
+            .map(|(name, _)| name.clone())
+            .intersect(right.iter().map(|(name, _)| name.clone()))
+            .collect();
+        assert_eq!(names, vec!["ada".to_string(), "bob".to_string()]);
+
+        // Stage 2: one fetch per surviving key. This is where a repeated key
+        // multiplies — one person's rows against that key's orders — and it is a
+        // loop, not an operator.
+        let mut pairs = Vec::new();
+        for name in &names {
+            let persons: Vec<PersonKey> = left
+                .iter()
+                .filter(|(n, _)| n == name)
+                .map(|(_, key)| key.clone())
+                .collect();
+            let orders_for: Vec<OrderKey> = right
+                .iter()
+                .filter(|(n, _)| n == name)
+                .map(|(_, key)| key.clone())
+                .collect();
+            for person in &persons {
+                for order in &orders_for {
+                    pairs.push((person.clone(), order.clone()));
+                }
+            }
+        }
         pairs.sort();
         assert_eq!(
             pairs,

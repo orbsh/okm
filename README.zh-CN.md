@@ -6,7 +6,7 @@
 
 OKM 是对标 ORM 的范式——逻辑定义是 ORM 式的，代码生成产出底层 KV 操作。ORM 将对象映射到关系表，OKM 将对象映射到 KV 键空间。通过派生宏（`KeyEncode` / `DocumentEncode` / `JunctionEncode` / `GraphEncode`）+ 数字命名空间 ID，构建零成本抽象语义数据层：开发侧如同 ORM 般声明式，编译后退化为纯指针偏移计算。
 
-关联阅读：[KV 存储引擎](https://github.com/orbsh/wiki/blob/main/kv-storage-engine.md) — 底层架构与设计模式（编码原理、索引策略、引擎层取舍）；[架构总览](docs/ARCHITECTURE.zh-CN.md)——双层声明机器（derive 展开 + 常量表）；[建模指南](docs/MODELING.zh-CN.md) — 规范性 schema 建模方法（四层建模法、三道读路径、覆盖索引克制、主键复合边界）；[查询配方](docs/query-recipes.zh-CN.md)——把 merge_join / group_by / walk 组合成 SQL 形状，WHERE 边界记录；[图查询配方](docs/graph-queries.zh-CN.md)——图的面组合成 Cypher 形状的遍历；[并发与写者](docs/CONCURRENCY.zh-CN.md)——单写者的确切含义、哪些机制依赖它、以及四种能承载更多写者的形态。
+关联阅读：[KV 存储引擎](https://github.com/orbsh/wiki/blob/main/kv-storage-engine.md) — 底层架构与设计模式（编码原理、索引策略、引擎层取舍）；[架构总览](docs/ARCHITECTURE.zh-CN.md)——双层声明机器（derive 展开 + 常量表）；[建模指南](docs/MODELING.zh-CN.md) — 规范性 schema 建模方法（四层建模法、三道读路径、覆盖索引克制、主键复合边界）；[查询配方](docs/query-recipes.zh-CN.md)——把 merge / intersect / difference / union、group_by 与 walk 组合成 SQL 形状，WHERE 边界记录；[图查询配方](docs/graph-queries.zh-CN.md)——图的面组合成 Cypher 形状的遍历；[并发与写者](docs/CONCURRENCY.zh-CN.md)——单写者的确切含义、哪些机制依赖它、以及四种能承载更多写者的形态。
 
 ## 这笔交易：缩小能力面，换非对称收益
 
@@ -15,7 +15,7 @@ OKM 放弃的每一项能力，理由都是同一条：它只能活在运行时�
 - **没有查询语言**：查询是代码，不是文本。运行时不解析 SQL，也不需要规划器去决定走哪个访问方法——调用点直接点名。
 - **没有优化器**：没有代价模型、没有统计信息、没有计划选择。物理路径就是声明和调用写明的那一条。
 - **没有无模式模式**：schema 活在类型系统里，改 schema 是一次部署，不是一条运行时 DDL。
-- **不能即席查询**：声明过的访问方法之外的形状（任意过滤、未索引的 join）不是「慢」，而是写不出来；join 是两次有序扫描之上的客户端 `merge_join`。
+- **不能即席查询**：声明过的访问方法之外的形状（任意过滤、未索引的 join）不是「慢」，而是写不出来；join 是客户端的：两条有序键流上的集合代数（`merge` / `intersect` / `difference`），再对每个存活键回表一次。
 - **有些模式刻意不支持**：原子性止步于单个引擎；batch 里的扫描被拒绝，而不是返回部分视图；写入侧按构造只有一个写者。
 
 换来的不是「代码更少」，而是成本形状不同。损失一次性付清——由作者在声明时付、由编译器在构建时付；收益在每一次操作上兑现：键是指向定长字节的指针，解码是一次切片，一次语义写入是一次提交，引擎选择变成免费的，因为字节就是字节。

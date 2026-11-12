@@ -42,7 +42,7 @@ FTS    = 多值函数索引（n-gram/token → N 条 entry）+ 调用方 BM25 �
 
 ## 落不进来的（明确不做）
 
-- **hash join / 无序 join 加速**——`okm-query::merge_join` 自己排序输入，所以 join key 不在排序维度上时付的是一次排序、不是错误答案，它仍是唯一答案。join key 不是排序维度依然是个值得声明索引的建模缺口：声明索引省掉的正是那次排序。
+- **hash join / 无序 join 加速**——没有算子替你排序：`merge` / `intersect` / `difference` 要求输入已按 join 键有序且不检查，所以 join key 不在排序维度上时，代价是调用点显式补一次排序（无序流直接喂给 `intersect` 会静默少键）。join key 不是排序维度依然是个值得声明索引的建模缺口：声明索引省掉的正是那次排序。hash join 会引入第二套 join 语义和一个 build 侧，那正是有序契约要避免的东西。
 - **流式订阅 / CDC**——没有 tail 扫原语，属引擎层（fjall watch / slatedb invalidate），不该在模型层仿造。
 - **分布式累加协议**——单写者下 `#[ok_reduce]` 的读-改-写 hook 是安全的；多写者竞态/分布式计数器协议仍超出「有序字节流」模型，属旁边的 OLAP/流系统。
 - **通用二级缓存**——缓存失效策略是应用逻辑；okm-core 条目生灭绑定声明，没有挂失效钩子的位置。

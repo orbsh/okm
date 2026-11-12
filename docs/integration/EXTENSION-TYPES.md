@@ -101,11 +101,13 @@ Approximate counting (UV, hot terms) should prefer the degradation to
 
 ## What does not land (explicitly out of scope)
 
-- **Hash join / unordered join acceleration** — `okm-query::merge_join` sorts
-  its own inputs, so an unordered join key costs a sort, not a wrong answer,
-  and it stays the only answer. A join key that is not a sort dimension is
-  still a modeling gap worth declaring an index for: that is what removes the
-  sort.
+- **Hash join / unordered join acceleration** — no operator sorts for you: `merge` /
+  `intersect` / `difference` take streams already ordered by the join key and do not
+  check it, so an unordered join key costs an explicit sort at the call site (an
+  unordered stream handed straight to `intersect` misses keys silently). A join key
+  that is not a sort dimension is still a modeling gap worth declaring an index for:
+  that is what removes the sort. A hash join would add a second join semantics and a
+  build side, which is what the ordered contract exists to avoid.
 - **Streaming subscriptions / CDC** — no tail-scan primitive exists;
   this belongs to the engine layer (fjall watch / slatedb invalidate),
   not a model-layer imitation.

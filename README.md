@@ -4,7 +4,7 @@
 
 OKM is the KV counterpart of ORM: the logic is defined ORM-style, code generation produces the underlying KV operations. ORM maps objects onto relational tables, OKM maps objects onto KV keyspaces. Declarative derive macros (`KeyEncode` / `DocumentEncode` / `GraphEncode`) plus numeric namespace IDs build a zero-cost semantic data layer — as declarative as an ORM at development time, compiled down to pure pointer-offset arithmetic.
 
-Related reading: [KV Storage Engine](https://github.com/orbsh/wiki/blob/main/kv-storage-engine-en.md) — underlying architecture and design patterns (encoding principles, index strategies, engine-level trade-offs); [Architecture](docs/ARCHITECTURE.md) — the two-layer declaration machine (derive expansion + constant tables); [Modeling Guide](docs/MODELING.md) — the normative schema-modeling method (four layers, three read paths, covering-index restraint, composite-key boundary); [Query Recipes](docs/query-recipes.md) — composing merge_join / group_by / walk into SQL shapes, the WHERE boundary record; [Graph Query Recipes](docs/graph-queries.md) — the graph's faces composed into Cypher-shaped traversals; [Concurrency and Writers](docs/CONCURRENCY.md) — what single-writer means, which mechanisms assume it, and the four shapes that carry more.
+Related reading: [KV Storage Engine](https://github.com/orbsh/wiki/blob/main/kv-storage-engine-en.md) — underlying architecture and design patterns (encoding principles, index strategies, engine-level trade-offs); [Architecture](docs/ARCHITECTURE.md) — the two-layer declaration machine (derive expansion + constant tables); [Modeling Guide](docs/MODELING.md) — the normative schema-modeling method (four layers, three read paths, covering-index restraint, composite-key boundary); [Query Recipes](docs/query-recipes.md) — composing merge / intersect / difference / union, group_by and walk into SQL shapes, the WHERE boundary record; [Graph Query Recipes](docs/graph-queries.md) — the graph's faces composed into Cypher-shaped traversals; [Concurrency and Writers](docs/CONCURRENCY.md) — what single-writer means, which mechanisms assume it, and the four shapes that carry more.
 
 ## The bet: a smaller surface, an asymmetric payoff
 
@@ -19,7 +19,8 @@ at run time, in a layer between the declaration and the bytes.
   deploy, not a run-time DDL statement.
 - **No ad-hoc queries.** Shapes outside the declared access methods (arbitrary
   filters, unindexed joins) are not slow — they are not expressible. Joins are
-  client-side `merge_join` over two ordered scans.
+  client-side: set algebra over two ordered key streams (`merge` / `intersect` /
+  `difference`), then one fetch per surviving key.
 - **Some patterns unsupported on purpose.** Atomicity stops at one engine; a
   scan inside a batch is refused rather than answered partially; the write side
   is single-writer by construction.

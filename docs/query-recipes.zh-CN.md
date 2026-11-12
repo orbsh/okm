@@ -1,6 +1,6 @@
 # 查询配方：okm-query 组合子与 SQL 的对应
 
-本文是 okm-query 的使用配方集：四个组合子（intersect / difference / merge_join / group_by，加图的 walk）怎么组合成 SQL 世界的熟悉形状，以及两条边界记录——where 的物理/内存分界（前缀、区间、filter）、三种分组的落地差异。机制细节见 internals（[索引机制](internals/index-mechanism.zh-CN.md)）；建模纪律见[建模指南](MODELING.zh-CN.md)。
+本文是 okm-query 的使用配方集：组合子（merge / intersect / difference / union、group_by，加图的 walk）怎么组合成 SQL 世界的熟悉形状，以及两条边界记录——where 的物理/内存分界（前缀、区间、filter）、三种分组的落地差异。机制细节见 internals（[索引机制](internals/index-mechanism.zh-CN.md)）；建模纪律见[建模指南](MODELING.zh-CN.md)。
 
 ## 核心立场
 
@@ -12,7 +12,7 @@ SQL 概念        okm 落地
 WHERE (物理)    索引声明 + 前缀/区间扫描（免费，见边界记录）
 WHERE (内存)    .filter()（stdlib，无需包装）
 GROUP BY        group_by（索引排序承担分组）或 reduce（编译期）
-JOIN            intersect（有序键流）+ merge_join 处理 m×n
+JOIN            intersect（有序键流）+ 每个存活键一次回表
 多级 rollup     前缀扫描逐级收窄 group 段
 图遍历          walk（一跳 = 一次前缀扫描）
 ```
@@ -110,7 +110,10 @@ for (left, right) in left_keys.merge(right_keys) {
 }
 ```
 
-`intersect` 与 `difference` 就是这条流上的两个 filter，单独命名是因为它们被问得多得多。
+`intersect` 与 `difference` 就是这条流上的两个 filter，单独命名是因为它们被问得多得多。`union`
+是第三个——`a.union(b)` 是 `merge` 把每个元组折叠成它唯一在场的那一侧，于是把两条流交织成一条
+有序流，而不是拼接（`chain` 把整个左侧排在第一个右侧键之前，去重的话要么全量物化、要么用
+hash set）。
 
 **第二步——回表取幸存者。** 每个公共键去读携带它的行；重复键的笛卡尔积只在这里发生：
 
@@ -127,16 +130,29 @@ for key in common {
 每个公共键一次索引探测。键集合在读到第一行之前就已经完整，所以可以先过滤、截断、计数——
 选择性在碰任何 payload 之前就生效。
 
-**另一种形状：几乎全集相交时用锁步。** 如果两侧几乎完全相交，代价变成逐键探测，那么
-一趟配对两条流更划算，哪怕它物化并且读了两侧的 payload：
+**另一种形状：键流一趟走完（几乎全集相交时）。** 如果两侧几乎完全相交，代价变成逐键探测，那么
+两条流一趟配对更划算，哪怕它读了两侧的行。join 仍然分两步：`a.merge(b)` 对每个不同的键交一个
+元组——相遇的键就是 `(Some, Some)` 那一种——调用方在自己的循环里把这个元组展开成对，回表也发生
+在那里：
 
 ```rust
-let pairs = okm_query::merge_join(left_pairs, right_pairs);   // Vec<(OrderKey, UserKey)>
+for (left, right) in left_keys.merge(right_keys) {
+    match (left, right) {
+        (Some(a), Some(b)) => {
+            for order in orders.scan::<Order_ByUser>(&a.to_be_bytes()) {
+                for user in users.scan::<User_ById>(&b.to_be_bytes()) {
+                    emit(order?, user?);   // a 的 m 行 × b 的 n 行
+                }
+            }
+        }
+        _ => {}   // 单侧的键就是上面外连接的答案
+    }
+}
 ```
 
-它就是多重性那一步（m×n 对就是它的答案），所以返回 `Vec`、自己排序：已排过的一侧只付一趟线性
-比较，没排过的一侧付 `O(n log n)` 而不是错误答案。判据是探测次数会不会超过行数。刻意没有
-hash join：sort-merge 不需要对键做哈希，内存 `O(n)`，不必物化 build 侧。
+没有算子替你展开对，这正是要点：多重性属于这个循环，所以不存在第二套 join 语义要跟着改，没有
+两条各长 k 的 run 的 k² 次拷贝，也没有 `.take(n)` 截不断的 `Vec`。和这里其他算子一样，两条流必须
+按 join 键有序；键布局不保证有序时先显式排序——一趟走完省掉的是探测次数，不是排序。
 
 **外连接就是差集。** "左边有、右边没有" = `a.difference(b)`——接收者就是左侧，
 所以 `a − (a ∩ b)` 不必先算交集——三个答案恰好划分两条流：

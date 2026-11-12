@@ -1,7 +1,7 @@
 # Query Recipes: okm-query Combinators and Their SQL Shapes
 
-A recipe collection for okm-query: how the three combinators
-(intersect / difference / merge_join / group_by / walk) compose into shapes familiar from SQL,
+A recipe collection for okm-query: how the combinators
+(merge / intersect / difference / union, group_by, walk) compose into shapes familiar from SQL,
 plus two boundary records — the physical/in-memory split of WHERE
 (prefix, range, filter), and
 the three landings of grouping. Mechanism details live in internals
@@ -22,7 +22,7 @@ SQL concept      okm landing
 WHERE (physical) index declaration + prefix/range scan (free — see the record)
 WHERE (memory)   .filter() (stdlib, no wrapper)
 GROUP BY         group_by (index sort does the grouping) or reduce (compile time)
-JOIN             intersect (ordered key streams) + merge_join for m×n
+JOIN             intersect (ordered key streams) + one fetch per surviving key
 Multi-rollup     prefix scans narrowing the group segment level by level
 Graph walk       walk (one hop = one prefix scan)
 ```
@@ -133,7 +133,11 @@ for (left, right) in left_keys.merge(right_keys) {
 ```
 
 `intersect` and `difference` are exactly the two filters over that stream, named
-because they are asked far more often than "both sides, all three cases".
+because they are asked far more often than "both sides, all three cases". `union`
+is the third — `a.union(b)` is `merge` with each tuple collapsed to its one
+present side, so it interleaves the two sides into one ordered stream instead of
+concatenating them (`chain` puts the whole left before the first right key, and
+deduplicating that needs a materialization or a hash set).
 
 **Step 2 — fetch the survivors.** For each shared key, read the rows that carry it;
 the cross product of a repeated key happens here, in this loop, and nowhere else:
@@ -152,19 +156,33 @@ One index probe per shared key. Because the key set is complete before the first
 row is read, it can be filtered, truncated, or counted first — selectivity applies
 before any payload is touched.
 
-**The other shape: lockstep, when nearly every key is shared.** If both sides
-intersect almost fully, the per-key probes are the cost, and pairing the two
-streams in one pass wins even though it materializes and reads both sides' payloads:
+**The other shape: one pass over the key streams, when nearly every key is shared.**
+If both sides intersect almost fully, the per-key probes are the cost, and pairing the
+two streams in one pass wins even though it reads both sides' rows. The join is still
+two stages: `a.merge(b)` answers one tuple per distinct key — the key that meets is
+the `(Some, Some)` shape — and the caller expands that tuple into pairs in its own
+loop, which is also where the rows are read:
 
 ```rust
-let pairs = okm_query::merge_join(left_pairs, right_pairs);   // Vec<(OrderKey, UserKey)>
+for (left, right) in left_keys.merge(right_keys) {
+    match (left, right) {
+        (Some(a), Some(b)) => {
+            for order in orders.scan::<Order_ByUser>(&a.to_be_bytes()) {
+                for user in users.scan::<User_ById>(&b.to_be_bytes()) {
+                    emit(order?, user?);   // a's m rows × b's n rows
+                }
+            }
+        }
+        _ => {}   // a one-sided key is the outer-join answer, above
+    }
+}
 ```
 
-That is the multiplicity step by definition (m×n pairs is its answer), so it returns
-a `Vec` and sorts its own inputs: an already-ordered side costs one linear pass, and
-an unordered one costs `O(n log n)` rather than a wrong answer. Choose it when the
-probe count would exceed the row count. No hash join, deliberately: a sort-merge
-needs no hashing of the key type and holds `O(n)` instead of a build side.
+No operator expands the pairs for you, and that is the point: multiplicity belongs to
+this loop, so there is no second join semantics to keep in step, no k² copy of two
+repeated runs, and no `Vec` that `take(n)` cannot cut short. The streams must be
+ordered by the join key like every other adapter here — when the layout does not
+order them, sort explicitly first. One pass saves the probe count, not the sort.
 
 **Outer joins are differences.** "Left has it, right does not" is `a.difference(b)` —
 the receiver is the left side, so `a − (a ∩ b)` needs no intersection computed
