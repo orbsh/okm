@@ -246,13 +246,9 @@ call site never translates its data into a verb name:
 | `(&Dict,)` / `(&Variant::Map(map),)` | whole document: the map IS the document — an omitted declared field takes its default, an omitted dynamic name is removed |
 | `purge` | both slots — the only removal verb, on both sides |
 
-The map those rows name is `okm_value::Dict`: an opaque, insertion-ordered
-name → value map, and the only spelling of a document object (`Variant::Map`
-carries it). It is used like a map — `get`, `insert`, `entry`, `iter`, `len`
-come from the map it derefs to — but the backing container is not part of the
-API, so no caller can name it and no signature changes if it is swapped.
-Iteration follows INSERTION order, not name order: a site that needs a
-canonical order across two documents sorts explicitly.
+The map those rows name is `okm_value::Dict`: an insertion-ordered name → value
+map, the only spelling of a document object (`Variant::Map` carries it, and
+insertion order is the contract — ADR-0063).
 
 The payload is caller data, so a write is fallible (`okm_core::Error`): a
 declared name carrying the wrong kind is `Error::KindMismatch`, never a silent

@@ -465,9 +465,12 @@ t.purge(&key)?;                               // -> bool (something was there)
 name-keyed object (a document is one), and nested `Map`s recurse as native frames
 (type tag 7) sharing the table's vocabulary; no CBOR.
 - The object is `okm_value::Dict`, a type and not an alias: an insertion-ordered
-name → value map whose backing container is private, so no caller can name it and
-swapping it changes no signature. It is used like a map (`get`, `insert`, `entry`,
-`iter`) because it derefs to the map, but the contract is the type's: iteration is
+name → value map whose surface is an explicit method list (`get`, `insert`, `len`,
+`iter`, …) written on the type and forwarded to the backing map. There is no
+`Deref`, so the container's name appears nowhere in the API, coercion cannot hand
+a `&Dict` to a `fn f(&<container>)`, and no backing method the contract does not
+list is reachable; swapping the container rewrites that one impl block and nothing
+else. The contract is therefore the type's: iteration is
 INSERTION order (an overwrite keeps a name's place), equality ignores order, and a
 site needing a canonical order sorts explicitly. `Array` stays a plain `Vec` because
 a vector has one canonical implementation; an ordered map's implementation — and the

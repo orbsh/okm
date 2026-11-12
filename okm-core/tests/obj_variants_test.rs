@@ -85,7 +85,7 @@ fn view_projects_both_slots_and_leaves_the_typed_read_alone() {
     // A static-only document: the view carries the declared names.
     let row_only = doc_of(&t, &key(1)).unwrap().unwrap();
     assert_eq!(row_only.len(), 2);
-    assert_eq!(row_only["level"], Variant::U64(2));
+    assert_eq!(row_only.get("level"), Some(&Variant::U64(2)));
 
     // Dynamic names join the same view; the typed read stays slot 0.
     t.put(
@@ -98,8 +98,8 @@ fn view_projects_both_slots_and_leaves_the_typed_read_alone() {
     .unwrap();
     let got = doc_of(&t, &key(1)).unwrap().unwrap();
     assert_eq!(got.len(), 4);
-    assert_eq!(got["score"], Variant::U64(99));
-    assert_eq!(got["note"], Variant::Str("hello".into()));
+    assert_eq!(got.get("score"), Some(&Variant::U64(99)));
+    assert_eq!(got.get("note"), Some(&Variant::Str("hello".into())));
     assert_eq!(t.get_row(&key(1)).unwrap().unwrap(), user(1, 2));
 
     // Vocabulary landed in the id family under the same ns, cursor included
@@ -142,7 +142,7 @@ fn a_point_read_answers_parts_apart() {
     match value.unwrap() {
         Variant::Map(map) => {
             assert_eq!(map.len(), 1);
-            assert_eq!(map["note"], Variant::Str("hi".into()));
+            assert_eq!(map.get("note"), Some(&Variant::Str("hi".into())));
         }
         other => panic!("slot 1 is an object, got {other:?}"),
     }
@@ -257,7 +257,7 @@ fn replace_is_the_doc_of() {
         !got.contains_key("gone"),
         "replace drops unnamed dynamic names"
     );
-    assert_eq!(got["kept"], Variant::Str("y".into()));
+    assert_eq!(got.get("kept"), Some(&Variant::Str("y".into())));
     assert!(
         t.scan::<ByLevel>(&9u32.to_be_bytes())
             .collect::<okm_core::error::Result<Vec<_>>>()
@@ -393,12 +393,12 @@ fn two_handles_on_one_engine_do_not_share_an_id() {
     .unwrap();
 
     assert_eq!(
-        doc_of(&a, &key(2)).unwrap().unwrap()["beta"],
-        Variant::Str("y".into())
+        doc_of(&a, &key(2)).unwrap().unwrap().get("beta"),
+        Some(&Variant::Str("y".into()))
     );
     assert_eq!(
-        doc_of(&b, &key(3)).unwrap().unwrap()["gamma"],
-        Variant::Str("z".into())
+        doc_of(&b, &key(3)).unwrap().unwrap().get("gamma"),
+        Some(&Variant::Str("z".into()))
     );
 }
 
@@ -423,17 +423,17 @@ fn one_dynamic_name_across_documents_survives_a_fresh_mirror() {
     .unwrap();
 
     assert_eq!(
-        doc_of(&t, &key(2)).unwrap().unwrap()["tag"],
-        Variant::Str("beta".into())
+        doc_of(&t, &key(2)).unwrap().unwrap().get("tag"),
+        Some(&Variant::Str("beta".into()))
     );
 
     let fresh: Collection<TestStore, UserKey, User> = Collection::new(store.shared_handle());
     assert_eq!(
-        doc_of(&fresh, &key(1)).unwrap().unwrap()["tag"],
-        Variant::Str("alpha".into())
+        doc_of(&fresh, &key(1)).unwrap().unwrap().get("tag"),
+        Some(&Variant::Str("alpha".into()))
     );
     assert_eq!(
-        doc_of(&fresh, &key(2)).unwrap().unwrap()["tag"],
-        Variant::Str("beta".into())
+        doc_of(&fresh, &key(2)).unwrap().unwrap().get("tag"),
+        Some(&Variant::Str("beta".into()))
     );
 }

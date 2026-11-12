@@ -102,7 +102,7 @@ contract and the size envelope are in
   takes the document map (`okm_value::Dict`, an opaque insertion-ordered
   name → value map), so the bytes come out in that map's INSERTION order —
   not id order, and not sorted by name. The map's container is not part of
-  the API (it is a type now, not an alias: see ADR-0035), so no site can
+  the API (it is a type now, not an alias: ADR-0035; its explicit method-only surface, and why it is not `Deref`, are ADR-0063), so no site can
   reach for sorted iteration; a document assembled in a different order
   encodes to different bytes, which is a LAYOUT difference: readers address
   dynamic fields by id, never by position, so nothing may assume ids ascend

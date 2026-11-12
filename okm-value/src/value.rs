@@ -13,9 +13,10 @@
 //!
 //! The object form is [`Dict`]: a TYPE, not an alias for the container it
 //! happens to use today. Its names iterate in INSERTION order, its backing map
-//! is private, and no signature here names it — so the container can be swapped
-//! without a breaking change, and the ordering it promises is the model's, not a
-//! dependency's.
+//! is private, its methods are written out and forwarded one by one (no
+//! `Deref`), and no method signature names the container — so it can be swapped
+//! without a breaking change, and the ordering it promises is the model's, not
+//! a dependency's.
 
 use indexmap::IndexMap;
 
@@ -65,20 +66,23 @@ pub enum Variant {
 /// it, so the backing type is NOT part of this contract: replacing it must not
 /// change one signature, one name, one value.
 ///
-/// # It is used like a map
+/// # The surface is the impl block below
 ///
-/// `Dict` derefs to its backing map, so the ordinary map vocabulary —
-/// [`get`](IndexMap::get), [`get_mut`](IndexMap::get_mut),
-/// [`insert`](IndexMap::insert), [`remove`](Dict::remove),
-/// [`entry`](IndexMap::entry), [`iter`](IndexMap::iter),
-/// [`keys`](IndexMap::keys), [`len`](IndexMap::len) — is spelled once, by the
-/// container, instead of restated here. The deref is the SURFACE, not the
-/// contract: what a caller may rely on is what this doc comment states, and
-/// the trait impls below (the ones deref cannot carry).
+/// Every method this type has is written in that block and forwards to the
+/// backing map; anything not written there does not exist. It is deliberately
+/// NOT a `Deref`, which would leak the container two ways: coercion would let a
+/// caller's `fn f(&<container>)` accept a `&Dict`, naming the backing type in
+/// someone else's signature, and every backing method (`swap_remove`,
+/// `sort_keys`, `swap_indices`, …) would become reachable and could break the
+/// insertion-order promise below. The container's name survives in exactly two
+/// places beside the bodies — `From<..>` and the `IntoIterator` associated
+/// types — and both are conversions the caller drives, never a way to pass a
+/// `&Dict` off as the container. Swapping the container rewrites this one impl
+/// block plus those conversions, and nothing any caller wrote.
 ///
 /// # Iteration order is INSERTION order
 ///
-/// `iter`, `keys` and `values` walk names in the order they were first
+/// `iter` and `keys` walk names in the order they were first
 /// inserted: an overwrite keeps the name's place, and a `remove` followed by an
 /// insert moves it to the end. Nothing sorts them. A site that needs a
 /// canonical order — an assertion, a diff, a snapshot column — sorts
@@ -103,20 +107,6 @@ pub enum Variant {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Dict(IndexMap<String, Variant>);
 
-impl std::ops::Deref for Dict {
-    type Target = IndexMap<String, Variant>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl std::ops::DerefMut for Dict {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
-    }
-}
-
 impl Dict {
     /// No names.
     pub fn new() -> Self {
@@ -128,14 +118,56 @@ impl Dict {
         Self(IndexMap::with_capacity(capacity))
     }
 
+    /// Number of names.
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// No names at all.
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Put `value` under `name`, answering the value it displaced.
+    ///
+    /// A new name lands LAST; an overwrite keeps the name's place.
+    pub fn insert(&mut self, name: String, value: Variant) -> Option<Variant> {
+        self.0.insert(name, value)
+    }
+
+    /// The value stored under `name`.
+    pub fn get(&self, name: &str) -> Option<&Variant> {
+        self.0.get(name)
+    }
+
+    /// The value stored under `name`, for in-place edit.
+    pub fn get_mut(&mut self, name: &str) -> Option<&mut Variant> {
+        self.0.get_mut(name)
+    }
+
+    /// Whether `name` is present.
+    pub fn contains_key(&self, name: &str) -> bool {
+        self.0.contains_key(name)
+    }
+
     /// Remove `name`, answering the value it carried.
     ///
-    /// This is the one method restated rather than reached through the deref:
-    /// the container's `remove` is its swap form, which moves the LAST name
-    /// into the hole and so breaks the insertion order this type promises.
-    /// `shift_remove` closes the gap instead.
+    /// This is the one method whose NAME is restated rather than forwarded
+    /// verbatim: the container's `remove` is its swap form, which moves the
+    /// LAST name into the hole and so breaks the insertion order this type
+    /// promises. `shift_remove` closes the gap instead.
     pub fn remove(&mut self, name: &str) -> Option<Variant> {
         self.0.shift_remove(name)
+    }
+
+    /// Names and values in INSERTION order.
+    pub fn iter(&self) -> impl Iterator<Item = (&String, &Variant)> {
+        self.0.iter()
+    }
+
+    /// Names in INSERTION order.
+    pub fn keys(&self) -> impl Iterator<Item = &String> {
+        self.0.keys()
     }
 }
 
