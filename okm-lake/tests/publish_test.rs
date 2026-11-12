@@ -15,7 +15,7 @@
 
 use arrow::array::{Int64Array, RecordBatch};
 use arrow::datatypes::{DataType, Field, Schema};
-use okm_lake::publish::replace_table;
+use okm_lake::publish::{PublishedFile, replace_files, replace_table};
 use okm_lake::store::{LakeStore, LocalFs};
 use okm_lake::{delta, read, status};
 
@@ -26,6 +26,25 @@ fn parquet(ids: &[i64]) -> Vec<u8> {
     let batch = RecordBatch::try_new(
         schema,
         vec![std::sync::Arc::new(Int64Array::from(ids.to_vec()))],
+    )
+    .unwrap();
+    okm_lake::snapshot::parquet_io::batch_bytes(&batch).unwrap()
+}
+
+/// A partitioned final-state file: the key the table splits on (`org`, a string so a value can
+/// need encoding) beside a column, and no `okm_op` — a published file states final rows.
+fn partitioned_parquet(org: &str, ids: &[i64]) -> Vec<u8> {
+    let schema = std::sync::Arc::new(Schema::new(vec![
+        Field::new("org", DataType::Utf8, false),
+        Field::new("id", DataType::Int64, false),
+    ]));
+    let count = ids.len();
+    let batch = RecordBatch::try_new(
+        schema,
+        vec![
+            std::sync::Arc::new(arrow::array::StringArray::from(vec![org; count])),
+            std::sync::Arc::new(Int64Array::from(ids.to_vec())),
+        ],
     )
     .unwrap();
     okm_lake::snapshot::parquet_io::batch_bytes(&batch).unwrap()
@@ -179,4 +198,184 @@ fn a_published_table_has_nothing_to_fold() {
     // And the rows are still readable afterwards: refusing changed nothing.
     let state = read::current_state(&lake, &table).unwrap();
     assert_eq!(ids(&state), vec![1, 2, 3]);
+}
+
+/// The two halves of a published partitioned table, as one version.
+///
+/// A publisher that holds partitions holds all of them NOW. Stating them one version at a time
+/// would leave a window in which one partition answers this interval and the other answers the
+/// last one — a table that is never wrong and never right either.
+#[test]
+fn one_version_can_hold_a_file_per_partition() {
+    let dir = tempfile::tempdir().unwrap();
+    let lake = LocalFs::new(dir.path());
+    let table = "parts";
+    let keys = vec!["org".to_string(), "id".to_string()];
+
+    let first_org = partitioned_parquet("1", &[10, 11]);
+    let second_org = partitioned_parquet("2", &[20]);
+    let published = replace_files(
+        &lake,
+        table,
+        &[
+            PublishedFile::partitioned("parts-0.parquet", &first_org, "org", "1"),
+            PublishedFile::partitioned("parts-0.parquet", &second_org, "org", "2"),
+        ],
+        &keys,
+    )
+    .expect("a partitioned publish");
+
+    // ONE version names both files, and each landed in its own partition's directory.
+    assert_eq!(published.commit.version, 0);
+    assert_eq!(published.replaced, 0);
+    assert_eq!(
+        published.files,
+        vec![
+            "data/org=1/parts-0.parquet".to_string(),
+            "data/org=2/parts-0.parquet".to_string(),
+        ]
+    );
+    assert_eq!(
+        published.bytes,
+        (first_org.len() + second_org.len()) as u64,
+        "the version's bytes are the sum of its files"
+    );
+    for file in &published.files {
+        assert!(
+            lake.head(&format!("{table}/{file}")).unwrap().is_some(),
+            "the file is in the store: {file}"
+        );
+        assert!(
+            status::manifest_at(&lake, table, file).is_some(),
+            "a manifest beside every file: {file}"
+        );
+    }
+
+    // The log states the partition as the RAW text; only the directory is encoded.
+    let adds = delta::live_adds(&lake, table).unwrap();
+    assert_eq!(
+        adds,
+        vec![
+            (
+                "data/org=1/parts-0.parquet".to_string(),
+                vec![("org".to_string(), "1".to_string())]
+            ),
+            (
+                "data/org=2/parts-0.parquet".to_string(),
+                vec![("org".to_string(), "2".to_string())]
+            ),
+        ]
+    );
+
+    // A reader of that version sees the union: one table, two files.
+    let state = read::current_state(&lake, table).expect("both partitions read");
+    let mut got = ids(&state);
+    got.sort_unstable();
+    assert_eq!(got, vec![10, 11, 20]);
+
+    // And `status` counts the version, not a file: two live files, three rows, no removals.
+    let report = status::status(&lake, table, true).expect("status");
+    assert_eq!(report.live_files, 2, "one file per partition value");
+    assert_eq!(report.change_rows, Some(3), "summed over the files");
+    assert_eq!(report.deletes, Some(0));
+    assert_eq!(report.live_rows, Some(3), "and the rows fold to themselves");
+    assert!(!report.folded);
+
+    // The next version replaces BOTH partitions in one commit. A partition value that needs
+    // encoding proves the split: the directory is percent-encoded, the action is not.
+    let first_again = partitioned_parquet("acme/1", &[10]);
+    let second_again = partitioned_parquet("2", &[20, 21]);
+    let published = replace_files(
+        &lake,
+        table,
+        &[
+            PublishedFile::partitioned("parts-1.parquet", &first_again, "org", "acme/1"),
+            PublishedFile::partitioned("parts-1.parquet", &second_again, "org", "2"),
+        ],
+        &keys,
+    )
+    .expect("a second publish");
+
+    assert_eq!(published.commit.version, 1);
+    assert_eq!(published.replaced, 2, "every file of the old version left");
+    assert_eq!(published.files[0], "data/org=acme%2F1/parts-1.parquet");
+    for gone in ["data/org=1/parts-0.parquet", "data/org=2/parts-0.parquet"] {
+        assert!(
+            lake.head(&format!("{table}/{gone}")).unwrap().is_none(),
+            "the replaced partition left the store: {gone}"
+        );
+        assert!(
+            lake.head(&format!("{table}/{}", status::manifest_key(gone)))
+                .unwrap()
+                .is_none(),
+            "and its manifest went with it: {gone}"
+        );
+    }
+    let mut got = ids(&read::current_state(&lake, table).expect("the new version reads"));
+    got.sort_unstable();
+    assert_eq!(
+        got,
+        vec![10, 20, 21],
+        "both partitions state the new version"
+    );
+    assert_eq!(
+        delta::live_adds(&lake, table).unwrap()[0].1,
+        vec![("org".to_string(), "acme/1".to_string())],
+        "the action keeps the raw value"
+    );
+}
+
+/// The partition rules a published version cannot break: a partition is part of the KEY space,
+/// and one file states one value.
+#[test]
+fn a_published_partition_has_to_refine_the_key_space() {
+    let dir = tempfile::tempdir().unwrap();
+    let lake = LocalFs::new(dir.path());
+    let table = "rules";
+    // `id` is a column of the file, but this table's key is `org` alone — which is what
+    // makes it the wrong thing to partition by.
+    let keys = vec!["org".to_string()];
+    let bytes = partitioned_parquet("1", &[1]);
+
+    // `id` is a column, not a key: partitioning by it would let one key live in two files,
+    // where a fold can no longer see both halves of it.
+    let refused = replace_files(
+        &lake,
+        table,
+        &[PublishedFile::partitioned(
+            "rules-0.parquet",
+            &bytes,
+            "id",
+            "1",
+        )],
+        &keys,
+    )
+    .expect_err("a partition that is not a key");
+    assert!(
+        refused.contains("is not a key column"),
+        "the refusal names the rule: {refused}"
+    );
+
+    // Two files for one value is one key in two places.
+    let refused = replace_files(
+        &lake,
+        table,
+        &[
+            PublishedFile::partitioned("rules-0.parquet", &bytes, "org", "1"),
+            PublishedFile::partitioned("rules-1.parquet", &bytes, "org", "1"),
+        ],
+        &keys,
+    )
+    .expect_err("two files, one value");
+    assert!(
+        refused.contains("one file per partition value"),
+        "the refusal names the rule: {refused}"
+    );
+
+    // A refused publish writes nothing: no file, no manifest, no version.
+    assert!(
+        delta::files_in_order(&lake, table).unwrap().is_empty(),
+        "a refused version leaves no file"
+    );
+    assert_eq!(delta::next_version(&lake, table).unwrap(), 0);
 }

@@ -3,11 +3,14 @@
 //! A service that already holds its own state does not need the change-log path: it has one
 //! answer per table, now, and wants it in the lake. That is a REPLACEMENT, not an append —
 //! the previous version's files stop being reachable in the same commit that adds the new
-//! one — which is what [`crate::delta::commit_compaction`] expresses and what a reader sees
-//! as a table whose current state is one file.
+//! ones — which is what [`crate::delta::commit_compaction`] expresses and what a reader sees
+//! as a table whose current state is the files of one version. One file, or one per partition:
+//! a partitioned table states every partition it holds in ONE commit, so no version is ever
+//! half old and half new.
 //!
 //! A publisher that lands a version per interval makes a LOG that grows by a version per
-//! interval while the table stays one file. [`PublishOptions::checkpoint_every`] is the answer
+//! interval while the table stays the files of one version. [`PublishOptions::checkpoint_every`]
+//! is the answer
 //! Delta gives for that shape: every `N` versions the writer states the log's whole state in
 //! one artifact, so a reader starts there instead of at version 0 (ADR-0065).
 //!
@@ -23,10 +26,48 @@ pub struct Published {
     pub commit: Commit,
     /// Files the new version replaced.
     pub replaced: usize,
-    /// Bytes of the file it added.
+    /// Bytes the version added, summed over its files.
     pub bytes: u64,
+    /// The lake keys the version added, in the order they were given.
+    pub files: Vec<String>,
     /// The version a checkpoint was written for, when this publish was one that needed it.
     pub checkpoint: Option<u64>,
+}
+
+/// One file of a published version: the bytes, the name inside its partition directory, and the
+/// partition values that place it.
+///
+/// The NAME does not carry a directory. Where a file lands is decided by its partition values
+/// (`data/<column>=<value>/`, percent-encoded), because a caller that could spell the directory
+/// itself could put a file in a partition the log does not say it is in — and then a fold, which
+/// keeps to one partition, could not find it.
+pub struct PublishedFile<'a> {
+    /// The file's name inside its partition directory (`data/` when unpartitioned).
+    pub name: &'a str,
+    /// The Parquet bytes.
+    pub bytes: &'a [u8],
+    /// `(column, value)` for every partition column — empty for an unpartitioned table.
+    pub partition: delta::Partition,
+}
+
+impl<'a> PublishedFile<'a> {
+    /// A file of an unpartitioned table.
+    pub fn plain(name: &'a str, bytes: &'a [u8]) -> Self {
+        Self {
+            name,
+            bytes,
+            partition: Vec::new(),
+        }
+    }
+
+    /// A file that states one partition value.
+    pub fn partitioned(name: &'a str, bytes: &'a [u8], column: &str, value: &str) -> Self {
+        Self {
+            name,
+            bytes,
+            partition: vec![(column.to_string(), value.to_string())],
+        }
+    }
 }
 
 /// How a publisher keeps its log readable.
@@ -54,13 +95,19 @@ impl PublishOptions {
     }
 }
 
-/// Put `bytes` (a Parquet file) as the table's current state, in one Delta version.
+/// Put one Parquet file as the table's whole current state, in one Delta version.
 ///
-/// The file is written first and the commit names it, so a failure between the two leaves an
-/// unreferenced object and no half-committed version — the next publish overwrites the same
-/// name. A table with no version yet takes [`delta::commit_files`]; a table that already has
+/// This is [`replace_files`] with a single unpartitioned file — the shape a table that is one
+/// file per version has. A publisher that holds partitions states them all at once through
+/// [`replace_files`], because one version that names every partition is the only version a
+/// reader can see whole: two versions would be a window in which half the table is the old
+/// answer.
+///
+/// The files are written first and the commit names them, so a failure between the two leaves
+/// unreferenced objects and no half-committed version — the next publish overwrites the same
+/// names. A table with no version yet takes [`delta::commit_files`]; a table that already has
 /// one takes [`delta::commit_compaction`], which is the same writer saying "these files leave
-/// as this one arrives".
+/// as these arrive".
 ///
 /// The replaced files are deleted once the commit is in place: a publisher is mirroring a
 /// live service, not keeping a history, and a lake that grows a file per table per interval
@@ -92,25 +139,67 @@ pub fn replace_table_with(
     keys: &[String],
     options: &PublishOptions,
 ) -> Result<Published, String> {
-    let name = file_name.trim_start_matches("data/").to_string();
-    if name.is_empty() {
-        return Err("a published file needs a name".to_string());
-    }
-    let relative = format!("data/{name}");
+    replace_files_with(
+        store,
+        table,
+        &[PublishedFile::plain(file_name, bytes)],
+        keys,
+        options,
+    )
+}
+
+/// Put every file of the table's current state, as ONE Delta version.
+///
+/// A partitioned table is one file per partition value, so a publisher that holds partitions
+/// hands all of them over in one call: the version that lands is complete, and the files of the
+/// version it replaced leave in the same commit. [`replace_table`] is the single-file form.
+///
+/// The partition rules are the drain's (`DrainConfig::partition`), because a published table is
+/// the same table a drain writes: the column must be a KEY column (a partition that does not
+/// refine the key space lets one key live in two files), the directory name is percent-encoded
+/// while the action keeps the raw text, and one file states one partition value.
+pub fn replace_files(
+    store: &dyn LakeStore,
+    table: &str,
+    files: &[PublishedFile<'_>],
+    keys: &[String],
+) -> Result<Published, String> {
+    replace_files_with(store, table, files, keys, &PublishOptions::default())
+}
+
+/// [`replace_files`], with the log's own maintenance turned on.
+pub fn replace_files_with(
+    store: &dyn LakeStore,
+    table: &str,
+    files: &[PublishedFile<'_>],
+    keys: &[String],
+    options: &PublishOptions,
+) -> Result<Published, String> {
+    let placed = placed(files, keys)?;
     let live = delta::files_in_order(store, table)?;
-    store.put(&table_key(table, &relative), bytes)?;
-    // The manifest goes down BEFORE the commit that names the file: a reader that sees the
-    // version must find the description of what it points at, and `status` must never report
-    // "unknown" for a file this writer just measured.
-    write_manifest(store, table, &relative, &name, bytes, keys)?;
-    let addition = Addition::plain(relative.clone(), bytes.len() as u64);
+    for file in &placed {
+        store.put(&table_key(table, &file.relative), file.bytes)?;
+        // The manifest goes down BEFORE the commit that names the file: a reader that sees the
+        // version must find the description of what it points at, and `status` must never
+        // report "unknown" for a file this writer just measured.
+        write_manifest(store, table, &file.relative, file.name, file.bytes, keys)?;
+    }
+    let additions: Vec<Addition> = placed
+        .iter()
+        .map(|file| Addition {
+            path: file.relative.clone(),
+            partition: file.partition.clone(),
+            size: file.bytes.len() as u64,
+        })
+        .collect();
     let commit = if live.is_empty() {
-        delta::commit_files(store, table, &[addition], keys)?
+        delta::commit_files(store, table, &additions, keys)?
     } else {
-        delta::commit_compaction(store, table, &live, &[addition], keys)?
+        delta::commit_compaction(store, table, &live, &additions, keys)?
     };
     for old in &live {
-        if old != &relative {
+        // A file the new version states again at the same path was overwritten in place.
+        if !placed.iter().any(|file| &file.relative == old) {
             store.delete(&table_key(table, old))?;
             // The manifest described that file and nothing else, so it goes with it.
             store.delete(&table_key(table, &status::manifest_key(old)))?;
@@ -127,9 +216,103 @@ pub fn replace_table_with(
     Ok(Published {
         commit,
         replaced: live.len(),
-        bytes: bytes.len() as u64,
+        bytes: placed.iter().map(|file| file.bytes.len() as u64).sum(),
+        files: placed.into_iter().map(|file| file.relative).collect(),
         checkpoint,
     })
+}
+
+/// One file of a version, after the partition rules placed it at a lake key.
+struct Placed<'a> {
+    /// The name inside the partition directory (the Parquet file's own name).
+    name: &'a str,
+    /// `data/<column>=<encoded value>/<name>`, or `data/<name>`.
+    relative: String,
+    bytes: &'a [u8],
+    partition: delta::Partition,
+}
+
+/// Place every file at the key its partition values name, or say which rule it broke.
+fn placed<'a>(files: &[PublishedFile<'a>], keys: &[String]) -> Result<Vec<Placed<'a>>, String> {
+    if files.is_empty() {
+        return Err("a published version needs at least one file".to_string());
+    }
+    let columns: Vec<&str> = files[0]
+        .partition
+        .iter()
+        .map(|(column, _)| column.as_str())
+        .collect();
+    // A published table is the table a drain writes, and that one partitions by ONE column
+    // (`DrainConfig.partition` takes a single name): a second would produce a
+    // `data/a=1/b=2/` shape the drain's own listing does not read.
+    if columns.len() > 1 {
+        return Err(format!(
+            "a table partitions by one column, and this version names {columns:?}"
+        ));
+    }
+    // A partition must refine the key space: partition by anything else and one key could live
+    // in two files, where a fold can no longer see both halves of it.
+    for column in &columns {
+        if !keys.iter().any(|key| key == column) {
+            return Err(format!(
+                "`{column}` is not a key column of this table: a partition has to refine the \
+                 key space, and {keys:?} is that space"
+            ));
+        }
+    }
+    let mut placed: Vec<Placed<'a>> = Vec::with_capacity(files.len());
+    for file in files {
+        let name = file.name.trim_start_matches("data/");
+        if name.is_empty() {
+            return Err("a published file needs a name".to_string());
+        }
+        if name.contains('/') {
+            return Err(format!(
+                "{name}: a published file is a name, not a path — its directory comes from its \
+                 partition values"
+            ));
+        }
+        if file
+            .partition
+            .iter()
+            .map(|(column, _)| column.as_str())
+            .ne(columns.iter().copied())
+        {
+            return Err(format!(
+                "{name}: every file of one version states the same partition columns as the \
+                 first, {columns:?}"
+            ));
+        }
+        let relative = match file.partition.first() {
+            Some((column, value)) => {
+                format!("data/{column}={}/{}", crate::partition_dir(value), name)
+            }
+            None => format!("data/{name}"),
+        };
+        // One file per partition value: two files stating one value is one key in two places,
+        // which is exactly what the partition rule exists to prevent.
+        if let Some((_, value)) = file.partition.first() {
+            let twice = placed
+                .iter()
+                .filter_map(|kept| kept.partition.first())
+                .any(|(_, kept)| kept == value);
+            if twice {
+                return Err(format!(
+                    "{relative}: one file per partition value, and `{value}` is named twice"
+                ));
+            }
+        }
+        if placed.iter().any(|kept| kept.relative == relative) {
+            return Err(format!("{relative}: this version names the file twice"));
+        }
+        placed.push(Placed {
+            name,
+            relative,
+            bytes: file.bytes,
+            partition: file.partition.clone(),
+        });
+    }
+    Ok(placed)
 }
 
 /// The manifest beside a published file: what it holds, and where its keys start and end.
