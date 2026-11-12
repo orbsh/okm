@@ -1208,6 +1208,14 @@ Two disciplines of use:
 
 Zero-value reclamation is deliberately not done: an emptied group keeps its entry (the acc returns to the identity), which saves the whole tombstone logic; a caller skips identity groups as it likes.
 
+## Grouping is maintained, not queried
+
+There is no query planner here and no runtime aggregation. A query is a key range you chose, and the engine answers with what the bytes say; nothing on the read path groups, folds or counts. An aggregate therefore takes one of two forms — a ledger the write path maintains, or a scan whose result you fold yourself ([pre-aggregation](#cross-row-pre-aggregation)) — and the set operators do not add a third: `intersect` and `difference` put **selection** on the read path, over streams already ordered, while aggregation stays on the write path.
+
+Grouping is the maintained half. `#[ok_reduce(AuthorStats { group(author_id) })]` makes the group part of the entry's address — the entry key is `[ns][slot][group segment]` — and `put` performs the read-modify-write: read the accumulator, unfold the old row's contribution, fold the new one's, write it back; `purge` runs the same path on its unfold branch. So a group is a stored answer at a known key: `reduce_get` fetches it, `scan_reduces` walks every group, and reading it costs a point read rather than a pass over the rows. What the ledger does not hold is a member list — there is no record in the KV of which rows contributed — so "which rows are in group X" stays a question about rows, answered by the key layout (put the group field first in the index `fields` and one group is one contiguous run) or by a scan. The invariants that keep the ledger equal to the row set, chiefly the unfold on an overwrite, are in the internals' [reduce mechanism](internals/reduce-mechanism.zh-CN.md).
+
+`group_by` in `okm-query` is a different thing under a similar name: it folds consecutive runs of an iterator **already in hand**, taking the group key from a closure and returning a `Vec` of `(group, acc)`. It folds rows that were already read — ordered input is what makes it a single pass — so it can shape a small result you have just produced (the survivors of an intersection, a page you fetched), but it cannot answer "which rows are in group X", because until those rows are read it has no input at all. It is the tail of a read already paid for, not a substitute for the maintained view.
+
 ## Reading one reduce
 
 The write path maintains the ledger; the read side is two functions, and both take a **type marker** rather than a slot number — the derive generates one marker per `#[ok_reduce]` declaration in declaration order, carrying that reduce's slot, its group fields and its group encoder. The marker is named `__OkmReduce_<Row>_<n>`: the row type it belongs to, and the declaration's index.

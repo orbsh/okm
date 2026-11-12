@@ -3307,7 +3307,6 @@ never wanted an engine.
 - [ ] **Clone per result pair.** The duplicate-run branch pushes `(l.clone(), r.clone())` per pair — k² clones for two runs of length k.
 - [ ] **No skew shortcut.** Lopsided intersections (1M against 1K) are 12.7× faster with a gallop over the small side than with the merge; it belongs in the operator, not in someone's caller.
 - [ ] (2026-11-12) **No `union`.** `intersect` and `difference` are set-semantic, ordered and lazy; `union` still is not — `chain` plus a dedup pass is the shape, and nothing asks for it yet. It is the third filter over the same ordered contract, and the dedup half is the run-drain the other two already perform.
-- [ ] (2026-11-12) **The parts sweep has not reached `mudra` / `krystallizer`.** Their call sites still name the removed payload verbs (`scan_entries_exact`, `scan_covered`); taking the `<I, P>` form is one sweep each (17 sites between them). `mudra`'s `pages_of_tag` is also where the hand-passed store and ns prefix go away — `Collection::scan_exact::<…>` reads through the handle. Both live in other repos, so this repo's tests cannot see them.
 
 ## 2026-11-11 — the entry header is one byte (ADR-0060), and the codec moves out
 
