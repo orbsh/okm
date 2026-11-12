@@ -337,7 +337,7 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
         let end = crate::engine::storage::prefix_end(&prefix);
         Ok(self
             .store
-            .scan_range_iter(&prefix, end.as_deref())
+            .scan_range(&prefix, end.as_deref())
             .next()
             .is_some())
     }
@@ -506,7 +506,7 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
         write_slot(&mut begin, PRIMARY_SLOT);
         let end = crate::engine::storage::prefix_end(&begin);
         let head = begin.len();
-        let mut it = self.store.scan_range_iter(&begin, end.as_deref());
+        let mut it = self.store.scan_range(&begin, end.as_deref());
         let Some(item) = it.next_back() else {
             return Ok(None);
         };
@@ -917,7 +917,7 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
         for slot in slots {
             let prefix = self.face_key(slot, &[]);
             let end = prefix_end(&prefix);
-            for item in self.store.scan_range_iter(&prefix, end.as_deref()) {
+            for item in self.store.scan_range(&prefix, end.as_deref()) {
                 let (key, _) = item?;
                 batch.del(&key);
                 if batch.ops.len() >= chunk {
@@ -934,7 +934,7 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
         let primary = self.face_key(PRIMARY_SLOT, &[]);
         let end = prefix_end(&primary);
         let mut rebuilt = 0usize;
-        for item in self.store.scan_range_iter(&primary, end.as_deref()) {
+        for item in self.store.scan_range(&primary, end.as_deref()) {
             let (key, bytes) = item?;
             let suffix = &key[primary.len()..];
             let Some(id) = <[u8; 8]>::try_from(suffix).ok().map(u64::from_be_bytes) else {

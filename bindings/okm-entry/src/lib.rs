@@ -76,13 +76,37 @@ impl okm_core::storage::VirtualStorage for EngineBox {
         &self,
         begin: &[u8],
         end: Option<&[u8]>,
-    ) -> okm_core::error::Result<Vec<Vec<u8>>> {
+    ) -> okm_core::engine::storage::ScanIter {
         match self {
             #[cfg(feature = "test-engines")]
             Self::Test(s) => s.scan_range(begin, end),
-            Self::Injected(e) => e
-                .scan_range(begin, end)
-                .map_err(okm_core::error::Error::Engine),
+            Self::Injected(e) => {
+                // The host's `Engine` face answers keys only (its scan answer
+                // carries no values), so the pair iterator is built with one
+                // point read per key — the same fetch-back the trait's old
+                // default did, now stated at the one boundary that still has a
+                // key-only source. Errors ride the items (ADR-0038).
+                let mut pairs: Vec<Result<(Vec<u8>, Vec<u8>), okm_core::error::Error>> =
+                    Vec::new();
+                match e.scan_range(begin, end) {
+                    Ok(keys) => {
+                        for k in keys {
+                            match e.get(&k) {
+                                Ok(Some(v)) => pairs.push(Ok((k, v))),
+                                // The key vanished between the scan and the
+                                // read: a normal race, not a failure.
+                                Ok(None) => {}
+                                Err(err) => {
+                                    pairs.push(Err(okm_core::error::Error::Engine(err)));
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    Err(err) => pairs.push(Err(okm_core::error::Error::Engine(err))),
+                }
+                okm_core::engine::storage::ScanIter::Buffered(pairs.into_iter())
+            }
         }
     }
 }

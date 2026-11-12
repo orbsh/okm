@@ -26,12 +26,19 @@ async fn slatedb_sync_ops_run_inside_a_tokio_context() {
     store.put(b"a".to_vec(), b"1".to_vec()).unwrap();
     store.put(b"b".to_vec(), b"2".to_vec()).unwrap();
     assert_eq!(handle.get(b"a").unwrap().as_deref(), Some(&b"1"[..]));
-    assert_eq!(handle.scan_range(b"a", Some(b"c")).unwrap().len(), 2);
+    assert_eq!(
+        handle
+            .scan_range(b"a", Some(b"c"))
+            .collect::<okm_core::error::Result<Vec<_>>>()
+            .unwrap()
+            .len(),
+        2
+    );
     assert_eq!(
         handle.scan_suffix(b"").unwrap(),
         vec![b"a".to_vec(), b"b".to_vec()]
     );
-    let items: Vec<_> = handle.scan_range_iter(b"", None).collect();
+    let items: Vec<_> = handle.scan_range(b"", None).collect();
     assert_eq!(items.len(), 2);
     handle.del(b"a").unwrap();
     assert_eq!(handle.get(b"a").unwrap(), None);
@@ -47,7 +54,7 @@ async fn slatedb_backwards_walk_drains_to_completion() {
         store.put(i.to_be_bytes().to_vec(), vec![0u8]).unwrap();
     }
     let last_three: Vec<_> = store
-        .scan_range_iter(&0u32.to_be_bytes(), None)
+        .scan_range(&0u32.to_be_bytes(), None)
         .map(|item| item.expect("a page item"))
         .rev()
         .take(3)

@@ -120,16 +120,8 @@ impl<S: VirtualStorage> VirtualStorage for Reads<S> {
         self.inner.scan_suffix(prefix)
     }
 
-    fn scan_range(
-        &self,
-        begin: &[u8],
-        end: Option<&[u8]>,
-    ) -> okm_core::error::Result<Vec<Vec<u8>>> {
+    fn scan_range(&self, begin: &[u8], end: Option<&[u8]>) -> ScanIter {
         self.inner.scan_range(begin, end)
-    }
-
-    fn scan_range_iter(&self, begin: &[u8], end: Option<&[u8]>) -> ScanIter {
-        self.inner.scan_range_iter(begin, end)
     }
 
     fn commit_batch(&self, batch: Batch) -> okm_core::error::Result<()> {

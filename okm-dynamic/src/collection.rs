@@ -383,7 +383,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
             let mut prefix = ns.clone();
             okm_core::write_slot(&mut prefix, method.slot);
             let end = prefix_end(&prefix);
-            for item in self.store.scan_range_iter(&prefix, end.as_deref()) {
+            for item in self.store.scan_range(&prefix, end.as_deref()) {
                 let (key, _) = item.map_err(codec)?;
                 batch.del(&key);
                 report.entries_deleted += 1;
@@ -411,7 +411,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
             let mut prefix = ns.clone();
             okm_core::write_slot(&mut prefix, slot);
             let end = prefix_end(&prefix);
-            for item in self.store.scan_range_iter(&prefix, end.as_deref()) {
+            for item in self.store.scan_range(&prefix, end.as_deref()) {
                 let (key, _) = item.map_err(codec)?;
                 let pkey = &key[prefix.len()..];
                 let Some(document) = self.fetch(pkey)? else {

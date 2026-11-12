@@ -2025,16 +2025,8 @@ impl<S: VirtualStorage> VirtualStorage for ChangelogStore<S> {
         Ok(())
     }
 
-    fn scan_range(&self, begin: &[u8], end: Option<&[u8]>) -> Result<Vec<Vec<u8>>> {
+    fn scan_range(&self, begin: &[u8], end: Option<&[u8]>) -> crate::engine::storage::ScanIter {
         self.inner.scan_range(begin, end)
-    }
-
-    fn scan_range_iter(
-        &self,
-        begin: &[u8],
-        end: Option<&[u8]>,
-    ) -> crate::engine::storage::ScanIter {
-        self.inner.scan_range_iter(begin, end)
     }
 
     fn commit_batch(&self, batch: Batch) -> Result<()> {

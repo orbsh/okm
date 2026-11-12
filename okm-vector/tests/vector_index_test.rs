@@ -51,18 +51,20 @@ impl VirtualStorage for MemStore {
         Ok(())
     }
 
-    fn scan_range(
-        &self,
-        begin: &[u8],
-        end: Option<&[u8]>,
-    ) -> okm_core::error::Result<Vec<Vec<u8>>> {
+    fn scan_range(&self, begin: &[u8], end: Option<&[u8]>) -> okm_core::engine::storage::ScanIter {
+        // The test map is buffered: `ScanIter::Buffered` is how a
+        // non-streaming source states itself.
         let map = self.map.lock().unwrap();
         let lower = Bound::Included(begin.to_vec());
         let upper = match end {
             Some(e) => Bound::Excluded(e.to_vec()),
             None => Bound::Unbounded,
         };
-        Ok(map.range((lower, upper)).map(|(k, _)| k.clone()).collect())
+        let pairs: Vec<okm_core::error::Result<(Vec<u8>, Vec<u8>)>> = map
+            .range((lower, upper))
+            .map(|(k, v)| Ok((k.clone(), v.clone())))
+            .collect();
+        okm_core::engine::storage::ScanIter::Buffered(pairs.into_iter())
     }
 }
 

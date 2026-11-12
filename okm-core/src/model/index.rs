@@ -871,7 +871,7 @@ pub fn scan_raw<S: VirtualStorage + ?Sized, I: KvIndex>(
     let taken = I::key_prefix_width();
     let end = crate::engine::storage::prefix_end(&prefix);
     let mut out = Vec::new();
-    for item in store.scan_range_iter(&prefix, end.as_deref()) {
+    for item in store.scan_range(&prefix, end.as_deref()) {
         let (full, value) = item?;
         if full.len() < seg_start + taken {
             continue;

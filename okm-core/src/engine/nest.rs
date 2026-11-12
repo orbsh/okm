@@ -152,33 +152,12 @@ impl VirtualStorage for RemoteStore {
             .round_trip(&OpFrame::one(OP_SCAN, prefix.to_vec(), Vec::new()))?
             .suffixes)
     }
-    /// Range scan rides the SAME OP_SCAN frame: the value segment —
-    /// empty for a prefix scan — carries `[0x01][end bytes]` when a
-    /// finite end exists, `[0x00]` for unbounded. No wire change: the
-    /// frame already has a value field; prefix is just the special case
-    /// with an empty value.
-    fn scan_range(&self, begin: &[u8], end: Option<&[u8]>) -> crate::error::Result<Vec<Vec<u8>>> {
-        let mut value = vec![0u8];
-        if let Some(end) = end {
-            value[0] = 1;
-            value.extend_from_slice(end);
-        }
-        Ok(self
-            .round_trip(&OpFrame::one(OP_SCAN, begin.to_vec(), value))?
-            .suffixes)
-    }
-
-    /// Lazy paged stream (ADR-0021): one `ScanIter::Remote` whose refill
-    /// is an `OP_SCAN_STREAM` round trip per page. Early abandonment
-    /// stops pulling pages; values ride the chunk (no N+1). The
-    /// receiver's chunk-time consistency (no snapshot across pages) is
-    /// the documented contract — a consumer needing a frozen view
-    /// materializes it instead.
-    fn scan_range_iter(
-        &self,
-        begin: &[u8],
-        end: Option<&[u8]>,
-    ) -> crate::engine::storage::ScanIter {
+    /// Range scan rides the SAME OP_SCAN_STREAM frame as the lazy form:
+    /// one page per refill, values on the chunk (no N+1). The eager
+    /// one-frame key read (`OP_SCAN`) is still what `scan_suffix` uses —
+    /// a prefix answer needs keys only — but a range scan is the trait's
+    /// one ordered-read primitive and answers the lazy iterator.
+    fn scan_range(&self, begin: &[u8], end: Option<&[u8]>) -> crate::engine::storage::ScanIter {
         crate::engine::storage::ScanIter::Remote(RemoteScanIter {
             store: self.clone_for_iter(),
             begin: begin.to_vec(),
@@ -493,19 +472,21 @@ impl<S: VirtualStorage> ExecCore<S> {
                     // full key; prefix answers are already relative.
                     let plen = self.prefix.as_ref().map_or(0, Vec::len);
                     let strip = move |k: Vec<u8>| k[plen..].to_vec();
+                    // The trait's one scan primitive yields pairs lazily; the
+                    // wire answer is keys only, so this is the eager mirror.
+                    let keys_of = |it: crate::engine::storage::ScanIter| {
+                        let pairs: crate::error::Result<Vec<(Vec<u8>, Vec<u8>)>> = it.collect();
+                        pairs.map(|ps| ps.into_iter().map(|(k, _)| strip(k)).collect::<Vec<_>>())
+                    };
                     let scanned: crate::error::Result<Vec<Vec<u8>>> = match value.first() {
                         // [0x01][end] = bounded range; [0x00] alone =
                         // begin-only range (unbounded end); EMPTY value =
                         // the legacy prefix scan. (A begin-only range and
                         // a prefix scan are different predicates.)
-                        Some(&0x00) if value.len() == 1 => engine
-                            .scan_range(&hk, None)
-                            .map(|ks| ks.into_iter().map(&strip).collect()),
+                        Some(&0x00) if value.len() == 1 => keys_of(engine.scan_range(&hk, None)),
                         Some(&0x01) => {
                             let end = hosted_key(&self.prefix, &value[1..]);
-                            engine
-                                .scan_range(&hk, Some(&end))
-                                .map(|ks| ks.into_iter().map(&strip).collect())
+                            keys_of(engine.scan_range(&hk, Some(&end)))
                         }
                         // A prefix answer is ALREADY relative to `hk`; stripping
                         // the hosted prefix again would eat real key bytes.
@@ -570,8 +551,8 @@ impl<S: VirtualStorage> ExecCore<S> {
                     // the sender owns cursor bytes it can re-send verbatim.
                     let plen = self.prefix.as_ref().map_or(0, Vec::len);
                     let mut pairs: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
-                    for item in engine
-                        .scan_range_iter(begin.as_deref().expect("begin present"), end.as_deref())
+                    for item in
+                        engine.scan_range(begin.as_deref().expect("begin present"), end.as_deref())
                     {
                         match item {
                             Ok((k, v)) => pairs.push((k[plen..].to_vec(), v)),
@@ -684,23 +665,20 @@ mod tests {
                 .map(|(k, _)| k[prefix.len()..].to_vec())
                 .collect())
         }
-        fn scan_range(
-            &self,
-            begin: &[u8],
-            end: Option<&[u8]>,
-        ) -> crate::error::Result<Vec<Vec<u8>>> {
+        fn scan_range(&self, begin: &[u8], end: Option<&[u8]>) -> crate::engine::storage::ScanIter {
             let map = self
                 .0
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let iter = map.range(begin.to_vec()..);
-            Ok(iter
+            let pairs: Vec<crate::error::Result<(Vec<u8>, Vec<u8>)>> = map
+                .range(begin.to_vec()..)
                 .take_while(|(k, _)| match end {
                     Some(end) => k.as_slice() < end,
                     None => true,
                 })
-                .map(|(k, _)| k.clone())
-                .collect())
+                .map(|(k, v)| Ok((k.clone(), v.clone())))
+                .collect();
+            crate::engine::storage::ScanIter::Buffered(pairs.into_iter())
         }
     }
 
@@ -794,11 +772,7 @@ mod tests {
         fn scan_suffix(&self, prefix: &[u8]) -> crate::error::Result<Vec<Vec<u8>>> {
             self.0.scan_suffix(prefix)
         }
-        fn scan_range(
-            &self,
-            begin: &[u8],
-            end: Option<&[u8]>,
-        ) -> crate::error::Result<Vec<Vec<u8>>> {
+        fn scan_range(&self, begin: &[u8], end: Option<&[u8]>) -> crate::engine::storage::ScanIter {
             self.0.scan_range(begin, end)
         }
         fn commit_batch(&self, _batch: Batch) -> crate::error::Result<()> {

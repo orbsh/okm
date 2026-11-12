@@ -65,23 +65,11 @@ impl VirtualStorage for MemStore {
             .collect())
     }
 
-    fn scan_range(&self, begin: &[u8], end: Option<&[u8]>) -> crate::error::Result<Vec<Vec<u8>>> {
-        let map = self.map();
-        Ok(match end {
-            Some(end) => map
-                .range(begin.to_vec()..end.to_vec())
-                .map(|(k, _)| k.clone())
-                .collect(),
-            None => map
-                .range(begin.to_vec()..)
-                .map(|(k, _)| k.clone())
-                .collect(),
-        })
-    }
-
-    fn scan_range_iter(&self, begin: &[u8], end: Option<&[u8]>) -> ScanIter {
-        // Buffered, which is the trait's own default: a unit test that walks a
-        // range here wants the pairs, not the engine's laziness contract.
+    fn scan_range(&self, begin: &[u8], end: Option<&[u8]>) -> ScanIter {
+        // Buffered by construction: this is a unit-test map, not an engine
+        // with a cursor. `ScanIter::Buffered` is how a non-streaming backend
+        // states itself (the trait's own shape), and the caller's `.collect()`
+        // puts the eager list one call away.
         let _ = prefix_end; // the default `scan_suffix` bound is the same helper
         let map = self.map();
         let end = end.map(<[u8]>::to_vec);

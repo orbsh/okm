@@ -86,35 +86,11 @@ impl VirtualStorage for FjallStore {
         Ok(out)
     }
 
-    fn scan_range(&self, begin: &[u8], end: Option<&[u8]>) -> crate::error::Result<Vec<Vec<u8>>> {
-        let mut out = Vec::new();
-        match end {
-            Some(end) => {
-                for g in self.ks.range(begin..end) {
-                    out.push(
-                        g.key()
-                            .map_err(|e| crate::error::Error::Engine(e.to_string()))?
-                            .to_vec(),
-                    );
-                }
-            }
-            None => {
-                for g in self.ks.range(begin..) {
-                    out.push(
-                        g.key()
-                            .map_err(|e| crate::error::Error::Engine(e.to_string()))?
-                            .to_vec(),
-                    );
-                }
-            }
-        }
-        Ok(out)
-    }
-
     /// fjall's `Iter` is an owned, 'static lazy iterator (snapshot
     /// nonce held inside) — native streaming, no buffering, both
-    /// directions.
-    fn scan_range_iter(&self, begin: &[u8], end: Option<&[u8]>) -> super::storage::ScanIter {
+    /// directions. This is the trait's one ordered-read primitive, so the
+    /// eager key list is the caller's `.collect()`.
+    fn scan_range(&self, begin: &[u8], end: Option<&[u8]>) -> super::storage::ScanIter {
         let it = match end {
             Some(end) => self.ks.range(begin..end),
             None => self.ks.range(begin..),

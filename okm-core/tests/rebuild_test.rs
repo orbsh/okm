@@ -62,11 +62,10 @@ pub struct Plain {
 /// Every key and value in the store, sorted by key — the honest way to say "these
 /// two rebuilds produced the same store", rather than trusting one query shape.
 fn dump<S: VirtualStorage + ?Sized>(store: &S) -> Vec<(Vec<u8>, Vec<u8>)> {
-    let mut out = Vec::new();
-    for key in store.scan_range(b"", None).unwrap() {
-        let value = store.get(&key).unwrap().unwrap_or_default();
-        out.push((key, value));
-    }
+    let mut out: Vec<(Vec<u8>, Vec<u8>)> = store
+        .scan_range(b"", None)
+        .collect::<okm_core::Result<Vec<_>>>()
+        .unwrap();
     out.sort();
     out
 }
@@ -152,10 +151,10 @@ fn a_face_entry_lost_behind_the_stores_back_comes_back() {
     okm_core::index::write_slot(&mut face, Note::INDEX_DECLS[0].slot);
     let victim = store
         .scan_range(&face, None)
-        .unwrap()
-        .into_iter()
         .next()
-        .expect("the seeded rows derived entries");
+        .expect("the seeded rows derived entries")
+        .expect("an entry item")
+        .0;
     store.del(&victim).unwrap();
     assert_eq!(
         t.scan::<Note_ByAuthor>(&7u64.to_be_bytes())
@@ -226,11 +225,8 @@ impl VirtualStorage for Flaky {
     fn scan_suffix(&self, prefix: &[u8]) -> okm_core::Result<Vec<Vec<u8>>> {
         self.inner.scan_suffix(prefix)
     }
-    fn scan_range(&self, begin: &[u8], end: Option<&[u8]>) -> okm_core::Result<Vec<Vec<u8>>> {
+    fn scan_range(&self, begin: &[u8], end: Option<&[u8]>) -> okm_core::storage::ScanIter {
         self.inner.scan_range(begin, end)
-    }
-    fn scan_range_iter(&self, begin: &[u8], end: Option<&[u8]>) -> okm_core::storage::ScanIter {
-        self.inner.scan_range_iter(begin, end)
     }
     fn commit_batch(&self, batch: Batch) -> okm_core::Result<()> {
         let left = self.commits_left.get();

@@ -402,9 +402,9 @@ One contract, two worlds, one carrier, two adapters:
 
 | Item | Kind | Contract |
 |---|---|---|
-| `VirtualStorage` | sync contract | `put` / `get` / `del` / `scan_suffix` / `scan_range` / `scan_range_iter` / `commit_batch`; writes take `&self` (ADR-0026); `scan_range` is the ONE ordered-read primitive — `scan_suffix` and `scan_range_iter` default onto it |
+| `VirtualStorage` | sync contract | `put` / `get` / `del` / `scan_suffix` / `scan_range` / `commit_batch`; writes take `&self` (ADR-0026); `scan_range` is the ONE ordered-read primitive (a lazy `ScanIter` of `(key, value)` pairs) — `scan_suffix` defaults onto it and the eager form is the caller's `.collect()` |
 | `VirtualStorageAsync` | async mirror | the same surface, awaited (`SlatedbStore`, `WireClient`) |
-| `SharedVirtualStorage` | capability | `shared_handle()` returns a handle to the SAME physical keyspace, never a copy; required by `NestStorage` and by fetch-back inside `scan_range_iter` |
+| `SharedVirtualStorage` | capability | `shared_handle()` returns a handle to the SAME physical keyspace, never a copy; required by `NestStorage` and by fetch-back inside `scan_range` |
 | `Batch` | carrier | an ordered op list (`ops: Vec<(key, Option<value>)>`: `Some` = put, `None` = del, **no dedupe** — the list is replayed in order). `Default` + `put` / `del` is its whole API, and the assembly points are what fill it; one `commit_batch` flushes it as a single engine-level write |
 | `ScanIter` | iterator | opaque enum over each backend's native owned iterator (fjall / redb / slatedb / remote / buffered); `DoubleEndedIterator` wherever the engine can walk backwards |
 | `BatchStore<'a, S>` | adapter | a batch as a writer: point reads see pending ops newest-first then the store, writes only append, scan shapes panic (ADR-0031) |
@@ -434,7 +434,7 @@ it is writing into one. What it adds is a redirection, not a capability:
 - **the commit lives outside it** — `commit_batch` is the caller's call on the
   engine; called on the adapter instead, it only merges the inner ops into the
   outer batch;
-- no `SharedVirtualStorage` (so `NestStorage` and `scan_range_iter`'s fetch-back
+- no `SharedVirtualStorage` (so `NestStorage` and `scan_range`'s fetch-back
   refuse it), and every scan shape panics rather than answer a partial view.
 
 Decision records live in [docs/adr/](docs/adr/); implementation status is

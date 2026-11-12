@@ -57,7 +57,7 @@ fn entries(col: &Collection<TestStore, MembershipKey, Membership>, slot: u16) ->
     let end = prefix_end(&prefix);
     let mut out: Vec<Vec<u8>> = col
         .store()
-        .scan_range_iter(&prefix, end.as_deref())
+        .scan_range(&prefix, end.as_deref())
         .map(|item| item.unwrap().0[prefix.len()..].to_vec())
         .collect();
     out.sort();
@@ -181,7 +181,7 @@ fn primary_keys(col: &Collection<TestStore, MembershipKey, Membership>) -> Vec<V
     let prefix = [0u8, 210u8, 0x00, 0x00];
     let end = prefix_end(&prefix);
     col.store()
-        .scan_range_iter(&prefix, end.as_deref())
+        .scan_range(&prefix, end.as_deref())
         .map(|item| item.unwrap().0)
         .collect()
 }

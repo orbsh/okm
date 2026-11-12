@@ -86,7 +86,7 @@ impl VirtualStorage for RefusingStore {
         self.inner.del(key)
     }
 
-    fn scan_range(&self, begin: &[u8], end: Option<&[u8]>) -> okm_core::Result<Vec<Vec<u8>>> {
+    fn scan_range(&self, begin: &[u8], end: Option<&[u8]>) -> okm_core::storage::ScanIter {
         self.inner.scan_range(begin, end)
     }
 }

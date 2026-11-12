@@ -612,24 +612,13 @@ impl VirtualStorage for SlatedbSync {
         self.del_sync(key)
     }
     fn scan_suffix(&self, prefix: &[u8]) -> okm_core::error::Result<Vec<Vec<u8>>> {
-        Ok(self
-            .scan_range_sync(prefix, None)?
-            .into_iter()
-            .filter_map(|k| k.strip_prefix(prefix).map(|s| s.to_vec()))
-            .collect())
+        let prefix = prefix.to_vec();
+        self.request(|reply| Cmd::ScanSuffix { prefix, reply })
     }
-    fn scan_range(
-        &self,
-        begin: &[u8],
-        end: Option<&[u8]>,
-    ) -> okm_core::error::Result<Vec<Vec<u8>>> {
-        self.scan_range_sync(begin, end)
-    }
-    fn scan_range_iter(
-        &self,
-        begin: &[u8],
-        end: Option<&[u8]>,
-    ) -> okm_core::engine::storage::ScanIter {
+    /// The trait's one scan primitive: the driver's lazy per-item channel,
+    /// type-erased as `ScanIter::External` because the iterator belongs to
+    /// this crate (ADR-0059). The eager key list is the caller's `.collect()`.
+    fn scan_range(&self, begin: &[u8], end: Option<&[u8]>) -> okm_core::engine::storage::ScanIter {
         self.scan_range_iter_sync(begin, end)
     }
 }

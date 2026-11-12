@@ -113,35 +113,10 @@ impl VirtualStorage for RedbStore {
         Ok(out)
     }
 
-    fn scan_range(&self, begin: &[u8], end: Option<&[u8]>) -> crate::error::Result<Vec<Vec<u8>>> {
-        let txn = self.db.begin_read().map_err(eng)?;
-        let Ok(table) = txn.open_table(TABLE) else {
-            return Ok(Vec::new()); // missing table = empty keyspace
-        };
-        // redb's RangeBounds on `&[u8]` keys: begin inclusive, end
-        // exclusive via `..end`; unbounded when no end.
-        let mut out = Vec::new();
-        match end {
-            Some(end) => {
-                for r in table.range(begin..end).map_err(eng)? {
-                    let (k, _) = r.map_err(eng)?;
-                    out.push(k.value().to_vec());
-                }
-            }
-            None => {
-                for r in table.range(begin..).map_err(eng)? {
-                    let (k, _) = r.map_err(eng)?;
-                    out.push(k.value().to_vec());
-                }
-            }
-        }
-        Ok(out)
-    }
-
     /// redb's `OwnedRange` is 'static (Arc'd transaction guard inside) —
     /// native streaming without holding the read txn borrow, both
-    /// directions.
-    fn scan_range_iter(&self, begin: &[u8], end: Option<&[u8]>) -> super::storage::ScanIter {
+    /// directions. The trait's one ordered-read primitive.
+    fn scan_range(&self, begin: &[u8], end: Option<&[u8]>) -> super::storage::ScanIter {
         // A failure to even OPEN the range rides the ITEM (ADR-0038): the
         // constructor cannot answer for it, and swallowing it is how "failed"
         // used to read as "empty".

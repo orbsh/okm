@@ -279,7 +279,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
             let mut prefix = header.clone();
             crate::model::index::write_slot(&mut prefix, decl.slot);
             let end = prefix_end(&prefix);
-            for item in self.store.scan_range_iter(&prefix, end.as_deref()) {
+            for item in self.store.scan_range(&prefix, end.as_deref()) {
                 let (key, _) = item?;
                 batch.del(&key);
                 report.entries_deleted += 1;
@@ -295,9 +295,8 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
             report.chunks += 1;
         }
 
-        // Phase 2 — derive from the rows. `scan_range_iter` is the lazy face of
-        // the engine's own iterator, so this holds one chunk of ops, not one
-        // table of keys.
+        // Phase 2 — derive from the rows. `scan_range` is the engine's own lazy
+        // iterator, so this holds one chunk of ops, not one table of keys.
         //
         // Whether a row has to be DECODED is a property of the declaration, not
         // of the run (ADR-0054): a payload face reads fields out of the value, a
@@ -314,7 +313,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         let mut prefix = header.clone();
         crate::model::index::write_slot(&mut prefix, crate::model::index::PRIMARY_SLOT);
         let end = prefix_end(&prefix);
-        for item in self.store.scan_range_iter(&prefix, end.as_deref()) {
+        for item in self.store.scan_range(&prefix, end.as_deref()) {
             let (key, value) = item?;
             let suffix = &key[prefix.len()..];
             if suffix.len() < K::KEY_LEN {
@@ -863,7 +862,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         let head_len = begin.len();
         let key_len = K::KEY_LEN;
         self.store
-            .scan_range_iter(&begin, end.as_deref())
+            .scan_range(&begin, end.as_deref())
             .map(move |item| {
                 let (full, _value) = item?;
                 // A primary entry is `[header][slot][key]`. Past the probe the
@@ -1361,7 +1360,7 @@ where
             taken: I::key_prefix_width(),
             probe_len,
             exact,
-            iter: col.store.scan_range_iter(&b, e.as_deref()),
+            iter: col.store.scan_range(&b, e.as_deref()),
             _index: std::marker::PhantomData,
         }
     }

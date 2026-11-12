@@ -244,7 +244,7 @@ only added structure is the frontier and the visited set.
 - **range = the interval form of physical WHERE (ADR-0020).** A
   predicate on the LEADING index field with byte order == value order
   is a key interval — `1 < a < 100` reads only the rows inside
-  `[1, 100)`, via `scan_range` (buffered) or `scan_range_iter` (lazy:
+  `[1, 100)`, via `scan_range` (lazy:
   LIMIT / first-match stops pulling; `.rev()` reads backwards, free).
   Bounds are the encoded bytes of the leading field, caller-owned.
   The difference from a prefix is not cost — both read only hits — but

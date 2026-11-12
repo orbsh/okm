@@ -327,9 +327,9 @@ okm-core = { version = "0.1", features = ["fjall"] }    # 或 "redb"；异步引
 
 | 项 | 种类 | 契约 |
 |---|---|---|
-| `VirtualStorage` | 同步契约 | `put` / `get` / `del` / `scan_suffix` / `scan_range` / `scan_range_iter` / `commit_batch`；写操作取 `&self`（ADR-0026）；`scan_range` 是**唯一**的有序读原语——`scan_suffix` 与 `scan_range_iter` 都以它为默认实现 |
+| `VirtualStorage` | 同步契约 | `put` / `get` / `del` / `scan_suffix` / `scan_range` / `commit_batch`；写操作取 `&self`（ADR-0026）；`scan_range` 是**唯一**的有序读原语（惰性 `ScanIter`，逐条 `(key, value)`）——`scan_suffix` 以它为默认实现，要整批就自己 `.collect()` |
 | `VirtualStorageAsync` | 异步镜像 | 同一套面，改为 await（`SlatedbStore`、`WireClient` 实现） |
-| `SharedVirtualStorage` | 能力 | `shared_handle()` 返回**同一份物理键空间**的句柄，绝不是副本；`NestStorage` 与 `scan_range_iter` 的回表都依赖它 |
+| `SharedVirtualStorage` | 能力 | `shared_handle()` 返回**同一份物理键空间**的句柄，绝不是副本；`NestStorage` 与 `scan_range` 的回表都依赖它 |
 | `Batch` | 载体 | 有序 op 列表（`ops: Vec<(key, Option<value>)>`：`Some` 是 put、`None` 是 del，**不去重**，按序回放）。`Default` + `put` / `del` 就是它的全部 API，填它的是装配点；一次 `commit_batch` 作为一次引擎级写落盘 |
 | `ScanIter` | 迭代器 | 覆盖各后端原生 owned 迭代器的封闭枚举（fjall / redb / slatedb / remote / buffered）；引擎能倒走的地方就保留 `DoubleEndedIterator` |
 | `BatchStore<'a, S>` | 适配器 | 把 batch 当成写入器：点读先看本批待写项（倒序最新）再看 store，写只追加，扫描形态 panic（ADR-0031） |
@@ -357,7 +357,7 @@ okm-core = { version = "0.1", features = ["fjall"] }    # 或 "redb"；异步引
   不能长期持有，也不能传出去；
 - **提交在它外面**——`commit_batch` 是调用方对引擎的调用；在适配器上调用只会把内层 op
   并进外层批；
-- 不实现 `SharedVirtualStorage`（所以 `NestStorage` 与 `scan_range_iter` 的回表都拒它），
+- 不实现 `SharedVirtualStorage`（所以 `NestStorage` 与 `scan_range` 的回表都拒它），
   且所有扫描形态 panic，而不是给一份部分视图。
 
 决策记录见 [docs/adr/](docs/adr/)；落地状态见 [docs/PLAN.md](docs/PLAN.md)。

@@ -23,7 +23,6 @@
 use okm_value::{Dict, Variant};
 use std::cell::Cell;
 
-use okm_core::engine::storage::ScanIter;
 use okm_core::{Batch, Document, DocumentEncode, KeyEncode, ReduceCodec, VirtualStorage};
 
 use okm_async::TestStore;
@@ -126,16 +125,8 @@ impl<S: VirtualStorage> VirtualStorage for Counting<S> {
         self.inner.scan_suffix(prefix)
     }
 
-    fn scan_range(
-        &self,
-        begin: &[u8],
-        end: Option<&[u8]>,
-    ) -> okm_core::error::Result<Vec<Vec<u8>>> {
+    fn scan_range(&self, begin: &[u8], end: Option<&[u8]>) -> okm_core::engine::storage::ScanIter {
         self.inner.scan_range(begin, end)
-    }
-
-    fn scan_range_iter(&self, begin: &[u8], end: Option<&[u8]>) -> ScanIter {
-        self.inner.scan_range_iter(begin, end)
     }
 
     fn commit_batch(&self, batch: Batch) -> okm_core::error::Result<()> {

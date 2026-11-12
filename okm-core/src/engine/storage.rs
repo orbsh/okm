@@ -49,10 +49,15 @@ pub trait VirtualStorage {
     /// the range whose end is the prefix's terminator (see
     /// [`prefix_end`]). Engines override when they have a native prefix
     /// scan (`scan_prefix(prefix, subrange)`) that beats a range.
+    ///
+    /// This is one of the two names that still answers a `Vec` (the other is
+    /// [`commit_batch`](Self::commit_batch)); it derives from the ONE iterator
+    /// primitive, so a backend that can only scan lazily pays nothing extra to
+    /// satisfy it.
     fn scan_suffix(&self, prefix: &[u8]) -> crate::error::Result<Vec<Vec<u8>>> {
-        Ok(self
-            .scan_range(prefix, prefix_end(prefix).as_deref())?
-            .into_iter()
+        let mut out = Vec::new();
+        for item in self.scan_range(prefix, prefix_end(prefix).as_deref()) {
+            let (key, _) = item?;
             // The default MUST honor the documented return shape: `scan_range`
             // hands back FULL keys, so the prefix is stripped here. A default
             // that forwarded full keys kept every tail-slicing caller working
@@ -61,57 +66,36 @@ pub trait VirtualStorage {
             // ops (a host-injected engine) then reported suffixes one prefix
             // too long, and exact matching could never fire there. The range
             // holds exactly the keys carrying `prefix`, so the slice is total;
-            // `get` keeps it panic-free regardless.
-            .map(|k| k.get(prefix.len()..).unwrap_or(&[]).to_vec())
-            .collect())
+            // `get` keeps it panic-free regardless. The value is discarded:
+            // a suffix scan is a key question, and the pair iterator is the
+            // shape the contract has.
+            out.push(key.get(prefix.len()..).unwrap_or(&[]).to_vec());
+        }
+        Ok(out)
     }
-    /// Range scan over FULL keys: `[begin, end)` in byte order —
-    /// `None` end = unbounded. Begin is inclusive. This is the ONE
-    /// ordered-read primitive of the engine contract; prefix scanning
+    /// Range scan over FULL `(key, value)` pairs: `[begin, end)` in byte
+    /// order — `None` end = unbounded. Begin is inclusive. This is the
+    /// ONE ordered-read primitive of the engine contract; prefix scanning
     /// is its special case (see `scan_suffix`). Byte order == value
     /// order for every OKM-encoded field (BE fixed-width, VarInt's
     /// prefix-monotonic encoding), so a `1 < a < 100` predicate IS a
     /// key interval — the engine reads only rows inside it.
-    fn scan_range(&self, begin: &[u8], end: Option<&[u8]>) -> crate::error::Result<Vec<Vec<u8>>>;
-
-    /// LAZY range scan: full `(key, value)` pairs in byte order, pulled
-    /// on demand — half-way abandonment (LIMIT, first-match) costs only
-    /// the reads actually performed. The opaque [`ScanIter`] is the
-    /// trait's streaming contract: every native backend iterator (fjall
-    /// `Iter`, redb `OwnedRange`, an async engine's iterator, the remote
-    /// page) is 'static and owned, so wrapping is free; buffers never
-    /// materialize unless the consumer collects. `scan_range`'s default
-    /// derives from here.
-    /// Remote engines degrade to a buffered round trip (the wire frame
-    /// already batches the answer).
-    fn scan_range_iter(&self, begin: &[u8], end: Option<&[u8]>) -> ScanIter {
-        // Sound-but-buffered default: engines with owned native
-        // iterators (fjall / redb) override this method; the
-        // default materializes the whole range first (a borrow cannot
-        // span the trait boundary) and hands back an owned iterator.
-        // Errors ride the ITEMS: the constructor cannot fail on behalf of
-        // an engine whose failure shows up per key.
-        let mut pairs: Vec<crate::error::Result<(Vec<u8>, Vec<u8>)>> = Vec::new();
-        match self.scan_range(begin, end) {
-            Ok(keys) => {
-                for k in keys {
-                    match self.get(&k) {
-                        Ok(Some(v)) => pairs.push(Ok((k, v))),
-                        // The key vanished between the scan and the read: the
-                        // range is not a snapshot, and a missing value is a
-                        // normal race, not a failure.
-                        Ok(None) => {}
-                        Err(e) => {
-                            pairs.push(Err(e));
-                            break;
-                        }
-                    }
-                }
-            }
-            Err(e) => pairs.push(Err(e)),
-        }
-        ScanIter::Buffered(pairs.into_iter())
-    }
+    ///
+    /// The answer is LAZY, pulled on demand: half-way abandonment (LIMIT,
+    /// first-match) costs only the reads actually performed. The opaque
+    /// [`ScanIter`] is the trait's streaming contract — every native backend
+    /// iterator (fjall `Iter`, redb `OwnedRange`, an async engine's
+    /// iterator, the remote page) is 'static and owned, so wrapping is free;
+    /// buffers never materialize unless the consumer collects. A caller that
+    /// wants the keys or the pairs as a `Vec` writes
+    /// `.collect::<crate::error::Result<Vec<_>>>()` — the eager form is the
+    /// caller's mirror, not a second method. Engines with no streaming
+    /// source state themselves as `ScanIter::Buffered`.
+    ///
+    /// Errors ride the ITEMS: a constructor cannot answer for a failure the
+    /// engine only discovers per key, and swallowing it is how "failed" used
+    /// to read as "empty" (ADR-0038).
+    fn scan_range(&self, begin: &[u8], end: Option<&[u8]>) -> ScanIter;
     /// Prefix scan returning `(key suffix, value)` pairs, in key order,
     /// is NOT a trait method — it lives as the free function
     /// [`scan_suffix_kv`] (ADR-0027).
@@ -137,7 +121,7 @@ pub trait VirtualStorage {
 }
 
 /// Prefix scan returning `(key suffix, value)` pairs, in key order:
-/// ONE pass over [`VirtualStorage::scan_range_iter`] (ADR-0027 moved this
+/// ONE pass over [`VirtualStorage::scan_range`] (ADR-0027 moved this
 /// off the trait — its old default derived from `scan_suffix` + `get`,
 /// an N+1 shape no engine ever overrode).
 pub fn scan_suffix_kv<S: VirtualStorage + ?Sized>(
@@ -146,7 +130,7 @@ pub fn scan_suffix_kv<S: VirtualStorage + ?Sized>(
 ) -> crate::error::Result<Vec<(Vec<u8>, Vec<u8>)>> {
     let end = prefix_end(prefix);
     let mut out = Vec::new();
-    for item in store.scan_range_iter(prefix, end.as_deref()) {
+    for item in store.scan_range(prefix, end.as_deref()) {
         let (mut full, v) = item?;
         // Drop the prefix from the key the iterator already allocated instead of copying
         // the suffix into a second buffer: the range guarantees the key starts with the
@@ -166,7 +150,7 @@ pub fn scan_suffix_kv<S: VirtualStorage + ?Sized>(
 /// this: a copied engine behind two hosts would silently fork the
 /// keyspace.
 /// The engine contract's streaming iterator, returned by
-/// [`VirtualStorage::scan_range_iter`]. An opaque enum over the
+/// [`VirtualStorage::scan_range`]. An opaque enum over the
 /// backends' native owned iterators rather than a `dyn` box: the enum
 /// keeps `DoubleEndedIterator` — a consumer may walk the range
 /// backwards (e.g. "last N entries") without a second buffer pass.
@@ -272,12 +256,8 @@ impl<S: VirtualStorage + ?Sized> VirtualStorage for &S {
         (**self).scan_suffix(prefix)
     }
 
-    fn scan_range(&self, begin: &[u8], end: Option<&[u8]>) -> crate::error::Result<Vec<Vec<u8>>> {
+    fn scan_range(&self, begin: &[u8], end: Option<&[u8]>) -> ScanIter {
         (**self).scan_range(begin, end)
-    }
-
-    fn scan_range_iter(&self, begin: &[u8], end: Option<&[u8]>) -> ScanIter {
-        (**self).scan_range_iter(begin, end)
     }
 
     fn commit_batch(&self, batch: Batch) -> crate::error::Result<()> {
@@ -322,8 +302,8 @@ impl Batch {
 /// **Point reads only.** A scan that merges pending ops with the store's
 /// iterator is a different operation (read, decide, then open a batch),
 /// and a partial view would be worse than none: every scan shape
-/// (`scan_range`, and the `scan_suffix` / `scan_range_iter` defaults that
-/// funnel through it) panics with the contract instead of answering.
+/// (`scan_range`, and `scan_suffix` which derives from it) answers the
+/// contract's one failure item instead of a view.
 pub struct BatchStore<'a, S: VirtualStorage> {
     store: &'a S,
     batch: std::cell::RefCell<&'a mut Batch>,
@@ -368,9 +348,10 @@ impl<S: VirtualStorage> VirtualStorage for BatchStore<'_, S> {
         Ok(())
     }
 
-    fn scan_range(&self, _begin: &[u8], _end: Option<&[u8]>) -> crate::error::Result<Vec<Vec<u8>>> {
-        // Funnels every scan shape here: `scan_suffix` and
-        // `scan_range_iter` both default through this method.
-        Err(crate::error::Error::ScanThroughBatch)
+    fn scan_range(&self, _begin: &[u8], _end: Option<&[u8]>) -> ScanIter {
+        // Every scan shape funnels through here; the contract's error rides
+        // the ITEM, so a scan over a batch answers one failure instead of a
+        // partial view.
+        ScanIter::Buffered(vec![Err(crate::error::Error::ScanThroughBatch)].into_iter())
     }
 }

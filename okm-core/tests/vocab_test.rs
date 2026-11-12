@@ -131,7 +131,7 @@ impl VirtualStorage for NoScan {
         &self,
         _begin: &[u8],
         _end: Option<&[u8]>,
-    ) -> okm_core::error::Result<Vec<Vec<u8>>> {
+    ) -> okm_core::engine::storage::ScanIter {
         panic!("the categorical hot path must not scan");
     }
     fn commit_batch(&self, batch: Batch) -> okm_core::error::Result<()> {
@@ -218,11 +218,7 @@ impl VirtualStorage for VocabProbes {
     fn del(&self, key: &[u8]) -> okm_core::error::Result<()> {
         self.inner.del(key)
     }
-    fn scan_range(
-        &self,
-        begin: &[u8],
-        end: Option<&[u8]>,
-    ) -> okm_core::error::Result<Vec<Vec<u8>>> {
+    fn scan_range(&self, begin: &[u8], end: Option<&[u8]>) -> okm_core::engine::storage::ScanIter {
         self.inner.scan_range(begin, end)
     }
 }

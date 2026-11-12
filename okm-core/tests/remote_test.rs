@@ -190,11 +190,11 @@ fn commit_batch_is_one_frame_one_commit() {
 }
 
 /// ADR-0021 end-to-end: the remote path joins the lazy contract —
-/// `scan_range_iter` returns `ScanIter::Remote`, pages ride
-/// OP_SCAN_STREAM with values attached (no N+1), the cursor is
-/// sender-owned, and forward == buffered answers.
+/// `scan_range` returns `ScanIter::Remote`, pages ride OP_SCAN_STREAM
+/// with values attached (no N+1), the cursor is sender-owned, and a
+/// fresh walk answers the same pairs.
 #[test]
-fn remote_scan_range_iter_is_lazy_paged() {
+fn remote_scan_range_is_lazy_paged() {
     let handle = spawn_host(TestStore::default(), &[0x00, 0x11]);
     let t: Collection<RemoteStore, UserKey, User> = Collection::new(handle.open());
     let remote = handle.open();
@@ -227,23 +227,18 @@ fn remote_scan_range_iter_is_lazy_paged() {
         e.extend_from_slice(&u64::MAX.to_be_bytes());
         e
     };
-    let buffered: Vec<(Vec<u8>, Vec<u8>)> = remote
-        .scan_range(&begin, Some(&end))
-        .unwrap()
-        .into_iter()
-        .map(|k| {
-            (
-                k.clone(),
-                remote.get(&k).unwrap().expect("a read after a scan"),
-            )
-        })
-        .collect();
     let lazy: Vec<(Vec<u8>, Vec<u8>)> = remote
-        .scan_range_iter(&begin, Some(&end))
+        .scan_range(&begin, Some(&end))
         .map(|item| item.expect("a page item"))
         .collect();
     assert_eq!(lazy.len(), 40);
-    assert_eq!(lazy, buffered, "lazy paged walk == buffered answer");
+    // A second walk over the same bounds answers the same pairs: the range
+    // scan IS the lazy primitive now (the eager form is a collect).
+    let again: Vec<(Vec<u8>, Vec<u8>)> = remote
+        .scan_range(&begin, Some(&end))
+        .collect::<okm_core::Result<Vec<_>>>()
+        .expect("a second walk");
+    assert_eq!(again, lazy, "a fresh scan == the first walk");
 
     // Values ride the chunks: every lazy item has a non-empty value
     // without any per-key OP_GET (the N+1 fix — asserted by shape).
@@ -252,13 +247,13 @@ fn remote_scan_range_iter_is_lazy_paged() {
     // Early abandonment stops after the first page (page default 256 >
     // 40 rows here, so one round trip covers all; the take() locks the
     // lazy-by-construction semantics through the remote arm).
-    let first_two: Vec<_> = remote.scan_range_iter(&begin, None).take(2).collect();
+    let first_two: Vec<_> = remote.scan_range(&begin, None).take(2).collect();
     assert_eq!(first_two.len(), 2);
 
     // Backwards walk degrades to buffered (the slatedb rule): rev() gives
     // the reverse of the forward answer.
     let last_two: Vec<_> = remote
-        .scan_range_iter(&begin, Some(&end))
+        .scan_range(&begin, Some(&end))
         .map(|item| item.expect("a page item"))
         .rev()
         .take(2)
@@ -289,7 +284,7 @@ fn remote_unbounded_stream_crosses_pages() {
         "600 writes to land",
     );
     let items: Vec<_> = remote
-        .scan_range_iter(b"k", None)
+        .scan_range(b"k", None)
         .map(|item| item.expect("a page item"))
         .collect();
     assert_eq!(

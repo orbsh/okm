@@ -848,7 +848,11 @@ fn reindex_rebuilds_the_faces_one_chunk_at_a_time() {
     let mut prefix = <Employment as okm_core::Document>::NS_PREFIX.to_vec();
     okm_core::index::write_slot(&mut prefix, okm_core::model::graph::EDGE_OUT_SLOT);
     let end = okm_core::engine::storage::prefix_end(&prefix);
-    let stale = store.scan_range(&prefix, end.as_deref()).unwrap();
+    let stale: Vec<Vec<u8>> = store
+        .scan_range(&prefix, end.as_deref())
+        .map(|item| item.map(|(k, _)| k))
+        .collect::<okm_core::error::Result<_>>()
+        .unwrap();
     assert_eq!(stale.len(), 5);
     for key in &stale {
         store.del(key).unwrap();

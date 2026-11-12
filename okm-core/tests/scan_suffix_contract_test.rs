@@ -43,18 +43,26 @@ impl VirtualStorage for RawOnly {
             .remove(key);
         Ok(())
     }
-    fn scan_range(
-        &self,
-        begin: &[u8],
-        end: Option<&[u8]>,
-    ) -> okm_core::error::Result<Vec<Vec<u8>>> {
-        let rows = self.rows.lock().unwrap();
+    fn scan_range(&self, begin: &[u8], end: Option<&[u8]>) -> okm_core::engine::storage::ScanIter {
+        // Raw-ops-only engine: it holds a `BTreeMap`, so the pairs are
+        // buffered — `ScanIter::Buffered` is how a non-streaming source
+        // states itself. The eager key list is the caller's `.collect()`.
+        let rows = self
+            .rows
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let start = begin.to_vec();
-        let iter: Box<dyn Iterator<Item = (&Vec<u8>, &Vec<u8>)>> = match end {
-            Some(e) => Box::new(rows.range(start..e.to_vec())),
-            None => Box::new(rows.range(start..)),
+        let pairs: Vec<okm_core::error::Result<(Vec<u8>, Vec<u8>)>> = match end {
+            Some(e) => rows
+                .range(start..e.to_vec())
+                .map(|(k, v)| Ok((k.clone(), v.clone())))
+                .collect(),
+            None => rows
+                .range(start..)
+                .map(|(k, v)| Ok((k.clone(), v.clone())))
+                .collect(),
         };
-        Ok(iter.map(|(k, _)| k.clone()).collect())
+        okm_core::engine::storage::ScanIter::Buffered(pairs.into_iter())
     }
 }
 
