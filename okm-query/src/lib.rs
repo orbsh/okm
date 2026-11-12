@@ -313,35 +313,47 @@ where
 }
 
 /// Group-fold over an ordered entry stream: consecutive entries whose
-/// extracted group key matches fold into one accumulator. Ordered input
-/// (which every okm-core scan is) makes this a single pass — the KV-side
-/// equivalent of SQL GROUP BY when the index already sorts by the group
-/// dimension (put the group field first in `fields` and the sort does
-/// the grouping).
+/// extracted group key matches fold into one accumulator, one `(group, acc)`
+/// per run. Ordered input (which every okm-core scan is) makes this a single
+/// pass — the KV-side equivalent of SQL GROUP BY when the index already sorts
+/// by the group dimension (put the group field first in `fields` and the sort
+/// does the grouping).
+///
+/// Lazy, like the scan verbs and the set operators: a group is answered when
+/// the input moves past its run, so `.take(n)` walks only the runs it returns
+/// and a chain never materializes. `.collect::<Vec<_>>()` IS the eager mirror
+/// — there is no eager twin of this verb.
+///
+/// A fold over rows ALREADY IN HAND, and nothing more: it cannot answer
+/// "which rows are in group X", because until those rows are read it has no
+/// input at all. Grouping as a *maintained* answer is the reduce path's job
+/// (`#[ok_reduce]`: the group lives in the entry key and `put` folds the row
+/// into it). This shapes a result the caller has already produced — the
+/// survivors of an intersection, one fetched page.
 pub fn group_by<G, T, A>(
     items: impl IntoIterator<Item = T>,
     key: impl Fn(&T) -> G,
     init: impl Fn() -> A,
     mut fold: impl FnMut(A, T) -> A,
-) -> Vec<(G, A)>
+) -> impl Iterator<Item = (G, A)>
 where
     G: PartialEq,
 {
-    let mut out: Vec<(G, A)> = Vec::new();
-    for item in items {
-        match out.last_mut() {
-            Some((g, acc)) if *g == key(&item) => {
-                let a = std::mem::replace(acc, init());
-                *acc = fold(a, item);
-            }
-            _ => {
-                let g = key(&item);
-                let acc = fold(init(), item);
-                out.push((g, acc));
+    // `peekable` holds the item that opened the NEXT run, so a group boundary is
+    // seen without a pending slot of our own — and the item is not lost, only
+    // answered by the following `next()`.
+    let mut items = items.into_iter().peekable();
+    std::iter::from_fn(move || {
+        let first = items.next()?;
+        let group = key(&first);
+        let mut acc = fold(init(), first);
+        while items.peek().is_some_and(|next| key(next) == group) {
+            if let Some(item) = items.next() {
+                acc = fold(acc, item);
             }
         }
-    }
-    out
+        Some((group, acc))
+    })
 }
 
 /// One hop across one edge type, keyed by the node's encoded identity.
@@ -1110,7 +1122,28 @@ mod tests {
     #[test]
     fn group_by_folds_consecutive_runs() {
         let rows = vec![(7u64, 10), (7, 20), (9, 30)];
-        let grouped = group_by(rows, |r| r.0, || 0u64, |acc, (_, v)| acc + v);
+        let grouped: Vec<_> = group_by(rows, |r| r.0, || 0u64, |acc, (_, v)| acc + v).collect();
         assert_eq!(grouped, vec![(7, 30), (9, 30)]);
+    }
+
+    /// Laziness: answering the first group must not drain the input. Three runs of
+    /// two; `pulled` is how many items the source actually handed out.
+    #[test]
+    fn group_by_pulls_only_the_run_it_answers() {
+        let mut pulled = 0;
+        let input = (0..6u64).map(|i| {
+            pulled += 1;
+            (i / 2, i)
+        });
+
+        let first: Vec<_> = group_by(input, |r| r.0, || 0u64, |acc, (_, v)| acc + v)
+            .take(1)
+            .collect();
+
+        assert_eq!(first, vec![(0, 1)], "one group, the first run folded");
+        assert!(
+            pulled < 6,
+            "take(1) must stop at the first run, pulled {pulled} of 6"
+        );
     }
 }

@@ -36,7 +36,8 @@ let counts = okm_query::group_by(
     |u| u.org_id,
     || 0u64,
     |acc, _| acc + 1,
-);
+)
+.collect::<Vec<_>>();   // 折叠是惰性的；collect 是急切镜像
 ```
 
 输入有序（每个 scan 都有序），group_by 是单趟的——分组成本 = 索引排序成本，后者在写入时已付。

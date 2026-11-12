@@ -47,7 +47,8 @@ let counts = okm_query::group_by(
     |u| u.org_id,
     || 0u64,
     |acc, _| acc + 1,
-);
+)
+.collect::<Vec<_>>();   // the fold is lazy; collect is the eager mirror
 ```
 
 The input is ordered (every scan is), so group_by is single-pass —
