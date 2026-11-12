@@ -2321,22 +2321,21 @@ panic lints allowed only in the places it names. So the runtime half of
       degraded to a JSON string under okm's mapping (Binary as base64, `Int`/`UInt`
       kept as numbers, lists and maps as arrays and objects). The mapping is okm's
       to publish — otherwise every adapter invents a dialect.
-- [ ] Owed *in* `okm-lake` (restated 2026-11-11, owner): **the sink half of the lake output.**
-      Landed the same day, in two steps. First, removals became EXPRESSIBLE: a window holding a
+- [ ] Owed *in* `okm-lake` (restated 2026-11-11, surveyed and rewritten 2026-11-12, owner): **the sink half of the lake output.**
+      Removals became EXPRESSIBLE first: a window holding a
       `del` writes a change row instead of being refused — `okm_op` / `okm_slot` / `okm_seq` are
       table-wide columns on every window, core's `Window.ops` keeps the log's op order, and a
       `put_open` row states a change that touched only the open fields (ADR-0058 § Amendment).
-      Second, the table can be folded: `okm-lake condense` writes one current-state file per
+      Then the table could be folded: `okm-lake condense` writes one current-state file per
       table and commits a `remove` per replaced file plus one `add` (copy-on-write), on top of
       a read path whose identity comes from the `okm.key` metadata (`read::current_state`).
-      What is still owed:
-      (a) **a ROW-level removal** — landed as a RANGE INDEX rather than a deletion vector: every
+      **Row-level removal** — landed as a RANGE INDEX rather than a deletion vector: every
       manifest records the key range its file covers (`key_bounds`, sortable-byte hex), so a
       fold knows which files can possibly hold a key and opens only those. Removing one key
       rewrites the file whose range holds it and leaves the rest of the table alone, which is
       what a deletion vector buys minus the reader work of applying one. A `remove` action is
       still whole-file: the COW shape is the contract, not an approximation of one.
-      (b) **incremental convergence** — landed, both sides. The trigger is `DrainConfig.fold`
+      **Incremental convergence** — landed, both sides. The trigger is `DrainConfig.fold`
       (fold once the change files pass a count or a byte threshold) and the work is incremental:
       a fold rewrites only the files that share a key with another file or that hold a removal,
       because a file whose keys are exclusive to it already states final rows. The index it
@@ -2344,26 +2343,57 @@ panic lints allowed only in the places it names. So the runtime half of
       decide. What is still O(table) is the KEY scan itself; a per-file key-bound sidecar could
       prune files that cannot share a key, and that is worth doing only once a table's key
       column no longer fits in memory.
-      (b2) **vacuum** — landed as `okm-lake vacuum --keep-versions N` (plus `--dry-run`):
+      **Vacuum** — landed as `okm-lake vacuum --keep-versions N` (plus `--dry-run`):
       `N` counts versions rather than days, `0` keeps only the current version, a file's
       manifest goes with it, and the sweep is idempotent (the log keeps naming deleted files,
       the disk does not, and a second run reports nothing). The log is never edited: what the
       table said stays true; only the bytes behind the old versions stop existing.
-      (b1b) **a folded file carries a manifest**, listing the segments of the files it replaced:
+      **A folded file carries a manifest**, listing the segments of the files it replaced:
       a fold is now invisible to provenance and to `status`.
-      (b3) **merging two windows of open fields** — landed: `parquet-variant` was already a
+      **Merging two windows of open fields** — landed: `parquet-variant` was already a
       dependency for the write side, so the fold decodes each `variant` cell, unions the objects
       field by field (later window wins, nested objects merge) and RE-ENCODES the half via
       `bridge::variant_column`. `read::open_fields` exposes the decoder.
-      (c) **file-size target** — landed as `max_rows_per_file` (CLI `--max-rows-per-file`): parts
+      **File-size target** — landed as `max_rows_per_file` (CLI `--max-rows-per-file`): parts
       named `-p<k>`, each with its own manifest and a narrower `key_bounds`. Rows, not bytes: a
       byte target is a write-measure-rewrite loop, and rows are what a window knows up front.
-      **partitioning** — landed as `DrainConfig.partition` (CLI `--partition <column>`):
+      **Partitioning** — landed as `DrainConfig.partition` (CLI `--partition <column>`):
       one file per partition value per window under `data/<column>=<value>/`, the value in Delta
       `partitionValues` and the columns once in `metaData`, a fold that stays inside its
       partition by construction, and the directory name percent-encoded while the action keeps
       the raw text. The column must be a KEY column, because a partition that does not refine
       the key space lets one key live in two files.
+      **What is still owed (surveyed 2026-11-12; each piece names its test).** The drain side is
+      whole; the gap is on the WRITER side, in the order it should be fixed:
+      (a) **a `publish`ed table has no reader.** `read::resolve` and `read::keys_of_file` require
+      an `okm_op` column on every file ("a file has no `okm_op` column"), and
+      `publish::replace_table` writes rows and no op column — so a published lake can neither be
+      read as current state nor folded. The rule to adopt: **a file without `okm_op` states FINAL
+      rows** — it carries no ops, so there is nothing to fold and its rows ARE the answer. Test:
+      publish two versions, then `current_state` answers the latest version's rows and `condense`
+      refuses with "nothing to fold".
+      (b) **`publish` writes no manifest.** `replace_table` commits a bare `Addition::plain`, so
+      `status.change_rows` is `None` (one manifest-less file makes the sum unknown rather than
+      partial) and the addition carries no `key_bounds`, which leaves a fold nothing to prune
+      with. Piece: publish writes the manifest with empty segments. Test: after a publish,
+      `status` reports the known row count and the addition has `key_bounds`.
+      (c) **slot-aware removals are not resolved.** `okm_slot = 1` (the document's open half) is
+      drainable — a full-length suffix makes it deletable — yet `read::resolve` drops the WHOLE
+      key on any `del`, and `delete_into` (`okm-core/src/model/document.rs`) deletes only the
+      primary row and its faces. So a slot-1 `del` means "the open half is gone, the row lives".
+      Confirm whether any writer emits one before calling this a bug; if one does, `resolve` has
+      to apply the removal to that face only. Test: a window with a slot-1 `del` folds to a row
+      that keeps its declared columns and has no open fields, while a primary `del` still drops
+      the row.
+      (d) **partitioned / multi-file publish.** `replace_table` takes ONE file name and no
+      partition values, so a publisher holding partitioned state cannot state a version with more
+      than one partition. Piece: a multi-`Addition` publish form (each file with its partition
+      values) over the same COW commit. Test: one publish with two partitions lands both files in
+      one version with `partitionValues` set, and `current_state` unions them.
+      (e) **`docs/drain-contract.md`** needs the "a current-state file needs no ops" rule from
+      (a) and the checkpoint reading order — a reader starts at the newest
+      `_delta_log/<V>.checkpoint.json` and replays only the versions after it — so a sink author
+      reads the same rules this survey derived.
       `okm_lake::delta` stays a zero-dependency log encoder, so anything that outgrows it
       splits off by measurement rather than by default. `okm_dynamic::arrow` covers the
       schema-driven Arrow builder, with the typed bridge as its drift lock; a SQL-to-okm planner
