@@ -9,6 +9,14 @@ okm-core = { path = "../okm-core" }
 [dev-dependencies]
 okm-core = { path = "../okm-core" }
 okm-async = { path = "../okm-async", features = ["slatedb"] }
+criterion = "0.5"
+
+# The slice gallop against the stream merge, on lopsided and balanced shapes.
+# No CI gate — the numbers answer "which operator for which input", and the
+# test that pins the shortcut's cost lives in `lib.rs`.
+[[bench]]
+name = "set_ops"
+harness = false
 
 [lints]
 workspace = true

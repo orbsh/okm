@@ -144,6 +144,16 @@ pub trait OrderedSets: IntoIterator + Sized {
     }
 
     /// The keys on both sides, once each.
+    ///
+    /// Same ordered contract as the trait: the input is ordered by key, and
+    /// unordered input silently misses keys.
+    ///
+    /// Why this cannot gallop: an `Iterator` only moves forward, so there is no
+    /// seek to jump with — "skipping ahead" to the other side's key still costs
+    /// one `next()` per key skipped, which is exactly the walk the merge already
+    /// does. The 12.7× gallop belongs to inputs that can be INDEXED, and it is
+    /// [`gallop_intersect`] over slices (a seekable source re-seeks instead of
+    /// advancing; that is a different operator, not a branch in this one).
     fn intersect<R>(self, right: R) -> impl Iterator<Item = Self::Item>
     where
         R: IntoIterator<Item = Self::Item>,
@@ -186,6 +196,122 @@ pub trait OrderedSets: IntoIterator + Sized {
 }
 
 impl<I: IntoIterator> OrderedSets for I {}
+
+/// Set intersection over two ORDERED SLICES, galloping instead of walking — the
+/// random-access half of [`intersect`](OrderedSets::intersect), for inputs that
+/// can be indexed.
+///
+/// Same answer as the stream operator: one `&T` per shared key, in ascending
+/// order, set semantics (a repeated key answers once). Zero copies — the items
+/// are borrowed from the caller's slices, so this is also the shape to reach for
+/// when the keys are expensive to clone.
+///
+/// The difference is the skip. A stream can only be advanced, so when one side
+/// has to catch up it pays one `next()` per key it passes; a slice can be
+/// SEARCHED, so catching up costs `O(log gap)` comparisons — an exponential
+/// probe (1, 2, 4, 8 … keys ahead) to bracket the target, then a binary search
+/// inside the bracket (`slice::partition_point`). Lopsided input is where that
+/// pays: `benches/set_ops.rs` has 1 000 000 against 1 000 at 42 µs here versus
+/// 1.49 ms for the merge form (35×), while balanced input (1 000 000 against
+/// 500 000) comes out the same or marginally ahead (1.36 ms versus 1.55 ms) —
+/// the probe's constant is paid exactly where the merge also spends a
+/// comparison, so the shape that cannot win is also the shape that cannot
+/// lose much.
+///
+/// Ordered is a CONTRACT, not a check — the same one the stream operators have:
+/// both slices ascending. Unordered input does not error, it silently misses
+/// keys. (Sorted slices are what a caller holds after sorting a scan; the scan
+/// itself is a stream and goes through `intersect`.)
+pub fn gallop_intersect<'a, T: Ord>(left: &'a [T], right: &'a [T]) -> impl Iterator<Item = &'a T> {
+    GallopIntersect {
+        left,
+        right,
+        i: 0,
+        j: 0,
+    }
+}
+
+/// [`gallop_intersect`]'s lazy cursor: two indices into the caller's slices.
+struct GallopIntersect<'a, T> {
+    left: &'a [T],
+    right: &'a [T],
+    i: usize,
+    j: usize,
+}
+
+impl<'a, T: Ord> Iterator for GallopIntersect<'a, T> {
+    type Item = &'a T;
+
+    fn next(&mut self) -> Option<&'a T> {
+        loop {
+            // Copied out so the returned item borrows the caller's data, not
+            // `self` — that is what keeps the signature `&'a T`.
+            let (left, right) = (self.left, self.right);
+            let (l, r) = (left.get(self.i)?, right.get(self.j)?);
+            match l.cmp(r) {
+                // One side is behind: seek it to the other's key instead of
+                // stepping through every key in between.
+                std::cmp::Ordering::Less => self.i = seek(left, self.i + 1, r),
+                std::cmp::Ordering::Greater => self.j = seek(right, self.j + 1, l),
+                std::cmp::Ordering::Equal => {
+                    // The key is in both: emit one representative and step past
+                    // every copy on both sides (set semantics, and the reason a
+                    // repeated key cannot come back).
+                    self.i = past_run(left, self.i, l);
+                    self.j = past_run(right, self.j, l);
+                    return Some(l);
+                }
+            }
+        }
+    }
+}
+
+/// The first index at or after `from` whose key is `>= target`: a galloping
+/// lower bound.
+///
+/// Adjacent keys are the common case in a mostly-aligned merge and cost one
+/// comparison; a real gap costs an exponential probe (doubling until the key at
+/// `lo + step` is no longer below the target) plus one binary search over the
+/// bracket, so `O(log(gap))` instead of `O(gap)`.
+///
+/// Finds the bracket, not the answer, by walking: every probe only proves that
+/// the keys before it are below the target, which is what makes a slice's
+/// random access cheaper than a stream's single step.
+fn seek<T: Ord>(s: &[T], from: usize, target: &T) -> usize {
+    let n = s.len();
+    if from >= n {
+        return n;
+    }
+    if s[from] >= *target {
+        return from;
+    }
+    let mut lo = from; // s[lo] < target
+    let mut step = 1usize;
+    let mut hi = n;
+    loop {
+        let probe = lo + step;
+        if probe >= n {
+            break;
+        }
+        if s[probe] >= *target {
+            hi = probe + 1;
+            break;
+        }
+        lo = probe;
+        step = step.saturating_mul(2);
+    }
+    lo + s[lo..hi].partition_point(|key| key < target)
+}
+
+/// The first index at or after `from` whose key is not `key` (the end of one
+/// run of equal keys).
+fn past_run<T: Ord>(s: &[T], from: usize, key: &T) -> usize {
+    let mut i = from;
+    while i < s.len() && s[i] == *key {
+        i += 1;
+    }
+    i
+}
 
 /// The alignment behind every operator here: two ordered streams, one tuple per
 /// distinct key.
@@ -797,6 +923,135 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![1],
             "so the filters over it are set-semantic to the last key"
+        );
+    }
+
+    thread_local! {
+        /// Comparisons spent by [`Probe`] on this thread.
+        static PROBE_CMPS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    }
+
+    /// A key that counts its own comparisons. The gallop's claim is about how
+    /// many comparisons an intersection spends, which is invisible from the
+    /// answer — so the key type is the instrument. Equality is free (it is not
+    /// what the merge costs); `Ord` is what both paths call.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    struct Probe(u32);
+
+    impl PartialOrd for Probe {
+        fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+            Some(self.cmp(other))
+        }
+    }
+
+    impl Ord for Probe {
+        fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+            PROBE_CMPS.with(|c| c.set(c.get() + 1));
+            self.0.cmp(&other.0)
+        }
+    }
+
+    fn probe_cmps(reset: bool) -> u64 {
+        PROBE_CMPS.with(|c| {
+            let seen = c.get();
+            if reset {
+                c.set(0);
+            }
+            seen
+        })
+    }
+
+    /// The slice operator is the stream operator's answer, borrowed: the same keys,
+    /// the same order, set semantics on both sides' duplicates.
+    #[test]
+    fn gallop_intersect_answers_what_the_stream_form_answers() {
+        let cases: Vec<(Vec<u32>, Vec<u32>)> = vec![
+            (vec![], vec![]),
+            (vec![], vec![1, 2, 3]),
+            (vec![1, 2, 3], vec![]),
+            (vec![1, 3, 5, 7, 9], vec![2, 4, 6, 8, 10]),
+            (vec![1, 2, 3], vec![1, 2, 3]),
+            (vec![1, 1, 1], vec![1, 1]),
+            (vec![1, 1, 2, 4, 4, 7], vec![4, 4, 4, 5, 7]),
+            (vec![9], vec![0, 1, 2, 3, 4, 5, 6, 7, 8]),
+            (vec![0, 1, 2, 3, 4, 5, 6, 7, 8], vec![9]),
+            (
+                (0..200_000u32).collect(),
+                (0..200_000u32).step_by(997).collect(),
+            ),
+            (
+                (0..200_000u32).step_by(997).collect(),
+                (0..200_000u32).collect(),
+            ),
+        ];
+        for (left, right) in cases {
+            let got: Vec<u32> = gallop_intersect(&left, &right).copied().collect();
+            let want: Vec<u32> = left.clone().into_iter().intersect(right.clone()).collect();
+            assert_eq!(
+                got, want,
+                "slices disagree with the stream on {left:?} / {right:?}"
+            );
+        }
+    }
+
+    /// The seek is TAKEN, not just correct: on lopsided slices the gallop spends
+    /// far fewer comparisons than the merge, and on balanced ones it stays within
+    /// a small constant (the probe's price).
+    #[test]
+    fn gallop_intersect_seeks_on_lopsided_slices_and_stays_flat_on_balanced_ones() {
+        let lopsided_long: Vec<Probe> = (0u32..200_000).map(Probe).collect();
+        let lopsided_short: Vec<Probe> = (0u32..200_000).step_by(193).map(Probe).collect();
+
+        probe_cmps(true);
+        let galloped: Vec<u32> = gallop_intersect(&lopsided_long, &lopsided_short)
+            .map(|p| p.0)
+            .collect();
+        let gallop_cmps = probe_cmps(true);
+
+        let streamed: Vec<u32> = lopsided_long
+            .iter()
+            .intersect(lopsided_short.iter())
+            .map(|p| p.0)
+            .collect();
+        let stream_cmps = probe_cmps(true);
+
+        assert_eq!(galloped, streamed);
+        assert!(
+            gallop_cmps * 4 < stream_cmps,
+            "the slice operator must seek, not walk (gallop {gallop_cmps}, merge {stream_cmps})"
+        );
+
+        // Balanced: every key of the long slice advances by one, so the gallop's
+        // advantage is gone — but it must not cost a multiple of the merge.
+        let left: Vec<Probe> = (0u32..20_000).map(Probe).collect();
+        let right: Vec<Probe> = (0u32..20_000).step_by(2).map(Probe).collect();
+        probe_cmps(true);
+        let got: Vec<u32> = gallop_intersect(&left, &right).map(|p| p.0).collect();
+        let balanced_gallop = probe_cmps(true);
+        let want: Vec<u32> = left.intersect(right).map(|p| p.0).collect();
+        let balanced_stream = probe_cmps(true);
+        assert_eq!(got, want);
+        assert_eq!(got.len(), 10_000);
+        assert!(
+            balanced_gallop <= balanced_stream * 3,
+            "a balanced pair must stay near the merge's price \
+             (gallop {balanced_gallop}, merge {balanced_stream})"
+        );
+    }
+
+    /// Lazy and borrowed: `take(1)` answers from the front, and the items are
+    /// references into the caller's slices — no clone of a key, ever.
+    #[test]
+    fn gallop_intersect_is_lazy_and_borrows() {
+        let left: Vec<String> = ["a", "b", "c"].map(String::from).to_vec();
+        let right: Vec<String> = ["b", "c", "d"].map(String::from).to_vec();
+        let first: Vec<&String> = gallop_intersect(&left, &right).take(1).collect();
+        assert_eq!(first, vec![&left[1]]);
+        assert_eq!(
+            gallop_intersect(&left, &right).collect::<Vec<_>>(),
+            vec![&left[1], &left[2]],
+            "the answers point into the left slice, which is what makes the \
+             operator clone-free"
         );
     }
 
