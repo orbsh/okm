@@ -13,7 +13,6 @@
 use okm_core::FjallStore;
 mod common;
 use common::*;
-use okm_core::parts;
 
 #[test]
 fn fjall_roundtrip() {
@@ -37,9 +36,7 @@ fn fjall_roundtrip() {
 
     // 反向：by_session 索引，一次前缀扫描
     let hits = rows
-        .scan::<__OkmIndex_UserSessionRow_by_session, (parts::Fields, parts::Key, parts::Row)>(
-            &1001u64.to_be_bytes(),
-        )
+        .scan::<__OkmIndex_UserSessionRow_by_session>(&1001u64.to_be_bytes())
         .collect::<okm_core::error::Result<Vec<_>>>()
         .unwrap();
     assert_eq!(hits.len(), 1);
@@ -47,12 +44,10 @@ fn fjall_roundtrip() {
 
     rows.purge(&k(101, 1001)).unwrap();
     assert_eq!(
-        rows.scan::<__OkmIndex_UserSessionRow_by_session, (parts::Fields, parts::Key, parts::Row)>(
-            &1001u64.to_be_bytes()
-        )
-        .collect::<okm_core::error::Result<Vec<_>>>()
-        .unwrap()
-        .len(),
+        rows.scan::<__OkmIndex_UserSessionRow_by_session>(&1001u64.to_be_bytes())
+            .collect::<okm_core::error::Result<Vec<_>>>()
+            .unwrap()
+            .len(),
         0,
         "the index entry left with the row"
     );

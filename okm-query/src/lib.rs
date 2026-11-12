@@ -308,7 +308,6 @@ pub fn walk<S: VirtualStorage + Clone>(
 mod tests {
     use super::*;
     use okm_async::TestStore;
-    use okm_core::parts;
     use okm_core::{Document, DocumentEncode, KeyEncode};
 
     /// 端点文档：user（ns=1）
@@ -414,9 +413,7 @@ mod tests {
             }
             // 反向：by_followee 索引，回表拿关系行
             for (_, key, _) in table
-                .scan::<__OkmIndex_FollowsRow_by_followee, (parts::Fields, parts::Key, parts::Row)>(
-                    n.encode().as_slice(),
-                )
+                .scan::<__OkmIndex_FollowsRow_by_followee>(n.encode().as_slice())
                 .collect::<okm_core::error::Result<Vec<_>>>()
                 .expect("an index read")
             {
@@ -438,7 +435,8 @@ mod tests {
                 out.push(mk(key.mentioned_id).encode());
             }
             for (_, key, _) in table
-                .scan::<__OkmIndex_MentionsRow_by_mentioned, (parts::Fields, parts::Key, parts::Row)>(n.encode().as_slice()).collect::<okm_core::error::Result<Vec<_>>>()
+                .scan::<__OkmIndex_MentionsRow_by_mentioned>(n.encode().as_slice())
+                .collect::<okm_core::error::Result<Vec<_>>>()
                 .expect("an index read")
             {
                 out.push(mk(key.decoded.user_id).encode());
@@ -721,14 +719,14 @@ mod tests {
 
         // Field segment as the merge key: no fetch-back, no includes, no sort.
         let left: Vec<(String, PersonKey)> = users
-            .scan::<__OkmIndex_Person_by_name, (parts::Fields, parts::Key, parts::Row)>(&[])
+            .scan::<__OkmIndex_Person_by_name>(&[])
             .collect::<okm_core::error::Result<Vec<_>>>()
             .unwrap()
             .into_iter()
             .map(|(fields, key, _)| (fields.name, key.decoded))
             .collect();
         let right: Vec<(String, OrderKey)> = orders
-            .scan::<__OkmIndex_Order_by_name, (parts::Fields, parts::Key, parts::Row)>(&[])
+            .scan::<__OkmIndex_Order_by_name>(&[])
             .collect::<okm_core::error::Result<Vec<_>>>()
             .unwrap()
             .into_iter()

@@ -138,9 +138,9 @@ pub struct Include; // I::Covered, decoded from the entry value (() when none)
 pub trait Part<I: KvIndex> { type Output; fn take(hit: &mut Hit<'_, I>) -> Result<Self::Output>; }
 pub trait Parts<I: KvIndex> { type Output; fn take(hit: &mut Hit<'_, I>) -> Result<Self::Output>; }   // one impl per arity, ceiling = the number of parts
 
-t.scan::<ByOrg, (parts::Key, parts::Fields)>(&probe)?;  // no fetch, caller's order
-t.scan::<ByOrg, (parts::Fields, parts::Key, parts::Row)>(&probe)?;   // the plain answer
-t.scan::<ByOrg, (parts::Key, parts::Include)>(&probe)?;             // the covered answer
+t.scan::<ByOrg>(&probe).parts::<(parts::Key, parts::Fields)>();  // no fetch, caller's order
+t.scan::<ByOrg>(&probe);                                        // the plain answer
+t.scan::<ByOrg>(&probe).parts::<(parts::Key, parts::Include)>(); // the covered answer
 ```
 
 The parts are named through the `parts` module rather than imported bare: `Key`,

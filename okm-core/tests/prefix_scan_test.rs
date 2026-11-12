@@ -16,7 +16,6 @@
 )]
 
 use okm_async::TestStore;
-use okm_core::parts;
 use okm_core::{Collection, DocumentEncode, KeyEncode};
 
 #[derive(KeyEncode, Clone, PartialEq, Eq, Debug)]
@@ -178,9 +177,7 @@ fn index_prefix_iter_matches_the_eager_scan() {
     let col = seeded();
 
     let eager: Vec<DeviceKey> = col
-        .scan::<__OkmIndex_Device_by_label, (parts::Fields, parts::Key, parts::Row)>(
-            &3u32.to_be_bytes(),
-        )
+        .scan::<__OkmIndex_Device_by_label>(&3u32.to_be_bytes())
         .collect::<okm_core::error::Result<Vec<_>>>()
         .unwrap()
         .into_iter()
@@ -188,9 +185,7 @@ fn index_prefix_iter_matches_the_eager_scan() {
         .collect();
 
     let lazy: Vec<DeviceKey> = col
-        .scan::<__OkmIndex_Device_by_label, (parts::Fields, parts::Key, parts::Row)>(
-            &3u32.to_be_bytes(),
-        )
+        .scan::<__OkmIndex_Device_by_label>(&3u32.to_be_bytes())
         .map(|r| r.unwrap())
         .map(|(_, pk, _doc)| pk.decoded)
         .collect();
@@ -200,7 +195,7 @@ fn index_prefix_iter_matches_the_eager_scan() {
 
     // A partial prefix over the field segment is the streaming group read.
     let mut group: Vec<DeviceKey> = col
-        .scan::<__OkmIndex_Device_by_label, (parts::Fields, parts::Key, parts::Row)>(&[])
+        .scan::<__OkmIndex_Device_by_label>(&[])
         .map(|r| r.unwrap())
         .map(|(_, pk, _doc)| pk.decoded)
         .collect();
@@ -210,7 +205,7 @@ fn index_prefix_iter_matches_the_eager_scan() {
 
     // Reverse is the mirror of the same window.
     let mut rev: Vec<DeviceKey> = col
-        .scan::<__OkmIndex_Device_by_label, (parts::Fields, parts::Key, parts::Row)>(&[])
+        .scan::<__OkmIndex_Device_by_label>(&[])
         .rev()
         .map(|r| r.unwrap())
         .map(|(_, pk, _doc)| pk.decoded)
@@ -229,16 +224,14 @@ fn index_prefix_probe_is_typed_and_byte_identical() {
     assert_eq!(probe.as_bytes(), 1u16.to_be_bytes());
 
     let typed: Vec<DeviceKey> = col
-        .scan::<__OkmIndex_Device_by_tag_label, (parts::Fields, parts::Key, parts::Row)>(&probe)
+        .scan::<__OkmIndex_Device_by_tag_label>(&probe)
         .collect::<okm_core::error::Result<Vec<_>>>()
         .unwrap()
         .into_iter()
         .map(|(_, pk, _)| pk.decoded)
         .collect();
     let raw: Vec<DeviceKey> = col
-        .scan::<__OkmIndex_Device_by_tag_label, (parts::Fields, parts::Key, parts::Row)>(
-            &1u16.to_be_bytes()[..],
-        )
+        .scan::<__OkmIndex_Device_by_tag_label>(&1u16.to_be_bytes()[..])
         .collect::<okm_core::error::Result<Vec<_>>>()
         .unwrap()
         .into_iter()
@@ -253,7 +246,7 @@ fn index_prefix_probe_is_typed_and_byte_identical() {
         .label(1u32)
         .finish();
     let one = col
-        .scan::<__OkmIndex_Device_by_tag_label, (parts::Fields, parts::Key, parts::Row)>(&probe)
+        .scan::<__OkmIndex_Device_by_tag_label>(&probe)
         .collect::<okm_core::error::Result<Vec<_>>>()
         .unwrap();
     assert_eq!(one.len(), 1);
@@ -268,16 +261,14 @@ fn index_prefix_probe_is_typed_and_byte_identical() {
 
     // The empty probe is the whole access method.
     let all = col
-        .scan::<__OkmIndex_Device_by_tag_label, (parts::Fields, parts::Key, parts::Row)>(
-            &__OkmIndex_Device_by_tag_label::prefix().finish(),
-        )
+        .scan::<__OkmIndex_Device_by_tag_label>(&__OkmIndex_Device_by_tag_label::prefix().finish())
         .collect::<okm_core::error::Result<Vec<_>>>()
         .unwrap();
     assert_eq!(all.len(), 7);
 
     // The lazy twin takes the same probe, and reverses.
     let lazy: Vec<DeviceKey> = col
-        .scan::<__OkmIndex_Device_by_tag_label, (parts::Fields, parts::Key, parts::Row)>(
+        .scan::<__OkmIndex_Device_by_tag_label>(
             &__OkmIndex_Device_by_tag_label::prefix().tag(1u16).finish(),
         )
         .map(|r| r.unwrap())

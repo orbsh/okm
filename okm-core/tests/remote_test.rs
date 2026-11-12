@@ -74,7 +74,7 @@ fn table_semantics_over_remote() {
 
     // Index scan over the remote: same API, bytes travel twice.
     let hits = t
-        .scan::<ByLevel, (parts::Fields, parts::Key, parts::Row)>(&3u32.to_be_bytes())
+        .scan::<ByLevel>(&3u32.to_be_bytes())
         .collect::<okm_core::error::Result<Vec<_>>>()
         .unwrap();
     assert_eq!(hits.len(), 1);
@@ -89,7 +89,7 @@ fn table_semantics_over_remote() {
 
     // Both rows' primary + index entries landed (read-side observation).
     let all = t
-        .scan::<ByLevel, (parts::Fields, parts::Key, parts::Row)>(&[])
+        .scan::<ByLevel>(&[])
         .collect::<okm_core::error::Result<Vec<_>>>()
         .unwrap();
     assert_eq!(all.len(), 2);
@@ -101,7 +101,7 @@ fn table_semantics_over_remote() {
         "delete to propagate",
     );
     assert_eq!(
-        t.scan::<ByLevel, (parts::Fields, parts::Key, parts::Row)>(&3u32.to_be_bytes())
+        t.scan::<ByLevel>(&3u32.to_be_bytes())
             .collect::<okm_core::error::Result<Vec<_>>>()
             .unwrap()
             .len(),
@@ -111,7 +111,7 @@ fn table_semantics_over_remote() {
     t.put(&UserKey { id: 42 }, &User { level: 8 }).unwrap();
     wait_for(
         || {
-            !t.scan::<ByLevel, (parts::Fields, parts::Key, parts::Row)>(&8u32.to_be_bytes())
+            !t.scan::<ByLevel>(&8u32.to_be_bytes())
                 .collect::<okm_core::error::Result<Vec<_>>>()
                 .unwrap()
                 .is_empty()
@@ -119,7 +119,7 @@ fn table_semantics_over_remote() {
         "overwrite to land",
     );
     let hits = t
-        .scan::<ByLevel, (parts::Fields, parts::Key, parts::Row)>(&8u32.to_be_bytes())
+        .scan::<ByLevel>(&8u32.to_be_bytes())
         .collect::<okm_core::error::Result<Vec<_>>>()
         .unwrap();
     assert_eq!(hits.len(), 1);
@@ -322,7 +322,6 @@ pub struct Entry {
 }
 
 use __OkmIndex_Entry_by_account as Entry_ByAccount;
-use okm_core::parts;
 
 fn entry_ledger<S: VirtualStorage>(
     t: &Collection<S, EntryKey, Entry>,
@@ -360,7 +359,7 @@ fn routine_put_carries_face_and_ledger_in_one_frame() {
     wait_for(|| t.get(&k).unwrap().is_some(), "row to land");
     // Face: an index scan round trip (entry key + fetch-back).
     assert_eq!(
-        t.scan::<Entry_ByAccount, (parts::Fields, parts::Key, parts::Row)>(&7u64.to_be_bytes())
+        t.scan::<Entry_ByAccount>(&7u64.to_be_bytes())
             .collect::<okm_core::error::Result<Vec<_>>>()
             .unwrap()
             .len(),
@@ -386,7 +385,7 @@ fn routine_put_carries_face_and_ledger_in_one_frame() {
     wait_for(|| t.get(&k).unwrap().is_none(), "delete to propagate");
     assert_eq!(entry_ledger(&t, 8), Some(0));
     assert!(
-        t.scan::<Entry_ByAccount, (parts::Fields, parts::Key, parts::Row)>(&8u64.to_be_bytes())
+        t.scan::<Entry_ByAccount>(&8u64.to_be_bytes())
             .collect::<okm_core::error::Result<Vec<_>>>()
             .unwrap()
             .is_empty()

@@ -223,7 +223,7 @@ fn measure_fjall(dir: &Path, rows: u64) -> Line {
     let scan_fetch_ns = median_of(3, || {
         let started = Instant::now();
         black_box(
-            t.scan::<ByLevel, (parts::Fields, parts::Key, parts::Row)>(&probe)
+            t.scan::<ByLevel>(&probe)
                 .collect::<okm_core::error::Result<Vec<_>>>()
                 .expect("scan")
                 .len(),
@@ -233,7 +233,8 @@ fn measure_fjall(dir: &Path, rows: u64) -> Line {
     let scan_covered_ns = median_of(3, || {
         let started = Instant::now();
         black_box(
-            t.scan::<ByLevel, (parts::Fields, parts::Key, parts::Include)>(&probe)
+            t.scan::<ByLevel>(&probe)
+                .parts::<(parts::Fields, parts::Key, parts::Include)>()
                 .collect::<okm_core::error::Result<Vec<_>>>()
                 .expect("covered")
                 .len(),
@@ -267,7 +268,7 @@ fn measure_fjall(dir: &Path, rows: u64) -> Line {
         let fetch_total = median_of(3, || {
             let started = Instant::now();
             black_box(
-                t.scan::<ByLevel, (parts::Fields, parts::Key, parts::Row)>(&probe)
+                t.scan::<ByLevel>(&probe)
                     .collect::<okm_core::error::Result<Vec<_>>>()
                     .expect("scan")
                     .len(),
@@ -277,7 +278,8 @@ fn measure_fjall(dir: &Path, rows: u64) -> Line {
         let covered_total = median_of(3, || {
             let started = Instant::now();
             black_box(
-                t.scan::<ByLevel, (parts::Fields, parts::Key, parts::Include)>(&probe)
+                t.scan::<ByLevel>(&probe)
+                    .parts::<(parts::Fields, parts::Key, parts::Include)>()
                     .collect::<okm_core::error::Result<Vec<_>>>()
                     .expect("covered")
                     .len(),

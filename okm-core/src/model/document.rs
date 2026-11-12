@@ -10,7 +10,7 @@
 
 use crate::engine::storage::{SharedVirtualStorage, VirtualStorage, scan_suffix_kv};
 use crate::model::index::{Document, KvIndex};
-use crate::model::key::KeyEncode;
+use crate::model::key::{KeyEncode, PrefixKey};
 use crate::model::obj_vocab::VocabSet;
 
 /// One document as the byte-level scans hand it over: `(key encoding suffix,
@@ -62,6 +62,15 @@ pub struct Collection<S, K: KeyEncode, R: Document<Key = K>> {
     ns_override: Option<u16>,
     _marker: std::marker::PhantomData<(K, R)>,
 }
+
+/// One scan hit, the default payload of every scan verb: the sort segment decoded,
+/// the key, and the row when the entry carries a full key (a truncated `key(...)`
+/// cannot fetch back, so `None`).
+pub type ScanHit<I> = (
+    <I as KvIndex>::Fields,
+    PrefixKey<<I as KvIndex>::Key>,
+    Option<<I as KvIndex>::Document>,
+);
 
 /// Where an index entry's field segment starts: after the ns header and the
 /// slot (one byte for a fixed face, two for a counting family — measured, not
@@ -627,20 +636,18 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     /// Leftmost-prefix scan over access method `I`: every entry whose field
     /// segment starts with `probe`, in entry order, pulled on demand.
     ///
-    /// `P` is what to read out of each hit — a tuple of
-    /// [`parts`](crate::model::parts), in the caller's order:
+    /// The answer is [`ScanHit`] — the field segment, the key, the row — which is
+    /// what almost every caller wants. When it is not, name the parts:
     ///
     /// ```ignore
-    /// t.scan::<ByOrg, (parts::Fields, parts::Key, parts::Row)>(&probe)   // the plain answer
-    /// t.scan::<ByOrg, (parts::Key, parts::Fields)>(&probe)               // no fetch, caller's order
-    /// t.scan::<ByOrg, (parts::Key, parts::Include)>(&probe)              // the `includes` payload
+    /// t.scan::<ByOrg>(&probe)                          // (Fields, Key, Row)
+    /// t.scan::<ByOrg>(&probe).parts::<(parts::Key,)>() // the key alone: no fetch
     /// ```
     ///
     /// A part the caller does not name costs nothing: it is a type that is not in
     /// the tuple, so no code for it exists. `Row` is the only part that reads the
     /// store, and it is read per entry pulled — a consumer that stops early pays
-    /// only for what it consumed. `collect::<Result<Vec<_>>>()` is the mirror when
-    /// the whole answer is wanted at once.
+    /// only for what it consumed.
     ///
     /// Prefix semantics: a stored value that EXTENDS the probe matches
     /// (`"alpha"` probes `"alpha"` and `"alphabet"`). Entries whose probe bytes
@@ -651,13 +658,9 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     /// With a truncated `key(...)` prefix the decoded key is partial
     /// (`PrefixKey.taken < KEY_LEN`) and `Row` answers `None`: the trustworthy
     /// prefix fields are what continues the scan on the main table.
-    pub fn scan<I, P>(
-        &self,
-        probe: impl crate::model::prefix::ProbeBytes<I>,
-    ) -> impl DoubleEndedIterator<Item = crate::error::Result<P::Output>> + '_
+    pub fn scan<I>(&self, probe: impl crate::model::prefix::ProbeBytes<I>) -> Scan<'_, S, K, R, I>
     where
         I: KvIndex<Key = K, Document = R>,
-        P: crate::model::parts::Parts<I>,
         S: SharedVirtualStorage,
     {
         let header = self.header();
@@ -665,7 +668,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         let mut b = I::entry_prefix(&header, &[]);
         b.extend_from_slice(encoded);
         let e = crate::engine::storage::prefix_end(&b);
-        self.entry_iter::<I, P>(header, encoded.len(), false, b, e)
+        Scan::new(self, header, encoded.len(), false, b, e)
     }
 
     /// Equality scan over access method `I`: only entries whose field segment is
@@ -673,13 +676,12 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     /// hit, and neither is the tail-spill case (a probe satisfied by primary-key
     /// bytes). The probe must name every field of the index's data segment; a
     /// partial probe is a group query — use [`scan`](Self::scan).
-    pub fn scan_exact<I, P>(
+    pub fn scan_exact<I>(
         &self,
         probe: impl crate::model::prefix::ProbeBytes<I>,
-    ) -> impl DoubleEndedIterator<Item = crate::error::Result<P::Output>> + '_
+    ) -> Scan<'_, S, K, R, I>
     where
         I: KvIndex<Key = K, Document = R>,
-        P: crate::model::parts::Parts<I>,
         S: SharedVirtualStorage,
     {
         let header = self.header();
@@ -687,7 +689,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         let mut b = I::entry_prefix(&header, &[]);
         b.extend_from_slice(encoded);
         let e = crate::engine::storage::prefix_end(&b);
-        self.entry_iter::<I, P>(header, encoded.len(), true, b, e)
+        Scan::new(self, header, encoded.len(), true, b, e)
     }
 
     /// Range scan over access method `I`: `begin`/`end` are the ENCODED forms of
@@ -695,16 +697,11 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     /// BE fixed-width and prefix-monotonic VarInt), `[begin, end)` on the entry
     /// keys. That is the physical WHERE of a `1 < a < 100` predicate: the engine
     /// reads only the entries inside the interval, and rows only for the entries a
-    /// consumer pulls. Semantics beyond the leading-field interval (an end that
-    /// cuts into the carried pkey, mixed bound widths) are the caller's.
-    pub fn scan_range<I, P>(
-        &self,
-        begin: &[u8],
-        end: Option<&[u8]>,
-    ) -> impl DoubleEndedIterator<Item = crate::error::Result<P::Output>> + '_
+    /// consumer pulls. Semantics beyond the leading-field interval (an end that cuts
+    /// into the carried pkey, mixed bound widths) are the caller's.
+    pub fn scan_range<I>(&self, begin: &[u8], end: Option<&[u8]>) -> Scan<'_, S, K, R, I>
     where
         I: KvIndex<Key = K, Document = R>,
-        P: crate::model::parts::Parts<I>,
         S: SharedVirtualStorage,
     {
         let header = self.header();
@@ -715,57 +712,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
             e.extend_from_slice(end);
             e
         });
-        self.entry_iter::<I, P>(header, begin.len(), false, b, e)
-    }
-
-    /// The one lazy walk behind all three verbs. Bounds arrive already spliced into
-    /// entry-key space and OWNED: the returned iterator must not borrow the caller's
-    /// bound bytes. `probe_len` is the number of segment bytes the bound names —
-    /// an entry whose own segment is shorter met the bound with carried key bytes,
-    /// which is a false hit; `exact` additionally wants nothing beyond it.
-    fn entry_iter<I, P>(
-        &self,
-        header: Vec<u8>,
-        probe_len: usize,
-        exact: bool,
-        b: Vec<u8>,
-        e: Option<Vec<u8>>,
-    ) -> impl DoubleEndedIterator<Item = crate::error::Result<P::Output>> + '_
-    where
-        I: KvIndex<Key = K, Document = R>,
-        P: crate::model::parts::Parts<I>,
-        S: SharedVirtualStorage,
-    {
-        let seg_start = segment_start::<I>(&header);
-        let taken = I::key_prefix_width();
-        self.store
-            .scan_range_iter(&b, e.as_deref())
-            .filter_map(move |item| {
-                let (full, value) = match item {
-                    Ok(kv) => kv,
-                    Err(e) => return Some(Err(e)),
-                };
-                if full.len() < seg_start + taken {
-                    return None;
-                }
-                let segment_len = full.len() - seg_start - taken;
-                let matched = if exact {
-                    segment_len == probe_len
-                } else {
-                    segment_len >= probe_len
-                };
-                if !matched {
-                    return None;
-                }
-                let raw = crate::model::index::RawHit {
-                    segment: full[seg_start..full.len() - taken].to_vec(),
-                    tail: full[full.len() - taken..].to_vec(),
-                    value,
-                };
-                let mut fetch = |key: &I::Key| self.get(key);
-                let mut hit = crate::model::parts::Hit::new(&raw, &mut fetch);
-                Some(P::take(&mut hit))
-            })
+        Scan::new(self, header, begin.len(), false, b, e)
     }
 
     /// Raw documents: `(key encoding suffix, payload)` per document, in key
@@ -1359,5 +1306,202 @@ where
     pub fn captured(store: crate::changelog::ChangelogStore<S>) -> crate::error::Result<Self> {
         store.register::<K, R>()?;
         Ok(Self::new(store))
+    }
+}
+
+/// One scan in progress: the answer to a prefix, exact or range question, pulled
+/// on demand. Its `Iterator` item is [`ScanHit`] — `(Fields, Key, Row)` — because
+/// that is what almost every caller asks for; [`parts`](Scan::parts) names a
+/// different payload, and costs only what it names.
+pub struct Scan<'a, S: VirtualStorage, K: KeyEncode, R: Document<Key = K>, I> {
+    col: &'a Collection<S, K, R>,
+    /// Where the field segment starts (after the ns header and the slot).
+    seg_start: usize,
+    /// Width of the key tail the entries carry.
+    taken: usize,
+    /// Segment bytes the bound names: an entry whose own segment is shorter met
+    /// the bound with carried key bytes, which is a false hit.
+    probe_len: usize,
+    /// Exact matching additionally wants nothing beyond the bound.
+    exact: bool,
+    iter: crate::engine::storage::ScanIter,
+    _index: std::marker::PhantomData<I>,
+}
+
+impl<'a, S, K, R, I> Scan<'a, S, K, R, I>
+where
+    S: SharedVirtualStorage,
+    K: KeyEncode,
+    R: Document<Key = K>,
+    I: KvIndex<Key = K, Document = R>,
+{
+    fn new(
+        col: &'a Collection<S, K, R>,
+        header: Vec<u8>,
+        probe_len: usize,
+        exact: bool,
+        b: Vec<u8>,
+        e: Option<Vec<u8>>,
+    ) -> Self {
+        Self {
+            col,
+            seg_start: segment_start::<I>(&header),
+            taken: I::key_prefix_width(),
+            probe_len,
+            exact,
+            iter: col.store.scan_range_iter(&b, e.as_deref()),
+            _index: std::marker::PhantomData,
+        }
+    }
+
+    /// One entry from the front, already matched against the bound.
+    fn pull(&mut self) -> Option<crate::error::Result<crate::model::index::RawHit>> {
+        loop {
+            let (full, value) = match self.iter.next()? {
+                Ok(kv) => kv,
+                Err(e) => return Some(Err(e)),
+            };
+            if let Some(raw) = self.matched(full, value) {
+                return Some(Ok(raw));
+            }
+        }
+    }
+
+    /// One entry from the back, same rules.
+    fn pull_back(&mut self) -> Option<crate::error::Result<crate::model::index::RawHit>> {
+        loop {
+            let (full, value) = match self.iter.next_back()? {
+                Ok(kv) => kv,
+                Err(e) => return Some(Err(e)),
+            };
+            if let Some(raw) = self.matched(full, value) {
+                return Some(Ok(raw));
+            }
+        }
+    }
+
+    /// Split the entry at its own boundaries and apply the bound. `None` is a
+    /// false hit: the entry's segment is shorter than the bytes the bound names.
+    fn matched(&self, full: Vec<u8>, value: Vec<u8>) -> Option<crate::model::index::RawHit> {
+        if full.len() < self.seg_start + self.taken {
+            return None;
+        }
+        let segment_len = full.len() - self.seg_start - self.taken;
+        let matched = if self.exact {
+            segment_len == self.probe_len
+        } else {
+            segment_len >= self.probe_len
+        };
+        if !matched {
+            return None;
+        }
+        Some(crate::model::index::RawHit {
+            segment: full[self.seg_start..full.len() - self.taken].to_vec(),
+            tail: full[full.len() - self.taken..].to_vec(),
+            value,
+        })
+    }
+
+    /// Take the caller's parts out of one entry.
+    fn take_parts<P: crate::model::parts::Parts<I>>(
+        &self,
+        raw: &crate::model::index::RawHit,
+    ) -> crate::error::Result<P::Output> {
+        let mut fetch = |key: &K| self.col.get(key);
+        let mut hit = crate::model::parts::Hit::new(raw, &mut fetch);
+        P::take(&mut hit)
+    }
+
+    /// Name the parts this scan should answer: the caller's order, the caller's
+    /// length. Not naming them answers [`ScanHit`].
+    pub fn parts<P: crate::model::parts::Parts<I>>(self) -> ScanParts<'a, S, K, R, I, P> {
+        ScanParts {
+            scan: self,
+            _parts: std::marker::PhantomData,
+        }
+    }
+}
+
+impl<S, K, R, I> Iterator for Scan<'_, S, K, R, I>
+where
+    S: SharedVirtualStorage,
+    K: KeyEncode,
+    R: Document<Key = K>,
+    I: KvIndex<Key = K, Document = R>,
+{
+    type Item = crate::error::Result<ScanHit<I>>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let raw = self.pull()?;
+        Some(match raw {
+            Ok(raw) => self.take_parts::<(
+                crate::model::parts::Fields,
+                crate::model::parts::Key,
+                crate::model::parts::Row,
+            )>(&raw),
+            Err(e) => Err(e),
+        })
+    }
+}
+
+impl<S, K, R, I> DoubleEndedIterator for Scan<'_, S, K, R, I>
+where
+    S: SharedVirtualStorage,
+    K: KeyEncode,
+    R: Document<Key = K>,
+    I: KvIndex<Key = K, Document = R>,
+{
+    fn next_back(&mut self) -> Option<Self::Item> {
+        let raw = self.pull_back()?;
+        Some(match raw {
+            Ok(raw) => self.take_parts::<(
+                crate::model::parts::Fields,
+                crate::model::parts::Key,
+                crate::model::parts::Row,
+            )>(&raw),
+            Err(e) => Err(e),
+        })
+    }
+}
+
+/// A scan with its payload named — what [`Scan::parts`] returns.
+pub struct ScanParts<'a, S: VirtualStorage, K: KeyEncode, R: Document<Key = K>, I, P> {
+    scan: Scan<'a, S, K, R, I>,
+    _parts: std::marker::PhantomData<P>,
+}
+
+impl<S, K, R, I, P> Iterator for ScanParts<'_, S, K, R, I, P>
+where
+    S: SharedVirtualStorage,
+    K: KeyEncode,
+    R: Document<Key = K>,
+    I: KvIndex<Key = K, Document = R>,
+    P: crate::model::parts::Parts<I>,
+{
+    type Item = crate::error::Result<P::Output>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let raw = self.scan.pull()?;
+        Some(match raw {
+            Ok(raw) => self.scan.take_parts::<P>(&raw),
+            Err(e) => Err(e),
+        })
+    }
+}
+
+impl<S, K, R, I, P> DoubleEndedIterator for ScanParts<'_, S, K, R, I, P>
+where
+    S: SharedVirtualStorage,
+    K: KeyEncode,
+    R: Document<Key = K>,
+    I: KvIndex<Key = K, Document = R>,
+    P: crate::model::parts::Parts<I>,
+{
+    fn next_back(&mut self) -> Option<Self::Item> {
+        let raw = self.scan.pull_back()?;
+        Some(match raw {
+            Ok(raw) => self.scan.take_parts::<P>(&raw),
+            Err(e) => Err(e),
+        })
     }
 }

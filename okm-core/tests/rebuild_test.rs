@@ -24,7 +24,6 @@ use __OkmIndex_Note_by_author as Note_ByAuthor;
 use __OkmIndex_NotePlus_by_author as NotePlus_ByAuthor;
 use __OkmIndex_NotePlus_by_body as NotePlus_ByBody;
 use okm_async::TestStore;
-use okm_core::parts;
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
 pub struct NoteKey {
@@ -102,7 +101,7 @@ fn a_rebuild_builds_the_face_a_second_declaration_added() {
         FaceStatus::Stale { .. }
     ));
     let by_body = plus
-        .scan::<NotePlus_ByBody, (parts::Fields, parts::Key, parts::Row)>(&7u64.to_be_bytes())
+        .scan::<NotePlus_ByBody>(&7u64.to_be_bytes())
         .collect::<okm_core::error::Result<Vec<_>>>()
         .unwrap();
     assert!(
@@ -118,14 +117,14 @@ fn a_rebuild_builds_the_face_a_second_declaration_added() {
     assert_eq!(plus.faces_status().unwrap(), FaceStatus::Match);
 
     assert_eq!(
-        plus.scan::<NotePlus_ByBody, (parts::Fields, parts::Key, parts::Row)>(&7u64.to_be_bytes())
+        plus.scan::<NotePlus_ByBody>(&7u64.to_be_bytes())
             .collect::<okm_core::error::Result<Vec<_>>>()
             .unwrap()
             .len(),
         1
     );
     assert_eq!(
-        plus.scan::<NotePlus_ByBody, (parts::Fields, parts::Key, parts::Row)>(&8u64.to_be_bytes())
+        plus.scan::<NotePlus_ByBody>(&8u64.to_be_bytes())
             .collect::<okm_core::error::Result<Vec<_>>>()
             .unwrap()
             .len(),
@@ -133,12 +132,10 @@ fn a_rebuild_builds_the_face_a_second_declaration_added() {
     );
     // The face the store already had is still right, not doubled.
     assert_eq!(
-        plus.scan::<NotePlus_ByAuthor, (parts::Fields, parts::Key, parts::Row)>(
-            &7u64.to_be_bytes()
-        )
-        .collect::<okm_core::error::Result<Vec<_>>>()
-        .unwrap()
-        .len(),
+        plus.scan::<NotePlus_ByAuthor>(&7u64.to_be_bytes())
+            .collect::<okm_core::error::Result<Vec<_>>>()
+            .unwrap()
+            .len(),
         1
     );
 }
@@ -161,7 +158,7 @@ fn a_face_entry_lost_behind_the_stores_back_comes_back() {
         .expect("the seeded rows derived entries");
     store.del(&victim).unwrap();
     assert_eq!(
-        t.scan::<Note_ByAuthor, (parts::Fields, parts::Key, parts::Row)>(&7u64.to_be_bytes())
+        t.scan::<Note_ByAuthor>(&7u64.to_be_bytes())
             .collect::<okm_core::error::Result<Vec<_>>>()
             .unwrap()
             .len(),
@@ -171,14 +168,14 @@ fn a_face_entry_lost_behind_the_stores_back_comes_back() {
     let report = t.rebuild_faces(1).unwrap();
     assert_eq!(report.entries_deleted, 1, "the sweep removed what was left");
     assert_eq!(
-        t.scan::<Note_ByAuthor, (parts::Fields, parts::Key, parts::Row)>(&7u64.to_be_bytes())
+        t.scan::<Note_ByAuthor>(&7u64.to_be_bytes())
             .collect::<okm_core::error::Result<Vec<_>>>()
             .unwrap()
             .len(),
         1
     );
     assert_eq!(
-        t.scan::<Note_ByAuthor, (parts::Fields, parts::Key, parts::Row)>(&8u64.to_be_bytes())
+        t.scan::<Note_ByAuthor>(&8u64.to_be_bytes())
             .collect::<okm_core::error::Result<Vec<_>>>()
             .unwrap()
             .len(),
@@ -285,7 +282,7 @@ fn an_interrupted_rebuild_writes_no_stamp_and_a_rerun_finishes_the_job() {
     t2.rebuild_faces(1).unwrap();
     assert_eq!(t2.faces_status().unwrap(), FaceStatus::Match);
     assert_eq!(
-        t2.scan::<NotePlus_ByAuthor, (parts::Fields, parts::Key, parts::Row)>(&8u64.to_be_bytes())
+        t2.scan::<NotePlus_ByAuthor>(&8u64.to_be_bytes())
             .collect::<okm_core::error::Result<Vec<_>>>()
             .unwrap()
             .len(),
@@ -322,14 +319,14 @@ fn the_chunked_sweep_survives_a_native_snapshot_iterator() {
     assert_eq!(report.documents, 3);
     assert_eq!(report.faces_swept, 1);
     assert_eq!(
-        t.scan::<Note_ByAuthor, (parts::Fields, parts::Key, parts::Row)>(&7u64.to_be_bytes())
+        t.scan::<Note_ByAuthor>(&7u64.to_be_bytes())
             .collect::<okm_core::error::Result<Vec<_>>>()
             .unwrap()
             .len(),
         2
     );
     assert_eq!(
-        t.scan::<Note_ByAuthor, (parts::Fields, parts::Key, parts::Row)>(&8u64.to_be_bytes())
+        t.scan::<Note_ByAuthor>(&8u64.to_be_bytes())
             .collect::<okm_core::error::Result<Vec<_>>>()
             .unwrap()
             .len(),

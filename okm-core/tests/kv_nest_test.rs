@@ -33,7 +33,6 @@ pub struct Item {
 }
 
 use __OkmIndex_Item_by_kind as ByKind;
-use okm_core::parts;
 
 #[test]
 fn nest_derive_end_to_end() {
@@ -62,7 +61,7 @@ fn nest_derive_end_to_end() {
     assert_eq!(document.kind, 7);
 
     let hits = t
-        .scan::<ByKind, (parts::Fields, parts::Key, parts::Row)>(&7u32.to_be_bytes())
+        .scan::<ByKind>(&7u32.to_be_bytes())
         .collect::<okm_core::error::Result<Vec<_>>>()
         .unwrap();
     assert_eq!(hits.len(), 1);

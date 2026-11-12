@@ -258,7 +258,7 @@ t.put(&user, &User { org_id: 7, created_at: 30, reputation: 100, bio_len: 2 })?;
 // 任意访问方法上的最左前缀扫描。访问方法后面的那个类型参数说「每条命中要读出什么」，
 // 顺序由调用方给：(字段段, 主键, 行) 在这里——去掉 Row 就一次 payload 都不读，
 // 那正是 join 做的（先对条目求交，再只给幸存者回表）。
-let rows = t.scan::<ByOrg, (parts::Fields, parts::Key, parts::Row)>(&7u32.to_be_bytes())
+let rows = t.scan::<ByOrg>(&7u32.to_be_bytes())
     .collect::<Result<Vec<_>>>()?;   // 扫描就是迭代器；这是它的急切镜子
 for (fields, key, row) in rows {
     // fields: 索引字段解码后的值（这里是 org_id）——你按它扫描的那一列
@@ -266,7 +266,8 @@ for (fields, key, row) in rows {
     // row:    payload 存在时为 Some(解码的 User)
 }
 
-let entries = t.scan::<ByOrg, (parts::Fields, parts::Key)>(&7u32.to_be_bytes())
+let entries = t.scan::<ByOrg>(&7u32.to_be_bytes())
+    .parts::<(parts::Fields, parts::Key)>()
     .collect::<Result<Vec<_>>>()?;
 
 t.purge(&user)?; // 删除主键 + 所有已声明的索引 entry（+ 动态段；多值索引逐条清除，无悬挂条目）

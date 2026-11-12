@@ -7,8 +7,8 @@
 //! in the caller's order.
 //!
 //! ```ignore
-//! t.scan::<ByOrg, (parts::Key, parts::Fields)>(&probe).collect::<crate::error::Result<Vec<_>>>()?;        // the sort segment, no fetch
-//! t.scan::<ByOrg, (parts::Fields, parts::Key, parts::Row)>(&probe).collect::<crate::error::Result<Vec<_>>>()?;   // what a plain scan answers
+//! t.scan::<ByOrg>(&probe)                                       // (Fields, Key, Row)
+//! t.scan::<ByOrg>(&probe).parts::<(parts::Key, parts::Fields)>() // no fetch, order as written
 //! ```
 //!
 //! Both the order and the number of parts are the caller's: `(Fields, Key)` and

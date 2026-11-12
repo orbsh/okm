@@ -96,10 +96,12 @@ parameter is the payload menu, so leaving `Row` out means no payload is read:
 ```rust
 // ordered by user, then by key; (fields, key) — no fetch
 let left = orders
-    .scan::<Order_ByUser, (parts::Fields, parts::Key)>(&[])
+    .scan::<Order_ByUser>(&[])
+    .parts::<(parts::Fields, parts::Key)>()
     .map(|hit| hit.map(|(f, _)| f.user_id));
 let right = users
-    .scan::<User_ById, (parts::Fields, parts::Key)>(&[])
+    .scan::<User_ById>(&[])
+    .parts::<(parts::Fields, parts::Key)>()
     .map(|hit| hit.map(|(f, _)| f.id));
 
 let common: Vec<u32> = left.intersect(right).collect::<Result<Vec<_>>>()?;
@@ -138,8 +140,8 @@ the cross product of a repeated key happens here, in this loop, and nowhere else
 
 ```rust
 for key in common {
-    for order in orders.scan::<Order_ByUser, (parts::Fields, parts::Key, parts::Row)>(&key.to_be_bytes()) {
-        for user in users.scan::<User_ById, (parts::Fields, parts::Key, parts::Row)>(&key.to_be_bytes()) {
+    for order in orders.scan::<Order_ByUser>(&key.to_be_bytes()) {
+        for user in users.scan::<User_ById>(&key.to_be_bytes()) {
             emit(order?, user?);   // m rows × n rows for this key
         }
     }

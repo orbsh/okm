@@ -76,10 +76,12 @@ join 是两步，只有第一步是查询算子。
 ```rust
 // 按 user 有序，值内再按主键；(字段段, 主键) —— 不回表
 let left = orders
-    .scan::<Order_ByUser, (parts::Fields, parts::Key)>(&[])
+    .scan::<Order_ByUser>(&[])
+    .parts::<(parts::Fields, parts::Key)>()
     .map(|hit| hit.map(|(f, _)| f.user_id));
 let right = users
-    .scan::<User_ById, (parts::Fields, parts::Key)>(&[])
+    .scan::<User_ById>(&[])
+    .parts::<(parts::Fields, parts::Key)>()
     .map(|hit| hit.map(|(f, _)| f.id));
 
 let common: Vec<u32> = left.intersect(right).collect::<Result<Vec<_>>>()?;
@@ -114,8 +116,8 @@ for (left, right) in left_keys.merge(right_keys) {
 
 ```rust
 for key in common {
-    for order in orders.scan::<Order_ByUser, (parts::Fields, parts::Key, parts::Row)>(&key.to_be_bytes()) {
-        for user in users.scan::<User_ById, (parts::Fields, parts::Key, parts::Row)>(&key.to_be_bytes()) {
+    for order in orders.scan::<Order_ByUser>(&key.to_be_bytes()) {
+        for user in users.scan::<User_ById>(&key.to_be_bytes()) {
             emit(order?, user?);   // 这个键的 m 行 × n 行
         }
     }

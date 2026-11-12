@@ -254,7 +254,7 @@ fn bench_scan(c: &mut Criterion) {
         g.bench_function(format!("scan_index+fetch_back/fanout_{fanout}"), |b| {
             b.iter(|| {
                 black_box(
-                    t.scan::<ByLevel, (parts::Fields, parts::Key, parts::Row)>(&probe)
+                    t.scan::<ByLevel>(&probe)
                         .collect::<okm_core::error::Result<Vec<_>>>()
                         .unwrap()
                         .len(),
@@ -264,7 +264,8 @@ fn bench_scan(c: &mut Criterion) {
         g.bench_function(format!("scan_covered/fanout_{fanout}"), |b| {
             b.iter(|| {
                 black_box(
-                    t.scan::<ByLevel, (parts::Fields, parts::Key, parts::Include)>(&probe)
+                    t.scan::<ByLevel>(&probe)
+                        .parts::<(parts::Fields, parts::Key, parts::Include)>()
                         .collect::<okm_core::error::Result<Vec<_>>>()
                         .unwrap()
                         .len(),

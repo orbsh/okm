@@ -74,7 +74,7 @@ fn parquet_export_import_roundtrip_restores_rows_and_indexes() {
     // `reputation` = i*100, so matching the first value requires its BE
     // bytes — here just scan the whole index (empty prefix).
     let scanned = t2
-        .scan::<__OkmIndex_TRow_by_org, (parts::Fields, parts::Key, parts::Row)>(&[])
+        .scan::<__OkmIndex_TRow_by_org>(&[])
         .collect::<okm_core::error::Result<Vec<_>>>()
         .unwrap();
     assert_eq!(scanned.len(), 5, "index rebuilt on import");
@@ -157,7 +157,6 @@ fn fielddesc_tables_back_the_audit() {
 // re-interns labels in the destination, so the ids there are its own numbering.
 
 use okm_core::Vocab;
-use okm_core::parts;
 
 #[derive(KeyEncode, Clone, PartialEq, Debug)]
 pub struct VKey {

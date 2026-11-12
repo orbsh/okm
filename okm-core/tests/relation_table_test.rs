@@ -9,7 +9,6 @@
 //! 4. `rebuild_faces` 从行重建索引面后，结果不变（派生状态可重建）。
 
 use okm_async::TestStore;
-use okm_core::parts;
 use okm_core::{DocumentEncode, KeyEncode};
 
 /// 复合主键：一张普通的表，两列就是关系表的两端。
@@ -50,7 +49,7 @@ fn a_relation_table_answers_both_directions_with_its_payload() {
     // ---- 反向：按 member 扫索引并回表 ----
     let probe = 101u64.to_be_bytes();
     let hits = table
-        .scan::<__OkmIndex_Membership_by_member, (parts::Fields, parts::Key, parts::Row)>(&probe)
+        .scan::<__OkmIndex_Membership_by_member>(&probe)
         .collect::<okm_core::error::Result<Vec<_>>>()
         .unwrap();
     assert_eq!(hits.len(), 2, "member 101 is in two channels");
@@ -68,7 +67,7 @@ fn a_relation_table_answers_both_directions_with_its_payload() {
     // ---- purge 一行：索引条目跟着走 ----
     table.purge(&k(9, 101)).unwrap();
     let hits = table
-        .scan::<__OkmIndex_Membership_by_member, (parts::Fields, parts::Key, parts::Row)>(&probe)
+        .scan::<__OkmIndex_Membership_by_member>(&probe)
         .collect::<okm_core::error::Result<Vec<_>>>()
         .unwrap();
     assert_eq!(hits.len(), 1, "the index entry left with the row");
@@ -76,7 +75,7 @@ fn a_relation_table_answers_both_directions_with_its_payload() {
     // ---- 派生面可重建：清空后从行重建，结果不变 ----
     table.rebuild_faces(64).unwrap();
     let hits = table
-        .scan::<__OkmIndex_Membership_by_member, (parts::Fields, parts::Key, parts::Row)>(&probe)
+        .scan::<__OkmIndex_Membership_by_member>(&probe)
         .collect::<okm_core::error::Result<Vec<_>>>()
         .unwrap();
     assert_eq!(

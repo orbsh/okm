@@ -288,7 +288,7 @@ t.put(&user, &User { org_id: 7, created_at: 30, reputation: 100, bio_len: 2 })?;
 // access method says WHAT TO READ out of each hit, in the caller's order:
 // (fields, key, row) here — drop `Row` and no payload is read at all, which is
 // what a join does (intersect the entries, then fetch only the survivors).
-let rows = t.scan::<ByOrg, (parts::Fields, parts::Key, parts::Row)>(&7u32.to_be_bytes())
+let rows = t.scan::<ByOrg>(&7u32.to_be_bytes())
     .collect::<Result<Vec<_>>>()?;   // a scan is an iterator; this is the mirror
 for (fields, key, row) in rows {
     // fields: the index fields, decoded (org_id here) — the column you scanned BY
@@ -296,7 +296,8 @@ for (fields, key, row) in rows {
     // row:    Some(decoded User) when the payload exists
 }
 
-let entries = t.scan::<ByOrg, (parts::Fields, parts::Key)>(&7u32.to_be_bytes())
+let entries = t.scan::<ByOrg>(&7u32.to_be_bytes())
+    .parts::<(parts::Fields, parts::Key)>()
     .collect::<Result<Vec<_>>>()?;
 
 t.purge(&user)?; // removes the primary key + all declared index entries (+ the dynamic segment)
