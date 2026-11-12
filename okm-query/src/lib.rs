@@ -97,15 +97,16 @@ pub fn merge_join<K: Ord, L: Clone, R: Clone>(
     out
 }
 /// Set algebra over key streams that are already ordered by key, as methods:
-/// `a.merge(b)`, `a.intersect(b)`, `a.difference(b)`.
+/// `a.merge(b)`, `a.intersect(b)`, `a.difference(b)`, `a.union(b)`.
 ///
-/// One alignment rule, three projections. [`merge`](OrderedSets::merge) walks both
+/// One alignment rule, four projections. [`merge`](OrderedSets::merge) walks both
 /// streams by key and answers ONE tuple per distinct key — `(Some, None)` where
 /// only the left has it, `(Some, Some)` where both do, `(None, Some)` where only
 /// the right does. That is the general form: an outer join's three answers, a
 /// full outer join in one pass, and "what does each side have that the other does
-/// not" without a second operator. `intersect` and `difference` are filters over
-/// it, named because those two questions are asked far more often than the rest.
+/// not" without a second operator. `intersect`, `difference` and `union` are
+/// filters over it, named because those questions are asked far more often than
+/// the rest.
 ///
 /// SET semantics, not multiset, at every level: a key carried by several entries
 /// is answered once, and one representative per side is handed back. Multiplicity
@@ -162,6 +163,26 @@ pub trait OrderedSets: IntoIterator + Sized {
         self.merge(right)
             .filter_map(|(left, right)| if right.is_none() { left } else { None })
     }
+
+    /// The keys on either side, once each (`a ∪ b`) — the third filter over the
+    /// same alignment, and the one that answers with the most keys: every tuple
+    /// `merge` produces carries at least one side, so nothing is dropped and the
+    /// set discipline comes for free. A key both sides repeat still answers once,
+    /// and the left representative wins when both sides have one (`left.or(right)`)
+    /// — the order of the answer stays ordered because `merge` walks the keys in
+    /// order.
+    ///
+    /// `union` is not `chain` plus a dedup: `chain` answers the whole left run
+    /// before the first right key, so deduplicating it needs either a full
+    /// materialization or a `HashSet` — both defeat `take(1)`. Here the same
+    /// single pass that drops duplicates also interleaves the two sides.
+    fn union<R>(self, right: R) -> impl Iterator<Item = Self::Item>
+    where
+        R: IntoIterator<Item = Self::Item>,
+        Self::Item: Ord,
+    {
+        self.merge(right).filter_map(|(left, right)| left.or(right))
+    }
 }
 
 impl<I: IntoIterator> OrderedSets for I {}
@@ -182,29 +203,45 @@ where
     type Item = (Option<LI::Item>, Option<LI::Item>);
 
     fn next(&mut self) -> Option<Self::Item> {
-        let (left, right) = match self.right.peek() {
-            // Nothing left to align against: the rest of the left is left-only.
-            None => return Some((Some(self.left.next()?), None)),
-            Some(right) => match self.left.peek()?.cmp(right) {
+        match (self.left.peek(), self.right.peek()) {
+            // Nothing on either side: the stream is done.
+            (None, None) => None,
+            // One side exhausted is NOT the end: the other side's tail is
+            // one-sided answers, and `merge` is the general form, so both tails
+            // are emitted (a left-only intersection is a `filter_map` on top).
+            (Some(_), None) => {
+                let key = self.left.next()?;
+                drain_this_key(&mut self.left, &key);
+                Some((Some(key), None))
+            }
+            (None, Some(_)) => {
+                let key = self.right.next()?;
+                drain_this_key(&mut self.right, &key);
+                Some((None, Some(key)))
+            }
+            (Some(left), Some(right)) => match left.cmp(right) {
                 std::cmp::Ordering::Less => {
                     let key = self.left.next()?;
                     drain_this_key(&mut self.left, &key);
-                    return Some((Some(key), None));
+                    Some((Some(key), None))
                 }
                 std::cmp::Ordering::Greater => {
                     let key = self.right.next()?;
                     drain_this_key(&mut self.right, &key);
-                    return Some((None, Some(key)));
+                    Some((None, Some(key)))
                 }
-                std::cmp::Ordering::Equal => (self.left.next()?, self.right.next()?),
+                std::cmp::Ordering::Equal => {
+                    let left = self.left.next()?;
+                    let right = self.right.next()?;
+                    // One representative from each side (the key is moved out, so
+                    // no `Clone` is needed), then both runs are emptied so the key
+                    // cannot come back a second time.
+                    drain_this_key(&mut self.left, &left);
+                    drain_this_key(&mut self.right, &right);
+                    Some((Some(left), Some(right)))
+                }
             },
-        };
-        // One representative from each side (the key is moved out, so no `Clone`
-        // is needed), then both runs are emptied so the key cannot come back a
-        // second time.
-        drain_this_key(&mut self.left, &left);
-        drain_this_key(&mut self.right, &right);
-        Some((Some(left), Some(right)))
+        }
     }
 }
 
@@ -615,6 +652,151 @@ mod tests {
                 .difference(vec![1u8])
                 .next()
                 .is_none()
+        );
+    }
+
+    /// `union` is a set: disjoint sides answer both, and the answer is ordered.
+    #[test]
+    fn union_answers_both_sides_once_in_order() {
+        assert_eq!(
+            vec![1u8, 4]
+                .into_iter()
+                .union(vec![2u8, 3])
+                .collect::<Vec<_>>(),
+            vec![1, 2, 3, 4],
+            "disjoint sides interleave into one ordered stream"
+        );
+        assert_eq!(
+            vec![1u8, 3, 5]
+                .into_iter()
+                .union(vec![2u8, 3, 4])
+                .collect::<Vec<_>>(),
+            vec![1, 2, 3, 4, 5],
+            "a shared key is one answer, not two"
+        );
+        // Duplicates on BOTH sides: the run is one key, and it appears where it
+        // sorts — not at the end, as `chain` plus dedup would leave it.
+        assert_eq!(
+            vec![2u8, 2, 2, 7]
+                .into_iter()
+                .union(vec![2u8, 2, 5, 5])
+                .collect::<Vec<_>>(),
+            vec![2, 5, 7]
+        );
+        assert_eq!(
+            vec![1u8, 2]
+                .into_iter()
+                .union(Vec::<u8>::new())
+                .collect::<Vec<_>>(),
+            vec![1, 2],
+            "half an empty pair answers the other side"
+        );
+        assert_eq!(
+            Vec::<u8>::new()
+                .into_iter()
+                .union(vec![9u8])
+                .collect::<Vec<_>>(),
+            vec![9]
+        );
+        assert_eq!(
+            Vec::<u8>::new()
+                .into_iter()
+                .union(Vec::<u8>::new())
+                .collect::<Vec<_>>(),
+            Vec::<u8>::new()
+        );
+    }
+
+    /// The item stays a key, so N sides fold: `a ∪ b ∪ c`, then the other
+    /// operators compose on top of it without a second type.
+    #[test]
+    fn union_folds_across_sides_and_chains_into_filters() {
+        let a = vec![1u8, 4, 7];
+        let b = vec![2u8, 4, 8];
+        let c = vec![3u8, 8, 9];
+        assert_eq!(
+            a.clone()
+                .union(b.clone())
+                .union(c.clone())
+                .collect::<Vec<_>>(),
+            vec![1, 2, 3, 4, 7, 8, 9]
+        );
+        // (a ∪ b) ∩ c — the union's answer is still ordered input for the next filter.
+        assert_eq!(
+            a.clone()
+                .union(b.clone())
+                .intersect(c.clone())
+                .collect::<Vec<_>>(),
+            vec![8]
+        );
+        // (a ∪ b) − c
+        assert_eq!(
+            a.union(b).difference(c).collect::<Vec<_>>(),
+            vec![1, 2, 4, 7]
+        );
+    }
+
+    /// Lazy like the other two: `take(1)` pulls only as far as the first key, and
+    /// an abandoned union does no work at all past it.
+    #[test]
+    fn union_takes_only_what_the_answer_needs() {
+        struct Counted<I> {
+            inner: I,
+            pulled: std::rc::Rc<std::cell::Cell<usize>>,
+        }
+        impl<I: Iterator> Iterator for Counted<I> {
+            type Item = I::Item;
+            fn next(&mut self) -> Option<I::Item> {
+                self.pulled.set(self.pulled.get() + 1);
+                self.inner.next()
+            }
+        }
+        let pulled = std::rc::Rc::new(std::cell::Cell::new(0));
+        let left = Counted {
+            inner: (10u32..1000).collect::<Vec<_>>().into_iter(),
+            pulled: pulled.clone(),
+        };
+        let right = Counted {
+            inner: (1000u32..2000).collect::<Vec<_>>().into_iter(),
+            pulled: pulled.clone(),
+        };
+        assert_eq!(left.union(right).take(1).collect::<Vec<_>>(), vec![10]);
+        assert!(
+            pulled.get() <= 3,
+            "a merged head pulls one key per side (plus one to prove the left run \
+             ended), not 1990 (pulled {})",
+            pulled.get()
+        );
+    }
+
+    /// An exhausted side is not the end of the alignment: the other side's tail
+    /// is one-sided answers, and `merge` promises ALL distinct keys. (Both shapes
+    /// were silently truncated before `union` made them visible.)
+    #[test]
+    fn merge_keeps_the_tail_of_a_side_that_outlives_the_other() {
+        assert_eq!(
+            Vec::<u8>::new()
+                .into_iter()
+                .merge(vec![1u8, 2])
+                .collect::<Vec<_>>(),
+            vec![(None, Some(1)), (None, Some(2))],
+            "an exhausted left still answers the right tail"
+        );
+        assert_eq!(
+            vec![1u8, 2, 2, 3]
+                .into_iter()
+                .merge(Vec::<u8>::new())
+                .collect::<Vec<_>>(),
+            vec![(Some(1), None), (Some(2), None), (Some(3), None)],
+            "the left tail is answered once per distinct key, not once per entry"
+        );
+        assert_eq!(
+            vec![1u8, 1]
+                .into_iter()
+                .difference(Vec::<u8>::new())
+                .collect::<Vec<_>>(),
+            vec![1],
+            "so the filters over it are set-semantic to the last key"
         );
     }
 
