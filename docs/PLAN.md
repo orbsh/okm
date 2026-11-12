@@ -2365,13 +2365,17 @@ panic lints allowed only in the places it names. So the runtime half of
       the key space lets one key live in two files.
       **What is still owed (surveyed 2026-11-12; each piece names its test).** The drain side is
       whole; the gap is on the WRITER side, in the order it should be fixed:
-      (a) **a `publish`ed table has no reader.** `read::resolve` and `read::keys_of_file` require
-      an `okm_op` column on every file ("a file has no `okm_op` column"), and
-      `publish::replace_table` writes rows and no op column — so a published lake can neither be
-      read as current state nor folded. The rule to adopt: **a file without `okm_op` states FINAL
-      rows** — it carries no ops, so there is nothing to fold and its rows ARE the answer. Test:
-      publish two versions, then `current_state` answers the latest version's rows and `condense`
-      refuses with "nothing to fold".
+      - [x] (a) **a `publish`ed table has no reader** (surveyed 2026-11-12; **fixed 2026-11-12**).
+      `read::resolve` and `read::keys_of_file` required an `okm_op` column on every file, and
+      `publish::replace_table` writes rows and no op column — so a published lake could neither be
+      read as current state nor folded. The rule that landed: **a file without `okm_op` states
+      FINAL rows** — it carries no ops, so there is nothing to fold and its rows ARE the answer.
+      The op column is optional per file AND per batch, which is the same rule for the third shape
+      a table takes when a final file is aligned against a union schema that has `okm_op` because
+      another file brought it: there the column exists and is NULL on every row. `keys_of_file`
+      drops `okm_op` from its projection too, answering "removes nothing" instead of refusing.
+      Test: `okm-lake/tests/publish_test.rs` publishes two versions and gets the latest version's
+      rows out of `current_state`, then `condense` refuses with "nothing to fold".
       (b) **`publish` writes no manifest.** `replace_table` commits a bare `Addition::plain`, so
       `status.change_rows` is `None` (one manifest-less file makes the sum unknown rather than
       partial) and the addition carries no `key_bounds`, which leaves a fold nothing to prune

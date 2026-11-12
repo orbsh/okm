@@ -2,6 +2,8 @@
 //!
 //! The drain writes CHANGE files (ADR-0058 § Amendment): every row carries `okm_op`,
 //! `okm_slot` and `okm_seq`, and the Delta log says which file was added by which version.
+//! A table may also hold FINAL files — what `publish` writes and what a fold leaves — whose
+//! rows carry no ops at all, because they state the answer rather than a step towards it.
 //! That is enough to answer the two questions a reader has without any of okm's types:
 //!
 //! * what does this table say NOW — [`current_state`], which applies the ops in order, keeps
@@ -237,6 +239,21 @@ fn state_and_total(store: &dyn LakeStore, table: &str) -> Result<(RecordBatch, u
     resolve(&schema, &batches, &keys)
 }
 
+/// The ops a batch carries, or `None` when it carries none — the two shapes one thing can take.
+///
+/// A CHANGE file has `okm_op` on every row. A file of FINAL rows (`publish`, and any sink that
+/// states its own current state) has no op column at all: its rows say nothing about history, so
+/// there is nothing to fold and the rows ARE the answer. The third shape is a final file aligned
+/// against a union schema that HAS `okm_op` because another file brought it: there the column
+/// exists and is NULL for every row, which means the same thing as its absence.
+fn ops_of(batch: &RecordBatch) -> Option<&StringArray> {
+    let column = batch.column_by_name("okm_op")?;
+    if column.null_count() == column.len() {
+        return None;
+    }
+    column.as_any().downcast_ref::<StringArray>()
+}
+
 /// Fold a run of batches (already aligned to one schema) into current state.
 ///
 /// Works on whatever run of files the caller hands it: the whole table for
@@ -295,14 +312,14 @@ fn resolve(
             })
             .collect::<Result<_>>()?;
         let rows = converter.convert_columns(&columns)?;
-        let ops = batch
-            .column_by_name("okm_op")
-            .and_then(|c| c.as_any().downcast_ref::<StringArray>())
-            .ok_or_else(|| ReadError::new("a file has no `okm_op` column"))?;
+        // A file without ops states FINAL rows: every row is a `put`, so it needs no folding —
+        // it is what a `publish` writes, and treating its rows as anything else would either
+        // drop them or need an op that file does not carry.
+        let ops = ops_of(batch);
         let opens = open_at.map(|at| batch.column(at).clone());
         for row in 0..batch.num_rows() {
             let at = base + row;
-            let op = ops.value(row);
+            let op = ops.map_or(OKM_PUT, |ops| ops.value(row));
             let entry = newest
                 .entry(rows.row(row).as_ref().to_vec())
                 .or_insert(Winner {
@@ -415,7 +432,10 @@ fn keys_of_file(
             roots.push(at);
         }
     }
-    if roots.len() != keys.len() + 1 {
+    // A final-rows file has no `okm_op`: it removes nothing, so the op column is optional here
+    // and its absence is an answer rather than a fault.
+    let has_ops = schema.column_with_name("okm_op").is_some();
+    if roots.len() != keys.len() + usize::from(has_ops) {
         return Err(ReadError::new(format!(
             "{key}: a file is missing a key column or `okm_op`"
         )));
@@ -458,14 +478,14 @@ fn keys_of_file(
             })
             .collect::<Result<_>>()?;
         let rows = conv.convert_columns(&columns)?;
-        let ops = batch
-            .column_by_name("okm_op")
-            .and_then(|c| c.as_any().downcast_ref::<StringArray>())
-            .ok_or_else(|| ReadError::new("a file has no `okm_op` column"))?;
-        for row in 0..batch.num_rows() {
-            if ops.value(row) == OKM_DEL {
-                removed = true;
+        if let Some(ops) = ops_of(&batch) {
+            for row in 0..batch.num_rows() {
+                if ops.value(row) == OKM_DEL {
+                    removed = true;
+                }
             }
+        }
+        for row in 0..batch.num_rows() {
             out.push(rows.row(row).as_ref().to_vec());
         }
         converter = Some((conv, key_names));
