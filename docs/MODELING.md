@@ -1329,6 +1329,32 @@ Both doors take a prefix probe, and a full-table scan is the **empty probe** —
 
 This door answers one shape only: read by key **prefix**. A dimension that is not a leading segment of the primary key does not become queryable through it — that is a key-layout question (move the dimension forward) or an access-method question; if a segment must stay in the key and also be read in another shape, that is the mirror workaround, and its retirement condition is an `#[ok_index]` that can name a key segment.
 
+## A join is set algebra: `merge`, `intersect`, `difference`
+
+There is no join operator here, and no join planner. An index answers a set of keys in key order; a join is the composition of two ordinary reads — intersect the key streams the indexes answer, then fetch a row for each surviving key. The set step is a trait, not a verb added to the storage API: `OrderedSets` in `okm-query` puts `merge`, `intersect` and `difference` on anything that yields keys (`Vec`, array, a scan iterator), and each is an adapter over a stream already ordered by the join key.
+
+`merge` is the general alignment: it walks both streams by key and answers one tuple per distinct key — `(Some, None)`, `(Some, Some)`, `(None, Some)`, in key order, and never `(None, None)`, because an alignment only reports keys that exist. That one pass is a full outer join: three answers for both sides, plus "what each side has that the other does not", with no second operator. `intersect` and `difference` are this stream's two named filters, named because those two questions are asked far more often than "all three cases".
+
+Both are set-level, not multiset-level: a key that either side repeats is answered once, with one representative per side, and multiplicity is left to the step that reads rows. They are lazy and allocate nothing, need no `Clone` on the key, and `take(1)` consumes only what one answer needs.
+
+Chaining is the composition, and any number of sides works, because the item stays a key: `a.intersect(b)`, `a.intersect(b).intersect(c)`, `a.intersect(b).difference(c)`. Direction lives in the receiver — `a.difference(b)` is `a \ b`, the same set as `a − (a ∩ b)`, reached without computing the intersection.
+
+**Outer joins are compositions, not operators.** Left-only is `a.difference(b)`, right-only is `b.difference(a)`, both at once is `merge` — or the two differences side by side, which is the same answer partitioned. For N sides, intersect once and subtract per side.
+
+**m×n belongs to the step after.** Set algebra works at key level, so a repeated key answers once; the expansion happens when rows are fetched for a surviving key, where the loop over that key's entries really is m rows against n. `merge_join` in the same crate is that multiplicity step — pairs, sorting, run expansion — and its doc points at `intersect` first, because intersecting entries and fetching only the survivors beats materializing both sides unless nearly every key is shared.
+
+**Ordered input is a contract, not a runtime check.** Verifying it would mean reading a stream to its end before answering with it — exactly the materialization these adapters exist to avoid. So unordered input does not raise: it silently misses keys. The contract is free to meet where it matters: an index scan's order is the entry tuple `(fields…, key)`, so a projection onto the leading fields is still ordered, and a join on the first declared field needs no sort. When the join dimension is not the leading field, sort explicitly and the sort stays visible in the caller.
+
+```rust
+// a, b, c: key streams already ordered by the join field — an index scan
+// projected onto it, or any Vec/array of the same key type.
+let shared: Vec<u32> = a.clone().intersect(b.clone()).collect();       // a ∩ b
+let only_left: Vec<u32> = a.difference(b.clone()).collect();           // a \ b
+let both_but_not_c: Vec<u32> = a.intersect(b).difference(c).collect(); // (a ∩ b) \ c
+```
+
+Because the join is those two steps and nothing else, its result is ordinary code — a vector to go on folding, a prefix of it, a key set counted before any payload is read — rather than a restricted join form or a query string with a planner behind it. The only restriction is the key layout, and that was settled at declaration. The cookbook form, with the scans in place and the fetch loop spelled out, is in the [query guide](query-recipes.md), "The JOIN recipe: intersect keys, then fetch".
+
 ## Key naming: a plain prefix plus composed access methods
 
 A key is three segments: `[ns][pkey...][order]`. The sort field goes at the tail (a u64 big-endian timestamp is the byte order of time order, a timeline by nature): entries under one pkey are physically adjacent and ordered, and a prefix scan IS the timeline / range read — restoring a session, taking the latest N, are one `scan` each. The primary sort field going into the key is a physical decision; other sort dimensions stay out of the key, live in the payload, and surface through `#[ok_index]`.
