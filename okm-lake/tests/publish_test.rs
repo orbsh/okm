@@ -16,8 +16,8 @@
 use arrow::array::{Int64Array, RecordBatch};
 use arrow::datatypes::{DataType, Field, Schema};
 use okm_lake::publish::replace_table;
-use okm_lake::store::LocalFs;
-use okm_lake::{delta, read};
+use okm_lake::store::{LakeStore, LocalFs};
+use okm_lake::{delta, read, status};
 
 /// A final-state Parquet file: the table's columns and nothing else — no `okm_op`, because
 /// there is no history to state.
@@ -78,6 +78,83 @@ fn a_published_table_reads_back_as_its_newest_version() {
     assert_eq!(
         delta::files_in_order(&lake, &table).unwrap(),
         vec!["data/pub-1.parquet".to_string()]
+    );
+}
+
+#[test]
+fn a_publish_states_its_row_count_and_key_range() {
+    let dir = tempfile::tempdir().unwrap();
+    let (lake, table) = published(dir.path(), &[&[10, 20, 30]]);
+
+    // `status` reads the manifest instead of the file: one published file without one would make
+    // the sum "unknown" rather than partial.
+    let report = status::status(&lake, &table, false).expect("status");
+    assert_eq!(
+        report.change_rows,
+        Some(3),
+        "the count is known, not unknown"
+    );
+    assert_eq!(report.deletes, Some(0), "a final file removes nothing");
+    assert!(!report.folded, "a published file is not a fold");
+
+    let live = delta::files_in_order(&lake, &table).unwrap();
+    let manifest = status::manifest_at(&lake, &table, &live[0]).expect("a published manifest");
+    assert_eq!(manifest.rows, 3);
+    assert!(
+        manifest.segments.is_empty(),
+        "a published file projects no window"
+    );
+    // The range the keys cover, in the manifest's sortable-byte hex (big-endian with the sign bit
+    // flipped for a signed integer): this is the index a fold prunes with.
+    assert_eq!(
+        manifest.key_bounds,
+        vec![(
+            "id".to_string(),
+            "800000000000000a".to_string(),
+            "800000000000001e".to_string()
+        )]
+    );
+
+    // The Delta action states the same thing to a reader that never sees okm's manifest.
+    let version = std::fs::read_to_string(
+        lake.local_root()
+            .expect("a directory lake")
+            .join(&table)
+            .join("_delta_log/00000000000000000000.json"),
+    )
+    .expect("the first version");
+    let add = version
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("an action"))
+        .find(|action| action.get("add").is_some())
+        .expect("an add action")
+        .clone();
+    let stats: serde_json::Value =
+        serde_json::from_str(add["add"]["stats"].as_str().expect("stats is a string"))
+            .expect("stats is JSON");
+    assert_eq!(stats["numRecords"], 3, "the row count in the log: {stats}");
+    assert_eq!(
+        stats["minValues"]["id"], 10,
+        "the range in the log: {stats}"
+    );
+    assert_eq!(
+        stats["maxValues"]["id"], 30,
+        "the range in the log: {stats}"
+    );
+
+    // Publishing again leaves ONE manifest: the one the new file earned.
+    let (lake, table) = published(dir.path(), &[&[10, 20, 30], &[10, 20]]);
+    let live = delta::files_in_order(&lake, &table).unwrap();
+    assert_eq!(live.len(), 1);
+    assert!(
+        lake.head(&format!("{table}/data/pub-0.manifest.json"))
+            .unwrap()
+            .is_none(),
+        "the replaced file's manifest goes with the file"
+    );
+    assert_eq!(
+        status::status(&lake, &table, false).unwrap().change_rows,
+        Some(2)
     );
 }
 

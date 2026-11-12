@@ -15,6 +15,7 @@
 
 use crate::delta::{self, Addition, Commit};
 use crate::store::{LakeStore, table_key};
+use crate::{WindowManifest, bounds, status};
 
 /// What one publish did.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -98,6 +99,10 @@ pub fn replace_table_with(
     let relative = format!("data/{name}");
     let live = delta::files_in_order(store, table)?;
     store.put(&table_key(table, &relative), bytes)?;
+    // The manifest goes down BEFORE the commit that names the file: a reader that sees the
+    // version must find the description of what it points at, and `status` must never report
+    // "unknown" for a file this writer just measured.
+    write_manifest(store, table, &relative, &name, bytes, keys)?;
     let addition = Addition::plain(relative.clone(), bytes.len() as u64);
     let commit = if live.is_empty() {
         delta::commit_files(store, table, &[addition], keys)?
@@ -107,6 +112,8 @@ pub fn replace_table_with(
     for old in &live {
         if old != &relative {
             store.delete(&table_key(table, old))?;
+            // The manifest described that file and nothing else, so it goes with it.
+            store.delete(&table_key(table, &status::manifest_key(old)))?;
         }
     }
     // The checkpoint is written AFTER the commit and its deletes: it states the log, and a
@@ -123,6 +130,64 @@ pub fn replace_table_with(
         bytes: bytes.len() as u64,
         checkpoint,
     })
+}
+
+/// The manifest beside a published file: what it holds, and where its keys start and end.
+///
+/// A published file is not a window — no segment was projected into it — so `segments` is empty
+/// and `layout_version` is 0 ("no layout behind this file"). What it DOES state is what the other
+/// readers of a lake need: the row count `status` sums, and the `key_bounds` a fold prunes with.
+/// Without them one published file makes `status` report "rows unknown" and makes every fold open
+/// every file, because a file with no manifest is a file that could share any key.
+fn write_manifest(
+    store: &dyn LakeStore,
+    table: &str,
+    relative: &str,
+    name: &str,
+    bytes: &[u8],
+    keys: &[String],
+) -> Result<(), String> {
+    let builder = parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(
+        bytes::Bytes::copy_from_slice(bytes),
+    )
+    .map_err(|e| format!("{relative}: {e}"))?;
+    // The row count comes from the footer, like every other count here: the caller's file is
+    // measured, never taken on trust.
+    let rows = builder
+        .metadata()
+        .row_groups()
+        .iter()
+        .map(|group| group.num_rows() as usize)
+        .sum();
+    let columns = builder
+        .schema()
+        .fields()
+        .iter()
+        .map(|f| {
+            (
+                f.name().clone(),
+                format!("{:?}", f.data_type()),
+                f.is_nullable(),
+            )
+        })
+        .collect();
+    let manifest = WindowManifest {
+        table: table.to_string(),
+        layout_version: 0,
+        segments: Vec::new(),
+        rows,
+        deletes: 0,
+        columns,
+        file: name.to_string(),
+        key_bounds: bounds::to_manifest(&bounds::of_parquet(bytes, keys)?),
+    };
+    store.put(
+        &table_key(table, &status::manifest_key(relative)),
+        serde_json::to_string_pretty(&manifest)
+            .map_err(|e| format!("manifest: {e}"))?
+            .as_bytes(),
+    )?;
+    Ok(())
 }
 
 #[cfg(test)]

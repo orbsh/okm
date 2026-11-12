@@ -2376,11 +2376,20 @@ panic lints allowed only in the places it names. So the runtime half of
       drops `okm_op` from its projection too, answering "removes nothing" instead of refusing.
       Test: `okm-lake/tests/publish_test.rs` publishes two versions and gets the latest version's
       rows out of `current_state`, then `condense` refuses with "nothing to fold".
-      (b) **`publish` writes no manifest.** `replace_table` commits a bare `Addition::plain`, so
-      `status.change_rows` is `None` (one manifest-less file makes the sum unknown rather than
-      partial) and the addition carries no `key_bounds`, which leaves a fold nothing to prune
-      with. Piece: publish writes the manifest with empty segments. Test: after a publish,
-      `status` reports the known row count and the addition has `key_bounds`.
+      - [x] (b) **`publish` wrote no manifest** (surveyed 2026-11-12; **fixed 2026-11-12**).
+      `replace_table` committed a bare `Addition::plain`, so `status.change_rows` was `None` (one
+      manifest-less file makes the sum unknown rather than partial) and a fold had no bounds to
+      prune with — a file with no manifest could share any key, so every fold opened it.
+      **Landed:** publish writes the manifest with EMPTY `segments` and `layout_version` 0 (no
+      window was projected into the file), carrying the row count from the footer and one
+      `key_bounds` entry per key column, computed by reading the key columns back with a
+      projection (`bounds::of_parquet`, one range across row groups). The replaced file's manifest
+      is deleted with the file. The bounds live where the fold reads them — the manifest — and the
+      Delta action states the same range to a reader that never opens it, through
+      `stats.minValues`/`maxValues` from the Parquet footer; `Addition` grows no field for a value
+      `stats` already carries. Test: `okm-lake/tests/publish_test.rs` gets `change_rows ==
+      Some(n)`, the manifest's `key_bounds` equal to the key's range, and the `add` action's
+      `stats.numRecords` + `minValues`/`maxValues`.
       (c) **slot-aware removals are not resolved.** `okm_slot = 1` (the document's open half) is
       drainable — a full-length suffix makes it deletable — yet `read::resolve` drops the WHOLE
       key on any `del`, and `delete_into` (`okm-core/src/model/document.rs`) deletes only the

@@ -135,6 +135,67 @@ fn sortable(column: &dyn Array, row: usize) -> Option<Vec<u8>> {
     }
 }
 
+/// The bounds of the KEY columns of a Parquet file, read with a projection so the payload is
+/// never decoded.
+///
+/// This is how a writer that holds finished bytes states the range it could not compute while
+/// building the batch (`publish` is handed a file, not a window). A file with several row groups
+/// is ONE range — the minimum of the minimums and the maximum of the maximums — because that is
+/// what "the range this file covers" means to a fold.
+pub fn of_parquet(bytes: &[u8], key_names: &[String]) -> Result<Bounds, String> {
+    let builder = parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(
+        bytes::Bytes::copy_from_slice(bytes),
+    )
+    .map_err(|e| format!("parquet: {e}"))?;
+    let descriptor = builder.metadata().file_metadata().schema_descr().clone();
+    let file_schema = builder.schema().clone();
+    let mut roots = Vec::with_capacity(key_names.len());
+    for name in key_names {
+        let at = file_schema
+            .index_of(name)
+            .map_err(|_| format!("no key column `{name}` in the file"))?;
+        roots.push(at);
+    }
+    let reader = builder
+        .with_projection(parquet::arrow::ProjectionMask::roots(&descriptor, roots))
+        .build()
+        .map_err(|e| format!("parquet: {e}"))?;
+
+    let mut out: Vec<Option<Bound>> = vec![None; key_names.len()];
+    for batch in reader {
+        let batch = batch.map_err(|e| format!("parquet: {e}"))?;
+        for (at, name) in key_names.iter().enumerate() {
+            let Some(column) = batch.column_by_name(name) else {
+                continue;
+            };
+            for row in 0..column.len() {
+                let Some(value) = sortable(column.as_ref(), row) else {
+                    continue;
+                };
+                match out[at].as_mut() {
+                    Some(bound) => {
+                        if value < bound.min {
+                            bound.min = value.clone();
+                        }
+                        if value > bound.max {
+                            bound.max = value;
+                        }
+                    }
+                    None => {
+                        out[at] = Some(Bound {
+                            column: name.clone(),
+                            min: value.clone(),
+                            max: value,
+                        });
+                    }
+                }
+            }
+        }
+    }
+    // A column that is NULL in every row has no range: it prunes nothing, which is safe.
+    Ok(Bounds(out.into_iter().flatten().collect()))
+}
+
 /// Hex, for a manifest that has to be JSON.
 pub fn to_hex(bytes: &[u8]) -> String {
     let mut out = String::with_capacity(bytes.len() * 2);
