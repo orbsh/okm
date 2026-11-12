@@ -204,7 +204,7 @@ impl Path {
     ///   an object resolves to NO values — never an error (the same
     ///   "absent attribute values are empty results" rule the attribute
     ///   faces carry).
-    pub fn resolve<'a>(&self, document: &'a crate::ValueMap) -> Vec<&'a Value> {
+    pub fn resolve<'a>(&self, document: &'a crate::Dict) -> Vec<&'a Value> {
         let mut out = Vec::new();
         walk_map(document, &self.components, &mut out);
         out
@@ -283,7 +283,7 @@ impl Path {
     }
 }
 
-fn walk_map<'a>(map: &'a crate::ValueMap, comps: &[Component], out: &mut Vec<&'a Value>) {
+fn walk_map<'a>(map: &'a crate::Dict, comps: &[Component], out: &mut Vec<&'a Value>) {
     let Some((head, rest)) = comps.split_first() else {
         return; // a document is not a value
     };
@@ -355,18 +355,18 @@ fn flatten_scalars(v: &Value) -> Vec<&Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::BTreeMap;
+    use crate::Dict;
 
     fn obj(pairs: &[(&str, Value)]) -> Value {
-        let mut m = BTreeMap::new();
+        let mut m = Dict::new();
         for (k, v) in pairs {
             m.insert((*k).to_string(), v.clone());
         }
         Value::Map(m)
     }
 
-    fn doc(pairs: &[(&str, Value)]) -> crate::ValueMap {
-        let mut m = BTreeMap::new();
+    fn doc(pairs: &[(&str, Value)]) -> crate::Dict {
+        let mut m = Dict::new();
         for (k, v) in pairs {
             m.insert((*k).to_string(), v.clone());
         }
@@ -481,6 +481,7 @@ mod tests {
 
     #[test]
     fn encode_decode_roundtrip() {
+        use std::collections::BTreeMap;
         let p = Path::parse("refs[2].\"a.b\"").unwrap();
         let names: BTreeMap<u16, String> = [(0u16, "refs".to_string()), (1u16, "a.b".to_string())]
             .into_iter()

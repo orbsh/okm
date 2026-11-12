@@ -15,13 +15,11 @@ use okm_lake::bridge::ToRecordBatch;
 use okm_lake::snapshot::parquet_io;
 use okm_lake::snapshot::parquet_io::EdgeRestore;
 
-use std::collections::BTreeMap;
-
 use okm_core::{
     Batch, Document, DocumentEncode, EdgeHead, Graph, GraphEncode, KeyEncode, NodeRef, ReduceCodec,
     VirtualStorage,
 };
-use okm_value::Variant;
+use okm_value::{Dict, Variant};
 
 use okm_async::TestStore;
 // ---- two node collections and one graph ----
@@ -134,7 +132,7 @@ fn an_edge_table_restores_into_a_fresh_graph() {
     )
     .unwrap();
     // One edge carries open attributes (the 0x01 segment).
-    let mut attrs = BTreeMap::new();
+    let mut attrs = Dict::new();
     attrs.insert("note".to_string(), Variant::Str("hi".into()));
     let mut batch = Batch::default();
     g.replace_into(&mut batch, 2, &attrs).unwrap();

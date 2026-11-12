@@ -22,7 +22,7 @@ document API 是按**存储布局**切的，不是按调用方的意图切的：
 |---|---|---|---|
 | `get(&key) -> Option<R>` | 静态段（结构体） | — | 不变 |
 | `put(&key, &R)` | 静态段 + 面 + 账本 | 1 | 不变 |
-| `fetch(&key) -> Option<BTreeMap<String, Variant>>` | 整份文档（两槽合并） | — | `get_document` + `get_fields` |
+| `fetch(&key) -> Option<Dict>` | 整份文档（两槽合并） | — | `get_document` + `get_fields` |
 | `merge(&key, &map)` | 声明名 → 行 RMW；其余名字 → 槽 1 里对应的那一个名字 | 1 | `put_document`（merge 那一半）+ `put_fields` |
 | `replace(&key, &map)` | 由 map 重建行；槽 1 = map 里非声明名的集合 | 1 | ——（比 `put_document` 语义强） |
 | `purge(&key) -> bool` | 两槽一起清除 | 1 | `delete_document` + `delete_fields` |

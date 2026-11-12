@@ -21,12 +21,10 @@
     clippy::panic_in_result_fn
 )]
 
-use std::collections::BTreeMap;
-
 use okm_async::TestStore;
 use okm_core::schema::CollectionSchema;
 use okm_core::{DocumentEncode, KeyEncode, VirtualStorage};
-use okm_dynamic::{AccessMethod, DynamicCollection, FieldType, Path, Value, ValueMap};
+use okm_dynamic::{AccessMethod, Dict, DynamicCollection, FieldType, Path, Value};
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
 pub struct NodeKey {
@@ -81,22 +79,22 @@ fn table(store: TestStore) -> DynamicCollection<TestStore> {
 /// The four path indexes are declared on the same table as the primary
 /// document: `kind` is the schema-declared field, everything else lives
 /// in the dynamic segment.
-fn declared(kind: u32) -> ValueMap {
-    let mut m = BTreeMap::new();
+fn declared(kind: u32) -> Dict {
+    let mut m = Dict::new();
     m.insert("kind".into(), Value::U32(kind));
     m
 }
 
 fn obj(pairs: &[(&str, Value)]) -> Value {
-    let mut m = BTreeMap::new();
+    let mut m = Dict::new();
     for (k, v) in pairs {
         m.insert((*k).to_string(), v.clone());
     }
     Value::Map(m)
 }
 
-fn fields(author: Option<&str>, tags: &[&str], rank: Option<Value>, refs: &[&str]) -> ValueMap {
-    let mut m = BTreeMap::new();
+fn fields(author: Option<&str>, tags: &[&str], rank: Option<Value>, refs: &[&str]) -> Dict {
+    let mut m = Dict::new();
     if let Some(a) = author {
         m.insert("author".into(), obj(&[("name", Value::Str(a.into()))]));
     }
@@ -119,7 +117,7 @@ fn fields(author: Option<&str>, tags: &[&str], rank: Option<Value>, refs: &[&str
 }
 
 /// Primary keys (the `id` field of the decoded key) a scan returns.
-fn ids(hits: Vec<ValueMap>) -> Vec<u64> {
+fn ids(hits: Vec<Dict>) -> Vec<u64> {
     let mut out: Vec<u64> = hits
         .iter()
         .map(|k| match k.get("id") {
@@ -350,19 +348,19 @@ fn out_of_range_and_non_numeric_values_produce_no_entry() {
             AccessMethod::path(0x1005, Path::parse("meta.small").unwrap(), FieldType::U8).unwrap(),
         ],
     );
-    let mut one = BTreeMap::new();
+    let mut one = Dict::new();
     one.insert("meta".into(), obj(&[("small", Value::U64(300))]));
     t.put(&key(1), &declared(7)).unwrap();
     t.put(&key(1), &one).unwrap();
     // 300 does not fit the declared U8 → no entry, no error.
     assert!(entry_keys(t.store(), 0x1005).is_empty());
 
-    let mut fits = BTreeMap::new();
+    let mut fits = Dict::new();
     fits.insert("meta".into(), obj(&[("small", Value::U64(200))]));
     t.put(&key(1), &fits).unwrap();
     assert_eq!(ids(t.scan(0x1005, &[200u8]).unwrap()), vec![1]);
 
-    let mut wrong_kind = BTreeMap::new();
+    let mut wrong_kind = Dict::new();
     wrong_kind.insert("meta".into(), obj(&[("small", Value::Str("big".into()))]));
     t.put(&key(1), &wrong_kind).unwrap();
     assert!(entry_keys(t.store(), 0x1005).is_empty());

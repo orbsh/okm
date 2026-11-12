@@ -498,8 +498,8 @@ pub struct Projection {
 pub fn project(win: &Window) -> Result<(arrow::array::RecordBatch, Projection)> {
     let key_len = win.schema.key_len;
     let mut keys: Vec<Vec<u8>> = Vec::with_capacity(win.ops.len());
-    let mut rows: Vec<Option<okm_dynamic::ValueMap>> = Vec::with_capacity(win.ops.len());
-    let mut variant_of: Vec<Option<&okm_dynamic::ValueMap>> = Vec::with_capacity(win.ops.len());
+    let mut rows: Vec<Option<okm_dynamic::Dict>> = Vec::with_capacity(win.ops.len());
+    let mut variant_of: Vec<Option<&okm_dynamic::Dict>> = Vec::with_capacity(win.ops.len());
     let mut op_names: Vec<&str> = Vec::with_capacity(win.ops.len());
     let mut slots: Vec<Option<u16>> = Vec::with_capacity(win.ops.len());
     let mut seqs: Vec<u32> = Vec::with_capacity(win.ops.len());
@@ -511,7 +511,7 @@ pub fn project(win: &Window) -> Result<(arrow::array::RecordBatch, Projection)> 
     // Two dynamic segments can name the same key (two writes in one window). Their open
     // halves MERGE in log order — the later field wins, and fields the earlier one wrote
     // that the later one did not stay — instead of the last map replacing the first.
-    let mut by_key: std::collections::HashMap<&[u8], okm_dynamic::ValueMap> =
+    let mut by_key: std::collections::HashMap<&[u8], okm_dynamic::Dict> =
         std::collections::HashMap::new();
     for (key, map) in &win.dynamic {
         match by_key.get_mut(key.as_slice()) {

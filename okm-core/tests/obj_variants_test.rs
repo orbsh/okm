@@ -10,11 +10,10 @@
     clippy::panic_in_result_fn
 )]
 
-use std::collections::BTreeMap;
+use okm_value::{Dict, Variant};
 
 use okm_async::TestStore;
 use okm_core::{Collection, DocumentEncode, KeyEncode, VirtualStorage};
-use okm_value::Variant;
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
 pub struct UserKey {
@@ -38,7 +37,7 @@ use __OkmIndex_User_by_level as ByLevel;
 fn doc_of<S, K, R>(
     col: &okm_core::Collection<S, K, R>,
     key: &K,
-) -> okm_core::error::Result<Option<std::collections::BTreeMap<String, okm_value::Variant>>>
+) -> okm_core::error::Result<Option<Dict>>
 where
     S: okm_core::VirtualStorage,
     K: okm_core::KeyEncode,
@@ -71,7 +70,7 @@ fn user(legacy: u32, level: u32) -> User {
     User { legacy, level }
 }
 
-fn dmap(pairs: &[(&str, Variant)]) -> BTreeMap<String, Variant> {
+fn dmap(pairs: &[(&str, Variant)]) -> Dict {
     pairs
         .iter()
         .map(|(name, value)| ((*name).to_string(), value.clone()))
@@ -276,7 +275,7 @@ fn replace_is_the_doc_of() {
     assert_eq!(t.get_row(&key(3)).unwrap().unwrap(), user(7, 0));
 
     // An empty map IS the empty document.
-    t.put(&key(1), (&Variant::Map(BTreeMap::new()),)).unwrap();
+    t.put(&key(1), (&Variant::Map(Dict::new()),)).unwrap();
     assert!(doc_of(&t, &key(1)).unwrap().is_none());
 }
 

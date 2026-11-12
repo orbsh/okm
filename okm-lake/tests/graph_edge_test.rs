@@ -16,6 +16,7 @@ use okm_core::{
     Batch, DocumentEncode, EdgeHead, Graph, GraphEncode, KeyEncode, NodeRef, NodeSet, PRIMARY_SLOT,
     VirtualStorage,
 };
+use okm_value::Dict;
 
 // ---- node collections (standard documents, standard layout) ----
 
@@ -742,7 +743,6 @@ fn neighbor_nodes_resolve_to_node_refs() {
 #[test]
 fn the_edge_set_exports_as_a_table_with_named_endpoints() {
     use arrow::array::{Array, BinaryArray};
-    use std::collections::BTreeMap;
 
     let store = okm_async::TestStore::slatedb_mem();
     let mut g: Graph<_, Employment> = Graph::new(store.clone());
@@ -756,7 +756,7 @@ fn the_edge_set_exports_as_a_table_with_named_endpoints() {
     )
     .unwrap();
 
-    let mut attrs: BTreeMap<String, okm_value::Variant> = BTreeMap::new();
+    let mut attrs = Dict::new();
     attrs.insert(
         "role".to_string(),
         okm_value::Variant::Str("lead".to_string()),

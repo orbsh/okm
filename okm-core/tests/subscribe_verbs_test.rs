@@ -15,11 +15,10 @@
     clippy::panic_in_result_fn
 )]
 
-use std::collections::BTreeMap;
+use okm_value::{Dict, Variant};
 
 use okm_async::TestStore;
 use okm_core::Collection;
-use okm_value::Variant;
 
 #[path = "subscribe_common.rs"]
 mod subscribe_common;
@@ -29,7 +28,7 @@ use subscribe_common::*;
 /// `(op, epoch, balance)` per event, in arrival order.
 type Seen = std::sync::Arc<std::sync::Mutex<Vec<(String, u64, u64)>>>;
 
-fn dmap(pairs: &[(&str, Variant)]) -> BTreeMap<String, Variant> {
+fn dmap(pairs: &[(&str, Variant)]) -> Dict {
     pairs
         .iter()
         .map(|(name, value)| ((*name).to_string(), value.clone()))

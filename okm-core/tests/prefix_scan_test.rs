@@ -17,6 +17,7 @@
 
 use okm_async::TestStore;
 use okm_core::{Collection, DocumentEncode, KeyEncode};
+use okm_value::Dict;
 
 #[derive(KeyEncode, Clone, PartialEq, Eq, Debug)]
 pub struct DeviceKey {
@@ -151,7 +152,7 @@ fn document_mode_reaches_both_slots_under_a_prefix() {
         user: 10,
         device: 9,
     };
-    let mut patch = std::collections::BTreeMap::new();
+    let mut patch = Dict::new();
     patch.insert("note".to_string(), Variant::Str("no row".into()));
     col.put(&seg_only, &Variant::Map(patch)).unwrap();
 

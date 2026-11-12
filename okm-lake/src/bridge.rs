@@ -423,7 +423,7 @@ fn push_variant<B: parquet_variant::VariantBuilderExt>(b: &mut B, v: &Variant) {
 }
 fn push_variant_obj<S: parquet_variant::BuilderSpecificState>(
     ob: &mut parquet_variant::ObjectBuilder<'_, S>,
-    map: &std::collections::BTreeMap<String, Variant>,
+    map: &okm_value::Dict,
 ) {
     for (k, val) in map {
         match val {
@@ -455,7 +455,7 @@ fn push_variant_obj<S: parquet_variant::BuilderSpecificState>(
 /// struct of the two binaries. Writing the flat form and calling it a variant was a
 /// real defect: DuckDB read the column as `blob` and `variant_extract` answered NULL
 /// for every row, while the same bytes in the struct form decoded correctly.
-pub fn variant_parts(map: &okm_value::ValueMap) -> (Vec<u8>, Vec<u8>) {
+pub fn variant_parts(map: &okm_value::Dict) -> (Vec<u8>, Vec<u8>) {
     let mut b = parquet_variant::VariantBuilder::new();
     push_variant(&mut b, &Variant::Map(map.clone()));
     b.finish()
@@ -491,7 +491,7 @@ fn variant_field(name: &str, nullable: bool) -> arrow::datatypes::Field {
 /// A `variant` column over a run of open-field maps. `None` is a null cell — a row with
 /// no open fields has nothing to say, and a null says it without inventing an empty
 /// object.
-pub fn variant_array(maps: &[Option<&okm_value::ValueMap>]) -> arrow::array::StructArray {
+pub fn variant_array(maps: &[Option<&okm_value::Dict>]) -> arrow::array::StructArray {
     use arrow::array::{Array, BinaryBuilder, StructArray};
     use arrow::buffer::NullBuffer;
     use arrow::datatypes::Field as ArrowField;
@@ -531,7 +531,7 @@ pub fn variant_array(maps: &[Option<&okm_value::ValueMap>]) -> arrow::array::Str
 /// A `variant` column with its field: what a caller appends to a batch.
 pub fn variant_column(
     name: &str,
-    maps: &[Option<&okm_value::ValueMap>],
+    maps: &[Option<&okm_value::Dict>],
 ) -> (
     arrow::datatypes::Field,
     std::sync::Arc<dyn arrow::array::Array>,
@@ -635,15 +635,15 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> ToRecordBatch for Co
 
         // One Parquet Variant per document from its dynamic segment, as the two halves the
         // canonical storage type wants.
-        let mut per_row: Vec<Option<okm_value::ValueMap>> = Vec::with_capacity(documents.len());
+        let mut per_row: Vec<Option<okm_value::Dict>> = Vec::with_capacity(documents.len());
         for (kenc, _) in &documents {
             let key = K::decode(kenc);
-            let map: Option<okm_value::ValueMap> = self
+            let map: Option<okm_value::Dict> = self
                 .slot1_map(&key)?
                 .map(|fields| fields.into_iter().collect());
             per_row.push(map);
         }
-        let refs: Vec<Option<&okm_value::ValueMap>> = per_row.iter().map(|m| m.as_ref()).collect();
+        let refs: Vec<Option<&okm_value::Dict>> = per_row.iter().map(|m| m.as_ref()).collect();
         let variant_col = Arc::new(variant_array(&refs)) as Arc<dyn arrow::array::Array>;
 
         // Schema: base fields + variant field (extension-typed).
@@ -716,7 +716,7 @@ impl<S: VirtualStorage, E: GraphEncode> EdgeTable for Graph<S, E> {
         // (src name, src pkey, dst name, dst pkey, predicate) per row
         type EdgeRow = (Option<String>, Vec<u8>, Option<String>, Vec<u8>, String);
         let mut rows: Vec<EdgeRow> = Vec::with_capacity(ids.len());
-        let mut variants: Vec<Option<okm_value::ValueMap>> = Vec::with_capacity(ids.len());
+        let mut variants: Vec<Option<okm_value::Dict>> = Vec::with_capacity(ids.len());
 
         for id in ids {
             let Some(body) = self.get_edge(id)? else {
@@ -734,7 +734,7 @@ impl<S: VirtualStorage, E: GraphEncode> EdgeTable for Graph<S, E> {
             ));
             variants.push(
                 self.attrs(id)?
-                    .map(|fields| fields.into_iter().collect::<okm_value::ValueMap>()),
+                    .map(|fields| fields.into_iter().collect::<okm_value::Dict>()),
             );
             documents.push((id.to_be_bytes().to_vec(), Some(body.payload)));
         }
@@ -807,7 +807,7 @@ impl<S: VirtualStorage, E: GraphEncode> EdgeTable for Graph<S, E> {
 
         // The variant column, the same struct<metadata, value> shape as the document
         // path — one encoding, or a reader meets two.
-        let refs: Vec<Option<&okm_value::ValueMap>> = variants.iter().map(|m| m.as_ref()).collect();
+        let refs: Vec<Option<&okm_value::Dict>> = variants.iter().map(|m| m.as_ref()).collect();
         arrays.push(Arc::new(variant_array(&refs)));
 
         // Same split as the document export: the read above is fallible, the

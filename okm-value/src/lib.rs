@@ -38,7 +38,7 @@ mod error;
 pub use error::Error;
 pub use segment::{decode, encode};
 pub use value::{
-    CodecError, DynamicField, ObjValueType, ValueMap, Variant, decode_named, decode_variants,
-    dyn_kind, vocab_id_from_u64,
+    CodecError, Dict, DynamicField, ObjValueType, Variant, decode_named, decode_variants, dyn_kind,
+    vocab_id_from_u64,
 };
 pub use vocab::{Id, Names, Vocabulary};

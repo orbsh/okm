@@ -34,7 +34,7 @@ The surface splits by VALUE SHAPE rather than by slot.
 |---|---|---|---|
 | `get(&key) -> Option<R>` | static segment (typed) | — | unchanged |
 | `put(&key, &R)` | static segment + faces + ledgers | 1 | unchanged |
-| `fetch(&key) -> Option<BTreeMap<String, Variant>>` | the whole document (both slots merged) | — | `get_document` + `get_fields` |
+| `fetch(&key) -> Option<Dict>` | the whole document (both slots merged) | — | `get_document` + `get_fields` |
 | `merge(&key, &map)` | declared names → row RMW; every other name → that name in slot 1 | 1 | `put_document` (merge half) + `put_fields` |
 | `replace(&key, &map)` | row rebuilt from the map; slot 1 = exactly the map's non-declared names | 1 | — (stronger than `put_document`) |
 | `purge(&key) -> bool` | both slots removed | 1 | `delete_document` + `delete_fields` |

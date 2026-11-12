@@ -20,7 +20,7 @@
     clippy::panic_in_result_fn
 )]
 
-use okm_value::Variant;
+use okm_value::{Dict, Variant};
 use std::cell::Cell;
 
 use okm_core::engine::storage::ScanIter;
@@ -34,7 +34,7 @@ use okm_async::TestStore;
 fn doc_of<S, K, R>(
     col: &okm_core::Collection<S, K, R>,
     key: &K,
-) -> okm_core::error::Result<Option<std::collections::BTreeMap<String, okm_value::Variant>>>
+) -> okm_core::error::Result<Option<Dict>>
 where
     S: okm_core::VirtualStorage,
     K: okm_core::KeyEncode,
@@ -264,7 +264,7 @@ fn dynamic_write_including_vocabulary_growth_is_one_engine_commit() {
     let t = <LedgerRow as Document>::collection(Counting::new(TestStore::slatedb_mem()));
     t.store().reset();
 
-    let mut fields = std::collections::BTreeMap::new();
+    let mut fields = Dict::new();
     fields.insert(
         "colour".to_string(),
         okm_value::Variant::Str("amber".into()),
@@ -392,9 +392,7 @@ fn purge_is_one_engine_commit() {
     assert!(doc_of(&t, &k).unwrap().is_none());
 }
 
-fn map_of(
-    pairs: &[(&str, okm_value::Variant)],
-) -> std::collections::BTreeMap<String, okm_value::Variant> {
+fn map_of(pairs: &[(&str, okm_value::Variant)]) -> Dict {
     pairs
         .iter()
         .map(|(name, value)| ((*name).to_string(), value.clone()))

@@ -21,6 +21,7 @@
 
 use crate::engine::storage::VirtualStorage;
 use crate::model::key::{KeyEncode, PrefixKey};
+use okm_value::Dict;
 
 /// Slot type: either a **fixed face** (one byte, 0x00–0x0F — a family with a
 /// single face and nothing to enumerate) or a **counting family** (two bytes:
@@ -326,7 +327,7 @@ pub trait Document: Sized + Clone {
     type Vocabs: crate::model::obj_vocab::VocabSet + ::core::default::Default;
     /// document -> map: every declared field lifted into a run-time
     /// Variant (ADR-0012 document-map bridge; derive-generated).
-    fn to_map(&self) -> std::collections::BTreeMap<String, okm_value::Variant>;
+    fn to_map(&self) -> Dict;
     /// The row as one open value: [`to_map`](Self::to_map) wrapped in
     /// [`Variant::Map`](okm_value::Variant::Map).
     ///
@@ -349,9 +350,7 @@ pub trait Document: Sized + Clone {
     /// [`Error::ValueOutOfRange`](crate::error::Error::ValueOutOfRange): the
     /// caller spelled a value, so defaulting or truncating it would write
     /// something they never asked for.
-    fn try_from_map(
-        map: &std::collections::BTreeMap<String, okm_value::Variant>,
-    ) -> crate::error::Result<Self>
+    fn try_from_map(map: &Dict) -> crate::error::Result<Self>
     where
         Self: Sized;
     /// Identity type this document hangs off (from `#[ok_ref(...)]`).

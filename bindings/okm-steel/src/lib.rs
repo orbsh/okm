@@ -10,8 +10,7 @@
 //! callable-implementable semantics (reduce, func/partial indexes via
 //! host callables); subscribe stays excluded.
 use okm_core::schema::CollectionSchema;
-use okm_dynamic::{decode_key, decode_payload, encode_key, encode_payload, Value, ValueMap};
-use std::collections::BTreeMap;
+use okm_dynamic::{decode_key, decode_payload, encode_key, encode_payload, Value, Dict};
 use std::sync::Arc;
 use steel::rvals::SteelHashMap;
 use steel::steel_vm::engine::Engine;
@@ -137,15 +136,15 @@ fn find_field<'a>(
         .ok_or_else(|| format!("field `{name}`: not declared in the schema"))
 }
 
-/// Hash-map (steel `hash?`) → ValueMap with kind coercion.
+/// Hash-map (steel `hash?`) → Dict with kind coercion.
 pub(crate) fn steel_hash_to_map(
     schema: &CollectionSchema,
     v: &SteelVal,
-) -> Result<ValueMap, String> {
+) -> Result<Dict, String> {
     let SteelVal::HashMapV(map) = v else {
         return Err(format!("values must be a hash (define/hash), got {v:?}"));
     };
-    let mut out = BTreeMap::new();
+    let mut out = Dict::new();
     for (k, val) in map.iter() {
         let name = k
             .as_string()
@@ -157,7 +156,7 @@ pub(crate) fn steel_hash_to_map(
     Ok(out)
 }
 
-pub(crate) fn value_map_to_steel(m: &ValueMap) -> SteelVal {
+pub(crate) fn value_map_to_steel(m: &Dict) -> SteelVal {
     let mut inner = im_rc::HashMap::new();
     for (k, v) in m {
         inner.insert(StringV(k.as_str().to_owned().into()), value_to_steel(v));
@@ -170,7 +169,7 @@ pub(crate) fn value_map_to_steel(m: &ValueMap) -> SteelVal {
 /// `value_map_to_steel` so meta bytes and payload bytes are one convention at
 /// the script face, not two.
 pub(crate) fn meta_to_steel(meta: &okm_core::TableMeta) -> SteelVal {
-    let mut m = ValueMap::new();
+    let mut m = Dict::new();
     for (name, value) in meta.iter() {
         m.insert(name.to_string(), Value::Bytes(value.to_vec()));
     }
@@ -212,7 +211,7 @@ fn get_schema(id: isize) -> Result<std::sync::Arc<CollectionSchema>, String> {
             .ok_or_else(|| format!("okm: unknown schema handle {id}"))
     })
 }
-pub(crate) fn steel_hash_to_map_for(id: isize, vals: SteelVal) -> Result<ValueMap, String> {
+pub(crate) fn steel_hash_to_map_for(id: isize, vals: SteelVal) -> Result<Dict, String> {
     let s = get_schema(id)?;
     steel_hash_to_map(&s, &vals)
 }

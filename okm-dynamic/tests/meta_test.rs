@@ -23,7 +23,7 @@
 
 use okm_core::schema::CollectionSchema;
 use okm_core::{Document, DocumentEncode, KeyEncode, VirtualStorage, meta};
-use okm_dynamic::{DynamicCollection, Value, ValueMap};
+use okm_dynamic::{Dict, DynamicCollection, Value};
 
 use okm_async::TestStore;
 /// ns 92 = `[0x00, 0x5C]` — the hex locks below spell it out.
@@ -54,8 +54,8 @@ fn dynamic<S: VirtualStorage>(store: S) -> DynamicCollection<S> {
     )
 }
 
-fn document(label: &str) -> ValueMap {
-    let mut m = ValueMap::new();
+fn document(label: &str) -> Dict {
+    let mut m = Dict::new();
     m.insert("label".into(), Value::Str(label.into()));
     m
 }

@@ -55,7 +55,7 @@ mod write;
 pub use okm_core::TableMeta;
 pub use okm_core::field::FieldType;
 pub use okm_core::schema::{CollectionSchema, FieldSchema};
-pub use okm_value::{CodecError, ValueMap, Variant as Value};
+pub use okm_value::{CodecError, Dict, Variant as Value};
 
 // NOTE (v1 scope): nested key segments are NOT supported by the dynamic
 // codec — `FieldType::Segment` does not exist (the key-composition
@@ -88,7 +88,7 @@ pub use write::WritePayload;
 /// reporting stay in one place.
 pub(crate) fn field_pair<'a>(
     field: &okm_core::schema::FieldSchema,
-    map: &'a ValueMap,
+    map: &'a Dict,
 ) -> Result<&'a Value, CodecError> {
     let name = field.name.as_str();
     let schema_ty = field.ty;
@@ -154,7 +154,7 @@ mod tests {
 
     #[test]
     fn field_pair_rejects_mismatches() {
-        let mut m = ValueMap::new();
+        let mut m = Dict::new();
         m.insert("a".into(), Value::U32(1));
         assert!(field_pair(&field("a", okm_core::field::FieldType::U32, 4), &m).is_ok());
         assert!(matches!(
@@ -187,7 +187,7 @@ mod tests {
     /// categorical field wider than a byte could not be written at all.
     #[test]
     fn a_wide_vocab_id_is_admitted_by_its_width() {
-        let mut m = ValueMap::new();
+        let mut m = Dict::new();
         m.insert("v".into(), Value::Bytes(vec![0, 7]));
         let vocab = field("v", okm_core::field::FieldType::Vocab(0x21), 2);
         assert!(field_pair(&vocab, &m).is_ok());

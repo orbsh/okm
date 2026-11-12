@@ -420,8 +420,8 @@ Writing is one verb, and the payload type chooses the path. The three face lifec
 | payload | path |
 |---|---|
 | `&R` | the row and its faces. The fresh-row fast path: it does NOT clean the previous values' faces (that is `purge` / `save_with_prev_into`'s job) |
-| `&Variant::Map(map)` (or `&ValueMap` on the dynamic side) | partial document: a declared name is a row read-modify-write (superseded face swept, ledger compensated), every other name overwrites itself in the segment, names the map omits keep their stored values |
-| `(&Variant::Map(map),)` (or `(&ValueMap,)`) | whole document: the map IS the document — an omitted declared field takes its default, an omitted dynamic name is removed |
+| `&Variant::Map(map)` (or `&Dict` on the dynamic side) | partial document: a declared name is a row read-modify-write (superseded face swept, ledger compensated), every other name overwrites itself in the segment, names the map omits keep their stored values |
+| `(&Variant::Map(map),)` (or `(&Dict,)`) | whole document: the map IS the document — an omitted declared field takes its default, an omitted dynamic name is removed |
 | `purge` | both slots, one commit — the ONE removal verb |
 
 A scalar or array payload is refused (`Error::NotADocument`): a scalar is a field VALUE, not a document. The payload is caller data, so a refused write writes nothing.
@@ -448,7 +448,7 @@ let doc = match (row, dyn_) {
 
 // Partial write: declared names are a row RMW (typed path, previous faces
 // cleaned), unknown names overwrite just those names in the dynamic segment.
-t.put(&key, &patch)?;                          // ValueMap / Variant::Map
+t.put(&key, &patch)?;                          // Dict / Variant::Map
 
 // Whole-document replacement: the map IS the document — absent declared
 // fields take defaults, unnamed dynamic names are removed. The one-element
@@ -464,6 +464,14 @@ t.purge(&key)?;                               // -> bool (something was there)
 `U32`/`U64`/`I64`/`F64`/`Str`/`Bytes`/`Bool`/`Null`/`Array`/`Map` — `Map` is the
 name-keyed object (a document is one), and nested `Map`s recurse as native frames
 (type tag 7) sharing the table's vocabulary; no CBOR.
+- The object is `okm_value::Dict`, a type and not an alias: an insertion-ordered
+name → value map whose backing container is private, so no caller can name it and
+swapping it changes no signature. It is used like a map (`get`, `insert`, `entry`,
+`iter`) because it derefs to the map, but the contract is the type's: iteration is
+INSERTION order (an overwrite keeps a name's place), equality ignores order, and a
+site needing a canonical order sorts explicitly. `Array` stays a plain `Vec` because
+a vector has one canonical implementation; an ordered map's implementation — and the
+ordering it implies — is a design choice the model must own.
 - The value form crosses a boundary as itself, not as a hand-written
 `match` per direction: `Serialize`/`Deserialize` for `Variant` ride the same `schema-serde` feature. `Deserialize` goes through `deserialize_any`, so the format must be self-describing (JSON, CBOR — not bincode); in JSON two collapses are unavoidable and documented — `Bytes` renders as a number array (CBOR keeps a byte string), and a non-negative `Int` reads back as `UInt`. The storage encoding is untouched: the block table's entries plus vocabulary ids remain the representation at rest (ADR-0057).
 - `Bytes` is the **opaque member** of the vocabulary: the store

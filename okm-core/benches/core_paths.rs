@@ -376,10 +376,10 @@ fn bench_write_changelog(c: &mut Criterion) {
 
 fn bench_dynamic(c: &mut Criterion) {
     use okm_core::schema::CollectionSchema;
-    use okm_dynamic::{Value, ValueMap, encode_key, encode_payload};
+    use okm_dynamic::{Dict, Value, encode_key, encode_payload};
 
     let schema = CollectionSchema::of::<BenchKey, BenchRow>();
-    let mut values = ValueMap::new();
+    let mut values = Dict::new();
     values.insert("org_id".into(), Value::U32(42));
     values.insert("user_id".into(), Value::U64(42));
     values.insert("tag".into(), Value::Bytes(vec![42, 0, 0, 0]));

@@ -242,9 +242,17 @@ call site never translates its data into a verb name:
 | payload | path |
 |---|---|
 | `&R` (typed side only) | the row and its faces; the fresh-row fast path, so the previous values' entries are NOT swept |
-| `&ValueMap` / `&Variant::Map(map)` | partial document: a declared name is a row read-modify-write (its superseded face swept, the ledger compensated), every other name overwrites that name in the segment, and names the map omits keep their stored values |
-| `(&ValueMap,)` / `(&Variant::Map(map),)` | whole document: the map IS the document — an omitted declared field takes its default, an omitted dynamic name is removed |
+| `&Dict` / `&Variant::Map(map)` | partial document: a declared name is a row read-modify-write (its superseded face swept, the ledger compensated), every other name overwrites that name in the segment, and names the map omits keep their stored values |
+| `(&Dict,)` / `(&Variant::Map(map),)` | whole document: the map IS the document — an omitted declared field takes its default, an omitted dynamic name is removed |
 | `purge` | both slots — the only removal verb, on both sides |
+
+The map those rows name is `okm_value::Dict`: an opaque, insertion-ordered
+name → value map, and the only spelling of a document object (`Variant::Map`
+carries it). It is used like a map — `get`, `insert`, `entry`, `iter`, `len`
+come from the map it derefs to — but the backing container is not part of the
+API, so no caller can name it and no signature changes if it is swapped.
+Iteration follows INSERTION order, not name order: a site that needs a
+canonical order across two documents sorts explicitly.
 
 The payload is caller data, so a write is fallible (`okm_core::Error`): a
 declared name carrying the wrong kind is `Error::KindMismatch`, never a silent
@@ -284,7 +292,7 @@ let doc = match (row, dyn_seg) {
 // Write: one verb, and the payload picks the path.
 // Merge — only the names given are touched; a declared name takes the typed
 // path (faces, reduces, events); unknown names join the dynamic segment.
-users.put(&key, &patch)?;                       // ValueMap
+users.put(&key, &patch)?;                       // Dict
 
 // Replace — the map IS the document (absent declared fields default, unnamed
 // dynamic names are removed). The one-element tuple is the whole-document arm.

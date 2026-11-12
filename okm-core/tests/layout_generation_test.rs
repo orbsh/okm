@@ -21,7 +21,7 @@ use okm_async::TestStore;
 use okm_core::changelog::window::{WindowConfig, load_sidecar, read_window, sidecar_of};
 use okm_core::changelog::{ChangelogConfig, ChangelogStore, apply_log_in_generation, table_dir};
 use okm_core::{Collection, Document, DocumentEncode, KeyEncode};
-use okm_value::Variant;
+use okm_value::{Dict, Variant};
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
 pub struct K {
@@ -77,7 +77,7 @@ fn a_window_stops_at_a_vocabulary_change() {
     {
         let c: Collection<_, K, Gen1> = Collection::captured(store(log.path())).expect("assemble");
         c.put(&K { id: 1 }, &Gen1 { level: 7 }).expect("put");
-        let mut open = std::collections::BTreeMap::new();
+        let mut open = Dict::new();
         open.insert(
             "note".to_string(),
             okm_value::Variant::Str("first".to_string()),
@@ -90,7 +90,7 @@ fn a_window_stops_at_a_vocabulary_change() {
     {
         let c: Collection<_, K, Gen1> = Collection::captured(store(log.path())).expect("assemble");
         c.put(&K { id: 1 }, &Gen1 { level: 8 }).expect("put");
-        let mut open = std::collections::BTreeMap::new();
+        let mut open = Dict::new();
         open.insert(
             "tag".to_string(),
             okm_value::Variant::Str("second".to_string()),

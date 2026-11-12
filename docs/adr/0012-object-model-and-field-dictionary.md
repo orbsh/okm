@@ -99,10 +99,14 @@ contract and the size envelope are in
   structure information living in the values, not in a per-document
   schema.
 - Ordering: entries carry NO ordering guarantee. Every writer in the tree
-  takes a name-keyed map (`BTreeMap`), so the bytes come out in NAME order
-  — not id order, and not the order a caller inserted its names. Readers
-  address dynamic fields by id, never by position, so nothing may assume
-  ids ascend inside the blob (a binary search over ids is not available).
+  takes the document map (`okm_value::Dict`, an opaque insertion-ordered
+  name → value map), so the bytes come out in that map's INSERTION order —
+  not id order, and not sorted by name. The map's container is not part of
+  the API (it is a type now, not an alias: see ADR-0035), so no site can
+  reach for sorted iteration; a document assembled in a different order
+  encodes to different bytes, which is a LAYOUT difference: readers address
+  dynamic fields by id, never by position, so nothing may assume ids ascend
+  inside the blob (a binary search over ids is not available).
 
 **Declared fields are indexed through their own faces; a dynamic field is
 indexed through a declared path.** Indexes need stable wire order and

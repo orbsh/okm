@@ -966,10 +966,8 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     }
 }
 
-use std::collections::BTreeMap;
-
 use crate::model::obj_vocab::{FIELD_VOCAB, Faces, Vocabulary, pending_in};
-use okm_value::Variant;
+use okm_value::Dict;
 
 impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> {
     /// Dynamic-segment key: `[header][0x01][key payload]` — the per-document
@@ -1004,11 +1002,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     /// back as [`Error`](crate::error::Error) instead of silently defaulting.
     /// The check runs before any op enters the batch, so a refused merge leaves
     /// the store exactly as it was — the dynamic half included.
-    pub(crate) fn merge_map(
-        &self,
-        key: &K,
-        object: &BTreeMap<String, Variant>,
-    ) -> crate::error::Result<()> {
+    pub(crate) fn merge_map(&self, key: &K, object: &Dict) -> crate::error::Result<()> {
         let (typed, dynamic) = self.split_names(object);
         let mut batch = crate::engine::storage::Batch::default();
         // The event a point verb owes its subscribers (ADR-0047): the row this
@@ -1051,11 +1045,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     /// Fallible for the same reason as the partial arm: the map is caller
     /// data, and a declared name that carries the wrong kind is refused before
     /// anything is written.
-    pub(crate) fn replace_map(
-        &self,
-        key: &K,
-        object: &BTreeMap<String, Variant>,
-    ) -> crate::error::Result<()> {
+    pub(crate) fn replace_map(&self, key: &K, object: &Dict) -> crate::error::Result<()> {
         let (typed, dynamic) = self.split_names(object);
         let mut batch = crate::engine::storage::Batch::default();
         // `replace` carries the same event rule as `merge`: whatever row it
@@ -1177,7 +1167,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     /// Crate-visible for the export bridge, which needs the segment WITHOUT the
     /// declared half (the variant column); a single half is [`Collection::get`],
     /// and the two halves are composed by the caller as values.
-    pub fn slot1_map(&self, key: &K) -> crate::error::Result<Option<BTreeMap<String, Variant>>> {
+    pub fn slot1_map(&self, key: &K) -> crate::error::Result<Option<Dict>> {
         let raw = match self.store.get(&self.fields_key(key))? {
             Some(raw) => raw,
             None => return Ok(None),
@@ -1203,7 +1193,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         if frames.is_empty() {
             return Ok(None);
         }
-        let mut out = BTreeMap::new();
+        let mut out = Dict::new();
         for f in frames {
             if let Some(name) = d.name_of(&mut door, f.id)? {
                 out.insert(name, f.value);
@@ -1221,7 +1211,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         &self,
         batch: &mut crate::engine::storage::Batch,
         key: &K,
-        variants: &BTreeMap<String, Variant>,
+        variants: &Dict,
     ) -> crate::error::Result<()> {
         let header = self.header();
         let k = self.fields_key(key);
@@ -1261,13 +1251,10 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
 
     /// Split a name-keyed map along the declaration: declared names are the
     /// static segment, the rest the dynamic one.
-    fn split_names(
-        &self,
-        object: &BTreeMap<String, Variant>,
-    ) -> (BTreeMap<String, Variant>, BTreeMap<String, Variant>) {
+    fn split_names(&self, object: &Dict) -> (Dict, Dict) {
         let declared: std::collections::HashSet<&str> = R::FIELDS.iter().map(|f| f.name).collect();
-        let mut typed = BTreeMap::new();
-        let mut dynamic = BTreeMap::new();
+        let mut typed = Dict::new();
+        let mut dynamic = Dict::new();
         for (name, value) in object {
             if declared.contains(name.as_str()) {
                 typed.insert(name.clone(), value.clone());

@@ -64,7 +64,7 @@ use crate::engine::storage::{Batch, VirtualStorage, scan_suffix_kv};
 use crate::model::index::{DYNAMIC_SLOT, Document, PRIMARY_SLOT, Slot, write_slot};
 use crate::model::key::KeyEncode;
 use crate::model::obj_vocab::{Faces, PREDICATE_VOCAB, Vocabulary};
-use okm_value::{Variant, decode_named};
+use okm_value::{Dict, decode_named};
 
 /// Fixed face 0x06: out-edge traversal, pair-qualified
 /// (`[src][dst][edge_id]`): prefix on `src` deliberately keeps the "all of a
@@ -548,7 +548,7 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
         &mut self,
         batch: &mut Batch,
         edge_id: u64,
-        fields: &std::collections::BTreeMap<String, Variant>,
+        fields: &Dict,
     ) -> crate::error::Result<()> {
         let key = self.dynamic_key(edge_id);
         batch.del(&key);
@@ -571,10 +571,7 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
     /// vocabulary cannot resolve is dropped rather than invented, and an empty
     /// segment answers `None` (no attributes) — the same rule the document path
     /// follows.
-    pub fn attrs(
-        &self,
-        edge_id: u64,
-    ) -> crate::error::Result<Option<std::collections::BTreeMap<String, Variant>>> {
+    pub fn attrs(&self, edge_id: u64) -> crate::error::Result<Option<Dict>> {
         let raw = match self.store.get(&self.dynamic_key(edge_id))? {
             Some(raw) => raw,
             None => return Ok(None),
@@ -596,7 +593,7 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
         if frames.is_empty() {
             return Ok(None);
         }
-        let mut out = std::collections::BTreeMap::new();
+        let mut out = Dict::new();
         for frame in frames {
             if let Some(name) = dict.name_of(&mut door, frame.id)? {
                 out.insert(name, frame.value);

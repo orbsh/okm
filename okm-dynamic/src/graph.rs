@@ -30,7 +30,7 @@ use okm_core::model::graph::{
 use okm_core::obj_vocab::{FIELD_VOCAB, Faces, PREDICATE_VOCAB, Vocabulary};
 use okm_core::schema::CollectionSchema;
 use okm_core::storage::{Batch, VirtualStorage, scan_suffix_kv};
-use okm_value::{Variant, decode_named};
+use okm_value::{Dict, decode_named};
 
 /// One dynamic edge: endpoints by reference, predicate by name,
 /// attributes as a name-keyed map (nTLV frames on the wire, ids allocated
@@ -40,7 +40,7 @@ pub struct DynEdge {
     pub src: NodeRef,
     pub dst: NodeRef,
     pub predicate: String,
-    pub attrs: std::collections::BTreeMap<String, Variant>,
+    pub attrs: Dict,
 }
 
 /// Engine = the dynamic form's operation surface. Symmetric with
@@ -179,10 +179,7 @@ impl<S: VirtualStorage> Graph<S> {
 
     /// Attribute map → nTLV frames (ids via the field vocabulary; values are
     /// self-describing typed frames — the dynamic segment's own wire).
-    fn attrs_wire(
-        &mut self,
-        attrs: &std::collections::BTreeMap<String, Variant>,
-    ) -> Result<Vec<u8>, String> {
+    fn attrs_wire(&mut self, attrs: &Dict) -> Result<Vec<u8>, String> {
         // The segment codec speaks core's error type, so the closure hands it
         // the vocabulary's own result rather than this facade's string form.
         let Self {
@@ -196,10 +193,7 @@ impl<S: VirtualStorage> Graph<S> {
     /// Attribute frames → name-keyed map (ids resolved via the field
     /// vocabulary; unknown ids dropped — the shared-engine degraded mode,
     /// the same rule the dynamic reader (`fetch`) follows).
-    fn attrs_from(
-        &mut self,
-        wire: &[u8],
-    ) -> Result<std::collections::BTreeMap<String, Variant>, String> {
+    fn attrs_from(&mut self, wire: &[u8]) -> Result<Dict, String> {
         // Nested ids resolve through the same mirror; a store failure is parked
         // and raised after the walk (a nested decode has nowhere else to put it).
         let mut failed: Option<String> = None;
@@ -213,7 +207,7 @@ impl<S: VirtualStorage> Graph<S> {
         if let Some(e) = failed {
             return Err(e);
         }
-        let mut out = std::collections::BTreeMap::new();
+        let mut out = Dict::new();
         for f in frames {
             if let Some(name) = self.field_label(f.id)? {
                 out.insert(name, f.value);
@@ -404,7 +398,7 @@ impl<S: VirtualStorage> Graph<S> {
             .map_err(|e| e.to_string())?
         {
             Some(wire) => self.attrs_from(&wire)?,
-            None => std::collections::BTreeMap::new(),
+            None => Dict::new(),
         };
         Ok(Some(DynEdge {
             src,

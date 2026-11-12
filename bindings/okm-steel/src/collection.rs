@@ -22,7 +22,7 @@
 //!   binds it at inject time.
 
 use okm_core::storage::VirtualStorage;
-use okm_dynamic::ValueMap;
+use okm_dynamic::Dict;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use steel::steel_vm::engine::Engine;
@@ -447,6 +447,6 @@ fn vector_of(items: Vec<SteelVal>) -> SteelVal {
 fn hash_to_map(
     schema: &okm_core::schema::CollectionSchema,
     v: &SteelVal,
-) -> Result<ValueMap, String> {
+) -> Result<Dict, String> {
     crate::steel_hash_to_map(schema, v)
 }

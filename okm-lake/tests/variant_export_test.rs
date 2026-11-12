@@ -13,7 +13,7 @@
 use okm_async::TestStore;
 use okm_core::{DocumentEncode, KeyEncode, okm_value::Variant};
 use okm_lake::bridge::ToRecordBatch;
-use std::collections::BTreeMap;
+use okm_value::Dict;
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
 pub struct UserKey {
@@ -35,11 +35,11 @@ fn variant_column_export() {
         okm_core::Collection::new(TestStore::slatedb_mem());
 
     // Document 1: declared fields + dynamic segment.
-    let mut dyn1: BTreeMap<String, Variant> = BTreeMap::new();
+    let mut dyn1 = Dict::new();
     dyn1.insert("score".into(), Variant::U64(99));
     dyn1.insert(
         "nested".into(),
-        Variant::Map(BTreeMap::from([
+        Variant::Map(Dict::from([
             ("x".into(), Variant::I64(-3)),
             ("flag".into(), Variant::Bool(true)),
         ])),

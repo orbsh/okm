@@ -24,8 +24,7 @@
     clippy::panic_in_result_fn
 )]
 
-use okm_value::Variant;
-use std::collections::BTreeMap;
+use okm_value::{Dict, Variant};
 
 use okm_async::TestStore;
 use okm_core::{Collection, Document, DocumentEncode, KeyEncode};
@@ -50,7 +49,7 @@ fn table() -> Collection<TestStore, DocKey, Doc> {
     <Doc as Document>::collection(TestStore::slatedb_mem())
 }
 
-fn map(pairs: &[(&str, Variant)]) -> BTreeMap<String, Variant> {
+fn map(pairs: &[(&str, Variant)]) -> Dict {
     pairs
         .iter()
         .map(|(name, value)| ((*name).to_string(), value.clone()))
@@ -69,7 +68,7 @@ fn faces(t: &Collection<TestStore, DocKey, Doc>, owner: u64) -> usize {
 /// document and an empty one answer the same question here. The composition
 /// is the two primitives: a point read answers parts, the row converts to a
 /// value, values merge.
-fn doc_map(t: &Collection<TestStore, DocKey, Doc>, k: &DocKey) -> BTreeMap<String, Variant> {
+fn doc_map(t: &Collection<TestStore, DocKey, Doc>, k: &DocKey) -> Dict {
     let (row, seg) = t
         .get::<(okm_core::parts::Row, okm_core::parts::Value)>(k)
         .unwrap();
@@ -221,7 +220,7 @@ fn a_one_element_tuple_payload_replaces_the_whole_document() {
 
     // `replace` with no declared name at all is `purge`'s write, through the
     // same verb.
-    t.put(&k, (&Variant::Map(BTreeMap::new()),)).unwrap();
+    t.put(&k, (&Variant::Map(Dict::new()),)).unwrap();
     assert!(t.get_row(&k).unwrap().is_none());
     let (row, seg) = t
         .get::<(okm_core::parts::Row, okm_core::parts::Value)>(&k)

@@ -19,7 +19,7 @@ use arrow::array::{
 };
 use arrow::compute::{concat_batches, take};
 use arrow::row::{RowConverter, SortField};
-use okm_value::{ValueMap, Variant};
+use okm_value::{Dict, Variant};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use std::collections::HashMap;
 use std::fmt;
@@ -258,7 +258,7 @@ fn resolve(
         order: usize,
         put: Option<usize>,
         /// The document's open half, accumulated across every window that wrote one.
-        open: Option<ValueMap>,
+        open: Option<Dict>,
     }
     let mut newest: HashMap<Vec<u8>, Winner> = HashMap::new();
     let open_at = schema.index_of(OPEN_FIELDS_COLUMN).ok();
@@ -342,7 +342,7 @@ fn resolve(
         arrays.push(take(column.as_ref(), &declared, None)?);
     }
     if let Some(at) = variant_at {
-        let maps: Vec<Option<&ValueMap>> = live.iter().map(|(_, w)| w.open.as_ref()).collect();
+        let maps: Vec<Option<&Dict>> = live.iter().map(|(_, w)| w.open.as_ref()).collect();
         let (_, column) = crate::bridge::variant_column(OPEN_FIELDS_COLUMN, &maps);
         arrays[at] = column;
     }
@@ -550,7 +550,7 @@ fn files_to_fold(
 /// The cell is `struct(metadata, value)` in the Parquet variant encoding, and the cell's object
 /// is a document's open fields. Reading it is what lets a fold MERGE two windows' open halves
 /// instead of dropping the older one.
-pub fn open_fields(cell: &StructArray, row: usize) -> Result<ValueMap> {
+pub fn open_fields(cell: &StructArray, row: usize) -> Result<Dict> {
     let bytes = |at: usize| -> Result<&[u8]> {
         let column = cell
             .column(at)
@@ -564,7 +564,7 @@ pub fn open_fields(cell: &StructArray, row: usize) -> Result<ValueMap> {
     let object = variant
         .as_object()
         .ok_or_else(|| ReadError::new("a variant cell holds no object"))?;
-    let mut map = ValueMap::new();
+    let mut map = Dict::new();
     for (name, value) in object.iter() {
         map.insert(name.to_string(), as_dynamic(&value)?);
     }
@@ -604,7 +604,7 @@ fn as_dynamic(value: &parquet_variant::Variant<'_, '_>) -> Result<Variant> {
         return Ok(Variant::Array(items));
     }
     if let Some(object) = value.as_object() {
-        let mut map = ValueMap::new();
+        let mut map = Dict::new();
         for (name, value) in object.iter() {
             map.insert(name.to_string(), as_dynamic(&value)?);
         }
@@ -617,7 +617,7 @@ fn as_dynamic(value: &parquet_variant::Variant<'_, '_>) -> Result<Variant> {
 
 /// `source` over `target`: a field the later window wrote wins, and two objects merge field by
 /// field so a document's open half accumulates instead of being replaced wholesale.
-pub(crate) fn merge_open(target: &mut ValueMap, source: &ValueMap) {
+pub(crate) fn merge_open(target: &mut Dict, source: &Dict) {
     for (name, value) in source {
         let nested = match (target.get(name), value) {
             (Some(Variant::Map(kept)), Variant::Map(next)) => {

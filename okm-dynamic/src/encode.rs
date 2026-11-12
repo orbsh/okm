@@ -4,11 +4,11 @@
 //! (`HOT_WIDTH`), and the payload's generation is the SEGMENT header's statement
 //! (ADR-0042 as amended), so a row carries neither a length nor a version.
 
-use crate::{CodecError, CollectionSchema, Value, ValueMap, field_pair};
+use crate::{CodecError, CollectionSchema, Dict, Value, field_pair};
 
 /// Encode the key from the value map: fields in schema order, BE widths.
 /// Returns exactly `schema.key_len` bytes (nested segments recurse).
-pub fn encode_key(schema: &CollectionSchema, values: &ValueMap) -> Result<Vec<u8>, CodecError> {
+pub fn encode_key(schema: &CollectionSchema, values: &Dict) -> Result<Vec<u8>, CodecError> {
     let mut buf = Vec::with_capacity(schema.key_len);
     for f in &schema.key_fields {
         encode_field(f, values, &mut buf)?;
@@ -21,7 +21,7 @@ pub fn encode_key(schema: &CollectionSchema, values: &ValueMap) -> Result<Vec<u8
 /// Cold frames are written in schema declaration order (the map order is
 /// irrelevant); every declared cold field MUST be present — dynamic
 /// payloads are fully materialized (no partial documents).
-pub fn encode_payload(schema: &CollectionSchema, values: &ValueMap) -> Result<Vec<u8>, CodecError> {
+pub fn encode_payload(schema: &CollectionSchema, values: &Dict) -> Result<Vec<u8>, CodecError> {
     let mut hot = Vec::with_capacity(schema.hot_width);
     for f in &schema.hot_fields {
         encode_field(f, values, &mut hot)?;
@@ -64,7 +64,7 @@ pub fn encode_payload(schema: &CollectionSchema, values: &ValueMap) -> Result<Ve
 pub fn encode_fields(
     schema: &CollectionSchema,
     names: &[String],
-    values: &ValueMap,
+    values: &Dict,
 ) -> Result<Vec<u8>, CodecError> {
     let mut buf = Vec::new();
     for name in names {
@@ -100,7 +100,7 @@ pub fn encode_fields(
 /// fields go through `encode_payload`'s TLV path.
 fn encode_field(
     f: &okm_core::schema::FieldSchema,
-    values: &ValueMap,
+    values: &Dict,
     buf: &mut Vec<u8>,
 ) -> Result<(), CodecError> {
     let v = field_pair(f, values)?;

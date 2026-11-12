@@ -22,9 +22,8 @@ use okm_async::TestStore;
 use okm_core::schema::CollectionSchema;
 use okm_core::{DocumentEncode, KeyEncode, VirtualStorage};
 use okm_dynamic::{
-    AccessMethod, AccessMethodKind, BoundReduce, DynamicCollection, ReduceSpec, Value, ValueMap,
+    AccessMethod, AccessMethodKind, BoundReduce, Dict, DynamicCollection, ReduceSpec, Value,
 };
-use std::collections::BTreeMap;
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
 pub struct UserKey {
@@ -107,8 +106,8 @@ fn schema() -> CollectionSchema {
 /// The PAYLOAD names only: the identity is the pkey's business, and a map
 /// naming a key field would be writing a DYNAMIC field of that name (ADR-0035:
 /// the classifier is the payload declaration, not the schema's whole name set).
-fn values(level: u32, score: u16, name: &str) -> ValueMap {
-    let mut m = BTreeMap::new();
+fn values(level: u32, score: u16, name: &str) -> Dict {
+    let mut m = Dict::new();
     m.insert("level".into(), Value::U32(level));
     m.insert("score".into(), Value::U16(score));
     m.insert("name".into(), Value::Str(name.into()));
@@ -123,7 +122,7 @@ fn key_bytes(org_id: u32, user_id: u64) -> Vec<u8> {
 /// returning encoded bytes — the shape a Python/Steel callable fills.
 /// Fan-out on the name's bytes (inverted-index regime); the encoding is
 /// the caller's (BE u32 here, matching the Rust `user_tags`).
-fn func_tags(document: &ValueMap) -> Result<Vec<Vec<u8>>, String> {
+fn func_tags(document: &Dict) -> Result<Vec<Vec<u8>>, String> {
     match document.get("name") {
         Some(Value::Str(s)) => Ok(s
             .bytes()
@@ -142,17 +141,12 @@ impl okm_dynamic::ReduceLogic for GroupCount {
     fn seed(&self) -> Vec<u8> {
         0u64.to_be_bytes().to_vec()
     }
-    fn fold(&self, acc: &mut Vec<u8>, _key: &ValueMap, _document: &ValueMap) -> Result<(), String> {
+    fn fold(&self, acc: &mut Vec<u8>, _key: &Dict, _document: &Dict) -> Result<(), String> {
         let n = be_u64(acc) + 1;
         *acc = n.to_be_bytes().to_vec();
         Ok(())
     }
-    fn unfold(
-        &self,
-        acc: &mut Vec<u8>,
-        _key: &ValueMap,
-        _document: &ValueMap,
-    ) -> Result<(), String> {
+    fn unfold(&self, acc: &mut Vec<u8>, _key: &Dict, _document: &Dict) -> Result<(), String> {
         let n = be_u64(acc)
             .checked_sub(1)
             .ok_or("accumulator underflow: unfold without fold")?;
@@ -171,7 +165,7 @@ fn be_u64(b: &[u8]) -> u64 {
 
 /// The dynamic-side "active" predicate: the host closure gates on the
 /// name's first byte (bool is not a typed schema kind in v1 scope).
-fn active(document: &ValueMap) -> Result<bool, String> {
+fn active(document: &Dict) -> Result<bool, String> {
     Ok(matches!(document.get("name"), Some(Value::Str(s)) if s.as_bytes() == b"a"))
 }
 
@@ -211,7 +205,7 @@ fn reduce_entry_key(t: &DynamicCollection<TestStore>, level: u32) -> Vec<u8> {
         group_fields: vec!["level".into()],
         logic: Box::new(GroupCount),
     });
-    let mut m = BTreeMap::new();
+    let mut m = Dict::new();
     m.insert("level".into(), Value::U32(level));
     reduce
         .entry_key(t.schema(), &42u16.to_be_bytes(), &m, &m)

@@ -52,7 +52,7 @@ head   = bit 7      复合：这一项拥有下一个块
 
 **5. 编解码器搬出 `okm-core`，值词汇表跟着走。** 段编解码器（`encode` / `decode`）被不止一个 crate 使用——`okm-core` 自己（`document.rs`、`model/graph.rs`）与 `okm-dynamic`（`graph.rs`、`plan_fields.rs`）——而它的货币类型 `Variant` 还用得更外面（`okm-dynamic` 把它 re-export 成 `Value`，`okm-lake` 与绑定层都建在它上面）。本 ADR 采用的规则就一句：**一个 crate 用的编解码器是那个 crate 里的模块；两个或更多 crate 用的，是它自己的 crate。** 这也是 ADR-0059 的轴判据——切分单位要等于变化的单位，而值类型与布局版本按自己的节奏变，不随存储走。
 
-这个 crate 不能只是编解码器：它的接口类型是 `Variant`，一个回头向 `okm-core` 要自己入参类型的 crate 就是循环依赖。所以新 crate 是"无 schema 的值 + 它的词表视图 + 两者的编解码器"——`okm-value`：`Variant` / `DynamicField` / `ValueMap` / `CodecError`、`encode` / `decode`，以及裁决 6 那道词表缝。`okm-core` 依赖它；旧路径下不留任何 re-export（ADR-0043 的姿态：改名不留别名）。
+这个 crate 不能只是编解码器：它的接口类型是 `Variant`，一个回头向 `okm-core` 要自己入参类型的 crate 就是循环依赖。所以新 crate 是"无 schema 的值 + 它的词表视图 + 两者的编解码器"——`okm-value`：`Variant` / `DynamicField` / `Dict` / `CodecError`、`encode` / `decode`，以及裁决 6 那道词表缝。`okm-core` 依赖它；旧路径下不留任何 re-export（ADR-0043 的姿态：改名不留别名）。
 
 **6. 编解码器是有状态的，而词表跟持有存储的句柄一起死。** 段里装的是 id，所以字段名词汇表的两个方向都要穿过 codec 的边界。上一版把这件事叫"编码器"是错的：它持有一份词表，所以它**就是**词表，而词表是有状态的。`okm_value::Vocabulary` 持有两个方向，除此之外对存储一无所知；编码和解码是它的方法。
 
@@ -82,7 +82,7 @@ head   = bit 7      复合：这一项拥有下一个块
 ## 后果
 
 - 已有的库连同它的 changelog 目录一起删除，不走 replay（见裁决 4）。这条放在第一位，因为它是唯一不可逆的一条：字节里没有任何东西能区分 v2 段与 v3 段，所以两个构建不能共用一个库。
-- `okm_core::model::obj_dynamic` 与 `okm_core::obj_segment` 的路径变成 `okm_value::…`：对 `okm-dynamic`、`okm-lake`、绑定层和 core 自己的调用点是破坏性的。`ValueMap` / `NameResolver` / `CodecError` 跟着 `Variant` 一起搬，所以接收它们的 trait 实现也一起搬。
+- `okm_core::model::obj_dynamic` 与 `okm_core::obj_segment` 的路径变成 `okm_value::…`：对 `okm-dynamic`、`okm-lake`、绑定层和 core 自己的调用点是破坏性的。`Dict` / `NameResolver` / `CodecError` 跟着 `Variant` 一起搬，所以接收它们的 trait 实现也一起搬。
 - "叶子条目与旧内联帧头逐字节相同"（ADR-0057 §6）不再成立；机制页、那串手算的十六进制例子以及 MODELING 的语法行都要跟着改。
 - 解码只多一条规则：bit 7 置位表示没有长度；否则 len 码为 7 表示后面跟一个 `put_len` varint；再否则那三位的值就是长度。逃逸那一个分支就是全部新增代码路径。
 - 早先那个"定宽类型不带长度、宽度放类型里"的头部设想，作为否决记录留在这里，免得下一次评审重新推导一遍。

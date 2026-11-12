@@ -12,10 +12,9 @@
     clippy::panic_in_result_fn
 )]
 
-use std::collections::BTreeMap;
+use okm_value::{Dict, Variant};
 
 use okm_core::{Document, DocumentEncode, KeyEncode};
-use okm_value::Variant;
 
 /// The document as one map: the row's value with the dynamic segment laid over
 /// it — a point read answers parts, a row converts to a value, and values
@@ -23,7 +22,7 @@ use okm_value::Variant;
 fn doc_of<S, K, R>(
     col: &okm_core::Collection<S, K, R>,
     key: &K,
-) -> okm_core::error::Result<Option<std::collections::BTreeMap<String, okm_value::Variant>>>
+) -> okm_core::error::Result<Option<Dict>>
 where
     S: okm_core::VirtualStorage,
     K: okm_core::KeyEncode,
@@ -79,7 +78,7 @@ fn key(user_id: u64) -> ProfileKey {
     ProfileKey { org_id: 7, user_id }
 }
 
-fn map_of(pairs: &[(&str, Variant)]) -> BTreeMap<String, Variant> {
+fn map_of(pairs: &[(&str, Variant)]) -> Dict {
     pairs
         .iter()
         .map(|(name, value)| ((*name).to_string(), value.clone()))

@@ -192,7 +192,7 @@ in-memory work left is the visited set.
 
 `Graph<S, E>` (fixed ontology: attributes are declared struct fields,
 typed attrs bodies) and `okm_dynamic::Graph<S>` (attributes are runtime
-nTLV frames, `DynEdge { predicate: String, attrs: BTreeMap<..> }`) expose
+nTLV frames, `DynEdge { predicate: String, attrs: Dict }`) expose
 the SAME read methods over the SAME faces. Differences visible to
 queries:
 

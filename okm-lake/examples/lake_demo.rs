@@ -15,7 +15,7 @@
 use okm_core::changelog::{ChangelogConfig, ChangelogStore};
 use okm_core::{Collection, DocumentEncode, KeyEncode, Vocab};
 use okm_lake::{DrainConfig, drain};
-use okm_value::Variant;
+use okm_value::{Dict, Variant};
 
 use okm_async::TestStore;
 #[derive(KeyEncode, Clone, PartialEq, Debug)]
@@ -56,7 +56,7 @@ fn main() {
         }
         // A field the declaration does not have: the segment is truth, so the lake
         // carries it as a `variant` column.
-        let mut extra = std::collections::BTreeMap::new();
+        let mut extra = Dict::new();
         extra.insert("note".to_string(), Variant::Str("first".to_string()));
         c.put(&K { org: 7, id: 1 }, &Variant::Map(extra))
             .expect("merge");

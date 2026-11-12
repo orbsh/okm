@@ -23,9 +23,8 @@ use okm_core::{
     Collection, Document, DocumentEncode, KeyEncode, Offset, Quant, VarInt, VirtualStorage,
 };
 use okm_dynamic::{
-    CodecError, Value, ValueMap, decode_key, decode_payload, encode_key, encode_payload,
+    CodecError, Dict, Value, decode_key, decode_payload, encode_key, encode_payload,
 };
-use std::collections::BTreeMap;
 
 /// The document as one map: the row's value with the dynamic segment laid over
 /// it — a point read answers parts, a row converts to a value, and values
@@ -33,7 +32,7 @@ use std::collections::BTreeMap;
 fn doc_of<S, K, R>(
     col: &okm_core::Collection<S, K, R>,
     key: &K,
-) -> okm_core::error::Result<Option<std::collections::BTreeMap<String, okm_value::Variant>>>
+) -> okm_core::error::Result<Option<Dict>>
 where
     S: okm_core::VirtualStorage,
     K: okm_core::KeyEncode,
@@ -126,8 +125,8 @@ fn schema_export_matches_declaration() {
     );
 }
 
-fn sample_values() -> ValueMap {
-    let mut m = BTreeMap::new();
+fn sample_values() -> Dict {
+    let mut m = Dict::new();
     m.insert("org_id".into(), Value::U32(0x0A0B_0C0D));
     m.insert("user_id".into(), Value::U64(0x1122_3344_5566_7788));
     m.insert("level".into(), Value::U32(9));
@@ -236,7 +235,7 @@ fn dynamic_rejects_schema_violations() {
     // policy; the core walk is schema-driven and silent here.)
 
     // Missing field.
-    let mut bad = BTreeMap::new();
+    let mut bad = Dict::new();
     bad.insert("org_id".into(), Value::U32(1));
     assert!(matches!(
         encode_key(&schema, &bad),
@@ -353,12 +352,12 @@ fn a_key_name_in_a_map_is_a_value_field_in_both_modes() {
         user_id: 1,
     };
 
-    let mut typed_map = BTreeMap::new();
+    let mut typed_map = Dict::new();
     typed_map.insert("org_id".to_string(), Variant::U64(999));
     typed_map.insert("note".to_string(), Variant::Str("hi".into()));
     typed.put(&key, &Variant::Map(typed_map)).unwrap();
 
-    let mut dyn_map = BTreeMap::new();
+    let mut dyn_map = Dict::new();
     dyn_map.insert("org_id".to_string(), Value::U32(999));
     dyn_map.insert("note".to_string(), Value::Str("hi".into()));
     dynamic.put(&key.encode(), &dyn_map).unwrap();
@@ -425,7 +424,7 @@ fn the_two_enumeration_modes_see_the_two_kinds_of_document() {
             },
         )
         .unwrap();
-    let mut dynamic_only = BTreeMap::new();
+    let mut dynamic_only = Dict::new();
     dynamic_only.insert("note".to_string(), Variant::Str("no row".into()));
     typed
         .put(&segment_only, &Variant::Map(dynamic_only))
@@ -466,10 +465,10 @@ fn the_two_enumeration_modes_see_the_two_kinds_of_document() {
         CollectionSchema::of::<UserKey, User>(),
         vec![],
     );
-    let mut row_map = BTreeMap::new();
+    let mut row_map = Dict::new();
     row_map.insert("level".to_string(), Value::U32(3));
     dynamic.put(&with_row.encode(), &row_map).unwrap();
-    let mut dyn_only = BTreeMap::new();
+    let mut dyn_only = Dict::new();
     dyn_only.insert("note".to_string(), Value::Str("no row".into()));
     dynamic.put(&segment_only.encode(), &dyn_only).unwrap();
     assert_eq!(
@@ -512,8 +511,8 @@ fn wrapped_row() -> Wrapped {
     }
 }
 
-fn wrapped_values() -> ValueMap {
-    let mut m = BTreeMap::new();
+fn wrapped_values() -> Dict {
+    let mut m = Dict::new();
     m.insert("n".into(), Value::U32(7));
     m.insert("created".into(), Value::I64(1_700_000_050));
     m.insert("price".into(), Value::F64(12.345));

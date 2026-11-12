@@ -32,9 +32,8 @@
 
 use crate::Error;
 use crate::value::ObjValueType;
-use crate::value::{DynamicField, ValueMap, Variant};
+use crate::value::{Dict, DynamicField, Variant};
 use crate::varint::{put_len, take_len};
-use std::collections::BTreeMap;
 
 /// Bit 7 of an entry's head: this entry owns the next block.
 const COMPOSITE: u8 = 0x80;
@@ -86,7 +85,7 @@ struct Entry {
 /// through the same vocabulary — one vocabulary per table, so nesting needs no
 /// second one.
 pub fn encode<E>(
-    fields: &ValueMap,
+    fields: &Dict,
     vocab: &mut dyn FnMut(&str) -> Result<u16, E>,
 ) -> Result<Vec<u8>, Error<E>> {
     let mut values: Vec<u8> = Vec::new();
@@ -393,7 +392,7 @@ pub fn decode(bytes: &[u8], name_of: &mut dyn FnMut(u16) -> Option<String>) -> V
                         Variant::Array(children.into_iter().map(|(_, v)| v).collect())
                     }
                     Some(ObjValueType::Obj) => {
-                        let mut map = BTreeMap::new();
+                        let mut map = Dict::new();
                         for (id, v) in children {
                             let key = name_of(id).unwrap_or_else(|| id.to_string());
                             map.insert(key, v);
@@ -478,7 +477,7 @@ fn decode_body(ty: u8, body: &[u8]) -> Option<Variant> {
 mod tests {
     use super::*;
 
-    fn map(pairs: &[(&str, Variant)]) -> ValueMap {
+    fn map(pairs: &[(&str, Variant)]) -> Dict {
         pairs
             .iter()
             .map(|(k, v)| ((*k).to_string(), v.clone()))
@@ -494,7 +493,7 @@ mod tests {
         }
     }
 
-    fn round_trip(fields: &ValueMap) -> Vec<(String, Variant)> {
+    fn round_trip(fields: &Dict) -> Vec<(String, Variant)> {
         let mut v = vocab();
         let bytes = encode(fields, &mut v).expect("encode");
         // Flat maps only: names allocate in map order, so id k is names[k-1].
@@ -526,7 +525,7 @@ mod tests {
 
     #[test]
     fn a_nested_object_and_array_keep_their_shape() {
-        let mut inner = BTreeMap::new();
+        let mut inner = Dict::new();
         inner.insert("leaf".to_string(), Variant::U64(1));
         let fields = map(&[
             ("obj", Variant::Map(inner)),
@@ -550,7 +549,7 @@ mod tests {
         let decoded = decode(&bytes, &mut |id| {
             snapshot.get((id as usize).checked_sub(1)?).cloned()
         });
-        let mut by_name: BTreeMap<String, Variant> = BTreeMap::new();
+        let mut by_name = Dict::new();
         for field in decoded {
             let name = snapshot
                 .get((field.id as usize) - 1)
@@ -628,8 +627,8 @@ mod tests {
     // ---- layout v3: one head byte (ADR-0060) -------------------------------
 
     /// id 1, len 1, UInt; id 2, Array; id 3, len 3, Str; id 4, Obj.
-    fn nested_example() -> ValueMap {
-        let inner = BTreeMap::from([("leaf".to_string(), Variant::I64(-2))]);
+    fn nested_example() -> Dict {
+        let inner = Dict::from([("leaf".to_string(), Variant::I64(-2))]);
         map(&[
             ("alpha", Variant::U64(7)),
             (

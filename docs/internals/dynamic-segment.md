@@ -47,7 +47,7 @@ Minimal big-endian integers — unsigned drops leading zeros and is never empty;
 
 ## Order, which is part of the format
 
-Inside a block, entries are written in the field NAME's byte order (every writer iterates a `BTreeMap`), and the vocabulary ids are allocated on that same walk — which is why one map at a fixed vocabulary encodes to one byte string. Blocks are breadth-first from block 0, and the *j*-th composite met while walking the blocks owns block *j+1*; that counter is what makes a stored offset unnecessary for nesting, and it puts both orders in the format rather than in a convention: a writer that queues differently, or a reader that numbers differently, lands a subtree under the wrong parent. The arithmetic checks catch the gross versions of that mistake, not the quiet one.
+Inside a block, entries are written in the order the map carries — its INSERTION order, since the document map is an insertion-ordered `Dict` and not a sorted one — and the vocabulary ids are allocated on that same walk, which is why one map (one insertion order) at a fixed vocabulary encodes to one byte string. Blocks are breadth-first from block 0, and the *j*-th composite met while walking the blocks owns block *j+1*; that counter is what makes a stored offset unnecessary for nesting, and it puts both orders in the format rather than in a convention: a writer that queues differently, or a reader that numbers differently, lands a subtree under the wrong parent. The arithmetic checks catch the gross versions of that mistake, not the quiet one.
 
 The value area is the leaves in table order, so a leaf's body begins at the sum of the leaf lengths before it — summed across blocks, not per block.
 

@@ -20,7 +20,7 @@
 use okm_async::TestStore;
 use okm_core::schema::CollectionSchema;
 use okm_core::{DocumentEncode, KeyEncode, write_slot};
-use okm_dynamic::{DynamicCollection, Value, ValueMap};
+use okm_dynamic::{Dict, DynamicCollection, Value};
 
 const NS: u16 = 47;
 
@@ -44,7 +44,7 @@ fn key(id: u64) -> Vec<u8> {
     id.to_be_bytes().to_vec()
 }
 
-fn map(pairs: &[(&str, Value)]) -> ValueMap {
+fn map(pairs: &[(&str, Value)]) -> Dict {
     pairs
         .iter()
         .map(|(name, value)| ((*name).to_string(), value.clone()))
@@ -96,12 +96,12 @@ fn two_handles_allocate_one_id_per_label() {
         "one id per label, whichever handle wrote it"
     );
     assert_eq!(
-        a.fetch(&key(3)).unwrap().unwrap()["gamma"],
-        Value::Str("z".into())
+        a.fetch(&key(3)).unwrap().unwrap().get("gamma").cloned(),
+        Some(Value::Str("z".into()))
     );
     assert_eq!(
-        b.fetch(&key(2)).unwrap().unwrap()["beta"],
-        Value::Str("y".into())
+        b.fetch(&key(2)).unwrap().unwrap().get("beta").cloned(),
+        Some(Value::Str("y".into()))
     );
 }
 
@@ -119,16 +119,21 @@ fn a_stale_mirror_resolves_an_unknown_id_from_the_engine() {
         .unwrap();
     // Loads the reader's mirror: "early" and nothing else.
     assert_eq!(
-        reader.fetch(&key(1)).unwrap().unwrap()["early"],
-        Value::U64(1)
+        reader
+            .fetch(&key(1))
+            .unwrap()
+            .unwrap()
+            .get("early")
+            .cloned(),
+        Some(Value::U64(1))
     );
 
     writer
         .put(&key(2), &map(&[("late", Value::U64(2))]))
         .unwrap();
     assert_eq!(
-        reader.fetch(&key(2)).unwrap().unwrap()["late"],
-        Value::U64(2),
+        reader.fetch(&key(2)).unwrap().unwrap().get("late").cloned(),
+        Some(Value::U64(2)),
         "an id outside the mirror is probed, not dropped"
     );
 }

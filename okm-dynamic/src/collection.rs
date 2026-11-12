@@ -20,7 +20,7 @@ use okm_core::storage::VirtualStorage;
 
 use crate::index::{AccessMethod, scan_access_method};
 use crate::reduce::{BoundReduce, ReduceSpec};
-use crate::{CollectionSchema, ValueMap, decode_payload};
+use crate::{CollectionSchema, Dict, decode_payload};
 
 /// Codec errors surfaced as strings (dynamic callers are host-language
 /// bridges — error values, not typed hierarchies).
@@ -80,7 +80,7 @@ impl<S: VirtualStorage> okm_core::changelog::replay::ReplayTarget for DynamicCol
         &self.schema().name
     }
 
-    fn put(&self, pkey: &[u8], row: &ValueMap) -> Result<(), String> {
+    fn put(&self, pkey: &[u8], row: &Dict) -> Result<(), String> {
         DynamicCollection::put(self, pkey, row)
     }
 
@@ -88,7 +88,7 @@ impl<S: VirtualStorage> okm_core::changelog::replay::ReplayTarget for DynamicCol
         DynamicCollection::purge(self, pkey)
     }
 
-    fn fetch(&self, pkey: &[u8]) -> Result<Option<ValueMap>, String> {
+    fn fetch(&self, pkey: &[u8]) -> Result<Option<Dict>, String> {
         DynamicCollection::fetch(self, pkey)
     }
 
@@ -506,7 +506,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
     /// A reduce group's entry key for a group-field value map (read-side
     /// probe: the caller names the GROUP fields, same rule as the
     /// Rust-side `reduce_get` probe).
-    pub fn reduce_entry_key(&self, _ns: u16, group_values: &ValueMap) -> Result<Vec<u8>, String> {
+    pub fn reduce_entry_key(&self, _ns: u16, group_values: &Dict) -> Result<Vec<u8>, String> {
         // The first registered reduce owns this probe shape (single-reduce
         // tables; multi-reduce probes go through BoundReduce directly).
         let reduce = self
@@ -533,7 +533,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
     /// a value silently dropped on the floor. The whole-document verbs split by
     /// declaration before they get here, so this fires only on a direct
     /// `plan_put`; dynamic names belong to `merge` / `replace`.
-    pub(crate) fn check_declared(&self, document: &ValueMap) -> Result<(), String> {
+    pub(crate) fn check_declared(&self, document: &Dict) -> Result<(), String> {
         for name in document.keys() {
             if !self.is_declared(name) {
                 return Err(format!(
@@ -547,7 +547,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
 
     /// The stored document at `pkey`, decoded (None = absent): the row half
     /// of `fetch`, and the state every write verb reads before planning.
-    fn stored_document(&self, pkey: &[u8]) -> Result<Option<ValueMap>, String> {
+    fn stored_document(&self, pkey: &[u8]) -> Result<Option<Dict>, String> {
         if pkey.len() != self.schema.key_len {
             return Err(format!(
                 "key width mismatch: got {}, schema declares {}",
@@ -595,7 +595,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
     /// Access-method scan (leftmost prefix over the indexed fields,
     /// caller-encoded): returns the matching documents' primary keys, decoded.
     /// THE routing primitive — an event resolves its targets here.
-    pub fn scan(&self, index_slot: u16, encoded_prefix: &[u8]) -> Result<Vec<ValueMap>, String> {
+    pub fn scan(&self, index_slot: u16, encoded_prefix: &[u8]) -> Result<Vec<Dict>, String> {
         let index = self
             .indexes
             .iter()
@@ -645,11 +645,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
     /// Equality scan over one access method (same routing primitive as
     /// [`scan`](Self::scan)): only documents whose field segment is exactly
     /// the probe — the probe must name every field of the data segment.
-    pub fn scan_exact(
-        &self,
-        index_slot: u16,
-        encoded_prefix: &[u8],
-    ) -> Result<Vec<ValueMap>, String> {
+    pub fn scan_exact(&self, index_slot: u16, encoded_prefix: &[u8]) -> Result<Vec<Dict>, String> {
         let index = self
             .indexes
             .iter()
@@ -676,7 +672,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
         &self,
         index_slot: u16,
         encoded_prefix: &[u8],
-    ) -> Result<Vec<(ValueMap, ValueMap)>, String> {
+    ) -> Result<Vec<(Dict, Dict)>, String> {
         let index = self
             .indexes
             .iter()
@@ -717,7 +713,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
     /// zero-frame list is never written, so empty and absent are one state).
     /// The read half every whole-document verb shares: `fetch` merges it with
     /// the row, `merge` / `replace` read-modify-write it.
-    fn dynamic_map(&self, pkey: &[u8]) -> Result<Option<ValueMap>, String> {
+    fn dynamic_map(&self, pkey: &[u8]) -> Result<Option<Dict>, String> {
         let raw = match self
             .store
             .get(&self.fields_key(pkey))
@@ -764,7 +760,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
     /// the typed `fetch` applies (its `extend` order). `merge` and `replace`
     /// split by declaration and therefore cannot produce such a name; the only
     /// source is a write that predates this surface.
-    pub fn fetch(&self, pkey: &[u8]) -> Result<Option<ValueMap>, String> {
+    pub fn fetch(&self, pkey: &[u8]) -> Result<Option<Dict>, String> {
         let row = self.stored_document(pkey)?;
         let dynamic = self.dynamic_map(pkey)?;
         if row.is_none() && dynamic.is_none() {
@@ -797,7 +793,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
         payload.write(self, pkey)
     }
 
-    /// The `&ValueMap` arm of [`put`](Self::put): partial whole-document
+    /// The `&Dict` arm of [`put`](Self::put): partial whole-document
     /// update, ONE commit (ADR-0035 rule 3).
     ///
     /// - A name the schema declares is a read-modify-write of the row: the
@@ -812,7 +808,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
     ///   either: the schema answers which arm the plan takes, so the stored
     ///   state is read per arm, not per verb (a dynamic-only map pays one
     ///   segment read, a declared-only map one row read).
-    pub(crate) fn merge_map(&self, pkey: &[u8], object: &ValueMap) -> Result<(), String> {
+    pub(crate) fn merge_map(&self, pkey: &[u8], object: &Dict) -> Result<(), String> {
         let (declared, dynamic) = self.split_names(object);
         let old_row = if declared.is_empty() {
             None
@@ -861,7 +857,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
         Ok(())
     }
 
-    /// The `(&ValueMap,)` arm of [`put`](Self::put): whole-document
+    /// The `(&Dict,)` arm of [`put`](Self::put): whole-document
     /// replacement, ONE commit — the map IS the document (ADR-0035 rule 4).
     ///
     /// - Declared names rebuild the row; a declared field the map does not name
@@ -876,7 +872,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
     /// deleted, and only the stored row says which); the segment only when a
     /// path index has entries to sweep, because the entry is written wholesale
     /// from the map (an empty map deletes it).
-    pub(crate) fn replace_map(&self, pkey: &[u8], object: &ValueMap) -> Result<(), String> {
+    pub(crate) fn replace_map(&self, pkey: &[u8], object: &Dict) -> Result<(), String> {
         let old_row = self.stored_document(pkey)?;
         let old_dynamic = if self.has_path_index() {
             self.dynamic_map(pkey)?
@@ -950,7 +946,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
     pub(crate) fn path_entry_ops(
         &self,
         pkey: &[u8],
-        fields: &ValueMap,
+        fields: &Dict,
         write: bool,
     ) -> Result<Vec<EngineOp>, String> {
         if !self.has_path_index() {

@@ -47,7 +47,7 @@ use crate::VirtualStorage;
 use crate::decode::{decode_key, decode_payload};
 use crate::model::index::DYNAMIC_SLOT;
 use crate::{OP_DELETE, OP_PUT, PRIMARY_SLOT};
-use okm_value::{ValueMap, Variant};
+use okm_value::{Dict, Variant};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -67,12 +67,12 @@ pub trait ReplayTarget {
     /// Write a decoded row through the target's own write path (never a byte copy:
     /// index entries, dynamic segments and reduce ledgers are rebuilt from the row).
     /// The one write verb, as everywhere else: a payload is a document.
-    fn put(&self, pkey: &[u8], row: &ValueMap) -> Result<(), String>;
+    fn put(&self, pkey: &[u8], row: &Dict) -> Result<(), String>;
     /// Remove a row. A primary-face delete is a removal.
     fn purge(&self, pkey: &[u8]) -> Result<bool, String>;
     /// The row as the target would read it back — labels, not ids. Reconciliation
     /// compares in labels, because that is what a read hands out.
-    fn fetch(&self, pkey: &[u8]) -> Result<Option<ValueMap>, String>;
+    fn fetch(&self, pkey: &[u8]) -> Result<Option<Dict>, String>;
     /// Every document key the target holds: the subtraction half of a reconciliation.
     fn document_keys(&self) -> Result<Vec<Vec<u8>>, String>;
 }
@@ -297,7 +297,7 @@ fn row_of<S: crate::VirtualStorage>(
     suffix: &[u8],
     payload: &[u8],
     labels: &HashMap<(u16, Vec<u8>), String>,
-) -> Result<ValueMap, String> {
+) -> Result<Dict, String> {
     let mut row = decode_payload(schema, payload).map_err(|e| e.to_string())?;
     let _key = decode_key(schema, suffix).map_err(|e| e.to_string())?;
     for field in schema.hot_fields.iter().chain(schema.cold_fields.iter()) {
@@ -321,7 +321,7 @@ fn intern<S: crate::VirtualStorage>(
     schema: &crate::schema::CollectionSchema,
     header: &[u8],
     store: &S,
-    row: &mut ValueMap,
+    row: &mut Dict,
 ) -> Result<(), String> {
     for field in schema.hot_fields.iter().chain(schema.cold_fields.iter()) {
         let crate::FieldType::Vocab(face) = field.ty else {

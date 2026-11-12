@@ -5,6 +5,9 @@ edition = "2024"
 description = "Name vocabularies: the label-to-number mapping dynamic segments are written in"
 
 [dependencies]
+# The document map's container. A dependency of THIS crate only: the type
+# (`ValueMap`) is what clients name, so the container stays out of their source.
+indexmap = "2"
 serde = { version = "1", optional = true }
 
 [features]

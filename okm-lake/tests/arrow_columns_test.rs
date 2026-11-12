@@ -124,7 +124,7 @@ fn an_absent_payload_is_a_null_half_and_a_wrong_kind_is_an_error() {
     assert!(!batch.column(0).is_null(0), "keys are never NULL");
 
     // A row whose value is the wrong kind is a refusal, not a silent NULL.
-    let mut wrong = okm_dynamic::ValueMap::new();
+    let mut wrong = okm_dynamic::Dict::new();
     wrong.insert("note".into(), Value::Str("ok".into()));
     wrong.insert("n".into(), Value::Str("not a number".into()));
     wrong.insert("created".into(), Value::I64(1_700_000_050));

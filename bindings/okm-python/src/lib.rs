@@ -12,16 +12,16 @@
 //! are ordinary input).
 pub mod pyo3_impl {
     use okm_core::storage::VirtualStorage;
-    use okm_dynamic::{AccessMethod, AccessMethodKind, ReduceLogic, Value, ValueMap};
+    use okm_dynamic::{AccessMethod, AccessMethodKind, ReduceLogic, Value, Dict};
     use pyo3::exceptions::{PyTypeError, PyValueError};
     use pyo3::prelude::*;
     use pyo3::Py;
     use std::sync::{Arc, Mutex};
 
-    /// Convert a ValueMap (decoded document) into a Python dict.
+    /// Convert a Dict (decoded document) into a Python dict.
     fn map_to_dict<'py>(
         py: Python<'py>,
-        m: &ValueMap,
+        m: &Dict,
     ) -> PyResult<Bound<'py, pyo3::types::PyDict>> {
         let d = pyo3::types::PyDict::new(py);
         for (k, v) in m {
@@ -51,7 +51,7 @@ use okm_async::TestStore;
     fn value_to_py<'py>(py: Python<'py>, v: &Value) -> PyResult<Py<PyAny>> {
         Ok(match v {
             Value::Map(fields) => {
-                let inner: ValueMap = fields.clone();
+                let inner: Dict = fields.clone();
                 map_to_dict(py, &inner)?.into_any().unbind()
             }
             Value::Array(items) => {
@@ -62,7 +62,7 @@ use okm_async::TestStore;
                 list.into_any().unbind()
             }
             other => {
-                let one = ValueMap::from([("__v__".to_string(), other.clone())]);
+                let one = Dict::from([("__v__".to_string(), other.clone())]);
                 let d = map_to_dict(py, &one)?;
                 d.get_item("__v__")?
                     .ok_or_else(|| {
@@ -120,8 +120,8 @@ use okm_async::TestStore;
         fn fold(
             &self,
             acc: &mut Vec<u8>,
-            key: &ValueMap,
-            document: &ValueMap,
+            key: &Dict,
+            document: &Dict,
         ) -> Result<(), String> {
             Python::attach(|py| self.apply(py, "fold", acc, key, document))
         }
@@ -129,8 +129,8 @@ use okm_async::TestStore;
         fn unfold(
             &self,
             acc: &mut Vec<u8>,
-            key: &ValueMap,
-            document: &ValueMap,
+            key: &Dict,
+            document: &Dict,
         ) -> Result<(), String> {
             Python::attach(|py| self.apply(py, "unfold", acc, key, document))
         }
@@ -142,8 +142,8 @@ use okm_async::TestStore;
             py: Python<'_>,
             method: &str,
             acc: &mut Vec<u8>,
-            key: &ValueMap,
-            document: &ValueMap,
+            key: &Dict,
+            document: &Dict,
         ) -> Result<(), String> {
             let py_acc = pyo3::types::PyByteArray::new(py, acc);
             // ADR-0024: the host callable sees the DECODED key dict — one
@@ -236,14 +236,14 @@ use okm_async::TestStore;
         /// The PLAIN Rust method face (host-side callers: the carrier's
         /// injection checks, embedded harnesses). Same executor, same
         /// `DynamicCollection` calls the #[pymethods] shell makes — the
-        /// python shell adds only dict <-> ValueMap coercion on top.
+        /// python shell adds only dict <-> Dict coercion on top.
         /// `replace = false` merges the names the map carries; `true` makes the
         /// map the whole document (a name it omits is gone). One verb either
         /// way — the payload type is what selects the path.
         pub fn put_doc(
             &self,
             pkey: &[u8],
-            document: &ValueMap,
+            document: &Dict,
             replace: bool,
         ) -> Result<(), String> {
             let inner = self
@@ -258,7 +258,7 @@ use okm_async::TestStore;
             .map_err(|e| e.to_string())
         }
 
-        pub fn fetch_doc(&self, pkey: &[u8]) -> Result<Option<ValueMap>, String> {
+        pub fn fetch_doc(&self, pkey: &[u8]) -> Result<Option<Dict>, String> {
             self.inner
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -275,7 +275,7 @@ use okm_async::TestStore;
         }
 
         /// Declared-index scan by slot + encoded prefix → decoded keys.
-        pub fn scan_doc(&self, slot: u16, encoded_prefix: &[u8]) -> Result<Vec<ValueMap>, String> {
+        pub fn scan_doc(&self, slot: u16, encoded_prefix: &[u8]) -> Result<Vec<Dict>, String> {
             self.inner
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -352,7 +352,7 @@ use okm_async::TestStore;
             includes: Option<Vec<String>>,
             version: u32,
         ) -> PyResult<()> {
-            let derive = move |document: &ValueMap| -> Result<Vec<Vec<u8>>, String> {
+            let derive = move |document: &Dict| -> Result<Vec<Vec<u8>>, String> {
                 Python::attach(|py| {
                     let doc = map_to_dict(py, document).map_err(call_err)?;
                     let raw = func
@@ -389,7 +389,7 @@ use okm_async::TestStore;
             includes: Option<Vec<String>>,
             version: u32,
         ) -> PyResult<()> {
-            let predicate = move |document: &ValueMap| -> Result<bool, String> {
+            let predicate = move |document: &Dict| -> Result<bool, String> {
                 Python::attach(|py| {
                     let doc = map_to_dict(py, document).map_err(call_err)?;
                     let raw = admits
@@ -839,11 +839,11 @@ use okm_async::TestStore;
     fn py_values_to_map_any(
         schema: &okm_core::schema::CollectionSchema,
         values: &Bound<'_, PyAny>,
-    ) -> PyResult<ValueMap> {
+    ) -> PyResult<Dict> {
         let dict = values
             .cast::<pyo3::types::PyDict>()
             .map_err(|_| PyTypeError::new_err("values must be a dict {field: value}"))?;
-        let mut out = ValueMap::new();
+        let mut out = Dict::new();
         for (k, v) in dict.iter() {
             let name: String = k.extract()?;
             let declared = schema
@@ -897,7 +897,7 @@ use okm_async::TestStore;
         }
         if v.is_instance_of::<PyDict>() {
             let dict = v.cast::<PyDict>()?;
-            let mut obj = ValueMap::new();
+            let mut obj = Dict::new();
             for (k, item) in dict.iter() {
                 let key: String = k.extract()?;
                 obj.insert(key.clone(), py_dynamic_value(&key, &item)?);
@@ -909,16 +909,16 @@ use okm_async::TestStore;
         )))
     }
 
-    /// Schema-coerced dict → ValueMap (ints carry no Python width; the
+    /// Schema-coerced dict → Dict (ints carry no Python width; the
     /// schema kind drives the coercion).
     fn py_values_to_map(
         schema: &okm_core::schema::CollectionSchema,
         values: &Bound<'_, PyAny>,
-    ) -> PyResult<ValueMap> {
+    ) -> PyResult<Dict> {
         let dict = values
             .cast::<pyo3::types::PyDict>()
             .map_err(|_| PyTypeError::new_err("values must be a dict {field: value}"))?;
-        let mut out = ValueMap::new();
+        let mut out = Dict::new();
         for (k, v) in dict.iter() {
             let name: String = k.extract()?;
             let f = schema

@@ -16,7 +16,7 @@
 
 use okm_core::storage::VirtualStorage;
 
-use crate::ValueMap;
+use crate::Dict;
 use crate::collection::DynamicCollection;
 use okm_value::Variant;
 
@@ -28,7 +28,7 @@ pub trait WritePayload<S: VirtualStorage> {
 
 /// Partial document: a map, i.e. the names this write carries. Every other name
 /// in the stored document is left as it was.
-impl<S: VirtualStorage> WritePayload<S> for &ValueMap {
+impl<S: VirtualStorage> WritePayload<S> for &Dict {
     fn write(self, col: &DynamicCollection<S>, pkey: &[u8]) -> Result<(), String> {
         col.merge_map(pkey, self)
     }
@@ -46,7 +46,7 @@ impl<S: VirtualStorage> WritePayload<S> for &Variant {
 }
 
 /// Whole document: the map IS the document, so a name it omits is gone.
-impl<S: VirtualStorage> WritePayload<S> for (&ValueMap,) {
+impl<S: VirtualStorage> WritePayload<S> for (&Dict,) {
     fn write(self, col: &DynamicCollection<S>, pkey: &[u8]) -> Result<(), String> {
         col.replace_map(pkey, self.0)
     }

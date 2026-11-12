@@ -16,7 +16,7 @@
 //! extra round trips, only restart recovery reads accs once).
 
 use crate::index::index_entries;
-use crate::{DynamicCollection, ValueMap, decode_payload, encode_payload};
+use crate::{Dict, DynamicCollection, decode_payload, encode_payload};
 use okm_core::schema::CollectionSchema;
 use okm_core::storage::VirtualStorage;
 
@@ -74,8 +74,8 @@ struct AccOverlay<'a> {
 /// the stored pair).
 #[derive(Clone, Copy, Default)]
 pub struct Stored<'a> {
-    pub row: Option<&'a ValueMap>,
-    pub dynamic: Option<&'a ValueMap>,
+    pub row: Option<&'a Dict>,
+    pub dynamic: Option<&'a Dict>,
 }
 
 impl<'a> AccOverlay<'a> {
@@ -104,8 +104,8 @@ impl<S: VirtualStorage> DynamicCollection<S> {
     pub fn plan_put(
         &self,
         pkey: &[u8],
-        document: &ValueMap,
-        old: Option<&ValueMap>,
+        document: &Dict,
+        old: Option<&Dict>,
         acc_of: &AccOf,
     ) -> Result<PlannedPut, String> {
         self.check_key(pkey)?;
@@ -141,7 +141,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
     pub fn plan_delete(
         &self,
         pkey: &[u8],
-        old: &ValueMap,
+        old: &Dict,
         acc_of: &AccOf,
     ) -> Result<PlannedDelete, String> {
         self.check_key(pkey)?;
@@ -176,8 +176,8 @@ impl<S: VirtualStorage> DynamicCollection<S> {
     pub fn plan_merge(
         &self,
         pkey: &[u8],
-        declared: &ValueMap,
-        dynamic: &ValueMap,
+        declared: &Dict,
+        dynamic: &Dict,
         stored: Stored<'_>,
         acc_of: &AccOf,
         vocab: &mut crate::plan_fields::VocabMirror,
@@ -185,7 +185,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
         self.check_key(pkey)?;
         let mut plan = PlannedWrite::default();
         if !declared.is_empty() {
-            let mut carried: Vec<&ValueMap> = Vec::with_capacity(2);
+            let mut carried: Vec<&Dict> = Vec::with_capacity(2);
             if let Some(old) = stored.row {
                 carried.push(old);
             }
@@ -211,8 +211,8 @@ impl<S: VirtualStorage> DynamicCollection<S> {
     pub fn plan_replace(
         &self,
         pkey: &[u8],
-        declared: &ValueMap,
-        dynamic: &ValueMap,
+        declared: &Dict,
+        dynamic: &Dict,
         stored: Stored<'_>,
         acc_of: &AccOf,
         vocab: &mut crate::plan_fields::VocabMirror,
@@ -241,8 +241,8 @@ impl<S: VirtualStorage> DynamicCollection<S> {
     pub fn plan_purge(
         &self,
         pkey: &[u8],
-        old_row: Option<&ValueMap>,
-        old_dynamic: Option<&ValueMap>,
+        old_row: Option<&Dict>,
+        old_dynamic: Option<&Dict>,
         acc_of: &AccOf,
     ) -> Result<PlannedWrite, String> {
         self.check_key(pkey)?;
@@ -268,8 +268,8 @@ impl<S: VirtualStorage> DynamicCollection<S> {
     fn plan_dynamic(
         &self,
         pkey: &[u8],
-        old: Option<&ValueMap>,
-        new: &ValueMap,
+        old: Option<&Dict>,
+        new: &Dict,
         vocab: &mut crate::plan_fields::VocabMirror,
         plan: &mut PlannedWrite,
     ) -> Result<(), String> {
@@ -293,9 +293,9 @@ impl<S: VirtualStorage> DynamicCollection<S> {
     /// dynamic segment, and the identity still comes from the pkey (which no map
     /// can move). Rejecting it would be a rule about a collision that cannot
     /// happen: the row half never carries key names, so nothing is shadowed.
-    pub(crate) fn split_names(&self, object: &ValueMap) -> (ValueMap, ValueMap) {
-        let mut declared = ValueMap::new();
-        let mut dynamic = ValueMap::new();
+    pub(crate) fn split_names(&self, object: &Dict) -> (Dict, Dict) {
+        let mut declared = Dict::new();
+        let mut dynamic = Dict::new();
         for (name, value) in object {
             if self.is_payload_field(name) {
                 declared.insert(name.clone(), value.clone());
@@ -339,8 +339,8 @@ impl<S: VirtualStorage> DynamicCollection<S> {
     /// identity — the pkey stays authoritative. `encode_payload` requires every declared
     /// field, and "absent" means the default on the decode side too
     /// ([`okm_core::decode::fill_schema_defaults`], one definition).
-    fn row_base(&self, pkey: &[u8], carried: &[&ValueMap]) -> Result<ValueMap, String> {
-        let mut out = ValueMap::new();
+    fn row_base(&self, pkey: &[u8], carried: &[&Dict]) -> Result<Dict, String> {
+        let mut out = Dict::new();
         for map in carried {
             out.extend((*map).clone());
         }
@@ -355,7 +355,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
     fn plan_reduces(
         &self,
         pkey: &[u8],
-        document: &ValueMap,
+        document: &Dict,
         add: bool,
         plan: &mut impl PlanSink,
         overlay: &mut AccOverlay,
@@ -425,6 +425,6 @@ impl PlanSink for PlannedDelete {
 /// remote actor's cache-refill helper — what the embedded path does
 /// against its engine on overwrite, offered here so the binding wraps
 /// it instead of re-implementing the decode).
-pub fn decode_stored(schema: &CollectionSchema, payload: &[u8]) -> Result<ValueMap, String> {
+pub fn decode_stored(schema: &CollectionSchema, payload: &[u8]) -> Result<Dict, String> {
     decode_payload(schema, payload).map_err(|e| e.to_string())
 }

@@ -15,7 +15,7 @@
 //!   (the log replays the id faces) — an id that has no label is NULL, never an
 //!   invented name.
 
-use crate::{CodecError, Value, ValueMap, decode_key};
+use crate::{CodecError, Dict, Value, decode_key};
 use arrow::array::{
     ArrayRef, BinaryArray, FixedSizeBinaryArray, Float64Array, Int64Array, StringArray, UInt8Array,
     UInt16Array, UInt32Array, UInt64Array,
@@ -99,7 +99,7 @@ pub fn schema_of(schema: &CollectionSchema) -> Result<Schema, CodecError> {
 pub fn record_batch(
     schema: &CollectionSchema,
     keys: &[Vec<u8>],
-    rows: &[Option<ValueMap>],
+    rows: &[Option<Dict>],
     labels: Option<Labels<'_>>,
 ) -> Result<RecordBatch, CodecError> {
     if keys.len() != rows.len() {
@@ -115,7 +115,7 @@ pub fn record_batch(
     let key_maps = keys
         .iter()
         .map(|k| decode_key(schema, k))
-        .collect::<Result<Vec<ValueMap>, CodecError>>()?;
+        .collect::<Result<Vec<Dict>, CodecError>>()?;
     for f in &schema.key_fields {
         let vals: Vec<Option<&Value>> = key_maps
             .iter()

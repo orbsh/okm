@@ -22,7 +22,7 @@ use crate::bridge::ToRecordBatch;
 use okm_core::model::field::FieldType;
 use okm_core::model::index::Document;
 use okm_core::model::key::KeyEncode;
-use okm_value::Variant;
+use okm_value::{Dict, Variant};
 
 /// Declaration-order offset table for a fixed-width region (the key
 /// encoding, or the value half of TLV frames — widths are declared, so the
@@ -583,7 +583,7 @@ pub mod parquet_io {
     fn segment_from_variant(
         col: &dyn arrow::array::Array,
         row: usize,
-    ) -> Result<Option<std::collections::BTreeMap<String, okm_value::Variant>>, String> {
+    ) -> Result<Option<Dict>, String> {
         if col.is_null(row) {
             return Ok(None);
         }
@@ -760,8 +760,7 @@ pub mod parquet_io {
             let mut heads: Vec<EdgeHead> = Vec::with_capacity(n);
             let mut ids: Vec<u64> = Vec::with_capacity(n);
             let mut payloads: Vec<E> = Vec::with_capacity(n);
-            let mut props: Vec<std::collections::BTreeMap<String, okm_value::Variant>> =
-                Vec::with_capacity(n);
+            let mut props: Vec<Dict> = Vec::with_capacity(n);
             {
                 let store = self.store_mut();
                 let mut ns_header = <E as Document>::PARTITION_PREFIX.to_vec();
@@ -844,10 +843,7 @@ pub mod parquet_io {
     /// The open-attributes column (a Parquet Variant holding one object) back to the map a
     /// write takes. A null cell is "no attributes", which is not an error; a cell
     /// that is not an object is one.
-    fn variant_map(
-        col: &dyn arrow::array::Array,
-        row: usize,
-    ) -> Result<std::collections::BTreeMap<String, okm_value::Variant>, String> {
+    fn variant_map(col: &dyn arrow::array::Array, row: usize) -> Result<Dict, String> {
         use arrow::array::{Array, BinaryArray, StructArray};
 
         // The canonical storage type of a variant: `struct<metadata: binary,
@@ -858,7 +854,7 @@ pub mod parquet_io {
             .downcast_ref::<StructArray>()
             .ok_or_else(|| format!("row {row}: the attribute column is not a variant struct"))?;
         if col.is_null(row) {
-            return Ok(std::collections::BTreeMap::new());
+            return Ok(Dict::new());
         }
         let half = |name: &str| -> Result<&BinaryArray, String> {
             col.column_by_name(name)
@@ -871,7 +867,7 @@ pub mod parquet_io {
         let obj = variant
             .as_object()
             .ok_or_else(|| format!("row {row}: the attribute wire is not an object"))?;
-        let mut out = std::collections::BTreeMap::new();
+        let mut out = Dict::new();
         for (name, value) in obj.iter() {
             out.insert(name.to_string(), to_dynamic(&value));
         }
@@ -904,7 +900,7 @@ pub mod parquet_io {
             return Variant::Array(list.iter().map(|it| to_dynamic(&it)).collect());
         }
         if let Some(obj) = v.as_object() {
-            let mut map = std::collections::BTreeMap::new();
+            let mut map = Dict::new();
             for (name, val) in obj.iter() {
                 map.insert(name.to_string(), to_dynamic(&val));
             }

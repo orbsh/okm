@@ -17,8 +17,7 @@ use okm_core::{
     DocumentEncode, EdgeHead, EdgeKey, Graph as StaticGraph, GraphEncode, KeyEncode, NodeRef,
 };
 use okm_dynamic::{DynEdge, Graph};
-use okm_value::Variant;
-use std::collections::BTreeMap;
+use okm_value::{Dict, Variant};
 
 const NS: u16 = 0x0190; // 400
 
@@ -34,8 +33,8 @@ fn org(id: u64) -> NodeRef {
     node(0x11, id)
 }
 
-fn attrs(since: u16) -> BTreeMap<String, Variant> {
-    let mut m = BTreeMap::new();
+fn attrs(since: u16) -> Dict {
+    let mut m = Dict::new();
     m.insert("since".to_string(), Variant::U64(since as u64));
     m
 }
@@ -227,7 +226,7 @@ fn byte_equality_with_fixed_ontology_form() {
             src: person(1),
             dst: org(9),
             predicate: "works_at".into(),
-            attrs: BTreeMap::new(),
+            attrs: Dict::new(),
         },
         7,
     )

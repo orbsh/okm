@@ -23,7 +23,7 @@ use crate::error::{Error, Result};
 use crate::model::index::DYNAMIC_SLOT;
 use crate::schema::CollectionSchema;
 use crate::{OP_DELETE, OP_PUT, PRIMARY_SLOT};
-use okm_value::ValueMap;
+use okm_value::Dict;
 
 use super::{read_sealed, table_dir};
 
@@ -59,7 +59,7 @@ pub struct Window {
     /// The segments this window covers, in order, as file names.
     pub segments: Vec<String>,
     /// `(key suffix, document)` per put on the primary face, in order.
-    pub rows: Vec<(Vec<u8>, ValueMap)>,
+    pub rows: Vec<(Vec<u8>, Dict)>,
     /// `(slot, key suffix)` per removal, in order. Slot `0x00` means the ROW is
     /// gone; other slots are the document's own parts (purge takes both).
     pub deletes: Vec<(u16, Vec<u8>)>,
@@ -71,7 +71,7 @@ pub struct Window {
     /// are not columns — they travel as one `variant` column beside them (the
     /// analytics twin of a segment), and a key with no primary row carries no row
     /// here at all (a document with no row is not a row).
-    pub dynamic: Vec<(Vec<u8>, ValueMap)>,
+    pub dynamic: Vec<(Vec<u8>, Dict)>,
     /// Ops that carry no column and no segment of their own (an index entry, a
     /// reduce ledger line): the write path rebuilds them from the row.
     pub open_fields: usize,
@@ -265,9 +265,9 @@ fn segment_labels(
 pub fn decode_dynamic_segment(
     body: &[u8],
     labels: &HashMap<(u16, Vec<u8>), String>,
-) -> Result<ValueMap> {
+) -> Result<Dict> {
     let faces = crate::obj_vocab::FIELD_VOCAB;
-    let mut row = ValueMap::new();
+    let mut row = Dict::new();
     for field in okm_value::decode_named(body, &mut |id| {
         labels
             .get(&(faces.id_slot, id.to_be_bytes().to_vec()))

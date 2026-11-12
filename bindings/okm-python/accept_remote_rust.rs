@@ -14,7 +14,7 @@
 use okm_core::{KeyEncode, DocumentEncode};
 use okm_core::schema::CollectionSchema;
 use okm_dynamic::{
-    AccessMethod, AccessMethodKind, DynamicCollection, ReduceLogic, ReduceSpec, Value, ValueMap,
+    AccessMethod, AccessMethodKind, DynamicCollection, ReduceLogic, ReduceSpec, Value, Dict,
 };
 use okm_async::TestStore;
 use std::collections::BTreeMap;
@@ -38,12 +38,12 @@ struct GroupCount;
 
 impl ReduceLogic for GroupCount {
     fn seed(&self) -> Vec<u8> { 0u64.to_be_bytes().to_vec() }
-    fn fold(&self, acc: &mut Vec<u8>, _k: &ValueMap, _d: &ValueMap) -> Result<(), String> {
+    fn fold(&self, acc: &mut Vec<u8>, _k: &Dict, _d: &Dict) -> Result<(), String> {
         let n = u64::from_be_bytes(acc.as_slice().try_into().map_err(|_| "acc width")?) + 1;
         *acc = n.to_be_bytes().to_vec();
         Ok(())
     }
-    fn unfold(&self, acc: &mut Vec<u8>, _k: &ValueMap, _d: &ValueMap) -> Result<(), String> {
+    fn unfold(&self, acc: &mut Vec<u8>, _k: &Dict, _d: &Dict) -> Result<(), String> {
         let n = u64::from_be_bytes(acc.as_slice().try_into().map_err(|_| "acc width")?)
             .checked_sub(1)
             .ok_or("underflow")?;
@@ -95,8 +95,8 @@ fn dynamic_table() -> DynamicCollection<TestStore> {
     )
 }
 
-fn values(org: u32, user: u64, level: u32, score: u16, name: &str) -> ValueMap {
-    let mut m = BTreeMap::new();
+fn values(org: u32, user: u64, level: u32, score: u16, name: &str) -> Dict {
+    let mut m = Dict::new();
     m.insert("org_id".into(), Value::U32(org));
     m.insert("user_id".into(), Value::U64(user));
     m.insert("level".into(), Value::U32(level));

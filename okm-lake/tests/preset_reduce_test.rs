@@ -19,6 +19,7 @@
 
 use okm_async::TestStore;
 use okm_core::{Document, DocumentEncode, KeyEncode, Quant, Reduce, ReduceCodec, ReduceLogic};
+use okm_value::Dict;
 
 /// The document as one map: the row's value with the dynamic segment laid over
 /// it — a point read answers parts, a row converts to a value, and values
@@ -26,7 +27,7 @@ use okm_core::{Document, DocumentEncode, KeyEncode, Quant, Reduce, ReduceCodec, 
 fn doc_of<S, K, R>(
     col: &okm_core::Collection<S, K, R>,
     key: &K,
-) -> okm_core::error::Result<Option<std::collections::BTreeMap<String, okm_value::Variant>>>
+) -> okm_core::error::Result<Option<Dict>>
 where
     S: okm_core::VirtualStorage,
     K: okm_core::KeyEncode,
@@ -365,7 +366,6 @@ fn the_reduce_table_exports_as_its_own_file() {
 #[test]
 fn a_merge_folds_the_ledger_once_and_only_through_the_row_arm() {
     use okm_value::Variant;
-    use std::collections::BTreeMap;
 
     let t = <Post as Document>::collection(TestStore::slatedb_mem());
     let k = PostKey { id: 1 };
@@ -394,7 +394,7 @@ fn a_merge_folds_the_ledger_once_and_only_through_the_row_arm() {
 
     // Segment-only patch: the open half gains a name, the row (and the ledger)
     // is not touched.
-    let mut open = BTreeMap::new();
+    let mut open = Dict::new();
     open.insert("note".to_string(), Variant::Str("x".into()));
     t.put(&k, &Variant::Map(open)).unwrap();
     assert_eq!(
@@ -409,7 +409,7 @@ fn a_merge_folds_the_ledger_once_and_only_through_the_row_arm() {
 
     // Both halves in ONE call: the row arm folds (the usual unfold-then-fold
     // pair), the segment arm does not — one fold, not one per arm.
-    let mut both = BTreeMap::new();
+    let mut both = Dict::new();
     both.insert("views".to_string(), Variant::U64(7));
     both.insert("tag".to_string(), Variant::Str("y".into()));
     t.put(&k, &Variant::Map(both)).unwrap();

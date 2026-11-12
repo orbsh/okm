@@ -18,7 +18,7 @@ use okm_core::model::obj_vocab::FIELD_VOCAB;
 use okm_core::storage::{VirtualStorage, scan_suffix_kv};
 use okm_value::decode_named;
 
-use crate::{Value, ValueMap};
+use crate::{Dict, Value};
 
 /// The field-name vocabulary as a pure mirror (no engine): the plan
 /// surface's vocabulary carrier. `next_id` is the allocation watermark;
@@ -136,7 +136,7 @@ impl VocabMirror {
         &mut self,
         store: &S,
         ns: &[u8],
-        map: &ValueMap,
+        map: &Dict,
     ) -> Result<(), String> {
         for (name, value) in map {
             if !self.by_name.contains_key(name) {
@@ -242,7 +242,7 @@ pub fn fields_key(ns: &[u8], pkey: &[u8]) -> Vec<u8> {
 pub fn plan_put_fields(
     ns: &[u8],
     pkey: &[u8],
-    fields: &ValueMap,
+    fields: &Dict,
     vocab: &mut VocabMirror,
 ) -> Result<PlannedFields, String> {
     // The vocabulary mutation and the frame body interleave (a nested
@@ -252,7 +252,7 @@ pub fn plan_put_fields(
     let mut vocab_ops: Vec<(Vec<u8>, Option<Vec<u8>>)> = Vec::new();
     // The schema-driven values become the segment's currency first: the
     // encoder walks one name-keyed map (ADR-0057).
-    let mut dyn_fields = okm_value::ValueMap::new();
+    let mut dyn_fields = okm_value::Dict::new();
     for (name, value) in fields {
         dyn_fields.insert(name.clone(), value_to_dyn_value(value)?);
     }
@@ -318,7 +318,7 @@ pub fn plan_delete_fields(ns: &[u8], pkey: &[u8]) -> PlannedFields {
 /// reader records. A CACHED mirror uses
 /// [`fields_from_frames_probing`] instead, which resolves an unknown id from
 /// the id face before dropping it.
-pub fn fields_from_frames(raw: &[u8], vocab: &VocabMirror) -> Result<ValueMap, String> {
+pub fn fields_from_frames(raw: &[u8], vocab: &VocabMirror) -> Result<Dict, String> {
     collect_fields(raw, &mut |id| Ok(vocab.name_for(id).map(str::to_string)))
 }
 
@@ -332,7 +332,7 @@ pub fn fields_from_frames_probing<S: VirtualStorage>(
     vocab: &mut VocabMirror,
     store: &S,
     ns: &[u8],
-) -> Result<ValueMap, String> {
+) -> Result<Dict, String> {
     let mut resolve = |id: u16| -> Result<Option<String>, String> {
         if let Some(name) = vocab.name_for(id) {
             return Ok(Some(name.to_string()));
@@ -358,12 +358,12 @@ pub fn fields_from_frames_probing<S: VirtualStorage>(
 fn collect_fields(
     raw: &[u8],
     resolve: &mut dyn FnMut(u16) -> Result<Option<String>, String>,
-) -> Result<ValueMap, String> {
+) -> Result<Dict, String> {
     // Nested Map keys resolve through the same closure; there it can only
     // answer `Option`, so a probe failure drops that key rather than failing the
     // whole read (the id-without-entry rule, applied one level down).
     let frames = decode_named(raw, &mut |id| resolve(id).ok().flatten());
-    let mut out = ValueMap::new();
+    let mut out = Dict::new();
     for f in frames {
         let Some(name) = resolve(f.id)? else {
             continue; // vocabulary entry absent: drop
@@ -391,7 +391,7 @@ pub(crate) fn value_to_dyn_value(v: &Value) -> Result<okm_value::Variant, String
         Value::Bytes(b) => Variant::Bytes(b.clone()),
         Value::Null => Variant::Null,
         Value::Map(m) => {
-            let mut out = std::collections::BTreeMap::new();
+            let mut out = Dict::new();
             for (k, v) in m {
                 out.insert(k.clone(), value_to_dyn_value(v)?);
             }
@@ -421,8 +421,8 @@ mod tests {
         vec![0u8, 7]
     }
 
-    fn two_fields() -> ValueMap {
-        let mut f = ValueMap::new();
+    fn two_fields() -> Dict {
+        let mut f = Dict::new();
         f.insert("note".into(), Value::Str("hello".into()));
         f.insert("weight".into(), Value::U64(9));
         f
@@ -432,7 +432,7 @@ mod tests {
     fn plan_allocates_both_directions_then_the_entry() {
         let mut vocab = VocabMirror::default();
         let plan = plan_put_fields(&ns(), b"k", &two_fields(), &mut vocab).unwrap();
-        // ValueMap order: note < weight → ids 0 and 1.
+        // Dict order: note < weight → ids 0 and 1.
         assert_eq!(
             plan.new_vocab_entries,
             vec![("note".to_string(), 0u16), ("weight".to_string(), 1u16)]
@@ -451,7 +451,7 @@ mod tests {
         assert_eq!(plan.ops.len(), 1);
         // After adoption, a fresh name continues from the watermark.
         vocab.adopt(&[("extra".to_string(), 5u16)]);
-        let mut f = ValueMap::new();
+        let mut f = Dict::new();
         f.insert("brand_new".into(), Value::Bool(true));
         let p2 = plan_put_fields(&ns(), b"k", &f, &mut vocab).unwrap();
         assert_eq!(p2.new_vocab_entries, vec![("brand_new".to_string(), 6u16)]);
@@ -466,7 +466,7 @@ mod tests {
             next_id: u16::MAX,
             ..VocabMirror::default()
         };
-        let mut f = ValueMap::new();
+        let mut f = Dict::new();
         f.insert("one_too_many".into(), Value::Bool(true));
         let err = plan_put_fields(&ns(), b"k", &f, &mut vocab)
             .expect_err("the claim must refuse, not wrap or abort");
@@ -487,7 +487,7 @@ mod tests {
     #[test]
     fn empty_map_plans_the_delete() {
         let mut vocab = VocabMirror::default();
-        let plan = plan_put_fields(&ns(), b"k", &ValueMap::new(), &mut vocab).unwrap();
+        let plan = plan_put_fields(&ns(), b"k", &Dict::new(), &mut vocab).unwrap();
         assert_eq!(plan.ops.len(), 1);
         assert!(plan.ops[0].1.is_none());
     }

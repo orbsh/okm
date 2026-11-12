@@ -10,8 +10,14 @@
 //! escaping to `[0xFF][u16 id]`. Unknown value types on decode are normal input
 //! for a dynamic reader: the field is skipped, not fatal — a newer writer may
 //! store types an older reader cannot see.
+//!
+//! The object form is [`Dict`]: a TYPE, not an alias for the container it
+//! happens to use today. Its names iterate in INSERTION order, its backing map
+//! is private, and no signature here names it — so the container can be swapped
+//! without a breaking change, and the ordering it promises is the model's, not a
+//! dependency's.
 
-use std::collections::BTreeMap;
+use indexmap::IndexMap;
 
 /// The value a document holds: a tagged union of the kinds the document model
 /// admits — `U8`/`U16`/`U32`/`U64`/`I64`/`F64`/`Str`/`Bytes`/`Bool`/`Null`/`Array`
@@ -46,12 +52,134 @@ pub enum Variant {
     Null,
     Array(Vec<Variant>),
     /// Nested object: name-keyed map (see the type's doc comment).
-    Map(BTreeMap<String, Variant>),
+    Map(Dict),
 }
 
-/// Field name → value. `BTreeMap` for deterministic iteration (cold TLV frames are
-/// written in schema declaration order, not map order).
-pub type ValueMap = BTreeMap<String, Variant>;
+/// The object a document holds: an insertion-ordered name → value map, and the
+/// only spelling of "the map a `Map` variant carries".
+///
+/// It is a TYPE, not an alias, because [`Variant::Map`] has to name some type.
+/// Naming the backing map there would freeze that map into the public API —
+/// callers would name it in their own signatures, and swapping it later would
+/// be a breaking change. The field is private and no public signature mentions
+/// it, so the backing type is NOT part of this contract: replacing it must not
+/// change one signature, one name, one value.
+///
+/// # It is used like a map
+///
+/// `Dict` derefs to its backing map, so the ordinary map vocabulary —
+/// [`get`](IndexMap::get), [`get_mut`](IndexMap::get_mut),
+/// [`insert`](IndexMap::insert), [`remove`](Dict::remove),
+/// [`entry`](IndexMap::entry), [`iter`](IndexMap::iter),
+/// [`keys`](IndexMap::keys), [`len`](IndexMap::len) — is spelled once, by the
+/// container, instead of restated here. The deref is the SURFACE, not the
+/// contract: what a caller may rely on is what this doc comment states, and
+/// the trait impls below (the ones deref cannot carry).
+///
+/// # Iteration order is INSERTION order
+///
+/// `iter`, `keys` and `values` walk names in the order they were first
+/// inserted: an overwrite keeps the name's place, and a `remove` followed by an
+/// insert moves it to the end. Nothing sorts them. A site that needs a
+/// canonical order — an assertion, a diff, a snapshot column — sorts
+/// explicitly and says so, because the order a document's names were assembled
+/// in is how it was built, not what it is.
+///
+/// # Equality ignores order
+///
+/// Two maps are equal when they carry the same names with the same values. A
+/// document is a set of name→value pairs; insertion order is provenance, and
+/// comparing two documents must not depend on the path that produced them.
+///
+/// # Why this is a type while `Array` stays a `Vec`
+///
+/// [`Variant::Array`] holds a plain `Vec<Variant>`: a vector has one canonical
+/// implementation whose behaviour is fully specified by the standard library,
+/// so naming it costs the model nothing. An ordered name→value map is a real
+/// design choice — sorted, hashed, insertion-ordered, and memory-per-name all
+/// differ, and the choice is visible through iteration order. That is the one
+/// thing a reader of a document can observe, so it is the one thing the model
+/// must own rather than inherit from a dependency.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Dict(IndexMap<String, Variant>);
+
+impl std::ops::Deref for Dict {
+    type Target = IndexMap<String, Variant>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for Dict {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl Dict {
+    /// No names.
+    pub fn new() -> Self {
+        Self(IndexMap::new())
+    }
+
+    /// No names, with room for `capacity` of them.
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self(IndexMap::with_capacity(capacity))
+    }
+
+    /// Remove `name`, answering the value it carried.
+    ///
+    /// This is the one method restated rather than reached through the deref:
+    /// the container's `remove` is its swap form, which moves the LAST name
+    /// into the hole and so breaks the insertion order this type promises.
+    /// `shift_remove` closes the gap instead.
+    pub fn remove(&mut self, name: &str) -> Option<Variant> {
+        self.0.shift_remove(name)
+    }
+}
+
+impl From<IndexMap<String, Variant>> for Dict {
+    fn from(map: IndexMap<String, Variant>) -> Self {
+        Self(map)
+    }
+}
+
+impl FromIterator<(String, Variant)> for Dict {
+    fn from_iter<I: IntoIterator<Item = (String, Variant)>>(iter: I) -> Self {
+        Self(iter.into_iter().collect())
+    }
+}
+
+impl Extend<(String, Variant)> for Dict {
+    fn extend<I: IntoIterator<Item = (String, Variant)>>(&mut self, iter: I) {
+        self.0.extend(iter);
+    }
+}
+
+impl<const N: usize> From<[(String, Variant); N]> for Dict {
+    fn from(pairs: [(String, Variant); N]) -> Self {
+        Self(IndexMap::from(pairs))
+    }
+}
+
+impl IntoIterator for Dict {
+    type Item = (String, Variant);
+    type IntoIter = indexmap::map::IntoIter<String, Variant>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_iter()
+    }
+}
+
+impl<'a> IntoIterator for &'a Dict {
+    type Item = (&'a String, &'a Variant);
+    type IntoIter = indexmap::map::Iter<'a, String, Variant>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter()
+    }
+}
 
 impl Variant {
     /// Object merge: the composition rule for a document assembled from two
@@ -99,7 +227,7 @@ impl Variant {
 /// side, which is a documented value, not an absence marker.
 impl Default for Variant {
     fn default() -> Self {
-        Variant::Map(BTreeMap::new())
+        Variant::Map(Dict::new())
     }
 }
 
@@ -259,7 +387,6 @@ mod serde_impls {
     use serde::de::{MapAccess, SeqAccess, Visitor};
     use serde::ser::{SerializeMap, SerializeSeq};
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
-    use std::collections::BTreeMap;
     use std::fmt;
 
     impl Serialize for Variant {
@@ -359,7 +486,7 @@ mod serde_impls {
                 }
 
                 fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
-                    let mut out = BTreeMap::new();
+                    let mut out = super::Dict::new();
                     while let Some((name, value)) = map.next_entry::<String, Variant>()? {
                         out.insert(name, value);
                     }
@@ -374,8 +501,7 @@ mod serde_impls {
 
 #[cfg(all(test, feature = "serde"))]
 mod serde_tests {
-    use super::Variant;
-    use std::collections::BTreeMap;
+    use super::{Dict, Variant};
 
     fn round_trip(value: &Variant) -> Variant {
         let text = serde_json::to_string(value).expect("serializes");
@@ -402,11 +528,11 @@ mod serde_tests {
     fn composites_round_trip_and_names_survive() {
         // The shape k10r hands to a model: a record with a nested object,
         // an array of mixed values, and duplicate-free names.
-        let value = Variant::Map(BTreeMap::from([
+        let value = Variant::Map(Dict::from([
             ("name".to_string(), Variant::Str("alpha".into())),
             (
                 "props".to_string(),
-                Variant::Map(BTreeMap::from([
+                Variant::Map(Dict::from([
                     ("vcs".to_string(), Variant::Str("gitea".into())),
                     ("stars".to_string(), Variant::U64(7)),
                 ])),
@@ -424,11 +550,8 @@ mod serde_tests {
         assert_eq!(round_trip(&value), value);
         // The JSON text is the obvious one — a consumer can read it as is.
         assert_eq!(
-            serde_json::to_string(&Variant::Map(BTreeMap::from([(
-                "a".into(),
-                Variant::U64(1)
-            )])))
-            .unwrap(),
+            serde_json::to_string(&Variant::Map(Dict::from([("a".into(), Variant::U64(1))])))
+                .unwrap(),
             r#"{"a":1}"#
         );
     }
@@ -495,9 +618,9 @@ mod tests {
     fn obj_in_array_roundtrip() {
         // A `Map` nested inside an `Array`: the shape aura's interface_schema
         // carried in production.
-        let nested = BTreeMap::from([("c".to_string(), Variant::I64(0))]);
-        let val = Variant::Map(BTreeMap::from([("item".to_string(), Variant::Map(nested))]));
-        let fields = ValueMap::from([("a".to_string(), Variant::Array(vec![val]))]);
+        let nested = Dict::from([("c".to_string(), Variant::I64(0))]);
+        let val = Variant::Map(Dict::from([("item".to_string(), Variant::Map(nested))]));
+        let fields = Dict::from([("a".to_string(), Variant::Array(vec![val]))]);
         let bytes = encode(&fields, &mut stub(&["a", "item", "c"])).unwrap();
         let got = decode_named(&bytes, &mut names_of(&["a", "item", "c"]));
         assert_eq!(got.len(), 1);
@@ -521,7 +644,7 @@ mod tests {
         // The id lane is unchanged by the block table: 254 is one byte, 255 and
         // above escape through 0xFF + u16.
         fn ids_of(id: u16) -> Vec<u8> {
-            let fields = ValueMap::from([("x".to_string(), Variant::U64(1))]);
+            let fields = Dict::from([("x".to_string(), Variant::U64(1))]);
             let mut vocab = move |_: &str| Ok::<u16, ()>(id);
             encode(&fields, &mut vocab).unwrap()
         }
@@ -540,9 +663,9 @@ mod tests {
         // hostile value down the stack.
         let mut value = Variant::U64(1);
         for _ in 0..80 {
-            value = Variant::Map(BTreeMap::from([("k".to_string(), value)]));
+            value = Variant::Map(Dict::from([("k".to_string(), value)]));
         }
-        let fields = ValueMap::from([("root".to_string(), value)]);
+        let fields = Dict::from([("root".to_string(), value)]);
         let mut next = 1u16;
         let bytes = encode(&fields, &mut |_: &str| -> Result<u16, ()> {
             let id = next;
@@ -558,32 +681,32 @@ mod tests {
 
     #[test]
     fn objects_merge_name_by_name_and_nested_objects_recurse() {
-        let left = Variant::Map(BTreeMap::from([
+        let left = Variant::Map(Dict::from([
             ("a".to_string(), Variant::U32(1)),
             (
                 "inner".to_string(),
-                Variant::Map(BTreeMap::from([
+                Variant::Map(Dict::from([
                     ("x".to_string(), Variant::Str("kept".into())),
                     ("y".to_string(), Variant::Null),
                 ])),
             ),
         ]));
-        let right = Variant::Map(BTreeMap::from([
+        let right = Variant::Map(Dict::from([
             ("b".to_string(), Variant::Bool(true)),
             (
                 "inner".to_string(),
-                Variant::Map(BTreeMap::from([("y".to_string(), Variant::U8(9))])),
+                Variant::Map(Dict::from([("y".to_string(), Variant::U8(9))])),
             ),
         ]));
         let got = left.merged(right);
         assert_eq!(
             got,
-            Variant::Map(BTreeMap::from([
+            Variant::Map(Dict::from([
                 ("a".to_string(), Variant::U32(1)),
                 ("b".to_string(), Variant::Bool(true)),
                 (
                     "inner".to_string(),
-                    Variant::Map(BTreeMap::from([
+                    Variant::Map(Dict::from([
                         ("x".to_string(), Variant::Str("kept".into())),
                         ("y".to_string(), Variant::U8(9)),
                     ]))
@@ -594,11 +717,11 @@ mod tests {
 
     #[test]
     fn an_array_replaces_instead_of_appending() {
-        let left = Variant::Map(BTreeMap::from([(
+        let left = Variant::Map(Dict::from([(
             "tags".to_string(),
             Variant::Array(vec![Variant::Str("a".into())]),
         )]));
-        let right = Variant::Map(BTreeMap::from([(
+        let right = Variant::Map(Dict::from([(
             "tags".to_string(),
             Variant::Array(vec![Variant::Str("b".into())]),
         )]));
@@ -614,7 +737,7 @@ mod tests {
             Variant::Str("x".into())
         );
         assert_eq!(
-            Variant::Map(BTreeMap::new()).merged(Variant::Null),
+            Variant::Map(Dict::new()).merged(Variant::Null),
             Variant::Null
         );
     }
@@ -623,7 +746,7 @@ mod tests {
     fn the_empty_object_is_the_merge_identity() {
         // An absent half contributes nothing: `unwrap_or_default()` on either
         // side of the composition leaves the other side untouched.
-        let doc = Variant::Map(BTreeMap::from([("a".to_string(), Variant::U32(1))]));
+        let doc = Variant::Map(Dict::from([("a".to_string(), Variant::U32(1))]));
         assert_eq!(doc.clone().merged(Variant::default()), doc);
         assert_eq!(
             Variant::default().merged(doc.clone()),

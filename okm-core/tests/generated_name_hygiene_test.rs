@@ -14,7 +14,7 @@
 #![allow(clippy::unwrap_used, clippy::panic)]
 
 use okm_core::{Collection, Document, DocumentEncode, KeyEncode};
-use okm_value::Variant;
+use okm_value::{Dict, Variant};
 
 use okm_async::TestStore;
 use okm_core::parts;
@@ -125,7 +125,7 @@ fn the_dynamic_segment_still_takes_unknown_names() {
     let col: Collection<_, ShadowKey, Shadow> = Collection::new(TestStore::default());
     col.put(&key(), &row()).unwrap();
 
-    let mut patch = std::collections::BTreeMap::new();
+    let mut patch = Dict::new();
     patch.insert("note".to_string(), Variant::Str("open segment".into()));
     patch.insert("b".to_string(), Variant::U64(99));
     col.put(&key(), &Variant::Map(patch)).unwrap();

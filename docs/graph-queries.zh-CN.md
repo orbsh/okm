@@ -136,7 +136,7 @@ walk 成为热路径时，把边 collection 的热谓词提升为声明的 `#[ok
 
 ## 两种形态，一个查询面
 
-`Graph<S, E>`（固定本体：属性是声明 struct 字段，body 取类型化字节）与 `okm_dynamic::Graph<S>`（属性是运行时 nTLV 帧，`DynEdge { predicate: String, attrs: BTreeMap<..> }`）在相同的面上暴露相同的读方法。查询可见的差异：
+`Graph<S, E>`（固定本体：属性是声明 struct 字段，body 取类型化字节）与 `okm_dynamic::Graph<S>`（属性是运行时 nTLV 帧，`DynEdge { predicate: String, attrs: Dict }`）在相同的面上暴露相同的读方法。查询可见的差异：
 
 - `get_edge` 返回原始 body（`EdgeBody.payload` = 载荷字节），`edge` 再把它解成声明的类型；对比解码后的 `DynEdge`（属性经字段名词汇表还原）。
 - 动态形态没有 0x1 属性面（属性名是运行时数据，等值属性扫描结构性缺席——0x08/0x09 的谓词过滤是完整的，不是缺口）。

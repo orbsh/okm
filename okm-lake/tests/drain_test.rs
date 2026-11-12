@@ -15,7 +15,7 @@ use okm_async::TestStore;
 use okm_core::changelog::{ChangelogConfig, ChangelogStore};
 use okm_core::{Collection, DocumentEncode, KeyEncode};
 use okm_lake::{DrainConfig, drain};
-use okm_value::Variant;
+use okm_value::{Dict, Variant};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 
 #[derive(KeyEncode, Clone, PartialEq, Debug)]
@@ -484,7 +484,7 @@ fn a_documents_open_fields_travel_as_a_variant_column() {
             },
         )
         .expect("put");
-        let mut open = std::collections::BTreeMap::new();
+        let mut open = Dict::new();
         open.insert(
             "note".to_string(),
             okm_value::Variant::Str("first".to_string()),
@@ -564,7 +564,7 @@ fn an_open_segment_with_no_row_is_a_put_open_row() {
         .expect("put");
         // A key with a segment and no row: `merge` of nothing but open names on a key
         // that was never put (a row purged in an earlier window looks the same here).
-        let mut open = std::collections::BTreeMap::new();
+        let mut open = Dict::new();
         open.insert(
             "note".to_string(),
             okm_value::Variant::Str("orphan".to_string()),
@@ -698,7 +698,7 @@ fn a_variant_column_declares_its_table_feature() {
             },
         )
         .expect("put");
-        let mut open = std::collections::BTreeMap::new();
+        let mut open = Dict::new();
         open.insert(
             "note".to_string(),
             okm_value::Variant::Str("first".to_string()),
@@ -819,7 +819,7 @@ fn statistics_name_the_right_column_when_a_struct_sits_before_it() {
             },
         )
         .expect("put");
-        let mut open = std::collections::BTreeMap::new();
+        let mut open = Dict::new();
         open.insert(
             "note".to_string(),
             okm_value::Variant::Str("first".to_string()),
@@ -1672,7 +1672,7 @@ fn a_fold_keeps_open_fields_written_by_an_earlier_window() {
             },
         )
         .expect("put");
-        let mut open = std::collections::BTreeMap::new();
+        let mut open = Dict::new();
         open.insert(
             "note".to_string(),
             okm_value::Variant::Str("first".to_string()),
@@ -1747,7 +1747,7 @@ fn a_fold_merges_open_fields_written_by_two_windows() {
             },
         )
         .expect("put");
-        let mut open = std::collections::BTreeMap::new();
+        let mut open = Dict::new();
         open.insert(
             field.to_string(),
             okm_value::Variant::Str(value.to_string()),

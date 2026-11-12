@@ -18,7 +18,7 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use okm::pyo3_impl::{Collection, Engine};
-use okm_dynamic::{Value, ValueMap};
+use okm_dynamic::{Value, Dict};
 
 /// A host-owned in-memory engine behind the byte-level face (the realm
 /// store's shape at this seam).
@@ -87,8 +87,8 @@ fn key_bytes(id: u64) -> Vec<u8> {
     id.to_be_bytes().to_vec()
 }
 
-fn doc(count: u64) -> ValueMap {
-    let mut m = ValueMap::new();
+fn doc(count: u64) -> Dict {
+    let mut m = Dict::new();
     m.insert("id".into(), Value::U64(count));
     m.insert("count".into(), Value::U64(count));
     m

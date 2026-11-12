@@ -4,7 +4,7 @@
 
 use crate::field::FieldType;
 use crate::schema::CollectionSchema;
-use okm_value::{CodecError, ValueMap, Variant};
+use okm_value::{CodecError, Dict, Variant};
 use std::collections::BTreeMap;
 
 /// Inside a decode walk the tree reads better under its short name; it is the
@@ -13,7 +13,7 @@ use Variant as Value;
 
 /// Decode the key bytes into the value map (fields at their static
 /// offsets; nested segments would recurse — v1 keys are flat).
-pub fn decode_key(schema: &CollectionSchema, bytes: &[u8]) -> Result<ValueMap, CodecError> {
+pub fn decode_key(schema: &CollectionSchema, bytes: &[u8]) -> Result<Dict, CodecError> {
     if bytes.len() < schema.key_len {
         return Err(CodecError::Truncated {
             field: "<key>".into(),
@@ -21,7 +21,7 @@ pub fn decode_key(schema: &CollectionSchema, bytes: &[u8]) -> Result<ValueMap, C
             got: bytes.len(),
         });
     }
-    let mut out = BTreeMap::new();
+    let mut out = Dict::new();
     for f in &schema.key_fields {
         let raw = &bytes[f.offset..f.offset + f.width];
         out.insert(
@@ -41,7 +41,7 @@ pub fn resolve_vocab_labels<S: crate::VirtualStorage + ?Sized>(
     schema: &CollectionSchema,
     store: &S,
     header: &[u8],
-    values: &mut ValueMap,
+    values: &mut Dict,
 ) -> Result<(), String> {
     for f in &schema.hot_fields {
         let FieldType::Vocab(id_slot) = f.ty else {
@@ -68,7 +68,7 @@ pub fn resolve_vocab_labels<S: crate::VirtualStorage + ?Sized>(
 /// There is no header: the split between the two segments is a compile-time fact of
 /// the declaration, so a payload shorter than `hot_width` is a truncation, not an
 /// older row (ADR-0042 as amended — a generation's declaration is frozen).
-pub fn decode_payload(schema: &CollectionSchema, bytes: &[u8]) -> Result<ValueMap, CodecError> {
+pub fn decode_payload(schema: &CollectionSchema, bytes: &[u8]) -> Result<Dict, CodecError> {
     let hot_len = schema.hot_width;
     let hot = bytes.get(..hot_len).ok_or_else(|| CodecError::Truncated {
         field: "<hot segment>".into(),
@@ -76,7 +76,7 @@ pub fn decode_payload(schema: &CollectionSchema, bytes: &[u8]) -> Result<ValueMa
         got: bytes.len(),
     })?;
 
-    let mut out = BTreeMap::new();
+    let mut out = Dict::new();
     for f in &schema.hot_fields {
         match hot.get(f.offset..f.offset + f.width) {
             Some(raw) => {
@@ -236,7 +236,7 @@ pub fn decode_payload(schema: &CollectionSchema, bytes: &[u8]) -> Result<ValueMa
 /// name-keyed map that may name only some declared fields. A map that skips a
 /// field is not an error — the payload is positional and a half row cannot be
 /// encoded — so the default is what "absent" means on both paths.
-pub fn fill_schema_defaults(schema: &CollectionSchema, out: &mut ValueMap) {
+pub fn fill_schema_defaults(schema: &CollectionSchema, out: &mut Dict) {
     for f in schema.hot_fields.iter().chain(schema.cold_fields.iter()) {
         if out.contains_key(&f.name) {
             continue;

@@ -25,8 +25,7 @@ use okm_async::TestStore;
 use okm_core::engine::storage::ScanIter;
 use okm_core::schema::CollectionSchema;
 use okm_core::{Batch, Collection, Document, DocumentEncode, KeyEncode, VirtualStorage};
-use okm_dynamic::{AccessMethod, DynamicCollection, Value, ValueMap};
-use std::collections::BTreeMap;
+use okm_dynamic::{AccessMethod, Dict, DynamicCollection, Value};
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
 pub struct UserKey {
@@ -53,8 +52,8 @@ fn schema() -> CollectionSchema {
 /// The PAYLOAD names only: the identity is the pkey's business, and a map
 /// naming a key field would be writing a DYNAMIC field of that name (ADR-0035:
 /// the classifier is the payload declaration, not the schema's whole name set).
-fn values(level: u32, score: u16, name: &str) -> ValueMap {
-    let mut m = BTreeMap::new();
+fn values(level: u32, score: u16, name: &str) -> Dict {
+    let mut m = Dict::new();
     m.insert("level".into(), Value::U32(level));
     m.insert("score".into(), Value::U16(score));
     m.insert("name".into(), Value::Str(name.into()));
@@ -476,7 +475,7 @@ fn dynamic_fields_equal_typed_fields() {
 
     // One map, both modes: no declared name is named here, so both sides
     // write slot 1 only and the row is untouched.
-    let mut fields = BTreeMap::new();
+    let mut fields = Dict::new();
     fields.insert("note".to_string(), Variant::Str("hello".into()));
     fields.insert("weight".to_string(), Variant::U64(9));
     typed
@@ -539,7 +538,7 @@ fn merge_keeps_the_unnamed_dynamic_name_and_never_writes_the_row() {
         .unwrap();
 
     // A second merge naming only `b` leaves `a` standing (ADR-0035 rule 3).
-    let mut only_b = ValueMap::new();
+    let mut only_b = Dict::new();
     only_b.insert("b".into(), Value::U64(2));
     t.put(&key_bytes(1, 3), &only_b).unwrap();
 
@@ -593,7 +592,7 @@ fn replace_is_the_whole_document_and_empty_is_purge() {
     );
 
     // replace(&empty) == purge.
-    let empty = ValueMap::new();
+    let empty = Dict::new();
     t.put(&key_bytes(1, 4), (&empty,)).unwrap();
     assert!(t.fetch(&key_bytes(1, 4)).unwrap().is_none());
 }
@@ -623,14 +622,13 @@ fn purge_is_the_one_deletion_verb_and_takes_both_slots() {
 
 #[test]
 fn dynamic_fields_carry_composites() {
-    use std::collections::BTreeMap as M;
     let t = dynamic_table(TestStore::slatedb_mem());
     t.put(&key_bytes(1, 6), &values(1, 5, "a")).unwrap();
 
     // Nested Map + heterogeneous Array round-trip through the bridge.
-    let mut nested: M<String, Value> = M::new();
+    let mut nested = Dict::new();
     nested.insert("n".into(), Value::Str("v".into()));
-    let mut f: M<String, Value> = M::new();
+    let mut f = Dict::new();
     f.insert("obj".into(), Value::Map(nested));
     f.insert(
         "tags".into(),
@@ -642,7 +640,7 @@ fn dynamic_fields_carry_composites() {
     assert_eq!(
         back.get("obj"),
         Some(&Value::Map({
-            let mut m = M::new();
+            let mut m = Dict::new();
             m.insert("n".into(), Value::Str("v".into()));
             m
         })),
@@ -678,7 +676,7 @@ fn plan_merge_equals_embedded_merge() {
             &k,
             // Every name here is dynamic on this table, so the declared half is
             // empty — the same split the collection makes before planning.
-            &okm_dynamic::ValueMap::new(),
+            &okm_dynamic::Dict::new(),
             &dfields(&[("note", "hello"), ("weight", "9")]),
             okm_dynamic::Stored::default(),
             &|_ek: &[u8]| Ok(None),
@@ -732,8 +730,8 @@ fn plan_merge_equals_embedded_merge() {
     assert_eq!(back, dfields(&[("note", "hello"), ("weight", "9")]));
 }
 
-fn dfields(pairs: &[(&str, &str)]) -> okm_dynamic::ValueMap {
-    let mut m = okm_dynamic::ValueMap::new();
+fn dfields(pairs: &[(&str, &str)]) -> okm_dynamic::Dict {
+    let mut m = okm_dynamic::Dict::new();
     for (k, v) in pairs {
         m.insert(
             k.to_string(),
@@ -792,7 +790,7 @@ fn dynamic_variable_width_index_matches_typed_bytes() {
         // Payload names only: the identity rides the pkey. Naming a key field
         // here would be a dynamic field of that name, not the identity (see
         // `a_key_field_name_in_the_map_is_a_dynamic_field`).
-        let mut m = BTreeMap::new();
+        let mut m = Dict::new();
         m.insert("email".to_string(), Value::Str(email.into()));
         dynamic
             .put(&EmailKey { id }.encode(), &m)
@@ -839,7 +837,7 @@ fn dynamic_variable_width_index_matches_typed_bytes() {
     assert_eq!(ids, vec![1, 2], "the fan-out: two rows share one email");
 
     // Overwrite sweeps the stale entry (the email changed).
-    let mut m = BTreeMap::new();
+    let mut m = Dict::new();
     m.insert("email".to_string(), Value::Str("a@x".into()));
     dynamic.put(&EmailKey { id: 3 }.encode(), &m).unwrap();
     let hits = dynamic.scan(0x3001, b"a@x").unwrap();
@@ -1039,7 +1037,7 @@ fn a_reader_without_the_declaration_learns_what_each_path_slot_means() {
     let writer = DynamicCollection::new(store.clone(), 41, schema(), vec![method]);
     writer.ensure_layout().unwrap();
 
-    let mut doc = ValueMap::new();
+    let mut doc = Dict::new();
     doc.insert("note".into(), Value::Str("hot".into()));
     writer.put(&key_bytes(1, 30), &doc).unwrap();
     assert_eq!(writer.scan(0x3005, b"hot").unwrap().len(), 1);

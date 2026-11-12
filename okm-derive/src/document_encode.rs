@@ -2302,8 +2302,8 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> syn::Result<TS2> {
             }
             /// document -> map: every declared field lifted into Variant
             /// (ADR-0012 document-map bridge).
-            fn to_map(&self) -> ::std::collections::BTreeMap<String, ::okm_core::okm_value::Variant> {
-                let mut out = ::std::collections::BTreeMap::new();
+            fn to_map(&self) -> ::okm_core::okm_value::Dict {
+                let mut out = ::okm_core::okm_value::Dict::new();
                 #to_map_arms
                 out
             }
@@ -2312,7 +2312,7 @@ pub(crate) fn emit_row_impl(schema: &DocumentSchema) -> syn::Result<TS2> {
             /// same evolution rule as the payload decoder); a name that IS
             /// present with the wrong kind — or a value that cannot be
             /// represented — comes back as an `okm_core::Error`.
-            fn try_from_map(map: &::std::collections::BTreeMap<String, ::okm_core::okm_value::Variant>) -> ::okm_core::error::Result<Self> {
+            fn try_from_map(map: &::okm_core::okm_value::Dict) -> ::okm_core::error::Result<Self> {
                 ::core::result::Result::Ok(Self {
                     #from_map_arms
                 })

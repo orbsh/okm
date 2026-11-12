@@ -12,7 +12,7 @@
 //! ENCODED bytes; this module only manages the entry lifecycle.
 
 use crate::path::Path;
-use crate::{Value, ValueMap};
+use crate::{Dict, Value};
 use okm_core::schema::CollectionSchema;
 use okm_core::storage::VirtualStorage;
 
@@ -26,12 +26,12 @@ pub type CallableResult<T> = Result<T, String>;
 /// entries. Must be pure (same purity contract as the Rust-side
 /// `admits`): an impure predicate makes delete compute a different
 /// entry set than put and leaves dangling entries.
-pub type Admits = Box<dyn Fn(&ValueMap) -> CallableResult<bool> + Send + Sync>;
+pub type Admits = Box<dyn Fn(&Dict) -> CallableResult<bool> + Send + Sync>;
 
 /// Function-index derive: one encoded value per entry (plain func index),
 /// or several (multi-entry fan-out, the inverted-index regime). Sort
 /// order = the result encodings' order, same as the derive.
-pub type FuncDerive = Box<dyn Fn(&ValueMap) -> CallableResult<Vec<Vec<u8>>> + Send + Sync>;
+pub type FuncDerive = Box<dyn Fn(&Dict) -> CallableResult<Vec<Vec<u8>>> + Send + Sync>;
 
 /// Which entries an access method produces.
 pub enum AccessMethodKind {
@@ -273,7 +273,7 @@ impl AccessMethod {
     fn fields_bytes(
         &self,
         schema: &CollectionSchema,
-        document: &ValueMap,
+        document: &Dict,
         pkey: &[u8],
     ) -> Result<Vec<u8>, String> {
         let _ = pkey; // payload-only; the pkey tail is appended by the caller
@@ -370,7 +370,7 @@ pub fn index_entries(
     ns: &[u8],
     indexes: &[AccessMethod],
     pkey: &[u8],
-    document: &ValueMap,
+    document: &Dict,
 ) -> Result<IndexEntries, String> {
     let mut out = Vec::new();
     for idx in indexes {
@@ -456,7 +456,7 @@ pub fn path_index_entries(
     ns: &[u8],
     indexes: &[AccessMethod],
     pkey: &[u8],
-    document: &ValueMap,
+    document: &Dict,
 ) -> Result<IndexEntries, String> {
     let mut out = Vec::new();
     for idx in indexes {
@@ -537,7 +537,7 @@ pub fn scan_access_method<S: VirtualStorage>(
     ns: &[u8],
     index: &AccessMethod,
     encoded_prefix: &[u8],
-) -> Result<Vec<ValueMap>, String> {
+) -> Result<Vec<Dict>, String> {
     scan_access_method_filtered(store, schema, ns, index, encoded_prefix, false)
 }
 
@@ -553,7 +553,7 @@ pub fn scan_access_method_exact<S: VirtualStorage>(
     ns: &[u8],
     index: &AccessMethod,
     encoded_prefix: &[u8],
-) -> Result<Vec<ValueMap>, String> {
+) -> Result<Vec<Dict>, String> {
     scan_access_method_filtered(store, schema, ns, index, encoded_prefix, true)
 }
 
@@ -564,7 +564,7 @@ fn scan_access_method_filtered<S: VirtualStorage>(
     index: &AccessMethod,
     encoded_prefix: &[u8],
     exact: bool,
-) -> Result<Vec<ValueMap>, String> {
+) -> Result<Vec<Dict>, String> {
     let p = entry_scan_prefix(schema, ns, index, encoded_prefix)?;
     let kl = schema.key_len;
     let mut out = Vec::new();
@@ -649,7 +649,7 @@ pub fn scan_access_method_covered<S: VirtualStorage>(
     ns: &[u8],
     index: &AccessMethod,
     encoded_prefix: &[u8],
-) -> Result<Vec<(ValueMap, ValueMap)>, String> {
+) -> Result<Vec<(Dict, Dict)>, String> {
     let p = entry_scan_prefix(schema, ns, index, encoded_prefix)?;
     let kl = schema.key_len;
     let mut out = Vec::new();
@@ -681,8 +681,8 @@ pub fn decode_includes(
     schema: &CollectionSchema,
     index: &AccessMethod,
     raw: &[u8],
-) -> Result<ValueMap, String> {
-    let mut out = ValueMap::new();
+) -> Result<Dict, String> {
+    let mut out = Dict::new();
     let mut off = 0usize;
     for name in &index.includes {
         if schema.key_fields.iter().any(|f| &f.name == name) {

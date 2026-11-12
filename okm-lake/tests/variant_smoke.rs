@@ -9,8 +9,8 @@
 )]
 
 use okm_core::{DocumentEncode, KeyEncode, okm_value::Variant};
+use okm_value::Dict;
 use parquet_variant::VariantBuilder;
-use std::collections::BTreeMap;
 
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
 pub struct UserKey {
@@ -30,7 +30,7 @@ pub struct User {
 fn variant_build_smoke() {
     // Build one Variant object from a Variant tree (the shape the
     // dynamic segment's frames decode to).
-    let mut obj: BTreeMap<String, Variant> = BTreeMap::new();
+    let mut obj = Dict::new();
     obj.insert("score".into(), Variant::U64(99));
     obj.insert(
         "tags".into(),
@@ -38,7 +38,7 @@ fn variant_build_smoke() {
     );
     obj.insert(
         "nested".into(),
-        Variant::Map(BTreeMap::from([
+        Variant::Map(Dict::from([
             ("x".into(), Variant::I64(-3)),
             ("flag".into(), Variant::Bool(true)),
         ])),
@@ -76,7 +76,7 @@ fn variant_build_smoke() {
 
     fn push_obj<S: parquet_variant::BuilderSpecificState>(
         ob: &mut parquet_variant::ObjectBuilder<'_, S>,
-        map: &BTreeMap<String, Variant>,
+        map: &Dict,
     ) {
         for (k, val) in map {
             match val {

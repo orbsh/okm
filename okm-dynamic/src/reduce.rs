@@ -23,7 +23,7 @@
 //! leaves an empty group, not a deleted entry. No zero-garbage-collect —
 //! a zero-detection policy is the caller's (same as the Rust side).
 
-use crate::{Value, ValueMap};
+use crate::{Dict, Value};
 use okm_core::storage::VirtualStorage;
 
 /// The host-language reduce logic — one object, the mirror of the
@@ -37,10 +37,10 @@ pub trait ReduceLogic: Send + Sync {
     /// Add one document into the group's accumulator. The key arrives
     /// DECODED (schema-driven key-field map, ADR-0024) — host callables
     /// see one object model, never bytes.
-    fn fold(&self, acc: &mut Vec<u8>, key: &ValueMap, document: &ValueMap) -> Result<(), String>;
+    fn fold(&self, acc: &mut Vec<u8>, key: &Dict, document: &Dict) -> Result<(), String>;
     /// Remove one document from the group's accumulator. Reversibility
     /// `unfold(fold(a, x)) = a` is the implementor's obligation.
-    fn unfold(&self, acc: &mut Vec<u8>, key: &ValueMap, document: &ValueMap) -> Result<(), String>;
+    fn unfold(&self, acc: &mut Vec<u8>, key: &Dict, document: &Dict) -> Result<(), String>;
 }
 
 /// Object-safe alias the collection holds (host languages bridge their
@@ -87,8 +87,8 @@ impl BoundReduce {
     pub fn group_bytes(
         &self,
         schema: &okm_core::schema::CollectionSchema,
-        key: &ValueMap,
-        document: &ValueMap,
+        key: &Dict,
+        document: &Dict,
     ) -> Result<Vec<u8>, String> {
         let mut buf = Vec::new();
         for name in &self.spec.group_fields {
@@ -109,7 +109,7 @@ impl BoundReduce {
                     .find(|f| &f.name == name)
                     .ok_or_else(|| format!("group field `{name}` not in schema"))?
             };
-            let source: &ValueMap = if from_key { key } else { document };
+            let source: &Dict = if from_key { key } else { document };
             let v = source.get(name).ok_or_else(|| {
                 format!(
                     "group field `{name}` missing from {} map",
@@ -141,8 +141,8 @@ impl BoundReduce {
         &self,
         schema: &okm_core::schema::CollectionSchema,
         ns: &[u8],
-        key: &ValueMap,
-        document: &ValueMap,
+        key: &Dict,
+        document: &Dict,
     ) -> Result<Vec<u8>, String> {
         let g = self.group_bytes(schema, key, document)?;
         let mut buf = Vec::with_capacity(ns.len() + 2 + g.len());
@@ -199,7 +199,7 @@ pub struct PresetLogic {
 }
 
 impl PresetLogic {
-    fn field_u64(doc: &ValueMap, field: &str) -> Result<u64, String> {
+    fn field_u64(doc: &Dict, field: &str) -> Result<u64, String> {
         match doc.get(field) {
             Some(Value::U64(v)) => Ok(*v),
             Some(other) => Err(format!("reduce field `{field}` is not U64: {other:?}")),
@@ -215,7 +215,7 @@ impl ReduceLogic for PresetLogic {
             PresetKind::LowWater(_) => u64::MAX.to_be_bytes().to_vec(),
         }
     }
-    fn fold(&self, acc: &mut Vec<u8>, _key: &ValueMap, document: &ValueMap) -> Result<(), String> {
+    fn fold(&self, acc: &mut Vec<u8>, _key: &Dict, document: &Dict) -> Result<(), String> {
         let mut cur = u64::from_be_bytes(acc.as_slice().try_into().unwrap_or([0u8; 8]));
         match &self.kind {
             PresetKind::Count => cur += 1,
@@ -225,12 +225,7 @@ impl ReduceLogic for PresetLogic {
         *acc = cur.to_be_bytes().to_vec();
         Ok(())
     }
-    fn unfold(
-        &self,
-        acc: &mut Vec<u8>,
-        _key: &ValueMap,
-        _document: &ValueMap,
-    ) -> Result<(), String> {
+    fn unfold(&self, acc: &mut Vec<u8>, _key: &Dict, _document: &Dict) -> Result<(), String> {
         match &self.kind {
             PresetKind::Count => {
                 let mut cur = u64::from_be_bytes(acc.as_slice().try_into().unwrap_or([0u8; 8]));

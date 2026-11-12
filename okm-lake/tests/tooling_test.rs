@@ -13,6 +13,7 @@ use okm_lake::snapshot::parquet_io;
 
 use okm_async::TestStore;
 use okm_core::{Collection, Document, DocumentEncode, FieldDesc, FieldType, KeyEncode};
+use okm_value::Dict;
 
 /// The document as one map: the row's value with the dynamic segment laid over
 /// it — a point read answers parts, a row converts to a value, and values
@@ -20,7 +21,7 @@ use okm_core::{Collection, Document, DocumentEncode, FieldDesc, FieldType, KeyEn
 fn doc_of<S, K, R>(
     col: &okm_core::Collection<S, K, R>,
     key: &K,
-) -> okm_core::error::Result<Option<std::collections::BTreeMap<String, okm_value::Variant>>>
+) -> okm_core::error::Result<Option<Dict>>
 where
     S: okm_core::VirtualStorage,
     K: okm_core::KeyEncode,
@@ -318,7 +319,6 @@ fn an_unnamed_id_exports_as_null_and_import_refuses_it() {
 #[test]
 fn parquet_with_variant_restores_both_halves_and_segment_only_documents() {
     use okm_value::Variant;
-    use std::collections::BTreeMap;
 
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("backup.parquet");
@@ -337,7 +337,7 @@ fn parquet_with_variant_restores_both_halves_and_segment_only_documents() {
         },
     )
     .unwrap();
-    let mut open = BTreeMap::new();
+    let mut open = Dict::new();
     open.insert("note".to_string(), Variant::Str("hello".into()));
     t1.put(&with_row, &Variant::Map(open.clone())).unwrap();
     let segment_only = TKey {
