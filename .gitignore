@@ -1,4 +1,6 @@
 target/
+# scratch cargo target dir used for verification builds; never a source of truth
+build-verify/
 /.worktrees/
 # built extension artifact inside the mixed python package
 bindings/okm-python/okm/*.so
