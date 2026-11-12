@@ -39,7 +39,7 @@ fn upsert_with_full_paths() {
         })
         .unwrap();
     assert_eq!(written.hits, 10);
-    assert_eq!(t.get(&CounterKey { id: 1 }).unwrap().unwrap().hits, 10);
+    assert_eq!(t.get_row(&CounterKey { id: 1 }).unwrap().unwrap().hits, 10);
 
     // ---------- RMW path: old in hand ----------
     let written = t
@@ -50,7 +50,7 @@ fn upsert_with_full_paths() {
         })
         .unwrap();
     assert_eq!(written.hits, 15);
-    assert_eq!(t.get(&CounterKey { id: 1 }).unwrap().unwrap().hits, 15);
+    assert_eq!(t.get_row(&CounterKey { id: 1 }).unwrap().unwrap().hits, 15);
 
     // ---------- write path fired: index entries present ----------
     // by_bucket(7) scan must see the document (index entry written by the put

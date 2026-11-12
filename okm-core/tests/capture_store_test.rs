@@ -121,7 +121,7 @@ fn an_uncaptured_table_writes_no_log() {
         let q: Collection<_, K, Quiet> =
             Collection::captured(store(root.path())).expect("assemble");
         q.put(&K { id: 1 }, &Quiet { level: 1 }).expect("put");
-        kept = q.get(&K { id: 1 }).expect("get").is_some();
+        kept = q.get_row(&K { id: 1 }).expect("get").is_some();
     }
 
     assert!(kept, "the write still landed in the store");

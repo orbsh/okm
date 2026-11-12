@@ -138,11 +138,11 @@ fn table_write_path_inside_tenant_segment() {
     // the engine's map is out of reach BY DESIGN (the host owns the only
     // handle) — the sender-side view is the contract.
     for _ in 0..200 {
-        if t.get(&DocKey { id: 9 }).unwrap().is_some() {
+        if t.get_row(&DocKey { id: 9 }).unwrap().is_some() {
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
-    assert_eq!(t.get(&DocKey { id: 9 }).unwrap().unwrap().title, 5);
+    assert_eq!(t.get_row(&DocKey { id: 9 }).unwrap().unwrap().title, 5);
     assert_eq!(t.scan_keys(&okm_core::PrefixProbe::empty()).count(), 1);
 }

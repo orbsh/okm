@@ -31,6 +31,7 @@ pub struct User {
 }
 
 use __OkmIndex_User_by_level as ByLevel;
+use okm_core::whole_document;
 
 fn key(id: u64) -> UserKey {
     UserKey { id }
@@ -53,7 +54,7 @@ fn view_projects_both_slots_and_leaves_the_typed_read_alone() {
     t.put(&key(1), &user(1, 2)).unwrap();
 
     // A static-only document: the view carries the declared names.
-    let row_only = t.fetch(&key(1)).unwrap().unwrap();
+    let row_only = whole_document(&t, &key(1)).unwrap().unwrap();
     assert_eq!(row_only.len(), 2);
     assert_eq!(row_only["level"], DynamicValue::U64(2));
 
@@ -66,11 +67,11 @@ fn view_projects_both_slots_and_leaves_the_typed_read_alone() {
         ]),
     )
     .unwrap();
-    let got = t.fetch(&key(1)).unwrap().unwrap();
+    let got = whole_document(&t, &key(1)).unwrap().unwrap();
     assert_eq!(got.len(), 4);
     assert_eq!(got["score"], DynamicValue::U64(99));
     assert_eq!(got["note"], DynamicValue::Str("hello".into()));
-    assert_eq!(t.get(&key(1)).unwrap().unwrap(), user(1, 2));
+    assert_eq!(t.get_row(&key(1)).unwrap().unwrap(), user(1, 2));
 
     // Vocabulary landed in the id family under the same ns, cursor included
     // (ADR-0032: the face holds its allocation cursor at the bare prefix).
@@ -91,8 +92,53 @@ fn view_projects_both_slots_and_leaves_the_typed_read_alone() {
     // not the primary entry.
     t.merge(&key(9), &dmap(&[("only", DynamicValue::U64(1))]))
         .unwrap();
-    assert!(t.get(&key(9)).unwrap().is_none(), "no static segment");
-    assert_eq!(t.fetch(&key(9)).unwrap().unwrap().len(), 1);
+    assert!(t.get_row(&key(9)).unwrap().is_none(), "no static segment");
+    assert_eq!(whole_document(&t, &key(9)).unwrap().unwrap().len(), 1);
+}
+
+#[test]
+fn a_point_read_answers_parts_apart() {
+    use okm_core::parts;
+    let t: Collection<TestStore, UserKey, User> = Collection::new(TestStore::slatedb_mem());
+    t.put(&key(1), &user(1, 2)).unwrap();
+    t.merge(&key(1), &dmap(&[("note", DynamicValue::Str("hi".into()))]))
+        .unwrap();
+
+    // Both halves, kept apart: each is its own Option.
+    let (row, value) = t.get::<(parts::Row, parts::Value)>(&key(1)).unwrap();
+    assert_eq!(row.unwrap(), user(1, 2));
+    match value.unwrap() {
+        DynamicValue::Obj(map) => {
+            assert_eq!(map.len(), 1);
+            assert_eq!(map["note"], DynamicValue::Str("hi".into()));
+        }
+        other => panic!("slot 1 is an object, got {other:?}"),
+    }
+
+    // get_row is the sugar for the one-element tuple, so the collapse rule
+    // makes the two answers the same type AND the same value.
+    assert_eq!(
+        t.get::<(parts::Row,)>(&key(1)).unwrap(),
+        t.get_row(&key(1)).unwrap()
+    );
+
+    // The dynamic half alone, without decoding the row.
+    let only = t.get::<(parts::Value,)>(&key(1)).unwrap();
+    assert!(only.is_some());
+
+    // Absence is per slot: a dynamic-only document answers (None, Some).
+    t.merge(&key(9), &dmap(&[("only", DynamicValue::U64(1))]))
+        .unwrap();
+    let (row, value) = t.get::<(parts::Row, parts::Value)>(&key(9)).unwrap();
+    assert!(row.is_none(), "no row in slot 0");
+    assert!(value.is_some(), "slot 1 exists");
+
+    // ...and a key holding nothing answers (None, None), not one None for the
+    // pair.
+    let (row, value) = t.get::<(parts::Row, parts::Value)>(&key(404)).unwrap();
+    assert!(row.is_none());
+    assert!(value.is_none());
+    assert!(whole_document(&t, &key(404)).unwrap().is_none());
 }
 
 #[test]
@@ -109,7 +155,7 @@ fn merge_touches_only_the_names_it_is_given() {
     t.merge(&key(1), &dmap(&[("c", DynamicValue::U64(3))]))
         .unwrap();
 
-    let got = t.fetch(&key(1)).unwrap().unwrap();
+    let got = whole_document(&t, &key(1)).unwrap().unwrap();
     assert_eq!(got.len(), 5, "2 declared + 3 dynamic");
     for name in ["a", "b", "c"] {
         assert!(
@@ -134,7 +180,7 @@ fn merge_of_a_declared_field_is_an_rmw_and_cleans_the_old_face() {
     t.merge(&key(1), &dmap(&[("level", DynamicValue::U64(30))]))
         .unwrap();
 
-    let row = t.get(&key(1)).unwrap().unwrap();
+    let row = t.get_row(&key(1)).unwrap().unwrap();
     assert_eq!(
         (row.legacy, row.level),
         (1, 30),
@@ -173,8 +219,8 @@ fn replace_is_the_whole_document() {
         ]),
     )
     .unwrap();
-    assert_eq!(t.get(&key(1)).unwrap().unwrap(), user(0, 4));
-    let got = t.fetch(&key(1)).unwrap().unwrap();
+    assert_eq!(t.get_row(&key(1)).unwrap().unwrap(), user(0, 4));
+    let got = whole_document(&t, &key(1)).unwrap().unwrap();
     assert!(
         !got.contains_key("gone"),
         "replace drops unnamed dynamic names"
@@ -191,11 +237,11 @@ fn replace_is_the_whole_document() {
     // A fresh key: the map alone builds the row (absent fields default).
     t.replace(&key(3), &dmap(&[("legacy", DynamicValue::U64(7))]))
         .unwrap();
-    assert_eq!(t.get(&key(3)).unwrap().unwrap(), user(7, 0));
+    assert_eq!(t.get_row(&key(3)).unwrap().unwrap(), user(7, 0));
 
     // An empty map IS the empty document.
     t.replace(&key(1), &BTreeMap::new()).unwrap();
-    assert!(t.fetch(&key(1)).unwrap().is_none());
+    assert!(whole_document(&t, &key(1)).unwrap().is_none());
 }
 
 #[test]
@@ -204,17 +250,20 @@ fn purge_clears_both_slots_in_one_call() {
     t.put(&key(2), &user(1, 1)).unwrap();
     t.merge(&key(2), &dmap(&[("x", DynamicValue::U64(1))]))
         .unwrap();
-    assert!(t.fetch(&key(2)).unwrap().is_some());
+    assert!(whole_document(&t, &key(2)).unwrap().is_some());
 
     assert!(t.purge(&key(2)).unwrap());
-    assert!(t.fetch(&key(2)).unwrap().is_none(), "both slots gone");
+    assert!(
+        whole_document(&t, &key(2)).unwrap().is_none(),
+        "both slots gone"
+    );
     assert!(!t.purge(&key(2)).unwrap(), "second purge is a no-op");
 
     // A dynamic-only document is purgeable too.
     t.merge(&key(4), &dmap(&[("y", DynamicValue::U64(1))]))
         .unwrap();
     assert!(t.purge(&key(4)).unwrap());
-    assert!(t.fetch(&key(4)).unwrap().is_none());
+    assert!(whole_document(&t, &key(4)).unwrap().is_none());
 }
 
 // ---- from_map 的两条规则：缺席填默认，出现但种类/范围不对则具名拒绝 ----------
@@ -272,7 +321,7 @@ fn a_refused_merge_returns_the_error_and_writes_nothing() {
         "unexpected error: {err:?}"
     );
     assert_eq!(
-        t.get(&key(1)).unwrap().unwrap(),
+        t.get_row(&key(1)).unwrap().unwrap(),
         user(3, 4),
         "a refused merge writes nothing"
     );
@@ -280,7 +329,7 @@ fn a_refused_merge_returns_the_error_and_writes_nothing() {
     // 同一个 API 上的成功路径不受影响。
     t.merge(&key(1), &dmap(&[("level", DynamicValue::U64(9))]))
         .unwrap();
-    assert_eq!(t.get(&key(1)).unwrap().unwrap(), user(3, 9));
+    assert_eq!(t.get_row(&key(1)).unwrap().unwrap(), user(3, 9));
 }
 
 /// Two handles on one engine allocate from the SAME cursor: the mirror must not
@@ -301,11 +350,11 @@ fn two_handles_on_one_engine_do_not_share_an_id() {
         .unwrap();
 
     assert_eq!(
-        a.fetch(&key(2)).unwrap().unwrap()["beta"],
+        whole_document(&a, &key(2)).unwrap().unwrap()["beta"],
         DynamicValue::Str("y".into())
     );
     assert_eq!(
-        b.fetch(&key(3)).unwrap().unwrap()["gamma"],
+        whole_document(&b, &key(3)).unwrap().unwrap()["gamma"],
         DynamicValue::Str("z".into())
     );
 }
@@ -328,17 +377,17 @@ fn one_dynamic_name_across_documents_survives_a_fresh_mirror() {
         .unwrap();
 
     assert_eq!(
-        t.fetch(&key(2)).unwrap().unwrap()["tag"],
+        whole_document(&t, &key(2)).unwrap().unwrap()["tag"],
         DynamicValue::Str("beta".into())
     );
 
     let fresh: Collection<TestStore, UserKey, User> = Collection::new(store.shared_handle());
     assert_eq!(
-        fresh.fetch(&key(1)).unwrap().unwrap()["tag"],
+        whole_document(&fresh, &key(1)).unwrap().unwrap()["tag"],
         DynamicValue::Str("alpha".into())
     );
     assert_eq!(
-        fresh.fetch(&key(2)).unwrap().unwrap()["tag"],
+        whole_document(&fresh, &key(2)).unwrap().unwrap()["tag"],
         DynamicValue::Str("beta".into())
     );
 }

@@ -3338,3 +3338,7 @@ unset) and was verified against a local rustfs.
 - [ ] **A checkpoint for a long log.** Publishing a version per interval per table means a log
   that a reader replays from 0. Delta's answer is a checkpoint every N versions; the writer here
   still makes none, and `publish` was written to be the first caller that needs it.
+
+## 2026-11-12 — a point read answers parts, not one assembled map
+
+- [x] **Point reads take a `PointParts` tuple, like scans take `Parts`.** `Collection::get::<P>(&key)` answers `P::Output`, where the parts are `parts::Row` (slot 0, `Option<R>`) and `parts::Value` (slot 1 as `DynamicValue::Obj`, `Option<DynamicValue>`); a one-element tuple collapses to its part's own output, so `get::<(parts::Row,)>` IS `get_row`. Absence is per slot — a dynamic-only document answers `(None, Some(object))` and a missing key `(None, None)`, because a document is the PAIR of slots (ADR-0035). `Collection::fetch` is gone: it merged both slots into one `BTreeMap` behind a name that sounds like a single read, so the merging now has a name of its own and exactly one implementation, the free `whole_document(&col, &key)` (`None` only when both slots are empty). Every call site in the workspace was swept: `get` -> `get_row`, `fetch` -> `whole_document` (or `get::<(Row, Value)>` where the halves are used apart). `slot1_map` stays as the internal primitive the `Value` part builds on.

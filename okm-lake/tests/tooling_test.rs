@@ -12,7 +12,9 @@ use okm_lake::bridge::ToRecordBatch;
 use okm_lake::snapshot::parquet_io;
 
 use okm_async::TestStore;
-use okm_core::{Collection, Document, DocumentEncode, FieldDesc, FieldType, KeyEncode};
+use okm_core::{
+    Collection, Document, DocumentEncode, FieldDesc, FieldType, KeyEncode, whole_document,
+};
 
 #[derive(KeyEncode, Clone, PartialEq, Debug)]
 pub struct TKey {
@@ -64,7 +66,7 @@ fn parquet_export_import_roundtrip_restores_rows_and_indexes() {
             org_id: 1,
             user_id: i,
         };
-        let r = t2.get(&k).unwrap().expect("document restored");
+        let r = t2.get_row(&k).unwrap().expect("document restored");
         assert_eq!(r.reputation, (i * 100) as u32);
         assert_eq!(r.level, (i as u16) + 7);
         assert_eq!(r.tag, [i as u8, 0, 0xFF, 0x42]);
@@ -223,7 +225,7 @@ fn parquet_roundtrip_carries_labels_not_ids() {
     assert_eq!(n, 4);
     for (i, (s, c)) in statuses.iter().zip(colors.iter()).enumerate() {
         let r = t2
-            .get(&VKey { id: i as u64 })
+            .get_row(&VKey { id: i as u64 })
             .unwrap()
             .expect("row restored");
         assert_eq!(r.status.as_str(), Some(*s));
@@ -322,14 +324,14 @@ fn parquet_with_variant_restores_both_halves_and_segment_only_documents() {
     assert_eq!(n, 1, "one document has a row; the other is segment-only");
 
     assert_eq!(
-        t2.get(&with_row)
+        t2.get_row(&with_row)
             .unwrap()
             .expect("the row came back")
             .reputation,
         100
     );
     assert_eq!(
-        t2.fetch(&with_row)
+        whole_document(&t2, &with_row)
             .unwrap()
             .expect("the document")
             .get("note"),
@@ -338,11 +340,11 @@ fn parquet_with_variant_restores_both_halves_and_segment_only_documents() {
     );
 
     assert!(
-        t2.get(&segment_only).unwrap().is_none(),
+        t2.get_row(&segment_only).unwrap().is_none(),
         "no row was invented"
     );
     assert_eq!(
-        t2.fetch(&segment_only)
+        whole_document(&t2, &segment_only)
             .unwrap()
             .expect("the segment-only document")
             .get("note"),

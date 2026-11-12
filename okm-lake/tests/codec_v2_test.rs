@@ -169,7 +169,7 @@ fn parquet_roundtrip_with_string_columns() {
     assert_eq!(n, 3);
     for (i, name) in names.iter().enumerate() {
         let r = t2
-            .get(&SKey {
+            .get_row(&SKey {
                 shard: 1,
                 id: i as u64,
             })

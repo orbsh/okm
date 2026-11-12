@@ -68,7 +68,7 @@ fn table_semantics_over_remote() {
     // pump applies them asynchronously) — wait for the round trip to
     // catch up before asserting.
     wait_for(
-        || t.get(&UserKey { id: 42 }).unwrap().is_some(),
+        || t.get_row(&UserKey { id: 42 }).unwrap().is_some(),
         "first put to land",
     );
 
@@ -82,7 +82,7 @@ fn table_semantics_over_remote() {
 
     // Point get via the table (full round trip: frame → host → engine → back).
     let document = t
-        .get(&UserKey { id: 42 })
+        .get_row(&UserKey { id: 42 })
         .unwrap()
         .expect("document round-tripped");
     assert_eq!(document.level, 3);
@@ -97,7 +97,7 @@ fn table_semantics_over_remote() {
     // Delete removes both halves remotely.
     t.purge(&UserKey { id: 42 }).unwrap();
     wait_for(
-        || t.get(&UserKey { id: 42 }).unwrap().is_none(),
+        || t.get_row(&UserKey { id: 42 }).unwrap().is_none(),
         "delete to propagate",
     );
     assert_eq!(
@@ -208,7 +208,7 @@ fn remote_scan_range_iter_is_lazy_paged() {
         .unwrap();
     }
     wait_for(
-        || t.get(&UserKey { id: 39 }).unwrap().is_some(),
+        || t.get_row(&UserKey { id: 39 }).unwrap().is_some(),
         "writes to land",
     );
 
@@ -356,7 +356,7 @@ fn routine_put_carries_face_and_ledger_in_one_frame() {
         },
     )
     .unwrap();
-    wait_for(|| t.get(&k).unwrap().is_some(), "row to land");
+    wait_for(|| t.get_row(&k).unwrap().is_some(), "row to land");
     // Face: an index scan round trip (entry key + fetch-back).
     assert_eq!(
         t.scan::<Entry_ByAccount>(&7u64.to_be_bytes())
@@ -382,7 +382,7 @@ fn routine_put_carries_face_and_ledger_in_one_frame() {
 
     // Delete: the removals and the unfold share a frame too.
     t.purge(&k).unwrap();
-    wait_for(|| t.get(&k).unwrap().is_none(), "delete to propagate");
+    wait_for(|| t.get_row(&k).unwrap().is_none(), "delete to propagate");
     assert_eq!(entry_ledger(&t, 8), Some(0));
     assert!(
         t.scan::<Entry_ByAccount>(&8u64.to_be_bytes())

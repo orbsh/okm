@@ -362,7 +362,7 @@ fn the_batch_writer_verb_captures_save_into() {
         .unwrap();
     app.commit_batch(batch).expect("publish");
 
-    assert_eq!(app.get(&key).expect("get"), Some(row));
+    assert_eq!(app.get_row(&key).expect("get"), Some(row));
     let frames = drain(app, dir.path());
     assert_eq!(frames.len(), 1);
     assert_eq!(

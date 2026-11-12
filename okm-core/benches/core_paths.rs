@@ -22,7 +22,7 @@ use std::hint::black_box;
 use okm_async::TestStore;
 use okm_core::{
     Collection, Document, DocumentEncode, KeyEncode, KvIndex, ReduceCodec, ReduceLogic, Reverse,
-    Reversible, VarInt, VirtualStorage,
+    Reversible, VarInt, VirtualStorage, whole_document,
 };
 
 // ---------- declarations under test ----------
@@ -294,7 +294,7 @@ fn bench_write_mock(c: &mut Criterion) {
         let t: Collection<TestStore, BenchKey, BenchRow> =
             Collection::new(TestStore::slatedb_mem());
         t.put(&make_key(1), &make_row(1)).unwrap();
-        b.iter(|| black_box(t.fetch(&make_key(1)).unwrap().is_some()))
+        b.iter(|| black_box(whole_document(&t, &make_key(1)).unwrap().is_some()))
     });
     g.bench_function("batch_commit/100_ops", |b| {
         let store = TestStore::slatedb_mem();

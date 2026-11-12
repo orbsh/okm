@@ -48,14 +48,14 @@ fn nest_derive_end_to_end() {
 
     // Fire-and-forget write: poll until the round trip sees the document.
     for _ in 0..200 {
-        if t.get(&ItemKey { id: 1 }).unwrap().is_some() {
+        if t.get_row(&ItemKey { id: 1 }).unwrap().is_some() {
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
 
     let document = t
-        .get(&ItemKey { id: 1 })
+        .get_row(&ItemKey { id: 1 })
         .unwrap()
         .expect("document round-tripped");
     assert_eq!(document.kind, 7);

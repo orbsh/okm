@@ -67,7 +67,7 @@ fn cold_frame_roundtrip() {
     };
     t.put(&k, &r).unwrap();
 
-    let got = t.get(&k).unwrap().unwrap();
+    let got = t.get_row(&k).unwrap().unwrap();
     assert_eq!(got.embed, Vector::new(vec![0.25, -3.5, 1e6]));
     assert_eq!(got.score, 7);
 }
@@ -94,8 +94,14 @@ fn length_is_data_not_schema() {
         },
     )
     .unwrap();
-    assert_eq!(t.get(&DocKey { id: 1 }).unwrap().unwrap().embed.len(), 1);
-    assert_eq!(t.get(&DocKey { id: 2 }).unwrap().unwrap().embed.len(), 4);
+    assert_eq!(
+        t.get_row(&DocKey { id: 1 }).unwrap().unwrap().embed.len(),
+        1
+    );
+    assert_eq!(
+        t.get_row(&DocKey { id: 2 }).unwrap().unwrap().embed.len(),
+        4
+    );
 }
 
 #[test]

@@ -82,7 +82,7 @@ fn a_batch_defers_until_commit() {
     )
     .unwrap();
     assert!(
-        t.get(&PostKey { id: 1 }).unwrap().is_none(),
+        t.get_row(&PostKey { id: 1 }).unwrap().is_none(),
         "an uncommitted batch must not write"
     );
 
@@ -90,7 +90,7 @@ fn a_batch_defers_until_commit() {
     store.commit_batch(batch).expect("commit");
     let t2: Collection<TestStore, PostKey, Post> = Collection::new(store.clone());
     assert!(
-        t2.get(&PostKey { id: 1 }).unwrap().is_some(),
+        t2.get_row(&PostKey { id: 1 }).unwrap().is_some(),
         "document lands at commit"
     );
 }
@@ -296,7 +296,7 @@ fn an_uncommitted_batch_moves_neither_the_row_nor_the_ledger() {
 
     assert_eq!(ledger(&t, 7), Some(1), "the unfold never landed");
     assert_eq!(ledger(&t, 8), None, "the fold never landed");
-    assert_eq!(t.get(&k).unwrap().expect("row").account, 7);
+    assert_eq!(t.get_row(&k).unwrap().expect("row").account, 7);
 }
 
 #[test]
@@ -435,13 +435,13 @@ fn embedded_children_are_written_and_released_in_the_batch() {
         .unwrap();
     store.commit_batch(batch).expect("commit");
     assert!(
-        contacts.get(&c1).unwrap().is_some(),
+        contacts.get_row(&c1).unwrap().is_some(),
         "child lands with the parent"
     );
 
     // Overwrite pointing somewhere else: the old child is released in the
     // same batch, exactly as put's overwrite pass does.
-    let old = cards.get(&k).expect("store").expect("old card");
+    let old = cards.get_row(&k).expect("store").expect("old card");
     let mut batch = okm_core::Batch::default();
     cards
         .save_with_prev_into(
@@ -462,11 +462,11 @@ fn embedded_children_are_written_and_released_in_the_batch() {
     store.commit_batch(batch).expect("commit");
 
     assert!(
-        contacts.get(&c1).unwrap().is_none(),
+        contacts.get_row(&c1).unwrap().is_none(),
         "the dropped child is released"
     );
     assert_eq!(
-        contacts.get(&c2).unwrap().map(|c| c.number),
+        contacts.get_row(&c2).unwrap().map(|c| c.number),
         Some("222".to_string())
     );
 }
@@ -512,14 +512,14 @@ fn save_with_prev_into_interns_inside_the_batch() {
     let mut batch = okm_core::Batch::default();
     c.save_with_prev_into(&mut batch, &k, &row, None).unwrap();
     assert!(
-        c.get(&k).unwrap().is_none(),
+        c.get_row(&k).unwrap().is_none(),
         "an uncommitted batch moves nothing"
     );
     store.commit_batch(batch).expect("commit");
 
     // After the commit the row reads back with LABELS: the id → label entries
     // travelled in the same batch as the payload.
-    let back = c.get(&k).unwrap().expect("row landed");
+    let back = c.get_row(&k).unwrap().expect("row landed");
     assert_eq!(back.event.as_str(), Some("http.request"));
     assert_eq!(back.status.as_str(), Some("warn"));
     assert_eq!(back.level, 3);
@@ -543,7 +543,7 @@ fn save_with_prev_into_interns_inside_the_batch() {
     .unwrap();
     store.commit_batch(batch).expect("commit");
 
-    let second = c.get(&LogKey { id: 2 }).unwrap().expect("row landed");
+    let second = c.get_row(&LogKey { id: 2 }).unwrap().expect("row landed");
     assert_eq!(second.event.as_str(), Some("db.timeout"));
     assert_eq!(second.status.as_str(), Some("error"));
     assert_ne!(
@@ -553,7 +553,7 @@ fn save_with_prev_into_interns_inside_the_batch() {
     );
 
     // And the first row still names both of its own labels.
-    let again = c.get(&k).unwrap().expect("row still there");
+    let again = c.get_row(&k).unwrap().expect("row still there");
     assert_eq!(again.event.as_str(), Some("http.request"));
     assert_eq!(again.status.as_str(), Some("warn"));
 }
@@ -571,13 +571,16 @@ fn purge_into_defers_until_the_commit() {
     let mut batch = okm_core::Batch::default();
     assert!(t.purge_into(&mut batch, &k).unwrap(), "there was a row");
     assert!(
-        t.get(&k).unwrap().is_some(),
+        t.get_row(&k).unwrap().is_some(),
         "an uncommitted batch removes nothing"
     );
     assert_eq!(ledger(&t, 7), Some(1), "the fold is still in the store");
 
     t.commit_batch(batch).unwrap();
-    assert!(t.get(&k).unwrap().is_none(), "the commit removes the row");
+    assert!(
+        t.get_row(&k).unwrap().is_none(),
+        "the commit removes the row"
+    );
     assert_eq!(ledger(&t, 7), Some(0), "the removal unfolds the ledger");
     assert!(
         t.scan::<Entry_ByAccount>(&7u64.to_be_bytes())
@@ -604,7 +607,7 @@ fn purge_into_reads_the_batch_it_is_building() {
     );
     t.commit_batch(batch).unwrap();
 
-    assert!(t.get(&k).unwrap().is_none());
+    assert!(t.get_row(&k).unwrap().is_none());
     assert_eq!(ledger(&t, 7), Some(0), "the staged fold was unfolded");
     assert!(
         t.scan::<Entry_ByAccount>(&7u64.to_be_bytes())
@@ -649,14 +652,14 @@ fn two_tables_leave_in_one_commit() {
     assert!(posts.purge_into(&mut batch, &PostKey { id: 1 }).unwrap());
     assert!(entries.purge_into(&mut batch, &ek).unwrap());
     assert!(
-        posts.get(&PostKey { id: 1 }).unwrap().is_some(),
+        posts.get_row(&PostKey { id: 1 }).unwrap().is_some(),
         "the batch owns the removals until it lands"
     );
 
     // ONE commit, through either collection's door.
     posts.commit_batch(batch).unwrap();
-    assert!(posts.get(&PostKey { id: 1 }).unwrap().is_none());
-    assert!(entries.get(&ek).unwrap().is_none());
+    assert!(posts.get_row(&PostKey { id: 1 }).unwrap().is_none());
+    assert!(entries.get_row(&ek).unwrap().is_none());
     assert!(
         posts
             .scan::<Post_ByAuthor>(&7u64.to_be_bytes())

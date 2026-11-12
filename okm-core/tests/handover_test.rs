@@ -104,18 +104,18 @@ fn the_successor_asks_applies_and_then_claims() {
 
     let successor = Collection::<_, RowKey, Row>::captured(successor_store).unwrap();
     assert_eq!(
-        successor.get(&RowKey { id: 1 }).unwrap().unwrap().title,
+        successor.get_row(&RowKey { id: 1 }).unwrap().unwrap().title,
         "one"
     );
     assert_eq!(
-        successor.get(&RowKey { id: 2 }).unwrap().unwrap().title,
+        successor.get_row(&RowKey { id: 2 }).unwrap().unwrap().title,
         "two"
     );
 
     // And it keeps writing to the same log, above what A left behind.
     write(&successor, 3, "three");
     assert_eq!(
-        successor.get(&RowKey { id: 3 }).unwrap().unwrap().title,
+        successor.get_row(&RowKey { id: 3 }).unwrap().unwrap().title,
         "three"
     );
 }
@@ -167,5 +167,8 @@ fn capture_off_opens_nothing_and_writes_nothing() {
         "the log directory is untouched"
     );
     // The write itself still happened: capture is a hint, the store is the record.
-    assert_eq!(app.get(&RowKey { id: 1 }).unwrap().unwrap().title, "one");
+    assert_eq!(
+        app.get_row(&RowKey { id: 1 }).unwrap().unwrap().title,
+        "one"
+    );
 }

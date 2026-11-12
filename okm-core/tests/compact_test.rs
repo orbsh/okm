@@ -132,13 +132,13 @@ fn a_compaction_prunes_what_the_baseline_covers_and_replay_still_works() {
     let restored = Collection::<_, RowKey, Row>::new(target);
     for id in 0..12 {
         assert_eq!(
-            restored.get(&RowKey { id }).unwrap().unwrap().title,
+            restored.get_row(&RowKey { id }).unwrap().unwrap().title,
             format!("row {id}")
         );
     }
     for id in 100..104 {
         assert_eq!(
-            restored.get(&RowKey { id }).unwrap().unwrap().title,
+            restored.get_row(&RowKey { id }).unwrap().unwrap().title,
             format!("after {id}")
         );
     }
@@ -278,7 +278,7 @@ fn the_policy_compacts_at_a_rotation_without_being_asked() {
     let restored = Collection::<_, RowKey, Row>::new(target);
     for id in 0..10 {
         assert_eq!(
-            restored.get(&RowKey { id }).unwrap().unwrap().title,
+            restored.get_row(&RowKey { id }).unwrap().unwrap().title,
             format!("row {id}")
         );
     }

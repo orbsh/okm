@@ -26,6 +26,7 @@ use okm_core::engine::storage::ScanIter;
 use okm_core::{Batch, Document, DocumentEncode, KeyEncode, ReduceCodec, VirtualStorage};
 
 use okm_async::TestStore;
+use okm_core::whole_document;
 /// An engine handle that counts how writes arrive: bare single-op writes
 /// versus commits (each carrying N ops).
 struct Counting<S> {
@@ -162,7 +163,7 @@ fn put_is_one_engine_commit() {
     );
 
     // The commit really carried them: row, face and ledger are all visible.
-    assert_eq!(t.get(&LedgerKey { id: 1 }).unwrap(), Some(row(7)));
+    assert_eq!(t.get_row(&LedgerKey { id: 1 }).unwrap(), Some(row(7)));
     assert_eq!(
         t.scan::<Ledger_ByAccount>(&7u64.to_be_bytes())
             .collect::<okm_core::error::Result<Vec<_>>>()
@@ -216,7 +217,7 @@ fn delete_is_one_engine_commit() {
     assert_eq!(c.commits.get(), 1, "a removal is one engine commit");
     assert_eq!(c.ops_committed.get(), 3, "del primary + del face + unfold");
     assert_eq!((c.bare_puts.get(), c.bare_dels.get()), (0, 0));
-    assert!(t.get(&k).unwrap().is_none());
+    assert!(t.get_row(&k).unwrap().is_none());
     assert!(
         t.scan::<Ledger_ByAccount>(&7u64.to_be_bytes())
             .collect::<okm_core::error::Result<Vec<_>>>()
@@ -251,7 +252,7 @@ fn dynamic_write_including_vocabulary_growth_is_one_engine_commit() {
     );
     assert_eq!((c.bare_puts.get(), c.bare_dels.get()), (0, 0));
     assert_eq!(
-        t.fetch(&LedgerKey { id: 1 })
+        whole_document(&t, &LedgerKey { id: 1 })
             .unwrap()
             .and_then(|m| m.get("colour").cloned()),
         Some(okm_value::DynamicValue::Str("amber".into()))
@@ -272,9 +273,9 @@ fn merge_of_a_declared_field_is_one_engine_commit() {
     assert_eq!(c.commits.get(), 1, "merge is one engine commit");
     assert_eq!(c.ops_committed.get(), 4, "unfold + primary + face + fold");
     assert_eq!((c.bare_puts.get(), c.bare_dels.get()), (0, 0));
-    assert_eq!(t.get(&k).unwrap().unwrap().amount, 9);
+    assert_eq!(t.get_row(&k).unwrap().unwrap().amount, 9);
     assert_eq!(
-        t.get(&k).unwrap().unwrap().account,
+        t.get_row(&k).unwrap().unwrap().account,
         7,
         "unnamed declared field kept"
     );
@@ -311,14 +312,16 @@ fn replace_is_one_engine_commit_across_both_slots() {
         "unfold + primary + face put + STALE face del + fold, then the slot-1 entry"
     );
     assert_eq!((c.bare_puts.get(), c.bare_dels.get()), (0, 0));
-    assert_eq!(t.get(&k).unwrap().unwrap().account, 8);
+    assert_eq!(t.get_row(&k).unwrap().unwrap().account, 8);
     assert_eq!(
-        t.get(&k).unwrap().unwrap().amount,
+        t.get_row(&k).unwrap().unwrap().amount,
         0,
         "unnamed declared field defaults"
     );
     assert_eq!(
-        t.fetch(&k).unwrap().and_then(|m| m.get("colour").cloned()),
+        whole_document(&t, &k)
+            .unwrap()
+            .and_then(|m| m.get("colour").cloned()),
         Some(okm_value::DynamicValue::Str("slate".into()))
     );
 }
@@ -345,7 +348,7 @@ fn purge_is_one_engine_commit() {
         "del primary + del face + unfold + del slot 1"
     );
     assert_eq!((c.bare_puts.get(), c.bare_dels.get()), (0, 0));
-    assert!(t.fetch(&k).unwrap().is_none());
+    assert!(whole_document(&t, &k).unwrap().is_none());
 }
 
 fn map_of(
@@ -390,7 +393,7 @@ fn the_verbs_take_a_shared_handle_and_still_commit_once_each() {
     assert_eq!(c.bare_puts.get(), 0);
     assert_eq!(c.bare_dels.get(), 0);
     assert_eq!(
-        t.get(&LedgerKey { id: 1 }).unwrap(),
+        t.get_row(&LedgerKey { id: 1 }).unwrap(),
         None,
         "purge took the row"
     );

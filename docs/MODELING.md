@@ -361,7 +361,7 @@ pub struct Profile {
 - **`user_id` above is two fields, not one stored twice.** The key's `user_id` is
 the address; the row's `user_id` is data that may legitimately differ — a denormalized copy for an index, or so a reader need not re-derive it from the key. Nothing dedupes, nothing errors, nothing compares them on a read.
 - **Names are classified by the declaration, not by the key.** In a whole-document
-write a name that is a declared payload field updates the row; anything else lands in the dynamic segment (ADR-0012). The key's own bytes never appear in the map `fetch` returns — that map is payload fields plus segment.
+write a name that is a declared payload field updates the row; anything else lands in the dynamic segment (ADR-0012). The key's own bytes never appear in the map `whole_document` returns — that map is payload fields plus segment.
 
 The boundary with SQL is structural, and it sits here. A relational engine hides the key inside the row, so a value split off into overflow pages is an engine detail addressed by the row id with a chunk ordinal appended. okm has no row outside a key — the table IS a key space — so the same split is a DECLARED side table whose ns sits at the FRONT of the address while the key payload stays byte-identical. Hence: the side table is still scanned by the parent's key prefix, it commits on its own, and nothing can join the two halves back — composition is the application's two point reads (ADR-0036).
 
@@ -391,7 +391,7 @@ The key is not the cheap substitute for a column. It is stronger in four ways, a
 - **It is a read path, not only an address.** "Every device of this user" is key composition, not an index: with `[org][user][device]`, `scan_keys(&DeviceKey::prefix().org(7).user(11).finish())` is the whole query — one prefix scan over the primary table, nothing declared, and lazy (`.take(n)` a LIMIT, `.rev()` a newest-first page). This is where the model departs from SQL: there an index is a COPY of the data that the planner may or may not use, here the ordering the read needs IS the storage order, so the bytes that identify a row also group it. A face is declared only for the dimensions the key does not order (ADR-0049).
 - **It is ordered.** Key bytes ARE the sort order of every scan (BE fixed width, prefix-monotonic VarInt). `Uuid7` in the key makes creation order readable to the millisecond with no timestamp field and no index — ties inside one millisecond sort by their random tail, and that is enough for insert locality, which is why a btree's hot page stays hot. `Uuid4` for the token says, by choice of type, that a credential has no order worth keeping.
 - **It cannot drift.** One writer builds the address once. There is no second copy to update and no read path that could compare two ids and disagree.
-- **It is already in hand on every read.** `fetch` takes the key the caller passed; `scan` and `scan_covered` return `PrefixKey<K>` beside every hit. A mirrored id hands a caller something it already had.
+- **It is already in hand on every read.** `whole_document` takes the key the caller passed; `scan` and `scan_covered` return `PrefixKey<K>` beside every hit. A mirrored id hands a caller something it already had.
 
 What a value SHOULD carry is the id of something else — `Device.user`, `Token.device`: a foreign relationship the key does not encode. That is data, it may change, and no read can recover it from the address.
 
@@ -411,14 +411,21 @@ The far end of the same spectrum is aura's `MqData`, whose row type is empty (`p
 
 ### Dynamic fields: the document API (ADR-0012)
 
-One encoding serves declared rows and external data. Declared fields ride the hot/cold segments as usual; anything else lands in the **dynamic segment** (fixed face 0x01) as a block table over a value area — `toc_len u16 | blocks | values`, an entry being `[field-id][head]` (one byte: length, type, composite), nested blocks breadth-first (ADR-0057; the bytes and the size envelope are in [dynamic-segment.md](internals/dynamic-segment.md)) — with names allocated on first sight in the **field-name vocabulary** (fixed faces 0x02/0x03). Runtime surface on `Collection` — the static segment speaks the struct, the whole document speaks one name-keyed map (ADR-0035). Two doors, and the split is about what a call may look at: `get` / `put` are the **struct door** (the row only — no vocabulary load, no segment access; the compiled-schema path), while `fetch` / `merge` / `replace` / `purge` are the **whole-document door**.
+One encoding serves declared rows and external data. Declared fields ride the hot/cold segments as usual; anything else lands in the **dynamic segment** (fixed face 0x01) as a block table over a value area — `toc_len u16 | blocks | values`, an entry being `[field-id][head]` (one byte: length, type, composite), nested blocks breadth-first (ADR-0057; the bytes and the size envelope are in [dynamic-segment.md](internals/dynamic-segment.md)) — with names allocated on first sight in the **field-name vocabulary** (fixed faces 0x02/0x03). Runtime surface on `Collection` — the static segment speaks the struct, slot 1 speaks parts, and the two halves are one name-keyed map only when a caller asks for it (ADR-0035). The split is about what a call may LOOK AT, and it is now spelled in the type: `get_row` / `put` are the **struct door** (the row only — no vocabulary load, no segment access; the compiled-schema path), `get::<(parts::Row, parts::Value)>` names both halves and pays for both, and `merge` / `replace` / `purge` are the **whole-document door**.
 
 The classifier is the payload declaration — hot or cold — and nothing else. A name that coincides with a key field is not special: OKM is a key-value store, the key and the value are separate things, so such a name is simply a field in the value and lands in the dynamic segment. The identity still comes from the key: no map can move it, and a map naming `org_id` creates no row at `org_id`. Nothing needs checking here, and no confusion needs preventing — a caller that stores a field named like a key field gets exactly what it asked for.
 
 ```rust
+// A point read names its parts, in the caller's order, and only those are
+// decoded: Row is slot 0, Value is slot 1 as DynamicValue::Obj.
+let (row, dyn_) = t.get::<(parts::Row, parts::Value)>(&key)?;  // (Option<R>, Option<DynamicValue>)
+t.get_row(&key)?;                              // sugar for get::<(parts::Row,)> — Option<R>
+t.get::<(parts::Value,)>(&key)?;               // slot 1 alone; the row is never decoded
+
 // The row-map bridge: every field (declared + dynamic) lifts to its logical
 // type (Quant -> F64, VarInt -> u64, Enum -> variant name, Offset -> i64).
-let fields = t.fetch(&key)?;                   // Option<BTreeMap<String, DynamicValue>>, None = no document
+// The ONE assembly of the two halves — `None` only when BOTH slots are empty.
+let fields = whole_document(&t, &key)?;        // Option<BTreeMap<String, DynamicValue>>
 
 // Partial update: declared names are a row RMW (typed path, previous faces
 // cleaned), unknown names overwrite just those names in the dynamic segment.
@@ -1059,7 +1066,7 @@ pub struct Doc {
 
 The length is data, not schema: swapping embedding models (384 → 768 dimensions) is just a different frame, with no wire migration. When the application does know the expected length (a contract-fixed embedding dimension), `#[ok_len(384)]` adds an encode-time check — the write boundary is where the promise is enforced; decode does not check (bypassing the decoder is the reader's own problem — raw frame bytes are as opaque as an unrendered image). The same contract is exported to dynamic readers (`FieldSchema::expect_len`) and enforced consistently on the Python side. It is an application contract, never a format constraint.
 
-Elements are **pure values** — the identity line (in the many-to-many section above) keeps a `Vector` out of the relation carriers: a scalar has no key, and a key reference to it is a category error. One-to-many → `Refs`; many-to-many → a relation table; an ordered list of values → `Vector`; a heterogeneous dynamic list → `DynamicValue::Array` (fixed face 0x01). `fetch` lifts a vector to `DynamicValue::Array` — the dynamic layer has no vector type, a vector is a storage-layer format. A multi-dimensional shape is application interpretation (a flat sequence read row-major); nothing about it is stored on the wire.
+Elements are **pure values** — the identity line (in the many-to-many section above) keeps a `Vector` out of the relation carriers: a scalar has no key, and a key reference to it is a category error. One-to-many → `Refs`; many-to-many → a relation table; an ordered list of values → `Vector`; a heterogeneous dynamic list → `DynamicValue::Array` (fixed face 0x01). `whole_document` lifts a vector to `DynamicValue::Array` — the dynamic layer has no vector type, a vector is a storage-layer format. A multi-dimensional shape is application interpretation (a flat sequence read row-major); nothing about it is stored on the wire.
 
 The consumer side (okm-vector) layers search on top: an exact contiguous scan (the small-scale path, and the recall reference), an in-memory HNSW over quantized codes (int8 cosine or product-quantization codes), and shard-organized handles — one snapshot per shard under fixed face 0x0A, a cache, droppable at any time. The graph yields code-level distances; re-scoring against the stored f32 values is the caller's job. Storage stays byte-opaque: the corpus is still just those frame bytes.
 
@@ -1112,7 +1119,7 @@ pub struct PostPayload { pub mime: String, pub body: Bytes }
 
 | What you want | How |
 |---|---|
-| read one column | `payloads.get(&key)` — one point read; the row is never decoded |
+| read one column | `payloads.get_row(&key)` — one point read; the row is never decoded |
 | write one column | `payloads.put(&key, &payload)` — one row write; the hot row is never re-encoded |
 | write both atomically | each collection's `save_with_prev_into` into one `Batch`, then one `commit_batch` (ADR-0003, ADR-0031) |
 | the whole document | two reads, on demand — that is what the split bought |
@@ -1134,7 +1141,7 @@ Do not split: every access reads the row anyway **and** nothing in it is written
 - **The key type is the parent's key type.** The key payload is therefore byte-identical and the pairing is pinned by the compiler; only the ns and the table name differ — the side table takes an ns of its own, and that is the whole cost.
 - **Existence is the side row's presence.** No `Option` field and no zero-length sentinel: "is there one" is a state, not an absence.
 - **Write the pair into one batch** (each collection's `save_with_prev_into`, one `commit_batch`) and delete the pair — there is no cascade in this model, so deletion is the caller's; `purge_into` puts the delete in one commit as well.
-- **The parent row stays complete.** `R` is still the document's full declared field set; the side table is its second table, not its patch — so `fetch` / `replace` / `put` semantics do not change by a word.
+- **The parent row stays complete.** `R` is still the document's full declared field set; the side table is its second table, not its patch — so `whole_document` / `replace` / `put` semantics do not change by a word.
 - **The side table can have everything a table has**: its own declared faces, reduce groups, its own `#[ok_layout]` version, its own engine (any table may — see *The engine is an assembly-point choice*), and export/import for free as a `(K, R)` pair — because it is an ordinary table, not a position inside the row codec.
 
 ### The three shapes it is not
@@ -1283,7 +1290,7 @@ What that buys is the other half of the same ledger: read paths are predictable 
 
 The remaining raw door, `scan_documents_raw`, is the maintenance surface for the snapshot exporter and the arrow bridge, not an application query path.
 
-Enumeration has two modes, because a document is **two slots** (ADR-0035): `scan_keys` enumerates **rows** (one prefix scan — a document with only a segment is not there), while `scan_document_keys` enumerates **documents** (the row slot and the segment slot merged in memory, which is also why a `merge` with no declared names shows up). Materialization belongs to neither mode — `fetch` is that door, so turning a key into a document is a plain `map`; and the merge cannot be an adapter, because an adapter cannot emit something that was never scanned.
+Enumeration has two modes, because a document is **two slots** (ADR-0035): `scan_keys` enumerates **rows** (one prefix scan — a document with only a segment is not there), while `scan_document_keys` enumerates **documents** (the row slot and the segment slot merged in memory, which is also why a `merge` with no declared names shows up). Materialization belongs to neither mode — `whole_document` is that door, so turning a key into a document is a plain `map`; and the merge cannot be an adapter, because an adapter cannot emit something that was never scanned.
 
 Both doors take a prefix probe, and a full-table scan is the **empty probe** — there is no separate full-table door any more (ADR-0049). A composite primary key's leading segments are themselves a read path, not just an address: `scan_keys(&DeviceKey::prefix().org(7).user(11).finish())` answers "all devices of this user" with one prefix scan, declaring no access method. The probe is typed and ordered — the derive emits one builder method per depth, and fields can only be given in declaration order; inserting a field between two others fails to compile at the call site instead of quietly constraining other bytes. `finish()` at any depth is a legal probe, and `PrefixProbe::empty()` constrains nothing. `scan_keys` is lazy — `.take(n)` is a LIMIT and you pay only for reads that execute; `.skip(m).take(n)` is paging; `.rev()` walks the same window backwards — while `scan_document_keys` stays eager, because merging two slots needs both sides in hand. The index-side dual is `scan_prefix_iter::<I>(encoded)`, the streaming form of `scan`, with identical entries and fetch-back.
 

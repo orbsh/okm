@@ -70,6 +70,7 @@ pub struct BenchRow {
 
 use __OkmIndex_BenchRow_by_level as ByLevel;
 use okm_core::parts;
+use okm_core::whole_document;
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct TagTotals {
@@ -187,7 +188,7 @@ fn measure_fjall(dir: &Path, rows: u64) -> Line {
     let get_ns = median_of(3, || {
         let started = Instant::now();
         for _ in 0..rows {
-            black_box(t.fetch(&key).expect("get"));
+            black_box(whole_document(&t, &key).expect("get"));
         }
         med_ns(started.elapsed(), rows)
     });

@@ -168,7 +168,7 @@ fn a_hook_that_says_no_does_not_undo_the_claim() {
     // And writing works — what is missing is the routing, not the right to write.
     let b = Collection::<_, RowKey, Row>::captured(b).unwrap();
     write_a_row(&b, 2);
-    assert_eq!(b.get(&RowKey { id: 2 }).unwrap().unwrap().title, "x");
+    assert_eq!(b.get_row(&RowKey { id: 2 }).unwrap().unwrap().title, "x");
 }
 
 #[test]

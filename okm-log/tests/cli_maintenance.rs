@@ -109,7 +109,7 @@ fn status_reports_the_log_and_compact_checkpoints_it() {
     let restored = Collection::<_, RowKey, Row>::new(target);
     for id in 0..6 {
         assert_eq!(
-            restored.get(&RowKey { id }).unwrap().unwrap().title,
+            restored.get_row(&RowKey { id }).unwrap().unwrap().title,
             format!("row {id}")
         );
     }

@@ -97,7 +97,7 @@ fn engine_matrix_table_round_trip() {
         let t: okm_core::Collection<TestStore, MKey, MRow> = okm_core::Collection::new(store);
         t.put(&MKey { id: 7 }, &MRow { score: 55 }).unwrap();
         let back = t
-            .get(&MKey { id: 7 })
+            .get_row(&MKey { id: 7 })
             .expect("a store read")
             .expect("{name}: document round trip");
         assert_eq!(back.score, 55, "{name}");

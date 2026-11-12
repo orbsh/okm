@@ -18,7 +18,9 @@
 )]
 
 use okm_async::TestStore;
-use okm_core::{Document, DocumentEncode, KeyEncode, Quant, Reduce, ReduceCodec, ReduceLogic};
+use okm_core::{
+    Document, DocumentEncode, KeyEncode, Quant, Reduce, ReduceCodec, ReduceLogic, whole_document,
+};
 
 /// 分组模式：按 forum 分组，四种 preset 各占一个 slot。
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
@@ -372,7 +374,7 @@ fn a_merge_folds_the_ledger_once_and_only_through_the_row_arm() {
         "a segment-only patch folds nothing"
     );
     assert_eq!(
-        t.fetch(&k).unwrap().unwrap().get("note"),
+        whole_document(&t, &k).unwrap().unwrap().get("note"),
         Some(&DynamicValue::Str("x".into()))
     );
 
@@ -393,7 +395,7 @@ fn a_merge_folds_the_ledger_once_and_only_through_the_row_arm() {
         "the Sum followed the row's new value"
     );
     assert_eq!(
-        t.fetch(&k).unwrap().unwrap().get("tag"),
+        whole_document(&t, &k).unwrap().unwrap().get("tag"),
         Some(&DynamicValue::Str("y".into()))
     );
 }

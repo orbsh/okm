@@ -436,7 +436,7 @@ fn link_into_shares_one_batch_with_documents() {
     store.commit_batch(batch).unwrap();
 
     assert!(
-        nodes.get(&UserId { id: 1 }).unwrap().is_some(),
+        nodes.get_row(&UserId { id: 1 }).unwrap().is_some(),
         "document landed"
     );
     assert_eq!(

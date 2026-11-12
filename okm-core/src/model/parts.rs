@@ -23,8 +23,10 @@
 //! positions need N impls — and it costs four impls for every order and every
 //! selection: there is still exactly ONE scan method.
 
+use crate::engine::storage::VirtualStorage;
 use crate::error::Result;
-use crate::model::index::{KvIndex, RawHit};
+use crate::model::document::Collection;
+use crate::model::index::{Document, KvIndex, RawHit};
 use crate::model::key::KeyEncode;
 
 /// How a part reaches the row: one point read, handed in by the scan verb so a
@@ -173,3 +175,83 @@ parts_for_tuple!(A);
 parts_for_tuple!(A, B);
 parts_for_tuple!(A, B, C);
 parts_for_tuple!(A, B, C, D);
+
+// ===================== point reads =====================
+//
+// A scan walks entries; a point read has no entry, only a key and the two slots
+// behind it (ADR-0035: a document is the PAIR). So the same idea, one level
+// down: the caller names the parts it wants and pays for exactly those.
+
+/// The dynamic segment (slot 1) as a name-keyed object — the half of the
+/// document that has no struct field. Point reads only: a scan entry carries
+/// `includes` bytes, not the dynamic segment, so there is nothing here for a
+/// [`Part`] to do.
+pub struct Value;
+
+/// What a point read answers about one key.
+///
+/// Each part is its OWN `Option`, because absence is per slot: a key holding
+/// only a dynamic segment answers `(None, Some(object))`, and a key holding
+/// nothing answers `(None, None)`. Merging them into one map is
+/// [`whole_document`](crate::model::document::whole_document)'s job, and a
+/// caller that names one half never materializes the other.
+///
+/// One-element tuples collapse to the part's own output — `(parts::Row,)` is
+/// `Option<R>`, not `(Option<R>,)` — so the sugar [`Collection::get_row`] and
+/// the general form answer the same type.
+pub trait PointParts<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> {
+    /// What this selection contributes to the caller's answer.
+    type Output;
+    fn take(col: &Collection<S, K, R>, key: &K) -> Result<Self::Output>;
+}
+
+impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> PointParts<S, K, R> for Row {
+    type Output = Option<R>;
+    fn take(col: &Collection<S, K, R>, key: &K) -> Result<Self::Output> {
+        col.get_row(key)
+    }
+}
+
+impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> PointParts<S, K, R> for Value {
+    type Output = Option<okm_value::DynamicValue>;
+    fn take(col: &Collection<S, K, R>, key: &K) -> Result<Self::Output> {
+        Ok(col.slot1_map(key)?.map(okm_value::DynamicValue::Obj))
+    }
+}
+
+/// The collapse rule: one part named is that part's answer, unwrapped from the
+/// tuple. Two and three parts are the tuple of their answers, in call order.
+impl<S, K, R, A> PointParts<S, K, R> for (A,)
+where
+    S: VirtualStorage,
+    K: KeyEncode,
+    R: Document<Key = K>,
+    A: PointParts<S, K, R>,
+{
+    type Output = A::Output;
+    fn take(col: &Collection<S, K, R>, key: &K) -> Result<Self::Output> {
+        A::take(col, key)
+    }
+}
+
+macro_rules! point_parts_for_tuple {
+    ($($name:ident),+) => {
+        impl<S, K, R, $($name),+> PointParts<S, K, R> for ($($name,)+)
+        where
+            S: VirtualStorage,
+            K: KeyEncode,
+            R: Document<Key = K>,
+            $($name: PointParts<S, K, R>),+
+        {
+            type Output = ($($name::Output,)+);
+            fn take(col: &Collection<S, K, R>, key: &K) -> Result<Self::Output> {
+                Ok(($($name::take(col, key)?,)+))
+            }
+        }
+    };
+}
+
+// Two halves, so two is the useful ceiling; three costs one more impl and keeps
+// a caller from having to invent a struct for a third question.
+point_parts_for_tuple!(A, B);
+point_parts_for_tuple!(A, B, C);

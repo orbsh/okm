@@ -64,7 +64,7 @@ fn shard_table_via_bare_host_lands_on_its_ns_segment() {
     t.put(&ShardDocKey { id: 5 }, &ShardDoc { title: 3 })
         .unwrap();
     for _ in 0..200 {
-        if t.get(&ShardDocKey { id: 5 }).unwrap().is_some() {
+        if t.get_row(&ShardDocKey { id: 5 }).unwrap().is_some() {
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(10));

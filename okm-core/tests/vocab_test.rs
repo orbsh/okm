@@ -49,7 +49,7 @@ fn labels_round_trip_through_per_field_vocabularies() {
     c.put(&VKey { org: 1, id: 2 }, &row("closed", "red", 8))
         .unwrap();
 
-    let a = c.get(&VKey { org: 1, id: 1 }).unwrap().unwrap();
+    let a = c.get_row(&VKey { org: 1, id: 1 }).unwrap().unwrap();
     assert_eq!(a.status.as_str(), Some("active"));
     assert_eq!(a.color.as_str(), Some("red"));
     assert_eq!(a.n, 7);
@@ -57,7 +57,7 @@ fn labels_round_trip_through_per_field_vocabularies() {
     assert_eq!(a.status.id(), Some(0u8));
     assert_eq!(a.color.id(), Some(0u16));
 
-    let b = c.get(&VKey { org: 1, id: 2 }).unwrap().unwrap();
+    let b = c.get_row(&VKey { org: 1, id: 2 }).unwrap().unwrap();
     assert_eq!(b.status.as_str(), Some("closed"));
     assert_eq!(b.status.id(), Some(1u8), "second label in the status field");
     assert_eq!(
@@ -81,7 +81,7 @@ fn labels_round_trip_through_per_field_vocabularies() {
     let mut d = VRow::try_from_map(&m).unwrap();
     d.status = Vocab::of("suspended");
     c.put(&VKey { org: 1, id: 3 }, &d).unwrap();
-    let e = c.get(&VKey { org: 1, id: 3 }).unwrap().unwrap();
+    let e = c.get_row(&VKey { org: 1, id: 3 }).unwrap().unwrap();
     assert_eq!(e.status.as_str(), Some("suspended"));
     assert_eq!(e.status.id(), Some(2u8));
     assert_eq!(
@@ -152,7 +152,7 @@ fn a_put_on_a_categorical_table_never_scans() {
     c.put(&VKey { org: 1, id: 2 }, &row("closed", "blue", 3))
         .unwrap();
 
-    let two = c.get(&VKey { org: 1, id: 2 }).unwrap().expect("row");
+    let two = c.get_row(&VKey { org: 1, id: 2 }).unwrap().expect("row");
     assert_eq!(two.status.as_str(), Some("closed"));
     assert_eq!(two.color.as_str(), Some("blue"));
     assert_eq!(

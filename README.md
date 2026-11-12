@@ -105,7 +105,7 @@ Implemented:
 - Secondary indexes (access methods) — `#[ok_index(name { fields(…), includes(…), key(…), func(…), where(…) })]` on **row structs**: composite indexes over payload fields (declaration order), no per-index slot/ns — the 2-byte table namespace already discriminates every entry; leftmost-prefix scans with fetch-back; `key(…)` truncates the carried primary-key tail to the named subset (`encode_prefix_named`), full key by default; `includes` covering positioned as a materialized view for high-fanout queries; `func(path)` replaces the data segment with a plain fn's return value — the return form is an iterator of the segment type, so one value (`[v]`) and a fan-out (`Vec`/slice/iterator) are one contract (ADR-0055), probe side calls the same path; `where(path)` is a row-level predicate — a partial index, rows the predicate rejects contribute no entries.
 - Lead faces (identity orderings) — `#[ok_lead(name { fields(key_fields), key(…), deprecated })]` on **row structs** (ADR-0054): the entry's sorted segment is sliced out of the KEY's own encoding instead of a payload column, so a reverse read costs no copy and cannot disagree with the key. Own slot family (`0x5nnn`, its own counter), same `KvIndex` doors, typed probe builder (`.prefix().member_id(id).finish()`), `Covered = ()` always; `rebuild_faces` repairs these without decoding a row, because nothing about them depends on the payload.
 - `Collection<S, K, R>` node assembly point — `put`/`purge` write the primary key and every declared index entry in one store instance (the declaration IS the registry); `scan` returns `(Key, Option<Row>)` via leftmost-prefix on any access method.
-- **Document API** — two read doors and three write verbs. The struct door: `get` / `put` speak `R` (typed side only). The document door: `fetch` reads the whole document as one name-keyed map (both slots merged), `merge` writes only the names given, `replace` makes the map the document, `purge` removes both slots — one engine commit per write. **Every verb is fallible** (`okm_core::Result`): no write panics — the engine's refusal, a full vocabulary and a map that does not fit the declaration all come back as `okm_core::Error` (ADR-0037). Reads answer `Result<Option<R>>` / `Result<Vec<…>>` — absence is the `Option`, a store that could not answer is the `Err` (ADR-0038). The dynamic side has only the document door: there is no struct there to speak. Unknown field names allocate in the per-table field-name vocabulary and land in the dynamic segment (n-TLV frames, nested objects recursive, no CBOR); the row-map bridge lifts declared fields to logical types (`Quant`→`F64`, `Vocab`→label, `Offset`→`i64`).
+- **Document API** — reads name their parts and writes name their verb. The struct door: `get_row` / `put` speak `R` (typed side only). The document door: `get::<(parts::Row, parts::Value)>` hands back each slot on its own (`Option<R>`, `Option<DynamicValue>`) and `whole_document` is the ONE assembly of the two into a name-keyed map (both slots merged), `merge` writes only the names given, `replace` makes the map the document, `purge` removes both slots — one engine commit per write. **Every verb is fallible** (`okm_core::Result`): no write panics — the engine's refusal, a full vocabulary and a map that does not fit the declaration all come back as `okm_core::Error` (ADR-0037). Reads answer `Result<Option<R>>` / `Result<Vec<…>>` — absence is the `Option`, a store that could not answer is the `Err` (ADR-0038). The dynamic side has only the document door: there is no struct there to speak. Unknown field names allocate in the per-table field-name vocabulary and land in the dynamic segment (n-TLV frames, nested objects recursive, no CBOR); the row-map bridge lifts declared fields to logical types (`Quant`→`F64`, `Vocab`→label, `Offset`→`i64`).
 - **Dynamic codec bindings** — schema export drives embedded-language readers: `bindings/okm-python` (PyO3) and `bindings/okm-steel`, byte-identical with the Rust derive.
 - **Path indexes over the dynamic segment** ([ADR-0029](docs/adr/0029-path-index.md)) — `AccessMethod::path(slot, Path::parse("author.name")?, FieldType::Str)?`: nested and array paths declared as access methods, one entry per resolved value (a wildcard is the absence of an `Index` component), maintained on the dynamic-segment write path; the value type is declared, and the entry key carries the slot, never the path.
 - Engine backends behind Cargo features: `fjall` (sync `FjallStore`), `redb` (sync `RedbStore`), `slatedb` (async `SlatedbStore`); tests run the real engines through the `TestStore` matrix (slatedb-mem / fjall / redb), no mock to drift from them.
@@ -178,14 +178,14 @@ users.put(&key, &User { org_id: 7, bio_len: 240 })?;
 // Reads are fallible too: `?` is "the store answered", the Option inside is
 // "the row is there". A store that could not answer is an Err, never a `None`
 // the caller would mistake for an absent row (ADR-0038).
-let row: Option<User> = users.get(&key)?;
+let row: Option<User> = users.get_row(&key)?;
 
 // Read by primary-key prefix: the key IS the access path. A composite key
 // groups by construction, so "every user of this org" needs no index and no
 // declared query — the probe names leading fields, in declaration order.
 let org_users = users.scan_keys(&UserKey::prefix().org_id(7).finish());
 // Lazy: `.take(n)` is a LIMIT, `.skip(n)` a page, `.rev()` walks backwards;
-// each item is a `Result<UserKey>` (rows only — `fetch` materializes).
+// each item is a `Result<UserKey>` (rows only — `whole_document` materializes).
 
 // Read by access method: the dimension is NOT in the key, so it is a declared
 // face — leftmost-prefix scan, then fetch-back. The probe mirrors the key's:
@@ -233,14 +233,14 @@ convenience:
 | verbs | see | pay |
 |---|---|---|
 | `get` / `put` | the declared row only (`R`), never the dynamic segment | no field-name vocabulary load, no segment read — the compiled-schema path |
-| `fetch` / `merge` / `replace` | the whole document: one name-keyed map over both halves | only the arms the names actually touch |
+| `whole_document` / `merge` / `replace` | the whole document: one name-keyed map over both halves | only the arms the names actually touch |
 
 `get` / `put` are the static-mode optimization, not a legacy corner: the row is
 a struct and the struct is all of it — `put(&key, &R)` has no way to name a field
 the declaration does not carry. They never load the field-name vocabulary and
 never read or write the segment.
 
-`fetch` / `merge` / `replace` are the general form, for tables that carry open
+`whole_document` / `merge` / `replace` are the general form, for tables that carry open
 fields. `merge` and `replace` are the two fallible writes (`okm_core::Error`):
 their input is caller data, so a name that matches a declaration but carries the
 wrong kind comes back as an error instead of being silently defaulted. `merge`
@@ -257,9 +257,13 @@ land in the dynamic segment (`[id][type][len][value]` frames, nested
 objects recursive). Declared fields stay typed and indexable.
 
 ```rust
-// Read: declared fields lifted to logical types, merged over dynamic ones.
-// One name-keyed map — the document, not a row plus an attachment.
-let obj: Option<BTreeMap<String, DynamicValue>> = users.fetch(&key)?;
+// Read: name the parts. Row is slot 0, Value is slot 1 as an object; each is
+// its own Option, so a dynamic-only document answers (None, Some(obj)).
+let (row, dyn_) = users.get::<(parts::Row, parts::Value)>(&key)?;
+
+// The assembled map — declared fields lifted to logical types, merged over the
+// dynamic ones — is one free function, `None` only when BOTH slots are empty.
+let obj: Option<BTreeMap<String, DynamicValue>> = whole_document(&users, &key)?;
 
 // Merge: names matching the declaration take the typed path (indexes,
 // reduces and events included); unknown names join the dynamic segment.

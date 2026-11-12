@@ -496,7 +496,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     /// multi-writer future (optimistic CAS) triggers only if multiple
     /// live writers over one store become a real requirement.
     pub fn upsert_with(&self, key: &K, f: impl FnOnce(Option<R>) -> R) -> crate::error::Result<R> {
-        let new = f(self.get(key)?);
+        let new = f(self.get_row(key)?);
         self.put(key, &new)?;
         Ok(new)
     }
@@ -620,8 +620,13 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         I::entry_key(&self.header(), key, document)
     }
 
-    /// Point lookup: decode key payload + TLV payload.
-    pub fn get(&self, key: &K) -> crate::error::Result<Option<R>> {
+    /// Point lookup, the row alone: decode key payload + TLV payload.
+    ///
+    /// Sugar for `get::<(parts::Row,)>` — the common case where the typed
+    /// payload is the whole question. A key that holds only a dynamic segment
+    /// (ADR-0035's slot-1-only document) answers `None` here; ask for the
+    /// [`Value`](crate::model::parts::Value) part to see that half.
+    pub fn get_row(&self, key: &K) -> crate::error::Result<Option<R>> {
         let k = self.primary_key(key);
         let v = match self.store.get(&k)? {
             Some(v) => v,
@@ -631,6 +636,25 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         R::__okm_embed_deref(&mut document, &self.store)?;
         R::__okm_deref_vocab(&mut document, &mut self.vocabs.borrow_mut(), &self.store)?;
         Ok(Some(document))
+    }
+
+    /// Point read, by parts: the caller names which halves of the document it
+    /// wants, in its own order, and pays for only those.
+    ///
+    /// ```ignore
+    /// t.get::<(parts::Row,)>(&k)                // the row: same answer as get_row
+    /// t.get::<(parts::Value,)>(&k)              // the dynamic segment alone
+    /// t.get::<(parts::Row, parts::Value)>(&k)   // both halves, apart
+    /// ```
+    ///
+    /// Absence is per part: each slot has its own `Option`, so a missing key
+    /// answers `(None, None)` rather than collapsing to one `None`. One-element
+    /// tuples collapse to the part's own output (no one-tuple wrapper).
+    pub fn get<P>(&self, key: &K) -> crate::error::Result<P::Output>
+    where
+        P: crate::model::parts::PointParts<S, K, R>,
+    {
+        P::take(self, key)
     }
 
     /// Leftmost-prefix scan over access method `I`: every entry whose field
@@ -799,8 +823,9 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     ///
     /// Laziness is the interface: `.take(n)` is a LIMIT that pays only the
     /// reads performed, `.skip(m).take(n)` an offset page, `.rev()` the same
-    /// window backwards. Materializing is not this method's job — `fetch` is
-    /// the door, so a key becomes a document with `.map(|k| col.fetch(&k))`.
+    /// window backwards. Materializing is not this method's job —
+    /// [`whole_document`] is the door, so a key becomes a document with
+    /// `.map(|k| whole_document(self, &k))`.
     pub fn scan_keys(
         &self,
         probe: &crate::model::prefix::PrefixProbe<K>,
@@ -854,8 +879,8 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     ///
     /// Eager on purpose, unlike `scan_keys`: the merge needs both sides in hand,
     /// and nothing streams whole-table document enumeration today. Materializing
-    /// the documents is still not this method's job — `fetch` is the door, so a
-    /// key becomes a document with a plain `map` over the keys.
+    /// the documents is still not this method's job — [`whole_document`] is the
+    /// door, so a key becomes a document with a plain `map` over the keys.
     pub fn scan_document_keys(
         &self,
         probe: &crate::model::prefix::PrefixProbe<K>,
@@ -933,29 +958,6 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         buf
     }
 
-    /// The document as a name-keyed map — the read door of the whole-document
-    /// surface, paired with `merge` / `replace` / `purge` (ADR-0035). Declared
-    /// fields (typed, from slot 0) come first, the dynamic segment's names
-    /// (slot 1) extend them. Declared names win by construction — the typed
-    /// side is compile-time and the vocabulary only allocates names it has
-    /// never seen.
-    ///
-    /// `None` = nothing stored in EITHER slot. A dynamic-only document (no
-    /// primary entry) still fetches: "the document" is the pair of slots, not
-    /// the primary entry. `get` is the other read door — it speaks `R`.
-    pub fn fetch(&self, key: &K) -> crate::error::Result<Option<BTreeMap<String, DynamicValue>>> {
-        let row = self.get(key)?;
-        let stored = self.slot1_map(key)?;
-        if row.is_none() && stored.is_none() {
-            return Ok(None);
-        }
-        let mut out = row.map(|r| r.to_map()).unwrap_or_default();
-        if let Some(fields) = stored {
-            out.extend(fields);
-        }
-        Ok(Some(out))
-    }
-
     /// Partial whole-document update, ONE engine commit.
     ///
     /// - A name that matches a declared field is a read-modify-write of the row:
@@ -989,7 +991,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         // nothing — this interface speaks about typed rows.
         let mut announced: Option<R> = None;
         if !typed.is_empty() {
-            let prev = self.get(key)?;
+            let prev = self.get_row(key)?;
             let mut merged = prev.as_ref().map(|r| r.to_map()).unwrap_or_default();
             merged.extend(typed);
             let document = R::try_from_map(&merged)?;
@@ -1033,7 +1035,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         // name is `purge`'s write, so it announces what `purge` announces.
         let mut announced: Option<(crate::subscribe::Op, R)> = None;
         if typed.is_empty() {
-            if let Some(prev) = self.get(key)? {
+            if let Some(prev) = self.get_row(key)? {
                 self.delete_into(&mut batch, key, &prev)?;
                 announced = Some((crate::subscribe::Op::Delete, prev));
             }
@@ -1041,7 +1043,7 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
             // The stored row is the face-sweep source: without it the previous
             // values' entries would dangle, exactly what `put` is allowed to do
             // and a whole-document verb is not.
-            let prev = self.get(key)?;
+            let prev = self.get_row(key)?;
             let document = R::try_from_map(&typed)?;
             self.save_with_prev_into(&mut batch, key, &document, prev.as_ref())?;
             announced = Some((crate::subscribe::Op::Put, document));
@@ -1145,7 +1147,8 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     /// The stored dynamic segment as a name-keyed map. `None` = no entry; a
     /// zero-frame list is never written, so empty and absent are one state.
     /// Crate-visible for the export bridge, which needs the segment WITHOUT the
-    /// declared half (the variant column) — the public read is [`fetch`].
+    /// declared half (the variant column); the two halves assembled is
+    /// [`whole_document`], and a single half is [`Collection::get`].
     pub fn slot1_map(
         &self,
         key: &K,
@@ -1289,6 +1292,29 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     }
 }
 
+/// The whole document as one name-keyed map — both slots, declared names first.
+///
+/// `None` only when BOTH slots are empty: a dynamic-only document (no primary
+/// entry) still answers, because "the document" is the PAIR of slots
+/// (ADR-0035). With point reads answering parts, this is the one assembly left
+/// — for callers that want the merged map (serialization, export, whole-document
+/// comparison) rather than a named half.
+pub fn whole_document<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>>(
+    col: &Collection<S, K, R>,
+    key: &K,
+) -> crate::error::Result<Option<BTreeMap<String, DynamicValue>>> {
+    let row = col.get_row(key)?;
+    let stored = col.slot1_map(key)?;
+    if row.is_none() && stored.is_none() {
+        return Ok(None);
+    }
+    let mut out = row.map(|r| r.to_map()).unwrap_or_default();
+    if let Some(fields) = stored {
+        out.extend(fields);
+    }
+    Ok(Some(out))
+}
+
 impl<S, K, R> Collection<crate::changelog::ChangelogStore<S>, K, R>
 where
     S: VirtualStorage,
@@ -1407,7 +1433,7 @@ where
         &self,
         raw: &crate::model::index::RawHit,
     ) -> crate::error::Result<P::Output> {
-        let mut fetch = |key: &K| self.col.get(key);
+        let mut fetch = |key: &K| self.col.get_row(key);
         let mut hit = crate::model::parts::Hit::new(raw, &mut fetch);
         P::take(&mut hit)
     }

@@ -18,6 +18,7 @@ use okm_core::{Document, DocumentEncode, KeyEncode};
 use okm_value::DynamicValue;
 
 use okm_async::TestStore;
+use okm_core::whole_document;
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
 pub struct ProfileKey {
     pub org_id: u32,
@@ -70,14 +71,14 @@ fn a_name_may_live_in_the_key_and_in_the_payload() {
         )
         .unwrap();
 
-    let row = table.get(&key(101)).unwrap().unwrap();
+    let row = table.get_row(&key(101)).unwrap().unwrap();
     assert_eq!(row.user_id, 999, "the payload copy is its own field");
     assert!(
-        table.get(&key(999)).unwrap().is_none(),
+        table.get_row(&key(999)).unwrap().is_none(),
         "the key's value still addresses"
     );
 
-    let doc = table.fetch(&key(101)).unwrap().unwrap();
+    let doc = whole_document(&table, &key(101)).unwrap().unwrap();
     assert_eq!(
         doc.get("user_id"),
         Some(&DynamicValue::U64(999)),
@@ -113,8 +114,8 @@ fn the_same_key_type_addresses_a_side_table() {
         "the key payload is the same bytes by construction"
     );
 
-    assert_eq!(main.get(&k).unwrap().unwrap().bio, "hello");
-    assert_eq!(side.get(&k).unwrap().unwrap().views, 3);
+    assert_eq!(main.get_row(&k).unwrap().unwrap().bio, "hello");
+    assert_eq!(side.get_row(&k).unwrap().unwrap().views, 3);
 }
 
 #[test]
@@ -138,7 +139,7 @@ fn a_map_name_that_matches_a_payload_field_writes_the_row() {
         .merge(&k, &map_of(&[("user_id", DynamicValue::U64(50))]))
         .unwrap();
 
-    let row = table.get(&k).unwrap().unwrap();
+    let row = table.get_row(&k).unwrap().unwrap();
     assert_eq!(row.user_id, 50);
     assert_eq!(row.bio, "a", "other payload fields are untouched");
 
@@ -146,7 +147,7 @@ fn a_map_name_that_matches_a_payload_field_writes_the_row() {
     table
         .merge(&k, &map_of(&[("nickname", DynamicValue::Str("z".into()))]))
         .unwrap();
-    let doc = table.fetch(&k).unwrap().unwrap();
+    let doc = whole_document(&table, &k).unwrap().unwrap();
     assert_eq!(doc.get("nickname"), Some(&DynamicValue::Str("z".into())));
     assert_eq!(doc.get("user_id"), Some(&DynamicValue::U64(50)));
 }

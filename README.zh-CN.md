@@ -76,7 +76,7 @@ crate 分工：okm-core = 共享运行时（引擎契约、`Collection`、docume
 - 多引擎混用——同一进程内不同 ns 段可绑不同引擎（交易走 fjall、日志走 slatedb）；原子性止于单引擎内，ns 编号全库唯一。
 - 快照导出——行 → Parquet，与引擎无关（备份 / 数据交换 / lakehouse 分析）；ns 还原为描述性文本，列名即字段名。
 - Lakehouse 路径——导出目录**就是**一张 Delta 表（`okm_lake::delta`：每个窗口一条 JSON 提交，schema 从 Parquet footer 读，路径相对表目录，不需要 catalog、不需要注册；开放字段作为一个 `variant` 列携带）。湖是一个键空间而不是一个目录：`okm_lake::store` 把同一张表写进本地目录或 S3 桶，`okm_lake::publish` 是「自己持有状态的服务按快照镜像自己」的入口（ADR-0061）。增量：变更日志在提交边界捕获（[ADR-0045](docs/adr/0045-changelog-capture-and-drain.md)）；窗口合并属于核心（`okm_core::changelog::window`），`okm-lake` 这个与应用无链接的独立程序把窗口投影成文件，水位在文件落盘后才推进。
-- **Document API**——两道读门、三个写动词。结构体门：`get` / `put` 说 `R`（只有 typed 侧有）。文档门：`fetch` 读整份文档（两槽合并的名字键 map）、`merge` 只动点名的名字、`replace` 让 map 就是文档、`purge` 清掉两槽；每次写一个引擎提交。动态侧只有文档门——那边没有结构体可说。未知字段名在每表字段名词汇表里分配编号，落进动态段（n-TLV 帧、嵌套对象递归、无 CBOR）；行-映射桥把声明字段 lift 到逻辑类型（`Quant`→`F64`、`Vocab`→标签、`Offset`→`i64`）。
+- **Document API**——两道读门、三个写动词。结构体门：`get_row` / `put` 说 `R`（只有 typed 侧有）。文档门：`get::<(parts::Row, parts::Value)>` 把两个槽各答各的（`Option<R>`、`Option<DynamicValue>`），`whole_document` 是两槽拼成一张名字键 map 的**唯一**入口、`merge` 只动点名的名字、`replace` 让 map 就是文档、`purge` 清掉两槽；每次写一个引擎提交。动态侧只有文档门——那边没有结构体可说。未知字段名在每表字段名词汇表里分配编号，落进动态段（n-TLV 帧、嵌套对象递归、无 CBOR）；行-映射桥把声明字段 lift 到逻辑类型（`Quant`→`F64`、`Vocab`→标签、`Offset`→`i64`）。
 - **动态 codec binding**——schema 导出驱动嵌入式语言读取器：`bindings/okm-python`（PyO3）与 `bindings/okm-steel`，与 Rust derive 字节一致。
 - **动态段上的路径索引**（[ADR-0029](docs/adr/0029-path-index.zh-CN.md)）——`AccessMethod::path(slot, Path::parse("author.name")?, FieldType::Str)?`：把嵌套路径与数组路径声明成访问方法，每个解析出的值一条条目（通配 = 没有 `Index` 组件），维护挂在动态段写路径上；值类型随声明，条目键携带 slot、从不携带路径。
 - **Document 模型**——声明式 row 与外部数据共用单一编码（[ADR-0012](docs/adr/0012-object-model-and-field-dictionary.md)）。OKM 面向文档：document 逻辑上全动态（运行期可出现任意字段），且**声明的静态字段嵌入动态整体**——hot/cold 段、索引、schema 导出照常生效。声明 struct 是只有静态路径的退化 document；纯 document（MQ payload、JSON）是只有动态路径的退化 document；两者同一编码。嵌入光谱上的术语：
@@ -134,13 +134,13 @@ let key = UserKey { org_id: 7, user_id: 101 };
 // 写：主表条目 + 每个声明的面一条，同一个 store 实例。
 // 动词取 &self（与底层 KV 的 put/del 一致），独占性由集合 !Sync 保证。
 users.put(&key, &User { org_id: 7, bio_len: 240 });
-let row: Option<User> = users.get(&key);
+let row: Option<User> = users.get_row(&key);
 
 // 按主键前缀读：键本身就是访问路径。合成键天生分组，"这个 org 的全部用户"
 // 不需要索引、不需要声明查询——探针按声明序命名前导字段。
 let org_users = users.scan_keys(&UserKey::prefix().org_id(7).finish());
 // 惰性：`.take(n)` 是 LIMIT，`.skip(n)` 翻页，`.rev()` 反向；每条是 `Result<UserKey>`
-// （只给行——物化走 `fetch`）。
+// （只给行——物化走 `whole_document`）。
 
 // 按访问方法读：维度不在键里，所以它是一条声明出来的面——最左前缀扫描 + 回表。
 // 探针与主键那套对称：`ByOrg::prefix()` 按该索引声明的 `fields(...)` 顺序给字段，
@@ -182,12 +182,12 @@ users.purge(&key);   // 主条目 + 面 + 动态段，一次提交；删除集�
 | 动词 | 看到 | 付出 |
 |---|---|---|
 | `get` / `put` | 只有声明行（`R`），永远不碰动态段 | 不载入字段名词汇表，不读段——编译期 schema 这条路 |
-| `fetch` / `merge` / `replace` | 整份文档：一张按名字索引的 map，覆盖两半 | 只读这次点到的那些臂 |
+| `whole_document` / `merge` / `replace` | 整份文档：一张按名字索引的 map，覆盖两半 | 只读这次点到的那些臂 |
 
 `get` / `put` 是纯静态模式下的优化，不是遗留角落：行就是结构体，而结构体就是它的全部——
 `put(&key, &R)` 根本说不出声明之外的名字。它们从不载入字段名词汇表，也从不读或写动态段。
 
-`fetch` / `merge` / `replace` 是通用形态，给带开放字段的表用。`merge` 在规划之前
+`whole_document`（拼装两槽）/ `merge` / `replace` 是通用形态，给带开放字段的表用。`merge` 在规划之前
 先分类：声明名走 typed 那条（行 RMW、面、账本、事件），其余名字进动态段——
 没有声明名的 patch 不读行，没有动态名的 patch 不读段、也不载入词汇表。`replace`
 则把 map 就当成文档（没点名的声明字段取默认值，没点名的动态名被删掉）。
@@ -196,9 +196,13 @@ users.purge(&key);   // 主条目 + 面 + 动态段，一次提交；删除集�
 一套编码服务声明行与外部数据。未知字段名是正常输入：在每表的字段名词汇表里分配编号，落进动态段（`[id][type][len][value]` 帧、嵌套对象递归）。声明字段保持 typed 且可索引。
 
 ```rust
-// 读：声明字段 lift 到逻辑类型，叠在动态字段之上。
-// 一张按名字索引的 map——这是文档本身，不是"行 + 附件"。
-let obj = users.fetch(&key)?;                 // BTreeMap<String, DynamicValue>
+// 读：按局部点名。Row 是槽 0，Value 是槽 1（对象形态）；各自是独立的 Option，
+// 所以只有动态段的文档答 (None, Some(obj))。
+let (row, dyn_) = users.get::<(parts::Row, parts::Value)>(&key)?;
+
+// 拼好的那张按名字索引的 map（声明字段 lift 到逻辑类型，叠在动态字段之上）
+// 是一个自由函数，只有两个槽都空时才返回 None。
+let obj = whole_document(&users, &key)?;      // Option<BTreeMap<String, DynamicValue>>
 
 // merge：命中声明的名字走 typed 路径（索引、reduce、事件一并生效），
 // 未知名字并入动态段。只动点名的字段，其余保持库里已有的值。

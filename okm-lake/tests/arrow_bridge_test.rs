@@ -420,8 +420,11 @@ fn uuid_field_survives_a_parquet_round_trip() {
     let n = okm_lake::snapshot::parquet_io::import_parquet(&mut t2, &path).unwrap();
     assert_eq!(n, 2);
     for (id, device) in rows {
-        let got = t2.get(&DeviceKey { id }).unwrap().expect("restored row");
+        let got = t2
+            .get_row(&DeviceKey { id })
+            .unwrap()
+            .expect("restored row");
         assert_eq!(got.device, device);
-        assert_eq!(got, t1.get(&DeviceKey { id }).unwrap().unwrap());
+        assert_eq!(got, t1.get_row(&DeviceKey { id }).unwrap().unwrap());
     }
 }

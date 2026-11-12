@@ -949,7 +949,7 @@ fn function_index_with_no_values_writes_no_entries() {
     let pairs = ByNone::entry_pairs(<Quiet as Document>::NS_PREFIX, &k, &row);
     assert!(pairs.is_empty());
     // 主表仍有行：函数索引是派生面，不是写入的门
-    assert!(t.get(&k).unwrap().is_some());
+    assert!(t.get_row(&k).unwrap().is_some());
 }
 
 // ---------------------------------------------------------------------------
@@ -1170,7 +1170,7 @@ fn partial_index_flip_needs_delete_then_put() {
         t4.store().get(&e).unwrap().is_none(),
         "replace 扫掉存储行的面"
     );
-    assert_eq!(t4.get(&k).unwrap().unwrap().status, 1, "map 就是文档");
+    assert_eq!(t4.get_row(&k).unwrap().unwrap().status, 1, "map 就是文档");
 }
 
 #[test]
@@ -1296,7 +1296,7 @@ fn covered_scan_answers_without_the_primary_table() {
     assert_eq!(covered[0].2, PostCovered { title_len: 77 });
 
     t.store().del(&t.primary_key(&k)).unwrap();
-    assert!(t.get(&k).unwrap().is_none(), "主表行已不在");
+    assert!(t.get_row(&k).unwrap().is_none(), "主表行已不在");
     let covered = t
         .scan::<ByTimeline>(&7u64.to_be_bytes())
         .parts::<(parts::Fields, parts::Key, parts::Include)>()

@@ -67,7 +67,7 @@ fn a_uuid_payload_field_keeps_its_kind_and_round_trips() {
         },
     )
     .unwrap();
-    let got = rows.get(&device).unwrap().expect("row");
+    let got = rows.get_row(&device).unwrap().expect("row");
     assert_eq!(got.token, token);
     assert_eq!(got.device, device);
     assert_eq!(got.note, "kept");
@@ -109,7 +109,7 @@ fn rows_round_trip_by_uuid_key_and_scans_return_the_key() {
         )
         .unwrap();
 
-    let got = devices.get(&a).unwrap().expect("row a");
+    let got = devices.get_row(&a).unwrap().expect("row a");
     assert_eq!(got.alias, "laptop");
 
     // The keyspace is already in clock order: no re-sorting, no index needed to read it that way.
@@ -130,5 +130,8 @@ fn rows_round_trip_by_uuid_key_and_scans_return_the_key() {
             },
         )
         .unwrap();
-    assert_eq!(tokens.get(&t).unwrap().expect("token row").device.key, a);
+    assert_eq!(
+        tokens.get_row(&t).unwrap().expect("token row").device.key,
+        a
+    );
 }

@@ -68,7 +68,7 @@ fn a_batch_emits_no_event_and_still_lands() {
     t.commit_batch(batch).unwrap();
 
     assert!(
-        t.get(&AccountKey { id: 1 }).unwrap().is_some(),
+        t.get_row(&AccountKey { id: 1 }).unwrap().is_some(),
         "the batch's rows landed"
     );
     assert_eq!(

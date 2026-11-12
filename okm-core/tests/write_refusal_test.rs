@@ -129,7 +129,7 @@ fn a_refused_write_comes_back_as_the_engines_text() {
     // Nothing landed: the primary put is the batch's first op, and it was refused.
     t.store().accept_everything();
     assert!(
-        t.get(&RefuseKey { id: 1 }).unwrap().is_none(),
+        t.get_row(&RefuseKey { id: 1 }).unwrap().is_none(),
         "a refused write left a row behind"
     );
 }
@@ -149,7 +149,7 @@ fn a_replayed_batch_leaves_the_ops_before_the_refusal() {
 
     t.store().accept_everything();
     assert!(
-        t.get(&RefuseKey { id: 2 }).unwrap().is_some(),
+        t.get_row(&RefuseKey { id: 2 }).unwrap().is_some(),
         "the accepted prefix of a replayed batch stays written — that is the boundary"
     );
 }

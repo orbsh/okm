@@ -67,7 +67,7 @@ fn every_point_verb_announces_the_row_it_leaves() {
     t.replace(&key, &dmap(&[])).unwrap();
     // Nothing left to remove, so nothing announced.
     t.replace(&key, &dmap(&[])).unwrap();
-    assert!(t.get(&key).unwrap().is_none());
+    assert!(t.get_row(&key).unwrap().is_none());
 
     t.put(&key, &Account { balance: 40 }).unwrap();
     t.purge(&key).unwrap();

@@ -19,6 +19,7 @@
 
 use okm_async::TestStore;
 use okm_core::schema::CollectionSchema;
+use okm_core::whole_document;
 use okm_core::{
     Collection, Document, DocumentEncode, KeyEncode, Offset, Quant, VarInt, VirtualStorage,
 };
@@ -185,7 +186,7 @@ fn rust_write_dynamic_read_and_reverse() {
     assert_eq!(rust_key.user_id, 0x1122_3344_5566_7788);
     t.put(&rust_key, &rust_decoded).unwrap();
     let document = t
-        .get(&rust_key)
+        .get_row(&rust_key)
         .unwrap()
         .expect("rust reads dynamic-encoded bytes");
     assert_eq!(document.name, "alice");
@@ -335,11 +336,14 @@ fn a_key_name_in_a_map_is_a_value_field_in_both_modes() {
     // No payload name was given, so no row is written on either side: the value
     // stands alone, addressed by the pkey.
     assert!(
-        typed.get(&key).unwrap().is_none(),
+        typed.get_row(&key).unwrap().is_none(),
         "no payload name = no row"
     );
     assert!(
-        typed.fetch(&key).unwrap().unwrap().contains_key("org_id"),
+        whole_document(&typed, &key)
+            .unwrap()
+            .unwrap()
+            .contains_key("org_id"),
         "the name is a value field on the typed side"
     );
     assert!(
@@ -352,13 +356,15 @@ fn a_key_name_in_a_map_is_a_value_field_in_both_modes() {
     );
     // The identity is the pkey and a map cannot move it: this invented no row.
     assert!(
-        typed
-            .fetch(&UserKey {
+        whole_document(
+            &typed,
+            &UserKey {
                 org_id: 999,
                 user_id: 1
-            })
-            .unwrap()
-            .is_none()
+            }
+        )
+        .unwrap()
+        .is_none()
     );
 }
 
@@ -413,7 +419,7 @@ fn the_two_enumeration_modes_see_the_two_kinds_of_document() {
         .scan_document_keys(&okm_core::PrefixProbe::empty())
         .unwrap()
         .iter()
-        .map(|k| typed.fetch(k).unwrap().expect("a document"))
+        .map(|k| whole_document(&typed, k).unwrap().expect("a document"))
         .collect();
     assert_eq!(docs.len(), 2, "the adapter is a map over keys + fetch");
     assert!(
