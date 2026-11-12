@@ -26,6 +26,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 
 use crate::delta;
+use crate::store::{LakeStore, table_key};
 
 /// What a failed read or fold says. Same rules as the drain's error: the caller's decision
 /// is the same for io, Parquet, schema and op problems — stop, fix, run again.
@@ -99,8 +100,8 @@ const OPEN_FIELDS_COLUMN: &str = "variant";
 /// Read from the log, not guessed: `okm.key` in the schema metadata is the one thing a file
 /// cannot say about itself, and an export written before the amendment has none — which is a
 /// refusal here rather than a fold on a made-up identity.
-pub fn key_columns(table_dir: &Path) -> Result<Vec<String>> {
-    let schema = delta::schema_string_at(table_dir)?
+pub fn key_columns(store: &dyn LakeStore, table: &str) -> Result<Vec<String>> {
+    let schema = delta::schema_string(store, table)?
         .ok_or_else(|| ReadError::new("this table has no schema in its log yet"))?;
     let parsed: serde_json::Value = serde_json::from_str(&schema)
         .map_err(|e| ReadError::new(format!("schema string is not JSON: {e}")))?;
@@ -163,16 +164,23 @@ fn aligned(batch: &RecordBatch, schema: &arrow::datatypes::SchemaRef) -> Result<
 }
 
 /// The given data files, in the order given, one batch list per file.
-fn read_files(table_dir: &Path, files: &[String]) -> Result<Vec<RecordBatch>> {
+///
+/// Read through the store, not through `File`: a lake may be a bucket, and a Parquet reader
+/// takes bytes just as happily as a file handle.
+fn read_files(store: &dyn LakeStore, table: &str, files: &[String]) -> Result<Vec<RecordBatch>> {
     if files.is_empty() {
         return Err(ReadError::new("this table has no data files"));
     }
     let mut batches = Vec::new();
     for rel in files {
-        let path = table_dir.join(rel);
-        let file = std::fs::File::open(&path)?;
-        let reader = ParquetRecordBatchReaderBuilder::try_new(file)?;
-        for batch in reader.build()? {
+        let key = table_key(table, rel);
+        let bytes = store.get(&key)?;
+        let reader = ParquetRecordBatchReaderBuilder::try_new(bytes::Bytes::from(bytes))
+            .map_err(|e| ReadError::new(format!("{key}: {e}")))?;
+        let rows = reader
+            .build()
+            .map_err(|e| ReadError::new(format!("{key}: {e}")))?;
+        for batch in rows {
             batches.push(batch?);
         }
     }
@@ -181,10 +189,11 @@ fn read_files(table_dir: &Path, files: &[String]) -> Result<Vec<RecordBatch>> {
 
 /// The files' batches against the schema the table agrees on.
 fn aligned_files(
-    table_dir: &Path,
+    store: &dyn LakeStore,
+    table: &str,
     files: &[String],
 ) -> Result<(arrow::datatypes::SchemaRef, Vec<RecordBatch>)> {
-    let raw = read_files(table_dir, files)?;
+    let raw = read_files(store, table, files)?;
     // Files of one table do not have to be column-for-column identical: a window with no
     // open fields has no `variant` column. The table's schema is the union, and a file that
     // lacks a column reads as NULL in it.
@@ -203,16 +212,22 @@ fn aligned_files(
 /// which is what `files_in_order` reads. A key whose last op is a `del` is simply absent —
 /// that is what current state means, and the change history is still in the log for anyone
 /// who asks the question the other way round.
-pub fn current_state(table_dir: &Path) -> Result<RecordBatch> {
-    Ok(state_and_total(table_dir)?.0)
+pub fn current_state(store: &dyn LakeStore, table: &str) -> Result<RecordBatch> {
+    Ok(state_and_total(store, table)?.0)
+}
+
+/// [`current_state`] for a table inside a local lake directory.
+pub fn current_state_at(table_dir: &Path) -> Result<RecordBatch> {
+    let (store, table) = delta::lake_of(table_dir).map_err(ReadError::new)?;
+    current_state(&store, &table)
 }
 
 /// The same answer, plus how many change rows the files hold — the number a fold compares
 /// itself against to decide whether there is anything to fold.
-fn state_and_total(table_dir: &Path) -> Result<(RecordBatch, usize)> {
-    let files = delta::files_in_order_at(table_dir)?;
-    let (schema, batches) = aligned_files(table_dir, &files)?;
-    let keys = key_columns(table_dir)?;
+fn state_and_total(store: &dyn LakeStore, table: &str) -> Result<(RecordBatch, usize)> {
+    let files = delta::files_in_order(store, table)?;
+    let (schema, batches) = aligned_files(store, table, &files)?;
+    let keys = key_columns(store, table)?;
     resolve(&schema, &batches, &keys)
 }
 
@@ -376,9 +391,16 @@ fn resolve(
 /// The keys a file holds, and whether it holds a removal — read with a PROJECTION, so the
 /// payload is never touched. This is the index a fold needs: a key that appears in one file
 /// and was never removed there is already final.
-fn keys_of_file(path: &Path, keys: &[String]) -> Result<(Vec<Vec<u8>>, bool)> {
-    let file = std::fs::File::open(path)?;
-    let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
+fn keys_of_file(
+    store: &dyn LakeStore,
+    table: &str,
+    rel: &str,
+    keys: &[String],
+) -> Result<(Vec<Vec<u8>>, bool)> {
+    let key = table_key(table, rel);
+    let bytes = store.get(&key)?;
+    let builder = ParquetRecordBatchReaderBuilder::try_new(bytes::Bytes::from(bytes))
+        .map_err(|e| ReadError::new(format!("{key}: {e}")))?;
     let descriptor = builder.metadata().file_metadata().schema_descr().clone();
     let schema = builder.schema().clone();
     let mut roots = Vec::new();
@@ -389,8 +411,7 @@ fn keys_of_file(path: &Path, keys: &[String]) -> Result<(Vec<Vec<u8>>, bool)> {
     }
     if roots.len() != keys.len() + 1 {
         return Err(ReadError::new(format!(
-            "{}: a file is missing a key column or `okm_op`",
-            path.display()
+            "{key}: a file is missing a key column or `okm_op`"
         )));
     }
     let reader = builder
@@ -455,7 +476,8 @@ fn keys_of_file(path: &Path, keys: &[String]) -> Result<(Vec<Vec<u8>>, bool)> {
 /// cannot overlap anything are never opened; only the overlapping ones have their key columns
 /// read, and that read confirms what the ranges only guessed.
 fn files_to_fold(
-    table_dir: &Path,
+    store: &dyn LakeStore,
+    table: &str,
     files: &[String],
     keys: &[String],
 ) -> Result<(Vec<String>, usize)> {
@@ -465,7 +487,7 @@ fn files_to_fold(
     let mut bounds: Vec<Option<Bounds>> = Vec::with_capacity(files.len());
     let mut removes = vec![false; files.len()];
     for (at, rel) in files.iter().enumerate() {
-        let manifest = crate::status::manifest_of(&table_dir.join(rel));
+        let manifest = crate::status::manifest_at(store, table, rel);
         removes[at] = manifest.as_ref().is_some_and(|m| m.deletes > 0);
         bounds.push(
             manifest
@@ -514,7 +536,7 @@ fn files_to_fold(
         if !candidate[at] {
             continue;
         }
-        let (here, removed) = keys_of_file(&table_dir.join(rel), keys)?;
+        let (here, removed) = keys_of_file(store, table, rel, keys)?;
         if removed {
             touched[at] = true;
         }
@@ -643,8 +665,10 @@ pub(crate) fn merge_open(target: &mut Dict, source: &Dict) {
 pub struct FoldReport {
     /// The version the fold committed.
     pub version: u64,
-    /// The files that now hold the table's current state: one per partition, or one when the
-    /// table is not partitioned.
+    /// The lake keys that now hold the table's current state: one per partition, or one when
+    /// the table is not partitioned.
+    pub keys: Vec<String>,
+    /// The same files as paths, when the lake is a directory; empty when it is a bucket.
     pub files: Vec<PathBuf>,
     /// How many files it replaced.
     pub replaced: usize,
@@ -666,36 +690,35 @@ pub struct FoldReport {
 ///
 /// A table with nothing to resolve is refused rather than rewritten: folding it would churn
 /// the log without changing what a reader sees.
-pub fn condense(table_dir: &Path) -> Result<FoldReport> {
-    condense_at(table_dir, 0)
+pub fn condense(store: &dyn LakeStore, table: &str) -> Result<FoldReport> {
+    condense_on(store, table, 0)
+}
+
+/// [`condense`] for a table inside a local lake directory.
+pub fn condense_at(table_dir: &Path, max_rows: usize) -> Result<FoldReport> {
+    let (store, table) = delta::lake_of(table_dir).map_err(ReadError::new)?;
+    condense_on(&store, &table, max_rows)
 }
 
 /// Fold the table, with at most `max_rows` rows per file (`0` = one file per partition).
-pub fn condense_at(table_dir: &Path, max_rows: usize) -> Result<FoldReport> {
-    let files = delta::files_in_order_at(table_dir)?;
-    let keys = key_columns(table_dir)?;
-    let (touched, pruned) = files_to_fold(table_dir, &files, &keys)?;
+pub fn condense_on(store: &dyn LakeStore, table: &str, max_rows: usize) -> Result<FoldReport> {
+    let files = delta::files_in_order(store, table)?;
+    let keys = key_columns(store, table)?;
+    let (touched, pruned) = files_to_fold(store, table, &files, &keys)?;
     if touched.is_empty() {
         return Err(ReadError::refused(format!(
-            "{}: every key lives in one file and nothing is removed, nothing to fold",
-            table_dir.display()
+            "{table}: every key lives in one file and nothing is removed, nothing to fold"
         )));
     }
     let untouched = files.len() - touched.len();
 
-    let hex = table_dir
-        .file_name()
-        .and_then(|n| n.to_str())
-        .ok_or_else(|| ReadError::new(format!("{}: not a table directory", table_dir.display())))?
-        .to_string();
-    let version = delta::next_version_at(table_dir)?;
-    let data_dir = table_dir.join("data");
-    std::fs::create_dir_all(&data_dir)?;
+    let hex = table.to_string();
+    let version = delta::next_version(store, table)?;
 
     // A fold stays INSIDE the partition it resolves: a table is partitioned by a KEY column,
     // so the same key cannot be in two partitions, and a fold that crossed them would write
     // one file whose partitionValues describe two different values.
-    let live = delta::live_adds_at(table_dir)?;
+    let live = delta::live_adds(store, table)?;
     let mut groups: Vec<(delta::Partition, Vec<String>)> = Vec::new();
     for rel in &touched {
         let values = live
@@ -711,22 +734,19 @@ pub fn condense_at(table_dir: &Path, max_rows: usize) -> Result<FoldReport> {
 
     let stem = format!("{hex}-fold-{version:020}");
     let mut additions: Vec<delta::Addition> = Vec::new();
-    let mut written: Vec<PathBuf> = Vec::new();
+    let mut written: Vec<String> = Vec::new();
     let mut rows = 0usize;
-    for (at, (values, files)) in groups.iter().enumerate() {
-        let (schema, batches) = aligned_files(table_dir, files)?;
+    for (values, files) in &groups {
+        let (schema, batches) = aligned_files(store, table, files)?;
         let (batch, _) = resolve(&schema, &batches, &keys)?;
         // Nothing left to say in this partition: its files go, and no file replaces them.
         if batch.num_rows() == 0 {
             continue;
         }
         let dir = match values.first() {
-            Some((column, value)) => {
-                data_dir.join(format!("{column}={}", crate::partition_dir(value)))
-            }
-            None => data_dir.clone(),
+            Some((column, value)) => format!("data/{column}={}", crate::partition_dir(value)),
+            None => "data".to_string(),
         };
-        std::fs::create_dir_all(&dir)?;
         // A folded partition larger than the limit becomes several files, the same way a
         // window does — and each part's manifest states a narrower key range than the whole.
         let parts = crate::split_rows(&batch, max_rows).map_err(|e| ReadError::new(e.what))?;
@@ -737,10 +757,11 @@ pub fn condense_at(table_dir: &Path, max_rows: usize) -> Result<FoldReport> {
                 format!("-p{part}")
             };
             let name = format!("{stem}{suffix}.parquet");
-            let out = dir.join(&name);
-            let scratch = table_dir.join(format!(".{at}-{part}-{name}.partial"));
-            crate::snapshot::parquet_io::write_batch(chunk, &scratch)?;
-            std::fs::rename(&scratch, &out)?;
+            let relative = format!("{dir}/{name}");
+            // The bytes are the file: a store has no `stat`, and the writer just made them.
+            let bytes = crate::snapshot::parquet_io::batch_bytes(chunk)
+                .map_err(|e| ReadError::new(format!("{relative}: {e}")))?;
+            store.put(&table_key(table, &relative), &bytes)?;
 
             // A folded file gets a manifest too: it carries the segments the files it
             // replaced described, so provenance survives a fold and `status` can still
@@ -748,7 +769,7 @@ pub fn condense_at(table_dir: &Path, max_rows: usize) -> Result<FoldReport> {
             let mut segments: Vec<String> = Vec::new();
             let mut layout_version = 0u8;
             for rel in files {
-                if let Some(manifest) = crate::status::manifest_of(&table_dir.join(rel)) {
+                if let Some(manifest) = crate::status::manifest_at(store, table, rel) {
                     layout_version = layout_version.max(manifest.layout_version);
                     for segment in manifest.segments {
                         if !segments.contains(&segment) {
@@ -780,37 +801,32 @@ pub fn condense_at(table_dir: &Path, max_rows: usize) -> Result<FoldReport> {
                     &crate::bounds::of_batch(chunk, &keys).map_err(ReadError::new)?,
                 ),
             };
-            std::fs::write(
-                out.with_extension("manifest.json"),
+            store.put(
+                &table_key(table, &crate::status::manifest_key(&relative)),
                 serde_json::to_string_pretty(&manifest)
-                    .map_err(|e| ReadError::new(format!("manifest: {e}")))?,
+                    .map_err(|e| ReadError::new(format!("manifest: {e}")))?
+                    .as_bytes(),
             )?;
 
             rows += chunk.num_rows();
-            let relative = out
-                .strip_prefix(table_dir)
-                .map(|rel| rel.to_string_lossy().replace('\\', "/"))
-                .map_err(|_| {
-                    ReadError::new(format!(
-                        "{}: not inside {}",
-                        out.display(),
-                        table_dir.display()
-                    ))
-                })?;
-            let size = std::fs::metadata(&out).map(|m| m.len()).unwrap_or(0);
             additions.push(delta::Addition {
-                path: relative,
+                path: relative.clone(),
                 partition: values.clone(),
-                size,
+                size: bytes.len() as u64,
             });
-            written.push(out);
+            written.push(relative);
         }
     }
 
-    let commit = delta::commit_compaction_at(table_dir, &touched, &additions, &keys)?;
-    let files = written;
+    let commit = delta::commit_compaction(store, table, &touched, &additions, &keys)?;
+    // Paths only where a path exists: a bucket's keys are not files this process can open.
+    let files = match store.local_root() {
+        Some(root) => written.iter().map(|key| root.join(key)).collect(),
+        None => Vec::new(),
+    };
     Ok(FoldReport {
         version: commit.version,
+        keys: written,
         files,
         replaced: touched.len(),
         untouched,

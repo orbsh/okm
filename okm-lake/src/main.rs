@@ -1,12 +1,12 @@
 //! `okm-lake` — the exported lake: project the change log into Parquet, then keep it.
 //!
 //! ```text
-//! okm-lake         --root <log dir> --out <lake dir> [--consumer NAME] [--max-segments N]
+//! okm-lake         --root <log dir> --out <lake> [--consumer NAME] [--max-segments N]
 //!                  [--table <hex header>] [--partition COLUMN] [--max-rows-per-file N]
 //!                  [--fold-after-files N] [--fold-after-bytes B]
-//! okm-lake condense --out <lake dir> [--table <hex header>]
-//! okm-lake vacuum   --out <lake dir> --keep-versions N [--table <hex header>] [--dry-run]
-//! okm-lake status   --out <lake dir> [--table <hex header>] [--rows]
+//! okm-lake condense --out <lake> [--table <hex header>]
+//! okm-lake vacuum   --out <lake> --keep-versions N [--table <hex header>] [--dry-run]
+//! okm-lake status   --out <lake> [--table <hex header>] [--rows]
 //! ```
 //!
 //! Nothing here knows the application: `--root` is the directory a capturing store wrote
@@ -16,11 +16,17 @@
 //! `vacuum` deletes the files no kept version can see, `status` says what is there
 //! (ADR-0058 § Amendment).
 //!
+//! A lake is a directory, a `file://` path, or `s3://bucket/prefix`: the verbs write and read
+//! through `okm_lake::store`, so a bucket is not a second implementation of anything
+//! (ADR-0061). Credentials come from the environment (`AWS_*`, then `OKM_S3_*`).
+//!
 //! The LOG's own tool is `okm-log`: status of the segments and the claim, compaction, and
 //! replay into a store. Two artifacts, two tools — a migration never needs the columnar stack.
 
-use okm_lake::{DrainConfig, Report, drain, drain_table};
-use std::path::{Path, PathBuf};
+use okm_lake::cli::{self, Verb};
+use okm_lake::store::{self, LakeStore, S3Options};
+use okm_lake::{DrainConfig, Report};
+use std::collections::BTreeSet;
 
 fn main() {
     match run() {
@@ -33,134 +39,57 @@ fn main() {
 }
 
 fn run() -> Result<i32, String> {
-    let mut args: Vec<String> = std::env::args().skip(1).collect();
-    if args.first().is_some_and(|a| a == "status") {
-        args.remove(0);
-        return status(&args);
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    match cli::parse(&args)? {
+        Verb::Help => {
+            println!("{}", cli::USAGE);
+            Ok(0)
+        }
+        Verb::Drain(parsed) => drain_verb(&parsed),
+        Verb::Condense(parsed) => condense(&parsed),
+        Verb::Vacuum(parsed) => vacuum(&parsed),
+        Verb::Status(parsed) => status(&parsed),
     }
-    if args.first().is_some_and(|a| a == "condense") {
-        args.remove(0);
-        return condense(&args);
-    }
-    if args.first().is_some_and(|a| a == "vacuum") {
-        args.remove(0);
-        return vacuum(&args);
-    }
-    if args
-        .first()
-        .is_some_and(|a| matches!(a.as_str(), "-h" | "--help" | "help"))
-    {
-        println!(
-            "okm-lake [--root <log dir> --out <lake dir>] | <verb>\n\
-             \n\
-             (no verb)  --root <log dir> --out <lake dir> [--consumer NAME] [--max-segments N]\n\
-             \x20          [--table <hex header>] [--partition COLUMN] [--max-rows-per-file N]\n\
-             \x20          [--fold-after-files N] [--fold-after-bytes B]\n\
-             condense   --out <lake dir> [--table <hex header>]\n\
-             vacuum     --out <lake dir> --keep-versions N [--table <hex header>] [--dry-run]\n\
-             status     --out <lake dir> [--table <hex header>] [--rows]\n\
-             \n\
-             The lake, not the log: `okm-log` has status/compact/replay for the segments."
-        );
-        return Ok(0);
-    }
-    if args.first().is_some_and(|a| !a.starts_with('-')) {
-        return Err(format!(
-            "unknown verb `{}` (okm-lake: condense, vacuum, status; okm-log: status, compact, replay)",
-            args[0]
-        ));
-    }
-    drain_verb(&args)
+}
+
+/// Open the lake a verb was pointed at. Credentials are the environment's business, not the
+/// arguments': a command line is a log line waiting to happen.
+fn open(lake: &store::LakeUrl) -> Result<Box<dyn LakeStore>, String> {
+    store::open_url(lake, Some(S3Options::from_env()))
 }
 
 /// The default verb: project every table's windows into the lake, with the options that say
 /// how the lake is shaped (partitions, row limit) and when it folds itself.
-fn drain_verb(args: &[String]) -> Result<i32, String> {
-    let mut root: Option<PathBuf> = None;
-    let mut out: Option<PathBuf> = None;
-    let mut consumer = String::from("default");
-    let mut max_segments = 16usize;
-    let mut table: Option<String> = None;
-    let mut fold_after_files: usize = 0;
-    let mut fold_after_bytes: u64 = 0;
-    let mut partition: Option<String> = None;
-    let mut max_rows_per_file: usize = 0;
+fn drain_verb(parsed: &cli::DrainArgs) -> Result<i32, String> {
+    let lake = open(&parsed.lake)?;
+    // The path form's root, when the address is one: `drain_to` takes the lake from its
+    // argument, so a bucket leaves this empty rather than pretending a url is a path.
+    let out = match &parsed.lake {
+        store::LakeUrl::Dir(path) => path.clone(),
+        store::LakeUrl::S3 { .. } => std::path::PathBuf::new(),
+    };
+    let mut cfg = DrainConfig::new(out, &parsed.consumer);
+    cfg.max_segments = parsed.max_segments;
+    cfg.partition = parsed.partition.clone();
+    cfg.max_rows_per_file = parsed.max_rows_per_file;
+    cfg.fold = parsed.fold;
 
-    let mut it = args.iter();
-    while let Some(arg) = it.next() {
-        let mut value = || {
-            it.next()
-                .cloned()
-                .ok_or_else(|| format!("{arg} needs a value"))
-        };
-        match arg.as_str() {
-            "--root" | "--log" => root = Some(PathBuf::from(value()?)),
-            "--out" | "--lake" => out = Some(PathBuf::from(value()?)),
-            "--consumer" => consumer = value()?,
-            "--table" => table = Some(value()?),
-            "--max-segments" => {
-                max_segments = value()?
-                    .parse()
-                    .map_err(|_| "--max-segments takes a number".to_string())?
-            }
-            "--fold-after-files" => {
-                fold_after_files = value()?
-                    .parse()
-                    .map_err(|_| "--fold-after-files takes a number".to_string())?
-            }
-            "--partition" => partition = Some(value()?),
-            "--max-rows-per-file" => {
-                max_rows_per_file = value()?
-                    .parse()
-                    .map_err(|e| format!("--max-rows-per-file: {e}"))?
-            }
-            "--fold-after-bytes" => {
-                fold_after_bytes = value()?
-                    .parse()
-                    .map_err(|_| "--fold-after-bytes takes a number".to_string())?
-            }
-            "-h" | "--help" => {
-                println!(
-                    "okm-lake --root <log dir> --out <lake dir> [--consumer NAME] \
-                     [--max-segments N] [--table <hex header>] \
-                     [--partition COLUMN] [--max-rows-per-file N] [--fold-after-files N]
-                     [--fold-after-bytes B]"
-                );
-                return Ok(0);
-            }
-            other => return Err(format!("unknown argument `{other}` (try --help)")),
-        }
-    }
-
-    let root = root.ok_or("--root is required (the capturing store's log directory)")?;
-    let mut cfg = DrainConfig::new(
-        out.ok_or("--out is required (where window files land)")?,
-        consumer,
-    );
-    cfg.max_segments = max_segments;
-    cfg.partition = partition;
-    cfg.max_rows_per_file = max_rows_per_file;
-    if fold_after_files > 0 || fold_after_bytes > 0 {
-        cfg.fold = Some(okm_lake::FoldPolicy {
-            after_files: fold_after_files,
-            after_bytes: fold_after_bytes,
-        });
-    }
-
-    let report = match table {
-        // One table, named by the header in hex — the directory name, which IS the
-        // table's identity on disk.
+    let report = match parsed.table.as_deref() {
+        // One table, named by the header in hex — the directory name, which IS the table's
+        // identity on the log's side.
         Some(header) => {
             let mut report = Report::default();
-            let dir = okm_core::changelog::window::dir_of(&root, &decode_hex(&header)?);
-            drain_table(&dir, &cfg, &mut report).map_err(|e| e.to_string())?;
+            let dir = okm_core::changelog::window::dir_of(&parsed.root, &decode_hex(header)?);
+            okm_lake::drain_table_to(&*lake, &dir, &cfg, &mut report).map_err(|e| e.to_string())?;
             report
         }
-        None => drain(&root, &cfg).map_err(|e| e.to_string())?,
+        None => okm_lake::drain_to(&*lake, &parsed.root, &cfg).map_err(|e| e.to_string())?,
     };
 
-    for file in &report.files {
-        println!("{}", file.display());
+    // Keys, not paths: a bucket has no path to print, and a directory's key IS its path under
+    // the lake root.
+    for key in &report.keys {
+        println!("{key}");
     }
     println!(
         "tables {}, segments {}, rows {}, deletes {}, segment-only {}, derived-deletes {}, \
@@ -177,43 +106,11 @@ fn drain_verb(args: &[String]) -> Result<i32, String> {
     Ok(0)
 }
 
-/// The lake side of `status`: one line per table, from the log and the manifests alone.
-fn status(args: &[String]) -> Result<i32, String> {
-    let mut out: Option<PathBuf> = None;
-    let mut count_rows = false;
-    let mut table: Option<String> = None;
-
-    let mut it = args.iter();
-    while let Some(arg) = it.next() {
-        let mut value = || {
-            it.next()
-                .cloned()
-                .ok_or_else(|| format!("{arg} needs a value"))
-        };
-        match arg.as_str() {
-            "--out" | "--lake" => out = Some(PathBuf::from(value()?)),
-            "--rows" => count_rows = true,
-            "--table" => table = Some(value()?),
-            "-h" | "--help" => {
-                println!("okm-lake status --out <lake dir> [--table <hex header>] [--rows]");
-                return Ok(0);
-            }
-            other => return Err(format!("unknown argument `{other}` (try --help)")),
-        }
-    }
-
-    let Some(out) = out else {
-        return Err(
-            "--out is required (the exported lake; `okm-log status --root` is the log's side)"
-                .to_string(),
-        );
-    };
-    lake_status(&out, table.as_deref(), count_rows)
-}
-
-fn lake_status(out: &Path, only: Option<&str>, count_rows: bool) -> Result<i32, String> {
-    for dir in lake_tables(out, only)? {
-        let status = okm_lake::status::status(&dir, count_rows)?;
+/// The lake side of `status`: one block per table, from the log and the manifests alone.
+fn status(parsed: &cli::StatusArgs) -> Result<i32, String> {
+    let lake = open(&parsed.lake)?;
+    for table in lake_tables(&*lake, parsed.table.as_deref())? {
+        let status = okm_lake::status::status(&*lake, &table, parsed.rows)?;
         let rows = status
             .change_rows
             .map(|n| match status.deletes {
@@ -221,7 +118,7 @@ fn lake_status(out: &Path, only: Option<&str>, count_rows: bool) -> Result<i32, 
                 None => format!("{n} change row(s)"),
             })
             .unwrap_or_else(|| "change rows unknown (a file has no manifest)".to_string());
-        println!("{}", dir.display());
+        println!("{table}");
         println!(
             "  v{}: {} live file(s), {}, {}, {}",
             status.latest_version,
@@ -248,61 +145,28 @@ fn lake_status(out: &Path, only: Option<&str>, count_rows: bool) -> Result<i32, 
     Ok(0)
 }
 
-/// `vacuum --out <lake dir> --keep-versions N [--table <hex header>] [--dry-run]`
+/// `vacuum --out <lake> --keep-versions N [--table <hex header>] [--dry-run]`
 ///
 /// Delete the files NO kept version references — the bytes a fold leaves behind. `N` counts
 /// versions, not days, and `0` keeps only the current version.
-fn vacuum(args: &[String]) -> Result<i32, String> {
-    let mut out: Option<PathBuf> = None;
-    let mut table: Option<String> = None;
-    let mut keep: Option<u64> = None;
-    let mut dry_run = false;
-
-    let mut it = args.iter();
-    while let Some(arg) = it.next() {
-        let mut value = || {
-            it.next()
-                .cloned()
-                .ok_or_else(|| format!("{arg} needs a value"))
-        };
-        match arg.as_str() {
-            "--out" | "--lake" => out = Some(PathBuf::from(value()?)),
-            "--table" => table = Some(value()?),
-            "--keep-versions" => {
-                keep = Some(
-                    value()?
-                        .parse()
-                        .map_err(|_| "--keep-versions takes a number".to_string())?,
-                )
-            }
-            "--dry-run" => dry_run = true,
-            "-h" | "--help" => {
-                println!(
-                    "okm-lake vacuum --out <lake dir> --keep-versions N \
-                     [--table <hex header>] [--dry-run]"
-                );
-                return Ok(0);
-            }
-            other => return Err(format!("unknown argument `{other}` (try --help)")),
-        }
-    }
-
-    let out = out.ok_or("--out is required (the directory windows were drained into)")?;
-    // Deleting files is the one verb that must be told how much history to keep: a default
-    // here would be a guess about someone else's readers.
-    let keep =
-        keep.ok_or("--keep-versions is required: the number of versions to keep readable")?;
+fn vacuum(parsed: &cli::VacuumArgs) -> Result<i32, String> {
+    let lake = open(&parsed.lake)?;
     let mut deleted = 0usize;
     let mut bytes = 0u64;
     let mut kept = 0usize;
-    for dir in lake_tables(&out, table.as_deref())? {
-        let report = okm_lake::vacuum::vacuum(&dir, keep, dry_run)?;
+    for table in lake_tables(&*lake, parsed.table.as_deref())? {
+        let report =
+            okm_lake::vacuum::vacuum(&*lake, &table, parsed.keep_versions, parsed.dry_run)?;
         println!(
             "{}: {} file(s), {} byte(s) {}; {} kept from v{} on",
-            dir.display(),
+            table,
             report.deleted,
             report.bytes,
-            if dry_run { "would go" } else { "deleted" },
+            if parsed.dry_run {
+                "would go"
+            } else {
+                "deleted"
+            },
             report.kept,
             report.floor
         );
@@ -312,79 +176,58 @@ fn vacuum(args: &[String]) -> Result<i32, String> {
     }
     println!(
         "{} {deleted} file(s), {bytes} byte(s); {kept} kept",
-        if dry_run { "would delete" } else { "deleted" }
+        if parsed.dry_run {
+            "would delete"
+        } else {
+            "deleted"
+        }
     );
     Ok(0)
 }
 
-/// `condense --out <lake dir> [--table <hex header>]`
+/// `condense --out <lake> [--table <hex header>]`
 ///
 /// Fold each exported table into one current-state file. Idempotent in meaning, not in
 /// commits: a table with one file is already its own current state and is left alone.
-fn condense(args: &[String]) -> Result<i32, String> {
-    let mut out: Option<PathBuf> = None;
-    let mut table: Option<String> = None;
-
-    let mut it = args.iter();
-    while let Some(arg) = it.next() {
-        let mut value = || {
-            it.next()
-                .cloned()
-                .ok_or_else(|| format!("{arg} needs a value"))
-        };
-        match arg.as_str() {
-            "--out" | "--lake" => out = Some(PathBuf::from(value()?)),
-            "--table" => table = Some(value()?),
-            "-h" | "--help" => {
-                println!("okm-lake condense --out <lake dir> [--table <hex header>]");
-                return Ok(0);
-            }
-            other => return Err(format!("unknown argument `{other}` (try --help)")),
-        }
-    }
-
-    let out = out.ok_or("--out is required (the directory windows were drained into)")?;
+fn condense(parsed: &cli::LakeArgs) -> Result<i32, String> {
+    let lake = open(&parsed.lake)?;
     let mut folded = 0usize;
     let mut skipped = 0usize;
-    for dir in lake_tables(&out, table.as_deref())? {
-        match okm_lake::read::condense(&dir) {
+    for table in lake_tables(&*lake, parsed.table.as_deref())? {
+        match okm_lake::read::condense(&*lake, &table) {
             Ok(report) => {
                 println!(
                     "{}: v{} holds {} row(s); replaced {} file(s), left {} alone",
-                    dir.display(),
-                    report.version,
-                    report.rows,
-                    report.replaced,
-                    report.untouched
+                    table, report.version, report.rows, report.replaced, report.untouched
                 );
                 folded += 1;
             }
             // A table with one file has nothing to fold — that is a state, not a failure.
             Err(e) if e.what.contains("nothing to fold") => skipped += 1,
-            Err(e) => eprintln!("{}: {e}", dir.display()),
+            Err(e) => eprintln!("{table}: {e}"),
         }
     }
     println!("folded {folded}, already current {skipped}");
     Ok(0)
 }
 
-/// The exported tables under a lake directory: a subdirectory that has a Delta log.
-fn lake_tables(out: &Path, only: Option<&str>) -> Result<Vec<PathBuf>, String> {
-    let mut dirs = Vec::new();
-    for entry in std::fs::read_dir(out).map_err(|e| format!("{}: {e}", out.display()))? {
-        let path = entry.map_err(|e| e.to_string())?.path();
-        if !path.join("_delta_log").is_dir() {
-            continue;
-        }
-        if let Some(name) = only
-            && path.file_name().and_then(|n| n.to_str()) != Some(name)
+/// The exporter's tables in a lake: a name whose keys include a Delta log.
+///
+/// Found by listing, not by walking a directory: on a bucket the keys are the only truth, and
+/// a local directory lists the same way through [`LocalFs`](okm_lake::store::LocalFs).
+fn lake_tables(store: &dyn LakeStore, only: Option<&str>) -> Result<Vec<String>, String> {
+    let mut tables: BTreeSet<String> = BTreeSet::new();
+    for entry in store.list("")? {
+        if let Some((table, rest)) = entry.path.split_once('/')
+            && rest.starts_with("_delta_log/")
         {
-            continue;
+            tables.insert(table.to_string());
         }
-        dirs.push(path);
     }
-    dirs.sort();
-    Ok(dirs)
+    Ok(tables
+        .into_iter()
+        .filter(|table| only.is_none_or(|wanted| wanted == table))
+        .collect())
 }
 
 fn human(bytes: u64) -> String {

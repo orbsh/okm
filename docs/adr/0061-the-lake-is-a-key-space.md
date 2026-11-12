@@ -2,7 +2,7 @@
 
 Date: 2026-11-11
 Status: RULED & LANDED 2026-11-11 (library side). The verbs in the binary still take paths; §4
-says why that is the remaining half.
+says why that is the remaining half. §4's gap is closed 2026-11-12 — see §7.
 
 ## 1. Context
 
@@ -79,3 +79,12 @@ unchanged.
 - Deleting a replaced file immediately (in `publish`) is deliberate: a publisher mirrors live
   state. A producer that wants history keeps the versions instead and vacuums on its own
   schedule.
+## 7. Amendment (2026-11-12): the binary takes a url
+
+§4's gap is closed. `--out` (also spelled `--store` / `--lake`) parses into `store::LakeUrl` —
+one arm per form, no bucket contacted — and drain, condense, vacuum and status read and write
+through `LakeStore`. What `delta` had already done, the rest of the crate now does: the
+path-shaped verbs are adapters (`*_at`), and a directory is one store among two. The drain's
+position, its manifests and its Parquet all go through the store, so a bucket is a lake for
+every verb rather than for `publish` alone. Verification: `okm-lake/tests/cli_test.rs` runs the
+binary end to end on a local lake, and `cli.rs` asserts each address form without a network.

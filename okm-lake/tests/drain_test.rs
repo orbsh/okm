@@ -927,15 +927,15 @@ fn a_fold_replaces_the_change_files_with_current_state() {
         .to_path_buf();
 
     // Before the fold: two files, three change rows, one live key.
-    let before = okm_lake::read::current_state(&table_dir).expect("current state");
+    let before = okm_lake::read::current_state_at(&table_dir).expect("current state");
     assert_eq!(before.num_rows(), 1, "K2 is the only live key");
 
-    let fold = okm_lake::read::condense(&table_dir).expect("fold");
+    let fold = okm_lake::read::condense_at(&table_dir, 0).expect("fold");
     assert_eq!(fold.replaced, 2, "both change files");
     assert_eq!(fold.rows, 1);
 
     // After: one file, and the row that is left is the one that was never removed.
-    let after = okm_lake::read::current_state(&table_dir).expect("current state");
+    let after = okm_lake::read::current_state_at(&table_dir).expect("current state");
     assert_eq!(after.num_rows(), 1);
     let id = after
         .column_by_name("id")
@@ -968,7 +968,7 @@ fn a_fold_replaces_the_change_files_with_current_state() {
     );
 
     // And folding again is refused rather than churning the log: one file IS current state.
-    let again = okm_lake::read::condense(&table_dir).expect_err("nothing to fold");
+    let again = okm_lake::read::condense_at(&table_dir, 0).expect_err("nothing to fold");
     assert!(again.what.contains("nothing to fold"), "got: {again}");
 }
 
@@ -997,7 +997,7 @@ fn a_vacuum_deletes_only_files_no_kept_version_references() {
         .filter(|p| p.join("_delta_log").is_dir())
         .collect();
     let table_dir = dirs.pop().expect("one table");
-    let fold = okm_lake::read::condense(&table_dir).expect("fold");
+    let fold = okm_lake::read::condense_at(&table_dir, 0).expect("fold");
     assert_eq!(fold.replaced, 2);
 
     let entries = |dir: &std::path::Path| -> Vec<String> {
@@ -1021,16 +1021,16 @@ fn a_vacuum_deletes_only_files_no_kept_version_references() {
     );
 
     // Keeping one version still covers the version the fold replaced: nothing goes.
-    let kept = okm_lake::vacuum::vacuum(&table_dir, 1, false).expect("vacuum");
+    let kept = okm_lake::vacuum::vacuum_at(&table_dir, 1, false).expect("vacuum");
     assert_eq!(kept.deleted, 0, "the previous version is still readable");
     assert_eq!(files(&table_dir).len(), 3);
 
     // Keeping only the current version reclaims them.
-    let dry = okm_lake::vacuum::vacuum(&table_dir, 0, true).expect("dry run");
+    let dry = okm_lake::vacuum::vacuum_at(&table_dir, 0, true).expect("dry run");
     assert_eq!(dry.deleted, 2, "would delete both");
     assert_eq!(files(&table_dir).len(), 3, "and deleted nothing");
 
-    let swept = okm_lake::vacuum::vacuum(&table_dir, 0, false).expect("vacuum");
+    let swept = okm_lake::vacuum::vacuum_at(&table_dir, 0, false).expect("vacuum");
     assert_eq!(swept.deleted, 2);
     assert!(swept.bytes > 0, "bytes are counted: {swept:?}");
     let left = entries(&table_dir);
@@ -1046,10 +1046,10 @@ fn a_vacuum_deletes_only_files_no_kept_version_references() {
     );
 
     // The table still answers: vacuum removes bytes, not history the log still names.
-    let state = okm_lake::read::current_state(&table_dir).expect("current state");
+    let state = okm_lake::read::current_state_at(&table_dir).expect("current state");
     assert_eq!(state.num_rows(), 1);
     // And a second sweep has nothing to do.
-    let again = okm_lake::vacuum::vacuum(&table_dir, 0, false).expect("vacuum again");
+    let again = okm_lake::vacuum::vacuum_at(&table_dir, 0, false).expect("vacuum again");
     assert_eq!(again.deleted, 0);
 }
 
@@ -1095,10 +1095,10 @@ fn a_fold_leaves_files_whose_keys_are_exclusive_to_them() {
         .to_path_buf();
 
     // Two files, no shared key: nothing to resolve, so nothing is folded.
-    let refused = okm_lake::read::condense(&table_dir).expect_err("nothing to fold");
+    let refused = okm_lake::read::condense_at(&table_dir, 0).expect_err("nothing to fold");
     assert!(refused.refused, "a policy may skip this: {refused}");
     assert_eq!(
-        okm_lake::read::current_state(&table_dir)
+        okm_lake::read::current_state_at(&table_dir)
             .expect("state")
             .num_rows(),
         2
@@ -1127,7 +1127,7 @@ fn a_fold_leaves_files_whose_keys_are_exclusive_to_them() {
             .expect("the K2 file")
     };
 
-    let fold = okm_lake::read::condense(&table_dir).expect("fold");
+    let fold = okm_lake::read::condense_at(&table_dir, 0).expect("fold");
     assert_eq!(fold.replaced, 2, "the two files that share K1");
     assert_eq!(fold.untouched, 1, "the K2 file is already final");
     assert_eq!(fold.rows, 1, "both files held K1, which is one row");
@@ -1138,7 +1138,7 @@ fn a_fold_leaves_files_whose_keys_are_exclusive_to_them() {
         live.contains(&k2_file),
         "the exclusive file was not rewritten: {live:?}"
     );
-    let state = okm_lake::read::current_state(&table_dir).expect("state");
+    let state = okm_lake::read::current_state_at(&table_dir).expect("state");
     assert_eq!(state.num_rows(), 2, "K1 and K2");
     let level = state
         .column_by_name("level")
@@ -1192,7 +1192,7 @@ fn a_window_is_cut_into_files_by_the_row_limit() {
     assert_ne!(first.key_bounds, last.key_bounds, "{first:?} {last:?}");
 
     // The table still reads as one table.
-    let state = okm_lake::read::current_state(&table_dir).expect("state");
+    let state = okm_lake::read::current_state_at(&table_dir).expect("state");
     assert_eq!(state.num_rows(), 5);
 }
 
@@ -1237,7 +1237,7 @@ fn a_fold_honours_the_row_limit() {
         "{:?}",
         fold.files
     );
-    let state = okm_lake::read::current_state(&table_dir).expect("state");
+    let state = okm_lake::read::current_state_at(&table_dir).expect("state");
     assert_eq!(state.num_rows(), 3);
 }
 
@@ -1299,7 +1299,7 @@ fn a_partitioned_drain_writes_one_file_per_value() {
     assert!(values.contains(&"org=2".to_string()), "{values:?}");
 
     // And the table reads as one table: two rows, from two directories.
-    let state = okm_lake::read::current_state(&table_dir).expect("state");
+    let state = okm_lake::read::current_state_at(&table_dir).expect("state");
     assert_eq!(state.num_rows(), 2);
 }
 
@@ -1341,7 +1341,7 @@ fn a_fold_stays_inside_a_partition() {
     }
     drain(root.path(), &cfg).expect("second window");
 
-    let fold = okm_lake::read::condense(&table_dir).expect("fold");
+    let fold = okm_lake::read::condense_at(&table_dir, 0).expect("fold");
     assert_eq!(fold.replaced, 2, "org 1's two windows");
     assert_eq!(fold.untouched, 1, "org 2 is another partition");
     assert_eq!(
@@ -1355,7 +1355,7 @@ fn a_fold_stays_inside_a_partition() {
         fold.files[0]
     );
 
-    let state = okm_lake::read::current_state(&table_dir).expect("state");
+    let state = okm_lake::read::current_state_at(&table_dir).expect("state");
     assert_eq!(state.num_rows(), 2, "org 1 and org 2");
     let levels: Vec<u32> = {
         let column = state
@@ -1461,14 +1461,14 @@ fn the_key_range_in_a_manifest_prunes_the_fold() {
     }
     drain(root.path(), &DrainConfig::new(out.path(), "test")).expect("third window");
 
-    let fold = okm_lake::read::condense(&table_dir).expect("fold");
+    let fold = okm_lake::read::condense_at(&table_dir, 0).expect("fold");
     assert_eq!(fold.replaced, 2, "org 1's two files");
     assert_eq!(fold.untouched, 1, "org 2's file is out of range");
     assert_eq!(fold.rows, 1);
 
     let after = okm_lake::delta::files_in_order_at(&table_dir).expect("files");
     assert_eq!(after.len(), 2, "the untouched file plus the folded one");
-    let state = okm_lake::read::current_state(&table_dir).expect("state");
+    let state = okm_lake::read::current_state_at(&table_dir).expect("state");
     assert_eq!(state.num_rows(), 2);
     let levels: Vec<u32> = {
         let column = state
@@ -1507,7 +1507,7 @@ fn a_status_reads_the_lake_without_opening_a_payload() {
         .collect();
     let table_dir = dirs.pop().expect("one table");
 
-    let before = okm_lake::status::status(&table_dir, false).expect("status");
+    let before = okm_lake::status::status_at(&table_dir, false).expect("status");
     assert_eq!(before.live_files, 2);
     assert_eq!(before.change_rows, Some(2), "one row per window");
     assert_eq!(before.deletes, Some(0));
@@ -1515,8 +1515,8 @@ fn a_status_reads_the_lake_without_opening_a_payload() {
     assert_eq!(before.stale_files, 0);
     assert_eq!(before.live_rows, None, "not asked, so not folded");
 
-    okm_lake::read::condense(&table_dir).expect("fold");
-    let folded = okm_lake::status::status(&table_dir, true).expect("status");
+    okm_lake::read::condense_at(&table_dir, 0).expect("fold");
+    let folded = okm_lake::status::status_at(&table_dir, true).expect("status");
     assert_eq!(folded.live_files, 1);
     assert!(folded.folded, "the newest file is a fold");
     assert_eq!(
@@ -1531,8 +1531,8 @@ fn a_status_reads_the_lake_without_opening_a_payload() {
     );
     assert!(folded.stale_bytes > 0);
 
-    okm_lake::vacuum::vacuum(&table_dir, 0, false).expect("vacuum");
-    let swept = okm_lake::status::status(&table_dir, false).expect("status");
+    okm_lake::vacuum::vacuum_at(&table_dir, 0, false).expect("vacuum");
+    let swept = okm_lake::status::status_at(&table_dir, false).expect("status");
     assert_eq!(swept.stale_files, 0, "nothing left to reclaim");
     assert_eq!(swept.live_files, 1);
 }
@@ -1573,14 +1573,15 @@ fn a_single_file_with_removals_is_foldable() {
         .unwrap()
         .to_path_buf();
 
-    let fold = okm_lake::read::condense(&table_dir).expect("three change rows are worth folding");
+    let fold =
+        okm_lake::read::condense_at(&table_dir, 0).expect("three change rows are worth folding");
     assert_eq!(fold.replaced, 1);
     assert_eq!(fold.rows, 1, "K2 is the only live key");
 
-    let after = okm_lake::read::current_state(&table_dir).expect("current state");
+    let after = okm_lake::read::current_state_at(&table_dir).expect("current state");
     assert_eq!(after.num_rows(), 1);
     // And with one op per key, the same file is left alone next time.
-    let again = okm_lake::read::condense(&table_dir).expect_err("nothing left to fold");
+    let again = okm_lake::read::condense_at(&table_dir, 0).expect_err("nothing left to fold");
     assert!(again.what.contains("nothing to fold"), "got: {again}");
 }
 
@@ -1645,7 +1646,7 @@ fn a_drain_folds_the_table_when_the_policy_says_so() {
         live[0].contains("-fold-"),
         "and it is the folded one: {live:?}"
     );
-    let state = okm_lake::read::current_state(&table_dir).expect("current state");
+    let state = okm_lake::read::current_state_at(&table_dir).expect("current state");
     assert_eq!(state.num_rows(), 2, "both keys are live");
 
     // A threshold above the current size does nothing.
@@ -1700,11 +1701,11 @@ fn a_fold_keeps_open_fields_written_by_an_earlier_window() {
         .unwrap()
         .to_path_buf();
 
-    let fold = okm_lake::read::condense(&table_dir).expect("fold");
+    let fold = okm_lake::read::condense_at(&table_dir, 0).expect("fold");
     assert_eq!(fold.replaced, 2);
     assert_eq!(fold.rows, 1);
 
-    let state = okm_lake::read::current_state(&table_dir).expect("current state");
+    let state = okm_lake::read::current_state_at(&table_dir).expect("current state");
     assert_eq!(state.num_rows(), 1);
     let level = state
         .column_by_name("level")
@@ -1764,12 +1765,13 @@ fn a_fold_merges_open_fields_written_by_two_windows() {
         .collect();
     let table_dir = dirs.pop().expect("one table");
 
-    let fold = okm_lake::read::condense(&table_dir).expect("both windows written open fields");
+    let fold =
+        okm_lake::read::condense_at(&table_dir, 0).expect("both windows written open fields");
     assert_eq!(fold.replaced, 2, "the two windows that touched K1");
     assert_eq!(fold.rows, 1);
 
     // One row, and its variant cell holds BOTH fields.
-    let state = okm_lake::read::current_state(&table_dir).expect("current state");
+    let state = okm_lake::read::current_state_at(&table_dir).expect("current state");
     assert_eq!(state.num_rows(), 1);
     let variant = state
         .column_by_name("variant")

@@ -125,7 +125,7 @@ and a window is never half-described.
 
 ## Folding
 
-`okm-lake condense --out <lake dir>` turns a table's change files into ONE file of current
+`okm-lake condense --out <lake>` turns a table's change files into ONE file of current
 state and commits the removal of the ones it replaced (ADR-0058 § Amendment):
 
     _delta_log/<n>.json    {"remove": ...} per replaced file, {"add": ...} for the new one
@@ -177,7 +177,7 @@ question (how long history is kept) this writer does not answer yet.
 
 ## Status
 
-`okm-lake status --out <lake dir> [--table <hex>] [--rows]` reports one table per block:
+`okm-lake status --out <lake> [--table <hex>] [--rows]` reports one table per block:
 version, live files and bytes, change rows and removals summed from the manifests, whether the
 newest file is a fold, and how many bytes a vacuum would reclaim. It reads the log, the file
 sizes and the manifests — no payload — so it is cheap on a table with a million rows.
@@ -191,7 +191,7 @@ survives a fold, and the status can still count what is in the lake.
 
 ## Vacuum
 
-`okm-lake vacuum --out <lake dir> --keep-versions N [--dry-run]` deletes the files no kept
+`okm-lake vacuum --out <lake> --keep-versions N [--dry-run]` deletes the files no kept
 version can see. It is the other half of `condense`: a `remove` action takes a file out of the
 TABLE and leaves the bytes in `data/`, because a reader asking for an older version still needs
 them — so reclaiming them is a retention decision, and the only honest default is none.

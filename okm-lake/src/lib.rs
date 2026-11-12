@@ -37,6 +37,7 @@
 
 pub mod bounds;
 pub mod bridge;
+pub mod cli;
 pub mod delta;
 pub mod publish;
 pub mod read;
@@ -45,12 +46,12 @@ pub mod status;
 pub mod store;
 pub mod vacuum;
 
-use okm_core::changelog::window::{
-    self, Window, WindowConfig, WindowOp, read_watermark, table_dirs, write_watermark,
-};
+use okm_core::changelog::window::{self, Window, WindowConfig, WindowOp, table_dirs};
 use okm_dynamic::arrow::record_batch;
 use std::fmt;
 use std::path::{Path, PathBuf};
+
+use crate::store::{LakeStore, LocalFs, table_key};
 
 /// What a failed projection says. One shape for every layer below (io, JSON,
 /// codec, Parquet) because the caller's decision is the same for all of them:
@@ -77,6 +78,14 @@ impl std::error::Error for DrainError {}
 impl From<std::io::Error> for DrainError {
     fn from(e: std::io::Error) -> Self {
         Self::new(e.to_string())
+    }
+}
+
+/// A store's message is already a sentence about the lake; it becomes the drain's error as
+/// it is rather than inside a second wrapper.
+impl From<String> for DrainError {
+    fn from(e: String) -> Self {
+        Self::new(e)
     }
 }
 
@@ -149,6 +158,8 @@ impl FoldPolicy {
 /// windows mean fewer, larger files and a staler lake side.
 #[derive(Clone, Debug)]
 pub struct DrainConfig {
+    /// The lake root this config drives when the caller uses the PATH form ([`drain`]); the
+    /// store form ([`drain_to`]) takes its lake from the argument, and this is then unused.
     pub out_dir: PathBuf,
     /// The consumer's name: its position file is per-consumer, because two readers
     /// at different positions are two positions, not a disagreement.
@@ -180,15 +191,53 @@ impl DrainConfig {
             fold: None,
         }
     }
+}
 
-    /// The reading half's own config for one table: the window size and this
-    /// consumer's position.
-    fn window_for(&self, table: &str) -> Result<WindowConfig> {
-        Ok(WindowConfig {
-            max_segments: self.max_segments,
-            after: read_watermark(&self.out_dir, &self.consumer, table)?,
-        })
+/// The position file for one `(consumer, table)` pair, as a lake key.
+///
+/// The position lives in the LAKE, not in the log, so a bucket read is a bucket read: the same
+/// name core uses for a directory (`watermark-<consumer>-<table>.txt`), addressed as a key.
+fn position_key(consumer: &str, table: &str) -> String {
+    format!("watermark-{consumer}-{table}.txt")
+}
+
+/// Where this consumer left off: the last segment name it took, or `None`.
+fn read_position(
+    store: &dyn LakeStore,
+    consumer: &str,
+    table: &str,
+) -> std::result::Result<Option<String>, String> {
+    let key = position_key(consumer, table);
+    // Absence has an answer (`None`); only a real read failure is an error.
+    if store.head(&key)?.is_none() {
+        return Ok(None);
     }
+    let bytes = store.get(&key)?;
+    Ok(Some(
+        String::from_utf8(bytes)
+            .map_err(|e| format!("{key}: {e}"))?
+            .trim()
+            .to_string(),
+    ))
+}
+
+/// Move the position. One store write, so a reader sees the old mark or the new one.
+fn write_position(
+    store: &dyn LakeStore,
+    consumer: &str,
+    table: &str,
+    to: &str,
+) -> std::result::Result<(), String> {
+    store.put(&position_key(consumer, table), to.as_bytes())
+}
+
+/// The reading half's own config for one table: the window size and this consumer's position.
+fn window_config(store: &dyn LakeStore, cfg: &DrainConfig, table: &str) -> Result<WindowConfig> {
+    Ok(WindowConfig {
+        max_segments: cfg.max_segments,
+        after: read_position(store, &cfg.consumer, table)
+            .map_err(|e| DrainError::new(format!("watermark: {e}")))?,
+    })
 }
 
 /// What one pass did — enough to tell "nothing to do" from "everything worked".
@@ -208,6 +257,9 @@ pub struct Report {
     /// Dynamic-segment puts carried as the window's `variant` column. Counted so a
     /// sink can tell "no open fields anywhere" from "open fields written".
     pub open_fields: usize,
+    /// The lake keys written, always — this is the report a bucket can use.
+    pub keys: Vec<String>,
+    /// The same files as paths, when the lake is a directory; empty when it is a bucket.
     pub files: Vec<PathBuf>,
     /// Delta commits written (one per table that produced a window).
     pub metadata: usize,
@@ -250,14 +302,22 @@ pub struct WindowManifest {
     pub key_bounds: Vec<(String, String, String)>,
 }
 
-/// Project every table directory under `root`.
-pub fn drain(root: &Path, cfg: &DrainConfig) -> Result<Report> {
+/// Project every table directory under `root` into the lake at `store`.
+///
+/// The log is read from a directory (that is where a capturing store writes it); the LAKE is a
+/// key space, so the windows, their manifests, the position and the Delta log all go through
+/// [`LakeStore`] — a bucket included.
+pub fn drain_to(store: &dyn LakeStore, root: &Path, cfg: &DrainConfig) -> Result<Report> {
     let mut report = Report::default();
-    std::fs::create_dir_all(&cfg.out_dir)?;
     for dir in table_dirs(root)? {
-        drain_table(&dir, cfg, &mut report)?;
+        drain_table_to(store, &dir, cfg, &mut report)?;
     }
     Ok(report)
+}
+
+/// Project every table directory under `root` into the lake `cfg.out_dir` names.
+pub fn drain(root: &Path, cfg: &DrainConfig) -> Result<Report> {
+    drain_to(&LocalFs::new(&cfg.out_dir), root, cfg)
 }
 
 /// Project one table directory: every window this consumer has not taken.
@@ -267,9 +327,19 @@ pub fn drain(root: &Path, cfg: &DrainConfig) -> Result<Report> {
 /// windows. Looping here is what keeps a single invocation from advancing the position to
 /// the end of one generation and reporting success.
 pub fn drain_table(dir: &Path, cfg: &DrainConfig, report: &mut Report) -> Result<()> {
+    drain_table_to(&LocalFs::new(&cfg.out_dir), dir, cfg, report)
+}
+
+/// [`drain_table`] into a lake that may be a bucket.
+pub fn drain_table_to(
+    store: &dyn LakeStore,
+    dir: &Path,
+    cfg: &DrainConfig,
+    report: &mut Report,
+) -> Result<()> {
     report.tables += 1;
     let table = window::file_name(dir);
-    while let Some(win) = window::read_window(dir, &cfg.window_for(&table)?)? {
+    while let Some(win) = window::read_window(dir, &window_config(store, cfg, &table)?)? {
         if win.rows.is_empty()
             && win.dynamic.is_empty()
             && !win
@@ -285,9 +355,9 @@ pub fn drain_table(dir: &Path, cfg: &DrainConfig, report: &mut Report) -> Result
             report.segments += win.segments.len();
             break;
         }
-        drain_one(cfg, report, &win)?;
+        drain_one(store, cfg, report, &win)?;
     }
-    maybe_fold(cfg, &table, report)
+    maybe_fold(store, cfg, &table, report)
 }
 
 /// Fold the table if the policy says its change files have piled up.
@@ -295,25 +365,35 @@ pub fn drain_table(dir: &Path, cfg: &DrainConfig, report: &mut Report) -> Result
 /// Runs after the windows are committed, never inside one: a fold is a replacement of files a
 /// reader can already see, so it must not be part of the half-commit rule that guards a
 /// window. A table below the threshold (or already folded) is left exactly as it is.
-fn maybe_fold(cfg: &DrainConfig, table: &str, report: &mut Report) -> Result<()> {
+fn maybe_fold(
+    store: &dyn LakeStore,
+    cfg: &DrainConfig,
+    table: &str,
+    report: &mut Report,
+) -> Result<()> {
     let Some(policy) = cfg.fold else {
         return Ok(());
     };
-    let table_dir = cfg.out_dir.join(table);
-    if !table_dir.join("_delta_log").is_dir() {
+    // A table with no log yet was not drained by this pass (an empty generation), so there
+    // is nothing a fold could resolve.
+    if store
+        .list(&table_key(table, "_delta_log/"))
+        .map_err(DrainError::new)?
+        .is_empty()
+    {
         return Ok(());
     }
     let files =
-        delta::files_in_order_at(&table_dir).map_err(|e| DrainError::new(format!("delta: {e}")))?;
+        delta::files_in_order(store, table).map_err(|e| DrainError::new(format!("delta: {e}")))?;
     let bytes: u64 = files
         .iter()
-        .filter_map(|rel| std::fs::metadata(table_dir.join(rel)).ok())
-        .map(|m| m.len())
+        .filter_map(|rel| store.head(&table_key(table, rel)).ok().flatten())
+        .map(|entry| entry.size)
         .sum();
     if !policy.met(files.len(), bytes) {
         return Ok(());
     }
-    match crate::read::condense_at(&table_dir, cfg.max_rows_per_file) {
+    match crate::read::condense_on(store, table, cfg.max_rows_per_file) {
         Ok(_) => {
             report.folds += 1;
             Ok(())
@@ -334,14 +414,14 @@ fn maybe_fold(cfg: &DrainConfig, table: &str, report: &mut Report) -> Result<()>
 /// A partitioned table writes one file per partition VALUE into `data/<column>=<value>/`, and
 /// the value travels into the Delta action as a string. Everything else — the watermark, the
 /// half-commit rule, the manifests — is per window and does not care how many files it took.
-fn drain_one(cfg: &DrainConfig, report: &mut Report, win: &Window) -> Result<()> {
+fn drain_one(
+    store: &dyn LakeStore,
+    cfg: &DrainConfig,
+    report: &mut Report,
+    win: &Window,
+) -> Result<()> {
     let first = window::stem_of(&win.segments[0]);
     let last = window::stem_of(&win.segments[win.segments.len() - 1]);
-    // One directory per table, `data/` inside it: that directory IS the exported
-    // table (ADR-0056 §8), and a reader is pointed at it rather than at a pile of
-    // files that also serves other tables.
-    let table_dir = cfg.out_dir.join(&win.table);
-    let data_dir = table_dir.join("data");
 
     let key_names: Vec<String> = win
         .schema
@@ -367,22 +447,21 @@ fn drain_one(cfg: &DrainConfig, report: &mut Report, win: &Window) -> Result<()>
     let (batch, whole) = project(win)?;
     let groups = split_by_partition(&batch, partition)?;
 
-    // Written into a scratch name beside the watermark and moved into place only once the
-    // projection succeeded: a refused window must leave no directory tree, no file and no
-    // moved position behind, which is the half-commit rule the tests hold this to.
-    std::fs::create_dir_all(&data_dir)?;
-    let mut written: Vec<PathBuf> = Vec::new();
-    for (at, (values, chunk)) in groups.iter().enumerate() {
+    // Nothing is committed until every file of the window is in the store: a refused window
+    // leaves no file, no manifest and no moved position behind, which is the half-commit
+    // rule the tests hold this to. A store `put` is one atomic write (a rename locally, a
+    // conditional PUT on a bucket), so a reader never lists a half-written file either.
+    let mut written: Vec<String> = Vec::new();
+    for (values, chunk) in &groups {
         // A partition this window did not touch gets no file: an empty parquet would be a
         // window that says nothing, and a reader would have to open it to find that out.
         if chunk.num_rows() == 0 {
             continue;
         }
         let dir = match values.first() {
-            Some((column, value)) => data_dir.join(format!("{column}={}", partition_dir(value))),
-            None => data_dir.clone(),
+            Some((column, value)) => format!("data/{column}={}", partition_dir(value)),
+            None => "data".to_string(),
         };
-        std::fs::create_dir_all(&dir)?;
         // A window larger than the limit becomes several files. Their names carry the part
         // number; a window that fits keeps the plain name it always had.
         let parts = split_rows(chunk, cfg.max_rows_per_file)?;
@@ -393,13 +472,9 @@ fn drain_one(cfg: &DrainConfig, report: &mut Report, win: &Window) -> Result<()>
                 format!("-p{part}")
             };
             let name = format!("{}-{first}-{last}{suffix}.parquet", win.table);
-            let out = dir.join(&name);
-            let scratch = cfg.out_dir.join(format!(
-                ".{}-{first}-{last}-{at}-{part}.parquet.partial",
-                win.table
-            ));
-            crate::snapshot::parquet_io::write_batch(rows, &scratch)?;
-            std::fs::rename(&scratch, &out)?;
+            let relative = format!("{dir}/{name}");
+            let bytes = crate::snapshot::parquet_io::batch_bytes(rows)?;
+            store.put(&table_key(&win.table, &relative), &bytes)?;
 
             // The manifest lands with the file: a sink records provenance from it without
             // opening the Parquet, and an operator answers "did window N land".
@@ -411,34 +486,30 @@ fn drain_one(cfg: &DrainConfig, report: &mut Report, win: &Window) -> Result<()>
                 rows: described.rows,
                 deletes: described.deletes,
                 columns: described.columns,
-                file: window::file_name(&out),
+                file: name,
                 key_bounds: described.key_bounds,
             };
-            write_atomic(
-                &out.with_extension("manifest.json"),
-                &serde_json::to_string_pretty(&manifest)?,
+            store.put(
+                &table_key(&win.table, &crate::status::manifest_key(&relative)),
+                serde_json::to_string_pretty(&manifest)?.as_bytes(),
             )?;
-            written.push(out);
+            written.push(relative);
         }
     }
 
     // Only now: the files that cover the window exist, and so do their manifests.
-    write_watermark(
-        &cfg.out_dir,
-        &cfg.consumer,
-        &win.table,
-        &format!("{last}.segment"),
-    )?;
+    write_position(store, &cfg.consumer, &win.table, &format!("{last}.segment"))
+        .map_err(DrainError::new)?;
 
     // The Delta view: this window is one more `add` per file in the log, not a rebuild of
     // everything before it. Committed after the position moves, because a log entry
     // describes a file that exists. Every file under `data/` is offered so a deleted or
     // never-written log heals itself; the ones already recorded are skipped.
-    let files = scan_data(&data_dir)?;
+    let files = scan_data(store, &win.table)?;
     // The key columns travel into the log's schema metadata (`okm.key`): a reader that
     // folds history needs the table's identity, and a file cannot say which of its columns
     // that is (ADR-0058 § Amendment).
-    delta::commit_files_at(&table_dir, &files, &key_names)
+    delta::commit_files(store, &win.table, &files, &key_names)
         .map_err(|e| DrainError::new(format!("delta: {e}")))?;
     report.metadata += 1;
 
@@ -447,7 +518,17 @@ fn drain_one(cfg: &DrainConfig, report: &mut Report, win: &Window) -> Result<()>
     report.deletes += whole.deletes;
     report.derived_deletes += whole.derived_deletes;
     report.open_fields += win.dynamic.len();
-    report.files.extend(written);
+    // Paths only where a path exists: a bucket's keys are not files this process can open.
+    if let Some(root) = store.local_root() {
+        report.files.extend(
+            written
+                .iter()
+                .map(|relative| root.join(table_key(&win.table, relative))),
+        );
+    }
+    report
+        .keys
+        .extend(written.into_iter().map(|rel| table_key(&win.table, &rel)));
     Ok(())
 }
 
@@ -855,57 +936,35 @@ pub(crate) fn partition_value(name: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-/// Every partition directory under `data/`, so a commit can name the file and its value.
-fn scan_data(data_dir: &Path) -> Result<Vec<delta::Addition>> {
+/// Every file under the table's `data/`, so a commit can name the file and its value.
+///
+/// A listing, not a directory walk: the partition value lives in the key's first segment
+/// (`data/<column>=<value>/<file>`), and the store says which keys exist.
+fn scan_data(store: &dyn LakeStore, table: &str) -> Result<Vec<delta::Addition>> {
+    let prefix = format!("{}/", table_key(table, "data"));
+    let inside = format!("{table}/");
     let mut out = Vec::new();
-    for entry in std::fs::read_dir(data_dir)? {
-        let path = entry?.path();
-        if path.is_dir() {
-            let name = path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or_default();
-            let (column, value) = match name.split_once('=') {
-                Some((column, value)) => (column.to_string(), partition_value(value)),
-                None => continue,
-            };
-            let dir_name = path
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_default();
-            for file in std::fs::read_dir(&path)? {
-                let file = file?.path();
-                if file.extension().is_some_and(|e| e == "parquet") {
-                    let size = std::fs::metadata(&file).map(|m| m.len()).unwrap_or(0);
-                    out.push(delta::Addition {
-                        path: format!(
-                            "data/{dir_name}/{}",
-                            file.file_name().unwrap_or_default().to_string_lossy()
-                        ),
-                        partition: vec![(column.clone(), value.clone())],
-                        size,
-                    });
-                }
-            }
-        } else if path.extension().is_some_and(|e| e == "parquet") {
-            let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-            out.push(delta::Addition::plain(
-                format!(
-                    "data/{}",
-                    path.file_name().unwrap_or_default().to_string_lossy()
-                ),
-                size,
-            ));
+    for entry in store.list(&prefix)? {
+        let Some(relative) = entry.path.strip_prefix(&inside) else {
+            continue;
+        };
+        if !relative.ends_with(".parquet") {
+            continue;
         }
+        let rest = relative.trim_start_matches("data/");
+        let partition = match rest.split_once('/') {
+            Some((dir, _)) => match dir.split_once('=') {
+                Some((column, value)) => vec![(column.to_string(), partition_value(value))],
+                None => Vec::new(),
+            },
+            None => Vec::new(),
+        };
+        out.push(delta::Addition {
+            path: relative.to_string(),
+            partition,
+            size: entry.size,
+        });
     }
     out.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(out)
-}
-
-/// Replace by rename: a reader either sees the old file or the new one.
-fn write_atomic(path: &Path, contents: &str) -> Result<()> {
-    let tmp = path.with_extension("partial");
-    std::fs::write(&tmp, contents)?;
-    std::fs::rename(&tmp, path)?;
-    Ok(())
 }

@@ -197,6 +197,28 @@ pub struct S3Options {
     pub secret_key: String,
 }
 
+impl S3Options {
+    /// Credentials from the environment: the `AWS_*` names first (what every tool and SDK
+    /// already reads), then this workspace's `OKM_S3_*` names for a local rustfs.
+    ///
+    /// A config still names the variables; this is where the process resolves them, which is
+    /// the split ADR-0007 asks for — no secret is stored by the crate.
+    pub fn from_env() -> Self {
+        let read = |aws: &str, okm: &str| {
+            std::env::var(aws)
+                .or_else(|_| std::env::var(okm))
+                .ok()
+                .filter(|value| !value.is_empty())
+        };
+        Self {
+            endpoint: read("AWS_ENDPOINT_URL", "OKM_S3_ENDPOINT"),
+            region: read("AWS_REGION", "OKM_S3_REGION"),
+            access_key: read("AWS_ACCESS_KEY_ID", "OKM_S3_ACCESS_KEY").unwrap_or_default(),
+            secret_key: read("AWS_SECRET_ACCESS_KEY", "OKM_S3_SECRET").unwrap_or_default(),
+        }
+    }
+}
+
 /// A lake that is a bucket, behind a synchronous face.
 ///
 /// The runtime is this handle's own and is current-threaded: the verbs call it from a
@@ -379,19 +401,70 @@ impl LakeStore for S3 {
 /// Open a lake from a URL: `s3://bucket/prefix` needs credentials, anything else is a
 /// directory (a plain path or `file://`).
 pub fn open(url: &str, options: Option<S3Options>) -> Result<Box<dyn LakeStore>, String> {
-    if let Some(rest) = url.strip_prefix("s3://") {
-        let (bucket, prefix) = match rest.split_once('/') {
-            Some((bucket, prefix)) => (bucket, prefix),
-            None => (rest, ""),
-        };
-        if bucket.is_empty() {
-            return Err(format!("`{url}` names no bucket"));
+    open_url(&LakeUrl::parse(url)?, options)
+}
+
+/// A lake's address, parsed: a key space or a directory.
+///
+/// Parsing is separate from opening because the FORM is what a caller configures and what a
+/// test can assert: no bucket is contacted here, and `s3://` is one enum arm rather than a
+/// string a verb has to keep re-reading.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LakeUrl {
+    /// A directory on this machine — `path` or `file://path`.
+    Dir(PathBuf),
+    /// A bucket, with the key prefix the lake sits under (may be empty).
+    S3 { bucket: String, prefix: String },
+}
+
+impl LakeUrl {
+    pub fn parse(url: &str) -> Result<Self, String> {
+        if let Some(rest) = url.strip_prefix("s3://") {
+            let (bucket, prefix) = match rest.split_once('/') {
+                Some((bucket, prefix)) => (bucket, prefix.to_string()),
+                None => (rest, String::new()),
+            };
+            if bucket.is_empty() {
+                return Err(format!("`{url}` names no bucket"));
+            }
+            return Ok(Self::S3 {
+                bucket: bucket.to_string(),
+                prefix: prefix.trim_matches('/').to_string(),
+            });
         }
-        let options = options.unwrap_or_default();
-        return Ok(Box::new(S3::new(bucket, prefix, &options)?));
+        let path = url.strip_prefix("file://").unwrap_or(url);
+        if path.is_empty() {
+            return Err(format!("`{url}` names no directory"));
+        }
+        Ok(Self::Dir(PathBuf::from(path)))
     }
-    let path = url.strip_prefix("file://").unwrap_or(url);
-    Ok(Box::new(LocalFs::new(PathBuf::from(path))))
+
+    /// How this lake is named in a report or an error.
+    pub fn describe(&self) -> String {
+        match self {
+            Self::Dir(path) => path.display().to_string(),
+            Self::S3 { bucket, prefix } if prefix.is_empty() => format!("s3://{bucket}"),
+            Self::S3 { bucket, prefix } => format!("s3://{bucket}/{prefix}"),
+        }
+    }
+}
+
+impl std::str::FromStr for LakeUrl {
+    type Err = String;
+    fn from_str(url: &str) -> Result<Self, String> {
+        Self::parse(url)
+    }
+}
+
+/// [`open`] for an already-parsed address.
+pub fn open_url(url: &LakeUrl, options: Option<S3Options>) -> Result<Box<dyn LakeStore>, String> {
+    match url {
+        LakeUrl::S3 { bucket, prefix } => {
+            let options = options.unwrap_or_default();
+            Ok(Box::new(S3::new(bucket, prefix, &options)?))
+        }
+        LakeUrl::Dir(path) => Ok(Box::new(LocalFs::new(path))),
+    }
 }
 
 /// A lake's key for `<table>/<relative>`.

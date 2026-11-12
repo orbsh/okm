@@ -3332,10 +3332,12 @@ producer that owns its state, and `*_bytes` emitters in `snapshot::parquet_io`. 
 exercised against a real bucket by `okm-lake/tests/s3_test.rs` (skipped when `OKM_S3_URL` is
 unset) and was verified against a local rustfs.
 
-- [ ] **The binary's verbs take a url.** `--out` and `--store` accept `s3://bucket/prefix`:
-  drain, condense, vacuum and status are the fs call sites already replaced in `delta`, so the
-  work is the argument parsing and the tests, not the protocol. Until then a bucket is reachable
-  through the library only (ADR-0061 §4).
+- [x] **The binary's verbs take a url.** `--out` (also spelled `--store` / `--lake`) parses into
+  `store::LakeUrl` — a directory, `file://`, or `s3://bucket/prefix` — and drain, condense,
+  vacuum and status all read and write through `LakeStore`, so the `*_at` verbs are adapters
+  over the key space rather than its only implementation. Parsing lives in `cli.rs` (unit
+  tests per form, no network: they assert the config); `tests/cli_test.rs` runs the binary end
+  to end on a local lake. Landed 2026-11-12 (ADR-0061 §7).
 - [ ] **A checkpoint for a long log.** Publishing a version per interval per table means a log
   that a reader replays from 0. Delta's answer is a checkpoint every N versions; the writer here
   still makes none, and `publish` was written to be the first caller that needs it.

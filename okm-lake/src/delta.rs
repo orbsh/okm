@@ -848,7 +848,7 @@ fn now_ms() -> u64 {
 /// The lake a table directory sits in, and the table's own name there. A verb given a
 /// directory means exactly this: a local lake one level up, and the directory's name as the
 /// table. The store form is what a bucket uses, and both end in the same code.
-fn lake_at(table_dir: &Path) -> Result<(LocalFs, String), String> {
+pub(crate) fn lake_of(table_dir: &Path) -> Result<(LocalFs, String), String> {
     let table = table_dir
         .file_name()
         .ok_or_else(|| format!("{}: no table name", table_dir.display()))?
@@ -866,7 +866,7 @@ pub fn commit_files_at(
     files: &[Addition],
     keys: &[String],
 ) -> Result<Commit, String> {
-    let (store, table) = lake_at(table_dir)?;
+    let (store, table) = lake_of(table_dir)?;
     commit_files(&store, &table, files, keys)
 }
 
@@ -877,42 +877,42 @@ pub fn commit_compaction_at(
     adds: &[Addition],
     keys: &[String],
 ) -> Result<Commit, String> {
-    let (store, table) = lake_at(table_dir)?;
+    let (store, table) = lake_of(table_dir)?;
     commit_compaction(&store, &table, removes, adds, keys)
 }
 
 /// [`files_in_order`] for a lake that is a directory.
 pub fn files_in_order_at(table_dir: &Path) -> Result<Vec<String>, String> {
-    let (store, table) = lake_at(table_dir)?;
+    let (store, table) = lake_of(table_dir)?;
     files_in_order(&store, &table)
 }
 
 /// [`live_adds`] for a lake that is a directory.
 pub fn live_adds_at(table_dir: &Path) -> Result<Vec<(String, Partition)>, String> {
-    let (store, table) = lake_at(table_dir)?;
+    let (store, table) = lake_of(table_dir)?;
     live_adds(&store, &table)
 }
 
 /// [`removed_files`] for a lake that is a directory.
 pub fn removed_files_at(table_dir: &Path) -> Result<(Vec<(String, u64)>, u64), String> {
-    let (store, table) = lake_at(table_dir)?;
+    let (store, table) = lake_of(table_dir)?;
     removed_files(&store, &table)
 }
 
 /// [`added_files`] for a lake that is a directory.
 pub fn added_files_at(table_dir: &Path) -> Result<Vec<String>, String> {
-    let (store, table) = lake_at(table_dir)?;
+    let (store, table) = lake_of(table_dir)?;
     added_files(&store, &table)
 }
 
 /// [`next_version`] for a lake that is a directory.
 pub fn next_version_at(table_dir: &Path) -> Result<u64, String> {
-    let (store, table) = lake_at(table_dir)?;
+    let (store, table) = lake_of(table_dir)?;
     next_version(&store, &table)
 }
 
 /// [`schema_string`] for a lake that is a directory.
 pub fn schema_string_at(table_dir: &Path) -> Result<Option<String>, String> {
-    let (store, table) = lake_at(table_dir)?;
+    let (store, table) = lake_of(table_dir)?;
     schema_string(&store, &table)
 }

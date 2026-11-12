@@ -9,10 +9,14 @@
 //! only the current version and deletes every file it does not read — the aggressive setting,
 //! spelled out rather than guessed — and `7` keeps a week of folds' worth of files if a fold
 //! lands daily.
+//!
+//! The store is asked for sizes and does the deleting: a bucket is a lake too, and a vacuum
+//! that only knew how to `remove_file` would be a verb with a storage shape.
 
 use std::path::Path;
 
 use crate::delta;
+use crate::store::{LakeStore, table_key};
 
 /// What one vacuum did.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -31,10 +35,15 @@ pub struct VacuumReport {
 ///
 /// `keep_versions` counts VERSIONS, not days: the log is the clock here, and a table that
 /// folds once a week has a different calendar from one that folds hourly.
-pub fn vacuum(table_dir: &Path, keep_versions: u64, dry_run: bool) -> Result<VacuumReport, String> {
-    let (gone, latest) = delta::removed_files_at(table_dir)?;
+pub fn vacuum(
+    store: &dyn LakeStore,
+    table: &str,
+    keep_versions: u64,
+    dry_run: bool,
+) -> Result<VacuumReport, String> {
+    let (gone, latest) = delta::removed_files(store, table)?;
     let floor = latest.saturating_sub(keep_versions);
-    let live = delta::files_in_order_at(table_dir)?.len();
+    let live = delta::files_in_order(store, table)?.len();
     let mut report = VacuumReport {
         kept: live,
         floor,
@@ -47,26 +56,30 @@ pub fn vacuum(table_dir: &Path, keep_versions: u64, dry_run: bool) -> Result<Vac
             report.kept += 1;
             continue;
         }
-        let path = table_dir.join(&rel);
-        // Already gone (an earlier sweep): the log keeps naming it, the disk does not, and a
+        let key = table_key(table, &rel);
+        // Already gone (an earlier sweep): the log keeps naming it, the store does not, and a
         // second vacuum must not report work it did not do.
-        let bytes = match std::fs::metadata(&path) {
-            Ok(meta) => meta.len(),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(e) => return Err(format!("{}: {e}", path.display())),
+        let Some(entry) = store.head(&key)? else {
+            continue;
         };
         if !dry_run {
-            std::fs::remove_file(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+            store.delete(&key)?;
             // The manifest the drain wrote beside it describes a file that is gone; leaving
             // it would describe a window nobody can read.
-            let manifest = path.with_extension("manifest.json");
-            if manifest.exists() {
-                std::fs::remove_file(&manifest)
-                    .map_err(|e| format!("{}: {e}", manifest.display()))?;
-            }
+            store.delete(&table_key(table, &crate::status::manifest_key(&rel)))?;
         }
         report.deleted += 1;
-        report.bytes += bytes;
+        report.bytes += entry.size;
     }
     Ok(report)
+}
+
+/// [`vacuum`] for a table inside a local lake directory.
+pub fn vacuum_at(
+    table_dir: &Path,
+    keep_versions: u64,
+    dry_run: bool,
+) -> Result<VacuumReport, String> {
+    let (store, table) = delta::lake_of(table_dir)?;
+    vacuum(&store, &table, keep_versions, dry_run)
 }
