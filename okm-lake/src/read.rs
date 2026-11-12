@@ -124,6 +124,12 @@ pub fn key_columns(store: &dyn LakeStore, table: &str) -> Result<Vec<String>> {
     Ok(keys)
 }
 
+/// [`key_columns`] for a table inside a local lake directory.
+pub fn key_columns_at(table_dir: &Path) -> Result<Vec<String>> {
+    let (store, table) = delta::lake_of(table_dir).map_err(ReadError::new)?;
+    key_columns(&store, &table)
+}
+
 /// The schema the table's files agree on: every field any of them carries, in first-seen
 /// order. A file that lacks one (the `variant` column of windows with no open fields) reads
 /// as NULL for it rather than failing the fold.

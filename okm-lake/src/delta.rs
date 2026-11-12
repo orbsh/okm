@@ -383,6 +383,11 @@ struct LogState {
     max_version: Option<u64>,
     table_id: Option<String>,
     schema: Option<String>,
+    /// The `protocol` action as it was written, so a checkpoint can restate it verbatim
+    /// instead of inventing a feature list from the schema.
+    protocol: Option<serde_json::Value>,
+    /// The `metaData` action as it was written: id, schema, partition columns, created time.
+    meta: Option<serde_json::Value>,
     /// Membership: what a reader would see now.
     files: BTreeSet<String>,
     /// The same files in the order the log added them — a window's order IS the version
@@ -395,16 +400,87 @@ struct LogState {
     partition: Vec<String>,
     /// Where each live file sits in the key space, by path.
     partitions: HashMap<String, Partition>,
+    /// The version the state was read from, when the read started at a checkpoint. A reader
+    /// that starts there does not know — and must not need — anything older.
+    from_checkpoint: Option<u64>,
+}
+
+/// One action applied to a log state.
+///
+/// A version and a checkpoint carry the SAME action vocabulary, which is the whole point: a
+/// checkpoint is not a second format, it is the log's own actions with the history already
+/// resolved. `version` is `None` for every action a checkpoint states — a checkpoint does not
+/// name a version, it IS one.
+fn absorb(state: &mut LogState, action: &serde_json::Value, version: Option<u64>) {
+    if let Some(protocol) = action.get("protocol") {
+        state.protocol = Some(protocol.clone());
+    }
+    if let Some(meta) = action.get("metaData") {
+        if let Some(id) = meta.get("id").and_then(|v| v.as_str()) {
+            state.table_id = Some(id.to_string());
+        }
+        if let Some(schema) = meta.get("schemaString").and_then(|v| v.as_str()) {
+            state.schema = Some(schema.to_string());
+        }
+        if let Some(columns) = meta.get("partitionColumns").and_then(|v| v.as_array()) {
+            state.partition = columns
+                .iter()
+                .filter_map(|c| c.as_str().map(|c| c.to_string()))
+                .collect();
+        }
+        state.meta = Some(meta.clone());
+    }
+    if let Some(add) = action.get("add")
+        && let Some(p) = add.get("path").and_then(|v| v.as_str())
+    {
+        let values = add
+            .get("partitionValues")
+            .and_then(|v| v.as_object())
+            .map(|object| {
+                object
+                    .iter()
+                    .filter_map(|(name, value)| {
+                        value
+                            .as_str()
+                            .map(|value| (name.clone(), value.to_string()))
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        state.partitions.insert(p.to_string(), values);
+        if state.files.insert(p.to_string()) {
+            state.order.push(p.to_string());
+        }
+    }
+    if let Some(remove) = action.get("remove")
+        && let Some(p) = remove.get("path").and_then(|v| v.as_str())
+    {
+        state.files.remove(p);
+        state.order.retain(|kept| kept != p);
+        state.removed.push((p.to_string(), version.unwrap_or(0)));
+    }
+}
+
+/// The version a checkpoint's file name states.
+fn checkpoint_version(name: &str) -> Option<u64> {
+    name.strip_suffix(".checkpoint.json")?.parse().ok()
 }
 
 fn read_log(store: &dyn LakeStore, table: &str) -> Result<LogState, String> {
     let log = crate::store::table_key(table, "_delta_log/");
     let mut state = LogState::default();
     let mut versions: Vec<(u64, String)> = Vec::new();
+    let mut checkpoints: Vec<(u64, String)> = Vec::new();
     for entry in store.list(&log)? {
         let name = entry.path.strip_prefix(log.as_str()).unwrap_or(&entry.path);
-        // Only `NNN.json` counts: `.json.tmp` is a commit in flight and `.checkpoint.`
-        // files are a reader's optimisation this writer never makes.
+        // A checkpoint is a reader's optimisation, and the newest one is where reading
+        // starts. Versions stay the format's authority: a checkpoint only saves reading
+        // the versions before it.
+        if let Some(version) = checkpoint_version(name) {
+            checkpoints.push((version, entry.path));
+            continue;
+        }
+        // Only `NNN.json` counts: `.json.tmp` is a commit in flight.
         let Some(stem) = name.strip_suffix(".json") else {
             continue;
         };
@@ -415,59 +491,39 @@ fn read_log(store: &dyn LakeStore, table: &str) -> Result<LogState, String> {
             versions.push((version, entry.path));
         }
     }
+    checkpoints.sort();
     versions.sort();
-    for (v, key) in versions {
-        let text = String::from_utf8(store.get(&key)?).map_err(|e| format!("{key}: {e}"))?;
-        for line in text.lines().filter(|l| !l.trim().is_empty()) {
-            let action: serde_json::Value =
-                serde_json::from_str(line).map_err(|e| format!("{key}: {e}"))?;
-            if let Some(meta) = action.get("metaData") {
-                if let Some(id) = meta.get("id").and_then(|v| v.as_str()) {
-                    state.table_id = Some(id.to_string());
-                }
-                if let Some(schema) = meta.get("schemaString").and_then(|v| v.as_str()) {
-                    state.schema = Some(schema.to_string());
-                }
-                if let Some(columns) = meta.get("partitionColumns").and_then(|v| v.as_array()) {
-                    state.partition = columns
-                        .iter()
-                        .filter_map(|c| c.as_str().map(|c| c.to_string()))
-                        .collect();
-                }
-            }
-            if let Some(add) = action.get("add")
-                && let Some(p) = add.get("path").and_then(|v| v.as_str())
-            {
-                let values = add
-                    .get("partitionValues")
-                    .and_then(|v| v.as_object())
-                    .map(|object| {
-                        object
-                            .iter()
-                            .filter_map(|(name, value)| {
-                                value
-                                    .as_str()
-                                    .map(|value| (name.clone(), value.to_string()))
-                            })
-                            .collect::<Vec<_>>()
-                    })
-                    .unwrap_or_default();
-                state.partitions.insert(p.to_string(), values);
-                if state.files.insert(p.to_string()) {
-                    state.order.push(p.to_string());
-                }
-            }
-            if let Some(remove) = action.get("remove")
-                && let Some(p) = remove.get("path").and_then(|v| v.as_str())
-            {
-                state.files.remove(p);
-                state.order.retain(|kept| kept != p);
-                state.removed.push((p.to_string(), v));
-            }
+
+    let mut from = None;
+    if let Some((version, key)) = checkpoints.pop() {
+        for action in actions_of(store, &key)? {
+            absorb(&mut state, &action, None);
         }
-        state.max_version = Some(v);
+        // The checkpoint states the log AS OF this version: that is the newest one seen so
+        // far, even if the version files behind it were reclaimed.
+        state.max_version = Some(version);
+        state.from_checkpoint = Some(version);
+        from = Some(version);
+    }
+    for (version, key) in versions {
+        if from.is_some_and(|start| version <= start) {
+            continue;
+        }
+        for action in actions_of(store, &key)? {
+            absorb(&mut state, &action, Some(version));
+        }
+        state.max_version = Some(version);
     }
     Ok(state)
+}
+
+/// The actions one log artifact holds, in order.
+fn actions_of(store: &dyn LakeStore, key: &str) -> Result<Vec<serde_json::Value>, String> {
+    let text = String::from_utf8(store.get(key)?).map_err(|e| format!("{key}: {e}"))?;
+    text.lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| serde_json::from_str(line).map_err(|e| format!("{key}: {e}")))
+        .collect()
 }
 
 /// A table id that is stable for a directory: Delta only requires uniqueness, and a
@@ -720,6 +776,95 @@ pub fn next_version(store: &dyn LakeStore, table: &str) -> Result<u64, String> {
         .max_version
         .map(|v| v + 1)
         .unwrap_or(0))
+}
+
+/// The version a reader starts at: the newest checkpoint, if the table has one.
+///
+/// A reader needs nothing older than this line, which is what makes the checkpoint worth
+/// writing — and what makes reclaiming the versions behind it legal.
+pub fn checkpoint_at(store: &dyn LakeStore, table: &str) -> Result<Option<u64>, String> {
+    Ok(read_log(store, table)?.from_checkpoint)
+}
+
+/// What one checkpoint wrote.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Checkpoint {
+    /// The version whose state it states.
+    pub version: u64,
+    /// The log key it was written under.
+    pub path: String,
+    /// Live files it names.
+    pub files: usize,
+}
+
+/// State the log as of its newest version, in ONE artifact.
+///
+/// The artifact carries the log's OWN actions — the protocol, the table's `metaData`, and one
+/// `add` per live file in log order — with every `remove` resolved away. That is what makes it
+/// a checkpoint rather than a second format: the reader's action loop is the same one, it just
+/// starts here instead of at version 0 (ADR-0065).
+///
+/// It is claimed with a create-only write, like a version: two writers may not disagree about
+/// what one version's state was. Asking for a checkpoint of a version that already has one
+/// answers with it rather than writing a second.
+pub fn write_checkpoint(store: &dyn LakeStore, table: &str) -> Result<Checkpoint, String> {
+    let state = read_log(store, table)?;
+    let version = state
+        .max_version
+        .ok_or_else(|| format!("{table}: this table has no version to checkpoint"))?;
+    let path = crate::store::table_key(table, &format!("_delta_log/{version:020}.checkpoint.json"));
+    if state.from_checkpoint == Some(version) {
+        return Ok(Checkpoint {
+            version,
+            path,
+            files: state.order.len(),
+        });
+    }
+
+    let mut actions: Vec<serde_json::Value> = Vec::new();
+    // The protocol and the schema travel verbatim: a checkpoint that restated them from the
+    // files would be a second opinion about the table's identity.
+    if let Some(protocol) = &state.protocol {
+        actions.push(serde_json::json!({ "protocol": protocol }));
+    }
+    if let Some(meta) = &state.meta {
+        actions.push(serde_json::json!({ "metaData": meta }));
+    }
+    for live in &state.order {
+        let partition = state.partitions.get(live).cloned().unwrap_or_default();
+        let key = crate::store::table_key(table, live);
+        let size = store
+            .head(&key)?
+            .ok_or_else(|| format!("{key}: a live file is missing, so its state cannot be stated"))?
+            .size;
+        actions.push(serde_json::json!({
+            "add": {
+                "path": live,
+                "partitionValues": partition_object(&partition),
+                "size": size,
+                "modificationTime": now_ms(),
+                // A checkpoint restates files a reader already had; it changes no data.
+                "dataChange": false,
+            }
+        }));
+    }
+
+    let mut body = String::new();
+    for action in &actions {
+        let line = serde_json::to_string(action).map_err(|e| format!("action: {e}"))?;
+        body.push_str(&line);
+        body.push('\n');
+    }
+    if !store.put_new(&path, body.as_bytes())? {
+        return Err(format!(
+            "{path} already exists: another writer checkpointed version {version}"
+        ));
+    }
+    Ok(Checkpoint {
+        version,
+        path,
+        files: state.order.len(),
+    })
 }
 
 /// The table's current schema string, if it has one yet.

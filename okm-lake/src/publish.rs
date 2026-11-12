@@ -6,6 +6,11 @@
 //! one — which is what [`crate::delta::commit_compaction`] expresses and what a reader sees
 //! as a table whose current state is one file.
 //!
+//! A publisher that lands a version per interval makes a LOG that grows by a version per
+//! interval while the table stays one file. [`PublishOptions::checkpoint_every`] is the answer
+//! Delta gives for that shape: every `N` versions the writer states the log's whole state in
+//! one artifact, so a reader starts there instead of at version 0 (ADR-0065).
+//!
 //! Nothing here is local: the store may be a directory or a bucket (see [`crate::store`]).
 
 use crate::delta::{self, Addition, Commit};
@@ -19,6 +24,33 @@ pub struct Published {
     pub replaced: usize,
     /// Bytes of the file it added.
     pub bytes: u64,
+    /// The version a checkpoint was written for, when this publish was one that needed it.
+    pub checkpoint: Option<u64>,
+}
+
+/// How a publisher keeps its log readable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PublishOptions {
+    /// Write a checkpoint every N versions (`0`, the default: never).
+    ///
+    /// `N` counts VERSIONS, not time: it is the length of log a reader may have to replay
+    /// between checkpoints, and it is the caller's cost trade — the checkpoint is written
+    /// once per N publishes and read once per reader.
+    pub checkpoint_every: usize,
+}
+
+impl PublishOptions {
+    /// A checkpoint every `n` versions.
+    pub fn every(n: usize) -> Self {
+        Self {
+            checkpoint_every: n,
+        }
+    }
+
+    /// Is a checkpoint due after the version just committed?
+    fn due(&self, version: u64) -> bool {
+        self.checkpoint_every > 0 && (version + 1).is_multiple_of(self.checkpoint_every as u64)
+    }
 }
 
 /// Put `bytes` (a Parquet file) as the table's current state, in one Delta version.
@@ -40,6 +72,25 @@ pub fn replace_table(
     bytes: &[u8],
     keys: &[String],
 ) -> Result<Published, String> {
+    replace_table_with(
+        store,
+        table,
+        file_name,
+        bytes,
+        keys,
+        &PublishOptions::default(),
+    )
+}
+
+/// [`replace_table`], with the log's own maintenance turned on.
+pub fn replace_table_with(
+    store: &dyn LakeStore,
+    table: &str,
+    file_name: &str,
+    bytes: &[u8],
+    keys: &[String],
+    options: &PublishOptions,
+) -> Result<Published, String> {
     let name = file_name.trim_start_matches("data/").to_string();
     if name.is_empty() {
         return Err("a published file needs a name".to_string());
@@ -58,10 +109,19 @@ pub fn replace_table(
             store.delete(&table_key(table, old))?;
         }
     }
+    // The checkpoint is written AFTER the commit and its deletes: it states the log, and a
+    // log that names files the store no longer has would make the next read fail rather than
+    // save it work.
+    let checkpoint = if options.due(commit.version) {
+        Some(delta::write_checkpoint(store, table)?.version)
+    } else {
+        None
+    };
     Ok(Published {
         commit,
         replaced: live.len(),
         bytes: bytes.len() as u64,
+        checkpoint,
     })
 }
 
@@ -108,5 +168,46 @@ mod tests {
         );
         assert!(lake.head("log/data/log-1.parquet").unwrap().is_none());
         assert!(lake.head("log/data/log-2.parquet").unwrap().is_some());
+        // No policy asked for checkpoints, so the log is only versions.
+        assert_eq!(first.checkpoint, None);
+        assert_eq!(delta::checkpoint_at(&lake, "log").unwrap(), None);
+    }
+
+    #[test]
+    fn a_checkpoint_lands_on_the_interval_and_nowhere_else() {
+        let dir = tempfile::tempdir().unwrap();
+        let lake = LocalFs::new(dir.path());
+        let keys = vec!["id".to_string()];
+        let options = PublishOptions::every(3);
+
+        let mut written = Vec::new();
+        for round in 1..=7 {
+            let published = replace_table_with(
+                &lake,
+                "log",
+                &format!("log-{round}.parquet"),
+                &parquet(round),
+                &keys,
+                &options,
+            )
+            .unwrap();
+            assert_eq!(published.commit.version, round as u64 - 1);
+            written.push(published.checkpoint);
+        }
+        // Versions 0..=6: a checkpoint after the 3rd and the 6th, which are versions 2 and 5.
+        assert_eq!(
+            written,
+            vec![None, None, Some(2), None, None, Some(5), None]
+        );
+        assert_eq!(delta::checkpoint_at(&lake, "log").unwrap(), Some(5));
+
+        // Version 6 landed after the checkpoint at 5, so a checkpoint now states v6; asking
+        // again for the same version answers with it instead of writing a second.
+        let at_six = delta::write_checkpoint(&lake, "log").unwrap();
+        assert_eq!(at_six.version, 6);
+        let again = delta::write_checkpoint(&lake, "log").unwrap();
+        assert_eq!(again.version, 6);
+        assert_eq!(again.files, 1, "a publisher keeps one current-state file");
+        assert_eq!(delta::checkpoint_at(&lake, "log").unwrap(), Some(6));
     }
 }
