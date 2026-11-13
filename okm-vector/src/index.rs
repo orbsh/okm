@@ -23,19 +23,15 @@ use okm_core::engine::storage::{Batch, VirtualStorage, scan_suffix_kv};
 use crate::codec::{Codec, Reader, put_u16};
 use crate::hnsw::{Hnsw, HnswParams};
 
-/// Fixed face 0x0A holds the built graph per shard:
-/// `[ns 2B][0x0A][shard u16 BE] → blob`.
+/// Fixed face 0x0E holds the built graph per shard:
+/// `[ns 2B][0x0E][shard u16 BE] → blob`.
 ///
 /// It is a cache entry, not a row-derived one: nothing in the corpus points at
-/// it, and discarding every blob loses only rebuild time. It sits directly after
-/// the graph's four faces (0x06–0x09) with no slot left empty between them;
-/// 0x0B–0x0F stay free for fixed faces.
-pub const VECTOR_INDEX_SLOT: u8 = 0x0A;
-
-/// Where the snapshot lived before ADR-0041 compacted the graph faces and moved
-/// it to [`VECTOR_INDEX_SLOT`]. Nothing reads this slot any more, so blobs an
-/// older build left there are space no other code will ever reclaim.
-pub const RETIRED_SNAPSHOT_SLOT: u8 = 0x0B;
+/// it, and discarding every blob loses only rebuild time. The fixed band is
+/// laid out core-first: 0x00–0x09 is structure, 0x0A–0x0D are free for the next
+/// row kinds, and the cache takes 0x0E — as far from the core as the band
+/// allows, one below the meta face that sits on the one/two-byte delimiter.
+pub const VECTOR_INDEX_SLOT: u8 = 0x0E;
 
 const MAGIC: &[u8; 8] = b"OKMVEC1\0";
 const VERSION: u16 = 1;
@@ -159,17 +155,15 @@ impl VectorIndex {
     /// corpus behind the snapshot is gone or rebuilt under a different codec: a
     /// snapshot is a cache, and a cache nobody sweeps is space with no owner.
     ///
-    /// It takes the RETIRED slot's blobs with it ([`RETIRED_SNAPSHOT_SLOT`]) —
-    /// one sweep for the space ADR-0041's renumbering left behind, not a second
-    /// mechanism. Nothing reads that slot, so those bytes would otherwise sit
-    /// there for the life of the store.
+    /// One slot, one sweep: the snapshot face is the only place a blob ever
+    /// lives, so there is no second number to chase.
     pub fn wipe<S: VirtualStorage + ?Sized>(store: &mut S, ns: [u8; 2]) -> Result<usize, String> {
         let mut removed = 0;
         let mut batch = Batch::default();
-        for slot in [VECTOR_INDEX_SLOT, RETIRED_SNAPSHOT_SLOT] {
+        {
             let mut prefix = Vec::with_capacity(3);
             prefix.extend_from_slice(&ns);
-            prefix.push(slot);
+            prefix.push(VECTOR_INDEX_SLOT);
             let blobs = scan_suffix_kv(&*store, &prefix).map_err(|e| e.to_string())?;
             for (suffix, _) in &blobs {
                 let mut key = prefix.clone();

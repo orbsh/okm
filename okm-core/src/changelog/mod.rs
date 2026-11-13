@@ -29,7 +29,7 @@
 //! the payload stores ids, so the labels are truth, not decoration). The DERIVED
 //! half is dropped — declared indexes (`0x3nnn`), reduces (`0x4nnn`), lead
 //! faces (`0x5nnn`, ADR-0054), the graph's traversal faces (`0x06`–`0x09`, rebuilt from the
-//! primary rows by `Graph::reindex`), the vector snapshot (`0x0A`) and the table
+//! primary rows by `Graph::reindex`), the vector snapshot (`0x0E`) and the table
 //! meta row (`0x0F`) — as is any bare-face key (a face's singleton, e.g. a
 //! vocabulary's allocation cursor).
 //!

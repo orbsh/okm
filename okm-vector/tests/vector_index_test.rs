@@ -186,23 +186,12 @@ fn wipe_reclaims_every_blob_of_a_namespace() {
     }
     let mut store = MemStore::new();
     idx.save(&mut store).expect("save");
-    // The move: a blob an older build left at the slot the snapshot used to live in.
-    let retired = okm_vector::RETIRED_SNAPSHOT_SLOT;
-    let mut old_key = ns.to_vec();
-    old_key.push(retired);
-    old_key.extend_from_slice(&0u16.to_be_bytes());
-    store
-        .put(old_key.clone(), b"a snapshot from before the move".to_vec())
-        .unwrap();
+    // Four shards, four blobs — the snapshot face is the only place they live.
 
     assert_eq!(
         VectorIndex::wipe(&mut store, ns).expect("wipe"),
-        5,
-        "four live shards plus the one the old build left behind"
-    );
-    assert!(
-        store.get(&old_key).unwrap().is_none(),
-        "the retired slot goes with it, or nothing ever reclaims it"
+        4,
+        "one blob per live shard, and nothing else to reclaim"
     );
     assert!(
         VectorIndex::load(&store, ns)

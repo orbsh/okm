@@ -64,7 +64,7 @@ const ABSENT_ORG: u32 = 9_999;
 const ABSENT_STATUS: u8 = 200;
 
 fn org_of(i: u64) -> u32 {
-    if i % 10 != 0 {
+    if !i.is_multiple_of(10) {
         BIG_TENANT
     } else {
         2 + ((i / 10) % SCATTERED) as u32
@@ -293,7 +293,7 @@ impl Fixture {
                 }
             }
         }
-        files.sort_unstable_by(|a, b| b.0.cmp(&a.0));
+        files.sort_unstable_by_key(|f| std::cmp::Reverse(f.0));
         for (len, name) in files.iter().take(6) {
             println!(
                 "  file {name:24} {:>10.1} MiB",
@@ -415,7 +415,6 @@ fn scan(c: &mut Criterion, f: &Fixture) {
                 f.col
                     .scan_exact::<ByOrg>(black_box(&probe))
                     .parts::<(parts::Key,)>()
-                    .map(|r| r.unwrap())
                     .count(),
             )
         })

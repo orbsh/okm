@@ -789,7 +789,7 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
         self.traverse_pair(EDGE_IN_SLOT, dst, src)
     }
 
-    /// Predicate-qualified traversal (0x09/0x0A): all edge ids of one
+    /// Predicate-qualified traversal (0x08/0x09): all edge ids of one
     /// predicate from one node. An unknown predicate scans nothing — there
     /// is no face to match.
     pub fn typed_edges(
@@ -1015,7 +1015,7 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
         self.endpoints(ids, |b| &b.src)
     }
 
-    /// Predicate-qualified neighbors (0x09/0x0A): `typed_out`/`typed_in`
+    /// Predicate-qualified neighbors (0x08/0x09): `typed_out`/`typed_in`
     /// resolved to far endpoints. Unknown predicates scan empty, like their
     /// edge-id counterparts.
     pub fn typed_out_nodes(
@@ -1027,7 +1027,7 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
         self.endpoints(ids, |b| &b.dst)
     }
 
-    /// Predicate-qualified in-neighbors (0x0A) — the in-direction mirror of
+    /// Predicate-qualified in-neighbors (0x09) — the in-direction mirror of
     /// [`typed_out_nodes`](Self::typed_out_nodes).
     pub fn typed_in_nodes(
         &mut self,

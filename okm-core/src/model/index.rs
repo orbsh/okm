@@ -122,7 +122,7 @@ pub const PREDICATE_VOCAB_NAME_SLOT: Slot = 0x05;
 /// The table's META entry (ADR-0043): fixed face 0x0F — the highest one, and
 /// deliberately so. `slot <= 0x0F` is the delimiter between the one-byte faces
 /// and the counting families, so the meta sits ON the boundary: the free band
-/// below it (0x0B–0x0E) stays contiguous, and no fixed face added later can
+/// below it (0x0A–0x0D) stays contiguous, and no fixed face added later can
 /// ever squeeze it out.
 ///
 /// ADDRESS: `[partition?][ns][0x0F]`, no suffix — a face-level singleton, like
@@ -130,7 +130,8 @@ pub const PREDICATE_VOCAB_NAME_SLOT: Slot = 0x05;
 /// ([`crate::model::meta::TableMeta`]); `version` is the one name the runtime
 /// writes (the shape the store was stamped with, `Document::LAYOUT_VERSION`).
 /// The middle of the fixed band belongs to its owning module: 0x06–0x09 to
-/// `model::graph`, 0x0A to `okm-vector`'s snapshot.
+/// `model::graph`, 0x0E to `okm-vector`'s snapshot (a cache, so it sits at the
+/// far end rather than among the structural faces).
 pub const META_SLOT: Slot = 0x0F;
 /// Slot base available to `#[ok_index]` declaration-order allocation —
 /// counters start at 1 (0 reserved), so 4095 declared indexes per collection.

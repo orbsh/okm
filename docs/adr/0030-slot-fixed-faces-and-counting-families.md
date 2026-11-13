@@ -72,8 +72,8 @@ assembles a key writes a slot the same way.
 0x07  graph in                     [ns][0x07][dst ref][src ref][edge_id]
 0x08  graph predicate+out          [ns][0x08][predicate_id][src ref][dst ref][edge_id]
 0x09  graph predicate+in           [ns][0x09][predicate_id][dst ref][src ref][edge_id]
-0x0A  vector index snapshot        [ns][0x0A][shard u16 BE]     → built graph (okm-vector cache)
-0x0B–0x0E                      free for future fixed faces
+0x0A–0x0D                      free for future fixed faces — the next row kind takes its number here
+0x0E  vector index snapshot        [ns][0x0E][shard u16 BE]     → built graph (okm-vector cache)
 0x0F  table meta                   [ns][0x0F]                   → name → bytes map (ADR-0043)
 ```
 
