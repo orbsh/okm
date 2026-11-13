@@ -13,19 +13,20 @@ The star shape loses information the model needs: two sets over the same vertice
 **1. A grouping of edges is a set of rows, not a node.** Members live in one row kind, one row per member:
 
 ```text
-0x0A  edge member (authority)   [ns][0x0A][kind][group_id][edge_id]
-0x0B  node member (derived)     [ns][0x0B][kind][group_id][node_id][edge_id]
+0x0A  the group itself        [ns][0x0A][kind][group_id]              → dynamic payload
+0x0B  edge member (authority) [ns][0x0B][kind][group_id][edge_id]     → empty
+0x0C  node member (derived)   [ns][0x0C][kind][group_id][node_id][edge_id] → empty, rebuildable
 ```
 
-`kind` is a one-byte closed vocabulary (community / event / subgraph / scope); `group_id` is allocated at run time, not by declaration order. The face IS the row kind — no in-row discriminator — and `kind` stays a key field, so one face serves every vocabulary. Members come out ordered: `0x0A` by edge id, `0x0B` by node id — the second is what makes "the members of this group" a stream with duplicates only adjacent, so deduplication costs one comparison instead of a set.
+`kind` is a one-byte closed vocabulary (community / event / subgraph / scope); `group_id` is allocated at run time, not by declaration order. The face IS the row kind — no in-row discriminator — and `kind` stays a key field, so one face serves every vocabulary. Member rows carry no value: the edge already carries it. Members come out ordered: `0x0B` by edge id, `0x0C` by node id — the second is what makes "the members of this group" a stream with duplicates only adjacent, so deduplication costs one comparison instead of a set.
 
-**2. Members are edges; node membership is derived.** An edge row already carries both endpoints, so a group's nodes are its member edges' endpoints, deduplicated. `0x0B` exists only to make that projection *ordered and streamable*, and to carry the count. It is rebuilt from `0x0A` and the edge rows at any time — an index, not a second truth.
+**2. Members are edges; node membership is derived.** An edge row already carries both endpoints, so a group's nodes are its member edges' endpoints, deduplicated. `0x0C` exists only to make that projection *ordered and streamable*. It is rebuilt from `0x0B` and the edge rows at any time — an index, not a second truth.
 
 **3. Completeness rests on a write-time rule, not on补行.** A node exists only as an endpoint of some edge (no "create a bare node" path), and a group exists only with two or more members. Under those two rules the derivation is total and no "member without an edge" shape is needed.
 
 **4. Groups carry a dynamic payload.** They are not pure sets: member count, weight, last write time live on the group. They cannot be a declared Rust type because `kind` is a run-time vocabulary, so the payload is the dynamic segment's own shape (`Dict`).
 
-**5. Groupings are versioned, and deletion is a write-path contract.** A recompute writes a new group version; the old one stays, so diffs and rollbacks are ordinary set operations. Deleting an edge deletes its membership rows in the same batch; a miss is a freshness problem, not a correctness one, because `0x0B` is rebuildable.
+**5. Groupings are versioned, and deletion is a write-path contract.** A recompute writes a new group version; the old one stays, so diffs and rollbacks are ordinary set operations. Deleting an edge deletes its membership rows in the same batch; a miss is a freshness problem, not a correctness one, because `0x0C` is rebuildable.
 
 **6. The base graph stays clean.** Algorithms (shortest path, PageRank, components, community detection) run on the edge table alone and never see a grouping. Ignoring cross-group edges is then not a compromise: it is the model's use of the fact that graphs have modular structure. Contraction and expansion — group the edges, compute inside, compute between groups — are a `group by` and a `join`, with no graph restructuring. The residual (edges outside the chosen groups) must stay queryable, and the error is asymmetric: degree-like metrics tolerate truncation, path-like ones do not.
 
@@ -42,7 +43,7 @@ Vec::<Decl<G>>::new()
 
 Endpoints are created on demand, membership is idempotent (same `(kind, group, member)` upserts), and all three reduces run in the same batch — which is where ADR-0028's counters land. Other operations ride the same row kind: `remove`, `merge`, `split`, `reassign`, `lookup`, `members`, `nodes`, `diff`.
 
-**8. Two fixed faces, taken from the freed core band.** `0x0A` and `0x0B` — contiguous, and the first two numbers the vector snapshot's move left free. Two faces rather than one face plus an in-row byte, because the model's rule is that the face states what a row is; `0x0C` and `0x0D` stay free. Counting families are not used for groups: their counters are declaration order with a 4095 ceiling, while groups are runtime-unbounded.
+**8. Three fixed faces, taken from the freed core band.** `0x0A`, `0x0B`, `0x0C` — contiguous, and the first three numbers the vector snapshot's move left free. Three faces rather than one face plus an in-row byte, because the model's rule is that the face states what a row is; `0x0D` stays free and `0x0E` is Extension. Counting families are not used for groups: their counters are declaration order with a 4095 ceiling, while groups are runtime-unbounded.
 
 ## Consequences
 

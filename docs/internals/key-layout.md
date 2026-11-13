@@ -73,9 +73,10 @@ byte (≥ 0x10).
 0x07  graph in                     [ns][0x07][dst ref][src ref][edge_id]
 0x08  graph predicate+out          [ns][0x08][predicate_id][src ref][dst ref][edge_id]
 0x09  graph predicate+in           [ns][0x09][predicate_id][dst ref][src ref][edge_id]
-0x0A  hyperedge edge member  [ns][0x0A][kind][group][edge_id]      → empty (ADR-0066)
-0x0B  hyperedge node member  [ns][0x0B][kind][group][node][edge_id] → empty, derived from 0x0A (ADR-0066)
-0x0C–0x0D  free for future fixed faces — the next CORE row kind takes its number here
+0x0A  hyperedge group        [ns][0x0A][kind][group]               → dynamic payload
+0x0B  hyperedge edge member  [ns][0x0B][kind][group][edge_id]      → empty
+0x0C  hyperedge node member  [ns][0x0C][kind][group][node][edge_id] → empty, derived from 0x0B
+0x0D       free for future fixed faces — the next CORE row kind takes its number here
 0x0E  Extension                [ns][0x0E][subkind]…          subkind 0x01 = vector index snapshot (droppable cache)
 0x0F  table meta                    [ns][0x0F]                  → name → bytes map (ADR-0043)
 (rows are grouped by ROLE: the two vocabularies first, then the graph faces
