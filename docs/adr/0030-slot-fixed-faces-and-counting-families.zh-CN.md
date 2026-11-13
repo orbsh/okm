@@ -46,7 +46,7 @@ slot 的首字节自己说明后面还跟不跟计数字节：
 0x07  图 入边           [ns][0x07][dst 引用][src 引用][edge_id]
 0x08  图 谓词+出        [ns][0x08][predicate_id][src 引用][dst 引用][edge_id]
 0x09  图 谓词+入        [ns][0x09][predicate_id][dst 引用][src 引用][edge_id]
-0x0A  超边 组行         [ns][0x0A][kind][组号]（载荷）
+0x0A  超边 组行         [ns][0x0A][kind][组号]（值 = parent_id + 载荷）
 0x0B  超边 边成员       [ns][0x0B][kind][组号][边号]（ADR-0066）
 0x0C  超边 节点成员     [ns][0x0C][kind][组号][节点][边号]（派生，可重建）
 0x0D                        空闲，下一个核心行型从这里取号
