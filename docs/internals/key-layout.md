@@ -174,6 +174,22 @@ to have no segment). Semantics: partition is workload isolation (compaction
 grouping), not an ownership boundary; ns remains the outermost ownership
 level.
 
+## Face-level singletons: a key shorter than its own entries
+
+  Some values belong to a face rather than to an entry. They are written with a key shorter than the entries around them — at the extreme, the bare face prefix:
+
+```text
+[ns][0x02]              → vocabulary allocation cursor (entries at [ns][0x02][id])   ← 69197cd
+[ns][0x04]              → predicate cursor (same shape)
+[ns][0x0A][kind][group] → hyperedge group row (members live on 0x0B/0x0C, other faces)
+[ns][0x0F]              → table metadata (no children)
+```
+
+  One reading rule — **key length**: the row type's exact length is the value, anything longer is an entry. Before applying it, ask whether the entries share the face, because that decides whether the rule is needed or merely harmless:
+
+- **Entries on the same face** (vocabulary cursor): the cursor's key prefixes every entry, so an id-face scan must bound the key length or it reads the cursor as an entry. This is also why the exported schema lists two faces per vocabulary and never mentions the cursor: its key is derived.
+- **Entries on another face** (hyperedge group row): a different face byte means no shared prefix and no length test — at the price of two scans for group plus members instead of one.
+
 ## Panorama
 
 ```text
