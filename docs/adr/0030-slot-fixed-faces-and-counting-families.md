@@ -72,8 +72,10 @@ assembles a key writes a slot the same way.
 0x07  graph in                     [ns][0x07][dst ref][src ref][edge_id]
 0x08  graph predicate+out          [ns][0x08][predicate_id][src ref][dst ref][edge_id]
 0x09  graph predicate+in           [ns][0x09][predicate_id][dst ref][src ref][edge_id]
-0x0A–0x0D                      free for future fixed faces — the next row kind takes its number here
-0x0E  vector index snapshot        [ns][0x0E][shard u16 BE]     → built graph (okm-vector cache)
+0x0A  hyperedge edge member        [ns][0x0A][kind][group][edge_id]        (ADR-0066)
+0x0B  hyperedge node member        [ns][0x0B][kind][group][node][edge_id]  (derived, rebuildable)
+0x0C–0x0D                      free for future fixed faces — the next CORE row kind takes its number here
+0x0E  non-core band (E = extension)                [ns][0x0E][subkind]…      subkind 0x01 = vector index snapshot
 0x0F  table meta                   [ns][0x0F]                   → name → bytes map (ADR-0043)
 ```
 

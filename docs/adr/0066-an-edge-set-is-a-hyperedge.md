@@ -1,0 +1,59 @@
+# ADR-0066: An edge set is a hyperedge
+
+**Status**: Draft (2026-11-12). Merges `docs/ideas/hyperedge-membership.md` and the promoted parts of `docs/ideas/hypergraph.md`; supersedes the latter's member-face layout, which it generalises.
+
+## Context
+
+The graph carries binary edges: a fact is `(src, dst, predicate, payload)`. Some knowledge is not binary — a community, an event's evidence, a subgraph, a permission boundary: **a named set of assertions**. Two shapes are possible. Give the set a node of its own and hang the members off it (star / reified node), or keep the set as rows that name its members.
+
+The star shape loses information the model needs: two sets over the same vertices but different edges cannot be told apart, an edge shared by two sets is invisible, an edge's own role has no place, and the fake node becomes a high-degree hub that community detection reads as a core. The base graph is also already complete — a grouping is an organisational layer over it, not a change to it.
+
+## Decision
+
+**1. A grouping of edges is a set of rows, not a node.** Members live in one row kind, one row per member:
+
+```text
+0x0A  edge member (authority)   [ns][0x0A][kind][group_id][edge_id]
+0x0B  node member (derived)     [ns][0x0B][kind][group_id][node_id][edge_id]
+```
+
+`kind` is a one-byte closed vocabulary (community / event / subgraph / scope); `group_id` is allocated at run time, not by declaration order. The face IS the row kind — no in-row discriminator — and `kind` stays a key field, so one face serves every vocabulary. Members come out ordered: `0x0A` by edge id, `0x0B` by node id — the second is what makes "the members of this group" a stream with duplicates only adjacent, so deduplication costs one comparison instead of a set.
+
+**2. Members are edges; node membership is derived.** An edge row already carries both endpoints, so a group's nodes are its member edges' endpoints, deduplicated. `0x0B` exists only to make that projection *ordered and streamable*, and to carry the count. It is rebuilt from `0x0A` and the edge rows at any time — an index, not a second truth.
+
+**3. Completeness rests on a write-time rule, not on补行.** A node exists only as an endpoint of some edge (no "create a bare node" path), and a group exists only with two or more members. Under those two rules the derivation is total and no "member without an edge" shape is needed.
+
+**4. Groups carry a dynamic payload.** They are not pure sets: member count, weight, last write time live on the group. They cannot be a declared Rust type because `kind` is a run-time vocabulary, so the payload is the dynamic segment's own shape (`Dict`).
+
+**5. Groupings are versioned, and deletion is a write-path contract.** A recompute writes a new group version; the old one stays, so diffs and rollbacks are ordinary set operations. Deleting an edge deletes its membership rows in the same batch; a miss is a freshness problem, not a correctness one, because `0x0B` is rebuildable.
+
+**6. The base graph stays clean.** Algorithms (shortest path, PageRank, components, community detection) run on the edge table alone and never see a grouping. Ignoring cross-group edges is then not a compromise: it is the model's use of the fact that graphs have modular structure. Contraction and expansion — group the edges, compute inside, compute between groups — are a `group by` and a `join`, with no graph restructuring. The residual (edges outside the chosen groups) must stay queryable, and the error is asymmetric: degree-like metrics tolerate truncation, path-like ones do not.
+
+**7. One write entry point, not a new declaration.** `Decl` is always two variants; many node kinds live in the enum `#[derive(GraphEncode)]` already generates for `#[ok_nodes(…)]` (one variant per collection, ns from each table's own `#[ok_ns]`):
+
+```rust
+Vec::<Decl<G>>::new()
+    .decls([Decl::Node(G::Nodes::User, key), Decl::Edge(head), …])
+    .hyper_edge(HyperEdge { kind, id, payload })        // id None = create, Some = merge
+    .reduce_node::<User>(|u: &mut User| u.seen += 1)    // per collection: node rows are heterogeneous
+    .reduce_edge(|e: &mut E| e.weight += 1)             // one payload type per graph
+    .reduce_hyper_edge(|h: &mut Dict| …)                // groups are dynamic
+```
+
+Endpoints are created on demand, membership is idempotent (same `(kind, group, member)` upserts), and all three reduces run in the same batch — which is where ADR-0028's counters land. Other operations ride the same row kind: `remove`, `merge`, `split`, `reassign`, `lookup`, `members`, `nodes`, `diff`.
+
+**8. Two fixed faces, taken from the freed core band.** `0x0A` and `0x0B` — contiguous, and the first two numbers the vector snapshot's move left free. Two faces rather than one face plus an in-row byte, because the model's rule is that the face states what a row is; `0x0C` and `0x0D` stay free. Counting families are not used for groups: their counters are declaration order with a 4095 ceiling, while groups are runtime-unbounded.
+
+## Consequences
+
+- A fact can belong to many groups, with the graph topology untouched.
+- "What is in this group" and "what changed between these two versions" are scans and set operations, not traversals.
+- Storage grows by roughly three rows per grouped edge (two derived node rows plus the membership row); the number to watch is rows per edge.
+- Anything that recomputes groups must write a version rather than replace; readers see a consistent snapshot of one version.
+
+## Rejected
+
+- **A node per group (star / reified).** Loses set identity, shared membership and per-edge roles, and pollutes algorithms with fake hubs.
+- **A counting family per group.** Bounded at 4095 and semantically "declaration order" — wrong for run-time groups.
+- **Storing the set as one value.** A set-valued entry is a cross-row read-modify-write, which the write contract refuses.
+- **A separate hypergraph declaration.** The graph already declares members; the write API above is the whole addition.
