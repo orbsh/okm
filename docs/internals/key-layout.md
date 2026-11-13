@@ -77,7 +77,7 @@ byte (≥ 0x10).
 0x0B  hyperedge edge member  [ns][0x0B][kind][group][edge_id]      → empty
 0x0C  hyperedge node member  [ns][0x0C][kind][group][node][edge_id] → empty, derived from 0x0B
 0x0D  hyperedge child index  [ns][0x0D][kind][parent][child]       → empty, derived
-0x0E  Extension                [ns][0x0E][subkind]…          subkind 0x01 = vector index snapshot (droppable cache)
+0x0E  Extension                [ns][0x0E][subkind]…          each subkind owns its contract: 0x01 = vector snapshot (droppable)
 0x0F  table meta                    [ns][0x0F]                  → name → bytes map (ADR-0043)
 (rows are grouped by ROLE: the two vocabularies first, then the graph faces
 that read their ids — a vocabulary leads the faces it serves; the NUMBERS
