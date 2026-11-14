@@ -382,6 +382,138 @@ fn drain_run<S: Seekable>(side: &mut S, key: &S::Key) {
     }
 }
 
+/// The keys on the LEFT with no match on the right (`a \ b`) over two
+/// REPOSITIONABLE streams — [`intersect_seek`]'s sibling, and the reason a
+/// caller can answer "what does this walk have that the other does not"
+/// without materializing either side.
+///
+/// Same alignment as [`intersect_seek`]: both sides ascend by
+/// [`Seekable::Key`], the trailing side is chased (a few steps, then one
+/// reposition once [`SEEK_BUDGET`] is spent), and a key carried by several
+/// entries answers once (set semantics — a run is drained on both sides when the
+/// key meets, and on the left when it is answered).
+///
+/// Lazy in both directions: `.take(1)` costs one answer, and a left side that
+/// runs ahead of a spent right side is answered without touching the store
+/// again — a spent side is not a reason to stop, only a reason to stop chasing.
+///
+/// Ordered is a CONTRACT, not a check, exactly as in the stream operator: the
+/// cursor's position never moves backwards, so unordered input does not error,
+/// it silently misses keys.
+pub fn difference<L, R>(left: L, right: R) -> impl Iterator<Item = L::Key>
+where
+    L: Seekable,
+    R: Seekable<Key = L::Key>,
+    L::Key: Clone,
+{
+    Difference { left, right }
+}
+
+/// [`difference`]'s lazy cursor: one left position, one right position, and the
+/// rule that the left advances only when it is about to answer.
+struct Difference<L, R> {
+    left: L,
+    right: R,
+}
+
+impl<L, R> Iterator for Difference<L, R>
+where
+    L: Seekable,
+    R: Seekable<Key = L::Key>,
+    L::Key: Clone,
+{
+    type Item = L::Key;
+
+    fn next(&mut self) -> Option<L::Key> {
+        loop {
+            // A spent left ends the answer: it has no key left to offer. A spent
+            // RIGHT does not — every remaining left key is a one-sided answer.
+            let key = self.left.key()?.clone();
+            if self.right.key().is_some_and(|right| right < &key) {
+                // The right is behind this key: chase it up to it. A chase that
+                // runs out leaves the right spent, and the `is_some_and` below
+                // then reads "not shared", which is the correct answer for every
+                // key left.
+                let _ = chase(&mut self.right, &key);
+            }
+            let shared = self.right.key() == Some(&key);
+            // Set semantics on the left: a key carried by several entries
+            // answers at most once, whether it is shared or not.
+            drain_run(&mut self.left, &key);
+            if shared {
+                drain_run(&mut self.right, &key);
+                continue;
+            }
+            return Some(key);
+        }
+    }
+}
+
+/// The keys on either side, once each (`a ∪ b`), over two REPOSITIONABLE
+/// streams — the merge half of [`intersect_seek`] with the same bounds and the
+/// same forward-only contract.
+///
+/// One pass, two cursors: the lower key wins, a key on both sides is answered
+/// once and its run is drained on BOTH sides, and neither side is ever read
+/// ahead of what the answer needs. Adjacent duplicates collapse because a run is
+/// drained as it is answered — the set discipline comes from the same walk, not
+/// from a second dedupe pass (which would need a `HashSet` or a full buffer and
+/// would defeat `take(1)`).
+///
+/// Not `chain` plus dedup, for the reason [`OrderedSets::union`] states: a chain
+/// answers the whole left run before the first right key, so the interleave
+/// `union` promises is not reachable from it without materializing.
+pub fn union<L, R>(left: L, right: R) -> impl Iterator<Item = L::Key>
+where
+    L: Seekable,
+    R: Seekable<Key = L::Key>,
+    L::Key: Clone,
+{
+    Union { left, right }
+}
+
+/// [`union`]'s lazy cursor.
+struct Union<L, R> {
+    left: L,
+    right: R,
+}
+
+impl<L, R> Iterator for Union<L, R>
+where
+    L: Seekable,
+    R: Seekable<Key = L::Key>,
+    L::Key: Clone,
+{
+    type Item = L::Key;
+
+    fn next(&mut self) -> Option<L::Key> {
+        let left = self.left.key().cloned();
+        let right = self.right.key().cloned();
+        let (key, drain_left, drain_right) = match (left, right) {
+            // Both spent: the answer is over.
+            (None, None) => return None,
+            // One side spent is not the end: the other side's tail is a run of
+            // one-sided answers, in order.
+            (Some(key), None) => (key, true, false),
+            (None, Some(key)) => (key, false, true),
+            (Some(left), Some(right)) => match left.cmp(&right) {
+                std::cmp::Ordering::Less => (left, true, false),
+                std::cmp::Ordering::Greater => (right, false, true),
+                // One answer for a shared key: both runs go, so the key cannot
+                // come back from the other side on the next turn.
+                std::cmp::Ordering::Equal => (left, true, true),
+            },
+        };
+        if drain_left {
+            drain_run(&mut self.left, &key);
+        }
+        if drain_right {
+            drain_run(&mut self.right, &key);
+        }
+        Some(key)
+    }
+}
+
 /// The alignment behind every operator here: two ordered streams, one tuple per
 /// distinct key.
 struct Merge<LI: Iterator, RI: Iterator> {
@@ -1529,6 +1661,214 @@ mod tests {
             (e_meter.seeks.get(), o_meter.seeks.get()),
             (0, 0),
             "adjacent keys are a step, never a reopen"
+        );
+    }
+
+    // ================= difference / union over repositionable streams =================
+
+    /// The two operators answer what their stream forms answer, on every shape
+    /// that has bitten an alignment: empty sides, disjoint, identical,
+    /// duplicates on one side and on both, and one side inside the other.
+    #[test]
+    fn difference_and_union_answer_what_the_stream_operators_answer() {
+        let shapes: Vec<(&str, Vec<u8>, Vec<u8>)> = vec![
+            ("both empty", vec![], vec![]),
+            ("left empty", vec![], vec![1, 2, 3]),
+            ("right empty", vec![1, 2, 3], vec![]),
+            ("disjoint", vec![1, 3, 5, 7], vec![2, 4, 6, 8]),
+            ("identical", vec![1, 2, 3], vec![1, 2, 3]),
+            ("left inside right", vec![3, 4], vec![1, 2, 3, 4, 5]),
+            ("right inside left", vec![1, 2, 3, 4, 5], vec![3, 4]),
+            (
+                "duplicates on both sides",
+                vec![1, 1, 1, 2, 2, 5, 5, 9],
+                vec![1, 1, 2, 3, 3, 5, 9, 9, 9],
+            ),
+            ("duplicates, one shared key", vec![7; 40], vec![7; 13]),
+            (
+                "no key shared but interleaved",
+                (0..100).collect(),
+                (0..100).map(|i| i * 2 + 1).collect(),
+            ),
+        ];
+
+        for (name, left, right) in shapes {
+            let want_union: Vec<u8> = left.clone().union(right.clone()).collect();
+            let got_union: Vec<u8> =
+                union(Cursor::new(left.clone()), Cursor::new(right.clone())).collect();
+            assert_eq!(got_union, want_union, "{name}: union");
+
+            let want_difference: Vec<u8> = left.clone().difference(right.clone()).collect();
+            let got_difference: Vec<u8> =
+                difference(Cursor::new(left.clone()), Cursor::new(right.clone())).collect();
+            assert_eq!(got_difference, want_difference, "{name}: difference");
+        }
+
+        // The three operators partition the left side: shared + left-only = left.
+        let left: Vec<u8> = vec![1, 2, 2, 5, 8, 9];
+        let right: Vec<u8> = vec![2, 3, 8, 8];
+        let shared: Vec<u8> =
+            intersect_seek(Cursor::new(left.clone()), Cursor::new(right.clone())).collect();
+        let only_left: Vec<u8> =
+            difference(Cursor::new(left.clone()), Cursor::new(right.clone())).collect();
+        let joined: Vec<u8> =
+            union(Cursor::new(shared.clone()), Cursor::new(only_left.clone())).collect();
+        assert_eq!(shared, vec![2, 8]);
+        assert_eq!(only_left, vec![1, 5, 9]);
+        let mut deduped = left.clone();
+        deduped.dedup();
+        assert_eq!(
+            joined, deduped,
+            "the intersection plus the difference IS the left side, one answer per key"
+        );
+    }
+
+    /// The PATH proof for the two operators, and why only ONE of them chases.
+    ///
+    /// `union` answers every key of both sides, so no key is ever skipped and no
+    /// cursor ever needs to jump — its cost is one step per answer, which is the
+    /// floor. `difference` is where the chase lives: the left side answers while
+    /// the right one is made to catch up, so a skewed pair must spend
+    /// [`SEEK_BUDGET`] steps and a reposition per right-hand key, never a walk
+    /// over the left side's entries.
+    #[test]
+    fn union_never_chases_and_difference_seeks_the_side_that_catches_up() {
+        const N: u64 = 200_000;
+        const STRIDE: usize = 997;
+
+        let long: Vec<u64> = (0..N).collect();
+        let short: Vec<u64> = (0..N).step_by(STRIDE).collect();
+
+        // Union: every key of both sides is an answer, so both advance by one
+        // and neither repositions.
+        let (long_meter, short_meter) = (Meter::default(), Meter::default());
+        let merged: Vec<u64> = union(
+            Counted::new(long.clone(), &long_meter),
+            Counted::new(short.clone(), &short_meter),
+        )
+        .collect();
+        let mut want: Vec<u64> = long.clone();
+        want.extend(short.iter().copied());
+        want.sort_unstable();
+        want.dedup();
+        assert_eq!(merged, want, "the union of the two sides");
+        assert_eq!(
+            (long_meter.seeks.get(), short_meter.seeks.get()),
+            (0, 0),
+            "a union skips nothing, so it never repositions"
+        );
+        assert_eq!(
+            (long_meter.steps.get(), short_meter.steps.get()),
+            (long.len(), short.len()),
+            "one step per answer per side — the floor"
+        );
+
+        // Difference, long side as the left: the SHORT side is the one that has
+        // to catch up, one short key at a time.
+        let (long_meter, short_meter) = (Meter::default(), Meter::default());
+        let rest: Vec<u64> = difference(
+            Counted::new(long.clone(), &long_meter),
+            Counted::new(short.clone(), &short_meter),
+        )
+        .collect();
+        let shared: std::collections::BTreeSet<u64> = short.iter().copied().collect();
+        assert_eq!(rest.len(), (N as usize) - shared.len());
+        assert!(
+            rest.iter().all(|key| !shared.contains(key)),
+            "every answered key is one the right side does not have"
+        );
+        assert_eq!(
+            long_meter.steps.get(),
+            long.len(),
+            "the left side steps once per key it answers — it is the answer stream"
+        );
+        assert!(
+            short_meter.seeks.get() <= short.len(),
+            "the chaser repositions at most once per short key, got {} for {}",
+            short_meter.seeks.get(),
+            short.len()
+        );
+        assert!(
+            short_meter.steps.get() <= short.len() * (SEEK_BUDGET + 2),
+            "and walks at most the budget between reopens, got {}",
+            short_meter.steps.get()
+        );
+        assert!(
+            short_meter.steps.get() * 10 < N as usize,
+            "the chaser must not walk the long side: {} steps over {N} entries",
+            short_meter.steps.get()
+        );
+
+        // Balanced: adjacent keys are a step on both sides, so nothing reopens.
+        let a: Vec<u64> = (0..100_000).collect();
+        let b: Vec<u64> = (0..100_000).map(|i| i * 2).collect();
+        let (a_meter, b_meter) = (Meter::default(), Meter::default());
+        let joined: Vec<u64> =
+            union(Counted::new(a.clone(), &a_meter), Counted::new(b, &b_meter)).collect();
+        // `a` holds 0..100 000, `b` the evens up to 200 000: 50 000 keys meet.
+        assert_eq!(joined.len(), 150_000);
+        assert_eq!(
+            (a_meter.seeks.get(), b_meter.seeks.get()),
+            (0, 0),
+            "balanced input pays no reopen"
+        );
+    }
+
+    /// Lazy in both: `take(1)` pulls one key per side, and an abandoned stream
+    /// does no work past the answer.
+    #[test]
+    fn difference_and_union_take_only_what_the_answer_needs() {
+        #[derive(Clone, Default)]
+        struct Meter2 {
+            pulled: std::rc::Rc<std::cell::Cell<usize>>,
+        }
+        struct Pulled<I> {
+            inner: I,
+            meter: Meter2,
+        }
+        impl<I: Iterator> Iterator for Pulled<I> {
+            type Item = I::Item;
+            fn next(&mut self) -> Option<I::Item> {
+                self.meter.pulled.set(self.meter.pulled.get() + 1);
+                self.inner.next()
+            }
+        }
+
+        let left_meter = Meter2::default();
+        let right_meter = Meter2::default();
+        let left = Pulled {
+            inner: (0..10_000u32).collect::<Vec<_>>().into_iter(),
+            meter: left_meter.clone(),
+        };
+        let right = Pulled {
+            inner: (10_000..20_000u32).collect::<Vec<_>>().into_iter(),
+            meter: right_meter.clone(),
+        };
+        assert_eq!(left.union(right).take(1).collect::<Vec<_>>(), vec![0]);
+        assert!(
+            left_meter.pulled.get() <= 2 && right_meter.pulled.get() <= 2,
+            "a union's head pulls one key per side, pulled {} / {}",
+            left_meter.pulled.get(),
+            right_meter.pulled.get()
+        );
+
+        // Difference short-circuits on a cursor pair the same way: one answer,
+        // one key from each side (plus the run drain).
+        let (a_meter, b_meter) = (Meter::default(), Meter::default());
+        let disjoint_left: Vec<u64> = (0..5_000).collect();
+        let disjoint_right: Vec<u64> = (5_000..10_000).collect();
+        let first: Vec<u64> = difference(
+            Counted::new(disjoint_left, &a_meter),
+            Counted::new(disjoint_right, &b_meter),
+        )
+        .take(1)
+        .collect();
+        assert_eq!(first, vec![0]);
+        assert!(
+            a_meter.steps.get() <= 2 && b_meter.seeks.get() <= 1,
+            "one answer costs one step per side and no walk, got {} / {}",
+            a_meter.steps.get(),
+            b_meter.seeks.get()
         );
     }
 }

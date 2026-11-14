@@ -20,6 +20,7 @@
 
 use crate::bridge::ToRecordBatch;
 use okm_core::model::field::FieldType;
+use okm_core::model::hyper::{Decl, Fragment};
 use okm_core::model::index::Document;
 use okm_core::model::key::KeyEncode;
 use okm_value::{Dict, Variant};
@@ -675,8 +676,10 @@ pub mod parquet_io {
             F: Fn(&str) -> Option<u16>;
     }
 
-    impl<S: okm_core::engine::storage::VirtualStorage, E: okm_core::model::graph::GraphEncode>
-        EdgeRestore for okm_core::model::graph::Graph<S, E>
+    impl<
+        S: okm_core::engine::storage::VirtualStorage,
+        E: okm_core::model::graph::GraphEncode + Default + 'static,
+    > EdgeRestore for okm_core::model::graph::Graph<S, E>
     {
         /// The file form of [`Self::import_table`]: read every batch and land it,
         /// so a caller never assembles a batch the export did not hand it. An empty
@@ -827,9 +830,16 @@ pub mod parquet_io {
                 .zip(ids.iter().zip(payloads.iter()))
                 .zip(props.iter())
             {
+                // The id is the identity: `edge_at` creates it when free and
+                // re-asserts it when live, and the reducer installs the payload
+                // the file carries. One fragment, one commit.
+                let payload = (*payload).clone();
+                let mut fragment = Fragment::<E>::new([Decl::edge_at((*head).clone(), *id)]);
+                fragment.reduce_edge(move |e: &mut E| *e = payload.clone());
+                self.incorporate(fragment).map_err(|e| e.to_string())?;
+                // Open attributes are the document's own row, so they take the
+                // second commit (the two carriers are separate write paths).
                 let mut batch = okm_core::engine::storage::Batch::default();
-                self.link_into(&mut batch, head, payload, *id)
-                    .map_err(|e| e.to_string())?;
                 self.replace_into(&mut batch, *id, fields)
                     .map_err(|e| e.to_string())?;
                 self.store_mut()

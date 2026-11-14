@@ -16,9 +16,23 @@ use okm_lake::snapshot::parquet_io;
 use okm_lake::snapshot::parquet_io::EdgeRestore;
 
 use okm_core::{
-    Batch, Document, DocumentEncode, EdgeHead, Graph, GraphEncode, KeyEncode, NodeRef, ReduceCodec,
-    VirtualStorage,
+    Batch, Decl, Document, DocumentEncode, EdgeHead, Fragment, Graph, GraphEncode, KeyEncode,
+    NodeRef, ReduceCodec, VirtualStorage,
 };
+
+/// The one-edge write a test needs, expressed the way the API expresses it: an
+/// id-carrying declaration plus the payload in an edge reducer.
+fn link<S: VirtualStorage, E: GraphEncode + Clone + Default + 'static>(
+    g: &mut Graph<S, E>,
+    head: EdgeHead,
+    payload: &E,
+    edge_id: u64,
+) -> okm_core::Result<()> {
+    let mut fragment = Fragment::<E>::new([Decl::edge_at(head, edge_id)]);
+    let given = payload.clone();
+    fragment.reduce_edge(move |e| *e = given.clone());
+    g.incorporate(fragment).map(|_| ())
+}
 use okm_value::{Dict, Variant};
 
 use okm_async::TestStore;
@@ -113,8 +127,9 @@ fn an_edge_table_restores_into_a_fresh_graph() {
     let dir = tempfile::tempdir().unwrap();
     let src = TestStore::slatedb_mem();
     let mut g: Graph<_, Employment> = Graph::new(src.clone());
-    g.link(
-        &head(user(1), org(9), "employs"),
+    link(
+        &mut g,
+        head(user(1), org(9), "employs"),
         &Employment {
             since_year: 2020,
             weight: 7,
@@ -122,8 +137,9 @@ fn an_edge_table_restores_into_a_fresh_graph() {
         1,
     )
     .unwrap();
-    g.link(
-        &head(user(2), org(9), "leads"),
+    link(
+        &mut g,
+        head(user(2), org(9), "leads"),
         &Employment {
             since_year: 2021,
             weight: 3,
@@ -179,8 +195,13 @@ fn an_edge_table_restores_into_a_fresh_graph() {
 fn an_unknown_endpoint_collection_is_refused_by_name() {
     let store = TestStore::slatedb_mem();
     let mut g: Graph<_, Employment> = Graph::new(store.clone());
-    g.link(&head(user(1), org(9), "employs"), &Employment::default(), 1)
-        .unwrap();
+    link(
+        &mut g,
+        head(user(1), org(9), "employs"),
+        &Employment::default(),
+        1,
+    )
+    .unwrap();
     let table = g.to_record_batch_table(name_of).unwrap();
 
     let fresh = TestStore::slatedb_mem();

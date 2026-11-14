@@ -13,10 +13,36 @@
 use okm_lake::bridge::EdgeTable;
 
 use okm_core::{
-    Batch, DocumentEncode, EdgeHead, Graph, GraphEncode, KeyEncode, NodeRef, NodeSet, PRIMARY_SLOT,
-    VirtualStorage,
+    Batch, Decl, DocumentEncode, EdgeHead, Fragment, Graph, GraphEncode, KeyEncode, NodeRef,
+    NodeSet, PRIMARY_SLOT, VirtualStorage,
 };
 use okm_value::Dict;
+
+/// `Graph::link` is gone (ADR-0066: `incorporate` is the only write verb), so a
+/// test that wants one edge at a chosen id says so: a fragment whose ONLY
+/// declaration names that id, with the payload folded in by the edge reducer.
+fn link<S: VirtualStorage, E: GraphEncode + Clone + Default + 'static>(
+    g: &mut Graph<S, E>,
+    head: EdgeHead,
+    payload: &E,
+    edge_id: u64,
+) -> okm_core::Result<()> {
+    let mut fragment = Fragment::<E>::new([Decl::edge_at(head, edge_id)]);
+    let given = payload.clone();
+    fragment.reduce_edge(move |e| *e = given.clone());
+    g.incorporate(fragment).map(|_| ())
+}
+
+/// The delete twin: `retract` with one edge declaration. Absence is not a
+/// refusal, so a double delete reports zero instead of failing.
+fn unlink<S: VirtualStorage, E: GraphEncode + Default + 'static>(
+    g: &mut Graph<S, E>,
+    edge_id: u64,
+) -> okm_core::Result<okm_core::RetractReport> {
+    let mut fragment = Fragment::<E>::new([]);
+    fragment.delete_edge(edge_id);
+    g.retract(fragment)
+}
 
 // ---- node collections (standard documents, standard layout) ----
 
@@ -113,8 +139,9 @@ fn max_edge_id_is_the_last_primary_key() {
     // the most recent write.
     let mut highest = 0;
     for (id, year) in [(3u64, 2019u16), (11, 2020), (7, 2021)] {
-        g.link(
-            &head(user(1), org(9), "employs"),
+        link(
+            &mut g,
+            head(user(1), org(9), "employs"),
             &Employment {
                 since_year: year,
                 weight: id as u32,
@@ -133,7 +160,7 @@ fn max_edge_id_is_the_last_primary_key() {
 
     // Unlinking the maximum moves it down: it is a read of the table, not a
     // counter anyone has to keep in sync.
-    g.unlink(11).unwrap();
+    unlink(&mut g, 11).unwrap();
     assert_eq!(g.max_edge_id().unwrap(), Some(7));
 }
 
@@ -146,8 +173,7 @@ fn link_traverse_and_fetch_back_with_attributes() {
         since_year: 2020,
         weight: 7,
     };
-    g.link(&head(user(1), org(9), "employs"), &attrs, 1)
-        .unwrap();
+    link(&mut g, head(user(1), org(9), "employs"), &attrs, 1).unwrap();
 
     // Traversal faces answer.
     assert_eq!(g.out_edges(&user(1)).unwrap(), vec![1]);
@@ -191,16 +217,27 @@ fn predicates_are_listed_from_the_predicate_vocabulary() {
     let store = okm_async::TestStore::slatedb_mem();
     let mut g: Graph<_, Employment> = Graph::new(store.clone());
 
-    g.link(&head(user(1), org(9), "employs"), &Employment::default(), 1)
-        .unwrap();
-    g.link(
-        &head(user(1), org(9), "contracts"),
+    link(
+        &mut g,
+        head(user(1), org(9), "employs"),
+        &Employment::default(),
+        1,
+    )
+    .unwrap();
+    link(
+        &mut g,
+        head(user(1), org(9), "contracts"),
         &Employment::default(),
         2,
     )
     .unwrap();
-    g.link(&head(user(2), org(9), "employs"), &Employment::default(), 3)
-        .unwrap();
+    link(
+        &mut g,
+        head(user(2), org(9), "employs"),
+        &Employment::default(),
+        3,
+    )
+    .unwrap();
 
     // One 0x04 prefix scan — an exact list, id-ordered, never inferred
     // from the index faces.
@@ -231,8 +268,13 @@ fn the_predicate_cursor_is_the_id_faces_bare_prefix() {
         k
     };
     let mut g: Graph<_, Employment> = Graph::new(store.clone());
-    g.link(&head(user(1), org(9), "employs"), &Employment::default(), 1)
-        .unwrap();
+    link(
+        &mut g,
+        head(user(1), org(9), "employs"),
+        &Employment::default(),
+        1,
+    )
+    .unwrap();
 
     assert_eq!(
         store
@@ -257,8 +299,9 @@ fn the_predicate_cursor_is_the_id_faces_bare_prefix() {
         g2.predicate_vocab_name(0).unwrap().as_deref(),
         Some("employs")
     );
-    g2.link(
-        &head(user(2), org(9), "contracts"),
+    link(
+        &mut g2,
+        head(user(2), org(9), "contracts"),
         &Employment::default(),
         2,
     )
@@ -284,10 +327,16 @@ fn unlink_and_relabeled_parallel_edges() {
     let store = okm_async::TestStore::slatedb_mem();
     let mut g: Graph<_, Employment> = Graph::new(store.clone());
 
-    g.link(&head(user(1), org(9), "employs"), &Employment::default(), 1)
-        .unwrap();
-    g.link(
-        &head(user(1), org(9), "contracts"),
+    link(
+        &mut g,
+        head(user(1), org(9), "employs"),
+        &Employment::default(),
+        1,
+    )
+    .unwrap();
+    link(
+        &mut g,
+        head(user(1), org(9), "contracts"),
         &Employment::default(),
         2,
     )
@@ -299,7 +348,7 @@ fn unlink_and_relabeled_parallel_edges() {
     assert_eq!(g.typed_out("contracts", &user(1)).unwrap(), vec![2]);
     assert_eq!(g.edges_of_predicate("contracts").unwrap(), vec![2]);
 
-    g.unlink(1).unwrap();
+    unlink(&mut g, 1).unwrap();
     assert_eq!(g.typed_out("employs", &user(1)).unwrap(), Vec::<u64>::new());
     assert_eq!(g.edges_of_predicate("employs").unwrap(), Vec::<u64>::new());
     assert_eq!(
@@ -321,8 +370,8 @@ fn unlink_deletes_the_declared_face_entry_exactly() {
         since_year: 2020,
         weight: 2,
     }; // same declared value
-    g.link(&head(user(1), org(9), "employs"), &a, 1).unwrap();
-    g.link(&head(user(2), org(9), "employs"), &b, 2).unwrap();
+    link(&mut g, head(user(1), org(9), "employs"), &a, 1).unwrap();
+    link(&mut g, head(user(2), org(9), "employs"), &b, 2).unwrap();
 
     let slot = <__OkmIndex_Employment_by_since as okm_core::KvIndex>::SLOT;
     assert_eq!(
@@ -330,24 +379,28 @@ fn unlink_deletes_the_declared_face_entry_exactly() {
         vec![1, 2]
     );
 
-    g.unlink(1).unwrap();
+    unlink(&mut g, 1).unwrap();
     // Exact deletion: the payload was decoded, the same declared value was
     // re-derived, and only edge 1's entry went away.
     assert_eq!(
         g.by_attr_face(slot, &2020u16.to_be_bytes()).unwrap(),
         vec![2]
     );
-    assert!(
-        g.unlink(1).is_err(),
-        "double unlink errors, not silently re-deletes"
+    // The second delete has nothing to take: absence is a no-op, not a
+    // refusal, and the report says zero.
+    let again = unlink(&mut g, 1).expect("a delete of an absent id is a no-op");
+    assert_eq!(
+        (again.nodes, again.edges, again.memberships),
+        (0, 0, 0),
+        "nothing left to delete, nothing reported"
     );
 }
 
 #[test]
 fn rewrite_is_one_batch() {
-    // A functional rewrite is unlink + link in ONE batch (ADR-0010's owed
-    // item): same edge_id, new endpoints/predicate/payload, and every stale
-    // face goes with the old row — no window between two commits.
+    // An in-place rewrite is ONE fragment (ADR-0010's owed item): the id names
+    // the row, the declaration carries the new head, and every stale face goes
+    // with the old assertion — no window in which the edge is absent.
     let store = okm_async::TestStore::slatedb_mem();
     let mut g: Graph<_, Employment> = Graph::new(store.clone());
     let a = Employment {
@@ -358,13 +411,13 @@ fn rewrite_is_one_batch() {
         since_year: 2021,
         weight: 2,
     };
-    g.link(&head(user(1), org(9), "employs"), &a, 1).unwrap();
+    link(&mut g, head(user(1), org(9), "employs"), &a, 1).unwrap();
 
-    let mut batch = Batch::default();
-    g.unlink_into(&mut batch, 1).unwrap();
-    g.link_into(&mut batch, &head(user(1), org(10), "contracts"), &b, 1)
-        .unwrap();
-    store.commit_batch(batch).unwrap();
+    let mut fragment =
+        Fragment::<Employment>::new([Decl::edge_at(head(user(1), org(10), "contracts"), 1)]);
+    let given = b.clone();
+    fragment.reduce_edge(move |e: &mut Employment| *e = given.clone());
+    g.incorporate(fragment).unwrap();
 
     // The row is the new fact, under the same identity.
     let body = g.get_edge(1).unwrap().unwrap();
@@ -399,42 +452,49 @@ fn member_set_is_checked_at_write() {
     let mut g: Graph<_, Employment> = Graph::new(store.clone());
     // ns 12 is nobody's collection in this graph.
     let stranger = NodeRef::new(&12u16.to_be_bytes(), &1u64.to_be_bytes());
-    let err = g
-        .link(
-            &head(user(1), stranger, "employs"),
-            &Employment::default(),
-            1,
-        )
-        .unwrap_err();
+    let err = link(
+        &mut g,
+        head(user(1), stranger, "employs"),
+        &Employment::default(),
+        1,
+    )
+    .unwrap_err();
     assert!(
         err.to_string().contains("not a member"),
         "unexpected error: {err}"
     );
     assert!(g.get_edge(1).unwrap().is_none(), "nothing was written");
     // A member pair still lands.
-    g.link(&head(user(1), org(9), "employs"), &Employment::default(), 1)
-        .unwrap();
-}
-
-#[test]
-fn link_into_shares_one_batch_with_documents() {
-    let store = okm_async::TestStore::slatedb_mem();
-    let mut g: Graph<_, Employment> = Graph::new(store.clone());
-    let nodes = okm_core::Collection::new(store.clone());
-
-    let mut batch = Batch::default();
-    // A document write and an edge write into ONE batch.
-    nodes
-        .save_with_prev_into(&mut batch, &UserId { id: 1 }, &User { active: 1 }, None)
-        .unwrap();
-    g.link_into(
-        &mut batch,
-        &head(user(1), org(9), "employs"),
+    link(
+        &mut g,
+        head(user(1), org(9), "employs"),
         &Employment::default(),
         1,
     )
     .unwrap();
+}
+
+#[test]
+fn a_fragment_is_one_commit_and_a_document_is_another() {
+    let store = okm_async::TestStore::slatedb_mem();
+    let mut g: Graph<_, Employment> = Graph::new(store.clone());
+    let nodes = okm_core::Collection::new(store.clone());
+
+    // The fragment IS the unit of atomicity (ADR-0066 §7): there is no
+    // caller-owned batch to fold an edge write into, so a caller that also
+    // writes documents commits them through the collection's own verb.
+    let mut batch = Batch::default();
+    nodes
+        .save_with_prev_into(&mut batch, &UserId { id: 1 }, &User { active: 1 }, None)
+        .unwrap();
     store.commit_batch(batch).unwrap();
+    link(
+        &mut g,
+        head(user(1), org(9), "employs"),
+        &Employment::default(),
+        1,
+    )
+    .unwrap();
 
     assert!(
         nodes.get_row(&UserId { id: 1 }).unwrap().is_some(),
@@ -461,10 +521,16 @@ fn node_kind_filter_intersects_typed_traversal() {
         .unwrap();
     orgs.put(&OrgId { id: 10 }, &Org { kind: 3, active: 1 })
         .unwrap();
-    g.link(&head(user(1), org(9), "employs"), &Employment::default(), 1)
-        .unwrap();
-    g.link(
-        &head(user(1), org(10), "employs"),
+    link(
+        &mut g,
+        head(user(1), org(9), "employs"),
+        &Employment::default(),
+        1,
+    )
+    .unwrap();
+    link(
+        &mut g,
+        head(user(1), org(10), "employs"),
         &Employment::default(),
         2,
     )
@@ -524,8 +590,7 @@ fn hex_lock_one_link() {
         since_year: 2020,
         weight: 0,
     };
-    g.link(&head(user(1), org(9), "employs"), &attrs, 1)
-        .unwrap();
+    link(&mut g, head(user(1), org(9), "employs"), &attrs, 1).unwrap();
 
     let ns = 100u16.to_be_bytes();
     let slot = |s: u16| {
@@ -698,8 +763,8 @@ fn neighbor_nodes_resolve_to_node_refs() {
         since_year: 2021,
         weight: 2,
     };
-    g.link(&head(user(1), org(9), "employs"), &a1, 1).unwrap();
-    g.link(&head(user(1), org(10), "employs"), &a2, 2).unwrap();
+    link(&mut g, head(user(1), org(9), "employs"), &a1, 1).unwrap();
+    link(&mut g, head(user(1), org(10), "employs"), &a2, 2).unwrap();
 
     // One-hop neighbors as NodeRef — the traversal currency.
     let mut outs = g.out_nodes(&user(1)).unwrap();
@@ -728,8 +793,8 @@ fn neighbor_nodes_resolve_to_node_refs() {
         since_year: 2022,
         weight: 3,
     };
-    g.link(&head(user(2), org(9), "employs"), &a3, 3).unwrap();
-    g.link(&head(user(2), org(9), "employs"), &a3, 4).unwrap();
+    link(&mut g, head(user(2), org(9), "employs"), &a3, 3).unwrap();
+    link(&mut g, head(user(2), org(9), "employs"), &a3, 4).unwrap();
     assert_eq!(g.out_nodes(&user(2)).unwrap(), vec![org(9), org(9)]);
     let mut deduped = g.out_nodes(&user(2)).unwrap();
     deduped.sort();
@@ -746,8 +811,9 @@ fn the_edge_set_exports_as_a_table_with_named_endpoints() {
 
     let store = okm_async::TestStore::slatedb_mem();
     let mut g: Graph<_, Employment> = Graph::new(store.clone());
-    g.link(
-        &head(user(1), org(9), "employs"),
+    link(
+        &mut g,
+        head(user(1), org(9), "employs"),
         &Employment {
             since_year: 2020,
             weight: 7,
@@ -831,8 +897,9 @@ fn reindex_rebuilds_the_faces_one_chunk_at_a_time() {
     let store = okm_async::TestStore::slatedb_mem();
     let mut g: Graph<_, Employment> = Graph::new(store.clone());
     for id in 1..=5u64 {
-        g.link(
-            &head(user(id), org(9), "employs"),
+        link(
+            &mut g,
+            head(user(id), org(9), "employs"),
             &Employment {
                 since_year: 2020,
                 weight: id as u32,

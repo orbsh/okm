@@ -73,7 +73,7 @@ use crate::model::schema::SlotMap;
 /// its edge members (ADR-0066 — a grouping is an assertion, not a derivation).
 /// `Derived` is everything a reader can rebuild by replaying the truth through a
 /// write path — declared indexes, reduce accumulators, lead faces, the graph's
-/// traversal faces, the cluster's node members and child index, the
+/// traversal faces, the cluster's child index and its edge → cluster index, the
 /// vector snapshot, the table meta row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Side {
@@ -102,10 +102,20 @@ pub fn side_of(slots: &SlotMap, slot: u16) -> Side {
     // The cluster band (ADR-0066): the cluster row and its edge members are
     // ASSERTIONS — a grouping is written, not derived, and no replay of the edge
     // rows produces it (two sets over the same edges are different sets). The
-    // node members (0x0C) and the child index (0x0D) are the derived halves, so
-    // they stay off the log: they rebuild from 0x0B plus the edge rows.
+    // child index (0x0C) is the derived half, so it stays off the log: it
+    // rebuilds from `parent_id` in the cluster rows.
     if slot == crate::model::hyper::CLUSTER_SLOT || slot == crate::model::hyper::EDGE_MEMBER_SLOT {
         return Side::Truth;
+    }
+    // The DERIVED half of that band, named rather than left to the family
+    // fallback below: the child index (0x0C) rebuilds from `parent_id` in the
+    // cluster rows, and the edge → cluster index (0x0D) rebuilds from the member
+    // rows on 0x0B. Neither is an assertion of its own, so neither reaches the
+    // log — replaying the truth reproduces both.
+    if slot == crate::model::hyper::CHILD_INDEX_SLOT
+        || slot == crate::model::hyper::EDGE_CLUSTER_SLOT
+    {
+        return Side::Derived;
     }
     // Counting families: the two categorical-vocabulary directions are truth (the
     // payload holds ids, ADR-0032); index, reduce and lead are derived.

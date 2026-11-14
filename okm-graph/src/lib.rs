@@ -1,8 +1,8 @@
 //! okm-graph — graph algorithms over okm-core's edge entries and
 //! okm-query's ordered-stream operators.
 //!
-//! The graph already exists in the store: a `Junction` type
-//! double-writes both directions, so a node's neighbor list is one
+//! The graph already exists in the store: every edge writes both
+//! traversal faces (out and in), so a node's neighbor list is one
 //! prefix scan. Algorithms here only iterate that fact — no adjacency
 //! materialization, no new primitive. Community detection (label
 //! propagation) and PageRank are fold passes over neighbor scans.

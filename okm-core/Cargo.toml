@@ -129,10 +129,10 @@ name = "remote_test"
 [[test]]
 name = "save_into_test"
 
-# The cluster faces (ADR-0066): four fixed rows, one write entry point, and the
-# two write-time rules, on the real engine matrix.
+# The cluster faces (ADR-0066): four fixed rows, one write verb (`Fragment`), and
+# the two write-time rules, on the real engine matrix.
 [[test]]
-name = "hyperedge_test"
+name = "cluster_test"
 
 [[test]]
 name = "subscribe_test"

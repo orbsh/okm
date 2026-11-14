@@ -57,10 +57,10 @@
 //! predicate vocabulary (the same 0x04/0x05 pair, per collection).
 //!
 //! Identity: the primary key is the bare `edge_id` (graph-global), so point
-//! reads and `unlink` need only the id; the predicate is a VALUE segment in
+//! reads and a delete need only the id; the predicate is a VALUE segment in
 //! the body and an index dimension on the faces.
 
-use crate::engine::storage::{Batch, VirtualStorage, scan_suffix_kv};
+use crate::engine::storage::{Batch, ScanIter, VirtualStorage, prefix_end, scan_suffix_kv};
 use crate::model::index::{DYNAMIC_SLOT, Document, PRIMARY_SLOT, Slot, write_slot};
 use crate::model::key::KeyEncode;
 use crate::model::obj_vocab::{Faces, PREDICATE_VOCAB, Vocabulary};
@@ -461,29 +461,12 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
         Ok(out)
     }
 
-    /// Write one edge: primary + predicate index + four traversal faces +
-    /// every DECLARED `#[ok_index]` face (and the vocabulary pair on first
-    /// sight of a new predicate), all in one engine batch. Parallel edges
-    /// are separate edges — each call carries a caller-chosen `edge_id`
-    /// (identity allocation stays with the caller; `link` verifies
-    /// non-collision with one point read).
-    pub fn link(&mut self, head: &EdgeHead, payload: &E, edge_id: u64) -> crate::error::Result<()> {
-        let pk = self.primary_key(edge_id);
-        if self.store.get(&pk)?.is_some() {
-            return Err(crate::error::Error::EdgeAlreadyLive { edge_id });
-        }
-        let mut batch = Batch::default();
-        self.write_into(&mut batch, head, payload, edge_id)?;
-        self.store.commit_batch(batch)
-    }
-
-    /// Encode the full write set into an externally owned batch — the
-    /// cross-collection atomic path (documents and edges share one batch,
-    /// one commit covers them all). Vocabulary allocation cannot ride the
-    /// caller's batch (it commits its own), so a first-sight predicate name
-    /// may outlive a failed outer commit — an extra append-only entry is
-    /// harmless by the same rule the obj vocabulary documents.
-    pub fn link_into(
+    /// Encode one edge's full row set into the write fragment's batch: primary +
+    /// four traversal faces + every DECLARED `#[ok_index]` face, and the
+    /// vocabulary pair on first sight of a new predicate. `pub(crate)` because
+    /// [`Graph::incorporate`] is the only way to write an edge — this is the row
+    /// encoder underneath it, never a verb of its own.
+    pub(crate) fn link_into(
         &mut self,
         batch: &mut Batch,
         head: &EdgeHead,
@@ -491,6 +474,23 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
         edge_id: u64,
     ) -> crate::error::Result<()> {
         self.write_into(batch, head, payload, edge_id)
+    }
+
+    /// Re-assert an edge that is already there: every row of the assertion,
+    /// WITHOUT the dynamic segment's delete — the open attributes (0x01) belong
+    /// to the stored assertion and are no declaration's to clear.
+    ///
+    /// This is what `Decl::edge_at` on a live id uses, which is how an update
+    /// (a reduce folded over a named id) keeps the id, the faces and the
+    /// membership rows intact.
+    pub(crate) fn assert_into(
+        &mut self,
+        batch: &mut Batch,
+        head: &EdgeHead,
+        payload: &E,
+        edge_id: u64,
+    ) -> crate::error::Result<()> {
+        self.write_rows(batch, head, payload, edge_id)
     }
 
     /// Every edge id in this graph, in key order — the scan an export needs.
@@ -617,7 +617,22 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
         Ok(Some(out))
     }
 
+    /// A create: the assertion's rows, after the previous occupant's open
+    /// attributes are dropped — a write at this id replaces the segment, so
+    /// nothing inherits a stale prop.
     fn write_into(
+        &mut self,
+        batch: &mut Batch,
+        head: &EdgeHead,
+        payload: &E,
+        edge_id: u64,
+    ) -> crate::error::Result<()> {
+        batch.del(&self.dynamic_key(edge_id));
+        self.write_rows(batch, head, payload, edge_id)
+    }
+
+    /// The rows of one assertion, without touching the dynamic segment.
+    fn write_rows(
         &mut self,
         batch: &mut Batch,
         head: &EdgeHead,
@@ -632,10 +647,6 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
         let dst_wire = head.dst.encode();
         let id_be = edge_id.to_be_bytes();
 
-        // A rewrite replaces the edge outright, so the previous assertion's open
-        // attributes must not survive it. The 0x01 entry is derived from the row
-        // that is being overwritten — one delete, in the same batch.
-        batch.del(&self.dynamic_key(edge_id));
         batch.put(self.primary_key(edge_id), body);
         // out (0x06): [src][dst][edge_id]
         batch.put(
@@ -671,22 +682,19 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
         Ok(())
     }
 
-    /// Remove one edge: decode the body, delete the exact entries the link
-    /// wrote. Declared faces are re-derived by decoding the payload into
-    /// the declaration's type — no prefix sweep, so an unrelated edge with
-    /// a shared attribute value cannot be touched.
-    pub fn unlink(&mut self, edge_id: u64) -> crate::error::Result<()> {
-        let mut batch = Batch::default();
-        self.unlink_into(&mut batch, edge_id)?;
-        self.store.commit_batch(batch)
-    }
-
-    /// Encode the full delete set into an externally owned batch — the
-    /// cross-collection atomic path, and the one that makes a REWRITE one
-    /// commit instead of two (`unlink_into` + `link_into` into the same
-    /// batch: the incumbent's primary is deleted and re-put in order, and
-    /// every stale face goes with it).
-    pub fn unlink_into(&mut self, batch: &mut Batch, edge_id: u64) -> crate::error::Result<()> {
+    /// Delete exactly the rows one edge wrote: decode the body, then delete the
+    /// entries it produced. Declared faces are re-derived by decoding the payload
+    /// into the declaration's type — no prefix sweep, so an unrelated edge with a
+    /// shared attribute value cannot be touched.
+    ///
+    /// `pub(crate)` for the same reason [`link_into`](Self::link_into) is:
+    /// [`Graph::retract`] owns the delete verb, and this is the row encoder it
+    /// calls once per doomed edge.
+    pub(crate) fn unlink_into(
+        &mut self,
+        batch: &mut Batch,
+        edge_id: u64,
+    ) -> crate::error::Result<()> {
         let pk = self.primary_key(edge_id);
         let bytes = self
             .store
@@ -1053,8 +1061,81 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
         self.endpoints(ids, |b| &b.src)
     }
 
+    /// The out-edges of one node as a LAZY, ORDERED, repositionable stream
+    /// (face 0x06) — one [`EdgeStep`] per `next()`, read straight off the entry.
+    ///
+    /// The eager verbs ([`out_edges`](Self::out_edges),
+    /// [`out_nodes`](Self::out_nodes)) answer a `Vec` and are the right shape for
+    /// "list them all". This is the shape for "walk until you find": nothing is
+    /// collected, an abandoned stream stops reading, and
+    /// [`find`](Iterator::find)/[`take`](Iterator::take)/
+    /// [`take_while`](Iterator::take_while) cost only the entries they touch.
+    ///
+    /// **The far endpoint comes from the entry's key.** Every traversal entry
+    /// carries both endpoints (`[src][dst][edge_id]`), so a hop's destination is
+    /// already in hand — this stream never reads the edge's primary row, which
+    /// is one read per hop saved against the `out_edges` + `get_edge` shape. The
+    /// consequence is what the step can say: it knows the endpoints and the id,
+    /// and (only when the scan went through a predicate-qualified face) the
+    /// predicate's id. A hop on 0x06 does not know the predicate, because the
+    /// entry does not carry it — that is exactly why
+    /// [`by`](EdgeStream::by) switches faces instead of filtering afterwards.
+    ///
+    /// The direction is a PARAMETER, not a second API: [`inn`](Self::inn) answers
+    /// the same [`EdgeStream`] over the other face, so the two compose with
+    /// `chain`, `zip` and `flat_map` without an enum of shapes.
+    ///
+    /// **Cycle-unaware, deliberately.** A stream walks one node's face and
+    /// stops; whether two paths reached "the same" node depends on the caller's
+    /// filter (a tenant? a version? a kind?), so a visited set here would answer
+    /// a question the stream cannot see. A hop chain is
+    /// `flat_map`: `let mut here = vec![start]; for _ in 0..n { here = here.iter().flat_map(|node| g.walk(node)).map(|step| step.far).collect(); }`
+    /// — and the caller that needs to stop on revisit owns that set, with its
+    /// memory cost in plain sight.
+    ///
+    /// A fault mid-walk is parked, not raised: [`EdgeStream::error`] answers it,
+    /// because an [`Iterator`] has no place to put one and a corrupt face must
+    /// not read as "no more neighbours" (the rule
+    /// [`SeekScan::error`](crate::model::document::SeekScan::error) states).
+    pub fn out(&self, node: &NodeRef) -> EdgeStream<'_, S> {
+        EdgeStream::new(&self.store, self.ns, Direction::Out, node.clone())
+    }
+
+    /// The in-edges of one node as the same [`EdgeStream`] over face 0x07 —
+    /// [`out`](Self::out) with the direction as its only difference.
+    ///
+    /// Its step's `far` is the SOURCE of the edge (`head.src`), and `head.dst`
+    /// is the node it was started from: the mirror of the out walk, on the face
+    /// the double write already materialized. No second index is involved, so
+    /// "who points at this" costs exactly what "what does this point at" does.
+    pub fn inn(&self, node: &NodeRef) -> EdgeStream<'_, S> {
+        EdgeStream::new(&self.store, self.ns, Direction::In, node.clone())
+    }
+
+    /// One hop out of `node` — the chainable spelling of [`out`](Self::out).
+    ///
+    /// It exists so a traversal reads as one: a hop is
+    /// `g.walk(node)`, two hops is `g.walk(node).flat_map(|s| g.walk(&s.far))`,
+    /// and the depth lives in the caller's iterator chain rather than in a
+    /// verb. It is the same stream, not a shortcut with different semantics.
+    pub fn walk(&self, node: &NodeRef) -> EdgeStream<'_, S> {
+        self.out(node)
+    }
+
+    /// The predicate's vocabulary id, read-only — `None` when no edge ever
+    /// carried it, so no face can hold one.
+    ///
+    /// [`typed_out`](Self::typed_out) needs a `&mut self` because it warms the
+    /// handle's vocabulary cache on the way; this is the same probe with a
+    /// throwaway cache, which is what lets a stream (holding `&self`) push a
+    /// predicate down to the 0x08/0x09 prefix when [`by`](EdgeStream::by) names
+    /// one. One `get` on the predicate's 0x04 face, not a walk of the edges.
+    pub fn predicate_id(&self, predicate: &str) -> crate::error::Result<Option<u16>> {
+        predicate_id_in(&self.store, &self.ns, predicate)
+    }
+
     /// Shared resolve step of the *_nodes helpers: ids → bodies → far
-    /// endpoint. A dead id (concurrent unlink between scan and fetch)
+    /// endpoint. A dead id (concurrent retract between scan and fetch)
     /// drops out silently — neighbors are a scan snapshot, not a
     /// transaction.
     fn endpoints(
@@ -1064,7 +1145,7 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
     ) -> crate::error::Result<Vec<NodeRef>> {
         let mut out = Vec::with_capacity(ids.len());
         for id in ids {
-            // A dead id (concurrent unlink between scan and fetch) drops out:
+            // A dead id (concurrent retract between scan and fetch) drops out:
             // neighbors are a scan snapshot, not a transaction.
             if let Some(body) = self.get_edge(id)? {
                 out.push(side(&body).clone());
@@ -1072,6 +1153,375 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
         }
         Ok(out)
     }
+}
+
+/// Which face a hop walks: forward (0x06 / 0x08) or backward (0x07 / 0x09).
+///
+/// A direction is a VALUE, not a second type: [`Graph::out`] and
+/// [`Graph::inn`] answer the same [`EdgeStream`], so the two directions
+/// `chain`, `zip` and `flat_map` into one traversal without the consumer
+/// matching on a shape.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Direction {
+    /// Forward, source → destination: face 0x06, or 0x08 with a predicate.
+    Out,
+    /// Backward, destination → source: face 0x07, or 0x09 with a predicate.
+    In,
+}
+
+impl Direction {
+    /// The face this direction walks — predicate-qualified (0x08/0x09) when a
+    /// predicate travelled with it, plain (0x06/0x07) when it did not.
+    ///
+    /// One decision, made in one place, so a stream cannot scan the untyped
+    /// face with a predicate set (or the other way round): the two says the
+    /// same thing about where the entries live.
+    pub fn slot(self, predicate: Option<u16>) -> Slot {
+        match (self, predicate) {
+            (Direction::Out, None) => EDGE_OUT_SLOT,
+            (Direction::In, None) => EDGE_IN_SLOT,
+            (Direction::Out, Some(_)) => EDGE_PREDICATE_OUT_SLOT,
+            (Direction::In, Some(_)) => EDGE_PREDICATE_IN_SLOT,
+        }
+    }
+}
+
+/// The head a traversal ENTRY states: the edge's two endpoints, always, and the
+/// predicate's vocabulary id when the entry came off a qualified face.
+///
+/// It is deliberately not [`EdgeHead`]. The untyped faces 0x06/0x07 carry no
+/// predicate at all — that is why filtering by one switches faces instead of
+/// filtering rows — so a step decoded from them cannot answer a predicate
+/// name, and `EdgeHead`'s `String` would have to be invented. `predicate: None`
+/// means \"this entry did not say\", never \"the edge has no predicate\"; the
+/// name behind an id is one vocabulary read away
+/// ([`Graph::predicate_vocab_name`]), and the id itself came off the key.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HopHead {
+    /// The edge's source endpoint.
+    pub src: NodeRef,
+    /// The edge's destination endpoint.
+    pub dst: NodeRef,
+    /// The predicate's vocabulary id, when the face carried one.
+    pub predicate: Option<u16>,
+}
+
+/// One hop, as the traversal entry itself states it.
+///
+/// Everything here comes from the entry's KEY (`[src][dst][edge_id]`, or
+/// `[predicate][…]` on the qualified faces): the far endpoint is the first ref
+/// after the scanned prefix, the id is its trailing eight bytes. No row is
+/// read to build one, so a `find` over a face costs the entries it walks and
+/// nothing else.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EdgeStep {
+    /// The edge's identity — globally unique within the graph, and the id every
+    /// other verb ([`Graph::get_edge`], [`Graph::attrs`], a retract) takes.
+    pub edge_id: u64,
+    /// The endpoint on the FAR side of this step: `head.dst` walking out,
+    /// `head.src` walking in.
+    pub far: NodeRef,
+    /// The head the entry named — the edge's own direction, which is why an out
+    /// step and an in step of ONE edge answer the same `head` and mirrored
+    /// `far`s.
+    pub head: HopHead,
+}
+
+/// The entry on top of an [`EdgeStream`]: its raw face key (the position
+/// [`Seekable`] speaks) and the hop it decodes to.
+struct FaceEntry {
+    key: Vec<u8>,
+    step: EdgeStep,
+}
+
+/// One node's edges, one direction, as a LAZY ORDERED CURSOR.
+///
+/// Built by [`Graph::out`] / [`Graph::inn`] / [`Graph::walk`]; the same type
+/// answers both directions (`Direction` is a field), and
+/// [`by`](Self::by) moves it onto the predicate-qualified face without
+/// changing the type.
+///
+/// Three contracts hold it together:
+///
+/// - **One entry per step.** Construction puts the first entry on top (a
+///   position has to exist before it can be read, the rule
+///   [`SeekScan`](crate::model::document::SeekScan) follows), and each
+///   [`next`](Iterator::next) hands that entry back and pulls at most one more.
+///   So a consumer reads at most one entry ahead of what it was given, and
+///   dropping the stream stops the scan where it stands.
+/// - **Ordered by entry key.** The key is `[header][slot][scanned prefix][far
+///   ref][edge_id]`, so the order is the far endpoint's byte order and then the
+///   id — the address order of the face, not an insertion order. That is what
+///   makes it a [`Seekable`](crate::seek::Seekable) and what makes two streams
+///   over the same face alignable by [`okm-query`'s operators](crate::seek).
+/// - **Cycle-unaware.** The stream answers one node's edges and stops. It does
+///   not dedupe and it does not remember where it has been: \"the same node\"
+///   depends on the caller's filter, and a visited set here would price every
+///   walk for a question only the caller can ask.
+pub struct EdgeStream<'a, S> {
+    /// The engine the face lives in — re-read by [`by`](Self::by), which
+    /// reopens the scan on another face.
+    store: &'a S,
+    /// The graph's namespace, as the two header bytes every key starts with.
+    ns: [u8; 2],
+    /// Which face family this stream walks.
+    dir: Direction,
+    /// The node the walk started from: the scanned prefix, and the `near` side
+    /// of every head the stream reports.
+    node: NodeRef,
+    /// The pushed-down predicate id, or `None` for the untyped face.
+    filter: Option<u16>,
+    /// The face cursor. `None` means this stream is SPENT before its first
+    /// item — a predicate nobody interned has no face to walk, and that is an
+    /// empty answer rather than a scan that discards everything.
+    scan: Option<ScanIter>,
+    /// Bytes of key before the far endpoint: the scanned prefix's length, so
+    /// decoding an entry is a slice, not a re-derived prefix.
+    suffix_at: usize,
+    /// The entry on top; `None` once spent.
+    cur: Option<FaceEntry>,
+    /// The fault that ended the walk, if one did.
+    ///
+    /// [`Iterator`] has no channel for it and [`Seekable`]'s verbs answer
+    /// positions, so it is parked here instead of being reported as a clean
+    /// end — the same rule [`SeekScan::error`](crate::model::document::SeekScan::error)
+    /// states, and the reason a corrupt face cannot read as \"no neighbours\".
+    err: Option<crate::error::Error>,
+}
+
+impl<'a, S: VirtualStorage> EdgeStream<'a, S> {
+    /// Open one node's face and put its first entry on top.
+    ///
+    /// `pub(crate)` because the cluster layer's node form flattens the very same
+    /// streams ([`crate::model::hyper::ClusterStream`]) rather than opening the
+    /// faces a second time.
+    pub(crate) fn new(store: &'a S, ns: [u8; 2], dir: Direction, node: NodeRef) -> Self {
+        let mut stream = Self {
+            store,
+            ns,
+            dir,
+            node,
+            filter: None,
+            scan: None,
+            suffix_at: 0,
+            cur: None,
+            err: None,
+        };
+        stream.reopen(None);
+        stream
+    }
+
+    /// Where this stream walks — the same face family and node it was opened
+    /// on, at whatever filter it carries now.
+    fn prefix(&self) -> Vec<u8> {
+        let mut prefix = self.ns.to_vec();
+        write_slot(&mut prefix, self.dir.slot(self.filter));
+        if let Some(id) = self.filter {
+            prefix.extend_from_slice(&id.to_be_bytes());
+        }
+        prefix.extend_from_slice(&self.node.encode());
+        prefix
+    }
+
+    /// Point the cursor at (possibly) another face and re-fill it.
+    ///
+    /// A filter change is a different FACE, not a narrower range on the same
+    /// one, so the position does not survive: the old scan is dropped and the
+    /// new one starts at its own first entry.
+    fn reopen(&mut self, filter: Option<u16>) {
+        self.filter = filter;
+        let prefix = self.prefix();
+        self.suffix_at = prefix.len();
+        self.cur = None;
+        self.err = None;
+        let end = prefix_end(&prefix);
+        self.scan = Some(self.store.scan_range(&prefix, end.as_deref()));
+        self.fill();
+    }
+
+    /// Put the next decodable entry on top, or clear it when the face ends.
+    ///
+    /// An entry whose key this face cannot carry (a shorter suffix than an
+    /// endpoint plus an id, a ref that does not parse) is skipped rather than
+    /// guessed at — the same fail-closed direction
+    /// [`ids_after_endpoint`](Graph::ids_after_endpoint) takes, since the entry
+    /// belongs to some other layout and inventing a hop from it would be worse
+    /// than not seeing it.
+    fn fill(&mut self) {
+        self.cur = None;
+        loop {
+            // The pull's borrow ends here, so decoding can read `self` freely.
+            let next = match self.scan.as_mut() {
+                Some(scan) => scan.next(),
+                None => return,
+            };
+            match next {
+                None => return,
+                Some(Err(e)) => {
+                    self.err = Some(e);
+                    return;
+                }
+                Some(Ok((key, _))) => {
+                    if let Some(step) = self.decode(&key) {
+                        self.cur = Some(FaceEntry { key, step });
+                        return;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Read one hop out of a face entry's key: `[far ref][edge_id]` after the
+    /// scanned prefix, turned into the edge's own direction with the node this
+    /// stream started from filling the near side.
+    fn decode(&self, key: &[u8]) -> Option<EdgeStep> {
+        let suffix = key.get(self.suffix_at..)?;
+        let (far, taken) = NodeRef::decode(suffix)?;
+        let id_bytes = suffix.get(taken..)?;
+        let id = <[u8; 8]>::try_from(id_bytes).ok()?;
+        let (src, dst) = match self.dir {
+            Direction::Out => (self.node.clone(), far.clone()),
+            Direction::In => (far.clone(), self.node.clone()),
+        };
+        Some(EdgeStep {
+            edge_id: u64::from_be_bytes(id),
+            far,
+            head: HopHead {
+                src,
+                dst,
+                predicate: self.filter,
+            },
+        })
+    }
+
+    /// Narrow this hop to one predicate, PUSHED DOWN onto the 0x08/0x09 prefix
+    /// — one scan of that predicate's entries for this node, not a scan of the
+    /// node's whole face with discards.
+    ///
+    /// The pushed-down form is the same [`EdgeStream`], so `by` sits anywhere a
+    /// stream does: `g.out(&n).by("employs")?.take(2)`. The predicate's id
+    /// comes from the graph's own vocabulary, so an unknown name is an EMPTY
+    /// stream — no edge can carry a predicate nobody ever wrote — and the
+    /// `Result` carries only the vocabulary read's own fault.
+    ///
+    /// A filter change is a new face: the position restarts at that face's
+    /// first entry, and whatever the old cursor had walked is dropped with it
+    /// (it was a different key space, so its keys are not bounds in this one).
+    pub fn by(mut self, predicate: &str) -> crate::error::Result<Self> {
+        match self.predicate_id(predicate)? {
+            Some(id) => {
+                self.reopen(Some(id));
+                Ok(self)
+            }
+            // No face can hold this predicate: spent before the first item,
+            // with no scan opened to read and throw away.
+            None => {
+                self.filter = None;
+                self.scan = None;
+                self.cur = None;
+                Ok(self)
+            }
+        }
+    }
+
+    /// The predicate's vocabulary id, without warming the graph handle's cache
+    /// (this stream holds `&Graph`, not `&mut Graph`, which is what lets two
+    /// streams from one graph be alive at once — and compared).
+    fn predicate_id(&self, predicate: &str) -> crate::error::Result<Option<u16>> {
+        predicate_id_in(self.store, &self.ns, predicate)
+    }
+
+    /// The fault that ended this walk, if an engine failed mid-scan.
+    ///
+    /// `None` for a stream that simply ran out of entries — the distinction
+    /// [`Iterator`] cannot draw, and the one a caller needs before it trusts
+    /// \"no more neighbours\".
+    pub fn error(&self) -> Option<&crate::error::Error> {
+        self.err.as_ref()
+    }
+
+    /// Which direction this stream walks.
+    pub fn direction(&self) -> Direction {
+        self.dir
+    }
+
+    /// The node the walk started from.
+    pub fn node(&self) -> &NodeRef {
+        &self.node
+    }
+
+    /// The pushed-down predicate id, when [`by`](Self::by) narrowed this
+    /// stream.
+    pub fn predicate(&self) -> Option<u16> {
+        self.filter
+    }
+}
+
+impl<S: VirtualStorage> Iterator for EdgeStream<'_, S> {
+    type Item = EdgeStep;
+
+    fn next(&mut self) -> Option<EdgeStep> {
+        let entry = self.cur.take()?;
+        self.fill();
+        Some(entry.step)
+    }
+}
+
+impl<S: VirtualStorage> crate::seek::Seekable for EdgeStream<'_, S> {
+    /// The face entry's RAW key — the byte string the scan's cursor speaks, so
+    /// a position on one stream is directly usable as another's bound when both
+    /// walk the same face family.
+    type Key = Vec<u8>;
+
+    fn key(&self) -> Option<&Vec<u8>> {
+        self.cur.as_ref().map(|entry| &entry.key)
+    }
+
+    fn step(&mut self) -> bool {
+        if self.cur.is_none() {
+            return false;
+        }
+        self.fill();
+        self.cur.is_some()
+    }
+
+    fn seek(&mut self, lower: &Vec<u8>) -> bool {
+        match &self.cur {
+            // At or past the bound: forward-only, so the position is kept.
+            Some(entry) if &entry.key >= lower => return true,
+            // Spent (or never opened): nothing at or after any bound remains.
+            None => return false,
+            Some(_) => {}
+        }
+        let Some(scan) = self.scan.as_mut() else {
+            return false;
+        };
+        // The cursor moves; the entry it lands on is not consumed by the seek,
+        // so `fill` puts it on top (and skips anything undecodable after it).
+        if !scan.seek(lower) {
+            self.cur = None;
+            return false;
+        }
+        self.fill();
+        self.cur.is_some()
+    }
+}
+
+/// The predicate's id, read-only: a throwaway vocabulary cache over a shared
+/// store handle.
+///
+/// The cache exists because the probe answers `Option<u16>` through a
+/// [`Names`](okm_value::Names) door, which is the same door the write path
+/// allocates through; a fresh one costs nothing on a cache miss and cannot go
+/// stale, which is what a `&self` handle needs.
+fn predicate_id_in<S: VirtualStorage + ?Sized>(
+    store: &S,
+    ns: &[u8; 2],
+    predicate: &str,
+) -> crate::error::Result<Option<u16>> {
+    let mut cache = Vocabulary::<u16>::new();
+    let mut door = Faces::<_, u16>::new(store, ns, PREDICATE_VOCAB);
+    cache.id_of(&mut door, predicate)
 }
 
 #[cfg(test)]

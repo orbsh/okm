@@ -8,10 +8,10 @@
 //! in a face of its own — and the graph's topology is untouched.
 //!
 //! ```text
-//! 0x0A  cluster row      [ns][0x0A][kind][hyper_id]                   → [parent u64 BE][dynamic payload]
-//! 0x0B  edge member      [ns][0x0B][kind][hyper_id][edge_id]          → empty
-//! 0x0C  node member      [ns][0x0C][kind][hyper_id][node ref][edge_id] → empty, derived
-//! 0x0D  child cluster    [ns][0x0D][kind][parent_id][hyper_id]        → empty, derived
+//! 0x0A  cluster row      [ns][0x0A][kind][hyper_id]             → [parent u64 BE][dynamic payload]
+//! 0x0B  edge member      [ns][0x0B][kind][hyper_id][edge_id]    → empty
+//! 0x0C  child cluster    [ns][0x0C][kind][parent_id][hyper_id]  → empty, derived
+//! 0x0D  edge → cluster   [ns][0x0D][edge_id][kind][hyper_id]    → empty, derived
 //! ```
 //!
 //! # What is authority and what is an index
@@ -19,60 +19,102 @@
 //! `0x0A` (the cluster) and `0x0B` (its edge members) are truth: a cluster's
 //! existence and its membership are assertions, and a recompute writes a NEW
 //! cluster id rather than overwriting one. `0x0C` and `0x0D` are derived and
-//! rebuildable — `0x0C` from `0x0B` plus the edge rows, `0x0D` from `parent_id`
-//! in the cluster rows — so a miss on either is a freshness problem, never a
+//! rebuildable — `0x0C` from `parent_id` in the cluster rows, `0x0D` from the
+//! member rows themselves — so a miss on either is a freshness problem, never a
 //! correctness one ([`Hyperedges::rebuild_derived`] is the repair verb).
 //!
-//! # Why the node member face carries the node and the edge
+//! `0x0D` is the same fact as `0x0B` read the other way: `0x0B` is
+//! `[kind][cluster][edge]` ("who is in this cluster"), `0x0D` is
+//! `[edge][kind][cluster]` ("which clusters is this edge in"). It exists
+//! because a **traversal is ordered by edge id** and so is this face: the two
+//! are intersectable by key (`intersect_seek` over `Graph::out` and
+//! `Hyperedges::members`), which is what makes "the member edges of C that these
+//! nodes point at" one alignment instead of a hash set. Writing it costs one
+//! more entry per member row, in the same batch, on every add, remove and
+//! retract.
 //!
-//! A cluster's NODES are its member edges' endpoints, deduplicated. `0x0C`
-//! exists to make that projection **ordered and streamable**: the node segment
-//! is the [`NodeRef`] wire (`[ns 2B][len varint][pkey]`, self-delimiting from
-//! the left, so the trailing eight bytes are the edge id), and byte order over
-//! that segment is node order — same ns, then same-width pkeys in numeric order.
-//! Identical nodes from different edges therefore land ADJACENT, so
-//! deduplication costs one comparison with the previous row instead of a set.
+//! # Why there is no node face
 //!
-//! The node COUNT is not obtained by counting `0x0C` rows: it lives in the
-//! cluster row's payload under [`NODE_COUNT`], written by the same batch that
-//! writes the rows, and [`ClusterRow::node_count`] is the reader for it.
+//! A cluster's NODES are its member edges' endpoints, deduplicated — that fact
+//! does not change, only where the projection lives: outside. A derived face
+//! mirroring the endpoints would be a fourth row per grouped edge, and the node
+//! kinds are heterogeneous, so keeping that mirror correct costs more than it
+//! saves. A caller who wants the participants takes the member edges and sorts
+//! or dedupes on its own side: inserting into a sorted list is log n, and no
+//! HashMap is needed.
 //!
 //! # Completeness rests on two write-time rules
 //!
 //! A node exists only as an endpoint of some edge — there is no "create a bare
 //! node" path ([`Error::BareNode`]) — and a cluster exists only with two or
-//! more members ([`Error::ClusterTooSmall`]). Under those two rules the
-//! derivation is total, so no "member without an edge" shape is needed.
+//! more members ([`Error::ClusterTooSmall`]). Both are rules about CREATION: a
+//! delete may leave a node that is an endpoint of nothing, because what a delete
+//! removes is the assertion, not the endpoint.
 //!
-//! # One write entry point
+//! # Two verbs, one direction each
 //!
-//! [`WriteSet`] is the only entry: the declared rows (nodes and edges), the
-//! clusters over them, and the three reduces all land in ONE engine batch, so a
-//! reader sees the whole group or none of it.
+//! [`Graph::incorporate`] writes, [`Graph::retract`] removes. There is no third
+//! verb, and no separate edge-linking one: a [`Fragment`] is the whole unit of
+//! work — the declared rows, the clusters over them and the three reduces — and
+//! it lands in ONE engine batch, so a reader sees the whole group or none of it.
 //!
 //! ```ignore
-//! Vec::<Decl<Employment>>::new()
-//!     .decls([
-//!         Decl::edge(EdgeHead { src: alice(), dst: acme(), predicate: "works_at".into() }),
-//!         Decl::edge(EdgeHead { src: bob(), dst: acme(), predicate: "works_at".into() }),
-//!     ])
-//!     .hyper_edge(HyperEdge::create(Kind::COMMUNITY, attrs("acme")))
+//! let mut fragment = Fragment::<Employment>::new([
+//!     Decl::edge(EdgeHead { src: alice(), dst: acme(), predicate: "works_at".into() }),
+//!     Decl::edge(EdgeHead { src: bob(), dst: acme(), predicate: "works_at".into() }),
+//! ]);
+//! fragment
+//!     .cluster(Cluster::new(Kind::COMMUNITY, attrs("acme")))
 //!     .reduce_node::<Person>(|p| p.seen += 1)
 //!     .reduce_edge(|e| e.weight += 1)
-//!     .reduce_hyper_edge(|h| h.insert("weight".into(), Variant::U64(2)))
-//!     .commit(&mut graph)?;
+//!     .reduce_cluster(|c| c.insert("weight".into(), Variant::U64(2)));
+//! let report = graph.incorporate(fragment)?;
+//!
+//! // The declarations alone are a valid write: the cluster and the three reduces are optional.
+//! graph.incorporate(Fragment::new([Decl::edge(EdgeHead { src: alice(), dst: acme(), predicate: "works_at".into() })]))?;
 //! ```
 //!
 //! Membership is idempotent by construction: a member row is `(kind, cluster,
 //! edge)`, so writing the same triple twice is one row.
+//!
+//! # There is no update verb
+//!
+//! An update IS `incorporate` with a reduce. Naming an edge at its own id
+//! ([`Decl::edge_at`], or `Fragment::cluster` on an existing cluster) makes the
+//! fragment's reducers fold over that row, so the payload changes while the id,
+//! its faces and its membership rows stand.
+//!
+//! # What a delete takes
+//!
+//! [`Graph::retract`] is the inverse: a fragment whose declarations are
+//! `delete_node` / `delete_edge`, plus the cluster `delete` it may carry. Nothing
+//! that is merely absent is a refusal — an id no row holds is nothing to do, and
+//! the report says zero.
+//!
+//! - Deleting a NODE deletes every edge incident to it: both traversal faces,
+//!   the predicate faces, the payload row, and those edges' cluster membership
+//!   rows. A node cannot be left with a dangling edge.
+//! - Deleting an EDGE leaves both endpoints alone, even when they are then
+//!   connected to nothing. "A node exists only as an endpoint" is about
+//!   creation, not about what a delete may leave behind. The two rules do not
+//!   contradict each other: one is the cascade a node's absence forces, the
+//!   other is what an edge's absence forces (nothing).
+//!
+//! A cluster that drops below two members stops existing, so its remaining
+//! membership rows leave too — and the report counts every membership row that
+//! went, not only the doomed edges' own.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use okm_value::{Dict, Variant, decode_named};
 
-use crate::engine::storage::{Batch, BatchStore, VirtualStorage, prefix_end, scan_suffix_kv};
+use crate::engine::storage::{
+    Batch, BatchStore, ScanIter, VirtualStorage, prefix_end, scan_suffix_kv,
+};
 use crate::error::{Error, Result};
-use crate::model::graph::{EdgeHead, Graph, GraphEncode, NodeRef, NodeSet, decode_body};
+use crate::model::graph::{
+    Direction, EdgeHead, EdgeStep, EdgeStream, Graph, GraphEncode, NodeRef, NodeSet,
+};
 use crate::model::index::{Document, PRIMARY_SLOT, Slot, write_slot};
 use crate::model::obj_vocab::{FIELD_VOCAB, Faces, Vocabulary};
 
@@ -85,20 +127,24 @@ use crate::model::obj_vocab::{FIELD_VOCAB, Faces, Vocabulary};
 pub const CLUSTER_SLOT: Slot = 0x0A;
 /// Fixed face 0x0B: one row per member EDGE — the authority for membership.
 pub const EDGE_MEMBER_SLOT: Slot = 0x0B;
-/// Fixed face 0x0C: one row per (member edge, endpoint) — the ordered, streamable
-/// node projection. Derived, rebuildable from `0x0B` plus the edge rows.
-pub const NODE_MEMBER_SLOT: Slot = 0x0C;
-/// Fixed face 0x0D: the child index `[kind][parent][child]`, derived from
+/// Fixed face 0x0C: the derived child index `[kind][parent][child]`, derived from
 /// `parent_id` in the cluster rows so "list a cluster's children" is one clean
 /// prefix scan instead of a walk over every cluster of the kind.
-pub const CHILD_SLOT: Slot = 0x0D;
+pub const CHILD_INDEX_SLOT: Slot = 0x0C;
+/// Fixed face 0x0D: the derived EDGE → CLUSTER index
+/// `[ns][0x0D][edge_id][kind][hyper_id]` — the reverse direction of `0x0B`,
+/// derived from the member rows so it rebuilds from `0x0B` alone.
+///
+/// `edge_id` leads on purpose: the face is then ordered by edge id, which is the
+/// order an edge-id stream is in, so a perceptive caller can align the two with
+/// `okm-query`'s set operators instead of materializing a set. `(kind,
+/// hyper_id)` follow, so a membership test for a known
+/// `(kind, cluster, edge)` is one exact key — [`member_of`] is that read.
+pub const EDGE_CLUSTER_SLOT: Slot = 0x0D;
 
 /// Payload name carrying the number of member EDGES, maintained by the write
-/// path. Reserved: the writer stamps it last, after `reduce_hyper_edge` runs.
+/// path. Reserved: the writer stamps it last, after `reduce_cluster` runs.
 pub const MEMBER_COUNT: &str = "members";
-/// Payload name carrying the number of distinct member NODES. This is the count
-/// a reader trusts — never a count of `0x0C` rows.
-pub const NODE_COUNT: &str = "nodes";
 
 /// The cluster's kind: a one-byte CLOSED vocabulary (community / event /
 /// subgraph / scope), kept in the key so one face serves every kind. Byte `0` is
@@ -124,7 +170,7 @@ impl Kind {
 }
 
 /// One cluster, named by kind and runtime id — the pair every row of the group
-/// carries, and the identity `merge`/`split`/`reassign` speak in.
+/// carries, and the identity `incorporate`/`split`/`reassign` speak in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ClusterRef {
     pub kind: Kind,
@@ -144,8 +190,7 @@ pub struct ClusterRow {
     /// reader slices it without decoding anything.
     pub parent: u64,
     /// The dynamic tail: member count, weight, last write time — whatever the
-    /// writer put there. [`MEMBER_COUNT`] and [`NODE_COUNT`] are maintained by
-    /// the write path.
+    /// writer put there. [`MEMBER_COUNT`] is maintained by the write path.
     pub payload: Dict,
 }
 
@@ -153,11 +198,6 @@ impl ClusterRow {
     /// Member edges, from the payload (0 when the name is absent).
     pub fn member_count(&self) -> u64 {
         count_of(&self.payload, MEMBER_COUNT)
-    }
-
-    /// Distinct member nodes, from the payload (0 when the name is absent).
-    pub fn node_count(&self) -> u64 {
-        count_of(&self.payload, NODE_COUNT)
     }
 }
 
@@ -167,18 +207,18 @@ impl ClusterRow {
 /// `parent` nests the cluster through the row's own head, so no second face is
 /// needed to express a hierarchy — `0` means "no parent".
 #[derive(Clone, Debug, Default)]
-pub struct HyperEdge {
+pub struct Cluster {
     pub kind: Kind,
-    /// `None` allocates one; `Some(id)` merges into the cluster already there.
+    /// `None` allocates one; `Some(id)` incorporates into the cluster already there.
     pub id: Option<u64>,
     pub payload: Dict,
     /// The parent cluster's id, `0` for none.
     pub parent: u64,
 }
 
-impl HyperEdge {
-    /// A NEW cluster over this batch's edges.
-    pub fn create(kind: Kind, payload: Dict) -> Self {
+impl Cluster {
+    /// A NEW cluster over this fragment's edges.
+    pub fn new(kind: Kind, payload: Dict) -> Self {
         Self {
             kind,
             id: None,
@@ -187,13 +227,13 @@ impl HyperEdge {
         }
     }
 
-    /// Merge into the cluster `id`: its members gain this batch's edges and its
+    /// Incorporate into the cluster `id`: its members gain this fragment's edges and its
     /// payload gains this declaration's names (a name both carry is overwritten).
     ///
-    /// The id is also how a batch addresses a cluster it is creating in the same
-    /// commit — an id the batch would allocate cannot be named before the call,
+    /// The id is also how a fragment addresses a cluster it is creating in the same
+    /// commit — an id the fragment would allocate cannot be named before the call,
     /// so `Some(id)` on an id no row holds creates that cluster.
-    pub fn merge_into(kind: Kind, id: u64, payload: Dict) -> Self {
+    pub fn into(kind: Kind, id: u64, payload: Dict) -> Self {
         Self {
             kind,
             id: Some(id),
@@ -209,39 +249,41 @@ impl HyperEdge {
     }
 }
 
-/// What one write set reports back: the ids it allocated.
+/// What one fragment reports back: the ids it allocated.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct WriteReport {
     /// The edges this write created, in declaration order.
     pub edge_ids: Vec<u64>,
-    /// The clusters this write allocated (a `HyperEdge` with `id: None`, then any
-    /// `split`'s new cluster), in that order.
+    /// The clusters this write allocated (a `Cluster` with `id: None`), in
+    /// declaration order.
     pub hyper_ids: Vec<u64>,
 }
 
-/// Member sets of two clusters, compared as sets: what "between two versions"
-/// means (ADR-0066 §5 — a recompute writes a new id, and a diff is ordinary set
-/// arithmetic over the two member scans).
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct ClusterDiff {
-    pub shared: Vec<u64>,
-    pub only_a: Vec<u64>,
-    pub only_b: Vec<u64>,
-}
-
-impl ClusterDiff {
-    /// No member moved either way.
-    pub fn is_empty(&self) -> bool {
-        self.only_a.is_empty() && self.only_b.is_empty()
-    }
+/// What one `retract` removed — the inverse of [`WriteReport`], counted in rows
+/// that are no longer there. A refusal is never "the id was not there": an
+/// absent node or edge is nothing to do, and it contributes zero.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RetractReport {
+    /// Node deletions honored: a node counts when at least one edge named it, so
+    /// the cascade removed something. A node no edge names is not in the graph
+    /// (a node exists only as an endpoint), so retracting it reports zero.
+    pub nodes: usize,
+    /// Edges actually there and removed — including the ones a node's cascade
+    /// pulled in.
+    pub edges: usize,
+    /// Membership rows removed: the doomed edges' own, plus every row a cluster
+    /// took with it when it dropped below two members.
+    pub memberships: usize,
 }
 
 /// What a derived-face rebuild did.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct DerivedReport {
+    /// Cluster rows walked — the child index's derived-from.
     pub clusters: usize,
+    /// Member rows walked — the edge → cluster index's derived-from.
     pub members: usize,
-    pub node_rows: usize,
+    /// Commits the rebuild took.
     pub chunks: usize,
 }
 
@@ -278,22 +320,10 @@ pub fn edge_member_key(ns: &[u8; 2], cluster: ClusterRef, edge_id: u64) -> Vec<u
     key
 }
 
-/// `[ns][0x0C][kind][hyper_id][node ref][edge_id]` — one endpoint of one member
-/// edge. The node segment is the `NodeRef` wire, so it is self-delimiting and
-/// the trailing eight bytes are always the edge id.
-pub fn node_member_key(ns: &[u8; 2], cluster: ClusterRef, node: &NodeRef, edge_id: u64) -> Vec<u8> {
-    let mut key = face_prefix(ns, NODE_MEMBER_SLOT);
-    key.push(cluster.kind.0);
-    push_u64(&mut key, cluster.id);
-    key.extend_from_slice(&node.encode());
-    push_u64(&mut key, edge_id);
-    key
-}
-
-/// `[ns][0x0D][kind][parent_id][hyper_id]` — the child index, one row per
+/// `[ns][0x0C][kind][parent_id][hyper_id]` — the child index, one row per
 /// (parent, child) pair.
 pub fn child_key(ns: &[u8; 2], kind: Kind, parent: u64, child: u64) -> Vec<u8> {
-    let mut key = face_prefix(ns, CHILD_SLOT);
+    let mut key = face_prefix(ns, CHILD_INDEX_SLOT);
     key.push(kind.0);
     push_u64(&mut key, parent);
     push_u64(&mut key, child);
@@ -315,19 +345,31 @@ pub fn members_prefix(ns: &[u8; 2], cluster: ClusterRef) -> Vec<u8> {
     key
 }
 
-/// `[ns][0x0C][kind][hyper_id]` — every node member row of one cluster.
-pub fn node_members_prefix(ns: &[u8; 2], cluster: ClusterRef) -> Vec<u8> {
-    let mut key = face_prefix(ns, NODE_MEMBER_SLOT);
+/// `[ns][0x0C][kind][parent_id]` — every child of one cluster.
+pub fn children_prefix(ns: &[u8; 2], kind: Kind, parent: u64) -> Vec<u8> {
+    let mut key = face_prefix(ns, CHILD_INDEX_SLOT);
+    key.push(kind.0);
+    push_u64(&mut key, parent);
+    key
+}
+
+/// `[ns][0x0D][edge_id][kind][hyper_id]` — one edge's membership in one cluster,
+/// derived from the member row that says the same thing the other way round.
+///
+/// Edge id first: the face is ordered by edge, so it aligns with any stream
+/// keyed by edge id. `(kind, hyper_id)` after it, so the triple is one exact key.
+pub fn edge_cluster_key(ns: &[u8; 2], edge_id: u64, cluster: ClusterRef) -> Vec<u8> {
+    let mut key = face_prefix(ns, EDGE_CLUSTER_SLOT);
+    push_u64(&mut key, edge_id);
     key.push(cluster.kind.0);
     push_u64(&mut key, cluster.id);
     key
 }
 
-/// `[ns][0x0D][kind][parent_id]` — every child of one cluster.
-pub fn children_prefix(ns: &[u8; 2], kind: Kind, parent: u64) -> Vec<u8> {
-    let mut key = face_prefix(ns, CHILD_SLOT);
-    key.push(kind.0);
-    push_u64(&mut key, parent);
+/// `[ns][0x0D][edge_id]` — every cluster one edge belongs to.
+pub fn edge_clusters_prefix(ns: &[u8; 2], edge_id: u64) -> Vec<u8> {
+    let mut key = face_prefix(ns, EDGE_CLUSTER_SLOT);
+    push_u64(&mut key, edge_id);
     key
 }
 
@@ -435,38 +477,12 @@ fn member_ids<S: VirtualStorage + ?Sized>(
         .collect())
 }
 
-/// The node member rows of one cluster, in key order: `(node, edge)` per row.
-fn node_member_rows<S: VirtualStorage + ?Sized>(
-    store: &S,
-    ns: &[u8; 2],
-    cluster: ClusterRef,
-) -> Result<Vec<(NodeRef, u64)>> {
-    let mut out = Vec::new();
-    for (suffix, _) in scan_suffix_kv(store, &node_members_prefix(ns, cluster))? {
-        let Some((node, used)) = NodeRef::decode(&suffix) else {
-            continue;
-        };
-        // The node segment is self-delimiting; what follows it is the edge id,
-        // and a row of another width is not one of ours.
-        let Some(edge) = be_u64(&suffix[used..]) else {
-            continue;
-        };
-        if suffix.len() != used + 8 {
-            continue;
-        }
-        out.push((node, edge));
-    }
-    Ok(out)
-}
-
-/// The state one cluster write has to build on: the row, its member set, and the
-/// node rows the derived face already holds.
+/// The state one cluster write has to build on: the row and its member set.
 struct ClusterState {
     exists: bool,
     parent: u64,
     payload: Dict,
     members: BTreeSet<u64>,
-    nodes: Vec<(NodeRef, u64)>,
 }
 
 fn read_cluster<S: VirtualStorage + ?Sized>(
@@ -479,7 +495,6 @@ fn read_cluster<S: VirtualStorage + ?Sized>(
         parent: 0,
         payload: Dict::new(),
         members: BTreeSet::new(),
-        nodes: Vec::new(),
     };
     if let Some(raw) = store.get(&cluster_key(ns, cluster.kind, cluster.id))? {
         state.exists = true;
@@ -490,29 +505,7 @@ fn read_cluster<S: VirtualStorage + ?Sized>(
         }
     }
     state.members = member_ids(store, ns, cluster)?.into_iter().collect();
-    state.nodes = node_member_rows(store, ns, cluster)?;
     Ok(state)
-}
-
-/// One edge's endpoints, or `None` when the key holds no edge. An edge this same
-/// write set is creating is answered from `batch` — its primary row is in the
-/// batch, not in the store yet.
-fn edge_endpoints<S: VirtualStorage + ?Sized>(
-    store: &S,
-    ns: &[u8; 2],
-    edge_id: u64,
-    batch: &BTreeMap<u64, (NodeRef, NodeRef)>,
-) -> Result<Option<(NodeRef, NodeRef)>> {
-    if let Some(pair) = batch.get(&edge_id) {
-        return Ok(Some(pair.clone()));
-    }
-    let mut key = face_prefix(ns, PRIMARY_SLOT);
-    push_u64(&mut key, edge_id);
-    let Some(body) = store.get(&key)? else {
-        return Ok(None);
-    };
-    let parsed = decode_body(&body);
-    Ok(Some((parsed.src, parsed.dst)))
 }
 
 /// The next cluster id no row holds, for one kind: the highest `hyper_id` under
@@ -612,26 +605,7 @@ impl<S: VirtualStorage> Hyperedges<S> {
         member_ids(&self.store, &self.ns, cluster)
     }
 
-    /// The node member rows, in key order: `(node, edge)` per row, duplicates
-    /// adjacent. This is the streaming form, not a set.
-    pub fn node_rows(&self, cluster: ClusterRef) -> Result<Vec<(NodeRef, u64)>> {
-        node_member_rows(&self.store, &self.ns, cluster)
-    }
-
-    /// The cluster's member NODES, deduplicated: one pass over `0x0C` comparing
-    /// each row's node with the previous one (the face orders them so duplicates
-    /// are adjacent), never a set.
-    pub fn nodes(&self, cluster: ClusterRef) -> Result<Vec<NodeRef>> {
-        let mut out: Vec<NodeRef> = Vec::new();
-        for (node, _) in node_member_rows(&self.store, &self.ns, cluster)? {
-            if out.last() != Some(&node) {
-                out.push(node);
-            }
-        }
-        Ok(out)
-    }
-
-    /// The children of one cluster: one scan of `[ns][0x0D][kind][parent]`.
+    /// The children of one cluster: one scan of `[ns][0x0C][kind][parent]`.
     pub fn children(&self, kind: Kind, parent: u64) -> Result<Vec<u64>> {
         Ok(
             scan_suffix_kv(&self.store, &children_prefix(&self.ns, kind, parent))?
@@ -647,32 +621,30 @@ impl<S: VirtualStorage> Hyperedges<S> {
         Ok(self.lookup(cluster)?.map_or(0, |row| row.parent))
     }
 
-    /// Two clusters' member sets, as set arithmetic.
-    pub fn diff(&self, a: ClusterRef, b: ClusterRef) -> Result<ClusterDiff> {
-        let left: BTreeSet<u64> = self.members(a)?.into_iter().collect();
-        let right: BTreeSet<u64> = self.members(b)?.into_iter().collect();
-        Ok(ClusterDiff {
-            shared: left.intersection(&right).copied().collect(),
-            only_a: left.difference(&right).copied().collect(),
-            only_b: right.difference(&left).copied().collect(),
-        })
-    }
-
-    /// Rebuild the two DERIVED faces (`0x0C`, `0x0D`) from the rows that carry
-    /// the truth, and answer what was written.
+    /// Rebuild the DERIVED faces (`0x0C`, `0x0D`) from the rows that carry the
+    /// truth, and answer what was written.
     ///
     /// Sweep first, derive second — an entry's key encodes the value it was
     /// derived from, so a member that moved answers at a key no row produces any
     /// more, and re-deriving writes the new key without naming the old one.
     /// `chunk` bounds the ops per commit; a reader running DURING the rebuild
     /// sees a half-built face (operator window: do not read while it runs).
+    ///
+    /// The two faces are rebuilt from their OWN sources: the child index from
+    /// `parent_id` in the cluster rows, the edge → cluster index from the member
+    /// rows (`0x0B`) — never from each other, and never from the face being
+    /// rebuilt. That is what makes `0x0D` rebuildable from `0x0B` ALONE, and it
+    /// is the property the write path is checked against: the same input rows
+    /// answer the same bytes either way.
     pub fn rebuild_derived(&self, chunk: usize) -> Result<DerivedReport> {
         let chunk = chunk.max(1);
         let mut report = DerivedReport::default();
         let mut batch = Batch::default();
 
-        // Phase 1 — sweep both derived faces.
-        for slot in [NODE_MEMBER_SLOT, CHILD_SLOT] {
+        // Phase 1 — sweep both derived faces. One sweep per face because a key
+        // from one face is not a key of the other; the loop keeps a half-built
+        // store bounded by `chunk` either way.
+        for slot in [CHILD_INDEX_SLOT, EDGE_CLUSTER_SLOT] {
             let prefix = face_prefix(&self.ns, slot);
             for item in self
                 .store
@@ -717,7 +689,11 @@ impl<S: VirtualStorage> Hyperedges<S> {
             }
         }
 
-        // Phase 3 — the node members, from `0x0B` plus the edge rows.
+        // Phase 3 — the edge → cluster index, from the MEMBER rows: `0x0B` is
+        // `[kind][cluster][edge]`, so each row states one `(edge, kind,
+        // cluster)` triple and the derived key is that triple in the face's own
+        // order. Nothing here reads the face being written, which is what makes
+        // this rebuild possible with `0x0D` wiped.
         let prefix = face_prefix(&self.ns, EDGE_MEMBER_SLOT);
         for item in self
             .store
@@ -732,14 +708,8 @@ impl<S: VirtualStorage> Hyperedges<S> {
                 continue;
             };
             let cluster = ClusterRef::new(Kind(suffix[0]), id);
+            batch.put(edge_cluster_key(&self.ns, edge, cluster), Vec::new());
             report.members += 1;
-            if let Some((src, dst)) = edge_endpoints(&self.store, &self.ns, edge, &BTreeMap::new())?
-            {
-                for node in [src, dst] {
-                    batch.put(node_member_key(&self.ns, cluster, &node, edge), Vec::new());
-                    report.node_rows += 1;
-                }
-            }
             if batch.ops.len() >= chunk {
                 self.store.commit_batch(std::mem::take(&mut batch))?;
                 report.chunks += 1;
@@ -754,22 +724,391 @@ impl<S: VirtualStorage> Hyperedges<S> {
 }
 
 // ---------------------------------------------------------------------------
+// The reverse index as a stream (0x0D)
+// ---------------------------------------------------------------------------
+
+/// What a cluster stream is asked about: one EDGE (`u64`) or one NODE
+/// (`NodeRef`, or a reference to one).
+///
+/// It exists because the two questions share one name and Rust has no
+/// overloading: `graph.clusters_of(edge_id)` walks one edge's `0x0D` run, and
+/// `graph.clusters_of(&node)` walks the node's incident edges and flattens their
+/// runs. One name, two costs, one cursor type.
+pub trait ClusterSubject {
+    /// The cursor's open — the only thing the two subjects do differently.
+    fn open<'a, S: VirtualStorage>(self, store: &'a S, ns: [u8; 2]) -> ClusterStream<'a, S>;
+}
+
+impl ClusterSubject for u64 {
+    fn open<'a, S: VirtualStorage>(self, store: &'a S, ns: [u8; 2]) -> ClusterStream<'a, S> {
+        ClusterStream::of_edge(store, ns, self)
+    }
+}
+
+impl ClusterSubject for NodeRef {
+    fn open<'a, S: VirtualStorage>(self, store: &'a S, ns: [u8; 2]) -> ClusterStream<'a, S> {
+        ClusterStream::of_node(store, ns, &self)
+    }
+}
+
+impl ClusterSubject for &NodeRef {
+    fn open<'a, S: VirtualStorage>(self, store: &'a S, ns: [u8; 2]) -> ClusterStream<'a, S> {
+        ClusterStream::of_node(store, ns, self)
+    }
+}
+
+/// The clusters some subject belongs to, as a LAZY ORDERED cursor over the
+/// derived face `0x0D`.
+///
+/// One subject, two shapes — and the shape is a field, not a second type:
+///
+/// - **an edge** (`u64`): one prefix scan of `[ns][0x0D][edge_id]`, whose
+///   suffixes are `[kind][hyper_id]`. One entry per cluster the edge is in.
+/// - **a node** (`NodeRef`): its incident edges (`0x06` then `0x07`, the same
+///   [`EdgeStream`] a traversal walks) `flat_map`ed through the edge form, with
+///   adjacent duplicates collapsed.
+///
+/// # Cost, stated plainly
+///
+/// The edge form is one scan and reads exactly its own entries. The node form
+/// opens one scan of the out face, then one of the in face, then ONE scan per
+/// incident edge (`0x0D` is keyed by edge, so an edge's clusters are contiguous
+/// and nothing else's are) — so its cost is `out-degree + in-degree + 1` scans,
+/// and each of them reads only the entries it answers. That is the price of
+/// keying the face by edge id: it is what makes the face alignable with an
+/// edge-ordered stream, and it is why a node degree of ten thousand is a
+/// thousand-segment walk rather than one scan. A caller that needs one cluster's
+/// members the other way round takes
+/// [`members`](Hyperedges::members) — that face is keyed by cluster, and it is
+/// one scan.
+///
+/// Duplicates: only ADJACENT ones collapse. Within one edge there are none (the
+/// key is unique), and across edges the same cluster repeats only when two
+/// incident edges are in it — which is not necessarily adjacent, because the
+/// entries are ordered by edge id, not by `(kind, hyper_id)`. A caller that
+/// needs a set collects into one; the stream deliberately does not, because the
+/// set would have to be held for the whole walk and the walk is the point.
+///
+/// Derived, not truth: an entry here is a copy of a `0x0B` row, so a missing one
+/// is a stale index (repair with [`Hyperedges::rebuild_derived`]) and never a
+/// wrong answer about what the graph holds.
+pub struct ClusterStream<'a, S> {
+    store: &'a S,
+    ns: [u8; 2],
+    /// The cursor over the CURRENT key space: one edge's `[kind][hyper_id]` run.
+    scan: Option<ScanIter>,
+    /// Bytes of key before the `[kind][hyper_id]` pair.
+    suffix_at: usize,
+    /// The entry on top: its raw key (the [`Seekable`] position) and the cluster
+    /// it names.
+    cur: Option<(Vec<u8>, ClusterRef)>,
+    /// The edge this stream is about, in the edge form.
+    edge: Option<u64>,
+    /// The node this stream is about, in the node form.
+    node: Option<NodeRef>,
+    /// The node's out-edges, then (lazily) its in-edges — the two directions
+    /// concatenated are still ascending by key, because `0x06` < `0x07`.
+    out: Option<EdgeStream<'a, S>>,
+    inn: Option<EdgeStream<'a, S>>,
+    /// The last cluster answered, for adjacent-duplicate collapse.
+    last: Option<ClusterRef>,
+    /// The fault that ended the walk, if one did — [`Seekable`] has no channel
+    /// for one, the same rule [`EdgeStream::error`] follows.
+    err: Option<Error>,
+}
+
+impl<'a, S: VirtualStorage> ClusterStream<'a, S> {
+    /// One edge's clusters.
+    fn of_edge(store: &'a S, ns: [u8; 2], edge_id: u64) -> Self {
+        let mut stream = Self {
+            store,
+            ns,
+            scan: None,
+            suffix_at: 0,
+            cur: None,
+            edge: Some(edge_id),
+            node: None,
+            out: None,
+            inn: None,
+            last: None,
+            err: None,
+        };
+        stream.open_edge(edge_id);
+        stream.fill();
+        stream
+    }
+
+    /// One node's clusters: its incident edges, flattened.
+    fn of_node(store: &'a S, ns: [u8; 2], node: &NodeRef) -> Self {
+        let mut stream = Self {
+            store,
+            ns,
+            scan: None,
+            suffix_at: 0,
+            cur: None,
+            edge: None,
+            node: Some(node.clone()),
+            out: Some(EdgeStream::new(store, ns, Direction::Out, node.clone())),
+            inn: None,
+            last: None,
+            err: None,
+        };
+        stream.fill();
+        stream
+    }
+
+    /// Point the cursor at one edge's run — the key space changes, so the
+    /// position does too.
+    fn open_edge(&mut self, edge_id: u64) {
+        let prefix = edge_clusters_prefix(&self.ns, edge_id);
+        self.suffix_at = prefix.len();
+        self.cur = None;
+        let end = prefix_end(&prefix);
+        self.scan = Some(self.store.scan_range(&prefix, end.as_deref()));
+    }
+
+    /// The next incident edge of the node form: the out face to exhaustion, then
+    /// the in face. Opened lazily so a node with out-edges never pays for a scan
+    /// of its in face it does not need.
+    fn next_edge(&mut self) -> Option<EdgeStep> {
+        self.node.as_ref()?;
+        let done_with_out = match self.out.as_mut() {
+            Some(out) => match out.next() {
+                Some(step) => return Some(step),
+                None => true,
+            },
+            None => false,
+        };
+        if done_with_out {
+            self.out = None;
+            let node = self.node.as_ref()?.clone();
+            self.inn = Some(EdgeStream::new(self.store, self.ns, Direction::In, node));
+        }
+        self.inn.as_mut()?.next()
+    }
+
+    /// One entry's cluster: `[kind][hyper_id]` after the scanned prefix, nothing
+    /// else. A suffix of another width is not this face's and is skipped.
+    fn decode(&self, key: &[u8]) -> Option<ClusterRef> {
+        let suffix = key.get(self.suffix_at..)?;
+        if suffix.len() != 9 {
+            return None;
+        }
+        Some(ClusterRef::new(Kind(suffix[0]), be_u64(&suffix[1..])?))
+    }
+
+    /// Put the next answer on top, or clear it when there is none left.
+    ///
+    /// A duplicate of the entry just answered is dropped here rather than handed
+    /// out twice — the adjacent-run collapse of the node form.
+    fn fill(&mut self) {
+        loop {
+            if self.cur.is_some() {
+                return;
+            }
+            let pulled = self.scan.as_mut().map(|scan| scan.next());
+            match pulled {
+                Some(Some(Ok((key, _)))) => {
+                    if let Some(cluster) = self.decode(&key)
+                        && self.last != Some(cluster)
+                    {
+                        self.last = Some(cluster);
+                        self.cur = Some((key, cluster));
+                    }
+                    continue;
+                }
+                Some(Some(Err(e))) => {
+                    self.err = Some(e);
+                    self.scan = None;
+                    return;
+                }
+                // This key space is exhausted (or there is none yet).
+                Some(None) | None => self.scan = None,
+            }
+            match self.next_edge() {
+                Some(step) => self.open_edge(step.edge_id),
+                None => return,
+            }
+        }
+    }
+
+    /// The fault that ended this walk, if an engine failed mid-scan.
+    pub fn error(&self) -> Option<&Error> {
+        self.err.as_ref()
+    }
+
+    /// The edge this stream was opened on — `None` for the node form, whose key
+    /// space changes as it walks.
+    pub fn edge(&self) -> Option<u64> {
+        self.edge
+    }
+
+    /// Whether this stream walks one edge's run or a node's incident edges.
+    pub fn is_edge_form(&self) -> bool {
+        self.edge.is_some()
+    }
+
+    /// The node this stream was opened on — `None` for the edge form.
+    pub fn node(&self) -> Option<&NodeRef> {
+        self.node.as_ref()
+    }
+}
+
+impl<S: VirtualStorage> Iterator for ClusterStream<'_, S> {
+    type Item = ClusterRef;
+
+    fn next(&mut self) -> Option<ClusterRef> {
+        let (_, cluster) = self.cur.take()?;
+        self.fill();
+        Some(cluster)
+    }
+}
+
+impl<S: VirtualStorage> crate::seek::Seekable for ClusterStream<'_, S> {
+    /// The `0x0D` entry's raw key — the byte string the scan's cursor speaks.
+    type Key = Vec<u8>;
+
+    fn key(&self) -> Option<&Vec<u8>> {
+        self.cur.as_ref().map(|(key, _)| key)
+    }
+
+    fn step(&mut self) -> bool {
+        if self.cur.is_none() {
+            return false;
+        }
+        self.cur = None;
+        self.fill();
+        self.cur.is_some()
+    }
+
+    fn seek(&mut self, lower: &Vec<u8>) -> bool {
+        match &self.cur {
+            // At or past the bound: forward-only, the position is kept.
+            Some((key, _)) if key >= lower => return true,
+            // The cursor is filled to exhaustion by `fill`, so no position means
+            // no entries left.
+            None => return false,
+            Some(_) => {}
+        }
+        if self.node.is_none() {
+            // Edge form: one key space, so the scan can REPOSITION instead of
+            // walking the gap.
+            let moved = match self.scan.as_mut() {
+                Some(scan) => scan.seek(lower),
+                None => false,
+            };
+            self.cur = None;
+            if !moved {
+                self.scan = None;
+                return false;
+            }
+            self.fill();
+            return self.cur.is_some();
+        }
+        // Node form: the bound may live in a LATER edge's run, and the runs are
+        // separate scans — so this degrades to a drain, one item per step. The
+        // trait documents that as the honest cost where no cursor exists.
+        loop {
+            if !self.step() {
+                return false;
+            }
+            if let Some((key, _)) = &self.cur
+                && key >= lower
+            {
+                return true;
+            }
+        }
+    }
+}
+
+/// Is `edge_id` a member of `cluster`? One point read of the derived face — the
+/// read that makes a membership test a `.filter` predicate inside a traversal
+/// instead of a set built beforehand.
+fn member_of_in<S: VirtualStorage + ?Sized>(
+    store: &S,
+    ns: &[u8; 2],
+    cluster: ClusterRef,
+    edge_id: u64,
+) -> Result<bool> {
+    Ok(store
+        .get(&edge_cluster_key(ns, edge_id, cluster))?
+        .is_some())
+}
+
+impl<S: VirtualStorage> Hyperedges<S> {
+    /// The clusters one edge belongs to, in `(kind, hyper_id)` order — the
+    /// derived face read by its leading segment.
+    pub fn clusters_of(&self, edge_id: u64) -> ClusterStream<'_, S> {
+        ClusterStream::of_edge(&self.store, self.ns, edge_id)
+    }
+
+    /// Is this edge a member of this cluster? The derived face's exact key, one
+    /// read.
+    pub fn member_of(&self, cluster: ClusterRef, edge_id: u64) -> Result<bool> {
+        member_of_in(&self.store, &self.ns, cluster, edge_id)
+    }
+}
+
+impl<S: VirtualStorage, G: GraphEncode> Graph<S, G> {
+    /// The clusters one edge belongs to — [`ClusterStream`] over `0x0D`, or over
+    /// a node's incident edges when given a [`NodeRef`] (see the type's cost
+    /// note: the node form costs one scan per incident edge).
+    ///
+    /// ```ignore
+    /// for cluster in graph.clusters_of(edge_id) { /* derived, ordered by edge */ }
+    /// for cluster in graph.clusters_of(&node) { /* flat_map over its edges */ }
+    /// ```
+    pub fn clusters_of<Q: ClusterSubject>(&self, subject: Q) -> ClusterStream<'_, S> {
+        subject.open(self.store(), self.ns().to_be_bytes())
+    }
+
+    /// Is `edge_id` a member of cluster `(kind, cluster)`? One point read of the
+    /// derived face — `Ok(false)` for a member row that is not there.
+    ///
+    /// Not a `bool`: a point read can fault, and a fault reported as \"not a
+    /// member\" is how a broken store would read as an empty cluster. The
+    /// traversal-filter spelling is
+    /// `.filter(|step| graph.member_of(kind, cluster, step.edge_id).unwrap_or(false))`
+    /// — the `unwrap_or` is the caller saying what a fault means to it.
+    pub fn member_of(&self, kind: Kind, cluster: u64, edge_id: u64) -> Result<bool> {
+        member_of_in(
+            self.store(),
+            &self.ns().to_be_bytes(),
+            ClusterRef::new(kind, cluster),
+            edge_id,
+        )
+    }
+}
+
+// ---------------------------------------------------------------------------
 // The write entry point
 // ---------------------------------------------------------------------------
 
-/// One row a write set declares. TWO variants, always: many node kinds live in
-/// the enum `#[derive(GraphEncode)]` already generates for `#[ok_nodes(…)]` (one
-/// variant per collection, ns from each table's own `#[ok_ns]`), so a new
-/// participating table is one name in the graph's declaration and nothing here.
+/// One row a fragment declares. Node kinds live in the enum
+/// `#[derive(GraphEncode)]` already generates for `#[ok_nodes(…)]` (one variant
+/// per collection, ns from each table's own `#[ok_ns]`), so a new participating
+/// table is one name in the graph's declaration and nothing here.
 pub enum Decl<G: GraphEncode> {
-    /// A node this batch touches, by collection and key encoding. It must be an
-    /// endpoint of an edge this batch writes — the noded side has no other
+    /// A node this fragment touches, by collection and key encoding. It must be an
+    /// endpoint of an edge this fragment writes — the noded side has no other
     /// creation path.
     Node(G::Nodes, Vec<u8>),
-    /// An edge this batch creates. Its identity is allocated at run time
+    /// An edge this fragment creates. Its identity is allocated at run time
     /// (`max + 1`), because parallel edges are separate edges and a declaration
     /// order is not an identity.
     Edge(EdgeHead),
+    /// An edge AT a given id — how a fragment NAMES an edge that is already
+    /// there. An id no row holds creates the edge there (the restore path,
+    /// ADR-0062, where the source's ids are the file's); an id that is live
+    /// re-asserts that row in place, so this fragment's `reduce_edge` folds over
+    /// it and a cluster declaration can adopt it as a member.
+    ///
+    /// A different head at the same id is the in-place rewrite: the old
+    /// assertion's rows leave and the new ones land in the same batch, so the id
+    /// was never absent (ADR-0010's arbitration). Payload and open attributes
+    /// survive a re-assertion of the SAME head; a replaced assertion takes its
+    /// attributes with it.
+    EdgeAt(EdgeHead, u64),
 }
 
 impl<G: GraphEncode> Decl<G> {
@@ -782,20 +1121,12 @@ impl<G: GraphEncode> Decl<G> {
     pub fn edge(head: EdgeHead) -> Self {
         Decl::Edge(head)
     }
-}
 
-/// The batch as one value: `Vec::<Decl<G>>::new().decls([…])` starts it.
-pub trait DeclSet<G: GraphEncode + Default>: Sized {
-    /// Declare the rows this write set writes, then answer the write set.
-    fn decls<I: IntoIterator<Item = Decl<G>>>(self, decls: I) -> WriteSet<G>;
-}
-
-impl<G: GraphEncode + Default> DeclSet<G> for Vec<Decl<G>> {
-    fn decls<I: IntoIterator<Item = Decl<G>>>(self, decls: I) -> WriteSet<G> {
-        let mut set = WriteSet::empty();
-        set.rows.extend(self);
-        set.rows.extend(decls);
-        set
+    /// An edge declaration at a caller-chosen id — create when that id is free,
+    /// re-assert (or rewrite) when it is live: never a second edge, because the
+    /// id is the identity.
+    pub fn edge_at(head: EdgeHead, edge_id: u64) -> Self {
+        Decl::EdgeAt(head, edge_id)
     }
 }
 
@@ -805,13 +1136,13 @@ struct ClusterPlan {
     /// The parent to write; `None` = keep whatever the row already says.
     parent: Option<u64>,
     payload: Dict,
-    /// Whether the payload came from the caller (so `reduce_hyper_edge` runs on
+    /// Whether the payload came from the caller (so `reduce_cluster` runs on
     /// it), as opposed to being carried over from the stored row.
     from_caller: bool,
     /// Whether a declaration asked for this cluster (as opposed to an op that
     /// only moves members).
     declared: bool,
-    /// The cluster is removed outright: a merge source, or a drop below two
+    /// The cluster is removed outright: an incorporation source, or a drop below two
     /// members.
     delete_row: bool,
     add: BTreeSet<u64>,
@@ -828,8 +1159,6 @@ struct ClusterOutcome {
     payload: Dict,
     put_members: Vec<u64>,
     del_members: Vec<u64>,
-    put_nodes: Vec<(NodeRef, u64)>,
-    del_nodes: Vec<(NodeRef, u64)>,
 }
 
 enum ClusterOp {
@@ -838,20 +1167,9 @@ enum ClusterOp {
     /// Remove a cluster outright.
     Delete(ClusterRef),
     /// Union several clusters' members into one, deleting the sources.
-    Merge {
+    Incorporate {
         sources: Vec<ClusterRef>,
         into: ClusterRef,
-    },
-    /// Move `members` out of `cluster` into a new cluster.
-    Split {
-        cluster: ClusterRef,
-        members: Vec<u64>,
-    },
-    /// Move one existing edge between clusters.
-    Reassign {
-        edge: u64,
-        from: ClusterRef,
-        to: ClusterRef,
     },
 }
 
@@ -918,56 +1236,61 @@ where
     }
 }
 
-/// The one write entry point (ADR-0066 §7): declared rows, the clusters over
-/// them, and the three reduces, all encoded into ONE batch.
 /// A reduce over the graph's own edge payload — one type per graph, so one field.
 pub type EdgeReduce<G> = Box<dyn FnMut(&mut G)>;
 
 /// A reduce over a cluster's dynamic payload; clusters are not declared types.
-pub type HyperReduce = Box<dyn FnMut(&mut Dict)>;
+pub type ClusterReduce = Box<dyn FnMut(&mut Dict)>;
 
-pub struct WriteSet<G: GraphEncode + Default> {
+/// The write fragment (ADR-0066 §7): the declared rows, the clusters over them and
+/// the three reduces, all encoded into ONE engine batch by
+/// [`Graph::incorporate`]; the delete declarations go the other way, through
+/// [`Graph::retract`].
+pub struct Fragment<G: GraphEncode + Default> {
     rows: Vec<Decl<G>>,
-    clusters: Vec<HyperEdge>,
+    clusters: Vec<Cluster>,
     ops: Vec<ClusterOp>,
-    deletes: Vec<u64>,
+    edge_deletes: Vec<u64>,
+    node_deletes: Vec<NodeRef>,
     node_reducers: Vec<Box<dyn NodeReduce>>,
     edge_reducer: Option<EdgeReduce<G>>,
-    hyper_reducer: Option<HyperReduce>,
+    cluster_reducer: Option<ClusterReduce>,
 }
 
-impl<G: GraphEncode + Default> WriteSet<G> {
+impl<G: GraphEncode + Default> Fragment<G> {
+    /// The fragment as one value: its declarations are the only required part, and whatever a builder below attaches — a cluster, a reducer — is optional, so a fragment of declarations alone writes just its nodes and edges.
+    pub fn new<I: IntoIterator<Item = Decl<G>>>(decls: I) -> Self {
+        let mut fragment = Self::empty();
+        fragment.rows.extend(decls);
+        fragment
+    }
+
     fn empty() -> Self {
         Self {
             rows: Vec::new(),
             clusters: Vec::new(),
             ops: Vec::new(),
-            deletes: Vec::new(),
+            edge_deletes: Vec::new(),
+            node_deletes: Vec::new(),
             node_reducers: Vec::new(),
             edge_reducer: None,
-            hyper_reducer: None,
+            cluster_reducer: None,
         }
     }
 
-    /// Declare more rows (the entry verb is [`DeclSet::decls`] on the empty Vec).
-    pub fn decls<I: IntoIterator<Item = Decl<G>>>(mut self, decls: I) -> Self {
-        self.rows.extend(decls);
-        self
-    }
-
-    /// The cluster this batch's edges belong to. `id: None` creates one and
-    /// reports the id allocated for it; `Some(id)` merges into the cluster
+    /// The cluster this fragment's edges belong to. `id: None` creates one and
+    /// reports the id allocated for it; `Some(id)` incorporates into the cluster
     /// already there.
-    pub fn hyper_edge(mut self, hyper: HyperEdge) -> Self {
-        self.clusters.push(hyper);
+    pub fn cluster(&mut self, cluster: Cluster) -> &mut Self {
+        self.clusters.push(cluster);
         self
     }
 
-    /// Fold every node of collection `R` that this batch touches — declared, or
+    /// Fold every node of collection `R` that this fragment touches — declared, or
     /// merely an endpoint of an edge it writes (endpoints are created on
     /// demand). One closure per collection, because node rows are
     /// heterogeneous.
-    pub fn reduce_node<R>(mut self, f: impl FnMut(&mut R) + 'static) -> Self
+    pub fn reduce_node<R>(&mut self, f: impl FnMut(&mut R) + 'static) -> &mut Self
     where
         R: Document + Default + 'static,
     {
@@ -980,7 +1303,7 @@ impl<G: GraphEncode + Default> WriteSet<G> {
 
     /// Fold every edge this batch creates. One payload type per graph, so one
     /// closure.
-    pub fn reduce_edge(mut self, f: impl FnMut(&mut G) + 'static) -> Self {
+    pub fn reduce_edge(&mut self, f: impl FnMut(&mut G) + 'static) -> &mut Self {
         self.edge_reducer = Some(Box::new(f));
         self
     }
@@ -988,14 +1311,17 @@ impl<G: GraphEncode + Default> WriteSet<G> {
     /// Fold every cluster payload this batch declares — `&mut Dict`, because a
     /// cluster's payload is dynamic (its `kind` is a run-time vocabulary, so no
     /// declared Rust type exists for it).
-    pub fn reduce_hyper_edge(mut self, f: impl FnMut(&mut Dict) + 'static) -> Self {
-        self.hyper_reducer = Some(Box::new(f));
+    ///
+    /// Optional, like every builder here: a batch with only declarations writes
+    /// just the nodes and edges.
+    pub fn reduce_cluster(&mut self, f: impl FnMut(&mut Dict) + 'static) -> &mut Self {
+        self.cluster_reducer = Some(Box::new(f));
         self
     }
 
     /// Drop this batch's edges from `cluster`. A cluster left with fewer than
     /// two members stops existing (ADR-0066 §3), so its rows go with them.
-    pub fn remove(mut self, cluster: ClusterRef) -> Self {
+    pub fn remove(&mut self, cluster: ClusterRef) -> &mut Self {
         self.ops.push(ClusterOp::Remove(cluster));
         self
     }
@@ -1003,68 +1329,103 @@ impl<G: GraphEncode + Default> WriteSet<G> {
     /// Remove `cluster` outright: its row, its member rows and its derived rows,
     /// in this batch. Idempotent — a cluster that is not there has nothing to
     /// delete, the same rule the engine's own `del` follows.
-    pub fn delete(mut self, cluster: ClusterRef) -> Self {
+    pub fn delete(&mut self, cluster: ClusterRef) -> &mut Self {
         self.ops.push(ClusterOp::Delete(cluster));
         self
     }
 
     /// Union `sources`' members into `into` and remove the sources.
-    pub fn merge<I: IntoIterator<Item = ClusterRef>>(
-        mut self,
+    pub fn incorporate<I: IntoIterator<Item = ClusterRef>>(
+        &mut self,
         sources: I,
         into: ClusterRef,
-    ) -> Self {
-        self.ops.push(ClusterOp::Merge {
+    ) -> &mut Self {
+        self.ops.push(ClusterOp::Incorporate {
             sources: sources.into_iter().collect(),
             into,
         });
         self
     }
 
-    /// Move `members` out of `cluster` into a NEW cluster (its id comes back in
-    /// the report).
-    pub fn split(mut self, cluster: ClusterRef, members: Vec<u64>) -> Self {
-        self.ops.push(ClusterOp::Split { cluster, members });
-        self
-    }
-
-    /// Move one existing edge from one cluster to another. Writing the same
-    /// `(kind, cluster, edge)` twice upserts one row, so this is idempotent.
-    pub fn reassign(mut self, edge: u64, from: ClusterRef, to: ClusterRef) -> Self {
-        self.ops.push(ClusterOp::Reassign { edge, from, to });
-        self
-    }
-
-    /// Delete an edge — and every membership row it owns — in the same batch.
+    /// Delete one edge — and every membership row it owns — in the same batch
+    /// as the rest of the fragment's deletes. Read by [`Graph::retract`].
     ///
     /// Deletion is a WRITE-PATH contract, not a cascade (ADR-0066 §5): the edge's
-    /// rows and its `0x0B`/`0x0C` rows leave together, and a cluster that drops
-    /// below two members leaves with them. A miss would be a freshness problem
-    /// rather than a correctness one (`0x0C` rebuilds), which is why nothing here
-    /// needs a trigger or a sweeper.
+    /// rows and its `0x0B` rows leave together, and a cluster that drops below
+    /// two members leaves with them. A miss would be a freshness problem rather
+    /// than a correctness one (the child index rebuilds), which is why nothing
+    /// here needs a trigger or a sweeper.
     ///
     /// The clusters an edge belongs to are found by ONE pass over the member face
     /// (`0x0B` is the authority, and there is no reverse index — a member row is
     /// `[kind][cluster][edge]`, so "which clusters hold this edge" is a scan by
-    /// suffix). One pass serves every edge this write set deletes.
-    pub fn unlink(mut self, edge_id: u64) -> Self {
-        self.deletes.push(edge_id);
+    /// suffix). One pass serves every edge this fragment deletes.
+    ///
+    /// An id no row holds is nothing to do, not a refusal: the report says zero.
+    pub fn delete_edge(&mut self, edge_id: u64) -> &mut Self {
+        self.edge_deletes.push(edge_id);
         self
     }
 
-    /// Encode the whole write set into `batch` and commit it as ONE engine
-    /// commit. A refused write set writes nothing: every check runs before the
-    /// commit, and the batch is dropped.
-    pub fn commit<S: VirtualStorage>(self, graph: &mut Graph<S, G>) -> Result<WriteReport> {
-        let mut batch = Batch::default();
-        let report = self.write_into(graph, &mut batch)?;
-        graph.store().commit_batch(batch)?;
-        Ok(report)
+    /// Delete one node AND every edge incident to it — both traversal faces, the
+    /// predicate faces, the payload row, and those edges' cluster membership
+    /// rows. A node cannot be left with a dangling edge.
+    ///
+    /// The node's own document row is not this verb's to remove: a `NodeRef`
+    /// names a table's ns and a key, not that table's key header (`[partition]
+    /// [ns]`, ADR-0014 §5), so the row a reducer materialized leaves through its
+    /// collection's own delete. What changes here is the graph: after this
+    /// fragment, no edge names the node, which is the only sense in which a node
+    /// exists at all (ADR-0066 §3).
+    ///
+    /// A node no edge names is not in the graph, so retracting it is nothing to
+    /// do — the report says zero, the same tolerant reading an absent id gets.
+    pub fn delete_node(&mut self, node: NodeRef) -> &mut Self {
+        self.node_deletes.push(node);
+        self
     }
 
-    /// The cross-collection atomic path: the same write set, into a batch the
-    /// caller owns (documents and clusters commit together).
-    pub fn write_into<S: VirtualStorage>(
+    /// A retract fragment removes, and only removes. Anything that declares rows,
+    /// clusters or reduces belongs to [`Graph::incorporate`] — a fragment
+    /// carrying both would have two meanings in one batch.
+    ///
+    /// The cluster `delete` is a removal, so it rides this verb; `remove` is
+    /// already satisfied (every doomed edge is dropped from every cluster that
+    /// holds it), and a cluster merge is a write, so it does not.
+    fn check_retractable(&self) -> Result<()> {
+        let writes = self.rows.len()
+            + self.clusters.len()
+            + self.node_reducers.len()
+            + usize::from(self.edge_reducer.is_some())
+            + usize::from(self.cluster_reducer.is_some())
+            + self
+                .ops
+                .iter()
+                .filter(|op| matches!(op, ClusterOp::Incorporate { .. }))
+                .count();
+        if writes > 0 {
+            return Err(Error::RetractWithWrites {
+                declarations: writes,
+            });
+        }
+        Ok(())
+    }
+
+    /// `incorporate` writes, and a fragment that declares deletions belongs to
+    /// [`Graph::retract`] — two verbs with one meaning each.
+    fn check_incorporable(&self) -> Result<()> {
+        let deletions = self.edge_deletes.len() + self.node_deletes.len();
+        if deletions > 0 {
+            return Err(Error::IncorporateWithDeletes { deletions });
+        }
+        Ok(())
+    }
+
+    /// The cross-collection atomic path: the same batch, encoded into an engine
+    /// batch the caller owns (documents and clusters commit together). Nothing is
+    /// written until the caller commits `batch` — [`Graph::incorporate`] is the
+    /// verb that commits it for you.
+    fn write_into<S: VirtualStorage>(
         mut self,
         graph: &mut Graph<S, G>,
         batch: &mut Batch,
@@ -1073,13 +1434,17 @@ impl<G: GraphEncode + Default> WriteSet<G> {
         let mut report = WriteReport::default();
 
         // ---- 1. The decls: members, endpoints, and the bare-node rule ----
-        let mut heads: Vec<EdgeHead> = Vec::new();
+        let mut edges: Vec<(&EdgeHead, Option<u64>)> = Vec::new();
         let mut endpoints: BTreeSet<(u16, Vec<u8>)> = BTreeSet::new();
         for decl in &self.rows {
-            if let Decl::Edge(head) = decl {
+            match decl {
+                Decl::Edge(head) => edges.push((head, None)),
+                Decl::EdgeAt(head, id) => edges.push((head, Some(*id))),
+                Decl::Node(..) => {}
+            }
+            if let Decl::Edge(head) | Decl::EdgeAt(head, _) = decl {
                 endpoints.insert((head.src.ns_id(), head.src.pkey.clone()));
                 endpoints.insert((head.dst.ns_id(), head.dst.pkey.clone()));
-                heads.push(head.clone());
             }
         }
         for decl in &self.rows {
@@ -1094,7 +1459,15 @@ impl<G: GraphEncode + Default> WriteSet<G> {
             }
         }
 
-        // ---- 2. The edges: runtime ids, every face, in this batch ----
+        // ---- 2. The edges: identity first, then every face, in this batch ----
+        //
+        // `Decl::edge_at` is how a fragment NAMES an edge that is already there.
+        // Naming it does three things at once, and all three are the same fact:
+        // the row is re-asserted (so this fragment's `reduce_edge` folds over
+        // it — the update path), its membership rows are the ones the cluster
+        // declarations below write, and a head that differs is an in-place
+        // rewrite rather than a refusal.
+        let reserved: BTreeSet<u64> = edges.iter().filter_map(|(_, id)| *id).collect();
         let mut next_edge = match graph.max_edge_id()? {
             Some(max) => max.checked_add(1),
             None => Some(0),
@@ -1102,48 +1475,79 @@ impl<G: GraphEncode + Default> WriteSet<G> {
         .ok_or_else(|| Error::Corrupt {
             what: "edge ids are exhausted: u64::MAX is live".to_string(),
         })?;
-        let mut bodies: BTreeMap<u64, (NodeRef, NodeRef)> = BTreeMap::new();
-        for head in &heads {
-            let id = next_edge;
-            next_edge = next_edge.saturating_add(1);
-            let mut payload = G::default();
-            if let Some(reduce) = self.edge_reducer.as_mut() {
-                reduce(&mut payload);
+        for (head, explicit) in edges {
+            let id = match explicit {
+                Some(id) => id,
+                None => {
+                    while reserved.contains(&next_edge) {
+                        next_edge = next_edge.saturating_add(1);
+                    }
+                    let id = next_edge;
+                    next_edge = next_edge.saturating_add(1);
+                    id
+                }
+            };
+            match graph.get_edge(id)? {
+                Some(stored) => {
+                    // The stored payload, with this fragment's reducers folded
+                    // over it: an update is a write, and it keeps the id.
+                    let mut payload = G::decode_payload(&stored.payload);
+                    if let Some(reduce) = self.edge_reducer.as_mut() {
+                        reduce(&mut payload);
+                    }
+                    let same_head = stored.src == head.src
+                        && stored.dst == head.dst
+                        && graph
+                            .predicate_vocab_name(stored.predicate_vocab_id)?
+                            .as_deref()
+                            == Some(head.predicate.as_str());
+                    if same_head {
+                        // Re-assertion: the same assertion, whose rows are
+                        // already right — its open attributes (0x01) are a
+                        // segment of their own and not this declaration's to
+                        // clear.
+                        graph.assert_into(batch, head, &payload, id)?;
+                    } else {
+                        // A new head at the same id: the old assertion's rows
+                        // leave and the new ones land in ONE batch, so at commit
+                        // the id was never absent — the in-place rewrite
+                        // (ADR-0010's arbitration), now spelled as a declaration.
+                        graph.unlink_into(batch, id)?;
+                        graph.link_into(batch, head, &payload, id)?;
+                    }
+                }
+                None => {
+                    let mut payload = G::default();
+                    if let Some(reduce) = self.edge_reducer.as_mut() {
+                        reduce(&mut payload);
+                    }
+                    graph.link_into(batch, head, &payload, id)?;
+                }
             }
-            graph.link_into(batch, head, &payload, id)?;
-            bodies.insert(id, (head.src.clone(), head.dst.clone()));
             report.edge_ids.push(id);
         }
         let batch_edges: Vec<u64> = report.edge_ids.clone();
 
         // ---- 3. Cluster ids: allocated at run time, per kind ----
-        // Every kind this write set can allocate in: the ones it declares and the
-        // ones its ops move members in or out of (a `split` creates a cluster in
-        // the source's kind, so the floor has to be known before it allocates).
+        // Every kind this fragment can allocate in: the ones it declares and the
+        // ones its ops move members in or out of.
         let mut kinds: BTreeSet<u8> = BTreeSet::new();
-        for hyper in &self.clusters {
-            kinds.insert(hyper.kind.0);
+        for cluster in &self.clusters {
+            kinds.insert(cluster.kind.0);
         }
         for op in &self.ops {
             match op {
                 ClusterOp::Remove(cluster) => {
                     kinds.insert(cluster.kind.0);
                 }
-                ClusterOp::Merge { sources, into } => {
+                ClusterOp::Incorporate { sources, into } => {
                     kinds.insert(into.kind.0);
                     for source in sources {
                         kinds.insert(source.kind.0);
                     }
                 }
-                ClusterOp::Split { cluster, .. } => {
-                    kinds.insert(cluster.kind.0);
-                }
                 ClusterOp::Delete(cluster) => {
                     kinds.insert(cluster.kind.0);
-                }
-                ClusterOp::Reassign { from, to, .. } => {
-                    kinds.insert(from.kind.0);
-                    kinds.insert(to.kind.0);
                 }
             }
         }
@@ -1155,20 +1559,20 @@ impl<G: GraphEncode + Default> WriteSet<G> {
         // An explicit id reserves the range above it, so a `None` declared
         // BEFORE it cannot take a number it has already claimed — and `0` is
         // reserved for "no parent", so it is nobody's id.
-        for hyper in &self.clusters {
-            match hyper.id {
+        for cluster in &self.clusters {
+            match cluster.id {
                 Some(0) => return Err(Error::ReservedClusterId),
                 Some(id) => {
-                    let slot = next_id.entry(hyper.kind.0).or_insert(1);
+                    let slot = next_id.entry(cluster.kind.0).or_insert(1);
                     *slot = (*slot).max(id.saturating_add(1));
                 }
                 None => {}
             }
         }
         let mut assigned: Vec<u64> = Vec::with_capacity(self.clusters.len());
-        for hyper in &self.clusters {
-            let slot = next_id.entry(hyper.kind.0).or_insert(1);
-            match hyper.id {
+        for cluster in &self.clusters {
+            let slot = next_id.entry(cluster.kind.0).or_insert(1);
+            match cluster.id {
                 Some(id) => assigned.push(id),
                 None => {
                     let id = *slot;
@@ -1181,12 +1585,12 @@ impl<G: GraphEncode + Default> WriteSet<G> {
 
         // ---- 4. The plan: one record per cluster this batch touches ----
         let mut plan: BTreeMap<(u8, u64), ClusterPlan> = BTreeMap::new();
-        for (hyper, id) in self.clusters.iter().zip(&assigned) {
-            let entry = plan.entry((hyper.kind.0, *id)).or_default();
+        for (cluster, id) in self.clusters.iter().zip(&assigned) {
+            let entry = plan.entry((cluster.kind.0, *id)).or_default();
             entry.declared = true;
-            entry.parent = Some(hyper.parent);
+            entry.parent = Some(cluster.parent);
             entry.from_caller = true;
-            for (name, value) in hyper.payload.iter() {
+            for (name, value) in cluster.payload.iter() {
                 entry.payload.insert(name.clone(), value.clone());
             }
             entry.add.extend(batch_edges.iter().copied());
@@ -1206,17 +1610,7 @@ impl<G: GraphEncode + Default> WriteSet<G> {
                     entry.delete_row = true;
                     entry.declared = true;
                 }
-                ClusterOp::Reassign { edge, from, to } => {
-                    plan.entry((from.kind.0, from.id))
-                        .or_default()
-                        .remove
-                        .insert(*edge);
-                    plan.entry((to.kind.0, to.id))
-                        .or_default()
-                        .add
-                        .insert(*edge);
-                }
-                ClusterOp::Merge { sources, into } => {
+                ClusterOp::Incorporate { sources, into } => {
                     // The target's row is rewritten (its counts change), but it
                     // is not DECLARED here: merging into a cluster that does not
                     // exist is a mistake, not a creation.
@@ -1239,73 +1633,48 @@ impl<G: GraphEncode + Default> WriteSet<G> {
                         gone.remove.extend(state.members.iter().copied());
                     }
                 }
-                ClusterOp::Split { cluster, members } => {
-                    let state = read_cluster(graph.store(), &ns, *cluster)?;
-                    if !state.exists {
-                        return Err(Error::ClusterNotFound {
-                            kind: cluster.kind.0,
-                            id: cluster.id,
-                        });
-                    }
-                    let slot = next_id.entry(cluster.kind.0).or_insert(1);
-                    let id = *slot;
-                    *slot = slot.saturating_add(1);
-                    let fresh = plan.entry((cluster.kind.0, id)).or_default();
-                    fresh.declared = true;
-                    fresh.parent = Some(state.parent);
-                    fresh.payload = state.payload.clone();
-                    fresh.add.extend(members.iter().copied());
-                    let source = plan.entry((cluster.kind.0, cluster.id)).or_default();
-                    source.remove.extend(members.iter().copied());
-                    report.hyper_ids.push(id);
-                }
             }
         }
 
-        // ---- 4b. Edges leaving: membership rows go in the same batch ----
-        //
-        // One pass over the member face serves every deletion: a member row is
-        // `[kind][cluster][edge]`, so an edge's clusters are found by SUFFIX.
-        // There is no reverse index, and none is needed — this runs once per
-        // write set that deletes something, not once per edge.
-        if !self.deletes.is_empty() {
-            let doomed: BTreeSet<u64> = self.deletes.iter().copied().collect();
-            let prefix = face_prefix(&ns, EDGE_MEMBER_SLOT);
-            for (suffix, _) in scan_suffix_kv(graph.store(), &prefix)? {
-                if suffix.len() != 17 {
-                    continue;
-                }
-                let (Some(id), Some(edge)) = (be_u64(&suffix[1..9]), be_u64(&suffix[9..])) else {
-                    continue;
-                };
-                if doomed.contains(&edge) {
-                    plan.entry((suffix[0], id)).or_default().remove.insert(edge);
-                }
-            }
-            for edge in &self.deletes {
-                graph.unlink_into(batch, *edge)?;
-            }
-        }
+        // ---- 5. The rows: outcomes, then the faces, one batch ----
+        self.apply_plan(graph, &ns, &endpoints, plan, batch)?;
+        Ok(report)
+    }
 
-        // ---- 5. Outcomes: read the state, derive the rows ----
+    /// Steps 5 and 6 of a batch, for BOTH verbs: read every planned cluster's
+    /// state, derive the rows it ends up with, then write the node rows and the
+    /// cluster faces into `batch`. Answers how many membership rows it deleted —
+    /// the number `retract` reports.
+    fn apply_plan<S: VirtualStorage>(
+        &mut self,
+        graph: &Graph<S, G>,
+        ns: &[u8; 2],
+        endpoints: &BTreeSet<(u16, Vec<u8>)>,
+        plan: BTreeMap<(u8, u64), ClusterPlan>,
+        batch: &mut Batch,
+    ) -> Result<usize> {
+        let mut deleted_members = 0usize;
         let mut outcomes: Vec<ClusterOutcome> = Vec::with_capacity(plan.len());
         for ((kind, id), mut entry) in plan {
             let cluster = ClusterRef::new(Kind(kind), id);
-            let state = read_cluster(graph.store(), &ns, cluster)?;
+            let state = read_cluster(graph.store(), ns, cluster)?;
             if !state.exists && !entry.declared {
                 // An op named a cluster that is not there and this batch does
                 // not create it: there is nothing to move members in or out of.
                 return Err(Error::ClusterNotFound { kind, id });
             }
             // `add` wins over `remove` for the same edge: this write's claim is
-            // the later one, and it is what makes `reassign(e, c, c)` a no-op
-            // instead of a self-deletion.
+            // the later one, and it is what makes a fragment that both adopts
+            // an edge into a cluster and removes it from that same cluster a
+            // no-op instead of a self-deletion.
             let mut members = state.members.clone();
             for gone in &entry.remove {
                 members.remove(gone);
             }
             members.extend(entry.add.iter().copied());
-            if members.len() < 2 && !state.exists {
+            // A cluster below two members may not be CREATED — but a delete is
+            // not a creation, so an id that was never there is nothing to do.
+            if members.len() < 2 && !state.exists && !entry.delete_row {
                 return Err(Error::ClusterTooSmall {
                     kind,
                     id,
@@ -1321,27 +1690,8 @@ impl<G: GraphEncode + Default> WriteSet<G> {
                 for (name, value) in entry.payload.iter() {
                     payload.insert(name.clone(), value.clone());
                 }
-                if let Some(reduce) = self.hyper_reducer.as_mut().filter(|_| entry.from_caller) {
+                if let Some(reduce) = self.cluster_reducer.as_mut().filter(|_| entry.from_caller) {
                     reduce(&mut payload);
-                }
-            }
-
-            // Node refs: the derived face's rows for members that stay, plus the
-            // endpoints of the edges this write adds. A node count is the size
-            // of THAT set — never the number of 0x0C rows.
-            let mut refs: BTreeSet<NodeRef> = BTreeSet::new();
-            for (node, edge) in &state.nodes {
-                if members.contains(edge) {
-                    refs.insert(node.clone());
-                }
-            }
-            for edge in &entry.add {
-                if !members.contains(edge) {
-                    continue;
-                }
-                if let Some((src, dst)) = edge_endpoints(graph.store(), &ns, *edge, &bodies)? {
-                    refs.insert(src);
-                    refs.insert(dst);
                 }
             }
 
@@ -1354,31 +1704,12 @@ impl<G: GraphEncode + Default> WriteSet<G> {
                     state.members.difference(&members).copied().collect(),
                 )
             };
-            let mut put_nodes: Vec<(NodeRef, u64)> = Vec::new();
-            for edge in &put_members {
-                if let Some((src, dst)) = edge_endpoints(graph.store(), &ns, *edge, &bodies)? {
-                    put_nodes.push((src, *edge));
-                    put_nodes.push((dst, *edge));
-                }
-            }
-            let mut del_nodes: Vec<(NodeRef, u64)> = Vec::new();
-            for edge in &del_members {
-                if let Some((src, dst)) = edge_endpoints(graph.store(), &ns, *edge, &bodies)? {
-                    del_nodes.push((src, *edge));
-                    del_nodes.push((dst, *edge));
-                }
-            }
-            if delete_row {
-                // The derived face's own rows go too, so nothing survives a
-                // cluster's removal — including rows of edges that are gone.
-                del_nodes.extend(state.nodes.iter().cloned());
-            }
 
             if !delete_row {
                 payload.insert(MEMBER_COUNT.to_string(), Variant::U64(members.len() as u64));
-                payload.insert(NODE_COUNT.to_string(), Variant::U64(refs.len() as u64));
             }
             entry.parent = Some(entry.parent.unwrap_or(state.parent));
+            deleted_members += del_members.len();
             outcomes.push(ClusterOutcome {
                 cluster,
                 delete_row,
@@ -1392,8 +1723,6 @@ impl<G: GraphEncode + Default> WriteSet<G> {
                 payload: if delete_row { Dict::new() } else { payload },
                 put_members,
                 del_members,
-                put_nodes,
-                del_nodes,
             });
         }
 
@@ -1418,44 +1747,144 @@ impl<G: GraphEncode + Default> WriteSet<G> {
             if outcome.old_parent != 0
                 && (outcome.delete_row || outcome.old_parent != outcome.parent)
             {
-                adapter.del(&child_key(
-                    &ns,
-                    cluster.kind,
-                    outcome.old_parent,
-                    cluster.id,
-                ))?;
+                adapter.del(&child_key(ns, cluster.kind, outcome.old_parent, cluster.id))?;
             }
             if !outcome.delete_row
                 && outcome.parent != 0
                 && (!outcome.existed || outcome.old_parent != outcome.parent)
             {
                 adapter.put(
-                    child_key(&ns, cluster.kind, outcome.parent, cluster.id),
+                    child_key(ns, cluster.kind, outcome.parent, cluster.id),
                     Vec::new(),
                 )?;
             }
             for edge in &outcome.del_members {
-                adapter.del(&edge_member_key(&ns, cluster, *edge))?;
-            }
-            for (node, edge) in &outcome.del_nodes {
-                adapter.del(&node_member_key(&ns, cluster, node, *edge))?;
+                adapter.del(&edge_member_key(ns, cluster, *edge))?;
+                // The reverse direction is the SAME fact, so it leaves in the
+                // same breath: a membership row and its edge-first mirror are
+                // never allowed to disagree for longer than one commit.
+                adapter.del(&edge_cluster_key(ns, *edge, cluster))?;
             }
             if outcome.delete_row {
-                adapter.del(&cluster_key(&ns, cluster.kind, cluster.id))?;
+                adapter.del(&cluster_key(ns, cluster.kind, cluster.id))?;
                 continue;
             }
             for edge in &outcome.put_members {
-                adapter.put(edge_member_key(&ns, cluster, *edge), Vec::new())?;
+                adapter.put(edge_member_key(ns, cluster, *edge), Vec::new())?;
+                adapter.put(edge_cluster_key(ns, *edge, cluster), Vec::new())?;
             }
-            for (node, edge) in &outcome.put_nodes {
-                adapter.put(node_member_key(&ns, cluster, node, *edge), Vec::new())?;
-            }
-            let body = encode_dict(&adapter, &ns, &outcome.payload)?;
+            let body = encode_dict(&adapter, ns, &outcome.payload)?;
             adapter.put(
-                cluster_key(&ns, cluster.kind, cluster.id),
+                cluster_key(ns, cluster.kind, cluster.id),
                 cluster_value(outcome.parent, &body),
             )?;
         }
+        Ok(deleted_members)
+    }
+}
+
+impl<S: VirtualStorage, G: GraphEncode + Default> Graph<S, G> {
+    /// The write verb (ADR-0066 §7): consume `fragment` and land its declared
+    /// rows, its clusters and its three reduces as ONE engine commit. A refused
+    /// fragment writes nothing — every check runs before the commit — and the
+    /// report names the ids it allocated.
+    ///
+    /// There is no update verb: an update is this verb with a reduce. Naming an
+    /// edge at its own id ([`Decl::edge_at`]) makes `reduce_edge` fold over that
+    /// row, so its payload changes while its id, faces and memberships stand.
+    pub fn incorporate(&mut self, fragment: Fragment<G>) -> Result<WriteReport> {
+        fragment.check_incorporable()?;
+        let mut rows = Batch::default();
+        let report = fragment.write_into(self, &mut rows)?;
+        self.store().commit_batch(rows)?;
+        Ok(report)
+    }
+
+    /// The delete verb — the inverse of [`incorporate`](Self::incorporate).
+    ///
+    /// A fragment handed here carries delete declarations
+    /// ([`Fragment::delete_node`], [`Fragment::delete_edge`], and the cluster
+    /// `delete`); it may not also declare rows, clusters or reduces, because
+    /// those are what `incorporate` is for ([`Error::RetractWithWrites`]).
+    ///
+    /// Two rules, and they are not in tension:
+    ///
+    /// - deleting a NODE deletes every edge incident to it — both traversal
+    ///   faces, the predicate faces, the payload row, and those edges' cluster
+    ///   membership rows. A node cannot be left with a dangling edge.
+    /// - deleting an EDGE leaves both endpoints alone, even when they are then
+    ///   connected to nothing. "A node exists only as an endpoint" is about
+    ///   creation, not about what a delete may leave behind.
+    ///
+    /// Refusals are the caller's to ignore, and nothing here refuses for
+    /// absence: an id no row holds, or a node no edge names, is nothing to do
+    /// and reports zero. Everything runs in ONE batch, so a reader sees the
+    /// whole removal or none of it.
+    pub fn retract(&mut self, mut fragment: Fragment<G>) -> Result<RetractReport> {
+        fragment.check_retractable()?;
+        let ns: [u8; 2] = self.ns().to_be_bytes();
+        let mut report = RetractReport::default();
+        let mut batch = Batch::default();
+
+        // ---- 1. The doomed edges: a node's cascade first, then the declared
+        //         ids, deduplicated — one edge is one removal whatever named it.
+        let mut doomed: BTreeSet<u64> = BTreeSet::new();
+        let mut nodes: BTreeSet<NodeRef> = BTreeSet::new();
+        for node in &fragment.node_deletes {
+            let mut incident = self.out_edges(node)?;
+            incident.extend(self.in_edges(node)?);
+            if incident.is_empty() {
+                // A node exists only as an endpoint, so one no edge names is not
+                // in the graph: nothing to remove, and the report says zero.
+                continue;
+            }
+            nodes.insert(node.clone());
+            doomed.extend(incident);
+        }
+        doomed.extend(fragment.edge_deletes.iter().copied());
+
+        // ---- 2. Membership rows follow the edges: ONE pass over 0x0B ----
+        //
+        // A member row is `[kind][cluster][edge]`, so an edge's clusters are
+        // found by SUFFIX. There is no reverse index, and none is needed — this
+        // runs once per retract, not once per edge.
+        let mut plan: BTreeMap<(u8, u64), ClusterPlan> = BTreeMap::new();
+        let prefix = face_prefix(&ns, EDGE_MEMBER_SLOT);
+        for (suffix, _) in scan_suffix_kv(self.store(), &prefix)? {
+            if suffix.len() != 17 {
+                continue;
+            }
+            let (Some(id), Some(edge)) = (be_u64(&suffix[1..9]), be_u64(&suffix[9..])) else {
+                continue;
+            };
+            if doomed.contains(&edge) {
+                plan.entry((suffix[0], id)).or_default().remove.insert(edge);
+            }
+        }
+        // A cluster `delete` in the fragment rides the same plan; `remove` is
+        // already satisfied — every doomed edge is dropped from every cluster
+        // that holds it — and anything else was refused above.
+        for op in &fragment.ops {
+            if let ClusterOp::Delete(cluster) = op {
+                let entry = plan.entry((cluster.kind.0, cluster.id)).or_default();
+                entry.delete_row = true;
+                entry.declared = true;
+            }
+        }
+
+        // ---- 3. The edges themselves: exactly their rows, in this batch ----
+        for edge in &doomed {
+            if self.get_edge(*edge)?.is_none() {
+                continue;
+            }
+            self.unlink_into(&mut batch, *edge)?;
+            report.edges += 1;
+        }
+
+        // ---- 4. The cluster faces, through the same path a write uses ----
+        report.memberships = fragment.apply_plan(self, &ns, &BTreeSet::new(), plan, &mut batch)?;
+        self.store().commit_batch(batch)?;
+        report.nodes = nodes.len();
         Ok(report)
     }
 }
@@ -1465,11 +1894,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_four_faces_are_the_fixed_band_the_adr_numbered() {
+    fn the_three_faces_are_the_fixed_band_the_adr_numbered() {
         assert_eq!(CLUSTER_SLOT, 0x0A);
         assert_eq!(EDGE_MEMBER_SLOT, 0x0B);
-        assert_eq!(NODE_MEMBER_SLOT, 0x0C);
-        assert_eq!(CHILD_SLOT, 0x0D);
+        assert_eq!(CHILD_INDEX_SLOT, 0x0C);
     }
 
     #[test]
@@ -1510,18 +1938,17 @@ mod tests {
     }
 
     #[test]
-    fn a_node_member_suffix_is_a_self_delimiting_ref_and_an_edge_id() {
+    fn a_child_row_is_the_prefix_then_the_child_id() {
         let ns = [0x10u8, 0x00];
-        let cluster = ClusterRef::new(Kind::EVENT, 3);
-        let node = NodeRef::new(&0x10u16.to_be_bytes(), &5u64.to_be_bytes());
-        let key = node_member_key(&ns, cluster, &node, 42);
-        let prefix = node_members_prefix(&ns, cluster);
+        let key = child_key(&ns, Kind::EVENT, 3, 42);
+        let prefix = children_prefix(&ns, Kind::EVENT, 3);
         assert!(key.starts_with(&prefix));
+        // The face byte is the one the child index moved down to.
+        assert_eq!(u16::from(key[2]), CHILD_INDEX_SLOT);
+        assert_eq!(&key[3], &Kind::EVENT.byte());
         let suffix = &key[prefix.len()..];
-        // [ns 2][len 1][pkey 8][edge 8]
-        assert_eq!(suffix.len(), 19);
-        let (back, used) = NodeRef::decode(suffix).expect("ref");
-        assert_eq!(back, node);
-        assert_eq!(be_u64(&suffix[used..]), Some(42));
+        // [child 8]
+        assert_eq!(suffix.len(), 8);
+        assert_eq!(be_u64(suffix), Some(42));
     }
 }

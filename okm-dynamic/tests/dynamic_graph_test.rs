@@ -13,6 +13,7 @@
 
 use okm_core::schema::CollectionSchema;
 use okm_core::storage::VirtualStorage;
+use okm_core::{Decl, Fragment};
 use okm_core::{
     DocumentEncode, EdgeHead, EdgeKey, Graph as StaticGraph, GraphEncode, KeyEncode, NodeRef,
 };
@@ -234,16 +235,15 @@ fn byte_equality_with_fixed_ontology_form() {
 
     let store_fix = okm_async::TestStore::slatedb_mem();
     let mut gf: StaticGraph<_, WorksAt> = StaticGraph::new(store_fix.clone());
-    gf.link(
-        &EdgeHead {
+    let fragment = Fragment::<WorksAt>::new([Decl::edge_at(
+        EdgeHead {
             src: person(1),
             dst: org(9),
             predicate: "works_at".into(),
         },
-        &WorksAt::default(),
         7,
-    )
-    .unwrap();
+    )]);
+    gf.incorporate(fragment).unwrap();
 
     let collect = |store: &okm_async::TestStore, prefix: &[u8]| -> Vec<Vec<u8>> {
         let mut out = Vec::new();

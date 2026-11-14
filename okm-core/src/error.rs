@@ -78,13 +78,26 @@ pub enum Error {
         "nested object requires the vocabulary (name `{name}` unresolved) — use okm_value::encode"
     )]
     VocabularyRequired { name: String },
-    /// `Graph::link` on an id that is already live — identity stays with the
-    /// caller, so a collision is the caller's bug, not a retry.
-    #[error("edge_id {edge_id} already live")]
-    EdgeAlreadyLive { edge_id: u64 },
-    /// `Graph::unlink` on an id with no stored edge.
-    #[error("unlink: edge_id {edge_id} not found")]
+    /// The internal delete of an id with no stored edge. Never reaches a caller
+    /// as a refusal — `Graph::retract` treats absence as nothing to do — it is
+    /// the invariant that keeps a delete from inventing rows.
+    #[error("delete: edge_id {edge_id} not found")]
     EdgeNotFound { edge_id: u64 },
+    /// A fragment handed to `incorporate` declared deletions. `incorporate`
+    /// writes; a delete is `retract`'s business, and one batch carrying both
+    /// would have two meanings.
+    #[error(
+        "{deletions} deletion(s) in this fragment — `retract` removes, `incorporate` writes; \
+         hand the deletion to `Graph::retract`"
+    )]
+    IncorporateWithDeletes { deletions: usize },
+    /// A fragment handed to `retract` declared rows, clusters or reduces.
+    /// `retract` removes; an insert or an update is `incorporate`'s business.
+    #[error(
+        "{declarations} declaration(s) in this fragment — `retract` only removes; \
+         hand the writes to `Graph::incorporate`"
+    )]
+    RetractWithWrites { declarations: usize },
     /// An edge endpoint whose namespace is not a member of the graph's.
     #[error("{side} ns {ns} is not a member of graph ns {graph_ns}")]
     EdgeNotMember {
