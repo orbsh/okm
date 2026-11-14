@@ -172,19 +172,23 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         buf
     }
 
-    /// The table's meta entry (fixed face 0x0F, ADR-0043): `None` when the store
+    /// The table's meta entry (fixed face 0x1F, ADR-0043): `None` when the store
     /// was never stamped. One point read; an engine failure comes back as `Err`.
     pub fn meta(&self) -> crate::error::Result<Option<crate::model::meta::TableMeta>> {
         crate::model::meta::read(&self.store, &self.header())
     }
 
-    /// First-touch verb (ADR-0043): record this declaration's FACE fingerprint on a
-    /// fresh store, or answer the row the store already carries.
+    /// First-touch verb (ADR-0043): on a fresh store, record the layout generation
+    /// this build speaks (`Document::LAYOUT_VERSION`) and this declaration's FACE
+    /// fingerprint; on an existing row, refuse a generation this build does not
+    /// speak and otherwise answer the row as it stands.
     ///
     /// Call it once per table at attach — never on the write path (one point read per
-    /// call). It no longer compares a layout number: which generation wrote these
-    /// bytes is the SEGMENT header's statement, checked where a log is opened
-    /// (ADR-0042 as amended), and a store with no log has nothing to compare against.
+    /// call). The version is the load-bearing half: a layout change is a cutover, so
+    /// a store that records another number is refused here (`LayoutMismatch`, naming
+    /// both) instead of being decoded row by row under a declaration that never wrote
+    /// it. The fingerprint is compared separately by `faces_status`, because stale
+    /// faces are repairable drift rather than an unreadable store.
     ///
     /// The table's NAME is recorded here too, and that is the store-side half of the
     /// ns claim: a module cannot see another module's declarations, so the compile-time
@@ -193,7 +197,8 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     /// nothing and checks nothing.
     pub fn ensure_layout(&self) -> crate::error::Result<crate::model::meta::TableMeta> {
         let header = self.header();
-        let mut meta = crate::model::meta::ensure_faces(&self.store, &header, R::FACES)?;
+        let mut meta =
+            crate::model::meta::ensure_layout(&self.store, &header, R::LAYOUT_VERSION, R::FACES)?;
         if !R::TABLE_NAME.is_empty() {
             match meta.table_name() {
                 Some(existing) if existing != R::TABLE_NAME => {
@@ -348,14 +353,19 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         }
 
         // Phase 3 — the stamp, the last write. Nothing above claims completion.
-        crate::model::meta::stamp_faces(&self.store, &header, R::FACES)?;
+        crate::model::meta::stamp_layout(&self.store, &header, R::LAYOUT_VERSION, R::FACES)?;
         Ok(report)
     }
 
     /// Record one caller-owned name in the meta entry (ADR-0043), creating the
-    /// row when the store has none. The runtime keeps no name of its own there:
-    /// the payload's generation lives in the segment header, and `faces` is
-    /// written by the stamp verb, so this is the caller's map and nothing else.
+    /// row when the store has none.
+    ///
+    /// `version` belongs to the runtime, never to the caller: this verb re-stamps it
+    /// with `Document::LAYOUT_VERSION` after applying the caller's name, so the shape
+    /// stamp cannot be edited away. And it will not write that number over ANOTHER
+    /// generation's — a row that records a layout this build does not speak is refused
+    /// (`LayoutMismatch`) instead of relabelled, because relabelling would turn a
+    /// store this build cannot read into one that claims it can.
     ///
     /// Read-modify-write of ONE singleton key, committed as a single write.
     pub fn set_meta(
@@ -367,7 +377,9 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
             Some(meta) => meta,
             None => crate::model::meta::TableMeta::new(),
         };
+        crate::model::meta::check_layout(&meta, R::LAYOUT_VERSION)?;
         meta.set(name, value);
+        meta.set(crate::model::meta::VERSION, vec![R::LAYOUT_VERSION]);
         crate::model::meta::write(&self.store, &self.header(), &meta)?;
         Ok(meta)
     }

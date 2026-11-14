@@ -77,7 +77,7 @@ pub struct AuditIncident {
 | edge id 是 4B/8B | `u64`（8 字节大端）到处一致：`link`、`edge_ids`、面 |
 | `#[ok_entities(User, Org, Asset)]` | 现有声明词汇是 `#[ok_nodes(EntityRow, MemberRow)]`，按类型取文档**表**；derive 读每张表自己的 `#[ok_ns]`（`okm-core/src/model/graph.rs:196-216`，ADR-0017 状态行，2026-10-21 更新） |
 | `link(edge_id, members, payload)` | `Graph::link(&EdgeHead{src, dst, predicate}, &E, edge_id: u64)`（`okm-core/src/model/graph.rs:224-232, 373`）；N 成员的 head 是新形状，而 body 是固定的 `[src ref][dst ref][predicate_vocab_id][payload]`（`graph.rs:236`，`decode_body` 在 `graph.rs:259`）——payload 偏移可算，只因为有恰好两个 ref，所以开放的成员列表需要一个计数或长度前缀 |
-| payload 索引是超图特性 | payload 是普通 obj（ADR-0012）：一份文档声明已经同时给出两个 codec 方向和它的 `#[ok_index]` 面，计数族 `0x1`（`graph.rs:39-46`） |
+| payload 索引是超图特性 | payload 是普通 obj（ADR-0012）：一份文档声明已经同时给出两个 codec 方向和它的 `#[ok_index]` 面，而那是声明索引族 `0x4nnn`（`okm-core/src/model/index.rs:588-591` 的 `SLOT` 说明，键布局表见 `docs/adr/0012-object-model-and-field-dictionary.md:215-219`） |
 | `okm_query::intersect` | 作为惰性适配器发布：`a.intersect(b)` / `a.merge(b)`，作用于按键有序的流（`okm-query/src/lib.rs:66,88`），在键上是集合语义、每个不同键一个元组——扩张成对的 join 是调用方的取行循环，不是算子。今天的图面扫描仍物化成 `Vec`（`Graph::edge_ids`，`graph.rs:404`），所以新的 API 是流式的、**面**上的 k 路求交，尽管底下的 `VirtualStorage::scan_range` 已经可用 |
 | `unlink_into` 是写前读 | 确认：它读主 body、解码，然后删掉确切的面以及 payload 声明的索引条目（`graph.rs:553-590`）。N 成员时这只在 body 带成员列表时才成立 |
 | link/unlink 是一次原子提交 | 对批路径确认：文档与边共用一次 `commit_batch`（ADR-0031，`link_into` 的文档在 `graph.rs:382-395`）。有一处不对称沿用下来：词汇分配自己提交，所以外层提交失败可能留下孤儿的谓词/词汇条目——无害，且已记录 |

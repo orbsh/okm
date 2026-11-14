@@ -1,18 +1,28 @@
-//! Table meta — fixed face 0x0F: ONE entry per table that describes the store
+//! Table meta — fixed face 0x1F: ONE entry per table that describes the store
 //! instead of holding its data (ADR-0043).
 //!
-//! The address is a face-level singleton, `[partition][ns][0x0F]` with no
-//! suffix, exactly like the vocabulary cursor at `[ns][0x02]`. 0x0F is the
-//! HIGHEST fixed face, and that is deliberate: `slot <= 0x0F` is the delimiter
+//! The address is a face-level singleton, `[partition][ns][0x1F]` with no
+//! suffix, exactly like the vocabulary cursor at `[ns][0x02]`. 0x1F is the
+//! HIGHEST fixed face, and that is deliberate: `slot <= 0x1F` is the delimiter
 //! that separates the one-byte faces from the counting families, so the meta
 //! sits on the boundary and no future fixed face can squeeze it out.
 //!
-//! The value is a NAME → BYTES map, not a fixed struct: `version` is the one
-//! name the runtime itself writes, and anything else a consumer wants to record
-//! about the store (a build id, a migration note) rides beside it without a
+//! The value is a NAME → BYTES map, not a fixed struct. Three names are the
+//! runtime's: `version` (the layout generation this build speaks, one byte),
+//! `faces` (the fingerprint of the derived faces, ADR-0048) and, when the
+//! declaration carries one, `table`. Anything else a consumer wants to record
+//! about the store (a build id, a migration note) rides beside them without a
 //! layout decision. Names are inline — the meta row never touches the field-name
 //! vocabulary (slots 0x02/0x03), so stamping a store cannot grow a vocabulary or
 //! depend on one.
+//!
+//! `version` is load-bearing, not decorative. A layout change is a cutover: the
+//! number increments, the store is exported by the build that wrote it and
+//! imported into one the new build creates, and an older store is REFUSED rather
+//! than half-read (ADR-0030, `docs/internals/key-layout.md`). A store that does
+//! not record which layout wrote it cannot be refused for that reason, so the
+//! first-touch verb stamps the number and a later read that finds one this build
+//! does not speak stops there with [`crate::Error::LayoutMismatch`], naming both.
 //!
 //! What it is NOT: a compatibility promise (ADR-0042). It turns "this store was
 //! written in another shape" into one point read at attach time instead of a
@@ -26,6 +36,17 @@ use crate::engine::storage::VirtualStorage;
 use crate::error::Result;
 use crate::model::index::{Document, META_SLOT, write_slot};
 use crate::model::wrappers::wire::{put_len, take_len};
+
+/// The layout generation this build speaks (`Document::LAYOUT_VERSION`), one
+/// byte — the same number the declaration names in `#[ok_layout(version = N)]`.
+///
+/// This is the store's answer to "which key layout wrote me", and it is what
+/// makes a refusal possible at attach: a layout change is a cutover, so an older
+/// store must be turned away by NUMBER rather than half-read row by row. A row
+/// that never recorded one is simply older than the name — absence is not a
+/// mismatch (nothing here says the layout is wrong, only that nobody wrote it
+/// down), exactly as absent `faces` reads as untrusted rather than wrong.
+pub const VERSION: &str = "version";
 
 /// The fingerprint of the declaration's structural faces (ADR-0048) — the
 /// derived state that lives outside the primary table and that the payload's
@@ -130,6 +151,17 @@ impl TableMeta {
         <[u8; crate::model::faces::FINGERPRINT_LEN]>::try_from(bytes).ok()
     }
 
+    /// The stamped layout generation, if this row names one. Exactly one byte:
+    /// this row is written by this crate, so a wider or empty value is a foreign
+    /// write, not a number to compare half of — it reads as absent, the same way
+    /// a short `faces` value does.
+    pub fn layout_version(&self) -> Option<u8> {
+        match self.get(VERSION)? {
+            [byte] => Some(*byte),
+            _ => None,
+        }
+    }
+
     /// This store's faces against a declaration's, as three answers.
     pub fn face_status(&self, current: [u8; crate::model::faces::FINGERPRINT_LEN]) -> FaceStatus {
         match self.faces() {
@@ -207,7 +239,7 @@ impl TableMeta {
 }
 
 /// The meta entry's key: the table header with the highest fixed face. No
-/// suffix — the face is a singleton, so `[ns][0x0F]` is the whole address.
+/// suffix — the face is a singleton, so `[ns][0x1F]` is the whole address.
 pub fn meta_key(header: &[u8]) -> Vec<u8> {
     let mut buf = Vec::with_capacity(header.len() + 1);
     buf.extend_from_slice(header);
@@ -224,46 +256,81 @@ pub fn read<S: VirtualStorage + ?Sized>(store: &S, header: &[u8]) -> Result<Opti
 
 /// Write the meta row as given, replacing whatever it carried.
 ///
-/// `version` belongs to the runtime: `Collection::set_meta` re-stamps it after
-/// applying the caller's name, so the entry cannot be edited away by accident.
+/// This is the raw write and it does not touch `version`: `Collection::set_meta`
+/// (and the dynamic twin) reconciles the generation before calling it, so the
+/// entry cannot be edited away by accident. A test that wants a FOREIGN row —
+/// one this build did not write — comes through here.
 pub fn write<S: VirtualStorage + ?Sized>(store: &S, header: &[u8], meta: &TableMeta) -> Result<()> {
     store.put(meta_key(header), meta.encode())
 }
 
-/// First-touch: stamp a FRESH table's meta row with the declaration's fingerprint,
-/// and answer any existing row exactly as it stands.
+/// Refuse a row that records a layout generation this build does not speak.
 ///
-/// "Exactly as it stands" is the point. A row that exists without a fingerprint is a
-/// store written before faces existed, or one whose rebuild never finished — both
-/// answer `Stale`/`Unknown` by design (ADR-0048), and a first-touch verb that
-/// repaired the row would erase that signal. Only [`stamp_faces`] moves a fingerprint
-/// on a store that already has a row, and only the rebuild calls it.
-pub fn ensure_faces<S: VirtualStorage + ?Sized>(
+/// The one comparison the row exists for. Absent is not a mismatch: nothing
+/// recorded a number, which is what every store older than this name looks like,
+/// and refusing those would make the mechanism a wall instead of a detector
+/// (ADR-0042). Present and different is a refusal that names both numbers.
+pub fn check_layout(meta: &TableMeta, layout_version: u8) -> Result<()> {
+    match meta.layout_version() {
+        Some(stored) if stored != layout_version => Err(crate::error::Error::LayoutMismatch {
+            stored,
+            current: layout_version,
+        }),
+        _ => Ok(()),
+    }
+}
+
+/// First-touch: stamp a FRESH table's meta row with the layout generation and the
+/// declaration's face fingerprint; on an existing row, refuse another generation
+/// and otherwise answer it exactly as it stands.
+///
+/// "Exactly as it stands" is the point for `faces`. A row that exists without a
+/// fingerprint is a store written before faces existed, or one whose rebuild never
+/// finished — both answer `Stale`/`Unknown` by design (ADR-0048), and a first-touch
+/// verb that repaired the row would erase that signal. Only [`stamp_layout`] moves a
+/// fingerprint on a store that already has a row, and only the rebuild calls it.
+///
+/// `version` is different, and the difference is the whole reason it is written:
+/// a fingerprint is repairable drift, a generation is a cutover. So this verb
+/// compares it, and a disagreement is [`crate::Error::LayoutMismatch`] — the store
+/// is not half-read, it is refused, at the one place a reader already says "I am
+/// attaching to this store".
+pub fn ensure_layout<S: VirtualStorage + ?Sized>(
     store: &S,
     header: &[u8],
+    layout_version: u8,
     faces: [u8; crate::model::faces::FINGERPRINT_LEN],
 ) -> Result<TableMeta> {
     let key = meta_key(header);
     let Some(bytes) = store.get(&key)? else {
         let mut meta = TableMeta::new();
+        meta.set(VERSION, vec![layout_version]);
         meta.set(FACES, faces.to_vec());
         store.put(key, meta.encode())?;
         return Ok(meta);
     };
-    Ok(TableMeta::decode(&bytes))
+    let meta = TableMeta::decode(&bytes);
+    check_layout(&meta, layout_version)?;
+    Ok(meta)
 }
 
-/// Write the face stamp, creating the meta row if the store has none.
+/// Write both of the runtime's layout names, creating the meta row if the store
+/// has none.
 ///
 /// This is the ONE verb that moves `faces` after a store already exists — the
 /// rebuild calls it on completion, which is why an interrupted rebuild needs no
 /// state of its own: the stamp simply was never written, so the next open still
-/// answers `Stale` (ADR-0048). Whether these bytes are of this build's generation
-/// is not a question this row answers — the payload's layout lives in the SEGMENT
-/// header, where a reader that never opens a store can see it too (ADR-0042).
-pub fn stamp_faces<S: VirtualStorage + ?Sized>(
+/// answers `Stale` (ADR-0048). It carries `version` too, so a rebuild on a store
+/// that has no meta row produces the same row a first touch would. Whether these
+/// bytes are of this build's generation is not a question this row answers — the
+/// payload's layout lives in the SEGMENT header, where a reader that never opens
+/// a store can see it too (ADR-0042) — but the store's own number is a statement,
+/// so writing it over another generation's is refused (`LayoutMismatch`) rather
+/// than relabelled.
+pub fn stamp_layout<S: VirtualStorage + ?Sized>(
     store: &S,
     header: &[u8],
+    layout_version: u8,
     faces: [u8; crate::model::faces::FINGERPRINT_LEN],
 ) -> Result<TableMeta> {
     let key = meta_key(header);
@@ -271,6 +338,8 @@ pub fn stamp_faces<S: VirtualStorage + ?Sized>(
         Some(bytes) => TableMeta::decode(&bytes),
         None => TableMeta::new(),
     };
+    check_layout(&meta, layout_version)?;
+    meta.set(VERSION, vec![layout_version]);
     meta.set(FACES, faces.to_vec());
     store.put(key, meta.encode())?;
     Ok(meta)

@@ -1,14 +1,17 @@
-//! Table meta (ADR-0043): fixed face 0x0F — ONE name → bytes entry per table,
+//! Table meta (ADR-0043): fixed face 0x1F — ONE name → bytes entry per table,
 //! describing the store instead of holding its data.
 //!
-//! The row carries what the CALLER names plus the declaration's face fingerprint
-//! (ADR-0048). It carries no layout number: the payload's generation is the segment
-//! header's statement (ADR-0042 as amended), because a reader that must decode a row
-//! before trusting it cannot ask that row which format wrote it.
+//! Three names are the runtime's: `version` (the layout generation the writer
+//! speaks, `Document::LAYOUT_VERSION`), `faces` (the declaration's face
+//! fingerprint, ADR-0048) and `table` (its `#[ok_name]`). The version is the
+//! load-bearing one: a layout change is a cutover, so a store stamped with a
+//! number this build does not speak is REFUSED at attach, while a store that
+//! never recorded one is merely older than the name and still opens.
 //!
-//! Locks: the address (highest fixed face, no suffix), the fingerprint a fresh store
-//! gets, the locked bytes of a caller-named row, the form once two names exist, and
-//! the entry's exclusion from row/document scans.
+//! Locks: the address (highest fixed face, no suffix), the three names a fresh
+//! store gets, the fingerprint's value, the locked bytes of a caller-named row,
+//! the form once a caller name exists, both refusal shapes, and the entry's
+//! exclusion from row/document scans.
 
 #![allow(
     clippy::unwrap_used,
@@ -51,9 +54,14 @@ fn the_stamp_lives_at_the_highest_fixed_face_with_no_suffix() {
         Some(MetaRow::FACES),
         "the fingerprint is the declaration's own, computed, never typed"
     );
+    assert_eq!(
+        stamped.layout_version(),
+        Some(<MetaRow as Document>::LAYOUT_VERSION),
+        "the store records the layout generation that wrote it"
+    );
 
     let key = meta::meta_key(&header());
-    assert_eq!(key, vec![0x00, 0x5A, 0x0F], "`[ns 2B][0x0F]`, no suffix");
+    assert_eq!(key, vec![0x00, 0x5A, 0x1F], "`[ns 2B][0x1F]`, no suffix");
 
     // [count u16 BE] [name_len varint] [name] [value_len varint] [value]
     let payload = store.get(&key).unwrap().unwrap();
@@ -61,8 +69,8 @@ fn the_stamp_lives_at_the_highest_fixed_face_with_no_suffix() {
     assert_eq!(stamped_row.faces(), Some(MetaRow::FACES));
     assert_eq!(
         stamped_row.iter().map(|(n, _)| n).collect::<Vec<_>>(),
-        vec!["faces", "table"],
-        "the runtime's fingerprint and the table's own name, nothing else"
+        vec!["faces", "table", "version"],
+        "the runtime's fingerprint, the table's own name and the layout it speaks — nothing else"
     );
     assert_eq!(
         stamped_row.table_name(),
@@ -107,8 +115,8 @@ fn a_second_name_rides_beside_the_stamp() {
     assert_eq!(after.get("build"), Some(&b"20261028"[..]));
     assert_eq!(
         after.iter().map(|(n, _)| n).collect::<Vec<_>>(),
-        vec!["build", "faces", "table"],
-        "the caller's map plus the two names the runtime owns"
+        vec!["build", "faces", "table", "version"],
+        "the caller's map plus the three names the runtime owns"
     );
     let stored = table.meta().unwrap().unwrap();
     assert_eq!(stored, after);
@@ -116,6 +124,50 @@ fn a_second_name_rides_beside_the_stamp() {
     // Rewriting a caller name re-reads the row it finds, so the fingerprint survives.
     let after = table.set_meta("build", b"20261030".to_vec()).unwrap();
     assert_eq!(after.faces(), Some(MetaRow::FACES));
+
+    // And the layout name is the runtime's: a caller writing `version` itself gets
+    // this build's number back, not its own bytes.
+    let after = table.set_meta("version", vec![9]).unwrap();
+    assert_eq!(
+        after.layout_version(),
+        Some(<MetaRow as Document>::LAYOUT_VERSION),
+        "the shape stamp cannot be edited away by a caller"
+    );
+}
+
+#[test]
+fn a_store_stamped_with_another_layout_is_refused() {
+    let store = TestStore::default();
+    let table = <MetaRow as Document>::collection(store.clone());
+
+    // A row this build did NOT write: another layout's number, no fingerprint.
+    let mut foreign = TableMeta::new();
+    foreign.set(meta::VERSION, vec![9]);
+    meta::write(&store, &header(), &foreign).unwrap();
+
+    match table.ensure_layout() {
+        Err(okm_core::Error::LayoutMismatch { stored, current }) => {
+            assert_eq!(stored, 9, "the number the store records");
+            assert_eq!(
+                current,
+                <MetaRow as Document>::LAYOUT_VERSION,
+                "and the one this build speaks"
+            );
+        }
+        other => panic!("expected LayoutMismatch, got {other:?}"),
+    }
+
+    // Writing through this handle is refused too: relabelling a store this build
+    // cannot read would make it claim a layout it never had.
+    assert!(matches!(
+        table.set_meta("build", b"1".to_vec()),
+        Err(okm_core::Error::LayoutMismatch { stored: 9, .. })
+    ));
+    assert_eq!(
+        table.meta().unwrap().unwrap().layout_version(),
+        Some(9),
+        "the refused writes left the store's own number untouched"
+    );
 }
 
 #[test]
@@ -126,10 +178,10 @@ fn a_row_with_no_fingerprint_is_untrusted_not_refused() {
     foreign.set("whoever", b"not okm".to_vec());
     meta::write(&store, &header(), &foreign).unwrap();
 
-    // Opening is fine: this row does not say which generation wrote the bytes, and it
-    // is not the place to ask (ADR-0042 — the segment header is). What it does say is
-    // that no fingerprint was ever recorded, so the derived faces are untrusted
-    // rather than wrong.
+    // Opening is fine: this row records no layout number and no fingerprint. It is
+    // not a MISMATCH — nothing here says the layout is wrong, only that nobody wrote
+    // it down, and every store older than these names looks exactly like this. What
+    // it does say is that the derived faces are untrusted rather than wrong.
     assert!(table.ensure_layout().is_ok());
     assert_eq!(
         table.faces_status().unwrap(),
@@ -176,6 +228,7 @@ fn the_meta_payload_survives_a_hand_written_row() {
     assert_eq!(meta.get("alpha"), Some(&[1u8, 2][..]));
     assert_eq!(meta.get("beta"), Some(&[][..]), "an empty value is a value");
     assert_eq!(meta.faces(), None, "no fingerprint name in this row");
+    assert_eq!(meta.layout_version(), None, "and no layout name either");
 }
 
 /// ns 92: two tables that share a namespace. The compile-time claim stops at one

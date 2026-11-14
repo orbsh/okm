@@ -82,7 +82,7 @@ Cypher 形状                          okm 落点（面）
 (:org {id:9})-[r:employs]->(:user {id:1})
                                     edge_at            (0x08，一个精确键：
                                                         断言同一性)
-()-[r:employs {since: 2020}]->()    by_attr_face       (计数族 0x3nnn)
+()-[r:employs {since: 2020}]->()    by_attr_face       (声明索引族 0x4nnn)
 ```
 
 ```rust

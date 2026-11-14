@@ -83,7 +83,7 @@ Cypher shape                        okm landing (face)
 (:org {id:9})-[r:employs]->(:user {id:1})
                                     edge_at            (0x08, one exact key:
                                                         the assertion identity)
-()-[r:employs {since: 2020}]->()    by_attr_face       (counting family 0x3nnn)
+()-[r:employs {since: 2020}]->()    by_attr_face       (declared-index family 0x4nnn)
 ```
 
 ```rust
