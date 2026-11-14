@@ -20,7 +20,7 @@
 //! are ordinary input).
 pub mod pyo3_impl {
     use okm_core::storage::VirtualStorage;
-    use okm_core::{Direction, NodeRef};
+    use okm_core::{Direction, EdgeKey, Members, NodeRef};
     use okm_dynamic::{
         AccessMethod, AccessMethodKind, Cluster, ClusterRef, Decl, Dict, DynEdge, DynFragment,
         EdgeStep, Kind, ReduceLogic, RetractReport, Value, WriteReport,
@@ -1042,6 +1042,108 @@ pub mod pyo3_impl {
         Ok(dict.into_any().unbind())
     }
 
+    /// An edge's identity as Python states it: the two endpoints and the
+    /// predicate by NAME.
+    ///
+    /// ADR-0067 retired the edge id: the tuple IS the identity, so this is the
+    /// handle every edge-shaped read and delete takes, and it is what the write
+    /// report and every read answer with — a head can feed straight back into
+    /// `edge` / `member_of` / `clusters_of` / a `retract`.
+    struct Head {
+        src: NodeRef,
+        dst: NodeRef,
+        predicate: String,
+    }
+
+    /// A head across the boundary: `{"src": node, "dst": node, "predicate":
+    /// str}` or the 3-tuple `(src, dst, predicate)` — the dict is what the
+    /// verbs answer with, the tuple is the spelling a caller writing one by hand
+    /// reaches for (a node takes the same two spellings, see `node_of`).
+    fn head_of(obj: &Bound<'_, PyAny>, what: &str) -> PyResult<Head> {
+        if let Ok(dict) = obj.cast::<pyo3::types::PyDict>() {
+            return Ok(Head {
+                src: node_of(&need(dict, "src", what)?, &format!("{what}.src"))?,
+                dst: node_of(&need(dict, "dst", what)?, &format!("{what}.dst"))?,
+                predicate: need(dict, "predicate", what)?.extract().map_err(|_| {
+                    PyTypeError::new_err(format!(
+                        "{what}: `predicate` is a str (the name, never an id)"
+                    ))
+                })?,
+            });
+        }
+        let tuple = obj.cast::<pyo3::types::PyTuple>().map_err(|_| {
+            PyTypeError::new_err(format!(
+                "{what}: an edge head is {{\"src\": node, \"dst\": node, \"predicate\": str}} \
+                 or (src, dst, predicate)"
+            ))
+        })?;
+        if tuple.len() != 3 {
+            return Err(PyTypeError::new_err(format!(
+                "{what}: a head tuple is (src, dst, predicate), got {} entries",
+                tuple.len()
+            )));
+        }
+        Ok(Head {
+            src: node_of(&tuple.get_item(0)?, &format!("{what}.src"))?,
+            dst: node_of(&tuple.get_item(1)?, &format!("{what}.dst"))?,
+            predicate: tuple
+                .get_item(2)?
+                .extract()
+                .map_err(|_| PyTypeError::new_err(format!("{what}: `predicate` is a str")))?,
+        })
+    }
+
+    /// A predicate's NAME for the id a face entry carried.
+    ///
+    /// One point read through okm-core's own vocabulary door — the key shape is
+    /// okm-core's, never re-derived here. A member or step row whose predicate
+    /// has no name is a graph that lost its vocabulary under itself: an error,
+    /// never a blank label.
+    fn predicate_name(store: &EngineBox, ns: u16, id: u16) -> Result<String, String> {
+        okm_core::obj_vocab::vocab_label(
+            store,
+            &ns.to_be_bytes(),
+            okm_core::obj_vocab::PREDICATE_VOCAB,
+            &id.to_be_bytes(),
+        )
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| {
+            format!("predicate {id} has no vocabulary name — the graph's vocabulary was lost under it")
+        })
+    }
+
+    /// A head → the identity okm-dynamic takes. `None` when no edge ever
+    /// interned the predicate: no row can hold that edge, so a read answers
+    /// nothing and a delete is nothing to do (never a refusal).
+    fn head_key(
+        store: &EngineBox,
+        ns: u16,
+        obj: &Bound<'_, PyAny>,
+        what: &str,
+    ) -> PyResult<Option<EdgeKey>> {
+        let head = head_of(obj, what)?;
+        let id = okm_dynamic::predicate_id_in(store, &ns.to_be_bytes(), &head.predicate)
+            .map_err(PyValueError::new_err)?;
+        Ok(id.map(|predicate| EdgeKey::new(head.src, predicate, head.dst)))
+    }
+
+    /// An identity → the head dict, predicate resolved to its NAME.
+    fn head_to_py(
+        py: Python<'_>,
+        store: &EngineBox,
+        ns: u16,
+        key: &EdgeKey,
+    ) -> PyResult<Py<PyAny>> {
+        let dict = pyo3::types::PyDict::new(py);
+        dict.set_item("src", node_to_py(py, &key.src)?)?;
+        dict.set_item("dst", node_to_py(py, &key.dst)?)?;
+        dict.set_item(
+            "predicate",
+            predicate_name(store, ns, key.predicate).map_err(PyValueError::new_err)?,
+        )?;
+        Ok(dict.into_any().unbind())
+    }
+
     /// A cluster kind by byte or by the vocabulary's name: the four the ADR
     /// fixes, spelled the way a reader of the docs would spell them.
     fn kind_of(obj: &Bound<'_, PyAny>, what: &str) -> PyResult<Kind> {
@@ -1103,36 +1205,52 @@ pub mod pyo3_impl {
         Ok(out)
     }
 
-    /// One `edges` entry as a declaration: `{src, dst, predicate, attrs?,
-    /// edge_id?}`. `edge_id` names an edge that is already there — the update
-    /// path (a re-assertion folds this fragment's reducer over the stored
-    /// attributes) and the restore path (an id no row holds creates it).
+    /// One `edges` entry as a declaration: `{src, dst, predicate, attrs?}`.
+    ///
+    /// There is no `edge_id` and no update-by-id: ADR-0067 made the tuple the
+    /// identity, so a declaration naming a tuple no row holds CREATES the edge
+    /// and one naming a live tuple RE-ASSERTS it (this fragment's
+    /// `on_edge_conflict` decides the attributes, and a cluster declaration in
+    /// the same fragment adopts the edge as a member).
     fn edge_decl_of(obj: &Bound<'_, PyAny>, what: &str) -> PyResult<Decl> {
         let dict = obj.cast::<pyo3::types::PyDict>().map_err(|_| {
             PyTypeError::new_err(format!(
-                "{what}: an edge declaration is a dict \
-                 {{src, dst, predicate, attrs?, edge_id?}}"
+                "{what}: an edge declaration is a dict {{src, dst, predicate, attrs?}}"
             ))
         })?;
         let src = node_of(&need(dict, "src", what)?, &format!("{what}.src"))?;
         let dst = node_of(&need(dict, "dst", what)?, &format!("{what}.dst"))?;
         let predicate: String = need(dict, "predicate", what)?.extract().map_err(|_| {
-            PyTypeError::new_err(format!("{what}: `predicate` is a str (the name, never an id)"))
+            PyTypeError::new_err(format!(
+                "{what}: `predicate` is a str (the name, never an id)"
+            ))
         })?;
         let attrs = match dict.get_item("attrs")? {
             Some(v) if !v.is_none() => dyn_map_of(&v, &format!("{what}.attrs"))?,
             _ => Dict::new(),
         };
-        let edge = DynEdge {
+        Ok(Decl::edge(DynEdge {
             src,
             dst,
             predicate,
             attrs,
+        }))
+    }
+
+    /// Whether an `edges` entry is a DELETE TARGET: a head and nothing else.
+    /// The edge-side twin of [`cluster_is_target`] — one dict parses under both
+    /// verbs, and the key that changes the reading is `attrs`: a dict that
+    /// carries them is a declaration, so `retract` refuses it with
+    /// okm-dynamic's own "that is incorporate's verb".
+    fn head_is_target(obj: &Bound<'_, PyAny>) -> bool {
+        let Ok(dict) = obj.cast::<pyo3::types::PyDict>() else {
+            return false;
         };
-        Ok(match dict.get_item("edge_id")? {
-            Some(v) if !v.is_none() => Decl::edge_at(edge, v.extract::<u64>()?),
-            _ => Decl::edge(edge),
-        })
+        !dict
+            .get_item("attrs")
+            .ok()
+            .flatten()
+            .is_some_and(|v| !v.is_none())
     }
 
     /// One cluster entry as a DECLARATION: `{kind, payload?, parent?, id?}`.
@@ -1209,41 +1327,58 @@ pub mod pyo3_impl {
     }
 
     /// A fragment dict → `DynFragment`. Nothing here decides whether the mix is
-    /// legal: `incorporate` refuses a fragment carrying deletions and `retract`
-    /// refuses one carrying writes, with the same strings the Rust face raises.
-    fn fragment_of(obj: &Bound<'_, PyAny>, verb: ReadFor) -> PyResult<DynFragment> {
-        let dict = obj
-            .cast::<pyo3::types::PyDict>()
-            .map_err(|_| PyTypeError::new_err("a fragment must be a dict"))?;
-        let mut decls: Vec<Decl> = Vec::new();
-        let mut edge_deletes: Vec<u64> = Vec::new();
-        let mut node_deletes: Vec<NodeRef> = Vec::new();
-        let mut cluster_decls: Vec<Cluster> = Vec::new();
-        let mut cluster_deletes: Vec<ClusterRef> = Vec::new();
-        let mut removes: Vec<ClusterRef> = Vec::new();
+        /// legal: `incorporate` refuses a fragment carrying deletions and `retract`
+        /// refuses one carrying writes, with the same strings the Rust face raises.
+        ///
+        /// `store`/`ns` are here for ONE reason: an edge delete is a HEAD, and a
+        /// head names its predicate by name while the face keys carry the interned
+        /// id — so the id comes from the graph's own vocabulary. A head whose
+        /// predicate nobody interned names no row at all, so as a delete it is
+        /// nothing to do and drops out here (never a refusal).
+        fn fragment_of(
+            obj: &Bound<'_, PyAny>,
+            verb: ReadFor,
+            store: &EngineBox,
+            ns: u16,
+        ) -> PyResult<DynFragment> {
+            let dict = obj
+                .cast::<pyo3::types::PyDict>()
+                .map_err(|_| PyTypeError::new_err("a fragment must be a dict"))?;
+            let mut decls: Vec<Decl> = Vec::new();
+            let mut edge_deletes: Vec<EdgeKey> = Vec::new();
+            let mut node_deletes: Vec<NodeRef> = Vec::new();
+            let mut cluster_decls: Vec<Cluster> = Vec::new();
+            let mut cluster_deletes: Vec<ClusterRef> = Vec::new();
+            let mut removes: Vec<ClusterRef> = Vec::new();
 
-        for item in list_of(dict, "edges")? {
-            // An INTEGER is an edge id — a delete, whatever verb is reading it.
-            // A dict is a declaration. Reading both here is what lets
-            // `incorporate` answer with "that is retract's verb" instead of a
-            // type complaint about the shape the caller fed the other verb.
-            match item.extract::<u64>() {
-                Ok(id) => edge_deletes.push(id),
-                Err(_) => decls.push(edge_decl_of(&item, "edges")?),
-            };
-        }
-
-        for item in list_of(dict, "clusters")? {
-            if verb == ReadFor::Delete && cluster_is_target(&item) {
-                cluster_deletes.push(cluster_ref_of(&item, "clusters")?);
-            } else {
-                cluster_decls.push(cluster_decl_of(&item, "clusters")?);
+            for item in list_of(dict, "edges")? {
+                // A HEAD is a delete target, a dict with attributes (or the tuple)
+                // is a declaration — the same verb-dependent reading clusters get.
+                // Reading both here is what lets `incorporate` answer with "that is
+                // retract's verb" instead of a type complaint about the shape the
+                // caller fed the other verb.
+                if verb == ReadFor::Delete && head_is_target(&item) {
+                    if let Some(key) = head_key(store, ns, &item, "edges")? {
+                        edge_deletes.push(key);
+                    }
+                } else {
+                    decls.push(edge_decl_of(&item, "edges")?);
+                }
             }
-        }
 
-        for item in list_of(dict, "delete_edges")? {
-            edge_deletes.push(item.extract::<u64>()?);
-        }
+            for item in list_of(dict, "clusters")? {
+                if verb == ReadFor::Delete && cluster_is_target(&item) {
+                    cluster_deletes.push(cluster_ref_of(&item, "clusters")?);
+                } else {
+                    cluster_decls.push(cluster_decl_of(&item, "clusters")?);
+                }
+            }
+
+            for item in list_of(dict, "delete_edges")? {
+                if let Some(key) = head_key(store, ns, &item, "delete_edges")? {
+                    edge_deletes.push(key);
+                }
+            }
         for item in list_of(dict, "delete_nodes")? {
             node_deletes.push(node_of(&item, "delete_nodes")?);
         }
@@ -1359,25 +1494,47 @@ pub mod pyo3_impl {
         })
     }
 
-    /// The step dict: the edge's id, the FAR endpoint, the head it came from and
-    /// the entry's own key — the last one because it is the position
-    /// `okm-query`'s operators speak, so a walk can feed a [`KeySet`] directly.
-    fn step_to_py(py: Python<'_>, key: &[u8], step: &EdgeStep) -> PyResult<Py<PyAny>> {
+    /// The step dict: the edge's HEAD (its identity — `{src, dst, predicate}`),
+    /// the FAR endpoint and the entry's own key — the last one because it is the
+    /// position `okm-query`'s operators speak, so a walk can feed a [`KeySet`]
+    /// directly.
+    ///
+    /// The predicate comes back by NAME: the entry carries the interned id, and
+    /// this is the one place a step spends a vocabulary point read on it (never
+    /// a row read — the identity is in the key, ADR-0067).
+    fn step_to_py(
+        py: Python<'_>,
+        store: &EngineBox,
+        ns: u16,
+        key: &[u8],
+        step: &EdgeStep,
+    ) -> PyResult<Py<PyAny>> {
         let dict = pyo3::types::PyDict::new(py);
-        dict.set_item("edge_id", step.edge_id)?;
         dict.set_item("far", node_to_py(py, &step.far)?)?;
         dict.set_item("key", key.to_vec())?;
         let head = pyo3::types::PyDict::new(py);
         head.set_item("src", node_to_py(py, &step.head.src)?)?;
         head.set_item("dst", node_to_py(py, &step.head.dst)?)?;
-        head.set_item("predicate", step.head.predicate)?;
+        head.set_item(
+            "predicate",
+            predicate_name(store, ns, step.head.predicate).map_err(PyValueError::new_err)?,
+        )?;
         dict.set_item("head", head)?;
         Ok(dict.into_any().unbind())
     }
 
-    fn write_report_to_py(py: Python<'_>, report: &WriteReport) -> PyResult<Py<PyAny>> {
+    fn write_report_to_py(
+        py: Python<'_>,
+        store: &EngineBox,
+        ns: u16,
+        report: &WriteReport,
+    ) -> PyResult<Py<PyAny>> {
         let dict = pyo3::types::PyDict::new(py);
-        dict.set_item("edge_ids", report.edge_ids.clone())?;
+        let edges = pyo3::types::PyList::empty(py);
+        for key in &report.edges {
+            edges.append(head_to_py(py, store, ns, key)?)?;
+        }
+        dict.set_item("edges", edges)?;
         dict.set_item("hyper_ids", report.hyper_ids.clone())?;
         Ok(dict.into_any().unbind())
     }
@@ -1415,6 +1572,11 @@ pub mod pyo3_impl {
         /// `inner` across its own calls.
         store: EngineBox,
         ns: u16,
+        /// The declared endpoint widths ([`Members`]): what turns "where does
+        /// this endpoint end" into a lookup — the whole reason an edge key needs
+        /// no length prefix (ADR-0067). Captured at assembly because a cursor
+        /// owns its scan and cannot borrow the graph's copy.
+        members: Members,
     }
 
     impl Graph {
@@ -1436,10 +1598,12 @@ pub mod pyo3_impl {
                 ));
             }
             let inner = DynGraph::new(store.clone(), ns, schema.clone());
+            let members = inner.member_widths().clone();
             Ok(Graph {
                 inner: Arc::new(Mutex::new(inner)),
                 store,
                 ns,
+                members,
             })
         }
 
@@ -1458,6 +1622,13 @@ pub mod pyo3_impl {
         /// The engine handle this graph reads through.
         pub fn store_handle(&self) -> EngineBox {
             self.store.clone()
+        }
+
+        /// The declared endpoint widths — what a host opening its own cursor
+        /// ([`EdgeStream::filtered`]) needs, because the table that delimits an
+        /// endpoint is the declaration's, not the key's (ADR-0067).
+        pub fn member_widths(&self) -> &Members {
+            &self.members
         }
 
         pub fn ns_id(&self) -> u16 {
@@ -1483,22 +1654,40 @@ pub mod pyo3_impl {
 
         /// One hop out of `node`, as an OWNED cursor.
         pub fn out_dyn(&self, node: &NodeRef) -> EdgeStream {
-            EdgeStream::open(self.store.clone(), self.ns, Direction::Out, node.clone())
+            EdgeStream::open(
+                self.store.clone(),
+                self.ns,
+                Direction::Out,
+                node.clone(),
+                self.members.clone(),
+            )
         }
 
         /// One hop in to `node` — the mirror face.
         pub fn inn_dyn(&self, node: &NodeRef) -> EdgeStream {
-            EdgeStream::open(self.store.clone(), self.ns, Direction::In, node.clone())
+            EdgeStream::open(
+                self.store.clone(),
+                self.ns,
+                Direction::In,
+                node.clone(),
+                self.members.clone(),
+            )
         }
 
-        pub fn member_of_dyn(&self, kind: Kind, cluster: u64, edge_id: u64) -> Result<bool, String> {
+        /// Is `key` a member of cluster `(kind, cluster)`? One point read.
+        ///
+        /// The plain-Rust face speaks `EdgeKey` — the tuple plus its interned
+        /// predicate id, which is what the faces carry; the head-shaped
+        /// spelling lives in the `#[pymethods]` shell. [`Graph::key_of`] is the
+        /// one translation, for a host that holds names.
+        pub fn member_of_dyn(&self, kind: Kind, cluster: u64, key: &EdgeKey) -> Result<bool, String> {
             self.inner
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .member_of(kind, cluster, edge_id)
+                .member_of(kind, cluster, key)
         }
 
-        pub fn members_dyn(&self, kind: Kind, cluster: u64) -> Result<Vec<u64>, String> {
+        pub fn members_dyn(&self, kind: Kind, cluster: u64) -> Result<Vec<EdgeKey>, String> {
             self.inner
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -1540,19 +1729,28 @@ pub mod pyo3_impl {
                 .member_count(kind, id)
         }
 
-        pub fn clusters_of_dyn(&self, edge_id: u64) -> Result<Vec<ClusterRef>, String> {
+        pub fn clusters_of_dyn(&self, key: &EdgeKey) -> Result<Vec<ClusterRef>, String> {
             self.inner
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .clusters_of(edge_id)
+                .clusters_of(key)
         }
 
         /// One edge, decoded: endpoints, predicate by NAME, attributes.
-        pub fn edge_dyn(&self, edge_id: u64) -> Result<Option<DynEdge>, String> {
+        pub fn edge_dyn(&self, key: &EdgeKey) -> Result<Option<DynEdge>, String> {
             self.inner
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .get_edge(edge_id)
+                .get_edge(key)
+        }
+
+        /// A head's identity in this graph's vocabulary — the ONE translation
+        /// from "the tuple a caller names" to "the key the faces carry".
+        ///
+        /// `None` when no edge ever interned the predicate: no row can hold
+        /// that edge, so a read answers nothing and a delete is nothing to do.
+        pub fn key_of(&self, head: &Bound<'_, PyAny>, what: &str) -> PyResult<Option<EdgeKey>> {
+            head_key(&self.store, self.ns, head, what)
         }
 
         pub fn lookup_dyn(
@@ -1606,7 +1804,7 @@ pub mod pyo3_impl {
         ///
         /// ```text
         /// {
-        ///   "edges":     [{src, dst, predicate, attrs?, edge_id?}, …],
+        ///   "edges":     [{src, dst, predicate, attrs?}, …],
         ///   "clusters":  [{kind, payload?, parent?, id?}, …],
         ///   "reduce_edge":    {name: value},   # folded onto every edge payload
         ///   "reduce_cluster": {name: value},   # folded onto every declared payload
@@ -1615,7 +1813,11 @@ pub mod pyo3_impl {
         /// ```
         ///
         /// `kind` is `community` / `event` / `subgraph` / `scope` or its byte.
-        /// A node is `{"ns": int, "key": bytes}` or `(ns, key)`.
+        /// A node is `{"ns": int, "key": bytes}` or `(ns, key)`. An EDGE has no
+        /// id (ADR-0067): its head — `(src, dst, predicate)` — IS its identity,
+        /// so a declaration naming a tuple no row holds creates the edge and one
+        /// naming a live tuple re-asserts it (the reducer decides its attributes,
+        /// and a cluster declaration in the same fragment adopts it).
         ///
         /// The reducers take a DICT OF FIELDS, not a callable: the Rust hooks are
         /// `Fn(&Dict, &Dict) -> Dict`, so a Python callable would be handed both
@@ -1627,57 +1829,69 @@ pub mod pyo3_impl {
         /// okm-dynamic's own message ("incorporate writes; … that is retract's
         /// verb"), as `ValueError` — the same refusal the Rust face raises.
         ///
-        /// Answers `{"edge_ids": [...], "hyper_ids": [...]}`: the ids this write
-        /// allocated (an `edge_id`/cluster `id` the caller supplied is not one of
-        /// them).
+        /// Answers `{"edges": [{src, dst, predicate}, …], "hyper_ids": [...]}`:
+        /// the heads this write asserted, in declaration order, and the cluster
+        /// ids it allocated (a cluster `id` the caller supplied is not one of
+        /// them). A head feeds straight back into `edge` / `member_of` /
+        /// `clusters_of` / a `retract`.
         fn incorporate(&self, fragment: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
-            let fragment = fragment_of(fragment, ReadFor::Write)?;
+            let fragment = fragment_of(fragment, ReadFor::Write, &self.store, self.ns)?;
             let report = self
                 .incorporate_dyn(fragment)
                 .map_err(PyValueError::new_err)?;
-            Python::attach(|py| write_report_to_py(py, &report))
+            Python::attach(|py| write_report_to_py(py, &self.store, self.ns, &report))
         }
 
         /// Remove — the inverse verb, same fragment shape:
         ///
         /// ```text
         /// {
-        ///   "edges":            [edge_id, …],        # or declarations, to be refused
+        ///   "edges":            [{src, dst, predicate}, …],   # heads; a dict with attrs is refused
         ///   "nodes":            [{ns, key} | (ns, key), …],
         ///   "clusters":         [{kind, id}, …],
-        ///   "delete_edges":     [edge_id, …],
+        ///   "delete_edges":     [{src, dst, predicate}, …],
         ///   "delete_nodes":     [{ns, key}, …],
         ///   "delete_clusters":  [{kind, id}, …],
         /// }
         /// ```
         ///
+        /// An edge is named by its HEAD: `(src, dst, predicate)`, a dict or the
+        /// 3-tuple. There is no id to delete by any more (ADR-0067).
+        ///
         /// Deleting a NODE takes every edge incident to it (both directions, the
         /// predicate faces, the payload row, the dynamic segment, those edges'
         /// membership rows). Deleting an EDGE leaves both endpoints standing,
-        /// even when they are then connected to nothing. An id nobody holds is
-        /// nothing to do, not a refusal.
+        /// even when they are then connected to nothing. A head nobody holds —
+        /// including a predicate nothing ever interned — is nothing to do, not a
+        /// refusal.
         ///
         /// A fragment that declares writes (edge/cluster declarations, a
         /// reducer, a `remove`) is refused with okm-dynamic's message
-        /// ("retract removes; … that is incorporate's verb").
+        /// ("retract removes; … that is incorporate's verb"). An edge dict
+        /// carrying `attrs` is a DECLARATION, so that is the shape it is read as.
         ///
         /// Answers `{"nodes": n, "edges": n, "memberships": n}`.
         fn retract(&self, fragment: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
-            let fragment = fragment_of(fragment, ReadFor::Delete)?;
+            let fragment = fragment_of(fragment, ReadFor::Delete, &self.store, self.ns)?;
             let report = self.retract_dyn(fragment).map_err(PyValueError::new_err)?;
             Python::attach(|py| retract_report_to_py(py, &report))
         }
 
-        /// One edge by id: `{edge_id, src, dst, predicate, attrs}`, or `None`.
+        /// One edge by HEAD: `{src, dst, predicate, attrs}`, or `None`.
         /// The predicate comes back by NAME (the vocabulary resolves it), and the
         /// attributes as the map the edge was written with.
-        fn edge(&self, edge_id: u64) -> PyResult<Option<Py<PyAny>>> {
-            let Some(edge) = self.edge_dyn(edge_id).map_err(PyValueError::new_err)? else {
+        ///
+        /// `None` also covers a predicate nothing ever interned — no edge can
+        /// carry a name the vocabulary does not hold.
+        fn edge(&self, head: &Bound<'_, PyAny>) -> PyResult<Option<Py<PyAny>>> {
+            let Some(key) = self.key_of(head, "edge")? else {
+                return Ok(None);
+            };
+            let Some(edge) = self.edge_dyn(&key).map_err(PyValueError::new_err)? else {
                 return Ok(None);
             };
             Python::attach(|py| {
                 let dict = pyo3::types::PyDict::new(py);
-                dict.set_item("edge_id", edge_id)?;
                 dict.set_item("src", node_to_py(py, &edge.src)?)?;
                 dict.set_item("dst", node_to_py(py, &edge.dst)?)?;
                 dict.set_item("predicate", edge.predicate.clone())?;
@@ -1714,18 +1928,36 @@ pub mod pyo3_impl {
 
         // ---- cluster reads ----
 
-        /// Is `edge_id` a member of cluster `(kind, cluster)`? One point read.
-        fn member_of(&self, kind: &Bound<'_, PyAny>, cluster: u64, edge_id: u64) -> PyResult<bool> {
+        /// Is the edge named by `head` a member of cluster `(kind, cluster)`? One
+        /// point read. A head nothing holds — or a predicate nothing ever
+        /// interned — answers `False`.
+        fn member_of(
+            &self,
+            kind: &Bound<'_, PyAny>,
+            cluster: u64,
+            head: &Bound<'_, PyAny>,
+        ) -> PyResult<bool> {
             let kind = kind_of(kind, "member_of")?;
-            self.member_of_dyn(kind, cluster, edge_id)
+            let Some(key) = self.key_of(head, "member_of")? else {
+                return Ok(false);
+            };
+            self.member_of_dyn(kind, cluster, &key)
                 .map_err(PyValueError::new_err)
         }
 
-        /// The member edges of one cluster, in edge-id order: one prefix scan of
-        /// the authority face.
-        fn members(&self, kind: &Bound<'_, PyAny>, cluster: u64) -> PyResult<Vec<u64>> {
+        /// The member edges of one cluster, in key order: one prefix scan of
+        /// the authority face. One HEAD per member — `{src, dst, predicate}`,
+        /// the shape `member_of` / `clusters_of` / `edge` take back.
+        fn members(&self, kind: &Bound<'_, PyAny>, cluster: u64) -> PyResult<Vec<Py<PyAny>>> {
             let kind = kind_of(kind, "members")?;
-            self.members_dyn(kind, cluster).map_err(PyValueError::new_err)
+            let keys = self
+                .members_dyn(kind, cluster)
+                .map_err(PyValueError::new_err)?;
+            Python::attach(|py| {
+                keys.iter()
+                    .map(|key| head_to_py(py, &self.store, self.ns, key))
+                    .collect()
+            })
         }
 
         /// The children of one cluster: one scan of the child index.
@@ -1784,15 +2016,19 @@ pub mod pyo3_impl {
                 .map_err(PyValueError::new_err)
         }
 
-        /// Every cluster one edge belongs to: `[{"kind": int, "id": int}]`.
+        /// Every cluster the edge named by `head` belongs to:
+        /// `[{"kind": int, "id": int}]`.
         ///
         /// The reverse of `members`, one scan of the derived mirror. There is no
         /// node form: on this form a node is an endpoint and nothing else, and
         /// membership is a property of EDGES — a node is answered by asking
-        /// about its edges (`clusters_of(step["edge_id"])` inside a walk).
-        fn clusters_of(&self, edge_id: u64) -> PyResult<Vec<Py<PyAny>>> {
+        /// about its edges (`clusters_of(step["head"])` inside a walk).
+        fn clusters_of(&self, head: &Bound<'_, PyAny>) -> PyResult<Vec<Py<PyAny>>> {
+            let Some(key) = self.key_of(head, "clusters_of")? else {
+                return Ok(Vec::new());
+            };
             let clusters = self
-                .clusters_of_dyn(edge_id)
+                .clusters_of_dyn(&key)
                 .map_err(PyValueError::new_err)?;
             Python::attach(|py| {
                 clusters
@@ -1831,6 +2067,10 @@ pub mod pyo3_impl {
     pub struct EdgeStream {
         store: EngineBox,
         ns: u16,
+        /// The declared endpoint widths — the cursor OWNS its scan, so it owns
+        /// the table that says where each endpoint ends (ADR-0067: no length
+        /// prefix in the key, the declaration delimits it).
+        members: Members,
         dir: Direction,
         node: NodeRef,
         /// The pushed-down predicate id, or `None` for the untyped face.
@@ -1857,10 +2097,17 @@ pub mod pyo3_impl {
         /// A cursor over one node's edges. Plain Rust, so a host test can drive
         /// a traversal without an interpreter (the same reason `Collection`
         /// keeps its `_doc` methods beside the `#[pymethods]` shell).
-        pub fn open(store: EngineBox, ns: u16, dir: Direction, node: NodeRef) -> Self {
+        pub fn open(
+            store: EngineBox,
+            ns: u16,
+            dir: Direction,
+            node: NodeRef,
+            members: Members,
+        ) -> Self {
             let mut stream = EdgeStream {
                 store,
                 ns,
+                members,
                 dir,
                 node,
                 filter: None,
@@ -1925,6 +2172,7 @@ pub mod pyo3_impl {
                             self.dir,
                             &self.node,
                             self.filter,
+                            &self.members,
                         ) {
                             self.cur = Some((key, step));
                             return;
@@ -1954,11 +2202,13 @@ pub mod pyo3_impl {
             dir: Direction,
             node: NodeRef,
             predicate: &str,
+            members: Members,
         ) -> Result<Self, String> {
             let filter = okm_dynamic::predicate_id_in(&store, &ns.to_be_bytes(), predicate)?;
             let mut stream = EdgeStream {
                 store,
                 ns,
+                members,
                 dir,
                 node,
                 filter,
@@ -2007,9 +2257,14 @@ pub mod pyo3_impl {
             slf
         }
 
-        /// The next hop: `{edge_id, far: {ns, key}, key, head: {src, dst,
-        /// predicate}}`. A spent face answers `StopIteration` — the iterator
-        /// protocol, so `for step in g.out(n)` (and `next(it, None)`) work.
+        /// The next hop: `{far: {ns, key}, key, head: {src, dst, predicate}}`.
+        /// A spent face answers `StopIteration` — the iterator protocol, so
+        /// `for step in g.out(n)` (and `next(it, None)`) work.
+        ///
+        /// `head` is the edge's IDENTITY (ADR-0067), so it feeds straight back
+        /// into `edge` / `member_of` / `clusters_of` / a `retract`. The predicate
+        /// is resolved to its name here (one vocabulary point read per step);
+        /// the endpoints and the face key are read off the entry itself.
         ///
         /// A fault mid-walk RAISES `ValueError` rather than reading as "no more
         /// neighbours" (the distinction an iterator cannot draw, and the one a
@@ -2017,7 +2272,9 @@ pub mod pyo3_impl {
         /// `error` keeps the text afterwards.
         fn __next__(&mut self) -> PyResult<Option<Py<PyAny>>> {
             if let Some((key, step)) = self.next_step() {
-                return Python::attach(|py| step_to_py(py, &key, &step).map(Some));
+                return Python::attach(|py| {
+                    step_to_py(py, &self.store, self.ns, &key, &step).map(Some)
+                });
             }
             match (&self.err, self.err_raised) {
                 (Some(e), false) => {
@@ -2040,6 +2297,7 @@ pub mod pyo3_impl {
                 self.dir,
                 self.node.clone(),
                 predicate,
+                self.members.clone(),
             )
             .map_err(PyValueError::new_err)
         }

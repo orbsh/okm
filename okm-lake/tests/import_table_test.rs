@@ -16,19 +16,19 @@ use okm_lake::snapshot::parquet_io;
 use okm_lake::snapshot::parquet_io::EdgeRestore;
 
 use okm_core::{
-    Batch, Decl, Document, DocumentEncode, EdgeHead, Fragment, Graph, GraphEncode, KeyEncode,
-    NodeRef, ReduceCodec, VirtualStorage,
+    Batch, Decl, Document, DocumentEncode, EdgeHead, EdgeKey, Fragment, Graph, GraphEncode,
+    KeyEncode, NodeRef, ReduceCodec, VirtualStorage,
 };
 
-/// The one-edge write a test needs, expressed the way the API expresses it: an
-/// id-carrying declaration plus the payload in an edge reducer.
+/// The one-edge write a test needs, expressed the way the API expresses it: a
+/// head declaration plus the payload in an edge reducer. The tuple is the
+/// identity (ADR-0067), so nothing is numbered.
 fn link<S: VirtualStorage, E: GraphEncode + Clone + Default + 'static>(
     g: &mut Graph<S, E>,
     head: EdgeHead,
     payload: &E,
-    edge_id: u64,
 ) -> okm_core::Result<()> {
-    let mut fragment = Fragment::<E>::new([Decl::edge_at(head, edge_id)]);
+    let mut fragment = Fragment::<E>::new([Decl::edge(head)]);
     let given = payload.clone();
     fragment.on_edge_conflict(move |_stored, _declared| given.clone());
     g.incorporate(fragment).map(|_| ())
@@ -134,7 +134,6 @@ fn an_edge_table_restores_into_a_fresh_graph() {
             since_year: 2020,
             weight: 7,
         },
-        1,
     )
     .unwrap();
     link(
@@ -144,14 +143,16 @@ fn an_edge_table_restores_into_a_fresh_graph() {
             since_year: 2021,
             weight: 3,
         },
-        2,
     )
     .unwrap();
-    // One edge carries open attributes (the 0x01 segment).
+    // One edge carries open attributes (the 0x01 segment). "employs" was
+    // interned first (key order: user 1 before user 2), so it is id 0.
+    let employs = EdgeKey::new(user(1), 0, org(9));
+    let leads = EdgeKey::new(user(2), 1, org(9));
     let mut attrs = Dict::new();
     attrs.insert("note".to_string(), Variant::Str("hi".into()));
     let mut batch = Batch::default();
-    g.replace_into(&mut batch, 2, &attrs).unwrap();
+    g.replace_into(&mut batch, &leads, &attrs).unwrap();
     g.store_mut().commit_batch(batch).unwrap();
 
     // Export, write, and READ THE FILE BACK — the restore's real input.
@@ -164,8 +165,10 @@ fn an_edge_table_restores_into_a_fresh_graph() {
     let n = r.import_table(&table, ns_of).unwrap();
     assert_eq!(n, 2);
 
-    // Ids, endpoints, predicate, payload, attributes: all back as they were.
-    let one = r.get_edge(1).unwrap().unwrap();
+    // Identities, endpoints, predicate, payload, attributes: all back as they
+    // were. The identity is the tuple, so nothing was numbered on the way in or
+    // out.
+    let one = r.get_edge(&employs).unwrap().unwrap();
     assert_eq!((one.src.clone(), one.dst.clone()), (user(1), org(9)));
     assert_eq!(
         r.predicate_vocab_name(one.predicate_vocab_id)
@@ -173,21 +176,26 @@ fn an_edge_table_restores_into_a_fresh_graph() {
             .unwrap(),
         "employs"
     );
-    let payload = r.edge(1).unwrap().unwrap();
+    let payload = r.edge(&employs).unwrap().unwrap();
     assert_eq!((payload.since_year, payload.weight), (2020, 7));
-    assert_eq!(r.edge(2).unwrap().unwrap().since_year, 2021);
+    assert_eq!(r.edge(&leads).unwrap().unwrap().since_year, 2021);
     assert_eq!(
-        r.attrs(2).unwrap().unwrap().get("note"),
+        r.attrs(&leads).unwrap().unwrap().get("note"),
         Some(&Variant::Str("hi".into()))
     );
     assert!(
-        r.attrs(1).unwrap().is_none(),
+        r.attrs(&employs).unwrap().is_none(),
         "an edge with no attributes has none"
     );
 
     // Derived faces follow the write: traversal answers on the restored graph.
-    assert_eq!(r.out_edges(&user(1)).unwrap(), vec![1]);
-    assert_eq!(r.typed_in("employs", &org(9)).unwrap(), vec![1]);
+    let out = r.out_edges(&user(1)).unwrap();
+    assert_eq!(out, vec![employs.clone()]);
+    assert_eq!(
+        r.typed_in("employs", &org(9)).unwrap(),
+        vec![employs],
+        "the predicate face names the same identity"
+    );
     assert_eq!(r.predicates().unwrap().len(), 2);
 }
 
@@ -199,7 +207,6 @@ fn an_unknown_endpoint_collection_is_refused_by_name() {
         &mut g,
         head(user(1), org(9), "employs"),
         &Employment::default(),
-        1,
     )
     .unwrap();
     let table = g.to_record_batch_table(name_of).unwrap();

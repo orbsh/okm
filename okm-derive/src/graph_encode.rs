@@ -43,8 +43,12 @@
 //! collections this graph admits" — belongs to `NodeSet::NS_VALUES`, never to
 //! the enum's name. `<Name>Nodes` would claim the type holds many nodes, which
 //! no value ever does.
-//! Identity is the mechanism's `EdgeKey` (the bare `edge_id`) — a graph
-//! declares no key struct.
+//! Identity is the mechanism's `EdgeKey` (the tuple — an edge has no number,
+//! ADR-0067) — a graph declares no key struct. What the declaration DOES add
+//! beyond the member list is each member's key width (`KEY_LENS`, from that
+//! table's own `KEY_LEN`), which is what lets an edge key be written and parsed
+//! with no length prefix, and one typed endpoint constructor per member
+//! (`EmploymentNode::user(&key)`).
 
 use proc_macro2::TokenStream as TS2;
 use quote::quote;
@@ -53,6 +57,22 @@ use syn::Token;
 
 use crate::document_encode::emit_row_impl;
 use crate::schema::parse_schema_with_key;
+
+/// `EmploymentNode`'s variant `WorksFor` → the constructor `works_for`.
+fn snake_case(name: &str) -> String {
+    let mut out = String::with_capacity(name.len() + 4);
+    for (at, ch) in name.chars().enumerate() {
+        if ch.is_uppercase() {
+            if at > 0 {
+                out.push('_');
+            }
+            out.extend(ch.to_lowercase());
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
 
 /// Parse + validate the declaration, then expand it. A malformed declaration
 /// comes back as a span-carrying `syn::Error` — the caller turns it into
@@ -141,6 +161,33 @@ pub fn expand(input: syn::DeriveInput) -> syn::Result<TS2> {
         quote! { <#ty as ::okm_core::Document>::NS }
     });
 
+    // One pkey width per listed table, read off its key's own `KEY_LEN`. This is
+    // the table an edge key parses by: no length prefix, because the declaration
+    // already says how wide each endpoint is (ADR-0067).
+    let len_items = tables.iter().map(|ty| {
+        quote! { <<#ty as ::okm_core::Document>::Key as ::okm_core::KeyEncode>::KEY_LEN }
+    });
+
+    // The checked way to build an endpoint: one constructor per member, taking
+    // THAT table's key type, so a key of another collection cannot be passed and
+    // the ns can never drift from the table. `EmploymentNode::user(&key)`.
+    let endpoint_fns = tables.iter().zip(variants.iter()).map(|(ty, variant)| {
+        let fname = quote::format_ident!("{}", snake_case(&variant.to_string()));
+        let doc = format!(
+            "The endpoint `{variant}` names, from a key of its own collection — the \
+             declared way to build a graph reference (ADR-0067)."
+        );
+        quote! {
+            #[doc = #doc]
+            pub fn #fname(key: &<#ty as ::okm_core::Document>::Key) -> ::okm_core::NodeRef {
+                ::okm_core::NodeRef::new(
+                    <#ty as ::okm_core::Document>::NS_PREFIX,
+                    &::okm_core::KeyEncode::encode(key),
+                )
+            }
+        }
+    });
+
     let key_ty: syn::Type = syn::parse_quote!(::okm_core::EdgeKey);
     let schema = parse_schema_with_key(input, key_ty)?;
     let row = emit_row_impl(&schema)?;
@@ -158,8 +205,16 @@ pub fn expand(input: syn::DeriveInput) -> syn::Result<TS2> {
             #(#variants),*
         }
 
+        impl #set_ident {
+            #(#endpoint_fns)*
+        }
+
         impl ::okm_core::NodeSet for #set_ident {
             const NS_VALUES: &'static [u16] = &[#(#ns_items),*];
+
+            /// Each member's pkey width, from its key's own `KEY_LEN` — the table
+            /// an edge key parses by, with no length prefix (ADR-0067).
+            const KEY_LENS: &'static [usize] = &[#(#len_items),*];
 
             /// The variant's position in `NS_VALUES` — the same order, so a
             /// write path handed a variant can name its collection. The enum is

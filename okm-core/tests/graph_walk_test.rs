@@ -34,8 +34,8 @@ use okm_async::TestStore;
 use okm_core::engine::storage::{ExternalScan, ScanIter};
 use okm_core::error::Result;
 use okm_core::{
-    Decl, Document, DocumentEncode, EdgeHead, Fragment, Graph, GraphEncode, KeyEncode, NodeRef,
-    Seekable, VirtualStorage,
+    Decl, Document, DocumentEncode, EdgeHead, EdgeKey, Fragment, Graph, GraphEncode, KeyEncode,
+    NodeRef, Seekable, VirtualStorage,
 };
 use okm_query::{difference, intersect_seek, union};
 
@@ -257,21 +257,25 @@ fn verify(store: TestStore) {
     let report = g
         .incorporate(Fragment::new(decls))
         .unwrap_or_else(|e| panic!("{name}: commit: {e}"));
-    let ids = report.edge_ids;
-    assert_eq!(ids.len() as u64, WORKS + ADVISES + 1);
-    let works: Vec<u64> = ids[..WORKS as usize].to_vec();
-    let advises: Vec<u64> = ids[WORKS as usize..(WORKS + ADVISES) as usize].to_vec();
-    let bridge = ids[ids.len() - 1];
+    let keys: Vec<EdgeKey> = report.edges;
+    assert_eq!(keys.len() as u64, WORKS + ADVISES + 1);
+    let works: Vec<EdgeKey> = keys[..WORKS as usize].to_vec();
+    let advises: Vec<EdgeKey> = keys[WORKS as usize..(WORKS + ADVISES) as usize].to_vec();
+    let bridge = keys[keys.len() - 1].clone();
+    let works_pred = g
+        .predicate_id("works_at")
+        .expect("predicate probe")
+        .expect("the predicate was interned");
     calls.reset();
 
     // ---- 1. one edge, both directions: the same head, mirrored far ends ----
     let out_step = g
         .out(&person(1))
-        .find(|step| step.edge_id == works[0])
+        .find(|step| step.key() == works[0])
         .expect("the hub's first out-edge");
     let in_step = g
         .inn(&org(1))
-        .find(|step| step.edge_id == works[0])
+        .find(|step| step.key() == works[0])
         .expect("the same edge from the far side");
     assert_eq!(
         (
@@ -292,14 +296,15 @@ fn verify(store: TestStore) {
         "{name}: one edge states one head, whichever face read it"
     );
     assert_eq!(
-        out_step.head.predicate, None,
-        "{name}: the untyped face carries no predicate — it is not in the key"
+        out_step.head.predicate, works_pred,
+        "{name}: the untyped face states the predicate too — it is in the key, not in a row \
+         (ADR-0067)"
     );
 
     // ... and the in face is not a re-read: the second person's edge mirrors too.
     let mirrored = g
         .inn(&org(1))
-        .find(|step| step.edge_id == bridge)
+        .find(|step| step.key() == bridge)
         .expect("the bridge edge arrives at org 1");
     assert_eq!(
         mirrored.far,
@@ -319,28 +324,19 @@ fn verify(store: TestStore) {
 
     // ---- 3. predicate pushdown: same set, fewer entries ----
     let untyped_keys = keys_of(g.out(&person(1)));
-    let untyped = g
-        .out(&person(1))
-        .map(|step| step.edge_id)
-        .collect::<Vec<_>>();
-    // Ordered by the face, i.e. by destination — the ids are not the order.
+    let untyped: Vec<EdgeKey> = g.out(&person(1)).map(|step| step.key()).collect();
+    // Ordered by the face, i.e. by destination — the identities are not the order.
     let mut untyped_sorted = untyped.clone();
-    untyped_sorted.sort_unstable();
+    untyped_sorted.sort();
 
-    // The manual filter the pushdown replaces: walk the untyped face, then fetch
-    // each edge's row to learn its predicate and discard.
-    let works_pred = g.predicate_id("works_at").expect("predicate probe");
-    assert!(works_pred.is_some(), "{name}: the predicate was interned");
+    // The manual filter the pushdown replaces: walk the untyped face and keep
+    // the entries whose key states the predicate. It reads no row — the head is
+    // the key (ADR-0067) — so what pushdown buys is ENTRIES, not reads.
     calls.reset();
-    let manual: Vec<u64> = g
+    let manual: Vec<EdgeKey> = g
         .out(&person(1))
-        .filter(|step| {
-            g.get_edge(step.edge_id)
-                .expect("edge read")
-                .map(|body| body.predicate_vocab_id)
-                == works_pred
-        })
-        .map(|step| step.edge_id)
+        .filter(|step| step.head.predicate == works_pred)
+        .map(|step| step.key())
         .collect();
     let manual_pulled = calls.pulled();
     let manual_gets = calls.gets.get();
@@ -351,17 +347,17 @@ fn verify(store: TestStore) {
     let pushed = narrowed
         .by("works_at")
         .expect("predicate id")
-        .map(|step| step.edge_id)
+        .map(|step| step.key())
         .collect::<Vec<_>>();
     let pushed_pulled = calls.pulled();
     let mut pushed_sorted = pushed.clone();
-    pushed_sorted.sort_unstable();
+    pushed_sorted.sort();
 
     assert_eq!(
         pushed_sorted,
         {
             let mut want = works.clone();
-            want.sort_unstable();
+            want.sort();
             want
         },
         "{name}: the pushed-down stream answers exactly the predicate's edges"
@@ -370,10 +366,10 @@ fn verify(store: TestStore) {
         pushed_sorted,
         {
             let mut want = manual.clone();
-            want.sort_unstable();
+            want.sort();
             want
         },
-        "{name}: ... and it is the same set the row-filter answers"
+        "{name}: ... and it is the same set the key-filter answers"
     );
     assert!(
         pushed_pulled < manual_pulled,
@@ -381,10 +377,10 @@ fn verify(store: TestStore) {
          {}-entry face)",
         WORKS + ADVISES
     );
-    assert!(
-        manual_gets > 0,
-        "{name}: the manual filter pays one row read per entry ({manual_gets}); the pushed \
-         one pays none"
+    assert_eq!(
+        manual_gets, 0,
+        "{name}: the untyped face states the predicate, so filtering it costs no row read \
+         ({manual_gets})"
     );
     assert_eq!(
         pushed.len() as u64,
@@ -415,7 +411,7 @@ fn verify(store: TestStore) {
         .out(&person(1))
         .find(|step| step.far == org(1))
         .expect("org 1 is the first destination");
-    assert_eq!(found.edge_id, works[0]);
+    assert_eq!(found.key(), works[0]);
     let find_pulled = calls.pulled();
     assert!(
         find_pulled <= 3,
@@ -424,7 +420,7 @@ fn verify(store: TestStore) {
     );
 
     calls.reset();
-    let head_of_face: Vec<u64> = g.out(&person(1)).take(3).map(|step| step.edge_id).collect();
+    let head_of_face: Vec<EdgeKey> = g.out(&person(1)).take(3).map(|step| step.key()).collect();
     assert_eq!(head_of_face.len(), 3);
     let take_pulled = calls.pulled();
     assert!(
@@ -434,10 +430,10 @@ fn verify(store: TestStore) {
     );
 
     calls.reset();
-    let prefix_run: Vec<u64> = g
+    let prefix_run: Vec<EdgeKey> = g
         .out(&person(1))
         .take_while(|step| step.far.ns_id() == Org::NS)
-        .map(|step| step.edge_id)
+        .map(|step| step.key())
         .collect();
     let while_pulled = calls.pulled();
     assert_eq!(prefix_run.len() as u64, WORKS + ADVISES);

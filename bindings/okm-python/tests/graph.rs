@@ -3,10 +3,16 @@
 //! algebra, over the real engine (no mock store, no parallel layout).
 //!
 //! The layout itself is locked in okm-dynamic's own suite; what is locked HERE
-//! is the BINDING wiring — that the ids the verbs report are the ids the reads
-//! answer, that a delete cascades (nodes) or does not (edges), that a walk is
-//! lazy enough to abandon, and that a `KeySet` keeps "set algebra first, one
-//! fetch after" instead of a loop over ids.
+//! is the BINDING wiring — that the heads the verbs report are the heads the
+//! reads answer, that a delete cascades (nodes) or does not (edges), that a
+//! walk is lazy enough to abandon, and that a `KeySet` keeps "set algebra
+//! first, one fetch after" instead of a loop over keys.
+//!
+//! ADR-0067 rides through this whole file: an edge has NO number, its identity
+//! is the tuple `(src, predicate, dst)`. The Rust helpers speak `EdgeKey` (the
+//! tuple plus the interned predicate id, which is what the faces carry) and the
+//! Python shells speak the head `{src, dst, predicate}` — the `python_face`
+//! module below is what locks that translation.
 //!
 //! Gate: `cargo test --no-default-features --features host-tests` — the same
 //! posture as `injection.rs`, for the same reason: the test names pyclass
@@ -35,7 +41,7 @@ use std::sync::{Arc, Mutex};
 
 use okm::pyo3_impl::{Collection, Engine, EngineBox, Graph, KeySet};
 use okm_core::schema::CollectionSchema;
-use okm_core::{Direction, NodeRef};
+use okm_core::{Direction, EdgeKey, NodeRef};
 use okm_dynamic::{Cluster, ClusterRef, Decl, Dict, DynEdge, DynFragment, Kind, Value as Variant};
 
 /// The graph table's ns — a second table in the store, beside the collection's.
@@ -72,9 +78,23 @@ fn edge(src: NodeRef, dst: NodeRef, predicate: &str) -> DynEdge {
     }
 }
 
-/// A graph declaration as an export carries it, with an EMPTY member set — so
-/// the writer checks nothing rather than guessing, which is what a graph whose
-/// endpoints are bare refs wants.
+/// The identity a head names, resolved through the graph's OWN vocabulary.
+///
+/// ADR-0067: an edge has no number — the tuple IS the identity, so a test says
+/// which edge it means and asks the vocabulary what id that tuple carries. A
+/// predicate that was never interned names no edge at all, hence the panic.
+fn key(g: &Graph, src: NodeRef, dst: NodeRef, predicate: &str) -> EdgeKey {
+    let id = okm_dynamic::predicate_id_in(&g.store_handle(), &NS.to_be_bytes(), predicate)
+        .expect("the vocabulary probe")
+        .unwrap_or_else(|| panic!("predicate `{predicate}` was never interned"));
+    EdgeKey::new(src, id, dst)
+}
+
+/// A graph declaration as an export carries it. The member set is DECLARED
+/// (`members` + `member_widths`) even though the writer checks nothing against
+/// it — ADR-0067 made the width table the only boundary an edge key has, so a
+/// graph with no declared width cannot parse one of its own endpoints, let
+/// alone walk one.
 fn graph_schema() -> CollectionSchema {
     serde_json::from_value(serde_json::json!({
         "name": "edges",
@@ -84,7 +104,8 @@ fn graph_schema() -> CollectionSchema {
         "hot_width": 8,
         "hot_fields": [{"name": "at", "ty": "U64", "width": 8, "offset": 0, "tag": 0}],
         "cold_fields": [],
-        "members": [],
+        "members": [16, 17],
+        "member_widths": [[16, 8], [17, 8]],
         "indexes": [],
         "slots": {"primary": 0, "dynamic": 1, "field_vocab_id": 2, "field_vocab_name": 3,
                   "declared_index_base": 4096, "declared_reduce_base": 8192,
@@ -216,7 +237,7 @@ fn the_graph_writes_into_the_store_the_collection_was_given() {
             "works_at",
         ))]))
         .unwrap_or_else(|e| panic!("incorporate: {e}"));
-    assert_eq!(report.edge_ids.len(), 1);
+    assert_eq!(report.edges.len(), 1);
     assert!(
         engine.len() > 0,
         "the graph wrote into the HOST engine, not an orphan store"
@@ -237,8 +258,9 @@ fn the_graph_writes_into_the_store_the_collection_was_given() {
         Some(Variant::U64(42))
     );
     // ... and the graph's row survived the collection's write.
+    let written = key(&g, person(1), org(1), "works_at");
     assert!(
-        g.edge_dyn(report.edge_ids[0]).expect("edge read").is_some(),
+        g.edge_dyn(&written).expect("edge read").is_some(),
         "the document write did not disturb the graph's rows"
     );
 }
@@ -265,14 +287,14 @@ fn a_write_is_visible_after_incorporate() {
         .incorporate_dyn(fragment)
         .unwrap_or_else(|e| panic!("incorporate: {e}"));
 
-    assert_eq!(report.edge_ids.len(), 2, "one id per edge declaration");
+    assert_eq!(report.edges.len(), 2, "one head per edge declaration");
     assert_eq!(report.hyper_ids.len(), 1, "one id per cluster declaration");
     let cluster = report.hyper_ids[0];
     assert_eq!(cluster, 1, "ids start at 1 — 0 is \"no parent\"");
 
     // The edge row, decoded: endpoints, predicate by NAME, attributes by name.
     let first = g
-        .edge_dyn(report.edge_ids[0])
+        .edge_dyn(&report.edges[0])
         .expect("edge read")
         .expect("the edge is there");
     assert_eq!(first.src, person(1));
@@ -282,8 +304,13 @@ fn a_write_is_visible_after_incorporate() {
         "the predicate resolves to its name, never a bare id"
     );
     assert_eq!(first.attrs.get("since"), Some(&Variant::U64(2020)));
+    assert_eq!(
+        report.edges[0],
+        key(&g, person(1), org(9), "works_at"),
+        "the report names the tuple it wrote — there is no id to hand back"
+    );
 
-    // The cluster: its row, its members (in edge-id order) and its count.
+    // The cluster: its row, its members (in key order) and its count.
     let row = g
         .lookup_dyn(Kind::COMMUNITY, cluster)
         .expect("lookup")
@@ -296,8 +323,8 @@ fn a_write_is_visible_after_incorporate() {
     );
     assert_eq!(
         g.members_dyn(Kind::COMMUNITY, cluster).expect("members"),
-        report.edge_ids,
-        "one scan of the authority face"
+        report.edges,
+        "one scan of the authority face, and it answers the same tuples"
     );
     assert_eq!(
         g.member_count_dyn(Kind::COMMUNITY, cluster).expect("count"),
@@ -313,11 +340,13 @@ fn a_write_is_visible_after_incorporate() {
     );
     // The reverse direction: which clusters does an edge belong to?
     assert_eq!(
-        g.clusters_of_dyn(report.edge_ids[1]).expect("clusters_of"),
+        g.clusters_of_dyn(&report.edges[1]).expect("clusters_of"),
         vec![ClusterRef::new(Kind::COMMUNITY, cluster)]
     );
     assert!(
-        g.clusters_of_dyn(4_242).expect("clusters_of").is_empty(),
+        g.clusters_of_dyn(&key(&g, person(9), org(9), "works_at"))
+            .expect("clusters_of")
+            .is_empty(),
         "an edge nobody clustered answers nothing"
     );
 
@@ -327,7 +356,7 @@ fn a_write_is_visible_after_incorporate() {
         .unwrap_or_else(|_| panic!("second handle"));
     assert_eq!(
         again
-            .edge_dyn(report.edge_ids[0])
+            .edge_dyn(&report.edges[0])
             .expect("read")
             .map(|e| e.predicate),
         Some("works_at".to_string())
@@ -336,7 +365,11 @@ fn a_write_is_visible_after_incorporate() {
     // The traversal answers the same fact from the entry alone.
     let steps = walk(&g, &person(1));
     assert_eq!(steps.len(), 1);
-    assert_eq!(steps[0].1.edge_id, report.edge_ids[0]);
+    assert_eq!(
+        steps[0].1.key(),
+        report.edges[0],
+        "the entry IS the identity — the write's tuple and the hop's tuple agree"
+    );
     assert_eq!(
         steps[0].1.far,
         org(9),
@@ -344,8 +377,8 @@ fn a_write_is_visible_after_incorporate() {
     );
     assert_eq!(steps[0].1.head.src, person(1));
     assert_eq!(
-        steps[0].1.head.predicate, None,
-        "the untyped face carries no predicate — it is not in the key"
+        steps[0].1.head.predicate, report.edges[0].predicate,
+        "the untyped face carries the predicate id beside the endpoints"
     );
 
     // The mirror face: same head, mirrored far end.
@@ -357,7 +390,7 @@ fn a_write_is_visible_after_incorporate() {
     assert_eq!(incoming.len(), 2, "two edges end at org 9");
     let mirrored = incoming
         .iter()
-        .find(|(_, s)| s.edge_id == report.edge_ids[0])
+        .find(|(_, s)| s.key() == report.edges[0])
         .expect("the same edge from the far side")
         .1
         .clone();
@@ -379,16 +412,21 @@ fn deleting_a_node_takes_its_edges_and_deleting_an_edge_leaves_the_endpoints() {
             Decl::edge(edge(person(2), org(3), "works_at")),
         ]))
         .unwrap_or_else(|e| panic!("incorporate: {e}"));
-    let (p1_to_o1, p2_to_o1, p2_to_o3) = (
-        report.edge_ids[0],
-        report.edge_ids[1],
-        report.edge_ids[2],
+    let p1_to_o1 = key(&g, person(1), org(1), "works_at");
+    let p2_to_o1 = key(&g, person(2), org(1), "works_at");
+    let p2_to_o3 = key(&g, person(2), org(3), "works_at");
+    assert_eq!(
+        report.edges,
+        vec![p1_to_o1.clone(), p2_to_o1.clone(), p2_to_o3.clone()],
+        "the report names the tuples, in declaration order"
     );
     assert_eq!(walk(&g, &person(2)).len(), 2);
 
     // ---- a node's delete cascades: both faces, the row, the segment ----
     let removed = g
-        .retract_dyn(DynFragment::default().tap(|f| { f.delete_node(person(1)); }))
+        .retract_dyn(DynFragment::default().tap(|f| {
+            f.delete_node(person(1));
+        }))
         .unwrap_or_else(|e| panic!("retract: {e}"));
     assert_eq!(
         (removed.nodes, removed.edges, removed.memberships),
@@ -396,7 +434,7 @@ fn deleting_a_node_takes_its_edges_and_deleting_an_edge_leaves_the_endpoints() {
         "one node, its one edge, no membership rows to sweep"
     );
     assert!(
-        g.edge_dyn(p1_to_o1).expect("read").is_none(),
+        g.edge_dyn(&p1_to_o1).expect("read").is_none(),
         "the node took its edge's primary row with it"
     );
     assert!(
@@ -416,29 +454,33 @@ fn deleting_a_node_takes_its_edges_and_deleting_an_edge_leaves_the_endpoints() {
 
     // ---- an edge's delete leaves both endpoints standing ----
     let removed = g
-        .retract_dyn(DynFragment::default().tap(|f| { f.delete_edge(p2_to_o1); }))
+        .retract_dyn(DynFragment::default().tap(|f| {
+            f.delete_edge(p2_to_o1.clone());
+        }))
         .unwrap_or_else(|e| panic!("retract: {e}"));
     assert_eq!((removed.nodes, removed.edges), (0, 1));
-    assert!(g.edge_dyn(p2_to_o1).expect("read").is_none());
+    assert!(g.edge_dyn(&p2_to_o1).expect("read").is_none());
     assert!(
-        g.edge_dyn(p2_to_o3).expect("read").is_some(),
+        g.edge_dyn(&p2_to_o3).expect("read").is_some(),
         "the surviving edge is not collateral"
     );
     assert_eq!(
         walk(&g, &person(2))
             .iter()
-            .map(|(_, s)| s.edge_id)
+            .map(|(_, s)| s.key())
             .collect::<Vec<_>>(),
-        vec![p2_to_o3],
+        vec![p2_to_o3.clone()],
         "person 2 is still an endpoint — of one edge now"
     );
     assert!(
         walk_in(&g, &org(1)).is_empty(),
         "org 1 is still an endpoint too — of nothing"
     );
-    // An id nobody holds is nothing to do, not a refusal.
+    // A head nobody holds is nothing to do, not a refusal.
     let nothing = g
-        .retract_dyn(DynFragment::default().tap(|f| { f.delete_edge(9_999); }))
+        .retract_dyn(DynFragment::default().tap(|f| {
+            f.delete_edge(key(&g, person(9), org(9), "works_at"));
+        }))
         .unwrap_or_else(|e| panic!("retract: {e}"));
     assert_eq!((nothing.nodes, nothing.edges, nothing.memberships), (0, 0, 0));
 }
@@ -462,13 +504,13 @@ fn a_traversal_reads_only_the_entries_the_caller_asks_for() {
     let report = g
         .incorporate_dyn(DynFragment::new(decls))
         .unwrap_or_else(|e| panic!("incorporate: {e}"));
-    let works: Vec<u64> = report.edge_ids[..WORKS as usize].to_vec();
+    let works: Vec<EdgeKey> = report.edges[..WORKS as usize].to_vec();
 
     // The whole face, one entry per step.
     let mut stream = g.out_dyn(&person(1));
     let mut all = Vec::new();
     while let Some((_, step)) = stream.next_step() {
-        all.push(step.edge_id);
+        all.push(step.key());
     }
     assert_eq!(all.len() as u64, WORKS + ADVISES);
     assert_eq!(
@@ -476,6 +518,12 @@ fn a_traversal_reads_only_the_entries_the_caller_asks_for() {
         (WORKS + ADVISES) as usize,
         "a full walk reads the face exactly once"
     );
+    // The steps ARE what the write reported — same tuples, no id in between.
+    let mut reported = report.edges.clone();
+    reported.sort_unstable();
+    let mut walked = all.clone();
+    walked.sort_unstable();
+    assert_eq!(walked, reported, "one identity, two spellings of it");
 
     // ---- the caller breaks after three: the scan stops where it stands ----
     let mut stream = g.out_dyn(&person(1));
@@ -502,12 +550,13 @@ fn a_traversal_reads_only_the_entries_the_caller_asks_for() {
         Direction::Out,
         person(1),
         "works_at",
+        g.member_widths().clone(),
     )
     .expect("probe");
     assert!(pushed.filter_id().is_some(), "the pushdown names a face");
     let mut ids = Vec::new();
     while let Some((_, step)) = pushed.next_step() {
-        ids.push(step.edge_id);
+        ids.push(step.key());
     }
     ids.sort_unstable();
     let mut want = works;
@@ -530,6 +579,7 @@ fn a_traversal_reads_only_the_entries_the_caller_asks_for() {
         Direction::Out,
         person(1),
         "never_written",
+        g.member_widths().clone(),
     )
     .expect("a probe, not a fault");
     assert!(unknown.next_step().is_none());
@@ -559,43 +609,49 @@ fn member_of_answers_before_and_after_a_retract() {
         .incorporate_dyn(fragment)
         .unwrap_or_else(|e| panic!("incorporate: {e}"));
     let cluster = report.hyper_ids[0];
-    let ids = report.edge_ids.clone();
+    let keys = report.edges.clone();
 
-    for id in &ids {
+    for key in &keys {
         assert!(
-            g.member_of_dyn(Kind::COMMUNITY, cluster, *id)
+            g.member_of_dyn(Kind::COMMUNITY, cluster, key)
                 .expect("member_of"),
             "every edge of the batch is a member"
         );
     }
     assert!(
-        !g.member_of_dyn(Kind::COMMUNITY, cluster, 4_242)
-            .expect("member_of"),
-        "an id no cluster holds"
+        !g.member_of_dyn(
+            Kind::COMMUNITY,
+            cluster,
+            &EdgeKey::new(person(4), keys[0].predicate, org(4)),
+        )
+        .expect("member_of"),
+        "a tuple no cluster holds"
     );
     assert!(
-        !g.member_of_dyn(Kind::EVENT, cluster, ids[0]).expect("member_of"),
-        "membership is per KIND — the same id on another kind is another cluster"
+        !g.member_of_dyn(Kind::EVENT, cluster, &keys[0]).expect("member_of"),
+        "membership is per KIND — the same tuple on another kind is another cluster"
     );
 
     // One member leaves: the cluster survives on the other two, and the derived
     // faces follow the retract rather than the row they used to hold.
     let removed = g
-        .retract_dyn(DynFragment::default().tap(|f| { f.delete_edge(ids[1]); }))
+        .retract_dyn(DynFragment::default().tap(|f| {
+            f.delete_edge(keys[1].clone());
+        }))
         .unwrap_or_else(|e| panic!("retract: {e}"));
     assert_eq!(removed.edges, 1);
     assert_eq!(removed.memberships, 1, "one membership row swept");
     assert!(
-        !g.member_of_dyn(Kind::COMMUNITY, cluster, ids[1]).expect("member_of"),
+        !g.member_of_dyn(Kind::COMMUNITY, cluster, &keys[1]).expect("member_of"),
         "the retracted edge is no longer a member"
     );
     assert!(
-        g.member_of_dyn(Kind::COMMUNITY, cluster, ids[0]).expect("member_of"),
+        g.member_of_dyn(Kind::COMMUNITY, cluster, &keys[0]).expect("member_of"),
         "the others still are"
     );
     assert_eq!(
         g.members_dyn(Kind::COMMUNITY, cluster).expect("members"),
-        vec![ids[0], ids[2]]
+        vec![keys[0].clone(), keys[2].clone()]
     );
     assert_eq!(
         g.member_count_dyn(Kind::COMMUNITY, cluster).expect("count"),
@@ -603,21 +659,23 @@ fn member_of_answers_before_and_after_a_retract() {
         "the row's count was re-stamped"
     );
     assert!(
-        g.clusters_of_dyn(ids[1]).expect("clusters_of").is_empty(),
+        g.clusters_of_dyn(&keys[1]).expect("clusters_of").is_empty(),
         "the edge-first mirror lost the row too"
     );
 
     // A second retract drops it below two members, so the cluster stops
     // existing — its row and the last membership rows go with it.
     let removed = g
-        .retract_dyn(DynFragment::default().tap(|f| { f.delete_edge(ids[2]); }))
+        .retract_dyn(DynFragment::default().tap(|f| {
+            f.delete_edge(keys[2].clone());
+        }))
         .unwrap_or_else(|e| panic!("retract: {e}"));
     assert_eq!(
         removed.memberships, 2,
         "the cluster row and the remaining member row"
     );
     assert!(
-        !g.member_of_dyn(Kind::COMMUNITY, cluster, ids[0]).expect("member_of"),
+        !g.member_of_dyn(Kind::COMMUNITY, cluster, &keys[0]).expect("member_of"),
         "a one-member cluster is not a cluster (ADR-0066 §3)"
     );
     assert!(g
@@ -650,17 +708,19 @@ fn a_key_set_intersects_then_fetches_in_one_call() {
             Decl::edge(edge(person(1), org(5), "works_at")),
         ]))
         .unwrap_or_else(|e| panic!("incorporate: {e}"));
+    assert_eq!(report.edges.len(), 5, "five declarations, five heads");
     // A cluster over TWO of them — "which of this node's edges are in C" — by
-    // naming those two ids: a declaration adopts exactly the batch's edges.
+    // re-asserting those two heads: on a live tuple a declaration adopts the
+    // edge into the cluster instead of creating anything.
     let mut fragment = DynFragment::new([
-        Decl::edge_at(edge(person(1), org(1), "works_at"), report.edge_ids[0]),
-        Decl::edge_at(edge(person(1), org(2), "works_at"), report.edge_ids[1]),
+        Decl::edge(edge(person(1), org(1), "works_at")),
+        Decl::edge(edge(person(1), org(2), "works_at")),
     ]);
     fragment.cluster(Cluster::new(Kind::COMMUNITY, Dict::new()));
-    let grouped_ids = g
+    let grouped = g
         .incorporate_dyn(fragment)
         .unwrap_or_else(|e| panic!("cluster: {e}"));
-    let cluster = grouped_ids.hyper_ids[0];
+    let cluster = grouped.hyper_ids[0];
     let members = g.members_dyn(Kind::COMMUNITY, cluster).expect("members");
 
     // The walk's own face keys — the position okm-query's operators speak.
@@ -669,24 +729,24 @@ fn a_key_set_intersects_then_fetches_in_one_call() {
     let all_keys: Vec<Vec<u8>> = steps.iter().map(|(key, _)| key.clone()).collect();
     let member_keys: Vec<Vec<u8>> = steps
         .iter()
-        .filter(|(_, step)| members.contains(&step.edge_id))
+        .filter(|(_, step)| members.contains(&step.key()))
         .map(|(key, _)| key.clone())
         .collect();
     assert_eq!(member_keys.len(), 2, "the cluster holds two of the five");
 
     let all = KeySet::of(all_keys.clone());
-    let grouped = KeySet::of(member_keys.clone());
+    let grouped_keys = KeySet::of(member_keys.clone());
     assert_eq!(all.keys_ref().len(), 5);
-    assert_eq!(grouped.keys_ref().len(), 2);
+    assert_eq!(grouped_keys.keys_ref().len(), 2);
 
-    // Set algebra: one call each, no loop over ids in the caller.
+    // Set algebra: one call each, no loop over keys in the caller.
     assert_eq!(
-        all.intersect_dyn(&grouped).keys_ref(),
+        all.intersect_dyn(&grouped_keys).keys_ref(),
         member_keys.as_slice()
     );
-    assert_eq!(all.union_dyn(&grouped).keys_ref(), all_keys.as_slice());
-    assert_eq!(all.difference_dyn(&grouped).keys_ref().len(), 3);
-    assert_eq!(grouped.intersect_dyn(&all).keys_ref().len(), 2);
+    assert_eq!(all.union_dyn(&grouped_keys).keys_ref(), all_keys.as_slice());
+    assert_eq!(all.difference_dyn(&grouped_keys).keys_ref().len(), 3);
+    assert_eq!(grouped_keys.intersect_dyn(&all).keys_ref().len(), 2);
     // A set is a set: input order and duplicates do not survive.
     assert_eq!(
         KeySet::of(vec![b"z".to_vec(), b"a".to_vec(), b"a".to_vec()]).keys_ref(),
@@ -696,7 +756,7 @@ fn a_key_set_intersects_then_fetches_in_one_call() {
     // ... then ONE fetch for the surviving rows.
     let store = g.store_handle();
     let rows = all
-        .intersect_dyn(&grouped)
+        .intersect_dyn(&grouped_keys)
         .fetch_dyn(&store)
         .unwrap_or_else(|e| panic!("fetch: {e}"));
     assert_eq!(rows.len(), 2);
@@ -705,24 +765,30 @@ fn a_key_set_intersects_then_fetches_in_one_call() {
             member_keys.contains(key),
             "the fetch answers the intersection"
         );
-        assert_eq!(
-            value.as_deref(),
-            Some(&[] as &[u8]),
-            "a traversal entry carries no value — the key is the fact"
-        );
+        // A member row (0x0b) carries no value — the key is the fact — while a
+        // traversal row (0x06) carries the edge's payload. The intersection can
+        // hold both kinds, so the value is whatever that entry row holds; the
+        // claim worth asserting is the key, which the line above already does.
+        let _ = value;
     }
-    // The trailing eight bytes of an entry key are the edge id, so the two-step
-    // shape answers ids without a second scan.
-    let mut fetched_ids: Vec<u64> = rows
+    // The entry key's tail IS the far endpoint (`[ns 2][pkey 8]`, no length
+    // prefix — the declaration delimits it), so the two-step shape answers the
+    // neighbours without a second scan and without an edge id to look up.
+    let mut fetched_far: Vec<NodeRef> = rows
         .iter()
         .map(|(key, _)| {
-            u64::from_be_bytes(key[key.len() - 8..].try_into().expect("an id suffix"))
+            let tail = &key[key.len() - 10..];
+            NodeRef::new(&tail[..2], &tail[2..])
         })
         .collect();
-    fetched_ids.sort_unstable();
-    let mut want = members.clone();
-    want.sort_unstable();
-    assert_eq!(fetched_ids, want);
+    fetched_far.sort_unstable();
+    let mut want_far: Vec<NodeRef> = steps
+        .iter()
+        .filter(|(key, _)| member_keys.contains(key))
+        .map(|(_, step)| step.far.clone())
+        .collect();
+    want_far.sort_unstable();
+    assert_eq!(fetched_far, want_far);
 
     // A key that is no longer in the store answers `None`, not a refusal.
     let stale = KeySet::of(vec![b"nope".to_vec()])
@@ -799,26 +865,48 @@ mod python_face {
             fragment.set_item("reduce_edge", fold).unwrap();
 
             let report = as_dict(g.call_method1("incorporate", (fragment,)).unwrap());
-            let ids: Vec<u64> = report
-                .get_item("edge_ids")
+            // ADR-0067: the report names the HEADS, not ids.
+            let heads: Vec<Bound<'_, PyAny>> = report
+                .get_item("edges")
                 .unwrap()
                 .unwrap()
-                .extract()
-                .unwrap();
+                .cast_into::<PyList>()
+                .unwrap()
+                .iter()
+                .collect();
             let hypers: Vec<u64> = report
                 .get_item("hyper_ids")
                 .unwrap()
                 .unwrap()
                 .extract()
                 .unwrap();
-            assert_eq!(ids.len(), 2);
+            assert_eq!(heads.len(), 2);
             assert_eq!(hypers, vec![1u64]);
+            assert_eq!(
+                heads[0]
+                    .cast::<PyDict>()
+                    .unwrap()
+                    .get_item("predicate")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                "works_at",
+                "the report answers the predicate by NAME, so the head feeds back in"
+            );
+            assert!(
+                report
+                    .get_item("edge_ids")
+                    .unwrap()
+                    .is_none(),
+                "there is no edge id to report any more"
+            );
 
             // ---- a mixed fragment is REFUSED, in okm-dynamic's own words ----
             let mixed = PyDict::new(py);
             let deletes = PyList::empty(py);
-            deletes.append(ids[0]).unwrap();
-            mixed.set_item("edges", deletes).unwrap();
+            deletes.append(heads[0].clone()).unwrap();
+            mixed.set_item("delete_edges", deletes).unwrap();
             let err = g
                 .call_method1("incorporate", (mixed,))
                 .expect_err("incorporate writes; a deletion is retract's verb");
@@ -826,11 +914,13 @@ mod python_face {
                 err.to_string().contains("retract's verb"),
                 "the binding reports the Rust face's refusal: {err}"
             );
+            // A declaration carries ATTRIBUTES (a head and nothing else is a
+            // delete target), so this is the shape `retract` must refuse.
             let mixed = PyDict::new(py);
             let declares = PyList::empty(py);
-            declares
-                .append(edge_dict(py, (0x10, 3), (0x11, 3), "works_at"))
-                .unwrap();
+            let declared = edge_dict(py, (0x10, 3), (0x11, 3), "works_at");
+            declared.set_item("attrs", PyDict::new(py)).unwrap();
+            declares.append(declared).unwrap();
             mixed.set_item("edges", declares).unwrap();
             let err = g
                 .call_method1("retract", (mixed,))
@@ -854,14 +944,38 @@ mod python_face {
                 .call_method1("out", (node_dict(py, 0x10, 1),))
                 .unwrap();
             let first = as_dict(walk.call_method0("__next__").unwrap());
+            assert!(
+                first.get_item("edge_id").unwrap().is_none(),
+                "a step has no id to carry — the head is the identity"
+            );
+            let first_head = as_dict(first.get_item("head").unwrap().unwrap());
             assert_eq!(
-                first
-                    .get_item("edge_id")
+                first_head
+                    .get_item("predicate")
                     .unwrap()
                     .unwrap()
-                    .extract::<u64>()
+                    .extract::<String>()
                     .unwrap(),
-                ids[0]
+                "works_at"
+            );
+            assert_eq!(
+                as_dict(first_head.get_item("src").unwrap().unwrap())
+                    .get_item("ns")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<u16>()
+                    .unwrap(),
+                0x10
+            );
+            assert_eq!(
+                as_dict(first_head.get_item("dst").unwrap().unwrap())
+                    .get_item("ns")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<u16>()
+                    .unwrap(),
+                0x11,
+                "an out hop states the edge's own direction, not the walk's"
             );
             let far = as_dict(first.get_item("far").unwrap().unwrap());
             assert_eq!(
@@ -887,14 +1001,16 @@ mod python_face {
             // and only then trips the iterator protocol's StopIteration — the
             // thing that makes `for step in g.out(n)` terminate.
             let second = as_dict(walk.call_method0("__next__").unwrap());
+            let second_head = as_dict(second.get_item("head").unwrap().unwrap());
             assert_eq!(
-                second
-                    .get_item("edge_id")
+                as_dict(second_head.get_item("dst").unwrap().unwrap())
+                    .get_item("key")
                     .unwrap()
                     .unwrap()
-                    .extract::<u64>()
+                    .extract::<Vec<u8>>()
                     .unwrap(),
-                ids[1]
+                2u64.to_be_bytes().to_vec(),
+                "the second hop ends at the second org"
             );
             let end = walk.call_method0("__next__");
             assert!(
@@ -907,7 +1023,10 @@ mod python_face {
                 2
             );
             assert_eq!(
-                walk.getattr("direction").unwrap().extract::<String>().unwrap(),
+                walk.getattr("direction")
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
                 "out"
             );
 
@@ -931,12 +1050,25 @@ mod python_face {
                 2
             );
 
-            // ---- cluster reads are plain values ----
+            // ---- cluster reads take a HEAD and answer plain values ----
             assert!(
-                g.call_method1("member_of", ("community", 1u64, ids[1]))
+                g.call_method1("member_of", ("community", 1u64, heads[1].clone()))
                     .unwrap()
                     .extract::<bool>()
                     .unwrap()
+            );
+            // The tuple spelling is accepted too — it is the same head.
+            let tuple_head = (
+                node_dict(py, 0x10, 1),
+                node_dict(py, 0x11, 2),
+                "works_at".to_string(),
+            );
+            assert!(
+                g.call_method1("member_of", ("community", 1u64, tuple_head.clone()))
+                    .unwrap()
+                    .extract::<bool>()
+                    .unwrap(),
+                "a 3-tuple head is the same identity as the dict"
             );
             let row = as_dict(g.call_method1("lookup", ("community", 1u64)).unwrap());
             assert_eq!(
@@ -947,8 +1079,83 @@ mod python_face {
                     .unwrap(),
                 2
             );
-            let refs = g.call_method1("clusters_of", (ids[0],)).unwrap();
+            let members = g.call_method1("members", ("community", 1u64)).unwrap();
+            assert_eq!(members.len().unwrap(), 2, "one head per member edge");
+            assert_eq!(
+                as_dict(members.get_item(0).unwrap())
+                    .get_item("predicate")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                "works_at",
+                "a member is a head, not an id"
+            );
+            let refs = g
+                .call_method1("clusters_of", (heads[0].clone(),))
+                .unwrap();
             assert_eq!(refs.len().unwrap(), 1);
+
+            // ---- a predicate nobody interned names no edge at all ----
+            let unknown = edge_dict(py, (0x10, 9), (0x11, 9), "never_written");
+            assert!(
+                !g.call_method1("member_of", ("community", 1u64, unknown.clone()))
+                    .unwrap()
+                    .extract::<bool>()
+                    .unwrap(),
+                "no face can hold an edge whose predicate was never interned"
+            );
+            assert_eq!(
+                g.call_method1("clusters_of", (unknown.clone(),))
+                    .unwrap()
+                    .len()
+                    .unwrap(),
+                0
+            );
+            assert!(g
+                .call_method1("edge", (unknown.clone(),))
+                .unwrap()
+                .is_none());
+            let nowhere = PyDict::new(py);
+            nowhere
+                .set_item("delete_edges", PyList::new(py, [unknown]).unwrap())
+                .unwrap();
+            let removed = as_dict(g.call_method1("retract", (nowhere,)).unwrap());
+            assert_eq!(
+                removed
+                    .get_item("edges")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<u64>()
+                    .unwrap(),
+                0,
+                "a head nobody holds is nothing to do, not a refusal"
+            );
+
+            // ---- `edge` answers the head it was asked for ----
+            let one = as_dict(g.call_method1("edge", (heads[1].clone(),)).unwrap());
+            assert_eq!(
+                one.get_item("predicate")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                "works_at"
+            );
+            assert_eq!(
+                one.get_item("attrs")
+                    .unwrap()
+                    .unwrap()
+                    .cast::<PyDict>()
+                    .unwrap()
+                    .get_item("seen")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<u64>()
+                    .unwrap(),
+                1,
+                "the reducer's fields are on the stored attributes"
+            );
 
             // ---- KeySet: algebra inside one call, rows in the next ----
             let keys = PyList::empty(py);

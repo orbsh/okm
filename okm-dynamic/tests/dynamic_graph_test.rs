@@ -98,19 +98,32 @@ fn dynamic_link_traverse_and_fetch_back() {
     let store = okm_async::TestStore::slatedb_mem();
     let mut g: Graph<_> = Graph::new(store.clone(), NS, works_at_schema());
 
-    g.link(&dyn_edge(person(1), org(9), "works_at", 2020), 1)
+    let key = g
+        .link(&dyn_edge(person(1), org(9), "works_at", 2020))
         .unwrap();
+    // The writer's answer IS the identity: the tuple, with the predicate as the
+    // vocabulary id it was interned at (ADR-0067).
+    assert_eq!(key.src, person(1));
+    assert_eq!(key.dst, org(9));
 
-    assert_eq!(g.out_edges(&person(1)).unwrap(), vec![1]);
-    assert_eq!(g.in_edges(&org(9)).unwrap(), vec![1]);
-    assert_eq!(g.typed_out("works_at", &person(1)).unwrap(), vec![1]);
-    assert_eq!(g.typed_in("works_at", &org(9)).unwrap(), vec![1]);
-    assert_eq!(g.edges_of_predicate("works_at").unwrap(), vec![1]);
+    assert_eq!(g.out_edges(&person(1)).unwrap(), vec![key.clone()]);
+    assert_eq!(g.in_edges(&org(9)).unwrap(), vec![key.clone()]);
+    assert_eq!(
+        g.typed_out("works_at", &person(1)).unwrap(),
+        vec![key.clone()]
+    );
+    assert_eq!(g.typed_in("works_at", &org(9)).unwrap(), vec![key.clone()]);
+    assert_eq!(g.edges_of_predicate("works_at").unwrap(), vec![key.clone()]);
+    assert_eq!(
+        g.edge_at("works_at", &person(1), &org(9)).unwrap(),
+        Some(key.clone()),
+        "the identity lookup is one exact key"
+    );
     // Unknown predicates scan empty (no face, no panic) — on a handle that
     // was never primed: the read itself loads the vocabulary.
     assert!(g.typed_out("owns", &person(1)).unwrap().is_empty());
 
-    let back = g.get_edge(1).unwrap().unwrap();
+    let back = g.get_edge(&key).unwrap().unwrap();
     assert_eq!(back.src, person(1));
     assert_eq!(back.dst, org(9));
     assert_eq!(back.predicate, "works_at");
@@ -130,42 +143,69 @@ fn dynamic_unlink_removes_all_faces() {
     let store = okm_async::TestStore::slatedb_mem();
     let mut g: Graph<_> = Graph::new(store.clone(), NS, works_at_schema());
 
-    g.link(&dyn_edge(person(1), org(9), "works_at", 2020), 1)
+    let first = g
+        .link(&dyn_edge(person(1), org(9), "works_at", 2020))
         .unwrap();
-    g.link(&dyn_edge(person(2), org(9), "works_at", 2021), 2)
+    let second = g
+        .link(&dyn_edge(person(2), org(9), "works_at", 2021))
         .unwrap();
-    g.unlink(1).unwrap();
+    g.unlink(&first).unwrap();
 
-    assert_eq!(g.out_edges(&person(1)).unwrap(), Vec::<u64>::new());
-    assert_eq!(g.edges_of_predicate("works_at").unwrap(), vec![2]);
-    assert!(g.get_edge(1).unwrap().is_none());
-    assert!(g.unlink(1).is_err(), "double unlink errors");
+    assert_eq!(g.out_edges(&person(1)).unwrap(), Vec::<EdgeKey>::new());
+    assert_eq!(
+        g.edges_of_predicate("works_at").unwrap(),
+        vec![second.clone()]
+    );
+    assert!(g.get_edge(&first).unwrap().is_none());
+    assert!(g.unlink(&first).is_err(), "double unlink errors");
     // The dynamic segment entry goes with it: no attribute frame survives.
     let mut dyn_key = NS.to_be_bytes().to_vec();
     okm_core::write_slot(&mut dyn_key, okm_core::index::DYNAMIC_SLOT);
-    dyn_key.extend_from_slice(&1u64.to_be_bytes());
+    first.write(&mut dyn_key);
     assert!(store.get(&dyn_key).unwrap().is_none());
 }
 
 #[test]
-fn dynamic_rejects_live_id_and_handles_mixed_pkey_widths() {
+fn a_reassertion_is_the_same_row_and_widths_come_from_the_declaration() {
     let store = okm_async::TestStore::slatedb_mem();
     let mut g: Graph<_> = Graph::new(store.clone(), NS, works_at_schema());
-    g.link(&dyn_edge(person(1), org(9), "works_at", 2020), 1)
+    let first = g
+        .link(&dyn_edge(person(1), org(9), "works_at", 2020))
         .unwrap();
-    assert!(
-        g.link(&dyn_edge(person(2), org(8), "works_at", 2020), 1)
-            .is_err()
+    // Writing the same tuple again is writing the same row (ADR-0067) — there is
+    // no number to collide over. The attribute segment is REPLACED, not merged.
+    let again = g
+        .link(&dyn_edge(person(1), org(9), "works_at", 2021))
+        .unwrap();
+    assert_eq!(again, first, "the tuple is the identity");
+    assert_eq!(
+        g.out_edges(&person(1)).unwrap(),
+        vec![first.clone()],
+        "one row, not two"
+    );
+    assert_eq!(
+        g.get_edge(&first).unwrap().unwrap().attrs.get("since"),
+        Some(&Variant::U64(2021)),
+        "the second assertion's frame replaced the first's"
     );
 
-    // Mixed pkey widths need NO registration — refs carry their own
-    // len. A 4-byte-key node round-trips beside an 8-byte one.
-    let team = NodeRef::new(&0x12u16.to_be_bytes(), &7u32.to_be_bytes());
-    g.link(&dyn_edge(person(1), team.clone(), "joins", 2021), 2)
+    // Widths come from each member table's OWN declaration: a pkey that does
+    // not match its table is refused, not smuggled in by a length prefix. The
+    // `Team` table is keyed by a `u64`, so a 4-byte pkey in its ns is wrong.
+    let wrong_width = NodeRef::new(&0x12u16.to_be_bytes(), &7u32.to_be_bytes());
+    let err = g
+        .link(&dyn_edge(person(1), wrong_width, "joins", 2021))
+        .unwrap_err();
+    assert!(err.contains("byte(s) wide"), "unexpected error: {err}");
+
+    // The declared width round-trips.
+    let team = NodeRef::new(&0x12u16.to_be_bytes(), &7u64.to_be_bytes());
+    let joins = g
+        .link(&dyn_edge(person(1), team.clone(), "joins", 2021))
         .unwrap();
-    let back = g.get_edge(2).unwrap().unwrap();
-    assert_eq!(back.dst.pkey, 7u32.to_be_bytes().to_vec());
-    assert_eq!(g.in_edges(&team).unwrap(), vec![2]);
+    let back = g.get_edge(&joins).unwrap().unwrap();
+    assert_eq!(back.dst.pkey, 7u64.to_be_bytes().to_vec());
+    assert_eq!(g.in_edges(&team).unwrap(), vec![joins]);
 }
 
 #[test]
@@ -185,23 +225,33 @@ fn member_set_travels_in_the_schema_and_is_enforced() {
     // way the static form's `E::Nodes` rejects it.
     let stranger = NodeRef::new(&0x13u16.to_be_bytes(), &1u64.to_be_bytes());
     let err = g
-        .link(&dyn_edge(person(1), stranger, "works_at", 2020), 1)
+        .link(&dyn_edge(person(1), stranger, "works_at", 2020))
         .unwrap_err();
     assert!(err.contains("not a member"), "unexpected error: {err}");
-    assert!(g.get_edge(1).unwrap().is_none(), "nothing was written");
+    assert!(
+        g.out_edges(&person(1)).unwrap().is_empty(),
+        "nothing was written"
+    );
 
-    // An EMPTY set declares no membership (a writer without a graph
-    // declaration): nothing is checked, nothing is guessed.
+    // Without a member set there is no width for any endpoint, so
+    // `[src][pred][dst]` has no boundary to parse by (ADR-0067). The writer
+    // refuses rather than guessing a length — an edge needs a declaration to
+    // exist at all.
     let mut plain: Graph<_> = Graph::new(
         store.clone(),
         NS,
         CollectionSchema::of::<EdgeKey, WorksAt>(),
     );
     assert!(plain.schema().members.is_empty());
+    assert!(plain.schema().member_widths.is_empty());
     let loose = NodeRef::new(&0x13u16.to_be_bytes(), &1u64.to_be_bytes());
-    plain
-        .link(&dyn_edge(person(1), loose, "works_at", 2020), 2)
-        .expect("an empty member set checks nothing");
+    let err = plain
+        .link(&dyn_edge(person(1), loose, "works_at", 2020))
+        .unwrap_err();
+    assert!(
+        err.contains("declare it in the schema's member set"),
+        "unexpected error: {err}"
+    );
 }
 
 #[test]
@@ -222,27 +272,21 @@ fn byte_equality_with_fixed_ontology_form() {
     // shared wire is everything else, including the empty obj payload.
     let store_dyn = okm_async::TestStore::slatedb_mem();
     let mut gd: Graph<_> = Graph::new(store_dyn.clone(), NS, works_at_schema());
-    gd.link(
-        &DynEdge {
-            src: person(1),
-            dst: org(9),
-            predicate: "works_at".into(),
-            attrs: Dict::new(),
-        },
-        7,
-    )
+    gd.link(&DynEdge {
+        src: person(1),
+        dst: org(9),
+        predicate: "works_at".into(),
+        attrs: Dict::new(),
+    })
     .unwrap();
 
     let store_fix = okm_async::TestStore::slatedb_mem();
     let mut gf: StaticGraph<_, WorksAt> = StaticGraph::new(store_fix.clone());
-    let fragment = Fragment::<WorksAt>::new([Decl::edge_at(
-        EdgeHead {
-            src: person(1),
-            dst: org(9),
-            predicate: "works_at".into(),
-        },
-        7,
-    )]);
+    let fragment = Fragment::<WorksAt>::new([Decl::edge(EdgeHead {
+        src: person(1),
+        dst: org(9),
+        predicate: "works_at".into(),
+    })]);
     gf.incorporate(fragment).unwrap();
 
     let collect = |store: &okm_async::TestStore, prefix: &[u8]| -> Vec<Vec<u8>> {
@@ -278,15 +322,20 @@ fn link_promotes_its_vocabulary_allocations() {
     let store = okm_async::TestStore::slatedb_mem();
     let mut g: Graph<_> = Graph::new(store, NS, works_at_schema());
 
-    g.link(&dyn_edge(person(1), org(9), "works_at", 2020), 1)
+    let first = g
+        .link(&dyn_edge(person(1), org(9), "works_at", 2020))
         .unwrap();
     assert_eq!(g.vocab_pending(), 0, "an immediate commit is evidence");
 
     // The same names on a new edge allocate nothing, and leave nothing pending.
-    g.link(&dyn_edge(person(1), org(9), "works_at", 2021), 2)
+    // A re-assertion of the same tuple reuses them too.
+    g.link(&dyn_edge(person(1), org(8), "works_at", 2021))
         .unwrap();
     assert_eq!(g.vocab_pending(), 0);
-    let back = g.get_edge(2).unwrap().unwrap();
+    g.link(&dyn_edge(person(1), org(9), "works_at", 2021))
+        .unwrap();
+    assert_eq!(g.vocab_pending(), 0, "a re-assertion interns nothing");
+    let back = g.get_edge(&first).unwrap().unwrap();
     assert_eq!(back.predicate, "works_at");
     assert_eq!(back.attrs.get("since"), Some(&Variant::U64(2021)));
 }

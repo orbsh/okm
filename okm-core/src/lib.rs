@@ -84,7 +84,7 @@ pub use model::document::{Collection, SeekScan};
 pub use model::field::{FieldDesc, FieldType};
 pub use model::graph::{
     Direction, EdgeBody, EdgeHead, EdgeKey, EdgeStep, EdgeStream, Graph, GraphEncode, HopHead,
-    NodeRef, NodeSet,
+    Members, NodeRef, NodeSet,
 };
 pub use model::hyper::{
     CHILD_INDEX_SLOT, CLUSTER_SLOT, Cluster, ClusterConflict, ClusterRef, ClusterRow,

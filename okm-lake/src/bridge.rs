@@ -710,16 +710,18 @@ impl<S: VirtualStorage, E: GraphEncode> EdgeTable for Graph<S, E> {
         use arrow::buffer::{Buffer, OffsetBuffer, ScalarBuffer};
         use arrow::datatypes::{Field as ArrowField, Schema as ArrowSchema};
 
-        let ids = self.edge_ids()?;
+        // The edges themselves, in key order — an edge has no number, so the
+        // export walks identities (ADR-0067).
+        let keys = self.edges()?;
         // Edge rows always have a body: `None` (no row) does not arise here.
-        let mut documents: Vec<(Vec<u8>, Option<Vec<u8>>)> = Vec::with_capacity(ids.len());
+        let mut documents: Vec<(Vec<u8>, Option<Vec<u8>>)> = Vec::with_capacity(keys.len());
         // (src name, src pkey, dst name, dst pkey, predicate) per row
         type EdgeRow = (Option<String>, Vec<u8>, Option<String>, Vec<u8>, String);
-        let mut rows: Vec<EdgeRow> = Vec::with_capacity(ids.len());
-        let mut variants: Vec<Option<okm_value::Dict>> = Vec::with_capacity(ids.len());
+        let mut rows: Vec<EdgeRow> = Vec::with_capacity(keys.len());
+        let mut variants: Vec<Option<okm_value::Dict>> = Vec::with_capacity(keys.len());
 
-        for id in ids {
-            let Some(body) = self.get_edge(id)? else {
+        for key in keys {
+            let Some(body) = self.get_edge(&key)? else {
                 continue;
             };
             let predicate = self
@@ -733,14 +735,17 @@ impl<S: VirtualStorage, E: GraphEncode> EdgeTable for Graph<S, E> {
                 predicate,
             ));
             variants.push(
-                self.attrs(id)?
+                self.attrs(&key)?
                     .map(|fields| fields.into_iter().collect::<okm_value::Dict>()),
             );
-            documents.push((id.to_be_bytes().to_vec(), Some(body.payload)));
+            // The payload half of the row; the identity's own bytes travel as the
+            // endpoint columns above, because that IS the identity now.
+            documents.push((key.wire(), Some(body.payload)));
         }
 
-        // The declaration's own columns: the edge key (the bare edge id) then the
-        // payload fields, exactly the document projection.
+        // The declaration's own columns: the payload fields, exactly the document
+        // projection. The identity needs no column of its own — the endpoint and
+        // predicate columns in front ARE it.
         let proj = Projection::<EdgeKey, E>::new();
         let mut header = E::PARTITION_PREFIX.to_vec();
         header.extend_from_slice(E::NS_PREFIX);

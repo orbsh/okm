@@ -711,9 +711,8 @@ pub mod parquet_io {
             F: Fn(&str) -> Option<u16>,
         {
             use arrow::array::{Array, BinaryArray, StringArray};
-            use okm_core::model::graph::{EdgeHead, EdgeKey, NodeRef};
+            use okm_core::model::graph::{EdgeHead, NodeRef};
 
-            let key_fields = <EdgeKey as KeyEncode>::FIELDS;
             let row_fields = <E as Document>::FIELDS;
             // Columns are found BY NAME, so a table may carry more than this
             // declaration names: the endpoint pair's typed key columns, for one,
@@ -729,7 +728,6 @@ pub mod parquet_io {
             let (c_dst_t, c_dst_k) = (col("dst_table")?, col("dst_pkey")?);
             let c_pred = col("predicate")?;
             let c_variant = col("variant")?;
-            let c_key = col(key_fields[0].name)?;
             let c_payload: Vec<usize> = row_fields
                 .iter()
                 .map(|f| col(f.name))
@@ -761,7 +759,6 @@ pub mod parquet_io {
                 };
 
             let mut heads: Vec<EdgeHead> = Vec::with_capacity(n);
-            let mut ids: Vec<u64> = Vec::with_capacity(n);
             let mut payloads: Vec<E> = Vec::with_capacity(n);
             let mut props: Vec<Dict> = Vec::with_capacity(n);
             {
@@ -779,15 +776,8 @@ pub mod parquet_io {
                     if predicates.is_null(row) {
                         return Err(format!("row {row}: the edge has no predicate"));
                     }
-                    // The key half: the edge id, at the key column's own width.
-                    let key_bytes =
-                        wire_bytes(batch.column(c_key), row, &key_fields[0], store, &ns_header)?;
-                    let id_bytes: [u8; 8] = key_bytes.as_slice().try_into().map_err(|_| {
-                        format!(
-                            "row {row}: edge key is {} bytes, not a u64",
-                            key_bytes.len()
-                        )
-                    })?;
+                    // The identity half: the endpoints and the predicate, which
+                    // ARE the edge (ADR-0067). Nothing to read for a number.
                     // The payload: `[hot segment][cold TLV]` — no header, the hot
                     // width is the declaration's (ADR-0042 as amended) — reassembled
                     // from the typed columns.
@@ -819,33 +809,38 @@ pub mod parquet_io {
                         dst,
                         predicate: predicates.value(row).to_string(),
                     });
-                    ids.push(u64::from_be_bytes(id_bytes));
                     payloads.push(E::decode_payload(&payload));
                     props.push(variant_map(batch.column(c_variant), row)?);
                 }
             }
 
-            for ((head, (id, payload)), fields) in heads
-                .iter()
-                .zip(ids.iter().zip(payloads.iter()))
-                .zip(props.iter())
-            {
-                // The id is the identity: `edge_at` creates it when free and
-                // re-asserts it when live, and the conflict hook answers the
-                // payload the file carries — the stored row, if any, does not get
-                // a say in a restore. One fragment, one commit.
+            for ((head, payload), fields) in heads.iter().zip(payloads.iter()).zip(props.iter()) {
+                // The tuple is the identity: a declaration creates the edge when
+                // that row is free and re-asserts it when it is live, so a restore
+                // twice over the same file lands the same rows (ADR-0067). The
+                // conflict hook answers the payload the file carries — the stored
+                // row, if any, does not get a say in a restore. One fragment, one
+                // commit.
                 let payload = (*payload).clone();
-                let mut fragment = Fragment::<E>::new([Decl::edge_at((*head).clone(), *id)]);
+                let mut fragment = Fragment::<E>::new([Decl::edge((*head).clone())]);
                 fragment.on_edge_conflict(move |_stored, _declared| payload.clone());
-                self.incorporate(fragment).map_err(|e| e.to_string())?;
+                let report = self.incorporate(fragment).map_err(|e| e.to_string())?;
+                let Some(key) = report.edges.first().cloned() else {
+                    return Err("a restored edge answered no identity".to_string());
+                };
                 // Open attributes are the document's own row, so they take the
                 // second commit (the two carriers are separate write paths).
                 let mut batch = okm_core::engine::storage::Batch::default();
-                self.replace_into(&mut batch, *id, fields)
+                self.replace_into(&mut batch, &key, fields)
                     .map_err(|e| e.to_string())?;
-                self.store_mut()
-                    .commit_batch(batch)
-                    .map_err(|e| format!("edge {id}: {e}"))?;
+                self.store_mut().commit_batch(batch).map_err(|e| {
+                    format!(
+                        "edge (ns {} predicate {} ns {}): {e}",
+                        key.src.ns_id(),
+                        key.predicate,
+                        key.dst.ns_id()
+                    )
+                })?;
             }
             Ok(n)
         }

@@ -3,11 +3,15 @@
 //! payloads everywhere.
 //!
 //! ```text
-//! 0x0A  cluster row      [ns][0x0A][kind][hyper_id]            → [parent u64 BE][dynamic payload]
-//! 0x0B  edge member      [ns][0x0B][kind][hyper_id][edge_id]   → empty
-//! 0x0C  child cluster    [ns][0x0C][kind][parent_id][hyper_id] → empty, derived
-//! 0x0D  edge → cluster   [ns][0x0D][edge_id][kind][hyper_id]   → empty, derived
+//! 0x0A  cluster row      [ns][0x0A][kind][hyper_id]                 → [parent u64 BE][dynamic payload]
+//! 0x0B  edge member      [ns][0x0B][kind][hyper_id][src][pred][dst] → empty
+//! 0x0C  child cluster    [ns][0x0C][kind][parent_id][hyper_id]      → empty, derived
+//! 0x0D  edge → cluster   [ns][0x0D][src][pred][dst][kind][hyper_id] → empty, derived
 //! ```
+//!
+//! A member is an edge, and an edge is its tuple (ADR-0067): the rows above hold
+//! `[src][pred][dst]` where the numbered layout held an `edge_id`, and the widths
+//! come from the schema's member table exactly as they do for an edge key.
 //!
 //! # Why this exists as a second implementation and not a generic wrapper
 //!
@@ -50,7 +54,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use okm_core::model::graph::NodeRef;
+use okm_core::model::graph::{EdgeKey, Members, NodeRef};
 use okm_core::model::hyper::{
     CHILD_INDEX_SLOT, CLUSTER_SLOT, EDGE_CLUSTER_SLOT, EDGE_MEMBER_SLOT, child_key,
     children_prefix, cluster_key, cluster_value, clusters_prefix, edge_cluster_key,
@@ -162,16 +166,24 @@ fn decode_dict<S: VirtualStorage + ?Sized>(
 // Reads
 // ---------------------------------------------------------------------------
 
-fn member_ids<S: VirtualStorage + ?Sized>(
+fn member_keys<S: VirtualStorage + ?Sized>(
     store: &S,
     ns: &[u8; 2],
     cluster: ClusterRef,
-) -> Result<Vec<u64>, String> {
-    Ok(scan_suffix_kv(store, &members_prefix(ns, cluster))
-        .map_err(|e| e.to_string())?
-        .into_iter()
-        .filter_map(|(suffix, _)| be_u64(&suffix))
-        .collect())
+    members: &Members,
+) -> Result<Vec<EdgeKey>, String> {
+    let mut out = Vec::new();
+    for (suffix, _) in
+        scan_suffix_kv(store, &members_prefix(ns, cluster)).map_err(|e| e.to_string())?
+    {
+        let Some((key, taken)) = EdgeKey::parse(&suffix, members) else {
+            continue;
+        };
+        if taken == suffix.len() {
+            out.push(key);
+        }
+    }
+    Ok(out)
 }
 
 /// What one cluster write has to build on: the row and its member set.
@@ -179,13 +191,14 @@ struct State {
     exists: bool,
     parent: u64,
     payload: Dict,
-    members: BTreeSet<u64>,
+    members: BTreeSet<EdgeKey>,
 }
 
 fn read_cluster<S: VirtualStorage + ?Sized>(
     store: &S,
     ns: &[u8; 2],
     cluster: ClusterRef,
+    members: &Members,
 ) -> Result<State, String> {
     let mut state = State {
         exists: false,
@@ -204,7 +217,9 @@ fn read_cluster<S: VirtualStorage + ?Sized>(
             state.payload = decode_dict(store, ns, body)?;
         }
     }
-    state.members = member_ids(store, ns, cluster)?.into_iter().collect();
+    state.members = member_keys(store, ns, cluster, members)?
+        .into_iter()
+        .collect();
     Ok(state)
 }
 
@@ -277,14 +292,15 @@ impl<S: VirtualStorage> Graph<S> {
         Ok(out)
     }
 
-    /// The member edges of one cluster, in edge-id order — the authority
-    /// (`0x0B`). One prefix scan; no length test, because member rows are the
-    /// only rows under that prefix.
-    pub fn members(&self, kind: Kind, cluster: u64) -> Result<Vec<u64>, String> {
-        member_ids(
+    /// The member edges of one cluster, in key order — the authority (`0x0B`).
+    /// One prefix scan, and each entry's suffix is the edge tuple, parsed by the
+    /// declared widths.
+    pub fn members(&self, kind: Kind, cluster: u64) -> Result<Vec<EdgeKey>, String> {
+        member_keys(
             self.store_ref(),
             &self.ns_pair(),
             ClusterRef::new(kind, cluster),
+            self.member_widths(),
         )
     }
 
@@ -306,23 +322,19 @@ impl<S: VirtualStorage> Graph<S> {
         Ok(self.lookup(kind, id)?.map_or(0, |row| row.parent))
     }
 
-    /// Is `edge_id` a member of cluster `(kind, cluster)`? One point read of the
+    /// Is `edge` a member of cluster `(kind, cluster)`? One point read of the
     /// derived face `0x0D` — the read that makes a membership test a `.filter`
     /// predicate inside a traversal instead of a set built beforehand.
     ///
     /// Not a `bool`: a point read can fault, and a fault reported as "not a
     /// member" is how a broken store would read as an empty cluster. The
     /// traversal-filter spelling is
-    /// `.filter(|step| graph.member_of(kind, cluster, step.edge_id).unwrap_or(false))`.
-    pub fn member_of(&self, kind: Kind, cluster: u64, edge_id: u64) -> Result<bool, String> {
+    /// `.filter(|step| graph.member_of(kind, cluster, &step.key()).unwrap_or(false))`.
+    pub fn member_of(&self, kind: Kind, cluster: u64, edge: &EdgeKey) -> Result<bool, String> {
         let ns = self.ns_pair();
         Ok(self
             .store_ref()
-            .get(&edge_cluster_key(
-                &ns,
-                edge_id,
-                ClusterRef::new(kind, cluster),
-            ))
+            .get(&edge_cluster_key(&ns, edge, ClusterRef::new(kind, cluster)))
             .map_err(|e| e.to_string())?
             .is_some())
     }
@@ -350,10 +362,10 @@ impl<S: VirtualStorage> Graph<S> {
     /// There is no node form: on this form a node is an endpoint and nothing
     /// else, and membership is a property of edges (ADR-0066), so a node is
     /// answered by asking about its edges.
-    pub fn clusters_of(&self, edge_id: u64) -> Result<Vec<ClusterRef>, String> {
+    pub fn clusters_of(&self, edge: &EdgeKey) -> Result<Vec<ClusterRef>, String> {
         let ns = self.ns_pair();
         Ok(
-            scan_suffix_kv(self.store_ref(), &edge_clusters_prefix(&ns, edge_id))
+            scan_suffix_kv(self.store_ref(), &edge_clusters_prefix(&ns, edge))
                 .map_err(|e| e.to_string())?
                 .into_iter()
                 .filter_map(|(suffix, _)| match suffix.split_first() {
@@ -442,19 +454,28 @@ impl<S: VirtualStorage> Graph<S> {
         // cluster)` triple and the derived key is that triple in the face's own
         // order. Nothing here reads the face being written, which is what makes
         // this rebuild possible with `0x0D` wiped.
+        let members = self.member_widths().clone();
         let prefix = face_prefix(&ns, EDGE_MEMBER_SLOT);
         let end = prefix_end(&prefix);
         for item in store.scan_range(&prefix, end.as_deref()) {
             let (key, _) = item.map_err(|e| e.to_string())?;
             let suffix = &key[prefix.len()..];
-            if suffix.len() != 17 {
+            // `[kind][hyper_id]` then the edge tuple, whose width is the
+            // declaration's — never a length in the row (ADR-0067).
+            if suffix.len() <= 9 {
                 continue;
             }
-            let (Some(id), Some(edge)) = (be_u64(&suffix[1..9]), be_u64(&suffix[9..])) else {
+            let Some(id) = be_u64(&suffix[1..9]) else {
                 continue;
             };
+            let Some((edge, taken)) = EdgeKey::parse(&suffix[9..], &members) else {
+                continue;
+            };
+            if taken + 9 != suffix.len() {
+                continue;
+            }
             let cluster = ClusterRef::new(Kind(suffix[0]), id);
-            batch.put(edge_cluster_key(&ns, edge, cluster), Vec::new());
+            batch.put(edge_cluster_key(&ns, &edge, cluster), Vec::new());
             report.members += 1;
             if batch.ops.len() >= chunk {
                 store
@@ -480,34 +501,17 @@ impl<S: VirtualStorage> Graph<S> {
 /// `NodeRef` is self-describing, so there is nothing to declare.
 #[derive(Clone, Debug)]
 pub enum Decl {
-    /// An edge this fragment creates. Its identity is allocated at run time
-    /// (`max + 1`), because parallel edges are separate edges and a declaration
-    /// order is not an identity.
+    /// An edge this fragment asserts. The tuple IS the identity (ADR-0067): on a
+    /// tuple no row holds it creates the edge, on one that is live it re-asserts
+    /// that row, so this fragment's `on_edge_conflict` decides the attributes and
+    /// a cluster declaration can adopt it as a member.
     Edge(DynEdge),
-    /// An edge AT a given id — how a fragment NAMES an edge that is already
-    /// there. An id no row holds creates the edge there (the restore path); an
-    /// id that is live re-asserts that row in place, so this fragment's
-    /// `on_edge_conflict` decides the payload and a cluster declaration can adopt
-    /// it as a member. A different head at the same id is the in-place rewrite.
-    EdgeAt(DynEdge, u64),
 }
 
 impl Decl {
     /// An edge declaration.
     pub fn edge(edge: DynEdge) -> Self {
         Decl::Edge(edge)
-    }
-
-    /// An edge declaration at a caller-chosen id.
-    pub fn edge_at(edge: DynEdge, edge_id: u64) -> Self {
-        Decl::EdgeAt(edge, edge_id)
-    }
-
-    fn id(&self) -> Option<u64> {
-        match self {
-            Decl::Edge(_) => None,
-            Decl::EdgeAt(_, id) => Some(*id),
-        }
     }
 }
 
@@ -526,8 +530,8 @@ struct Plan {
     /// The cluster is removed outright: an explicit delete, or a drop below two
     /// members.
     delete_row: bool,
-    add: BTreeSet<u64>,
-    remove: BTreeSet<u64>,
+    add: BTreeSet<EdgeKey>,
+    remove: BTreeSet<EdgeKey>,
 }
 
 /// One cluster write's outcome: the exact rows to put and delete.
@@ -538,8 +542,8 @@ struct Outcome {
     old_parent: u64,
     existed: bool,
     payload: Dict,
-    put_members: Vec<u64>,
-    del_members: Vec<u64>,
+    put_members: Vec<EdgeKey>,
+    del_members: Vec<EdgeKey>,
 }
 
 /// A cluster operation that rides the same plan the declarations do.
@@ -573,7 +577,7 @@ pub struct DynFragment {
     edges: Vec<Decl>,
     clusters: Vec<Cluster>,
     ops: Vec<ClusterOp>,
-    edge_deletes: Vec<u64>,
+    edge_deletes: Vec<EdgeKey>,
     node_deletes: Vec<NodeRef>,
     edge_conflict: Option<EdgeConflict>,
     cluster_conflict: Option<ClusterConflict>,
@@ -649,10 +653,13 @@ impl DynFragment {
     ///
     /// The clusters an edge belongs to are found by ONE pass over the member
     /// face (`0x0B` is the authority; `0x0D` is derived and may be stale, so it
-    /// is not what a delete trusts). An id no row holds is nothing to do, not a
+    /// is not what a delete trusts). A tuple no row holds is nothing to do, not a
     /// refusal: the report says zero.
-    pub fn delete_edge(&mut self, edge_id: u64) -> &mut Self {
-        self.edge_deletes.push(edge_id);
+    ///
+    /// It takes the identity, not a number, because there is no number
+    /// (ADR-0067) — the same tuple the write used.
+    pub fn delete_edge(&mut self, edge: EdgeKey) -> &mut Self {
+        self.edge_deletes.push(edge);
         self
     }
 
@@ -712,81 +719,38 @@ impl DynFragment {
         let ns = graph.ns_pair();
         let mut report = WriteReport::default();
 
-        // ---- 1. The edges: identity first, then every face ----
+        // ---- 1. The edges: the tuple is the identity, then every face ----
         //
-        // `Decl::EdgeAt` is how a fragment NAMES an edge that is already there.
-        // Naming it does three things at once, and all three are the same fact:
-        // the row is re-asserted (so this fragment's `on_edge_conflict` decides the
-        // stored attributes — the update path), its membership rows are the
-        // ones the cluster declarations below write, and a head that differs is
-        // an in-place rewrite rather than a refusal.
+        // The declaration names endpoints and a predicate, and that tuple IS the
+        // identity (ADR-0067). So the same declaration that creates an edge
+        // re-asserts it: a row at that tuple means this fragment's
+        // `on_edge_conflict` decides the attributes (the update path), and no row
+        // means the declaration creates it.
         let edges = std::mem::take(&mut self.edges);
-        let reserved: BTreeSet<u64> = edges.iter().filter_map(Decl::id).collect();
-        let mut next_edge = match graph.max_edge_id()? {
-            Some(max) => max
-                .checked_add(1)
-                .ok_or("edge ids are exhausted: u64::MAX is live")?,
-            None => 0,
-        };
         for decl in &edges {
-            let (edge, explicit) = match decl {
-                Decl::Edge(edge) => (edge, None),
-                Decl::EdgeAt(edge, id) => (edge, Some(*id)),
-            };
-            let id = match explicit {
-                Some(id) => id,
-                None => {
-                    while reserved.contains(&next_edge) {
-                        next_edge = next_edge.saturating_add(1);
-                    }
-                    let id = next_edge;
-                    next_edge = next_edge.saturating_add(1);
-                    id
-                }
-            };
-            match graph.get_edge(id)? {
+            let Decl::Edge(edge) = decl;
+            // The vocabulary id is part of the key, so the predicate is interned
+            // before the existence probe — the write would intern it anyway.
+            let key = graph.key_of(edge)?;
+            match graph.get_edge(&key)? {
                 Some(stored) => {
-                    let same_head = stored.src == edge.src
-                        && stored.dst == edge.dst
-                        && stored.predicate == edge.predicate;
-                    // The stored attributes survive a re-assertion of the SAME
-                    // assertion (the declaration names a row, it does not
-                    // restate it); a replaced assertion takes its old
-                    // attributes with it, so there is nothing for the old side
-                    // to hold and both sides are the declaration's own map.
-                    let (stored_attrs, declared_attrs) = if same_head {
-                        (stored.attrs.clone(), edge.attrs.clone())
-                    } else {
-                        (edge.attrs.clone(), edge.attrs.clone())
-                    };
-                    // The hook decides; with no hook the stored map stays, which
-                    // is the update path, and a replacement's map is the declared
-                    // one either way.
+                    // The stored attributes and the declared ones go to the hook,
+                    // whose answer is what lands; with no hook the stored map
+                    // stays, which is the update path.
                     let attrs = match self.edge_conflict.as_ref() {
-                        Some(resolve) => resolve(&stored_attrs, &declared_attrs),
-                        None => stored_attrs,
+                        Some(resolve) => resolve(&stored.attrs, &edge.attrs),
+                        None => stored.attrs,
                     };
                     let written = DynEdge {
                         attrs,
                         ..edge.clone()
                     };
-                    if same_head {
-                        // Re-assertion: the rows are already right, and the
-                        // dynamic segment is exactly the folded map, so one
-                        // write covers both.
-                        graph.write_into(batch, &written, id)?;
-                    } else {
-                        // A new head at the same id: the old assertion's rows
-                        // leave and the new ones land in ONE batch, so at commit
-                        // the id was never absent — the in-place rewrite.
-                        graph.unlink_into(batch, id)?;
-                        graph.write_into(batch, &written, id)?;
-                    }
+                    graph.write_into(batch, &written)?;
                 }
                 None => {
                     // A creation: there is no stored row, so the old side is the
-                    // empty payload and the declaration's attributes are what the
-                    // hook compares against.
+                    // empty map and the declaration's attributes are what the hook
+                    // compares against.
                     let declared = edge.attrs.clone();
                     let attrs = match self.edge_conflict.as_ref() {
                         Some(resolve) => resolve(&Dict::new(), &declared),
@@ -796,12 +760,12 @@ impl DynFragment {
                         attrs,
                         ..edge.clone()
                     };
-                    graph.write_into(batch, &written, id)?;
+                    graph.write_into(batch, &written)?;
                 }
             }
-            report.edge_ids.push(id);
+            report.edges.push(key);
         }
-        let batch_edges: Vec<u64> = report.edge_ids.clone();
+        let batch_edges: Vec<EdgeKey> = report.edges.clone();
 
         // ---- 2. Cluster ids: allocated at run time, per kind ----
         let mut kinds: BTreeSet<u8> = BTreeSet::new();
@@ -858,7 +822,7 @@ impl DynFragment {
             for (name, value) in cluster.payload.iter() {
                 entry.payload.insert(name.clone(), value.clone());
             }
-            entry.add.extend(batch_edges.iter().copied());
+            entry.add.extend(batch_edges.iter().cloned());
         }
         for op in &self.ops {
             match op {
@@ -866,7 +830,7 @@ impl DynFragment {
                     plan.entry((cluster.kind.0, cluster.id))
                         .or_default()
                         .remove
-                        .extend(batch_edges.iter().copied());
+                        .extend(batch_edges.iter().cloned());
                 }
                 ClusterOp::Delete(cluster) => {
                     // The row goes, and it is DECLARED: a delete names the
@@ -898,7 +862,7 @@ impl DynFragment {
         let mut outcomes: Vec<Outcome> = Vec::with_capacity(plan.len());
         for ((kind, id), entry) in plan {
             let cluster = ClusterRef::new(Kind(kind), id);
-            let state = read_cluster(graph.store_ref(), ns, cluster)?;
+            let state = read_cluster(graph.store_ref(), ns, cluster, graph.member_widths())?;
             if !state.exists && !entry.declared {
                 // An op named a cluster that is not there and this batch does
                 // not create it: there is nothing to move members in or out of.
@@ -914,7 +878,7 @@ impl DynFragment {
             for gone in &entry.remove {
                 members.remove(gone);
             }
-            members.extend(entry.add.iter().copied());
+            members.extend(entry.add.iter().cloned());
             // A cluster below two members may not be CREATED — but a delete is
             // not a creation, so an id that was never there is nothing to do.
             if members.len() < 2 && !state.exists && !entry.delete_row {
@@ -942,13 +906,13 @@ impl DynFragment {
                 };
             }
 
-            let (put_members, del_members): (Vec<u64>, Vec<u64>) = if delete_row {
-                let all: BTreeSet<u64> = state.members.union(&entry.add).copied().collect();
+            let (put_members, del_members): (Vec<EdgeKey>, Vec<EdgeKey>) = if delete_row {
+                let all: BTreeSet<EdgeKey> = state.members.union(&entry.add).cloned().collect();
                 (Vec::new(), all.into_iter().collect())
             } else {
                 (
-                    members.difference(&state.members).copied().collect(),
-                    state.members.difference(&members).copied().collect(),
+                    members.difference(&state.members).cloned().collect(),
+                    state.members.difference(&members).cloned().collect(),
                 )
             };
 
@@ -1005,13 +969,13 @@ impl DynFragment {
             }
             for edge in &outcome.del_members {
                 adapter
-                    .del(&edge_member_key(ns, cluster, *edge))
+                    .del(&edge_member_key(ns, cluster, edge))
                     .map_err(|e| e.to_string())?;
                 // The reverse direction is the SAME fact, so it leaves in the
                 // same breath: a membership row and its edge-first mirror are
                 // never allowed to disagree for longer than one commit.
                 adapter
-                    .del(&edge_cluster_key(ns, *edge, cluster))
+                    .del(&edge_cluster_key(ns, edge, cluster))
                     .map_err(|e| e.to_string())?;
             }
             if outcome.delete_row {
@@ -1022,10 +986,10 @@ impl DynFragment {
             }
             for edge in &outcome.put_members {
                 adapter
-                    .put(edge_member_key(ns, cluster, *edge), Vec::new())
+                    .put(edge_member_key(ns, cluster, edge), Vec::new())
                     .map_err(|e| e.to_string())?;
                 adapter
-                    .put(edge_cluster_key(ns, *edge, cluster), Vec::new())
+                    .put(edge_cluster_key(ns, edge, cluster), Vec::new())
                     .map_err(|e| e.to_string())?;
             }
             let body = encode_dict(&adapter, ns, &outcome.payload)?;
@@ -1087,8 +1051,9 @@ impl<S: VirtualStorage> Graph<S> {
         let mut batch = Batch::default();
 
         // ---- 1. The doomed edges: a node's cascade first, then the declared
-        //         ids, deduplicated — one edge is one removal whatever named it.
-        let mut doomed: BTreeSet<u64> = BTreeSet::new();
+        //         identities, deduplicated — one edge is one removal whatever
+        //         named it.
+        let mut doomed: BTreeSet<EdgeKey> = BTreeSet::new();
         let mut nodes: BTreeSet<NodeRef> = BTreeSet::new();
         for node in &fragment.node_deletes {
             let mut incident = self.out_edges(node)?;
@@ -1101,7 +1066,7 @@ impl<S: VirtualStorage> Graph<S> {
             nodes.insert(node.clone());
             doomed.extend(incident);
         }
-        doomed.extend(fragment.edge_deletes.iter().copied());
+        doomed.extend(fragment.edge_deletes.iter().cloned());
 
         // ---- 2. Membership rows follow the edges: ONE pass over 0x0B ----
         //
@@ -1110,16 +1075,23 @@ impl<S: VirtualStorage> Graph<S> {
         // `0x0D` is derived and may be stale, so a delete never consults it.
         let mut plan: BTreeMap<(u8, u64), Plan> = BTreeMap::new();
         if !doomed.is_empty() {
+            let members = self.member_widths().clone();
             let prefix = face_prefix(&ns, EDGE_MEMBER_SLOT);
             for (suffix, _) in
                 scan_suffix_kv(self.store_ref(), &prefix).map_err(|e| e.to_string())?
             {
-                if suffix.len() != 17 {
+                if suffix.len() <= 9 {
                     continue;
                 }
-                let (Some(id), Some(edge)) = (be_u64(&suffix[1..9]), be_u64(&suffix[9..])) else {
+                let Some(id) = be_u64(&suffix[1..9]) else {
                     continue;
                 };
+                let Some((edge, taken)) = EdgeKey::parse(&suffix[9..], &members) else {
+                    continue;
+                };
+                if taken + 9 != suffix.len() {
+                    continue;
+                }
                 if doomed.contains(&edge) {
                     plan.entry((suffix[0], id)).or_default().remove.insert(edge);
                 }
@@ -1138,10 +1110,10 @@ impl<S: VirtualStorage> Graph<S> {
 
         // ---- 3. The edges themselves: exactly their rows, in this batch ----
         for edge in &doomed {
-            if self.get_edge(*edge)?.is_none() {
+            if self.get_edge(edge)?.is_none() {
                 continue;
             }
-            self.unlink_into(&mut batch, *edge)?;
+            self.unlink_into(&mut batch, edge)?;
             report.edges += 1;
         }
 

@@ -113,9 +113,14 @@ pub struct CollectionSchema {
     pub cold_fields: Vec<FieldSchema>,
     /// The member collections of a GRAPH's edge set (ADR-0017 §4): the ns of
     /// every node collection the graph admits. Empty for an ordinary document
-    /// collection, and empty also means "declares no set" — a dynamic writer
-    /// then checks nothing rather than guessing.
+    /// collection, and empty also means "declares no set".
     pub members: Vec<u16>,
+    /// `(ns, key width)` for every member collection — the table an edge key is
+    /// parsed by, because an edge carries no length prefix per endpoint
+    /// (ADR-0067). It is the runtime half of the compile-time `NodeSet`, and a
+    /// dynamic writer needs it to build and read a key at all: without the width,
+    /// `[src][pred][dst]` has no boundary.
+    pub member_widths: Vec<(u16, usize)>,
     /// Slot map (ADR-0012 final allocation): the dynamic reader needs to
     /// know where the dynamic segment and the vocabulary live, and where
     /// declared index/reduce slots begin.
@@ -292,6 +297,7 @@ impl CollectionSchema {
             hot_fields,
             cold_fields,
             members: Vec::new(),
+            member_widths: Vec::new(),
             slots: SlotMap::standard(),
             indexes: <R as Document>::INDEX_DECLS
                 .iter()
@@ -319,8 +325,10 @@ impl CollectionSchema {
     /// rides the schema as DATA (ADR-0025: mode is a property of the writer),
     /// never as a stored slot.
     pub fn of_graph<E: crate::model::graph::GraphEncode>() -> Self {
+        use crate::model::graph::{Members, NodeSet};
         let mut schema = Self::of::<crate::model::graph::EdgeKey, E>();
-        schema.members = <E::Nodes as crate::model::graph::NodeSet>::NS_VALUES.to_vec();
+        schema.members = <E::Nodes as NodeSet>::NS_VALUES.to_vec();
+        schema.member_widths = Members::of::<E::Nodes>().pairs().to_vec();
         schema
     }
 }
@@ -577,6 +585,7 @@ mod serde_impls {
                 hot_fields: &'a [FieldSchema],
                 cold_fields: &'a [FieldSchema],
                 members: &'a [u16],
+                member_widths: &'a [(u16, usize)],
                 slots: &'a SlotMap,
                 indexes: &'a [IndexSchema],
                 faces: &'a [u8],
@@ -591,6 +600,7 @@ mod serde_impls {
                 hot_fields: &self.hot_fields,
                 cold_fields: &self.cold_fields,
                 members: &self.members,
+                member_widths: &self.member_widths,
                 slots: &self.slots,
                 indexes: &self.indexes,
                 faces: &self.faces,
@@ -620,6 +630,11 @@ mod serde_impls {
                 /// Schemas written before the member set existed carry none.
                 #[serde(default)]
                 members: Vec<u16>,
+                /// Schemas written before edges dropped their length prefix
+                /// carry no widths; such a schema can read its own tables but
+                /// cannot key a graph edge (ADR-0067).
+                #[serde(default)]
+                member_widths: Vec<(u16, usize)>,
                 slots: SlotMap,
                 /// Schemas written before faces were exported carry none. An
                 /// empty list means "not described", which reads as unknown
@@ -640,6 +655,7 @@ mod serde_impls {
                 hot_fields: r.hot_fields,
                 cold_fields: r.cold_fields,
                 members: r.members,
+                member_widths: r.member_widths,
                 slots: r.slots,
                 indexes: r.indexes,
                 faces: r.faces,

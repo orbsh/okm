@@ -13,34 +13,55 @@
 use okm_lake::bridge::EdgeTable;
 
 use okm_core::{
-    Batch, Decl, DocumentEncode, EdgeHead, Fragment, Graph, GraphEncode, KeyEncode, NodeRef,
-    NodeSet, PRIMARY_SLOT, VirtualStorage,
+    Batch, Decl, DocumentEncode, EdgeHead, EdgeKey, Fragment, Graph, GraphEncode, KeyEncode,
+    NodeRef, NodeSet, VirtualStorage,
 };
 use okm_value::Dict;
 
-/// `Graph::link` is gone (ADR-0066: `incorporate` is the only write verb), so a
-/// test that wants one edge at a chosen id says so: a fragment whose ONLY
-/// declaration names that id, with the payload folded in by the edge reducer.
+/// `incorporate` is the only write verb (ADR-0066), and the tuple IS the
+/// identity (ADR-0067), so a test that wants one edge declares its head and
+/// folds the payload in through the edge reducer. The answer is the identity the
+/// row landed at — there is no number to hand back.
 fn link<S: VirtualStorage, E: GraphEncode + Clone + Default + 'static>(
     g: &mut Graph<S, E>,
     head: EdgeHead,
     payload: &E,
-    edge_id: u64,
-) -> okm_core::Result<()> {
-    let mut fragment = Fragment::<E>::new([Decl::edge_at(head, edge_id)]);
+) -> okm_core::Result<EdgeKey> {
+    let mut fragment = Fragment::<E>::new([Decl::edge(head)]);
     let given = payload.clone();
     fragment.on_edge_conflict(move |_stored, _declared| given.clone());
-    g.incorporate(fragment).map(|_| ())
+    let report = g.incorporate(fragment)?;
+    Ok(report
+        .edges
+        .into_iter()
+        .next()
+        .expect("one declaration answers one identity"))
 }
 
-/// The delete twin: `retract` with one edge declaration. Absence is not a
-/// refusal, so a double delete reports zero instead of failing.
+/// The identity of one head, resolved through the graph's own predicate
+/// vocabulary — how a test names an edge it did not create in this fragment.
+fn key<S: VirtualStorage, E: GraphEncode>(
+    g: &Graph<S, E>,
+    predicate: &str,
+    src: NodeRef,
+    dst: NodeRef,
+) -> EdgeKey {
+    let id = g
+        .predicate_id(predicate)
+        .unwrap()
+        .expect("the predicate was interned by a write");
+    EdgeKey::new(src, id, dst)
+}
+
+/// The delete twin: `retract` with one edge declaration (a HEAD — the identity is
+/// the tuple, so naming it needs no number). Absence is not a refusal, so a
+/// double delete reports zero instead of failing.
 fn unlink<S: VirtualStorage, E: GraphEncode + Default + 'static>(
     g: &mut Graph<S, E>,
-    edge_id: u64,
+    head: EdgeHead,
 ) -> okm_core::Result<okm_core::RetractReport> {
     let mut fragment = Fragment::<E>::new([]);
-    fragment.delete_edge(edge_id);
+    fragment.delete_edge(head);
     g.retract(fragment)
 }
 
@@ -123,45 +144,44 @@ fn head(src: NodeRef, dst: NodeRef, predicate: &str) -> EdgeHead {
     }
 }
 
-/// Issuer recovery reads the MAXIMUM edge id, and it reads it without walking
-/// the table: the primary slot orders by `edge_id`, so the max is the last key.
+/// The edge set IS the identities (ADR-0067): a listing is one scan of `0x06`,
+/// in key order, with no counter anyone has to keep in sync — and no number to
+/// reserve for a caller's next write.
 #[test]
-fn max_edge_id_is_the_last_primary_key() {
+fn the_edge_set_is_the_identities_in_key_order() {
     let store = okm_async::TestStore::slatedb_mem();
     let mut g: Graph<_, Employment> = Graph::new(store);
-    assert_eq!(
-        g.max_edge_id().unwrap(),
-        None,
-        "an empty graph has no maximum"
-    );
+    assert!(g.edges().unwrap().is_empty(), "an empty graph has no edges");
 
-    // Linked OUT OF ORDER (3, 11, 7): the answer is the id space's maximum, not
-    // the most recent write.
-    let mut highest = 0;
-    for (id, year) in [(3u64, 2019u16), (11, 2020), (7, 2021)] {
+    // Linked OUT OF ORDER (dst 9, 11, 7): the answer is key order, not write
+    // order — the tuple is the position.
+    for (id, year) in [(9u64, 2019u16), (11, 2020), (7, 2021)] {
         link(
             &mut g,
-            head(user(1), org(9), "employs"),
+            head(user(1), org(id), "employs"),
             &Employment {
                 since_year: year,
                 weight: id as u32,
             },
-            id,
         )
         .unwrap();
-        highest = highest.max(id);
-        assert_eq!(g.max_edge_id().unwrap(), Some(highest));
     }
-    // It agrees with the exhaustive read an export uses.
-    assert_eq!(
-        g.max_edge_id().unwrap(),
-        g.edge_ids().unwrap().into_iter().max()
-    );
+    let in_key_order: Vec<EdgeKey> = [7u64, 9, 11]
+        .iter()
+        .map(|id| key(&g, "employs", user(1), org(*id)))
+        .collect();
+    assert_eq!(g.edges().unwrap(), in_key_order);
+    // The exhaustive read agrees with the face that answers a traversal.
+    assert_eq!(g.out_edges(&user(1)).unwrap(), in_key_order);
 
-    // Unlinking the maximum moves it down: it is a read of the table, not a
-    // counter anyone has to keep in sync.
-    unlink(&mut g, 11).unwrap();
-    assert_eq!(g.max_edge_id().unwrap(), Some(7));
+    // Unlinking one removes exactly its own identity: the set is a read of the
+    // rows, not a number space with a watermark.
+    unlink(&mut g, head(user(1), org(11), "employs")).unwrap();
+    assert_eq!(
+        g.edges().unwrap(),
+        vec![in_key_order[0].clone(), in_key_order[1].clone()],
+        "the dst-11 row is gone; the dst-7 and dst-9 rows stand"
+    );
 }
 
 #[test]
@@ -173,14 +193,14 @@ fn link_traverse_and_fetch_back_with_attributes() {
         since_year: 2020,
         weight: 7,
     };
-    link(&mut g, head(user(1), org(9), "employs"), &attrs, 1).unwrap();
+    let k = link(&mut g, head(user(1), org(9), "employs"), &attrs).unwrap();
 
-    // Traversal faces answer.
-    assert_eq!(g.out_edges(&user(1)).unwrap(), vec![1]);
-    assert_eq!(g.in_edges(&org(9)).unwrap(), vec![1]);
-    assert_eq!(g.typed_out("employs", &user(1)).unwrap(), vec![1]);
-    assert_eq!(g.typed_in("employs", &org(9)).unwrap(), vec![1]);
-    assert_eq!(g.edges_of_predicate("employs").unwrap(), vec![1]);
+    // Traversal faces answer — with the identity, because the tuple is one.
+    assert_eq!(g.out_edges(&user(1)).unwrap(), vec![k.clone()]);
+    assert_eq!(g.in_edges(&org(9)).unwrap(), vec![k.clone()]);
+    assert_eq!(g.typed_out("employs", &user(1)).unwrap(), vec![k.clone()]);
+    assert_eq!(g.typed_in("employs", &org(9)).unwrap(), vec![k.clone()]);
+    assert_eq!(g.edges_of_predicate("employs").unwrap(), vec![k.clone()]);
     // An unknown predicate scans nothing (no face, no panic) — and a fresh
     // handle answers without anyone priming the cache first.
     assert!(g.typed_out("owns", &user(1)).unwrap().is_empty());
@@ -188,7 +208,7 @@ fn link_traverse_and_fetch_back_with_attributes() {
 
     // Fetch back: both refs cut, predicate name via the graph's own
     // vocabulary, payload decoded into the declaration's type.
-    let body = g.get_edge(1).unwrap().unwrap();
+    let body = g.get_edge(&k).unwrap().unwrap();
     assert_eq!(body.src, user(1));
     assert_eq!(body.dst, org(9));
     assert_eq!(
@@ -197,13 +217,13 @@ fn link_traverse_and_fetch_back_with_attributes() {
             .unwrap(),
         "employs"
     );
-    let back = g.edge(1).unwrap().unwrap();
+    let back = g.edge(&k).unwrap().unwrap();
     assert_eq!((back.since_year, back.weight), (2020, 7));
 
-    // Declared-attribute face: scan [since_year = 2020] → edge 1.
+    // Declared-attribute face: scan [since_year = 2020] → this identity.
     let slot = <__OkmIndex_Employment_by_since as okm_core::KvIndex>::SLOT;
     let ids = g.by_attr_face(slot, &2020u16.to_be_bytes()).unwrap();
-    assert_eq!(ids, vec![1]);
+    assert_eq!(ids, vec![k]);
     // A value no edge carries scans empty.
     assert!(
         g.by_attr_face(slot, &1999u16.to_be_bytes())
@@ -221,21 +241,18 @@ fn predicates_are_listed_from_the_predicate_vocabulary() {
         &mut g,
         head(user(1), org(9), "employs"),
         &Employment::default(),
-        1,
     )
     .unwrap();
     link(
         &mut g,
         head(user(1), org(9), "contracts"),
         &Employment::default(),
-        2,
     )
     .unwrap();
     link(
         &mut g,
         head(user(2), org(9), "employs"),
         &Employment::default(),
-        3,
     )
     .unwrap();
 
@@ -272,7 +289,6 @@ fn the_predicate_cursor_is_the_id_faces_bare_prefix() {
         &mut g,
         head(user(1), org(9), "employs"),
         &Employment::default(),
-        1,
     )
     .unwrap();
 
@@ -303,7 +319,6 @@ fn the_predicate_cursor_is_the_id_faces_bare_prefix() {
         &mut g2,
         head(user(2), org(9), "contracts"),
         &Employment::default(),
-        2,
     )
     .unwrap();
     assert_eq!(
@@ -327,33 +342,46 @@ fn unlink_and_relabeled_parallel_edges() {
     let store = okm_async::TestStore::slatedb_mem();
     let mut g: Graph<_, Employment> = Graph::new(store.clone());
 
-    link(
+    let employs = link(
         &mut g,
         head(user(1), org(9), "employs"),
         &Employment::default(),
-        1,
     )
     .unwrap();
-    link(
+    let contracts = link(
         &mut g,
         head(user(1), org(9), "contracts"),
         &Employment::default(),
-        2,
     )
     .unwrap();
 
     // Parallel edges (same endpoints, different predicates) are
-    // independent edges on every face.
-    assert_eq!(g.typed_out("employs", &user(1)).unwrap(), vec![1]);
-    assert_eq!(g.typed_out("contracts", &user(1)).unwrap(), vec![2]);
-    assert_eq!(g.edges_of_predicate("contracts").unwrap(), vec![2]);
+    // independent edges on every face — the predicate is part of the tuple.
+    assert_eq!(
+        g.typed_out("employs", &user(1)).unwrap(),
+        vec![employs.clone()]
+    );
+    assert_eq!(
+        g.typed_out("contracts", &user(1)).unwrap(),
+        vec![contracts.clone()]
+    );
+    assert_eq!(
+        g.edges_of_predicate("contracts").unwrap(),
+        vec![contracts.clone()]
+    );
 
-    unlink(&mut g, 1).unwrap();
-    assert_eq!(g.typed_out("employs", &user(1)).unwrap(), Vec::<u64>::new());
-    assert_eq!(g.edges_of_predicate("employs").unwrap(), Vec::<u64>::new());
+    unlink(&mut g, head(user(1), org(9), "employs")).unwrap();
+    assert_eq!(
+        g.typed_out("employs", &user(1)).unwrap(),
+        Vec::<EdgeKey>::new()
+    );
+    assert_eq!(
+        g.edges_of_predicate("employs").unwrap(),
+        Vec::<EdgeKey>::new()
+    );
     assert_eq!(
         g.out_edges(&user(1)).unwrap(),
-        vec![2],
+        vec![contracts],
         "the other edge survives"
     );
 }
@@ -369,26 +397,28 @@ fn unlink_deletes_the_declared_face_entry_exactly() {
     let b = Employment {
         since_year: 2020,
         weight: 2,
-    }; // same declared value
-    link(&mut g, head(user(1), org(9), "employs"), &a, 1).unwrap();
-    link(&mut g, head(user(2), org(9), "employs"), &b, 2).unwrap();
+    };
+    // same declared value
+    let first = link(&mut g, head(user(1), org(9), "employs"), &a).unwrap();
+    let second = link(&mut g, head(user(2), org(9), "employs"), &b).unwrap();
 
     let slot = <__OkmIndex_Employment_by_since as okm_core::KvIndex>::SLOT;
     assert_eq!(
         g.by_attr_face(slot, &2020u16.to_be_bytes()).unwrap(),
-        vec![1, 2]
+        vec![first.clone(), second.clone()]
     );
 
-    unlink(&mut g, 1).unwrap();
+    unlink(&mut g, head(user(1), org(9), "employs")).unwrap();
     // Exact deletion: the payload was decoded, the same declared value was
-    // re-derived, and only edge 1's entry went away.
+    // re-derived, and only the first assertion's entry went away.
     assert_eq!(
         g.by_attr_face(slot, &2020u16.to_be_bytes()).unwrap(),
-        vec![2]
+        vec![second]
     );
     // The second delete has nothing to take: absence is a no-op, not a
     // refusal, and the report says zero.
-    let again = unlink(&mut g, 1).expect("a delete of an absent id is a no-op");
+    let again = unlink(&mut g, head(user(1), org(9), "employs"))
+        .expect("a delete of an absent head is a no-op");
     assert_eq!(
         (again.nodes, again.edges, again.memberships),
         (0, 0, 0),
@@ -397,10 +427,10 @@ fn unlink_deletes_the_declared_face_entry_exactly() {
 }
 
 #[test]
-fn rewrite_is_one_batch() {
-    // An in-place rewrite is ONE fragment (ADR-0010's owed item): the id names
-    // the row, the declaration carries the new head, and every stale face goes
-    // with the old assertion — no window in which the edge is absent.
+fn a_different_head_is_a_different_edge() {
+    // ADR-0067: the tuple IS the identity, so "rewriting" an edge onto another
+    // head is not an in-place edit — it is a SECOND edge. The first row, its
+    // faces and its declared entry all stay where they are.
     let store = okm_async::TestStore::slatedb_mem();
     let mut g: Graph<_, Employment> = Graph::new(store.clone());
     let a = Employment {
@@ -411,38 +441,38 @@ fn rewrite_is_one_batch() {
         since_year: 2021,
         weight: 2,
     };
-    link(&mut g, head(user(1), org(9), "employs"), &a, 1).unwrap();
+    let first = link(&mut g, head(user(1), org(9), "employs"), &a).unwrap();
+    let second = link(&mut g, head(user(1), org(10), "contracts"), &b).unwrap();
+    assert_ne!(first, second, "two heads, two identities");
 
-    let mut fragment =
-        Fragment::<Employment>::new([Decl::edge_at(head(user(1), org(10), "contracts"), 1)]);
-    let given = b.clone();
-    fragment.on_edge_conflict(move |_stored, _declared| given.clone());
-    g.incorporate(fragment).unwrap();
-
-    // The row is the new fact, under the same identity.
-    let body = g.get_edge(1).unwrap().unwrap();
-    assert_eq!(body.dst, org(10));
+    // Each row is its own fact, under its own identity.
+    let body = g.get_edge(&second).unwrap().unwrap();
+    assert_eq!((body.src.clone(), body.dst.clone()), (user(1), org(10)));
     assert_eq!(
         g.predicate_vocab_name(body.predicate_vocab_id)
             .unwrap()
             .unwrap(),
         "contracts"
     );
-    // Faces: the old destination and the old predicate are gone, the new ones
-    // answer, and the declared face moved with the payload.
-    assert!(g.in_edges(&org(9)).unwrap().is_empty());
-    assert_eq!(g.in_edges(&org(10)).unwrap(), vec![1]);
-    assert!(g.edges_of_predicate("employs").unwrap().is_empty());
-    assert_eq!(g.edges_of_predicate("contracts").unwrap(), vec![1]);
+    // Faces: both answer, and each declared entry names exactly one identity.
+    assert_eq!(g.in_edges(&org(9)).unwrap(), vec![first.clone()]);
+    assert_eq!(g.in_edges(&org(10)).unwrap(), vec![second.clone()]);
+    assert_eq!(
+        g.edges_of_predicate("employs").unwrap(),
+        vec![first.clone()]
+    );
+    assert_eq!(
+        g.edges_of_predicate("contracts").unwrap(),
+        vec![second.clone()]
+    );
     let slot = <__OkmIndex_Employment_by_since as okm_core::KvIndex>::SLOT;
-    assert!(
-        g.by_attr_face(slot, &2020u16.to_be_bytes())
-            .unwrap()
-            .is_empty()
+    assert_eq!(
+        g.by_attr_face(slot, &2020u16.to_be_bytes()).unwrap(),
+        vec![first]
     );
     assert_eq!(
         g.by_attr_face(slot, &2021u16.to_be_bytes()).unwrap(),
-        vec![1]
+        vec![second]
     );
 }
 
@@ -464,23 +494,23 @@ fn same_head_reassert_retires_the_old_face_entry() {
         weight: 1,
     };
     let h = head(user(1), org(9), "employs");
-    link(&mut g, h.clone(), &before, 1).unwrap();
+    let k = link(&mut g, h.clone(), &before).unwrap();
 
     // Open attributes (0x01) are a segment of their own. A re-assert must not
     // clear them: that is the whole difference between this and a
-    // delete-then-create at the same id.
+    // delete-then-create of the same head.
     let mut attrs = Dict::new();
     attrs.insert(
         "role".to_string(),
         okm_value::Variant::Str("lead".to_string()),
     );
     let mut batch = okm_core::Batch::default();
-    g.replace_into(&mut batch, 1, &attrs).unwrap();
+    g.replace_into(&mut batch, &k, &attrs).unwrap();
     store.commit_batch(batch).unwrap();
 
-    // Same head, same id, new payload: the conflict hook answers the new
-    // since_year, and the face follows.
-    let mut fragment = Fragment::<Employment>::new([Decl::edge_at(h, 1)]);
+    // Same head, new payload: the conflict hook answers the new since_year, and
+    // the face follows.
+    let mut fragment = Fragment::<Employment>::new([Decl::edge(h)]);
     let given = after.clone();
     fragment.on_edge_conflict(move |old, _declared| Employment {
         since_year: given.since_year,
@@ -488,7 +518,8 @@ fn same_head_reassert_retires_the_old_face_entry() {
     });
     g.incorporate(fragment).unwrap();
 
-    // The face, read END TO END: one entry for edge 1, at the new position.
+    // The face, read END TO END: one entry for this identity, at the new
+    // position — the declared entry's tail IS the edge key (no number).
     let slot = <__OkmIndex_Employment_by_since as okm_core::KvIndex>::SLOT;
     let mut prefix = 100u16.to_be_bytes().to_vec();
     okm_core::write_slot(&mut prefix, slot);
@@ -499,7 +530,7 @@ fn same_head_reassert_retires_the_old_face_entry() {
         .collect();
     let mut expected = prefix.clone();
     expected.extend_from_slice(&200u16.to_be_bytes());
-    expected.extend_from_slice(&1u64.to_be_bytes());
+    expected.extend_from_slice(&k.wire());
     assert_eq!(
         face.iter().map(|(k, _)| k.clone()).collect::<Vec<_>>(),
         vec![expected],
@@ -515,20 +546,20 @@ fn same_head_reassert_retires_the_old_face_entry() {
     );
     assert_eq!(
         g.by_attr_face(slot, &200u16.to_be_bytes()).unwrap(),
-        vec![1]
+        vec![k.clone()]
     );
 
     // The payload is the new fact, the traversal faces are unchanged, and the
-    // open attributes survived the rewrite.
-    let now = g.edge(1).unwrap().unwrap();
+    // open attributes survived the re-assertion.
+    let now = g.edge(&k).unwrap().unwrap();
     assert_eq!(
         (now.since_year, now.weight),
         (after.since_year, after.weight)
     );
-    assert_eq!(g.out_edges(&user(1)).unwrap(), vec![1]);
-    assert_eq!(g.in_edges(&org(9)).unwrap(), vec![1]);
+    assert_eq!(g.out_edges(&user(1)).unwrap(), vec![k.clone()]);
+    assert_eq!(g.in_edges(&org(9)).unwrap(), vec![k.clone()]);
     assert_eq!(
-        g.attrs(1).unwrap().unwrap().get("role"),
+        g.attrs(&k).unwrap().unwrap().get("role"),
         Some(&okm_value::Variant::Str("lead".to_string())),
         "the 0x01 segment is not this declaration's to clear"
     );
@@ -544,20 +575,18 @@ fn member_set_is_checked_at_write() {
         &mut g,
         head(user(1), stranger, "employs"),
         &Employment::default(),
-        1,
     )
     .unwrap_err();
     assert!(
         err.to_string().contains("not a member"),
         "unexpected error: {err}"
     );
-    assert!(g.get_edge(1).unwrap().is_none(), "nothing was written");
+    assert!(g.edges().unwrap().is_empty(), "nothing was written");
     // A member pair still lands.
     link(
         &mut g,
         head(user(1), org(9), "employs"),
         &Employment::default(),
-        1,
     )
     .unwrap();
 }
@@ -576,11 +605,10 @@ fn a_fragment_is_one_commit_and_a_document_is_another() {
         .save_with_prev_into(&mut batch, &UserId { id: 1 }, &User { active: 1 }, None)
         .unwrap();
     store.commit_batch(batch).unwrap();
-    link(
+    let k = link(
         &mut g,
         head(user(1), org(9), "employs"),
         &Employment::default(),
-        1,
     )
     .unwrap();
 
@@ -590,7 +618,7 @@ fn a_fragment_is_one_commit_and_a_document_is_another() {
     );
     assert_eq!(
         g.out_edges(&user(1)).unwrap(),
-        vec![1],
+        vec![k],
         "edge landed in the same commit"
     );
 }
@@ -609,18 +637,16 @@ fn node_kind_filter_intersects_typed_traversal() {
         .unwrap();
     orgs.put(&OrgId { id: 10 }, &Org { kind: 3, active: 1 })
         .unwrap();
-    link(
+    let to9 = link(
         &mut g,
         head(user(1), org(9), "employs"),
         &Employment::default(),
-        1,
     )
     .unwrap();
     link(
         &mut g,
         head(user(1), org(10), "employs"),
         &Employment::default(),
-        2,
     )
     .unwrap();
 
@@ -642,43 +668,61 @@ fn node_kind_filter_intersects_typed_traversal() {
 
     // Predicate-filtered traversal from user(1), keep only edges whose dst
     // is in the kind-2 node set.
-    let kept: Vec<u64> = g
+    let kept: Vec<EdgeKey> = g
         .typed_out("employs", &user(1))
         .unwrap()
         .into_iter()
-        .filter(|id| {
-            let b = g.get_edge(*id).unwrap().unwrap();
-            let dst_id = u64::from_be_bytes(b.dst.pkey.as_slice().try_into().unwrap());
+        .filter(|k| {
+            let dst_id = u64::from_be_bytes(k.dst.pkey.as_slice().try_into().unwrap());
             kind2.contains(&dst_id)
         })
         .collect();
-    assert_eq!(kept, vec![1], "kind-3 edge converged out in memory");
+    assert_eq!(kept, vec![to9], "kind-3 edge converged out in memory");
 }
 
 #[test]
-fn noderef_varint_len_self_describing() {
-    // The wire carries the pkey width: same node -> same bytes (prefix
-    // scans match), mixed widths need no registration.
+fn noderef_is_two_ns_bytes_and_the_bare_key() {
+    // ADR-0067: the ref carries no length — the member table's declaration is
+    // the width. The same node always spells the same bytes (prefix scans match
+    // by construction) and a mixed-width graph needs no per-ref length.
     let a = NodeRef::new(&10u16.to_be_bytes(), &3u64.to_be_bytes());
     let b = NodeRef::new(&11u16.to_be_bytes(), &[9, 9, 9, 9]);
-    assert_eq!(a.encode().len(), 11);
-    assert_eq!(b.encode().len(), 2 + 1 + 4); // ns 2B + len 1B + 4-byte pkey
-    let (back, n) = NodeRef::decode(&b.encode()).unwrap();
-    assert_eq!(n, b.encode().len());
-    assert_eq!(back, b);
+    assert_eq!(a.wire().len(), 2 + 8, "[ns 2B][pkey 8B]");
+    assert_eq!(b.wire().len(), 2 + 4, "[ns 2B][pkey 4B]");
+    assert_eq!(
+        a.wire(),
+        [10u16.to_be_bytes().to_vec(), 3u64.to_be_bytes().to_vec()].concat()
+    );
+
+    // Parsing is the width table's job, and an undeclared ns is refused rather
+    // than guessed at.
+    let members = okm_core::model::graph::Members::new(vec![(10, 8), (11, 4)]);
+    let (back, n) = NodeRef::parse(&a.wire(), &members).unwrap();
+    assert_eq!((back, n), (a, 10));
+    let (back, n) = NodeRef::parse(&b.wire(), &members).unwrap();
+    assert_eq!((back, n), (b.clone(), 6));
+    assert!(
+        NodeRef::parse(
+            &b.wire(),
+            &okm_core::model::graph::Members::new(vec![(10, 8)])
+        )
+        .is_none(),
+        "a width the declaration does not state cannot be cut"
+    );
 }
 
 #[test]
 fn hex_lock_one_link() {
-    // Byte-level lock of one link (ns 100, edge_id 1, predicate "employs"
-    // → id 0, user(1)→org(9), payload {since_year: 2020, weight: 0}).
+    // Byte-level lock of one link (ns 100, predicate "employs" → id 0,
+    // user(1)→org(9), payload {since_year: 2020, weight: 0}). The tuple IS the
+    // row: `0x06` carries the payload and there is no numbered primary row.
     let store = okm_async::TestStore::slatedb_mem();
     let mut g: Graph<_, Employment> = Graph::new(store.clone());
     let attrs = Employment {
         since_year: 2020,
         weight: 0,
     };
-    link(&mut g, head(user(1), org(9), "employs"), &attrs, 1).unwrap();
+    link(&mut g, head(user(1), org(9), "employs"), &attrs).unwrap();
 
     let ns = 100u16.to_be_bytes();
     let slot = |s: u16| {
@@ -686,45 +730,64 @@ fn hex_lock_one_link() {
         okm_core::write_slot(&mut v, s);
         v
     };
-    let id = 1u64.to_be_bytes().to_vec();
     let pid = 0u16.to_be_bytes().to_vec();
-    let src = user(1).encode();
-    let dst = org(9).encode();
-    assert_eq!(src.len(), 11, "[ns 2B][len 1B][pkey 8B]");
-    assert_eq!(dst.len(), 11);
+    let src = user(1).wire();
+    let dst = org(9).wire();
+    assert_eq!(src.len(), 10, "[ns 2B][pkey 8B]");
+    assert_eq!(dst.len(), 10);
 
-    let mut primary = ns.to_vec();
-    okm_core::write_slot(&mut primary, PRIMARY_SLOT);
-    assert_eq!(
-        primary.len(),
-        3,
-        "primary head = ns 2B + fixed face 0x00, one byte"
-    );
-    primary.extend_from_slice(&id);
-    let body = store.get(&primary).unwrap().unwrap();
-    // Body = [src][dst][predicate_vocab_id][obj payload]; the payload is the same
-    // two-segment obj a document row carries, and it has no header (ADR-0042 as
-    // amended): [hot segment][cold TLV] — since_year u16 then weight u32, both
-    // fixed-width, so the whole payload is hot.
+    // The payload is the same two-segment obj a document row carries, and it has
+    // no header (ADR-0042 as amended): [hot segment][cold TLV] — since_year u16
+    // then weight u32, both fixed-width, so the whole payload is hot.
     let payload = {
         let mut v = Vec::new();
         v.extend_from_slice(&2020u16.to_be_bytes());
         v.extend_from_slice(&0u32.to_be_bytes());
         v
     };
+    // 0x06 = [ns][0x06][src][pred][dst] → the payload. One row, no id anywhere.
     assert_eq!(
-        body,
-        [src.clone(), dst.clone(), pid.clone(), payload].concat()
+        store
+            .get(
+                &[
+                    ns.to_vec(),
+                    slot(0x06),
+                    src.clone(),
+                    pid.clone(),
+                    dst.clone()
+                ]
+                .concat()
+            )
+            .unwrap(),
+        Some(payload),
+        "out face carries the edge"
+    );
+    // The retired primary slot holds nothing: an edge has no number to key by.
+    assert!(
+        store
+            .get(
+                &[
+                    ns.to_vec(),
+                    slot(0x00),
+                    src.clone(),
+                    pid.clone(),
+                    dst.clone()
+                ]
+                .concat()
+            )
+            .unwrap()
+            .is_none(),
+        "an edge writes no primary row"
     );
 
     // The graph's faces are fixed faces — one byte each (ADR-0030), and the
     // vocabulary precedes the faces that read its ids. The vocabulary class
     // itself is counting family 4 since ADR-0032 (two-byte slots).
-    let key = |parts: &[Vec<u8>]| parts.concat();
+    let cat = |parts: &[Vec<u8>]| parts.concat();
     let vocab = |s: u16| slot(s);
     assert!(
         store
-            .get(&key(&[
+            .get(&cat(&[
                 ns.to_vec(),
                 vocab(okm_core::index::PREDICATE_VOCAB_ID_SLOT),
                 pid.clone()
@@ -735,7 +798,7 @@ fn hex_lock_one_link() {
     );
     assert!(
         store
-            .get(&key(&[
+            .get(&cat(&[
                 ns.to_vec(),
                 vocab(okm_core::index::PREDICATE_VOCAB_NAME_SLOT),
                 b"employs".to_vec()
@@ -744,43 +807,29 @@ fn hex_lock_one_link() {
             .is_some(),
         "predicate name → id"
     );
-    // Every face carries BOTH endpoints: the pair is in the key, so the id is
-    // the last segment of a single-node entry and the whole suffix of a pair one.
+    // Every face spells the tuple: 0x06 `[src][pred][dst]`, 0x07 the mirrored
+    // `[dst][pred][src]`, 0x08 `[pred][src][dst]`, 0x09 `[pred][dst][src]`.
     assert!(
         store
-            .get(&key(&[
-                ns.to_vec(),
-                slot(0x06),
-                src.clone(),
-                dst.clone(),
-                id.clone()
-            ]))
-            .unwrap()
-            .is_some(),
-        "out (pair-qualified)"
-    );
-    assert!(
-        store
-            .get(&key(&[
+            .get(&cat(&[
                 ns.to_vec(),
                 slot(0x07),
                 dst.clone(),
-                src.clone(),
-                id.clone()
+                pid.clone(),
+                src.clone()
             ]))
             .unwrap()
             .is_some(),
-        "in (pair-qualified)"
+        "in"
     );
     assert!(
         store
-            .get(&key(&[
+            .get(&cat(&[
                 ns.to_vec(),
                 slot(0x08),
                 pid.clone(),
                 src.clone(),
-                dst.clone(),
-                id.clone()
+                dst.clone()
             ]))
             .unwrap()
             .is_some(),
@@ -788,32 +837,37 @@ fn hex_lock_one_link() {
     );
     assert!(
         store
-            .get(&key(&[
+            .get(&cat(&[
                 ns.to_vec(),
                 slot(0x09),
                 pid.clone(),
                 dst.clone(),
-                src.clone(),
-                id.clone()
+                src.clone()
             ]))
             .unwrap()
             .is_some(),
         "predicate+in"
     );
-    // The retired predicate index (0x06 under the old numbering) is gone: the
-    // same key now names an out-edge, and nothing writes `[predicate][id]`.
+    // A head that differs in ONE byte is a different row — there is no number
+    // space for a second edge to collide in.
     assert!(
         store
-            .get(&key(&[ns.to_vec(), slot(0x06), pid.clone(), id.clone()]))
+            .get(&cat(&[
+                ns.to_vec(),
+                slot(0x06),
+                src.clone(),
+                pid.clone(),
+                org(8).wire()
+            ]))
             .unwrap()
             .is_none(),
-        "no predicate-only face"
+        "an unasserted head has no row"
     );
     // Nothing in the retired 0x02/0x03 band names a predicate: that band is
     // now free (the field vocabulary moved to family 4, ADR-0032).
     assert!(
         store
-            .get(&key(&[
+            .get(&cat(&[
                 ns.to_vec(),
                 slot(0x02),
                 0u16.to_be_bytes().to_vec()
@@ -823,15 +877,18 @@ fn hex_lock_one_link() {
     );
 
     // Declared face (counting family 0x1, declaration order):
-    // since_year=2020 — two bytes, unlike the fixed faces above.
+    // since_year=2020 — two bytes, unlike the fixed faces above, and the entry's
+    // tail is the edge key itself.
     let mut face = ns.to_vec();
     okm_core::write_slot(
         &mut face,
         <__OkmIndex_Employment_by_since as okm_core::KvIndex>::SLOT,
     );
     face.extend_from_slice(&2020u16.to_be_bytes());
-    face.extend_from_slice(&id);
-    assert_eq!(face.len(), 2 + 2 + 2 + 8);
+    face.extend_from_slice(&src);
+    face.extend_from_slice(&pid);
+    face.extend_from_slice(&dst);
+    assert_eq!(face.len(), 2 + 2 + 2 + 10 + 2 + 10);
     assert!(
         store.get(&face).unwrap().is_some(),
         "declared-attribute face"
@@ -851,8 +908,8 @@ fn neighbor_nodes_resolve_to_node_refs() {
         since_year: 2021,
         weight: 2,
     };
-    link(&mut g, head(user(1), org(9), "employs"), &a1, 1).unwrap();
-    link(&mut g, head(user(1), org(10), "employs"), &a2, 2).unwrap();
+    link(&mut g, head(user(1), org(9), "employs"), &a1).unwrap();
+    link(&mut g, head(user(1), org(10), "employs"), &a2).unwrap();
 
     // One-hop neighbors as NodeRef — the traversal currency.
     let mut outs = g.out_nodes(&user(1)).unwrap();
@@ -874,15 +931,15 @@ fn neighbor_nodes_resolve_to_node_refs() {
         vec![user(1)]
     );
 
-    // Parallel-edge collapse: two heads between the same pair produce
-    // the same neighbor twice — multiplicity preserved, dedupe is the
-    // caller's set semantics (NodeRef is Hash + Ord).
+    // Parallel-edge collapse: two edges between the same pair (the predicate is
+    // what tells them apart) produce the same neighbor twice — multiplicity
+    // preserved, dedupe is the caller's set semantics (NodeRef is Hash + Ord).
     let a3 = Employment {
         since_year: 2022,
         weight: 3,
     };
-    link(&mut g, head(user(2), org(9), "employs"), &a3, 3).unwrap();
-    link(&mut g, head(user(2), org(9), "employs"), &a3, 4).unwrap();
+    link(&mut g, head(user(2), org(9), "employs"), &a3).unwrap();
+    link(&mut g, head(user(2), org(9), "contracts"), &a3).unwrap();
     assert_eq!(g.out_nodes(&user(2)).unwrap(), vec![org(9), org(9)]);
     let mut deduped = g.out_nodes(&user(2)).unwrap();
     deduped.sort();
@@ -899,14 +956,13 @@ fn the_edge_set_exports_as_a_table_with_named_endpoints() {
 
     let store = okm_async::TestStore::slatedb_mem();
     let mut g: Graph<_, Employment> = Graph::new(store.clone());
-    link(
+    let k = link(
         &mut g,
         head(user(1), org(9), "employs"),
         &Employment {
             since_year: 2020,
             weight: 7,
         },
-        1,
     )
     .unwrap();
 
@@ -916,10 +972,10 @@ fn the_edge_set_exports_as_a_table_with_named_endpoints() {
         okm_value::Variant::Str("lead".to_string()),
     );
     let mut batch = okm_core::Batch::default();
-    g.replace_into(&mut batch, 1, &attrs).unwrap();
+    g.replace_into(&mut batch, &k, &attrs).unwrap();
     store.commit_batch(batch).unwrap();
     assert_eq!(
-        g.attrs(1).unwrap().map(|f| f.len()),
+        g.attrs(&k).unwrap().map(|f| f.len()),
         Some(1),
         "the attribute segment reads back"
     );
@@ -977,11 +1033,11 @@ fn the_edge_set_exports_as_a_table_with_named_endpoints() {
 }
 
 #[test]
-fn reindex_rebuilds_the_faces_one_chunk_at_a_time() {
-    // ADR-0048's chunked rebuild reaches the graph through `reindex`: the same
-    // two phases as a collection's faces — sweep, then re-derive from the primary
-    // — with the ops split across commits, so a large edge set costs one chunk of
-    // memory instead of one batch of every entry.
+fn reindex_rebuilds_the_derived_faces_one_chunk_at_a_time() {
+    // ADR-0048's chunked rebuild reaches the graph through `reindex`: sweep the
+    // derived faces, then re-derive them from the authority (`0x06`, which holds
+    // the tuple AND the payload) — with the ops split across commits, so a large
+    // edge set costs one chunk of memory instead of one batch of every entry.
     let store = okm_async::TestStore::slatedb_mem();
     let mut g: Graph<_, Employment> = Graph::new(store.clone());
     for id in 1..=5u64 {
@@ -992,39 +1048,43 @@ fn reindex_rebuilds_the_faces_one_chunk_at_a_time() {
                 since_year: 2020,
                 weight: id as u32,
             },
-            id,
         )
         .unwrap();
     }
     assert_eq!(g.out_edges(&user(3)).unwrap().len(), 1);
 
-    // Empty one face without touching a single primary row: the state `reindex`
-    // exists to repair.
-    let mut prefix = <Employment as okm_core::Document>::NS_PREFIX.to_vec();
-    okm_core::index::write_slot(&mut prefix, okm_core::model::graph::EDGE_OUT_SLOT);
-    let end = okm_core::engine::storage::prefix_end(&prefix);
-    let stale: Vec<Vec<u8>> = store
-        .scan_range(&prefix, end.as_deref())
-        .map(|item| item.map(|(k, _)| k))
-        .collect::<okm_core::error::Result<_>>()
-        .unwrap();
-    assert_eq!(stale.len(), 5);
-    for key in &stale {
-        store.del(key).unwrap();
+    // Empty the DERIVED faces without touching a single authority row: the state
+    // `reindex` exists to repair. 0x06 is never wiped — it IS the edge.
+    for slot in [
+        okm_core::model::graph::EDGE_IN_SLOT,
+        okm_core::model::graph::EDGE_PREDICATE_OUT_SLOT,
+        okm_core::model::graph::EDGE_PREDICATE_IN_SLOT,
+    ] {
+        let mut prefix = <Employment as okm_core::Document>::NS_PREFIX.to_vec();
+        okm_core::index::write_slot(&mut prefix, slot);
+        let end = okm_core::engine::storage::prefix_end(&prefix);
+        let stale: Vec<Vec<u8>> = store
+            .scan_range(&prefix, end.as_deref())
+            .map(|item| item.map(|(k, _)| k))
+            .collect::<okm_core::error::Result<_>>()
+            .unwrap();
+        for key in &stale {
+            store.del(key).unwrap();
+        }
     }
     assert_eq!(
         g.out_edges(&user(3)).unwrap().len(),
-        0,
-        "the out face is empty now"
+        1,
+        "the authority face still holds every edge"
     );
     assert_eq!(
         g.in_edges(&org(9)).unwrap().len(),
-        5,
-        "the in face is intact"
+        0,
+        "the derived in face is empty now"
     );
 
     let rebuilt = g.reindex(2).unwrap();
-    assert_eq!(rebuilt, 5, "one edge per primary row, all re-derived");
+    assert_eq!(rebuilt, 5, "one edge per authority row, all re-derived");
     for id in 1..=5u64 {
         assert_eq!(g.out_edges(&user(id)).unwrap().len(), 1, "edge {id} out");
     }

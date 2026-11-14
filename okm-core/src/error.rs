@@ -78,11 +78,18 @@ pub enum Error {
         "nested object requires the vocabulary (name `{name}` unresolved) — use okm_value::encode"
     )]
     VocabularyRequired { name: String },
-    /// The internal delete of an id with no stored edge. Never reaches a caller
-    /// as a refusal — `Graph::retract` treats absence as nothing to do — it is
-    /// the invariant that keeps a delete from inventing rows.
-    #[error("delete: edge_id {edge_id} not found")]
-    EdgeNotFound { edge_id: u64 },
+    /// The internal delete of an identity with no stored edge. Never reaches a
+    /// caller as a refusal — `Graph::retract` treats absence as nothing to do —
+    /// it is the invariant that keeps a delete from inventing rows.
+    ///
+    /// An edge has no number (ADR-0067), so the identity that was not found is
+    /// stated as its endpoints and its predicate id.
+    #[error("delete: edge (src ns {src_ns}, predicate {predicate}, dst ns {dst_ns}) not found")]
+    EdgeNotFound {
+        src_ns: u16,
+        predicate: u16,
+        dst_ns: u16,
+    },
     /// A fragment handed to `incorporate` declared deletions. `incorporate`
     /// writes; a delete is `retract`'s business, and one batch carrying both
     /// would have two meanings.
@@ -98,9 +105,19 @@ pub enum Error {
          hand the writes to `Graph::incorporate`"
     )]
     RetractWithWrites { declarations: usize },
-    /// An edge endpoint whose namespace is not a member of the graph's.
-    #[error("{side} ns {ns} is not a member of graph ns {graph_ns}")]
-    EdgeNotMember {
+    /// An edge endpoint whose namespace is not one of the graph's declared
+    /// member tables (ADR-0067).
+    ///
+    /// `#[ok_nodes(Table, …)]` is a closed set — the declaration says which
+    /// collections may be endpoints — so a ref built by hand from a foreign ns is
+    /// refused at write time instead of being written as if it belonged. The
+    /// generated member enum (`EmploymentNode::user(&key)`) is the checked way to
+    /// build one.
+    #[error(
+        "{side} ns {ns} is not a member of graph ns {graph_ns} — the graph's #[ok_nodes] \
+         list is the closed set of endpoint tables (ADR-0067)"
+    )]
+    ForeignEndpoint {
         side: &'static str,
         ns: u16,
         graph_ns: u16,
