@@ -55,7 +55,6 @@ note: required by a bound in `KEY_LEN`
   |                              ^^^^^ required by this bound in `KeyEncode::KEY_LEN`
   |     /// Total encoded byte count (payload only, namespace header excluded).
   |     const KEY_LEN: usize;
-  |           ------- required by a bound in this associated constant
   = note: this error originates in the derive macro `KeyEncode` (in Nightly builds, run with -Z macro-backtrace for more info)
 help: consider annotating `K` with `#[derive(Clone)]`
   |
