@@ -10,7 +10,7 @@
 )]
 
 /// 槽位是位置语义：高半字节是族，低 12 位是计数器。越界值不再被掩码——
-/// 掩码会把它落到另一个族里合法-looking 的槽位上（0x3FFF + 1 = 0x4001 是
+/// 掩码会把它落到另一个族里合法-looking 的槽位上（0x4FFF + 1 = 0x5001 是
 /// reduce 族），条目会被另一张表读回去。构造即拒绝。
 #[test]
 #[should_panic(expected = "slot counter out of range")]

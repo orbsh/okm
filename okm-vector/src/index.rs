@@ -23,16 +23,21 @@ use okm_core::engine::storage::{Batch, VirtualStorage, scan_suffix_kv};
 use crate::codec::{Codec, Reader, put_u16};
 use crate::hnsw::{Hnsw, HnswParams};
 
-/// Fixed face 0x0E — Extension (ADR-0066 §8): the one band left once the core
-/// faces were assigned, and the band whose sub-kinds each own their own
-/// durability contract. Every entry under it is `[ns 2B][0x0E][sub-kind]…`.
-pub const VECTOR_INDEX_SLOT: u8 = 0x0E;
+/// Fixed face 0x1E — Extension (ADR-0066 §8): the band once the core faces and
+/// the handles were placed, and the band whose sub-kinds each own their own
+/// durability contract. Every entry under it is `[ns 2B][0x1E][sub-kind]…`.
+///
+/// `0x1E` sits at the tail of the thirty-two-face band next to the meta row
+/// (`0x1F`) so the two mnemonics — E for Extension, F for the final face — stay
+/// the band's tail; `0x10`–`0x1D` is the one contiguous reserve below them
+/// (ADR-0030).
+pub const VECTOR_INDEX_SLOT: u8 = 0x1E;
 
-/// Sub-kind 0x01 of face 0x0E: the built graph per shard, one blob each —
-/// `[ns 2B][0x0E][0x01][shard u16 BE] → blob`.
+/// Sub-kind 0x01 of face 0x1E: the built graph per shard, one blob each —
+/// `[ns 2B][0x1E][0x01][shard u16 BE] → blob`.
 ///
 /// The sub-kind is what makes a cache droppable without guessing: the whole
-/// contract of `0x0E/0x01` is "rebuildable from the corpus", so a reader that
+/// contract of `0x1E/0x01` is "rebuildable from the corpus", so a reader that
 /// finds no blob rebuilds, and `wipe` reclaims every blob of a namespace by
 /// sweeping this one prefix. A future extension kind (a schema, a checkpoint
 /// sidecar) lands on its own sub-kind and inherits none of that.

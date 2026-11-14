@@ -71,8 +71,8 @@ pub struct AuditIncident {
 
 | 提案说 | 代码说 |
 |---|---|
-| 超图占用面 `0x0A` | `0x0A` 是 `okm-vector` 的 per-shard 图（`okm-vector/src/index.rs:33`）；图自己的面停在 `0x09`（`EDGE_PREDICATE_IN_SLOT`，`okm-core/src/model/graph.rs:81`）。在用的固定面：`0x00`–`0x0A`，`0x0B` 是退役的快照槽，`0x0F` 是表元数据（ADR-0043）——所以空带是 `0x0C`–`0x0E`，三个面 |
-| 面槽 2 字节 | 固定面是 **1 字节**；只有计数族（`0x1nnn`/`0x2nnn`）是 2 字节——ADR-0030 第 45-46 与 85-97 行，由 `write_slot` 实现（`okm-core/src/model/index.rs:81-91`） |
+| 超图占用面 `0x0A` | `0x0A` 现在是**簇行**（ADR-0066），`0x0B`–`0x0D` 是它的成员与两张派生面；图的遍历面停在 `0x09`（`EDGE_PREDICATE_IN_SLOT`，`okm-core/src/model/graph.rs:81`）。`okm-vector` 的 per-shard 快照已并进 Extension（`0x1E` 的 0x01 子类）。在用的固定面：`0x00`–`0x0D` 是核心（`0x0A` 是簇行，ADR-0066），`0x0E`/`0x0F` 是句柄登记册，`0x1E` 是 Extension（向量快照已并入它的 0x01 子类），`0x1F` 是表元数据（ADR-0043）——所以空带是 `0x10`–`0x1D`，十四个面 |
+| 面槽 2 字节 | 固定面是 **1 字节**；只有计数族（`0x2nnn`/`0x3nnn`）是 2 字节——ADR-0030 第 45-46 与 85-97 行，由 `write_slot` 实现（`okm-core/src/model/index.rs:81-91`） |
 | `NodeRef` = `[ns 2B][len u16][pkey]` | `[ns 2B][len **varint**][pkey]`，`len < 64` 时一字节（`okm-core/src/model/graph.rs:104-111`） |
 | edge id 是 4B/8B | `u64`（8 字节大端）到处一致：`link`、`edge_ids`、面 |
 | `#[ok_entities(User, Org, Asset)]` | 现有声明词汇是 `#[ok_nodes(EntityRow, MemberRow)]`，按类型取文档**表**；derive 读每张表自己的 `#[ok_ns]`（`okm-core/src/model/graph.rs:196-216`，ADR-0017 状态行，2026-10-21 更新） |
@@ -84,10 +84,10 @@ pub struct AuditIncident {
 
 ## 8. 开放问题（设计工作，不是记录）
 
-1. **第三种声明，还是图的一个基数？** `GraphEncode` 的面 `0x06–0x0A` 是 src/dst 形状的：out、in、predicate+out、predicate+in。集合形状的图把 out/in 塌成一个成员面加一个 predicate+member 面，方向区分从边层消失。这是第二个载体还是 ADR-0017 的一次加宽，决定了下游的一切（声明、derive、unlink）。
+1. **第三种声明，还是图的一个基数？** `GraphEncode` 的面 `0x06–0x09` 是 src/dst 形状的：out、in、predicate+out、predicate+in。集合形状的图把 out/in 塌成一个成员面加一个 predicate+member 面，方向区分从边层消失。这是第二个载体还是 ADR-0017 的一次加宽，决定了下游的一切（声明、derive、unlink）。
 2. **基数上界。** 有界 N（比如 ≤ 16）让 body 保住可算的偏移，也守住了零解析那条主张；无界 N 需要在 body 里放计数/varint 前缀，payload 偏移于是变成一个游标。
 3. **重数。** 成员面键无法区分同一个成员的两次出现，于是重复的参与方塌成一条面 entry。若「同一资产两次、角色不同」必须可表示，成员身份就需要把位置或角色放进键里。
 4. **逐成员角色。** 超图文献里常见的下一个要求（`approver`、`receiver`）。面键里放角色字节或角色 id 会加宽每个面，并把扫描顺序钉死成 role-first 或 member-first；留在 payload 里则键窄，但角色查询变成一次完整取行。
-5. **面编号。** `0x0C–0x0F` 是空的；把 `0x07` 复用成「成员」会重新解释现存的图键，所以超图必须住在自己的 ns 里（ADR-0017 §1 已经做到一图一 ns），永不与一组二元边共用一个。
+5. **面编号。** `0x10`–`0x1D` 是空的；把 `0x07` 复用成「成员」会重新解释现存的图键，所以超图必须住在自己的 ns 里（ADR-0017 §1 已经做到一图一 ns），永不与一组二元边共用一个。
 6. **成员校验。** `NodeSet` / `#[ok_nodes]` 是现成的声明集机制（一个声明，不占槽）。复用它，而不是发明 `ok_entities`，否则词汇会为同一个念头长出两个名字。
 7. **现有模式是否已经回答了这个用例？** 关系表回答了（ADR-0051 + ADR-0054），而且它比本节原先比较的二元边建模是更强的基线：N 个成员是 N 行，`put` 在同一个批里写行和每个面，关系上的属性是普通可索引列，反方向是从键上切出的 lead face（于是不可能与键漂移），行还会经过变更日志进入 lake。对着这条基线，超边是拿 N 行换 1 行 + N 个面，它赢在哪、输在哪的逐项对照在 `relation-shapes.md`。

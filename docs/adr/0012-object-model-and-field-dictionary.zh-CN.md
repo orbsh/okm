@@ -77,12 +77,20 @@
 0x02       字段名词汇表            [ns][0x02][field-id]        → 名字
 0x03       字段名词汇表            [ns][0x03][名字字节]        → field-id
 0x04/0x05  谓词词汇表            [ns][0x04][predicate_id]    （ADR-0017）
-0x06–0x09  图面                  （ADR-0017、ADR-0041）
-0x0A       向量索引快照          （okm-vector 缓存）
-0x0F       表元信息              （ADR-0043）
-0x3nnn     声明索引              [ns][0x3nnn][...]
-0x4nnn     reduce                [ns][0x4nnn][...]
+0x06–0x0D  图面                  （ADR-0017、ADR-0041、ADR-0066）
+0x0E/0x0F  句柄登记册            （图的句柄，ADR-0033）
+0x1E       Extension             （okm-vector 缓存——是固定面，不是 0x0A）
+0x1F       表元信息              （ADR-0043）
+0x2nnn     词汇表：label → id    [ns][0x2nnn][...]
+0x3nnn     词汇表：id → label    [ns][0x3nnn][...]
+0x4nnn     声明索引              [ns][0x4nnn][...]
+0x5nnn     reduce                [ns][0x5nnn][...]
+0x6nnn     前导面                [ns][0x6nnn][...]
 ```
+
+（上表是当前带子：ADR-0033 把固定面加宽到 `0x00`–`0x1F`、把助记面放在带尾；
+计数族从 `0x2` 起按声明序编号。本 ADR 的裁决——obj 自有的每一面都是单字节固定面
+——没有变。）
 
 obj 自己拥有的每一面都是单字节的**固定面**；声明索引与 reduce 是**计数族**（family nibble 加 12 位计数，两字节）。slot 自定界——首字节自己说明后面还跟不跟计数字节——所以固定面与计数族不可能混淆。完整分配由 ADR-0030 拥有，它取代了 ADR-0016 统一的 4 字节头。
 

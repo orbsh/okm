@@ -25,13 +25,13 @@
 //! **What is captured is the TRUTH half of the batch** — primary rows (slot
 //! `0x00`), the dynamic segment (`0x01`), the two dynamic field-name faces
 //! (`0x02`/`0x03`), the two predicate faces (`0x04`/`0x05`), and both directions
-//! of every declared categorical vocabulary (families `0x1`/`0x2`, ADR-0032:
+//! of every declared categorical vocabulary (families `0x2`/`0x3`, ADR-0032:
 //! the payload stores ids, so the labels are truth, not decoration). The DERIVED
-//! half is dropped — declared indexes (`0x3nnn`), reduces (`0x4nnn`), lead
-//! faces (`0x5nnn`, ADR-0054), the graph's traversal faces (`0x06`–`0x09`, rebuilt from the
-//! primary rows by `Graph::reindex`), the vector snapshot (`0x0E`) and the table
-//! meta row (`0x0F`) — as is any bare-face key (a face's singleton, e.g. a
-//! vocabulary's allocation cursor).
+//! half is dropped — declared indexes (`0x4nnn`), reduces (`0x5nnn`), lead
+//! faces (`0x6nnn`, ADR-0054), the graph's traversal faces (`0x06`–`0x09`, rebuilt from the
+//! primary rows by `Graph::reindex`), the handle registry (`0x0E`/`0x0F`), the
+//! vector snapshot (`0x1E`) and the table meta row (`0x1F`) — as is any bare-face
+//! key (a face's singleton, e.g. a vocabulary's allocation cursor).
 //!
 //! The rule FAILS CLOSED: an unrecognised slot is dropped. A log that is visibly
 //! incomplete can be repaired by a reconciliation scan; a lake that quietly

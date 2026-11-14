@@ -124,11 +124,11 @@ def main() -> int:
     rust = run_rust_helper()
     t = okm.Collection(schema, 42)
     t.add_func_index(
-        0x1002,
+        0x4002,
         lambda d: [(ord(c) & 0xFF).to_bytes(4, "big") for c in d["name"]],
     )
-    t.add_partial_index(0x1003, ["level"], lambda d: d["name"] == "a")
-    t.add_reduce(0x2001, ["level"], make_logic())
+    t.add_partial_index(0x4003, ["level"], lambda d: d["name"] == "a")
+    t.add_reduce(0x5001, ["level"], make_logic())
 
     accs_cache: dict = {}
     frames = {}

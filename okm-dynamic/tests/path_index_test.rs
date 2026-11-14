@@ -46,10 +46,10 @@ fn key(id: u64) -> Vec<u8> {
     NodeKey { id }.encode()
 }
 
-const SLOT_AUTHOR: u16 = 0x3001;
-const SLOT_TAGS: u16 = 0x3002;
-const SLOT_RANK: u16 = 0x1003;
-const SLOT_PINNED: u16 = 0x1004;
+const SLOT_AUTHOR: u16 = 0x4001;
+const SLOT_TAGS: u16 = 0x4002;
+const SLOT_RANK: u16 = 0x7003;
+const SLOT_PINNED: u16 = 0x7004;
 
 fn table(store: TestStore) -> DynamicCollection<TestStore> {
     DynamicCollection::new(
@@ -345,7 +345,7 @@ fn out_of_range_and_non_numeric_values_produce_no_entry() {
         51,
         schema(),
         vec![
-            AccessMethod::path(0x1005, Path::parse("meta.small").unwrap(), FieldType::U8).unwrap(),
+            AccessMethod::path(0x7005, Path::parse("meta.small").unwrap(), FieldType::U8).unwrap(),
         ],
     );
     let mut one = Dict::new();
@@ -353,17 +353,17 @@ fn out_of_range_and_non_numeric_values_produce_no_entry() {
     t.put(&key(1), &declared(7)).unwrap();
     t.put(&key(1), &one).unwrap();
     // 300 does not fit the declared U8 → no entry, no error.
-    assert!(entry_keys(t.store(), 0x1005).is_empty());
+    assert!(entry_keys(t.store(), 0x7005).is_empty());
 
     let mut fits = Dict::new();
     fits.insert("meta".into(), obj(&[("small", Value::U64(200))]));
     t.put(&key(1), &fits).unwrap();
-    assert_eq!(ids(t.scan(0x1005, &[200u8]).unwrap()), vec![1]);
+    assert_eq!(ids(t.scan(0x7005, &[200u8]).unwrap()), vec![1]);
 
     let mut wrong_kind = Dict::new();
     wrong_kind.insert("meta".into(), obj(&[("small", Value::Str("big".into()))]));
     t.put(&key(1), &wrong_kind).unwrap();
-    assert!(entry_keys(t.store(), 0x1005).is_empty());
+    assert!(entry_keys(t.store(), 0x7005).is_empty());
 }
 
 #[test]

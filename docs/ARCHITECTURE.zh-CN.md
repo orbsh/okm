@@ -22,7 +22,7 @@ encode_payload()                   PAYLOAD_FIELDS: [("x",4),("name",0)]
 decode_payload()                   FIELDS: [FieldDesc; 2]
 index_entries()                    HOT_WIDTH: 4
 __okm_encode_named()               NS_PREFIX: [0,9]
-        │                          by_a::SLOT: 0x1001
+        │                          by_a::SLOT: 0x4001
         ▼                          DEFAULTS / FIELD_CONTRACTS
 Collection::put/get/scan ───────── 两层在此汇合
         │
@@ -38,7 +38,7 @@ VirtualStorage (Fjall / redb / slatedb)
 ```text
 okm-core/src/
 ├── model/    面向声明的核心——key 编解码、Document trait 与 Collection、
-│             索引、junction、reduce、schema 导出、动态段编解码、
+│             索引、前导面、reduce、schema 导出、动态段编解码、
 │             包装类型（wrappers/）
 ├── engine/   KV 引擎边界——VirtualStorage 抽象及其适配器
 │             （Fjall / redb / slatedb）、TestStore、远程嵌套。
@@ -59,10 +59,10 @@ okm-core/src/
 ```
 
 - **ns**（u16 BE）：集合的身份，在 document 上声明一次（`#[ok_ns]`），16 位全空间由所有条目种类共享。
-- **slot**：首字节决定它自己的宽度。高半字节为 0 → 一字节，一个固定面（主表 0x00、动态段 0x01、字段名词汇表两个方向 0x02/0x03、谓词词汇表 0x04/0x05、图边四面 0x06–0x09、向量索引快照 0x0A）。否则 → 两字节：高半字节是族号，其余是 12 位计数（声明索引 0x1nnn、reduce 0x2nnn、junction 0x3nnn）。定界是关于字节自身的事实、不是查表——这正是按族拼前缀扫描仍然精确的原因（ADR-0030；取代 ADR-0016 的段表）。
+- **slot**：首字节决定它自己的宽度。高半字节为 0 → 一字节，一个固定面（主表 0x00、动态段 0x01、字段名词汇表两个方向 0x02/0x03、谓词词汇表 0x04/0x05、图边四面 0x06–0x09、簇的四面 0x0A–0x0D、句柄登记册 0x0E/0x0F、Extension 0x1E（向量快照是它的 0x01 子类）、表元信息 0x1F）。否则 → 两字节：高半字节是族号，其余是 12 位计数（词表 0x2nnn/0x3nnn、声明索引 0x4nnn、reduce 0x5nnn、前导面 0x6nnn）。定界是关于字节自身的事实、不是查表——这正是按族拼前缀扫描仍然精确的原因（ADR-0030；取代 ADR-0016 的段表）。
 - **身份尾段**：永远是主键编码（全长或声明的截断），所以每条派生条目都可逆回它的源文档。
 
-junction 是唯一的跨集合条目：每个端点 ns 一条单向条目（双 ns 寄生，ADR-0015），方向由承载条目的 ns 决定，区分号在 slot 低位。
+前导面是唯一条段不取自载荷的条目种类：`0x6nnn`，段从**键自己的编码**里切出（ADR-0054），所以身份顺序不可能与它所排序的键漂移，重建也不需要解码。多对多关系不需要独立载体——它就是以那对身份为键的行，每个读方向一张面（ADR-0051）。
 
 ## wire 纪律
 

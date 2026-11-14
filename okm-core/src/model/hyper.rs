@@ -48,13 +48,22 @@
 //! or dedupes on its own side: inserting into a sorted list is log n, and no
 //! HashMap is needed.
 //!
-//! # Completeness rests on two write-time rules
+//! # Completeness rests on one write-time rule
 //!
 //! A node exists only as an endpoint of some edge — there is no "create a bare
-//! node" path ([`Error::BareNode`]) — and a cluster exists only with two or
-//! more members ([`Error::ClusterTooSmall`]). Both are rules about CREATION: a
-//! delete may leave a node that is an endpoint of nothing, because what a delete
-//! removes is the assertion, not the endpoint.
+//! node" path ([`Error::BareNode`]). A cluster needs no counterpart: it is a
+//! SCOPE, and a scope is information by itself. "This subject is sensitive, do
+//! not ask" and "something used to be here and is gone now" are both statements
+//! only an empty scope can make, and a one-member cluster is a scope that
+//! currently holds one thing. So a cluster row is CREATED when it is declared
+//! and deleted only when it is explicitly deleted ([`Fragment::delete`], or an
+//! [`Fragment::incorporate`] that merges the source away); a membership change
+//! never touches it, and its `members` count is an honest count that may be
+//! zero.
+//!
+//! The bare-node rule is about CREATION: a delete may leave a node that is an
+//! endpoint of nothing, because what a delete removes is the assertion, not the
+//! endpoint.
 //!
 //! # Two verbs, one direction each
 //!
@@ -111,9 +120,9 @@
 //!   contradict each other: one is the cascade a node's absence forces, the
 //!   other is what an edge's absence forces (nothing).
 //!
-//! A cluster that drops below two members stops existing, so its remaining
-//! membership rows leave too — and the report counts every membership row that
-//! went, not only the doomed edges' own.
+//! A cluster outlives its members: removing the last one leaves the row and its
+//! payload standing, with a count of zero — a scope is a statement, not an alias
+//! for the edges inside it. The report counts every membership row that went.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -286,8 +295,8 @@ pub struct RetractReport {
     /// Edges actually there and removed — including the ones a node's cascade
     /// pulled in.
     pub edges: usize,
-    /// Membership rows removed: the doomed edges' own, plus every row a cluster
-    /// took with it when it dropped below two members.
+    /// Membership rows removed: the doomed edges' own. A cluster is not deleted
+    /// by losing members, so nothing leaves on that account.
     pub memberships: usize,
 }
 
@@ -1258,8 +1267,8 @@ struct ClusterPlan {
     /// Whether a declaration asked for this cluster (as opposed to an op that
     /// only moves members).
     declared: bool,
-    /// The cluster is removed outright: an incorporation source, or a drop below two
-    /// members.
+    /// The cluster row is removed outright: an explicit `delete`, or an
+    /// `incorporate` that merges this cluster away as a source.
     delete_row: bool,
     add: BTreeSet<HandleKey>,
     remove: BTreeSet<HandleKey>,
@@ -1463,8 +1472,9 @@ impl<G: GraphEncode + Default> Fragment<G> {
         self
     }
 
-    /// Drop this batch's edges from `cluster`. A cluster left with fewer than
-    /// two members stops existing (ADR-0066 §3), so its rows go with them.
+    /// Drop this batch's edges from `cluster`. The cluster row stays: a scope is
+    /// not an alias for the edges inside it, so losing the last member leaves an
+    /// empty cluster with an honest count of zero (ADR-0066 §3).
     pub fn remove(&mut self, cluster: ClusterRef) -> &mut Self {
         self.ops.push(ClusterOp::Remove(cluster));
         self
@@ -1500,10 +1510,11 @@ impl<G: GraphEncode + Default> Fragment<G> {
     /// an absent edge gets.
     ///
     /// Deletion is a WRITE-PATH contract, not a cascade (ADR-0066 §5): the edge's
-    /// rows and its `0x0B` rows leave together, and a cluster that drops below
-    /// two members leaves with them. A miss would be a freshness problem rather
-    /// than a correctness one (the child index rebuilds), which is why nothing
-    /// here needs a trigger or a sweeper.
+    /// rows and its `0x0B` rows leave together, and every cluster that held the
+    /// edge keeps its row with a lowered count — losing a member is not losing a
+    /// scope. A miss would be a freshness problem rather than a correctness one
+    /// (the child index rebuilds), which is why nothing here needs a trigger or a
+    /// sweeper.
     ///
     /// The clusters an edge belongs to are found by ONE pass over the member face
     /// (`0x0B` is the authority, and there is no reverse index — a member row is
@@ -1826,18 +1837,11 @@ impl<G: GraphEncode + Default> Fragment<G> {
                 members.remove(gone);
             }
             members.extend(entry.add.iter().cloned());
-            // A cluster below two members may not be CREATED — but a delete is
-            // not a creation, so an id that was never there is nothing to do.
-            if members.len() < 2 && !state.exists && !entry.delete_row {
-                return Err(Error::ClusterTooSmall {
-                    kind,
-                    id,
-                    members: members.len(),
-                });
-            }
-            // With fewer than two members a cluster stops existing (ADR-0066
-            // §3), so the drop IS the deletion — no orphan row is left behind.
-            let delete_row = entry.delete_row || members.len() < 2;
+            // A cluster is a scope: it is created when declared and deleted only
+            // when explicitly deleted. No membership count — not even zero —
+            // takes the row away, so an empty or one-member cluster is a legal
+            // answer rather than a dropped one.
+            let delete_row = entry.delete_row;
 
             let mut payload = state.payload.clone();
             if !delete_row {

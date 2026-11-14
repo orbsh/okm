@@ -20,7 +20,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::error::{Error, Result};
-use crate::model::index::DYNAMIC_SLOT;
+use crate::model::index::{DYNAMIC_SLOT, FIXED_FACE_MAX};
 use crate::schema::CollectionSchema;
 use crate::{OP_DELETE, OP_PUT, PRIMARY_SLOT};
 use okm_value::Dict;
@@ -405,12 +405,12 @@ fn read_sidecar(path: &Path) -> Result<CollectionSchema> {
 }
 
 /// `key = header + slot + suffix`. The slot is one byte on the fixed faces and two
-/// on the counting families (ADR-0044's numbering), which is why the width comes
+/// on the counting families (ADR-0030's numbering), which is why the width comes
 /// from the first byte and not from a constant.
 pub fn split_slot<'a>(header: &[u8], key: &'a [u8]) -> Option<(u16, &'a [u8])> {
     let rest = key.strip_prefix(header)?;
     let first = *rest.first()?;
-    if first <= 0x0F {
+    if first <= FIXED_FACE_MAX as u8 {
         Some((u16::from(first), rest.get(1..)?))
     } else {
         let second = *rest.get(1)?;

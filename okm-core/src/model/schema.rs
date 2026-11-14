@@ -213,7 +213,7 @@ pub struct SlotMap {
     pub predicate_vocab_name: u16,
     pub declared_index_base: u16,
     pub declared_reduce_base: u16,
-    /// `0x5nnn` base: lead faces count from here (ADR-0054), in their own family
+    /// `0x6nnn` base: lead faces count from here (ADR-0054), in their own family
     /// so a declaration cannot take a number an index would have used.
     pub declared_lead_base: u16,
 }

@@ -356,7 +356,7 @@ Clusters (hyperedges) land in three fixed faces: `0x0A` the cluster row (value =
 
 ### 6. Cross-table atomic writes: one fragment, one commit
 
-`Fragment` is the carrier of a cross-table write: the nodes, edges, member rows and conflict hooks of one batch commit together or not at all. There is no cross-table transaction language and no cascade mechanism — consistency rests on "one fragment = one commit", and on the two premises the write entry point enforces (a node must be an endpoint of some edge, a cluster needs at least two members).
+`Fragment` is the carrier of a cross-table write: the nodes, edges, member rows and conflict hooks of one batch commit together or not at all. There is no cross-table transaction language and no cascade mechanism — consistency rests on "one fragment = one commit", and on the one premise the write entry point enforces: a node must be an endpoint of some edge. A cluster is a scope and needs no such rule — an empty or one-member cluster is a legal statement, and membership changes never delete its row.
 
 ```rust
 let mut x = Fragment::<Employment>::new([Decl::edge(head)]);        // restating the same tuple = the same row

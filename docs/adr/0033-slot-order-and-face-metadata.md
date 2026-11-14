@@ -10,7 +10,7 @@ ADR-0030 (fixed faces vs counting families), ADR-0032 (the allocation cursor)
 ## Context
 
 Every key is `[0xFF][part] (optional) [ns 2B][slot 1–2B][suffix]`, and the slot
-carries its own width in its high nibble: `0x00–0x0F` is a fixed face (one
+carries its own width: a first byte below `0x20` is a fixed face (one
 byte), anything else is a counting family (two bytes, 12-bit counter). ADR-0030
 then admitted one metadata value per face at the BARE PREFIX — `[ns][slot]` with
 no suffix — admissible exactly when every real entry of that face carries at
@@ -37,8 +37,8 @@ LENGTH, so:
 
 ```text
 [ns][0x02]          → end [ns][0x03]         the 0x03 face is outside
-[ns][0x0F]          → end [ns][0x10]         [ns][0x10][nn] sorts AFTER [ns][0x10]
-[ns][0x10][0x01]    → end [ns][0x10][0x02]   the next counter is outside
+[ns][0x1F]          → end [ns][0x20]         [ns][0x20][nn] sorts AFTER [ns][0x20]
+[ns][0x20][0x01]    → end [ns][0x20][0x02]   the next counter is outside
 ```
 
 The second line is the one place where the two slot widths could collide, and it
@@ -73,10 +73,10 @@ engine cost that is key comparison plus value copy.
 **3. A face's metadata stays on that face.** The two ways of separating it were
 both rejected:
 
-- *Its own family* — the earlier `0x3nnn` cursor design. It renumbers indexes
-  `0x4nnn`, reduces `0x5nnn`, junctions `0x6nnn` (an ordering reverted on
-  2026-10-20), and it turns a face's watermark into a numbered instance: the
-  thing describes one face, yet it lives as a peer of families.
+- *Its own family* — a cursor family of its own (tried and reverted on
+  2026-10-20). It spends one family number on one value per vocabulary, pushes
+  every family above it up by one, and turns a face's watermark into a numbered
+  instance: the thing describes one face, yet it lives as a peer of families.
 - *Its own keyspace or prefix region* — the cursor stops being covered by the
   collection's ns. Drop, namespace teardown and partition isolation no longer
   reach it, so a missed cleanup hands stale ids to new data, silently; and
@@ -119,9 +119,10 @@ It would buy one integer compare.
 - A face may host one metadata value at its bare prefix whenever every real entry
   carries at least one suffix byte — no slot, no family, no migration. That is
   the whole cost of the vocabulary cursor.
-- The delimiter rule is load-bearing: a future fixed face above `0x0F`, or a
-  family below `0x10`, breaks the seam silently. `FIXED_FACE_MAX`, `write_slot`'s
-  assert and the hex-lock tests are what keep it honest.
+- The delimiter rule is load-bearing: a fixed face above `0x1F`, or a family
+  below `0x20`, breaks the seam silently — which is why the band ends exactly at
+  the delimiter. `FIXED_FACE_MAX`, `write_slot`'s assert and the hex-lock tests
+  are what keep it honest.
 - Readers that ENUMERATE a face must filter by width; readers that hold a point
   key never meet the cursor.
 - Whole-collection operations stay expressible as one prefix per face. A future

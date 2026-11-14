@@ -75,8 +75,8 @@ fn schema_json() -> String {
 fn entry_json() -> serde_json::Value {
     serde_json::json!({
         "schema": serde_json::to_value(CollectionSchema::of::<UserKey, UserV3>()).unwrap(),
-        "indexes": [{ "name": "by_level", "slot": 4097, "fields": ["level"], "kind": "plain" }],
-        "reduces": [{ "name": "total", "slot": 8193, "group": [], "kind": "count" }],
+        "indexes": [{ "name": "by_level", "slot": 16385, "fields": ["level"], "kind": "plain" }],
+        "reduces": [{ "name": "total", "slot": 20481, "group": [], "kind": "count" }],
     })
 }
 
@@ -157,7 +157,7 @@ fn script_writes_land_in_the_host_engine() {
     let out3 = vm2
         .run(
             r#"
-(define rows (collection-scan! "Counters" 4097 (list->vector (list 0 0 0 9))))
+(define rows (collection-scan! "Counters" 16385 (list->vector (list 0 0 0 9))))
 (assert! (= (vector-length rows) 1))
 (assert! (= (hash-ref (vector-ref rows 0) "org_id") 1))
 (assert! (= (hash-ref (vector-ref rows 0) "user_id") 2))
@@ -207,7 +207,7 @@ fn script_writes_land_in_the_host_engine() {
         .keys()
         .any(|k| k.starts_with(&[0u8, 41, 0u8]) && k.len() == 3 + 12);
     assert!(primary_gone, "the primary row left the host engine");
-    let index_gone = !rows.keys().any(|k| k.starts_with(&[0u8, 41, 16u8, 1u8])); // slot 4097 = 0x1001
+    let index_gone = !rows.keys().any(|k| k.starts_with(&[0u8, 41, 64u8, 1u8])); // slot 16385 = 0x4001
     assert!(index_gone, "the index entry was swept");
     drop(rows);
 }
@@ -276,7 +276,7 @@ fn bad_declaration_names_the_error() {
     let engine = Arc::new(MemEngine(Mutex::new(Default::default())));
     let entry = serde_json::json!({
         "schema": serde_json::to_value(CollectionSchema::of::<UserKey, UserV3>()).unwrap(),
-        "indexes": [{ "slot": 4097, "fields": [], "kind": "func" }],
+        "indexes": [{ "slot": 16385, "fields": [], "kind": "func" }],
     });
     let err = StorageRegistry::default()
         .inject(engine, "Bad", &entry, 41)

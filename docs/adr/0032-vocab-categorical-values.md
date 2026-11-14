@@ -56,20 +56,20 @@ use it today (field names 0x02/0x03, predicate/kind tokens 0x04/0x05).
    ```
    FIELD_VOCAB      = 0x02, 0x03    // field names — fixed faces, unchanged
    PREDICATE_VOCAB  = 0x04, 0x05    // predicates / kind tokens — unchanged
-   0x1nnn / 0x2nnn  label → id / id → label   nnn = the vocabulary's number
+   0x2nnn / 0x3nnn  label → id / id → label   nnn = the vocabulary's number
    ```
 
-   Field #0 takes counter 1: `0x1001` (label → id) and `0x2001` (id → label).
+   Field #0 takes counter 1: `0x2001` (label → id) and `0x3001` (id → label).
    Field #1 takes counter 2, and so on. One number per vocabulary means the two
    directions cannot be split by an off-by-one, the capacity is the full 12-bit
    range (4095 vocabularies), and no family carries a parity convention inside
    it.
 
    The allocation cursor spends no number at all: it is the ID FACE's
-   face-level singleton (ADR-0030), `[ns][0x2nnn]` with no id bytes, so the
-   families below keep the numbers they already had — the alternative, a
-   dedicated cursor family, would have moved declared indexes, reduces and
-   junctions by one and bought nothing.
+   face-level singleton (ADR-0030), `[ns][0x3nnn]` with no id bytes — so the
+   cursor spends no family of its own. A dedicated cursor family would have
+   spent one number to hold one value per vocabulary; the face-level singleton
+   holds the same value on a face that already exists.
 
    The two collection-wide name domains keep their fixed faces: their NUMBER is
    fixed, so they need no allocation, and leaving them in place costs no data
@@ -78,7 +78,7 @@ use it today (field names 0x02/0x03, predicate/kind tokens 0x04/0x05).
 
 3. **A cursor entry, so allocation is a point read.** The next id is stored —
    ONE entry, and it costs no face at all: it is the id face's **face-level
-   singleton**, keyed by the bare prefix `[ns][0x2nnn]` with no id suffix. Every
+   singleton**, keyed by the bare prefix `[ns][0x3nnn]` with no id suffix. Every
    real entry of that face carries exactly `N` bytes after the slot, so a
    zero-length key is not expressible as data and the two cannot collide — by
    length, not by a reserved id. (It cannot live on the label face: the empty
@@ -160,7 +160,7 @@ use it today (field names 0x02/0x03, predicate/kind tokens 0x04/0x05).
 - The vocabulary class ends up in two homes BY ALLOCATION REGIME, and that is
   deliberate: the two collection-wide name domains are fixed in number (fixed
   faces, no allocation), the per-field data vocabularies are declaration-order
-  and open-ended (families 0x1/0x2). The split is exactly what avoids migrating live
+  and open-ended (families 0x2/0x3). The split is exactly what avoids migrating live
   name tables: a face move would have to COPY entries, and forgetting that
   makes the dynamic-segment read drop fields silently (unknown ids drop the field).
 - Migration is therefore about categories only, and it is NOT silent: old

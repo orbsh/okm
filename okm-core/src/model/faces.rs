@@ -45,9 +45,9 @@ pub struct IndexDecl {
 /// field" in one and "a key field" in the other.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FaceKind {
-    /// `0x3nnn`: a declared index, payload segment.
+    /// `0x4nnn`: a declared index, payload segment.
     Index,
-    /// `0x5nnn`: a lead face, identity segment.
+    /// `0x6nnn`: a lead face, identity segment.
     Lead,
 }
 
@@ -246,7 +246,7 @@ mod tests {
 
     const A: IndexDecl = IndexDecl {
         name: "by_name",
-        slot: 0x3001,
+        slot: 0x4001,
         fields: &["name"],
         includes: &[],
         func: "",
@@ -254,7 +254,7 @@ mod tests {
     };
     const B: IndexDecl = IndexDecl {
         name: "by_org",
-        slot: 0x3002,
+        slot: 0x4002,
         fields: &["org_id", "created_at"],
         includes: &["bio_len"],
         func: "",

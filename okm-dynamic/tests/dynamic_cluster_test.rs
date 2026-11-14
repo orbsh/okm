@@ -1170,25 +1170,34 @@ fn the_two_verbs_refuse_each_others_declarations() {
             "{engine}: and no edge was born either"
         );
 
-        // A cluster over ONE member is refused, and the edge that would have
-        // been its member is not written either — every check runs before the
-        // commit.
+        // A cluster over ONE member is a legal write: a cluster is a scope, so the
+        // row lands with an honest count of one instead of being refused, and the
+        // edge it holds lands with it.
         let mut fragment = DynFragment::new([Decl::edge(edge(person(4), org(4), "works_at"))]);
         fragment.cluster(Cluster::new(Kind::COMMUNITY, Dict::new()));
-        let err = g
+        let report = g
             .incorporate(fragment)
-            .expect_err("a cluster needs two members");
-        assert!(
-            err.contains("two or more members"),
-            "{engine}: unexpected error: {err}"
+            .expect("a one-member cluster is a scope, not a refusal");
+        let one = report.hyper_ids[0];
+        assert_eq!(
+            g.out_edges(&person(4)).expect("out").len(),
+            1,
+            "{engine}: the edge that would have been its member landed"
         );
-        assert!(
-            g.out_edges(&person(4)).expect("out").is_empty(),
-            "{engine}: the refused edge did not land"
+        assert_eq!(
+            g.member_count(Kind::COMMUNITY, one).expect("count"),
+            1,
+            "{engine}: the row states the count it has"
         );
-        assert!(
-            g.clusters(Kind::COMMUNITY).expect("clusters").is_empty(),
-            "{engine}: and no cluster row was written"
+        assert_eq!(
+            g.members(Kind::COMMUNITY, one).expect("members").len(),
+            1,
+            "{engine}: one member row, written in the same batch"
+        );
+        assert_eq!(
+            g.clusters(Kind::COMMUNITY).expect("clusters").len(),
+            1,
+            "{engine}: and the cluster row exists at that id"
         );
     }
 }
@@ -1287,6 +1296,97 @@ fn an_edge_hook_keeps_the_newer_frame_across_a_reassertion() {
             g.out_edges(&person(1)).expect("out").len(),
             1,
             "{engine}: a re-assertion is the same edge — no second one appeared"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 11. An empty cluster is a scope, and its row is a row like any other
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_cluster_created_with_no_members_at_all_is_a_scope() {
+    for (engine, store) in TestStore::matrix() {
+        let mut g = graph(&store);
+        // The declaration and nothing else: no edge, no member. An empty scope is
+        // a statement — "something used to be here and is gone now" — so the row
+        // it makes is legal and says zero.
+        let mut fragment = DynFragment::new([]);
+        fragment.cluster(Cluster::new(
+            Kind::SCOPE,
+            attrs(&[("label", Variant::Str("gone".to_string()))]),
+        ));
+        let report = g
+            .incorporate(fragment)
+            .expect("an empty scope is a declared scope");
+        assert_eq!(report.hyper_ids.len(), 1, "{engine}: one id allocated");
+        assert!(report.edges.is_empty(), "{engine}: no edge declared");
+        let scope = report.hyper_ids[0];
+
+        let row = g.lookup(Kind::SCOPE, scope).expect("lookup").expect("row");
+        assert_eq!(
+            g.member_count(Kind::SCOPE, scope).expect("count"),
+            0,
+            "{engine}: zero is the honest count"
+        );
+        assert_eq!(
+            row.payload.get("label"),
+            Some(&Variant::Str("gone".to_string())),
+            "{engine}: the payload is the statement the scope makes"
+        );
+        assert!(
+            g.members(Kind::SCOPE, scope).expect("members").is_empty(),
+            "{engine}: an empty member list, not an error"
+        );
+        assert_eq!(
+            g.clusters(Kind::SCOPE).expect("clusters"),
+            vec![scope],
+            "{engine}: and the kind scan still lists it"
+        );
+        assert!(
+            face(&store, 0x0B).is_empty(),
+            "{engine}: nothing was invented to join it to the graph"
+        );
+    }
+}
+
+#[test]
+fn an_explicitly_declared_empty_cluster_survives_a_rebuild() {
+    for (engine, store) in TestStore::matrix() {
+        let mut g = graph(&store);
+        // A parent scope with no edges and a child scope under it, also empty:
+        // the child index is derived from the cluster rows, so the rebuild has to
+        // work off rows whose member face is empty.
+        let mut fragment = DynFragment::new([]);
+        fragment.cluster(Cluster::new(Kind::SCOPE, Dict::new()));
+        let parent = g.incorporate(fragment).expect("parent").hyper_ids[0];
+        let mut fragment = DynFragment::new([]);
+        fragment.cluster(Cluster::new(Kind::SCOPE, Dict::new()).under(parent));
+        let child = g.incorporate(fragment).expect("child").hyper_ids[0];
+        assert_eq!(
+            g.children(Kind::SCOPE, parent).expect("children"),
+            vec![child],
+            "{engine}: the child index was written with the rows"
+        );
+
+        let report = g.rebuild_derived(usize::MAX).expect("rebuild");
+        assert_eq!(report.clusters, 2, "{engine}: both rows walked");
+        assert_eq!(report.members, 0, "{engine}: and no member row exists");
+
+        for (id, label) in [(parent, "parent"), (child, "child")] {
+            g.lookup(Kind::SCOPE, id)
+                .expect("lookup")
+                .unwrap_or_else(|| panic!("{engine}: {label} survived the rebuild"));
+            assert_eq!(
+                g.member_count(Kind::SCOPE, id).expect("count"),
+                0,
+                "{engine}: {label} still says zero"
+            );
+        }
+        assert_eq!(
+            g.children(Kind::SCOPE, parent).expect("children"),
+            vec![child],
+            "{engine}: the derived child index rebuilt from the rows alone"
         );
     }
 }

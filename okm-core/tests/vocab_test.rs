@@ -90,8 +90,9 @@ fn labels_round_trip_through_per_field_vocabularies() {
         "untouched field keeps its label"
     );
 
-    // Each field's vocabulary is its own face pair in counting families 1/2, and
-    // the schema carries the id face so a dynamic reader can resolve labels.
+    // Each field's vocabulary is its own face pair in counting families 2/3
+    // (label → id, id → label), and the schema carries the id face so a dynamic
+    // reader can resolve labels.
     let faces: Vec<(u16, usize)> = VRow::FIELDS
         .iter()
         .filter_map(|f| match f.ty {
@@ -100,8 +101,8 @@ fn labels_round_trip_through_per_field_vocabularies() {
         })
         .collect();
     assert_eq!(faces.len(), 2);
-    assert_eq!(faces[0].0 >> 12, 2, "id → label lives in family 2");
-    assert_eq!(faces[1].0 >> 12, 2);
+    assert_eq!(faces[0].0 >> 12, 3, "the id face lives in family 3");
+    assert_eq!(faces[1].0 >> 12, 3);
     assert_ne!(faces[0].0, faces[1].0, "one vocabulary per field");
     assert_eq!(
         (faces[0].1, faces[1].1),
@@ -165,7 +166,7 @@ fn a_put_on_a_categorical_table_never_scans() {
 // ---- the cache belongs to the handle (ADR-0032) ---------------------------
 
 /// A store that counts point reads on the data-vocabulary faces: the two
-/// counting families, `0x1nnn` (label → id) and `0x2nnn` (id → label). The
+/// counting families, `0x6nnn` (label → id) and `0x2nnn` (id → label). The
 /// header is `[ns 2B]` with no partition, so the slot's first byte is
 /// `key[2]`.
 struct VocabProbes {
@@ -200,7 +201,7 @@ impl VocabProbes {
         self.reads.load(std::sync::atomic::Ordering::Relaxed)
     }
     fn is_vocab_key(key: &[u8]) -> bool {
-        matches!(key.get(2).map(|b| b >> 4), Some(1 | 2))
+        matches!(key.get(2).map(|b| b >> 4), Some(2 | 6))
     }
 }
 

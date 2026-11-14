@@ -25,16 +25,22 @@ big-endian** — and the slot's internals are split structurally:
 ```text
 slot u16 = [segment 4 bit][counter 12 bit]      (counting families)
 
-0x3nnn  declared index   counter = declaration order
-0x4nnn  reduce           counter = declaration order, independent quota
-0x5nnn  unassigned       never reissued
+0x2nnn  vocabulary, label → id  counter = the vocabulary's number
+0x3nnn  vocabulary, id → label  same counter, other family
+0x4nnn  declared index          counter = declaration order
+0x5nnn  reduce                  counter = declaration order, independent quota
+0x6nnn  lead face               counter = declaration order
 ```
 
+(These are the numbers of the current band; ADR-0030 kept the two-byte counting
+family and ADR-0033 widened the fixed-face band. Segment dispatch — `slot >> 12`
+— is exactly the decision this ADR records, and it is unchanged.)
+
 ADR-0030 owns the full assignment and the fixed-face table. A fixed face is not
-a slot with a counter: it is one byte, `0x00–0x0F`, its own number and no
+a slot with a counter: it is one byte, `0x00–0x1F`, its own number and no
 segment — primary `0x00`, the dynamic segment `0x01`, both vocabularies
-`0x02–0x05`, the graph's faces `0x06–0x09`, the vector snapshot `0x0A`, the
-table meta `0x0F`.
+`0x02–0x05`, the graph's faces `0x06–0x0D`, the handle registry `0x0E`/`0x0F`,
+the Extension `0x1E`, the table meta `0x1F`.
 
 - **Segment extraction is structural**: `slot >> 12` on a counting family. A
   numeric range convention becomes a typed dispatch — misuse of one segment's

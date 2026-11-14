@@ -108,7 +108,7 @@ fn graph_schema() -> CollectionSchema {
         "member_widths": [[16, 8], [17, 8]],
         "indexes": [],
         "slots": {"primary": 0, "dynamic": 1, "field_vocab_id": 2, "field_vocab_name": 3,
-                  "declared_index_base": 4096, "declared_reduce_base": 8192,
+                  "declared_index_base": 16384, "declared_reduce_base": 20480,
                   "junction_base": 12288}
     }))
     .expect("the graph schema parses")
@@ -125,7 +125,7 @@ fn doc_entry() -> serde_json::Value {
             "hot_fields": [{"name": "count", "ty": "U64", "width": 8, "offset": 0, "tag": 0}],
             "cold_fields": [],
             "slots": {"primary": 0, "dynamic": 1, "field_vocab_id": 2, "field_vocab_name": 3,
-                      "declared_index_base": 4096, "declared_reduce_base": 8192,
+                      "declared_index_base": 16384, "declared_reduce_base": 20480,
                       "junction_base": 12288}
         },
         "indexes": [],
@@ -669,32 +669,33 @@ fn member_of_answers_before_and_after_a_retract() {
         "the edge-first mirror lost the row too"
     );
 
-    // A second retract drops it below two members, so the cluster stops
-    // existing — its row and the last membership rows go with it.
+    // A second retract drops it to ONE member — and the cluster keeps its row: a
+    // scope is not an alias for the edges inside it, so the count is 1 rather
+    // than the row leaving with the edge.
     let removed = g
         .retract_dyn(DynFragment::default().tap(|f| {
             f.delete_edge(keys[2].clone());
         }))
         .unwrap_or_else(|e| panic!("retract: {e}"));
-    assert_eq!(
-        removed.memberships, 2,
-        "the cluster row and the remaining member row"
+    assert_eq!(removed.memberships, 1, "one membership row swept");
+    assert!(
+        g.member_of_dyn(Kind::COMMUNITY, cluster, &keys[0]).expect("member_of"),
+        "the remaining edge is still a member of a one-member cluster"
     );
     assert!(
-        !g.member_of_dyn(Kind::COMMUNITY, cluster, &keys[0]).expect("member_of"),
-        "a one-member cluster is not a cluster (ADR-0066 §3)"
+        g.lookup_dyn(Kind::COMMUNITY, cluster)
+            .expect("lookup")
+            .is_some(),
+        "the scope outlives its members"
     );
-    assert!(g
-        .lookup_dyn(Kind::COMMUNITY, cluster)
-        .expect("lookup")
-        .is_none());
-    assert!(g
-        .members_dyn(Kind::COMMUNITY, cluster)
-        .expect("members")
-        .is_empty());
+    assert_eq!(
+        g.members_dyn(Kind::COMMUNITY, cluster).expect("members"),
+        vec![keys[0].clone()]
+    );
     assert_eq!(
         g.member_count_dyn(Kind::COMMUNITY, cluster).expect("count"),
-        0
+        1,
+        "the row's count is honest"
     );
 }
 

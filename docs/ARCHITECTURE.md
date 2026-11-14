@@ -41,7 +41,7 @@ encode_payload()                  PAYLOAD_FIELDS: [("x",4),("name",0)]
 decode_payload()                  FIELDS: [FieldDesc; 2]
 index_entries()                   HOT_WIDTH: 4
 __okm_encode_named()              NS_PREFIX: [0,9]
-        │                         by_a::SLOT: 0x1001
+        │                         by_a::SLOT: 0x4001
         ▼                         DEFAULTS / FIELD_CONTRACTS
 Collection::put/get/scan ───────── both layers meet here
         │
@@ -67,7 +67,7 @@ it without any Rust type in sight.
 ```text
 okm-core/src/
 ├── model/    declaration-facing core — key codecs, the Document trait
-│             and Collection, indexes, junctions, reduces, schema
+│             and Collection, indexes, lead faces, reduces, schema
 │             export, dynamic-segment codec, wrapper types (wrappers/)
 ├── engine/   the KV boundary — VirtualStorage abstraction and its
 │             adapters (Fjall / redb / slatedb), TestStore, remote
@@ -95,10 +95,12 @@ Every key shares one header discipline:
 - **slot**: the first byte decides its own width. High nibble 0 → one
   byte, a fixed face (primary 0x00, dynamic segment 0x01, the two
   vocabulary directions 0x02/0x03, the predicate vocabulary 0x04/0x05, the
-  graph's four faces 0x06–0x09, the vector index snapshot 0x0A).
+  graph's four faces 0x06–0x09, the cluster band 0x0A–0x0D,
+  the handle registry 0x0E/0x0F, Extension 0x1E (the vector snapshot
+  is its 0x01 subkind), table meta 0x1F).
   Anything else → two bytes: a family number in the high nibble plus a
-  12-bit counter (declared indexes 0x3nnn, reduces 0x4nnn, lead faces
-  0x5nnn). Delimiting on the byte's own bit, not on a table, is what
+  12-bit counter (declared indexes 0x4nnn, reduces 0x5nnn, lead faces
+  0x6nnn). Delimiting on the byte's own bit, not on a table, is what
   keeps a family-prefix scan exact (ADR-0030; it supersedes ADR-0016's
   segment table).
 - **identity tail**: always the primary-key encoding (full or a
@@ -106,7 +108,7 @@ Every key shares one header discipline:
   source document.
 
 Lead faces are the one entry kind whose segment is not the payload:
-`0x5nnn`, sliced out of the KEY's own encoding (ADR-0054), so an
+`0x6nnn`, sliced out of the KEY's own encoding (ADR-0054), so an
 identity ordering cannot drift from the key it orders and is rebuilt
 without a decode. A many-to-many relation needs no separate carrier —
 it is a row keyed by the pair, with one face per reading direction

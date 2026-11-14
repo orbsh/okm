@@ -754,9 +754,9 @@ fn hex_lock_one_link() {
     assert_eq!(dst.len(), 8);
     assert_ne!(src_h, dst_h, "two endpoints, two handles");
 
-    // The registry lives in family `0xF`: `0xF000` names a handle's node,
-    // `0xF001` names a node's handle. It is the ONLY face that still holds a
-    // ref — everything else speaks the number.
+    // The registry lives on two FIXED faces: `0x0E` names a handle's node,
+    // `0x0F` names a node's handle. It is the ONLY pair of faces that still
+    // holds a ref — everything else speaks the number.
     let mut fwd = ns.to_vec();
     okm_core::write_slot(&mut fwd, okm_core::HANDLE_NODE_SLOT);
     fwd.extend_from_slice(&src);
@@ -770,12 +770,17 @@ fn hex_lock_one_link() {
     rev.extend_from_slice(&user(1).wire());
     assert_eq!(store.get(&rev).unwrap(), Some(src.clone()), "node → handle");
     assert_eq!(
+        (okm_core::HANDLE_NODE_SLOT, okm_core::NODE_HANDLE_SLOT),
+        (0x0E, 0x0F),
+        "the two registry faces are 0x0E and 0x0F"
+    );
+    assert_eq!(
         (
-            okm_core::HANDLE_NODE_SLOT >> 12,
-            okm_core::NODE_HANDLE_SLOT >> 12
+            okm_core::slot_len(okm_core::HANDLE_NODE_SLOT),
+            okm_core::slot_len(okm_core::NODE_HANDLE_SLOT)
         ),
-        (0xF, 0xF),
-        "both registry faces sit in family 0xF"
+        (1, 1),
+        "and each is one byte — no family prefix, no discriminator"
     );
 
     // The payload is the same two-segment obj a document row carries, and it has
@@ -913,7 +918,7 @@ fn hex_lock_one_link() {
             .is_none()
     );
 
-    // Declared face (counting family 0x1, declaration order):
+    // Declared face (counting family 0x3, declaration order):
     // since_year=2020 — two bytes, unlike the fixed faces above, and the entry's
     // tail is the edge key itself.
     let mut face = ns.to_vec();

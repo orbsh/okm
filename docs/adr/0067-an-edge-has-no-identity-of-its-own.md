@@ -57,10 +57,15 @@ The corollary is a constraint worth stating once: a table that wants to appear i
 
 The tuple identity is what the surface speaks. Internally the graph may carry its own handle: a dense `u64` per node, issued when a node first appears as an endpoint, resolved to `(ns, pkey)` only where a caller, a collection read or a delete needs the real reference. This is recorded now because it fixes the shape of the two faces it would use and nothing else.
 
-Faces, all in the low core band, none in Extension (`0x10`, `0x11`):
+Two **fixed faces** — one byte each, adjacent, right after the core
+(`0x00`–`0x0D`), neither of them in Extension (`0x1E`):
 
-    handle -> node      [ns][0x10][handle u64]   -> [node_ns 2B][pkey]
-    node -> handle      [ns][0x11][node_ns][pkey] -> [handle u64]
+    0x0E  handle -> node   [ns][0x0E][handle u64]         -> [node_ns 2B][pkey]
+    0x0F  node -> handle   [ns][0x0F][node_ns][pkey]       -> [handle u64]
+
+The direction IS the face number, so no key carries a discriminator byte. The
+allocation cursor (the next handle to issue) is the bare prefix `[ns][0x0E]`,
+legal because every real entry of that face is exactly eight bytes past it.
 
 Traversal faces keep the same counts and the same slots; only their interior changes: `[src_handle][pred][dst_handle]`, eighteen bytes regardless of how wide a member table's key is. Nothing else is stored in the row but the edge's payload — the opposite endpoint does not need to be duplicated into the value, because the handle is the graph's own identity and resolving it is what the handle face is for.
 
@@ -68,7 +73,7 @@ What it costs and what it buys, stated so the decision can be re-measured rather
 
 - Space. A tuple costs `2 + key + 2 + key` bytes today. The ordinary case is a composite identity such as `(u32, u64, u32)` — sixteen bytes — which makes a tuple thirty-eight and a handle eighteen: less than half, four times per edge (`0x06`, `0x07` and the two predicate faces). A bare `u64` key gives twenty-two against eighteen, which is where the saving is small.
 - Registry. Two rows per node, roughly fifty bytes together, paid once per node rather than per edge. A sixteen-byte composite key therefore breaks even at a degree below one — the first edge pays for its endpoints' rows — while a bare `u64` key needs a degree of three or four before it wins on space alone.
-- Reads. A hop reads no row either way, because `far` is the handle and traversal stays in handles. A reference is resolved once per result, or in bulk: handles are issued monotonically, so a sorted set of results is one range scan over `0x10`.
+- Reads. A hop reads no row either way, because `far` is the handle and traversal stays in handles. A reference is resolved once per result, or in bulk: handles are issued monotonically, so a sorted set of results is one range scan over `0x0E`.
 - Writes. One handle lookup per unique endpoint in a fragment, plus the two rows on first sight.
 - Lifecycle. A handle outlives its last edge only as waste; the alternative is reference counting, which is a resource the model does not otherwise have. Waste is bounded by the number of nodes that have ever had an edge, and a handle space of `2^64` makes it a space question, not a correctness one. Compaction, when it exists, reissues from zero.
 

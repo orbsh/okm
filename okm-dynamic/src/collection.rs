@@ -161,7 +161,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
         &self.indexes
     }
 
-    /// The table's meta entry (fixed face 0x0F, ADR-0043) — the SAME row the
+    /// The table's meta entry (fixed face 0x1F, ADR-0043) — the SAME row the
     /// typed `Collection` stamps, addressed by this table's ns. `None` = the
     /// store was never stamped; an engine failure surfaces as its message (this
     /// crate answers dynamic callers, which carry no typed error hierarchy).
@@ -170,11 +170,13 @@ impl<S: VirtualStorage> DynamicCollection<S> {
     }
 
     /// First-touch verb (ADR-0043) on the dynamic side: record this declaration's
-    /// faces on a fresh store, or answer the row the store already carries.
+    /// layout generation and faces on a fresh store; on an existing row, refuse a
+    /// generation this build does not speak and otherwise answer the row as it is.
     ///
-    /// No layout number is compared here any more: which generation wrote the bytes
-    /// is the SEGMENT header's statement, checked where a log is opened (ADR-0042 as
-    /// amended), and a store with no log has nothing to compare against.
+    /// The number compared is the SCHEMA's (`CollectionSchema::layout_version`, the
+    /// typed declaration's `LAYOUT_VERSION`): a layout change is a cutover, so a store
+    /// stamped with another number is refused here instead of being decoded row by
+    /// row under a schema that never wrote it.
     ///
     /// One point read when stamped, one point write when not: call it where the host
     /// attaches to a store, never on the write path.
@@ -188,12 +190,14 @@ impl<S: VirtualStorage> DynamicCollection<S> {
         // no compiler answers for them. The methods ARE the declaration here, so
         // they are what gets hashed (ADR-0048).
         let faces = self.computed_faces();
-        let mut meta = okm_core::meta::ensure_faces(&self.store, &self.ns, faces).map_err(codec)?;
+        let mut meta =
+            okm_core::meta::ensure_layout(&self.store, &self.ns, self.schema.layout_version, faces)
+                .map_err(codec)?;
 
         // ADR-0029: a path index's SLOT is its identity — the entry key carries no
-        // path — so a reader who is not the declarer sees `0x3001` and nothing else.
+        // path — so a reader who is not the declarer sees `0x4001` and nothing else.
         // The declaration is recorded beside the stamp, one name per path face
-        // (`path:0x3001` → the canonical text), which is what makes a slot
+        // (`path:0x4001` → the canonical text), which is what makes a slot
         // answerable once the declaring process is gone. Drift detection stays the
         // fingerprint's job; this record is for the reader.
         let mut changed = false;
@@ -243,7 +247,7 @@ impl<S: VirtualStorage> DynamicCollection<S> {
     }
 
     /// The path faces this table's store declares, read from its own record:
-    /// `slot → canonical text` (`0x3001 → /f:note -> Str`).
+    /// `slot → canonical text` (`0x4001 → /f:note -> Str`).
     ///
     /// A reader that did not declare the methods (another process, another language,
     /// an operator with a shell) learns what each path slot means without the
@@ -458,19 +462,24 @@ impl<S: VirtualStorage> DynamicCollection<S> {
 
         // Phase 3 — the stamp, the last write, exactly as the typed verb does it.
         let faces = self.computed_faces();
-        okm_core::meta::stamp_faces(&self.store, &ns, faces).map_err(codec)?;
+        okm_core::meta::stamp_layout(&self.store, &ns, self.schema.layout_version, faces)
+            .map_err(codec)?;
         Ok(report)
     }
 
     /// Record one caller-owned name in the meta row, creating it when the store has
-    /// none. The runtime keeps no name of its own there: the payload's generation
-    /// lives in the segment header, and `faces` belongs to the stamp verb.
+    /// none. `version` belongs to the runtime: this verb re-stamps it with the
+    /// schema's own number after applying the caller's name, and refuses
+    /// (`LayoutMismatch`) rather than relabel a row already stamped with a layout
+    /// this schema does not speak. `faces` belongs to the stamp verbs.
     pub fn set_meta(&self, name: &str, value: Vec<u8>) -> Result<okm_core::TableMeta, String> {
         let mut meta = match self.meta()? {
             Some(meta) => meta,
             None => okm_core::TableMeta::new(),
         };
+        okm_core::meta::check_layout(&meta, self.schema.layout_version).map_err(codec)?;
         meta.set(name, value);
+        meta.set(okm_core::meta::VERSION, vec![self.schema.layout_version]);
         okm_core::meta::write(&self.store, &self.ns, &meta).map_err(codec)?;
         Ok(meta)
     }

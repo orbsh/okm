@@ -15,13 +15,13 @@ counting families carry the 2-byte slot).
 A collection's entries come in two shapes, decided by the slot's first byte:
 
 ```text
-fixed face      [ ns 2B BE ][ slot 0x00–0x0F ]                             value = TLV payload (primary)
-counting family [ ns 2B BE ][ slot 0x3nnn ][ index fields ][ pkey ]        value = includes TLV (declared index)
+fixed face      [ ns 2B BE ][ slot 0x00–0x1F ]                             value = TLV payload (primary)
+counting family [ ns 2B BE ][ slot 0x4nnn ][ index fields ][ pkey ]        value = includes TLV (declared index)
 ```
 
 The discriminator = the 2-byte namespace + the slot: the ns segment scopes
 the whole collection, and the slot's first byte either delimits the slot
-(high nibble 0 — a fixed face, one number per face) or carries a family
+(below `0x20` — a fixed face, one number per face) or carries a family
 number in its high nibble with a 12-bit counter in the rest. The full key
 layout lives in [key layout](key-layout.md); this page expands only the slot
 level. `#[ok_ns]` keeps its cleanest semantics — one number per collection,
@@ -34,30 +34,37 @@ entries (ADR-0005).
 (primary = `0x00`, `PRIMARY_SLOT`; the dynamic segment `0x01`; the
 field-name vocabulary's two directions `0x02`/`0x03`; the predicate vocabulary
 `0x04`/`0x05`; the graph's faces
-`0x06`–`0x0A`). A counting family's slot is its family number plus a counter
-allocated by **declaration order** — the declared-index family is `0x3`, so the
-first `#[ok_index]` is `0x3001`, the second `0x3002`, …
+`0x06`–`0x0D`; the handle registry `0x0E`/`0x0F`; `0x1E` Extension, `0x1F`
+the table meta — the whole band and its one reserve are in
+[key layout](key-layout.md)). A counting family's slot is its family number plus
+a counter allocated by **declaration order** — the declared-index family is
+`0x4`, so the first `#[ok_index]` is `0x4001`, the second `0x4002`, …
 
-The counting families, in order: vocabularies own `0x1` (label → id) and `0x2`
-(id → label), sharing one counter per vocabulary; declared indexes `0x3`;
-reduces `0x4`; junctions `0x5`. A vocabulary's allocation cursor is not a face at
-all — it is the id face's face-level singleton (bare prefix, no suffix; see
+The counting families, in declaration order from the bottom of the family space:
+vocabularies own `0x2` (label → id) and `0x3` (id → label), sharing one counter
+per vocabulary; declared indexes `0x4`; reduces `0x5`; lead faces `0x6`. A
+vocabulary's allocation cursor is not a face at all — it is the id face's
+face-level singleton (bare prefix, no suffix; see
 [key layout](key-layout.md)).
+
+The numbers are positions in the layout, not compatibility offsets: a layout
+change is a cutover (export, re-import), so no family ever has to dodge an older
+numbering.
 
 ```text
 #[ok_ns(9)]
 struct User { ... }
-#[ok_index(by_a ...)]   →  SLOT=0x3001, entry head = [0,9,0x30,0x01]
-#[ok_index(by_b ...)]   →  SLOT=0x3002, entry head = [0,9,0x30,0x02]
+#[ok_index(by_a ...)]   →  SLOT=0x4001, entry head = [0,9,0x40,0x01]
+#[ok_index(by_b ...)]   →  SLOT=0x4002, entry head = [0,9,0x40,0x02]
 ```
 
-Reduces live in family 0x4, junctions in family 0x5 — each with its own
+Reduces live in family 0x5, lead faces in 0x6 — each with its own
 independent counter (ADR-0016 removed the old coupling where reduce
 continued the index counter). Cross-collection isolation is guaranteed by
 the manual ns vocabulary (ADR-0002); the slot only isolates **within** a
-collection. The per-collection cap is 4095 indexes, 4095 reduces and 2048
-junction discriminators (a 12-bit counter with 0 reserved) — overflow is a
-compile-time fact (literal overflow), never a runtime risk.
+collection. The per-collection cap is 4095 indexes, 4095 reduces and 4095 lead
+faces (a 12-bit counter with 0 reserved) — overflow is a compile-time fact
+(literal overflow), never a runtime risk.
 
 ## What compiles to constants
 
@@ -124,7 +131,12 @@ update 2026-10-17: the graph gained a predicate vocabulary) — primary, dynamic
 segment, both vocabulary directions, the graph's five — and their counter
 was constant. Fixed faces became one byte with their own numbers (0x00–0x0B) and the segment
 table gave way to a two-shape layout: fixed face (1 byte) or counting family
-(2 bytes, 12-bit counter — vocabularies own 0x1/0x2, indexes start at 0x3001,
-reduces at 0x4001, junctions fill 0x5nnn). The per-collection caps are 4095
-indexes / 4095 reduces / 4095 vocabularies / 2048 junction discriminators, and
-the earlier 4096 wording was one too many (the counter's 0 is reserved).
+(2 bytes, 12-bit counter). The per-collection caps are 4095 indexes / 4095
+reduces / 4095 vocabularies, and the earlier 4096 wording was one too many (the
+counter's 0 is reserved).
+
+Later (ADR-0033's band widened to thirty-two faces, ADR-0051 retired the
+junction segment, ADR-0054 added lead faces) the family numbers were settled in
+declaration order from `0x2` upward: `0x2`/`0x3` the two vocabulary directions,
+`0x4` indexes, `0x5` reduces, `0x6` lead faces. There is no compatibility
+numbering — a layout change is a cutover, so the numbers are simply the layout.

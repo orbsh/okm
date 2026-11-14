@@ -208,12 +208,21 @@ structure, while the outer object stays purely dynamic.)
 0x02       field-name vocabulary  [ns][0x02][field-id]        → name
 0x03       field-name vocabulary  [ns][0x03][name bytes]      → field-id
 0x04/0x05  predicate vocabulary   [ns][0x04][predicate_id]    (ADR-0017)
-0x06–0x09  graph faces            (ADR-0017, ADR-0041)
-0x0A       vector index snapshot  (okm-vector cache)
-0x0F       table meta             (ADR-0043)
-0x3nnn     declared indexes       [ns][0x3nnn][...]
-0x4nnn     reduces                [ns][0x4nnn][...]
+0x06–0x0D  graph faces            (ADR-0017, ADR-0041, ADR-0066)
+0x0E/0x0F  handle registry        (graph handles, ADR-0033)
+0x1E       Extension              (okm-vector cache — a fixed face, not 0x0A)
+0x1F       table meta             (ADR-0043)
+0x2nnn     vocabulary, label → id [ns][0x2nnn][...]
+0x3nnn     vocabulary, id → label [ns][0x3nnn][...]
+0x4nnn     declared indexes       [ns][0x4nnn][...]
+0x5nnn     reduces                [ns][0x5nnn][...]
+0x6nnn     lead faces             [ns][0x6nnn][...]
 ```
+
+(The numbers above are the current band: ADR-0033 widened the fixed faces to
+`0x00`–`0x1F` and put the mnemonics at the tail; the counting families run in
+declaration order from `0x2`. This ADR's decision — every face the obj owns is
+a one-byte fixed face — is unchanged.)
 
 Every face the obj itself owns is a one-byte **fixed face**; declared
 indexes and reduces are **counting families** (family nibble plus a 12-bit

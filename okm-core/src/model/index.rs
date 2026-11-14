@@ -15,15 +15,16 @@
 //!   The tail is always decodable from the last bytes of the entry key.
 //!
 //! The primary table is slot 0x0000: `[ns 2B][0x0000][key]`, value = TLV
-//! payload. Access methods live in the index segment (0x1), counters by
-//! attribute order inside one item (never reused — hole discipline same
-//! as ns IDs, ADR-0005).
+//! payload. Access methods live in their own counting family (`0x4nnn`, one
+//! number per declaration in declaration order): the family number IS the
+//! discriminator, so the counter never has to be read against a namespace
+//! (ADR-0005, ADR-0030).
 
 use crate::engine::storage::VirtualStorage;
 use crate::model::key::{KeyEncode, PrefixKey};
 use okm_value::Dict;
 
-/// Slot type: either a **fixed face** (one byte, 0x00–0x0F — a family with a
+/// Slot type: either a **fixed face** (one byte, 0x00–0x1F — a family with a
 /// single face and nothing to enumerate) or a **counting family** (two bytes:
 /// the family number in the first byte's high nibble plus a 12-bit counter,
 /// ADR-0030). Big-endian in the key, and the width follows from the value, so
@@ -33,43 +34,52 @@ pub type Slot = u16;
 /// Family numbers (the high nibble of a counting family's first byte): entry
 /// kinds whose instances are enumerated. An enumeration, not a space
 /// allocation.
+///
+/// The family space starts at `0x2`: `0x0` is the fixed band, and a family
+/// `0x1` would encode as `0x10nn`–`0x1Fnn`, whose first byte is a FIXED FACE —
+/// the two spaces would overlap on the delimiter byte itself.
+///
+/// The numbers below run in DECLARATION ORDER, upward from the bottom of the
+/// family space: a family's number is its place in the layout, not a
+/// compatibility artifact. A layout change is a cutover (export, re-import), so
+/// there is never an older numbering to stay clear of.
 pub mod segment {
     /// Declared vocabularies (ADR-0032), the label → id direction: the key is
     /// the label, the value the id. Counter = the vocabulary's own number
     /// (declaration order among the document's `Vocab<N>` fields) — ONE number
     /// per vocabulary, because the DIRECTION is the family.
-    pub const VOCAB_LABEL: u16 = 0x1;
+    pub const VOCAB_LABEL: u16 = 0x2;
     /// Declared vocabularies, the id → label direction: same counter, other
     /// family. `vocab_faces(i)` pairs the two with the cursor below.
-    pub const VOCAB_ID: u16 = 0x2;
+    pub const VOCAB_ID: u16 = 0x3;
     /// Declared indexes (declaration-order counter).
-    pub const INDEX: u16 = 0x3;
+    pub const INDEX: u16 = 0x4;
     /// Declared reduces (independent declaration-order counter).
-    pub const REDUCE: u16 = 0x4;
+    pub const REDUCE: u16 = 0x5;
     /// Lead faces (ADR-0054): the entry's sort segment comes from the KEY's own encoding,
     /// so the face orders a collection by identity rather than by a payload copy of it.
-    pub const LEAD: u16 = 0x5;
-    /// The graph's handle registry (ADR-0067), whose two faces — handle → node
-    /// and node → handle — share this ONE family number with the direction in
-    /// the counter bits (`model::handles`). Nothing allocates inside it, so its
-    /// two values are discriminators rather than a watermark, and a third face
-    /// of the same subsystem takes counter 2 rather than another nibble.
-    pub const HANDLE: u16 = 0xF;
+    pub const LEAD: u16 = 0x6;
 }
+
+/// Lowest counting-family number. `0x0` is the fixed band and `0x1` would
+/// collide with it on the delimiter byte, so the family space starts here.
+pub const FAMILY_MIN: u16 = 0x2;
 
 /// Assemble a counting family's slot from its family number and counter.
 ///
 /// Both halves are CHECKED, because the slot's meaning is positional: the high
 /// nibble is the family and the low 12 bits are the counter. Masking either
 /// half would land the value on a legitimate-looking slot of ANOTHER kind —
-/// `0x3FFF + 1 = 0x4001` is the reduce family, and a family above `0xF` wraps
-/// into the fixed-face space — so an out-of-range number silently becomes a
-/// different table's entry. A `const fn`, so a bad declaration-time constant
-/// fails at compile time and a runtime caller gets the same refusal.
+/// `0x4FFF + 1 = 0x5001` is the reduce family — so an out-of-range number
+/// silently becomes a different table's entry. Family `0x1` is refused for the
+/// same reason: its first byte is `0x10`–`0x1F`, the fixed band's own numbers,
+/// so the slot would decode as a face rather than as a member of a family.
+/// A `const fn`, so a bad declaration-time constant fails at compile time and a
+/// runtime caller gets the same refusal.
 pub const fn slot(family: u16, counter: u16) -> Slot {
     assert!(
-        family <= 0x000F,
-        "slot family out of range: the high nibble is 4 bits, so 0x0-0xF is the whole space",
+        family >= FAMILY_MIN && family <= 0x000F,
+        "slot family out of range: 0x2-0xF are the counting families — 0x0 is the fixed band and 0x1 would encode inside it",
     );
     assert!(
         counter <= 0x0FFF,
@@ -78,10 +88,11 @@ pub const fn slot(family: u16, counter: u16) -> Slot {
     (family << 12) | counter
 }
 
-/// Highest fixed-face number — the whole one-byte space. A fixed face carries
-/// no counter, and keeping the space at high nibble 0 is what makes
-/// "first byte's high nibble is 0" a sufficient delimiter.
-pub const FIXED_FACE_MAX: Slot = 0x0F;
+/// Highest fixed-face number: the whole one-byte space. A fixed face carries no
+/// counter, and keeping the faces inside `0x00`–`0x1F` is what makes "first
+/// byte < 0x20" a sufficient delimiter. `0x1F` is the table meta row, so the
+/// band's top number is also its boundary number (ADR-0030).
+pub const FIXED_FACE_MAX: Slot = 0x1F;
 
 /// Write a slot in its own width: one byte for a fixed face, two for a
 /// counting family (ADR-0030). The panic arm is a layout error, not a
@@ -91,8 +102,8 @@ pub fn write_slot(buf: &mut Vec<u8>, slot: Slot) {
         buf.push(slot as u8);
     } else {
         assert!(
-            slot >> 12 != 0,
-            "slot 0x{slot:04X} is neither a fixed face (0x00–0x0F) nor a counting family (family nibble != 0)"
+            slot >= (FAMILY_MIN << 12),
+            "slot 0x{slot:04X} is neither a fixed face (0x00-0x1F) nor a counting family (0x2000-0xFFFF): 0x0020-0x1FFF has no encoding"
         );
         buf.extend_from_slice(&slot.to_be_bytes());
     }
@@ -125,20 +136,22 @@ pub const PREDICATE_VOCAB_ID_SLOT: Slot = 0x04;
 /// Predicate vocabulary, name → number: fixed face 0x05 (the mirror of
 /// [`PREDICATE_VOCAB_ID_SLOT`]).
 pub const PREDICATE_VOCAB_NAME_SLOT: Slot = 0x05;
-/// The table's META entry (ADR-0043): fixed face 0x0F — the highest one, and
-/// deliberately so. `slot <= 0x0F` is the delimiter between the one-byte faces
-/// and the counting families, so the meta sits ON the boundary: the free band
-/// below it (0x0A–0x0D) stays contiguous, and no fixed face added later can
-/// ever squeeze it out.
+/// The table's META entry (ADR-0043): fixed face 0x1F — the highest one, and
+/// deliberately so. `slot <= 0x1F` is the delimiter between the one-byte faces
+/// and the counting families, so the meta sits ON the boundary: the headroom
+/// below it (0x10–0x1D) stays one contiguous block, and no fixed face added
+/// later can ever squeeze it out.
 ///
-/// ADDRESS: `[partition?][ns][0x0F]`, no suffix — a face-level singleton, like
+/// ADDRESS: `[partition?][ns][0x1F]`, no suffix — a face-level singleton, like
 /// the vocabulary cursor at `[ns][0x02]`. VALUE: a name → bytes map
 /// ([`crate::model::meta::TableMeta`]); `version` is the one name the runtime
 /// writes (the shape the store was stamped with, `Document::LAYOUT_VERSION`).
-/// The middle of the fixed band belongs to its owning module: 0x06–0x09 to
-/// `model::graph`, 0x0E to `okm-vector`'s snapshot (a cache, so it sits at the
-/// far end rather than among the structural faces).
-pub const META_SLOT: Slot = 0x0F;
+/// The band belongs to its owning modules: 0x06–0x0D to `model::graph` and
+/// `model::hyper`, 0x0E/0x0F to the graph's handle registry
+/// (`model::handles`), 0x1E to `okm-vector`'s Extension face (a cache, so it
+/// sits at the tail among the mnemonics rather than among the structural
+/// faces).
+pub const META_SLOT: Slot = 0x1F;
 /// Slot base available to `#[ok_index]` declaration-order allocation —
 /// counters start at 1 (0 reserved), so 4095 declared indexes per collection.
 pub const DECLARED_SLOT_BASE: Slot = slot(segment::INDEX, 1);
@@ -572,8 +585,8 @@ pub trait KvIndex {
     /// a caller that scanned by a column can read that column without a second
     /// read. A `func` index answers [`RawFields`].
     type Fields: DecodeIndexFields;
-    /// Item-local slot, allocated by attribute order (index segment,
-    /// 0x3001, 0x3002, …; primary = 0x0000). 2 bytes in the entry header,
+    /// Item-local slot, allocated by declaration order (index family,
+    /// 0x4001, 0x4002, …; primary = 0x0000). 2 bytes in the entry header,
     /// big-endian (ADR-0016).
     const SLOT: Slot;
     /// Indexed payload fields, in sort order.

@@ -9,7 +9,7 @@
 //!    fixed-width fields today but keeps the same frame for the
 //!    variable-length regime later.
 //! 3. `#[ok_index(idx_name { fields(a, b), includes(c) })]` — one access
-//!    method per declaration, slots start at DECLARED_SLOT_BASE (0x3001) in attribute order
+//!    method per declaration, slots start at DECLARED_SLOT_BASE (0x4001) in declaration order
 //!    (`0` is reserved for the primary table, ADR-0005). Generates a
 //!    marker struct per index plus `Document::index_entries`, so `put`/
 //!    `delete` cover every declared access method with no runtime
@@ -31,22 +31,23 @@
 use proc_macro2::TokenStream as TS2;
 
 /// Declared-slot segment bases (ADR-0016): slot = 4-bit segment + 12-bit
-/// counter; indexes allocate from the 0x1 segment, reduces from the 0x2
-/// segment (independent counters). Literals, not runtime constants — a
-/// proc-macro crate cannot name okm_core at its own compile time. Keep in
-/// sync with `okm_core::index::DECLARED_SLOT_BASE` / `REDUCE_SLOT_BASE`.
-const DECLARED_SLOT_BASE: u16 = 0x3001;
-const REDUCE_SLOT_BASE: u16 = 0x4001;
+/// counter; indexes allocate from the 0x4 family, reduces from the 0x5 family
+/// (independent counters), lead faces from the 0x6 family. Literals, not
+/// runtime constants — a proc-macro crate cannot name okm_core at its own
+/// compile time. Keep in sync with `okm_core::model::index::DECLARED_SLOT_BASE`
+/// / `REDUCE_SLOT_BASE` / `LEAD_SLOT_BASE`.
+const DECLARED_SLOT_BASE: u16 = 0x4001;
+const REDUCE_SLOT_BASE: u16 = 0x5001;
 /// Lead-face family base (ADR-0054): its own counter and its own segment.
 /// Keep in sync with `okm_core::index::LEAD_SLOT_BASE`.
-const LEAD_SLOT_BASE: u16 = 0x5001;
+const LEAD_SLOT_BASE: u16 = 0x6001;
 
 /// Declaration-order slot from a family base, CHECKED at expansion time.
 ///
 /// The counter is the low 12 bits, so a 0-based declaration position `n` sits at
 /// counter `n + 1` (both bases start at counter 1) and the last legal `n` is
 /// `0x0FFE`: declaration 4096 would carry counter 0x1000 and land on the NEXT
-/// family's first slot (index `0x3FFF + 1 = 0x4001` is the reduce family). A
+/// family's first slot (index `0x4FFF + 1 = 0x5001` is the reduce family). A
 /// declaration-count mistake is a source-level mistake — refuse it here instead
 /// of masking the counter and writing entries another table reads back.
 fn declared_slot(base: u16, n: usize, what: &str, span: proc_macro2::Span) -> syn::Result<u16> {
@@ -2343,19 +2344,23 @@ mod tests {
     fn declaration_slots_stay_inside_their_family() {
         // The last legal declaration: counter 0x0FFF is the family's top slot.
         assert_eq!(
-            declared_slot(0x3001, 0x0FFE, "index", Span::call_site()).unwrap(),
-            0x3FFF
+            declared_slot(0x4001, 0x0FFE, "index", Span::call_site()).unwrap(),
+            0x4FFF
         );
         assert_eq!(
-            declared_slot(0x4001, 0x0FFE, "reduce", Span::call_site()).unwrap(),
-            0x4FFF
+            declared_slot(0x5001, 0x0FFE, "reduce", Span::call_site()).unwrap(),
+            0x5FFF
+        );
+        assert_eq!(
+            declared_slot(0x6001, 0x0FFE, "lead", Span::call_site()).unwrap(),
+            0x6FFF
         );
     }
 
     #[test]
     fn one_past_the_last_declaration_is_refused() {
         // Declaration 4096 would carry counter 0x1000 — the NEXT family.
-        let err = declared_slot(0x3001, 0x0FFF, "index", Span::call_site()).unwrap_err();
+        let err = declared_slot(0x4001, 0x0FFF, "index", Span::call_site()).unwrap_err();
         assert!(
             err.to_string().contains("at most 4095 declarations"),
             "{err}"

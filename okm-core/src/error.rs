@@ -130,11 +130,6 @@ pub enum Error {
         "node {key} of ns {ns} is not an endpoint of any edge in this write — a node exists only as an endpoint (ADR-0066 §3)"
     )]
     BareNode { ns: u16, key: String },
-    /// A cluster with fewer than two members. Such a set is not a grouping of
-    /// anything, and the derivation of node membership is only total when the
-    /// cluster is (ADR-0066 §3).
-    #[error("a cluster needs two or more members; {kind}/{id} would have {members}")]
-    ClusterTooSmall { kind: u8, id: u64, members: usize },
     /// `merge` / `split` / `reassign` named a cluster that no row holds and this
     /// write set does not create.
     #[error("cluster {kind}/{id} not found")]
@@ -179,6 +174,18 @@ pub enum Error {
         declared: String,
         existing: String,
     },
+    /// The store records a layout generation this build does not speak (ADR-0043
+    /// §4). A layout change is a cutover, not a migration: the number increments,
+    /// the store is exported by the build that wrote it and imported into one this
+    /// build creates — reading on would mean decoding rows under a declaration
+    /// that never wrote them, which is how a version disagreement turns into
+    /// silently wrong rows.
+    #[error(
+        "this store was written by layout v{stored}; this build speaks v{current}. \
+         A layout change is a cutover, not a migration: export the store with the build \
+         that wrote it, then import it into one this build creates"
+    )]
+    LayoutMismatch { stored: u8, current: u8 },
     /// The change log could not be opened or read (ADR-0045). Deliberately NOT
     /// on the write path: a log that cannot be appended records itself in
     /// `Collection::changelog_status` instead, because the write it describes is

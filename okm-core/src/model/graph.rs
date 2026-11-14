@@ -32,8 +32,8 @@
 //! 0x07    in                [dst_h][pred][src_h]            → empty
 //! 0x08    predicate+out     [pred][src_h][dst_h]            → empty
 //! 0x09    predicate+in      [pred][dst_h][src_h]            → empty
-//! 0x10    handle → node     [handle u64]                    → [node_ns 2B][pkey]
-//! 0x11    node → handle     [node_ns 2B][pkey]              → [handle u64]
+//! 0x0E    handle → node     [handle u64]                    → [node_ns 2B][pkey]
+//! 0x0F    node → handle     [node_ns 2B][pkey]              → [handle u64]
 //! ```
 //!
 //! **The interior is handles, not refs** (ADR-0067, "a boundary-only handle"):
@@ -63,7 +63,7 @@
 //! exactly the same edge set with longer keys.
 //!
 //! A vocabulary precedes the faces that read its ids. Declared attribute faces
-//! are ordinary `#[ok_index]` declarations — counting family 0x3nnn, exactly the
+//! are ordinary `#[ok_index]` declarations — counting family 0x4nnn, exactly the
 //! document machinery (`Document::index_entries`), because the edge's payload IS
 //! an obj (ADR-0012). The node collection is a STANDARD document collection: zero
 //! layout difference from any document collection; a node collection carrying
@@ -1424,14 +1424,25 @@ impl<S: VirtualStorage, E: GraphEncode> Graph<S, E> {
         Ok(rebuilt)
     }
 
-    /// Filter by declared attribute (a counting-family 0x3nnn face): scan the
-    /// face with the caller-encoded probe and return the identities behind it.
+    /// Filter by a declared attribute face (a counting family's `0x4nnn`) by
+    /// EQUALITY: scan `[ns][slot][probe]` and answer the tuples behind it.
     ///
-    /// The declared face's tail IS the edge key the write path derived — the
-    /// tuple's own bytes (`E::index_entries`), cut by the member table's widths.
-    /// So the answer costs the scan and nothing else: the refs are in the entry,
-    /// no handle is resolved, and a tail with bytes left over belongs to another
-    /// layout (skipped rather than guessed at).
+    /// **The probe must reach the face's full declared field width** — every
+    /// field the declaration indexes, in declaration order, encoded the way the
+    /// write path encodes them (`E::index_entries`). This is an equality match on
+    /// the whole field set, not a prefix or range scan over its first field.
+    ///
+    /// What follows the probe in an entry key is the edge's own tuple,
+    /// `[src][predicate][dst]` (`EdgeKey::parse`). A probe that stops short leaves
+    /// the remaining declared fields in front of that tuple, so the parser reads
+    /// those bytes as an endpoint's ns; the entry is kept only when the parse
+    /// consumed the suffix EXACTLY, and one with declared fields left over is
+    /// dropped. **A short probe therefore answers an empty result — silently.**
+    /// It is not an error, and it is not a superset: nothing matches.
+    ///
+    /// The answer costs the scan and nothing else: the tuples are in the entry, so
+    /// no handle is resolved, and a tail that does not parse as this graph's tuple
+    /// belongs to another layout and is skipped rather than guessed at.
     pub fn by_attr_face(&self, slot: Slot, encoded: &[u8]) -> crate::error::Result<Vec<EdgeKey>> {
         let p = self.face_key(slot, &[encoded]);
         let mut keys = Vec::new();

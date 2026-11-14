@@ -1527,7 +1527,7 @@ pub(crate) fn parse_schema_with_key(
         }
     }
 
-    // #[ok_lead(...)]: key-order faces (ADR-0054), own family (`0x5nnn`) and
+    // #[ok_lead(...)]: key-order faces (ADR-0054), own family (`0x6nnn`) and
     // own counter. The body is an index declaration's minus the payload half:
     // `fields` names KEY fields and the entry's segment is sliced out of the
     // key's own encoding, so nothing here covers, computes or predicates.

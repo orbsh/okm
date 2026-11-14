@@ -75,11 +75,11 @@ fn counters_entry() -> serde_json::Value {
             "hot_fields": [{"name": "count", "ty": "U64", "width": 8, "offset": 0, "tag": 0}],
             "cold_fields": [],
             "slots": {"primary": 0, "dynamic": 1, "field_vocab_id": 2, "field_vocab_name": 3,
-                      "declared_index_base": 4096, "declared_reduce_base": 8192,
+                      "declared_index_base": 16384, "declared_reduce_base": 20480,
                       "junction_base": 12288}
         },
-        "indexes": [{"name": "by_count", "slot": 4097, "fields": ["count"], "kind": "plain"}],
-        "reduces": [{"name": "total", "slot": 8193, "group": [], "kind": "count"}]
+        "indexes": [{"name": "by_count", "slot": 16385, "fields": ["count"], "kind": "plain"}],
+        "reduces": [{"name": "total", "slot": 20481, "group": [], "kind": "count"}]
     })
 }
 
@@ -115,7 +115,7 @@ fn injected_collection_writes_to_the_host_engine() {
 
     // Declared index routes through the same engine (plan wrote the
     // index entry, scan reads it): by_count prefix = 10u64 BE.
-    let hits = coll.scan_doc(4097, &10u64.to_be_bytes()).unwrap();
+    let hits = coll.scan_doc(16385, &10u64.to_be_bytes()).unwrap();
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].get("id"), Some(&Value::U64(1)));
 
@@ -123,16 +123,16 @@ fn injected_collection_writes_to_the_host_engine() {
     // finds nothing, the new one finds the key.
     coll.put_doc(&key_bytes(1), &doc(11), false).unwrap();
     assert!(coll
-        .scan_doc(4097, &10u64.to_be_bytes())
+        .scan_doc(16385, &10u64.to_be_bytes())
         .unwrap()
         .is_empty());
-    assert_eq!(coll.scan_doc(4097, &11u64.to_be_bytes()).unwrap().len(), 1);
+    assert_eq!(coll.scan_doc(16385, &11u64.to_be_bytes()).unwrap().len(), 1);
 
     // Delete removes primary + index.
     coll.purge_doc(&key_bytes(1)).unwrap();
     assert!(coll.fetch_doc(&key_bytes(1)).unwrap().is_none());
     assert!(coll
-        .scan_doc(4097, &11u64.to_be_bytes())
+        .scan_doc(16385, &11u64.to_be_bytes())
         .unwrap()
         .is_empty());
 }
@@ -147,7 +147,7 @@ fn injected_reduce_preset_accums_in_the_host_engine() {
     coll.put_doc(&key_bytes(2), &doc(7), false).unwrap();
     // The count group entry key: [ns][slot BE][group segment=empty].
     let mut ek = vec![0u8, 7];
-    ek.extend_from_slice(&8193u16.to_be_bytes());
+    ek.extend_from_slice(&20481u16.to_be_bytes());
     let acc = engine
         .get(&ek)
         .unwrap()
@@ -168,7 +168,7 @@ fn bad_declaration_is_an_error_not_a_silent_empty() {
     // A func index cannot be built from data (needs a host callable).
     let entry = serde_json::json!({
         "schema": counters_entry()["schema"].clone(),
-        "indexes": [{"name": "f", "slot": 4097, "fields": [], "kind": "func"}]
+        "indexes": [{"name": "f", "slot": 16385, "fields": [], "kind": "func"}]
     });
     let err = match Collection::with_store(engine, &entry, 7) {
         Err(e) => e,

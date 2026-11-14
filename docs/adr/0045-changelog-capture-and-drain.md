@@ -69,12 +69,12 @@ length prefix. No second format, and vocabulary growth needs no record of its ow
 **3. The filter is an EXCLUDE list, stated once, and it fails closed toward the
 lake.** Carried — the set an export carries: primary `0x00`, dynamic segment
 `0x01`, field-name vocabulary `0x02`/`0x03`, predicate vocabulary `0x04`/`0x05`,
-and BOTH directions of every declared categorical vocabulary (`0x1nnn`/`0x2nnn`,
+and BOTH directions of every declared categorical vocabulary (`0x2nnn`/`0x3nnn`,
 ADR-0032 — the payload stores ids, so the labels are truth, not decoration).
-Dropped: declared index `0x3nnn`, reduce `0x4nnn`, graph faces
-`0x06`–`0x09` (`Graph::reindex` empties and rebuilds them from the primary rows,
-so an edge rides as a row like anything else), vector snapshot `0x0A`, table meta
-`0x0F`, and **bare-face keys** — a key whose length is
+Dropped: declared index `0x4nnn`, reduce `0x5nnn`, lead faces `0x6nnn`, graph
+faces `0x06`–`0x0D` (`Graph::reindex` empties and rebuilds them from the primary
+rows, so an edge rides as a row like anything else), vector snapshot `0x1E`,
+table meta `0x1F`, and **bare-face keys** — a key whose length is
 the header plus the slot width is a face-level singleton (the vocabulary
 allocation cursor, the table's meta row), and no row ever has that shape.
 Anything unrecognised is dropped too: a log that is visibly incomplete can be
@@ -187,7 +187,7 @@ mapping is not, or every third-party adapter invents its own dialect.
 
 ## Rejected
 
-**A face in the same namespace** (`0x0B`–`0x0E` is the free band). The cheapest
+**A face in the same namespace** (`0x10`–`0x1D` is the headroom). The cheapest
 to wire — capture is already a batch write, so it commits atomically with the row
 — and the most expensive to run: the record pays LSM per-entry overhead, is
 rewritten as it moves levels, needs a tombstone, and is compacted away, so a

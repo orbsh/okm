@@ -50,9 +50,10 @@
 //! - Deleting an EDGE ([`DynFragment::delete_edge`]) leaves both endpoints
 //!   alone, even when they are then connected to nothing.
 //!
-//! A cluster that drops below two members stops existing, so its remaining
-//! membership rows leave too, and the report counts every membership row that
-//! went.
+//! A cluster outlives its members: removing the last one leaves the row and its
+//! payload standing, with a count of zero. A cluster is a scope, created when
+//! declared and deleted only when explicitly deleted, so membership changes never
+//! take the row with them.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -606,8 +607,8 @@ struct Plan {
     /// Whether a declaration asked for this cluster (as opposed to an op that
     /// only moves members).
     declared: bool,
-    /// The cluster is removed outright: an explicit delete, or a drop below two
-    /// members.
+    /// The cluster row is removed outright: an explicit delete, never a drop in
+    /// membership.
     delete_row: bool,
     /// Membership is moved in ROW space (an edge's handle triple), because that
     /// is what the member and derived faces are keyed by.
@@ -714,8 +715,9 @@ impl DynFragment {
         self
     }
 
-    /// Drop this batch's edges from `cluster`. A cluster left with fewer than
-    /// two members stops existing, so its rows go with them.
+    /// Drop this batch's edges from `cluster`. The cluster row stays: a scope is
+    /// not an alias for the edges inside it, so losing the last member leaves an
+    /// empty cluster with an honest count of zero.
     pub fn remove(&mut self, cluster: ClusterRef) -> &mut Self {
         self.ops.push(ClusterOp::Remove(cluster));
         self
@@ -953,17 +955,11 @@ impl DynFragment {
                 members.remove(gone);
             }
             members.extend(entry.add.iter().cloned());
-            // A cluster below two members may not be CREATED — but a delete is
-            // not a creation, so an id that was never there is nothing to do.
-            if members.len() < 2 && !state.exists && !entry.delete_row {
-                return Err(format!(
-                    "a cluster needs two or more members: (kind {kind}, hyper_id {id}) would have {}",
-                    members.len()
-                ));
-            }
-            // With fewer than two members a cluster stops existing (ADR-0066
-            // §3), so the drop IS the deletion — no orphan row is left behind.
-            let delete_row = entry.delete_row || members.len() < 2;
+            // A cluster is a scope: it is created when declared and deleted only
+            // when explicitly deleted. No membership count — not even zero —
+            // takes the row away, so an empty or one-member cluster is a legal
+            // answer rather than a dropped one.
+            let delete_row = entry.delete_row;
 
             let mut payload = state.payload.clone();
             if !delete_row {

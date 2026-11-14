@@ -1,5 +1,5 @@
 //! The handle registry (ADR-0067, ADR-0030) on the real engine matrix: the two
-//! faces of ONE counting family, issue-on-first-sight, boundary-only
+//! fixed faces of the registry, issue-on-first-sight, boundary-only
 //! resolution, the bulk resolver, what a delete leaves behind, the reverse
 //! face's rebuild, and the fact that a hop reads no row.
 //!
@@ -114,19 +114,20 @@ fn head_of(g: &mut Graph<TestStore, Employment>, key: &okm_core::EdgeKey) -> Edg
 
 // ---- the registry's key space, spelled out ----
 
-/// A face prefix: `[ns 2B][family 1B][counter 1B]` — a counting family's slot is
-/// TWO bytes, which is the reason the registry cannot live at `0x10`/`0x11`
-/// (ADR-0030: `0x0010`–`0x0FFF` is neither a fixed face nor a family).
+/// A face prefix: `[ns 2B][slot]` — one byte for a fixed face, two for a
+/// counting family. Both registry faces are FIXED faces (`0x0E`, `0x0F`), and
+/// the prefix is built with the crate's own writer so the test cannot disagree
+/// with the layout it is pinning.
 fn face_prefix(slot: u16) -> Vec<u8> {
     let mut key = NS.to_be_bytes().to_vec();
-    key.extend_from_slice(&slot.to_be_bytes());
+    okm_core::write_slot(&mut key, slot);
     key
 }
 
 /// Every `(key, value)` row of one face, in key order.
 ///
 /// The forward face is the one face that also carries a FACE-LEVEL SINGLETON —
-/// the allocation cursor at the bare prefix `[ns][0xF0][0x00]` — so it is not a
+/// the allocation cursor at the bare prefix `[ns][0x0E]` — so it is not a
 /// row and is skipped here; every real row sits exactly eight bytes past the
 /// prefix (ADR-0030's "a face-level singleton is not a band").
 fn face(store: &TestStore, slot: u16) -> Vec<(Vec<u8>, Vec<u8>)> {
@@ -147,14 +148,14 @@ fn cursor(store: &TestStore) -> Option<u64> {
     ))
 }
 
-/// `[ns][0xF0][0x00][handle u64]` — the forward row.
+/// `[ns][0x0E][handle u64]` — the forward row.
 fn forward_key(handle: u64) -> Vec<u8> {
     let mut key = face_prefix(HANDLE_NODE_SLOT);
     key.extend_from_slice(&handle.to_be_bytes());
     key
 }
 
-/// `[ns][0xF0][0x01][node_ns 2B][pkey]` — the reverse row.
+/// `[ns][0x0F][node_ns 2B][pkey]` — the reverse row.
 fn reverse_key(node: &NodeRef) -> Vec<u8> {
     let mut key = face_prefix(NODE_HANDLE_SLOT);
     key.extend_from_slice(&node.wire());
@@ -244,17 +245,24 @@ impl<S: VirtualStorage> VirtualStorage for Counting<S> {
 // ================= 1. issue once, reuse on the second mention =================
 
 fn verify_issue_once(store: &TestStore, engine: &str) {
-    // The two faces are ONE family with the direction in the low bits — this is
-    // the numbering the delimiter permits, and `0x10`/`0x11` is what it rejects.
+    // Two FIXED faces, one byte each, adjacent in the core band — the direction
+    // IS the face number, so no key carries a discriminator byte. They sit
+    // right after the core (0x00–0x0D); the band's reserve (0x10–0x1D) is above
+    // them, Extension and the meta at the tail (ADR-0030).
     assert_eq!(
-        slot_len(HANDLE_NODE_SLOT),
-        2,
-        "{engine}: a counting family's slot is two bytes"
+        (HANDLE_NODE_SLOT, NODE_HANDLE_SLOT),
+        (0x0E, 0x0F),
+        "{engine}: the registry took the two faces right after the core"
     );
     assert_eq!(
-        HANDLE_NODE_SLOT >> 12,
-        NODE_HANDLE_SLOT >> 12,
-        "{engine}: both directions share one family number"
+        slot_len(HANDLE_NODE_SLOT),
+        1,
+        "{engine}: a fixed face's slot is one byte"
+    );
+    assert_eq!(
+        slot_len(NODE_HANDLE_SLOT),
+        1,
+        "{engine}: the reverse face is a fixed face too"
     );
     assert_eq!(
         NODE_HANDLE_SLOT,
@@ -311,7 +319,7 @@ fn verify_issue_once(store: &TestStore, engine: &str) {
         "{engine}: the reverse row is the same handle, big-endian"
     );
     // Issue order is first sight: p1, o1, o2, p2. The watermark is the face's
-    // bare-prefix SINGLETON — eight bytes of next handle at `[ns][0xF0][0x00]`,
+    // bare-prefix SINGLETON — eight bytes of next handle at `[ns][0x0E]`,
     // told apart from a row by LENGTH, not by a reserved value.
     assert_eq!(
         cursor(store),

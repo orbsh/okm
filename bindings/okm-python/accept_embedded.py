@@ -117,7 +117,7 @@ def main() -> int:
     t = okm.Collection(schema, 42)
 
     # --- table meta (ADR-0043): one stamp, whichever mode declared it ---
-    # The dynamic table stamps the same `[ns][0x0F]` row the typed path does,
+    # The dynamic table stamps the same `[ns][0x1F]` row the typed path does,
     # with `schema.layout_version`; a second call answers the stored row.
     assert t.meta() is None, "a fresh store carries no record — the read verb says so"
     meta = t.ensure_layout()
@@ -140,16 +140,16 @@ def main() -> int:
 
     # --- registration (binding-time, ADR-0022) ------------------------
     t.add_func_index(
-        0x1002,
+        0x4002,
         lambda d: [(ord(c) & 0xFF).to_bytes(4, "big") for c in d["name"]],
     )
     t.add_partial_index(
-        0x1003,
+        0x4003,
         ["level"],
         lambda d: d["name"] == "a",
         includes=["score"],
     )
-    t.add_reduce(0x2001, ["level"], make_logic())
+    t.add_reduce(0x5001, ["level"], make_logic())
 
     # --- put folds ----------------------------------------------------
     t.put(key(1, 10), doc(1, 10, 4, 100, "a"))
@@ -172,12 +172,12 @@ def main() -> int:
     assert t.reduce_get({"level": 9}) == (0).to_bytes(8, "big")
 
     # --- func index: fan-out entries + scan -----------------------------
-    hits = t.scan(0x1002, (ord("a") & 0xFF).to_bytes(4, "big"))
+    hits = t.scan(0x4002, (ord("a") & 0xFF).to_bytes(4, "big"))
     assert len(hits) == 1 and hits[0]["user_id"] == 10, hits
     # overwrite to a name without 'a': the entry sweeps
     t.put(key(1, 10), doc(1, 10, 4, 100, "zig"))
-    assert t.scan(0x1002, (ord("a") & 0xFF).to_bytes(4, "big")) == []
-    assert len(t.scan(0x1002, (ord("z") & 0xFF).to_bytes(4, "big"))) == 1
+    assert t.scan(0x4002, (ord("a") & 0xFF).to_bytes(4, "big")) == []
+    assert len(t.scan(0x4002, (ord("z") & 0xFF).to_bytes(4, "big"))) == 1
 
     # --- exact scan: a probe completed by the key tail is dropped --------
     # The fan-out value is 4 bytes and the key tail follows with no boundary
@@ -187,45 +187,45 @@ def main() -> int:
     # variant accepts. scan_exact additionally requires the probe to consume
     # the whole field segment.
     vz = (ord("z") & 0xFF).to_bytes(4, "big")
-    assert t.scan(0x1002, vz + b"\x00") == [], "spill is no prefix hit"
-    assert t.scan_exact(0x1002, vz + b"\x00") == [], "spill is no exact hit"
-    assert len(t.scan(0x1002, vz)) == 1, "the value itself is a prefix hit"
-    assert len(t.scan_exact(0x1002, vz)) == 1, "and an exact hit"
+    assert t.scan(0x4002, vz + b"\x00") == [], "spill is no prefix hit"
+    assert t.scan_exact(0x4002, vz + b"\x00") == [], "spill is no exact hit"
+    assert len(t.scan(0x4002, vz)) == 1, "the value itself is a prefix hit"
+    assert len(t.scan_exact(0x4002, vz)) == 1, "and an exact hit"
 
     # --- partial index: predicate gates entry existence ------------------
     # name "zig" is not admitted → no entry even though level=4 exists
-    assert t.scan(0x1003, (4).to_bytes(4, "big")) == []
+    assert t.scan(0x4003, (4).to_bytes(4, "big")) == []
     t.put(key(1, 12), doc(1, 12, 4, 50, "a"))
-    assert len(t.scan(0x1003, (4).to_bytes(4, "big"))) == 1
+    assert len(t.scan(0x4003, (4).to_bytes(4, "big"))) == 1
     t.purge(key(1, 12))
-    assert t.scan(0x1003, (4).to_bytes(4, "big")) == []
+    assert t.scan(0x4003, (4).to_bytes(4, "big")) == []
 
     # --- path index (ADR-0029): a face over the schema-free segment ------
     # `note` is NOT declared, so `merge` puts it in the dynamic segment — the only
     # place a path index earns its keep (a declared field's depth-1 path is what a
     # Plain index already covers). Declaring it before any write proves the face
     # starts empty and fills from the documents.
-    t.add_path_index(0x1004, "note", "str")
-    assert t.scan(0x1004, b"hot") == [], "a declared face starts empty"
+    t.add_path_index(0x4004, "note", "str")
+    assert t.scan(0x4004, b"hot") == [], "a declared face starts empty"
     t.put(key(1, 20), {"note": "hot"})
-    hits = t.scan(0x1004, b"hot")
+    hits = t.scan(0x4004, b"hot")
     assert len(hits) == 1 and hits[0]["user_id"] == 20, hits
     # overwrite with a different value sweeps the old entry (the entry key encodes
     # the value, so the sweep is the only thing that can reach it)
     t.put(key(1, 20), {"note": "cold"})
-    assert t.scan(0x1004, b"hot") == [], "the old entry is gone"
-    assert len(t.scan(0x1004, b"cold")) == 1
+    assert t.scan(0x4004, b"hot") == [], "the old entry is gone"
+    assert len(t.scan(0x4004, b"cold")) == 1
 
     # Array fan-out: one entry per resolved value, positioned by the index.
-    t.add_path_index(0x1005, "tags[1]", "str")
+    t.add_path_index(0x4005, "tags[1]", "str")
     t.put(key(1, 21), {"tags": ["x", "y"]})
-    assert len(t.scan(0x1005, b"y")) == 1, "the pinned position resolved"
-    assert t.scan(0x1005, b"x") == [], "position 1 is not position 0"
+    assert len(t.scan(0x4005, b"y")) == 1, "the pinned position resolved"
+    assert t.scan(0x4005, b"x") == [], "position 1 is not position 0"
 
     # A value type the entry encoder cannot produce is refused at declaration,
     # rather than declared as a face that would answer nothing forever.
     try:
-        t.add_path_index(0x1006, "note", "uuid4")
+        t.add_path_index(0x4006, "note", "uuid4")
     except ValueError as e:
         assert "u8/u16/u32/u64/str/fixed" in str(e), e
     else:
@@ -242,7 +242,7 @@ def main() -> int:
 
     # A closure cannot be hashed, so a swapped derive is invisible to the
     # fingerprint unless the caller says it changed: the version rides the number.
-    t.add_func_index(0x1007, lambda d: [b"v2"], version=2)
+    t.add_func_index(0x4007, lambda d: [b"v2"], version=2)
     after = t.faces_status()
     assert after["state"] == "stale", after
     assert after["current"] != before["current"], "the version rode the fingerprint"
@@ -253,7 +253,7 @@ def main() -> int:
     assert report["faces_swept"] >= 4, report
     assert t.faces_status()["state"] == "match", t.faces_status()
     # The re-derived faces answer: the path index was declared before the writes.
-    assert len(t.scan(0x1004, b"cold")) == 1
+    assert len(t.scan(0x4004, b"cold")) == 1
 
     print("embedded-mode acceptance: ALL PASS")
     return 0

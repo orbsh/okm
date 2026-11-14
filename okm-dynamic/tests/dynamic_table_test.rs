@@ -66,8 +66,8 @@ fn dynamic_table<S: VirtualStorage>(store: S) -> DynamicCollection<S> {
         41,
         schema(),
         vec![
-            AccessMethod::plain(0x3001, vec!["level".into()], vec![]),
-            AccessMethod::plain(0x3002, vec!["score".into()], vec!["level".into()]),
+            AccessMethod::plain(0x4001, vec!["level".into()], vec![]),
+            AccessMethod::plain(0x4002, vec!["score".into()], vec!["level".into()]),
         ],
     )
 }
@@ -200,7 +200,7 @@ fn dynamic_scan_finds_by_access_method() {
     t.put(&key_bytes(1, 12), &values(4, 200, "c")).unwrap();
 
     // by_level (slot 16): level = 4 → users 10 and 12.
-    let hits = t.scan(0x3001, &4u32.to_be_bytes()).unwrap();
+    let hits = t.scan(0x4001, &4u32.to_be_bytes()).unwrap();
     let mut ids: Vec<u64> = hits
         .iter()
         .map(|k| match k.get("user_id") {
@@ -214,12 +214,12 @@ fn dynamic_scan_finds_by_access_method() {
     // by_score (slot 17): score = 100 -> users 10 and 11.
     let mut prefix = Vec::new();
     prefix.extend_from_slice(&100u16.to_be_bytes());
-    assert_eq!(t.scan(0x3002, &prefix).unwrap().len(), 2);
+    assert_eq!(t.scan(0x4002, &prefix).unwrap().len(), 2);
 
     // No match: org 2 has nobody.
     let mut prefix = Vec::new();
     prefix.extend_from_slice(&999u16.to_be_bytes());
-    assert!(t.scan(0x3002, &prefix).unwrap().is_empty());
+    assert!(t.scan(0x4002, &prefix).unwrap().is_empty());
 }
 
 #[test]
@@ -229,11 +229,11 @@ fn dynamic_covered_scan_answers_without_fetching_documents() {
     t.put(&key_bytes(1, 11), &values(9, 100, "b")).unwrap();
     t.put(&key_bytes(1, 12), &values(4, 200, "c")).unwrap();
 
-    // by_score (slot 0x3002) declares includes(level): the entry VALUE carries
+    // by_score (slot 0x4002) declares includes(level): the entry VALUE carries
     // it, so the covered scan answers `level` per hit without fetching a doc.
     let mut prefix = Vec::new();
     prefix.extend_from_slice(&100u16.to_be_bytes());
-    let covered = t.scan_covered(0x3002, &prefix).unwrap();
+    let covered = t.scan_covered(0x4002, &prefix).unwrap();
     assert_eq!(covered.len(), 2);
     let mut got: Vec<(u64, u32)> = covered
         .iter()
@@ -247,7 +247,7 @@ fn dynamic_covered_scan_answers_without_fetching_documents() {
 
     // A declaration without includes covers nothing: the map is empty, and the
     // call is still a normal (error-free) scan.
-    let covered = t.scan_covered(0x3001, &4u32.to_be_bytes()).unwrap();
+    let covered = t.scan_covered(0x4001, &4u32.to_be_bytes()).unwrap();
     assert_eq!(covered.len(), 2);
     assert!(covered.iter().all(|(_, c)| c.is_empty()));
 }
@@ -261,7 +261,7 @@ fn dynamic_covered_str_include_decodes_the_trailing_remainder() {
         41,
         schema(),
         vec![AccessMethod::plain(
-            0x3001,
+            0x4001,
             vec!["level".into()],
             vec!["name".into()],
         )],
@@ -270,7 +270,7 @@ fn dynamic_covered_str_include_decodes_the_trailing_remainder() {
     t.put(&key_bytes(1, 11), &values(4, 100, "更长的名字"))
         .unwrap();
 
-    let covered = t.scan_covered(0x3001, &4u32.to_be_bytes()).unwrap();
+    let covered = t.scan_covered(0x4001, &4u32.to_be_bytes()).unwrap();
     assert_eq!(covered.len(), 2);
     let names: Vec<&str> = covered
         .iter()
@@ -291,9 +291,9 @@ fn dynamic_overwrite_sweeps_stale_entries() {
     // level 4) must be gone, the new one present.
     t.put(&key_bytes(1, 10), &values(9, 100, "a")).unwrap();
 
-    let level4 = t.scan(0x3001, &4u32.to_be_bytes()).unwrap();
+    let level4 = t.scan(0x4001, &4u32.to_be_bytes()).unwrap();
     assert!(level4.is_empty(), "stale by_level entry must be swept");
-    let level9 = t.scan(0x3001, &9u32.to_be_bytes()).unwrap();
+    let level9 = t.scan(0x4001, &9u32.to_be_bytes()).unwrap();
     assert_eq!(level9.len(), 1);
 }
 
@@ -303,10 +303,10 @@ fn dynamic_purge_removes_all_entries() {
     t.put(&key_bytes(1, 10), &values(4, 100, "a")).unwrap();
     t.purge(&key_bytes(1, 10)).unwrap();
 
-    assert!(t.scan(0x3001, &4u32.to_be_bytes()).unwrap().is_empty());
+    assert!(t.scan(0x4001, &4u32.to_be_bytes()).unwrap().is_empty());
     let mut prefix = Vec::new();
     prefix.extend_from_slice(&100u16.to_be_bytes());
-    assert!(t.scan(0x3002, &prefix).unwrap().is_empty());
+    assert!(t.scan(0x4002, &prefix).unwrap().is_empty());
     assert!(t.fetch(&key_bytes(1, 10)).unwrap().is_none());
 }
 
@@ -768,7 +768,7 @@ fn dynamic_variable_width_index_matches_typed_bytes() {
         TestStore::slatedb_mem(),
         43,
         schema.clone(),
-        vec![AccessMethod::plain(0x3001, vec!["email".into()], vec![])],
+        vec![AccessMethod::plain(0x4001, vec!["email".into()], vec![])],
     );
 
     let doc = |email: &str| Subscriber {
@@ -817,7 +817,7 @@ fn dynamic_variable_width_index_matches_typed_bytes() {
 
     // Equality probe with the FULL string (longer than nothing — the
     // pkey tail cuts the raw UTF-8): rows 1 and 2 match, 3 does not.
-    let hits = dynamic.scan(0x3001, b"a@x").expect("equality probe");
+    let hits = dynamic.scan(0x4001, b"a@x").expect("equality probe");
     let mut ids: Vec<u64> = hits
         .iter()
         .map(|k| match k.get("id") {
@@ -832,7 +832,7 @@ fn dynamic_variable_width_index_matches_typed_bytes() {
     let mut m = Dict::new();
     m.insert("email".to_string(), Value::Str("a@x".into()));
     dynamic.put(&EmailKey { id: 3 }.encode(), &m).unwrap();
-    let hits = dynamic.scan(0x3001, b"a@x").unwrap();
+    let hits = dynamic.scan(0x4001, b"a@x").unwrap();
     let mut ids: Vec<u64> = hits
         .iter()
         .filter_map(|k| match k.get("id") {
@@ -870,7 +870,7 @@ fn dynamic_variable_width_index_declaration_errors() {
         pub b: String,
     }
     let two_str_schema = CollectionSchema::of::<TwoStrKey, TwoStr>();
-    let two_variable = AccessMethod::plain(0x3001, vec!["a".into(), "b".into()], vec![]);
+    let two_variable = AccessMethod::plain(0x4001, vec!["a".into(), "b".into()], vec![]);
     assert!(two_variable.fields_width(&two_str_schema).is_err());
 
     // Includes segments share the rule.
@@ -978,7 +978,7 @@ fn a_hand_declared_table_stamps_its_faces_and_rebuilds_a_new_one() {
     // one more method can both SEE the drift and repair it.
     let store = TestStore::default();
     let one = vec![AccessMethod::plain(
-        0x3001,
+        0x4001,
         vec!["level".into()],
         Vec::new(),
     )];
@@ -987,11 +987,11 @@ fn a_hand_declared_table_stamps_its_faces_and_rebuilds_a_new_one() {
     assert_eq!(t.faces_status().unwrap(), okm_core::FaceStatus::Match);
     t.put(&key_bytes(1, 10), &values(4, 100, "a")).unwrap();
     t.put(&key_bytes(1, 11), &values(9, 100, "b")).unwrap();
-    assert_eq!(t.scan(0x3001, &4u32.to_be_bytes()).unwrap().len(), 1);
+    assert_eq!(t.scan(0x4001, &4u32.to_be_bytes()).unwrap().len(), 1);
 
     let two = vec![
-        AccessMethod::plain(0x3001, vec!["level".into()], Vec::new()),
-        AccessMethod::plain(0x3002, vec!["score".into()], Vec::new()),
+        AccessMethod::plain(0x4001, vec!["level".into()], Vec::new()),
+        AccessMethod::plain(0x4002, vec!["score".into()], Vec::new()),
     ];
     let t2 = DynamicCollection::new(store.clone(), 41, schema(), two);
     assert!(matches!(
@@ -999,7 +999,7 @@ fn a_hand_declared_table_stamps_its_faces_and_rebuilds_a_new_one() {
         okm_core::FaceStatus::Stale { .. }
     ));
     assert!(
-        t2.scan(0x3002, &100u16.to_be_bytes()).unwrap().is_empty(),
+        t2.scan(0x4002, &100u16.to_be_bytes()).unwrap().is_empty(),
         "the added face has never been derived"
     );
 
@@ -1009,19 +1009,19 @@ fn a_hand_declared_table_stamps_its_faces_and_rebuilds_a_new_one() {
     assert!(report.entries_written >= 4, "{report:?}");
     assert_eq!(t2.faces_status().unwrap(), okm_core::FaceStatus::Match);
 
-    assert_eq!(t2.scan(0x3002, &100u16.to_be_bytes()).unwrap().len(), 2);
-    assert_eq!(t2.scan(0x3001, &4u32.to_be_bytes()).unwrap().len(), 1);
-    assert_eq!(t2.scan(0x3001, &9u32.to_be_bytes()).unwrap().len(), 1);
+    assert_eq!(t2.scan(0x4002, &100u16.to_be_bytes()).unwrap().len(), 2);
+    assert_eq!(t2.scan(0x4001, &4u32.to_be_bytes()).unwrap().len(), 1);
+    assert_eq!(t2.scan(0x4001, &9u32.to_be_bytes()).unwrap().len(), 1);
 }
 
 #[test]
 fn a_reader_without_the_declaration_learns_what_each_path_slot_means() {
     // ADR-0029: a path index's slot IS its identity — the entry key carries no
     // path. So the declaration is recorded beside the stamp, and a process that
-    // never saw the declaration can still say what `0x3005` indexes.
+    // never saw the declaration can still say what `0x4005` indexes.
     let store = TestStore::default();
     let method = AccessMethod::path(
-        0x3005,
+        0x4005,
         okm_dynamic::Path::parse("note").unwrap(),
         okm_core::field::FieldType::Str,
     )
@@ -1032,14 +1032,14 @@ fn a_reader_without_the_declaration_learns_what_each_path_slot_means() {
     let mut doc = Dict::new();
     doc.insert("note".into(), Value::Str("hot".into()));
     writer.put(&key_bytes(1, 30), &doc).unwrap();
-    assert_eq!(writer.scan(0x3005, b"hot").unwrap().len(), 1);
+    assert_eq!(writer.scan(0x4005, b"hot").unwrap().len(), 1);
 
     // The reader knows nothing about the table's methods: an empty list.
     let reader = DynamicCollection::new(store.clone(), 41, schema(), Vec::new());
     assert!(reader.indexes().is_empty(), "the reader declared nothing");
     let registry = reader.path_registry().unwrap();
     assert_eq!(
-        registry.get(&0x3005).map(String::as_str),
+        registry.get(&0x4005).map(String::as_str),
         Some("/f:note -> Str"),
         "the slot names its path without the declaring host"
     );
@@ -1053,7 +1053,7 @@ fn a_derive_version_is_how_a_changed_callable_becomes_visible() {
     // `Match` over entries the old function wrote.
     let store = TestStore::default();
     let v0 = AccessMethod {
-        slot: 0x3007,
+        slot: 0x4007,
         fields: Vec::new(),
         includes: Vec::new(),
         kind: okm_dynamic::AccessMethodKind::Func(Box::new(|d| {
@@ -1071,7 +1071,7 @@ fn a_derive_version_is_how_a_changed_callable_becomes_visible() {
 
     // The same slot, the same fields, a DIFFERENT derive — and the caller says so.
     let v1 = AccessMethod {
-        slot: 0x3007,
+        slot: 0x4007,
         fields: Vec::new(),
         includes: Vec::new(),
         kind: okm_dynamic::AccessMethodKind::Func(Box::new(|_d| Ok(vec![b"other".to_vec()]))),

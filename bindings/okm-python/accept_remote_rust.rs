@@ -65,7 +65,7 @@ fn dynamic_table() -> DynamicCollection<TestStore> {
         schema(),
         vec![
             AccessMethod {
-                slot: 0x1002,
+                slot: 0x4002,
                 fields: vec![],
                 includes: vec![],
                 kind: AccessMethodKind::Func(Box::new(|d| match d.get("name") {
@@ -78,7 +78,7 @@ fn dynamic_table() -> DynamicCollection<TestStore> {
                 version: 0,
             },
             AccessMethod {
-                slot: 0x1003,
+                slot: 0x4003,
                 fields: vec!["level".into()],
                 includes: vec![],
                 kind: AccessMethodKind::Partial(Box::new(|d| {
@@ -88,7 +88,7 @@ fn dynamic_table() -> DynamicCollection<TestStore> {
             },
         ],
         vec![ReduceSpec {
-            slot: 0x2001,
+            slot: 0x5001,
             group_fields: vec!["level".into()],
             logic: Box::new(GroupCount),
         }],

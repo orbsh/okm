@@ -6,7 +6,7 @@
 //! document verbs too** — `merge` / `replace` / `purge` go through
 //! `save_with_prev_into`, which emits no subscribe event (ADR-0031 §5), so a
 //! capture hung there would miss them silently. **Labels are truth** — a
-//! categorical vocabulary's two directions ride (`0x1nnn`/`0x2nnn`) while its
+//! categorical vocabulary's two directions ride (`0x2nnn`/`0x3nnn`) while its
 //! allocation cursor, a bare face prefix, does not.
 //!
 //! The tail rules: a sealed segment is complete by construction (sealing is a
@@ -92,7 +92,7 @@ fn slot_of(header: &[u8], key: &[u8]) -> u16 {
         .strip_prefix(header)
         .expect("captured key carries the header");
     let first = *rest.first().expect("captured key has a slot byte");
-    if first <= 0x0F {
+    if first <= 0x1F {
         u16::from(first)
     } else {
         u16::from_be_bytes([first, *rest.get(1).expect("two-byte slot")])
@@ -103,7 +103,7 @@ fn slot_of(header: &[u8], key: &[u8]) -> u16 {
 fn assert_truth_only(header: &[u8], ops: &[(u8, Vec<u8>, Vec<u8>)]) {
     for (_, key, _) in ops {
         let slot = slot_of(header, key);
-        let truth = matches!(slot, 0x00..=0x05) || matches!(slot >> 12, 0x1 | 0x2);
+        let truth = matches!(slot, 0x00..=0x05) || matches!(slot >> 12, 0x2 | 0x3);
         assert!(truth, "captured a derived entry at slot 0x{slot:04X}");
     }
 }
@@ -247,11 +247,11 @@ fn categorical_labels_ride_and_their_cursor_does_not() {
     let ops = &tag_frames[0].0;
     let slots: Vec<u16> = ops.iter().map(|(_, key, _)| slot_of(TAG_NS, key)).collect();
     assert!(
-        slots.iter().any(|s| s >> 12 == 0x1),
+        slots.iter().any(|s| s >> 12 == 0x2),
         "label -> id rides: {slots:04X?}"
     );
     assert!(
-        slots.iter().any(|s| s >> 12 == 0x2),
+        slots.iter().any(|s| s >> 12 == 0x3),
         "id -> label rides: {slots:04X?}"
     );
     // The allocation cursor is the id face's bare prefix: header + slot, no
@@ -259,7 +259,7 @@ fn categorical_labels_ride_and_their_cursor_does_not() {
     let cursor_len = TAG_NS.len() + 2;
     assert!(
         !ops.iter()
-            .any(|(_, key, _)| key.len() == cursor_len && slot_of(TAG_NS, key) >> 12 == 0x2),
+            .any(|(_, key, _)| key.len() == cursor_len && slot_of(TAG_NS, key) >> 12 == 0x3),
         "the vocabulary cursor is a face singleton, not a record"
     );
     assert_truth_only(TAG_NS, ops);
@@ -512,12 +512,14 @@ fn every_slot_is_classified_and_only_the_truth_half_is_carried() {
     // segment, field-name vocabulary both ways, predicate vocabulary both ways,
     // and the cluster band's authority half — the cluster row (0x0A) and its
     // edge members (0x0B), which are assertions the edge rows cannot reproduce
-    // (ADR-0066). Everything else in 0x00–0x0F is derived — the graph's
-    // traversal faces (0x06–0x09), the cluster's child index (0x0C), the vector
-    // snapshot (0x0E), the table meta row (0x0F) — and 0x0D is free again, so it
-    // is classified derived only because the whole unclaimed band is.
+    // (ADR-0066). Everything else in 0x00–0x1F is derived — the graph's
+    // traversal faces (0x06–0x09), the handle registry (0x0E/0x0F), the
+    // cluster's child index (0x0C), its edge → cluster index (0x0D), the vector
+    // snapshot (0x1E), the table meta row (0x1F) — and the reserve between the
+    // handles and Extension (0x10–0x1D) is unassigned, so it is classified
+    // derived only because the whole unclaimed band is.
     let fixed_truth = [0x00u16, 0x01, 0x02, 0x03, 0x04, 0x05, 0x0A, 0x0B];
-    for slot in 0u16..=0x0F {
+    for slot in 0u16..=0x1F {
         let want = if fixed_truth.contains(&slot) {
             Side::Truth
         } else {
@@ -526,14 +528,15 @@ fn every_slot_is_classified_and_only_the_truth_half_is_carried() {
         assert_eq!(side_of(&slots, slot), want, "fixed face 0x{slot:04X}");
     }
 
-    // Counting families: labels ride (0x1nnn / 0x2nnn) because the payload holds
-    // ids; indexes, reduces and lead faces are derived state.
-    // Counting families (0x1nnn upward — a two-byte slot always starts above
-    // 0x0F, so family 0 is the fixed faces and is not part of this loop).
-    for family in 0x1u16..=0xF {
+    // Counting families: the two vocabulary directions ride (0x2nnn label->id,
+    // 0x3nnn id->label) because the payload holds ids; indexes, reduces and
+    // lead faces are derived state.
+    // Counting families start at 0x2nnn — a two-byte slot always starts at or
+    // above 0x2000, so 0x0 is the fixed band and 0x1 is not a family at all.
+    for family in 0x2u16..=0xF {
         for count in [0u16, 1, 0xFFF] {
             let slot = (family << 12) | count;
-            let want = if matches!(family, 0x1 | 0x2) {
+            let want = if matches!(family, 0x2 | 0x3) {
                 Side::Truth
             } else {
                 Side::Derived

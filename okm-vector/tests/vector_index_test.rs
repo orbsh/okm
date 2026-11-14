@@ -129,7 +129,7 @@ fn snapshot_roundtrip_over_storage() {
 
 #[test]
 fn snapshot_keys_live_under_the_extension_subkind() {
-    // The address is `[ns][0x0E][0x01][shard u16 BE]` and nothing else: 0x0E is
+    // The address is `[ns][0x1E][0x01][shard u16 BE]` and nothing else: 0x1E is
     // the Extension face (ADR-0066 §8), 0x01 is the droppable vector snapshot.
     // Built by hand here on purpose — the test states the bytes an outside
     // reader (a backup tool, a host-side binding) has to reproduce.
@@ -140,7 +140,7 @@ fn snapshot_keys_live_under_the_extension_subkind() {
     idx.save(&mut store).expect("save");
 
     for shard in 0..2u16 {
-        let mut key = vec![0x12, 0x34, 0x0E, 0x01];
+        let mut key = vec![0x12, 0x34, 0x1E, 0x01];
         key.extend_from_slice(&shard.to_be_bytes());
         assert_eq!(
             idx.slot_key(shard as usize),
@@ -154,7 +154,7 @@ fn snapshot_keys_live_under_the_extension_subkind() {
     }
     // The pre-sub-kind address is NOT the snapshot's: the face byte alone no
     // longer addresses a shard, so a stale blob cannot be read as one.
-    let legacy = vec![0x12, 0x34, 0x0E, 0x00, 0x00];
+    let legacy = vec![0x12, 0x34, 0x1E, 0x00, 0x00];
     assert!(store.get(&legacy).unwrap().is_none());
     // …and the wipe sweeps exactly this sub-kind's blobs.
     assert_eq!(VectorIndex::wipe(&mut store, ns).expect("wipe"), 2);

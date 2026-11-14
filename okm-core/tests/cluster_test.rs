@@ -403,27 +403,119 @@ fn a_refused_batch_leaves_nothing() {
             "{engine}: no face landed either"
         );
 
-        // A cluster over ONE member is refused, and the edge that would have
-        // been its member is not written either.
+        // A cluster over ONE member is a legal write: a cluster is a scope, not
+        // a grouping that needs two edges before it can exist (ADR-0066 §3). The
+        // row lands with an honest count of one, and its single member row with
+        // it — this fragment is accepted, not refused.
         let mut fragment = Fragment::<Employment>::new([edge(person(1), org(1))]);
         fragment.cluster(Cluster::new(Kind::COMMUNITY, Dict::new()));
-        let err = g
+        let report = g
             .incorporate(fragment)
-            .expect_err("a cluster needs two members");
-        assert!(
-            matches!(err, Error::ClusterTooSmall { members: 1, .. }),
-            "{engine}: unexpected error: {err:?}"
+            .expect("a one-member cluster is a scope, not a refusal");
+        assert_eq!(
+            report.edges.len(),
+            1,
+            "{engine}: the edge that would have been its member landed"
         );
-        assert!(
-            !g.has_edges().expect("has_edges"),
-            "{engine}: still nothing"
-        );
-        assert!(
+        let one = ClusterRef::new(Kind::COMMUNITY, report.hyper_ids[0]);
+        assert_eq!(
             hyper(&store)
-                .clusters(Kind::COMMUNITY)
-                .expect("clusters")
-                .is_empty(),
-            "{engine}: no cluster row"
+                .lookup(one)
+                .expect("lookup")
+                .expect("row")
+                .member_count(),
+            1,
+            "{engine}: the row states the count it has"
+        );
+        assert_eq!(
+            hyper(&store).members(one).expect("members").len(),
+            1,
+            "{engine}: one member row, written in the same batch"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 4b. An empty cluster is a scope, and its row is a row like any other
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_cluster_created_with_no_members_at_all_is_a_scope() {
+    for (engine, store) in TestStore::matrix() {
+        let mut g = graph(&store);
+        // The declaration and nothing else: no edge, no member. An empty scope is
+        // a statement — "this subject is sensitive, do not ask" — so it is a
+        // legal write, and the row it makes says zero.
+        let mut fragment = Fragment::<Employment>::new([]);
+        fragment.cluster(Cluster::new(Kind::SCOPE, attrs("do-not-ask")));
+        let report = g
+            .incorporate(fragment)
+            .expect("an empty scope is a declared scope");
+        assert_eq!(report.hyper_ids.len(), 1, "{engine}: one id allocated");
+        assert!(report.edges.is_empty(), "{engine}: no edge declared");
+        let scope = ClusterRef::new(Kind::SCOPE, report.hyper_ids[0]);
+
+        let row = hyper(&store).lookup(scope).expect("lookup").expect("row");
+        assert_eq!(row.member_count(), 0, "{engine}: zero is the honest count");
+        assert_eq!(
+            row.payload.get("label"),
+            Some(&Variant::Str("do-not-ask".to_string())),
+            "{engine}: the payload is the statement the scope makes"
+        );
+        assert!(
+            hyper(&store).members(scope).expect("members").is_empty(),
+            "{engine}: an empty member list, not an error"
+        );
+        assert_eq!(
+            hyper(&store).clusters(Kind::SCOPE).expect("clusters"),
+            vec![scope.id],
+            "{engine}: and the kind scan still lists it"
+        );
+        assert!(
+            face(&store, 0x0B).is_empty(),
+            "{engine}: nothing was invented to join it to the graph"
+        );
+    }
+}
+
+#[test]
+fn an_explicitly_declared_empty_cluster_survives_a_rebuild() {
+    for (engine, store) in TestStore::matrix() {
+        let mut g = graph(&store);
+        // A parent scope with no edges and a child scope under it, also empty:
+        // the child index is derived from the cluster rows, so the rebuild has to
+        // work off rows whose member face is empty.
+        let mut fragment = Fragment::<Employment>::new([]);
+        fragment.cluster(Cluster::new(Kind::SCOPE, attrs("parent")));
+        let parent = g.incorporate(fragment).expect("parent").hyper_ids[0];
+        let mut fragment = Fragment::<Employment>::new([]);
+        fragment.cluster(Cluster::new(Kind::SCOPE, attrs("child")).under(parent));
+        let child = g.incorporate(fragment).expect("child").hyper_ids[0];
+        assert_eq!(
+            hyper(&store)
+                .children(Kind::SCOPE, parent)
+                .expect("children"),
+            vec![child],
+            "{engine}: the child index was written with the rows"
+        );
+
+        let report = hyper(&store).rebuild_derived(usize::MAX).expect("rebuild");
+        assert_eq!(report.clusters, 2, "{engine}: both rows walked");
+        assert_eq!(report.members, 0, "{engine}: and no member row exists");
+
+        for (id, label) in [(parent, "parent"), (child, "child")] {
+            let row = hyper(&store)
+                .lookup(ClusterRef::new(Kind::SCOPE, id))
+                .expect("lookup")
+                .unwrap_or_else(|| panic!("{engine}: {label} survived the rebuild"));
+            assert_eq!(row.member_count(), 0, "{engine}: {label} still says zero");
+        }
+        assert_eq!(
+            hyper(&store)
+                .children(Kind::SCOPE, parent)
+                .expect("children"),
+            vec![child],
+            "{engine}: the derived child index rebuilt from the rows alone"
         );
     }
 }
@@ -519,11 +611,27 @@ fn an_edge_delete_takes_exactly_its_rows() {
             .cluster(Cluster::into(Kind::COMMUNITY, b.id, attrs("b")))
             .remove(a);
         g.incorporate(fragment).expect("move");
-        // A lost two members but kept one, so it is below the minimum and is
-        // gone; B has three.
-        assert!(
-            hyper(&store).lookup(a).expect("lookup").is_none(),
-            "{engine}: a cluster below two members stops existing"
+        // A lost two members and kept one — and it KEEPS ITS ROW: a scope is not
+        // an alias for the edges inside it. The count is the honest one, and the
+        // payload (the scope's own statement) is still there.
+        let kept = hyper(&store)
+            .lookup(a)
+            .expect("lookup")
+            .expect("a cluster outlives its members");
+        assert_eq!(
+            kept.member_count(),
+            1,
+            "{engine}: the count is honest, not a minimum"
+        );
+        assert_eq!(
+            kept.payload.get("label"),
+            Some(&Variant::Str("a".to_string())),
+            "{engine}: the scope's payload stayed with it"
+        );
+        assert_eq!(
+            hyper(&store).members(a).expect("members").len(),
+            1,
+            "{engine}: exactly the member it kept"
         );
         assert_eq!(
             hyper(&store).members(b).expect("members").len(),

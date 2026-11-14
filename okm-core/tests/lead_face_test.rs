@@ -68,17 +68,17 @@ fn entries(col: &Collection<TestStore, MembershipKey, Membership>, slot: u16) ->
 fn slots_come_from_the_lead_family() {
     assert_eq!(
         <__OkmLead_Membership_by_member as KvIndex>::SLOT,
-        0x5001,
+        0x6001,
         "the lead family starts after reduces; declaration order numbers it"
     );
     assert_eq!(
         <__OkmLead_Membership_by_member_channel as KvIndex>::SLOT,
-        0x5002
+        0x6002
     );
     // Faces are still faces: both declarations are in the fingerprint table.
     let decls = <Membership as Document>::INDEX_DECLS;
     assert_eq!(decls.len(), 2);
-    assert_eq!(decls[0].slot, 0x5001);
+    assert_eq!(decls[0].slot, 0x6001);
     assert_eq!(decls[0].fields, &["member"]);
     assert!(decls[0].includes.is_empty() && decls[0].func.is_empty());
 }
@@ -86,7 +86,7 @@ fn slots_come_from_the_lead_family() {
 #[test]
 fn the_entry_is_the_key_reslotted() {
     let col = seeded();
-    let keys = entries(&col, 0x5001);
+    let keys = entries(&col, 0x6001);
     assert_eq!(keys.len(), 4);
     // channel 1 / member 10, full tail: [member][channel][member].
     let mut expect = Vec::new();
@@ -155,7 +155,7 @@ fn a_truncated_tail_hands_back_keys_to_continue_with() {
 fn purge_and_rebuild_maintain_the_face() {
     let col = seeded();
     col.purge(&key(1, 10)).unwrap();
-    assert_eq!(entries(&col, 0x5001).len(), 3, "purge takes the entry away");
+    assert_eq!(entries(&col, 0x6001).len(), 3, "purge takes the entry away");
 
     let report = col.rebuild_faces(64).unwrap();
     assert_eq!(report.entries_deleted, 3 + 3, "both faces swept first");
@@ -164,7 +164,7 @@ fn purge_and_rebuild_maintain_the_face() {
         3 + 3,
         "and re-derived from the rows"
     );
-    assert_eq!(entries(&col, 0x5001).len(), 3);
+    assert_eq!(entries(&col, 0x6001).len(), 3);
 
     let probe = __OkmLead_Membership_by_member::prefix()
         .member(11u64)
@@ -193,7 +193,7 @@ fn the_export_says_which_kind_a_face_is() {
     assert_eq!(schema.indexes[0].kind(), Some(FaceKind::Lead));
     assert_eq!(schema.indexes[1].kind(), Some(FaceKind::Lead));
     assert_eq!(
-        schema.slots.declared_lead_base, 0x5001,
+        schema.slots.declared_lead_base, 0x6001,
         "the export names the family base, so a host never hardcodes it"
     );
     assert_eq!(
@@ -232,6 +232,6 @@ fn a_lead_only_collection_rebuilds_without_decoding_a_row() {
     let report = col.rebuild_faces(64).unwrap();
     assert_eq!(report.documents, 4, "the rows are found by key alone");
     assert_eq!(report.entries_written, 8, "two lead faces per row");
-    assert_eq!(entries(&col, 0x5001).len(), 4);
-    assert_eq!(entries(&col, 0x5002).len(), 4);
+    assert_eq!(entries(&col, 0x6001).len(), 4);
+    assert_eq!(entries(&col, 0x6002).len(), 4);
 }

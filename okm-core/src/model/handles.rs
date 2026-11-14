@@ -3,21 +3,25 @@
 //! the boundary (ADR-0067, "a boundary-only handle").
 //!
 //! ```text
-//! 0xF000  handle → node   [ns][0xF0][0x00][handle u64]        → [node_ns 2B][pkey]
-//! 0xF001  node → handle   [ns][0xF0][0x01][node_ns 2B][pkey]  → [handle u64 BE]
+//! 0x0E  handle → node   [ns][0x0E][handle u64]         → [node_ns 2B][pkey]
+//! 0x0F  node → handle   [ns][0x0F][node_ns 2B][pkey]   → [handle u64 BE]
 //! ```
 //!
-//! Both faces live in ONE counting family (`0xF`) with the direction in the low
-//! twelve bits, because the slot space leaves a subsystem that owns a pair no
-//! other choice. `0x00`–`0x0F` is the fixed band and all sixteen numbers are
-//! spoken for; `0x0010`–`0x0FFF` is rejected by the delimiter — it is neither a
-//! fixed face nor a family, so the ADR's earlier `0x10`/`0x11` numbering was
-//! not encodable at all. ADR-0030 ("what the slot space actually is") names the
-//! two possible shapes: spend fixed faces, or take one family number and keep
-//! the discriminator inside it. The fixed band has nothing left to spend, so
-//! this is the second. One number also keeps the pair ADJACENT — the forward
-//! face's scan range ends exactly where the reverse face's begins — which is
-//! what makes "one row per direction, one registry" visible in the key space.
+//! Two FIXED FACES, one byte each, adjacent in the core band: the direction IS
+//! the face number, so no key carries a discriminator byte. They sit
+//! immediately after the core (`0x00`–`0x0D`) because the band is packed from
+//! `0x00`: the pair took the two numbers the tail used to hold (Extension and
+//! the meta moved up to `0x1E`/`0x1F`), and the band's one reserve —
+//! `0x10`–`0x1D` — sits ABOVE the pair, so the next face added takes `0x10`
+//! and nothing has to be renumbered (ADR-0030).
+//!
+//! Before the band widened they were ONE counting family (`0xF00n` with the
+//! direction in the counter bits), because sixteen fixed faces were spent and
+//! `0x10`/`0x11` were not encodable at all. Thirty-two faces make the pair
+//! affordable: no family number, no discriminator, and the adjacency is real
+//! rather than numeric coincidence — the forward face's scan range ends exactly
+//! where the reverse face's begins, which is what makes "one row per direction,
+//! one registry" visible in the key space.
 //!
 //! The registry sits in the CORE band because it is the graph's own structure,
 //! not an extension of a document: two rows per node — one per direction — and
@@ -41,12 +45,12 @@
 //!
 //! # The cursor is a face-level singleton
 //!
-//! `[ns][0xF0][0x00]` with no suffix holds the next handle — the same shape the
-//! vocabulary cursors use (`obj_vocab::cursor_key`), and legal for the same
-//! reason: every real entry of that face is exactly eight bytes after the
-//! prefix, so a zero-length suffix is not expressible as data. A reader tells
-//! the two apart by LENGTH, and an eight-byte decoder rejects the cursor
-//! instead of reading it as a handle.
+//! `[ns][0x0E]` with no suffix holds the next handle — the bare face prefix,
+//! the same shape the vocabulary cursors use (`obj_vocab::cursor_key`), and
+//! legal for the same reason: every real entry of that face is exactly eight
+//! bytes after the prefix, so a zero-length suffix is not expressible as data.
+//! A reader tells the two apart by LENGTH, and an eight-byte decoder rejects
+//! the cursor instead of reading it as a handle.
 //!
 //! Ordering is issue order, not key order: a range over handles is a range over
 //! "when this node first appeared", which no face may rely on for value
@@ -55,21 +59,14 @@
 use crate::engine::storage::{Batch, BatchStore, VirtualStorage, prefix_end, scan_suffix_kv};
 use crate::error::{Error, Result};
 use crate::model::graph::NodeRef;
-use crate::model::index::{Slot, segment, slot, write_slot};
+use crate::model::index::{Slot, write_slot};
 
-/// The registry's counting family (`index::segment::HANDLE`). Two faces, one
-/// number: `[ns][0xF0][0x00]` forward, `[ns][0xF0][0x01]` reverse.
-const HANDLE_FAMILY: Slot = segment::HANDLE;
-
-/// `[ns][0xF0][0x00][handle u64] → [node_ns 2B][pkey]` — the forward face, which
-/// is authority. Also carries the allocation cursor as its bare-prefix
-/// singleton, and its 12-bit counter part is a DIRECTION DISCRIMINATOR (`0`),
-/// not a watermark: nothing allocates inside this family.
-pub const HANDLE_NODE_SLOT: Slot = slot(HANDLE_FAMILY, 0);
-/// `[ns][0xF0][0x01][node_ns 2B][pkey] → [handle u64 BE]` — the reverse
-/// direction (discriminator `1`), derived from the forward face and rebuildable
-/// from it alone.
-pub const NODE_HANDLE_SLOT: Slot = slot(HANDLE_FAMILY, 1);
+/// `[ns][0x0E][handle u64] → [node_ns 2B][pkey]` — the forward face, which is
+/// authority. Also carries the allocation cursor as its bare-prefix singleton.
+pub const HANDLE_NODE_SLOT: Slot = 0x0E;
+/// `[ns][0x0F][node_ns 2B][pkey] → [handle u64 BE]` — the reverse direction,
+/// derived from the forward face and rebuildable from it alone.
+pub const NODE_HANDLE_SLOT: Slot = 0x0F;
 
 /// The first handle ever issued. Zero is [`Handle::NONE`].
 pub const FIRST_HANDLE: u64 = 1;
