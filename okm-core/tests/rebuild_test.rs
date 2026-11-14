@@ -244,9 +244,13 @@ impl VirtualStorage for Flaky {
 fn an_interrupted_rebuild_writes_no_stamp_and_a_rerun_finishes_the_job() {
     let inner = TestStore::default();
     seed(&inner, &[(1, 7), (2, 8), (3, 9)]);
-    // A meta row that records no face fingerprint — the state a rebuild candidate is
-    // in (an app's own name, nothing else).
+    // A meta row of THIS generation that records no face fingerprint — the state a
+    // rebuild candidate is in (the version it speaks, an app's own name, no faces).
     let mut unstamped = okm_core::TableMeta::new();
+    unstamped.set(
+        okm_core::meta::VERSION,
+        vec![<NotePlus as Document>::LAYOUT_VERSION],
+    );
     unstamped.set("build", b"20260801".to_vec());
     okm_core::meta::write(
         &inner,

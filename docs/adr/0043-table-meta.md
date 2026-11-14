@@ -49,9 +49,10 @@ codec.
 
 - `version` is the layout generation the writer speaks: one byte, the declaration's
   own number (`Document::LAYOUT_VERSION`, `#[ok_layout(version = N)]`, default 1).
-  It is what lets an older store be REFUSED by number rather than half-read; a
-  store that never recorded one cannot be refused for that reason, so absence is
-  not a mismatch (see §4). `faces` (ADR-0048) is the fingerprint of the
+  It is what lets a store of another generation be REFUSED by number rather than
+  half-read, and it is REQUIRED of every row: a row that carries other names but no
+  `version` is a row this build did not stamp, and it is refused the same way (see
+  §4). `faces` (ADR-0048) is the fingerprint of the
   declaration's derived faces, and `table` (§7) is its `#[ok_name]`: those three
   are the runtime's names, and anything else is the caller's.
 - Names are inline on purpose: stamping a table must not touch the field-name
@@ -62,8 +63,9 @@ codec.
 
 **4. One verb writes the runtime's names: `ensure_layout`.** Absent row → seed
 `version` (the number this build speaks) and the fingerprint of this declaration's
-derived faces; present row → refuse a `version` this build does not speak
-(`LayoutMismatch { stored, current }`, naming both), and otherwise answer the row
+derived faces; present row → refuse a row that is not of this generation
+(`LayoutMismatch { stored, current }` when it names another number, naming both;
+`LayoutUnstamped { current }` when it names none), and otherwise answer the row
 untouched (other names included), because rewriting the fingerprint would erase the
 `Stale` signal `rebuild_faces` acts on. It is called at attach/boot, once per table.
 `Collection::new` stays I/O-free and keeps returning `Self` — which is exactly why this
@@ -71,8 +73,10 @@ is a verb and not constructor work. A payload generation is not recorded here �
 segment header's (ADR-0042, amended) — but the STORE's number is, and that is the one this
 row compares: a layout change is a cutover, so a store that records another number is
 refused by number at attach instead of being decoded row by row under a declaration that
-never wrote it. A row with NO `version` is older than the name, and old-plus-silent is not
-a mismatch: it opens, exactly as a store written before this ADR opened.
+never wrote it. A row that records NO `version` is refused as well: there is no migration
+and no older layout to tolerate, so a row this build did not stamp is not a store of this
+layout. Only an ABSENT row is exempt — there is nothing to disagree with, and it is seeded,
+never refused.
 
 **5. Callers record their own names with `set_meta`,** and the runtime re-stamps
 `version` afterwards — and refuses to write its number over a row that records
@@ -105,11 +109,11 @@ except here. Unnamed declarations write nothing and check nothing.
   `meta_test.rs` locks that the row scans never surface it.
 - **It does not travel in export/snapshot.** The row describes the WRITER's shape;
   the importing build stamps its own. Export is rows, not self-description.
-- **A stale store with no meta row and a fresh store are the same bytes.** Seeding
-  an absent row blesses whatever is there, which is accepted (ADR-0042 already
-  says old stores are discarded, not migrated); a store that DOES record a number is
-  refused instead, and the segment header's `layout_version` stays the second line,
-  checked where a log is opened.
+- **A store with no meta row and a fresh store are the same bytes.** Seeding an
+  absent row blesses whatever is there, which is accepted (ADR-0042 already says old
+  stores are discarded, not migrated); a store whose row DOES exist is refused
+  instead — another generation's number, or no number at all — and the segment
+  header's `layout_version` stays the second line, checked where a log is opened.
 - **ns ↔ shape is a declaration-time 1:1 that nothing enforces.** Two row types
   sharing one ns now also disagree on `version`, and `ensure_layout` refuses the
   second one — at attach. It is not a write-path guard: that would cost a point

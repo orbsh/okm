@@ -1,11 +1,11 @@
 //! Structural faces carry a fingerprint (ADR-0048): the derived state that lives
 //! outside the primary table gets a number that says WHICH declaration built it.
 //!
-//! Locks: a fresh store is stamped with the declaration's own fingerprint; an
-//! untouched store and one stamped by an older build both answer `Unknown` while
-//! still opening on `version` alone; a second declaration in the same ns answers
-//! `Stale`; and the exported schema carries the same number — so an outside
-//! reader and the store cannot disagree about what "current" means.
+//! Locks: a fresh store is stamped with the declaration's own fingerprint; a row
+//! of this generation without one answers `Unknown` while still opening; a second
+//! declaration in the same ns answers `Stale`; and the exported schema carries the
+//! same number — so an outside reader and the store cannot disagree about what
+//! "current" means.
 
 #![allow(
     clippy::unwrap_used,
@@ -65,17 +65,19 @@ fn a_fresh_store_is_stamped_with_its_declarations_faces() {
 }
 
 #[test]
-fn a_store_written_before_faces_existed_opens_but_answers_unknown() {
+fn a_store_with_no_fingerprint_opens_but_answers_unknown() {
     let store = TestStore::default();
     let table = Note::collection(store.clone());
-    // A meta row that names no fingerprint: an app's own name, nothing else.
-    let mut older = TableMeta::new();
-    older.set("build", b"20260801".to_vec());
-    meta::write(&store, &meta::document_header::<Note>(), &older).unwrap();
+    // A row of THIS generation with no fingerprint: the version matches and the
+    // faces were never stamped — an interrupted rebuild looks exactly like this.
+    let mut unstamped = TableMeta::new();
+    unstamped.set(meta::VERSION, vec![<Note as Document>::LAYOUT_VERSION]);
+    unstamped.set("build", b"20260801".to_vec());
+    meta::write(&store, &meta::document_header::<Note>(), &unstamped).unwrap();
 
     assert!(
         table.ensure_layout().is_ok(),
-        "a store with no fingerprint still opens — faces are not a refusal"
+        "a matching version opens — the fingerprint is not a refusal"
     );
     assert_eq!(
         table.faces_status().unwrap(),

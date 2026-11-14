@@ -186,6 +186,20 @@ pub enum Error {
          that wrote it, then import it into one this build creates"
     )]
     LayoutMismatch { stored: u8, current: u8 },
+    /// The store's meta row records no layout generation at all (ADR-0043 §4).
+    ///
+    /// A missing number is not a third kind of agreement. Nothing here is
+    /// migrated and no older layout is tolerated, so a row this build did not
+    /// stamp describes bytes no generation vouches for, and reading rows through
+    /// it is exactly what the cutover rule exists to prevent. Its own variant
+    /// rather than `LayoutMismatch`: `stored` is a number, and reporting "no
+    /// number" by inventing one would put a false answer in a public field.
+    #[error(
+        "this store's meta row records no layout generation; this build speaks v{current}. \
+         A store this build did not stamp is not a store of this layout: export it with the \
+         build that wrote it, then import it into one this build creates"
+    )]
+    LayoutUnstamped { current: u8 },
     /// The change log could not be opened or read (ADR-0045). Deliberately NOT
     /// on the write path: a log that cannot be appended records itself in
     /// `Collection::changelog_status` instead, because the write it describes is

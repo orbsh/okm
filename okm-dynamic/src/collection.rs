@@ -170,13 +170,16 @@ impl<S: VirtualStorage> DynamicCollection<S> {
     }
 
     /// First-touch verb (ADR-0043) on the dynamic side: record this declaration's
-    /// layout generation and faces on a fresh store; on an existing row, refuse a
-    /// generation this build does not speak and otherwise answer the row as it is.
+    /// layout generation and faces on a fresh store; on an existing row, refuse a row
+    /// that is not of this generation and otherwise answer the row as it is.
     ///
     /// The number compared is the SCHEMA's (`CollectionSchema::layout_version`, the
     /// typed declaration's `LAYOUT_VERSION`): a layout change is a cutover, so a store
     /// stamped with another number is refused here instead of being decoded row by
-    /// row under a schema that never wrote it.
+    /// row under a schema that never wrote it — and so is a row that records no
+    /// number at all (`LayoutUnstamped`), because a row this build did not stamp is
+    /// not a store of this layout. Only an absent row is exempt: nothing exists to
+    /// disagree with, and this verb seeds it.
     ///
     /// One point read when stamped, one point write when not: call it where the host
     /// attaches to a store, never on the write path.
@@ -471,13 +474,17 @@ impl<S: VirtualStorage> DynamicCollection<S> {
     /// none. `version` belongs to the runtime: this verb re-stamps it with the
     /// schema's own number after applying the caller's name, and refuses
     /// (`LayoutMismatch`) rather than relabel a row already stamped with a layout
-    /// this schema does not speak. `faces` belongs to the stamp verbs.
+    /// this schema does not speak — a row with no `version` at all is refused the
+    /// same way (`LayoutUnstamped`), since it is not an older store but one this
+    /// build did not stamp. `faces` belongs to the stamp verbs.
     pub fn set_meta(&self, name: &str, value: Vec<u8>) -> Result<okm_core::TableMeta, String> {
         let mut meta = match self.meta()? {
-            Some(meta) => meta,
+            Some(meta) => {
+                okm_core::meta::check_layout(&meta, self.schema.layout_version).map_err(codec)?;
+                meta
+            }
             None => okm_core::TableMeta::new(),
         };
-        okm_core::meta::check_layout(&meta, self.schema.layout_version).map_err(codec)?;
         meta.set(name, value);
         meta.set(okm_core::meta::VERSION, vec![self.schema.layout_version]);
         okm_core::meta::write(&self.store, &self.ns, &meta).map_err(codec)?;

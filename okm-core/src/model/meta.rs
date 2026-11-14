@@ -19,10 +19,13 @@
 //! `version` is load-bearing, not decorative. A layout change is a cutover: the
 //! number increments, the store is exported by the build that wrote it and
 //! imported into one the new build creates, and an older store is REFUSED rather
-//! than half-read (ADR-0030, `docs/internals/key-layout.md`). A store that does
-//! not record which layout wrote it cannot be refused for that reason, so the
-//! first-touch verb stamps the number and a later read that finds one this build
-//! does not speak stops there with [`crate::Error::LayoutMismatch`], naming both.
+//! than half-read (ADR-0030, `docs/internals/key-layout.md`). So the check is
+//! total in both directions: the first-touch verb stamps the number on a row it
+//! creates, and a row that exists without one is a store this build did not
+//! stamp — refused with [`crate::Error::LayoutUnstamped`], exactly as a number
+//! this build does not speak is refused with [`crate::Error::LayoutMismatch`].
+//! There is no third state to tolerate: nothing here is migrated, so a row
+//! written by an older layout is not this build's store.
 //!
 //! What it is NOT: a compatibility promise (ADR-0042). It turns "this store was
 //! written in another shape" into one point read at attach time instead of a
@@ -41,11 +44,13 @@ use crate::model::wrappers::wire::{put_len, take_len};
 /// byte — the same number the declaration names in `#[ok_layout(version = N)]`.
 ///
 /// This is the store's answer to "which key layout wrote me", and it is what
-/// makes a refusal possible at attach: a layout change is a cutover, so an older
-/// store must be turned away by NUMBER rather than half-read row by row. A row
-/// that never recorded one is simply older than the name — absence is not a
-/// mismatch (nothing here says the layout is wrong, only that nobody wrote it
-/// down), exactly as absent `faces` reads as untrusted rather than wrong.
+/// makes a refusal possible at attach: a layout change is a cutover, so a store
+/// of another generation is turned away by NUMBER rather than half-read row by
+/// row. The name is therefore required, not optional: a row that carries other
+/// names but not this one is a store this build did not stamp, and it is refused
+/// ([`crate::Error::LayoutUnstamped`]) instead of being opened on the assumption
+/// that silence means "older". Only an ABSENT ROW is exempt — there is nothing to
+/// disagree with, and `ensure_layout` seeds it.
 pub const VERSION: &str = "version";
 
 /// The fingerprint of the declaration's structural faces (ADR-0048) — the
@@ -264,25 +269,39 @@ pub fn write<S: VirtualStorage + ?Sized>(store: &S, header: &[u8], meta: &TableM
     store.put(meta_key(header), meta.encode())
 }
 
-/// Refuse a row that records a layout generation this build does not speak.
+/// Refuse a row that does not record THIS build's layout generation.
 ///
-/// The one comparison the row exists for. Absent is not a mismatch: nothing
-/// recorded a number, which is what every store older than this name looks like,
-/// and refusing those would make the mechanism a wall instead of a detector
-/// (ADR-0042). Present and different is a refusal that names both numbers.
+/// The one comparison the row exists for, and it has no permissive branch: a row
+/// that names another number is [`crate::Error::LayoutMismatch`] (naming both), and
+/// a row that names none is [`crate::Error::LayoutUnstamped`]. Both are the same
+/// verdict — this store is not of this build's layout — because a layout change is
+/// a cutover and nothing here migrates (ADR-0043 §4). "No name" is not
+/// older-but-fine: a row that exists was written by something, and this build did
+/// not write it. Only a store with NO ROW is absent, and that is the callers' seed
+/// path, not a comparison.
 pub fn check_layout(meta: &TableMeta, layout_version: u8) -> Result<()> {
     match meta.layout_version() {
         Some(stored) if stored != layout_version => Err(crate::error::Error::LayoutMismatch {
             stored,
             current: layout_version,
         }),
-        _ => Ok(()),
+        Some(_) => Ok(()),
+        None => Err(crate::error::Error::LayoutUnstamped {
+            current: layout_version,
+        }),
     }
 }
 
 /// First-touch: stamp a FRESH table's meta row with the layout generation and the
-/// declaration's face fingerprint; on an existing row, refuse another generation
-/// and otherwise answer it exactly as it stands.
+/// declaration's face fingerprint; on an existing row, refuse a row that is not of
+/// this generation and otherwise answer it exactly as it stands.
+///
+/// "Not of this generation" covers both shapes of an existing row: a `version`
+/// this build does not speak is [`crate::Error::LayoutMismatch`] naming both
+/// numbers, and a row that records no `version` at all is
+/// [`crate::Error::LayoutUnstamped`]. A fresh store has no row to compare, so it is
+/// seeded and never refused — the refusal path exists for a row that is there and
+/// does not match.
 ///
 /// "Exactly as it stands" is the point for `faces`. A row that exists without a
 /// fingerprint is a store written before faces existed, or one whose rebuild never
@@ -292,9 +311,8 @@ pub fn check_layout(meta: &TableMeta, layout_version: u8) -> Result<()> {
 ///
 /// `version` is different, and the difference is the whole reason it is written:
 /// a fingerprint is repairable drift, a generation is a cutover. So this verb
-/// compares it, and a disagreement is [`crate::Error::LayoutMismatch`] — the store
-/// is not half-read, it is refused, at the one place a reader already says "I am
-/// attaching to this store".
+/// compares it, and a disagreement is a refusal — the store is not half-read, it is
+/// refused, at the one place a reader already says "I am attaching to this store".
 pub fn ensure_layout<S: VirtualStorage + ?Sized>(
     store: &S,
     header: &[u8],
@@ -321,12 +339,11 @@ pub fn ensure_layout<S: VirtualStorage + ?Sized>(
 /// rebuild calls it on completion, which is why an interrupted rebuild needs no
 /// state of its own: the stamp simply was never written, so the next open still
 /// answers `Stale` (ADR-0048). It carries `version` too, so a rebuild on a store
-/// that has no meta row produces the same row a first touch would. Whether these
-/// bytes are of this build's generation is not a question this row answers — the
-/// payload's layout lives in the SEGMENT header, where a reader that never opens
-/// a store can see it too (ADR-0042) — but the store's own number is a statement,
-/// so writing it over another generation's is refused (`LayoutMismatch`) rather
-/// than relabelled.
+/// that has no meta row produces the same row a first touch would. A row that IS
+/// there is checked first: another generation's number, or no number at all, is
+/// refused (`LayoutMismatch` / `LayoutUnstamped`) rather than relabelled — the
+/// store's own number is a statement, and this verb may not make one up for rows it
+/// did not write.
 pub fn stamp_layout<S: VirtualStorage + ?Sized>(
     store: &S,
     header: &[u8],
@@ -335,10 +352,13 @@ pub fn stamp_layout<S: VirtualStorage + ?Sized>(
 ) -> Result<TableMeta> {
     let key = meta_key(header);
     let mut meta = match store.get(&key)? {
-        Some(bytes) => TableMeta::decode(&bytes),
+        Some(bytes) => {
+            let meta = TableMeta::decode(&bytes);
+            check_layout(&meta, layout_version)?;
+            meta
+        }
         None => TableMeta::new(),
     };
-    check_layout(&meta, layout_version)?;
     meta.set(VERSION, vec![layout_version]);
     meta.set(FACES, faces.to_vec());
     store.put(key, meta.encode())?;

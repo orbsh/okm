@@ -5,13 +5,16 @@
 //! speaks, `Document::LAYOUT_VERSION`), `faces` (the declaration's face
 //! fingerprint, ADR-0048) and `table` (its `#[ok_name]`). The version is the
 //! load-bearing one: a layout change is a cutover, so a store stamped with a
-//! number this build does not speak is REFUSED at attach, while a store that
-//! never recorded one is merely older than the name and still opens.
+//! number this build does not speak is REFUSED at attach — and so is a row that
+//! records no number at all, because a row this build did not stamp is not a store
+//! of this layout. The only exempt store is one with no row yet: that is fresh,
+//! and the first-touch verb seeds it.
 //!
 //! Locks: the address (highest fixed face, no suffix), the three names a fresh
 //! store gets, the fingerprint's value, the locked bytes of a caller-named row,
-//! the form once a caller name exists, both refusal shapes, and the entry's
-//! exclusion from row/document scans.
+//! the form once a caller name exists, the refusal shapes (another generation's
+//! number, no number at all, a taken table name), and the entry's exclusion from
+//! row/document scans.
 
 #![allow(
     clippy::unwrap_used,
@@ -171,23 +174,37 @@ fn a_store_stamped_with_another_layout_is_refused() {
 }
 
 #[test]
-fn a_row_with_no_fingerprint_is_untrusted_not_refused() {
+fn a_row_that_records_no_layout_name_is_refused() {
     let store = TestStore::default();
     let table = <MetaRow as Document>::collection(store.clone());
+
+    // A row this build did not write: a caller's name and a fingerprint, no
+    // generation. There is no older layout to tolerate — a row this build did not
+    // stamp describes bytes no generation vouches for.
     let mut foreign = TableMeta::new();
+    foreign.set(meta::FACES, MetaRow::FACES.to_vec());
     foreign.set("whoever", b"not okm".to_vec());
     meta::write(&store, &header(), &foreign).unwrap();
 
-    // Opening is fine: this row records no layout number and no fingerprint. It is
-    // not a MISMATCH — nothing here says the layout is wrong, only that nobody wrote
-    // it down, and every store older than these names looks exactly like this. What
-    // it does say is that the derived faces are untrusted rather than wrong.
-    assert!(table.ensure_layout().is_ok());
+    match table.ensure_layout() {
+        Err(okm_core::Error::LayoutUnstamped { current }) => assert_eq!(
+            current,
+            <MetaRow as Document>::LAYOUT_VERSION,
+            "the one number this build speaks"
+        ),
+        other => panic!("expected LayoutUnstamped, got {other:?}"),
+    }
+
+    // Writing through this handle is refused too: stamping the row would label a
+    // store whose rows nothing vouches for.
+    assert!(matches!(
+        table.set_meta("build", b"1".to_vec()),
+        Err(okm_core::Error::LayoutUnstamped { .. })
+    ));
     assert_eq!(
-        table.faces_status().unwrap(),
-        okm_core::FaceStatus::Unknown {
-            current: MetaRow::FACES
-        }
+        table.meta().unwrap().unwrap().layout_version(),
+        None,
+        "the refused writes left the row exactly as they found it"
     );
 }
 

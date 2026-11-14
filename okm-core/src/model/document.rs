@@ -180,15 +180,18 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
 
     /// First-touch verb (ADR-0043): on a fresh store, record the layout generation
     /// this build speaks (`Document::LAYOUT_VERSION`) and this declaration's FACE
-    /// fingerprint; on an existing row, refuse a generation this build does not
-    /// speak and otherwise answer the row as it stands.
+    /// fingerprint; on an existing row, refuse a row that is not of this generation
+    /// and otherwise answer the row as it stands.
     ///
     /// Call it once per table at attach — never on the write path (one point read per
     /// call). The version is the load-bearing half: a layout change is a cutover, so
     /// a store that records another number is refused here (`LayoutMismatch`, naming
-    /// both) instead of being decoded row by row under a declaration that never wrote
-    /// it. The fingerprint is compared separately by `faces_status`, because stale
-    /// faces are repairable drift rather than an unreadable store.
+    /// both), and so is a row that records no number at all (`LayoutUnstamped`) —
+    /// a row this build did not stamp is not a store of this layout — instead of
+    /// being decoded row by row under a declaration that never wrote it. Only an
+    /// absent row is exempt: nothing exists to disagree with, and this verb seeds it.
+    /// The fingerprint is compared separately by `faces_status`, because stale faces
+    /// are repairable drift rather than an unreadable store.
     ///
     /// The table's NAME is recorded here too, and that is the store-side half of the
     /// ns claim: a module cannot see another module's declarations, so the compile-time
@@ -365,7 +368,10 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
     /// stamp cannot be edited away. And it will not write that number over ANOTHER
     /// generation's — a row that records a layout this build does not speak is refused
     /// (`LayoutMismatch`) instead of relabelled, because relabelling would turn a
-    /// store this build cannot read into one that claims it can.
+    /// store this build cannot read into one that claims it can. A row that records
+    /// no `version` at all is refused the same way (`LayoutUnstamped`): it is not an
+    /// older store, it is one this build did not stamp. A store with NO row is simply
+    /// fresh, and the row this verb writes carries this build's number.
     ///
     /// Read-modify-write of ONE singleton key, committed as a single write.
     pub fn set_meta(
@@ -374,10 +380,12 @@ impl<S: VirtualStorage, K: KeyEncode, R: Document<Key = K>> Collection<S, K, R> 
         value: Vec<u8>,
     ) -> crate::error::Result<crate::model::meta::TableMeta> {
         let mut meta = match self.meta()? {
-            Some(meta) => meta,
+            Some(meta) => {
+                crate::model::meta::check_layout(&meta, R::LAYOUT_VERSION)?;
+                meta
+            }
             None => crate::model::meta::TableMeta::new(),
         };
-        crate::model::meta::check_layout(&meta, R::LAYOUT_VERSION)?;
         meta.set(name, value);
         meta.set(crate::model::meta::VERSION, vec![R::LAYOUT_VERSION]);
         crate::model::meta::write(&self.store, &self.header(), &meta)?;

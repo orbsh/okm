@@ -602,9 +602,10 @@ pub mod pyo3_impl {
         }
 
         /// Stamp this table on the store, or answer the stamp it already carries
-        /// (ADR-0043): `{name: bytes}`. Raises `ValueError` naming both numbers
-        /// when the store was written in another layout version — the shape check
-        /// belongs where the host attaches, not on the write path.
+        /// (ADR-0043): `{name: bytes}`. Raises `ValueError` when the row is not of
+        /// this generation — another layout version (naming both numbers) or no
+        /// version at all — the shape check belongs where the host attaches, not on
+        /// the write path.
         fn ensure_layout(&self) -> PyResult<Py<PyAny>> {
             let meta = self
                 .inner
