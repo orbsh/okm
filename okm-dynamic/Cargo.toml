@@ -12,6 +12,11 @@ arrow = { version = "60", optional = true }
 [dev-dependencies]
 okm-derive = { path = "../okm-derive" }
 okm-async = { path = "../okm-async", features = ["slatedb"] }
+# The set operators over a repositionable stream (`intersect_seek`) live one
+# crate up, and the suite that proves this form's traversal streams are
+# `Seekable` over the same entry key has to call them: a dev-dependency, the
+# same parallel `okm-core` draws for its own graph-walk suite.
+okm-query = { path = "../okm-query" }
 # The generation-replay test writes and reads a real changelog directory.
 tempfile = "3"
 

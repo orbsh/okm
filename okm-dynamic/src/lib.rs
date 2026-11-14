@@ -42,6 +42,7 @@
 
 #[cfg(feature = "arrow")]
 pub mod arrow;
+mod cluster;
 mod collection;
 mod encode;
 mod graph;
@@ -63,14 +64,22 @@ pub use okm_value::{CodecError, Dict, Variant as Value};
 // fields. Should segments return, the schema export already carries the
 // FieldType variant slot for them.
 
+/// The dynamic counterpart of core's graph + cluster vocabulary: the same four
+/// cluster faces (ADR-0066) with `Dict` payloads, the same lazy traversal
+/// streams, and the same two write verbs (`incorporate` / `retract`).
+pub use cluster::{
+    Cluster, ClusterConflict, ClusterRef, ClusterRow, Decl, DerivedReport, DynFragment,
+    EdgeConflict, Kind, MEMBER_COUNT, RetractReport, WriteReport,
+};
 pub use collection::DynamicCollection;
 pub use encode::{encode_fields, encode_key, encode_payload};
-pub use graph::{DynEdge, Graph};
+pub use graph::{DynEdge, DynEdgeStream, Graph, edge_face_prefix, edge_step, predicate_id_in};
 pub use index::{
     AccessMethod, AccessMethodKind, Admits, FuncDerive, decode_includes, index_entries,
     path_index_entries, scan_access_method, scan_access_method_covered, scan_access_method_exact,
 };
 pub use okm_core::decode::{decode_key, decode_payload, resolve_vocab_labels};
+pub use okm_core::model::graph::{Direction, EdgeStep, HopHead};
 pub use path::{Component, Path};
 pub use plan::{PlannedDelete, PlannedPut, PlannedWrite, Stored, decode_stored};
 pub use plan_fields::{

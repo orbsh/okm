@@ -30,7 +30,7 @@ fn link<S: VirtualStorage, E: GraphEncode + Clone + Default + 'static>(
 ) -> okm_core::Result<()> {
     let mut fragment = Fragment::<E>::new([Decl::edge_at(head, edge_id)]);
     let given = payload.clone();
-    fragment.reduce_edge(move |e| *e = given.clone());
+    fragment.on_edge_conflict(move |_stored, _declared| given.clone());
     g.incorporate(fragment).map(|_| ())
 }
 use okm_value::{Dict, Variant};

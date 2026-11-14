@@ -87,9 +87,10 @@ pub use model::graph::{
     NodeRef, NodeSet,
 };
 pub use model::hyper::{
-    CHILD_INDEX_SLOT, CLUSTER_SLOT, Cluster, ClusterReduce, ClusterRef, ClusterRow, ClusterStream,
-    ClusterSubject, Decl, DerivedReport, EDGE_CLUSTER_SLOT, EDGE_MEMBER_SLOT, Fragment, Hyperedges,
-    Kind, MEMBER_COUNT, RetractReport, WriteReport, edge_cluster_key, edge_clusters_prefix,
+    CHILD_INDEX_SLOT, CLUSTER_SLOT, Cluster, ClusterConflict, ClusterRef, ClusterRow,
+    ClusterStream, ClusterSubject, Decl, DerivedReport, EDGE_CLUSTER_SLOT, EDGE_MEMBER_SLOT,
+    Fragment, Hyperedges, Kind, MEMBER_COUNT, RetractReport, WriteReport, edge_cluster_key,
+    edge_clusters_prefix,
 };
 pub use model::index::{
     DecodeIndexFields, Document, IndexFuncResult, KvIndex, LEAD_SLOT_BASE, META_SLOT, PRIMARY_SLOT,

@@ -831,11 +831,12 @@ pub mod parquet_io {
                 .zip(props.iter())
             {
                 // The id is the identity: `edge_at` creates it when free and
-                // re-asserts it when live, and the reducer installs the payload
-                // the file carries. One fragment, one commit.
+                // re-asserts it when live, and the conflict hook answers the
+                // payload the file carries — the stored row, if any, does not get
+                // a say in a restore. One fragment, one commit.
                 let payload = (*payload).clone();
                 let mut fragment = Fragment::<E>::new([Decl::edge_at((*head).clone(), *id)]);
-                fragment.reduce_edge(move |e: &mut E| *e = payload.clone());
+                fragment.on_edge_conflict(move |_stored, _declared| payload.clone());
                 self.incorporate(fragment).map_err(|e| e.to_string())?;
                 // Open attributes are the document's own row, so they take the
                 // second commit (the two carriers are separate write paths).

@@ -41,6 +41,13 @@ pub trait Engine: Send + Sync {
 /// injected host engine. One executor behind both faces (the 0037 §1
 /// rule): same `DynamicCollection` code path, the enum only dispatches
 /// bytes.
+///
+/// `Clone` because a handle is a KEYSpace, not a connection: `TestStore`
+/// clones share the underlying store, and `Injected` is an `Arc` — so a
+/// second face over the same engine (a graph beside a collection, a
+/// traversal cursor owning the store it scans) sees the rows the first
+/// wrote. It does NOT duplicate anything.
+#[derive(Clone)]
 pub enum EngineBox {
     /// The embedded in-process store. Feature-gated: the matrix lives in
     /// okm-async (slatedb + fjall), so a host-injecting binding must not

@@ -45,8 +45,8 @@ pub struct OrgId {
     pub id: u64,
 }
 
-/// A node table with NO reducer registered: its nodes exist (as endpoints) but
-/// nothing materializes a row for them.
+/// A node table with NO conflict hook registered: its nodes exist (as endpoints)
+/// but nothing materializes a row for them.
 #[derive(DocumentEncode, Clone, PartialEq, Debug, Default)]
 #[ok_ref(OrgId)]
 #[ok_ns(0x31)]
@@ -139,7 +139,7 @@ fn every_row_kind_round_trips_at_the_layout_the_adr_states() {
             Fragment::<Employment>::new([edge(person(1), org(9)), edge(person(2), org(9))]);
         fragment
             .cluster(Cluster::new(Kind::COMMUNITY, attrs("acme")))
-            .reduce_edge(|e: &mut Employment| e.weight += 7);
+            .on_edge_conflict(|_stored, _declared| Employment { weight: 7 });
         let report = g
             .incorporate(fragment)
             .unwrap_or_else(|e| panic!("{engine}: commit: {e}"));
@@ -149,11 +149,11 @@ fn every_row_kind_round_trips_at_the_layout_the_adr_states() {
         let id = report.hyper_ids[0];
         let cluster = ClusterRef::new(Kind::COMMUNITY, id);
 
-        // The edge rows themselves are the ordinary graph rows: the reduce ran,
-        // so the payload is the fragment's, not a default.
+        // The edge rows themselves are the ordinary graph rows: the hook ran, so
+        // the payload is the fragment's, not a default.
         for edge_id in &report.edge_ids {
             let body = g.edge(*edge_id).expect("edge").expect("present");
-            assert_eq!(body.weight, 7, "{engine}: the edge reducer ran");
+            assert_eq!(body.weight, 7, "{engine}: the edge conflict hook ran");
         }
 
         // 0x0A — the cluster row: `[parent u64 BE][dynamic payload]`, and NOTHING
@@ -567,21 +567,23 @@ fn the_declarations_alone_are_a_whole_write() {
 }
 
 // ---------------------------------------------------------------------------
-// 7. The three reduces, in the write fragment
+// 7. The three conflict hooks, in the write fragment
 // ---------------------------------------------------------------------------
 
 #[test]
-fn the_three_reduces_run_in_the_write_fragment() {
+fn the_three_conflict_hooks_run_in_the_write_fragment() {
     for (engine, store) in TestStore::matrix() {
         let mut g = graph(&store);
         let mut fragment =
             Fragment::<Employment>::new([edge(person(1), org(1)), edge(person(2), org(1))]);
         fragment
             .cluster(Cluster::new(Kind::COMMUNITY, Dict::new()))
-            .reduce_node::<Person>(|p| p.seen += 1)
-            .reduce_edge(|e: &mut Employment| e.weight += 1)
-            .reduce_cluster(|h| {
-                h.insert("weight".to_string(), Variant::U64(2));
+            .on_node_conflict::<Person>(|old, _declared| Person { seen: old.seen + 1 })
+            .on_edge_conflict(|_stored, _declared| Employment { weight: 1 })
+            .on_cluster_conflict(|_stored, declared| {
+                let mut row = declared.clone();
+                row.insert("weight".to_string(), Variant::U64(2));
+                row
             });
         let report = g.incorporate(fragment).expect("commit");
         let cluster = ClusterRef::new(Kind::COMMUNITY, report.hyper_ids[0]);
@@ -594,31 +596,31 @@ fn the_three_reduces_run_in_the_write_fragment() {
                 .unwrap_or_else(|| panic!("{engine}: person {id} was created on demand"));
             assert_eq!(
                 row.seen, 1,
-                "{engine}: the node reducer ran for person {id}"
+                "{engine}: the node conflict hook ran for person {id}"
             );
         }
-        // A collection with no registered reducer gets no row: an endpoint
+        // A collection with no registered hook gets no row: an endpoint
         // exists because an edge names it, not because a table was touched.
         assert!(
             Org::collection(store.clone())
                 .get_row(&OrgId { id: 1 })
                 .expect("read")
                 .is_none(),
-            "{engine}: no reducer, no row"
+            "{engine}: no hook, no row"
         );
 
         let row = hyper(&store).lookup(cluster).expect("lookup").expect("row");
         assert_eq!(
             row.payload.get("weight"),
             Some(&Variant::U64(2)),
-            "{engine}: the cluster reducer ran"
+            "{engine}: the cluster conflict hook ran"
         );
         assert_eq!(row.member_count(), 2, "{engine}: counts stamped last");
 
         // A second fragment with the same collection accumulates instead of
-        // resetting: the row is read, mutated and rewritten in one commit.
+        // resetting: the stored row and the declared one reach the hook together.
         let mut fragment = Fragment::<Employment>::new([edge(person(1), org(2))]);
-        fragment.reduce_node::<Person>(|p| p.seen += 1);
+        fragment.on_node_conflict::<Person>(|old, _declared| Person { seen: old.seen + 1 });
         g.incorporate(fragment).expect("second fragment");
         assert_eq!(
             people
@@ -637,6 +639,75 @@ fn the_three_reduces_run_in_the_write_fragment() {
                 .seen,
             1,
             "{engine}: an untouched node keeps its count"
+        );
+    }
+}
+
+/// The hook that sees BOTH sides: a cluster's stored stamp wins over a
+/// declaration whose own stamp is older, and the rest of the write (members,
+/// counts) still lands. A mutator that only saw the stored row could not state
+/// this — it had nothing to compare the incoming `ts` against — and a hook that
+/// only saw the declared one would have lost the stamp on every write.
+#[test]
+fn a_cluster_hook_keeps_the_stored_payload_when_the_declared_one_is_older() {
+    for (engine, store) in TestStore::matrix() {
+        let mut g = graph(&store);
+
+        // Newest stamp wins; equal stamps take the declaration.
+        fn newest(old: &Dict, declared: &Dict) -> Dict {
+            fn stamp(row: &Dict) -> u64 {
+                match row.get("ts") {
+                    Some(Variant::U64(ts)) => *ts,
+                    _ => 0,
+                }
+            }
+            if stamp(declared) >= stamp(old) {
+                declared.clone()
+            } else {
+                old.clone()
+            }
+        }
+
+        let mut stamped = Dict::new();
+        stamped.insert("ts".to_string(), Variant::U64(10));
+        let mut fragment =
+            Fragment::<Employment>::new([edge(person(1), org(1)), edge(person(2), org(1))]);
+        fragment
+            .cluster(Cluster::new(Kind::COMMUNITY, stamped))
+            .on_cluster_conflict(newest);
+        let report = g.incorporate(fragment).expect("first write");
+        let cluster = ClusterRef::new(Kind::COMMUNITY, report.hyper_ids[0]);
+        assert_eq!(
+            hyper(&store)
+                .lookup(cluster)
+                .expect("lookup")
+                .expect("row")
+                .payload
+                .get("ts"),
+            Some(&Variant::U64(10)),
+            "{engine}: a creation has no stored map, so the declared stamp lands"
+        );
+
+        // The same cluster, named at its id, with an OLDER stamp and one more
+        // member: membership moves, the stamp does not.
+        let mut older = Dict::new();
+        older.insert("ts".to_string(), Variant::U64(4));
+        let mut fragment = Fragment::<Employment>::new([edge(person(3), org(1))]);
+        fragment
+            .cluster(Cluster::into(Kind::COMMUNITY, cluster.id, older))
+            .on_cluster_conflict(newest);
+        g.incorporate(fragment).expect("second write");
+
+        let row = hyper(&store).lookup(cluster).expect("lookup").expect("row");
+        assert_eq!(
+            row.payload.get("ts"),
+            Some(&Variant::U64(10)),
+            "{engine}: the stored stamp survived a declaration with an older one"
+        );
+        assert_eq!(
+            row.member_count(),
+            3,
+            "{engine}: the rest of the declaration still landed"
         );
     }
 }
@@ -1092,7 +1163,7 @@ fn the_two_verbs_refuse_each_others_declarations() {
 }
 
 // ---------------------------------------------------------------------------
-// 13. There is no update verb: an update is a reduce over a named id
+// 13. There is no update verb: an update is a conflict hook over a named id
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -1103,17 +1174,20 @@ fn an_update_is_a_reduce_folded_over_a_named_edge() {
             Fragment::<Employment>::new([edge(person(1), org(1)), edge(person(1), org(2))]);
         fragment
             .cluster(Cluster::new(Kind::COMMUNITY, Dict::new()))
-            .reduce_edge(|e: &mut Employment| e.weight = 5);
+            .on_edge_conflict(|_stored, _declared| Employment { weight: 5 });
         let report = g.incorporate(fragment).expect("write");
         let (target, other) = (report.edge_ids[0], report.edge_ids[1]);
         let members_before = face(&store, 0x0B);
         let ids_before = g.edge_ids().expect("ids");
 
-        // The update: name the edge at its id, fold a reduce over it. No verb of
-        // its own — the id, the faces and the membership rows stand.
+        // The update: name the edge at its id, hand it a conflict hook that reads
+        // what is stored. No verb of its own — the id, the faces and the
+        // membership rows stand.
         let mut fragment =
             Fragment::<Employment>::new([Decl::edge_at(head(person(1), org(1)), target)]);
-        fragment.reduce_edge(|e: &mut Employment| e.weight += 100);
+        fragment.on_edge_conflict(|stored, _declared| Employment {
+            weight: stored.weight + 100,
+        });
         let updated = g.incorporate(fragment).expect("update");
 
         assert_eq!(
@@ -1128,7 +1202,7 @@ fn an_update_is_a_reduce_folded_over_a_named_edge() {
         assert_eq!(
             g.edge(target).expect("read").expect("edge").weight,
             105,
-            "{engine}: the reduce folded over the STORED payload, not a default"
+            "{engine}: the hook read the STORED payload, not a default"
         );
         assert_eq!(
             g.edge(other).expect("read").expect("edge").weight,

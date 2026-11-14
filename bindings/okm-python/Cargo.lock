@@ -1455,20 +1455,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "okm-async"
+version = "0.1.0"
+dependencies = [
+ "okm-core",
+ "okm-wire",
+ "slatedb",
+ "tokio",
+]
+
+[[package]]
 name = "okm-core"
 version = "0.1.0"
 dependencies = [
  "getrandom 0.3.4",
  "okm-derive",
+ "okm-value",
  "okm-wire",
  "proc-macro2",
  "quote",
  "serde",
  "serde_json",
- "slatedb",
  "syn 2.0.119",
  "thiserror 2.0.20",
- "tokio",
 ]
 
 [[package]]
@@ -1486,12 +1495,14 @@ name = "okm-dynamic"
 version = "0.1.0"
 dependencies = [
  "okm-core",
+ "okm-value",
 ]
 
 [[package]]
 name = "okm-entry"
 version = "0.1.0"
 dependencies = [
+ "okm-async",
  "okm-core",
  "okm-dynamic",
  "serde_json",
@@ -1501,12 +1512,28 @@ dependencies = [
 name = "okm-python"
 version = "0.1.0"
 dependencies = [
+ "okm-async",
  "okm-core",
  "okm-dynamic",
  "okm-entry",
+ "okm-query",
  "okm-wire",
  "pyo3",
  "serde_json",
+]
+
+[[package]]
+name = "okm-query"
+version = "0.1.0"
+dependencies = [
+ "okm-core",
+]
+
+[[package]]
+name = "okm-value"
+version = "0.1.0"
+dependencies = [
+ "indexmap",
 ]
 
 [[package]]

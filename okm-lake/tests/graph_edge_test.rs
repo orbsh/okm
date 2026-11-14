@@ -29,7 +29,7 @@ fn link<S: VirtualStorage, E: GraphEncode + Clone + Default + 'static>(
 ) -> okm_core::Result<()> {
     let mut fragment = Fragment::<E>::new([Decl::edge_at(head, edge_id)]);
     let given = payload.clone();
-    fragment.reduce_edge(move |e| *e = given.clone());
+    fragment.on_edge_conflict(move |_stored, _declared| given.clone());
     g.incorporate(fragment).map(|_| ())
 }
 
@@ -416,7 +416,7 @@ fn rewrite_is_one_batch() {
     let mut fragment =
         Fragment::<Employment>::new([Decl::edge_at(head(user(1), org(10), "contracts"), 1)]);
     let given = b.clone();
-    fragment.reduce_edge(move |e: &mut Employment| *e = given.clone());
+    fragment.on_edge_conflict(move |_stored, _declared| given.clone());
     g.incorporate(fragment).unwrap();
 
     // The row is the new fact, under the same identity.
@@ -443,6 +443,94 @@ fn rewrite_is_one_batch() {
     assert_eq!(
         g.by_attr_face(slot, &2021u16.to_be_bytes()).unwrap(),
         vec![1]
+    );
+}
+
+#[test]
+fn same_head_reassert_retires_the_old_face_entry() {
+    // The SAME assertion written twice with a payload that moved an indexed
+    // field is still ONE edge on ONE face. The entries the old payload wrote
+    // are re-derivable only from the OLD payload, so a re-assert that writes
+    // the new entries without retiring the old ones leaves the id on the face
+    // twice — and a range read over that face serves the row twice.
+    let store = okm_async::TestStore::slatedb_mem();
+    let mut g: Graph<_, Employment> = Graph::new(store.clone());
+    let before = Employment {
+        since_year: 100,
+        weight: 1,
+    };
+    let after = Employment {
+        since_year: 200,
+        weight: 1,
+    };
+    let h = head(user(1), org(9), "employs");
+    link(&mut g, h.clone(), &before, 1).unwrap();
+
+    // Open attributes (0x01) are a segment of their own. A re-assert must not
+    // clear them: that is the whole difference between this and a
+    // delete-then-create at the same id.
+    let mut attrs = Dict::new();
+    attrs.insert(
+        "role".to_string(),
+        okm_value::Variant::Str("lead".to_string()),
+    );
+    let mut batch = okm_core::Batch::default();
+    g.replace_into(&mut batch, 1, &attrs).unwrap();
+    store.commit_batch(batch).unwrap();
+
+    // Same head, same id, new payload: the conflict hook answers the new
+    // since_year, and the face follows.
+    let mut fragment = Fragment::<Employment>::new([Decl::edge_at(h, 1)]);
+    let given = after.clone();
+    fragment.on_edge_conflict(move |old, _declared| Employment {
+        since_year: given.since_year,
+        ..*old
+    });
+    g.incorporate(fragment).unwrap();
+
+    // The face, read END TO END: one entry for edge 1, at the new position.
+    let slot = <__OkmIndex_Employment_by_since as okm_core::KvIndex>::SLOT;
+    let mut prefix = 100u16.to_be_bytes().to_vec();
+    okm_core::write_slot(&mut prefix, slot);
+    let end = okm_core::engine::storage::prefix_end(&prefix);
+    let face: Vec<(Vec<u8>, Vec<u8>)> = store
+        .scan_range(&prefix, end.as_deref())
+        .map(|item| item.expect("engine read"))
+        .collect();
+    let mut expected = prefix.clone();
+    expected.extend_from_slice(&200u16.to_be_bytes());
+    expected.extend_from_slice(&1u64.to_be_bytes());
+    assert_eq!(
+        face.iter().map(|(k, _)| k.clone()).collect::<Vec<_>>(),
+        vec![expected],
+        "one edge is one entry, at the value the payload now carries"
+    );
+
+    // ... and the two point reads agree: old position empties, new one answers.
+    assert!(
+        g.by_attr_face(slot, &100u16.to_be_bytes())
+            .unwrap()
+            .is_empty(),
+        "the entry the old payload wrote is gone"
+    );
+    assert_eq!(
+        g.by_attr_face(slot, &200u16.to_be_bytes()).unwrap(),
+        vec![1]
+    );
+
+    // The payload is the new fact, the traversal faces are unchanged, and the
+    // open attributes survived the rewrite.
+    let now = g.edge(1).unwrap().unwrap();
+    assert_eq!(
+        (now.since_year, now.weight),
+        (after.since_year, after.weight)
+    );
+    assert_eq!(g.out_edges(&user(1)).unwrap(), vec![1]);
+    assert_eq!(g.in_edges(&org(9)).unwrap(), vec![1]);
+    assert_eq!(
+        g.attrs(1).unwrap().unwrap().get("role"),
+        Some(&okm_value::Variant::Str("lead".to_string())),
+        "the 0x01 segment is not this declaration's to clear"
     );
 }
 

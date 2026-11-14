@@ -55,8 +55,9 @@
 //!
 //! [`Graph::incorporate`] writes, [`Graph::retract`] removes. There is no third
 //! verb, and no separate edge-linking one: a [`Fragment`] is the whole unit of
-//! work — the declared rows, the clusters over them and the three reduces — and
-//! it lands in ONE engine batch, so a reader sees the whole group or none of it.
+//! work — the declared rows, the clusters over them and the three conflict
+//! hooks — and it lands in ONE engine batch, so a reader sees the whole group or
+//! none of it.
 //!
 //! ```ignore
 //! let mut fragment = Fragment::<Employment>::new([
@@ -65,12 +66,16 @@
 //! ]);
 //! fragment
 //!     .cluster(Cluster::new(Kind::COMMUNITY, attrs("acme")))
-//!     .reduce_node::<Person>(|p| p.seen += 1)
-//!     .reduce_edge(|e| e.weight += 1)
-//!     .reduce_cluster(|c| c.insert("weight".into(), Variant::U64(2)));
+//!     .on_node_conflict::<Person>(|old, _declared| Person { seen: old.seen + 1 })
+//!     .on_edge_conflict(|old, declared| Employment { weight: old.weight.max(declared.weight) })
+//!     .on_cluster_conflict(|old, declared| {
+//!         let mut row = declared.clone();
+//!         row.insert("weight".into(), Variant::U64(2));
+//!         row
+//!     });
 //! let report = graph.incorporate(fragment)?;
 //!
-//! // The declarations alone are a valid write: the cluster and the three reduces are optional.
+//! // The declarations alone are a valid write: the cluster and the three hooks are optional.
 //! graph.incorporate(Fragment::new([Decl::edge(EdgeHead { src: alice(), dst: acme(), predicate: "works_at".into() })]))?;
 //! ```
 //!
@@ -79,10 +84,10 @@
 //!
 //! # There is no update verb
 //!
-//! An update IS `incorporate` with a reduce. Naming an edge at its own id
-//! ([`Decl::edge_at`], or `Fragment::cluster` on an existing cluster) makes the
-//! fragment's reducers fold over that row, so the payload changes while the id,
-//! its faces and its membership rows stand.
+//! An update IS `incorporate` with a conflict hook. Naming an edge at its own id
+//! ([`Decl::edge_at`], or `Fragment::cluster` on an existing cluster) hands the
+//! fragment's hooks that row's stored payload beside the declared one, so the
+//! payload changes while the id, its faces and its membership rows stand.
 //!
 //! # What a delete takes
 //!
@@ -143,7 +148,7 @@ pub const CHILD_INDEX_SLOT: Slot = 0x0C;
 pub const EDGE_CLUSTER_SLOT: Slot = 0x0D;
 
 /// Payload name carrying the number of member EDGES, maintained by the write
-/// path. Reserved: the writer stamps it last, after `reduce_cluster` runs.
+/// path. Reserved: the writer stamps it last, after `on_cluster_conflict` runs.
 pub const MEMBER_COUNT: &str = "members";
 
 /// The cluster's kind: a one-byte CLOSED vocabulary (community / event /
@@ -1100,8 +1105,8 @@ pub enum Decl<G: GraphEncode> {
     /// An edge AT a given id — how a fragment NAMES an edge that is already
     /// there. An id no row holds creates the edge there (the restore path,
     /// ADR-0062, where the source's ids are the file's); an id that is live
-    /// re-asserts that row in place, so this fragment's `reduce_edge` folds over
-    /// it and a cluster declaration can adopt it as a member.
+    /// re-asserts that row in place, so this fragment's `on_edge_conflict`
+    /// decides its payload and a cluster declaration can adopt it as a member.
     ///
     /// A different head at the same id is the in-place rewrite: the old
     /// assertion's rows leave and the new ones land in the same batch, so the id
@@ -1136,8 +1141,8 @@ struct ClusterPlan {
     /// The parent to write; `None` = keep whatever the row already says.
     parent: Option<u64>,
     payload: Dict,
-    /// Whether the payload came from the caller (so `reduce_cluster` runs on
-    /// it), as opposed to being carried over from the stored row.
+    /// Whether the payload came from the caller (so `on_cluster_conflict` runs
+    /// on it), as opposed to being carried over from the stored row.
     from_caller: bool,
     /// Whether a declaration asked for this cluster (as opposed to an op that
     /// only moves members).
@@ -1173,14 +1178,14 @@ enum ClusterOp {
     },
 }
 
-/// The per-collection reduce hook: node rows are heterogeneous, so the
+/// The per-collection conflict hook: node rows are heterogeneous, so the
 /// registration is the type door.
-trait NodeReduce {
+trait NodeConflict {
     fn ns(&self) -> u16;
     /// The table's key header, `[0xFF][part] (if declared)[ns]`.
     fn header(&self, ns: &[u8; 2]) -> Vec<u8>;
-    /// The row's new payload: the stored one (decoded, mutated) or the type's
-    /// default when the endpoint does not exist yet.
+    /// The row's new payload: the hook's answer for the stored payload and the
+    /// declared one, or the declared payload when nothing is stored yet.
     fn apply(
         &mut self,
         store: &mut dyn VirtualStorage,
@@ -1189,15 +1194,15 @@ trait NodeReduce {
     ) -> Result<Vec<u8>>;
 }
 
-struct NodeReducer<R: Document, F> {
+struct NodeConflictHook<R: Document, F> {
     f: F,
     _pd: std::marker::PhantomData<R>,
 }
 
-impl<R, F> NodeReduce for NodeReducer<R, F>
+impl<R, F> NodeConflict for NodeConflictHook<R, F>
 where
     R: Document + Default,
-    F: FnMut(&mut R),
+    F: Fn(&R, &R) -> R,
 {
     fn ns(&self) -> u16 {
         R::NS
@@ -1217,18 +1222,23 @@ where
         existing: Option<&[u8]>,
     ) -> Result<Vec<u8>> {
         let mut vocabs = R::Vocabs::default();
+        // A node declaration carries no payload — the key names the row and the
+        // collection's mapping is the only writer — so the DECLARED side of the
+        // comparison is the type's default. A creation therefore calls the hook
+        // with (default, default): there is no stored row, and the old payload's
+        // shape is still what lands.
+        let declared = R::default();
         let mut row = match existing {
             Some(bytes) => {
-                let mut row = R::decode_payload(bytes);
-                // A decoded payload carries vocabulary IDS; the mutate-and-write
+                let mut stored = R::decode_payload(bytes);
+                // A decoded payload carries vocabulary IDS; the fold-and-write
                 // cycle has to hold labels again or the re-encode would store ids
                 // as labels (ADR-0032's two-door rule).
-                row.__okm_deref_vocab(&mut vocabs, &*store)?;
-                row
+                stored.__okm_deref_vocab(&mut vocabs, &*store)?;
+                (self.f)(&stored, &declared)
             }
-            None => R::default(),
+            None => (self.f)(&declared, &declared),
         };
-        (self.f)(&mut row);
         if R::HAS_VOCAB {
             row.__okm_intern(&mut vocabs, store, header)?;
         }
@@ -1236,14 +1246,16 @@ where
     }
 }
 
-/// A reduce over the graph's own edge payload — one type per graph, so one field.
-pub type EdgeReduce<G> = Box<dyn FnMut(&mut G)>;
+/// A conflict hook over the graph's own edge payload — one type per graph, so
+/// one field. It takes `(stored, declared)` and answers the payload to write.
+pub type EdgeConflict<G> = Box<dyn Fn(&G, &G) -> G>;
 
-/// A reduce over a cluster's dynamic payload; clusters are not declared types.
-pub type ClusterReduce = Box<dyn FnMut(&mut Dict)>;
+/// A conflict hook over a cluster's dynamic payload; clusters are not declared
+/// types, so both sides are a `Dict`.
+pub type ClusterConflict = Box<dyn Fn(&Dict, &Dict) -> Dict>;
 
 /// The write fragment (ADR-0066 §7): the declared rows, the clusters over them and
-/// the three reduces, all encoded into ONE engine batch by
+/// the three conflict hooks, all encoded into ONE engine batch by
 /// [`Graph::incorporate`]; the delete declarations go the other way, through
 /// [`Graph::retract`].
 pub struct Fragment<G: GraphEncode + Default> {
@@ -1252,9 +1264,9 @@ pub struct Fragment<G: GraphEncode + Default> {
     ops: Vec<ClusterOp>,
     edge_deletes: Vec<u64>,
     node_deletes: Vec<NodeRef>,
-    node_reducers: Vec<Box<dyn NodeReduce>>,
-    edge_reducer: Option<EdgeReduce<G>>,
-    cluster_reducer: Option<ClusterReduce>,
+    node_conflicts: Vec<Box<dyn NodeConflict>>,
+    edge_conflict: Option<EdgeConflict<G>>,
+    cluster_conflict: Option<ClusterConflict>,
 }
 
 impl<G: GraphEncode + Default> Fragment<G> {
@@ -1272,9 +1284,9 @@ impl<G: GraphEncode + Default> Fragment<G> {
             ops: Vec::new(),
             edge_deletes: Vec::new(),
             node_deletes: Vec::new(),
-            node_reducers: Vec::new(),
-            edge_reducer: None,
-            cluster_reducer: None,
+            node_conflicts: Vec::new(),
+            edge_conflict: None,
+            cluster_conflict: None,
         }
     }
 
@@ -1286,36 +1298,57 @@ impl<G: GraphEncode + Default> Fragment<G> {
         self
     }
 
-    /// Fold every node of collection `R` that this fragment touches — declared, or
+    /// Resolve every node of collection `R` that this fragment touches — declared, or
     /// merely an endpoint of an edge it writes (endpoints are created on
-    /// demand). One closure per collection, because node rows are
+    /// demand). One hook per collection, because node rows are
     /// heterogeneous.
-    pub fn reduce_node<R>(&mut self, f: impl FnMut(&mut R) + 'static) -> &mut Self
+    ///
+    /// The hook compares the STORED row with the DECLARED one and answers the row
+    /// to write: `|old, declared| old.clone()` keeps what is there, `|_, declared|
+    /// declared.clone()` overwrites, `|old, declared| Person { seen: old.seen.max(declared.seen), ..*old }`
+    /// is the monotone merge. A node declaration carries no payload, so the
+    /// declared side is the collection's default row; and a node that does not
+    /// exist yet is created by calling the hook with `(default, default)`, so a
+    /// counter hook still seeds the new row.
+    pub fn on_node_conflict<R>(&mut self, f: impl Fn(&R, &R) -> R + 'static) -> &mut Self
     where
         R: Document + Default + 'static,
     {
-        self.node_reducers.push(Box::new(NodeReducer::<R, _> {
+        self.node_conflicts.push(Box::new(NodeConflictHook::<R, _> {
             f,
             _pd: std::marker::PhantomData,
         }));
         self
     }
 
-    /// Fold every edge this batch creates. One payload type per graph, so one
-    /// closure.
-    pub fn reduce_edge(&mut self, f: impl FnMut(&mut G) + 'static) -> &mut Self {
-        self.edge_reducer = Some(Box::new(f));
+    /// Resolve every edge this batch writes. One payload type per graph, so one
+    /// hook, and the stored payload on a live id is what the hook compares the
+    /// declared one against (`declared` is the payload type's default — an edge
+    /// declaration names a head, not a payload).
+    ///
+    /// Called with `(default, default)` when the id is free: a creation has no
+    /// stored row to compare against, and the hook's answer is the payload that
+    /// lands.
+    pub fn on_edge_conflict(&mut self, f: impl Fn(&G, &G) -> G + 'static) -> &mut Self {
+        self.edge_conflict = Some(Box::new(f));
         self
     }
 
-    /// Fold every cluster payload this batch declares — `&mut Dict`, because a
-    /// cluster's payload is dynamic (its `kind` is a run-time vocabulary, so no
-    /// declared Rust type exists for it).
+    /// Resolve every cluster payload this batch declares — `Dict` on both sides,
+    /// because a cluster's payload is dynamic (its `kind` is a run-time
+    /// vocabulary, so no declared Rust type exists for it).
+    ///
+    /// This is the one hook whose two sides are both real payloads: `old` is the
+    /// stored map and `declared` is that map with this declaration's entries
+    /// merged in, so a hook can decide between them (`|old, declared| if
+    /// declared["ts"] >= old["ts"] { declared.clone() } else { old.clone() }`).
+    /// A cluster that does not exist yet is created by calling the hook with
+    /// `(empty, declared)`.
     ///
     /// Optional, like every builder here: a batch with only declarations writes
     /// just the nodes and edges.
-    pub fn reduce_cluster(&mut self, f: impl FnMut(&mut Dict) + 'static) -> &mut Self {
-        self.cluster_reducer = Some(Box::new(f));
+    pub fn on_cluster_conflict(&mut self, f: impl Fn(&Dict, &Dict) -> Dict + 'static) -> &mut Self {
+        self.cluster_conflict = Some(Box::new(f));
         self
     }
 
@@ -1395,9 +1428,9 @@ impl<G: GraphEncode + Default> Fragment<G> {
     fn check_retractable(&self) -> Result<()> {
         let writes = self.rows.len()
             + self.clusters.len()
-            + self.node_reducers.len()
-            + usize::from(self.edge_reducer.is_some())
-            + usize::from(self.cluster_reducer.is_some())
+            + self.node_conflicts.len()
+            + usize::from(self.edge_conflict.is_some())
+            + usize::from(self.cluster_conflict.is_some())
             + self
                 .ops
                 .iter()
@@ -1463,10 +1496,10 @@ impl<G: GraphEncode + Default> Fragment<G> {
         //
         // `Decl::edge_at` is how a fragment NAMES an edge that is already there.
         // Naming it does three things at once, and all three are the same fact:
-        // the row is re-asserted (so this fragment's `reduce_edge` folds over
-        // it — the update path), its membership rows are the ones the cluster
-        // declarations below write, and a head that differs is an in-place
-        // rewrite rather than a refusal.
+        // the row is re-asserted (so this fragment's `on_edge_conflict` decides
+        // the payload — the update path), its membership rows are the ones the
+        // cluster declarations below write, and a head that differs is an
+        // in-place rewrite rather than a refusal.
         let reserved: BTreeSet<u64> = edges.iter().filter_map(|(_, id)| *id).collect();
         let mut next_edge = match graph.max_edge_id()? {
             Some(max) => max.checked_add(1),
@@ -1489,12 +1522,16 @@ impl<G: GraphEncode + Default> Fragment<G> {
             };
             match graph.get_edge(id)? {
                 Some(stored) => {
-                    // The stored payload, with this fragment's reducers folded
-                    // over it: an update is a write, and it keeps the id.
-                    let mut payload = G::decode_payload(&stored.payload);
-                    if let Some(reduce) = self.edge_reducer.as_mut() {
-                        reduce(&mut payload);
-                    }
+                    // The stored payload and the declared one go to the hook,
+                    // whose answer is what lands: an update is a write, and it
+                    // keeps the id. An edge declaration names a head, not a
+                    // payload, so the declared side is the payload type's default.
+                    let stored_payload = G::decode_payload(&stored.payload);
+                    let declared = G::default();
+                    let payload = match self.edge_conflict.as_ref() {
+                        Some(resolve) => resolve(&stored_payload, &declared),
+                        None => stored_payload,
+                    };
                     let same_head = stored.src == head.src
                         && stored.dst == head.dst
                         && graph
@@ -1502,10 +1539,22 @@ impl<G: GraphEncode + Default> Fragment<G> {
                             .as_deref()
                             == Some(head.predicate.as_str());
                     if same_head {
-                        // Re-assertion: the same assertion, whose rows are
-                        // already right — its open attributes (0x01) are a
-                        // segment of their own and not this declaration's to
-                        // clear.
+                        // Re-assertion at a live id: the head is the same, but
+                        // the payload is not necessarily — a reducer folded a
+                        // new value into a declared field, and the entries the
+                        // OLD payload wrote into the `#[ok_index]` faces are
+                        // only re-derivable from the old payload. So the
+                        // previous assertion's rows leave first, exactly as the
+                        // new-head branch does, and the re-assertion lands in
+                        // the same batch: the id is never absent at commit.
+                        //
+                        // `unlink_into` is not a delete: it takes the primary,
+                        // the four traversal faces and the declared faces, and
+                        // leaves the dynamic segment (0x01) alone — the open
+                        // attributes are a segment of their own and not this
+                        // declaration's to clear. That is the whole difference
+                        // between this and delete-then-create.
+                        graph.unlink_into(batch, id)?;
                         graph.assert_into(batch, head, &payload, id)?;
                     } else {
                         // A new head at the same id: the old assertion's rows
@@ -1517,10 +1566,13 @@ impl<G: GraphEncode + Default> Fragment<G> {
                     }
                 }
                 None => {
-                    let mut payload = G::default();
-                    if let Some(reduce) = self.edge_reducer.as_mut() {
-                        reduce(&mut payload);
-                    }
+                    // A creation: no row to compare against, so the hook sees
+                    // (declared, declared) — its answer is the payload.
+                    let declared = G::default();
+                    let payload = match self.edge_conflict.as_ref() {
+                        Some(resolve) => resolve(&declared, &declared),
+                        None => declared,
+                    };
                     graph.link_into(batch, head, &payload, id)?;
                 }
             }
@@ -1687,12 +1739,17 @@ impl<G: GraphEncode + Default> Fragment<G> {
 
             let mut payload = state.payload.clone();
             if !delete_row {
+                // The two sides the hook compares: the stored map, and that map
+                // with this declaration's entries merged in. Without a hook the
+                // merged map is what lands, which is the plain write.
+                let mut declared = state.payload.clone();
                 for (name, value) in entry.payload.iter() {
-                    payload.insert(name.clone(), value.clone());
+                    declared.insert(name.clone(), value.clone());
                 }
-                if let Some(reduce) = self.cluster_reducer.as_mut().filter(|_| entry.from_caller) {
-                    reduce(&mut payload);
-                }
+                payload = match self.cluster_conflict.as_ref().filter(|_| entry.from_caller) {
+                    Some(resolve) => resolve(&state.payload, &declared),
+                    None => declared,
+                };
             }
 
             let (put_members, del_members): (Vec<u64>, Vec<u64>) = if delete_row {
@@ -1728,7 +1785,7 @@ impl<G: GraphEncode + Default> Fragment<G> {
 
         // ---- 6. Write: node rows, then the cluster faces, one batch ----
         let mut adapter = BatchStore::new(graph.store(), batch);
-        for reduce in &mut self.node_reducers {
+        for reduce in &mut self.node_conflicts {
             let node_ns = reduce.ns();
             let header = reduce.header(&node_ns.to_be_bytes());
             for (_, pkey) in endpoints.iter().filter(|(ns, _)| *ns == node_ns) {
@@ -1785,13 +1842,14 @@ impl<G: GraphEncode + Default> Fragment<G> {
 
 impl<S: VirtualStorage, G: GraphEncode + Default> Graph<S, G> {
     /// The write verb (ADR-0066 §7): consume `fragment` and land its declared
-    /// rows, its clusters and its three reduces as ONE engine commit. A refused
-    /// fragment writes nothing — every check runs before the commit — and the
-    /// report names the ids it allocated.
+    /// rows, its clusters and its three conflict hooks as ONE engine commit. A
+    /// refused fragment writes nothing — every check runs before the commit — and
+    /// the report names the ids it allocated.
     ///
-    /// There is no update verb: an update is this verb with a reduce. Naming an
-    /// edge at its own id ([`Decl::edge_at`]) makes `reduce_edge` fold over that
-    /// row, so its payload changes while its id, faces and memberships stand.
+    /// There is no update verb: an update is this verb with a conflict hook.
+    /// Naming an edge at its own id ([`Decl::edge_at`]) hands `on_edge_conflict`
+    /// that row's stored payload beside the declared one, so its payload changes
+    /// while its id, faces and memberships stand.
     pub fn incorporate(&mut self, fragment: Fragment<G>) -> Result<WriteReport> {
         fragment.check_incorporable()?;
         let mut rows = Batch::default();

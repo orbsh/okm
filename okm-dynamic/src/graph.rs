@@ -25,11 +25,12 @@
 
 use okm_core::index::PRIMARY_SLOT;
 use okm_core::model::graph::{
-    EDGE_IN_SLOT, EDGE_OUT_SLOT, EDGE_PREDICATE_IN_SLOT, EDGE_PREDICATE_OUT_SLOT, NodeRef,
+    Direction, EDGE_IN_SLOT, EDGE_OUT_SLOT, EDGE_PREDICATE_IN_SLOT, EDGE_PREDICATE_OUT_SLOT,
+    EdgeStep, HopHead, NodeRef,
 };
 use okm_core::obj_vocab::{FIELD_VOCAB, Faces, PREDICATE_VOCAB, Vocabulary};
 use okm_core::schema::CollectionSchema;
-use okm_core::storage::{Batch, VirtualStorage, scan_suffix_kv};
+use okm_core::storage::{Batch, ScanIter, VirtualStorage, prefix_end, scan_suffix_kv};
 use okm_value::{Dict, decode_named};
 
 /// One dynamic edge: endpoints by reference, predicate by name,
@@ -89,6 +90,27 @@ impl<S: VirtualStorage> Graph<S> {
     /// pays one engine probe per name.
     pub fn vocab_pending(&self) -> usize {
         self.predicates.pending_len() + self.fields.pending_len()
+    }
+
+    /// The engine handle. The cluster faces (`crate::cluster`) and the derived
+    /// rebuild read through this, so a read verb needs no `&mut` on the graph.
+    pub(crate) fn store_ref(&self) -> &S {
+        &self.store
+    }
+
+    /// The ns as the two header bytes every key in this crate starts with —
+    /// the shape core's key builders take (`cluster_key`, `edge_member_key`, …),
+    /// so the dynamic form builds the same bytes through the same functions.
+    pub(crate) fn ns_pair(&self) -> [u8; 2] {
+        [self.ns[0], self.ns[1]]
+    }
+
+    /// One engine commit: the single boundary every write verb ends on, so
+    /// `incorporate` and `retract` cannot drift apart on how a batch lands.
+    pub(crate) fn commit(&self, batch: Batch) -> Result<(), String> {
+        self.store
+            .commit_batch(batch)
+            .map_err(|e| format!("dynamic graph commit failed: {e}"))
     }
 
     /// Membership (ADR-0017 §4): the declaration's member set rides the
@@ -239,9 +261,12 @@ impl<S: VirtualStorage> Graph<S> {
         self.face_key(okm_core::index::DYNAMIC_SLOT, &[&edge_id.to_be_bytes()])
     }
 
-    /// Write one edge: primary + predicate index + four traversal faces +
-    /// the predicate vocabulary, one engine batch. Attributes ride the
-    /// primary's value (nTLV frames after `[src][dst][predicate_vocab_id]`).
+    /// Write one edge: primary + predicate index + four traversal faces + the
+    /// dynamic segment + the predicate vocabulary, one engine batch.
+    ///
+    /// `pub(crate)` on the caller's-batch form because the write verb owns the
+    /// commit: [`crate::cluster::DynFragment::write_into`] lands this edge's
+    /// rows, its cluster membership rows and the cluster rows in ONE batch.
     pub fn link(&mut self, edge: &DynEdge, edge_id: u64) -> Result<(), String> {
         let pk = self.primary_key(edge_id);
         if self.store.get(&pk).map_err(|e| e.to_string())?.is_some() {
@@ -265,7 +290,15 @@ impl<S: VirtualStorage> Graph<S> {
         self.write_into(batch, edge, edge_id)
     }
 
-    fn write_into(
+    /// The rows of one assertion, attributes included — the shape both the
+    /// create path and a re-assertion of a live id write.
+    ///
+    /// The dynamic segment is REPLACED, not merged: the entry is deleted and
+    /// rewritten with this edge's attributes, so an assertion that dropped an
+    /// attribute cannot leave the old frame behind. (On a fresh id the delete
+    /// is a no-op; on a re-assertion it is what makes the write idempotent
+    /// instead of additive.)
+    pub(crate) fn write_into(
         &mut self,
         batch: &mut Batch,
         edge: &DynEdge,
@@ -281,11 +314,12 @@ impl<S: VirtualStorage> Graph<S> {
         let id_be = edge_id.to_be_bytes();
 
         batch.put(self.primary_key(edge_id), body);
-        // Open attributes ride the dynamic segment, one entry per edge — a
-        // zero-frame list is never written (absent = no attributes).
-        if !attr_wire.is_empty() {
-            batch.put(self.fields_key(edge_id), attr_wire);
-        }
+        // Open attributes ride the dynamic segment, one entry per edge. The put
+        // is unconditional and therefore a REPLACE: the segment is keyed by the
+        // edge alone, so a re-assertion overwrites the previous frame list
+        // instead of merging into it, and no stale attribute can outlive the
+        // assertion that wrote it.
+        batch.put(self.fields_key(edge_id), attr_wire);
         batch.put(
             self.face_key(EDGE_OUT_SLOT, &[&src_wire, &dst_wire, &id_be]),
             Vec::new(),
@@ -321,6 +355,17 @@ impl<S: VirtualStorage> Graph<S> {
     /// re-derives them from the stored body (fetched first). Exact by
     /// construction — the dynamic form declares no attribute faces to sweep.
     pub fn unlink(&mut self, edge_id: u64) -> Result<(), String> {
+        let mut batch = Batch::default();
+        self.unlink_into(&mut batch, edge_id)?;
+        self.store
+            .commit_batch(batch)
+            .map_err(|e| format!("dynamic graph unlink commit failed: {e}"))
+    }
+
+    /// The same delete, encoded into a caller-owned batch — the shape
+    /// `retract` needs, because an edge's rows and the membership rows that
+    /// name it leave in ONE commit.
+    pub(crate) fn unlink_into(&mut self, batch: &mut Batch, edge_id: u64) -> Result<(), String> {
         let pk = self.primary_key(edge_id);
         let body = self
             .store
@@ -331,7 +376,6 @@ impl<S: VirtualStorage> Graph<S> {
         let id_be = edge_id.to_be_bytes();
         let predicate_be = predicate_vocab_id.to_be_bytes();
 
-        let mut batch = Batch::default();
         batch.del(&pk);
         batch.del(&self.fields_key(edge_id));
         batch.del(&self.face_key(EDGE_OUT_SLOT, &[&src_wire, &dst_wire, &id_be]));
@@ -344,9 +388,38 @@ impl<S: VirtualStorage> Graph<S> {
             EDGE_PREDICATE_IN_SLOT,
             &[&predicate_be, &dst_wire, &src_wire, &id_be],
         ));
-        self.store
-            .commit_batch(batch)
-            .map_err(|e| format!("dynamic graph unlink commit failed: {e}"))
+        Ok(())
+    }
+
+    /// The highest edge id this graph holds — `None` when it holds no edges.
+    ///
+    /// Primary entries are `[ns][0x00][edge_id 8B]` in big-endian order, so the
+    /// maximum IS the last key of that range: one reverse step, which is what
+    /// id allocation on the write path runs (the static form's
+    /// `Graph::max_edge_id`, over the same bytes).
+    pub fn max_edge_id(&self) -> Result<Option<u64>, String> {
+        let mut begin = self.ns.clone();
+        okm_core::write_slot(&mut begin, PRIMARY_SLOT);
+        let end = prefix_end(&begin);
+        let head = begin.len();
+        let mut it = self.store.scan_range(&begin, end.as_deref());
+        let Some(item) = it.next_back() else {
+            return Ok(None);
+        };
+        let (key, _) = item.map_err(|e| e.to_string())?;
+        // The suffix of a primary entry IS the id — a key of another width means
+        // the store was written by a different declaration, which is reported
+        // rather than truncated into a wrong number.
+        if key.len() != head + 8 {
+            return Err(format!(
+                "an edge primary entry is {} byte(s) long, but this form makes it {}",
+                key.len(),
+                head + 8
+            ));
+        }
+        Ok(<[u8; 8]>::try_from(&key[head..])
+            .ok()
+            .map(u64::from_be_bytes))
     }
 
     /// Walk `[src ref][dst ref][predicate_vocab_id]` from the body front; returns
@@ -537,6 +610,357 @@ impl<S: VirtualStorage> Graph<S> {
     pub fn predicate_vocab_name(&mut self, id: u16) -> Result<Option<String>, String> {
         self.predicate_label(id)
     }
+
+    /// The predicate's vocabulary id, read-only — `None` when no edge ever
+    /// carried it, so no face can hold one.
+    ///
+    /// The eager `typed_out` needs `&mut self` because it warms the handle's
+    /// vocabulary cache; this is the same probe with a throwaway cache, which
+    /// is what lets a stream (holding `&self`) push a predicate down to the
+    /// 0x08/0x09 prefix when [`DynEdgeStream::by`] names one. One read of the
+    /// predicate's 0x04 face, not a walk of the edges.
+    pub fn predicate_id(&self, predicate: &str) -> Result<Option<u16>, String> {
+        predicate_id_in(&self.store, &self.ns, predicate)
+    }
+
+    /// The out-edges of one node as a LAZY, ORDERED, repositionable stream
+    /// (face 0x06) — one [`EdgeStep`] per `next()`, read straight off the entry.
+    ///
+    /// The eager verbs ([`out_edges`](Self::out_edges)) answer a `Vec` and are
+    /// the right shape for "list them all"; this is the shape for "walk until
+    /// you find". Nothing is collected, an abandoned stream stops reading, and
+    /// `find`/`take`/`take_while` cost only the entries they touch.
+    ///
+    /// **The far endpoint comes from the entry's key.** Every traversal entry
+    /// carries both endpoints (`[src][dst][edge_id]`), so a hop's destination is
+    /// already in hand — this stream never reads the edge's primary row. What
+    /// the step can say is therefore what the entry states: the endpoints and
+    /// the id always, the predicate's id only when the scan went through a
+    /// qualified face ([`by`](DynEdgeStream::by)) — 0x06/0x07 do not carry one.
+    ///
+    /// The direction is a PARAMETER, not a second API: [`inn`](Self::inn)
+    /// answers the same stream over the other face, so the two compose with
+    /// `chain`, `zip` and `flat_map` without an enum of shapes.
+    ///
+    /// A fault mid-walk is parked, not raised: [`DynEdgeStream::error`] answers
+    /// it, because an [`Iterator`] has no place to put one and a corrupt face
+    /// must not read as "no more neighbours".
+    pub fn out(&self, node: &NodeRef) -> DynEdgeStream<'_, S> {
+        DynEdgeStream::new(&self.store, self.ns_pair(), Direction::Out, node.clone())
+    }
+
+    /// The in-edges of one node as the same [`DynEdgeStream`] over face 0x07 —
+    /// [`out`](Self::out) with the direction as its only difference.
+    ///
+    /// Its step's `far` is the SOURCE of the edge, and `head.dst` is the node it
+    /// was started from: the mirror of the out walk, on the face the double
+    /// write already materialized.
+    pub fn inn(&self, node: &NodeRef) -> DynEdgeStream<'_, S> {
+        DynEdgeStream::new(&self.store, self.ns_pair(), Direction::In, node.clone())
+    }
+
+    /// One hop out of `node` — the chainable spelling of [`out`](Self::out):
+    /// a hop is `g.walk(n)`, two hops is
+    /// `g.walk(n).flat_map(|s| g.walk(&s.far))`, and the depth lives in the
+    /// caller's iterator chain rather than in a verb.
+    pub fn walk(&self, node: &NodeRef) -> DynEdgeStream<'_, S> {
+        self.out(node)
+    }
+}
+
+/// One node's edges, one direction, as a LAZY ORDERED CURSOR over faces
+/// 0x06/0x07 (or 0x08/0x09 once a predicate is pushed down).
+///
+/// The type is the dynamic counterpart of core's `EdgeStream`: same faces, same
+/// entry key, same step (`okm_core::EdgeStep`), so a consumer written against
+/// one form works against the other. What differs is only what the dynamic
+/// form always differs in — nothing here names a declared type.
+///
+/// Three contracts hold it together:
+///
+/// - **One entry per step.** Construction puts the first entry on top (a
+///   position has to exist before it can be read), and each `next` hands that
+///   entry back and pulls at most one more — so a consumer reads at most one
+///   entry ahead of what it was given, and dropping the stream stops the scan
+///   where it stands.
+/// - **Ordered by entry key.** The key is
+///   `[ns][slot][scanned prefix][far ref][edge_id]`, i.e. the far endpoint's
+///   byte order and then the id — the address order of the face, not an
+///   insertion order. That is what makes it a
+///   [`Seekable`](okm_core::seek::Seekable), and what makes two streams over
+///   the same face alignable by `okm-query`'s operators.
+/// - **Cycle-unaware.** The stream answers one node's edges and stops. "The
+///   same node" depends on the caller's own filter, so a visited set here would
+///   price every walk for a question only the caller can ask.
+pub struct DynEdgeStream<'a, S> {
+    /// The engine the face lives in — re-read by [`by`](Self::by), which
+    /// reopens the scan on another face.
+    store: &'a S,
+    /// The graph's namespace, as the two header bytes every key starts with.
+    ns: [u8; 2],
+    /// Which face family this stream walks.
+    dir: Direction,
+    /// The node the walk started from: the scanned prefix, and the `near` side
+    /// of every head the stream reports.
+    node: NodeRef,
+    /// The pushed-down predicate id, or `None` for the untyped face.
+    filter: Option<u16>,
+    /// The face cursor. `None` means this stream is SPENT before its first
+    /// item — a predicate nobody interned has no face to walk.
+    scan: Option<ScanIter>,
+    /// Bytes of key before the far endpoint: the scanned prefix's length.
+    suffix_at: usize,
+    /// The entry on top; `None` once spent.
+    cur: Option<(Vec<u8>, EdgeStep)>,
+    /// The fault that ended the walk, if one did.
+    err: Option<String>,
+}
+
+impl<'a, S: VirtualStorage> DynEdgeStream<'a, S> {
+    fn new(store: &'a S, ns: [u8; 2], dir: Direction, node: NodeRef) -> Self {
+        let mut stream = Self {
+            store,
+            ns,
+            dir,
+            node,
+            filter: None,
+            scan: None,
+            suffix_at: 0,
+            cur: None,
+            err: None,
+        };
+        stream.reopen(None);
+        stream
+    }
+
+    /// Where this stream walks — the face family, the pushed-down filter and
+    /// the node it was opened on.
+    fn prefix(&self) -> Vec<u8> {
+        edge_face_prefix(self.ns, self.dir, self.filter, &self.node)
+    }
+
+    /// Point the cursor at (possibly) another face and re-fill it.
+    ///
+    /// A filter change is a different FACE, not a narrower range on the same
+    /// one, so the position does not survive: the old scan is dropped and the
+    /// new one starts at its own first entry.
+    fn reopen(&mut self, filter: Option<u16>) {
+        self.filter = filter;
+        let prefix = self.prefix();
+        self.suffix_at = prefix.len();
+        self.cur = None;
+        self.err = None;
+        let end = prefix_end(&prefix);
+        self.scan = Some(self.store.scan_range(&prefix, end.as_deref()));
+        self.fill();
+    }
+
+    /// Put the next decodable entry on top, or clear it when the face ends.
+    ///
+    /// An entry whose key this face cannot carry (a shorter suffix than an
+    /// endpoint plus an id, a ref that does not parse) is SKIPPED rather than
+    /// guessed at — the entry belongs to some other layout, and inventing a hop
+    /// from it would be worse than not seeing it.
+    fn fill(&mut self) {
+        self.cur = None;
+        loop {
+            let next = match self.scan.as_mut() {
+                Some(scan) => scan.next(),
+                None => return,
+            };
+            match next {
+                None => return,
+                Some(Err(e)) => {
+                    self.err = Some(e.to_string());
+                    self.scan = None;
+                    return;
+                }
+                Some(Ok((key, _))) => {
+                    if let Some(step) =
+                        edge_step(&key, self.suffix_at, self.dir, &self.node, self.filter)
+                    {
+                        self.cur = Some((key, step));
+                        return;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Narrow this hop to one predicate, PUSHED DOWN onto the 0x08/0x09 prefix
+    /// — one scan of that predicate's entries for this node, not a scan of the
+    /// node's whole face with discards.
+    ///
+    /// The predicate's id comes from the graph's own vocabulary, so an unknown
+    /// name is an EMPTY stream (no edge can carry a predicate nobody wrote),
+    /// and the `Result` carries only the vocabulary read's own fault.
+    ///
+    /// A filter change is a new face: the position restarts at that face's
+    /// first entry, and whatever the old cursor had walked is dropped with it
+    /// (it was a different key space, so its keys are not bounds in this one).
+    pub fn by(mut self, predicate: &str) -> Result<Self, String> {
+        match predicate_id_in(self.store, &self.ns, predicate)? {
+            Some(id) => {
+                self.reopen(Some(id));
+                Ok(self)
+            }
+            None => {
+                self.filter = None;
+                self.scan = None;
+                self.cur = None;
+                Ok(self)
+            }
+        }
+    }
+
+    /// The fault that ended this walk, if an engine failed mid-scan. `None` for
+    /// a stream that simply ran out of entries — the distinction [`Iterator`]
+    /// cannot draw, and the one a caller needs before it trusts "no more
+    /// neighbours".
+    pub fn error(&self) -> Option<&String> {
+        self.err.as_ref()
+    }
+
+    /// Which direction this stream walks.
+    pub fn direction(&self) -> Direction {
+        self.dir
+    }
+
+    /// The node the walk started from.
+    pub fn node(&self) -> &NodeRef {
+        &self.node
+    }
+
+    /// The pushed-down predicate id, when [`by`](Self::by) narrowed this
+    /// stream.
+    pub fn predicate(&self) -> Option<u16> {
+        self.filter
+    }
+}
+
+impl<S: VirtualStorage> Iterator for DynEdgeStream<'_, S> {
+    type Item = EdgeStep;
+
+    fn next(&mut self) -> Option<EdgeStep> {
+        let (_, step) = self.cur.take()?;
+        self.fill();
+        Some(step)
+    }
+}
+
+impl<S: VirtualStorage> okm_core::seek::Seekable for DynEdgeStream<'_, S> {
+    /// The face entry's RAW key — the byte string the scan's cursor speaks, so
+    /// a position on one stream is directly usable as another's bound when both
+    /// walk the same face family.
+    type Key = Vec<u8>;
+
+    fn key(&self) -> Option<&Vec<u8>> {
+        self.cur.as_ref().map(|(key, _)| key)
+    }
+
+    fn step(&mut self) -> bool {
+        if self.cur.is_none() {
+            return false;
+        }
+        self.fill();
+        self.cur.is_some()
+    }
+
+    fn seek(&mut self, lower: &Vec<u8>) -> bool {
+        match &self.cur {
+            // At or past the bound: forward-only, so the position is kept.
+            Some((key, _)) if key >= lower => return true,
+            // Spent (or never opened): nothing at or after any bound remains.
+            None => return false,
+            Some(_) => {}
+        }
+        let Some(scan) = self.scan.as_mut() else {
+            return false;
+        };
+        // The cursor moves; the entry it lands on is not consumed by the seek,
+        // so `fill` puts it on top (and skips anything undecodable after it).
+        if !scan.seek(lower) {
+            self.cur = None;
+            return false;
+        }
+        self.fill();
+        self.cur.is_some()
+    }
+}
+
+/// Read one hop out of a face entry's key: `[far ref][edge_id]` after the
+/// scanned prefix, turned into the edge's own direction with the node the
+/// stream started from filling the near side.
+///
+/// Public because a cursor that OWNS its scan (a host binding cannot hold a
+/// `&S` borrow across its own calls, so it cannot store a [`DynEdgeStream`])
+/// still has to read a hop the way this face states it. Exposing the rule is
+/// what keeps one implementation of it: a binding's cursor walks the entries
+/// and asks this function what each one means.
+pub fn edge_step(
+    key: &[u8],
+    suffix_at: usize,
+    dir: Direction,
+    node: &NodeRef,
+    filter: Option<u16>,
+) -> Option<EdgeStep> {
+    let suffix = key.get(suffix_at..)?;
+    let (far, taken) = NodeRef::decode(suffix)?;
+    let id = <[u8; 8]>::try_from(suffix.get(taken..)?).ok()?;
+    let (src, dst) = match dir {
+        Direction::Out => (node.clone(), far.clone()),
+        Direction::In => (far.clone(), node.clone()),
+    };
+    Some(EdgeStep {
+        edge_id: u64::from_be_bytes(id),
+        far,
+        head: HopHead {
+            src,
+            dst,
+            predicate: filter,
+        },
+    })
+}
+
+/// The scan prefix one node's walk opens on: `[ns][slot][predicate?][node ref]`,
+/// where the slot is the face family the direction (and the pushed-down
+/// predicate) selects. The counterpart of [`edge_step`] for the other half of
+/// the layout: reading where a walk starts, not what an entry means.
+pub fn edge_face_prefix(
+    ns: [u8; 2],
+    dir: Direction,
+    filter: Option<u16>,
+    node: &NodeRef,
+) -> Vec<u8> {
+    let mut prefix = ns.to_vec();
+    okm_core::write_slot(&mut prefix, dir.slot(filter));
+    if let Some(id) = filter {
+        prefix.extend_from_slice(&id.to_be_bytes());
+    }
+    prefix.extend_from_slice(&node.encode());
+    prefix
+}
+
+/// The predicate's id, read-only: a throwaway vocabulary cache over a shared
+/// store handle.
+///
+/// Public for the same reason [`edge_step`] is: a cursor that owns its scan
+/// reopens on another face when a predicate is pushed down, and the id that
+/// names that face comes from the graph's own vocabulary — through this probe,
+/// never through a re-derivation of the vocabulary's key layout.
+///
+/// The cache exists because the probe answers `Option<u16>` through a
+/// [`Names`](okm_value::Names) door, which is the same door the write path
+/// allocates through; a fresh one costs nothing on a cache miss and cannot go
+/// stale, which is what a `&self` handle needs.
+pub fn predicate_id_in<S: VirtualStorage + ?Sized>(
+    store: &S,
+    ns: &[u8],
+    predicate: &str,
+) -> Result<Option<u16>, String> {
+    let mut cache = Vocabulary::<u16>::new();
+    let mut door = Faces::<_, u16>::new(store, ns, PREDICATE_VOCAB);
+    cache.id_of(&mut door, predicate).map_err(|e| e.to_string())
 }
 
 /// Face-suffix → edge ids: every traversal/predicate face ends in an 8-byte
