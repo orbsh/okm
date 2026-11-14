@@ -72,10 +72,9 @@ assembles a key writes a slot the same way.
 0x07  graph in                     [ns][0x07][dst ref][src ref][edge_id]
 0x08  graph predicate+out          [ns][0x08][predicate_id][src ref][dst ref][edge_id]
 0x09  graph predicate+in           [ns][0x09][predicate_id][dst ref][src ref][edge_id]
-0x0A  cluster              [ns][0x0A][kind][group]               (value = parent_id + payload)
-0x0B  edge member        [ns][0x0B][kind][group][edge_id]       (ADR-0066)
-0x0C  node member        [ns][0x0C][kind][group][node][edge_id] (derived, rebuildable)
-0x0D  child cluster index        [ns][0x0D][kind][parent][child]    (derived)
+0x0A  cluster                   [ns][0x0A][kind][hyper_id]           (value = parent_id + payload; ADR-0066)
+0x0B  edge member               [ns][0x0B][kind][hyper_id][edge_id]  (ADR-0066)
+0x0C  child cluster index       [ns][0x0C][kind][parent][child]    (derived, rebuildable)
 0x0E  Extension                [ns][0x0E][subkind]…      each subkind owns its contract (0x01 = vector snapshot)
 0x0F  table meta                   [ns][0x0F]                   → name → bytes map (ADR-0043)
 ```
@@ -153,7 +152,7 @@ byte, no counter, nothing to enumerate.
 - **A fixed face carries no counter.** If a family that is one face today
   ever needs instances, it becomes a counting family (take a segment from
   0x6–0x0F) — it does not reuse its fixed-face number for sub-kinds. New
-  single-face kinds take the next free fixed-face number (four left, 0x0B–0x0E).
+  single-face kinds take the next free fixed-face number (one left, 0x0D).
 - **One counter width, 12 bits.** There is no per-family counter width;
   the family byte's low nibble belongs to the counter.
 - **Declared indexes and reduces are 4095 per collection** (the counter's

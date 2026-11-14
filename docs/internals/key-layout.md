@@ -57,8 +57,9 @@ counting family   first byte high nibble != 0   slot = 2 bytes   [ns][0x1n][nn]
                                                                  counter = (n << 8) | nn
 ```
 
-**Fixed faces** (1 byte, 16 numbers, 12 in use) — a family that is a single
-face, with nothing to enumerate. Big-endian is why the high nibble leads,
+**Fixed faces** (1 byte, 16 numbers, all 16 in use: `0x00`–`0x0D` core, `0x0E`
+Extension, `0x0F` meta) — a family that is a single face, with nothing to
+enumerate. Big-endian is why the high nibble leads,
 and why the rule holds: 0x00–0x0F can never equal a counting family's first
 byte (≥ 0x10).
 
@@ -73,10 +74,10 @@ byte (≥ 0x10).
 0x07  graph in                     [ns][0x07][dst ref][src ref][edge_id]
 0x08  graph predicate+out          [ns][0x08][predicate_id][src ref][dst ref][edge_id]
 0x09  graph predicate+in           [ns][0x09][predicate_id][dst ref][src ref][edge_id]
-0x0A  cluster        [ns][0x0A][kind][group]               → [parent_id u64][dynamic payload]
-0x0B  edge member  [ns][0x0B][kind][group][edge_id]      → empty
-0x0C  node member  [ns][0x0C][kind][group][node][edge_id] → empty, derived from 0x0B
-0x0D  child cluster index  [ns][0x0D][kind][parent][child]       → empty, derived
+0x0A  cluster              [ns][0x0A][kind][hyper_id]           → [parent_id u64][dynamic payload]
+0x0B  edge member          [ns][0x0B][kind][hyper_id][edge_id]  → empty
+0x0C  child cluster index  [ns][0x0C][kind][parent][child]      → empty, derived (ADR-0066)
+0x0D  edge → cluster index  [ns][0x0D][edge_id][kind][hyper_id]  → empty, derived (ADR-0066)
 0x0E  Extension                [ns][0x0E][subkind]…          each subkind owns its contract: 0x01 = vector snapshot (droppable)
 0x0F  table meta                    [ns][0x0F]                  → name → bytes map (ADR-0043)
 (rows are grouped by ROLE: the two vocabularies first, then the graph faces
@@ -181,7 +182,7 @@ level.
 ```text
 [ns][0x02]              → vocabulary allocation cursor (entries at [ns][0x02][id])   ← 69197cd
 [ns][0x04]              → predicate cursor (same shape)
-[ns][0x0A][kind][group] → cluster row (members live on 0x0B/0x0C, other faces)
+[ns][0x0A][kind][hyper_id] → cluster row (members live on 0x0B, children on 0x0C)
 [ns][0x0F]              → table metadata (no children)
 ```
 

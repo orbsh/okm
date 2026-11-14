@@ -1,96 +1,175 @@
 # OKM — Object-Keyspace Mapping（对象键空间映射）
 
-> ORM 的体验，Redis 的速度，PostgreSQL 的持久，不受边界限制的功能。
+> And what, SQL, must we give in return?
 
-> 英文版为主文档（[README.md](README.md)），本文为对应中文版。
+[English version](README.md)
 
-OKM 是对标 ORM 的范式——逻辑定义是 ORM 式的，代码生成产出底层 KV 操作。ORM 将对象映射到关系表，OKM 将对象映射到 KV 键空间。通过派生宏（`KeyEncode` / `DocumentEncode` / `JunctionEncode` / `GraphEncode`）+ 数字命名空间 ID，构建零成本抽象语义数据层：开发侧如同 ORM 般声明式，编译后退化为纯指针偏移计算。
+应用是数据的唯一读者，数据库就不该是一个网络服务。OKM 是一个嵌入式、类型安全、编译期优化的存储引擎——它没有查询语言、没有优化器、没有运行时计划，因为你的应用代码已经知道每个查询的形态，剩下的只是让编译器也知道。
 
-关联阅读：[KV 存储引擎](https://github.com/orbsh/wiki/blob/main/kv-storage-engine.md) — 底层架构与设计模式（编码原理、索引策略、引擎层取舍）；[架构总览](docs/ARCHITECTURE.zh-CN.md)——双层声明机器（derive 展开 + 常量表）；[建模指南](docs/MODELING.zh-CN.md) — 规范性 schema 建模方法（四层建模法、三道读路径、覆盖索引克制、主键复合边界）；[查询配方](docs/query-recipes.zh-CN.md)——把 merge / intersect / difference / union、group_by 与 walk 组合成 SQL 形状，WHERE 边界记录；[图查询配方](docs/graph-queries.zh-CN.md)——图的面组合成 Cypher 形状的遍历；[并发与写者](docs/CONCURRENCY.zh-CN.md)——单写者的确切含义、哪些机制依赖它、以及四种能承载更多写者的形态。
+```rust
+use okm::prelude::*;
 
-## 这笔交易：缩小能力面，换非对称收益
+#[derive(KeyEncode)]                  // 身份独立声明：定宽、大端、无分隔符
+pub struct UserKey {
+    pub org_id: u32,
+    pub user_id: u64,
+}
 
-OKM 放弃的每一项能力，理由都是同一条：它只能活在运行时，成为「声明」与「字节」之间的一层。
+#[derive(DocumentEncode)]             // 行：身份 + 载荷 + 访问方法
+#[ok_ref(UserKey)]                    // 行自己钉住 key 类型
+#[ok_ns(1)]                           // ns 声明在这里，不在组装处
+#[ok_index(by_plan { fields(plan) })] // 一个面：条目键 = 被索引字段 + key 尾段
+pub struct User {
+    pub email: String,
+    pub plan: Plan,
+}
+```
 
-- **没有查询语言**：查询是代码，不是文本。运行时不解析 SQL，也不需要规划器去决定走哪个访问方法——调用点直接点名。
-- **没有优化器**：没有代价模型、没有统计信息、没有计划选择。物理路径就是声明和调用写明的那一条。
-- **没有无模式模式**：schema 活在类型系统里，改 schema 是一次部署，不是一条运行时 DDL。
-- **不能即席查询**：声明过的访问方法之外的形状（任意过滤、未索引的 join）不是「慢」，而是写不出来；join 是客户端的：两条有序键流上的集合代数（`merge` / `intersect` / `difference`），再对每个存活键回表一次。
-- **有些模式刻意不支持**：原子性止步于单个引擎；batch 里的扫描被拒绝，而不是返回部分视图；写入侧按构造只有一个写者。
+## SQL 是动态的，应用里的 SQL 是静态的
 
-换来的不是「代码更少」，而是成本形状不同。损失一次性付清——由作者在声明时付、由编译器在构建时付；收益在每一次操作上兑现：键是指向定长字节的指针，解码是一次切片，一次语义写入是一次提交，引擎选择变成免费的，因为字节就是字节。
+SQL 被设计成一种运行时才被解释的语言：查询是字符串，结构在运行前未知，于是数据库必须随身带着解析器、优化器、计划缓存——这些机制存在的唯一理由，就是"它不知道下一条查询长什么样"。
 
-这个不对称就是全部论证：一次性的限制，换每次操作的收益。它也是「打破抽象层级」在这里的确切含义——本该坐在声明与引擎之间当解释器的那一层（规划器、schema 目录、查询运行时）不是被优化掉，而是不存在。被这样砍掉的每一层，成本都转移到编译器或作者身上，而那是唯一能「只付一次」的地方。反过来说，**不可静态检查的限制会破坏这笔交易**：它退回运行时，成本重新变成每次操作都收。
+而你的应用不是这样。每一条查询都写在代码里，参数来自变量，形状在编译期就固定了：`WHERE plan = $1` 的形状永远是"按 plan 取行"，变的只是 `$1` 的值。所谓"动态查询"，绝大多数是**同一个静态形状换一个参数**；真正随用户输入改变结构的那一小部分——BI 面板里拼 WHERE、报表生成器、临时的 admin 查询——恰好是 SQL 的主场，也是嵌入式引擎不该假装能赢的地方，诚实的分界线就在这里。
 
-### 扩展：中间没有东西需要长大
+这笔交易因此可以一句话说完：**把"查询在运行时才知道"这个前提从引擎里拿掉**。前提拿掉之后，随之消失的是一整串为它而生的机制：解析器、优化器、计划缓存、参数嗅探、prepared statement 的生命周期、连接池、以及为了绕开这一整套而存在的缓存层。它们不是被更好的实现替代，而是**失去了存在的理由**。
 
-没有要登记表的目录，没有要喂统计信息的规划器，也没有要复制的查询服务——一张表就是一个命名空间编号加一份声明，一条查询就是调用点的代码。增加能力也是同一种加法：一张新表、一个新的面、schema-free 区上的一条 path 索引；不向库登记，也不向存储登记。于是天花板在单表，而不在系统：表是扩展的单位，每张表带着它唯一的写者（第二个写者的账单见[并发与写者](docs/CONCURRENCY.zh-CN.md)），而读取、过滤与 join 都在调用点执行，不另设服务。领域知识从不进入库——这正是业务逻辑属于这套机制的扩展、而不是插进某个运行时的插件的原因。
+代价同样明确，也必须说明：查询集合封闭。schema 变更要重新编译；ad-hoc 分析要另走一条路（CDC 到 Delta Lake，让分析侧用任意引擎）；"随手连上 psql 看一眼"这件事没有了。静态化省下的不是某个常数，而是**一整套从未真正为你产出的能力**的维护税。
 
-### 语言就是运行时
+## 为什么不是 SQL + Redis？
 
-客户端/服务端数据库为每条语句收一次往返，并且只用它自己的方言回答，于是必须够快的部分被推进存储过程——第二种语言、第二个调试器、一套只在方言里成立的类型系统，以及一份只存在于服务器里的逻辑副本。OKM 没有这道边界要翻：声明、查询和引擎句柄在**同一个进程**里（引擎在进程内时——fjall、redb、slatedb；远端存储是刻意的例外，它付那一次跳，也仅此而已），所以本该写成存储过程的那段代码就是普通 Rust——`cargo test`、类型检查、断点、crate、与服务其它部分同一套 review。它替代的那条语句没有线路要过：往返不是被加速了，而是不存在。
+现代后端的默认架构是“PostgreSQL 存真相，Redis 做加速”：
 
-## 为什么：代码即 DDL
+```
+应用 ──网络 RTT──→ SQL    （解析 → 计划 → 执行）
+应用 ──网络 RTT──→ Redis  （缓存，需要手工失效）
+```
 
-SQL 的核心价值不是执行性能，而是关系模型交付的可读性、建模规整度和团队协作确定性。裸露的二进制 Key 会退化为面条代码——团队无法理解 Key 的排列规则。解决方案：用 Rust 类型系统替代 SQL DDL，把 Schema 正确性从运行时数据库引擎提到编译期编译器。
+每一层都在为另一层的存在付钱：Redis 存在是因为 SQL 每次读取要付网络往返 + 解析 + 计划；SQL 中心化部署是因为查询是动态字符串，需要独立的解析服务。这两者互为因果，也是两者同时消失的原因。
 
-- **Struct 即 DDL**：SQL 定义表结构，Rust Struct 定义 Key 编码。编译器保证格式一致——任何试图写入错误格式 Key 的代码在编译期直接报错，不需要运行时校验。
-- **无模式是陷阱**：无模式存储来者不拒（数字字段可以写成字符串 `"25"` 甚至数组 `[25]`），代价是所有消费端代码写满防御性解析。强类型把脏数据在 `cargo check` 阶段熔断——连生成的资格都没有——同时保留 KV 引擎的硬件级速度，免掉 PG 的运行时 DDL 锁开销和 SQL 字符串解析税。
-- **Hex 稳定性测试**：编码漂移的最终防线。硬编码历史 hex 字节锁定物理 Key 布局；任何改动 ns、字段顺序或宽度的行为都让 CI 立刻失败（见 `okm-core/tests/integration.rs`）。
+| | SQL + Redis | OKM |
+|---|---|---|
+| 读一行 | 0.5–2 ms（RTT + 解析 + 计划） | ~1 µs（进程内 B-tree） |
+| 缓存层 | 需要（读太慢） | 不存在（读取本身已是内存速度） |
+| 缓存失效 | 一整门工程学科 | 没有缓存可失效 |
+| 部署清单 | 应用 + 数据库服务 + 连接池 | 一个二进制 |
+| 查询校验 | 运行时错误 | 编译期错误 |
+| 业务边界 | 两个系统、无跨系统事务 | 一个类型域 |
 
-判定：SQL 的核心价值是面向人类的结构化纪律。KV 只要贯彻「代码即 DDL 的强类型编码 + 多版本 payload 懒迁移 + 双写 Key 指针契约 + hex 硬编码单元测试」，就同时获得了：编译期 Schema 安全（Rust 编译器）+ 运行时极致性能（LSM-Tree）+ 零停机演进（版本化 payload）+ 团队可维护性（Struct 注释即文档）+ 编码漂移防护（hex 单元测试）。在 Schema 安全性上完成对 SurrealDB（无模式）和 PostgreSQL（运行时 DDL 锁）的双向反超。
+Redis 的性能故事成立于“网络是给定前提”的世界。OKM 的统一论点是让这个前提消失——缓存层不是被替代，是被彻底抽掉。
 
-## 两种模式：编译期 schema 与声明式 schema
+## 两步语义：查询 = 集合运算 + 回表
 
-OKM 只有一个存储引擎契约、一套键布局，但有两个 schema 载体：
+所有查询归纳为两个原语：
 
-- **静态模式（代码生成）**——Rust 类型 + `#[derive(...)]`（okm-derive）。编译器即 schema 校验器：键宽、偏移、索引声明都是编译期事实；组装点是 `Collection<S, K, R>`。面向 Rust 宿主与 Rust 源码编译的 wasm 摊位。
-- **动态模式（schema 数据）**——一个 `CollectionSchema` 值（静态侧经 `okm_core::schema::CollectionSchema::of` 导出，或直接以数据形式编写）+ okm-dynamic。`DynamicCollection` 接受运行时 ns 与 schema 值；编解码与 derive 逐字节一致。面向嵌入式语言 摊位（经 bindings 的 Python/Steel）与运行时组装 collection 的宿主（aura ADR-0026：每 摊位 类型一个真实 ns，从注册表分配）。
+```rust
+// 第一步：键集合运算（纯内存，O(min(|A|,|B|))，基数大时自动最优）
+let active: KeySet<UserId> = users.by_plan().contains(&[Plan::Pro]);
+let paid: KeySet<UserId>   = users.by_email().prefix("team");
 
-两种模式对同一声明产生**完全相同的字节**：同一 header 纪律、同一键编码、同一 payload 帧、同一词汇表行为。编译期 collection 写的数据，动态侧读得回来，反之亦然——模式是**写入方**的属性，不是数据的属性。写动词刻意对齐（`merge` / `replace` / `purge` / `scan` + document map），应用代码形状不分叉；typed 侧的 `get` / `put` 是说结构体的那一道门。
+// 交集、并集、差集——都是结构化值，可序列化、可下推
+let target = active.intersect(&paid);
 
-crate 分工：okm-core = 共享运行时（引擎契约、`Collection`、document/动态段机制、reduce、subscribe）；okm-derive = 静态代码生成；okm-dynamic = schema 驱动编解码与 `DynamicCollection`；okm-wire = 远程引擎 wire 格式；okm-async = 异步面（镜像 trait、wire 发送端、异步引擎——不依赖它，它就不在构建里）；okm-query/stream/graph/vector/ngram = core 之上的消费侧算子。
+// 第二步：回表（按主键批量取回完整行）
+let rows: Vec<Users> = users.fetch(&target);
+```
 
-## 物理收益
+- **基数大不是优化问题，是一个 if 语句**：小集合建哈希、扫大集合，谁小是运行时事实，代码现塌判断，不需要优化器猜
+- **键集合是可序列化的中间表示**：跨进程、跨网络、跨引擎传输时，传的是集合运算的结果而非原始数据
+- **动态查询也有位置**：用户在 UI 里拼的条件过滤，形态天然是“谓词 → 键集合 → 回表”，动态性被限制在集合运算的输入端
 
-- **85% 前缀压缩**：14 字节字符串前缀 → 2 字节数字命名空间。
-- **100% 定长 Key**（全量身份）：所有字段的绝对字节偏移被编译期死锁，反序列化纯指针切片，零解析。
-- **32768 个命名空间**：u16 的最高位 niche 为边方向位（见 [ADR-0001](docs/adr/0001-direction-bit-niche.md)）。
-- **缓存局部性**：LSM-Tree 布隆过滤器拦截 + 内存 Seek，热路径 CPU 缓存局部性极好。
-- **零运行时开销**：无正则/split/AST——查询路径随 `cargo build --release` 固化为机器码。
+## 面与引擎：声明时定形，装配时选引擎
+
+索引不是独立对象，它是**行上的一个面**：`#[ok_index(...)]` 写在行声明里，条目键 = 被索引字段 + 这一行的 key 尾段。所以没有"另建一张索引表"这回事——面的形状跟着行一起被编译，键就是行的 key 类型；同一个 key 类型可以被多张行、多个面共用。
+
+引擎选择发生在装配处，一次决定一个集合：
+
+```rust
+// 生产：持久化 LSM
+let users: Collection<_, UserKey, User> = Collection::new(Fjall::open("data/users")?);
+
+// 测试：纯内存，零 I/O
+let users: Collection<_, UserKey, User> = Collection::new(Mem::default());
+
+// 归档：同一种声明，另一个引擎实例
+let archive: Collection<_, UserKey, User> = Collection::new(Fjall::open("data/archive")?);
+```
+
+所有引擎实现同一套行为契约（见 `engine_matrix_test`），换引擎不改应用逻辑——存储在哪是实现细节，位置不在类型里。
+
+## 引擎之外的分层
+
+诚实的世界，各走各的层：
+
+- **Ad-hoc 分析 / BI** → CDC 淌业务日志持续导出 Delta Lake，分析侧任意引擎（DuckDB / Spark / Trino）
+- **Schema 演进** → 模式变更是编译期事件：蓝绿两进程各跑各的版本，共享 COW 快照
+- **动态模式**（租户自定义字段）→ okm-dynamic：结构是数据而不是类型，外层访问仍是静态优化路径
 
 ## 状态
 
-已实现：
+内部多个项目生产使用。尚未承诺 API 稳定性，当前阶段适合评估和实验，不适合外部生产依赖。
 
-- `KeyEncode` — 定宽 key 编码（`u32` / `u64` / `[u8; N]`），大端序，编译期 `KEY_LEN` / `FIELD_WIDTHS`，`encode_prefix_named` 截断原语。
-- `JunctionEncode` — junction（SQL 多对多连接表）：每端 ns 一条单向条目，4 字节头 `[ns u16][slot u16]`（0x3 段），各端点身份宽度可独立声明（`#[ok_head(...)]`），`#[ok_junction(n)]` 区分号，查询方法生成在端点 key 类型上。
-- `Junction<S, E>` — junction 装配点：引擎 + junction 类型 = 一条关系的操作面（`link` / `unlink` / `forward` / `reverse` / `reverse_prefix`）。
-- `GraphEncode` + `Graph<S, E>` + `NodeSet`/`NodeRef` — 图边，第三种关系载体（ADR-0017）：**一份声明就是这张图**（ns + 边自己的载荷 + 显式 `#[ok_index]` 面 + `#[ok_nodes]` 成员集），开放端点走自描述引用 `[ns 2B][len][pkey]`（pkey 宽度住在引用自身——无注册表），平行边携带调用方选定的 id，谓词走图自己的谓词词汇表（0x04/0x05——列举就是一扫前缀），声明属性面就是普通计数族 0x1 索引；`link`/`unlink` 一个 batch 写/删全部面，`unlink` 解码载荷后精确删除；无类型/谓词/谓词过滤/属性四种扫描。
-- 引擎后端走 Cargo feature：`fjall`（同步 `FjallStore`）、`redb`（同步 `RedbStore`）、`slatedb`（异步 `SlatedbStore` + `AsyncJunction`）；测试用 `TestStore` 引擎矩阵（slatedb 内存 / fjall / redb）跑真实引擎，没有会漂移的 mock。
+## 优化器的角色收缩
 
-- 二级索引（访问方法）——**行 struct** 上的 `#[ok_index(name { fields(…), includes(…), key(…), func(…), where(…) })]`：对 **payload 字段**（按声明序）建组合索引；无 per-index slot/ns——2 字节表命名空间已区分所有 entry；最左前缀扫描；`key(…)` 把 key 尾部携带的主键截断到命名子集（`encode_prefix_named`），默认取满主键；`includes` 覆盖索引定位为高扇出查询的物化视图；`func(path)` 用普通 fn 的返回值替代数据段（探针端调同一路径）；`where(path)` 是行级谓词——部分索引，被拒绝的行不产生任何条目。
-- `Collection<S, K, R>` 行装配点——`put`/`purge` 在同一 store 实例内一次写入（或删除）主键与全部声明的索引条目（声明即注册表）；`scan` 经任意访问方法的最左前缀返回 `(Key, Option<Row>)`。
-- **语义化 batch 写路径**（[ADR-0031](docs/adr/0031-batch-write-semantics.md)）——`BatchStore`（把 batch 当成写入器：点读先看本批待写项、scan 一律拒绝）+ `Collection::save_with_prev_into(batch, key, doc, prev)`：主键 + 面写进调用方的 `Batch`，reduce 的折/回折经适配器完成，新文档不再产出的面一并删除——带账本的表从此能加入跨表原子提交，而不必自己重写一份账本。
-- 字段级编码 wrapper（`Vocab<N>`、`Offset<T>`、`VarInt<T>`、`Quant<P>`、`Reverse<T>`、`Vector<T>`、`Bytes`）与变长载荷/索引字段（`String`），key 保持定宽。
-- 多引擎混用——同一进程内不同 ns 段可绑不同引擎（交易走 fjall、日志走 slatedb）；原子性止于单引擎内，ns 编号全库唯一。
-- 快照导出——行 → Parquet，与引擎无关（备份 / 数据交换 / lakehouse 分析）；ns 还原为描述性文本，列名即字段名。
-- Lakehouse 路径——导出目录**就是**一张 Delta 表（`okm_lake::delta`：每个窗口一条 JSON 提交，schema 从 Parquet footer 读，路径相对表目录，不需要 catalog、不需要注册；开放字段作为一个 `variant` 列携带）。湖是一个键空间而不是一个目录：`okm_lake::store` 把同一张表写进本地目录或 S3 桶，`okm_lake::publish` 是「自己持有状态的服务按快照镜像自己」的入口（ADR-0061）。增量：变更日志在提交边界捕获（[ADR-0045](docs/adr/0045-changelog-capture-and-drain.md)）；窗口合并属于核心（`okm_core::changelog::window`），`okm-lake` 这个与应用无链接的独立程序把窗口投影成文件，水位在文件落盘后才推进。
-- **Document API**——读按局部点名，写只有一个 `put`：载荷类型决定走哪条路。结构体门：`get_row` 说 `R`。文档门：`get::<(parts::Row, parts::Value)>` 把两个槽各答各的（`Option<R>`、`Option<Variant>`）；`put(&key, &R)` 写行，`put(&key, &map)` 只写 map 携带的那些名字，`put(&key, (&map,))` 让 map 就是整份文档，`purge` 清掉两槽；每次写一个引擎提交。**没有拼装函数**：行用 `Document::to_value()` 转成一个值，两个值用 `Variant::merged` 合成（对象按名字合并、嵌套对象递归，其余情况右侧替换左侧）。动态侧只有文档门——那边没有结构体可说。未知字段名在每表字段名词汇表里分配编号，落进动态段（n-TLV 帧、嵌套对象递归、无 CBOR）；行-映射桥把声明字段 lift 到逻辑类型（`Quant`→`F64`、`Vocab`→标签、`Offset`→`i64`）。
-- **动态 codec binding**——schema 导出驱动嵌入式语言读取器：`bindings/okm-python`（PyO3）与 `bindings/okm-steel`，与 Rust derive 字节一致。
-- **动态段上的路径索引**（[ADR-0029](docs/adr/0029-path-index.zh-CN.md)）——`AccessMethod::path(slot, Path::parse("author.name")?, FieldType::Str)?`：把嵌套路径与数组路径声明成访问方法，每个解析出的值一条条目（通配 = 没有 `Index` 组件），维护挂在动态段写路径上；值类型随声明，条目键携带 slot、从不携带路径。
-- **Document 模型**——声明式 row 与外部数据共用单一编码（[ADR-0012](docs/adr/0012-object-model-and-field-dictionary.md)）。OKM 面向文档：document 逻辑上全动态（运行期可出现任意字段），且**声明的静态字段嵌入动态整体**——hot/cold 段、索引、schema 导出照常生效。声明 struct 是只有静态路径的退化 document；纯 document（MQ payload、JSON）是只有动态路径的退化 document；两者同一编码。嵌入光谱上的术语：
-  - **variant**——动态内容嵌为一个声明的静态字段（`Bytes` payload）；动态性活在值里，不进键布局。
+这个洞对优化器的侵蚀最大。优化器存在的理由是“查询未知，引擎必须聪明”。静态世界里，任何优化器能做的事都可以被预先做成代码，且没有估计误差：
 
-  动态帧采用 CBOR 衍生的取帧方式，不是 CBOR 本身：只取 **major type 模式**——每帧以类型 nibble 开头——结构编码也在同一方案里。CBOR 的 major type 含列表和映射；有了字段名词汇表，OKM 只需要列表：映射就是 nTLV 列表（编号、类型、长度、值），结构信息活在值里，不进 per-document schema。
+- 谓词下推 → 程序员先算集合再回表，天然下推
+- join 顺序 → 集合运算的顺序由调用链决定，且程序员知道基数
+- 索引选择 → 访问方法在声明 slot 时就绑定了
+- cardinality 估计 → 不需要猜，写代码的人见过数据
+
+这不是说“程序员永远比优化器聪明”，而是说：当查询集合封闭时，优化器的工作变成了一次性的开发期决策。
+
+## 和历史上的先例对照
+
+- **ORM 的查询集**：TypeORM/Diesel 的编译期查询构造器半承认了这一点，但最终仍编译成文本 SQL，把静态性浪费在最后一步——编译成字符串再交给动态引擎是双输
+- **存储过程**：把逻辑移到数据侧，但语言封闭、无生态、调试地狱；OKM 把数据移到逻辑侧（嵌入式），保留了全部 Rust 生态
+- **Sled/redb 等嵌入式 KV**：承认嵌入式优势，但停留在字节层，没有类型层
+- **超编译（Futamura projections）**：理论上“把解释器特化成编译器”的第一层投影。静态查询 = 手动完成了这一次投影特化
+
+## 综合体评估
+
+| 特性 | 实现方式 | 设计意图 | 状态 |
+|---|---|---|---|
+| ORM 体验 | Rust 类型系统 + 派生宏 | 编译时生成存取代码，避免运行时解析 | ✅ 核心特性 |
+| Redis 速度 | 精简优化的 KV 存储 | 嵌入式无网络开销，接近内存访问 | ✅ 目标性能 |
+| PostgreSQL 持久性 | 业务日志 + 持久化存储 | 确保数据在系统故障后不丢失 | ✅ 设计目标 |
+| 无边界的函数 | 嵌入式调用 Rust 函数 | 复杂逻辑直接用应用代码实现 | ✅ 独特优势 |
+| 两步语义 | 集合运算与回表分离 | 理解匹配与物化分离 | ✅ 核心创新 |
+
+**核心优势**：编译期类型安全（不匹配查询在编译时现形）、零成本抽象（编译后退化为纯指针偏移）、清晰模型（关系代数）与简洁 API。
+
+**当前的挑战**：生态、生产验证、复杂查询（跨多个实体）、团队协作（社区为零）。
+
+**适用性**：高（超 Redis 与传统的读写性能 + Rust 技术栈项目）；特定场景（快速构建概念验证）；不合适（现成生态和社区支持）。
+
+## 与其他方案对比
+
+| 方案 | 类型 | 核心优势 | 核心劣势 | 适用场景 |
+|---|---|---|---|---|
+| OKM | 嵌入式 Rust ORM | 性能潜力、扩展性、类型安全 | 生态空白 | 性能敏感、Rust 技术探索 |
+| Diesel | Rust ORM | 成熟稳定、编译期检查 | 异步受限、学习曲线陡 | 传统 Web 后端 |
+| SQLx | 异步 SQL 工具包 | 异步优先、编译时检查、灵活 | 非 ORM，需手动处理关系 | 异步服务、微服务 |
+| SeaORM | 动态 ORM | 灵活、动态、功能丰富 | 抽象层带来性能开销 | 快速开发 REST/GraphQL |
+| rusqlite | SQLite 绑定 | 轻量、无依赖、简单 | 同步 API、SQLite 限制 | CLI 工具、桌面应用 |
+| Redis | 内存数据库 | 极快、数据结构丰富 | 不持久、需网络访问 | 缓存、会话存储、实时分析 |
+
+## 总结与建议
+
+OKM 代表了一种反传统数据库设计思路：把关系数据库的查询模式映射到 KV 存储结构，以 ORM 式的类型定义和编译时生成代码替代运行时查询。
+
+值得警惕的是本项目的代价：静态化不是免费的——运行时的自由度（BI 工具、临时查询、动态报表）被真实放弃了。这决定了 OKM 的定位是应用数据库，不是分析数据库，Ad-hoc 是 SQL 真正的主场。
+
+对于绝大多数项目，引入 OKM 目前不划算：它的生态是零，所有组件都要自建。它更适合作为技术探索和实验平台，验证其设计理念；如有嵌入式的需求，rusqlite（SQLite）是更稳妥的选择；若追求高性能，Redis（配合持久化）仍是主流方案；若追求成熟，SeaORM 或 Diesel 更合适。
+
+OKM 的价值在于其前期的设计思路，特别是“无边界函数”和“两步语义”，可为未来数据库设计提供新范式。
 
 ## 使用方法
 
 ### 1. 声明：key、行与关系
 
-完整的声明词汇（`KeyEncode` / `DocumentEncode` / `JunctionEncode` /
-`GraphEncode`，以及 `#[ok_index]` 的 `fields`/`includes`/`key`/`func`/`where`
-注解）见[建模指南](docs/MODELING.zh-CN.md)「声明基础」。四种形态：
+完整的声明词汇（`KeyEncode` / `DocumentEncode` / `GraphEncode`，以及 `#[ok_index]` 的
+`fields`/`includes`/`key`/`func`/`where` 注解）见[建模指南](docs/MODELING.zh-CN.md)「声明基础」。
+三种形态：**身份**、**行**、**图**。多对多不再有独立载体——它是一张普通 collection（键就是那对身份）加一条 `#[ok_lead]` 反向面。
 
 ```rust
 #[derive(KeyEncode)]                        // 身份：定宽字段、大端、无分隔符
@@ -102,21 +181,6 @@ pub struct UserKey { pub org_id: u32, pub user_id: u64 }
 #[ok_index(by_org { fields(org_id) })]      // 一个面：条目键 = 被索引字段 + key 尾段
 pub struct User { pub org_id: u32, pub bio_len: u32 }
 
-#[derive(JunctionEncode)] #[ok_junction(1)] // 多对多，端点强类型
-pub struct UserToSession {
-    #[ok_head(org_id, user_id)]
-    pub user: Ref<User, UserKey>,
-    pub session: Ref<Session, SessionKey>,
-}
-
-#[derive(GraphEncode, Clone, Default)]       // 一份声明就是这张图（ADR-0017）
-#[ok_ns(100)]
-#[ok_nodes(User, Org)]                       // 成员集：节点**表**，按类型列出
-#[ok_index(by_since { fields(since_year) })] // 属性是显式声明的面——不做任何隐含
-pub struct Employment { pub since_year: u16, pub weight: u32 }
-
-// 生成：`pub enum EmploymentNode { User, Org }` 及其 `NodeSet` 实现，
-// 每个 ns 取自那张表自己的 `#[ok_ns]`——不写两遍
 ```
 
 索引声明机械地生成访问方法类型：`ok_index(by_org ...)` 产出
@@ -240,61 +304,6 @@ users.purge(&key)?;
 
 嵌入式语言读取器（Python / Steel 摊位）经 schema 导出消费动态 codec——`bindings/okm-python`（PyO3）与 `bindings/okm-steel` 与 Rust derive 字节一致；版本默认值迁移在该路径同样生效。
 
-### 4. 运行时：关系（junction 与图）
-
-```rust
-// junction：每端 ns 一条单向条目（共两条），双向都能查。
-let edges: Junction<_, UserToSession> = Junction::new(store.clone());
-edges.link(&user, &session);                  // 正向 + 反向，一个实例内
-let sessions = user.get_session(&edges);      // 方法生成在 key 类型上
-edges.unlink(&user, &session);
-
-// 图：端点是自描述引用——没有注册表，没有宽度表。
-let mut g: Graph<_, Employment> = Graph::new(store.clone());
-g.link(&EdgeHead {
-    src: NodeRef::new(&10u16.to_be_bytes(), &1u64.to_be_bytes()),  // [ns][len][pkey]
-    dst: NodeRef::new(&11u16.to_be_bytes(), &9u64.to_be_bytes()),
-    predicate: "employs".into(),                                  // 运行期数据，进词汇表
-}, &Employment { since_year: 2020, weight: 7 }, 1)?;             // edge id 由调用方给
-
-g.out_nodes(&user_ref);                       // 一跳邻居，以 NodeRef 返回
-g.typed_out("employs", &user_ref);            // 谓词限定的遍历（0x09 面）
-g.in_edges(&org_ref);                         // 谁指向这里
-g.predicates();                               // 全部关系类型：一次 0x04 前缀扫描
-g.by_attr_face(<BySince as KvIndex>::SLOT, &2020u16.to_be_bytes()); // 声明的属性面
-g.unlink(1)?;                                 // 解码边体，精确删除它产出的那些面
-```
-
-分工：`Refs`/`Junction` 面向固定、强类型的端点对；图边面向开放端点、
-运行期谓词、平行边与属性。节点的"类型"仍是普通文档 collection——ns 就是
-类型标记，所以按节点种类过滤用的是那个 collection 自己的索引。
-
-### 5. 跨表原子写：batch 路径
-
-一个 `Batch`、一次提交，要么全活要么全无（ADR-0003）。单集合的常规写入
-不需要调用方持有 batch：`put`、`purge`、`merge`、`replace` 自己建一个——主条目、
-索引面、内嵌子文档、旧文档释放的引用、reduce 的折/回折、词表增长——一次提交，
-所以一次语义写就是一次引擎提交、一个崩溃边界。下面这个调用方持有的 batch 是
-给跨装配点的写入用的。文档写入用
-`save_with_prev_into`，图与 junction 用各自的 `*_into` 兄弟：
-
-```rust
-let mut batch = Batch::default();
-users.save_with_prev_into(&mut batch, &key, &new_row, Some(&old_row));
-g.link_into(&mut batch, &head, &attrs, 7)?;
-store.commit_batch(batch)?;                    // 行、面与账本一起落地
-```
-
-`save_with_prev_into` 是这条路唯一的文档动词——曾经有一个只管编码的前身，它已
-移除，因为它把下面每一条规则都推给了调用方。reduce 的折/回折与旧面清理都经
-`BatchStore`（batch 的读穿透视图）完成，所以同一批
-里对同一组的两次 fold 看见的是本批已产出的值，不会重复计数
-（[ADR-0031](docs/adr/0031-batch-write-semantics.md)）。subscribe 事件按裁
-决留在 batch 路径之外：批量写者的事件归它自己，在未提交的批里发事件等于
-宣布一次可能永不落地的写。调用方不手推 op 进批——`save_with_prev_into` /
-`link_into` 替它们编码键与面；op 列表本身是引擎、wire 帧与 dynamic plan
-消费的内部接缝。
-
 ### 6. 引擎后端
 
 ```toml
@@ -303,8 +312,59 @@ okm-core = { version = "0.1", features = ["fjall"] }    # 或 "redb"；异步引
 ```
 
 - **fjall**（同步）：`FjallStore::open(path)` — 本地 LSM 引擎，单 `Database` 句柄，按需 `persist`。
-- **slatedb**（异步）：`SlatedbStore::open(path, Arc<dyn ObjectStore>)` — 对象存储后端；构造 store 用 `slatedb::object_store` 的 re-export，版本永远和 slatedb 内部一致。异步遍历走 `AsyncJunction`。
+- **slatedb**（异步）：`SlatedbStore::open(path, Arc<dyn ObjectStore>)` — 对象存储后端；构造 store 用 `slatedb::object_store` 的 re-export，版本永远和 slatedb 内部一致。异步遍历走对应的 async 迭代器。
 - **TestStore**：测试用的引擎矩阵，跑的是真实引擎（slatedb 内存、fjall 临时目录、redb 临时文件）——没有会与真实实现漂移的 mock。
+
+### 4. 运行时：关系（图）
+
+一张图的声明就是它的全部：`#[ok_ns]` 定信任域，`#[ok_nodes(User, Org)]` 列出成员**表**（派生宏据此生成枚举与 `NodeSet`，一个变体一个集合），`#[ok_index]` 是显式声明的面。
+
+```rust
+#[derive(GraphEncode, Clone, Default)]
+#[ok_ns(100)]
+#[ok_nodes(User, Org)]
+#[ok_index(by_since { fields(since_year) })]
+struct Employment {
+    since_year: u16,
+    weight: u32,
+}
+```
+
+写只有一个动词，碎片（`Fragment`）是它唯一的输入：声明里收节点与边，链上可选的簇与三个 reduce，`None` 的部分就是不做。
+
+```rust
+let mut x = Fragment::<Employment>::new([
+    Decl::Node(EmploymentNode::User, user_key),          // 端点按需创建
+    Decl::Edge(EdgeHead { src, dst, predicate: "employs".into() }),
+]);
+x.cluster(Cluster::new(Kind::EVENT, payload))            // 成簇（可选）
+ .reduce_node::<User>(|u| u.seen += 1)                   // 更新走 reduce
+ .reduce_edge(|e| e.weight += 1)
+ .reduce_cluster(|c| c.insert("weight", …));
+graph.incorporate(x)?;                                   // 一批落地：端点、边、成员行、reduce
+```
+
+删除是反向动词，两条规则不同：删节点连带删它的所有边（一条边不能缺一端），删边保留两端（之后它们可能不再连任何边——"节点只在成为端点时存在"是写入前提，不是删除后的不变量）。
+
+```rust
+graph.retract(Fragment::new([]).delete_node(user_key).delete_edge(7))?;
+```
+
+遍历是有序流，一跳一次 `next()`：`out` 与 `inn` 产出同一个 `EdgeStep`（方向是参数不是两套 API），谓词过滤下推到 `0x08`/`0x09` 前缀，`find`/`take_while` 天然短路，drop 即停。流实现 `Seekable`，于是 `intersect`/`difference`/`union` 与集合运算、簇成员流共用同一套实现。
+
+簇（超边）落在三张固定面：`0x0A` 簇行（值 = `parent_id` + 动态载荷）、`0x0B` 边成员、`0x0C` 子簇索引；加 `0x0D` 边→簇的派生索引，于是"某条边属于哪些簇"是一次点查。成员只记边，参与者是成员边的两端，投影在调用方做。
+
+### 5. 跨表原子写：一个碎片，一次提交
+
+`Fragment` 就是跨表写的载体：同一批里的节点、边、成员行、reduce 一起提交或一起不提交。没有跨表事务语言、也没有级联机制——一致性靠"一个碎片 = 一次提交"，以及写入口强制的两条前提（节点必须是某条边的端点，簇至少两个成员）。
+
+```rust
+let mut x = Fragment::<Employment>::new([Decl::edge_at(head, 7)]);  // 同一 id 重述 = 就地更新
+x.reduce_edge(|e| *e = new_payload);
+graph.incorporate(x)?;                                              // id、面、成员行都不动
+```
+
+不同载体是各自的一次提交：一条边的载荷在图上，它的开放属性在文档的动态段（`0x01`），两者属于两个写路径；需要两者同批时，由调用方把它们放进同一个上层流程，而不是让引擎去猜。
 
 ## 接口层级
 
@@ -313,8 +373,8 @@ okm-core = { version = "0.1", features = ["fjall"] }    # 或 "redb"；异步引
 
 | 层 | 接口 | 它承诺什么 |
 |---|---|---|
-| 声明层 | `KeyEncode` / `DocumentEncode` / `JunctionEncode` / `GraphEncode`（okm-derive） | 纯 `Vec<u8>` 进出——没有存储、没有 I/O、没有引擎类型；这正是每个 derive 保持单 item 纯函数的前提 |
-| 装配层 | `Collection<S, K, R>` / `Junction<S, E>` / `Graph<S, E>`，加 reduce 与 subscribe 钩子 | 绑定**一个**引擎实例；读写都取 `&self`（写不需要 `&mut`：集合是 `!Sync`，单持有者在编译期就定死）；`Graph` 仍是 `&mut self`，它的谓词词表是可变的缓存字段；声明本身就是注册表，没有需要在运行期同步的 schema 对象 |
+| 声明层 | `KeyEncode` / `DocumentEncode` / `GraphEncode`（okm-derive） | 纯 `Vec<u8>` 进出——没有存储、没有 I/O、没有引擎类型；这正是每个 derive 保持单 item 纯函数的前提 |
+| 装配层 | `Collection<S, K, R>` / `Graph<S, E>`，加 reduce 与 subscribe 钩子 | 绑定**一个**引擎实例；读写都取 `&self`（写不需要 `&mut`：集合是 `!Sync`，单持有者在编译期就定死）；`Graph` 仍是 `&mut self`，它的谓词词表是可变的缓存字段；声明本身就是注册表，没有需要在运行期同步的 schema 对象 |
 | 引擎契约 | `VirtualStorage` / `SharedVirtualStorage`（`okm-core/src/engine/storage.rs`）；`VirtualStorageAsync` 是它在 `okm-async` 里的镜像（ADR-0059） | 编码字节上的七个方法——后端唯一必须说的一种语言；异步镜像只服务于「自身 API 就是异步」的引擎与传输 |
 | 消费层 | okm-query / okm-stream / okm-graph / okm-vector / okm-ngram / bindings | 位于装配层之上，消费它的产物（有序扫描流、subscribe 事件、document），对 core 零改动 |
 
@@ -369,16 +429,10 @@ okm-core = { version = "0.1", features = ["fjall"] }    # 或 "redb"；异步引
 - **宏层刻意无存储**——encode/decode 是纯 `Vec<u8>` 进出函数；引擎选择与生命周期归装配处（`Collection::new(store)`）。这是每个 derive 保持单 item 纯函数的前提。
 - **可移植性**：范式作用在字节层、与宿主语言无关——Python dataclass 写同样的 `encode()` 可复现布局（SlateDB 的 Python 绑定经 UniFFI 提供所需原语：`get` / `scan_prefix` + `KeyRange` / `WriteBatch` / 事务）。但可移植有结构性代价：类型错误从编译期移到运行时（`assert` 兜底而非编译器）、编码是字节拼接而非 memcpy 级指针偏移（热路径慢 1–2 个数量级）、装饰器/元类是运行期注册而非编译期展开。范式相同，保障级别由宿主语言能力决定。
 
-## 为什么不用（现成的）数据库？
 
-OKM 的潜在好处之一：选型烦恼消失了。实际选项还很多：PostgreSQL、DuckDB、Lakehouse、SurrealDB……OKM 说的是纯字节，任何能 put/get 字节的引擎都够格。
+## 相关文档
 
-OKM 对准的负载并不稀有。大多数应用进行的数据操作是固定的：一个版本发布一套形状，下一个版本发布另一套固定形状——查询集合随部署变化，不随语句变化，而在同一个版本内则什么都不动。真正需要在运行时临时构造查询的只有两类事：即席分析和数据库管理，而它们是对同一份数据的另一套方案（分析引擎、BI 层、数据库 console），不是应用请求所走的路径。
-
-通用数据库仍然为这一可能性向每一次请求收费：语句每次执行都要解析一遍、schema 变更要拿一次 DDL 锁、planner 要为一条自本版本发布以来一字未改的查询重新走一遍备选路径。通用性是真的，只是它按操作出租，而一个永远用不上它的负载照样付租金。OKM 停止支付：schema 就是类型系统（变更是部署，校验由编译器完成），访问路径由调用点点名而不是每条查询去发现，语句剩下的部分就是机器码。
-
-即席查询则不需要搬进存储来回答。它真正要的是列，不是访问路径：分析型提问做扫描、过滤和聚合，根本不用存储的索引——key 布局、声明出来的 face、前缀扫描都与它无关。承载这件事的格式是 Parquet，所以 OKM 对即席面的回答是一条导出路径，而不是第二套查询运行时：行 → Parquet（与引擎无关，每表一套文件），接下来回答问题的那个东西——DuckDB、Spark、仓库——就是查询引擎。事务路径保持字节形态，分析型提问拿到列式形态。
-
-这条路已经比「目录里一堆 Parquet」更进一层。变更日志（ADR-0045）在提交边界捕获，核心把已封存的 segment 合成窗口（`okm_core::changelog::window`），由 `okm-lake` 程序投影成文件，水位只在文件落盘之后才推进——窗口是历史而不是当前状态，压实归 sink 负责。每个窗口随后在导出目录的 Delta 日志里落一条提交（`okm_lake::delta`），于是这个目录就是一张表：读方按路径直接打开，不注册任何东西——用 DuckDB 的 `delta_scan` 端到端验过，工作目录在表目录之外也能读，连文档开放字段的 `variant_extract` 都解得出来。删除有两种可表达的形态：带删除的窗口写成变更行（`okm_op` / `okm_slot` / `okm_seq`，ADR-0058 § Amendment），以及 `okm-lake condense` 把一张表的变更文件折成一个当前态文件、对被替换的每个文件提交一条 `remove`——整文件替换（copy-on-write），所以不需要 key→文件索引（抽干本身也能做：变更文件超过 `--fold-after-files` / `--fold-after-bytes` 就折）。仍欠的是行级 delete vector（它才需要那个索引）、分区与文件大小目标，这些是 sink 的活，不是存储的活。
-
-形状真正会变的只有一处：应用升级，而这里必须说实话——SQL 能让 schema 在线改，OKM 不能。形状变更是迁移，路径只有一条：把变更日志回放进新代码建的那个库（[ADR-0056](docs/adr/0056-the-segment-is-the-migration-path.zh-CN.md)）；而 KV 存储只有一个写者，所以哪怕字节格式没变，升级也要停一次再换。形态是蓝绿（[ADR-0042](docs/adr/0042-layout-versions-are-stamps.zh-CN.md)）：新构建作为第二个进程、配自己的 store 起来，回放 baseline 加各段直到追平；旧实例继续服务，然后把自己的尾巴抽进日志；一次短切换停机应用这段尾巴，流量切走。谁能写是一条事实，不是某个进程：每表在分段旁边有一个 `owner` 文件，旧写者封盘后把**读者能看见的位置**记进去，新构建必须追到同一个数才允许接收写（[ADR-0056](docs/adr/0056-the-segment-is-the-migration-path.zh-CN.md) §6）。迁移的载体是 `okm_core::changelog::replay`（`okm-log replay` 是它的 CLI）——读一个表目录（baseline、各段、sidecar），把行走目标库的写路径写进去，词表标签重新 intern，所以 id 是目标库自己的。机制归核心，因为回放一个段不是格式，而是日志存在的理由。内置的 `okm_lake::snapshot::parquet_io::export_parquet` / `import_parquet` 是**当前状态**的转储与恢复——它读的是库而不是历史，所以删掉的行在文件里就是不存在；导入走正常写路径，索引条目由行重建而不是被搬运。两件不同的事：状态以快照形式走，变更以段的形式走。基于日志的 replay 也正是把 Parquet 从这条路上拿掉的形态，因为列式追加表达不了删除。代价是一次排期的窗口，不是每一次请求的税——而每一次请求都付税，正是运行时 schema 收的那种账。
+- [Modeling Guide](docs/MODELING.zh-CN.md) — 规范化的建模方法（四层、三条读路径、covering index 克制）
+- [Architecture](docs/ARCHITECTURE.zh-CN.md) — 两层声明机器（派生宏展开 + 常量表）
+- [Key Layout](docs/internals/key-layout.zh-CN.md) — 键空间布局与固定面分配
+- [Query Recipes](docs/query-recipes.zh-CN.md) — merge / intersect / difference / union 如何拼成 SQL 形状

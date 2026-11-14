@@ -1,6 +1,6 @@
 # OKM — Object-Keyspace Mapping
 
-> ORM experience, Redis speed, PostgreSQL durability, and functions without boundaries.
+> And what, SQL, must we give in return?
 
 OKM is the KV counterpart of ORM: the logic is defined ORM-style, code generation produces the underlying KV operations. ORM maps objects onto relational tables, OKM maps objects onto KV keyspaces. Declarative derive macros (`KeyEncode` / `DocumentEncode` / `GraphEncode`) plus numeric namespace IDs build a zero-cost semantic data layer — as declarative as an ORM at development time, compiled down to pure pointer-offset arithmetic.
 

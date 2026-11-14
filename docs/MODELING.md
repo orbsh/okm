@@ -915,6 +915,26 @@ g.by_attr_face(<BySince as KvIndex>::SLOT, &2020u16.to_be_bytes());
 
 The dividing line: `Refs` = one-to-many; a relation table = many-to-many, fixed endpoints, attributes the relation owns; **a graph edge** = independent identity, attributes, parallel edges, open endpoints.
 
+### Traversal: one hop per iteration
+
+A traversal is a lazy ordered stream, not a materialized neighbour list. `graph.out(node)` and `graph.inn(node)` answer the SAME type — an `EdgeStream` over face 0x06 or 0x07, with the direction as a field — and each `next()` reads one entry and yields one `EdgeStep { edge_id, far, head }`. The two directions composing as one type is the point: `chain`, `zip` and `flat_map` work across them without the consumer matching on a shape.
+
+- **The far endpoint comes from the entry, not from a row.** Every traversal entry carries both endpoints (`[src][dst][edge_id]`), so a hop's destination is already in the key. A walk fetches no primary rows at all; the eager `out_nodes` shape (scan the face, then read each edge) is one read per hop that this does not pay.
+- **What the step can state is what the entry states.** Endpoints and the id always; the predicate's id only when the scan went through 0x08/0x09, because 0x06/0x07 do not carry one. `HopHead::predicate` is `None` for "this entry did not say", never for "the edge has no predicate".
+- **Predicate filtering is pushed down, not filtered after.** `.by("employs")` reopens the SAME stream type on the predicate-qualified face — one scan of that predicate's entries for the node, instead of the node's whole face with discards. On a hub whose out-degree is mostly one predicate, that is the difference between reading the edges you asked for and reading every edge and throwing most of them away. A predicate nobody ever interned answers an empty stream without opening a scan: no edge can carry it.
+- **Short-circuiting is free**, because nothing is collected: `find`, `take`, `take_while` and `try_fold` read only the entries up to the answer, and dropping the stream stops the scan where it stands. (The cursor keeps the item on top — a position has to exist before it can be read — so a stream may read at most one entry ahead of what it handed out.)
+- **Both directions are `Seekable` over their entry key**, so the repositioning operators in `okm-query` work on them unchanged: `intersect_seek`, `difference` and `union` over two walks are ordinary one-pass alignments, and a seek forward skips a range instead of stepping through it.
+- **Cycle handling is the caller's.** The streams are deliberately cycle-unaware: whether two paths reached "the same" node depends on the caller's filter (a tenant? a version? a kind?), so a visited set inside the stream would answer a question the stream cannot see. A hop chain is `flat_map` — `graph.walk(node).flat_map(|step| graph.walk(&step.far))` — and a caller that must stop on revisit owns that set, with its memory cost in plain sight. Nothing here is a `bfs`: that would be a different verb over these streams, not a different stream.
+
+```rust
+// one hop, lazily; the predicate is a face, not a filter
+for step in graph.out(&user).by("employs")? {
+    println!("{} -> {:?}", step.edge_id, step.far);
+}
+// two hops: no API for it, just flat_map
+let colleagues = graph.walk(&user).flat_map(|step| graph.walk(&step.far));
+```
+
 ### Predicates: an edge's type
 
 The relation's name lives in the edge's **head**, beside the endpoints — `EdgeHead { src, dst, predicate }` — and it is the only one of the three with no compile-time declaration. This is the rung a relation table cannot reach: a relation table's type is its Rust struct (`PageTag`), fixed when the code is written; an edge's type is **data**.
@@ -927,6 +947,39 @@ The relation's name lives in the edge's **head**, beside the endpoints — `Edge
 - **Direction is part of the assertion.** `link` writes src → dst; the reverse relation is another predicate (or the same predicate with the endpoints swapped), and the library never derives it. Two edges over the same pair are two distinct assertions, told apart by their predicates and `edge_id` — which is what parallel edges are for.
 
 **Why a `Vocab` field cannot replace it.** A `Vocab<N>` field interns a label, its faces are only the ones `#[ok_index]` declares, and it lives in the **payload**, behind the payload's own frames. A predicate cannot move there: the traversal faces are keyed by it (`[predicate_id][src NodeRef][edge_id]`, `[predicate_id][dst …]`), and the endpoints are **head** bytes rather than payload fields, so no payload index can produce those entries; the id also has to sit at an offset computable in the edge body, so `unlink` can delete an edge without decoding the payload first; and each edge has exactly one predicate, which is what lets it go straight into the key with no existence check. What the two share is the mechanism underneath — the same intern-style label ↔ id protocol (append-only, first sight gets the number, two faces) — so this is one primitive in two positions, not two mechanisms: a vocabulary owned by the graph's **key** versus one owned by a payload **field**.
+
+### Clusters: a set of edges, kept as a membership table
+
+A graph has a third way to organise itself: several edges declared as one thing — an event's whole evidence, a community, a subgraph, a permission boundary. That is a cluster, and it sits on four fixed faces:
+
+```
+0x0A  [ns][0x0A][kind][hyper_id]            → [parent_id u64 BE][payload]
+0x0B  [ns][0x0B][kind][hyper_id][edge_id]   → empty
+0x0C  [ns][0x0C][kind][parent][hyper_id]    → empty (derived, rebuilt from 0x0A)
+0x0D  [ns][0x0D][edge_id][kind][hyper_id]   → empty (derived, rebuilt from 0x0B)
+```
+
+Members are edges; nodes are not members. The participants are the endpoints of the member edges, and the deduplication happens on the reading side — inserting into a sorted list is log n, a HashMap is not needed, and node kinds are heterogeneous enough that mirroring them into a face costs more to maintain than it saves. The `0x0A` value starts with a fixed-width `parent_id`, `0` meaning no parent, so nesting costs no extra face. A cluster's members, a kind's clusters and a cluster's children are each a clean prefix scan (`[ns][0x0B][kind][hyper_id]`, `[ns][0x0A][kind]`, `[ns][0x0C][kind][parent]`): the face bytes differ, so no length test is needed.
+
+The write entry point adds no new declaration kind:
+
+```rust
+let mut x = Fragment::<G>::new([Decl::Node(G::Nodes::User, key), Decl::Edge(head)]);
+x.cluster(Cluster::new(Kind::EVENT, payload))   // None creates, Cluster::into(id) incorporates
+ .reduce_node::<User>(|u| u.seen += 1)          // registered per collection: node rows differ
+ .reduce_edge(|e| e.weight += 1)                // one edge payload type per graph
+ .reduce_cluster(|c| c.insert("weight", …));    // a cluster's payload is dynamic
+graph.incorporate(x);                           // endpoints, edges, member rows, three reduces
+
+// Everything after the declarations is optional: a fragment of declarations alone writes just the nodes and edges.
+graph.incorporate(Fragment::new([Decl::Node(G::Nodes::User, key)]));
+```
+
+`Decl` has exactly two variants; node kinds come from the enum `#[ok_nodes(..)]` generates. `None` creates and returns the id, `Some` incorporates into an existing cluster, membership is idempotent, and the three reduces run in the same commit — which is how a cluster's member count and weight are maintained, with no second read-modify-write. The other operations ride the same rows: `remove`, `incorporate(sources, into)`, `split`, `reassign`, `lookup`, `members`, `children`, `diff`.
+
+`0x0D` is the same membership read backwards: `0x0B` answers "who is in this cluster", `0x0D` answers "which clusters is this edge in". Without it the second question is a suffix scan of every member row of the kind — fine once per retract, wrong once per traversal hop — and with `edge_id` leading, its entries are in the order an edge-id stream already has, so "the member edges of C that these nodes point at" is one intersection of two ordered streams (`graph.clusters_of` against a member cursor) instead of a set built on the caller's side. `member_of(kind, cluster, edge)` is the same face's exact key, one point read, which is what lets a membership test be a `.filter` inside a traversal. Its cost is stated where it is paid: one extra entry per member row on every write, and the node form of `clusters_of` is one scan per incident edge — the price of keying the face by edge.
+
+A cluster is an assertion, so `0x0A`/`0x0B` are Truth in the changelog and `0x0C`/`0x0D` are Derived and rebuildable. Deleting an edge deletes its membership rows in the same batch; a cluster below two members disappears — a node exists only as an endpoint, a cluster only with members — and those two write-time rules are what make "every member has an edge" true without a defensive shape.
 
 ### What belongs in a graph
 
@@ -1361,6 +1414,35 @@ let both_but_not_c: Vec<u32> = a.intersect(b).difference(c).collect(); // (a ∩
 ```
 
 Because the join is those two steps and nothing else, its result is ordinary code — a vector to go on folding, a prefix of it, a key set counted before any payload is read — rather than a restricted join form or a query string with a planner behind it. The only restriction is the key layout, and that was settled at declaration. The cookbook form, with the scans in place and the fetch loop spelled out, is in the [query guide](query-recipes.md), "The JOIN recipe: intersect keys, then fetch".
+
+### Two-step semantics: why there is no join
+
+A join is a **compound primitive**: matching (which tuples are related — the set level, key-set intersection and difference) and assembly (pasting related tuples' fields into a wide row — the value level, materialisation). Bundling them paid off on disk: one sequential scan did both the matching and the pasting, saving an I/O. The cost is in the semantic model — a join is both a filter and a constructor, so the planner has to change gear between the two roles, and predicate pushdown and semijoin rewrites are exactly the work of prying the bundle apart.
+
+okm splits it explicitly: **step one is plain set algebra** (intersect, difference, union over keys, `O(min(|A|,|B|))`, touching only index entries), **step two is a plain primary-key bulk fetch** (no matching logic at all). This is the column store's late materialisation, whose worth C-Store and Vertica already showed: a selective step one saves most of the fetch.
+
+Every cluster (hyperedge) operation lands in step one, and the fetch is always the same primitive:
+
+```
+a cluster's members        {edge_ids}                → fetch
+two clusters intersected   H₁.edges ∩ H₂.edges       → fetch
+child closure              union of key sets (walk parent) → fetch
+complement / residual      all_edges ∖ H.edges       → fetch
+reverse membership         the key set 0x0D answers  → fetch
+algorithmic subgraph       the participating set     → fetch
+```
+
+  The observation worth keeping: **every cluster operation happens at the key-set layer**, and the fetch is always one bulk read. A relational engine needs recursive CTEs and joins, where each level materialises a wide row and join semantics swallow set semantics; a graph database does not have set operations as primitives at all and simulates them with traversal, one hop at a time. An intermediate-node representation only ever hops, so it never reaches the key-set fast path — which makes the cluster not merely compatible with this model but the one representation that lets both steps run at full speed.
+
+**The key set is a value, and exposing it pays twice**: step one's output can be named, kept and composed:
+
+```rust
+let keys: KeySet = h1.edges() & h2.edges();   // intersection, index only
+let keys = keys | children_keys(h3);           // add the child closure
+let edges: Vec<Edge> = db.fetch(keys)?;        // exactly one fetch
+```
+
+  In a traditional system that intermediate lives inside the optimiser, out of reach; here it is the API. The more complex the cluster algebra — hierarchy, overlap, mixed set operations — the longer that lever, because what an optimiser would have to do, the caller does directly, and composes.
 
 ## Key naming: a plain prefix plus composed access methods
 
