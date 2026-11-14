@@ -2185,6 +2185,7 @@ dependencies = [
  "okm-async",
  "okm-core",
  "okm-derive",
+ "okm-query",
  "okm-value",
  "serde",
  "tempfile",
