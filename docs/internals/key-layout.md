@@ -73,10 +73,10 @@ byte (≥ 0x10).
 0x07  graph in                     [ns][0x07][dst ref][src ref][edge_id]
 0x08  graph predicate+out          [ns][0x08][predicate_id][src ref][dst ref][edge_id]
 0x09  graph predicate+in           [ns][0x09][predicate_id][dst ref][src ref][edge_id]
-0x0A  hyperedge group        [ns][0x0A][kind][group]               → [parent_id u64][dynamic payload]
-0x0B  hyperedge edge member  [ns][0x0B][kind][group][edge_id]      → empty
-0x0C  hyperedge node member  [ns][0x0C][kind][group][node][edge_id] → empty, derived from 0x0B
-0x0D  hyperedge child index  [ns][0x0D][kind][parent][child]       → empty, derived
+0x0A  cluster        [ns][0x0A][kind][group]               → [parent_id u64][dynamic payload]
+0x0B  edge member  [ns][0x0B][kind][group][edge_id]      → empty
+0x0C  node member  [ns][0x0C][kind][group][node][edge_id] → empty, derived from 0x0B
+0x0D  child cluster index  [ns][0x0D][kind][parent][child]       → empty, derived
 0x0E  Extension                [ns][0x0E][subkind]…          each subkind owns its contract: 0x01 = vector snapshot (droppable)
 0x0F  table meta                    [ns][0x0F]                  → name → bytes map (ADR-0043)
 (rows are grouped by ROLE: the two vocabularies first, then the graph faces
@@ -181,14 +181,14 @@ level.
 ```text
 [ns][0x02]              → vocabulary allocation cursor (entries at [ns][0x02][id])   ← 69197cd
 [ns][0x04]              → predicate cursor (same shape)
-[ns][0x0A][kind][group] → hyperedge group row (members live on 0x0B/0x0C, other faces)
+[ns][0x0A][kind][group] → cluster row (members live on 0x0B/0x0C, other faces)
 [ns][0x0F]              → table metadata (no children)
 ```
 
   One reading rule — **key length**: the row type's exact length is the value, anything longer is an entry. Before applying it, ask whether the entries share the face, because that decides whether the rule is needed or merely harmless:
 
 - **Entries on the same face** (vocabulary cursor): the cursor's key prefixes every entry, so an id-face scan must bound the key length or it reads the cursor as an entry. This is also why the exported schema lists two faces per vocabulary and never mentions the cursor: its key is derived.
-- **Entries on another face** (hyperedge group row): a different face byte means no shared prefix and no length test — at the price of two scans for group plus members instead of one.
+- **Entries on another face** (cluster row): a different face byte means no shared prefix and no length test — at the price of two scans for group plus members instead of one.
 
 ## Panorama
 

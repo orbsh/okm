@@ -46,10 +46,10 @@ slot 的首字节自己说明后面还跟不跟计数字节：
 0x07  图 入边           [ns][0x07][dst 引用][src 引用][edge_id]
 0x08  图 谓词+出        [ns][0x08][predicate_id][src 引用][dst 引用][edge_id]
 0x09  图 谓词+入        [ns][0x09][predicate_id][dst 引用][src 引用][edge_id]
-0x0A  超边 组行         [ns][0x0A][kind][组号]（值 = parent_id + 载荷）
-0x0B  超边 边成员       [ns][0x0B][kind][组号][边号]（ADR-0066）
-0x0C  超边 节点成员     [ns][0x0C][kind][组号][节点][边号]（派生，可重建）
-0x0D  超边 子组索引     [ns][0x0D][kind][父组号][子组号]（派生）
+0x0A  簇 簇行         [ns][0x0A][kind][簇号]（值 = parent_id + 载荷）
+0x0B  簇 边成员       [ns][0x0B][kind][簇号][边号]（ADR-0066）
+0x0C  簇 节点成员     [ns][0x0C][kind][簇号][节点][边号]（派生，可重建）
+0x0D  簇 子簇索引     [ns][0x0D][kind][父簇号][子簇号]（派生）
 0x0E  Extension           [ns][0x0E][子类]…   子类各自定契约（0x01 向量快照，可丢）
 0x0F  表元信息          [ns][0x0F]                   → 名字 → 字节的映射（ADR-0043）
 ```

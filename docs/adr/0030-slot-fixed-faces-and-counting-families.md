@@ -72,10 +72,10 @@ assembles a key writes a slot the same way.
 0x07  graph in                     [ns][0x07][dst ref][src ref][edge_id]
 0x08  graph predicate+out          [ns][0x08][predicate_id][src ref][dst ref][edge_id]
 0x09  graph predicate+in           [ns][0x09][predicate_id][dst ref][src ref][edge_id]
-0x0A  hyperedge group              [ns][0x0A][kind][group]               (value = parent_id + payload)
-0x0B  hyperedge edge member        [ns][0x0B][kind][group][edge_id]       (ADR-0066)
-0x0C  hyperedge node member        [ns][0x0C][kind][group][node][edge_id] (derived, rebuildable)
-0x0D  hyperedge child index        [ns][0x0D][kind][parent][child]    (derived)
+0x0A  cluster              [ns][0x0A][kind][group]               (value = parent_id + payload)
+0x0B  edge member        [ns][0x0B][kind][group][edge_id]       (ADR-0066)
+0x0C  node member        [ns][0x0C][kind][group][node][edge_id] (derived, rebuildable)
+0x0D  child cluster index        [ns][0x0D][kind][parent][child]    (derived)
 0x0E  Extension                [ns][0x0E][subkind]…      each subkind owns its contract (0x01 = vector snapshot)
 0x0F  table meta                   [ns][0x0F]                   → name → bytes map (ADR-0043)
 ```

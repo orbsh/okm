@@ -1,6 +1,8 @@
 # ADR-0066: An edge set is a hyperedge
 
-**Status**: Draft (2026-11-12). Merges `docs/ideas/hyperedge-membership.md` and the promoted parts of `docs/ideas/hypergraph.md`; supersedes the latter's member-face layout, which it generalises.
+**Status**: Draft (2026-11-12). Merges `docs/ideas/cluster-membership.md` and the promoted parts of `docs/ideas/hypergraph.md`; supersedes the latter's member-face layout, which it generalises.
+
+This ADR calls it a cluster; the literature calls it a hyperedge, and the difference is that we do not use the arity theory. A community is a cluster whose members were discovered rather than declared.
 
 ## Context
 
@@ -13,23 +15,23 @@ The star shape loses information the model needs: two sets over the same vertice
 **1. A grouping of edges is a set of rows, not a node.** Members live in one row kind, one row per member:
 
 ```text
-0x0A  the group itself        [ns][0x0A][kind][group_id]              → dynamic payload
-0x0B  edge member (authority) [ns][0x0B][kind][group_id][edge_id]     → empty
-0x0C  node member (derived)   [ns][0x0C][kind][group_id][node_id][edge_id] → empty, rebuildable
+0x0A  the cluster itself        [ns][0x0A][kind][hyper_id]              → dynamic payload
+0x0B  edge member (authority) [ns][0x0B][kind][hyper_id][edge_id]     → empty
+0x0C  node member (derived)   [ns][0x0C][kind][hyper_id][node_id][edge_id] → empty, rebuildable
 ```
 
-`kind` is a one-byte closed vocabulary (community / event / subgraph / scope); `group_id` is allocated at run time, not by declaration order. The face IS the row kind — no in-row discriminator — and `kind` stays a key field, so one face serves every vocabulary. Member rows carry no value: the edge already carries it. Members come out ordered: `0x0B` by edge id, `0x0C` by node id — the second is what makes "the members of this group" a stream with duplicates only adjacent, so deduplication costs one comparison instead of a set.
+`kind` is a one-byte closed vocabulary (community / event / subgraph / scope); `hyper_id` is allocated at run time, not by declaration order. The face IS the row kind — no in-row discriminator — and `kind` stays a key field, so one face serves every vocabulary. Member rows carry no value: the edge already carries it. Members come out ordered: `0x0B` by edge id, `0x0C` by node id — the second is what makes "the members of this group" a stream with duplicates only adjacent, so deduplication costs one comparison instead of a set.
 
-**2. Members are edges; node membership is derived.** An edge row already carries both endpoints, so a group's nodes are its member edges' endpoints, deduplicated. `0x0C` exists only to make that projection *ordered and streamable*. It is rebuilt from `0x0B` and the edge rows at any time — an index, not a second truth.
+**2. Members are edges; node membership is derived.** An edge row already carries both endpoints, so a cluster's nodes are its member edges' endpoints, deduplicated. `0x0C` exists only to make that projection *ordered and streamable*. It is rebuilt from `0x0B` and the edge rows at any time — an index, not a second truth.
 
 **3. Completeness rests on a write-time rule, not on补行.** A node exists only as an endpoint of some edge (no "create a bare node" path), and a group exists only with two or more members. Under those two rules the derivation is total and no "member without an edge" shape is needed.
 
-**4. The group is a row of its own, one key shorter than its members.** `[ns][0x0A][kind][group_id]` holds the payload — member count, weight, last write time — while members sit on `0x0B`/`0x0C`. Same shape as the vocabulary cursor at `[ns][0x02]` (69197cd), with one difference that matters: the cursor's entries share its face, so a scan must bound the key length to avoid reading the cursor as an entry, whereas here the face byte differs and no length test is needed. Listing a kind's groups is `[ns][0x0A][kind]`; listing a group's members is `[ns][0x0B][kind][group]` — two scans, each unambiguous. The value is a fixed head plus a dynamic tail: `[parent_id u64 BE][payload]`. `parent_id` is fixed width and first so a reader slices it without decoding anything, and `0` means "no parent" — a reserved value, not a nullable flag, so the head is always eight bytes. Groups therefore nest through the group row itself, with no second face. One cost is stated rather than hidden: reading a group's parent is free, listing a group's children is a scan of `[ns][0x0A][kind]` unless the derived face below exists — which it does. The payload is the dynamic segment's shape (`Dict`) because `kind` is a run-time vocabulary, so no declared Rust type exists for it.
+**4. The group is a row of its own, one key shorter than its members.** `[ns][0x0A][kind][hyper_id]` holds the payload — member count, weight, last write time — while members sit on `0x0B`/`0x0C`. Same shape as the vocabulary cursor at `[ns][0x02]` (69197cd), with one difference that matters: the cursor's entries share its face, so a scan must bound the key length to avoid reading the cursor as an entry, whereas here the face byte differs and no length test is needed. Listing a kind's clusters is `[ns][0x0A][kind]`; listing a cluster's members is `[ns][0x0B][kind][group]` — two scans, each unambiguous. The value is a fixed head plus a dynamic tail: `[parent_id u64 BE][payload]`. `parent_id` is fixed width and first so a reader slices it without decoding anything, and `0` means "no parent" — a reserved value, not a nullable flag, so the head is always eight bytes. Groups therefore nest through the cluster row itself, with no second face. One cost is stated rather than hidden: reading a cluster's parent is free, listing a cluster's children is a scan of `[ns][0x0A][kind]` unless the derived face below exists — which it does. The payload is the dynamic segment's shape (`Dict`) because `kind` is a run-time vocabulary, so no declared Rust type exists for it.
 
 
 **5. Groupings are versioned, and deletion is a write-path contract.** A recompute writes a new group version; the old one stays, so diffs and rollbacks are ordinary set operations. Deleting an edge deletes its membership rows in the same batch; a miss is a freshness problem, not a correctness one, because `0x0C` is rebuildable.
 
-**6. The base graph stays clean.** Algorithms (shortest path, PageRank, components, community detection) run on the edge table alone and never see a grouping. Ignoring cross-group edges is then not a compromise: it is the model's use of the fact that graphs have modular structure. Contraction and expansion — group the edges, compute inside, compute between groups — are a `group by` and a `join`, with no graph restructuring. The residual (edges outside the chosen groups) must stay queryable, and the error is asymmetric: degree-like metrics tolerate truncation, path-like ones do not.
+**6. The base graph stays clean.** Algorithms (shortest path, PageRank, components, community detection) run on the edge table alone and never see a grouping. Ignoring cross-group edges is then not a compromise: it is the model's use of the fact that graphs have modular structure. Contraction and expansion — group the edges, compute inside, compute between clusters — are a `group by` and a `join`, with no graph restructuring. The residual (edges outside the chosen clusters) must stay queryable, and the error is asymmetric: degree-like metrics tolerate truncation, path-like ones do not.
 
 **7. One write entry point, not a new declaration.** `Decl` is always two variants; many node kinds live in the enum `#[derive(GraphEncode)]` already generates for `#[ok_nodes(…)]` (one variant per collection, ns from each table's own `#[ok_ns]`):
 
@@ -39,23 +41,23 @@ Vec::<Decl<G>>::new()
     .hyper_edge(HyperEdge { kind, id, payload })        // id None = create, Some = merge
     .reduce_node::<User>(|u: &mut User| u.seen += 1)    // per collection: node rows are heterogeneous
     .reduce_edge(|e: &mut E| e.weight += 1)             // one payload type per graph
-    .reduce_hyper_edge(|h: &mut Dict| …)                // groups are dynamic
+    .reduce_hyper_edge(|h: &mut Dict| …)                // clusters are dynamic
 ```
 
 Endpoints are created on demand, membership is idempotent (same `(kind, group, member)` upserts), and all three reduces run in the same batch — which is where ADR-0028's counters land. Other operations ride the same row kind: `remove`, `merge`, `split`, `reassign`, `lookup`, `members`, `nodes`, `diff`.
 
-**8. Four fixed faces, taken from the freed core band.** `0x0A` the group, `0x0B` edge members, `0x0C` derived node members, `0x0D` the derived child index `[ns][0x0D][kind][parent][child]`, which turns "list a group's children" into a clean prefix scan; it is derived from `parent_id` in the group rows and rebuildable by scanning them. Three faces rather than one face plus an in-row byte, because the model's rule is that the face states what a row is; With that, the core band is exhausted: a new row kind goes into `0x0E` Extension under a sub-kind byte. Counting families are not used for groups: their counters are declaration order with a 4095 ceiling, while groups are runtime-unbounded.
+**8. Four fixed faces, taken from the freed core band.** `0x0A` the cluster, `0x0B` edge members, `0x0C` derived node members, `0x0D` the derived child index `[ns][0x0D][kind][parent][child]`, which turns "list a cluster's children" into a clean prefix scan; it is derived from `parent_id` in the cluster rows and rebuildable by scanning them. Three faces rather than one face plus an in-row byte, because the model's rule is that the face states what a row is; With that, the core band is exhausted: a new row kind goes into `0x0E` Extension under a sub-kind byte. Counting families are not used for clusters: their counters are declaration order with a 4095 ceiling, while clusters are runtime-unbounded.
 
 ## Consequences
 
-- A fact can belong to many groups, with the graph topology untouched.
+- A fact can belong to many clusters, with the graph topology untouched.
 - "What is in this group" and "what changed between these two versions" are scans and set operations, not traversals.
 - Storage grows by roughly three rows per grouped edge (two derived node rows plus the membership row); the number to watch is rows per edge.
-- Anything that recomputes groups must write a version rather than replace; readers see a consistent snapshot of one version.
+- Anything that recomputes clusters must write a version rather than replace; readers see a consistent snapshot of one version.
 
 ## Rejected
 
 - **A node per group (star / reified).** Loses set identity, shared membership and per-edge roles, and pollutes algorithms with fake hubs.
-- **A counting family per group.** Bounded at 4095 and semantically "declaration order" — wrong for run-time groups.
+- **A counting family per group.** Bounded at 4095 and semantically "declaration order" — wrong for run-time clusters.
 - **Storing the set as one value.** A set-valued entry is a cross-row read-modify-write, which the write contract refuses.
 - **A separate hypergraph declaration.** The graph already declares members; the write API above is the whole addition.
